@@ -1,0 +1,17 @@
+[discord]
+token = "YOUR_DISCORD_BOT_TOKEN_HERE"
+
+[storage]
+sqlite_path = "data/self-agent.db"
+
+[reaction]
+mode = "rule_based"
+
+[reaction.rules]
+mention = true
+reply_to_self = true
+keyword_trigger = []
+
+[reaction.llm]
+always_on = false
+channels = []
