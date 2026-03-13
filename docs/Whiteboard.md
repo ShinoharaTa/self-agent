@@ -155,3 +155,60 @@ self-agent/
 - **Agent-4**: 実装の速度と品質のバランスが良い。4クレートの最小構成で動作するスケルトンを構築。main.rsのシグナルハンドリングやconfig読み込みも実装済み。
 
 **主な懸念**: 設計ドキュメント（Agent-3）とコード実装（Agent-4）の間に乖離がある（Message型、Agent trait、メッセージバス方式）。次のイテレーションで設計に合わせてコードを進化させる必要がある。ただし、Phase 1の初期段階ではAgent-4のシンプルな実装から始めて段階的にリッチ化する方針が合理的。
+
+---
+
+## 8. 追加実装ログ (2026-03-14)
+
+### 8.1 crates/llm-client 新規作成
+- **パッケージ名**: `self-agent-llm-client`
+- **構成**: `src/lib.rs`, `src/types.rs`, `src/provider.rs`, `src/anthropic.rs`
+- **内容**:
+  - `LlmProvider` トレイト: `name()` + `chat()` の非同期抽象インターフェース
+  - `AnthropicProvider`: Claude API (Messages API v2023-06-01) の実装。デフォルトモデル `claude-sonnet-4-20250514`
+  - 共通型: `ChatMessage`, `ChatOptions`, `ChatResponse`, `Usage`, `Role`
+- **依存**: reqwest, serde, serde_json, tokio, tracing, async-trait, anyhow, futures (workspace依存は使わず直接バージョン指定)
+
+### 8.2 crates/config 新規作成
+- **パッケージ名**: `self-agent-config`
+- **構成**: `src/lib.rs`
+- **内容**:
+  - `AppConfig` 構造体: discord, storage, reaction, llm, agents の各設定セクション
+  - `AppConfig::load()`: TOMLファイル読み込み + 環境変数オーバーライド (`DISCORD_TOKEN`, `ANTHROPIC_API_KEY`)
+  - serde defaultによるオプショナルフィールド対応
+- **依存**: serde, toml, tracing, anyhow (workspace依存は使わず直接バージョン指定)
+
+### 8.3 config/default.toml 更新
+- `[storage]` に `memory_path` 追加
+- `[llm]` セクション追加 (provider, model, api_key)
+- `[agents]` セクション追加 (bus_buffer_size)
+- 旧 `[reaction.llm]` セクション削除 (新しい `[llm]` セクションに統合)
+
+### 8.4 未完了事項
+- **cargo check 未実行**: Bash権限が利用不可のため、コンパイル確認は手動で行う必要あり
+- **workspace Cargo.toml 未更新**: 別エージェントが編集中のため、`members` への `"crates/llm-client"`, `"crates/config"` 追加は別途必要
+
+### 8.5 crates/storage アップグレード
+- **変更内容**: データモデル追加 (`models.rs`)、SQLite DB を CRUD 対応に拡張、MemoryStore を階層型に刷新
+- **models.rs 新規追加**: `TaskStatus`, `TaskPriority`, `Task`, `CreateTask`, `UpdateTask`, `TaskFilter`, `Reminder`, `CreateReminder`, `ConversationLog` の各型を定義
+- **sqlite.rs 完全リライト**: タスク CRUD (`create_task`, `get_task`, `list_tasks`, `update_task`, `delete_task`)、リマインダー (`create_reminder`, `get_pending_reminders`, `mark_reminder_fired`)、会話ログ (`log_conversation`, `get_recent_context`) を実装。マイグレーションで `tasks`, `reminders`, `conversation_logs` テーブル + インデックスを作成
+- **memory.rs リライト**: `MemoryStore` を階層型 (global / agents / context) に変更。`load_global`, `save_global`, `load_agent`, `save_agent`, `load_context`, `save_context`, `list_agent_memories` メソッド
+- **Cargo.toml**: workspace 依存から直接バージョン指定に変更。`serde_json`, `chrono` 依存を追加
+- **lib.rs**: `models` モジュール追加、全パブリック型の re-export
+
+### 8.6 crates/task-manager 新規作成
+- **パッケージ名**: `self-agent-task-manager`
+- **構成**: `src/lib.rs` のみ (単一モジュール)
+- **内容**:
+  - `TaskManager` 構造体: `Database` をラップしてタスク管理ビジネスロジックを提供
+  - メソッド: `create_task`, `get_task`, `list_tasks`, `today_tasks`, `update_task`, `complete_task`, `delete_task`, `search_tasks`, `task_summary`
+  - `today_tasks()`: Todo + InProgress のタスクを優先度降順で返す
+  - `task_summary()`: LLM に渡すためのMarkdown形式サマリーを生成
+- **テスト**: 5件 (`test_create_and_get_task`, `test_complete_task`, `test_today_tasks`, `test_search_tasks`, `test_task_summary`)
+- **依存**: self-agent-storage (path), serde, serde_json, chrono, tracing, anyhow (すべて直接バージョン指定)
+
+### 8.7 未完了事項 (8.5-8.6)
+- **cargo check / cargo test 未実行**: Bash 権限が利用不可のため、コンパイル・テスト確認は手動で行う必要あり
+- **workspace Cargo.toml 未更新**: `members` への `"crates/task-manager"` 追加は別途必要
+- **DateTime パース**: SQLite の `datetime('now')` 形式 (`YYYY-MM-DD HH:MM:SS`) は chrono の RFC 3339 パーサーでは失敗し、`unwrap_or_default()` で Unix epoch にフォールバックする。将来的に `NaiveDateTime` パース + UTC 変換への改善が必要
+- **core への統合**: task-manager は現在 core に依存しない設計。Agent trait 実装は core リライト完了後に追加予定

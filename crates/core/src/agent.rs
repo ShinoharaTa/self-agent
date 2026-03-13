@@ -1,17 +1,35 @@
-use anyhow::Result;
+use std::time::Duration;
+
 use async_trait::async_trait;
 
-use crate::message::Message;
+use crate::bus::MessageBus;
+use crate::error::Result;
+use crate::message::{AgentId, Message};
 
 /// すべてのエージェントが実装するトレイト
 #[async_trait]
 pub trait Agent: Send + Sync {
-    /// エージェント名を返す
-    fn name(&self) -> &str;
+    /// エージェントのID
+    fn id(&self) -> AgentId;
 
-    /// エージェントを起動する
-    async fn start(&self) -> Result<()>;
+    /// 初期化処理
+    async fn init(&mut self, bus: MessageBus) -> Result<()>;
 
     /// メッセージを処理する
-    async fn handle_message(&self, message: Message) -> Result<()>;
+    async fn handle_message(&mut self, message: Message) -> Result<Option<Message>>;
+
+    /// 定期処理の間隔 (None = 定期処理なし)
+    fn tick_interval(&self) -> Option<Duration> {
+        None
+    }
+
+    /// 定期処理
+    async fn tick(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// シャットダウン処理
+    async fn shutdown(&mut self) -> Result<()> {
+        Ok(())
+    }
 }

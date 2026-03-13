@@ -2,8 +2,11 @@
 members = [
     "crates/core",
     "crates/storage",
+    "crates/config",
+    "crates/llm-client",
     "crates/chat-bot",
     "crates/orchestrator",
+    "crates/task-manager",
 ]
 resolver = "2"
 
@@ -14,11 +17,18 @@ version = "0.1.0"
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures = "0.3"
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [package]
 name = "self-agent"
@@ -28,11 +38,15 @@ edition.workspace = true
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 self-agent-core = { path = "crates/core" }
 self-agent-storage = { path = "crates/storage" }
+self-agent-config = { path = "crates/config" }
+self-agent-llm-client = { path = "crates/llm-client" }
 self-agent-chat-bot = { path = "crates/chat-bot" }
 self-agent-orchestrator = { path = "crates/orchestrator" }
+self-agent-task-manager = { path = "crates/task-manager" }

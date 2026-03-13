@@ -1,39 +1,11 @@
 use anyhow::Result;
-use serde::Deserialize;
 use tracing::info;
 
+use self_agent_config::AppConfig;
 use self_agent_core::bus::MessageBus;
-
-/// アプリケーション設定
-#[derive(Debug, Deserialize)]
-struct Config {
-    discord: DiscordConfig,
-    storage: StorageConfig,
-    #[allow(dead_code)]
-    reaction: ReactionConfig,
-}
-
-#[derive(Debug, Deserialize)]
-struct DiscordConfig {
-    token: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct StorageConfig {
-    sqlite_path: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReactionConfig {
-    #[allow(dead_code)]
-    mode: String,
-}
-
-fn load_config() -> Result<Config> {
-    let config_str = std::fs::read_to_string("config/default.toml")?;
-    let config: Config = toml::from_str(&config_str)?;
-    Ok(config)
-}
+use self_agent_core::message::AgentId;
+use self_agent_core::Agent;
+use self_agent_storage::{Database, MemoryStore};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -48,31 +20,51 @@ async fn main() -> Result<()> {
     info!("self-agent starting...");
 
     // 設定読み込み
-    let config = load_config()?;
-    info!("Config loaded: storage={}", config.storage.sqlite_path);
+    let config = AppConfig::load("config/default.toml")?;
+    info!(
+        "Config loaded: storage={}, memory={}",
+        config.storage.sqlite_path, config.storage.memory_path
+    );
 
     // メッセージバス初期化
-    let bus = MessageBus::new(256);
-    info!("Message bus initialized");
+    let bus = MessageBus::new(config.agents.bus_buffer_size);
 
     // ストレージ初期化
-    let _db = self_agent_storage::Database::open(&config.storage.sqlite_path)?;
-    info!("Database initialized");
+    let db = Database::open(&config.storage.sqlite_path)?;
+    let memory = MemoryStore::new(&config.storage.memory_path)?;
+    info!("Storage initialized (SQLite + MemoryStore)");
 
-    // オーケストレーター起動
-    let orchestrator = self_agent_orchestrator::Orchestrator::new(bus.clone());
+    // TaskManager初期化
+    let _task_manager = self_agent_task_manager::TaskManager::new(db);
+    info!("TaskManager initialized");
+
+    // MemoryStore: グローバル記憶の初期化（存在しない場合）
+    if memory.load_global()?.is_empty() {
+        memory.save_global("# Global Memory\n\nself-agent のグローバル記憶。\n")?;
+    }
+
+    // オーケストレーター初期化・起動
+    let mut orchestrator = self_agent_orchestrator::Orchestrator::new();
+    orchestrator
+        .init(bus.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
     let orchestrator_handle = tokio::spawn(async move {
-        use self_agent_core::Agent;
-        if let Err(e) = orchestrator.start().await {
+        if let Err(e) = orchestrator.run().await {
             tracing::error!("Orchestrator error: {}", e);
         }
     });
+
+    // ChatBot をメッセージバスに登録
+    let _chatbot_rx = bus.register(AgentId::ChatBot).await;
 
     // Discord Bot起動
     let discord_bus = bus.clone();
     let discord_token = config.discord.token.clone();
     let discord_handle = tokio::spawn(async move {
-        if let Err(e) = self_agent_chat_bot::discord::start_bot(&discord_token, discord_bus).await
+        if let Err(e) =
+            self_agent_chat_bot::discord::start_bot(&discord_token, discord_bus).await
         {
             tracing::error!("Discord bot error: {}", e);
         }

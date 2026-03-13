@@ -1,8 +1,9 @@
 [discord]
-token = "YOUR_DISCORD_BOT_TOKEN_HERE"
+token = "YOUR_DISCORD_BOT_TOKEN"
 
 [storage]
 sqlite_path = "data/self-agent.db"
+memory_path = "data/memory"
 
 [reaction]
 mode = "rule_based"
@@ -12,6 +13,10 @@ mention = true
 reply_to_self = true
 keyword_trigger = []
 
-[reaction.llm]
-always_on = false
-channels = []
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+api_key = ""
+
+[agents]
+bus_buffer_size = 256
