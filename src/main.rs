@@ -1,14 +1,25 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use tracing::info;
 
 use self_agent_config::AppConfig;
 use self_agent_core::bus::MessageBus;
-use self_agent_core::message::AgentId;
 use self_agent_core::Agent;
+use self_agent_llm_client::anthropic::AnthropicProvider;
+use self_agent_llm_client::provider::LlmProvider;
 use self_agent_storage::{Database, MemoryStore};
+
+mod setup;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // --setup フラグの検出
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--setup" || a == "setup") {
+        return setup::run_setup().await;
+    }
+
     // ログ初期化
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -30,21 +41,46 @@ async fn main() -> Result<()> {
     let bus = MessageBus::new(config.agents.bus_buffer_size);
 
     // ストレージ初期化
-    let db = Database::open(&config.storage.sqlite_path)?;
+    let db = Arc::new(std::sync::Mutex::new(Database::open(&config.storage.sqlite_path)?));
     let memory = MemoryStore::new(&config.storage.memory_path)?;
     info!("Storage initialized (SQLite + MemoryStore)");
 
-    // TaskManager初期化
-    let _task_manager = self_agent_task_manager::TaskManager::new(db);
-    info!("TaskManager initialized");
-
-    // MemoryStore: グローバル記憶の初期化（存在しない場合）
+    // MemoryStore: グローバル記憶の初期化
     if memory.load_global()?.is_empty() {
         memory.save_global("# Global Memory\n\nself-agent のグローバル記憶。\n")?;
     }
 
-    // オーケストレーター初期化・起動
+    // LLM初期化（APIキーがあれば）
+    let llm_api_key = std::env::var("ANTHROPIC_API_KEY")
+        .ok()
+        .or_else(|| {
+            let key = &config.llm.api_key;
+            if !key.is_empty() && key != "YOUR_API_KEY" {
+                Some(key.clone())
+            } else {
+                None
+            }
+        });
+
+    let llm: Option<Arc<dyn LlmProvider>> = if let Some(key) = llm_api_key {
+        info!(
+            "LLM initialized: provider={}, model={}",
+            config.llm.provider, config.llm.model
+        );
+        Some(Arc::new(
+            AnthropicProvider::new(key).with_model(config.llm.model.clone()),
+        ))
+    } else {
+        info!("LLM not configured, running in echo mode");
+        None
+    };
+
+    // Orchestrator初期化・起動
     let mut orchestrator = self_agent_orchestrator::Orchestrator::new();
+    if let Some(llm) = llm {
+        orchestrator = orchestrator.with_llm(llm);
+    }
+    orchestrator = orchestrator.with_db(db.clone());
     orchestrator
         .init(bus.clone())
         .await
@@ -56,28 +92,43 @@ async fn main() -> Result<()> {
         }
     });
 
-    // ChatBot をメッセージバスに登録
-    let _chatbot_rx = bus.register(AgentId::ChatBot).await;
-
-    // Discord Bot起動
-    let discord_bus = bus.clone();
-    let discord_token = config.discord.token.clone();
-    let discord_handle = tokio::spawn(async move {
-        if let Err(e) =
-            self_agent_chat_bot::discord::start_bot(&discord_token, discord_bus).await
-        {
-            tracing::error!("Discord bot error: {}", e);
+    // Discord Bot起動（トークンがあれば）
+    let discord_token = std::env::var("DISCORD_TOKEN").ok().or_else(|| {
+        let token = &config.discord.token;
+        if !token.is_empty() && token != "YOUR_DISCORD_BOT_TOKEN" {
+            Some(token.clone())
+        } else {
+            None
         }
     });
 
-    info!("All agents started. Press Ctrl+C to shutdown.");
+    let discord_handle = if let Some(token) = discord_token {
+        // chat-bot用に別DBインスタンスを開く（rusqlite::Connectionは!Sync）
+        let chat_db = Database::open(&config.storage.sqlite_path)?;
+        let discord_bus = bus.clone();
+        Some(tokio::spawn(async move {
+            if let Err(e) =
+                self_agent_chat_bot::discord::start_bot(&token, discord_bus, Some(chat_db)).await
+            {
+                tracing::error!("Discord bot error: {}", e);
+            }
+        }))
+    } else {
+        info!("Discord not configured, skipping bot startup");
+        info!("Run with --setup for configuration help");
+        None
+    };
+
+    info!("self-agent started. Press Ctrl+C to shutdown.");
 
     // シャットダウン待機
     tokio::signal::ctrl_c().await?;
     info!("Shutdown signal received");
 
     orchestrator_handle.abort();
-    discord_handle.abort();
+    if let Some(handle) = discord_handle {
+        handle.abort();
+    }
 
     info!("self-agent shutdown complete");
     Ok(())

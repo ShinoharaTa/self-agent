@@ -212,3 +212,20 @@ self-agent/
 - **workspace Cargo.toml 未更新**: `members` への `"crates/task-manager"` 追加は別途必要
 - **DateTime パース**: SQLite の `datetime('now')` 形式 (`YYYY-MM-DD HH:MM:SS`) は chrono の RFC 3339 パーサーでは失敗し、`unwrap_or_default()` で Unix epoch にフォールバックする。将来的に `NaiveDateTime` パース + UTC 変換への改善が必要
 - **core への統合**: task-manager は現在 core に依存しない設計。Agent trait 実装は core リライト完了後に追加予定
+
+### 8.8 ChatBot 双方向通信 + 会話コンテキスト収集
+- **変更ファイル**: `crates/chat-bot/Cargo.toml`, `crates/chat-bot/src/discord.rs`
+- **Cargo.toml 変更**: `self-agent-storage` 依存追加、serenity に `cache` feature 追加
+- **discord.rs 完全リライト**: 以下の機能を実装
+  1. **SharedState パターン**: `DiscordHandler` と `response_listener` が `Arc<SharedState>` を共有。`SharedState` は HTTP クライアント (`tokio::sync::RwLock`)、bot_user_id (`tokio::sync::RwLock`)、MessageBus、Database (`std::sync::Mutex`) を保持
+  2. **双方向通信**: `response_listener` タスクが MessageBus から ChatBot 宛メッセージを受信し、payload の `text` と `channel_id` を使って Discord チャンネルに `ChannelId::say()` で送信
+  3. **会話コンテキスト収集**: メンション検出時に `GetMessages::new().before(msg.id).limit(10)` で直近10件のメッセージを取得し、bot メッセージを除外してコンテキスト文字列を構築。payload に `context`, `server_id`, `message_id` フィールドを追加
+  4. **会話ログ保存**: 全メッセージ (bot以外) を `Database::log_conversation()` で SQLite に保存
+  5. **`start_bot` シグネチャ変更**: `pub async fn start_bot(token: &str, bus: MessageBus, db: Option<Database>) -> Result<()>` に `db` 引数追加
+- **設計判断**:
+  - `Database` は `rusqlite::Connection` が `!Sync` のため `Arc<Database>` ではなく `Option<Mutex<Database>>` で `Sync` を確保
+  - `std::sync::Mutex` を使用 (`log_conversation` は同期的かつ短時間で完了するため、async mutex は不要)
+  - `tokio::sync::RwLock` は `http` と `bot_user_id` に使用 (async コンテキストで安全にアクセス)
+- **未完了事項**:
+  - `cargo check` 未実行 (Bash 権限なし)。手動でのコンパイル確認が必要
+  - `src/main.rs` の `start_bot` 呼び出し更新は別エージェントが担当

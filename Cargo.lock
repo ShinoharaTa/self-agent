@@ -206,6 +206,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "5.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
+dependencies = [
+ "cfg-if",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+ "serde",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1513,6 +1527,7 @@ dependencies = [
  "self-agent-task-manager",
  "serde",
  "serde_json",
+ "serenity",
  "tokio",
  "toml",
  "tracing",
@@ -1526,6 +1541,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "self-agent-core",
+ "self-agent-storage",
  "serde",
  "serde_json",
  "serenity",
@@ -1576,8 +1592,12 @@ dependencies = [
 name = "self-agent-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "self-agent-core",
+ "self-agent-llm-client",
+ "self-agent-storage",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -1697,11 +1717,14 @@ dependencies = [
  "base64",
  "bitflags",
  "bytes",
+ "dashmap",
  "flate2",
  "futures",
  "mime_guess",
+ "parking_lot",
  "percent-encoding",
  "reqwest",
+ "rustc-hash",
  "secrecy",
  "serde",
  "serde_cow",

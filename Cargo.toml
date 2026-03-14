@@ -50,3 +50,4 @@ self-agent-llm-client = { path = "crates/llm-client" }
 self-agent-chat-bot = { path = "crates/chat-bot" }
 self-agent-orchestrator = { path = "crates/orchestrator" }
 self-agent-task-manager = { path = "crates/task-manager" }
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }

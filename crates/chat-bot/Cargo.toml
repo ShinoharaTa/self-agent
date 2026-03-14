@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }
+self-agent-core = { path = "../core" }
+self-agent-storage = { path = "../storage" }
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "rustls_backend", "cache"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
-self-agent-core = { path = "../core" }
