@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     let bus = MessageBus::new(config.agents.bus_buffer_size);
 
     // ストレージ初期化
-    let db = Arc::new(std::sync::Mutex::new(Database::open(&config.storage.sqlite_path)?));
+    let config_db = Database::open(&config.storage.sqlite_path)?;
     let memory = MemoryStore::new(&config.storage.memory_path)?;
     info!("Storage initialized (SQLite + MemoryStore)");
 
@@ -50,9 +50,10 @@ async fn main() -> Result<()> {
         memory.save_global("# Global Memory\n\nself-agent のグローバル記憶。\n")?;
     }
 
-    // LLM初期化（APIキーがあれば）
-    let llm_api_key = std::env::var("ANTHROPIC_API_KEY")
-        .ok()
+    // クレデンシャル解決: DB → 環境変数 → config.toml の優先順
+    let llm_api_key = config_db
+        .get_config("anthropic_api_key")?
+        .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
         .or_else(|| {
             let key = &config.llm.api_key;
             if !key.is_empty() && key != "YOUR_API_KEY" {
@@ -62,6 +63,27 @@ async fn main() -> Result<()> {
             }
         });
 
+    let discord_token = config_db
+        .get_config("discord_token")?
+        .or_else(|| std::env::var("DISCORD_TOKEN").ok())
+        .or_else(|| {
+            let token = &config.discord.token;
+            if !token.is_empty() && token != "YOUR_DISCORD_BOT_TOKEN" {
+                Some(token.clone())
+            } else {
+                None
+            }
+        });
+
+    // config_db は設定読み出し専用なのでここで閉じる
+    drop(config_db);
+
+    // Orchestrator用DB（Mutex wrapped）
+    let db = Arc::new(std::sync::Mutex::new(
+        Database::open(&config.storage.sqlite_path)?,
+    ));
+
+    // LLM初期化
     let llm: Option<Arc<dyn LlmProvider>> = if let Some(key) = llm_api_key {
         info!(
             "LLM initialized: provider={}, model={}",
@@ -72,6 +94,7 @@ async fn main() -> Result<()> {
         ))
     } else {
         info!("LLM not configured, running in echo mode");
+        info!("Run with --setup to configure");
         None
     };
 
@@ -92,18 +115,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Discord Bot起動（トークンがあれば）
-    let discord_token = std::env::var("DISCORD_TOKEN").ok().or_else(|| {
-        let token = &config.discord.token;
-        if !token.is_empty() && token != "YOUR_DISCORD_BOT_TOKEN" {
-            Some(token.clone())
-        } else {
-            None
-        }
-    });
-
+    // Discord Bot起動
     let discord_handle = if let Some(token) = discord_token {
-        // chat-bot用に別DBインスタンスを開く（rusqlite::Connectionは!Sync）
         let chat_db = Database::open(&config.storage.sqlite_path)?;
         let discord_bus = bus.clone();
         Some(tokio::spawn(async move {
@@ -115,7 +128,7 @@ async fn main() -> Result<()> {
         }))
     } else {
         info!("Discord not configured, skipping bot startup");
-        info!("Run with --setup for configuration help");
+        info!("Run with --setup to configure");
         None
     };
 

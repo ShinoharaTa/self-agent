@@ -68,6 +68,12 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_reminders_remind_at ON reminders(remind_at);
             CREATE INDEX IF NOT EXISTS idx_reminders_is_fired ON reminders(is_fired);
             CREATE INDEX IF NOT EXISTS idx_conversation_logs_timestamp ON conversation_logs(timestamp);
+
+            CREATE TABLE IF NOT EXISTS system_config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
         ")?;
         info!("Database migration complete");
         Ok(())
@@ -273,6 +279,51 @@ impl Database {
         }
         logs.reverse(); // 古い順に
         Ok(logs)
+    }
+
+    // --- システム設定 (key-value) ---
+
+    pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO system_config (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_config(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT value FROM system_config WHERE key = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![key], |row| row.get(0))?;
+        match rows.next() {
+            Some(Ok(val)) => Ok(Some(val)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn delete_config(&self, key: &str) -> Result<bool> {
+        let affected = self.conn.execute(
+            "DELETE FROM system_config WHERE key = ?1",
+            params![key],
+        )?;
+        Ok(affected > 0)
+    }
+
+    pub fn list_config(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key, value FROM system_config ORDER BY key",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut configs = Vec::new();
+        for row in rows {
+            configs.push(row?);
+        }
+        Ok(configs)
     }
 
     pub fn conn(&self) -> &Connection {

@@ -1,5 +1,6 @@
-[discord]
-token = "YOUR_DISCORD_BOT_TOKEN"
+# self-agent 設定ファイル
+# APIキーやトークンはシステムDB (SQLite) で管理されます。
+# `cargo run -- --setup` で対話的に設定できます。
 
 [storage]
 sqlite_path = "data/self-agent.db"
@@ -16,7 +17,6 @@ keyword_trigger = []
 [llm]
 provider = "anthropic"
 model = "claude-sonnet-4-20250514"
-api_key = ""
 
 [agents]
 bus_buffer_size = 256

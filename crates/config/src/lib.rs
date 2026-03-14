@@ -5,6 +5,7 @@ use std::path::Path;
 /// アプリケーション全体の設定
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub discord: DiscordConfig,
     pub storage: StorageConfig,
     pub reaction: ReactionConfig,
@@ -14,10 +15,10 @@ pub struct AppConfig {
     pub agents: AgentConfig,
 }
 
-/// Discord接続設定
-#[derive(Debug, Clone, Deserialize)]
+/// Discord接続設定（トークンはシステムDBで管理）
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct DiscordConfig {
-    /// Botトークン（環境変数 DISCORD_TOKEN でオーバーライド可能）
+    #[serde(default)]
     pub token: String,
 }
 
@@ -57,14 +58,13 @@ fn default_true() -> bool {
     true
 }
 
-/// LLM設定
+/// LLM設定（APIキーはシステムDBで管理）
 #[derive(Debug, Clone, Deserialize)]
 pub struct LlmConfig {
     #[serde(default = "default_provider")]
     pub provider: String,
     #[serde(default = "default_model")]
     pub model: String,
-    /// APIキー（環境変数 ANTHROPIC_API_KEY でオーバーライド可能）
     #[serde(default)]
     pub api_key: String,
 }
@@ -102,15 +102,7 @@ impl AppConfig {
     /// TOMLファイルから設定を読み込む
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path.as_ref())?;
-        let mut config: AppConfig = toml::from_str(&content)?;
-
-        // 環境変数でオーバーライド
-        if let Ok(token) = std::env::var("DISCORD_TOKEN") {
-            config.discord.token = token;
-        }
-        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-            config.llm.api_key = key;
-        }
+        let config: AppConfig = toml::from_str(&content)?;
 
         tracing::info!("Config loaded from {}", path.as_ref().display());
         Ok(config)
