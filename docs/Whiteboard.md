@@ -229,3 +229,168 @@ self-agent/
 - **未完了事項**:
   - `cargo check` 未実行 (Bash 権限なし)。手動でのコンパイル確認が必要
   - `src/main.rs` の `start_bot` 呼び出し更新は別エージェントが担当
+
+---
+
+## 9. 設計セッション #2 - 要望洗い出しと設計反映 (2026-03-14)
+
+> 3エージェント並列起動による競技的設計セッション
+
+### 9.1 セッション参加者
+
+| 役割 | 担当 | ステータス | 成果物 |
+|---|---|---|---|
+| チームリーダー | Leader | 完了 | Whiteboard統合、ロードマップ |
+| 要件ファシリテーター | Agent-1 | 完了 | `docs/design/REQUIREMENTS_V2.md` |
+| LLMアーキテクト | Agent-2 | 完了 | `docs/design/LLM_MULTI_PROVIDER.md` |
+| インテグレーション設計 | Agent-3 | 完了 | `docs/design/INTEGRATIONS.md` |
+
+### 9.2 セッション目標と達成状況
+
+| 目標 | 達成度 | 備考 |
+|---|---|---|
+| ユーザー要望の網羅的洗い出し | 達成 | 明示8件 + 暗黙8件 + 未議論13件 = 計30要件を特定 |
+| 優先度マトリクスの作成 | 達成 | 影響度 x コストで5段階のTier分け |
+| マルチLLMプロバイダー設計 | 達成 | 7プロバイダー対応、OpenAI互換共通実装、モデルルーティング |
+| 外部連携統合設計 | 達成 | OAuth統一管理、Calendar/Slack/Reminder/スキルの設計 |
+
+### 9.3 議論の経過
+
+#### Agent-1 (要件ファシリテーター) の分析
+
+**発見した重要な未議論領域:**
+1. **レートリミット管理** - 複数LLMプロバイダー対応時に重要度が急増。コスト暴走リスクあり
+2. **通知チャンネルの統一抽象化** - Discord/Slack/Web UIすべてに通知を送る共通レイヤーが欠落
+3. **Graceful Shutdown** - 現在のmain.rsは`abort()`で強制終了しており、データ損失リスクあり
+4. **LLMコスト追跡** - 個人プロジェクトでもコスト管理は重要。特に複数プロバイダー時
+5. **データマイグレーション戦略** - SQLiteスキーマ変更時の安全な移行手段が未定義
+
+**Phase 1.5の提案**: 次のPhaseに進む前に、設計とコードの乖離解消、テスト整備、エラーハンドリング統一を行うべき。
+
+#### Agent-2 (LLMアーキテクト) の設計判断
+
+**核心的な設計決定:**
+1. **OpenAI互換プロバイダーの共通化** - xAI, Ollama, GLM, Azure OpenAIは全てOpenAI Chat Completions API互換。`OpenAiCompatibleProvider`を1つ作り、ベースURL/認証/ヘッダーだけ差し替える方式を採用
+2. **LocalGPT参考の`[llm.providers.xxx]`セクション方式** - プロバイダーごとに独立した設定セクション。enabled/disabledで切替
+3. **ModelRouter** - タスク種別 (intent_parsing, summarization, code_generation, chat) に応じたモデル自動選択
+4. **ProviderRegistry** - 設定ファイルからプロバイダーインスタンスを動的に生成
+5. **UsageTracker** - SQLiteベースのLLM使用量追跡。月次コスト集計
+
+**既存コードへの影響を最小化**: `LlmProvider` traitの既存メソッドは変えず、`capabilities()`, `chat_stream()` を追加。`AnthropicProvider`は互換性維持。
+
+#### Agent-3 (インテグレーション設計) の設計判断
+
+**核心的な設計決定:**
+1. **CredentialStore** - 全外部サービスのOAuth/APIキーを統一管理。SQLiteに保存し、将来的にaes-gcm暗号化
+2. **ChatPlatform trait** - Discord/Slack/将来のWeb UIを統一する抽象レイヤー。`send_message()`, `get_recent_messages()` の共通インターフェース
+3. **Google Calendar OAuth2** - ローカルHTTPサーバー (localhost:18431) で認可コード受取。セットアップウィザードでブラウザ認証フロー
+4. **承認制スケジュール** - CalSync -> Orchestrator -> ChatBot -> ユーザー -> 確定のフロー。空き時間候補を提示し、ユーザーが選択
+5. **リマインダーのtick()パターン** - Agent traitの`tick_interval()`を活用し、1分間隔で発火チェック
+
+### 9.4 3エージェント間の合意点
+
+| 論点 | 合意内容 |
+|---|---|
+| Phase 1.5の必要性 | 全員合意。コード品質の安定化が先 |
+| 認証情報の管理場所 | CredentialStore (SQLite) に統一。DB -> 環境変数 -> config.toml の優先順維持 |
+| プラットフォーム抽象化 | ChatPlatform traitで統一。既存Discord実装はリファクタリング |
+| LLMプロバイダー設定形式 | `[llm.providers.xxx]` セクション方式。LocalGPT参考 |
+| モデルルーティング | タスク種別ベースの自動選択 + ユーザー明示指定のオーバーライド |
+| OAuth2フロー | ローカルHTTPサーバーでのコールバック受取方式 |
+
+### 9.5 未合意・要ユーザー判断事項
+
+1. **Bot名**: 引き続き未決定
+2. **LLMプロバイダーの実装優先順位**: OpenAI? Ollama? xAI?
+3. **Web UIの用途と規模**: ダッシュボード? フル機能?
+4. **Slack利用規模**: ワークスペース数、必要な機能レベル
+5. **「まだ出し切っていない要望」**: ユーザーからの追加入力待ち
+
+---
+
+## 10. 推奨ロードマップ
+
+### Phase 1.5: コード安定化 (推定1-2週間)
+
+**目標**: 設計とコードの乖離解消、テスト整備、E2E動作確認
+
+| # | タスク | 依存 | 推定工数 |
+|---|---|---|---|
+| 1 | Agent trait拡張 (init, tick, shutdown追加) | なし | 0.5日 |
+| 2 | Message型にUUID, timestamp, correlation_id追加 | なし | 0.5日 |
+| 3 | main.rsのGraceful Shutdown実装 (abort -> shutdown) | #1 | 0.5日 |
+| 4 | coreクレートのthiserrorエラー型定義 | なし | 0.5日 |
+| 5 | workspace Cargo.toml整備 + cargo check通過 | なし | 0.5日 |
+| 6 | core, storage, task-managerのユニットテスト | #4 | 1日 |
+| 7 | E2E動作確認 (Discord メンション -> タスク登録) | #1-5 | 1日 |
+| 8 | DateTime パース修正 (NaiveDateTime対応) | なし | 0.5日 |
+
+### Phase 2: 機能拡充 (推定4-6週間)
+
+**Sprint 2-1: LLMマルチプロバイダー (2週間)**
+| # | タスク | 依存 |
+|---|---|---|
+| 9 | LlmProvider trait拡張 (capabilities, chat_stream) | Phase 1.5完了 |
+| 10 | OpenAiCompatibleProvider実装 | #9 |
+| 11 | ProviderRegistry実装 | #10 |
+| 12 | config.toml を [llm.providers.xxx] 形式に移行 | #11 |
+| 13 | セットアップウィザードのマルチプロバイダー対応 | #12 |
+| 14 | UsageTracker (コスト追跡) 実装 | #9 |
+| 15 | RateLimiter実装 | #9 |
+
+**Sprint 2-2: 外部連携基盤 (2週間)**
+| # | タスク | 依存 |
+|---|---|---|
+| 16 | CredentialStore実装 (storage クレートに追加) | Phase 1.5完了 |
+| 17 | ChatPlatform trait + Discord リファクタリング | #16 |
+| 18 | リマインダーエージェント実装 | Phase 1.5完了 |
+| 19 | ModelRouter実装 | #11 |
+| 20 | 通知チャンネル抽象化 | #17 |
+
+**Sprint 2-3: Google Calendar + Slack (2週間)**
+| # | タスク | 依存 |
+|---|---|---|
+| 21 | Google OAuth2ヘルパー実装 | #16 |
+| 22 | Google Calendar APIクライアント実装 | #21 |
+| 23 | CalSyncエージェント実装 | #22 |
+| 24 | 承認制スケジュールフロー実装 | #23 |
+| 25 | Slack Bot実装 (slack-morphism) | #17 |
+| 26 | セットアップウィザード更新 (Slack, Calendar) | #23, #25 |
+
+### Phase 3: 自律拡張 (推定4-6週間)
+
+| # | タスク | 依存 |
+|---|---|---|
+| 27 | rquickjsスキルランタイム実装 | Phase 2完了 |
+| 28 | TypeScript -> JSビルドパイプライン (swc) | #27 |
+| 29 | SkillDevエージェント実装 | #28 |
+| 30 | Web UI (フレームワーク選定 + 基本実装) | Phase 2完了 |
+| 31 | MCP対応 (外部ツール連携) | Phase 2完了 |
+| 32 | ヘルスチェック・監視 | Phase 2完了 |
+| 33 | バックアップ・リストア機構 | Phase 2完了 |
+
+### マイルストーン
+
+```
+2026-03 末: Phase 1.5 完了 (コード安定化、E2E動作確認)
+2026-04 中: Sprint 2-1 完了 (マルチLLM対応)
+2026-04 末: Sprint 2-2 完了 (リマインダー、通知抽象化)
+2026-05 中: Sprint 2-3 完了 (Calendar、Slack)
+2026-06 末: Phase 3 完了 (スキルシステム、Web UI)
+```
+
+---
+
+## 11. 設計書一覧
+
+| ファイル | 内容 | 作成セッション |
+|---|---|---|
+| `docs/REQUIREMENTS.md` | 要件定義書 V1 | セッション #1 |
+| `docs/design/REQUIREMENTS_V2.md` | 優先度付き要件一覧 (30要件) | セッション #2 |
+| `docs/design/LLM_MULTI_PROVIDER.md` | マルチLLMプロバイダー設計書 | セッション #2 |
+| `docs/design/INTEGRATIONS.md` | 外部連携設計書 (Calendar, Slack, Reminder, Skill) | セッション #2 |
+| `docs/architecture/ARCHITECTURE.md` | A2Aアーキテクチャ詳細設計 | セッション #1 |
+| `docs/architecture/CRATE_STRUCTURE.md` | クレート構成設計 | セッション #1 |
+| `docs/architecture/TECH_DECISIONS.md` | 技術選定根拠 | セッション #1 |
+| `docs/research/a2a_protocol.md` | A2Aプロトコル調査 | セッション #1 |
+| `docs/research/openclaw_analysis.md` | OpenClaw/Claude Code分析 | セッション #1 |
