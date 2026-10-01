@@ -1,72 +1,58 @@
 # self-agent
 
-自分専用の自律型マルチエージェントBot。Rustで開発。
-
 ## 概要
 
-ADHDエンジニアのタスク管理・情報整理を支援する自律型エージェントシステム。
-Discord/Slackの会話からタスクを抽出・管理し、Googleカレンダーと連携してスケジューリングを行う。
+Discord 専用サーバーに常駐する個人用エージェント。Claude Agent SDK（TypeScript）で実装し、Claude Max の利用枠で動く。
+Discord の 1 スレッド = 1 SDK セッション（`resume` で継続）。
 
-- A2A (Agent-to-Agent) アーキテクチャで複数エージェントが協調動作
-- シングルユーザー向け
-- 要件定義書: `docs/REQUIREMENTS.md`
-- アーキテクチャ設計: `docs/architecture/`
+- 要件: `docs/REQUIREMENTS.md`, `docs/design/`
+- 旧 Rust 版の資料は `docs/archive/`（参照のみ）
 
-## ビルド方法
+## コマンド
 
 ```bash
-cargo check          # コンパイル確認
-cargo build          # ビルド
-cargo test --workspace  # 全テスト実行
-cargo run            # 起動 (環境変数 or config/default.toml のトークン設定が必要)
+source ~/.nvm/nvm.sh   # 非対話シェルでは毎回必要（Node 24.20.0）
+npm ci                 # 依存インストール（package-lock.json どおり）
+npm run check          # 型チェック（tsc --noEmit）
+npm test               # テスト（node:test）
+npm start              # 起動
+npm run measure        # P0 実測（OAuth トークン必須。利用枠を消費する）
+```
+
+## ディレクトリ構成
+
+```
+self-agent/
+├── package.json / package-lock.json
+├── tsconfig.json          # 型チェック専用（noEmit）。実行は Node の型ストリッピング
+├── src/
+│   ├── main.ts            # エントリポイント
+│   └── config.ts          # 環境変数から設定を読む
+├── scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測
+├── test/                  # node:test
+└── docs/                  # REQUIREMENTS.md, design/, research/, archive/
 ```
 
 ## 環境変数
 
 | 変数名 | 用途 |
 |---|---|
-| `DISCORD_TOKEN` | Discord Botトークン (config.tomlをオーバーライド) |
-| `ANTHROPIC_API_KEY` | Claude APIキー (config.tomlをオーバーライド) |
-| `RUST_LOG` | ログレベル (例: `info`, `debug`) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `claude setup-token` で発行。権限 600 の環境ファイルに置く。コミット禁止 |
+| `CLAUDE_CONFIG_DIR` | SDK の設定・セッション保存先。既定 `~/.local/share/self-agent/claude` |
+| `SELF_AGENT_WORKDIR` | エージェントの作業ディレクトリ。既定 `~/.local/share/self-agent/work` |
+| `SELF_AGENT_MODEL` | 使用モデル。既定 `claude-opus-5` |
 
-## ディレクトリ構成
+## コーディング規約
 
-```
-self-agent/
-├── Cargo.toml              # workspace定義 + ルートバイナリ
-├── src/main.rs             # エントリポイント
-├── config/default.toml     # デフォルト設定
-├── crates/
-│   ├── core/               # Agent trait, MessageBus (mpsc), Message型, エラー型
-│   ├── config/             # AppConfig (TOML読み込み + 環境変数オーバーライド)
-│   ├── storage/            # SQLite (rusqlite) + 階層型MemoryStore
-│   ├── llm-client/         # LlmProvider trait + Anthropic (Claude API) 実装
-│   ├── task-manager/       # タスクCRUD・検索・サマリー (5テストあり)
-│   ├── chat-bot/           # Discord Bot (serenity) + メンション検出
-│   └── orchestrator/       # A2Aメッセージルーティング
-└── docs/
-    ├── REQUIREMENTS.md     # 要件定義書
-    ├── Whiteboard.md       # 設計セッションメモ
-    ├── architecture/       # ARCHITECTURE.md, CRATE_STRUCTURE.md, TECH_DECISIONS.md
-    └── research/           # OpenClaw分析, A2Aプロトコル調査
-```
+- erasable な TypeScript のみ（enum / namespace / parameter properties 禁止）。ビルドせず `node` で直接実行する
+- 相対 import は `.ts` 拡張子付き
+- 依存は最小限、バージョンは exact 固定
+- public リポジトリなので、トークン・ID・個人情報をコードやログに書かない
 
-## クレート依存関係
+## プロンプトキャッシュの規則
 
-```
-core ← orchestrator, chat-bot
-storage ← task-manager
-config, llm-client (独立)
-ルートバイナリ → 全クレートに依存
-```
-
-## 主要な型
-
-- `Agent` trait (`core/src/agent.rs`): id(), init(), handle_message(), tick(), shutdown()
-- `AgentId` enum (`core/src/message.rs`): Orchestrator, TaskManager, CalSync, ChatBot, SkillDev, Reminder
-- `Message` (`core/src/message.rs`): UUID, from/to, kind, payload(JSON), correlation_id, timestamp, priority
-- `MessageBus` (`core/src/bus.rs`): tokio mpsc ベース、register/unregister/send/broadcast
-- `Database` (`storage/src/sqlite.rs`): tasks, reminders, conversation_logs テーブル
-- `MemoryStore` (`storage/src/memory.rs`): 階層型 (global / agents / context)
-- `LlmProvider` trait (`llm-client/src/provider.rs`): chat() メソッド
-- `AppConfig` (`config/src/lib.rs`): discord, storage, reaction, llm, agents セクション
+- システムプロンプトは静的に保つ。日時や ID などの可変値を入れない
+- ツール集合は全セッション共通で固定する
+- 会話履歴は追記のみ（途中を書き換えない）
+- モデルと effort はセッション途中で変えない
+- キャッシュ効果の計測は result の `modelUsage` の差分で行う
