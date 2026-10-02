@@ -29,6 +29,8 @@ export type Config = {
   channelOpGapMs: number;
   /** 停止時（SIGINT / SIGTERM）に進行中のターンを待つ上限の秒数 */
   shutdownGraceSec: number;
+  /** 進行中のセッションを、最後の発言からこの時間（時間単位）経ったら待ちに移す */
+  idleHours: number;
 };
 
 const DEFAULT_MODEL = "claude-opus-5";
@@ -37,6 +39,7 @@ const DEFAULT_MAX_CONCURRENT_TURNS = 2;
 const DEFAULT_TURN_TIMEOUT_SEC = 300;
 const DEFAULT_CHANNEL_OP_GAP_MS = 2000;
 const DEFAULT_SHUTDOWN_GRACE_SEC = 30;
+const DEFAULT_IDLE_HOURS = 12;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -117,6 +120,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       nonEmpty(env.SELF_AGENT_SHUTDOWN_GRACE_SEC),
       DEFAULT_SHUTDOWN_GRACE_SEC,
     ),
+    idleHours: positiveInteger("SELF_AGENT_IDLE_HOURS", nonEmpty(env.SELF_AGENT_IDLE_HOURS), DEFAULT_IDLE_HOURS),
   };
 }
 

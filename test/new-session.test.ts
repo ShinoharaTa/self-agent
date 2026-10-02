@@ -101,6 +101,7 @@ class FakeGateway
 
 type ResponderCall =
   | { method: "defer"; ephemeral: boolean }
+  | { method: "deferUpdate" }
   | { method: "reply" | "update"; message: OutgoingMessage }
   | { method: "showModal"; modal: ModalDef };
 
@@ -109,6 +110,9 @@ class FakeResponder implements InteractionResponder {
 
   async defer(ephemeral: boolean): Promise<void> {
     this.calls.push({ method: "defer", ephemeral });
+  }
+  async deferUpdate(): Promise<void> {
+    this.calls.push({ method: "deferUpdate" });
   }
   async reply(message: OutgoingMessage): Promise<void> {
     this.calls.push({ method: "reply", message });

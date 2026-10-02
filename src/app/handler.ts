@@ -6,8 +6,10 @@ import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
 import { acceptedChannel, type ResolveChannel } from "./access.ts";
+import type { ChannelOpsQueue } from "./channel-ops.ts";
 import { buildTurnPrompt } from "./prompt.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
+import { applySessionEvent } from "./session-state.ts";
 import { MAX_TURNS_ERROR_PREFIX, runChannelTurn, type TurnDeps } from "./turn.ts";
 
 export const FAILURE_REPLY = "処理に失敗しました。時間をおいてもう一度送ってください。";
@@ -26,8 +28,10 @@ export type HandlerDeps = {
   sessions: SdkSessionStore;
   /** 次のターンの prompt の先頭に付ける文（resume 失敗の復旧など） */
   seeds: ChannelSeedStore;
-  /** セッションの題名と最終発言の時刻、resume 失敗時の要約 */
-  topicSessions: Pick<TopicSessionStore, "touch" | "get">;
+  /** セッションの題名と最終発言の時刻、resume 失敗時の要約。待ち・完了のセッションは発言で進行中に戻す */
+  topicSessions: Pick<TopicSessionStore, "touch" | "get" | "setActive" | "setWaiting">;
+  /** 進行中に戻したセッションを進行中カテゴリへ移す */
+  channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
   usage: UsageStore;
   /** ターンのキュー（key は channelId）。/close のターンも同じキューに入れる */
   queue: KeyedSerialQueue;
@@ -40,7 +44,7 @@ function describeError(error: unknown): string {
 
 /** 受け付けた発言を 1 ターンとして処理する。返す Promise は reject しない（失敗は log に出す） */
 export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Promise<void> {
-  const { cfg, resolveChannel, gateway, runner, sessions, seeds, topicSessions, usage, queue, log } = deps;
+  const { cfg, resolveChannel, gateway, runner, sessions, seeds, topicSessions, channelOps, usage, queue, log } = deps;
   const turnDeps: TurnDeps = { runner, sessions, seeds, topicSessions, usage, log };
 
   /** 返信の失敗は log に出して終える（再試行しない） */
@@ -92,6 +96,10 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
         const session = topicSessions.touch(event.channelId);
         if (session === undefined) return;
         channelName = session.title;
+        // 待ち・完了なら進行中に戻して進行中カテゴリへ移す（知らせは出さず、ターンは通常どおり行う）
+        if (applySessionEvent(session, "message", { topicSessions, channelOps }).move !== null) {
+          log(`発言があったためセッションを進行中に戻しました（guild=${guildId}）`);
+        }
       }
       await queue.run(event.channelId, () => handleTurn(event, guildId, channelName));
     } catch (error) {

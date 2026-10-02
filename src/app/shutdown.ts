@@ -1,4 +1,4 @@
-// 停止処理: 新しい発言・操作の受付を止め、進行中の処理を上限付きで待ってから gateway を止めて DB を閉じる
+// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理を上限付きで待ってから gateway を止めて DB を閉じる
 import type { Config } from "../config.ts";
 import type {
   Gateway,
@@ -8,6 +8,7 @@ import type {
   InteractionResponder,
 } from "../discord/gateway.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
+import type { Scheduler } from "./scheduler.ts";
 
 /** 停止を始めた後に来た操作への応答（応答期限があるので、受け付けない旨だけ返す） */
 export const RESTARTING_REPLY = "再起動中です";
@@ -17,6 +18,8 @@ export type ShutdownDeps = {
   gateway: Pick<Gateway, "stop">;
   /** 完了を待つキュー（ターン用と /setup・/new 用） */
   queues: ReadonlyArray<Pick<KeyedSerialQueue, "idle">>;
+  /** 定期処理。停止を始めたら止め、実行中の tick があれば終わるのを待つ */
+  scheduler: Pick<Scheduler, "stop" | "idle">;
   closeDb: () => void;
   log: (message: string) => void;
 };
@@ -31,7 +34,7 @@ export type Shutdown = {
   /** gateway.start に渡すハンドラ。停止を始めたら新しい発言・操作を受け付けない */
   handlers: GatewayHandlers;
   /**
-   * 受付を止め、受け付け済みの発言・操作（返信まで）とキューのジョブが終わるのを最大 shutdownGraceSec 秒待ってから、
+   * 受付と定期処理を止め、受け付け済みの発言・操作（返信まで）とキューのジョブ・実行中の tick が終わるのを最大 shutdownGraceSec 秒待ってから、
    * gateway を止めて DB を閉じる。待っている間も gateway は動いているので、終わったターンの返信は送られる。reject しない
    */
   shutdown: () => Promise<void>;
@@ -57,7 +60,7 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 }
 
 export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdown {
-  const { cfg, gateway, queues, closeDb, log } = deps;
+  const { cfg, gateway, queues, scheduler, closeDb, log } = deps;
   let stopping = false;
   /** 受け付けて、まだ終わっていない発言・操作の処理（返信を含む） */
   const inFlight = new Set<Promise<void>>();
@@ -74,7 +77,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
   const drained = async (): Promise<void> => {
     // 待っている間に増えた分（停止中の操作への応答）も待つ
     while (inFlight.size > 0) await Promise.all([...inFlight]);
-    await Promise.all(queues.map((queue) => queue.idle()));
+    await Promise.all([...queues.map((queue) => queue.idle()), scheduler.idle()]);
   };
 
   const handlers: GatewayHandlers = {
@@ -100,6 +103,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
 
   const shutdown = async (): Promise<void> => {
     stopping = true;
+    scheduler.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);
     if (!(await settlesWithin(drained(), cfg.shutdownGraceSec * 1000))) {
       log(`進行中の処理が ${cfg.shutdownGraceSec} 秒で終わらなかったため、待たずに終了します`);

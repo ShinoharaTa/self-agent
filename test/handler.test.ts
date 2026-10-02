@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
+import type { MoveTarget } from "../src/app/channel-ops.ts";
 import { COMPACTED_NOTE, createHandler, EMPTY_REPLY, FAILURE_REPLY, MAX_TURNS_REPLY } from "../src/app/handler.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
@@ -33,6 +34,9 @@ class FakeGateway implements Gateway {
   async send(channelId: string, text: string, replyToId?: string): Promise<void> {
     this.beforeSend();
     this.sent.push({ channelId, text, replyToId });
+  }
+  async sendMessage(): Promise<void> {
+    throw new Error("想定外の呼び出し");
   }
   startTyping(): () => void {
     this.typingStarted++;
@@ -85,6 +89,14 @@ class FakeRunner implements AgentRunner {
   }
 }
 
+class RecordingChannelOps {
+  moves: Array<{ channelId: string; target: MoveTarget }> = [];
+
+  enqueueMove(channelId: string, target: MoveTarget): void {
+    this.moves.push({ channelId, target });
+  }
+}
+
 function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
   return {
     id: "message-1",
@@ -124,6 +136,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
   const clock = { now: NOW };
   const topicSessions = new TopicSessionStore(db, () => clock.now);
   const seeds = new ChannelSeedStore(db, () => NOW);
+  const channelOps = new RecordingChannelOps();
   const logs: string[] = [];
   const handle = createHandler({
     cfg,
@@ -134,11 +147,12 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     sessions,
     seeds,
     topicSessions,
+    channelOps,
     usage,
     queue: new KeyedSerialQueue(2),
     log: (line) => logs.push(line),
   });
-  return { db, gateway, runner, sessions, seeds, topicSessions, clock, usage, logs, handle };
+  return { db, gateway, runner, sessions, seeds, topicSessions, channelOps, clock, usage, logs, handle };
 }
 
 /** ツールのハンドラに渡す、このターンのチャンネル */
@@ -373,6 +387,64 @@ test("セッションのチャンネル: 受け付けた発言の last_activity_
   await handle(message({ id: "message-3", channelId: "inbox-1" }));
   assert.equal(runner.inputs.length, 3);
   assert.equal(topicSessions.get("topic-1")?.lastActivityAt, "2026-10-02T03:00:00.000Z");
+});
+
+test("待ち・完了のセッションでの発言: 進行中に戻して進行中カテゴリへの移動を入れ、ターンは通常どおり行う（知らせは出さない）", async (t) => {
+  const { db, gateway, runner, topicSessions, channelOps, logs, handle } = setup(t, [
+    okResult("session-a", "おかえりなさい"),
+    okResult("session-b", "再開します"),
+  ]);
+  topicSessions.create(TOPIC);
+  topicSessions.create({ ...TOPIC, channelId: "topic-2" });
+  topicSessions.setWaiting("topic-1");
+  topicSessions.close("topic-2", "閉じたときの要約");
+
+  // 移動はターンの前（キュー待ちの前）に入れる
+  runner.beforeResult = async () => {
+    assert.equal(channelOps.moves.length, 2);
+  };
+  await Promise.all([
+    handle(message({ id: "message-1", channelId: "topic-1" })),
+    handle(message({ id: "message-2", channelId: "topic-2" })),
+  ]);
+
+  for (const channelId of ["topic-1", "topic-2"]) {
+    const session = topicSessions.get(channelId);
+    assert.equal(session?.state, "active", channelId);
+    assert.equal(session?.waitingSince, null, channelId);
+    assert.equal(session?.closedAt, null, channelId);
+  }
+  // 完了から戻しても要約は残す
+  assert.equal(topicSessions.get("topic-2")?.summary, "閉じたときの要約");
+  assert.deepEqual(channelOps.moves, [
+    { channelId: "topic-1", target: { kind: "state", guildId: "guild-1", state: "active" } },
+    { channelId: "topic-2", target: { kind: "state", guildId: "guild-1", state: "active" } },
+  ]);
+  // 返信はターンの返答だけ
+  assert.deepEqual(
+    gateway.sent.map((sent) => [sent.channelId, sent.text]),
+    [
+      ["topic-1", "おかえりなさい"],
+      ["topic-2", "再開します"],
+    ],
+  );
+  assert.equal(runner.inputs.length, 2);
+  assert.deepEqual(logs, [
+    "発言があったためセッションを進行中に戻しました（guild=guild-1）",
+    "発言があったためセッションを進行中に戻しました（guild=guild-1）",
+  ]);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE state = 'active'").get()?.n, 2);
+});
+
+test("進行中のセッション・#inbox での発言では移動を入れない", async (t) => {
+  const { topicSessions, channelOps, handle } = setup(t, [okResult("session-a", "1"), okResult("session-b", "2")]);
+  topicSessions.create(TOPIC);
+
+  await handle(message({ channelId: "topic-1" }));
+  await handle(message({ channelId: "inbox-1" }));
+
+  assert.equal(topicSessions.get("topic-1")?.state, "active");
+  assert.deepEqual(channelOps.moves, []);
 });
 
 test("削除済みのセッション・別サーバーのセッションのチャンネルでは受け付けず、last_activity_at も更新しない", async (t) => {
