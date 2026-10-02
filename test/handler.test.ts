@@ -35,6 +35,10 @@ class FakeGateway implements Gateway {
       this.typingStopped++;
     };
   }
+  isInGuild(): boolean {
+    return true;
+  }
+  async registerGuildCommands(): Promise<void> {}
   async stop(): Promise<void> {}
 }
 

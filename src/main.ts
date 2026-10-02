@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createHandler } from "./app/handler.ts";
+import { COMMANDS, COMPONENTS, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { KeyedSerialQueue } from "./app/queue.ts";
 import { loadConfig, missingForStart } from "./config.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -40,6 +41,12 @@ const handle = createHandler({
   queue: new KeyedSerialQueue(config.maxConcurrentTurns),
   log: (message) => console.error(message),
 });
+const handleInteraction = createInteractionHandler({
+  cfg: config,
+  commands: COMMANDS,
+  components: COMPONENTS,
+  log: (message) => console.error(message),
+});
 
 const shutdown = async (): Promise<void> => {
   await gateway.stop();
@@ -49,7 +56,13 @@ const shutdown = async (): Promise<void> => {
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());
 
-await gateway.start((message) => {
-  void handle(message);
+await gateway.start({
+  onMessage: (message) => {
+    void handle(message);
+  },
+  onInteraction: (interaction, responder) => {
+    void handleInteraction(interaction, responder);
+  },
 });
+await registerCommands({ cfg: config, gateway, commands: COMMANDS, log: (message) => console.error(message) });
 console.log(`self-agent: 起動しました（model=${config.model}）`);
