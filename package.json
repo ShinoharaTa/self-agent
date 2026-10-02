@@ -1,0 +1,21 @@
+{
+  "name": "self-agent",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.20.0"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "check": "tsc --noEmit",
+    "test": "node --test 'test/**/*.test.ts'",
+    "measure": "node scripts/measure-turn.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.286"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "typescript": "7.0.2"
+  }
+}

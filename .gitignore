@@ -1,7 +1,7 @@
-/target
-**/*.rs.bk
-*.pdb
+node_modules/
+data/
 .env
+.env.*
 *.db
 *.sqlite
 .DS_Store
