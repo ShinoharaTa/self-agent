@@ -76,6 +76,10 @@ export const MIGRATIONS: readonly string[] = [
     created_at TEXT NOT NULL
   );
   `,
+  // v5: 同じ SDK セッションでの resume の連続失敗回数（成功・別のセッションに替えたら 0）
+  `
+  ALTER TABLE channel_sessions ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

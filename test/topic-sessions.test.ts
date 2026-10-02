@@ -195,8 +195,8 @@ test("openDb: v3 の DB を v4 に上げても既存のセッションは残り�
   const db = openDb(path);
   t.after(() => db.close());
 
-  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 4);
-  assert.equal(MIGRATIONS.length, 4);
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 4);
   const store = new TopicSessionStore(db, clock());
   assert.deepEqual(store.get("topic-1"), {
     channelId: "topic-1",
@@ -218,4 +218,46 @@ test("openDb: v3 の DB を v4 に上げても既存のセッションは残り�
   const seeds = new ChannelSeedStore(db, clock());
   seeds.set("topic-1", "seed");
   assert.equal(seeds.get("topic-1"), "seed");
+});
+
+test("SessionStore: 連続失敗を数え、set（成功・別のセッションへの置き換え）で 0 に戻す。行が無ければ 0", (t) => {
+  const sessions = new SessionStore(tempDb(t), clock());
+  assert.equal(sessions.recordFailure("inbox-1"), 0);
+  assert.equal(sessions.failureCount("inbox-1"), 0);
+
+  sessions.set("inbox-1", "session-1");
+  assert.equal(sessions.recordFailure("inbox-1"), 1);
+  assert.equal(sessions.recordFailure("inbox-1"), 2);
+  assert.equal(sessions.failureCount("inbox-1"), 2);
+  assert.equal(sessions.get("inbox-1"), "session-1");
+
+  sessions.set("inbox-1", "session-1");
+  assert.equal(sessions.failureCount("inbox-1"), 0);
+  sessions.recordFailure("inbox-1");
+  sessions.set("inbox-1", "session-2");
+  assert.equal(sessions.failureCount("inbox-1"), 0);
+
+  sessions.delete("inbox-1");
+  assert.equal(sessions.failureCount("inbox-1"), 0);
+});
+
+test("openDb: v4 の DB を v5 に上げても SDK セッションは残り、連続失敗の回数は 0 から数える", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // P2-4 時点（v4）の DB を作る
+  const v4 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 4)) v4.exec(migration);
+  v4.exec("PRAGMA user_version = 4");
+  v4.prepare("INSERT INTO channel_sessions (key, session_id, updated_at) VALUES ('topic-1', 'session-1', '2026-10-01T00:00:00.000Z')").run();
+  v4.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 5);
+  assert.equal(MIGRATIONS.length, 5);
+  const sessions = new SessionStore(db, clock());
+  assert.equal(sessions.get("topic-1"), "session-1");
+  assert.equal(sessions.failureCount("topic-1"), 0);
+  assert.equal(sessions.recordFailure("topic-1"), 1);
 });

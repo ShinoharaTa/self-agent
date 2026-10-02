@@ -11,6 +11,18 @@ import type { UsageStore } from "../store/usage.ts";
  */
 export const RESUME_FAILURE_PATTERN = /No conversation found/i;
 
+/**
+ * 同じ SDK セッションでの resume がこの回数続けて失敗したら、RESUME_FAILURE_PATTERN に一致しなくても捨ててやり直す
+ * （文言が想定と違う・例外で届くなどで、そのチャンネルが失敗し続けるのを防ぐ）。タイムアウトは数えない
+ */
+export const RESUME_FAILURE_LIMIT = 3;
+
+/** 手順数の上限で止まった失敗。result.subtype がこの文字列で始まる */
+export const MAX_TURNS_ERROR_PREFIX = "error_max_turns";
+
+/** 数えない失敗（重い処理で時間がかかっただけで、セッションは壊れていない） */
+const TIMEOUT_ERROR = "timeout";
+
 export const RESUME_SEED_HEADER = "前の会話の記録が切れたため、要約から再開します。";
 
 export type TurnDeps = {
@@ -41,7 +53,9 @@ export function resumeSeed(session: TopicSession | undefined): string | undefine
 /**
  * チャンネルで 1 ターン実行する（会話の key は channelId）。呼び出し側で同じチャンネルのターンを直列にしておくこと。
  * - SDK セッションがあれば resume する。無く seed があれば prompt の先頭に付け、成功したら消す
- * - resume が「会話の記録が無い」で失敗したら SDK セッションを捨て、seed（要約）を入れて、sessionId 無しで 1 回だけやり直す
+ * - 失敗しても SDK が会話を記録していれば（result まで届いた失敗）、その session_id を残して次のターンで続ける
+ * - resume が「会話の記録が無い」で失敗したとき、または同じセッションで RESUME_FAILURE_LIMIT 回続けて失敗したときは、
+ *   SDK セッションを捨て、seed（要約）を入れて、sessionId 無しで 1 回だけやり直す
  * 返す結果の失敗は呼び出し側で返信・log する
  */
 export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise<RunResult> {
@@ -64,6 +78,10 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
       sessions.set(key, result.sessionId);
     } else {
       usage.record({ key, sessionId: result.sessionId, ok: false });
+      // 途中まで（task_add 済みなど）の文脈を次のターンに残す。同じセッションなら失敗の回数はそのまま
+      if (result.sessionRecorded && result.sessionId !== undefined && result.sessionId !== sessions.get(key)) {
+        sessions.set(key, result.sessionId);
+      }
     }
     return result;
   };
@@ -71,9 +89,20 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
   const sessionId = sessions.get(key);
   if (sessionId !== undefined) {
     const result = await runOnce(turn.prompt, sessionId);
-    if (result.ok || !RESUME_FAILURE_PATTERN.test(result.errorMessage)) return result;
-    // 実機の文言の確認のため、元のエラー文も出す
-    log(`resume に失敗したため、SDK セッションを捨てて新しいセッションで 1 回だけやり直します: ${result.errorMessage}`);
+    if (result.ok) return result;
+    // タイムアウトと手順数の上限は、会話自体は生きている（上限は SDK が記録済み）ので数えない
+    const countable = result.errorMessage !== TIMEOUT_ERROR && !result.errorMessage.startsWith(MAX_TURNS_ERROR_PREFIX);
+    const failures = countable ? sessions.recordFailure(key) : 0;
+    // 実機の文言の確認のため、どちらも元のエラー文を出す
+    if (RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
+      log(`resume に失敗したため、SDK セッションを捨てて新しいセッションで 1 回だけやり直します: ${result.errorMessage}`);
+    } else if (failures >= RESUME_FAILURE_LIMIT) {
+      log(
+        `連続失敗のため（${failures} 回）、SDK セッションを捨てて新しいセッションで 1 回だけやり直します: ${result.errorMessage}`,
+      );
+    } else {
+      return result;
+    }
     sessions.delete(key);
     const seed = resumeSeed(topicSessions.get(turn.channelId));
     if (seed !== undefined) seeds.set(key, seed);

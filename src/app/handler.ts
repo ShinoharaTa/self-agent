@@ -8,9 +8,11 @@ import type { UsageStore } from "../store/usage.ts";
 import { acceptedChannel, type ResolveChannel } from "./access.ts";
 import { buildTurnPrompt } from "./prompt.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
-import { runChannelTurn, type TurnDeps } from "./turn.ts";
+import { MAX_TURNS_ERROR_PREFIX, runChannelTurn, type TurnDeps } from "./turn.ts";
 
 export const FAILURE_REPLY = "処理に失敗しました。時間をおいてもう一度送ってください。";
+/** 1 ターンのツール呼び出しの上限（maxTurns）で止まったとき。会話は残っているので、もう一度送れば続きから進む */
+export const MAX_TURNS_REPLY = "途中までで止めました（手順が多すぎました）。続ける場合はもう一度送ってください。";
 export const EMPTY_REPLY = "（返答が空でした）";
 
 export type HandlerDeps = {
@@ -70,7 +72,8 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
     }
 
     log(`ターンが失敗しました: ${result.errorMessage}`);
-    await reply(event, FAILURE_REPLY);
+    // sdk-runner は result の失敗を subtype から書き始める
+    await reply(event, result.errorMessage.startsWith(MAX_TURNS_ERROR_PREFIX) ? MAX_TURNS_REPLY : FAILURE_REPLY);
   };
 
   return async (event) => {

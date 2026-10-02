@@ -406,7 +406,7 @@ test("前の /close で残った下書きは使わない（ターンの前に消
 });
 
 test("ターンが失敗したら「要約に失敗しました…」と返し、状態は変えない", async (t) => {
-  const env = setup(t, () => [() => ({ ok: false, errorMessage: "timeout" })]);
+  const env = setup(t, () => [() => ({ ok: false, errorMessage: "timeout", sessionRecorded: false })]);
 
   const calls = await env.runClose();
 
@@ -468,7 +468,11 @@ test("再起動の後（新しいストアとハンドラ）でも、DB の下�
 
 test("resume に失敗したら要約の seed で新しいセッションを起こし、1 回だけやり直して閉じる", async (t) => {
   const env = setup(t, (topicSessions) => [
-    () => ({ ok: false, errorMessage: "error_during_execution: No conversation found with session ID: session-1" }),
+    () => ({
+      ok: false,
+      errorMessage: "error_during_execution: No conversation found with session ID: session-1",
+      sessionRecorded: false,
+    }),
     reports({ summary: "題名だけから再開した" }, topicSessions),
   ]);
 

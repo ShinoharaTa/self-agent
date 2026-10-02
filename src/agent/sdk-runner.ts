@@ -86,20 +86,26 @@ export class SdkAgentRunner implements AgentRunner {
       }
     } catch (error) {
       if (abortController.signal.aborted) {
-        return { ok: false, errorMessage: "timeout", sessionId };
+        return { ok: false, errorMessage: "timeout", sessionId, sessionRecorded: false };
       }
       const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      return { ok: false, errorMessage: `exception: ${shorten(text)}`, sessionId };
+      return { ok: false, errorMessage: `exception: ${shorten(text)}`, sessionId, sessionRecorded: false };
     }
 
     if (abortController.signal.aborted) {
-      return { ok: false, errorMessage: "timeout", sessionId };
+      return { ok: false, errorMessage: "timeout", sessionId, sessionRecorded: false };
     }
     if (result === undefined) {
-      return { ok: false, errorMessage: "result メッセージを受け取れませんでした", sessionId };
+      return { ok: false, errorMessage: "result メッセージを受け取れませんでした", sessionId, sessionRecorded: false };
     }
     if (result.subtype !== "success" || result.is_error) {
-      return { ok: false, errorMessage: describeResultError(result), sessionId: result.session_id };
+      // result まで届いたので SDK は会話を記録している（error_max_turns なら途中のツール呼び出しも含む）
+      return {
+        ok: false,
+        errorMessage: describeResultError(result),
+        sessionId: result.session_id,
+        sessionRecorded: true,
+      };
     }
     return {
       ok: true,
