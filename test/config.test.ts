@@ -110,18 +110,19 @@ test("missingForStart は欠けている必須変数の名前だけを返す", (
     "DISCORD_TOKEN",
     "SELF_AGENT_OWNER_ID",
     "SELF_AGENT_ALLOWED_GUILD_IDS",
-    "SELF_AGENT_INBOX_CHANNEL_ID",
   ]);
 
+  // SELF_AGENT_INBOX_CHANNEL_ID は /setup 前の fallback なので必須ではない
   const full = loadConfig({
     HOME: "/home/tester",
     CLAUDE_CODE_OAUTH_TOKEN: "dummy",
     DISCORD_TOKEN: "dummy",
     SELF_AGENT_OWNER_ID: "100",
     SELF_AGENT_ALLOWED_GUILD_IDS: "200",
-    SELF_AGENT_INBOX_CHANNEL_ID: "300",
   });
+  assert.equal(full.inboxChannelId, undefined);
   assert.deepEqual(missingForStart(full), []);
+  assert.deepEqual(missingForStart({ ...full, inboxChannelId: "300" }), []);
   assert.deepEqual(missingForStart({ ...full, discordTokenPresent: false, allowedGuildIds: [] }), [
     "DISCORD_TOKEN",
     "SELF_AGENT_ALLOWED_GUILD_IDS",

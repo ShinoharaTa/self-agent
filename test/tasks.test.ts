@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTaskToolHandlers, type TextToolResult } from "../src/agent/tools.ts";
-import { openDb } from "../src/store/db.ts";
+import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 
 function tempStore(t: TestContext): TaskStore {
@@ -117,7 +117,7 @@ test("openDb: 開き直してもマイグレーションを繰り返さない", 
   first.close();
 
   const second = openDb(path);
-  assert.equal(second.prepare("PRAGMA user_version").get()?.user_version, 1);
+  assert.equal(second.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
   assert.equal(second.prepare("PRAGMA journal_mode").get()?.journal_mode, "wal");
   assert.deepEqual(new TaskStore(second).list({ status: "open", limit: 20 }).map((task) => task.title), ["残る"]);
   second.close();

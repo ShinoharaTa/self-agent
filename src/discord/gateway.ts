@@ -85,6 +85,13 @@ export type CommandDef = {
   }>;
 };
 
+export type TextChannelOptions = {
+  name: string;
+  /** 置くカテゴリ */
+  parentId: string;
+  topic?: string;
+};
+
 /** 1 つの interaction への応答。最初の応答は 3 秒以内（時間のかかる処理は先に defer） */
 export interface InteractionResponder {
   /** 応答を保留する（「考え中」表示）。後の reply がその本文になる */
@@ -113,5 +120,13 @@ export interface Gateway {
   isInGuild(guildId: string): boolean;
   /** そのサーバーのコマンドを defs で丸ごと置き換える（bulk overwrite） */
   registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void>;
+  /** カテゴリを作り、その ID を返す。permission overwrite は書かない */
+  createCategory(guildId: string, name: string): Promise<string>;
+  /** カテゴリの中にテキストチャンネルを作り、その ID を返す。name・topic は作成時にだけ設定し、以後変更しない */
+  createTextChannel(guildId: string, options: TextChannelOptions): Promise<string>;
+  /** チャンネル（カテゴリを含む）がまだ Discord 上にあるか。無い以外の失敗（権限・通信）は投げる */
+  channelExists(channelId: string): Promise<boolean>;
+  /** チャンネルを別のカテゴリへ移す。permission overwrite は移動先に合わせない（書き換えない） */
+  moveChannel(channelId: string, parentId: string): Promise<void>;
   stop(): Promise<void>;
 }

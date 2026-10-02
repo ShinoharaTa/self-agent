@@ -3,7 +3,7 @@ import type { Config } from "../config.ts";
 import type { Gateway, IncomingMessage } from "../discord/gateway.ts";
 import type { SessionStore } from "../store/sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
-import { isAccepted } from "./access.ts";
+import { isAccepted, type ResolveChannel } from "./access.ts";
 import { buildTurnPrompt } from "./prompt.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 
@@ -11,7 +11,9 @@ export const FAILURE_REPLY = "処理に失敗しました。時間をおいて�
 export const EMPTY_REPLY = "（返答が空でした）";
 
 export type HandlerDeps = {
-  cfg: Pick<Config, "allowedGuildIds" | "inboxChannelId" | "ownerUserId" | "timeZone">;
+  cfg: Pick<Config, "allowedGuildIds" | "ownerUserId" | "timeZone">;
+  /** 受け付け対象のチャンネルか（DB の設定、無ければ env の #inbox） */
+  resolveChannel: ResolveChannel;
   gateway: Gateway;
   runner: AgentRunner;
   sessions: SessionStore;
@@ -26,7 +28,7 @@ function describeError(error: unknown): string {
 
 /** 受け付けた発言を 1 ターンとして処理する。返す Promise は reject しない（失敗は log に出す） */
 export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Promise<void> {
-  const { cfg, gateway, runner, sessions, usage, queue, log } = deps;
+  const { cfg, resolveChannel, gateway, runner, sessions, usage, queue, log } = deps;
 
   /** 返信の失敗は log に出して終える（再試行しない） */
   const reply = async (event: IncomingMessage, text: string): Promise<void> => {
@@ -73,8 +75,9 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
   };
 
   return async (event) => {
-    if (!isAccepted(event, cfg)) return;
     try {
+      // 受付判定は DB を引くので try の中で行う
+      if (!isAccepted(event, cfg, resolveChannel)) return;
       await queue.run(event.channelId, () => handleTurn(event));
     } catch (error) {
       log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`);

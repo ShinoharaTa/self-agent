@@ -3,12 +3,14 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
+import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
 import { createHandler } from "./app/handler.ts";
-import { COMMANDS, COMPONENTS, createInteractionHandler, registerCommands } from "./app/interactions.ts";
+import { COMPONENTS, createCommands, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { KeyedSerialQueue } from "./app/queue.ts";
 import { loadConfig, missingForStart } from "./config.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { openDb } from "./store/db.ts";
+import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { SessionStore } from "./store/sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { UsageStore } from "./store/usage.ts";
@@ -29,23 +31,28 @@ const db = openDb(join(config.dataDir, "self-agent.db"));
 const tasks = new TaskStore(db, now);
 const sessions = new SessionStore(db, now);
 const usage = new UsageStore(db, now);
+const guildSettings = new GuildSettingsStore(db, now);
+const log = (message: string): void => console.error(message);
 
 const runner = new SdkAgentRunner(config, () => createTaskMcpServer(tasks));
 const gateway = new DiscordGateway(config.allowedGuildIds);
 const handle = createHandler({
   cfg: config,
+  resolveChannel: createChannelResolver(config, guildSettings),
   gateway,
   runner,
   sessions,
   usage,
   queue: new KeyedSerialQueue(config.maxConcurrentTurns),
-  log: (message) => console.error(message),
+  log,
 });
+// /setup 専用のキュー（ターンの同時実行枠とは分ける）
+const commands = createCommands({ gateway, guildSettings, queue: new KeyedSerialQueue(1), log });
 const handleInteraction = createInteractionHandler({
   cfg: config,
-  commands: COMMANDS,
+  commands,
   components: COMPONENTS,
-  log: (message) => console.error(message),
+  log,
 });
 
 const shutdown = async (): Promise<void> => {
@@ -64,5 +71,6 @@ await gateway.start({
     void handleInteraction(interaction, responder);
   },
 });
-await registerCommands({ cfg: config, gateway, commands: COMMANDS, log: (message) => console.error(message) });
+await registerCommands({ cfg: config, gateway, commands, log });
+logUnconfiguredGuilds({ cfg: config, guildSettings, log });
 console.log(`self-agent: 起動しました（model=${config.model}）`);
