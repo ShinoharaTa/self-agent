@@ -17,6 +17,7 @@ import type {
 } from "../src/discord/gateway.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 
@@ -26,8 +27,10 @@ type GatewayCall =
   | { method: "channelExists"; channelId: string }
   | { method: "moveChannel"; channelId: string; parentId: string };
 
-/** 作ったチャンネルを覚えておき、channelExists はそれ（から消したものを除く）で答える */
-class FakeGateway implements Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "moveChannel"> {
+/** 作ったチャンネルを覚えておき、channelExists はそれ（から消したものを除く）で答える（/new は new-session.test.ts） */
+class FakeGateway
+  implements Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "moveChannel" | "countChannelsIn" | "send">
+{
   calls: GatewayCall[] = [];
   /** Discord 上にあるチャンネル */
   readonly alive = new Set<string>();
@@ -54,6 +57,12 @@ class FakeGateway implements Pick<Gateway, "createCategory" | "createTextChannel
   }
   async moveChannel(channelId: string, parentId: string): Promise<void> {
     this.calls.push({ method: "moveChannel", channelId, parentId });
+  }
+  async countChannelsIn(): Promise<number> {
+    throw new Error("想定外の呼び出し");
+  }
+  async send(): Promise<void> {
+    throw new Error("想定外の呼び出し");
   }
 
   /** 呼び出し記録を空にする（2 回目の /setup の呼び出しだけを見るため） */
@@ -127,7 +136,7 @@ function setup(t: TestContext) {
     assert.equal(reply.message.ephemeral, true);
     return reply.message.text;
   };
-  return { gateway, guildSettings, logs, run };
+  return { db, gateway, guildSettings, logs, run };
 }
 
 /** 初回の /setup で作られる ID（作る順に ch-1 から振られる） */
@@ -400,17 +409,18 @@ test("ensureGuildLayout: サーバーごとに別々に作って保存する", a
 });
 
 test("/setup はコマンドとして登録され、オーナーの操作で振り分けられる", async (t) => {
-  const { gateway, guildSettings } = setup(t);
+  const { db, gateway, guildSettings } = setup(t);
   const logs: string[] = [];
   const commands = createCommands({
     gateway,
     guildSettings,
+    topicSessions: new TopicSessionStore(db, () => NOW),
     queue: new KeyedSerialQueue(1),
     log: (line) => logs.push(line),
   });
   assert.deepEqual(
     commands.map((command) => command.def.name),
-    ["help", "setup"],
+    ["help", "setup", "new"],
   );
   const handle = createInteractionHandler({
     cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },

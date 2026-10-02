@@ -82,6 +82,9 @@ export type CommandDef = {
     name: string;
     description: string;
     required?: boolean;
+    /** string のときだけ効く。文字数の下限・上限（Discord 側で検証する） */
+    minLength?: number;
+    maxLength?: number;
   }>;
 };
 
@@ -126,6 +129,8 @@ export interface Gateway {
   createTextChannel(guildId: string, options: TextChannelOptions): Promise<string>;
   /** チャンネル（カテゴリを含む）がまだ Discord 上にあるか。無い以外の失敗（権限・通信）は投げる */
   channelExists(channelId: string): Promise<boolean>;
+  /** カテゴリの中にあるチャンネルの数（キャッシュではなく Discord 上の実数。手動で置かれた分も数える） */
+  countChannelsIn(categoryId: string): Promise<number>;
   /** チャンネルを別のカテゴリへ移す。permission overwrite は移動先に合わせない（書き換えない） */
   moveChannel(channelId: string, parentId: string): Promise<void>;
   stop(): Promise<void>;

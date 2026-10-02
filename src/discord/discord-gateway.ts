@@ -172,7 +172,12 @@ function toCommandData(def: CommandDef): ChatInputApplicationCommandData {
     const common = { name: option.name, description: option.description, required: option.required ?? false };
     switch (option.type) {
       case "string":
-        return { ...common, type: ApplicationCommandOptionType.String };
+        return {
+          ...common,
+          type: ApplicationCommandOptionType.String,
+          minLength: option.minLength,
+          maxLength: option.maxLength,
+        };
       case "integer":
         return { ...common, type: ApplicationCommandOptionType.Integer };
       case "boolean":
@@ -336,13 +341,23 @@ export class DiscordGateway implements Gateway {
 
   async channelExists(channelId: string): Promise<boolean> {
     try {
-      // キャッシュではなく Discord に問い合わせる（/setup でしか使わない）
+      // キャッシュではなく Discord に問い合わせる（/setup と /new でしか使わない）
       await this.client.channels.fetch(channelId, { force: true });
       return true;
     } catch (error) {
       if (error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownChannel) return false;
       throw error;
     }
+  }
+
+  async countChannelsIn(categoryId: string): Promise<number> {
+    const category = await this.client.channels.fetch(categoryId);
+    if (category === null || category.type !== ChannelType.GuildCategory) {
+      throw new Error("カテゴリではありません");
+    }
+    // category.children（キャッシュ）ではなく、サーバーの全チャンネルを Discord から取り直して数える
+    const channels = await category.guild.channels.fetch();
+    return channels.filter((channel) => channel !== null && channel.parentId === categoryId).size;
   }
 
   async moveChannel(channelId: string, parentId: string): Promise<void> {

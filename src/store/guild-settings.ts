@@ -77,6 +77,14 @@ export class GuildSettingsStore {
     return row === undefined ? undefined : String(row.category_id);
   }
 
+  /** その状態のカテゴリを ordinal の昇順で返す */
+  listStateCategories(guildId: string, state: SessionState): Array<{ ordinal: number; categoryId: string }> {
+    return this.db
+      .prepare("SELECT ordinal, category_id FROM state_categories WHERE guild_id = ? AND state = ? ORDER BY ordinal")
+      .all(guildId, state)
+      .map((row) => ({ ordinal: Number(row.ordinal), categoryId: String(row.category_id) }));
+  }
+
   /** 状態カテゴリの ID を保存する。同じ (state, ordinal) があれば作り直したカテゴリで置き換える */
   setStateCategory(guildId: string, state: SessionState, ordinal: number, categoryId: string): void {
     this.db

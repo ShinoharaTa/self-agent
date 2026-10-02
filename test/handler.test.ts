@@ -12,6 +12,7 @@ import type { Gateway, IncomingMessage } from "../src/discord/gateway.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { SessionStore } from "../src/store/sessions.ts";
+import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
 
 const cfg = { allowedGuildIds: ["guild-1"], inboxChannelId: "inbox-1", ownerUserId: "owner-1", timeZone: "Asia/Tokyo" };
@@ -50,6 +51,9 @@ class FakeGateway implements Gateway {
   async channelExists(): Promise<boolean> {
     throw new Error("想定外の呼び出し");
   }
+  async countChannelsIn(): Promise<number> {
+    throw new Error("想定外の呼び出し");
+  }
   async moveChannel(): Promise<void> {
     throw new Error("想定外の呼び出し");
   }
@@ -58,6 +62,8 @@ class FakeGateway implements Gateway {
 
 class FakeRunner implements AgentRunner {
   inputs: RunInput[] = [];
+  /** 入力を記録した後、結果を返す前に待つ */
+  beforeResult: () => Promise<void> = async () => {};
   private readonly results: Array<RunResult | Error>;
 
   constructor(results: Array<RunResult | Error>) {
@@ -66,6 +72,7 @@ class FakeRunner implements AgentRunner {
 
   async run(input: RunInput): Promise<RunResult> {
     this.inputs.push(input);
+    await this.beforeResult();
     const next = this.results.shift();
     if (next === undefined) throw new Error("想定外の呼び出し");
     if (next instanceof Error) throw next;
@@ -108,20 +115,27 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
   const runner = new FakeRunner(results);
   const sessions = new SessionStore(db, () => NOW);
   const usage = new UsageStore(db, () => NOW);
+  // last_activity_at の更新を見るため、sessions の時計だけ進められるようにする
+  const clock = { now: NOW };
+  const topicSessions = new TopicSessionStore(db, () => clock.now);
   const logs: string[] = [];
   const handle = createHandler({
     cfg,
     // guild_settings が空なので env の #inbox（inbox-1）を受け付ける
-    resolveChannel: createChannelResolver(cfg, new GuildSettingsStore(db, () => NOW)),
+    resolveChannel: createChannelResolver(cfg, new GuildSettingsStore(db, () => NOW), topicSessions),
     gateway,
     runner,
     sessions,
+    topicSessions,
     usage,
     queue: new KeyedSerialQueue(2),
     log: (line) => logs.push(line),
   });
-  return { gateway, runner, sessions, usage, logs, handle };
+  return { db, gateway, runner, sessions, topicSessions, clock, usage, logs, handle };
 }
+
+/** /new で作ったセッションのチャンネル（topic-1、guild-1、作成は NOW） */
+const TOPIC = { channelId: "topic-1", guildId: "guild-1", title: "旅行の計画", categoryId: "active-1" };
 
 test("受け付けた発言で runner を呼び、usage 記録・session 保存・返信をする", async (t) => {
   const { gateway, runner, sessions, usage, logs, handle } = setup(t, [okResult("session-1", "登録しました")]);
@@ -252,4 +266,73 @@ test("処理中の例外は reject せず log に出し、入力中表示を止�
   assert.deepEqual(gateway.sent, []);
   assert.equal(logs.length, 1);
   assert.match(logs[0]!, /unexpected/);
+});
+
+test("セッションのチャンネル: 受け付けて日時ヘッダに題名を出し、会話はチャンネルごとに resume する", async (t) => {
+  const { gateway, runner, sessions, topicSessions, handle } = setup(t, [
+    okResult("session-a", "了解"),
+    okResult("session-a", "続き"),
+  ]);
+  topicSessions.create(TOPIC);
+
+  await handle(message({ id: "message-1", channelId: "topic-1", content: "行き先を決めたい" }));
+  await handle(message({ id: "message-2", channelId: "topic-1", content: "予算は" }));
+
+  assert.equal(runner.inputs.length, 2);
+  assert.equal(runner.inputs[0]!.prompt, buildTurnPrompt("行き先を決めたい", CREATED_AT, "Asia/Tokyo", "旅行の計画"));
+  assert.equal(runner.inputs[0]!.prompt, "[2026-10-02(金) 08:59 JST #旅行の計画]\n行き先を決めたい");
+  assert.equal(runner.inputs[0]!.sessionId, undefined);
+  assert.equal(runner.inputs[1]!.sessionId, "session-a");
+  assert.equal(sessions.get("topic-1"), "session-a");
+  assert.equal(sessions.get("inbox-1"), undefined);
+  assert.deepEqual(gateway.sent, [
+    { channelId: "topic-1", text: "了解", replyToId: "message-1" },
+    { channelId: "topic-1", text: "続き", replyToId: "message-2" },
+  ]);
+});
+
+test("セッションのチャンネル: 受け付けた発言の last_activity_at はキュー待ちの前に更新し、#inbox の発言では更新しない", async (t) => {
+  const { runner, topicSessions, clock, handle } = setup(t, [
+    okResult("session-a", "1"),
+    okResult("session-a", "2"),
+    okResult("session-b", "3"),
+  ]);
+  topicSessions.create(TOPIC);
+  let release = (): void => {};
+  runner.beforeResult = () => new Promise<void>((resolve) => (release = resolve));
+
+  const first = handle(message({ id: "message-1", channelId: "topic-1" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  clock.now = new Date("2026-10-02T03:00:00Z");
+  const second = handle(message({ id: "message-2", channelId: "topic-1" }));
+
+  // 1 つ目のターンが終わっておらず、2 つ目はキュー待ちでも更新済み
+  assert.equal(runner.inputs.length, 1);
+  assert.equal(topicSessions.get("topic-1")?.lastActivityAt, "2026-10-02T03:00:00.000Z");
+
+  runner.beforeResult = async () => {};
+  release();
+  await Promise.all([first, second]);
+  assert.equal(runner.inputs.length, 2);
+
+  clock.now = new Date("2026-10-02T05:00:00Z");
+  await handle(message({ id: "message-3", channelId: "inbox-1" }));
+  assert.equal(runner.inputs.length, 3);
+  assert.equal(topicSessions.get("topic-1")?.lastActivityAt, "2026-10-02T03:00:00.000Z");
+});
+
+test("削除済みのセッション・別サーバーのセッションのチャンネルでは受け付けず、last_activity_at も更新しない", async (t) => {
+  const { db, gateway, runner, topicSessions, clock, handle } = setup(t, []);
+  topicSessions.create(TOPIC);
+  db.prepare("UPDATE sessions SET state = 'deleted' WHERE channel_id = 'topic-1'").run();
+  topicSessions.create({ ...TOPIC, channelId: "topic-9", guildId: "guild-9" });
+  clock.now = new Date("2026-10-02T03:00:00Z");
+
+  await handle(message({ channelId: "topic-1" }));
+  await handle(message({ channelId: "topic-9" }));
+
+  assert.equal(runner.inputs.length, 0);
+  assert.deepEqual(gateway.sent, []);
+  assert.equal(topicSessions.get("topic-1")?.lastActivityAt, NOW.toISOString());
+  assert.equal(topicSessions.get("topic-9")?.lastActivityAt, NOW.toISOString());
 });

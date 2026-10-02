@@ -52,6 +52,20 @@ export const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (guild_id, state, ordinal)
   );
   `,
+  // v3: /new で作ったセッション（1 テキストチャンネル = 1 セッション）。SDK の session_id は channel_sessions のまま
+  `
+  CREATE TABLE sessions (
+    channel_id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('active', 'waiting', 'done', 'deleted')),
+    category_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_activity_at TEXT NOT NULL,
+    waiting_since TEXT,
+    closed_at TEXT
+  );
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
