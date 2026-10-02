@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { HELP_TEXT } from "../src/app/commands/help.ts";
+import { HELP_TEXT, helpCommand } from "../src/app/commands/help.ts";
 import {
-  COMMANDS,
   createInteractionHandler,
   INTERACTION_FAILURE_REPLY,
   OWNER_ONLY_REPLY,
@@ -21,6 +20,8 @@ import type {
 } from "../src/discord/gateway.ts";
 
 const cfg = { allowedGuildIds: ["guild-1", "guild-9"], ownerUserId: "owner-1" };
+// 振り分けと登録の仕組みを見るので、依存の無い /help だけで足りる（/setup は setup.test.ts）
+const COMMANDS: CommandHandler[] = [helpCommand];
 const CREATED_AT = new Date("2026-10-02T00:12:00Z");
 
 type ResponderCall =

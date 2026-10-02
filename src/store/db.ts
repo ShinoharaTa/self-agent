@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 // MIGRATIONS[i] で user_version を i から i + 1 に上げる。既存の要素は書き換えず、末尾に追加する
-const MIGRATIONS: readonly string[] = [
+export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE tasks (
     id INTEGER PRIMARY KEY,
@@ -29,6 +29,27 @@ const MIGRATIONS: readonly string[] = [
     input_tokens INTEGER,
     cache_read_input_tokens INTEGER,
     cache_creation_input_tokens INTEGER
+  );
+  `,
+  // v2: /setup で作ったカテゴリ・チャンネルの ID。1 つ作るごとに保存するので、途中で失敗すると NULL の列が残る
+  `
+  CREATE TABLE guild_settings (
+    guild_id TEXT PRIMARY KEY,
+    home_category_id TEXT,
+    inbox_channel_id TEXT,
+    tasks_channel_id TEXT,
+    system_channel_id TEXT,
+    home_panel_message_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE state_categories (
+    guild_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('active', 'waiting', 'done')),
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 1),
+    category_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, state, ordinal)
   );
   `,
 ];

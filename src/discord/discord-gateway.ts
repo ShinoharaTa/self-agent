@@ -6,18 +6,22 @@ import {
   ApplicationCommandOptionType,
   type ButtonInteraction,
   ButtonStyle,
+  ChannelType,
   type ChatInputApplicationCommandData,
   type ChatInputCommandInteraction,
   Client,
   ComponentType,
+  DiscordAPIError,
   type Interaction as DiscordInteraction,
   Events,
   GatewayIntentBits,
+  type Guild,
   type Message,
   type MessageActionRowComponentData,
   MessageFlags,
   type MessageMentionOptions,
   type ModalSubmitInteraction,
+  RESTJSONErrorCodes,
   type SendableChannels,
   type StringSelectMenuInteraction,
   TextInputStyle,
@@ -32,6 +36,7 @@ import type {
   InteractionResponder,
   ModalDef,
   OutgoingMessage,
+  TextChannelOptions,
 } from "./gateway.ts";
 import { splitMessage } from "./split.ts";
 
@@ -310,15 +315,55 @@ export class DiscordGateway implements Gateway {
   }
 
   async registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void> {
-    const guild = this.client.guilds.cache.get(guildId);
-    if (guild === undefined) {
-      throw new Error("参加していないサーバーです");
+    await this.guild(guildId).commands.set(defs.map(toCommandData));
+  }
+
+  // permissionOverwrites は渡さない（非公開にしない。Bot にはサーバー全体の Manage Channels を付ける前提）
+  async createCategory(guildId: string, name: string): Promise<string> {
+    const category = await this.guild(guildId).channels.create({ name, type: ChannelType.GuildCategory });
+    return category.id;
+  }
+
+  async createTextChannel(guildId: string, options: TextChannelOptions): Promise<string> {
+    const channel = await this.guild(guildId).channels.create({
+      name: options.name,
+      type: ChannelType.GuildText,
+      parent: options.parentId,
+      topic: options.topic,
+    });
+    return channel.id;
+  }
+
+  async channelExists(channelId: string): Promise<boolean> {
+    try {
+      // キャッシュではなく Discord に問い合わせる（/setup でしか使わない）
+      await this.client.channels.fetch(channelId, { force: true });
+      return true;
+    } catch (error) {
+      if (error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownChannel) return false;
+      throw error;
     }
-    await guild.commands.set(defs.map(toCommandData));
+  }
+
+  async moveChannel(channelId: string, parentId: string): Promise<void> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (channel === null || channel.isDMBased() || channel.isThread() || channel.type === ChannelType.GuildCategory) {
+      throw new Error("カテゴリへ移せないチャンネルです");
+    }
+    // 既定の lockPermissions: true は移動先の overwrite を書き込む（Manage Roles が要る）ので使わない
+    await channel.setParent(parentId, { lockPermissions: false });
   }
 
   async stop(): Promise<void> {
     await this.client.destroy();
+  }
+
+  private guild(guildId: string): Guild {
+    const guild = this.client.guilds.cache.get(guildId);
+    if (guild === undefined) {
+      throw new Error("参加していないサーバーです");
+    }
+    return guild;
   }
 
   private async sendableChannel(channelId: string): Promise<SendableChannels> {

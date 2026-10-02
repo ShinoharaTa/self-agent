@@ -4,11 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
+import { createChannelResolver } from "../src/app/access.ts";
 import { createHandler, EMPTY_REPLY, FAILURE_REPLY } from "../src/app/handler.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import type { Gateway, IncomingMessage } from "../src/discord/gateway.ts";
 import { openDb } from "../src/store/db.ts";
+import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { SessionStore } from "../src/store/sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
 
@@ -39,6 +41,18 @@ class FakeGateway implements Gateway {
     return true;
   }
   async registerGuildCommands(): Promise<void> {}
+  async createCategory(): Promise<string> {
+    throw new Error("想定外の呼び出し");
+  }
+  async createTextChannel(): Promise<string> {
+    throw new Error("想定外の呼び出し");
+  }
+  async channelExists(): Promise<boolean> {
+    throw new Error("想定外の呼び出し");
+  }
+  async moveChannel(): Promise<void> {
+    throw new Error("想定外の呼び出し");
+  }
   async stop(): Promise<void> {}
 }
 
@@ -97,6 +111,8 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
   const logs: string[] = [];
   const handle = createHandler({
     cfg,
+    // guild_settings が空なので env の #inbox（inbox-1）を受け付ける
+    resolveChannel: createChannelResolver(cfg, new GuildSettingsStore(db, () => NOW)),
     gateway,
     runner,
     sessions,

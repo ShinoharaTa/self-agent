@@ -15,6 +15,7 @@ export type Config = {
   ownerUserId: string | undefined;
   /** 動作を許可するサーバー（ギルド）の ID。これ以外のサーバーと DM では一切反応しない */
   allowedGuildIds: string[];
+  /** 任意。/setup を実行していないサーバーで #inbox とみなすチャンネル（P3 で廃止） */
   inboxChannelId: string | undefined;
   /** SQLite などの保存先。DB は `${dataDir}/self-agent.db` */
   dataDir: string;
@@ -110,6 +111,5 @@ export function missingForStart(cfg: Config): string[] {
   if (!cfg.discordTokenPresent) missing.push("DISCORD_TOKEN");
   if (cfg.ownerUserId === undefined) missing.push("SELF_AGENT_OWNER_ID");
   if (cfg.allowedGuildIds.length === 0) missing.push("SELF_AGENT_ALLOWED_GUILD_IDS");
-  if (cfg.inboxChannelId === undefined) missing.push("SELF_AGENT_INBOX_CHANNEL_ID");
   return missing;
 }

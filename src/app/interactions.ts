@@ -2,6 +2,7 @@
 import type { Config } from "../config.ts";
 import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../discord/gateway.ts";
 import { helpCommand } from "./commands/help.ts";
+import { createSetupCommand, type SetupDeps } from "./commands/setup.ts";
 
 export const OWNER_ONLY_REPLY = "オーナー専用です";
 export const UNKNOWN_REPLY = "不明な操作です";
@@ -22,8 +23,13 @@ export type ComponentHandler = {
   handle(interaction: ComponentInteraction, responder: InteractionResponder): Promise<void>;
 };
 
+export type CommandDeps = SetupDeps;
+
 /** 登録するスラッシュコマンド */
-export const COMMANDS: readonly CommandHandler[] = [helpCommand];
+export function createCommands(deps: CommandDeps): CommandHandler[] {
+  return [helpCommand, createSetupCommand(deps)];
+}
+
 /** 名前空間ごとのハンドラ（P2-1 では無し） */
 export const COMPONENTS: readonly ComponentHandler[] = [];
 
