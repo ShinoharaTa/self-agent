@@ -13,6 +13,7 @@ import { openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { SessionStore } from "./store/sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
+import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { UsageStore } from "./store/usage.ts";
 
 const config = loadConfig();
@@ -32,22 +33,24 @@ const tasks = new TaskStore(db, now);
 const sessions = new SessionStore(db, now);
 const usage = new UsageStore(db, now);
 const guildSettings = new GuildSettingsStore(db, now);
+const topicSessions = new TopicSessionStore(db, now);
 const log = (message: string): void => console.error(message);
 
 const runner = new SdkAgentRunner(config, () => createTaskMcpServer(tasks));
 const gateway = new DiscordGateway(config.allowedGuildIds);
 const handle = createHandler({
   cfg: config,
-  resolveChannel: createChannelResolver(config, guildSettings),
+  resolveChannel: createChannelResolver(config, guildSettings, topicSessions),
   gateway,
   runner,
   sessions,
+  topicSessions,
   usage,
   queue: new KeyedSerialQueue(config.maxConcurrentTurns),
   log,
 });
-// /setup 専用のキュー（ターンの同時実行枠とは分ける）
-const commands = createCommands({ gateway, guildSettings, queue: new KeyedSerialQueue(1), log });
+// /setup・/new 専用のキュー（ターンの同時実行枠とは分ける）
+const commands = createCommands({ gateway, guildSettings, topicSessions, queue: new KeyedSerialQueue(1), log });
 const handleInteraction = createInteractionHandler({
   cfg: config,
   commands,

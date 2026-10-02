@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createChannelResolver, isAccepted, logUnconfiguredGuilds, type ResolveChannel } from "../src/app/access.ts";
+import { acceptedChannel, createChannelResolver, logUnconfiguredGuilds, type ResolveChannel } from "../src/app/access.ts";
 import type { IncomingMessage } from "../src/discord/gateway.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 
 const cfg = { allowedGuildIds: ["guild-1", "guild-9"], ownerUserId: "owner-1" };
 
@@ -24,18 +25,27 @@ const accepted: IncomingMessage = {
   createdAt: new Date("2026-10-02T00:12:00Z"),
 };
 
-function tempGuildSettings(t: TestContext): GuildSettingsStore {
+function tempStores(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
   const db = openDb(join(dir, "self-agent.db"));
   t.after(() => {
     db.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  return new GuildSettingsStore(db, () => new Date("2026-10-02T00:12:00Z"));
+  const now = () => new Date("2026-10-02T00:12:00Z");
+  return { db, guildSettings: new GuildSettingsStore(db, now), topicSessions: new TopicSessionStore(db, now) };
 }
 
-test("すべての条件を満たす発言は受け付ける", () => {
-  assert.equal(isAccepted(accepted, cfg, resolveInbox), true);
+function tempGuildSettings(t: TestContext): GuildSettingsStore {
+  return tempStores(t).guildSettings;
+}
+
+/** sessions の行が無い DB（#inbox の判定だけを見る） */
+const NO_SESSIONS = { get: () => undefined };
+
+test("すべての条件を満たす発言は受け付け、チャンネルの種類を返す", () => {
+  assert.equal(acceptedChannel(accepted, cfg, resolveInbox), "inbox");
+  assert.equal(acceptedChannel(accepted, cfg, () => "session"), "session");
 });
 
 test("条件を 1 つでも外れる発言は弾く", () => {
@@ -50,18 +60,18 @@ test("条件を 1 つでも外れる発言は弾く", () => {
     ["空白だけの本文", { content: " \n\t " }],
   ];
   for (const [name, override] of cases) {
-    assert.equal(isAccepted({ ...accepted, ...override }, cfg, resolveInbox), false, name);
+    assert.equal(acceptedChannel({ ...accepted, ...override }, cfg, resolveInbox), null, name);
   }
 });
 
 test("設定が欠けていれば何も受け付けない", () => {
-  assert.equal(isAccepted(accepted, { ...cfg, allowedGuildIds: [] }, resolveInbox), false);
-  assert.equal(isAccepted(accepted, { ...cfg, ownerUserId: undefined }, resolveInbox), false);
-  assert.equal(isAccepted(accepted, cfg, () => null), false);
+  assert.equal(acceptedChannel(accepted, { ...cfg, allowedGuildIds: [] }, resolveInbox), null);
+  assert.equal(acceptedChannel(accepted, { ...cfg, ownerUserId: undefined }, resolveInbox), null);
+  assert.equal(acceptedChannel(accepted, cfg, () => null), null);
 });
 
 test("許可リストにある別のサーバーでも受け付ける", () => {
-  assert.equal(isAccepted({ ...accepted, guildId: "guild-9" }, cfg, resolveInbox), true);
+  assert.equal(acceptedChannel({ ...accepted, guildId: "guild-9" }, cfg, resolveInbox), "inbox");
 });
 
 test("チャンネルの判定には発言のサーバーとチャンネルを渡し、他の条件で弾く発言では呼ばない", () => {
@@ -71,10 +81,10 @@ test("チャンネルの判定には発言のサーバーとチャンネルを�
     return "inbox";
   };
 
-  assert.equal(isAccepted({ ...accepted, guildId: "guild-9", channelId: "inbox-9" }, cfg, resolve), true);
-  assert.equal(isAccepted({ ...accepted, authorId: "someone-else" }, cfg, resolve), false);
-  assert.equal(isAccepted({ ...accepted, guildId: "guild-2" }, cfg, resolve), false);
-  assert.equal(isAccepted({ ...accepted, content: " " }, cfg, resolve), false);
+  assert.equal(acceptedChannel({ ...accepted, guildId: "guild-9", channelId: "inbox-9" }, cfg, resolve), "inbox");
+  assert.equal(acceptedChannel({ ...accepted, authorId: "someone-else" }, cfg, resolve), null);
+  assert.equal(acceptedChannel({ ...accepted, guildId: "guild-2" }, cfg, resolve), null);
+  assert.equal(acceptedChannel({ ...accepted, content: " " }, cfg, resolve), null);
 
   assert.deepEqual(calls, [["guild-9", "inbox-9"]]);
 });
@@ -84,7 +94,7 @@ test("createChannelResolver: /setup 済みのサーバーは DB の #inbox だ�
   guildSettings.setChannel("guild-1", "inboxChannelId", "db-inbox-1");
 
   for (const inboxChannelId of ["env-inbox", undefined]) {
-    const resolve = createChannelResolver({ inboxChannelId }, guildSettings);
+    const resolve = createChannelResolver({ inboxChannelId }, guildSettings, NO_SESSIONS);
     assert.equal(resolve("guild-1", "db-inbox-1"), "inbox", String(inboxChannelId));
     assert.equal(resolve("guild-1", "env-inbox"), null, String(inboxChannelId));
     assert.equal(resolve("guild-1", "other-1"), null, String(inboxChannelId));
@@ -96,12 +106,12 @@ test("createChannelResolver: /setup 前のサーバーは env の #inbox があ�
   // 別のサーバーの設定は関係しない
   guildSettings.setChannel("guild-9", "inboxChannelId", "db-inbox-9");
 
-  const withEnv = createChannelResolver({ inboxChannelId: "env-inbox" }, guildSettings);
+  const withEnv = createChannelResolver({ inboxChannelId: "env-inbox" }, guildSettings, NO_SESSIONS);
   assert.equal(withEnv("guild-1", "env-inbox"), "inbox");
   assert.equal(withEnv("guild-1", "db-inbox-9"), null);
   assert.equal(withEnv("guild-1", "other-1"), null);
 
-  const withoutEnv = createChannelResolver({ inboxChannelId: undefined }, guildSettings);
+  const withoutEnv = createChannelResolver({ inboxChannelId: undefined }, guildSettings, NO_SESSIONS);
   assert.equal(withoutEnv("guild-1", "env-inbox"), null);
   assert.equal(withoutEnv("guild-1", "other-1"), null);
 });
@@ -110,8 +120,42 @@ test("createChannelResolver: /setup が途中で止まり #inbox が未作成な
   const guildSettings = tempGuildSettings(t);
   guildSettings.setChannel("guild-1", "homeCategoryId", "home-1");
 
-  const resolve = createChannelResolver({ inboxChannelId: "env-inbox" }, guildSettings);
+  const resolve = createChannelResolver({ inboxChannelId: "env-inbox" }, guildSettings, NO_SESSIONS);
   assert.equal(resolve("guild-1", "env-inbox"), null);
+});
+
+test("createChannelResolver: sessions に行があり削除済みでなければ、そのサーバーのセッションとして受け付ける", (t) => {
+  const { db, guildSettings, topicSessions } = tempStores(t);
+  guildSettings.setChannel("guild-1", "inboxChannelId", "db-inbox-1");
+  for (const [channelId, state] of [
+    ["session-active", "active"],
+    ["session-waiting", "waiting"],
+    ["session-done", "done"],
+    ["session-deleted", "deleted"],
+  ] as const) {
+    topicSessions.create({ channelId, guildId: "guild-1", title: "題名", categoryId: "active-1" });
+    db.prepare("UPDATE sessions SET state = ? WHERE channel_id = ?").run(state, channelId);
+  }
+
+  const resolve = createChannelResolver({ inboxChannelId: undefined }, guildSettings, topicSessions);
+  assert.equal(resolve("guild-1", "db-inbox-1"), "inbox");
+  assert.equal(resolve("guild-1", "session-active"), "session");
+  assert.equal(resolve("guild-1", "session-waiting"), "session");
+  assert.equal(resolve("guild-1", "session-done"), "session");
+  assert.equal(resolve("guild-1", "session-deleted"), null);
+  assert.equal(resolve("guild-1", "other-1"), null);
+});
+
+test("createChannelResolver: 別のサーバーの sessions の行では受け付けない", (t) => {
+  const { guildSettings, topicSessions } = tempStores(t);
+  topicSessions.create({ channelId: "session-1", guildId: "guild-1", title: "題名", categoryId: "active-1" });
+
+  const resolve = createChannelResolver({ inboxChannelId: undefined }, guildSettings, topicSessions);
+  assert.equal(resolve("guild-1", "session-1"), "session");
+  assert.equal(resolve("guild-9", "session-1"), null);
+  // 許可サーバー間でも、発言のサーバーと行のサーバーが違えば弾く
+  assert.equal(acceptedChannel({ ...accepted, guildId: "guild-9", channelId: "session-1" }, cfg, resolve), null);
+  assert.equal(acceptedChannel({ ...accepted, channelId: "session-1" }, cfg, resolve), "session");
 });
 
 test("logUnconfiguredGuilds: guild_settings の無い許可サーバーだけを log に出し、env の #inbox を使っているかを添える", (t) => {

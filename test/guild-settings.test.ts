@@ -78,6 +78,25 @@ test("GuildSettingsStore: 状態カテゴリは (サーバー, 状態, ordinal) 
   assert.equal(store.getStateCategory("guild-2", "active", 1), "other-active-1");
 });
 
+test("GuildSettingsStore: listStateCategories はそのサーバー・状態のカテゴリを ordinal の昇順で返す", (t) => {
+  const store = tempStore(t);
+  assert.deepEqual(store.listStateCategories("guild-1", "active"), []);
+
+  store.setStateCategory("guild-1", "active", 3, "active-3");
+  store.setStateCategory("guild-1", "active", 1, "active-1");
+  store.setStateCategory("guild-1", "waiting", 1, "waiting-1");
+  store.setStateCategory("guild-1", "active", 2, "active-2");
+  store.setStateCategory("guild-2", "active", 4, "other-active-4");
+
+  assert.deepEqual(store.listStateCategories("guild-1", "active"), [
+    { ordinal: 1, categoryId: "active-1" },
+    { ordinal: 2, categoryId: "active-2" },
+    { ordinal: 3, categoryId: "active-3" },
+  ]);
+  assert.deepEqual(store.listStateCategories("guild-1", "waiting"), [{ ordinal: 1, categoryId: "waiting-1" }]);
+  assert.deepEqual(store.listStateCategories("guild-1", "done"), []);
+});
+
 test("state_categories: 決めた状態以外・同じカテゴリの二重登録は DB が拒む", (t) => {
   const store = tempStore(t);
   store.setStateCategory("guild-1", "active", 1, "active-1");

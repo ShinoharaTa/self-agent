@@ -2,6 +2,7 @@
 import type { Config } from "../config.ts";
 import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../discord/gateway.ts";
 import { helpCommand } from "./commands/help.ts";
+import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
 import { createSetupCommand, type SetupDeps } from "./commands/setup.ts";
 
 export const OWNER_ONLY_REPLY = "オーナー専用です";
@@ -23,11 +24,12 @@ export type ComponentHandler = {
   handle(interaction: ComponentInteraction, responder: InteractionResponder): Promise<void>;
 };
 
-export type CommandDeps = SetupDeps;
+/** /setup と /new は同じキュー（queue）を使う */
+export type CommandDeps = SetupDeps & NewSessionDeps;
 
 /** 登録するスラッシュコマンド */
 export function createCommands(deps: CommandDeps): CommandHandler[] {
-  return [helpCommand, createSetupCommand(deps)];
+  return [helpCommand, createSetupCommand(deps), createNewSessionCommand(deps)];
 }
 
 /** 名前空間ごとのハンドラ（P2-1 では無し） */

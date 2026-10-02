@@ -27,11 +27,11 @@ src/
 ├── main.ts      # 配線だけ（config → store → runner → gateway → handler）
 ├── config.ts    # 環境変数から設定を読む
 ├── app/         # 受付判定・key 別直列キュー・ターンの prompt・handler
-│   ├── access.ts        # 発言の受付判定。受け付けるチャンネルは DB の設定から引く（/setup 前のサーバーだけ env の #inbox）
+│   ├── access.ts        # 発言の受付判定。受け付けるチャンネル（#inbox と /new で作ったセッション）は DB から引く（/setup 前のサーバーだけ env の #inbox）
 │   ├── interactions.ts  # コマンド・ボタン等の振り分け（許可サーバー・オーナー判定 → コマンド名 / custom_id の名前空間）と起動時のコマンド登録
 │   └── commands/        # スラッシュコマンド。1 コマンド 1 ファイル（help.ts, setup.ts など）
 ├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ）・Options・システムプロンプト・タスクツール
-├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sessions / usage / guild-settings（/setup で作ったカテゴリ・チャンネルの ID）
+├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sessions（SDK の session_id）/ usage / guild-settings（/setup で作ったカテゴリ・チャンネルの ID）/ topic-sessions（/new で作ったセッションのチャンネル）
 └── discord/     # Gateway インタフェースと discord.js 実装
 scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測
 test/            # 単体テスト。test/integration/ は結合テスト

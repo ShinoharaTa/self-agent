@@ -25,10 +25,15 @@ const STATE_CATEGORIES: ReadonlyArray<{ state: SessionState; name: string }> = [
 
 const FIRST_ORDINAL = 1;
 
+/** カテゴリ・チャンネルを作る操作（/setup・/new）の直列化の key。同じサーバーではどちらも 1 つずつ実行する */
+export function layoutQueueKey(guildId: string): string {
+  return `layout:${guildId}`;
+}
+
 export type SetupDeps = {
   gateway: Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "moveChannel">;
   guildSettings: GuildSettingsStore;
-  /** 同じサーバーの /setup を 1 つずつ実行する（key は `setup:<guildId>`） */
+  /** 同じサーバーの /setup・/new を 1 つずつ実行する（key は layoutQueueKey） */
   queue: KeyedSerialQueue;
   log: (message: string) => void;
 };
@@ -137,8 +142,8 @@ export function createSetupCommand(deps: SetupDeps): CommandHandler {
       if (guildId === null) throw new Error("サーバー外で /setup が呼ばれました");
       // Discord への作成が複数回あり 3 秒を超えうるので、先に保留する
       await responder.defer(true);
-      // 同時に走ると両方が「未作成」と判断して二重に作るので、サーバーごとに 1 つずつ実行する
-      const result = await queue.run(`setup:${guildId}`, () => ensureGuildLayout(guildId, deps));
+      // 同時に走ると両方が「未作成」と判断して二重に作るので、サーバーごとに 1 つずつ実行する（/new とも）
+      const result = await queue.run(layoutQueueKey(guildId), () => ensureGuildLayout(guildId, deps));
       if (result.failure === null) {
         log(`/setup を実行しました（guild=${guildId}、作成 ${result.created.length} 件）`);
       } else {
