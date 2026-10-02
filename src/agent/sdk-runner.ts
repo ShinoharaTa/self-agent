@@ -25,7 +25,7 @@ function describeResultError(result: SDKResultMessage): string {
 }
 
 export class SdkAgentRunner implements AgentRunner {
-  private readonly cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec">;
+  private readonly cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">;
   private readonly createMcpServer: () => McpSdkServerConfigWithInstance;
 
   /**
@@ -33,7 +33,7 @@ export class SdkAgentRunner implements AgentRunner {
    * ツール定義は毎回同じなのでプロンプトキャッシュには影響しない
    */
   constructor(
-    cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec">,
+    cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">,
     createMcpServer: () => McpSdkServerConfigWithInstance,
   ) {
     this.cfg = cfg;

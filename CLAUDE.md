@@ -46,6 +46,7 @@ docs/            # REQUIREMENTS.md, design/, research/, archive/
 | `SELF_AGENT_WORKDIR` | エージェントの作業ディレクトリ。既定 `~/.local/share/self-agent/work` |
 | `SELF_AGENT_DATA_DIR` | SQLite（`self-agent.db`）の保存先。既定 `~/.local/share/self-agent/data` |
 | `SELF_AGENT_MODEL` | 使用モデル。既定 `claude-opus-5` |
+| `SELF_AGENT_EFFORT` | `low` / `medium` / `high` / `xhigh` / `max`。未設定ならモデルの既定。変更は再起動で反映（Opus 5 は effort ごとにキャッシュが別なので、変更直後は各セッションの最初のターンだけキャッシュが効かない） |
 | `SELF_AGENT_TZ` | 日時ヘッダのタイムゾーン。既定 `Asia/Tokyo` |
 | `SELF_AGENT_MAX_CONCURRENT` | 同時に処理するターン数の上限。既定 2 |
 | `SELF_AGENT_TURN_TIMEOUT_SEC` | 1 ターンの打ち切りまでの秒数。既定 300 |

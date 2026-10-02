@@ -17,6 +17,7 @@ test("未設定ならデフォルト値を使う", () => {
     timeZone: "Asia/Tokyo",
     maxConcurrentTurns: 2,
     turnTimeoutSec: 300,
+    effort: undefined,
   });
 });
 
@@ -132,4 +133,10 @@ test("許可サーバーの ID に数字以外が混ざっていたらエラー"
     () => loadConfig({ HOME: "/home/tester", SELF_AGENT_ALLOWED_GUILD_IDS: "200,abc" }),
     /SELF_AGENT_ALLOWED_GUILD_IDS/,
   );
+});
+
+test("SELF_AGENT_EFFORT は決められた値だけを受け付ける", () => {
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_EFFORT: "low" }).effort, "low");
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_EFFORT: "" }).effort, undefined);
+  assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_EFFORT: "fast" }), /SELF_AGENT_EFFORT/);
 });

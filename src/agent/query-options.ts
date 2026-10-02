@@ -14,7 +14,7 @@ function childEnv(): Record<string, string | undefined> {
 }
 
 export function buildQueryOptions(
-  cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir">,
+  cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "effort">,
   mcpServer: McpSdkServerConfigWithInstance,
 ): Options {
   return {
@@ -28,6 +28,8 @@ export function buildQueryOptions(
     allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
     mcpServers: { [MCP_SERVER_NAME]: mcpServer },
     maxTurns: MAX_TURNS,
+    // 未設定ならモデルの既定に任せる（キーごと入れない）
+    ...(cfg.effort === undefined ? {} : { effort: cfg.effort }),
     env: {
       ...childEnv(),
       CLAUDE_CONFIG_DIR: cfg.claudeConfigDir,
