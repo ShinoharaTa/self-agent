@@ -31,6 +31,8 @@ export type Config = {
   shutdownGraceSec: number;
   /** 進行中のセッションを、最後の発言からこの時間（時間単位）経ったら待ちに移す */
   idleHours: number;
+  /** #inbox から session_open で自動で作れるセッションの 1 日（timeZone の日付）あたりの数 */
+  autoSessionPerDay: number;
 };
 
 const DEFAULT_MODEL = "claude-opus-5";
@@ -40,6 +42,7 @@ const DEFAULT_TURN_TIMEOUT_SEC = 300;
 const DEFAULT_CHANNEL_OP_GAP_MS = 2000;
 const DEFAULT_SHUTDOWN_GRACE_SEC = 30;
 const DEFAULT_IDLE_HOURS = 12;
+const DEFAULT_AUTO_SESSION_PER_DAY = 3;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -121,6 +124,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       DEFAULT_SHUTDOWN_GRACE_SEC,
     ),
     idleHours: positiveInteger("SELF_AGENT_IDLE_HOURS", nonEmpty(env.SELF_AGENT_IDLE_HOURS), DEFAULT_IDLE_HOURS),
+    autoSessionPerDay: positiveInteger(
+      "SELF_AGENT_AUTO_SESSION_PER_DAY",
+      nonEmpty(env.SELF_AGENT_AUTO_SESSION_PER_DAY),
+      DEFAULT_AUTO_SESSION_PER_DAY,
+    ),
   };
 }
 

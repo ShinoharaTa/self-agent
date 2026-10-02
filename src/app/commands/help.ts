@@ -2,7 +2,7 @@ import type { CommandHandler } from "../interactions.ts";
 
 export const HELP_TEXT = [
   "**self-agent の使い方**",
-  "#inbox に書くと、タスクの登録・一覧・完了を受け付けます。",
+  "#inbox に書くと、タスクの登録・一覧・完了を受け付けます。長くなりそうな相談は、Bot がセッション用のチャンネルを作って案内します（1 日の上限あり。上限に達したら /new で作れます）。",
   "",
   "**コマンド**",
   "`/help` この案内を表示します",

@@ -9,6 +9,7 @@ import { createHandler } from "./app/handler.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { KeyedSerialQueue } from "./app/queue.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
+import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { loadConfig, missingForStart } from "./config.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -41,9 +42,28 @@ const topicSessions = new TopicSessionStore(db, now);
 const seeds = new ChannelSeedStore(db, now);
 const log = (message: string): void => console.error(message);
 
-// ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ
-const runner = new SdkAgentRunner(config, (context) => createTaskMcpServer(tasks, topicSessions, context), log);
 const gateway = new DiscordGateway(config.allowedGuildIds);
+const resolveChannel = createChannelResolver(config, guildSettings, topicSessions);
+// /setup・/new・session_open 専用のキュー（ターンの同時実行枠とは分ける）
+const layoutQueue = new KeyedSerialQueue(1);
+// #inbox の session_open: /new と同じキュー（layoutQueue）で作る
+const openSession = createOpenSession({
+  cfg: config,
+  resolveChannel,
+  gateway,
+  guildSettings,
+  topicSessions,
+  seeds,
+  queue: layoutQueue,
+  now,
+  log,
+});
+// ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ
+const runner = new SdkAgentRunner(
+  config,
+  (context) => createTaskMcpServer(tasks, topicSessions, openSession, context),
+  log,
+);
 // 発言と /close のターンのキュー（key は channelId）
 const turnQueue = new KeyedSerialQueue(config.maxConcurrentTurns);
 const turn = { runner, sessions, seeds, topicSessions, usage, log };
@@ -56,14 +76,12 @@ const channelOps = new ChannelOpsQueue({
 });
 const handle = createHandler({
   cfg: config,
-  resolveChannel: createChannelResolver(config, guildSettings, topicSessions),
+  resolveChannel,
   gateway,
   ...turn,
   channelOps,
   queue: turnQueue,
 });
-// /setup・/new 専用のキュー（ターンの同時実行枠とは分ける）
-const layoutQueue = new KeyedSerialQueue(1);
 const commands = createCommands({
   cfg: config,
   gateway,

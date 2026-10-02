@@ -388,6 +388,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
                 waitingSince: null,
                 closedAt: null,
                 summary: null,
+                origin: "command",
               },
             ]
           : [];

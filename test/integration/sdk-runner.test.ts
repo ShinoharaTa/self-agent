@@ -34,7 +34,8 @@ test(
     const logs: string[] = [];
     const runner = new SdkAgentRunner(
       cfg,
-      (context) => createTaskMcpServer(tasks, new TopicSessionStore(db), context),
+      // session_open はここでは使わない
+      (context) => createTaskMcpServer(tasks, new TopicSessionStore(db), async () => ({ result: "not_available" }), context),
       (line) => logs.push(line),
     );
 

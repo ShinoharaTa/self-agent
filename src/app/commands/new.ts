@@ -1,6 +1,6 @@
 import type { Gateway, InteractionResponder } from "../../discord/gateway.ts";
 import type { GuildSettingsStore, SessionState } from "../../store/guild-settings.ts";
-import type { TopicSessionStore } from "../../store/topic-sessions.ts";
+import type { TopicSessionOrigin, TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { CommandHandler } from "../interactions.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
 import { layoutQueueKey, stateCategoryName } from "./setup.ts";
@@ -91,11 +91,15 @@ export async function findStateCategory(
   return categoryId;
 }
 
-/** 空きのある進行中カテゴリにセッション用のチャンネルを作り、sessions に保存する。/setup 前（進行中カテゴリが無い）なら何もしない */
+/**
+ * 空きのある進行中カテゴリにセッション用のチャンネルを作り、sessions に保存する。/setup 前（進行中カテゴリが無い）なら何もしない。
+ * origin は作られ方（/new・ホームパネルは command、#inbox の session_open は inbox）
+ */
 export async function createTopicSession(
   guildId: string,
   title: string,
   deps: Pick<NewSessionDeps, "gateway" | "guildSettings" | "topicSessions" | "log">,
+  origin: TopicSessionOrigin = "command",
 ): Promise<NewSessionResult> {
   const { gateway, guildSettings, topicSessions, log } = deps;
   if (
@@ -112,7 +116,7 @@ export async function createTopicSession(
     topic: title,
   });
   try {
-    topicSessions.create({ channelId, guildId, title, categoryId });
+    topicSessions.create({ channelId, guildId, title, categoryId, origin });
   } catch (error) {
     // チャンネルだけが Discord に残る。手で消せるよう、ログにチャンネル ID を出す（ログ方針の例外）
     log(

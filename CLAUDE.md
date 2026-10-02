@@ -33,11 +33,12 @@ src/
 │   ├── channel-ops.ts   # チャンネルのカテゴリ移動の列（全サーバーで直列・間隔・同じチャンネルはまとめる・再試行。満杯なら `完了 N` を作る）
 │   ├── session-state.ts # セッションの状態遷移（純関数 transition）と、その DB・カテゴリ移動への反映（発言・/wait・[続ける]・idle）
 │   ├── scheduler.ts     # 定期処理（起動直後と 5 分ごとの tick）。最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、[続ける][閉じる] 付きで知らせる
+│   ├── session-open.ts  # #inbox の session_open ツールの処理（#inbox だけ・同じ題名の進行中/待ちがあればそれを返す・1 日の上限・前回から 15 分の間隔 → /new と同じ作成処理 + #inbox の文脈を seed に）
 │   ├── shutdown.ts      # 停止処理（シグナルで新しい受付と定期処理を止め、進行中の処理を返信まで上限付きで待ってから gateway と DB を閉じる）
 │   ├── interactions.ts  # コマンド・ボタン等の振り分け（許可サーバー・オーナー判定 → コマンド名 / custom_id の名前空間）と起動時のコマンド登録
 │   └── commands/        # スラッシュコマンド。1 コマンド 1 ファイル（help.ts, setup.ts など）。close.ts は確認と [閉じる] のボタン（`close:`）、wait.ts は [続ける]（`wait:`）、tasks.ts は完了にするセレクト（`tasks:`）も持つ。setup.ts は #inbox のホームパネルを投稿し、home.ts はそのボタンとモーダル（`home:`）を受ける
-├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ。ツール呼び出しは PostToolUse の hook で数えて log）・Options・システムプロンプト・ツール（タスク・session_report）
-├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sdk-sessions（SDK の session_id）/ usage（ターンごとのトークン・compaction・ツール呼び出し数。/usage の集計）/ guild-settings（/setup で作ったカテゴリ・チャンネルの ID）/ topic-sessions（/new で作ったセッションのチャンネル、/close の要約と下書き）/ channel-seeds（次のターンの prompt の先頭に付ける文）
+├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ。ツール呼び出しは PostToolUse の hook で数えて log）・Options・システムプロンプト・ツール（タスク・session_report・session_open。定義は全チャンネル共通で、session_open の処理は app/session-open.ts から受け取る）
+├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sdk-sessions（SDK の session_id）/ usage（ターンごとのトークン・compaction・ツール呼び出し数。/usage の集計）/ guild-settings（/setup で作ったカテゴリ・チャンネルの ID）/ topic-sessions（/new・session_open で作ったセッションのチャンネルと作られ方（origin）、/close の要約と下書き）/ channel-seeds（次のターンの prompt の先頭に付ける文）
 └── discord/     # Gateway インタフェースと discord.js 実装。convert.ts は内部型 ⇔ Discord の形の変換（discord.js は型だけ import）
 scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測
 test/            # 単体テスト。test/integration/ は結合テスト
@@ -63,6 +64,7 @@ docs/            # REQUIREMENTS.md, design/, research/, archive/, plan/（フェ
 | `SELF_AGENT_CHANNEL_OP_GAP_MS` | チャンネルのカテゴリ移動の間隔（ミリ秒、全サーバー共通で直列）。既定 2000 |
 | `SELF_AGENT_SHUTDOWN_GRACE_SEC` | 停止時（SIGINT / SIGTERM）に進行中のターンを返信まで待つ上限の秒数。既定 30。待つ間は新しい発言・操作を受け付けない。2 回目のシグナルでは待たずに終了する |
 | `SELF_AGENT_IDLE_HOURS` | 進行中のセッションを、最後の発言からこの時間（正の整数、時間単位）経ったら待ちに移す。既定 12 |
+| `SELF_AGENT_AUTO_SESSION_PER_DAY` | #inbox から session_open で自動で作れるセッションの 1 日（`SELF_AGENT_TZ` の日付）あたりの数（正の整数）。既定 3。/new で作ったものは数えない |
 
 ## コーディング規約
 
