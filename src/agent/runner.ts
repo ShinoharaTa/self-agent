@@ -17,8 +17,19 @@ export type TurnUsage = {
   cacheCreationInputTokens: number;
 };
 
+/** このターン中に SDK が会話を要約した（compaction）。trigger は "auto" / "manual"、preTokens は要約前のトークン数 */
+export type Compaction = { trigger: string; preTokens?: number };
+
 export type RunResult =
-  | { ok: true; text: string; sessionId: string; usage: TurnUsage; durationMs: number }
+  | {
+      ok: true;
+      text: string;
+      sessionId: string;
+      usage: TurnUsage;
+      durationMs: number;
+      /** compaction が起きたときだけ入る */
+      compacted?: Compaction;
+    }
   | {
       ok: false;
       errorMessage: string;

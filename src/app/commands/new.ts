@@ -97,7 +97,7 @@ export async function createTopicSession(
   title: string,
   deps: Pick<NewSessionDeps, "gateway" | "guildSettings" | "topicSessions" | "log">,
 ): Promise<NewSessionResult> {
-  const { gateway, guildSettings, topicSessions } = deps;
+  const { gateway, guildSettings, topicSessions, log } = deps;
   if (
     guildSettings.get(guildId) === undefined ||
     guildSettings.getStateCategory(guildId, "active", FIRST_ORDINAL) === undefined
@@ -111,7 +111,15 @@ export async function createTopicSession(
     parentId: categoryId,
     topic: title,
   });
-  topicSessions.create({ channelId, guildId, title, categoryId });
+  try {
+    topicSessions.create({ channelId, guildId, title, categoryId });
+  } catch (error) {
+    // チャンネルだけが Discord に残る。手で消せるよう、ログにチャンネル ID を出す（ログ方針の例外）
+    log(
+      `セッションのチャンネルを作りましたが DB への保存に失敗しました（guild=${guildId}、channel=${channelId}）: ${describeError(error)}`,
+    );
+    throw error;
+  }
   return { result: "created", channelId };
 }
 

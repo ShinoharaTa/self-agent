@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
-/** 会話の単位（P1 はチャンネル ID、P2 からスレッド ID）→ Agent SDK の session_id */
-export class SessionStore {
+/** 会話の単位（チャンネル ID。#inbox と /new で作ったセッションのチャンネル）→ Agent SDK の session_id。テーブルは channel_sessions */
+export class SdkSessionStore {
   private readonly db: DatabaseSync;
   private readonly now: () => Date;
 

@@ -80,6 +80,10 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE channel_sessions ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0;
   `,
+  // v6: そのターンで SDK が会話を要約したか（compaction。compact_boundary を受け取ったら 1）
+  `
+  ALTER TABLE usage_log ADD COLUMN compacted INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

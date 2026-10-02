@@ -31,7 +31,7 @@ import type {
 } from "../src/discord/gateway.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
-import { SessionStore } from "../src/store/sessions.ts";
+import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
@@ -148,7 +148,7 @@ function stores(db: DatabaseSync, now: () => Date) {
   return {
     topicSessions: new TopicSessionStore(db, now),
     tasks: new TaskStore(db, now),
-    sessions: new SessionStore(db, now),
+    sessions: new SdkSessionStore(db, now),
     seeds: new ChannelSeedStore(db, now),
     usage: new UsageStore(db, now),
   };

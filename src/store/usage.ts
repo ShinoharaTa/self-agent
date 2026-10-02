@@ -8,6 +8,8 @@ export type UsageRecord = {
   inputTokens?: number;
   cacheReadInputTokens?: number;
   cacheCreationInputTokens?: number;
+  /** そのターンで compaction が起きたか。省略は false */
+  compacted?: boolean;
 };
 
 export type UsageEntry = {
@@ -20,6 +22,7 @@ export type UsageEntry = {
   inputTokens: number | null;
   cacheReadInputTokens: number | null;
   cacheCreationInputTokens: number | null;
+  compacted: boolean;
 };
 
 function nullableNumber(value: SQLOutputValue | undefined): number | null {
@@ -37,6 +40,7 @@ function toEntry(row: Record<string, SQLOutputValue>): UsageEntry {
     inputTokens: nullableNumber(row.input_tokens),
     cacheReadInputTokens: nullableNumber(row.cache_read_input_tokens),
     cacheCreationInputTokens: nullableNumber(row.cache_creation_input_tokens),
+    compacted: Number(row.compacted) === 1,
   };
 }
 
@@ -53,8 +57,8 @@ export class UsageStore {
   record(record: UsageRecord): void {
     this.db
       .prepare(
-        "INSERT INTO usage_log (at, key, session_id, ok, duration_ms, input_tokens, cache_read_input_tokens, cache_creation_input_tokens) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO usage_log (at, key, session_id, ok, duration_ms, input_tokens, cache_read_input_tokens, cache_creation_input_tokens, compacted) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         this.now().toISOString(),
@@ -65,6 +69,7 @@ export class UsageStore {
         record.inputTokens ?? null,
         record.cacheReadInputTokens ?? null,
         record.cacheCreationInputTokens ?? null,
+        record.compacted === true ? 1 : 0,
       );
   }
 

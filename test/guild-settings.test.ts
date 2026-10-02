@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { GuildSettingsStore, type SessionState } from "../src/store/guild-settings.ts";
-import { SessionStore } from "../src/store/sessions.ts";
+import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 
 function tempDir(t: TestContext): string {
@@ -125,7 +125,7 @@ test("openDb: v1 の DB を v2 に上げても既存のデータは残る", (t) 
     new TaskStore(db).list({ status: "open", limit: 20 }).map((task) => task.title),
     ["残る"],
   );
-  assert.equal(new SessionStore(db).get("inbox-1"), "session-1");
+  assert.equal(new SdkSessionStore(db).get("inbox-1"), "session-1");
 
   const store = new GuildSettingsStore(db);
   assert.equal(store.get("guild-1"), undefined);

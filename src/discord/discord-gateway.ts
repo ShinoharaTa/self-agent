@@ -1,34 +1,33 @@
 // Gateway の discord.js 実装。トークンは process.env.DISCORD_TOKEN から直接読み、保持もログ出力もしない
 import {
-  type ActionRowData,
-  type APIModalInteractionResponseCallbackData,
-  type ApplicationCommandOptionData,
-  ApplicationCommandOptionType,
   type ButtonInteraction,
-  ButtonStyle,
   ChannelType,
-  type ChatInputApplicationCommandData,
   type ChatInputCommandInteraction,
   Client,
-  ComponentType,
   DiscordAPIError,
   type Interaction as DiscordInteraction,
   Events,
   GatewayIntentBits,
   type Guild,
   type Message,
-  type MessageActionRowComponentData,
   MessageFlags,
-  type MessageMentionOptions,
   type ModalSubmitInteraction,
   RESTJSONErrorCodes,
   type SendableChannels,
   type StringSelectMenuInteraction,
-  TextInputStyle,
 } from "discord.js";
+import {
+  ALLOWED_MENTIONS,
+  toButtonInteraction,
+  toCommandData,
+  toCommandInteraction,
+  toModal,
+  toModalInteraction,
+  toPayload,
+  toSelectInteraction,
+} from "./convert.ts";
 import type {
   CommandDef,
-  ComponentRow,
   Gateway,
   GatewayHandlers,
   IncomingMessage,
@@ -41,9 +40,6 @@ import type {
 import { splitMessage } from "./split.ts";
 
 const TYPING_INTERVAL_MS = 8_000;
-
-// @everyone・ロール・他ユーザーへの通知は出さない（返信先への通知だけ残す）
-const ALLOWED_MENTIONS: MessageMentionOptions = { parse: [], repliedUser: true };
 
 function toIncoming(message: Message): IncomingMessage {
   return {
@@ -78,113 +74,12 @@ function isSupported(interaction: DiscordInteraction): interaction is SupportedI
   );
 }
 
+/** 種類の判定は discord.js のメソッドで行い、値の取り出しは convert.ts に任せる */
 function toInteraction(interaction: SupportedInteraction): Interaction {
-  const base = {
-    guildId: interaction.guildId,
-    channelId: interaction.channelId,
-    userId: interaction.user.id,
-    createdAt: interaction.createdAt,
-  };
-  if (interaction.isChatInputCommand()) {
-    const options: Record<string, string | number | boolean> = {};
-    for (const option of interaction.options.data) {
-      if (option.value !== undefined) options[option.name] = option.value;
-    }
-    return { ...base, kind: "command", name: interaction.commandName, options };
-  }
-  if (interaction.isButton()) {
-    return { ...base, kind: "button", customId: interaction.customId };
-  }
-  if (interaction.isStringSelectMenu()) {
-    return { ...base, kind: "select", customId: interaction.customId, values: [...interaction.values] };
-  }
-  const fields: Record<string, string> = {};
-  for (const [customId, field] of interaction.fields.fields) {
-    if (field.type === ComponentType.TextInput) fields[customId] = field.value;
-  }
-  return { ...base, kind: "modal", customId: interaction.customId, fields };
-}
-
-const BUTTON_STYLES = {
-  primary: ButtonStyle.Primary,
-  secondary: ButtonStyle.Secondary,
-  success: ButtonStyle.Success,
-  danger: ButtonStyle.Danger,
-} as const;
-
-function toComponents(rows: readonly ComponentRow[]): ActionRowData<MessageActionRowComponentData>[] {
-  return rows.map((row) => ({
-    type: ComponentType.ActionRow,
-    components:
-      row.kind === "buttons"
-        ? row.buttons.map((button) => ({
-            type: ComponentType.Button,
-            customId: button.customId,
-            label: button.label,
-            style: BUTTON_STYLES[button.style ?? "secondary"],
-            disabled: button.disabled ?? false,
-          }))
-        : [
-            {
-              type: ComponentType.StringSelect,
-              customId: row.select.customId,
-              placeholder: row.select.placeholder,
-              minValues: row.select.minValues,
-              maxValues: row.select.maxValues,
-              options: row.select.options,
-            },
-          ],
-  }));
-}
-
-/** reply / followUp / editReply / update 共通の本文。components を省略したら送らない（update では元のまま残る） */
-function toPayload(message: OutgoingMessage) {
-  return {
-    content: message.text,
-    allowedMentions: ALLOWED_MENTIONS,
-    ...(message.components === undefined ? {} : { components: toComponents(message.components) }),
-  };
-}
-
-/** テキスト入力は Label で包む（ActionRow で包む形は Discord 側で非推奨） */
-function toModal(modal: ModalDef): APIModalInteractionResponseCallbackData {
-  return {
-    custom_id: modal.customId,
-    title: modal.title,
-    components: modal.fields.map((field) => ({
-      type: ComponentType.Label,
-      label: field.label,
-      component: {
-        type: ComponentType.TextInput,
-        custom_id: field.customId,
-        style: field.style === "paragraph" ? TextInputStyle.Paragraph : TextInputStyle.Short,
-        required: field.required ?? true,
-        max_length: field.maxLength,
-        placeholder: field.placeholder,
-        value: field.value,
-      },
-    })),
-  };
-}
-
-function toCommandData(def: CommandDef): ChatInputApplicationCommandData {
-  const options = (def.options ?? []).map((option): ApplicationCommandOptionData => {
-    const common = { name: option.name, description: option.description, required: option.required ?? false };
-    switch (option.type) {
-      case "string":
-        return {
-          ...common,
-          type: ApplicationCommandOptionType.String,
-          minLength: option.minLength,
-          maxLength: option.maxLength,
-        };
-      case "integer":
-        return { ...common, type: ApplicationCommandOptionType.Integer };
-      case "boolean":
-        return { ...common, type: ApplicationCommandOptionType.Boolean };
-    }
-  });
-  return { name: def.name, description: def.description, options };
+  if (interaction.isChatInputCommand()) return toCommandInteraction(interaction);
+  if (interaction.isButton()) return toButtonInteraction(interaction);
+  if (interaction.isStringSelectMenu()) return toSelectInteraction(interaction);
+  return toModalInteraction(interaction);
 }
 
 class DiscordResponder implements InteractionResponder {

@@ -20,7 +20,7 @@ import type {
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { SessionStore } from "../src/store/sessions.ts";
+import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
@@ -464,7 +464,7 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     turnQueue: new KeyedSerialQueue(1),
     turn: {
       runner,
-      sessions: new SessionStore(db, () => NOW),
+      sessions: new SdkSessionStore(db, () => NOW),
       seeds: new ChannelSeedStore(db, () => NOW),
       topicSessions,
       usage: new UsageStore(db, () => NOW),

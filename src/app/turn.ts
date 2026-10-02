@@ -1,7 +1,7 @@
 // 1 チャンネルの 1 ターン（発言・/close 共通）。usage の記録、SDK セッションの保存、seed の付与、resume 失敗からの復旧
 import type { AgentRunner, RunResult } from "../agent/runner.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
-import type { SessionStore } from "../store/sessions.ts";
+import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSession, TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
 
@@ -28,7 +28,7 @@ export const RESUME_SEED_HEADER = "前の会話の記録が切れたため、要
 export type TurnDeps = {
   runner: AgentRunner;
   /** channelId → SDK の session_id */
-  sessions: SessionStore;
+  sessions: SdkSessionStore;
   seeds: ChannelSeedStore;
   /** 復旧の seed に要約（無ければ題名）を入れるため */
   topicSessions: Pick<TopicSessionStore, "get">;
@@ -74,7 +74,12 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
         inputTokens: result.usage.inputTokens,
         cacheReadInputTokens: result.usage.cacheReadInputTokens,
         cacheCreationInputTokens: result.usage.cacheCreationInputTokens,
+        compacted: result.compacted !== undefined,
       });
+      if (result.compacted !== undefined) {
+        const { trigger, preTokens } = result.compacted;
+        log(`会話が長くなったため SDK が古い部分を要約しました（trigger=${trigger}、要約前 ${preTokens ?? "?"} トークン）`);
+      }
       sessions.set(key, result.sessionId);
     } else {
       usage.record({ key, sessionId: result.sessionId, ok: false });

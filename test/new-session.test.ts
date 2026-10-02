@@ -429,6 +429,23 @@ test("/new: 最初の投稿に失敗しても log に出し、リンクは返す
   ]);
 });
 
+test("/new: チャンネルを作った後の DB 保存に失敗したら、作ったチャンネルの ID を log に出して投げ直す", async (t) => {
+  const { gateway, topicSessions, logs, runNew, setUp, sessionCount } = setup(t);
+  await setUp();
+  t.mock.method(topicSessions, "create", () => {
+    throw new Error("database is locked");
+  });
+
+  await assert.rejects(runNew("x"), /database is locked/);
+
+  assert.equal(gateway.calls.filter((call) => call.method === "createTextChannel").length, 1);
+  assert.equal(gateway.calls.filter((call) => call.method === "send").length, 0);
+  assert.equal(sessionCount(), 0);
+  assert.deepEqual(logs, [
+    "セッションのチャンネルを作りましたが DB への保存に失敗しました（guild=guild-1、channel=ch-8）: database is locked",
+  ]);
+});
+
 test("/new と /setup は同じキューの同じ key（layout:<guildId>）で直列に実行する", async (t) => {
   const queue = new RecordingQueue(1);
   const { deps, runNew, setUp } = setup(t, queue);

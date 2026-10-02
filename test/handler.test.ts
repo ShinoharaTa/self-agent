@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
-import { createHandler, EMPTY_REPLY, FAILURE_REPLY, MAX_TURNS_REPLY } from "../src/app/handler.ts";
+import { COMPACTED_NOTE, createHandler, EMPTY_REPLY, FAILURE_REPLY, MAX_TURNS_REPLY } from "../src/app/handler.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { RESUME_FAILURE_LIMIT, RESUME_SEED_HEADER } from "../src/app/turn.ts";
@@ -13,7 +13,7 @@ import type { Gateway, IncomingMessage } from "../src/discord/gateway.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { SessionStore } from "../src/store/sessions.ts";
+import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
 
@@ -99,7 +99,7 @@ function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
   };
 }
 
-function okResult(sessionId: string, text: string): RunResult {
+function okResult(sessionId: string, text: string): Extract<RunResult, { ok: true }> {
   return {
     ok: true,
     text,
@@ -118,7 +118,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
   });
   const gateway = new FakeGateway();
   const runner = new FakeRunner(results);
-  const sessions = new SessionStore(db, () => NOW);
+  const sessions = new SdkSessionStore(db, () => NOW);
   const usage = new UsageStore(db, () => NOW);
   // last_activity_at の更新を見るため、sessions の時計だけ進められるようにする
   const clock = { now: NOW };
@@ -190,6 +190,7 @@ test("受け付けた発言で runner を呼び、usage 記録・session 保存�
       inputTokens: 10,
       cacheReadInputTokens: 2000,
       cacheCreationInputTokens: 300,
+      compacted: false,
     },
   ]);
   assert.equal(gateway.typingStarted, 1);
@@ -240,6 +241,32 @@ test("返答が空なら「（返答が空でした）」を返信する", async
     gateway.sent.map((sent) => sent.text),
     [EMPTY_REPLY, EMPTY_REPLY],
   );
+});
+
+test("compaction が起きたターンは返信の末尾に 1 行足し、usage に compacted を記録して log に出す", async (t) => {
+  const { gateway, usage, logs, handle } = setup(t, [
+    { ...okResult("session-1", "登録しました"), compacted: { trigger: "auto", preTokens: 150000 } },
+    { ...okResult("session-1", ""), compacted: { trigger: "manual" } },
+    okResult("session-1", "次"),
+  ]);
+
+  await handle(message({ id: "message-1" }));
+  await handle(message({ id: "message-2" }));
+  await handle(message({ id: "message-3" }));
+
+  assert.equal(COMPACTED_NOTE, "（会話が長くなったため、古い部分を要約しました）");
+  assert.deepEqual(
+    gateway.sent.map((sent) => sent.text),
+    [`登録しました\n${COMPACTED_NOTE}`, `${EMPTY_REPLY}\n${COMPACTED_NOTE}`, "次"],
+  );
+  assert.deepEqual(
+    usage.recent(10).map((entry) => entry.compacted),
+    [false, true, true],
+  );
+  assert.deepEqual(logs, [
+    "会話が長くなったため SDK が古い部分を要約しました（trigger=auto、要約前 150000 トークン）",
+    "会話が長くなったため SDK が古い部分を要約しました（trigger=manual、要約前 ? トークン）",
+  ]);
 });
 
 test("返信に失敗しても usage と session は残し、log に出して終える", async (t) => {

@@ -7,9 +7,10 @@ import { DatabaseSync } from "node:sqlite";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { SessionStore } from "../src/store/sessions.ts";
+import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { UsageStore } from "../src/store/usage.ts";
 
 function tempDir(t: TestContext): string {
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
@@ -108,7 +109,7 @@ test("openDb: v2 の DB を v3 に上げても既存のデータは残り、sess
     new TaskStore(db).list({ status: "open", limit: 20 }).map((task) => task.title),
     ["残る"],
   );
-  assert.equal(new SessionStore(db).get("inbox-1"), "session-1");
+  assert.equal(new SdkSessionStore(db).get("inbox-1"), "session-1");
   const guildSettings = new GuildSettingsStore(db);
   assert.equal(guildSettings.get("guild-1")?.inboxChannelId, "inbox-1");
   assert.equal(guildSettings.getStateCategory("guild-1", "active", 1), "active-1");
@@ -159,7 +160,7 @@ test("TopicSessionStore: setCategory は今置いているカテゴリを更新�
   assert.equal(store.get("inbox-1"), undefined);
 });
 
-test("ChannelSeedStore: 保存（置き換え）・取得・削除。SessionStore.delete で SDK セッションを捨てる", (t) => {
+test("ChannelSeedStore: 保存（置き換え）・取得・削除。SdkSessionStore.delete で SDK セッションを捨てる", (t) => {
   const db = tempDb(t);
   const seeds = new ChannelSeedStore(db, clock());
   assert.equal(seeds.get("topic-1"), undefined);
@@ -170,7 +171,7 @@ test("ChannelSeedStore: 保存（置き換え）・取得・削除。SessionStor
   seeds.delete("topic-1");
   assert.equal(seeds.get("topic-1"), undefined);
 
-  const sessions = new SessionStore(db, clock());
+  const sessions = new SdkSessionStore(db, clock());
   sessions.set("topic-1", "session-1");
   sessions.set("topic-2", "session-2");
   sessions.delete("topic-1");
@@ -211,7 +212,7 @@ test("openDb: v3 の DB を v4 に上げても既存のセッションは残り�
     summary: null,
   });
   assert.equal(store.getCloseDraft("topic-1"), undefined);
-  assert.equal(new SessionStore(db).get("topic-1"), "session-1");
+  assert.equal(new SdkSessionStore(db).get("topic-1"), "session-1");
 
   store.saveCloseDraft("topic-1", { summary: "要約", tasks: [] });
   assert.equal(store.close("topic-1", "要約")?.summary, "要約");
@@ -220,8 +221,8 @@ test("openDb: v3 の DB を v4 に上げても既存のセッションは残り�
   assert.equal(seeds.get("topic-1"), "seed");
 });
 
-test("SessionStore: 連続失敗を数え、set（成功・別のセッションへの置き換え）で 0 に戻す。行が無ければ 0", (t) => {
-  const sessions = new SessionStore(tempDb(t), clock());
+test("SdkSessionStore: 連続失敗を数え、set（成功・別のセッションへの置き換え）で 0 に戻す。行が無ければ 0", (t) => {
+  const sessions = new SdkSessionStore(tempDb(t), clock());
   assert.equal(sessions.recordFailure("inbox-1"), 0);
   assert.equal(sessions.failureCount("inbox-1"), 0);
 
@@ -254,10 +255,38 @@ test("openDb: v4 の DB を v5 に上げても SDK セッションは残り、�
   const db = openDb(path);
   t.after(() => db.close());
 
-  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 5);
-  assert.equal(MIGRATIONS.length, 5);
-  const sessions = new SessionStore(db, clock());
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 5);
+  const sessions = new SdkSessionStore(db, clock());
   assert.equal(sessions.get("topic-1"), "session-1");
   assert.equal(sessions.failureCount("topic-1"), 0);
   assert.equal(sessions.recordFailure("topic-1"), 1);
+});
+
+test("openDb: v5 の DB を v6 に上げても usage_log の行は残り、compacted は 0（false）。以後は compacted を記録できる", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // compaction の記録より前（v5）の DB を作る
+  const v5 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 5)) v5.exec(migration);
+  v5.exec("PRAGMA user_version = 5");
+  v5.prepare("INSERT INTO usage_log (at, key, session_id, ok) VALUES ('2026-10-01T00:00:00.000Z', 'inbox-1', 'session-1', 1)").run();
+  v5.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 6);
+  assert.equal(MIGRATIONS.length, 6);
+  const usage = new UsageStore(db, clock());
+  usage.record({ key: "topic-1", sessionId: "session-2", ok: true, compacted: true });
+  usage.record({ key: "topic-1", sessionId: "session-2", ok: false });
+  assert.deepEqual(
+    usage.recent(10).map((entry) => [entry.key, entry.ok, entry.compacted]),
+    [
+      ["topic-1", false, false],
+      ["topic-1", true, true],
+      ["inbox-1", true, false],
+    ],
+  );
 });
