@@ -148,6 +148,18 @@ export class TopicSessionStore {
       .map(toSession);
   }
 
+  /**
+   * そのサーバーのその状態のセッションを新しい順に limit 件まで（/sessions）。
+   * 進行中・待ちは最終発言の時刻、完了は閉じた時刻の新しい順。削除済みは対象外
+   */
+  listByState(guildId: string, state: "active" | "waiting" | "done", limit: number): TopicSession[] {
+    const orderBy = state === "done" ? "closed_at DESC" : "last_activity_at DESC";
+    return this.db
+      .prepare(`SELECT * FROM sessions WHERE guild_id = ? AND state = ? ORDER BY ${orderBy}, channel_id LIMIT ?`)
+      .all(guildId, state, limit)
+      .map(toSession);
+  }
+
   /** 今置いているカテゴリを記録する。行が無ければ（セッション以外のチャンネルなら）何もしない */
   setCategory(channelId: string, categoryId: string): void {
     this.db.prepare("UPDATE sessions SET category_id = ? WHERE channel_id = ?").run(categoryId, channelId);

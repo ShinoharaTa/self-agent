@@ -41,9 +41,10 @@ class FakeGateway implements Pick<Gateway, "sendMessage"> {
   /** sendMessage の直前に待つ。投げればその送信は失敗する */
   beforeSend: (channelId: string) => Promise<void> = async () => {};
 
-  async sendMessage(channelId: string, message: OutgoingMessage): Promise<void> {
+  async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
     await this.beforeSend(channelId);
     this.sent.push({ channelId, message });
+    return `message-${this.sent.length}`;
   }
 }
 

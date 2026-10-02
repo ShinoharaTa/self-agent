@@ -31,11 +31,19 @@ test(
     const db = openDb(join(cfg.dataDir, "self-agent.db"));
     t.after(() => db.close());
     const tasks = new TaskStore(db);
-    const runner = new SdkAgentRunner(cfg, (context) => createTaskMcpServer(tasks, new TopicSessionStore(db), context));
+    const logs: string[] = [];
+    const runner = new SdkAgentRunner(
+      cfg,
+      (context) => createTaskMcpServer(tasks, new TopicSessionStore(db), context),
+      (line) => logs.push(line),
+    );
 
     const first = await runner.run({ prompt: buildTurnPrompt("明日買い物に行く", new Date(), cfg.timeZone) });
     assert.ok(first.ok, first.ok ? "" : first.errorMessage);
     assert.equal(tasks.list({ status: "open", limit: 50 }).length, 1);
+    // task_add の呼び出しを PostToolUse の hook で数えている
+    assert.ok(first.toolCalls >= 1, `toolCalls=${first.toolCalls}`);
+    assert.ok(logs.some((line) => line.startsWith("ツールを呼び出しました: mcp__selfagent__task_add")), logs.join("\n"));
 
     const second = await runner.run({
       prompt: buildTurnPrompt("ありがとう", new Date(), cfg.timeZone),

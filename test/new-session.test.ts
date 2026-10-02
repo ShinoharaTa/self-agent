@@ -40,7 +40,16 @@ class FakeGateway
   implements
     Pick<
       Gateway,
-      "createCategory" | "createTextChannel" | "channelExists" | "moveChannel" | "getParentId" | "countChannelsIn" | "send"
+      | "createCategory"
+      | "createTextChannel"
+      | "channelExists"
+      | "moveChannel"
+      | "getParentId"
+      | "countChannelsIn"
+      | "send"
+      | "sendMessage"
+      | "pinMessage"
+      | "messageExists"
     >
 {
   calls: GatewayCall[] = [];
@@ -86,6 +95,14 @@ class FakeGateway
   async send(channelId: string, text: string): Promise<void> {
     this.beforeSend();
     this.calls.push({ method: "send", channelId, text });
+  }
+  // /setup の最後のホームパネル（calls には記録しない。ホームパネルは home-panel.test.ts）
+  async sendMessage(): Promise<string> {
+    return "panel-1";
+  }
+  async pinMessage(): Promise<void> {}
+  async messageExists(): Promise<boolean> {
+    return true;
   }
 
   reset(): void {

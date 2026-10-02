@@ -84,6 +84,10 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE usage_log ADD COLUMN compacted INTEGER NOT NULL DEFAULT 0;
   `,
+  // v7: そのターンのツール呼び出しの回数（失敗した呼び出しを含む。SDK の PostToolUse / PostToolUseFailure で数える）
+  `
+  ALTER TABLE usage_log ADD COLUMN tool_calls INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

@@ -35,7 +35,13 @@ class FakeGateway implements Gateway {
     this.beforeSend();
     this.sent.push({ channelId, text, replyToId });
   }
-  async sendMessage(): Promise<void> {
+  async sendMessage(): Promise<string> {
+    throw new Error("想定外の呼び出し");
+  }
+  async pinMessage(): Promise<void> {
+    throw new Error("想定外の呼び出し");
+  }
+  async messageExists(): Promise<boolean> {
     throw new Error("想定外の呼び出し");
   }
   startTyping(): () => void {
@@ -118,6 +124,7 @@ function okResult(sessionId: string, text: string): Extract<RunResult, { ok: tru
     sessionId,
     usage: { inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300 },
     durationMs: 4200,
+    toolCalls: 3,
   };
 }
 
@@ -165,6 +172,7 @@ const RESUME_FAILURE: RunResult = {
   ok: false,
   errorMessage: "error_during_execution: No conversation found with session ID: session-old",
   sessionRecorded: false,
+  toolCalls: 0,
 };
 
 /** result が届かなかった失敗（SDK が会話を記録したか分からない） */
@@ -172,6 +180,7 @@ const CRASH: RunResult = {
   ok: false,
   errorMessage: "exception: Error: Claude Code process exited with code 1",
   sessionRecorded: false,
+  toolCalls: 0,
 };
 
 /** /new で作ったセッションのチャンネル（topic-1、guild-1、作成は NOW） */
@@ -205,6 +214,7 @@ test("受け付けた発言で runner を呼び、usage 記録・session 保存�
       cacheReadInputTokens: 2000,
       cacheCreationInputTokens: 300,
       compacted: false,
+      toolCalls: 3,
     },
   ]);
   assert.equal(gateway.typingStarted, 1);
@@ -226,7 +236,7 @@ test("2 ターン目は保存した sessionId で resume する", async (t) => {
 
 test("ok:false（result が届かなかった失敗）なら usage に ok=0 で記録して失敗の返信をし、session は保存しない", async (t) => {
   const { gateway, sessions, usage, logs, handle } = setup(t, [
-    { ok: false, errorMessage: "exception: Error: boom", sessionId: "session-x", sessionRecorded: false },
+    { ok: false, errorMessage: "exception: Error: boom", sessionId: "session-x", sessionRecorded: false, toolCalls: 2 },
   ]);
   gateway.beforeSend = () => {
     assert.equal(usage.recent(10).length, 1);
@@ -240,6 +250,8 @@ test("ok:false（result が届かなかった失敗）なら usage に ok=0 で�
   assert.equal(entry?.ok, false);
   assert.equal(entry?.sessionId, "session-x");
   assert.equal(entry?.inputTokens, null);
+  // 失敗するまでのツール呼び出しも数える
+  assert.equal(entry?.toolCalls, 2);
   assert.equal(logs.length, 1);
   assert.match(logs[0]!, /exception: Error: boom/);
   assert.equal(gateway.typingStopped, 1);
@@ -544,7 +556,7 @@ test("resume 失敗: #inbox では seed を入れずに sessionId 無しで 1 �
 
 test("resume 以外の失敗ではやり直さず、SDK セッションも seed もそのまま", async (t) => {
   const { gateway, runner, sessions, seeds, topicSessions, handle } = setup(t, [
-    { ok: false, errorMessage: "timeout", sessionId: "session-old", sessionRecorded: false },
+    { ok: false, errorMessage: "timeout", sessionId: "session-old", sessionRecorded: false, toolCalls: 0 },
   ]);
   topicSessions.create(TOPIC);
   sessions.set("topic-1", "session-old");
@@ -561,7 +573,7 @@ test("resume 以外の失敗ではやり直さず、SDK セッションも seed 
 
 test("seed: SDK セッションが無く seed があれば prompt の先頭に付け、成功したら消す。失敗なら残す", async (t) => {
   const { runner, sessions, seeds, topicSessions, handle } = setup(t, [
-    { ok: false, errorMessage: "timeout", sessionRecorded: false },
+    { ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 },
     okResult("session-a", "了解"),
     okResult("session-a", "次"),
   ]);
@@ -602,7 +614,7 @@ test("seed: SDK セッションがあれば seed は付けずに resume する",
 
 test("error_max_turns: SDK が記録した session_id を保存して専用の返信をし、次の発言はそこから resume する", async (t) => {
   const { gateway, runner, sessions, usage, handle } = setup(t, [
-    { ok: false, errorMessage: "error_max_turns", sessionId: "session-x", sessionRecorded: true },
+    { ok: false, errorMessage: "error_max_turns", sessionId: "session-x", sessionRecorded: true, toolCalls: 0 },
     okResult("session-x", "続きです"),
   ]);
 
@@ -621,8 +633,8 @@ test("error_max_turns: SDK が記録した session_id を保存して専用の�
 
 test("result が届かなかった失敗（例外・タイムアウト）では、途中で受け取った session_id があっても保存しない", async (t) => {
   const { gateway, sessions, handle } = setup(t, [
-    { ok: false, errorMessage: "timeout", sessionId: "session-x", sessionRecorded: false },
-    { ok: false, errorMessage: "exception: Error: boom", sessionId: "session-y", sessionRecorded: false },
+    { ok: false, errorMessage: "timeout", sessionId: "session-x", sessionRecorded: false, toolCalls: 0 },
+    { ok: false, errorMessage: "exception: Error: boom", sessionId: "session-y", sessionRecorded: false, toolCalls: 0 },
   ]);
 
   await handle(message({ id: "message-1" }));
@@ -677,7 +689,7 @@ test("連続失敗: 同じ SDK セッションで 2 回までは捨てず、3 �
 });
 
 test("連続失敗: 成功したら回数を 0 に戻す。タイムアウトは数えない", async (t) => {
-  const timeout: RunResult = { ok: false, errorMessage: "timeout", sessionRecorded: false };
+  const timeout: RunResult = { ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 };
   const { runner, sessions, handle } = setup(t, [
     CRASH,
     CRASH,
@@ -710,6 +722,7 @@ test("連続失敗: 手順数の上限（error_max_turns）は数えず、何回
     errorMessage: "error_max_turns",
     sessionId: "session-old",
     sessionRecorded: true,
+    toolCalls: 0,
   };
   const { gateway, runner, sessions, handle } = setup(t, [maxTurns, maxTurns, maxTurns, maxTurns]);
   sessions.set("inbox-1", "session-old");

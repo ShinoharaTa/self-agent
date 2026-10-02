@@ -42,7 +42,7 @@ const seeds = new ChannelSeedStore(db, now);
 const log = (message: string): void => console.error(message);
 
 // ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ
-const runner = new SdkAgentRunner(config, (context) => createTaskMcpServer(tasks, topicSessions, context));
+const runner = new SdkAgentRunner(config, (context) => createTaskMcpServer(tasks, topicSessions, context), log);
 const gateway = new DiscordGateway(config.allowedGuildIds);
 // 発言と /close のターンのキュー（key は channelId）
 const turnQueue = new KeyedSerialQueue(config.maxConcurrentTurns);
@@ -65,12 +65,14 @@ const handle = createHandler({
 // /setup・/new 専用のキュー（ターンの同時実行枠とは分ける）
 const layoutQueue = new KeyedSerialQueue(1);
 const commands = createCommands({
+  cfg: config,
   gateway,
   guildSettings,
   topicSessions,
   queue: layoutQueue,
   channelOps,
   tasks,
+  usage,
   turnQueue,
   turn,
   log,
@@ -78,7 +80,18 @@ const commands = createCommands({
 const handleInteraction = createInteractionHandler({
   cfg: config,
   commands,
-  components: createComponents({ topicSessions, tasks, channelOps, turnQueue, turn, log }),
+  // ホームパネルの [新しいセッション] は /new と同じキュー（layoutQueue）で作る
+  components: createComponents({
+    gateway,
+    guildSettings,
+    topicSessions,
+    queue: layoutQueue,
+    tasks,
+    channelOps,
+    turnQueue,
+    turn,
+    log,
+  }),
   log,
 });
 // 定期処理: 発言の無い進行中のセッションを待ちに移す

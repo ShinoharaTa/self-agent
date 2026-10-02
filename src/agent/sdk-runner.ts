@@ -1,6 +1,7 @@
 // AgentRunner の Agent SDK 実装。query() を使うのはこのファイルだけ
 import {
   query,
+  type HookCallback,
   type McpSdkServerConfigWithInstance,
   type Options,
   type SDKMessage,
@@ -30,23 +31,55 @@ export function describeResultError(result: SDKResultMessage): string {
   return errors.length === 0 ? result.subtype : `${result.subtype}: ${shorten(errors.join(" / "))}`;
 }
 
+/** ツール呼び出しの記録。hooks を Options に入れ、count でそのターンの回数を読む */
+export type ToolCallRecorder = {
+  hooks: NonNullable<Options["hooks"]>;
+  count(): number;
+};
+
+/**
+ * ツール呼び出しを数え、ツール名と所要時間（取れなければ名前だけ）を log に出す。失敗した呼び出しも数え、失敗として出す。
+ * ツールの入力・出力・エラーの中身は log に出さない。hooks は SDK 側（クライアント）で呼ばれるだけなので、プロンプトキャッシュには影響しない
+ */
+export function createToolCallRecorder(log: (message: string) => void): ToolCallRecorder {
+  let calls = 0;
+  const duration = (ms: number | undefined): string => (typeof ms === "number" ? `（${ms} ms）` : "");
+  const onToolUse: HookCallback = async (input) => {
+    if (input.hook_event_name === "PostToolUse") {
+      calls++;
+      log(`ツールを呼び出しました: ${input.tool_name}${duration(input.duration_ms)}`);
+    } else if (input.hook_event_name === "PostToolUseFailure") {
+      calls++;
+      log(`ツールの呼び出しが失敗しました: ${input.tool_name}${duration(input.duration_ms)}`);
+    }
+    return {};
+  };
+  return {
+    hooks: { PostToolUse: [{ hooks: [onToolUse] }], PostToolUseFailure: [{ hooks: [onToolUse] }] },
+    count: () => calls,
+  };
+}
+
 export class SdkAgentRunner implements AgentRunner {
   private readonly cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">;
   private readonly createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance;
+  private readonly log: (message: string) => void;
   private readonly queryFn: QueryFn;
 
   /**
    * MCP サーバーのインスタンスは同時に 1 つの query にしか接続できないため、run ごとに createMcpServer で作る。
    * ツール定義は毎回同じ（ハンドラが参照する context だけが変わる）なのでプロンプトキャッシュには影響しない。
-   * queryFn は省略すれば SDK の query（テストで差し替える）
+   * log はツール呼び出しの記録に使う。queryFn は省略すれば SDK の query（テストで差し替える）
    */
   constructor(
     cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">,
     createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance,
+    log: (message: string) => void,
     queryFn: QueryFn = query,
   ) {
     this.cfg = cfg;
     this.createMcpServer = createMcpServer;
+    this.log = log;
     this.queryFn = queryFn;
   }
 
@@ -62,10 +95,12 @@ export class SdkAgentRunner implements AgentRunner {
 
   private async runQuery(input: RunInput, abortController: AbortController): Promise<RunResult> {
     const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context));
+    // ツール呼び出しの回数はターンごとに数えるので、hooks も run ごとに作って足す
+    const tools = createToolCallRecorder(this.log);
     const options: Options =
       input.sessionId === undefined
-        ? { ...base, abortController }
-        : { ...base, abortController, resume: input.sessionId };
+        ? { ...base, abortController, hooks: tools.hooks }
+        : { ...base, abortController, hooks: tools.hooks, resume: input.sessionId };
     // メインループの各ステップの usage を合算する。並列ツール呼び出しは同じ message.id を共有するので重複を除く
     const seenMessageIds = new Set<string>();
     const usage: TurnUsage = { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
@@ -103,17 +138,29 @@ export class SdkAgentRunner implements AgentRunner {
       }
     } catch (error) {
       if (abortController.signal.aborted) {
-        return { ok: false, errorMessage: "timeout", sessionId, sessionRecorded: false };
+        return { ok: false, errorMessage: "timeout", sessionId, sessionRecorded: false, toolCalls: tools.count() };
       }
       const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      return { ok: false, errorMessage: `exception: ${shorten(text)}`, sessionId, sessionRecorded: false };
+      return {
+        ok: false,
+        errorMessage: `exception: ${shorten(text)}`,
+        sessionId,
+        sessionRecorded: false,
+        toolCalls: tools.count(),
+      };
     }
 
     if (abortController.signal.aborted) {
-      return { ok: false, errorMessage: "timeout", sessionId, sessionRecorded: false };
+      return { ok: false, errorMessage: "timeout", sessionId, sessionRecorded: false, toolCalls: tools.count() };
     }
     if (result === undefined) {
-      return { ok: false, errorMessage: "result メッセージを受け取れませんでした", sessionId, sessionRecorded: false };
+      return {
+        ok: false,
+        errorMessage: "result メッセージを受け取れませんでした",
+        sessionId,
+        sessionRecorded: false,
+        toolCalls: tools.count(),
+      };
     }
     if (result.subtype !== "success" || result.is_error) {
       // result まで届いたので SDK は会話を記録している（error_max_turns なら途中のツール呼び出しも含む）
@@ -122,6 +169,7 @@ export class SdkAgentRunner implements AgentRunner {
         errorMessage: describeResultError(result),
         sessionId: result.session_id,
         sessionRecorded: true,
+        toolCalls: tools.count(),
       };
     }
     return {
@@ -131,6 +179,7 @@ export class SdkAgentRunner implements AgentRunner {
       usage,
       durationMs: result.duration_ms,
       ...(compacted === undefined ? {} : { compacted }),
+      toolCalls: tools.count(),
     };
   }
 }

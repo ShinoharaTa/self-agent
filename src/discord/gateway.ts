@@ -122,8 +122,12 @@ export interface Gateway {
   start(handlers: GatewayHandlers): Promise<void>;
   /** 長い本文は分割して送る。replyToId があれば最初の塊だけその発言への返信にする */
   send(channelId: string, text: string, replyToId?: string): Promise<void>;
-  /** ボタンなどの付いたメッセージを 1 通送る（分割しない。ephemeral は効かない） */
-  sendMessage(channelId: string, message: OutgoingMessage): Promise<void>;
+  /** ボタンなどの付いたメッセージを 1 通送り、その ID を返す（分割しない。ephemeral は効かない） */
+  sendMessage(channelId: string, message: OutgoingMessage): Promise<string>;
+  /** メッセージをピン留めする */
+  pinMessage(channelId: string, messageId: string): Promise<void>;
+  /** メッセージ（とそのチャンネル）がまだ Discord 上にあるか。無い以外の失敗（権限・通信）は投げる */
+  messageExists(channelId: string, messageId: string): Promise<boolean>;
   /** 入力中表示を始め、止める関数を返す */
   startTyping(channelId: string): () => void;
   /** Bot がそのサーバーに参加しているか（start 後に使う） */

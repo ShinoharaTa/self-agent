@@ -75,6 +75,7 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
         cacheReadInputTokens: result.usage.cacheReadInputTokens,
         cacheCreationInputTokens: result.usage.cacheCreationInputTokens,
         compacted: result.compacted !== undefined,
+        toolCalls: result.toolCalls,
       });
       if (result.compacted !== undefined) {
         const { trigger, preTokens } = result.compacted;
@@ -82,7 +83,7 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
       }
       sessions.set(key, result.sessionId);
     } else {
-      usage.record({ key, sessionId: result.sessionId, ok: false });
+      usage.record({ key, sessionId: result.sessionId, ok: false, toolCalls: result.toolCalls });
       // 途中まで（task_add 済みなど）の文脈を次のターンに残す。同じセッションなら失敗の回数はそのまま
       if (result.sessionRecorded && result.sessionId !== undefined && result.sessionId !== sessions.get(key)) {
         sessions.set(key, result.sessionId);

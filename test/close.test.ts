@@ -110,6 +110,7 @@ function ok(text: string, sessionId: string = "session-1"): RunResult {
     sessionId,
     usage: { inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300 },
     durationMs: 4200,
+    toolCalls: 1,
   };
 }
 
@@ -411,7 +412,7 @@ test("前の /close で残った下書きは使わない（ターンの前に消
 });
 
 test("ターンが失敗したら「要約に失敗しました…」と返し、状態は変えない", async (t) => {
-  const env = setup(t, () => [() => ({ ok: false, errorMessage: "timeout", sessionRecorded: false })]);
+  const env = setup(t, () => [() => ({ ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 })]);
 
   const calls = await env.runClose();
 
@@ -480,6 +481,7 @@ test("resume に失敗したら要約の seed で新しいセッションを起�
       ok: false,
       errorMessage: "error_during_execution: No conversation found with session ID: session-1",
       sessionRecorded: false,
+      toolCalls: 0,
     }),
     reports({ summary: "題名だけから再開した" }, topicSessions),
   ]);
@@ -581,7 +583,7 @@ test("[閉じる]（close:start）: 元メッセージは変えずに保留 → 
 
 test("[閉じる]: タスク候補が 0 件なら閉じて、待ちの知らせを「閉じました」にしてボタンを外す。失敗なら失敗の文面にしてボタンを外す", async (t) => {
   const env = setup(t, (topicSessions) => [
-    () => ({ ok: false, errorMessage: "timeout", sessionRecorded: false }),
+    () => ({ ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 }),
     reports({ summary: "話しただけで終わった" }, topicSessions),
   ]);
   env.topicSessions.setWaiting("topic-1");

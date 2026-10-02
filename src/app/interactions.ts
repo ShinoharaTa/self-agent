@@ -3,8 +3,12 @@ import type { Config } from "../config.ts";
 import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../discord/gateway.ts";
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { helpCommand } from "./commands/help.ts";
+import { createHomeComponent, type HomeDeps } from "./commands/home.ts";
 import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
+import { createSessionsCommand, type SessionsDeps } from "./commands/sessions.ts";
 import { createSetupCommand, type SetupDeps } from "./commands/setup.ts";
+import { createTasksCommand, createTasksComponent, type TasksDeps } from "./commands/tasks.ts";
+import { createUsageCommand, type UsageDeps } from "./commands/usage.ts";
 import { createWaitCommand, createWaitComponent, type WaitDeps } from "./commands/wait.ts";
 
 export const OWNER_ONLY_REPLY = "オーナー専用です";
@@ -27,7 +31,7 @@ export type ComponentHandler = {
 };
 
 /** /setup と /new は同じキュー（queue）、/close は発言のターンと同じキュー（turnQueue）を使う */
-export type CommandDeps = SetupDeps & NewSessionDeps & CloseDeps & WaitDeps;
+export type CommandDeps = SetupDeps & NewSessionDeps & CloseDeps & WaitDeps & SessionsDeps & TasksDeps & UsageDeps;
 
 /** 登録するスラッシュコマンド */
 export function createCommands(deps: CommandDeps): CommandHandler[] {
@@ -37,15 +41,21 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
     createNewSessionCommand(deps),
     createCloseCommand(deps),
     createWaitCommand(deps),
+    createSessionsCommand(deps),
+    createTasksCommand(deps),
+    createUsageCommand(deps),
   ];
 }
 
-/** [閉じる]（close:start）は /close と同じ流れなので、ターンのキューも要る */
-export type ComponentDeps = CloseDeps & WaitDeps;
+/**
+ * [閉じる]（close:start）は /close と同じ流れなので、ターンのキューも要る。
+ * ホームパネルの [新しいセッション] は /new と同じ作成なので、/setup・/new のキュー（queue）と gateway も要る
+ */
+export type ComponentDeps = CloseDeps & WaitDeps & TasksDeps & HomeDeps;
 
-/** 名前空間ごとのボタン・セレクトのハンドラ */
+/** 名前空間ごとのボタン・セレクト・モーダルのハンドラ */
 export function createComponents(deps: ComponentDeps): ComponentHandler[] {
-  return [createCloseComponent(deps), createWaitComponent(deps)];
+  return [createCloseComponent(deps), createWaitComponent(deps), createTasksComponent(deps), createHomeComponent(deps)];
 }
 
 export type InteractionDeps = {
