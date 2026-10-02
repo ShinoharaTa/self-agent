@@ -1,4 +1,4 @@
-import type { Gateway } from "../../discord/gateway.ts";
+import type { Gateway, InteractionResponder } from "../../discord/gateway.ts";
 import type { GuildSettingsStore, SessionState } from "../../store/guild-settings.ts";
 import type { TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { CommandHandler } from "../interactions.ts";
@@ -13,8 +13,8 @@ const CATEGORY_CHANNEL_LIMIT = 50;
 /** /setup が作る最初の進行中カテゴリ */
 const FIRST_ORDINAL = 1;
 
-/** 題名の文字数（Discord 側で検証する） */
-const TITLE_MAX_LENGTH = 100;
+/** 題名の文字数（Discord 側で検証する。/new とホームパネルのモーダルで共通） */
+export const TITLE_MAX_LENGTH = 100;
 /** チャンネル名の文字数の上限（UTF-16 の単位で数える） */
 const CHANNEL_NAME_MAX_LENGTH = 100;
 /** 正規化して空になった題名のチャンネル名 */
@@ -127,9 +127,44 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * 題名からセッションを作り、そのリンクを本人にだけ表示する（/new とホームパネルの [新しいセッション] のモーダルで共通）。
+ * 空白だけの題名は作らずに案内する → 保留 → /setup と同じキューで作成 → 最初の投稿 → リンクを返す。via は log の主語（「/new で」など）
+ */
+export async function startTopicSession(
+  guildId: string,
+  rawTitle: string,
+  responder: InteractionResponder,
+  deps: NewSessionDeps,
+  via: string,
+): Promise<void> {
+  const { gateway, queue, log } = deps;
+  // 空白だけの題名は Discord の min_length・必須の検証を通ってしまうので、ここで弾く
+  const title = rawTitle.trim();
+  if (title === "") {
+    await responder.reply({ text: EMPTY_TITLE_REPLY, ephemeral: true });
+    return;
+  }
+  // Discord への作成が複数回ありうるので、先に保留する
+  await responder.defer(true);
+  // 同時に走ると空きの数え方がずれるので、/setup と同じ key で 1 つずつ実行する
+  const result = await queue.run(layoutQueueKey(guildId), () => createTopicSession(guildId, title, deps));
+  if (result.result === "not_set_up") {
+    await responder.reply({ text: NOT_SET_UP_REPLY, ephemeral: true });
+    return;
+  }
+  log(`${via}セッションを作りました（guild=${guildId}）`);
+  try {
+    await gateway.send(result.channelId, welcomeText(title));
+  } catch (error) {
+    // チャンネルと DB の行はできているので、失敗の返信にはしない
+    log(`セッションの最初の投稿に失敗しました: ${describeError(error)}`);
+  }
+  await responder.reply({ text: `<#${result.channelId}> を作りました`, ephemeral: true });
+}
+
 /** `/new 題名`: セッション用のチャンネルを進行中カテゴリに作り、そのリンクを本人にだけ表示する */
 export function createNewSessionCommand(deps: NewSessionDeps): CommandHandler {
-  const { gateway, queue, log } = deps;
   return {
     def: {
       name: "new",
@@ -151,28 +186,7 @@ export function createNewSessionCommand(deps: NewSessionDeps): CommandHandler {
       if (guildId === null) throw new Error("サーバー外で /new が呼ばれました");
       const rawTitle = interaction.options.title;
       if (typeof rawTitle !== "string") throw new Error("/new の題名がありません");
-      // 空白だけの題名は Discord の min_length を通ってしまうので、ここで弾く
-      const title = rawTitle.trim();
-      if (title === "") {
-        await responder.reply({ text: EMPTY_TITLE_REPLY, ephemeral: true });
-        return;
-      }
-      // Discord への作成が複数回ありうるので、先に保留する
-      await responder.defer(true);
-      // 同時に走ると空きの数え方がずれるので、/setup と同じ key で 1 つずつ実行する
-      const result = await queue.run(layoutQueueKey(guildId), () => createTopicSession(guildId, title, deps));
-      if (result.result === "not_set_up") {
-        await responder.reply({ text: NOT_SET_UP_REPLY, ephemeral: true });
-        return;
-      }
-      log(`/new でセッションを作りました（guild=${guildId}）`);
-      try {
-        await gateway.send(result.channelId, welcomeText(title));
-      } catch (error) {
-        // チャンネルと DB の行はできているので、失敗の返信にはしない
-        log(`セッションの最初の投稿に失敗しました: ${describeError(error)}`);
-      }
-      await responder.reply({ text: `<#${result.channelId}> を作りました`, ephemeral: true });
+      await startTopicSession(guildId, rawTitle, responder, deps, "/new で");
     },
   };
 }

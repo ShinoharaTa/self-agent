@@ -10,7 +10,7 @@ export type GuildSettings = {
   inboxChannelId: string | null;
   tasksChannelId: string | null;
   systemChannelId: string | null;
-  /** #inbox に固定するホームパネル（P2-6 で使う） */
+  /** #inbox に投稿してピン留めしたホームパネルのメッセージ */
   homePanelMessageId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -68,6 +68,17 @@ export class GuildSettingsStore {
           `ON CONFLICT (guild_id) DO UPDATE SET ${column} = excluded.${column}, updated_at = excluded.updated_at`,
       )
       .run(guildId, channelId, at, at);
+  }
+
+  /** ホームパネルのメッセージ ID を保存する。行が無ければ作る */
+  setHomePanelMessageId(guildId: string, messageId: string): void {
+    const at = this.now().toISOString();
+    this.db
+      .prepare(
+        "INSERT INTO guild_settings (guild_id, home_panel_message_id, created_at, updated_at) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT (guild_id) DO UPDATE SET home_panel_message_id = excluded.home_panel_message_id, updated_at = excluded.updated_at",
+      )
+      .run(guildId, messageId, at, at);
   }
 
   getStateCategory(guildId: string, state: SessionState, ordinal: number): string | undefined {

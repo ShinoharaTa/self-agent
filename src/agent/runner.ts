@@ -29,10 +29,14 @@ export type RunResult =
       durationMs: number;
       /** compaction が起きたときだけ入る */
       compacted?: Compaction;
+      /** このターンのツール呼び出しの回数（失敗した呼び出しを含む） */
+      toolCalls: number;
     }
   | {
       ok: false;
       errorMessage: string;
+      /** 失敗するまでのツール呼び出しの回数（失敗した呼び出しを含む） */
+      toolCalls: number;
       sessionId?: string;
       /**
        * sessionId が result メッセージのもの（SDK が会話を記録済みで、次のターンで resume できる）なら true。

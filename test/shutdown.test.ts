@@ -55,8 +55,15 @@ class FakeGateway implements Gateway {
   async send(_channelId: string, text: string): Promise<void> {
     this.events.push(`send ${text}`);
   }
-  async sendMessage(_channelId: string, message: OutgoingMessage): Promise<void> {
+  async sendMessage(_channelId: string, message: OutgoingMessage): Promise<string> {
     this.events.push(`sendMessage ${message.text}`);
+    return "message-1";
+  }
+  async pinMessage(): Promise<void> {
+    throw new Error("想定外の呼び出し");
+  }
+  async messageExists(): Promise<boolean> {
+    throw new Error("想定外の呼び出し");
   }
   startTyping(): () => void {
     return () => {};
@@ -121,6 +128,7 @@ class GatedRunner implements AgentRunner {
       sessionId: "session-1",
       usage: { inputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
       durationMs: 10,
+      toolCalls: 0,
     };
   }
 }
@@ -358,7 +366,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
   const sendMessage = gateway.sendMessage.bind(gateway);
   gateway.sendMessage = async (channelId, message) => {
     await gate.promise;
-    await sendMessage(channelId, message);
+    return sendMessage(channelId, message);
   };
   const intervals: Array<{ fn: () => void; cancelled: boolean }> = [];
   let listed = 0;

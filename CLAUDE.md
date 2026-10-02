@@ -35,9 +35,9 @@ src/
 │   ├── scheduler.ts     # 定期処理（起動直後と 5 分ごとの tick）。最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、[続ける][閉じる] 付きで知らせる
 │   ├── shutdown.ts      # 停止処理（シグナルで新しい受付と定期処理を止め、進行中の処理を返信まで上限付きで待ってから gateway と DB を閉じる）
 │   ├── interactions.ts  # コマンド・ボタン等の振り分け（許可サーバー・オーナー判定 → コマンド名 / custom_id の名前空間）と起動時のコマンド登録
-│   └── commands/        # スラッシュコマンド。1 コマンド 1 ファイル（help.ts, setup.ts など）。close.ts は確認と [閉じる] のボタン（`close:`）、wait.ts は [続ける]（`wait:`）も持つ
-├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ）・Options・システムプロンプト・ツール（タスク・session_report）
-├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sdk-sessions（SDK の session_id）/ usage / guild-settings（/setup で作ったカテゴリ・チャンネルの ID）/ topic-sessions（/new で作ったセッションのチャンネル、/close の要約と下書き）/ channel-seeds（次のターンの prompt の先頭に付ける文）
+│   └── commands/        # スラッシュコマンド。1 コマンド 1 ファイル（help.ts, setup.ts など）。close.ts は確認と [閉じる] のボタン（`close:`）、wait.ts は [続ける]（`wait:`）、tasks.ts は完了にするセレクト（`tasks:`）も持つ。setup.ts は #inbox のホームパネルを投稿し、home.ts はそのボタンとモーダル（`home:`）を受ける
+├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ。ツール呼び出しは PostToolUse の hook で数えて log）・Options・システムプロンプト・ツール（タスク・session_report）
+├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sdk-sessions（SDK の session_id）/ usage（ターンごとのトークン・compaction・ツール呼び出し数。/usage の集計）/ guild-settings（/setup で作ったカテゴリ・チャンネルの ID）/ topic-sessions（/new で作ったセッションのチャンネル、/close の要約と下書き）/ channel-seeds（次のターンの prompt の先頭に付ける文）
 └── discord/     # Gateway インタフェースと discord.js 実装。convert.ts は内部型 ⇔ Discord の形の変換（discord.js は型だけ import）
 scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測
 test/            # 単体テスト。test/integration/ は結合テスト

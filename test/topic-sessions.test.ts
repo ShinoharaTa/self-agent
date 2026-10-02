@@ -330,8 +330,8 @@ test("openDb: v5 の DB を v6 に上げても usage_log の行は残り、compa
   const db = openDb(path);
   t.after(() => db.close());
 
-  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 6);
-  assert.equal(MIGRATIONS.length, 6);
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 6);
   const usage = new UsageStore(db, clock());
   usage.record({ key: "topic-1", sessionId: "session-2", ok: true, compacted: true });
   usage.record({ key: "topic-1", sessionId: "session-2", ok: false });

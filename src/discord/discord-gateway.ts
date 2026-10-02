@@ -209,9 +209,32 @@ export class DiscordGateway implements Gateway {
     }
   }
 
-  async sendMessage(channelId: string, message: OutgoingMessage): Promise<void> {
+  async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
     const channel = await this.sendableChannel(channelId);
-    await channel.send(toPayload(message));
+    const sent = await channel.send(toPayload(message));
+    return sent.id;
+  }
+
+  async pinMessage(channelId: string, messageId: string): Promise<void> {
+    const channel = await this.sendableChannel(channelId);
+    await channel.messages.pin(messageId);
+  }
+
+  async messageExists(channelId: string, messageId: string): Promise<boolean> {
+    try {
+      // キャッシュではなく Discord に問い合わせる（/setup でしか使わない）
+      const channel = await this.sendableChannel(channelId);
+      await channel.messages.fetch({ message: messageId, force: true });
+      return true;
+    } catch (error) {
+      if (
+        error instanceof DiscordAPIError &&
+        (error.code === RESTJSONErrorCodes.UnknownMessage || error.code === RESTJSONErrorCodes.UnknownChannel)
+      ) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   startTyping(channelId: string): () => void {

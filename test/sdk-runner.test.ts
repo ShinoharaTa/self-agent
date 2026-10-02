@@ -2,11 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   createSdkMcpServer,
+  type HookInput,
   type McpSdkServerConfigWithInstance,
   type Options,
   type SDKMessage,
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { buildQueryOptions } from "../src/agent/query-options.ts";
 import type { RunContext } from "../src/agent/runner.ts";
 import { describeResultError, SdkAgentRunner } from "../src/agent/sdk-runner.ts";
 import { RESUME_FAILURE_PATTERN } from "../src/app/turn.ts";
@@ -99,6 +101,7 @@ function setupRunner(
   const calls: QueryCall[] = [];
   const contexts: Array<RunContext | undefined> = [];
   const servers: McpSdkServerConfigWithInstance[] = [];
+  const logs: string[] = [];
   const runner = new SdkAgentRunner(
     { ...cfg, ...overrides },
     (context) => {
@@ -107,12 +110,13 @@ function setupRunner(
       servers.push(server);
       return server;
     },
+    (line) => logs.push(line),
     (call) => {
       calls.push(call);
       return stream(call);
     },
   );
-  return { runner, calls, contexts, servers };
+  return { runner, calls, contexts, servers, logs };
 }
 
 /** 決まったメッセージを順に流すストリーム */
@@ -143,6 +147,7 @@ test("SdkAgentRunner: 成功ならメインループの usage を合算し、並
     sessionId: "session-1",
     usage: { inputTokens: 15, cacheReadInputTokens: 2200, cacheCreationInputTokens: 200 },
     durationMs: 4200,
+    toolCalls: 0,
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.prompt, "明日買い物に行く");
@@ -194,6 +199,7 @@ test("SdkAgentRunner: is_error・error_max_turns は result の session_id を�
     errorMessage: "success (is_error): API Error: 500",
     sessionId: "session-2",
     sessionRecorded: true,
+    toolCalls: 0,
   });
 
   const maxTurns = setupRunner(
@@ -204,6 +210,7 @@ test("SdkAgentRunner: is_error・error_max_turns は result の session_id を�
     errorMessage: "error_max_turns",
     sessionId: "session-3",
     sessionRecorded: true,
+    toolCalls: 0,
   });
 });
 
@@ -217,6 +224,7 @@ test("SdkAgentRunner: result が届かずに終われば失敗。途中の sessi
     errorMessage: "result メッセージを受け取れませんでした",
     sessionId: "session-1",
     sessionRecorded: false,
+    toolCalls: 0,
   });
 });
 
@@ -231,6 +239,7 @@ test("SdkAgentRunner: ストリームの例外は exception として返し、se
     errorMessage: "exception: Error: Claude Code process exited with code 1",
     sessionId: "session-1",
     sessionRecorded: false,
+    toolCalls: 0,
   });
 });
 
@@ -243,7 +252,7 @@ test("SdkAgentRunner: turnTimeoutSec を過ぎたら abort して timeout を返
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
       if (throws) throw new Error("Claude Code process aborted by user");
     };
-  const expected = { ok: false, errorMessage: "timeout", sessionId: "session-1", sessionRecorded: false };
+  const expected = { ok: false, errorMessage: "timeout", sessionId: "session-1", sessionRecorded: false, toolCalls: 0 };
 
   for (const throws of [true, false]) {
     // 10ms で打ち切る
@@ -269,4 +278,93 @@ test("SdkAgentRunner: run ごとに context を渡して MCP サーバーを作�
   for (const [index, call] of calls.entries()) {
     assert.equal(call.options.mcpServers?.selfagent, servers[index]);
   }
+});
+
+/** SDK がツールの実行後に呼ぶのと同じように、その query の Options の hook を呼ぶ（入力・出力・エラーには中身を入れておく） */
+async function callToolHook(
+  call: QueryCall,
+  event: "PostToolUse" | "PostToolUseFailure",
+  fields: { tool_name: string; duration_ms?: number },
+): Promise<unknown> {
+  const matchers = call.options.hooks?.[event];
+  assert.equal(matchers?.length, 1);
+  const hook = matchers![0]!.hooks[0]!;
+  const input = {
+    hook_event_name: event,
+    session_id: "session-1",
+    transcript_path: "/srv/claude/session-1.jsonl",
+    cwd: "/srv/work",
+    tool_use_id: "toolu-1",
+    tool_input: { title: "秘密の入力" },
+    ...(event === "PostToolUse" ? { tool_response: "秘密の出力" } : { error: "秘密のエラー" }),
+    ...fields,
+  } as unknown as HookInput;
+  return hook(input, "toolu-1", { signal: new AbortController().signal });
+}
+
+test("SdkAgentRunner: PostToolUse・PostToolUseFailure の hook でツール呼び出しを数え、名前と所要時間（無ければ名前だけ）を log に出す。中身は出さない", async () => {
+  const hookOutputs: unknown[] = [];
+  const { runner, logs } = setupRunner(async function* (call) {
+    yield init("session-1");
+    hookOutputs.push(await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_add", duration_ms: 35 }));
+    hookOutputs.push(await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_list" }));
+    hookOutputs.push(
+      await callToolHook(call, "PostToolUseFailure", { tool_name: "mcp__selfagent__task_complete", duration_ms: 12 }),
+    );
+    yield success("session-1", "登録しました");
+  });
+
+  const result = await runner.run({ prompt: "x" });
+
+  assert.ok(result.ok);
+  assert.equal(result.toolCalls, 3);
+  assert.deepEqual(logs, [
+    "ツールを呼び出しました: mcp__selfagent__task_add（35 ms）",
+    "ツールを呼び出しました: mcp__selfagent__task_list",
+    "ツールの呼び出しが失敗しました: mcp__selfagent__task_complete（12 ms）",
+  ]);
+  assert.ok(logs.every((line) => !line.includes("秘密")));
+  // 何も変えずに続けさせる
+  assert.deepEqual(hookOutputs, [{}, {}, {}]);
+});
+
+test("SdkAgentRunner: hooks は run ごとに作って Options に足し（buildQueryOptions には入れない）、回数は run ごとに数える", async () => {
+  let runs = 0;
+  const { runner, calls } = setupRunner(async function* (call) {
+    runs++;
+    if (runs === 1) {
+      await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_add", duration_ms: 1 });
+      await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_add", duration_ms: 1 });
+    }
+    yield success("session-1", "はい");
+  });
+
+  const first = await runner.run({ prompt: "1" });
+  const second = await runner.run({ prompt: "2", sessionId: "session-1" });
+
+  assert.ok(first.ok && second.ok);
+  assert.equal(first.toolCalls, 2);
+  assert.equal(second.toolCalls, 0);
+  assert.notEqual(calls[0]!.options.hooks, calls[1]!.options.hooks);
+  assert.deepEqual(Object.keys(calls[1]!.options.hooks ?? {}), ["PostToolUse", "PostToolUseFailure"]);
+  assert.equal(calls[1]!.options.resume, "session-1");
+  // キャッシュに効く Options は hooks を含まない
+  const server = createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
+  assert.equal("hooks" in buildQueryOptions(cfg, server), false);
+});
+
+test("SdkAgentRunner: 失敗したターンでも、それまでのツール呼び出しの回数を返す", async () => {
+  const { runner } = setupRunner(async function* (call) {
+    yield init("session-1");
+    await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_add" });
+    throw new Error("Claude Code process exited with code 1");
+  });
+
+  assert.deepEqual(await runner.run({ prompt: "x" }), {
+    ok: false,
+    errorMessage: "exception: Error: Claude Code process exited with code 1",
+    sessionId: "session-1",
+    sessionRecorded: false,
+    toolCalls: 1,
+  });
 });

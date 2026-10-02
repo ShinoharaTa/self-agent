@@ -1,4 +1,4 @@
-import type { Gateway } from "../../discord/gateway.ts";
+import type { Gateway, OutgoingMessage } from "../../discord/gateway.ts";
 import type { GuildChannelField, GuildSettingsStore, SessionState } from "../../store/guild-settings.ts";
 import type { ChannelOpsQueue } from "../channel-ops.ts";
 import type { CommandHandler } from "../interactions.ts";
@@ -26,6 +26,10 @@ const STATE_CATEGORIES: ReadonlyArray<{ state: SessionState; name: string }> = [
 
 const FIRST_ORDINAL = 1;
 
+export const HOME_PANEL_TEXT = "self-agent のホーム。ボタンかスラッシュコマンドで操作できます。";
+/** ホームパネルのボタンの custom_id の名前空間（`home:<action>`。処理は home.ts） */
+export const HOME_NAMESPACE = "home";
+
 /** 状態カテゴリの名前（満杯で足すカテゴリは `進行中 2` のようにこれに ordinal を付ける） */
 export function stateCategoryName(state: SessionState): string {
   const category = STATE_CATEGORIES.find((candidate) => candidate.state === state);
@@ -39,7 +43,17 @@ export function layoutQueueKey(guildId: string): string {
 }
 
 export type SetupDeps = {
-  gateway: Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "moveChannel" | "getParentId">;
+  gateway: Pick<
+    Gateway,
+    | "createCategory"
+    | "createTextChannel"
+    | "channelExists"
+    | "moveChannel"
+    | "getParentId"
+    | "sendMessage"
+    | "pinMessage"
+    | "messageExists"
+  >;
   guildSettings: GuildSettingsStore;
   /** 同じサーバーの /setup・/new を 1 つずつ実行する（key は layoutQueueKey） */
   queue: KeyedSerialQueue;
@@ -68,7 +82,10 @@ function describeError(error: unknown): string {
  */
 export async function ensureGuildLayout(
   guildId: string,
-  deps: Pick<SetupDeps, "gateway" | "guildSettings">,
+  deps: {
+    gateway: Pick<SetupDeps["gateway"], "createCategory" | "createTextChannel" | "channelExists" | "moveChannel">;
+    guildSettings: GuildSettingsStore;
+  },
 ): Promise<SetupResult> {
   const { gateway, guildSettings } = deps;
   const result: SetupResult = { created: [], existing: [], failure: null };
@@ -152,6 +169,48 @@ export async function repairHomeChannelParents(
   }
 }
 
+/** #inbox にピン留めするホームパネル: [新しいセッション]（`home:new`）[タスク一覧]（`home:tasks`）[待ちのセッション]（`home:waiting`） */
+export function homePanelMessage(): OutgoingMessage {
+  return {
+    text: HOME_PANEL_TEXT,
+    components: [
+      {
+        kind: "buttons",
+        buttons: [
+          { customId: `${HOME_NAMESPACE}:new`, label: "新しいセッション", style: "primary" },
+          { customId: `${HOME_NAMESPACE}:tasks`, label: "タスク一覧" },
+          { customId: `${HOME_NAMESPACE}:waiting`, label: "待ちのセッション" },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * #inbox にホームパネルを投稿してピン留めし、メッセージ ID を保存する。保存したメッセージがまだあれば何もしない（ピン留めも確かめない）。
+ * ピン留めに失敗しても投稿と保存は残し、log に出す。存在の確認・投稿の失敗は投げる
+ */
+export async function ensureHomePanel(
+  guildId: string,
+  deps: Pick<SetupDeps, "gateway" | "guildSettings" | "log">,
+): Promise<void> {
+  const { gateway, guildSettings, log } = deps;
+  const settings = guildSettings.get(guildId);
+  const inboxChannelId = settings?.inboxChannelId;
+  if (settings === undefined || inboxChannelId === null || inboxChannelId === undefined) return;
+  const savedId = settings.homePanelMessageId;
+  // #inbox を作り直したときは、前の #inbox のメッセージは見つからない（投稿し直す）
+  if (savedId !== null && (await gateway.messageExists(inboxChannelId, savedId))) return;
+  const messageId = await gateway.sendMessage(inboxChannelId, homePanelMessage());
+  guildSettings.setHomePanelMessageId(guildId, messageId);
+  try {
+    await gateway.pinMessage(inboxChannelId, messageId);
+    log(`ホームパネルを #inbox に投稿してピン留めしました（guild=${guildId}）`);
+  } catch (error) {
+    log(`ホームパネルを #inbox に投稿しましたが、ピン留めに失敗しました（guild=${guildId}）: ${describeError(error)}`);
+  }
+}
+
 function mentions(ids: readonly string[]): string {
   return ids.map((id) => `<#${id}>`).join(" ");
 }
@@ -170,7 +229,7 @@ export function formatSetupResult(result: SetupResult): string {
   return lines.join("\n");
 }
 
-/** `/setup`: self-agent 用のカテゴリとチャンネルを作り、結果を本人にだけ表示する */
+/** `/setup`: self-agent 用のカテゴリとチャンネルを作り、#inbox にホームパネルをピン留めして、結果を本人にだけ表示する */
 export function createSetupCommand(deps: SetupDeps): CommandHandler {
   const { queue, log } = deps;
   return {
@@ -182,18 +241,30 @@ export function createSetupCommand(deps: SetupDeps): CommandHandler {
       // Discord への作成が複数回あり 3 秒を超えうるので、先に保留する
       await responder.defer(true);
       // 同時に走ると両方が「未作成」と判断して二重に作るので、サーバーごとに 1 つずつ実行する（/new とも）
-      const result = await queue.run(layoutQueueKey(guildId), async () => {
+      const { result, panelFailure } = await queue.run(layoutQueueKey(guildId), async () => {
         const layout = await ensureGuildLayout(guildId, deps);
-        // 途中で失敗した回は揃っていないので、親のずれは次の /setup で直す
-        if (layout.failure === null) await repairHomeChannelParents(guildId, deps);
-        return layout;
+        // 途中で失敗した回は揃っていないので、親のずれとホームパネルは次の /setup で直す
+        if (layout.failure !== null) return { result: layout, panelFailure: null };
+        await repairHomeChannelParents(guildId, deps);
+        try {
+          await ensureHomePanel(guildId, deps);
+          return { result: layout, panelFailure: null };
+        } catch (error) {
+          // カテゴリとチャンネルは揃っているので /setup の失敗にはせず、返信に 1 行足す
+          log(`ホームパネルの投稿に失敗しました（guild=${guildId}）: ${describeError(error)}`);
+          return { result: layout, panelFailure: describeError(error) };
+        }
       });
       if (result.failure === null) {
         log(`/setup を実行しました（guild=${guildId}、作成 ${result.created.length} 件）`);
       } else {
         log(`/setup が途中で失敗しました（guild=${guildId}、作成 ${result.created.length} 件）: ${result.failure}`);
       }
-      await responder.reply({ text: formatSetupResult(result), ephemeral: true });
+      const text = formatSetupResult(result);
+      await responder.reply({
+        text: panelFailure === null ? text : `${text}\nホームパネルの投稿に失敗しました: ${panelFailure}`,
+        ephemeral: true,
+      });
     },
   };
 }
