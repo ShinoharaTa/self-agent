@@ -37,7 +37,7 @@ export function stateCategoryName(state: SessionState): string {
   return category.name;
 }
 
-/** カテゴリ・チャンネルを作る操作（/setup・/new）の直列化の key。同じサーバーではどちらも 1 つずつ実行する */
+/** カテゴリ・チャンネルを作る操作（/setup・/new・session_open）の直列化の key。同じサーバーではどれも 1 つずつ実行する */
 export function layoutQueueKey(guildId: string): string {
   return `layout:${guildId}`;
 }

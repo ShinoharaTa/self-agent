@@ -88,6 +88,10 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE usage_log ADD COLUMN tool_calls INTEGER NOT NULL DEFAULT 0;
   `,
+  // v8: セッションの作られ方（command: /new・ホームパネル、inbox: #inbox の session_open）。session_open の 1 日の上限と間隔を数える
+  `
+  ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'command' CHECK (origin IN ('command', 'inbox'));
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

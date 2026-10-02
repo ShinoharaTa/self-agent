@@ -49,6 +49,7 @@ test("TopicSessionStore: 進行中として保存し、最終発言の時刻は�
     waitingSince: null,
     closedAt: null,
     summary: null,
+    origin: "command",
   };
   assert.deepEqual(created, expected);
   assert.deepEqual(store.get("topic-1"), expected);
@@ -264,6 +265,7 @@ test("openDb: v3 の DB を v4 に上げても既存のセッションは残り�
     waitingSince: null,
     closedAt: null,
     summary: null,
+    origin: "command",
   });
   assert.equal(store.getCloseDraft("topic-1"), undefined);
   assert.equal(new SdkSessionStore(db).get("topic-1"), "session-1");
@@ -343,4 +345,90 @@ test("openDb: v5 の DB を v6 に上げても usage_log の行は残り、compa
       ["inbox-1", true, false],
     ],
   );
+});
+
+test("TopicSessionStore: origin を省略すれば command、inbox を渡せば inbox で保存する。決めた値以外は DB が拒む", (t) => {
+  const db = tempDb(t);
+  const store = new TopicSessionStore(db, clock());
+
+  assert.equal(store.create(NEW_SESSION).origin, "command");
+  assert.equal(store.create({ ...NEW_SESSION, channelId: "topic-2", origin: "inbox" }).origin, "inbox");
+  assert.equal(store.get("topic-2")?.origin, "inbox");
+  assert.throws(() => db.prepare("UPDATE sessions SET origin = 'auto' WHERE channel_id = 'topic-1'").run(), /CHECK/);
+});
+
+test("TopicSessionStore.listOpen: そのサーバーの進行中・待ちだけを最終発言の新しい順に返す", (t) => {
+  const db = tempDb(t);
+  const store = new TopicSessionStore(db, clock());
+  for (const channelId of ["topic-1", "topic-2", "topic-3", "topic-4"]) store.create({ ...NEW_SESSION, channelId });
+  store.create({ ...NEW_SESSION, channelId: "topic-5", guildId: "guild-2" });
+  store.setWaiting("topic-2");
+  db.prepare("UPDATE sessions SET state = 'done' WHERE channel_id = 'topic-3'").run();
+  db.prepare("UPDATE sessions SET state = 'deleted' WHERE channel_id = 'topic-4'").run();
+  // topic-1 を最後に発言したことにする
+  store.touch("topic-1");
+
+  assert.deepEqual(
+    store.listOpen("guild-1").map((session) => [session.channelId, session.state]),
+    [
+      ["topic-1", "active"],
+      ["topic-2", "waiting"],
+    ],
+  );
+  assert.deepEqual(
+    store.listOpen("guild-2").map((session) => session.channelId),
+    ["topic-5"],
+  );
+  assert.deepEqual(store.listOpen("guild-9"), []);
+});
+
+test("TopicSessionStore: countCreatedSince と lastCreatedAt はその origin だけを、全サーバー・全状態で数える", (t) => {
+  const db = tempDb(t);
+  // 00:00, 00:01, ... に作る
+  const store = new TopicSessionStore(db, clock());
+  assert.equal(store.countCreatedSince("inbox", new Date(0)), 0);
+  assert.equal(store.lastCreatedAt("inbox"), undefined);
+
+  store.create({ ...NEW_SESSION, channelId: "topic-1", origin: "inbox" });
+  store.create({ ...NEW_SESSION, channelId: "topic-2", origin: "inbox", guildId: "guild-2" });
+  store.create({ ...NEW_SESSION, channelId: "topic-3" });
+  store.create({ ...NEW_SESSION, channelId: "topic-4", origin: "inbox" });
+  db.prepare("UPDATE sessions SET state = 'deleted' WHERE channel_id = 'topic-4'").run();
+
+  // since ちょうどを含む
+  assert.equal(store.countCreatedSince("inbox", new Date("2026-10-02T00:01:00.000Z")), 2);
+  assert.equal(store.countCreatedSince("inbox", new Date("2026-10-02T00:01:00.001Z")), 1);
+  assert.equal(store.countCreatedSince("inbox", new Date("2026-10-02T00:00:00.000Z")), 3);
+  assert.equal(store.countCreatedSince("command", new Date("2026-10-02T00:00:00.000Z")), 1);
+  assert.deepEqual(store.lastCreatedAt("inbox"), new Date("2026-10-02T00:03:00.000Z"));
+  assert.deepEqual(store.lastCreatedAt("command"), new Date("2026-10-02T00:02:00.000Z"));
+});
+
+test("openDb: v7 の DB を v8 に上げても既存のセッションは残り、origin は command。以後は inbox で作ったものを数えられる", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // セッションの作られ方の記録より前（v7）の DB を作る
+  const v7 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 7)) v7.exec(migration);
+  v7.exec("PRAGMA user_version = 7");
+  v7.prepare(
+    "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at) " +
+      "VALUES ('topic-1', 'guild-1', '旅行の計画', 'waiting', 'waiting-1', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')",
+  ).run();
+  v7.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 8);
+  const store = new TopicSessionStore(db, clock());
+  assert.equal(store.get("topic-1")?.origin, "command");
+  assert.equal(store.get("topic-1")?.state, "waiting");
+  assert.equal(store.countCreatedSince("inbox", new Date(0)), 0);
+  assert.equal(store.countCreatedSince("command", new Date(0)), 1);
+
+  store.create({ ...NEW_SESSION, channelId: "topic-2", origin: "inbox" });
+  assert.equal(store.countCreatedSince("inbox", new Date(0)), 1);
+  assert.deepEqual(store.lastCreatedAt("inbox"), new Date("2026-10-02T00:00:00.000Z"));
 });

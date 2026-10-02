@@ -21,6 +21,7 @@ test("未設定ならデフォルト値を使う", () => {
     channelOpGapMs: 2000,
     shutdownGraceSec: 30,
     idleHours: 12,
+    autoSessionPerDay: 3,
   });
 });
 
@@ -40,6 +41,7 @@ test("環境変数で上書きできる", () => {
     SELF_AGENT_CHANNEL_OP_GAP_MS: "500",
     SELF_AGENT_SHUTDOWN_GRACE_SEC: "10",
     SELF_AGENT_IDLE_HOURS: "24",
+    SELF_AGENT_AUTO_SESSION_PER_DAY: "5",
   });
   assert.equal(config.claudeConfigDir, "/srv/claude");
   assert.equal(config.workDir, "/srv/work");
@@ -54,6 +56,7 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.channelOpGapMs, 500);
   assert.equal(config.shutdownGraceSec, 10);
   assert.equal(config.idleHours, 24);
+  assert.equal(config.autoSessionPerDay, 5);
 });
 
 test("token は有無だけを返し、値は含めない", () => {
@@ -128,6 +131,17 @@ test("SELF_AGENT_IDLE_HOURS が正の整数でなければエラー", () => {
     );
   }
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_IDLE_HOURS: "" }).idleHours, 12);
+});
+
+test("SELF_AGENT_AUTO_SESSION_PER_DAY が正の整数でなければエラー", () => {
+  for (const value of ["0", "-1", "1.5", "abc"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_AUTO_SESSION_PER_DAY: value }),
+      /SELF_AGENT_AUTO_SESSION_PER_DAY/,
+      value,
+    );
+  }
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_AUTO_SESSION_PER_DAY: "" }).autoSessionPerDay, 3);
 });
 
 test("HOME が無く既定のディレクトリが必要ならエラー", () => {

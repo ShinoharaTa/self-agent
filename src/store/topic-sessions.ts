@@ -3,7 +3,10 @@ import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 /** セッションの状態。deleted はチャンネルを消した後も要約を残すための行 */
 export type TopicSessionState = "active" | "waiting" | "done" | "deleted";
 
-/** /new で作ったセッション（sessions）。会話の SDK session_id は SdkSessionStore（channel_sessions）が持つ */
+/** セッションの作られ方。command は /new・ホームパネル、inbox は #inbox での session_open */
+export type TopicSessionOrigin = "command" | "inbox";
+
+/** /new（ホームパネルを含む）や #inbox の session_open で作ったセッション（sessions）。会話の SDK session_id は SdkSessionStore（channel_sessions）が持つ */
 export type TopicSession = {
   channelId: string;
   guildId: string;
@@ -19,6 +22,7 @@ export type TopicSession = {
   closedAt: string | null;
   /** /close で残した要約。閉じる前は null */
   summary: string | null;
+  origin: TopicSessionOrigin;
 };
 
 /** session_report の summary の文字数の上限 */
@@ -37,9 +41,12 @@ export type NewTopicSession = {
   guildId: string;
   title: string;
   categoryId: string;
+  /** 省略すれば command */
+  origin?: TopicSessionOrigin;
 };
 
 const STATES: readonly TopicSessionState[] = ["active", "waiting", "done", "deleted"];
+const ORIGINS: readonly TopicSessionOrigin[] = ["command", "inbox"];
 
 function nullableString(value: SQLOutputValue | undefined): string | null {
   return value === null || value === undefined ? null : String(value);
@@ -49,6 +56,12 @@ function toState(value: SQLOutputValue | undefined): TopicSessionState {
   const state = STATES.find((candidate) => candidate === value);
   if (state === undefined) throw new Error(`sessions.state が不正です: ${String(value)}`);
   return state;
+}
+
+function toOrigin(value: SQLOutputValue | undefined): TopicSessionOrigin {
+  const origin = ORIGINS.find((candidate) => candidate === value);
+  if (origin === undefined) throw new Error(`sessions.origin が不正です: ${String(value)}`);
+  return origin;
 }
 
 function toSession(row: Record<string, SQLOutputValue>): TopicSession {
@@ -63,6 +76,7 @@ function toSession(row: Record<string, SQLOutputValue>): TopicSession {
     waitingSince: nullableString(row.waiting_since),
     closedAt: nullableString(row.closed_at),
     summary: nullableString(row.summary),
+    origin: toOrigin(row.origin),
   };
 }
 
@@ -104,10 +118,10 @@ export class TopicSessionStore {
     const at = this.now().toISOString();
     const row = this.db
       .prepare(
-        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at) " +
-          "VALUES (?, ?, ?, 'active', ?, ?, ?) RETURNING *",
+        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, origin) " +
+          "VALUES (?, ?, ?, 'active', ?, ?, ?, ?) RETURNING *",
       )
-      .get(session.channelId, session.guildId, session.title, session.categoryId, at, at);
+      .get(session.channelId, session.guildId, session.title, session.categoryId, at, at, session.origin ?? "command");
     return toSession(row!);
   }
 
@@ -158,6 +172,32 @@ export class TopicSessionStore {
       .prepare(`SELECT * FROM sessions WHERE guild_id = ? AND state = ? ORDER BY ${orderBy}, channel_id LIMIT ?`)
       .all(guildId, state, limit)
       .map(toSession);
+  }
+
+  /** そのサーバーの進行中・待ちのセッションを最終発言の新しい順に（session_open の同じ題名の確認） */
+  listOpen(guildId: string): TopicSession[] {
+    return this.db
+      .prepare(
+        "SELECT * FROM sessions WHERE guild_id = ? AND state IN ('active', 'waiting') " +
+          "ORDER BY last_activity_at DESC, channel_id",
+      )
+      .all(guildId)
+      .map(toSession);
+  }
+
+  /** その作られ方で since 以降（ちょうどを含む）に作ったセッションの数。全サーバー・削除済みを含めて数える */
+  countCreatedSince(origin: TopicSessionOrigin, since: Date): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM sessions WHERE origin = ? AND created_at >= ?")
+      .get(origin, since.toISOString());
+    return Number(row?.n ?? 0);
+  }
+
+  /** その作られ方で最後にセッションを作った時刻（全サーバー・削除済みを含む）。無ければ undefined */
+  lastCreatedAt(origin: TopicSessionOrigin): Date | undefined {
+    const row = this.db.prepare("SELECT MAX(created_at) AS at FROM sessions WHERE origin = ?").get(origin);
+    const at = nullableString(row?.at);
+    return at === null ? undefined : new Date(at);
   }
 
   /** 今置いているカテゴリを記録する。行が無ければ（セッション以外のチャンネルなら）何もしない */
