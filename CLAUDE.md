@@ -27,12 +27,14 @@ src/
 ├── main.ts      # 配線だけ（config → store → runner → gateway → handler）
 ├── config.ts    # 環境変数から設定を読む
 ├── app/         # 受付判定・key 別直列キュー・ターンの prompt・handler
+│   ├── interactions.ts  # コマンド・ボタン等の振り分け（許可サーバー・オーナー判定 → コマンド名 / custom_id の名前空間）と起動時のコマンド登録
+│   └── commands/        # スラッシュコマンド。1 コマンド 1 ファイル（help.ts など）
 ├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ）・Options・システムプロンプト・タスクツール
 ├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sessions / usage
 └── discord/     # Gateway インタフェースと discord.js 実装
 scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測
 test/            # 単体テスト。test/integration/ は結合テスト
-docs/            # REQUIREMENTS.md, design/, research/, archive/
+docs/            # REQUIREMENTS.md, design/, research/, archive/, plan/（フェーズごとの実装仕様）
 ```
 
 ## 環境変数

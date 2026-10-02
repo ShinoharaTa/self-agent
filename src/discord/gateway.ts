@@ -12,11 +12,106 @@ export type IncomingMessage = {
   createdAt: Date;
 };
 
+type InteractionBase = {
+  /** DM では null */
+  guildId: string | null;
+  channelId: string | null;
+  userId: string;
+  createdAt: Date;
+};
+
+/** スラッシュコマンド・ボタン・セレクト・モーダル送信。custom_id は `<ns>:<action>:<channelId>`（100 字以内） */
+export type Interaction =
+  | (InteractionBase & { kind: "command"; name: string; options: Record<string, string | number | boolean> })
+  | (InteractionBase & { kind: "button"; customId: string })
+  | (InteractionBase & { kind: "select"; customId: string; values: string[] })
+  /** fields はテキスト入力の customId → 入力値 */
+  | (InteractionBase & { kind: "modal"; customId: string; fields: Record<string, string> });
+
+export type ButtonDef = {
+  customId: string;
+  label: string;
+  /** 既定 secondary */
+  style?: "primary" | "secondary" | "success" | "danger";
+  disabled?: boolean;
+};
+
+export type SelectDef = {
+  customId: string;
+  placeholder?: string;
+  minValues?: number;
+  maxValues?: number;
+  /** 25 件まで */
+  options: Array<{ label: string; value: string; description?: string }>;
+};
+
+/** メッセージの 1 行。ボタンは 1 行 5 個まで、セレクトは 1 行に 1 つ。1 メッセージ 5 行まで */
+export type ComponentRow = { kind: "buttons"; buttons: ButtonDef[] } | { kind: "select"; select: SelectDef };
+
+export type OutgoingMessage = {
+  /** 2000 字以内（分割しない） */
+  text: string;
+  /** update で省略すると元のコンポーネントを残す。[] で取り除く */
+  components?: ComponentRow[];
+  /** reply でだけ効く。defer 後の reply は defer 時の指定に従う */
+  ephemeral?: boolean;
+};
+
+export type ModalDef = {
+  customId: string;
+  title: string;
+  /** テキスト入力。5 個まで */
+  fields: Array<{
+    customId: string;
+    label: string;
+    /** 既定 short（1 行） */
+    style?: "short" | "paragraph";
+    /** 既定 true */
+    required?: boolean;
+    maxLength?: number;
+    placeholder?: string;
+    value?: string;
+  }>;
+};
+
+export type CommandDef = {
+  name: string;
+  description: string;
+  options?: Array<{
+    type: "string" | "integer" | "boolean";
+    name: string;
+    description: string;
+    required?: boolean;
+  }>;
+};
+
+/** 1 つの interaction への応答。最初の応答は 3 秒以内（時間のかかる処理は先に defer） */
+export interface InteractionResponder {
+  /** 応答を保留する（「考え中」表示）。後の reply がその本文になる */
+  defer(ephemeral: boolean): Promise<void>;
+  /** 新しいメッセージで応答する。defer 後なら保留中の応答の本文、応答済みなら追加のメッセージになる */
+  reply(message: OutgoingMessage): Promise<void>;
+  /** ボタン・セレクト（とメッセージから開いたモーダル）の元メッセージを書き換えて応答する */
+  update(message: OutgoingMessage): Promise<void>;
+  /** モーダルを開いて応答する（モーダル送信への応答には使えない） */
+  showModal(modal: ModalDef): Promise<void>;
+}
+
+export type GatewayHandlers = {
+  onMessage: (message: IncomingMessage) => void;
+  /** 許可外のサーバー・DM のものも含めて渡す（受付判定は app 側） */
+  onInteraction: (interaction: Interaction, responder: InteractionResponder) => void;
+};
+
 export interface Gateway {
-  start(onMessage: (message: IncomingMessage) => void): Promise<void>;
+  start(handlers: GatewayHandlers): Promise<void>;
   /** 長い本文は分割して送る。replyToId があれば最初の塊だけその発言への返信にする */
   send(channelId: string, text: string, replyToId?: string): Promise<void>;
   /** 入力中表示を始め、止める関数を返す */
   startTyping(channelId: string): () => void;
+  /** Bot がそのサーバーに参加しているか（start 後に使う） */
+  isInGuild(guildId: string): boolean;
+  /** そのサーバーのコマンドを defs で丸ごと置き換える（bulk overwrite） */
+  registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void>;
   stop(): Promise<void>;
 }

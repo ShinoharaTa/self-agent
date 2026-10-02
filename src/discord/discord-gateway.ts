@@ -1,13 +1,38 @@
 // Gateway の discord.js 実装。トークンは process.env.DISCORD_TOKEN から直接読み、保持もログ出力もしない
 import {
+  type ActionRowData,
+  type APIModalInteractionResponseCallbackData,
+  type ApplicationCommandOptionData,
+  ApplicationCommandOptionType,
+  type ButtonInteraction,
+  ButtonStyle,
+  type ChatInputApplicationCommandData,
+  type ChatInputCommandInteraction,
   Client,
+  ComponentType,
+  type Interaction as DiscordInteraction,
   Events,
   GatewayIntentBits,
   type Message,
+  type MessageActionRowComponentData,
+  MessageFlags,
   type MessageMentionOptions,
+  type ModalSubmitInteraction,
   type SendableChannels,
+  type StringSelectMenuInteraction,
+  TextInputStyle,
 } from "discord.js";
-import type { Gateway, IncomingMessage } from "./gateway.ts";
+import type {
+  CommandDef,
+  ComponentRow,
+  Gateway,
+  GatewayHandlers,
+  IncomingMessage,
+  Interaction,
+  InteractionResponder,
+  ModalDef,
+  OutgoingMessage,
+} from "./gateway.ts";
 import { splitMessage } from "./split.ts";
 
 const TYPING_INTERVAL_MS = 8_000;
@@ -32,6 +57,170 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** 受け付ける interaction の種類（それ以外の autocomplete・コンテキストメニュー等は無視する） */
+type SupportedInteraction =
+  | ChatInputCommandInteraction
+  | ButtonInteraction
+  | StringSelectMenuInteraction
+  | ModalSubmitInteraction;
+
+function isSupported(interaction: DiscordInteraction): interaction is SupportedInteraction {
+  return (
+    interaction.isChatInputCommand() ||
+    interaction.isButton() ||
+    interaction.isStringSelectMenu() ||
+    interaction.isModalSubmit()
+  );
+}
+
+function toInteraction(interaction: SupportedInteraction): Interaction {
+  const base = {
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    userId: interaction.user.id,
+    createdAt: interaction.createdAt,
+  };
+  if (interaction.isChatInputCommand()) {
+    const options: Record<string, string | number | boolean> = {};
+    for (const option of interaction.options.data) {
+      if (option.value !== undefined) options[option.name] = option.value;
+    }
+    return { ...base, kind: "command", name: interaction.commandName, options };
+  }
+  if (interaction.isButton()) {
+    return { ...base, kind: "button", customId: interaction.customId };
+  }
+  if (interaction.isStringSelectMenu()) {
+    return { ...base, kind: "select", customId: interaction.customId, values: [...interaction.values] };
+  }
+  const fields: Record<string, string> = {};
+  for (const [customId, field] of interaction.fields.fields) {
+    if (field.type === ComponentType.TextInput) fields[customId] = field.value;
+  }
+  return { ...base, kind: "modal", customId: interaction.customId, fields };
+}
+
+const BUTTON_STYLES = {
+  primary: ButtonStyle.Primary,
+  secondary: ButtonStyle.Secondary,
+  success: ButtonStyle.Success,
+  danger: ButtonStyle.Danger,
+} as const;
+
+function toComponents(rows: readonly ComponentRow[]): ActionRowData<MessageActionRowComponentData>[] {
+  return rows.map((row) => ({
+    type: ComponentType.ActionRow,
+    components:
+      row.kind === "buttons"
+        ? row.buttons.map((button) => ({
+            type: ComponentType.Button,
+            customId: button.customId,
+            label: button.label,
+            style: BUTTON_STYLES[button.style ?? "secondary"],
+            disabled: button.disabled ?? false,
+          }))
+        : [
+            {
+              type: ComponentType.StringSelect,
+              customId: row.select.customId,
+              placeholder: row.select.placeholder,
+              minValues: row.select.minValues,
+              maxValues: row.select.maxValues,
+              options: row.select.options,
+            },
+          ],
+  }));
+}
+
+/** reply / followUp / editReply / update 共通の本文。components を省略したら送らない（update では元のまま残る） */
+function toPayload(message: OutgoingMessage) {
+  return {
+    content: message.text,
+    allowedMentions: ALLOWED_MENTIONS,
+    ...(message.components === undefined ? {} : { components: toComponents(message.components) }),
+  };
+}
+
+/** テキスト入力は Label で包む（ActionRow で包む形は Discord 側で非推奨） */
+function toModal(modal: ModalDef): APIModalInteractionResponseCallbackData {
+  return {
+    custom_id: modal.customId,
+    title: modal.title,
+    components: modal.fields.map((field) => ({
+      type: ComponentType.Label,
+      label: field.label,
+      component: {
+        type: ComponentType.TextInput,
+        custom_id: field.customId,
+        style: field.style === "paragraph" ? TextInputStyle.Paragraph : TextInputStyle.Short,
+        required: field.required ?? true,
+        max_length: field.maxLength,
+        placeholder: field.placeholder,
+        value: field.value,
+      },
+    })),
+  };
+}
+
+function toCommandData(def: CommandDef): ChatInputApplicationCommandData {
+  const options = (def.options ?? []).map((option): ApplicationCommandOptionData => {
+    const common = { name: option.name, description: option.description, required: option.required ?? false };
+    switch (option.type) {
+      case "string":
+        return { ...common, type: ApplicationCommandOptionType.String };
+      case "integer":
+        return { ...common, type: ApplicationCommandOptionType.Integer };
+      case "boolean":
+        return { ...common, type: ApplicationCommandOptionType.Boolean };
+    }
+  });
+  return { name: def.name, description: def.description, options };
+}
+
+class DiscordResponder implements InteractionResponder {
+  private readonly interaction: SupportedInteraction;
+
+  constructor(interaction: SupportedInteraction) {
+    this.interaction = interaction;
+  }
+
+  async defer(ephemeral: boolean): Promise<void> {
+    await this.interaction.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
+  }
+
+  async reply(message: OutgoingMessage): Promise<void> {
+    const interaction = this.interaction;
+    const flags = message.ephemeral === true ? MessageFlags.Ephemeral : undefined;
+    if (interaction.replied) {
+      await interaction.followUp({ ...toPayload(message), flags });
+    } else if (interaction.deferred) {
+      // 公開範囲は defer 時に決まっているので flags は渡さない
+      await interaction.editReply(toPayload(message));
+    } else {
+      await interaction.reply({ ...toPayload(message), flags });
+    }
+  }
+
+  async update(message: OutgoingMessage): Promise<void> {
+    const interaction = this.interaction;
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      await interaction.update(toPayload(message));
+    } else if (interaction.isModalSubmit() && interaction.isFromMessage()) {
+      await interaction.update(toPayload(message));
+    } else {
+      throw new Error("update はボタン・セレクト・メッセージから開いたモーダルにだけ使えます");
+    }
+  }
+
+  async showModal(modal: ModalDef): Promise<void> {
+    const interaction = this.interaction;
+    if (interaction.isModalSubmit()) {
+      throw new Error("モーダル送信への応答でモーダルは開けません");
+    }
+    await interaction.showModal(toModal(modal));
+  }
+}
+
 export class DiscordGateway implements Gateway {
   /** 許可していないサーバーに入っていたら警告する（メッセージは handler 側の受付判定で弾く） */
   private readonly allowedGuildIds: readonly string[];
@@ -50,7 +239,7 @@ export class DiscordGateway implements Gateway {
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
   });
 
-  async start(onMessage: (message: IncomingMessage) => void): Promise<void> {
+  async start(handlers: GatewayHandlers): Promise<void> {
     const token = process.env.DISCORD_TOKEN;
     if (token === undefined || token === "") {
       throw new Error("DISCORD_TOKEN が設定されていません");
@@ -62,7 +251,14 @@ export class DiscordGateway implements Gateway {
       this.warnIfNotAllowed(guild.id);
     });
     this.client.on(Events.MessageCreate, (message) => {
-      onMessage(toIncoming(message));
+      handlers.onMessage(toIncoming(message));
+    });
+    this.client.on(Events.InteractionCreate, (interaction) => {
+      if (!isSupported(interaction)) {
+        console.error(`discord: 未対応の操作を無視しました（type=${interaction.type}）`);
+        return;
+      }
+      handlers.onInteraction(toInteraction(interaction), new DiscordResponder(interaction));
     });
     const ready = new Promise<void>((resolve) => {
       this.client.once(Events.ClientReady, () => resolve());
@@ -107,6 +303,18 @@ export class DiscordGateway implements Gateway {
       stopped = true;
       clearInterval(timer);
     };
+  }
+
+  isInGuild(guildId: string): boolean {
+    return this.client.guilds.cache.has(guildId);
+  }
+
+  async registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void> {
+    const guild = this.client.guilds.cache.get(guildId);
+    if (guild === undefined) {
+      throw new Error("参加していないサーバーです");
+    }
+    await guild.commands.set(defs.map(toCommandData));
   }
 
   async stop(): Promise<void> {
