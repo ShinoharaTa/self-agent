@@ -79,3 +79,58 @@ test("maxConcurrent は正の整数", () => {
   assert.throws(() => new KeyedSerialQueue(0), RangeError);
   assert.throws(() => new KeyedSerialQueue(1.5), RangeError);
 });
+
+test("idle: 何も無ければすぐ resolve する", async () => {
+  const queue = new KeyedSerialQueue(1);
+  await queue.idle();
+  await queue.run("a", async () => undefined);
+  await queue.idle();
+});
+
+test("idle: 実行中・枠待ち・同じ key の前のジョブ待ちがすべて終わってから resolve する（例外で終わったジョブも数える）", async () => {
+  const queue = new KeyedSerialQueue(1);
+  const gates = [deferred(), deferred(), deferred()];
+  // a-0 が実行中、b は枠待ち、a-1 は a-0 待ち
+  const runs = [
+    queue.run("a", () => gates[0]!.promise),
+    queue.run("b", async () => {
+      await gates[1]!.promise;
+      throw new Error("boom");
+    }),
+    queue.run("a", () => gates[2]!.promise),
+  ];
+  let idle = false;
+  const waiting = queue.idle().then(() => {
+    idle = true;
+  });
+
+  for (const gate of gates) {
+    await flush();
+    assert.equal(idle, false);
+    gate.resolve();
+  }
+  await waiting;
+  assert.equal(idle, true);
+  await Promise.allSettled(runs);
+});
+
+test("idle: 待っている間に足されたジョブも終わるまで resolve しない", async () => {
+  const queue = new KeyedSerialQueue(2);
+  const first = deferred();
+  const second = deferred();
+  void queue.run("a", () => first.promise);
+  let idle = false;
+  const waiting = queue.idle().then(() => {
+    idle = true;
+  });
+
+  void queue.run("b", () => second.promise);
+  first.resolve();
+  await flush();
+  await flush();
+  assert.equal(idle, false);
+
+  second.resolve();
+  await waiting;
+  assert.equal(idle, true);
+});

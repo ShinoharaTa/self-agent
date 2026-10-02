@@ -8,12 +8,13 @@ import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { KeyedSerialQueue } from "./app/queue.ts";
+import { createShutdown } from "./app/shutdown.ts";
 import { loadConfig, missingForStart } from "./config.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
-import { SessionStore } from "./store/sessions.ts";
+import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { UsageStore } from "./store/usage.ts";
@@ -32,7 +33,7 @@ mkdirSync(config.claudeConfigDir, { recursive: true });
 const now = (): Date => new Date();
 const db = openDb(join(config.dataDir, "self-agent.db"));
 const tasks = new TaskStore(db, now);
-const sessions = new SessionStore(db, now);
+const sessions = new SdkSessionStore(db, now);
 const usage = new UsageStore(db, now);
 const guildSettings = new GuildSettingsStore(db, now);
 const topicSessions = new TopicSessionStore(db, now);
@@ -59,12 +60,13 @@ const handle = createHandler({
   ...turn,
   queue: turnQueue,
 });
+// /setup・/new 専用のキュー（ターンの同時実行枠とは分ける）
+const layoutQueue = new KeyedSerialQueue(1);
 const commands = createCommands({
   gateway,
   guildSettings,
   topicSessions,
-  // /setup・/new 専用のキュー（ターンの同時実行枠とは分ける）
-  queue: new KeyedSerialQueue(1),
+  queue: layoutQueue,
   channelOps,
   tasks,
   turnQueue,
@@ -78,22 +80,22 @@ const handleInteraction = createInteractionHandler({
   log,
 });
 
-const shutdown = async (): Promise<void> => {
-  await gateway.stop();
-  db.close();
-  process.exit(0);
+// 停止: シグナルで新しい受付を止め、進行中の処理（返信まで）を最大 shutdownGraceSec 秒待ってから gateway と DB を閉じる
+const lifecycle = createShutdown(
+  { cfg: config, gateway, queues: [turnQueue, layoutQueue], closeDb: () => db.close(), log },
+  { handleMessage: handle, handleInteraction },
+);
+const onSignal = (): void => {
+  if (lifecycle.stopping()) {
+    log("停止中にもう一度シグナルを受けたため、待たずに終了します");
+    process.exit(1);
+  }
+  void lifecycle.shutdown().then(() => process.exit(0));
 };
-process.once("SIGINT", () => void shutdown());
-process.once("SIGTERM", () => void shutdown());
+process.on("SIGINT", onSignal);
+process.on("SIGTERM", onSignal);
 
-await gateway.start({
-  onMessage: (message) => {
-    void handle(message);
-  },
-  onInteraction: (interaction, responder) => {
-    void handleInteraction(interaction, responder);
-  },
-});
+await gateway.start(lifecycle.handlers);
 await registerCommands({ cfg: config, gateway, commands, log });
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
 console.log(`self-agent: 起動しました（model=${config.model}）`);

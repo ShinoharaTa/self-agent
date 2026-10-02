@@ -3,7 +3,7 @@ import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 /** セッションの状態。deleted はチャンネルを消した後も要約を残すための行 */
 export type TopicSessionState = "active" | "waiting" | "done" | "deleted";
 
-/** /new で作ったセッション（sessions）。会話の SDK session_id は SessionStore（channel_sessions）が持つ */
+/** /new で作ったセッション（sessions）。会話の SDK session_id は SdkSessionStore（channel_sessions）が持つ */
 export type TopicSession = {
   channelId: string;
   guildId: string;
@@ -84,7 +84,7 @@ function toCloseDraft(json: string): CloseDraft {
   };
 }
 
-/** セッション用チャンネルの一覧（sessions）。src/store/sessions.ts の channel_sessions とは別 */
+/** セッション用チャンネルの一覧（sessions）。src/store/sdk-sessions.ts の channel_sessions とは別 */
 export class TopicSessionStore {
   private readonly db: DatabaseSync;
   private readonly now: () => Date;

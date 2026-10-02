@@ -3,11 +3,15 @@ import {
   query,
   type McpSdkServerConfigWithInstance,
   type Options,
+  type SDKMessage,
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Config } from "../config.ts";
 import { buildQueryOptions } from "./query-options.ts";
-import type { AgentRunner, RunContext, RunInput, RunResult, TurnUsage } from "./runner.ts";
+import type { AgentRunner, Compaction, RunContext, RunInput, RunResult, TurnUsage } from "./runner.ts";
+
+/** query() の形。テストでは偽のストリームを返す関数に差し替える */
+export type QueryFn = (params: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>;
 
 const ERROR_TEXT_LIMIT = 200;
 
@@ -29,17 +33,21 @@ export function describeResultError(result: SDKResultMessage): string {
 export class SdkAgentRunner implements AgentRunner {
   private readonly cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">;
   private readonly createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance;
+  private readonly queryFn: QueryFn;
 
   /**
    * MCP サーバーのインスタンスは同時に 1 つの query にしか接続できないため、run ごとに createMcpServer で作る。
-   * ツール定義は毎回同じ（ハンドラが参照する context だけが変わる）なのでプロンプトキャッシュには影響しない
+   * ツール定義は毎回同じ（ハンドラが参照する context だけが変わる）なのでプロンプトキャッシュには影響しない。
+   * queryFn は省略すれば SDK の query（テストで差し替える）
    */
   constructor(
     cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">,
     createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance,
+    queryFn: QueryFn = query,
   ) {
     this.cfg = cfg;
     this.createMcpServer = createMcpServer;
+    this.queryFn = queryFn;
   }
 
   async run(input: RunInput): Promise<RunResult> {
@@ -63,9 +71,10 @@ export class SdkAgentRunner implements AgentRunner {
     const usage: TurnUsage = { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
     let sessionId = input.sessionId;
     let result: SDKResultMessage | undefined;
+    let compacted: Compaction | undefined;
 
     try {
-      for await (const message of query({ prompt: input.prompt, options })) {
+      for await (const message of this.queryFn({ prompt: input.prompt, options })) {
         if ("session_id" in message && typeof message.session_id === "string") {
           sessionId = message.session_id;
         }
@@ -79,6 +88,14 @@ export class SdkAgentRunner implements AgentRunner {
           usage.inputTokens += stepUsage.input_tokens;
           usage.cacheReadInputTokens += stepUsage.cache_read_input_tokens ?? 0;
           usage.cacheCreationInputTokens += stepUsage.cache_creation_input_tokens ?? 0;
+        }
+        // 会話が長くなり SDK が古い部分を要約した。1 ターンに複数回あれば最後のもの
+        if (message.type === "system" && message.subtype === "compact_boundary") {
+          const metadata = message.compact_metadata;
+          compacted = {
+            trigger: metadata.trigger,
+            ...(typeof metadata.pre_tokens === "number" ? { preTokens: metadata.pre_tokens } : {}),
+          };
         }
         if (message.type === "result") {
           result = message;
@@ -113,6 +130,7 @@ export class SdkAgentRunner implements AgentRunner {
       sessionId: result.session_id,
       usage,
       durationMs: result.duration_ms,
+      ...(compacted === undefined ? {} : { compacted }),
     };
   }
 }

@@ -6,11 +6,38 @@ import { MCP_SERVER_NAME } from "./tools.ts";
 
 const MAX_TURNS = 8;
 
-// Claude の子プロセスには不要な秘密を渡さない
-const ENV_DENYLIST = ["DISCORD_TOKEN"];
+/** Claude の子プロセスに渡す環境変数（許可方式）。これ以外（DISCORD_TOKEN など）は渡さない */
+const CHILD_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+  "TMPDIR",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "https_proxy",
+  "http_proxy",
+  "no_proxy",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+];
 
-function childEnv(): Record<string, string | undefined> {
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !ENV_DENYLIST.includes(key)));
+/**
+ * Claude の子プロセスの env。SDK は env を渡すと process.env と混ぜずに置き換えるので、許可した変数だけを写し
+ * （無いものは入れない）、設定ディレクトリと自動メモリ無効を足す。scripts/measure-turn.ts も使う
+ */
+export function childEnv(claudeConfigDir: string, source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of CHILD_ENV_ALLOWLIST) {
+    const value = source[key];
+    if (value !== undefined) env[key] = value;
+  }
+  env.CLAUDE_CONFIG_DIR = claudeConfigDir;
+  env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+  return env;
 }
 
 export function buildQueryOptions(
@@ -27,13 +54,11 @@ export function buildQueryOptions(
     permissionMode: "dontAsk",
     allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
     mcpServers: { [MCP_SERVER_NAME]: mcpServer },
+    // mcpServers 以外の MCP 設定（.mcp.json・ユーザー設定・プラグイン）は読まない
+    strictMcpConfig: true,
     maxTurns: MAX_TURNS,
     // 未設定ならモデルの既定に任せる（キーごと入れない）
     ...(cfg.effort === undefined ? {} : { effort: cfg.effort }),
-    env: {
-      ...childEnv(),
-      CLAUDE_CONFIG_DIR: cfg.claudeConfigDir,
-      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-    },
+    env: childEnv(cfg.claudeConfigDir),
   };
 }

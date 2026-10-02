@@ -19,6 +19,7 @@ test("未設定ならデフォルト値を使う", () => {
     turnTimeoutSec: 300,
     effort: undefined,
     channelOpGapMs: 2000,
+    shutdownGraceSec: 30,
   });
 });
 
@@ -36,6 +37,7 @@ test("環境変数で上書きできる", () => {
     SELF_AGENT_MAX_CONCURRENT: "4",
     SELF_AGENT_TURN_TIMEOUT_SEC: "60",
     SELF_AGENT_CHANNEL_OP_GAP_MS: "500",
+    SELF_AGENT_SHUTDOWN_GRACE_SEC: "10",
   });
   assert.equal(config.claudeConfigDir, "/srv/claude");
   assert.equal(config.workDir, "/srv/work");
@@ -48,6 +50,7 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.maxConcurrentTurns, 4);
   assert.equal(config.turnTimeoutSec, 60);
   assert.equal(config.channelOpGapMs, 500);
+  assert.equal(config.shutdownGraceSec, 10);
 });
 
 test("token は有無だけを返し、値は含めない", () => {
@@ -100,6 +103,17 @@ test("SELF_AGENT_CHANNEL_OP_GAP_MS が正の整数でなければエラー", () 
     );
   }
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_CHANNEL_OP_GAP_MS: "" }).channelOpGapMs, 2000);
+});
+
+test("SELF_AGENT_SHUTDOWN_GRACE_SEC が正の整数でなければエラー", () => {
+  for (const value of ["0", "-1", "1.5", "abc"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_SHUTDOWN_GRACE_SEC: value }),
+      /SELF_AGENT_SHUTDOWN_GRACE_SEC/,
+      value,
+    );
+  }
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SHUTDOWN_GRACE_SEC: "" }).shutdownGraceSec, 30);
 });
 
 test("HOME が無く既定のディレクトリが必要ならエラー", () => {

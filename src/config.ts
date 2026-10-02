@@ -27,6 +27,8 @@ export type Config = {
   effort: Effort | undefined;
   /** チャンネルのカテゴリ移動の間隔（ミリ秒）。全サーバーで 1 本の列にして、この間を空ける */
   channelOpGapMs: number;
+  /** 停止時（SIGINT / SIGTERM）に進行中のターンを待つ上限の秒数 */
+  shutdownGraceSec: number;
 };
 
 const DEFAULT_MODEL = "claude-opus-5";
@@ -34,6 +36,7 @@ const DEFAULT_TIME_ZONE = "Asia/Tokyo";
 const DEFAULT_MAX_CONCURRENT_TURNS = 2;
 const DEFAULT_TURN_TIMEOUT_SEC = 300;
 const DEFAULT_CHANNEL_OP_GAP_MS = 2000;
+const DEFAULT_SHUTDOWN_GRACE_SEC = 30;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -108,6 +111,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "SELF_AGENT_CHANNEL_OP_GAP_MS",
       nonEmpty(env.SELF_AGENT_CHANNEL_OP_GAP_MS),
       DEFAULT_CHANNEL_OP_GAP_MS,
+    ),
+    shutdownGraceSec: positiveInteger(
+      "SELF_AGENT_SHUTDOWN_GRACE_SEC",
+      nonEmpty(env.SELF_AGENT_SHUTDOWN_GRACE_SEC),
+      DEFAULT_SHUTDOWN_GRACE_SEC,
     ),
   };
 }

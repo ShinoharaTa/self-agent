@@ -2,6 +2,7 @@
 // 出力は JSON 1 つだけ。メッセージストリーム全体や env は出さない。
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { query, type Options, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import { childEnv } from "../src/agent/query-options.ts";
 import { loadConfig } from "../src/config.ts";
 
 const SAMPLE_INTERVAL_MS = 200;
@@ -98,11 +99,8 @@ const baseOptions: Options = {
   tools: [],
   permissionMode: "dontAsk",
   maxTurns: 2,
-  env: {
-    ...process.env,
-    CLAUDE_CONFIG_DIR: config.claudeConfigDir,
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-  },
+  // 本体と同じ許可方式（DISCORD_TOKEN などは渡さない）
+  env: childEnv(config.claudeConfigDir),
 };
 
 const turns = [];

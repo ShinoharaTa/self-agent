@@ -2,7 +2,7 @@ import type { AgentRunner, RunResult } from "../agent/runner.ts";
 import type { Config } from "../config.ts";
 import type { Gateway, IncomingMessage } from "../discord/gateway.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
-import type { SessionStore } from "../store/sessions.ts";
+import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
 import { acceptedChannel, type ResolveChannel } from "./access.ts";
@@ -14,6 +14,8 @@ export const FAILURE_REPLY = "処理に失敗しました。時間をおいて�
 /** 1 ターンのツール呼び出しの上限（maxTurns）で止まったとき。会話は残っているので、もう一度送れば続きから進む */
 export const MAX_TURNS_REPLY = "途中までで止めました（手順が多すぎました）。続ける場合はもう一度送ってください。";
 export const EMPTY_REPLY = "（返答が空でした）";
+/** そのターンで compaction が起きたとき、返信の末尾に足す 1 行 */
+export const COMPACTED_NOTE = "（会話が長くなったため、古い部分を要約しました）";
 
 export type HandlerDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "ownerUserId" | "timeZone">;
@@ -21,7 +23,7 @@ export type HandlerDeps = {
   resolveChannel: ResolveChannel;
   gateway: Gateway;
   runner: AgentRunner;
-  sessions: SessionStore;
+  sessions: SdkSessionStore;
   /** 次のターンの prompt の先頭に付ける文（resume 失敗の復旧など） */
   seeds: ChannelSeedStore;
   /** セッションの題名と最終発言の時刻、resume 失敗時の要約 */
@@ -67,7 +69,8 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
     }
 
     if (result.ok) {
-      await reply(event, result.text.trim() === "" ? EMPTY_REPLY : result.text);
+      const text = result.text.trim() === "" ? EMPTY_REPLY : result.text;
+      await reply(event, result.compacted === undefined ? text : `${text}\n${COMPACTED_NOTE}`);
       return;
     }
 
