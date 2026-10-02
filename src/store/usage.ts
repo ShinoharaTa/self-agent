@@ -12,6 +12,8 @@ export type UsageRecord = {
   compacted?: boolean;
   /** そのターンのツール呼び出しの回数（失敗した呼び出しを含む）。省略は 0 */
   toolCalls?: number;
+  /** そのターンの最後のステップの入力（input + cache read + cache creation）。省略は 0 */
+  contextTokens?: number;
 };
 
 export type UsageEntry = {
@@ -26,6 +28,7 @@ export type UsageEntry = {
   cacheCreationInputTokens: number | null;
   compacted: boolean;
   toolCalls: number;
+  contextTokens: number;
 };
 
 /** ある時刻以降のターンの合計（/usage）。トークンは成功したターンの分だけ（失敗したターンは記録していない） */
@@ -58,6 +61,7 @@ function toEntry(row: Record<string, SQLOutputValue>): UsageEntry {
     cacheCreationInputTokens: nullableNumber(row.cache_creation_input_tokens),
     compacted: Number(row.compacted) === 1,
     toolCalls: Number(row.tool_calls),
+    contextTokens: Number(row.context_tokens),
   };
 }
 
@@ -74,8 +78,8 @@ export class UsageStore {
   record(record: UsageRecord): void {
     this.db
       .prepare(
-        "INSERT INTO usage_log (at, key, session_id, ok, duration_ms, input_tokens, cache_read_input_tokens, cache_creation_input_tokens, compacted, tool_calls) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO usage_log (at, key, session_id, ok, duration_ms, input_tokens, cache_read_input_tokens, cache_creation_input_tokens, compacted, tool_calls, context_tokens) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         this.now().toISOString(),
@@ -88,12 +92,29 @@ export class UsageStore {
         record.cacheCreationInputTokens ?? null,
         record.compacted === true ? 1 : 0,
         record.toolCalls ?? 0,
+        record.contextTokens ?? 0,
       );
   }
 
   /** 新しい順 */
   recent(limit: number): UsageEntry[] {
     return this.db.prepare("SELECT * FROM usage_log ORDER BY id DESC LIMIT ?").all(limit).map(toEntry);
+  }
+
+  /** その key のターン（成否を問わない）のうち、after より後（ちょうどは含まない）に記録した数。after が無ければすべて数える */
+  countAfter(key: string, after: Date | undefined): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS turns FROM usage_log WHERE key = ? AND at > ?")
+      .get(key, after === undefined ? "" : after.toISOString());
+    return Number(row?.turns ?? 0);
+  }
+
+  /** その key の成功したターンのうち、after より後（ちょうどは含まない）に記録した最新のもの。after が無ければすべてから選ぶ */
+  latestOkAfter(key: string, after: Date | undefined): UsageEntry | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM usage_log WHERE key = ? AND ok = 1 AND at > ? ORDER BY id DESC LIMIT 1")
+      .get(key, after === undefined ? "" : after.toISOString());
+    return row === undefined ? undefined : toEntry(row);
   }
 
   /** since 以降（ちょうどを含む）に記録したターンを合計する */

@@ -31,6 +31,11 @@ export type RunResult =
       compacted?: Compaction;
       /** このターンのツール呼び出しの回数（失敗した呼び出しを含む） */
       toolCalls: number;
+      /**
+       * メインループの最後のステップ（最後の assistant メッセージ）の入力（input + cache read + cache creation）。
+       * usage と違って合算しないので、ターンを終えた時点の会話の大きさの目安になる
+       */
+      contextTokens: number;
     }
   | {
       ok: false;

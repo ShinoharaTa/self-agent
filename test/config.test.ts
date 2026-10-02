@@ -23,6 +23,8 @@ test("未設定ならデフォルト値を使う", () => {
     idleHours: 12,
     autoSessionPerDay: 3,
     deleteAfterDays: 30,
+    inboxRotateAt: { hour: 4, minute: 0 },
+    inboxMaxInputTokens: 150000,
   });
 });
 
@@ -44,6 +46,8 @@ test("環境変数で上書きできる", () => {
     SELF_AGENT_IDLE_HOURS: "24",
     SELF_AGENT_AUTO_SESSION_PER_DAY: "5",
     SELF_AGENT_DELETE_AFTER_DAYS: "7",
+    SELF_AGENT_INBOX_ROTATE_AT: "23:59",
+    SELF_AGENT_INBOX_MAX_INPUT_TOKENS: "80000",
   });
   assert.equal(config.claudeConfigDir, "/srv/claude");
   assert.equal(config.workDir, "/srv/work");
@@ -60,6 +64,8 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.idleHours, 24);
   assert.equal(config.autoSessionPerDay, 5);
   assert.equal(config.deleteAfterDays, 7);
+  assert.deepEqual(config.inboxRotateAt, { hour: 23, minute: 59 });
+  assert.equal(config.inboxMaxInputTokens, 80000);
 });
 
 test("token は有無だけを返し、値は含めない", () => {
@@ -156,6 +162,36 @@ test("SELF_AGENT_DELETE_AFTER_DAYS が正の整数でなければエラー", () 
     );
   }
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DELETE_AFTER_DAYS: "" }).deleteAfterDays, 30);
+});
+
+test("SELF_AGENT_INBOX_ROTATE_AT は HH:MM（00:00〜23:59）だけを受け付け、それ以外はエラー", () => {
+  for (const [value, expected] of [
+    ["00:00", { hour: 0, minute: 0 }],
+    ["04:30", { hour: 4, minute: 30 }],
+    ["19:05", { hour: 19, minute: 5 }],
+    ["23:59", { hour: 23, minute: 59 }],
+  ] as const) {
+    assert.deepEqual(loadConfig({ HOME: "/home/tester", SELF_AGENT_INBOX_ROTATE_AT: value }).inboxRotateAt, expected, value);
+  }
+  for (const value of ["4:00", "24:00", "12:60", "12:0", "1200", "12:00:00", " 04:00", "04:00 ", "abc", "-1:00"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_INBOX_ROTATE_AT: value }),
+      /SELF_AGENT_INBOX_ROTATE_AT/,
+      value,
+    );
+  }
+  assert.deepEqual(loadConfig({ HOME: "/home/tester", SELF_AGENT_INBOX_ROTATE_AT: "" }).inboxRotateAt, { hour: 4, minute: 0 });
+});
+
+test("SELF_AGENT_INBOX_MAX_INPUT_TOKENS が正の整数でなければエラー", () => {
+  for (const value of ["0", "-1", "1.5", "abc", "150k"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_INBOX_MAX_INPUT_TOKENS: value }),
+      /SELF_AGENT_INBOX_MAX_INPUT_TOKENS/,
+      value,
+    );
+  }
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_INBOX_MAX_INPUT_TOKENS: "" }).inboxMaxInputTokens, 150000);
 });
 
 test("HOME が無く既定のディレクトリが必要ならエラー", () => {

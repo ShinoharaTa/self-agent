@@ -223,6 +223,7 @@ test("session_open: 作ったチャンネルの最初のターンの prompt の�
         usage: { inputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
         durationMs: 1,
         toolCalls: 0,
+        contextTokens: 1,
       };
     },
   };

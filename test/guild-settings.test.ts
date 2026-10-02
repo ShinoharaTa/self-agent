@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { GuildSettingsStore, type SessionState } from "../src/store/guild-settings.ts";
+import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 
@@ -39,6 +40,7 @@ test("GuildSettingsStore: 未設定のサーバーは undefined、ID は 1 つ�
     tasksChannelId: null,
     systemChannelId: null,
     homePanelMessageId: null,
+    inboxRotatedDate: null,
     createdAt: "2026-10-02T00:00:00.000Z",
     updatedAt: "2026-10-02T00:00:00.000Z",
   });
@@ -55,6 +57,7 @@ test("GuildSettingsStore: 未設定のサーバーは undefined、ID は 1 つ�
     tasksChannelId: "tasks-1",
     systemChannelId: "system-1",
     homePanelMessageId: null,
+    inboxRotatedDate: null,
     createdAt: "2026-10-02T00:00:00.000Z",
     updatedAt: "2026-10-02T00:04:00.000Z",
   });
@@ -133,4 +136,56 @@ test("openDb: v1 の DB を v2 に上げても既存のデータは残る", (t) 
   store.setStateCategory("guild-1", "done", 1, "done-1");
   assert.equal(store.get("guild-1")?.inboxChannelId, "inbox-2");
   assert.equal(store.getStateCategory("guild-1", "done", 1), "done-1");
+});
+
+test("GuildSettingsStore.setInboxRotatedDate: 他の列は変えずに #inbox を切り替えた日を上書きする", (t) => {
+  const store = tempStore(t);
+  store.setChannel("guild-1", "inboxChannelId", "inbox-1");
+  assert.equal(store.get("guild-1")?.inboxRotatedDate, null);
+
+  store.setInboxRotatedDate("guild-1", "2026-10-02");
+  store.setInboxRotatedDate("guild-1", "2026-10-03");
+
+  const settings = store.get("guild-1");
+  assert.equal(settings?.inboxRotatedDate, "2026-10-03");
+  assert.equal(settings?.inboxChannelId, "inbox-1");
+  assert.equal(settings?.createdAt, "2026-10-02T00:00:00.000Z");
+  assert.equal(settings?.updatedAt, "2026-10-02T00:02:00.000Z");
+});
+
+test("openDb: v9 の DB を v10 に上げても既存のサーバー設定は残り、切り替えた日は null。以後は切り替えた日と #inbox の要約を記録できる", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // #inbox の切り替えより前（v9）の DB を作る
+  const v9 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 9)) v9.exec(migration);
+  v9.exec("PRAGMA user_version = 9");
+  v9.prepare(
+    "INSERT INTO guild_settings (guild_id, inbox_channel_id, system_channel_id, created_at, updated_at) " +
+      "VALUES ('guild-1', 'inbox-1', 'system-1', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')",
+  ).run();
+  v9.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 10);
+  const store = new GuildSettingsStore(db, clock());
+  assert.equal(store.get("guild-1")?.inboxChannelId, "inbox-1");
+  assert.equal(store.get("guild-1")?.systemChannelId, "system-1");
+  assert.equal(store.get("guild-1")?.inboxRotatedDate, null);
+  store.setInboxRotatedDate("guild-1", "2026-10-02");
+  assert.equal(store.get("guild-1")?.inboxRotatedDate, "2026-10-02");
+
+  const summaries = new InboxSummaryStore(db, clock());
+  assert.equal(summaries.latest("guild-1"), undefined);
+  summaries.add("guild-1", "2026-10-02", "- 金曜までに見積もりを送る");
+  assert.deepEqual(summaries.latest("guild-1"), {
+    id: 1,
+    guildId: "guild-1",
+    date: "2026-10-02",
+    summary: "- 金曜までに見積もりを送る",
+    createdAt: "2026-10-02T00:00:00.000Z",
+  });
 });

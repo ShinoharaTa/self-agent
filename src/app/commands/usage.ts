@@ -48,7 +48,8 @@ export function startOfLocalDay(at: Date, timeZone: string, daysBefore: number =
   return new Date(midnightAsUtc - offsetMs(new Date(first), timeZone));
 }
 
-function formatDate(at: Date, timeZone: string): string {
+/** その時刻の、timeZone での日付（YYYY-MM-DD） */
+export function formatDate(at: Date, timeZone: string): string {
   const { year, month, day } = localDate(at, timeZone);
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }

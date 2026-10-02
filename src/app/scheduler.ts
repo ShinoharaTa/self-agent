@@ -1,5 +1,6 @@
 // 定期処理（tick）。最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、
-// 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認する。
+// 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認し、
+// 時期が来た #inbox の会話を切り替える（inbox-rotate.ts）。
 // 対象は毎回 DB から求めるので、止まっていた間に過ぎた分も起動直後の tick で拾う（永続のタイマーは持たない）
 import type { Config } from "../config.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
@@ -9,6 +10,7 @@ import type { ChannelOpsQueue } from "./channel-ops.ts";
 import { closeStartButton } from "./commands/close.ts";
 import { deletePrompt } from "./commands/delete.ts";
 import { continueButton } from "./commands/wait.ts";
+import type { InboxRotator } from "./inbox-rotate.ts";
 import { applySessionEvent } from "./session-state.ts";
 
 /** tick の間隔 */
@@ -43,6 +45,8 @@ export type SchedulerDeps = {
   channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
   /** 待ちに移した知らせと削除の確認を投稿する */
   gateway: Pick<Gateway, "sendMessage">;
+  /** #inbox の切り替え（日次・入力の大きさ）。要約のターンは発言と同じキューで行う */
+  inboxRotator: Pick<InboxRotator, "rotateDue">;
   now: () => Date;
   timers?: SchedulerTimers;
   log: (message: string) => void;
@@ -103,10 +107,12 @@ export class Scheduler {
     return running;
   }
 
-  /** 待ちへの移動と削除の確認は、片方が失敗してももう片方を行う */
+  /** 待ちへの移動・削除の確認・#inbox の切り替えは、どれかが失敗しても残りを行う。#inbox の切り替えは LLM のターンを待つので最後に行う */
   private async runTick(): Promise<void> {
     await this.moveIdleSessions();
     await this.promptDeletes();
+    // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
+    await this.deps.inboxRotator.rotateDue(() => this.stopped);
   }
 
   private async moveIdleSessions(): Promise<void> {

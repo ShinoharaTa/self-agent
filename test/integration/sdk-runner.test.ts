@@ -52,5 +52,8 @@ test(
     });
     assert.ok(second.ok, second.ok ? "" : second.errorMessage);
     assert.ok(second.usage.cacheReadInputTokens > 0, `cacheReadInputTokens=${second.usage.cacheReadInputTokens}`);
+    // 最後のステップの入力は、合算した入力を超えない
+    const total = second.usage.inputTokens + second.usage.cacheReadInputTokens + second.usage.cacheCreationInputTokens;
+    assert.ok(second.contextTokens > 0 && second.contextTokens <= total, `contextTokens=${second.contextTokens} total=${total}`);
   },
 );

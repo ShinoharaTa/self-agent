@@ -128,6 +128,8 @@ function okResult(sessionId: string, text: string): Extract<RunResult, { ok: tru
     usage: { inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300 },
     durationMs: 4200,
     toolCalls: 3,
+    // 3 回ツールを呼んだターンの最後のステップの入力（合算の usage より小さい）
+    contextTokens: 900,
   };
 }
 
@@ -218,6 +220,7 @@ test("受け付けた発言で runner を呼び、usage 記録・session 保存�
       cacheCreationInputTokens: 300,
       compacted: false,
       toolCalls: 3,
+      contextTokens: 900,
     },
   ]);
   assert.equal(gateway.typingStarted, 1);
