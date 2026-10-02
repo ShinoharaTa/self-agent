@@ -100,9 +100,12 @@ const handleInteraction = createInteractionHandler({
   commands,
   // ホームパネルの [新しいセッション] は /new と同じキュー（layoutQueue）で作る
   components: createComponents({
+    cfg: config,
     gateway,
     guildSettings,
     topicSessions,
+    sessions,
+    seeds,
     queue: layoutQueue,
     tasks,
     channelOps,
@@ -112,8 +115,8 @@ const handleInteraction = createInteractionHandler({
   }),
   log,
 });
-// 定期処理: 発言の無い進行中のセッションを待ちに移す
-const scheduler = new Scheduler({ cfg: config, topicSessions, channelOps, gateway, now, log });
+// 定期処理: 発言の無い進行中のセッションを待ちに移し、完了から日数の経ったセッションの削除を #system で確認する
+const scheduler = new Scheduler({ cfg: config, topicSessions, guildSettings, channelOps, gateway, now, log });
 
 // 停止: シグナルで新しい受付と定期処理を止め、進行中の処理（返信まで）を最大 shutdownGraceSec 秒待ってから gateway と DB を閉じる
 const lifecycle = createShutdown(

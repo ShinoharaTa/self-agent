@@ -50,6 +50,8 @@ test("TopicSessionStore: 進行中として保存し、最終発言の時刻は�
     closedAt: null,
     summary: null,
     origin: "command",
+    deletePromptMessageId: null,
+    deletedAt: null,
   };
   assert.deepEqual(created, expected);
   assert.deepEqual(store.get("topic-1"), expected);
@@ -161,7 +163,7 @@ test("TopicSessionStore: setCategory は今置いているカテゴリを更新�
   assert.equal(store.get("inbox-1"), undefined);
 });
 
-test("TopicSessionStore: setWaiting は待ちにして waiting_since を今にし、setActive は進行中に戻して waiting_since と closed_at を消す（要約は残す）", (t) => {
+test("TopicSessionStore: setWaiting は待ちにして waiting_since を今にし、setActive は進行中に戻して waiting_since と closed_at・削除の確認の記録を消す（要約は残す）", (t) => {
   const store = new TopicSessionStore(tempDb(t), clock());
   store.create(NEW_SESSION);
 
@@ -178,12 +180,14 @@ test("TopicSessionStore: setWaiting は待ちにして waiting_since を今に�
   assert.equal(active?.waitingSince, null);
   assert.deepEqual(store.get("topic-1"), active);
 
-  // 完了から戻す
+  // 完了から戻す。削除の確認を投稿済みなら、その記録も消す
   store.close("topic-1", "要約");
+  store.setDeletePrompt("topic-1", "message-1");
   const reopened = store.setActive("topic-1");
   assert.equal(reopened?.state, "active");
   assert.equal(reopened?.closedAt, null);
   assert.equal(reopened?.summary, "要約");
+  assert.equal(reopened?.deletePromptMessageId, null);
 
   assert.equal(store.setWaiting("topic-9"), undefined);
   assert.equal(store.setActive("topic-9"), undefined);
@@ -266,6 +270,8 @@ test("openDb: v3 の DB を v4 に上げても既存のセッションは残り�
     closedAt: null,
     summary: null,
     origin: "command",
+    deletePromptMessageId: null,
+    deletedAt: null,
   });
   assert.equal(store.getCloseDraft("topic-1"), undefined);
   assert.equal(new SdkSessionStore(db).get("topic-1"), "session-1");
@@ -431,4 +437,111 @@ test("openDb: v7 の DB を v8 に上げても既存のセッションは残り�
   store.create({ ...NEW_SESSION, channelId: "topic-2", origin: "inbox" });
   assert.equal(store.countCreatedSince("inbox", new Date(0)), 1);
   assert.deepEqual(store.lastCreatedAt("inbox"), new Date("2026-10-02T00:00:00.000Z"));
+});
+
+test("TopicSessionStore.listDeleteDue: 完了で閉じた時刻が指定時刻以前（ちょうどを含む）、確認をまだ投稿していないものを閉じた古い順に limit 件まで返す", (t) => {
+  const db = tempDb(t);
+  const at = { now: new Date("2026-10-02T00:00:00.000Z") };
+  const store = new TopicSessionStore(db, () => at.now);
+  const closeAt = (channelId: string, iso: string): void => {
+    at.now = new Date(iso);
+    store.create({ ...NEW_SESSION, channelId });
+    store.close(channelId, "要約");
+  };
+  closeAt("topic-c", "2026-10-02T00:03:00.000Z");
+  closeAt("topic-a", "2026-10-02T00:01:00.000Z");
+  closeAt("topic-b", "2026-10-02T00:02:00.000Z");
+  closeAt("topic-d", "2026-10-02T00:04:00.000Z");
+  closeAt("topic-p", "2026-10-02T00:00:00.000Z");
+  closeAt("topic-x", "2026-10-02T00:00:00.000Z");
+  closeAt("topic-y", "2026-10-02T00:00:00.000Z");
+  store.setDeletePrompt("topic-p", "message-1");
+  store.setActive("topic-x");
+  db.prepare("UPDATE sessions SET state = 'deleted' WHERE channel_id = 'topic-y'").run();
+
+  const ids = (before: string, limit: number): string[] =>
+    store.listDeleteDue(new Date(before), limit).map((session) => session.channelId);
+
+  assert.deepEqual(ids("2026-10-02T00:03:00.000Z", 10), ["topic-a", "topic-b", "topic-c"]);
+  assert.deepEqual(ids("2026-10-02T00:02:59.999Z", 10), ["topic-a", "topic-b"]);
+  assert.deepEqual(ids("2026-10-02T00:10:00.000Z", 2), ["topic-a", "topic-b"]);
+  assert.deepEqual(ids("2026-10-02T00:00:59.999Z", 10), []);
+});
+
+test("TopicSessionStore: setDeletePrompt は確認のメッセージを記録し、postponeDelete は閉じた時刻を今にして記録を消す。行が無ければ undefined", (t) => {
+  const store = new TopicSessionStore(tempDb(t), clock());
+  store.create(NEW_SESSION);
+  store.close("topic-1", "要約");
+
+  store.setDeletePrompt("topic-1", "message-1");
+  assert.equal(store.get("topic-1")?.deletePromptMessageId, "message-1");
+
+  const postponed = store.postponeDelete("topic-1");
+
+  assert.equal(postponed?.closedAt, "2026-10-02T00:02:00.000Z");
+  assert.equal(postponed?.deletePromptMessageId, null);
+  assert.equal(postponed?.state, "done");
+  assert.equal(postponed?.summary, "要約");
+  assert.deepEqual(store.get("topic-1"), postponed);
+  assert.equal(store.postponeDelete("topic-9"), undefined);
+});
+
+test("TopicSessionStore: markDeleted は削除済みにして削除した時刻を残し、要約は残す。行が無ければ undefined", (t) => {
+  const store = new TopicSessionStore(tempDb(t), clock());
+  store.create(NEW_SESSION);
+  store.close("topic-1", "要約");
+  store.setDeletePrompt("topic-1", "message-1");
+
+  const deleted = store.markDeleted("topic-1");
+
+  assert.equal(deleted?.state, "deleted");
+  assert.equal(deleted?.deletedAt, "2026-10-02T00:02:00.000Z");
+  assert.equal(deleted?.summary, "要約");
+  assert.equal(deleted?.closedAt, "2026-10-02T00:01:00.000Z");
+  assert.deepEqual(store.get("topic-1"), deleted);
+  assert.equal(store.markDeleted("topic-9"), undefined);
+});
+
+test("openDb: v8 の DB を v9 に上げても既存のセッションは残り、削除の確認と削除した時刻は null。以後は記録できる", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // 削除の確認の記録より前（v8）の DB を作る
+  const v8 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 8)) v8.exec(migration);
+  v8.exec("PRAGMA user_version = 8");
+  v8.prepare(
+    "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, closed_at, summary, origin) " +
+      "VALUES ('topic-1', 'guild-1', '旅行の計画', 'done', 'done-1', '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', '2026-08-02T00:00:00.000Z', '要約', 'inbox')",
+  ).run();
+  v8.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 9);
+  const store = new TopicSessionStore(db, clock());
+  assert.deepEqual(store.get("topic-1"), {
+    channelId: "topic-1",
+    guildId: "guild-1",
+    title: "旅行の計画",
+    state: "done",
+    categoryId: "done-1",
+    createdAt: "2026-08-01T00:00:00.000Z",
+    lastActivityAt: "2026-08-01T00:00:00.000Z",
+    waitingSince: null,
+    closedAt: "2026-08-02T00:00:00.000Z",
+    summary: "要約",
+    origin: "inbox",
+    deletePromptMessageId: null,
+    deletedAt: null,
+  });
+  assert.deepEqual(
+    store.listDeleteDue(new Date("2026-09-01T00:00:00.000Z"), 5).map((session) => session.channelId),
+    ["topic-1"],
+  );
+
+  store.setDeletePrompt("topic-1", "message-1");
+  assert.equal(store.get("topic-1")?.deletePromptMessageId, "message-1");
+  assert.equal(store.markDeleted("topic-1")?.deletedAt, "2026-10-02T00:00:00.000Z");
 });

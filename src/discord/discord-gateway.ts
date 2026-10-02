@@ -318,6 +318,20 @@ export class DiscordGateway implements Gateway {
     return channel.parentId;
   }
 
+  async deleteChannel(channelId: string): Promise<void> {
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (channel === null || channel.isDMBased() || channel.isThread() || channel.type === ChannelType.GuildCategory) {
+        throw new Error("削除できないチャンネルです");
+      }
+      await channel.delete();
+    } catch (error) {
+      // 手で消されていた（取得・削除のどちらで分かっても）なら、消えているので成功とみなす
+      if (error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownChannel) return;
+      throw error;
+    }
+  }
+
   async stop(): Promise<void> {
     await this.client.destroy();
   }

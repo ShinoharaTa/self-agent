@@ -20,11 +20,14 @@ type InteractionBase = {
   createdAt: Date;
 };
 
-/** スラッシュコマンド・ボタン・セレクト・モーダル送信。custom_id は `<ns>:<action>:<channelId>`（100 字以内） */
+/**
+ * スラッシュコマンド・ボタン・セレクト・モーダル送信。custom_id は `<ns>:<action>:<channelId>`（100 字以内）。
+ * ボタン・セレクトの messageId は、押された（選ばれた）コンポーネントが付いていたメッセージの ID
+ */
 export type Interaction =
   | (InteractionBase & { kind: "command"; name: string; options: Record<string, string | number | boolean> })
-  | (InteractionBase & { kind: "button"; customId: string })
-  | (InteractionBase & { kind: "select"; customId: string; values: string[] })
+  | (InteractionBase & { kind: "button"; customId: string; messageId?: string })
+  | (InteractionBase & { kind: "select"; customId: string; values: string[]; messageId?: string })
   /** fields はテキスト入力の customId → 入力値 */
   | (InteractionBase & { kind: "modal"; customId: string; fields: Record<string, string> });
 
@@ -146,5 +149,7 @@ export interface Gateway {
   moveChannel(channelId: string, parentId: string): Promise<void>;
   /** チャンネルの今の親カテゴリの ID（キャッシュではなく Discord 上の値）。カテゴリの外なら null */
   getParentId(channelId: string): Promise<string | null>;
+  /** チャンネルを削除する。既に無ければ（Unknown Channel）何もしない。それ以外の失敗（権限・通信）は投げる */
+  deleteChannel(channelId: string): Promise<void>;
   stop(): Promise<void>;
 }

@@ -49,16 +49,23 @@ test("toCommandInteraction: DM（guildId が null）もそのまま渡す", () =
   assert.deepEqual(interaction, { ...BASE, guildId: null, channelId: null, kind: "command", name: "help", options: {} });
 });
 
-test("toButtonInteraction・toSelectInteraction: custom_id と選んだ値（配列は写す）", () => {
-  assert.deepEqual(toButtonInteraction({ ...SOURCE, customId: "close:all:topic-1" }), {
+test("toButtonInteraction・toSelectInteraction: custom_id と選んだ値（配列は写す）、付いていたメッセージの ID", () => {
+  assert.deepEqual(toButtonInteraction({ ...SOURCE, customId: "close:all:topic-1", message: { id: "message-1" } }), {
     ...BASE,
     kind: "button",
     customId: "close:all:topic-1",
+    messageId: "message-1",
   });
 
   const values = ["1", "3"];
-  const select = toSelectInteraction({ ...SOURCE, customId: "close:sel:topic-1", values });
-  assert.deepEqual(select, { ...BASE, kind: "select", customId: "close:sel:topic-1", values: ["1", "3"] });
+  const select = toSelectInteraction({ ...SOURCE, customId: "close:sel:topic-1", values, message: { id: "message-2" } });
+  assert.deepEqual(select, {
+    ...BASE,
+    kind: "select",
+    customId: "close:sel:topic-1",
+    values: ["1", "3"],
+    messageId: "message-2",
+  });
   assert.ok(select.kind === "select");
   assert.notEqual(select.values, values);
 });
