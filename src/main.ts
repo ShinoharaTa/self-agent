@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
+import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
-import { COMPONENTS, createCommands, createInteractionHandler, registerCommands } from "./app/interactions.ts";
+import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { KeyedSerialQueue } from "./app/queue.ts";
 import { loadConfig, missingForStart } from "./config.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
+import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { SessionStore } from "./store/sessions.ts";
@@ -34,27 +36,45 @@ const sessions = new SessionStore(db, now);
 const usage = new UsageStore(db, now);
 const guildSettings = new GuildSettingsStore(db, now);
 const topicSessions = new TopicSessionStore(db, now);
+const seeds = new ChannelSeedStore(db, now);
 const log = (message: string): void => console.error(message);
 
-const runner = new SdkAgentRunner(config, () => createTaskMcpServer(tasks));
+// ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ
+const runner = new SdkAgentRunner(config, (context) => createTaskMcpServer(tasks, topicSessions, context));
 const gateway = new DiscordGateway(config.allowedGuildIds);
+// 発言と /close のターンのキュー（key は channelId）
+const turnQueue = new KeyedSerialQueue(config.maxConcurrentTurns);
+const turn = { runner, sessions, seeds, topicSessions, usage, log };
+const channelOps = new ChannelOpsQueue({
+  gateway,
+  guildSettings,
+  topicSessions,
+  gapMs: config.channelOpGapMs,
+  log,
+});
 const handle = createHandler({
   cfg: config,
   resolveChannel: createChannelResolver(config, guildSettings, topicSessions),
   gateway,
-  runner,
-  sessions,
+  ...turn,
+  queue: turnQueue,
+});
+const commands = createCommands({
+  gateway,
+  guildSettings,
   topicSessions,
-  usage,
-  queue: new KeyedSerialQueue(config.maxConcurrentTurns),
+  // /setup・/new 専用のキュー（ターンの同時実行枠とは分ける）
+  queue: new KeyedSerialQueue(1),
+  channelOps,
+  tasks,
+  turnQueue,
+  turn,
   log,
 });
-// /setup・/new 専用のキュー（ターンの同時実行枠とは分ける）
-const commands = createCommands({ gateway, guildSettings, topicSessions, queue: new KeyedSerialQueue(1), log });
 const handleInteraction = createInteractionHandler({
   cfg: config,
   commands,
-  components: COMPONENTS,
+  components: createComponents({ topicSessions, tasks, channelOps, log }),
   log,
 });
 

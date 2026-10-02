@@ -23,4 +23,9 @@ export class SessionStore {
       )
       .run(key, sessionId, this.now().toISOString());
   }
+
+  /** resume できなくなった SDK セッションを捨てる。次のターンは新しいセッションになる */
+  delete(key: string): void {
+    this.db.prepare("DELETE FROM channel_sessions WHERE key = ?").run(key);
+  }
 }

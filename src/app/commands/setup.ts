@@ -1,5 +1,6 @@
 import type { Gateway } from "../../discord/gateway.ts";
 import type { GuildChannelField, GuildSettingsStore, SessionState } from "../../store/guild-settings.ts";
+import type { ChannelOpsQueue } from "../channel-ops.ts";
 import type { CommandHandler } from "../interactions.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
 
@@ -25,16 +26,25 @@ const STATE_CATEGORIES: ReadonlyArray<{ state: SessionState; name: string }> = [
 
 const FIRST_ORDINAL = 1;
 
+/** 状態カテゴリの名前（満杯で足すカテゴリは `進行中 2` のようにこれに ordinal を付ける） */
+export function stateCategoryName(state: SessionState): string {
+  const category = STATE_CATEGORIES.find((candidate) => candidate.state === state);
+  if (category === undefined) throw new Error(`状態カテゴリの名前がありません: ${state}`);
+  return category.name;
+}
+
 /** カテゴリ・チャンネルを作る操作（/setup・/new）の直列化の key。同じサーバーではどちらも 1 つずつ実行する */
 export function layoutQueueKey(guildId: string): string {
   return `layout:${guildId}`;
 }
 
 export type SetupDeps = {
-  gateway: Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "moveChannel">;
+  gateway: Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "moveChannel" | "getParentId">;
   guildSettings: GuildSettingsStore;
   /** 同じサーバーの /setup・/new を 1 つずつ実行する（key は layoutQueueKey） */
   queue: KeyedSerialQueue;
+  /** self-agent カテゴリの外に出ている #inbox / #tasks / #system を戻す */
+  channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
   log: (message: string) => void;
 };
 
@@ -113,6 +123,35 @@ export async function ensureGuildLayout(
   return result;
 }
 
+/**
+ * #inbox / #tasks / #system の今の親が self-agent カテゴリと違えば、ChannelOpsQueue に戻す移動を入れる（移動は後で順に行う）。
+ * カテゴリを作り直した回に移動が失敗した場合や、手で動かされた場合を直す。確認の失敗は log に出して次へ進む
+ */
+export async function repairHomeChannelParents(
+  guildId: string,
+  deps: Pick<SetupDeps, "gateway" | "guildSettings" | "channelOps" | "log">,
+): Promise<void> {
+  const { gateway, guildSettings, channelOps, log } = deps;
+  const settings = guildSettings.get(guildId);
+  const homeCategoryId = settings?.homeCategoryId;
+  if (settings === undefined || homeCategoryId === null || homeCategoryId === undefined) return;
+  let queued = 0;
+  for (const { field } of HOME_CHANNELS) {
+    const channelId = settings[field];
+    if (channelId === null) continue;
+    try {
+      if ((await gateway.getParentId(channelId)) === homeCategoryId) continue;
+      channelOps.enqueueMove(channelId, { kind: "category", categoryId: homeCategoryId });
+      queued++;
+    } catch (error) {
+      log(`親カテゴリの確認に失敗しました（guild=${guildId}）: ${describeError(error)}`);
+    }
+  }
+  if (queued > 0) {
+    log(`self-agent カテゴリの外にあるチャンネル ${queued} 件を戻します（guild=${guildId}）`);
+  }
+}
+
 function mentions(ids: readonly string[]): string {
   return ids.map((id) => `<#${id}>`).join(" ");
 }
@@ -143,7 +182,12 @@ export function createSetupCommand(deps: SetupDeps): CommandHandler {
       // Discord への作成が複数回あり 3 秒を超えうるので、先に保留する
       await responder.defer(true);
       // 同時に走ると両方が「未作成」と判断して二重に作るので、サーバーごとに 1 つずつ実行する（/new とも）
-      const result = await queue.run(layoutQueueKey(guildId), () => ensureGuildLayout(guildId, deps));
+      const result = await queue.run(layoutQueueKey(guildId), async () => {
+        const layout = await ensureGuildLayout(guildId, deps);
+        // 途中で失敗した回は揃っていないので、親のずれは次の /setup で直す
+        if (layout.failure === null) await repairHomeChannelParents(guildId, deps);
+        return layout;
+      });
       if (result.failure === null) {
         log(`/setup を実行しました（guild=${guildId}、作成 ${result.created.length} 件）`);
       } else {

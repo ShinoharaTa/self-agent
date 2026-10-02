@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentRunner } from "../src/agent/runner.ts";
+import type { MoveTarget } from "../src/app/channel-ops.ts";
 import { HELP_TEXT } from "../src/app/commands/help.ts";
 import { createSetupCommand, ensureGuildLayout } from "../src/app/commands/setup.ts";
-import { COMPONENTS, createCommands, createInteractionHandler } from "../src/app/interactions.ts";
+import { createCommands, createComponents, createInteractionHandler } from "../src/app/interactions.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import type {
   Gateway,
@@ -15,9 +17,13 @@ import type {
   OutgoingMessage,
   TextChannelOptions,
 } from "../src/discord/gateway.ts";
+import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { SessionStore } from "../src/store/sessions.ts";
+import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { UsageStore } from "../src/store/usage.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 
@@ -27,13 +33,26 @@ type GatewayCall =
   | { method: "channelExists"; channelId: string }
   | { method: "moveChannel"; channelId: string; parentId: string };
 
-/** 作ったチャンネルを覚えておき、channelExists はそれ（から消したものを除く）で答える（/new は new-session.test.ts） */
+/**
+ * 作ったチャンネルを覚えておき、channelExists はそれ（から消したものを除く）で答える（/new は new-session.test.ts）。
+ * getParentId は作成・移動で記録した親で答え、calls ではなく parentChecks に記録する
+ */
 class FakeGateway
-  implements Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "moveChannel" | "countChannelsIn" | "send">
+  implements
+    Pick<
+      Gateway,
+      "createCategory" | "createTextChannel" | "channelExists" | "moveChannel" | "getParentId" | "countChannelsIn" | "send"
+    >
 {
   calls: GatewayCall[] = [];
+  /** getParentId で問い合わせたチャンネル */
+  parentChecks: string[] = [];
   /** Discord 上にあるチャンネル */
   readonly alive = new Set<string>();
+  /** テキストチャンネル → 今の親カテゴリ（手で動かされたことにするときは直接書き換える） */
+  readonly parents = new Map<string, string | null>();
+  /** getParentId の直前に呼ばれる。投げればその確認は失敗する */
+  beforeParent: (channelId: string) => void = () => {};
   /** 作成の直前に呼ばれる。投げればその作成は失敗する */
   beforeCreate: (name: string) => void = () => {};
   /** channelExists の直前に呼ばれる。投げればその確認は失敗する */
@@ -48,7 +67,9 @@ class FakeGateway
   async createTextChannel(guildId: string, options: TextChannelOptions): Promise<string> {
     this.calls.push({ method: "createTextChannel", guildId, options });
     this.beforeCreate(options.name);
-    return this.newId();
+    const id = this.newId();
+    this.parents.set(id, options.parentId);
+    return id;
   }
   async channelExists(channelId: string): Promise<boolean> {
     this.calls.push({ method: "channelExists", channelId });
@@ -57,6 +78,12 @@ class FakeGateway
   }
   async moveChannel(channelId: string, parentId: string): Promise<void> {
     this.calls.push({ method: "moveChannel", channelId, parentId });
+    this.parents.set(channelId, parentId);
+  }
+  async getParentId(channelId: string): Promise<string | null> {
+    this.parentChecks.push(channelId);
+    this.beforeParent(channelId);
+    return this.parents.get(channelId) ?? null;
   }
   async countChannelsIn(): Promise<number> {
     throw new Error("想定外の呼び出し");
@@ -68,6 +95,7 @@ class FakeGateway
   /** 呼び出し記録を空にする（2 回目の /setup の呼び出しだけを見るため） */
   reset(): void {
     this.calls = [];
+    this.parentChecks = [];
   }
 
   private newId(): string {
@@ -109,6 +137,15 @@ const SETUP: Extract<Interaction, { kind: "command" }> = {
   createdAt: NOW,
 };
 
+/** ChannelOpsQueue の代わりに、入れた移動を記録する */
+class RecordingChannelOps {
+  moves: Array<{ channelId: string; target: MoveTarget }> = [];
+
+  enqueueMove(channelId: string, target: MoveTarget): void {
+    this.moves.push({ channelId, target });
+  }
+}
+
 function setup(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
   const db = openDb(join(dir, "self-agent.db"));
@@ -118,11 +155,13 @@ function setup(t: TestContext) {
   });
   const gateway = new FakeGateway();
   const guildSettings = new GuildSettingsStore(db, () => NOW);
+  const channelOps = new RecordingChannelOps();
   const logs: string[] = [];
   const command = createSetupCommand({
     gateway,
     guildSettings,
     queue: new KeyedSerialQueue(1),
+    channelOps,
     log: (line) => logs.push(line),
   });
   /** /setup を 1 回実行し、ephemeral の返信本文を返す */
@@ -136,7 +175,7 @@ function setup(t: TestContext) {
     assert.equal(reply.message.ephemeral, true);
     return reply.message.text;
   };
-  return { db, gateway, guildSettings, logs, run };
+  return { db, gateway, guildSettings, channelOps, logs, run };
 }
 
 /** 初回の /setup で作られる ID（作る順に ch-1 から振られる） */
@@ -409,24 +448,39 @@ test("ensureGuildLayout: サーバーごとに別々に作って保存する", a
 });
 
 test("/setup はコマンドとして登録され、オーナーの操作で振り分けられる", async (t) => {
-  const { db, gateway, guildSettings } = setup(t);
+  const { db, gateway, guildSettings, channelOps } = setup(t);
   const logs: string[] = [];
+  const log = (line: string): number => logs.push(line);
+  const topicSessions = new TopicSessionStore(db, () => NOW);
+  const tasks = new TaskStore(db, () => NOW);
+  const runner: AgentRunner = { run: async () => assert.fail("想定外の呼び出し") };
   const commands = createCommands({
     gateway,
     guildSettings,
-    topicSessions: new TopicSessionStore(db, () => NOW),
+    topicSessions,
     queue: new KeyedSerialQueue(1),
-    log: (line) => logs.push(line),
+    channelOps,
+    tasks,
+    turnQueue: new KeyedSerialQueue(1),
+    turn: {
+      runner,
+      sessions: new SessionStore(db, () => NOW),
+      seeds: new ChannelSeedStore(db, () => NOW),
+      topicSessions,
+      usage: new UsageStore(db, () => NOW),
+      log,
+    },
+    log,
   });
   assert.deepEqual(
     commands.map((command) => command.def.name),
-    ["help", "setup", "new"],
+    ["help", "setup", "new", "close"],
   );
   const handle = createInteractionHandler({
     cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },
     commands,
-    components: COMPONENTS,
-    log: (line) => logs.push(line),
+    components: createComponents({ topicSessions, tasks, channelOps, log }),
+    log,
   });
 
   const stranger = new FakeResponder();
@@ -442,4 +496,73 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
 
 test("/help に /setup の説明がある", () => {
   assert.match(HELP_TEXT, /^`\/setup` /m);
+});
+
+test("親のずれ: 初回と、すべて self-agent カテゴリにあるときは移動を入れない", async (t) => {
+  const { gateway, channelOps, run } = setup(t);
+  await run();
+  assert.deepEqual(gateway.parentChecks, [FIRST.inbox, FIRST.tasks, FIRST.system]);
+  gateway.reset();
+
+  await run();
+
+  assert.deepEqual(gateway.parentChecks, [FIRST.inbox, FIRST.tasks, FIRST.system]);
+  assert.deepEqual(channelOps.moves, []);
+});
+
+test("親のずれ: self-agent カテゴリの外にある #inbox・#system だけ、self-agent カテゴリへの移動を ChannelOpsQueue に入れる", async (t) => {
+  const { gateway, channelOps, logs, run } = setup(t);
+  await run();
+  // 手で動かされた・カテゴリを作り直した回に移動が失敗した
+  gateway.parents.set(FIRST.inbox, FIRST.done);
+  gateway.parents.set(FIRST.system, null);
+  gateway.reset();
+  logs.length = 0;
+
+  const text = await run();
+
+  assert.deepEqual(channelOps.moves, [
+    { channelId: FIRST.inbox, target: { kind: "category", categoryId: FIRST.home } },
+    { channelId: FIRST.system, target: { kind: "category", categoryId: FIRST.home } },
+  ]);
+  // /setup 自身は移動しない（ChannelOpsQueue が後で順に行う）
+  assert.equal(gateway.calls.filter((call) => call.method === "moveChannel").length, 0);
+  assert.match(text, /^すべて揃っています。/);
+  assert.deepEqual(logs, [
+    "self-agent カテゴリの外にあるチャンネル 2 件を戻します（guild=guild-1）",
+    "/setup を実行しました（guild=guild-1、作成 0 件）",
+  ]);
+});
+
+test("親のずれ: カテゴリを作り直して移せたなら、移動は入れない", async (t) => {
+  const { gateway, channelOps, run } = setup(t);
+  await run();
+  gateway.alive.delete(FIRST.home);
+  gateway.reset();
+
+  await run();
+
+  assert.deepEqual(gateway.parentChecks, [FIRST.inbox, FIRST.tasks, FIRST.system]);
+  assert.deepEqual(channelOps.moves, []);
+});
+
+test("親のずれ: 途中で失敗した回は確認しない。確認に失敗したチャンネルは log に出して次へ進む", async (t) => {
+  const { gateway, channelOps, logs, run } = setup(t);
+  gateway.beforeCreate = (name) => {
+    if (name === "完了") throw new Error("Missing Permissions");
+  };
+  await run();
+  assert.deepEqual(gateway.parentChecks, []);
+
+  gateway.beforeCreate = () => {};
+  gateway.parents.set(FIRST.tasks, null);
+  gateway.beforeParent = (channelId) => {
+    if (channelId === FIRST.inbox) throw new Error("Missing Access");
+  };
+  logs.length = 0;
+  await run();
+
+  assert.deepEqual(gateway.parentChecks, [FIRST.inbox, FIRST.tasks, FIRST.system]);
+  assert.deepEqual(channelOps.moves, [{ channelId: FIRST.tasks, target: { kind: "category", categoryId: FIRST.home } }]);
+  assert.ok(logs.includes("親カテゴリの確認に失敗しました（guild=guild-1）: Missing Access"));
 });

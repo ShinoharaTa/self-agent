@@ -25,12 +25,15 @@ export type Config = {
   turnTimeoutSec: number;
   /** 未設定ならモデルの既定。プロセス内で固定（セッション途中で変えるとキャッシュが崩れるため） */
   effort: Effort | undefined;
+  /** チャンネルのカテゴリ移動の間隔（ミリ秒）。全サーバーで 1 本の列にして、この間を空ける */
+  channelOpGapMs: number;
 };
 
 const DEFAULT_MODEL = "claude-opus-5";
 const DEFAULT_TIME_ZONE = "Asia/Tokyo";
 const DEFAULT_MAX_CONCURRENT_TURNS = 2;
 const DEFAULT_TURN_TIMEOUT_SEC = 300;
+const DEFAULT_CHANNEL_OP_GAP_MS = 2000;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -101,6 +104,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       DEFAULT_TURN_TIMEOUT_SEC,
     ),
     effort: effortLevel(nonEmpty(env.SELF_AGENT_EFFORT)),
+    channelOpGapMs: positiveInteger(
+      "SELF_AGENT_CHANNEL_OP_GAP_MS",
+      nonEmpty(env.SELF_AGENT_CHANNEL_OP_GAP_MS),
+      DEFAULT_CHANNEL_OP_GAP_MS,
+    ),
   };
 }
 

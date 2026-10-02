@@ -17,6 +17,19 @@ export type TopicSession = {
   lastActivityAt: string;
   waitingSince: string | null;
   closedAt: string | null;
+  /** /close で残した要約。閉じる前は null */
+  summary: string | null;
+};
+
+/** session_report の summary の文字数の上限 */
+export const CLOSE_SUMMARY_MAX_LENGTH = 600;
+/** session_report の tasks の件数の上限 */
+export const CLOSE_TASKS_MAX = 10;
+
+/** /close の確認待ちの下書き（session_report で受け取った要約とやることの候補）。sessions.close_draft に JSON で保存する */
+export type CloseDraft = {
+  summary: string;
+  tasks: Array<{ title: string; due?: string }>;
 };
 
 export type NewTopicSession = {
@@ -49,6 +62,25 @@ function toSession(row: Record<string, SQLOutputValue>): TopicSession {
     lastActivityAt: String(row.last_activity_at),
     waitingSince: nullableString(row.waiting_since),
     closedAt: nullableString(row.closed_at),
+    summary: nullableString(row.summary),
+  };
+}
+
+function toCloseDraft(json: string): CloseDraft {
+  const value: unknown = JSON.parse(json);
+  if (typeof value !== "object" || value === null || !("summary" in value) || !("tasks" in value)) {
+    throw new Error("sessions.close_draft が不正です");
+  }
+  const { summary, tasks } = value;
+  if (typeof summary !== "string" || !Array.isArray(tasks)) throw new Error("sessions.close_draft が不正です");
+  return {
+    summary,
+    tasks: tasks.map((task: unknown) => {
+      if (typeof task !== "object" || task === null || !("title" in task) || typeof task.title !== "string") {
+        throw new Error("sessions.close_draft が不正です");
+      }
+      return "due" in task && typeof task.due === "string" ? { title: task.title, due: task.due } : { title: task.title };
+    }),
   };
 }
 
@@ -84,6 +116,40 @@ export class TopicSessionStore {
     const row = this.db
       .prepare("UPDATE sessions SET last_activity_at = ? WHERE channel_id = ? RETURNING *")
       .get(this.now().toISOString(), channelId);
+    return row === undefined ? undefined : toSession(row);
+  }
+
+  /** 今置いているカテゴリを記録する。行が無ければ（セッション以外のチャンネルなら）何もしない */
+  setCategory(channelId: string, categoryId: string): void {
+    this.db.prepare("UPDATE sessions SET category_id = ? WHERE channel_id = ?").run(categoryId, channelId);
+  }
+
+  /** /close の確認待ちの下書きを保存する（前のものは置き換える）。行が無ければ false */
+  saveCloseDraft(channelId: string, draft: CloseDraft): boolean {
+    const result = this.db
+      .prepare("UPDATE sessions SET close_draft = ? WHERE channel_id = ?")
+      .run(JSON.stringify(draft), channelId);
+    return Number(result.changes) > 0;
+  }
+
+  /** 確認待ちの下書き。無ければ undefined */
+  getCloseDraft(channelId: string): CloseDraft | undefined {
+    const row = this.db.prepare("SELECT close_draft FROM sessions WHERE channel_id = ?").get(channelId);
+    const json = nullableString(row?.close_draft);
+    return json === null ? undefined : toCloseDraft(json);
+  }
+
+  clearCloseDraft(channelId: string): void {
+    this.db.prepare("UPDATE sessions SET close_draft = NULL WHERE channel_id = ?").run(channelId);
+  }
+
+  /** 閉じる: 完了にして閉じた時刻と要約を残し、下書きを消す。行が無ければ undefined */
+  close(channelId: string, summary: string): TopicSession | undefined {
+    const row = this.db
+      .prepare(
+        "UPDATE sessions SET state = 'done', closed_at = ?, summary = ?, close_draft = NULL WHERE channel_id = ? RETURNING *",
+      )
+      .get(this.now().toISOString(), summary, channelId);
     return row === undefined ? undefined : toSession(row);
   }
 }

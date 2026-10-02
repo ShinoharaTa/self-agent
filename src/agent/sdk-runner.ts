@@ -7,7 +7,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Config } from "../config.ts";
 import { buildQueryOptions } from "./query-options.ts";
-import type { AgentRunner, RunInput, RunResult, TurnUsage } from "./runner.ts";
+import type { AgentRunner, RunContext, RunInput, RunResult, TurnUsage } from "./runner.ts";
 
 const ERROR_TEXT_LIMIT = 200;
 
@@ -17,24 +17,26 @@ function shorten(text: string): string {
   return oneLine.length > ERROR_TEXT_LIMIT ? `${oneLine.slice(0, ERROR_TEXT_LIMIT)}…` : oneLine;
 }
 
-function describeResultError(result: SDKResultMessage): string {
+/** result のエラーを 1 行にする。errors があれば添える（resume 失敗の文言などを handler が判定できるように残す） */
+export function describeResultError(result: SDKResultMessage): string {
   if (result.subtype === "success") {
     return `success (is_error): ${shorten(result.result)}`;
   }
-  return result.subtype;
+  const errors = result.errors.filter((error) => error.trim() !== "");
+  return errors.length === 0 ? result.subtype : `${result.subtype}: ${shorten(errors.join(" / "))}`;
 }
 
 export class SdkAgentRunner implements AgentRunner {
   private readonly cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">;
-  private readonly createMcpServer: () => McpSdkServerConfigWithInstance;
+  private readonly createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance;
 
   /**
    * MCP サーバーのインスタンスは同時に 1 つの query にしか接続できないため、run ごとに createMcpServer で作る。
-   * ツール定義は毎回同じなのでプロンプトキャッシュには影響しない
+   * ツール定義は毎回同じ（ハンドラが参照する context だけが変わる）なのでプロンプトキャッシュには影響しない
    */
   constructor(
     cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">,
-    createMcpServer: () => McpSdkServerConfigWithInstance,
+    createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance,
   ) {
     this.cfg = cfg;
     this.createMcpServer = createMcpServer;
@@ -51,7 +53,7 @@ export class SdkAgentRunner implements AgentRunner {
   }
 
   private async runQuery(input: RunInput, abortController: AbortController): Promise<RunResult> {
-    const base = buildQueryOptions(this.cfg, this.createMcpServer());
+    const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context));
     const options: Options =
       input.sessionId === undefined
         ? { ...base, abortController }

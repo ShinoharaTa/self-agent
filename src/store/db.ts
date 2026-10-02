@@ -66,6 +66,16 @@ export const MIGRATIONS: readonly string[] = [
     closed_at TEXT
   );
   `,
+  // v4: /close の要約と確認待ちの下書き（session_report の JSON）。resume できなくなった会話などを次のターンで再開するための種（seed）
+  `
+  ALTER TABLE sessions ADD COLUMN summary TEXT;
+  ALTER TABLE sessions ADD COLUMN close_draft TEXT;
+  CREATE TABLE channel_seeds (
+    channel_id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

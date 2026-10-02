@@ -1,6 +1,7 @@
 // スラッシュコマンド・ボタン・セレクト・モーダルの振り分け。発言の処理（handler.ts）とは別経路
 import type { Config } from "../config.ts";
 import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../discord/gateway.ts";
+import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { helpCommand } from "./commands/help.ts";
 import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
 import { createSetupCommand, type SetupDeps } from "./commands/setup.ts";
@@ -24,16 +25,20 @@ export type ComponentHandler = {
   handle(interaction: ComponentInteraction, responder: InteractionResponder): Promise<void>;
 };
 
-/** /setup と /new は同じキュー（queue）を使う */
-export type CommandDeps = SetupDeps & NewSessionDeps;
+/** /setup と /new は同じキュー（queue）、/close は発言のターンと同じキュー（turnQueue）を使う */
+export type CommandDeps = SetupDeps & NewSessionDeps & CloseDeps;
 
 /** 登録するスラッシュコマンド */
 export function createCommands(deps: CommandDeps): CommandHandler[] {
-  return [helpCommand, createSetupCommand(deps), createNewSessionCommand(deps)];
+  return [helpCommand, createSetupCommand(deps), createNewSessionCommand(deps), createCloseCommand(deps)];
 }
 
-/** 名前空間ごとのハンドラ（P2-1 では無し） */
-export const COMPONENTS: readonly ComponentHandler[] = [];
+export type ComponentDeps = Pick<CloseDeps, "topicSessions" | "tasks" | "channelOps" | "log">;
+
+/** 名前空間ごとのボタン・セレクトのハンドラ */
+export function createComponents(deps: ComponentDeps): ComponentHandler[] {
+  return [createCloseComponent(deps)];
+}
 
 export type InteractionDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "ownerUserId">;
