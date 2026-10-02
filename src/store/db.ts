@@ -97,6 +97,19 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE sessions ADD COLUMN delete_prompt_message_id TEXT;
   ALTER TABLE sessions ADD COLUMN deleted_at TEXT;
   `,
+  // v10: #inbox の会話を切り替えたときに残した要約（date は切り替えた日）と、サーバーごとの最後に切り替えた日（いずれも SELF_AGENT_TZ の日付、YYYY-MM-DD）。
+  // usage_log にはターンの最後のステップの入力（input + cache read + cache creation。会話の大きさの目安、失敗したターンは 0）
+  `
+  CREATE TABLE inbox_summaries (
+    id INTEGER PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  ALTER TABLE guild_settings ADD COLUMN inbox_rotated_date TEXT;
+  ALTER TABLE usage_log ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

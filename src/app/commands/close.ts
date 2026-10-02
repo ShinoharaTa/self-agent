@@ -65,8 +65,8 @@ function closable(session: TopicSession | undefined, guildId: string): "ok" | "n
   return session.state === "done" || session.state === "deleted" ? "closed" : "ok";
 }
 
-/** session_report が呼ばれなかったときの要約（返答本文の先頭 600 字） */
-function fallbackSummary(text: string): string {
+/** session_report が呼ばれなかったときの要約（返答本文の先頭 600 字。空なら「（要約なし）」）。#inbox の切り替えの要約にも使う */
+export function fallbackSummary(text: string): string {
   const summary = clip(text.trim(), CLOSE_SUMMARY_MAX_LENGTH);
   return summary === "" ? EMPTY_SUMMARY : summary;
 }

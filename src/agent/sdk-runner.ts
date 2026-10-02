@@ -104,6 +104,8 @@ export class SdkAgentRunner implements AgentRunner {
     // メインループの各ステップの usage を合算する。並列ツール呼び出しは同じ message.id を共有するので重複を除く
     const seenMessageIds = new Set<string>();
     const usage: TurnUsage = { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
+    // メインループの最後のステップの入力（合算しない）
+    let contextTokens = 0;
     let sessionId = input.sessionId;
     let result: SDKResultMessage | undefined;
     let compacted: Compaction | undefined;
@@ -123,6 +125,8 @@ export class SdkAgentRunner implements AgentRunner {
           usage.inputTokens += stepUsage.input_tokens;
           usage.cacheReadInputTokens += stepUsage.cache_read_input_tokens ?? 0;
           usage.cacheCreationInputTokens += stepUsage.cache_creation_input_tokens ?? 0;
+          contextTokens =
+            stepUsage.input_tokens + (stepUsage.cache_read_input_tokens ?? 0) + (stepUsage.cache_creation_input_tokens ?? 0);
         }
         // 会話が長くなり SDK が古い部分を要約した。1 ターンに複数回あれば最後のもの
         if (message.type === "system" && message.subtype === "compact_boundary") {
@@ -180,6 +184,7 @@ export class SdkAgentRunner implements AgentRunner {
       durationMs: result.duration_ms,
       ...(compacted === undefined ? {} : { compacted }),
       toolCalls: tools.count(),
+      contextTokens,
     };
   }
 }

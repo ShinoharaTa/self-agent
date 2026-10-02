@@ -12,6 +12,8 @@ export type GuildSettings = {
   systemChannelId: string | null;
   /** #inbox に投稿してピン留めしたホームパネルのメッセージ */
   homePanelMessageId: string | null;
+  /** #inbox の会話を最後に切り替えた日（SELF_AGENT_TZ の日付、YYYY-MM-DD）。まだ切り替えていなければ null */
+  inboxRotatedDate: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -37,6 +39,7 @@ function toSettings(row: Record<string, SQLOutputValue>): GuildSettings {
     tasksChannelId: nullableString(row.tasks_channel_id),
     systemChannelId: nullableString(row.system_channel_id),
     homePanelMessageId: nullableString(row.home_panel_message_id),
+    inboxRotatedDate: nullableString(row.inbox_rotated_date),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -79,6 +82,17 @@ export class GuildSettingsStore {
           "ON CONFLICT (guild_id) DO UPDATE SET home_panel_message_id = excluded.home_panel_message_id, updated_at = excluded.updated_at",
       )
       .run(guildId, messageId, at, at);
+  }
+
+  /** #inbox の会話を切り替えた日（YYYY-MM-DD）を保存する。行が無ければ作る */
+  setInboxRotatedDate(guildId: string, date: string): void {
+    const at = this.now().toISOString();
+    this.db
+      .prepare(
+        "INSERT INTO guild_settings (guild_id, inbox_rotated_date, created_at, updated_at) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT (guild_id) DO UPDATE SET inbox_rotated_date = excluded.inbox_rotated_date, updated_at = excluded.updated_at",
+      )
+      .run(guildId, date, at, at);
   }
 
   getStateCategory(guildId: string, state: SessionState, ordinal: number): string | undefined {

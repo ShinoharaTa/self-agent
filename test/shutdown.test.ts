@@ -132,6 +132,7 @@ class GatedRunner implements AgentRunner {
       usage: { inputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
       durationMs: 10,
       toolCalls: 0,
+      contextTokens: 1,
     };
   }
 }
@@ -409,6 +410,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
     guildSettings: { get: () => assert.fail("想定外の呼び出し") },
     channelOps: { enqueueMove: () => {} },
     gateway,
+    inboxRotator: { rotateDue: async () => {} },
     now: () => NOW,
     timers: {
       every: (fn) => {

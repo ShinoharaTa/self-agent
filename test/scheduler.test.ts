@@ -60,6 +60,19 @@ class RecordingChannelOps {
   }
 }
 
+/** #inbox の切り替え（rotateDue）の呼び出しを記録する。中身は inbox-rotate.test.ts で確かめる */
+class RecordingRotator {
+  /** 呼ばれたときに渡された stopping */
+  calls: Array<() => boolean> = [];
+  /** 呼ばれたときの他の処理の状態など */
+  onCall: () => Promise<void> = async () => {};
+
+  async rotateDue(stopping: () => boolean): Promise<void> {
+    this.calls.push(stopping);
+    await this.onCall();
+  }
+}
+
 function setup(t: TestContext, idleHours: number = 12, deleteAfterDays: number = 30) {
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
   const db = openDb(join(dir, "self-agent.db"));
@@ -72,6 +85,7 @@ function setup(t: TestContext, idleHours: number = 12, deleteAfterDays: number =
   const guildSettings = new GuildSettingsStore(db, () => clock.now);
   const gateway = new FakeGateway();
   const channelOps = new RecordingChannelOps();
+  const inboxRotator = new RecordingRotator();
   const timers = new FakeTimers();
   const logs: string[] = [];
   const scheduler = new Scheduler({
@@ -80,6 +94,7 @@ function setup(t: TestContext, idleHours: number = 12, deleteAfterDays: number =
     guildSettings,
     channelOps,
     gateway,
+    inboxRotator,
     now: () => clock.now,
     timers,
     log: (line) => logs.push(line),
@@ -101,7 +116,20 @@ function setup(t: TestContext, idleHours: number = 12, deleteAfterDays: number =
   };
   // guild-1 は /setup 済み（#system あり）
   guildSettings.setChannel("guild-1", "systemChannelId", "system-1");
-  return { db, clock, topicSessions, guildSettings, gateway, channelOps, timers, logs, scheduler, createAt, closeAt };
+  return {
+    db,
+    clock,
+    topicSessions,
+    guildSettings,
+    gateway,
+    channelOps,
+    inboxRotator,
+    timers,
+    logs,
+    scheduler,
+    createAt,
+    closeAt,
+  };
 }
 
 function ago(ms: number): Date {
@@ -330,6 +358,7 @@ test("tick: DB の失敗は reject せず log に出す", async () => {
     guildSettings: { get: () => assert.fail("想定外の呼び出し") },
     channelOps: new RecordingChannelOps(),
     gateway: new FakeGateway(),
+    inboxRotator: new RecordingRotator(),
     now: () => NOW,
     timers: new FakeTimers(),
     log: (line) => logs.push(line),
@@ -531,4 +560,48 @@ test("削除の確認: 確認の後に進行中に戻って閉じ直したら、
   assert.equal(env.gateway.sent.length, 2);
   assert.equal(env.gateway.sent[1]?.channelId, "system-1");
   assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-2");
+});
+
+test("tick: 待ちへの移動と削除の確認の後に #inbox の切り替えを行い、idle はその終わりまで待つ", async (t) => {
+  const env = setup(t);
+  env.createAt("topic-1", ago(14 * HOUR_MS));
+  env.closeAt("topic-2", ago(40 * DAY_MS));
+  const seen: string[] = [];
+  let release = (): void => {};
+  env.inboxRotator.onCall = () => {
+    seen.push(`moves=${env.channelOps.moves.length} sent=${env.gateway.sent.length}`);
+    return new Promise<void>((resolve) => (release = resolve));
+  };
+
+  const running = env.scheduler.tick();
+  await flush();
+  assert.deepEqual(seen, ["moves=1 sent=2"]);
+  let idle = false;
+  const waiting = env.scheduler.idle().then(() => {
+    idle = true;
+  });
+  await flush();
+  assert.equal(idle, false);
+
+  release();
+  await Promise.all([running, waiting]);
+  assert.equal(idle, true);
+  assert.equal(env.inboxRotator.calls.length, 1);
+});
+
+test("stop: 実行中の #inbox の切り替えには、停止を始めたことが stopping で伝わる", async (t) => {
+  const env = setup(t);
+  let release = (): void => {};
+  env.inboxRotator.onCall = () => new Promise<void>((resolve) => (release = resolve));
+
+  env.scheduler.start(TICK_INTERVAL_MS);
+  await flush();
+  const stopping = env.inboxRotator.calls[0];
+  assert.ok(stopping !== undefined);
+  assert.equal(stopping(), false);
+
+  env.scheduler.stop();
+  assert.equal(stopping(), true);
+  release();
+  await env.scheduler.idle();
 });

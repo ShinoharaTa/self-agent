@@ -35,7 +35,14 @@ export type Config = {
   autoSessionPerDay: number;
   /** 完了からこの日数経ったセッションについて、チャンネルを削除するか #system で確認する */
   deleteAfterDays: number;
+  /** 毎日この時刻（timeZone）を過ぎたら #inbox の会話を要約して新しいセッションに切り替える */
+  inboxRotateAt: TimeOfDay;
+  /** #inbox の直近の成功したターンの最後のステップの入力（input + cache read + cache creation）がこれを超えたら、日次を待たずに切り替える */
+  inboxMaxInputTokens: number;
 };
+
+/** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
+export type TimeOfDay = { hour: number; minute: number };
 
 const DEFAULT_MODEL = "claude-opus-5";
 const DEFAULT_TIME_ZONE = "Asia/Tokyo";
@@ -46,6 +53,8 @@ const DEFAULT_SHUTDOWN_GRACE_SEC = 30;
 const DEFAULT_IDLE_HOURS = 12;
 const DEFAULT_AUTO_SESSION_PER_DAY = 3;
 const DEFAULT_DELETE_AFTER_DAYS = 30;
+const DEFAULT_INBOX_ROTATE_AT: TimeOfDay = { hour: 4, minute: 0 };
+const DEFAULT_INBOX_MAX_INPUT_TOKENS = 150000;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -82,6 +91,16 @@ function positiveInteger(name: string, value: string | undefined, fallback: numb
     throw new Error(`${name} は正の整数で指定してください`);
   }
   return parsed;
+}
+
+/** `HH:MM`（00:00〜23:59、時・分とも 2 桁）。それ以外はエラー */
+function timeOfDay(name: string, value: string | undefined, fallback: TimeOfDay): TimeOfDay {
+  if (value === undefined) return fallback;
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  if (match === null) {
+    throw new Error(`${name} は HH:MM（00:00〜23:59）で指定してください`);
+  }
+  return { hour: Number(match[1]), minute: Number(match[2]) };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -136,6 +155,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "SELF_AGENT_DELETE_AFTER_DAYS",
       nonEmpty(env.SELF_AGENT_DELETE_AFTER_DAYS),
       DEFAULT_DELETE_AFTER_DAYS,
+    ),
+    inboxRotateAt: timeOfDay(
+      "SELF_AGENT_INBOX_ROTATE_AT",
+      nonEmpty(env.SELF_AGENT_INBOX_ROTATE_AT),
+      DEFAULT_INBOX_ROTATE_AT,
+    ),
+    inboxMaxInputTokens: positiveInteger(
+      "SELF_AGENT_INBOX_MAX_INPUT_TOKENS",
+      nonEmpty(env.SELF_AGENT_INBOX_MAX_INPUT_TOKENS),
+      DEFAULT_INBOX_MAX_INPUT_TOKENS,
     ),
   };
 }

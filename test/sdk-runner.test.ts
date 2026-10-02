@@ -148,12 +148,38 @@ test("SdkAgentRunner: 成功ならメインループの usage を合算し、並
     usage: { inputTokens: 15, cacheReadInputTokens: 2200, cacheCreationInputTokens: 200 },
     durationMs: 4200,
     toolCalls: 0,
+    // 最後のステップ（msg-2）の入力
+    contextTokens: 1205,
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.prompt, "明日買い物に行く");
   assert.equal("resume" in calls[0]!.options, false);
   assert.ok(calls[0]!.options.abortController instanceof AbortController);
   assert.equal(calls[0]!.options.strictMcpConfig, true);
+});
+
+test("SdkAgentRunner: contextTokens はメインループの最後のステップの入力（input + cache read + cache creation）。合算せず、後から届いたサブエージェントの分は使わない", async () => {
+  const { runner } = setupRunner(
+    messages(
+      init("session-1"),
+      assistant("msg-1", { input: 3, cacheRead: 50000, cacheCreation: 2000 }),
+      assistant("msg-2", { input: 4, cacheRead: 52000, cacheCreation: 300 }),
+      assistant("msg-2", { input: 4, cacheRead: 52000, cacheCreation: 300 }),
+      assistant("msg-sub", { input: 999, cacheRead: 999, cacheCreation: 999 }, "toolu-1"),
+      success("session-1", "調べました"),
+    ),
+  );
+
+  const result = await runner.run({ prompt: "調べて" });
+
+  assert.ok(result.ok);
+  assert.equal(result.contextTokens, 52304);
+  assert.deepEqual(result.usage, { inputTokens: 7, cacheReadInputTokens: 102000, cacheCreationInputTokens: 2300 });
+
+  // assistant メッセージが無ければ 0
+  const empty = await setupRunner(messages(success("session-1", "続き"))).runner.run({ prompt: "続き" });
+  assert.ok(empty.ok);
+  assert.equal(empty.contextTokens, 0);
 });
 
 test("SdkAgentRunner: sessionId を渡せば resume する", async () => {

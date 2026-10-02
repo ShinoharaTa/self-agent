@@ -6,6 +6,7 @@ import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
 import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
+import { InboxRotator } from "./app/inbox-rotate.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { KeyedSerialQueue } from "./app/queue.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
@@ -16,6 +17,7 @@ import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
+import { InboxSummaryStore } from "./store/inbox-summaries.ts";
 import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
@@ -40,6 +42,7 @@ const usage = new UsageStore(db, now);
 const guildSettings = new GuildSettingsStore(db, now);
 const topicSessions = new TopicSessionStore(db, now);
 const seeds = new ChannelSeedStore(db, now);
+const inboxSummaries = new InboxSummaryStore(db, now);
 const log = (message: string): void => console.error(message);
 
 const gateway = new DiscordGateway(config.allowedGuildIds);
@@ -115,8 +118,28 @@ const handleInteraction = createInteractionHandler({
   }),
   log,
 });
-// 定期処理: 発言の無い進行中のセッションを待ちに移し、完了から日数の経ったセッションの削除を #system で確認する
-const scheduler = new Scheduler({ cfg: config, topicSessions, guildSettings, channelOps, gateway, now, log });
+// #inbox の切り替え: 要約のターンは発言と同じキュー（turnQueue、key は #inbox の channelId）で行う
+const inboxRotator = new InboxRotator({
+  cfg: config,
+  guildSettings,
+  inboxSummaries,
+  turnQueue,
+  turn,
+  gateway,
+  now,
+  log,
+});
+// 定期処理: 発言の無い進行中のセッションを待ちに移し、完了から日数の経ったセッションの削除を #system で確認し、#inbox の会話を切り替える
+const scheduler = new Scheduler({
+  cfg: config,
+  topicSessions,
+  guildSettings,
+  channelOps,
+  gateway,
+  inboxRotator,
+  now,
+  log,
+});
 
 // 停止: シグナルで新しい受付と定期処理を止め、進行中の処理（返信まで）を最大 shutdownGraceSec 秒待ってから gateway と DB を閉じる
 const lifecycle = createShutdown(

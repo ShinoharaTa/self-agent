@@ -92,6 +92,37 @@ test("openDb: v6 の DB を v7 に上げても usage_log の行は残り、tool_
   );
 });
 
+test("openDb: v9 の DB を v10 に上げても usage_log の行は残り、context_tokens は 0。以後は最後のステップの入力を記録できる", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // 最後のステップの入力の記録より前（v9）の DB を作る
+  const v9 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 9)) v9.exec(migration);
+  v9.exec("PRAGMA user_version = 9");
+  v9.prepare(
+    "INSERT INTO usage_log (at, key, session_id, ok, input_tokens, cache_read_input_tokens, cache_creation_input_tokens) " +
+      "VALUES ('2026-10-01T00:00:00.000Z', 'inbox-1', 'session-1', 1, 10, 200000, 300)",
+  ).run();
+  v9.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 10);
+  const usage = new UsageStore(db, () => NOW);
+  usage.record({ key: "inbox-1", ok: true, cacheReadInputTokens: 90000, contextTokens: 45000 });
+  usage.record({ key: "inbox-1", ok: false });
+  assert.deepEqual(
+    usage.recent(10).map((entry) => [entry.ok, entry.cacheReadInputTokens, entry.contextTokens]),
+    [
+      [false, null, 0],
+      [true, 90000, 45000],
+      [true, 200000, 0],
+    ],
+  );
+});
+
 test("UsageStore.summarize: since ちょうどを含み、その前は含めない。成功・失敗・トークン・compaction・ツール呼び出しを合計する", (t) => {
   const { usage, recordAt } = setup(t);
   recordSamples(recordAt);
@@ -127,6 +158,26 @@ test("UsageStore.summarize: since ちょうどを含み、その前は含めな�
     compactions: 0,
     toolCalls: 0,
   });
+});
+
+test("UsageStore.countAfter / latestOkAfter: その key で after より後（ちょうどは含まない）のターン。after が無ければすべて", (t) => {
+  const { usage, recordAt } = setup(t);
+  recordAt("2026-10-02T00:00:00.000Z", ok(1, 10, 100, 0));
+  recordAt("2026-10-02T00:01:00.000Z", ok(2, 20, 200, 0));
+  recordAt("2026-10-02T00:02:00.000Z", { ok: false, toolCalls: 0 });
+  // 別の key は数えない
+  usage.record({ key: "topic-1", ...ok(9, 9, 9, 0) });
+
+  assert.equal(usage.countAfter("inbox-1", undefined), 3);
+  assert.equal(usage.countAfter("inbox-1", new Date("2026-10-02T00:00:00.000Z")), 2);
+  assert.equal(usage.countAfter("inbox-1", new Date("2026-10-02T00:02:00.000Z")), 0);
+  assert.equal(usage.countAfter("inbox-2", undefined), 0);
+
+  // 失敗したターンは飛ばして、最新の成功したターンを返す
+  assert.equal(usage.latestOkAfter("inbox-1", undefined)?.cacheCreationInputTokens, 200);
+  assert.equal(usage.latestOkAfter("inbox-1", new Date("2026-10-02T00:00:59.999Z"))?.inputTokens, 2);
+  assert.equal(usage.latestOkAfter("inbox-1", new Date("2026-10-02T00:01:00.000Z")), undefined);
+  assert.equal(usage.latestOkAfter("inbox-2", undefined), undefined);
 });
 
 test("startOfLocalDay: タイムゾーンの日付の 0 時（n 日前にずらせる。月・年をまたぐ）", () => {

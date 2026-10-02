@@ -50,6 +50,31 @@ export function resumeSeed(session: TopicSession | undefined): string | undefine
     : `${RESUME_SEED_HEADER}\n${session.summary}`;
 }
 
+/** ターンの結果を usage_log に記録する（成功ならトークン・compaction・最後のステップの入力も）。compaction が起きたら log に出す */
+export function recordTurnUsage(deps: Pick<TurnDeps, "usage" | "log">, key: string, result: RunResult): void {
+  const { usage, log } = deps;
+  if (!result.ok) {
+    usage.record({ key, sessionId: result.sessionId, ok: false, toolCalls: result.toolCalls });
+    return;
+  }
+  usage.record({
+    key,
+    sessionId: result.sessionId,
+    ok: true,
+    durationMs: result.durationMs,
+    inputTokens: result.usage.inputTokens,
+    cacheReadInputTokens: result.usage.cacheReadInputTokens,
+    cacheCreationInputTokens: result.usage.cacheCreationInputTokens,
+    compacted: result.compacted !== undefined,
+    toolCalls: result.toolCalls,
+    contextTokens: result.contextTokens,
+  });
+  if (result.compacted !== undefined) {
+    const { trigger, preTokens } = result.compacted;
+    log(`会話が長くなったため SDK が古い部分を要約しました（trigger=${trigger}、要約前 ${preTokens ?? "?"} トークン）`);
+  }
+}
+
 /**
  * チャンネルで 1 ターン実行する（会話の key は channelId）。呼び出し側で同じチャンネルのターンを直列にしておくこと。
  * - SDK セッションがあれば resume する。無く seed があれば prompt の先頭に付け、成功したら消す
@@ -59,31 +84,16 @@ export function resumeSeed(session: TopicSession | undefined): string | undefine
  * 返す結果の失敗は呼び出し側で返信・log する
  */
 export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise<RunResult> {
-  const { runner, sessions, seeds, topicSessions, usage, log } = deps;
+  const { runner, sessions, seeds, topicSessions, log } = deps;
   const key = turn.channelId;
   const context = { guildId: turn.guildId, channelId: turn.channelId };
 
   const runOnce = async (prompt: string, sessionId: string | undefined): Promise<RunResult> => {
     const result = await runner.run({ prompt, sessionId, context });
+    recordTurnUsage(deps, key, result);
     if (result.ok) {
-      usage.record({
-        key,
-        sessionId: result.sessionId,
-        ok: true,
-        durationMs: result.durationMs,
-        inputTokens: result.usage.inputTokens,
-        cacheReadInputTokens: result.usage.cacheReadInputTokens,
-        cacheCreationInputTokens: result.usage.cacheCreationInputTokens,
-        compacted: result.compacted !== undefined,
-        toolCalls: result.toolCalls,
-      });
-      if (result.compacted !== undefined) {
-        const { trigger, preTokens } = result.compacted;
-        log(`会話が長くなったため SDK が古い部分を要約しました（trigger=${trigger}、要約前 ${preTokens ?? "?"} トークン）`);
-      }
       sessions.set(key, result.sessionId);
     } else {
-      usage.record({ key, sessionId: result.sessionId, ok: false, toolCalls: result.toolCalls });
       // 途中まで（task_add 済みなど）の文脈を次のターンに残す。同じセッションなら失敗の回数はそのまま
       if (result.sessionRecorded && result.sessionId !== undefined && result.sessionId !== sessions.get(key)) {
         sessions.set(key, result.sessionId);

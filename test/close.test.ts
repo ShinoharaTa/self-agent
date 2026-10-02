@@ -111,6 +111,7 @@ function ok(text: string, sessionId: string = "session-1"): RunResult {
     usage: { inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300 },
     durationMs: 4200,
     toolCalls: 1,
+    contextTokens: 2310,
   };
 }
 
