@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
-import { createHandler, EMPTY_REPLY, FAILURE_REPLY } from "../src/app/handler.ts";
+import { createHandler, EMPTY_REPLY, FAILURE_REPLY, MAX_TURNS_REPLY } from "../src/app/handler.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
-import { RESUME_SEED_HEADER } from "../src/app/turn.ts";
+import { RESUME_FAILURE_LIMIT, RESUME_SEED_HEADER } from "../src/app/turn.ts";
 import type { Gateway, IncomingMessage } from "../src/discord/gateway.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
@@ -150,6 +150,14 @@ function context(channelId: string = "inbox-1") {
 const RESUME_FAILURE: RunResult = {
   ok: false,
   errorMessage: "error_during_execution: No conversation found with session ID: session-old",
+  sessionRecorded: false,
+};
+
+/** result が届かなかった失敗（SDK が会話を記録したか分からない） */
+const CRASH: RunResult = {
+  ok: false,
+  errorMessage: "exception: Error: Claude Code process exited with code 1",
+  sessionRecorded: false,
 };
 
 /** /new で作ったセッションのチャンネル（topic-1、guild-1、作成は NOW） */
@@ -201,9 +209,9 @@ test("2 ターン目は保存した sessionId で resume する", async (t) => {
   assert.equal(sessions.get("inbox-1"), "session-1");
 });
 
-test("ok:false なら usage に ok=0 で記録して失敗の返信をし、session は保存しない", async (t) => {
+test("ok:false（result が届かなかった失敗）なら usage に ok=0 で記録して失敗の返信をし、session は保存しない", async (t) => {
   const { gateway, sessions, usage, logs, handle } = setup(t, [
-    { ok: false, errorMessage: "error_max_turns", sessionId: "session-x" },
+    { ok: false, errorMessage: "exception: Error: boom", sessionId: "session-x", sessionRecorded: false },
   ]);
   gateway.beforeSend = () => {
     assert.equal(usage.recent(10).length, 1);
@@ -218,7 +226,7 @@ test("ok:false なら usage に ok=0 で記録して失敗の返信をし、sess
   assert.equal(entry?.sessionId, "session-x");
   assert.equal(entry?.inputTokens, null);
   assert.equal(logs.length, 1);
-  assert.match(logs[0]!, /error_max_turns/);
+  assert.match(logs[0]!, /exception: Error: boom/);
   assert.equal(gateway.typingStopped, 1);
 });
 
@@ -398,7 +406,7 @@ test("resume 失敗: SDK セッションを捨てて要約の seed を入れ、s
 test("resume 失敗: 要約が無ければ seed は題名だけ。やり直しも失敗したらそれ以上やり直さず、seed は残す", async (t) => {
   const { gateway, runner, sessions, seeds, topicSessions, handle } = setup(t, [
     RESUME_FAILURE,
-    { ok: false, errorMessage: "error_max_turns" },
+    CRASH,
   ]);
   topicSessions.create(TOPIC);
   sessions.set("topic-1", "session-old");
@@ -437,7 +445,7 @@ test("resume 失敗: #inbox では seed を入れずに sessionId 無しで 1 �
 
 test("resume 以外の失敗ではやり直さず、SDK セッションも seed もそのまま", async (t) => {
   const { gateway, runner, sessions, seeds, topicSessions, handle } = setup(t, [
-    { ok: false, errorMessage: "timeout", sessionId: "session-old" },
+    { ok: false, errorMessage: "timeout", sessionId: "session-old", sessionRecorded: false },
   ]);
   topicSessions.create(TOPIC);
   sessions.set("topic-1", "session-old");
@@ -446,13 +454,15 @@ test("resume 以外の失敗ではやり直さず、SDK セッションも seed 
 
   assert.equal(runner.inputs.length, 1);
   assert.equal(sessions.get("topic-1"), "session-old");
+  // タイムアウトは連続失敗に数えない
+  assert.equal(sessions.failureCount("topic-1"), 0);
   assert.equal(seeds.get("topic-1"), undefined);
   assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY]);
 });
 
 test("seed: SDK セッションが無く seed があれば prompt の先頭に付け、成功したら消す。失敗なら残す", async (t) => {
   const { runner, sessions, seeds, topicSessions, handle } = setup(t, [
-    { ok: false, errorMessage: "timeout" },
+    { ok: false, errorMessage: "timeout", sessionRecorded: false },
     okResult("session-a", "了解"),
     okResult("session-a", "次"),
   ]);
@@ -489,4 +499,130 @@ test("seed: SDK セッションがあれば seed は付けずに resume する",
   assert.equal(runner.inputs[0]!.prompt, buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo"));
   assert.equal(runner.inputs[0]!.sessionId, "session-1");
   assert.equal(seeds.get("inbox-1"), "使わない");
+});
+
+test("error_max_turns: SDK が記録した session_id を保存して専用の返信をし、次の発言はそこから resume する", async (t) => {
+  const { gateway, runner, sessions, usage, handle } = setup(t, [
+    { ok: false, errorMessage: "error_max_turns", sessionId: "session-x", sessionRecorded: true },
+    okResult("session-x", "続きです"),
+  ]);
+
+  await handle(message({ id: "message-1" }));
+
+  assert.equal(sessions.get("inbox-1"), "session-x");
+  assert.deepEqual(gateway.sent, [{ channelId: "inbox-1", text: MAX_TURNS_REPLY, replyToId: "message-1" }]);
+  assert.equal(MAX_TURNS_REPLY, "途中までで止めました（手順が多すぎました）。続ける場合はもう一度送ってください。");
+  assert.equal(usage.recent(10)[0]?.ok, false);
+
+  await handle(message({ id: "message-2", content: "続けて" }));
+
+  assert.equal(runner.inputs[1]!.sessionId, "session-x");
+  assert.equal(gateway.sent[1]?.text, "続きです");
+});
+
+test("result が届かなかった失敗（例外・タイムアウト）では、途中で受け取った session_id があっても保存しない", async (t) => {
+  const { gateway, sessions, handle } = setup(t, [
+    { ok: false, errorMessage: "timeout", sessionId: "session-x", sessionRecorded: false },
+    { ok: false, errorMessage: "exception: Error: boom", sessionId: "session-y", sessionRecorded: false },
+  ]);
+
+  await handle(message({ id: "message-1" }));
+  await handle(message({ id: "message-2" }));
+
+  assert.equal(sessions.get("inbox-1"), undefined);
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY, FAILURE_REPLY]);
+});
+
+test("連続失敗: 同じ SDK セッションで 2 回までは捨てず、3 回目で捨てて seed を入れ、sessionId 無しで 1 回だけやり直す", async (t) => {
+  const { gateway, runner, sessions, seeds, topicSessions, logs, handle } = setup(t, [
+    CRASH,
+    CRASH,
+    CRASH,
+    okResult("session-new", "続きをどうぞ"),
+  ]);
+  assert.equal(RESUME_FAILURE_LIMIT, 3);
+  topicSessions.create(TOPIC);
+  sessions.set("topic-1", "session-old");
+
+  await handle(message({ id: "message-1", channelId: "topic-1" }));
+  await handle(message({ id: "message-2", channelId: "topic-1" }));
+
+  assert.equal(runner.inputs.length, 2);
+  assert.equal(sessions.get("topic-1"), "session-old");
+  assert.equal(sessions.failureCount("topic-1"), 2);
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY, FAILURE_REPLY]);
+  assert.equal(logs.filter((line) => line.includes("SDK セッションを捨てて")).length, 0);
+
+  await handle(message({ id: "message-3", channelId: "topic-1", content: "予算は" }));
+
+  const prompt = buildTurnPrompt("予算は", CREATED_AT, "Asia/Tokyo", "旅行の計画");
+  const seed = `${RESUME_SEED_HEADER}\n題名: 旅行の計画`;
+  assert.deepEqual(
+    runner.inputs.slice(2).map((input) => [input.prompt, input.sessionId]),
+    [
+      [prompt, "session-old"],
+      [`${seed}\n\n${prompt}`, undefined],
+    ],
+  );
+  assert.equal(sessions.get("topic-1"), "session-new");
+  assert.equal(sessions.failureCount("topic-1"), 0);
+  assert.equal(seeds.get("topic-1"), undefined);
+  assert.equal(gateway.sent[2]?.text, "続きをどうぞ");
+  assert.ok(
+    logs.includes(
+      "連続失敗のため（3 回）、SDK セッションを捨てて新しいセッションで 1 回だけやり直します: " +
+        "exception: Error: Claude Code process exited with code 1",
+    ),
+    logs.join("\n"),
+  );
+});
+
+test("連続失敗: 成功したら回数を 0 に戻す。タイムアウトは数えない", async (t) => {
+  const timeout: RunResult = { ok: false, errorMessage: "timeout", sessionRecorded: false };
+  const { runner, sessions, handle } = setup(t, [
+    CRASH,
+    CRASH,
+    okResult("session-old", "はい"),
+    CRASH,
+    timeout,
+    timeout,
+    CRASH,
+  ]);
+  sessions.set("inbox-1", "session-old");
+
+  await handle(message());
+  await handle(message());
+  assert.equal(sessions.failureCount("inbox-1"), 2);
+  await handle(message());
+  assert.equal(sessions.failureCount("inbox-1"), 0);
+
+  for (let i = 0; i < 4; i++) await handle(message());
+
+  // CRASH・timeout・timeout・CRASH で 2 回。やり直しは起きていない
+  assert.equal(sessions.failureCount("inbox-1"), 2);
+  assert.equal(runner.inputs.length, 7);
+  assert.ok(runner.inputs.every((input) => input.sessionId === "session-old"));
+  assert.equal(sessions.get("inbox-1"), "session-old");
+});
+
+test("連続失敗: 手順数の上限（error_max_turns）は数えず、何回続いても会話を捨てない", async (t) => {
+  const maxTurns: RunResult = {
+    ok: false,
+    errorMessage: "error_max_turns",
+    sessionId: "session-old",
+    sessionRecorded: true,
+  };
+  const { gateway, runner, sessions, handle } = setup(t, [maxTurns, maxTurns, maxTurns, maxTurns]);
+  sessions.set("inbox-1", "session-old");
+
+  for (let i = 0; i < 4; i++) await handle(message());
+
+  assert.equal(runner.inputs.length, 4);
+  assert.ok(runner.inputs.every((input) => input.sessionId === "session-old"));
+  assert.equal(sessions.failureCount("inbox-1"), 0);
+  assert.equal(sessions.get("inbox-1"), "session-old");
+  assert.deepEqual(
+    gateway.sent.map((sent) => sent.text),
+    [MAX_TURNS_REPLY, MAX_TURNS_REPLY, MAX_TURNS_REPLY, MAX_TURNS_REPLY],
+  );
 });

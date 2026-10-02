@@ -19,7 +19,16 @@ export type TurnUsage = {
 
 export type RunResult =
   | { ok: true; text: string; sessionId: string; usage: TurnUsage; durationMs: number }
-  | { ok: false; errorMessage: string; sessionId?: string };
+  | {
+      ok: false;
+      errorMessage: string;
+      sessionId?: string;
+      /**
+       * sessionId が result メッセージのもの（SDK が会話を記録済みで、次のターンで resume できる）なら true。
+       * 例外・タイムアウトなど result を受け取れなかった失敗では false
+       */
+      sessionRecorded: boolean;
+    };
 
 export interface AgentRunner {
   run(input: RunInput): Promise<RunResult>;
