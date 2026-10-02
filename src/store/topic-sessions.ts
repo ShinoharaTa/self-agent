@@ -119,6 +119,35 @@ export class TopicSessionStore {
     return row === undefined ? undefined : toSession(row);
   }
 
+  /** 待ちにする: state を waiting にして waiting_since を今にする。行が無ければ undefined */
+  setWaiting(channelId: string): TopicSession | undefined {
+    const row = this.db
+      .prepare("UPDATE sessions SET state = 'waiting', waiting_since = ? WHERE channel_id = ? RETURNING *")
+      .get(this.now().toISOString(), channelId);
+    return row === undefined ? undefined : toSession(row);
+  }
+
+  /** 進行中に戻す: state を active にして waiting_since と closed_at を消す（要約は残す）。行が無ければ undefined */
+  setActive(channelId: string): TopicSession | undefined {
+    const row = this.db
+      .prepare(
+        "UPDATE sessions SET state = 'active', waiting_since = NULL, closed_at = NULL WHERE channel_id = ? RETURNING *",
+      )
+      .get(channelId);
+    return row === undefined ? undefined : toSession(row);
+  }
+
+  /** 進行中で、最終発言の時刻が before 以前（ちょうどを含む）のセッションを、最終発言の古い順に limit 件まで */
+  listIdle(before: Date, limit: number): TopicSession[] {
+    return this.db
+      .prepare(
+        "SELECT * FROM sessions WHERE state = 'active' AND last_activity_at <= ? " +
+          "ORDER BY last_activity_at, channel_id LIMIT ?",
+      )
+      .all(before.toISOString(), limit)
+      .map(toSession);
+  }
+
   /** 今置いているカテゴリを記録する。行が無ければ（セッション以外のチャンネルなら）何もしない */
   setCategory(channelId: string, categoryId: string): void {
     this.db.prepare("UPDATE sessions SET category_id = ? WHERE channel_id = ?").run(categoryId, channelId);

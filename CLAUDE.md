@@ -31,9 +31,11 @@ src/
 │   ├── access.ts        # 発言の受付判定。受け付けるチャンネル（#inbox と /new で作ったセッション）は DB から引く（/setup 前のサーバーだけ env の #inbox）
 │   ├── turn.ts          # 1 チャンネルの 1 ターン（発言・/close 共通）。usage・SDK セッションの保存、seed の付与、resume 失敗からの復旧
 │   ├── channel-ops.ts   # チャンネルのカテゴリ移動の列（全サーバーで直列・間隔・同じチャンネルはまとめる・再試行。満杯なら `完了 N` を作る）
-│   ├── shutdown.ts      # 停止処理（シグナルで新しい受付を止め、進行中の処理を返信まで上限付きで待ってから gateway と DB を閉じる）
+│   ├── session-state.ts # セッションの状態遷移（純関数 transition）と、その DB・カテゴリ移動への反映（発言・/wait・[続ける]・idle）
+│   ├── scheduler.ts     # 定期処理（起動直後と 5 分ごとの tick）。最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、[続ける][閉じる] 付きで知らせる
+│   ├── shutdown.ts      # 停止処理（シグナルで新しい受付と定期処理を止め、進行中の処理を返信まで上限付きで待ってから gateway と DB を閉じる）
 │   ├── interactions.ts  # コマンド・ボタン等の振り分け（許可サーバー・オーナー判定 → コマンド名 / custom_id の名前空間）と起動時のコマンド登録
-│   └── commands/        # スラッシュコマンド。1 コマンド 1 ファイル（help.ts, setup.ts など）。close.ts は確認のボタン（`close:`）も持つ
+│   └── commands/        # スラッシュコマンド。1 コマンド 1 ファイル（help.ts, setup.ts など）。close.ts は確認と [閉じる] のボタン（`close:`）、wait.ts は [続ける]（`wait:`）も持つ
 ├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ）・Options・システムプロンプト・ツール（タスク・session_report）
 ├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sdk-sessions（SDK の session_id）/ usage / guild-settings（/setup で作ったカテゴリ・チャンネルの ID）/ topic-sessions（/new で作ったセッションのチャンネル、/close の要約と下書き）/ channel-seeds（次のターンの prompt の先頭に付ける文）
 └── discord/     # Gateway インタフェースと discord.js 実装。convert.ts は内部型 ⇔ Discord の形の変換（discord.js は型だけ import）
@@ -60,6 +62,7 @@ docs/            # REQUIREMENTS.md, design/, research/, archive/, plan/（フェ
 | `SELF_AGENT_TURN_TIMEOUT_SEC` | 1 ターンの打ち切りまでの秒数。既定 300 |
 | `SELF_AGENT_CHANNEL_OP_GAP_MS` | チャンネルのカテゴリ移動の間隔（ミリ秒、全サーバー共通で直列）。既定 2000 |
 | `SELF_AGENT_SHUTDOWN_GRACE_SEC` | 停止時（SIGINT / SIGTERM）に進行中のターンを返信まで待つ上限の秒数。既定 30。待つ間は新しい発言・操作を受け付けない。2 回目のシグナルでは待たずに終了する |
+| `SELF_AGENT_IDLE_HOURS` | 進行中のセッションを、最後の発言からこの時間（正の整数、時間単位）経ったら待ちに移す。既定 12 |
 
 ## コーディング規約
 

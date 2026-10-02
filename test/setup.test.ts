@@ -107,6 +107,7 @@ class FakeGateway
 
 type ResponderCall =
   | { method: "defer"; ephemeral: boolean }
+  | { method: "deferUpdate" }
   | { method: "reply" | "update"; message: OutgoingMessage }
   | { method: "showModal"; modal: ModalDef };
 
@@ -115,6 +116,9 @@ class FakeResponder implements InteractionResponder {
 
   async defer(ephemeral: boolean): Promise<void> {
     this.calls.push({ method: "defer", ephemeral });
+  }
+  async deferUpdate(): Promise<void> {
+    this.calls.push({ method: "deferUpdate" });
   }
   async reply(message: OutgoingMessage): Promise<void> {
     this.calls.push({ method: "reply", message });
@@ -454,6 +458,15 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
   const topicSessions = new TopicSessionStore(db, () => NOW);
   const tasks = new TaskStore(db, () => NOW);
   const runner: AgentRunner = { run: async () => assert.fail("想定外の呼び出し") };
+  const turnQueue = new KeyedSerialQueue(1);
+  const turn = {
+    runner,
+    sessions: new SdkSessionStore(db, () => NOW),
+    seeds: new ChannelSeedStore(db, () => NOW),
+    topicSessions,
+    usage: new UsageStore(db, () => NOW),
+    log,
+  };
   const commands = createCommands({
     gateway,
     guildSettings,
@@ -461,25 +474,23 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     queue: new KeyedSerialQueue(1),
     channelOps,
     tasks,
-    turnQueue: new KeyedSerialQueue(1),
-    turn: {
-      runner,
-      sessions: new SdkSessionStore(db, () => NOW),
-      seeds: new ChannelSeedStore(db, () => NOW),
-      topicSessions,
-      usage: new UsageStore(db, () => NOW),
-      log,
-    },
+    turnQueue,
+    turn,
     log,
   });
   assert.deepEqual(
     commands.map((command) => command.def.name),
-    ["help", "setup", "new", "close"],
+    ["help", "setup", "new", "close", "wait"],
+  );
+  const components = createComponents({ topicSessions, tasks, channelOps, turnQueue, turn, log });
+  assert.deepEqual(
+    components.map((component) => component.namespace),
+    ["close", "wait"],
   );
   const handle = createInteractionHandler({
     cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },
     commands,
-    components: createComponents({ topicSessions, tasks, channelOps, log }),
+    components,
     log,
   });
 

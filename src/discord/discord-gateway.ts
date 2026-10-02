@@ -84,6 +84,8 @@ function toInteraction(interaction: SupportedInteraction): Interaction {
 
 class DiscordResponder implements InteractionResponder {
   private readonly interaction: SupportedInteraction;
+  /** deferUpdate で保留したか。保留中の応答（editReply）は元メッセージになるので、reply は追加のメッセージにする */
+  private updateDeferred = false;
 
   constructor(interaction: SupportedInteraction) {
     this.interaction = interaction;
@@ -93,10 +95,22 @@ class DiscordResponder implements InteractionResponder {
     await this.interaction.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
   }
 
+  async deferUpdate(): Promise<void> {
+    const interaction = this.interaction;
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      await interaction.deferUpdate();
+    } else if (interaction.isModalSubmit() && interaction.isFromMessage()) {
+      await interaction.deferUpdate();
+    } else {
+      throw new Error("deferUpdate はボタン・セレクト・メッセージから開いたモーダルにだけ使えます");
+    }
+    this.updateDeferred = true;
+  }
+
   async reply(message: OutgoingMessage): Promise<void> {
     const interaction = this.interaction;
     const flags = message.ephemeral === true ? MessageFlags.Ephemeral : undefined;
-    if (interaction.replied) {
+    if (interaction.replied || this.updateDeferred) {
       await interaction.followUp({ ...toPayload(message), flags });
     } else if (interaction.deferred) {
       // 公開範囲は defer 時に決まっているので flags は渡さない
@@ -108,7 +122,10 @@ class DiscordResponder implements InteractionResponder {
 
   async update(message: OutgoingMessage): Promise<void> {
     const interaction = this.interaction;
-    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+    if (this.updateDeferred) {
+      // deferUpdate の後は、保留中の応答（元メッセージ）を書き換える
+      await interaction.editReply(toPayload(message));
+    } else if (interaction.isButton() || interaction.isStringSelectMenu()) {
       await interaction.update(toPayload(message));
     } else if (interaction.isModalSubmit() && interaction.isFromMessage()) {
       await interaction.update(toPayload(message));
@@ -190,6 +207,11 @@ export class DiscordGateway implements Gateway {
         await channel.send({ content: chunk, allowedMentions: ALLOWED_MENTIONS });
       }
     }
+  }
+
+  async sendMessage(channelId: string, message: OutgoingMessage): Promise<void> {
+    const channel = await this.sendableChannel(channelId);
+    await channel.send(toPayload(message));
   }
 
   startTyping(channelId: string): () => void {

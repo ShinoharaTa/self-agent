@@ -99,9 +99,14 @@ export type TextChannelOptions = {
 export interface InteractionResponder {
   /** 応答を保留する（「考え中」表示）。後の reply がその本文になる */
   defer(ephemeral: boolean): Promise<void>;
-  /** 新しいメッセージで応答する。defer 後なら保留中の応答の本文、応答済みなら追加のメッセージになる */
+  /**
+   * ボタン・セレクト（とメッセージから開いたモーダル）の応答を、元メッセージを変えずに保留する（「考え中」も出さない）。
+   * 後の update が元メッセージの書き換えになり、reply は追加のメッセージになる
+   */
+  deferUpdate(): Promise<void>;
+  /** 新しいメッセージで応答する。defer 後なら保留中の応答の本文、応答済み・deferUpdate 後なら追加のメッセージになる */
   reply(message: OutgoingMessage): Promise<void>;
-  /** ボタン・セレクト（とメッセージから開いたモーダル）の元メッセージを書き換えて応答する */
+  /** ボタン・セレクト（とメッセージから開いたモーダル）の元メッセージを書き換えて応答する（deferUpdate 後でも使える） */
   update(message: OutgoingMessage): Promise<void>;
   /** モーダルを開いて応答する（モーダル送信への応答には使えない） */
   showModal(modal: ModalDef): Promise<void>;
@@ -117,6 +122,8 @@ export interface Gateway {
   start(handlers: GatewayHandlers): Promise<void>;
   /** 長い本文は分割して送る。replyToId があれば最初の塊だけその発言への返信にする */
   send(channelId: string, text: string, replyToId?: string): Promise<void>;
+  /** ボタンなどの付いたメッセージを 1 通送る（分割しない。ephemeral は効かない） */
+  sendMessage(channelId: string, message: OutgoingMessage): Promise<void>;
   /** 入力中表示を始め、止める関数を返す */
   startTyping(channelId: string): () => void;
   /** Bot がそのサーバーに参加しているか（start 後に使う） */

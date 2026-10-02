@@ -26,6 +26,7 @@ const CREATED_AT = new Date("2026-10-02T00:12:00Z");
 
 type ResponderCall =
   | { method: "defer"; ephemeral: boolean }
+  | { method: "deferUpdate" }
   | { method: "reply" | "update"; message: OutgoingMessage }
   | { method: "showModal"; modal: ModalDef };
 
@@ -36,6 +37,9 @@ class FakeResponder implements InteractionResponder {
 
   async defer(ephemeral: boolean): Promise<void> {
     this.calls.push({ method: "defer", ephemeral });
+  }
+  async deferUpdate(): Promise<void> {
+    this.calls.push({ method: "deferUpdate" });
   }
   async reply(message: OutgoingMessage): Promise<void> {
     this.beforeReply();
@@ -238,6 +242,28 @@ test("defer だけ済んでいれば、保留中の応答を「処理に失敗�
 
   assert.deepEqual(responder.calls, [
     { method: "defer", ephemeral: true },
+    { method: "reply", message: { text: INTERACTION_FAILURE_REPLY, ephemeral: true } },
+  ]);
+});
+
+test("deferUpdate だけ済んでいれば、ephemeral で「処理に失敗しました」と返す", async () => {
+  const { handle } = setup({
+    components: [
+      {
+        namespace: "broken",
+        async handle(_interaction, responder) {
+          await responder.deferUpdate();
+          throw new Error("boom");
+        },
+      },
+    ],
+  });
+  const responder = new FakeResponder();
+
+  await handle(button("broken:go:1"), responder);
+
+  assert.deepEqual(responder.calls, [
+    { method: "deferUpdate" },
     { method: "reply", message: { text: INTERACTION_FAILURE_REPLY, ephemeral: true } },
   ]);
 });

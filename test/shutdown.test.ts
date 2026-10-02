@@ -8,6 +8,7 @@ import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
 import { createHandler } from "../src/app/handler.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { Scheduler, TICK_INTERVAL_MS } from "../src/app/scheduler.ts";
 import { createShutdown, RESTARTING_REPLY, type InnerHandlers, type ShutdownDeps } from "../src/app/shutdown.ts";
 import type {
   Gateway,
@@ -54,6 +55,9 @@ class FakeGateway implements Gateway {
   async send(_channelId: string, text: string): Promise<void> {
     this.events.push(`send ${text}`);
   }
+  async sendMessage(_channelId: string, message: OutgoingMessage): Promise<void> {
+    this.events.push(`sendMessage ${message.text}`);
+  }
   startTyping(): () => void {
     return () => {};
   }
@@ -94,6 +98,7 @@ class FakeResponder implements InteractionResponder {
   }
 
   async defer(): Promise<void> {}
+  async deferUpdate(): Promise<void> {}
   async reply(message: OutgoingMessage): Promise<void> {
     this.replies.push(message);
     this.events.push(`reply ${message.text}`);
@@ -147,6 +152,7 @@ function deps(
     cfg,
     gateway: new FakeGateway(events),
     queues: [],
+    scheduler: { stop: () => {}, idle: async () => {} },
     closeDb: () => {
       events.push("closeDb");
     },
@@ -232,6 +238,7 @@ function handlerSetup(t: TestContext) {
     sessions: new SdkSessionStore(db, () => NOW),
     seeds: new ChannelSeedStore(db, () => NOW),
     topicSessions,
+    channelOps: { enqueueMove: () => {} },
     usage,
     queue: turnQueue,
     log: () => {},
@@ -342,4 +349,75 @@ test("gateway の停止に失敗しても DB は閉じ、reject しない", asyn
 
   assert.deepEqual(events, ["stop", "closeDb"]);
   assert.ok(shutdownDeps.logs.includes("Discord との切断に失敗しました: boom"));
+});
+
+test("停止を始めたら scheduler を止め（以後 tick しない）、実行中の tick が終わってから gateway を止めて DB を閉じる", async () => {
+  const events: string[] = [];
+  const gateway = new FakeGateway(events);
+  const gate = deferred();
+  const sendMessage = gateway.sendMessage.bind(gateway);
+  gateway.sendMessage = async (channelId, message) => {
+    await gate.promise;
+    await sendMessage(channelId, message);
+  };
+  const intervals: Array<{ fn: () => void; cancelled: boolean }> = [];
+  let listed = 0;
+  const scheduler = new Scheduler({
+    cfg: { idleHours: 12 },
+    topicSessions: {
+      listIdle: () => {
+        listed++;
+        return listed === 1
+          ? [
+              {
+                channelId: "topic-1",
+                guildId: "guild-1",
+                title: "旅行の計画",
+                state: "active",
+                categoryId: "active-1",
+                createdAt: NOW.toISOString(),
+                lastActivityAt: NOW.toISOString(),
+                waitingSince: null,
+                closedAt: null,
+                summary: null,
+              },
+            ]
+          : [];
+      },
+      setActive: () => undefined,
+      setWaiting: () => {
+        events.push("setWaiting");
+        return undefined;
+      },
+    },
+    channelOps: { enqueueMove: () => {} },
+    gateway,
+    now: () => NOW,
+    timers: {
+      every: (fn) => {
+        const entry = { fn, cancelled: false };
+        intervals.push(entry);
+        return () => {
+          entry.cancelled = true;
+        };
+      },
+    },
+    log: () => {},
+  });
+  // 起動直後の tick が知らせの投稿で止まっている
+  scheduler.start(TICK_INTERVAL_MS);
+  await flush();
+  assert.deepEqual(events, ["setWaiting"]);
+
+  const { shutdown } = createShutdown(deps(events, { gateway, scheduler }), noopInner);
+  const done = shutdown();
+  await flush();
+  assert.equal(intervals[0]?.cancelled, true);
+  assert.deepEqual(events, ["setWaiting"]);
+
+  gate.resolve();
+  await done;
+
+  assert.deepEqual(events, ["setWaiting", "sendMessage 12 時間発言がないので待ちに移しました。", "stop", "closeDb"]);
+  assert.equal(listed, 1);
 });

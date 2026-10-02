@@ -8,6 +8,7 @@ import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { KeyedSerialQueue } from "./app/queue.ts";
+import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { loadConfig, missingForStart } from "./config.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -58,6 +59,7 @@ const handle = createHandler({
   resolveChannel: createChannelResolver(config, guildSettings, topicSessions),
   gateway,
   ...turn,
+  channelOps,
   queue: turnQueue,
 });
 // /setup・/new 専用のキュー（ターンの同時実行枠とは分ける）
@@ -76,13 +78,15 @@ const commands = createCommands({
 const handleInteraction = createInteractionHandler({
   cfg: config,
   commands,
-  components: createComponents({ topicSessions, tasks, channelOps, log }),
+  components: createComponents({ topicSessions, tasks, channelOps, turnQueue, turn, log }),
   log,
 });
+// 定期処理: 発言の無い進行中のセッションを待ちに移す
+const scheduler = new Scheduler({ cfg: config, topicSessions, channelOps, gateway, now, log });
 
-// 停止: シグナルで新しい受付を止め、進行中の処理（返信まで）を最大 shutdownGraceSec 秒待ってから gateway と DB を閉じる
+// 停止: シグナルで新しい受付と定期処理を止め、進行中の処理（返信まで）を最大 shutdownGraceSec 秒待ってから gateway と DB を閉じる
 const lifecycle = createShutdown(
-  { cfg: config, gateway, queues: [turnQueue, layoutQueue], closeDb: () => db.close(), log },
+  { cfg: config, gateway, queues: [turnQueue, layoutQueue], scheduler, closeDb: () => db.close(), log },
   { handleMessage: handle, handleInteraction },
 );
 const onSignal = (): void => {
@@ -98,4 +102,6 @@ process.on("SIGTERM", onSignal);
 await gateway.start(lifecycle.handlers);
 await registerCommands({ cfg: config, gateway, commands, log });
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
+// 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で。停止を始めていれば何もしない
+scheduler.start(TICK_INTERVAL_MS);
 console.log(`self-agent: 起動しました（model=${config.model}）`);

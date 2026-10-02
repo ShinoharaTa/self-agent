@@ -11,6 +11,7 @@ import {
   ALREADY_CLOSED_REPLY,
   CLOSE_PROMPT,
   closedText,
+  closeStartButton,
   confirmText,
   createCloseCommand,
   createCloseComponent,
@@ -60,6 +61,7 @@ class FakeRunner implements AgentRunner {
 
 type ResponderCall =
   | { method: "defer"; ephemeral: boolean }
+  | { method: "deferUpdate" }
   | { method: "reply" | "update"; message: OutgoingMessage }
   | { method: "showModal"; modal: ModalDef };
 
@@ -68,6 +70,9 @@ class FakeResponder implements InteractionResponder {
 
   async defer(ephemeral: boolean): Promise<void> {
     this.calls.push({ method: "defer", ephemeral });
+  }
+  async deferUpdate(): Promise<void> {
+    this.calls.push({ method: "deferUpdate" });
   }
   async reply(message: OutgoingMessage): Promise<void> {
     this.calls.push({ method: "reply", message });
@@ -447,11 +452,14 @@ test("再起動の後（新しいストアとハンドラ）でも、DB の下�
 
   const restarted = stores(env.db, () => CLOSED_AT);
   const channelOps = new RecordingChannelOps();
+  const log = (): void => {};
   const component = createCloseComponent({
     topicSessions: restarted.topicSessions,
     tasks: restarted.tasks,
     channelOps,
-    log: () => {},
+    turnQueue: new KeyedSerialQueue(1),
+    turn: { runner: new FakeRunner([]), ...restarted, log },
+    log,
   });
   const responder = new FakeResponder();
   await component.handle(select(["1"]) as Exclude<Interaction, { kind: "command" }>, responder);
@@ -543,6 +551,79 @@ test("確認メッセージは候補の題名を 100 字で切り、最大の候
   assert.ok(row?.kind === "select");
   assert.equal(row.select.options[0]?.label.length, 100);
   assert.equal(row.select.maxValues, 10);
+});
+
+test("[閉じる]（close:start）: 元メッセージは変えずに保留 → /close と同じターン → 待ちの知らせを要約とタスク候補・確認のボタンに書き換える", async (t) => {
+  const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
+  // 12 時間で待ちにされたセッション
+  env.topicSessions.setWaiting("topic-1");
+
+  const calls = await env.press(button("start"));
+
+  assert.deepEqual(env.runner.inputs, [
+    { prompt: CLOSE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "topic-1" } },
+  ]);
+  assert.deepEqual(calls, [
+    { method: "deferUpdate" },
+    { method: "update", message: { text: confirmText(REPORT), components: [BUTTONS] } },
+  ]);
+  assert.deepEqual(env.turnQueue.keys, ["topic-1"]);
+  // まだ閉じない（待ちのまま）
+  assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");
+  assert.deepEqual(env.channelOps.moves, []);
+
+  // 書き換えた確認のボタンは /close のものと同じに動く
+  env.clock.now = CLOSED_AT;
+  const confirmCalls = await env.press(button("all"));
+  assert.deepEqual(confirmCalls, [{ method: "update", message: { text: closedText(REPORT.summary, 3), components: [] } }]);
+  assertClosed(env, REPORT.summary);
+});
+
+test("[閉じる]: タスク候補が 0 件なら閉じて、待ちの知らせを「閉じました」にしてボタンを外す。失敗なら失敗の文面にしてボタンを外す", async (t) => {
+  const env = setup(t, (topicSessions) => [
+    () => ({ ok: false, errorMessage: "timeout", sessionRecorded: false }),
+    reports({ summary: "話しただけで終わった" }, topicSessions),
+  ]);
+  env.topicSessions.setWaiting("topic-1");
+
+  const failed = await env.press(button("start"));
+
+  assert.deepEqual(failed, [
+    { method: "deferUpdate" },
+    { method: "update", message: { text: SUMMARY_FAILURE_REPLY, components: [] } },
+  ]);
+  assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");
+  assert.deepEqual(env.logs, ["/close のターンが失敗しました: timeout"]);
+
+  env.clock.now = CLOSED_AT;
+  const closed = await env.press(button("start"));
+
+  assert.deepEqual(closed, [
+    { method: "deferUpdate" },
+    { method: "update", message: { text: closedText("話しただけで終わった", 0), components: [] } },
+  ]);
+  assertClosed(env, "話しただけで終わった");
+});
+
+test("[閉じる]: 閉じたセッション・セッション以外では ephemeral で断り、ターンを実行しない", async (t) => {
+  const env = setup(t, () => []);
+  env.topicSessions.create({ ...TOPIC, channelId: "topic-9", guildId: "guild-9" });
+
+  for (const channelId of ["unknown-1", "topic-9"]) {
+    const calls = await env.press(button("start", channelId));
+    assert.deepEqual(calls, [{ method: "reply", message: { text: NOT_SESSION_REPLY, ephemeral: true } }], channelId);
+  }
+  for (const state of ["done", "deleted"]) {
+    env.db.prepare("UPDATE sessions SET state = ? WHERE channel_id = 'topic-1'").run(state);
+    const calls = await env.press(button("start"));
+    assert.deepEqual(calls, [{ method: "reply", message: { text: ALREADY_CLOSED_REPLY, ephemeral: true } }], state);
+  }
+  assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(env.turnQueue.keys, []);
+});
+
+test("[閉じる] ボタンの custom_id は close:start:<channelId>", () => {
+  assert.deepEqual(closeStartButton("topic-1"), { customId: "close:start:topic-1", label: "閉じる" });
 });
 
 test("/help に /close の説明がある", () => {

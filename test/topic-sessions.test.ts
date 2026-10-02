@@ -160,6 +160,60 @@ test("TopicSessionStore: setCategory は今置いているカテゴリを更新�
   assert.equal(store.get("inbox-1"), undefined);
 });
 
+test("TopicSessionStore: setWaiting は待ちにして waiting_since を今にし、setActive は進行中に戻して waiting_since と closed_at を消す（要約は残す）", (t) => {
+  const store = new TopicSessionStore(tempDb(t), clock());
+  store.create(NEW_SESSION);
+
+  const waiting = store.setWaiting("topic-1");
+
+  assert.equal(waiting?.state, "waiting");
+  assert.equal(waiting?.waitingSince, "2026-10-02T00:01:00.000Z");
+  assert.equal(waiting?.lastActivityAt, "2026-10-02T00:00:00.000Z");
+  assert.deepEqual(store.get("topic-1"), waiting);
+
+  const active = store.setActive("topic-1");
+
+  assert.equal(active?.state, "active");
+  assert.equal(active?.waitingSince, null);
+  assert.deepEqual(store.get("topic-1"), active);
+
+  // 完了から戻す
+  store.close("topic-1", "要約");
+  const reopened = store.setActive("topic-1");
+  assert.equal(reopened?.state, "active");
+  assert.equal(reopened?.closedAt, null);
+  assert.equal(reopened?.summary, "要約");
+
+  assert.equal(store.setWaiting("topic-9"), undefined);
+  assert.equal(store.setActive("topic-9"), undefined);
+});
+
+test("TopicSessionStore: listIdle は進行中で最終発言が指定時刻以前（ちょうどを含む）のものを古い順に limit 件まで返す", (t) => {
+  const db = tempDb(t);
+  const at = { now: new Date("2026-10-02T00:00:00.000Z") };
+  const store = new TopicSessionStore(db, () => at.now);
+  const create = (channelId: string, iso: string): void => {
+    at.now = new Date(iso);
+    store.create({ ...NEW_SESSION, channelId });
+  };
+  create("topic-c", "2026-10-02T00:03:00.000Z");
+  create("topic-a", "2026-10-02T00:01:00.000Z");
+  create("topic-b", "2026-10-02T00:02:00.000Z");
+  create("topic-d", "2026-10-02T00:04:00.000Z");
+  create("topic-w", "2026-10-02T00:00:00.000Z");
+  create("topic-x", "2026-10-02T00:00:00.000Z");
+  store.setWaiting("topic-w");
+  store.close("topic-x", "要約");
+
+  const ids = (before: string, limit: number): string[] =>
+    store.listIdle(new Date(before), limit).map((session) => session.channelId);
+
+  assert.deepEqual(ids("2026-10-02T00:03:00.000Z", 10), ["topic-a", "topic-b", "topic-c"]);
+  assert.deepEqual(ids("2026-10-02T00:02:59.999Z", 10), ["topic-a", "topic-b"]);
+  assert.deepEqual(ids("2026-10-02T00:10:00.000Z", 2), ["topic-a", "topic-b"]);
+  assert.deepEqual(ids("2026-10-02T00:00:59.999Z", 10), []);
+});
+
 test("ChannelSeedStore: 保存（置き換え）・取得・削除。SdkSessionStore.delete で SDK セッションを捨てる", (t) => {
   const db = tempDb(t);
   const seeds = new ChannelSeedStore(db, clock());

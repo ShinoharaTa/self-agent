@@ -5,6 +5,7 @@ import { type CloseDeps, createCloseCommand, createCloseComponent } from "./comm
 import { helpCommand } from "./commands/help.ts";
 import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
 import { createSetupCommand, type SetupDeps } from "./commands/setup.ts";
+import { createWaitCommand, createWaitComponent, type WaitDeps } from "./commands/wait.ts";
 
 export const OWNER_ONLY_REPLY = "オーナー専用です";
 export const UNKNOWN_REPLY = "不明な操作です";
@@ -26,18 +27,25 @@ export type ComponentHandler = {
 };
 
 /** /setup と /new は同じキュー（queue）、/close は発言のターンと同じキュー（turnQueue）を使う */
-export type CommandDeps = SetupDeps & NewSessionDeps & CloseDeps;
+export type CommandDeps = SetupDeps & NewSessionDeps & CloseDeps & WaitDeps;
 
 /** 登録するスラッシュコマンド */
 export function createCommands(deps: CommandDeps): CommandHandler[] {
-  return [helpCommand, createSetupCommand(deps), createNewSessionCommand(deps), createCloseCommand(deps)];
+  return [
+    helpCommand,
+    createSetupCommand(deps),
+    createNewSessionCommand(deps),
+    createCloseCommand(deps),
+    createWaitCommand(deps),
+  ];
 }
 
-export type ComponentDeps = Pick<CloseDeps, "topicSessions" | "tasks" | "channelOps" | "log">;
+/** [閉じる]（close:start）は /close と同じ流れなので、ターンのキューも要る */
+export type ComponentDeps = CloseDeps & WaitDeps;
 
 /** 名前空間ごとのボタン・セレクトのハンドラ */
 export function createComponents(deps: ComponentDeps): ComponentHandler[] {
-  return [createCloseComponent(deps)];
+  return [createCloseComponent(deps), createWaitComponent(deps)];
 }
 
 export type InteractionDeps = {
@@ -73,6 +81,10 @@ function trackResponses(responder: InteractionResponder): { responder: Interacti
     responder: {
       defer: async (ephemeral) => {
         await responder.defer(ephemeral);
+        state = "deferred";
+      },
+      deferUpdate: async () => {
+        await responder.deferUpdate();
         state = "deferred";
       },
       reply: async (message) => {
@@ -142,7 +154,7 @@ export function createInteractionHandler(
       await dispatch(interaction, responder);
     } catch (error) {
       log(`操作の処理中にエラーが発生しました（${describeInteraction(interaction)}）: ${describeError(error)}`);
-      // 応答済みなら追加で送らない。defer だけ済んでいれば保留中の応答を失敗の文面で埋める
+      // 応答済みなら追加で送らない。defer だけ済んでいれば保留中の応答を失敗の文面で埋める（deferUpdate の後は追加のメッセージになる）
       if (state() !== "done") await replyEphemeral(responder, INTERACTION_FAILURE_REPLY);
     }
   };
