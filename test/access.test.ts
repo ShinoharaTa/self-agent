@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { isAccepted } from "../src/app/access.ts";
 import type { IncomingMessage } from "../src/discord/gateway.ts";
 
-const cfg = { guildId: "guild-1", inboxChannelId: "inbox-1", ownerUserId: "owner-1" };
+const cfg = { allowedGuildIds: ["guild-1", "guild-9"], inboxChannelId: "inbox-1", ownerUserId: "owner-1" };
 
 const accepted: IncomingMessage = {
   id: "message-1",
@@ -22,7 +22,7 @@ test("すべての条件を満たす発言は受け付ける", () => {
 
 test("条件を 1 つでも外れる発言は弾く", () => {
   const cases: Array<[string, Partial<IncomingMessage>]> = [
-    ["別ギルド", { guildId: "guild-2" }],
+    ["許可していないサーバー", { guildId: "guild-2" }],
     ["DM", { guildId: null }],
     ["別チャンネル", { channelId: "other-1" }],
     ["オーナー以外", { authorId: "someone-else" }],
@@ -37,7 +37,11 @@ test("条件を 1 つでも外れる発言は弾く", () => {
 });
 
 test("設定が欠けていれば何も受け付けない", () => {
-  assert.equal(isAccepted(accepted, { ...cfg, guildId: undefined }), false);
+  assert.equal(isAccepted(accepted, { ...cfg, allowedGuildIds: [] }), false);
   assert.equal(isAccepted(accepted, { ...cfg, inboxChannelId: undefined }), false);
   assert.equal(isAccepted(accepted, { ...cfg, ownerUserId: undefined }), false);
+});
+
+test("許可リストにある別のサーバーでも受け付ける", () => {
+  assert.equal(isAccepted({ ...accepted, guildId: "guild-9" }, cfg), true);
 });

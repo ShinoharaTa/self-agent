@@ -33,6 +33,19 @@ function describeError(error: unknown): string {
 }
 
 export class DiscordGateway implements Gateway {
+  /** 許可していないサーバーに入っていたら警告する（メッセージは handler 側の受付判定で弾く） */
+  private readonly allowedGuildIds: readonly string[];
+
+  constructor(allowedGuildIds: readonly string[]) {
+    this.allowedGuildIds = allowedGuildIds;
+  }
+
+  private warnIfNotAllowed(guildId: string): void {
+    if (!this.allowedGuildIds.includes(guildId)) {
+      console.error(`discord: 許可していないサーバーに参加しています（guild=${guildId}）。このサーバーでは反応しません`);
+    }
+  }
+
   private readonly client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
   });
@@ -45,6 +58,9 @@ export class DiscordGateway implements Gateway {
     this.client.on(Events.Error, (error) => {
       console.error(`discord: ${describeError(error)}`);
     });
+    this.client.on(Events.GuildCreate, (guild) => {
+      this.warnIfNotAllowed(guild.id);
+    });
     this.client.on(Events.MessageCreate, (message) => {
       onMessage(toIncoming(message));
     });
@@ -53,6 +69,9 @@ export class DiscordGateway implements Gateway {
     });
     await this.client.login(token);
     await ready;
+    for (const guildId of this.client.guilds.cache.keys()) {
+      this.warnIfNotAllowed(guildId);
+    }
     console.log("discord: 接続しました");
   }
 

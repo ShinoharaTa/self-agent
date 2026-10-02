@@ -11,7 +11,7 @@ export const FAILURE_REPLY = "処理に失敗しました。時間をおいて�
 export const EMPTY_REPLY = "（返答が空でした）";
 
 export type HandlerDeps = {
-  cfg: Pick<Config, "guildId" | "inboxChannelId" | "ownerUserId" | "timeZone">;
+  cfg: Pick<Config, "allowedGuildIds" | "inboxChannelId" | "ownerUserId" | "timeZone">;
   gateway: Gateway;
   runner: AgentRunner;
   sessions: SessionStore;

@@ -12,7 +12,7 @@ import { openDb } from "../src/store/db.ts";
 import { SessionStore } from "../src/store/sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
 
-const cfg = { guildId: "guild-1", inboxChannelId: "inbox-1", ownerUserId: "owner-1", timeZone: "Asia/Tokyo" };
+const cfg = { allowedGuildIds: ["guild-1"], inboxChannelId: "inbox-1", ownerUserId: "owner-1", timeZone: "Asia/Tokyo" };
 const NOW = new Date("2026-10-02T00:12:00Z");
 // 発言の時刻（ストアの now とは別。prompt の日時ヘッダはこちらを使う）
 const CREATED_AT = new Date("2026-10-01T23:59:00Z");

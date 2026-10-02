@@ -40,7 +40,8 @@ docs/            # REQUIREMENTS.md, design/, research/, archive/
 | 変数名 | 用途 |
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` / `DISCORD_TOKEN` | 必須。OAuth は `claude setup-token` で発行。権限 600 の `~/.config/self-agent/env` に置く（start / test:integration / measure が読む）。コミット禁止 |
-| `SELF_AGENT_OWNER_ID` / `_GUILD_ID` / `_INBOX_CHANNEL_ID` | 必須。受け付けるオーナー・ギルド・#inbox チャンネルの ID |
+| `SELF_AGENT_ALLOWED_GUILD_IDS` | 必須。動作を許可するサーバー ID（カンマ区切り）。これ以外のサーバーと DM には一切反応しない |
+| `SELF_AGENT_OWNER_ID` / `SELF_AGENT_INBOX_CHANNEL_ID` | 必須。受け付けるオーナーと #inbox チャンネルの ID |
 | `CLAUDE_CONFIG_DIR` | SDK の設定・セッション保存先。既定 `~/.local/share/self-agent/claude` |
 | `SELF_AGENT_WORKDIR` | エージェントの作業ディレクトリ。既定 `~/.local/share/self-agent/work` |
 | `SELF_AGENT_DATA_DIR` | SQLite（`self-agent.db`）の保存先。既定 `~/.local/share/self-agent/data` |

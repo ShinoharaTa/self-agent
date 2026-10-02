@@ -30,7 +30,7 @@ const sessions = new SessionStore(db, now);
 const usage = new UsageStore(db, now);
 
 const runner = new SdkAgentRunner(config, () => createTaskMcpServer(tasks));
-const gateway = new DiscordGateway();
+const gateway = new DiscordGateway(config.allowedGuildIds);
 const handle = createHandler({
   cfg: config,
   gateway,

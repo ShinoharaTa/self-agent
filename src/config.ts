@@ -9,7 +9,8 @@ export type Config = {
   workDir: string;
   model: string;
   ownerUserId: string | undefined;
-  guildId: string | undefined;
+  /** 動作を許可するサーバー（ギルド）の ID。これ以外のサーバーと DM では一切反応しない */
+  allowedGuildIds: string[];
   inboxChannelId: string | undefined;
   /** SQLite などの保存先。DB は `${dataDir}/self-agent.db` */
   dataDir: string;
@@ -26,6 +27,21 @@ const DEFAULT_TURN_TIMEOUT_SEC = 300;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
+}
+
+/** カンマ区切りの Discord ID の一覧。数字以外を含む要素があればエラー */
+function idList(name: string, value: string | undefined): string[] {
+  if (value === undefined) return [];
+  const ids = value
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id !== "");
+  for (const id of ids) {
+    if (!/^\d+$/.test(id)) {
+      throw new Error(`${name} は数字の ID をカンマ区切りで指定してください`);
+    }
+  }
+  return [...new Set(ids)];
 }
 
 function positiveInteger(name: string, value: string | undefined, fallback: number): number {
@@ -54,7 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     workDir: nonEmpty(env.SELF_AGENT_WORKDIR) ?? join(home(), ".local/share/self-agent/work"),
     model: nonEmpty(env.SELF_AGENT_MODEL) ?? DEFAULT_MODEL,
     ownerUserId: nonEmpty(env.SELF_AGENT_OWNER_ID),
-    guildId: nonEmpty(env.SELF_AGENT_GUILD_ID),
+    allowedGuildIds: idList("SELF_AGENT_ALLOWED_GUILD_IDS", nonEmpty(env.SELF_AGENT_ALLOWED_GUILD_IDS)),
     inboxChannelId: nonEmpty(env.SELF_AGENT_INBOX_CHANNEL_ID),
     dataDir: nonEmpty(env.SELF_AGENT_DATA_DIR) ?? join(home(), ".local/share/self-agent/data"),
     timeZone: nonEmpty(env.SELF_AGENT_TZ) ?? DEFAULT_TIME_ZONE,
@@ -77,7 +93,7 @@ export function missingForStart(cfg: Config): string[] {
   if (!cfg.oauthTokenPresent) missing.push("CLAUDE_CODE_OAUTH_TOKEN");
   if (!cfg.discordTokenPresent) missing.push("DISCORD_TOKEN");
   if (cfg.ownerUserId === undefined) missing.push("SELF_AGENT_OWNER_ID");
-  if (cfg.guildId === undefined) missing.push("SELF_AGENT_GUILD_ID");
+  if (cfg.allowedGuildIds.length === 0) missing.push("SELF_AGENT_ALLOWED_GUILD_IDS");
   if (cfg.inboxChannelId === undefined) missing.push("SELF_AGENT_INBOX_CHANNEL_ID");
   return missing;
 }

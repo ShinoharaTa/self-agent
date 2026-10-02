@@ -11,7 +11,7 @@ test("未設定ならデフォルト値を使う", () => {
     workDir: "/home/tester/.local/share/self-agent/work",
     model: "claude-opus-5",
     ownerUserId: undefined,
-    guildId: undefined,
+    allowedGuildIds: [],
     inboxChannelId: undefined,
     dataDir: "/home/tester/.local/share/self-agent/data",
     timeZone: "Asia/Tokyo",
@@ -27,7 +27,7 @@ test("環境変数で上書きできる", () => {
     SELF_AGENT_WORKDIR: "/srv/work",
     SELF_AGENT_MODEL: "claude-sonnet-5",
     SELF_AGENT_OWNER_ID: "100",
-    SELF_AGENT_GUILD_ID: "200",
+    SELF_AGENT_ALLOWED_GUILD_IDS: "200, 201,,200",
     SELF_AGENT_INBOX_CHANNEL_ID: "300",
     SELF_AGENT_DATA_DIR: "/srv/data",
     SELF_AGENT_TZ: "UTC",
@@ -38,7 +38,7 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.workDir, "/srv/work");
   assert.equal(config.model, "claude-sonnet-5");
   assert.equal(config.ownerUserId, "100");
-  assert.equal(config.guildId, "200");
+  assert.deepEqual(config.allowedGuildIds, ["200", "201"]);
   assert.equal(config.inboxChannelId, "300");
   assert.equal(config.dataDir, "/srv/data");
   assert.equal(config.timeZone, "UTC");
@@ -108,7 +108,7 @@ test("missingForStart は欠けている必須変数の名前だけを返す", (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "DISCORD_TOKEN",
     "SELF_AGENT_OWNER_ID",
-    "SELF_AGENT_GUILD_ID",
+    "SELF_AGENT_ALLOWED_GUILD_IDS",
     "SELF_AGENT_INBOX_CHANNEL_ID",
   ]);
 
@@ -117,12 +117,19 @@ test("missingForStart は欠けている必須変数の名前だけを返す", (
     CLAUDE_CODE_OAUTH_TOKEN: "dummy",
     DISCORD_TOKEN: "dummy",
     SELF_AGENT_OWNER_ID: "100",
-    SELF_AGENT_GUILD_ID: "200",
+    SELF_AGENT_ALLOWED_GUILD_IDS: "200",
     SELF_AGENT_INBOX_CHANNEL_ID: "300",
   });
   assert.deepEqual(missingForStart(full), []);
-  assert.deepEqual(missingForStart({ ...full, discordTokenPresent: false, guildId: undefined }), [
+  assert.deepEqual(missingForStart({ ...full, discordTokenPresent: false, allowedGuildIds: [] }), [
     "DISCORD_TOKEN",
-    "SELF_AGENT_GUILD_ID",
+    "SELF_AGENT_ALLOWED_GUILD_IDS",
   ]);
+});
+
+test("許可サーバーの ID に数字以外が混ざっていたらエラー", () => {
+  assert.throws(
+    () => loadConfig({ HOME: "/home/tester", SELF_AGENT_ALLOWED_GUILD_IDS: "200,abc" }),
+    /SELF_AGENT_ALLOWED_GUILD_IDS/,
+  );
 });
