@@ -133,5 +133,7 @@ export interface Gateway {
   countChannelsIn(categoryId: string): Promise<number>;
   /** チャンネルを別のカテゴリへ移す。permission overwrite は移動先に合わせない（書き換えない） */
   moveChannel(channelId: string, parentId: string): Promise<void>;
+  /** チャンネルの今の親カテゴリの ID（キャッシュではなく Discord 上の値）。カテゴリの外なら null */
+  getParentId(channelId: string): Promise<string | null>;
   stop(): Promise<void>;
 }

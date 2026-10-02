@@ -10,6 +10,7 @@ import { buildTurnPrompt } from "../../src/app/prompt.ts";
 import { loadConfig } from "../../src/config.ts";
 import { openDb } from "../../src/store/db.ts";
 import { TaskStore } from "../../src/store/tasks.ts";
+import { TopicSessionStore } from "../../src/store/topic-sessions.ts";
 
 const tokenPresent = (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "") !== "";
 
@@ -30,7 +31,7 @@ test(
     const db = openDb(join(cfg.dataDir, "self-agent.db"));
     t.after(() => db.close());
     const tasks = new TaskStore(db);
-    const runner = new SdkAgentRunner(cfg, () => createTaskMcpServer(tasks));
+    const runner = new SdkAgentRunner(cfg, (context) => createTaskMcpServer(tasks, new TopicSessionStore(db), context));
 
     const first = await runner.run({ prompt: buildTurnPrompt("明日買い物に行く", new Date(), cfg.timeZone) });
     assert.ok(first.ok, first.ok ? "" : first.errorMessage);

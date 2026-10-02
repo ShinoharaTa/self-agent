@@ -8,7 +8,9 @@ import { createChannelResolver } from "../src/app/access.ts";
 import { createHandler, EMPTY_REPLY, FAILURE_REPLY } from "../src/app/handler.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { RESUME_SEED_HEADER } from "../src/app/turn.ts";
 import type { Gateway, IncomingMessage } from "../src/discord/gateway.ts";
+import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { SessionStore } from "../src/store/sessions.ts";
@@ -55,6 +57,9 @@ class FakeGateway implements Gateway {
     throw new Error("想定外の呼び出し");
   }
   async moveChannel(): Promise<void> {
+    throw new Error("想定外の呼び出し");
+  }
+  async getParentId(): Promise<string | null> {
     throw new Error("想定外の呼び出し");
   }
   async stop(): Promise<void> {}
@@ -118,6 +123,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
   // last_activity_at の更新を見るため、sessions の時計だけ進められるようにする
   const clock = { now: NOW };
   const topicSessions = new TopicSessionStore(db, () => clock.now);
+  const seeds = new ChannelSeedStore(db, () => NOW);
   const logs: string[] = [];
   const handle = createHandler({
     cfg,
@@ -126,13 +132,25 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     gateway,
     runner,
     sessions,
+    seeds,
     topicSessions,
     usage,
     queue: new KeyedSerialQueue(2),
     log: (line) => logs.push(line),
   });
-  return { db, gateway, runner, sessions, topicSessions, clock, usage, logs, handle };
+  return { db, gateway, runner, sessions, seeds, topicSessions, clock, usage, logs, handle };
 }
+
+/** ツールのハンドラに渡す、このターンのチャンネル */
+function context(channelId: string = "inbox-1") {
+  return { guildId: "guild-1", channelId };
+}
+
+/** resume 先の会話の記録が無いときの失敗（実機の文言は未確認） */
+const RESUME_FAILURE: RunResult = {
+  ok: false,
+  errorMessage: "error_during_execution: No conversation found with session ID: session-old",
+};
 
 /** /new で作ったセッションのチャンネル（topic-1、guild-1、作成は NOW） */
 const TOPIC = { channelId: "topic-1", guildId: "guild-1", title: "旅行の計画", categoryId: "active-1" };
@@ -148,7 +166,7 @@ test("受け付けた発言で runner を呼び、usage 記録・session 保存�
   await handle(message());
 
   assert.deepEqual(runner.inputs, [
-    { prompt: buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo"), sessionId: undefined },
+    { prompt: buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo"), sessionId: undefined, context: context() },
   ]);
   assert.match(runner.inputs[0]!.prompt, /^\[2026-10-02\(金\) 08:59 JST #inbox\]\n/);
   assert.deepEqual(gateway.sent, [{ channelId: "inbox-1", text: "登録しました", replyToId: "message-1" }]);
@@ -283,6 +301,7 @@ test("セッションのチャンネル: 受け付けて日時ヘッダに題名
   assert.equal(runner.inputs[0]!.prompt, "[2026-10-02(金) 08:59 JST #旅行の計画]\n行き先を決めたい");
   assert.equal(runner.inputs[0]!.sessionId, undefined);
   assert.equal(runner.inputs[1]!.sessionId, "session-a");
+  assert.deepEqual(runner.inputs[1]!.context, context("topic-1"));
   assert.equal(sessions.get("topic-1"), "session-a");
   assert.equal(sessions.get("inbox-1"), undefined);
   assert.deepEqual(gateway.sent, [
@@ -335,4 +354,139 @@ test("削除済みのセッション・別サーバーのセッションのチ�
   assert.deepEqual(gateway.sent, []);
   assert.equal(topicSessions.get("topic-1")?.lastActivityAt, NOW.toISOString());
   assert.equal(topicSessions.get("topic-9")?.lastActivityAt, NOW.toISOString());
+});
+
+test("resume 失敗: SDK セッションを捨てて要約の seed を入れ、sessionId 無しで 1 回だけやり直し、成功したら seed を消す", async (t) => {
+  const { db, gateway, runner, sessions, seeds, topicSessions, usage, logs, handle } = setup(t, [
+    RESUME_FAILURE,
+    okResult("session-new", "続きをどうぞ"),
+  ]);
+  topicSessions.create(TOPIC);
+  db.prepare("UPDATE sessions SET summary = '行き先は京都に決めた' WHERE channel_id = 'topic-1'").run();
+  sessions.set("topic-1", "session-old");
+  const prompt = buildTurnPrompt("予算は", CREATED_AT, "Asia/Tokyo", "旅行の計画");
+  const seed = `${RESUME_SEED_HEADER}\n行き先は京都に決めた`;
+  // やり直しの時点で seed が入っていて、古い SDK セッションは消えている
+  runner.beforeResult = async () => {
+    if (runner.inputs.length === 2) {
+      assert.equal(seeds.get("topic-1"), seed);
+      assert.equal(sessions.get("topic-1"), undefined);
+    }
+  };
+
+  await handle(message({ channelId: "topic-1", content: "予算は" }));
+
+  assert.deepEqual(runner.inputs, [
+    { prompt, sessionId: "session-old", context: context("topic-1") },
+    { prompt: `${seed}\n\n${prompt}`, sessionId: undefined, context: context("topic-1") },
+  ]);
+  assert.equal(RESUME_SEED_HEADER, "前の会話の記録が切れたため、要約から再開します。");
+  assert.equal(sessions.get("topic-1"), "session-new");
+  assert.equal(seeds.get("topic-1"), undefined);
+  assert.deepEqual(gateway.sent, [{ channelId: "topic-1", text: "続きをどうぞ", replyToId: "message-1" }]);
+  assert.deepEqual(
+    usage.recent(10).map((entry) => [entry.ok, entry.sessionId]),
+    [
+      [true, "session-new"],
+      [false, null],
+    ],
+  );
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /resume に失敗したため/);
+});
+
+test("resume 失敗: 要約が無ければ seed は題名だけ。やり直しも失敗したらそれ以上やり直さず、seed は残す", async (t) => {
+  const { gateway, runner, sessions, seeds, topicSessions, handle } = setup(t, [
+    RESUME_FAILURE,
+    { ok: false, errorMessage: "error_max_turns" },
+  ]);
+  topicSessions.create(TOPIC);
+  sessions.set("topic-1", "session-old");
+
+  await handle(message({ channelId: "topic-1" }));
+
+  assert.equal(runner.inputs.length, 2);
+  assert.equal(runner.inputs[1]!.sessionId, undefined);
+  const seed = `${RESUME_SEED_HEADER}\n題名: 旅行の計画`;
+  assert.ok(runner.inputs[1]!.prompt.startsWith(`${seed}\n\n[2026-10-02(金) 08:59 JST #旅行の計画]\n`));
+  assert.equal(seeds.get("topic-1"), seed);
+  assert.equal(sessions.get("topic-1"), undefined);
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY]);
+
+  // 次の発言は seed を付けて新しいセッションで始める（resume しない）
+  runner.inputs.length = 0;
+  await handle(message({ id: "message-2", channelId: "topic-1", content: "続き" }));
+  assert.equal(runner.inputs[0]?.sessionId, undefined);
+  assert.ok(runner.inputs[0]?.prompt.startsWith(`${seed}\n\n`));
+});
+
+test("resume 失敗: #inbox では seed を入れずに sessionId 無しで 1 回だけやり直す", async (t) => {
+  const { runner, sessions, seeds, handle } = setup(t, [RESUME_FAILURE, okResult("session-new", "はい")]);
+  sessions.set("inbox-1", "session-old");
+
+  await handle(message());
+
+  const prompt = buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo");
+  assert.deepEqual(runner.inputs, [
+    { prompt, sessionId: "session-old", context: context() },
+    { prompt, sessionId: undefined, context: context() },
+  ]);
+  assert.equal(seeds.get("inbox-1"), undefined);
+  assert.equal(sessions.get("inbox-1"), "session-new");
+});
+
+test("resume 以外の失敗ではやり直さず、SDK セッションも seed もそのまま", async (t) => {
+  const { gateway, runner, sessions, seeds, topicSessions, handle } = setup(t, [
+    { ok: false, errorMessage: "timeout", sessionId: "session-old" },
+  ]);
+  topicSessions.create(TOPIC);
+  sessions.set("topic-1", "session-old");
+
+  await handle(message({ channelId: "topic-1" }));
+
+  assert.equal(runner.inputs.length, 1);
+  assert.equal(sessions.get("topic-1"), "session-old");
+  assert.equal(seeds.get("topic-1"), undefined);
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY]);
+});
+
+test("seed: SDK セッションが無く seed があれば prompt の先頭に付け、成功したら消す。失敗なら残す", async (t) => {
+  const { runner, sessions, seeds, topicSessions, handle } = setup(t, [
+    { ok: false, errorMessage: "timeout" },
+    okResult("session-a", "了解"),
+    okResult("session-a", "次"),
+  ]);
+  topicSessions.create(TOPIC);
+  seeds.set("topic-1", "前日までの要約");
+  const prompt = buildTurnPrompt("行き先を決めたい", CREATED_AT, "Asia/Tokyo", "旅行の計画");
+
+  await handle(message({ channelId: "topic-1", content: "行き先を決めたい" }));
+  assert.equal(seeds.get("topic-1"), "前日までの要約");
+
+  await handle(message({ channelId: "topic-1", content: "行き先を決めたい" }));
+  assert.equal(seeds.get("topic-1"), undefined);
+  assert.equal(sessions.get("topic-1"), "session-a");
+
+  // SDK セッションができた後は seed を付けない
+  await handle(message({ channelId: "topic-1", content: "行き先を決めたい" }));
+  assert.deepEqual(
+    runner.inputs.map((input) => [input.prompt, input.sessionId]),
+    [
+      [`前日までの要約\n\n${prompt}`, undefined],
+      [`前日までの要約\n\n${prompt}`, undefined],
+      [prompt, "session-a"],
+    ],
+  );
+});
+
+test("seed: SDK セッションがあれば seed は付けずに resume する", async (t) => {
+  const { runner, sessions, seeds, handle } = setup(t, [okResult("session-1", "はい")]);
+  sessions.set("inbox-1", "session-1");
+  seeds.set("inbox-1", "使わない");
+
+  await handle(message());
+
+  assert.equal(runner.inputs[0]!.prompt, buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo"));
+  assert.equal(runner.inputs[0]!.sessionId, "session-1");
+  assert.equal(seeds.get("inbox-1"), "使わない");
 });

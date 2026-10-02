@@ -369,6 +369,15 @@ export class DiscordGateway implements Gateway {
     await channel.setParent(parentId, { lockPermissions: false });
   }
 
+  async getParentId(channelId: string): Promise<string | null> {
+    // 手で動かされていることがあるので、キャッシュではなく Discord に問い合わせる
+    const channel = await this.client.channels.fetch(channelId, { force: true });
+    if (channel === null || channel.isDMBased()) {
+      throw new Error("サーバーのチャンネルではありません");
+    }
+    return channel.parentId;
+  }
+
   async stop(): Promise<void> {
     await this.client.destroy();
   }

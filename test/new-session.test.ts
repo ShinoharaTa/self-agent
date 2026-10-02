@@ -35,9 +35,13 @@ type GatewayCall =
   | { method: "moveChannel"; channelId: string; parentId: string }
   | { method: "send"; channelId: string; text: string };
 
-/** 作ったチャンネルとその置き場所を覚えておき、channelExists・countChannelsIn はそれで答える */
+/** 作ったチャンネルとその置き場所を覚えておき、channelExists・countChannelsIn・getParentId はそれで答える（getParentId は記録しない） */
 class FakeGateway
-  implements Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "moveChannel" | "countChannelsIn" | "send">
+  implements
+    Pick<
+      Gateway,
+      "createCategory" | "createTextChannel" | "channelExists" | "moveChannel" | "getParentId" | "countChannelsIn" | "send"
+    >
 {
   calls: GatewayCall[] = [];
   /** Discord 上にあるチャンネル */
@@ -75,6 +79,9 @@ class FakeGateway
   async moveChannel(channelId: string, parentId: string): Promise<void> {
     this.calls.push({ method: "moveChannel", channelId, parentId });
     this.parents.set(channelId, parentId);
+  }
+  async getParentId(channelId: string): Promise<string | null> {
+    return this.parents.get(channelId) ?? null;
   }
   async send(channelId: string, text: string): Promise<void> {
     this.beforeSend();
@@ -148,7 +155,9 @@ function setup(t: TestContext, queue: KeyedSerialQueue = new KeyedSerialQueue(1)
   const guildSettings = new GuildSettingsStore(db, () => NOW);
   const topicSessions = new TopicSessionStore(db, () => NOW);
   const logs: string[] = [];
-  const deps = { gateway, guildSettings, topicSessions, queue, log: (line: string) => logs.push(line) };
+  // /setup の親のずれの修復はここでは起きない（作ったチャンネルはすべて self-agent カテゴリにある）
+  const channelOps = { enqueueMove: () => assert.fail("想定外の移動") };
+  const deps = { gateway, guildSettings, topicSessions, queue, channelOps, log: (line: string) => logs.push(line) };
   const command = createNewSessionCommand(deps);
   /** /new を 1 回実行し、応答の呼び出しを返す */
   const runNew = async (title: string): Promise<ResponderCall[]> => {
@@ -243,6 +252,7 @@ test("/new: 進行中に空きがあればそこにチャンネルを作って�
     lastActivityAt: NOW.toISOString(),
     waitingSince: null,
     closedAt: null,
+    summary: null,
   });
   assert.deepEqual(logs, ["/new でセッションを作りました（guild=guild-1）"]);
 });

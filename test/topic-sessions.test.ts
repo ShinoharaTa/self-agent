@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { SessionStore } from "../src/store/sessions.ts";
@@ -46,6 +47,7 @@ test("TopicSessionStore: 進行中として保存し、最終発言の時刻は�
     lastActivityAt: "2026-10-02T00:00:00.000Z",
     waitingSince: null,
     closedAt: null,
+    summary: null,
   };
   assert.deepEqual(created, expected);
   assert.deepEqual(store.get("topic-1"), expected);
@@ -114,4 +116,106 @@ test("openDb: v2 の DB を v3 に上げても既存のデータは残り、sess
   const store = new TopicSessionStore(db, clock());
   store.create(NEW_SESSION);
   assert.equal(store.get("topic-1")?.title, "旅行の計画");
+});
+
+test("TopicSessionStore: 下書きの保存・取得・削除。行が無いチャンネルには保存しない", (t) => {
+  const store = new TopicSessionStore(tempDb(t), clock());
+  store.create(NEW_SESSION);
+  const draft = { summary: "要約", tasks: [{ title: "宿を予約する", due: "2026-10-05" }, { title: "休みの申請" }] };
+
+  assert.equal(store.getCloseDraft("topic-1"), undefined);
+  assert.equal(store.saveCloseDraft("topic-1", draft), true);
+  assert.deepEqual(store.getCloseDraft("topic-1"), draft);
+  assert.equal(store.saveCloseDraft("topic-9", draft), false);
+  assert.equal(store.getCloseDraft("topic-9"), undefined);
+
+  store.clearCloseDraft("topic-1");
+  assert.equal(store.getCloseDraft("topic-1"), undefined);
+});
+
+test("TopicSessionStore: close は完了にして閉じた時刻と要約を残し、下書きを消す。行が無ければ undefined", (t) => {
+  const store = new TopicSessionStore(tempDb(t), clock());
+  store.create(NEW_SESSION);
+  store.saveCloseDraft("topic-1", { summary: "下書き", tasks: [] });
+
+  const closed = store.close("topic-1", "要約");
+
+  assert.equal(closed?.state, "done");
+  assert.equal(closed?.closedAt, "2026-10-02T00:01:00.000Z");
+  assert.equal(closed?.summary, "要約");
+  assert.deepEqual(store.get("topic-1"), closed);
+  assert.equal(store.getCloseDraft("topic-1"), undefined);
+  assert.equal(store.close("topic-9", "要約"), undefined);
+});
+
+test("TopicSessionStore: setCategory は今置いているカテゴリを更新し、行が無ければ何もしない", (t) => {
+  const store = new TopicSessionStore(tempDb(t), clock());
+  store.create(NEW_SESSION);
+
+  store.setCategory("topic-1", "done-1");
+  store.setCategory("inbox-1", "home-1");
+
+  assert.equal(store.get("topic-1")?.categoryId, "done-1");
+  assert.equal(store.get("inbox-1"), undefined);
+});
+
+test("ChannelSeedStore: 保存（置き換え）・取得・削除。SessionStore.delete で SDK セッションを捨てる", (t) => {
+  const db = tempDb(t);
+  const seeds = new ChannelSeedStore(db, clock());
+  assert.equal(seeds.get("topic-1"), undefined);
+  seeds.set("topic-1", "古い");
+  seeds.set("topic-1", "新しい");
+  assert.equal(seeds.get("topic-1"), "新しい");
+  assert.equal(db.prepare("SELECT created_at FROM channel_seeds").get()?.created_at, "2026-10-02T00:01:00.000Z");
+  seeds.delete("topic-1");
+  assert.equal(seeds.get("topic-1"), undefined);
+
+  const sessions = new SessionStore(db, clock());
+  sessions.set("topic-1", "session-1");
+  sessions.set("topic-2", "session-2");
+  sessions.delete("topic-1");
+  assert.equal(sessions.get("topic-1"), undefined);
+  assert.equal(sessions.get("topic-2"), "session-2");
+});
+
+test("openDb: v3 の DB を v4 に上げても既存のセッションは残り、要約は null。下書きと seed が使える", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // P2-3 時点（v3）の DB を作る
+  const v3 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 3)) v3.exec(migration);
+  v3.exec("PRAGMA user_version = 3");
+  v3.prepare("INSERT INTO channel_sessions (key, session_id, updated_at) VALUES ('topic-1', 'session-1', '2026-10-01T00:00:00.000Z')").run();
+  v3.prepare(
+    "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at) " +
+      "VALUES ('topic-1', 'guild-1', '旅行の計画', 'active', 'active-1', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')",
+  ).run();
+  v3.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 4);
+  assert.equal(MIGRATIONS.length, 4);
+  const store = new TopicSessionStore(db, clock());
+  assert.deepEqual(store.get("topic-1"), {
+    channelId: "topic-1",
+    guildId: "guild-1",
+    title: "旅行の計画",
+    state: "active",
+    categoryId: "active-1",
+    createdAt: "2026-10-01T00:00:00.000Z",
+    lastActivityAt: "2026-10-01T00:00:00.000Z",
+    waitingSince: null,
+    closedAt: null,
+    summary: null,
+  });
+  assert.equal(store.getCloseDraft("topic-1"), undefined);
+  assert.equal(new SessionStore(db).get("topic-1"), "session-1");
+
+  store.saveCloseDraft("topic-1", { summary: "要約", tasks: [] });
+  assert.equal(store.close("topic-1", "要約")?.summary, "要約");
+  const seeds = new ChannelSeedStore(db, clock());
+  seeds.set("topic-1", "seed");
+  assert.equal(seeds.get("topic-1"), "seed");
 });
