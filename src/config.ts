@@ -1,5 +1,9 @@
 import { join } from "node:path";
 
+/** Agent SDK の effort と同じ値。config は SDK に依存させないので独自に定義する */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORT_LEVELS)[number];
+
 export type Config = {
   /** CLAUDE_CODE_OAUTH_TOKEN が設定されているか。値そのものは保持しない */
   oauthTokenPresent: boolean;
@@ -18,6 +22,8 @@ export type Config = {
   maxConcurrentTurns: number;
   /** 1 ターンの打ち切りまでの秒数 */
   turnTimeoutSec: number;
+  /** 未設定ならモデルの既定。プロセス内で固定（セッション途中で変えるとキャッシュが崩れるため） */
+  effort: Effort | undefined;
 };
 
 const DEFAULT_MODEL = "claude-opus-5";
@@ -42,6 +48,15 @@ function idList(name: string, value: string | undefined): string[] {
     }
   }
   return [...new Set(ids)];
+}
+
+function effortLevel(value: string | undefined): Effort | undefined {
+  if (value === undefined) return undefined;
+  const level = EFFORT_LEVELS.find((candidate) => candidate === value);
+  if (level === undefined) {
+    throw new Error(`SELF_AGENT_EFFORT は ${EFFORT_LEVELS.join(" / ")} のいずれかで指定してください`);
+  }
+  return level;
 }
 
 function positiveInteger(name: string, value: string | undefined, fallback: number): number {
@@ -84,6 +99,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       nonEmpty(env.SELF_AGENT_TURN_TIMEOUT_SEC),
       DEFAULT_TURN_TIMEOUT_SEC,
     ),
+    effort: effortLevel(nonEmpty(env.SELF_AGENT_EFFORT)),
   };
 }
 

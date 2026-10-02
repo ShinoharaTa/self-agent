@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { buildQueryOptions } from "../src/agent/query-options.ts";
 
-const cfg = { model: "claude-opus-5", workDir: "/srv/work", claudeConfigDir: "/srv/claude" };
+const cfg = { model: "claude-opus-5", workDir: "/srv/work", claudeConfigDir: "/srv/claude", effort: undefined };
 const mcpServer = createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
 
 test("毎回同じ Options を返す（キャッシュのため）", () => {
@@ -46,4 +46,9 @@ test("env に DISCORD_TOKEN を渡さない", () => {
     if (saved === undefined) delete process.env.DISCORD_TOKEN;
     else process.env.DISCORD_TOKEN = saved;
   }
+});
+
+test("effort は設定したときだけ Options に入る", () => {
+  assert.equal("effort" in buildQueryOptions(cfg, mcpServer), false);
+  assert.equal(buildQueryOptions({ ...cfg, effort: "medium" }, mcpServer).effort, "medium");
 });
