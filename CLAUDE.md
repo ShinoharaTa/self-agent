@@ -11,40 +11,47 @@ Discord の 1 スレッド = 1 SDK セッション（`resume` で継続）。
 ## コマンド
 
 ```bash
-source ~/.nvm/nvm.sh   # 非対話シェルでは毎回必要（Node 24.20.0）
-npm ci                 # 依存インストール（package-lock.json どおり）
-npm run check          # 型チェック（tsc --noEmit）
-npm test               # テスト（node:test）
-npm start              # 起動
-npm run measure        # P0 実測（OAuth トークン必須。利用枠を消費する）
+source ~/.nvm/nvm.sh      # 非対話シェルでは毎回必要（Node 24.20.0）
+npm ci                    # 依存インストール（package-lock.json どおり）
+npm run check             # 型チェック（tsc --noEmit）
+npm test                  # 単体テスト（test/*.test.ts。偽 Runner / 偽 Gateway / 一時 SQLite）
+npm run test:integration  # 結合テスト（OAuth トークンが無ければ skip。あれば利用枠を消費する）
+npm start                 # 起動（必須の環境変数が欠けていれば変数名を出して exit 1）
+npm run measure           # P0 実測（OAuth トークン必須。利用枠を消費する）
 ```
 
 ## ディレクトリ構成
 
 ```
-self-agent/
-├── package.json / package-lock.json
-├── tsconfig.json          # 型チェック専用（noEmit）。実行は Node の型ストリッピング
-├── src/
-│   ├── main.ts            # エントリポイント
-│   └── config.ts          # 環境変数から設定を読む
-├── scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測
-├── test/                  # node:test
-└── docs/                  # REQUIREMENTS.md, design/, research/, archive/
+src/
+├── main.ts      # 配線だけ（config → store → runner → gateway → handler）
+├── config.ts    # 環境変数から設定を読む
+├── app/         # 受付判定・key 別直列キュー・ターンの prompt・handler
+├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ）・Options・システムプロンプト・タスクツール
+├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sessions / usage
+└── discord/     # Gateway インタフェースと discord.js 実装
+scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測
+test/            # 単体テスト。test/integration/ は結合テスト
+docs/            # REQUIREMENTS.md, design/, research/, archive/
 ```
 
 ## 環境変数
 
 | 変数名 | 用途 |
 |---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | `claude setup-token` で発行。権限 600 の環境ファイルに置く。コミット禁止 |
+| `CLAUDE_CODE_OAUTH_TOKEN` / `DISCORD_TOKEN` | 必須。OAuth は `claude setup-token` で発行。権限 600 の `~/.config/self-agent/env` に置く（start / test:integration / measure が読む）。コミット禁止 |
+| `SELF_AGENT_OWNER_ID` / `_GUILD_ID` / `_INBOX_CHANNEL_ID` | 必須。受け付けるオーナー・ギルド・#inbox チャンネルの ID |
 | `CLAUDE_CONFIG_DIR` | SDK の設定・セッション保存先。既定 `~/.local/share/self-agent/claude` |
 | `SELF_AGENT_WORKDIR` | エージェントの作業ディレクトリ。既定 `~/.local/share/self-agent/work` |
+| `SELF_AGENT_DATA_DIR` | SQLite（`self-agent.db`）の保存先。既定 `~/.local/share/self-agent/data` |
 | `SELF_AGENT_MODEL` | 使用モデル。既定 `claude-opus-5` |
+| `SELF_AGENT_TZ` | 日時ヘッダのタイムゾーン。既定 `Asia/Tokyo` |
+| `SELF_AGENT_MAX_CONCURRENT` | 同時に処理するターン数の上限。既定 2 |
+| `SELF_AGENT_TURN_TIMEOUT_SEC` | 1 ターンの打ち切りまでの秒数。既定 300 |
 
 ## コーディング規約
 
-- erasable な TypeScript のみ（enum / namespace / parameter properties 禁止）。ビルドせず `node` で直接実行する
+- erasable な TypeScript のみ（enum / namespace / parameter properties 禁止）。ビルドせず `node` で直接実行する（tsconfig は型チェック専用）
 - 相対 import は `.ts` 拡張子付き
 - 依存は最小限、バージョンは exact 固定
 - public リポジトリなので、トークン・ID・個人情報をコードやログに書かない
