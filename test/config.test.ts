@@ -22,6 +22,7 @@ test("未設定ならデフォルト値を使う", () => {
     shutdownGraceSec: 30,
     idleHours: 12,
     autoSessionPerDay: 3,
+    deleteAfterDays: 30,
   });
 });
 
@@ -42,6 +43,7 @@ test("環境変数で上書きできる", () => {
     SELF_AGENT_SHUTDOWN_GRACE_SEC: "10",
     SELF_AGENT_IDLE_HOURS: "24",
     SELF_AGENT_AUTO_SESSION_PER_DAY: "5",
+    SELF_AGENT_DELETE_AFTER_DAYS: "7",
   });
   assert.equal(config.claudeConfigDir, "/srv/claude");
   assert.equal(config.workDir, "/srv/work");
@@ -57,6 +59,7 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.shutdownGraceSec, 10);
   assert.equal(config.idleHours, 24);
   assert.equal(config.autoSessionPerDay, 5);
+  assert.equal(config.deleteAfterDays, 7);
 });
 
 test("token は有無だけを返し、値は含めない", () => {
@@ -142,6 +145,17 @@ test("SELF_AGENT_AUTO_SESSION_PER_DAY が正の整数でなければエラー", 
     );
   }
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_AUTO_SESSION_PER_DAY: "" }).autoSessionPerDay, 3);
+});
+
+test("SELF_AGENT_DELETE_AFTER_DAYS が正の整数でなければエラー", () => {
+  for (const value of ["0", "-1", "1.5", "abc"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_DELETE_AFTER_DAYS: value }),
+      /SELF_AGENT_DELETE_AFTER_DAYS/,
+      value,
+    );
+  }
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DELETE_AFTER_DAYS: "" }).deleteAfterDays, 30);
 });
 
 test("HOME が無く既定のディレクトリが必要ならエラー", () => {

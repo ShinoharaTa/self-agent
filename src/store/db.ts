@@ -92,6 +92,11 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'command' CHECK (origin IN ('command', 'inbox'));
   `,
+  // v9: 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったときに #system に投稿した削除の確認（投稿済みなら投稿し直さない）と、チャンネルを削除した時刻
+  `
+  ALTER TABLE sessions ADD COLUMN delete_prompt_message_id TEXT;
+  ALTER TABLE sessions ADD COLUMN deleted_at TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

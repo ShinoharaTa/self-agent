@@ -49,12 +49,24 @@ export function toCommandInteraction(
   return { ...interactionBase(source), kind: "command", name: source.commandName, options };
 }
 
-export function toButtonInteraction(source: InteractionSource & { customId: string }): Interaction {
-  return { ...interactionBase(source), kind: "button", customId: source.customId };
+/** message はボタンが付いていたメッセージ */
+export function toButtonInteraction(
+  source: InteractionSource & { customId: string; message: { id: string } },
+): Interaction {
+  return { ...interactionBase(source), kind: "button", customId: source.customId, messageId: source.message.id };
 }
 
-export function toSelectInteraction(source: InteractionSource & { customId: string; values: readonly string[] }): Interaction {
-  return { ...interactionBase(source), kind: "select", customId: source.customId, values: [...source.values] };
+/** message はセレクトが付いていたメッセージ */
+export function toSelectInteraction(
+  source: InteractionSource & { customId: string; values: readonly string[]; message: { id: string } },
+): Interaction {
+  return {
+    ...interactionBase(source),
+    kind: "select",
+    customId: source.customId,
+    values: [...source.values],
+    messageId: source.message.id,
+  };
 }
 
 /** モーダル送信。テキスト入力の値だけを customId → 入力値で取り出す */

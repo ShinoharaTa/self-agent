@@ -23,6 +23,10 @@ export type TopicSession = {
   /** /close で残した要約。閉じる前は null */
   summary: string | null;
   origin: TopicSessionOrigin;
+  /** #system に投稿した削除の確認のメッセージ。投稿前・[残す] の後は null */
+  deletePromptMessageId: string | null;
+  /** チャンネルを削除した時刻。削除前は null */
+  deletedAt: string | null;
 };
 
 /** session_report の summary の文字数の上限 */
@@ -77,6 +81,8 @@ function toSession(row: Record<string, SQLOutputValue>): TopicSession {
     closedAt: nullableString(row.closed_at),
     summary: nullableString(row.summary),
     origin: toOrigin(row.origin),
+    deletePromptMessageId: nullableString(row.delete_prompt_message_id),
+    deletedAt: nullableString(row.deleted_at),
   };
 }
 
@@ -141,11 +147,15 @@ export class TopicSessionStore {
     return row === undefined ? undefined : toSession(row);
   }
 
-  /** 進行中に戻す: state を active にして waiting_since と closed_at を消す（要約は残す）。行が無ければ undefined */
+  /**
+   * 進行中に戻す: state を active にして waiting_since と closed_at、削除の確認の記録を消す（要約は残す。投稿済みの確認は以後効かない）。
+   * 行が無ければ undefined
+   */
   setActive(channelId: string): TopicSession | undefined {
     const row = this.db
       .prepare(
-        "UPDATE sessions SET state = 'active', waiting_since = NULL, closed_at = NULL WHERE channel_id = ? RETURNING *",
+        "UPDATE sessions SET state = 'active', waiting_since = NULL, closed_at = NULL, delete_prompt_message_id = NULL " +
+          "WHERE channel_id = ? RETURNING *",
       )
       .get(channelId);
     return row === undefined ? undefined : toSession(row);
@@ -231,6 +241,40 @@ export class TopicSessionStore {
         "UPDATE sessions SET state = 'done', closed_at = ?, summary = ?, close_draft = NULL WHERE channel_id = ? RETURNING *",
       )
       .get(this.now().toISOString(), summary, channelId);
+    return row === undefined ? undefined : toSession(row);
+  }
+
+  /**
+   * 完了で、閉じた時刻が before 以前（ちょうどを含む）で、削除の確認をまだ投稿していないセッションを、閉じた時刻の古い順に limit 件まで
+   */
+  listDeleteDue(before: Date, limit: number): TopicSession[] {
+    return this.db
+      .prepare(
+        "SELECT * FROM sessions WHERE state = 'done' AND closed_at <= ? AND delete_prompt_message_id IS NULL " +
+          "ORDER BY closed_at, channel_id LIMIT ?",
+      )
+      .all(before.toISOString(), limit)
+      .map(toSession);
+  }
+
+  /** #system に投稿した削除の確認のメッセージを記録する（記録したセッションには投稿し直さない） */
+  setDeletePrompt(channelId: string, messageId: string): void {
+    this.db.prepare("UPDATE sessions SET delete_prompt_message_id = ? WHERE channel_id = ?").run(messageId, channelId);
+  }
+
+  /** [残す]: 閉じた時刻を今にして削除の確認の記録を消す（SELF_AGENT_DELETE_AFTER_DAYS 日後にもう一度確認する）。行が無ければ undefined */
+  postponeDelete(channelId: string): TopicSession | undefined {
+    const row = this.db
+      .prepare("UPDATE sessions SET closed_at = ?, delete_prompt_message_id = NULL WHERE channel_id = ? RETURNING *")
+      .get(this.now().toISOString(), channelId);
+    return row === undefined ? undefined : toSession(row);
+  }
+
+  /** チャンネルを削除した: 削除済みにして削除した時刻を残す（要約は残す）。行が無ければ undefined */
+  markDeleted(channelId: string): TopicSession | undefined {
+    const row = this.db
+      .prepare("UPDATE sessions SET state = 'deleted', deleted_at = ? WHERE channel_id = ? RETURNING *")
+      .get(this.now().toISOString(), channelId);
     return row === undefined ? undefined : toSession(row);
   }
 }

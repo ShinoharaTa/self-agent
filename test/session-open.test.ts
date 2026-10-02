@@ -197,6 +197,8 @@ test("session_open: 成功したら /new と同じ作成処理でチャンネル
     closedAt: null,
     summary: null,
     origin: "inbox",
+    deletePromptMessageId: null,
+    deletedAt: null,
   });
   assert.equal(seeds.get("ch-1"), `#inbox からの続き:\n${ARGS.context}`);
   // /setup・/new と同じキューの同じ key で作る

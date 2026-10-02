@@ -33,6 +33,8 @@ export type Config = {
   idleHours: number;
   /** #inbox から session_open で自動で作れるセッションの 1 日（timeZone の日付）あたりの数 */
   autoSessionPerDay: number;
+  /** 完了からこの日数経ったセッションについて、チャンネルを削除するか #system で確認する */
+  deleteAfterDays: number;
 };
 
 const DEFAULT_MODEL = "claude-opus-5";
@@ -43,6 +45,7 @@ const DEFAULT_CHANNEL_OP_GAP_MS = 2000;
 const DEFAULT_SHUTDOWN_GRACE_SEC = 30;
 const DEFAULT_IDLE_HOURS = 12;
 const DEFAULT_AUTO_SESSION_PER_DAY = 3;
+const DEFAULT_DELETE_AFTER_DAYS = 30;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -128,6 +131,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "SELF_AGENT_AUTO_SESSION_PER_DAY",
       nonEmpty(env.SELF_AGENT_AUTO_SESSION_PER_DAY),
       DEFAULT_AUTO_SESSION_PER_DAY,
+    ),
+    deleteAfterDays: positiveInteger(
+      "SELF_AGENT_DELETE_AFTER_DAYS",
+      nonEmpty(env.SELF_AGENT_DELETE_AFTER_DAYS),
+      DEFAULT_DELETE_AFTER_DAYS,
     ),
   };
 }

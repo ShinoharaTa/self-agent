@@ -378,3 +378,64 @@ test("Discord への問い合わせの失敗も再試行する", async (t) => {
   assert.deepEqual(gateway.moves(), [["a", "x"]]);
   assert.deepEqual(logs, ["チャンネルの移動に失敗しました（1 回目）。30 秒後にやり直します: Unknown Channel"]);
 });
+
+test("cancel: そのチャンネルの未実行の移動を捨て、他のチャンネルの移動は残す", async (t) => {
+  const { gateway, clock, queue } = setup(t);
+  const gate = deferred();
+  gateway.beforeMove = (channelId) => (channelId === "first" ? gate.promise : undefined);
+
+  queue.enqueueMove("first", { kind: "category", categoryId: "x" });
+  await settle();
+  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
+  queue.enqueueMove("b", { kind: "category", categoryId: "y" });
+  queue.cancel("a");
+  // 列に無いチャンネルは何もしない
+  queue.cancel("unknown");
+  gate.resolve();
+  await clock.advance(GAP_MS * 10);
+
+  assert.deepEqual(gateway.moves(), [
+    ["first", "x"],
+    ["b", "y"],
+  ]);
+  assert.equal(
+    gateway.calls.some((call) => call.method === "getParentId" && call.channelId === "a"),
+    false,
+  );
+});
+
+test("cancel: 再試行を待っている移動も取り消す", async (t) => {
+  const { gateway, clock, logs, queue } = setup(t);
+  gateway.beforeMove = () => {
+    throw new Error("Service Unavailable");
+  };
+  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
+  await clock.advance(GAP_MS);
+  assert.equal(gateway.moves().length, 1);
+
+  queue.cancel("a");
+  await clock.advance(3_600_000);
+
+  assert.equal(gateway.moves().length, 1);
+  assert.equal(clock.pending, 0);
+  assert.deepEqual(logs, ["チャンネルの移動に失敗しました（1 回目）。30 秒後にやり直します: Service Unavailable"]);
+});
+
+test("cancel の後に同じチャンネルの移動を入れれば、改めて実行する", async (t) => {
+  const { gateway, clock, queue } = setup(t);
+  const gate = deferred();
+  gateway.beforeMove = (channelId) => (channelId === "first" ? gate.promise : undefined);
+
+  queue.enqueueMove("first", { kind: "category", categoryId: "x" });
+  await settle();
+  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
+  queue.cancel("a");
+  queue.enqueueMove("a", { kind: "category", categoryId: "y" });
+  gate.resolve();
+  await clock.advance(GAP_MS * 10);
+
+  assert.deepEqual(gateway.moves(), [
+    ["first", "x"],
+    ["a", "y"],
+  ]);
+});

@@ -2,6 +2,7 @@
 import type { Config } from "../config.ts";
 import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../discord/gateway.ts";
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
+import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
 import { helpCommand } from "./commands/help.ts";
 import { createHomeComponent, type HomeDeps } from "./commands/home.ts";
 import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
@@ -49,13 +50,20 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
 
 /**
  * [閉じる]（close:start）は /close と同じ流れなので、ターンのキューも要る。
- * ホームパネルの [新しいセッション] は /new と同じ作成なので、/setup・/new のキュー（queue）と gateway も要る
+ * ホームパネルの [新しいセッション] は /new と同じ作成なので、/setup・/new のキュー（queue）と gateway も要る。
+ * 削除の確認の [削除する] はチャンネルを消すので、SDK セッション（sessions）と seed も要る
  */
-export type ComponentDeps = CloseDeps & WaitDeps & TasksDeps & HomeDeps;
+export type ComponentDeps = CloseDeps & WaitDeps & TasksDeps & HomeDeps & DeleteDeps;
 
 /** 名前空間ごとのボタン・セレクト・モーダルのハンドラ */
 export function createComponents(deps: ComponentDeps): ComponentHandler[] {
-  return [createCloseComponent(deps), createWaitComponent(deps), createTasksComponent(deps), createHomeComponent(deps)];
+  return [
+    createCloseComponent(deps),
+    createWaitComponent(deps),
+    createTasksComponent(deps),
+    createHomeComponent(deps),
+    createDeleteComponent(deps),
+  ];
 }
 
 export type InteractionDeps = {

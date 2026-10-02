@@ -72,6 +72,9 @@ class FakeGateway implements Gateway {
   async getParentId(): Promise<string | null> {
     throw new Error("想定外の呼び出し");
   }
+  async deleteChannel(): Promise<void> {
+    throw new Error("想定外の呼び出し");
+  }
   async stop(): Promise<void> {}
 }
 

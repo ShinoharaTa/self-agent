@@ -65,14 +65,24 @@ export class ChannelOpsQueue {
    * 実行時に Discord 上の今の親がもう目的地なら何もしない
    */
   enqueueMove(channelId: string, target: MoveTarget): void {
+    this.cancelRetry(channelId);
+    // 既にあれば列の位置はそのままで中身だけ置き換わる
+    this.pending.set(channelId, { channelId, target, attempt: 0 });
+    void this.drain();
+  }
+
+  /** そのチャンネルの未実行の移動（再試行待ちを含む）を捨てる（チャンネルを削除したとき）。実行中の移動は止めない */
+  cancel(channelId: string): void {
+    this.cancelRetry(channelId);
+    this.pending.delete(channelId);
+  }
+
+  private cancelRetry(channelId: string): void {
     const cancelRetry = this.retries.get(channelId);
     if (cancelRetry !== undefined) {
       cancelRetry();
       this.retries.delete(channelId);
     }
-    // 既にあれば列の位置はそのままで中身だけ置き換わる
-    this.pending.set(channelId, { channelId, target, attempt: 0 });
-    void this.drain();
   }
 
   private async drain(): Promise<void> {

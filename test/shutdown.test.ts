@@ -90,6 +90,9 @@ class FakeGateway implements Gateway {
   async getParentId(): Promise<string | null> {
     throw new Error("想定外の呼び出し");
   }
+  async deleteChannel(): Promise<void> {
+    throw new Error("想定外の呼び出し");
+  }
   async stop(): Promise<void> {
     this.events.push("stop");
     if (this.stopError !== undefined) throw this.stopError;
@@ -371,7 +374,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
   const intervals: Array<{ fn: () => void; cancelled: boolean }> = [];
   let listed = 0;
   const scheduler = new Scheduler({
-    cfg: { idleHours: 12 },
+    cfg: { idleHours: 12, deleteAfterDays: 30 },
     topicSessions: {
       listIdle: () => {
         listed++;
@@ -389,6 +392,8 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
                 closedAt: null,
                 summary: null,
                 origin: "command",
+                deletePromptMessageId: null,
+                deletedAt: null,
               },
             ]
           : [];
@@ -398,7 +403,10 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
         events.push("setWaiting");
         return undefined;
       },
+      listDeleteDue: () => [],
+      setDeletePrompt: () => assert.fail("想定外の呼び出し"),
     },
+    guildSettings: { get: () => assert.fail("想定外の呼び出し") },
     channelOps: { enqueueMove: () => {} },
     gateway,
     now: () => NOW,

@@ -58,6 +58,7 @@ class FakeGateway
       | "sendMessage"
       | "pinMessage"
       | "messageExists"
+      | "deleteChannel"
     >
 {
   calls: GatewayCall[] = [];
@@ -112,6 +113,9 @@ class FakeGateway
     return this.parents.get(channelId) ?? null;
   }
   async countChannelsIn(): Promise<number> {
+    throw new Error("想定外の呼び出し");
+  }
+  async deleteChannel(): Promise<void> {
     throw new Error("想定外の呼び出し");
   }
   async send(): Promise<void> {
@@ -190,6 +194,9 @@ class RecordingChannelOps {
 
   enqueueMove(channelId: string, target: MoveTarget): void {
     this.moves.push({ channelId, target });
+  }
+  cancel(): void {
+    throw new Error("想定外の呼び出し");
   }
 }
 
@@ -537,9 +544,12 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     ["help", "setup", "new", "close", "wait", "sessions", "tasks", "usage"],
   );
   const components = createComponents({
+    cfg: { deleteAfterDays: 30 },
     gateway,
     guildSettings,
     topicSessions,
+    sessions: turn.sessions,
+    seeds: turn.seeds,
     queue: layoutQueue,
     tasks,
     channelOps,
@@ -549,7 +559,7 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
   });
   assert.deepEqual(
     components.map((component) => component.namespace),
-    ["close", "wait", "tasks", "home"],
+    ["close", "wait", "tasks", "home", "del"],
   );
   const handle = createInteractionHandler({
     cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },
