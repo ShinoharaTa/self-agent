@@ -6,7 +6,7 @@ Discord 専用サーバーに常駐する個人用エージェント。Claude Ag
 Discord の 1 チャンネル（#inbox と /new で作ったセッションのチャンネル）= 1 SDK セッション（`resume` で継続）。
 サブエージェントは使わない。話題を分けたいときはセッション（チャンネル）を分ける。
 
-- 要件: `docs/REQUIREMENTS.md`, `docs/design/`
+- 要求と決定事項: `docs/REQUIREMENTS.md`（再始動版）。外部連携の設計は `docs/design/INTEGRATIONS.md`
 - 旧 Rust 版の資料は `docs/archive/`（参照のみ）
 
 ## コマンド
