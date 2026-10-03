@@ -16,6 +16,13 @@ test("システムプロンプトに日付や年を含めない", () => {
   assert.doesNotMatch(String(systemPrompt), /\d{4}|\d{1,2}\s*[/\-月]\s*\d{1,2}/);
 });
 
+test("システムプロンプトに改訂の要点（#inbox・<#チャンネルID>・task_list・session_open）を含める", () => {
+  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  for (const word of ["#inbox", "<#", "task_list", "session_open"]) {
+    assert.ok(String(systemPrompt).includes(word), word);
+  }
+});
+
 test("組み込みツールと設定ファイルを使わず、自前ツールだけを許可する", () => {
   const options = buildQueryOptions(cfg, mcpServer);
   assert.deepEqual(options.tools, []);

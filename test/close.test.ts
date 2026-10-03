@@ -35,7 +35,7 @@ import { openDb } from "../src/store/db.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
-import { type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { CLOSE_SUMMARY_MAX_LENGTH, type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
@@ -263,6 +263,7 @@ test("/close: 公開で defer → 静的な prompt で resume → 要約とタ�
     { prompt: CLOSE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "topic-1" } },
   ]);
   assert.match(CLOSE_PROMPT, /session_report を 1 回だけ呼んでください。$/);
+  assert.ok(CLOSE_PROMPT.includes(`${CLOSE_SUMMARY_MAX_LENGTH} 字以内`));
   assert.deepEqual(calls, [
     { method: "defer", ephemeral: false },
     { method: "reply", message: { text: confirmText(REPORT), components: [BUTTONS] } },
