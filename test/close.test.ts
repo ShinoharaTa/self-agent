@@ -15,13 +15,13 @@ import {
   confirmText,
   createCloseCommand,
   createCloseComponent,
-  EMPTY_SUMMARY,
   NO_DRAFT_REPLY,
   NOT_SESSION_REPLY,
   SUMMARY_FAILURE_REPLY,
 } from "../src/app/commands/close.ts";
 import { HELP_TEXT } from "../src/app/commands/help.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { EMPTY_SUMMARY } from "../src/app/summary.ts";
 import { RESUME_SEED_HEADER } from "../src/app/turn.ts";
 import type {
   ComponentRow,
@@ -32,6 +32,7 @@ import type {
 } from "../src/discord/gateway.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
+import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -157,6 +158,7 @@ function stores(db: DatabaseSync, now: () => Date) {
     tasks: new TaskStore(db, now),
     sessions: new SdkSessionStore(db, now),
     seeds: new ChannelSeedStore(db, now),
+    inboxSummaries: new InboxSummaryStore(db, now),
     usage: new UsageStore(db, now),
   };
 }
@@ -169,7 +171,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
     rmSync(dir, { recursive: true, force: true });
   });
   const clock = { now: NOW };
-  const { topicSessions, tasks, sessions, seeds, usage } = stores(db, () => clock.now);
+  const { topicSessions, tasks, sessions, seeds, inboxSummaries, usage } = stores(db, () => clock.now);
   const runner = new FakeRunner(steps(topicSessions));
   const channelOps = new RecordingChannelOps();
   const turnQueue = new RecordingQueue(2);
@@ -180,7 +182,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
     tasks,
     channelOps,
     turnQueue,
-    turn: { runner, sessions, seeds, topicSessions, usage, log },
+    turn: { runner, sessions, seeds, topicSessions, inboxSummaries, usage, log },
     log,
   };
   const command = createCloseCommand(deps);

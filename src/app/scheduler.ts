@@ -1,10 +1,13 @@
-// 定期処理（tick）。最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、
+// 定期処理（tick）。DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
+// 最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、
 // 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認し、
 // 時期が来た #inbox の会話を切り替える（inbox-rotate.ts）。
-// 対象は毎回 DB から求めるので、止まっていた間に過ぎた分も起動直後の tick で拾う（永続のタイマーは持たない）
+// 対象は毎回 DB と Discord から求めるので、止まっていた間に過ぎた分や失敗した移動も起動直後の tick で拾う（永続のタイマーは持たない）
 import type { Config } from "../config.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
-import type { GuildSettingsStore } from "../store/guild-settings.ts";
+import type { ChannelSeedStore } from "../store/channel-seeds.ts";
+import type { GuildSettings, GuildSettingsStore } from "../store/guild-settings.ts";
+import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
 import { closeStartButton } from "./commands/close.ts";
@@ -19,6 +22,11 @@ export const TICK_INTERVAL_MS = 5 * 60 * 1000;
 export const IDLE_BATCH_LIMIT = 5;
 /** 1 回の tick で削除の確認を投稿するセッションの上限 */
 export const DELETE_PROMPT_BATCH_LIMIT = 5;
+/** 1 回の tick で 1 サーバーあたり、状態とカテゴリのずれを直す移動を入れるセッションの上限 */
+export const RECONCILE_BATCH_LIMIT = 5;
+
+/** /setup が self-agent カテゴリの中に作るチャンネル */
+const HOME_CHANNEL_FIELDS = ["inboxChannelId", "tasksChannelId", "systemChannelId"] as const;
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -37,14 +45,22 @@ const REAL_TIMERS: SchedulerTimers = {
 };
 
 export type SchedulerDeps = {
-  cfg: Pick<Config, "idleHours" | "deleteAfterDays">;
-  topicSessions: Pick<TopicSessionStore, "listIdle" | "setActive" | "setWaiting" | "listDeleteDue" | "setDeletePrompt">;
-  /** 削除の確認の投稿先（#system） */
-  guildSettings: Pick<GuildSettingsStore, "get">;
-  /** 待ちにしたセッションを待ちカテゴリへ移す */
+  /** allowedGuildIds は再同期の対象のサーバー */
+  cfg: Pick<Config, "allowedGuildIds" | "idleHours" | "deleteAfterDays">;
+  topicSessions: Pick<
+    TopicSessionStore,
+    "get" | "listIdle" | "setActive" | "setWaiting" | "listDeleteDue" | "setDeletePrompt" | "listUndeleted" | "markDeleted"
+  >;
+  /** 削除の確認の投稿先（#system）と、再同期で見る self-agent カテゴリ・状態カテゴリ */
+  guildSettings: Pick<GuildSettingsStore, "get" | "listStateCategories">;
+  /** Discord 上で消えていたセッションのチャンネルの SDK セッション（channel_sessions）を消す */
+  sessions: Pick<SdkSessionStore, "delete">;
+  /** Discord 上で消えていたセッションのチャンネルの seed（channel_seeds）を消す */
+  seeds: Pick<ChannelSeedStore, "delete">;
+  /** 待ちにしたセッションを待ちカテゴリへ移し、再同期でずれていたチャンネルを移す */
   channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
-  /** 待ちに移した知らせと削除の確認を投稿する */
-  gateway: Pick<Gateway, "sendMessage">;
+  /** 待ちに移した知らせと削除の確認を投稿し、再同期でサーバーのチャンネルの親カテゴリを取る */
+  gateway: Pick<Gateway, "sendMessage" | "listChannelParents" | "isInGuild">;
   /** #inbox の切り替え（日次・入力の大きさ）。要約のターンは発言と同じキューで行う */
   inboxRotator: Pick<InboxRotator, "rotateDue">;
   now: () => Date;
@@ -107,12 +123,82 @@ export class Scheduler {
     return running;
   }
 
-  /** 待ちへの移動・削除の確認・#inbox の切り替えは、どれかが失敗しても残りを行う。#inbox の切り替えは LLM のターンを待つので最後に行う */
+  /**
+   * 再同期・待ちへの移動・削除の確認・#inbox の切り替えは、どれかが失敗しても残りを行う。
+   * 再同期は消えたチャンネルを先に削除済みにするため最初に、#inbox の切り替えは LLM のターンを待つので最後に行う
+   */
   private async runTick(): Promise<void> {
+    await this.reconcileChannels();
     await this.moveIdleSessions();
     await this.promptDeletes();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
     await this.deps.inboxRotator.rotateDue(() => this.stopped);
+  }
+
+  /**
+   * /setup 済みの許可サーバーごとに、DB のセッションの状態と Discord の親カテゴリを突き合わせ、ずれていれば移動を列に入れる
+   * （失敗した移動や手で動かされたチャンネルを直す）。サーバーごとに 1 回だけ Discord からチャンネルの一覧を取る。
+   * - セッションのチャンネルが Discord 上に無ければ、手で消されたので削除済みにする（要約は残し、SDK セッションと seed を消す）
+   * - 親がその状態のカテゴリのどれでもなければ、その状態のカテゴリへの移動を入れる（1 サーバーで最大 5 件。残りは次の tick）
+   * - #inbox / #tasks / #system の親が self-agent カテゴリでなければ、そこへ戻す移動を入れる
+   * self-agent カテゴリ・その状態のカテゴリが Discord 上に 1 つも無ければ、そこへは移さない（作り直すのは /setup）
+   */
+  private async reconcileChannels(): Promise<void> {
+    const { cfg, guildSettings, gateway, log } = this.deps;
+    for (const guildId of cfg.allowedGuildIds) {
+      try {
+        const settings = guildSettings.get(guildId);
+        if (settings === undefined) continue;
+        // Bot が抜けたサーバーは一覧を取れない。毎 tick の失敗 log を避けて静かに飛ばす
+        if (!gateway.isInGuild(guildId)) continue;
+        await this.reconcileGuild(settings);
+      } catch (error) {
+        log(`チャンネルのカテゴリの確認に失敗しました（guild=${guildId}）: ${describeError(error)}`);
+      }
+    }
+  }
+
+  private async reconcileGuild(settings: GuildSettings): Promise<void> {
+    const { topicSessions, guildSettings, sessions, seeds, channelOps, gateway, log } = this.deps;
+    const { guildId } = settings;
+    // 一覧を取る前に DB から読む（取っている間に /new で作られたセッションを、一覧に無いからと削除済みにしない）
+    const candidates = topicSessions.listUndeleted(guildId);
+    const parents = await gateway.listChannelParents(guildId);
+
+    let moved = 0;
+    for (const candidate of candidates) {
+      // 一覧を取っている間に状態が変わっている（発言・/close・削除）ことがあるので読み直す
+      const session = topicSessions.get(candidate.channelId);
+      if (session === undefined || session.state === "deleted") continue;
+      if (!parents.has(session.channelId)) {
+        topicSessions.markDeleted(session.channelId);
+        sessions.delete(session.channelId);
+        seeds.delete(session.channelId);
+        log(`セッションのチャンネルが Discord 上に無いため、削除済みにしました（guild=${guildId}）`);
+        continue;
+      }
+      if (moved >= RECONCILE_BATCH_LIMIT) continue;
+      const categories = guildSettings
+        .listStateCategories(guildId, session.state)
+        .filter((category) => parents.has(category.categoryId));
+      const parentId = parents.get(session.channelId) ?? null;
+      if (categories.length === 0 || categories.some((category) => category.categoryId === parentId)) continue;
+      channelOps.enqueueMove(session.channelId, { kind: "state", guildId, state: session.state });
+      moved++;
+    }
+    if (moved > 0) log(`状態とカテゴリが合わないセッション ${moved} 件を移します（guild=${guildId}）`);
+
+    const homeCategoryId = settings.homeCategoryId;
+    if (homeCategoryId === null || !parents.has(homeCategoryId)) return;
+    let returned = 0;
+    for (const field of HOME_CHANNEL_FIELDS) {
+      const channelId = settings[field];
+      // チャンネル自体が無ければ作り直すのは /setup
+      if (channelId === null || !parents.has(channelId) || parents.get(channelId) === homeCategoryId) continue;
+      channelOps.enqueueMove(channelId, { kind: "category", categoryId: homeCategoryId });
+      returned++;
+    }
+    if (returned > 0) log(`self-agent カテゴリの外にあるチャンネル ${returned} 件を戻します（guild=${guildId}）`);
   }
 
   private async moveIdleSessions(): Promise<void> {
@@ -127,6 +213,8 @@ export class Scheduler {
         log(`${cfg.idleHours} 時間発言が無いセッションを待ちに移しました（guild=${session.guildId}）`);
       }
       for (const session of idle) {
+        // 前の知らせの投稿を待つ間に、発言・[続ける] で進行中に戻っていれば投稿しない
+        if (topicSessions.get(session.channelId)?.state === "active") continue;
         try {
           await gateway.sendMessage(session.channelId, idleNotice(cfg.idleHours, session.channelId));
         } catch (error) {

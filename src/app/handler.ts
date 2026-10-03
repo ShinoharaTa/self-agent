@@ -2,8 +2,9 @@ import type { AgentRunner, RunResult } from "../agent/runner.ts";
 import type { Config } from "../config.ts";
 import type { Gateway, IncomingMessage } from "../discord/gateway.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
+import type { InboxSummaryStore } from "../store/inbox-summaries.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
-import type { TopicSessionStore } from "../store/topic-sessions.ts";
+import type { TopicSession, TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
 import { acceptedChannel, type ResolveChannel } from "./access.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
@@ -18,6 +19,8 @@ export const MAX_TURNS_REPLY = "途中までで止めました（手順が多す
 export const EMPTY_REPLY = "（返答が空でした）";
 /** そのターンで compaction が起きたとき、返信の末尾に足す 1 行 */
 export const COMPACTED_NOTE = "（会話が長くなったため、古い部分を要約しました）";
+/** 発言で待ち・完了から進行中に戻したターンの、返信の先頭に足す 1 行（成功したときだけ） */
+export const REVIVED_NOTE = "（進行中に戻しました）";
 
 export type HandlerDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "ownerUserId" | "timeZone">;
@@ -30,6 +33,8 @@ export type HandlerDeps = {
   seeds: ChannelSeedStore;
   /** セッションの題名と最終発言の時刻、resume 失敗時の要約。待ち・完了のセッションは発言で進行中に戻す */
   topicSessions: Pick<TopicSessionStore, "touch" | "get" | "setActive" | "setWaiting">;
+  /** #inbox の resume 失敗時の seed（直近の #inbox の要約） */
+  inboxSummaries: Pick<InboxSummaryStore, "latest">;
   /** 進行中に戻したセッションを進行中カテゴリへ移す */
   channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
   usage: UsageStore;
@@ -44,8 +49,16 @@ function describeError(error: unknown): string {
 
 /** 受け付けた発言を 1 ターンとして処理する。返す Promise は reject しない（失敗は log に出す） */
 export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Promise<void> {
-  const { cfg, resolveChannel, gateway, runner, sessions, seeds, topicSessions, channelOps, usage, queue, log } = deps;
-  const turnDeps: TurnDeps = { runner, sessions, seeds, topicSessions, usage, log };
+  const { cfg, resolveChannel, gateway, runner, sessions, seeds, topicSessions, inboxSummaries, channelOps, usage, queue, log } =
+    deps;
+  const turnDeps: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, usage, log };
+
+  /** セッションが待ち・完了なら進行中に戻して進行中カテゴリへ移す（知らせは返信の先頭に付ける）。戻したら true */
+  const revive = (session: Pick<TopicSession, "channelId" | "guildId" | "state">): boolean => {
+    if (applySessionEvent(session, "message", { topicSessions, channelOps }).move === null) return false;
+    log(`発言があったためセッションを進行中に戻しました（guild=${session.guildId}）`);
+    return true;
+  };
 
   /** 返信の失敗は log に出して終える（再試行しない） */
   const reply = async (event: IncomingMessage, text: string): Promise<void> => {
@@ -56,8 +69,19 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
     }
   };
 
-  /** channelName は prompt の日時ヘッダに入れるチャンネル名 */
-  const handleTurn = async (event: IncomingMessage, guildId: string, channelName: string): Promise<void> => {
+  /**
+   * channelName は prompt の日時ヘッダに入れるチャンネル名。isSession はセッションのチャンネルか、revivedBeforeQueue はキュー待ちの前に進行中に戻したか。
+   * セッションはキュー待ちの間に変わりうる（/close の確定で完了になる等）ので、ここで読み直して待ち・完了なら改めて進行中に戻す
+   */
+  const handleTurn = async (
+    event: IncomingMessage,
+    guildId: string,
+    channelName: string,
+    isSession: boolean,
+    revivedBeforeQueue: boolean,
+  ): Promise<void> => {
+    const current = isSession ? topicSessions.get(event.channelId) : undefined;
+    const revived = (current !== undefined && revive(current)) || revivedBeforeQueue;
     const stopTyping = gateway.startTyping(event.channelId);
     let result: RunResult;
     try {
@@ -73,7 +97,8 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
     }
 
     if (result.ok) {
-      const text = result.text.trim() === "" ? EMPTY_REPLY : result.text;
+      let text = result.text.trim() === "" ? EMPTY_REPLY : result.text;
+      if (revived) text = `${REVIVED_NOTE}\n${text}`;
       await reply(event, result.compacted === undefined ? text : `${text}\n${COMPACTED_NOTE}`);
       return;
     }
@@ -91,17 +116,16 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
       if (kind === null || event.guildId === null) return;
       const guildId = event.guildId;
       let channelName = "inbox";
+      let revived = false;
       if (kind === "session") {
         // 最終発言の時刻はキュー待ちの前に記録する。日時ヘッダには題名を出す
         const session = topicSessions.touch(event.channelId);
         if (session === undefined) return;
         channelName = session.title;
-        // 待ち・完了なら進行中に戻して進行中カテゴリへ移す（知らせは出さず、ターンは通常どおり行う）
-        if (applySessionEvent(session, "message", { topicSessions, channelOps }).move !== null) {
-          log(`発言があったためセッションを進行中に戻しました（guild=${guildId}）`);
-        }
+        // 待ち・完了なら進行中に戻して進行中カテゴリへ移す（ターンは通常どおり行い、返信の先頭で知らせる）
+        revived = revive(session);
       }
-      await queue.run(event.channelId, () => handleTurn(event, guildId, channelName));
+      await queue.run(event.channelId, () => handleTurn(event, guildId, channelName, kind === "session", revived));
     } catch (error) {
       log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`);
     }

@@ -26,16 +26,17 @@ import {
   toPayload,
   toSelectInteraction,
 } from "./convert.ts";
-import type {
-  CommandDef,
-  Gateway,
-  GatewayHandlers,
-  IncomingMessage,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-  TextChannelOptions,
+import {
+  type CommandDef,
+  type Gateway,
+  type GatewayHandlers,
+  type IncomingMessage,
+  type Interaction,
+  type InteractionResponder,
+  type ModalDef,
+  type OutgoingMessage,
+  type TextChannelOptions,
+  UnknownChannelError,
 } from "./gateway.ts";
 import { splitMessage } from "./split.ts";
 
@@ -56,6 +57,10 @@ function toIncoming(message: Message): IncomingMessage {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isUnknownChannel(error: unknown): boolean {
+  return error instanceof DiscordAPIError && error.code === RESTJSONErrorCodes.UnknownChannel;
 }
 
 /** 受け付ける interaction の種類（それ以外の autocomplete・コンテキストメニュー等は無視する） */
@@ -296,26 +301,49 @@ export class DiscordGateway implements Gateway {
       throw new Error("カテゴリではありません");
     }
     // category.children（キャッシュ）ではなく、サーバーの全チャンネルを Discord から取り直して数える
-    const channels = await category.guild.channels.fetch();
-    return channels.filter((channel) => channel !== null && channel.parentId === categoryId).size;
+    const parents = await this.listChannelParents(category.guildId);
+    let count = 0;
+    for (const parentId of parents.values()) if (parentId === categoryId) count++;
+    return count;
+  }
+
+  async listChannelParents(guildId: string): Promise<Map<string, string | null>> {
+    // guild.channels.fetch() はスレッドを返さない（スレッドは fetchActiveThreads で別に取る）
+    const channels = await this.guild(guildId).channels.fetch();
+    const parents = new Map<string, string | null>();
+    for (const [channelId, channel] of channels) {
+      if (channel !== null) parents.set(channelId, channel.parentId);
+    }
+    return parents;
   }
 
   async moveChannel(channelId: string, parentId: string): Promise<void> {
-    const channel = await this.client.channels.fetch(channelId);
-    if (channel === null || channel.isDMBased() || channel.isThread() || channel.type === ChannelType.GuildCategory) {
-      throw new Error("カテゴリへ移せないチャンネルです");
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (channel === null || channel.isDMBased() || channel.isThread() || channel.type === ChannelType.GuildCategory) {
+        throw new Error("カテゴリへ移せないチャンネルです");
+      }
+      // 既定の lockPermissions: true は移動先の overwrite を書き込む（Manage Roles が要る）ので使わない
+      await channel.setParent(parentId, { lockPermissions: false });
+    } catch (error) {
+      // 手で消されていた（取得・移動のどちらで分かっても）
+      if (isUnknownChannel(error)) throw new UnknownChannelError();
+      throw error;
     }
-    // 既定の lockPermissions: true は移動先の overwrite を書き込む（Manage Roles が要る）ので使わない
-    await channel.setParent(parentId, { lockPermissions: false });
   }
 
   async getParentId(channelId: string): Promise<string | null> {
-    // 手で動かされていることがあるので、キャッシュではなく Discord に問い合わせる
-    const channel = await this.client.channels.fetch(channelId, { force: true });
-    if (channel === null || channel.isDMBased()) {
-      throw new Error("サーバーのチャンネルではありません");
+    try {
+      // 手で動かされていることがあるので、キャッシュではなく Discord に問い合わせる
+      const channel = await this.client.channels.fetch(channelId, { force: true });
+      if (channel === null || channel.isDMBased()) {
+        throw new Error("サーバーのチャンネルではありません");
+      }
+      return channel.parentId;
+    } catch (error) {
+      if (isUnknownChannel(error)) throw new UnknownChannelError();
+      throw error;
     }
-    return channel.parentId;
   }
 
   async deleteChannel(channelId: string): Promise<void> {

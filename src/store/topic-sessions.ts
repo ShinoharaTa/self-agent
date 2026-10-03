@@ -195,6 +195,17 @@ export class TopicSessionStore {
       .map(toSession);
   }
 
+  /** そのサーバーの削除済みでない（進行中・待ち・完了の）セッションを最終発言の新しい順に（カテゴリの再同期） */
+  listUndeleted(guildId: string): TopicSession[] {
+    return this.db
+      .prepare(
+        "SELECT * FROM sessions WHERE guild_id = ? AND state IN ('active', 'waiting', 'done') " +
+          "ORDER BY last_activity_at DESC, channel_id",
+      )
+      .all(guildId)
+      .map(toSession);
+  }
+
   /** その作られ方で since 以降（ちょうどを含む）に作ったセッションの数。全サーバー・削除済みを含めて数える */
   countCreatedSince(origin: TopicSessionOrigin, since: Date): number {
     const row = this.db

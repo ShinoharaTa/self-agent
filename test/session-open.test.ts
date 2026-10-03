@@ -23,6 +23,7 @@ import type { Gateway, TextChannelOptions } from "../src/discord/gateway.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -232,6 +233,7 @@ test("session_open: 作ったチャンネルの最初のターンの prompt の�
     sessions: new SdkSessionStore(db, () => NOW),
     seeds,
     topicSessions,
+    inboxSummaries: new InboxSummaryStore(db, () => NOW),
     usage: new UsageStore(db, () => NOW),
     log,
   };

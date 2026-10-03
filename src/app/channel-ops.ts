@@ -1,32 +1,24 @@
-// チャンネルのカテゴリ移動を全サーバー共通の 1 本の列で順に行う。Discord のレート制限に当たらないよう、操作の間を空け、同じチャンネルの移動はまとめる
+// チャンネルのカテゴリ移動を全サーバー共通の 1 本の列で順に行う。Discord のレート制限に当たらないよう、操作の間を空け、同じチャンネルの移動はまとめる。
+// 失敗しても再試行しない（log に出して終える）。ずれは Scheduler の tick の再同期（DB の状態と Discord の親カテゴリの突き合わせ）が直す
 import { setTimeout as delay } from "node:timers/promises";
-import type { Gateway } from "../discord/gateway.ts";
+import { type Gateway, UnknownChannelError } from "../discord/gateway.ts";
 import type { GuildSettingsStore, SessionState } from "../store/guild-settings.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
-import { findStateCategory } from "./commands/new.ts";
+import { findStateCategory } from "./categories.ts";
 
 /** 移動先。state は実行時に、その状態のカテゴリのうち空きのあるものを選ぶ（満杯なら `完了 N` などを作る） */
 export type MoveTarget =
   | { kind: "category"; categoryId: string }
   | { kind: "state"; guildId: string; state: SessionState };
 
-/** 失敗したときの再試行の間隔。3 回やり直してもだめなら log に出してやめる */
-export const RETRY_DELAYS_MS: readonly number[] = [30_000, 120_000, 600_000];
-
 /** テストでは偽の時計に差し替える */
 export type ChannelOpsTimers = {
   /** 操作の間隔を空ける */
   sleep(ms: number): Promise<void>;
-  /** 再試行を予約し、取り消す関数を返す */
-  schedule(fn: () => void, ms: number): () => void;
 };
 
 const REAL_TIMERS: ChannelOpsTimers = {
   sleep: (ms) => delay(ms),
-  schedule: (fn, ms) => {
-    const timer = setTimeout(fn, ms);
-    return () => clearTimeout(timer);
-  },
 };
 
 export type ChannelOpsDeps = {
@@ -40,7 +32,7 @@ export type ChannelOpsDeps = {
   log: (message: string) => void;
 };
 
-type MoveOp = { channelId: string; target: MoveTarget; attempt: number };
+type MoveOp = { channelId: string; target: MoveTarget };
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -51,9 +43,9 @@ export class ChannelOpsQueue {
   private readonly timers: ChannelOpsTimers;
   /** まだ実行していない移動（channelId ごとに 1 つ。Map の挿入順に実行する） */
   private readonly pending = new Map<string, MoveOp>();
-  /** 再試行を待っている移動の取り消し */
-  private readonly retries = new Map<string, () => void>();
   private running = false;
+  /** 実行中の移動（間隔を空けている間は undefined） */
+  private current: Promise<void> | undefined;
 
   constructor(deps: ChannelOpsDeps) {
     this.deps = deps;
@@ -61,28 +53,23 @@ export class ChannelOpsQueue {
   }
 
   /**
-   * 移動を列に入れる（すぐ返る）。同じチャンネルの未実行の移動（再試行待ちを含む）があれば、この目的地で置き換える。
+   * 移動を列に入れる（すぐ返る）。同じチャンネルの未実行の移動があれば、この目的地で置き換える。
    * 実行時に Discord 上の今の親がもう目的地なら何もしない
    */
   enqueueMove(channelId: string, target: MoveTarget): void {
-    this.cancelRetry(channelId);
     // 既にあれば列の位置はそのままで中身だけ置き換わる
-    this.pending.set(channelId, { channelId, target, attempt: 0 });
+    this.pending.set(channelId, { channelId, target });
     void this.drain();
   }
 
-  /** そのチャンネルの未実行の移動（再試行待ちを含む）を捨てる（チャンネルを削除したとき）。実行中の移動は止めない */
+  /** そのチャンネルの未実行の移動を捨てる（チャンネルを削除したとき）。実行中の移動は止めない */
   cancel(channelId: string): void {
-    this.cancelRetry(channelId);
     this.pending.delete(channelId);
   }
 
-  private cancelRetry(channelId: string): void {
-    const cancelRetry = this.retries.get(channelId);
-    if (cancelRetry !== undefined) {
-      cancelRetry();
-      this.retries.delete(channelId);
-    }
+  /** 実行中の移動が終わったら resolve する（停止時に使う。まだ始めていない移動は待たない） */
+  idle(): Promise<void> {
+    return this.current ?? Promise.resolve();
   }
 
   private async drain(): Promise<void> {
@@ -94,7 +81,13 @@ export class ChannelOpsQueue {
         if (next.done === true) break;
         const op = next.value;
         this.pending.delete(op.channelId);
-        await this.execute(op);
+        const current = this.execute(op);
+        this.current = current;
+        try {
+          await current;
+        } finally {
+          this.current = undefined;
+        }
         // 次の操作との間を空ける（この間に入った移動も、空けてから実行する）
         await this.timers.sleep(this.deps.gapMs);
       }
@@ -103,11 +96,14 @@ export class ChannelOpsQueue {
     }
   }
 
+  /** reject しない。失敗は log に出して終える（チャンネルが既に無ければ何も出さない） */
   private async execute(op: MoveOp): Promise<void> {
     try {
       await this.move(op);
     } catch (error) {
-      this.retryLater(op, error);
+      // 削除されたチャンネルの移動。次の tick の再同期で削除済みになる
+      if (error instanceof UnknownChannelError) return;
+      this.deps.log(`チャンネルの移動に失敗しました（次の定期処理で直します）: ${describeError(error)}`);
     }
   }
 
@@ -129,23 +125,5 @@ export class ChannelOpsQueue {
     }
     if (parentId !== categoryId) await gateway.moveChannel(channelId, categoryId);
     topicSessions.setCategory(channelId, categoryId);
-  }
-
-  private retryLater(op: MoveOp, error: unknown): void {
-    const { log } = this.deps;
-    // 実行中に同じチャンネルの新しい移動が入っていれば、そちらに任せる
-    if (this.pending.has(op.channelId)) return;
-    const wait = RETRY_DELAYS_MS[op.attempt];
-    if (wait === undefined) {
-      log(`チャンネルの移動に ${op.attempt + 1} 回失敗したため、やめました: ${describeError(error)}`);
-      return;
-    }
-    log(`チャンネルの移動に失敗しました（${op.attempt + 1} 回目）。${wait / 1000} 秒後にやり直します: ${describeError(error)}`);
-    const cancel = this.timers.schedule(() => {
-      this.retries.delete(op.channelId);
-      this.pending.set(op.channelId, { ...op, attempt: op.attempt + 1 });
-      void this.drain();
-    }, wait);
-    this.retries.set(op.channelId, cancel);
   }
 }

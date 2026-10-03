@@ -6,7 +6,15 @@ import { join } from "node:path";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
 import type { MoveTarget } from "../src/app/channel-ops.ts";
-import { COMPACTED_NOTE, createHandler, EMPTY_REPLY, FAILURE_REPLY, MAX_TURNS_REPLY } from "../src/app/handler.ts";
+import {
+  COMPACTED_NOTE,
+  createHandler,
+  EMPTY_REPLY,
+  FAILURE_REPLY,
+  MAX_TURNS_REPLY,
+  REVIVED_NOTE,
+} from "../src/app/handler.ts";
+import { rotatedSeed } from "../src/app/summary.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { RESUME_FAILURE_LIMIT, RESUME_SEED_HEADER } from "../src/app/turn.ts";
@@ -14,6 +22,7 @@ import type { Gateway, IncomingMessage } from "../src/discord/gateway.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
@@ -64,6 +73,9 @@ class FakeGateway implements Gateway {
     throw new Error("想定外の呼び出し");
   }
   async countChannelsIn(): Promise<number> {
+    throw new Error("想定外の呼び出し");
+  }
+  async listChannelParents(): Promise<Map<string, string | null>> {
     throw new Error("想定外の呼び出し");
   }
   async moveChannel(): Promise<void> {
@@ -148,7 +160,9 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
   const clock = { now: NOW };
   const topicSessions = new TopicSessionStore(db, () => clock.now);
   const seeds = new ChannelSeedStore(db, () => NOW);
+  const inboxSummaries = new InboxSummaryStore(db, () => NOW);
   const channelOps = new RecordingChannelOps();
+  const queue = new KeyedSerialQueue(2);
   const logs: string[] = [];
   const handle = createHandler({
     cfg,
@@ -159,12 +173,27 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     sessions,
     seeds,
     topicSessions,
+    inboxSummaries,
     channelOps,
     usage,
-    queue: new KeyedSerialQueue(2),
+    queue,
     log: (line) => logs.push(line),
   });
-  return { db, gateway, runner, sessions, seeds, topicSessions, channelOps, clock, usage, logs, handle };
+  return {
+    db,
+    gateway,
+    runner,
+    sessions,
+    seeds,
+    topicSessions,
+    inboxSummaries,
+    channelOps,
+    queue,
+    clock,
+    usage,
+    logs,
+    handle,
+  };
 }
 
 /** ツールのハンドラに渡す、このターンのチャンネル */
@@ -407,7 +436,7 @@ test("セッションのチャンネル: 受け付けた発言の last_activity_
   assert.equal(topicSessions.get("topic-1")?.lastActivityAt, "2026-10-02T03:00:00.000Z");
 });
 
-test("待ち・完了のセッションでの発言: 進行中に戻して進行中カテゴリへの移動を入れ、ターンは通常どおり行う（知らせは出さない）", async (t) => {
+test("待ち・完了のセッションでの発言: 進行中に戻して進行中カテゴリへの移動を入れ、ターンは通常どおり行い、返信の先頭で戻したことを知らせる", async (t) => {
   const { db, gateway, runner, topicSessions, channelOps, logs, handle } = setup(t, [
     okResult("session-a", "おかえりなさい"),
     okResult("session-b", "再開します"),
@@ -438,12 +467,13 @@ test("待ち・完了のセッションでの発言: 進行中に戻して進行
     { channelId: "topic-1", target: { kind: "state", guildId: "guild-1", state: "active" } },
     { channelId: "topic-2", target: { kind: "state", guildId: "guild-1", state: "active" } },
   ]);
-  // 返信はターンの返答だけ
+  // 返信の先頭に 1 行足す（別の投稿にはしない）
+  assert.equal(REVIVED_NOTE, "（進行中に戻しました）");
   assert.deepEqual(
     gateway.sent.map((sent) => [sent.channelId, sent.text]),
     [
-      ["topic-1", "おかえりなさい"],
-      ["topic-2", "再開します"],
+      ["topic-1", `${REVIVED_NOTE}\nおかえりなさい`],
+      ["topic-2", `${REVIVED_NOTE}\n再開します`],
     ],
   );
   assert.equal(runner.inputs.length, 2);
@@ -454,8 +484,8 @@ test("待ち・完了のセッションでの発言: 進行中に戻して進行
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE state = 'active'").get()?.n, 2);
 });
 
-test("進行中のセッション・#inbox での発言では移動を入れない", async (t) => {
-  const { topicSessions, channelOps, handle } = setup(t, [okResult("session-a", "1"), okResult("session-b", "2")]);
+test("進行中のセッション・#inbox での発言では移動を入れず、返信にも何も足さない", async (t) => {
+  const { gateway, topicSessions, channelOps, handle } = setup(t, [okResult("session-a", "1"), okResult("session-b", "2")]);
   topicSessions.create(TOPIC);
 
   await handle(message({ channelId: "topic-1" }));
@@ -463,6 +493,65 @@ test("進行中のセッション・#inbox での発言では移動を入れな�
 
   assert.equal(topicSessions.get("topic-1")?.state, "active");
   assert.deepEqual(channelOps.moves, []);
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), ["1", "2"]);
+});
+
+test("進行中に戻したターン: compaction の 1 行は末尾に足す。失敗したら失敗の返信だけで、戻したことは付けない", async (t) => {
+  const { gateway, topicSessions, handle } = setup(t, [
+    { ...okResult("session-a", "続きです"), compacted: { trigger: "auto" } },
+    CRASH,
+  ]);
+  topicSessions.create(TOPIC);
+  topicSessions.create({ ...TOPIC, channelId: "topic-2" });
+  topicSessions.setWaiting("topic-1");
+  topicSessions.close("topic-2", "要約");
+
+  await handle(message({ id: "message-1", channelId: "topic-1" }));
+  await handle(message({ id: "message-2", channelId: "topic-2" }));
+
+  assert.equal(topicSessions.get("topic-2")?.state, "active");
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [`${REVIVED_NOTE}\n続きです\n${COMPACTED_NOTE}`, FAILURE_REPLY]);
+});
+
+test("キュー待ちの間に完了になったセッション（/close の確定）への発言は、ターンの前に読み直して進行中に戻す", async (t) => {
+  const { gateway, runner, topicSessions, channelOps, queue, logs, handle } = setup(t, [
+    okResult("session-a", "続きをどうぞ"),
+  ]);
+  topicSessions.create(TOPIC);
+  // /close のターンが同じキュー（key は channelId）で走っている間に発言が届く
+  let release = (): void => {};
+  const closing = queue.run("topic-1", () => new Promise<void>((resolve) => (release = resolve)));
+  const replying = handle(message({ channelId: "topic-1" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  // 発言が届いた時点では進行中なので、まだ移動は入れていない
+  assert.deepEqual(channelOps.moves, []);
+  assert.equal(runner.inputs.length, 0);
+
+  // /close の確定で完了になってから、発言のターンが走る
+  topicSessions.close("topic-1", "要約");
+  release();
+  await Promise.all([closing, replying]);
+
+  assert.equal(topicSessions.get("topic-1")?.state, "active");
+  assert.equal(topicSessions.get("topic-1")?.closedAt, null);
+  assert.deepEqual(channelOps.moves, [
+    { channelId: "topic-1", target: { kind: "state", guildId: "guild-1", state: "active" } },
+  ]);
+  assert.equal(runner.inputs.length, 1);
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [`${REVIVED_NOTE}\n続きをどうぞ`]);
+  assert.deepEqual(logs, ["発言があったためセッションを進行中に戻しました（guild=guild-1）"]);
+});
+
+test("キュー待ちの前に進行中に戻したら、キューの中では読み直しても重ねて戻さない", async (t) => {
+  const { gateway, topicSessions, channelOps, logs, handle } = setup(t, [okResult("session-a", "はい")]);
+  topicSessions.create(TOPIC);
+  topicSessions.setWaiting("topic-1");
+
+  await handle(message({ channelId: "topic-1" }));
+
+  assert.equal(channelOps.moves.length, 1);
+  assert.equal(logs.length, 1);
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [`${REVIVED_NOTE}\nはい`]);
 });
 
 test("削除済みのセッション・別サーバーのセッションのチャンネルでは受け付けず、last_activity_at も更新しない", async (t) => {
@@ -545,9 +634,11 @@ test("resume 失敗: 要約が無ければ seed は題名だけ。やり直し�
   assert.ok(runner.inputs[0]?.prompt.startsWith(`${seed}\n\n`));
 });
 
-test("resume 失敗: #inbox では seed を入れずに sessionId 無しで 1 回だけやり直す", async (t) => {
-  const { runner, sessions, seeds, handle } = setup(t, [RESUME_FAILURE, okResult("session-new", "はい")]);
+test("resume 失敗: #inbox はそのサーバーの #inbox の要約がまだ無ければ seed を入れずに sessionId 無しで 1 回だけやり直す", async (t) => {
+  const { runner, sessions, seeds, inboxSummaries, handle } = setup(t, [RESUME_FAILURE, okResult("session-new", "はい")]);
   sessions.set("inbox-1", "session-old");
+  // 別のサーバーの要約は使わない
+  inboxSummaries.add("guild-9", "2026-10-01", "別のサーバーの要約");
 
   await handle(message());
 
@@ -558,6 +649,45 @@ test("resume 失敗: #inbox では seed を入れずに sessionId 無しで 1 �
   ]);
   assert.equal(seeds.get("inbox-1"), undefined);
   assert.equal(sessions.get("inbox-1"), "session-new");
+});
+
+test("resume 失敗: #inbox はそのサーバーの直近の #inbox の要約を seed にして sessionId 無しで 1 回だけやり直し、成功したら seed を消す", async (t) => {
+  const { runner, sessions, seeds, inboxSummaries, handle } = setup(t, [RESUME_FAILURE, okResult("session-new", "はい")]);
+  sessions.set("inbox-1", "session-old");
+  inboxSummaries.add("guild-1", "2026-10-01", "古い要約");
+  inboxSummaries.add("guild-1", "2026-10-02", "- 金曜までに見積もりを送る");
+  const seed = rotatedSeed("- 金曜までに見積もりを送る");
+  runner.beforeResult = async () => {
+    if (runner.inputs.length === 2) assert.equal(seeds.get("inbox-1"), seed);
+  };
+
+  await handle(message());
+
+  const prompt = buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo");
+  assert.equal(seed, "これまでの #inbox の要約:\n- 金曜までに見積もりを送る");
+  assert.deepEqual(runner.inputs, [
+    { prompt, sessionId: "session-old", context: context() },
+    { prompt: `${seed}\n\n${prompt}`, sessionId: undefined, context: context() },
+  ]);
+  assert.equal(seeds.get("inbox-1"), undefined);
+  assert.equal(sessions.get("inbox-1"), "session-new");
+});
+
+test("連続失敗: #inbox でも結果の届かない失敗が 3 回続いたら捨て、直近の #inbox の要約を seed にしてやり直す", async (t) => {
+  const { runner, sessions, seeds, inboxSummaries, handle } = setup(t, [CRASH, CRASH, CRASH, CRASH]);
+  sessions.set("inbox-1", "session-old");
+  inboxSummaries.add("guild-1", "2026-10-02", "前回の要約");
+
+  for (let i = 0; i < 3; i++) await handle(message());
+
+  assert.deepEqual(
+    runner.inputs.map((input) => input.sessionId),
+    ["session-old", "session-old", "session-old", undefined],
+  );
+  assert.ok(runner.inputs[3]!.prompt.startsWith(`${rotatedSeed("前回の要約")}\n\n`));
+  // やり直しも失敗したので seed は残し、次の発言で使う
+  assert.equal(sessions.get("inbox-1"), undefined);
+  assert.equal(seeds.get("inbox-1"), rotatedSeed("前回の要約"));
 });
 
 test("resume 以外の失敗ではやり直さず、SDK セッションも seed もそのまま", async (t) => {
@@ -722,7 +852,14 @@ test("連続失敗: 成功したら回数を 0 に戻す。タイムアウトは
   assert.equal(sessions.get("inbox-1"), "session-old");
 });
 
-test("連続失敗: 手順数の上限（error_max_turns）は数えず、何回続いても会話を捨てない", async (t) => {
+test("連続失敗: 結果が届いた失敗（API エラー・手順数の上限）は数えず、5 回続いても会話を捨てない", async (t) => {
+  const apiError: RunResult = {
+    ok: false,
+    errorMessage: "success (is_error)",
+    sessionId: "session-old",
+    sessionRecorded: true,
+    toolCalls: 0,
+  };
   const maxTurns: RunResult = {
     ok: false,
     errorMessage: "error_max_turns",
@@ -730,17 +867,51 @@ test("連続失敗: 手順数の上限（error_max_turns）は数えず、何回
     sessionRecorded: true,
     toolCalls: 0,
   };
-  const { gateway, runner, sessions, handle } = setup(t, [maxTurns, maxTurns, maxTurns, maxTurns]);
+  const { gateway, runner, sessions, seeds, logs, handle } = setup(t, [
+    apiError,
+    apiError,
+    apiError,
+    apiError,
+    apiError,
+    maxTurns,
+    maxTurns,
+    maxTurns,
+  ]);
   sessions.set("inbox-1", "session-old");
 
-  for (let i = 0; i < 4; i++) await handle(message());
+  for (let i = 0; i < 8; i++) await handle(message());
 
-  assert.equal(runner.inputs.length, 4);
+  assert.equal(runner.inputs.length, 8);
   assert.ok(runner.inputs.every((input) => input.sessionId === "session-old"));
   assert.equal(sessions.failureCount("inbox-1"), 0);
   assert.equal(sessions.get("inbox-1"), "session-old");
+  assert.equal(seeds.get("inbox-1"), undefined);
+  assert.equal(logs.filter((line) => line.includes("SDK セッションを捨てて")).length, 0);
   assert.deepEqual(
     gateway.sent.map((sent) => sent.text),
-    [MAX_TURNS_REPLY, MAX_TURNS_REPLY, MAX_TURNS_REPLY, MAX_TURNS_REPLY],
+    [...Array.from({ length: 5 }, () => FAILURE_REPLY), MAX_TURNS_REPLY, MAX_TURNS_REPLY, MAX_TURNS_REPLY],
   );
+});
+
+test("連続失敗: 結果が届いた失敗は、結果の届かない失敗の数を 0 に戻さない（同じ SDK セッションのまま）", async (t) => {
+  const apiError: RunResult = {
+    ok: false,
+    errorMessage: "success (is_error)",
+    sessionId: "session-old",
+    sessionRecorded: true,
+    toolCalls: 0,
+  };
+  const { runner, sessions, handle } = setup(t, [CRASH, apiError, CRASH, apiError, CRASH, okResult("session-new", "はい")]);
+  sessions.set("inbox-1", "session-old");
+
+  for (let i = 0; i < 4; i++) await handle(message());
+  assert.equal(sessions.failureCount("inbox-1"), 2);
+  assert.equal(sessions.get("inbox-1"), "session-old");
+
+  await handle(message());
+  assert.deepEqual(
+    runner.inputs.map((input) => input.sessionId),
+    ["session-old", "session-old", "session-old", "session-old", "session-old", undefined],
+  );
+  assert.equal(sessions.get("inbox-1"), "session-new");
 });

@@ -110,6 +110,10 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE guild_settings ADD COLUMN inbox_rotated_date TEXT;
   ALTER TABLE usage_log ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0;
   `,
+  // v11: #inbox の会話を最後に切り替えた時刻（ISO）。切り替えの後のターンだけを見るときの基準（要約のターン自身の記録より後の時刻）
+  `
+  ALTER TABLE guild_settings ADD COLUMN inbox_rotated_at TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

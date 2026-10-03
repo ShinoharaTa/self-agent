@@ -34,9 +34,9 @@ test("describeResultError: errors が空なら subtype だけ。複数あれば 
   assert.equal(long, `error_during_execution: ${"x".repeat(200)}…`);
 });
 
-test("describeResultError: success の is_error は本文を出す", () => {
+test("describeResultError: success の is_error は本文（result.result）を出さず、subtype だけ", () => {
   const result = { type: "result", subtype: "success", is_error: true, result: "API Error: 500" } as unknown as SDKResultMessage;
-  assert.equal(describeResultError(result), "success (is_error): API Error: 500");
+  assert.equal(describeResultError(result), "success (is_error)");
 });
 
 const cfg = {
@@ -222,7 +222,7 @@ test("SdkAgentRunner: is_error・error_max_turns は result の session_id を�
   );
   assert.deepEqual(await isError.runner.run({ prompt: "x" }), {
     ok: false,
-    errorMessage: "success (is_error): API Error: 500",
+    errorMessage: "success (is_error)",
     sessionId: "session-2",
     sessionRecorded: true,
     toolCalls: 0,
@@ -267,6 +267,55 @@ test("SdkAgentRunner: ストリームの例外は exception として返し、se
     sessionRecorded: false,
     toolCalls: 0,
   });
+});
+
+test("SdkAgentRunner: 例外で終わったら、子プロセスの stderr の末尾 200 字を 1 行にして errorMessage に添える。stderr は log に出さない", async () => {
+  const { runner, logs } = setupRunner(async function* (call) {
+    yield init("session-1");
+    call.options.stderr?.("Error: No conversation found\n  with session ID: session-0\n");
+    throw new Error("Claude Code process exited with code 1");
+  });
+
+  assert.deepEqual(await runner.run({ prompt: "x", sessionId: "session-0" }), {
+    ok: false,
+    errorMessage:
+      "exception: Error: Claude Code process exited with code 1（stderr: Error: No conversation found with session ID: session-0）",
+    sessionId: "session-1",
+    sessionRecorded: false,
+    toolCalls: 0,
+  });
+  assert.deepEqual(logs, []);
+});
+
+test("SdkAgentRunner: stderr は直近の分だけ保持し、添えるのは末尾 200 字（切ったら先頭に …）。stderr が無ければ添えない", async () => {
+  const { runner } = setupRunner(async function* (call) {
+    // 保持する 2000 字より前の分は残らない
+    call.options.stderr?.("先頭の古い出力");
+    call.options.stderr?.("x".repeat(2000));
+    call.options.stderr?.("y".repeat(150));
+    call.options.stderr?.("z".repeat(100));
+    throw new Error("boom");
+  });
+  const result = await runner.run({ prompt: "x" });
+  assert.ok(!result.ok);
+  assert.equal(result.errorMessage, `exception: Error: boom（stderr: …${"y".repeat(100)}${"z".repeat(100)}）`);
+
+  const { runner: quiet } = setupRunner(async function* (call) {
+    call.options.stderr?.(" \n ");
+    throw new Error("boom");
+  });
+  const quietResult = await quiet.run({ prompt: "x" });
+  assert.ok(!quietResult.ok);
+  assert.equal(quietResult.errorMessage, "exception: Error: boom");
+
+  // result が届いた失敗・成功には添えない
+  const { runner: recorded } = setupRunner(async function* (call) {
+    call.options.stderr?.("warning");
+    yield sdkMessage({ type: "result", subtype: "error_max_turns", is_error: true, errors: [], session_id: "session-1" });
+  });
+  const recordedResult = await recorded.run({ prompt: "x" });
+  assert.ok(!recordedResult.ok);
+  assert.equal(recordedResult.errorMessage, "error_max_turns");
 });
 
 test("SdkAgentRunner: turnTimeoutSec を過ぎたら abort して timeout を返す（例外で終わっても、そのまま終わっても）", async () => {
