@@ -25,7 +25,7 @@ import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { CLOSE_SUMMARY_MAX_LENGTH, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
 
 /** 2026-10-03(土) 04:00 JST（UTC ではまだ 10/02） */
@@ -299,7 +299,7 @@ const NO_TURNS_LOG = "#inbox に前回の切り替えからの会話が無いた
 test("文言: 要約を頼む prompt は静的で、日次・サイズのどちらでも通じる。seed は「これまでの #inbox の要約:」に続けて要約を入れる", () => {
   assert.equal(
     ROTATE_PROMPT,
-    "会話を新しくするので、ここまでの #inbox のやり取りのうち、今後も必要なこと（未完了の話題・決めたこと・約束）だけを 600 字以内の箇条書きで返答してください。ツールは使わないでください。",
+    `会話を新しくするので、ここまでの #inbox のやり取りのうち、今後も必要なこと（未完了の話題・決めたこと・約束）だけを ${CLOSE_SUMMARY_MAX_LENGTH} 字以内の箇条書きで返答してください。ツールは使わないでください。`,
   );
   assert.equal(ROTATED_NOTICE, "（会話を新しくしました。これまでの要約を引き継いでいます）");
   assert.equal(rotatedSeed("- a\n- b"), "これまでの #inbox の要約:\n- a\n- b");

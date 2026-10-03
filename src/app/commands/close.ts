@@ -1,15 +1,20 @@
 import type { ButtonDef, ComponentRow, InteractionResponder, OutgoingMessage } from "../../discord/gateway.ts";
 import type { TaskStore } from "../../store/tasks.ts";
-import type { CloseDraft, TopicSession, TopicSessionStore } from "../../store/topic-sessions.ts";
+import {
+  CLOSE_SUMMARY_MAX_LENGTH,
+  type CloseDraft,
+  type TopicSession,
+  type TopicSessionStore,
+} from "../../store/topic-sessions.ts";
 import type { ChannelOpsQueue } from "../channel-ops.ts";
 import type { CommandHandler, ComponentHandler } from "../interactions.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
 import { clip, fallbackSummary } from "../summary.ts";
 import { runChannelTurn, type TurnDeps } from "../turn.ts";
 
-/** /close のターンの prompt。静的に保つ（日時ヘッダも付けない） */
+/** /close のターンの prompt。静的に保つ（日時ヘッダも付けない。字数は session_report の summary の上限と揃える） */
 export const CLOSE_PROMPT =
-  "このセッションを閉じます。ここまでの内容を 600 字以内で要約し、まだ登録していないやることがあれば task_add は使わずに tasks に入れて、session_report を 1 回だけ呼んでください。";
+  `このセッションを閉じます。ここまでの内容を ${CLOSE_SUMMARY_MAX_LENGTH} 字以内で要約し、まだ登録していないやることがあれば task_add は使わずに tasks に入れて、session_report を 1 回だけ呼んでください。`;
 
 export const NOT_SESSION_REPLY = "セッションのチャンネルで実行してください";
 export const ALREADY_CLOSED_REPLY = "このセッションは閉じています";

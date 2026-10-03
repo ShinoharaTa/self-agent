@@ -6,14 +6,15 @@ import type { Config } from "../config.ts";
 import type { Gateway } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { InboxSummaryStore } from "../store/inbox-summaries.ts";
+import { CLOSE_SUMMARY_MAX_LENGTH } from "../store/topic-sessions.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { fallbackSummary, rotatedSeed } from "./summary.ts";
 import { formatDate } from "./time.ts";
 import { recordTurnUsage, RESUME_FAILURE_PATTERN, type TurnDeps } from "./turn.ts";
 
-/** 要約を頼むターンの prompt。静的に保つ（日時ヘッダも付けない） */
+/** 要約を頼むターンの prompt。静的に保つ（日時ヘッダも付けない。字数は要約を切り詰める上限と揃える） */
 export const ROTATE_PROMPT =
-  "会話を新しくするので、ここまでの #inbox のやり取りのうち、今後も必要なこと（未完了の話題・決めたこと・約束）だけを 600 字以内の箇条書きで返答してください。ツールは使わないでください。";
+  `会話を新しくするので、ここまでの #inbox のやり取りのうち、今後も必要なこと（未完了の話題・決めたこと・約束）だけを ${CLOSE_SUMMARY_MAX_LENGTH} 字以内の箇条書きで返答してください。ツールは使わないでください。`;
 
 /** 切り替えた後に #inbox に投稿する 1 行 */
 export const ROTATED_NOTICE = "（会話を新しくしました。これまでの要約を引き継いでいます）";
