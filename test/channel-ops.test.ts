@@ -4,8 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as flush } from "node:timers/promises";
-import { ChannelOpsQueue, type ChannelOpsTimers, RETRY_DELAYS_MS } from "../src/app/channel-ops.ts";
-import type { Gateway } from "../src/discord/gateway.ts";
+import { ChannelOpsQueue, type ChannelOpsTimers } from "../src/app/channel-ops.ts";
+import { type Gateway, UnknownChannelError } from "../src/discord/gateway.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -61,7 +61,7 @@ class FakeGateway
   }
 }
 
-/** 偽の時計。sleep と再試行の予約は advance で時刻が来たら進む */
+/** 偽の時計。sleep は advance で時刻が来たら進む */
 class FakeClock implements ChannelOpsTimers {
   now = 0;
   sleeps: number[] = [];
@@ -69,18 +69,10 @@ class FakeClock implements ChannelOpsTimers {
 
   sleep(ms: number): Promise<void> {
     this.sleeps.push(ms);
-    return new Promise((resolve) => this.schedule(resolve, ms));
+    return new Promise((resolve) => this.timers.push({ at: this.now + ms, fn: resolve }));
   }
 
-  schedule(fn: () => void, ms: number): () => void {
-    const timer = { at: this.now + ms, fn };
-    this.timers.push(timer);
-    return () => {
-      this.timers = this.timers.filter((candidate) => candidate !== timer);
-    };
-  }
-
-  /** 予約の数（再試行と sleep の両方） */
+  /** 待っている sleep の数 */
   get pending(): number {
     return this.timers.length;
   }
@@ -285,49 +277,10 @@ test("実行中の移動と同じチャンネルの移動は、終わった後�
   assert.equal(gateway.calls.filter((call) => call.method === "getParentId").length, 2);
 });
 
-test("失敗したら 30 秒・2 分・10 分後に 3 回まで再試行し、だめなら log に出してやめる", async (t) => {
+test("失敗したら log に出して終え、再試行しない。他の移動は続ける", async (t) => {
   const { gateway, clock, logs, queue } = setup(t);
-  gateway.beforeMove = () => {
-    throw new Error("Missing Permissions");
-  };
-  assert.deepEqual(RETRY_DELAYS_MS, [30_000, 120_000, 600_000]);
-
-  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
-  await settle();
-  assert.equal(gateway.moves().length, 1);
-
-  await clock.advance(30_000 - 1);
-  assert.equal(gateway.moves().length, 1);
-  await clock.advance(1);
-  assert.equal(gateway.moves().length, 2);
-
-  await clock.advance(120_000 - 1);
-  assert.equal(gateway.moves().length, 2);
-  await clock.advance(1);
-  assert.equal(gateway.moves().length, 3);
-
-  await clock.advance(600_000 - 1);
-  assert.equal(gateway.moves().length, 3);
-  await clock.advance(1);
-  assert.equal(gateway.moves().length, 4);
-
-  // これ以上はやり直さない
-  await clock.advance(3_600_000);
-  assert.equal(gateway.moves().length, 4);
-  assert.equal(clock.pending, 0);
-  assert.deepEqual(logs, [
-    "チャンネルの移動に失敗しました（1 回目）。30 秒後にやり直します: Missing Permissions",
-    "チャンネルの移動に失敗しました（2 回目）。120 秒後にやり直します: Missing Permissions",
-    "チャンネルの移動に失敗しました（3 回目）。600 秒後にやり直します: Missing Permissions",
-    "チャンネルの移動に 4 回失敗したため、やめました: Missing Permissions",
-  ]);
-});
-
-test("再試行で成功したらそこで終わる。待っている間も他の移動は進む", async (t) => {
-  const { gateway, clock, logs, queue } = setup(t);
-  let failures = 1;
   gateway.beforeMove = (channelId) => {
-    if (channelId === "a" && failures-- > 0) throw new Error("Service Unavailable");
+    if (channelId === "a") throw new Error("Missing Permissions");
   };
 
   queue.enqueueMove("a", { kind: "category", categoryId: "x" });
@@ -338,45 +291,76 @@ test("再試行で成功したらそこで終わる。待っている間も他�
     ["b", "y"],
   ]);
 
-  await clock.advance(30_000);
-  assert.deepEqual(gateway.moves()[2], ["a", "x"]);
+  // これ以上はやり直さない（ずれは定期処理の再同期が直す）
   await clock.advance(3_600_000);
-  assert.equal(gateway.moves().length, 3);
-  assert.equal(logs.length, 1);
+  assert.equal(gateway.moves().length, 2);
+  assert.equal(clock.pending, 0);
+  assert.deepEqual(logs, ["チャンネルの移動に失敗しました（次の定期処理で直します）: Missing Permissions"]);
 });
 
-test("再試行を待っている間に同じチャンネルの移動が来たら、再試行を取り消して新しい目的地で実行する", async (t) => {
-  const { gateway, clock, queue } = setup(t);
-  gateway.beforeMove = () => {
+test("Discord への問い合わせの失敗も log に出して終える", async (t) => {
+  const { gateway, clock, logs, queue } = setup(t);
+  gateway.getParentId = async () => {
     throw new Error("Service Unavailable");
   };
-  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
-  await clock.advance(GAP_MS);
-  gateway.beforeMove = () => {};
 
-  queue.enqueueMove("a", { kind: "category", categoryId: "y" });
+  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
+  await clock.advance(3_600_000);
+
+  assert.deepEqual(gateway.moves(), []);
+  assert.deepEqual(logs, ["チャンネルの移動に失敗しました（次の定期処理で直します）: Service Unavailable"]);
+});
+
+test("チャンネルが既に無い（Unknown Channel）なら、問い合わせ・移動のどちらで分かっても log に出さずに終える", async (t) => {
+  const { gateway, clock, logs, queue } = setup(t);
+  const getParentId = gateway.getParentId.bind(gateway);
+  gateway.getParentId = async (channelId) => {
+    if (channelId === "deleted-1") throw new UnknownChannelError();
+    return getParentId(channelId);
+  };
+  gateway.beforeMove = (channelId) => {
+    if (channelId === "deleted-2") throw new UnknownChannelError();
+  };
+
+  queue.enqueueMove("deleted-1", { kind: "category", categoryId: "x" });
+  queue.enqueueMove("deleted-2", { kind: "category", categoryId: "x" });
+  queue.enqueueMove("c", { kind: "category", categoryId: "x" });
   await clock.advance(3_600_000);
 
   assert.deepEqual(gateway.moves(), [
-    ["a", "x"],
-    ["a", "y"],
+    ["deleted-2", "x"],
+    ["c", "x"],
   ]);
+  assert.deepEqual(logs, []);
 });
 
-test("Discord への問い合わせの失敗も再試行する", async (t) => {
-  const { gateway, clock, logs, queue } = setup(t);
-  let failures = 1;
-  const getParentId = gateway.getParentId.bind(gateway);
-  gateway.getParentId = async (channelId) => {
-    if (failures-- > 0) throw new Error("Unknown Channel");
-    return getParentId(channelId);
-  };
+test("idle: 実行中の移動が終わったら resolve する。間隔を空けている間・未実行の移動は待たない", async (t) => {
+  const { gateway, clock, queue } = setup(t);
+  // 何も実行していなければすぐ
+  await queue.idle();
 
+  const gate = deferred();
+  gateway.beforeMove = (channelId) => (channelId === "a" ? gate.promise : undefined);
   queue.enqueueMove("a", { kind: "category", categoryId: "x" });
-  await clock.advance(30_000);
+  queue.enqueueMove("b", { kind: "category", categoryId: "y" });
+  await settle();
 
+  let idle = false;
+  const waiting = queue.idle().then(() => {
+    idle = true;
+  });
+  await settle();
+  assert.equal(idle, false);
+
+  gate.resolve();
+  await waiting;
+  assert.equal(idle, true);
+  // b はまだ始めていない（間隔を空けている）
   assert.deepEqual(gateway.moves(), [["a", "x"]]);
-  assert.deepEqual(logs, ["チャンネルの移動に失敗しました（1 回目）。30 秒後にやり直します: Unknown Channel"]);
+  await queue.idle();
+
+  await clock.advance(GAP_MS);
+  assert.deepEqual(gateway.moves()[1], ["b", "y"]);
 });
 
 test("cancel: そのチャンネルの未実行の移動を捨て、他のチャンネルの移動は残す", async (t) => {
@@ -402,23 +386,6 @@ test("cancel: そのチャンネルの未実行の移動を捨て、他のチャ
     gateway.calls.some((call) => call.method === "getParentId" && call.channelId === "a"),
     false,
   );
-});
-
-test("cancel: 再試行を待っている移動も取り消す", async (t) => {
-  const { gateway, clock, logs, queue } = setup(t);
-  gateway.beforeMove = () => {
-    throw new Error("Service Unavailable");
-  };
-  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
-  await clock.advance(GAP_MS);
-  assert.equal(gateway.moves().length, 1);
-
-  queue.cancel("a");
-  await clock.advance(3_600_000);
-
-  assert.equal(gateway.moves().length, 1);
-  assert.equal(clock.pending, 0);
-  assert.deepEqual(logs, ["チャンネルの移動に失敗しました（1 回目）。30 秒後にやり直します: Service Unavailable"]);
 });
 
 test("cancel の後に同じチャンネルの移動を入れれば、改めて実行する", async (t) => {

@@ -6,9 +6,9 @@ import type { Config } from "../config.ts";
 import type { Gateway } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { InboxSummaryStore } from "../store/inbox-summaries.ts";
-import { fallbackSummary } from "./commands/close.ts";
-import { formatDate } from "./commands/usage.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
+import { fallbackSummary, rotatedSeed } from "./summary.ts";
+import { formatDate } from "./time.ts";
 import { recordTurnUsage, RESUME_FAILURE_PATTERN, type TurnDeps } from "./turn.ts";
 
 /** 要約を頼むターンの prompt。静的に保つ（日時ヘッダも付けない） */
@@ -23,19 +23,15 @@ export const ROTATED_NOTICE_FRESH = "（会話を新しくしました）";
 /** 切り替えに失敗したサーバーは、失敗からこの時間が経つまでやり直さない */
 export const ROTATE_RETRY_MS = 60 * 60 * 1000;
 
-/** 切り替えた後の最初のターンの prompt の先頭に付ける文（seed） */
-export function rotatedSeed(summary: string): string {
-  return `これまでの #inbox の要約:\n${summary}`;
-}
 
 /** 切り替える理由。日次（rotateAt を過ぎた）か、直近の成功したターンの最後のステップの入力の大きさ */
 type RotateReason = { kind: "daily" } | { kind: "size"; contextTokens: number };
 
 export type InboxRotatorDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "timeZone" | "inboxRotateAt" | "inboxMaxInputTokens">;
-  /** #inbox のチャンネルと、最後に切り替えた日 */
-  guildSettings: Pick<GuildSettingsStore, "get" | "setInboxRotatedDate">;
-  /** 切り替えたときの要約（最後の要約の時刻を「前回の切り替え」とする） */
+  /** #inbox のチャンネルと、最後に切り替えた日・時刻（時刻を「前回の切り替え」とする） */
+  guildSettings: Pick<GuildSettingsStore, "get" | "setInboxRotated">;
+  /** 切り替えたときの要約 */
   inboxSummaries: Pick<InboxSummaryStore, "add" | "latest">;
   /** 発言のターンと同じキュー（key は channelId）。要約のターンが発言のターンと重ならないようにする */
   turnQueue: Pick<KeyedSerialQueue, "run">;
@@ -97,16 +93,16 @@ export class InboxRotator {
     }
   }
 
-  /** 前回の切り替え（最後に要約を残した時刻）。まだ要約が無ければ undefined */
+  /** 前回の切り替えの時刻（guild_settings.inbox_rotated_at）。まだ記録が無ければ undefined（全履歴を見る） */
   private lastRotatedAt(guildId: string): Date | undefined {
-    const last = this.deps.inboxSummaries.latest(guildId);
-    return last === undefined ? undefined : new Date(last.createdAt);
+    const rotatedAt = this.deps.guildSettings.get(guildId)?.inboxRotatedAt ?? null;
+    return rotatedAt === null ? undefined : new Date(rotatedAt);
   }
 
   /**
    * 切り替えの時期なら理由を返す。
    * - 日次: timeZone の時刻が rotateAt 以降で、今日（timeZone の日付）まだ切り替えていない
-   * - サイズ: SDK セッションがあり、前回の切り替えより後の最新の成功したターンの最後のステップの入力（input + cache read + cache creation）が
+   * - サイズ: SDK セッションがあり、前回の切り替えの時刻より後の最新の成功したターンの最後のステップの入力（input + cache read + cache creation）が
    *   上限を超えた（要約のターン自身や、SDK セッションが無いときの記録で切り替え続けないように）
    */
   private dueReason(guildId: string, inboxChannelId: string, rotatedDate: string | null): RotateReason | undefined {
@@ -123,8 +119,10 @@ export class InboxRotator {
   }
 
   /**
-   * 発言のターンと同じキューの中で行う。SDK セッションが無いか、前回の切り替えより後に #inbox のターンが無ければ、LLM を呼ばずに切り替えた日だけ記録する。
+   * 発言のターンと同じキューの中で行う。SDK セッションが無いか、前回の切り替えより後に #inbox のターンが無ければ、LLM を呼ばずに切り替えた日と時刻だけ記録する。
    * それ以外は要約を頼むターンを行う（resume 失敗からの復旧はしない。runChannelTurn は使わず、usage の記録と SDK が記録した session_id の保存だけ同じように行う）。
+   * 要約のターンには context を渡さない（session_report・session_open は not_available になる）。
+   * 切り替えた時刻は要約のターンの usage を記録した後に取り直す（要約のターン自身の記録を「前回の切り替えより後」に数えないため）。
    * - 成功: 要約を保存 → SDK セッションを捨てる → seed を入れる → 切り替えた日を記録 → #inbox に知らせる
    * - 会話の記録が無い（RESUME_FAILURE_PATTERN）: 要約は作らずに SDK セッションを捨て、切り替えた日を記録し、直近の要約があればそれを seed に入れて知らせる
    * - それ以外の失敗: 何も変えない（resume の連続失敗には数えない。失敗の時刻を覚え、ROTATE_RETRY_MS 経ってからやり直す）
@@ -142,26 +140,25 @@ export class InboxRotator {
     const today = formatDate(now(), cfg.timeZone);
     const sessionId = sessions.get(inboxChannelId);
     if (sessionId === undefined || usage.countAfter(inboxChannelId, this.lastRotatedAt(guildId)) === 0) {
-      guildSettings.setInboxRotatedDate(guildId, today);
+      guildSettings.setInboxRotated(guildId, today, now());
       this.failedAt.delete(guildId);
       log(`#inbox に前回の切り替えからの会話が無いため、要約せずに切り替えた日だけ記録しました（guild=${guildId}）`);
       return;
     }
 
-    const result = await runner.run({
-      prompt: ROTATE_PROMPT,
-      sessionId,
-      context: { guildId, channelId: inboxChannelId },
-    });
+    // ツールの context は渡さない（#inbox の session_open で要約の途中にセッションを作らせない）
+    const result = await runner.run({ prompt: ROTATE_PROMPT, sessionId, context: undefined });
     recordTurnUsage(turn, inboxChannelId, result);
+    // usage の記録より後の時刻にする（次の判定で要約のターン自身の記録を数えない）
+    const rotatedAt = now();
 
     if (result.ok) {
-      // session_report が呼ばれても使わない（#inbox では not_available になる）。返答本文の先頭を要約にする
+      // session_report が呼ばれても使わない（context が無いので not_available になる）。返答本文の先頭を要約にする
       const summary = fallbackSummary(result.text);
       inboxSummaries.add(guildId, today, summary);
       sessions.delete(inboxChannelId);
       seeds.set(inboxChannelId, rotatedSeed(summary));
-      guildSettings.setInboxRotatedDate(guildId, today);
+      guildSettings.setInboxRotated(guildId, today, rotatedAt);
       this.failedAt.delete(guildId);
       const detail = reason.kind === "daily" ? "日次" : `直近の入力 ${reason.contextTokens} トークン`;
       log(`#inbox の会話を要約して新しいセッションに切り替えました（guild=${guildId}、${detail}）`);
@@ -174,7 +171,7 @@ export class InboxRotator {
       const last = inboxSummaries.latest(guildId);
       sessions.delete(inboxChannelId);
       if (last !== undefined) seeds.set(inboxChannelId, rotatedSeed(last.summary));
-      guildSettings.setInboxRotatedDate(guildId, today);
+      guildSettings.setInboxRotated(guildId, today, rotatedAt);
       this.failedAt.delete(guildId);
       // 実機の文言の確認のため、元のエラー文も出す
       const carried = last === undefined ? "前回の要約なし" : "前回の要約を引き継ぎ";

@@ -69,7 +69,7 @@ const runner = new SdkAgentRunner(
 );
 // 発言と /close のターンのキュー（key は channelId）
 const turnQueue = new KeyedSerialQueue(config.maxConcurrentTurns);
-const turn = { runner, sessions, seeds, topicSessions, usage, log };
+const turn = { runner, sessions, seeds, topicSessions, inboxSummaries, usage, log };
 const channelOps = new ChannelOpsQueue({
   gateway,
   guildSettings,
@@ -129,11 +129,14 @@ const inboxRotator = new InboxRotator({
   now,
   log,
 });
-// 定期処理: 発言の無い進行中のセッションを待ちに移し、完了から日数の経ったセッションの削除を #system で確認し、#inbox の会話を切り替える
+// 定期処理: セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
+// 完了から日数の経ったセッションの削除を #system で確認し、#inbox の会話を切り替える
 const scheduler = new Scheduler({
   cfg: config,
   topicSessions,
   guildSettings,
+  sessions,
+  seeds,
   channelOps,
   gateway,
   inboxRotator,
@@ -141,9 +144,9 @@ const scheduler = new Scheduler({
   log,
 });
 
-// 停止: シグナルで新しい受付と定期処理を止め、進行中の処理（返信まで）を最大 shutdownGraceSec 秒待ってから gateway と DB を閉じる
+// 停止: シグナルで新しい受付と定期処理を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway と DB を閉じる
 const lifecycle = createShutdown(
-  { cfg: config, gateway, queues: [turnQueue, layoutQueue], scheduler, closeDb: () => db.close(), log },
+  { cfg: config, gateway, queues: [turnQueue, layoutQueue], scheduler, channelOps, closeDb: () => db.close(), log },
   { handleMessage: handle, handleInteraction },
 );
 const onSignal = (): void => {

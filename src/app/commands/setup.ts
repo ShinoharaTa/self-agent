@@ -1,6 +1,5 @@
 import type { Gateway, OutgoingMessage } from "../../discord/gateway.ts";
 import type { GuildChannelField, GuildSettingsStore, SessionState } from "../../store/guild-settings.ts";
-import type { ChannelOpsQueue } from "../channel-ops.ts";
 import type { CommandHandler } from "../interactions.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
 
@@ -49,7 +48,6 @@ export type SetupDeps = {
     | "createTextChannel"
     | "channelExists"
     | "moveChannel"
-    | "getParentId"
     | "sendMessage"
     | "pinMessage"
     | "messageExists"
@@ -57,8 +55,6 @@ export type SetupDeps = {
   guildSettings: GuildSettingsStore;
   /** 同じサーバーの /setup・/new を 1 つずつ実行する（key は layoutQueueKey） */
   queue: KeyedSerialQueue;
-  /** self-agent カテゴリの外に出ている #inbox / #tasks / #system を戻す */
-  channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
   log: (message: string) => void;
 };
 
@@ -79,6 +75,7 @@ function describeError(error: unknown): string {
  * 足りないカテゴリ・チャンネルを作る。1 つ作るごとに DB へ保存するので、途中で失敗しても次の実行で続きから作る。
  * DB にあって Discord 上に残っているものは作らない（既存の同名カテゴリは再利用しない）。
  * self-agent カテゴリを作り直したときは、残っている #inbox / #tasks / #system をそこへ移す
+ * （移動に失敗した分や手で動かされた分は、定期処理の再同期（scheduler.ts）が戻す）
  */
 export async function ensureGuildLayout(
   guildId: string,
@@ -138,35 +135,6 @@ export async function ensureGuildLayout(
     result.failure = describeError(error);
   }
   return result;
-}
-
-/**
- * #inbox / #tasks / #system の今の親が self-agent カテゴリと違えば、ChannelOpsQueue に戻す移動を入れる（移動は後で順に行う）。
- * カテゴリを作り直した回に移動が失敗した場合や、手で動かされた場合を直す。確認の失敗は log に出して次へ進む
- */
-export async function repairHomeChannelParents(
-  guildId: string,
-  deps: Pick<SetupDeps, "gateway" | "guildSettings" | "channelOps" | "log">,
-): Promise<void> {
-  const { gateway, guildSettings, channelOps, log } = deps;
-  const settings = guildSettings.get(guildId);
-  const homeCategoryId = settings?.homeCategoryId;
-  if (settings === undefined || homeCategoryId === null || homeCategoryId === undefined) return;
-  let queued = 0;
-  for (const { field } of HOME_CHANNELS) {
-    const channelId = settings[field];
-    if (channelId === null) continue;
-    try {
-      if ((await gateway.getParentId(channelId)) === homeCategoryId) continue;
-      channelOps.enqueueMove(channelId, { kind: "category", categoryId: homeCategoryId });
-      queued++;
-    } catch (error) {
-      log(`親カテゴリの確認に失敗しました（guild=${guildId}）: ${describeError(error)}`);
-    }
-  }
-  if (queued > 0) {
-    log(`self-agent カテゴリの外にあるチャンネル ${queued} 件を戻します（guild=${guildId}）`);
-  }
 }
 
 /** #inbox にピン留めするホームパネル: [新しいセッション]（`home:new`）[タスク一覧]（`home:tasks`）[待ちのセッション]（`home:waiting`） */
@@ -243,9 +211,8 @@ export function createSetupCommand(deps: SetupDeps): CommandHandler {
       // 同時に走ると両方が「未作成」と判断して二重に作るので、サーバーごとに 1 つずつ実行する（/new とも）
       const { result, panelFailure } = await queue.run(layoutQueueKey(guildId), async () => {
         const layout = await ensureGuildLayout(guildId, deps);
-        // 途中で失敗した回は揃っていないので、親のずれとホームパネルは次の /setup で直す
+        // 途中で失敗した回は揃っていないので、ホームパネルは次の /setup で直す
         if (layout.failure !== null) return { result: layout, panelFailure: null };
-        await repairHomeChannelParents(guildId, deps);
         try {
           await ensureHomePanel(guildId, deps);
           return { result: layout, panelFailure: null };

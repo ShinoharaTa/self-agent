@@ -5,7 +5,7 @@ import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { ResolveChannel } from "./access.ts";
 import { createTopicSession, toChannelName, type NewSessionDeps } from "./commands/new.ts";
 import { layoutQueueKey } from "./commands/setup.ts";
-import { startOfLocalDay } from "./commands/usage.ts";
+import { startOfLocalDay } from "./time.ts";
 
 /** 前回の自動作成（session_open）からこの時間が経つまでは作らない */
 export const AUTO_SESSION_COOLDOWN_MS = 15 * 60 * 1000;

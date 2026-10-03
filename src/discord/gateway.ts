@@ -115,6 +115,14 @@ export interface InteractionResponder {
   showModal(modal: ModalDef): Promise<void>;
 }
 
+/** 操作したチャンネルが Discord 上に無い（Unknown Channel）。getParentId・moveChannel が投げる */
+export class UnknownChannelError extends Error {
+  constructor() {
+    super("Unknown Channel");
+    this.name = "UnknownChannelError";
+  }
+}
+
 export type GatewayHandlers = {
   onMessage: (message: IncomingMessage) => void;
   /** 許可外のサーバー・DM のものも含めて渡す（受付判定は app 側） */
@@ -145,9 +153,14 @@ export interface Gateway {
   channelExists(channelId: string): Promise<boolean>;
   /** カテゴリの中にあるチャンネルの数（キャッシュではなく Discord 上の実数。手動で置かれた分も数える） */
   countChannelsIn(categoryId: string): Promise<number>;
-  /** チャンネルを別のカテゴリへ移す。permission overwrite は移動先に合わせない（書き換えない） */
+  /**
+   * サーバーの全チャンネル（カテゴリを含む。スレッドは含まない）の ID → 今の親カテゴリの ID（カテゴリの外なら null）。
+   * キャッシュではなく Discord から 1 回で取り直す
+   */
+  listChannelParents(guildId: string): Promise<Map<string, string | null>>;
+  /** チャンネルを別のカテゴリへ移す。permission overwrite は移動先に合わせない（書き換えない）。チャンネルが無ければ UnknownChannelError */
   moveChannel(channelId: string, parentId: string): Promise<void>;
-  /** チャンネルの今の親カテゴリの ID（キャッシュではなく Discord 上の値）。カテゴリの外なら null */
+  /** チャンネルの今の親カテゴリの ID（キャッシュではなく Discord 上の値）。カテゴリの外なら null。チャンネルが無ければ UnknownChannelError */
   getParentId(channelId: string): Promise<string | null>;
   /** チャンネルを削除する。既に無ければ（Unknown Channel）何もしない。それ以外の失敗（権限・通信）は投げる */
   deleteChannel(channelId: string): Promise<void>;

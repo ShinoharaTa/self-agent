@@ -1,4 +1,4 @@
-// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理を上限付きで待ってから gateway を止めて DB を閉じる
+// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止めて DB を閉じる
 import type { Config } from "../config.ts";
 import type {
   Gateway,
@@ -7,6 +7,7 @@ import type {
   Interaction,
   InteractionResponder,
 } from "../discord/gateway.ts";
+import type { ChannelOpsQueue } from "./channel-ops.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import type { Scheduler } from "./scheduler.ts";
 
@@ -20,6 +21,8 @@ export type ShutdownDeps = {
   queues: ReadonlyArray<Pick<KeyedSerialQueue, "idle">>;
   /** 定期処理。停止を始めたら止め、実行中の tick があれば終わるのを待つ */
   scheduler: Pick<Scheduler, "stop" | "idle">;
+  /** チャンネルの移動の列。実行中の 1 件だけ終わるのを待つ（まだ始めていない移動は待たない。次の起動の再同期が直す） */
+  channelOps: Pick<ChannelOpsQueue, "idle">;
   closeDb: () => void;
   log: (message: string) => void;
 };
@@ -34,7 +37,7 @@ export type Shutdown = {
   /** gateway.start に渡すハンドラ。停止を始めたら新しい発言・操作を受け付けない */
   handlers: GatewayHandlers;
   /**
-   * 受付と定期処理を止め、受け付け済みの発言・操作（返信まで）とキューのジョブ・実行中の tick が終わるのを最大 shutdownGraceSec 秒待ってから、
+   * 受付と定期処理を止め、受け付け済みの発言・操作（返信まで）とキューのジョブ・実行中の tick・実行中のチャンネルの移動が終わるのを最大 shutdownGraceSec 秒待ってから、
    * gateway を止めて DB を閉じる。待っている間も gateway は動いているので、終わったターンの返信は送られる。reject しない
    */
   shutdown: () => Promise<void>;
@@ -60,7 +63,7 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 }
 
 export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdown {
-  const { cfg, gateway, queues, scheduler, closeDb, log } = deps;
+  const { cfg, gateway, queues, scheduler, channelOps, closeDb, log } = deps;
   let stopping = false;
   /** 受け付けて、まだ終わっていない発言・操作の処理（返信を含む） */
   const inFlight = new Set<Promise<void>>();
@@ -78,6 +81,8 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     // 待っている間に増えた分（停止中の操作への応答）も待つ
     while (inFlight.size > 0) await Promise.all([...inFlight]);
     await Promise.all([...queues.map((queue) => queue.idle()), scheduler.idle()]);
+    // ターンと定期処理が入れた移動のうち、その時点で実行中のものだけ待つ
+    await channelOps.idle();
   };
 
   const handlers: GatewayHandlers = {

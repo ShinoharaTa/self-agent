@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setImmediate as flush } from "node:timers/promises";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
+import { ChannelOpsQueue } from "../src/app/channel-ops.ts";
 import { createHandler } from "../src/app/handler.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "../src/app/scheduler.ts";
@@ -21,6 +22,7 @@ import type {
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
@@ -82,6 +84,9 @@ class FakeGateway implements Gateway {
     throw new Error("想定外の呼び出し");
   }
   async countChannelsIn(): Promise<number> {
+    throw new Error("想定外の呼び出し");
+  }
+  async listChannelParents(): Promise<Map<string, string | null>> {
     throw new Error("想定外の呼び出し");
   }
   async moveChannel(): Promise<void> {
@@ -165,6 +170,7 @@ function deps(
     gateway: new FakeGateway(events),
     queues: [],
     scheduler: { stop: () => {}, idle: async () => {} },
+    channelOps: { idle: async () => {} },
     closeDb: () => {
       events.push("closeDb");
     },
@@ -250,6 +256,7 @@ function handlerSetup(t: TestContext) {
     sessions: new SdkSessionStore(db, () => NOW),
     seeds: new ChannelSeedStore(db, () => NOW),
     topicSessions,
+    inboxSummaries: new InboxSummaryStore(db, () => NOW),
     channelOps: { enqueueMove: () => {} },
     usage,
     queue: turnQueue,
@@ -375,8 +382,11 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
   const intervals: Array<{ fn: () => void; cancelled: boolean }> = [];
   let listed = 0;
   const scheduler = new Scheduler({
-    cfg: { idleHours: 12, deleteAfterDays: 30 },
+    cfg: { allowedGuildIds: [], idleHours: 12, deleteAfterDays: 30 },
     topicSessions: {
+      get: () => undefined,
+      listUndeleted: () => assert.fail("想定外の呼び出し"),
+      markDeleted: () => assert.fail("想定外の呼び出し"),
       listIdle: () => {
         listed++;
         return listed === 1
@@ -407,7 +417,12 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
       listDeleteDue: () => [],
       setDeletePrompt: () => assert.fail("想定外の呼び出し"),
     },
-    guildSettings: { get: () => assert.fail("想定外の呼び出し") },
+    guildSettings: {
+      get: () => assert.fail("想定外の呼び出し"),
+      listStateCategories: () => assert.fail("想定外の呼び出し"),
+    },
+    sessions: { delete: () => assert.fail("想定外の呼び出し") },
+    seeds: { delete: () => assert.fail("想定外の呼び出し") },
     channelOps: { enqueueMove: () => {} },
     gateway,
     inboxRotator: { rotateDue: async () => {} },
@@ -439,4 +454,47 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
 
   assert.deepEqual(events, ["setWaiting", "sendMessage 12 時間発言がないので待ちに移しました。", "stop", "closeDb"]);
   assert.equal(listed, 1);
+});
+
+test("実行中のチャンネルの移動は終わるまで待ってから gateway を止める。まだ始めていない移動は待たない", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  const db = openDb(join(dir, "self-agent.db"));
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const events: string[] = [];
+  const gate = deferred();
+  const channelOps = new ChannelOpsQueue({
+    gateway: {
+      getParentId: async () => null,
+      moveChannel: async (channelId) => {
+        events.push(`move ${channelId}`);
+        await gate.promise;
+        events.push(`moved ${channelId}`);
+      },
+      channelExists: async () => assert.fail("想定外の呼び出し"),
+      countChannelsIn: async () => assert.fail("想定外の呼び出し"),
+      createCategory: async () => assert.fail("想定外の呼び出し"),
+    },
+    guildSettings: new GuildSettingsStore(db, () => NOW),
+    topicSessions: { setCategory: () => {} },
+    gapMs: 2000,
+    // 間隔は空け終わらない（次の移動は始まらない）
+    timers: { sleep: () => new Promise<void>(() => {}) },
+    log: () => {},
+  });
+  channelOps.enqueueMove("a", { kind: "category", categoryId: "home-1" });
+  channelOps.enqueueMove("b", { kind: "category", categoryId: "home-1" });
+  await flush();
+
+  const { shutdown } = createShutdown(deps(events, { channelOps }), noopInner);
+  const done = shutdown();
+  await flush();
+  assert.deepEqual(events, ["move a"]);
+
+  gate.resolve();
+  await done;
+
+  assert.deepEqual(events, ["move a", "moved a", "stop", "closeDb"]);
 });

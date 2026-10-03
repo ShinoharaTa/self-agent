@@ -10,13 +10,16 @@ import {
   DELETE_PROMPT_BATCH_LIMIT,
   IDLE_BATCH_LIMIT,
   idleNotice,
+  RECONCILE_BATCH_LIMIT,
   Scheduler,
   type SchedulerTimers,
   TICK_INTERVAL_MS,
 } from "../src/app/scheduler.ts";
 import type { Gateway, OutgoingMessage } from "../src/discord/gateway.ts";
+import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 
 const NOW = new Date("2026-10-02T12:00:00.000Z");
@@ -40,15 +43,33 @@ class FakeTimers implements SchedulerTimers {
   }
 }
 
-class FakeGateway implements Pick<Gateway, "sendMessage"> {
+class FakeGateway implements Pick<Gateway, "sendMessage" | "listChannelParents" | "isInGuild"> {
   sent: Array<{ channelId: string; message: OutgoingMessage }> = [];
+  /** Bot が参加しているサーバー。undefined なら全部に参加している扱い */
+  joined: Set<string> | undefined;
+  isInGuild(guildId: string): boolean {
+    return this.joined === undefined || this.joined.has(guildId);
+  }
   /** sendMessage の直前に待つ。投げればその送信は失敗する */
   beforeSend: (channelId: string) => Promise<void> = async () => {};
+  /** listChannelParents で問い合わせたサーバー */
+  listed: string[] = [];
+  /** サーバーのチャンネル → 親カテゴリ。undefined なら defaultParents（ずれなし）を返す */
+  parents: Map<string, string | null> | undefined;
+  defaultParents: () => Map<string, string | null> = () => new Map();
+  /** listChannelParents の中（結果を返す前）に呼ばれる。投げればその問い合わせは失敗する */
+  beforeList: () => void = () => {};
 
   async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
     await this.beforeSend(channelId);
     this.sent.push({ channelId, message });
     return `message-${this.sent.length}`;
+  }
+  async listChannelParents(guildId: string): Promise<Map<string, string | null>> {
+    this.listed.push(guildId);
+    const parents = new Map(this.parents ?? this.defaultParents());
+    this.beforeList();
+    return parents;
   }
 }
 
@@ -73,7 +94,12 @@ class RecordingRotator {
   }
 }
 
-function setup(t: TestContext, idleHours: number = 12, deleteAfterDays: number = 30) {
+function setup(
+  t: TestContext,
+  idleHours: number = 12,
+  deleteAfterDays: number = 30,
+  allowedGuildIds: string[] = ["guild-1"],
+) {
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
   const db = openDb(join(dir, "self-agent.db"));
   t.after(() => {
@@ -83,15 +109,27 @@ function setup(t: TestContext, idleHours: number = 12, deleteAfterDays: number =
   const clock = { now: NOW };
   const topicSessions = new TopicSessionStore(db, () => clock.now);
   const guildSettings = new GuildSettingsStore(db, () => clock.now);
+  const sessions = new SdkSessionStore(db, () => clock.now);
+  const seeds = new ChannelSeedStore(db, () => clock.now);
   const gateway = new FakeGateway();
+  // 既定では、削除済みでないセッションのチャンネルはどれも DB の category_id に置かれている（ずれなし）
+  gateway.defaultParents = () =>
+    new Map(
+      db
+        .prepare("SELECT channel_id, category_id FROM sessions WHERE state != 'deleted'")
+        .all()
+        .map((row) => [String(row.channel_id), String(row.category_id)]),
+    );
   const channelOps = new RecordingChannelOps();
   const inboxRotator = new RecordingRotator();
   const timers = new FakeTimers();
   const logs: string[] = [];
   const scheduler = new Scheduler({
-    cfg: { idleHours, deleteAfterDays },
+    cfg: { allowedGuildIds, idleHours, deleteAfterDays },
     topicSessions,
     guildSettings,
+    sessions,
+    seeds,
     channelOps,
     gateway,
     inboxRotator,
@@ -121,6 +159,8 @@ function setup(t: TestContext, idleHours: number = 12, deleteAfterDays: number =
     clock,
     topicSessions,
     guildSettings,
+    sessions,
+    seeds,
     gateway,
     channelOps,
     inboxRotator,
@@ -345,8 +385,9 @@ test("stop: 以後の定期実行を止め、stop の後の start では何も�
 test("tick: DB の失敗は reject せず log に出す", async () => {
   const logs: string[] = [];
   const scheduler = new Scheduler({
-    cfg: { idleHours: 12, deleteAfterDays: 30 },
+    cfg: { allowedGuildIds: [], idleHours: 12, deleteAfterDays: 30 },
     topicSessions: {
+      get: () => assert.fail("想定外の呼び出し"),
       listIdle: () => {
         throw new Error("database is locked");
       },
@@ -354,8 +395,15 @@ test("tick: DB の失敗は reject せず log に出す", async () => {
       setWaiting: () => assert.fail("想定外の呼び出し"),
       listDeleteDue: () => [],
       setDeletePrompt: () => assert.fail("想定外の呼び出し"),
+      listUndeleted: () => assert.fail("想定外の呼び出し"),
+      markDeleted: () => assert.fail("想定外の呼び出し"),
     },
-    guildSettings: { get: () => assert.fail("想定外の呼び出し") },
+    guildSettings: {
+      get: () => assert.fail("想定外の呼び出し"),
+      listStateCategories: () => assert.fail("想定外の呼び出し"),
+    },
+    sessions: { delete: () => assert.fail("想定外の呼び出し") },
+    seeds: { delete: () => assert.fail("想定外の呼び出し") },
     channelOps: new RecordingChannelOps(),
     gateway: new FakeGateway(),
     inboxRotator: new RecordingRotator(),
@@ -604,4 +652,254 @@ test("stop: 実行中の #inbox の切り替えには、停止を始めたこと
   assert.equal(stopping(), true);
   release();
   await env.scheduler.idle();
+});
+
+/** /setup 済みの配置（self-agent カテゴリ・#inbox/#tasks/#system・各状態カテゴリ 1 つ目）を DB に入れる */
+function layout(env: ReturnType<typeof setup>): void {
+  env.guildSettings.setChannel("guild-1", "homeCategoryId", "home-1");
+  env.guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
+  env.guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
+  env.guildSettings.setStateCategory("guild-1", "active", 1, "active-1");
+  env.guildSettings.setStateCategory("guild-1", "waiting", 1, "waiting-1");
+  env.guildSettings.setStateCategory("guild-1", "done", 1, "done-1");
+}
+
+/** Discord 上のチャンネルの親。カテゴリ（親は null）と、ずれの無い #inbox/#tasks/#system に entries を足す */
+function discord(entries: Array<[string, string | null]>, categories: string[] = ["home-1", "active-1", "waiting-1", "done-1"]) {
+  return new Map<string, string | null>([
+    ...categories.map((id): [string, null] => [id, null]),
+    ["inbox-1", "home-1"],
+    ["tasks-1", "home-1"],
+    ["system-1", "home-1"],
+    ...entries,
+  ]);
+}
+
+function toState(channelId: string, state: "active" | "waiting" | "done"): { channelId: string; target: MoveTarget } {
+  return { channelId, target: { kind: "state", guildId: "guild-1", state } };
+}
+
+test("再同期: 親がその状態のカテゴリのどれでもないセッションだけ、その状態のカテゴリへの移動を入れる", async (t) => {
+  const env = setup(t);
+  layout(env);
+  env.guildSettings.setStateCategory("guild-1", "active", 2, "active-2");
+  for (const channelId of ["topic-a", "topic-b", "topic-c", "topic-d", "topic-e"]) env.createAt(channelId, NOW);
+  env.topicSessions.setWaiting("topic-b");
+  env.topicSessions.setWaiting("topic-c");
+  env.topicSessions.close("topic-d", "要約");
+  env.topicSessions.close("topic-e", "要約");
+  env.gateway.parents = discord(
+    [
+      // 2 つ目の進行中カテゴリにある（どれかに入っていればよい）
+      ["topic-a", "active-2"],
+      // 待ちなのに進行中カテゴリにある（移動に失敗した・手で動かされた）
+      ["topic-b", "active-1"],
+      ["topic-c", "waiting-1"],
+      ["topic-d", "done-1"],
+      // 完了なのにカテゴリの外にある
+      ["topic-e", null],
+    ],
+    ["home-1", "active-1", "active-2", "waiting-1", "done-1"],
+  );
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.gateway.listed, ["guild-1"]);
+  assert.deepEqual(env.channelOps.moves, [toState("topic-b", "waiting"), toState("topic-e", "done")]);
+  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.logs, ["状態とカテゴリが合わないセッション 2 件を移します（guild=guild-1）"]);
+
+  // ずれが無ければ何もしない
+  env.gateway.parents.set("topic-b", "waiting-1");
+  env.gateway.parents.set("topic-e", "done-1");
+  env.logs.length = 0;
+  await env.scheduler.tick();
+  assert.equal(env.channelOps.moves.length, 2);
+  assert.deepEqual(env.logs, []);
+});
+
+test("再同期: Discord 上に無いセッションのチャンネルは削除済みにし（要約は残す）、SDK セッションと seed を消す", async (t) => {
+  const env = setup(t);
+  layout(env);
+  env.createAt("topic-a", NOW);
+  env.createAt("topic-gone", NOW);
+  env.createAt("topic-gone-done", NOW);
+  env.createAt("topic-deleted", NOW);
+  env.topicSessions.close("topic-gone-done", "閉じたときの要約");
+  env.topicSessions.markDeleted("topic-deleted");
+  env.sessions.set("topic-gone", "session-x");
+  env.seeds.set("topic-gone", "seed");
+  env.sessions.set("topic-a", "session-a");
+  env.gateway.parents = discord([["topic-a", "active-1"]]);
+  env.clock.now = new Date(NOW.getTime() + 60_000);
+
+  await env.scheduler.tick();
+
+  for (const channelId of ["topic-gone", "topic-gone-done"]) {
+    const session = env.topicSessions.get(channelId);
+    assert.equal(session?.state, "deleted", channelId);
+    assert.equal(session?.deletedAt, env.clock.now.toISOString(), channelId);
+  }
+  assert.equal(env.topicSessions.get("topic-gone-done")?.summary, "閉じたときの要約");
+  assert.equal(env.sessions.get("topic-gone"), undefined);
+  assert.equal(env.seeds.get("topic-gone"), undefined);
+  // 残っているもの・既に削除済みのものはそのまま
+  assert.equal(env.topicSessions.get("topic-a")?.state, "active");
+  assert.equal(env.sessions.get("topic-a"), "session-a");
+  assert.equal(env.topicSessions.get("topic-deleted")?.deletedAt, NOW.toISOString());
+  assert.deepEqual(env.channelOps.moves, []);
+  assert.deepEqual(env.logs, [
+    "セッションのチャンネルが Discord 上に無いため、削除済みにしました（guild=guild-1）",
+    "セッションのチャンネルが Discord 上に無いため、削除済みにしました（guild=guild-1）",
+  ]);
+});
+
+test("再同期: Discord 上で消えた進行中のセッションは、待ちへの移動より先に削除済みにする（知らせも出さない）", async (t) => {
+  const env = setup(t);
+  layout(env);
+  env.createAt("topic-gone", ago(14 * HOUR_MS));
+  env.gateway.parents = discord([]);
+
+  await env.scheduler.tick();
+
+  assert.equal(env.topicSessions.get("topic-gone")?.state, "deleted");
+  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.channelOps.moves, []);
+});
+
+test("再同期: #inbox / #tasks / #system の親が self-agent カテゴリでなければ戻す移動を入れる（チャンネル自体が無ければ何もしない）", async (t) => {
+  const env = setup(t);
+  layout(env);
+  env.gateway.parents = discord([
+    ["inbox-1", "done-1"],
+    ["system-1", null],
+  ]);
+  // #tasks は消えている（作り直すのは /setup）
+  env.gateway.parents.delete("tasks-1");
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.channelOps.moves, [
+    { channelId: "inbox-1", target: { kind: "category", categoryId: "home-1" } },
+    { channelId: "system-1", target: { kind: "category", categoryId: "home-1" } },
+  ]);
+  assert.deepEqual(env.logs, ["self-agent カテゴリの外にあるチャンネル 2 件を戻します（guild=guild-1）"]);
+});
+
+test("再同期: 移動を入れるのは 1 サーバーで最大 5 件（最終発言の新しい順）。残りは次の tick。消えたチャンネルの削除済みは数えない", async (t) => {
+  const env = setup(t);
+  assert.equal(RECONCILE_BATCH_LIMIT, 5);
+  layout(env);
+  const ids = ["topic-0", "topic-1", "topic-2", "topic-3", "topic-4", "topic-5", "topic-6"];
+  // 新しい順は topic-6, topic-5, ...
+  ids.forEach((channelId, index) => env.createAt(channelId, new Date(NOW.getTime() - (10 - index) * 60_000)));
+  env.createAt("topic-gone", new Date(NOW.getTime() - 60 * 60_000));
+  for (const channelId of ids) env.topicSessions.setWaiting(channelId);
+  env.gateway.parents = discord(ids.map((channelId): [string, string] => [channelId, "active-1"]));
+
+  await env.scheduler.tick();
+
+  const newestFirst = [...ids].reverse();
+  assert.deepEqual(env.channelOps.moves, newestFirst.slice(0, 5).map((channelId) => toState(channelId, "waiting")));
+  assert.equal(env.topicSessions.get("topic-gone")?.state, "deleted");
+
+  // 移動が済んだ分は次の tick では合っている
+  for (const move of env.channelOps.moves) env.gateway.parents.set(move.channelId, "waiting-1");
+  await env.scheduler.tick();
+  assert.deepEqual(
+    env.channelOps.moves.map((move) => move.channelId),
+    newestFirst,
+  );
+});
+
+test("再同期: その状態のカテゴリ・self-agent カテゴリが Discord 上に 1 つも無ければ、そこへは移さない（作り直すのは /setup）", async (t) => {
+  const env = setup(t);
+  layout(env);
+  env.createAt("topic-waiting", NOW);
+  env.createAt("topic-done", NOW);
+  env.topicSessions.setWaiting("topic-waiting");
+  env.topicSessions.close("topic-done", "要約");
+  // 待ちカテゴリと self-agent カテゴリが消え、中のチャンネルはカテゴリの外に出た
+  env.gateway.parents = discord(
+    [
+      ["topic-waiting", null],
+      ["topic-done", null],
+      ["inbox-1", null],
+    ],
+    ["active-1", "done-1"],
+  );
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.channelOps.moves, [toState("topic-done", "done")]);
+  assert.equal(env.topicSessions.get("topic-waiting")?.state, "waiting");
+});
+
+test("再同期: 対象は許可サーバーのうち /setup 済みのサーバーだけ。問い合わせに失敗したら log に出し、残りの処理は行う", async (t) => {
+  const env = setup(t, 12, 30, ["guild-1", "guild-2"]);
+  // guild-2 は /setup 前、guild-9 は /setup 済みだが許可サーバーではない
+  env.guildSettings.setChannel("guild-9", "inboxChannelId", "inbox-9");
+  env.createAt("topic-1", ago(14 * HOUR_MS));
+  env.gateway.beforeList = () => {
+    throw new Error("Missing Access");
+  };
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.gateway.listed, ["guild-1"]);
+  assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");
+  assert.deepEqual(env.logs, [
+    "チャンネルのカテゴリの確認に失敗しました（guild=guild-1）: Missing Access",
+    "12 時間発言が無いセッションを待ちに移しました（guild=guild-1）",
+  ]);
+});
+
+test("再同期: 一覧を取っている間に作られたセッションは削除済みにせず、状態が変わったセッションは今の状態で判断する", async (t) => {
+  const env = setup(t);
+  layout(env);
+  env.createAt("topic-b", NOW);
+  env.topicSessions.setWaiting("topic-b");
+  env.gateway.parents = discord([["topic-b", "waiting-1"]]);
+  env.gateway.beforeList = () => {
+    // 一覧を取った後に /new でチャンネルと行が作られ、待ちのセッションは発言で進行中に戻った
+    env.topicSessions.create({ channelId: "topic-new", guildId: "guild-1", title: "新しい", categoryId: "active-1" });
+    env.topicSessions.setActive("topic-b");
+  };
+
+  await env.scheduler.tick();
+
+  assert.equal(env.topicSessions.get("topic-new")?.state, "active");
+  assert.deepEqual(env.channelOps.moves, [toState("topic-b", "active")]);
+});
+
+test("tick: 待ちに移した知らせは、投稿する前に読み直して進行中に戻っていれば投稿しない", async (t) => {
+  const env = setup(t);
+  env.createAt("topic-1", ago(14 * HOUR_MS));
+  env.createAt("topic-2", ago(13 * HOUR_MS));
+  env.gateway.beforeSend = async (channelId) => {
+    // topic-1 の知らせを投稿している間に、topic-2 で発言があった
+    if (channelId === "topic-1") env.topicSessions.setActive("topic-2");
+  };
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(
+    env.gateway.sent.map((sent) => sent.channelId),
+    ["topic-1"],
+  );
+  assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");
+  assert.equal(env.topicSessions.get("topic-2")?.state, "active");
+});
+
+test("再同期: Bot が参加していない（抜けた）サーバーは一覧を取らず、log も出さない", async (t) => {
+  const env = setup(t);
+  layout(env);
+  env.createAt("topic-a", NOW);
+  env.gateway.joined = new Set();
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.gateway.listed, []);
+  assert.deepEqual(env.channelOps.moves, []);
+  assert.deepEqual(env.logs, []);
 });

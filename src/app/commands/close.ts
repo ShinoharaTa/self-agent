@@ -1,14 +1,10 @@
 import type { ButtonDef, ComponentRow, InteractionResponder, OutgoingMessage } from "../../discord/gateway.ts";
 import type { TaskStore } from "../../store/tasks.ts";
-import {
-  CLOSE_SUMMARY_MAX_LENGTH,
-  type CloseDraft,
-  type TopicSession,
-  type TopicSessionStore,
-} from "../../store/topic-sessions.ts";
+import type { CloseDraft, TopicSession, TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { ChannelOpsQueue } from "../channel-ops.ts";
 import type { CommandHandler, ComponentHandler } from "../interactions.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
+import { clip, fallbackSummary } from "../summary.ts";
 import { runChannelTurn, type TurnDeps } from "../turn.ts";
 
 /** /close のターンの prompt。静的に保つ（日時ヘッダも付けない） */
@@ -19,8 +15,6 @@ export const NOT_SESSION_REPLY = "セッションのチャンネルで実行し�
 export const ALREADY_CLOSED_REPLY = "このセッションは閉じています";
 export const SUMMARY_FAILURE_REPLY = "要約に失敗しました。もう一度 /close を実行してください";
 export const NO_DRAFT_REPLY = "/close をもう一度実行してください";
-/** session_report が呼ばれず、返答も空だったときの要約 */
-export const EMPTY_SUMMARY = "（要約なし）";
 
 /** ボタン・セレクトの custom_id の名前空間（`close:<action>:<channelId>`） */
 const NAMESPACE = "close";
@@ -42,14 +36,6 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** UTF-16 の単位で max までに切る。サロゲートペアの途中で切れたら前半も落とす */
-function clip(text: string, max: number, ellipsis: string = ""): string {
-  if (text.length <= max) return text;
-  let cut = text.slice(0, max - ellipsis.length);
-  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
-  return `${cut}${ellipsis}`;
-}
-
 function customId(action: "all" | "pick" | "none" | "sel" | "start", channelId: string): string {
   return `${NAMESPACE}:${action}:${channelId}`;
 }
@@ -63,12 +49,6 @@ export function closeStartButton(channelId: string): ButtonDef {
 function closable(session: TopicSession | undefined, guildId: string): "ok" | "not_session" | "closed" {
   if (session === undefined || session.guildId !== guildId) return "not_session";
   return session.state === "done" || session.state === "deleted" ? "closed" : "ok";
-}
-
-/** session_report が呼ばれなかったときの要約（返答本文の先頭 600 字。空なら「（要約なし）」）。#inbox の切り替えの要約にも使う */
-export function fallbackSummary(text: string): string {
-  const summary = clip(text.trim(), CLOSE_SUMMARY_MAX_LENGTH);
-  return summary === "" ? EMPTY_SUMMARY : summary;
 }
 
 /** 要約とやることの候補（番号付き）。ボタンを押す前の確認メッセージ */

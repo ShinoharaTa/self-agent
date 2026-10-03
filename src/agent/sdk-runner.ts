@@ -15,6 +15,8 @@ import type { AgentRunner, Compaction, RunContext, RunInput, RunResult, TurnUsag
 export type QueryFn = (params: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>;
 
 const ERROR_TEXT_LIMIT = 200;
+/** Claude の子プロセスの stderr のうち保持する末尾の文字数 */
+const STDERR_KEEP_LENGTH = 2000;
 
 /** ログ向けに 1 行・上限文字数に縮める */
 function shorten(text: string): string {
@@ -22,10 +24,22 @@ function shorten(text: string): string {
   return oneLine.length > ERROR_TEXT_LIMIT ? `${oneLine.slice(0, ERROR_TEXT_LIMIT)}…` : oneLine;
 }
 
-/** result のエラーを 1 行にする。errors があれば添える（resume 失敗の文言などを handler が判定できるように残す） */
+/** stderr を 1 行にして末尾の上限文字数だけ残す（空なら空文字）。サロゲートペアの途中から始まれば後半も落とす */
+function stderrTail(text: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= ERROR_TEXT_LIMIT) return oneLine;
+  let tail = oneLine.slice(-ERROR_TEXT_LIMIT);
+  if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
+  return `…${tail}`;
+}
+
+/**
+ * result のエラーを 1 行にする。errors があれば添える（resume 失敗の文言などを handler が判定できるように残す）。
+ * result の本文（result.result）は会話の内容を含みうるので、is_error でも入れない
+ */
 export function describeResultError(result: SDKResultMessage): string {
   if (result.subtype === "success") {
-    return `success (is_error): ${shorten(result.result)}`;
+    return "success (is_error)";
   }
   const errors = result.errors.filter((error) => error.trim() !== "");
   return errors.length === 0 ? result.subtype : `${result.subtype}: ${shorten(errors.join(" / "))}`;
@@ -97,10 +111,15 @@ export class SdkAgentRunner implements AgentRunner {
     const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context));
     // ツール呼び出しの回数はターンごとに数えるので、hooks も run ごとに作って足す
     const tools = createToolCallRecorder(this.log);
+    // 子プロセスの stderr は末尾だけ保持し、例外で終わったときに errorMessage に添える（中身を log に直接は出さない）
+    let stderr = "";
+    const onStderr = (data: string): void => {
+      stderr = (stderr + data).slice(-STDERR_KEEP_LENGTH);
+    };
     const options: Options =
       input.sessionId === undefined
-        ? { ...base, abortController, hooks: tools.hooks }
-        : { ...base, abortController, hooks: tools.hooks, resume: input.sessionId };
+        ? { ...base, abortController, hooks: tools.hooks, stderr: onStderr }
+        : { ...base, abortController, hooks: tools.hooks, stderr: onStderr, resume: input.sessionId };
     // メインループの各ステップの usage を合算する。並列ツール呼び出しは同じ message.id を共有するので重複を除く
     const seenMessageIds = new Set<string>();
     const usage: TurnUsage = { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
@@ -145,9 +164,10 @@ export class SdkAgentRunner implements AgentRunner {
         return { ok: false, errorMessage: "timeout", sessionId, sessionRecorded: false, toolCalls: tools.count() };
       }
       const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      const tail = stderrTail(stderr);
       return {
         ok: false,
-        errorMessage: `exception: ${shorten(text)}`,
+        errorMessage: tail === "" ? `exception: ${shorten(text)}` : `exception: ${shorten(text)}（stderr: ${tail}）`,
         sessionId,
         sessionRecorded: false,
         toolCalls: tools.count(),

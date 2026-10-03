@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { setImmediate as flush } from "node:timers/promises";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
-import { EMPTY_SUMMARY } from "../src/app/commands/close.ts";
 import { createHandler } from "../src/app/handler.ts";
 import {
   InboxRotator,
@@ -14,10 +13,10 @@ import {
   ROTATE_RETRY_MS,
   ROTATED_NOTICE,
   ROTATED_NOTICE_FRESH,
-  rotatedSeed,
 } from "../src/app/inbox-rotate.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { EMPTY_SUMMARY, rotatedSeed } from "../src/app/summary.ts";
 import { RESUME_FAILURE_LIMIT, type TurnDeps } from "../src/app/turn.ts";
 import type { TimeOfDay } from "../src/config.ts";
 import type { Gateway, IncomingMessage, OutgoingMessage } from "../src/discord/gateway.ts";
@@ -105,6 +104,9 @@ class FakeGateway implements Gateway {
   async countChannelsIn(): Promise<number> {
     throw new Error("想定外の呼び出し");
   }
+  async listChannelParents(): Promise<Map<string, string | null>> {
+    throw new Error("想定外の呼び出し");
+  }
   async moveChannel(): Promise<void> {
     throw new Error("想定外の呼び出し");
   }
@@ -168,9 +170,14 @@ type Options = {
   rotateAt?: TimeOfDay;
   maxInputTokens?: number;
   allowedGuildIds?: string[];
-  /** guild-1 の最後に切り替えた日。既定は前日（2026-10-02）。null はまだ一度も切り替えていない */
+  /** guild-1 の最後に切り替えた日。既定は前日（2026-10-02）。null はまだ一度も切り替えていない（時刻も無い） */
   rotatedDate?: string | null;
 };
+
+/** 切り替えた日の 04:00 JST（setup で記録する、前回の切り替えの時刻） */
+function rotatedAtOf(date: string): Date {
+  return new Date(`${date}T04:00:00+09:00`);
+}
 
 function setup(t: TestContext, results: Array<RunResult | Error> = [], options: Options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
@@ -200,13 +207,13 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     inboxRotateAt: options.rotateAt ?? { hour: 4, minute: 0 },
     inboxMaxInputTokens: options.maxInputTokens ?? 150000,
   };
-  const turn: TurnDeps = { runner, sessions, seeds, topicSessions, usage, log };
+  const turn: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, usage, log };
   const rotator = new InboxRotator({ cfg, guildSettings, inboxSummaries, turnQueue: queue, turn, gateway, now, log });
 
   // guild-1 は /setup 済み（#inbox は inbox-1）
   guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
   const rotatedDate = options.rotatedDate === undefined ? "2026-10-02" : options.rotatedDate;
-  if (rotatedDate !== null) guildSettings.setInboxRotatedDate("guild-1", rotatedDate);
+  if (rotatedDate !== null) guildSettings.setInboxRotated("guild-1", rotatedDate, rotatedAtOf(rotatedDate));
 
   /** when の時刻に #inbox（channelId）で成功したターンがあったことにする（usage の記録と SDK セッション） */
   const chatAt = (
@@ -240,6 +247,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
       sessions,
       seeds,
       topicSessions,
+      inboxSummaries,
       channelOps: { enqueueMove: () => assert.fail("想定外の呼び出し") },
       usage,
       queue,
@@ -311,7 +319,7 @@ test("日次: rotateAt（04:00 JST）の直前は切り替えず、ちょうど�
   env.clock.now = ROTATE_AT;
   await env.rotate();
   assert.deepEqual(env.runner.inputs, [
-    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "inbox-1" } },
+    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined },
   ]);
   assert.equal(env.state().rotatedDate, "2026-10-03");
 });
@@ -325,7 +333,7 @@ test("日次: 日付は SELF_AGENT_TZ で決める（UTC の日付ではない�
   assert.equal(env.runner.inputs.length, 0);
 
   // 前日（10/02）のままなら切り替え、JST の日付（10/03）を記録する
-  env.guildSettings.setInboxRotatedDate("guild-1", "2026-10-02");
+  env.guildSettings.setInboxRotated("guild-1", "2026-10-02", rotatedAtOf("2026-10-02"));
   await env.rotate();
   assert.equal(env.runner.inputs.length, 1);
   assert.equal(env.state().rotatedDate, "2026-10-03");
@@ -392,6 +400,7 @@ test("SDK セッションが無ければ、ターンの記録があっても LLM
   assert.equal(env.runner.inputs.length, 0);
   assert.deepEqual(env.queue.keys, ["inbox-1"]);
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-03", summary: undefined, session: undefined, seed: undefined });
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, ROTATE_AT.toISOString());
   assert.deepEqual(env.gateway.events, []);
   assert.deepEqual(env.logs, [NO_TURNS_LOG]);
 
@@ -401,20 +410,23 @@ test("SDK セッションが無ければ、ターンの記録があっても LLM
   assert.deepEqual(env.queue.keys, ["inbox-1"]);
 });
 
-test("前回の切り替え（最後の要約）より後に #inbox のターンが無ければ、LLM を呼ばずに切り替えた日だけ記録する（SDK セッションも seed もそのまま）", async (t) => {
+test("前回の切り替えの時刻（inbox_rotated_at。最後の要約の時刻ではない）より後に #inbox のターンが無ければ、LLM を呼ばずに切り替えた日と時刻だけ記録する（SDK セッションも seed もそのまま）", async (t) => {
   const env = setup(t);
-  // 前回の要約と同じ時刻までのターンは数えない
+  // 要約はそれより前に残したもの。要約の時刻を基準にすると、その後のターンを数えてしまう
+  env.clock.now = at(ROTATE_AT, -30 * HOUR_MS);
+  env.inboxSummaries.add("guild-1", "2026-10-01", "前回の要約");
+  env.clock.now = ROTATE_AT;
+  // 前回の切り替えの時刻（setup で 10/02 04:00 JST = 24 時間前）ちょうどまでのターンは数えない
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, at(ROTATE_AT, -24 * HOUR_MS).toISOString());
   env.chatAt(at(ROTATE_AT, -25 * HOUR_MS));
   env.chatAt(at(ROTATE_AT, -24 * HOUR_MS));
-  env.clock.now = at(ROTATE_AT, -24 * HOUR_MS);
-  env.inboxSummaries.add("guild-1", "2026-10-02", "前回の要約");
   env.seeds.set("inbox-1", rotatedSeed("前回の要約"));
-  env.clock.now = ROTATE_AT;
 
   await env.rotate();
 
   assert.equal(env.runner.inputs.length, 0);
   assert.equal(env.state().rotatedDate, "2026-10-03");
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, ROTATE_AT.toISOString());
   assert.equal(env.state().summary?.summary, "前回の要約");
   assert.equal(env.state().session, "session-1");
   assert.equal(env.state().seed, rotatedSeed("前回の要約"));
@@ -437,7 +449,7 @@ test("切り替え: 要約のターン → 要約を保存 → SDK セッショ�
   await env.rotate();
 
   assert.deepEqual(env.runner.inputs, [
-    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "inbox-1" } },
+    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined },
   ]);
   assert.deepEqual(env.queue.keys, ["inbox-1"]);
   const expected = {
@@ -448,6 +460,7 @@ test("切り替え: 要約のターン → 要約を保存 → SDK セッショ�
   };
   assert.deepEqual(atNotice, [expected]);
   assert.deepEqual(env.state(), expected);
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, ROTATE_AT.toISOString());
   assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
   // 要約のターンも usage に記録する
   const [entry] = env.usage.recent(1);
@@ -464,6 +477,44 @@ test("切り替え: 要約のターン → 要約を保存 → SDK セッショ�
   await env.rotate();
   assert.equal(env.runner.inputs.length, 1);
   assert.equal(env.gateway.events.length, 1);
+});
+
+test("切り替え: 要約のターンには context を渡さない（session_report・session_open は使えない）", async (t) => {
+  const env = setup(t, [ok(SUMMARY)]);
+  env.chatAt(at(ROTATE_AT, -HOUR_MS));
+
+  await env.rotate();
+
+  assert.equal(env.runner.inputs.length, 1);
+  assert.ok("context" in env.runner.inputs[0]!);
+  assert.equal(env.runner.inputs[0]?.context, undefined);
+});
+
+test("切り替えた時刻は要約のターンの usage を記録した後に取り直す（ターン中に時刻が進んでも、要約のターン自身の記録を次の判定に数えない）", async (t) => {
+  const big: Tokens = { input: 5, read: 200000, creation: 1000, context: 201005 };
+  const env = setup(t, [ok(SUMMARY, "session-1", big)]);
+  env.chatAt(at(ROTATE_AT, -HOUR_MS));
+  const summaryTurn = deferred();
+  env.runner.gates[0] = summaryTurn.promise;
+
+  const rotating = env.rotate();
+  await flush();
+  // 要約のターンに 2 分かかった
+  const finishedAt = at(ROTATE_AT, 2 * MINUTE_MS);
+  env.clock.now = finishedAt;
+  summaryTurn.resolve();
+  await rotating;
+
+  assert.equal(env.usage.recent(1)[0]?.at, finishedAt.toISOString());
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, finishedAt.toISOString());
+  // 日付は切り替えを始めたときのもの
+  assert.equal(env.state().rotatedDate, "2026-10-03");
+
+  // 新しいセッションができても、要約のターン自身の大きな入力（201005 トークン）では切り替えない
+  env.sessions.set("inbox-1", "session-2");
+  env.clock.now = at(ROTATE_AT, 10 * MINUTE_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 1);
 });
 
 test("切り替え: 要約は返答本文の前後の空白を除いた先頭 600 字。空なら「（要約なし）」", async (t) => {
@@ -540,11 +591,7 @@ test("切り替え: 発言のターンの途中なら、同じキュー（key �
   userTurn.resolve();
   await Promise.all([replying, rotating]);
 
-  assert.deepEqual(env.runner.inputs[1], {
-    prompt: ROTATE_PROMPT,
-    sessionId: "session-2",
-    context: { guildId: "guild-1", channelId: "inbox-1" },
-  });
+  assert.deepEqual(env.runner.inputs[1], { prompt: ROTATE_PROMPT, sessionId: "session-2", context: undefined });
   assert.deepEqual(env.queue.keys, ["inbox-1", "inbox-1"]);
   assert.deepEqual(
     env.gateway.events.map((event) => `${event.method}:${event.text}`),
@@ -561,6 +608,7 @@ test("要約のターンが失敗したら何も変えずに log に出し、同
   await env.rotate();
 
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-02", summary: undefined, session: "session-1", seed: undefined });
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, rotatedAtOf("2026-10-02").toISOString());
   assert.deepEqual(env.gateway.events, []);
   assert.deepEqual(env.logs, [
     "#inbox の要約に失敗したため、切り替えませんでした（guild=guild-1）。1 時間後以降にやり直します: error_during_execution: boom",
@@ -625,6 +673,7 @@ test("会話の記録が無い（No conversation found）なら要約を作ら�
     session: undefined,
     seed: rotatedSeed("前回の要約"),
   });
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, ROTATE_AT.toISOString());
   assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
   assert.equal(env.usage.recent(1)[0]?.ok, false);
   assert.deepEqual(env.logs, [
@@ -719,7 +768,7 @@ test("サイズ: 今日切り替え済みでも、前回の切り替えより後
   await env.rotate();
 
   assert.deepEqual(env.runner.inputs, [
-    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "inbox-1" } },
+    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined },
   ]);
   assert.deepEqual(env.state(), {
     rotatedDate: "2026-10-03",
@@ -790,11 +839,8 @@ test("複数のサーバーは 1 つずつ切り替え、1 つが失敗しても
   await env.rotate();
 
   assert.deepEqual(
-    env.runner.inputs.map((input) => input.context),
-    [
-      { guildId: "guild-1", channelId: "inbox-1" },
-      { guildId: "guild-2", channelId: "inbox-2" },
-    ],
+    env.runner.inputs.map((input) => input.sessionId),
+    ["session-1", "session-2"],
   );
   assert.equal(env.state().rotatedDate, "2026-10-02");
   assert.equal(env.guildSettings.get("guild-2")?.inboxRotatedDate, "2026-10-03");
