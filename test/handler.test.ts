@@ -1007,6 +1007,39 @@ test("中断・打ち切り: 途中で受け取った session_id は、そのチ
   assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY, "続きです", ABORTED_REPLY]);
 });
 
+test("中断・打ち切り: session_id を保存したときは seed も消す（その prompt は SDK の会話に記録済み）。保存しなければ seed は残す", async (t) => {
+  const { runner, sessions, seeds, topicSessions, handle } = setup(t, [
+    { ok: false, errorMessage: "aborted", sessionRecorded: false, toolCalls: 0 },
+    { ok: false, errorMessage: "aborted", sessionId: "session-a", sessionRecorded: false, toolCalls: 0 },
+    { ok: false, errorMessage: "timeout", sessionId: "session-t", sessionRecorded: false, toolCalls: 0 },
+    { ok: false, errorMessage: "timeout", sessionId: "session-x", sessionRecorded: false, toolCalls: 0 },
+  ]);
+  topicSessions.create(TOPIC);
+  seeds.set("topic-1", "前日までの要約");
+  seeds.set("inbox-1", "#inbox の要約");
+
+  // session_id を受け取れていなければ保存せず、seed も残す
+  await handle(message({ id: "message-1", channelId: "topic-1" }));
+  assert.equal(sessions.get("topic-1"), undefined);
+  assert.equal(seeds.get("topic-1"), "前日までの要約");
+
+  await handle(message({ id: "message-2", channelId: "topic-1" }));
+  assert.equal(sessions.get("topic-1"), "session-a");
+  assert.equal(seeds.get("topic-1"), undefined);
+  assert.ok(runner.inputs[1]!.prompt.startsWith("前日までの要約\n\n"));
+
+  await handle(message({ id: "message-3" }));
+  assert.equal(sessions.get("inbox-1"), "session-t");
+  assert.equal(seeds.get("inbox-1"), undefined);
+
+  // 既に SDK セッションがあれば（resume したターン）保存も seed の削除もしない
+  seeds.set("inbox-1", "使わない");
+  await handle(message({ id: "message-4" }));
+  assert.equal(runner.inputs[3]!.sessionId, "session-t");
+  assert.equal(sessions.get("inbox-1"), "session-t");
+  assert.equal(seeds.get("inbox-1"), "使わない");
+});
+
 test("中断・打ち切り: 既に保存している SDK セッションは上書きせず、session_id を受け取れていなければ何も保存しない", async (t) => {
   const { sessions, topicSessions, handle } = setup(t, [
     { ok: false, errorMessage: "aborted", sessionId: "session-new", sessionRecorded: false, toolCalls: 0 },
@@ -1171,10 +1204,15 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/** 途中経過のメッセージの [中断]（そのテストで最初のセッションのターンは番号 1） */
+/** ターンの番号は handler を作った時刻（NOW）のミリ秒から 1 ずつ増やす。そのテストで n 番目のセッションのターンの番号 */
+function turnSeq(n: number): number {
+  return NOW.getTime() + n;
+}
+
+/** 途中経過のメッセージの [中断]（そのテストで最初のセッションのターン） */
 const ABORT_ROW = {
   kind: "buttons",
-  buttons: [{ customId: "turn:abort:topic-1:1", label: "中断", style: "danger" }],
+  buttons: [{ customId: `turn:abort:topic-1:${turnSeq(1)}`, label: "中断", style: "danger" }],
 } as const;
 const STALE = [{ method: "reply", message: { text: STALE_TURN_REPLY, ephemeral: true } }];
 
@@ -1343,7 +1381,7 @@ test("途中経過: #inbox のターンには途中経過も中断も付けな�
 
   assert.equal(runner.received[0]!.signal, undefined);
   assert.equal(runner.received[0]!.onProgress, undefined);
-  assert.equal(handler.abortTurn("inbox-1", 1), false);
+  assert.equal(handler.abortTurn("inbox-1", turnSeq(1)), false);
   assert.equal(timers.pending, 0);
   release.resolve();
   await turn;
@@ -1369,7 +1407,7 @@ test("[中断]: 実行中のセッションのターンを abort して deferUpd
   assert.equal(runner.received[0]!.signal?.aborted, false);
 
   // 表示の書き換えはターンの終わりに handler が行う
-  assert.deepEqual(await press("turn:abort:topic-1:1"), [{ method: "deferUpdate" }]);
+  assert.deepEqual(await press(`turn:abort:topic-1:${turnSeq(1)}`), [{ method: "deferUpdate" }]);
   await turn;
 
   assert.equal(runner.received[0]!.signal?.aborted, true);
@@ -1387,7 +1425,7 @@ test("[中断]: 実行中のセッションのターンを abort して deferUpd
   assert.equal(timers.pending, 0);
 
   // 終わったターンの [中断] は古い
-  assert.deepEqual(await press("turn:abort:topic-1:1"), STALE);
+  assert.deepEqual(await press(`turn:abort:topic-1:${turnSeq(1)}`), STALE);
 });
 
 test("[中断]: ボタンはターンごとの番号を持ち、前のターンのボタンでは次のターンを止めない", async (t) => {
@@ -1403,24 +1441,27 @@ test("[中断]: ボタンはターンごとの番号を持ち、前のターン�
       input.signal?.addEventListener("abort", () => resolve());
     });
 
-  // 1 ターン目: 途中経過の [中断] は番号 1。押さずに終わる
+  // 1 ターン目: 途中経過の [中断] は 1 つ目の番号。押さずに終わる
   const first = handle(message({ id: "message-1", channelId: "topic-1" }));
   await timers.advance(PROGRESS_DELAY_MS);
   release.resolve();
   await first;
   release = deferred();
 
-  // 2 ターン目: [中断] は番号 2。1 ターン目のボタンを押しても止まらない
+  // 2 ターン目: [中断] は次の番号。1 ターン目のボタンを押しても止まらない
   const second = handle(message({ id: "message-2", channelId: "topic-1" }));
   await timers.advance(PROGRESS_DELAY_MS);
   assert.deepEqual(
     gateway.posts.map((post) => post.message.components?.[0]),
-    [ABORT_ROW, { kind: "buttons", buttons: [{ customId: "turn:abort:topic-1:2", label: "中断", style: "danger" }] }],
+    [
+      ABORT_ROW,
+      { kind: "buttons", buttons: [{ customId: `turn:abort:topic-1:${turnSeq(2)}`, label: "中断", style: "danger" }] },
+    ],
   );
-  assert.deepEqual(await press("turn:abort:topic-1:1"), STALE);
+  assert.deepEqual(await press(`turn:abort:topic-1:${turnSeq(1)}`), STALE);
   assert.equal(runner.received[1]!.signal?.aborted, false);
 
-  assert.deepEqual(await press("turn:abort:topic-1:2"), [{ method: "deferUpdate" }]);
+  assert.deepEqual(await press(`turn:abort:topic-1:${turnSeq(2)}`), [{ method: "deferUpdate" }]);
   await second;
   assert.equal(runner.received[1]!.signal?.aborted, true);
   assert.deepEqual(gateway.sent.map((sent) => sent.text), ["できました", ABORTED_REPLY]);
@@ -1431,8 +1472,8 @@ test("[中断]: 実行中のターンが無いチャンネルでは本人にだ�
   topicSessions.create(TOPIC);
 
   assert.equal(STALE_TURN_REPLY, "この操作は古くなっています");
-  assert.deepEqual(await press("turn:abort:topic-1:1"), STALE);
-  assert.deepEqual(await press("turn:abort:inbox-1:1"), STALE);
+  assert.deepEqual(await press(`turn:abort:topic-1:${turnSeq(1)}`), STALE);
+  assert.deepEqual(await press(`turn:abort:inbox-1:${turnSeq(1)}`), STALE);
 });
 
 test("連続失敗: 中断（aborted）は数えず、3 回続いても会話を捨てない", async (t) => {
