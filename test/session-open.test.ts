@@ -1,12 +1,18 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as z from "zod";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
-import { createTaskTools, type SessionOpenResult, type TextToolResult } from "../src/agent/tools.ts";
+import {
+  createTaskTools,
+  type KbMemoryToolDeps,
+  type SessionOpenResult,
+  type TextToolResult,
+} from "../src/agent/tools.ts";
 import { createChannelResolver } from "../src/app/access.ts";
 import { createTopicSession, toChannelName } from "../src/app/commands/new.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
@@ -24,6 +30,8 @@ import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
+import { KnowledgeStore } from "../src/store/knowledge.ts";
+import { MemoryStore } from "../src/store/memories.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -234,6 +242,7 @@ test("session_open: 作ったチャンネルの最初のターンの prompt の�
     seeds,
     topicSessions,
     inboxSummaries: new InboxSummaryStore(db, () => NOW),
+    memories: new MemoryStore(db, () => NOW),
     usage: new UsageStore(db, () => NOW),
     log,
   };
@@ -425,6 +434,17 @@ test("session_open: /setup 前（env の #inbox で受け付けているサー�
   assert.equal(seeds.get("ch-1"), undefined);
 });
 
+/** ナレッジベースと記憶のツールのストア（ここでは確認・知らせの投稿は使わない） */
+function kbMemory(db: DatabaseSync): KbMemoryToolDeps {
+  return {
+    knowledge: new KnowledgeStore(db, () => NOW),
+    memories: new MemoryStore(db, () => NOW),
+    confirmKbDelete: async () => assert.fail("想定外の呼び出し"),
+    notifyMemoryChange: async () => assert.fail("想定外の呼び出し"),
+    timeZone: "Asia/Tokyo",
+  };
+}
+
 test("ツール定義: どのチャンネルの run でも名前・説明・入力の形は同じで、説明に可変値を入れない", (t) => {
   const { db, topicSessions } = setup(t);
   const tasks = new TaskStore(db, () => NOW);
@@ -437,7 +457,7 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
   ];
 
   const definitions = contexts.map((context) =>
-    createTaskTools(tasks, topicSessions, openSession, context).map((definition) => ({
+    createTaskTools(tasks, topicSessions, openSession, kbMemory(db), context).map((definition) => ({
       name: definition.name,
       description: definition.description,
       inputSchema: z.toJSONSchema(z.object(definition.inputSchema)),
@@ -447,9 +467,22 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
   );
 
   for (const other of definitions.slice(1)) assert.deepEqual(other, definitions[0]);
+  // ツール集合は全セッション共通で固定する（変わるとキャッシュが全セッションで外れる）。並びも含めて意図しない変更を検出する
   assert.deepEqual(
     definitions[0]!.map((definition) => definition.name),
-    ["task_add", "task_list", "task_complete", "session_report", "session_open"],
+    [
+      "task_add",
+      "task_list",
+      "task_complete",
+      "session_report",
+      "session_open",
+      "kb_save",
+      "kb_search",
+      "kb_get",
+      "kb_delete",
+      "memory_save",
+      "memory_forget",
+    ],
   );
   const serialized = JSON.stringify(definitions[0]);
   for (const id of ["guild-1", "guild-2", "inbox-1", "inbox-2", "topic-1"]) assert.ok(!serialized.includes(id), id);
@@ -469,7 +502,7 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
 test("ツール定義: session_open の題名は前後の空白を除いて 1〜100 字、context は 1〜400 字", (t) => {
   const { db, topicSessions } = setup(t);
   const tasks = new TaskStore(db, () => NOW);
-  const definition = createTaskTools(tasks, topicSessions, async () => ({ result: "not_available" })).find(
+  const definition = createTaskTools(tasks, topicSessions, async () => ({ result: "not_available" }), kbMemory(db)).find(
     (candidate) => candidate.name === "session_open",
   );
   assert.ok(definition !== undefined);
@@ -491,7 +524,7 @@ test("ツール: session_open のハンドラはこの run の context を渡し
     received.push([args, context]);
     return { result: "existing", channelId: "topic-1" };
   };
-  const definition = createTaskTools(tasks, topicSessions, openSession, INBOX).find(
+  const definition = createTaskTools(tasks, topicSessions, openSession, kbMemory(db), INBOX).find(
     (candidate) => candidate.name === "session_open",
   );
   assert.ok(definition !== undefined);

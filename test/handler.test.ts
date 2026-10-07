@@ -23,6 +23,7 @@ import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
+import { MemoryStore } from "../src/store/memories.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
@@ -161,6 +162,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
   const topicSessions = new TopicSessionStore(db, () => clock.now);
   const seeds = new ChannelSeedStore(db, () => NOW);
   const inboxSummaries = new InboxSummaryStore(db, () => NOW);
+  const memories = new MemoryStore(db, () => NOW);
   const channelOps = new RecordingChannelOps();
   const queue = new KeyedSerialQueue(2);
   const logs: string[] = [];
@@ -174,6 +176,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     seeds,
     topicSessions,
     inboxSummaries,
+    memories,
     channelOps,
     usage,
     queue,
@@ -187,6 +190,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     seeds,
     topicSessions,
     inboxSummaries,
+    memories,
     channelOps,
     queue,
     clock,

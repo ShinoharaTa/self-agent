@@ -23,6 +23,7 @@ import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
+import { MemoryStore } from "../src/store/memories.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
@@ -257,6 +258,7 @@ function handlerSetup(t: TestContext) {
     seeds: new ChannelSeedStore(db, () => NOW),
     topicSessions,
     inboxSummaries: new InboxSummaryStore(db, () => NOW),
+    memories: new MemoryStore(db, () => NOW),
     channelOps: { enqueueMove: () => {} },
     usage,
     queue: turnQueue,

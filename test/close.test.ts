@@ -33,6 +33,7 @@ import type {
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
+import { MemoryStore } from "../src/store/memories.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { CLOSE_SUMMARY_MAX_LENGTH, type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -159,6 +160,7 @@ function stores(db: DatabaseSync, now: () => Date) {
     sessions: new SdkSessionStore(db, now),
     seeds: new ChannelSeedStore(db, now),
     inboxSummaries: new InboxSummaryStore(db, now),
+    memories: new MemoryStore(db, now),
     usage: new UsageStore(db, now),
   };
 }
@@ -171,7 +173,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
     rmSync(dir, { recursive: true, force: true });
   });
   const clock = { now: NOW };
-  const { topicSessions, tasks, sessions, seeds, inboxSummaries, usage } = stores(db, () => clock.now);
+  const { topicSessions, tasks, sessions, seeds, inboxSummaries, memories, usage } = stores(db, () => clock.now);
   const runner = new FakeRunner(steps(topicSessions));
   const channelOps = new RecordingChannelOps();
   const turnQueue = new RecordingQueue(2);
@@ -182,7 +184,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
     tasks,
     channelOps,
     turnQueue,
-    turn: { runner, sessions, seeds, topicSessions, inboxSummaries, usage, log },
+    turn: { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log },
     log,
   };
   const command = createCloseCommand(deps);

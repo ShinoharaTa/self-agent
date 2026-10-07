@@ -17,13 +17,14 @@ import {
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { EMPTY_SUMMARY, rotatedSeed } from "../src/app/summary.ts";
-import { RESUME_FAILURE_LIMIT, type TurnDeps } from "../src/app/turn.ts";
+import { MEMORY_BLOCK_HEADER, RESUME_FAILURE_LIMIT, type TurnDeps } from "../src/app/turn.ts";
 import type { TimeOfDay } from "../src/config.ts";
 import type { Gateway, IncomingMessage, OutgoingMessage } from "../src/discord/gateway.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
+import { MemoryStore } from "../src/store/memories.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { CLOSE_SUMMARY_MAX_LENGTH, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
@@ -194,6 +195,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
   const seeds = new ChannelSeedStore(db, now);
   const usage = new UsageStore(db, now);
   const topicSessions = new TopicSessionStore(db, now);
+  const memories = new MemoryStore(db, now);
   const runner = new FakeRunner(results);
   const gateway = new FakeGateway();
   const queue = new RecordingQueue(2);
@@ -207,7 +209,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     inboxRotateAt: options.rotateAt ?? { hour: 4, minute: 0 },
     inboxMaxInputTokens: options.maxInputTokens ?? 150000,
   };
-  const turn: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, usage, log };
+  const turn: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
   const rotator = new InboxRotator({ cfg, guildSettings, inboxSummaries, turnQueue: queue, turn, gateway, now, log });
 
   // guild-1 は /setup 済み（#inbox は inbox-1）
@@ -248,6 +250,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
       seeds,
       topicSessions,
       inboxSummaries,
+      memories,
       channelOps: { enqueueMove: () => assert.fail("想定外の呼び出し") },
       usage,
       queue,
@@ -267,6 +270,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     inboxSummaries,
     sessions,
     seeds,
+    memories,
     usage,
     runner,
     gateway,
@@ -583,6 +587,30 @@ test("切り替え: 要約が次の発言の最初のターンの prompt の先�
     env.gateway.events.map((event) => `${event.method}:${event.text}`),
     [`sendMessage:${ROTATED_NOTICE}`, "send:10 時からです", "send:どういたしまして"],
   );
+});
+
+test("記憶: 要約のターン（resume）には記憶のブロックを付けず、切り替え後の最初の発言のターンに [記憶のブロック, 要約の seed, prompt] で付ける", async (t) => {
+  const env = setup(t, [ok(SUMMARY), ok("晴れです", "session-2")]);
+  env.memories.add("住んでいる地域: 東京都練馬区");
+  env.chatAt(at(ROTATE_AT, -HOUR_MS));
+
+  await env.rotate();
+  const first = message("明日の天気は？", at(ROTATE_AT, MINUTE_MS));
+  await env.handler()(first);
+
+  assert.deepEqual(
+    env.runner.inputs.map((input) => [input.prompt, input.sessionId]),
+    [
+      [ROTATE_PROMPT, "session-1"],
+      [
+        `${MEMORY_BLOCK_HEADER}\n- [#1] 住んでいる地域: 東京都練馬区\n\n${rotatedSeed(SUMMARY)}\n\n` +
+          buildTurnPrompt(first.content, first.createdAt, "Asia/Tokyo", "inbox"),
+        undefined,
+      ],
+    ],
+  );
+  // 記憶は seed に保存しない
+  assert.equal(env.state().seed, undefined);
 });
 
 test("切り替え: 発言のターンの途中なら、同じキュー（key は #inbox）でそのターンの後に行い、そのターンで保存した SDK セッションを要約する", async (t) => {

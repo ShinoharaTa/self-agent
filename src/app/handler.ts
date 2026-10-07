@@ -3,6 +3,7 @@ import type { Config } from "../config.ts";
 import type { Gateway, IncomingMessage } from "../discord/gateway.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { InboxSummaryStore } from "../store/inbox-summaries.ts";
+import type { MemoryStore } from "../store/memories.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSession, TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
@@ -36,6 +37,8 @@ export type HandlerDeps = {
   topicSessions: Pick<TopicSessionStore, "touch" | "get" | "setActive" | "setWaiting">;
   /** #inbox の resume 失敗時の seed（直近の #inbox の要約） */
   inboxSummaries: Pick<InboxSummaryStore, "latest">;
+  /** 新しい SDK セッションの最初の prompt に付ける記憶 */
+  memories: Pick<MemoryStore, "list">;
   /** 進行中に戻したセッションを進行中カテゴリへ移す */
   channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
   usage: UsageStore;
@@ -50,9 +53,22 @@ function describeError(error: unknown): string {
 
 /** 受け付けた発言を 1 ターンとして処理する。返す Promise は reject しない（失敗は log に出す） */
 export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Promise<void> {
-  const { cfg, resolveChannel, gateway, runner, sessions, seeds, topicSessions, inboxSummaries, channelOps, usage, queue, log } =
-    deps;
-  const turnDeps: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, usage, log };
+  const {
+    cfg,
+    resolveChannel,
+    gateway,
+    runner,
+    sessions,
+    seeds,
+    topicSessions,
+    inboxSummaries,
+    memories,
+    channelOps,
+    usage,
+    queue,
+    log,
+  } = deps;
+  const turnDeps: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
 
   /** セッションが待ち・完了なら進行中に戻して進行中カテゴリへ移す（知らせは返信の先頭に付ける）。戻したら true */
   const revive = (session: Pick<TopicSession, "channelId" | "guildId" | "state">): boolean => {

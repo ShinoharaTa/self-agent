@@ -7,6 +7,8 @@ import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
 import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
 import { InboxRotator } from "./app/inbox-rotate.ts";
+import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
+import { createNotifyMemoryChange } from "./app/commands/memory-undo.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { KeyedSerialQueue } from "./app/queue.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
@@ -18,6 +20,8 @@ import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { InboxSummaryStore } from "./store/inbox-summaries.ts";
+import { KnowledgeStore } from "./store/knowledge.ts";
+import { MemoryStore } from "./store/memories.ts";
 import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
@@ -43,6 +47,8 @@ const guildSettings = new GuildSettingsStore(db, now);
 const topicSessions = new TopicSessionStore(db, now);
 const seeds = new ChannelSeedStore(db, now);
 const inboxSummaries = new InboxSummaryStore(db, now);
+const knowledge = new KnowledgeStore(db, now);
+const memories = new MemoryStore(db, now);
 const log = (message: string): void => console.error(message);
 
 const gateway = new DiscordGateway(config.allowedGuildIds);
@@ -61,15 +67,23 @@ const openSession = createOpenSession({
   now,
   log,
 });
+// ナレッジベースと記憶のツール: kb_delete の確認と記憶の変更の知らせは run のチャンネルに投稿する
+const kbMemory = {
+  knowledge,
+  memories,
+  confirmKbDelete: createConfirmKbDelete({ gateway }),
+  notifyMemoryChange: createNotifyMemoryChange({ gateway, log }),
+  timeZone: config.timeZone,
+};
 // ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ
 const runner = new SdkAgentRunner(
   config,
-  (context) => createTaskMcpServer(tasks, topicSessions, openSession, context),
+  (context) => createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, context),
   log,
 );
 // 発言と /close のターンのキュー（key は channelId）
 const turnQueue = new KeyedSerialQueue(config.maxConcurrentTurns);
-const turn = { runner, sessions, seeds, topicSessions, inboxSummaries, usage, log };
+const turn = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
 const channelOps = new ChannelOpsQueue({
   gateway,
   guildSettings,
@@ -111,6 +125,8 @@ const handleInteraction = createInteractionHandler({
     seeds,
     queue: layoutQueue,
     tasks,
+    knowledge,
+    memories,
     channelOps,
     turnQueue,
     turn,
