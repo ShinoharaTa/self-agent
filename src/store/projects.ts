@@ -8,7 +8,7 @@ const FALLBACK_SLUG = "app";
 /** 題名の文字数の上限 */
 export const PROJECT_TITLE_MAX_LENGTH = 100;
 
-/** 作って URL で渡すプロジェクト（projects）。時刻は Unix 時刻（ミリ秒） */
+/** 作って URL で渡すプロジェクト（projects） */
 export type Project = {
   id: number;
   guildId: string;
@@ -17,10 +17,10 @@ export type Project = {
   /** URL とディレクトリの名前（英小文字・数字・`-`）。削除済みのものとも重ならない */
   slug: string;
   title: string;
-  createdAt: number;
-  updatedAt: number;
+  createdAt: string;
+  updatedAt: string;
   /** 削除した時刻。削除されていなければ null */
-  deletedAt: number | null;
+  deletedAt: string | null;
 };
 
 export type NewProject = {
@@ -30,7 +30,6 @@ export type NewProject = {
   name: string;
   /** 前後の空白を除いて PROJECT_TITLE_MAX_LENGTH 字まで。空なら slug */
   title: string;
-  now: number;
 };
 
 /** 先頭から length 文字（コードポイント）まで */
@@ -54,8 +53,8 @@ export function toSlug(name: string): string {
   return slug.length < PROJECT_SLUG_MIN_LENGTH ? FALLBACK_SLUG : slug;
 }
 
-function nullableNumber(value: SQLOutputValue | undefined): number | null {
-  return value === null || value === undefined ? null : Number(value);
+function nullableString(value: SQLOutputValue | undefined): string | null {
+  return value === null || value === undefined ? null : String(value);
 }
 
 function toProject(row: Record<string, SQLOutputValue>): Project {
@@ -65,18 +64,20 @@ function toProject(row: Record<string, SQLOutputValue>): Project {
     channelId: String(row.channel_id),
     slug: String(row.slug),
     title: String(row.title),
-    createdAt: Number(row.created_at),
-    updatedAt: Number(row.updated_at),
-    deletedAt: nullableNumber(row.deleted_at),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    deletedAt: nullableString(row.deleted_at),
   };
 }
 
 /** 作って URL で渡すプロジェクト。消すときは論理削除にし、slug は削除後も使わない */
 export class ProjectStore {
   private readonly db: DatabaseSync;
+  private readonly now: () => Date;
 
-  constructor(db: DatabaseSync) {
+  constructor(db: DatabaseSync, now: () => Date = () => new Date()) {
     this.db = db;
+    this.now = now;
   }
 
   /**
@@ -86,11 +87,12 @@ export class ProjectStore {
   create(project: NewProject): Project {
     const slug = this.uniqueSlug(toSlug(project.name));
     const title = truncate(project.title.trim(), PROJECT_TITLE_MAX_LENGTH);
+    const at = this.now().toISOString();
     const row = this.db
       .prepare(
         "INSERT INTO projects (guild_id, channel_id, slug, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
       )
-      .get(project.guildId, project.channelId, slug, title === "" ? slug : title, project.now, project.now);
+      .get(project.guildId, project.channelId, slug, title === "" ? slug : title, at, at);
     return toProject(row!);
   }
 
@@ -120,16 +122,18 @@ export class ProjectStore {
       .map(toProject);
   }
 
-  /** 更新日時を now にする。削除済みなら何もしない */
-  touch(id: number, now: number): void {
-    this.db.prepare("UPDATE projects SET updated_at = ? WHERE id = ? AND deleted_at IS NULL").run(now, id);
+  /** 更新日時を今にする。削除済みなら何もしない */
+  touch(id: number): void {
+    this.db
+      .prepare("UPDATE projects SET updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+      .run(this.now().toISOString(), id);
   }
 
   /** 削除済みにする。無い id・既に削除済みなら何もせず false */
-  markDeleted(id: number, now: number): boolean {
+  markDeleted(id: number): boolean {
     const result = this.db
       .prepare("UPDATE projects SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
-      .run(now, id);
+      .run(this.now().toISOString(), id);
     return Number(result.changes) > 0;
   }
 

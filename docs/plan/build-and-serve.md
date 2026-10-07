@@ -33,7 +33,7 @@
 
 ## 3. 作業場所とプロジェクト
 - ソースは `<workDir>/projects/<slug>/`、配るのは `<workDir>/projects/<slug>/site/` だけ。cwd は全チャンネルで workDir のまま。
-- DB（user_version 13）: `projects(id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER)` と、`channel_id` の部分 UNIQUE インデックス（`WHERE deleted_at IS NULL`）。
+- DB（user_version 13）: `projects(id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT)`（時刻は既存のテーブルと同じ ISO 文字列）と、`channel_id` の部分 UNIQUE インデックス（`WHERE deleted_at IS NULL`）。
   - `title` は前後の空白を除いて 100 字まで。空なら slug。
   - セッションのチャンネル 1 つに、削除されていないプロジェクトは 0〜1 個（`/projects` で消した後は、同じチャンネルで新しく作れる）。#inbox には作らない。
   - 削除済みの slug も UNIQUE のまま残す（同じ URL が別のものを指さないように）。
