@@ -47,12 +47,15 @@
 ## 4. ツールとガード（段 1）
 - 組み込み: `[WebSearch, WebFetch, Read, Write, Edit, Glob, Grep]`（この順で固定）。段 2 で末尾に `Bash` を足す。
 - MCP: 既存の 11 個の末尾に `project_open` を足す。
-- allowedTools に足す: `Read`・`Glob`・`Grep`・`Write`・`Edit`。可否は PreToolUse の hook で決める（下）。permissionMode は dontAsk のまま。
-- PreToolUse の hook（`Read|Write|Edit|Glob|Grep`）:
-  - パス（Read/Write/Edit は `file_path`、Glob/Grep は `path`。無ければ cwd）を絶対パスにし、存在する一番深い親の realpath で判定する。
+- allowedTools に足す: パスを絞ったルール `Read(//<realpath(workDir)>/projects/**)` と `Edit(//<realpath(workDir)>/projects/**)`（Edit のルールは Write にも、Read のルールは Glob・Grep にも効く。許可ルールは symlink の先も一致しないと効かないので実際の場所で書く）。それより細かい可否は PreToolUse の hook で決める（下）。permissionMode は dontAsk のまま（ルールに無いものは拒否）。
+- PreToolUse の hook（`Read|Write|Edit|Glob|Grep`）。全 run に入れる（#inbox・context の無いターンも）。context の無いターン（#inbox の要約）ではすべて拒否:
+  - パス（Read/Write/Edit は `file_path`、Glob/Grep は `path`。無ければ cwd）の文字列に、`/` で分けた要素として `..` があれば、resolve・realpath の前に拒否する（symlink の後ろの `..` を字面で畳んで中と誤判定しないため）。
+  - それ以外は絶対パスにし、存在する一番深い親の realpath で判定する。
   - Write / Edit: 対象がこのチャンネルのプロジェクトのディレクトリの中でなければ拒否。#inbox・プロジェクトの無いチャンネルでは拒否（「先に project_open を使う」）。
   - Read / Glob / Grep: 対象が `<workDir>/projects/` の中でなければ拒否。
+  - Glob の `pattern`・Grep の `glob`: 絶対パス（`/` か `~` で始まる）か、部分文字列 `..` を含めば拒否（`{..,x}` のような書き方も含める）。
   - 拒否の理由はモデルに返す。log には「ファイル操作を拒否しました（<ツール名>）」だけを出す（パスは出さない）。
+  - 判定（ストアの読み書きを含む）が例外で終わったら拒否する（fail-closed。CLI は hook の例外を「判断なし」として通すため）。理由は「判定に失敗したため拒否しました」、log は「ファイル操作の判定に失敗したため拒否しました（<ツール名>）」（パス・例外の中身は出さない）。
 - project_open（入力 `name`: 英語の短い名前、`title`: 表示名）:
   - #inbox・context の無いターン → `not_available`（「セッションのチャンネルで使う」）。サーバーの機能が無効 → `not_configured`。
   - このチャンネルにプロジェクトがあれば、それを返す（`existing`）。無ければ作り、`<slug>/site/` まで mkdir して返す（`created`）。
@@ -72,7 +75,8 @@
   - ターンが開始から 20 秒経っても終わっていなければ、チャンネルに「作業中…（<m> 分 <s> 秒・ツール <n> 回）」+ 改行 + 直近の手順のメッセージを 1 つ出し、以後 10 秒ごとに、表示が変わっていれば編集する（ボタンは残す）。ツールの回数はメインループの assistant メッセージの tool_use の数。
   - 手順は tool_use ごとに「書いています: <dir からの相対パス>」（Write・Edit）「読んでいます: …」（Read）「ファイルを探しています」（Glob・Grep）「Web を検索しています」「ページを読んでいます」（WebFetch）「ツールを使っています: <mcp__selfagent__ を除いた名前>」「<ツール名> を使っています」の形。ファイルの中身・コマンド・URL・検索語は出さない。対象がこのチャンネルのプロジェクトの外ならパスを付けない。
   - 送信・編集の失敗は log だけで、ターンは止めない。
-  - [中断]（`turn:abort:<channelId>`、danger）を付ける。押されたらそのターンを abort して（errorMessage は `aborted`。打ち切りの `timeout` と同じく連続失敗に数えない）「中断しました（<m> 分 <s> 秒・ツール <n> 回）」に書き換えてボタンを外し、返答は「中断しました。続けるときは発言してください」。実行中のターンが無ければ本人にだけ「この操作は古くなっています」。
+  - [中断]（`turn:abort:<channelId>:<turnSeq>`、danger）を付ける。turnSeq は handler がセッションのチャンネルのターンごとに振る単調増加の番号で、実行中のターンごとに記録する（[中断] はターン単位）。押されたらそのターンを abort して（errorMessage は `aborted`。打ち切りの `timeout` と同じく連続失敗に数えない）「中断しました（<m> 分 <s> 秒・ツール <n> 回）」に書き換えてボタンを外し、返答は「中断しました。続けるときは発言してください」。実行中のターンが無い・実行中のターンの番号と一致しない（前のターンのボタン）なら本人にだけ「この操作は古くなっています」。
+  - 中断・打ち切り（`aborted`・`timeout`）で終わったターンでも、SDK の session_id を受け取っていれば、そのチャンネルにまだ SDK セッションの保存が無いときだけ保存する（既にあるものは上書きしない）。次の発言はその会話を resume して続ける。
   - 終わったら終わり方に合わせて書き換えてボタンを外し、返答は別のメッセージで投稿する: 成功は「完了（4 分 10 秒・ツール 23 回）」、手順の上限は「手順の上限で止まりました（…）」、中断は「中断しました（…）」、timeout・例外などそれ以外の失敗は「止まりました（…）」。
   - 手順の上限（error_max_turns）で止まったら、セッションのチャンネルだけ今の返信（「途中までで止めました（手順が多すぎました）。…」）に [続ける]（`turn:continue:<channelId>`）を付ける。押すとボタンを外し、「続けてください」をオーナーの発言と同じ経路で 1 ターン送る（日時ヘッダは押した時刻・返信先なし・URL なし）。そのチャンネルが受け付けるセッションでなくなっていたら本人にだけ「この操作は古くなっています」。
 
@@ -92,7 +96,7 @@
   EOT
   sudo systemctl reload apparmor
   ```
-  このホストは `kernel.apparmor_restrict_unprivileged_userns = 1` で、bwrap 用の profile が無い（確認済み）。代償: shino3 のどのプロセスも bwrap 経由で userns を作れるようになる。
+  このホストは `kernel.apparmor_restrict_unprivileged_userns = 1` で、bwrap 用の profile が無い（確認済み）。代償: Bot を動かすユーザーのどのプロセスも bwrap 経由で userns を作れるようになる。
 - Options の sandbox: `enabled: true`、`failIfUnavailable: true`、`autoAllowBashIfSandboxed: true`、`allowUnsandboxedCommands: false`。
   - network: `allowedDomains: ["registry.npmjs.org"]`。
   - filesystem: `denyRead: ["~/", "/run/user", "/tmp/tmux-<uid>", "/run/postgresql", "/run/tailscale", "/run/dbus"]`、`allowRead: [<workDir>, "~/.nvm"]`。書き込みは cwd（workDir）だけ。
