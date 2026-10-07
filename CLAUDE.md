@@ -41,7 +41,7 @@ src/
 │   ├── shutdown.ts      # 停止処理（シグナルで新しい受付と定期処理を止め、進行中の処理を返信まで・実行中のチャンネルの移動を上限付きで待ってから gateway と DB を閉じる）
 │   ├── interactions.ts  # コマンド・ボタン等の振り分け（許可サーバー・オーナー判定 → コマンド名 / custom_id の名前空間）と起動時のコマンド登録
 │   └── commands/        # スラッシュコマンド。1 コマンド 1 ファイル（help.ts, setup.ts など）。close.ts は確認と [閉じる] のボタン（`close:`）、wait.ts は [続ける]（`wait:`）、tasks.ts は完了にするセレクト（`tasks:`）も持つ。delete.ts は削除の確認のボタン（`del:`。記録した今の確認のボタンで、完了のときだけ動く。[削除する] でチャンネルを消して削除済みに、[残す] で完了日時を今にする。それ以外は「古くなっています」）だけを持つ。setup.ts は #inbox のホームパネルを投稿し、home.ts はそのボタンとモーダル（`home:`）を受ける
-├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ。ツール呼び出しは PostToolUse の hook で数えて log）・Options・システムプロンプト・ツール（タスク・session_report・session_open。定義は全チャンネル共通で、session_open の処理は app/session-open.ts から受け取る）
+├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ。ツール呼び出しは PostToolUse の hook で数えて log）・Options（組み込みツールは WebSearch と WebFetch だけ。WebFetch はそのターンにオーナーが貼った URL だけで、それ以外は PreToolUse の hook で拒否）・システムプロンプト・ツール（タスク・session_report・session_open。定義は全チャンネル共通で、session_open の処理は app/session-open.ts から受け取る）
 ├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sdk-sessions（SDK の session_id）/ usage（ターンごとのトークン・最後のステップの入力・compaction・ツール呼び出し数。/usage の集計）/ guild-settings（/setup で作ったカテゴリ・チャンネルの ID と #inbox を最後に切り替えた日と時刻）/ inbox-summaries（#inbox を切り替えたときの要約）/ topic-sessions（/new・session_open で作ったセッションのチャンネルと作られ方（origin）、/close の要約と下書き、削除の確認のメッセージと削除した時刻。削除後も要約は残す）/ channel-seeds（次のターンの prompt の先頭に付ける文）
 └── discord/     # Gateway インタフェースと discord.js 実装。convert.ts は内部型 ⇔ Discord の形の変換（discord.js は型だけ import）
 scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測

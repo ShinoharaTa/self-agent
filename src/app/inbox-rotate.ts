@@ -129,7 +129,7 @@ export class InboxRotator {
   /**
    * 発言のターンと同じキューの中で行う。SDK セッションが無いか、前回の切り替えより後に #inbox のターンが無ければ、LLM を呼ばずに切り替えた日と時刻だけ記録する。
    * それ以外は要約を頼むターンを行う（resume 失敗からの復旧はしない。runChannelTurn は使わず、usage の記録と SDK が記録した session_id の保存だけ同じように行う）。
-   * 要約のターンには context を渡さない（session_report・session_open は not_available になる）。
+   * 要約のターンには context を渡さない（session_report・session_open は not_available になる）。WebFetch に許す URL も渡さない（取得はできない）。
    * 切り替えた時刻は要約のターンの usage を記録した後に取り直す（要約のターン自身の記録を「前回の切り替えより後」に数えないため）。
    * - 成功: 要約を保存 → SDK セッションを捨てる → seed を入れる → 切り替えた日を記録 → #inbox に知らせる
    * - 会話の記録が無い（RESUME_FAILURE_PATTERN）: 要約は作らずに SDK セッションを捨て、切り替えた日を記録し、直近の要約があればそれを seed に入れて知らせる
@@ -154,8 +154,9 @@ export class InboxRotator {
       return;
     }
 
-    // ツールの context は渡さない（#inbox の session_open で要約の途中にセッションを作らせない）
-    const result = await runner.run({ prompt: ROTATE_PROMPT, sessionId, context: undefined });
+    // ツールの context は渡さない（#inbox の session_open で要約の途中にセッションを作らせない）。
+    // オーナーの発言ではないので、WebFetch で取得できる URL も無い
+    const result = await runner.run({ prompt: ROTATE_PROMPT, sessionId, context: undefined, allowedUrls: [] });
     recordTurnUsage(turn, inboxChannelId, result);
     // usage の記録より後の時刻にする（次の判定で要約のターン自身の記録を数えない）
     const rotatedAt = now();

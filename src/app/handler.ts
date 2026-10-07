@@ -12,6 +12,7 @@ import { buildTurnPrompt } from "./prompt.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { applySessionEvent } from "./session-state.ts";
 import { MAX_TURNS_ERROR_PREFIX, runChannelTurn, type TurnDeps } from "./turn.ts";
+import { extractUrls } from "./urls.ts";
 
 export const FAILURE_REPLY = "処理に失敗しました。時間をおいてもう一度送ってください。";
 /** 1 ターンのツール呼び出しの上限（maxTurns）で止まったとき。会話は残っているので、もう一度送れば続きから進む */
@@ -91,6 +92,8 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
         channelId: event.channelId,
         // 日時はキュー待ちでずれないよう、発言の時刻を使う
         prompt: buildTurnPrompt(event.content, event.createdAt, cfg.timeZone, channelName),
+        // WebFetch で取得できるのは、この発言に貼られた URL だけ
+        allowedUrls: extractUrls(event.content),
       });
     } finally {
       stopTyping();

@@ -319,7 +319,7 @@ test("日次: rotateAt（04:00 JST）の直前は切り替えず、ちょうど�
   env.clock.now = ROTATE_AT;
   await env.rotate();
   assert.deepEqual(env.runner.inputs, [
-    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined },
+    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined, allowedUrls: [] },
   ]);
   assert.equal(env.state().rotatedDate, "2026-10-03");
 });
@@ -460,7 +460,7 @@ test("切り替え: 要約のターン → 要約を保存 → SDK セッショ�
   await env.rotate();
 
   assert.deepEqual(env.runner.inputs, [
-    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined },
+    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined, allowedUrls: [] },
   ]);
   assert.deepEqual(env.queue.keys, ["inbox-1"]);
   const expected = {
@@ -490,7 +490,7 @@ test("切り替え: 要約のターン → 要約を保存 → SDK セッショ�
   assert.equal(env.gateway.events.length, 1);
 });
 
-test("切り替え: 要約のターンには context を渡さない（session_report・session_open は使えない）", async (t) => {
+test("切り替え: 要約のターンには context を渡さない（session_report・session_open は使えない）。WebFetch に許す URL も無い", async (t) => {
   const env = setup(t, [ok(SUMMARY)]);
   env.chatAt(at(ROTATE_AT, -HOUR_MS));
 
@@ -499,6 +499,7 @@ test("切り替え: 要約のターンには context を渡さない（session_r
   assert.equal(env.runner.inputs.length, 1);
   assert.ok("context" in env.runner.inputs[0]!);
   assert.equal(env.runner.inputs[0]?.context, undefined);
+  assert.deepEqual(env.runner.inputs[0]?.allowedUrls, []);
 });
 
 test("切り替えた時刻は要約のターンの usage を記録した後に取り直す（ターン中に時刻が進んでも、要約のターン自身の記録を次の判定に数えない）", async (t) => {
@@ -602,7 +603,7 @@ test("切り替え: 発言のターンの途中なら、同じキュー（key �
   userTurn.resolve();
   await Promise.all([replying, rotating]);
 
-  assert.deepEqual(env.runner.inputs[1], { prompt: ROTATE_PROMPT, sessionId: "session-2", context: undefined });
+  assert.deepEqual(env.runner.inputs[1], { prompt: ROTATE_PROMPT, sessionId: "session-2", context: undefined, allowedUrls: [] });
   assert.deepEqual(env.queue.keys, ["inbox-1", "inbox-1"]);
   assert.deepEqual(
     env.gateway.events.map((event) => `${event.method}:${event.text}`),
@@ -699,6 +700,7 @@ test("会話の記録が無い（No conversation found）なら要約を作ら�
     prompt: `${rotatedSeed("前回の要約")}\n\n${buildTurnPrompt(first.content, first.createdAt, "Asia/Tokyo", "inbox")}`,
     sessionId: undefined,
     context: { guildId: "guild-1", channelId: "inbox-1" },
+    allowedUrls: [],
   });
   assert.equal(env.state().seed, undefined);
 
@@ -779,7 +781,7 @@ test("サイズ: 今日切り替え済みでも、前回の切り替えより後
   await env.rotate();
 
   assert.deepEqual(env.runner.inputs, [
-    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined },
+    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined, allowedUrls: [] },
   ]);
   assert.deepEqual(env.state(), {
     rotatedDate: "2026-10-03",

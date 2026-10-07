@@ -231,7 +231,7 @@ test("受け付けた発言で runner を呼び、usage 記録・session 保存�
   await handle(message());
 
   assert.deepEqual(runner.inputs, [
-    { prompt: buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo"), sessionId: undefined, context: context() },
+    { prompt: buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo"), sessionId: undefined, context: context(), allowedUrls: [] },
   ]);
   assert.match(runner.inputs[0]!.prompt, /^\[2026-10-02\(金\) 08:59 JST #inbox\]\n/);
   assert.deepEqual(gateway.sent, [{ channelId: "inbox-1", text: "登録しました", replyToId: "message-1" }]);
@@ -267,6 +267,18 @@ test("2 ターン目は保存した sessionId で resume する", async (t) => {
   assert.equal(runner.inputs[0]!.sessionId, undefined);
   assert.equal(runner.inputs[1]!.sessionId, "session-1");
   assert.equal(sessions.get("inbox-1"), "session-1");
+});
+
+test("発言に貼った URL を、そのターンで WebFetch に許す URL（allowedUrls）として渡す。次の発言には引き継がない", async (t) => {
+  const { runner, handle } = setup(t, [okResult("session-1", "読みました"), okResult("session-1", "はい")]);
+
+  await handle(message({ id: "message-1", content: "これ読んで <https://example.com/a>、あと https://example.com/b。" }));
+  await handle(message({ id: "message-2", content: "要点だけ教えて" }));
+
+  assert.deepEqual(
+    runner.inputs.map((input) => input.allowedUrls),
+    [["https://example.com/a", "https://example.com/b"], []],
+  );
 });
 
 test("ok:false（result が届かなかった失敗）なら usage に ok=0 で記録して失敗の返信をし、session は保存しない", async (t) => {
@@ -591,8 +603,8 @@ test("resume 失敗: SDK セッションを捨てて要約の seed を入れ、s
   await handle(message({ channelId: "topic-1", content: "予算は" }));
 
   assert.deepEqual(runner.inputs, [
-    { prompt, sessionId: "session-old", context: context("topic-1") },
-    { prompt: `${seed}\n\n${prompt}`, sessionId: undefined, context: context("topic-1") },
+    { prompt, sessionId: "session-old", context: context("topic-1"), allowedUrls: [] },
+    { prompt: `${seed}\n\n${prompt}`, sessionId: undefined, context: context("topic-1"), allowedUrls: [] },
   ]);
   assert.equal(RESUME_SEED_HEADER, "前の会話の記録が切れたため、要約から再開します。");
   assert.equal(sessions.get("topic-1"), "session-new");
@@ -607,6 +619,22 @@ test("resume 失敗: SDK セッションを捨てて要約の seed を入れ、s
   );
   assert.equal(logs.length, 1);
   assert.match(logs[0]!, /resume に失敗したため/);
+});
+
+test("resume 失敗のやり直しでも、WebFetch に許すのは発言の URL だけ（seed の要約に含まれる URL は許さない）", async (t) => {
+  const { db, runner, sessions, topicSessions, handle } = setup(t, [RESUME_FAILURE, okResult("session-new", "読みました")]);
+  topicSessions.create(TOPIC);
+  db.prepare("UPDATE sessions SET summary = '参考: https://summary.example/x' WHERE channel_id = 'topic-1'").run();
+  sessions.set("topic-1", "session-old");
+
+  await handle(message({ channelId: "topic-1", content: "これも見て https://example.com/c" }));
+
+  assert.equal(runner.inputs.length, 2);
+  assert.ok(runner.inputs[1]!.prompt.includes("https://summary.example/x"));
+  assert.deepEqual(
+    runner.inputs.map((input) => input.allowedUrls),
+    [["https://example.com/c"], ["https://example.com/c"]],
+  );
 });
 
 test("resume 失敗: 要約が無ければ seed は題名だけ。やり直しも失敗したらそれ以上やり直さず、seed は残す", async (t) => {
@@ -644,8 +672,8 @@ test("resume 失敗: #inbox はそのサーバーの #inbox の要約がまだ�
 
   const prompt = buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo");
   assert.deepEqual(runner.inputs, [
-    { prompt, sessionId: "session-old", context: context() },
-    { prompt, sessionId: undefined, context: context() },
+    { prompt, sessionId: "session-old", context: context(), allowedUrls: [] },
+    { prompt, sessionId: undefined, context: context(), allowedUrls: [] },
   ]);
   assert.equal(seeds.get("inbox-1"), undefined);
   assert.equal(sessions.get("inbox-1"), "session-new");
@@ -666,8 +694,8 @@ test("resume 失敗: #inbox はそのサーバーの直近の #inbox の要約�
   const prompt = buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo");
   assert.equal(seed, "これまでの #inbox の要約:\n- 金曜までに見積もりを送る");
   assert.deepEqual(runner.inputs, [
-    { prompt, sessionId: "session-old", context: context() },
-    { prompt: `${seed}\n\n${prompt}`, sessionId: undefined, context: context() },
+    { prompt, sessionId: "session-old", context: context(), allowedUrls: [] },
+    { prompt: `${seed}\n\n${prompt}`, sessionId: undefined, context: context(), allowedUrls: [] },
   ]);
   assert.equal(seeds.get("inbox-1"), undefined);
   assert.equal(sessions.get("inbox-1"), "session-new");

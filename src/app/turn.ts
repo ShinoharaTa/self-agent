@@ -44,6 +44,8 @@ export type ChannelTurn = {
   guildId: string;
   channelId: string;
   prompt: string;
+  /** このターンで WebFetch に取得を許す URL。オーナーの発言のターンだけその発言の URL、それ以外（/close など）は空 */
+  allowedUrls: readonly string[];
 };
 
 /**
@@ -96,7 +98,8 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
   const context = { guildId: turn.guildId, channelId: turn.channelId };
 
   const runOnce = async (prompt: string, sessionId: string | undefined): Promise<RunResult> => {
-    const result = await runner.run({ prompt, sessionId, context });
+    // seed を付けてやり直すときも、取得を許すのはオーナーの発言の URL だけ
+    const result = await runner.run({ prompt, sessionId, context, allowedUrls: turn.allowedUrls });
     recordTurnUsage(deps, key, result);
     if (result.ok) {
       sessions.set(key, result.sessionId);

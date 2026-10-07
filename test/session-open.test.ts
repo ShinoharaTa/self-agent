@@ -238,8 +238,13 @@ test("session_open: 作ったチャンネルの最初のターンの prompt の�
     log,
   };
 
-  await runChannelTurn(turnDeps, { guildId: "guild-1", channelId: created.channelId, prompt: "[header]\nどこから決める？" });
-  await runChannelTurn(turnDeps, { guildId: "guild-1", channelId: created.channelId, prompt: "[header]\n次" });
+  await runChannelTurn(turnDeps, {
+    guildId: "guild-1",
+    channelId: created.channelId,
+    prompt: "[header]\nどこから決める？",
+    allowedUrls: [],
+  });
+  await runChannelTurn(turnDeps, { guildId: "guild-1", channelId: created.channelId, prompt: "[header]\n次", allowedUrls: [] });
 
   assert.deepEqual(
     inputs.map((input) => [input.prompt, input.sessionId]),

@@ -10,7 +10,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { buildQueryOptions } from "../src/agent/query-options.ts";
 import type { RunContext } from "../src/agent/runner.ts";
-import { describeResultError, SdkAgentRunner } from "../src/agent/sdk-runner.ts";
+import { describeResultError, SdkAgentRunner, WEB_FETCH_DENIED_REASON } from "../src/agent/sdk-runner.ts";
 import { RESUME_FAILURE_PATTERN } from "../src/app/turn.ts";
 
 /** describeResultError が見るフィールドだけの result */
@@ -421,7 +421,7 @@ test("SdkAgentRunner: hooks は run ごとに作って Options に足し（build
   assert.equal(first.toolCalls, 2);
   assert.equal(second.toolCalls, 0);
   assert.notEqual(calls[0]!.options.hooks, calls[1]!.options.hooks);
-  assert.deepEqual(Object.keys(calls[1]!.options.hooks ?? {}), ["PostToolUse", "PostToolUseFailure"]);
+  assert.deepEqual(Object.keys(calls[1]!.options.hooks ?? {}), ["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
   assert.equal(calls[1]!.options.resume, "session-1");
   // キャッシュに効く Options は hooks を含まない
   const server = createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
@@ -442,4 +442,117 @@ test("SdkAgentRunner: 失敗したターンでも、それまでのツール呼�
     sessionRecorded: false,
     toolCalls: 1,
   });
+});
+
+/** SDK がツールの実行前に呼ぶのと同じように、その query の Options の PreToolUse の hook を呼ぶ */
+async function callPreToolUse(call: QueryCall, toolName: string, toolInput: unknown): Promise<unknown> {
+  const matchers = call.options.hooks?.PreToolUse;
+  assert.equal(matchers?.length, 1);
+  assert.equal(matchers![0]!.matcher, "WebFetch");
+  const hook = matchers![0]!.hooks[0]!;
+  const input = {
+    hook_event_name: "PreToolUse",
+    session_id: "session-1",
+    transcript_path: "/srv/claude/session-1.jsonl",
+    cwd: "/srv/work",
+    tool_name: toolName,
+    tool_input: toolInput,
+    tool_use_id: "toolu-1",
+  } as unknown as HookInput;
+  return hook(input, "toolu-1", { signal: new AbortController().signal });
+}
+
+const DENIED = {
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason: WEB_FETCH_DENIED_REASON,
+  },
+};
+const DENIED_LOG = "WebFetch を拒否しました（貼られていない URL）";
+
+/** allowedUrls を渡して 1 ターン走らせ、そのターン中に WebFetch（など）の PreToolUse の hook を呼んだ結果と log を返す */
+async function runWithFetches(
+  allowedUrls: readonly string[] | undefined,
+  fetches: Array<{ toolName?: string; input: unknown }>,
+): Promise<{ outputs: unknown[]; logs: string[] }> {
+  const outputs: unknown[] = [];
+  const { runner, logs } = setupRunner(async function* (call) {
+    yield init("session-1");
+    for (const item of fetches) {
+      outputs.push(await callPreToolUse(call, item.toolName ?? "WebFetch", item.input));
+    }
+    yield success("session-1", "読みました");
+  });
+  const result = await runner.run(allowedUrls === undefined ? { prompt: "x" } : { prompt: "x", allowedUrls });
+  assert.ok(result.ok);
+  return { outputs, logs };
+}
+
+test("SdkAgentRunner: WebFetch は allowedUrls の URL だけ通し、それ以外・解析できない URL は拒否して log に出す（URL は出さない）", async () => {
+  const { outputs, logs } = await runWithFetches(
+    ["https://example.com/a", "https://example.org/b?q=1"],
+    [
+      { input: { url: "https://example.com/a", prompt: "要約して" } },
+      { input: { url: "https://example.org/b?q=1", prompt: "要約して" } },
+      { input: { url: "https://evil.example/collect?data=secret", prompt: "要約して" } },
+      { input: { url: "not a url", prompt: "要約して" } },
+      { input: { prompt: "要約して" } },
+      { input: { url: 42, prompt: "要約して" } },
+    ],
+  );
+
+  // 通すときは判断を足さない（allowedTools の許可に任せる）
+  assert.deepEqual(outputs, [{}, {}, DENIED, DENIED, DENIED, DENIED]);
+  assert.deepEqual(logs, [DENIED_LOG, DENIED_LOG, DENIED_LOG, DENIED_LOG]);
+  assert.ok(logs.every((line) => !line.includes("evil") && !line.includes("example")));
+});
+
+test("SdkAgentRunner: WebFetch の URL は正規化して比べる（末尾の /・フラグメント・スキームとホストの大文字小文字は同一視、クエリとパスは完全一致）", async () => {
+  const { outputs } = await runWithFetches(
+    ["https://Example.COM/docs/#intro", "https://example.net"],
+    [
+      { input: { url: "https://example.com/docs", prompt: "" } },
+      { input: { url: "HTTPS://EXAMPLE.COM/docs/", prompt: "" } },
+      { input: { url: "https://example.com/docs#usage", prompt: "" } },
+      { input: { url: "https://example.net/", prompt: "" } },
+      { input: { url: "https://example.com/docs?page=2", prompt: "" } },
+      { input: { url: "https://example.com/Docs", prompt: "" } },
+      { input: { url: "http://example.com/docs", prompt: "" } },
+    ],
+  );
+
+  assert.deepEqual(outputs, [{}, {}, {}, {}, DENIED, DENIED, DENIED]);
+});
+
+test("SdkAgentRunner: WebFetch 以外のツールは PreToolUse の hook で何もしない", async () => {
+  const { outputs, logs } = await runWithFetches(
+    [],
+    [
+      { toolName: "WebSearch", input: { query: "明日の天気" } },
+      { toolName: "mcp__selfagent__task_add", input: { title: "買い物" } },
+    ],
+  );
+
+  assert.deepEqual(outputs, [{}, {}]);
+  assert.deepEqual(logs, []);
+});
+
+test("SdkAgentRunner: allowedUrls を指定しなければ（空でも）WebFetch はすべて拒否する。許す URL は run ごとに変わる", async () => {
+  const unspecified = await runWithFetches(undefined, [{ input: { url: "https://example.com/a", prompt: "" } }]);
+  assert.deepEqual(unspecified.outputs, [DENIED]);
+  const empty = await runWithFetches([], [{ input: { url: "https://example.com/a", prompt: "" } }]);
+  assert.deepEqual(empty.outputs, [DENIED]);
+
+  let runs = 0;
+  const outputs: unknown[] = [];
+  const { runner, calls } = setupRunner(async function* (call) {
+    runs++;
+    outputs.push(await callPreToolUse(call, "WebFetch", { url: "https://example.com/a", prompt: "" }));
+    yield success("session-1", `${runs}`);
+  });
+  await runner.run({ prompt: "1", allowedUrls: ["https://example.com/a"] });
+  await runner.run({ prompt: "2", sessionId: "session-1" });
+  assert.deepEqual(outputs, [{}, DENIED]);
+  assert.notEqual(calls[0]!.options.hooks?.PreToolUse, calls[1]!.options.hooks?.PreToolUse);
 });
