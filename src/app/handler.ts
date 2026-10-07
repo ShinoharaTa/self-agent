@@ -174,8 +174,11 @@ export function createHandler(deps: HandlerDeps): Handler {
   const turnDeps: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
   /** 実行中のセッションのチャンネルのターンの番号と中断（key は channelId。ターンが終わったら消す） */
   const running = new Map<string, { turnSeq: number; controller: AbortController }>();
-  /** 最後に振ったターンの番号（セッションのチャンネルのターンごとに 1 ずつ増やす。[中断] のボタンに入れる） */
-  let lastTurnSeq = 0;
+  /**
+   * 最後に振ったターンの番号（セッションのチャンネルのターンごとに 1 ずつ増やす。[中断] のボタンに入れる）。
+   * 開始値は handler を作った時刻のミリ秒にし、再起動しても前の番号（残ったボタン）と重ならないようにする
+   */
+  let lastTurnSeq = now().getTime();
 
   /** セッションが待ち・完了なら進行中に戻して進行中カテゴリへ移す（知らせは返信の先頭に付ける）。戻したら true */
   const revive = (session: Pick<TopicSession, "channelId" | "guildId" | "state">): boolean => {
