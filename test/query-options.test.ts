@@ -23,12 +23,19 @@ test("システムプロンプトに改訂の要点（#inbox・<#チャンネル
   }
 });
 
-test("組み込みツールと設定ファイルを使わず、自前ツールだけを許可する", () => {
+test("システムプロンプトに WebSearch と WebFetch の使い方を含める", () => {
+  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  for (const word of ["WebSearch", "WebFetch"]) {
+    assert.ok(String(systemPrompt).includes(word), word);
+  }
+});
+
+test("組み込みツールは WebSearch と WebFetch だけ。設定ファイルは使わず、自前ツールとその 2 つだけを許可する", () => {
   const options = buildQueryOptions(cfg, mcpServer);
-  assert.deepEqual(options.tools, []);
+  assert.deepEqual(options.tools, ["WebSearch", "WebFetch"]);
   assert.equal(options.permissionMode, "dontAsk");
   assert.deepEqual(options.settingSources, []);
-  assert.deepEqual(options.allowedTools, ["mcp__selfagent__*"]);
+  assert.deepEqual(options.allowedTools, ["mcp__selfagent__*", "WebSearch", "WebFetch"]);
   assert.equal(options.mcpServers?.selfagent, mcpServer);
   assert.equal(options.strictMcpConfig, true);
   assert.equal(options.model, "claude-opus-5");

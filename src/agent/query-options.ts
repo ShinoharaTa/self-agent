@@ -49,10 +49,11 @@ export function buildQueryOptions(
     systemPrompt: SYSTEM_PROMPT,
     settingSources: [],
     cwd: cfg.workDir,
-    // 組み込みツールは無効。自前の MCP ツールだけを許可し、それ以外は dontAsk で拒否する
-    tools: [],
+    // 組み込みツールは WebSearch と WebFetch だけ（WebFetch の URL は sdk-runner の PreToolUse の hook で絞る）。
+    // 自前の MCP ツールとこの 2 つだけを許可し、それ以外は dontAsk で拒否する。キャッシュのため順序も固定
+    tools: ["WebSearch", "WebFetch"],
     permissionMode: "dontAsk",
-    allowedTools: [`mcp__${MCP_SERVER_NAME}__*`],
+    allowedTools: [`mcp__${MCP_SERVER_NAME}__*`, "WebSearch", "WebFetch"],
     mcpServers: { [MCP_SERVER_NAME]: mcpServer },
     // mcpServers 以外の MCP 設定（.mcp.json・ユーザー設定・プラグイン）は読まない
     strictMcpConfig: true,

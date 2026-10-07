@@ -259,8 +259,9 @@ test("/close: 公開で defer → 静的な prompt で resume → 要約とタ�
 
   const calls = await env.runClose();
 
+  // オーナーの発言ではないので、WebFetch に許す URL は無い
   assert.deepEqual(env.runner.inputs, [
-    { prompt: CLOSE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "topic-1" } },
+    { prompt: CLOSE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "topic-1" }, allowedUrls: [] },
   ]);
   assert.match(CLOSE_PROMPT, /session_report を 1 回だけ呼んでください。$/);
   assert.ok(CLOSE_PROMPT.includes(`${CLOSE_SUMMARY_MAX_LENGTH} 字以内`));
@@ -567,7 +568,7 @@ test("[閉じる]（close:start）: 元メッセージは変えずに保留 → 
   const calls = await env.press(button("start"));
 
   assert.deepEqual(env.runner.inputs, [
-    { prompt: CLOSE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "topic-1" } },
+    { prompt: CLOSE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "topic-1" }, allowedUrls: [] },
   ]);
   assert.deepEqual(calls, [
     { method: "deferUpdate" },

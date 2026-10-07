@@ -2,6 +2,7 @@
 import {
   query,
   type HookCallback,
+  type HookCallbackMatcher,
   type McpSdkServerConfigWithInstance,
   type Options,
   type SDKMessage,
@@ -74,6 +75,56 @@ export function createToolCallRecorder(log: (message: string) => void): ToolCall
   };
 }
 
+/** WebFetch を拒否したときにモデルへ返す理由 */
+export const WEB_FETCH_DENIED_REASON = "オーナーが発言に貼った URL だけ取得できます";
+
+/**
+ * WebFetch の URL の比較用の形。解析できなければ undefined。フラグメントを除き、パスの末尾の / を 1 つ除く。
+ * スキームとホストは URL の解析で小文字になる。クエリはそのまま（完全一致で比べる）
+ */
+export function normalizeUrl(raw: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  url.hash = "";
+  // http(s) のルートは空にできず / のまま残るので、末尾の / の有無は同じ形になる
+  if (url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
+  return url.href;
+}
+
+/**
+ * WebFetch を、allowedUrls（このターンにオーナーが貼った URL）に含まれる URL だけに絞る PreToolUse の hook。
+ * 含まれない・解析できない URL は拒否して log に出す（URL は出さない）。WebFetch 以外のツールは何もしない
+ */
+export function createWebFetchGuard(
+  allowedUrls: readonly string[],
+  log: (message: string) => void,
+): HookCallbackMatcher {
+  const allowed = new Set(allowedUrls.map(normalizeUrl).filter((url) => url !== undefined));
+  const guard: HookCallback = async (input) => {
+    if (input.hook_event_name !== "PreToolUse" || input.tool_name !== "WebFetch") return {};
+    const toolInput = input.tool_input;
+    const url =
+      typeof toolInput === "object" && toolInput !== null && "url" in toolInput && typeof toolInput.url === "string"
+        ? normalizeUrl(toolInput.url)
+        : undefined;
+    // 許可する URL は判断を足さずに通す（allowedTools の許可に任せる）
+    if (url !== undefined && allowed.has(url)) return {};
+    log("WebFetch を拒否しました（貼られていない URL）");
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: WEB_FETCH_DENIED_REASON,
+      },
+    };
+  };
+  return { matcher: "WebFetch", hooks: [guard] };
+}
+
 export class SdkAgentRunner implements AgentRunner {
   private readonly cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">;
   private readonly createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance;
@@ -109,8 +160,12 @@ export class SdkAgentRunner implements AgentRunner {
 
   private async runQuery(input: RunInput, abortController: AbortController): Promise<RunResult> {
     const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context));
-    // ツール呼び出しの回数はターンごとに数えるので、hooks も run ごとに作って足す
+    // ツール呼び出しの回数はターンごとに数え、WebFetch に許す URL もターンごとに違うので、hooks は run ごとに作って足す
     const tools = createToolCallRecorder(this.log);
+    const hooks: NonNullable<Options["hooks"]> = {
+      PreToolUse: [createWebFetchGuard(input.allowedUrls ?? [], this.log)],
+      ...tools.hooks,
+    };
     // 子プロセスの stderr は末尾だけ保持し、例外で終わったときに errorMessage に添える（中身を log に直接は出さない）
     let stderr = "";
     const onStderr = (data: string): void => {
@@ -118,8 +173,8 @@ export class SdkAgentRunner implements AgentRunner {
     };
     const options: Options =
       input.sessionId === undefined
-        ? { ...base, abortController, hooks: tools.hooks, stderr: onStderr }
-        : { ...base, abortController, hooks: tools.hooks, stderr: onStderr, resume: input.sessionId };
+        ? { ...base, abortController, hooks, stderr: onStderr }
+        : { ...base, abortController, hooks, stderr: onStderr, resume: input.sessionId };
     // メインループの各ステップの usage を合算する。並列ツール呼び出しは同じ message.id を共有するので重複を除く
     const seenMessageIds = new Set<string>();
     const usage: TurnUsage = { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };

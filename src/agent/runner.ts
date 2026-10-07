@@ -8,6 +8,8 @@ export type RunInput = {
   /** 指定すればそのセッションを resume する */
   sessionId?: string;
   context?: RunContext;
+  /** このターンで WebFetch に取得を許す URL（オーナーがこのターンの発言に貼ったもの）。未指定・空なら WebFetch はすべて拒否する */
+  allowedUrls?: readonly string[];
 };
 
 /** メインループの各ステップの入力側トークン（resume しても累計にならない、このターンの分） */

@@ -137,7 +137,8 @@ async function closeTurn(deps: CloseDeps, guildId: string, channelId: string): P
   if (session === undefined || closable(session, guildId) !== "ok") return { result: "closed" };
   // 前の /close や通常のターンで残った下書きは使わない
   topicSessions.clearCloseDraft(channelId);
-  const result = await runChannelTurn(turn, { guildId, channelId, prompt: CLOSE_PROMPT });
+  // オーナーの発言ではないので、WebFetch で取得できる URL は無い
+  const result = await runChannelTurn(turn, { guildId, channelId, prompt: CLOSE_PROMPT, allowedUrls: [] });
   if (!result.ok) return { result: "failed", errorMessage: result.errorMessage };
   const draft = topicSessions.getCloseDraft(channelId) ?? { summary: fallbackSummary(result.text), tasks: [] };
   if (draft.tasks.length > 0) return { result: "confirm", draft };
