@@ -167,21 +167,20 @@ function sendStatus(req: IncomingMessage, res: ServerResponse, status: number, h
   sendBody(req, res, status, "text/plain; charset=utf-8", `${STATUS_TEXT[status] ?? status}\n`, headers);
 }
 
+type Target = { kind: "file" | "directory"; path: string };
+
 /**
- * site の中の segments が指すファイルの実パス。ディレクトリなら その中の index.html。
- * 無い・通常のファイルでない・realpath が `<realpath(projectsDir)>/<slug>/site` の外（symlink・slug や site 自体の symlink を含む）なら undefined
+ * site の中の segments が指すファイルかディレクトリの実パス。
+ * 無い・通常のファイルでもディレクトリでもない・realpath が `<realpath(projectsDir)>/<slug>/site` の外（symlink・slug や site 自体の symlink を含む）なら undefined
  */
-async function resolveFile(projectsDir: string, slug: string, segments: string[]): Promise<string | undefined> {
+async function resolveTarget(projectsDir: string, slug: string, segments: string[]): Promise<Target | undefined> {
   try {
     const site = join(await realpath(projectsDir), slug, "site");
-    const inside = (path: string): boolean => path.startsWith(site + sep) || path === site;
-    let real = await realpath(join(site, ...segments));
-    if (!inside(real)) return undefined;
-    if ((await stat(real)).isDirectory()) {
-      real = await realpath(join(real, "index.html"));
-      if (!inside(real)) return undefined;
-    }
-    return (await stat(real)).isFile() ? real : undefined;
+    const real = await realpath(join(site, ...segments));
+    if (!real.startsWith(site + sep) && real !== site) return undefined;
+    const info = await stat(real);
+    if (info.isDirectory()) return { kind: "directory", path: real };
+    return info.isFile() ? { kind: "file", path: real } : undefined;
   } catch {
     return undefined;
   }
@@ -257,22 +256,38 @@ export function createStaticServer(options: StaticServerOptions): StaticServer {
       sendStatus(req, res, 301, { Location: `${PROJECT_PREFIX}${project.slug}/${query}` });
       return;
     }
-    const path = decode(afterPrefix.slice(slash + 1));
-    if (path === undefined || path.includes("\0") || path.includes("..")) {
+    const rawRest = afterPrefix.slice(slash + 1);
+    const path = decode(rawRest);
+    if (path === undefined || path.includes("\0")) {
       sendStatus(req, res, 404);
       return;
     }
+    // デコード後に / で分けた要素が . で始まる（`.`・`..`・ドットファイル）なら 404。`a..b.js` のような名前は通す
     const segments = path.split("/");
     if (segments.some((segment) => segment.startsWith("."))) {
       sendStatus(req, res, 404);
       return;
     }
-    const file = await resolveFile(projectsDir, project.slug, segments);
-    if (file === undefined) {
+    const target = await resolveTarget(projectsDir, project.slug, segments);
+    if (target === undefined) {
       sendStatus(req, res, 404);
       return;
     }
-    await sendFile(req, res, file);
+    if (target.kind === "file") {
+      await sendFile(req, res, target.path);
+      return;
+    }
+    // 末尾 / なしのディレクトリは <そのパス>/ へ（ページの相対パスがそのディレクトリを基準にするように）
+    if (path !== "" && !path.endsWith("/")) {
+      sendStatus(req, res, 301, { Location: `${PROJECT_PREFIX}${project.slug}/${rawRest}/${query}` });
+      return;
+    }
+    const index = await resolveTarget(projectsDir, project.slug, [...segments, "index.html"]);
+    if (index?.kind !== "file") {
+      sendStatus(req, res, 404);
+      return;
+    }
+    await sendFile(req, res, index.path);
   };
 
   const server = createServer((req, res) => {

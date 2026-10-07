@@ -135,8 +135,10 @@ test("Content-Type は拡張子から決める（大文字も同じ）。知ら�
     assert.equal(res.status, 200, ext);
     assert.equal(res.headers["content-type"], type, ext);
   }
-  const noExt = await fetchRaw(server, "/p/kakeibo/types");
-  assert.equal(noExt.status, 404);
+  write(join(site, "types", "README"), "x");
+  const noExt = await fetchRaw(server, "/p/kakeibo/types/README");
+  assert.equal(noExt.status, 200);
+  assert.equal(noExt.headers["content-type"], "application/octet-stream");
 });
 
 test("ディレクトリなら index.html を返す。パスはデコードしてから探す。空のファイルも返す", async (t) => {
@@ -151,9 +153,6 @@ test("ディレクトリなら index.html を返す。パスはデコードし�
   const sub = await fetchRaw(server, "/p/kakeibo/sub/");
   assert.equal(sub.status, 200);
   assert.equal(sub.body, "<p>sub</p>");
-  const subNoSlash = await fetchRaw(server, "/p/kakeibo/sub");
-  assert.equal(subNoSlash.status, 200);
-  assert.equal(subNoSlash.body, "<p>sub</p>");
 
   const encoded = await fetchRaw(server, "/p/kakeibo/my%20page/");
   assert.equal(encoded.status, 200);
@@ -172,6 +171,36 @@ test("ディレクトリなら index.html を返す。パスはデコードし�
   const alias = await fetchRaw(server, "/p/kakeibo/alias.txt");
   assert.equal(alias.status, 200);
   assert.equal(alias.body, "hello");
+});
+
+test("末尾 / なしのディレクトリは <そのパス>/ へ 301（クエリ・エンコードは保つ）。index.html の無いディレクトリ・site の外のディレクトリは 404", async (t) => {
+  const { server, site } = await setup(t);
+  write(join(site, "my page", "index.html"), "<p>space</p>");
+  write(join(site, "a", "b", "index.html"), "<p>b</p>");
+  mkdirSync(join(site, "noindex"));
+
+  for (const [path, location] of [
+    ["/p/kakeibo/sub", "/p/kakeibo/sub/"],
+    ["/p/kakeibo/sub?x=1&y=2", "/p/kakeibo/sub/?x=1&y=2"],
+    ["/p/kakeibo/my%20page", "/p/kakeibo/my%20page/"],
+    ["/p/kakeibo/a/b", "/p/kakeibo/a/b/"],
+    ["/p/kakeibo/noindex", "/p/kakeibo/noindex/"],
+  ] as const) {
+    const res = await fetchRaw(server, path);
+    assert.equal(res.status, 301, path);
+    assert.equal(res.headers.location, location, path);
+  }
+  const head = await fetchRaw(server, "/p/kakeibo/sub", { method: "HEAD" });
+  assert.equal(head.status, 301);
+  assert.equal(head.headers.location, "/p/kakeibo/sub/");
+
+  const nested = await fetchRaw(server, "/p/kakeibo/a/b/");
+  assert.equal(nested.status, 200);
+  assert.equal(nested.body, "<p>b</p>");
+  for (const path of ["/p/kakeibo/noindex/", "/p/kakeibo/outside", "/p/kakeibo/outside/"]) {
+    const res = await fetchRaw(server, path);
+    assert.equal(res.status, 404, path);
+  }
 });
 
 test("/p/<slug> は /p/<slug>/ へ 301（クエリは保つ）", async (t) => {
@@ -210,7 +239,10 @@ test("..・%2e%2e・ドットファイル・NUL・デコードできないパス
     "/p/kakeibo/%2E%2E/secret.txt",
     "/p/kakeibo/%2e%2e%2fsecret.txt",
     "/p/kakeibo/sub/../../secret.txt",
-    "/p/kakeibo/a..b",
+    "/p/kakeibo/sub/..",
+    "/p/kakeibo/sub/%2e%2e/hello.txt",
+    "/p/kakeibo/%2e%2e",
+    "/p/kakeibo/..hidden.js",
     "/p/kakeibo/.env",
     "/p/kakeibo/%2eenv",
     "/p/kakeibo/.hidden/a.txt",
@@ -237,6 +269,21 @@ test("site 自体が symlink なら 404（realpath が <projectsDir>/<slug>/site
     const res = await fetchRaw(server, path);
     assert.equal(res.status, 404, path);
   }
+});
+
+test("要素が .. でなければ .. を含む名前は通す（a..b.js・x..y/）", async (t) => {
+  const { server, site } = await setup(t);
+  write(join(site, "a..b.js"), "ab");
+  write(join(site, "x..y", "index.html"), "<p>xy</p>");
+
+  const file = await fetchRaw(server, "/p/kakeibo/a..b.js");
+  assert.equal(file.status, 200);
+  assert.equal(file.body, "ab");
+  assert.equal(file.headers["content-type"], "text/javascript; charset=utf-8");
+
+  const dir = await fetchRaw(server, "/p/kakeibo/x..y/");
+  assert.equal(dir.status, 200);
+  assert.equal(dir.body, "<p>xy</p>");
 });
 
 test("削除済みの slug・無い slug・/p/ 以外のパスは 404（ファイルがあっても）", async (t) => {
