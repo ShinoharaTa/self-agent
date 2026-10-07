@@ -114,6 +114,47 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE guild_settings ADD COLUMN inbox_rotated_at TEXT;
   `,
+  // v12: ナレッジベース（url_key は呼び出し側が正規化した URL。URL 無しのメモは NULL で、UNIQUE は NULL を重複扱いしない）と、
+  // その全文検索（FTS5 trigram の外部コンテンツ。kb_entries の変更はトリガーで反映する）。オーナーについての記憶（deleted_at で論理削除）
+  `
+  CREATE TABLE kb_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT,
+    url_key TEXT UNIQUE,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    channel_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE VIRTUAL TABLE kb_fts USING fts5(
+    title, summary, body, tags, url,
+    content='kb_entries', content_rowid='id', tokenize='trigram'
+  );
+  CREATE TRIGGER kb_entries_ai AFTER INSERT ON kb_entries BEGIN
+    INSERT INTO kb_fts (rowid, title, summary, body, tags, url)
+      VALUES (new.id, new.title, new.summary, new.body, new.tags, new.url);
+  END;
+  CREATE TRIGGER kb_entries_ad AFTER DELETE ON kb_entries BEGIN
+    INSERT INTO kb_fts (kb_fts, rowid, title, summary, body, tags, url)
+      VALUES ('delete', old.id, old.title, old.summary, old.body, old.tags, old.url);
+  END;
+  CREATE TRIGGER kb_entries_au AFTER UPDATE ON kb_entries BEGIN
+    INSERT INTO kb_fts (kb_fts, rowid, title, summary, body, tags, url)
+      VALUES ('delete', old.id, old.title, old.summary, old.body, old.tags, old.url);
+    INSERT INTO kb_fts (rowid, title, summary, body, tags, url)
+      VALUES (new.id, new.title, new.summary, new.body, new.tags, new.url);
+  END;
+  CREATE TABLE memories (
+    id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL,
+    channel_id TEXT,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
