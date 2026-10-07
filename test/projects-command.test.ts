@@ -376,5 +376,5 @@ test("proj の不明な操作（id 無し・数でない id・知らない actio
 });
 
 test("/help に /projects の説明がある", () => {
-  assert.match(HELP_TEXT, /^`\/projects` 作ったページの一覧と削除$/m);
+  assert.match(HELP_TEXT, /^`\/projects` 作ったページの一覧を表示します（選んで削除できます）$/m);
 });
