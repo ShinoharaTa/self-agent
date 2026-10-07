@@ -16,6 +16,7 @@ import { buildQueryOptions } from "../src/agent/query-options.ts";
 import type { ProgressStep, RunContext } from "../src/agent/runner.ts";
 import {
   describeResultError,
+  FILE_GUARD_FAILED_REASON,
   INBOX_MAX_TURNS,
   progressLabel,
   SdkAgentRunner,
@@ -704,6 +705,66 @@ test("SdkAgentRunner: ファイル操作の hook は拒否したら理由をモ�
   assert.deepEqual(projects.touched, [7, 7]);
   assert.deepEqual(logs, ["ファイル操作を拒否しました（Write）", "ファイル操作を拒否しました（Grep）"]);
   assert.ok(logs.every((line) => !line.includes("secret-path") && !line.includes(workDir)));
+});
+
+test("SdkAgentRunner: ファイル操作の hook は判定が例外で終わったら（ストアの読み書きの失敗）拒否する。log にはツール名だけを出し、パス・例外の中身は出さない", async (t) => {
+  const workDir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  t.after(() => rmSync(workDir, { recursive: true, force: true }));
+  const projectsDir = join(workDir, "projects");
+  mkdirSync(join(projectsDir, "kakeibo", "site"), { recursive: true });
+  const file = join(projectsDir, "kakeibo", "site", "index.html");
+  const topic = { guildId: "guild-1", channelId: "topic-1", kind: "session" } as const;
+  const deny = {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: FILE_GUARD_FAILED_REASON,
+    },
+  };
+
+  /** getByChannel か touch が投げるストアで 1 ターン走らせ、Read と Write の hook の結果と log を返す */
+  const runWith = async (projects: FakeProjects) => {
+    const outputs: unknown[] = [];
+    const { runner, logs } = setupRunner(
+      async function* (call) {
+        const pre = (toolName: string, input: unknown) =>
+          callPreToolUse(call, toolName, input, "Read|Write|Edit|Glob|Grep", workDir);
+        outputs.push(await pre("Read", { file_path: file }));
+        outputs.push(await pre("Write", { file_path: file, content: "<p>" }));
+        yield success("session-1", "はい");
+      },
+      {},
+      { projects, projectsDir },
+    );
+    assert.ok((await runner.run({ prompt: "x", context: topic })).ok);
+    return { outputs, logs };
+  };
+
+  const brokenRead = await runWith({
+    ...fakeProjects(),
+    getByChannel: () => {
+      throw new Error(`database is locked: ${file}`);
+    },
+  });
+  assert.deepEqual(brokenRead.outputs, [deny, deny]);
+  assert.deepEqual(brokenRead.logs, [
+    "ファイル操作の判定に失敗したため拒否しました（Read）",
+    "ファイル操作の判定に失敗したため拒否しました（Write）",
+  ]);
+
+  // 書き込みを許した後の更新日時の記録が失敗しても、通さずに拒否する（Read は記録しないので通す）
+  const brokenTouch = await runWith({
+    ...fakeProjects({ "topic-1": { id: 7, slug: "kakeibo" } }),
+    touch: () => {
+      throw new Error(`database is locked: ${file}`);
+    },
+  });
+  assert.deepEqual(brokenTouch.outputs, [{}, deny]);
+  assert.deepEqual(brokenTouch.logs, ["ファイル操作の判定に失敗したため拒否しました（Write）"]);
+  assert.equal(FILE_GUARD_FAILED_REASON, "判定に失敗したため拒否しました");
+  for (const line of [...brokenRead.logs, ...brokenTouch.logs]) {
+    assert.ok(!line.includes(workDir) && !line.includes("database"), line);
+  }
 });
 
 test("progressLabel: Write・Edit・Read はこのチャンネルのプロジェクトの中ならそこからの相対パスを添え、外・プロジェクト無し・パス無しなら添えない", (t) => {

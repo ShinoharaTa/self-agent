@@ -3,6 +3,7 @@ import {
   query,
   type HookCallback,
   type HookCallbackMatcher,
+  type HookJSONOutput,
   type McpSdkServerConfigWithInstance,
   type Options,
   type SDKMessage,
@@ -174,9 +175,24 @@ export type FileGuardDeps = {
   projectsDir: string;
 };
 
+/** ファイル操作の判定が例外で終わったときにモデルへ返す理由 */
+export const FILE_GUARD_FAILED_REASON = "判定に失敗したため拒否しました";
+
+/** PreToolUse の hook の拒否 */
+function denyToolUse(reason: string): HookJSONOutput {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    },
+  };
+}
+
 /**
  * ファイル操作（Read・Write・Edit・Glob・Grep）を judgeFileAccess で絞る PreToolUse の hook。context はこの run のチャンネル。
- * 拒否したら理由をモデルに返し、log にはツール名だけを出す（パスは出さない）。Write・Edit を許したらプロジェクトの更新日時を今にする
+ * 拒否したら理由をモデルに返し、log にはツール名だけを出す（パスは出さない）。Write・Edit を許したらプロジェクトの更新日時を今にする。
+ * CLI は hook の例外を「判断なし」として通してしまうので、判定（ストアの読み書きを含む）が例外で終わったら拒否する（パス・例外の中身は log に出さない）
  */
 export function createFileGuard(
   context: RunContext | undefined,
@@ -186,28 +202,27 @@ export function createFileGuard(
   const { projects, projectsDir } = deps;
   const guard: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse" || !FILE_TOOLS.includes(input.tool_name)) return {};
-    const project = context === undefined ? undefined : projects.getByChannel(context.channelId);
-    const decision = judgeFileAccess({
-      toolName: input.tool_name,
-      toolInput: input.tool_input,
-      cwd: input.cwd,
-      context,
-      projectsDir,
-      project,
-    });
-    if (decision.allowed) {
-      if (project !== undefined && FILE_WRITE_TOOLS.includes(input.tool_name)) projects.touch(project.id);
-      // 判断を足さずに通す（allowedTools の許可に任せる）
-      return {};
+    try {
+      const project = context === undefined ? undefined : projects.getByChannel(context.channelId);
+      const decision = judgeFileAccess({
+        toolName: input.tool_name,
+        toolInput: input.tool_input,
+        cwd: input.cwd,
+        context,
+        projectsDir,
+        project,
+      });
+      if (decision.allowed) {
+        if (project !== undefined && FILE_WRITE_TOOLS.includes(input.tool_name)) projects.touch(project.id);
+        // 判断を足さずに通す（allowedTools の許可に任せる）
+        return {};
+      }
+      log(`ファイル操作を拒否しました（${input.tool_name}）`);
+      return denyToolUse(decision.reason);
+    } catch {
+      log(`ファイル操作の判定に失敗したため拒否しました（${input.tool_name}）`);
+      return denyToolUse(FILE_GUARD_FAILED_REASON);
     }
-    log(`ファイル操作を拒否しました（${input.tool_name}）`);
-    return {
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: decision.reason,
-      },
-    };
   };
   return { matcher: FILE_TOOLS.join("|"), hooks: [guard] };
 }
