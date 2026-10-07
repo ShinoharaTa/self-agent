@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { RunContext } from "../src/agent/runner.ts";
 import { createMemoryToolHandlers } from "../src/agent/tools.ts";
 import {
   createMemoryUndoComponent,
@@ -15,7 +16,7 @@ import { openDb } from "../src/store/db.ts";
 import { MemoryStore } from "../src/store/memories.ts";
 
 const NOW = new Date("2026-10-07T00:00:00.000Z");
-const CONTEXT = { guildId: "guild-1", channelId: "topic-1" };
+const CONTEXT: RunContext = { guildId: "guild-1", channelId: "topic-1", kind: "session" };
 
 type ResponderCall =
   | { method: "defer"; ephemeral: boolean }

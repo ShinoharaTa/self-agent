@@ -138,7 +138,13 @@ async function closeTurn(deps: CloseDeps, guildId: string, channelId: string): P
   // 前の /close や通常のターンで残った下書きは使わない
   topicSessions.clearCloseDraft(channelId);
   // オーナーの発言ではないので、WebFetch で取得できる URL は無い
-  const result = await runChannelTurn(turn, { guildId, channelId, prompt: CLOSE_PROMPT, allowedUrls: [] });
+  const result = await runChannelTurn(turn, {
+    guildId,
+    channelId,
+    kind: "session",
+    prompt: CLOSE_PROMPT,
+    allowedUrls: [],
+  });
   if (!result.ok) return { result: "failed", errorMessage: result.errorMessage };
   const draft = topicSessions.getCloseDraft(channelId) ?? { summary: fallbackSummary(result.text), tasks: [] };
   if (draft.tasks.length > 0) return { result: "confirm", draft };
@@ -176,7 +182,8 @@ async function runClose(
     return;
   }
   await response.defer();
-  const outcome = await turnQueue.run(channelId, () => closeTurn(deps, guildId, channelId));
+  // セッションのターンなので、発言のターンと同じく同時実行の枠を 1 つ #inbox 用に残す
+  const outcome = await turnQueue.run(channelId, () => closeTurn(deps, guildId, channelId), { session: true });
   switch (outcome.result) {
     case "closed":
       await response.show({ text: ALREADY_CLOSED_REPLY });

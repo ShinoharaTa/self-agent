@@ -7,7 +7,7 @@ import type { MemoryStore } from "../store/memories.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSession, TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
-import { acceptedChannel, type ResolveChannel } from "./access.ts";
+import { acceptedChannel, type ChannelKind, type ResolveChannel } from "./access.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
 import { buildTurnPrompt } from "./prompt.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
@@ -42,7 +42,7 @@ export type HandlerDeps = {
   /** 進行中に戻したセッションを進行中カテゴリへ移す */
   channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
   usage: UsageStore;
-  /** ターンのキュー（key は channelId）。/close のターンも同じキューに入れる */
+  /** ターンのキュー（key は channelId）。/close のターンも同じキューに入れる。セッションのターンはセッションのジョブとして入れる */
   queue: KeyedSerialQueue;
   log: (message: string) => void;
 };
@@ -87,17 +87,17 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
   };
 
   /**
-   * channelName は prompt の日時ヘッダに入れるチャンネル名。isSession はセッションのチャンネルか、revivedBeforeQueue はキュー待ちの前に進行中に戻したか。
+   * channelName は prompt の日時ヘッダに入れるチャンネル名。kind はチャンネルの種類、revivedBeforeQueue はキュー待ちの前に進行中に戻したか。
    * セッションはキュー待ちの間に変わりうる（/close の確定で完了になる等）ので、ここで読み直して待ち・完了なら改めて進行中に戻す
    */
   const handleTurn = async (
     event: IncomingMessage,
     guildId: string,
     channelName: string,
-    isSession: boolean,
+    kind: ChannelKind,
     revivedBeforeQueue: boolean,
   ): Promise<void> => {
-    const current = isSession ? topicSessions.get(event.channelId) : undefined;
+    const current = kind === "session" ? topicSessions.get(event.channelId) : undefined;
     const revived = (current !== undefined && revive(current)) || revivedBeforeQueue;
     const stopTyping = gateway.startTyping(event.channelId);
     let result: RunResult;
@@ -106,6 +106,7 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
       result = await runChannelTurn(turnDeps, {
         guildId,
         channelId: event.channelId,
+        kind,
         // 日時はキュー待ちでずれないよう、発言の時刻を使う
         prompt: buildTurnPrompt(event.content, event.createdAt, cfg.timeZone, channelName),
         // WebFetch で取得できるのは、この発言に貼られた URL だけ
@@ -144,7 +145,10 @@ export function createHandler(deps: HandlerDeps): (event: IncomingMessage) => Pr
         // 待ち・完了なら進行中に戻して進行中カテゴリへ移す（ターンは通常どおり行い、返信の先頭で知らせる）
         revived = revive(session);
       }
-      await queue.run(event.channelId, () => handleTurn(event, guildId, channelName, kind === "session", revived));
+      // セッションのターンは同時実行の枠を 1 つ #inbox 用に残す
+      await queue.run(event.channelId, () => handleTurn(event, guildId, channelName, kind, revived), {
+        session: kind === "session",
+      });
     } catch (error) {
       log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`);
     }

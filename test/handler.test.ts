@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
+import type { AgentRunner, RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
 import type { MoveTarget } from "../src/app/channel-ops.ts";
 import {
@@ -201,8 +201,8 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
 }
 
 /** ツールのハンドラに渡す、このターンのチャンネル */
-function context(channelId: string = "inbox-1") {
-  return { guildId: "guild-1", channelId };
+function context(channelId: string = "inbox-1"): RunContext {
+  return { guildId: "guild-1", channelId, kind: channelId === "inbox-1" ? "inbox" : "session" };
 }
 
 /** resume 先の会話の記録が無いときの失敗（実機の文言は未確認） */
@@ -420,6 +420,42 @@ test("セッションのチャンネル: 受け付けて日時ヘッダに題名
     { channelId: "topic-1", text: "了解", replyToId: "message-1" },
     { channelId: "topic-1", text: "続き", replyToId: "message-2" },
   ]);
+});
+
+test("同時実行: セッションのチャンネルのターンは枠を 1 つ #inbox 用に残す（maxConcurrent 2 ならセッションは 1 つずつ、その間も #inbox は動く）", async (t) => {
+  const { runner, topicSessions, handle } = setup(t, [
+    okResult("session-a", "1"),
+    okResult("session-i", "2"),
+    okResult("session-b", "3"),
+  ]);
+  topicSessions.create(TOPIC);
+  topicSessions.create({ ...TOPIC, channelId: "topic-2", title: "引っ越し" });
+  const releases: Array<() => void> = [];
+  runner.beforeResult = () => new Promise<void>((resolve) => releases.push(resolve));
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  const topicA = handle(message({ id: "message-1", channelId: "topic-1" }));
+  await flush();
+  const topicB = handle(message({ id: "message-2", channelId: "topic-2" }));
+  const inbox = handle(message({ id: "message-3", channelId: "inbox-1" }));
+  await flush();
+
+  // topic-2 は枠が空いていても待ち、後から来た #inbox が動く
+  assert.deepEqual(
+    runner.inputs.map((input) => input.context),
+    [context("topic-1"), context("inbox-1")],
+  );
+
+  // topic-1 が終わると topic-2 が動く
+  releases[0]!();
+  await topicA;
+  await flush();
+  assert.deepEqual(
+    runner.inputs.map((input) => input.context?.channelId),
+    ["topic-1", "inbox-1", "topic-2"],
+  );
+  for (const release of releases.slice(1)) release();
+  await Promise.all([topicB, inbox]);
 });
 
 test("セッションのチャンネル: 受け付けた発言の last_activity_at はキュー待ちの前に更新し、#inbox の発言では更新しない", async (t) => {

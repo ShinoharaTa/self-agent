@@ -1,5 +1,5 @@
 // 配線だけ: config → store → runner → gateway → handler
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
@@ -54,6 +54,9 @@ const memories = new MemoryStore(db, now);
 const projects = new ProjectStore(db, now);
 const log = (message: string): void => console.error(message);
 
+// 作ったプロジェクトの場所。権限ルール（<realpath(workDir)>/projects）と同じ実際の場所にする
+const projectsDir = join(realpathSync(config.workDir), "projects");
+
 const gateway = new DiscordGateway(config.allowedGuildIds);
 const resolveChannel = createChannelResolver(config, guildSettings, topicSessions);
 // /setup・/new・session_open 専用のキュー（ターンの同時実行枠とは分ける）
@@ -78,10 +81,19 @@ const kbMemory = {
   notifyMemoryChange: createNotifyMemoryChange({ gateway, log }),
   timeZone: config.timeZone,
 };
-// ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ
+// project_open: 配信が無効（設定が無い・待ち受けに失敗した）なら not_configured（staticServer は下で作る）
+const projectTools = {
+  projects,
+  projectsDir,
+  publicBaseUrl: config.publicBaseUrl,
+  serving: () => staticServer?.listening() ?? false,
+};
+// ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ。
+// ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中）に絞る
 const runner = new SdkAgentRunner(
   config,
-  (context) => createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, context),
+  (context) => createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, context),
+  { projects, projectsDir },
   log,
 );
 // 発言と /close のターンのキュー（key は channelId）
@@ -166,7 +178,6 @@ const scheduler = new Scheduler({
 // 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
 let staticServer: StaticServer | undefined;
 if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
-  const projectsDir = join(config.workDir, "projects");
   mkdirSync(projectsDir, { recursive: true });
   staticServer = createStaticServer({
     host: "127.0.0.1",

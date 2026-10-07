@@ -20,13 +20,14 @@ import { MEMORY_BLOCK_HEADER } from "../src/app/turn.ts";
 import { openDb } from "../src/store/db.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
 import { MEMORY_MAX_ACTIVE, MemoryStore } from "../src/store/memories.ts";
+import { ProjectStore } from "../src/store/projects.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 
 /** 2026-10-07 01:30 JST（UTC ではまだ 10/06） */
 const NOW = new Date("2026-10-06T16:30:00.000Z");
 const LATER = new Date("2026-10-08T03:00:00.000Z");
-const CONTEXT: RunContext = { guildId: "guild-1", channelId: "topic-1" };
+const CONTEXT: RunContext = { guildId: "guild-1", channelId: "topic-1", kind: "session" };
 
 function setup(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
@@ -147,7 +148,7 @@ test("kb_save: id 付きはその項目を置き換えて updated。created_at �
   clock.now = LATER;
 
   // 同じ項目の URL のままなら exists にしない。省略した body・tags は空になる
-  const result = kb({ guildId: "guild-1", channelId: "inbox-1" }).kbSave({
+  const result = kb({ guildId: "guild-1", channelId: "inbox-1", kind: "inbox" }).kbSave({
     url: "https://example.com/docs/sqlite",
     title: "SQLite FTS5",
     summary: "詳しい要約",
@@ -404,6 +405,13 @@ function definitions(t: TestContext, context?: RunContext) {
     new TopicSessionStore(env.db, () => NOW),
     async () => ({ result: "not_available" }),
     env.deps,
+    // project_open はここでは使わない（配信は無効）
+    {
+      projects: new ProjectStore(env.db, () => NOW),
+      projectsDir: "/srv/work/projects",
+      publicBaseUrl: undefined,
+      serving: () => false,
+    },
     context,
   );
   const find = (name: string) => {

@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { buildQueryOptions, childEnv } from "../src/agent/query-options.ts";
 
@@ -23,6 +26,15 @@ test("システムプロンプトに改訂の要点（#inbox・<#チャンネル
   }
 });
 
+test("システムプロンプトに作ってと頼まれたときの行（project_open・コードを貼らない・#inbox では session_open）を含める", () => {
+  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  assert.ok(
+    String(systemPrompt).includes(
+      "- 何かを作ってと頼まれたら、コードを返事に貼らない。セッションのチャンネルで project_open を使い、ファイルを書いて動く状態にしてから、URL と使い方を 3〜5 行で伝える。#inbox で頼まれたら session_open で専用のチャンネルを作る。コードは聞かれたときだけ短く見せる。",
+    ),
+  );
+});
+
 test("システムプロンプトに WebSearch と WebFetch の使い方を含める", () => {
   const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
   for (const word of ["WebSearch", "WebFetch"]) {
@@ -30,18 +42,39 @@ test("システムプロンプトに WebSearch と WebFetch の使い方を含�
   }
 });
 
-test("組み込みツールは WebSearch と WebFetch だけ。設定ファイルは使わず、自前ツールとその 2 つだけを許可する", () => {
+test("組み込みツールは Web の 2 つとファイル操作の 5 つ（この順で固定）。設定ファイルは使わず、自前ツール・Web の 2 つと projects の下の読み書きだけを許可する", () => {
   const options = buildQueryOptions(cfg, mcpServer);
-  assert.deepEqual(options.tools, ["WebSearch", "WebFetch"]);
+  assert.deepEqual(options.tools, ["WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob", "Grep"]);
   assert.equal(options.permissionMode, "dontAsk");
   assert.deepEqual(options.settingSources, []);
-  assert.deepEqual(options.allowedTools, ["mcp__selfagent__*", "WebSearch", "WebFetch"]);
+  // 素の Read・Write・Bash は許可しない。Edit のルールは Write にも、Read のルールは Glob・Grep にも効く
+  assert.deepEqual(options.allowedTools, [
+    "mcp__selfagent__*",
+    "WebSearch",
+    "WebFetch",
+    "Read(//srv/work/projects/**)",
+    "Edit(//srv/work/projects/**)",
+  ]);
   assert.equal(options.mcpServers?.selfagent, mcpServer);
   assert.equal(options.strictMcpConfig, true);
   assert.equal(options.model, "claude-opus-5");
   assert.equal(options.cwd, "/srv/work");
-  assert.equal(options.maxTurns, 8);
+  // maxTurns・hooks・resume は run ごとに sdk-runner が足す
+  assert.equal("maxTurns" in options, false);
   assert.equal(options.resume, undefined);
+});
+
+test("allowedTools の projects のルールは workDir の実際の場所（symlink を解いたもの）で書く", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "real-work"));
+  symlinkSync(join(root, "real-work"), join(root, "work"));
+
+  const { allowedTools, cwd } = buildQueryOptions({ ...cfg, workDir: join(root, "work") }, mcpServer);
+
+  const rule = `//${join(root, "real-work", "projects").slice(1)}/**`;
+  assert.deepEqual(allowedTools?.slice(3), [`Read(${rule})`, `Edit(${rule})`]);
+  assert.equal(cwd, join(root, "work"));
 });
 
 test("env に設定ディレクトリと自動メモリ無効を入れる", () => {

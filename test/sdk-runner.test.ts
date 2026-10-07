@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createSdkMcpServer,
   type HookInput,
@@ -8,10 +11,17 @@ import {
   type SDKMessage,
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { FILE_NO_CONTEXT_REASON, FILE_READ_DENIED_REASON, FILE_WRITE_DENIED_REASON } from "../src/agent/file-access.ts";
 import { buildQueryOptions } from "../src/agent/query-options.ts";
 import type { RunContext } from "../src/agent/runner.ts";
-import { describeResultError, SdkAgentRunner, WEB_FETCH_DENIED_REASON } from "../src/agent/sdk-runner.ts";
+import {
+  describeResultError,
+  INBOX_MAX_TURNS,
+  SdkAgentRunner,
+  WEB_FETCH_DENIED_REASON,
+} from "../src/agent/sdk-runner.ts";
 import { RESUME_FAILURE_PATTERN } from "../src/app/turn.ts";
+import type { Project, ProjectStore } from "../src/store/projects.ts";
 
 /** describeResultError が見るフィールドだけの result */
 function errorResult(subtype: "error_during_execution" | "error_max_turns", errors: string[]): SDKResultMessage {
@@ -45,7 +55,26 @@ const cfg = {
   claudeConfigDir: "/srv/claude",
   turnTimeoutSec: 300,
   effort: undefined,
+  sessionMaxTurns: 40,
+  sessionTurnTimeoutSec: 900,
 };
+
+/** ファイル操作の hook のストア。既定ではどのチャンネルにもプロジェクトが無い */
+type FakeProjects = Pick<ProjectStore, "getByChannel" | "touch"> & { touched: number[] };
+
+function fakeProjects(byChannel: Record<string, Pick<Project, "id" | "slug">> = {}): FakeProjects {
+  const touched: number[] = [];
+  return {
+    touched,
+    getByChannel: (channelId) => {
+      const project = byChannel[channelId];
+      return project === undefined ? undefined : ({ ...project, channelId } as Project);
+    },
+    touch: (id) => {
+      touched.push(id);
+    },
+  };
+}
 
 /** テストで使うフィールドだけのメッセージ */
 function sdkMessage(fields: Record<string, unknown>): SDKMessage {
@@ -97,6 +126,7 @@ type QueryCall = { prompt: string; options: Options };
 function setupRunner(
   stream: (call: QueryCall) => AsyncIterable<SDKMessage>,
   overrides: Partial<typeof cfg> = {},
+  files: { projects: FakeProjects; projectsDir: string } = { projects: fakeProjects(), projectsDir: "/srv/work/projects" },
 ) {
   const calls: QueryCall[] = [];
   const contexts: Array<RunContext | undefined> = [];
@@ -110,6 +140,7 @@ function setupRunner(
       servers.push(server);
       return server;
     },
+    files,
     (line) => logs.push(line),
     (call) => {
       calls.push(call);
@@ -339,8 +370,8 @@ test("SdkAgentRunner: turnTimeoutSec を過ぎたら abort して timeout を返
 
 test("SdkAgentRunner: run ごとに context を渡して MCP サーバーを作り、その query の Options に入れる", async () => {
   const { runner, calls, contexts, servers } = setupRunner(messages(success("session-1", "はい")));
-  const first = { guildId: "guild-1", channelId: "inbox-1" };
-  const second = { guildId: "guild-1", channelId: "topic-1" };
+  const first: RunContext = { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" };
+  const second: RunContext = { guildId: "guild-1", channelId: "topic-1", kind: "session" };
 
   await runner.run({ prompt: "1", context: first });
   await runner.run({ prompt: "2", context: second });
@@ -444,17 +475,28 @@ test("SdkAgentRunner: 失敗したターンでも、それまでのツール呼�
   });
 });
 
-/** SDK がツールの実行前に呼ぶのと同じように、その query の Options の PreToolUse の hook を呼ぶ */
-async function callPreToolUse(call: QueryCall, toolName: string, toolInput: unknown): Promise<unknown> {
+/**
+ * SDK がツールの実行前に呼ぶのと同じように、その query の Options の PreToolUse の hook を呼ぶ。
+ * matcher は WebFetch（既定）かファイル操作（Read|Write|Edit|Glob|Grep）。cwd は workDir
+ */
+async function callPreToolUse(
+  call: QueryCall,
+  toolName: string,
+  toolInput: unknown,
+  matcher: string = "WebFetch",
+  cwd: string = "/srv/work",
+): Promise<unknown> {
   const matchers = call.options.hooks?.PreToolUse;
-  assert.equal(matchers?.length, 1);
-  assert.equal(matchers![0]!.matcher, "WebFetch");
-  const hook = matchers![0]!.hooks[0]!;
+  assert.deepEqual(
+    matchers?.map((entry) => entry.matcher),
+    ["WebFetch", "Read|Write|Edit|Glob|Grep"],
+  );
+  const hook = matchers!.find((entry) => entry.matcher === matcher)!.hooks[0]!;
   const input = {
     hook_event_name: "PreToolUse",
     session_id: "session-1",
     transcript_path: "/srv/claude/session-1.jsonl",
-    cwd: "/srv/work",
+    cwd,
     tool_name: toolName,
     tool_input: toolInput,
     tool_use_id: "toolu-1",
@@ -555,4 +597,110 @@ test("SdkAgentRunner: allowedUrls を指定しなければ（空でも）WebFetc
   await runner.run({ prompt: "2", sessionId: "session-1" });
   assert.deepEqual(outputs, [{}, DENIED]);
   assert.notEqual(calls[0]!.options.hooks?.PreToolUse, calls[1]!.options.hooks?.PreToolUse);
+});
+
+test("SdkAgentRunner: maxTurns はセッションのチャンネルなら sessionMaxTurns、#inbox・context なしは 8。run ごとに Options に入れる", async () => {
+  const { runner, calls } = setupRunner(messages(success("session-1", "はい")), { sessionMaxTurns: 40 });
+
+  await runner.run({ prompt: "1", context: { guildId: "guild-1", channelId: "topic-1", kind: "session" } });
+  await runner.run({ prompt: "2", context: { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" } });
+  await runner.run({ prompt: "3" });
+  await runner.run({
+    prompt: "4",
+    sessionId: "session-1",
+    context: { guildId: "guild-1", channelId: "topic-1", kind: "session" },
+  });
+
+  assert.equal(INBOX_MAX_TURNS, 8);
+  assert.deepEqual(
+    calls.map((call) => call.options.maxTurns),
+    [40, 8, 8, 40],
+  );
+  // キャッシュに効く Options（buildQueryOptions）には入れない
+  const server = createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
+  assert.equal("maxTurns" in buildQueryOptions(cfg, server), false);
+});
+
+test("SdkAgentRunner: 打ち切りはセッションのチャンネルなら sessionTurnTimeoutSec、#inbox・context なしは turnTimeoutSec", async () => {
+  /** abort されるまで待つ */
+  const untilAbort = async function* (call: QueryCall): AsyncIterable<SDKMessage> {
+    yield init("session-1");
+    const signal = call.options.abortController!.signal;
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+  };
+  const timeout = { ok: false, errorMessage: "timeout", sessionId: "session-1", sessionRecorded: false, toolCalls: 0 };
+  const session = { guildId: "guild-1", channelId: "topic-1", kind: "session" } as const;
+  const inbox = { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" } as const;
+
+  // セッションだけ 10ms で打ち切る（#inbox は 300 秒なので、打ち切られれば sessionTurnTimeoutSec を使っている）
+  const short = setupRunner(untilAbort, { turnTimeoutSec: 300, sessionTurnTimeoutSec: 0.01 });
+  assert.deepEqual(await short.runner.run({ prompt: "x", context: session }), timeout);
+
+  // #inbox と context なしは 10ms で打ち切る（セッションの 900 秒は使わない）
+  const inboxShort = setupRunner(untilAbort, { turnTimeoutSec: 0.01, sessionTurnTimeoutSec: 900 });
+  assert.deepEqual(await inboxShort.runner.run({ prompt: "x", context: inbox }), timeout);
+  assert.deepEqual(await inboxShort.runner.run({ prompt: "x" }), timeout);
+});
+
+test("SdkAgentRunner: ファイル操作の hook はどの run にも入る（context が無い run にも）。context はその run のもの", async () => {
+  const outputs: unknown[] = [];
+  const { runner, calls, logs } = setupRunner(async function* (call) {
+    outputs.push(await callPreToolUse(call, "Read", { file_path: "/srv/work/notes.txt" }, "Read|Write|Edit|Glob|Grep"));
+    yield success("session-1", "はい");
+  });
+
+  await runner.run({ prompt: "1" });
+  await runner.run({ prompt: "2", context: { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" } });
+  await runner.run({ prompt: "3", context: { guildId: "guild-1", channelId: "topic-1", kind: "session" } });
+
+  assert.equal(calls.length, 3);
+  assert.notEqual(calls[1]!.options.hooks?.PreToolUse, calls[2]!.options.hooks?.PreToolUse);
+  const reasons = outputs.map(
+    (output) => (output as { hookSpecificOutput: { permissionDecisionReason: string } }).hookSpecificOutput,
+  );
+  assert.deepEqual(
+    reasons.map((output) => output.permissionDecisionReason),
+    [FILE_NO_CONTEXT_REASON, FILE_READ_DENIED_REASON, FILE_READ_DENIED_REASON],
+  );
+  assert.deepEqual(logs, Array(3).fill("ファイル操作を拒否しました（Read）"));
+});
+
+test("SdkAgentRunner: ファイル操作の hook は拒否したら理由をモデルに返し、log にはツール名だけを出す。Write・Edit を許したらプロジェクトの更新日時を今にする", async (t) => {
+  const workDir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  t.after(() => rmSync(workDir, { recursive: true, force: true }));
+  const projectsDir = join(workDir, "projects");
+  mkdirSync(join(projectsDir, "kakeibo", "site"), { recursive: true });
+  mkdirSync(join(projectsDir, "other", "site"), { recursive: true });
+  const projects = fakeProjects({ "topic-1": { id: 7, slug: "kakeibo" }, "topic-2": { id: 8, slug: "other" } });
+  const topic = { guildId: "guild-1", channelId: "topic-1", kind: "session" } as const;
+  const outputs: unknown[] = [];
+  const { runner, logs } = setupRunner(
+    async function* (call) {
+      const pre = (toolName: string, input: unknown) =>
+        callPreToolUse(call, toolName, input, "Read|Write|Edit|Glob|Grep", workDir);
+      outputs.push(await pre("Write", { file_path: join(projectsDir, "kakeibo", "site", "index.html"), content: "<p>" }));
+      outputs.push(await pre("Edit", { file_path: "projects/kakeibo/site/index.html", old_string: "a", new_string: "b" }));
+      outputs.push(await pre("Read", { file_path: join(projectsDir, "other", "site", "index.html") }));
+      outputs.push(await pre("Glob", { pattern: "**/*", path: join(projectsDir, "kakeibo") }));
+      outputs.push(await pre("Write", { file_path: join(projectsDir, "other", "site", "secret-path.html"), content: "" }));
+      outputs.push(await pre("Grep", { pattern: "TOKEN" }));
+      // ファイル操作以外は何もしない
+      outputs.push(await pre("mcp__selfagent__task_add", { title: "買い物" }));
+      yield success("session-1", "作りました");
+    },
+    {},
+    { projects, projectsDir },
+  );
+
+  const result = await runner.run({ prompt: "家計簿を作って", context: topic });
+
+  assert.ok(result.ok);
+  const deny = (reason: string) => ({
+    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
+  });
+  assert.deepEqual(outputs, [{}, {}, {}, {}, deny(FILE_WRITE_DENIED_REASON), deny(FILE_READ_DENIED_REASON), {}]);
+  // 許した Write・Edit の分だけ（Read・Glob では変えない）
+  assert.deepEqual(projects.touched, [7, 7]);
+  assert.deepEqual(logs, ["ファイル操作を拒否しました（Write）", "ファイル操作を拒否しました（Grep）"]);
+  assert.ok(logs.every((line) => !line.includes("secret-path") && !line.includes(workDir)));
 });

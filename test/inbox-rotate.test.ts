@@ -727,7 +727,7 @@ test("会話の記録が無い（No conversation found）なら要約を作ら�
   assert.deepEqual(env.runner.inputs[1], {
     prompt: `${rotatedSeed("前回の要約")}\n\n${buildTurnPrompt(first.content, first.createdAt, "Asia/Tokyo", "inbox")}`,
     sessionId: undefined,
-    context: { guildId: "guild-1", channelId: "inbox-1" },
+    context: { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" },
     allowedUrls: [],
   });
   assert.equal(env.state().seed, undefined);

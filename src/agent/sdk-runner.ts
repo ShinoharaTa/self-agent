@@ -9,12 +9,17 @@ import {
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Config } from "../config.ts";
+import type { ProjectStore } from "../store/projects.ts";
+import { FILE_TOOLS, FILE_WRITE_TOOLS, judgeFileAccess } from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
 import { buildQueryOptions } from "./query-options.ts";
 import type { AgentRunner, Compaction, RunContext, RunInput, RunResult, TurnUsage } from "./runner.ts";
 
 /** query() の形。テストでは偽のストリームを返す関数に差し替える */
 export type QueryFn = (params: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>;
+
+/** #inbox と context の無いターン（#inbox の要約）の手順（maxTurns）の上限。セッションのチャンネルは cfg.sessionMaxTurns */
+export const INBOX_MAX_TURNS = 8;
 
 const ERROR_TEXT_LIMIT = 200;
 /** Claude の子プロセスの stderr のうち保持する末尾の文字数 */
@@ -109,32 +114,89 @@ export function createWebFetchGuard(
   return { matcher: "WebFetch", hooks: [guard] };
 }
 
+/** ファイル操作の hook が使うプロジェクトのストアと場所 */
+export type FileGuardDeps = {
+  /** context のチャンネルのプロジェクトを引き、書き込みを許したら更新日時を今にする */
+  projects: Pick<ProjectStore, "getByChannel" | "touch">;
+  /** `<workDir>/projects` */
+  projectsDir: string;
+};
+
+/**
+ * ファイル操作（Read・Write・Edit・Glob・Grep）を judgeFileAccess で絞る PreToolUse の hook。context はこの run のチャンネル。
+ * 拒否したら理由をモデルに返し、log にはツール名だけを出す（パスは出さない）。Write・Edit を許したらプロジェクトの更新日時を今にする
+ */
+export function createFileGuard(
+  context: RunContext | undefined,
+  deps: FileGuardDeps,
+  log: (message: string) => void,
+): HookCallbackMatcher {
+  const { projects, projectsDir } = deps;
+  const guard: HookCallback = async (input) => {
+    if (input.hook_event_name !== "PreToolUse" || !FILE_TOOLS.includes(input.tool_name)) return {};
+    const project = context === undefined ? undefined : projects.getByChannel(context.channelId);
+    const decision = judgeFileAccess({
+      toolName: input.tool_name,
+      toolInput: input.tool_input,
+      cwd: input.cwd,
+      context,
+      projectsDir,
+      project,
+    });
+    if (decision.allowed) {
+      if (project !== undefined && FILE_WRITE_TOOLS.includes(input.tool_name)) projects.touch(project.id);
+      // 判断を足さずに通す（allowedTools の許可に任せる）
+      return {};
+    }
+    log(`ファイル操作を拒否しました（${input.tool_name}）`);
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: decision.reason,
+      },
+    };
+  };
+  return { matcher: FILE_TOOLS.join("|"), hooks: [guard] };
+}
+
 export class SdkAgentRunner implements AgentRunner {
-  private readonly cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">;
+  private readonly cfg: Pick<
+    Config,
+    "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort" | "sessionMaxTurns" | "sessionTurnTimeoutSec"
+  >;
   private readonly createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance;
+  private readonly files: FileGuardDeps;
   private readonly log: (message: string) => void;
   private readonly queryFn: QueryFn;
 
   /**
    * MCP サーバーのインスタンスは同時に 1 つの query にしか接続できないため、run ごとに createMcpServer で作る。
    * ツール定義は毎回同じ（ハンドラが参照する context だけが変わる）なのでプロンプトキャッシュには影響しない。
-   * log はツール呼び出しの記録に使う。queryFn は省略すれば SDK の query（テストで差し替える）
+   * files はファイル操作の hook が使う。log はツール呼び出しの記録に使う。queryFn は省略すれば SDK の query（テストで差し替える）
    */
   constructor(
-    cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort">,
+    cfg: Pick<
+      Config,
+      "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort" | "sessionMaxTurns" | "sessionTurnTimeoutSec"
+    >,
     createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance,
+    files: FileGuardDeps,
     log: (message: string) => void,
     queryFn: QueryFn = query,
   ) {
     this.cfg = cfg;
     this.createMcpServer = createMcpServer;
+    this.files = files;
     this.log = log;
     this.queryFn = queryFn;
   }
 
+  /** セッションのチャンネルのターンは cfg.sessionTurnTimeoutSec、それ以外（#inbox・context なし）は cfg.turnTimeoutSec で打ち切る */
   async run(input: RunInput): Promise<RunResult> {
     const abortController = new AbortController();
-    const timer = setTimeout(() => abortController.abort(), this.cfg.turnTimeoutSec * 1000);
+    const timeoutSec = input.context?.kind === "session" ? this.cfg.sessionTurnTimeoutSec : this.cfg.turnTimeoutSec;
+    const timer = setTimeout(() => abortController.abort(), timeoutSec * 1000);
     try {
       return await this.runQuery(input, abortController);
     } finally {
@@ -144,10 +206,16 @@ export class SdkAgentRunner implements AgentRunner {
 
   private async runQuery(input: RunInput, abortController: AbortController): Promise<RunResult> {
     const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context));
-    // ツール呼び出しの回数はターンごとに数え、WebFetch に許す URL もターンごとに違うので、hooks は run ごとに作って足す
+    // 手順の上限はチャンネルの種類で変える（セッションのチャンネルは cfg.sessionMaxTurns、それ以外は INBOX_MAX_TURNS）
+    const maxTurns = input.context?.kind === "session" ? this.cfg.sessionMaxTurns : INBOX_MAX_TURNS;
+    // ツール呼び出しの回数はターンごとに数え、WebFetch に許す URL とファイル操作を許す場所もターンごとに違うので、hooks は run ごとに作って足す。
+    // ファイル操作の hook はどの run にも必ず入れる
     const tools = createToolCallRecorder(this.log);
     const hooks: NonNullable<Options["hooks"]> = {
-      PreToolUse: [createWebFetchGuard(input.allowedUrls ?? [], this.log)],
+      PreToolUse: [
+        createWebFetchGuard(input.allowedUrls ?? [], this.log),
+        createFileGuard(input.context, this.files, this.log),
+      ],
       ...tools.hooks,
     };
     // 子プロセスの stderr は末尾だけ保持し、例外で終わったときに errorMessage に添える（中身を log に直接は出さない）
@@ -157,8 +225,8 @@ export class SdkAgentRunner implements AgentRunner {
     };
     const options: Options =
       input.sessionId === undefined
-        ? { ...base, abortController, hooks, stderr: onStderr }
-        : { ...base, abortController, hooks, stderr: onStderr, resume: input.sessionId };
+        ? { ...base, maxTurns, abortController, hooks, stderr: onStderr }
+        : { ...base, maxTurns, abortController, hooks, stderr: onStderr, resume: input.sessionId };
     // メインループの各ステップの usage を合算する。並列ツール呼び出しは同じ message.id を共有するので重複を除く
     const seenMessageIds = new Set<string>();
     const usage: TurnUsage = { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };

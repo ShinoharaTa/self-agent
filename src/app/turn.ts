@@ -1,5 +1,5 @@
 // 1 チャンネルの 1 ターン（発言・/close 共通）。usage の記録、SDK セッションの保存、記憶と seed の付与、resume 失敗からの復旧
-import type { AgentRunner, RunResult } from "../agent/runner.ts";
+import type { AgentRunner, RunContext, RunResult } from "../agent/runner.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { InboxSummary, InboxSummaryStore } from "../store/inbox-summaries.ts";
 import type { Memory, MemoryStore } from "../store/memories.ts";
@@ -49,6 +49,8 @@ export type TurnDeps = {
 export type ChannelTurn = {
   guildId: string;
   channelId: string;
+  /** チャンネルの種類（#inbox かセッションか）。run の context に入れる */
+  kind: RunContext["kind"];
   prompt: string;
   /** このターンで WebFetch に取得を許す URL。オーナーの発言のターンだけその発言の URL、それ以外（/close など）は空 */
   allowedUrls: readonly string[];
@@ -108,7 +110,7 @@ export function recordTurnUsage(deps: Pick<TurnDeps, "usage" | "log">, key: stri
 export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise<RunResult> {
   const { runner, sessions, seeds, topicSessions, inboxSummaries, memories, log } = deps;
   const key = turn.channelId;
-  const context = { guildId: turn.guildId, channelId: turn.channelId };
+  const context: RunContext = { guildId: turn.guildId, channelId: turn.channelId, kind: turn.kind };
 
   const runOnce = async (prompt: string, sessionId: string | undefined): Promise<RunResult> => {
     // seed を付けてやり直すときも、取得を許すのはオーナーの発言の URL だけ
