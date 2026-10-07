@@ -35,17 +35,17 @@ class FakeResponder implements InteractionResponder {
   }
 }
 
-/** 中断と [続ける] の呼び出しを記録する。running のチャンネルだけ中断できる */
-function setup(channels: Record<string, ChannelKind> = {}, running: string[] = []) {
-  const aborted: string[] = [];
+/** 中断と [続ける] の呼び出しを記録する。running のチャンネルの、その番号のターンだけ中断できる */
+function setup(channels: Record<string, ChannelKind> = {}, running: Record<string, number> = {}) {
+  const aborted: Array<{ channelId: string; turnSeq: number }> = [];
   const continued: Array<{ guildId: string; channelId: string; at: Date }> = [];
   const logs: string[] = [];
   const component = createTurnControlsComponent({
     resolveChannel: (_guildId, channelId) => channels[channelId] ?? null,
     turns: {
-      abortTurn: (channelId) => {
-        if (!running.includes(channelId)) return false;
-        aborted.push(channelId);
+      abortTurn: (channelId, turnSeq) => {
+        if (running[channelId] !== turnSeq) return false;
+        aborted.push({ channelId, turnSeq });
         return true;
       },
       continueTurn: async (guildId, channelId, at) => {
@@ -67,21 +67,26 @@ function button(customId: string): Extract<Interaction, { kind: "button" }> {
   return { kind: "button", customId, guildId: "guild-1", channelId: "elsewhere-1", userId: "owner-1", createdAt: NOW };
 }
 
-test("turn のボタン: [中断] は turn:abort:<channelId>（danger）、[続ける] は turn:continue:<channelId>", () => {
-  assert.deepEqual(abortTurnButton("topic-1"), { customId: "turn:abort:topic-1", label: "中断", style: "danger" });
+test("turn のボタン: [中断] は turn:abort:<channelId>:<turnSeq>（danger）、[続ける] は turn:continue:<channelId>", () => {
+  assert.deepEqual(abortTurnButton("topic-1", 3), { customId: "turn:abort:topic-1:3", label: "中断", style: "danger" });
   assert.deepEqual(continueTurnButton("topic-1"), { customId: "turn:continue:topic-1", label: "続ける" });
   // handler の MAX_TURNS_REPLY と同じもの
   assert.equal(HANDLER_MAX_TURNS_REPLY, MAX_TURNS_REPLY);
 });
 
-test("[中断]: custom_id のチャンネルのターンを中断して deferUpdate する。実行中でなければ本人にだけ古いと返す", async () => {
-  const env = setup({}, ["topic-1"]);
+test("[中断]: custom_id のチャンネルの、その番号のターンを中断して deferUpdate する。実行中でない・番号が違う・番号が無ければ本人にだけ古いと返す", async () => {
+  const env = setup({}, { "topic-1": 3 });
+  const stale = [{ method: "reply", message: { text: STALE_TURN_REPLY, ephemeral: true } }];
 
-  assert.deepEqual(await env.press(button("turn:abort:topic-1")), [{ method: "deferUpdate" }]);
-  assert.deepEqual(await env.press(button("turn:abort:topic-2")), [
-    { method: "reply", message: { text: STALE_TURN_REPLY, ephemeral: true } },
-  ]);
-  assert.deepEqual(env.aborted, ["topic-1"]);
+  assert.deepEqual(await env.press(button("turn:abort:topic-1:3")), [{ method: "deferUpdate" }]);
+  assert.deepEqual(await env.press(button("turn:abort:topic-2:3")), stale);
+  // 前のターンのボタン
+  assert.deepEqual(await env.press(button("turn:abort:topic-1:2")), stale);
+  // 番号の無い（このバージョンより前の）ボタン・数字でない番号
+  assert.deepEqual(await env.press(button("turn:abort:topic-1")), stale);
+  assert.deepEqual(await env.press(button("turn:abort:topic-1:")), stale);
+  assert.deepEqual(await env.press(button("turn:abort:topic-1:3x")), stale);
+  assert.deepEqual(env.aborted, [{ channelId: "topic-1", turnSeq: 3 }]);
   assert.deepEqual(env.logs, ["[中断] でターンを中断しました（guild=guild-1）"]);
 });
 
@@ -101,13 +106,13 @@ test("[続ける]: 受け付けるセッションならボタンを外してか�
 });
 
 test("turn の不明な操作（custom_id のチャンネル無し・知らない action・セレクト）は例外にする", async () => {
-  const env = setup({ "topic-1": "session" }, ["topic-1"]);
+  const env = setup({ "topic-1": "session" }, { "topic-1": 1 });
 
   await assert.rejects(env.press(button("turn:abort")), /チャンネルがありません/);
   await assert.rejects(env.press(button("turn:abort:")), /チャンネルがありません/);
-  await assert.rejects(env.press(button("turn:stop:topic-1")), /不明な操作/);
+  await assert.rejects(env.press(button("turn:stop:topic-1:1")), /不明な操作/);
   await assert.rejects(
-    env.press({ ...button("turn:abort:topic-1"), kind: "select", values: ["1"] }),
+    env.press({ ...button("turn:abort:topic-1:1"), kind: "select", values: ["1"] }),
     /不明な操作/,
   );
   assert.deepEqual(env.aborted, []);

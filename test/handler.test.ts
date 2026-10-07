@@ -1171,10 +1171,10 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/** 途中経過のメッセージの [中断] */
+/** 途中経過のメッセージの [中断]（そのテストで最初のセッションのターンは番号 1） */
 const ABORT_ROW = {
   kind: "buttons",
-  buttons: [{ customId: "turn:abort:topic-1", label: "中断", style: "danger" }],
+  buttons: [{ customId: "turn:abort:topic-1:1", label: "中断", style: "danger" }],
 } as const;
 const STALE = [{ method: "reply", message: { text: STALE_TURN_REPLY, ephemeral: true } }];
 
@@ -1343,7 +1343,7 @@ test("途中経過: #inbox のターンには途中経過も中断も付けな�
 
   assert.equal(runner.received[0]!.signal, undefined);
   assert.equal(runner.received[0]!.onProgress, undefined);
-  assert.equal(handler.abortTurn("inbox-1"), false);
+  assert.equal(handler.abortTurn("inbox-1", 1), false);
   assert.equal(timers.pending, 0);
   release.resolve();
   await turn;
@@ -1369,7 +1369,7 @@ test("[中断]: 実行中のセッションのターンを abort して deferUpd
   assert.equal(runner.received[0]!.signal?.aborted, false);
 
   // 表示の書き換えはターンの終わりに handler が行う
-  assert.deepEqual(await press("turn:abort:topic-1"), [{ method: "deferUpdate" }]);
+  assert.deepEqual(await press("turn:abort:topic-1:1"), [{ method: "deferUpdate" }]);
   await turn;
 
   assert.equal(runner.received[0]!.signal?.aborted, true);
@@ -1387,7 +1387,43 @@ test("[中断]: 実行中のセッションのターンを abort して deferUpd
   assert.equal(timers.pending, 0);
 
   // 終わったターンの [中断] は古い
-  assert.deepEqual(await press("turn:abort:topic-1"), STALE);
+  assert.deepEqual(await press("turn:abort:topic-1:1"), STALE);
+});
+
+test("[中断]: ボタンはターンごとの番号を持ち、前のターンのボタンでは次のターンを止めない", async (t) => {
+  const { gateway, runner, topicSessions, timers, handle, press } = setup(t, [
+    okResult("session-a", "できました"),
+    { ok: false, errorMessage: "aborted", sessionId: "session-a", sessionRecorded: false, toolCalls: 0 },
+  ]);
+  topicSessions.create(TOPIC);
+  let release = deferred();
+  runner.beforeResult = (input) =>
+    new Promise((resolve) => {
+      void release.promise.then(resolve);
+      input.signal?.addEventListener("abort", () => resolve());
+    });
+
+  // 1 ターン目: 途中経過の [中断] は番号 1。押さずに終わる
+  const first = handle(message({ id: "message-1", channelId: "topic-1" }));
+  await timers.advance(PROGRESS_DELAY_MS);
+  release.resolve();
+  await first;
+  release = deferred();
+
+  // 2 ターン目: [中断] は番号 2。1 ターン目のボタンを押しても止まらない
+  const second = handle(message({ id: "message-2", channelId: "topic-1" }));
+  await timers.advance(PROGRESS_DELAY_MS);
+  assert.deepEqual(
+    gateway.posts.map((post) => post.message.components?.[0]),
+    [ABORT_ROW, { kind: "buttons", buttons: [{ customId: "turn:abort:topic-1:2", label: "中断", style: "danger" }] }],
+  );
+  assert.deepEqual(await press("turn:abort:topic-1:1"), STALE);
+  assert.equal(runner.received[1]!.signal?.aborted, false);
+
+  assert.deepEqual(await press("turn:abort:topic-1:2"), [{ method: "deferUpdate" }]);
+  await second;
+  assert.equal(runner.received[1]!.signal?.aborted, true);
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), ["できました", ABORTED_REPLY]);
 });
 
 test("[中断]: 実行中のターンが無いチャンネルでは本人にだけ「この操作は古くなっています」", async (t) => {
@@ -1395,8 +1431,8 @@ test("[中断]: 実行中のターンが無いチャンネルでは本人にだ�
   topicSessions.create(TOPIC);
 
   assert.equal(STALE_TURN_REPLY, "この操作は古くなっています");
-  assert.deepEqual(await press("turn:abort:topic-1"), STALE);
-  assert.deepEqual(await press("turn:abort:inbox-1"), STALE);
+  assert.deepEqual(await press("turn:abort:topic-1:1"), STALE);
+  assert.deepEqual(await press("turn:abort:inbox-1:1"), STALE);
 });
 
 test("連続失敗: 中断（aborted）は数えず、3 回続いても会話を捨てない", async (t) => {
