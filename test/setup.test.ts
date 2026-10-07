@@ -21,6 +21,8 @@ import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
+import { KnowledgeStore } from "../src/store/knowledge.ts";
+import { MemoryStore } from "../src/store/memories.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -506,6 +508,7 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     seeds: new ChannelSeedStore(db, () => NOW),
     topicSessions,
     inboxSummaries: new InboxSummaryStore(db, () => NOW),
+    memories: new MemoryStore(db, () => NOW),
     usage: new UsageStore(db, () => NOW),
     log,
   };
@@ -536,6 +539,8 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     seeds: turn.seeds,
     queue: layoutQueue,
     tasks,
+    knowledge: new KnowledgeStore(db, () => NOW),
+    memories: turn.memories,
     channelOps,
     turnQueue,
     turn,
@@ -543,7 +548,7 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
   });
   assert.deepEqual(
     components.map((component) => component.namespace),
-    ["close", "wait", "tasks", "home", "del"],
+    ["close", "wait", "tasks", "home", "del", "kb", "mem"],
   );
   const handle = createInteractionHandler({
     cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },

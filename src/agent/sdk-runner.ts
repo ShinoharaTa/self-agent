@@ -9,6 +9,7 @@ import {
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Config } from "../config.ts";
+import { normalizeUrl } from "./url.ts";
 import { buildQueryOptions } from "./query-options.ts";
 import type { AgentRunner, Compaction, RunContext, RunInput, RunResult, TurnUsage } from "./runner.ts";
 
@@ -77,23 +78,6 @@ export function createToolCallRecorder(log: (message: string) => void): ToolCall
 
 /** WebFetch を拒否したときにモデルへ返す理由 */
 export const WEB_FETCH_DENIED_REASON = "オーナーが発言に貼った URL だけ取得できます";
-
-/**
- * WebFetch の URL の比較用の形。解析できなければ undefined。フラグメントを除き、パスの末尾の / を 1 つ除く。
- * スキームとホストは URL の解析で小文字になる。クエリはそのまま（完全一致で比べる）
- */
-export function normalizeUrl(raw: string): string | undefined {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return undefined;
-  }
-  url.hash = "";
-  // http(s) のルートは空にできず / のまま残るので、末尾の / の有無は同じ形になる
-  if (url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
-  return url.href;
-}
 
 /**
  * WebFetch を、allowedUrls（このターンにオーナーが貼った URL）に含まれる URL だけに絞る PreToolUse の hook。

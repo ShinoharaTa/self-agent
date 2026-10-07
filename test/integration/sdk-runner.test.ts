@@ -9,6 +9,8 @@ import { createTaskMcpServer } from "../../src/agent/tools.ts";
 import { buildTurnPrompt } from "../../src/app/prompt.ts";
 import { loadConfig } from "../../src/config.ts";
 import { openDb } from "../../src/store/db.ts";
+import { KnowledgeStore } from "../../src/store/knowledge.ts";
+import { MemoryStore } from "../../src/store/memories.ts";
 import { TaskStore } from "../../src/store/tasks.ts";
 import { TopicSessionStore } from "../../src/store/topic-sessions.ts";
 
@@ -32,10 +34,18 @@ test(
     t.after(() => db.close());
     const tasks = new TaskStore(db);
     const logs: string[] = [];
+    // session_open・kb_delete の確認・記憶の知らせはここでは使わない
+    const kbMemory = {
+      knowledge: new KnowledgeStore(db),
+      memories: new MemoryStore(db),
+      confirmKbDelete: async () => {},
+      notifyMemoryChange: async () => {},
+      timeZone: cfg.timeZone,
+    };
     const runner = new SdkAgentRunner(
       cfg,
-      // session_open はここでは使わない
-      (context) => createTaskMcpServer(tasks, new TopicSessionStore(db), async () => ({ result: "not_available" }), context),
+      (context) =>
+        createTaskMcpServer(tasks, new TopicSessionStore(db), async () => ({ result: "not_available" }), kbMemory, context),
       (line) => logs.push(line),
     );
 

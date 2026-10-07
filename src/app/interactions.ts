@@ -5,6 +5,8 @@ import { type CloseDeps, createCloseCommand, createCloseComponent } from "./comm
 import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
 import { helpCommand } from "./commands/help.ts";
 import { createHomeComponent, type HomeDeps } from "./commands/home.ts";
+import { createKbDeleteComponent, type KbDeleteDeps } from "./commands/kb-delete.ts";
+import { createMemoryUndoComponent, type MemoryUndoDeps } from "./commands/memory-undo.ts";
 import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
 import { createSessionsCommand, type SessionsDeps } from "./commands/sessions.ts";
 import { createSetupCommand, type SetupDeps } from "./commands/setup.ts";
@@ -51,9 +53,10 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
 /**
  * [閉じる]（close:start）は /close と同じ流れなので、ターンのキューも要る。
  * ホームパネルの [新しいセッション] は /new と同じ作成なので、/setup・/new のキュー（queue）と gateway も要る。
- * 削除の確認の [削除する] はチャンネルを消すので、SDK セッション（sessions）と seed も要る
+ * 削除の確認の [削除する] はチャンネルを消すので、SDK セッション（sessions）と seed も要る。
+ * ナレッジベースの削除の確認（kb:）と記憶の変更の [取り消す]（mem:）は、それぞれのストアだけを使う
  */
-export type ComponentDeps = CloseDeps & WaitDeps & TasksDeps & HomeDeps & DeleteDeps;
+export type ComponentDeps = CloseDeps & WaitDeps & TasksDeps & HomeDeps & DeleteDeps & KbDeleteDeps & MemoryUndoDeps;
 
 /** 名前空間ごとのボタン・セレクト・モーダルのハンドラ */
 export function createComponents(deps: ComponentDeps): ComponentHandler[] {
@@ -63,6 +66,8 @@ export function createComponents(deps: ComponentDeps): ComponentHandler[] {
     createTasksComponent(deps),
     createHomeComponent(deps),
     createDeleteComponent(deps),
+    createKbDeleteComponent(deps),
+    createMemoryUndoComponent(deps),
   ];
 }
 
