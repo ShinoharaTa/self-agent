@@ -1,4 +1,4 @@
-// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止めて DB を閉じる
+// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバーと DB を閉じる
 import type { Config } from "../config.ts";
 import type {
   Gateway,
@@ -7,6 +7,7 @@ import type {
   Interaction,
   InteractionResponder,
 } from "../discord/gateway.ts";
+import type { StaticServer } from "../serve/static-server.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import type { Scheduler } from "./scheduler.ts";
@@ -23,6 +24,8 @@ export type ShutdownDeps = {
   scheduler: Pick<Scheduler, "stop" | "idle">;
   /** チャンネルの移動の列。実行中の 1 件だけ終わるのを待つ（まだ始めていない移動は待たない。次の起動の再同期が直す） */
   channelOps: Pick<ChannelOpsQueue, "idle">;
+  /** 作ったプロジェクトの静的サーバー。DB を閉じる前に閉じる。無ければ（機能が無効）何もしない */
+  staticServer?: Pick<StaticServer, "close">;
   closeDb: () => void;
   log: (message: string) => void;
 };
@@ -38,7 +41,7 @@ export type Shutdown = {
   handlers: GatewayHandlers;
   /**
    * 受付と定期処理を止め、受け付け済みの発言・操作（返信まで）とキューのジョブ・実行中の tick・実行中のチャンネルの移動が終わるのを最大 shutdownGraceSec 秒待ってから、
-   * gateway を止めて DB を閉じる。待っている間も gateway は動いているので、終わったターンの返信は送られる。reject しない
+   * gateway を止め、静的サーバーと DB を閉じる。待っている間も gateway は動いているので、終わったターンの返信は送られる。reject しない
    */
   shutdown: () => Promise<void>;
   /** 停止を始めたか */
@@ -63,7 +66,7 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 }
 
 export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdown {
-  const { cfg, gateway, queues, scheduler, channelOps, closeDb, log } = deps;
+  const { cfg, gateway, queues, scheduler, channelOps, staticServer, closeDb, log } = deps;
   let stopping = false;
   /** 受け付けて、まだ終わっていない発言・操作の処理（返信を含む） */
   const inFlight = new Set<Promise<void>>();
@@ -117,6 +120,12 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       await gateway.stop();
     } catch (error) {
       log(`Discord との切断に失敗しました: ${describeError(error)}`);
+    }
+    // 配信のリクエストは DB を引くので、DB より先に閉じる
+    try {
+      await staticServer?.close();
+    } catch (error) {
+      log(`ページの配信を止められませんでした: ${describeError(error)}`);
     }
     try {
       closeDb();
