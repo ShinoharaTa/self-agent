@@ -54,6 +54,7 @@ export type RunResult =
       errorMessage: string;
       /** 失敗するまでのツール呼び出しの回数（失敗した呼び出しを含む） */
       toolCalls: number;
+      /** 途中で受け取った session_id（まだ受け取っていなければ resume 元の sessionId）。中断・打ち切り・例外で終わっても入る */
       sessionId?: string;
       /**
        * sessionId が result メッセージのもの（SDK が会話を記録済みで、次のターンで resume できる）なら true。

@@ -108,7 +108,8 @@ export function recordTurnUsage(deps: Pick<TurnDeps, "usage" | "log">, key: stri
  * チャンネルで 1 ターン実行する（会話の key は channelId）。呼び出し側で同じチャンネルのターンを直列にしておくこと。
  * - SDK セッションがあれば resume する。無ければ [記憶のブロック, seed, prompt] を空行でつないで渡し（記憶が無い・seed が無いならその分は付けない）、
  *   成功したら seed を消す。記憶のブロックは毎回 DB から作る（seed には保存しない）
- * - 失敗しても SDK が会話を記録していれば（result まで届いた失敗）、その session_id を残して次のターンで続ける
+ * - 失敗しても SDK が会話を記録していれば（result まで届いた失敗）、その session_id を残して次のターンで続ける。
+ *   中断・打ち切りで終わったときは、途中で受け取った session_id があり、そのチャンネルにまだ SDK セッションが無いときだけ残す
  * - resume が「会話の記録が無い」で失敗したとき、または同じセッションで結果の届かない失敗（タイムアウト・中断を除く）が RESUME_FAILURE_LIMIT 回続いたときは、
  *   SDK セッションを捨て、seed（要約）を入れて、sessionId 無しで 1 回だけやり直す
  * 返す結果の失敗は呼び出し側で返信・log する
@@ -134,6 +135,13 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     } else {
       // 途中まで（task_add 済みなど）の文脈を次のターンに残す。同じセッションなら失敗の回数はそのまま
       if (result.sessionRecorded && result.sessionId !== undefined && result.sessionId !== sessions.get(key)) {
+        sessions.set(key, result.sessionId);
+      } else if (
+        // 中断・打ち切りでも、途中で受け取った session_id があれば、まだ保存が無いときだけ残す（既にあるものは上書きしない）
+        (result.errorMessage === ABORTED_ERROR || result.errorMessage === TIMEOUT_ERROR) &&
+        result.sessionId !== undefined &&
+        sessions.get(key) === undefined
+      ) {
         sessions.set(key, result.sessionId);
       }
     }

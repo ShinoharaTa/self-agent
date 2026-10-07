@@ -13,7 +13,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { FILE_NO_CONTEXT_REASON, FILE_READ_DENIED_REASON, FILE_WRITE_DENIED_REASON } from "../src/agent/file-access.ts";
 import { buildQueryOptions } from "../src/agent/query-options.ts";
-import type { ProgressStep, RunContext } from "../src/agent/runner.ts";
+import type { ProgressStep, RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
 import {
   describeResultError,
   FILE_GUARD_FAILED_REASON,
@@ -368,6 +368,52 @@ test("SdkAgentRunner: turnTimeoutSec を過ぎたら abort して timeout を返
     assert.deepEqual(await runner.run({ prompt: "x" }), expected);
     assert.equal(calls[0]!.options.abortController!.signal.aborted, true);
   }
+});
+
+test("SdkAgentRunner: 中断・打ち切りで終わったら、そのターンで受け取った session_id を返す（sessionRecorded は false）。受け取る前なら返さない", async () => {
+  /** sessionId を受け取ってから（無ければ受け取らずに）abort されるまで待つ */
+  const untilAbort = (sessionId: string | undefined) =>
+    async function* (call: QueryCall): AsyncIterable<SDKMessage> {
+      if (sessionId !== undefined) yield init(sessionId);
+      const signal = call.options.abortController!.signal;
+      if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+      throw new Error("Claude Code process aborted by user");
+    };
+  const abortSoon = async (runner: SdkAgentRunner, input: RunInput): Promise<RunResult> => {
+    const controller = new AbortController();
+    const running = runner.run({ ...input, signal: controller.signal });
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    return running;
+  };
+
+  // resume したターンでも、受け取ったもの（init の session_id）を返す
+  const resumed = setupRunner(untilAbort("session-1"));
+  assert.deepEqual(await abortSoon(resumed.runner, { prompt: "x", sessionId: "session-0" }), {
+    ok: false,
+    errorMessage: "aborted",
+    sessionId: "session-1",
+    sessionRecorded: false,
+    toolCalls: 0,
+  });
+
+  const before = setupRunner(untilAbort(undefined));
+  assert.deepEqual(await abortSoon(before.runner, { prompt: "x" }), {
+    ok: false,
+    errorMessage: "aborted",
+    sessionId: undefined,
+    sessionRecorded: false,
+    toolCalls: 0,
+  });
+
+  const timeout = setupRunner(untilAbort("session-2"), { turnTimeoutSec: 0.01 });
+  assert.deepEqual(await timeout.runner.run({ prompt: "x" }), {
+    ok: false,
+    errorMessage: "timeout",
+    sessionId: "session-2",
+    sessionRecorded: false,
+    toolCalls: 0,
+  });
 });
 
 test("SdkAgentRunner: run ごとに context を渡して MCP サーバーを作り、その query の Options に入れる", async () => {
