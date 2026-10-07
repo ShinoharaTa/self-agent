@@ -220,6 +220,11 @@ export class DiscordGateway implements Gateway {
     return sent.id;
   }
 
+  async editMessage(channelId: string, messageId: string, message: OutgoingMessage): Promise<void> {
+    const channel = await this.sendableChannel(channelId);
+    await channel.messages.edit(messageId, toPayload(message));
+  }
+
   async pinMessage(channelId: string, messageId: string): Promise<void> {
     const channel = await this.sendableChannel(channelId);
     await channel.messages.pin(messageId);

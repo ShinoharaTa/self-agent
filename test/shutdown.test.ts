@@ -62,6 +62,9 @@ class FakeGateway implements Gateway {
     this.events.push(`sendMessage ${message.text}`);
     return "message-1";
   }
+  async editMessage(_channelId: string, _messageId: string, message: OutgoingMessage): Promise<void> {
+    this.events.push(`editMessage ${message.text}`);
+  }
   async pinMessage(): Promise<void> {
     throw new Error("想定外の呼び出し");
   }
@@ -262,8 +265,9 @@ function handlerSetup(t: TestContext) {
     channelOps: { enqueueMove: () => {} },
     usage,
     queue: turnQueue,
+    now: () => NOW,
     log: () => {},
-  });
+  }).handleMessage;
   const shutdownDeps = deps(events, {
     gateway,
     queues: [turnQueue],

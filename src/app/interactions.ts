@@ -12,6 +12,7 @@ import { createProjectsCommand, createProjectsComponent, type ProjectsDeps } fro
 import { createSessionsCommand, type SessionsDeps } from "./commands/sessions.ts";
 import { createSetupCommand, type SetupDeps } from "./commands/setup.ts";
 import { createTasksCommand, createTasksComponent, type TasksDeps } from "./commands/tasks.ts";
+import { createTurnControlsComponent, type TurnControlsDeps } from "./commands/turn-controls.ts";
 import { createUsageCommand, type UsageDeps } from "./commands/usage.ts";
 import { createWaitCommand, createWaitComponent, type WaitDeps } from "./commands/wait.ts";
 
@@ -64,7 +65,8 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
  * ホームパネルの [新しいセッション] は /new と同じ作成なので、/setup・/new のキュー（queue）と gateway も要る。
  * 削除の確認の [削除する] はチャンネルを消すので、SDK セッション（sessions）と seed も要る。
  * ナレッジベースの削除の確認（kb:）と記憶の変更の [取り消す]（mem:）は、それぞれのストアだけを使う。
- * プロジェクトの削除（proj:）はディレクトリも消すので、プロジェクトの場所（projectsDir）も要る
+ * プロジェクトの削除（proj:）はディレクトリも消すので、プロジェクトの場所（projectsDir）も要る。
+ * ターンの [中断]・[続ける]（turn:）は発言の handler（実行中のターンの中断と、発言と同じ経路のターンの投入）を使う
  */
 export type ComponentDeps = CloseDeps &
   WaitDeps &
@@ -73,7 +75,8 @@ export type ComponentDeps = CloseDeps &
   DeleteDeps &
   KbDeleteDeps &
   MemoryUndoDeps &
-  ProjectsDeps;
+  ProjectsDeps &
+  TurnControlsDeps;
 
 /** 名前空間ごとのボタン・セレクト・モーダルのハンドラ */
 export function createComponents(deps: ComponentDeps): ComponentHandler[] {
@@ -86,6 +89,7 @@ export function createComponents(deps: ComponentDeps): ComponentHandler[] {
     createKbDeleteComponent(deps),
     createMemoryUndoComponent(deps),
     createProjectsComponent(deps),
+    createTurnControlsComponent(deps),
   ];
 }
 

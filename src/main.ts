@@ -106,13 +106,15 @@ const channelOps = new ChannelOpsQueue({
   gapMs: config.channelOpGapMs,
   log,
 });
-const handle = createHandler({
+// セッションのチャンネルのターンには途中経過と [中断] を付け、手順の上限で止まったら [続ける] を付ける
+const handler = createHandler({
   cfg: config,
   resolveChannel,
   gateway,
   ...turn,
   channelOps,
   queue: turnQueue,
+  now,
 });
 const commands = createCommands({
   cfg: config,
@@ -132,9 +134,11 @@ const commands = createCommands({
 const handleInteraction = createInteractionHandler({
   cfg: config,
   commands,
-  // ホームパネルの [新しいセッション] は /new と同じキュー（layoutQueue）で作る
+  // ホームパネルの [新しいセッション] は /new と同じキュー（layoutQueue）で作る。[中断]・[続ける] は発言の handler に渡す
   components: createComponents({
     cfg: config,
+    resolveChannel,
+    turns: handler,
     gateway,
     guildSettings,
     topicSessions,
@@ -206,7 +210,7 @@ const lifecycle = createShutdown(
     closeDb: () => db.close(),
     log,
   },
-  { handleMessage: handle, handleInteraction },
+  { handleMessage: handler.handleMessage, handleInteraction },
 );
 const onSignal = (): void => {
   if (lifecycle.stopping()) {
