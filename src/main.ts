@@ -16,12 +16,14 @@ import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { loadConfig, missingForStart } from "./config.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
+import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { InboxSummaryStore } from "./store/inbox-summaries.ts";
 import { KnowledgeStore } from "./store/knowledge.ts";
 import { MemoryStore } from "./store/memories.ts";
+import { ProjectStore } from "./store/projects.ts";
 import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
@@ -49,6 +51,7 @@ const seeds = new ChannelSeedStore(db, now);
 const inboxSummaries = new InboxSummaryStore(db, now);
 const knowledge = new KnowledgeStore(db, now);
 const memories = new MemoryStore(db, now);
+const projects = new ProjectStore(db, now);
 const log = (message: string): void => console.error(message);
 
 const gateway = new DiscordGateway(config.allowedGuildIds);
@@ -160,9 +163,34 @@ const scheduler = new Scheduler({
   log,
 });
 
-// 停止: シグナルで新しい受付と定期処理を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway と DB を閉じる
+// 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
+let staticServer: StaticServer | undefined;
+if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
+  const projectsDir = join(config.workDir, "projects");
+  mkdirSync(projectsDir, { recursive: true });
+  staticServer = createStaticServer({
+    host: "127.0.0.1",
+    port: config.servePort,
+    projectsDir,
+    projects,
+    allowedLogin: config.serveAllowedLogin,
+    timeZone: config.timeZone,
+    log,
+  });
+}
+
+// 停止: シグナルで新しい受付と定期処理を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・DB を閉じる
 const lifecycle = createShutdown(
-  { cfg: config, gateway, queues: [turnQueue, layoutQueue], scheduler, channelOps, closeDb: () => db.close(), log },
+  {
+    cfg: config,
+    gateway,
+    queues: [turnQueue, layoutQueue],
+    scheduler,
+    channelOps,
+    staticServer,
+    closeDb: () => db.close(),
+    log,
+  },
   { handleMessage: handle, handleInteraction },
 );
 const onSignal = (): void => {
@@ -175,6 +203,15 @@ const onSignal = (): void => {
 process.on("SIGINT", onSignal);
 process.on("SIGTERM", onSignal);
 
+// 起動に失敗しても（ポートの衝突など）Bot は動かし続ける。staticServer.listening() は false のまま
+if (staticServer !== undefined) {
+  try {
+    await staticServer.start();
+    log(`ページの配信を始めました（127.0.0.1:${config.servePort}）`);
+  } catch (error) {
+    log(`ページの配信を始められませんでした: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 await gateway.start(lifecycle.handlers);
 await registerCommands({ cfg: config, gateway, commands, log });
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });

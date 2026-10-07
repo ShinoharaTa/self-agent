@@ -372,6 +372,42 @@ test("gateway の停止に失敗しても DB は閉じ、reject しない", asyn
   assert.ok(shutdownDeps.logs.includes("Discord との切断に失敗しました: boom"));
 });
 
+test("静的サーバーは gateway を止めた後、DB を閉じる前に閉じる", async () => {
+  const events: string[] = [];
+  const { shutdown } = createShutdown(
+    deps(events, {
+      staticServer: {
+        close: async () => {
+          events.push("closeServer");
+        },
+      },
+    }),
+    noopInner,
+  );
+
+  await shutdown();
+
+  assert.deepEqual(events, ["stop", "closeServer", "closeDb"]);
+});
+
+test("静的サーバーを閉じるのに失敗しても DB は閉じ、reject しない", async () => {
+  const events: string[] = [];
+  const shutdownDeps = deps(events, {
+    staticServer: {
+      close: async () => {
+        events.push("closeServer");
+        throw new Error("boom");
+      },
+    },
+  });
+  const { shutdown } = createShutdown(shutdownDeps, noopInner);
+
+  await shutdown();
+
+  assert.deepEqual(events, ["stop", "closeServer", "closeDb"]);
+  assert.ok(shutdownDeps.logs.includes("ページの配信を止められませんでした: boom"));
+});
+
 test("停止を始めたら scheduler を止め（以後 tick しない）、実行中の tick が終わってから gateway を止めて DB を閉じる", async () => {
   const events: string[] = [];
   const gateway = new FakeGateway(events);
