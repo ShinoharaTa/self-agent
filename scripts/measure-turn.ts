@@ -1,6 +1,7 @@
 // P0 実測用: 2 ターン（2 回目は resume）の所要時間・子孫プロセスの RSS・トークン使用量を測る。
 // Options は本体と同じ（buildQueryOptions のシステムプロンプト・組み込みツール・許可と createTaskMcpServer のツール。maxTurns は #inbox と同じ）。
 // hooks（WebFetch・ファイル操作の guard）は付けない（測定の prompt はツールを使わない）。ツールのストアは一時ディレクトリの SQLite（本体の DB は開かない）。
+// cwd（workDir）も一時ディレクトリにし、本体の workDir は使わない。
 // 出力は JSON 1 つだけ。メッセージストリーム全体や env は出さない。
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -94,16 +95,19 @@ if (!config.oauthTokenPresent) {
   process.exit(1);
 }
 
-mkdirSync(config.workDir, { recursive: true });
 mkdirSync(config.claudeConfigDir, { recursive: true });
 
 // ツールのストアは一時ディレクトリの SQLite。ツール定義はストアや context によらず同じ（session_open・kb_delete・記憶の知らせは使わない）
 const storeDir = mkdtempSync(join(tmpdir(), "self-agent-measure-"));
 const db = openDb(join(storeDir, "self-agent.db"));
+// cwd は一時ディレクトリ（本体の workDir にファイルを作らない）
+const workDir = mkdtempSync(join(tmpdir(), "self-agent-measure-work-"));
+const measureConfig = { ...config, workDir };
 // 失敗で process.exit したときも消す
 process.on("exit", () => {
   db.close();
   rmSync(storeDir, { recursive: true, force: true });
+  rmSync(workDir, { recursive: true, force: true });
 });
 const kbMemory = {
   knowledge: new KnowledgeStore(db),
@@ -114,14 +118,14 @@ const kbMemory = {
 };
 const projectTools = {
   projects: new ProjectStore(db),
-  projectsDir: join(realpathSync(config.workDir), "projects"),
+  projectsDir: join(realpathSync(workDir), "projects"),
   publicBaseUrl: config.publicBaseUrl,
   serving: () => false,
 };
 /** 本体と同じ Options。MCP サーバーは同時に 1 つの query にしか接続できないので、ターンごとに作る */
 const baseOptions = (): Options => ({
   ...buildQueryOptions(
-    config,
+    measureConfig,
     createTaskMcpServer(
       new TaskStore(db),
       new TopicSessionStore(db),
