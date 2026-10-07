@@ -62,8 +62,8 @@ test("Write・Edit: このチャンネルのプロジェクトの中なら許す
   assert.deepEqual(judge("Edit", { file_path: join(project, "site", "index.html"), old_string: "a", new_string: "b" }), ALLOWED);
   // cwd（workDir）からの相対パス
   assert.deepEqual(judge("Write", { file_path: "projects/kakeibo/site/style.css", content: "" }), ALLOWED);
-  // 中に戻る `..` は通す
-  assert.deepEqual(judge("Write", { file_path: join(project, "src", "..", "site", "a.js"), content: "" }), ALLOWED);
+  // `..` を含む名前（要素が `..` ではない）は通す
+  assert.deepEqual(judge("Write", { file_path: join(project, "site", "a..b.js"), content: "" }), ALLOWED);
 });
 
 test("Write・Edit: `..` で外に出る・別のチャンネルのプロジェクト・projects の外・プロジェクトのディレクトリそのものは拒否する", (t) => {
@@ -96,6 +96,30 @@ test("Write・Edit: symlink で外に出るものは拒否する（ファイル�
   assert.deepEqual(judge("Write", { file_path: join(site, "outside", "new.txt"), content: "" }), WRITE_DENIED);
   assert.deepEqual(judge("Write", { file_path: join(site, "other", "site", "index.html"), content: "" }), WRITE_DENIED);
   assert.deepEqual(judge("Write", { file_path: join(site, "dangling.txt"), content: "" }), WRITE_DENIED);
+});
+
+test("パスの要素に `..` があれば、resolve・realpath の前に拒否する（中に戻るものも、symlink の後ろの `..` も）", (t) => {
+  const { root, projectsDir, judge } = setup(t);
+  const project = join(projectsDir, "kakeibo");
+  // site/deep は projects の外の <root>/a/b を指す。site/deep/../../secret.txt の実際の場所は <root>/secret.txt だが、
+  // 字面で畳むと projects/kakeibo/secret.txt（中）になる
+  mkdirSync(join(root, "a", "b"), { recursive: true });
+  symlinkSync(join(root, "a", "b"), join(project, "site", "deep"));
+  const escaped = `${project}/site/deep/../../secret.txt`;
+
+  assert.deepEqual(judge("Write", { file_path: escaped, content: "" }), WRITE_DENIED);
+  assert.deepEqual(judge("Edit", { file_path: escaped, old_string: "a", new_string: "b" }), WRITE_DENIED);
+  assert.deepEqual(judge("Read", { file_path: escaped }), READ_DENIED);
+  assert.deepEqual(judge("Glob", { pattern: "*", path: `${project}/site/deep/../..` }), READ_DENIED);
+  assert.deepEqual(judge("Grep", { pattern: "a", path: `${project}/site/deep/../..` }), READ_DENIED);
+  // 中に戻るだけの `..` も拒否する（相対パス・末尾の `..` も）
+  assert.deepEqual(judge("Write", { file_path: `${project}/src/../site/a.js`, content: "" }), WRITE_DENIED);
+  assert.deepEqual(judge("Read", { file_path: "projects/kakeibo/src/../site/index.html" }), READ_DENIED);
+  assert.deepEqual(judge("Glob", { pattern: "*", path: `${project}/site/..` }), READ_DENIED);
+  assert.deepEqual(judge("Grep", { pattern: "a", path: "../work/projects/kakeibo" }), READ_DENIED);
+  // `..` を含む名前は要素が `..` ではないので通す
+  assert.deepEqual(judge("Read", { file_path: `${project}/site/a..b.js` }), ALLOWED);
+  assert.deepEqual(judge("Grep", { pattern: "a", path: `${project}/site..old` }), ALLOWED);
 });
 
 test("Write・Edit: #inbox・プロジェクトの無いチャンネルでは、プロジェクトの中を指しても拒否する", (t) => {
@@ -140,16 +164,31 @@ test("Read・Glob・Grep: symlink で外に出るものは拒否する", (t) => 
   assert.deepEqual(judge("Glob", { pattern: "*", path: join(site, "outside") }), READ_DENIED);
 });
 
-test("Glob の pattern・Grep の glob: 絶対パス（/ か ~ で始まる）か、/ で分けた要素に .. があれば、path が中でも拒否する", (t) => {
+test("Glob の pattern・Grep の glob: 絶対パス（/ か ~ で始まる）か、部分文字列 .. を含めば、path が中でも拒否する", (t) => {
   const { projectsDir, judge } = setup(t);
   const path = join(projectsDir, "kakeibo");
 
-  for (const pattern of ["/etc/*", "~/.ssh/*", "~", "../*", "../../**/*", "site/../../other/**", "**/..", ".."]) {
+  for (const pattern of [
+    "/etc/*",
+    "~/.ssh/*",
+    "~",
+    "../*",
+    "../../**/*",
+    "site/../../other/**",
+    "**/..",
+    "..",
+    // 波括弧で `..` の要素を作る書き方
+    "{..,x}/*",
+    "{x,..}/secret.txt",
+    // 要素ではない `..` も含めて拒否する
+    "a..b.js",
+    "...",
+  ]) {
     assert.deepEqual(judge("Glob", { pattern, path }), READ_DENIED, pattern);
     assert.deepEqual(judge("Grep", { pattern: "a", path, glob: pattern }), READ_DENIED, pattern);
   }
-  // 中だけを指すもの（`..` を含む名前・ドットファイルは要素が `..` ではない）は通す
-  for (const pattern of ["**/*.html", "site/*", "*.{js,css}", "a..b.js", "**/.env", "./site/*"]) {
+  // 中だけを指すもの（ドットファイル・`./`）は通す
+  for (const pattern of ["**/*.html", "site/*", "*.{js,css}", "**/.env", "./site/*"]) {
     assert.deepEqual(judge("Glob", { pattern, path }), ALLOWED, pattern);
     assert.deepEqual(judge("Grep", { pattern: "a", path, glob: pattern }), ALLOWED, pattern);
   }

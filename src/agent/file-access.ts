@@ -76,19 +76,28 @@ function targetPath(toolName: string, toolInput: unknown, cwd: string): string |
 }
 
 /**
- * Glob の pattern・Grep の glob が path の外を指しうるか。絶対パス（`/` か `~` で始まる）か、`/` で分けた要素に `..` があれば true。
- * 無い・文字列でなければ false（path だけで判定する）
+ * Glob の pattern・Grep の glob が path の外を指しうるか。絶対パス（`/` か `~` で始まる）か、部分文字列 `..` を含めば true
+ * （`{..,x}` のような書き方も外に出られるので、要素に分けずに見る）。無い・文字列でなければ false（path だけで判定する）
  */
 function patternEscapes(toolName: string, toolInput: unknown): boolean {
   const input = typeof toolInput === "object" && toolInput !== null ? (toolInput as Record<string, unknown>) : {};
   const pattern = toolName === "Glob" ? input.pattern : toolName === "Grep" ? input.glob : undefined;
   if (typeof pattern !== "string") return false;
-  return pattern.startsWith("/") || pattern.startsWith("~") || pattern.split("/").includes("..");
+  return pattern.startsWith("/") || pattern.startsWith("~") || pattern.includes("..");
 }
 
 /**
- * ファイル操作を許すか。対象のパスは cwd を基準に絶対パスにし、resolveRealPath で実際の場所にして判定する（symlink・`..` で外に出られない）。
+ * パスの文字列が、`/` で分けた要素に `..` を持つか。resolve は symlink の後ろの `..` も字面で畳んでしまい、
+ * 実際には外を指すパスを中と判定しうるので、resolve・realpath の前に拒否する
+ */
+function hasParentSegment(path: string): boolean {
+  return path.split("/").includes("..");
+}
+
+/**
+ * ファイル操作を許すか。対象のパスは cwd を基準に絶対パスにし、resolveRealPath で実際の場所にして判定する（symlink で外に出られない）。
  * - context が無い: すべて拒否
+ * - 対象のパス（Read・Write・Edit の file_path、Glob・Grep の path）の要素に `..` があれば拒否
  * - Write・Edit: #inbox・プロジェクトの無いチャンネルでは拒否。対象が `<realpath(projectsDir)>/<slug>/` の中でなければ拒否
  * - Read・Glob・Grep: 対象が `<realpath(projectsDir)>/` の中でなければ拒否。Glob の pattern・Grep の glob が絶対パスか `..` を含めば拒否
  * FILE_TOOLS 以外のツールは何もせず許す
@@ -102,7 +111,8 @@ export function judgeFileAccess(request: FileAccessRequest): FileAccessDecision 
   if (write && (context.kind !== "session" || project === undefined)) return denied;
   if (patternEscapes(toolName, toolInput)) return denied;
   const raw = targetPath(toolName, toolInput, cwd);
-  const target = raw === undefined ? undefined : resolveRealPath(resolve(cwd, raw));
+  if (raw === undefined || hasParentSegment(raw)) return denied;
+  const target = resolveRealPath(resolve(cwd, raw));
   const projects = resolveRealPath(projectsDir);
   if (target === undefined || projects === undefined) return denied;
   const allowedDir = write && project !== undefined ? join(projects, project.slug) : projects;
