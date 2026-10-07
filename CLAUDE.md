@@ -18,7 +18,7 @@ npm run check             # 型チェック（tsc --noEmit）
 npm test                  # 単体テスト（test/*.test.ts。偽 Runner / 偽 Gateway / 一時 SQLite）
 npm run test:integration  # 結合テスト（OAuth トークンが無ければ skip。あれば利用枠を消費する）
 npm start                 # 起動（必須の環境変数が欠けていれば変数名を出して exit 1）
-npm run measure           # P0 実測（OAuth トークン必須。利用枠を消費する）
+npm run measure           # P0 実測（本体と同じ Options・ツールで 2 ターン。OAuth トークン必須。利用枠を消費する）
 ```
 
 ## ディレクトリ構成
@@ -45,7 +45,7 @@ src/
 ├── store/       # node:sqlite（user_version でマイグレーション）。tasks / sdk-sessions（SDK の session_id）/ usage（ターンごとのトークン・最後のステップの入力・compaction・ツール呼び出し数。/usage の集計）/ guild-settings（/setup で作ったカテゴリ・チャンネルの ID と #inbox を最後に切り替えた日と時刻）/ inbox-summaries（#inbox を切り替えたときの要約）/ topic-sessions（/new・session_open で作ったセッションのチャンネルと作られ方（origin）、/close の要約と下書き、削除の確認のメッセージと削除した時刻。削除後も要約は残す）/ channel-seeds（次のターンの prompt の先頭に付ける文）/ knowledge（ナレッジベース。kb_entries と FTS5 trigram の kb_fts。検索は 3 文字以上の語を MATCH・3 文字未満を LIKE で AND。url_key は呼び出し側が正規化した URL）/ memories（オーナーについての記憶。論理削除）/ projects（作って URL で渡すプロジェクト。論理削除。channel_id は削除されていないものの中で一意）
 ├── serve/       # 作ったプロジェクトの静的サーバー（node:http。127.0.0.1 で待ち受け、tailnet には tailscale serve で出す）。`/p/<slug>/<path>` → `<workDir>/projects/<slug>/site/<path>`、`/` は一覧。GET/HEAD だけ。削除済みの slug・ドットファイル・`..`・site の外への symlink は 404。SELF_AGENT_SERVE_ALLOWED_LOGIN があれば Tailscale-User-Login を確かめる。log はリクエストごとには出さない
 └── discord/     # Gateway インタフェースと discord.js 実装。convert.ts は内部型 ⇔ Discord の形の変換（discord.js は型だけ import）
-scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測
+scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測（buildQueryOptions と createTaskMcpServer の本体と同じシステムプロンプト・ツールで測る。hooks は付けない。ツールのストアは一時 SQLite）
 test/            # 単体テスト。test/integration/ は結合テスト
 docs/            # REQUIREMENTS.md, design/, research/, archive/, plan/（フェーズごとの実装仕様）
 ```
