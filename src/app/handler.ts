@@ -47,9 +47,28 @@ export function progressText(elapsedMs: number, toolCalls: number, label: string
   return label === undefined ? head : `${head}\n${label}`;
 }
 
-/** ターンが終わった後の途中経過のメッセージの本文（中断で終わったら「中断しました」、それ以外は「完了」） */
-export function progressEndText(aborted: boolean, elapsedMs: number, toolCalls: number): string {
-  return `${aborted ? "中断しました" : "完了"}（${formatElapsed(elapsedMs)}・ツール ${toolCalls} 回）`;
+/** ターンの終わり方（途中経過の最後の書き換えに使う）。failed は timeout・例外など、それ以外の失敗 */
+export type TurnOutcome = "done" | "max_turns" | "aborted" | "failed";
+
+const OUTCOME_LABELS: Record<TurnOutcome, string> = {
+  done: "完了",
+  max_turns: "手順の上限で止まりました",
+  aborted: "中断しました",
+  failed: "止まりました",
+};
+
+/** ターンの終わり方。結果が無ければ（例外）failed */
+export function turnOutcome(result: RunResult | undefined): TurnOutcome {
+  if (result === undefined) return "failed";
+  if (result.ok) return "done";
+  if (result.errorMessage === ABORTED_ERROR) return "aborted";
+  // sdk-runner は result の失敗を subtype から書き始める
+  return result.errorMessage.startsWith(MAX_TURNS_ERROR_PREFIX) ? "max_turns" : "failed";
+}
+
+/** ターンが終わった後の途中経過のメッセージの本文（「完了」「手順の上限で止まりました」「中断しました」「止まりました」） */
+export function progressEndText(outcome: TurnOutcome, elapsedMs: number, toolCalls: number): string {
+  return `${OUTCOME_LABELS[outcome]}（${formatElapsed(elapsedMs)}・ツール ${toolCalls} 回）`;
 }
 
 /** テストでは偽のタイマーに差し替える */
@@ -181,11 +200,11 @@ export function createHandler(deps: HandlerDeps): Handler {
   /**
    * セッションのチャンネルのターンの途中経過。開始から PROGRESS_DELAY_MS 経っても終わっていなければ [中断] 付きのメッセージを 1 つ送り、
    * 以後 PROGRESS_INTERVAL_MS ごとに、表示が変わっていれば書き換える（ボタンは残す）。finish でタイマーを止め、
-   * 送っていれば「完了」か「中断しました」に書き換えてボタンを外す。送信・編集は順に行い、失敗は log だけ（ターンは止めない）
+   * 送っていれば終わり方（progressEndText）に書き換えてボタンを外す。送信・編集は順に行い、失敗は log だけ（ターンは止めない）
    */
   const startProgress = (
     channelId: string,
-  ): { onProgress: (step: ProgressStep) => void; finish: (aborted: boolean) => Promise<void> } => {
+  ): { onProgress: (step: ProgressStep) => void; finish: (outcome: TurnOutcome) => Promise<void> } => {
     const startedAt = now().getTime();
     let toolCalls = 0;
     let label: string | undefined;
@@ -233,11 +252,11 @@ export function createHandler(deps: HandlerDeps): Handler {
         toolCalls++;
         label = step.label;
       },
-      finish: async (aborted) => {
+      finish: async (outcome) => {
         finished = true;
         cancelDelay();
         stopEvery();
-        const text = progressEndText(aborted, elapsed(), toolCalls);
+        const text = progressEndText(outcome, elapsed(), toolCalls);
         enqueue(async () => {
           if (messageId === undefined) return;
           try {
@@ -282,7 +301,7 @@ export function createHandler(deps: HandlerDeps): Handler {
       stopTyping();
       if (controller !== undefined && running.get(channelId) === controller) running.delete(channelId);
       // 途中経過のタイマーはターンの終わりで必ず止める
-      await progress?.finish(result !== undefined && !result.ok && result.errorMessage === ABORTED_ERROR);
+      await progress?.finish(turnOutcome(result));
     }
 
     if (result.ok) {
