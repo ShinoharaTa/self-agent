@@ -125,8 +125,11 @@ export type Handler = {
    * 受け付けるセッションでなければ何もしない。返信まで待つ。reject しない
    */
   continueTurn(guildId: string, channelId: string, at: Date): Promise<void>;
-  /** そのセッションのチャンネルで実行中の（発言・[続ける] の）ターンを中断する。実行中のターンが無ければ false（#inbox・/close のターンは中断できない） */
-  abortTurn(channelId: string): boolean;
+  /**
+   * そのセッションのチャンネルで実行中の（発言・[続ける] の）ターンを、番号（turnSeq）が一致するときだけ中断する。
+   * 実行中のターンが無い・番号が違う（前のターンのボタン）なら false（#inbox・/close のターンは中断できない）
+   */
+  abortTurn(channelId: string, turnSeq: number): boolean;
 };
 
 /** 1 ターンの依頼（オーナーの発言か [続ける]） */
@@ -169,8 +172,10 @@ export function createHandler(deps: HandlerDeps): Handler {
   } = deps;
   const timers = deps.timers ?? REAL_TIMERS;
   const turnDeps: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
-  /** 実行中のセッションのチャンネルのターンの中断（key は channelId。ターンが終わったら消す） */
-  const running = new Map<string, AbortController>();
+  /** 実行中のセッションのチャンネルのターンの番号と中断（key は channelId。ターンが終わったら消す） */
+  const running = new Map<string, { turnSeq: number; controller: AbortController }>();
+  /** 最後に振ったターンの番号（セッションのチャンネルのターンごとに 1 ずつ増やす。[中断] のボタンに入れる） */
+  let lastTurnSeq = 0;
 
   /** セッションが待ち・完了なら進行中に戻して進行中カテゴリへ移す（知らせは返信の先頭に付ける）。戻したら true */
   const revive = (session: Pick<TopicSession, "channelId" | "guildId" | "state">): boolean => {
@@ -198,12 +203,13 @@ export function createHandler(deps: HandlerDeps): Handler {
   };
 
   /**
-   * セッションのチャンネルのターンの途中経過。開始から PROGRESS_DELAY_MS 経っても終わっていなければ [中断] 付きのメッセージを 1 つ送り、
+   * セッションのチャンネルのターンの途中経過。開始から PROGRESS_DELAY_MS 経っても終わっていなければ、そのターンの番号の [中断] 付きのメッセージを 1 つ送り、
    * 以後 PROGRESS_INTERVAL_MS ごとに、表示が変わっていれば書き換える（ボタンは残す）。finish でタイマーを止め、
    * 送っていれば終わり方（progressEndText）に書き換えてボタンを外す。送信・編集は順に行い、失敗は log だけ（ターンは止めない）
    */
   const startProgress = (
     channelId: string,
+    turnSeq: number,
   ): { onProgress: (step: ProgressStep) => void; finish: (outcome: TurnOutcome) => Promise<void> } => {
     const startedAt = now().getTime();
     let toolCalls = 0;
@@ -237,7 +243,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         try {
           messageId = await gateway.sendMessage(channelId, {
             text,
-            components: [{ kind: "buttons", buttons: [abortTurnButton(channelId)] }],
+            components: [{ kind: "buttons", buttons: [abortTurnButton(channelId, turnSeq)] }],
           });
           shown = text;
         } catch (error) {
@@ -273,16 +279,16 @@ export function createHandler(deps: HandlerDeps): Handler {
   /**
    * channelName は prompt の日時ヘッダに入れるチャンネル名。revivedBeforeQueue はキュー待ちの前に進行中に戻したか。
    * セッションはキュー待ちの間に変わりうる（/close の確定で完了になる等）ので、ここで読み直して待ち・完了なら改めて進行中に戻す。
-   * セッションのチャンネルのターンは、実行中の間だけ中断できるようにし、途中経過を出す
+   * セッションのチャンネルのターンは、番号を振って実行中の間だけ中断できるようにし、途中経過を出す
    */
   const handleTurn = async (request: TurnRequest, channelName: string, revivedBeforeQueue: boolean): Promise<void> => {
     const { guildId, channelId, kind } = request;
     const current = kind === "session" ? topicSessions.get(channelId) : undefined;
     const revived = (current !== undefined && revive(current)) || revivedBeforeQueue;
     const stopTyping = gateway.startTyping(channelId);
-    const controller = kind === "session" ? new AbortController() : undefined;
-    if (controller !== undefined) running.set(channelId, controller);
-    const progress = kind === "session" ? startProgress(channelId) : undefined;
+    const turn = kind === "session" ? { turnSeq: ++lastTurnSeq, controller: new AbortController() } : undefined;
+    if (turn !== undefined) running.set(channelId, turn);
+    const progress = turn === undefined ? undefined : startProgress(channelId, turn.turnSeq);
     let result: RunResult | undefined;
     try {
       // 会話の単位はチャンネル（key は channelId）
@@ -294,12 +300,12 @@ export function createHandler(deps: HandlerDeps): Handler {
         prompt: buildTurnPrompt(request.content, request.at, cfg.timeZone, channelName),
         // WebFetch で取得できるのは、この発言に貼られた URL だけ
         allowedUrls: extractUrls(request.content),
-        ...(controller === undefined ? {} : { signal: controller.signal }),
+        ...(turn === undefined ? {} : { signal: turn.controller.signal }),
         ...(progress === undefined ? {} : { onProgress: progress.onProgress }),
       });
     } finally {
       stopTyping();
-      if (controller !== undefined && running.get(channelId) === controller) running.delete(channelId);
+      if (turn !== undefined && running.get(channelId) === turn) running.delete(channelId);
       // 途中経過のタイマーはターンの終わりで必ず止める
       await progress?.finish(turnOutcome(result));
     }
@@ -377,10 +383,10 @@ export function createHandler(deps: HandlerDeps): Handler {
         log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`);
       }
     },
-    abortTurn: (channelId) => {
-      const controller = running.get(channelId);
-      if (controller === undefined) return false;
-      controller.abort();
+    abortTurn: (channelId, turnSeq) => {
+      const turn = running.get(channelId);
+      if (turn === undefined || turn.turnSeq !== turnSeq) return false;
+      turn.controller.abort();
       return true;
     },
   };
