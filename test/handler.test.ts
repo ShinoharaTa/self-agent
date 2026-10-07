@@ -968,10 +968,16 @@ test("error_max_turns: SDK が記録した session_id を保存して専用の�
   assert.equal(gateway.sent[1]?.text, "続きです");
 });
 
-test("result が届かなかった失敗（例外・タイムアウト）では、途中で受け取った session_id があっても保存しない", async (t) => {
+test("result が届かなかった失敗（例外・result なし）では、途中で受け取った session_id があっても保存しない", async (t) => {
   const { gateway, sessions, handle } = setup(t, [
-    { ok: false, errorMessage: "timeout", sessionId: "session-x", sessionRecorded: false, toolCalls: 0 },
-    { ok: false, errorMessage: "exception: Error: boom", sessionId: "session-y", sessionRecorded: false, toolCalls: 0 },
+    { ok: false, errorMessage: "exception: Error: boom", sessionId: "session-x", sessionRecorded: false, toolCalls: 0 },
+    {
+      ok: false,
+      errorMessage: "result メッセージを受け取れませんでした",
+      sessionId: "session-y",
+      sessionRecorded: false,
+      toolCalls: 0,
+    },
   ]);
 
   await handle(message({ id: "message-1" }));
@@ -979,6 +985,46 @@ test("result が届かなかった失敗（例外・タイムアウト）では�
 
   assert.equal(sessions.get("inbox-1"), undefined);
   assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY, FAILURE_REPLY]);
+});
+
+test("中断・打ち切り: 途中で受け取った session_id は、そのチャンネルにまだ SDK セッションが無いときだけ保存し、次のターンはそこから resume する", async (t) => {
+  const { gateway, runner, sessions, topicSessions, handle } = setup(t, [
+    { ok: false, errorMessage: "timeout", sessionId: "session-t", sessionRecorded: false, toolCalls: 0 },
+    okResult("session-t", "続きです"),
+    { ok: false, errorMessage: "aborted", sessionId: "session-a", sessionRecorded: false, toolCalls: 2 },
+  ]);
+  topicSessions.create(TOPIC);
+
+  await handle(message({ id: "message-1" }));
+  assert.equal(sessions.get("inbox-1"), "session-t");
+  assert.equal(sessions.failureCount("inbox-1"), 0);
+  await handle(message({ id: "message-2" }));
+  assert.equal(runner.inputs[1]!.sessionId, "session-t");
+
+  await handle(message({ id: "message-3", channelId: "topic-1" }));
+  assert.equal(sessions.get("topic-1"), "session-a");
+  assert.equal(sessions.failureCount("topic-1"), 0);
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY, "続きです", ABORTED_REPLY]);
+});
+
+test("中断・打ち切り: 既に保存している SDK セッションは上書きせず、session_id を受け取れていなければ何も保存しない", async (t) => {
+  const { sessions, topicSessions, handle } = setup(t, [
+    { ok: false, errorMessage: "aborted", sessionId: "session-new", sessionRecorded: false, toolCalls: 0 },
+    { ok: false, errorMessage: "timeout", sessionId: "session-new", sessionRecorded: false, toolCalls: 0 },
+    { ok: false, errorMessage: "aborted", sessionRecorded: false, toolCalls: 0 },
+    { ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 },
+  ]);
+  topicSessions.create(TOPIC);
+  sessions.set("topic-1", "session-old");
+
+  await handle(message({ id: "message-1", channelId: "topic-1" }));
+  await handle(message({ id: "message-2", channelId: "topic-1" }));
+  assert.equal(sessions.get("topic-1"), "session-old");
+  assert.equal(sessions.failureCount("topic-1"), 0);
+
+  await handle(message({ id: "message-3" }));
+  await handle(message({ id: "message-4" }));
+  assert.equal(sessions.get("inbox-1"), undefined);
 });
 
 test("連続失敗: 同じ SDK セッションで 2 回までは捨てず、3 回目で捨てて seed を入れ、sessionId 無しで 1 回だけやり直す", async (t) => {

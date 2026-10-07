@@ -311,7 +311,8 @@ export class SdkAgentRunner implements AgentRunner {
     let compacted: Compaction | undefined;
     // 途中経過は tool_use ごとに 1 回（同じ tool_use の id は 1 回だけ）
     const seenToolUseIds = new Set<string>();
-    // 中断（[中断]）と打ち切りは同じ abortController で止まるので、input.signal で見分ける
+    // 中断（[中断]）と打ち切りは同じ abortController で止まるので、input.signal で見分ける。
+    // 途中で受け取った session_id は返す（turn.ts が、まだ SDK セッションの無いチャンネルでだけ残す）
     const stopped = (): RunResult => ({
       ok: false,
       errorMessage: input.signal?.aborted === true ? "aborted" : "timeout",
