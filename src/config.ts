@@ -40,11 +40,11 @@ export type Config = {
   /** #inbox の直近の成功したターンの最後のステップの入力（input + cache read + cache creation）がこれを超えたら、日次を待たずに切り替える */
   inboxMaxInputTokens: number;
   /** 任意。作ったプロジェクトを配る静的サーバーのポート（127.0.0.1 で待ち受ける）。これと publicBaseUrl のどちらかが無ければ機能ごと無効 */
-  servePort?: number;
+  servePort: number | undefined;
   /** 任意。プロジェクトの URL の前半（例 `https://<host>.<tailnet>.ts.net:9443`）。末尾の `/` は除いてある */
-  publicBaseUrl?: string;
+  publicBaseUrl: string | undefined;
   /** 任意。設定すると、静的サーバーは Tailscale-User-Login ヘッダがこれと一致しない要求を拒否する */
-  serveAllowedLogin?: string;
+  serveAllowedLogin: string | undefined;
   /** セッションのチャンネルの 1 ターンの手順（maxTurns）の上限 */
   sessionMaxTurns: number;
   /** セッションのチャンネルの 1 ターンの打ち切りまでの秒数 */
