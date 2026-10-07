@@ -39,6 +39,16 @@ export type Config = {
   inboxRotateAt: TimeOfDay;
   /** #inbox の直近の成功したターンの最後のステップの入力（input + cache read + cache creation）がこれを超えたら、日次を待たずに切り替える */
   inboxMaxInputTokens: number;
+  /** 任意。作ったプロジェクトを配る静的サーバーのポート（127.0.0.1 で待ち受ける）。これと publicBaseUrl のどちらかが無ければ機能ごと無効 */
+  servePort?: number;
+  /** 任意。プロジェクトの URL の前半（例 `https://<host>.<tailnet>.ts.net:9443`）。末尾の `/` は除いてある */
+  publicBaseUrl?: string;
+  /** 任意。設定すると、静的サーバーは Tailscale-User-Login ヘッダがこれと一致しない要求を拒否する */
+  serveAllowedLogin?: string;
+  /** セッションのチャンネルの 1 ターンの手順（maxTurns）の上限 */
+  sessionMaxTurns: number;
+  /** セッションのチャンネルの 1 ターンの打ち切りまでの秒数 */
+  sessionTurnTimeoutSec: number;
 };
 
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
@@ -55,6 +65,8 @@ const DEFAULT_AUTO_SESSION_PER_DAY = 3;
 const DEFAULT_DELETE_AFTER_DAYS = 30;
 const DEFAULT_INBOX_ROTATE_AT: TimeOfDay = { hour: 4, minute: 0 };
 const DEFAULT_INBOX_MAX_INPUT_TOKENS = 150000;
+const DEFAULT_SESSION_MAX_TURNS = 40;
+const DEFAULT_SESSION_TURN_TIMEOUT_SEC = 900;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -91,6 +103,26 @@ function positiveInteger(name: string, value: string | undefined, fallback: numb
     throw new Error(`${name} は正の整数で指定してください`);
   }
   return parsed;
+}
+
+/** 1〜65535 の整数。それ以外はエラー */
+function port(name: string, value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = /^\d+$/.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(`${name} は 1〜65535 の整数で指定してください`);
+  }
+  return parsed;
+}
+
+/** `http://` か `https://` で始まる URL。末尾の `/` は除く。それ以外はエラー */
+function baseUrl(name: string, value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.replace(/\/+$/, "");
+  if (!/^https?:\/\//.test(trimmed)) {
+    throw new Error(`${name} は http:// か https:// で始まる URL で指定してください`);
+  }
+  return trimmed;
 }
 
 /** `HH:MM`（00:00〜23:59、時・分とも 2 桁）。それ以外はエラー */
@@ -165,6 +197,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "SELF_AGENT_INBOX_MAX_INPUT_TOKENS",
       nonEmpty(env.SELF_AGENT_INBOX_MAX_INPUT_TOKENS),
       DEFAULT_INBOX_MAX_INPUT_TOKENS,
+    ),
+    servePort: port("SELF_AGENT_SERVE_PORT", nonEmpty(env.SELF_AGENT_SERVE_PORT)),
+    publicBaseUrl: baseUrl("SELF_AGENT_PUBLIC_BASE_URL", nonEmpty(env.SELF_AGENT_PUBLIC_BASE_URL)),
+    serveAllowedLogin: nonEmpty(env.SELF_AGENT_SERVE_ALLOWED_LOGIN),
+    sessionMaxTurns: positiveInteger(
+      "SELF_AGENT_SESSION_MAX_TURNS",
+      nonEmpty(env.SELF_AGENT_SESSION_MAX_TURNS),
+      DEFAULT_SESSION_MAX_TURNS,
+    ),
+    sessionTurnTimeoutSec: positiveInteger(
+      "SELF_AGENT_SESSION_TURN_TIMEOUT_SEC",
+      nonEmpty(env.SELF_AGENT_SESSION_TURN_TIMEOUT_SEC),
+      DEFAULT_SESSION_TURN_TIMEOUT_SEC,
     ),
   };
 }
