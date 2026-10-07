@@ -25,6 +25,11 @@ test("未設定ならデフォルト値を使う", () => {
     deleteAfterDays: 30,
     inboxRotateAt: { hour: 4, minute: 0 },
     inboxMaxInputTokens: 150000,
+    servePort: undefined,
+    publicBaseUrl: undefined,
+    serveAllowedLogin: undefined,
+    sessionMaxTurns: 40,
+    sessionTurnTimeoutSec: 900,
   });
 });
 
@@ -48,6 +53,11 @@ test("環境変数で上書きできる", () => {
     SELF_AGENT_DELETE_AFTER_DAYS: "7",
     SELF_AGENT_INBOX_ROTATE_AT: "23:59",
     SELF_AGENT_INBOX_MAX_INPUT_TOKENS: "80000",
+    SELF_AGENT_SERVE_PORT: "8790",
+    SELF_AGENT_PUBLIC_BASE_URL: "https://example.ts.net:9443/",
+    SELF_AGENT_SERVE_ALLOWED_LOGIN: "owner@example.com",
+    SELF_AGENT_SESSION_MAX_TURNS: "60",
+    SELF_AGENT_SESSION_TURN_TIMEOUT_SEC: "1200",
   });
   assert.equal(config.claudeConfigDir, "/srv/claude");
   assert.equal(config.workDir, "/srv/work");
@@ -66,6 +76,11 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.deleteAfterDays, 7);
   assert.deepEqual(config.inboxRotateAt, { hour: 23, minute: 59 });
   assert.equal(config.inboxMaxInputTokens, 80000);
+  assert.equal(config.servePort, 8790);
+  assert.equal(config.publicBaseUrl, "https://example.ts.net:9443");
+  assert.equal(config.serveAllowedLogin, "owner@example.com");
+  assert.equal(config.sessionMaxTurns, 60);
+  assert.equal(config.sessionTurnTimeoutSec, 1200);
 });
 
 test("token は有無だけを返し、値は含めない", () => {
@@ -192,6 +207,71 @@ test("SELF_AGENT_INBOX_MAX_INPUT_TOKENS が正の整数でなければエラー"
     );
   }
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_INBOX_MAX_INPUT_TOKENS: "" }).inboxMaxInputTokens, 150000);
+});
+
+test("SELF_AGENT_SERVE_PORT は 1〜65535 の整数だけを受け付け、それ以外はエラー", () => {
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SERVE_PORT: "1" }).servePort, 1);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SERVE_PORT: "65535" }).servePort, 65535);
+  for (const value of ["0", "65536", "-1", "1.5", "abc", " 8790"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_SERVE_PORT: value }),
+      /SELF_AGENT_SERVE_PORT/,
+      value,
+    );
+  }
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SERVE_PORT: "" }).servePort, undefined);
+});
+
+test("SELF_AGENT_PUBLIC_BASE_URL は http:// か https:// で始まるものだけを受け付け、末尾の / を除く", () => {
+  for (const [value, expected] of [
+    ["https://example.ts.net:9443", "https://example.ts.net:9443"],
+    ["https://example.ts.net:9443/", "https://example.ts.net:9443"],
+    ["https://example.ts.net:9443//", "https://example.ts.net:9443"],
+    ["http://127.0.0.1:8790/", "http://127.0.0.1:8790"],
+  ] as const) {
+    assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_PUBLIC_BASE_URL: value }).publicBaseUrl, expected, value);
+  }
+  for (const value of [
+    "example.ts.net",
+    "ftp://example.ts.net",
+    "https:/example.ts.net",
+    "//example.ts.net",
+    "https://",
+    " https://example.ts.net",
+  ]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_PUBLIC_BASE_URL: value }),
+      /SELF_AGENT_PUBLIC_BASE_URL/,
+      value,
+    );
+  }
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_PUBLIC_BASE_URL: "" }).publicBaseUrl, undefined);
+});
+
+test("SELF_AGENT_SERVE_ALLOWED_LOGIN は空なら未設定", () => {
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SERVE_ALLOWED_LOGIN: "" }).serveAllowedLogin, undefined);
+});
+
+test("SELF_AGENT_SESSION_MAX_TURNS が正の整数でなければエラー", () => {
+  for (const value of ["0", "-1", "1.5", "abc"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_SESSION_MAX_TURNS: value }),
+      /SELF_AGENT_SESSION_MAX_TURNS/,
+      value,
+    );
+  }
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SESSION_MAX_TURNS: "" }).sessionMaxTurns, 40);
+});
+
+test("SELF_AGENT_SESSION_TURN_TIMEOUT_SEC が正の整数でなければエラー", () => {
+  for (const value of ["0", "-1", "1.5", "abc"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_SESSION_TURN_TIMEOUT_SEC: value }),
+      /SELF_AGENT_SESSION_TURN_TIMEOUT_SEC/,
+      value,
+    );
+  }
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SESSION_TURN_TIMEOUT_SEC: "" }).sessionTurnTimeoutSec, 900);
 });
 
 test("HOME が無く既定のディレクトリが必要ならエラー", () => {

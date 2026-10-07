@@ -155,6 +155,21 @@ export const MIGRATIONS: readonly string[] = [
     deleted_at TEXT
   );
   `,
+  // v13: 作って URL で渡すプロジェクト（時刻は Unix 時刻のミリ秒）。deleted_at で論理削除し、削除済みの slug も UNIQUE のまま残す（同じ URL が別のものを指さないように）。
+  // channel_id は削除されていないものの中で一意（削除した後は同じチャンネルで新しく作れる）
+  `
+  CREATE TABLE projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER
+  );
+  CREATE UNIQUE INDEX projects_channel_id_active ON projects (channel_id) WHERE deleted_at IS NULL;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
