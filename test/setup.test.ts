@@ -23,6 +23,7 @@ import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
 import { MemoryStore } from "../src/store/memories.ts";
+import { ProjectStore } from "../src/store/projects.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -513,8 +514,11 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     log,
   };
   const layoutQueue = new KeyedSerialQueue(1);
+  const projects = new ProjectStore(db, () => NOW);
+  // /projects の削除はここでは押さないので、ディレクトリは作らない
+  const projectsDir = join(tmpdir(), "self-agent-test-projects-unused");
   const commands = createCommands({
-    cfg: { timeZone: "Asia/Tokyo" },
+    cfg: { timeZone: "Asia/Tokyo", publicBaseUrl: undefined },
     gateway,
     guildSettings,
     topicSessions,
@@ -522,16 +526,18 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     channelOps,
     tasks,
     usage: turn.usage,
+    projects,
+    projectsDir,
     turnQueue,
     turn,
     log,
   });
   assert.deepEqual(
     commands.map((command) => command.def.name),
-    ["help", "setup", "new", "close", "wait", "sessions", "tasks", "usage"],
+    ["help", "setup", "new", "close", "wait", "sessions", "tasks", "usage", "projects"],
   );
   const components = createComponents({
-    cfg: { deleteAfterDays: 30 },
+    cfg: { deleteAfterDays: 30, timeZone: "Asia/Tokyo", publicBaseUrl: undefined },
     gateway,
     guildSettings,
     topicSessions,
@@ -541,6 +547,8 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     tasks,
     knowledge: new KnowledgeStore(db, () => NOW),
     memories: turn.memories,
+    projects,
+    projectsDir,
     channelOps,
     turnQueue,
     turn,
@@ -548,7 +556,7 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
   });
   assert.deepEqual(
     components.map((component) => component.namespace),
-    ["close", "wait", "tasks", "home", "del", "kb", "mem"],
+    ["close", "wait", "tasks", "home", "del", "kb", "mem", "proj"],
   );
   const handle = createInteractionHandler({
     cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },
