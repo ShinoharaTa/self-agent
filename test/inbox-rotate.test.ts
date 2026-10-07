@@ -362,18 +362,29 @@ test("日次: SELF_AGENT_TZ と SELF_AGENT_INBOX_ROTATE_AT の値で判定する
   assert.equal(env.state().rotatedDate, "2026-10-02");
 });
 
-test("日次: まだ一度も切り替えていないサーバーは、rotateAt を過ぎた最初の tick で切り替える", async (t) => {
+test("日次: まだ一度も切り替えていないサーバー（/setup 直後）は、今を基準として記録するだけで切り替えない。翌日の rotateAt から切り替える", async (t) => {
   const env = setup(t, [ok(SUMMARY)], { rotatedDate: null });
-  env.chatAt(at(ROTATE_AT, -48 * HOUR_MS));
+  env.chatAt(at(ROTATE_AT, 5 * HOUR_MS));
 
-  env.clock.now = at(ROTATE_AT, -1);
-  await env.rotate();
-  assert.equal(env.state().rotatedDate, null);
-
+  // rotateAt を過ぎていても、最初の tick は基準を記録するだけ（LLM を呼ばない・知らせない）
   env.clock.now = at(ROTATE_AT, 6 * HOUR_MS);
   await env.rotate();
-  assert.equal(env.runner.inputs.length, 1);
+  assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(env.gateway.events, []);
   assert.equal(env.state().rotatedDate, "2026-10-03");
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, at(ROTATE_AT, 6 * HOUR_MS).toISOString());
+
+  // 同じ日の後の tick でも切り替えない
+  env.chatAt(at(ROTATE_AT, 7 * HOUR_MS));
+  env.clock.now = at(ROTATE_AT, 8 * HOUR_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 0);
+
+  // 翌日の rotateAt を過ぎたら切り替える
+  env.clock.now = at(ROTATE_AT, 24 * HOUR_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 1);
+  assert.equal(env.state().rotatedDate, "2026-10-04");
 });
 
 test("日次: その日に既に切り替えていれば、会話があっても何もしない", async (t) => {
@@ -833,6 +844,7 @@ test("対象は許可サーバーのうち /setup 済み（DB に #inbox があ�
 test("複数のサーバーは 1 つずつ切り替え、1 つが失敗しても残りは切り替える", async (t) => {
   const env = setup(t, [FAILED, ok(SUMMARY, "session-2")], { allowedGuildIds: ["guild-1", "guild-2"] });
   env.guildSettings.setChannel("guild-2", "inboxChannelId", "inbox-2");
+  env.guildSettings.setInboxRotated("guild-2", "2026-10-02", rotatedAtOf("2026-10-02"));
   env.chatAt(at(ROTATE_AT, -HOUR_MS));
   env.chatAt(at(ROTATE_AT, -HOUR_MS), undefined, "inbox-2", "session-2");
 

@@ -82,6 +82,13 @@ export class InboxRotator {
         const settings = guildSettings.get(guildId);
         const inboxChannelId = settings?.inboxChannelId ?? null;
         if (settings === undefined || inboxChannelId === null) continue;
+        // まだ一度も切り替えていない（/setup 直後・更新直後）なら、今を基準として記録するだけにする。
+        // 記録が無いまま判定すると、最初の会話の直後に日次の切り替えが走ってしまう
+        if (settings.inboxRotatedAt === null) {
+          const at = now();
+          guildSettings.setInboxRotated(guildId, formatDate(at, cfg.timeZone), at);
+          continue;
+        }
         const failedAt = this.failedAt.get(guildId);
         if (failedAt !== undefined && now().getTime() - failedAt < ROTATE_RETRY_MS) continue;
         const reason = this.dueReason(guildId, inboxChannelId, settings.inboxRotatedDate);
