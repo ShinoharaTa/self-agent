@@ -76,10 +76,21 @@ function targetPath(toolName: string, toolInput: unknown, cwd: string): string |
 }
 
 /**
+ * Glob の pattern・Grep の glob が path の外を指しうるか。絶対パス（`/` か `~` で始まる）か、`/` で分けた要素に `..` があれば true。
+ * 無い・文字列でなければ false（path だけで判定する）
+ */
+function patternEscapes(toolName: string, toolInput: unknown): boolean {
+  const input = typeof toolInput === "object" && toolInput !== null ? (toolInput as Record<string, unknown>) : {};
+  const pattern = toolName === "Glob" ? input.pattern : toolName === "Grep" ? input.glob : undefined;
+  if (typeof pattern !== "string") return false;
+  return pattern.startsWith("/") || pattern.startsWith("~") || pattern.split("/").includes("..");
+}
+
+/**
  * ファイル操作を許すか。対象のパスは cwd を基準に絶対パスにし、resolveRealPath で実際の場所にして判定する（symlink・`..` で外に出られない）。
  * - context が無い: すべて拒否
  * - Write・Edit: #inbox・プロジェクトの無いチャンネルでは拒否。対象が `<realpath(projectsDir)>/<slug>/` の中でなければ拒否
- * - Read・Glob・Grep: 対象が `<realpath(projectsDir)>/` の中でなければ拒否
+ * - Read・Glob・Grep: 対象が `<realpath(projectsDir)>/` の中でなければ拒否。Glob の pattern・Grep の glob が絶対パスか `..` を含めば拒否
  * FILE_TOOLS 以外のツールは何もせず許す
  */
 export function judgeFileAccess(request: FileAccessRequest): FileAccessDecision {
@@ -89,6 +100,7 @@ export function judgeFileAccess(request: FileAccessRequest): FileAccessDecision 
   const write = FILE_WRITE_TOOLS.includes(toolName);
   const denied: FileAccessDecision = { allowed: false, reason: write ? FILE_WRITE_DENIED_REASON : FILE_READ_DENIED_REASON };
   if (write && (context.kind !== "session" || project === undefined)) return denied;
+  if (patternEscapes(toolName, toolInput)) return denied;
   const raw = targetPath(toolName, toolInput, cwd);
   const target = raw === undefined ? undefined : resolveRealPath(resolve(cwd, raw));
   const projects = resolveRealPath(projectsDir);

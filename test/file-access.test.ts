@@ -140,6 +140,23 @@ test("Read・Glob・Grep: symlink で外に出るものは拒否する", (t) => 
   assert.deepEqual(judge("Glob", { pattern: "*", path: join(site, "outside") }), READ_DENIED);
 });
 
+test("Glob の pattern・Grep の glob: 絶対パス（/ か ~ で始まる）か、/ で分けた要素に .. があれば、path が中でも拒否する", (t) => {
+  const { projectsDir, judge } = setup(t);
+  const path = join(projectsDir, "kakeibo");
+
+  for (const pattern of ["/etc/*", "~/.ssh/*", "~", "../*", "../../**/*", "site/../../other/**", "**/..", ".."]) {
+    assert.deepEqual(judge("Glob", { pattern, path }), READ_DENIED, pattern);
+    assert.deepEqual(judge("Grep", { pattern: "a", path, glob: pattern }), READ_DENIED, pattern);
+  }
+  // 中だけを指すもの（`..` を含む名前・ドットファイルは要素が `..` ではない）は通す
+  for (const pattern of ["**/*.html", "site/*", "*.{js,css}", "a..b.js", "**/.env", "./site/*"]) {
+    assert.deepEqual(judge("Glob", { pattern, path }), ALLOWED, pattern);
+    assert.deepEqual(judge("Grep", { pattern: "a", path, glob: pattern }), ALLOWED, pattern);
+  }
+  // Grep の pattern（正規表現）は対象のパスではないので見ない
+  assert.deepEqual(judge("Grep", { pattern: "/etc/../passwd", path }), ALLOWED);
+});
+
 test("context が無いターンではファイル操作をすべて拒否する。パスが無い・形が違う入力も拒否する。ファイル操作以外は判定しない", (t) => {
   const { projectsDir, judge } = setup(t);
   const file = join(projectsDir, "kakeibo", "site", "index.html");
