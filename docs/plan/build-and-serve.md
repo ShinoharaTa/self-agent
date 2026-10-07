@@ -22,8 +22,8 @@
 - `SELF_AGENT_SERVE_PORT` と `SELF_AGENT_PUBLIC_BASE_URL` のどちらかが無ければ、機能ごと無効（サーバーを起動しない。project_open は `not_configured`）。
 - ルーティング:
   - GET / HEAD だけ受ける（それ以外は 405）。
-  - `/p/<slug>/<path>` → `<workDir>/projects/<slug>/site/<path>`。ディレクトリなら `index.html`。`/p/<slug>` は `/p/<slug>/` へ 301。
-  - 404: DB に無い・削除済みの slug、パスの要素が `.` で始まる、`..` を含む（デコード後）、realpath が `site/` の外（symlink）、ファイルが無い。
+  - `/p/<slug>/<path>` → `<workDir>/projects/<slug>/site/<path>`。ディレクトリなら `index.html`。`/p/<slug>` は `/p/<slug>/` へ 301。末尾 `/` なしのディレクトリも `<そのパス>/` へ 301（どちらもクエリは保つ）。
+  - 404: DB に無い・削除済みの slug、パスの要素（デコード後に `/` で分けたもの）が `.` で始まる（`.`・`..` を含む。`a..b.js` のような名前は通す）、realpath が `site/` の外（symlink）、ファイルが無い。
   - `/` はプロジェクトの一覧（題名・更新日時・リンク。削除済みは出さない）。ほかの endpoint は置かない。
 - ヘッダ: `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-cache`。Content-Type は拡張子から（html, css, js, mjs, json, svg, png, jpg, jpeg, gif, webp, ico, txt, map, wasm, woff, woff2。それ以外は application/octet-stream）。CSP は付けない（§1 の決定）。
 - tailscale serve（オーナーが 1 回だけ打つ）: `sudo tailscale serve --bg --https=9443 http://127.0.0.1:8790`。確認 `tailscale serve status`、解除 `sudo tailscale serve --https=9443 off`。
