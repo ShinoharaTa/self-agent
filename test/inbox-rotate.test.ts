@@ -80,6 +80,9 @@ class FakeGateway implements Gateway {
     this.events.push({ method: "sendMessage", channelId, text: message.text });
     return `message-${this.events.length}`;
   }
+  async editMessage(): Promise<void> {
+    throw new Error("想定外の呼び出し");
+  }
   async pinMessage(): Promise<void> {
     throw new Error("想定外の呼び出し");
   }
@@ -254,8 +257,9 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
       channelOps: { enqueueMove: () => assert.fail("想定外の呼び出し") },
       usage,
       queue,
+      now: () => clock.now,
       log,
-    });
+    }).handleMessage;
   /** guild-1 の切り替えまわりの状態 */
   const state = () => ({
     rotatedDate: guildSettings.get("guild-1")?.inboxRotatedDate ?? null,

@@ -552,11 +552,14 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     channelOps,
     turnQueue,
     turn,
+    // [中断]・[続ける] はここでは押さない
+    resolveChannel: () => null,
+    turns: { abortTurn: () => false, continueTurn: async () => {} },
     log,
   });
   assert.deepEqual(
     components.map((component) => component.namespace),
-    ["close", "wait", "tasks", "home", "del", "kb", "mem", "proj"],
+    ["close", "wait", "tasks", "home", "del", "kb", "mem", "proj", "turn"],
   );
   const handle = createInteractionHandler({
     cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },

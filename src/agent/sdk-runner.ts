@@ -8,12 +8,14 @@ import {
   type SDKMessage,
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Config } from "../config.ts";
 import type { ProjectStore } from "../store/projects.ts";
-import { FILE_TOOLS, FILE_WRITE_TOOLS, judgeFileAccess } from "./file-access.ts";
+import { FILE_TOOLS, FILE_WRITE_TOOLS, judgeFileAccess, resolveRealPath } from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
 import { buildQueryOptions } from "./query-options.ts";
 import type { AgentRunner, Compaction, RunContext, RunInput, RunResult, TurnUsage } from "./runner.ts";
+import { MCP_SERVER_NAME } from "./tools.ts";
 
 /** query() の形。テストでは偽のストリームを返す関数に差し替える */
 export type QueryFn = (params: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>;
@@ -79,6 +81,56 @@ export function createToolCallRecorder(log: (message: string) => void): ToolCall
     hooks: { PostToolUse: [{ hooks: [onToolUse] }], PostToolUseFailure: [{ hooks: [onToolUse] }] },
     count: () => calls,
   };
+}
+
+/** 自前の MCP ツールの名前の接頭辞（途中経過ではこれを除いた名前を出す） */
+const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
+
+/**
+ * file_path（cwd を基準に絶対パスにする）が projectDir の中なら、projectDir からの相対パス。
+ * どちらも resolveRealPath で実際の場所にして比べる。中でない・file_path が無い・解決できないなら undefined
+ */
+function projectRelativePath(toolInput: unknown, cwd: string, projectDir: string | undefined): string | undefined {
+  if (projectDir === undefined || typeof toolInput !== "object" || toolInput === null) return undefined;
+  const filePath = (toolInput as Record<string, unknown>).file_path;
+  if (typeof filePath !== "string") return undefined;
+  const target = resolveRealPath(resolve(cwd, filePath));
+  const dir = resolveRealPath(projectDir);
+  if (target === undefined || dir === undefined) return undefined;
+  const rel = relative(dir, target);
+  return rel === "" || isAbsolute(rel) || rel.split(sep)[0] === ".." ? undefined : rel;
+}
+
+/**
+ * 途中経過に出す 1 手順の文。ファイルの中身・コマンド・URL・検索語は出さない。
+ * Write・Edit・Read の対象は、このチャンネルのプロジェクトのディレクトリ（projectDir）の中ならそこからの相対パスだけを添える
+ */
+export function progressLabel(
+  toolName: string,
+  toolInput: unknown,
+  cwd: string,
+  projectDir: string | undefined,
+): string {
+  const withPath = (label: string): string => {
+    const rel = projectRelativePath(toolInput, cwd, projectDir);
+    return rel === undefined ? label : `${label}: ${rel}`;
+  };
+  switch (toolName) {
+    case "Write":
+    case "Edit":
+      return withPath("書いています");
+    case "Read":
+      return withPath("読んでいます");
+    case "Glob":
+    case "Grep":
+      return "ファイルを探しています";
+    case "WebSearch":
+      return "Web を検索しています";
+    case "WebFetch":
+      return "ページを読んでいます";
+  }
+  if (toolName.startsWith(MCP_TOOL_PREFIX)) return `ツールを使っています: ${toolName.slice(MCP_TOOL_PREFIX.length)}`;
+  return `${toolName} を使っています`;
 }
 
 /** WebFetch を拒否したときにモデルへ返す理由 */
@@ -192,15 +244,22 @@ export class SdkAgentRunner implements AgentRunner {
     this.queryFn = queryFn;
   }
 
-  /** セッションのチャンネルのターンは cfg.sessionTurnTimeoutSec、それ以外（#inbox・context なし）は cfg.turnTimeoutSec で打ち切る */
+  /**
+   * セッションのチャンネルのターンは cfg.sessionTurnTimeoutSec、それ以外（#inbox・context なし）は cfg.turnTimeoutSec で打ち切る。
+   * input.signal が abort されたら（[中断]）同じ abortController で止める
+   */
   async run(input: RunInput): Promise<RunResult> {
     const abortController = new AbortController();
     const timeoutSec = input.context?.kind === "session" ? this.cfg.sessionTurnTimeoutSec : this.cfg.turnTimeoutSec;
     const timer = setTimeout(() => abortController.abort(), timeoutSec * 1000);
+    const onAbort = (): void => abortController.abort();
+    input.signal?.addEventListener("abort", onAbort);
+    if (input.signal?.aborted === true) abortController.abort();
     try {
       return await this.runQuery(input, abortController);
     } finally {
       clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onAbort);
     }
   }
 
@@ -235,6 +294,16 @@ export class SdkAgentRunner implements AgentRunner {
     let sessionId = input.sessionId;
     let result: SDKResultMessage | undefined;
     let compacted: Compaction | undefined;
+    // 途中経過は tool_use ごとに 1 回（同じ tool_use の id は 1 回だけ）
+    const seenToolUseIds = new Set<string>();
+    // 中断（[中断]）と打ち切りは同じ abortController で止まるので、input.signal で見分ける
+    const stopped = (): RunResult => ({
+      ok: false,
+      errorMessage: input.signal?.aborted === true ? "aborted" : "timeout",
+      sessionId,
+      sessionRecorded: false,
+      toolCalls: tools.count(),
+    });
 
     try {
       for await (const message of this.queryFn({ prompt: input.prompt, options })) {
@@ -254,6 +323,18 @@ export class SdkAgentRunner implements AgentRunner {
           contextTokens =
             stepUsage.input_tokens + (stepUsage.cache_read_input_tokens ?? 0) + (stepUsage.cache_creation_input_tokens ?? 0);
         }
+        // assistant メッセージは並列ツール呼び出しでも 1 ブロックずつ届くので、message.id ではなく tool_use の id で重複を除く
+        if (message.type === "assistant" && message.parent_tool_use_id === null && input.onProgress !== undefined) {
+          for (const block of message.message.content ?? []) {
+            if (block.type !== "tool_use" || seenToolUseIds.has(block.id)) continue;
+            seenToolUseIds.add(block.id);
+            // プロジェクトはターンの途中で project_open で作られうるので、そのたびに引く
+            const project =
+              input.context === undefined ? undefined : this.files.projects.getByChannel(input.context.channelId);
+            const projectDir = project === undefined ? undefined : join(this.files.projectsDir, project.slug);
+            input.onProgress({ label: progressLabel(block.name, block.input, this.cfg.workDir, projectDir) });
+          }
+        }
         // 会話が長くなり SDK が古い部分を要約した。1 ターンに複数回あれば最後のもの
         if (message.type === "system" && message.subtype === "compact_boundary") {
           const metadata = message.compact_metadata;
@@ -267,9 +348,7 @@ export class SdkAgentRunner implements AgentRunner {
         }
       }
     } catch (error) {
-      if (abortController.signal.aborted) {
-        return { ok: false, errorMessage: "timeout", sessionId, sessionRecorded: false, toolCalls: tools.count() };
-      }
+      if (abortController.signal.aborted) return stopped();
       const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       const tail = stderrTail(stderr);
       return {
@@ -281,9 +360,7 @@ export class SdkAgentRunner implements AgentRunner {
       };
     }
 
-    if (abortController.signal.aborted) {
-      return { ok: false, errorMessage: "timeout", sessionId, sessionRecorded: false, toolCalls: tools.count() };
-    }
+    if (abortController.signal.aborted) return stopped();
     if (result === undefined) {
       return {
         ok: false,

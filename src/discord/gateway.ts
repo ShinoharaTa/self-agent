@@ -135,6 +135,8 @@ export interface Gateway {
   send(channelId: string, text: string, replyToId?: string): Promise<void>;
   /** ボタンなどの付いたメッセージを 1 通送り、その ID を返す（分割しない。ephemeral は効かない） */
   sendMessage(channelId: string, message: OutgoingMessage): Promise<string>;
+  /** 送ったメッセージを書き換える（分割しない。components を省略すると元のコンポーネントを残し、[] で取り除く。ephemeral は効かない） */
+  editMessage(channelId: string, messageId: string, message: OutgoingMessage): Promise<void>;
   /** メッセージをピン留めする */
   pinMessage(channelId: string, messageId: string): Promise<void>;
   /** メッセージ（とそのチャンネル）がまだ Discord 上にあるか。無い以外の失敗（権限・通信）は投げる */

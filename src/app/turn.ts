@@ -1,5 +1,5 @@
 // 1 チャンネルの 1 ターン（発言・/close 共通）。usage の記録、SDK セッションの保存、記憶と seed の付与、resume 失敗からの復旧
-import type { AgentRunner, RunContext, RunResult } from "../agent/runner.ts";
+import type { AgentRunner, ProgressStep, RunContext, RunResult } from "../agent/runner.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { InboxSummary, InboxSummaryStore } from "../store/inbox-summaries.ts";
 import type { Memory, MemoryStore } from "../store/memories.ts";
@@ -16,7 +16,7 @@ export const RESUME_FAILURE_PATTERN = /No conversation found/i;
 
 /**
  * 同じ SDK セッションでの resume が、結果（result）が届かずにこの回数続けて失敗したら、RESUME_FAILURE_PATTERN に一致しなくても捨ててやり直す
- * （文言が想定と違う・例外で届くなどで、そのチャンネルが失敗し続けるのを防ぐ）。タイムアウトと、結果が届いた失敗は数えない
+ * （文言が想定と違う・例外で届くなどで、そのチャンネルが失敗し続けるのを防ぐ）。タイムアウト・中断と、結果が届いた失敗は数えない
  */
 export const RESUME_FAILURE_LIMIT = 3;
 
@@ -25,6 +25,8 @@ export const MAX_TURNS_ERROR_PREFIX = "error_max_turns";
 
 /** 数えない失敗（重い処理で時間がかかっただけで、セッションは壊れていない） */
 const TIMEOUT_ERROR = "timeout";
+/** [中断] で止めた失敗。これも数えない（オーナーが止めただけで、セッションは壊れていない） */
+export const ABORTED_ERROR = "aborted";
 
 export const RESUME_SEED_HEADER = "前の会話の記録が切れたため、要約から再開します。";
 
@@ -54,6 +56,10 @@ export type ChannelTurn = {
   prompt: string;
   /** このターンで WebFetch に取得を許す URL。オーナーの発言のターンだけその発言の URL、それ以外（/close など）は空 */
   allowedUrls: readonly string[];
+  /** 外からの中断（セッションのチャンネルの発言・[続ける] のターンだけ）。resume 失敗のやり直しにも渡す */
+  signal?: AbortSignal;
+  /** 途中経過（セッションのチャンネルの発言・[続ける] のターンだけ）。resume 失敗のやり直しにも渡す */
+  onProgress?: (step: ProgressStep) => void;
 };
 
 /**
@@ -103,7 +109,7 @@ export function recordTurnUsage(deps: Pick<TurnDeps, "usage" | "log">, key: stri
  * - SDK セッションがあれば resume する。無ければ [記憶のブロック, seed, prompt] を空行でつないで渡し（記憶が無い・seed が無いならその分は付けない）、
  *   成功したら seed を消す。記憶のブロックは毎回 DB から作る（seed には保存しない）
  * - 失敗しても SDK が会話を記録していれば（result まで届いた失敗）、その session_id を残して次のターンで続ける
- * - resume が「会話の記録が無い」で失敗したとき、または同じセッションで結果の届かない失敗（タイムアウトを除く）が RESUME_FAILURE_LIMIT 回続いたときは、
+ * - resume が「会話の記録が無い」で失敗したとき、または同じセッションで結果の届かない失敗（タイムアウト・中断を除く）が RESUME_FAILURE_LIMIT 回続いたときは、
  *   SDK セッションを捨て、seed（要約）を入れて、sessionId 無しで 1 回だけやり直す
  * 返す結果の失敗は呼び出し側で返信・log する
  */
@@ -114,7 +120,14 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
 
   const runOnce = async (prompt: string, sessionId: string | undefined): Promise<RunResult> => {
     // seed を付けてやり直すときも、取得を許すのはオーナーの発言の URL だけ
-    const result = await runner.run({ prompt, sessionId, context, allowedUrls: turn.allowedUrls });
+    const result = await runner.run({
+      prompt,
+      sessionId,
+      context,
+      allowedUrls: turn.allowedUrls,
+      ...(turn.signal === undefined ? {} : { signal: turn.signal }),
+      ...(turn.onProgress === undefined ? {} : { onProgress: turn.onProgress }),
+    });
     recordTurnUsage(deps, key, result);
     if (result.ok) {
       sessions.set(key, result.sessionId);
@@ -132,8 +145,9 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     const result = await runOnce(turn.prompt, sessionId);
     if (result.ok) return result;
     // 数えるのは結果が届かなかった失敗だけ。結果が届いた失敗（API エラー・手順数の上限など）は SDK が会話を読めた証拠で、
-    // タイムアウトは時間がかかっただけで会話自体は生きている
-    const countable = !result.sessionRecorded && result.errorMessage !== TIMEOUT_ERROR;
+    // タイムアウトは時間がかかっただけ、中断はオーナーが止めただけで、会話自体は生きている
+    const countable =
+      !result.sessionRecorded && result.errorMessage !== TIMEOUT_ERROR && result.errorMessage !== ABORTED_ERROR;
     const failures = countable ? sessions.recordFailure(key) : 0;
     // 実機の文言の確認のため、どちらも元のエラー文を出す
     if (RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
