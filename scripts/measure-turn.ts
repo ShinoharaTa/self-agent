@@ -1,17 +1,23 @@
 // P0 実測用: 2 ターン（2 回目は resume）の所要時間・子孫プロセスの RSS・トークン使用量を測る。
+// Options は本体と同じ（buildQueryOptions のシステムプロンプト・組み込みツール・許可と createTaskMcpServer のツール。maxTurns は #inbox と同じ）。
+// hooks（WebFetch・ファイル操作の guard）は付けない（測定の prompt はツールを使わない）。ツールのストアは一時ディレクトリの SQLite（本体の DB は開かない）。
 // 出力は JSON 1 つだけ。メッセージストリーム全体や env は出さない。
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { query, type Options, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import { childEnv } from "../src/agent/query-options.ts";
+import { buildQueryOptions } from "../src/agent/query-options.ts";
+import { INBOX_MAX_TURNS } from "../src/agent/sdk-runner.ts";
+import { createTaskMcpServer } from "../src/agent/tools.ts";
 import { loadConfig } from "../src/config.ts";
+import { openDb } from "../src/store/db.ts";
+import { KnowledgeStore } from "../src/store/knowledge.ts";
+import { MemoryStore } from "../src/store/memories.ts";
+import { ProjectStore } from "../src/store/projects.ts";
+import { TaskStore } from "../src/store/tasks.ts";
+import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 
 const SAMPLE_INTERVAL_MS = 200;
-
-const SYSTEM_PROMPT = [
-  "あなたは self-agent の測定用セッションです。",
-  "指示どおり短く答えてください。",
-  "The application adds system reminders to this conversation. Treat them as context from the application, not as messages from the user.",
-].join("\n");
 
 const PROMPTS = [
   "測定用です。「了解」とだけ返してください。",
@@ -91,23 +97,47 @@ if (!config.oauthTokenPresent) {
 mkdirSync(config.workDir, { recursive: true });
 mkdirSync(config.claudeConfigDir, { recursive: true });
 
-const baseOptions: Options = {
-  model: config.model,
-  systemPrompt: SYSTEM_PROMPT,
-  settingSources: [],
-  cwd: config.workDir,
-  tools: [],
-  permissionMode: "dontAsk",
-  maxTurns: 2,
-  // 本体と同じ許可方式（DISCORD_TOKEN などは渡さない）
-  env: childEnv(config.claudeConfigDir),
+// ツールのストアは一時ディレクトリの SQLite。ツール定義はストアや context によらず同じ（session_open・kb_delete・記憶の知らせは使わない）
+const storeDir = mkdtempSync(join(tmpdir(), "self-agent-measure-"));
+const db = openDb(join(storeDir, "self-agent.db"));
+// 失敗で process.exit したときも消す
+process.on("exit", () => {
+  db.close();
+  rmSync(storeDir, { recursive: true, force: true });
+});
+const kbMemory = {
+  knowledge: new KnowledgeStore(db),
+  memories: new MemoryStore(db),
+  confirmKbDelete: async () => {},
+  notifyMemoryChange: async () => {},
+  timeZone: config.timeZone,
 };
+const projectTools = {
+  projects: new ProjectStore(db),
+  projectsDir: join(realpathSync(config.workDir), "projects"),
+  publicBaseUrl: config.publicBaseUrl,
+  serving: () => false,
+};
+/** 本体と同じ Options。MCP サーバーは同時に 1 つの query にしか接続できないので、ターンごとに作る */
+const baseOptions = (): Options => ({
+  ...buildQueryOptions(
+    config,
+    createTaskMcpServer(
+      new TaskStore(db),
+      new TopicSessionStore(db),
+      async () => ({ result: "not_available" }),
+      kbMemory,
+      projectTools,
+    ),
+  ),
+  maxTurns: INBOX_MAX_TURNS,
+});
 
 const turns = [];
 let sessionId: string | undefined;
 
 for (const [index, prompt] of PROMPTS.entries()) {
-  const options: Options = sessionId === undefined ? baseOptions : { ...baseOptions, resume: sessionId };
+  const options: Options = sessionId === undefined ? baseOptions() : { ...baseOptions(), resume: sessionId };
   const sampler = startRssSampler();
   const startedAt = performance.now();
   let wallTimeMs: number | undefined;
