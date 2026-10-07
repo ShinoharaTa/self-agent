@@ -20,7 +20,7 @@ export type TasksDeps = {
 };
 
 /** UTF-16 の単位で max までに切り、切ったら末尾を … にする。サロゲートペアの途中で切れたら前半も落とす */
-function clip(text: string, max: number): string {
+export function clip(text: string, max: number): string {
   if (text.length <= max) return text;
   let cut = text.slice(0, max - 1);
   if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
