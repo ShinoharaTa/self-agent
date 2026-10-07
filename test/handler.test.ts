@@ -1224,7 +1224,7 @@ test("途中経過: 20 秒で [中断] 付きのメッセージを 1 つ送り�
   assert.deepEqual(logs, []);
 });
 
-test("途中経過: 手順がまだ無ければ 1 行目だけ。失敗で終わっても「完了」に書き換える", async (t) => {
+test("途中経過: 手順がまだ無ければ 1 行目だけ。結果の届かない失敗で終わったら「止まりました」に書き換える", async (t) => {
   const { gateway, runner, topicSessions, timers, handle } = setup(t, [CRASH]);
   topicSessions.create(TOPIC);
   const release = deferred();
@@ -1236,7 +1236,7 @@ test("途中経過: 手順がまだ無ければ 1 行目だけ。失敗で終わ
   release.resolve();
   await turn;
 
-  assert.deepEqual(gateway.edits.map((edit) => edit.message), [{ text: "完了（0 分 20 秒・ツール 0 回）", components: [] }]);
+  assert.deepEqual(gateway.edits.map((edit) => edit.message), [{ text: "止まりました（0 分 20 秒・ツール 0 回）", components: [] }]);
   assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY]);
   assert.equal(timers.pending, 0);
 });
@@ -1421,4 +1421,44 @@ test("[続ける]: 受け付けるセッションでなくなったチャンネ�
   assert.deepEqual(await press("turn:continue:unknown-1"), STALE);
   assert.equal(runner.inputs.length, 0);
   assert.deepEqual(gateway.sent, []);
+});
+
+test("途中経過: 最後の書き換えは終わり方で変える（成功は完了・手順の上限・中断・timeout と例外は止まりました）", async (t) => {
+  const timeout: RunResult = { ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 };
+  const maxTurns: RunResult = {
+    ok: false,
+    errorMessage: "error_max_turns",
+    sessionId: "session-x",
+    sessionRecorded: true,
+    toolCalls: 0,
+  };
+  const aborted: RunResult = { ok: false, errorMessage: "aborted", sessionRecorded: false, toolCalls: 0 };
+  const { gateway, runner, topicSessions, timers, handle } = setup(t, [
+    okResult("session-a", "できました"),
+    maxTurns,
+    aborted,
+    timeout,
+    new Error("unexpected"),
+  ]);
+  topicSessions.create(TOPIC);
+  let release = deferred();
+  runner.beforeResult = () => release.promise;
+
+  for (let i = 0; i < 5; i++) {
+    const turn = handle(message({ id: `message-${i + 1}`, channelId: "topic-1" }));
+    await timers.advance(PROGRESS_DELAY_MS + 1_000);
+    release.resolve();
+    await turn;
+    release = deferred();
+  }
+
+  assert.deepEqual(
+    gateway.edits.map((edit) => edit.message),
+    ["完了", "手順の上限で止まりました", "中断しました", "止まりました", "止まりました"].map((label) => ({
+      text: `${label}（0 分 21 秒・ツール 0 回）`,
+      components: [],
+    })),
+  );
+  assert.equal(gateway.posts.length, 6);
+  assert.equal(timers.pending, 0);
 });
