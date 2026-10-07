@@ -99,7 +99,7 @@ test("確認の投稿: 「<題名>（#id）を削除しますか？」と [削�
       },
     },
   });
-  await confirm({ id: 12, title: "SQLite の全文検索" }, { guildId: "guild-1", channelId: "topic-1" });
+  await confirm({ id: 12, title: "SQLite の全文検索" }, { guildId: "guild-1", channelId: "topic-1", kind: "session" });
   assert.deepEqual(sent, [["topic-1", prompt]]);
 
   // 投稿に失敗したら投げる
@@ -110,7 +110,10 @@ test("確認の投稿: 「<題名>（#id）を削除しますか？」と [削�
       },
     },
   });
-  await assert.rejects(failing({ id: 12, title: "t" }, { guildId: "guild-1", channelId: "topic-1" }), /Missing Access/);
+  await assert.rejects(
+    failing({ id: 12, title: "t" }, { guildId: "guild-1", channelId: "topic-1", kind: "session" }),
+    /Missing Access/,
+  );
 });
 
 test("[削除する]: 項目を消し、確認メッセージを「<題名>（#id）を削除しました」に書き換えてボタンを外す。log に題名は出さない", async (t) => {

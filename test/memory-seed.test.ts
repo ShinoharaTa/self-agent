@@ -4,7 +4,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
-import { MEMORY_BLOCK_HEADER, memoryBlock, RESUME_SEED_HEADER, runChannelTurn, type TurnDeps } from "../src/app/turn.ts";
+import {
+  type ChannelTurn,
+  MEMORY_BLOCK_HEADER,
+  memoryBlock,
+  RESUME_SEED_HEADER,
+  runChannelTurn,
+  type TurnDeps,
+} from "../src/app/turn.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
@@ -15,7 +22,7 @@ import { UsageStore } from "../src/store/usage.ts";
 
 const NOW = new Date("2026-10-07T00:00:00.000Z");
 const PROMPT = "[2026-10-07(水) 09:00 JST #旅行の計画]\n明日の天気は？";
-const TURN = { guildId: "guild-1", channelId: "topic-1", prompt: PROMPT, allowedUrls: [] };
+const TURN: ChannelTurn = { guildId: "guild-1", channelId: "topic-1", kind: "session", prompt: PROMPT, allowedUrls: [] };
 
 class FakeRunner implements AgentRunner {
   inputs: RunInput[] = [];
@@ -108,7 +115,12 @@ test("新しいセッション（SDK セッション無し）: prompt の先頭�
   await run();
 
   assert.deepEqual(runner.inputs, [
-    { prompt: `${block}\n\n${PROMPT}`, sessionId: undefined, context: { guildId: "guild-1", channelId: "topic-1" }, allowedUrls: [] },
+    {
+      prompt: `${block}\n\n${PROMPT}`,
+      sessionId: undefined,
+      context: { guildId: "guild-1", channelId: "topic-1", kind: "session" },
+      allowedUrls: [],
+    },
   ]);
   assert.equal(seeds.get("topic-1"), undefined);
 });

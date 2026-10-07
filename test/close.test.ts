@@ -20,7 +20,7 @@ import {
   SUMMARY_FAILURE_REPLY,
 } from "../src/app/commands/close.ts";
 import { HELP_TEXT } from "../src/app/commands/help.ts";
-import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { KeyedSerialQueue, type QueueRunOptions } from "../src/app/queue.ts";
 import { EMPTY_SUMMARY } from "../src/app/summary.ts";
 import { RESUME_SEED_HEADER } from "../src/app/turn.ts";
 import type {
@@ -95,13 +95,15 @@ class RecordingChannelOps {
   }
 }
 
-/** 受け取った key を記録する */
+/** 受け取った key と指定（セッションのジョブか）を記録する */
 class RecordingQueue extends KeyedSerialQueue {
   keys: string[] = [];
+  options: Array<QueueRunOptions | undefined> = [];
 
-  run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  run<T>(key: string, fn: () => Promise<T>, options?: QueueRunOptions): Promise<T> {
     this.keys.push(key);
-    return super.run(key, fn);
+    this.options.push(options);
+    return super.run(key, fn, options);
   }
 }
 
@@ -263,7 +265,12 @@ test("/close: 公開で defer → 静的な prompt で resume → 要約とタ�
 
   // オーナーの発言ではないので、WebFetch に許す URL は無い
   assert.deepEqual(env.runner.inputs, [
-    { prompt: CLOSE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "topic-1" }, allowedUrls: [] },
+    {
+      prompt: CLOSE_PROMPT,
+      sessionId: "session-1",
+      context: { guildId: "guild-1", channelId: "topic-1", kind: "session" },
+      allowedUrls: [],
+    },
   ]);
   assert.match(CLOSE_PROMPT, /session_report を 1 回だけ呼んでください。$/);
   assert.ok(CLOSE_PROMPT.includes(`${CLOSE_SUMMARY_MAX_LENGTH} 字以内`));
@@ -290,8 +297,9 @@ test("/close: 公開で defer → 静的な prompt で resume → 要約とタ�
   assert.deepEqual(env.topicSessions.getCloseDraft("topic-1"), REPORT);
   assertOpen(env);
   assert.deepEqual(env.openTasks(), []);
-  // 発言と同じキューの同じ key（channelId）で実行する
+  // 発言と同じキューの同じ key（channelId）で、セッションのジョブとして実行する
   assert.deepEqual(env.turnQueue.keys, ["topic-1"]);
+  assert.deepEqual(env.turnQueue.options, [{ session: true }]);
   // ターンの usage と SDK セッションも記録する
   assert.equal(env.usage.recent(10).length, 1);
   assert.equal(env.sessions.get("topic-1"), "session-1");
@@ -570,13 +578,19 @@ test("[閉じる]（close:start）: 元メッセージは変えずに保留 → 
   const calls = await env.press(button("start"));
 
   assert.deepEqual(env.runner.inputs, [
-    { prompt: CLOSE_PROMPT, sessionId: "session-1", context: { guildId: "guild-1", channelId: "topic-1" }, allowedUrls: [] },
+    {
+      prompt: CLOSE_PROMPT,
+      sessionId: "session-1",
+      context: { guildId: "guild-1", channelId: "topic-1", kind: "session" },
+      allowedUrls: [],
+    },
   ]);
   assert.deepEqual(calls, [
     { method: "deferUpdate" },
     { method: "update", message: { text: confirmText(REPORT), components: [BUTTONS] } },
   ]);
   assert.deepEqual(env.turnQueue.keys, ["topic-1"]);
+  assert.deepEqual(env.turnQueue.options, [{ session: true }]);
   // まだ閉じない（待ちのまま）
   assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");
   assert.deepEqual(env.channelOps.moves, []);

@@ -5,11 +5,12 @@ import type { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as z from "zod";
-import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
+import type { AgentRunner, RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
 import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
 import {
   createTaskTools,
   type KbMemoryToolDeps,
+  type ProjectToolDeps,
   type SessionOpenResult,
   type TextToolResult,
 } from "../src/agent/tools.ts";
@@ -32,6 +33,7 @@ import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
 import { MemoryStore } from "../src/store/memories.ts";
+import { ProjectStore } from "../src/store/projects.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -99,7 +101,7 @@ class RecordingQueue extends KeyedSerialQueue {
   }
 }
 
-const INBOX = { guildId: "guild-1", channelId: "inbox-1" };
+const INBOX: RunContext = { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" };
 const ARGS = { title: "旅行の計画", context: "京都に 2 泊したい。宿と移動を決める" };
 
 type Options = {
@@ -250,10 +252,17 @@ test("session_open: 作ったチャンネルの最初のターンの prompt の�
   await runChannelTurn(turnDeps, {
     guildId: "guild-1",
     channelId: created.channelId,
+    kind: "session",
     prompt: "[header]\nどこから決める？",
     allowedUrls: [],
   });
-  await runChannelTurn(turnDeps, { guildId: "guild-1", channelId: created.channelId, prompt: "[header]\n次", allowedUrls: [] });
+  await runChannelTurn(turnDeps, {
+    guildId: "guild-1",
+    channelId: created.channelId,
+    kind: "session",
+    prompt: "[header]\n次",
+    allowedUrls: [],
+  });
 
   assert.deepEqual(
     inputs.map((input) => [input.prompt, input.sessionId]),
@@ -283,11 +292,11 @@ test("session_open: #inbox 以外（セッション・受け付け対象外・�
   const { gateway, topicSessions, seeds, queue, openSession, sessionCount } = setup(t);
   topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "別の話", categoryId: "active-1" });
 
-  const contexts = [
-    { guildId: "guild-1", channelId: "topic-1" },
-    { guildId: "guild-1", channelId: "other-1" },
+  const contexts: Array<RunContext | undefined> = [
+    { guildId: "guild-1", channelId: "topic-1", kind: "session" },
+    { guildId: "guild-1", channelId: "other-1", kind: "inbox" },
     // 別サーバーの同じ ID のチャンネル
-    { guildId: "guild-2", channelId: "inbox-1" },
+    { guildId: "guild-2", channelId: "inbox-1", kind: "inbox" },
     undefined,
   ];
   for (const context of contexts) {
@@ -423,7 +432,9 @@ test("session_open: 同じターンで並べて呼ばれても、確認と作成
 test("session_open: /setup 前（env の #inbox で受け付けているサーバー、進行中カテゴリが無いサーバー）なら not_set_up を返し、何も作らない", async (t) => {
   const { gateway, guildSettings, seeds, openSession, sessionCount } = setup(t, { setUp: false, envInbox: "env-inbox" });
 
-  assert.deepEqual(await openSession(ARGS, { guildId: "guild-1", channelId: "env-inbox" }), { result: "not_set_up" });
+  assert.deepEqual(await openSession(ARGS, { guildId: "guild-1", channelId: "env-inbox", kind: "inbox" }), {
+    result: "not_set_up",
+  });
 
   // /setup が途中で止まり、#inbox はあるが進行中カテゴリがまだ無い
   guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
@@ -445,19 +456,29 @@ function kbMemory(db: DatabaseSync): KbMemoryToolDeps {
   };
 }
 
+/** project_open のストアと配信の設定（ここでは配信は無効） */
+function projectTools(db: DatabaseSync): ProjectToolDeps {
+  return {
+    projects: new ProjectStore(db, () => NOW),
+    projectsDir: "/srv/work/projects",
+    publicBaseUrl: undefined,
+    serving: () => false,
+  };
+}
+
 test("ツール定義: どのチャンネルの run でも名前・説明・入力の形は同じで、説明に可変値を入れない", (t) => {
   const { db, topicSessions } = setup(t);
   const tasks = new TaskStore(db, () => NOW);
   const openSession = async (): Promise<SessionOpenResult> => ({ result: "not_available" });
-  const contexts = [
-    { guildId: "guild-1", channelId: "inbox-1" },
-    { guildId: "guild-1", channelId: "topic-1" },
-    { guildId: "guild-2", channelId: "inbox-2" },
+  const contexts: Array<RunContext | undefined> = [
+    { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" },
+    { guildId: "guild-1", channelId: "topic-1", kind: "session" },
+    { guildId: "guild-2", channelId: "inbox-2", kind: "inbox" },
     undefined,
   ];
 
   const definitions = contexts.map((context) =>
-    createTaskTools(tasks, topicSessions, openSession, kbMemory(db), context).map((definition) => ({
+    createTaskTools(tasks, topicSessions, openSession, kbMemory(db), projectTools(db), context).map((definition) => ({
       name: definition.name,
       description: definition.description,
       inputSchema: z.toJSONSchema(z.object(definition.inputSchema)),
@@ -482,6 +503,7 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
       "kb_delete",
       "memory_save",
       "memory_forget",
+      "project_open",
     ],
   );
   const serialized = JSON.stringify(definitions[0]);
@@ -502,9 +524,13 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
 test("ツール定義: session_open の題名は前後の空白を除いて 1〜100 字、context は 1〜400 字", (t) => {
   const { db, topicSessions } = setup(t);
   const tasks = new TaskStore(db, () => NOW);
-  const definition = createTaskTools(tasks, topicSessions, async () => ({ result: "not_available" }), kbMemory(db)).find(
-    (candidate) => candidate.name === "session_open",
-  );
+  const definition = createTaskTools(
+    tasks,
+    topicSessions,
+    async () => ({ result: "not_available" }),
+    kbMemory(db),
+    projectTools(db),
+  ).find((candidate) => candidate.name === "session_open");
   assert.ok(definition !== undefined);
   const schema = z.object(definition.inputSchema);
 
@@ -524,7 +550,7 @@ test("ツール: session_open のハンドラはこの run の context を渡し
     received.push([args, context]);
     return { result: "existing", channelId: "topic-1" };
   };
-  const definition = createTaskTools(tasks, topicSessions, openSession, kbMemory(db), INBOX).find(
+  const definition = createTaskTools(tasks, topicSessions, openSession, kbMemory(db), projectTools(db), INBOX).find(
     (candidate) => candidate.name === "session_open",
   );
   assert.ok(definition !== undefined);

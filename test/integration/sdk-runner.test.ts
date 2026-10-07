@@ -11,6 +11,7 @@ import { loadConfig } from "../../src/config.ts";
 import { openDb } from "../../src/store/db.ts";
 import { KnowledgeStore } from "../../src/store/knowledge.ts";
 import { MemoryStore } from "../../src/store/memories.ts";
+import { ProjectStore } from "../../src/store/projects.ts";
 import { TaskStore } from "../../src/store/tasks.ts";
 import { TopicSessionStore } from "../../src/store/topic-sessions.ts";
 
@@ -42,10 +43,22 @@ test(
       notifyMemoryChange: async () => {},
       timeZone: cfg.timeZone,
     };
+    // プロジェクトもここでは使わない（配信は無効）
+    const projects = new ProjectStore(db);
+    const projectsDir = join(cfg.workDir, "projects");
+    const projectTools = { projects, projectsDir, publicBaseUrl: undefined, serving: () => false };
     const runner = new SdkAgentRunner(
       cfg,
       (context) =>
-        createTaskMcpServer(tasks, new TopicSessionStore(db), async () => ({ result: "not_available" }), kbMemory, context),
+        createTaskMcpServer(
+          tasks,
+          new TopicSessionStore(db),
+          async () => ({ result: "not_available" }),
+          kbMemory,
+          projectTools,
+          context,
+        ),
+      { projects, projectsDir },
       (line) => logs.push(line),
     );
 

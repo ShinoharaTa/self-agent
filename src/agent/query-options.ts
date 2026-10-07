@@ -1,10 +1,10 @@
-// プロンプトキャッシュを効かせるため、全ターンで同じ Options を使う（resume だけ run 側で足す）
+// プロンプトキャッシュを効かせるため、全ターンで同じ Options を使う（resume・maxTurns・hooks は run 側で足す）
+import { join, resolve } from "node:path";
 import type { McpSdkServerConfigWithInstance, Options } from "@anthropic-ai/claude-agent-sdk";
 import type { Config } from "../config.ts";
+import { resolveRealPath } from "./file-access.ts";
 import { SYSTEM_PROMPT } from "./system-prompt.ts";
 import { MCP_SERVER_NAME } from "./tools.ts";
-
-const MAX_TURNS = 8;
 
 /** Claude の子プロセスに渡す環境変数（許可方式）。これ以外（DISCORD_TOKEN など）は渡さない */
 const CHILD_ENV_ALLOWLIST = [
@@ -40,24 +40,35 @@ export function childEnv(claudeConfigDir: string, source: NodeJS.ProcessEnv = pr
   return env;
 }
 
+/**
+ * 権限ルールの `<realpath(workDir)>/projects` の下すべて（`//` で始まる絶対パスの形）。
+ * 許可ルールは symlink の先も一致しないと効かないので、実際の場所で書く
+ */
+function projectsRulePath(workDir: string): string {
+  const realWorkDir = resolveRealPath(workDir) ?? resolve(workDir);
+  return `//${join(realWorkDir, "projects").replace(/^\/+/, "")}/**`;
+}
+
 export function buildQueryOptions(
   cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "effort">,
   mcpServer: McpSdkServerConfigWithInstance,
 ): Options {
+  const projects = projectsRulePath(cfg.workDir);
   return {
     model: cfg.model,
     systemPrompt: SYSTEM_PROMPT,
     settingSources: [],
     cwd: cfg.workDir,
-    // 組み込みツールは WebSearch と WebFetch だけ（WebFetch の URL は sdk-runner の PreToolUse の hook で絞る）。
-    // 自前の MCP ツールとこの 2 つだけを許可し、それ以外は dontAsk で拒否する。キャッシュのため順序も固定
-    tools: ["WebSearch", "WebFetch"],
+    // 組み込みツールは Web の 2 つとファイル操作の 5 つ（シェルは無い）。キャッシュのため順序も固定。
+    // WebFetch の URL とファイル操作のパスは sdk-runner の PreToolUse の hook で絞る。
+    // 許可するのは自前の MCP ツール・Web の 2 つと、<workDir>/projects の下の読み書き（Edit のルールは Write にも、Read のルールは Glob・Grep にも効く）。
+    // それ以外は dontAsk で拒否する
+    tools: ["WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob", "Grep"],
     permissionMode: "dontAsk",
-    allowedTools: [`mcp__${MCP_SERVER_NAME}__*`, "WebSearch", "WebFetch"],
+    allowedTools: [`mcp__${MCP_SERVER_NAME}__*`, "WebSearch", "WebFetch", `Read(${projects})`, `Edit(${projects})`],
     mcpServers: { [MCP_SERVER_NAME]: mcpServer },
     // mcpServers 以外の MCP 設定（.mcp.json・ユーザー設定・プラグイン）は読まない
     strictMcpConfig: true,
-    maxTurns: MAX_TURNS,
     // 未設定ならモデルの既定に任せる（キーごと入れない）
     ...(cfg.effort === undefined ? {} : { effort: cfg.effort }),
     env: childEnv(cfg.claudeConfigDir),

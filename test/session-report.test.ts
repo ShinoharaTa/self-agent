@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { RunContext } from "../src/agent/runner.ts";
 import { createSessionToolHandlers, type TextToolResult } from "../src/agent/tools.ts";
 import { openDb } from "../src/store/db.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -32,7 +33,7 @@ const ARGS = {
 
 test("session_report: セッションのチャンネルなら close_draft に保存して { ok: true } を返す（前の下書きは置き換える）", (t) => {
   const { db, topicSessions } = setup(t);
-  const handlers = createSessionToolHandlers(topicSessions, { guildId: "guild-1", channelId: "topic-1" });
+  const handlers = createSessionToolHandlers(topicSessions, { guildId: "guild-1", channelId: "topic-1", kind: "session" });
 
   assert.deepEqual(parse(handlers.sessionReport({ summary: "古い" })), { ok: true });
   assert.deepEqual(parse(handlers.sessionReport(ARGS)), { ok: true });
@@ -49,7 +50,7 @@ test("session_report: セッションのチャンネルなら close_draft に保
 
 test("session_report: tasks を省略したら空の配列で保存する。待ち・完了のセッションでも保存する", (t) => {
   const { db, topicSessions } = setup(t);
-  const handlers = createSessionToolHandlers(topicSessions, { guildId: "guild-1", channelId: "topic-1" });
+  const handlers = createSessionToolHandlers(topicSessions, { guildId: "guild-1", channelId: "topic-1", kind: "session" });
 
   for (const state of ["waiting", "done"]) {
     db.prepare("UPDATE sessions SET state = ? WHERE channel_id = 'topic-1'").run(state);
@@ -63,10 +64,10 @@ test("session_report: セッション以外（#inbox・削除済み・別サー�
   topicSessions.create({ channelId: "topic-2", guildId: "guild-1", title: "削除済み", categoryId: "done-1" });
   db.prepare("UPDATE sessions SET state = 'deleted' WHERE channel_id = 'topic-2'").run();
 
-  const contexts = [
-    { guildId: "guild-1", channelId: "inbox-1" },
-    { guildId: "guild-1", channelId: "topic-2" },
-    { guildId: "guild-9", channelId: "topic-1" },
+  const contexts: Array<RunContext | undefined> = [
+    { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" },
+    { guildId: "guild-1", channelId: "topic-2", kind: "session" },
+    { guildId: "guild-9", channelId: "topic-1", kind: "session" },
     undefined,
   ];
   for (const context of contexts) {

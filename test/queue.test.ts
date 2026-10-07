@@ -134,3 +134,138 @@ test("idle: 待っている間に足されたジョブも終わるまで resolve
   await waiting;
   assert.equal(idle, true);
 });
+
+test("セッションのジョブ: maxConcurrent 2 なら同時に 1 つまでで、その間も #inbox など（セッションでない）のジョブは動ける", async () => {
+  const queue = new KeyedSerialQueue(2);
+  const gates = { topicA: deferred(), topicB: deferred(), inbox: deferred() };
+  const started: string[] = [];
+  const job = (name: keyof typeof gates) => async () => {
+    started.push(name);
+    await gates[name].promise;
+  };
+  const runs = [
+    queue.run("topic-a", job("topicA"), { session: true }),
+    queue.run("topic-b", job("topicB"), { session: true }),
+    queue.run("inbox", job("inbox")),
+  ];
+
+  // topic-b は枠が空いていてもセッションの上限で待ち、後から来た inbox が先に動く
+  await flush();
+  assert.deepEqual(started, ["topicA", "inbox"]);
+  gates.inbox.resolve();
+  await flush();
+  assert.deepEqual(started, ["topicA", "inbox"]);
+  gates.topicA.resolve();
+  await flush();
+  assert.deepEqual(started, ["topicA", "inbox", "topicB"]);
+  gates.topicB.resolve();
+  await Promise.all(runs);
+});
+
+test("セッションのジョブ: 待ちの順は来た順。枠が空いたら、先に来たもののうち枠の条件を満たすものから動く", async () => {
+  const queue = new KeyedSerialQueue(2);
+  const gates = Array.from({ length: 5 }, () => deferred());
+  const started: number[] = [];
+  const job = (index: number) => async () => {
+    started.push(index);
+    await gates[index]!.promise;
+  };
+  const runs = [
+    // 0: セッション、1: #inbox で全枠を使う
+    queue.run("topic-0", job(0), { session: true }),
+    queue.run("inbox-1", job(1)),
+    // 2: セッション、3: #inbox、4: #inbox の順に待つ
+    queue.run("topic-2", job(2), { session: true }),
+    queue.run("inbox-3", job(3)),
+    queue.run("inbox-4", job(4)),
+  ];
+  await flush();
+  assert.deepEqual(started, [0, 1]);
+
+  // #inbox が終わって 1 枠空いても、セッションの 2 はセッションの上限で動けないので、次に来た 3 が動く
+  gates[1]!.resolve();
+  await flush();
+  assert.deepEqual(started, [0, 1, 3]);
+
+  // セッションの 0 が終わると、待っている中で一番先の 2 が動く（4 より先）
+  gates[0]!.resolve();
+  await flush();
+  assert.deepEqual(started, [0, 1, 3, 2]);
+
+  gates[3]!.resolve();
+  await flush();
+  assert.deepEqual(started, [0, 1, 3, 2, 4]);
+  for (const gate of gates) gate.resolve();
+  await Promise.all(runs);
+});
+
+test("セッションのジョブ: maxConcurrent 1 なら、セッションもそれ以外も全部 1 つずつ", async () => {
+  const queue = new KeyedSerialQueue(1);
+  let active = 0;
+  let peak = 0;
+  const gates = Array.from({ length: 4 }, () => deferred());
+  const started: number[] = [];
+  const runs = gates.map((gate, index) =>
+    queue.run(
+      `key-${index}`,
+      async () => {
+        active++;
+        peak = Math.max(peak, active);
+        started.push(index);
+        await gate.promise;
+        active--;
+      },
+      { session: index % 2 === 0 },
+    ),
+  );
+
+  for (const [index, gate] of gates.entries()) {
+    await flush();
+    assert.deepEqual(started, Array.from({ length: index + 1 }, (_value, i) => i));
+    gate.resolve();
+  }
+  await Promise.all(runs);
+  assert.equal(peak, 1);
+});
+
+test("セッションのジョブ: 同じ key は種類によらず直列。idle はセッションのジョブも待つ", async () => {
+  const queue = new KeyedSerialQueue(3);
+  const gates = [deferred(), deferred()];
+  const events: string[] = [];
+  const runs = [
+    queue.run(
+      "topic-1",
+      async () => {
+        events.push("start 0");
+        await gates[0]!.promise;
+        events.push("end 0");
+      },
+      { session: true },
+    ),
+    // 同じチャンネルの /close のターンなど
+    queue.run(
+      "topic-1",
+      async () => {
+        events.push("start 1");
+        await gates[1]!.promise;
+        events.push("end 1");
+      },
+      { session: true },
+    ),
+  ];
+  let idle = false;
+  const waiting = queue.idle().then(() => {
+    idle = true;
+  });
+
+  await flush();
+  assert.deepEqual(events, ["start 0"]);
+  gates[0]!.resolve();
+  await flush();
+  assert.deepEqual(events, ["start 0", "end 0", "start 1"]);
+  assert.equal(idle, false);
+  gates[1]!.resolve();
+  await waiting;
+  await Promise.all(runs);
+  assert.deepEqual(events, ["start 0", "end 0", "start 1", "end 1"]);
+});
