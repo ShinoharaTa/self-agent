@@ -283,6 +283,18 @@ test("task_list ハンドラ: dropped は既定（open）に出ず、status drop
   ]);
 });
 
+test("task_update・task_list ハンドラ: 日付の形式でない due・due_by は invalid_due・invalid_due_by で、何も変えない", (t) => {
+  const store = tempStore(t);
+  const handlers = createTaskToolHandlers(store, TZ);
+  const task = store.add({ title: "歯医者を予約", due: "2026-10-05" });
+
+  for (const due of ["tomorrow", "2026-10-5", "2026-02-30", ""]) {
+    assert.deepEqual(parse(handlers.taskUpdate({ id: 1, title: "変えない", due })), { result: "invalid_due" }, due);
+    assert.deepEqual(parse(handlers.taskList({ due_by: due })), { result: "invalid_due_by" }, due);
+  }
+  assert.deepEqual(store.get(1), task);
+});
+
 test("openDb: 開き直してもマイグレーションを繰り返さない", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

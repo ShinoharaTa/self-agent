@@ -133,6 +133,14 @@ function summary(task: Task): { id: number; title: string; due: string | null } 
   return { id: task.id, title: task.title, due: task.due };
 }
 
+// task_update の due・task_list の due_by は入力の形を z.string() にし、日付の形式はハンドラで確かめる
+// （z.iso.date() は JSON Schema に長い pattern を出し、毎ターン送るツール定義が増えるため）
+const isoDate = z.iso.date();
+
+function isDate(value: string): boolean {
+  return isoDate.safeParse(value).success;
+}
+
 /** task_update の before・after と task_list の要素 */
 function withStatus(task: Task): { id: number; title: string; due: string | null; status: TaskStatus } {
   return { ...summary(task), status: task.status };
@@ -152,6 +160,7 @@ export function createTaskToolHandlers(store: TaskStore, timeZone: string) {
       return textResult(summary(store.add({ title: args.title, due: args.due })));
     },
     taskList(args: TaskListArgs): TextToolResult {
+      if (args.due_by !== undefined && !isDate(args.due_by)) return textResult({ result: "invalid_due_by" });
       const tasks = store.list({
         status: args.status ?? "open",
         limit: args.limit ?? DEFAULT_LIST_LIMIT,
@@ -167,6 +176,9 @@ export function createTaskToolHandlers(store: TaskStore, timeZone: string) {
       return textResult({ result: outcome.result, ...summary(outcome.task) });
     },
     taskUpdate(args: TaskUpdateArgs): TextToolResult {
+      if (args.due !== undefined && args.due !== "none" && !isDate(args.due)) {
+        return textResult({ result: "invalid_due" });
+      }
       const outcome = store.update(args.id, {
         title: args.title,
         due: args.due === "none" ? null : args.due,
@@ -451,8 +463,8 @@ export function createTaskTools(
           .enum(["open", "done", "dropped"])
           .optional()
           .describe("open（未完了、既定）・done（完了済み）・dropped（やめた）"),
-        due_by: z.iso
-          .date()
+        due_by: z
+          .string()
           .optional()
           .describe("YYYY-MM-DD。期限がこの日以前のもの（期限切れを含む。期限なしは除く）だけに絞る"),
         limit: z.number().int().min(1).max(50).optional().describe(`最大件数（既定 ${DEFAULT_LIST_LIMIT}）`),
@@ -474,7 +486,7 @@ export function createTaskTools(
         id: z.number().int().describe("変えるタスクの id"),
         title: z.string().min(1).max(200).optional().describe("新しい題名。変えなければ省略"),
         due: z
-          .union([z.iso.date(), z.literal("none")])
+          .string()
           .optional()
           .describe('新しい期限（YYYY-MM-DD）。期限を外すなら "none"。変えなければ省略'),
         status: z
