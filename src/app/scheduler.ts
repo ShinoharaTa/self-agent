@@ -1,7 +1,7 @@
 // 定期処理（tick）。DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
 // 最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、
 // 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認し、
-// 時期が来た #inbox の会話を切り替える（inbox-rotate.ts）。
+// 時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
 // 対象は毎回 DB と Discord から求めるので、止まっていた間に過ぎた分や失敗した移動も起動直後の tick で拾う（永続のタイマーは持たない）
 import type { Config } from "../config.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
@@ -61,7 +61,7 @@ export type SchedulerDeps = {
   channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
   /** 待ちに移した知らせと削除の確認を投稿し、再同期でサーバーのチャンネルの親カテゴリを取る */
   gateway: Pick<Gateway, "sendMessage" | "listChannelParents" | "isInGuild">;
-  /** #inbox の切り替え（日次・入力の大きさ）。要約のターンは発言と同じキューで行う */
+  /** #inbox・#tasks の切り替え（日次・入力の大きさ）。要約のターンは発言と同じキューで行う */
   inboxRotator: Pick<InboxRotator, "rotateDue">;
   now: () => Date;
   timers?: SchedulerTimers;
@@ -124,8 +124,8 @@ export class Scheduler {
   }
 
   /**
-   * 再同期・待ちへの移動・削除の確認・#inbox の切り替えは、どれかが失敗しても残りを行う。
-   * 再同期は消えたチャンネルを先に削除済みにするため最初に、#inbox の切り替えは LLM のターンを待つので最後に行う
+   * 再同期・待ちへの移動・削除の確認・#inbox・#tasks の切り替えは、どれかが失敗しても残りを行う。
+   * 再同期は消えたチャンネルを先に削除済みにするため最初に、#inbox・#tasks の切り替えは LLM のターンを待つので最後に行う
    */
   private async runTick(): Promise<void> {
     await this.reconcileChannels();

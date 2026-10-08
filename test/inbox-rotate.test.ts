@@ -13,6 +13,7 @@ import {
   ROTATE_RETRY_MS,
   ROTATED_NOTICE,
   ROTATED_NOTICE_FRESH,
+  TASKS_ROTATE_PROMPT,
 } from "../src/app/inbox-rotate.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
@@ -176,6 +177,10 @@ type Options = {
   allowedGuildIds?: string[];
   /** guild-1 の最後に切り替えた日。既定は前日（2026-10-02）。null はまだ一度も切り替えていない（時刻も無い） */
   rotatedDate?: string | null;
+  /** guild-1 に #inbox（inbox-1）があるか。既定 true */
+  inbox?: boolean;
+  /** 指定すれば guild-1 に #tasks（tasks-1）を作り、最後に切り替えた時刻を記録する。null はまだ一度も切り替えていない。既定は #tasks なし */
+  tasksRotatedAt?: Date | null;
 };
 
 /** 切り替えた日の 04:00 JST（setup で記録する、前回の切り替えの時刻） */
@@ -215,10 +220,14 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
   const turn: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
   const rotator = new InboxRotator({ cfg, guildSettings, inboxSummaries, turnQueue: queue, turn, gateway, now, log });
 
-  // guild-1 は /setup 済み（#inbox は inbox-1）
-  guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
+  // guild-1 は /setup 済み（#inbox は inbox-1。#tasks は tasks-1）
+  if (options.inbox ?? true) guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
   const rotatedDate = options.rotatedDate === undefined ? "2026-10-02" : options.rotatedDate;
   if (rotatedDate !== null) guildSettings.setInboxRotated("guild-1", rotatedDate, rotatedAtOf(rotatedDate));
+  if (options.tasksRotatedAt !== undefined) {
+    guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
+    if (options.tasksRotatedAt !== null) guildSettings.setTasksRotated("guild-1", options.tasksRotatedAt);
+  }
 
   /** when の時刻に #inbox（channelId）で成功したターンがあったことにする（usage の記録と SDK セッション） */
   const chatAt = (
@@ -267,6 +276,13 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     session: sessions.get("inbox-1"),
     seed: seeds.get("inbox-1"),
   });
+  /** guild-1 の #tasks の切り替えまわりの状態 */
+  const tasksState = () => ({
+    rotatedAt: guildSettings.get("guild-1")?.tasksRotatedAt ?? null,
+    summary: inboxSummaries.latest("guild-1", "tasks"),
+    session: sessions.get("tasks-1"),
+    seed: seeds.get("tasks-1"),
+  });
   return {
     db,
     clock,
@@ -284,14 +300,15 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     chatAt,
     handler,
     state,
+    tasksState,
     rotate: (): Promise<void> => rotator.rotateDue(() => false),
   };
 }
 
-function message(content: string, createdAt: Date): IncomingMessage {
+function message(content: string, createdAt: Date, channelId: string = "inbox-1"): IncomingMessage {
   return {
     id: `message-${createdAt.getTime()}`,
-    channelId: "inbox-1",
+    channelId,
     guildId: "guild-1",
     authorId: "owner-1",
     authorIsBot: false,
@@ -920,4 +937,339 @@ test("停止: 停止を始めていたら切り替えを始めない。キュー
   assert.equal(env.state().rotatedDate, "2026-10-02");
   assert.equal(env.guildSettings.get("guild-2")?.inboxRotatedDate, null);
   assert.deepEqual(env.logs, []);
+});
+
+const TASKS_CONTEXT = { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" } as const;
+const TASKS_NO_TURNS_LOG = "#tasks に前回の切り替えからの会話が無いため、要約せずに切り替えた日だけ記録しました（guild=guild-1）";
+
+test("#tasks の文言: 要約を頼む prompt は静的で、タスクの一覧を書き写させない。seed は「これまでの #tasks の要約:」に続けて要約を入れる", () => {
+  assert.equal(
+    TASKS_ROTATE_PROMPT,
+    `会話を新しくするので、ここまでの #tasks のやり取りのうち、今後も必要なこと（相談の途中のこと・決めた方針・約束）だけを ${CLOSE_SUMMARY_MAX_LENGTH} 字以内の箇条書きで返答してください。タスクの一覧は DB にあるので書き写さないでください。ツールは使わないでください。`,
+  );
+  assert.equal(CLOSE_SUMMARY_MAX_LENGTH, 600);
+  assert.equal(rotatedSeed("- a\n- b", "tasks"), "これまでの #tasks の要約:\n- a\n- b");
+  assert.equal(rotatedSeed("- a", "inbox"), rotatedSeed("- a"));
+});
+
+test("#tasks 日次: rotateAt の直前は切り替えず、ちょうどから要約のターン → 要約を #tasks の要約として保存 → SDK セッションを捨てる → seed → 時刻 → #tasks に知らせる", async (t) => {
+  const env = setup(t, [ok(SUMMARY, "session-t")], { inbox: false, tasksRotatedAt: rotatedAtOf("2026-10-02") });
+  env.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, "tasks-1", "session-t");
+
+  env.clock.now = at(ROTATE_AT, -1);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(env.queue.keys, []);
+
+  env.clock.now = ROTATE_AT;
+  await env.rotate();
+
+  assert.deepEqual(env.runner.inputs, [
+    { prompt: TASKS_ROTATE_PROMPT, sessionId: "session-t", context: undefined, allowedUrls: [] },
+  ]);
+  assert.deepEqual(env.queue.keys, ["tasks-1"]);
+  assert.deepEqual(env.tasksState(), {
+    rotatedAt: ROTATE_AT.toISOString(),
+    summary: { id: 1, guildId: "guild-1", date: "2026-10-03", summary: SUMMARY, createdAt: ROTATE_AT.toISOString() },
+    session: undefined,
+    seed: rotatedSeed(SUMMARY, "tasks"),
+  });
+  // channel_kind は 'tasks'。#inbox の要約としては読まない
+  assert.equal(env.db.prepare("SELECT channel_kind FROM inbox_summaries").get()?.channel_kind, "tasks");
+  assert.equal(env.inboxSummaries.latest("guild-1"), undefined);
+  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.logs, ["#tasks の会話を要約して新しいセッションに切り替えました（guild=guild-1、日次）"]);
+  // 要約のターンも usage に記録する（key は #tasks）
+  assert.equal(env.usage.recent(1)[0]?.key, "tasks-1");
+
+  // 同じ日の後の tick では何もしない
+  env.clock.now = at(ROTATE_AT, 5 * MINUTE_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 1);
+
+  // 翌日も rotateAt の直前は切り替えず、過ぎたら切り替える（会話が無いので時刻だけ）
+  env.clock.now = at(ROTATE_AT, 24 * HOUR_MS - 1);
+  await env.rotate();
+  assert.equal(env.tasksState().rotatedAt, ROTATE_AT.toISOString());
+  env.clock.now = at(ROTATE_AT, 24 * HOUR_MS);
+  await env.rotate();
+  assert.equal(env.tasksState().rotatedAt, at(ROTATE_AT, 24 * HOUR_MS).toISOString());
+  assert.equal(env.runner.inputs.length, 1);
+  assert.equal(env.logs.at(-1), TASKS_NO_TURNS_LOG);
+});
+
+test("#tasks: 切り替え後の最初の発言のターンに [記憶のブロック, 「これまでの #tasks の要約:」, prompt] を付け、成功したら seed を消す。切り替え中の発言は同じキューで後に処理する", async (t) => {
+  const env = setup(t, [ok(SUMMARY, "session-t"), ok("2 件です", "session-t2")], {
+    inbox: false,
+    tasksRotatedAt: rotatedAtOf("2026-10-02"),
+  });
+  env.memories.add("住んでいる地域: 東京都練馬区");
+  env.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, "tasks-1", "session-t");
+  const summaryTurn = deferred();
+  env.runner.gates[0] = summaryTurn.promise;
+  const handle = env.handler();
+
+  const rotating = env.rotate();
+  await flush();
+  const first = message("今日やることは？", at(ROTATE_AT, MINUTE_MS), "tasks-1");
+  const replying = handle(first);
+  await flush();
+  assert.equal(env.runner.inputs.length, 1);
+  summaryTurn.resolve();
+  await Promise.all([rotating, replying]);
+
+  assert.deepEqual(
+    env.runner.inputs.map((input) => [input.prompt, input.sessionId, input.context]),
+    [
+      [TASKS_ROTATE_PROMPT, "session-t", undefined],
+      [
+        `${MEMORY_BLOCK_HEADER}\n- [#1] 住んでいる地域: 東京都練馬区\n\nこれまでの #tasks の要約:\n${SUMMARY}\n\n` +
+          buildTurnPrompt(first.content, first.createdAt, "Asia/Tokyo", "tasks"),
+        undefined,
+        TASKS_CONTEXT,
+      ],
+    ],
+  );
+  assert.deepEqual(env.queue.keys, ["tasks-1", "tasks-1"]);
+  assert.equal(env.tasksState().seed, undefined);
+  assert.equal(env.tasksState().session, "session-t2");
+  assert.deepEqual(
+    env.gateway.events.map((event) => `${event.method}:${event.channelId}:${event.text}`),
+    [`sendMessage:tasks-1:${ROTATED_NOTICE}`, "send:tasks-1:2 件です"],
+  );
+});
+
+test("#tasks 日次: まだ一度も切り替えていない #tasks（/setup 直後・更新直後）は、今を基準として記録するだけ。翌日の rotateAt から切り替える", async (t) => {
+  const env = setup(t, [ok(SUMMARY, "session-t")], { inbox: false, tasksRotatedAt: null });
+  env.chatAt(at(ROTATE_AT, 5 * HOUR_MS), SMALL, "tasks-1", "session-t");
+
+  // rotateAt を過ぎていても、最初の tick は基準を記録するだけ（LLM を呼ばない・知らせない）
+  env.clock.now = at(ROTATE_AT, 6 * HOUR_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(env.queue.keys, []);
+  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.logs, []);
+  assert.equal(env.tasksState().rotatedAt, at(ROTATE_AT, 6 * HOUR_MS).toISOString());
+
+  // 同じ日の後の tick でも切り替えない
+  env.chatAt(at(ROTATE_AT, 7 * HOUR_MS), SMALL, "tasks-1", "session-t");
+  env.clock.now = at(ROTATE_AT, 8 * HOUR_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 0);
+
+  // 翌日の rotateAt を過ぎたら切り替える
+  env.clock.now = at(ROTATE_AT, 24 * HOUR_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 1);
+  assert.equal(env.runner.inputs[0]?.prompt, TASKS_ROTATE_PROMPT);
+  assert.equal(env.tasksState().summary?.date, "2026-10-04");
+});
+
+test("#tasks: 前回の切り替えより後に #tasks のターンが無い・SDK セッションが無ければ、LLM を呼ばずに時刻だけ記録する（#inbox のターンは数えない）", async (t) => {
+  // #inbox は今日（10/03）切り替え済み
+  const env = setup(t, [], { rotatedDate: "2026-10-03", tasksRotatedAt: rotatedAtOf("2026-10-02") });
+  env.chatAt(at(ROTATE_AT, -HOUR_MS));
+  // #tasks のターンは前回の切り替え（24 時間前）ちょうどまで
+  env.chatAt(at(ROTATE_AT, -24 * HOUR_MS), SMALL, "tasks-1", "session-t");
+
+  await env.rotate();
+
+  assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(env.queue.keys, ["tasks-1"]);
+  assert.deepEqual(env.tasksState(), {
+    rotatedAt: ROTATE_AT.toISOString(),
+    summary: undefined,
+    session: "session-t",
+    seed: undefined,
+  });
+  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.logs, [TASKS_NO_TURNS_LOG]);
+
+  // 翌日: ターンはあっても SDK セッションが無ければ同じ
+  env.chatAt(at(ROTATE_AT, HOUR_MS), SMALL, "tasks-1", "session-t");
+  env.sessions.delete("tasks-1");
+  env.clock.now = at(ROTATE_AT, 24 * HOUR_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 0);
+  assert.equal(env.tasksState().rotatedAt, at(ROTATE_AT, 24 * HOUR_MS).toISOString());
+  assert.equal(env.logs.at(-1), TASKS_NO_TURNS_LOG);
+});
+
+test("#tasks サイズ: 今日切り替え済みでも、前回の切り替えより後の最新の成功した #tasks のターンの最後のステップの入力が上限を超えたら切り替える", async (t) => {
+  const noon = at(ROTATE_AT, 8 * HOUR_MS);
+  const env = setup(t, [ok(SUMMARY, "session-t", { input: 5, read: 200000, creation: 1000, context: 201005 })], {
+    inbox: false,
+    tasksRotatedAt: ROTATE_AT,
+    maxInputTokens: 1000,
+  });
+  env.clock.now = noon;
+
+  // ちょうど上限なら切り替えない
+  env.chatAt(at(noon, -2 * HOUR_MS), { ...SMALL, context: 1000 }, "tasks-1", "session-t");
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 0);
+
+  env.chatAt(at(noon, -HOUR_MS), { ...SMALL, context: 1001 }, "tasks-1", "session-t");
+  await env.rotate();
+
+  assert.deepEqual(env.runner.inputs, [
+    { prompt: TASKS_ROTATE_PROMPT, sessionId: "session-t", context: undefined, allowedUrls: [] },
+  ]);
+  assert.deepEqual(env.tasksState(), {
+    rotatedAt: noon.toISOString(),
+    summary: { id: 1, guildId: "guild-1", date: "2026-10-03", summary: SUMMARY, createdAt: noon.toISOString() },
+    session: undefined,
+    seed: rotatedSeed(SUMMARY, "tasks"),
+  });
+  assert.deepEqual(env.logs, ["#tasks の会話を要約して新しいセッションに切り替えました（guild=guild-1、直近の入力 1001 トークン）"]);
+
+  // 要約のターン自身（最後のステップの入力 201005）の記録では、新しいセッションができても切り替えない
+  env.sessions.set("tasks-1", "session-t2");
+  env.clock.now = at(noon, 5 * MINUTE_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 1);
+});
+
+test("#tasks 記録切れ: 要約を作らずに SDK セッションを捨て、直近の #tasks の要約（それより新しい #inbox の要約ではない）を seed にして知らせる", async (t) => {
+  const env = setup(t, [RESUME_FAILURE], { inbox: false, tasksRotatedAt: rotatedAtOf("2026-10-02") });
+  env.clock.now = at(ROTATE_AT, -30 * HOUR_MS);
+  env.inboxSummaries.add("guild-1", "2026-10-01", "前回の #tasks の要約", "tasks");
+  env.clock.now = at(ROTATE_AT, -24 * HOUR_MS);
+  env.inboxSummaries.add("guild-1", "2026-10-02", "前回の #inbox の要約");
+  env.clock.now = ROTATE_AT;
+  env.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, "tasks-1", "session-t");
+
+  await env.rotate();
+
+  assert.equal(env.runner.inputs.length, 1);
+  assert.equal(Number(env.db.prepare("SELECT COUNT(*) AS n FROM inbox_summaries").get()?.n), 2);
+  assert.deepEqual(env.tasksState(), {
+    rotatedAt: ROTATE_AT.toISOString(),
+    summary: {
+      id: 1,
+      guildId: "guild-1",
+      date: "2026-10-01",
+      summary: "前回の #tasks の要約",
+      createdAt: at(ROTATE_AT, -30 * HOUR_MS).toISOString(),
+    },
+    session: undefined,
+    seed: rotatedSeed("前回の #tasks の要約", "tasks"),
+  });
+  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.logs, [
+    "#tasks の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=guild-1、前回の要約を引き継ぎ）: " +
+      RESUME_FAILURE.errorMessage,
+  ]);
+});
+
+test("記録切れ: 同じ tick で #inbox → #tasks の順に切り替え、#inbox は #tasks の要約を引き継がない", async (t) => {
+  const env = setup(t, [RESUME_FAILURE, RESUME_FAILURE], { tasksRotatedAt: rotatedAtOf("2026-10-02") });
+  env.clock.now = at(ROTATE_AT, -24 * HOUR_MS);
+  env.inboxSummaries.add("guild-1", "2026-10-02", "前回の #tasks の要約", "tasks");
+  env.clock.now = ROTATE_AT;
+  env.chatAt(at(ROTATE_AT, -HOUR_MS));
+  env.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, "tasks-1", "session-t");
+
+  await env.rotate();
+
+  assert.deepEqual(
+    env.runner.inputs.map((input) => [input.prompt, input.sessionId]),
+    [
+      [ROTATE_PROMPT, "session-1"],
+      [TASKS_ROTATE_PROMPT, "session-t"],
+    ],
+  );
+  assert.deepEqual(env.queue.keys, ["inbox-1", "tasks-1"]);
+  assert.deepEqual(env.state(), { rotatedDate: "2026-10-03", summary: undefined, session: undefined, seed: undefined });
+  assert.equal(env.tasksState().seed, rotatedSeed("前回の #tasks の要約", "tasks"));
+  assert.deepEqual(env.gateway.events, [
+    { method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE_FRESH },
+    { method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE },
+  ]);
+});
+
+test("記録切れ: #tasks は #inbox の要約を引き継がない（#tasks の要約が無ければ seed を入れずに知らせる）", async (t) => {
+  const env = setup(t, [RESUME_FAILURE], { inbox: false, tasksRotatedAt: rotatedAtOf("2026-10-02") });
+  env.inboxSummaries.add("guild-1", "2026-10-02", "前回の #inbox の要約");
+  env.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, "tasks-1", "session-t");
+
+  await env.rotate();
+
+  assert.deepEqual(env.tasksState(), {
+    rotatedAt: ROTATE_AT.toISOString(),
+    summary: undefined,
+    session: undefined,
+    seed: undefined,
+  });
+  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE_FRESH }]);
+  assert.deepEqual(env.logs, [
+    "#tasks の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=guild-1、前回の要約なし）: " +
+      RESUME_FAILURE.errorMessage,
+  ]);
+});
+
+test("#tasks: 要約のターンが失敗したら何も変えずに log に出し、1 時間経つまでやり直さない。失敗は #inbox と #tasks で別に数える", async (t) => {
+  const failedTasks: RunResult = { ...FAILED, sessionId: "session-t" };
+  const env = setup(t, [ok(SUMMARY), failedTasks, ok(SUMMARY, "session-t")], {
+    tasksRotatedAt: rotatedAtOf("2026-10-02"),
+  });
+  env.chatAt(at(ROTATE_AT, -HOUR_MS));
+  env.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, "tasks-1", "session-t");
+
+  await env.rotate();
+
+  // #inbox は切り替わり、#tasks は何も変わらない
+  assert.equal(env.state().rotatedDate, "2026-10-03");
+  assert.deepEqual(env.tasksState(), {
+    rotatedAt: rotatedAtOf("2026-10-02").toISOString(),
+    summary: undefined,
+    session: "session-t",
+    seed: undefined,
+  });
+  assert.deepEqual(env.logs, [
+    ROTATED_LOG,
+    "#tasks の要約に失敗したため、切り替えませんでした（guild=guild-1）。1 時間後以降にやり直します: error_during_execution: boom",
+  ]);
+  assert.equal(env.sessions.failureCount("tasks-1"), 0);
+
+  // 1 時間に 1 ms 足りなければやり直さない
+  env.clock.now = at(ROTATE_AT, HOUR_MS - 1);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 2);
+
+  // ちょうど 1 時間後にやり直す
+  env.clock.now = at(ROTATE_AT, HOUR_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 3);
+  assert.deepEqual(env.runner.inputs[2], {
+    prompt: TASKS_ROTATE_PROMPT,
+    sessionId: "session-t",
+    context: undefined,
+    allowedUrls: [],
+  });
+  assert.equal(env.tasksState().summary?.summary, SUMMARY);
+  assert.equal(env.tasksState().rotatedAt, at(ROTATE_AT, HOUR_MS).toISOString());
+});
+
+test("#tasks: 要約のターンが例外で終わっても何も変えずに log に出し、1 時間経つまでやり直さない", async (t) => {
+  const env = setup(t, [new Error("spawn failed"), ok(SUMMARY, "session-t")], {
+    inbox: false,
+    tasksRotatedAt: rotatedAtOf("2026-10-02"),
+  });
+  env.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, "tasks-1", "session-t");
+
+  await env.rotate();
+
+  assert.equal(env.tasksState().rotatedAt, rotatedAtOf("2026-10-02").toISOString());
+  assert.equal(env.tasksState().session, "session-t");
+  assert.deepEqual(env.logs, ["#tasks の切り替えに失敗しました（guild=guild-1）: spawn failed"]);
+
+  env.clock.now = at(ROTATE_AT, HOUR_MS - 1);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 1);
+  env.clock.now = at(ROTATE_AT, HOUR_MS);
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 2);
+  assert.equal(env.tasksState().seed, rotatedSeed(SUMMARY, "tasks"));
 });
