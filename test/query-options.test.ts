@@ -49,8 +49,7 @@ test("システムプロンプトにアプリの説明（チャンネル・セ�
   const prompt = String(systemPrompt);
   assert.ok(prompt.includes("このアプリについて（使い方を聞かれたら、この範囲で答える）:"));
   for (const word of [
-    "#tasks",
-    "#system",
+    "- #tasks: まだ役割が無い。#system: 完了から日数が経ったセッションを削除するかの確認。",
     "「進行中」「待ち」「完了」",
     "パネルのボタン",
     "- ここに無いことは、分からないと答える。",
