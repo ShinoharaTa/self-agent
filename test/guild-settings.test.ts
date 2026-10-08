@@ -42,6 +42,7 @@ test("GuildSettingsStore: 未設定のサーバーは undefined、ID は 1 つ�
     homePanelMessageId: null,
     inboxRotatedDate: null,
     inboxRotatedAt: null,
+    tasksRotatedAt: null,
     createdAt: "2026-10-02T00:00:00.000Z",
     updatedAt: "2026-10-02T00:00:00.000Z",
   });
@@ -60,6 +61,7 @@ test("GuildSettingsStore: 未設定のサーバーは undefined、ID は 1 つ�
     homePanelMessageId: null,
     inboxRotatedDate: null,
     inboxRotatedAt: null,
+    tasksRotatedAt: null,
     createdAt: "2026-10-02T00:00:00.000Z",
     updatedAt: "2026-10-02T00:04:00.000Z",
   });
@@ -217,4 +219,71 @@ test("openDb: v10 の DB を v11 に上げても切り替えた日は残り、�
   assert.equal(store.get("guild-1")?.inboxRotatedAt, null);
   store.setInboxRotated("guild-1", "2026-10-02", new Date("2026-10-01T19:00:00.000Z"));
   assert.equal(store.get("guild-1")?.inboxRotatedAt, "2026-10-01T19:00:00.000Z");
+});
+
+test("GuildSettingsStore.setTasksRotated: 他の列（#inbox を切り替えた日・時刻を含む）は変えずに #tasks を切り替えた時刻（ISO）を上書きする", (t) => {
+  const store = tempStore(t);
+  store.setChannel("guild-1", "tasksChannelId", "tasks-1");
+  store.setInboxRotated("guild-1", "2026-10-02", new Date("2026-10-01T19:00:00.000Z"));
+  assert.equal(store.get("guild-1")?.tasksRotatedAt, null);
+
+  store.setTasksRotated("guild-1", new Date("2026-10-01T19:00:00.000Z"));
+  store.setTasksRotated("guild-1", new Date("2026-10-02T19:00:01.234Z"));
+
+  const settings = store.get("guild-1");
+  assert.equal(settings?.tasksRotatedAt, "2026-10-02T19:00:01.234Z");
+  assert.equal(settings?.tasksChannelId, "tasks-1");
+  assert.equal(settings?.inboxRotatedDate, "2026-10-02");
+  assert.equal(settings?.inboxRotatedAt, "2026-10-01T19:00:00.000Z");
+  assert.equal(settings?.updatedAt, "2026-10-02T00:03:00.000Z");
+});
+
+test("openDb: v13 の DB を v14 に上げても既存の要約は #inbox のものとして残り、#tasks の要約と切り替えた時刻は無い。以後はチャンネルごとに記録できる", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // #tasks の切り替えより前（v13）の DB を作る
+  const v13 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 13)) v13.exec(migration);
+  v13.exec("PRAGMA user_version = 13");
+  v13.prepare(
+    "INSERT INTO guild_settings (guild_id, inbox_channel_id, tasks_channel_id, inbox_rotated_date, inbox_rotated_at, created_at, updated_at) " +
+      "VALUES ('guild-1', 'inbox-1', 'tasks-1', '2026-10-01', '2026-09-30T19:00:00.000Z', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')",
+  ).run();
+  v13.prepare(
+    "INSERT INTO inbox_summaries (guild_id, date, summary, created_at) VALUES ('guild-1', '2026-10-01', '- 前の要約', '2026-09-30T19:00:00.000Z')",
+  ).run();
+  v13.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 14);
+  const store = new GuildSettingsStore(db, clock());
+  assert.equal(store.get("guild-1")?.tasksChannelId, "tasks-1");
+  assert.equal(store.get("guild-1")?.inboxRotatedAt, "2026-09-30T19:00:00.000Z");
+  assert.equal(store.get("guild-1")?.tasksRotatedAt, null);
+
+  const summaries = new InboxSummaryStore(db, clock());
+  assert.equal(summaries.latest("guild-1")?.summary, "- 前の要約");
+  assert.equal(summaries.latest("guild-1", "inbox")?.summary, "- 前の要約");
+  assert.equal(summaries.latest("guild-1", "tasks"), undefined);
+
+  // #tasks の要約は #inbox の要約に混ざらない（逆も）
+  summaries.add("guild-1", "2026-10-02", "- #tasks の要約", "tasks");
+  assert.equal(summaries.latest("guild-1")?.summary, "- 前の要約");
+  assert.deepEqual(summaries.latest("guild-1", "tasks"), {
+    id: 2,
+    guildId: "guild-1",
+    date: "2026-10-02",
+    summary: "- #tasks の要約",
+    createdAt: "2026-10-02T00:00:00.000Z",
+  });
+  summaries.add("guild-1", "2026-10-03", "- #inbox の要約");
+  assert.equal(summaries.latest("guild-1", "tasks")?.summary, "- #tasks の要約");
+  assert.equal(summaries.latest("guild-1", "inbox")?.summary, "- #inbox の要約");
+  assert.equal(
+    db.prepare("SELECT channel_kind FROM inbox_summaries WHERE id = 1").get()?.channel_kind,
+    "inbox",
+  );
 });

@@ -170,6 +170,12 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE UNIQUE INDEX projects_channel_id_active ON projects (channel_id) WHERE deleted_at IS NULL;
   `,
+  // v14: #tasks の会話の切り替え。要約がどのチャンネルのものか（'inbox' | 'tasks'。既存の行は #inbox）と、
+  // サーバーごとの #tasks を最後に切り替えた時刻（ISO。日付はこの時刻から SELF_AGENT_TZ で求める）
+  `
+  ALTER TABLE inbox_summaries ADD COLUMN channel_kind TEXT NOT NULL DEFAULT 'inbox';
+  ALTER TABLE guild_settings ADD COLUMN tasks_rotated_at TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

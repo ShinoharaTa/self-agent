@@ -1,6 +1,9 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 
-/** #inbox の会話を切り替えたときに残した要約（inbox_summaries） */
+/** 会話を切り替えて要約を残すチャンネルの種類（/setup 済みのサーバーの #inbox と #tasks。inbox_summaries.channel_kind） */
+export type SummaryChannelKind = "inbox" | "tasks";
+
+/** #inbox・#tasks の会話を切り替えたときに残した要約（inbox_summaries） */
 export type InboxSummary = {
   id: number;
   guildId: string;
@@ -20,7 +23,7 @@ function toSummary(row: Record<string, SQLOutputValue>): InboxSummary {
   };
 }
 
-/** サーバーごとの #inbox の要約。切り替えるたびに 1 行足し、消さない */
+/** サーバーごと・チャンネル（#inbox / #tasks）ごとの要約。切り替えるたびに 1 行足し、消さない。channelKind を省略したら #inbox */
 export class InboxSummaryStore {
   private readonly db: DatabaseSync;
   private readonly now: () => Date;
@@ -30,17 +33,17 @@ export class InboxSummaryStore {
     this.now = now;
   }
 
-  add(guildId: string, date: string, summary: string): void {
+  add(guildId: string, date: string, summary: string, channelKind: SummaryChannelKind = "inbox"): void {
     this.db
-      .prepare("INSERT INTO inbox_summaries (guild_id, date, summary, created_at) VALUES (?, ?, ?, ?)")
-      .run(guildId, date, summary, this.now().toISOString());
+      .prepare("INSERT INTO inbox_summaries (guild_id, date, summary, created_at, channel_kind) VALUES (?, ?, ?, ?, ?)")
+      .run(guildId, date, summary, this.now().toISOString(), channelKind);
   }
 
-  /** そのサーバーで最後に残した要約。まだ無ければ undefined */
-  latest(guildId: string): InboxSummary | undefined {
+  /** そのサーバーのそのチャンネルで最後に残した要約。まだ無ければ undefined */
+  latest(guildId: string, channelKind: SummaryChannelKind = "inbox"): InboxSummary | undefined {
     const row = this.db
-      .prepare("SELECT * FROM inbox_summaries WHERE guild_id = ? ORDER BY id DESC LIMIT 1")
-      .get(guildId);
+      .prepare("SELECT * FROM inbox_summaries WHERE guild_id = ? AND channel_kind = ? ORDER BY id DESC LIMIT 1")
+      .get(guildId, channelKind);
     return row === undefined ? undefined : toSummary(row);
   }
 }

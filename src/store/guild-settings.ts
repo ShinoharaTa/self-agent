@@ -16,6 +16,8 @@ export type GuildSettings = {
   inboxRotatedDate: string | null;
   /** #inbox の会話を最後に切り替えた時刻（ISO）。まだ切り替えていなければ（v11 より前に切り替えた分も）null */
   inboxRotatedAt: string | null;
+  /** #tasks の会話を最後に切り替えた時刻（ISO。日付はこの時刻から SELF_AGENT_TZ で求める）。まだ切り替えていなければ null */
+  tasksRotatedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -43,6 +45,7 @@ function toSettings(row: Record<string, SQLOutputValue>): GuildSettings {
     homePanelMessageId: nullableString(row.home_panel_message_id),
     inboxRotatedDate: nullableString(row.inbox_rotated_date),
     inboxRotatedAt: nullableString(row.inbox_rotated_at),
+    tasksRotatedAt: nullableString(row.tasks_rotated_at),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -97,6 +100,17 @@ export class GuildSettingsStore {
           "inbox_rotated_at = excluded.inbox_rotated_at, updated_at = excluded.updated_at",
       )
       .run(guildId, date, rotatedAt.toISOString(), at, at);
+  }
+
+  /** #tasks の会話を切り替えた時刻（rotatedAt）を保存する。行が無ければ作る */
+  setTasksRotated(guildId: string, rotatedAt: Date): void {
+    const at = this.now().toISOString();
+    this.db
+      .prepare(
+        "INSERT INTO guild_settings (guild_id, tasks_rotated_at, created_at, updated_at) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT (guild_id) DO UPDATE SET tasks_rotated_at = excluded.tasks_rotated_at, updated_at = excluded.updated_at",
+      )
+      .run(guildId, rotatedAt.toISOString(), at, at);
   }
 
   getStateCategory(guildId: string, state: SessionState, ordinal: number): string | undefined {
