@@ -148,17 +148,25 @@ export const WEB_FETCH_MAX_REDIRECTS = 5;
 const REDIRECT_LINE_PATTERN = /^[ \t]*Redirect URL \([^)\n]*\): (https?:\/\/\S+)[ \t]*$/m;
 
 /**
- * PostToolUse の tool_response から結果のテキストを取り出す。WebFetch は `{ result, code, url, … }` の result。
- * 文字列・content ブロック（`{ type: "text", text }`）の配列・content を持つ形にも備える。取り出せなければ空文字
+ * WebFetch の tool_response（CLI の出力 `{ bytes, code, codeText, result, durationMs, url }`）が転送を示すなら、その結果のテキスト。
+ * 転送かどうかは HTTP の状態コード（code が 300〜399）で判定する。普通のページの result はページの中身をもとにした要約で、
+ * 偽の Redirect 行を含みうるので読まない。転送先は構造化された項目に無いので result の Redirect 行から読む。
+ * code を持たない形（文字列・content ブロックの配列など）は転送と判定できないので undefined
  */
-function toolResponseText(response: unknown): string {
-  if (typeof response === "string") return response;
-  if (Array.isArray(response)) return response.map(toolResponseText).join("\n");
-  if (typeof response !== "object" || response === null) return "";
-  const fields = response as Record<string, unknown>;
-  if (typeof fields.result === "string") return fields.result;
-  if (typeof fields.text === "string") return fields.text;
-  return toolResponseText(fields.content);
+function webFetchRedirectText(response: unknown): string | undefined {
+  if (typeof response !== "object" || response === null || Array.isArray(response)) return undefined;
+  const { code, result } = response as Record<string, unknown>;
+  if (typeof code !== "number" || !Number.isInteger(code) || code < 300 || code > 399) return undefined;
+  return typeof result === "string" ? result : undefined;
+}
+
+/** 転送先（正規化したもの）と、http なら同じ URL の https（ページは https で取得されることがある） */
+function redirectTargets(redirectUrl: string): string[] {
+  const url = new URL(redirectUrl);
+  if (url.protocol !== "http:") return [redirectUrl];
+  url.protocol = "https:";
+  const https = normalizeUrl(url.href);
+  return https === undefined ? [redirectUrl] : [redirectUrl, https];
 }
 
 /** WebFetch の tool_input の url を正規化したもの。無い・解析できなければ undefined */
@@ -174,8 +182,9 @@ export type WebFetchGuard = { preToolUse: HookCallbackMatcher; postToolUse: Hook
 /**
  * WebFetch を、allowedUrls（このターンにオーナーが貼った URL）に含まれる URL だけに絞る。
  * PreToolUse の hook は、含まれない・解析できない URL を拒否して log に出す（URL は出さない）。
- * PostToolUse の hook は、許可済みの URL を WebFetch した結果が転送（Redirect URL の行）なら、その転送先をこのターンの許可に加える
- * （転送先の転送も同じ。1 ターンで WEB_FETCH_MAX_REDIRECTS 回まで。log に URL は出さない）。WebFetch 以外のツールは何もしない
+ * PostToolUse の hook は、許可済みの URL を WebFetch した結果が転送（code が 3xx で、result に Redirect URL の行）なら、
+ * その転送先（http なら https も）をこのターンの許可に加える（転送先の転送も同じ。1 ターンで WEB_FETCH_MAX_REDIRECTS 回まで。
+ * log に URL は出さない）。WebFetch 以外のツールは何もしない
  */
 export function createWebFetchGuard(allowedUrls: readonly string[], log: (message: string) => void): WebFetchGuard {
   const allowed = new Set(allowedUrls.map(normalizeUrl).filter((url) => url !== undefined));
@@ -194,15 +203,18 @@ export function createWebFetchGuard(allowedUrls: readonly string[], log: (messag
       },
     };
   };
-  // 許可済みの URL からの転送だけを辿る。既に許可している転送先は数えない
+  // 許可済みの URL からの転送だけを辿る。http の転送先は https も加え、2 つで 1 回と数える。既に許可している転送先は数えない
   const followRedirect: HookCallback = async (input) => {
     if (input.hook_event_name !== "PostToolUse" || input.tool_name !== "WebFetch") return {};
     const url = webFetchUrl(input.tool_input);
     if (url === undefined || !allowed.has(url) || redirects >= WEB_FETCH_MAX_REDIRECTS) return {};
-    const target = REDIRECT_LINE_PATTERN.exec(toolResponseText(input.tool_response))?.[1];
+    const text = webFetchRedirectText(input.tool_response);
+    const target = text === undefined ? undefined : REDIRECT_LINE_PATTERN.exec(text)?.[1];
     const redirectUrl = target === undefined ? undefined : normalizeUrl(target);
-    if (redirectUrl === undefined || allowed.has(redirectUrl)) return {};
-    allowed.add(redirectUrl);
+    if (redirectUrl === undefined) return {};
+    const added = redirectTargets(redirectUrl).filter((candidate) => !allowed.has(candidate));
+    if (added.length === 0) return {};
+    for (const candidate of added) allowed.add(candidate);
     redirects++;
     log("WebFetch の転送先を許可しました");
     return {};
