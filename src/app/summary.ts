@@ -1,4 +1,5 @@
-// 要約の文字列（/close と #inbox の切り替えで共通）
+// 要約の文字列（/close と #inbox・#tasks の切り替えで共通）
+import type { SummaryChannelKind } from "../store/inbox-summaries.ts";
 import { CLOSE_SUMMARY_MAX_LENGTH } from "../store/topic-sessions.ts";
 
 /** session_report が呼ばれず、返答も空だったときの要約 */
@@ -12,13 +13,16 @@ export function clip(text: string, max: number, ellipsis: string = ""): string {
   return `${cut}${ellipsis}`;
 }
 
-/** session_report が呼ばれなかったときの要約（返答本文の先頭 600 字。空なら「（要約なし）」）。#inbox の切り替えの要約にも使う */
+/** session_report が呼ばれなかったときの要約（返答本文の先頭 600 字。空なら「（要約なし）」）。#inbox・#tasks の切り替えの要約にも使う */
 export function fallbackSummary(text: string): string {
   const summary = clip(text.trim(), CLOSE_SUMMARY_MAX_LENGTH);
   return summary === "" ? EMPTY_SUMMARY : summary;
 }
 
-/** #inbox の要約を次のターンの prompt の先頭に付けるときの形（切り替えと、#inbox の resume 失敗からの復旧で共通） */
-export function rotatedSeed(summary: string): string {
-  return `これまでの #inbox の要約:\n${summary}`;
+/**
+ * #inbox・#tasks の要約を次のターンの prompt の先頭に付けるときの形（「これまでの #inbox の要約:」「これまでの #tasks の要約:」）。
+ * 切り替えと、そのチャンネルの resume 失敗からの復旧で共通。channelKind を省略したら #inbox
+ */
+export function rotatedSeed(summary: string, channelKind: SummaryChannelKind = "inbox"): string {
+  return `これまでの #${channelKind} の要約:\n${summary}`;
 }
