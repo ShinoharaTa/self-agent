@@ -128,6 +128,22 @@ test("/tasks: 未完了が 0 件なら「未完了のタスクはありません
   assert.equal(NO_OPEN_TASKS_TEXT, "未完了のタスクはありません");
 });
 
+test("/tasks: やめた（dropped）タスクは一覧とセレクトに出ない", async (t) => {
+  const { tasks, runTasks } = setup(t);
+  tasks.add({ title: "やめた", due: "2026-10-03" });
+  tasks.add({ title: "残す" });
+  tasks.update(1, { status: "dropped" });
+
+  const calls = await runTasks();
+
+  assert.deepEqual(calls, [
+    {
+      method: "reply",
+      message: { text: "#2 残す", components: [selectRow([{ label: "#2 残す", value: "2" }])], ephemeral: true },
+    },
+  ]);
+});
+
 test("/tasks: 20 件まで。セレクトの選択肢も表示した 20 件", (t) => {
   const { tasks } = setup(t);
   for (let i = 1; i <= 23; i++) tasks.add({ title: `t${i}`, due: `2026-10-${String(i).padStart(2, "0")}` });
