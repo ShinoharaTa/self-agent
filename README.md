@@ -61,7 +61,7 @@ Discord ──(discord.js)── Gateway ── access check (allowed servers, o
 
 - It responds only to the owner's messages and actions, and only on servers allowed by an environment variable. It ignores DMs, other servers, other people, bots and webhooks.
 - All Claude Code built-in tools except WebSearch and WebFetch are disabled (no shell, no file access).
-- WebFetch can fetch only URLs the owner pasted in that turn's message; anything else is denied by a hook. This blocks a page's instructions from sending data to some other URL.
+- WebFetch can fetch only URLs the owner pasted in that turn's message (and where they redirect to); anything else is denied by a hook. This blocks a page's instructions from sending data to some other URL.
 - Content from web pages, search results and the knowledge base is treated as reference material. Instructions inside it are not followed.
 - Irreversible actions, such as deleting a channel or a knowledge base entry, happen only when you press a button.
 - Bot messages never ping `@everyone` or roles.

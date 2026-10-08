@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SdkAgentRunner } from "../../src/agent/sdk-runner.ts";
+import { query, type HookCallback } from "@anthropic-ai/claude-agent-sdk";
+import { SdkAgentRunner, type QueryFn } from "../../src/agent/sdk-runner.ts";
 import { createTaskMcpServer } from "../../src/agent/tools.ts";
 import { buildTurnPrompt } from "../../src/app/prompt.ts";
 import { loadConfig } from "../../src/config.ts";
@@ -19,6 +20,14 @@ const tokenPresent = (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "") !== "";
 
 /** 別のホストへ転送する URL（golang.org → go.dev）。CLI の WebFetch は別のホストへの転送を自動では追わず、転送先を結果で返す */
 const REDIRECTING_URL = "https://golang.org/";
+
+/** tool_response の形（型・項目名・code の値）。中身（URL・本文）は出さない */
+function describeShape(response: unknown): string {
+  if (Array.isArray(response)) return `array(${response.length})`;
+  if (typeof response !== "object" || response === null) return typeof response;
+  const fields = response as Record<string, unknown>;
+  return `object{${Object.keys(fields).sort().join(",")}} code=${typeof fields.code === "number" ? fields.code : typeof fields.code}`;
+}
 
 test(
   "WebFetch のガード: 貼った URL が別のホストへ転送されても、転送先を拒否せずに読める",
@@ -49,6 +58,23 @@ test(
     const projectsDir = join(cfg.workDir, "projects");
     const projectTools = { projects, projectsDir, publicBaseUrl: undefined, serving: () => false };
     const logs: string[] = [];
+    // 実際の CLI の WebFetch の tool_response の形を記録する hook を、runner の hooks の後ろに足す
+    const shapes: string[] = [];
+    const observe: HookCallback = async (input) => {
+      if (input.hook_event_name === "PostToolUse" && input.tool_name === "WebFetch") shapes.push(describeShape(input.tool_response));
+      return {};
+    };
+    const queryFn: QueryFn = ({ prompt, options }) =>
+      query({
+        prompt,
+        options: {
+          ...options,
+          hooks: {
+            ...options.hooks,
+            PostToolUse: [...(options.hooks?.PostToolUse ?? []), { matcher: "WebFetch", hooks: [observe] }],
+          },
+        },
+      });
     const runner = new SdkAgentRunner(
       cfg,
       (context) =>
@@ -62,6 +88,7 @@ test(
         ),
       { projects, projectsDir },
       (line) => logs.push(line),
+      queryFn,
     );
 
     const request = `${REDIRECTING_URL} このページを読んで、ページの題名を答えてください。`;
@@ -76,9 +103,11 @@ test(
     t.diagnostic(
       `ツール呼び出し ${result.toolCalls} 回、WebFetch の拒否 ${denials.length} 回、転送先の許可 ${redirects.length} 回`,
     );
+    t.diagnostic(`WebFetch の tool_response: ${shapes.join(" / ")}`);
     assert.ok(result.ok, result.ok ? "" : result.errorMessage);
     assert.equal(denials.length, 0, "WebFetch がガードに拒否された");
-    // 転送の結果（tool_response）から転送先を読めた
+    // 転送の結果（tool_response の code が 3xx）から転送先を読めた
+    assert.ok(shapes.some((shape) => /code=3\d\d$/.test(shape)), "転送の結果の code が 3xx でない");
     assert.ok(redirects.length >= 1, "転送先を許可に加えていない（WebFetch を呼ばなかったか、結果を読めなかった）");
   },
 );
