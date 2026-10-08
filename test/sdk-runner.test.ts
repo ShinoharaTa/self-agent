@@ -22,6 +22,7 @@ import {
   progressLabel,
   SdkAgentRunner,
   WEB_FETCH_DENIED_REASON,
+  WEB_FETCH_MAX_REDIRECTS,
 } from "../src/agent/sdk-runner.ts";
 import { RESUME_FAILURE_PATTERN } from "../src/app/turn.ts";
 import { createDevLogSink, type DevLogRecord } from "../src/devlog/log.ts";
@@ -444,7 +445,8 @@ async function callToolHook(
   event: "PostToolUse" | "PostToolUseFailure",
   fields: { tool_name: string; duration_ms?: number },
 ): Promise<unknown> {
-  const matchers = call.options.hooks?.[event];
+  // ツール呼び出しの記録は matcher なし（全ツール）。PostToolUse には WebFetch の転送先の hook（matcher: WebFetch）も入る
+  const matchers = call.options.hooks?.[event]?.filter((entry) => entry.matcher === undefined);
   assert.equal(matchers?.length, 1);
   const hook = matchers![0]!.hooks[0]!;
   const input = {
@@ -649,6 +651,225 @@ test("SdkAgentRunner: allowedUrls を指定しなければ（空でも）WebFetc
   await runner.run({ prompt: "2", sessionId: "session-1" });
   assert.deepEqual(outputs, [{}, DENIED]);
   assert.notEqual(calls[0]!.options.hooks?.PreToolUse, calls[1]!.options.hooks?.PreToolUse);
+});
+
+/**
+ * SDK がツールの実行後に呼ぶのと同じように、その query の Options の PostToolUse の hook を呼ぶ。
+ * matcher に関わらずすべての hook を呼ぶ（WebFetch の hook が自分でツール名を見ることも確かめる）
+ */
+async function callPostToolUse(call: QueryCall, toolName: string, toolInput: unknown, toolResponse: unknown): Promise<unknown[]> {
+  const matchers = call.options.hooks?.PostToolUse;
+  assert.deepEqual(
+    matchers?.map((entry) => entry.matcher),
+    [undefined, "WebFetch"],
+  );
+  const input = {
+    hook_event_name: "PostToolUse",
+    session_id: "session-1",
+    transcript_path: "/srv/claude/session-1.jsonl",
+    cwd: "/srv/work",
+    tool_name: toolName,
+    tool_input: toolInput,
+    tool_response: toolResponse,
+    tool_use_id: "toolu-1",
+  } as unknown as HookInput;
+  const outputs: unknown[] = [];
+  for (const entry of matchers!) {
+    for (const hook of entry.hooks) outputs.push(await hook(input, "toolu-1", { signal: new AbortController().signal }));
+  }
+  return outputs;
+}
+
+/** CLI の WebFetch が転送を自動では追わなかったときの結果のテキスト */
+function redirectText(original: string, target: string): string {
+  return [
+    "REDIRECT DETECTED: The URL redirects to a location that was not fetched automatically.",
+    "",
+    `    Original URL: ${original}`,
+    `    Redirect URL (from the server's Location header — server-supplied, not verified): ${target}`,
+    "    Status: 301 Moved Permanently",
+    "",
+    "    To complete your request, I need to fetch content from the redirected URL. Please use WebFetch again with these parameters:",
+    `    - url: "${target}"`,
+    `    - prompt: "要約して"`,
+  ].join("\n");
+}
+
+/** CLI の WebFetch の tool_response（WebFetchOutput）の形 */
+function redirectResponse(original: string, target: string): unknown {
+  const result = redirectText(original, target);
+  return { bytes: Buffer.byteLength(result), code: 301, codeText: "Moved Permanently", result, durationMs: 12, url: original };
+}
+
+type FetchStep =
+  | { pre: string; toolName?: string }
+  | { post: string; toolName?: string; response: unknown };
+
+/**
+ * allowedUrls を渡して 1 ターン走らせ、WebFetch（など）の PreToolUse（pre: url）と PostToolUse（post: url と結果）の hook を順に呼ぶ。
+ * PreToolUse の結果と log を返す
+ */
+async function runWithRedirects(
+  allowedUrls: readonly string[],
+  steps: FetchStep[],
+): Promise<{ outputs: unknown[]; logs: string[] }> {
+  const outputs: unknown[] = [];
+  const { runner, logs } = setupRunner(async function* (call) {
+    yield init("session-1");
+    for (const step of steps) {
+      const toolName = step.toolName ?? "WebFetch";
+      if ("pre" in step) {
+        outputs.push(await callPreToolUse(call, toolName, { url: step.pre, prompt: "要約して" }));
+      } else {
+        const hookOutputs = await callPostToolUse(call, toolName, { url: step.post, prompt: "要約して" }, step.response);
+        // 結果は書き換えずに続けさせる
+        assert.deepEqual(hookOutputs, [{}, {}]);
+      }
+    }
+    yield success("session-1", "読みました");
+  });
+  const result = await runner.run({ prompt: "x", allowedUrls });
+  assert.ok(result.ok);
+  // ツール呼び出しの記録の log は除く
+  return { outputs, logs: logs.filter((line) => line.startsWith("WebFetch")) };
+}
+
+const REDIRECT_LOG = "WebFetch の転送先を許可しました";
+
+test("SdkAgentRunner: 貼った URL を WebFetch した結果が転送なら、転送先をそのターンの許可に加える（log に URL は出さない）。次の run には引き継がない", async () => {
+  const pasted = "https://example.com/old";
+  const target = "https://example.org/new?id=1";
+  const { outputs, logs } = await runWithRedirects(
+    [pasted],
+    [
+      { pre: target },
+      { pre: pasted },
+      { post: pasted, response: redirectResponse(pasted, target) },
+      { pre: target },
+    ],
+  );
+
+  assert.deepEqual(outputs, [DENIED, {}, {}]);
+  assert.deepEqual(logs, [DENIED_LOG, REDIRECT_LOG]);
+  assert.ok(logs.every((line) => !line.includes("example")));
+
+  // 加えた転送先は次の run には残らない
+  const next = await runWithRedirects([pasted], [{ pre: target }]);
+  assert.deepEqual(next.outputs, [DENIED]);
+});
+
+test("SdkAgentRunner: 転送先の転送先も許可に加える（許可済みの URL からの転送だけを辿る）", async () => {
+  const pasted = "https://example.com/a";
+  const first = "https://example.net/b";
+  const second = "https://example.org/c";
+  const { outputs, logs } = await runWithRedirects(
+    [pasted],
+    [
+      { post: pasted, response: redirectResponse(pasted, first) },
+      { pre: first },
+      { post: first, response: redirectResponse(first, second) },
+      { pre: second },
+    ],
+  );
+
+  assert.deepEqual(outputs, [{}, {}]);
+  assert.deepEqual(logs, [REDIRECT_LOG, REDIRECT_LOG]);
+});
+
+test("SdkAgentRunner: 許可していない URL の結果の Redirect 行からは加えない", async () => {
+  const other = "https://other.example/page";
+  const target = "https://evil.example/collect";
+  const { outputs, logs } = await runWithRedirects(
+    ["https://example.com/a"],
+    [
+      { post: other, response: redirectResponse(other, target) },
+      { pre: target },
+    ],
+  );
+
+  assert.deepEqual(outputs, [DENIED]);
+  assert.deepEqual(logs, [DENIED_LOG]);
+});
+
+test(`SdkAgentRunner: 転送先を加えるのは 1 ターンで ${WEB_FETCH_MAX_REDIRECTS} 回まで（6 回目の転送は加えない）`, async () => {
+  const pasted = "https://example.com/0";
+  const hops = [1, 2, 3, 4, 5, 6].map((n) => `https://example.com/${n}`);
+  const steps: FetchStep[] = [];
+  let from = pasted;
+  for (const hop of hops) {
+    steps.push({ post: from, response: redirectResponse(from, hop) }, { pre: hop });
+    from = hop;
+  }
+  const { outputs, logs } = await runWithRedirects([pasted], steps);
+
+  assert.equal(WEB_FETCH_MAX_REDIRECTS, 5);
+  assert.deepEqual(outputs, [{}, {}, {}, {}, {}, DENIED]);
+  assert.deepEqual(logs, [...Array(5).fill(REDIRECT_LOG), DENIED_LOG]);
+});
+
+test("SdkAgentRunner: WebFetch 以外のツールの結果の Redirect 行からは加えない", async () => {
+  const pasted = "https://example.com/a";
+  const target = "https://evil.example/collect";
+  const { outputs, logs } = await runWithRedirects(
+    [pasted],
+    [
+      { post: pasted, toolName: "WebSearch", response: redirectText(pasted, target) },
+      { post: pasted, toolName: "mcp__selfagent__kb_get", response: [{ type: "text", text: redirectText(pasted, target) }] },
+      { pre: target },
+    ],
+  );
+
+  assert.deepEqual(outputs, [DENIED]);
+  assert.deepEqual(logs, [DENIED_LOG]);
+});
+
+test("SdkAgentRunner: 転送先は正規化して比べる（https から http への転送は http のまま。スキームが違う URL は許さない）", async () => {
+  // 実際の例: https の URL が同じホストの http の URL へ転送された
+  const pasted = "https://www.post.japanpost.jp/service/you_pack/charge/ichiran/20.html";
+  const target = "http://www.post.japanpost.jp/service/domestic/charge/list/yu-pack/20.html";
+  const { outputs, logs } = await runWithRedirects(
+    [pasted],
+    [
+      // 貼った URL も正規化して比べる（ホストの大文字・フラグメント）
+      { post: "https://WWW.post.japanpost.jp/service/you_pack/charge/ichiran/20.html#top", response: redirectResponse(pasted, target) },
+      { pre: target },
+      { pre: "HTTP://WWW.POST.JAPANPOST.JP/service/domestic/charge/list/yu-pack/20.html#x" },
+      { pre: "https://www.post.japanpost.jp/service/domestic/charge/list/yu-pack/20.html" },
+    ],
+  );
+
+  assert.deepEqual(outputs, [{}, {}, DENIED]);
+  assert.deepEqual(logs, [REDIRECT_LOG, DENIED_LOG]);
+});
+
+test("SdkAgentRunner: 結果は WebFetchOutput・文字列・content ブロックの配列・content を持つ形のどれからでも読む。注記付き・http(s) 以外の転送先は加えない", async () => {
+  const pasted = "https://example.com/a";
+  const target = "https://example.org/b";
+  const shapes: unknown[] = [
+    redirectResponse(pasted, target),
+    redirectText(pasted, target),
+    [{ type: "text", text: redirectText(pasted, target) }],
+    [{ type: "image" }, { type: "text", text: redirectText(pasted, target) }],
+    { content: [{ type: "text", text: redirectText(pasted, target) }] },
+  ];
+  for (const response of shapes) {
+    const { outputs, logs } = await runWithRedirects([pasted], [{ post: pasted, response }, { pre: target }]);
+    assert.deepEqual(outputs, [{}], JSON.stringify(response).slice(0, 80));
+    assert.deepEqual(logs, [REDIRECT_LOG]);
+  }
+
+  // 長すぎて切り詰めた転送先（URL の後ろに注記が続く）・取得できない宛先・Redirect 行の無い結果・読めない形
+  const truncated = redirectText(pasted, target).replace(target, `${target} […2000 more characters withheld: too long to relay]`);
+  const withheld = redirectText(pasted, target).replace(
+    /Redirect URL .*$/m,
+    "Redirect URL: (withheld — the server sent a redirect target that is not a valid http(s) URL)",
+  );
+  const notHttp = redirectText(pasted, "ftp://example.org/b");
+  for (const response of [truncated, withheld, notHttp, "ページの要約です", 42, null, undefined, { code: 301 }]) {
+    const { outputs, logs } = await runWithRedirects([pasted], [{ post: pasted, response }, { pre: target }]);
+    assert.deepEqual(outputs, [DENIED]);
+    assert.deepEqual(logs, [DENIED_LOG]);
+  }
 });
 
 test("SdkAgentRunner: maxTurns はセッションのチャンネルなら sessionMaxTurns、#inbox・context なしは 8。run ごとに Options に入れる", async () => {
