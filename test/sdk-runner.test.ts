@@ -690,6 +690,34 @@ test("SdkAgentRunner: 打ち切りはセッションのチャンネルなら ses
   assert.deepEqual(await inboxShort.runner.run({ prompt: "x" }), timeout);
 });
 
+test("SdkAgentRunner: #tasks の run は #inbox と同じく maxTurns 8・turnTimeoutSec（セッションの上限は使わない）", async () => {
+  const tasks = { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" } as const;
+  const { runner, calls } = setupRunner(messages(success("session-1", "はい")), { sessionMaxTurns: 40 });
+  await runner.run({ prompt: "1", context: tasks });
+  await runner.run({ prompt: "2", sessionId: "session-1", context: tasks });
+  assert.deepEqual(
+    calls.map((call) => call.options.maxTurns),
+    [INBOX_MAX_TURNS, INBOX_MAX_TURNS],
+  );
+  assert.equal(INBOX_MAX_TURNS, 8);
+
+  /** abort されるまで待つ */
+  const untilAbort = async function* (call: QueryCall): AsyncIterable<SDKMessage> {
+    yield init("session-1");
+    const signal = call.options.abortController!.signal;
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+  };
+  // turnTimeoutSec だけ 10ms にする（セッションの 900 秒を使えば打ち切られない）
+  const short = setupRunner(untilAbort, { turnTimeoutSec: 0.01, sessionTurnTimeoutSec: 900 });
+  assert.deepEqual(await short.runner.run({ prompt: "x", context: tasks }), {
+    ok: false,
+    errorMessage: "timeout",
+    sessionId: "session-1",
+    sessionRecorded: false,
+    toolCalls: 0,
+  });
+});
+
 test("SdkAgentRunner: ファイル操作の hook はどの run にも入る（context が無い run にも）。context はその run のもの", async () => {
   const outputs: unknown[] = [];
   const { runner, calls, logs } = setupRunner(async function* (call) {

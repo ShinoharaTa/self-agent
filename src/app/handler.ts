@@ -101,7 +101,7 @@ export type HandlerDeps = {
   seeds: ChannelSeedStore;
   /** セッションの題名と最終発言の時刻、resume 失敗時の要約。待ち・完了のセッションは発言で進行中に戻す */
   topicSessions: Pick<TopicSessionStore, "touch" | "get" | "setActive" | "setWaiting">;
-  /** #inbox の resume 失敗時の seed（直近の #inbox の要約） */
+  /** #inbox・#tasks の resume 失敗時の seed（そのチャンネルの直近の要約） */
   inboxSummaries: Pick<InboxSummaryStore, "latest">;
   /** 新しい SDK セッションの最初の prompt に付ける記憶 */
   memories: Pick<MemoryStore, "list">;
@@ -127,7 +127,7 @@ export type Handler = {
   continueTurn(guildId: string, channelId: string, at: Date): Promise<void>;
   /**
    * そのセッションのチャンネルで実行中の（発言・[続ける] の）ターンを、番号（turnSeq）が一致するときだけ中断する。
-   * 実行中のターンが無い・番号が違う（前のターンのボタン）なら false（#inbox・/close のターンは中断できない）
+   * 実行中のターンが無い・番号が違う（前のターンのボタン）なら false（#inbox・#tasks・/close のターンは中断できない）
    */
   abortTurn(channelId: string, turnSeq: number): boolean;
 };
@@ -151,7 +151,7 @@ function describeError(error: unknown): string {
 
 /**
  * 受け付けた発言（と [続ける]）を 1 ターンとして処理する。セッションのチャンネルのターンには途中経過と [中断] を付け、
- * 手順の上限で止まったら [続ける] を付ける（#inbox には付けない）
+ * 手順の上限で止まったら [続ける] を付ける（#inbox・#tasks には付けない）
  */
 export function createHandler(deps: HandlerDeps): Handler {
   const {
@@ -343,7 +343,8 @@ export function createHandler(deps: HandlerDeps): Handler {
 
   /** 受け付けた依頼をキューに入れる（発言と [続ける] で共通） */
   const submit = async (request: TurnRequest): Promise<void> => {
-    let channelName = "inbox";
+    // 日時ヘッダのチャンネル名（#inbox・#tasks。セッションは題名）
+    let channelName = request.kind === "tasks" ? "tasks" : "inbox";
     let revived = false;
     if (request.kind === "session") {
       // 最終発言の時刻はキュー待ちの前に記録する。日時ヘッダには題名を出す
@@ -353,7 +354,7 @@ export function createHandler(deps: HandlerDeps): Handler {
       // 待ち・完了なら進行中に戻して進行中カテゴリへ移す（ターンは通常どおり行い、返信の先頭で知らせる）
       revived = revive(session);
     }
-    // セッションのターンは同時実行の枠を 1 つ #inbox 用に残す
+    // セッションのターンは同時実行の枠を 1 つ #inbox・#tasks 用に残す
     await queue.run(request.channelId, () => handleTurn(request, channelName, revived), {
       session: request.kind === "session",
     });

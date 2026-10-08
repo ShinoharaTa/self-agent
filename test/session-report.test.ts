@@ -77,3 +77,15 @@ test("session_report: セッション以外（#inbox・削除済み・別サー�
   assert.equal(topicSessions.getCloseDraft("topic-1"), undefined);
   assert.equal(topicSessions.getCloseDraft("topic-2"), undefined);
 });
+
+test("session_report: #tasks では not_available を返し、何も保存しない", (t) => {
+  const { topicSessions } = setup(t);
+
+  const result = createSessionToolHandlers(topicSessions, { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" }).sessionReport(
+    ARGS,
+  );
+
+  assert.deepEqual(parse(result), { result: "not_available" });
+  assert.equal(topicSessions.getCloseDraft("tasks-1"), undefined);
+  assert.equal(topicSessions.getCloseDraft("topic-1"), undefined);
+});

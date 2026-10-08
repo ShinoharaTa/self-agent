@@ -12,7 +12,7 @@ export const FILE_WRITE_TOOLS: readonly string[] = ["Write", "Edit"];
 export const FILE_WRITE_DENIED_REASON = "このチャンネルのプロジェクトの中だけに書けます。先に project_open を使ってください";
 /** Read・Glob・Grep を拒否したときにモデルへ返す理由 */
 export const FILE_READ_DENIED_REASON = "読めるのはプロジェクトのディレクトリの中だけです。project_open が返した dir の中を指定してください";
-/** context の無いターン（#inbox の要約のターン）で拒否したときにモデルへ返す理由 */
+/** context の無いターン（#inbox・#tasks の要約のターン）で拒否したときにモデルへ返す理由 */
 export const FILE_NO_CONTEXT_REASON = "このターンではファイルを扱えません";
 
 export type FileAccessRequest = {
@@ -98,7 +98,7 @@ function hasParentSegment(path: string): boolean {
  * ファイル操作を許すか。対象のパスは cwd を基準に絶対パスにし、resolveRealPath で実際の場所にして判定する（symlink で外に出られない）。
  * - context が無い: すべて拒否
  * - 対象のパス（Read・Write・Edit の file_path、Glob・Grep の path）の要素に `..` があれば拒否
- * - Write・Edit: #inbox・プロジェクトの無いチャンネルでは拒否。対象が `<realpath(projectsDir)>/<slug>/` の中でなければ拒否
+ * - Write・Edit: セッション以外（#inbox・#tasks）・プロジェクトの無いチャンネルでは拒否。対象が `<realpath(projectsDir)>/<slug>/` の中でなければ拒否
  * - Read・Glob・Grep: 対象が `<realpath(projectsDir)>/` の中でなければ拒否。Glob の pattern・Grep の glob が絶対パスか `..` を含めば拒否
  * FILE_TOOLS 以外のツールは何もせず許す
  */

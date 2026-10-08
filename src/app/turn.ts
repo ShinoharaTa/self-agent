@@ -1,7 +1,7 @@
 // 1 チャンネルの 1 ターン（発言・/close 共通）。usage の記録、SDK セッションの保存、記憶と seed の付与、resume 失敗からの復旧
 import type { AgentRunner, ProgressStep, RunContext, RunResult } from "../agent/runner.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
-import type { InboxSummary, InboxSummaryStore } from "../store/inbox-summaries.ts";
+import type { InboxSummary, InboxSummaryStore, SummaryChannelKind } from "../store/inbox-summaries.ts";
 import type { Memory, MemoryStore } from "../store/memories.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSession, TopicSessionStore } from "../store/topic-sessions.ts";
@@ -40,7 +40,7 @@ export type TurnDeps = {
   seeds: ChannelSeedStore;
   /** 復旧の seed に要約（無ければ題名）を入れるため */
   topicSessions: Pick<TopicSessionStore, "get">;
-  /** #inbox（セッションでないチャンネル）の復旧の seed に、そのサーバーの直近の #inbox の要約を入れるため */
+  /** #inbox・#tasks（セッションでないチャンネル）の復旧の seed に、そのサーバーの直近の同じチャンネルの要約を入れるため */
   inboxSummaries: Pick<InboxSummaryStore, "latest">;
   /** 新しい SDK セッションの最初の prompt の先頭に、有効な記憶を付けるため */
   memories: Pick<MemoryStore, "list">;
@@ -51,7 +51,7 @@ export type TurnDeps = {
 export type ChannelTurn = {
   guildId: string;
   channelId: string;
-  /** チャンネルの種類（#inbox かセッションか）。run の context に入れる */
+  /** チャンネルの種類（#inbox・#tasks かセッションか）。run の context に入れる */
   kind: RunContext["kind"];
   prompt: string;
   /** このターンで WebFetch に取得を許す URL。オーナーの発言のターンだけその発言の URL、それ以外（/close など）は空 */
@@ -63,11 +63,17 @@ export type ChannelTurn = {
 };
 
 /**
- * resume 失敗のあとに入れる seed。セッションはその要約（無ければ題名）、セッションでないチャンネル（#inbox）は
- * そのサーバーの直近の #inbox の要約（切り替えたときと同じ形）。#inbox の要約がまだ無ければ入れない
+ * resume 失敗のあとに入れる seed。セッションはその要約（無ければ題名）、セッションでないチャンネル（#inbox・#tasks）は
+ * そのサーバーの直近の同じチャンネルの要約（channelSummary。切り替えたときと同じ形）。その要約がまだ無ければ入れない
  */
-export function resumeSeed(session: TopicSession | undefined, inboxSummary: InboxSummary | undefined): string | undefined {
-  if (session === undefined) return inboxSummary === undefined ? undefined : rotatedSeed(inboxSummary.summary);
+export function resumeSeed(
+  session: TopicSession | undefined,
+  channelSummary: InboxSummary | undefined,
+  channelKind: SummaryChannelKind,
+): string | undefined {
+  if (session === undefined) {
+    return channelSummary === undefined ? undefined : rotatedSeed(channelSummary.summary, channelKind);
+  }
   return session.summary === null
     ? `${RESUME_SEED_HEADER}\n題名: ${session.title}`
     : `${RESUME_SEED_HEADER}\n${session.summary}`;
@@ -171,7 +177,13 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     }
     sessions.delete(key);
     const session = topicSessions.get(turn.channelId);
-    const seed = resumeSeed(session, session === undefined ? inboxSummaries.latest(turn.guildId) : undefined);
+    // #tasks は #tasks の要約、それ以外（#inbox）は #inbox の要約を使う
+    const summaryKind: SummaryChannelKind = turn.kind === "tasks" ? "tasks" : "inbox";
+    const seed = resumeSeed(
+      session,
+      session === undefined ? inboxSummaries.latest(turn.guildId, summaryKind) : undefined,
+      summaryKind,
+    );
     if (seed !== undefined) seeds.set(key, seed);
   }
 

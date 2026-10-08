@@ -1585,3 +1585,170 @@ test("途中経過: 最後の書き換えは終わり方で変える（成功は
   assert.equal(gateway.posts.length, 6);
   assert.equal(timers.pending, 0);
 });
+
+/** guild-1 を /setup 済み（#inbox は inbox-1、#tasks は tasks-1）にする。以後は env の #inbox ではなく DB のチャンネルで受け付ける */
+function setUpGuild(db: ReturnType<typeof openDb>): GuildSettingsStore {
+  const guildSettings = new GuildSettingsStore(db, () => NOW);
+  guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
+  guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
+  return guildSettings;
+}
+
+const TASKS_CONTEXT: RunContext = { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" };
+
+test("#tasks: /setup 済みのサーバーの #tasks の発言は kind tasks・ヘッダ #tasks で 1 ターン走り、返信して会話を続ける", async (t) => {
+  const { db, gateway, runner, sessions, handle } = setup(t, [
+    okResult("session-t", "今日は 2 件です"),
+    okResult("session-t", "変えました"),
+  ]);
+  setUpGuild(db);
+
+  await handle(message({ channelId: "tasks-1", content: "今日やることは？" }));
+  await handle(message({ id: "message-2", channelId: "tasks-1", content: "#3 を来週の月曜に" }));
+
+  assert.deepEqual(runner.inputs, [
+    {
+      prompt: buildTurnPrompt("今日やることは？", CREATED_AT, "Asia/Tokyo", "tasks"),
+      sessionId: undefined,
+      context: TASKS_CONTEXT,
+      allowedUrls: [],
+    },
+    {
+      prompt: buildTurnPrompt("#3 を来週の月曜に", CREATED_AT, "Asia/Tokyo", "tasks"),
+      sessionId: "session-t",
+      context: TASKS_CONTEXT,
+      allowedUrls: [],
+    },
+  ]);
+  assert.match(runner.inputs[0]!.prompt, /^\[2026-10-02\(金\) 08:59 JST #tasks\]\n/);
+  assert.deepEqual(gateway.sent, [
+    { channelId: "tasks-1", text: "今日は 2 件です", replyToId: "message-1" },
+    { channelId: "tasks-1", text: "変えました", replyToId: "message-2" },
+  ]);
+  assert.equal(sessions.get("tasks-1"), "session-t");
+});
+
+test("#tasks: 別のサーバーの同じ ID のチャンネル・/setup 前のサーバー（env の #inbox だけ）では受け付けない", async (t) => {
+  const { db, gateway, runner, handle } = setup(t, []);
+
+  // /setup 前（guild_settings が空）は env の #inbox だけで、#tasks は無い
+  await handle(message({ channelId: "tasks-1" }));
+  // 別のサーバーの #tasks の ID
+  new GuildSettingsStore(db, () => NOW).setChannel("guild-9", "tasksChannelId", "tasks-1");
+  await handle(message({ channelId: "tasks-1" }));
+
+  assert.equal(runner.inputs.length, 0);
+  assert.deepEqual(gateway.sent, []);
+});
+
+test("#tasks: 途中経過も [中断] も付けず、手順の上限で止まっても [続ける] を付けない（押されても古い操作として扱う）", async (t) => {
+  const { db, gateway, runner, timers, handler, handle, press } = setup(t, [
+    { ok: false, errorMessage: "error_max_turns", sessionId: "session-x", sessionRecorded: true, toolCalls: 8 },
+  ]);
+  setUpGuild(db);
+  const release = deferred();
+  runner.beforeResult = () => release.promise;
+
+  const turn = handle(message({ channelId: "tasks-1" }));
+  await timers.advance(PROGRESS_DELAY_MS + 3 * PROGRESS_INTERVAL_MS);
+
+  assert.equal(runner.received[0]!.signal, undefined);
+  assert.equal(runner.received[0]!.onProgress, undefined);
+  assert.equal(handler.abortTurn("tasks-1", turnSeq(1)), false);
+  assert.equal(timers.pending, 0);
+  release.resolve();
+  await turn;
+
+  assert.deepEqual(gateway.posts, []);
+  assert.deepEqual(gateway.edits, []);
+  assert.deepEqual(gateway.sent, [{ channelId: "tasks-1", text: MAX_TURNS_REPLY, replyToId: "message-1" }]);
+  assert.deepEqual(await press("turn:continue:tasks-1"), STALE);
+  assert.equal(runner.inputs.length, 1);
+});
+
+test("#tasks: 同時実行ではセッション以外のジョブとして、セッションのターンが動いている間も残りの枠で動く", async (t) => {
+  const { db, runner, topicSessions, handle } = setup(t, [
+    okResult("session-a", "1"),
+    okResult("session-t", "2"),
+    okResult("session-b", "3"),
+  ]);
+  setUpGuild(db);
+  topicSessions.create(TOPIC);
+  topicSessions.create({ ...TOPIC, channelId: "topic-2", title: "引っ越し" });
+  const releases: Array<() => void> = [];
+  runner.beforeResult = () => new Promise<void>((resolve) => releases.push(resolve));
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  const topicA = handle(message({ id: "message-1", channelId: "topic-1" }));
+  await flush();
+  const topicB = handle(message({ id: "message-2", channelId: "topic-2" }));
+  const tasks = handle(message({ id: "message-3", channelId: "tasks-1" }));
+  await flush();
+
+  // topic-2 は枠が空いていても待ち、後から来た #tasks が動く
+  assert.deepEqual(
+    runner.inputs.map((input) => input.context),
+    [context("topic-1"), TASKS_CONTEXT],
+  );
+  for (const release of releases) release();
+  await topicA;
+  await flush();
+  for (const release of releases.slice(2)) release();
+  await Promise.all([topicB, tasks]);
+  assert.equal(runner.inputs.length, 3);
+});
+
+test("resume 失敗: #tasks はそのサーバーの直近の #tasks の要約を seed にし（#inbox の要約は使わない）、#inbox は #tasks の要約を使わない", async (t) => {
+  const { db, runner, sessions, seeds, inboxSummaries, handle } = setup(t, [
+    RESUME_FAILURE,
+    okResult("session-t2", "はい"),
+    RESUME_FAILURE,
+    okResult("session-i2", "はい"),
+  ]);
+  setUpGuild(db);
+  sessions.set("tasks-1", "session-t1");
+  sessions.set("inbox-1", "session-i1");
+  inboxSummaries.add("guild-1", "2026-10-01", "#tasks の古い要約", "tasks");
+  inboxSummaries.add("guild-1", "2026-10-02", "#tasks の要約", "tasks");
+  // #tasks の要約より新しい #inbox の要約・別のサーバーの #tasks の要約は使わない
+  inboxSummaries.add("guild-1", "2026-10-02", "#inbox の要約");
+  inboxSummaries.add("guild-9", "2026-10-02", "別のサーバーの #tasks の要約", "tasks");
+
+  await handle(message({ channelId: "tasks-1" }));
+
+  const tasksPrompt = buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo", "tasks");
+  const tasksSeed = rotatedSeed("#tasks の要約", "tasks");
+  assert.equal(tasksSeed, "これまでの #tasks の要約:\n#tasks の要約");
+  assert.deepEqual(runner.inputs.slice(0, 2), [
+    { prompt: tasksPrompt, sessionId: "session-t1", context: TASKS_CONTEXT, allowedUrls: [] },
+    { prompt: `${tasksSeed}\n\n${tasksPrompt}`, sessionId: undefined, context: TASKS_CONTEXT, allowedUrls: [] },
+  ]);
+  assert.equal(seeds.get("tasks-1"), undefined);
+  assert.equal(sessions.get("tasks-1"), "session-t2");
+
+  // #inbox は、それより新しい #tasks の要約があっても #inbox の要約を使う
+  inboxSummaries.add("guild-1", "2026-10-03", "#tasks の新しい要約", "tasks");
+  await handle(message({ id: "message-2" }));
+
+  const inboxPrompt = buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo");
+  assert.deepEqual(runner.inputs[3], {
+    prompt: `${rotatedSeed("#inbox の要約")}\n\n${inboxPrompt}`,
+    sessionId: undefined,
+    context: context(),
+    allowedUrls: [],
+  });
+  assert.equal(sessions.get("inbox-1"), "session-i2");
+});
+
+test("resume 失敗: #tasks の要約がまだ無ければ、#inbox の要約があっても seed を入れずにやり直す", async (t) => {
+  const { db, runner, seeds, sessions, inboxSummaries, handle } = setup(t, [RESUME_FAILURE, okResult("session-t2", "はい")]);
+  setUpGuild(db);
+  sessions.set("tasks-1", "session-t1");
+  inboxSummaries.add("guild-1", "2026-10-02", "#inbox の要約");
+
+  await handle(message({ channelId: "tasks-1" }));
+
+  const prompt = buildTurnPrompt("明日買い物に行く", CREATED_AT, "Asia/Tokyo", "tasks");
+  assert.deepEqual(runner.inputs[1], { prompt, sessionId: undefined, context: TASKS_CONTEXT, allowedUrls: [] });
+  assert.equal(seeds.get("tasks-1"), undefined);
+});

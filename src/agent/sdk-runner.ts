@@ -21,7 +21,7 @@ import { MCP_SERVER_NAME } from "./tools.ts";
 /** query() の形。テストでは偽のストリームを返す関数に差し替える */
 export type QueryFn = (params: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>;
 
-/** #inbox と context の無いターン（#inbox の要約）の手順（maxTurns）の上限。セッションのチャンネルは cfg.sessionMaxTurns */
+/** #inbox・#tasks と context の無いターン（#inbox・#tasks の要約）の手順（maxTurns）の上限。セッションのチャンネルは cfg.sessionMaxTurns */
 export const INBOX_MAX_TURNS = 8;
 
 const ERROR_TEXT_LIMIT = 200;
@@ -260,7 +260,7 @@ export class SdkAgentRunner implements AgentRunner {
   }
 
   /**
-   * セッションのチャンネルのターンは cfg.sessionTurnTimeoutSec、それ以外（#inbox・context なし）は cfg.turnTimeoutSec で打ち切る。
+   * セッションのチャンネルのターンは cfg.sessionTurnTimeoutSec、それ以外（#inbox・#tasks・context なし）は cfg.turnTimeoutSec で打ち切る。
    * input.signal が abort されたら（[中断]）同じ abortController で止める
    */
   async run(input: RunInput): Promise<RunResult> {
