@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,6 +16,7 @@ import { buildQueryOptions } from "../src/agent/query-options.ts";
 import type { ProgressStep, RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
 import {
   describeResultError,
+  type DevLogDeps,
   FILE_GUARD_FAILED_REASON,
   INBOX_MAX_TURNS,
   progressLabel,
@@ -23,6 +24,7 @@ import {
   WEB_FETCH_DENIED_REASON,
 } from "../src/agent/sdk-runner.ts";
 import { RESUME_FAILURE_PATTERN } from "../src/app/turn.ts";
+import { createDevLogSink, type DevLogRecord } from "../src/devlog/log.ts";
 import type { Project, ProjectStore } from "../src/store/projects.ts";
 
 /** describeResultError が見るフィールドだけの result */
@@ -129,6 +131,7 @@ function setupRunner(
   stream: (call: QueryCall) => AsyncIterable<SDKMessage>,
   overrides: Partial<typeof cfg> = {},
   files: { projects: FakeProjects; projectsDir: string } = { projects: fakeProjects(), projectsDir: "/srv/work/projects" },
+  devLog?: DevLogDeps,
 ) {
   const calls: QueryCall[] = [];
   const contexts: Array<RunContext | undefined> = [];
@@ -148,6 +151,7 @@ function setupRunner(
       calls.push(call);
       return stream(call);
     },
+    devLog,
   );
   return { runner, calls, contexts, servers, logs };
 }
@@ -981,4 +985,295 @@ test("SdkAgentRunner: signal が abort されたら止めて aborted を返す�
     ...aborted,
     errorMessage: "timeout",
   });
+});
+
+/** 呼ばれるたびに times の次の時刻を返す時計（dev ログの開始時刻と所要時間） */
+function steppingClock(...times: string[]): () => Date {
+  const queue = times.map((time) => new Date(time));
+  return () => {
+    const next = queue.shift();
+    assert.ok(next !== undefined, "時計を想定より多く呼んだ");
+    return next;
+  };
+}
+
+/** 記録をそのまま配列に貯める受け口 */
+function memoryDevLog(): DevLogDeps & { records: DevLogRecord[] } {
+  const records: DevLogRecord[] = [];
+  return { records, sink: { write: (record) => void records.push(record) }, now: () => new Date("2026-10-08T00:00:00.000Z") };
+}
+
+/** tool_result のブロックを 1 つ持つ user メッセージ */
+function toolResult(toolUseId: string, content: unknown, isError?: boolean): SDKMessage {
+  return sdkMessage({
+    type: "user",
+    parent_tool_use_id: null,
+    session_id: "session-1",
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: toolUseId, content, ...(isError === undefined ? {} : { is_error: isError }) }],
+    },
+  });
+}
+
+/** content のブロックを持つ assistant メッセージ */
+function assistantBlocks(id: string, content: unknown[]): SDKMessage {
+  return sdkMessage({
+    type: "assistant",
+    parent_tool_use_id: null,
+    session_id: "session-1",
+    message: { id, content, usage: { input_tokens: 1 } },
+  });
+}
+
+test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 行に記録する。thinking は残さず、長い文字列は 2,000 字で切り、prompt と result.text は切らない", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dataDir = join(root, "data");
+  const sink = createDevLogSink({ devMode: true, dataDir, timeZone: "Asia/Tokyo" });
+  assert.ok(sink !== undefined);
+  const prompt = `[2026-10-08 00:30 #inbox]\n${"依頼".repeat(1500)}`;
+  const reply = "返".repeat(2500);
+  const longInput = { file_path: "/srv/work/projects/kakeibo/site/index.html", content: "x".repeat(2100) };
+  const longInputText = JSON.stringify(longInput);
+  const { runner } = setupRunner(
+    messages(
+      init("session-1"),
+      assistantBlocks("msg-1", [
+        { type: "thinking", thinking: "秘密の考え", signature: "sig" },
+        { type: "text", text: "考".repeat(2100) },
+      ]),
+      toolUse("msg-2", "toolu-1", "mcp__selfagent__task_add", { title: "牛乳を買う" }),
+      toolUse("msg-2", "toolu-2", "Write", longInput),
+      toolResult("toolu-1", [
+        { type: "text", text: "追加しました" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+      ]),
+      toolResult("toolu-2", "r".repeat(2100), true),
+      compactBoundary({ trigger: "auto", pre_tokens: 150000 }),
+      assistantBlocks("msg-3", [{ type: "text", text: reply }]),
+      success("session-1", reply),
+    ),
+    {},
+    undefined,
+    { sink, now: steppingClock("2026-10-07T15:30:00.000Z", "2026-10-07T15:30:12.345Z") },
+  );
+
+  const result = await runner.run({
+    prompt,
+    sessionId: "session-0",
+    context: { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" },
+  });
+
+  assert.ok(result.ok);
+  // 開始時刻の東京の日付のファイル。ディレクトリは 700、ファイルは 600
+  const dir = join(dataDir, "devlog");
+  const file = join(dir, "2026-10-08.jsonl");
+  assert.deepEqual(readdirSync(dir), ["2026-10-08.jsonl"]);
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  const lines = readFileSync(file, "utf8").split("\n");
+  assert.equal(lines.length, 2);
+  assert.equal(lines[1], "");
+  assert.ok(!lines[0]!.includes("秘密の考え"));
+  assert.deepEqual(JSON.parse(lines[0]!), {
+    at: "2026-10-07T15:30:00.000Z",
+    durationMs: 12345,
+    guildId: "guild-1",
+    channelId: "inbox-1",
+    kind: "inbox",
+    model: "claude-opus-5",
+    effort: null,
+    maxTurns: INBOX_MAX_TURNS,
+    resume: "session-0",
+    prompt,
+    steps: [
+      { t: "text", text: `${"考".repeat(2000)}…（100 字を省略）` },
+      { t: "tool_use", id: "toolu-1", name: "mcp__selfagent__task_add", input: { title: "牛乳を買う" } },
+      {
+        t: "tool_use",
+        id: "toolu-2",
+        name: "Write",
+        input: `${longInputText.slice(0, 2000)}…（${longInputText.length - 2000} 字を省略）`,
+      },
+      { t: "tool_result", id: "toolu-1", isError: false, content: "追加しました\n[image]" },
+      { t: "tool_result", id: "toolu-2", isError: true, content: `${"r".repeat(2000)}…（100 字を省略）` },
+      { t: "compact", trigger: "auto", preTokens: 150000 },
+      { t: "text", text: `${"返".repeat(2000)}…（500 字を省略）` },
+    ],
+    result: {
+      ok: true,
+      text: reply,
+      sessionId: "session-1",
+      usage: { inputTokens: 3, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      toolCalls: 0,
+      contextTokens: 1,
+      compacted: { trigger: "auto", preTokens: 150000 },
+    },
+  });
+
+  // 同じ日の次の run は同じファイルに追記する。context が無い run は guildId・channelId・kind が null、resume しなければ null
+  const { runner: second } = setupRunner(messages(success("session-2", "要約です")), { sessionMaxTurns: 40 }, undefined, {
+    sink,
+    now: steppingClock("2026-10-08T14:59:59.000Z", "2026-10-08T15:00:01.000Z"),
+  });
+  await second.run({ prompt: "これまでの会話を要約してください" });
+  const appended = readFileSync(file, "utf8").split("\n");
+  assert.equal(appended.length, 3);
+  assert.deepEqual(JSON.parse(appended[1]!), {
+    at: "2026-10-08T14:59:59.000Z",
+    durationMs: 2000,
+    guildId: null,
+    channelId: null,
+    kind: null,
+    model: "claude-opus-5",
+    effort: null,
+    maxTurns: INBOX_MAX_TURNS,
+    resume: null,
+    prompt: "これまでの会話を要約してください",
+    steps: [],
+    result: {
+      ok: true,
+      text: "要約です",
+      sessionId: "session-2",
+      usage: { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      toolCalls: 0,
+      contextTokens: 0,
+    },
+  });
+});
+
+test("dev ログ: 失敗（例外・result の失敗）・中断・打ち切りの run も、それまでの手順と失敗の理由を記録する", async () => {
+  const context: RunContext = { guildId: "guild-1", channelId: "topic-1", kind: "session" };
+
+  const thrown = memoryDevLog();
+  await setupRunner(
+    async function* () {
+      yield init("session-1");
+      yield assistantBlocks("msg-1", [{ type: "text", text: "調べます" }]);
+      throw new Error("Claude Code process exited with code 1");
+    },
+    {},
+    undefined,
+    thrown,
+  ).runner.run({ prompt: "調べて", context });
+  assert.equal(thrown.records.length, 1);
+  assert.equal(thrown.records[0]!.maxTurns, 40);
+  assert.deepEqual(thrown.records[0]!.steps, [{ t: "text", text: "調べます" }]);
+  assert.deepEqual(thrown.records[0]!.result, {
+    ok: false,
+    errorMessage: "exception: Error: Claude Code process exited with code 1",
+    sessionId: "session-1",
+    sessionRecorded: false,
+    toolCalls: 0,
+  });
+
+  const maxTurns = memoryDevLog();
+  await setupRunner(
+    messages(
+      toolUse("msg-1", "toolu-1", "WebSearch", { query: "家計簿" }),
+      sdkMessage({ type: "result", subtype: "error_max_turns", is_error: true, errors: [], session_id: "session-3" }),
+    ),
+    {},
+    undefined,
+    maxTurns,
+  ).runner.run({ prompt: "x", sessionId: "session-3", context });
+  assert.deepEqual(maxTurns.records[0]!.steps, [{ t: "tool_use", id: "toolu-1", name: "WebSearch", input: { query: "家計簿" } }]);
+  assert.deepEqual(maxTurns.records[0]!.result, {
+    ok: false,
+    errorMessage: "error_max_turns",
+    sessionId: "session-3",
+    sessionRecorded: true,
+    toolCalls: 0,
+  });
+
+  /** sessionId があれば init と text を 1 つ流してから、abort されるまで待つ */
+  const untilAbort = (sessionId: string | undefined) =>
+    async function* (call: QueryCall): AsyncIterable<SDKMessage> {
+      if (sessionId !== undefined) {
+        yield init(sessionId);
+        yield assistantBlocks("msg-1", [{ type: "text", text: "作業中" }]);
+      }
+      const signal = call.options.abortController!.signal;
+      if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+      throw new Error("Claude Code process aborted by user");
+    };
+
+  const aborted = memoryDevLog();
+  const controller = new AbortController();
+  const running = setupRunner(untilAbort("session-1"), {}, undefined, aborted).runner.run({
+    prompt: "x",
+    context,
+    signal: controller.signal,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await running;
+  assert.deepEqual(aborted.records[0]!.steps, [{ t: "text", text: "作業中" }]);
+  assert.deepEqual(aborted.records[0]!.result, {
+    ok: false,
+    errorMessage: "aborted",
+    sessionId: "session-1",
+    sessionRecorded: false,
+    toolCalls: 0,
+  });
+
+  // session_id を受け取る前に打ち切られたら、result に sessionId を入れない
+  const timedOut = memoryDevLog();
+  await setupRunner(untilAbort(undefined), { turnTimeoutSec: 0.01 }, undefined, timedOut).runner.run({ prompt: "x" });
+  assert.equal(timedOut.records.length, 1);
+  assert.deepEqual(timedOut.records[0]!.steps, []);
+  assert.deepEqual(timedOut.records[0]!.result, { ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 });
+});
+
+test("dev ログ: 書き込みに失敗してもターンは失敗せず、log には「dev ログを書けませんでした」だけを出す（中身・パスは出さない）", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // dataDir がファイルなので devlog/ を作れない
+  const dataDir = join(root, "data");
+  writeFileSync(dataDir, "");
+  const sink = createDevLogSink({ devMode: true, dataDir, timeZone: "Asia/Tokyo" });
+  assert.ok(sink !== undefined);
+
+  const { runner, logs } = setupRunner(messages(success("session-1", "秘密の返答")), {}, undefined, {
+    sink,
+    now: () => new Date("2026-10-08T00:00:00.000Z"),
+  });
+  const result = await runner.run({ prompt: "秘密の依頼" });
+
+  assert.deepEqual(result, {
+    ok: true,
+    text: "秘密の返答",
+    sessionId: "session-1",
+    usage: { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+    durationMs: 4200,
+    toolCalls: 0,
+    contextTokens: 0,
+  });
+  assert.deepEqual(logs, ["dev ログを書けませんでした"]);
+
+  // 受け口が投げても同じ
+  const throwing = setupRunner(messages(success("session-1", "はい")), {}, undefined, {
+    sink: {
+      write: () => {
+        throw new Error("EACCES: permission denied, open '/srv/data/devlog/2026-10-08.jsonl'");
+      },
+    },
+    now: () => new Date("2026-10-08T00:00:00.000Z"),
+  });
+  assert.equal((await throwing.runner.run({ prompt: "x" })).ok, true);
+  assert.deepEqual(throwing.logs, ["dev ログを書けませんでした"]);
+});
+
+test("dev ログ: dev モードでなければ受け口を作らず、run してもファイルもディレクトリも作られない", async (t) => {
+  const dataDir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  const sink = createDevLogSink({ devMode: false, dataDir, timeZone: "Asia/Tokyo" });
+  assert.equal(sink, undefined);
+
+  const { runner } = setupRunner(
+    messages(init("session-1"), assistantBlocks("msg-1", [{ type: "text", text: "はい" }]), success("session-1", "はい")),
+  );
+  assert.equal((await runner.run({ prompt: "x" })).ok, true);
+  assert.deepEqual(readdirSync(dataDir), []);
 });

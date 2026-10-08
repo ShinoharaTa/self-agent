@@ -468,6 +468,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
     channelOps: { enqueueMove: () => {} },
     gateway,
     inboxRotator: { rotateDue: async () => {} },
+    pruneDevLogs: () => {},
     now: () => NOW,
     timers: {
       every: (fn) => {

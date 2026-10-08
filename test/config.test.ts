@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, missingForStart } from "../src/config.ts";
+import { loadConfig, loadDataConfig, missingForStart } from "../src/config.ts";
 
 test("未設定ならデフォルト値を使う", () => {
   const config = loadConfig({ HOME: "/home/tester" });
@@ -30,6 +30,8 @@ test("未設定ならデフォルト値を使う", () => {
     serveAllowedLogin: undefined,
     sessionMaxTurns: 40,
     sessionTurnTimeoutSec: 900,
+    devMode: false,
+    devLogDays: 30,
   });
 });
 
@@ -58,6 +60,8 @@ test("環境変数で上書きできる", () => {
     SELF_AGENT_SERVE_ALLOWED_LOGIN: "owner@example.com",
     SELF_AGENT_SESSION_MAX_TURNS: "60",
     SELF_AGENT_SESSION_TURN_TIMEOUT_SEC: "1200",
+    SELF_AGENT_DEV_MODE: "1",
+    SELF_AGENT_DEV_LOG_DAYS: "7",
   });
   assert.equal(config.claudeConfigDir, "/srv/claude");
   assert.equal(config.workDir, "/srv/work");
@@ -81,6 +85,8 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.serveAllowedLogin, "owner@example.com");
   assert.equal(config.sessionMaxTurns, 60);
   assert.equal(config.sessionTurnTimeoutSec, 1200);
+  assert.equal(config.devMode, true);
+  assert.equal(config.devLogDays, 7);
 });
 
 test("token は有無だけを返し、値は含めない", () => {
@@ -272,6 +278,37 @@ test("SELF_AGENT_SESSION_TURN_TIMEOUT_SEC が正の整数でなければエラ�
     );
   }
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SESSION_TURN_TIMEOUT_SEC: "" }).sessionTurnTimeoutSec, 900);
+});
+
+test("SELF_AGENT_DEV_MODE は 1 で有効、未設定・空・0 で無効。それ以外の値はエラー", () => {
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: "1" }).devMode, true);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: "0" }).devMode, false);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: "" }).devMode, false);
+  for (const value of ["true", "yes", "2", " 1", "on"]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: value }), /SELF_AGENT_DEV_MODE/, value);
+  }
+});
+
+test("SELF_AGENT_DEV_LOG_DAYS が正の整数でなければエラー", () => {
+  for (const value of ["0", "-1", "1.5", "abc"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_LOG_DAYS: value }),
+      /SELF_AGENT_DEV_LOG_DAYS/,
+      value,
+    );
+  }
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_LOG_DAYS: "" }).devLogDays, 30);
+});
+
+test("loadDataConfig は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ だけを読み、既定値は loadConfig と同じ。他の変数の不正値は見ない", () => {
+  const env = { HOME: "/home/tester" };
+  const config = loadConfig(env);
+  assert.deepEqual(loadDataConfig(env), { dataDir: config.dataDir, timeZone: config.timeZone });
+  assert.deepEqual(
+    loadDataConfig({ SELF_AGENT_DATA_DIR: "/srv/data", SELF_AGENT_TZ: "UTC", SELF_AGENT_DEV_MODE: "yes", SELF_AGENT_EFFORT: "fast" }),
+    { dataDir: "/srv/data", timeZone: "UTC" },
+  );
+  assert.throws(() => loadDataConfig({}), /HOME/);
 });
 
 test("HOME が無く既定のディレクトリが必要ならエラー", () => {

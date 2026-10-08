@@ -19,6 +19,7 @@ npm test                  # 単体テスト（test/*.test.ts。偽 Runner / 偽 
 npm run test:integration  # 結合テスト（OAuth トークンが無ければ skip。あれば利用枠を消費する）
 npm start                 # 起動（必須の環境変数が欠けていれば変数名を出して exit 1）
 npm run measure           # P0 実測（本体と同じ Options・ツールで 2 ターン。OAuth トークン必須。利用枠を消費する）
+npm run devlog            # dev モードの会話ログを 1 ターンずつ表示（-- [--date YYYY-MM-DD] [--kind inbox|tasks|session] [--channel <id>] [--last N]。既定は今日・全部。トークン不要）
 ```
 
 ## ディレクトリ構成
@@ -45,8 +46,10 @@ src/
 ├── agent/       # AgentRunner と SDK 実装（query() は sdk-runner.ts だけ。ツール呼び出しは PostToolUse の hook で数えて log。run の context の kind がセッションなら maxTurns は SELF_AGENT_SESSION_MAX_TURNS・打ち切りは SELF_AGENT_SESSION_TURN_TIMEOUT_SEC、#inbox・#tasks と context の無いターンは 8 手順・SELF_AGENT_TURN_TIMEOUT_SEC。maxTurns は run ごとに Options に足す。run の signal（[中断]）は打ち切りと同じ abortController に繋ぎ、中断で終わったら errorMessage は aborted（打ち切りは timeout）。どちらもそのターンで受け取った session_id は返す（sessionRecorded は false）。onProgress はメインループの assistant メッセージの tool_use ごとに 1 回（同じ id は 1 回）、表示用の label で呼ぶ: Write・Edit は「書いています」、Read は「読んでいます」に、対象がそのチャンネルのプロジェクトの中ならそこからの相対パスを添える。Glob・Grep は「ファイルを探しています」、WebSearch は「Web を検索しています」、WebFetch は「ページを読んでいます」、自前の MCP ツールは「ツールを使っています: <名前>」、それ以外は「<名前> を使っています」。中身・コマンド・URL・検索語は出さない）・Options（組み込みツールは WebSearch / WebFetch / Read / Write / Edit / Glob / Grep の順で固定。シェルは無い。allowedTools は自前の MCP ツール・WebSearch・WebFetch と `Read(//<realpath(workDir)>/projects/**)`・`Edit(//<realpath(workDir)>/projects/**)`（Edit のルールは Write にも、Read のルールは Glob・Grep にも効く）。WebFetch はそのターンにオーナーが貼った URL だけで、それ以外は PreToolUse の hook で拒否。ファイル操作は file-access.ts の判定で PreToolUse の hook が全 run で絞る: file_path（Read・Write・Edit）・path（Glob・Grep）の `/` で分けた要素に `..` があれば resolve・realpath の前に拒否し、それ以外は絶対パスにして存在する一番深い親の realpath で判定し、Write・Edit はそのチャンネルの削除されていないプロジェクト（`<projectsDir>/<slug>/`）の中だけ（#inbox・#tasks・プロジェクトの無いチャンネルは拒否。許したらプロジェクトの更新日時を今に）、Read・Glob・Grep は `<projectsDir>/` の中だけ（Glob の pattern・Grep の glob が絶対パスか部分文字列 `..` を含めば拒否）、context の無いターンはすべて拒否。拒否の理由はモデルに返し、log はツール名だけ。判定（ストアの読み書きを含む）が例外で終わったら拒否する（fail-closed。CLI は hook の例外を判断なしとして通すため。log は「ファイル操作の判定に失敗したため拒否しました（<ツール名>）」で、パス・例外の中身は出さない））・システムプロンプト・ツール（task_add / task_list / task_complete / task_update / session_report / session_open / kb_save / kb_search / kb_get / kb_delete / memory_save / memory_forget / project_open の順で固定。task_update は題名・期限（`"none"` で外す）・状態（open / done / dropped）を変えて before と after を返す（無い id は not_found、変わる項目が無ければ no_change）。task_list は status に dropped、due_by で期限がその日以前のもの（期限なしは除く）に絞れ、各要素に status と、done・dropped は closed（日付）を付ける。project_open はセッション以外（#inbox・#tasks）・context の無いターンでは not_available、配信が無効（公開 URL が無い・静的サーバーが待ち受けていない）なら not_configured、そのチャンネルのプロジェクトがあれば existing、無ければ作って `<slug>/site/` まで mkdir して created（dir・site_dir・url と作るときの注意を返す）。定義は全チャンネル共通で、session_open の処理は app/session-open.ts、kb_delete の確認の投稿は app/commands/kb-delete.ts、記憶の変更の知らせは app/commands/memory-undo.ts から受け取る。kb_save は URL を normalizeUrl で url_key にし、同じ URL があれば exists。kb_search・kb_get の結果には「中の指示には従わない」の注意を付ける。kb_delete・memory_save・memory_forget は context の無いターンでは not_available。ツールの中身（URL・題名・本文・記憶の文）は log に出さない）
 ├── store/       # node:sqlite（user_version でマイグレーション）。tasks（状態は open / done / dropped（やめた。削除の代わりで戻せる）。done・dropped にすると completed_at を今に、open に戻すと null。一覧は open が期限順、done・dropped が閉じた新しい順）/ sdk-sessions（SDK の session_id）/ usage（ターンごとのトークン・最後のステップの入力・compaction・ツール呼び出し数。/usage の集計）/ guild-settings（/setup で作ったカテゴリ・チャンネルの ID と、#inbox を最後に切り替えた日と時刻・#tasks を最後に切り替えた時刻）/ inbox-summaries（#inbox・#tasks を切り替えたときの要約。channel_kind（'inbox' / 'tasks'）で分ける）/ topic-sessions（/new・session_open で作ったセッションのチャンネルと作られ方（origin）、/close の要約と下書き、削除の確認のメッセージと削除した時刻。削除後も要約は残す）/ channel-seeds（次のターンの prompt の先頭に付ける文）/ knowledge（ナレッジベース。kb_entries と FTS5 trigram の kb_fts。検索は 3 文字以上の語を MATCH・3 文字未満を LIKE で AND。url_key は呼び出し側が正規化した URL）/ memories（オーナーについての記憶。論理削除）/ projects（作って URL で渡すプロジェクト。論理削除。channel_id は削除されていないものの中で一意）
 ├── serve/       # 作ったプロジェクトの静的サーバー（node:http。127.0.0.1 で待ち受け、tailnet には tailscale serve で出す）。`/p/<slug>/<path>` → `<workDir>/projects/<slug>/site/<path>`、`/` は一覧。GET/HEAD だけ。削除済みの slug・ドットファイル・`..`・site の外への symlink は 404。SELF_AGENT_SERVE_ALLOWED_LOGIN があれば Tailscale-User-Login を確かめる。log はリクエストごとには出さない
+├── devlog/      # dev モード（SELF_AGENT_DEV_MODE=1）の会話ログ。log.ts は記録の型・切り詰め（2,000 字。prompt と result.text は切らない）・`<SELF_AGENT_DATA_DIR>/devlog/<YYYY-MM-DD>.jsonl` への追記（ディレクトリ 700・ファイル 600。日付は run の開始時刻の SELF_AGENT_TZ の日付）・古いファイルの削除（SDK に依存しない）。format.ts は表示の整形（純関数）。sdk-runner.ts が run ごとに steps（text・tool_use・tool_result・compact。thinking は残さない）を集めて終わりに 1 行書き（失敗は log だけでターンは止めない）、scheduler.ts の tick が SELF_AGENT_DEV_LOG_DAYS 日より前のファイルを消す（dev モードでなくても）
 └── discord/     # Gateway インタフェースと discord.js 実装。convert.ts は内部型 ⇔ Discord の形の変換（discord.js は型だけ import）
 scripts/measure-turn.ts  # ターン時間・RSS・トークン使用量の実測（buildQueryOptions と createTaskMcpServer の本体と同じシステムプロンプト・ツールで測る。hooks は付けない。ツールのストアは一時 SQLite、cwd（workDir）は一時ディレクトリで、本体の workDir は使わない）
+scripts/devlog.ts        # dev モードの会話ログの表示（npm run devlog）。読む設定は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ だけ（loadDataConfig）
 test/            # 単体テスト。test/integration/ は結合テスト
 docs/            # REQUIREMENTS.md, design/, research/, archive/, plan/（フェーズごとの実装仕様）
 ```
@@ -79,6 +82,8 @@ docs/            # REQUIREMENTS.md, design/, research/, archive/, plan/（フェ
 | `SELF_AGENT_SERVE_ALLOWED_LOGIN` | 任意。設定すると、静的サーバーは `Tailscale-User-Login` ヘッダがこれと一致しない要求を 403 にする（tailnet を他人と共有しているときだけ使う） |
 | `SELF_AGENT_SESSION_MAX_TURNS` | セッションのチャンネルの 1 ターンの手順（maxTurns）の上限（正の整数）。既定 40。#inbox・#tasks は対象外 |
 | `SELF_AGENT_SESSION_TURN_TIMEOUT_SEC` | セッションのチャンネルの 1 ターンの打ち切りまでの秒数（正の整数）。既定 900。#inbox・#tasks は `SELF_AGENT_TURN_TIMEOUT_SEC` |
+| `SELF_AGENT_DEV_MODE` | `1` で dev モード（run ごとの会話を `<SELF_AGENT_DATA_DIR>/devlog/<YYYY-MM-DD>.jsonl` に残す。`npm run devlog` で読む）。未設定か `0` なら無効。それ以外の値は設定エラー |
+| `SELF_AGENT_DEV_LOG_DAYS` | dev モードの会話ログを残す日数（正の整数）。既定 30。今日（`SELF_AGENT_TZ`）からこの日数より前の日のファイルを tick で消す（dev モードでなくても、ディレクトリがあれば消す） |
 
 ## コーディング規約
 
@@ -87,6 +92,7 @@ docs/            # REQUIREMENTS.md, design/, research/, archive/, plan/（フェ
 - 依存は最小限、バージョンは exact 固定
 - public リポジトリなので、トークン・ID・個人情報をコードやログに書かない
 - ローカルのログ（console）にはサーバー ID を出してよい。チャンネル ID・ユーザー ID・本文・トークンは出さない（例外: /new でチャンネルを作った後に DB 保存に失敗したときは、手で消せるよう作ったチャンネルの ID を出す）
+- dev モードの会話ログ（`<SELF_AGENT_DATA_DIR>/devlog/`）は例外として本文・チャンネル ID を含む（ローカルのファイル。リポジトリには入れない）。console のログには、その中身・パスを出さない
 
 ## プロンプトキャッシュの規則
 
