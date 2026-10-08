@@ -157,7 +157,7 @@ const handleInteraction = createInteractionHandler({
   }),
   log,
 });
-// #inbox の切り替え: 要約のターンは発言と同じキュー（turnQueue、key は #inbox の channelId）で行う
+// #inbox・#tasks の切り替え: 要約のターンは発言と同じキュー（turnQueue、key はそのチャンネルの channelId）で行う
 const inboxRotator = new InboxRotator({
   cfg: config,
   guildSettings,
@@ -169,7 +169,7 @@ const inboxRotator = new InboxRotator({
   log,
 });
 // 定期処理: セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
-// 完了から日数の経ったセッションの削除を #system で確認し、#inbox の会話を切り替える
+// 完了から日数の経ったセッションの削除を #system で確認し、#inbox・#tasks の会話を切り替える
 const scheduler = new Scheduler({
   cfg: config,
   topicSessions,

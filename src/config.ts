@@ -35,9 +35,9 @@ export type Config = {
   autoSessionPerDay: number;
   /** 完了からこの日数経ったセッションについて、チャンネルを削除するか #system で確認する */
   deleteAfterDays: number;
-  /** 毎日この時刻（timeZone）を過ぎたら #inbox の会話を要約して新しいセッションに切り替える */
+  /** 毎日この時刻（timeZone）を過ぎたら #inbox・#tasks の会話を要約して新しいセッションに切り替える */
   inboxRotateAt: TimeOfDay;
-  /** #inbox の直近の成功したターンの最後のステップの入力（input + cache read + cache creation）がこれを超えたら、日次を待たずに切り替える */
+  /** #inbox・#tasks の直近の成功したターンの最後のステップの入力（input + cache read + cache creation）がこれを超えたら、日次を待たずに切り替える */
   inboxMaxInputTokens: number;
   /** 任意。作ったプロジェクトを配る静的サーバーのポート（127.0.0.1 で待ち受ける）。これと publicBaseUrl のどちらかが無ければ機能ごと無効 */
   servePort: number | undefined;
