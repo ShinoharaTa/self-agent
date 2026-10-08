@@ -158,6 +158,38 @@ test("createChannelResolver: 別のサーバーの sessions の行では受け�
   assert.equal(acceptedChannel({ ...accepted, channelId: "session-1" }, cfg, resolve), "session");
 });
 
+test("createChannelResolver: /setup 済みのサーバーの DB の #tasks は tasks として受け付ける。別のサーバーの同じ ID・/setup 前のサーバー（env の fallback）では受け付けない", (t) => {
+  const { guildSettings, topicSessions } = tempStores(t);
+  guildSettings.setChannel("guild-1", "inboxChannelId", "db-inbox-1");
+  guildSettings.setChannel("guild-1", "tasksChannelId", "db-tasks-1");
+
+  const resolve = createChannelResolver({ inboxChannelId: "env-inbox" }, guildSettings, topicSessions);
+  assert.equal(resolve("guild-1", "db-tasks-1"), "tasks");
+  assert.equal(resolve("guild-1", "db-inbox-1"), "inbox");
+  // guild-9 は /setup 前。env の fallback は #inbox だけで、#tasks は無い（別のサーバーの #tasks の ID でも受け付けない）
+  assert.equal(resolve("guild-9", "env-inbox"), "inbox");
+  assert.equal(resolve("guild-9", "db-tasks-1"), null);
+  assert.equal(acceptedChannel({ ...accepted, channelId: "db-tasks-1" }, cfg, resolve), "tasks");
+  assert.equal(acceptedChannel({ ...accepted, guildId: "guild-9", channelId: "db-tasks-1" }, cfg, resolve), null);
+
+  // guild-9 も /setup 済みになっても、#tasks はそのサーバーのものだけ
+  guildSettings.setChannel("guild-9", "inboxChannelId", "db-inbox-9");
+  guildSettings.setChannel("guild-9", "tasksChannelId", "db-tasks-9");
+  assert.equal(resolve("guild-9", "db-tasks-9"), "tasks");
+  assert.equal(resolve("guild-9", "db-tasks-1"), null);
+  assert.equal(resolve("guild-1", "db-tasks-9"), null);
+});
+
+test("createChannelResolver: #tasks がまだ無い（/setup が途中で止まった）サーバーでは #tasks を受け付けない", (t) => {
+  const guildSettings = tempGuildSettings(t);
+  guildSettings.setChannel("guild-1", "inboxChannelId", "db-inbox-1");
+  guildSettings.setChannel("guild-9", "tasksChannelId", "db-tasks-9");
+
+  const resolve = createChannelResolver({ inboxChannelId: undefined }, guildSettings, NO_SESSIONS);
+  assert.equal(resolve("guild-1", "db-tasks-9"), null);
+  assert.equal(resolve("guild-1", "db-inbox-1"), "inbox");
+});
+
 test("logUnconfiguredGuilds: guild_settings の無い許可サーバーだけを log に出し、env の #inbox を使っているかを添える", (t) => {
   const guildSettings = tempGuildSettings(t);
   guildSettings.setChannel("guild-1", "inboxChannelId", "db-inbox-1");

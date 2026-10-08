@@ -3,8 +3,8 @@ import type { IncomingMessage } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 
-/** 発言を受け付けるチャンネルの種類（#inbox か、/new で作ったセッション） */
-export type ChannelKind = "inbox" | "session";
+/** 発言を受け付けるチャンネルの種類（#inbox、#tasks か、/new で作ったセッション） */
+export type ChannelKind = "inbox" | "tasks" | "session";
 
 /** そのチャンネルが受け付け対象なら種類を、対象外なら null を返す */
 export type ResolveChannel = (guildId: string, channelId: string) => ChannelKind | null;
@@ -34,6 +34,7 @@ export function acceptedChannel(
 
 /**
  * /setup 済みのサーバーは DB の #inbox、guild_settings に行が無いサーバーだけ env の SELF_AGENT_INBOX_CHANNEL_ID を #inbox とみなす（env は P3 で廃止）。
+ * #tasks は /setup 済みのサーバーの DB の #tasks だけ（env の fallback には無い）。
  * sessions に行があり、削除済みでなく、同じサーバーのチャンネルならセッションとして受け付ける
  */
 export function createChannelResolver(
@@ -45,6 +46,7 @@ export function createChannelResolver(
     const settings = guildSettings.get(guildId);
     const inboxChannelId = settings === undefined ? cfg.inboxChannelId : settings.inboxChannelId;
     if (channelId === inboxChannelId) return "inbox";
+    if (settings !== undefined && channelId === settings.tasksChannelId) return "tasks";
     const session = topicSessions.get(channelId);
     return session !== undefined && session.state !== "deleted" && session.guildId === guildId ? "session" : null;
   };

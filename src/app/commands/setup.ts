@@ -12,7 +12,7 @@ const HOME_CHANNELS: ReadonlyArray<{
   topic: string;
 }> = [
   { field: "inboxChannelId", name: "inbox", topic: "思いつきややることを書くと Bot が返事します" },
-  { field: "tasksChannelId", name: "tasks", topic: "タスクの一覧" },
+  { field: "tasksChannelId", name: "tasks", topic: "タスクの話だけをする場所。登録・期限の変更・やめる・今日やることを Bot と話せます" },
   { field: "systemChannelId", name: "system", topic: "Bot の起動・エラー・利用状況の通知" },
 ];
 

@@ -15,6 +15,7 @@ import type { RunContext } from "../src/agent/runner.ts";
 
 const TOPIC: RunContext = { guildId: "guild-1", channelId: "topic-1", kind: "session" };
 const INBOX: RunContext = { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" };
+const TASKS: RunContext = { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" };
 
 const ALLOWED = { allowed: true };
 const WRITE_DENIED = { allowed: false, reason: FILE_WRITE_DENIED_REASON };
@@ -129,6 +130,16 @@ test("Write・Edit: #inbox・プロジェクトの無いチャンネルでは、
   assert.deepEqual(judge("Write", { file_path: file, content: "" }, { context: INBOX }), WRITE_DENIED);
   assert.deepEqual(judge("Edit", { file_path: file }, { context: INBOX, project: undefined }), WRITE_DENIED);
   assert.deepEqual(judge("Write", { file_path: file, content: "" }, { project: undefined }), WRITE_DENIED);
+});
+
+test("Write・Edit: #tasks では、プロジェクトの中を指しても拒否する", (t) => {
+  const { projectsDir, judge } = setup(t);
+  const file = join(projectsDir, "kakeibo", "site", "index.html");
+
+  for (const project of [{ slug: "kakeibo" }, undefined]) {
+    assert.deepEqual(judge("Write", { file_path: file, content: "" }, { context: TASKS, project }), WRITE_DENIED);
+    assert.deepEqual(judge("Edit", { file_path: file }, { context: TASKS, project }), WRITE_DENIED);
+  }
 });
 
 test("Read・Glob・Grep: projects の中なら許す（別のチャンネルのプロジェクト・#inbox でも）。外は拒否する", (t) => {

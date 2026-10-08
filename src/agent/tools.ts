@@ -112,7 +112,7 @@ export type ProjectToolDeps = {
   serving: () => boolean;
 };
 
-/** project_open を #inbox・context の無いターンで呼んだときの message */
+/** project_open をセッション以外（#inbox・#tasks）・context の無いターンで呼んだときの message */
 export const PROJECT_OPEN_NOT_AVAILABLE_MESSAGE =
   "セッションのチャンネルで使います。#inbox では session_open で専用のチャンネルを作ってください";
 /** ページの配信が無効なときの message */
@@ -343,14 +343,14 @@ export function projectNotes(slug: string, url: string): string[] {
 }
 
 /**
- * プロジェクトのツール。context が無い・#inbox なら not_available、配信が無効（publicBaseUrl が無い・静的サーバーが待ち受けていない）なら not_configured。
+ * プロジェクトのツール。context が無い・セッション以外（#inbox・#tasks）なら not_available、配信が無効（publicBaseUrl が無い・静的サーバーが待ち受けていない）なら not_configured。
  * そのチャンネルの削除されていないプロジェクトがあれば existing、無ければ作って `<slug>/site/` まで mkdir し created
  */
 export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunContext | undefined) {
   const { projects, projectsDir, publicBaseUrl, serving } = deps;
   return {
     async projectOpen(args: ProjectOpenArgs): Promise<TextToolResult> {
-      if (context === undefined || context.kind === "inbox") {
+      if (context === undefined || context.kind !== "session") {
         return textResult({ status: "not_available", message: PROJECT_OPEN_NOT_AVAILABLE_MESSAGE });
       }
       if (publicBaseUrl === undefined || !serving()) {

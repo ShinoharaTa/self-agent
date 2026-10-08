@@ -308,6 +308,19 @@ test("session_open: #inbox 以外（セッション・受け付け対象外・�
   assert.equal(seeds.get("topic-1"), undefined);
 });
 
+test("session_open: /setup 済みのサーバーの #tasks では not_available を返し、何も作らない", async (t) => {
+  const { gateway, guildSettings, seeds, queue, openSession, sessionCount } = setup(t);
+  guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
+
+  assert.deepEqual(await openSession(ARGS, { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" }), {
+    result: "not_available",
+  });
+  assert.deepEqual(gateway.calls, []);
+  assert.deepEqual(queue.keys, []);
+  assert.equal(sessionCount(), 0);
+  assert.equal(seeds.get("tasks-1"), undefined);
+});
+
 test("session_open: 同じ正規化題名の進行中・待ちのセッションがそのサーバーにあれば、作らずに existing を返す", async (t) => {
   const { db, gateway, topicSessions, openSession, sessionCount } = setup(t);
   topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "Trip Plan!", categoryId: "active-1" });

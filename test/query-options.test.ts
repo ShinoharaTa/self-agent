@@ -49,7 +49,7 @@ test("システムプロンプトにアプリの説明（チャンネル・セ�
   const prompt = String(systemPrompt);
   assert.ok(prompt.includes("このアプリについて（使い方を聞かれたら、この範囲で答える）:"));
   for (const word of [
-    "- #tasks: まだ役割が無い。#system: 完了から日数が経ったセッションを削除するかの確認。",
+    "- #tasks: タスクの話だけをする場所（登録・一覧・期限や題名の変更・完了・やめる・今日やることの相談）。#system: 完了から日数が経ったセッションを削除するかの確認。",
     "「進行中」「待ち」「完了」",
     "パネルのボタン",
     "- ここに無いことは、分からないと答える。",
@@ -59,6 +59,26 @@ test("システムプロンプトにアプリの説明（チャンネル・セ�
   for (const command of ["new", "close", "wait", "sessions", "tasks", "projects", "usage", "help", "setup"]) {
     assert.ok(prompt.includes(`/${command}（`), command);
   }
+});
+
+test("システムプロンプトに #tasks の行（引き継ぎの文・書き分け・やることの 3 行・#tasks の節・アプリの説明）を含め、「まだ役割が無い」を含めない", () => {
+  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const prompt = String(systemPrompt);
+  for (const line of [
+    "「これまでの #inbox の要約:」「これまでの #tasks の要約:」「#inbox からの続き:」",
+    "- #inbox と #tasks では短く、基本 1〜3 行（タスクの一覧は 1 件 1 行）。セッションのチャンネル（ヘッダが #inbox・#tasks 以外）では、必要なだけ書いてよい。",
+    "- 期限や題名を変える、やめる、終わっていなかったと言われたら task_update を使い、変えた内容を 1 行で伝える。",
+    "- 今日やることを聞かれたら task_list の due_by に今日の日付を渡す。何からやるか聞かれたら 1 つだけ選び、理由を 1 行添える。",
+    "- 取りかかれないと言われたら、5 分でできる最初の一歩を 1 つだけ提案する。",
+    "\n#tasks では（ヘッダが #tasks）:\n" +
+      "- タスクの話だけをする。タスク以外の話題（調べもの・相談・作ってほしいもの）は答えずに、#inbox か /new のセッションで話すよう 1 行で案内する。\n" +
+      "- 一覧は期限切れ・今日・それ以外の順に出す。10 件を超えるときは今日までのものだけ出し、残りは件数と /tasks を案内する。\n",
+    "- #tasks: タスクの話だけをする場所（登録・一覧・期限や題名の変更・完了・やめる・今日やることの相談）。",
+  ]) {
+    assert.ok(prompt.includes(line), line);
+  }
+  assert.ok(!prompt.includes("まだ役割が無い"));
+  assert.ok(!prompt.includes("- #inbox では短く"));
 });
 
 test("システムプロンプトに WebSearch と WebFetch の使い方を含める", () => {

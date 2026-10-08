@@ -231,7 +231,7 @@ const FIRST = {
 
 const TOPICS: Record<string, string> = {
   inbox: "思いつきややることを書くと Bot が返事します",
-  tasks: "タスクの一覧",
+  tasks: "タスクの話だけをする場所。登録・期限の変更・やめる・今日やることを Bot と話せます",
   system: "Bot の起動・エラー・利用状況の通知",
 };
 
@@ -268,7 +268,7 @@ test("初回: self-agent カテゴリ → #inbox/#tasks/#system → 進行中/�
     {
       method: "createTextChannel",
       guildId: "guild-1",
-      options: { name: "tasks", parentId: FIRST.home, topic: "タスクの一覧" },
+      options: { name: "tasks", parentId: FIRST.home, topic: "タスクの話だけをする場所。登録・期限の変更・やめる・今日やることを Bot と話せます" },
     },
     {
       method: "createTextChannel",
@@ -581,6 +581,13 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
 
 test("/help に /setup の説明がある", () => {
   assert.match(HELP_TEXT, /^`\/setup` /m);
+});
+
+test("/help: #inbox の段落の次の行に #tasks の 1 行がある", () => {
+  const lines = HELP_TEXT.split("\n");
+  const inbox = lines.findIndex((line) => line.startsWith("#inbox に書くと、"));
+  assert.ok(inbox >= 0);
+  assert.equal(lines[inbox + 1], "#tasks ではタスクの話だけを受け付けます（期限や題名の変更・やめる・今日やることの相談）。");
 });
 
 test("ホームパネル: 本文と [新しいセッション][タスク一覧][待ちのセッション] のボタン（home:new / home:tasks / home:waiting）", () => {

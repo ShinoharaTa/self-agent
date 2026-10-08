@@ -119,6 +119,17 @@ test("project_open: #inbox・context の無いターンでは not_available を�
   assert.equal(existsSync(projectsDir), false);
 });
 
+test("project_open: #tasks でも not_available を返し、何も作らない（セッション以外では使えない）", async (t) => {
+  const { db, projectsDir, open } = setup(t);
+
+  assert.deepEqual(parse(await open({ guildId: "guild-1", channelId: "tasks-1", kind: "tasks" })), {
+    status: "not_available",
+    message: PROJECT_OPEN_NOT_AVAILABLE_MESSAGE,
+  });
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects").get()?.n, 0);
+  assert.equal(existsSync(projectsDir), false);
+});
+
 test("project_open: 配信が無効（公開 URL が無い・静的サーバーが待ち受けていない）なら not_configured を返し、何も作らない", async (t) => {
   for (const overrides of [{ publicBaseUrl: undefined }, { serving: () => false }]) {
     const { db, projectsDir, open } = setup(t, overrides);
