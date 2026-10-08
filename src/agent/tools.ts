@@ -39,8 +39,10 @@ const DEFAULT_LIST_LIMIT = 20;
 export type TextToolResult = { content: [{ type: "text"; text: string }] };
 
 export type TaskAddArgs = { title: string; due?: string };
-export type TaskListArgs = { status?: TaskStatus; limit?: number };
+export type TaskListArgs = { status?: TaskStatus; due_by?: string; limit?: number };
 export type TaskCompleteArgs = { id: number };
+/** due は YYYY-MM-DD か "none"（期限を外す） */
+export type TaskUpdateArgs = { id: number; title?: string; due?: string; status?: TaskStatus };
 export type SessionReportArgs = { summary: string; tasks?: CloseDraft["tasks"] };
 export type SessionOpenArgs = { title: string; context: string };
 export type KbSaveArgs = { url?: string; title: string; summary: string; body?: string; tags?: string; id?: number };
@@ -88,7 +90,7 @@ export type KbMemoryToolDeps = {
   memories: Pick<MemoryStore, "add" | "softDelete" | "countActive">;
   confirmKbDelete: ConfirmKbDelete;
   notifyMemoryChange: NotifyMemoryChange;
-  /** kb_save・kb_search・kb_get が返す日付（YYYY-MM-DD）のタイムゾーン */
+  /** kb_save・kb_search・kb_get と task_list が返す日付（YYYY-MM-DD）のタイムゾーン */
   timeZone: string;
 };
 
@@ -131,14 +133,31 @@ function summary(task: Task): { id: number; title: string; due: string | null } 
   return { id: task.id, title: task.title, due: task.due };
 }
 
-export function createTaskToolHandlers(store: TaskStore) {
+/** task_update の before・after と task_list の要素 */
+function withStatus(task: Task): { id: number; title: string; due: string | null; status: TaskStatus } {
+  return { ...summary(task), status: task.status };
+}
+
+/** timeZone は task_list が返す closed（done・dropped にした日付）のタイムゾーン */
+export function createTaskToolHandlers(store: TaskStore, timeZone: string) {
+  const listItem = (task: Task) =>
+    task.status === "open"
+      ? withStatus(task)
+      : {
+          ...withStatus(task),
+          closed: task.completedAt === null ? null : formatDate(new Date(task.completedAt), timeZone),
+        };
   return {
     taskAdd(args: TaskAddArgs): TextToolResult {
       return textResult(summary(store.add({ title: args.title, due: args.due })));
     },
     taskList(args: TaskListArgs): TextToolResult {
-      const tasks = store.list({ status: args.status ?? "open", limit: args.limit ?? DEFAULT_LIST_LIMIT });
-      return textResult(tasks.map(summary));
+      const tasks = store.list({
+        status: args.status ?? "open",
+        limit: args.limit ?? DEFAULT_LIST_LIMIT,
+        dueBy: args.due_by,
+      });
+      return textResult(tasks.map(listItem));
     },
     taskComplete(args: TaskCompleteArgs): TextToolResult {
       const outcome = store.complete(args.id);
@@ -146,6 +165,20 @@ export function createTaskToolHandlers(store: TaskStore) {
         return textResult({ result: "not_found", id: args.id });
       }
       return textResult({ result: outcome.result, ...summary(outcome.task) });
+    },
+    taskUpdate(args: TaskUpdateArgs): TextToolResult {
+      const outcome = store.update(args.id, {
+        title: args.title,
+        due: args.due === "none" ? null : args.due,
+        status: args.status,
+      });
+      if (outcome.result === "not_found") {
+        return textResult({ result: "not_found", id: args.id });
+      }
+      if (outcome.result === "no_change") {
+        return textResult({ result: "no_change", ...withStatus(outcome.task) });
+      }
+      return textResult({ result: "updated", before: withStatus(outcome.before), after: withStatus(outcome.after) });
     },
   };
 }
@@ -336,11 +369,14 @@ const TASK_ADD_DESCRIPTION =
   "登録前に task_list で同じものが無いか確かめる。" +
   "期限が分かるときは due に YYYY-MM-DD で渡す。登録したタスクの id・title・due を返す。";
 const TASK_LIST_DESCRIPTION =
-  "登録済みのタスクを期限の早い順（期限なしは最後）に返す。タスクの一覧や残っていることを聞かれたとき、" +
+  "登録済みのタスクを期限の早い順（期限なしは最後。done・dropped は閉じた新しい順）に返す。タスクの一覧や残っていることを聞かれたとき、" +
   "完了にするタスクの id を確かめたいときに使う。";
 const TASK_COMPLETE_DESCRIPTION =
   "タスクを完了にする。オーナーが何かを終えたと言ったときに使う。" +
   "存在しない id や既に完了しているタスクなら、その旨（not_found / already_done）を返す。";
+const TASK_UPDATE_DESCRIPTION =
+  "タスクの題名・期限・状態を変える。期限の変更、言い直し、やめた（dropped）、終わっていなかった（open に戻す）と言われたときに使う。" +
+  "変更前と変更後を返すので、変えた内容を 1 行で伝える。";
 const SESSION_REPORT_DESCRIPTION =
   "セッションのチャンネルを閉じるときに、ここまでの要約と、まだ登録していないやることの候補を報告する。" +
   "/close で頼まれたときだけ、1 回だけ使う。tasks はオーナーが確認してから登録するので、ここに入れたものを task_add で登録しない。" +
@@ -392,7 +428,7 @@ export function createTaskTools(
   project: ProjectToolDeps,
   context?: RunContext,
 ) {
-  const handlers = createTaskToolHandlers(store);
+  const handlers = createTaskToolHandlers(store, kbMemory.timeZone);
   const sessionHandlers = createSessionToolHandlers(topicSessions, context);
   const kbHandlers = createKnowledgeToolHandlers(kbMemory, context);
   const memoryHandlers = createMemoryToolHandlers(kbMemory, context);
@@ -411,7 +447,14 @@ export function createTaskTools(
       "task_list",
       TASK_LIST_DESCRIPTION,
       {
-        status: z.enum(["open", "done"]).optional().describe("open（未完了、既定）または done（完了済み）"),
+        status: z
+          .enum(["open", "done", "dropped"])
+          .optional()
+          .describe("open（未完了、既定）・done（完了済み）・dropped（やめた）"),
+        due_by: z.iso
+          .date()
+          .optional()
+          .describe("YYYY-MM-DD。期限がこの日以前のもの（期限切れを含む。期限なしは除く）だけに絞る"),
         limit: z.number().int().min(1).max(50).optional().describe(`最大件数（既定 ${DEFAULT_LIST_LIMIT}）`),
       },
       async (args) => handlers.taskList(args),
@@ -423,6 +466,23 @@ export function createTaskTools(
         id: z.number().int().describe("完了にするタスクの id"),
       },
       async (args) => handlers.taskComplete(args),
+    ),
+    tool(
+      "task_update",
+      TASK_UPDATE_DESCRIPTION,
+      {
+        id: z.number().int().describe("変えるタスクの id"),
+        title: z.string().min(1).max(200).optional().describe("新しい題名。変えなければ省略"),
+        due: z
+          .union([z.iso.date(), z.literal("none")])
+          .optional()
+          .describe('新しい期限（YYYY-MM-DD）。期限を外すなら "none"。変えなければ省略'),
+        status: z
+          .enum(["open", "done", "dropped"])
+          .optional()
+          .describe("open（未完了に戻す）・done（完了）・dropped（やめた）。変えなければ省略"),
+      },
+      async (args) => handlers.taskUpdate(args),
     ),
     tool(
       "session_report",

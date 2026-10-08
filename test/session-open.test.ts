@@ -495,6 +495,7 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
       "task_add",
       "task_list",
       "task_complete",
+      "task_update",
       "session_report",
       "session_open",
       "kb_save",
