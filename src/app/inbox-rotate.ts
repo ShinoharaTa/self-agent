@@ -13,9 +13,9 @@ import { fallbackSummary, rotatedSeed } from "./summary.ts";
 import { formatDate } from "./time.ts";
 import { recordTurnUsage, RESUME_FAILURE_PATTERN, type TurnDeps } from "./turn.ts";
 
-/** #inbox の要約を頼むターンの prompt。静的に保つ（日時ヘッダも付けない。字数は要約を切り詰める上限と揃える） */
+/** #inbox の要約を頼むターンの prompt。静的に保つ（日時ヘッダも付けない。字数は要約を切り詰める上限と揃える）。セッションに移った話題は案内と題名だけにする（中身はセッション側で進むため） */
 export const ROTATE_PROMPT =
-  `会話を新しくするので、ここまでの #inbox のやり取りのうち、今後も必要なこと（未完了の話題・決めたこと・約束）だけを ${CLOSE_SUMMARY_MAX_LENGTH} 字以内の箇条書きで返答してください。ツールは使わないでください。`;
+  `会話を新しくするので、ここまでの #inbox のやり取りのうち、今後も必要なこと（未完了の話題・決めたこと・約束）だけを ${CLOSE_SUMMARY_MAX_LENGTH} 字以内の箇条書きで返答してください。セッションのチャンネルに移った話題は、その後セッションで進むので、チャンネルの案内（<#チャンネルID>）と題名だけを書き、中身の進み具合は書かないでください。ツールは使わないでください。`;
 
 /** #tasks の要約を頼むターンの prompt。タスクの一覧は DB にあるので書き写させない（静的に保つのは #inbox と同じ） */
 export const TASKS_ROTATE_PROMPT =
