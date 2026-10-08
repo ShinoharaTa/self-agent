@@ -339,6 +339,7 @@ export function projectNotes(slug: string, url: string): string[] {
     "ビルドやコマンドの実行はできない。ライブラリは CDN から読む",
     "Glob・Grep は path に dir を指定する",
     "決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む",
+    "作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える",
   ];
 }
 

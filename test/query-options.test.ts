@@ -35,6 +35,15 @@ test("システムプロンプトに作ってと頼まれたときの行（proje
   );
 });
 
+test("システムプロンプトに、作ってと頼まれたときの行の直後に仕様の検討・見直しを頼まれたときの行（作り始めずに案を出す・頼まれていない機能は候補として 1 行）を含める", () => {
+  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  assert.ok(
+    String(systemPrompt).includes(
+      "コードは聞かれたときだけ短く見せる。\n- 仕様の検討や見直しを頼まれたら、作り始めずに案を短く出し、確認してから作る。頼まれていない機能は足さず、候補として 1 行で挙げる。\n",
+    ),
+  );
+});
+
 test("システムプロンプトにスマートフォン前提の行（PC は使えない・表と見出しを使わない・手順を案内せず project_open の URL で渡す）を含める", () => {
   const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
   assert.ok(

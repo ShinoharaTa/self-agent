@@ -74,7 +74,7 @@ test("project_open: セッションのチャンネルで作り、<slug>/site/ �
   assert.equal(project?.title, "家計簿");
 });
 
-test("project_open: 注意は 7 項目（dir と site_dir・相対パスと url・localStorage と slug・秘密・ビルド不可・Glob と Grep の path・SPEC.md）", () => {
+test("project_open: 注意は 8 項目（dir と site_dir・相対パスと url・localStorage と slug・秘密・ビルド不可・Glob と Grep の path・SPEC.md・作り終えた後の返事）", () => {
   assert.deepEqual(projectNotes("kakeibo", "https://example.test:9443/p/kakeibo/"), [
     "ファイルは dir の中に書く。配られるのは site_dir の中だけで、入口は site_dir/index.html",
     "パスは相対で書く（/ で始めない）。ページは https://example.test:9443/p/kakeibo/ で開かれる",
@@ -83,6 +83,7 @@ test("project_open: 注意は 7 項目（dir と site_dir・相対パスと url�
     "ビルドやコマンドの実行はできない。ライブラリは CDN から読む",
     "Glob・Grep は path に dir を指定する",
     "決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む",
+    "作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える",
   ]);
 });
 
