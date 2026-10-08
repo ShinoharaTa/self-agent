@@ -293,6 +293,7 @@ export function projectNotes(slug: string, url: string): string[] {
     "API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない",
     "ビルドやコマンドの実行はできない。ライブラリは CDN から読む",
     "Glob・Grep は path に dir を指定する",
+    "決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む",
   ];
 }
 

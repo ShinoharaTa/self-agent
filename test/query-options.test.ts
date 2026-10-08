@@ -35,6 +35,33 @@ test("システムプロンプトに作ってと頼まれたときの行（proje
   );
 });
 
+test("システムプロンプトにスマートフォン前提の行（PC は使えない・表と見出しを使わない・手順を案内せず project_open の URL で渡す）を含める", () => {
+  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  assert.ok(
+    String(systemPrompt).includes(
+      "- オーナーはスマートフォンの Discord から使い、PC は使えない。表と見出し（# で始まる行）は使わない。箇条書きは可。ファイルを保存して開く・コマンドを打つといった手順は案内せず、動くものは project_open で作って URL で渡す。",
+    ),
+  );
+});
+
+test("システムプロンプトにアプリの説明（チャンネル・セッション・全コマンド・パネル・無いことは分からないと答える）を含める", () => {
+  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const prompt = String(systemPrompt);
+  assert.ok(prompt.includes("このアプリについて（使い方を聞かれたら、この範囲で答える）:"));
+  for (const word of [
+    "#tasks",
+    "#system",
+    "「進行中」「待ち」「完了」",
+    "パネルのボタン",
+    "- ここに無いことは、分からないと答える。",
+  ]) {
+    assert.ok(prompt.includes(word), word);
+  }
+  for (const command of ["new", "close", "wait", "sessions", "tasks", "projects", "usage", "help", "setup"]) {
+    assert.ok(prompt.includes(`/${command}（`), command);
+  }
+});
+
 test("システムプロンプトに WebSearch と WebFetch の使い方を含める", () => {
   const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
   for (const word of ["WebSearch", "WebFetch"]) {
