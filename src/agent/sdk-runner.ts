@@ -138,22 +138,51 @@ export function progressLabel(
 /** WebFetch を拒否したときにモデルへ返す理由 */
 export const WEB_FETCH_DENIED_REASON = "オーナーが発言に貼った URL だけ取得できます";
 
+/** 1 ターンで WebFetch の許可に加える転送先の数の上限 */
+export const WEB_FETCH_MAX_REDIRECTS = 5;
+
 /**
- * WebFetch を、allowedUrls（このターンにオーナーが貼った URL）に含まれる URL だけに絞る PreToolUse の hook。
- * 含まれない・解析できない URL は拒否して log に出す（URL は出さない）。WebFetch 以外のツールは何もしない
+ * WebFetch の結果のうち転送先を示す行（CLI の `Redirect URL (from the server's Location header — …): <url>`）。
+ * URL の後ろに注記が続く行（長すぎて切り詰めた・取得できない宛先）は対象にしない
  */
-export function createWebFetchGuard(
-  allowedUrls: readonly string[],
-  log: (message: string) => void,
-): HookCallbackMatcher {
+const REDIRECT_LINE_PATTERN = /^[ \t]*Redirect URL \([^)\n]*\): (https?:\/\/\S+)[ \t]*$/m;
+
+/**
+ * PostToolUse の tool_response から結果のテキストを取り出す。WebFetch は `{ result, code, url, … }` の result。
+ * 文字列・content ブロック（`{ type: "text", text }`）の配列・content を持つ形にも備える。取り出せなければ空文字
+ */
+function toolResponseText(response: unknown): string {
+  if (typeof response === "string") return response;
+  if (Array.isArray(response)) return response.map(toolResponseText).join("\n");
+  if (typeof response !== "object" || response === null) return "";
+  const fields = response as Record<string, unknown>;
+  if (typeof fields.result === "string") return fields.result;
+  if (typeof fields.text === "string") return fields.text;
+  return toolResponseText(fields.content);
+}
+
+/** WebFetch の tool_input の url を正規化したもの。無い・解析できなければ undefined */
+function webFetchUrl(toolInput: unknown): string | undefined {
+  return typeof toolInput === "object" && toolInput !== null && "url" in toolInput && typeof toolInput.url === "string"
+    ? normalizeUrl(toolInput.url)
+    : undefined;
+}
+
+/** WebFetch のガード。PreToolUse で取得する URL を絞り、PostToolUse で結果の転送先をそのターンの許可に加える */
+export type WebFetchGuard = { preToolUse: HookCallbackMatcher; postToolUse: HookCallbackMatcher };
+
+/**
+ * WebFetch を、allowedUrls（このターンにオーナーが貼った URL）に含まれる URL だけに絞る。
+ * PreToolUse の hook は、含まれない・解析できない URL を拒否して log に出す（URL は出さない）。
+ * PostToolUse の hook は、許可済みの URL を WebFetch した結果が転送（Redirect URL の行）なら、その転送先をこのターンの許可に加える
+ * （転送先の転送も同じ。1 ターンで WEB_FETCH_MAX_REDIRECTS 回まで。log に URL は出さない）。WebFetch 以外のツールは何もしない
+ */
+export function createWebFetchGuard(allowedUrls: readonly string[], log: (message: string) => void): WebFetchGuard {
   const allowed = new Set(allowedUrls.map(normalizeUrl).filter((url) => url !== undefined));
+  let redirects = 0;
   const guard: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse" || input.tool_name !== "WebFetch") return {};
-    const toolInput = input.tool_input;
-    const url =
-      typeof toolInput === "object" && toolInput !== null && "url" in toolInput && typeof toolInput.url === "string"
-        ? normalizeUrl(toolInput.url)
-        : undefined;
+    const url = webFetchUrl(input.tool_input);
     // 許可する URL は判断を足さずに通す（allowedTools の許可に任せる）
     if (url !== undefined && allowed.has(url)) return {};
     log("WebFetch を拒否しました（貼られていない URL）");
@@ -165,7 +194,23 @@ export function createWebFetchGuard(
       },
     };
   };
-  return { matcher: "WebFetch", hooks: [guard] };
+  // 許可済みの URL からの転送だけを辿る。既に許可している転送先は数えない
+  const followRedirect: HookCallback = async (input) => {
+    if (input.hook_event_name !== "PostToolUse" || input.tool_name !== "WebFetch") return {};
+    const url = webFetchUrl(input.tool_input);
+    if (url === undefined || !allowed.has(url) || redirects >= WEB_FETCH_MAX_REDIRECTS) return {};
+    const target = REDIRECT_LINE_PATTERN.exec(toolResponseText(input.tool_response))?.[1];
+    const redirectUrl = target === undefined ? undefined : normalizeUrl(target);
+    if (redirectUrl === undefined || allowed.has(redirectUrl)) return {};
+    allowed.add(redirectUrl);
+    redirects++;
+    log("WebFetch の転送先を許可しました");
+    return {};
+  };
+  return {
+    preToolUse: { matcher: "WebFetch", hooks: [guard] },
+    postToolUse: { matcher: "WebFetch", hooks: [followRedirect] },
+  };
 }
 
 /** ファイル操作の hook が使うプロジェクトのストアと場所 */
@@ -378,15 +423,14 @@ export class SdkAgentRunner implements AgentRunner {
     steps: DevLogStep[] | undefined,
   ): Promise<RunResult> {
     const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context));
-    // ツール呼び出しの回数はターンごとに数え、WebFetch に許す URL とファイル操作を許す場所もターンごとに違うので、hooks は run ごとに作って足す。
-    // ファイル操作の hook はどの run にも必ず入れる
+    // ツール呼び出しの回数はターンごとに数え、WebFetch に許す URL（貼った URL とその転送先）とファイル操作を許す場所もターンごとに違うので、
+    // hooks は run ごとに作って足す。ファイル操作の hook はどの run にも必ず入れる
     const tools = createToolCallRecorder(this.log);
+    const webFetch = createWebFetchGuard(input.allowedUrls ?? [], this.log);
     const hooks: NonNullable<Options["hooks"]> = {
-      PreToolUse: [
-        createWebFetchGuard(input.allowedUrls ?? [], this.log),
-        createFileGuard(input.context, this.files, this.log),
-      ],
+      PreToolUse: [webFetch.preToolUse, createFileGuard(input.context, this.files, this.log)],
       ...tools.hooks,
+      PostToolUse: [...(tools.hooks.PostToolUse ?? []), webFetch.postToolUse],
     };
     // 子プロセスの stderr は末尾だけ保持し、例外で終わったときに errorMessage に添える（中身を log に直接は出さない）
     let stderr = "";
