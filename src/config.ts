@@ -49,6 +49,10 @@ export type Config = {
   sessionMaxTurns: number;
   /** セッションのチャンネルの 1 ターンの打ち切りまでの秒数 */
   sessionTurnTimeoutSec: number;
+  /** dev モード。true なら run ごとの会話を `${dataDir}/devlog/` に記録する */
+  devMode: boolean;
+  /** dev モードの会話ログを残す日数（これより前の日のファイルは tick で消す。dev モードでなくても消す） */
+  devLogDays: number;
 };
 
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
@@ -67,6 +71,7 @@ const DEFAULT_INBOX_ROTATE_AT: TimeOfDay = { hour: 4, minute: 0 };
 const DEFAULT_INBOX_MAX_INPUT_TOKENS = 150000;
 const DEFAULT_SESSION_MAX_TURNS = 40;
 const DEFAULT_SESSION_TURN_TIMEOUT_SEC = 900;
+const DEFAULT_DEV_LOG_DAYS = 30;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -125,6 +130,13 @@ function baseUrl(name: string, value: string | undefined): string | undefined {
   return trimmed;
 }
 
+/** `1` なら true、未設定か `0` なら false。それ以外はエラー */
+function flag(name: string, value: string | undefined): boolean {
+  if (value === undefined || value === "0") return false;
+  if (value === "1") return true;
+  throw new Error(`${name} は 1（有効）か 0（無効）で指定してください`);
+}
+
 /** `HH:MM`（00:00〜23:59、時・分とも 2 桁）。それ以外はエラー */
 function timeOfDay(name: string, value: string | undefined, fallback: TimeOfDay): TimeOfDay {
   if (value === undefined) return fallback;
@@ -135,14 +147,28 @@ function timeOfDay(name: string, value: string | undefined, fallback: TimeOfDay)
   return { hour: Number(match[1]), minute: Number(match[2]) };
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const home = (): string => {
-    const value = nonEmpty(env.HOME);
-    if (value === undefined) {
-      throw new Error("HOME が設定されていないため既定のディレクトリを決められません");
-    }
-    return value;
+/** 既定のディレクトリの基準。既定のディレクトリが要るときだけ読む */
+function homeDir(env: NodeJS.ProcessEnv): string {
+  const value = nonEmpty(env.HOME);
+  if (value === undefined) {
+    throw new Error("HOME が設定されていないため既定のディレクトリを決められません");
+  }
+  return value;
+}
+
+/**
+ * SQLite・dev ログの保存先と日付のタイムゾーンだけを読む。loadConfig と npm run devlog（トークンなど他の変数は読まない）で共通。
+ * HOME は SELF_AGENT_DATA_DIR が無いときだけ読む
+ */
+export function loadDataConfig(env: NodeJS.ProcessEnv = process.env): Pick<Config, "dataDir" | "timeZone"> {
+  return {
+    dataDir: nonEmpty(env.SELF_AGENT_DATA_DIR) ?? join(homeDir(env), ".local/share/self-agent/data"),
+    timeZone: nonEmpty(env.SELF_AGENT_TZ) ?? DEFAULT_TIME_ZONE,
   };
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const home = (): string => homeDir(env);
 
   return {
     oauthTokenPresent: nonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) !== undefined,
@@ -154,8 +180,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ownerUserId: nonEmpty(env.SELF_AGENT_OWNER_ID),
     allowedGuildIds: idList("SELF_AGENT_ALLOWED_GUILD_IDS", nonEmpty(env.SELF_AGENT_ALLOWED_GUILD_IDS)),
     inboxChannelId: nonEmpty(env.SELF_AGENT_INBOX_CHANNEL_ID),
-    dataDir: nonEmpty(env.SELF_AGENT_DATA_DIR) ?? join(home(), ".local/share/self-agent/data"),
-    timeZone: nonEmpty(env.SELF_AGENT_TZ) ?? DEFAULT_TIME_ZONE,
+    ...loadDataConfig(env),
     maxConcurrentTurns: positiveInteger(
       "SELF_AGENT_MAX_CONCURRENT",
       nonEmpty(env.SELF_AGENT_MAX_CONCURRENT),
@@ -211,6 +236,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       nonEmpty(env.SELF_AGENT_SESSION_TURN_TIMEOUT_SEC),
       DEFAULT_SESSION_TURN_TIMEOUT_SEC,
     ),
+    devMode: flag("SELF_AGENT_DEV_MODE", nonEmpty(env.SELF_AGENT_DEV_MODE)),
+    devLogDays: positiveInteger("SELF_AGENT_DEV_LOG_DAYS", nonEmpty(env.SELF_AGENT_DEV_LOG_DAYS), DEFAULT_DEV_LOG_DAYS),
   };
 }
 

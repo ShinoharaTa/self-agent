@@ -15,6 +15,7 @@ import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { loadConfig, missingForStart } from "./config.ts";
+import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
@@ -88,6 +89,9 @@ const projectTools = {
   publicBaseUrl: config.publicBaseUrl,
   serving: () => staticServer?.listening() ?? false,
 };
+// dev モードなら run ごとの会話を <dataDir>/devlog/<日付>.jsonl に残す（dev モードでなければ受け口を作らない）
+const devLogSink = createDevLogSink(config);
+if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${config.devLogDays} 日で消します）`);
 // ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ。
 // ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中）に絞る
 const runner = new SdkAgentRunner(
@@ -95,6 +99,8 @@ const runner = new SdkAgentRunner(
   (context) => createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, context),
   { projects, projectsDir },
   log,
+  undefined,
+  devLogSink === undefined ? undefined : { sink: devLogSink, now },
 );
 // 発言と /close のターンのキュー（key は channelId）
 const turnQueue = new KeyedSerialQueue(config.maxConcurrentTurns);
@@ -169,7 +175,7 @@ const inboxRotator = new InboxRotator({
   log,
 });
 // 定期処理: セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
-// 完了から日数の経ったセッションの削除を #system で確認し、#inbox・#tasks の会話を切り替える
+// 完了から日数の経ったセッションの削除を #system で確認し、古い dev ログを消し（dev モードでなくても）、#inbox・#tasks の会話を切り替える
 const scheduler = new Scheduler({
   cfg: config,
   topicSessions,
@@ -179,6 +185,7 @@ const scheduler = new Scheduler({
   channelOps,
   gateway,
   inboxRotator,
+  pruneDevLogs: () => pruneDevLogs(devLogDir(config.dataDir), now(), config.timeZone, config.devLogDays),
   now,
   log,
 });

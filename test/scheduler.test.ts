@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as flush } from "node:timers/promises";
@@ -15,6 +15,7 @@ import {
   type SchedulerTimers,
   TICK_INTERVAL_MS,
 } from "../src/app/scheduler.ts";
+import { pruneDevLogs } from "../src/devlog/log.ts";
 import type { Gateway, OutgoingMessage } from "../src/discord/gateway.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { openDb } from "../src/store/db.ts";
@@ -122,6 +123,8 @@ function setup(
     );
   const channelOps = new RecordingChannelOps();
   const inboxRotator = new RecordingRotator();
+  // 古い dev ログを消す処理。既定では何もしない（中身は devlog.test.ts で確かめる）
+  const devLogs = { prune: (): void => {} };
   const timers = new FakeTimers();
   const logs: string[] = [];
   const scheduler = new Scheduler({
@@ -133,6 +136,7 @@ function setup(
     channelOps,
     gateway,
     inboxRotator,
+    pruneDevLogs: () => devLogs.prune(),
     now: () => clock.now,
     timers,
     log: (line) => logs.push(line),
@@ -164,6 +168,7 @@ function setup(
     gateway,
     channelOps,
     inboxRotator,
+    devLogs,
     timers,
     logs,
     scheduler,
@@ -407,6 +412,7 @@ test("tick: DB の失敗は reject せず log に出す", async () => {
     channelOps: new RecordingChannelOps(),
     gateway: new FakeGateway(),
     inboxRotator: new RecordingRotator(),
+    pruneDevLogs: () => {},
     now: () => NOW,
     timers: new FakeTimers(),
     log: (line) => logs.push(line),
@@ -902,4 +908,48 @@ test("再同期: Bot が参加していない（抜けた）サーバーは一�
   assert.deepEqual(env.gateway.listed, []);
   assert.deepEqual(env.channelOps.moves, []);
   assert.deepEqual(env.logs, []);
+});
+
+test("dev ログ: tick ごとに、今日（TZ）から残す日数より前の日付のファイルだけを消し、名前の違うファイルは残す", async (t) => {
+  const env = setup(t);
+  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const names = [
+    "2026-08-01.jsonl",
+    "2026-09-01.jsonl",
+    "2026-09-02.jsonl",
+    "2026-10-02.jsonl",
+    "notes.txt",
+    "2026-08-01.jsonl.bak",
+    "2026-8-1.jsonl",
+  ];
+  for (const name of names) writeFileSync(join(dir, name), "{}\n");
+  mkdirSync(join(dir, "old"));
+  env.devLogs.prune = () => pruneDevLogs(dir, env.clock.now, "Asia/Tokyo", 30);
+
+  // 東京の 2026-10-01 23:59:59 → 2026-09-01 までを残す
+  env.clock.now = new Date("2026-10-01T14:59:59.000Z");
+  await env.scheduler.tick();
+  assert.deepEqual(readdirSync(dir).sort(), names.filter((name) => name !== "2026-08-01.jsonl").concat("old").sort());
+
+  // 東京の 2026-10-02 00:00 → 2026-09-02 より前を消す
+  env.clock.now = new Date("2026-10-01T15:00:00.000Z");
+  await env.scheduler.tick();
+  assert.deepEqual(
+    readdirSync(dir).sort(),
+    ["2026-09-02.jsonl", "2026-10-02.jsonl", "notes.txt", "2026-08-01.jsonl.bak", "2026-8-1.jsonl", "old"].sort(),
+  );
+  assert.deepEqual(env.logs, []);
+});
+
+test("dev ログ: 消すのに失敗しても log に出すだけ（中身・パスは出さない）で、#inbox の切り替えは行う", async (t) => {
+  const env = setup(t);
+  env.devLogs.prune = () => {
+    throw new Error("EACCES: permission denied, unlink '/srv/data/devlog/2026-08-01.jsonl'");
+  };
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.logs, ["古い dev ログを消せませんでした"]);
+  assert.equal(env.inboxRotator.calls.length, 1);
 });

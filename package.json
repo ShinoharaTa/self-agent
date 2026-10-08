@@ -10,7 +10,8 @@
     "check": "tsc --noEmit",
     "test": "node --test 'test/*.test.ts'",
     "test:integration": "node --env-file-if-exists=${HOME}/.config/self-agent/env --test 'test/integration/*.test.ts'",
-    "measure": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/measure-turn.ts"
+    "measure": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/measure-turn.ts",
+    "devlog": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/devlog.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.286",

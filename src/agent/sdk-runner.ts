@@ -11,6 +11,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Config } from "../config.ts";
+import { devLogResult, devLogToolInput, truncateText, type DevLogSink, type DevLogStep } from "../devlog/log.ts";
 import type { ProjectStore } from "../store/projects.ts";
 import { FILE_TOOLS, FILE_WRITE_TOOLS, judgeFileAccess, resolveRealPath } from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
@@ -227,6 +228,57 @@ export function createFileGuard(
   return { matcher: FILE_TOOLS.join("|"), hooks: [guard] };
 }
 
+/** tool_result の content をテキストにする（テキスト以外のブロックは `[<type>]`） */
+function toolResultText(content: string | ReadonlyArray<{ type: string }> | undefined): string {
+  if (content === undefined) return "";
+  if (typeof content === "string") return content;
+  return content
+    .map((block) => ("text" in block && typeof block.text === "string" ? block.text : `[${block.type}]`))
+    .join("\n");
+}
+
+/**
+ * dev ログの steps に足す、メッセージ 1 つ分の手順（assistant のテキストと tool_use、user の tool_result、compact_boundary）。
+ * thinking の中身は残さない。長い文字列は切る
+ */
+export function devLogSteps(message: SDKMessage): DevLogStep[] {
+  if (message.type === "assistant") {
+    const steps: DevLogStep[] = [];
+    for (const block of message.message.content ?? []) {
+      if (block.type === "text") {
+        steps.push({ t: "text", text: truncateText(block.text) });
+      } else if (block.type === "tool_use") {
+        steps.push({ t: "tool_use", id: block.id, name: block.name, input: devLogToolInput(block.input) });
+      }
+    }
+    return steps;
+  }
+  if (message.type === "user") {
+    const content = message.message.content;
+    if (typeof content === "string") return [];
+    const steps: DevLogStep[] = [];
+    for (const block of content) {
+      if (block.type !== "tool_result") continue;
+      steps.push({
+        t: "tool_result",
+        id: block.tool_use_id,
+        isError: block.is_error === true,
+        content: truncateText(toolResultText(block.content)),
+      });
+    }
+    return steps;
+  }
+  if (message.type === "system" && message.subtype === "compact_boundary") {
+    const metadata = message.compact_metadata;
+    const preTokens = typeof metadata.pre_tokens === "number" ? metadata.pre_tokens : null;
+    return [{ t: "compact", trigger: metadata.trigger, preTokens }];
+  }
+  return [];
+}
+
+/** dev モードの会話ログの受け口と、開始時刻・所要時間に使う時計 */
+export type DevLogDeps = { sink: DevLogSink; now: () => Date };
+
 export class SdkAgentRunner implements AgentRunner {
   private readonly cfg: Pick<
     Config,
@@ -236,11 +288,13 @@ export class SdkAgentRunner implements AgentRunner {
   private readonly files: FileGuardDeps;
   private readonly log: (message: string) => void;
   private readonly queryFn: QueryFn;
+  private readonly devLog: DevLogDeps | undefined;
 
   /**
    * MCP サーバーのインスタンスは同時に 1 つの query にしか接続できないため、run ごとに createMcpServer で作る。
    * ツール定義は毎回同じ（ハンドラが参照する context だけが変わる）なのでプロンプトキャッシュには影響しない。
-   * files はファイル操作の hook が使う。log はツール呼び出しの記録に使う。queryFn は省略すれば SDK の query（テストで差し替える）
+   * files はファイル操作の hook が使う。log はツール呼び出しの記録に使う。queryFn は省略すれば SDK の query（テストで差し替える）。
+   * devLog は dev モードのときだけ渡す（run ごとに 1 行記録する）。無ければ何もしない
    */
   constructor(
     cfg: Pick<
@@ -251,37 +305,79 @@ export class SdkAgentRunner implements AgentRunner {
     files: FileGuardDeps,
     log: (message: string) => void,
     queryFn: QueryFn = query,
+    devLog?: DevLogDeps,
   ) {
     this.cfg = cfg;
     this.createMcpServer = createMcpServer;
     this.files = files;
     this.log = log;
     this.queryFn = queryFn;
+    this.devLog = devLog;
   }
 
   /**
    * セッションのチャンネルのターンは cfg.sessionTurnTimeoutSec、それ以外（#inbox・#tasks・context なし）は cfg.turnTimeoutSec で打ち切る。
-   * input.signal が abort されたら（[中断]）同じ abortController で止める
+   * input.signal が abort されたら（[中断]）同じ abortController で止める。
+   * dev モードなら、起きた順の手順を集めて run の終わりに（成功・失敗・中断・打ち切りのどれでも）1 行記録する
    */
   async run(input: RunInput): Promise<RunResult> {
+    const recording =
+      this.devLog === undefined ? undefined : { devLog: this.devLog, startedAt: this.devLog.now(), steps: [] as DevLogStep[] };
+    // 手順の上限はチャンネルの種類で変える（セッションのチャンネルは cfg.sessionMaxTurns、それ以外は INBOX_MAX_TURNS）
+    const maxTurns = input.context?.kind === "session" ? this.cfg.sessionMaxTurns : INBOX_MAX_TURNS;
     const abortController = new AbortController();
     const timeoutSec = input.context?.kind === "session" ? this.cfg.sessionTurnTimeoutSec : this.cfg.turnTimeoutSec;
     const timer = setTimeout(() => abortController.abort(), timeoutSec * 1000);
     const onAbort = (): void => abortController.abort();
     input.signal?.addEventListener("abort", onAbort);
     if (input.signal?.aborted === true) abortController.abort();
+    let result: RunResult;
     try {
-      return await this.runQuery(input, abortController);
+      result = await this.runQuery(input, abortController, maxTurns, recording?.steps);
     } finally {
       clearTimeout(timer);
       input.signal?.removeEventListener("abort", onAbort);
     }
+    if (recording !== undefined) this.writeDevLog(recording, input, maxTurns, result);
+    return result;
   }
 
-  private async runQuery(input: RunInput, abortController: AbortController): Promise<RunResult> {
+  /** dev ログに 1 行記録する。失敗してもターンは止めない（log には中身・パスを出さない） */
+  private writeDevLog(
+    recording: { devLog: DevLogDeps; startedAt: Date; steps: DevLogStep[] },
+    input: RunInput,
+    maxTurns: number,
+    result: RunResult,
+  ): void {
+    const { devLog, startedAt, steps } = recording;
+    try {
+      devLog.sink.write({
+        at: startedAt.toISOString(),
+        durationMs: devLog.now().getTime() - startedAt.getTime(),
+        guildId: input.context?.guildId ?? null,
+        channelId: input.context?.channelId ?? null,
+        kind: input.context?.kind ?? null,
+        model: this.cfg.model,
+        effort: this.cfg.effort ?? null,
+        maxTurns,
+        resume: input.sessionId ?? null,
+        prompt: input.prompt,
+        steps,
+        result: devLogResult(result),
+      });
+    } catch {
+      this.log("dev ログを書けませんでした");
+    }
+  }
+
+  /** steps を渡したら（dev モード）、受け取ったメッセージから起きた順に手順を足す */
+  private async runQuery(
+    input: RunInput,
+    abortController: AbortController,
+    maxTurns: number,
+    steps: DevLogStep[] | undefined,
+  ): Promise<RunResult> {
     const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context));
-    // 手順の上限はチャンネルの種類で変える（セッションのチャンネルは cfg.sessionMaxTurns、それ以外は INBOX_MAX_TURNS）
-    const maxTurns = input.context?.kind === "session" ? this.cfg.sessionMaxTurns : INBOX_MAX_TURNS;
     // ツール呼び出しの回数はターンごとに数え、WebFetch に許す URL とファイル操作を許す場所もターンごとに違うので、hooks は run ごとに作って足す。
     // ファイル操作の hook はどの run にも必ず入れる
     const tools = createToolCallRecorder(this.log);
@@ -326,6 +422,7 @@ export class SdkAgentRunner implements AgentRunner {
         if ("session_id" in message && typeof message.session_id === "string") {
           sessionId = message.session_id;
         }
+        steps?.push(...devLogSteps(message));
         if (
           message.type === "assistant" &&
           message.parent_tool_use_id === null &&
