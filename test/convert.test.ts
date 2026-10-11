@@ -22,7 +22,7 @@ function json(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value));
 }
 
-test("toCommandInteraction: コマンド名と値のあるオプションだけを取り出す", () => {
+test("toCommandInteraction: コマンド名と値のあるオプションだけを取り出す。DM（guildId が null）もそのまま渡す", () => {
   const interaction = toCommandInteraction({
     ...SOURCE,
     commandName: "new",
@@ -42,11 +42,10 @@ test("toCommandInteraction: コマンド名と値のあるオプションだけ�
     name: "new",
     options: { title: "旅行の計画", count: 3, public: false },
   });
-});
 
-test("toCommandInteraction: DM（guildId が null）もそのまま渡す", () => {
-  const interaction = toCommandInteraction({ ...SOURCE, guildId: null, channelId: null, commandName: "help", options: { data: [] } });
-  assert.deepEqual(interaction, { ...BASE, guildId: null, channelId: null, kind: "command", name: "help", options: {} });
+  // DM（guildId が null）もそのまま渡す（弾くのは受付判定）
+  const dm = toCommandInteraction({ ...SOURCE, guildId: null, channelId: null, commandName: "help", options: { data: [] } });
+  assert.deepEqual(dm, { ...BASE, guildId: null, channelId: null, kind: "command", name: "help", options: {} });
 });
 
 test("toButtonInteraction・toSelectInteraction: custom_id と選んだ値（配列は写す）、付いていたメッセージの ID", () => {
