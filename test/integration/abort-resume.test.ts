@@ -52,7 +52,7 @@ test(
     };
     const projects = new ProjectStore(db);
     const projectsDir = join(realpathSync(cfg.workDir), "projects");
-    const projectTools = { projects, projectsDir, publicBaseUrl: undefined, serving: () => false };
+    const projectTools = { projects, projectsDir, publicBaseUrl: undefined, serving: () => false, log: () => {} };
 
     // 1 ターン目だけ、最初の assistant メッセージ（本文かツール呼び出し）を受け取った時点で中断する
     const controller = new AbortController();

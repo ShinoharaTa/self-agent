@@ -476,6 +476,7 @@ function projectTools(db: DatabaseSync): ProjectToolDeps {
     projectsDir: "/srv/work/projects",
     publicBaseUrl: undefined,
     serving: () => false,
+    log: () => {},
   };
 }
 

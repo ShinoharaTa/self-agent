@@ -62,8 +62,14 @@ test(
       timeZone: cfg.timeZone,
     };
     // project_open が existing を返せるよう、配信中として扱う（URL は example.test）
-    const projectTools = { projects, projectsDir, publicBaseUrl: "https://example.test", serving: () => true };
     const logs: string[] = [];
+    const projectTools = {
+      projects,
+      projectsDir,
+      publicBaseUrl: "https://example.test",
+      serving: () => true,
+      log: (line: string) => logs.push(line),
+    };
     const runner = new SdkAgentRunner(
       cfg,
       (runContext) =>

@@ -121,6 +121,7 @@ const projectTools = {
   projectsDir: join(realpathSync(workDir), "projects"),
   publicBaseUrl: config.publicBaseUrl,
   serving: () => false,
+  log: (message: string) => console.error(message),
 };
 /** 本体と同じ Options。MCP サーバーは同時に 1 つの query にしか接続できないので、ターンごとに作る */
 const baseOptions = (): Options => ({
