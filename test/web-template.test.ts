@@ -198,10 +198,13 @@ test("base.css: 色と px の値は変数の定義の中だけ。.icon は curre
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^@]*transition: none !important;/);
 });
 
-test("DESIGN.md: 80 行以内で、出てくる変数と .class（拡張子を除く）はすべて base.css にある", () => {
+test("DESIGN.md: 100 行以内で、出てくる変数と .class（拡張子を除く）はすべて base.css にある", () => {
   const design = read("DESIGN.md");
   const lines = design.split("\n").length - (design.endsWith("\n") ? 1 : 0);
-  assert.ok(lines <= 80, `${lines} 行`);
+  assert.ok(lines <= 100, `${lines} 行`);
+
+  assert.match(design, /\n## 使い勝手\n/);
+  for (const word of ["取り消し優先", "autofocus", "空状態", "位置の把握", "色の役割", "失敗の表示", "ダイアログ:", "一覧の行"]) assert.ok(design.includes(word), word);
 
   const css = stripComments(read("site/base.css"));
   const defined = declarations(css);
