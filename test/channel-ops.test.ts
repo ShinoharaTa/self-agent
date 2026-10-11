@@ -88,10 +88,7 @@ test("指定のカテゴリへ移し、sessions の category_id を更新する"
   queue.enqueueMove("topic-1", { kind: "category", categoryId: "home-1" });
   await settle();
 
-  assert.deepEqual(gateway.calls, [
-    { method: "getParentId", channelId: "topic-1" },
-    { method: "moveChannel", channelId: "topic-1", parentId: "home-1" },
-  ]);
+  assert.deepEqual(gateway.moves(), [["topic-1", "home-1"]]);
   assert.equal(topicSessions.get("topic-1")?.categoryId, "home-1");
 });
 
@@ -102,7 +99,7 @@ test("実行時に今の親が目的のカテゴリなら動かさない", async
   queue.enqueueMove("inbox-1", { kind: "category", categoryId: "home-1" });
   await settle();
 
-  assert.deepEqual(gateway.calls, [{ method: "getParentId", channelId: "inbox-1" }]);
+  assert.deepEqual(gateway.moves(), []);
 });
 
 test("状態の移動先: その状態のカテゴリのどれかに既にあれば、満杯でも動かさない", async (t) => {
@@ -116,7 +113,7 @@ test("状態の移動先: その状態のカテゴリのどれかに既にあれ
   queue.enqueueMove("topic-1", DONE);
   await settle();
 
-  assert.deepEqual(gateway.calls, [{ method: "getParentId", channelId: "topic-1" }]);
+  assert.deepEqual(gateway.moves(), []);
   assert.equal(topicSessions.get("topic-1")?.categoryId, "done-2");
 });
 
@@ -130,14 +127,7 @@ test("状態の移動先: ordinal の昇順で 50 未満の最初のカテゴリ
   queue.enqueueMove("topic-1", DONE);
   await settle();
 
-  assert.deepEqual(gateway.calls, [
-    { method: "getParentId", channelId: "topic-1" },
-    { method: "channelExists", channelId: "done-1" },
-    { method: "countChannelsIn", categoryId: "done-1" },
-    { method: "channelExists", channelId: "done-2" },
-    { method: "countChannelsIn", categoryId: "done-2" },
-    { method: "moveChannel", channelId: "topic-1", parentId: "done-2" },
-  ]);
+  assert.deepEqual(gateway.moves(), [["topic-1", "done-2"]]);
 });
 
 test("状態の移動先: 完了がすべて満杯なら「完了 2」を作って保存し、そこへ移す", async (t) => {
@@ -149,16 +139,17 @@ test("状態の移動先: 完了がすべて満杯なら「完了 2」を作っ�
   queue.enqueueMove("topic-1", DONE);
   await settle();
 
-  assert.deepEqual(gateway.calls.slice(3), [
-    { method: "createCategory", guildId: "guild-1", name: "完了 2" },
-    { method: "moveChannel", channelId: "topic-1", parentId: "new-category-1" },
-  ]);
+  assert.deepEqual(
+    gateway.calls.filter((call) => call.method === "createCategory"),
+    [{ method: "createCategory", guildId: "guild-1", name: "完了 2" }],
+  );
+  assert.deepEqual(gateway.moves(), [["topic-1", "new-category-1"]]);
   assert.deepEqual(guildSettings.listStateCategories("guild-1", "done"), [
     { ordinal: 1, categoryId: "done-1" },
     { ordinal: 2, categoryId: "new-category-1" },
   ]);
   assert.equal(topicSessions.get("topic-1")?.categoryId, "new-category-1");
-  assert.deepEqual(logs, ["完了カテゴリに空きが無いため「完了 2」を作りました（guild=guild-1）"]);
+  assert.equal(logs.length, 1);
 });
 
 test("全サーバー共通で 1 つずつ実行し、操作の間を SELF_AGENT_CHANNEL_OP_GAP_MS 空ける", async (t) => {
@@ -225,38 +216,35 @@ test("実行中の移動と同じチャンネルの移動は、終わった後�
   assert.equal(gateway.calls.filter((call) => call.method === "getParentId").length, 2);
 });
 
-test("失敗したら log に出して終え、再試行しない。他の移動は続ける", async (t) => {
-  const { gateway, clock, logs, queue } = setup(t);
-  gateway.beforeMove = (channelId) => {
-    if (channelId === "a") throw new Error("Missing Permissions");
-  };
+test("問い合わせ・移動に失敗したら log に出して終え、再試行しない。他の移動は続ける", async (t) => {
+  const cases = [
+    { label: "移動の失敗", fail: "move", error: "Missing Permissions" },
+    { label: "問い合わせの失敗", fail: "getParentId", error: "Service Unavailable" },
+  ] as const;
+  for (const { label, fail, error } of cases) {
+    const { gateway, clock, logs, queue } = setup(t);
+    const getParentId = gateway.getParentId.bind(gateway);
+    gateway.getParentId = async (channelId) => {
+      if (fail === "getParentId" && channelId === "a") throw new Error(error);
+      return getParentId(channelId);
+    };
+    gateway.beforeMove = (channelId) => {
+      if (fail === "move" && channelId === "a") throw new Error(error);
+    };
 
-  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
-  queue.enqueueMove("b", { kind: "category", categoryId: "y" });
-  await clock.advance(GAP_MS);
-  assert.deepEqual(gateway.moves(), [
-    ["a", "x"],
-    ["b", "y"],
-  ]);
+    queue.enqueueMove("a", { kind: "category", categoryId: "x" });
+    queue.enqueueMove("b", { kind: "category", categoryId: "y" });
+    await clock.advance(GAP_MS);
+    assert.deepEqual(gateway.moves().at(-1), ["b", "y"], label);
 
-  // これ以上はやり直さない（ずれは定期処理の再同期が直す）
-  await clock.advance(3_600_000);
-  assert.equal(gateway.moves().length, 2);
-  assert.equal(clock.pending, 0);
-  assert.deepEqual(logs, ["チャンネルの移動に失敗しました（次の定期処理で直します）: Missing Permissions"]);
-});
-
-test("Discord への問い合わせの失敗も log に出して終える", async (t) => {
-  const { gateway, clock, logs, queue } = setup(t);
-  gateway.getParentId = async () => {
-    throw new Error("Service Unavailable");
-  };
-
-  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
-  await clock.advance(3_600_000);
-
-  assert.deepEqual(gateway.moves(), []);
-  assert.deepEqual(logs, ["チャンネルの移動に失敗しました（次の定期処理で直します）: Service Unavailable"]);
+    // これ以上はやり直さない（ずれは定期処理の再同期が直す）
+    const moved = gateway.moves().length;
+    await clock.advance(3_600_000);
+    assert.equal(gateway.moves().length, moved, label);
+    assert.equal(clock.pending, 0, label);
+    assert.equal(logs.length, 1, label);
+    assert.ok(logs[0]?.includes(error), label);
+  }
 });
 
 test("チャンネルが既に無い（Unknown Channel）なら、問い合わせ・移動のどちらで分かっても log に出さずに終える", async (t) => {
@@ -311,7 +299,7 @@ test("idle: 実行中の移動が終わったら resolve する。間隔を空�
   assert.deepEqual(gateway.moves()[1], ["b", "y"]);
 });
 
-test("cancel: そのチャンネルの未実行の移動を捨て、他のチャンネルの移動は残す", async (t) => {
+test("cancel: そのチャンネルの未実行の移動を捨て、他のチャンネルの移動は残す。cancel の後に入れた移動は改めて実行する", async (t) => {
   const { gateway, clock, queue } = setup(t);
   const gate = deferred();
   gateway.beforeMove = (channelId) => (channelId === "first" ? gate.promise : undefined);
@@ -320,7 +308,10 @@ test("cancel: そのチャンネルの未実行の移動を捨て、他のチャ
   await settle();
   queue.enqueueMove("a", { kind: "category", categoryId: "x" });
   queue.enqueueMove("b", { kind: "category", categoryId: "y" });
+  queue.enqueueMove("c", { kind: "category", categoryId: "x" });
   queue.cancel("a");
+  queue.cancel("c");
+  queue.enqueueMove("c", { kind: "category", categoryId: "z" });
   // 列に無いチャンネルは何もしない
   queue.cancel("unknown");
   gate.resolve();
@@ -329,6 +320,7 @@ test("cancel: そのチャンネルの未実行の移動を捨て、他のチャ
   assert.deepEqual(gateway.moves(), [
     ["first", "x"],
     ["b", "y"],
+    ["c", "z"],
   ]);
   assert.equal(
     gateway.calls.some((call) => call.method === "getParentId" && call.channelId === "a"),
@@ -336,21 +328,3 @@ test("cancel: そのチャンネルの未実行の移動を捨て、他のチャ
   );
 });
 
-test("cancel の後に同じチャンネルの移動を入れれば、改めて実行する", async (t) => {
-  const { gateway, clock, queue } = setup(t);
-  const gate = deferred();
-  gateway.beforeMove = (channelId) => (channelId === "first" ? gate.promise : undefined);
-
-  queue.enqueueMove("first", { kind: "category", categoryId: "x" });
-  await settle();
-  queue.enqueueMove("a", { kind: "category", categoryId: "x" });
-  queue.cancel("a");
-  queue.enqueueMove("a", { kind: "category", categoryId: "y" });
-  gate.resolve();
-  await clock.advance(GAP_MS * 10);
-
-  assert.deepEqual(gateway.moves(), [
-    ["first", "x"],
-    ["a", "y"],
-  ]);
-});

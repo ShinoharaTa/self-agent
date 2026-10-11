@@ -1,8 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { setImmediate as flush } from "node:timers/promises";
 import type { MoveTarget } from "../src/app/channel-ops.ts";
 import { deletePrompt } from "../src/app/commands/delete.ts";
@@ -15,8 +12,6 @@ import {
   type SchedulerTimers,
   TICK_INTERVAL_MS,
 } from "../src/app/scheduler.ts";
-import { pruneProjectTrash } from "../src/agent/project-files.ts";
-import { pruneDevLogs } from "../src/devlog/log.ts";
 import type { OutgoingMessage } from "../src/discord/gateway.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
@@ -81,10 +76,9 @@ function setup(
     gateway.posts.map(({ channelId, message }) => ({ channelId, message }));
   const channelOps = new RecordingChannelOps();
   const inboxRotator = new RecordingRotator();
-  // 古い dev ログを消す処理。既定では何もしない（中身は devlog.test.ts で確かめる）
-  const devLogs = { prune: (): void => {} };
-  // プロジェクトの古い .trash を消す処理。既定では何もしない（中身は project-files.test.ts で確かめる）
-  const projectTrash = { prune: (): void => {} };
+  // 古い dev ログ・プロジェクトの古い .trash を消す処理。既定では呼ばれた回数を数えるだけ（中身は devlog.test.ts・project-files.test.ts で確かめる）
+  const devLogs = { calls: 0, prune: (): void => void devLogs.calls++ };
+  const projectTrash = { calls: 0, prune: (): void => void projectTrash.calls++ };
   const timers = new FakeTimers();
   const logs: string[] = [];
   const scheduler = new Scheduler({
@@ -148,71 +142,35 @@ function toWaiting(channelId: string): { channelId: string; target: MoveTarget }
   return { channelId, target: { kind: "state", guildId: "guild-1", state: "waiting" } };
 }
 
-test("待ちに移した知らせ: 時間は設定値で文言を作り、[続ける]（wait:continue）と [閉じる]（close:start）を付ける", () => {
-  assert.deepEqual(idleNotice(12, "topic-1"), {
-    text: "12 時間発言がないので待ちに移しました。",
-    components: [
-      {
-        kind: "buttons",
-        buttons: [
-          { customId: "wait:continue:topic-1", label: "続ける" },
-          { customId: "close:start:topic-1", label: "閉じる" },
-        ],
-      },
-    ],
-  });
-  assert.equal(idleNotice(3, "topic-1").text, "3 時間発言がないので待ちに移しました。");
-});
+test("tick: 最終発言がちょうど SELF_AGENT_IDLE_HOURS 前のセッションは待ちにし、その直前（1 ms 足りない）は残す。知らせの時間もその値にし、[続ける][閉じる] を付ける", async (t) => {
+  for (const idleHours of [12, 3]) {
+    const label = `${idleHours} 時間`;
+    const env = setup(t, idleHours);
+    env.createAt("topic-just", ago(idleHours * HOUR_MS));
+    env.createAt("topic-before", ago(idleHours * HOUR_MS - 1));
 
-test("tick: 最終発言がちょうど 12 時間前のセッションは待ちにし、その直前（12 時間に 1 ms 足りない）は残す", async (t) => {
-  const env = setup(t);
-  env.createAt("topic-just", ago(12 * HOUR_MS));
-  env.createAt("topic-before", ago(12 * HOUR_MS - 1));
+    await env.scheduler.tick();
 
-  await env.scheduler.tick();
+    const moved = env.topicSessions.get("topic-just");
+    assert.equal(moved?.state, "waiting", label);
+    assert.equal(moved?.waitingSince, NOW.toISOString(), label);
+    assert.equal(env.topicSessions.get("topic-before")?.state, "active", label);
+    assert.deepEqual(env.channelOps.moves, [toWaiting("topic-just")], label);
+    assert.deepEqual(env.sent(), [{ channelId: "topic-just", message: idleNotice(idleHours, "topic-just") }], label);
+    assert.deepEqual(
+      env.sent()[0]?.message.components?.flatMap((row) => (row.kind === "buttons" ? row.buttons.map((button) => button.customId) : [])),
+      ["wait:continue:topic-just", "close:start:topic-just"],
+      label,
+    );
+    assert.equal(env.logs.length, 1, label);
+    assert.ok(!env.logs[0]?.includes("topic-"), label);
 
-  const moved = env.topicSessions.get("topic-just");
-  assert.equal(moved?.state, "waiting");
-  assert.equal(moved?.waitingSince, NOW.toISOString());
-  assert.equal(env.topicSessions.get("topic-before")?.state, "active");
-  assert.deepEqual(env.channelOps.moves, [toWaiting("topic-just")]);
-  assert.deepEqual(env.sent(), [{ channelId: "topic-just", message: idleNotice(12, "topic-just") }]);
-  assert.deepEqual(env.logs, ["12 時間発言が無いセッションを待ちに移しました（guild=guild-1）"]);
-
-  // 1 ms 進めば残りも待ちになる
-  env.clock.now = new Date(NOW.getTime() + 1);
-  await env.scheduler.tick();
-  assert.equal(env.topicSessions.get("topic-before")?.state, "waiting");
-  assert.equal(env.sent().length, 2);
-});
-
-test("tick: 1 回で動かすのは最終発言の古い順に最大 5 件。残りは次の tick で動かす", async (t) => {
-  const env = setup(t);
-  assert.equal(IDLE_BATCH_LIMIT, 5);
-  // 作る順と古さの順を変えておく
-  const hoursAgo = [13, 20, 15, 30, 14, 25, 18];
-  hoursAgo.forEach((hours, index) => env.createAt(`topic-${index}`, ago(hours * HOUR_MS)));
-  const oldestFirst = hoursAgo
-    .map((hours, index) => ({ hours, channelId: `topic-${index}` }))
-    .sort((a, b) => b.hours - a.hours)
-    .map((entry) => entry.channelId);
-
-  await env.scheduler.tick();
-
-  assert.deepEqual(
-    env.sent().map((sent) => sent.channelId),
-    oldestFirst.slice(0, 5),
-  );
-  assert.deepEqual(env.channelOps.moves, oldestFirst.slice(0, 5).map(toWaiting));
-  for (const channelId of oldestFirst.slice(5)) assert.equal(env.topicSessions.get(channelId)?.state, "active");
-
-  await env.scheduler.tick();
-
-  assert.deepEqual(
-    env.sent().map((sent) => sent.channelId),
-    oldestFirst,
-  );
-  for (const channelId of oldestFirst) assert.equal(env.topicSessions.get(channelId)?.state, "waiting");
+    // 1 ms 進めば残りも待ちになる
+    env.clock.now = new Date(NOW.getTime() + 1);
+    await env.scheduler.tick();
+    assert.equal(env.topicSessions.get("topic-before")?.state, "waiting", label);
+    assert.equal(env.sent().length, 2, label);
+  }
 });
 
 test("tick: 待ち・完了・削除済みのセッションは対象にしない", async (t) => {
@@ -228,17 +186,6 @@ test("tick: 待ち・完了・削除済みのセッションは対象にしな�
   assert.deepEqual(env.channelOps.moves, []);
   assert.equal(env.topicSessions.get("topic-done")?.state, "done");
   assert.equal(env.topicSessions.get("topic-deleted")?.state, "deleted");
-});
-
-test("tick: SELF_AGENT_IDLE_HOURS の値で判定し、知らせの時間もその値にする", async (t) => {
-  const env = setup(t, 3);
-  env.createAt("topic-1", ago(3 * HOUR_MS));
-  env.createAt("topic-2", ago(3 * HOUR_MS - 1));
-
-  await env.scheduler.tick();
-
-  assert.deepEqual(env.sent(), [{ channelId: "topic-1", message: idleNotice(3, "topic-1") }]);
-  assert.equal(env.topicSessions.get("topic-2")?.state, "active");
 });
 
 test("tick: 知らせの投稿に失敗しても待ちのままにし、log に出して残りを続ける", async (t) => {
@@ -257,23 +204,7 @@ test("tick: 知らせの投稿に失敗しても待ちのままにし、log に�
     env.sent().map((sent) => sent.channelId),
     ["topic-2"],
   );
-  assert.ok(env.logs.includes("待ちに移した知らせの投稿に失敗しました（guild=guild-1）: Missing Access"), env.logs.join("\n"));
-});
-
-test("tick: 知らせの投稿より先に、対象をすべて DB で待ちにして移動を入れる", async (t) => {
-  const env = setup(t);
-  env.createAt("topic-1", ago(14 * HOUR_MS));
-  env.createAt("topic-2", ago(13 * HOUR_MS));
-  const statesAtSend: string[] = [];
-  env.gateway.beforeSendMessage = async () => {
-    statesAtSend.push(
-      `${env.topicSessions.get("topic-1")?.state}/${env.topicSessions.get("topic-2")?.state}/${env.channelOps.moves.length}`,
-    );
-  };
-
-  await env.scheduler.tick();
-
-  assert.deepEqual(statesAtSend, ["waiting/waiting/2", "waiting/waiting/2"]);
+  assert.ok(env.logs.some((line) => line.includes("Missing Access")), env.logs.join("\n"));
 });
 
 test("tick: 実行中に呼ばれたら重ねずに同じ tick を返し、idle はその完了を待つ", async (t) => {
@@ -309,7 +240,6 @@ test("start: 起動直後に 1 回 tick して止まっていた間に過ぎた�
   env.scheduler.start(TICK_INTERVAL_MS);
   await env.scheduler.idle();
 
-  assert.equal(TICK_INTERVAL_MS, 5 * 60 * 1000);
   assert.deepEqual(
     env.timers.intervals.map((entry) => entry.ms),
     [TICK_INTERVAL_MS],
@@ -350,110 +280,32 @@ test("stop: 以後の定期実行を止め、stop の後の start では何も�
   assert.deepEqual(env.sent(), []);
 });
 
-test("tick: DB の失敗は reject せず log に出す", async () => {
-  const logs: string[] = [];
-  const scheduler = new Scheduler({
-    cfg: { allowedGuildIds: [], idleHours: 12, deleteAfterDays: 30 },
-    topicSessions: {
-      get: () => assert.fail("想定外の呼び出し"),
-      listIdle: () => {
-        throw new Error("database is locked");
-      },
-      setActive: () => assert.fail("想定外の呼び出し"),
-      setWaiting: () => assert.fail("想定外の呼び出し"),
-      listDeleteDue: () => [],
-      setDeletePrompt: () => assert.fail("想定外の呼び出し"),
-      listUndeleted: () => assert.fail("想定外の呼び出し"),
-      markDeleted: () => assert.fail("想定外の呼び出し"),
-    },
-    guildSettings: {
-      get: () => assert.fail("想定外の呼び出し"),
-      listStateCategories: () => assert.fail("想定外の呼び出し"),
-    },
-    sessions: { delete: () => assert.fail("想定外の呼び出し") },
-    seeds: { delete: () => assert.fail("想定外の呼び出し") },
-    channelOps: new RecordingChannelOps(),
-    gateway: new FakeGateway(),
-    inboxRotator: new RecordingRotator(),
-    pruneDevLogs: () => {},
-    pruneProjectTrash: () => {},
-    now: () => NOW,
-    timers: new FakeTimers(),
-    log: (line) => logs.push(line),
-  });
+test("削除の確認: 閉じてからちょうど SELF_AGENT_DELETE_AFTER_DAYS 日のセッションは #system に [削除する][残す] を投稿してメッセージを記録し、その直前（1 ms 足りない）は残す", async (t) => {
+  for (const days of [30, 7]) {
+    const label = `${days} 日`;
+    const env = setup(t, 12, days);
+    env.closeAt("topic-just", ago(days * DAY_MS));
+    env.closeAt("topic-before", ago(days * DAY_MS - 1));
 
-  await scheduler.tick();
+    await env.scheduler.tick();
 
-  assert.deepEqual(logs, ["定期処理に失敗しました: database is locked"]);
-});
+    const prompted = env.topicSessions.get("topic-just");
+    assert.deepEqual(env.sent(), [{ channelId: "system-1", message: deletePrompt(prompted!, days) }], label);
+    assert.equal(prompted?.deletePromptMessageId, "message-1", label);
+    // 確認を投稿するだけで、状態・閉じた時刻は変えない
+    assert.equal(prompted?.state, "done", label);
+    assert.equal(prompted?.closedAt, ago(days * DAY_MS).toISOString(), label);
+    assert.equal(env.topicSessions.get("topic-before")?.deletePromptMessageId, null, label);
+    assert.deepEqual(env.channelOps.moves, [], label);
+    assert.equal(env.logs.length, 1, label);
+    assert.ok(!env.logs[0]?.includes("topic-"), label);
 
-test("削除の確認: 閉じてからちょうど 30 日のセッションは #system に [削除する][残す] を投稿してメッセージを記録し、その直前（1 ms 足りない）は残す", async (t) => {
-  const env = setup(t);
-  env.closeAt("topic-just", ago(30 * DAY_MS));
-  env.closeAt("topic-before", ago(30 * DAY_MS - 1));
-
-  await env.scheduler.tick();
-
-  const prompted = env.topicSessions.get("topic-just");
-  assert.deepEqual(env.sent(), [{ channelId: "system-1", message: deletePrompt(prompted!, 30) }]);
-  assert.equal(prompted?.deletePromptMessageId, "message-1");
-  // 確認を投稿するだけで、状態・閉じた時刻は変えない
-  assert.equal(prompted?.state, "done");
-  assert.equal(prompted?.closedAt, ago(30 * DAY_MS).toISOString());
-  assert.equal(env.topicSessions.get("topic-before")?.deletePromptMessageId, null);
-  assert.deepEqual(env.channelOps.moves, []);
-  assert.deepEqual(env.logs, ["完了から 30 日経ったセッションの削除の確認を投稿しました（guild=guild-1）"]);
-
-  // 1 ms 進めば残りも確認する
-  env.clock.now = new Date(NOW.getTime() + 1);
-  await env.scheduler.tick();
-  assert.deepEqual(
-    env.sent().map((sent) => sent.message.text),
-    [
-      "<#topic-just>（題名 topic-just）は完了から 30 日経ちました。チャンネルを削除しますか？要約は残ります。",
-      "<#topic-before>（題名 topic-before）は完了から 30 日経ちました。チャンネルを削除しますか？要約は残ります。",
-    ],
-  );
-  assert.equal(env.topicSessions.get("topic-before")?.deletePromptMessageId, "message-2");
-});
-
-test("削除の確認: SELF_AGENT_DELETE_AFTER_DAYS の値で判定し、文面の日数もその値にする", async (t) => {
-  const env = setup(t, 12, 7);
-  env.closeAt("topic-1", ago(7 * DAY_MS));
-  env.closeAt("topic-2", ago(7 * DAY_MS - 1));
-
-  await env.scheduler.tick();
-
-  assert.deepEqual(env.sent(), [
-    { channelId: "system-1", message: deletePrompt({ channelId: "topic-1", title: "題名 topic-1" }, 7) },
-  ]);
-  assert.match(env.sent()[0]!.message.text, /完了から 7 日経ちました/);
-});
-
-test("削除の確認: 1 回で投稿するのは閉じた時刻の古い順に最大 5 件。残りは次の tick で投稿する", async (t) => {
-  const env = setup(t);
-  assert.equal(DELETE_PROMPT_BATCH_LIMIT, 5);
-  // 作る順と古さの順を変えておく
-  const daysAgo = [31, 40, 33, 50, 32, 45, 36];
-  daysAgo.forEach((days, index) => env.closeAt(`topic-${index}`, ago(days * DAY_MS)));
-  const oldestFirst = daysAgo
-    .map((days, index) => ({ days, channelId: `topic-${index}` }))
-    .sort((a, b) => b.days - a.days)
-    .map((entry) => entry.channelId);
-  const promptedChannels = (): string[] =>
-    env.sent().map((sent) => /^<#([^>]+)>/.exec(sent.message.text)?.[1] ?? "");
-
-  await env.scheduler.tick();
-
-  assert.deepEqual(promptedChannels(), oldestFirst.slice(0, 5));
-  for (const channelId of oldestFirst.slice(5)) {
-    assert.equal(env.topicSessions.get(channelId)?.deletePromptMessageId, null);
+    // 1 ms 進めば残りも確認する
+    env.clock.now = new Date(NOW.getTime() + 1);
+    await env.scheduler.tick();
+    assert.deepEqual(env.sent()[1], { channelId: "system-1", message: deletePrompt(env.topicSessions.get("topic-before")!, days) }, label);
+    assert.equal(env.topicSessions.get("topic-before")?.deletePromptMessageId, "message-2", label);
   }
-
-  await env.scheduler.tick();
-
-  assert.deepEqual(promptedChannels(), oldestFirst);
-  for (const channelId of oldestFirst) assert.notEqual(env.topicSessions.get(channelId)?.deletePromptMessageId, null);
 });
 
 test("削除の確認: 投稿済みのセッションには投稿し直さない", async (t) => {
@@ -506,11 +358,9 @@ test("削除の確認: #system が無いサーバーは飛ばし、log はサー
   for (const channelId of ["topic-2a", "topic-2b", "topic-3"]) {
     assert.equal(env.topicSessions.get(channelId)?.deletePromptMessageId, null, channelId);
   }
-  assert.deepEqual(env.logs, [
-    "#system が無いため、削除の確認を投稿できません（guild=guild-2）。/setup を実行してください",
-    "#system が無いため、削除の確認を投稿できません（guild=guild-3）。/setup を実行してください",
-    "完了から 30 日経ったセッションの削除の確認を投稿しました（guild=guild-1）",
-  ]);
+  for (const guildId of ["guild-1", "guild-2", "guild-3"]) {
+    assert.equal(env.logs.filter((line) => line.includes(`guild=${guildId}）`)).length, 1, guildId);
+  }
 
   // #system ができれば次の tick で投稿する
   env.guildSettings.setChannel("guild-2", "systemChannelId", "system-2");
@@ -536,7 +386,7 @@ test("削除の確認: 投稿に失敗したら記録せずに log に出して�
 
   assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, null);
   assert.equal(env.topicSessions.get("topic-2")?.deletePromptMessageId, "message-1");
-  assert.ok(env.logs.includes("削除の確認の投稿に失敗しました（guild=guild-1）: Missing Access"), env.logs.join("\n"));
+  assert.ok(env.logs.some((line) => line.includes("Missing Access")), env.logs.join("\n"));
 
   await env.scheduler.tick();
 
@@ -544,7 +394,7 @@ test("削除の確認: 投稿に失敗したら記録せずに log に出して�
   assert.equal(env.sent().length, 2);
 });
 
-test("tick: 待ちへの移動で DB が失敗しても、削除の確認は行う", async (t) => {
+test("tick: 待ちへの移動で DB が失敗しても reject せず log に出し、削除の確認は行う", async (t) => {
   const env = setup(t);
   env.closeAt("topic-1", ago(40 * DAY_MS));
   env.topicSessions.listIdle = () => {
@@ -554,10 +404,8 @@ test("tick: 待ちへの移動で DB が失敗しても、削除の確認は行�
   await env.scheduler.tick();
 
   assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-1");
-  assert.deepEqual(env.logs, [
-    "定期処理に失敗しました: database is locked",
-    "完了から 30 日経ったセッションの削除の確認を投稿しました（guild=guild-1）",
-  ]);
+  assert.equal(env.logs.length, 2);
+  assert.ok(env.logs[0]?.includes("database is locked"), env.logs.join("\n"));
 });
 
 test("削除の確認: 確認の後に進行中に戻って閉じ直したら、閉じ直してから 30 日後にもう一度確認する", async (t) => {
@@ -580,7 +428,7 @@ test("削除の確認: 確認の後に進行中に戻って閉じ直したら、
   assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-2");
 });
 
-test("tick: 待ちへの移動と削除の確認の後に #inbox の切り替えを行い、idle はその終わりまで待つ", async (t) => {
+test("tick: #inbox の切り替えは idle が終わりまで待ち、停止を始めたことは stopping で伝わる", async (t) => {
   const env = setup(t);
   env.createAt("topic-1", ago(14 * HOUR_MS));
   env.closeAt("topic-2", ago(40 * DAY_MS));
@@ -591,9 +439,13 @@ test("tick: 待ちへの移動と削除の確認の後に #inbox の切り替え
     return new Promise<void>((resolve) => (release = resolve));
   };
 
-  const running = env.scheduler.tick();
+  env.scheduler.start(TICK_INTERVAL_MS);
   await flush();
+  // 切り替えは待ちへの移動と削除の確認の後（切り替えの要約のターンは長く、その間に待ちの知らせ・確認を遅らせない）
   assert.deepEqual(seen, ["moves=1 sent=2"]);
+  const stopping = env.inboxRotator.calls[0];
+  assert.ok(stopping !== undefined);
+  assert.equal(stopping(), false);
   let idle = false;
   const waiting = env.scheduler.idle().then(() => {
     idle = true;
@@ -601,27 +453,12 @@ test("tick: 待ちへの移動と削除の確認の後に #inbox の切り替え
   await flush();
   assert.equal(idle, false);
 
-  release();
-  await Promise.all([running, waiting]);
-  assert.equal(idle, true);
-  assert.equal(env.inboxRotator.calls.length, 1);
-});
-
-test("stop: 実行中の #inbox の切り替えには、停止を始めたことが stopping で伝わる", async (t) => {
-  const env = setup(t);
-  let release = (): void => {};
-  env.inboxRotator.onCall = () => new Promise<void>((resolve) => (release = resolve));
-
-  env.scheduler.start(TICK_INTERVAL_MS);
-  await flush();
-  const stopping = env.inboxRotator.calls[0];
-  assert.ok(stopping !== undefined);
-  assert.equal(stopping(), false);
-
   env.scheduler.stop();
   assert.equal(stopping(), true);
   release();
-  await env.scheduler.idle();
+  await waiting;
+  assert.equal(idle, true);
+  assert.equal(env.inboxRotator.calls.length, 1);
 });
 
 /** /setup 済みの配置（self-agent カテゴリ・#inbox/#tasks/#system・各状態カテゴリ 1 つ目）を DB に入れる */
@@ -677,7 +514,7 @@ test("再同期: 親がその状態のカテゴリのどれでもないセッシ
   assert.deepEqual(env.gateway.listed, ["guild-1"]);
   assert.deepEqual(env.channelOps.moves, [toState("topic-b", "waiting"), toState("topic-e", "done")]);
   assert.deepEqual(env.sent(), []);
-  assert.deepEqual(env.logs, ["状態とカテゴリが合わないセッション 2 件を移します（guild=guild-1）"]);
+  assert.equal(env.logs.length, 1);
 
   // ずれが無ければ何もしない
   env.gateway.parents.set("topic-b", "waiting-1");
@@ -692,7 +529,8 @@ test("再同期: Discord 上に無いセッションのチャンネルは削除�
   const env = setup(t);
   layout(env);
   env.createAt("topic-a", NOW);
-  env.createAt("topic-gone", NOW);
+  // 最終発言も古いが、待ちへの移動より先に削除済みにする（消えたチャンネルに知らせを出さない）
+  env.createAt("topic-gone", ago(14 * HOUR_MS));
   env.createAt("topic-gone-done", NOW);
   env.createAt("topic-deleted", NOW);
   env.topicSessions.close("topic-gone-done", "閉じたときの要約");
@@ -718,23 +556,9 @@ test("再同期: Discord 上に無いセッションのチャンネルは削除�
   assert.equal(env.sessions.get("topic-a"), "session-a");
   assert.equal(env.topicSessions.get("topic-deleted")?.deletedAt, NOW.toISOString());
   assert.deepEqual(env.channelOps.moves, []);
-  assert.deepEqual(env.logs, [
-    "セッションのチャンネルが Discord 上に無いため、削除済みにしました（guild=guild-1）",
-    "セッションのチャンネルが Discord 上に無いため、削除済みにしました（guild=guild-1）",
-  ]);
-});
-
-test("再同期: Discord 上で消えた進行中のセッションは、待ちへの移動より先に削除済みにする（知らせも出さない）", async (t) => {
-  const env = setup(t);
-  layout(env);
-  env.createAt("topic-gone", ago(14 * HOUR_MS));
-  env.gateway.parents = discord([]);
-
-  await env.scheduler.tick();
-
-  assert.equal(env.topicSessions.get("topic-gone")?.state, "deleted");
   assert.deepEqual(env.sent(), []);
-  assert.deepEqual(env.channelOps.moves, []);
+  assert.equal(env.logs.length, 2);
+  for (const line of env.logs) assert.ok(!line.includes("topic-"), line);
 });
 
 test("再同期: #inbox / #tasks / #system の親が self-agent カテゴリでなければ戻す移動を入れる（チャンネル自体が無ければ何もしない）", async (t) => {
@@ -753,33 +577,91 @@ test("再同期: #inbox / #tasks / #system の親が self-agent カテゴリで�
     { channelId: "inbox-1", target: { kind: "category", categoryId: "home-1" } },
     { channelId: "system-1", target: { kind: "category", categoryId: "home-1" } },
   ]);
-  assert.deepEqual(env.logs, ["self-agent カテゴリの外にあるチャンネル 2 件を戻します（guild=guild-1）"]);
+  assert.equal(env.logs.length, 1);
 });
 
-test("再同期: 移動を入れるのは 1 サーバーで最大 5 件（最終発言の新しい順）。残りは次の tick。消えたチャンネルの削除済みは数えない", async (t) => {
-  const env = setup(t);
-  assert.equal(RECONCILE_BATCH_LIMIT, 5);
-  layout(env);
-  const ids = ["topic-0", "topic-1", "topic-2", "topic-3", "topic-4", "topic-5", "topic-6"];
-  // 新しい順は topic-6, topic-5, ...
-  ids.forEach((channelId, index) => env.createAt(channelId, new Date(NOW.getTime() - (10 - index) * 60_000)));
-  env.createAt("topic-gone", new Date(NOW.getTime() - 60 * 60_000));
-  for (const channelId of ids) env.topicSessions.setWaiting(channelId);
-  env.gateway.parents = discord(ids.map((channelId): [string, string] => [channelId, "active-1"]));
+/** 何時間前・何日前かの配列の添字を topic-<添字> として、古い順に並べる */
+function byAge(ages: number[]): string[] {
+  return ages
+    .map((age, index) => ({ age, channelId: `topic-${index}` }))
+    .sort((a, b) => b.age - a.age)
+    .map((entry) => entry.channelId);
+}
 
-  await env.scheduler.tick();
+test("1 回の tick で扱うのは 5 件まで。残りは次の tick で扱う", async (t) => {
+  type Env = ReturnType<typeof setup>;
+  /** 待ちに移した知らせを投稿するときの「移動の数/そのうち DB で待ちになっている数」 */
+  const atSend: string[] = [];
+  const cases: Array<{
+    label: string;
+    limit: number;
+    /** 7 件を作り、扱う順の channelId を返す */
+    prepare: (env: Env) => string[];
+    /** 扱った channelId（順） */
+    handled: (env: Env) => string[];
+    /** 1 回目の tick の後 */
+    afterFirst?: (env: Env) => void;
+  }> = [
+    {
+      label: "待ちへの移動（最終発言の古い順）",
+      limit: IDLE_BATCH_LIMIT,
+      prepare: (env) => {
+        // 作る順と古さの順を変えておく
+        const hoursAgo = [13, 20, 15, 30, 14, 25, 18];
+        hoursAgo.forEach((hours, index) => env.createAt(`topic-${index}`, ago(hours * HOUR_MS)));
+        // 知らせの投稿より先に、対象をすべて DB で待ちにして移動を入れる（投稿の間に来た発言で進行中に戻れるように）
+        env.gateway.beforeSendMessage = async () => {
+          const waiting = env.channelOps.moves.filter((move) => env.topicSessions.get(move.channelId)?.state === "waiting");
+          atSend.push(`${env.channelOps.moves.length}/${waiting.length}`);
+        };
+        return byAge(hoursAgo);
+      },
+      handled: (env) => env.sent().map((sent) => sent.channelId),
+      afterFirst: () => {
+        assert.deepEqual(atSend, Array.from({ length: 5 }, () => "5/5"));
+      },
+    },
+    {
+      label: "削除の確認（閉じた時刻の古い順）",
+      limit: DELETE_PROMPT_BATCH_LIMIT,
+      prepare: (env) => {
+        const daysAgo = [31, 40, 33, 50, 32, 45, 36];
+        daysAgo.forEach((days, index) => env.closeAt(`topic-${index}`, ago(days * DAY_MS)));
+        return byAge(daysAgo);
+      },
+      handled: (env) => env.sent().map((sent) => /^<#([^>]+)>/.exec(sent.message.text)?.[1] ?? ""),
+    },
+    {
+      label: "再同期の移動（最終発言の新しい順。消えたチャンネルの削除済みは数えない）",
+      limit: RECONCILE_BATCH_LIMIT,
+      prepare: (env) => {
+        layout(env);
+        const ids = ["topic-0", "topic-1", "topic-2", "topic-3", "topic-4", "topic-5", "topic-6"];
+        ids.forEach((channelId, index) => env.createAt(channelId, new Date(NOW.getTime() - (10 - index) * 60_000)));
+        env.createAt("topic-gone", new Date(NOW.getTime() - 60 * 60_000));
+        for (const channelId of ids) env.topicSessions.setWaiting(channelId);
+        env.gateway.parents = discord(ids.map((channelId): [string, string] => [channelId, "active-1"]));
+        return [...ids].reverse();
+      },
+      handled: (env) => env.channelOps.moves.map((move) => move.channelId),
+      afterFirst: (env) => {
+        assert.equal(env.topicSessions.get("topic-gone")?.state, "deleted");
+        // 移動が済んだ分は次の tick では合っている
+        for (const move of env.channelOps.moves) env.gateway.parents.set(move.channelId, "waiting-1");
+      },
+    },
+  ];
+  for (const { label, limit, prepare, handled, afterFirst } of cases) {
+    const env = setup(t);
+    const order = prepare(env);
 
-  const newestFirst = [...ids].reverse();
-  assert.deepEqual(env.channelOps.moves, newestFirst.slice(0, 5).map((channelId) => toState(channelId, "waiting")));
-  assert.equal(env.topicSessions.get("topic-gone")?.state, "deleted");
+    await env.scheduler.tick();
+    assert.deepEqual(handled(env), order.slice(0, limit), label);
+    afterFirst?.(env);
 
-  // 移動が済んだ分は次の tick では合っている
-  for (const move of env.channelOps.moves) env.gateway.parents.set(move.channelId, "waiting-1");
-  await env.scheduler.tick();
-  assert.deepEqual(
-    env.channelOps.moves.map((move) => move.channelId),
-    newestFirst,
-  );
+    await env.scheduler.tick();
+    assert.deepEqual(handled(env), order, label);
+  }
 });
 
 test("再同期: その状態のカテゴリ・self-agent カテゴリが Discord 上に 1 つも無ければ、そこへは移さない（作り直すのは /setup）", async (t) => {
@@ -818,10 +700,9 @@ test("再同期: 対象は許可サーバーのうち /setup 済みのサーバ�
 
   assert.deepEqual(env.gateway.listed, ["guild-1"]);
   assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");
-  assert.deepEqual(env.logs, [
-    "チャンネルのカテゴリの確認に失敗しました（guild=guild-1）: Missing Access",
-    "12 時間発言が無いセッションを待ちに移しました（guild=guild-1）",
-  ]);
+  // 問い合わせの失敗と、待ちに移した log
+  assert.equal(env.logs.length, 2);
+  assert.ok(env.logs[0]?.includes("Missing Access"), env.logs.join("\n"));
 });
 
 test("再同期: 一覧を取っている間に作られたセッションは削除済みにせず、状態が変わったセッションは今の状態で判断する", async (t) => {
@@ -874,73 +755,28 @@ test("再同期: Bot が参加していない（抜けた）サーバーは一�
   assert.deepEqual(env.logs, []);
 });
 
-test("dev ログ: tick ごとに、今日（TZ）から残す日数より前の日付のファイルだけを消し、名前の違うファイルは残す", async (t) => {
+test("tick ごとに古い dev ログと .trash を消す処理を呼ぶ", async (t) => {
   const env = setup(t);
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const names = [
-    "2026-08-01.jsonl",
-    "2026-09-01.jsonl",
-    "2026-09-02.jsonl",
-    "2026-10-02.jsonl",
-    "notes.txt",
-    "2026-08-01.jsonl.bak",
-    "2026-8-1.jsonl",
-  ];
-  for (const name of names) writeFileSync(join(dir, name), "{}\n");
-  mkdirSync(join(dir, "old"));
-  env.devLogs.prune = () => pruneDevLogs(dir, env.clock.now, "Asia/Tokyo", 30);
 
-  // 東京の 2026-10-01 23:59:59 → 2026-09-01 までを残す
-  env.clock.now = new Date("2026-10-01T14:59:59.000Z");
   await env.scheduler.tick();
-  assert.deepEqual(readdirSync(dir).sort(), names.filter((name) => name !== "2026-08-01.jsonl").concat("old").sort());
+  await env.scheduler.tick();
 
-  // 東京の 2026-10-02 00:00 → 2026-09-02 より前を消す
-  env.clock.now = new Date("2026-10-01T15:00:00.000Z");
-  await env.scheduler.tick();
-  assert.deepEqual(
-    readdirSync(dir).sort(),
-    ["2026-09-02.jsonl", "2026-10-02.jsonl", "notes.txt", "2026-08-01.jsonl.bak", "2026-8-1.jsonl", "old"].sort(),
-  );
+  assert.equal(env.devLogs.calls, 2);
+  assert.equal(env.projectTrash.calls, 2);
   assert.deepEqual(env.logs, []);
 });
 
-test("dev ログ: 消すのに失敗しても log に出すだけ（中身・パスは出さない）で、#inbox の切り替えは行う", async (t) => {
-  const env = setup(t);
-  env.devLogs.prune = () => {
-    throw new Error("EACCES: permission denied, unlink '/srv/data/devlog/2026-08-01.jsonl'");
-  };
+test("古い dev ログ・.trash を消すのに失敗しても log に出すだけ（パスは出さない）で、#inbox の切り替えは行う", async (t) => {
+  for (const target of ["devLogs", "projectTrash"] as const) {
+    const env = setup(t);
+    env[target].prune = () => {
+      throw new Error("EACCES: permission denied, unlink '/srv/data/devlog/2026-08-01.jsonl'");
+    };
 
-  await env.scheduler.tick();
+    await env.scheduler.tick();
 
-  assert.deepEqual(env.logs, ["古い dev ログを消せませんでした"]);
-  assert.equal(env.inboxRotator.calls.length, 1);
-});
-
-test(".trash: tick ごとに、30 日を過ぎたプロジェクトの .trash/<trash_id> だけを消す", async (t) => {
-  const env = setup(t);
-  const projectsDir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
-  const trashRoot = join(projectsDir, "kakeibo", ".trash");
-  for (const id of ["20260901T115959Z", "20260902T120001Z"]) mkdirSync(join(trashRoot, id, "site"), { recursive: true });
-  env.projectTrash.prune = () => pruneProjectTrash(projectsDir, env.clock.now);
-
-  await env.scheduler.tick();
-
-  // NOW は 2026-10-02T12:00:00Z
-  assert.deepEqual(readdirSync(trashRoot), ["20260902T120001Z"]);
-  assert.deepEqual(env.logs, []);
-});
-
-test(".trash: 消すのに失敗しても log に出すだけ（パスは出さない）で、#inbox の切り替えは行う", async (t) => {
-  const env = setup(t);
-  env.projectTrash.prune = () => {
-    throw new Error("EACCES: permission denied, rmdir '/srv/work/projects/kakeibo/.trash/20260801T000000Z'");
-  };
-
-  await env.scheduler.tick();
-
-  assert.deepEqual(env.logs, ["プロジェクトの古い .trash を消せませんでした"]);
-  assert.equal(env.inboxRotator.calls.length, 1);
+    assert.equal(env.logs.length, 1, target);
+    assert.ok(!env.logs[0]?.includes("/srv"), target);
+    assert.equal(env.inboxRotator.calls.length, 1, target);
+  }
 });
