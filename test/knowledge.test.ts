@@ -170,18 +170,14 @@ test('KnowledgeStore.search: " % _ \\ や FTS の演算子を含む query でも
   store.add({ title: "snake_case の名前", summary: "C:\\path\\to の書き方" });
   store.add({ title: "どれにも当たらない", summary: "記号なし" });
 
-  assert.deepEqual(titles(store, '"'), ['引用 "quote" の例']);
-  assert.deepEqual(titles(store, '"quote"'), ['引用 "quote" の例']);
-  assert.deepEqual(titles(store, '"quote'), ['引用 "quote" の例']);
-  assert.deepEqual(titles(store, "%"), ['引用 "quote" の例']);
-  assert.deepEqual(titles(store, "0%"), ['引用 "quote" の例']);
-  assert.deepEqual(titles(store, "100%"), ['引用 "quote" の例']);
-  assert.deepEqual(titles(store, "_"), ["snake_case の名前"]);
-  assert.deepEqual(titles(store, "e_"), ["snake_case の名前"]);
-  assert.deepEqual(titles(store, "\\"), ["snake_case の名前"]);
-  assert.deepEqual(titles(store, "C:\\path"), ["snake_case の名前"]);
-  assert.deepEqual(titles(store, "%_"), []);
-  assert.deepEqual(titles(store, "\\%"), []);
+  const cases: Array<[queries: string[], expected: string[]]> = [
+    [['"', '"quote"', '"quote', "%", "0%", "100%"], ['引用 "quote" の例']],
+    [["_", "e_", "\\", "C:\\path"], ["snake_case の名前"]],
+    [["%_", "\\%"], []],
+  ];
+  for (const [queries, expected] of cases) {
+    for (const query of queries) assert.deepEqual(titles(store, query), expected, query);
+  }
   for (const query of ["AND", "OR NOT", "NEAR(a b)", "title:引用", "^引用", "引用*", "(", ")", "*", "-", "''", '""', '"""']) {
     assert.doesNotThrow(() => store.search(query), query);
   }
@@ -247,12 +243,11 @@ test("KnowledgeStore.search: 空の query は新しい順（updated_at）の一�
   // 本文は返さない
   assert.equal("body" in store.search("").entries[0]!, false);
 
-  // limit は 1〜10
-  assert.equal(store.search("", 10).entries.length, 10);
+  // limit は 1〜10（範囲の外は端に、整数でなければ既定の 5）
+  for (const [limit, length] of [[10, 10], [100, 10], [0, 1], [2.5, 5]]) {
+    assert.equal(store.search("", limit!).entries.length, length, String(limit));
+  }
   assert.equal(store.search("", 10).more, true);
-  assert.equal(store.search("", 100).entries.length, 10);
-  assert.equal(store.search("", 0).entries.length, 1);
-  assert.equal(store.search("", 2.5).entries.length, 5);
 
   // ちょうど limit 件なら more は false
   assert.equal(store.search("共通の要約", 10).more, true);

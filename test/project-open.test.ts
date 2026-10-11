@@ -6,7 +6,6 @@ import { join } from "node:path";
 import * as z from "zod";
 import type { RunContext } from "../src/agent/runner.ts";
 import { WEB_TEMPLATE_DIR } from "../src/agent/scaffold.ts";
-import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
 import {
   createProjectToolHandlers,
   createTaskTools,
@@ -29,7 +28,6 @@ const ARGS = { name: "Kakeibo App", title: "家計簿" };
 const CREATED_SCAFFOLD = ["DESIGN.md", "site/base.css", "site/app.css", "site/icons.svg", "site/index.html"];
 /** existing で site/base.css が無いときだけ足す UI の土台 */
 const EXISTING_SCAFFOLD = ["DESIGN.md", "site/base.css", "site/icons.svg"];
-const SCAFFOLD_FAILED_LOG = "project_open: UI の土台の複製に失敗しました";
 
 function setup(t: TestContext, overrides: Partial<ProjectToolDeps> = {}) {
   const db = tempDb(t);
@@ -74,7 +72,7 @@ function createWithoutScaffold(projects: ProjectStore, projectsDir: string, file
   return dir;
 }
 
-test("project_open: セッションのチャンネルで作り、<slug>/site/ まで mkdir して created と dir・site_dir・url・scaffold・注意を返す", async (t) => {
+test("project_open: セッションのチャンネルで作り、<slug>/site/ まで mkdir して created と dir・site_dir・url・scaffold・注意を返す。UI の土台の 5 つを templates/web/ から複製する", async (t) => {
   const { projects, projectsDir, logs, open } = setup(t);
 
   const result = parse(await open(TOPIC));
@@ -92,6 +90,7 @@ test("project_open: セッションのチャンネルで作り、<slug>/site/ �
   // キーの順も決めている
   assert.deepEqual(Object.keys(result as object), ["status", "dir", "site_dir", "url", "scaffold", "notes"]);
   assert.ok(statSync(join(dir, "site")).isDirectory());
+  for (const file of CREATED_SCAFFOLD) assertSameAsTemplate(dir, file);
   const project = projects.getByChannel("topic-1");
   assert.equal(project?.guildId, "guild-1");
   assert.equal(project?.slug, "kakeibo-app");
@@ -99,134 +98,117 @@ test("project_open: セッションのチャンネルで作り、<slug>/site/ �
   assert.deepEqual(logs, []);
 });
 
-test("project_open: created は UI の土台の 5 つ（DESIGN.md・site/ の base.css・app.css・icons.svg・index.html）を templates/web/ から複製する", async (t) => {
-  const { projectsDir, open } = setup(t);
+test("project_open: 土台は無いものだけ複製し、既にあるファイル（DESIGN.md を含む）は変えない。existing は site/base.css があれば何もしない。DESIGN.md と base.css が揃わなければ注意に土台の使い方を入れない", async (t) => {
+  const cases: Array<{
+    label: string;
+    /** 呼ぶ前のプロジェクトのディレクトリ。row が false ならプロジェクトの行は作らない */
+    before: Record<string, string>;
+    row: boolean;
+    status: string;
+    scaffold: string[];
+    absent: string[];
+    withDesign: boolean;
+  }> = [
+    {
+      label: "existing・base.css 無し",
+      before: { "site/index.html": "<p>前からある</p>", "site/app.css": "body { color: red; }", "SPEC.md": "仕様" },
+      row: true,
+      status: "existing",
+      scaffold: EXISTING_SCAFFOLD,
+      absent: [],
+      withDesign: true,
+    },
+    {
+      label: "existing・base.css あり",
+      before: { "site/base.css": "/* 自分で書いた */" },
+      row: true,
+      status: "existing",
+      scaffold: [],
+      absent: ["DESIGN.md", "site/icons.svg", "site/index.html"],
+      withDesign: false,
+    },
+    {
+      label: "existing・DESIGN.md あり・base.css 無し",
+      before: { "DESIGN.md": "前からある" },
+      row: true,
+      status: "existing",
+      scaffold: ["site/base.css", "site/icons.svg"],
+      absent: [],
+      withDesign: true,
+    },
+    {
+      label: "created・プロジェクトのディレクトリに DESIGN.md が先に残っていた",
+      before: { "DESIGN.md": "前からある" },
+      row: false,
+      status: "created",
+      scaffold: ["site/base.css", "site/app.css", "site/icons.svg", "site/index.html"],
+      absent: [],
+      withDesign: true,
+    },
+  ];
+  for (const { label, before, row, status, scaffold, absent, withDesign } of cases) {
+    const { projects, projectsDir, logs, open } = setup(t);
+    let dir = join(projectsDir, "kakeibo-app");
+    if (row) {
+      dir = createWithoutScaffold(projects, projectsDir, before);
+    } else {
+      mkdirSync(dir, { recursive: true });
+      for (const [file, content] of Object.entries(before)) writeFileSync(join(dir, file), content);
+    }
 
-  await open(TOPIC);
+    const result = parse(await open(TOPIC)) as { status: string; url: string; scaffold: string[]; notes: string[] };
 
-  const dir = join(projectsDir, "kakeibo-app");
-  for (const file of CREATED_SCAFFOLD) assertSameAsTemplate(dir, file);
-});
-
-test("project_open: existing で site/base.css が無ければ DESIGN.md・base.css・icons.svg だけ足し、既にある index.html・app.css は変えない", async (t) => {
-  const { projects, projectsDir, logs, open } = setup(t);
-  const dir = createWithoutScaffold(projects, projectsDir, {
-    "site/index.html": "<p>前からある</p>",
-    "site/app.css": "body { color: red; }",
-    "SPEC.md": "仕様",
-  });
-
-  const result = parse(await open(TOPIC)) as { status: string; scaffold: string[] };
-
-  assert.equal(result.status, "existing");
-  assert.deepEqual(result.scaffold, EXISTING_SCAFFOLD);
-  for (const file of EXISTING_SCAFFOLD) assertSameAsTemplate(dir, file);
-  assert.equal(readFileSync(join(dir, "site", "index.html"), "utf8"), "<p>前からある</p>");
-  assert.equal(readFileSync(join(dir, "site", "app.css"), "utf8"), "body { color: red; }");
-  assert.equal(readFileSync(join(dir, "SPEC.md"), "utf8"), "仕様");
-  assert.deepEqual(logs, []);
-});
-
-test("project_open: existing で site/base.css があれば何も変えず、scaffold は空。DESIGN.md が無いので注意に土台の使い方を入れない", async (t) => {
-  const { projects, projectsDir, logs, open } = setup(t);
-  const dir = createWithoutScaffold(projects, projectsDir, { "site/base.css": "/* 自分で書いた */" });
-
-  const result = parse(await open(TOPIC)) as { status: string; url: string; scaffold: string[]; notes: string[] };
-
-  assert.equal(result.status, "existing");
-  assert.deepEqual(result.scaffold, []);
-  assert.equal(readFileSync(join(dir, "site", "base.css"), "utf8"), "/* 自分で書いた */");
-  assert.equal(existsSync(join(dir, "DESIGN.md")), false);
-  assert.equal(existsSync(join(dir, "site", "icons.svg")), false);
-  assert.equal(existsSync(join(dir, "site", "index.html")), false);
-  assert.deepEqual(result.notes, projectNotes("kakeibo-app", result.url, false));
-  assert.deepEqual(logs, []);
-});
-
-test("project_open: 既にある DESIGN.md は上書きしない（created でも existing でも）", async (t) => {
-  // created: プロジェクトのディレクトリが先に残っていた
-  {
-    const { projectsDir, open } = setup(t);
-    const dir = join(projectsDir, "kakeibo-app");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "DESIGN.md"), "前からある");
-
-    const result = parse(await open(TOPIC)) as { status: string; scaffold: string[] };
-
-    assert.equal(result.status, "created");
-    assert.deepEqual(result.scaffold, ["site/base.css", "site/app.css", "site/icons.svg", "site/index.html"]);
-    assert.equal(readFileSync(join(dir, "DESIGN.md"), "utf8"), "前からある");
+    assert.equal(result.status, status, label);
+    assert.deepEqual(result.scaffold, scaffold, label);
+    for (const file of scaffold) assertSameAsTemplate(dir, file);
+    for (const [file, content] of Object.entries(before)) assert.equal(readFileSync(join(dir, file), "utf8"), content, `${label} ${file}`);
+    for (const file of absent) assert.equal(existsSync(join(dir, file)), false, `${label} ${file}`);
+    assert.deepEqual(result.notes, projectNotes("kakeibo-app", result.url, withDesign), label);
+    assert.deepEqual(logs, [], label);
   }
-  // existing: site/base.css は無いが DESIGN.md はある
-  {
-    const { projects, projectsDir, open } = setup(t);
-    const dir = createWithoutScaffold(projects, projectsDir, { "DESIGN.md": "前からある" });
-
-    const result = parse(await open(TOPIC)) as { status: string; scaffold: string[] };
-
-    assert.equal(result.status, "existing");
-    assert.deepEqual(result.scaffold, ["site/base.css", "site/icons.svg"]);
-    assert.equal(readFileSync(join(dir, "DESIGN.md"), "utf8"), "前からある");
-  }
 });
 
-test("project_open: 土台の複製に失敗しても created・existing を返し、scaffold は空。log は決めた文言だけ（パス・例外の中身は出さない）。注意に土台の使い方を入れない", async (t) => {
-  const { projectsDir, logs, open } = setup(t, { templateDir: join(tmpdir(), "self-agent-test-no-such-template") });
-
-  const created = parse(await open(TOPIC)) as { status: string; site_dir: string; url: string; scaffold: string[]; notes: string[] };
-  const existing = parse(await open(TOPIC)) as { status: string; scaffold: string[]; notes: string[] };
-
-  assert.equal(created.status, "created");
-  assert.deepEqual(created.scaffold, []);
-  assert.ok(statSync(created.site_dir).isDirectory());
-  assert.equal(existing.status, "existing");
-  assert.deepEqual(existing.scaffold, []);
-  assert.deepEqual(logs, [SCAFFOLD_FAILED_LOG, SCAFFOLD_FAILED_LOG]);
-  assert.equal(existsSync(join(projectsDir, "kakeibo-app", "DESIGN.md")), false);
-  assert.deepEqual(created.notes, projectNotes("kakeibo-app", created.url, false));
-  assert.deepEqual(existing.notes, created.notes);
-});
-
-test("project_open: 一部だけ複製できたら複製できた分を scaffold で返して log。DESIGN.md と base.css のどちらかが無ければ注意に土台の使い方を入れない", async (t) => {
+test("project_open: 土台の複製に失敗しても created・existing を返し、scaffold は複製できた分だけ。log はパス・例外の中身を出さない。注意に土台の使い方を入れない", async (t) => {
   // DESIGN.md と site/app.css だけがある複製の元
-  const templateDir = mkdtempSync(join(tmpdir(), "self-agent-test-template-"));
-  t.after(() => rmSync(templateDir, { recursive: true, force: true }));
-  mkdirSync(join(templateDir, "site"));
-  writeFileSync(join(templateDir, "DESIGN.md"), "決まり");
-  writeFileSync(join(templateDir, "site", "app.css"), "/* app */");
-  const { logs, open } = setup(t, { templateDir });
+  const partial = mkdtempSync(join(tmpdir(), "self-agent-test-template-"));
+  t.after(() => rmSync(partial, { recursive: true, force: true }));
+  mkdirSync(join(partial, "site"));
+  writeFileSync(join(partial, "DESIGN.md"), "決まり");
+  writeFileSync(join(partial, "site", "app.css"), "/* app */");
+  const cases: Array<{ label: string; templateDir: string; created: string[]; existing: string[] }> = [
+    { label: "複製の元が無い", templateDir: join(tmpdir(), "self-agent-test-no-such-template"), created: [], existing: [] },
+    { label: "一部だけ複製できる", templateDir: partial, created: ["DESIGN.md", "site/app.css"], existing: [] },
+  ];
 
-  const result = parse(await open(TOPIC)) as { status: string; url: string; scaffold: string[]; notes: string[] };
+  for (const { label, templateDir, created, existing } of cases) {
+    const { projectsDir, logs, open } = setup(t, { templateDir });
 
-  assert.equal(result.status, "created");
-  assert.deepEqual(result.scaffold, ["DESIGN.md", "site/app.css"]);
-  assert.deepEqual(logs, [SCAFFOLD_FAILED_LOG]);
-  assert.ok(!result.notes.includes(PROJECT_DESIGN_NOTE));
-  assert.deepEqual(result.notes, projectNotes("kakeibo-app", result.url, false));
+    const first = parse(await open(TOPIC)) as { status: string; site_dir: string; url: string; scaffold: string[]; notes: string[] };
+    const second = parse(await open(TOPIC)) as { status: string; scaffold: string[]; notes: string[] };
+
+    assert.equal(first.status, "created", label);
+    assert.deepEqual(first.scaffold, created, label);
+    assert.ok(statSync(first.site_dir).isDirectory(), label);
+    assert.equal(second.status, "existing", label);
+    assert.deepEqual(second.scaffold, existing, label);
+    assert.deepEqual(first.notes, projectNotes("kakeibo-app", first.url, false), label);
+    assert.deepEqual(second.notes, first.notes, label);
+    assert.equal(logs.length, 2, label);
+    for (const line of logs) {
+      for (const secret of [projectsDir, templateDir, "ENOENT"]) assert.ok(!line.includes(secret), `${label} ${line}`);
+    }
+  }
 });
 
-test("project_open: 注意は 10 項目（dir と site_dir・DESIGN.md と base.css・相対パスと url・localStorage と slug・秘密・ビルド不可・Glob の path・project_files・SPEC.md・作り終えた後の返事）", () => {
-  assert.deepEqual(projectNotes("kakeibo", "https://example.test:9443/p/kakeibo/", true), [
-    "ファイルは dir の中に書く。配られるのは site_dir の中だけで、入口は site_dir/index.html",
-    "作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う",
-    "パスは相対で書く（/ で始めない）。ページは https://example.test:9443/p/kakeibo/ で開かれる",
-    "localStorage のキーは kakeibo で始める（全プロジェクトが同じオリジン）",
-    "API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない",
-    "ビルドやコマンドの実行はできない。ライブラリは CDN から読む",
-    "Glob は path に dir を指定する",
-    "消す・移す・作り直すは project_files を使う（消したものは .trash に移り、配信されず、restore で戻せる。.trash の中のファイルは今のページに使わない）",
-    "決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む",
-    "作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える",
-  ]);
-});
-
-test("project_open: DESIGN.md か base.css が無いときの注意は 9 項目（土台の使い方の 2 番目だけを除く）", () => {
+test("projectNotes: withDesign なら 10 項目で DESIGN.md の項目を含み、そうでなければそれだけを除いた 9 項目", () => {
   const url = "https://example.test:9443/p/kakeibo/";
   const withDesign = projectNotes("kakeibo", url, true);
+  const withoutDesign = projectNotes("kakeibo", url, false);
 
-  assert.equal(withDesign[1], PROJECT_DESIGN_NOTE);
-  assert.deepEqual(projectNotes("kakeibo", url, false), withDesign.filter((note) => note !== PROJECT_DESIGN_NOTE));
-  assert.equal(projectNotes("kakeibo", url, false).length, 9);
+  assert.equal(withDesign.length, 10);
+  assert.ok(withDesign.includes(PROJECT_DESIGN_NOTE));
+  assert.equal(withoutDesign.length, 9);
+  assert.deepEqual(withoutDesign, withDesign.filter((note) => note !== PROJECT_DESIGN_NOTE));
 });
 
 test("project_open: 2 回目は同じプロジェクトを existing で返す（name・title が違っても作らない）。別のチャンネルは別のプロジェクト", async (t) => {
@@ -252,24 +234,16 @@ test("project_open: 同じターンで並べて呼ばれても 1 つしか作ら
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects").get()?.n, 1);
 });
 
-test("project_open: #inbox・context の無いターンでは not_available を返し、何も作らない", async (t) => {
+test("project_open: #inbox・#tasks・context の無いターンでは not_available を返し、何も作らない（セッション以外では使えない）", async (t) => {
   const { db, projectsDir, open } = setup(t);
 
-  for (const context of [INBOX, undefined]) {
-    assert.deepEqual(parse(await open(context)), { status: "not_available", message: PROJECT_OPEN_NOT_AVAILABLE_MESSAGE });
+  for (const context of [INBOX, { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" } as const, undefined]) {
+    assert.deepEqual(
+      parse(await open(context)),
+      { status: "not_available", message: PROJECT_OPEN_NOT_AVAILABLE_MESSAGE },
+      context?.kind ?? "context なし",
+    );
   }
-  assert.equal(PROJECT_OPEN_NOT_AVAILABLE_MESSAGE, "セッションのチャンネルで使います。#inbox では session_open で専用のチャンネルを作ってください");
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects").get()?.n, 0);
-  assert.equal(existsSync(projectsDir), false);
-});
-
-test("project_open: #tasks でも not_available を返し、何も作らない（セッション以外では使えない）", async (t) => {
-  const { db, projectsDir, open } = setup(t);
-
-  assert.deepEqual(parse(await open({ guildId: "guild-1", channelId: "tasks-1", kind: "tasks" })), {
-    status: "not_available",
-    message: PROJECT_OPEN_NOT_AVAILABLE_MESSAGE,
-  });
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects").get()?.n, 0);
   assert.equal(existsSync(projectsDir), false);
 });
@@ -281,13 +255,12 @@ test("project_open: 配信が無効（公開 URL が無い・静的サーバー�
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects").get()?.n, 0);
     assert.equal(existsSync(projectsDir), false);
   }
-  assert.equal(PROJECT_OPEN_NOT_CONFIGURED_MESSAGE, "ページの配信が設定されていません");
   // #inbox なら配信が無効でも not_available
   const { open } = setup(t, { publicBaseUrl: undefined });
   assert.equal((parse(await open(INBOX)) as { status: string }).status, "not_available");
 });
 
-function projectOpenDefinition(t: TestContext, context?: RunContext) {
+test("ツール定義: project_open は最後から 2 番目（最後は project_files）。name は 1〜40 字、title は 1〜100 字", (t) => {
   const { db, deps } = setup(t);
   const { tasks, topicSessions, knowledge, memories } = createStores(db, () => NOW);
   const tools = createTaskTools(
@@ -302,28 +275,10 @@ function projectOpenDefinition(t: TestContext, context?: RunContext) {
       timeZone: "Asia/Tokyo",
     },
     deps,
-    context,
   );
-  // project_open は最後から 2 番目（最後は project_files）
-  const definition = tools.at(-2);
-  assert.equal(definition?.name, "project_open");
-  return definition!;
-}
-
-test("ツール定義: project_open は project_files の前。説明は使いどころと、コードを貼らずに url を伝えること", (t) => {
-  const definition = projectOpenDefinition(t);
-
-  assert.equal(
-    definition.description,
-    "オーナーが何かを作ってほしい・動くものがほしいと頼んだときに使う。このチャンネルのプロジェクトを作るか、既にあれば返す。" +
-      "コードを Discord に貼らず、ファイルを dir に書き、site_dir の index.html から動く状態にして url を伝える。#inbox では使えない。",
-  );
-  // 使いどころはシステムプロンプトにも書く
-  assert.ok(SYSTEM_PROMPT.includes("project_open"));
-});
-
-test("ツール定義: project_open の name は 1〜40 字、title は 1〜100 字", (t) => {
-  const schema = z.object(projectOpenDefinition(t).inputSchema);
+  const definition = tools.at(-2)!;
+  assert.equal(definition.name, "project_open");
+  const schema = z.object(definition.inputSchema);
   const ok = (input: unknown): boolean => schema.safeParse(input).success;
 
   assert.ok(ok({ name: "a", title: "t" }));
@@ -333,15 +288,4 @@ test("ツール定義: project_open の name は 1〜40 字、title は 1〜100 
   assert.equal(ok({ name: "a", title: "" }), false);
   assert.equal(ok({ name: "a", title: "あ".repeat(101) }), false);
   assert.equal(ok({ title: "t" }), false);
-});
-
-test("ツール: project_open のハンドラはこの run の context で作り、結果を JSON で返す", async (t) => {
-  const definition = projectOpenDefinition(t, TOPIC);
-  // find の結果は全ツールの union なので、project_open の引数の形に絞って呼ぶ
-  const handler = definition.handler as (args: typeof ARGS, extra: unknown) => Promise<TextToolResult>;
-
-  const result = parse(await handler(ARGS, {})) as { status: string; url: string };
-
-  assert.equal(result.status, "created");
-  assert.equal(result.url, `${BASE_URL}/p/kakeibo-app/`);
 });
