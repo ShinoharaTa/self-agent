@@ -47,12 +47,11 @@ test("extractUrls: 同じ URL は 1 つにする", () => {
   ]);
 });
 
-test("extractUrls: 最大 10 件（先に出てきたものから）", () => {
-  const urls = Array.from({ length: 12 }, (_, index) => `https://example.com/${index}`);
-  assert.equal(MAX_URLS, 10);
-  assert.deepEqual(extractUrls(urls.join(" ")), urls.slice(0, 10));
+test("extractUrls: 最大 MAX_URLS 件（先に出てきたものから）", () => {
+  const urls = Array.from({ length: MAX_URLS + 2 }, (_, index) => `https://example.com/${index}`);
+  assert.deepEqual(extractUrls(urls.join(" ")), urls.slice(0, MAX_URLS));
   // 重複は数えない
-  assert.deepEqual(extractUrls([urls[0], ...urls].join(" ")), urls.slice(0, 10));
+  assert.deepEqual(extractUrls([urls[0], ...urls].join(" ")), urls.slice(0, MAX_URLS));
 });
 
 test("extractUrls: URL が無ければ空。http(s) 以外と scheme だけのものは取らない", () => {

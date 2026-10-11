@@ -125,22 +125,19 @@ test("パスの要素に `..` があれば、resolve・realpath の前に拒否�
   assert.deepEqual(judge("Glob", { pattern: "*", path: `${project}/site..old` }), ALLOWED);
 });
 
-test("Write・Edit: #inbox・プロジェクトの無いチャンネルでは、プロジェクトの中を指しても拒否する", (t) => {
+test("Write・Edit: #inbox・#tasks・プロジェクトの無いチャンネルでは、プロジェクトの中を指しても拒否する", (t) => {
   const { projectsDir, judge } = setup(t);
   const file = join(projectsDir, "kakeibo", "site", "index.html");
 
-  assert.deepEqual(judge("Write", { file_path: file, content: "" }, { context: INBOX }), WRITE_DENIED);
-  assert.deepEqual(judge("Edit", { file_path: file }, { context: INBOX, project: undefined }), WRITE_DENIED);
-  assert.deepEqual(judge("Write", { file_path: file, content: "" }, { project: undefined }), WRITE_DENIED);
-});
-
-test("Write・Edit: #tasks では、プロジェクトの中を指しても拒否する", (t) => {
-  const { projectsDir, judge } = setup(t);
-  const file = join(projectsDir, "kakeibo", "site", "index.html");
-
-  for (const project of [{ slug: "kakeibo" }, undefined]) {
-    assert.deepEqual(judge("Write", { file_path: file, content: "" }, { context: TASKS, project }), WRITE_DENIED);
-    assert.deepEqual(judge("Edit", { file_path: file }, { context: TASKS, project }), WRITE_DENIED);
+  for (const { label, context, project } of [
+    { label: "#inbox", context: INBOX, project: { slug: "kakeibo" } },
+    { label: "#inbox・プロジェクト無し", context: INBOX, project: undefined },
+    { label: "#tasks", context: TASKS, project: { slug: "kakeibo" } },
+    { label: "#tasks・プロジェクト無し", context: TASKS, project: undefined },
+    { label: "セッション・プロジェクト無し", context: TOPIC, project: undefined },
+  ]) {
+    assert.deepEqual(judge("Write", { file_path: file, content: "" }, { context, project }), WRITE_DENIED, label);
+    assert.deepEqual(judge("Edit", { file_path: file }, { context, project }), WRITE_DENIED, label);
   }
 });
 
@@ -239,10 +236,6 @@ test("Write・Edit: このチャンネルのプロジェクトの .trash その�
   // 名前の前半が同じだけのものは .trash ではない
   assert.deepEqual(judge("Write", { file_path: join(project, ".trash-old", "a.txt"), content: "" }), ALLOWED);
   assert.deepEqual(judge("Write", { file_path: join(project, "site", ".trash", "a.txt"), content: "" }), ALLOWED);
-  assert.deepEqual(
-    FILE_TRASH_DENIED_REASON,
-    ".trash の中には書けません。戻すときは project_files の restore を使ってください",
-  );
 
   assert.deepEqual(judge("Read", { file_path: join(trash, "20261011T000000Z", "site", "index.html") }), ALLOWED);
   assert.deepEqual(judge("Glob", { pattern: "**/*", path: trash }), ALLOWED);

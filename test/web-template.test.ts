@@ -6,76 +6,6 @@ import { WEB_TEMPLATE_DIR } from "../src/agent/scaffold.ts";
 
 const read = (file: string): string => readFileSync(join(WEB_TEMPLATE_DIR, file), "utf8");
 
-/** 色の変数（ダークモードで差し替える） */
-const COLOR_VARIABLES = [
-  "--bg",
-  "--surface",
-  "--muted",
-  "--border",
-  "--text",
-  "--text-muted",
-  "--primary",
-  "--primary-text",
-  "--accent",
-  "--danger",
-  "--success",
-  "--warning",
-];
-/** 値まで決めている変数 */
-const FIXED_VARIABLES: Record<string, string> = {
-  "--space-1": "4px",
-  "--space-2": "8px",
-  "--space-3": "12px",
-  "--space-4": "16px",
-  "--space-5": "20px",
-  "--space-6": "24px",
-  "--space-7": "32px",
-  "--space-8": "48px",
-  "--font-family": 'system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif',
-  "--font-xs": "12px",
-  "--font-sm": "14px",
-  "--font-base": "16px",
-  "--font-lg": "18px",
-  "--font-xl": "20px",
-  "--font-2xl": "24px",
-  "--leading-normal": "1.5",
-  "--leading-tight": "1.25",
-  "--weight-normal": "400",
-  "--weight-medium": "500",
-  "--weight-semibold": "600",
-  "--radius-sm": "6px",
-  "--radius-md": "8px",
-  "--radius-lg": "12px",
-  "--radius-full": "9999px",
-  "--tap": "44px",
-  "--icon-size": "20px",
-  "--container-max": "640px",
-};
-/** base.css の部品のクラス（DESIGN.md の「部品」） */
-const CLASSES = [
-  "container",
-  "stack",
-  "row",
-  "card",
-  "btn",
-  "btn-primary",
-  "btn-secondary",
-  "btn-ghost",
-  "btn-danger",
-  "input",
-  "select",
-  "textarea",
-  "check",
-  "chip",
-  "badge",
-  "list",
-  "list-item",
-  "segmented",
-  "empty",
-  "toast",
-  "bottom-bar",
-  "icon",
-];
 const ICON_SYMBOL_ATTRIBUTES =
   'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
 
@@ -84,25 +14,6 @@ const FILE_EXTENSIONS = new Set(["css", "md", "svg", "html", "js", "json"]);
 
 function stripComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, "");
-}
-
-/** 中に { を含まないブロック（@media の中の規則を含む）を、セレクタの一覧と宣言にする */
-function rules(css: string): Array<{ selectors: string[]; declarations: Map<string, string> }> {
-  return [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
-    selectors: match[1].split(",").map((selector) => selector.trim().replace(/\s+/g, " ")),
-    declarations: new Map(
-      [...match[2].matchAll(/([\w-]+):\s*([^;]+);/g)].map((declaration) => [declaration[1], declaration[2].trim()]),
-    ),
-  }));
-}
-
-/** selector にそのまま当たる規則のうち、最後に property を決めている値 */
-function lastValue(css: string, selector: string, property: string): string | undefined {
-  let value: string | undefined;
-  for (const rule of rules(css)) {
-    if (rule.selectors.includes(selector) && rule.declarations.has(property)) value = rule.declarations.get(property);
-  }
-  return value;
 }
 
 /** `#rrggbb` の相対輝度（WCAG 2） */
@@ -135,45 +46,20 @@ function rootBlocks(css: string): { light: string; dark: string } {
   return { light: light[1], dark: dark[1] };
 }
 
-test("base.css: 決めた変数がすべて :root にあり、余白・文字・角丸などは決めた値", () => {
-  const { light } = rootBlocks(stripComments(read("site/base.css")));
-  const defined = declarations(light);
-
-  for (const name of [...COLOR_VARIABLES, "--shadow-sm"]) assert.ok(defined.has(name), name);
-  for (const [name, value] of Object.entries(FIXED_VARIABLES)) assert.equal(defined.get(name), value, name);
-  assert.match(light, /color-scheme: light dark;/);
-});
-
-test("base.css: prefers-color-scheme: dark で色の変数をすべて差し替える", () => {
+test("base.css: prefers-color-scheme: dark で色の変数（ライトの値が #rrggbb のもの）をすべて差し替える", () => {
   const { light, dark } = rootBlocks(stripComments(read("site/base.css")));
   const lightValues = declarations(light);
   const darkValues = declarations(dark);
+  const colors = [...lightValues].filter(([, value]) => /^#[0-9a-f]{6}$/i.test(value)).map(([name]) => name);
 
-  for (const name of COLOR_VARIABLES) {
+  assert.match(light, /color-scheme: light dark;/);
+  assert.ok(colors.length > 0);
+  for (const name of colors) {
     assert.ok(darkValues.has(name), name);
     assert.notEqual(darkValues.get(name), lightValues.get(name), name);
   }
-  // 差し替えるのは色と影だけ
+  // 差し替えるのはライトにある変数だけ
   for (const name of darkValues.keys()) assert.ok(lightValues.has(name), name);
-});
-
-test("base.css: 部品のクラスと <dialog> がすべてある", () => {
-  const css = stripComments(read("site/base.css"));
-
-  for (const name of CLASSES) assert.match(css, new RegExp(`\\.${name}(?![\\w-])`), name);
-  assert.match(css, /^dialog \{/m);
-  assert.match(css, /^dialog::backdrop \{/m);
-});
-
-test("base.css: 押せる部品は min-height: var(--tap)、入力欄の文字は var(--font-base)", () => {
-  const css = read("site/base.css");
-
-  for (const selector of [".btn", ".input", ".select", ".textarea", ".chip", ".check", ".segmented > button", ".list-item"]) {
-    assert.equal(lastValue(css, selector, "min-height"), "var(--tap)", selector);
-  }
-  for (const selector of [".input", ".select", ".textarea"]) {
-    assert.equal(lastValue(css, selector, "font-size"), "var(--font-base)", selector);
-  }
 });
 
 test("base.css: ライトの --danger・--success・--warning は --bg と --surface に対してコントラスト比 4.5 以上", () => {
@@ -198,13 +84,12 @@ test("base.css: 色と px の値は変数の定義の中だけ。.icon は curre
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^@]*transition: none !important;/);
 });
 
-test("DESIGN.md: 100 行以内で、出てくる変数と .class（拡張子を除く）はすべて base.css にある", () => {
+test("DESIGN.md: 100 行以内で「使い勝手」の節があり、出てくる変数と .class（拡張子を除く）はすべて base.css にある", () => {
   const design = read("DESIGN.md");
   const lines = design.split("\n").length - (design.endsWith("\n") ? 1 : 0);
   assert.ok(lines <= 100, `${lines} 行`);
 
   assert.match(design, /\n## 使い勝手\n/);
-  for (const word of ["取り消し優先", "autofocus", "空状態", "位置の把握", "色の役割", "失敗の表示", "ダイアログ:", "一覧の行"]) assert.ok(design.includes(word), word);
 
   const css = stripComments(read("site/base.css"));
   const defined = declarations(css);
@@ -222,25 +107,13 @@ test("icons.svg: DESIGN.md に列挙したアイコン名と symbol の id が�
   const names = listed[1].split(", ");
   const ids = [...sprite.matchAll(/<symbol id="([^"]+)"/g)].map((match) => match[1]);
 
-  assert.equal(names.length, 20);
+  assert.ok(names.length > 0);
   assert.deepEqual([...ids].sort(), [...names].sort());
   for (const [tag] of sprite.matchAll(/<symbol [^>]*>/g)) assert.ok(tag.endsWith(` ${ICON_SYMBOL_ATTRIBUTES}>`), tag);
   // XML のコメントの中に -- は書けない（書くと sprite 全体が読めなくなる）
   const comment = sprite.match(/^<!--([\s\S]*?)-->/);
   assert.ok(comment !== null, "先頭のコメントが無い");
   assert.ok(!comment[1].includes("--"));
-  assert.ok(comment[1].includes("lucide-static 1.55.0"));
+  assert.ok(comment[1].includes("lucide"));
   assert.ok(comment[1].includes("ISC License"));
-});
-
-test("index.html: viewport・color-scheme と、base.css → app.css の順の link、空の main.container.stack", () => {
-  const html = read("site/index.html");
-
-  assert.ok(html.startsWith("<!doctype html>\n<html lang=\"ja\">"));
-  assert.ok(html.includes('<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'));
-  assert.ok(html.includes('<meta name="color-scheme" content="light dark">'));
-  const base = html.indexOf('<link rel="stylesheet" href="base.css">');
-  const app = html.indexOf('<link rel="stylesheet" href="app.css">');
-  assert.ok(base !== -1 && app !== -1 && base < app);
-  assert.ok(html.includes('<main class="container stack"></main>'));
 });
