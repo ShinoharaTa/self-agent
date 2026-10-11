@@ -69,7 +69,7 @@
     - 「API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない」
     - 「ビルドやコマンドの実行はできない（段 1）。ライブラリは CDN から読む」
     - 「Glob は path に dir を指定する」
-    - 「消す・移す・作り直すは project_files を使う（消したものは .trash に移り、restore で戻せる）」（#70）
+    - 「消す・移す・作り直すは project_files を使う（消したものは .trash に移り、配信されず、restore で戻せる。.trash の中のファイルは今のページに使わない）」（#70）
     - 「決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む」
     - 「作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える」
   - UI の土台（#67）: created・existing のどちらでも、リポジトリの `templates/web/` を複製する。created は DESIGN.md と site/ の base.css・app.css・icons.svg・index.html の 5 つ、existing は `site/base.css` が無いときだけ DESIGN.md・base.css・icons.svg の 3 つ。既にあるファイル（symlink を含む）は上書きせず、site が dir の外への symlink なら何も複製しない。複製できたものは結果の `scaffold` で返し、失敗したものがあっても log だけで結果はそのまま返す。
@@ -77,8 +77,9 @@
     - 注意の 2 番目に「作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う」を足す。複製の後に DESIGN.md と site/base.css のどちらかが無ければ入れない。ツールの定義は変えないので、キャッシュには影響しない。
 - project_files（#70。入力 `action`: trash / move / clear / restore、`paths`: 1〜50 件、`to`、`trash_id`）: オーナーはスマホしか使えず手で消せないので、プロジェクトの中のファイルを消す・移す・作り直す・戻す。
   - セッションのチャンネルで、そのチャンネルの削除されていないプロジェクトがあるときだけ使える（それ以外は `not_available`）。パスは dir からの相対。空・絶対・`..` を含む・dir そのもの・`.trash` で始まる・realpath が dir の外か `.trash` の中なら `invalid_path`（何もしない）。symlink はたどらない。
-  - trash: paths を `<dir>/.trash/<trash_id>/<同じ相対パス>` に移す（trash_id は UTC の `YYYYMMDDTHHmmssZ`。同じ秒なら `-2`…）。site/ の外なので配信されない。無いものは missing に入れて続ける。
-  - move: paths の 1 つを to に移す（改名を含む）。to が既にあれば上書きせず `exists`。
+  - trash・move はプロジェクトの dir が無い・解決できなければ `not_available`。trash・clear・restore（一覧を含む）は `.trash` が実際のディレクトリでない（symlink・ファイル）なら何もせず `trash_unavailable`（無いのはよい）。
+  - trash: paths を `<dir>/.trash/<trash_id>/<同じ相対パス>` に移す（trash_id は UTC の `YYYYMMDDTHHmmssZ`。同じ秒なら `-2`…）。site/ の外なので配信されない。無いものは missing に入れて続ける。同じパスの重複は 1 つにまとめ、paths の中に祖先があるもの（子 → 親の順でも）は祖先と一緒に移ったものとして moved に入れる（祖先が無ければ missing）。並びは入力の順。
+  - move: paths の 1 つを to に移す（改名を含む）。to は移動先の名前まで書く（末尾が `/` なら `invalid_path`）。to が既にあれば上書きせず `exists`。
   - clear: `.trash` 以外を全部 `.trash/<trash_id>/` に移し、UI の土台を置き直す（URL は変わらない）。
   - restore: trash_id の中身を元の場所に戻す。同じパスが既にあれば何も戻さず `conflict`（そのパスを trash してから restore し直す）。trash_id を省くと一覧（新しい順・ファイルの数）。
   - ファイルを変えたらプロジェクトの更新日時を今にする。log は「project_files: <action>（N 件）」だけ。

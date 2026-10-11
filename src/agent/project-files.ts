@@ -17,6 +17,11 @@ export const TRASH_ID_PATTERN = /^\d{8}T\d{6}Z(-\d+)?$/;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** trash・move でプロジェクトの dir が無い・解決できないときの message */
+export const PROJECT_DIR_MISSING_MESSAGE = "プロジェクトのディレクトリがありません。project_open を使ってください";
+/** .trash が実際のディレクトリでない（symlink・ファイル）ときの message */
+export const TRASH_UNAVAILABLE_MESSAGE = ".trash がディレクトリではないため使えません";
+
 export type ProjectFilesAction = "trash" | "move" | "clear" | "restore";
 export type ProjectFilesArgs = { action: ProjectFilesAction; paths?: string[]; to?: string; trash_id?: string };
 
@@ -32,7 +37,9 @@ export type ProjectFilesResult =
   | { result: "conflict"; paths: string[] }
   | { result: "restored"; trash_id: string; restored: string[] }
   | { result: "invalid_path"; path: string }
-  | { result: "invalid_args"; message: string };
+  | { result: "invalid_args"; message: string }
+  | { result: "not_available"; message: string }
+  | { result: "trash_unavailable"; message: string };
 
 export type ProjectFilesOptions = {
   /** trash_id の時刻 */
@@ -100,11 +107,10 @@ function nextTrashId(trashRoot: string, now: Date): string {
  * 空・`/` で始まる・要素に `..` がある・dir そのもの（`.` など）・最初の要素が .trash、
  * resolveRealPath で解決できない・実際の場所が realpath(dir) の中でない・realpath(dir)/.trash そのものかその中
  */
-function checkPath(dir: string, realDir: string | undefined, path: string): string | undefined {
+function checkPath(dir: string, realDir: string, path: string): string | undefined {
   if (path === "" || path.startsWith("/") || path.split("/").includes("..")) return undefined;
   const rel = relative(dir, join(dir, path));
   if (rel === "" || rel.split(sep)[0] === TRASH_DIR_NAME) return undefined;
-  if (realDir === undefined) return undefined;
   const real = resolveRealPath(join(dir, rel));
   if (real === undefined || !isInside(real, realDir)) return undefined;
   const realTrash = join(realDir, TRASH_DIR_NAME);
@@ -171,38 +177,61 @@ function extraArgs(args: ProjectFilesArgs, allowed: ReadonlyArray<"paths" | "to"
   return extras.length === 0 ? undefined : `${args.action} では ${extras.join("・")} を指定しないでください`;
 }
 
-function trash(dir: string, realDir: string | undefined, paths: string[], now: Date): ProjectFilesResult {
-  const rels: string[] = [];
+/**
+ * paths を `.trash/<trash_id>/<同じ相対パス>` に移す。同じ相対パスの重複は最初の 1 つにまとめ、paths の中に祖先があるものは
+ * 個別には移さない（祖先が移り、移す前にそれがあったなら moved、それ以外は missing）。moved・missing は入力の順
+ */
+function trash(dir: string, realDir: string, paths: string[], now: Date): ProjectFilesResult {
+  const items: Array<{ path: string; rel: string }> = [];
   for (const path of paths) {
     const rel = checkPath(dir, realDir, path);
     if (rel === undefined) return { result: "invalid_path", path };
-    rels.push(rel);
+    if (!items.some((item) => item.rel === rel)) items.push({ path, rel });
   }
+  /** rel の、paths の中で一番上の祖先（無ければ undefined） */
+  const topAncestor = (rel: string): string | undefined =>
+    items
+      .map((item) => item.rel)
+      .filter((other) => rel.startsWith(`${other}${sep}`))
+      .sort((a, b) => a.length - b.length)[0];
+  // 祖先と一緒に移るものは、移す前にあったかを見ておく
+  const existedBefore = new Map(
+    items.filter((item) => topAncestor(item.rel) !== undefined).map((item) => [item.rel, exists(join(dir, item.rel))]),
+  );
   const trashRoot = join(dir, TRASH_DIR_NAME);
   const id = nextTrashId(trashRoot, now);
-  const moved: string[] = [];
-  const missing: string[] = [];
-  rels.forEach((rel, i) => {
+  /** 祖先の無いものの rel → 移したか */
+  const movedTops = new Map<string, boolean>();
+  for (const { rel } of items) {
+    if (topAncestor(rel) !== undefined) continue;
     const source = join(dir, rel);
-    // 無いもの（先に移したものの中にあったものを含む）は飛ばす
     if (!exists(source)) {
-      missing.push(paths[i]!);
-      return;
+      movedTops.set(rel, false);
+      continue;
     }
     const target = join(trashRoot, id, rel);
     mkdirSync(dirname(target), { recursive: true });
     renameSync(source, target);
-    moved.push(paths[i]!);
-  });
+    movedTops.set(rel, true);
+  }
+  const moved: string[] = [];
+  const missing: string[] = [];
+  for (const { path, rel } of items) {
+    const top = topAncestor(rel);
+    const wasMoved = top === undefined ? movedTops.get(rel) === true : movedTops.get(top) === true && existedBefore.get(rel) === true;
+    (wasMoved ? moved : missing).push(path);
+  }
   return { result: "trashed", trash_id: moved.length === 0 ? null : id, moved, missing };
 }
 
-function move(dir: string, realDir: string | undefined, from: string, to: string): ProjectFilesResult {
+function move(dir: string, realDir: string, from: string, to: string): ProjectFilesResult {
   const fromRel = checkPath(dir, realDir, from);
   if (fromRel === undefined) return { result: "invalid_path", path: from };
   const toRel = checkPath(dir, realDir, to);
-  // 自分の中には移せない
-  if (toRel === undefined || toRel.startsWith(`${fromRel}${sep}`)) return { result: "invalid_path", path: to };
+  // to は移動先の名前まで書く（末尾が / ならだめ）。自分の中には移せない
+  if (toRel === undefined || to.endsWith("/") || toRel.startsWith(`${fromRel}${sep}`)) {
+    return { result: "invalid_path", path: to };
+  }
   if (!exists(join(dir, fromRel))) return { result: "missing", path: from };
   if (exists(join(dir, toRel))) return { result: "exists", path: to };
   mkdirSync(dirname(join(dir, toRel)), { recursive: true });
@@ -269,8 +298,10 @@ function restore(dir: string, id: string): ProjectFilesResult {
 
 /**
  * dir（`<projectsDir>/<slug>`）のファイルを操作する。パスは dir からの相対で、どれか 1 つでもだめなら何もせずに invalid_path。
- * - trash: paths を順に `.trash/<trash_id>/<同じ相対パス>` に移す。無いものは missing。1 つも移さなければ .trash/<trash_id> を作らず trash_id は null
- * - move: paths[0] を to に移す（上書きしない）
+ * trash・move は dir が無い・解決できなければ not_available。trash・clear・restore は `<dir>/.trash` が実際のディレクトリでない
+ * （symlink・ファイル）なら何もせず trash_unavailable（無いのはよい）。
+ * - trash: paths を `.trash/<trash_id>/<同じ相対パス>` に移す。無いものは missing。1 つも移さなければ .trash/<trash_id> を作らず trash_id は null
+ * - move: paths[0] を to に移す（上書きしない。to の末尾が / なら invalid_path）
  * - clear: 直下の .trash 以外をすべて `.trash/<trash_id>/` に移し、UI の土台（created の 5 つ）を置き直す
  * - restore: trash_id を省けば一覧（新しい順）。指定すればその中身を元の場所に戻す（1 つでも既にあれば何も戻さず conflict）
  */
@@ -280,6 +311,11 @@ export async function runProjectFiles(
   options: ProjectFilesOptions,
 ): Promise<ProjectFilesResult> {
   const realDir = resolveRealPath(dir);
+  const dirMissing = realDir === undefined || !isRealDirectory(realDir);
+  const trashRoot = join(dir, TRASH_DIR_NAME);
+  const trashUnavailable = exists(trashRoot) && !isRealDirectory(trashRoot);
+  const notAvailable: ProjectFilesResult = { result: "not_available", message: PROJECT_DIR_MISSING_MESSAGE };
+  const unavailable: ProjectFilesResult = { result: "trash_unavailable", message: TRASH_UNAVAILABLE_MESSAGE };
   switch (args.action) {
     case "trash": {
       if (args.paths === undefined || args.paths.length === 0 || args.paths.length > PROJECT_FILES_MAX_PATHS) {
@@ -287,6 +323,8 @@ export async function runProjectFiles(
       }
       const extra = extraArgs(args, ["paths"]);
       if (extra !== undefined) return invalidArgs(extra);
+      if (dirMissing) return notAvailable;
+      if (trashUnavailable) return unavailable;
       return trash(dir, realDir, args.paths, options.now);
     }
     case "move": {
@@ -294,16 +332,19 @@ export async function runProjectFiles(
       if (args.to === undefined) return invalidArgs("move には to を指定してください");
       const extra = extraArgs(args, ["paths", "to"]);
       if (extra !== undefined) return invalidArgs(extra);
+      if (dirMissing) return notAvailable;
       return move(dir, realDir, args.paths[0]!, args.to);
     }
     case "clear": {
       const extra = extraArgs(args, []);
       if (extra !== undefined) return invalidArgs(extra);
+      if (trashUnavailable) return unavailable;
       return clear(dir, options);
     }
     case "restore": {
       const extra = extraArgs(args, ["trash_id"]);
       if (extra !== undefined) return invalidArgs(extra);
+      if (trashUnavailable) return unavailable;
       return args.trash_id === undefined ? listTrashes(dir) : restore(dir, args.trash_id);
     }
     default:
