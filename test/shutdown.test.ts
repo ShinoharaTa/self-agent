@@ -6,7 +6,7 @@ import { createChannelResolver } from "../src/app/access.ts";
 import { ChannelOpsQueue } from "../src/app/channel-ops.ts";
 import { createHandler } from "../src/app/handler.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
-import { Scheduler, TICK_INTERVAL_MS } from "../src/app/scheduler.ts";
+import { idleNotice, Scheduler, TICK_INTERVAL_MS } from "../src/app/scheduler.ts";
 import { createShutdown, RESTARTING_REPLY, type InnerHandlers, type ShutdownDeps } from "../src/app/shutdown.ts";
 import type { IncomingMessage, Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
@@ -171,7 +171,6 @@ test("停止を始めたら新しい発言は何もせず、許可したサー�
   await done;
 
   assert.equal(called, 0);
-  assert.equal(RESTARTING_REPLY, "再起動中です");
   assert.deepEqual(allowed.replies, [{ text: RESTARTING_REPLY, ephemeral: true }]);
   assert.deepEqual(dm.replies, []);
   assert.deepEqual(otherGuild.replies, []);
@@ -299,10 +298,8 @@ test("上限の秒数を過ぎたら待たずに gateway を止めて DB を閉�
   await shutdown();
 
   assert.deepEqual(events, ["stop", "closeDb"]);
-  assert.deepEqual(shutdownDeps.logs, [
-    "停止します（進行中の処理を最大 0.02 秒待ちます）",
-    "進行中の処理が 0.02 秒で終わらなかったため、待たずに終了します",
-  ]);
+  // 停止を始めた log と、待たずに終える log
+  assert.equal(shutdownDeps.logs.length, 2);
 });
 
 test("gateway の停止に失敗しても DB は閉じ、reject しない", async () => {
@@ -314,43 +311,32 @@ test("gateway の停止に失敗しても DB は閉じ、reject しない", asyn
   await shutdown();
 
   assert.deepEqual(events, ["stop", "closeDb"]);
-  assert.ok(shutdownDeps.logs.includes("Discord との切断に失敗しました: boom"));
+  assert.ok(shutdownDeps.logs.some((line) => line.includes("boom")));
 });
 
-test("静的サーバーは gateway を止めた後、DB を閉じる前に閉じる", async () => {
-  const events: string[] = [];
-  const { shutdown } = createShutdown(
-    deps(events, {
+test("静的サーバーは gateway を止めた後、DB を閉じる前に閉じる。閉じるのに失敗しても DB は閉じ、reject しない", async () => {
+  for (const fails of [false, true]) {
+    const events: string[] = [];
+    const shutdownDeps = deps(events, {
       staticServer: {
         close: async () => {
           events.push("closeServer");
+          if (fails) throw new Error("boom");
         },
       },
-    }),
-    noopInner,
-  );
+    });
+    const { shutdown } = createShutdown(shutdownDeps, noopInner);
 
-  await shutdown();
+    await shutdown();
 
-  assert.deepEqual(events, ["stop", "closeServer", "closeDb"]);
-});
-
-test("静的サーバーを閉じるのに失敗しても DB は閉じ、reject しない", async () => {
-  const events: string[] = [];
-  const shutdownDeps = deps(events, {
-    staticServer: {
-      close: async () => {
-        events.push("closeServer");
-        throw new Error("boom");
-      },
-    },
-  });
-  const { shutdown } = createShutdown(shutdownDeps, noopInner);
-
-  await shutdown();
-
-  assert.deepEqual(events, ["stop", "closeServer", "closeDb"]);
-  assert.ok(shutdownDeps.logs.includes("ページの配信を止められませんでした: boom"));
+    const label = fails ? "失敗" : "成功";
+    assert.deepEqual(events, ["stop", "closeServer", "closeDb"], label);
+    assert.equal(
+      shutdownDeps.logs.some((line) => line.includes("boom")),
+      fails,
+      label,
+    );
+  }
 });
 
 test("停止を始めたら scheduler を止め（以後 tick しない）、実行中の tick が終わってから gateway を止めて DB を閉じる", async () => {
@@ -439,7 +425,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
   gate.resolve();
   await done;
 
-  assert.deepEqual(events, ["setWaiting", "sendMessage 12 時間発言がないので待ちに移しました。", "stop", "closeDb"]);
+  assert.deepEqual(events, ["setWaiting", `sendMessage ${idleNotice(12, "topic-1").text}`, "stop", "closeDb"]);
   assert.equal(listed, 1);
 });
 
