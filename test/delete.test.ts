@@ -1,8 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { ChannelType, DiscordAPIError, RESTJSONErrorCodes } from "discord.js";
 import { createChannelResolver } from "../src/app/access.ts";
 import {
@@ -14,70 +11,15 @@ import {
   STALE_TEXT,
 } from "../src/app/commands/delete.ts";
 import { DiscordGateway } from "../src/discord/discord-gateway.ts";
-import type { Gateway, Interaction, InteractionResponder, ModalDef, OutgoingMessage } from "../src/discord/gateway.ts";
-import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
-import { openDb } from "../src/store/db.ts";
-import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import type { Gateway, Interaction } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingChannelOps } from "./helpers/recording.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const CLOSED_AT = new Date("2026-09-01T00:00:00.000Z");
 const NOW = new Date("2026-10-02T00:12:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-  /** deferUpdate の直後に呼ばれる（保留の間に状態が変わったことにする） */
-  afterDeferUpdate: () => void = () => {};
-  /** update の直前に呼ばれる。投げればその更新は失敗する */
-  beforeUpdate: () => void = () => {};
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-    this.afterDeferUpdate();
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.beforeUpdate();
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
-
-/** Discord 上にあるチャンネルを覚えておく。既に無いチャンネルの削除は（Gateway の約束どおり）成功にする */
-class FakeGateway implements Pick<Gateway, "deleteChannel"> {
-  /** deleteChannel を呼ばれたチャンネル */
-  calls: string[] = [];
-  readonly alive = new Set<string>();
-  /** deleteChannel の直前に呼ばれる。投げればその削除は失敗する */
-  beforeDelete: (channelId: string) => void = () => {};
-
-  async deleteChannel(channelId: string): Promise<void> {
-    this.calls.push(channelId);
-    this.beforeDelete(channelId);
-    this.alive.delete(channelId);
-  }
-}
-
-class RecordingChannelOps {
-  cancelled: string[] = [];
-
-  cancel(channelId: string): void {
-    this.cancelled.push(channelId);
-  }
-}
 
 const TOPIC = { channelId: "topic-1", guildId: "guild-1", title: "旅行の計画", categoryId: "done-1" };
 
@@ -99,17 +41,10 @@ function press(
 }
 
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const clock = { now: CLOSED_AT };
-  const topicSessions = new TopicSessionStore(db, () => clock.now);
-  const sessions = new SdkSessionStore(db, () => clock.now);
-  const seeds = new ChannelSeedStore(db, () => clock.now);
-  const gateway = new FakeGateway();
+  const { topicSessions, sessions, seeds } = createStores(db, () => clock.now);
+  const gateway = new FakeGateway({ allow: ["deleteChannel"] });
   const channelOps = new RecordingChannelOps();
   const logs: string[] = [];
   const component = createDeleteComponent({
@@ -172,7 +107,7 @@ test("[削除する]: 完了のままなら保留してチャンネルを削除�
     { method: "deferUpdate" },
     { method: "update", message: { text: deletedText("旅行の計画"), components: [] } },
   ]);
-  assert.deepEqual(env.gateway.calls, ["topic-1"]);
+  assert.deepEqual(env.gateway.deleted, ["topic-1"]);
   assert.equal(env.gateway.alive.has("topic-1"), false);
   const session = env.topicSessions.get("topic-1");
   assert.equal(session?.state, "deleted");
@@ -218,7 +153,7 @@ test("進行中・待ちに戻ったら、確認の [削除する]・[残す] �
         assert.deepEqual(await env.run(press(action)), STALE, action);
       }
 
-      assert.deepEqual(env.gateway.calls, []);
+      assert.deepEqual(env.gateway.deleted, []);
       assert.deepEqual(env.topicSessions.get("topic-1"), before);
       assert.equal(env.sessions.get("topic-1"), "sdk-1");
       assert.equal(env.seeds.get("topic-1"), "seed-1");
@@ -241,7 +176,7 @@ test("閉じ直して新しい確認が出た後に古い確認を押しても�
   for (const action of ["yes", "keep"]) {
     assert.deepEqual(await env.run(press(action, "topic-1", "message-1")), STALE, action);
   }
-  assert.deepEqual(env.gateway.calls, []);
+  assert.deepEqual(env.gateway.deleted, []);
   assert.deepEqual(env.topicSessions.get("topic-1"), before);
 
   // 新しい確認の [削除する] は削除する
@@ -251,7 +186,7 @@ test("閉じ直して新しい確認が出た後に古い確認を押しても�
     { method: "deferUpdate" },
     { method: "update", message: { text: deletedText("旅行の計画"), components: [] } },
   ]);
-  assert.deepEqual(env.gateway.calls, ["topic-1"]);
+  assert.deepEqual(env.gateway.deleted, ["topic-1"]);
   const deleted = env.topicSessions.get("topic-1");
   assert.equal(deleted?.state, "deleted");
   assert.equal(deleted?.summary, "閉じ直した要約");
@@ -273,7 +208,7 @@ test("閉じ直した後の新しい確認の [残す] は延長し、その確�
   for (const action of ["yes", "keep"]) {
     assert.deepEqual(await env.run(press(action, "topic-1", "message-2")), STALE, action);
   }
-  assert.deepEqual(env.gateway.calls, []);
+  assert.deepEqual(env.gateway.deleted, []);
   assert.equal(env.topicSessions.get("topic-1")?.state, "done");
 });
 
@@ -286,7 +221,7 @@ test("押されたメッセージが分からない・記録した確認と違�
       assert.deepEqual(await env.run(press(action, "topic-1", messageId)), STALE, `${action} ${messageId}`);
     }
   }
-  assert.deepEqual(env.gateway.calls, []);
+  assert.deepEqual(env.gateway.deleted, []);
   assert.deepEqual(env.topicSessions.get("topic-1"), before);
 });
 
@@ -296,7 +231,7 @@ test("[削除する]: 保留の間に進行中に戻った・削除されたら�
   revived.afterDeferUpdate = () => env.topicSessions.setActive("topic-1");
 
   assert.deepEqual(await env.run(press("yes"), revived), [{ method: "deferUpdate" }, ...STALE]);
-  assert.deepEqual(env.gateway.calls, []);
+  assert.deepEqual(env.gateway.deleted, []);
   assert.equal(env.topicSessions.get("topic-1")?.state, "active");
 
   env.topicSessions.close("topic-1", "要約");
@@ -308,7 +243,7 @@ test("[削除する]: 保留の間に進行中に戻った・削除されたら�
     method: "update",
     message: { text: ALREADY_HANDLED_TEXT, components: [] },
   });
-  assert.deepEqual(env.gateway.calls, []);
+  assert.deepEqual(env.gateway.deleted, []);
 });
 
 test("[削除する]: チャンネルの削除に失敗したら何も変えずに投げる（ボタンは残るので押し直せる）", async (t) => {
@@ -357,7 +292,7 @@ test("[残す]: 閉じた時刻を今にして確認の記録を消し、30 日�
   assert.equal(session?.closedAt, NOW.toISOString());
   assert.equal(session?.deletePromptMessageId, null);
   assert.equal(session?.summary, "要約");
-  assert.deepEqual(env.gateway.calls, []);
+  assert.deepEqual(env.gateway.deleted, []);
   assert.equal(env.sessions.get("topic-1"), "sdk-1");
   assert.deepEqual(env.logs, ["[残す] でセッションのチャンネルを残しました（guild=guild-1）"]);
 
@@ -383,12 +318,12 @@ test("削除済み・行が無い・別サーバーのセッションの確認�
   assert.equal(env.topicSessions.get("topic-9")?.state, "done");
 
   await env.run(press("yes"));
-  assert.deepEqual(env.gateway.calls, ["topic-1"]);
+  assert.deepEqual(env.gateway.deleted, ["topic-1"]);
   const deleted = env.topicSessions.get("topic-1");
   for (const action of ["yes", "keep"]) {
     assert.deepEqual(await env.run(press(action)), handled, action);
   }
-  assert.deepEqual(env.gateway.calls, ["topic-1"]);
+  assert.deepEqual(env.gateway.deleted, ["topic-1"]);
   assert.deepEqual(env.topicSessions.get("topic-1"), deleted);
 });
 
@@ -401,7 +336,7 @@ test("del の不明な操作（custom_id のチャンネル無し・知らない
     env.run({ ...press("yes"), kind: "select", values: [] }),
     /不明な操作です（select yes）/,
   );
-  assert.deepEqual(env.gateway.calls, []);
+  assert.deepEqual(env.gateway.deleted, []);
   assert.equal(env.topicSessions.get("topic-1")?.state, "done");
 });
 

@@ -1,10 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { openDb } from "../src/store/db.ts";
 import { MemoryStore } from "../src/store/memories.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
 
 /** 呼ぶたびに 1 分進む時計 */
 function clock(): () => Date {
@@ -13,13 +10,8 @@ function clock(): () => Date {
 }
 
 function tempStore(t: TestContext): MemoryStore {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-  return new MemoryStore(db, clock());
+  const db = tempDb(t);
+  return createStores(db, clock()).memories;
 }
 
 test("MemoryStore: 追加すると有効な記憶として id 順に並ぶ", (t) => {

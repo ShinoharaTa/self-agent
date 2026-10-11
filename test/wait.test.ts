@@ -1,9 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { MoveTarget } from "../src/app/channel-ops.ts";
 import { ALREADY_CLOSED_REPLY, NOT_SESSION_REPLY } from "../src/app/commands/close.ts";
 import { HELP_TEXT } from "../src/app/commands/help.ts";
 import {
@@ -13,46 +9,13 @@ import {
   createWaitComponent,
   WAITED_REPLY,
 } from "../src/app/commands/wait.ts";
-import type { Interaction, InteractionResponder, ModalDef, OutgoingMessage } from "../src/discord/gateway.ts";
-import { openDb } from "../src/store/db.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { RecordingChannelOps } from "./helpers/recording.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 const LATER = new Date("2026-10-02T15:00:00Z");
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
-
-class RecordingChannelOps {
-  moves: Array<{ channelId: string; target: MoveTarget }> = [];
-
-  enqueueMove(channelId: string, target: MoveTarget): void {
-    this.moves.push({ channelId, target });
-  }
-}
 
 const BASE = { guildId: "guild-1", channelId: "topic-1", userId: "owner-1", createdAt: NOW };
 const WAIT: Extract<Interaction, { kind: "command" }> = { ...BASE, kind: "command", name: "wait", options: {} };
@@ -63,14 +26,9 @@ function continuePress(channelId: string = "topic-1"): Extract<Interaction, { ki
 }
 
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const clock = { now: NOW };
-  const topicSessions = new TopicSessionStore(db, () => clock.now);
+  const { topicSessions } = createStores(db, () => clock.now);
   const channelOps = new RecordingChannelOps();
   const logs: string[] = [];
   const deps = { topicSessions, channelOps, log: (line: string) => logs.push(line) };

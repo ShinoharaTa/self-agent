@@ -1,8 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import * as z from "zod";
 import type { RunContext } from "../src/agent/runner.ts";
 import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
@@ -17,12 +14,8 @@ import {
   type TextToolResult,
 } from "../src/agent/tools.ts";
 import { MEMORY_BLOCK_HEADER } from "../src/app/turn.ts";
-import { openDb } from "../src/store/db.ts";
-import { KnowledgeStore } from "../src/store/knowledge.ts";
-import { MEMORY_MAX_ACTIVE, MemoryStore } from "../src/store/memories.ts";
-import { ProjectStore } from "../src/store/projects.ts";
-import { TaskStore } from "../src/store/tasks.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { MEMORY_MAX_ACTIVE } from "../src/store/memories.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
 
 /** 2026-10-07 01:30 JST（UTC ではまだ 10/06） */
 const NOW = new Date("2026-10-06T16:30:00.000Z");
@@ -30,15 +23,9 @@ const LATER = new Date("2026-10-08T03:00:00.000Z");
 const CONTEXT: RunContext = { guildId: "guild-1", channelId: "topic-1", kind: "session" };
 
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const clock = { now: NOW };
-  const knowledge = new KnowledgeStore(db, () => clock.now);
-  const memories = new MemoryStore(db, () => clock.now);
+  const { knowledge, memories } = createStores(db, () => clock.now);
   const confirmed: Array<[unknown, RunContext]> = [];
   const notified: Array<[MemoryChange, RunContext]> = [];
   const deps: KbMemoryToolDeps = {
@@ -400,14 +387,15 @@ test("memory_save・memory_forget: context が無いターン（#inbox の要約
 
 function definitions(t: TestContext, context?: RunContext) {
   const env = setup(t);
+  const { tasks, topicSessions, projects } = createStores(env.db, () => NOW);
   const tools = createTaskTools(
-    new TaskStore(env.db, () => NOW),
-    new TopicSessionStore(env.db, () => NOW),
+    tasks,
+    topicSessions,
     async () => ({ result: "not_available" }),
     env.deps,
     // project_open はここでは使わない（配信は無効）
     {
-      projects: new ProjectStore(env.db, () => NOW),
+      projects,
       projectsDir: "/srv/work/projects",
       publicBaseUrl: undefined,
       serving: () => false,

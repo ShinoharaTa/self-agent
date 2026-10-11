@@ -1,10 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { openDb } from "../src/store/db.ts";
 import { ProjectStore, toSlug } from "../src/store/projects.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
 
 /** 2026-10-07T00:<minute>:00.000Z の ISO 文字列 */
 function at(minute: number): string {
@@ -13,14 +10,9 @@ function at(minute: number): string {
 
 /** setMinute で進める時計を持つストア（初めは 00:00） */
 function tempStore(t: TestContext): { store: ProjectStore; setMinute: (minute: number) => void } {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   let minute = 0;
-  const store = new ProjectStore(db, () => new Date(at(minute)));
+  const { projects: store } = createStores(db, () => new Date(at(minute)));
   return {
     store,
     setMinute: (value) => {

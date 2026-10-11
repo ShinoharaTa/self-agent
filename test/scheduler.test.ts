@@ -17,12 +17,10 @@ import {
 } from "../src/app/scheduler.ts";
 import { pruneProjectTrash } from "../src/agent/project-files.ts";
 import { pruneDevLogs } from "../src/devlog/log.ts";
-import type { Gateway, OutgoingMessage } from "../src/discord/gateway.ts";
-import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
-import { openDb } from "../src/store/db.ts";
-import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import type { OutgoingMessage } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingChannelOps } from "./helpers/recording.ts";
 
 const NOW = new Date("2026-10-02T12:00:00.000Z");
 const HOUR_MS = 60 * 60 * 1000;
@@ -45,44 +43,6 @@ class FakeTimers implements SchedulerTimers {
   }
 }
 
-class FakeGateway implements Pick<Gateway, "sendMessage" | "listChannelParents" | "isInGuild"> {
-  sent: Array<{ channelId: string; message: OutgoingMessage }> = [];
-  /** Bot が参加しているサーバー。undefined なら全部に参加している扱い */
-  joined: Set<string> | undefined;
-  isInGuild(guildId: string): boolean {
-    return this.joined === undefined || this.joined.has(guildId);
-  }
-  /** sendMessage の直前に待つ。投げればその送信は失敗する */
-  beforeSend: (channelId: string) => Promise<void> = async () => {};
-  /** listChannelParents で問い合わせたサーバー */
-  listed: string[] = [];
-  /** サーバーのチャンネル → 親カテゴリ。undefined なら defaultParents（ずれなし）を返す */
-  parents: Map<string, string | null> | undefined;
-  defaultParents: () => Map<string, string | null> = () => new Map();
-  /** listChannelParents の中（結果を返す前）に呼ばれる。投げればその問い合わせは失敗する */
-  beforeList: () => void = () => {};
-
-  async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
-    await this.beforeSend(channelId);
-    this.sent.push({ channelId, message });
-    return `message-${this.sent.length}`;
-  }
-  async listChannelParents(guildId: string): Promise<Map<string, string | null>> {
-    this.listed.push(guildId);
-    const parents = new Map(this.parents ?? this.defaultParents());
-    this.beforeList();
-    return parents;
-  }
-}
-
-class RecordingChannelOps {
-  moves: Array<{ channelId: string; target: MoveTarget }> = [];
-
-  enqueueMove(channelId: string, target: MoveTarget): void {
-    this.moves.push({ channelId, target });
-  }
-}
-
 /** #inbox の切り替え（rotateDue）の呼び出しを記録する。中身は inbox-rotate.test.ts で確かめる */
 class RecordingRotator {
   /** 呼ばれたときに渡された stopping */
@@ -102,26 +62,23 @@ function setup(
   deleteAfterDays: number = 30,
   allowedGuildIds: string[] = ["guild-1"],
 ) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const clock = { now: NOW };
-  const topicSessions = new TopicSessionStore(db, () => clock.now);
-  const guildSettings = new GuildSettingsStore(db, () => clock.now);
-  const sessions = new SdkSessionStore(db, () => clock.now);
-  const seeds = new ChannelSeedStore(db, () => clock.now);
-  const gateway = new FakeGateway();
-  // 既定では、削除済みでないセッションのチャンネルはどれも DB の category_id に置かれている（ずれなし）
-  gateway.defaultParents = () =>
-    new Map(
-      db
-        .prepare("SELECT channel_id, category_id FROM sessions WHERE state != 'deleted'")
-        .all()
-        .map((row) => [String(row.channel_id), String(row.category_id)]),
-    );
+  const { topicSessions, guildSettings, sessions, seeds } = createStores(db, () => clock.now);
+  const gateway = new FakeGateway({ allow: ["sendMessage", "listChannelParents", "isInGuild"] });
+  // parents を入れていなければ、削除済みでないセッションのチャンネルはどれも DB の category_id に置かれている（ずれなし）
+  gateway.listParents = () =>
+    gateway.parents.size > 0
+      ? gateway.parents
+      : new Map(
+          db
+            .prepare("SELECT channel_id, category_id FROM sessions WHERE state != 'deleted'")
+            .all()
+            .map((row) => [String(row.channel_id), String(row.category_id)]),
+        );
+  /** 送った sendMessage（送れたもの） */
+  const sent = (): Array<{ channelId: string; message: OutgoingMessage }> =>
+    gateway.posts.map(({ channelId, message }) => ({ channelId, message }));
   const channelOps = new RecordingChannelOps();
   const inboxRotator = new RecordingRotator();
   // 古い dev ログを消す処理。既定では何もしない（中身は devlog.test.ts で確かめる）
@@ -170,6 +127,7 @@ function setup(
     sessions,
     seeds,
     gateway,
+    sent,
     channelOps,
     inboxRotator,
     devLogs,
@@ -218,14 +176,14 @@ test("tick: 最終発言がちょうど 12 時間前のセッションは待ち�
   assert.equal(moved?.waitingSince, NOW.toISOString());
   assert.equal(env.topicSessions.get("topic-before")?.state, "active");
   assert.deepEqual(env.channelOps.moves, [toWaiting("topic-just")]);
-  assert.deepEqual(env.gateway.sent, [{ channelId: "topic-just", message: idleNotice(12, "topic-just") }]);
+  assert.deepEqual(env.sent(), [{ channelId: "topic-just", message: idleNotice(12, "topic-just") }]);
   assert.deepEqual(env.logs, ["12 時間発言が無いセッションを待ちに移しました（guild=guild-1）"]);
 
   // 1 ms 進めば残りも待ちになる
   env.clock.now = new Date(NOW.getTime() + 1);
   await env.scheduler.tick();
   assert.equal(env.topicSessions.get("topic-before")?.state, "waiting");
-  assert.equal(env.gateway.sent.length, 2);
+  assert.equal(env.sent().length, 2);
 });
 
 test("tick: 1 回で動かすのは最終発言の古い順に最大 5 件。残りは次の tick で動かす", async (t) => {
@@ -242,7 +200,7 @@ test("tick: 1 回で動かすのは最終発言の古い順に最大 5 件。残
   await env.scheduler.tick();
 
   assert.deepEqual(
-    env.gateway.sent.map((sent) => sent.channelId),
+    env.sent().map((sent) => sent.channelId),
     oldestFirst.slice(0, 5),
   );
   assert.deepEqual(env.channelOps.moves, oldestFirst.slice(0, 5).map(toWaiting));
@@ -251,7 +209,7 @@ test("tick: 1 回で動かすのは最終発言の古い順に最大 5 件。残
   await env.scheduler.tick();
 
   assert.deepEqual(
-    env.gateway.sent.map((sent) => sent.channelId),
+    env.sent().map((sent) => sent.channelId),
     oldestFirst,
   );
   for (const channelId of oldestFirst) assert.equal(env.topicSessions.get(channelId)?.state, "waiting");
@@ -266,7 +224,7 @@ test("tick: 待ち・完了・削除済みのセッションは対象にしな�
 
   await env.scheduler.tick();
 
-  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.sent(), []);
   assert.deepEqual(env.channelOps.moves, []);
   assert.equal(env.topicSessions.get("topic-done")?.state, "done");
   assert.equal(env.topicSessions.get("topic-deleted")?.state, "deleted");
@@ -279,7 +237,7 @@ test("tick: SELF_AGENT_IDLE_HOURS の値で判定し、知らせの時間もそ�
 
   await env.scheduler.tick();
 
-  assert.deepEqual(env.gateway.sent, [{ channelId: "topic-1", message: idleNotice(3, "topic-1") }]);
+  assert.deepEqual(env.sent(), [{ channelId: "topic-1", message: idleNotice(3, "topic-1") }]);
   assert.equal(env.topicSessions.get("topic-2")?.state, "active");
 });
 
@@ -287,7 +245,7 @@ test("tick: 知らせの投稿に失敗しても待ちのままにし、log に�
   const env = setup(t);
   env.createAt("topic-1", ago(14 * HOUR_MS));
   env.createAt("topic-2", ago(13 * HOUR_MS));
-  env.gateway.beforeSend = async (channelId) => {
+  env.gateway.beforeSendMessage = async (channelId) => {
     if (channelId === "topic-1") throw new Error("Missing Access");
   };
 
@@ -296,7 +254,7 @@ test("tick: 知らせの投稿に失敗しても待ちのままにし、log に�
   assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");
   assert.equal(env.topicSessions.get("topic-2")?.state, "waiting");
   assert.deepEqual(
-    env.gateway.sent.map((sent) => sent.channelId),
+    env.sent().map((sent) => sent.channelId),
     ["topic-2"],
   );
   assert.ok(env.logs.includes("待ちに移した知らせの投稿に失敗しました（guild=guild-1）: Missing Access"), env.logs.join("\n"));
@@ -307,7 +265,7 @@ test("tick: 知らせの投稿より先に、対象をすべて DB で待ちに�
   env.createAt("topic-1", ago(14 * HOUR_MS));
   env.createAt("topic-2", ago(13 * HOUR_MS));
   const statesAtSend: string[] = [];
-  env.gateway.beforeSend = async () => {
+  env.gateway.beforeSendMessage = async () => {
     statesAtSend.push(
       `${env.topicSessions.get("topic-1")?.state}/${env.topicSessions.get("topic-2")?.state}/${env.channelOps.moves.length}`,
     );
@@ -322,7 +280,7 @@ test("tick: 実行中に呼ばれたら重ねずに同じ tick を返し、idle 
   const env = setup(t);
   env.createAt("topic-1", ago(14 * HOUR_MS));
   let release = (): void => {};
-  env.gateway.beforeSend = () => new Promise<void>((resolve) => (release = resolve));
+  env.gateway.beforeSendMessage = () => new Promise<void>((resolve) => (release = resolve));
 
   const first = env.scheduler.tick();
   await flush();
@@ -338,7 +296,7 @@ test("tick: 実行中に呼ばれたら重ねずに同じ tick を返し、idle 
   release();
   await Promise.all([first, waiting]);
   assert.equal(idle, true);
-  assert.equal(env.gateway.sent.length, 1);
+  assert.equal(env.sent().length, 1);
   // 終わった後の idle はすぐ resolve する
   await env.scheduler.idle();
 });
@@ -358,7 +316,7 @@ test("start: 起動直後に 1 回 tick して止まっていた間に過ぎた�
   );
   assert.equal(env.topicSessions.get("topic-old")?.state, "waiting");
   assert.deepEqual(
-    env.gateway.sent.map((sent) => sent.channelId),
+    env.sent().map((sent) => sent.channelId),
     ["topic-old"],
   );
 
@@ -389,7 +347,7 @@ test("stop: 以後の定期実行を止め、stop の後の start では何も�
   assert.equal(env.timers.intervals[0]?.cancelled, true);
   assert.equal(env.timers.intervals.length, 1);
   assert.equal(env.topicSessions.get("topic-1")?.state, "active");
-  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.sent(), []);
 });
 
 test("tick: DB の失敗は reject せず log に出す", async () => {
@@ -437,7 +395,7 @@ test("削除の確認: 閉じてからちょうど 30 日のセッションは #
   await env.scheduler.tick();
 
   const prompted = env.topicSessions.get("topic-just");
-  assert.deepEqual(env.gateway.sent, [{ channelId: "system-1", message: deletePrompt(prompted!, 30) }]);
+  assert.deepEqual(env.sent(), [{ channelId: "system-1", message: deletePrompt(prompted!, 30) }]);
   assert.equal(prompted?.deletePromptMessageId, "message-1");
   // 確認を投稿するだけで、状態・閉じた時刻は変えない
   assert.equal(prompted?.state, "done");
@@ -450,7 +408,7 @@ test("削除の確認: 閉じてからちょうど 30 日のセッションは #
   env.clock.now = new Date(NOW.getTime() + 1);
   await env.scheduler.tick();
   assert.deepEqual(
-    env.gateway.sent.map((sent) => sent.message.text),
+    env.sent().map((sent) => sent.message.text),
     [
       "<#topic-just>（題名 topic-just）は完了から 30 日経ちました。チャンネルを削除しますか？要約は残ります。",
       "<#topic-before>（題名 topic-before）は完了から 30 日経ちました。チャンネルを削除しますか？要約は残ります。",
@@ -466,10 +424,10 @@ test("削除の確認: SELF_AGENT_DELETE_AFTER_DAYS の値で判定し、文面�
 
   await env.scheduler.tick();
 
-  assert.deepEqual(env.gateway.sent, [
+  assert.deepEqual(env.sent(), [
     { channelId: "system-1", message: deletePrompt({ channelId: "topic-1", title: "題名 topic-1" }, 7) },
   ]);
-  assert.match(env.gateway.sent[0]!.message.text, /完了から 7 日経ちました/);
+  assert.match(env.sent()[0]!.message.text, /完了から 7 日経ちました/);
 });
 
 test("削除の確認: 1 回で投稿するのは閉じた時刻の古い順に最大 5 件。残りは次の tick で投稿する", async (t) => {
@@ -483,7 +441,7 @@ test("削除の確認: 1 回で投稿するのは閉じた時刻の古い順に�
     .sort((a, b) => b.days - a.days)
     .map((entry) => entry.channelId);
   const promptedChannels = (): string[] =>
-    env.gateway.sent.map((sent) => /^<#([^>]+)>/.exec(sent.message.text)?.[1] ?? "");
+    env.sent().map((sent) => /^<#([^>]+)>/.exec(sent.message.text)?.[1] ?? "");
 
   await env.scheduler.tick();
 
@@ -507,7 +465,7 @@ test("削除の確認: 投稿済みのセッションには投稿し直さない
   await env.scheduler.tick();
   await env.scheduler.tick();
 
-  assert.equal(env.gateway.sent.length, 1);
+  assert.equal(env.sent().length, 1);
   assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-1");
 });
 
@@ -521,7 +479,7 @@ test("削除の確認: 進行中・待ち・削除済みのセッションは対
   await env.scheduler.tick();
 
   assert.deepEqual(
-    env.gateway.sent.map((sent) => sent.channelId),
+    env.sent().map((sent) => sent.channelId),
     ["topic-active"],
   );
   for (const channelId of ["topic-active", "topic-waiting", "topic-deleted"]) {
@@ -541,7 +499,7 @@ test("削除の確認: #system が無いサーバーは飛ばし、log はサー
   await env.scheduler.tick();
 
   assert.deepEqual(
-    env.gateway.sent.map((sent) => sent.channelId),
+    env.sent().map((sent) => sent.channelId),
     ["system-1"],
   );
   assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-1");
@@ -558,7 +516,7 @@ test("削除の確認: #system が無いサーバーは飛ばし、log はサー
   env.guildSettings.setChannel("guild-2", "systemChannelId", "system-2");
   await env.scheduler.tick();
   assert.deepEqual(
-    env.gateway.sent.map((sent) => sent.channelId),
+    env.sent().map((sent) => sent.channelId),
     ["system-1", "system-2", "system-2"],
   );
   assert.equal(env.topicSessions.get("topic-2a")?.deletePromptMessageId, "message-2");
@@ -570,7 +528,7 @@ test("削除の確認: 投稿に失敗したら記録せずに log に出して�
   env.closeAt("topic-1", ago(40 * DAY_MS));
   env.closeAt("topic-2", ago(35 * DAY_MS));
   let failures = 1;
-  env.gateway.beforeSend = async () => {
+  env.gateway.beforeSendMessage = async () => {
     if (failures-- > 0) throw new Error("Missing Access");
   };
 
@@ -583,7 +541,7 @@ test("削除の確認: 投稿に失敗したら記録せずに log に出して�
   await env.scheduler.tick();
 
   assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-2");
-  assert.equal(env.gateway.sent.length, 2);
+  assert.equal(env.sent().length, 2);
 });
 
 test("tick: 待ちへの移動で DB が失敗しても、削除の確認は行う", async (t) => {
@@ -613,12 +571,12 @@ test("削除の確認: 確認の後に進行中に戻って閉じ直したら、
   env.topicSessions.close("topic-1", "要約");
   env.clock.now = new Date(NOW.getTime() + 30 * DAY_MS - 1);
   await env.scheduler.tick();
-  assert.equal(env.gateway.sent.length, 1);
+  assert.equal(env.sent().length, 1);
 
   env.clock.now = new Date(NOW.getTime() + 30 * DAY_MS);
   await env.scheduler.tick();
-  assert.equal(env.gateway.sent.length, 2);
-  assert.equal(env.gateway.sent[1]?.channelId, "system-1");
+  assert.equal(env.sent().length, 2);
+  assert.equal(env.sent()[1]?.channelId, "system-1");
   assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-2");
 });
 
@@ -629,7 +587,7 @@ test("tick: 待ちへの移動と削除の確認の後に #inbox の切り替え
   const seen: string[] = [];
   let release = (): void => {};
   env.inboxRotator.onCall = () => {
-    seen.push(`moves=${env.channelOps.moves.length} sent=${env.gateway.sent.length}`);
+    seen.push(`moves=${env.channelOps.moves.length} sent=${env.sent().length}`);
     return new Promise<void>((resolve) => (release = resolve));
   };
 
@@ -718,7 +676,7 @@ test("再同期: 親がその状態のカテゴリのどれでもないセッシ
 
   assert.deepEqual(env.gateway.listed, ["guild-1"]);
   assert.deepEqual(env.channelOps.moves, [toState("topic-b", "waiting"), toState("topic-e", "done")]);
-  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.sent(), []);
   assert.deepEqual(env.logs, ["状態とカテゴリが合わないセッション 2 件を移します（guild=guild-1）"]);
 
   // ずれが無ければ何もしない
@@ -775,7 +733,7 @@ test("再同期: Discord 上で消えた進行中のセッションは、待ち�
   await env.scheduler.tick();
 
   assert.equal(env.topicSessions.get("topic-gone")?.state, "deleted");
-  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.sent(), []);
   assert.deepEqual(env.channelOps.moves, []);
 });
 
@@ -888,7 +846,7 @@ test("tick: 待ちに移した知らせは、投稿する前に読み直して�
   const env = setup(t);
   env.createAt("topic-1", ago(14 * HOUR_MS));
   env.createAt("topic-2", ago(13 * HOUR_MS));
-  env.gateway.beforeSend = async (channelId) => {
+  env.gateway.beforeSendMessage = async (channelId) => {
     // topic-1 の知らせを投稿している間に、topic-2 で発言があった
     if (channelId === "topic-1") env.topicSessions.setActive("topic-2");
   };
@@ -896,7 +854,7 @@ test("tick: 待ちに移した知らせは、投稿する前に読み直して�
   await env.scheduler.tick();
 
   assert.deepEqual(
-    env.gateway.sent.map((sent) => sent.channelId),
+    env.sent().map((sent) => sent.channelId),
     ["topic-1"],
   );
   assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");

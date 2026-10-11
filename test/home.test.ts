@@ -1,97 +1,16 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createHomeComponent, NEW_SESSION_MODAL } from "../src/app/commands/home.ts";
 import { EMPTY_TITLE_REPLY, NOT_SET_UP_REPLY, welcomeText } from "../src/app/commands/new.ts";
 import { ensureGuildLayout } from "../src/app/commands/setup.ts";
 import { taskListMessage } from "../src/app/commands/tasks.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
-import type {
-  Gateway,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-  TextChannelOptions,
-} from "../src/discord/gateway.ts";
-import { openDb } from "../src/store/db.ts";
-import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { TaskStore } from "../src/store/tasks.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
-
-type GatewayCall =
-  | { method: "createCategory"; name: string }
-  | { method: "createTextChannel"; options: TextChannelOptions }
-  | { method: "send"; channelId: string; text: string };
-
-/** 作ったチャンネルを覚えておき、channelExists・countChannelsIn はそれで答える（存在の確認・数えるのは記録しない） */
-class FakeGateway
-  implements Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "countChannelsIn" | "moveChannel" | "send">
-{
-  calls: GatewayCall[] = [];
-  private readonly alive = new Set<string>();
-  private readonly parents = new Map<string, string>();
-  private nextId = 1;
-
-  async createCategory(_guildId: string, name: string): Promise<string> {
-    this.calls.push({ method: "createCategory", name });
-    return this.newId();
-  }
-  async createTextChannel(_guildId: string, options: TextChannelOptions): Promise<string> {
-    this.calls.push({ method: "createTextChannel", options });
-    const id = this.newId();
-    this.parents.set(id, options.parentId);
-    return id;
-  }
-  async channelExists(channelId: string): Promise<boolean> {
-    return this.alive.has(channelId);
-  }
-  async countChannelsIn(categoryId: string): Promise<number> {
-    return [...this.parents.values()].filter((parentId) => parentId === categoryId).length;
-  }
-  async moveChannel(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async send(channelId: string, text: string): Promise<void> {
-    this.calls.push({ method: "send", channelId, text });
-  }
-
-  private newId(): string {
-    const id = `ch-${this.nextId++}`;
-    this.alive.add(id);
-    return id;
-  }
-}
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
 
 type ComponentInteraction = Exclude<Interaction, { kind: "command" }>;
 
@@ -110,17 +29,15 @@ function submitTitle(title: string): ComponentInteraction {
 const ACTIVE = "ch-5";
 
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const clock = { now: NOW };
-  const gateway = new FakeGateway();
-  const guildSettings = new GuildSettingsStore(db, () => NOW);
-  const topicSessions = new TopicSessionStore(db, () => clock.now);
-  const tasks = new TaskStore(db, () => NOW);
+  // 作ったチャンネルで channelExists・countChannelsIn に答える（存在の確認・数えるのは記録しない）
+  const gateway = new FakeGateway({
+    allow: ["channelExists", "countChannelsIn"],
+    record: ["createCategory", "createTextChannel", "send"],
+  });
+  const { guildSettings, tasks } = createStores(db, () => NOW);
+  const { topicSessions } = createStores(db, () => clock.now);
   const logs: string[] = [];
   const component = createHomeComponent({
     gateway,
@@ -165,7 +82,11 @@ test("モーダル送信（home:new-modal）: /new と同じ処理でセッシ�
   const calls = await handle(submitTitle("  旅行の計画  "));
 
   assert.deepEqual(gateway.calls, [
-    { method: "createTextChannel", options: { name: "旅行の計画", parentId: ACTIVE, topic: "旅行の計画" } },
+    {
+      method: "createTextChannel",
+      guildId: "guild-1",
+      options: { name: "旅行の計画", parentId: ACTIVE, topic: "旅行の計画" },
+    },
     { method: "send", channelId: "ch-8", text: welcomeText("旅行の計画") },
   ]);
   assert.deepEqual(calls, [

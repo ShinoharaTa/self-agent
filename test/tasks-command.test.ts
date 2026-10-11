@@ -1,8 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { MESSAGE_MAX_LENGTH } from "../src/app/commands/sessions.ts";
 import {
   createTasksCommand,
@@ -10,43 +7,11 @@ import {
   NO_OPEN_TASKS_TEXT,
   taskListMessage,
 } from "../src/app/commands/tasks.ts";
-import type {
-  ComponentRow,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-} from "../src/discord/gateway.ts";
-import { openDb } from "../src/store/db.ts";
-import { TaskStore } from "../src/store/tasks.ts";
+import type { ComponentRow, Interaction } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
 
 const BASE = { guildId: "guild-1", channelId: "inbox-1", userId: "owner-1", createdAt: NOW };
 const TASKS: Extract<Interaction, { kind: "command" }> = { ...BASE, kind: "command", name: "tasks", options: {} };
@@ -56,13 +21,8 @@ function select(values: string[], customId: string = "tasks:done"): Extract<Inte
 }
 
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-  const tasks = new TaskStore(db, () => NOW);
+  const db = tempDb(t);
+  const { tasks } = createStores(db, () => NOW);
   const logs: string[] = [];
   const deps = { tasks, log: (line: string) => logs.push(line) };
   const runTasks = async (): Promise<ResponderCall[]> => {

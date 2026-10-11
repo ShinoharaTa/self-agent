@@ -10,66 +10,23 @@ import {
   type CommandHandler,
   type ComponentHandler,
 } from "../src/app/interactions.ts";
-import type {
-  CommandDef,
-  Gateway,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-} from "../src/discord/gateway.ts";
+import type { Interaction, InteractionResponder } from "../src/discord/gateway.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { FakeResponder } from "./helpers/responder.ts";
 
 const cfg = { allowedGuildIds: ["guild-1", "guild-9"], ownerUserId: "owner-1" };
 // 振り分けと登録の仕組みを見るので、依存の無い /help だけで足りる（/setup は setup.test.ts）
 const COMMANDS: CommandHandler[] = [helpCommand];
 const CREATED_AT = new Date("2026-10-02T00:12:00Z");
 
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-  /** reply の直前に呼ばれる。投げればその応答は失敗する */
-  beforeReply: () => void = () => {};
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.beforeReply();
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
-
-class FakeGateway implements Pick<Gateway, "isInGuild" | "registerGuildCommands"> {
-  registered: Array<{ guildId: string; defs: readonly CommandDef[] }> = [];
-  private readonly joined: readonly string[];
-  private readonly failing: readonly string[];
-
-  constructor(joined: readonly string[], failing: readonly string[] = []) {
-    this.joined = joined;
-    this.failing = failing;
-  }
-
-  isInGuild(guildId: string): boolean {
-    return this.joined.includes(guildId);
-  }
-  async registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void> {
-    if (this.failing.includes(guildId)) throw new Error("Missing Access");
-    this.registered.push({ guildId, defs });
-  }
+/** joined のサーバーに参加し、failing のサーバーではコマンドの登録に失敗する */
+function fakeGateway(joined: readonly string[], failing: readonly string[] = []): FakeGateway {
+  const gateway = new FakeGateway({ allow: ["isInGuild", "registerGuildCommands"] });
+  gateway.joined = new Set(joined);
+  gateway.beforeRegister = (guildId) => {
+    if (failing.includes(guildId)) throw new Error("Missing Access");
+  };
+  return gateway;
 }
 
 type CommandInteraction = Extract<Interaction, { kind: "command" }>;
@@ -297,7 +254,7 @@ test("失敗の返信まで失敗しても reject せず log に出す", async (
 });
 
 test("起動時の登録は許可サーバーのうち参加しているものだけに行い、参加していなければ log を出してスキップする", async () => {
-  const gateway = new FakeGateway(["guild-1", "guild-other"]);
+  const gateway = fakeGateway(["guild-1", "guild-other"]);
   const logs: string[] = [];
 
   await registerCommands({ cfg, gateway, commands: COMMANDS, log: (line) => logs.push(line) });
@@ -313,7 +270,7 @@ test("起動時の登録は許可サーバーのうち参加しているもの�
 });
 
 test("1 つのサーバーで登録に失敗しても log に出して残りを続ける", async () => {
-  const gateway = new FakeGateway(["guild-1", "guild-9"], ["guild-1"]);
+  const gateway = fakeGateway(["guild-1", "guild-9"], ["guild-1"]);
   const logs: string[] = [];
 
   await registerCommands({ cfg, gateway, commands: COMMANDS, log: (line) => logs.push(line) });

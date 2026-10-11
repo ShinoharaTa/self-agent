@@ -1,167 +1,40 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRunner } from "../src/agent/runner.ts";
-import type { MoveTarget } from "../src/app/channel-ops.ts";
 import { HELP_TEXT } from "../src/app/commands/help.ts";
 import { createSetupCommand, ensureGuildLayout, HOME_PANEL_TEXT, homePanelMessage } from "../src/app/commands/setup.ts";
 import { createCommands, createComponents, createInteractionHandler } from "../src/app/interactions.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
-import type {
-  Gateway,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-  TextChannelOptions,
-} from "../src/discord/gateway.ts";
-import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
-import { openDb } from "../src/store/db.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
-import { KnowledgeStore } from "../src/store/knowledge.ts";
-import { MemoryStore } from "../src/store/memories.ts";
-import { ProjectStore } from "../src/store/projects.ts";
-import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
-import { TaskStore } from "../src/store/tasks.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
-import { UsageStore } from "../src/store/usage.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway, type GatewayCall } from "./helpers/gateway.ts";
+import { RecordingChannelOps } from "./helpers/recording.ts";
+import { FakeResponder } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 
-type GatewayCall =
-  | { method: "createCategory"; guildId: string; name: string }
-  | { method: "createTextChannel"; guildId: string; options: TextChannelOptions }
-  | { method: "channelExists"; channelId: string }
-  | { method: "moveChannel"; channelId: string; parentId: string };
-
-/** ホームパネルの投稿・ピン留め・存在の確認（calls とは別に記録する） */
-type PanelCall =
-  | { method: "messageExists"; channelId: string; messageId: string }
-  | { method: "sendMessage"; channelId: string; message: OutgoingMessage }
-  | { method: "pinMessage"; channelId: string; messageId: string };
-
 /**
  * 作ったチャンネルを覚えておき、channelExists はそれ（から消したものを除く）で答える（/new は new-session.test.ts）。
- * ホームパネルのメッセージは panelCalls に記録し、messageExists は投稿したもの（から消したものを除く）で答える
+ * ホームパネルのメッセージの呼び出しは panelCalls に分けて見て、messageExists は投稿したもの（から消したものを除く）で答える
  */
-class FakeGateway
-  implements
-    Pick<
-      Gateway,
-      | "createCategory"
-      | "createTextChannel"
-      | "channelExists"
-      | "moveChannel"
-      | "countChannelsIn"
-      | "send"
-      | "sendMessage"
-      | "pinMessage"
-      | "messageExists"
-      | "deleteChannel"
-    >
-{
-  calls: GatewayCall[] = [];
-  panelCalls: PanelCall[] = [];
-  /** Discord 上にあるメッセージ（channelId:messageId） */
-  readonly messages = new Set<string>();
-  /** sendMessage の直前に呼ばれる。投げればその投稿は失敗する */
-  beforePost: () => void = () => {};
-  /** pinMessage の直前に呼ばれる。投げればそのピン留めは失敗する */
-  beforePin: () => void = () => {};
-  /** messageExists の直前に呼ばれる。投げればその確認は失敗する */
-  beforeMessageExists: () => void = () => {};
-  private nextMessageId = 1;
-  /** Discord 上にあるチャンネル */
-  readonly alive = new Set<string>();
-  /** 作成の直前に呼ばれる。投げればその作成は失敗する */
-  beforeCreate: (name: string) => void = () => {};
-  /** channelExists の直前に呼ばれる。投げればその確認は失敗する */
-  beforeExists: () => void = () => {};
-  private nextId = 1;
-
-  async createCategory(guildId: string, name: string): Promise<string> {
-    this.calls.push({ method: "createCategory", guildId, name });
-    this.beforeCreate(name);
-    return this.newId();
-  }
-  async createTextChannel(guildId: string, options: TextChannelOptions): Promise<string> {
-    this.calls.push({ method: "createTextChannel", guildId, options });
-    this.beforeCreate(options.name);
-    return this.newId();
-  }
-  async channelExists(channelId: string): Promise<boolean> {
-    this.calls.push({ method: "channelExists", channelId });
-    this.beforeExists();
-    return this.alive.has(channelId);
-  }
-  async moveChannel(channelId: string, parentId: string): Promise<void> {
-    this.calls.push({ method: "moveChannel", channelId, parentId });
-  }
-  async countChannelsIn(): Promise<number> {
-    throw new Error("想定外の呼び出し");
-  }
-  async deleteChannel(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async send(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
-    this.panelCalls.push({ method: "sendMessage", channelId, message });
-    this.beforePost();
-    const messageId = `msg-${this.nextMessageId++}`;
-    this.messages.add(`${channelId}:${messageId}`);
-    return messageId;
-  }
-  async pinMessage(channelId: string, messageId: string): Promise<void> {
-    this.panelCalls.push({ method: "pinMessage", channelId, messageId });
-    this.beforePin();
-  }
-  async messageExists(channelId: string, messageId: string): Promise<boolean> {
-    this.panelCalls.push({ method: "messageExists", channelId, messageId });
-    this.beforeMessageExists();
-    return this.messages.has(`${channelId}:${messageId}`);
+class SetupGateway extends FakeGateway {
+  constructor() {
+    super({
+      record: ["createCategory", "createTextChannel", "channelExists", "moveChannel", "messageExists", "sendMessage", "pinMessage"],
+      messageIdPrefix: "msg-",
+    });
   }
 
-  /** 呼び出し記録を空にする（2 回目の /setup の呼び出しだけを見るため） */
-  reset(): void {
-    this.calls = [];
-    this.panelCalls = [];
+  /** チャンネルの作成・存在の確認・移動 */
+  get channelCalls(): GatewayCall[] {
+    return this.callsOf("createCategory", "createTextChannel", "channelExists", "moveChannel");
   }
-
-  private newId(): string {
-    const id = `ch-${this.nextId++}`;
-    this.alive.add(id);
-    return id;
-  }
-}
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
+  /** ホームパネルの投稿・ピン留め・存在の確認 */
+  get panelCalls(): GatewayCall[] {
+    return this.callsOf("messageExists", "sendMessage", "pinMessage");
   }
 }
 
@@ -175,27 +48,10 @@ const SETUP: Extract<Interaction, { kind: "command" }> = {
   createdAt: NOW,
 };
 
-/** ChannelOpsQueue の代わりに、入れた移動を記録する */
-class RecordingChannelOps {
-  moves: Array<{ channelId: string; target: MoveTarget }> = [];
-
-  enqueueMove(channelId: string, target: MoveTarget): void {
-    this.moves.push({ channelId, target });
-  }
-  cancel(): void {
-    throw new Error("想定外の呼び出し");
-  }
-}
-
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-  const gateway = new FakeGateway();
-  const guildSettings = new GuildSettingsStore(db, () => NOW);
+  const db = tempDb(t);
+  const gateway = new SetupGateway();
+  const { guildSettings } = createStores(db, () => NOW);
   const channelOps = new RecordingChannelOps();
   const logs: string[] = [];
   const command = createSetupCommand({
@@ -258,7 +114,7 @@ test("初回: self-agent カテゴリ → #inbox/#tasks/#system → 進行中/�
 
   const text = await run();
 
-  assert.deepEqual(gateway.calls, [
+  assert.deepEqual(gateway.channelCalls, [
     { method: "createCategory", guildId: "guild-1", name: "self-agent" },
     {
       method: "createTextChannel",
@@ -304,7 +160,7 @@ test("2 回目: すべて残っていれば存在を確認するだけで何も�
   const text = await run();
 
   assert.deepEqual(
-    gateway.calls,
+    gateway.channelCalls,
     Object.values(FIRST).map((channelId) => ({ method: "channelExists", channelId })),
   );
   assert.deepEqual(savedIds(guildSettings), FIRST);
@@ -327,7 +183,7 @@ test("一部欠損: 消えた #inbox と 待ち だけを作り直し、残っ�
   const text = await run();
 
   assert.deepEqual(
-    gateway.calls.filter((call) => call.method !== "channelExists"),
+    gateway.channelCalls.filter((call) => call.method !== "channelExists"),
     [textChannel("inbox", FIRST.home), { method: "createCategory", guildId: "guild-1", name: "待ち" }],
   );
   assert.deepEqual(savedIds(guildSettings), { ...FIRST, inbox: "ch-8", waiting: "ch-9" });
@@ -345,7 +201,7 @@ test("一部欠損: self-agent カテゴリだけ消えていたら作り直し�
 
   const text = await run();
 
-  assert.deepEqual(gateway.calls, [
+  assert.deepEqual(gateway.channelCalls, [
     { method: "channelExists", channelId: FIRST.home },
     { method: "createCategory", guildId: "guild-1", name: "self-agent" },
     { method: "channelExists", channelId: FIRST.inbox },
@@ -375,7 +231,7 @@ test("一部欠損: カテゴリと #tasks が消えていたら、#tasks は新
   await run();
 
   assert.deepEqual(
-    gateway.calls.filter((call) => call.method !== "channelExists"),
+    gateway.channelCalls.filter((call) => call.method !== "channelExists"),
     [
       { method: "createCategory", guildId: "guild-1", name: "self-agent" },
       { method: "moveChannel", channelId: FIRST.inbox, parentId: "ch-8" },
@@ -417,7 +273,7 @@ test("途中で失敗したら作った分は保存して失敗を返し、次�
   gateway.reset();
   const resumed = await run();
 
-  assert.deepEqual(gateway.calls, [
+  assert.deepEqual(gateway.channelCalls, [
     { method: "channelExists", channelId: FIRST.home },
     { method: "channelExists", channelId: FIRST.inbox },
     textChannel("tasks", FIRST.home),
@@ -452,7 +308,7 @@ test("存在の確認が「無い」以外で失敗したら、作り直さず�
 
   const text = await run();
 
-  assert.deepEqual(gateway.calls, [{ method: "channelExists", channelId: FIRST.home }]);
+  assert.deepEqual(gateway.channelCalls, [{ method: "channelExists", channelId: FIRST.home }]);
   assert.deepEqual(savedIds(guildSettings), FIRST);
   assert.match(text, /^途中で失敗しました: Missing Access\n/);
 });
@@ -462,13 +318,13 @@ test("同じサーバーで 2 回同時に実行しても、作るのは 1 セ�
 
   const [first, second] = await Promise.all([run(), run()]);
 
-  const creates = gateway.calls.filter(
+  const creates = gateway.channelCalls.filter(
     (call) => call.method === "createCategory" || call.method === "createTextChannel",
   );
   assert.equal(creates.length, 7);
   // 後の実行は先の実行が保存した ID を確認するだけ
   assert.deepEqual(
-    gateway.calls.slice(7),
+    gateway.channelCalls.slice(7),
     Object.values(FIRST).map((channelId) => ({ method: "channelExists", channelId })),
   );
   assert.deepEqual(savedIds(guildSettings), FIRST);
@@ -487,7 +343,7 @@ test("ensureGuildLayout: サーバーごとに別々に作って保存する", a
   assert.deepEqual(result.existing, []);
   assert.deepEqual(result.created, ["ch-8", "ch-9", "ch-10", "ch-11", "ch-12", "ch-13", "ch-14"]);
   assert.ok(
-    gateway.calls.every(
+    gateway.channelCalls.every(
       (call) => (call.method === "createCategory" || call.method === "createTextChannel") && call.guildId === "guild-2",
     ),
   );
@@ -499,22 +355,30 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
   const { db, gateway, guildSettings, channelOps } = setup(t);
   const logs: string[] = [];
   const log = (line: string): number => logs.push(line);
-  const topicSessions = new TopicSessionStore(db, () => NOW);
-  const tasks = new TaskStore(db, () => NOW);
+  const {
+    topicSessions,
+    tasks,
+    projects,
+    sessions,
+    seeds,
+    inboxSummaries,
+    memories,
+    usage,
+    knowledge,
+  } = createStores(db, () => NOW);
   const runner: AgentRunner = { run: async () => assert.fail("想定外の呼び出し") };
   const turnQueue = new KeyedSerialQueue(1);
   const turn = {
     runner,
-    sessions: new SdkSessionStore(db, () => NOW),
-    seeds: new ChannelSeedStore(db, () => NOW),
+    sessions,
+    seeds,
     topicSessions,
-    inboxSummaries: new InboxSummaryStore(db, () => NOW),
-    memories: new MemoryStore(db, () => NOW),
-    usage: new UsageStore(db, () => NOW),
+    inboxSummaries,
+    memories,
+    usage,
     log,
   };
   const layoutQueue = new KeyedSerialQueue(1);
-  const projects = new ProjectStore(db, () => NOW);
   // /projects の削除はここでは押さないので、ディレクトリは作らない
   const projectsDir = join(tmpdir(), "self-agent-test-projects-unused");
   const commands = createCommands({
@@ -547,7 +411,7 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     seeds: turn.seeds,
     queue: layoutQueue,
     tasks,
-    knowledge: new KnowledgeStore(db, () => NOW),
+    knowledge,
     memories: turn.memories,
     projects,
     projectsDir,
@@ -572,11 +436,11 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
 
   const stranger = new FakeResponder();
   await handle({ ...SETUP, userId: "someone-else" }, stranger);
-  assert.equal(gateway.calls.length, 0);
+  assert.equal(gateway.channelCalls.length, 0);
 
   const owner = new FakeResponder();
   await handle(SETUP, owner);
-  assert.equal(gateway.calls.length, 7);
+  assert.equal(gateway.channelCalls.length, 7);
   assert.equal(guildSettings.get("guild-1")?.inboxChannelId, FIRST.inbox);
   assert.deepEqual(owner.calls[0], { method: "defer", ephemeral: true });
 });
@@ -693,7 +557,7 @@ test("ホームパネル: ピン留めに失敗しても投稿と保存は残し
 
 test("ホームパネル: 投稿に失敗したら log に出して返信に 1 行足す（/setup の失敗にはしない）。次の /setup で投稿する", async (t) => {
   const { gateway, guildSettings, logs, run } = setup(t);
-  gateway.beforePost = () => {
+  gateway.beforeSendMessage = () => {
     throw new Error("Missing Access");
   };
 
@@ -717,7 +581,7 @@ test("ホームパネル: 投稿に失敗したら log に出して返信に 1 �
     "/setup を実行しました（guild=guild-1、作成 7 件）",
   ]);
 
-  gateway.beforePost = () => {};
+  gateway.beforeSendMessage = () => {};
   gateway.reset();
   await run();
 

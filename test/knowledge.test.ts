@@ -1,7 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
@@ -10,12 +8,7 @@ import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
 import { MemoryStore } from "../src/store/memories.ts";
 import { TaskStore } from "../src/store/tasks.ts";
-
-function tempDir(t: TestContext): string {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return dir;
-}
+import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 
 /** 呼ぶたびに 1 分進む時計 */
 function clock(): () => Date {
@@ -24,9 +17,8 @@ function clock(): () => Date {
 }
 
 function setup(t: TestContext): { db: DatabaseSync; store: KnowledgeStore } {
-  const db = openDb(join(tempDir(t), "self-agent.db"));
-  t.after(() => db.close());
-  return { db, store: new KnowledgeStore(db, clock()) };
+  const db = tempDb(t);
+  return { db, store: createStores(db, clock()).knowledge };
 }
 
 function titles(store: KnowledgeStore, query: string, limit?: number): string[] {

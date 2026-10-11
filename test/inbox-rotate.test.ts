@@ -1,10 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { setImmediate as flush } from "node:timers/promises";
-import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
+import type { RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
 import { createHandler } from "../src/app/handler.ts";
 import {
@@ -16,19 +13,15 @@ import {
   TASKS_ROTATE_PROMPT,
 } from "../src/app/inbox-rotate.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
-import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { EMPTY_SUMMARY, rotatedSeed } from "../src/app/summary.ts";
 import { MEMORY_BLOCK_HEADER, RESUME_FAILURE_LIMIT, type TurnDeps } from "../src/app/turn.ts";
 import type { TimeOfDay } from "../src/config.ts";
-import type { Gateway, IncomingMessage, OutgoingMessage } from "../src/discord/gateway.ts";
-import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
-import { openDb } from "../src/store/db.ts";
-import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
-import { MemoryStore } from "../src/store/memories.ts";
-import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
-import { CLOSE_SUMMARY_MAX_LENGTH, TopicSessionStore } from "../src/store/topic-sessions.ts";
-import { UsageStore } from "../src/store/usage.ts";
+import type { IncomingMessage } from "../src/discord/gateway.ts";
+import { CLOSE_SUMMARY_MAX_LENGTH } from "../src/store/topic-sessions.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingQueue } from "./helpers/recording.ts";
+import { FakeRunner } from "./helpers/runner.ts";
 
 /** 2026-10-03(土) 04:00 JST（UTC ではまだ 10/02） */
 const ROTATE_AT = new Date("2026-10-02T19:00:00.000Z");
@@ -43,95 +36,6 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve = (): void => {};
   const promise = new Promise<void>((done) => (resolve = done));
   return { promise, resolve };
-}
-
-/** 呼ばれた順に結果を返す。gates[i] があれば i 回目の呼び出しは結果を返す前にそれを待つ */
-class FakeRunner implements AgentRunner {
-  inputs: RunInput[] = [];
-  gates: Array<Promise<void> | undefined> = [];
-  private readonly results: Array<RunResult | Error>;
-
-  constructor(results: Array<RunResult | Error>) {
-    this.results = results;
-  }
-
-  async run(input: RunInput): Promise<RunResult> {
-    const index = this.inputs.length;
-    this.inputs.push(input);
-    await this.gates[index];
-    const next = this.results.shift();
-    if (next === undefined) throw new Error("想定外の呼び出し");
-    if (next instanceof Error) throw next;
-    return next;
-  }
-}
-
-/** 発言の返信（send）と切り替えの知らせ（sendMessage）を順に記録する */
-class FakeGateway implements Gateway {
-  events: Array<{ method: "send" | "sendMessage"; channelId: string; text: string }> = [];
-  /** sendMessage の直前に呼ばれる。投げればその送信は失敗する */
-  beforeSendMessage: (channelId: string) => void = () => {};
-
-  async start(): Promise<void> {}
-  async send(channelId: string, text: string): Promise<void> {
-    this.events.push({ method: "send", channelId, text });
-  }
-  async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
-    this.beforeSendMessage(channelId);
-    this.events.push({ method: "sendMessage", channelId, text: message.text });
-    return `message-${this.events.length}`;
-  }
-  async editMessage(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async pinMessage(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async messageExists(): Promise<boolean> {
-    throw new Error("想定外の呼び出し");
-  }
-  startTyping(): () => void {
-    return () => {};
-  }
-  isInGuild(): boolean {
-    return true;
-  }
-  async registerGuildCommands(): Promise<void> {}
-  async createCategory(): Promise<string> {
-    throw new Error("想定外の呼び出し");
-  }
-  async createTextChannel(): Promise<string> {
-    throw new Error("想定外の呼び出し");
-  }
-  async channelExists(): Promise<boolean> {
-    throw new Error("想定外の呼び出し");
-  }
-  async countChannelsIn(): Promise<number> {
-    throw new Error("想定外の呼び出し");
-  }
-  async listChannelParents(): Promise<Map<string, string | null>> {
-    throw new Error("想定外の呼び出し");
-  }
-  async moveChannel(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async getParentId(): Promise<string | null> {
-    throw new Error("想定外の呼び出し");
-  }
-  async deleteChannel(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async stop(): Promise<void> {}
-}
-
-/** 受け取った key を記録する（発言と同じキュー・同じ key を使うかを見る） */
-class RecordingQueue extends KeyedSerialQueue {
-  keys: string[] = [];
-
-  run<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    this.keys.push(key);
-    return super.run(key, fn);
-  }
 }
 
 /** ターンのトークン。input・read・creation は各ステップの合算、context は最後のステップの入力 */
@@ -189,23 +93,22 @@ function rotatedAtOf(date: string): Date {
 }
 
 function setup(t: TestContext, results: Array<RunResult | Error> = [], options: Options = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const clock = { now: ROTATE_AT };
   const now = (): Date => clock.now;
-  const guildSettings = new GuildSettingsStore(db, now);
-  const inboxSummaries = new InboxSummaryStore(db, now);
-  const sessions = new SdkSessionStore(db, now);
-  const seeds = new ChannelSeedStore(db, now);
-  const usage = new UsageStore(db, now);
-  const topicSessions = new TopicSessionStore(db, now);
-  const memories = new MemoryStore(db, now);
+  const { guildSettings, inboxSummaries, sessions, seeds, usage, topicSessions, memories } = createStores(db, now);
   const runner = new FakeRunner(results);
-  const gateway = new FakeGateway();
+  const gateway = new FakeGateway({
+    allow: ["start", "startTyping", "isInGuild", "registerGuildCommands", "stop"],
+    record: ["send", "sendMessage"],
+  });
+  /** 発言の返信（send）と切り替えの知らせ（sendMessage）を順に、本文だけで */
+  const events = () =>
+    gateway.calls.flatMap<{ method: "send" | "sendMessage"; channelId: string; text: string }>((call) => {
+      if (call.method === "send") return [call];
+      if (call.method === "sendMessage") return [{ method: call.method, channelId: call.channelId, text: call.message.text }];
+      return [];
+    });
   const queue = new RecordingQueue(2);
   const logs: string[] = [];
   const log = (line: string): void => {
@@ -294,6 +197,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     usage,
     runner,
     gateway,
+    events,
     queue,
     logs,
     rotator,
@@ -395,7 +299,7 @@ test("日次: まだ一度も切り替えていないサーバー（/setup 直�
   env.clock.now = at(ROTATE_AT, 6 * HOUR_MS);
   await env.rotate();
   assert.equal(env.runner.inputs.length, 0);
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.equal(env.state().rotatedDate, "2026-10-03");
   assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, at(ROTATE_AT, 6 * HOUR_MS).toISOString());
 
@@ -421,7 +325,7 @@ test("日次: その日に既に切り替えていれば、会話があっても
 
   assert.equal(env.runner.inputs.length, 0);
   assert.deepEqual(env.queue.keys, []);
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, []);
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-03", summary: undefined, session: "session-1", seed: undefined });
 });
@@ -437,7 +341,7 @@ test("SDK セッションが無ければ、ターンの記録があっても LLM
   assert.deepEqual(env.queue.keys, ["inbox-1"]);
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-03", summary: undefined, session: undefined, seed: undefined });
   assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, ROTATE_AT.toISOString());
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, [NO_TURNS_LOG]);
 
   // 記録したので、その日はもう何もしない
@@ -497,7 +401,7 @@ test("切り替え: 要約のターン → 要約を保存 → SDK セッショ�
   assert.deepEqual(atNotice, [expected]);
   assert.deepEqual(env.state(), expected);
   assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, ROTATE_AT.toISOString());
-  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.events(), [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
   // 要約のターンも usage に記録する
   const [entry] = env.usage.recent(1);
   assert.equal(entry?.key, "inbox-1");
@@ -512,7 +416,7 @@ test("切り替え: 要約のターン → 要約を保存 → SDK セッショ�
   env.clock.now = at(ROTATE_AT, 5 * MINUTE_MS);
   await env.rotate();
   assert.equal(env.runner.inputs.length, 1);
-  assert.equal(env.gateway.events.length, 1);
+  assert.equal(env.events().length, 1);
 });
 
 test("切り替え: 要約のターンには context を渡さない（session_report・session_open は使えない）。WebFetch に許す URL も無い", async (t) => {
@@ -605,7 +509,7 @@ test("切り替え: 要約が次の発言の最初のターンの prompt の先�
   assert.equal(env.state().session, "session-2");
   // 知らせは発言への返信より先
   assert.deepEqual(
-    env.gateway.events.map((event) => `${event.method}:${event.text}`),
+    env.events().map((event) => `${event.method}:${event.text}`),
     [`sendMessage:${ROTATED_NOTICE}`, "send:10 時からです", "send:どういたしまして"],
   );
 });
@@ -655,7 +559,7 @@ test("切り替え: 発言のターンの途中なら、同じキュー（key �
   assert.deepEqual(env.runner.inputs[1], { prompt: ROTATE_PROMPT, sessionId: "session-2", context: undefined, allowedUrls: [] });
   assert.deepEqual(env.queue.keys, ["inbox-1", "inbox-1"]);
   assert.deepEqual(
-    env.gateway.events.map((event) => `${event.method}:${event.text}`),
+    env.events().map((event) => `${event.method}:${event.text}`),
     ["send:了解です", `sendMessage:${ROTATED_NOTICE}`],
   );
   assert.equal(env.state().session, undefined);
@@ -670,7 +574,7 @@ test("要約のターンが失敗したら何も変えずに log に出し、同
 
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-02", summary: undefined, session: "session-1", seed: undefined });
   assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, rotatedAtOf("2026-10-02").toISOString());
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, [
     "#inbox の要約に失敗したため、切り替えませんでした（guild=guild-1）。1 時間後以降にやり直します: error_during_execution: boom",
   ]);
@@ -735,7 +639,7 @@ test("会話の記録が無い（No conversation found）なら要約を作ら�
     seed: rotatedSeed("前回の要約"),
   });
   assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, ROTATE_AT.toISOString());
-  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.events(), [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
   assert.equal(env.usage.recent(1)[0]?.ok, false);
   assert.deepEqual(env.logs, [
     "#inbox の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=guild-1、前回の要約を引き継ぎ）: " +
@@ -767,7 +671,7 @@ test("会話の記録が無く、前回の要約も無ければ seed は入れ�
 
   assert.equal(env.runner.inputs.length, 1);
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-03", summary: undefined, session: undefined, seed: undefined });
-  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE_FRESH }]);
+  assert.deepEqual(env.events(), [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE_FRESH }]);
   assert.deepEqual(env.logs, [
     "#inbox の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=guild-1、前回の要約なし）: " +
       RESUME_FAILURE.errorMessage,
@@ -838,7 +742,7 @@ test("サイズ: 今日切り替え済みでも、前回の切り替えより後
     session: undefined,
     seed: rotatedSeed(SUMMARY),
   });
-  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.events(), [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
   assert.deepEqual(env.logs, [
     "#inbox の会話を要約して新しいセッションに切り替えました（guild=guild-1、直近の入力 150001 トークン）",
   ]);
@@ -910,7 +814,7 @@ test("複数のサーバーは 1 つずつ切り替え、1 つが失敗しても
   assert.equal(env.inboxSummaries.latest("guild-2")?.summary, SUMMARY);
   assert.equal(env.sessions.get("inbox-2"), undefined);
   assert.equal(env.seeds.get("inbox-2"), rotatedSeed(SUMMARY));
-  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "inbox-2", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.events(), [{ method: "sendMessage", channelId: "inbox-2", text: ROTATED_NOTICE }]);
 });
 
 test("停止: 停止を始めていたら切り替えを始めない。キュー待ちの間に停止を始めたら、そのサーバーも残りのサーバーも何もしない", async (t) => {
@@ -977,7 +881,7 @@ test("#tasks 日次: rotateAt の直前は切り替えず、ちょうどから�
   // channel_kind は 'tasks'。#inbox の要約としては読まない
   assert.equal(env.db.prepare("SELECT channel_kind FROM inbox_summaries").get()?.channel_kind, "tasks");
   assert.equal(env.inboxSummaries.latest("guild-1"), undefined);
-  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.events(), [{ method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE }]);
   assert.deepEqual(env.logs, ["#tasks の会話を要約して新しいセッションに切り替えました（guild=guild-1、日次）"]);
   // 要約のターンも usage に記録する（key は #tasks）
   assert.equal(env.usage.recent(1)[0]?.key, "tasks-1");
@@ -1034,7 +938,7 @@ test("#tasks: 切り替え後の最初の発言のターンに [記憶のブロ�
   assert.equal(env.tasksState().seed, undefined);
   assert.equal(env.tasksState().session, "session-t2");
   assert.deepEqual(
-    env.gateway.events.map((event) => `${event.method}:${event.channelId}:${event.text}`),
+    env.events().map((event) => `${event.method}:${event.channelId}:${event.text}`),
     [`sendMessage:tasks-1:${ROTATED_NOTICE}`, "send:tasks-1:2 件です"],
   );
 });
@@ -1048,7 +952,7 @@ test("#tasks 日次: まだ一度も切り替えていない #tasks（/setup 直
   await env.rotate();
   assert.equal(env.runner.inputs.length, 0);
   assert.deepEqual(env.queue.keys, []);
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, []);
   assert.equal(env.tasksState().rotatedAt, at(ROTATE_AT, 6 * HOUR_MS).toISOString());
 
@@ -1083,7 +987,7 @@ test("#tasks: 前回の切り替えより後に #tasks のターンが無い・S
     session: "session-t",
     seed: undefined,
   });
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, [TASKS_NO_TURNS_LOG]);
 
   // 翌日: ターンはあっても SDK セッションが無ければ同じ
@@ -1156,7 +1060,7 @@ test("#tasks 記録切れ: 要約を作らずに SDK セッションを捨て、
     session: undefined,
     seed: rotatedSeed("前回の #tasks の要約", "tasks"),
   });
-  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.events(), [{ method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE }]);
   assert.deepEqual(env.logs, [
     "#tasks の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=guild-1、前回の要約を引き継ぎ）: " +
       RESUME_FAILURE.errorMessage,
@@ -1183,7 +1087,7 @@ test("記録切れ: 同じ tick で #inbox → #tasks の順に切り替え、#i
   assert.deepEqual(env.queue.keys, ["inbox-1", "tasks-1"]);
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-03", summary: undefined, session: undefined, seed: undefined });
   assert.equal(env.tasksState().seed, rotatedSeed("前回の #tasks の要約", "tasks"));
-  assert.deepEqual(env.gateway.events, [
+  assert.deepEqual(env.events(), [
     { method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE_FRESH },
     { method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE },
   ]);
@@ -1202,7 +1106,7 @@ test("記録切れ: #tasks は #inbox の要約を引き継がない（#tasks �
     session: undefined,
     seed: undefined,
   });
-  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE_FRESH }]);
+  assert.deepEqual(env.events(), [{ method: "sendMessage", channelId: "tasks-1", text: ROTATED_NOTICE_FRESH }]);
   assert.deepEqual(env.logs, [
     "#tasks の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=guild-1、前回の要約なし）: " +
       RESUME_FAILURE.errorMessage,
@@ -1296,7 +1200,7 @@ test("rotateNow（/renew）: 今日切り替え済みでも日次・サイズの
     seed: rotatedSeed(SUMMARY),
   });
   assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, renewedAt.toISOString());
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, [RENEW_LOG]);
 });
 
@@ -1314,7 +1218,7 @@ test("rotateNow（/renew）: SDK セッションが無ければ（ターンの�
   assert.deepEqual(env.queue.keys, ["inbox-1"]);
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-02", summary: undefined, session: undefined, seed: undefined });
   assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, rotatedAtOf("2026-10-02").toISOString());
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, []);
 
   // その後に会話があれば、rotateAt（04:00）の日次の切り替えで要約する
@@ -1324,7 +1228,7 @@ test("rotateNow（/renew）: SDK セッションが無ければ（ターンの�
   assert.equal(env.runner.inputs.length, 1);
   assert.equal(env.state().rotatedDate, "2026-10-03");
   assert.equal(env.state().seed, rotatedSeed(SUMMARY));
-  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.events(), [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
   assert.deepEqual(env.logs, [ROTATED_LOG]);
 });
 
@@ -1343,7 +1247,7 @@ test("rotateNow（/renew）: まだ一度も切り替えていない（/setup �
   assert.equal(env.state().seed, rotatedSeed(SUMMARY));
   assert.equal(env.state().rotatedDate, "2026-10-03");
   assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, now.toISOString());
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
 
   // #tasks も同じ
   const tasks = setup(t, [ok(SUMMARY, "session-t")], { inbox: false, tasksRotatedAt: null });
@@ -1379,7 +1283,7 @@ test("rotateNow（/renew）: SDK セッションがあれば、前回の切り�
   assert.equal(env.state().seed, rotatedSeed(SUMMARY));
   assert.equal(env.state().summary?.summary, SUMMARY);
   assert.equal(env.state().rotatedDate, "2026-10-03");
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, [RENEW_LOG]);
 
   // 同じ状態で日次の切り替えなら、今どおり LLM を呼ばずに日付だけ記録する
@@ -1415,7 +1319,7 @@ test("rotateNow（/renew）: 失敗の後の 1 時間の待ちを飛ばしてす
   assert.equal(env.runner.inputs.length, 2);
   assert.equal(env.state().summary?.summary, SUMMARY);
   assert.equal(env.state().seed, rotatedSeed(SUMMARY));
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
 });
 
 test("rotateNow（/renew）: 要約のターンが失敗したら何も変えずに failed を返し、失敗の時刻を覚える（rotateDue は 1 時間やり直さない）", async (t) => {
@@ -1425,7 +1329,7 @@ test("rotateNow（/renew）: 要約のターンが失敗したら何も変えず
   assert.equal(await env.rotator.rotateNow("guild-1", "inbox"), "failed");
 
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-02", summary: undefined, session: "session-1", seed: undefined });
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, [
     "#inbox の要約に失敗したため、切り替えませんでした（guild=guild-1）。1 時間後以降にやり直します: error_during_execution: boom",
   ]);
@@ -1457,7 +1361,7 @@ test("rotateNow（/renew）: 会話の記録が無ければ要約せずに切り
   fresh.chatAt(at(ROTATE_AT, -HOUR_MS));
   assert.equal(await fresh.rotator.rotateNow("guild-1", "inbox"), "rotated_fresh");
   assert.deepEqual(fresh.state(), { rotatedDate: "2026-10-03", summary: undefined, session: undefined, seed: undefined });
-  assert.deepEqual(fresh.gateway.events, []);
+  assert.deepEqual(fresh.events(), []);
 
   const carried = setup(t, [RESUME_FAILURE]);
   carried.clock.now = at(ROTATE_AT, -24 * HOUR_MS);
@@ -1467,7 +1371,7 @@ test("rotateNow（/renew）: 会話の記録が無ければ要約せずに切り
   assert.equal(await carried.rotator.rotateNow("guild-1", "inbox"), "rotated");
   assert.equal(carried.state().session, undefined);
   assert.equal(carried.state().seed, rotatedSeed("前回の要約"));
-  assert.deepEqual(carried.gateway.events, []);
+  assert.deepEqual(carried.events(), []);
 });
 
 test("rotateNow（/renew）#tasks: 今日切り替え済みでも #tasks の要約のターン → #tasks の要約として保存 → SDK セッションを捨てる → seed → 時刻。知らせは投稿しない", async (t) => {
@@ -1490,7 +1394,7 @@ test("rotateNow（/renew）#tasks: 今日切り替え済みでも #tasks の要�
   });
   // #inbox は変えない
   assert.deepEqual(env.state(), { rotatedDate: "2026-10-02", summary: undefined, session: undefined, seed: undefined });
-  assert.deepEqual(env.gateway.events, []);
+  assert.deepEqual(env.events(), []);
   assert.deepEqual(env.logs, ["#tasks の会話を要約して新しいセッションに切り替えました（guild=guild-1、/renew）"]);
 });
 

@@ -1,8 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { STALE_TEXT } from "../src/app/commands/delete.ts";
 import {
   createConfirmKbDelete,
@@ -11,37 +8,11 @@ import {
   kbDeletedText,
   kbDeletePrompt,
 } from "../src/app/commands/kb-delete.ts";
-import type { Interaction, InteractionResponder, ModalDef, OutgoingMessage } from "../src/discord/gateway.ts";
-import { openDb } from "../src/store/db.ts";
-import { KnowledgeStore } from "../src/store/knowledge.ts";
+import type { Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-07T00:00:00.000Z");
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
 
 function press(customId: string): Extract<Interaction, { kind: "button" }> {
   return {
@@ -56,13 +27,8 @@ function press(customId: string): Extract<Interaction, { kind: "button" }> {
 }
 
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-  const knowledge = new KnowledgeStore(db, () => NOW);
+  const db = tempDb(t);
+  const { knowledge } = createStores(db, () => NOW);
   knowledge.add({ url: "https://example.com/a", urlKey: "https://example.com/a", title: "SQLite の全文検索", summary: "s" });
   knowledge.add({ title: "残る項目", summary: "s" });
   const logs: string[] = [];

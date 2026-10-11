@@ -17,12 +17,8 @@ import {
   type ProjectToolDeps,
   type TextToolResult,
 } from "../src/agent/tools.ts";
-import { openDb } from "../src/store/db.ts";
-import { KnowledgeStore } from "../src/store/knowledge.ts";
-import { MemoryStore } from "../src/store/memories.ts";
 import { ProjectStore } from "../src/store/projects.ts";
-import { TaskStore } from "../src/store/tasks.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 
 const NOW = new Date("2026-10-07T00:12:00Z");
 const BASE_URL = "https://example.test:9443";
@@ -36,14 +32,9 @@ const EXISTING_SCAFFOLD = ["DESIGN.md", "site/base.css", "site/icons.svg"];
 const SCAFFOLD_FAILED_LOG = "project_open: UI の土台の複製に失敗しました";
 
 function setup(t: TestContext, overrides: Partial<ProjectToolDeps> = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-  const projects = new ProjectStore(db, () => NOW);
-  const projectsDir = join(dir, "work", "projects");
+  const db = tempDb(t);
+  const { projects } = createStores(db, () => NOW);
+  const projectsDir = join(tempDir(t), "work", "projects");
   const logs: string[] = [];
   const deps: ProjectToolDeps = {
     projects,
@@ -298,13 +289,14 @@ test("project_open: 配信が無効（公開 URL が無い・静的サーバー�
 
 function projectOpenDefinition(t: TestContext, context?: RunContext) {
   const { db, deps } = setup(t);
+  const { tasks, topicSessions, knowledge, memories } = createStores(db, () => NOW);
   const tools = createTaskTools(
-    new TaskStore(db, () => NOW),
-    new TopicSessionStore(db, () => NOW),
+    tasks,
+    topicSessions,
     async () => ({ result: "not_available" }),
     {
-      knowledge: new KnowledgeStore(db, () => NOW),
-      memories: new MemoryStore(db, () => NOW),
+      knowledge,
+      memories,
       confirmKbDelete: async () => assert.fail("想定外の呼び出し"),
       notifyMemoryChange: async () => assert.fail("想定外の呼び出し"),
       timeZone: "Asia/Tokyo",

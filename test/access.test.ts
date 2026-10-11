@@ -1,13 +1,9 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { acceptedChannel, createChannelResolver, logUnconfiguredGuilds, type ResolveChannel } from "../src/app/access.ts";
 import type { IncomingMessage } from "../src/discord/gateway.ts";
-import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
 
 const cfg = { allowedGuildIds: ["guild-1", "guild-9"], ownerUserId: "owner-1" };
 
@@ -26,14 +22,10 @@ const accepted: IncomingMessage = {
 };
 
 function tempStores(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const now = () => new Date("2026-10-02T00:12:00Z");
-  return { db, guildSettings: new GuildSettingsStore(db, now), topicSessions: new TopicSessionStore(db, now) };
+  const { guildSettings, topicSessions } = createStores(db, now);
+  return { db, guildSettings, topicSessions };
 }
 
 function tempGuildSettings(t: TestContext): GuildSettingsStore {
