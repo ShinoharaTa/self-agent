@@ -201,9 +201,9 @@ test("文言: 要約を頼む prompt は静的で、seed は「会話を新し�
   assert.equal(RENEW_SUMMARY_MAX_LENGTH, 1200);
   assert.equal(RENEWED_SEED_HEADER, "会話を新しくしました。前の会話の要約:");
   assert.equal(renewedSeed("- a\n- b"), "会話を新しくしました。前の会話の要約:\n- a\n- b");
-  assert.equal(renewedText("- a"), "会話を新しくしました。次の発言から新しい設定で続けます。\n\n**要約**\n- a");
-  assert.equal(RENEWED_FRESH_REPLY, "前の会話の記録が見つからないため、要約せずに新しくしました。次の発言から新しい設定で続けます");
-  assert.equal(NO_CONVERSATION_REPLY, "新しい会話はまだ始まっていません。次の発言から新しい設定で始まります");
+  assert.equal(renewedText("- a"), "会話を新しくしました。次の発言から新しい会話で続けます。\n\n**要約**\n- a");
+  assert.equal(RENEWED_FRESH_REPLY, "前の会話の記録が見つからないため、要約せずに新しくしました。次の発言から新しい会話で続けます");
+  assert.equal(NO_CONVERSATION_REPLY, "新しい会話はまだ始まっていません。次の発言から新しい会話で始まります");
   assert.equal(NOT_RENEWABLE_REPLY, "セッションのチャンネルか #inbox・#tasks で実行してください");
   assert.equal(NOT_SET_UP_REPLY, "/setup を実行してください");
   assert.equal(RENEW_FAILURE_REPLY, "失敗しました。もう一度 /renew を実行してください");
@@ -584,7 +584,7 @@ test("resumeSeed（セッション）: /renew → /close → 復活なら /close
 test("/help の /close の行の直後に /renew の行がある", () => {
   assert.ok(
     HELP_TEXT.includes(
-      "「完了」カテゴリへ移します\n`/renew` 会話を要約して新しくします。設定の変更（話し方の決まりなど）は新しい会話から反映されます。セッション・#inbox・#tasks で使えます\n",
+      "「完了」カテゴリへ移します\n`/renew` 会話を要約して新しくします。長くなった会話や、前の返事の癖を引きずらずに続けたいときに使います。セッション・#inbox・#tasks で使えます\n",
     ),
   );
 });
@@ -598,7 +598,7 @@ test("システムプロンプトに /renew の seed の見出し（引き継ぎ
   assert.ok(SYSTEM_PROMPT.includes(`「${RENEWED_SEED_HEADER}」`));
   assert.ok(
     SYSTEM_PROMPT.includes(
-      "/close（要約を残し、やることの候補を確認して登録してから閉じる）、/renew（会話を要約して新しくする。設定の変更を反映する）、/wait（待ちにする）",
+      "/close（要約を残し、やることの候補を確認して登録してから閉じる）、/renew（会話を要約して新しくする。長くなった会話を仕切り直す）、/wait（待ちにする）",
     ),
   );
 });

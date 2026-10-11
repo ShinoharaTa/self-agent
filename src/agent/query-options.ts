@@ -56,7 +56,9 @@ export function buildQueryOptions(
   const projects = projectsRulePath(cfg.workDir);
   return {
     model: cfg.model,
-    systemPrompt: SYSTEM_PROMPT,
+    // snapshot: false で、SDK にセッション初回のプロンプトを記録させず毎回この SYSTEM_PROMPT を送る（直したプロンプトが既存のセッションにも次のターンから届く。
+    // 変えたターンだけ全セッションでキャッシュが 1 回外れる。#69 で実測）。既定（記録する）に戻すと各セッションの最初の記録に戻るので戻さない
+    systemPrompt: { type: "custom", prompt: SYSTEM_PROMPT, snapshot: false },
     settingSources: [],
     cwd: cfg.workDir,
     // 組み込みツールは Web の 2 つとファイル操作の 4 つ（シェルは無い）。キャッシュのため順序も固定。

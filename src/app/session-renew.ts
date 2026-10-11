@@ -1,5 +1,5 @@
 // セッションのチャンネルの /renew。会話を要約して SDK セッションを捨て、次の発言から新しい SDK セッションで続ける
-// （システムプロンプトはセッションの初回に固定されるので、変更を既存のセッションに届けるにはセッションを新しくするしかない）。
+// （長くなった会話や、前の返事の癖を引きずらずに続けたいときに使う。システムプロンプトの変更は snapshot: false で次のターンから届く）。
 // 要約はツールを足さず、要約を頼むターンの返答本文を使う（#inbox・#tasks の切り替えと同じ）。セッションの状態とカテゴリは変えない
 import { RENEW_SUMMARY_MAX_LENGTH, type TopicSessionStore } from "../store/topic-sessions.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
