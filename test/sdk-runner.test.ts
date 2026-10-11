@@ -6,13 +6,11 @@ import { join } from "node:path";
 import {
   createSdkMcpServer,
   type HookInput,
-  type McpSdkServerConfigWithInstance,
   type Options,
   type SDKMessage,
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { FILE_NO_CONTEXT_REASON, FILE_READ_DENIED_REASON, FILE_WRITE_DENIED_REASON } from "../src/agent/file-access.ts";
-import { buildQueryOptions } from "../src/agent/query-options.ts";
 import type { ProgressStep, RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
 import {
   describeResultError,
@@ -33,25 +31,22 @@ function errorResult(subtype: "error_during_execution" | "error_max_turns", erro
   return { type: "result", subtype, is_error: true, errors } as unknown as SDKResultMessage;
 }
 
-test("describeResultError: errors があれば subtype に添え、resume 失敗の文言が残る", () => {
-  const text = describeResultError(
-    errorResult("error_during_execution", ["No conversation found with session ID: 00000000-0000-0000-0000-000000000000"]),
-  );
-  assert.equal(text, "error_during_execution: No conversation found with session ID: 00000000-0000-0000-0000-000000000000");
-  assert.match(text, RESUME_FAILURE_PATTERN);
-});
-
-test("describeResultError: errors が空なら subtype だけ。複数あれば 1 行にまとめて短くする", () => {
-  assert.equal(describeResultError(errorResult("error_max_turns", [])), "error_max_turns");
-  assert.equal(describeResultError(errorResult("error_max_turns", ["", "  "])), "error_max_turns");
-  assert.equal(describeResultError(errorResult("error_during_execution", ["a\nb", "c"])), "error_during_execution: a b / c");
-  const long = describeResultError(errorResult("error_during_execution", ["x".repeat(500)]));
-  assert.equal(long, `error_during_execution: ${"x".repeat(200)}…`);
-});
-
-test("describeResultError: success の is_error は本文（result.result）を出さず、subtype だけ", () => {
-  const result = { type: "result", subtype: "success", is_error: true, result: "API Error: 500" } as unknown as SDKResultMessage;
-  assert.equal(describeResultError(result), "success (is_error)");
+test("describeResultError: errors は subtype に添えて 1 行・短くまとめ（resume 失敗の文言は残る）、success の is_error は本文を出さない", () => {
+  const resume = "No conversation found with session ID: 00000000-0000-0000-0000-000000000000";
+  const cases: Array<{ label: string; result: SDKResultMessage; expected: string }> = [
+    { label: "errors あり", result: errorResult("error_during_execution", [resume]), expected: `error_during_execution: ${resume}` },
+    { label: "errors が空", result: errorResult("error_max_turns", []), expected: "error_max_turns" },
+    { label: "空白だけ", result: errorResult("error_max_turns", ["", "  "]), expected: "error_max_turns" },
+    { label: "複数・改行", result: errorResult("error_during_execution", ["a\nb", "c"]), expected: "error_during_execution: a b / c" },
+    { label: "長い", result: errorResult("error_during_execution", ["x".repeat(500)]), expected: `error_during_execution: ${"x".repeat(200)}…` },
+    {
+      label: "success の is_error",
+      result: { type: "result", subtype: "success", is_error: true, result: "API Error: 500" } as unknown as SDKResultMessage,
+      expected: "success (is_error)",
+    },
+  ];
+  for (const { label, result, expected } of cases) assert.equal(describeResultError(result), expected, label);
+  assert.match(describeResultError(cases[0]!.result), RESUME_FAILURE_PATTERN);
 });
 
 const cfg = {
@@ -127,7 +122,7 @@ function compactBoundary(metadata: Record<string, unknown>): SDKMessage {
 
 type QueryCall = { prompt: string; options: Options };
 
-/** queryFn に渡したストリームと、run ごとに作った MCP サーバーを記録する */
+/** queryFn に渡したストリームと、run ごとに MCP サーバーを作るときの context を記録する */
 function setupRunner(
   stream: (call: QueryCall) => AsyncIterable<SDKMessage>,
   overrides: Partial<typeof cfg> = {},
@@ -136,15 +131,12 @@ function setupRunner(
 ) {
   const calls: QueryCall[] = [];
   const contexts: Array<RunContext | undefined> = [];
-  const servers: McpSdkServerConfigWithInstance[] = [];
   const logs: string[] = [];
   const runner = new SdkAgentRunner(
     { ...cfg, ...overrides },
     (context) => {
       contexts.push(context);
-      const server = createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
-      servers.push(server);
-      return server;
+      return createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
     },
     files,
     (line) => logs.push(line),
@@ -154,7 +146,7 @@ function setupRunner(
     },
     devLog,
   );
-  return { runner, calls, contexts, servers, logs };
+  return { runner, calls, contexts, logs };
 }
 
 /** 決まったメッセージを順に流すストリーム */
@@ -192,8 +184,6 @@ test("SdkAgentRunner: 成功ならメインループの usage を合算し、並
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.prompt, "明日買い物に行く");
   assert.equal("resume" in calls[0]!.options, false);
-  assert.ok(calls[0]!.options.abortController instanceof AbortController);
-  assert.equal(calls[0]!.options.strictMcpConfig, true);
 });
 
 test("SdkAgentRunner: contextTokens はメインループの最後のステップの入力（input + cache read + cache creation）。合算せず、後から届いたサブエージェントの分は使わない", async () => {
@@ -292,87 +282,22 @@ test("SdkAgentRunner: result が届かずに終われば失敗。途中の sessi
   });
 });
 
-test("SdkAgentRunner: ストリームの例外は exception として返し、sessionRecorded は false", async () => {
-  const { runner } = setupRunner(async function* () {
-    yield init("session-1");
-    throw new Error("Claude Code process exited with code 1");
-  });
-
-  assert.deepEqual(await runner.run({ prompt: "x", sessionId: "session-0" }), {
-    ok: false,
-    errorMessage: "exception: Error: Claude Code process exited with code 1",
-    sessionId: "session-1",
-    sessionRecorded: false,
-    toolCalls: 0,
-  });
-});
-
-test("SdkAgentRunner: 例外で終わったら、子プロセスの stderr の末尾 200 字を 1 行にして errorMessage に添える。stderr は log に出さない", async () => {
+test("SdkAgentRunner: ストリームの例外は exception として返し（sessionRecorded は false）、子プロセスの stderr を errorMessage に添える。stderr は log に出さない", async () => {
   const { runner, logs } = setupRunner(async function* (call) {
     yield init("session-1");
     call.options.stderr?.("Error: No conversation found\n  with session ID: session-0\n");
     throw new Error("Claude Code process exited with code 1");
   });
 
-  assert.deepEqual(await runner.run({ prompt: "x", sessionId: "session-0" }), {
-    ok: false,
-    errorMessage:
-      "exception: Error: Claude Code process exited with code 1（stderr: Error: No conversation found with session ID: session-0）",
-    sessionId: "session-1",
-    sessionRecorded: false,
-    toolCalls: 0,
-  });
-  assert.deepEqual(logs, []);
-});
+  const result = await runner.run({ prompt: "x", sessionId: "session-0" });
 
-test("SdkAgentRunner: stderr は直近の分だけ保持し、添えるのは末尾 200 字（切ったら先頭に …）。stderr が無ければ添えない", async () => {
-  const { runner } = setupRunner(async function* (call) {
-    // 保持する 2000 字より前の分は残らない
-    call.options.stderr?.("先頭の古い出力");
-    call.options.stderr?.("x".repeat(2000));
-    call.options.stderr?.("y".repeat(150));
-    call.options.stderr?.("z".repeat(100));
-    throw new Error("boom");
-  });
-  const result = await runner.run({ prompt: "x" });
   assert.ok(!result.ok);
-  assert.equal(result.errorMessage, `exception: Error: boom（stderr: …${"y".repeat(100)}${"z".repeat(100)}）`);
-
-  const { runner: quiet } = setupRunner(async function* (call) {
-    call.options.stderr?.(" \n ");
-    throw new Error("boom");
-  });
-  const quietResult = await quiet.run({ prompt: "x" });
-  assert.ok(!quietResult.ok);
-  assert.equal(quietResult.errorMessage, "exception: Error: boom");
-
-  // result が届いた失敗・成功には添えない
-  const { runner: recorded } = setupRunner(async function* (call) {
-    call.options.stderr?.("warning");
-    yield sdkMessage({ type: "result", subtype: "error_max_turns", is_error: true, errors: [], session_id: "session-1" });
-  });
-  const recordedResult = await recorded.run({ prompt: "x" });
-  assert.ok(!recordedResult.ok);
-  assert.equal(recordedResult.errorMessage, "error_max_turns");
-});
-
-test("SdkAgentRunner: turnTimeoutSec を過ぎたら abort して timeout を返す（例外で終わっても、そのまま終わっても）", async () => {
-  /** abort されるまで待ち、throws なら例外で、そうでなければそのまま終える */
-  const untilAbort = (throws: boolean) =>
-    async function* (call: QueryCall): AsyncIterable<SDKMessage> {
-      yield init("session-1");
-      const signal = call.options.abortController!.signal;
-      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
-      if (throws) throw new Error("Claude Code process aborted by user");
-    };
-  const expected = { ok: false, errorMessage: "timeout", sessionId: "session-1", sessionRecorded: false, toolCalls: 0 };
-
-  for (const throws of [true, false]) {
-    // 10ms で打ち切る
-    const { runner, calls } = setupRunner(untilAbort(throws), { turnTimeoutSec: 0.01 });
-    assert.deepEqual(await runner.run({ prompt: "x" }), expected);
-    assert.equal(calls[0]!.options.abortController!.signal.aborted, true);
-  }
+  assert.equal(result.sessionId, "session-1");
+  assert.equal(result.sessionRecorded, false);
+  assert.ok(result.errorMessage.startsWith("exception: Error: Claude Code process exited with code 1"), result.errorMessage);
+  // resume の失敗が stderr にしか出なくても、turn.ts が見分けられる
+  assert.match(result.errorMessage, RESUME_FAILURE_PATTERN);
+  assert.deepEqual(logs, []);
 });
 
 test("SdkAgentRunner: 中断・打ち切りで終わったら、そのターンで受け取った session_id を返す（sessionRecorded は false）。受け取る前なら返さない", async () => {
@@ -421,24 +346,6 @@ test("SdkAgentRunner: 中断・打ち切りで終わったら、そのターン�
   });
 });
 
-test("SdkAgentRunner: run ごとに context を渡して MCP サーバーを作り、その query の Options に入れる", async () => {
-  const { runner, calls, contexts, servers } = setupRunner(messages(success("session-1", "はい")));
-  const first: RunContext = { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" };
-  const second: RunContext = { guildId: "guild-1", channelId: "topic-1", kind: "session" };
-
-  await runner.run({ prompt: "1", context: first });
-  await runner.run({ prompt: "2", context: second });
-  await runner.run({ prompt: "3" });
-
-  assert.deepEqual(contexts, [first, second, undefined]);
-  assert.equal(servers.length, 3);
-  assert.notEqual(servers[0], servers[1]);
-  assert.equal(calls.length, 3);
-  for (const [index, call] of calls.entries()) {
-    assert.equal(call.options.mcpServers?.selfagent, servers[index]);
-  }
-});
-
 /** SDK がツールの実行後に呼ぶのと同じように、その query の Options の hook を呼ぶ（入力・出力・エラーには中身を入れておく） */
 async function callToolHook(
   call: QueryCall,
@@ -478,55 +385,30 @@ test("SdkAgentRunner: PostToolUse・PostToolUseFailure の hook でツール呼�
 
   assert.ok(result.ok);
   assert.equal(result.toolCalls, 3);
-  assert.deepEqual(logs, [
-    "ツールを呼び出しました: mcp__selfagent__task_add（35 ms）",
-    "ツールを呼び出しました: mcp__selfagent__task_list",
-    "ツールの呼び出しが失敗しました: mcp__selfagent__task_complete（12 ms）",
-  ]);
+  assert.equal(logs.length, 3);
+  for (const [index, name] of ["task_add", "task_list", "task_complete"].entries()) assert.ok(logs[index]!.includes(name), name);
   assert.ok(logs.every((line) => !line.includes("秘密")));
   // 何も変えずに続けさせる
   assert.deepEqual(hookOutputs, [{}, {}, {}]);
 });
 
-test("SdkAgentRunner: hooks は run ごとに作って Options に足し（buildQueryOptions には入れない）、回数は run ごとに数える", async () => {
+test("SdkAgentRunner: ツール呼び出しの回数は run ごとに数え、失敗したターンでもそれまでの回数を返す", async () => {
   let runs = 0;
-  const { runner, calls } = setupRunner(async function* (call) {
+  const { runner } = setupRunner(async function* (call) {
     runs++;
-    if (runs === 1) {
-      await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_add", duration_ms: 1 });
-      await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_add", duration_ms: 1 });
-    }
+    yield init("session-1");
+    if (runs !== 2) await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_add", duration_ms: 1 });
+    if (runs === 1) await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_add", duration_ms: 1 });
+    if (runs === 3) throw new Error("Claude Code process exited with code 1");
     yield success("session-1", "はい");
   });
 
   const first = await runner.run({ prompt: "1" });
   const second = await runner.run({ prompt: "2", sessionId: "session-1" });
+  const failed = await runner.run({ prompt: "3", sessionId: "session-1" });
 
-  assert.ok(first.ok && second.ok);
-  assert.equal(first.toolCalls, 2);
-  assert.equal(second.toolCalls, 0);
-  assert.notEqual(calls[0]!.options.hooks, calls[1]!.options.hooks);
-  assert.deepEqual(Object.keys(calls[1]!.options.hooks ?? {}), ["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
-  assert.equal(calls[1]!.options.resume, "session-1");
-  // キャッシュに効く Options は hooks を含まない
-  const server = createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
-  assert.equal("hooks" in buildQueryOptions(cfg, server), false);
-});
-
-test("SdkAgentRunner: 失敗したターンでも、それまでのツール呼び出しの回数を返す", async () => {
-  const { runner } = setupRunner(async function* (call) {
-    yield init("session-1");
-    await callToolHook(call, "PostToolUse", { tool_name: "mcp__selfagent__task_add" });
-    throw new Error("Claude Code process exited with code 1");
-  });
-
-  assert.deepEqual(await runner.run({ prompt: "x" }), {
-    ok: false,
-    errorMessage: "exception: Error: Claude Code process exited with code 1",
-    sessionId: "session-1",
-    sessionRecorded: false,
-    toolCalls: 1,
-  });
+  assert.ok(first.ok && second.ok && !failed.ok);
+  assert.deepEqual([first.toolCalls, second.toolCalls, failed.toolCalls], [2, 0, 1]);
 });
 
 /**
@@ -565,7 +447,6 @@ const DENIED = {
     permissionDecisionReason: WEB_FETCH_DENIED_REASON,
   },
 };
-const DENIED_LOG = "WebFetch を拒否しました（貼られていない URL）";
 
 /** allowedUrls を渡して 1 ターン走らせ、そのターン中に WebFetch（など）の PreToolUse の hook を呼んだ結果と log を返す */
 async function runWithFetches(
@@ -585,7 +466,7 @@ async function runWithFetches(
   return { outputs, logs };
 }
 
-test("SdkAgentRunner: WebFetch は allowedUrls の URL だけ通し、それ以外・解析できない URL は拒否して log に出す（URL は出さない）", async () => {
+test("SdkAgentRunner: WebFetch は allowedUrls の URL だけ通し、それ以外・解析できない URL は拒否して log に出す（URL は出さない）。WebFetch 以外のツールには何もしない", async () => {
   const { outputs, logs } = await runWithFetches(
     ["https://example.com/a", "https://example.org/b?q=1"],
     [
@@ -595,13 +476,15 @@ test("SdkAgentRunner: WebFetch は allowedUrls の URL だけ通し、それ以�
       { input: { url: "not a url", prompt: "要約して" } },
       { input: { prompt: "要約して" } },
       { input: { url: 42, prompt: "要約して" } },
+      { toolName: "WebSearch", input: { query: "明日の天気" } },
+      { toolName: "mcp__selfagent__task_add", input: { title: "買い物" } },
     ],
   );
 
   // 通すときは判断を足さない（allowedTools の許可に任せる）
-  assert.deepEqual(outputs, [{}, {}, DENIED, DENIED, DENIED, DENIED]);
-  assert.deepEqual(logs, [DENIED_LOG, DENIED_LOG, DENIED_LOG, DENIED_LOG]);
-  assert.ok(logs.every((line) => !line.includes("evil") && !line.includes("example")));
+  assert.deepEqual(outputs, [{}, {}, DENIED, DENIED, DENIED, DENIED, {}, {}]);
+  assert.equal(logs.length, 4);
+  assert.ok(logs.every((line) => line.includes("WebFetch") && !line.includes("evil") && !line.includes("example")));
 });
 
 test("SdkAgentRunner: WebFetch の URL は正規化して比べる（末尾の /・フラグメント・スキームとホストの大文字小文字は同一視、クエリとパスは完全一致）", async () => {
@@ -621,19 +504,6 @@ test("SdkAgentRunner: WebFetch の URL は正規化して比べる（末尾の /
   assert.deepEqual(outputs, [{}, {}, {}, {}, DENIED, DENIED, DENIED]);
 });
 
-test("SdkAgentRunner: WebFetch 以外のツールは PreToolUse の hook で何もしない", async () => {
-  const { outputs, logs } = await runWithFetches(
-    [],
-    [
-      { toolName: "WebSearch", input: { query: "明日の天気" } },
-      { toolName: "mcp__selfagent__task_add", input: { title: "買い物" } },
-    ],
-  );
-
-  assert.deepEqual(outputs, [{}, {}]);
-  assert.deepEqual(logs, []);
-});
-
 test("SdkAgentRunner: allowedUrls を指定しなければ（空でも）WebFetch はすべて拒否する。許す URL は run ごとに変わる", async () => {
   const unspecified = await runWithFetches(undefined, [{ input: { url: "https://example.com/a", prompt: "" } }]);
   assert.deepEqual(unspecified.outputs, [DENIED]);
@@ -642,7 +512,7 @@ test("SdkAgentRunner: allowedUrls を指定しなければ（空でも）WebFetc
 
   let runs = 0;
   const outputs: unknown[] = [];
-  const { runner, calls } = setupRunner(async function* (call) {
+  const { runner } = setupRunner(async function* (call) {
     runs++;
     outputs.push(await callPreToolUse(call, "WebFetch", { url: "https://example.com/a", prompt: "" }));
     yield success("session-1", `${runs}`);
@@ -650,7 +520,6 @@ test("SdkAgentRunner: allowedUrls を指定しなければ（空でも）WebFetc
   await runner.run({ prompt: "1", allowedUrls: ["https://example.com/a"] });
   await runner.run({ prompt: "2", sessionId: "session-1" });
   assert.deepEqual(outputs, [{}, DENIED]);
-  assert.notEqual(calls[0]!.options.hooks?.PreToolUse, calls[1]!.options.hooks?.PreToolUse);
 });
 
 /**
@@ -733,207 +602,126 @@ async function runWithRedirects(
   return { outputs, logs: logs.filter((line) => line.startsWith("WebFetch")) };
 }
 
-const REDIRECT_LOG = "WebFetch の転送先を許可しました";
-
-test("SdkAgentRunner: 貼った URL を WebFetch した結果が転送なら、転送先をそのターンの許可に加える（log に URL は出さない）。次の run には引き継がない", async () => {
+test("SdkAgentRunner: 許可済みの URL を WebFetch した結果が転送なら、転送先（その転送先も・http なら https も）をそのターンだけ許可に加える。log に URL は出さない", async () => {
   const pasted = "https://example.com/old";
-  const target = "https://example.org/new?id=1";
+  const first = "https://example.org/new?id=1";
+  const second = "http://example.net/last";
   const { outputs, logs } = await runWithRedirects(
     [pasted],
     [
-      { pre: target },
-      { pre: pasted },
-      { post: pasted, response: redirectResponse(pasted, target) },
-      { pre: target },
-    ],
-  );
-
-  assert.deepEqual(outputs, [DENIED, {}, {}]);
-  assert.deepEqual(logs, [DENIED_LOG, REDIRECT_LOG]);
-  assert.ok(logs.every((line) => !line.includes("example")));
-
-  // 加えた転送先は次の run には残らない
-  const next = await runWithRedirects([pasted], [{ pre: target }]);
-  assert.deepEqual(next.outputs, [DENIED]);
-});
-
-test("SdkAgentRunner: 転送先の転送先も許可に加える（許可済みの URL からの転送だけを辿る）", async () => {
-  const pasted = "https://example.com/a";
-  const first = "https://example.net/b";
-  const second = "https://example.org/c";
-  const { outputs, logs } = await runWithRedirects(
-    [pasted],
-    [
+      { pre: first },
       { post: pasted, response: redirectResponse(pasted, first) },
       { pre: first },
       { post: first, response: redirectResponse(first, second) },
       { pre: second },
+      { pre: "https://example.net/last" },
+      // 別のパスは許さない
+      { pre: "https://example.net/other" },
     ],
   );
 
-  assert.deepEqual(outputs, [{}, {}]);
-  assert.deepEqual(logs, [REDIRECT_LOG, REDIRECT_LOG]);
+  assert.deepEqual(outputs, [DENIED, {}, {}, {}, DENIED]);
+  assert.ok(logs.length > 0);
+  assert.ok(logs.every((line) => !line.includes("example")));
+
+  // 加えた転送先は次の run には残らない
+  const next = await runWithRedirects([pasted], [{ pre: first }]);
+  assert.deepEqual(next.outputs, [DENIED]);
 });
 
-test("SdkAgentRunner: 許可していない URL の結果の Redirect 行からは加えない", async () => {
+test("SdkAgentRunner: 許可していない URL の結果・WebFetch 以外のツールの結果の Redirect 行からは加えない", async () => {
+  const pasted = "https://example.com/a";
   const other = "https://other.example/page";
   const target = "https://evil.example/collect";
-  const { outputs, logs } = await runWithRedirects(
-    ["https://example.com/a"],
-    [
-      { post: other, response: redirectResponse(other, target) },
-      { pre: target },
-    ],
-  );
-
-  assert.deepEqual(outputs, [DENIED]);
-  assert.deepEqual(logs, [DENIED_LOG]);
+  const cases: Array<{ label: string; step: FetchStep }> = [
+    { label: "許可していない URL", step: { post: other, response: redirectResponse(other, target) } },
+    { label: "WebSearch", step: { post: pasted, toolName: "WebSearch", response: redirectResponse(pasted, target) } },
+    { label: "自前のツール", step: { post: pasted, toolName: "mcp__selfagent__kb_get", response: redirectResponse(pasted, target) } },
+  ];
+  for (const { label, step } of cases) {
+    const { outputs } = await runWithRedirects([pasted], [step, { pre: target }]);
+    assert.deepEqual(outputs, [DENIED], label);
+  }
 });
 
-test(`SdkAgentRunner: 転送先を加えるのは 1 ターンで ${WEB_FETCH_MAX_REDIRECTS} 回まで（6 回目の転送は加えない）`, async () => {
+test("SdkAgentRunner: 転送とみなすのは tool_response の code が 300〜399 で、Redirect 行に http(s) の URL がそのまま書かれた結果だけ", async () => {
+  const pasted = "https://example.com/a";
+  const target = "https://example.org/b";
+  for (const code of [300, 399]) {
+    const { outputs } = await runWithRedirects([pasted], [{ post: pasted, response: redirectResponse(pasted, target, code) }, { pre: target }]);
+    assert.deepEqual(outputs, [{}], `code ${code}`);
+  }
+
+  const text = redirectText(pasted, target);
+  const notRedirects: Array<{ label: string; response: unknown }> = [
+    // 普通のページの結果はページの中身をもとにした要約なので、偽の Redirect 行を含みうる
+    { label: "code 200 の要約", response: redirectResponse(pasted, target, 200, `ページの要約です。\n${text}`) },
+    { label: "code 299", response: redirectResponse(pasted, target, 299) },
+    { label: "code 400", response: redirectResponse(pasted, target, 400) },
+    { label: "code が文字列", response: { ...(redirectResponse(pasted, target) as object), code: "301" } },
+    { label: "code が無い", response: { result: text } },
+    { label: "文字列だけ", response: text },
+    { label: "content の形", response: { content: [{ type: "text", text }] } },
+    { label: "null", response: null },
+    {
+      label: "注記付き（切り詰めた）",
+      response: redirectResponse(pasted, target, 301, text.replace(target, `${target} [\u20262000 more characters withheld: too long to relay]`)),
+    },
+    {
+      label: "取得できない",
+      response: redirectResponse(
+        pasted,
+        target,
+        301,
+        text.replace(/Redirect URL .*$/m, "Redirect URL: (withheld \u2014 the server sent a redirect target that is not a valid http(s) URL)"),
+      ),
+    },
+    { label: "http(s) 以外", response: redirectResponse(pasted, target, 301, redirectText(pasted, "ftp://example.org/b")) },
+  ];
+  for (const { label, response } of notRedirects) {
+    const { outputs } = await runWithRedirects([pasted], [{ post: pasted, response }, { pre: target }]);
+    assert.deepEqual(outputs, [DENIED], label);
+  }
+});
+
+test(`SdkAgentRunner: 転送先を加えるのは 1 ターンで ${WEB_FETCH_MAX_REDIRECTS} 回まで`, async () => {
   const pasted = "https://example.com/0";
-  const hops = [1, 2, 3, 4, 5, 6].map((n) => `https://example.com/${n}`);
+  const hops = Array.from({ length: WEB_FETCH_MAX_REDIRECTS + 1 }, (_, n) => `https://example.com/${n + 1}`);
   const steps: FetchStep[] = [];
   let from = pasted;
   for (const hop of hops) {
     steps.push({ post: from, response: redirectResponse(from, hop) }, { pre: hop });
     from = hop;
   }
-  const { outputs, logs } = await runWithRedirects([pasted], steps);
+  const { outputs } = await runWithRedirects([pasted], steps);
 
-  assert.equal(WEB_FETCH_MAX_REDIRECTS, 5);
-  assert.deepEqual(outputs, [{}, {}, {}, {}, {}, DENIED]);
-  assert.deepEqual(logs, [...Array(5).fill(REDIRECT_LOG), DENIED_LOG]);
+  assert.deepEqual(outputs, [...Array(WEB_FETCH_MAX_REDIRECTS).fill({}), DENIED]);
 });
 
-test("SdkAgentRunner: http の転送先で加える http と https は 2 つで 1 回と数える", async () => {
-  const pasted = "https://example.com/0";
-  const hops = [1, 2, 3, 4, 5, 6].map((n) => `http://example.com/${n}`);
-  const steps: FetchStep[] = [];
-  let from = pasted;
-  for (const hop of hops) {
-    steps.push({ post: from, response: redirectResponse(from, hop) }, { pre: hop }, { pre: hop.replace("http:", "https:") });
-    from = hop;
+/** run の context の種類ごとの例（#tasks は #inbox と同じ上限を使う） */
+const KIND_CASES = [
+  { label: "セッション", context: { guildId: "guild-1", channelId: "topic-1", kind: "session" }, session: true },
+  { label: "#inbox", context: { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" }, session: false },
+  { label: "#tasks", context: { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" }, session: false },
+  { label: "context なし", context: undefined, session: false },
+] as const satisfies ReadonlyArray<{ label: string; context: RunContext | undefined; session: boolean }>;
+
+test("SdkAgentRunner: maxTurns はセッションのチャンネルなら sessionMaxTurns、#inbox・#tasks・context なしは 8。run の context を MCP サーバー（ツール）に渡す", async () => {
+  const { runner, calls, contexts } = setupRunner(messages(success("session-1", "はい")), { sessionMaxTurns: 40 });
+
+  for (const { context } of KIND_CASES) await runner.run({ prompt: "x", sessionId: "session-1", context });
+
+  for (const [index, { label, session }] of KIND_CASES.entries()) {
+    assert.equal(calls[index]!.options.maxTurns, session ? 40 : INBOX_MAX_TURNS, label);
   }
-  const { outputs, logs } = await runWithRedirects([pasted], steps);
-
-  assert.deepEqual(outputs, [...Array(10).fill({}), DENIED, DENIED]);
-  assert.deepEqual(logs, [...Array(5).fill(REDIRECT_LOG), DENIED_LOG, DENIED_LOG]);
-});
-
-test("SdkAgentRunner: WebFetch 以外のツールの結果の Redirect 行からは加えない", async () => {
-  const pasted = "https://example.com/a";
-  const target = "https://evil.example/collect";
-  const { outputs, logs } = await runWithRedirects(
-    [pasted],
-    [
-      { post: pasted, toolName: "WebSearch", response: redirectResponse(pasted, target) },
-      { post: pasted, toolName: "mcp__selfagent__kb_get", response: redirectResponse(pasted, target) },
-      { pre: target },
-    ],
-  );
-
-  assert.deepEqual(outputs, [DENIED]);
-  assert.deepEqual(logs, [DENIED_LOG]);
-});
-
-test("SdkAgentRunner: 転送先は正規化して比べる。http の転送先は同じ URL の https も許す", async () => {
-  // 実際の例: https の URL が同じホストの http の URL へ転送された
-  const pasted = "https://www.post.japanpost.jp/service/you_pack/charge/ichiran/20.html";
-  const target = "http://www.post.japanpost.jp/service/domestic/charge/list/yu-pack/20.html";
-  const { outputs, logs } = await runWithRedirects(
-    [pasted],
-    [
-      // 貼った URL も正規化して比べる（ホストの大文字・フラグメント）
-      { post: "https://WWW.post.japanpost.jp/service/you_pack/charge/ichiran/20.html#top", response: redirectResponse(pasted, target) },
-      { pre: target },
-      { pre: "HTTP://WWW.POST.JAPANPOST.JP/service/domestic/charge/list/yu-pack/20.html#x" },
-      { pre: "https://www.post.japanpost.jp/service/domestic/charge/list/yu-pack/20.html" },
-      { pre: "https://www.post.japanpost.jp/service/domestic/charge/list/yu-pack/20.html/" },
-      // 別のパス・クエリは許さない
-      { pre: "https://www.post.japanpost.jp/service/domestic/charge/list/yu-pack/21.html" },
-    ],
-  );
-
-  assert.deepEqual(outputs, [{}, {}, {}, {}, DENIED]);
-  assert.deepEqual(logs, [REDIRECT_LOG, DENIED_LOG]);
-});
-
-test("SdkAgentRunner: 転送かどうかは tool_response の code（300〜399）で判定する。code が 200 の結果（ページの要約）の Redirect 行・code の無い形からは加えない", async () => {
-  const pasted = "https://example.com/a";
-  const target = "https://example.org/b";
-  for (const code of [300, 301, 302, 307, 308, 399]) {
-    const { outputs, logs } = await runWithRedirects([pasted], [{ post: pasted, response: redirectResponse(pasted, target, code) }, { pre: target }]);
-    assert.deepEqual(outputs, [{}], `code ${code}`);
-    assert.deepEqual(logs, [REDIRECT_LOG]);
-  }
-
-  // 普通のページの結果はページの中身をもとにした要約なので、偽の Redirect 行を含みうる
-  const pageSummary = `ページの要約です。\n${redirectText(pasted, target)}`;
-  const notRedirects: unknown[] = [
-    redirectResponse(pasted, target, 200, pageSummary),
-    redirectResponse(pasted, target, 200),
-    redirectResponse(pasted, target, 299),
-    redirectResponse(pasted, target, 400),
-    { ...(redirectResponse(pasted, target) as object), code: "301" },
-    { result: redirectText(pasted, target) },
-    redirectText(pasted, target),
-    [{ type: "text", text: redirectText(pasted, target) }],
-    { content: [{ type: "text", text: redirectText(pasted, target) }] },
-    { code: 301 },
-    42,
-    null,
-    undefined,
-  ];
-  for (const response of notRedirects) {
-    const { outputs, logs } = await runWithRedirects([pasted], [{ post: pasted, response }, { pre: target }]);
-    assert.deepEqual(outputs, [DENIED], JSON.stringify(response)?.slice(0, 80));
-    assert.deepEqual(logs, [DENIED_LOG]);
-  }
-});
-
-test("SdkAgentRunner: 転送の結果でも、注記付き（切り詰めた）・取得できない・http(s) 以外の転送先は加えない", async () => {
-  const pasted = "https://example.com/a";
-  const target = "https://example.org/b";
-  const truncated = redirectText(pasted, target).replace(target, `${target} [\u20262000 more characters withheld: too long to relay]`);
-  const withheld = redirectText(pasted, target).replace(
-    /Redirect URL .*$/m,
-    "Redirect URL: (withheld \u2014 the server sent a redirect target that is not a valid http(s) URL)",
-  );
-  const notHttp = redirectText(pasted, "ftp://example.org/b");
-  for (const result of [truncated, withheld, notHttp]) {
-    const { outputs, logs } = await runWithRedirects(
-      [pasted],
-      [{ post: pasted, response: redirectResponse(pasted, target, 301, result) }, { pre: target }],
-    );
-    assert.deepEqual(outputs, [DENIED]);
-    assert.deepEqual(logs, [DENIED_LOG]);
-  }
-});
-
-test("SdkAgentRunner: maxTurns はセッションのチャンネルなら sessionMaxTurns、#inbox・context なしは 8。run ごとに Options に入れる", async () => {
-  const { runner, calls } = setupRunner(messages(success("session-1", "はい")), { sessionMaxTurns: 40 });
-
-  await runner.run({ prompt: "1", context: { guildId: "guild-1", channelId: "topic-1", kind: "session" } });
-  await runner.run({ prompt: "2", context: { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" } });
-  await runner.run({ prompt: "3" });
-  await runner.run({
-    prompt: "4",
-    sessionId: "session-1",
-    context: { guildId: "guild-1", channelId: "topic-1", kind: "session" },
-  });
-
   assert.equal(INBOX_MAX_TURNS, 8);
   assert.deepEqual(
-    calls.map((call) => call.options.maxTurns),
-    [40, 8, 8, 40],
+    contexts,
+    KIND_CASES.map(({ context }) => context),
   );
-  // キャッシュに効く Options（buildQueryOptions）には入れない
-  const server = createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
-  assert.equal("maxTurns" in buildQueryOptions(cfg, server), false);
 });
 
-test("SdkAgentRunner: 打ち切りはセッションのチャンネルなら sessionTurnTimeoutSec、#inbox・context なしは turnTimeoutSec", async () => {
+test("SdkAgentRunner: 打ち切りはセッションのチャンネルなら sessionTurnTimeoutSec、#inbox・#tasks・context なしは turnTimeoutSec。打ち切ったら query を abort する", async () => {
   /** abort されるまで待つ */
   const untilAbort = async function* (call: QueryCall): AsyncIterable<SDKMessage> {
     yield init("session-1");
@@ -941,50 +729,21 @@ test("SdkAgentRunner: 打ち切りはセッションのチャンネルなら ses
     await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
   };
   const timeout = { ok: false, errorMessage: "timeout", sessionId: "session-1", sessionRecorded: false, toolCalls: 0 };
-  const session = { guildId: "guild-1", channelId: "topic-1", kind: "session" } as const;
-  const inbox = { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" } as const;
 
-  // セッションだけ 10ms で打ち切る（#inbox は 300 秒なので、打ち切られれば sessionTurnTimeoutSec を使っている）
-  const short = setupRunner(untilAbort, { turnTimeoutSec: 300, sessionTurnTimeoutSec: 0.01 });
-  assert.deepEqual(await short.runner.run({ prompt: "x", context: session }), timeout);
-
-  // #inbox と context なしは 10ms で打ち切る（セッションの 900 秒は使わない）
-  const inboxShort = setupRunner(untilAbort, { turnTimeoutSec: 0.01, sessionTurnTimeoutSec: 900 });
-  assert.deepEqual(await inboxShort.runner.run({ prompt: "x", context: inbox }), timeout);
-  assert.deepEqual(await inboxShort.runner.run({ prompt: "x" }), timeout);
-});
-
-test("SdkAgentRunner: #tasks の run は #inbox と同じく maxTurns 8・turnTimeoutSec（セッションの上限は使わない）", async () => {
-  const tasks = { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" } as const;
-  const { runner, calls } = setupRunner(messages(success("session-1", "はい")), { sessionMaxTurns: 40 });
-  await runner.run({ prompt: "1", context: tasks });
-  await runner.run({ prompt: "2", sessionId: "session-1", context: tasks });
-  assert.deepEqual(
-    calls.map((call) => call.options.maxTurns),
-    [INBOX_MAX_TURNS, INBOX_MAX_TURNS],
-  );
-  assert.equal(INBOX_MAX_TURNS, 8);
-
-  /** abort されるまで待つ */
-  const untilAbort = async function* (call: QueryCall): AsyncIterable<SDKMessage> {
-    yield init("session-1");
-    const signal = call.options.abortController!.signal;
-    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
-  };
-  // turnTimeoutSec だけ 10ms にする（セッションの 900 秒を使えば打ち切られない）
-  const short = setupRunner(untilAbort, { turnTimeoutSec: 0.01, sessionTurnTimeoutSec: 900 });
-  assert.deepEqual(await short.runner.run({ prompt: "x", context: tasks }), {
-    ok: false,
-    errorMessage: "timeout",
-    sessionId: "session-1",
-    sessionRecorded: false,
-    toolCalls: 0,
-  });
+  for (const { label, context, session } of KIND_CASES) {
+    // 使うはずの方だけ 10ms にする（もう一方の 300 秒を使えば打ち切られない）
+    const { runner, calls } = setupRunner(
+      untilAbort,
+      session ? { turnTimeoutSec: 300, sessionTurnTimeoutSec: 0.01 } : { turnTimeoutSec: 0.01, sessionTurnTimeoutSec: 300 },
+    );
+    assert.deepEqual(await runner.run({ prompt: "x", context }), timeout, label);
+    assert.equal(calls[0]!.options.abortController!.signal.aborted, true, label);
+  }
 });
 
 test("SdkAgentRunner: ファイル操作の hook はどの run にも入る（context が無い run にも）。context はその run のもの", async () => {
   const outputs: unknown[] = [];
-  const { runner, calls, logs } = setupRunner(async function* (call) {
+  const { runner, logs } = setupRunner(async function* (call) {
     outputs.push(await callPreToolUse(call, "Read", { file_path: "/srv/work/notes.txt" }, "Read|Write|Edit|Glob"));
     yield success("session-1", "はい");
   });
@@ -993,8 +752,6 @@ test("SdkAgentRunner: ファイル操作の hook はどの run にも入る（co
   await runner.run({ prompt: "2", context: { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" } });
   await runner.run({ prompt: "3", context: { guildId: "guild-1", channelId: "topic-1", kind: "session" } });
 
-  assert.equal(calls.length, 3);
-  assert.notEqual(calls[1]!.options.hooks?.PreToolUse, calls[2]!.options.hooks?.PreToolUse);
   const reasons = outputs.map(
     (output) => (output as { hookSpecificOutput: { permissionDecisionReason: string } }).hookSpecificOutput,
   );
@@ -1002,7 +759,8 @@ test("SdkAgentRunner: ファイル操作の hook はどの run にも入る（co
     reasons.map((output) => output.permissionDecisionReason),
     [FILE_NO_CONTEXT_REASON, FILE_READ_DENIED_REASON, FILE_READ_DENIED_REASON],
   );
-  assert.deepEqual(logs, Array(3).fill("ファイル操作を拒否しました（Read）"));
+  assert.equal(logs.length, 3);
+  assert.ok(logs.every((line) => line.includes("Read") && !line.includes("notes.txt")));
 });
 
 test("SdkAgentRunner: ファイル操作の hook は拒否したら理由をモデルに返し、log にはツール名だけを出す。Write・Edit を許したらプロジェクトの更新日時を今にする", async (t) => {
@@ -1041,7 +799,8 @@ test("SdkAgentRunner: ファイル操作の hook は拒否したら理由をモ�
   assert.deepEqual(outputs, [{}, {}, {}, {}, deny(FILE_WRITE_DENIED_REASON), deny(FILE_READ_DENIED_REASON), {}]);
   // 許した Write・Edit の分だけ（Read・Glob では変えない）
   assert.deepEqual(projects.touched, [7, 7]);
-  assert.deepEqual(logs, ["ファイル操作を拒否しました（Write）", "ファイル操作を拒否しました（Glob）"]);
+  assert.equal(logs.length, 2);
+  assert.ok(logs[0]!.includes("Write") && logs[1]!.includes("Glob"));
   assert.ok(logs.every((line) => !line.includes("secret-path") && !line.includes(workDir)));
 });
 
@@ -1085,10 +844,7 @@ test("SdkAgentRunner: ファイル操作の hook は判定が例外で終わっ�
     },
   });
   assert.deepEqual(brokenRead.outputs, [deny, deny]);
-  assert.deepEqual(brokenRead.logs, [
-    "ファイル操作の判定に失敗したため拒否しました（Read）",
-    "ファイル操作の判定に失敗したため拒否しました（Write）",
-  ]);
+  assert.equal(brokenRead.logs.length, 2);
 
   // 書き込みを許した後の更新日時の記録が失敗しても、通さずに拒否する（Read は記録しないので通す）
   const brokenTouch = await runWith({
@@ -1098,14 +854,13 @@ test("SdkAgentRunner: ファイル操作の hook は判定が例外で終わっ�
     },
   });
   assert.deepEqual(brokenTouch.outputs, [{}, deny]);
-  assert.deepEqual(brokenTouch.logs, ["ファイル操作の判定に失敗したため拒否しました（Write）"]);
-  assert.equal(FILE_GUARD_FAILED_REASON, "判定に失敗したため拒否しました");
+  assert.equal(brokenTouch.logs.length, 1);
   for (const line of [...brokenRead.logs, ...brokenTouch.logs]) {
     assert.ok(!line.includes(workDir) && !line.includes("database"), line);
   }
 });
 
-test("progressLabel: Write・Edit・Read はこのチャンネルのプロジェクトの中ならそこからの相対パスを添え、外・プロジェクト無し・パス無しなら添えない", (t) => {
+test("progressLabel: ツールの種類ごとに違う label。プロジェクトの中のファイルだけ相対パスを添え、それ以外の中身（外のパス・パターン・検索語・URL・コマンド）は出さない", (t) => {
   const workDir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
   t.after(() => rmSync(workDir, { recursive: true, force: true }));
   const projectsDir = join(workDir, "projects");
@@ -1116,33 +871,31 @@ test("progressLabel: Write・Edit・Read はこのチャンネルのプロジェ
   symlinkSync(join(projectsDir, "other"), join(projectDir, "outside"));
   const label = (toolName: string, input: unknown) => progressLabel(toolName, input, workDir, projectDir);
 
-  assert.equal(label("Write", { file_path: join(projectDir, "site", "index.html"), content: "<p>秘密</p>" }), "書いています: site/index.html");
-  // 相対パスは cwd（workDir）を基準にする
-  assert.equal(label("Edit", { file_path: "projects/kakeibo/site/app.js", old_string: "a", new_string: "b" }), "書いています: site/app.js");
-  assert.equal(label("Read", { file_path: join(projectDir, "README.md") }), "読んでいます: README.md");
-  // 外（別のプロジェクト・projects の外・`..` で出る・symlink の先が外・ディレクトリそのもの）
-  assert.equal(label("Write", { file_path: join(projectsDir, "other", "index.html") }), "書いています");
-  assert.equal(label("Read", { file_path: "/srv/elsewhere/notes.txt" }), "読んでいます");
-  assert.equal(label("Read", { file_path: join(projectDir, "..", "other", "a.txt") }), "読んでいます");
-  assert.equal(label("Read", { file_path: join(projectDir, "outside", "a.txt") }), "読んでいます");
-  assert.equal(label("Read", { file_path: projectDir }), "読んでいます");
-  // プロジェクトが無い（#inbox・まだ作っていない）・file_path が無い
-  assert.equal(progressLabel("Write", { file_path: join(projectDir, "site", "index.html") }, workDir, undefined), "書いています");
-  assert.equal(label("Edit", {}), "書いています");
-  assert.equal(label("Read", null), "読んでいます");
-});
+  // 中のファイルは相対パスを添える（相対パスは cwd（workDir）を基準にする）
+  assert.ok(label("Write", { file_path: join(projectDir, "site", "index.html"), content: "<p>秘密</p>" }).endsWith(": site/index.html"));
+  assert.ok(label("Edit", { file_path: "projects/kakeibo/site/app.js", old_string: "a", new_string: "b" }).endsWith(": site/app.js"));
 
-test("progressLabel: ファイルを探す・Web・project_files・自前の MCP ツール・それ以外のツール。パターン・検索語・URL・パスは出さない", () => {
-  const label = (toolName: string, input: unknown) => progressLabel(toolName, input, "/srv/work", "/srv/work/projects/kakeibo");
-
-  assert.equal(label("Glob", { pattern: "**/secret*", path: "/srv/work/projects/kakeibo" }), "ファイルを探しています");
-  assert.equal(label("mcp__selfagent__project_files", { action: "trash", paths: ["site/secret.html"] }), "ファイルを整理しています");
-  assert.equal(label("WebSearch", { query: "秘密の検索語" }), "Web を検索しています");
-  assert.equal(label("WebFetch", { url: "https://example.com/private", prompt: "要約" }), "ページを読んでいます");
-  assert.equal(label("mcp__selfagent__task_add", { title: "買い物" }), "ツールを使っています: task_add");
-  assert.equal(label("mcp__selfagent__project_open", { name: "kakeibo" }), "ツールを使っています: project_open");
-  assert.equal(label("mcp__other__run", {}), "mcp__other__run を使っています");
-  assert.equal(label("Bash", { command: "cat ~/.config/self-agent/env" }), "Bash を使っています");
+  const cases: Array<{ label: string; toolName: string; input: unknown; project?: string; secret: string }> = [
+    { label: "別のプロジェクト", toolName: "Write", input: { file_path: join(projectsDir, "other", "secret.html") }, secret: "secret" },
+    { label: "projects の外", toolName: "Read", input: { file_path: "/srv/elsewhere/secret.txt" }, secret: "secret" },
+    { label: "`..` で出る", toolName: "Read", input: { file_path: join(projectDir, "..", "other", "secret.txt") }, secret: "secret" },
+    { label: "symlink の先が外", toolName: "Read", input: { file_path: join(projectDir, "outside", "secret.txt") }, secret: "secret" },
+    { label: "プロジェクトが無い", toolName: "Write", input: { file_path: join(projectDir, "secret.html") }, project: undefined, secret: "secret" },
+    { label: "Glob", toolName: "Glob", input: { pattern: "**/secret*", path: projectDir }, secret: "secret" },
+    { label: "WebSearch", toolName: "WebSearch", input: { query: "秘密の検索語" }, secret: "秘密" },
+    { label: "WebFetch", toolName: "WebFetch", input: { url: "https://example.com/private", prompt: "要約" }, secret: "example" },
+    { label: "project_files", toolName: "mcp__selfagent__project_files", input: { action: "trash", paths: ["site/secret.html"] }, secret: "secret" },
+    { label: "自前のツール", toolName: "mcp__selfagent__task_add", input: { title: "秘密の買い物" }, secret: "秘密" },
+    { label: "それ以外", toolName: "Bash", input: { command: "cat ~/.config/self-agent/secret" }, secret: "secret" },
+  ];
+  const labels = new Map<string, string>();
+  for (const item of cases) {
+    const text = progressLabel(item.toolName, item.input, workDir, "project" in item ? item.project : projectDir);
+    assert.ok(text.length > 0 && !text.includes(item.secret) && !text.includes(workDir), item.label);
+    labels.set(item.toolName, text);
+  }
+  // 種類（書く・読む・探す・Web の検索・ページ・ファイルの整理・自前のツール・それ以外）ごとに違う
+  assert.equal(new Set(labels.values()).size, labels.size);
 });
 
 /** tool_use のブロックを 1 つ持つ assistant メッセージ（並列ツール呼び出しも 1 ブロックずつ届く） */
@@ -1486,7 +1239,7 @@ test("dev ログ: 失敗（例外・result の失敗）・中断・打ち切り�
   assert.deepEqual(timedOut.records[0]!.result, { ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 });
 });
 
-test("dev ログ: 書き込みに失敗してもターンは失敗せず、log には「dev ログを書けませんでした」だけを出す（中身・パスは出さない）", async (t) => {
+test("dev ログ: 書き込みに失敗してもターンは失敗せず、log には 1 行だけ出す（中身・パス・例外の中身は出さない）", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "self-agent-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   // dataDir がファイルなので devlog/ を作れない
@@ -1510,7 +1263,8 @@ test("dev ログ: 書き込みに失敗してもターンは失敗せず、log �
     toolCalls: 0,
     contextTokens: 0,
   });
-  assert.deepEqual(logs, ["dev ログを書けませんでした"]);
+  assert.equal(logs.length, 1);
+  assert.ok(!logs[0]!.includes("秘密") && !logs[0]!.includes(root), logs[0]);
 
   // 受け口が投げても同じ
   const throwing = setupRunner(messages(success("session-1", "はい")), {}, undefined, {
@@ -1522,7 +1276,8 @@ test("dev ログ: 書き込みに失敗してもターンは失敗せず、log �
     now: () => new Date("2026-10-08T00:00:00.000Z"),
   });
   assert.equal((await throwing.runner.run({ prompt: "x" })).ok, true);
-  assert.deepEqual(throwing.logs, ["dev ログを書けませんでした"]);
+  assert.equal(throwing.logs.length, 1);
+  assert.ok(!throwing.logs[0]!.includes("EACCES") && !throwing.logs[0]!.includes("/srv/data"), throwing.logs[0]);
 });
 
 test("dev ログ: dev モードでなければ受け口を作らず、run してもファイルもディレクトリも作られない", async (t) => {

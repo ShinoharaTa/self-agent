@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatDevLogRecord, parseDevLog, selectDevLogRecords } from "../src/devlog/format.ts";
 import {
-  createDevLogSink,
   devLogResult,
   devLogToolInput,
   pruneDevLogs,
@@ -62,9 +61,6 @@ test("pruneDevLogs: ディレクトリが無ければ何もしない（作らな
 
   pruneDevLogs(dir, new Date("2026-10-08T00:00:00.000Z"), "Asia/Tokyo", 30);
 
-  assert.equal(existsSync(dir), false);
-  // dev モードでなければ受け口も作らない
-  assert.equal(createDevLogSink({ devMode: false, dataDir: root, timeZone: "Asia/Tokyo" }), undefined);
   assert.equal(existsSync(dir), false);
 });
 

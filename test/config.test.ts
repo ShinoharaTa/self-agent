@@ -89,100 +89,40 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.devLogDays, 7);
 });
 
-test("token は有無だけを返し、値は含めない", () => {
-  const secret = "dummy-token-value";
-  const config = loadConfig({ HOME: "/home/tester", CLAUDE_CODE_OAUTH_TOKEN: secret });
-  assert.equal(config.oauthTokenPresent, true);
-  assert.ok(!JSON.stringify(config).includes(secret));
-
-  assert.equal(loadConfig({ HOME: "/home/tester", CLAUDE_CODE_OAUTH_TOKEN: "" }).oauthTokenPresent, false);
-  assert.equal(loadConfig({ HOME: "/home/tester" }).oauthTokenPresent, false);
-});
-
-test("DISCORD_TOKEN も有無だけを返し、値は含めない", () => {
-  const secret = "dummy-discord-token";
-  const config = loadConfig({ HOME: "/home/tester", DISCORD_TOKEN: secret });
-  assert.equal(config.discordTokenPresent, true);
-  assert.ok(!JSON.stringify(config).includes(secret));
-
-  assert.equal(loadConfig({ HOME: "/home/tester", DISCORD_TOKEN: "" }).discordTokenPresent, false);
-});
-
-test("SELF_AGENT_MAX_CONCURRENT が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc", " 2"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_MAX_CONCURRENT: value }),
-      /SELF_AGENT_MAX_CONCURRENT/,
-      value,
-    );
+test("CLAUDE_CODE_OAUTH_TOKEN・DISCORD_TOKEN は有無だけを返し、値は含めない", () => {
+  for (const { name, key } of [
+    { name: "CLAUDE_CODE_OAUTH_TOKEN", key: "oauthTokenPresent" },
+    { name: "DISCORD_TOKEN", key: "discordTokenPresent" },
+  ] as const) {
+    const secret = `dummy-${name}-value`;
+    const config = loadConfig({ HOME: "/home/tester", [name]: secret });
+    assert.equal(config[key], true, name);
+    assert.ok(!JSON.stringify(config).includes(secret), name);
+    assert.equal(loadConfig({ HOME: "/home/tester", [name]: "" })[key], false, name);
+    assert.equal(loadConfig({ HOME: "/home/tester" })[key], false, name);
   }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_MAX_CONCURRENT: "" }).maxConcurrentTurns, 2);
 });
 
-test("SELF_AGENT_TURN_TIMEOUT_SEC が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_TURN_TIMEOUT_SEC: value }),
-      /SELF_AGENT_TURN_TIMEOUT_SEC/,
-      value,
-    );
+test("正の整数の設定は、正の整数でなければ変数名を出してエラー。空なら既定値", () => {
+  const cases = [
+    { name: "SELF_AGENT_MAX_CONCURRENT", key: "maxConcurrentTurns", fallback: 2 },
+    { name: "SELF_AGENT_TURN_TIMEOUT_SEC", key: "turnTimeoutSec", fallback: 300 },
+    { name: "SELF_AGENT_CHANNEL_OP_GAP_MS", key: "channelOpGapMs", fallback: 2000 },
+    { name: "SELF_AGENT_SHUTDOWN_GRACE_SEC", key: "shutdownGraceSec", fallback: 30 },
+    { name: "SELF_AGENT_IDLE_HOURS", key: "idleHours", fallback: 12 },
+    { name: "SELF_AGENT_AUTO_SESSION_PER_DAY", key: "autoSessionPerDay", fallback: 3 },
+    { name: "SELF_AGENT_DELETE_AFTER_DAYS", key: "deleteAfterDays", fallback: 30 },
+    { name: "SELF_AGENT_INBOX_MAX_INPUT_TOKENS", key: "inboxMaxInputTokens", fallback: 150000 },
+    { name: "SELF_AGENT_SESSION_MAX_TURNS", key: "sessionMaxTurns", fallback: 40 },
+    { name: "SELF_AGENT_SESSION_TURN_TIMEOUT_SEC", key: "sessionTurnTimeoutSec", fallback: 900 },
+    { name: "SELF_AGENT_DEV_LOG_DAYS", key: "devLogDays", fallback: 30 },
+  ] as const;
+  for (const { name, key, fallback } of cases) {
+    for (const value of ["0", "-1", "1.5", "abc", " 2", "150k"]) {
+      assert.throws(() => loadConfig({ HOME: "/home/tester", [name]: value }), new RegExp(name), `${name}=${value}`);
+    }
+    assert.equal(loadConfig({ HOME: "/home/tester", [name]: "" })[key], fallback, name);
   }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_TURN_TIMEOUT_SEC: "" }).turnTimeoutSec, 300);
-});
-
-test("SELF_AGENT_CHANNEL_OP_GAP_MS が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_CHANNEL_OP_GAP_MS: value }),
-      /SELF_AGENT_CHANNEL_OP_GAP_MS/,
-      value,
-    );
-  }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_CHANNEL_OP_GAP_MS: "" }).channelOpGapMs, 2000);
-});
-
-test("SELF_AGENT_SHUTDOWN_GRACE_SEC が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_SHUTDOWN_GRACE_SEC: value }),
-      /SELF_AGENT_SHUTDOWN_GRACE_SEC/,
-      value,
-    );
-  }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SHUTDOWN_GRACE_SEC: "" }).shutdownGraceSec, 30);
-});
-
-test("SELF_AGENT_IDLE_HOURS が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_IDLE_HOURS: value }),
-      /SELF_AGENT_IDLE_HOURS/,
-      value,
-    );
-  }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_IDLE_HOURS: "" }).idleHours, 12);
-});
-
-test("SELF_AGENT_AUTO_SESSION_PER_DAY が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_AUTO_SESSION_PER_DAY: value }),
-      /SELF_AGENT_AUTO_SESSION_PER_DAY/,
-      value,
-    );
-  }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_AUTO_SESSION_PER_DAY: "" }).autoSessionPerDay, 3);
-});
-
-test("SELF_AGENT_DELETE_AFTER_DAYS が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_DELETE_AFTER_DAYS: value }),
-      /SELF_AGENT_DELETE_AFTER_DAYS/,
-      value,
-    );
-  }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DELETE_AFTER_DAYS: "" }).deleteAfterDays, 30);
 });
 
 test("SELF_AGENT_INBOX_ROTATE_AT は HH:MM（00:00〜23:59）だけを受け付け、それ以外はエラー", () => {
@@ -202,17 +142,6 @@ test("SELF_AGENT_INBOX_ROTATE_AT は HH:MM（00:00〜23:59）だけを受け付�
     );
   }
   assert.deepEqual(loadConfig({ HOME: "/home/tester", SELF_AGENT_INBOX_ROTATE_AT: "" }).inboxRotateAt, { hour: 4, minute: 0 });
-});
-
-test("SELF_AGENT_INBOX_MAX_INPUT_TOKENS が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc", "150k"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_INBOX_MAX_INPUT_TOKENS: value }),
-      /SELF_AGENT_INBOX_MAX_INPUT_TOKENS/,
-      value,
-    );
-  }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_INBOX_MAX_INPUT_TOKENS: "" }).inboxMaxInputTokens, 150000);
 });
 
 test("SELF_AGENT_SERVE_PORT は 1〜65535 の整数だけを受け付け、それ以外はエラー", () => {
@@ -258,28 +187,6 @@ test("SELF_AGENT_SERVE_ALLOWED_LOGIN は空なら未設定", () => {
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SERVE_ALLOWED_LOGIN: "" }).serveAllowedLogin, undefined);
 });
 
-test("SELF_AGENT_SESSION_MAX_TURNS が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_SESSION_MAX_TURNS: value }),
-      /SELF_AGENT_SESSION_MAX_TURNS/,
-      value,
-    );
-  }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SESSION_MAX_TURNS: "" }).sessionMaxTurns, 40);
-});
-
-test("SELF_AGENT_SESSION_TURN_TIMEOUT_SEC が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_SESSION_TURN_TIMEOUT_SEC: value }),
-      /SELF_AGENT_SESSION_TURN_TIMEOUT_SEC/,
-      value,
-    );
-  }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SESSION_TURN_TIMEOUT_SEC: "" }).sessionTurnTimeoutSec, 900);
-});
-
 test("SELF_AGENT_DEV_MODE は 1 で有効、未設定・空・0 で無効。それ以外の値はエラー", () => {
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: "1" }).devMode, true);
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: "0" }).devMode, false);
@@ -287,17 +194,6 @@ test("SELF_AGENT_DEV_MODE は 1 で有効、未設定・空・0 で無効。そ�
   for (const value of ["true", "yes", "2", " 1", "on"]) {
     assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: value }), /SELF_AGENT_DEV_MODE/, value);
   }
-});
-
-test("SELF_AGENT_DEV_LOG_DAYS が正の整数でなければエラー", () => {
-  for (const value of ["0", "-1", "1.5", "abc"]) {
-    assert.throws(
-      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_LOG_DAYS: value }),
-      /SELF_AGENT_DEV_LOG_DAYS/,
-      value,
-    );
-  }
-  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_LOG_DAYS: "" }).devLogDays, 30);
 });
 
 test("loadDataConfig は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ だけを読み、既定値は loadConfig と同じ。他の変数の不正値は見ない", () => {
@@ -311,12 +207,9 @@ test("loadDataConfig は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ だけを読み�
   assert.throws(() => loadDataConfig({}), /HOME/);
 });
 
-test("HOME が無く既定のディレクトリが必要ならエラー", () => {
+test("HOME が無く既定のディレクトリが必要ならエラー。ディレクトリがすべて指定されていれば HOME は不要", () => {
   assert.throws(() => loadConfig({}), /HOME/);
   assert.throws(() => loadConfig({ CLAUDE_CONFIG_DIR: "/srv/claude" }), /HOME/);
-});
-
-test("ディレクトリがすべて指定されていれば HOME は不要", () => {
   const config = loadConfig({
     CLAUDE_CONFIG_DIR: "/srv/claude",
     SELF_AGENT_WORKDIR: "/srv/work",
