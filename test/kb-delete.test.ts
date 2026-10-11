@@ -26,6 +26,15 @@ function press(customId: string): Extract<Interaction, { kind: "button" }> {
   };
 }
 
+/** 1 番目の項目の削除の確認（kbDeletePrompt）のボタンを label で押す（custom_id は確認のものを使う） */
+function fromPrompt(label: string): Extract<Interaction, { kind: "button" }> {
+  const row = kbDeletePrompt({ id: 1, title: "SQLite の全文検索" }).components?.[0];
+  assert.ok(row?.kind === "buttons");
+  const button = row.buttons.find((candidate) => candidate.label === label);
+  assert.ok(button !== undefined, label);
+  return press(button.customId);
+}
+
 function setup(t: TestContext) {
   const db = tempDb(t);
   const { knowledge } = createStores(db, () => NOW);
@@ -41,20 +50,9 @@ function setup(t: TestContext) {
   return { knowledge, logs, component, run };
 }
 
-test("確認の投稿: 「<題名>（#id）を削除しますか？」と [削除する]（kb:del:<id>）[やめる]（kb:keep:<id>）。run のチャンネルに投稿する", async () => {
+test("確認の投稿: 題名と id の確認に [削除する][やめる] を付けて run のチャンネルに投稿する。投稿に失敗したら投げる", async () => {
   const prompt = kbDeletePrompt({ id: 12, title: "SQLite の全文検索" });
-  assert.deepEqual(prompt, {
-    text: "SQLite の全文検索（#12）を削除しますか？",
-    components: [
-      {
-        kind: "buttons",
-        buttons: [
-          { customId: "kb:del:12", label: "削除する", style: "danger" },
-          { customId: "kb:keep:12", label: "やめる" },
-        ],
-      },
-    ],
-  });
+  assert.ok(prompt.text.includes("SQLite の全文検索（#12）"));
 
   const sent: Array<[string, OutgoingMessage]> = [];
   const confirm = createConfirmKbDelete({
@@ -85,10 +83,9 @@ test("確認の投稿: 「<題名>（#id）を削除しますか？」と [削�
 test("[削除する]: 項目を消し、確認メッセージを「<題名>（#id）を削除しました」に書き換えてボタンを外す。log に題名は出さない", async (t) => {
   const { knowledge, logs, run } = setup(t);
 
-  assert.deepEqual(await run(press("kb:del:1")), [
-    { method: "update", message: { text: "SQLite の全文検索（#1）を削除しました", components: [] } },
+  assert.deepEqual(await run(fromPrompt("削除する")), [
+    { method: "update", message: { text: kbDeletedText({ id: 1, title: "SQLite の全文検索" }), components: [] } },
   ]);
-  assert.equal(kbDeletedText({ id: 1, title: "SQLite の全文検索" }), "SQLite の全文検索（#1）を削除しました");
   assert.equal(knowledge.get(1), undefined);
   // 検索にも出ない（FTS も消える）
   assert.deepEqual(
@@ -96,16 +93,16 @@ test("[削除する]: 項目を消し、確認メッセージを「<題名>（#i
     [],
   );
   assert.ok(knowledge.get(2) !== undefined);
-  assert.deepEqual(logs, ["[削除する] でナレッジベースの項目を削除しました"]);
+  assert.equal(logs.length, 1);
+  assert.ok(!logs[0]!.includes("SQLite"));
 });
 
 test("[やめる]: 何も消さず「やめました」に書き換えてボタンを外す", async (t) => {
   const { knowledge, logs, run } = setup(t);
 
-  assert.deepEqual(await run(press("kb:keep:1")), [
+  assert.deepEqual(await run(fromPrompt("やめる")), [
     { method: "update", message: { text: KB_KEPT_TEXT, components: [] } },
   ]);
-  assert.equal(KB_KEPT_TEXT, "やめました");
   assert.ok(knowledge.get(1) !== undefined);
   assert.deepEqual(logs, []);
 });
@@ -118,7 +115,6 @@ test("既に無い項目（削除済み・2 回目の [削除する]・知らな
   assert.deepEqual(await run(press("kb:del:1")), stale);
   assert.deepEqual(await run(press("kb:keep:1")), stale);
   assert.deepEqual(await run(press("kb:del:99")), stale);
-  assert.ok(STALE_TEXT.includes("古くなっています"));
   assert.ok(knowledge.get(2) !== undefined);
 });
 

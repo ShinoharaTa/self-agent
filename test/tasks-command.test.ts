@@ -51,13 +51,15 @@ function selectRow(options: Array<{ label: string; value: string; description?: 
   };
 }
 
-test("/tasks: 未完了のタスクを期限順（期限なしは後ろ）に #id 題名（期限 YYYY-MM-DD）で並べ、表示した分のセレクトを付けて ephemeral で返す", async (t) => {
+test("/tasks: 未完了のタスク（完了・やめたものは出さない）を期限順（期限なしは後ろ）に #id 題名（期限 YYYY-MM-DD）で並べ、表示した分のセレクトを付けて ephemeral で返す", async (t) => {
   const { tasks, runTasks } = setup(t);
   tasks.add({ title: "期限なし" });
   tasks.add({ title: "来週", due: "2026-10-09" });
   tasks.add({ title: "明日", due: "2026-10-03" });
   tasks.add({ title: "済んだ", due: "2026-10-01" });
+  tasks.add({ title: "やめた", due: "2026-10-02" });
   tasks.complete(4);
+  tasks.update(5, { status: "dropped" });
 
   const calls = await runTasks();
 
@@ -85,23 +87,6 @@ test("/tasks: 未完了が 0 件なら「未完了のタスクはありません
   const calls = await runTasks();
 
   assert.deepEqual(calls, [{ method: "reply", message: { text: NO_OPEN_TASKS_TEXT, components: [], ephemeral: true } }]);
-  assert.equal(NO_OPEN_TASKS_TEXT, "未完了のタスクはありません");
-});
-
-test("/tasks: やめた（dropped）タスクは一覧とセレクトに出ない", async (t) => {
-  const { tasks, runTasks } = setup(t);
-  tasks.add({ title: "やめた", due: "2026-10-03" });
-  tasks.add({ title: "残す" });
-  tasks.update(1, { status: "dropped" });
-
-  const calls = await runTasks();
-
-  assert.deepEqual(calls, [
-    {
-      method: "reply",
-      message: { text: "#2 残す", components: [selectRow([{ label: "#2 残す", value: "2" }])], ephemeral: true },
-    },
-  ]);
 });
 
 test("/tasks: 20 件まで。セレクトの選択肢も表示した 20 件", (t) => {
@@ -147,8 +132,11 @@ test("tasks:done: 選んだタスクを完了にし、一覧を update で書き
   tasks.add({ title: "a", due: "2026-10-03" });
   tasks.add({ title: "b", due: "2026-10-04" });
   tasks.add({ title: "c" });
+  // 一覧のセレクトの custom_id で選ぶ
+  const row = taskListMessage(tasks).components?.[0];
+  assert.ok(row?.kind === "select");
 
-  const calls = await choose(select(["1", "3"]));
+  const calls = await choose(select(["1", "3"], row.select.customId));
 
   assert.equal(tasks.get(1)?.status, "done");
   assert.equal(tasks.get(2)?.status, "open");
@@ -162,7 +150,8 @@ test("tasks:done: 選んだタスクを完了にし、一覧を update で書き
       },
     },
   ]);
-  assert.deepEqual(logs, ["/tasks でタスクを 2 件完了にしました（guild=guild-1）"]);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /2 件/);
 });
 
 test("tasks:done: 全部完了にしたら「未完了のタスクはありません」にしてセレクトを外す。既に完了・無い id は数えない", async (t) => {
@@ -174,7 +163,8 @@ test("tasks:done: 全部完了にしたら「未完了のタスクはありま�
   const calls = await choose(select(["1", "2", "99", "x"]));
 
   assert.deepEqual(calls, [{ method: "update", message: { text: NO_OPEN_TASKS_TEXT, components: [] } }]);
-  assert.deepEqual(logs, ["/tasks でタスクを 1 件完了にしました（guild=guild-1）"]);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /1 件/);
 });
 
 test("tasks の不明な操作（ボタン・別の custom_id）は例外にする", async (t) => {

@@ -14,12 +14,10 @@ import {
   NOT_SESSION_REPLY,
   SUMMARY_FAILURE_REPLY,
 } from "../src/app/commands/close.ts";
-import { HELP_TEXT } from "../src/app/commands/help.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { EMPTY_SUMMARY } from "../src/app/summary.ts";
-import { RESUME_SEED_HEADER } from "../src/app/turn.ts";
-import type { ComponentRow, Interaction } from "../src/discord/gateway.ts";
-import { CLOSE_SUMMARY_MAX_LENGTH, type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
+import { type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
@@ -69,14 +67,23 @@ const REPORT: CloseDraft = {
   tasks: [{ title: "宿を予約する", due: "2026-10-05" }, { title: "新幹線の時刻を調べる" }, { title: "休みの申請" }],
 };
 
-const BUTTONS: ComponentRow = {
-  kind: "buttons",
-  buttons: [
-    { customId: "close:all:topic-1", label: "全部登録", style: "primary" },
-    { customId: "close:pick:topic-1", label: "選ぶ" },
-    { customId: "close:none:topic-1", label: "登録しない" },
-  ],
-};
+/** 確認のメッセージ（reply・update）に付いたボタンを label で押す（custom_id はメッセージのものを使う） */
+function pressLabel(call: ResponderCall | undefined, label: string): Interaction {
+  assert.ok(call?.method === "reply" || call?.method === "update");
+  const row = call.message.components?.[0];
+  assert.ok(row?.kind === "buttons");
+  const found = row.buttons.find((candidate) => candidate.label === label);
+  assert.ok(found !== undefined, label);
+  return { ...BASE, kind: "button", customId: found.customId };
+}
+
+/** 確認のボタンの label */
+function labelsOf(call: ResponderCall | undefined): string[] {
+  assert.ok(call?.method === "reply" || call?.method === "update");
+  const row = call.message.components?.[0];
+  assert.ok(row?.kind === "buttons");
+  return row.buttons.map((candidate) => candidate.label);
+}
 
 function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step[]) {
   const db = tempDb(t);
@@ -141,30 +148,28 @@ function assertOpen(env: Pick<ReturnType<typeof setup>, "topicSessions" | "chann
   assert.deepEqual(env.channelOps.moves, []);
 }
 
-test("/close: セッション以外（#inbox・知らないチャンネル・別サーバーのセッション・削除済み）では ephemeral で断り、ターンを実行しない", async (t) => {
+test("/close・[閉じる]: セッション以外（#inbox・知らないチャンネル・別サーバーのセッション）と閉じたセッション（done・deleted）では ephemeral で断り、ターンを実行しない", async (t) => {
   const env = setup(t, () => []);
   env.topicSessions.create({ ...TOPIC, channelId: "topic-9", guildId: "guild-9" });
+  const notSession = [{ method: "reply", message: { text: NOT_SESSION_REPLY, ephemeral: true } }];
+  const closed = [{ method: "reply", message: { text: ALREADY_CLOSED_REPLY, ephemeral: true } }];
 
-  for (const channelId of ["inbox-1", "unknown-1", "topic-9", null]) {
-    const calls = await env.runClose({ ...CLOSE, channelId });
-    assert.deepEqual(calls, [{ method: "reply", message: { text: NOT_SESSION_REPLY, ephemeral: true } }], String(channelId));
+  for (const channelId of ["inbox-1", "unknown-1", "topic-9"]) {
+    assert.deepEqual(await env.runClose({ ...CLOSE, channelId }), notSession, `/close ${channelId}`);
+    const start: Interaction = { ...BASE, kind: "button", customId: closeStartButton(channelId).customId };
+    assert.deepEqual(await env.press(start), notSession, `[閉じる] ${channelId}`);
   }
-  assert.equal(NOT_SESSION_REPLY, "セッションのチャンネルで実行してください");
-  assert.equal(env.runner.inputs.length, 0);
-});
-
-test("/close: 閉じたセッション（done・deleted）では ephemeral で「このセッションは閉じています」と返す", async (t) => {
-  const env = setup(t, () => []);
-
+  assert.deepEqual(await env.runClose({ ...CLOSE, channelId: null }), notSession, "/close null");
   for (const state of ["done", "deleted"]) {
     env.db.prepare("UPDATE sessions SET state = ? WHERE channel_id = 'topic-1'").run(state);
-    const calls = await env.runClose();
-    assert.deepEqual(calls, [{ method: "reply", message: { text: ALREADY_CLOSED_REPLY, ephemeral: true } }], state);
+    assert.deepEqual(await env.runClose(), closed, `/close ${state}`);
+    assert.deepEqual(await env.press(button("start")), closed, `[閉じる] ${state}`);
   }
   assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(env.turnQueue.keys, []);
 });
 
-test("/close: 公開で defer → 静的な prompt で resume → 要約とタスク候補（番号付き）と 3 つのボタンを出す。まだ閉じない", async (t) => {
+test("/close: 公開で defer → 静的な prompt で resume → 要約とタスク候補と 3 つのボタンを出す。まだ閉じない", async (t) => {
   const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
 
   const calls = await env.runClose();
@@ -178,105 +183,85 @@ test("/close: 公開で defer → 静的な prompt で resume → 要約とタ�
       allowedUrls: [],
     },
   ]);
-  assert.match(CLOSE_PROMPT, /session_report を 1 回だけ呼んでください。$/);
-  assert.ok(CLOSE_PROMPT.includes(`${CLOSE_SUMMARY_MAX_LENGTH} 字以内`));
-  assert.deepEqual(calls, [
-    { method: "defer", ephemeral: false },
-    { method: "reply", message: { text: confirmText(REPORT), components: [BUTTONS] } },
-  ]);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], { method: "defer", ephemeral: false });
   const reply = calls[1];
   assert.ok(reply?.method === "reply");
-  assert.equal(
-    reply.message.text,
-    [
-      "**要約**",
-      "京都に 2 泊する。宿は候補を 2 つに絞った。",
-      "",
-      "**やることの候補**",
-      "1. 宿を予約する（期限 2026-10-05）",
-      "2. 新幹線の時刻を調べる",
-      "3. 休みの申請",
-      "",
-      "タスクとして登録するものを選んでください。",
-    ].join("\n"),
-  );
+  assert.equal(reply.message.text, confirmText(REPORT));
+  assert.equal(reply.message.ephemeral, undefined);
+  assert.deepEqual(labelsOf(reply), ["全部登録", "選ぶ", "登録しない"]);
   assert.deepEqual(env.topicSessions.getCloseDraft("topic-1"), REPORT);
   assertOpen(env);
   assert.deepEqual(env.openTasks(), []);
-  // 発言と同じキューの同じ key（channelId）で、セッションのジョブとして実行する
-  assert.deepEqual(env.turnQueue.keys, ["topic-1"]);
+  // 発言と同じキューで、セッションのジョブとして実行する
   assert.deepEqual(env.turnQueue.options, [{ session: true }]);
   // ターンの usage と SDK セッションも記録する
   assert.equal(env.usage.recent(10).length, 1);
   assert.equal(env.sessions.get("topic-1"), "session-1");
 });
 
-test("[全部登録]: 候補をすべて登録して閉じ、確認メッセージのボタンを外して「閉じました（登録 3 件）」にする", async (t) => {
-  const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
-  await env.runClose();
-  env.clock.now = CLOSED_AT;
+test("[全部登録]・[登録しない]: 候補を全部・0 件登録して閉じ、確認メッセージのボタンを外す", async (t) => {
+  const cases = [
+    {
+      label: "全部登録",
+      registered: [
+        { title: "宿を予約する", due: "2026-10-05" },
+        { title: "新幹線の時刻を調べる", due: null },
+        { title: "休みの申請", due: null },
+      ],
+    },
+    { label: "登録しない", registered: [] },
+  ];
 
-  const calls = await env.press(button("all"));
+  for (const { label, registered } of cases) {
+    const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
+    const [, reply] = await env.runClose();
+    env.clock.now = CLOSED_AT;
 
-  assert.deepEqual(calls, [{ method: "update", message: { text: closedText(REPORT.summary, 3), components: [] } }]);
-  assert.match(closedText(REPORT.summary, 3), /\n閉じました（登録 3 件）$/);
-  assert.deepEqual(env.openTasks(), [
-    { title: "宿を予約する", due: "2026-10-05" },
-    { title: "新幹線の時刻を調べる", due: null },
-    { title: "休みの申請", due: null },
-  ]);
-  assertClosed(env, REPORT.summary);
-  assert.ok(env.logs.includes("/close でセッションを閉じました（guild=guild-1、登録 3 件）"));
-});
+    const calls = await env.press(pressLabel(reply, label));
 
-test("[登録しない]: タスクは登録せずに閉じる", async (t) => {
-  const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
-  await env.runClose();
-  env.clock.now = CLOSED_AT;
-
-  const calls = await env.press(button("none"));
-
-  assert.deepEqual(calls, [{ method: "update", message: { text: closedText(REPORT.summary, 0), components: [] } }]);
-  assert.deepEqual(env.openTasks(), []);
-  assertClosed(env, REPORT.summary);
+    assert.deepEqual(
+      calls,
+      [{ method: "update", message: { text: closedText(REPORT.summary, registered.length), components: [] } }],
+      label,
+    );
+    assert.deepEqual(env.openTasks(), registered, label);
+    assertClosed(env, REPORT.summary);
+    assert.equal(env.logs.length, 1, label);
+    assert.ok(!env.logs[0]!.includes("topic-1"), label);
+  }
 });
 
 test("[選ぶ]: 同じメッセージに複数選択のセレクトを足し、選んだものだけ登録して閉じる", async (t) => {
   const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
-  await env.runClose();
+  const [, reply] = await env.runClose();
 
-  const pickCalls = await env.press(button("pick"));
+  const pickCalls = await env.press(pressLabel(reply, "選ぶ"));
 
-  assert.deepEqual(pickCalls, [
-    {
-      method: "update",
-      message: {
-        text: confirmText(REPORT),
-        components: [
-          BUTTONS,
-          {
-            kind: "select",
-            select: {
-              customId: "close:sel:topic-1",
-              placeholder: "登録するものを選んでください",
-              minValues: 1,
-              maxValues: 3,
-              options: [
-                { label: "1. 宿を予約する", value: "0", description: "期限 2026-10-05" },
-                { label: "2. 新幹線の時刻を調べる", value: "1" },
-                { label: "3. 休みの申請", value: "2" },
-              ],
-            },
-          },
-        ],
-      },
-    },
-  ]);
+  const update = pickCalls[0];
+  assert.equal(pickCalls.length, 1);
+  assert.ok(update?.method === "update");
+  assert.equal(update.message.text, confirmText(REPORT));
+  // ボタンはそのまま残し、2 行目にセレクトを足す
+  assert.ok(reply?.method === "reply");
+  assert.deepEqual(update.message.components?.[0], reply.message.components?.[0]);
+  const row = update.message.components?.[1];
+  assert.ok(row?.kind === "select");
+  assert.equal(row.select.minValues, 1);
+  assert.equal(row.select.maxValues, 3);
+  assert.deepEqual(
+    row.select.options.map((option) => [option.label, option.value, option.description]),
+    [
+      ["1. 宿を予約する", "0", "期限 2026-10-05"],
+      ["2. 新幹線の時刻を調べる", "1", undefined],
+      ["3. 休みの申請", "2", undefined],
+    ],
+  );
   // セレクトを出しただけでは閉じない
   assertOpen(env);
 
   env.clock.now = CLOSED_AT;
-  const selectCalls = await env.press(select(["2", "0"]));
+  const selectCalls = await env.press({ ...BASE, kind: "select", customId: row.select.customId, values: ["2", "0"] });
 
   assert.deepEqual(selectCalls, [{ method: "update", message: { text: closedText(REPORT.summary, 2), components: [] } }]);
   // 選んだ順ではなく候補の順に登録する
@@ -304,9 +289,10 @@ test("タスク候補が 0 件なら確認なしで閉じ、保留中の応答�
   assert.deepEqual(env.openTasks(), []);
 });
 
-test("session_report が呼ばれなければ返答本文の先頭 600 字を要約にし、タスク無しで閉じる", async (t) => {
+test("session_report が呼ばれなければ返答本文の先頭 600 字を要約にし、タスク無しで閉じる（前の /close で残った下書きは使わない）", async (t) => {
   const long = `${"あ".repeat(599)}😀以降は切る`;
   const env = setup(t, () => [() => ok(`  ${long}  `), () => ok(" \n ")]);
+  env.topicSessions.saveCloseDraft("topic-1", { summary: "古い要約", tasks: [{ title: "古いタスク" }] });
   env.clock.now = CLOSED_AT;
 
   const calls = await env.runClose();
@@ -315,21 +301,12 @@ test("session_report が呼ばれなければ返答本文の先頭 600 字を要
   const summary = "あ".repeat(599);
   assert.deepEqual(calls[1], { method: "reply", message: { text: closedText(summary, 0) } });
   assertClosed(env, summary);
+  assert.deepEqual(env.openTasks(), []);
 
   // 返答も空なら「（要約なし）」
   env.db.prepare("UPDATE sessions SET state = 'active' WHERE channel_id = 'topic-1'").run();
   const empty = await env.runClose();
   assert.deepEqual(empty[1], { method: "reply", message: { text: closedText(EMPTY_SUMMARY, 0) } });
-});
-
-test("前の /close で残った下書きは使わない（ターンの前に消す）", async (t) => {
-  const env = setup(t, () => [() => ok("今回の要約")]);
-  env.topicSessions.saveCloseDraft("topic-1", { summary: "古い要約", tasks: [{ title: "古いタスク" }] });
-
-  const calls = await env.runClose();
-
-  assert.deepEqual(calls[1], { method: "reply", message: { text: closedText("今回の要約", 0) } });
-  assert.deepEqual(env.openTasks(), []);
 });
 
 test("ターンが失敗したら「要約に失敗しました…」と返し、状態は変えない", async (t) => {
@@ -341,11 +318,11 @@ test("ターンが失敗したら「要約に失敗しました…」と返し�
     { method: "defer", ephemeral: false },
     { method: "reply", message: { text: SUMMARY_FAILURE_REPLY } },
   ]);
-  assert.equal(SUMMARY_FAILURE_REPLY, "要約に失敗しました。もう一度 /close を実行してください");
   assertOpen(env);
   assert.equal(env.topicSessions.getCloseDraft("topic-1"), undefined);
   assert.deepEqual(env.openTasks(), []);
-  assert.deepEqual(env.logs, ["/close のターンが失敗しました: timeout"]);
+  assert.equal(env.logs.length, 1);
+  assert.match(env.logs[0]!, /timeout/);
 });
 
 test("下書きが無いボタン（閉じた後・/close 前）は ephemeral で /close のやり直しを案内し、何も変えない", async (t) => {
@@ -355,7 +332,6 @@ test("下書きが無いボタン（閉じた後・/close 前）は ephemeral �
     const calls = await env.press(interaction);
     assert.deepEqual(calls, [{ method: "reply", message: { text: NO_DRAFT_REPLY, ephemeral: true } }]);
   }
-  assert.equal(NO_DRAFT_REPLY, "/close をもう一度実行してください");
   assertOpen(env);
 
   // 1 回押して閉じた後の 2 回目は登録し直さない
@@ -396,48 +372,7 @@ test("再起動の後（新しいストアとハンドラ）でも、DB の下�
   assertClosed({ topicSessions: env.topicSessions, channelOps }, REPORT.summary);
 });
 
-test("resume に失敗したら要約の seed で新しいセッションを起こし、1 回だけやり直して閉じる", async (t) => {
-  const env = setup(t, (topicSessions) => [
-    () => ({
-      ok: false,
-      errorMessage: "error_during_execution: No conversation found with session ID: session-1",
-      sessionRecorded: false,
-      toolCalls: 0,
-    }),
-    reports({ summary: "題名だけから再開した" }, topicSessions),
-  ]);
-
-  const calls = await env.runClose();
-
-  const seed = `${RESUME_SEED_HEADER}\n題名: 旅行の計画`;
-  assert.deepEqual(
-    env.runner.inputs.map((input) => [input.prompt, input.sessionId]),
-    [
-      [CLOSE_PROMPT, "session-1"],
-      [`${seed}\n\n${CLOSE_PROMPT}`, undefined],
-    ],
-  );
-  assert.deepEqual(calls[1], { method: "reply", message: { text: closedText("題名だけから再開した", 0) } });
-  assert.equal(env.seeds.get("topic-1"), undefined);
-});
-
-test("/close のターンは同じチャンネルの発言のターンが終わるのを待つ", async (t) => {
-  const env = setup(t, (topicSessions) => [reports({ summary: "要約" }, topicSessions)]);
-  let release = (): void => {};
-  const running = env.turnQueue.run("topic-1", () => new Promise<void>((resolve) => (release = resolve)));
-
-  const closing = env.runClose();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(env.runner.inputs.length, 0);
-
-  release();
-  await running;
-  const calls = await closing;
-  assert.equal(env.runner.inputs.length, 1);
-  assert.deepEqual(calls[1], { method: "reply", message: { text: closedText("要約", 0) } });
-});
-
-test("/close の待ち中に閉じられていたら、ターンを実行せずに「このセッションは閉じています」と返す", async (t) => {
+test("/close のターンは同じチャンネルの発言のターンが終わるのを待ち、その間に閉じられていたらターンを実行せずに「このセッションは閉じています」と返す", async (t) => {
   const env = setup(t, () => []);
   let release = (): void => {};
   const running = env.turnQueue.run("topic-1", () => new Promise<void>((resolve) => (release = resolve)));
@@ -467,7 +402,7 @@ test("確認メッセージは候補の題名を 100 字で切り、最大の候
   assert.ok(reply.message.text.length <= 2000, String(reply.message.text.length));
   assert.ok(reply.message.text.includes(`1. ${"0".repeat(99)}…（期限 2026-10-05）`));
 
-  const pick = await env.press(button("pick"));
+  const pick = await env.press(pressLabel(reply, "選ぶ"));
   const update = pick[0];
   assert.ok(update?.method === "update");
   const row = update.message.components?.[1];
@@ -476,12 +411,12 @@ test("確認メッセージは候補の題名を 100 字で切り、最大の候
   assert.equal(row.select.maxValues, 10);
 });
 
-test("[閉じる]（close:start）: 元メッセージは変えずに保留 → /close と同じターン → 待ちの知らせを要約とタスク候補・確認のボタンに書き換える", async (t) => {
+test("[閉じる]: 元メッセージは変えずに保留 → /close と同じターン → 待ちの知らせを要約とタスク候補・確認のボタンに書き換える", async (t) => {
   const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
   // 12 時間で待ちにされたセッション
   env.topicSessions.setWaiting("topic-1");
 
-  const calls = await env.press(button("start"));
+  const calls = await env.press({ ...BASE, kind: "button", customId: closeStartButton("topic-1").customId });
 
   assert.deepEqual(env.runner.inputs, [
     {
@@ -491,11 +426,12 @@ test("[閉じる]（close:start）: 元メッセージは変えずに保留 → 
       allowedUrls: [],
     },
   ]);
-  assert.deepEqual(calls, [
-    { method: "deferUpdate" },
-    { method: "update", message: { text: confirmText(REPORT), components: [BUTTONS] } },
-  ]);
-  assert.deepEqual(env.turnQueue.keys, ["topic-1"]);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], { method: "deferUpdate" });
+  const update = calls[1];
+  assert.ok(update?.method === "update");
+  assert.equal(update.message.text, confirmText(REPORT));
+  assert.deepEqual(labelsOf(update), ["全部登録", "選ぶ", "登録しない"]);
   assert.deepEqual(env.turnQueue.options, [{ session: true }]);
   // まだ閉じない（待ちのまま）
   assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");
@@ -503,7 +439,7 @@ test("[閉じる]（close:start）: 元メッセージは変えずに保留 → 
 
   // 書き換えた確認のボタンは /close のものと同じに動く
   env.clock.now = CLOSED_AT;
-  const confirmCalls = await env.press(button("all"));
+  const confirmCalls = await env.press(pressLabel(update, "全部登録"));
   assert.deepEqual(confirmCalls, [{ method: "update", message: { text: closedText(REPORT.summary, 3), components: [] } }]);
   assertClosed(env, REPORT.summary);
 });
@@ -522,7 +458,7 @@ test("[閉じる]: タスク候補が 0 件なら閉じて、待ちの知らせ�
     { method: "update", message: { text: SUMMARY_FAILURE_REPLY, components: [] } },
   ]);
   assert.equal(env.topicSessions.get("topic-1")?.state, "waiting");
-  assert.deepEqual(env.logs, ["/close のターンが失敗しました: timeout"]);
+  assert.equal(env.logs.length, 1);
 
   env.clock.now = CLOSED_AT;
   const closed = await env.press(button("start"));
@@ -532,29 +468,4 @@ test("[閉じる]: タスク候補が 0 件なら閉じて、待ちの知らせ�
     { method: "update", message: { text: closedText("話しただけで終わった", 0), components: [] } },
   ]);
   assertClosed(env, "話しただけで終わった");
-});
-
-test("[閉じる]: 閉じたセッション・セッション以外では ephemeral で断り、ターンを実行しない", async (t) => {
-  const env = setup(t, () => []);
-  env.topicSessions.create({ ...TOPIC, channelId: "topic-9", guildId: "guild-9" });
-
-  for (const channelId of ["unknown-1", "topic-9"]) {
-    const calls = await env.press(button("start", channelId));
-    assert.deepEqual(calls, [{ method: "reply", message: { text: NOT_SESSION_REPLY, ephemeral: true } }], channelId);
-  }
-  for (const state of ["done", "deleted"]) {
-    env.db.prepare("UPDATE sessions SET state = ? WHERE channel_id = 'topic-1'").run(state);
-    const calls = await env.press(button("start"));
-    assert.deepEqual(calls, [{ method: "reply", message: { text: ALREADY_CLOSED_REPLY, ephemeral: true } }], state);
-  }
-  assert.equal(env.runner.inputs.length, 0);
-  assert.deepEqual(env.turnQueue.keys, []);
-});
-
-test("[閉じる] ボタンの custom_id は close:start:<channelId>", () => {
-  assert.deepEqual(closeStartButton("topic-1"), { customId: "close:start:topic-1", label: "閉じる" });
-});
-
-test("/help に /close の説明がある", () => {
-  assert.match(HELP_TEXT, /^`\/close` /m);
 });

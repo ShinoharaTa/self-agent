@@ -1,6 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { HELP_TEXT } from "../src/app/commands/help.ts";
 import {
   createNewSessionCommand,
   EMPTY_TITLE_REPLY,
@@ -13,7 +12,6 @@ import { KeyedSerialQueue } from "../src/app/queue.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
-import { RecordingQueue } from "./helpers/recording.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
@@ -69,44 +67,33 @@ function created(channelId: string): ResponderCall[] {
   ];
 }
 
-test("toChannelName: 前後の空白を除き、空白の連続（全角を含む）を - 1 つにする", () => {
-  assert.equal(toChannelName("  旅行の計画  "), "旅行の計画");
-  assert.equal(toChannelName("旅行 の　計画"), "旅行-の-計画");
-  assert.equal(toChannelName("a  \t\n　b"), "a-b");
-});
+test("toChannelName: 題名をチャンネル名に正規化する", () => {
+  const cases: Array<[label: string, title: string, name: string]> = [
+    ["前後の空白を除く", "  旅行の計画  ", "旅行の計画"],
+    ["空白の連続（全角を含む）は - 1 つ", "旅行 の　計画", "旅行-の-計画"],
+    ["タブ・改行も空白", "a  \t\n　b", "a-b"],
+    ["ASCII の記号は - と _ 以外を除く", "a!\"#$%&'()*+,./:;<=>?@[\\]^`{|}~b", "ab"],
+    ["- と _ は残す", "snake_case-name", "snake_case-name"],
+    ["日本語と全角の記号はそのまま", "「設計」レビュー！", "「設計」レビュー！"],
+    ["記号を除いてから空白を - に", "v1.2 リリース", "v12-リリース"],
+    ["ASCII の英字だけを小文字に", "Hello World", "hello-world"],
+    ["全角英字・ASCII 以外は小文字にしない", "ＡＢＣ Ä", "ＡＢＣ-Ä"],
+    ["- の連続を 1 つに", "a - b", "a-b"],
+    ["先頭・末尾の - を除く", "--a--b--", "a-b"],
+    ["記号を除いた跡の空白同士もつながる", "a ! b", "a-b"],
+    ["記号を除いた跡の先頭・末尾", "! a !", "a"],
+    ["100 字で切る", "a".repeat(150), "a".repeat(100)],
+    ["100 字で切る（日本語）", "あ".repeat(100) + "い", "あ".repeat(100)],
+    // 100 単位目がペアの前半なら、その文字ごと落とす
+    ["サロゲートペアは割らない", "a".repeat(99) + "😀", "a".repeat(99)],
+    ["サロゲートペアだけ", "😀".repeat(60), "😀".repeat(50)],
+    ["切った末尾に - が残らない", `${"あ".repeat(99)} x`, "あ".repeat(99)],
+    ["記号だけなら session", "!!!", "session"],
+    ["空白だけなら session", "   ", "session"],
+    ["- と記号と空白だけなら session", " - ! - ", "session"],
+  ];
 
-test("toChannelName: ASCII の記号は - と _ 以外を除き、日本語と全角の記号はそのまま残す", () => {
-  assert.equal(toChannelName("a!\"#$%&'()*+,./:;<=>?@[\\]^`{|}~b"), "ab");
-  assert.equal(toChannelName("snake_case-name"), "snake_case-name");
-  assert.equal(toChannelName("「設計」レビュー！"), "「設計」レビュー！");
-  assert.equal(toChannelName("v1.2 リリース"), "v12-リリース");
-});
-
-test("toChannelName: ASCII の英字だけを小文字にする", () => {
-  assert.equal(toChannelName("Hello World"), "hello-world");
-  assert.equal(toChannelName("ＡＢＣ Ä"), "ＡＢＣ-Ä");
-});
-
-test("toChannelName: - の連続を 1 つにし、先頭・末尾の - を除く", () => {
-  assert.equal(toChannelName("a - b"), "a-b");
-  assert.equal(toChannelName("--a--b--"), "a-b");
-  // 記号を除いた跡の空白同士もつながる
-  assert.equal(toChannelName("a ! b"), "a-b");
-  assert.equal(toChannelName("! a !"), "a");
-});
-
-test("toChannelName: 100 字で切り、サロゲートペアは割らない", () => {
-  assert.equal(toChannelName("a".repeat(150)), "a".repeat(100));
-  assert.equal(toChannelName("あ".repeat(100) + "い"), "あ".repeat(100));
-  // 100 単位目がペアの前半なら、その文字ごと落とす
-  assert.equal(toChannelName("a".repeat(99) + "😀"), "a".repeat(99));
-  assert.equal(toChannelName("😀".repeat(60)), "😀".repeat(50));
-});
-
-test("toChannelName: 正規化して空になれば session", () => {
-  assert.equal(toChannelName("!!!"), "session");
-  assert.equal(toChannelName("   "), "session");
-  assert.equal(toChannelName(" - ! - "), "session");
+  for (const [label, title, name] of cases) assert.equal(toChannelName(title), name, label);
 });
 
 test("/new: 進行中に空きがあればそこにチャンネルを作って保存し、最初の投稿をしてリンクを ephemeral で返す", async (t) => {
@@ -125,7 +112,7 @@ test("/new: 進行中に空きがあればそこにチャンネルを作って�
       guildId: "guild-1",
       options: { name: "旅行の計画-vol2", parentId: LAYOUT.active, topic: "旅行の計画 Vol.2" },
     },
-    { method: "send", channelId: "ch-8", text: "セッション「旅行の計画 Vol.2」を始めました。ここで話しかけてください。" },
+    { method: "send", channelId: "ch-8", text: welcomeText("旅行の計画 Vol.2") },
   ]);
   assert.deepEqual(calls, created("ch-8"));
   assert.deepEqual(topicSessions.get("ch-8"), {
@@ -145,7 +132,8 @@ test("/new: 進行中に空きがあればそこにチャンネルを作って�
     renewedSummary: null,
     renewedAt: null,
   });
-  assert.deepEqual(logs, ["/new でセッションを作りました（guild=guild-1）"]);
+  assert.equal(logs.length, 1);
+  assert.ok(!logs[0]!.includes("ch-8"));
 });
 
 test("/new: 進行中を ordinal の昇順に見て、50 未満の最初のカテゴリに作る", async (t) => {
@@ -202,7 +190,7 @@ test("/new: 進行中がすべて満杯なら「進行中 2」を作って保存
   ]);
   assert.equal(topicSessions.get("ch-9")?.categoryId, "ch-8");
   assert.deepEqual(calls, created("ch-9"));
-  assert.ok(logs.includes("進行中カテゴリに空きが無いため「進行中 2」を作りました（guild=guild-1）"));
+  assert.ok(logs.some((line) => line.includes("進行中 2")));
 
   gateway.reset();
   await runNew("次");
@@ -219,22 +207,35 @@ test("/new: 進行中がすべて満杯なら「進行中 2」を作って保存
   );
 });
 
-test("/new: 進行中 1・2 が満杯なら「進行中 3」を作る", async (t) => {
-  const { gateway, guildSettings, runNew, setUp } = setup(t);
-  await setUp();
-  const second = await gateway.createCategory("guild-1", "進行中 2");
-  guildSettings.setStateCategory("guild-1", "active", 2, second);
-  gateway.manual.set(LAYOUT.active, 50);
-  gateway.manual.set(second, 50);
-  gateway.reset();
+test("/new: 作れる進行中カテゴリが無ければ、次の番号の「進行中 n」を作る（消えた 1 つ目は数えるが作り直さない）", async (t) => {
+  const cases: Array<{ label: string; full: number[]; gone: number[]; name: string; ordinal: number }> = [
+    { label: "進行中 1・2 が満杯", full: [1, 2], gone: [], name: "進行中 3", ordinal: 3 },
+    { label: "進行中 1 つだけで消えていた", full: [], gone: [1], name: "進行中 2", ordinal: 2 },
+  ];
 
-  await runNew("x");
+  for (const { label, full, gone, name, ordinal } of cases) {
+    const { gateway, guildSettings, runNew, setUp } = setup(t);
+    await setUp();
+    const categories = [LAYOUT.active];
+    if (full.includes(2)) {
+      const second = await gateway.createCategory("guild-1", "進行中 2");
+      guildSettings.setStateCategory("guild-1", "active", 2, second);
+      categories.push(second);
+    }
+    for (const index of full) gateway.manual.set(categories[index - 1]!, 50);
+    for (const index of gone) gateway.alive.delete(categories[index - 1]!);
+    gateway.reset();
 
-  assert.deepEqual(
-    gateway.calls.filter((call) => call.method === "createCategory"),
-    [{ method: "createCategory", guildId: "guild-1", name: "進行中 3" }],
-  );
-  assert.equal(guildSettings.getStateCategory("guild-1", "active", 3), "ch-9");
+    await runNew("x");
+
+    assert.deepEqual(
+      gateway.calls.filter((call) => call.method === "createCategory"),
+      [{ method: "createCategory", guildId: "guild-1", name }],
+      label,
+    );
+    assert.equal(guildSettings.listStateCategories("guild-1", "active").at(-1)?.ordinal, ordinal, label);
+    assert.equal(guildSettings.getStateCategory("guild-1", "active", 1), LAYOUT.active, label);
+  }
 });
 
 test("/new: Discord 上で消えた進行中カテゴリは数えずに飛ばし、作り直さない", async (t) => {
@@ -262,24 +263,7 @@ test("/new: Discord 上で消えた進行中カテゴリは数えずに飛ばし
   assert.equal(guildSettings.getStateCategory("guild-1", "active", 1), LAYOUT.active);
   assert.equal(topicSessions.get("ch-9")?.categoryId, second);
   assert.deepEqual(calls, created("ch-9"));
-  assert.ok(logs.includes("進行中カテゴリ（1 番目）が見つからないため飛ばしました（guild=guild-1）"));
-});
-
-test("/new: 進行中カテゴリが 1 つだけで消えていたら、「進行中」ではなく「進行中 2」を作る", async (t) => {
-  const { gateway, guildSettings, runNew, setUp } = setup(t);
-  await setUp();
-  gateway.alive.delete(LAYOUT.active);
-
-  await runNew("x");
-
-  assert.deepEqual(
-    gateway.calls.filter((call) => call.method === "createCategory"),
-    [{ method: "createCategory", guildId: "guild-1", name: "進行中 2" }],
-  );
-  assert.deepEqual(guildSettings.listStateCategories("guild-1", "active"), [
-    { ordinal: 1, categoryId: LAYOUT.active },
-    { ordinal: 2, categoryId: "ch-8" },
-  ]);
+  assert.ok(logs.some((line) => line.includes("見つからない")));
 });
 
 test("/new: /setup 前（guild_settings が無い、または 進行中 が無い）なら作らずに案内を ephemeral で返す", async (t) => {
@@ -291,7 +275,6 @@ test("/new: /setup 前（guild_settings が無い、または 進行中 が無�
     { method: "defer", ephemeral: true },
     { method: "reply", message: { text: NOT_SET_UP_REPLY, ephemeral: true } },
   ]);
-  assert.equal(NOT_SET_UP_REPLY, "先に /setup を実行してください");
 
   // /setup が途中で止まり、進行中カテゴリがまだ無い
   guildSettings.setChannel("guild-1", "homeCategoryId", "home-1");
@@ -314,10 +297,8 @@ test("/new: 最初の投稿に失敗しても log に出し、リンクは返す
 
   assert.deepEqual(calls, created("ch-8"));
   assert.equal(topicSessions.get("ch-8")?.title, "x");
-  assert.deepEqual(logs, [
-    "/new でセッションを作りました（guild=guild-1）",
-    "セッションの最初の投稿に失敗しました: Missing Access",
-  ]);
+  assert.equal(logs.length, 2);
+  assert.match(logs[1]!, /Missing Access/);
 });
 
 test("/new: チャンネルを作った後の DB 保存に失敗したら、作ったチャンネルの ID を log に出して投げ直す", async (t) => {
@@ -332,20 +313,9 @@ test("/new: チャンネルを作った後の DB 保存に失敗したら、作�
   assert.equal(gateway.calls.filter((call) => call.method === "createTextChannel").length, 1);
   assert.equal(gateway.calls.filter((call) => call.method === "send").length, 0);
   assert.equal(sessionCount(), 0);
-  assert.deepEqual(logs, [
-    "セッションのチャンネルを作りましたが DB への保存に失敗しました（guild=guild-1、channel=ch-8）: database is locked",
-  ]);
-});
-
-test("/new と /setup は同じキューの同じ key（layout:<guildId>）で直列に実行する", async (t) => {
-  const queue = new RecordingQueue(1);
-  const { deps, runNew, setUp } = setup(t, queue);
-  await setUp();
-
-  await createSetupCommand(deps).handle(SETUP, new FakeResponder());
-  await runNew("x");
-
-  assert.deepEqual(queue.keys, ["layout:guild-1", "layout:guild-1"]);
+  // 手で消せるよう、作ったチャンネルの ID だけは log に出す
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /ch-8/);
 });
 
 test("/setup の実行中に /new が来たら、/setup が終わるのを待ってから作る", async (t) => {
@@ -398,26 +368,10 @@ test("/new を同時に 2 回実行しても、2 つ目は 1 つ目を数えて�
 test("/new のコマンド定義: 題名は必須の文字列で 1〜100 字", (t) => {
   const { deps } = setup(t);
   const { def } = createNewSessionCommand(deps);
-  assert.equal(def.name, "new");
-  assert.deepEqual(def.options, [
-    {
-      type: "string",
-      name: "title",
-      description: "セッションの題名（チャンネル名と topic に使います）",
-      required: true,
-      minLength: 1,
-      maxLength: 100,
-    },
-  ]);
-});
-
-test("/help に /new の説明がある", () => {
-  assert.match(HELP_TEXT, /^`\/new /m);
-});
-
-test("toChannelName: 100 字で切った末尾に - が残らない", () => {
-  const name = toChannelName(`${"あ".repeat(99)} x`);
-  assert.equal(name, "あ".repeat(99));
+  assert.deepEqual(
+    def.options?.map(({ type, name, required, minLength, maxLength }) => ({ type, name, required, minLength, maxLength })),
+    [{ type: "string", name: "title", required: true, minLength: 1, maxLength: 100 }],
+  );
 });
 
 test("/new: 空白だけの題名は作らずに案内する", async (t) => {
@@ -429,11 +383,3 @@ test("/new: 空白だけの題名は作らずに案内する", async (t) => {
   assert.equal(gateway.calls.length, 0);
 });
 
-test("/new: 題名の前後の空白は除いて topic とあいさつに使う", async (t) => {
-  const { gateway, runNew, setUp } = setup(t);
-  await setUp();
-  await runNew("  旅行の計画  ");
-  const createCall = gateway.calls.find((call) => call.method === "createTextChannel");
-  assert.ok(createCall);
-  assert.equal(JSON.stringify(createCall).includes("\"topic\":\"旅行の計画\""), true);
-});

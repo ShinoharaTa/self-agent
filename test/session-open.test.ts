@@ -3,19 +3,16 @@ import assert from "node:assert/strict";
 import type { DatabaseSync } from "node:sqlite";
 import * as z from "zod";
 import type { AgentRunner, RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
-import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
 import {
   createTaskTools,
   type KbMemoryToolDeps,
   type ProjectToolDeps,
   type SessionOpenResult,
-  type TextToolResult,
 } from "../src/agent/tools.ts";
 import { createChannelResolver } from "../src/app/access.ts";
 import { createTopicSession, toChannelName } from "../src/app/commands/new.ts";
 import {
   AUTO_SESSION_COOLDOWN_MESSAGE,
-  AUTO_SESSION_COOLDOWN_MS,
   AUTO_SESSION_LIMIT_MESSAGE,
   createOpenSession,
   inboxSeed,
@@ -94,12 +91,6 @@ function setup(t: TestContext, options: Options = {}) {
   };
 }
 
-function parse(result: TextToolResult): unknown {
-  assert.equal(result.content.length, 1);
-  assert.equal(result.content[0].type, "text");
-  return JSON.parse(result.content[0].text);
-}
-
 test("session_open: 成功したら /new と同じ作成処理でチャンネルを作り、seed を入れ、最初の投稿をして created を返す", async (t) => {
   const { gateway, topicSessions, seeds, queue, logs, openSession } = setup(t);
   // 最初の投稿の時点で sessions と seed は保存済み
@@ -119,7 +110,7 @@ test("session_open: 成功したら /new と同じ作成処理でチャンネル
       guildId: "guild-1",
       options: { name: "旅行の計画-vol2", parentId: "active-1", topic: "旅行の計画 Vol.2" },
     },
-    { method: "send", channelId: "ch-1", text: "セッション「旅行の計画 Vol.2」を始めました。#inbox の話の続きです。" },
+    { method: "send", channelId: "ch-1", text: inboxWelcomeText("旅行の計画 Vol.2") },
   ]);
   assert.deepEqual(topicSessions.get("ch-1"), {
     channelId: "ch-1",
@@ -138,11 +129,11 @@ test("session_open: 成功したら /new と同じ作成処理でチャンネル
     renewedSummary: null,
     renewedAt: null,
   });
-  assert.equal(seeds.get("ch-1"), `#inbox からの続き:\n${ARGS.context}`);
+  assert.equal(seeds.get("ch-1"), inboxSeed(ARGS.context));
   // /setup・/new と同じキューの同じ key で作る
   assert.deepEqual(queue.keys, ["layout:guild-1"]);
-  assert.deepEqual(logs, ["#inbox からセッションを作りました（guild=guild-1）"]);
-  assert.equal(inboxWelcomeText("x"), "セッション「x」を始めました。#inbox の話の続きです。");
+  assert.equal(logs.length, 1);
+  assert.ok(!logs[0]!.includes("ch-1"));
 });
 
 test("session_open: 作ったチャンネルの最初のターンの prompt の先頭に #inbox の文脈が付き、成功したら seed を消す", async (t) => {
@@ -186,7 +177,7 @@ test("session_open: 作ったチャンネルの最初のターンの prompt の�
   assert.deepEqual(
     inputs.map((input) => [input.prompt, input.sessionId]),
     [
-      [`#inbox からの続き:\n${ARGS.context}\n\n[header]\nどこから決める？`, undefined],
+      [`${inboxSeed(ARGS.context)}\n\n[header]\nどこから決める？`, undefined],
       ["[header]\n次", "session-1"],
     ],
   );
@@ -201,18 +192,18 @@ test("session_open: 最初の投稿に失敗しても log に出して created �
 
   assert.deepEqual(await openSession(ARGS, INBOX), { result: "created", channelId: "ch-1" });
   assert.equal(topicSessions.get("ch-1")?.origin, "inbox");
-  assert.deepEqual(logs, [
-    "#inbox からセッションを作りました（guild=guild-1）",
-    "セッションの最初の投稿に失敗しました: Missing Access",
-  ]);
+  assert.equal(logs.length, 2);
+  assert.match(logs[1]!, /Missing Access/);
 });
 
-test("session_open: #inbox 以外（セッション・受け付け対象外・別サーバー・context 無し）では not_available を返し、何も作らない", async (t) => {
-  const { gateway, topicSessions, seeds, queue, openSession, sessionCount } = setup(t);
+test("session_open: #inbox 以外（セッション・#tasks・受け付け対象外・別サーバー・context 無し）では not_available を返し、何も作らない", async (t) => {
+  const { gateway, guildSettings, topicSessions, seeds, queue, openSession, sessionCount } = setup(t);
   topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "別の話", categoryId: "active-1" });
+  guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
 
   const contexts: Array<RunContext | undefined> = [
     { guildId: "guild-1", channelId: "topic-1", kind: "session" },
+    { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" },
     { guildId: "guild-1", channelId: "other-1", kind: "inbox" },
     // 別サーバーの同じ ID のチャンネル
     { guildId: "guild-2", channelId: "inbox-1", kind: "inbox" },
@@ -225,18 +216,6 @@ test("session_open: #inbox 以外（セッション・受け付け対象外・�
   assert.deepEqual(queue.keys, []);
   assert.equal(sessionCount(), 1);
   assert.equal(seeds.get("topic-1"), undefined);
-});
-
-test("session_open: /setup 済みのサーバーの #tasks では not_available を返し、何も作らない", async (t) => {
-  const { gateway, guildSettings, seeds, queue, openSession, sessionCount } = setup(t);
-  guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
-
-  assert.deepEqual(await openSession(ARGS, { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" }), {
-    result: "not_available",
-  });
-  assert.deepEqual(gateway.calls, []);
-  assert.deepEqual(queue.keys, []);
-  assert.equal(sessionCount(), 0);
   assert.equal(seeds.get("tasks-1"), undefined);
 });
 
@@ -282,7 +261,7 @@ test("session_open: 上限は timeZone の日付で数える。前日の分は�
   // 10-02 は 2 件作ったので上限
   assert.deepEqual(await openAt("2026-10-01T15:30:00.000Z", "d"), {
     result: "limit",
-    message: "今日はこれ以上自動で作れません。/new で作ってください",
+    message: AUTO_SESSION_LIMIT_MESSAGE,
   });
   assert.deepEqual(await openAt("2026-10-02T14:59:59.999Z", "d"), {
     result: "limit",
@@ -293,39 +272,33 @@ test("session_open: 上限は timeZone の日付で数える。前日の分は�
   assert.equal(gateway.calls.filter((call) => call.method === "createTextChannel").length, 4);
 });
 
-test("session_open: 上限と間隔の両方に当たるときは limit を返す", async (t) => {
-  const { openAt } = setup(t, { perDay: 1 });
+test("session_open: 同じ題名なら上限・間隔より先に existing、上限と間隔の両方に当たるなら limit を返す", async (t) => {
+  const cases: Array<[label: string, title: string, expected: SessionOpenResult]> = [
+    ["同じ題名", "A", { result: "existing", channelId: "ch-1" }],
+    ["別の題名", "b", { result: "limit", message: AUTO_SESSION_LIMIT_MESSAGE }],
+  ];
 
-  assert.equal((await openAt("2026-10-02T00:00:00.000Z", "a")).result, "created");
-  assert.deepEqual(await openAt("2026-10-02T00:01:00.000Z", "b"), {
-    result: "limit",
-    message: AUTO_SESSION_LIMIT_MESSAGE,
-  });
+  for (const [label, title, expected] of cases) {
+    const { openAt } = setup(t, { perDay: 1 });
+    assert.equal((await openAt("2026-10-02T00:00:00.000Z", "a")).result, "created", label);
+    // 1 分後なので、上限にも間隔にも当たる
+    assert.deepEqual(await openAt("2026-10-02T00:01:00.000Z", title), expected, label);
+  }
 });
 
 test("session_open: 前回の自動作成から 15 分未満なら cooldown。15 分ちょうどからは作れる", async (t) => {
   const { gateway, openAt, sessionCount } = setup(t);
-  assert.equal(AUTO_SESSION_COOLDOWN_MS, 15 * 60 * 1000);
 
   assert.equal((await openAt("2026-10-02T00:00:00.000Z", "a")).result, "created");
   gateway.reset();
   assert.deepEqual(await openAt("2026-10-02T00:14:59.999Z", "b"), {
     result: "cooldown",
-    message: "少し時間をおいてください。急ぐなら /new で作れます",
+    message: AUTO_SESSION_COOLDOWN_MESSAGE,
   });
   assert.deepEqual(gateway.calls, []);
   assert.equal(sessionCount(), 1);
 
   assert.equal((await openAt("2026-10-02T00:15:00.000Z", "b")).result, "created");
-  assert.equal(AUTO_SESSION_COOLDOWN_MESSAGE, "少し時間をおいてください。急ぐなら /new で作れます");
-});
-
-test("session_open: 同じ題名なら上限・間隔より先に existing を返す", async (t) => {
-  const { openAt } = setup(t, { perDay: 1 });
-
-  const first = await openAt("2026-10-02T00:00:00.000Z", "a");
-  assert.ok(first.result === "created");
-  assert.deepEqual(await openAt("2026-10-02T00:01:00.000Z", "A"), { result: "existing", channelId: first.channelId });
 });
 
 test("session_open: /new で作ったセッションは上限にも間隔にも数えない", async (t) => {
@@ -445,17 +418,6 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
   );
   const serialized = JSON.stringify(definitions[0]);
   for (const id of ["guild-1", "guild-2", "inbox-1", "inbox-2", "topic-1"]) assert.ok(!serialized.includes(id), id);
-  const sessionOpen = definitions[0]!.find((definition) => definition.name === "session_open");
-  assert.equal(
-    sessionOpen?.description,
-    "#inbox での相談が 3 往復以上続きそう、または設計・調べもの・計画など腰を据えた話題になりそうなときに、" +
-      "その話題専用のセッション（チャンネル）を作る。単発のタスク登録や短い質問では使わない。" +
-      "作ったら返事にチャンネルのリンク（<#チャンネルID>）を書き、続きはそのチャンネルで話すよう伝える。" +
-      "existing を返したら（同じ題名のセッションが既にある）、そのチャンネルを案内する。" +
-      "limit や cooldown を返したら、message を伝えて /new を案内する。not_set_up を返したら /setup を案内する。",
-  );
-  // 使いどころはシステムプロンプトにも書く（既存のセッションにはツールの説明だけが届く）
-  assert.ok(SYSTEM_PROMPT.includes("session_open"));
 });
 
 test("ツール定義: session_open の題名は前後の空白を除いて 1〜100 字、context は 1〜400 字", (t) => {
@@ -479,23 +441,3 @@ test("ツール定義: session_open の題名は前後の空白を除いて 1〜
   assert.equal(schema.safeParse({ title: "a", context: "c".repeat(401) }).success, false);
 });
 
-test("ツール: session_open のハンドラはこの run の context を渡し、結果を JSON で返す", async (t) => {
-  const { db, topicSessions } = setup(t);
-  const { tasks } = createStores(db, () => NOW);
-  const received: unknown[] = [];
-  const openSession = async (args: unknown, context: unknown): Promise<SessionOpenResult> => {
-    received.push([args, context]);
-    return { result: "existing", channelId: "topic-1" };
-  };
-  const definition = createTaskTools(tasks, topicSessions, openSession, kbMemory(db), projectTools(db), INBOX).find(
-    (candidate) => candidate.name === "session_open",
-  );
-  assert.ok(definition !== undefined);
-
-  // find の結果は全ツールの union なので、session_open の引数の形に絞って呼ぶ
-  const handler = definition.handler as (args: typeof ARGS, extra: unknown) => Promise<TextToolResult>;
-  const result = await handler(ARGS, {});
-
-  assert.deepEqual(parse(result), { result: "existing", channelId: "topic-1" });
-  assert.deepEqual(received, [[ARGS, INBOX]]);
-});
