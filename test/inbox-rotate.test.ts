@@ -1300,10 +1300,10 @@ test("rotateNow（/renew）: 今日切り替え済みでも日次・サイズの
   assert.deepEqual(env.logs, [RENEW_LOG]);
 });
 
-test("rotateNow（/renew）: rotateAt の前でも切り替える。SDK セッションが無ければ（ターンの記録があっても）LLM を呼ばずに日付と時刻だけ記録して no_conversation", async (t) => {
+test("rotateNow（/renew）: SDK セッションが無ければ（ターンの記録があっても）LLM を呼ばずに no_conversation を返し、切り替えた日も時刻も記録しない（その日の日次の切り替えは行う）", async (t) => {
   // 02:00 JST（10/03）。前回は 10/02
   const early = at(ROTATE_AT, -2 * HOUR_MS);
-  const env = setup(t);
+  const env = setup(t, [ok(SUMMARY)]);
   env.chatAt(at(ROTATE_AT, -3 * HOUR_MS));
   env.sessions.delete("inbox-1");
   env.clock.now = early;
@@ -1312,10 +1312,56 @@ test("rotateNow（/renew）: rotateAt の前でも切り替える。SDK セッ�
 
   assert.equal(env.runner.inputs.length, 0);
   assert.deepEqual(env.queue.keys, ["inbox-1"]);
-  assert.deepEqual(env.state(), { rotatedDate: "2026-10-03", summary: undefined, session: undefined, seed: undefined });
-  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, early.toISOString());
+  assert.deepEqual(env.state(), { rotatedDate: "2026-10-02", summary: undefined, session: undefined, seed: undefined });
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, rotatedAtOf("2026-10-02").toISOString());
   assert.deepEqual(env.gateway.events, []);
-  assert.deepEqual(env.logs, [NO_TURNS_LOG]);
+  assert.deepEqual(env.logs, []);
+
+  // その後に会話があれば、rotateAt（04:00）の日次の切り替えで要約する
+  env.chatAt(at(ROTATE_AT, -HOUR_MS));
+  env.clock.now = ROTATE_AT;
+  await env.rotate();
+  assert.equal(env.runner.inputs.length, 1);
+  assert.equal(env.state().rotatedDate, "2026-10-03");
+  assert.equal(env.state().seed, rotatedSeed(SUMMARY));
+  assert.deepEqual(env.gateway.events, [{ method: "sendMessage", channelId: "inbox-1", text: ROTATED_NOTICE }]);
+  assert.deepEqual(env.logs, [ROTATED_LOG]);
+});
+
+test("rotateNow（/renew）: まだ一度も切り替えていない（/setup 直後・初回の tick 前）でも、SDK セッションとターンがあれば要約して切り替える（rotateDue は今を基準として記録するだけ）", async (t) => {
+  const now = at(ROTATE_AT, HOUR_MS);
+  const env = setup(t, [ok(SUMMARY)], { rotatedDate: null });
+  env.chatAt(at(ROTATE_AT, -HOUR_MS));
+  env.clock.now = now;
+
+  assert.equal(await env.rotator.rotateNow("guild-1", "inbox"), "rotated");
+
+  assert.deepEqual(env.runner.inputs, [
+    { prompt: ROTATE_PROMPT, sessionId: "session-1", context: undefined, allowedUrls: [] },
+  ]);
+  assert.equal(env.state().session, undefined);
+  assert.equal(env.state().seed, rotatedSeed(SUMMARY));
+  assert.equal(env.state().rotatedDate, "2026-10-03");
+  assert.equal(env.guildSettings.get("guild-1")?.inboxRotatedAt, now.toISOString());
+  assert.deepEqual(env.gateway.events, []);
+
+  // #tasks も同じ
+  const tasks = setup(t, [ok(SUMMARY, "session-t")], { inbox: false, tasksRotatedAt: null });
+  tasks.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, "tasks-1", "session-t");
+  tasks.clock.now = now;
+  assert.equal(await tasks.rotator.rotateNow("guild-1", "tasks"), "rotated");
+  assert.equal(tasks.tasksState().session, undefined);
+  assert.equal(tasks.tasksState().seed, rotatedSeed(SUMMARY, "tasks"));
+  assert.equal(tasks.tasksState().rotatedAt, now.toISOString());
+
+  // 同じ状態で rotateDue なら、要約せずに今を基準として記録するだけ
+  const due = setup(t, [ok(SUMMARY)], { rotatedDate: null });
+  due.chatAt(at(ROTATE_AT, -HOUR_MS));
+  due.clock.now = now;
+  await due.rotate();
+  assert.equal(due.runner.inputs.length, 0);
+  assert.equal(due.state().session, "session-1");
+  assert.equal(due.guildSettings.get("guild-1")?.inboxRotatedAt, now.toISOString());
 });
 
 test("rotateNow（/renew）: SDK セッションがあれば、前回の切り替えより後のターンが 0 件でも要約のターンを行って切り替える（rotateDue は日付だけ記録する）", async (t) => {

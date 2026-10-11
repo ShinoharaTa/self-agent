@@ -8,7 +8,7 @@ import { recordTurnUsage, RESUME_FAILURE_PATTERN, resumeSeed, type TurnDeps } fr
 
 /** /renew の要約を頼むターンの prompt。静的に保つ（日時ヘッダも付けない。字数は要約を切り詰める上限と揃える） */
 export const RENEW_PROMPT =
-  `会話を新しくするので、続きに必要なこと（目的・決めたこと・やり残し・約束・作っているものの URL）だけを ${RENEW_SUMMARY_MAX_LENGTH} 字以内の箇条書きで返答してください。SPEC.md に書いてあることは書き写さず、SPEC.md があることだけ書いてください。ツールは使わないでください。`;
+  `会話を新しくするので、続きに必要なこと（目的・決めたこと・やり残し・約束・作っているものの URL）だけを ${RENEW_SUMMARY_MAX_LENGTH} 字以内の箇条書きで返答してください。SPEC.md があれば、その中身は書き写さず、SPEC.md があることだけ書いてください。ツールは使わないでください。`;
 
 /** 新しくした後の最初のターンの prompt の先頭に付ける seed の見出し（システムプロンプトでこの文を説明している） */
 export const RENEWED_SEED_HEADER = "会話を新しくしました。前の会話の要約:";
@@ -39,17 +39,12 @@ export function renewedSeed(summary: string): string {
   return `${RENEWED_SEED_HEADER}\n${summary}`;
 }
 
-/** 返答本文からの要約（前後の空白を除いた先頭 RENEW_SUMMARY_MAX_LENGTH 字。空なら「（要約なし）」） */
-function renewSummary(text: string): string {
-  const summary = clip(text.trim(), RENEW_SUMMARY_MAX_LENGTH);
-  return summary === "" ? EMPTY_SUMMARY : summary;
-}
-
 /**
  * 発言のターンと同じキューの中で（セッションのジョブとして）行う。状態はキュー待ちの間に変わりうるので、キューの中で確かめる。
  * 要約のターンは resume だけで、resume 失敗からの復旧はしない（runChannelTurn は使わず、usage の記録と SDK が記録した session_id の保存だけ同じように行う）。
  * context は渡さない（session_report・session_open は not_available になる）。WebFetch に許す URL も渡さない。
- * - 成功: 要約を保存 → SDK セッションを捨てる → seed を入れる
+ * - 成功: 要約（返答本文の前後の空白を除いた先頭 RENEW_SUMMARY_MAX_LENGTH 字）を保存 → SDK セッションを捨てる → seed を入れる。
+ *   返答本文が空なら要約は保存せず（前の /renew の要約を残す）、seed は題名にし、返信には「（要約なし）」を出す
  * - 会話の記録が無い（RESUME_FAILURE_PATTERN）: 要約は作らずに SDK セッションを捨て、resume 失敗の復旧と同じ seed を入れる
  * - それ以外の失敗: 何も変えない
  */
@@ -71,16 +66,17 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
   recordTurnUsage(turn, channelId, result);
 
   if (result.ok) {
-    const summary = renewSummary(result.text);
-    topicSessions.setRenewed(channelId, summary);
+    const text = result.text.trim();
+    const summary = text === "" ? undefined : clip(text, RENEW_SUMMARY_MAX_LENGTH);
+    if (summary !== undefined) topicSessions.setRenewed(channelId, summary);
     sessions.delete(channelId);
-    seeds.set(channelId, renewedSeed(summary));
+    seeds.set(channelId, renewedSeed(summary ?? `題名: ${session.title}`));
     log(`/renew でセッションの会話を新しくしました（guild=${guildId}）`);
-    return { result: "renewed", summary };
+    return { result: "renewed", summary: summary ?? EMPTY_SUMMARY };
   }
 
   if (RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
-    // 会話の記録が既に無いので要約は作れない。resume 失敗の復旧と同じ seed（/close の要約 → 前の /renew の要約 → 題名）にする
+    // 会話の記録が既に無いので要約は作れない。resume 失敗の復旧と同じ seed（前の /renew の要約 → /close の要約 → 題名）にする
     sessions.delete(channelId);
     const seed = resumeSeed(session, undefined, "inbox");
     if (seed !== undefined) seeds.set(channelId, seed);

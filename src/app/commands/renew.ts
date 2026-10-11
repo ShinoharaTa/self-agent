@@ -7,7 +7,7 @@ import { ALREADY_CLOSED_REPLY } from "./close.ts";
 
 export const NOT_RENEWABLE_REPLY = "セッションのチャンネルか #inbox・#tasks で実行してください";
 export const RENEWED_FRESH_REPLY = "前の会話の記録が見つからないため、要約せずに新しくしました。次の発言から新しい設定で続けます";
-export const NO_CONVERSATION_REPLY = "まだ会話がありません。次の発言から新しい設定で始まります";
+export const NO_CONVERSATION_REPLY = "新しい会話はまだ始まっていません。次の発言から新しい設定で始まります";
 export const NOT_SET_UP_REPLY = "/setup を実行してください";
 export const RENEW_FAILURE_REPLY = "失敗しました。もう一度 /renew を実行してください";
 
