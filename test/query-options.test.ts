@@ -46,6 +46,16 @@ test("システムプロンプトに、作ってと頼まれたときの行の�
   );
 });
 
+test("システムプロンプトに、仕様の検討・見直しの行の直後に PLAN モードの行（書かずに計画を出す・承認まで project_open・Write・Edit・project_files を使わない・切り替えられないと言わない）を含める", () => {
+  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  assert.ok(
+    String(systemPrompt).includes(
+      "候補として 1 行で挙げる。\n" +
+        "- 計画（PLAN）モードで、と頼まれたら、ファイルを書かずに計画（目的・作るもの・手順・決めてほしいこと）を箇条書きで短く出し、オーナーが承認するまで project_open・Write・Edit・project_files を使わない。モードを切り替えられないとは言わない。\n",
+    ),
+  );
+});
+
 test("システムプロンプトにスマートフォン前提の行（PC は使えない・表と見出しを使わない・手順を案内せず project_open の URL で渡す）を含める", () => {
   const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
   assert.ok(
