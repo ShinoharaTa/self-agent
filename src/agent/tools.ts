@@ -363,7 +363,7 @@ export function projectNotes(slug: string, url: string, withDesign: boolean): st
     "API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない",
     "ビルドやコマンドの実行はできない。ライブラリは CDN から読む",
     "Glob は path に dir を指定する",
-    "消す・移す・作り直すは project_files を使う（消したものは .trash に移り、restore で戻せる）",
+    "消す・移す・作り直すは project_files を使う（消したものは .trash に移り、配信されず、restore で戻せる。.trash の中のファイルは今のページに使わない）",
     "決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む",
     "作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える",
   ];
@@ -379,7 +379,16 @@ function changedCount(outcome: ProjectFilesResult): number | undefined {
     case "moved":
     case "cleared":
       return 1;
-    default:
+    // 何も変えずに返したもの（.trash が使えない・dir が無いを含む）
+    case "list":
+    case "missing":
+    case "exists":
+    case "not_found":
+    case "conflict":
+    case "invalid_path":
+    case "invalid_args":
+    case "not_available":
+    case "trash_unavailable":
       return undefined;
   }
 }
@@ -496,7 +505,7 @@ const PROJECT_OPEN_DESCRIPTION =
 // 使いどころはシステムプロンプトと揃える（docs/plan/build-and-serve.md §4）。可変値は入れない
 const PROJECT_FILES_DESCRIPTION =
   "このチャンネルのプロジェクトのファイルを消す・移す・作り直す。パスはプロジェクトの dir からの相対。" +
-  "trash は paths を .trash に移す（配信されず、restore で戻せる）。move は paths の 1 つを to に移す・名前を変える。" +
+  "trash は paths を .trash に移す（配信されず、restore で戻せる）。move は paths（1 件）を to に移す・名前を変える（to は移動先の名前まで書く）。" +
   "clear は中身を全部 .trash に移して最初からにする（UI の土台も置き直す。URL は変わらない）。" +
   "restore は trash_id の中身を元に戻す（省くと一覧。conflict が返ったら、そのパスを trash してから restore し直す）。" +
   "オーナーは PC を使えないので、手で消すよう頼まずにこれを使う。消したら、何を消したかと戻せることを 1 行で伝える。";
@@ -715,7 +724,7 @@ export function createTaskTools(
           .max(PROJECT_FILES_MAX_PATHS)
           .optional()
           .describe(`dir からの相対パス（trash は 1〜${PROJECT_FILES_MAX_PATHS} 件、move は 1 件）`),
-        to: z.string().min(1).optional().describe("move の移動先（dir からの相対パス）"),
+        to: z.string().min(1).optional().describe("move の移動先（dir からの相対パス。名前まで書く）"),
         trash_id: z.string().optional().describe("restore で戻す .trash の id（省くと一覧）"),
       },
       async (args) => projectHandlers.projectFiles(args),
