@@ -68,9 +68,9 @@
     - 「Glob・Grep は path に dir を指定する」
     - 「決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む」
     - 「作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える」
-  - UI の土台（#67）: created・existing のどちらでも、リポジトリの `templates/web/` を複製する。created は DESIGN.md と site/ の base.css・app.css・icons.svg・index.html の 5 つ、existing は `site/base.css` が無いときだけ DESIGN.md・base.css・icons.svg の 3 つ。既にあるファイルは上書きしない。複製したものは結果の `scaffold` で返し、失敗しても log だけで結果はそのまま返す。
+  - UI の土台（#67）: created・existing のどちらでも、リポジトリの `templates/web/` を複製する。created は DESIGN.md と site/ の base.css・app.css・icons.svg・index.html の 5 つ、existing は `site/base.css` が無いときだけ DESIGN.md・base.css・icons.svg の 3 つ。既にあるファイル（symlink を含む）は上書きせず、site が dir の外への symlink なら何も複製しない。複製できたものは結果の `scaffold` で返し、失敗したものがあっても log だけで結果はそのまま返す。
     - 見た目の基準は shadcn/ui の既定風（中立色・黒のボタン・角丸 8px）。値はすべて base.css の変数（余白は 4 の倍数、文字 12〜24、角丸 6/8/12/9999、意味の名前の色とダークモードでの差し替え、影 1 種）と部品のクラスで、DESIGN.md（80 行以内）はその使い方。アイコンは Lucide（lucide-static 1.55.0、ISC）の sprite。
-    - 注意の 2 番目に「作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う」を足す。ツールの定義は変えないので、キャッシュには影響しない。
+    - 注意の 2 番目に「作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う」を足す。複製の後に DESIGN.md と site/base.css のどちらかが無ければ入れない。ツールの定義は変えないので、キャッシュには影響しない。
 - システムプロンプトに足す行:
   - 「何かを作ってと頼まれたら、コードを返事に貼らない。セッションのチャンネルで project_open を使い、ファイルを書いて動く状態にしてから、URL と使い方を 3〜5 行で伝える。#inbox で頼まれたら session_open で専用のチャンネルを作る。コードは聞かれたときだけ短く見せる。」
   - その直後に「仕様の検討や見直しを頼まれたら、作り始めずに案を短く出し、確認してから作る。頼まれていない機能は足さず、候補として 1 行で挙げる。」

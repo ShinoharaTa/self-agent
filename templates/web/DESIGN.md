@@ -7,6 +7,7 @@
 - 色は意味のためだけに使う。
 - CSS に px と色の値を直接書かず var() を使う。
 - base.css は編集しない。足りないものは site/app.css に var() で書く。
+- index.html の head で base.css、次に app.css を link する（無ければ足す）。
 
 ## 余白
 - 4 の倍数だけ。--space-1〜8 = 4 / 8 / 12 / 16 / 20 / 24 / 32 / 48。
@@ -21,34 +22,37 @@
 - 太さ: --weight-normal 400 / --weight-medium 500 / --weight-semibold 600。
 
 ## 角丸
-- --radius-sm 6（小物）/ --radius-md 8（ボタン・入力・カード）/ --radius-lg 12（ダイアログ・シート）/ --radius-full（チップとバッジだけ）。
+- --radius-sm 6（小物）/ --radius-md 8（ボタン・入力・カード）/ --radius-lg 12（ダイアログ）/ --radius-full（チップとバッジだけ）。
 
 ## 色
 - 意味の名前の変数だけを使う: --bg 背景 / --surface カード・ダイアログ / --muted 控えめな面 / --border 線 / --text 文字 / --text-muted 補足の文字。
 - --primary 主な操作（黒。ダークでは白）/ --primary-text primary の上の文字色。
-- --accent 青 1 色。リンクと選択中だけ。
-- --danger 削除・エラー / --success 完了 / --warning 注意。
+- --accent 青 1 色。リンク・選択中・フォーカスの輪だけ。
+- --danger 削除・エラー / --success 完了 / --warning 注意。danger / success / warning は文字・アイコン・線に使える。
 - ダークモードは prefers-color-scheme: dark でこの変数だけが差し替わる（color-scheme: light dark）。
 - 影は --shadow-sm の 1 種だけ。グラデーションと飾りの色は使わない。
 
 ## 部品（base.css のクラス）
 - .container: 最大 640px・左右 16px・safe-area の余白。.stack: 縦に並べる（gap）。.row: 横に並べる。
 - .card: 囲み。
-- .btn に .btn-primary（主な操作。1 画面に 1 つ）/ .btn-secondary / .btn-ghost / .btn-danger。高さ 44px 以上。
+- .btn に .btn-primary / .btn-secondary / .btn-ghost / .btn-danger。高さ 44px 以上。
+- primary は主な操作（1 画面に 1 つ）、secondary は補助の操作、ghost は行の中の小さな操作、danger は削除の確認の中だけ。
 - アイコンだけのボタンは .btn .btn-ghost .btn-icon にし、aria-label を付ける。
-- .input / .select / .textarea: 高さ 44px 以上・文字 16px。名前は <label> で付ける。
+- .input / .select / .textarea: 高さ 44px 以上・文字 16px。名前は <label> か aria-label で付ける。
 - .check: `<label class="check"><input type="checkbox"> 文字</label>`（箱は 24px、行で 44px）。
-- .chip: 絞り込みなど（選択中は aria-pressed="true"）。.badge: 状態の小さな表示。
+- .chip: `<button class="chip">` で使う。絞り込みなど（選択中は aria-pressed="true"）。.badge: 状態の小さな表示。
 - .list（ul）と .list-item（li）。
 - .segmented: button を並べ、選択中は aria-pressed="true"。
-- .empty: 空の表示。.toast: 短い知らせ（画面の上に出す）。
+- .empty: 空の表示。
+- .toast: 短い知らせ（画面の上に出す）。`<div class="toast" role="status" hidden>` を置き、hidden 属性の付け外しで出し入れする（inline style を使わない）。
 - `<dialog>`: 確認と入力（showModal() で開く）。
-- .bottom-bar: 画面下に固定する操作（safe-area の余白）。
+- .bottom-bar: 画面下に固定する操作（safe-area の余白）。.bottom-bar のある画面に入力欄を置かない（iOS でキーボードと重なる）。
 - .icon: アイコン（20px）。
 
 ## 状態
 - :focus-visible の輪と disabled の見た目は base.css にある。消さない。
-- 読み込み中・空・エラーの表示を必ず作る（.empty に文とアイコン。エラーは role="alert"）。
+- 空・エラーの表示は必ず作る（.empty に文とアイコン。エラーは role="alert"）。
+- 読み込みに時間がかかる処理があるときだけ、読み込み中の表示を作る。
 - 押せるものは 44×44px 以上。
 
 ## アイコン

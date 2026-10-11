@@ -79,8 +79,46 @@ const CLASSES = [
 const ICON_SYMBOL_ATTRIBUTES =
   'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
 
+/** DESIGN.md の `.class` のうち、クラスでない拡張子 */
+const FILE_EXTENSIONS = new Set(["css", "md", "svg", "html", "js", "json"]);
+
 function stripComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/** 中に { を含まないブロック（@media の中の規則を含む）を、セレクタの一覧と宣言にする */
+function rules(css: string): Array<{ selectors: string[]; declarations: Map<string, string> }> {
+  return [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
+    selectors: match[1].split(",").map((selector) => selector.trim().replace(/\s+/g, " ")),
+    declarations: new Map(
+      [...match[2].matchAll(/([\w-]+):\s*([^;]+);/g)].map((declaration) => [declaration[1], declaration[2].trim()]),
+    ),
+  }));
+}
+
+/** selector にそのまま当たる規則のうち、最後に property を決めている値 */
+function lastValue(css: string, selector: string, property: string): string | undefined {
+  let value: string | undefined;
+  for (const rule of rules(css)) {
+    if (rule.selectors.includes(selector) && rule.declarations.has(property)) value = rule.declarations.get(property);
+  }
+  return value;
+}
+
+/** `#rrggbb` の相対輝度（WCAG 2） */
+function luminance(hex: string): number {
+  const match = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  assert.ok(match !== null, hex);
+  const [r, g, b] = match.slice(1).map((part) => {
+    const channel = Number.parseInt(part, 16) / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrast(a: string, b: string): number {
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (light + 0.05) / (dark + 0.05);
 }
 
 /** `--name: value;` の宣言を名前 → 値にする */
@@ -127,6 +165,28 @@ test("base.css: 部品のクラスと <dialog> がすべてある", () => {
   assert.match(css, /^dialog::backdrop \{/m);
 });
 
+test("base.css: 押せる部品は min-height: var(--tap)、入力欄の文字は var(--font-base)", () => {
+  const css = read("site/base.css");
+
+  for (const selector of [".btn", ".input", ".select", ".textarea", ".chip", ".check", ".segmented > button", ".list-item"]) {
+    assert.equal(lastValue(css, selector, "min-height"), "var(--tap)", selector);
+  }
+  for (const selector of [".input", ".select", ".textarea"]) {
+    assert.equal(lastValue(css, selector, "font-size"), "var(--font-base)", selector);
+  }
+});
+
+test("base.css: ライトの --danger・--success・--warning は --bg と --surface に対してコントラスト比 4.5 以上", () => {
+  const values = declarations(rootBlocks(stripComments(read("site/base.css"))).light);
+
+  for (const name of ["--danger", "--success", "--warning"]) {
+    for (const background of ["--bg", "--surface"]) {
+      const ratio = contrast(values.get(name)!, values.get(background)!);
+      assert.ok(ratio >= 4.5, `${name} / ${background}: ${ratio.toFixed(2)}`);
+    }
+  }
+});
+
 test("base.css: 色と px の値は変数の定義の中だけ。.icon は currentColor の線で、動きを減らす設定なら transition を切る", () => {
   const css = stripComments(read("site/base.css"));
   const outsideDefinitions = css.replace(/--[\w-]+:\s*[^;]+;/g, "");
@@ -138,13 +198,17 @@ test("base.css: 色と px の値は変数の定義の中だけ。.icon は curre
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^@]*transition: none !important;/);
 });
 
-test("DESIGN.md: 80 行以内で、出てくる変数はすべて base.css にある", () => {
+test("DESIGN.md: 80 行以内で、出てくる変数と .class（拡張子を除く）はすべて base.css にある", () => {
   const design = read("DESIGN.md");
   const lines = design.split("\n").length - (design.endsWith("\n") ? 1 : 0);
   assert.ok(lines <= 80, `${lines} 行`);
 
-  const defined = declarations(stripComments(read("site/base.css")));
+  const css = stripComments(read("site/base.css"));
+  const defined = declarations(css);
   for (const [name] of design.matchAll(/--[a-z0-9-]*[a-z0-9]/g)) assert.ok(defined.has(name), name);
+  const classes = [...design.matchAll(/\.([a-z][a-z0-9-]*)/g)].map((match) => match[1]).filter((name) => !FILE_EXTENSIONS.has(name));
+  assert.ok(classes.length > 0);
+  for (const name of new Set(classes)) assert.match(css, new RegExp(`\\.${name}(?![\\w-])`), name);
 });
 
 test("icons.svg: DESIGN.md に列挙したアイコン名と symbol の id が一致し、symbol は Lucide と同じ線の属性。先頭のコメントに出典と ISC ライセンス", () => {

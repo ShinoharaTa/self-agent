@@ -58,8 +58,8 @@
   --primary-text: #fafafa;
   --accent: #2563eb;
   --danger: #dc2626;
-  --success: #16a34a;
-  --warning: #d97706;
+  --success: #15803d;
+  --warning: #b45309;
   --backdrop: rgb(0 0 0 / 0.5);
 
   /* 影（1 種だけ） */
@@ -95,6 +95,7 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -247,6 +248,7 @@ button {
   line-height: var(--leading-tight);
   text-align: center;
   text-decoration: none;
+  white-space: nowrap;
   user-select: none;
   transition:
     background-color var(--duration) ease,
@@ -263,6 +265,7 @@ button {
 .btn-secondary {
   background: var(--muted);
   color: var(--text);
+  border-color: var(--border);
 }
 
 .btn-ghost {
@@ -297,7 +300,6 @@ button {
 .btn:disabled,
 .btn[aria-disabled="true"] {
   opacity: 0.5;
-  cursor: not-allowed;
   pointer-events: none;
 }
 
@@ -318,8 +320,8 @@ button {
   transition: border-color var(--duration) ease;
 }
 
+/* 高さは rows で決める */
 .textarea {
-  min-height: calc(var(--tap) * 2);
   resize: vertical;
 }
 
