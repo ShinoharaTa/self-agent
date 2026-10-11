@@ -277,6 +277,8 @@ test("/new: 進行中に空きがあればそこにチャンネルを作って�
     origin: "command",
     deletePromptMessageId: null,
     deletedAt: null,
+    renewedSummary: null,
+    renewedAt: null,
   });
   assert.deepEqual(logs, ["/new でセッションを作りました（guild=guild-1）"]);
 });

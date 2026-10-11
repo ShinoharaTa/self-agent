@@ -38,7 +38,7 @@ export type TurnDeps = {
   /** channelId → SDK の session_id */
   sessions: SdkSessionStore;
   seeds: ChannelSeedStore;
-  /** 復旧の seed に要約（無ければ題名）を入れるため */
+  /** 復旧の seed に要約（/close の要約、無ければ /renew の要約、どちらも無ければ題名）を入れるため */
   topicSessions: Pick<TopicSessionStore, "get">;
   /** #inbox・#tasks（セッションでないチャンネル）の復旧の seed に、そのサーバーの直近の同じチャンネルの要約を入れるため */
   inboxSummaries: Pick<InboxSummaryStore, "latest">;
@@ -63,7 +63,7 @@ export type ChannelTurn = {
 };
 
 /**
- * resume 失敗のあとに入れる seed。セッションはその要約（無ければ題名）、セッションでないチャンネル（#inbox・#tasks）は
+ * resume 失敗のあとに入れる seed。セッションはその要約（/close の要約 → /renew の要約 → 題名 の順）、セッションでないチャンネル（#inbox・#tasks）は
  * そのサーバーの直近の同じチャンネルの要約（channelSummary。切り替えたときと同じ形）。その要約がまだ無ければ入れない
  */
 export function resumeSeed(
@@ -74,9 +74,8 @@ export function resumeSeed(
   if (session === undefined) {
     return channelSummary === undefined ? undefined : rotatedSeed(channelSummary.summary, channelKind);
   }
-  return session.summary === null
-    ? `${RESUME_SEED_HEADER}\n題名: ${session.title}`
-    : `${RESUME_SEED_HEADER}\n${session.summary}`;
+  const summary = session.summary ?? session.renewedSummary;
+  return summary === null ? `${RESUME_SEED_HEADER}\n題名: ${session.title}` : `${RESUME_SEED_HEADER}\n${summary}`;
 }
 
 /** 有効な記憶（id 順）のブロック。記憶が無ければ undefined（付けない） */

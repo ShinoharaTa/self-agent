@@ -2,7 +2,8 @@
 // 毎日 SELF_AGENT_INBOX_ROTATE_AT（SELF_AGENT_TZ）を過ぎたとき（日次）と、
 // 直近の成功したターンの最後のステップの入力が SELF_AGENT_INBOX_MAX_INPUT_TOKENS を超えたとき（サイズ）に、そのチャンネルの会話を要約して残し、
 // SDK セッションを捨てて次の発言から新しいセッションにする。要約は seed として次の最初のターンに付ける。
-// 要約はツールを足さず、要約を頼むターンの返答本文を使う（ツール集合を変えるとキャッシュが全セッションで外れるため）
+// 要約はツールを足さず、要約を頼むターンの返答本文を使う（ツール集合を変えるとキャッシュが全セッションで外れるため）。
+// /renew（rotateNow）は時期の判定を飛ばして同じ切り替えをすぐに行う
 import type { Config } from "../config.ts";
 import type { Gateway } from "../discord/gateway.ts";
 import type { GuildSettings, GuildSettingsStore } from "../store/guild-settings.ts";
@@ -35,8 +36,14 @@ const ROTATE_PROMPTS: Record<SummaryChannelKind, string> = { inbox: ROTATE_PROMP
 /** 1 つのサーバーの中で切り替える順 */
 const ROTATED_KINDS: readonly SummaryChannelKind[] = ["inbox", "tasks"];
 
-/** 切り替える理由。日次（rotateAt を過ぎた）か、直近の成功したターンの最後のステップの入力の大きさ */
-type RotateReason = { kind: "daily" } | { kind: "size"; contextTokens: number };
+/** 切り替える理由。日次（rotateAt を過ぎた）か、直近の成功したターンの最後のステップの入力の大きさか、/renew */
+type RotateReason = { kind: "daily" } | { kind: "size"; contextTokens: number } | { kind: "manual" };
+
+/**
+ * 切り替えの結果。rotated は要約を引き継いだ（記録切れで前回の要約を引き継いだときも）、rotated_fresh は記録切れで引き継ぐ要約が無かった、
+ * no_conversation は前回の切り替えから会話が無く日付と時刻だけ記録した、not_set_up はそのチャンネルが無い、failed は何も変えなかった
+ */
+export type RotateNowResult = "rotated" | "rotated_fresh" | "no_conversation" | "not_set_up" | "failed";
 
 /** 切り替えるチャンネル（/setup 済みのサーバーの #inbox か #tasks）と、前回の切り替え */
 type RotateTarget = {
@@ -131,6 +138,27 @@ export class InboxRotator {
     }
   }
 
+  /**
+   * /renew: そのサーバーの #inbox か #tasks を今すぐ切り替える。日次・サイズの判定と、失敗の後の待ち（ROTATE_RETRY_MS）は飛ばし、
+   * 発言と同じキューの中で rotateDue と同じ切り替えを行う。チャンネルへの知らせは投稿しない（呼び出し側がコマンドの返信で伝える）。
+   * reject しない（例外は失敗の時刻を覚えて log に出し、failed を返す）
+   */
+  async rotateNow(guildId: string, kind: SummaryChannelKind): Promise<RotateNowResult> {
+    const { guildSettings, turnQueue, now, log } = this.deps;
+    try {
+      const settings = guildSettings.get(guildId);
+      const target = settings === undefined ? undefined : this.targetOf(settings, kind);
+      if (target === undefined) return "not_set_up";
+      // 停止の判定は渡さないので、rotate が何もせずに終わる（undefined）ことは無い
+      const result = await turnQueue.run(target.channelId, () => this.rotate(target, { kind: "manual" }, () => false));
+      return result ?? "failed";
+    } catch (error) {
+      this.failedAt.set(failureKey(guildId, kind), now().getTime());
+      log(`#${kind} の切り替えに失敗しました（guild=${guildId}）: ${describeError(error)}`);
+      return "failed";
+    }
+  }
+
   /** そのサーバーの #inbox・#tasks と前回の切り替え。チャンネルがまだ無ければ undefined */
   private targetOf(settings: GuildSettings, kind: SummaryChannelKind): RotateTarget | undefined {
     const { guildId } = settings;
@@ -197,21 +225,29 @@ export class InboxRotator {
    * - 成功: 要約を保存 → SDK セッションを捨てる → seed を入れる → 切り替えた日を記録 → そのチャンネルに知らせる
    * - 会話の記録が無い（RESUME_FAILURE_PATTERN）: 要約は作らずに SDK セッションを捨て、切り替えた日を記録し、同じチャンネルの直近の要約があればそれを seed に入れて知らせる
    * - それ以外の失敗: 何も変えない（resume の連続失敗には数えない。失敗の時刻を覚え、ROTATE_RETRY_MS 経ってからやり直す）
+   * /renew（reason が manual）のときは、SDK セッションがあれば前回の切り替えより後のターンが無くても要約を頼むターンを行い（オーナーが明示的に頼んだため）、
+   * 知らせは投稿しない。結果を返す（キュー待ちの間に停止を始めていて何もしなかったら undefined）
    */
-  private async rotate(target: RotateTarget, reason: RotateReason, stopping: () => boolean): Promise<void> {
+  private async rotate(
+    target: RotateTarget,
+    reason: RotateReason,
+    stopping: () => boolean,
+  ): Promise<RotateNowResult | undefined> {
     const { cfg, inboxSummaries, turn, now, log } = this.deps;
     const { runner, sessions, seeds, usage } = turn;
     const { guildId, kind, channelId } = target;
     const key = failureKey(guildId, kind);
     // キュー待ちの間に停止を始めていたら何もしない（次の起動の tick でやり直す）
-    if (stopping()) return;
+    if (stopping()) return undefined;
     const today = formatDate(now(), cfg.timeZone);
     const sessionId = sessions.get(channelId);
-    if (sessionId === undefined || usage.countAfter(channelId, this.lastRotatedAt(target)) === 0) {
+    // /renew は前回の切り替えより後のターンを数えない（SDK セッションがあれば要約する）
+    const noTurns = reason.kind !== "manual" && usage.countAfter(channelId, this.lastRotatedAt(target)) === 0;
+    if (sessionId === undefined || noTurns) {
       this.markRotated(target, today, now());
       this.failedAt.delete(key);
       log(`#${kind} に前回の切り替えからの会話が無いため、要約せずに切り替えた日だけ記録しました（guild=${guildId}）`);
-      return;
+      return "no_conversation";
     }
 
     // ツールの context は渡さない（#inbox の session_open で要約の途中にセッションを作らせない）。
@@ -229,10 +265,11 @@ export class InboxRotator {
       seeds.set(channelId, rotatedSeed(summary, kind));
       this.markRotated(target, today, rotatedAt);
       this.failedAt.delete(key);
-      const detail = reason.kind === "daily" ? "日次" : `直近の入力 ${reason.contextTokens} トークン`;
+      const detail =
+        reason.kind === "daily" ? "日次" : reason.kind === "manual" ? "/renew" : `直近の入力 ${reason.contextTokens} トークン`;
       log(`#${kind} の会話を要約して新しいセッションに切り替えました（guild=${guildId}、${detail}）`);
-      await this.notify(target, ROTATED_NOTICE);
-      return;
+      if (reason.kind !== "manual") await this.notify(target, ROTATED_NOTICE);
+      return "rotated";
     }
 
     if (RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
@@ -247,8 +284,8 @@ export class InboxRotator {
       log(
         `#${kind} の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=${guildId}、${carried}）: ${result.errorMessage}`,
       );
-      await this.notify(target, last === undefined ? ROTATED_NOTICE_FRESH : ROTATED_NOTICE);
-      return;
+      if (reason.kind !== "manual") await this.notify(target, last === undefined ? ROTATED_NOTICE_FRESH : ROTATED_NOTICE);
+      return last === undefined ? "rotated_fresh" : "rotated";
     }
 
     // 途中まで記録された会話は次の発言で続ける（同じ SDK セッションなら置き換えない）
@@ -257,6 +294,7 @@ export class InboxRotator {
     }
     this.failedAt.set(key, now().getTime());
     log(`#${kind} の要約に失敗したため、切り替えませんでした（guild=${guildId}）。1 時間後以降にやり直します: ${result.errorMessage}`);
+    return "failed";
   }
 
   /** 切り替えた知らせをそのチャンネルに投稿する。失敗しても切り替えは済んでいるので log だけ出す */

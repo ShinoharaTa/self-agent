@@ -176,6 +176,11 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE inbox_summaries ADD COLUMN channel_kind TEXT NOT NULL DEFAULT 'inbox';
   ALTER TABLE guild_settings ADD COLUMN tasks_rotated_at TEXT;
   `,
+  // v15: /renew でセッションの会話を新しくしたときの要約と時刻（ISO）。resume 失敗の復旧で /close の要約が無ければ使う
+  `
+  ALTER TABLE sessions ADD COLUMN renewed_summary TEXT;
+  ALTER TABLE sessions ADD COLUMN renewed_at TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

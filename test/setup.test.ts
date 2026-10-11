@@ -530,11 +530,13 @@ test("/setup はコマンドとして登録され、オーナーの操作で振�
     projectsDir,
     turnQueue,
     turn,
+    // /renew はここでは実行しない
+    inboxRotator: { rotateNow: async () => assert.fail("想定外の呼び出し") },
     log,
   });
   assert.deepEqual(
     commands.map((command) => command.def.name),
-    ["help", "setup", "new", "close", "wait", "sessions", "tasks", "usage", "projects"],
+    ["help", "setup", "new", "close", "renew", "wait", "sessions", "tasks", "usage", "projects"],
   );
   const components = createComponents({
     cfg: { deleteAfterDays: 30, timeZone: "Asia/Tokyo", publicBaseUrl: undefined },
