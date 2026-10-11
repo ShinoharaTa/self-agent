@@ -15,44 +15,12 @@ import {
   type ProjectsDeps,
 } from "../src/app/commands/projects.ts";
 import { MESSAGE_MAX_LENGTH } from "../src/app/commands/sessions.ts";
-import type {
-  ComponentRow,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-} from "../src/discord/gateway.ts";
-import { openDb } from "../src/store/db.ts";
-import { ProjectStore } from "../src/store/projects.ts";
+import type { ComponentRow, Interaction } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const BASE_URL = "https://example.ts.net:9443";
 const TZ = "Asia/Tokyo";
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
 
 const INTERACTION_BASE = {
   guildId: "guild-1",
@@ -81,17 +49,16 @@ function press(customId: string): Extract<Interaction, { kind: "button" }> {
  */
 function setup(t: TestContext, options: { publicBaseUrl: string | undefined } = { publicBaseUrl: BASE_URL }) {
   const { publicBaseUrl } = options;
+  const db = tempDb(t);
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
   const projectsDir = join(dir, "projects");
   mkdirSync(projectsDir);
   t.after(() => {
-    db.close();
     chmodSync(projectsDir, 0o755);
     rmSync(dir, { recursive: true, force: true });
   });
   let now = new Date("2026-10-07T00:00:00Z");
-  const projects = new ProjectStore(db, () => now);
+  const { projects } = createStores(db, () => now);
   const logs: string[] = [];
   const deps: ProjectsDeps = {
     projects,

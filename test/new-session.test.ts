@@ -1,8 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { HELP_TEXT } from "../src/app/commands/help.ts";
 import {
   createNewSessionCommand,
@@ -13,144 +10,13 @@ import {
 } from "../src/app/commands/new.ts";
 import { createSetupCommand, ensureGuildLayout } from "../src/app/commands/setup.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
-import type {
-  Gateway,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-  TextChannelOptions,
-} from "../src/discord/gateway.ts";
-import { openDb } from "../src/store/db.ts";
-import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingQueue } from "./helpers/recording.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
-
-type GatewayCall =
-  | { method: "createCategory"; guildId: string; name: string }
-  | { method: "createTextChannel"; guildId: string; options: TextChannelOptions }
-  | { method: "channelExists"; channelId: string }
-  | { method: "countChannelsIn"; categoryId: string }
-  | { method: "moveChannel"; channelId: string; parentId: string }
-  | { method: "send"; channelId: string; text: string };
-
-/** 作ったチャンネルとその置き場所を覚えておき、channelExists・countChannelsIn・getParentId はそれで答える（getParentId は記録しない） */
-class FakeGateway
-  implements
-    Pick<
-      Gateway,
-      | "createCategory"
-      | "createTextChannel"
-      | "channelExists"
-      | "moveChannel"
-      | "getParentId"
-      | "countChannelsIn"
-      | "send"
-      | "sendMessage"
-      | "pinMessage"
-      | "messageExists"
-    >
-{
-  calls: GatewayCall[] = [];
-  /** Discord 上にあるチャンネル */
-  readonly alive = new Set<string>();
-  /** カテゴリに手動で置かれたチャンネルの数（countChannelsIn に足す） */
-  readonly manual = new Map<string, number>();
-  /** send の直前に呼ばれる。投げればその送信は失敗する */
-  beforeSend: () => void = () => {};
-  /** テキストチャンネル → 置いたカテゴリ */
-  private readonly parents = new Map<string, string>();
-  private nextId = 1;
-
-  async createCategory(guildId: string, name: string): Promise<string> {
-    this.calls.push({ method: "createCategory", guildId, name });
-    return this.newId();
-  }
-  async createTextChannel(guildId: string, options: TextChannelOptions): Promise<string> {
-    this.calls.push({ method: "createTextChannel", guildId, options });
-    const id = this.newId();
-    this.parents.set(id, options.parentId);
-    return id;
-  }
-  async channelExists(channelId: string): Promise<boolean> {
-    this.calls.push({ method: "channelExists", channelId });
-    return this.alive.has(channelId);
-  }
-  async countChannelsIn(categoryId: string): Promise<number> {
-    this.calls.push({ method: "countChannelsIn", categoryId });
-    let count = this.manual.get(categoryId) ?? 0;
-    for (const [channelId, parentId] of this.parents) {
-      if (parentId === categoryId && this.alive.has(channelId)) count++;
-    }
-    return count;
-  }
-  async moveChannel(channelId: string, parentId: string): Promise<void> {
-    this.calls.push({ method: "moveChannel", channelId, parentId });
-    this.parents.set(channelId, parentId);
-  }
-  async getParentId(channelId: string): Promise<string | null> {
-    return this.parents.get(channelId) ?? null;
-  }
-  async send(channelId: string, text: string): Promise<void> {
-    this.beforeSend();
-    this.calls.push({ method: "send", channelId, text });
-  }
-  // /setup の最後のホームパネル（calls には記録しない。ホームパネルは home-panel.test.ts）
-  async sendMessage(): Promise<string> {
-    return "panel-1";
-  }
-  async pinMessage(): Promise<void> {}
-  async messageExists(): Promise<boolean> {
-    return true;
-  }
-
-  reset(): void {
-    this.calls = [];
-  }
-
-  private newId(): string {
-    const id = `ch-${this.nextId++}`;
-    this.alive.add(id);
-    return id;
-  }
-}
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
-
-/** 受け取った key を記録する（/setup と /new が同じ key を使うかを見る） */
-class RecordingQueue extends KeyedSerialQueue {
-  keys: string[] = [];
-
-  run<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    this.keys.push(key);
-    return super.run(key, fn);
-  }
-}
 
 type CommandInteraction = Extract<Interaction, { kind: "command" }>;
 
@@ -166,15 +32,14 @@ const SETUP: CommandInteraction = { ...BASE, kind: "command", name: "setup", opt
 const LAYOUT = { home: "ch-1", inbox: "ch-2", tasks: "ch-3", system: "ch-4", active: "ch-5", waiting: "ch-6", done: "ch-7" };
 
 function setup(t: TestContext, queue: KeyedSerialQueue = new KeyedSerialQueue(1)) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
+  const db = tempDb(t);
+  // 作ったチャンネルとその置き場所で channelExists・countChannelsIn・getParentId に答える（getParentId は記録しない）。
+  // /setup の最後のホームパネル（sendMessage・pinMessage・messageExists）も記録しない（ホームパネルは setup.test.ts）
+  const gateway = new FakeGateway({
+    allow: ["getParentId", "sendMessage", "pinMessage", "messageExists"],
+    record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn", "moveChannel", "send"],
   });
-  const gateway = new FakeGateway();
-  const guildSettings = new GuildSettingsStore(db, () => NOW);
-  const topicSessions = new TopicSessionStore(db, () => NOW);
+  const { guildSettings, topicSessions } = createStores(db, () => NOW);
   const logs: string[] = [];
   // /setup の親のずれの修復はここでは起きない（作ったチャンネルはすべて self-agent カテゴリにある）
   const channelOps = { enqueueMove: () => assert.fail("想定外の移動") };

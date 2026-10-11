@@ -1,29 +1,22 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { cacheReadRate, createUsageCommand, usageText } from "../src/app/commands/usage.ts";
 import { startOfLocalDay } from "../src/app/time.ts";
-import type { Interaction, InteractionResponder, ModalDef, OutgoingMessage } from "../src/discord/gateway.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { type UsageRecord, UsageStore } from "../src/store/usage.ts";
+import { createStores, tempDb, tempDir } from "./helpers/db.ts";
+import { FakeResponder } from "./helpers/responder.ts";
 
 /** 2026-10-02(金) 09:12 JST */
 const NOW = new Date("2026-10-02T00:12:00Z");
 
-function tempDir(t: TestContext): string {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return dir;
-}
-
 function setup(t: TestContext) {
-  const db = openDb(join(tempDir(t), "self-agent.db"));
-  t.after(() => db.close());
+  const db = tempDb(t);
   const clock = { now: NOW };
-  const usage = new UsageStore(db, () => clock.now);
+  const { usage } = createStores(db, () => clock.now);
   /** at の時刻に 1 ターン記録する */
   const recordAt = (at: string, record: Omit<UsageRecord, "key">): void => {
     clock.now = new Date(at);
@@ -31,18 +24,6 @@ function setup(t: TestContext) {
     clock.now = NOW;
   };
   return { usage, recordAt };
-}
-
-class FakeResponder implements InteractionResponder {
-  replies: OutgoingMessage[] = [];
-
-  async defer(): Promise<void> {}
-  async deferUpdate(): Promise<void> {}
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.replies.push(message);
-  }
-  async update(): Promise<void> {}
-  async showModal(_modal: ModalDef): Promise<void> {}
 }
 
 const ok = (input: number, read: number, creation: number, toolCalls: number, compacted = false): Omit<UsageRecord, "key"> => ({

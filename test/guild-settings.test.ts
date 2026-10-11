@@ -1,7 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
@@ -9,12 +7,7 @@ import { GuildSettingsStore, type SessionState } from "../src/store/guild-settin
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
-
-function tempDir(t: TestContext): string {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return dir;
-}
+import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 
 /** 呼ぶたびに 1 分進む時計 */
 function clock(): () => Date {
@@ -23,9 +16,8 @@ function clock(): () => Date {
 }
 
 function tempStore(t: TestContext): GuildSettingsStore {
-  const db = openDb(join(tempDir(t), "self-agent.db"));
-  t.after(() => db.close());
-  return new GuildSettingsStore(db, clock());
+  const db = tempDb(t);
+  return createStores(db, clock()).guildSettings;
 }
 
 test("GuildSettingsStore: 未設定のサーバーは undefined、ID は 1 つずつ保存でき、まだ無い列は null", (t) => {

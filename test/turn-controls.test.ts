@@ -9,31 +9,10 @@ import {
   STALE_TURN_REPLY,
 } from "../src/app/commands/turn-controls.ts";
 import { MAX_TURNS_REPLY as HANDLER_MAX_TURNS_REPLY } from "../src/app/handler.ts";
-import type { Interaction, InteractionResponder, ModalDef, OutgoingMessage } from "../src/discord/gateway.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
-
-type ResponderCall = { method: "deferUpdate" } | { method: "reply" | "update"; message: OutgoingMessage };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(_modal: ModalDef): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-}
 
 /** 中断と [続ける] の呼び出しを記録する。running のチャンネルの、その番号のターンだけ中断できる */
 function setup(channels: Record<string, ChannelKind> = {}, running: Record<string, number> = {}) {

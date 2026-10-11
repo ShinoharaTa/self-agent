@@ -1,9 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import * as z from "zod";
 import type { AgentRunner, RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
 import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
@@ -16,7 +13,6 @@ import {
 } from "../src/agent/tools.ts";
 import { createChannelResolver } from "../src/app/access.ts";
 import { createTopicSession, toChannelName } from "../src/app/commands/new.ts";
-import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
   AUTO_SESSION_COOLDOWN_MESSAGE,
   AUTO_SESSION_COOLDOWN_MS,
@@ -26,80 +22,12 @@ import {
   inboxWelcomeText,
 } from "../src/app/session-open.ts";
 import { runChannelTurn } from "../src/app/turn.ts";
-import type { Gateway, TextChannelOptions } from "../src/discord/gateway.ts";
-import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
-import { openDb } from "../src/store/db.ts";
-import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
-import { KnowledgeStore } from "../src/store/knowledge.ts";
-import { MemoryStore } from "../src/store/memories.ts";
-import { ProjectStore } from "../src/store/projects.ts";
-import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
-import { TaskStore } from "../src/store/tasks.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
-import { UsageStore } from "../src/store/usage.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingQueue } from "./helpers/recording.ts";
 
 /** 2026-10-02(金) 09:12 JST */
 const NOW = new Date("2026-10-02T00:12:00Z");
-
-type GatewayCall =
-  | { method: "createCategory"; guildId: string; name: string }
-  | { method: "createTextChannel"; guildId: string; options: TextChannelOptions }
-  | { method: "channelExists"; channelId: string }
-  | { method: "countChannelsIn"; categoryId: string }
-  | { method: "send"; channelId: string; text: string };
-
-/** /new の作成処理が使う分だけの偽 Gateway。作ったチャンネルは ch-1 から振る */
-class FakeGateway
-  implements Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "countChannelsIn" | "send">
-{
-  calls: GatewayCall[] = [];
-  readonly alive = new Set<string>(["active-1"]);
-  /** send の直前に呼ばれる。投げればその送信は失敗する */
-  beforeSend: (channelId: string) => void = () => {};
-  private nextId = 1;
-
-  async createCategory(guildId: string, name: string): Promise<string> {
-    this.calls.push({ method: "createCategory", guildId, name });
-    return this.newId();
-  }
-  async createTextChannel(guildId: string, options: TextChannelOptions): Promise<string> {
-    this.calls.push({ method: "createTextChannel", guildId, options });
-    return this.newId();
-  }
-  async channelExists(channelId: string): Promise<boolean> {
-    this.calls.push({ method: "channelExists", channelId });
-    return this.alive.has(channelId);
-  }
-  async countChannelsIn(categoryId: string): Promise<number> {
-    this.calls.push({ method: "countChannelsIn", categoryId });
-    return 0;
-  }
-  async send(channelId: string, text: string): Promise<void> {
-    this.beforeSend(channelId);
-    this.calls.push({ method: "send", channelId, text });
-  }
-
-  reset(): void {
-    this.calls = [];
-  }
-
-  private newId(): string {
-    const id = `ch-${this.nextId++}`;
-    this.alive.add(id);
-    return id;
-  }
-}
-
-/** 受け取った key を記録する（/new と同じ key を使うかを見る） */
-class RecordingQueue extends KeyedSerialQueue {
-  keys: string[] = [];
-
-  run<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    this.keys.push(key);
-    return super.run(key, fn);
-  }
-}
 
 const INBOX: RunContext = { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" };
 const ARGS = { title: "旅行の計画", context: "京都に 2 泊したい。宿と移動を決める" };
@@ -113,18 +41,15 @@ type Options = {
 };
 
 function setup(t: TestContext, options: Options = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   let current = NOW;
   const now = (): Date => current;
-  const gateway = new FakeGateway();
-  const guildSettings = new GuildSettingsStore(db, now);
-  const topicSessions = new TopicSessionStore(db, now);
-  const seeds = new ChannelSeedStore(db, now);
+  // /new の作成処理が使う分だけ。作ったチャンネルは ch-1 から振る。進行中カテゴリ（active-1）は Discord 上にある
+  const gateway = new FakeGateway({
+    record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn", "send"],
+  });
+  gateway.alive.add("active-1");
+  const { guildSettings, topicSessions, seeds } = createStores(db, now);
   const queue = new RecordingQueue(2);
   const logs: string[] = [];
   const log = (line: string): void => {
@@ -240,16 +165,8 @@ test("session_open: 作ったチャンネルの最初のターンの prompt の�
       };
     },
   };
-  const turnDeps = {
-    runner,
-    sessions: new SdkSessionStore(db, () => NOW),
-    seeds,
-    topicSessions,
-    inboxSummaries: new InboxSummaryStore(db, () => NOW),
-    memories: new MemoryStore(db, () => NOW),
-    usage: new UsageStore(db, () => NOW),
-    log,
-  };
+  const { sessions, inboxSummaries, memories, usage } = createStores(db, () => NOW);
+  const turnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
 
   await runChannelTurn(turnDeps, {
     guildId: "guild-1",
@@ -462,9 +379,10 @@ test("session_open: /setup 前（env の #inbox で受け付けているサー�
 
 /** ナレッジベースと記憶のツールのストア（ここでは確認・知らせの投稿は使わない） */
 function kbMemory(db: DatabaseSync): KbMemoryToolDeps {
+  const { knowledge, memories } = createStores(db, () => NOW);
   return {
-    knowledge: new KnowledgeStore(db, () => NOW),
-    memories: new MemoryStore(db, () => NOW),
+    knowledge,
+    memories,
     confirmKbDelete: async () => assert.fail("想定外の呼び出し"),
     notifyMemoryChange: async () => assert.fail("想定外の呼び出し"),
     timeZone: "Asia/Tokyo",
@@ -473,8 +391,9 @@ function kbMemory(db: DatabaseSync): KbMemoryToolDeps {
 
 /** project_open のストアと配信の設定（ここでは配信は無効） */
 function projectTools(db: DatabaseSync): ProjectToolDeps {
+  const { projects } = createStores(db, () => NOW);
   return {
-    projects: new ProjectStore(db, () => NOW),
+    projects,
     projectsDir: "/srv/work/projects",
     publicBaseUrl: undefined,
     serving: () => false,
@@ -484,7 +403,7 @@ function projectTools(db: DatabaseSync): ProjectToolDeps {
 
 test("ツール定義: どのチャンネルの run でも名前・説明・入力の形は同じで、説明に可変値を入れない", (t) => {
   const { db, topicSessions } = setup(t);
-  const tasks = new TaskStore(db, () => NOW);
+  const { tasks } = createStores(db, () => NOW);
   const openSession = async (): Promise<SessionOpenResult> => ({ result: "not_available" });
   const contexts: Array<RunContext | undefined> = [
     { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" },
@@ -541,7 +460,7 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
 
 test("ツール定義: session_open の題名は前後の空白を除いて 1〜100 字、context は 1〜400 字", (t) => {
   const { db, topicSessions } = setup(t);
-  const tasks = new TaskStore(db, () => NOW);
+  const { tasks } = createStores(db, () => NOW);
   const definition = createTaskTools(
     tasks,
     topicSessions,
@@ -562,7 +481,7 @@ test("ツール定義: session_open の題名は前後の空白を除いて 1〜
 
 test("ツール: session_open のハンドラはこの run の context を渡し、結果を JSON で返す", async (t) => {
   const { db, topicSessions } = setup(t);
-  const tasks = new TaskStore(db, () => NOW);
+  const { tasks } = createStores(db, () => NOW);
   const received: unknown[] = [];
   const openSession = async (args: unknown, context: unknown): Promise<SessionOpenResult> => {
     received.push([args, context]);

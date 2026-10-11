@@ -1,8 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { setImmediate as flush } from "node:timers/promises";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
@@ -11,22 +8,10 @@ import { createHandler } from "../src/app/handler.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "../src/app/scheduler.ts";
 import { createShutdown, RESTARTING_REPLY, type InnerHandlers, type ShutdownDeps } from "../src/app/shutdown.ts";
-import type {
-  Gateway,
-  IncomingMessage,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-} from "../src/discord/gateway.ts";
-import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
-import { openDb } from "../src/store/db.ts";
-import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
-import { MemoryStore } from "../src/store/memories.ts";
-import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
-import { UsageStore } from "../src/store/usage.ts";
+import type { IncomingMessage, Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { FakeResponder } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 const cfg = {
@@ -45,16 +30,16 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/** send・stop と DB を閉じた順番を events に記録する */
-class FakeGateway implements Gateway {
+/** send・sendMessage・editMessage・stop を、DB を閉じた順番などと並べて events に記録する */
+class EventGateway extends FakeGateway {
   readonly events: string[];
   stopError: Error | undefined;
 
   constructor(events: string[]) {
+    super({ allow: ["start", "startTyping", "isInGuild", "registerGuildCommands"] });
     this.events = events;
   }
 
-  async start(): Promise<void> {}
   async send(_channelId: string, text: string): Promise<void> {
     this.events.push(`send ${text}`);
   }
@@ -65,65 +50,19 @@ class FakeGateway implements Gateway {
   async editMessage(_channelId: string, _messageId: string, message: OutgoingMessage): Promise<void> {
     this.events.push(`editMessage ${message.text}`);
   }
-  async pinMessage(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async messageExists(): Promise<boolean> {
-    throw new Error("想定外の呼び出し");
-  }
-  startTyping(): () => void {
-    return () => {};
-  }
-  isInGuild(): boolean {
-    return true;
-  }
-  async registerGuildCommands(): Promise<void> {}
-  async createCategory(): Promise<string> {
-    throw new Error("想定外の呼び出し");
-  }
-  async createTextChannel(): Promise<string> {
-    throw new Error("想定外の呼び出し");
-  }
-  async channelExists(): Promise<boolean> {
-    throw new Error("想定外の呼び出し");
-  }
-  async countChannelsIn(): Promise<number> {
-    throw new Error("想定外の呼び出し");
-  }
-  async listChannelParents(): Promise<Map<string, string | null>> {
-    throw new Error("想定外の呼び出し");
-  }
-  async moveChannel(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async getParentId(): Promise<string | null> {
-    throw new Error("想定外の呼び出し");
-  }
-  async deleteChannel(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
   async stop(): Promise<void> {
     this.events.push("stop");
     if (this.stopError !== undefined) throw this.stopError;
   }
 }
 
-class FakeResponder implements InteractionResponder {
-  readonly replies: OutgoingMessage[] = [];
-  readonly events: string[];
-
-  constructor(events: string[] = []) {
-    this.events = events;
-  }
-
-  async defer(): Promise<void> {}
-  async deferUpdate(): Promise<void> {}
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.replies.push(message);
-    this.events.push(`reply ${message.text}`);
-  }
-  async update(): Promise<void> {}
-  async showModal(_modal: ModalDef): Promise<void> {}
+/** reply を events にも記録する */
+function eventResponder(events: string[]): FakeResponder {
+  const responder = new FakeResponder();
+  responder.beforeReply = (message) => {
+    events.push(`reply ${message.text}`);
+  };
+  return responder;
 }
 
 /** run を呼ばれたら gate が開くまで待ってから返す */
@@ -166,12 +105,12 @@ function interaction(guildId: string | null): Interaction {
 /** 停止の部品。closeDb は events に記録する */
 function deps(
   events: string[],
-  overrides: Partial<Omit<ShutdownDeps, "gateway">> & { gateway?: FakeGateway } = {},
-): ShutdownDeps & { gateway: FakeGateway; logs: string[] } {
+  overrides: Partial<Omit<ShutdownDeps, "gateway">> & { gateway?: EventGateway } = {},
+): ShutdownDeps & { gateway: EventGateway; logs: string[] } {
   const logs: string[] = [];
   return {
     cfg,
-    gateway: new FakeGateway(events),
+    gateway: new EventGateway(events),
     queues: [],
     scheduler: { stop: () => {}, idle: async () => {} },
     channelOps: { idle: async () => {} },
@@ -223,9 +162,9 @@ test("停止を始めたら新しい発言は何もせず、許可したサー�
   const done = shutdown();
   assert.equal(stopping(), true);
   handlers.onMessage(message("message-1"));
-  const allowed = new FakeResponder(events);
-  const dm = new FakeResponder(events);
-  const otherGuild = new FakeResponder(events);
+  const allowed = eventResponder(events);
+  const dm = eventResponder(events);
+  const otherGuild = eventResponder(events);
   handlers.onInteraction(interaction("guild-1"), allowed);
   handlers.onInteraction(interaction(null), dm);
   handlers.onInteraction(interaction("guild-9"), otherGuild);
@@ -240,28 +179,30 @@ test("停止を始めたら新しい発言は何もせず、許可したサー�
 });
 
 function handlerSetup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    if (db.isOpen) db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const events: string[] = [];
-  const gateway = new FakeGateway(events);
+  const gateway = new EventGateway(events);
   const runner = new GatedRunner();
-  const usage = new UsageStore(db, () => NOW);
-  const topicSessions = new TopicSessionStore(db, () => NOW);
+  const {
+    usage,
+    topicSessions,
+    guildSettings,
+    sessions,
+    seeds,
+    inboxSummaries,
+    memories,
+  } = createStores(db, () => NOW);
   const turnQueue = new KeyedSerialQueue(2);
   const handle = createHandler({
     cfg,
-    resolveChannel: createChannelResolver(cfg, new GuildSettingsStore(db, () => NOW), topicSessions),
+    resolveChannel: createChannelResolver(cfg, guildSettings, topicSessions),
     gateway,
     runner,
-    sessions: new SdkSessionStore(db, () => NOW),
-    seeds: new ChannelSeedStore(db, () => NOW),
+    sessions,
+    seeds,
     topicSessions,
-    inboxSummaries: new InboxSummaryStore(db, () => NOW),
-    memories: new MemoryStore(db, () => NOW),
+    inboxSummaries,
+    memories,
     channelOps: { enqueueMove: () => {} },
     usage,
     queue: turnQueue,
@@ -318,7 +259,7 @@ test("キューの後で返信する操作（/close など）も、返信まで�
     },
   });
 
-  handlers.onInteraction(interaction("guild-1"), new FakeResponder(events));
+  handlers.onInteraction(interaction("guild-1"), eventResponder(events));
   const done = shutdown();
   gate.resolve();
   await done;
@@ -414,7 +355,7 @@ test("静的サーバーを閉じるのに失敗しても DB は閉じ、reject 
 
 test("停止を始めたら scheduler を止め（以後 tick しない）、実行中の tick が終わってから gateway を止めて DB を閉じる", async () => {
   const events: string[] = [];
-  const gateway = new FakeGateway(events);
+  const gateway = new EventGateway(events);
   const gate = deferred();
   const sendMessage = gateway.sendMessage.bind(gateway);
   gateway.sendMessage = async (channelId, message) => {
@@ -503,14 +444,10 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
 });
 
 test("実行中のチャンネルの移動は終わるまで待ってから gateway を止める。まだ始めていない移動は待たない", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const events: string[] = [];
   const gate = deferred();
+  const { guildSettings } = createStores(db, () => NOW);
   const channelOps = new ChannelOpsQueue({
     gateway: {
       getParentId: async () => null,
@@ -523,7 +460,7 @@ test("実行中のチャンネルの移動は終わるまで待ってから gate
       countChannelsIn: async () => assert.fail("想定外の呼び出し"),
       createCategory: async () => assert.fail("想定外の呼び出し"),
     },
-    guildSettings: new GuildSettingsStore(db, () => NOW),
+    guildSettings,
     topicSessions: { setCategory: () => {} },
     gapMs: 2000,
     // 間隔は空け終わらない（次の移動は始まらない）

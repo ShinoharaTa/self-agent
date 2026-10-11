@@ -1,65 +1,13 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { setImmediate as flush } from "node:timers/promises";
 import { ChannelOpsQueue, type ChannelOpsTimers } from "../src/app/channel-ops.ts";
-import { type Gateway, UnknownChannelError } from "../src/discord/gateway.ts";
-import { openDb } from "../src/store/db.ts";
-import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { UnknownChannelError } from "../src/discord/gateway.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 const GAP_MS = 2000;
-
-type GatewayCall =
-  | { method: "getParentId"; channelId: string }
-  | { method: "moveChannel"; channelId: string; parentId: string }
-  | { method: "channelExists"; channelId: string }
-  | { method: "countChannelsIn"; categoryId: string }
-  | { method: "createCategory"; guildId: string; name: string };
-
-/** チャンネルの親と、カテゴリの中の数を覚えておく */
-class FakeGateway
-  implements Pick<Gateway, "getParentId" | "moveChannel" | "channelExists" | "countChannelsIn" | "createCategory">
-{
-  calls: GatewayCall[] = [];
-  readonly parents = new Map<string, string | null>();
-  /** カテゴリに手動で置かれたチャンネルの数（countChannelsIn に足す） */
-  readonly manual = new Map<string, number>();
-  /** moveChannel の直前に呼ばれる。投げればその移動は失敗する */
-  beforeMove: (channelId: string) => Promise<void> | void = () => {};
-  private nextId = 1;
-
-  async getParentId(channelId: string): Promise<string | null> {
-    this.calls.push({ method: "getParentId", channelId });
-    return this.parents.get(channelId) ?? null;
-  }
-  async moveChannel(channelId: string, parentId: string): Promise<void> {
-    this.calls.push({ method: "moveChannel", channelId, parentId });
-    await this.beforeMove(channelId);
-    this.parents.set(channelId, parentId);
-  }
-  async channelExists(channelId: string): Promise<boolean> {
-    this.calls.push({ method: "channelExists", channelId });
-    return true;
-  }
-  async countChannelsIn(categoryId: string): Promise<number> {
-    this.calls.push({ method: "countChannelsIn", categoryId });
-    let count = this.manual.get(categoryId) ?? 0;
-    for (const parentId of this.parents.values()) if (parentId === categoryId) count++;
-    return count;
-  }
-  async createCategory(guildId: string, name: string): Promise<string> {
-    this.calls.push({ method: "createCategory", guildId, name });
-    return `new-category-${this.nextId++}`;
-  }
-
-  moves(): Array<[string, string]> {
-    return this.calls.flatMap((call) => (call.method === "moveChannel" ? [[call.channelId, call.parentId]] : []));
-  }
-}
 
 /** 偽の時計。sleep は advance で時刻が来たら進む */
 class FakeClock implements ChannelOpsTimers {
@@ -106,16 +54,16 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
+  const db = tempDb(t);
+  // チャンネルの親とカテゴリの中の数を覚えておく。作ったカテゴリは new-category-1 から振る
+  const gateway = new FakeGateway({
+    record: ["getParentId", "moveChannel", "channelExists", "countChannelsIn", "createCategory"],
+    channelIdPrefix: "new-category-",
   });
-  const gateway = new FakeGateway();
+  // 完了カテゴリはどれも Discord 上にある
+  for (const categoryId of ["done-1", "done-2", "done-3"]) gateway.alive.add(categoryId);
   const clock = new FakeClock();
-  const guildSettings = new GuildSettingsStore(db, () => NOW);
-  const topicSessions = new TopicSessionStore(db, () => NOW);
+  const { guildSettings, topicSessions } = createStores(db, () => NOW);
   const logs: string[] = [];
   const queue = new ChannelOpsQueue({
     gateway,

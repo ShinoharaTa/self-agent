@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { MoveTarget } from "../src/app/channel-ops.ts";
 import { applySessionEvent, type SessionEvent, transition, type Transition } from "../src/app/session-state.ts";
 import type { TopicSessionState } from "../src/store/topic-sessions.ts";
+import { RecordingChannelOps } from "./helpers/recording.ts";
 
 const STATES: readonly TopicSessionState[] = ["active", "waiting", "done", "deleted"];
 const EVENTS: readonly SessionEvent[] = ["message", "wait", "continue", "idle", "close"];
@@ -57,14 +57,6 @@ class RecordingStore {
   setWaiting(channelId: string): undefined {
     this.calls.push(`setWaiting ${channelId}`);
     return undefined;
-  }
-}
-
-class RecordingChannelOps {
-  moves: Array<{ channelId: string; target: MoveTarget }> = [];
-
-  enqueueMove(channelId: string, target: MoveTarget): void {
-    this.moves.push({ channelId, target });
   }
 }
 

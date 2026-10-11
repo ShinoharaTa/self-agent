@@ -1,11 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { AgentRunner, RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
+import type { RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
-import type { MoveTarget } from "../src/app/channel-ops.ts";
 import { createTurnControlsComponent, STALE_TURN_REPLY } from "../src/app/commands/turn-controls.ts";
 import {
   ABORTED_REPLY,
@@ -25,128 +21,19 @@ import { rotatedSeed } from "../src/app/summary.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { RESUME_FAILURE_LIMIT, RESUME_SEED_HEADER } from "../src/app/turn.ts";
-import type {
-  Gateway,
-  IncomingMessage,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-} from "../src/discord/gateway.ts";
-import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
+import type { IncomingMessage, Interaction } from "../src/discord/gateway.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
-import { MemoryStore } from "../src/store/memories.ts";
-import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
-import { UsageStore } from "../src/store/usage.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingChannelOps } from "./helpers/recording.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
+import { FakeRunner } from "./helpers/runner.ts";
 
 const cfg = { allowedGuildIds: ["guild-1"], inboxChannelId: "inbox-1", ownerUserId: "owner-1", timeZone: "Asia/Tokyo" };
 const NOW = new Date("2026-10-02T00:12:00Z");
 // 発言の時刻（ストアの now とは別。prompt の日時ヘッダはこちらを使う）
 const CREATED_AT = new Date("2026-10-01T23:59:00Z");
-
-class FakeGateway implements Gateway {
-  sent: Array<{ channelId: string; text: string; replyToId?: string }> = [];
-  /** sendMessage で送ったもの（ID は posted-<n>） */
-  posts: Array<{ channelId: string; messageId: string; message: OutgoingMessage }> = [];
-  edits: Array<{ channelId: string; messageId: string; message: OutgoingMessage }> = [];
-  /** send・sendMessage・editMessage を呼んだ順 */
-  order: string[] = [];
-  typingStarted = 0;
-  typingStopped = 0;
-  /** send の直前に呼ばれる。投げればその送信は失敗する */
-  beforeSend: () => void = () => {};
-  /** sendMessage・editMessage の直前に呼ばれる。投げればその送信・編集は失敗する */
-  beforeSendMessage: () => void = () => {};
-  beforeEdit: () => void = () => {};
-
-  async start(): Promise<void> {}
-  async send(channelId: string, text: string, replyToId?: string): Promise<void> {
-    this.beforeSend();
-    this.order.push("send");
-    this.sent.push({ channelId, text, replyToId });
-  }
-  async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
-    this.beforeSendMessage();
-    const messageId = `posted-${this.posts.length + 1}`;
-    this.order.push("sendMessage");
-    this.posts.push({ channelId, messageId, message });
-    return messageId;
-  }
-  async editMessage(channelId: string, messageId: string, message: OutgoingMessage): Promise<void> {
-    this.beforeEdit();
-    this.order.push("editMessage");
-    this.edits.push({ channelId, messageId, message });
-  }
-  async pinMessage(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async messageExists(): Promise<boolean> {
-    throw new Error("想定外の呼び出し");
-  }
-  startTyping(): () => void {
-    this.typingStarted++;
-    return () => {
-      this.typingStopped++;
-    };
-  }
-  isInGuild(): boolean {
-    return true;
-  }
-  async registerGuildCommands(): Promise<void> {}
-  async createCategory(): Promise<string> {
-    throw new Error("想定外の呼び出し");
-  }
-  async createTextChannel(): Promise<string> {
-    throw new Error("想定外の呼び出し");
-  }
-  async channelExists(): Promise<boolean> {
-    throw new Error("想定外の呼び出し");
-  }
-  async countChannelsIn(): Promise<number> {
-    throw new Error("想定外の呼び出し");
-  }
-  async listChannelParents(): Promise<Map<string, string | null>> {
-    throw new Error("想定外の呼び出し");
-  }
-  async moveChannel(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async getParentId(): Promise<string | null> {
-    throw new Error("想定外の呼び出し");
-  }
-  async deleteChannel(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async stop(): Promise<void> {}
-}
-
-class FakeRunner implements AgentRunner {
-  /** 受け取った入力のうち、中断（signal）と途中経過（onProgress）を除いたもの */
-  inputs: Array<Omit<RunInput, "signal" | "onProgress">> = [];
-  /** 受け取った入力そのもの */
-  received: RunInput[] = [];
-  /** 入力を記録した後、結果を返す前に待つ。input の onProgress を呼べ、signal で止まれる */
-  beforeResult: (input: RunInput) => Promise<void> = async () => {};
-  private readonly results: Array<RunResult | Error>;
-
-  constructor(results: Array<RunResult | Error>) {
-    this.results = results;
-  }
-
-  async run(input: RunInput): Promise<RunResult> {
-    const { signal: _signal, onProgress: _onProgress, ...rest } = input;
-    this.inputs.push(rest);
-    this.received.push(input);
-    await this.beforeResult(input);
-    const next = this.results.shift();
-    if (next === undefined) throw new Error("想定外の呼び出し");
-    if (next instanceof Error) throw next;
-    return next;
-  }
-}
 
 /** 偽のタイマー。advance で経過時間を進め、その間に来た after・every を時刻順に呼ぶ */
 class FakeTimers implements ProgressTimers {
@@ -195,36 +82,6 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
-type ResponderCall = { method: "deferUpdate" } | { method: "reply" | "update"; message: OutgoingMessage };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(_modal: ModalDef): Promise<void> {
-    throw new Error("想定外の呼び出し");
-  }
-}
-
-class RecordingChannelOps {
-  moves: Array<{ channelId: string; target: MoveTarget }> = [];
-
-  enqueueMove(channelId: string, target: MoveTarget): void {
-    this.moves.push({ channelId, target });
-  }
-}
-
 function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
   return {
     id: "message-1",
@@ -253,29 +110,24 @@ function okResult(sessionId: string, text: string): Extract<RunResult, { ok: tru
 }
 
 function setup(t: TestContext, results: Array<RunResult | Error>) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
+  const db = tempDb(t);
+  // sendMessage で送ったものの ID は posted-<n>
+  const gateway = new FakeGateway({
+    allow: ["start", "send", "sendMessage", "editMessage", "startTyping", "isInGuild", "registerGuildCommands", "stop"],
+    messageIdPrefix: "posted-",
   });
-  const gateway = new FakeGateway();
   const runner = new FakeRunner(results);
-  const sessions = new SdkSessionStore(db, () => NOW);
-  const usage = new UsageStore(db, () => NOW);
+  const { sessions, usage, seeds, inboxSummaries, memories, guildSettings } = createStores(db, () => NOW);
   // last_activity_at の更新を見るため、sessions の時計だけ進められるようにする
   const clock = { now: NOW };
-  const topicSessions = new TopicSessionStore(db, () => clock.now);
-  const seeds = new ChannelSeedStore(db, () => NOW);
-  const inboxSummaries = new InboxSummaryStore(db, () => NOW);
-  const memories = new MemoryStore(db, () => NOW);
+  const { topicSessions } = createStores(db, () => clock.now);
   const channelOps = new RecordingChannelOps();
   const queue = new KeyedSerialQueue(2);
   const logs: string[] = [];
   // 途中経過の経過時間は偽のタイマーの時刻で測る
   const timers = new FakeTimers();
   // guild_settings が空なので env の #inbox（inbox-1）を受け付ける
-  const resolveChannel = createChannelResolver(cfg, new GuildSettingsStore(db, () => NOW), topicSessions);
+  const resolveChannel = createChannelResolver(cfg, guildSettings, topicSessions);
   const handler = createHandler({
     cfg,
     resolveChannel,
@@ -1588,7 +1440,7 @@ test("途中経過: 最後の書き換えは終わり方で変える（成功は
 
 /** guild-1 を /setup 済み（#inbox は inbox-1、#tasks は tasks-1）にする。以後は env の #inbox ではなく DB のチャンネルで受け付ける */
 function setUpGuild(db: ReturnType<typeof openDb>): GuildSettingsStore {
-  const guildSettings = new GuildSettingsStore(db, () => NOW);
+  const { guildSettings } = createStores(db, () => NOW);
   guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
   guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
   return guildSettings;
@@ -1634,7 +1486,8 @@ test("#tasks: 別のサーバーの同じ ID のチャンネル・/setup 前の�
   // /setup 前（guild_settings が空）は env の #inbox だけで、#tasks は無い
   await handle(message({ channelId: "tasks-1" }));
   // 別のサーバーの #tasks の ID
-  new GuildSettingsStore(db, () => NOW).setChannel("guild-9", "tasksChannelId", "tasks-1");
+  const { guildSettings } = createStores(db, () => NOW);
+  guildSettings.setChannel("guild-9", "tasksChannelId", "tasks-1");
   await handle(message({ channelId: "tasks-1" }));
 
   assert.equal(runner.inputs.length, 0);

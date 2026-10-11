@@ -1,8 +1,5 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { HELP_TEXT } from "../src/app/commands/help.ts";
 import {
   createSessionsCommand,
@@ -11,38 +8,13 @@ import {
   MESSAGE_MAX_LENGTH,
   sessionListText,
 } from "../src/app/commands/sessions.ts";
-import type { Interaction, InteractionResponder, ModalDef, OutgoingMessage } from "../src/discord/gateway.ts";
-import { openDb } from "../src/store/db.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 const HOUR = 60 * 60 * 1000;
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
 
 const SESSIONS: Extract<Interaction, { kind: "command" }> = {
   kind: "command",
@@ -59,14 +31,9 @@ function hoursAgo(hours: number): Date {
 }
 
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const clock = { now: NOW };
-  const topicSessions = new TopicSessionStore(db, () => clock.now);
+  const { topicSessions } = createStores(db, () => clock.now);
 
   /** 最終発言が lastActivity のセッションを作り、state にする（完了は closedAt に閉じる） */
   const add = (

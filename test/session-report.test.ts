@@ -1,21 +1,12 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { RunContext } from "../src/agent/runner.ts";
 import { createSessionToolHandlers, type TextToolResult } from "../src/agent/tools.ts";
-import { openDb } from "../src/store/db.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
 
 function setup(t: TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
-  const topicSessions = new TopicSessionStore(db, () => new Date("2026-10-02T00:12:00Z"));
+  const db = tempDb(t);
+  const { topicSessions } = createStores(db, () => new Date("2026-10-02T00:12:00Z"));
   topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "旅行の計画", categoryId: "active-1" });
   return { db, topicSessions };
 }

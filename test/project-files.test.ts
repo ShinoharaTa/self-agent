@@ -33,12 +33,7 @@ import {
 import type { RunContext } from "../src/agent/runner.ts";
 import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
 import { createProjectToolHandlers, createTaskTools, type ProjectToolDeps, type TextToolResult } from "../src/agent/tools.ts";
-import { openDb } from "../src/store/db.ts";
-import { KnowledgeStore } from "../src/store/knowledge.ts";
-import { MemoryStore } from "../src/store/memories.ts";
-import { ProjectStore } from "../src/store/projects.ts";
-import { TaskStore } from "../src/store/tasks.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
 
 const NOW = new Date("2026-10-11T01:36:00.123Z");
 /** NOW の trash_id */
@@ -573,9 +568,8 @@ test("pruneProjectTrash: days を変えられる。projectsDir・.trash が無�
 /** createProjectToolHandlers を、touch を記録するストアと一時ディレクトリで作る。TOPIC のチャンネルにはプロジェクトがある */
 function setupTool(t: TestContext) {
   const env = setup(t);
-  const db = openDb(join(env.root, "self-agent.db"));
-  t.after(() => db.close());
-  const store = new ProjectStore(db, () => NOW);
+  const db = tempDb(t);
+  const { projects: store } = createStores(db, () => NOW);
   const project = store.create({ guildId: TOPIC.guildId, channelId: TOPIC.channelId, name: "kakeibo", title: "家計簿" });
   assert.equal(project.slug, "kakeibo");
   const touched: number[] = [];
@@ -705,13 +699,14 @@ test("project_files: 操作が例外で終わったら投げたまま（ツー�
 
 function projectFilesDefinition(t: TestContext, context?: RunContext) {
   const { db, deps } = setupTool(t);
+  const { tasks, topicSessions, knowledge, memories } = createStores(db, () => NOW);
   const tools = createTaskTools(
-    new TaskStore(db, () => NOW),
-    new TopicSessionStore(db, () => NOW),
+    tasks,
+    topicSessions,
     async () => ({ result: "not_available" }),
     {
-      knowledge: new KnowledgeStore(db, () => NOW),
-      memories: new MemoryStore(db, () => NOW),
+      knowledge,
+      memories,
       confirmKbDelete: async () => assert.fail("想定外の呼び出し"),
       notifyMemoryChange: async () => assert.fail("想定外の呼び出し"),
       timeZone: "Asia/Tokyo",

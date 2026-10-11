@@ -1,12 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
-import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
+import type { RunInput, RunResult } from "../src/agent/runner.ts";
 import { createSessionToolHandlers, type SessionReportArgs } from "../src/agent/tools.ts";
-import type { MoveTarget } from "../src/app/channel-ops.ts";
 import {
   ALREADY_CLOSED_REPLY,
   CLOSE_PROMPT,
@@ -20,92 +15,20 @@ import {
   SUMMARY_FAILURE_REPLY,
 } from "../src/app/commands/close.ts";
 import { HELP_TEXT } from "../src/app/commands/help.ts";
-import { KeyedSerialQueue, type QueueRunOptions } from "../src/app/queue.ts";
+import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { EMPTY_SUMMARY } from "../src/app/summary.ts";
 import { RESUME_SEED_HEADER } from "../src/app/turn.ts";
-import type {
-  ComponentRow,
-  Interaction,
-  InteractionResponder,
-  ModalDef,
-  OutgoingMessage,
-} from "../src/discord/gateway.ts";
-import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
-import { openDb } from "../src/store/db.ts";
-import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
-import { MemoryStore } from "../src/store/memories.ts";
-import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
-import { TaskStore } from "../src/store/tasks.ts";
+import type { ComponentRow, Interaction } from "../src/discord/gateway.ts";
 import { CLOSE_SUMMARY_MAX_LENGTH, type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
-import { UsageStore } from "../src/store/usage.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
+import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
+import { FakeRunner } from "./helpers/runner.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 const CLOSED_AT = new Date("2026-10-03T09:00:00Z");
 
 type Step = (input: RunInput) => RunResult;
-
-/** 1 回の run ごとに、渡された関数で結果を作る（session_report を呼んだことにするなど） */
-class FakeRunner implements AgentRunner {
-  inputs: RunInput[] = [];
-  private readonly steps: Step[];
-
-  constructor(steps: Step[]) {
-    this.steps = steps;
-  }
-
-  async run(input: RunInput): Promise<RunResult> {
-    this.inputs.push(input);
-    const step = this.steps.shift();
-    if (step === undefined) throw new Error("想定外の呼び出し");
-    return step(input);
-  }
-}
-
-type ResponderCall =
-  | { method: "defer"; ephemeral: boolean }
-  | { method: "deferUpdate" }
-  | { method: "reply" | "update"; message: OutgoingMessage }
-  | { method: "showModal"; modal: ModalDef };
-
-class FakeResponder implements InteractionResponder {
-  calls: ResponderCall[] = [];
-
-  async defer(ephemeral: boolean): Promise<void> {
-    this.calls.push({ method: "defer", ephemeral });
-  }
-  async deferUpdate(): Promise<void> {
-    this.calls.push({ method: "deferUpdate" });
-  }
-  async reply(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "reply", message });
-  }
-  async update(message: OutgoingMessage): Promise<void> {
-    this.calls.push({ method: "update", message });
-  }
-  async showModal(modal: ModalDef): Promise<void> {
-    this.calls.push({ method: "showModal", modal });
-  }
-}
-
-class RecordingChannelOps {
-  moves: Array<{ channelId: string; target: MoveTarget }> = [];
-
-  enqueueMove(channelId: string, target: MoveTarget): void {
-    this.moves.push({ channelId, target });
-  }
-}
-
-/** 受け取った key と指定（セッションのジョブか）を記録する */
-class RecordingQueue extends KeyedSerialQueue {
-  keys: string[] = [];
-  options: Array<QueueRunOptions | undefined> = [];
-
-  run<T>(key: string, fn: () => Promise<T>, options?: QueueRunOptions): Promise<T> {
-    this.keys.push(key);
-    this.options.push(options);
-    return super.run(key, fn, options);
-  }
-}
 
 function ok(text: string, sessionId: string = "session-1"): RunResult {
   return {
@@ -155,27 +78,10 @@ const BUTTONS: ComponentRow = {
   ],
 };
 
-function stores(db: DatabaseSync, now: () => Date) {
-  return {
-    topicSessions: new TopicSessionStore(db, now),
-    tasks: new TaskStore(db, now),
-    sessions: new SdkSessionStore(db, now),
-    seeds: new ChannelSeedStore(db, now),
-    inboxSummaries: new InboxSummaryStore(db, now),
-    memories: new MemoryStore(db, now),
-    usage: new UsageStore(db, now),
-  };
-}
-
 function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step[]) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  t.after(() => {
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  const db = tempDb(t);
   const clock = { now: NOW };
-  const { topicSessions, tasks, sessions, seeds, inboxSummaries, memories, usage } = stores(db, () => clock.now);
+  const { topicSessions, tasks, sessions, seeds, inboxSummaries, memories, usage } = createStores(db, () => clock.now);
   const runner = new FakeRunner(steps(topicSessions));
   const channelOps = new RecordingChannelOps();
   const turnQueue = new RecordingQueue(2);
@@ -466,7 +372,7 @@ test("再起動の後（新しいストアとハンドラ）でも、DB の下�
   const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
   await env.runClose();
 
-  const restarted = stores(env.db, () => CLOSED_AT);
+  const restarted = createStores(env.db, () => CLOSED_AT);
   const channelOps = new RecordingChannelOps();
   const log = (): void => {};
   const component = createCloseComponent({

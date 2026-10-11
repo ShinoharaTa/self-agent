@@ -1,7 +1,5 @@
-import { test, type TestContext } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
@@ -11,23 +9,12 @@ import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
-
-function tempDir(t: TestContext): string {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return dir;
-}
+import { tempDb, tempDir } from "./helpers/db.ts";
 
 /** 呼ぶたびに 1 分進む時計 */
 function clock(): () => Date {
   let minutes = 0;
   return () => new Date(Date.UTC(2026, 9, 2, 0, minutes++));
-}
-
-function tempDb(t: TestContext): DatabaseSync {
-  const db = openDb(join(tempDir(t), "self-agent.db"));
-  t.after(() => db.close());
-  return db;
 }
 
 const NEW_SESSION = { channelId: "topic-1", guildId: "guild-1", title: "旅行の計画", categoryId: "active-1" };

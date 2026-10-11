@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createTaskToolHandlers, type TextToolResult } from "../src/agent/tools.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { TaskStore } from "../src/store/tasks.ts";
+import { createStores } from "./helpers/db.ts";
 
 const TZ = "Asia/Tokyo";
 
@@ -16,7 +17,7 @@ function tempStore(t: TestContext, now: () => Date = () => new Date("2026-10-02T
     db.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  return new TaskStore(db, now);
+  return createStores(db, now).tasks;
 }
 
 /** set で進められる時計 */

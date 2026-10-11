@@ -1,12 +1,10 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { request, type IncomingHttpHeaders } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStaticServer, type StaticServer } from "../src/serve/static-server.ts";
-import { openDb } from "../src/store/db.ts";
-import { ProjectStore } from "../src/store/projects.ts";
+import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 
 const NOW = new Date("2026-10-07T00:12:00Z");
 const HOST = "127.0.0.1";
@@ -47,10 +45,9 @@ function write(path: string, content: string): void {
  * kakeibo の site には index.html・sub/index.html・ドットファイル・site の外を指す symlink などを置く
  */
 async function setup(t: TestContext, allowedLogin?: string) {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
-  const projectsDir = join(dir, "projects");
-  const projects = new ProjectStore(db, () => NOW);
+  const db = tempDb(t);
+  const projectsDir = join(tempDir(t), "projects");
+  const { projects } = createStores(db, () => NOW);
   const kakeibo = projects.create({ guildId: "guild-1", channelId: "topic-1", name: "kakeibo", title: `<b>家計簿</b> & "メモ"` });
   const old = projects.create({ guildId: "guild-1", channelId: "topic-2", name: "old", title: "古いページ" });
   projects.markDeleted(old.id);
@@ -82,11 +79,7 @@ async function setup(t: TestContext, allowedLogin?: string) {
     log: (line) => logs.push(line),
   });
   await server.start();
-  t.after(async () => {
-    await server.close();
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  t.after(() => server.close());
   return { server, site, logs, projects, projectsDir };
 }
 
@@ -358,22 +351,16 @@ test("/ は削除されていないプロジェクトの一覧（題名は HTML 
 });
 
 test("プロジェクトが無ければ一覧に「まだありません」", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
-  const db = openDb(join(dir, "self-agent.db"));
   const server = createStaticServer({
     host: HOST,
     port: 0,
-    projectsDir: join(dir, "projects"),
-    projects: new ProjectStore(db, () => NOW),
+    projectsDir: join(tempDir(t), "projects"),
+    projects: createStores(tempDb(t), () => NOW).projects,
     timeZone: "Asia/Tokyo",
     log: () => {},
   });
   await server.start();
-  t.after(async () => {
-    await server.close();
-    db.close();
-    rmSync(dir, { recursive: true, force: true });
-  });
+  t.after(() => server.close());
 
   const res = await fetchRaw(server, "/");
 
