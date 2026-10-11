@@ -21,29 +21,24 @@ function tempStore(t: TestContext): { store: ProjectStore; setMinute: (minute: n
   };
 }
 
-test("toSlug: 小文字にし、英小文字・数字以外を - に、連続する - を 1 つに、前後の - を除く", () => {
-  assert.equal(toSlug("Kakeibo"), "kakeibo");
-  assert.equal(toSlug("My Todo App!"), "my-todo-app");
-  assert.equal(toSlug("a  --  b__c"), "a-b-c");
-  assert.equal(toSlug("--hello--"), "hello");
-  assert.equal(toSlug("  2048 Game  "), "2048-game");
-  assert.equal(toSlug("家計簿 tracker"), "tracker");
-  assert.equal(toSlug("Café Menu"), "caf-menu");
-});
-
-test("toSlug: 30 字に切り、切った末尾の - も除く", () => {
-  assert.equal(toSlug("a".repeat(40)), "a".repeat(30));
-  // 31 字の "aaa…a-b" を 30 字に切ると末尾が - になる
-  assert.equal(toSlug(`${"a".repeat(29)} b`), "a".repeat(29));
-  assert.equal(toSlug("a".repeat(30)), "a".repeat(30));
-});
-
-test("toSlug: 3 字未満なら app", () => {
-  for (const name of ["", "ab", "!!", "日本語", "-a-", "  x  "]) {
-    assert.equal(toSlug(name), "app", name);
-  }
-  assert.equal(toSlug("abc"), "abc");
-  assert.equal(toSlug("a-b-c"), "a-b-c");
+test("toSlug: 小文字にし、英小文字・数字以外を - に、連続する - を 1 つに、前後の - を除く。30 字に切り（切った末尾の - も除く）、3 字未満なら app", () => {
+  const cases: Array<[label: string, name: string, slug: string]> = [
+    ["小文字にする", "Kakeibo", "kakeibo"],
+    ["記号と空白は -", "My Todo App!", "my-todo-app"],
+    ["連続する - は 1 つ", "a  --  b__c", "a-b-c"],
+    ["前後の - を除く", "--hello--", "hello"],
+    ["前後の空白", "  2048 Game  ", "2048-game"],
+    ["英数字以外は除く", "家計簿 tracker", "tracker"],
+    ["アクセント付きの文字", "Café Menu", "caf-menu"],
+    ["30 字に切る", "a".repeat(40), "a".repeat(30)],
+    // 31 字の "aaa…a-b" を 30 字に切ると末尾が - になる
+    ["切った末尾の - を除く", `${"a".repeat(29)} b`, "a".repeat(29)],
+    ["ちょうど 30 字", "a".repeat(30), "a".repeat(30)],
+    ...["", "ab", "!!", "日本語", "-a-", "  x  "].map((name): [string, string, string] => [`3 字未満: ${JSON.stringify(name)}`, name, "app"]),
+    ["ちょうど 3 字", "abc", "abc"],
+    ["- を含めて 3 字以上", "a-b-c", "a-b-c"],
+  ];
+  for (const [label, name, slug] of cases) assert.equal(toSlug(name), slug, label);
 });
 
 test("ProjectStore: 作ったプロジェクトを返し、チャンネル・slug・id で引ける", (t) => {

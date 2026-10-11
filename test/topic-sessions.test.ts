@@ -7,7 +7,7 @@ import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { type TopicSession, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
 import { tempDb, tempDir } from "./helpers/db.ts";
 
@@ -45,20 +45,6 @@ test("TopicSessionStore: 進行中として保存し、最終発言の時刻は�
   assert.deepEqual(created, expected);
   assert.deepEqual(store.get("topic-1"), expected);
   assert.equal(store.get("topic-2"), undefined);
-});
-
-test("TopicSessionStore: touch は last_activity_at だけを今にし、行が無ければ undefined", (t) => {
-  const store = new TopicSessionStore(tempDb(t), clock());
-  store.create(NEW_SESSION);
-  store.create({ ...NEW_SESSION, channelId: "topic-2" });
-
-  const touched = store.touch("topic-1");
-
-  assert.equal(touched?.lastActivityAt, "2026-10-02T00:02:00.000Z");
-  assert.equal(touched?.createdAt, "2026-10-02T00:00:00.000Z");
-  assert.deepEqual(store.get("topic-1"), touched);
-  assert.equal(store.get("topic-2")?.lastActivityAt, "2026-10-02T00:01:00.000Z");
-  assert.equal(store.touch("topic-9"), undefined);
 });
 
 test("sessions: 決めた状態以外・同じチャンネルの二重登録は DB が拒む", (t) => {
@@ -111,7 +97,7 @@ test("openDb: v2 の DB を v3 に上げても既存のデータは残り、sess
   assert.equal(store.get("topic-1")?.title, "旅行の計画");
 });
 
-test("TopicSessionStore: 下書きの保存・取得・削除。行が無いチャンネルには保存しない", (t) => {
+test("TopicSessionStore: 下書きの保存・取得・削除（close でも消える）。行が無いチャンネルには保存しない", (t) => {
   const store = new TopicSessionStore(tempDb(t), clock());
   store.create(NEW_SESSION);
   const draft = { summary: "要約", tasks: [{ title: "宿を予約する", due: "2026-10-05" }, { title: "休みの申請" }] };
@@ -124,62 +110,92 @@ test("TopicSessionStore: 下書きの保存・取得・削除。行が無いチ�
 
   store.clearCloseDraft("topic-1");
   assert.equal(store.getCloseDraft("topic-1"), undefined);
-});
 
-test("TopicSessionStore: close は完了にして閉じた時刻と要約を残し、下書きを消す。行が無ければ undefined", (t) => {
-  const store = new TopicSessionStore(tempDb(t), clock());
-  store.create(NEW_SESSION);
-  store.saveCloseDraft("topic-1", { summary: "下書き", tasks: [] });
-
-  const closed = store.close("topic-1", "要約");
-
-  assert.equal(closed?.state, "done");
-  assert.equal(closed?.closedAt, "2026-10-02T00:01:00.000Z");
-  assert.equal(closed?.summary, "要約");
-  assert.deepEqual(store.get("topic-1"), closed);
-  assert.equal(store.getCloseDraft("topic-1"), undefined);
-  assert.equal(store.close("topic-9", "要約"), undefined);
-});
-
-test("TopicSessionStore: setCategory は今置いているカテゴリを更新し、行が無ければ何もしない", (t) => {
-  const store = new TopicSessionStore(tempDb(t), clock());
-  store.create(NEW_SESSION);
-
-  store.setCategory("topic-1", "done-1");
-  store.setCategory("inbox-1", "home-1");
-
-  assert.equal(store.get("topic-1")?.categoryId, "done-1");
-  assert.equal(store.get("inbox-1"), undefined);
-});
-
-test("TopicSessionStore: setWaiting は待ちにして waiting_since を今にし、setActive は進行中に戻して waiting_since と closed_at・削除の確認の記録を消す（要約は残す）", (t) => {
-  const store = new TopicSessionStore(tempDb(t), clock());
-  store.create(NEW_SESSION);
-
-  const waiting = store.setWaiting("topic-1");
-
-  assert.equal(waiting?.state, "waiting");
-  assert.equal(waiting?.waitingSince, "2026-10-02T00:01:00.000Z");
-  assert.equal(waiting?.lastActivityAt, "2026-10-02T00:00:00.000Z");
-  assert.deepEqual(store.get("topic-1"), waiting);
-
-  const active = store.setActive("topic-1");
-
-  assert.equal(active?.state, "active");
-  assert.equal(active?.waitingSince, null);
-  assert.deepEqual(store.get("topic-1"), active);
-
-  // 完了から戻す。削除の確認を投稿済みなら、その記録も消す
+  store.saveCloseDraft("topic-1", draft);
   store.close("topic-1", "要約");
-  store.setDeletePrompt("topic-1", "message-1");
-  const reopened = store.setActive("topic-1");
-  assert.equal(reopened?.state, "active");
-  assert.equal(reopened?.closedAt, null);
-  assert.equal(reopened?.summary, "要約");
-  assert.equal(reopened?.deletePromptMessageId, null);
+  assert.equal(store.getCloseDraft("topic-1"), undefined);
+});
 
-  assert.equal(store.setWaiting("topic-9"), undefined);
-  assert.equal(store.setActive("topic-9"), undefined);
+test("TopicSessionStore: 状態遷移はその列だけを変え（時刻は今）、取り直しても同じ。行が無ければ何もしない（返り値のあるものは undefined）", (t) => {
+  const T0 = "2026-10-02T00:00:00.000Z";
+  const T1 = "2026-10-02T00:01:00.000Z";
+  const T2 = "2026-10-02T00:02:00.000Z";
+  /** 完了にして削除の確認を投稿した */
+  const closed = (store: TopicSessionStore): void => {
+    store.close("topic-1", "要約");
+    store.setDeletePrompt("topic-1", "message-1");
+  };
+  const cases: Array<{
+    label: string;
+    /** T1 に行う前の操作 */
+    before?: (store: TopicSessionStore) => void;
+    /** T2 に行う操作 */
+    act: (store: TopicSessionStore, channelId: string) => TopicSession | undefined | void;
+    changes: Partial<TopicSession>;
+  }> = [
+    { label: "touch は last_activity_at を今に", act: (store, id) => store.touch(id), changes: { lastActivityAt: T2 } },
+    { label: "setCategory は今置いているカテゴリを更新", act: (store, id) => store.setCategory(id, "done-1"), changes: { categoryId: "done-1" } },
+    { label: "setWaiting は待ちにして waiting_since を今に", act: (store, id) => store.setWaiting(id), changes: { state: "waiting", waitingSince: T2 } },
+    {
+      label: "setActive は待ちから進行中に戻して waiting_since を消す",
+      before: (store) => store.setWaiting("topic-1"),
+      act: (store, id) => store.setActive(id),
+      changes: { state: "active", waitingSince: null },
+    },
+    {
+      label: "setActive は完了から戻して closed_at と削除の確認の記録を消す（要約は残す）",
+      before: closed,
+      act: (store, id) => store.setActive(id),
+      changes: { state: "active", closedAt: null, deletePromptMessageId: null },
+    },
+    {
+      label: "close は完了にして閉じた時刻と要約を残し、/renew の要約と時刻を消す",
+      before: (store) => store.setRenewed("topic-1", "/renew の要約"),
+      act: (store, id) => store.close(id, "/close の要約"),
+      changes: { state: "done", closedAt: T2, summary: "/close の要約", renewedSummary: null, renewedAt: null },
+    },
+    {
+      label: "setRenewed は /renew の要約と時刻（今）を入れる",
+      act: (store, id) => store.setRenewed(id, "- 目的: 京都旅行"),
+      changes: { renewedSummary: "- 目的: 京都旅行", renewedAt: T2 },
+    },
+    {
+      label: "setDeletePrompt は確認のメッセージを記録",
+      before: (store) => store.close("topic-1", "要約"),
+      act: (store, id) => store.setDeletePrompt(id, "message-1"),
+      changes: { deletePromptMessageId: "message-1" },
+    },
+    {
+      label: "postponeDelete は閉じた時刻を今にして確認の記録を消す",
+      before: closed,
+      act: (store, id) => store.postponeDelete(id),
+      changes: { closedAt: T2, deletePromptMessageId: null },
+    },
+    {
+      label: "markDeleted は削除済みにして削除した時刻を残す（要約・閉じた時刻は残す）",
+      before: closed,
+      act: (store, id) => store.markDeleted(id),
+      changes: { state: "deleted", deletedAt: T2 },
+    },
+  ];
+
+  for (const { label, before, act, changes } of cases) {
+    const at = { now: new Date(T0) };
+    const store = new TopicSessionStore(tempDb(t), () => at.now);
+    store.create(NEW_SESSION);
+    at.now = new Date(T1);
+    before?.(store);
+    const prior = store.get("topic-1")!;
+    at.now = new Date(T2);
+
+    const result = act(store, "topic-1");
+
+    const expected = { ...prior, ...changes };
+    assert.deepEqual(store.get("topic-1"), expected, label);
+    if (result !== undefined) assert.deepEqual(result, expected, label);
+    assert.equal(act(store, "topic-9"), undefined, label);
+    assert.equal(store.get("topic-9"), undefined, label);
+  }
 });
 
 test("TopicSessionStore: listIdle は進行中で最終発言が指定時刻以前（ちょうどを含む）のものを古い順に limit 件まで返す", (t) => {
@@ -459,40 +475,6 @@ test("TopicSessionStore.listDeleteDue: 完了で閉じた時刻が指定時刻�
   assert.deepEqual(ids("2026-10-02T00:00:59.999Z", 10), []);
 });
 
-test("TopicSessionStore: setDeletePrompt は確認のメッセージを記録し、postponeDelete は閉じた時刻を今にして記録を消す。行が無ければ undefined", (t) => {
-  const store = new TopicSessionStore(tempDb(t), clock());
-  store.create(NEW_SESSION);
-  store.close("topic-1", "要約");
-
-  store.setDeletePrompt("topic-1", "message-1");
-  assert.equal(store.get("topic-1")?.deletePromptMessageId, "message-1");
-
-  const postponed = store.postponeDelete("topic-1");
-
-  assert.equal(postponed?.closedAt, "2026-10-02T00:02:00.000Z");
-  assert.equal(postponed?.deletePromptMessageId, null);
-  assert.equal(postponed?.state, "done");
-  assert.equal(postponed?.summary, "要約");
-  assert.deepEqual(store.get("topic-1"), postponed);
-  assert.equal(store.postponeDelete("topic-9"), undefined);
-});
-
-test("TopicSessionStore: markDeleted は削除済みにして削除した時刻を残し、要約は残す。行が無ければ undefined", (t) => {
-  const store = new TopicSessionStore(tempDb(t), clock());
-  store.create(NEW_SESSION);
-  store.close("topic-1", "要約");
-  store.setDeletePrompt("topic-1", "message-1");
-
-  const deleted = store.markDeleted("topic-1");
-
-  assert.equal(deleted?.state, "deleted");
-  assert.equal(deleted?.deletedAt, "2026-10-02T00:02:00.000Z");
-  assert.equal(deleted?.summary, "要約");
-  assert.equal(deleted?.closedAt, "2026-10-02T00:01:00.000Z");
-  assert.deepEqual(store.get("topic-1"), deleted);
-  assert.equal(store.markDeleted("topic-9"), undefined);
-});
-
 test("openDb: v8 の DB を v9 に上げても既存のセッションは残り、削除の確認と削除した時刻は null。以後は記録できる", (t) => {
   const path = join(tempDir(t), "self-agent.db");
 
@@ -577,16 +559,3 @@ test("openDb: v14 の DB を v15 に上げても既存のセッションは残�
   assert.equal(store.get("topic-9"), undefined);
 });
 
-test("TopicSessionStore: close は /renew の要約と時刻を消す（/close の要約が置き換える）", (t) => {
-  const store = new TopicSessionStore(tempDb(t), clock());
-  store.create(NEW_SESSION);
-  store.setRenewed("topic-1", "/renew の要約");
-  assert.equal(store.get("topic-1")?.renewedSummary, "/renew の要約");
-
-  const closed = store.close("topic-1", "/close の要約");
-
-  assert.equal(closed?.summary, "/close の要約");
-  assert.equal(closed?.renewedSummary, null);
-  assert.equal(closed?.renewedAt, null);
-  assert.deepEqual(store.get("topic-1"), closed);
-});

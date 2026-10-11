@@ -54,27 +54,6 @@ test("TaskStore: 追加・取得・完了", (t) => {
   assert.deepEqual(store.complete(99), { result: "not_found" });
 });
 
-test("TaskStore: 一覧は期限の昇順、期限なしは後ろ、件数上限あり", (t) => {
-  const store = tempStore(t);
-  store.add({ title: "期限なし A" });
-  store.add({ title: "10/05", due: "2026-10-05" });
-  store.add({ title: "10/03", due: "2026-10-03" });
-  store.add({ title: "期限なし B" });
-  store.add({ title: "完了済み", due: "2026-10-01" });
-  store.complete(5);
-
-  const titles = store.list({ status: "open", limit: 20 }).map((task) => task.title);
-  assert.deepEqual(titles, ["10/03", "10/05", "期限なし A", "期限なし B"]);
-  assert.deepEqual(
-    store.list({ status: "open", limit: 2 }).map((task) => task.title),
-    ["10/03", "10/05"],
-  );
-  assert.deepEqual(
-    store.list({ status: "done", limit: 20 }).map((task) => task.title),
-    ["完了済み"],
-  );
-});
-
 test("task_add / task_list / task_complete ハンドラ", (t) => {
   const handlers = createTaskToolHandlers(tempStore(t), TZ);
 
@@ -205,29 +184,36 @@ test("TaskStore.list: dueBy は期限がその日以前（期限切れと当日�
   );
 });
 
-test("TaskStore.list: done・dropped は閉じた時刻の新しい順", (t) => {
+test("TaskStore.list: open は期限の昇順（期限なしは後ろ）、done・dropped は閉じた時刻の新しい順。limit 件まで", (t) => {
   const time = clock("2026-10-02T00:00:00Z");
   const store = tempStore(t, time.now);
-  for (const title of ["a", "b", "c"]) store.add({ title, due: "2026-10-01" });
-  store.complete(2);
+  store.add({ title: "期限なし A" });
+  store.add({ title: "10/05", due: "2026-10-05" });
+  store.add({ title: "10/03", due: "2026-10-03" });
+  store.add({ title: "期限なし B" });
+  for (const title of ["a", "b", "c", "x", "y"]) store.add({ title, due: "2026-10-01" });
+  store.complete(6);
   time.set("2026-10-03T00:00:00Z");
-  store.complete(1);
+  store.complete(5);
   time.set("2026-10-04T00:00:00Z");
-  store.complete(3);
-  store.add({ title: "x" });
-  store.add({ title: "y" });
-  store.update(5, { status: "dropped" });
+  store.complete(7);
+  store.update(9, { status: "dropped" });
   time.set("2026-10-05T00:00:00Z");
-  store.update(4, { status: "dropped" });
+  store.update(8, { status: "dropped" });
 
-  assert.deepEqual(
-    store.list({ status: "done", limit: 20 }).map((task) => task.title),
-    ["c", "a", "b"],
-  );
-  assert.deepEqual(
-    store.list({ status: "dropped", limit: 20 }).map((task) => task.title),
-    ["x", "y"],
-  );
+  const cases: Array<[label: string, status: "open" | "done" | "dropped", limit: number, titles: string[]]> = [
+    ["open", "open", 20, ["10/03", "10/05", "期限なし A", "期限なし B"]],
+    ["open の limit", "open", 2, ["10/03", "10/05"]],
+    ["done", "done", 20, ["c", "a", "b"]],
+    ["dropped", "dropped", 20, ["x", "y"]],
+  ];
+  for (const [label, status, limit, titles] of cases) {
+    assert.deepEqual(
+      store.list({ status, limit }).map((task) => task.title),
+      titles,
+      label,
+    );
+  }
 });
 
 test("task_update ハンドラ: before と after を返す。due を none にすると期限を外す。無い id は not_found、項目なしは no_change", (t) => {
