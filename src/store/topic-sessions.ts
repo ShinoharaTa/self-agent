@@ -27,12 +27,18 @@ export type TopicSession = {
   deletePromptMessageId: string | null;
   /** チャンネルを削除した時刻。削除前は null */
   deletedAt: string | null;
+  /** /renew で会話を新しくしたときの要約。まだ新しくしていなければ null */
+  renewedSummary: string | null;
+  /** /renew で会話を新しくした時刻。まだ新しくしていなければ null */
+  renewedAt: string | null;
 };
 
 /** session_report の summary の文字数の上限 */
 export const CLOSE_SUMMARY_MAX_LENGTH = 600;
 /** session_report の tasks の件数の上限 */
 export const CLOSE_TASKS_MAX = 10;
+/** /renew の要約の文字数の上限 */
+export const RENEW_SUMMARY_MAX_LENGTH = 1200;
 
 /** /close の確認待ちの下書き（session_report で受け取った要約とやることの候補）。sessions.close_draft に JSON で保存する */
 export type CloseDraft = {
@@ -83,6 +89,8 @@ function toSession(row: Record<string, SQLOutputValue>): TopicSession {
     origin: toOrigin(row.origin),
     deletePromptMessageId: nullableString(row.delete_prompt_message_id),
     deletedAt: nullableString(row.deleted_at),
+    renewedSummary: nullableString(row.renewed_summary),
+    renewedAt: nullableString(row.renewed_at),
   };
 }
 
@@ -253,6 +261,13 @@ export class TopicSessionStore {
       )
       .get(this.now().toISOString(), summary, channelId);
     return row === undefined ? undefined : toSession(row);
+  }
+
+  /** /renew で会話を新しくした: 要約と、新しくした時刻（今）を残す（前のものは置き換える）。行が無ければ何もしない */
+  setRenewed(channelId: string, summary: string): void {
+    this.db
+      .prepare("UPDATE sessions SET renewed_summary = ?, renewed_at = ? WHERE channel_id = ?")
+      .run(summary, this.now().toISOString(), channelId);
   }
 
   /**

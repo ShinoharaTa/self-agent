@@ -30,6 +30,7 @@ It runs on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/over
 | `/setup` | Creates the categories (`self-agent`, `進行中`, `待ち`, `完了`) and the `#inbox`, `#tasks` and `#system` channels. Running it again recreates only what is missing. |
 | `/new <title>` | Creates a session channel. |
 | `/close` | Closes the session: saves a summary, lets you confirm suggested to-dos with buttons and adds them, then moves the channel to 完了. |
+| `/renew` | Summarizes the conversation and starts a fresh one, so setting changes take effect. Works in sessions, `#inbox` and `#tasks`. |
 | `/wait` | Moves the session to 待ち. Posting in that channel moves it back to 進行中. |
 | `/sessions` | Lists sessions with links. |
 | `/tasks` | Lists open tasks. Pick one to mark it done. |

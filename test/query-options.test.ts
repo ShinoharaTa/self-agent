@@ -65,7 +65,7 @@ test("システムプロンプトにアプリの説明（チャンネル・セ�
   ]) {
     assert.ok(prompt.includes(word), word);
   }
-  for (const command of ["new", "close", "wait", "sessions", "tasks", "projects", "usage", "help", "setup"]) {
+  for (const command of ["new", "close", "renew", "wait", "sessions", "tasks", "projects", "usage", "help", "setup"]) {
     assert.ok(prompt.includes(`/${command}（`), command);
   }
 });
