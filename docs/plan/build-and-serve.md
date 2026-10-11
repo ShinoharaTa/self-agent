@@ -16,6 +16,7 @@
 | プロジェクトの寿命 | チャンネルとは別に残す。チャンネルを消してもプロジェクトと URL は残る。消すのは `/projects` の [削除する] を押したときだけ |
 | ページからの外部通信 | 制限しない（CSP で外への通信を止めない）。外の API を呼ぶページも作れる |
 | 1 ターンの上限 | セッションのチャンネルは 40 手順・900 秒。#inbox は今の 8 手順・300 秒。同時実行の枠のうち 1 つを #inbox 用に空けておく |
+| プロジェクトの中のファイルの削除（#70） | project_files で `.trash` に移す。確認ボタンは無く、restore で戻せる。30 日で消す |
 
 ## 2. 配り方
 - 静的サーバーを self-agent に内蔵する（`node:http`。依存は足さない）。`127.0.0.1:SELF_AGENT_SERVE_PORT` で待ち受ける。Bot の一部として Bot と一緒に動く。
@@ -45,15 +46,17 @@
 - ディスクの上限（段 2 で入れる）: 1 プロジェクト 1 GB、合計 8 GB。
 
 ## 4. ツールとガード（段 1）
-- 組み込み: `[WebSearch, WebFetch, Read, Write, Edit, Glob, Grep]`（この順で固定）。段 2 で末尾に `Bash` を足す。
-- MCP: 既存の 11 個の末尾に `project_open` を足す。
-- allowedTools に足す: パスを絞ったルール `Read(//<realpath(workDir)>/projects/**)` と `Edit(//<realpath(workDir)>/projects/**)`（Edit のルールは Write にも、Read のルールは Glob・Grep にも効く。許可ルールは symlink の先も一致しないと効かないので実際の場所で書く）。それより細かい可否は PreToolUse の hook で決める（下）。permissionMode は dontAsk のまま（ルールに無いものは拒否）。
-- PreToolUse の hook（`Read|Write|Edit|Glob|Grep`）。全 run に入れる（#inbox・context の無いターンも）。context の無いターン（#inbox の要約）ではすべて拒否:
-  - パス（Read/Write/Edit は `file_path`、Glob/Grep は `path`。無ければ cwd）の文字列に、`/` で分けた要素として `..` があれば、resolve・realpath の前に拒否する（symlink の後ろの `..` を字面で畳んで中と誤判定しないため）。
+- 組み込み: `[WebSearch, WebFetch, Read, Write, Edit, Glob]`（この順で固定）。段 2 で末尾に `Bash` を足す。
+  - Grep は #70 で外した（数ファイルの静的サイトでは Read で足りる。ツールの説明文の分、毎ターンの入力が減る）。
+- MCP: 既存の 11 個の末尾に `project_open` を足す。#70 でその後ろに `project_files` を足した。
+- allowedTools に足す: パスを絞ったルール `Read(//<realpath(workDir)>/projects/**)` と `Edit(//<realpath(workDir)>/projects/**)`（Edit のルールは Write にも、Read のルールは Glob にも効く。許可ルールは symlink の先も一致しないと効かないので実際の場所で書く）。それより細かい可否は PreToolUse の hook で決める（下）。permissionMode は dontAsk のまま（ルールに無いものは拒否）。
+- PreToolUse の hook（`Read|Write|Edit|Glob`）。全 run に入れる（#inbox・context の無いターンも）。context の無いターン（#inbox の要約）ではすべて拒否:
+  - パス（Read/Write/Edit は `file_path`、Glob は `path`。無ければ cwd）の文字列に、`/` で分けた要素として `..` があれば、resolve・realpath の前に拒否する（symlink の後ろの `..` を字面で畳んで中と誤判定しないため）。
   - それ以外は絶対パスにし、存在する一番深い親の realpath で判定する。
   - Write / Edit: 対象がこのチャンネルのプロジェクトのディレクトリの中でなければ拒否。#inbox・プロジェクトの無いチャンネルでは拒否（「先に project_open を使う」）。
-  - Read / Glob / Grep: 対象が `<workDir>/projects/` の中でなければ拒否。
-  - Glob の `pattern`・Grep の `glob`: 絶対パス（`/` か `~` で始まる）か、部分文字列 `..` を含めば拒否（`{..,x}` のような書き方も含める）。
+    - #70: 中でも `<slug>/.trash` そのものとその中は拒否（「.trash の中には書けません。戻すときは project_files の restore を使ってください」）。
+  - Read / Glob: 対象が `<workDir>/projects/` の中でなければ拒否（.trash の中も読める）。
+  - Glob の `pattern`: 絶対パス（`/` か `~` で始まる）か、部分文字列 `..` を含めば拒否（`{..,x}` のような書き方も含める）。
   - 拒否の理由はモデルに返す。log には「ファイル操作を拒否しました（<ツール名>）」だけを出す（パスは出さない）。
   - 判定（ストアの読み書きを含む）が例外で終わったら拒否する（fail-closed。CLI は hook の例外を「判断なし」として通すため）。理由は「判定に失敗したため拒否しました」、log は「ファイル操作の判定に失敗したため拒否しました（<ツール名>）」（パス・例外の中身は出さない）。
 - project_open（入力 `name`: 英語の短い名前、`title`: 表示名）:
@@ -65,15 +68,25 @@
     - 「localStorage のキーは slug で始める（全プロジェクトが同じオリジン）」
     - 「API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない」
     - 「ビルドやコマンドの実行はできない（段 1）。ライブラリは CDN から読む」
-    - 「Glob・Grep は path に dir を指定する」
+    - 「Glob は path に dir を指定する」
+    - 「消す・移す・作り直すは project_files を使う（消したものは .trash に移り、restore で戻せる）」（#70）
     - 「決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む」
     - 「作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える」
   - UI の土台（#67）: created・existing のどちらでも、リポジトリの `templates/web/` を複製する。created は DESIGN.md と site/ の base.css・app.css・icons.svg・index.html の 5 つ、existing は `site/base.css` が無いときだけ DESIGN.md・base.css・icons.svg の 3 つ。既にあるファイル（symlink を含む）は上書きせず、site が dir の外への symlink なら何も複製しない。複製できたものは結果の `scaffold` で返し、失敗したものがあっても log だけで結果はそのまま返す。
     - 見た目の基準は shadcn/ui の既定風（中立色・黒のボタン・角丸 8px）。値はすべて base.css の変数（余白は 4 の倍数、文字 12〜24、角丸 6/8/12/9999、意味の名前の色とダークモードでの差し替え、影 1 種）と部品のクラスで、DESIGN.md（80 行以内）はその使い方。アイコンは Lucide（lucide-static 1.55.0、ISC）の sprite。
     - 注意の 2 番目に「作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う」を足す。複製の後に DESIGN.md と site/base.css のどちらかが無ければ入れない。ツールの定義は変えないので、キャッシュには影響しない。
+- project_files（#70。入力 `action`: trash / move / clear / restore、`paths`: 1〜50 件、`to`、`trash_id`）: オーナーはスマホしか使えず手で消せないので、プロジェクトの中のファイルを消す・移す・作り直す・戻す。
+  - セッションのチャンネルで、そのチャンネルの削除されていないプロジェクトがあるときだけ使える（それ以外は `not_available`）。パスは dir からの相対。空・絶対・`..` を含む・dir そのもの・`.trash` で始まる・realpath が dir の外か `.trash` の中なら `invalid_path`（何もしない）。symlink はたどらない。
+  - trash: paths を `<dir>/.trash/<trash_id>/<同じ相対パス>` に移す（trash_id は UTC の `YYYYMMDDTHHmmssZ`。同じ秒なら `-2`…）。site/ の外なので配信されない。無いものは missing に入れて続ける。
+  - move: paths の 1 つを to に移す（改名を含む）。to が既にあれば上書きせず `exists`。
+  - clear: `.trash` 以外を全部 `.trash/<trash_id>/` に移し、UI の土台を置き直す（URL は変わらない）。
+  - restore: trash_id の中身を元の場所に戻す。同じパスが既にあれば何も戻さず `conflict`（そのパスを trash してから restore し直す）。trash_id を省くと一覧（新しい順・ファイルの数）。
+  - ファイルを変えたらプロジェクトの更新日時を今にする。log は「project_files: <action>（N 件）」だけ。
+  - scheduler の tick で、名前の時刻から 30 日を過ぎた `.trash/<trash_id>` を消す。
 - システムプロンプトに足す行:
   - 「何かを作ってと頼まれたら、コードを返事に貼らない。セッションのチャンネルで project_open を使い、ファイルを書いて動く状態にしてから、URL と使い方を 3〜5 行で伝える。#inbox で頼まれたら session_open で専用のチャンネルを作る。コードは聞かれたときだけ短く見せる。」
   - その直後に「仕様の検討や見直しを頼まれたら、作り始めずに案を短く出し、確認してから作る。頼まれていない機能は足さず、候補として 1 行で挙げる。」
+  - #70: 「何かを作って…」の行と仕様の検討の行の間に「ファイルを消す・移す・作り直すときは project_files を使う。オーナーに手で操作するよう頼まない。」
   - 「書き方:」のスマートフォンの行（表と長い見出しを使わない）を置き換える:「オーナーはスマートフォンの Discord から使い、PC は使えない。表と見出し（# で始まる行）は使わない。箇条書きは可。ファイルを保存して開く・コマンドを打つといった手順は案内せず、動くものは project_open で作って URL で渡す。」
   - 「やること:」の後に「このアプリについて（使い方を聞かれたら、この範囲で答える）:」の節を足す。#inbox・セッション（カテゴリと待ち・削除の確認）・#tasks と #system・コマンド（/new /close /wait /sessions /tasks /projects /usage /help /setup とホームパネルのボタン）を 1 行ずつ書き、「ここに無いことは、分からないと答える。」で終える。コマンドの説明は /help（help.ts の HELP_TEXT）と揃える。
 
@@ -82,7 +95,7 @@
 - 同時実行: セッションのチャンネルのターンが同時に使えるのは `SELF_AGENT_MAX_CONCURRENT - 1` まで（最低 1）。#inbox は全枠を使える。
 - 途中経過（セッションのチャンネルの発言と [続ける] のターンだけ。#inbox と /close のターンには付けない）:
   - ターンが開始から 20 秒経っても終わっていなければ、チャンネルに「作業中…（<m> 分 <s> 秒・ツール <n> 回）」+ 改行 + 直近の手順のメッセージを 1 つ出し、以後 10 秒ごとに、表示が変わっていれば編集する（ボタンは残す）。ツールの回数はメインループの assistant メッセージの tool_use の数。
-  - 手順は tool_use ごとに「書いています: <dir からの相対パス>」（Write・Edit）「読んでいます: …」（Read）「ファイルを探しています」（Glob・Grep）「Web を検索しています」「ページを読んでいます」（WebFetch）「ツールを使っています: <mcp__selfagent__ を除いた名前>」「<ツール名> を使っています」の形。ファイルの中身・コマンド・URL・検索語は出さない。対象がこのチャンネルのプロジェクトの外ならパスを付けない。
+  - 手順は tool_use ごとに「書いています: <dir からの相対パス>」（Write・Edit）「読んでいます: …」（Read）「ファイルを探しています」（Glob）「Web を検索しています」「ページを読んでいます」（WebFetch）「ファイルを整理しています」（project_files）「ツールを使っています: <mcp__selfagent__ を除いた名前>」「<ツール名> を使っています」の形。ファイルの中身・コマンド・URL・検索語は出さない。対象がこのチャンネルのプロジェクトの外ならパスを付けない。
   - 送信・編集の失敗は log だけで、ターンは止めない。
   - [中断]（`turn:abort:<channelId>:<turnSeq>`、danger）を付ける。turnSeq は handler がセッションのチャンネルのターンごとに振る単調増加の番号（開始値は handler を作った時刻のミリ秒。再起動しても前の番号と重ならない）で、実行中のターンごとに記録する（[中断] はターン単位）。押されたらそのターンを abort して（errorMessage は `aborted`。打ち切りの `timeout` と同じく連続失敗に数えない）「中断しました（<m> 分 <s> 秒・ツール <n> 回）」に書き換えてボタンを外し、返答は「中断しました。続けるときは発言してください」。実行中のターンが無い・実行中のターンの番号と一致しない（前のターンのボタン）なら本人にだけ「この操作は古くなっています」。
   - 中断・打ち切り（`aborted`・`timeout`）で終わったターンでも、SDK の session_id を受け取っていれば、そのチャンネルにまだ SDK セッションの保存が無いときだけ保存する（既にあるものは上書きしない）。次の発言はその会話を resume して続ける。保存したときは、成功したときと同じく seed も消す（その prompt は SDK の会話に記録済みのため）。
@@ -135,6 +148,7 @@
 
 ## 9. ツール集合とキャッシュ
 - ツール集合を変えるのは段 1（PR 3）と段 2 の 2 回。そのたびに全セッションでキャッシュが 1 回外れる。
+  - #70 で組み込みから Grep を外し、MCP の末尾に project_files を足した（これも全セッションで 1 回外れる）。
 - 組み込みツールの説明文の分だけ毎ターンの入力が増える。段ごとに `npm run measure` で増えた量を実測して PR に書く。
 - システムプロンプトの行は新しいセッションと #inbox の日次切り替えから効く。ツールの説明文と project_open の結果の注意は既存のセッションにも届く。
 

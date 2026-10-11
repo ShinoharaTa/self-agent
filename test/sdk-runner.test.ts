@@ -531,7 +531,7 @@ test("SdkAgentRunner: 失敗したターンでも、それまでのツール呼�
 
 /**
  * SDK がツールの実行前に呼ぶのと同じように、その query の Options の PreToolUse の hook を呼ぶ。
- * matcher は WebFetch（既定）かファイル操作（Read|Write|Edit|Glob|Grep）。cwd は workDir
+ * matcher は WebFetch（既定）かファイル操作（Read|Write|Edit|Glob）。cwd は workDir
  */
 async function callPreToolUse(
   call: QueryCall,
@@ -543,7 +543,7 @@ async function callPreToolUse(
   const matchers = call.options.hooks?.PreToolUse;
   assert.deepEqual(
     matchers?.map((entry) => entry.matcher),
-    ["WebFetch", "Read|Write|Edit|Glob|Grep"],
+    ["WebFetch", "Read|Write|Edit|Glob"],
   );
   const hook = matchers!.find((entry) => entry.matcher === matcher)!.hooks[0]!;
   const input = {
@@ -985,7 +985,7 @@ test("SdkAgentRunner: #tasks の run は #inbox と同じく maxTurns 8・turnTi
 test("SdkAgentRunner: ファイル操作の hook はどの run にも入る（context が無い run にも）。context はその run のもの", async () => {
   const outputs: unknown[] = [];
   const { runner, calls, logs } = setupRunner(async function* (call) {
-    outputs.push(await callPreToolUse(call, "Read", { file_path: "/srv/work/notes.txt" }, "Read|Write|Edit|Glob|Grep"));
+    outputs.push(await callPreToolUse(call, "Read", { file_path: "/srv/work/notes.txt" }, "Read|Write|Edit|Glob"));
     yield success("session-1", "はい");
   });
 
@@ -1017,13 +1017,13 @@ test("SdkAgentRunner: ファイル操作の hook は拒否したら理由をモ�
   const { runner, logs } = setupRunner(
     async function* (call) {
       const pre = (toolName: string, input: unknown) =>
-        callPreToolUse(call, toolName, input, "Read|Write|Edit|Glob|Grep", workDir);
+        callPreToolUse(call, toolName, input, "Read|Write|Edit|Glob", workDir);
       outputs.push(await pre("Write", { file_path: join(projectsDir, "kakeibo", "site", "index.html"), content: "<p>" }));
       outputs.push(await pre("Edit", { file_path: "projects/kakeibo/site/index.html", old_string: "a", new_string: "b" }));
       outputs.push(await pre("Read", { file_path: join(projectsDir, "other", "site", "index.html") }));
       outputs.push(await pre("Glob", { pattern: "**/*", path: join(projectsDir, "kakeibo") }));
       outputs.push(await pre("Write", { file_path: join(projectsDir, "other", "site", "secret-path.html"), content: "" }));
-      outputs.push(await pre("Grep", { pattern: "TOKEN" }));
+      outputs.push(await pre("Glob", { pattern: "**/*" }));
       // ファイル操作以外は何もしない
       outputs.push(await pre("mcp__selfagent__task_add", { title: "買い物" }));
       yield success("session-1", "作りました");
@@ -1041,7 +1041,7 @@ test("SdkAgentRunner: ファイル操作の hook は拒否したら理由をモ�
   assert.deepEqual(outputs, [{}, {}, {}, {}, deny(FILE_WRITE_DENIED_REASON), deny(FILE_READ_DENIED_REASON), {}]);
   // 許した Write・Edit の分だけ（Read・Glob では変えない）
   assert.deepEqual(projects.touched, [7, 7]);
-  assert.deepEqual(logs, ["ファイル操作を拒否しました（Write）", "ファイル操作を拒否しました（Grep）"]);
+  assert.deepEqual(logs, ["ファイル操作を拒否しました（Write）", "ファイル操作を拒否しました（Glob）"]);
   assert.ok(logs.every((line) => !line.includes("secret-path") && !line.includes(workDir)));
 });
 
@@ -1066,7 +1066,7 @@ test("SdkAgentRunner: ファイル操作の hook は判定が例外で終わっ�
     const { runner, logs } = setupRunner(
       async function* (call) {
         const pre = (toolName: string, input: unknown) =>
-          callPreToolUse(call, toolName, input, "Read|Write|Edit|Glob|Grep", workDir);
+          callPreToolUse(call, toolName, input, "Read|Write|Edit|Glob", workDir);
         outputs.push(await pre("Read", { file_path: file }));
         outputs.push(await pre("Write", { file_path: file, content: "<p>" }));
         yield success("session-1", "はい");
@@ -1132,11 +1132,11 @@ test("progressLabel: Write・Edit・Read はこのチャンネルのプロジェ
   assert.equal(label("Read", null), "読んでいます");
 });
 
-test("progressLabel: ファイルを探す・Web・自前の MCP ツール・それ以外のツール。パターン・検索語・URL は出さない", () => {
+test("progressLabel: ファイルを探す・Web・project_files・自前の MCP ツール・それ以外のツール。パターン・検索語・URL・パスは出さない", () => {
   const label = (toolName: string, input: unknown) => progressLabel(toolName, input, "/srv/work", "/srv/work/projects/kakeibo");
 
   assert.equal(label("Glob", { pattern: "**/secret*", path: "/srv/work/projects/kakeibo" }), "ファイルを探しています");
-  assert.equal(label("Grep", { pattern: "TOKEN" }), "ファイルを探しています");
+  assert.equal(label("mcp__selfagent__project_files", { action: "trash", paths: ["site/secret.html"] }), "ファイルを整理しています");
   assert.equal(label("WebSearch", { query: "秘密の検索語" }), "Web を検索しています");
   assert.equal(label("WebFetch", { url: "https://example.com/private", prompt: "要約" }), "ページを読んでいます");
   assert.equal(label("mcp__selfagent__task_add", { title: "買い物" }), "ツールを使っています: task_add");

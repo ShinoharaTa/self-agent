@@ -521,6 +521,7 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
       "memory_save",
       "memory_forget",
       "project_open",
+      "project_files",
     ],
   );
   const serialized = JSON.stringify(definitions[0]);

@@ -47,8 +47,9 @@ Discord ──(discord.js)── Gateway ── access check (allowed servers, o
                          per-channel serial queue
                                        │
                          Claude Agent SDK query() (resumed per channel)
-                           ├─ own tools (in-process MCP: tasks, sessions, knowledge base, memories)
-                           └─ built-in tools (WebSearch / WebFetch only)
+                           ├─ own tools (in-process MCP: tasks, sessions, knowledge base, memories, projects)
+                           └─ built-in tools (web: WebSearch / WebFetch;
+                                              files: Read / Write / Edit / Glob, inside projects only)
                                        │
                                  SQLite (node:sqlite)
 ```
@@ -61,7 +62,7 @@ Discord ──(discord.js)── Gateway ── access check (allowed servers, o
 ## Safety rules
 
 - It responds only to the owner's messages and actions, and only on servers allowed by an environment variable. It ignores DMs, other servers, other people, bots and webhooks.
-- All Claude Code built-in tools except WebSearch and WebFetch are disabled (no shell, no file access).
+- There is no shell. Besides WebSearch and WebFetch, the only built-in tools are the file tools (Read / Write / Edit / Glob). A hook lets them read only inside the projects directory and write only inside the current channel's own project. Files the bot deletes are moved to the project's `.trash` (so they can be restored) and removed for good after 30 days.
 - WebFetch can fetch only URLs the owner pasted in that turn's message (and where they redirect to); anything else is denied by a hook. This blocks a page's instructions from sending data to some other URL.
 - Content from web pages, search results and the knowledge base is treated as reference material. Instructions inside it are not followed.
 - Irreversible actions, such as deleting a channel or a knowledge base entry, happen only when you press a button.

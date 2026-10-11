@@ -15,6 +15,7 @@ import {
   type SchedulerTimers,
   TICK_INTERVAL_MS,
 } from "../src/app/scheduler.ts";
+import { pruneProjectTrash } from "../src/agent/project-files.ts";
 import { pruneDevLogs } from "../src/devlog/log.ts";
 import type { Gateway, OutgoingMessage } from "../src/discord/gateway.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
@@ -125,6 +126,8 @@ function setup(
   const inboxRotator = new RecordingRotator();
   // 古い dev ログを消す処理。既定では何もしない（中身は devlog.test.ts で確かめる）
   const devLogs = { prune: (): void => {} };
+  // プロジェクトの古い .trash を消す処理。既定では何もしない（中身は project-files.test.ts で確かめる）
+  const projectTrash = { prune: (): void => {} };
   const timers = new FakeTimers();
   const logs: string[] = [];
   const scheduler = new Scheduler({
@@ -137,6 +140,7 @@ function setup(
     gateway,
     inboxRotator,
     pruneDevLogs: () => devLogs.prune(),
+    pruneProjectTrash: () => projectTrash.prune(),
     now: () => clock.now,
     timers,
     log: (line) => logs.push(line),
@@ -169,6 +173,7 @@ function setup(
     channelOps,
     inboxRotator,
     devLogs,
+    projectTrash,
     timers,
     logs,
     scheduler,
@@ -413,6 +418,7 @@ test("tick: DB の失敗は reject せず log に出す", async () => {
     gateway: new FakeGateway(),
     inboxRotator: new RecordingRotator(),
     pruneDevLogs: () => {},
+    pruneProjectTrash: () => {},
     now: () => NOW,
     timers: new FakeTimers(),
     log: (line) => logs.push(line),
@@ -951,5 +957,32 @@ test("dev ログ: 消すのに失敗しても log に出すだけ（中身・パ
   await env.scheduler.tick();
 
   assert.deepEqual(env.logs, ["古い dev ログを消せませんでした"]);
+  assert.equal(env.inboxRotator.calls.length, 1);
+});
+
+test(".trash: tick ごとに、30 日を過ぎたプロジェクトの .trash/<trash_id> だけを消す", async (t) => {
+  const env = setup(t);
+  const projectsDir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  t.after(() => rmSync(projectsDir, { recursive: true, force: true }));
+  const trashRoot = join(projectsDir, "kakeibo", ".trash");
+  for (const id of ["20260901T115959Z", "20260902T120001Z"]) mkdirSync(join(trashRoot, id, "site"), { recursive: true });
+  env.projectTrash.prune = () => pruneProjectTrash(projectsDir, env.clock.now);
+
+  await env.scheduler.tick();
+
+  // NOW は 2026-10-02T12:00:00Z
+  assert.deepEqual(readdirSync(trashRoot), ["20260902T120001Z"]);
+  assert.deepEqual(env.logs, []);
+});
+
+test(".trash: 消すのに失敗しても log に出すだけ（パスは出さない）で、#inbox の切り替えは行う", async (t) => {
+  const env = setup(t);
+  env.projectTrash.prune = () => {
+    throw new Error("EACCES: permission denied, rmdir '/srv/work/projects/kakeibo/.trash/20260801T000000Z'");
+  };
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.logs, ["プロジェクトの古い .trash を消せませんでした"]);
   assert.equal(env.inboxRotator.calls.length, 1);
 });

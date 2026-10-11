@@ -1,7 +1,7 @@
 // 定期処理（tick）。DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
 // 最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、
 // 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認し、
-// SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログを消し、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
+// SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログと 30 日を過ぎたプロジェクトの .trash を消し、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
 // 対象は毎回 DB と Discord から求めるので、止まっていた間に過ぎた分や失敗した移動も起動直後の tick で拾う（永続のタイマーは持たない）
 import type { Config } from "../config.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
@@ -65,6 +65,8 @@ export type SchedulerDeps = {
   inboxRotator: Pick<InboxRotator, "rotateDue">;
   /** 残す日数より前の dev ログを消す（dev モードでなくても、ディレクトリがあれば消す）。投げたら log に出して続ける */
   pruneDevLogs: () => void;
+  /** 残す日数を過ぎたプロジェクトの .trash/<trash_id> を消す。投げたら log に出して続ける */
+  pruneProjectTrash: () => void;
   now: () => Date;
   timers?: SchedulerTimers;
   log: (message: string) => void;
@@ -126,7 +128,7 @@ export class Scheduler {
   }
 
   /**
-   * 再同期・待ちへの移動・削除の確認・dev ログの削除・#inbox・#tasks の切り替えは、どれかが失敗しても残りを行う。
+   * 再同期・待ちへの移動・削除の確認・dev ログと .trash の削除・#inbox・#tasks の切り替えは、どれかが失敗しても残りを行う。
    * 再同期は消えたチャンネルを先に削除済みにするため最初に、#inbox・#tasks の切り替えは LLM のターンを待つので最後に行う
    */
   private async runTick(): Promise<void> {
@@ -134,6 +136,7 @@ export class Scheduler {
     await this.moveIdleSessions();
     await this.promptDeletes();
     this.pruneDevLogs();
+    this.pruneProjectTrash();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
     await this.deps.inboxRotator.rotateDue(() => this.stopped);
   }
@@ -210,6 +213,15 @@ export class Scheduler {
       this.deps.pruneDevLogs();
     } catch {
       this.deps.log("古い dev ログを消せませんでした");
+    }
+  }
+
+  /** プロジェクトの古い .trash を消す。失敗は log に出すだけ（パスは出さない） */
+  private pruneProjectTrash(): void {
+    try {
+      this.deps.pruneProjectTrash();
+    } catch {
+      this.deps.log("プロジェクトの古い .trash を消せませんでした");
     }
   }
 
