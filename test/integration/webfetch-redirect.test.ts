@@ -56,7 +56,7 @@ test(
     // プロジェクトもここでは使わない（配信は無効）
     const projects = new ProjectStore(db);
     const projectsDir = join(cfg.workDir, "projects");
-    const projectTools = { projects, projectsDir, publicBaseUrl: undefined, serving: () => false };
+    const projectTools = { projects, projectsDir, publicBaseUrl: undefined, serving: () => false, log: () => {} };
     const logs: string[] = [];
     // 実際の CLI の WebFetch の tool_response の形を記録する hook を、runner の hooks の後ろに足す
     const shapes: string[] = [];

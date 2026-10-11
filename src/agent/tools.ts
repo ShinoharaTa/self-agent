@@ -29,6 +29,7 @@ import {
   type TopicSessionStore,
 } from "../store/topic-sessions.ts";
 import type { RunContext } from "./runner.ts";
+import { copyWebScaffold } from "./scaffold.ts";
 import { normalizeUrl } from "./url.ts";
 
 export const MCP_SERVER_NAME = "selfagent";
@@ -110,6 +111,10 @@ export type ProjectToolDeps = {
   publicBaseUrl: string | undefined;
   /** 静的サーバーが待ち受けているか */
   serving: () => boolean;
+  /** UI の土台の複製に失敗したときの log */
+  log: (message: string) => void;
+  /** UI の土台の複製の元。省略すると templates/web/（テストで差し替える） */
+  templateDir?: string;
 };
 
 /** project_open をセッション以外（#inbox・#tasks）・context の無いターンで呼んだときの message */
@@ -333,6 +338,7 @@ export function createMemoryToolHandlers(
 export function projectNotes(slug: string, url: string): string[] {
   return [
     "ファイルは dir の中に書く。配られるのは site_dir の中だけで、入口は site_dir/index.html",
+    "作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う",
     `パスは相対で書く（/ で始めない）。ページは ${url} で開かれる`,
     `localStorage のキーは ${slug} で始める（全プロジェクトが同じオリジン）`,
     "API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない",
@@ -345,10 +351,12 @@ export function projectNotes(slug: string, url: string): string[] {
 
 /**
  * プロジェクトのツール。context が無い・セッション以外（#inbox・#tasks）なら not_available、配信が無効（publicBaseUrl が無い・静的サーバーが待ち受けていない）なら not_configured。
- * そのチャンネルの削除されていないプロジェクトがあれば existing、無ければ作って `<slug>/site/` まで mkdir し created
+ * そのチャンネルの削除されていないプロジェクトがあれば existing、無ければ作って `<slug>/site/` まで mkdir し created。
+ * どちらも UI の土台（templates/web/）を複製して、複製したものを scaffold で返す（created は 5 つ、existing は site/base.css が無いときだけ 3 つ。
+ * 既にあるファイルは上書きしない）。複製に失敗したら log に出し、scaffold を空にして結果はそのまま返す
  */
 export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunContext | undefined) {
-  const { projects, projectsDir, publicBaseUrl, serving } = deps;
+  const { projects, projectsDir, publicBaseUrl, serving, log, templateDir } = deps;
   return {
     async projectOpen(args: ProjectOpenArgs): Promise<TextToolResult> {
       if (context === undefined || context.kind !== "session") {
@@ -364,13 +372,23 @@ export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunCon
         projects.create({ guildId: context.guildId, channelId: context.channelId, name: args.name, title: args.title });
       const dir = join(projectsDir, project.slug);
       const siteDir = join(dir, "site");
+      const status = existing === undefined ? "created" : "existing";
       if (existing === undefined) await mkdir(siteDir, { recursive: true });
+      let scaffold: string[];
+      try {
+        scaffold = await copyWebScaffold(dir, status, templateDir);
+      } catch {
+        // パス・例外の中身は出さない
+        log("project_open: UI の土台の複製に失敗しました");
+        scaffold = [];
+      }
       const url = `${publicBaseUrl}/p/${project.slug}/`;
       return textResult({
-        status: existing === undefined ? "created" : "existing",
+        status,
         dir,
         site_dir: siteDir,
         url,
+        scaffold,
         notes: projectNotes(project.slug, url),
       });
     },

@@ -88,6 +88,7 @@ const projectTools = {
   projectsDir,
   publicBaseUrl: config.publicBaseUrl,
   serving: () => staticServer?.listening() ?? false,
+  log,
 };
 // dev モードなら run ごとの会話を <dataDir>/devlog/<日付>.jsonl に残す（dev モードでなければ受け口を作らない）
 const devLogSink = createDevLogSink(config);

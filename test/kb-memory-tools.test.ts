@@ -411,6 +411,7 @@ function definitions(t: TestContext, context?: RunContext) {
       projectsDir: "/srv/work/projects",
       publicBaseUrl: undefined,
       serving: () => false,
+      log: () => {},
     },
     context,
   );
