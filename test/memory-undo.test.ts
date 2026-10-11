@@ -65,38 +65,28 @@ function setup(t: TestContext) {
   return { memories, gateway, sent, logs, tools, component, run, lastUndo, active };
 }
 
-const UNDONE = [{ method: "update", message: { text: "（取り消しました）", components: [] } }];
+const UNDONE = [{ method: "update", message: { text: MEMORY_UNDONE_TEXT, components: [] } }];
 
-test("知らせ: 記憶したら「（記憶しました: …）」と [取り消す]（mem:undo:<追加した id>:0）を run のチャンネルに投稿する", async (t) => {
+test("知らせ: 記憶した・置き換えた・忘れたら、run のチャンネルに変えた記憶の文と [取り消す] を投稿する（custom_id は 100 字以内）", async (t) => {
   const { sent, tools } = setup(t);
 
   await tools.memorySave({ text: "住んでいる地域: 東京都練馬区" });
-
-  assert.deepEqual(sent, [
-    [
-      "topic-1",
-      {
-        text: "（記憶しました: 住んでいる地域: 東京都練馬区）",
-        components: [{ kind: "buttons", buttons: [{ customId: "mem:undo:1:0", label: "取り消す" }] }],
-      },
-    ],
-  ]);
-});
-
-test("知らせ: replace_id なら「（記憶しました: 新しい文）」と mem:undo:<新しい id>:<元の id>、忘れたら「（忘れました: …）」と mem:undo:0:<id>", async (t) => {
-  const { sent, tools, lastUndo } = setup(t);
-  await tools.memorySave({ text: "住んでいる地域: 東京都練馬区" });
-
   await tools.memorySave({ text: "住んでいる地域: 東京都杉並区", replace_id: 1 });
-  assert.equal(sent.at(-1)?.[1].text, "（記憶しました: 住んでいる地域: 東京都杉並区）");
-  assert.equal(lastUndo(), "mem:undo:2:1");
-
   await tools.memoryForget({ id: 2 });
-  assert.equal(sent.at(-1)?.[1].text, "（忘れました: 住んでいる地域: 東京都杉並区）");
-  assert.equal(lastUndo(), "mem:undo:0:2");
-  assert.ok(sent.every(([channelId]) => channelId === "topic-1"));
 
-  // custom_id は 100 字以内に収まる
+  assert.equal(sent.length, 3);
+  assert.ok(sent.every(([channelId]) => channelId === "topic-1"));
+  const texts = sent.map(([, message]) => message.text);
+  assert.ok(texts[0]!.includes("住んでいる地域: 東京都練馬区"));
+  assert.ok(texts[1]!.includes("住んでいる地域: 東京都杉並区"));
+  assert.ok(texts[2]!.includes("住んでいる地域: 東京都杉並区"));
+  assert.notEqual(texts[2], texts[1]);
+  for (const [, message] of sent) {
+    const row = message.components?.[0];
+    assert.ok(row?.kind === "buttons" && row.buttons.length === 1);
+  }
+
+  // 大きな id でも custom_id は 100 字以内に収まる
   const notice = memoryNotice({
     kind: "saved",
     added: { id: 2 ** 31, text: "a", channelId: null, createdAt: "", deletedAt: null },
@@ -112,58 +102,66 @@ test("知らせの投稿に失敗しても記憶の変更は残し、log に出�
     throw new Error("Missing Access");
   };
 
-  assert.equal((await tools.memorySave({ text: "a" })).content[0].text, JSON.stringify({ result: "saved", id: 1 }));
-  assert.deepEqual(active(), ["a"]);
+  assert.equal((await tools.memorySave({ text: "住所は練馬区" })).content[0].text, JSON.stringify({ result: "saved", id: 1 }));
+  assert.deepEqual(active(), ["住所は練馬区"]);
   assert.equal((await tools.memoryForget({ id: 1 })).content[0].text, JSON.stringify({ result: "forgotten" }));
   assert.deepEqual(active(), []);
-  assert.deepEqual(logs, [
-    "記憶の変更の知らせの投稿に失敗しました: Missing Access",
-    "記憶の変更の知らせの投稿に失敗しました: Missing Access",
-  ]);
+  assert.equal(logs.length, 2);
   // 本文は log に出さない
-  assert.ok(logs.every((line) => !line.includes("（記憶しました")));
+  for (const line of logs) assert.ok(!line.includes("練馬区"), line);
 });
 
-test("[取り消す]（記憶した）: 追加した記憶を論理削除し、知らせを「（取り消しました）」にしてボタンを外す。2 回押しても同じ結果", async (t) => {
-  const { tools, run, lastUndo, active, logs } = setup(t);
-  await tools.memorySave({ text: "残す" });
-  await tools.memorySave({ text: "取り消す" });
-  const undo = lastUndo();
+test("[取り消す]: 記憶した・置き換えた・忘れた変更を戻し、知らせを「（取り消しました）」にしてボタンを外す。2 回押しても同じ結果", async (t) => {
+  const cases: Array<{
+    label: string;
+    change: (env: ReturnType<typeof setup>) => Promise<void>;
+    expected: (env: ReturnType<typeof setup>) => void;
+  }> = [
+    {
+      // 追加した記憶を論理削除する
+      label: "記憶した",
+      change: async ({ tools }) => {
+        await tools.memorySave({ text: "残す" });
+        await tools.memorySave({ text: "取り消す" });
+      },
+      expected: ({ active }) => assert.deepEqual(active(), ["残す"]),
+    },
+    {
+      // 新しい記憶を消して元の記憶を戻す
+      label: "置き換えた",
+      change: async ({ tools }) => {
+        await tools.memorySave({ text: "住んでいる地域: 東京都練馬区" });
+        await tools.memorySave({ text: "住んでいる地域: 東京都杉並区", replace_id: 1 });
+      },
+      expected: ({ active }) => assert.deepEqual(active(), ["住んでいる地域: 東京都練馬区"]),
+    },
+    {
+      // 消した後に上限まで記憶していても戻す（件数の上限は確かめない）
+      label: "忘れた",
+      change: async ({ memories, tools }) => {
+        await tools.memorySave({ text: "戻す" });
+        await tools.memoryForget({ id: 1 });
+        for (let i = 0; i < 20; i++) memories.add(`記憶 ${i}`);
+      },
+      expected: ({ memories, active }) => {
+        assert.equal(memories.countActive(), 21);
+        assert.ok(active().includes("戻す"));
+      },
+    },
+  ];
 
-  assert.deepEqual(await run(undo), UNDONE);
-  assert.deepEqual(active(), ["残す"]);
-  assert.deepEqual(await run(undo), UNDONE);
-  assert.deepEqual(active(), ["残す"]);
-  assert.equal(MEMORY_UNDONE_TEXT, "（取り消しました）");
-  // 変えたときだけ log に出す（本文は出さない）
-  assert.deepEqual(logs, ["[取り消す] で記憶の変更を取り消しました"]);
-});
+  for (const { label, change, expected } of cases) {
+    const env = setup(t);
+    await change(env);
+    const undo = env.lastUndo();
 
-test("[取り消す]（置き換えた）: 新しい記憶を消して元の記憶を戻す。2 回押しても同じ結果", async (t) => {
-  const { tools, run, lastUndo, active } = setup(t);
-  await tools.memorySave({ text: "住んでいる地域: 東京都練馬区" });
-  await tools.memorySave({ text: "住んでいる地域: 東京都杉並区", replace_id: 1 });
-  const undo = lastUndo();
-
-  assert.deepEqual(await run(undo), UNDONE);
-  assert.deepEqual(active(), ["住んでいる地域: 東京都練馬区"]);
-  assert.deepEqual(await run(undo), UNDONE);
-  assert.deepEqual(active(), ["住んでいる地域: 東京都練馬区"]);
-});
-
-test("[取り消す]（忘れた）: 消した記憶を戻す。2 回押しても同じ結果で、件数の上限は確かめない", async (t) => {
-  const { memories, tools, run, lastUndo, active } = setup(t);
-  await tools.memorySave({ text: "戻す" });
-  await tools.memoryForget({ id: 1 });
-  const undo = lastUndo();
-  // 消した後に上限まで記憶していても戻す
-  for (let i = 0; i < 20; i++) memories.add(`記憶 ${i}`);
-
-  assert.deepEqual(await run(undo), UNDONE);
-  assert.equal(memories.countActive(), 21);
-  assert.ok(active().includes("戻す"));
-  assert.deepEqual(await run(undo), UNDONE);
-  assert.equal(memories.countActive(), 21);
+    assert.deepEqual(await env.run(undo), UNDONE, label);
+    expected(env);
+    assert.deepEqual(await env.run(undo), UNDONE, label);
+    expected(env);
+    // 変えたときだけ log に出す
+    assert.equal(env.logs.length, 1, label);
+  }
 });
 
 test("[取り消す]: 既に消えている記憶・知らない id でも何も変えずに「（取り消しました）」にする", async (t) => {

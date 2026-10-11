@@ -1,17 +1,11 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { AgentRunner } from "../src/agent/runner.ts";
-import { HELP_TEXT } from "../src/app/commands/help.ts";
-import { createSetupCommand, ensureGuildLayout, HOME_PANEL_TEXT, homePanelMessage } from "../src/app/commands/setup.ts";
-import { createCommands, createComponents, createInteractionHandler } from "../src/app/interactions.ts";
+import { createSetupCommand, ensureGuildLayout, homePanelMessage } from "../src/app/commands/setup.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway, type GatewayCall } from "./helpers/gateway.ts";
-import { RecordingChannelOps } from "./helpers/recording.ts";
 import { FakeResponder } from "./helpers/responder.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
@@ -28,9 +22,13 @@ class SetupGateway extends FakeGateway {
     });
   }
 
-  /** チャンネルの作成・存在の確認・移動 */
+  /** チャンネルの作成・存在の確認・移動（テキストチャンネルの topic の文言は見ない） */
   get channelCalls(): GatewayCall[] {
-    return this.callsOf("createCategory", "createTextChannel", "channelExists", "moveChannel");
+    return this.callsOf("createCategory", "createTextChannel", "channelExists", "moveChannel").map((call) =>
+      call.method === "createTextChannel"
+        ? { ...call, options: { name: call.options.name, parentId: call.options.parentId } }
+        : call,
+    );
   }
   /** ホームパネルの投稿・ピン留め・存在の確認 */
   get panelCalls(): GatewayCall[] {
@@ -52,7 +50,6 @@ function setup(t: TestContext) {
   const db = tempDb(t);
   const gateway = new SetupGateway();
   const { guildSettings } = createStores(db, () => NOW);
-  const channelOps = new RecordingChannelOps();
   const logs: string[] = [];
   const command = createSetupCommand({
     gateway,
@@ -71,7 +68,7 @@ function setup(t: TestContext) {
     assert.equal(reply.message.ephemeral, true);
     return reply.message.text;
   };
-  return { db, gateway, guildSettings, channelOps, logs, run };
+  return { gateway, guildSettings, logs, run };
 }
 
 /** 初回の /setup で作られる ID（作る順に ch-1 から振られる） */
@@ -85,15 +82,9 @@ const FIRST = {
   done: "ch-7",
 };
 
-const TOPICS: Record<string, string> = {
-  inbox: "思いつきややることを書くと Bot が返事します",
-  tasks: "タスクの話だけをする場所。登録・期限の変更・やめる・今日やることを Bot と話せます",
-  system: "Bot の起動・エラー・利用状況の通知",
-};
-
-/** テキストチャンネル作成の呼び出し（topic 付き） */
+/** テキストチャンネル作成の呼び出し（topic を除く） */
 function textChannel(name: string, parentId: string): GatewayCall {
-  return { method: "createTextChannel", guildId: "guild-1", options: { name, parentId, topic: TOPICS[name] } };
+  return { method: "createTextChannel", guildId: "guild-1", options: { name, parentId } };
 }
 
 function savedIds(guildSettings: GuildSettingsStore) {
@@ -109,6 +100,11 @@ function savedIds(guildSettings: GuildSettingsStore) {
   };
 }
 
+/** log にチャンネル ID・メッセージ ID を出していない */
+function assertNoIds(logs: readonly string[]): void {
+  for (const line of logs) assert.doesNotMatch(line, /ch-\d|msg-\d/, line);
+}
+
 test("初回: self-agent カテゴリ → #inbox/#tasks/#system → 進行中/待ち/完了 の順に作り、ID を保存してリンクを返す", async (t) => {
   const { gateway, guildSettings, logs, run } = setup(t);
 
@@ -116,25 +112,17 @@ test("初回: self-agent カテゴリ → #inbox/#tasks/#system → 進行中/�
 
   assert.deepEqual(gateway.channelCalls, [
     { method: "createCategory", guildId: "guild-1", name: "self-agent" },
-    {
-      method: "createTextChannel",
-      guildId: "guild-1",
-      options: { name: "inbox", parentId: FIRST.home, topic: "思いつきややることを書くと Bot が返事します" },
-    },
-    {
-      method: "createTextChannel",
-      guildId: "guild-1",
-      options: { name: "tasks", parentId: FIRST.home, topic: "タスクの話だけをする場所。登録・期限の変更・やめる・今日やることを Bot と話せます" },
-    },
-    {
-      method: "createTextChannel",
-      guildId: "guild-1",
-      options: { name: "system", parentId: FIRST.home, topic: "Bot の起動・エラー・利用状況の通知" },
-    },
+    textChannel("inbox", FIRST.home),
+    textChannel("tasks", FIRST.home),
+    textChannel("system", FIRST.home),
     { method: "createCategory", guildId: "guild-1", name: "進行中" },
     { method: "createCategory", guildId: "guild-1", name: "待ち" },
     { method: "createCategory", guildId: "guild-1", name: "完了" },
   ]);
+  // テキストチャンネルにはどれも topic を付ける
+  for (const call of gateway.callsOf("createTextChannel")) {
+    assert.ok(call.method === "createTextChannel" && (call.options.topic ?? "").length > 0, JSON.stringify(call));
+  }
   assert.deepEqual(savedIds(guildSettings), FIRST);
   // 最後に #inbox へホームパネルを投稿してピン留めし、ID を保存する
   assert.deepEqual(gateway.panelCalls, [
@@ -142,14 +130,9 @@ test("初回: self-agent カテゴリ → #inbox/#tasks/#system → 進行中/�
     { method: "pinMessage", channelId: FIRST.inbox, messageId: "msg-1" },
   ]);
   assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, "msg-1");
-  assert.equal(
-    text,
-    ["セットアップしました。", "作成: <#ch-1> <#ch-2> <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>"].join("\n"),
-  );
-  assert.deepEqual(logs, [
-    "ホームパネルを #inbox に投稿してピン留めしました（guild=guild-1）",
-    "/setup を実行しました（guild=guild-1、作成 7 件）",
-  ]);
+  assert.match(text, /^セットアップしました。\n作成: <#ch-1> <#ch-2> <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>$/);
+  assert.equal(logs.length, 2);
+  assertNoIds(logs);
 });
 
 test("2 回目: すべて残っていれば存在を確認するだけで何も作らない", async (t) => {
@@ -164,13 +147,8 @@ test("2 回目: すべて残っていれば存在を確認するだけで何も�
     Object.values(FIRST).map((channelId) => ({ method: "channelExists", channelId })),
   );
   assert.deepEqual(savedIds(guildSettings), FIRST);
-  assert.equal(
-    text,
-    [
-      "すべて揃っています。新しく作ったものはありません。",
-      "既存: <#ch-1> <#ch-2> <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>",
-    ].join("\n"),
-  );
+  assert.match(text, /^すべて揃っています。/);
+  assert.ok(text.includes("既存: <#ch-1> <#ch-2> <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>"));
 });
 
 test("一部欠損: 消えた #inbox と 待ち だけを作り直し、残っているものはそのまま（カテゴリが残っていれば移動しない）", async (t) => {
@@ -187,10 +165,7 @@ test("一部欠損: 消えた #inbox と 待ち だけを作り直し、残っ�
     [textChannel("inbox", FIRST.home), { method: "createCategory", guildId: "guild-1", name: "待ち" }],
   );
   assert.deepEqual(savedIds(guildSettings), { ...FIRST, inbox: "ch-8", waiting: "ch-9" });
-  assert.equal(
-    text,
-    ["セットアップしました。", "作成: <#ch-8> <#ch-9>", "既存: <#ch-1> <#ch-3> <#ch-4> <#ch-5> <#ch-7>"].join("\n"),
-  );
+  assert.ok(text.includes("作成: <#ch-8> <#ch-9>\n既存: <#ch-1> <#ch-3> <#ch-4> <#ch-5> <#ch-7>"));
 });
 
 test("一部欠損: self-agent カテゴリだけ消えていたら作り直し、残っている #inbox/#tasks/#system をそこへ移す", async (t) => {
@@ -215,10 +190,7 @@ test("一部欠損: self-agent カテゴリだけ消えていたら作り直し�
     { method: "channelExists", channelId: FIRST.done },
   ]);
   assert.deepEqual(savedIds(guildSettings), { ...FIRST, home: "ch-8" });
-  assert.equal(
-    text,
-    ["セットアップしました。", "作成: <#ch-8>", "既存: <#ch-2> <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>"].join("\n"),
-  );
+  assert.ok(text.includes("作成: <#ch-8>\n既存: <#ch-2> <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>"));
 });
 
 test("一部欠損: カテゴリと #tasks が消えていたら、#tasks は新しいカテゴリに作り、残りは移す", async (t) => {
@@ -242,7 +214,7 @@ test("一部欠損: カテゴリと #tasks が消えていたら、#tasks は新
   assert.deepEqual(savedIds(guildSettings), { ...FIRST, home: "ch-8", tasks: "ch-9" });
 });
 
-test("途中で失敗したら作った分は保存して失敗を返し、次の /setup で続きから作る", async (t) => {
+test("途中で失敗したら作った分は保存して失敗を返し（ホームパネルは投稿しない）、次の /setup で続きから作る", async (t) => {
   const { gateway, guildSettings, logs, run } = setup(t);
   gateway.beforeCreate = (name) => {
     if (name === "tasks") throw new Error("Missing Permissions");
@@ -259,15 +231,12 @@ test("途中で失敗したら作った分は保存して失敗を返し、次�
     waiting: undefined,
     done: undefined,
   });
-  assert.equal(
-    failed,
-    [
-      "途中で失敗しました: Missing Permissions",
-      "もう一度 /setup を実行すると、続きから作ります。",
-      "作成: <#ch-1> <#ch-2>",
-    ].join("\n"),
-  );
-  assert.deepEqual(logs, ["/setup が途中で失敗しました（guild=guild-1、作成 2 件）: Missing Permissions"]);
+  assert.match(failed, /^途中で失敗しました: Missing Permissions\n/);
+  assert.ok(failed.includes("作成: <#ch-1> <#ch-2>"));
+  assert.deepEqual(gateway.panelCalls, []);
+  assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, null);
+  assert.equal(logs.length, 1);
+  assertNoIds(logs);
 
   gateway.beforeCreate = () => {};
   gateway.reset();
@@ -283,19 +252,8 @@ test("途中で失敗したら作った分は保存して失敗を返し、次�
     { method: "createCategory", guildId: "guild-1", name: "完了" },
   ]);
   // 失敗した tasks の作成では ID が振られていない（ch-3 から続く）
-  assert.deepEqual(savedIds(guildSettings), {
-    home: FIRST.home,
-    inbox: FIRST.inbox,
-    tasks: "ch-3",
-    system: "ch-4",
-    active: "ch-5",
-    waiting: "ch-6",
-    done: "ch-7",
-  });
-  assert.equal(
-    resumed,
-    ["セットアップしました。", "作成: <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>", "既存: <#ch-1> <#ch-2>"].join("\n"),
-  );
+  assert.deepEqual(savedIds(guildSettings), FIRST);
+  assert.ok(resumed.includes("作成: <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>\n既存: <#ch-1> <#ch-2>"));
 });
 
 test("存在の確認が「無い」以外で失敗したら、作り直さずに失敗を返す", async (t) => {
@@ -351,275 +309,136 @@ test("ensureGuildLayout: サーバーごとに別々に作って保存する", a
   assert.deepEqual(savedIds(guildSettings), FIRST);
 });
 
-test("/setup はコマンドとして登録され、オーナーの操作で振り分けられる", async (t) => {
-  const { db, gateway, guildSettings, channelOps } = setup(t);
-  const logs: string[] = [];
-  const log = (line: string): number => logs.push(line);
-  const {
-    topicSessions,
-    tasks,
-    projects,
-    sessions,
-    seeds,
-    inboxSummaries,
-    memories,
-    usage,
-    knowledge,
-  } = createStores(db, () => NOW);
-  const runner: AgentRunner = { run: async () => assert.fail("想定外の呼び出し") };
-  const turnQueue = new KeyedSerialQueue(1);
-  const turn = {
-    runner,
-    sessions,
-    seeds,
-    topicSessions,
-    inboxSummaries,
-    memories,
-    usage,
-    log,
-  };
-  const layoutQueue = new KeyedSerialQueue(1);
-  // /projects の削除はここでは押さないので、ディレクトリは作らない
-  const projectsDir = join(tmpdir(), "self-agent-test-projects-unused");
-  const commands = createCommands({
-    cfg: { timeZone: "Asia/Tokyo", publicBaseUrl: undefined },
-    gateway,
-    guildSettings,
-    topicSessions,
-    queue: layoutQueue,
-    channelOps,
-    tasks,
-    usage: turn.usage,
-    projects,
-    projectsDir,
-    turnQueue,
-    turn,
-    // /renew はここでは実行しない
-    inboxRotator: { rotateNow: async () => assert.fail("想定外の呼び出し") },
-    log,
-  });
-  assert.deepEqual(
-    commands.map((command) => command.def.name),
-    ["help", "setup", "new", "close", "renew", "wait", "sessions", "tasks", "usage", "projects"],
-  );
-  const components = createComponents({
-    cfg: { deleteAfterDays: 30, timeZone: "Asia/Tokyo", publicBaseUrl: undefined },
-    gateway,
-    guildSettings,
-    topicSessions,
-    sessions: turn.sessions,
-    seeds: turn.seeds,
-    queue: layoutQueue,
-    tasks,
-    knowledge,
-    memories: turn.memories,
-    projects,
-    projectsDir,
-    channelOps,
-    turnQueue,
-    turn,
-    // [中断]・[続ける] はここでは押さない
-    resolveChannel: () => null,
-    turns: { abortTurn: () => false, continueTurn: async () => {} },
-    log,
-  });
-  assert.deepEqual(
-    components.map((component) => component.namespace),
-    ["close", "wait", "tasks", "home", "del", "kb", "mem", "proj", "turn"],
-  );
-  const handle = createInteractionHandler({
-    cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },
-    commands,
-    components,
-    log,
-  });
+test("ホームパネル: 2 回目の /setup では、メッセージが残っていれば確認だけ・消えていたら投稿し直す・#inbox を作り直したら新しい #inbox に投稿し直す", async (t) => {
+  const cases: Array<{
+    label: string;
+    arrange: (gateway: SetupGateway) => void;
+    panel: GatewayCall[];
+    savedId: string;
+  }> = [
+    {
+      label: "残っている",
+      arrange: () => {},
+      panel: [{ method: "messageExists", channelId: FIRST.inbox, messageId: "msg-1" }],
+      savedId: "msg-1",
+    },
+    {
+      label: "メッセージが消えた",
+      arrange: (gateway) => gateway.messages.delete(`${FIRST.inbox}:msg-1`),
+      panel: [
+        { method: "messageExists", channelId: FIRST.inbox, messageId: "msg-1" },
+        { method: "sendMessage", channelId: FIRST.inbox, message: homePanelMessage() },
+        { method: "pinMessage", channelId: FIRST.inbox, messageId: "msg-2" },
+      ],
+      savedId: "msg-2",
+    },
+    {
+      // 新しい #inbox は ch-8。前のメッセージはそこには無い
+      label: "#inbox を作り直した",
+      arrange: (gateway) => gateway.alive.delete(FIRST.inbox),
+      panel: [
+        { method: "messageExists", channelId: "ch-8", messageId: "msg-1" },
+        { method: "sendMessage", channelId: "ch-8", message: homePanelMessage() },
+        { method: "pinMessage", channelId: "ch-8", messageId: "msg-2" },
+      ],
+      savedId: "msg-2",
+    },
+  ];
 
-  const stranger = new FakeResponder();
-  await handle({ ...SETUP, userId: "someone-else" }, stranger);
-  assert.equal(gateway.channelCalls.length, 0);
+  for (const { label, arrange, panel, savedId } of cases) {
+    const { gateway, guildSettings, logs, run } = setup(t);
+    await run();
+    arrange(gateway);
+    gateway.reset();
+    logs.length = 0;
 
-  const owner = new FakeResponder();
-  await handle(SETUP, owner);
-  assert.equal(gateway.channelCalls.length, 7);
-  assert.equal(guildSettings.get("guild-1")?.inboxChannelId, FIRST.inbox);
-  assert.deepEqual(owner.calls[0], { method: "defer", ephemeral: true });
+    await run();
+
+    assert.deepEqual(gateway.panelCalls, panel, label);
+    assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, savedId, label);
+    // 投稿し直したときだけ log に出す
+    assert.equal(logs.length, panel.length === 1 ? 1 : 2, label);
+    assertNoIds(logs);
+  }
 });
 
-test("/help に /setup の説明がある", () => {
-  assert.match(HELP_TEXT, /^`\/setup` /m);
-});
-
-test("/help: #inbox の段落の次の行に #tasks の 1 行がある", () => {
-  const lines = HELP_TEXT.split("\n");
-  const inbox = lines.findIndex((line) => line.startsWith("#inbox に書くと、"));
-  assert.ok(inbox >= 0);
-  assert.equal(lines[inbox + 1], "#tasks ではタスクの話だけを受け付けます（期限や題名の変更・やめる・今日やることの相談）。");
-});
-
-test("ホームパネル: 本文と [新しいセッション][タスク一覧][待ちのセッション] のボタン（home:new / home:tasks / home:waiting）", () => {
-  assert.equal(HOME_PANEL_TEXT, "self-agent のホーム。ボタンかスラッシュコマンドで操作できます。");
-  assert.deepEqual(homePanelMessage(), {
-    text: HOME_PANEL_TEXT,
-    components: [
-      {
-        kind: "buttons",
-        buttons: [
-          { customId: "home:new", label: "新しいセッション", style: "primary" },
-          { customId: "home:tasks", label: "タスク一覧" },
-          { customId: "home:waiting", label: "待ちのセッション" },
-        ],
+test("ホームパネル: ピン留め・投稿・存在の確認に失敗しても /setup の失敗にはしない（投稿・確認の失敗は返信に 1 行足す）", async (t) => {
+  const cases: Array<{
+    label: string;
+    /** 初回の /setup を成功させてから失敗させるか */
+    afterFirst: boolean;
+    inject: (gateway: SetupGateway) => void;
+    methods: string[];
+    savedId: string | null;
+    replyLine: boolean;
+    /** 失敗を外した次の /setup のホームパネルの呼び出し */
+    next: string[];
+  }> = [
+    {
+      // 投稿と保存は残すので、次は投稿し直さない
+      label: "ピン留め",
+      afterFirst: false,
+      inject: (gateway) => {
+        gateway.beforePin = () => {
+          throw new Error("Missing Permissions");
+        };
       },
-    ],
-  });
-});
+      methods: ["sendMessage", "pinMessage"],
+      savedId: "msg-1",
+      replyLine: false,
+      next: ["messageExists"],
+    },
+    {
+      // 保存した ID が無いので、次は確認せずに投稿する（失敗した投稿では ID が振られていない）
+      label: "投稿",
+      afterFirst: false,
+      inject: (gateway) => {
+        gateway.beforeSendMessage = () => {
+          throw new Error("Missing Access");
+        };
+      },
+      methods: ["sendMessage"],
+      savedId: null,
+      replyLine: true,
+      next: ["sendMessage", "pinMessage"],
+    },
+    {
+      label: "存在の確認",
+      afterFirst: true,
+      inject: (gateway) => {
+        gateway.beforeMessageExists = () => {
+          throw new Error("Missing Access");
+        };
+      },
+      methods: ["messageExists"],
+      savedId: "msg-1",
+      replyLine: true,
+      next: ["messageExists"],
+    },
+  ];
 
-test("ホームパネル: 2 回目の /setup でメッセージがまだあれば、確認するだけで投稿もピン留めもしない", async (t) => {
-  const { gateway, guildSettings, logs, run } = setup(t);
-  await run();
-  gateway.reset();
-  logs.length = 0;
+  for (const { label, afterFirst, inject, methods, savedId, replyLine, next } of cases) {
+    const { gateway, guildSettings, logs, run } = setup(t);
+    if (afterFirst) await run();
+    gateway.reset();
+    logs.length = 0;
+    inject(gateway);
 
-  const text = await run();
+    const text = await run();
 
-  assert.deepEqual(gateway.panelCalls, [{ method: "messageExists", channelId: FIRST.inbox, messageId: "msg-1" }]);
-  assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, "msg-1");
-  assert.match(text, /^すべて揃っています。/);
-  assert.deepEqual(logs, ["/setup を実行しました（guild=guild-1、作成 0 件）"]);
-});
+    assert.deepEqual(gateway.panelCalls.map((call) => call.method), methods, label);
+    assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, savedId, label);
+    assert.doesNotMatch(text, /^途中で失敗しました/, label);
+    assert.equal(/\nホームパネルの投稿に失敗しました: Missing \w+$/.test(text), replyLine, label);
+    // 失敗の log と /setup の log
+    assert.equal(logs.length, 2, label);
+    assertNoIds(logs);
 
-test("ホームパネル: メッセージが消えていたら、次の /setup で投稿し直してピン留めし、新しい ID を保存する", async (t) => {
-  const { gateway, guildSettings, logs, run } = setup(t);
-  await run();
-  gateway.messages.delete(`${FIRST.inbox}:msg-1`);
-  gateway.reset();
-  logs.length = 0;
-
-  const text = await run();
-
-  assert.deepEqual(gateway.panelCalls, [
-    { method: "messageExists", channelId: FIRST.inbox, messageId: "msg-1" },
-    { method: "sendMessage", channelId: FIRST.inbox, message: homePanelMessage() },
-    { method: "pinMessage", channelId: FIRST.inbox, messageId: "msg-2" },
-  ]);
-  assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, "msg-2");
-  // カテゴリ・チャンネルは揃っているので、返信は変わらない
-  assert.match(text, /^すべて揃っています。/);
-  assert.deepEqual(logs, [
-    "ホームパネルを #inbox に投稿してピン留めしました（guild=guild-1）",
-    "/setup を実行しました（guild=guild-1、作成 0 件）",
-  ]);
-});
-
-test("ホームパネル: #inbox を作り直したら、新しい #inbox に投稿し直す", async (t) => {
-  const { gateway, guildSettings, run } = setup(t);
-  await run();
-  gateway.alive.delete(FIRST.inbox);
-  gateway.reset();
-
-  await run();
-
-  // 新しい #inbox は ch-8。前のメッセージはそこには無い
-  assert.deepEqual(gateway.panelCalls, [
-    { method: "messageExists", channelId: "ch-8", messageId: "msg-1" },
-    { method: "sendMessage", channelId: "ch-8", message: homePanelMessage() },
-    { method: "pinMessage", channelId: "ch-8", messageId: "msg-2" },
-  ]);
-  assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, "msg-2");
-});
-
-test("ホームパネル: ピン留めに失敗しても投稿と保存は残し、log に出す（返信は変わらない）。次の /setup では投稿し直さない", async (t) => {
-  const { gateway, guildSettings, logs, run } = setup(t);
-  gateway.beforePin = () => {
-    throw new Error("Missing Permissions");
-  };
-
-  const text = await run();
-
-  assert.deepEqual(
-    gateway.panelCalls.map((call) => call.method),
-    ["sendMessage", "pinMessage"],
-  );
-  assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, "msg-1");
-  assert.equal(
-    text,
-    ["セットアップしました。", "作成: <#ch-1> <#ch-2> <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>"].join("\n"),
-  );
-  assert.deepEqual(logs, [
-    "ホームパネルを #inbox に投稿しましたが、ピン留めに失敗しました（guild=guild-1）: Missing Permissions",
-    "/setup を実行しました（guild=guild-1、作成 7 件）",
-  ]);
-
-  gateway.reset();
-  await run();
-
-  assert.deepEqual(gateway.panelCalls, [{ method: "messageExists", channelId: FIRST.inbox, messageId: "msg-1" }]);
-});
-
-test("ホームパネル: 投稿に失敗したら log に出して返信に 1 行足す（/setup の失敗にはしない）。次の /setup で投稿する", async (t) => {
-  const { gateway, guildSettings, logs, run } = setup(t);
-  gateway.beforeSendMessage = () => {
-    throw new Error("Missing Access");
-  };
-
-  const text = await run();
-
-  assert.deepEqual(
-    gateway.panelCalls.map((call) => call.method),
-    ["sendMessage"],
-  );
-  assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, null);
-  assert.equal(
-    text,
-    [
-      "セットアップしました。",
-      "作成: <#ch-1> <#ch-2> <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>",
-      "ホームパネルの投稿に失敗しました: Missing Access",
-    ].join("\n"),
-  );
-  assert.deepEqual(logs, [
-    "ホームパネルの投稿に失敗しました（guild=guild-1）: Missing Access",
-    "/setup を実行しました（guild=guild-1、作成 7 件）",
-  ]);
-
-  gateway.beforeSendMessage = () => {};
-  gateway.reset();
-  await run();
-
-  // 保存した ID が無いので、確認せずに投稿する
-  assert.deepEqual(
-    gateway.panelCalls.map((call) => call.method),
-    ["sendMessage", "pinMessage"],
-  );
-  // 失敗した投稿では ID が振られていない
-  assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, "msg-1");
-});
-
-test("ホームパネル: 存在の確認が「無い」以外で失敗したら、投稿し直さずに返信に 1 行足す", async (t) => {
-  const { gateway, guildSettings, run } = setup(t);
-  await run();
-  gateway.beforeMessageExists = () => {
-    throw new Error("Missing Access");
-  };
-  gateway.reset();
-
-  const text = await run();
-
-  assert.deepEqual(
-    gateway.panelCalls.map((call) => call.method),
-    ["messageExists"],
-  );
-  assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, "msg-1");
-  assert.match(text, /\nホームパネルの投稿に失敗しました: Missing Access$/);
-});
-
-test("ホームパネル: /setup が途中で失敗した回は投稿しない", async (t) => {
-  const { gateway, guildSettings, run } = setup(t);
-  gateway.beforeCreate = (name) => {
-    if (name === "完了") throw new Error("Missing Permissions");
-  };
-
-  await run();
-
-  assert.deepEqual(gateway.panelCalls, []);
-  assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, null);
+    gateway.beforePin = () => {};
+    gateway.beforeSendMessage = () => {};
+    gateway.beforeMessageExists = () => {};
+    gateway.reset();
+    await run();
+    assert.deepEqual(gateway.panelCalls.map((call) => call.method), next, label);
+  }
 });

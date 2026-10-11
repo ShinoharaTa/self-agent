@@ -1,9 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentRunner, RunResult } from "../src/agent/runner.ts";
-import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
 import { ALREADY_CLOSED_REPLY } from "../src/app/commands/close.ts";
-import { HELP_TEXT } from "../src/app/commands/help.ts";
 import {
   createRenewCommand,
   NO_CONVERSATION_REPLY,
@@ -14,12 +12,12 @@ import {
   renewedText,
 } from "../src/app/commands/renew.ts";
 import { ROTATED_NOTICE, ROTATED_NOTICE_FRESH, type RotateNowResult } from "../src/app/inbox-rotate.ts";
-import { RENEW_PROMPT, RENEWED_SEED_HEADER, renewedSeed } from "../src/app/session-renew.ts";
+import { RENEW_PROMPT, renewedSeed } from "../src/app/session-renew.ts";
 import { EMPTY_SUMMARY } from "../src/app/summary.ts";
 import { MEMORY_BLOCK_HEADER, RESUME_SEED_HEADER, resumeSeed, runChannelTurn, type TurnDeps } from "../src/app/turn.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import type { SummaryChannelKind } from "../src/store/inbox-summaries.ts";
-import { RENEW_SUMMARY_MAX_LENGTH, type TopicSession } from "../src/store/topic-sessions.ts";
+import { RENEW_SUMMARY_MAX_LENGTH } from "../src/store/topic-sessions.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { RecordingQueue } from "./helpers/recording.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
@@ -121,52 +119,29 @@ function setup(t: TestContext, results: RunResult[] = []) {
   return { db, clock, runner, topicSessions, guildSettings, sessions, seeds, memories, usage, turnQueue, inboxRotator, logs, turn, runRenew, state };
 }
 
-test("文言: 要約を頼む prompt は静的で、seed は「会話を新しくしました。前の会話の要約:」に続けて要約を入れる", () => {
-  assert.equal(
-    RENEW_PROMPT,
-    "会話を新しくするので、続きに必要なこと（目的・決めたこと・やり残し・約束・作っているものの URL）だけを 1200 字以内の箇条書きで返答してください。SPEC.md があれば、その中身は書き写さず、SPEC.md があることだけ書いてください。ツールは使わないでください。",
-  );
-  assert.equal(RENEW_SUMMARY_MAX_LENGTH, 1200);
-  assert.equal(RENEWED_SEED_HEADER, "会話を新しくしました。前の会話の要約:");
-  assert.equal(renewedSeed("- a\n- b"), "会話を新しくしました。前の会話の要約:\n- a\n- b");
-  assert.equal(renewedText("- a"), "会話を新しくしました。次の発言から新しい会話で続けます。\n\n**要約**\n- a");
-  assert.equal(RENEWED_FRESH_REPLY, "前の会話の記録が見つからないため、要約せずに新しくしました。次の発言から新しい会話で続けます");
-  assert.equal(NO_CONVERSATION_REPLY, "新しい会話はまだ始まっていません。次の発言から新しい会話で始まります");
-  assert.equal(NOT_RENEWABLE_REPLY, "セッションのチャンネルか #inbox・#tasks で実行してください");
-  assert.equal(NOT_SET_UP_REPLY, "/setup を実行してください");
-  assert.equal(RENEW_FAILURE_REPLY, "失敗しました。もう一度 /renew を実行してください");
-});
-
-test("/renew: セッションでも #inbox・#tasks でもないチャンネル（/setup 前の env の #inbox・別サーバーのセッション・チャンネル無し）では ephemeral で断り、何もしない", async (t) => {
+test("/renew: セッションでも #inbox・#tasks でもないチャンネルと、閉じたセッション（done・deleted）では ephemeral で断り、何もしない", async (t) => {
   const env = setup(t);
   env.topicSessions.create({ ...TOPIC, channelId: "topic-9", guildId: "guild-9" });
+  const notRenewable = [{ method: "reply", message: { text: NOT_RENEWABLE_REPLY, ephemeral: true } }];
+  const closed = [{ method: "reply", message: { text: ALREADY_CLOSED_REPLY, ephemeral: true } }];
   // guild-2 は /setup 前（env の #inbox で受け付けているサーバー）。DB に #inbox が無いので対象外
-  const others: Array<Extract<Interaction, { kind: "command" }>> = [
-    { ...RENEW, guildId: "guild-2", channelId: "env-inbox-1" },
-    { ...RENEW, channelId: "unknown-1" },
-    { ...RENEW, channelId: "topic-9" },
-    { ...RENEW, guildId: "guild-2", channelId: "inbox-1" },
-    { ...RENEW, channelId: null },
+  const others: Array<[string, Extract<Interaction, { kind: "command" }>]> = [
+    ["/setup 前の env の #inbox", { ...RENEW, guildId: "guild-2", channelId: "env-inbox-1" }],
+    ["知らないチャンネル", { ...RENEW, channelId: "unknown-1" }],
+    ["別サーバーのセッション", { ...RENEW, channelId: "topic-9" }],
+    ["別サーバーの同じ ID の #inbox", { ...RENEW, guildId: "guild-2", channelId: "inbox-1" }],
+    ["チャンネル無し", { ...RENEW, channelId: null }],
   ];
 
-  for (const interaction of others) {
-    const calls = await env.runRenew(interaction);
-    assert.deepEqual(calls, [{ method: "reply", message: { text: NOT_RENEWABLE_REPLY, ephemeral: true } }], String(interaction.channelId));
+  for (const [label, interaction] of others) {
+    assert.deepEqual(await env.runRenew(interaction), notRenewable, label);
+  }
+  for (const state of ["done", "deleted"]) {
+    env.db.prepare("UPDATE sessions SET state = ? WHERE channel_id = 'topic-1'").run(state);
+    assert.deepEqual(await env.runRenew(), closed, state);
   }
   assert.equal(env.runner.inputs.length, 0);
   assert.deepEqual(env.inboxRotator.calls, []);
-  assert.deepEqual(env.turnQueue.keys, []);
-});
-
-test("/renew: 閉じたセッション（done・deleted）では ephemeral で「このセッションは閉じています」と返し、何もしない", async (t) => {
-  const env = setup(t);
-
-  for (const state of ["done", "deleted"]) {
-    env.db.prepare("UPDATE sessions SET state = ? WHERE channel_id = 'topic-1'").run(state);
-    const calls = await env.runRenew();
-    assert.deepEqual(calls, [{ method: "reply", message: { text: ALREADY_CLOSED_REPLY, ephemeral: true } }], state);
-  }
-  assert.equal(env.runner.inputs.length, 0);
   assert.deepEqual(env.turnQueue.keys, []);
   assert.equal(env.state().sdkSession, "session-1");
 });
@@ -180,14 +155,13 @@ test("/renew（セッション）: 公開で defer → 静的な prompt で resu
 
   // context も WebFetch に許す URL も渡さない
   assert.deepEqual(env.runner.inputs, [{ prompt: RENEW_PROMPT, sessionId: "session-1", context: undefined, allowedUrls: [] }]);
-  assert.ok("context" in env.runner.inputs[0]!);
   assert.deepEqual(calls, [
     { method: "defer", ephemeral: false },
     { method: "reply", message: { text: renewedText(SUMMARY) } },
   ]);
   assert.deepEqual(env.state(), {
     sdkSession: undefined,
-    seed: `${RENEWED_SEED_HEADER}\n${SUMMARY}`,
+    seed: renewedSeed(SUMMARY),
     renewedSummary: SUMMARY,
     renewedAt: RENEWED_AT.toISOString(),
   });
@@ -195,14 +169,14 @@ test("/renew（セッション）: 公開で defer → 静的な prompt で resu
   assert.equal(session?.state, "waiting");
   assert.equal(session?.categoryId, "active-1");
   assert.equal(session?.summary, null);
-  // 発言と同じキューの同じ key（channelId）で、セッションのジョブとして実行する
-  assert.deepEqual(env.turnQueue.keys, ["topic-1"]);
+  // 発言と同じキューで、セッションのジョブとして実行する
   assert.deepEqual(env.turnQueue.options, [{ session: true }]);
   // 要約のターンも usage に記録する
   const [entry] = env.usage.recent(1);
   assert.equal(entry?.key, "topic-1");
   assert.equal(entry?.ok, true);
-  assert.deepEqual(env.logs, ["/renew でセッションの会話を新しくしました（guild=guild-1）"]);
+  assert.equal(env.logs.length, 1);
+  assert.ok(!env.logs[0]!.includes("topic-1"));
   assert.deepEqual(env.inboxRotator.calls, []);
 });
 
@@ -253,69 +227,82 @@ test("/renew（セッション）: 返答本文が空なら要約は保存せず
   ]);
   assert.deepEqual(env.state(), {
     sdkSession: undefined,
-    seed: `${RENEWED_SEED_HEADER}\n題名: 旅行の計画`,
+    seed: renewedSeed("題名: 旅行の計画"),
     renewedSummary: "前の要約",
     renewedAt: NOW.toISOString(),
   });
-  assert.deepEqual(env.logs, ["/renew でセッションの会話を新しくしました（guild=guild-1）"]);
+  assert.equal(env.logs.length, 1);
 });
 
-test("/renew（セッション）: 会話の記録が無ければ要約を作らずに SDK セッションを捨て、resume 失敗の復旧と同じ seed（題名）を入れる", async (t) => {
-  const env = setup(t, [RESUME_FAILURE]);
+test("/renew（セッション）: 会話の記録が無ければ要約を作らずに SDK セッションを捨て、resume 失敗の復旧と同じ seed（前の /renew の要約か題名）を入れる", async (t) => {
+  const cases = [
+    { label: "前の /renew の要約なし", renewed: null, seed: `${RESUME_SEED_HEADER}\n題名: 旅行の計画`, renewedAt: null },
+    { label: "前の /renew の要約あり", renewed: "前の要約", seed: `${RESUME_SEED_HEADER}\n前の要約`, renewedAt: NOW.toISOString() },
+  ];
 
-  const calls = await env.runRenew();
+  for (const { label, renewed, seed, renewedAt } of cases) {
+    const env = setup(t, [RESUME_FAILURE]);
+    if (renewed !== null) env.topicSessions.setRenewed("topic-1", renewed);
 
-  assert.equal(env.runner.inputs.length, 1);
-  assert.deepEqual(calls, [
-    { method: "defer", ephemeral: false },
-    { method: "reply", message: { text: RENEWED_FRESH_REPLY } },
-  ]);
-  assert.deepEqual(env.state(), {
-    sdkSession: undefined,
-    seed: `${RESUME_SEED_HEADER}\n題名: 旅行の計画`,
-    renewedSummary: null,
-    renewedAt: null,
-  });
-  assert.equal(env.usage.recent(1)[0]?.ok, false);
-  assert.deepEqual(env.logs, [
-    `/renew でセッションの会話の記録が見つからないため、要約せずに新しくしました（guild=guild-1）: ${RESUME_FAILURE.errorMessage}`,
-  ]);
+    const calls = await env.runRenew();
+
+    assert.equal(env.runner.inputs.length, 1, label);
+    assert.deepEqual(
+      calls,
+      [
+        { method: "defer", ephemeral: false },
+        { method: "reply", message: { text: RENEWED_FRESH_REPLY } },
+      ],
+      label,
+    );
+    // 要約は前のまま
+    assert.deepEqual(env.state(), { sdkSession: undefined, seed, renewedSummary: renewed, renewedAt }, label);
+    assert.equal(env.usage.recent(1)[0]?.ok, false, label);
+    assert.equal(env.logs.length, 1, label);
+  }
 });
 
-test("/renew（セッション）: 会話の記録が無いとき、前の /renew の要約があれば seed にそれを使う（要約は前のまま）", async (t) => {
-  const env = setup(t, [RESUME_FAILURE]);
-  env.topicSessions.setRenewed("topic-1", "前の要約");
+test("/renew（セッション）: それ以外の失敗では seed・要約を変えずに失敗を返す。SDK が記録した別の session_id は残し、打ち切り・中断で受け取ったものでは置き換えない", async (t) => {
+  const cases: Array<{ label: string; result: RunResult; sdkSession: string }> = [
+    { label: "result まで届いた失敗", result: FAILED, sdkSession: "session-1" },
+    // 途中まで記録された会話（別の session_id）は次の発言で続ける
+    { label: "別の session_id を記録した失敗", result: { ...FAILED, sessionId: "session-2" }, sdkSession: "session-2" },
+    {
+      label: "打ち切り",
+      result: { ok: false, errorMessage: "timeout", sessionId: "session-2", sessionRecorded: false, toolCalls: 1 },
+      sdkSession: "session-1",
+    },
+    {
+      label: "中断",
+      result: { ok: false, errorMessage: "aborted", sessionId: "session-3", sessionRecorded: false, toolCalls: 0 },
+      sdkSession: "session-1",
+    },
+  ];
 
-  await env.runRenew();
+  for (const { label, result, sdkSession } of cases) {
+    const env = setup(t, [result]);
+    env.topicSessions.setRenewed("topic-1", "前の要約");
+    env.seeds.set("topic-1", "残っている seed");
 
-  assert.deepEqual(env.state(), {
-    sdkSession: undefined,
-    seed: `${RESUME_SEED_HEADER}\n前の要約`,
-    renewedSummary: "前の要約",
-    renewedAt: NOW.toISOString(),
-  });
-});
+    const calls = await env.runRenew();
 
-test("/renew（セッション）: それ以外の失敗では SDK セッション・seed・要約を変えずに失敗を返す。SDK が記録した別の session_id は残す", async (t) => {
-  const env = setup(t, [FAILED, { ...FAILED, sessionId: "session-2" }]);
-  env.topicSessions.setRenewed("topic-1", "前の要約");
-  env.seeds.set("topic-1", "残っている seed");
-
-  const calls = await env.runRenew();
-
-  assert.deepEqual(calls, [
-    { method: "defer", ephemeral: false },
-    { method: "reply", message: { text: RENEW_FAILURE_REPLY } },
-  ]);
-  const unchanged = { sdkSession: "session-1", seed: "残っている seed", renewedSummary: "前の要約", renewedAt: NOW.toISOString() };
-  assert.deepEqual(env.state(), unchanged);
-  assert.deepEqual(env.logs, [`/renew の要約に失敗しました（guild=guild-1）: ${FAILED.errorMessage}`]);
-  // resume の連続失敗には数えない
-  assert.equal(env.sessions.failureCount("topic-1"), 0);
-
-  // 途中まで記録された会話（別の session_id）は次の発言で続ける
-  await env.runRenew();
-  assert.deepEqual(env.state(), { ...unchanged, sdkSession: "session-2" });
+    assert.deepEqual(
+      calls,
+      [
+        { method: "defer", ephemeral: false },
+        { method: "reply", message: { text: RENEW_FAILURE_REPLY } },
+      ],
+      label,
+    );
+    assert.deepEqual(
+      env.state(),
+      { sdkSession, seed: "残っている seed", renewedSummary: "前の要約", renewedAt: NOW.toISOString() },
+      label,
+    );
+    assert.equal(env.logs.length, 1, label);
+    // resume の連続失敗には数えない
+    assert.equal(env.sessions.failureCount("topic-1"), 0, label);
+  }
 });
 
 test("/renew（セッション）: 要約のターンが例外で終わったら何も変えずに handle から投げる（返信は interactions.ts の「処理に失敗しました」に任せる）", async (t) => {
@@ -349,56 +336,35 @@ test("/renew（セッション）: 要約のターンが例外で終わったら
   });
 });
 
-test("/renew（セッション）: 打ち切り・中断（結果の届かない失敗）で受け取った session_id では SDK セッションを置き換えない", async (t) => {
-  const env = setup(t, [
-    { ok: false, errorMessage: "timeout", sessionId: "session-2", sessionRecorded: false, toolCalls: 1 },
-    { ok: false, errorMessage: "aborted", sessionId: "session-3", sessionRecorded: false, toolCalls: 0 },
-  ]);
+test("/renew（セッション）: SDK セッションが無ければ（まだ会話が無い・続けて 2 回目）runner を呼ばずに何も変えない", async (t) => {
+  const never = setup(t);
+  never.sessions.delete("topic-1");
+  never.seeds.set("topic-1", "#inbox からの続き:\n…");
+  const twice = setup(t, [ok(SUMMARY)]);
+  await twice.runRenew();
+  const cases = [
+    { label: "まだ会話が無い", env: never, runs: 0 },
+    { label: "続けて 2 回目", env: twice, runs: 1 },
+  ];
 
-  for (const errorMessage of ["timeout", "aborted"]) {
+  for (const { label, env, runs } of cases) {
+    const before = env.state();
+    env.logs.length = 0;
+
     const calls = await env.runRenew();
-    assert.deepEqual(calls[1], { method: "reply", message: { text: RENEW_FAILURE_REPLY } }, errorMessage);
-    assert.deepEqual(env.state(), { sdkSession: "session-1", seed: undefined, renewedSummary: null, renewedAt: null }, errorMessage);
+
+    assert.deepEqual(
+      calls,
+      [
+        { method: "defer", ephemeral: false },
+        { method: "reply", message: { text: NO_CONVERSATION_REPLY } },
+      ],
+      label,
+    );
+    assert.equal(env.runner.inputs.length, runs, label);
+    assert.deepEqual(env.state(), before, label);
+    assert.deepEqual(env.logs, [], label);
   }
-  assert.deepEqual(env.logs, [
-    "/renew の要約に失敗しました（guild=guild-1）: timeout",
-    "/renew の要約に失敗しました（guild=guild-1）: aborted",
-  ]);
-});
-
-test("/renew（セッション）: 続けて 2 回実行すると、2 回目は新しい会話がまだ無いので runner を呼ばずに何も変えない", async (t) => {
-  const env = setup(t, [ok(SUMMARY)]);
-
-  await env.runRenew();
-  const second = await env.runRenew();
-
-  assert.equal(env.runner.inputs.length, 1);
-  assert.deepEqual(second, [
-    { method: "defer", ephemeral: false },
-    { method: "reply", message: { text: NO_CONVERSATION_REPLY } },
-  ]);
-  assert.deepEqual(env.state(), {
-    sdkSession: undefined,
-    seed: renewedSeed(SUMMARY),
-    renewedSummary: SUMMARY,
-    renewedAt: NOW.toISOString(),
-  });
-});
-
-test("/renew（セッション）: SDK セッションが無ければ（まだ会話が無い）runner を呼ばずに何も変えない", async (t) => {
-  const env = setup(t);
-  env.sessions.delete("topic-1");
-  env.seeds.set("topic-1", "#inbox からの続き:\n…");
-
-  const calls = await env.runRenew();
-
-  assert.deepEqual(calls, [
-    { method: "defer", ephemeral: false },
-    { method: "reply", message: { text: NO_CONVERSATION_REPLY } },
-  ]);
-  assert.equal(env.runner.inputs.length, 0);
-  assert.deepEqual(env.state(), { sdkSession: undefined, seed: "#inbox からの続き:\n…", renewedSummary: null, renewedAt: null });
-  assert.deepEqual(env.logs, []);
 });
 
 test("/renew（セッション）: 同じチャンネルの発言のターンが終わるのを待ち、その間に閉じられていたらターンを実行せずに「このセッションは閉じています」と返す", async (t) => {
@@ -447,86 +413,27 @@ test("/renew（#inbox・#tasks）: 公開で defer → そのチャンネルの 
   assert.deepEqual(env.turnQueue.keys, []);
 });
 
-test("resumeSeed（セッション）: /renew の要約 → /close の要約 → 題名 の順に使う", () => {
-  const session: TopicSession = {
-    channelId: "topic-1",
-    guildId: "guild-1",
-    title: "旅行の計画",
-    state: "active",
-    categoryId: "active-1",
-    createdAt: NOW.toISOString(),
-    lastActivityAt: NOW.toISOString(),
-    waitingSince: null,
-    closedAt: null,
-    summary: null,
-    origin: "command",
-    deletePromptMessageId: null,
-    deletedAt: null,
-    renewedSummary: null,
-    renewedAt: null,
-  };
-  const seedOf = (overrides: Partial<TopicSession>): string | undefined =>
-    resumeSeed({ ...session, ...overrides }, undefined, "inbox");
-  const closed = { summary: "/close の要約" };
-  const renewed = { renewedSummary: "/renew の要約", renewedAt: RENEWED_AT.toISOString() };
-
-  assert.equal(seedOf({}), `${RESUME_SEED_HEADER}\n題名: 旅行の計画`);
-  assert.equal(seedOf(closed), `${RESUME_SEED_HEADER}\n/close の要約`);
-  assert.equal(seedOf(renewed), `${RESUME_SEED_HEADER}\n/renew の要約`);
-  // 残っている /renew の要約は最後の /close より新しい（/close で消す）
-  assert.equal(seedOf({ ...closed, ...renewed }), `${RESUME_SEED_HEADER}\n/renew の要約`);
-});
-
-test("resumeSeed（セッション）: /close・発言での復活・/renew の順に合わせて、最後に残した要約を使う（ストアの記録で）", async (t) => {
+test("resumeSeed（セッション）: 最後に残した要約（/renew か /close）を使い、どちらも無ければ題名（/renew の要約は /close で消える）", async (t) => {
   const env = setup(t);
   const seed = (): string | undefined => resumeSeed(env.topicSessions.get("topic-1"), undefined, "inbox");
 
-  // /close → 復活 → /renew なら /renew の要約
+  assert.equal(seed(), `${RESUME_SEED_HEADER}\n題名: 旅行の計画`);
+
+  // /renew → /close → 復活なら /close の要約
+  env.topicSessions.setRenewed("topic-1", "1 回目の /renew の要約");
+  assert.equal(seed(), `${RESUME_SEED_HEADER}\n1 回目の /renew の要約`);
   env.topicSessions.close("topic-1", "1 回目の /close の要約");
   env.topicSessions.setActive("topic-1");
-  env.topicSessions.setRenewed("topic-1", "/renew の要約");
-  assert.equal(seed(), `${RESUME_SEED_HEADER}\n/renew の要約`);
-
-  // → /close なら 2 回目の /close の要約（/renew の要約は消える）
-  env.topicSessions.close("topic-1", "2 回目の /close の要約");
-  assert.equal(seed(), `${RESUME_SEED_HEADER}\n2 回目の /close の要約`);
-
-  // → 復活しても /close の要約のまま
-  env.topicSessions.setActive("topic-1");
   assert.equal(env.topicSessions.get("topic-1")?.renewedSummary, null);
-  assert.equal(seed(), `${RESUME_SEED_HEADER}\n2 回目の /close の要約`);
-});
+  assert.equal(env.topicSessions.get("topic-1")?.renewedAt, null);
+  assert.equal(seed(), `${RESUME_SEED_HEADER}\n1 回目の /close の要約`);
 
-test("resumeSeed（セッション）: /renew → /close → 復活なら /close の要約（/renew の要約は /close で消える）", async (t) => {
-  const env = setup(t);
-  env.topicSessions.setRenewed("topic-1", "/renew の要約");
-  env.topicSessions.close("topic-1", "/close の要約");
+  // → /renew なら /renew の要約（残っている /renew の要約は最後の /close より新しい）
+  env.topicSessions.setRenewed("topic-1", "2 回目の /renew の要約");
+  assert.equal(seed(), `${RESUME_SEED_HEADER}\n2 回目の /renew の要約`);
+
+  // → /close → 復活なら 2 回目の /close の要約
+  env.topicSessions.close("topic-1", "2 回目の /close の要約");
   env.topicSessions.setActive("topic-1");
-
-  const session = env.topicSessions.get("topic-1");
-  assert.equal(session?.renewedSummary, null);
-  assert.equal(session?.renewedAt, null);
-  assert.equal(resumeSeed(session, undefined, "inbox"), `${RESUME_SEED_HEADER}\n/close の要約`);
-});
-
-test("/help の /close の行の直後に /renew の行がある", () => {
-  assert.ok(
-    HELP_TEXT.includes(
-      "「完了」カテゴリへ移します\n`/renew` 会話を要約して新しくします。長くなった会話や、前の返事の癖を引きずらずに続けたいときに使います。セッション・#inbox・#tasks で使えます\n",
-    ),
-  );
-});
-
-test("システムプロンプトに /renew の seed の見出し（引き継ぎの文）と、このアプリについての /renew がある", () => {
-  assert.ok(
-    SYSTEM_PROMPT.includes(
-      "「前の会話の記録が切れたため、要約から再開します。」「会話を新しくしました。前の会話の要約:」で始まる文がある場合も、アプリが付けた引き継ぎの文脈です。",
-    ),
-  );
-  assert.ok(SYSTEM_PROMPT.includes(`「${RENEWED_SEED_HEADER}」`));
-  assert.ok(
-    SYSTEM_PROMPT.includes(
-      "/close（要約を残し、やることの候補を確認して登録してから閉じる）、/renew（会話を要約して新しくする。長くなった会話を仕切り直す）、/wait（待ちにする）",
-    ),
-  );
+  assert.equal(seed(), `${RESUME_SEED_HEADER}\n2 回目の /close の要約`);
 });

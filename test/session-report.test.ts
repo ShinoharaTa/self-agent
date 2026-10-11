@@ -50,13 +50,14 @@ test("session_report: tasks を省略したら空の配列で保存する。待�
   }
 });
 
-test("session_report: セッション以外（#inbox・削除済み・別サーバー・context 無し）では not_available を返し、何も保存しない", (t) => {
+test("session_report: セッション以外（#inbox・#tasks・削除済み・別サーバー・context 無し）では not_available を返し、何も保存しない", (t) => {
   const { db, topicSessions } = setup(t);
   topicSessions.create({ channelId: "topic-2", guildId: "guild-1", title: "削除済み", categoryId: "done-1" });
   db.prepare("UPDATE sessions SET state = 'deleted' WHERE channel_id = 'topic-2'").run();
 
   const contexts: Array<RunContext | undefined> = [
     { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" },
+    { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" },
     { guildId: "guild-1", channelId: "topic-2", kind: "session" },
     { guildId: "guild-9", channelId: "topic-1", kind: "session" },
     undefined,
@@ -67,16 +68,5 @@ test("session_report: セッション以外（#inbox・削除済み・別サー�
   }
   assert.equal(topicSessions.getCloseDraft("topic-1"), undefined);
   assert.equal(topicSessions.getCloseDraft("topic-2"), undefined);
-});
-
-test("session_report: #tasks では not_available を返し、何も保存しない", (t) => {
-  const { topicSessions } = setup(t);
-
-  const result = createSessionToolHandlers(topicSessions, { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" }).sessionReport(
-    ARGS,
-  );
-
-  assert.deepEqual(parse(result), { result: "not_available" });
   assert.equal(topicSessions.getCloseDraft("tasks-1"), undefined);
-  assert.equal(topicSessions.getCloseDraft("topic-1"), undefined);
 });
