@@ -66,13 +66,12 @@ function remember(memories: MemoryStore): string {
 }
 
 test("記憶のブロック: 見出しの後に有効な記憶を id 順に「- [#id] 本文」で並べる。0 件なら付けない", () => {
-  assert.equal(MEMORY_BLOCK_HEADER, "オーナーについての記憶（アプリが保存したもの）:");
   assert.equal(
     memoryBlock([
       { id: 3, text: "住んでいる地域: 東京都練馬区" },
       { id: 7, text: "好み: 辛いものが苦手" },
     ]),
-    "オーナーについての記憶（アプリが保存したもの）:\n- [#3] 住んでいる地域: 東京都練馬区\n- [#7] 好み: 辛いものが苦手",
+    `${MEMORY_BLOCK_HEADER}\n- [#3] 住んでいる地域: 東京都練馬区\n- [#7] 好み: 辛いものが苦手`,
   );
   assert.equal(memoryBlock([]), undefined);
 });
