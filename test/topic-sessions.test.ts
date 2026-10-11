@@ -52,6 +52,8 @@ test("TopicSessionStore: 進行中として保存し、最終発言の時刻は�
     origin: "command",
     deletePromptMessageId: null,
     deletedAt: null,
+    renewedSummary: null,
+    renewedAt: null,
   };
   assert.deepEqual(created, expected);
   assert.deepEqual(store.get("topic-1"), expected);
@@ -272,6 +274,8 @@ test("openDb: v3 の DB を v4 に上げても既存のセッションは残り�
     origin: "command",
     deletePromptMessageId: null,
     deletedAt: null,
+    renewedSummary: null,
+    renewedAt: null,
   });
   assert.equal(store.getCloseDraft("topic-1"), undefined);
   assert.equal(new SdkSessionStore(db).get("topic-1"), "session-1");
@@ -535,6 +539,8 @@ test("openDb: v8 の DB を v9 に上げても既存のセッションは残り�
     origin: "inbox",
     deletePromptMessageId: null,
     deletedAt: null,
+    renewedSummary: null,
+    renewedAt: null,
   });
   assert.deepEqual(
     store.listDeleteDue(new Date("2026-09-01T00:00:00.000Z"), 5).map((session) => session.channelId),
@@ -544,4 +550,42 @@ test("openDb: v8 の DB を v9 に上げても既存のセッションは残り�
   store.setDeletePrompt("topic-1", "message-1");
   assert.equal(store.get("topic-1")?.deletePromptMessageId, "message-1");
   assert.equal(store.markDeleted("topic-1")?.deletedAt, "2026-10-02T00:00:00.000Z");
+});
+
+test("openDb: v14 の DB を v15 に上げても既存のセッションは残り、/renew の要約と時刻は null。setRenewed で要約と時刻（今）が入り、置き換えられる", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // /renew の要約より前（v14）の DB を作る
+  const v14 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 14)) v14.exec(migration);
+  v14.exec("PRAGMA user_version = 14");
+  v14.prepare(
+    "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, summary) " +
+      "VALUES ('topic-1', 'guild-1', '旅行の計画', 'active', 'active-1', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z', NULL)",
+  ).run();
+  v14.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 15);
+  const store = new TopicSessionStore(db, clock());
+  const before = store.get("topic-1");
+  assert.equal(before?.title, "旅行の計画");
+  assert.equal(before?.renewedSummary, null);
+  assert.equal(before?.renewedAt, null);
+
+  store.setRenewed("topic-1", "- 目的: 京都旅行");
+  assert.deepEqual(store.get("topic-1"), {
+    ...before,
+    renewedSummary: "- 目的: 京都旅行",
+    renewedAt: "2026-10-02T00:00:00.000Z",
+  });
+  store.setRenewed("topic-1", "- 宿を決めた");
+  assert.equal(store.get("topic-1")?.renewedSummary, "- 宿を決めた");
+  assert.equal(store.get("topic-1")?.renewedAt, "2026-10-02T00:01:00.000Z");
+  // 無いチャンネルは何もしない
+  store.setRenewed("topic-9", "x");
+  assert.equal(store.get("topic-9"), undefined);
 });

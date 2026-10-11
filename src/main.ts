@@ -103,7 +103,7 @@ const runner = new SdkAgentRunner(
   undefined,
   devLogSink === undefined ? undefined : { sink: devLogSink, now },
 );
-// 発言と /close のターンのキュー（key は channelId）
+// 発言と /close・/renew のターンのキュー（key は channelId）
 const turnQueue = new KeyedSerialQueue(config.maxConcurrentTurns);
 const turn = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
 const channelOps = new ChannelOpsQueue({
@@ -123,6 +123,18 @@ const handler = createHandler({
   queue: turnQueue,
   now,
 });
+// #inbox・#tasks の切り替え: 要約のターンは発言と同じキュー（turnQueue、key はそのチャンネルの channelId）で行う。
+// 定期処理と、#inbox・#tasks での /renew で使う
+const inboxRotator = new InboxRotator({
+  cfg: config,
+  guildSettings,
+  inboxSummaries,
+  turnQueue,
+  turn,
+  gateway,
+  now,
+  log,
+});
 const commands = createCommands({
   cfg: config,
   gateway,
@@ -136,6 +148,7 @@ const commands = createCommands({
   projectsDir,
   turnQueue,
   turn,
+  inboxRotator,
   log,
 });
 const handleInteraction = createInteractionHandler({
@@ -162,17 +175,6 @@ const handleInteraction = createInteractionHandler({
     turn,
     log,
   }),
-  log,
-});
-// #inbox・#tasks の切り替え: 要約のターンは発言と同じキュー（turnQueue、key はそのチャンネルの channelId）で行う
-const inboxRotator = new InboxRotator({
-  cfg: config,
-  guildSettings,
-  inboxSummaries,
-  turnQueue,
-  turn,
-  gateway,
-  now,
   log,
 });
 // 定期処理: セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、

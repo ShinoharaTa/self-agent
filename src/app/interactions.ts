@@ -9,6 +9,7 @@ import { createKbDeleteComponent, type KbDeleteDeps } from "./commands/kb-delete
 import { createMemoryUndoComponent, type MemoryUndoDeps } from "./commands/memory-undo.ts";
 import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
 import { createProjectsCommand, createProjectsComponent, type ProjectsDeps } from "./commands/projects.ts";
+import { createRenewCommand, type RenewDeps } from "./commands/renew.ts";
 import { createSessionsCommand, type SessionsDeps } from "./commands/sessions.ts";
 import { createSetupCommand, type SetupDeps } from "./commands/setup.ts";
 import { createTasksCommand, createTasksComponent, type TasksDeps } from "./commands/tasks.ts";
@@ -35,10 +36,14 @@ export type ComponentHandler = {
   handle(interaction: ComponentInteraction, responder: InteractionResponder): Promise<void>;
 };
 
-/** /setup と /new は同じキュー（queue）、/close は発言のターンと同じキュー（turnQueue）を使う */
+/**
+ * /setup と /new は同じキュー（queue）、/close と /renew は発言のターンと同じキュー（turnQueue）を使う。
+ * /renew は #inbox・#tasks では切り替え（inboxRotator）を使う
+ */
 export type CommandDeps = SetupDeps &
   NewSessionDeps &
   CloseDeps &
+  RenewDeps &
   WaitDeps &
   SessionsDeps &
   TasksDeps &
@@ -52,6 +57,7 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
     createSetupCommand(deps),
     createNewSessionCommand(deps),
     createCloseCommand(deps),
+    createRenewCommand(deps),
     createWaitCommand(deps),
     createSessionsCommand(deps),
     createTasksCommand(deps),
