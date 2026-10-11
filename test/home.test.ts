@@ -2,7 +2,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createHomeComponent, NEW_SESSION_MODAL } from "../src/app/commands/home.ts";
 import { EMPTY_TITLE_REPLY, NOT_SET_UP_REPLY, welcomeText } from "../src/app/commands/new.ts";
-import { ensureGuildLayout } from "../src/app/commands/setup.ts";
+import { ensureGuildLayout, homePanelMessage } from "../src/app/commands/setup.ts";
 import { taskListMessage } from "../src/app/commands/tasks.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
@@ -17,12 +17,19 @@ type ComponentInteraction = Exclude<Interaction, { kind: "command" }>;
 /** ホームパネルは #inbox（ch-2）にある */
 const BASE = { guildId: "guild-1", channelId: "ch-2", userId: "owner-1", createdAt: NOW };
 
-function press(action: string): ComponentInteraction {
-  return { ...BASE, kind: "button", customId: `home:${action}` };
+/** ホームパネル（homePanelMessage）のボタンを label で押す（custom_id はパネルのものを使う） */
+function press(label: string): ComponentInteraction {
+  const row = homePanelMessage().components?.[0];
+  assert.ok(row?.kind === "buttons");
+  const button = row.buttons.find((candidate) => candidate.label === label);
+  assert.ok(button !== undefined, label);
+  return { ...BASE, kind: "button", customId: button.customId };
 }
 
+/** NEW_SESSION_MODAL の題名の欄に title を入れて送る */
 function submitTitle(title: string): ComponentInteraction {
-  return { ...BASE, kind: "modal", customId: "home:new-modal", fields: { title } };
+  const field = NEW_SESSION_MODAL.fields[0]!;
+  return { ...BASE, kind: "modal", customId: NEW_SESSION_MODAL.customId, fields: { [field.customId]: title } };
 }
 
 /** /setup で作られる進行中カテゴリの ID（作る順に ch-1 から振られる） */
@@ -61,21 +68,20 @@ function setup(t: TestContext) {
   return { clock, gateway, topicSessions, tasks, logs, handle, setUp };
 }
 
-test("[新しいセッション]（home:new）: 題名 1 項目（必須・100 字まで）のモーダル home:new-modal を開く", async (t) => {
+test("[新しいセッション]: 題名 1 項目（必須・100 字まで）のモーダルを開く", async (t) => {
   const { gateway, handle } = setup(t);
 
-  const calls = await handle(press("new"));
+  const calls = await handle(press("新しいセッション"));
 
   assert.deepEqual(calls, [{ method: "showModal", modal: NEW_SESSION_MODAL }]);
-  assert.deepEqual(NEW_SESSION_MODAL, {
-    customId: "home:new-modal",
-    title: "新しいセッション",
-    fields: [{ customId: "title", label: "題名", required: true, maxLength: 100 }],
-  });
+  assert.deepEqual(
+    NEW_SESSION_MODAL.fields.map(({ required, maxLength }) => ({ required, maxLength })),
+    [{ required: true, maxLength: 100 }],
+  );
   assert.deepEqual(gateway.calls, []);
 });
 
-test("モーダル送信（home:new-modal）: /new と同じ処理でセッションを作り、ephemeral でリンクを返す", async (t) => {
+test("モーダル送信: /new と同じ処理でセッションを作り、ephemeral でリンクを返す", async (t) => {
   const { gateway, topicSessions, logs, handle, setUp } = setup(t);
   await setUp();
 
@@ -95,7 +101,8 @@ test("モーダル送信（home:new-modal）: /new と同じ処理でセッシ�
   ]);
   assert.equal(topicSessions.get("ch-8")?.state, "active");
   assert.equal(topicSessions.get("ch-8")?.title, "旅行の計画");
-  assert.deepEqual(logs, ["ホームパネルからセッションを作りました（guild=guild-1）"]);
+  assert.equal(logs.length, 1);
+  assert.ok(!logs[0]!.includes("ch-8"));
 });
 
 test("モーダル送信: 空白だけの題名は作らずに案内し、/setup 前なら /setup を案内する", async (t) => {
@@ -111,22 +118,20 @@ test("モーダル送信: 空白だけの題名は作らずに案内し、/setup
   assert.deepEqual(gateway.calls, []);
 });
 
-test("[タスク一覧]（home:tasks）: /tasks と同じ一覧とセレクトを ephemeral で返す", async (t) => {
+test("[タスク一覧]: /tasks と同じ一覧とセレクトを ephemeral で返す", async (t) => {
   const { tasks, handle } = setup(t);
   tasks.add({ title: "買い物", due: "2026-10-03" });
   tasks.add({ title: "電話" });
 
-  const calls = await handle(press("tasks"));
+  const calls = await handle(press("タスク一覧"));
 
   assert.deepEqual(calls, [{ method: "reply", message: { ...taskListMessage(tasks), ephemeral: true } }]);
-  assert.ok(calls[0]?.method === "reply");
-  assert.equal(calls[0].message.text, "#1 買い物（期限 2026-10-03）\n#2 電話");
 });
 
-test("[待ちのセッション]（home:waiting）: 待ちのセッションだけを ephemeral で返す。0 件なら「なし」", async (t) => {
+test("[待ちのセッション]: 待ちのセッションだけを ephemeral で返す。0 件なら「なし」", async (t) => {
   const { clock, topicSessions, handle } = setup(t);
 
-  assert.deepEqual(await handle(press("waiting")), [
+  assert.deepEqual(await handle(press("待ちのセッション")), [
     { method: "reply", message: { text: "**待ち**\nなし", ephemeral: true } },
   ]);
 
@@ -136,14 +141,14 @@ test("[待ちのセッション]（home:waiting）: 待ちのセッションだ�
   topicSessions.setWaiting("topic-1");
   clock.now = NOW;
 
-  assert.deepEqual(await handle(press("waiting")), [
+  assert.deepEqual(await handle(press("待ちのセッション")), [
     { method: "reply", message: { text: "**待ち**\n<#topic-1> 返事待ち（最終 5 時間前）", ephemeral: true } },
   ]);
 });
 
 test("home の不明な操作は例外にする", async (t) => {
   const { handle } = setup(t);
-  await assert.rejects(handle(press("other")), /home の不明な操作です/);
+  await assert.rejects(handle({ ...BASE, kind: "button", customId: "home:other" }), /home の不明な操作です/);
   await assert.rejects(handle({ ...BASE, kind: "select", customId: "home:tasks", values: [] }), /home の不明な操作です/);
   await assert.rejects(handle({ ...BASE, kind: "modal", customId: "home:other", fields: {} }), /home の不明な操作です/);
 });

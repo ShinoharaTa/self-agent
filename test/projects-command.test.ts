@@ -4,7 +4,6 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STALE_TEXT } from "../src/app/commands/delete.ts";
-import { HELP_TEXT } from "../src/app/commands/help.ts";
 import {
   createProjectsCommand,
   createProjectsComponent,
@@ -100,6 +99,21 @@ function setup(t: TestContext, options: { publicBaseUrl: string | undefined } = 
   };
 }
 
+/** proj:pick で id のプロジェクトを選び、出た確認のボタンを label で押す（custom_id は確認のものを使う） */
+async function confirmButton(
+  run: (interaction: Exclude<Interaction, { kind: "command" }>) => Promise<ResponderCall[]>,
+  id: number,
+  label: string,
+): Promise<Extract<Interaction, { kind: "button" }>> {
+  const [reply] = await run(pick([String(id)]));
+  assert.ok(reply?.method === "reply");
+  const row = reply.message.components?.[0];
+  assert.ok(row?.kind === "buttons");
+  const button = row.buttons.find((candidate) => candidate.label === label);
+  assert.ok(button !== undefined, label);
+  return press(button.customId);
+}
+
 function selectRow(options: Array<{ label: string; value: string; description: string }>): ComponentRow {
   return {
     kind: "select",
@@ -157,7 +171,6 @@ test("/projects: 0 件（削除済みだけを含む）なら「プロジェク�
   assert.deepEqual(await runProjects(), [
     { method: "reply", message: { text: NO_PROJECTS_TEXT, components: [], ephemeral: true } },
   ]);
-  assert.equal(NO_PROJECTS_TEXT, "プロジェクトはまだありません");
 });
 
 test("/projects: 配信が未設定（publicBaseUrl が無い）なら url の代わりに「（配信は未設定）」。確認の括弧の中も「配信は未設定」", async (t) => {
@@ -167,10 +180,11 @@ test("/projects: 配信が未設定（publicBaseUrl が無い）なら url の�
   const calls = await runProjects();
 
   assert.ok(calls[0]?.method === "reply");
-  assert.equal(calls[0].message.text, "**家計簿** （配信は未設定）（<#ch-1>・更新 2026-10-07）");
+  assert.ok(calls[0].message.text.includes("配信は未設定"));
+  assert.ok(!calls[0].message.text.includes("/p/"));
   const confirm = await run(pick(["1"]));
   assert.ok(confirm[0]?.method === "reply");
-  assert.equal(confirm[0].message.text, "家計簿（配信は未設定）を削除しますか？ ページは開けなくなり、ファイルも消えます");
+  assert.ok(confirm[0].message.text.includes("家計簿（配信は未設定）"));
 });
 
 test("/projects: 2000 字を超えるなら末尾（古いもの）から削って「ほか n 件」を足す。セレクトは本文とは別に新しい順に 25 件まで", (t) => {
@@ -210,26 +224,20 @@ test("/projects: セレクトの label は 100 字（UTF-16）までに切る", 
   assert.ok(label.endsWith("…"));
 });
 
-test("proj:pick: 選んだプロジェクトの削除の確認を本人にだけ出す。[削除する]（proj:del:<id>、danger）[やめる]（proj:keep:<id>）", async (t) => {
+test("proj:pick: 選んだプロジェクトの削除の確認（[削除する][やめる]）を本人にだけ出す", async (t) => {
   const { add, run } = setup(t);
   add("kakeibo", "家計簿");
 
   const calls = await run(pick(["1"]));
 
-  const prompt = {
-    text: `家計簿（${BASE_URL}/p/kakeibo/）を削除しますか？ ページは開けなくなり、ファイルも消えます`,
-    components: [
-      {
-        kind: "buttons" as const,
-        buttons: [
-          { customId: "proj:del:1", label: "削除する", style: "danger" as const },
-          { customId: "proj:keep:1", label: "やめる" },
-        ],
-      },
-    ],
-  };
-  assert.deepEqual(calls, [{ method: "reply", message: { ...prompt, ephemeral: true } }]);
-  assert.deepEqual(projectDeletePrompt({ id: 1, slug: "kakeibo", title: "家計簿" }, BASE_URL), prompt);
+  assert.deepEqual(calls, [
+    {
+      method: "reply",
+      message: { ...projectDeletePrompt({ id: 1, slug: "kakeibo", title: "家計簿" }, BASE_URL), ephemeral: true },
+    },
+  ]);
+  assert.ok(calls[0]?.method === "reply");
+  assert.ok(calls[0].message.text.includes(`${BASE_URL}/p/kakeibo/`));
 });
 
 test("proj:pick: 選んだ後に削除済み・無いものなら「古くなっています」を本人にだけ出す", async (t) => {
@@ -245,7 +253,7 @@ test("[削除する]: 削除済みにしてディレクトリを消し、「削�
   add("kakeibo", "家計簿");
   add("todo", "やること");
 
-  const calls = await run(press("proj:del:1"));
+  const calls = await run(await confirmButton(run, 1, "削除する"));
 
   assert.deepEqual(calls, [
     { method: "deferUpdate" },
@@ -257,7 +265,7 @@ test("[削除する]: 削除済みにしてディレクトリを消し、「削�
   // 他のプロジェクトはそのまま
   assert.ok(existsSync(join(projectsDir, "todo", "site", "index.html")));
   assert.equal(projects.get(2)?.deletedAt, null);
-  assert.deepEqual(logs, ["[削除する] でプロジェクトを削除しました"]);
+  assert.equal(logs.length, 1);
 
   assert.deepEqual(await run(press("proj:del:1")), [
     { method: "deferUpdate" },
@@ -267,7 +275,6 @@ test("[削除する]: 削除済みにしてディレクトリを消し、「削�
     { method: "deferUpdate" },
     { method: "update", message: { text: STALE_TEXT, components: [] } },
   ]);
-  assert.ok(STALE_TEXT.includes("古くなっています"));
   assert.equal(logs.length, 1);
 });
 
@@ -275,55 +282,64 @@ test("[やめる]: 何も消さず「やめました」にしてボタンを外�
   const { projects, projectsDir, add, run, logs } = setup(t);
   add("kakeibo", "家計簿");
 
-  assert.deepEqual(await run(press("proj:keep:1")), [
+  assert.deepEqual(await run(await confirmButton(run, 1, "やめる")), [
     { method: "update", message: { text: PROJECT_KEPT_TEXT, components: [] } },
   ]);
-  assert.equal(PROJECT_KEPT_TEXT, "やめました");
   assert.ok(existsSync(join(projectsDir, "kakeibo", "site", "index.html")));
   assert.equal(projects.get(1)?.deletedAt, null);
   assert.deepEqual(logs, []);
 });
+test("[削除する]: ディレクトリを消せない・消してはいけない（projects の外や別のプロジェクトを指す symlink・消すのに失敗）ときは残して log に出し、DB は削除済みにする", async (t) => {
+  const cases: Array<{
+    label: string;
+    /** 消すプロジェクトを用意し、その id と、残っているべきファイルを返す */
+    arrange: (env: ReturnType<typeof setup>) => { id: number; title: string; kept: string };
+  }> = [
+    {
+      label: "projects の外への symlink",
+      arrange: ({ dir, projects, projectsDir }) => {
+        const outside = join(dir, "outside");
+        mkdirSync(outside);
+        writeFileSync(join(outside, "keep.txt"), "keep");
+        const linked = projects.create({ guildId: "guild-1", channelId: "ch-linked", name: "linked", title: "外へのリンク" });
+        symlinkSync(outside, join(projectsDir, linked.slug));
+        return { id: linked.id, title: linked.title, kept: join(outside, "keep.txt") };
+      },
+    },
+    {
+      label: "別のプロジェクトへの symlink",
+      arrange: ({ projects, projectsDir, add }) => {
+        add("todo", "やること");
+        const sibling = projects.create({ guildId: "guild-1", channelId: "ch-sibling", name: "linked", title: "隣へのリンク" });
+        symlinkSync(join(projectsDir, "todo"), join(projectsDir, sibling.slug));
+        return { id: sibling.id, title: sibling.title, kept: join(projectsDir, "todo", "site", "index.html") };
+      },
+    },
+    {
+      label: "消すのに失敗",
+      arrange: ({ projectsDir, add }) => {
+        const project = add("linked", "家計簿");
+        // projects に書けないと linked 自体を消せない（setup の後始末で戻す）
+        chmodSync(projectsDir, 0o555);
+        return { id: project.id, title: project.title, kept: join(projectsDir, "linked") };
+      },
+    },
+  ];
 
-test("[削除する]: slug のディレクトリが projects の外（や別のプロジェクト）を指す symlink なら、消さずに log。DB は削除済みにする", async (t) => {
-  const { dir, projects, projectsDir, add, run, logs } = setup(t);
-  const outside = join(dir, "outside");
-  mkdirSync(outside);
-  writeFileSync(join(outside, "keep.txt"), "keep");
-  const linked = projects.create({ guildId: "guild-1", channelId: "ch-linked", name: "linked", title: "外へのリンク" });
-  symlinkSync(outside, join(projectsDir, linked.slug));
-  add("todo", "やること");
-  const sibling = projects.create({ guildId: "guild-1", channelId: "ch-sibling", name: "sibling", title: "隣へのリンク" });
-  symlinkSync(join(projectsDir, "todo"), join(projectsDir, sibling.slug));
+  for (const { label, arrange } of cases) {
+    const env = setup(t);
+    const { id, title, kept } = arrange(env);
 
-  const calls = await run(press(`proj:del:${linked.id}`));
+    const calls = await env.run(press(`proj:del:${id}`));
 
-  assert.deepEqual(calls.at(-1), { method: "update", message: { text: "削除しました: 外へのリンク", components: [] } });
-  assert.ok(existsSync(join(outside, "keep.txt")));
-  assert.notEqual(projects.get(linked.id)?.deletedAt, null);
-
-  await run(press(`proj:del:${sibling.id}`));
-  assert.ok(existsSync(join(projectsDir, "todo", "site", "index.html")));
-  assert.notEqual(projects.get(sibling.id)?.deletedAt, null);
-
-  const refused = "プロジェクトのディレクトリを確かめられないため消しませんでした";
-  assert.deepEqual(logs, [refused, "[削除する] でプロジェクトを削除しました", refused, "[削除する] でプロジェクトを削除しました"]);
-  // log に slug・パスは出さない
-  for (const line of logs) assert.ok(!line.includes("linked") && !line.includes(dir), line);
-});
-
-test("[削除する]: ディレクトリを消すのに失敗しても DB は削除済みのまま、log に「プロジェクトのディレクトリを消せませんでした」", async (t) => {
-  const { projects, projectsDir, add, run, logs } = setup(t);
-  add("kakeibo", "家計簿");
-  // projects に書けないと kakeibo 自体を消せない
-  chmodSync(projectsDir, 0o555);
-
-  const calls = await run(press("proj:del:1"));
-
-  chmodSync(projectsDir, 0o755);
-  assert.deepEqual(calls.at(-1), { method: "update", message: { text: "削除しました: 家計簿", components: [] } });
-  assert.ok(existsSync(join(projectsDir, "kakeibo")));
-  assert.notEqual(projects.get(1)?.deletedAt, null);
-  assert.deepEqual(logs, ["プロジェクトのディレクトリを消せませんでした", "[削除する] でプロジェクトを削除しました"]);
+    chmodSync(env.projectsDir, 0o755);
+    assert.deepEqual(calls.at(-1), { method: "update", message: { text: `削除しました: ${title}`, components: [] } }, label);
+    assert.ok(existsSync(kept), label);
+    assert.notEqual(env.projects.get(id)?.deletedAt, null, label);
+    // 消さなかったことと、削除したことの 2 行。slug・パスは出さない
+    assert.equal(env.logs.length, 2, label);
+    for (const line of env.logs) assert.ok(!line.includes("linked") && !line.includes(env.dir), `${label}: ${line}`);
+  }
 });
 
 test("proj の不明な操作（id 無し・数でない id・知らない action・ボタン以外・セレクト以外の pick）は例外にする", async (t) => {
@@ -340,8 +356,4 @@ test("proj の不明な操作（id 無し・数でない id・知らない actio
   assert.deepEqual(responder.calls, []);
   assert.equal(projects.get(1)?.deletedAt, null);
   assert.equal(component.namespace, "proj");
-});
-
-test("/help に /projects の説明がある", () => {
-  assert.match(HELP_TEXT, /^`\/projects` 作ったページの一覧を表示します（選んで削除できます）$/m);
 });

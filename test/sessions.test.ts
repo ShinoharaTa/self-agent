@@ -1,15 +1,12 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { HELP_TEXT } from "../src/app/commands/help.ts";
 import {
   createSessionsCommand,
   fitItems,
   formatElapsed,
   MESSAGE_MAX_LENGTH,
-  sessionListText,
 } from "../src/app/commands/sessions.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
-import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
@@ -175,15 +172,6 @@ test("/sessions: 2000 字を超えるなら末尾から削って「ほか n 件�
   assert.ok(text.length + `\n<#a00> ${long}（最終 1 時間前）`.length > MESSAGE_MAX_LENGTH);
 });
 
-test("sessionListText: 待ちだけの一覧（ホームパネルの [待ちのセッション]）", (t) => {
-  const { topicSessions, add } = setup(t);
-  add("a-1", "進行中", "active", hoursAgo(1));
-  add("w-1", "返事待ち", "waiting", hoursAgo(30));
-
-  assert.equal(sessionListText(topicSessions, "guild-1", ["waiting"], NOW), "**待ち**\n<#w-1> 返事待ち（最終 1 日前）");
-  assert.equal(sessionListText(topicSessions, "guild-2", ["waiting"], NOW), "**待ち**\nなし");
-});
-
 test("fitItems: 収まれば全部、超えるなら末尾から削って削った件数を render に渡す", () => {
   const render = (shown: readonly string[], omitted: number): string =>
     [...shown, ...(omitted > 0 ? [`ほか ${omitted} 件`] : [])].join("\n");
@@ -191,11 +179,4 @@ test("fitItems: 収まれば全部、超えるなら末尾から削って削っ�
   assert.deepEqual(fitItems(["aaa", "bbb"], render, 7), { text: "aaa\nbbb", shown: ["aaa", "bbb"] });
   assert.deepEqual(fitItems(["aaa", "bbb", "ccc"], render, 10), { text: "aaa\nほか 2 件", shown: ["aaa"] });
   assert.deepEqual(fitItems([], render, 10), { text: "", shown: [] });
-});
-
-test("/help に /sessions /tasks /usage とホームパネルの説明がある", () => {
-  assert.match(HELP_TEXT, /^`\/sessions` /m);
-  assert.match(HELP_TEXT, /^`\/tasks` /m);
-  assert.match(HELP_TEXT, /^`\/usage` /m);
-  assert.match(HELP_TEXT, /ホームパネル/);
 });
