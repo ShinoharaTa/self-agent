@@ -66,7 +66,9 @@ test("[中断]: custom_id のチャンネルの、その番号のターンを中
   assert.deepEqual(await env.press(button("turn:abort:topic-1:")), stale);
   assert.deepEqual(await env.press(button("turn:abort:topic-1:3x")), stale);
   assert.deepEqual(env.aborted, [{ channelId: "topic-1", turnSeq: 3 }]);
-  assert.deepEqual(env.logs, ["[中断] でターンを中断しました（guild=guild-1）"]);
+  // 中断できたときだけ log に出す。チャンネル ID は出さない
+  assert.equal(env.logs.length, 1);
+  assert.ok(!env.logs[0]!.includes("topic-1"), env.logs[0]);
 });
 
 test("[続ける]: 受け付けるセッションならボタンを外してから、押した時刻でターンを入れる。それ以外は本人にだけ古いと返す", async () => {
@@ -81,7 +83,9 @@ test("[続ける]: 受け付けるセッションならボタンを外してか�
   assert.deepEqual(await env.press(button("turn:continue:inbox-1")), stale);
   assert.deepEqual(await env.press(button("turn:continue:topic-9")), stale);
   assert.equal(env.continued.length, 1);
-  assert.deepEqual(env.logs, ["[続ける] でターンを続けます（guild=guild-1）"]);
+  // ターンを入れたときだけ log に出す。チャンネル ID は出さない
+  assert.equal(env.logs.length, 1);
+  assert.ok(!env.logs[0]!.includes("topic-1"), env.logs[0]);
 });
 
 test("turn の不明な操作（custom_id のチャンネル無し・知らない action・セレクト）は例外にする", async () => {

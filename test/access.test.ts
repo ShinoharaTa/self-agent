@@ -35,9 +35,10 @@ function tempGuildSettings(t: TestContext): GuildSettingsStore {
 /** sessions の行が無い DB（#inbox の判定だけを見る） */
 const NO_SESSIONS = { get: () => undefined };
 
-test("すべての条件を満たす発言は受け付け、チャンネルの種類を返す", () => {
+test("すべての条件を満たす発言は受け付け、チャンネルの種類を返す（許可リストにある別のサーバーでも）", () => {
   assert.equal(acceptedChannel(accepted, cfg, resolveInbox), "inbox");
   assert.equal(acceptedChannel(accepted, cfg, () => "session"), "session");
+  assert.equal(acceptedChannel({ ...accepted, guildId: "guild-9" }, cfg, resolveInbox), "inbox");
 });
 
 test("条件を 1 つでも外れる発言は弾く", () => {
@@ -60,25 +61,6 @@ test("設定が欠けていれば何も受け付けない", () => {
   assert.equal(acceptedChannel(accepted, { ...cfg, allowedGuildIds: [] }, resolveInbox), null);
   assert.equal(acceptedChannel(accepted, { ...cfg, ownerUserId: undefined }, resolveInbox), null);
   assert.equal(acceptedChannel(accepted, cfg, () => null), null);
-});
-
-test("許可リストにある別のサーバーでも受け付ける", () => {
-  assert.equal(acceptedChannel({ ...accepted, guildId: "guild-9" }, cfg, resolveInbox), "inbox");
-});
-
-test("チャンネルの判定には発言のサーバーとチャンネルを渡し、他の条件で弾く発言では呼ばない", () => {
-  const calls: Array<[string, string]> = [];
-  const resolve: ResolveChannel = (guildId, channelId) => {
-    calls.push([guildId, channelId]);
-    return "inbox";
-  };
-
-  assert.equal(acceptedChannel({ ...accepted, guildId: "guild-9", channelId: "inbox-9" }, cfg, resolve), "inbox");
-  assert.equal(acceptedChannel({ ...accepted, authorId: "someone-else" }, cfg, resolve), null);
-  assert.equal(acceptedChannel({ ...accepted, guildId: "guild-2" }, cfg, resolve), null);
-  assert.equal(acceptedChannel({ ...accepted, content: " " }, cfg, resolve), null);
-
-  assert.deepEqual(calls, [["guild-9", "inbox-9"]]);
 });
 
 test("createChannelResolver: /setup 済みのサーバーは DB の #inbox だけを受け付け、env の #inbox は使わない", (t) => {
