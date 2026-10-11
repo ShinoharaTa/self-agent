@@ -5,29 +5,40 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { buildQueryOptions, childEnv } from "../src/agent/query-options.ts";
+import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
 
 const cfg = { model: "claude-opus-5", workDir: "/srv/work", claudeConfigDir: "/srv/claude", effort: undefined };
 const mcpServer = createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
+
+/** buildQueryOptions のシステムプロンプトの本文 */
+function promptText(): string {
+  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  assert.ok(typeof systemPrompt === "object" && !Array.isArray(systemPrompt) && systemPrompt.type === "custom");
+  return String(systemPrompt.prompt);
+}
 
 test("毎回同じ Options を返す（キャッシュのため）", () => {
   assert.deepEqual(buildQueryOptions(cfg, mcpServer), buildQueryOptions(cfg, mcpServer));
 });
 
+test("システムプロンプトは記録させずに毎回送る（snapshot: false。直したプロンプトが既存のセッションにも届く）", () => {
+  assert.deepEqual(buildQueryOptions(cfg, mcpServer).systemPrompt, { type: "custom", prompt: SYSTEM_PROMPT, snapshot: false });
+});
+
 test("システムプロンプトに日付や年を含めない", () => {
-  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
-  assert.equal(typeof systemPrompt, "string");
+  const systemPrompt = promptText();
   assert.doesNotMatch(String(systemPrompt), /\d{4}|\d{1,2}\s*[/\-月]\s*\d{1,2}/);
 });
 
 test("システムプロンプトに改訂の要点（#inbox・<#チャンネルID>・task_list・session_open）を含める", () => {
-  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const systemPrompt = promptText();
   for (const word of ["#inbox", "<#", "task_list", "session_open"]) {
     assert.ok(String(systemPrompt).includes(word), word);
   }
 });
 
 test("システムプロンプトに作ってと頼まれたときの行（project_open・コードを貼らない・#inbox では session_open）を含める", () => {
-  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const systemPrompt = promptText();
   assert.ok(
     String(systemPrompt).includes(
       "- 何かを作ってと頼まれたら、コードを返事に貼らない。セッションのチャンネルで project_open を使い、ファイルを書いて動く状態にしてから、URL と使い方を 3〜5 行で伝える。#inbox で頼まれたら session_open で専用のチャンネルを作る。コードは聞かれたときだけ短く見せる。",
@@ -36,7 +47,7 @@ test("システムプロンプトに作ってと頼まれたときの行（proje
 });
 
 test("システムプロンプトに、作ってと頼まれたときの行の直後に project_files の行、その次に仕様の検討・見直しを頼まれたときの行（作り始めずに案を出す・頼まれていない機能は候補として 1 行）を含める", () => {
-  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const systemPrompt = promptText();
   assert.ok(
     String(systemPrompt).includes(
       "コードは聞かれたときだけ短く見せる。\n" +
@@ -47,7 +58,7 @@ test("システムプロンプトに、作ってと頼まれたときの行の�
 });
 
 test("システムプロンプトに、仕様の検討・見直しの行の直後に PLAN モードの行（書かずに計画を出す・承認まで project_open・Write・Edit・project_files を使わない・切り替えられないと言わない）を含める", () => {
-  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const systemPrompt = promptText();
   assert.ok(
     String(systemPrompt).includes(
       "候補として 1 行で挙げる。\n" +
@@ -57,7 +68,7 @@ test("システムプロンプトに、仕様の検討・見直しの行の直�
 });
 
 test("システムプロンプトにスマートフォン前提の行（PC は使えない・表と見出しを使わない・手順を案内せず project_open の URL で渡す）を含める", () => {
-  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const systemPrompt = promptText();
   assert.ok(
     String(systemPrompt).includes(
       "- オーナーはスマートフォンの Discord から使い、PC は使えない。表と見出し（# で始まる行）は使わない。箇条書きは可。ファイルを保存して開く・コマンドを打つといった手順は案内せず、動くものは project_open で作って URL で渡す。",
@@ -66,7 +77,7 @@ test("システムプロンプトにスマートフォン前提の行（PC は�
 });
 
 test("システムプロンプトにアプリの説明（チャンネル・セッション・全コマンド・パネル・無いことは分からないと答える）を含める", () => {
-  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const systemPrompt = promptText();
   const prompt = String(systemPrompt);
   assert.ok(prompt.includes("このアプリについて（使い方を聞かれたら、この範囲で答える）:"));
   for (const word of [
@@ -83,7 +94,7 @@ test("システムプロンプトにアプリの説明（チャンネル・セ�
 });
 
 test("システムプロンプトに #tasks の行（引き継ぎの文・書き分け・やることの 3 行・#tasks の節・アプリの説明）を含め、「まだ役割が無い」を含めない", () => {
-  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const systemPrompt = promptText();
   const prompt = String(systemPrompt);
   for (const line of [
     "「これまでの #inbox の要約:」「これまでの #tasks の要約:」「#inbox からの続き:」",
@@ -103,7 +114,7 @@ test("システムプロンプトに #tasks の行（引き継ぎの文・書き
 });
 
 test("システムプロンプトに WebSearch と WebFetch の使い方を含める", () => {
-  const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
+  const systemPrompt = promptText();
   for (const word of ["WebSearch", "WebFetch"]) {
     assert.ok(String(systemPrompt).includes(word), word);
   }

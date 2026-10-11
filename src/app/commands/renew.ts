@@ -6,8 +6,8 @@ import { type RenewOutcome, renewSession, type SessionRenewDeps } from "../sessi
 import { ALREADY_CLOSED_REPLY } from "./close.ts";
 
 export const NOT_RENEWABLE_REPLY = "セッションのチャンネルか #inbox・#tasks で実行してください";
-export const RENEWED_FRESH_REPLY = "前の会話の記録が見つからないため、要約せずに新しくしました。次の発言から新しい設定で続けます";
-export const NO_CONVERSATION_REPLY = "新しい会話はまだ始まっていません。次の発言から新しい設定で始まります";
+export const RENEWED_FRESH_REPLY = "前の会話の記録が見つからないため、要約せずに新しくしました。次の発言から新しい会話で続けます";
+export const NO_CONVERSATION_REPLY = "新しい会話はまだ始まっていません。次の発言から新しい会話で始まります";
 export const NOT_SET_UP_REPLY = "/setup を実行してください";
 export const RENEW_FAILURE_REPLY = "失敗しました。もう一度 /renew を実行してください";
 
@@ -20,7 +20,7 @@ export type RenewDeps = SessionRenewDeps & {
 
 /** セッションの会話を新しくした返信（要約を添える） */
 export function renewedText(summary: string): string {
-  return `会話を新しくしました。次の発言から新しい設定で続けます。\n\n**要約**\n${summary}`;
+  return `会話を新しくしました。次の発言から新しい会話で続けます。\n\n**要約**\n${summary}`;
 }
 
 function sessionReply(outcome: RenewOutcome): string {
@@ -63,7 +63,7 @@ function rotateReply(result: RotateNowResult): string {
 export function createRenewCommand(deps: RenewDeps): CommandHandler {
   const { guildSettings, topicSessions, inboxRotator } = deps;
   return {
-    def: { name: "renew", description: "会話を要約して新しくします（新しい設定で続けます）" },
+    def: { name: "renew", description: "会話を要約して新しくします（長くなった会話を仕切り直します）" },
     async handle(interaction, responder) {
       // 許可サーバー以外（DM を含む）は interactions.ts で弾いている
       const guildId = interaction.guildId;
