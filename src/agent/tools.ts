@@ -29,7 +29,7 @@ import {
   type TopicSessionStore,
 } from "../store/topic-sessions.ts";
 import type { RunContext } from "./runner.ts";
-import { copyWebScaffold } from "./scaffold.ts";
+import { copyWebScaffold, hasWebScaffold } from "./scaffold.ts";
 import { normalizeUrl } from "./url.ts";
 
 export const MCP_SERVER_NAME = "selfagent";
@@ -334,11 +334,20 @@ export function createMemoryToolHandlers(
   };
 }
 
-/** project_open の結果に付ける、作るときの注意 */
-export function projectNotes(slug: string, url: string): string[] {
+/** project_open の注意のうち、UI の土台（DESIGN.md・base.css）の使い方 */
+export const PROJECT_DESIGN_NOTE =
+  "作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。" +
+  "base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。" +
+  "既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う";
+
+/**
+ * project_open の結果に付ける、作るときの注意。
+ * withDesign が false（dir/DESIGN.md と site_dir/base.css のどちらかが無い）なら、土台の使い方（2 番目）は入れない（無いファイルを読ませない）
+ */
+export function projectNotes(slug: string, url: string, withDesign: boolean): string[] {
   return [
     "ファイルは dir の中に書く。配られるのは site_dir の中だけで、入口は site_dir/index.html",
-    "作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う",
+    ...(withDesign ? [PROJECT_DESIGN_NOTE] : []),
     `パスは相対で書く（/ で始めない）。ページは ${url} で開かれる`,
     `localStorage のキーは ${slug} で始める（全プロジェクトが同じオリジン）`,
     "API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない",
@@ -352,8 +361,9 @@ export function projectNotes(slug: string, url: string): string[] {
 /**
  * プロジェクトのツール。context が無い・セッション以外（#inbox・#tasks）なら not_available、配信が無効（publicBaseUrl が無い・静的サーバーが待ち受けていない）なら not_configured。
  * そのチャンネルの削除されていないプロジェクトがあれば existing、無ければ作って `<slug>/site/` まで mkdir し created。
- * どちらも UI の土台（templates/web/）を複製して、複製したものを scaffold で返す（created は 5 つ、existing は site/base.css が無いときだけ 3 つ。
- * 既にあるファイルは上書きしない）。複製に失敗したら log に出し、scaffold を空にして結果はそのまま返す
+ * どちらも UI の土台（templates/web/）を複製して、複製できたものを scaffold で返す（created は 5 つ、existing は site/base.css が無いときだけ 3 つ。
+ * 既にあるファイルは上書きしない）。複製に失敗したものがあれば log に出し、結果はそのまま返す。
+ * 複製の後に DESIGN.md と site/base.css のどちらかが無ければ、注意に土台の使い方を入れない
  */
 export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunContext | undefined) {
   const { projects, projectsDir, publicBaseUrl, serving, log, templateDir } = deps;
@@ -374,22 +384,17 @@ export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunCon
       const siteDir = join(dir, "site");
       const status = existing === undefined ? "created" : "existing";
       if (existing === undefined) await mkdir(siteDir, { recursive: true });
-      let scaffold: string[];
-      try {
-        scaffold = await copyWebScaffold(dir, status, templateDir);
-      } catch {
-        // パス・例外の中身は出さない
-        log("project_open: UI の土台の複製に失敗しました");
-        scaffold = [];
-      }
+      const { copied, failed } = await copyWebScaffold(dir, status, templateDir);
+      // パス・例外の中身は出さない
+      if (failed) log("project_open: UI の土台の複製に失敗しました");
       const url = `${publicBaseUrl}/p/${project.slug}/`;
       return textResult({
         status,
         dir,
         site_dir: siteDir,
         url,
-        scaffold,
-        notes: projectNotes(project.slug, url),
+        scaffold: copied,
+        notes: projectNotes(project.slug, url, await hasWebScaffold(dir)),
       });
     },
   };

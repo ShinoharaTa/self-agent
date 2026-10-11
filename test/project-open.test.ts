@@ -11,6 +11,7 @@ import {
   createProjectToolHandlers,
   createTaskTools,
   PROJECT_OPEN_NOT_AVAILABLE_MESSAGE,
+  PROJECT_DESIGN_NOTE,
   PROJECT_OPEN_NOT_CONFIGURED_MESSAGE,
   projectNotes,
   type ProjectToolDeps,
@@ -95,7 +96,7 @@ test("project_open: セッションのチャンネルで作り、<slug>/site/ �
     site_dir: join(dir, "site"),
     url,
     scaffold: CREATED_SCAFFOLD,
-    notes: projectNotes("kakeibo-app", url),
+    notes: projectNotes("kakeibo-app", url, true),
   });
   // キーの順も決めている
   assert.deepEqual(Object.keys(result as object), ["status", "dir", "site_dir", "url", "scaffold", "notes"]);
@@ -135,11 +136,11 @@ test("project_open: existing で site/base.css が無ければ DESIGN.md・base.
   assert.deepEqual(logs, []);
 });
 
-test("project_open: existing で site/base.css があれば何も変えず、scaffold は空", async (t) => {
-  const { projects, projectsDir, open } = setup(t);
+test("project_open: existing で site/base.css があれば何も変えず、scaffold は空。DESIGN.md が無いので注意に土台の使い方を入れない", async (t) => {
+  const { projects, projectsDir, logs, open } = setup(t);
   const dir = createWithoutScaffold(projects, projectsDir, { "site/base.css": "/* 自分で書いた */" });
 
-  const result = parse(await open(TOPIC)) as { status: string; scaffold: string[] };
+  const result = parse(await open(TOPIC)) as { status: string; url: string; scaffold: string[]; notes: string[] };
 
   assert.equal(result.status, "existing");
   assert.deepEqual(result.scaffold, []);
@@ -147,6 +148,8 @@ test("project_open: existing で site/base.css があれば何も変えず、sca
   assert.equal(existsSync(join(dir, "DESIGN.md")), false);
   assert.equal(existsSync(join(dir, "site", "icons.svg")), false);
   assert.equal(existsSync(join(dir, "site", "index.html")), false);
+  assert.deepEqual(result.notes, projectNotes("kakeibo-app", result.url, false));
+  assert.deepEqual(logs, []);
 });
 
 test("project_open: 既にある DESIGN.md は上書きしない（created でも existing でも）", async (t) => {
@@ -176,11 +179,11 @@ test("project_open: 既にある DESIGN.md は上書きしない（created で�
   }
 });
 
-test("project_open: 土台の複製に失敗しても created・existing を返し、scaffold は空。log は決めた文言だけ（パス・例外の中身は出さない）", async (t) => {
+test("project_open: 土台の複製に失敗しても created・existing を返し、scaffold は空。log は決めた文言だけ（パス・例外の中身は出さない）。注意に土台の使い方を入れない", async (t) => {
   const { projectsDir, logs, open } = setup(t, { templateDir: join(tmpdir(), "self-agent-test-no-such-template") });
 
-  const created = parse(await open(TOPIC)) as { status: string; site_dir: string; scaffold: string[] };
-  const existing = parse(await open(TOPIC)) as { status: string; scaffold: string[] };
+  const created = parse(await open(TOPIC)) as { status: string; site_dir: string; url: string; scaffold: string[]; notes: string[] };
+  const existing = parse(await open(TOPIC)) as { status: string; scaffold: string[]; notes: string[] };
 
   assert.equal(created.status, "created");
   assert.deepEqual(created.scaffold, []);
@@ -189,12 +192,32 @@ test("project_open: 土台の複製に失敗しても created・existing を返�
   assert.deepEqual(existing.scaffold, []);
   assert.deepEqual(logs, [SCAFFOLD_FAILED_LOG, SCAFFOLD_FAILED_LOG]);
   assert.equal(existsSync(join(projectsDir, "kakeibo-app", "DESIGN.md")), false);
+  assert.deepEqual(created.notes, projectNotes("kakeibo-app", created.url, false));
+  assert.deepEqual(existing.notes, created.notes);
+});
+
+test("project_open: 一部だけ複製できたら複製できた分を scaffold で返して log。DESIGN.md と base.css のどちらかが無ければ注意に土台の使い方を入れない", async (t) => {
+  // DESIGN.md と site/app.css だけがある複製の元
+  const templateDir = mkdtempSync(join(tmpdir(), "self-agent-test-template-"));
+  t.after(() => rmSync(templateDir, { recursive: true, force: true }));
+  mkdirSync(join(templateDir, "site"));
+  writeFileSync(join(templateDir, "DESIGN.md"), "決まり");
+  writeFileSync(join(templateDir, "site", "app.css"), "/* app */");
+  const { logs, open } = setup(t, { templateDir });
+
+  const result = parse(await open(TOPIC)) as { status: string; url: string; scaffold: string[]; notes: string[] };
+
+  assert.equal(result.status, "created");
+  assert.deepEqual(result.scaffold, ["DESIGN.md", "site/app.css"]);
+  assert.deepEqual(logs, [SCAFFOLD_FAILED_LOG]);
+  assert.ok(!result.notes.includes(PROJECT_DESIGN_NOTE));
+  assert.deepEqual(result.notes, projectNotes("kakeibo-app", result.url, false));
 });
 
 test("project_open: 注意は 9 項目（dir と site_dir・DESIGN.md と base.css・相対パスと url・localStorage と slug・秘密・ビルド不可・Glob と Grep の path・SPEC.md・作り終えた後の返事）", () => {
-  assert.deepEqual(projectNotes("kakeibo", "https://example.test:9443/p/kakeibo/"), [
+  assert.deepEqual(projectNotes("kakeibo", "https://example.test:9443/p/kakeibo/", true), [
     "ファイルは dir の中に書く。配られるのは site_dir の中だけで、入口は site_dir/index.html",
-    "作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う",
+    "作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う",
     "パスは相対で書く（/ で始めない）。ページは https://example.test:9443/p/kakeibo/ で開かれる",
     "localStorage のキーは kakeibo で始める（全プロジェクトが同じオリジン）",
     "API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない",
@@ -203,6 +226,15 @@ test("project_open: 注意は 9 項目（dir と site_dir・DESIGN.md と base.c
     "決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む",
     "作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える",
   ]);
+});
+
+test("project_open: DESIGN.md か base.css が無いときの注意は 8 項目（土台の使い方の 2 番目だけを除く）", () => {
+  const url = "https://example.test:9443/p/kakeibo/";
+  const withDesign = projectNotes("kakeibo", url, true);
+
+  assert.equal(withDesign[1], PROJECT_DESIGN_NOTE);
+  assert.deepEqual(projectNotes("kakeibo", url, false), withDesign.filter((note) => note !== PROJECT_DESIGN_NOTE));
+  assert.equal(projectNotes("kakeibo", url, false).length, 8);
 });
 
 test("project_open: 2 回目は同じプロジェクトを existing で返す（name・title が違っても作らない）。別のチャンネルは別のプロジェクト", async (t) => {
