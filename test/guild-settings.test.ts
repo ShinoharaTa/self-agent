@@ -60,10 +60,12 @@ test("GuildSettingsStore: 未設定のサーバーは undefined、ID は 1 つ�
   assert.equal(store.get("guild-2"), undefined);
 });
 
-test("GuildSettingsStore: 状態カテゴリは (サーバー, 状態, ordinal) ごとに保存し、作り直したら置き換える", (t) => {
+test("GuildSettingsStore: 状態カテゴリは (サーバー, 状態, ordinal) ごとに保存し、作り直したら置き換える。listStateCategories はそのサーバー・状態のものを ordinal の昇順で返す", (t) => {
   const store = tempStore(t);
   assert.equal(store.getStateCategory("guild-1", "active", 1), undefined);
+  assert.deepEqual(store.listStateCategories("guild-1", "active"), []);
 
+  store.setStateCategory("guild-1", "active", 3, "active-3");
   store.setStateCategory("guild-1", "active", 1, "active-1");
   store.setStateCategory("guild-1", "waiting", 1, "waiting-1");
   store.setStateCategory("guild-1", "active", 2, "active-2");
@@ -75,20 +77,8 @@ test("GuildSettingsStore: 状態カテゴリは (サーバー, 状態, ordinal) 
   assert.equal(store.getStateCategory("guild-1", "waiting", 1), "waiting-1");
   assert.equal(store.getStateCategory("guild-1", "done", 1), undefined);
   assert.equal(store.getStateCategory("guild-2", "active", 1), "other-active-1");
-});
-
-test("GuildSettingsStore: listStateCategories はそのサーバー・状態のカテゴリを ordinal の昇順で返す", (t) => {
-  const store = tempStore(t);
-  assert.deepEqual(store.listStateCategories("guild-1", "active"), []);
-
-  store.setStateCategory("guild-1", "active", 3, "active-3");
-  store.setStateCategory("guild-1", "active", 1, "active-1");
-  store.setStateCategory("guild-1", "waiting", 1, "waiting-1");
-  store.setStateCategory("guild-1", "active", 2, "active-2");
-  store.setStateCategory("guild-2", "active", 4, "other-active-4");
-
   assert.deepEqual(store.listStateCategories("guild-1", "active"), [
-    { ordinal: 1, categoryId: "active-1" },
+    { ordinal: 1, categoryId: "active-1b" },
     { ordinal: 2, categoryId: "active-2" },
     { ordinal: 3, categoryId: "active-3" },
   ]);
@@ -134,21 +124,37 @@ test("openDb: v1 の DB を v2 に上げても既存のデータは残る", (t) 
   assert.equal(store.getStateCategory("guild-1", "done", 1), "done-1");
 });
 
-test("GuildSettingsStore.setInboxRotated: 他の列は変えずに #inbox を切り替えた日と時刻（渡した時刻。ISO）を上書きする", (t) => {
-  const store = tempStore(t);
-  store.setChannel("guild-1", "inboxChannelId", "inbox-1");
-  assert.equal(store.get("guild-1")?.inboxRotatedDate, null);
-  assert.equal(store.get("guild-1")?.inboxRotatedAt, null);
+test("GuildSettingsStore.setInboxRotated・setTasksRotated: 他の列（もう一方のチャンネルの記録を含む）は変えずに、切り替えた日・時刻（渡した時刻。ISO）を上書きする", (t) => {
+  const first = new Date("2026-10-01T19:00:00.000Z");
+  const second = new Date("2026-10-02T19:00:01.234Z");
+  // other はもう一方のチャンネルの記録
+  const cases = [
+    {
+      label: "#inbox",
+      other: (store: GuildSettingsStore) => store.setTasksRotated("guild-1", first),
+      rotate: (store: GuildSettingsStore, date: string, at: Date) => store.setInboxRotated("guild-1", date, at),
+      changes: { inboxRotatedDate: "2026-10-03", inboxRotatedAt: second.toISOString() },
+    },
+    {
+      label: "#tasks",
+      other: (store: GuildSettingsStore) => store.setInboxRotated("guild-1", "2026-10-02", first),
+      rotate: (store: GuildSettingsStore, _date: string, at: Date) => store.setTasksRotated("guild-1", at),
+      changes: { tasksRotatedAt: second.toISOString() },
+    },
+  ];
 
-  store.setInboxRotated("guild-1", "2026-10-02", new Date("2026-10-01T19:00:00.000Z"));
-  store.setInboxRotated("guild-1", "2026-10-03", new Date("2026-10-02T19:00:01.234Z"));
+  for (const { label, other, rotate, changes } of cases) {
+    const store = tempStore(t);
+    store.setChannel("guild-1", "inboxChannelId", "inbox-1");
+    store.setChannel("guild-1", "tasksChannelId", "tasks-1");
+    other(store);
+    const prior = store.get("guild-1")!;
 
-  const settings = store.get("guild-1");
-  assert.equal(settings?.inboxRotatedDate, "2026-10-03");
-  assert.equal(settings?.inboxRotatedAt, "2026-10-02T19:00:01.234Z");
-  assert.equal(settings?.inboxChannelId, "inbox-1");
-  assert.equal(settings?.createdAt, "2026-10-02T00:00:00.000Z");
-  assert.equal(settings?.updatedAt, "2026-10-02T00:02:00.000Z");
+    rotate(store, "2026-10-02", first);
+    rotate(store, "2026-10-03", second);
+
+    assert.deepEqual(store.get("guild-1"), { ...prior, ...changes, updatedAt: "2026-10-02T00:04:00.000Z" }, label);
+  }
 });
 
 test("openDb: v9 の DB を v10 に上げても既存のサーバー設定は残り、切り替えた日は null。以後は切り替えた日と #inbox の要約を記録できる", (t) => {
@@ -211,23 +217,6 @@ test("openDb: v10 の DB を v11 に上げても切り替えた日は残り、�
   assert.equal(store.get("guild-1")?.inboxRotatedAt, null);
   store.setInboxRotated("guild-1", "2026-10-02", new Date("2026-10-01T19:00:00.000Z"));
   assert.equal(store.get("guild-1")?.inboxRotatedAt, "2026-10-01T19:00:00.000Z");
-});
-
-test("GuildSettingsStore.setTasksRotated: 他の列（#inbox を切り替えた日・時刻を含む）は変えずに #tasks を切り替えた時刻（ISO）を上書きする", (t) => {
-  const store = tempStore(t);
-  store.setChannel("guild-1", "tasksChannelId", "tasks-1");
-  store.setInboxRotated("guild-1", "2026-10-02", new Date("2026-10-01T19:00:00.000Z"));
-  assert.equal(store.get("guild-1")?.tasksRotatedAt, null);
-
-  store.setTasksRotated("guild-1", new Date("2026-10-01T19:00:00.000Z"));
-  store.setTasksRotated("guild-1", new Date("2026-10-02T19:00:01.234Z"));
-
-  const settings = store.get("guild-1");
-  assert.equal(settings?.tasksRotatedAt, "2026-10-02T19:00:01.234Z");
-  assert.equal(settings?.tasksChannelId, "tasks-1");
-  assert.equal(settings?.inboxRotatedDate, "2026-10-02");
-  assert.equal(settings?.inboxRotatedAt, "2026-10-01T19:00:00.000Z");
-  assert.equal(settings?.updatedAt, "2026-10-02T00:03:00.000Z");
 });
 
 test("openDb: v13 の DB を v14 に上げても既存の要約は #inbox のものとして残り、#tasks の要約と切り替えた時刻は無い。以後はチャンネルごとに記録できる", (t) => {

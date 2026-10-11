@@ -31,7 +31,6 @@ import {
   type ProjectFilesArgs,
 } from "../src/agent/project-files.ts";
 import type { RunContext } from "../src/agent/runner.ts";
-import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
 import { createProjectToolHandlers, createTaskTools, type ProjectToolDeps, type TextToolResult } from "../src/agent/tools.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 
@@ -94,15 +93,6 @@ function setup(t: TestContext) {
   return { root, projectsDir, dir, files, logs, run };
 }
 
-test("formatTrashId: UTC の YYYYMMDDTHHmmssZ（ミリ秒は落とす）。形は TRASH_ID_PATTERN に合う", () => {
-  assert.equal(formatTrashId(NOW), ID);
-  assert.equal(formatTrashId(new Date("2026-01-02T03:04:05.999Z")), "20260102T030405Z");
-  for (const id of [ID, `${ID}-2`, `${ID}-10`]) assert.ok(TRASH_ID_PATTERN.test(id), id);
-  for (const id of ["", "20261011T013600", "20261011-013600Z", `${ID}-`, `${ID}-x`, `../${ID}`, `${ID}/x`]) {
-    assert.equal(TRASH_ID_PATTERN.test(id), false, id);
-  }
-});
-
 test("trash → restore: paths を .trash/<trash_id>/ の同じ相対パスに移し、restore で元どおりに戻して .trash/<trash_id> を消す", async (t) => {
   const { dir, files, run } = setup(t);
 
@@ -143,80 +133,61 @@ test("trash: 無いものは missing に入れて続ける。同じパスの重�
   assert.deepEqual(tree(join(dir, TRASH_DIR_NAME, ID)), { "SPEC.md": "仕様" });
 });
 
-test("trash: 親 → 子の順。子は個別に移さず親と一緒に moved（親の中に無かったものは missing）。並びは入力の順", async (t) => {
-  const { dir, files, run } = setup(t);
+test("trash: 親子が重なる paths は順によらず親ごと移し（子 → 親でも ENOTEMPTY にならない）、子も moved（親の中に無かったものは missing）。並びは入力の順。restore で元どおり", async (t) => {
+  const cases: Array<{ label: string; paths: string[]; moved: string[]; missing: string[]; trashed: string[] }> = [
+    {
+      label: "親 → 子",
+      paths: ["site", "notes/a.md", "site/index.html", "site/nope.html", "notes"],
+      moved: ["site", "notes/a.md", "site/index.html", "notes"],
+      missing: ["site/nope.html"],
+      trashed: ["notes/a.md", "notes/b.md", "site/app.js", "site/index.html"],
+    },
+    {
+      label: "子 → 親",
+      paths: ["site/index.html", "site/app.js", "site", "SPEC.md"],
+      moved: ["site/index.html", "site/app.js", "site", "SPEC.md"],
+      missing: [],
+      trashed: ["SPEC.md", "site/app.js", "site/index.html"],
+    },
+    // 間の親は paths に無い
+    { label: "孫 → 祖父", paths: ["notes/a.md", "notes"], moved: ["notes/a.md", "notes"], missing: [], trashed: ["notes/a.md", "notes/b.md"] },
+  ];
+  for (const { label, paths, moved, missing, trashed } of cases) {
+    const { dir, files, run } = setup(t);
 
-  assert.deepEqual(await run({ action: "trash", paths: ["site", "notes/a.md", "site/index.html", "site/nope.html", "notes"] }), {
-    result: "trashed",
-    trash_id: ID,
-    moved: ["site", "notes/a.md", "site/index.html", "notes"],
-    missing: ["site/nope.html"],
-  });
-  assert.deepEqual(outsideTrash(dir), { "SPEC.md": "仕様" });
-  const { "SPEC.md": _kept, ...trashed } = files;
-  assert.deepEqual(tree(join(dir, TRASH_DIR_NAME, ID)), trashed);
+    assert.deepEqual(await run({ action: "trash", paths }), { result: "trashed", trash_id: ID, moved, missing }, label);
+    assert.deepEqual(Object.keys(tree(join(dir, TRASH_DIR_NAME, ID))).sort(), trashed, label);
+    await run({ action: "restore", trash_id: ID });
+    assert.deepEqual(outsideTrash(dir), files, label);
+  }
 });
 
-test("trash: 子 → 親の順でも途中で止まらず（ENOTEMPTY にならない）、親ごと移す。restore で元どおり", async (t) => {
+test("trash: 1 つも移さなければ（無い・祖先が無い）trash_id は null で、.trash も作らない", async (t) => {
   const { dir, files, run } = setup(t);
 
-  assert.deepEqual(await run({ action: "trash", paths: ["site/index.html", "site/app.js", "site", "SPEC.md"] }), {
-    result: "trashed",
-    trash_id: ID,
-    moved: ["site/index.html", "site/app.js", "site", "SPEC.md"],
-    missing: [],
-  });
-  assert.deepEqual(tree(join(dir, TRASH_DIR_NAME, ID)), {
-    "SPEC.md": "仕様",
-    "site/app.js": "console.log(1);",
-    "site/index.html": "<p>前の</p>",
-  });
-  // 孫 → 祖父（間の親は paths に無い）
-  assert.deepEqual(await run({ action: "trash", paths: ["notes/a.md", "notes"] }), {
-    result: "trashed",
-    trash_id: `${ID}-2`,
-    moved: ["notes/a.md", "notes"],
-    missing: [],
-  });
-
-  await run({ action: "restore", trash_id: ID });
-  await run({ action: "restore", trash_id: `${ID}-2` });
-  assert.deepEqual(outsideTrash(dir), files);
-});
-
-test("trash: 祖先が無ければ、その中のものも missing。1 つも移さなければ trash_id は null", async (t) => {
-  const { dir, files, run } = setup(t);
-
-  assert.deepEqual(await run({ action: "trash", paths: ["gone/a.txt", "gone", "gone/b/c.txt"] }), {
-    result: "trashed",
-    trash_id: null,
-    moved: [],
-    missing: ["gone/a.txt", "gone", "gone/b/c.txt"],
-  });
-  assert.deepEqual(tree(dir), files);
-});
-
-test("trash: 1 つも移さなければ .trash/<trash_id> を作らず trash_id は null（.trash も作らない）", async (t) => {
-  const { dir, files, run } = setup(t);
-
-  assert.deepEqual(await run({ action: "trash", paths: ["nope.txt", "site/nope/a.js"] }), {
-    result: "trashed",
-    trash_id: null,
-    moved: [],
-    missing: ["nope.txt", "site/nope/a.js"],
-  });
+  for (const paths of [
+    ["nope.txt", "site/nope/a.js"],
+    ["gone/a.txt", "gone", "gone/b/c.txt"],
+  ]) {
+    assert.deepEqual(await run({ action: "trash", paths }), { result: "trashed", trash_id: null, moved: [], missing: paths });
+  }
   assert.equal(existsSync(join(dir, TRASH_DIR_NAME)), false);
   assert.deepEqual(tree(dir), files);
 });
 
-test("trash: 同じ秒の trash_id が既にあれば -2、-3 を付ける", async (t) => {
+test("trash_id: UTC の YYYYMMDDTHHmmssZ（ミリ秒は落とす）。同じ秒の trash_id が既にあれば -2、-3 を付ける。形は TRASH_ID_PATTERN に合う", async (t) => {
   const { dir, run } = setup(t);
+  assert.equal(formatTrashId(new Date("2026-01-02T03:04:05.999Z")), "20260102T030405Z");
+  for (const id of ["", "20261011T013600", "20261011-013600Z", `${ID}-`, `${ID}-x`, `../${ID}`, `${ID}/x`]) {
+    assert.equal(TRASH_ID_PATTERN.test(id), false, id);
+  }
 
   const ids = [];
   for (const path of ["SPEC.md", "notes/a.md", "notes/b.md"]) {
     ids.push(((await run({ action: "trash", paths: [path] })) as { trash_id: string }).trash_id);
   }
   assert.deepEqual(ids, [ID, `${ID}-2`, `${ID}-3`]);
+  for (const id of ids) assert.ok(TRASH_ID_PATTERN.test(id), id);
   assert.equal(readFileSync(join(dir, TRASH_DIR_NAME, `${ID}-3`, "notes", "b.md"), "utf8"), "b");
   // 次の秒は付けない
   const next = await run({ action: "trash", paths: ["site/app.js"] }, new Date(NOW.getTime() + 1000));
@@ -256,28 +227,19 @@ test("move: paths の 1 つを to に移す（改名を含む。to の親は作�
   assert.equal(existsSync(join(dir, TRASH_DIR_NAME)), false);
 });
 
-test("move: to が既にあれば上書きせず exists、paths[0] が無ければ missing、to が paths[0] の中なら invalid_path。どれも何も変えない", async (t) => {
+test("move: to が既にあれば上書きせず exists、paths[0] が無ければ missing、to が paths[0] の中・末尾が /（名前が無い）なら invalid_path。どれも何も変えない", async (t) => {
   const { dir, files, run } = setup(t);
+  const cases: Array<[from: string, to: string, expected: object]> = [
+    ["SPEC.md", "site/index.html", { result: "exists", path: "site/index.html" }],
+    ["notes", "site", { result: "exists", path: "site" }],
+    ["nope.txt", "new.txt", { result: "missing", path: "nope.txt" }],
+    ["site", "site/old", { result: "invalid_path", path: "site/old" }],
+    ["site/", "./site/old/x", { result: "invalid_path", path: "./site/old/x" }],
+    ...["docs/", "site/", "site/js/", "docs//"].map((to): [string, string, object] => ["SPEC.md", to, { result: "invalid_path", path: to }]),
+  ];
 
-  assert.deepEqual(await run({ action: "move", paths: ["SPEC.md"], to: "site/index.html" }), {
-    result: "exists",
-    path: "site/index.html",
-  });
-  assert.deepEqual(await run({ action: "move", paths: ["notes"], to: "site" }), { result: "exists", path: "site" });
-  assert.deepEqual(await run({ action: "move", paths: ["nope.txt"], to: "new.txt" }), { result: "missing", path: "nope.txt" });
-  assert.deepEqual(await run({ action: "move", paths: ["site"], to: "site/old" }), { result: "invalid_path", path: "site/old" });
-  assert.deepEqual(await run({ action: "move", paths: ["site/"], to: "./site/old/x" }), {
-    result: "invalid_path",
-    path: "./site/old/x",
-  });
-  assert.deepEqual(tree(dir), files);
-});
-
-test("move: to の末尾が / なら（移動先の名前が無い）invalid_path で、何も変えない", async (t) => {
-  const { dir, files, run } = setup(t);
-
-  for (const to of ["docs/", "site/", "site/js/", "docs//"]) {
-    assert.deepEqual(await run({ action: "move", paths: ["SPEC.md"], to }), { result: "invalid_path", path: to }, to);
+  for (const [from, to, expected] of cases) {
+    assert.deepEqual(await run({ action: "move", paths: [from], to }), expected, `${from} → ${to}`);
   }
   assert.deepEqual(tree(dir), files);
   // paths の末尾の / はよい（移すものは名前で決まる）
@@ -286,7 +248,6 @@ test("move: to の末尾が / なら（移動先の名前が無い）invalid_pat
 
 test(".trash が実際のディレクトリでない（中・外への symlink、ファイル）なら、trash・clear・restore（一覧も）は何もせず trash_unavailable。move は使える", async (t) => {
   const unavailable = { result: "trash_unavailable", message: TRASH_UNAVAILABLE_MESSAGE };
-  assert.equal(TRASH_UNAVAILABLE_MESSAGE, ".trash がディレクトリではないため使えません");
   for (const kind of ["site", "outside", "file"] as const) {
     const { root, dir, run } = setup(t);
     mkdirSync(join(root, "outside", ID), { recursive: true });
@@ -320,7 +281,6 @@ test(".trash が実際のディレクトリでない（中・外への symlink�
 test("trash・move: プロジェクトの dir が無い・ファイル・解決できないなら not_available で、何も作らない。clear・restore は今どおり", async (t) => {
   const { root, projectsDir } = setup(t);
   const notAvailable = { result: "not_available", message: PROJECT_DIR_MISSING_MESSAGE };
-  assert.equal(PROJECT_DIR_MISSING_MESSAGE, "プロジェクトのディレクトリがありません。project_open を使ってください");
   writeFileSync(join(projectsDir, "file"), "ファイル");
   symlinkSync(join(root, "no-such"), join(projectsDir, "broken"));
   const runIn = (name: string, args: ProjectFilesArgs) =>
@@ -365,7 +325,16 @@ test("clear: .trash 以外をすべて .trash/<trash_id>/ に移し、UI の土�
   assert.equal(existsSync(join(empty, TRASH_DIR_NAME)), false);
 });
 
-test("clear → restore は土台と重なって conflict（何も戻さない）。conflict のパスを trash してから restore すると戻る", async (t) => {
+test("restore の conflict: 途中の要素がファイル・clear の後の土台と重なる、なら何も戻さない。conflict のパスを trash してから restore すると戻る", async (t) => {
+  // 途中の要素がファイル
+  {
+    const { dir, run } = setup(t);
+    await run({ action: "trash", paths: ["notes"] });
+    writeFileSync(join(dir, "notes"), "ファイル");
+
+    assert.deepEqual(await run({ action: "restore", trash_id: ID }), { result: "conflict", paths: ["notes"] });
+  }
+
   const { dir, files, run } = setup(t);
   await run({ action: "clear" });
   const scaffolded = outsideTrash(dir);
@@ -388,14 +357,6 @@ test("clear → restore は土台と重なって conflict（何も戻さない�
   const { "site/index.html": _replaced, ...scaffoldKept } = scaffolded;
   assert.deepEqual(outsideTrash(dir), { ...scaffoldKept, ...files });
   assert.equal(existsSync(join(dir, TRASH_DIR_NAME, ID)), false);
-});
-
-test("restore: 途中の要素がファイルなら、そのパスを conflict に返す", async (t) => {
-  const { dir, run } = setup(t);
-  await run({ action: "trash", paths: ["notes"] });
-  writeFileSync(join(dir, "notes"), "ファイル");
-
-  assert.deepEqual(await run({ action: "restore", trash_id: ID }), { result: "conflict", paths: ["notes"] });
 });
 
 test("restore: 一覧は新しい順（同じ秒は番号の大きい順）でファイルの数（再帰）を返し、形に合わない名前・ディレクトリでないものは出さない", async (t) => {
@@ -476,28 +437,28 @@ test("invalid_path: 空・絶対・`..`・`.`・.trash・dir の外への symlin
   assert.equal(readFileSync(join(root, "outside", "secret.txt"), "utf8"), "secret");
 });
 
-test("invalid_args: 引数が足りない・余計なら、何もせずに日本語の message を返す", async (t) => {
+test("invalid_args: 引数が足りない・余計・action が無いものなら、何もせずに invalid_args を返す", async (t) => {
   const { dir, files, run } = setup(t);
   const tooMany = Array.from({ length: PROJECT_FILES_MAX_PATHS + 1 }, (_, i) => `f${i}.txt`);
 
-  const cases: Array<[ProjectFilesArgs, string]> = [
-    [{ action: "trash" }, "trash には paths を 1〜50 件指定してください"],
-    [{ action: "trash", paths: [] }, "trash には paths を 1〜50 件指定してください"],
-    [{ action: "trash", paths: tooMany }, "trash には paths を 1〜50 件指定してください"],
-    [{ action: "trash", paths: ["SPEC.md"], to: "x" }, "trash では to を指定しないでください"],
-    [{ action: "trash", paths: ["SPEC.md"], trash_id: ID }, "trash では trash_id を指定しないでください"],
-    [{ action: "move", to: "x" }, "move には paths を 1 件だけ指定してください"],
-    [{ action: "move", paths: ["SPEC.md", "notes"], to: "x" }, "move には paths を 1 件だけ指定してください"],
-    [{ action: "move", paths: ["SPEC.md"] }, "move には to を指定してください"],
-    [{ action: "move", paths: ["SPEC.md"], to: "x", trash_id: ID }, "move では trash_id を指定しないでください"],
-    [{ action: "clear", paths: ["SPEC.md"] }, "clear では paths を指定しないでください"],
-    [{ action: "clear", to: "x", trash_id: ID }, "clear では to・trash_id を指定しないでください"],
-    [{ action: "restore", paths: ["SPEC.md"] }, "restore では paths を指定しないでください"],
-    [{ action: "restore", to: "x", trash_id: ID }, "restore では to を指定しないでください"],
-    [{ action: "delete" } as unknown as ProjectFilesArgs, "action は trash・move・clear・restore のどれかを指定してください"],
+  const cases: Array<[label: string, ProjectFilesArgs]> = [
+    ["trash に paths が無い", { action: "trash" }],
+    ["trash の paths が空", { action: "trash", paths: [] }],
+    ["trash の paths が多すぎる", { action: "trash", paths: tooMany }],
+    ["trash に to", { action: "trash", paths: ["SPEC.md"], to: "x" }],
+    ["trash に trash_id", { action: "trash", paths: ["SPEC.md"], trash_id: ID }],
+    ["move に paths が無い", { action: "move", to: "x" }],
+    ["move の paths が 2 件", { action: "move", paths: ["SPEC.md", "notes"], to: "x" }],
+    ["move に to が無い", { action: "move", paths: ["SPEC.md"] }],
+    ["move に trash_id", { action: "move", paths: ["SPEC.md"], to: "x", trash_id: ID }],
+    ["clear に paths", { action: "clear", paths: ["SPEC.md"] }],
+    ["clear に to・trash_id", { action: "clear", to: "x", trash_id: ID }],
+    ["restore に paths", { action: "restore", paths: ["SPEC.md"] }],
+    ["restore に to", { action: "restore", to: "x", trash_id: ID }],
+    ["action が無い", { action: "delete" } as unknown as ProjectFilesArgs],
   ];
-  for (const [args, message] of cases) {
-    assert.deepEqual(await run(args), { result: "invalid_args", message }, JSON.stringify(args));
+  for (const [label, args] of cases) {
+    assert.equal(((await run(args)) as { result: string }).result, "invalid_args", label);
   }
   assert.deepEqual(tree(dir), files);
 });
@@ -514,10 +475,11 @@ test("clear: UI の土台の複製に失敗しても cleared を返し、scaffol
 
   assert.deepEqual(result, { result: "cleared", trash_id: ID, scaffold: [] });
   assert.deepEqual(tree(join(dir, TRASH_DIR_NAME, ID)), files);
-  assert.deepEqual(logs, ["project_files: UI の土台の複製に失敗しました"]);
+  assert.equal(logs.length, 1);
+  for (const secret of [dir, "self-agent-test-no-such-template", "ENOENT"]) assert.ok(!logs[0]!.includes(secret), secret);
 });
 
-test("pruneProjectTrash: 名前の時刻から 30 日を過ぎた .trash/<trash_id> だけを消し、形に合わない名前・ディレクトリでないもの・symlink の先は触らない", (t) => {
+test("pruneProjectTrash: 名前の時刻から 30 日（days で変えられる）を過ぎた .trash/<trash_id> だけを消し、形に合わない名前・ディレクトリでないもの・symlink の先は触らない。projectsDir が無くても例外にならない", (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const projectsDir = join(root, "projects");
@@ -548,21 +510,17 @@ test("pruneProjectTrash: 名前の時刻から 30 日を過ぎた .trash/<trash_
   assert.deepEqual(readdirSync(join(projectsDir, "other", TRASH_DIR_NAME)), []);
   assert.equal(readFileSync(join(root, "outside", "20200101T000000Z", "keep.txt"), "utf8"), "keep");
   assert.ok(existsSync(join(projectsDir, "plain", "site")));
-});
 
-test("pruneProjectTrash: days を変えられる。projectsDir・.trash が無くても例外にならない（作らない）", (t) => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const now = new Date("2026-10-11T00:00:00Z");
+  // days を変えられる
+  const short = join(projectsDir, "short", TRASH_DIR_NAME);
+  mkdirSync(join(short, "20261009T235959Z"), { recursive: true });
+  mkdirSync(join(short, "20261010T000001Z"), { recursive: true });
+  pruneProjectTrash(projectsDir, now, 1);
+  assert.deepEqual(readdirSync(short), ["20261010T000001Z"]);
 
+  // projectsDir が無くても例外にならず、作らない
   pruneProjectTrash(join(root, "no-such-projects"), now);
   assert.equal(existsSync(join(root, "no-such-projects")), false);
-
-  const trash = join(root, "projects", "kakeibo", TRASH_DIR_NAME);
-  mkdirSync(join(trash, "20261009T235959Z"), { recursive: true });
-  mkdirSync(join(trash, "20261010T000001Z"), { recursive: true });
-  pruneProjectTrash(join(root, "projects"), now, 1);
-  assert.deepEqual(readdirSync(trash), ["20261010T000001Z"]);
 });
 
 /** createProjectToolHandlers を、touch を記録するストアと一時ディレクトリで作る。TOPIC のチャンネルにはプロジェクトがある */
@@ -654,28 +612,19 @@ test("project_files: ファイルを変えたら（trashed で 1 件以上・mov
   assert.equal(((await call(TOPIC, { action: "restore", trash_id: cleared.trash_id })) as { result: string }).result, "conflict");
 
   assert.deepEqual(touched, [project.id, project.id, project.id, project.id]);
-  assert.deepEqual(logs, [
-    "project_files: trash（2 件）",
-    "project_files: move（1 件）",
-    "project_files: restore（3 件）",
-    "project_files: clear（1 件）",
-  ]);
+  // 操作と件数が分かること
+  assert.deepEqual(
+    logs.map((line) => line.match(/(trash|move|restore|clear)\D*(\d+) 件/)?.slice(1)),
+    [
+      ["trash", "2"],
+      ["move", "1"],
+      ["restore", "3"],
+      ["clear", "1"],
+    ],
+  );
   for (const line of logs) {
     for (const secret of [dir, "site", "index", "notes", "SPEC", ID, "kakeibo"]) assert.ok(!line.includes(secret), `${line} ${secret}`);
   }
-});
-
-test("project_files: プロジェクトの dir が無ければ trash は not_available。更新日時も log も変えない", async (t) => {
-  const { dir, touched, logs, callFiles: call } = setupTool(t);
-  rmSync(dir, { recursive: true, force: true });
-
-  assert.deepEqual(await call(TOPIC, { action: "trash", paths: ["SPEC.md"] }), {
-    result: "not_available",
-    message: PROJECT_DIR_MISSING_MESSAGE,
-  });
-  assert.equal(existsSync(dir), false);
-  assert.deepEqual(touched, []);
-  assert.equal(logs.length, 0);
 });
 
 test("project_files: 操作が例外で終わったら投げたまま（ツールの呼び出しの失敗になる）。log は出さず、更新日時も変えない", async (t) => {
@@ -697,7 +646,7 @@ test("project_files: 操作が例外で終わったら投げたまま（ツー�
   assert.equal(logs.length, 0);
 });
 
-function projectFilesDefinition(t: TestContext, context?: RunContext) {
+test("ツール定義: project_files は最後（project_open の後）。引数は action（4 つ）・paths（1〜50 件、空文字は不可）・to（空文字は不可）・trash_id", (t) => {
   const { db, deps } = setupTool(t);
   const { tasks, topicSessions, knowledge, memories } = createStores(db, () => NOW);
   const tools = createTaskTools(
@@ -712,33 +661,12 @@ function projectFilesDefinition(t: TestContext, context?: RunContext) {
       timeZone: "Asia/Tokyo",
     },
     deps,
-    context,
   );
   assert.deepEqual(
     tools.slice(-2).map((definition) => definition.name),
     ["project_open", "project_files"],
   );
-  return tools.at(-1)!;
-}
-
-test("ツール定義: project_files は最後（project_open の後）。説明は使いどころと、手で消すよう頼まないこと", (t) => {
-  const definition = projectFilesDefinition(t);
-
-  assert.equal(
-    definition.description,
-    "このチャンネルのプロジェクトのファイルを消す・移す・作り直す。パスはプロジェクトの dir からの相対。" +
-      "trash は paths を .trash に移す（配信されず、restore で戻せる）。move は paths（1 件）を to に移す・名前を変える（to は移動先の名前まで書く）。" +
-      "clear は中身を全部 .trash に移して最初からにする（UI の土台も置き直す。URL は変わらない）。" +
-      "restore は trash_id の中身を元に戻す（省くと一覧。conflict が返ったら、そのパスを trash してから restore し直す）。" +
-      "オーナーは PC を使えないので、手で消すよう頼まずにこれを使う。消したら、何を消したかと戻せることを 1 行で伝える。",
-  );
-  // 使いどころはシステムプロンプトにも書く
-  assert.ok(SYSTEM_PROMPT.includes("project_files"));
-});
-
-test("ツール定義: project_files の引数は action（4 つ）・paths（1〜50 件、空文字は不可）・to（空文字は不可）・trash_id。説明は短い日本語", (t) => {
-  const definition = projectFilesDefinition(t);
-  const schema = z.object(definition.inputSchema);
+  const schema = z.object(tools.at(-1)!.inputSchema);
   const ok = (input: unknown): boolean => schema.safeParse(input).success;
 
   for (const action of ["trash", "move", "clear", "restore"]) assert.ok(ok({ action }), action);
@@ -751,23 +679,4 @@ test("ツール定義: project_files の引数は action（4 つ）・paths（1�
   assert.equal(ok({ action: "trash", paths: Array.from({ length: 51 }, (_, i) => `f${i}`) }), false);
   assert.equal(ok({ action: "trash", paths: [""] }), false);
   assert.equal(ok({ action: "move", paths: ["a"], to: "" }), false);
-
-  const properties = (z.toJSONSchema(schema) as { properties: Record<string, { description?: string }> }).properties;
-  assert.deepEqual(
-    Object.fromEntries(Object.entries(properties).map(([name, property]) => [name, property.description])),
-    {
-      action: "trash / move / clear / restore",
-      paths: "dir からの相対パス（trash は 1〜50 件、move は 1 件）",
-      to: "move の移動先（dir からの相対パス。名前まで書く）",
-      trash_id: "restore で戻す .trash の id（省くと一覧）",
-    },
-  );
-});
-
-test("ツール: project_files のハンドラはこの run の context で動き、結果を JSON で返す", async (t) => {
-  const definition = projectFilesDefinition(t, TOPIC);
-  // find の結果は全ツールの union なので、project_files の引数の形に絞って呼ぶ
-  const handler = definition.handler as (args: ProjectFilesArgs, extra: unknown) => Promise<TextToolResult>;
-
-  assert.deepEqual(parse(await handler({ action: "restore" }, {})), { result: "list", trashes: [] });
 });

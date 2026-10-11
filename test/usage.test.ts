@@ -162,26 +162,22 @@ test("UsageStore.countAfter / latestOkAfter: その key で after より後（�
   assert.equal(usage.latestOkAfter("inbox-2", undefined), undefined);
 });
 
-test("startOfLocalDay: タイムゾーンの日付の 0 時（n 日前にずらせる。月・年をまたぐ）", () => {
-  assert.equal(startOfLocalDay(NOW, "Asia/Tokyo").toISOString(), "2026-10-01T15:00:00.000Z");
-  assert.equal(startOfLocalDay(NOW, "Asia/Tokyo", 6).toISOString(), "2026-09-25T15:00:00.000Z");
-  assert.equal(startOfLocalDay(NOW, "UTC").toISOString(), "2026-10-02T00:00:00.000Z");
-  // JST 0 時ちょうどはその日、1 ms 前は前の日
-  assert.equal(startOfLocalDay(new Date("2026-10-01T15:00:00.000Z"), "Asia/Tokyo").toISOString(), "2026-10-01T15:00:00.000Z");
-  assert.equal(startOfLocalDay(new Date("2026-10-01T14:59:59.999Z"), "Asia/Tokyo").toISOString(), "2026-09-30T15:00:00.000Z");
-  assert.equal(
-    startOfLocalDay(new Date("2026-01-03T00:00:00Z"), "Asia/Tokyo", 6).toISOString(),
-    "2025-12-27T15:00:00.000Z",
-  );
-});
-
-test("startOfLocalDay: 夏時間の切り替わりをまたいでも、その日の 0 時のずれで求める", () => {
-  // America/New_York は 2026-03-08 02:00 に EST(-5) → EDT(-4)
-  const afternoon = new Date("2026-03-08T18:00:00Z");
-  assert.equal(startOfLocalDay(afternoon, "America/New_York").toISOString(), "2026-03-08T05:00:00.000Z");
-  const nextMorning = new Date("2026-03-09T12:00:00Z");
-  assert.equal(startOfLocalDay(nextMorning, "America/New_York").toISOString(), "2026-03-09T04:00:00.000Z");
-  assert.equal(startOfLocalDay(nextMorning, "America/New_York", 6).toISOString(), "2026-03-03T05:00:00.000Z");
+test("startOfLocalDay: タイムゾーンの日付の 0 時（n 日前にずらせる。月・年・夏時間の切り替わりをまたぐ）", () => {
+  const cases: Array<[label: string, at: string, timeZone: string, daysBack: number | undefined, expected: string]> = [
+    ["JST", NOW.toISOString(), "Asia/Tokyo", undefined, "2026-10-01T15:00:00.000Z"],
+    ["JST の 6 日前", NOW.toISOString(), "Asia/Tokyo", 6, "2026-09-25T15:00:00.000Z"],
+    ["UTC", NOW.toISOString(), "UTC", undefined, "2026-10-02T00:00:00.000Z"],
+    ["JST 0 時ちょうどはその日", "2026-10-01T15:00:00.000Z", "Asia/Tokyo", undefined, "2026-10-01T15:00:00.000Z"],
+    ["JST 0 時の 1 ms 前は前の日", "2026-10-01T14:59:59.999Z", "Asia/Tokyo", undefined, "2026-09-30T15:00:00.000Z"],
+    ["年をまたぐ", "2026-01-03T00:00:00Z", "Asia/Tokyo", 6, "2025-12-27T15:00:00.000Z"],
+    // America/New_York は 2026-03-08 02:00 に EST(-5) → EDT(-4)。その日の 0 時のずれで求める
+    ["夏時間に入る日", "2026-03-08T18:00:00Z", "America/New_York", undefined, "2026-03-08T05:00:00.000Z"],
+    ["夏時間に入った翌日", "2026-03-09T12:00:00Z", "America/New_York", undefined, "2026-03-09T04:00:00.000Z"],
+    ["夏時間をまたいで 6 日前", "2026-03-09T12:00:00Z", "America/New_York", 6, "2026-03-03T05:00:00.000Z"],
+  ];
+  for (const [label, at, timeZone, daysBack, expected] of cases) {
+    assert.equal(startOfLocalDay(new Date(at), timeZone, daysBack).toISOString(), expected, label);
+  }
 });
 
 test("cacheReadRate: read / (input + read + creation) を % で。分母が 0 なら「-」", () => {
@@ -199,7 +195,7 @@ test("cacheReadRate: read / (input + read + creation) を % で。分母が 0 �
   assert.equal(cacheReadRate({ ...summary, inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }), "-");
 });
 
-test("/usage: 今日と直近 7 日（SELF_AGENT_TZ の日付で区切る）を ephemeral で返す", async (t) => {
+test("/usage: 今日と直近 7 日（SELF_AGENT_TZ の日付で区切る）を ephemeral で返す。タイムゾーンが違えば日付の境界も変わる", async (t) => {
   const { usage, recordAt } = setup(t);
   recordSamples(recordAt);
   const command = createUsageCommand({ usage, cfg: { timeZone: "Asia/Tokyo" } });
@@ -216,36 +212,24 @@ test("/usage: 今日と直近 7 日（SELF_AGENT_TZ の日付で区切る）を 
 
   await command.handle(interaction, responder);
 
-  assert.deepEqual(responder.replies, [
+  assert.deepEqual(responder.replies, [{ text: usageText(usage, NOW, "Asia/Tokyo"), ephemeral: true }]);
+
+  const cases: Array<{ timeZone: string; today: string[]; week: string[] }> = [
     {
-      text: [
-        "**今日**（2026-10-02）",
-        "ターン 2（成功 1 / 失敗 1）",
-        "入力トークン 10",
-        "キャッシュ 読み取り 900 / 作成 90（読み取り率 90.0%）",
-        "compaction 1 回",
-        "ツール呼び出し 3 回",
-        "",
-        "**直近 7 日**（2026-09-26〜2026-10-02）",
-        "ターン 4（成功 3 / 失敗 1）",
-        "入力トークン 16",
-        "キャッシュ 読み取り 1,000 / 作成 99（読み取り率 89.7%）",
-        "compaction 1 回",
-        "ツール呼び出し 4 回",
-      ].join("\n"),
-      ephemeral: true,
+      timeZone: "Asia/Tokyo",
+      today: ["2026-10-02", "ターン 2（成功 1 / 失敗 1）", "入力トークン 10", "読み取り 900 / 作成 90（読み取り率 90.0%）", "compaction 1 回", "ツール呼び出し 3 回"],
+      week: ["2026-09-26〜2026-10-02", "ターン 4（成功 3 / 失敗 1）", "入力トークン 16", "読み取り 1,000 / 作成 99（読み取り率 89.7%）", "compaction 1 回", "ツール呼び出し 4 回"],
     },
-  ]);
-});
-
-test("/usage: タイムゾーンが違えば日付の境界も変わる（UTC なら今日は 10/02 00:00Z から）", (t) => {
-  const { usage, recordAt } = setup(t);
-  recordSamples(recordAt);
-
-  const text = usageText(usage, NOW, "UTC");
-
-  assert.match(text, /^\*\*今日\*\*（2026-10-02）\nターン 1（成功 0 \/ 失敗 1）\n入力トークン 0\n/);
-  assert.match(text, /読み取り率 -）\ncompaction 0 回\nツール呼び出し 1 回\n\n/);
-  // UTC の 7 日は 9/26 00:00Z から（9/25 15:00Z の行は入らない）
-  assert.match(text, /\*\*直近 7 日\*\*（2026-09-26〜2026-10-02）\nターン 3（成功 2 \/ 失敗 1）/);
+    {
+      // UTC なら今日は 10/02 00:00Z から、7 日は 9/26 00:00Z から（9/25 15:00Z の行は入らない）
+      timeZone: "UTC",
+      today: ["2026-10-02", "ターン 1（成功 0 / 失敗 1）", "入力トークン 0", "読み取り率 -", "compaction 0 回", "ツール呼び出し 1 回"],
+      week: ["2026-09-26〜2026-10-02", "ターン 3（成功 2 / 失敗 1）"],
+    },
+  ];
+  for (const { timeZone, today, week } of cases) {
+    const [todayText, weekText] = usageText(usage, NOW, timeZone).split("\n\n");
+    for (const part of today) assert.ok(todayText!.includes(part), `${timeZone} 今日 ${part}`);
+    for (const part of week) assert.ok(weekText!.includes(part), `${timeZone} 7 日 ${part}`);
+  }
 });
