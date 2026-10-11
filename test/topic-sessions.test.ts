@@ -589,3 +589,17 @@ test("openDb: v14 の DB を v15 に上げても既存のセッションは残�
   store.setRenewed("topic-9", "x");
   assert.equal(store.get("topic-9"), undefined);
 });
+
+test("TopicSessionStore: close は /renew の要約と時刻を消す（/close の要約が置き換える）", (t) => {
+  const store = new TopicSessionStore(tempDb(t), clock());
+  store.create(NEW_SESSION);
+  store.setRenewed("topic-1", "/renew の要約");
+  assert.equal(store.get("topic-1")?.renewedSummary, "/renew の要約");
+
+  const closed = store.close("topic-1", "/close の要約");
+
+  assert.equal(closed?.summary, "/close の要約");
+  assert.equal(closed?.renewedSummary, null);
+  assert.equal(closed?.renewedAt, null);
+  assert.deepEqual(store.get("topic-1"), closed);
+});

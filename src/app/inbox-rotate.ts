@@ -226,7 +226,8 @@ export class InboxRotator {
    * - 会話の記録が無い（RESUME_FAILURE_PATTERN）: 要約は作らずに SDK セッションを捨て、切り替えた日を記録し、同じチャンネルの直近の要約があればそれを seed に入れて知らせる
    * - それ以外の失敗: 何も変えない（resume の連続失敗には数えない。失敗の時刻を覚え、ROTATE_RETRY_MS 経ってからやり直す）
    * /renew（reason が manual）のときは、SDK セッションがあれば前回の切り替えより後のターンが無くても要約を頼むターンを行い（オーナーが明示的に頼んだため）、
-   * 知らせは投稿しない。結果を返す（キュー待ちの間に停止を始めていて何もしなかったら undefined）
+   * SDK セッションが無ければ何も変えない（切り替えた日を記録すると、その日の日次の切り替えを飛ばすため）。知らせは投稿しない。
+   * 結果を返す（キュー待ちの間に停止を始めていて何もしなかったら undefined）
    */
   private async rotate(
     target: RotateTarget,
@@ -241,6 +242,8 @@ export class InboxRotator {
     if (stopping()) return undefined;
     const today = formatDate(now(), cfg.timeZone);
     const sessionId = sessions.get(channelId);
+    // /renew で SDK セッションが無ければ、切り替えた日も時刻も記録しない（その日の日次の切り替えを飛ばさない）
+    if (reason.kind === "manual" && sessionId === undefined) return "no_conversation";
     // /renew は前回の切り替えより後のターンを数えない（SDK セッションがあれば要約する）
     const noTurns = reason.kind !== "manual" && usage.countAfter(channelId, this.lastRotatedAt(target)) === 0;
     if (sessionId === undefined || noTurns) {

@@ -27,7 +27,7 @@ export type TopicSession = {
   deletePromptMessageId: string | null;
   /** チャンネルを削除した時刻。削除前は null */
   deletedAt: string | null;
-  /** /renew で会話を新しくしたときの要約。まだ新しくしていなければ null */
+  /** /renew で会話を新しくしたときの要約。まだ新しくしていない・その後に /close した（/close で消す）なら null */
   renewedSummary: string | null;
   /** /renew で会話を新しくした時刻。まだ新しくしていなければ null */
   renewedAt: string | null;
@@ -253,11 +253,15 @@ export class TopicSessionStore {
     this.db.prepare("UPDATE sessions SET close_draft = NULL WHERE channel_id = ?").run(channelId);
   }
 
-  /** 閉じる: 完了にして閉じた時刻と要約を残し、下書きを消す。行が無ければ undefined */
+  /**
+   * 閉じる: 完了にして閉じた時刻と要約を残し、下書きを消す。/renew の要約と時刻も消す（/close の要約がそれまでの /renew の要約を置き換える）。
+   * 行が無ければ undefined
+   */
   close(channelId: string, summary: string): TopicSession | undefined {
     const row = this.db
       .prepare(
-        "UPDATE sessions SET state = 'done', closed_at = ?, summary = ?, close_draft = NULL WHERE channel_id = ? RETURNING *",
+        "UPDATE sessions SET state = 'done', closed_at = ?, summary = ?, close_draft = NULL, renewed_summary = NULL, renewed_at = NULL " +
+          "WHERE channel_id = ? RETURNING *",
       )
       .get(this.now().toISOString(), summary, channelId);
     return row === undefined ? undefined : toSession(row);
