@@ -1,6 +1,7 @@
 // 配線だけ: config → store → runner → gateway → handler
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { pruneProjectTrash } from "./agent/project-files.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
@@ -82,13 +83,15 @@ const kbMemory = {
   notifyMemoryChange: createNotifyMemoryChange({ gateway, log }),
   timeZone: config.timeZone,
 };
-// project_open: 配信が無効（設定が無い・待ち受けに失敗した）なら not_configured（staticServer は下で作る）
+// project_open: 配信が無効（設定が無い・待ち受けに失敗した）なら not_configured（staticServer は下で作る）。
+// project_files: このチャンネルのプロジェクトのファイルを .trash に移す・移す・作り直す・戻す
 const projectTools = {
   projects,
   projectsDir,
   publicBaseUrl: config.publicBaseUrl,
   serving: () => staticServer?.listening() ?? false,
   log,
+  now,
 };
 // dev モードなら run ごとの会話を <dataDir>/devlog/<日付>.jsonl に残す（dev モードでなければ受け口を作らない）
 const devLogSink = createDevLogSink(config);
@@ -178,7 +181,7 @@ const handleInteraction = createInteractionHandler({
   log,
 });
 // 定期処理: セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
-// 完了から日数の経ったセッションの削除を #system で確認し、古い dev ログを消し（dev モードでなくても）、#inbox・#tasks の会話を切り替える
+// 完了から日数の経ったセッションの削除を #system で確認し、古い dev ログ（dev モードでなくても）とプロジェクトの古い .trash を消し、#inbox・#tasks の会話を切り替える
 const scheduler = new Scheduler({
   cfg: config,
   topicSessions,
@@ -189,6 +192,7 @@ const scheduler = new Scheduler({
   gateway,
   inboxRotator,
   pruneDevLogs: () => pruneDevLogs(devLogDir(config.dataDir), now(), config.timeZone, config.devLogDays),
+  pruneProjectTrash: () => pruneProjectTrash(projectsDir, now()),
   now,
   log,
 });

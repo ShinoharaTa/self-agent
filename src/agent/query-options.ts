@@ -59,11 +59,11 @@ export function buildQueryOptions(
     systemPrompt: SYSTEM_PROMPT,
     settingSources: [],
     cwd: cfg.workDir,
-    // 組み込みツールは Web の 2 つとファイル操作の 5 つ（シェルは無い）。キャッシュのため順序も固定。
+    // 組み込みツールは Web の 2 つとファイル操作の 4 つ（シェルは無い）。キャッシュのため順序も固定。
     // WebFetch の URL とファイル操作のパスは sdk-runner の PreToolUse の hook で絞る。
-    // 許可するのは自前の MCP ツール・Web の 2 つと、<workDir>/projects の下の読み書き（Edit のルールは Write にも、Read のルールは Glob・Grep にも効く）。
+    // 許可するのは自前の MCP ツール・Web の 2 つと、<workDir>/projects の下の読み書き（Edit のルールは Write にも、Read のルールは Glob にも効く）。
     // それ以外は dontAsk で拒否する
-    tools: ["WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob", "Grep"],
+    tools: ["WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob"],
     permissionMode: "dontAsk",
     allowedTools: [`mcp__${MCP_SERVER_NAME}__*`, "WebSearch", "WebFetch", `Read(${projects})`, `Edit(${projects})`],
     mcpServers: { [MCP_SERVER_NAME]: mcpServer },

@@ -45,8 +45,9 @@ Discord ──(discord.js)── Gateway ── 受付判定（許可サーバ�
                          チャンネルごとの直列キュー
                                        │
                          Claude Agent SDK  query()（チャンネル単位で resume）
-                           ├─ 自前ツール（in-process MCP: タスク・セッション・ナレッジ・記憶）
-                           └─ 組み込みツール（WebSearch / WebFetch のみ）
+                           ├─ 自前ツール（in-process MCP: タスク・セッション・ナレッジ・記憶・プロジェクト）
+                           └─ 組み込みツール（Web: WebSearch / WebFetch、
+                                              ファイル: Read / Write / Edit / Glob。プロジェクトの中だけ）
                                        │
                                  SQLite（node:sqlite）
 ```
@@ -59,7 +60,7 @@ Discord ──(discord.js)── Gateway ── 受付判定（許可サーバ�
 ## 安全のための決まり
 
 - 反応するのは、環境変数で許可したサーバーの、オーナー本人の発言と操作だけ。DM・他のサーバー・他の人・Bot・Webhook には反応しない
-- Claude Code の組み込みツールは WebSearch と WebFetch 以外すべて無効（シェル・ファイル操作はできない）
+- シェルは無い。組み込みツールは WebSearch・WebFetch とファイル操作（Read / Write / Edit / Glob）だけで、読めるのは projects の中、書けるのはそのチャンネルのプロジェクトの中だけ（hook で判定する）。Bot が消したファイルはプロジェクトの `.trash` に移り（戻せる）、30 日で消える
 - WebFetch は、そのターンにオーナーが発言に貼った URL（とその転送先）だけ取得できる（それ以外は hook で拒否）。外のページの指示で別の URL にデータを送る経路を塞ぐため
 - Web・検索結果・ナレッジの中身は「資料」として扱い、その中の指示には従わない
 - チャンネルやナレッジの削除など戻せない操作は、ボタンを押したときだけ行う

@@ -214,7 +214,7 @@ test("project_open: 一部だけ複製できたら複製できた分を scaffold
   assert.deepEqual(result.notes, projectNotes("kakeibo-app", result.url, false));
 });
 
-test("project_open: 注意は 9 項目（dir と site_dir・DESIGN.md と base.css・相対パスと url・localStorage と slug・秘密・ビルド不可・Glob と Grep の path・SPEC.md・作り終えた後の返事）", () => {
+test("project_open: 注意は 10 項目（dir と site_dir・DESIGN.md と base.css・相対パスと url・localStorage と slug・秘密・ビルド不可・Glob の path・project_files・SPEC.md・作り終えた後の返事）", () => {
   assert.deepEqual(projectNotes("kakeibo", "https://example.test:9443/p/kakeibo/", true), [
     "ファイルは dir の中に書く。配られるのは site_dir の中だけで、入口は site_dir/index.html",
     "作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う",
@@ -222,19 +222,20 @@ test("project_open: 注意は 9 項目（dir と site_dir・DESIGN.md と base.c
     "localStorage のキーは kakeibo で始める（全プロジェクトが同じオリジン）",
     "API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない",
     "ビルドやコマンドの実行はできない。ライブラリは CDN から読む",
-    "Glob・Grep は path に dir を指定する",
+    "Glob は path に dir を指定する",
+    "消す・移す・作り直すは project_files を使う（消したものは .trash に移り、restore で戻せる）",
     "決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む",
     "作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える",
   ]);
 });
 
-test("project_open: DESIGN.md か base.css が無いときの注意は 8 項目（土台の使い方の 2 番目だけを除く）", () => {
+test("project_open: DESIGN.md か base.css が無いときの注意は 9 項目（土台の使い方の 2 番目だけを除く）", () => {
   const url = "https://example.test:9443/p/kakeibo/";
   const withDesign = projectNotes("kakeibo", url, true);
 
   assert.equal(withDesign[1], PROJECT_DESIGN_NOTE);
   assert.deepEqual(projectNotes("kakeibo", url, false), withDesign.filter((note) => note !== PROJECT_DESIGN_NOTE));
-  assert.equal(projectNotes("kakeibo", url, false).length, 8);
+  assert.equal(projectNotes("kakeibo", url, false).length, 9);
 });
 
 test("project_open: 2 回目は同じプロジェクトを existing で返す（name・title が違っても作らない）。別のチャンネルは別のプロジェクト", async (t) => {
@@ -311,12 +312,13 @@ function projectOpenDefinition(t: TestContext, context?: RunContext) {
     deps,
     context,
   );
-  const definition = tools.at(-1);
+  // project_open は最後から 2 番目（最後は project_files）
+  const definition = tools.at(-2);
   assert.equal(definition?.name, "project_open");
   return definition!;
 }
 
-test("ツール定義: project_open は最後。説明は使いどころと、コードを貼らずに url を伝えること", (t) => {
+test("ツール定義: project_open は project_files の前。説明は使いどころと、コードを貼らずに url を伝えること", (t) => {
   const definition = projectOpenDefinition(t);
 
   assert.equal(

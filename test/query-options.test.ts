@@ -35,11 +35,13 @@ test("システムプロンプトに作ってと頼まれたときの行（proje
   );
 });
 
-test("システムプロンプトに、作ってと頼まれたときの行の直後に仕様の検討・見直しを頼まれたときの行（作り始めずに案を出す・頼まれていない機能は候補として 1 行）を含める", () => {
+test("システムプロンプトに、作ってと頼まれたときの行の直後に project_files の行、その次に仕様の検討・見直しを頼まれたときの行（作り始めずに案を出す・頼まれていない機能は候補として 1 行）を含める", () => {
   const { systemPrompt } = buildQueryOptions(cfg, mcpServer);
   assert.ok(
     String(systemPrompt).includes(
-      "コードは聞かれたときだけ短く見せる。\n- 仕様の検討や見直しを頼まれたら、作り始めずに案を短く出し、確認してから作る。頼まれていない機能は足さず、候補として 1 行で挙げる。\n",
+      "コードは聞かれたときだけ短く見せる。\n" +
+        "- ファイルを消す・移す・作り直すときは project_files を使う。オーナーに手で操作するよう頼まない。\n" +
+        "- 仕様の検討や見直しを頼まれたら、作り始めずに案を短く出し、確認してから作る。頼まれていない機能は足さず、候補として 1 行で挙げる。\n",
     ),
   );
 });
@@ -97,12 +99,12 @@ test("システムプロンプトに WebSearch と WebFetch の使い方を含�
   }
 });
 
-test("組み込みツールは Web の 2 つとファイル操作の 5 つ（この順で固定）。設定ファイルは使わず、自前ツール・Web の 2 つと projects の下の読み書きだけを許可する", () => {
+test("組み込みツールは Web の 2 つとファイル操作の 4 つ（この順で固定。Grep は無い）。設定ファイルは使わず、自前ツール・Web の 2 つと projects の下の読み書きだけを許可する", () => {
   const options = buildQueryOptions(cfg, mcpServer);
-  assert.deepEqual(options.tools, ["WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob", "Grep"]);
+  assert.deepEqual(options.tools, ["WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob"]);
   assert.equal(options.permissionMode, "dontAsk");
   assert.deepEqual(options.settingSources, []);
-  // 素の Read・Write・Bash は許可しない。Edit のルールは Write にも、Read のルールは Glob・Grep にも効く
+  // 素の Read・Write・Bash は許可しない。Edit のルールは Write にも、Read のルールは Glob にも効く
   assert.deepEqual(options.allowedTools, [
     "mcp__selfagent__*",
     "WebSearch",

@@ -124,13 +124,13 @@ export function progressLabel(
     case "Read":
       return withPath("読んでいます");
     case "Glob":
-    case "Grep":
       return "ファイルを探しています";
     case "WebSearch":
       return "Web を検索しています";
     case "WebFetch":
       return "ページを読んでいます";
   }
+  if (toolName === `${MCP_TOOL_PREFIX}project_files`) return "ファイルを整理しています";
   if (toolName.startsWith(MCP_TOOL_PREFIX)) return `ツールを使っています: ${toolName.slice(MCP_TOOL_PREFIX.length)}`;
   return `${toolName} を使っています`;
 }
@@ -248,7 +248,7 @@ function denyToolUse(reason: string): HookJSONOutput {
 }
 
 /**
- * ファイル操作（Read・Write・Edit・Glob・Grep）を judgeFileAccess で絞る PreToolUse の hook。context はこの run のチャンネル。
+ * ファイル操作（Read・Write・Edit・Glob）を judgeFileAccess で絞る PreToolUse の hook。context はこの run のチャンネル。
  * 拒否したら理由をモデルに返し、log にはツール名だけを出す（パスは出さない）。Write・Edit を許したらプロジェクトの更新日時を今にする。
  * CLI は hook の例外を「判断なし」として通してしまうので、判定（ストアの読み書きを含む）が例外で終わったら拒否する（パス・例外の中身は log に出さない）
  */

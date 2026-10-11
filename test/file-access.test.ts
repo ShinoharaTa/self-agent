@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   FILE_NO_CONTEXT_REASON,
   FILE_READ_DENIED_REASON,
+  FILE_TOOLS,
+  FILE_TRASH_DENIED_REASON,
   FILE_WRITE_DENIED_REASON,
   judgeFileAccess,
   resolveRealPath,
@@ -21,6 +23,7 @@ const ALLOWED = { allowed: true };
 const WRITE_DENIED = { allowed: false, reason: FILE_WRITE_DENIED_REASON };
 const READ_DENIED = { allowed: false, reason: FILE_READ_DENIED_REASON };
 const NO_CONTEXT = { allowed: false, reason: FILE_NO_CONTEXT_REASON };
+const TRASH_DENIED = { allowed: false, reason: FILE_TRASH_DENIED_REASON };
 
 /**
  * 一時ディレクトリに workDir を作る。projects/kakeibo（このチャンネルのプロジェクト）と projects/other（別のチャンネルのもの）、
@@ -112,15 +115,14 @@ test("パスの要素に `..` があれば、resolve・realpath の前に拒否�
   assert.deepEqual(judge("Edit", { file_path: escaped, old_string: "a", new_string: "b" }), WRITE_DENIED);
   assert.deepEqual(judge("Read", { file_path: escaped }), READ_DENIED);
   assert.deepEqual(judge("Glob", { pattern: "*", path: `${project}/site/deep/../..` }), READ_DENIED);
-  assert.deepEqual(judge("Grep", { pattern: "a", path: `${project}/site/deep/../..` }), READ_DENIED);
   // 中に戻るだけの `..` も拒否する（相対パス・末尾の `..` も）
   assert.deepEqual(judge("Write", { file_path: `${project}/src/../site/a.js`, content: "" }), WRITE_DENIED);
   assert.deepEqual(judge("Read", { file_path: "projects/kakeibo/src/../site/index.html" }), READ_DENIED);
   assert.deepEqual(judge("Glob", { pattern: "*", path: `${project}/site/..` }), READ_DENIED);
-  assert.deepEqual(judge("Grep", { pattern: "a", path: "../work/projects/kakeibo" }), READ_DENIED);
+  assert.deepEqual(judge("Glob", { pattern: "*", path: "../work/projects/kakeibo" }), READ_DENIED);
   // `..` を含む名前は要素が `..` ではないので通す
   assert.deepEqual(judge("Read", { file_path: `${project}/site/a..b.js` }), ALLOWED);
-  assert.deepEqual(judge("Grep", { pattern: "a", path: `${project}/site..old` }), ALLOWED);
+  assert.deepEqual(judge("Glob", { pattern: "*", path: `${project}/site..old` }), ALLOWED);
 });
 
 test("Write・Edit: #inbox・プロジェクトの無いチャンネルでは、プロジェクトの中を指しても拒否する", (t) => {
@@ -142,14 +144,14 @@ test("Write・Edit: #tasks では、プロジェクトの中を指しても拒�
   }
 });
 
-test("Read・Glob・Grep: projects の中なら許す（別のチャンネルのプロジェクト・#inbox でも）。外は拒否する", (t) => {
+test("Read・Glob: projects の中なら許す（別のチャンネルのプロジェクト・#inbox でも）。外は拒否する", (t) => {
   const { root, workDir, projectsDir, judge } = setup(t);
 
   assert.deepEqual(judge("Read", { file_path: join(projectsDir, "kakeibo", "site", "index.html") }), ALLOWED);
   assert.deepEqual(judge("Read", { file_path: join(projectsDir, "other", "site", "index.html") }), ALLOWED);
   assert.deepEqual(judge("Read", { file_path: join(projectsDir, "other", "site", "index.html") }, { context: INBOX }), ALLOWED);
   assert.deepEqual(judge("Glob", { pattern: "**/*.html", path: join(projectsDir, "kakeibo") }), ALLOWED);
-  assert.deepEqual(judge("Grep", { pattern: "kakeibo", path: "projects/kakeibo/site" }), ALLOWED);
+  assert.deepEqual(judge("Glob", { pattern: "*.html", path: "projects/kakeibo/site" }), ALLOWED);
 
   assert.deepEqual(judge("Read", { file_path: join(root, "secret.txt") }), READ_DENIED);
   assert.deepEqual(judge("Read", { file_path: join(projectsDir, "kakeibo", "..", "..", "..", "secret.txt") }), READ_DENIED);
@@ -157,13 +159,12 @@ test("Read・Glob・Grep: projects の中なら許す（別のチャンネルの
   assert.deepEqual(judge("Read", { file_path: "/etc/passwd" }), READ_DENIED);
   // path が無ければ cwd（workDir）が対象なので拒否する
   assert.deepEqual(judge("Glob", { pattern: "**/*" }), READ_DENIED);
-  assert.deepEqual(judge("Grep", { pattern: "TOKEN" }), READ_DENIED);
-  assert.deepEqual(judge("Grep", { pattern: "TOKEN", path: root }), READ_DENIED);
+  assert.deepEqual(judge("Glob", { pattern: "**/*", path: root }), READ_DENIED);
   // projects そのもの
   assert.deepEqual(judge("Glob", { pattern: "*", path: projectsDir }), READ_DENIED);
 });
 
-test("Read・Glob・Grep: symlink で外に出るものは拒否する", (t) => {
+test("Read・Glob: symlink で外に出るものは拒否する", (t) => {
   const { root, projectsDir, judge } = setup(t);
   const site = join(projectsDir, "kakeibo", "site");
   symlinkSync(join(root, "secret.txt"), join(site, "link.txt"));
@@ -171,11 +172,10 @@ test("Read・Glob・Grep: symlink で外に出るものは拒否する", (t) => 
 
   assert.deepEqual(judge("Read", { file_path: join(site, "link.txt") }), READ_DENIED);
   assert.deepEqual(judge("Read", { file_path: join(site, "outside", "secret.txt") }), READ_DENIED);
-  assert.deepEqual(judge("Grep", { pattern: "secret", path: join(site, "outside") }), READ_DENIED);
   assert.deepEqual(judge("Glob", { pattern: "*", path: join(site, "outside") }), READ_DENIED);
 });
 
-test("Glob の pattern・Grep の glob: 絶対パス（/ か ~ で始まる）か、部分文字列 .. を含めば、path が中でも拒否する", (t) => {
+test("Glob の pattern: 絶対パス（/ か ~ で始まる）か、部分文字列 .. を含めば、path が中でも拒否する", (t) => {
   const { projectsDir, judge } = setup(t);
   const path = join(projectsDir, "kakeibo");
 
@@ -196,29 +196,56 @@ test("Glob の pattern・Grep の glob: 絶対パス（/ か ~ で始まる）�
     "...",
   ]) {
     assert.deepEqual(judge("Glob", { pattern, path }), READ_DENIED, pattern);
-    assert.deepEqual(judge("Grep", { pattern: "a", path, glob: pattern }), READ_DENIED, pattern);
   }
   // 中だけを指すもの（ドットファイル・`./`）は通す
   for (const pattern of ["**/*.html", "site/*", "*.{js,css}", "**/.env", "./site/*"]) {
     assert.deepEqual(judge("Glob", { pattern, path }), ALLOWED, pattern);
-    assert.deepEqual(judge("Grep", { pattern: "a", path, glob: pattern }), ALLOWED, pattern);
   }
-  // Grep の pattern（正規表現）は対象のパスではないので見ない
-  assert.deepEqual(judge("Grep", { pattern: "/etc/../passwd", path }), ALLOWED);
 });
 
 test("context が無いターンではファイル操作をすべて拒否する。パスが無い・形が違う入力も拒否する。ファイル操作以外は判定しない", (t) => {
   const { projectsDir, judge } = setup(t);
   const file = join(projectsDir, "kakeibo", "site", "index.html");
 
-  for (const toolName of ["Read", "Write", "Edit", "Glob", "Grep"]) {
+  for (const toolName of ["Read", "Write", "Edit", "Glob"]) {
     assert.deepEqual(judge(toolName, { file_path: file, path: file }, { context: undefined, project: undefined }), NO_CONTEXT);
   }
   assert.deepEqual(judge("Read", {}), READ_DENIED);
   assert.deepEqual(judge("Read", { file_path: 42 }), READ_DENIED);
   assert.deepEqual(judge("Write", null), WRITE_DENIED);
-  assert.deepEqual(judge("Grep", { pattern: "a", path: 42 }), READ_DENIED);
+  assert.deepEqual(judge("Glob", { pattern: "a", path: 42 }), READ_DENIED);
   assert.deepEqual(judge("WebSearch", { query: "a" }, { context: undefined }), ALLOWED);
+});
+
+test("判定するのは Read・Write・Edit・Glob（Grep は外した）", () => {
+  assert.deepEqual(FILE_TOOLS, ["Read", "Write", "Edit", "Glob"]);
+  assert.equal(FILE_TOOLS.includes("Grep"), false);
+});
+
+test("Write・Edit: このチャンネルのプロジェクトの .trash そのものとその中は拒否する（symlink で指しても）。Read・Glob は .trash の中も許す", (t) => {
+  const { projectsDir, judge } = setup(t);
+  const project = join(projectsDir, "kakeibo");
+  const trash = join(project, ".trash");
+  mkdirSync(join(trash, "20261011T000000Z", "site"), { recursive: true });
+  writeFileSync(join(trash, "20261011T000000Z", "site", "index.html"), "<p>old</p>");
+  symlinkSync(trash, join(project, "site", "to-trash"));
+
+  assert.deepEqual(judge("Write", { file_path: join(trash, "20261011T000000Z", "site", "index.html"), content: "" }), TRASH_DENIED);
+  assert.deepEqual(judge("Edit", { file_path: join(trash, "20261011T000000Z", "site", "index.html") }), TRASH_DENIED);
+  assert.deepEqual(judge("Write", { file_path: join(trash, "new.txt"), content: "" }), TRASH_DENIED);
+  assert.deepEqual(judge("Write", { file_path: trash, content: "" }), TRASH_DENIED);
+  assert.deepEqual(judge("Write", { file_path: "projects/kakeibo/.trash/a.txt", content: "" }), TRASH_DENIED);
+  assert.deepEqual(judge("Write", { file_path: join(project, "site", "to-trash", "a.txt"), content: "" }), TRASH_DENIED);
+  // 名前の前半が同じだけのものは .trash ではない
+  assert.deepEqual(judge("Write", { file_path: join(project, ".trash-old", "a.txt"), content: "" }), ALLOWED);
+  assert.deepEqual(judge("Write", { file_path: join(project, "site", ".trash", "a.txt"), content: "" }), ALLOWED);
+  assert.deepEqual(
+    FILE_TRASH_DENIED_REASON,
+    ".trash の中には書けません。戻すときは project_files の restore を使ってください",
+  );
+
+  assert.deepEqual(judge("Read", { file_path: join(trash, "20261011T000000Z", "site", "index.html") }), ALLOWED);
+  assert.deepEqual(judge("Glob", { pattern: "**/*", path: trash }), ALLOWED);
 });
 
 test("resolveRealPath: 存在する一番深い親の realpath に残りを足す。壊れた symlink は解決しない", (t) => {
