@@ -411,7 +411,7 @@ export function createMemoryToolHandlers(
 
 /** project_open の注意のうち、UI の土台（DESIGN.md・base.css）の使い方 */
 export const PROJECT_DESIGN_NOTE =
-  "作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。" +
+  "作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、色・余白・文字サイズ・角丸の値を直接書かない。" +
   "base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。" +
   "既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う";
 
@@ -424,7 +424,7 @@ export function projectNotes(slug: string, url: string, withDesign: boolean): st
     "ファイルは dir の中に書く。配られるのは site_dir の中だけで、入口は site_dir/index.html",
     ...(withDesign ? [PROJECT_DESIGN_NOTE] : []),
     `パスは相対で書く（/ で始めない）。ページは ${url} で開かれる`,
-    `localStorage のキーは ${slug} で始める（全プロジェクトが同じオリジン）`,
+    `localStorage のキーは ${slug} で始める（全プロジェクトが同じオリジン）。読めない・形が違うデータは黙って直したり捨てたりせず元のまま残し、保存に失敗したら成功と表示しない`,
     "API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない",
     "ビルドやコマンドの実行はできない。ライブラリは CDN から読む",
     "Glob は path に dir を指定する",

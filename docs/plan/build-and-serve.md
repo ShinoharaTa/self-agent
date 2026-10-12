@@ -65,7 +65,7 @@
   - 返す内容: `dir`、`site_dir`、`url` と、作るときの注意:
     - 「ファイルは dir の中に書く。配られるのは site_dir の中だけで、入口は site_dir/index.html」
     - 「パスは相対で書く（`/` で始めない）。ページは `<url>` で開かれる」
-    - 「localStorage のキーは slug で始める（全プロジェクトが同じオリジン）」
+    - 「localStorage のキーは slug で始める（全プロジェクトが同じオリジン）。読めない・形が違うデータは黙って直したり捨てたりせず元のまま残し、保存に失敗したら成功と表示しない」
     - 「API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない」
     - 「ビルドやコマンドの実行はできない（段 1）。ライブラリは CDN から読む」
     - 「Glob は path に dir を指定する」
@@ -75,7 +75,7 @@
   - UI の土台（#67）: created・existing のどちらでも、リポジトリの `templates/web/` を複製する。created は DESIGN.md と site/ の base.css・app.css・icons.svg・index.html の 5 つ、existing は `site/base.css` が無いときだけ DESIGN.md・base.css・icons.svg の 3 つ。既にあるファイル（symlink を含む）は上書きせず、site が dir の外への symlink なら何も複製しない。複製できたものは結果の `scaffold` で返し、失敗したものがあっても log だけで結果はそのまま返す。
     - 使い勝手の節（#81）: 取り消し優先（確認ダイアログより [取り消す] 付きトースト）・入力の摩擦（主の欄を先頭に autofocus・前回の選択を記憶）・空状態は 1 つで次の行動を書く・切り替え後は結果へスクロールし初期状態へ 1 タップで戻る・赤は超過と失敗だけ・保存失敗は alert で・ダイアログは 1 目的でボタンを下に固定・メモは 2 行まで。DESIGN.md は 100 行以内。
     - 見た目の基準は shadcn/ui の既定風（中立色・黒のボタン・角丸 8px）。値はすべて base.css の変数（余白は 4 の倍数、文字 12〜24、角丸 6/8/12/9999、意味の名前の色とダークモードでの差し替え、影 1 種）と部品のクラスで、DESIGN.md（80 行以内）はその使い方。アイコンは Lucide（lucide-static 1.55.0、ISC）の sprite。
-    - 注意の 2 番目に「作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、px と色の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う」を足す。複製の後に DESIGN.md と site/base.css のどちらかが無ければ入れない。ツールの定義は変えないので、キャッシュには影響しない。
+    - 注意の 2 番目に「作る前に dir/DESIGN.md を読む。見た目は site_dir/base.css の変数と部品で作り、色・余白・文字サイズ・角丸の値を直接書かない。base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う」を足す。複製の後に DESIGN.md と site/base.css のどちらかが無ければ入れない。ツールの定義は変えないので、キャッシュには影響しない。
 - project_files（#70。入力 `action`: trash / move / clear / restore、`paths`: 1〜50 件、`to`、`trash_id`）: オーナーはスマホしか使えず手で消せないので、プロジェクトの中のファイルを消す・移す・作り直す・戻す。
   - セッションのチャンネルで、そのチャンネルの削除されていないプロジェクトがあるときだけ使える（それ以外は `not_available`）。パスは dir からの相対。空・絶対・`..` を含む・dir そのもの・`.trash` で始まる・realpath が dir の外か `.trash` の中なら `invalid_path`（何もしない）。symlink はたどらない。
   - trash・move はプロジェクトの dir が無い・解決できなければ `not_available`。trash・clear・restore（一覧を含む）は `.trash` が実際のディレクトリでない（symlink・ファイル）なら何もせず `trash_unavailable`（無いのはよい）。
