@@ -365,7 +365,7 @@ export function projectNotes(slug: string, url: string, withDesign: boolean): st
     "Glob は path に dir を指定する",
     "消す・移す・作り直すは project_files を使う（消したものは .trash に移り、配信されず、restore で戻せる。.trash の中のファイルは今のページに使わない）",
     "決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む",
-    "作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、SPEC.md にあると伝える",
+    "作り終えたら、返事は URL と使い方を 3〜5 行にする。機能の一覧や仕様の詳細は返事に書かず、聞かれたら答える（SPEC.md は配信されずオーナーは読めないので、参照先として案内しない）",
   ];
 }
 
