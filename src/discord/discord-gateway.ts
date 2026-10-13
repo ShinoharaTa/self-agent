@@ -297,7 +297,7 @@ export class DiscordGateway implements Gateway {
 
   async channelExists(channelId: string): Promise<boolean> {
     try {
-      // キャッシュではなく Discord に問い合わせる（/setup と /new でしか使わない）
+      // キャッシュではなく Discord に問い合わせる（/setup・/new と、リマインドの投稿に失敗したときに使う）
       await this.client.channels.fetch(channelId, { force: true });
       return true;
     } catch (error) {

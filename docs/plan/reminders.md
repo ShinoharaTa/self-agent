@@ -155,7 +155,9 @@ CREATE INDEX reminders_active ON reminders (status, next_at);
 - 列: `rule` は §2.3 の形（NULL は 1 回だけ）。`next_at` は規則による次の回（1 回だけなら指定時刻。もう無ければ NULL）。`snooze_at` はスヌーズで決めた、もう一度知らせる時刻。`fire_seq` は投稿のたびに 1 増やす（スヌーズで出し直したときも）。
 - 状態: `active`（これから知らせる。next_at か snooze_at のどちらかがある）、`fired`（1 回だけのものを知らせた後で、まだボタンが押されていない）、`done`（完了。1 回だけで [完了]、紐づけたタスクが閉じていた）、`cancelled`（止めた）。
 - 発火の対象: `status = 'active' AND ((next_at IS NOT NULL AND next_at <= now) OR (snooze_at IS NOT NULL AND snooze_at <= now))`。早い順に、1 tick で最大 20 件。
-- 規則による回を出したら snooze_at も消す（新しい回が前のスヌーズより優先する）。
+- 規則による回を出したら snooze_at も消す（新しい回が前のスヌーズより優先する）。新しい回を投稿している数秒の間に前の回の [10 分後] を押すと、そのスヌーズは新しい回で消える（返事とは食い違うが、窓が小さいので許す）。
+- 止まっていた間に過ぎた回を 12 時間の規則で飛ばすときは、snooze_at も消す。繰り返しのスヌーズの回も 12 時間より古ければ出さずに消す。1 回だけのもののスヌーズの回は、規則による回と同じく遅れの注記を付けて出す。
+- tick は listDue の後、1 件ごとに行を読み直し、止められた・fire_seq が変わった・もう due でないものは出さない。
 - 物理削除はしない。
 - ストア（src/store/reminders.ts。SDK・Discord に依存しない）: `add`、`get`、`listActive(limit)`（next_at と snooze_at の早い方の順）、`listDue(now, limit)`、`countActive({ kind? })`、`findDuplicate(channelId, text, rule, nextAt)`、`markFired(id, expectedSeq, { nextAt, status, messageId, firedAt })`（active で fire_seq が expectedSeq のときだけ書き換え、成否を返す。投稿の間に止められたら false）、`claim(id, expectedSeq, { nextAt, status, firedAt })`（prompt 用。先に進める。条件は markFired と同じ）、`snooze(id, at, expectedSeq?)`、`complete(id, expectedSeq?)`（1 回だけのもの）、`clearSnooze(id, expectedSeq?)`（繰り返しの [済んだ]。snooze_at を消すだけ）、`cancel(id, expectedSeq?)`（expectedSeq を渡せば fire_seq が一致するときだけ。ボタンの古さの判定に使う）、`skipNext(id, nextAt)`、`moveChannel(id, channelId)`、`nextForTasks(taskIds)`（/tasks と task_list 用）。
 
