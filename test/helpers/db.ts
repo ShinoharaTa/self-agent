@@ -12,6 +12,7 @@ import { InboxSummaryStore } from "../../src/store/inbox-summaries.ts";
 import { KnowledgeStore } from "../../src/store/knowledge.ts";
 import { MemoryStore } from "../../src/store/memories.ts";
 import { ProjectStore } from "../../src/store/projects.ts";
+import { ReminderStore } from "../../src/store/reminders.ts";
 import { SdkSessionStore } from "../../src/store/sdk-sessions.ts";
 import { TaskStore } from "../../src/store/tasks.ts";
 import { TopicSessionStore } from "../../src/store/topic-sessions.ts";
@@ -48,5 +49,6 @@ export function createStores(db: DatabaseSync, now: () => Date) {
     knowledge: new KnowledgeStore(db, now),
     memories: new MemoryStore(db, now),
     projects: new ProjectStore(db, now),
+    reminders: new ReminderStore(db, now),
   };
 }

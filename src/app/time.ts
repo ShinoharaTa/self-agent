@@ -1,4 +1,4 @@
-// タイムゾーン（SELF_AGENT_TZ）での日付の計算。/usage・#inbox の切り替え・session_open の 1 日の上限で使う
+// タイムゾーン（SELF_AGENT_TZ）での日付の計算。/usage・#inbox の切り替え・session_open の 1 日の上限・リマインドの繰り返しで使う
 
 type LocalDate = { year: number; month: number; day: number };
 
@@ -10,7 +10,7 @@ function localDate(at: Date, timeZone: string): LocalDate {
 }
 
 /** timeZone の UTC からのずれ（ミリ秒、その時刻での値） */
-function offsetMs(at: Date, timeZone: string): number {
+export function offsetMs(at: Date, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     hourCycle: "h23",

@@ -181,6 +181,28 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE sessions ADD COLUMN renewed_summary TEXT;
   ALTER TABLE sessions ADD COLUMN renewed_at TEXT;
   `,
+  // v16: リマインドと予約した依頼。rule は繰り返しの形（1 回だけなら NULL）、next_at・snooze_at は UTC の ISO。
+  // fire_seq は投稿のたびに 1 増やし、発火とボタンの compare-and-set に使う。物理削除はしない
+  `
+  CREATE TABLE reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('notify', 'prompt')),
+    text TEXT NOT NULL,
+    task_id INTEGER,
+    rule TEXT,
+    next_at TEXT,
+    snooze_at TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'fired', 'done', 'cancelled')),
+    fire_seq INTEGER NOT NULL DEFAULT 0,
+    last_fired_at TEXT,
+    last_message_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX reminders_active ON reminders (status, next_at);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
