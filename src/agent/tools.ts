@@ -1,10 +1,18 @@
-// タスク・セッション・ナレッジベース・記憶・プロジェクトのツール。ハンドラは SDK に依存せずストアだけを使う（session_open は Discord への作成、
+// タスク・セッション・ナレッジベース・記憶・プロジェクト・リマインドのツール。ハンドラは SDK に依存せずストアだけを使う（session_open は Discord への作成、
 // kb_delete は確認の投稿、memory_save・memory_forget は変更の知らせがあるので、app 側の実装を受け取る。
 // project_open は配信中かどうかを main から受け取る。project_files の本体は project-files.ts）。末尾の createTaskTools・createTaskMcpServer が SDK への薄いアダプタ
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import * as z from "zod";
+import {
+  describeRule,
+  formatLocalDateTime,
+  formatWallClock,
+  nextOccurrence,
+  parseRule,
+  wallClockToUtc,
+} from "../app/recurrence.ts";
 import { formatDate } from "../app/time.ts";
 import {
   KB_BODY_MAX_LENGTH,
@@ -21,6 +29,14 @@ import {
 } from "../store/knowledge.ts";
 import { MEMORY_MAX_ACTIVE, MEMORY_TEXT_MAX_LENGTH, type Memory, type MemoryStore } from "../store/memories.ts";
 import { PROJECT_TITLE_MAX_LENGTH, type ProjectStore } from "../store/projects.ts";
+import {
+  REMINDER_MAX_ACTIVE,
+  REMINDER_PROMPT_MAX_ACTIVE,
+  REMINDER_TEXT_MAX_LENGTH,
+  type Reminder,
+  type ReminderKind,
+  type ReminderStore,
+} from "../store/reminders.ts";
 import type { Task, TaskStatus, TaskStore } from "../store/tasks.ts";
 import {
   CLOSE_SUMMARY_MAX_LENGTH,
@@ -59,6 +75,17 @@ export type KbIdArgs = { id: number };
 export type MemorySaveArgs = { text: string; replace_id?: number };
 export type MemoryForgetArgs = { id: number };
 export type ProjectOpenArgs = { name: string; title: string };
+/** at は "YYYY-MM-DD HH:MM"、time は "HH:MM"（どちらも timeZone の壁時計）。形はハンドラで確かめる */
+export type ReminderSetArgs = {
+  text: string;
+  kind?: ReminderKind;
+  at?: string;
+  repeat?: string;
+  time?: string;
+  on?: string;
+  task_id?: number;
+};
+export type ReminderCancelArgs = { id: number; skip_next?: boolean };
 
 /** session_open の結果（そのまま JSON にしてモデルに返す） */
 export type SessionOpenResult =
@@ -98,7 +125,7 @@ export type KbMemoryToolDeps = {
   memories: Pick<MemoryStore, "add" | "softDelete" | "countActive">;
   confirmKbDelete: ConfirmKbDelete;
   notifyMemoryChange: NotifyMemoryChange;
-  /** kb_save・kb_search・kb_get と task_list が返す日付（YYYY-MM-DD）のタイムゾーン */
+  /** kb_save・kb_search・kb_get と task_list が返す日付（YYYY-MM-DD）と、リマインドのツールの日時のタイムゾーン */
   timeZone: string;
 };
 
@@ -126,6 +153,34 @@ export type ProjectToolDeps = {
   /** project_files の trash_id の時刻。省略すると今（テストで差し替える） */
   now?: () => Date;
 };
+
+/** リマインドのツールと task_list の remind が使うストア */
+export type ReminderToolDeps = {
+  reminders: Pick<
+    ReminderStore,
+    "add" | "get" | "listActive" | "countActive" | "findDuplicate" | "cancel" | "skipNext" | "nextForTasks"
+  >;
+  /** 作った・止めた・飛ばしたときの log */
+  log: (message: string) => void;
+  /** in_past の判定と次の回の計算の今。省略すると今（テストで差し替える） */
+  now?: () => Date;
+};
+
+/** reminder_set の at がこれ以上前なら in_past。これより後の過去なら作り、次の tick ですぐ知らせる */
+export const REMINDER_PAST_GRACE_MS = 5 * 60 * 1000;
+/** reminder_set を context の無いターンで呼んだときの message */
+export const REMINDER_NO_CONTEXT_MESSAGE = "このターンでは使えません";
+/** reminder_set を予約した依頼のターンで呼んだときの message */
+export const REMINDER_SCHEDULED_MESSAGE = "予約した依頼のターンでは使えません";
+/** セッションのチャンネルで kind が prompt のときの message */
+export const REMINDER_PROMPT_IN_SESSION_MESSAGE =
+  "prompt は #inbox・#tasks だけで使えます。知らせるだけなら notify にしてください";
+/** active が上限に達しているときの message */
+export const REMINDER_LIMIT_MESSAGE =
+  `リマインドは ${REMINDER_MAX_ACTIVE} 件までです。要らないものを reminder_cancel で止めてください`;
+/** prompt の active が上限に達しているときの message */
+export const REMINDER_PROMPT_LIMIT_MESSAGE =
+  `prompt は ${REMINDER_PROMPT_MAX_ACTIVE} 件までです。要らないものを reminder_cancel で止めてください`;
 
 /** project_open をセッション以外（#inbox・#tasks）・context の無いターンで呼んだときの message */
 export const PROJECT_OPEN_NOT_AVAILABLE_MESSAGE =
@@ -161,15 +216,24 @@ function withStatus(task: Task): { id: number; title: string; due: string | null
   return { ...summary(task), status: task.status };
 }
 
-/** timeZone は task_list が返す closed（done・dropped にした日付）のタイムゾーン */
-export function createTaskToolHandlers(store: TaskStore, timeZone: string) {
-  const listItem = (task: Task) =>
-    task.status === "open"
-      ? withStatus(task)
-      : {
-          ...withStatus(task),
-          closed: task.completedAt === null ? null : formatDate(new Date(task.completedAt), timeZone),
-        };
+/**
+ * timeZone は task_list が返す closed（done・dropped にした日付）と remind（紐づけた active のリマインドの次の時刻）のタイムゾーン。
+ * remind はリマインドが無ければ付けない
+ */
+export function createTaskToolHandlers(
+  store: TaskStore,
+  timeZone: string,
+  reminders: Pick<ReminderStore, "nextForTasks">,
+) {
+  const listItem = (task: Task, remindAt: string | undefined) => {
+    const item = {
+      ...withStatus(task),
+      ...(remindAt === undefined ? {} : { remind: formatWallClock(new Date(remindAt), timeZone) }),
+    };
+    return task.status === "open"
+      ? item
+      : { ...item, closed: task.completedAt === null ? null : formatDate(new Date(task.completedAt), timeZone) };
+  };
   return {
     taskAdd(args: TaskAddArgs): TextToolResult {
       return textResult(summary(store.add({ title: args.title, due: args.due })));
@@ -181,7 +245,8 @@ export function createTaskToolHandlers(store: TaskStore, timeZone: string) {
         limit: args.limit ?? DEFAULT_LIST_LIMIT,
         dueBy: args.due_by,
       });
-      return textResult(tasks.map(listItem));
+      const remindAt = reminders.nextForTasks(tasks.map((task) => task.id));
+      return textResult(tasks.map((task) => listItem(task, remindAt.get(task.id))));
     },
     taskComplete(args: TaskCompleteArgs): TextToolResult {
       const outcome = store.complete(args.id);
@@ -451,6 +516,138 @@ export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunCon
   };
 }
 
+/** 次に知らせる時刻（next_at と snooze_at の早い方）。どちらも無ければ undefined */
+function earliestAt(reminder: Reminder): Date | undefined {
+  const times = [reminder.nextAt, reminder.snoozeAt].filter((at): at is string => at !== null).map((at) => Date.parse(at));
+  return times.length === 0 ? undefined : new Date(Math.min(...times));
+}
+
+/**
+ * リマインドのツール。日時はすべて timeZone の壁時計で受け渡す（next は曜日付き、repeat は日本語の表示）。
+ * reminder_set: context が無い・予約した依頼のターン・セッションのチャンネルでの prompt は not_available。作るのは context のチャンネル。
+ * reminder_list・reminder_cancel は全サーバーのものを扱う（/reminders と同じ）。
+ * log は作った・止めた・飛ばしたときだけ、id と種類だけを出す（text・時刻・チャンネル ID は出さない）
+ */
+export function createReminderToolHandlers(
+  deps: ReminderToolDeps,
+  tasks: Pick<TaskStore, "get">,
+  timeZone: string,
+  context: RunContext | undefined,
+) {
+  const { reminders, log } = deps;
+  const now = deps.now ?? (() => new Date());
+  const show = (at: Date | undefined): string | null => (at === undefined ? null : formatLocalDateTime(at, timeZone));
+  const repeatOf = (rule: string | null): string | null => (rule === null ? null : describeRule(rule));
+  return {
+    reminderSet(args: ReminderSetArgs): TextToolResult {
+      if (context === undefined) return textResult({ result: "not_available", message: REMINDER_NO_CONTEXT_MESSAGE });
+      if (context.scheduled === true) return textResult({ result: "not_available", message: REMINDER_SCHEDULED_MESSAGE });
+      const kind = args.kind ?? "notify";
+      if (kind === "prompt" && context.kind === "session") {
+        return textResult({ result: "not_available", message: REMINDER_PROMPT_IN_SESSION_MESSAGE });
+      }
+      if ((args.at === undefined) === (args.repeat === undefined)) {
+        return textResult({
+          result: "invalid_args",
+          message: "1 回だけなら at、繰り返しなら repeat・time・on のどちらか一方を渡してください",
+        });
+      }
+      if (args.repeat !== undefined && args.task_id !== undefined) {
+        return textResult({ result: "invalid_args", message: "task_id は 1 回だけ（at）のときだけ付けられます" });
+      }
+      const current = now();
+      let rule: string | null = null;
+      let nextAt: Date;
+      if (args.at !== undefined) {
+        const at = wallClockToUtc(args.at.trim(), timeZone);
+        if (at === undefined) {
+          return textResult({ result: "invalid_time", message: "at は YYYY-MM-DD HH:MM で、ある日付を指定してください" });
+        }
+        if (current.getTime() - at.getTime() >= REMINDER_PAST_GRACE_MS) {
+          return textResult({ result: "in_past", now: formatLocalDateTime(current, timeZone) });
+        }
+        nextAt = at;
+      } else {
+        const parsed = parseRule({ repeat: args.repeat, time: args.time, on: args.on });
+        if ("error" in parsed) return textResult({ result: parsed.error, message: parsed.message });
+        rule = parsed.rule;
+        // どの形も 31 日以内に回がある
+        nextAt = nextOccurrence(rule, current, timeZone)!;
+      }
+      let task: { id: number; title: string } | null = null;
+      if (args.task_id !== undefined) {
+        const found = tasks.get(args.task_id);
+        if (found === undefined) return textResult({ result: "task_not_found" });
+        if (found.status !== "open") return textResult({ result: "task_closed" });
+        task = { id: found.id, title: found.title };
+      }
+      const duplicate = reminders.findDuplicate(context.channelId, args.text, rule, rule === null ? nextAt : null);
+      if (duplicate !== undefined) {
+        return textResult({
+          result: "exists",
+          id: duplicate.id,
+          next: show(earliestAt(duplicate)),
+          repeat: repeatOf(duplicate.rule),
+        });
+      }
+      if (reminders.countActive() >= REMINDER_MAX_ACTIVE) {
+        return textResult({ result: "limit", message: REMINDER_LIMIT_MESSAGE });
+      }
+      if (kind === "prompt" && reminders.countActive({ kind: "prompt" }) >= REMINDER_PROMPT_MAX_ACTIVE) {
+        return textResult({ result: "limit", message: REMINDER_PROMPT_LIMIT_MESSAGE });
+      }
+      const created = reminders.add({
+        guildId: context.guildId,
+        channelId: context.channelId,
+        kind,
+        text: args.text,
+        ...(task === null ? {} : { taskId: task.id }),
+        ...(rule === null ? {} : { rule }),
+        nextAt,
+      });
+      log(`reminder_set: created（#${created.id}、${kind}）`);
+      return textResult({
+        result: "created",
+        id: created.id,
+        kind,
+        text: created.text,
+        next: show(nextAt),
+        repeat: repeatOf(rule),
+        task,
+      });
+    },
+    reminderList(): TextToolResult {
+      return textResult({
+        reminders: reminders.listActive(REMINDER_MAX_ACTIVE).map((reminder) => ({
+          id: reminder.id,
+          kind: reminder.kind,
+          text: reminder.text,
+          next: show(earliestAt(reminder)),
+          repeat: repeatOf(reminder.rule),
+          task_id: reminder.taskId,
+          channel: `<#${reminder.channelId}>`,
+        })),
+      });
+    },
+    /** skip_next は繰り返しの次の回（今の next_at）を飛ばし、その次の回にする */
+    reminderCancel(args: ReminderCancelArgs): TextToolResult {
+      const reminder = reminders.get(args.id);
+      if (reminder === undefined) return textResult({ result: "not_found" });
+      if (reminder.status !== "active") return textResult({ result: "not_active" });
+      if (args.skip_next === true) {
+        if (reminder.rule === null) return textResult({ result: "not_repeating" });
+        const next = reminder.nextAt === null ? null : nextOccurrence(reminder.rule, new Date(reminder.nextAt), timeZone);
+        if (next === null || !reminders.skipNext(reminder.id, next)) return textResult({ result: "not_active" });
+        log(`reminder_cancel: skipped（#${reminder.id}）`);
+        return textResult({ result: "skipped", id: reminder.id, next: formatLocalDateTime(next, timeZone) });
+      }
+      if (!reminders.cancel(reminder.id)) return textResult({ result: "not_active" });
+      log(`reminder_cancel: cancelled（#${reminder.id}）`);
+      return textResult({ result: "cancelled", id: reminder.id, text: reminder.text });
+    },
+  };
+}
+
 const TASK_ADD_DESCRIPTION =
   "オーナーのやることをタスクとして登録する。会話の中でやること・予定・忘れたくないことが出てきたときに使う。" +
   "登録前に task_list で同じものが無いか確かめる。" +
@@ -508,6 +705,16 @@ const PROJECT_FILES_DESCRIPTION =
   "clear は中身を全部 .trash に移して最初からにする（UI の土台も置き直す。URL は変わらない）。" +
   "restore は trash_id の中身を元に戻す（省くと一覧。conflict が返ったら、そのパスを trash してから restore し直す）。" +
   "オーナーは PC を使えないので、手で消すよう頼まずにこれを使う。消したら、何を消したかと戻せることを 1 行で伝える。";
+// 使いどころはシステムプロンプトと揃える（docs/plan/reminders.md §4）。可変値は入れない
+const REMINDER_SET_DESCRIPTION =
+  "オーナーが時刻に知らせてほしい・毎日/毎週/毎月〜してほしいと頼んだときに使う。このチャンネルに、その時刻にオーナーをメンションして投稿する。" +
+  "1 回だけなら at（ヘッダと同じタイムゾーンの YYYY-MM-DD HH:MM。「30 分後」「明日 9 時」はヘッダの日時から計算する）、繰り返しなら repeat・time・on を渡す。" +
+  "kind は、知らせるだけなら notify（既定）、その時刻に調べる・まとめる・一覧を出すなど自分が動くなら prompt にし、text にそのときの自分への依頼を書く（prompt は #inbox・#tasks だけ）。" +
+  "既にあるタスクについて知らせるなら task_id を付ける。結果の next と repeat をそのまま 1 行で伝える。";
+const REMINDER_LIST_DESCRIPTION =
+  "登録済みのリマインドと予約した依頼を、次に知らせる順に返す。一覧を聞かれたとき、止める・飛ばす id を確かめるときに使う。";
+const REMINDER_CANCEL_DESCRIPTION =
+  "リマインドを止める。skip_next を付けると、繰り返しの次の 1 回だけを飛ばす。止めて・もういらない・今度は休みと言われたときに使う。";
 
 /**
  * MCP サーバーに載せるツールの一覧。どのチャンネルの run でも定義（名前・説明・入力の形）は同じで、
@@ -519,13 +726,15 @@ export function createTaskTools(
   openSession: OpenSession,
   kbMemory: KbMemoryToolDeps,
   project: ProjectToolDeps,
+  reminder: ReminderToolDeps,
   context?: RunContext,
 ) {
-  const handlers = createTaskToolHandlers(store, kbMemory.timeZone);
+  const handlers = createTaskToolHandlers(store, kbMemory.timeZone, reminder.reminders);
   const sessionHandlers = createSessionToolHandlers(topicSessions, context);
   const kbHandlers = createKnowledgeToolHandlers(kbMemory, context);
   const memoryHandlers = createMemoryToolHandlers(kbMemory, context);
   const projectHandlers = createProjectToolHandlers(project, context);
+  const reminderHandlers = createReminderToolHandlers(reminder, store, kbMemory.timeZone, context);
   return [
     tool(
       "task_add",
@@ -734,6 +943,40 @@ export function createTaskTools(
       },
       async (args) => projectHandlers.projectFiles(args),
     ),
+    tool(
+      "reminder_set",
+      REMINDER_SET_DESCRIPTION,
+      {
+        text: z
+          .string()
+          .min(1)
+          .max(REMINDER_TEXT_MAX_LENGTH)
+          .describe(`知らせる文（notify）か、そのときの自分への依頼（prompt）。${REMINDER_TEXT_MAX_LENGTH} 字以内`),
+        kind: z.enum(["notify", "prompt"]).optional().describe("notify（知らせるだけ、既定）・prompt（その時刻に自分が動く）"),
+        at: z.string().optional().describe("1 回だけの時刻（YYYY-MM-DD HH:MM）。繰り返しなら省略"),
+        repeat: z
+          .enum(["daily", "weekdays", "weekly", "monthly"])
+          .optional()
+          .describe("daily（毎日）・weekdays（平日）・weekly（曜日）・monthly（毎月）。1 回だけなら省略"),
+        time: z.string().optional().describe("繰り返しの時刻（HH:MM）。repeat のとき必須"),
+        on: z
+          .string()
+          .optional()
+          .describe('weekly は曜日（例: "mon,wed"）、monthly は日（"1"〜"31" か "last"）'),
+        task_id: z.number().int().optional().describe("知らせるタスクの id（1 回だけのときだけ）"),
+      },
+      async (args) => reminderHandlers.reminderSet(args),
+    ),
+    tool("reminder_list", REMINDER_LIST_DESCRIPTION, {}, async () => reminderHandlers.reminderList()),
+    tool(
+      "reminder_cancel",
+      REMINDER_CANCEL_DESCRIPTION,
+      {
+        id: z.number().int().describe("止める・飛ばすリマインドの id"),
+        skip_next: z.boolean().optional().describe("true なら止めずに、繰り返しの次の 1 回だけを飛ばす"),
+      },
+      async (args) => reminderHandlers.reminderCancel(args),
+    ),
   ];
 }
 
@@ -743,12 +986,13 @@ export function createTaskMcpServer(
   openSession: OpenSession,
   kbMemory: KbMemoryToolDeps,
   project: ProjectToolDeps,
+  reminder: ReminderToolDeps,
   context?: RunContext,
 ): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: MCP_SERVER_NAME,
     version: "0.1.0",
     alwaysLoad: true,
-    tools: createTaskTools(store, topicSessions, openSession, kbMemory, project, context),
+    tools: createTaskTools(store, topicSessions, openSession, kbMemory, project, reminder, context),
   });
 }

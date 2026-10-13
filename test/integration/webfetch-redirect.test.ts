@@ -13,6 +13,7 @@ import { openDb } from "../../src/store/db.ts";
 import { KnowledgeStore } from "../../src/store/knowledge.ts";
 import { MemoryStore } from "../../src/store/memories.ts";
 import { ProjectStore } from "../../src/store/projects.ts";
+import { ReminderStore } from "../../src/store/reminders.ts";
 import { TaskStore } from "../../src/store/tasks.ts";
 import { TopicSessionStore } from "../../src/store/topic-sessions.ts";
 
@@ -84,6 +85,7 @@ test(
           async () => ({ result: "not_available" }),
           kbMemory,
           projectTools,
+          { reminders: new ReminderStore(db), log: () => {} },
           context,
         ),
       { projects, projectsDir },

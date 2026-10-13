@@ -260,9 +260,9 @@ test("project_open: 配信が無効（公開 URL が無い・静的サーバー�
   assert.equal((parse(await open(INBOX)) as { status: string }).status, "not_available");
 });
 
-test("ツール定義: project_open は最後から 2 番目（最後は project_files）。name は 1〜40 字、title は 1〜100 字", (t) => {
+test("ツール定義: project_open の name は 1〜40 字、title は 1〜100 字", (t) => {
   const { db, deps } = setup(t);
-  const { tasks, topicSessions, knowledge, memories } = createStores(db, () => NOW);
+  const { tasks, topicSessions, knowledge, memories, reminders } = createStores(db, () => NOW);
   const tools = createTaskTools(
     tasks,
     topicSessions,
@@ -275,9 +275,9 @@ test("ツール定義: project_open は最後から 2 番目（最後は project
       timeZone: "Asia/Tokyo",
     },
     deps,
+    { reminders, log: () => {} },
   );
-  const definition = tools.at(-2)!;
-  assert.equal(definition.name, "project_open");
+  const definition = tools.find((candidate) => candidate.name === "project_open")!;
   const schema = z.object(definition.inputSchema);
   const ok = (input: unknown): boolean => schema.safeParse(input).success;
 

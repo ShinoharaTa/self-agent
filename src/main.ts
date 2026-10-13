@@ -96,6 +96,8 @@ const projectTools = {
   log,
   now,
 };
+// リマインドのツール（reminder_set・reminder_list・reminder_cancel）と task_list の remind
+const reminderTools = { reminders, log, now };
 // dev モードなら run ごとの会話を <dataDir>/devlog/<日付>.jsonl に残す（dev モードでなければ受け口を作らない）
 const devLogSink = createDevLogSink(config);
 if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${config.devLogDays} 日で消します）`);
@@ -103,7 +105,7 @@ if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${c
 // ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中）に絞る
 const runner = new SdkAgentRunner(
   config,
-  (context) => createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, context),
+  (context) => createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, reminderTools, context),
   { projects, projectsDir },
   log,
   undefined,
