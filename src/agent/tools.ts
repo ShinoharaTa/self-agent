@@ -546,7 +546,9 @@ export function createReminderToolHandlers(
       if (kind === "prompt" && context.kind === "session") {
         return textResult({ result: "not_available", message: REMINDER_PROMPT_IN_SESSION_MESSAGE });
       }
-      if ((args.at === undefined) === (args.repeat === undefined)) {
+      const text = args.text.trim();
+      if (text === "") return textResult({ result: "invalid_args", message: "text が空です" });
+      if ((args.at === undefined) === (args.repeat === undefined) || (args.at !== undefined && (args.time !== undefined || args.on !== undefined))) {
         return textResult({
           result: "invalid_args",
           message: "1 回だけなら at、繰り返しなら repeat・time・on のどちらか一方を渡してください",
@@ -564,7 +566,11 @@ export function createReminderToolHandlers(
           return textResult({ result: "invalid_time", message: "at は YYYY-MM-DD HH:MM で、ある日付を指定してください" });
         }
         if (current.getTime() - at.getTime() >= REMINDER_PAST_GRACE_MS) {
-          return textResult({ result: "in_past", now: formatLocalDateTime(current, timeZone) });
+          return textResult({
+            result: "in_past",
+            now: formatLocalDateTime(current, timeZone),
+            message: "その時刻は過ぎています。now を基準に時刻を確かめ、at を直してください",
+          });
         }
         nextAt = at;
       } else {
@@ -581,7 +587,7 @@ export function createReminderToolHandlers(
         if (found.status !== "open") return textResult({ result: "task_closed" });
         task = { id: found.id, title: found.title };
       }
-      const duplicate = reminders.findDuplicate(context.channelId, args.text, rule, rule === null ? nextAt : null);
+      const duplicate = reminders.findDuplicate(context.channelId, kind, text, rule, rule === null ? nextAt : null);
       if (duplicate !== undefined) {
         return textResult({
           result: "exists",
@@ -600,7 +606,7 @@ export function createReminderToolHandlers(
         guildId: context.guildId,
         channelId: context.channelId,
         kind,
-        text: args.text,
+        text,
         ...(task === null ? {} : { taskId: task.id }),
         ...(rule === null ? {} : { rule }),
         nextAt,
@@ -631,6 +637,9 @@ export function createReminderToolHandlers(
     },
     /** skip_next は繰り返しの次の回（今の next_at）を飛ばし、その次の回にする */
     reminderCancel(args: ReminderCancelArgs): TextToolResult {
+      // 確認も取り消しも無いので、オーナーが見ていないターン（要約・予約した依頼）では止めさせない
+      if (context === undefined) return textResult({ result: "not_available", message: REMINDER_NO_CONTEXT_MESSAGE });
+      if (context.scheduled === true) return textResult({ result: "not_available", message: REMINDER_SCHEDULED_MESSAGE });
       const reminder = reminders.get(args.id);
       if (reminder === undefined) return textResult({ result: "not_found" });
       if (reminder.status !== "active") return textResult({ result: "not_active" });

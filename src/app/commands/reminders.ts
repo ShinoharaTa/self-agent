@@ -57,8 +57,10 @@ export function reminderLine(reminder: Reminder, timeZone: string): string {
   const at = earliestAt(reminder);
   const when = at === undefined ? "" : formatShortDateTime(at, timeZone);
   const where = `（${reminder.kind === "prompt" ? "依頼・" : ""}<#${reminder.channelId}>）`;
-  if (reminder.rule === null) return `#${reminder.id} ${when} ${reminder.text}${where}`;
-  return `#${reminder.id} ${describeRule(reminder.rule)} ${reminder.text}${where}次 ${when}`;
+  // 1 行で見せるので、text の改行は空白にする
+  const text = reminder.text.replace(/\s*\n\s*/g, " ");
+  if (reminder.rule === null) return `#${reminder.id} ${when} ${text}${where}`;
+  return `#${reminder.id} ${describeRule(reminder.rule)} ${text}${where}次 ${when}`;
 }
 
 /**
@@ -83,7 +85,7 @@ export function reminderListMessage(deps: Pick<RemindersDeps, "reminders" | "cfg
           minValues: 1,
           maxValues: 1,
           options: shown.slice(0, REMINDER_SELECT_LIMIT).map((reminder) => ({
-            label: clip(`#${reminder.id} ${reminder.text}`, OPTION_LABEL_MAX_LENGTH),
+            label: clip(`#${reminder.id} ${reminder.text.replace(/\s*\n\s*/g, " ")}`, OPTION_LABEL_MAX_LENGTH),
             value: String(reminder.id),
           })),
         },

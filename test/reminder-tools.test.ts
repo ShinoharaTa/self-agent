@@ -38,7 +38,7 @@ function parse(result: TextToolResult): unknown {
 
 /** 入力の形ごとの結果（created は result・next・repeat だけ比べる） */
 test("reminder_set: at・repeat・time・on の組み合わせごとの結果。next は曜日付き、repeat は日本語の表示", (t) => {
-  const cases: Array<[label: string, args: Omit<ReminderSetArgs, "text">, expected: object]> = [
+  const cases: Array<[label: string, args: Partial<ReminderSetArgs>, expected: object]> = [
     ["1 回だけ", { at: "2026-10-14 09:00" }, { result: "created", next: "2026-10-14(水) 09:00", repeat: null }],
     ["毎日", { repeat: "daily", time: "08:00" }, { result: "created", next: "2026-10-14(水) 08:00", repeat: "毎日 8:00" }],
     ["平日", { repeat: "weekdays", time: "09:30" }, { result: "created", next: "2026-10-13(火) 09:30", repeat: "平日 9:30" }],
@@ -58,6 +58,9 @@ test("reminder_set: at・repeat・time・on の組み合わせごとの結果。
     ["weekly に on が無い", { repeat: "weekly", time: "08:00" }, { result: "invalid_args" }],
     ["monthly の on の形が違う", { repeat: "monthly", time: "08:00", on: "32" }, { result: "invalid_args" }],
     ["repeat に task_id", { repeat: "daily", time: "08:00", task_id: 1 }, { result: "invalid_args" }],
+    ["at と time", { at: "2026-10-14 09:00", time: "10:00" }, { result: "invalid_args" }],
+    ["at と on", { at: "2026-10-14 09:00", on: "mon" }, { result: "invalid_args" }],
+    ["text が空白だけ", { text: "   ", at: "2026-10-14 09:00" }, { result: "invalid_args" }],
     ["at の形が違う", { at: "2026/10/14 9:00" }, { result: "invalid_time" }],
     ["存在しない日付", { at: "2026-02-30 09:00" }, { result: "invalid_time" }],
     ["time の形が違う", { repeat: "daily", time: "25:00" }, { result: "invalid_time" }],
@@ -104,6 +107,7 @@ test("reminder_set: at が今より 5 分以上前なら in_past（今の日時�
   assert.deepEqual(parse(handlers().reminderSet({ text: "a", at: "2026-10-13 08:55" })), {
     result: "in_past",
     now: "2026-10-13(火) 09:00",
+    message: "その時刻は過ぎています。now を基準に時刻を確かめ、at を直してください",
   });
   assert.equal(reminders.countActive(), 0);
   const created = parse(handlers().reminderSet({ text: "a", at: "2026-10-13 08:56" })) as Record<string, unknown>;
@@ -130,6 +134,11 @@ test("reminder_set: 同じチャンネル・text・rule（1 回だけなら同�
   assert.equal(reminders.countActive(), 2);
 
   assert.equal((parse(handlers().reminderSet({ text: "薬", at: "2026-10-14 21:00" })) as { result: string }).result, "created");
+  // 同じ text・時刻でも、予約した依頼（prompt）は別のもの
+  assert.equal(
+    (parse(handlers().reminderSet({ text: "薬", at: "2026-10-14 09:00", kind: "prompt" })) as { result: string }).result,
+    "created",
+  );
   assert.equal(
     (parse(handlers({ ...INBOX, channelId: "tasks-1", kind: "tasks" }).reminderSet({ text: "薬", at: "2026-10-14 09:00" })) as {
       result: string;
@@ -200,6 +209,15 @@ test("reminder_set: context が無い・予約した依頼のターン・セッ�
 
   assert.equal((parse(handlers(SESSION).reminderSet(args)) as { result: string }).result, "created");
   assert.equal(reminders.get(1)?.channelId, "topic-1");
+
+  // 止めるのも、オーナーが見ていないターンではできない
+  for (const [label, context, message] of [
+    ["context なし", null, REMINDER_NO_CONTEXT_MESSAGE],
+    ["予約した依頼のターン", { ...INBOX, scheduled: true }, REMINDER_SCHEDULED_MESSAGE],
+  ] as const) {
+    assert.deepEqual(parse(handlers(context).reminderCancel({ id: 1 })), { result: "not_available", message }, label);
+  }
+  assert.equal(reminders.get(1)?.status, "active");
 });
 
 test("reminder_list: active を次に知らせる順（スヌーズが早ければその時刻）に、id・kind・text・next・repeat・task_id・channel で返す", (t) => {
