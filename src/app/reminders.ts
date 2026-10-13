@@ -112,7 +112,7 @@ export type ReminderSchedulerDeps = {
   cfg: Pick<Config, "ownerUserId" | "timeZone">;
   reminders: Pick<
     ReminderStore,
-    "listDue" | "markFired" | "complete" | "clearSnooze" | "cancel" | "skipNext" | "moveChannel"
+    "listDue" | "get" | "markFired" | "complete" | "clearSnooze" | "cancel" | "skipNext" | "moveChannel"
   >;
   /** 紐づけたタスクが open か確かめ、本文に題名を出す */
   tasks: Pick<TaskStore, "get">;
@@ -206,9 +206,12 @@ export class ReminderScheduler {
     if (this.stopped) return;
     try {
       const at = now();
-      for (const reminder of reminders.listDue(at, REMINDER_BATCH_LIMIT)) {
+      for (const listed of reminders.listDue(at, REMINDER_BATCH_LIMIT)) {
         // 停止を始めたら、まだ始めていない発火は行わない（次の起動の最初の tick で拾う）
         if (this.stopped) return;
+        // 前の件を投稿している間に止められた・ボタンで変えられたものは出さない（読み直して確かめる）
+        const reminder = reminders.get(listed.id);
+        if (reminder === undefined || reminder.fireSeq !== listed.fireSeq || !isDue(reminder, at)) continue;
         try {
           await this.fire(reminder, at);
         } catch (error) {
@@ -281,10 +284,12 @@ export class ReminderScheduler {
       }
       return;
     }
-    if (result.channelId !== reminder.channelId) reminders.moveChannel(id, result.channelId);
+    const moved = result.channelId !== reminder.channelId;
+    if (moved) reminders.moveChannel(id, result.channelId);
     const lateMinutes = Math.floor((now.getTime() - occurrence.at.getTime()) / MINUTE_MS);
     log(`リマインドを知らせました（#${id}、guild=${reminder.guildId}、遅れ ${lateMinutes} 分）`);
-    await this.clearPreviousButtons(reminder, taskTitle);
+    // 移したときは前のチャンネルが無いので、前の回のボタンは外せない
+    if (!moved) await this.clearPreviousButtons(reminder, taskTitle);
   }
 
   /**
@@ -326,7 +331,11 @@ export class ReminderScheduler {
         if (nowMs - at.getTime() > REMINDER_STALE_MS) {
           const next = nextOccurrence(reminder.rule, now, cfg.timeZone);
           if (next === null) reminders.cancel(reminder.id);
-          else reminders.skipNext(reminder.id, next);
+          else {
+            reminders.skipNext(reminder.id, next);
+            // 飛ばした回より前のスヌーズも古いので、次の tick で鳴らさない
+            reminders.clearSnooze(reminder.id);
+          }
           log(`止まっていた間に過ぎたため飛ばしました（#${reminder.id}、${count} 回）`);
           return undefined;
         }
@@ -334,7 +343,14 @@ export class ReminderScheduler {
       return { at, snooze: false, count };
     }
     // listDue が返したので、next_at が due でなければ snooze_at が due
-    return { at: new Date(reminder.snoozeAt ?? now.toISOString()), snooze: true, count: 1 };
+    const at = new Date(reminder.snoozeAt ?? now.toISOString());
+    if (reminder.rule !== null && nowMs - at.getTime() > REMINDER_STALE_MS) {
+      // 繰り返しのスヌーズも、12 時間より古ければ出さない（1 回だけのものは遅れの注記付きで出す）
+      reminders.clearSnooze(reminder.id);
+      log(`止まっていた間に過ぎたため飛ばしました（#${reminder.id}、スヌーズ）`);
+      return undefined;
+    }
+    return { at, snooze: true, count: 1 };
   }
 
   /**
@@ -363,7 +379,7 @@ export class ReminderScheduler {
     const lines = reminderBaseLines(reminder, taskTitle);
     if (occurrence.snooze) lines.push("（もう一度）");
     const late = now.getTime() - occurrence.at.getTime();
-    if (reminder.rule === null && !occurrence.snooze && late >= REMINDER_LATE_NOTE_MS) {
+    if (reminder.rule === null && late >= REMINDER_LATE_NOTE_MS) {
       lines.push(
         late >= DAY_MS
           ? `（${formatShortDateTime(occurrence.at, cfg.timeZone)} の予定でした）`
@@ -420,4 +436,11 @@ export class ReminderScheduler {
       log(`前のリマインドのボタンを外せませんでした（#${reminder.id}）: ${describeError(error)}`);
     }
   }
+}
+
+/** active で、next_at か snooze_at が now 以前（listDue と同じ条件） */
+function isDue(reminder: Reminder, now: Date): boolean {
+  if (reminder.status !== "active") return false;
+  const nowMs = now.getTime();
+  return [reminder.nextAt, reminder.snoozeAt].some((at) => at !== null && new Date(at).getTime() <= nowMs);
 }

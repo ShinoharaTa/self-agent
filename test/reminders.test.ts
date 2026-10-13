@@ -358,3 +358,42 @@ test("1 tick で 20 件まで。idle は実行中の投稿を待ち、stop の�
   await Promise.all([running, waiting]);
   assert.deepEqual(gated.posted(), [["ch-1", "リマインド: 1 件目"]]);
 });
+
+test("前の件を投稿している間に止められた後ろの件は、同じ tick で出さない", async (t) => {
+  const env = setup(t);
+  env.add({ text: "先" });
+  const later = env.add({ text: "後" });
+  env.gateway.beforeSendMessage = () => {
+    env.reminders.cancel(later.id);
+  };
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.posted(), [["ch-1", "リマインド: 先"]]);
+  assert.equal(env.reminders.get(later.id)?.status, "cancelled");
+});
+
+test("古いスヌーズ: 12 時間で飛ばした繰り返しは前のスヌーズも消え、繰り返しのスヌーズだけが古くても出さない。1 回だけのスヌーズは遅れの注記付きで出す", async (t) => {
+  const cases: Array<{ label: string; reminder: Partial<NewReminder>; snoozeAt: Date; text: string | null }> = [
+    { label: "規則の回を飛ばした", reminder: { rule: "daily@20:00", nextAt: ago(13 * HOUR_MS) }, snoozeAt: ago(36 * HOUR_MS), text: null },
+    { label: "繰り返しのスヌーズだけが古い", reminder: { rule: "daily@20:00", nextAt: new Date(NOW.getTime() + 2 * HOUR_MS) }, snoozeAt: ago(13 * HOUR_MS), text: null },
+    {
+      label: "1 回だけのスヌーズが 2 日前",
+      reminder: { nextAt: ago(3 * DAY_MS) },
+      snoozeAt: ago(2 * DAY_MS),
+      text: "リマインド: 薬を飲む\n（もう一度）\n（10/11(日) 9:00 の予定でした）",
+    },
+  ];
+  for (const { label, reminder, snoozeAt, text } of cases) {
+    const env = setup(t);
+    const added = env.add(reminder);
+    if (reminder.rule === undefined) {
+      env.reminders.markFired(added.id, 0, { nextAt: null, status: "fired", firedAt: ago(3 * DAY_MS), messageId: "old-1" });
+    }
+    env.reminders.snooze(added.id, snoozeAt);
+    await env.scheduler.tick();
+    await env.scheduler.tick();
+    assert.deepEqual(env.posted(), text === null ? [] : [["ch-1", text]], label);
+    if (text === null) assert.equal(env.reminders.get(added.id)?.snoozeAt, null, label);
+  }
+});
