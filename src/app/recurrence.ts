@@ -168,12 +168,13 @@ function wallToInstant(wallAsUtc: number, timeZone: string): Date {
 
 const WALL_CLOCK_PATTERN = /^(\d{4})-(\d{2})-(\d{2}) ([01]\d|2[0-3]):([0-5]\d)$/;
 
-/** timeZone の壁時計 "YYYY-MM-DD HH:MM" を UTC の時刻に直す。形が違う・存在しない日付（2026-02-30）なら undefined */
+/** timeZone の壁時計 "YYYY-MM-DD HH:MM" を UTC の時刻に直す。形が違う・存在しない日付（2026-02-30）・1970 年より前なら undefined */
 export function wallClockToUtc(text: string, timeZone: string): Date | undefined {
   const match = WALL_CLOCK_PATTERN.exec(text);
   if (match === null) return undefined;
   const [year, month, day, hour, minute] = match.slice(1).map(Number) as [number, number, number, number, number];
-  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return undefined;
+  // Date.UTC は 0〜99 年を 1900 年代に読み替えるので、古い年はまとめて弾く
+  if (year < 1970 || month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return undefined;
   return wallToInstant(Date.UTC(year, month - 1, day, hour, minute), timeZone);
 }
 
@@ -182,7 +183,7 @@ function toWall(at: Date, timeZone: string): Date {
   return new Date(at.getTime() + offsetMs(at, timeZone));
 }
 
-/** 表示用の timeZone の日時。例: 2026-10-14(火) 09:00 */
+/** 表示用の timeZone の日時。例: 2026-10-14(水) 09:00 */
 export function formatLocalDateTime(at: Date, timeZone: string): string {
   const wall = toWall(at, timeZone);
   const pad = (n: number): string => String(n).padStart(2, "0");
