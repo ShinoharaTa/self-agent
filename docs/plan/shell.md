@@ -7,13 +7,13 @@
 ## 0. 目的
 - セッションのチャンネルで、プロジェクトの中に `git clone`・`npm install`・ビルドができる。成果物は今までどおり `site/` を URL で渡す。
 - Pi と同じく 1 コマンドごとの承認はしない。安全は環境（OS の sandbox）に任せる。
-- ただし Pi と違い、(1) スマホから遠隔で動かす、(2) Web のページを読む（プロンプトインジェクション）、(3) オーナーの他のもの（`~/.config/gh`・`~/.ssh`・Bot のトークンと DB・tmux・postgres・他プロジェクト）と同じ uid 1000 で動く。だから「承認なし」は「sandbox が確実に効いているときだけ」に限る（fail-closed）。
+- ただし Pi と違い、(1) スマホから遠隔で動かす、(2) Web のページを読む（プロンプトインジェクション）、(3) オーナーの他のもの（`~/.config/gh`・`~/.ssh`・Bot のトークンと DB・同じホストの他のサービス・他プロジェクト）と同じ OS ユーザーで動く。だから「承認なし」は「sandbox が確実に効いているときだけ」に限る（fail-closed）。
 
 ## 1. 隔離の方式（比較と推薦）
 
 | 観点 | (a) SDK 組み込み sandbox（bwrap） | (b) Bash だけコンテナ（rootless podman 等）+ 自前 MCP の shell ツール | (c) Bot ごと専用 OS ユーザー | (d) 自前 MCP の shell ツールで sandbox-runtime をチャンネルごとに呼ぶ |
 |---|---|---|---|---|
-| 秘密（トークン・gh・ssh・DB）から隔てる | ○ ファイルは denyRead、env は credentials.envVars で消す | ◎ 別の root fs | ◎ 別ユーザー（グループ adm・lxd も外れる） | ○（a と同じ仕組み） |
+| 秘密（トークン・gh・ssh・DB）から隔てる | ○ ファイルは denyRead、env は credentials.envVars で消す | ◎ 別の root fs | ◎ 別ユーザー（補助グループの権限も外れる） | ○（a と同じ仕組み） |
 | ネットの許可リスト | ◎ allowedDomains + strictAllowlist（CLI のプロキシ） | △ 自前でプロキシが要る | ✗ 単独では絞れない | ◎ |
 | 他チャンネルのプロジェクトへの書き込み | △ projects 全体に書ける（§2.3） | ○ | ✗ | ◎ チャンネルごと |
 | sudo | 要（apt 2 個 + AppArmor 1 個、1 回だけ） | 要（podman・uidmap） | 要（useradd・system unit。R9「systemctl --user で管理」から外れる） | 要（a と同じ） |
@@ -27,7 +27,8 @@
 
 ### 1.1 SDK の sandbox で確認したこと（SDK 0.3.286 / 同梱 CLI 2.1.286）
 確認（sdk.d.ts と CLI バイナリの文字列）:
-- `Options.sandbox` は CLI の `--settings`（flag settings 層）に `{ sandbox }` として渡る。`settings` オプションと同時には使えない（今は使っていない）。
+- `Options.sandbox` は CLI の `--settings`（flag settings 層）に `{ sandbox }` として渡る。`settings` オプションと同時に使えないのは `settings` がファイルのパスのときだけ（オブジェクト・JSON 文字列なら合流する。今は使っていない）。
+- 未確認: sdk.d.ts の `Options.sandbox` の説明は「ファイル・ネットの制限は権限ルール（Read・Edit・WebFetch）から来る。この設定は挙動（enabled・auto-allow など）だけ」と書く一方、設定のスキーマは `sandbox.filesystem`（allowWrite・denyWrite・denyRead・allowRead）と `sandbox.network` を持つ。§2.2 の filesystem・network が Options.sandbox 経由で実際に効くかは §7 の shell-check で確かめる。
 - 使える項目: `enabled` / `failIfUnavailable`（enabled なら既定 true。依存が無ければ query() はエラーの result で終わる）/ `autoAllowBashIfSandboxed` / `allowUnsandboxedCommands`（false で `dangerouslyDisableSandbox` を無視）/ `network.allowedDomains`・`deniedDomains`・`strictAllowlist`（--settings で効く。許可外のホストを確定で拒否し、Bash の `allowed_domains` 引数で広げられなくなる）/ `filesystem.allowWrite`・`denyWrite`・`denyRead`・`allowRead`（allowRead は denyRead より優先）/ `credentials.envVars`（`deny` でコマンドの env から消す）・`credentials.files` / `excludedCommands` / `enableWeakerNestedSandbox`（使わない。host の /proc が見える）。
 - `bwrapPath`・`socatPath` は managed settings でしか効かない → **bwrap と socat は PATH 上（/usr/bin）に要る**。
 - Unix ソケットの遮断（seccomp）は `apply-seccomp` が要り、無ければ「unix socket blocking disabled」で**動きはする**（任意の依存。CLI は `@anthropic-ai/sandbox-runtime` のグローバル導入を案内）。
@@ -44,11 +45,11 @@
 - `CLAUDE_CODE_TOOL_MEMORY_LIMIT` の値の書式と、systemd --user の配下で効くか。
 
 ### 1.2 ホストで確認したこと
-- bwrap・socat は未導入。`kernel.apparmor_restrict_unprivileged_userns = 1` で bwrap 用の profile が無い（codex の bwrap も userns/loopback で失敗した）。
-- uid 1000 のグループは adm（/var/log を読める）・lxd・sudo を含む。sandbox の中でも補助グループの権限は残る前提で、/var/log・/run を denyRead にする。lxd は本体未導入（/usr/sbin/lxc は snap の誘導スクリプト。/run/lxd-installer.socket がある）。
-- Unix ソケットの場所: `/tmp`（tmux-1000・`.s.PGSQL.5433`・tsx）、`/run`（user bus・tailscaled・dbus・snapd・systemd）、`~/.codex`。→ `/tmp`・`/run`・`~` を denyRead にすれば、ネットワーク名前空間（抽象ソケットも分かれる）と合わせて seccomp 無しでも届かない。
-- ディスク: / の空きは 26 GB（73% 使用）。メモリの空き約 6 GB。4 コア。user@1000 の cgroup は cpu・memory・pids を委譲済み。
-- Bot は transient の user unit（`systemd-run --user`）。MemoryMax・CPUQuota は未設定。node は `~/.local/bin/node` → `~/.nvm/versions/node/v24.20.0/bin/node`。
+- bwrap・socat は未導入。Ubuntu 24.04 の既定（unprivileged userns を AppArmor で制限）で、bwrap 用の profile が無いと userns を作れない（他のツールの bwrap も同じ理由で失敗した）。
+- Bot の OS ユーザーは、ログなどを読める補助グループを含む。sandbox の中でも補助グループの権限は残る前提で、/var/log・/run を denyRead にする。
+- 同じユーザーから届く Unix ソケット（端末多重化・DB・VPN・バス・他のツールのもの）は `/tmp`・`/run`・`~` の下にある。→ この 3 つを denyRead にすれば、ネットワーク名前空間（抽象ソケットも分かれる）と合わせて seccomp 無しでも届かない。
+- ディスク・メモリには余裕があるが、/ は他のサービスと共有している（→ §2.7 で workDir を分ける）。user の cgroup は cpu・memory・pids を委譲済み。
+- Bot は transient の user unit（`systemd-run --user`）。MemoryMax・CPUQuota は未設定。node は nvm の版のディレクトリ（`~/.nvm/versions/node/<版>/bin/node`）。
 
 ## 2. ポリシー（決定）
 
@@ -82,13 +83,13 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 
 ### 2.3 読める・書ける範囲（結果）
 - 読める: workDir の中（全プロジェクト）、node（npm を含む）、/usr・/etc など OS のファイル。
-- 読めない: ホーム全体（`~/.config`（gh・self-agent の env）・`~/.ssh`・`~/workspace`（Bot のリポジトリと他プロジェクト）・`~/.local/share/self-agent/{data,claude}`（DB・devlog・会話の記録）・`~/.npmrc`・`~/.codex`）、/tmp（tmux・postgres のソケット）、/run（user bus・tailscaled・dbus）、/var/log。
+- 読めない: ホーム全体（`~/.config`（gh・self-agent の env）・`~/.ssh`・`~/workspace`（Bot のリポジトリと他プロジェクト）・`~/.local/share/self-agent/{data,claude}`（DB・devlog・会話の記録）・`~/.npmrc`・他のツールの設定）、/tmp・/run（他のサービスのソケット）、/var/log。
 - 書ける: workDir の中だけ。**他のチャンネルのプロジェクトにも書ける**（Bash は sandbox の設定を固定するため。§1 の (d) を採らない理由と同じ）。.trash にも書ける。
 - 持ち出し: github.com・npm は相手のトークンを使えば送り先になりうる（push・publish）。持ち出せるのは sandbox の中で読めるもの = プロジェクトのファイルだけ。**プロジェクトに秘密を置かない**（project_open の注意に既にある）を前提にする。
 - 起動時の設定の確認（§4）で、workDir が `dataDir`・`claudeConfigDir`・リポジトリ（process.cwd()）・`~/.config/self-agent` と同じか、その中・外側にあれば Bash を無効にする（denyRead の穴を作らない）。
 
 ### 2.4 子プロセスの env（childEnv に足す。全 run 共通）
-- `PATH=<node の bin>:/usr/local/bin:/usr/bin:/bin`（service の PATH に nvm が無いため、明示する）
+- `PATH=<node の bin>:/usr/local/bin:/usr/bin:/bin`（service の PATH に nvm が無いため、明示する）。値は `src/agent/sandbox-check.ts` の `shellPath(process.execPath)` を使う（自己診断と CLI が同じ PATH で bwrap・socat を探すように。別に組み立てない）
 - `CLAUDE_CODE_TMPDIR=<workDir>/.tmp`（共有の /tmp/claude を使わない）
 - `npm_config_cache=<workDir>/.cache/npm`、`npm_config_update_notifier=false`、`npm_config_fund=false`、`npm_config_audit=false`
 - `GIT_TERMINAL_PROMPT=0`（非公開リポジトリで認証待ちにならず即失敗）、`GIT_CONFIG_NOSYSTEM=1`、`GIT_CONFIG_GLOBAL=/dev/null`
@@ -98,7 +99,8 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 ### 2.5 PreToolUse の hook（`Bash`。全 run に入れる。例外なら拒否 = fail-closed）
 拒否する条件（上から順に判定。理由はモデルに返す）:
 1. sandbox が無効（§4 の自己診断が通っていない）→「今はコマンドを実行できません」
-2. context が無い・kind が session でない・scheduled → 「コマンドはセッションのチャンネルで使えます」
+2. context が無い・kind が session でない・scheduled・/close のターン → 「コマンドはセッションのチャンネルで使えます」
+   - /close のターンは今 `kind: "session"` で印が無い。PR 3 で RunContext に印（例 `purpose: "close"`）を足して /close のターンで付け、hook は scheduled と同じ理由で拒否する。
 3. そのチャンネルの削除されていないプロジェクトが無い → 既存の FILE_WRITE_DENIED_REASON と同じ案内
 4. `run_in_background: true` または `dangerouslyDisableSandbox: true`
 5. ディスク（§2.7）: workDir の空きが 512 MB 未満、またはこのプロジェクトが 1 GB 超 → 「容量の上限を超えています。node_modules やビルドの出力・clone したものを project_files で .trash に移すか、Bash で消してください」
@@ -109,16 +111,17 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 - 1 コマンド: 既定 2 分・上限 5 分（2.4）。1 ターンは今のセッションの 900 秒・40 手順のまま。
 - 同時: セッションのターンは `MAX_CONCURRENT - 1`（既定 1）なので、コマンドが同時に走るのは 1 つまで。
 - 常駐プロセス: 作らない。バックグラウンド実行は止め、`&` で残したものはコマンドの終わりで消える前提（未確認 → §7 で確かめる）。dev サーバーを立てて URL で渡すことはできない（build-and-serve の C はやらないまま）。
-- メモリ・CPU: Bot の unit に `MemoryMax=4G`・`MemoryHigh=3G`・`CPUQuota=300%`・`TasksMax=1024` を付ける（Bot・CLI・コマンドの合計。postgres などは外）。超えたら cgroup の中で OOM（大きいビルドが先に落ちる）。`CLAUDE_CODE_TOOL_MEMORY_LIMIT=2G` も試し、効けばコマンドだけ先に落ちる（未確認なので必須にしない）。
+- メモリ・CPU: Bot の unit に `MemoryMax=4G`・`MemoryHigh=3G`・`CPUQuota=300%`・`TasksMax=1024` を付ける（Bot・CLI・コマンドの合計。他のサービスは外）。超えたら cgroup の中で OOM（大きいビルドが先に落ちる）。`CLAUDE_CODE_TOOL_MEMORY_LIMIT=2G` も試し、効けばコマンドだけ先に落ちる（未確認なので必須にしない）。
 
 ### 2.7 ディスク
-- **workDir を 8 GB の ext4 イメージ（疎ファイル）にする**（§6 の sudo）。どれだけ書いても / は埋まらない（postgres 等を巻き込まない）。疎なので今は場所を取らない。
-- ソフトの上限: 1 プロジェクト 1 GB（.trash を含む）。PreToolUse（Bash・Write・Edit）で判定。大きさは lstat で数え（symlink はたどらない）、プロジェクトごとに 60 秒キャッシュする。
+- **workDir を 8 GB の ext4 イメージ（疎ファイル）にする**（§6 の sudo）。どれだけ書いても / は埋まらない（他のサービスを巻き込まない）。疎なので今は場所を取らない。
+- ソフトの上限: 1 プロジェクト 1 GB（直下の `.trash` は数えない。数えると .trash に移しても 30 日の削除まで上限の下に戻らないため。ディスク全体は 8 GB のイメージと空き 512 MB の判定で抑える）。PreToolUse（Bash・Write・Edit）で判定。大きさは lstat で数え（symlink はたどらない）、プロジェクトごとに 60 秒キャッシュする。
 - 掃除（scheduler の tick）: `<workDir>/.tmp` の 1 日より古いもの、`<workDir>/.cache` が 1 GB を超えたら全部。/close でそのプロジェクトの `node_modules`（深さ 3 まで・realpath が dir の中・symlink はたどらない）を消す（作り直せるもの）。clone したものはプロジェクトと一緒に残し、/projects の削除で消える。
-- 起動時の確認: workDir が別のファイルシステム（親ディレクトリと st_dev が違う）でなければ Bash を無効にする（fstab の nofail で載らなかったとき、/ に書かないため）。
+- 起動時の確認: workDir が別のファイルシステム（親ディレクトリと st_dev が違う）でなければ Bash を無効にする（fstab の nofail で載らなかったとき、/ に書かないため）。これは代わりの目安で、tmpfs・bind mount でも通る（8 GB のイメージであることまでは確かめない）。
+- workDir の直下には mkfs が作る root 所有・700 の `lost+found` がある。workDir の下をたどる処理は EACCES を飛ばして続ける。
 
 ### 2.8 log
-- console: 「Bash を有効にしました」「Bash を無効にしました（<項目>）」「Bash を拒否しました（<種類>）」と、今の「ツールを呼び出しました: Bash（n 秒）」だけ。コマンド・出力・ホスト名・パスは出さない。
+- console: 「シェルの自己診断が通りました」「シェルの自己診断が通りません（<項目>）」（結果が変わったときだけ。通らない項目が変わったときも出す）「Bash を拒否しました（<種類>）」と、今の「ツールを呼び出しました: Bash（n 秒）」だけ。コマンド・出力・ホスト名・パスは出さない。
 - 失敗時に今は CLI の stderr の末尾 200 字を log に出している。sandbox の拒否のメッセージ（ホスト名を含みうる）が混ざらないか §7 で確かめ、混ざるなら Bash 有効時は stderr の末尾を出さず「stderr あり（n 字）」にする。
 - dev モードの会話ログには、今の規則どおりコマンドと出力が入る（ローカルのファイル）。
 
@@ -138,12 +141,16 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 - 有効化: env `SELF_AGENT_SHELL=1` のときだけ。未設定なら今のまま（Bash はツールに入れない。sandbox も付けない）。
 - 起動時と tick ごと（5 分）の自己診断（LLM を使わない。数十 ms）:
   1. PATH（§2.4）に bwrap と socat がある
-  2. `bwrap --unshare-user --unshare-net --unshare-pid --die-with-parent --ro-bind / / --proc /proc --dev /dev /bin/true` が 5 秒以内に 0 で終わる（userns・ネット名前空間・loopback を作れる）
+  2. `bwrap --unshare-user --unshare-net --unshare-pid --die-with-parent --ro-bind / / --proc /proc --dev /dev /bin/true` が 5 秒以内に 0 で終わる（userns・ネット名前空間・loopback を作れる）。これは CLI が実際に渡す bwrap の引数の一部だけなので、最後の確かめは PR 3 の `npm run shell-check`（§7）
   3. §2.3 の場所の重なりが無い
   4. §2.7 の workDir が別のファイルシステム
-- 通らなければ: その run から sandbox を Options に付けず（付けると failIfUnavailable で #inbox まで失敗するため）、Bash は hook で全部拒否（dontAsk でも拒否される二重）。各サーバーの #system に「シェル（Bash）を止めています: <項目>」を、状態が変わったときだけ 1 回投稿する。戻ったら「シェル（Bash）を再開しました」。
+- 通らなければ: その run から sandbox を Options に付けず（付けると failIfUnavailable で #inbox まで失敗するため）、Bash は hook で全部拒否（dontAsk でも拒否される二重）。各サーバーの #system に「シェル（Bash）を使えない状態です: <項目>」を、通る・通らないが変わったときだけ 1 回投稿する（最初の診断は通らないときだけ）。戻ったら「シェル（Bash）の自己診断が通りました」。
   - このときだけ Bash の説明文が変わるので、全セッションでキャッシュが 1 回外れる（異常時なので許す）。
-- 診断の後に sandbox が壊れた場合（次の tick まで）は CLI の failIfUnavailable でそのターンが失敗する。実装者は、このエラーを resume 失敗の連続回数に数えないこと（SDK セッションを捨てる復旧に入らないように）。
+- 診断の後に sandbox が壊れた場合（次の tick まで）。CLI が起動時に確かめるのは bwrap と socat が自分の PATH にあることだけ（userns の probe は root のときしか行わない）:
+  - (a) userns が作れなくなった（AppArmor の profile が外れたなど）: ターンは失敗しない。Bash のコマンドが毎回 bwrap のエラーで失敗する（閉じたまま）。
+  - (b) bwrap・socat が消えた: sandbox は全 run に付くので、failIfUnavailable で #inbox を含む全部のターンが次の tick まで失敗する。
+  - PR 3 の対策（(b) のため）: 各 run の前に、共有の PATH（shellPath）に bwrap と socat があるかだけを確かめ直す（ファイルの有無だけ。probe はしない）。無ければその場で状態を通らないに変え（log と #system は自己診断と同じ経路）、その run には sandbox を付けない。
+  - それでも CLI の failIfUnavailable でターンが失敗したときは、このエラーを resume 失敗の連続回数に数えないこと（SDK セッションを捨てる復旧に入らないように）。
 
 ## 5. 文書・プロンプト・ツールの変更
 
@@ -208,35 +215,38 @@ sudo install -d -m 700 /var/lib/self-agent
 sudo truncate -s 8G /var/lib/self-agent/work.img
 sudo chmod 600 /var/lib/self-agent/work.img
 sudo mkfs.ext4 -q -m 0 -L sa-work /var/lib/self-agent/work.img
-echo '/var/lib/self-agent/work.img /home/shino3/.local/share/self-agent/work ext4 loop,nodev,nosuid,noatime,nofail 0 2' | sudo tee -a /etc/fstab
+# <home> はホームの絶対パス、<user> は Bot の OS ユーザー（fstab には ~ を書けない）
+echo '/var/lib/self-agent/work.img <home>/.local/share/self-agent/work ext4 loop,nodev,nosuid,noatime,nofail 0 2' | sudo tee -a /etc/fstab
 sudo systemctl daemon-reload
-sudo mount /home/shino3/.local/share/self-agent/work
-sudo chown shino3:shino3 /home/shino3/.local/share/self-agent/work
+sudo mount <home>/.local/share/self-agent/work
+sudo chown <user>:<user> <home>/.local/share/self-agent/work
 # sudo 無し（戻す）
 cp -a ~/.local/share/self-agent/work.old/. ~/.local/share/self-agent/work/
 ```
-- 確認: `findmnt -no SOURCE,FSTYPE ~/.local/share/self-agent/work` が `/dev/loopN ext4`、`df -h ~/.local/share/self-agent/work` が約 7.8G、`stat -c %U ~/.local/share/self-agent/work` が shino3、`ls ~/.local/share/self-agent/work/projects` に今のプロジェクト。問題なければ `work.old` を消す（オーナーが確認してから）。
+- 確認: `findmnt -no SOURCE,FSTYPE ~/.local/share/self-agent/work` が `/dev/loopN ext4`、`df -h ~/.local/share/self-agent/work` が約 7.8G、`stat -c %U ~/.local/share/self-agent/work` が <user>、`ls ~/.local/share/self-agent/work/projects` に今のプロジェクト。問題なければ `work.old` を消す（オーナーが確認してから）。
+- mkfs は workDir の直下に root 所有・700 の `lost+found` を作る（消さない）。workDir の下をたどる処理（大きさの計算・掃除・一覧）は、読めないディレクトリ（EACCES）を飛ばして続けること。
 
 ### 6.3 任意（sudo 無し）: seccomp の補助
 - `source ~/.nvm/nvm.sh && npm install -g @anthropic-ai/sandbox-runtime@<版を固定>`（§8 の未決 5）。
 
 ### 6.4 Bot の起動し直し（sudo 無し）
-- README の `systemd-run --user` に `-p MemoryMax=4G -p MemoryHigh=3G -p CPUQuota=300% -p TasksMax=1024` を足し、env ファイルに `SELF_AGENT_SHELL=1` を足して起動。確認: `systemctl --user show self-agent -p MemoryMax -p CPUQuotaPerSecUSec`、log に「Bash を有効にしました」、#system に止めた知らせが無い。
+- README の `systemd-run --user` に `-p MemoryMax=4G -p MemoryHigh=3G -p CPUQuota=300% -p TasksMax=1024` を足し、env ファイルに `SELF_AGENT_SHELL=1` を足して起動。確認: `systemctl --user show self-agent -p MemoryMax -p CPUQuotaPerSecUSec`、log に「シェルの自己診断が通りました」、#system に「使えない状態です」の知らせが無い。
 
 ## 7. 受け入れ条件
 単体（偽 Runner・一時ディレクトリ。`npm test`）:
-- hook: #inbox・#tasks・context なし・scheduled・プロジェクトなし・`run_in_background: true`・`dangerouslyDisableSandbox: true`・容量超え・自己診断失敗で Bash を拒否し、セッション + プロジェクトありでは判断なし（通す）。判定が例外なら拒否。log にコマンドが出ない。
-- 自己診断: bwrap が無い・probe が非 0・時間切れ・場所の重なり・同じファイルシステムで無効、全部通れば有効。状態が変わったときだけ #system に 1 回投稿。
+- hook: #inbox・#tasks・context なし・scheduled・/close のターン・プロジェクトなし・`run_in_background: true`・`dangerouslyDisableSandbox: true`・容量超え・自己診断失敗で Bash を拒否し、セッション + プロジェクトありでは判断なし（通す）。判定が例外なら拒否。log にコマンドが出ない。
+- 自己診断: bwrap が無い・probe が非 0・時間切れ・場所の重なり・同じファイルシステムで無効、全部通れば有効。通る・通らないが変わったときだけ #system に 1 回投稿（項目の変化は log だけ）。各 run の前の bwrap・socat の有無の確かめ直し（無ければその run に sandbox を付けない）。
 - buildQueryOptions: `SELF_AGENT_SHELL` 無しなら今と同じ Options（ツール 6 個・sandbox なし）。有りで自己診断が通れば §2.2 の値とツール 7 個、通らなければ sandbox なし・ツール 7 個。どの run でも sandbox の値が同じ（チャンネルで変わらない）。
 - 掃除: /close で node_modules を消し、dir の外を指す symlink はたどらない。.tmp・.cache の掃除。
 
 実機（`scripts/shell-check.ts` を足す。本体と同じ Options で、決めたコマンドを 1 つずつ Bash で実行させて結果を照合。利用枠を少し使う。`npm run shell-check`）:
 - `cat ~/.config/self-agent/env` が失敗、`ls ~/.ssh ~/.config/gh ~/workspace ~/.local/share/self-agent/data ~/.local/share/self-agent/claude` が全部無い/空
 - `echo ${CLAUDE_CODE_OAUTH_TOKEN:-none}` が none、`env | grep -c -i -E 'token|discord'` が 0
-- `ls /tmp/tmux-1000 /run/user/1000 /run/postgresql /var/log/journal` が無い/空
+- `ls /tmp /run/user/<uid> /run /var/log/journal` が無い/空（他のサービスのソケットが見えない）
 - `curl -sS -m 10 https://example.com` が失敗、`curl -sS -m 5 http://127.0.0.1:<SERVE_PORT>/` が失敗
 - `git clone --depth 1 https://github.com/octocat/Hello-World.git <dir>/repos/hello` が成功、`npm view react version` が版を返す
 - `touch ~/x`・`touch ~/workspace/x` が失敗、`touch <dir>/ok` が成功
+- 上の denyRead・allowWrite・許可ドメインの結果で、Options.sandbox の `filesystem`・`network` が実際に効いていること（§1.1 の未確認）を確かめる。効いていなければ権限ルールで書く形に直す
 - `cat /proc/1/cmdline` が systemd でない（PID 名前空間）
 - `sleep 300 & echo started` の後、ターンが終わってから host で `pgrep -f 'sleep 300'` が空
 - （6.3 を入れたら）`python3 -c "import socket; socket.socket(socket.AF_UNIX)"` が PermissionError
@@ -247,7 +257,7 @@ cp -a ~/.local/share/self-agent/work.old/. ~/.local/share/self-agent/work/
 ## 8. PR 分解（1 PR = 1 論点。implementer に渡す粒度）
 1. **設計書 + 設定 + 自己診断**（キャッシュ影響なし）: 本書を `docs/plan/shell.md` に。config に `SELF_AGENT_SHELL`。`src/agent/sandbox-check.ts`（PATH 探索・bwrap の probe（spawn は注入できる）・場所の重なり・st_dev）。main で起動時に、scheduler の tick で再診断し、変わったら #system に投稿。この PR ではツールと Options は変えない（結果は log と #system だけ）。
 2. **ディスクの上限と掃除**（キャッシュ影響なし）: プロジェクトの大きさの計算（60 秒キャッシュ）と Write・Edit の拒否、空きの判定、/close の node_modules 削除、tick の .tmp・.cache 掃除。
-3. **Bash を有効にする**（**キャッシュが外れるのはこの PR だけ**。#108 の A と同じ再起動で出す）: buildQueryOptions に sandbox と Bash（`SELF_AGENT_SHELL` と診断結果で切り替え）、childEnv の §2.4、Bash の PreToolUse hook、途中経過のラベル、システムプロンプトの行（§5.2）、project_open の注意（§5.3）、stderr の扱い（§2.8）、`scripts/shell-check.ts`、README・README_ja・REQUIREMENTS・CLAUDE.md・build-and-serve.md の更新、measure の実測値。
+3. **Bash を有効にする**（**キャッシュが外れるのはこの PR だけ**。#108 の A と同じ再起動で出す）: buildQueryOptions に sandbox と Bash（`SELF_AGENT_SHELL` と診断結果で切り替え）、childEnv の §2.4（PATH は shellPath）、各 run の前の bwrap・socat の確かめ直し（§4）、RunContext の /close の印（§2.5）、Bash の PreToolUse hook、途中経過のラベル、システムプロンプトの行（§5.2）、project_open の注意（§5.3）、stderr の扱い（§2.8）、`scripts/shell-check.ts`、README・README_ja・REQUIREMENTS・CLAUDE.md・build-and-serve.md の更新、measure の実測値。
 - 1・2 は並行で作れる。3 は 1・2 の後。§6 の sudo は 3 の前にオーナーが打つ（1 の自己診断で通ったことを確かめられる）。
 
 ## 9. 決定事項と未決
