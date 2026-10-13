@@ -152,18 +152,18 @@ export class ReminderStore {
     return Number(row?.n ?? 0);
   }
 
-  /** 同じチャンネル・text・rule の active（1 回だけ（rule が null）なら next_at も同じもの） */
-  findDuplicate(channelId: string, text: string, rule: string | null, nextAt: Date | null): Reminder | undefined {
+  /** 同じチャンネル・kind・text・rule の active（1 回だけ（rule が null）なら next_at も同じもの） */
+  findDuplicate(channelId: string, kind: ReminderKind, text: string, rule: string | null, nextAt: Date | null): Reminder | undefined {
     const row =
       rule === null
         ? this.db
             .prepare(
-              "SELECT * FROM reminders WHERE status = 'active' AND channel_id = ? AND text = ? AND rule IS NULL AND next_at IS ? ORDER BY id LIMIT 1",
+              "SELECT * FROM reminders WHERE status = 'active' AND channel_id = ? AND kind = ? AND text = ? AND rule IS NULL AND next_at IS ? ORDER BY id LIMIT 1",
             )
-            .get(channelId, text, nextAt === null ? null : nextAt.toISOString())
+            .get(channelId, kind, text, nextAt === null ? null : nextAt.toISOString())
         : this.db
-            .prepare("SELECT * FROM reminders WHERE status = 'active' AND channel_id = ? AND text = ? AND rule = ? ORDER BY id LIMIT 1")
-            .get(channelId, text, rule);
+            .prepare("SELECT * FROM reminders WHERE status = 'active' AND channel_id = ? AND kind = ? AND text = ? AND rule = ? ORDER BY id LIMIT 1")
+            .get(channelId, kind, text, rule);
     return row === undefined ? undefined : toReminder(row);
   }
 
