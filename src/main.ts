@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pruneProjectTrash } from "./agent/project-files.ts";
-import { checkSandbox, shellPath } from "./agent/sandbox-check.ts";
+import { checkSandbox, nodeVersionDir, shellPath } from "./agent/sandbox-check.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
@@ -198,6 +198,7 @@ const shellState = new ShellState({
     checkSandbox({
       pathEnv: shellPath(process.execPath),
       workDir: config.workDir,
+      nodeDir: nodeVersionDir(process.execPath),
       dataDir: config.dataDir,
       claudeConfigDir: config.claudeConfigDir,
       repoDir: process.cwd(),
