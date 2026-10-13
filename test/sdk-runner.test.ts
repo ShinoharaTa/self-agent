@@ -10,7 +10,7 @@ import {
   type SDKMessage,
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { DISK_LIMIT_REASON, DiskQuota, WORKDIR_MIN_FREE_BYTES } from "../src/agent/disk.ts";
+import { DISK_FREE_REASON, DiskQuota, PROJECT_SIZE_REASON, WORKDIR_MIN_FREE_BYTES } from "../src/agent/disk.ts";
 import { FILE_NO_CONTEXT_REASON, FILE_READ_DENIED_REASON, FILE_WRITE_DENIED_REASON } from "../src/agent/file-access.ts";
 import type { ProgressStep, RunContext, RunInput, RunResult, StepUsage } from "../src/agent/runner.ts";
 import {
@@ -1013,7 +1013,7 @@ test("SdkAgentRunner: ファイル操作の hook は判定が例外で終わっ�
   }
 });
 
-test("SdkAgentRunner: ファイル操作の hook は Write・Edit を許すものでも、容量の上限（空き 512 MB 未満・プロジェクトの上限超え）なら拒否する。Read・Glob は容量を見ない。log はツール名と「容量」だけ", async (t) => {
+test("SdkAgentRunner: ファイル操作の hook は Write・Edit を許すものでも、容量の上限（空き 512 MB 未満・プロジェクトの上限超え）なら種類ごとの理由で拒否する。Read・Glob は容量を見ない。log はツール名と容量の種類だけ", async (t) => {
   const workDir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
   t.after(() => rmSync(workDir, { recursive: true, force: true }));
   const projectsDir = join(workDir, "projects");
@@ -1052,18 +1052,28 @@ test("SdkAgentRunner: ファイル操作の hook は Write・Edit を許すも�
     return { outputs, logs, touched: projects.touched };
   };
 
-  const cases: Array<{ label: string; free: number; projectMaxBytes?: number; denied: boolean }> = [
-    { label: "上限の内", free: 600 * MIB, denied: false },
-    { label: "空きがちょうど 512 MB", free: WORKDIR_MIN_FREE_BYTES, denied: false },
-    { label: "空きが 512 MB 未満", free: WORKDIR_MIN_FREE_BYTES - 4096, denied: true },
-    { label: "プロジェクトが上限を超える", free: 600 * MIB, projectMaxBytes: 0, denied: true },
+  const cases: Array<{ label: string; free: number; projectMaxBytes?: number; denied?: { reason: string; kind: string } }> = [
+    { label: "上限の内", free: 600 * MIB },
+    { label: "空きがちょうど 512 MB", free: WORKDIR_MIN_FREE_BYTES },
+    { label: "空きが 512 MB 未満", free: WORKDIR_MIN_FREE_BYTES - 4096, denied: { reason: DISK_FREE_REASON, kind: "空き" } },
+    {
+      label: "プロジェクトが上限を超える",
+      free: 600 * MIB,
+      projectMaxBytes: 0,
+      denied: { reason: PROJECT_SIZE_REASON, kind: "プロジェクト" },
+    },
   ];
   for (const item of cases) {
     const { outputs, logs, touched } = await runWith(item.free, item.projectMaxBytes);
-    if (item.denied) {
-      assert.deepEqual(outputs, [{}, deny(DISK_LIMIT_REASON), deny(DISK_LIMIT_REASON)], item.label);
+    if (item.denied !== undefined) {
+      const { reason, kind } = item.denied;
+      assert.deepEqual(outputs, [{}, deny(reason), deny(reason)], item.label);
       assert.deepEqual(touched, [], item.label);
-      assert.deepEqual(logs, ["ファイル操作を拒否しました（Write・容量）", "ファイル操作を拒否しました（Edit・容量）"], item.label);
+      assert.deepEqual(
+        logs,
+        [`ファイル操作を拒否しました（Write・容量: ${kind}）`, `ファイル操作を拒否しました（Edit・容量: ${kind}）`],
+        item.label,
+      );
     } else {
       assert.deepEqual(outputs, [{}, {}, {}], item.label);
       assert.deepEqual(touched, [7, 7], item.label);

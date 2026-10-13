@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { removeNodeModules } from "../../agent/disk.ts";
 import type { ButtonDef, ComponentRow, InteractionResponder, OutgoingMessage } from "../../discord/gateway.ts";
 import type { ProjectStore } from "../../store/projects.ts";
@@ -132,18 +131,26 @@ function finalizeClose(
 
 /**
  * 閉じた後に、そのチャンネルのプロジェクト（あれば）の node_modules を消す（作り直せるもの。disk.ts の removeNodeModules）。
- * 失敗は log だけで、/close の結果は変えない（パスは出さない）。reject しない
+ * 発言と同じキュー（turnQueue、key は channelId）の中で行い、そのチャンネルの新しいターンと重ならないようにする。
+ * プロジェクトの dir を確かめられなければ何も消さない。失敗は log だけで、/close の結果は変えない（パスは出さない）。reject しない
  */
 async function removeClosedNodeModules(
-  deps: Pick<CloseDeps, "projects" | "projectsDir" | "log">,
+  deps: Pick<CloseDeps, "projects" | "projectsDir" | "turnQueue" | "log">,
   channelId: string,
 ): Promise<void> {
-  const { projects, projectsDir, log } = deps;
+  const { projects, projectsDir, turnQueue, log } = deps;
   try {
-    const project = projects.getByChannel(channelId);
-    if (project === undefined) return;
-    const removed = await removeNodeModules(join(projectsDir, project.slug));
-    if (removed > 0) log(`node_modules を消しました（${removed} 件）`);
+    await turnQueue.run(
+      channelId,
+      async () => {
+        const project = projects.getByChannel(channelId);
+        if (project === undefined) return;
+        const removed = await removeNodeModules(projectsDir, project.slug);
+        if (removed === undefined) log("プロジェクトのディレクトリを確かめられないため node_modules を消しませんでした");
+        else if (removed > 0) log(`node_modules を消しました（${removed} 件）`);
+      },
+      { session: true },
+    );
   } catch {
     log("node_modules を消せませんでした");
   }

@@ -296,7 +296,7 @@ export function createFileGuard(
         if (project !== undefined && FILE_WRITE_TOOLS.includes(input.tool_name)) {
           const quota = disk.check(project.slug);
           if (!quota.allowed) {
-            log(`ファイル操作を拒否しました（${input.tool_name}・容量）`);
+            log(`ファイル操作を拒否しました（${input.tool_name}・容量: ${quota.kind === "free" ? "空き" : "プロジェクト"}）`);
             return denyToolUse(quota.reason);
           }
           projects.touch(project.id);

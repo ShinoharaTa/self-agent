@@ -1,9 +1,10 @@
 // project_files の本体（プロジェクトのファイルを .trash に移す・移す・作り直す・戻す）と、古い .trash の掃除。SDK に依存しない。
 // 消したものは `<dir>/.trash/<trash_id>/<同じ相対パス>` に移す（site/ の外なので配信されない）。symlink はたどらず、1 つのものとして移す。
 // ファイルの操作は同期で行う（同じターンで並べて呼ばれても、trash_id の選択と移動が混ざらない）
-import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { resolveRealPath } from "./file-access.ts";
+import { removeTree } from "./remove-tree.ts";
 import { copyWebScaffold } from "./scaffold.ts";
 
 /** プロジェクトの dir の直下の、消したものを置くディレクトリ */
@@ -276,7 +277,19 @@ function listTrashes(dir: string): ProjectFilesResult {
   };
 }
 
-function restore(dir: string, id: string): ProjectFilesResult {
+/**
+ * path（実際のディレクトリ）の中の空のディレクトリを下から rmdir し、最後に path そのものを rmdir する（再帰の rm は使わない。symlink はたどらない）。
+ * ディレクトリ以外が残っていれば ENOTEMPTY で投げる
+ */
+function removeEmptyDirs(path: string): void {
+  for (const name of readdirSync(path)) {
+    const child = join(path, name);
+    if (isRealDirectory(child)) removeEmptyDirs(child);
+  }
+  rmdirSync(path);
+}
+
+function restore(dir: string, id: string, log: (message: string) => void): ProjectFilesResult {
   const trashDir = join(dir, TRASH_DIR_NAME, id);
   if (!TRASH_ID_PATTERN.test(id) || !isRealDirectory(trashDir)) return { result: "not_found", trash_id: id };
   const entries = collectEntries(trashDir);
@@ -291,8 +304,12 @@ function restore(dir: string, id: string): ProjectFilesResult {
     mkdirSync(dirname(target), { recursive: true });
     renameSync(join(trashDir, rel), target);
   }
-  // 残っているのは空のディレクトリだけ
-  rmSync(trashDir, { recursive: true, force: true });
+  // 残っているのは空のディレクトリだけのはず。何か残っていて（途中で足された・消せない）も戻すのは済んでいるので、残して log だけ（パスは出さない）
+  try {
+    removeEmptyDirs(trashDir);
+  } catch {
+    log("project_files: 戻した後の .trash を消せませんでした");
+  }
   return { result: "restored", trash_id: id, restored: entries };
 }
 
@@ -345,7 +362,7 @@ export async function runProjectFiles(
       const extra = extraArgs(args, ["trash_id"]);
       if (extra !== undefined) return invalidArgs(extra);
       if (trashUnavailable) return unavailable;
-      return args.trash_id === undefined ? listTrashes(dir) : restore(dir, args.trash_id);
+      return args.trash_id === undefined ? listTrashes(dir) : restore(dir, args.trash_id, options.log);
     }
     default:
       return invalidArgs("action は trash・move・clear・restore のどれかを指定してください");
@@ -354,9 +371,10 @@ export async function runProjectFiles(
 
 /**
  * `<projectsDir>/<slug>/.trash/<name>` のうち、name が trash_id の形で、その時刻から days 日を過ぎたものを消す。
- * 形に合わない名前・ディレクトリでないもの（symlink を含む）は触らない（symlink の先も触らない）。projectsDir や .trash が無ければ何もしない
+ * 形に合わない名前・ディレクトリでないもの（symlink を含む）は触らない（symlink の先も触らない）。projectsDir や .trash が無ければ何もしない。
+ * 消すのは removeTree（symlink をたどらない rm）
  */
-export function pruneProjectTrash(projectsDir: string, now: Date, days = TRASH_RETENTION_DAYS): void {
+export async function pruneProjectTrash(projectsDir: string, now: Date, days = TRASH_RETENTION_DAYS): Promise<void> {
   let projects: string[];
   try {
     projects = readdirSync(projectsDir);
@@ -372,7 +390,7 @@ export function pruneProjectTrash(projectsDir: string, now: Date, days = TRASH_R
       const parsed = TRASH_ID_PATTERN.test(name) ? parseTrashId(name) : undefined;
       if (parsed === undefined || now.getTime() - parsed.time <= days * DAY_MS) continue;
       const target = join(trashRoot, name);
-      if (isRealDirectory(target)) rmSync(target, { recursive: true, force: true });
+      if (isRealDirectory(target)) await removeTree(target);
     }
   }
 }

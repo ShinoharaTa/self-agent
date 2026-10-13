@@ -66,9 +66,9 @@ export type SchedulerDeps = {
   /** 残す日数より前の dev ログを消す（dev モードでなくても、ディレクトリがあれば消す）。投げたら log に出して続ける */
   pruneDevLogs: () => void;
   /** 残す日数を過ぎたプロジェクトの .trash/<trash_id> を消す。投げたら log に出して続ける */
-  pruneProjectTrash: () => void;
+  pruneProjectTrash: () => Promise<void>;
   /** workDir の .tmp の古いものと、上限を超えた .cache を消す。投げたら log に出して続ける */
-  pruneWorkDir: () => void;
+  pruneWorkDir: () => Promise<void>;
   now: () => Date;
   timers?: SchedulerTimers;
   log: (message: string) => void;
@@ -138,8 +138,8 @@ export class Scheduler {
     await this.moveIdleSessions();
     await this.promptDeletes();
     this.pruneDevLogs();
-    this.pruneProjectTrash();
-    this.pruneWorkDir();
+    await this.pruneProjectTrash();
+    await this.pruneWorkDir();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
     await this.deps.inboxRotator.rotateDue(() => this.stopped);
   }
@@ -220,18 +220,18 @@ export class Scheduler {
   }
 
   /** プロジェクトの古い .trash を消す。失敗は log に出すだけ（パスは出さない） */
-  private pruneProjectTrash(): void {
+  private async pruneProjectTrash(): Promise<void> {
     try {
-      this.deps.pruneProjectTrash();
+      await this.deps.pruneProjectTrash();
     } catch {
       this.deps.log("プロジェクトの古い .trash を消せませんでした");
     }
   }
 
   /** workDir の .tmp の古いものと上限を超えた .cache を消す。失敗は log に出すだけ（パスは出さない） */
-  private pruneWorkDir(): void {
+  private async pruneWorkDir(): Promise<void> {
     try {
-      this.deps.pruneWorkDir();
+      await this.deps.pruneWorkDir();
     } catch {
       this.deps.log("作業場所の .tmp・.cache を消せませんでした");
     }

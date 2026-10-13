@@ -1,9 +1,10 @@
 // ディスクの上限と掃除（docs/plan/shell.md §2.7）。SDK に依存しない。
 // 大きさは lstat の blocks（du と同じ実際の使用量）で数え、symlink はたどらない（リンクそのものだけを数える）
-import { lstatSync, readdirSync, rmSync, statfsSync } from "node:fs";
-import { lstat, readdir, realpath, rm, unlink } from "node:fs/promises";
+import { lstatSync, readdirSync, statfsSync } from "node:fs";
+import { lstat, readdir, realpath, rmdir, unlink } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { TRASH_DIR_NAME } from "./project-files.ts";
+import { removeTree } from "./remove-tree.ts";
 
 /** workDir の空きがこれより少なければ、書き込み（Write・Edit）を拒否する */
 export const WORKDIR_MIN_FREE_BYTES = 512 * 1024 * 1024;
@@ -22,16 +23,21 @@ export const NODE_MODULES_MAX_DEPTH = 3;
 export const WORK_TMP_DIR_NAME = ".tmp";
 /** パッケージのキャッシュの場所（`<workDir>/.cache`） */
 export const WORK_CACHE_DIR_NAME = ".cache";
+/** プロジェクトの配信する場所（`<dir>/site`）。node_modules を探すときに入らない */
+const SITE_DIR_NAME = "site";
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
-/** 容量の上限で拒否したときにモデルへ返す理由 */
-export const DISK_LIMIT_REASON =
-  `容量の上限を超えています（プロジェクトは .trash を除いて ${PROJECT_MAX_BYTES / GIB} GB まで、作業場所の空きは ${WORKDIR_MIN_FREE_BYTES / MIB} MB 以上が要ります）。` +
-  "プロジェクトが大きすぎるときは、要らないもの（node_modules・ビルドの出力など）を project_files で .trash に移してください。作業場所の空きが足りないときは、オーナーに伝えてください";
+/** workDir の空きが足りなくて拒否したときにモデルへ返す理由（.trash に移しても空きは増えない） */
+export const DISK_FREE_REASON =
+  `作業場所の空きが足りません（${WORKDIR_MIN_FREE_BYTES / MIB} MB 未満）。.trash に移しても空きは増えないので、書き込みをやめてオーナーに伝えてください`;
+/** プロジェクトが大きすぎて拒否したときにモデルへ返す理由 */
+export const PROJECT_SIZE_REASON =
+  `このプロジェクトが容量の上限（.trash を除いて ${PROJECT_MAX_BYTES / GIB} GB）を超えています。要らないもの（node_modules・ビルドの出力など）を project_files で .trash に移してください`;
 
-export type DiskDecision = { allowed: true } | { allowed: false; reason: string };
+/** 拒否の種類。free は workDir の空き、project はプロジェクトの大きさ */
+export type DiskDecision = { allowed: true } | { allowed: false; kind: "free" | "project"; reason: string };
 
 function hasCode(error: unknown, ...codes: string[]): boolean {
   return error instanceof Error && "code" in error && codes.includes(String(error.code));
@@ -124,29 +130,34 @@ export class DiskQuota {
     return stats.bavail * stats.bsize;
   }
 
-  /** プロジェクトの大きさ（バイト。直下の .trash は数えない）。60 秒以内に数えたものがあればそれを返す。上限を超えたところで数えるのをやめる */
+  /**
+   * プロジェクトの大きさ（バイト。直下の .trash は数えない）。60 秒以内に数えた上限の内のものがあればそれを返す。上限を超えたところで数えるのをやめる。
+   * 上限を超えた結果はキャッシュしない（project_files で .trash に移したら、次の書き込みで数え直す）
+   */
   projectBytes(slug: string): number {
     const now = this.now().getTime();
     const cached = this.sizes.get(slug);
     if (cached !== undefined && now - cached.at < PROJECT_SIZE_CACHE_MS) return cached.bytes;
     const bytes = treeSize(join(this.projectsDir, slug), this.projectMaxBytes, [TRASH_DIR_NAME]);
-    this.sizes.set(slug, { bytes, at: now });
+    if (bytes > this.projectMaxBytes) this.sizes.delete(slug);
+    else this.sizes.set(slug, { bytes, at: now });
     return bytes;
   }
 
-  /** このプロジェクトに書いてよいか。workDir の空きが 512 MB 未満、またはプロジェクトが 1 GB を超えていれば拒否する */
+  /** このプロジェクトに書いてよいか。workDir の空きが 512 MB 未満（free）、またはプロジェクトが 1 GB を超えていれば（project）拒否する */
   check(slug: string): DiskDecision {
-    if (this.freeBytes() < WORKDIR_MIN_FREE_BYTES || this.projectBytes(slug) > this.projectMaxBytes) {
-      return { allowed: false, reason: DISK_LIMIT_REASON };
+    if (this.freeBytes() < WORKDIR_MIN_FREE_BYTES) return { allowed: false, kind: "free", reason: DISK_FREE_REASON };
+    if (this.projectBytes(slug) > this.projectMaxBytes) {
+      return { allowed: false, kind: "project", reason: PROJECT_SIZE_REASON };
     }
     return { allowed: true };
   }
 }
 
 /** path が実際のディレクトリか（symlink は false）。無ければ false */
-function isRealDirectory(path: string): boolean {
+async function isRealDirectory(path: string): Promise<boolean> {
   try {
-    return lstatSync(path).isDirectory();
+    return (await lstat(path)).isDirectory();
   } catch (error) {
     if (hasCode(error, "ENOENT", "ENOTDIR")) return false;
     throw error;
@@ -154,71 +165,111 @@ function isRealDirectory(path: string): boolean {
 }
 
 /**
- * workDir の掃除（scheduler の tick）。`<workDir>/.tmp` の直下のもののうち更新から 1 日を過ぎたものと、
- * cacheMaxBytes（既定 1 GB）を超えた `<workDir>/.cache` を丸ごと消す。どちらも無い・実際のディレクトリでない（symlink）なら何もしない。
- * 片方が失敗してももう片方は行い、最後に最初の失敗を投げる
+ * `<projectsDir>/<slug>` の realpath。projectsDir の直下のそのディレクトリそのもの（symlink でない）でなければ・確かめられなければ undefined
  */
-export function pruneWorkDir(workDir: string, now: Date, cacheMaxBytes = WORK_CACHE_MAX_BYTES): void {
-  let failure: unknown;
+export async function verifiedProjectDir(projectsDir: string, slug: string): Promise<string | undefined> {
   try {
-    const tmp = join(workDir, WORK_TMP_DIR_NAME);
-    if (isRealDirectory(tmp)) {
-      for (const name of readdirSync(tmp)) {
-        const target = join(tmp, name);
-        let mtime: number;
-        try {
-          mtime = lstatSync(target).mtimeMs;
-        } catch (error) {
-          if (hasCode(error, "ENOENT")) continue;
-          throw error;
-        }
-        // symlink はリンクそのものを消す（rm は symlink をたどらない）
-        if (now.getTime() - mtime > WORK_TMP_MAX_AGE_MS) rmSync(target, { recursive: true, force: true });
-      }
-    }
-  } catch (error) {
-    failure = error;
+    const base = await realpath(projectsDir);
+    const real = await realpath(join(projectsDir, slug));
+    return real === join(base, slug) ? real : undefined;
+  } catch {
+    return undefined;
   }
-  try {
-    const cache = join(workDir, WORK_CACHE_DIR_NAME);
-    if (isRealDirectory(cache) && treeSize(cache, cacheMaxBytes) > cacheMaxBytes) {
-      rmSync(cache, { recursive: true, force: true });
-    }
-  } catch (error) {
-    failure ??= error;
-  }
-  if (failure !== undefined) throw failure;
 }
 
 /**
- * プロジェクトの dir の中の node_modules を消し、消した数を返す（/close の後に使う。作り直せるもの）。
- * dir から深さ 3 まで（`<dir>/node_modules` が 1）を探し、直下の .trash には入らない。symlink はたどらない（探すのは実際のディレクトリだけ）。
- * 実際のディレクトリの node_modules は realpath が realpath(dir) の中のときだけ中身ごと消す。
- * symlink の node_modules は、リンクのある場所（親の realpath）が realpath(dir) の中のときだけリンクそのものを消す（指す先は消さない）。
- * dir が無ければ 0。失敗したら投げる
+ * `<workDir>/.tmp` の中を symlink をたどらずに回り、更新（自分の lstat の mtime）から 1 日を過ぎたファイル・symlink を消し、
+ * そのあと空になったディレクトリのうち、中を消す前の更新から 1 日を過ぎたものを下から消す（.tmp そのものは消さない）。
+ * 1 つ消せなくても（EACCES など）続け、失敗した数を返す。消している間に無くなったものは失敗に数えない
  */
-export async function removeNodeModules(projectDir: string): Promise<number> {
-  let root: string;
+async function pruneTmp(tmp: string, now: Date): Promise<number> {
+  const cutoff = now.getTime() - WORK_TMP_MAX_AGE_MS;
+  let failures = 0;
+  const visit = async (dir: string): Promise<void> => {
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch (error) {
+      if (!hasCode(error, "ENOENT")) failures++;
+      return;
+    }
+    for (const name of names) {
+      const path = join(dir, name);
+      try {
+        const stats = await lstat(path);
+        if (stats.isDirectory()) {
+          await visit(path);
+          if (stats.mtimeMs < cutoff) {
+            try {
+              // 空でなければ（新しいものが残っている）消さない
+              await rmdir(path);
+            } catch (error) {
+              if (!hasCode(error, "ENOTEMPTY", "EEXIST")) throw error;
+            }
+          }
+        } else if (stats.mtimeMs < cutoff) {
+          // unlink は symlink をたどらない（リンクそのものを消す）
+          await unlink(path);
+        }
+      } catch (error) {
+        if (!hasCode(error, "ENOENT")) failures++;
+      }
+    }
+  };
+  await visit(tmp);
+  return failures;
+}
+
+/**
+ * workDir の掃除（scheduler の tick）。`<workDir>/.tmp` の中の 1 日を過ぎたもの（pruneTmp）と、
+ * cacheMaxBytes（既定 1 GB）を超えた `<workDir>/.cache` を丸ごと（removeTree で）消す。どちらも無い・実際のディレクトリでない（symlink）なら何もしない。
+ * workDir の直下のほかのもの（lost+found など）は見ない。片方が失敗してももう片方は行い、失敗があれば最後にまとめて投げる（message にパスは入れない）
+ */
+export async function pruneWorkDir(workDir: string, now: Date, cacheMaxBytes = WORK_CACHE_MAX_BYTES): Promise<void> {
+  let failures = 0;
   try {
-    root = await realpath(projectDir);
+    const tmp = join(workDir, WORK_TMP_DIR_NAME);
+    if (await isRealDirectory(tmp)) failures += await pruneTmp(tmp, now);
+  } catch {
+    failures++;
+  }
+  try {
+    const cache = join(workDir, WORK_CACHE_DIR_NAME);
+    if ((await isRealDirectory(cache)) && treeSize(cache, cacheMaxBytes) > cacheMaxBytes) await removeTree(cache);
+  } catch {
+    failures++;
+  }
+  if (failures > 0) throw new Error(`作業場所の掃除で ${failures} 件失敗しました`);
+}
+
+/**
+ * `<projectsDir>/<slug>` の中の node_modules を消し、消した数を返す（/close の後に使う。作り直せるもの）。
+ * プロジェクトの dir が無ければ 0、projectsDir の直下のそのディレクトリそのもの（verifiedProjectDir）と確かめられなければ何も消さずに undefined。
+ * dir から深さ 3 まで（`<dir>/node_modules` が 1）を探し、直下の .trash と site（配信する場所。手で書いたものがありうる）には入らない。
+ * symlink はたどらない（探すのは実際のディレクトリだけ）。実際のディレクトリの node_modules は realpath が realpath(dir) の中のときだけ、
+ * symlink の node_modules は、リンクのある場所（親の realpath）が realpath(dir) の中のときだけ、removeTree で消す（symlink はリンクそのものだけ）。
+ * 失敗したら投げる
+ */
+export async function removeNodeModules(projectsDir: string, slug: string): Promise<number | undefined> {
+  try {
+    await lstat(join(projectsDir, slug));
   } catch (error) {
     if (hasCode(error, "ENOENT", "ENOTDIR")) return 0;
     throw error;
   }
-  if (!(await lstat(root)).isDirectory()) return 0;
+  const root = await verifiedProjectDir(projectsDir, slug);
+  if (root === undefined || !(await isRealDirectory(root))) return undefined;
   let removed = 0;
   const visit = async (dir: string, depth: number): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
-      if (depth === 1 && entry.name === TRASH_DIR_NAME) continue;
+      if (depth === 1 && (entry.name === TRASH_DIR_NAME || entry.name === SITE_DIR_NAME)) continue;
       if (entry.name === "node_modules") {
-        if (entry.isSymbolicLink()) {
-          if (isInside(join(await realpath(dir), entry.name), root)) {
-            await unlink(path);
-            removed++;
-          }
-        } else if (entry.isDirectory() && isInside(await realpath(path), root)) {
-          await rm(path, { recursive: true, force: true });
+        const inside = entry.isSymbolicLink()
+          ? isInside(join(await realpath(dir), entry.name), root)
+          : entry.isDirectory() && isInside(await realpath(path), root);
+        if (inside) {
+          await removeTree(path);
           removed++;
         }
         continue;

@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunInput, RunResult } from "../src/agent/runner.ts";
 import { createSessionToolHandlers, type SessionReportArgs } from "../src/agent/tools.ts";
@@ -479,12 +479,13 @@ test("[閉じる]: タスク候補が 0 件なら閉じて、待ちの知らせ�
   assertClosed(env, "話しただけで終わった");
 });
 
-/** topic-1 のプロジェクトを作り、node_modules（直下と site/ の下）と普通のファイルを置く。プロジェクトの dir を返す */
+/** topic-1 のプロジェクトを作り、node_modules（直下と app/ の下。site/ の下のものは消さない）と普通のファイルを置く。プロジェクトの dir を返す */
 function projectWithNodeModules(env: Pick<ReturnType<typeof setup>, "projects" | "projectsDir">): string {
   const project = env.projects.create({ guildId: "guild-1", channelId: "topic-1", name: "kakeibo", title: "家計簿" });
   const dir = join(env.projectsDir, project.slug);
   mkdirSync(join(dir, "node_modules", "react"), { recursive: true });
   writeFileSync(join(dir, "node_modules", "react", "index.js"), "x");
+  mkdirSync(join(dir, "app", "node_modules"), { recursive: true });
   mkdirSync(join(dir, "site", "node_modules"), { recursive: true });
   writeFileSync(join(dir, "site", "index.html"), "<p>");
   return dir;
@@ -495,7 +496,7 @@ test("閉じたら（/close で候補 0 件・確認のボタン）そのチャ�
   const failedDir = projectWithNodeModules(failed);
   await failed.runClose();
   assert.ok(existsSync(join(failedDir, "node_modules")));
-  assert.ok(existsSync(join(failedDir, "site", "node_modules")));
+  assert.ok(existsSync(join(failedDir, "app", "node_modules")));
 
   const finalized = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
   const finalizedDir = projectWithNodeModules(finalized);
@@ -517,13 +518,19 @@ test("閉じたら（/close で候補 0 件・確認のボタン）そのチャ�
     ["確認のボタン", confirmed, confirmedDir],
   ] as const) {
     assert.ok(!existsSync(join(dir, "node_modules")), label);
-    assert.ok(!existsSync(join(dir, "site", "node_modules")), label);
+    assert.ok(!existsSync(join(dir, "app", "node_modules")), label);
+    assert.ok(existsSync(join(dir, "site", "node_modules")), label);
     assert.ok(existsSync(join(dir, "site", "index.html")), label);
     assert.equal(env.logs.at(-1), "node_modules を消しました（2 件）", label);
+    // 消すのもそのチャンネルのキュー（セッションのジョブ）で行う
+    assert.deepEqual(env.turnQueue.keys.slice(-1), ["topic-1"], label);
+    assert.deepEqual(env.turnQueue.options.slice(-1), [{ session: true }], label);
   }
+  // 候補 0 件: /close のターンと node_modules の削除
+  assert.deepEqual(finalized.turnQueue.keys, ["topic-1", "topic-1"]);
 });
 
-test("node_modules を消すのに失敗しても（プロジェクトを引けない）閉じる処理はそのまま。log にパス・例外の中身は出さない。プロジェクトが無ければ何も出さない", async (t) => {
+test("node_modules を消すのに失敗しても（プロジェクトを引けない・dir が symlink）閉じる処理はそのまま。log にパス・例外の中身は出さない。プロジェクトが無ければ何も出さない", async (t) => {
   const broken = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
   broken.projects.getByChannel = () => {
     throw new Error(`database is locked: ${broken.projectsDir}`);
@@ -535,6 +542,19 @@ test("node_modules を消すのに失敗しても（プロジェクトを引け�
   assert.deepEqual(calls.at(-1), { method: "reply", message: { text: closedText("話しただけで終わった", 0) } });
   assertClosed(broken, "話しただけで終わった");
   assert.equal(broken.logs.at(-1), "node_modules を消せませんでした");
+
+  // プロジェクトの dir が外を指す symlink なら、何も消さずに log だけ
+  const linked = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
+  const project = linked.projects.create({ guildId: "guild-1", channelId: "topic-1", name: "kakeibo", title: "家計簿" });
+  const outside = tempDir(t);
+  mkdirSync(join(outside, "node_modules"));
+  mkdirSync(linked.projectsDir);
+  symlinkSync(outside, join(linked.projectsDir, project.slug));
+  linked.clock.now = CLOSED_AT;
+  await linked.runClose();
+  assertClosed(linked, "話しただけで終わった");
+  assert.ok(existsSync(join(outside, "node_modules")));
+  assert.equal(linked.logs.at(-1), "プロジェクトのディレクトリを確かめられないため node_modules を消しませんでした");
 
   const none = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
   none.clock.now = CLOSED_AT;

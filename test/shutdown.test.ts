@@ -400,8 +400,8 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
     gateway,
     inboxRotator: { rotateDue: async () => {} },
     pruneDevLogs: () => {},
-    pruneProjectTrash: () => {},
-    pruneWorkDir: () => {},
+    pruneProjectTrash: async () => {},
+    pruneWorkDir: async () => {},
     now: () => NOW,
     timers: {
       every: (fn) => {
