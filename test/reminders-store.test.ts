@@ -121,21 +121,22 @@ test("ReminderStore: listActive は active を next_at と snooze_at の早い�
   assert.equal(store.countActive({ kind: "notify" }), 3);
 });
 
-test("ReminderStore: findDuplicate は同じチャンネル・text・rule の active（1 回だけなら同じ時刻）", (t) => {
+test("ReminderStore: findDuplicate は同じチャンネル・kind・text・rule の active（1 回だけなら同じ時刻）", (t) => {
   const { store } = tempStore(t);
   const once = store.add(reminder());
   const repeating = store.add(reminder({ rule: "daily@08:00", nextAt: at(40) }));
   const cancelled = store.add(reminder({ text: "止めた", rule: "daily@08:00" }));
   store.cancel(cancelled.id);
 
-  const cases: Array<[label: string, args: [string, string, string | null, Date | null], id: number | undefined]> = [
-    ["1 回だけ: 同じ時刻", ["ch-1", "薬を飲む", null, at(30)], once.id],
-    ["1 回だけ: 違う時刻", ["ch-1", "薬を飲む", null, at(31)], undefined],
-    ["繰り返し: 時刻は見ない", ["ch-1", "薬を飲む", "daily@08:00", at(99)], repeating.id],
-    ["違う rule", ["ch-1", "薬を飲む", "weekdays@08:00", at(40)], undefined],
-    ["違うチャンネル", ["ch-2", "薬を飲む", null, at(30)], undefined],
-    ["違う text", ["ch-1", "水を飲む", null, at(30)], undefined],
-    ["active でない", ["ch-1", "止めた", "daily@08:00", at(30)], undefined],
+  const cases: Array<[label: string, args: [string, "notify" | "prompt", string, string | null, Date | null], id: number | undefined]> = [
+    ["1 回だけ: 同じ時刻", ["ch-1", "notify", "薬を飲む", null, at(30)], once.id],
+    ["違う kind", ["ch-1", "prompt", "薬を飲む", null, at(30)], undefined],
+    ["1 回だけ: 違う時刻", ["ch-1", "notify", "薬を飲む", null, at(31)], undefined],
+    ["繰り返し: 時刻は見ない", ["ch-1", "notify", "薬を飲む", "daily@08:00", at(99)], repeating.id],
+    ["違う rule", ["ch-1", "notify", "薬を飲む", "weekdays@08:00", at(40)], undefined],
+    ["違うチャンネル", ["ch-2", "notify", "薬を飲む", null, at(30)], undefined],
+    ["違う text", ["ch-1", "notify", "水を飲む", null, at(30)], undefined],
+    ["active でない", ["ch-1", "notify", "止めた", "daily@08:00", at(30)], undefined],
   ];
   for (const [label, args, id] of cases) assert.equal(store.findDuplicate(...args)?.id, id, label);
 });
