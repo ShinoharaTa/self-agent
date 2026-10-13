@@ -108,18 +108,18 @@ function assistant(
   });
 }
 
-/** 結果の usage の 1 ステップ */
-function step(input: number, read: number, creation: number, creation1h = 0, output = 0): StepUsage {
+/** 結果の usage の 1 ステップ（入力側だけ） */
+function step(input: number, read: number, creation: number, creation1h = 0): StepUsage {
   return {
     inputTokens: input,
     cacheReadInputTokens: read,
     cacheCreationInputTokens: creation,
     cacheCreation1hInputTokens: creation1h,
-    outputTokens: output,
   };
 }
 
-function success(sessionId: string, text: string): SDKMessage {
+/** outputTokens を渡せば result の usage（メインループの出力の合計）を入れる */
+function success(sessionId: string, text: string, outputTokens?: number): SDKMessage {
   return sdkMessage({
     type: "result",
     subtype: "success",
@@ -127,6 +127,7 @@ function success(sessionId: string, text: string): SDKMessage {
     result: text,
     session_id: sessionId,
     duration_ms: 4200,
+    ...(outputTokens === undefined ? {} : { usage: { output_tokens: outputTokens } }),
   });
 }
 
@@ -194,7 +195,6 @@ test("SdkAgentRunner: 成功ならメインループの usage を合算し、並
       cacheReadInputTokens: 2200,
       cacheCreationInputTokens: 200,
       cacheCreation1hInputTokens: 0,
-      outputTokens: 0,
       steps: [step(10, 1000, 200), step(5, 1200, 0)],
     },
     durationMs: 4200,
@@ -228,7 +228,6 @@ test("SdkAgentRunner: contextTokens はメインループの最後のステッ�
     cacheReadInputTokens: 102000,
     cacheCreationInputTokens: 2300,
     cacheCreation1hInputTokens: 0,
-    outputTokens: 0,
     steps: [step(3, 50000, 2000), step(4, 52000, 300)],
   });
 
@@ -312,23 +311,22 @@ test("SdkAgentRunner: result が届かずに終われば失敗。途中の sessi
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
       cacheCreation1hInputTokens: 0,
-      outputTokens: 0,
       steps: [step(10, 0, 0)],
     },
   });
 });
 
-test("SdkAgentRunner: usage はメインループのステップ（message.id）ごと。同じ id は届くたびに最新の usage で上書きし（並びは最初に届いた順）、1 時間のキャッシュの分と出力も足す", async () => {
+test("SdkAgentRunner: 入力側の usage はメインループのステップ（message.id）ごとに最初に届いたもの（1 時間の分も足す）。出力の合計は result の usage から取り、途中の assistant メッセージの出力は使わない", async () => {
   const { runner } = setupRunner(
     messages(
       init("session-1"),
+      // 同じ id は content のブロックごとに届く。入力側は同じ値で、output は確定していない
       assistant("msg-1", { input: 3, cacheRead: 0, cacheCreation: 5000, cache1h: 5000, output: 1 }),
-      // 同じ id の後のブロックは出力が増えた最新の usage
       assistant("msg-1", { input: 3, cacheRead: 0, cacheCreation: 5000, cache1h: 5000, output: 40 }),
       assistant("msg-2", { input: 2, cacheRead: 5000, cacheCreation: 100, output: 1 }),
       assistant("msg-sub", { input: 999, cacheRead: 999, cacheCreation: 999, cache1h: 999, output: 999 }, "toolu-1"),
       assistant("msg-2", { input: 2, cacheRead: 5000, cacheCreation: 100, output: 25 }),
-      success("session-1", "はい"),
+      success("session-1", "はい", 321),
     ),
   );
 
@@ -340,21 +338,28 @@ test("SdkAgentRunner: usage はメインループのステップ（message.id）
     cacheReadInputTokens: 5000,
     cacheCreationInputTokens: 5100,
     cacheCreation1hInputTokens: 5000,
-    outputTokens: 65,
-    steps: [step(3, 0, 5000, 5000, 40), step(2, 5000, 100, 0, 25)],
+    outputTokens: 321,
+    steps: [step(3, 0, 5000, 5000), step(2, 5000, 100)],
   });
   assert.equal(result.contextTokens, 5102);
+
+  // result に usage が無ければ、assistant メッセージに output があっても出力は入れない
+  const noResultUsage = await setupRunner(
+    messages(assistant("msg-1", { input: 1, cacheRead: 0, cacheCreation: 0, output: 40 }), success("session-1", "はい")),
+  ).runner.run({ prompt: "x" });
+  assert.ok(noResultUsage.ok);
+  assert.equal("outputTokens" in noResultUsage.usage, false);
 });
 
 test("SdkAgentRunner: 失敗（result のエラー・result なし・例外・中断・打ち切り）でも届いたステップがあれば usage を返し、1 ステップも無ければ入れない", async () => {
   const oneStep = assistant("msg-1", { input: 4, cacheRead: 900, cacheCreation: 50, cache1h: 50, output: 7 });
+  // 失敗したターンには出力を入れない（assistant メッセージ・result の usage の output は使わない）
   const expected = {
     inputTokens: 4,
     cacheReadInputTokens: 900,
     cacheCreationInputTokens: 50,
     cacheCreation1hInputTokens: 50,
-    outputTokens: 7,
-    steps: [step(4, 900, 50, 50, 7)],
+    steps: [step(4, 900, 50, 50)],
   };
   /** init（とステップ）を流してから abort されるまで待つ */
   const untilAbort = (withStep: boolean) =>
@@ -378,7 +383,14 @@ test("SdkAgentRunner: 失敗（result のエラー・result なし・例外・�
       stream: (withStep) =>
         messages(
           ...head(withStep),
-          sdkMessage({ type: "result", subtype: "error_max_turns", is_error: true, errors: [], session_id: "session-1" }),
+          sdkMessage({
+            type: "result",
+            subtype: "error_max_turns",
+            is_error: true,
+            errors: [],
+            session_id: "session-1",
+            usage: { output_tokens: 99 },
+          }),
         ),
       errorMessage: "error_max_turns",
     },
@@ -1259,7 +1271,6 @@ test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 �
         cacheReadInputTokens: 0,
         cacheCreationInputTokens: 0,
         cacheCreation1hInputTokens: 0,
-        outputTokens: 0,
         steps: [step(1, 0, 0), step(1, 0, 0), step(1, 0, 0)],
       },
       toolCalls: 0,
@@ -1292,7 +1303,7 @@ test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 �
       ok: true,
       text: "要約です",
       sessionId: "session-2",
-      usage: { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, cacheCreation1hInputTokens: 0, outputTokens: 0, steps: [] },
+      usage: { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, cacheCreation1hInputTokens: 0, steps: [] },
       toolCalls: 0,
       contextTokens: 0,
     },
@@ -1307,7 +1318,6 @@ test("dev ログ: 失敗（例外・result の失敗）・中断・打ち切り�
     cacheReadInputTokens: 0,
     cacheCreationInputTokens: 0,
     cacheCreation1hInputTokens: 0,
-    outputTokens: 0,
     steps: [step(1, 0, 0)],
   };
 
@@ -1418,7 +1428,6 @@ test("dev ログ: 書き込みに失敗してもターンは失敗せず、log �
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
       cacheCreation1hInputTokens: 0,
-      outputTokens: 0,
       steps: [],
     },
     durationMs: 4200,

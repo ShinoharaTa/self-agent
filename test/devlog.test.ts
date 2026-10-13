@@ -11,8 +11,8 @@ import {
   truncateText,
   type DevLogRecord,
   type DevLogResult,
+  type DevLogUsage,
 } from "../src/devlog/log.ts";
-import type { TurnUsage } from "../src/agent/runner.ts";
 import { turnUsage } from "./helpers/runner.ts";
 
 test("truncateText: 2,000 字までは切らず、超えたら先頭 2,000 字 + …（N 字を省略）。サロゲートペアの途中では切らない", () => {
@@ -176,12 +176,13 @@ test("formatDevLogRecord: 失敗は理由を出し、トークンは -。context
 test("formatDevLogRecord: 見出しのトークンは、失敗でも届いた分があれば出す。出力・ステップ数の無い古い記録はそこだけ -", () => {
   const failed = { ok: false as const, errorMessage: "timeout", sessionRecorded: false, toolCalls: 1 };
   // 出力・steps を記録していなかった頃の usage
-  const oldUsage = { inputTokens: 1, cacheReadInputTokens: 2, cacheCreationInputTokens: 3 } as unknown as TurnUsage;
+  const oldUsage: DevLogUsage = { inputTokens: 1, cacheReadInputTokens: 2, cacheCreationInputTokens: 3 };
   const cases: Array<{ label: string; result: DevLogResult; expected: string }> = [
     {
       label: "失敗で usage あり",
-      result: { ...failed, usage: turnUsage(4, 900, 50, 7) },
-      expected: "input 4 / cache read 900 / cache creation 50 / output 7 | ステップ 1 | ツール 1 回 | 失敗",
+      // 失敗したターンには出力の合計が無い
+      result: { ...failed, usage: turnUsage(4, 900, 50) },
+      expected: "input 4 / cache read 900 / cache creation 50 / output - | ステップ 1 | ツール 1 回 | 失敗",
     },
     {
       label: "古い記録",

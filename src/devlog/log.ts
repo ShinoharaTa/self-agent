@@ -19,13 +19,20 @@ export type DevLogStep =
   | { t: "tool_result"; id: string; isError: boolean; content: string }
   | { t: "compact"; trigger: string; preTokens: number | null };
 
+/**
+ * 記録の usage。書くときは RunResult の TurnUsage そのまま。読むときのために、以前の記録に無い項目は省略できる型にする
+ * （出力は失敗したターンと以前の記録に無く、steps・1 時間の分は以前の記録に無い）
+ */
+export type DevLogUsage = Omit<TurnUsage, "steps" | "cacheCreation1hInputTokens"> &
+  Partial<Pick<TurnUsage, "steps" | "cacheCreation1hInputTokens">>;
+
 /** RunResult から durationMs を除いたもの（所要時間は記録の durationMs） */
 export type DevLogResult =
   | {
       ok: true;
       text: string;
       sessionId: string;
-      usage: TurnUsage;
+      usage: DevLogUsage;
       toolCalls: number;
       contextTokens: number;
       compacted?: Compaction;
@@ -37,7 +44,7 @@ export type DevLogResult =
       sessionRecorded: boolean;
       toolCalls: number;
       /** 失敗するまでに届いたステップのトークン（RunResult に入っていたときだけ） */
-      usage?: TurnUsage;
+      usage?: DevLogUsage;
     };
 
 /** 1 run の記録（ファイルの 1 行） */

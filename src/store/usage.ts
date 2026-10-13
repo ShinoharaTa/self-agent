@@ -17,10 +17,11 @@ export type UsageRecord = {
   contextTokens?: number;
   /** ターンの種類（inbox・session-renew など、ログ用のラベル。ID は入れない）。省略は NULL */
   kind?: string;
+  /** そのターンのメインループの出力の合計（成功したターンだけ）。省略は NULL */
   outputTokens?: number;
   /** cacheCreationInputTokens のうち 1 時間のキャッシュの分 */
   cacheCreation1hInputTokens?: number;
-  /** メインループのステップごとのトークン（起きた順）。省略・null は NULL */
+  /** メインループのステップごとの入力側のトークン（起きた順）。省略・null は NULL */
   steps?: readonly StepUsage[] | null;
 };
 
@@ -39,6 +40,7 @@ export type UsageEntry = {
   contextTokens: number;
   /** v17 より前の行は null（以下 3 つも同じ） */
   kind: string | null;
+  /** 失敗したターンも null */
   outputTokens: number | null;
   cacheCreation1hInputTokens: number | null;
   /** JSON として読めない・形が違うときも null */
@@ -65,8 +67,8 @@ function nullableNumber(value: SQLOutputValue | undefined): number | null {
   return value === null || value === undefined ? null : Number(value);
 }
 
-/** steps 列の 1 要素（input・read・creation・creation 1h・output） */
-type StoredStep = { i: number; r: number; w: number; w1h: number; o: number };
+/** steps 列の 1 要素（input・read・creation・creation 1h）。出力は持たない */
+type StoredStep = { i: number; r: number; w: number; w1h: number };
 
 function stepsToJson(steps: readonly StepUsage[]): string {
   return JSON.stringify(
@@ -76,13 +78,12 @@ function stepsToJson(steps: readonly StepUsage[]): string {
         r: step.cacheReadInputTokens,
         w: step.cacheCreationInputTokens,
         w1h: step.cacheCreation1hInputTokens,
-        o: step.outputTokens,
       }),
     ),
   );
 }
 
-/** steps 列を読む。NULL・JSON として読めない・形が違う（数でない値がある）なら null */
+/** steps 列を読む。NULL・JSON として読めない・形が違う（i・r・w・w1h に数でない値がある）なら null。それ以外の項目（以前書いた o など）は無視する */
 function stepsFromJson(value: SQLOutputValue | undefined): StepUsage[] | null {
   if (typeof value !== "string") return null;
   let parsed: unknown;
@@ -95,14 +96,13 @@ function stepsFromJson(value: SQLOutputValue | undefined): StepUsage[] | null {
   const steps: StepUsage[] = [];
   for (const item of parsed) {
     if (typeof item !== "object" || item === null) return null;
-    const { i, r, w, w1h, o } = item as Record<string, unknown>;
-    if (![i, r, w, w1h, o].every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+    const { i, r, w, w1h } = item as Record<string, unknown>;
+    if (![i, r, w, w1h].every((n) => typeof n === "number" && Number.isFinite(n))) return null;
     steps.push({
       inputTokens: i as number,
       cacheReadInputTokens: r as number,
       cacheCreationInputTokens: w as number,
       cacheCreation1hInputTokens: w1h as number,
-      outputTokens: o as number,
     });
   }
   return steps;

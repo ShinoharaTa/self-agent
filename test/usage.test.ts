@@ -37,13 +37,12 @@ const ok = (input: number, read: number, creation: number, toolCalls: number, co
 });
 
 /** ステップ 1 つ分の usage */
-function step(input: number, read: number, creation: number, creation1h: number, output: number): StepUsage {
+function step(input: number, read: number, creation: number, creation1h: number): StepUsage {
   return {
     inputTokens: input,
     cacheReadInputTokens: read,
     cacheCreationInputTokens: creation,
     cacheCreation1hInputTokens: creation1h,
-    outputTokens: output,
   };
 }
 
@@ -136,7 +135,7 @@ test("openDb: v16 の DB を v17 に上げても usage_log の行は残り、種
   assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
   assert.ok(MIGRATIONS.length >= 17);
   const usage = new UsageStore(db, () => NOW);
-  usage.record({ key: "inbox-1", ok: true, kind: "inbox", outputTokens: 5, cacheCreation1hInputTokens: 100, steps: [step(1, 2, 3, 4, 5)] });
+  usage.record({ key: "inbox-1", ok: true, kind: "inbox", outputTokens: 5, cacheCreation1hInputTokens: 100, steps: [step(1, 2, 3, 4)] });
   const pick = (entry: UsageEntry) => [
     entry.key,
     entry.inputTokens,
@@ -147,28 +146,29 @@ test("openDb: v16 の DB を v17 に上げても usage_log の行は残り、種
     entry.steps,
   ];
   assert.deepEqual(usage.recent(10).map(pick), [
-    ["inbox-1", null, 0, "inbox", 5, 100, [step(1, 2, 3, 4, 5)]],
+    ["inbox-1", null, 0, "inbox", 5, 100, [step(1, 2, 3, 4)]],
     ["inbox-1", 10, 2310, null, null, null, null],
   ]);
 });
 
-test("UsageStore: steps は短い JSON で保存して読み戻す。NULL・読めない JSON・形が違えば null", (t) => {
+test("UsageStore: steps は短い JSON（入力側だけ）で保存して読み戻す。NULL・読めない JSON・形が違えば null、余計な項目（以前の o）は無視する", (t) => {
   const db = tempDb(t);
   const usage = new UsageStore(db, () => NOW);
-  usage.record({ key: "topic-1", ok: false, kind: "session", steps: [step(3, 0, 5000, 5000, 40), step(2, 5000, 100, 0, 25)] });
+  usage.record({ key: "topic-1", ok: false, kind: "session", steps: [step(3, 0, 5000, 5000), step(2, 5000, 100, 0)] });
   assert.equal(
     db.prepare("SELECT steps FROM usage_log").get()?.steps,
-    '[{"i":3,"r":0,"w":5000,"w1h":5000,"o":40},{"i":2,"r":5000,"w":100,"w1h":0,"o":25}]',
+    '[{"i":3,"r":0,"w":5000,"w1h":5000},{"i":2,"r":5000,"w":100,"w1h":0}]',
   );
-  assert.deepEqual(usage.recent(1)[0]?.steps, [step(3, 0, 5000, 5000, 40), step(2, 5000, 100, 0, 25)]);
+  assert.deepEqual(usage.recent(1)[0]?.steps, [step(3, 0, 5000, 5000), step(2, 5000, 100, 0)]);
 
   const cases: Array<[label: string, stored: string | null, expected: StepUsage[] | null]> = [
     ["NULL", null, null],
     ["空の配列", "[]", []],
     ["JSON でない", "{", null],
     ["配列でない", '{"i":1}', null],
-    ["要素が足りない", '[{"i":1,"r":2,"w":3,"w1h":4}]', null],
-    ["数でない値", '[{"i":"1","r":2,"w":3,"w1h":4,"o":5}]', null],
+    ["要素が足りない", '[{"i":1,"r":2,"w":3}]', null],
+    ["数でない値", '[{"i":"1","r":2,"w":3,"w1h":4}]', null],
+    ["以前の o は無視する", '[{"i":1,"r":2,"w":3,"w1h":4,"o":5}]', [step(1, 2, 3, 4)]],
   ];
   for (const [label, stored, expected] of cases) {
     db.prepare("UPDATE usage_log SET steps = ?").run(stored);
