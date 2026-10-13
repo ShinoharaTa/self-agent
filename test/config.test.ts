@@ -32,6 +32,7 @@ test("未設定ならデフォルト値を使う", () => {
     sessionTurnTimeoutSec: 900,
     devMode: false,
     devLogDays: 30,
+    shell: false,
   });
 });
 
@@ -62,6 +63,7 @@ test("環境変数で上書きできる", () => {
     SELF_AGENT_SESSION_TURN_TIMEOUT_SEC: "1200",
     SELF_AGENT_DEV_MODE: "1",
     SELF_AGENT_DEV_LOG_DAYS: "7",
+    SELF_AGENT_SHELL: "1",
   });
   assert.equal(config.claudeConfigDir, "/srv/claude");
   assert.equal(config.workDir, "/srv/work");
@@ -87,6 +89,7 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.sessionTurnTimeoutSec, 1200);
   assert.equal(config.devMode, true);
   assert.equal(config.devLogDays, 7);
+  assert.equal(config.shell, true);
 });
 
 test("CLAUDE_CODE_OAUTH_TOKEN・DISCORD_TOKEN は有無だけを返し、値は含めない", () => {
@@ -193,6 +196,20 @@ test("SELF_AGENT_DEV_MODE は 1 で有効、未設定・空・0 で無効。そ�
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: "" }).devMode, false);
   for (const value of ["true", "yes", "2", " 1", "on"]) {
     assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: value }), /SELF_AGENT_DEV_MODE/, value);
+  }
+});
+
+test("SELF_AGENT_SHELL は 1 で有効、未設定・空・0 で無効。それ以外の値はエラー", () => {
+  for (const { value, expected } of [
+    { value: undefined, expected: false },
+    { value: "", expected: false },
+    { value: "0", expected: false },
+    { value: "1", expected: true },
+  ]) {
+    assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SHELL: value }).shell, expected, String(value));
+  }
+  for (const value of ["true", "yes", "2", " 1", "on"]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_SHELL: value }), /SELF_AGENT_SHELL/, value);
   }
 });
 
