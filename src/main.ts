@@ -25,6 +25,7 @@ import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
+import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { InboxSummaryStore } from "./store/inbox-summaries.ts";
@@ -44,6 +45,16 @@ if (missing.length > 0) {
   console.error(`起動に必要な環境変数が設定されていません: ${missing.join(", ")}`);
   process.exit(1);
 }
+
+// 二重起動の防止: 同じ DB を 2 プロセスが使うと同じ発言に 2 回答えるので、<dataDir>/lock を取れなければ起動しない。終了するときに外す
+let dataLock: DataLock;
+try {
+  dataLock = acquireDataLock(config.dataDir);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+process.on("exit", () => dataLock.release());
 
 mkdirSync(config.workDir, { recursive: true });
 mkdirSync(config.claudeConfigDir, { recursive: true });

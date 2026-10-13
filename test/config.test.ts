@@ -33,6 +33,8 @@ test("未設定ならデフォルト値を使う", () => {
     devMode: false,
     devLogDays: 30,
     shell: false,
+    personas: [],
+    codexHome: undefined,
   });
 });
 
@@ -273,4 +275,127 @@ test("SELF_AGENT_EFFORT は決められた値だけを受け付ける", () => {
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_EFFORT: "low" }).effort, "low");
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_EFFORT: "" }).effort, undefined);
   assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_EFFORT: "fast" }), /SELF_AGENT_EFFORT/);
+});
+
+test("SELF_AGENT_PERSONAS: 足した人格ごとに変数を読み、未設定の項目は既定値（表示名は id・プロンプトは ~/.config/self-agent/personas/<id>.md・エンジンは claude）", () => {
+  const config = loadConfig({
+    HOME: "/home/tester",
+    DISCORD_TOKEN: "dummy-default",
+    SELF_AGENT_PERSONAS: " aoi, kai2 ,,",
+    SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "dummy-aoi",
+    SELF_AGENT_PERSONA_KAI2_DISCORD_TOKEN: "dummy-kai2",
+    SELF_AGENT_PERSONA_KAI2_NAME: "カイ",
+    SELF_AGENT_PERSONA_KAI2_PROMPT_FILE: "/srv/personas/kai.md",
+    SELF_AGENT_PERSONA_KAI2_ENGINE: "codex",
+    SELF_AGENT_PERSONA_KAI2_MODEL: "gpt-x",
+    SELF_AGENT_PERSONA_KAI2_EFFORT: "minimal",
+  });
+  assert.deepEqual(config.personas, [
+    {
+      id: "aoi",
+      name: "aoi",
+      discordTokenEnv: "SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN",
+      promptFile: "/home/tester/.config/self-agent/personas/aoi.md",
+      model: undefined,
+      engine: "claude",
+      effort: undefined,
+    },
+    {
+      id: "kai2",
+      name: "カイ",
+      discordTokenEnv: "SELF_AGENT_PERSONA_KAI2_DISCORD_TOKEN",
+      promptFile: "/srv/personas/kai.md",
+      model: "gpt-x",
+      engine: "codex",
+      effort: "minimal",
+    },
+  ]);
+  // codex の人格があれば SELF_AGENT_CODEX_HOME の既定を使う。トークンの値は設定に残さない
+  assert.equal(config.codexHome, "/home/tester/.local/share/self-agent/codex");
+  assert.ok(!JSON.stringify(config).includes("dummy-"));
+
+  const claudeOnly = loadConfig({
+    HOME: "/home/tester",
+    SELF_AGENT_PERSONAS: "aoi",
+    SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "dummy-aoi",
+    SELF_AGENT_PERSONA_AOI_EFFORT: "high",
+  });
+  assert.equal(claudeOnly.personas[0]?.effort, "high");
+  assert.equal(claudeOnly.codexHome, undefined);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_CODEX_HOME: "/srv/codex" }).codexHome, "/srv/codex");
+  assert.deepEqual(loadConfig({ HOME: "/home/tester", SELF_AGENT_PERSONAS: "" }).personas, []);
+});
+
+test("SELF_AGENT_PERSONAS: 不正な設定は変数名を出してエラーにし、値（トークンを含む）は出さない", () => {
+  const base = { HOME: "/home/tester", DISCORD_TOKEN: "dummy-secret-default" };
+  const aoi = { SELF_AGENT_PERSONAS: "aoi", SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "dummy-secret-aoi" };
+  const cases: Array<{ label: string; env: Record<string, string>; error: RegExp }> = [
+    { label: "id に大文字", env: { SELF_AGENT_PERSONAS: "Aoi" }, error: /SELF_AGENT_PERSONAS/ },
+    { label: "id に記号", env: { SELF_AGENT_PERSONAS: "a-b" }, error: /SELF_AGENT_PERSONAS/ },
+    { label: "id が 13 字", env: { SELF_AGENT_PERSONAS: "abcdefghijklm" }, error: /SELF_AGENT_PERSONAS/ },
+    { label: "予約語", env: { SELF_AGENT_PERSONAS: "default" }, error: /SELF_AGENT_PERSONAS.*default/ },
+    {
+      label: "id の重複",
+      env: { ...aoi, SELF_AGENT_PERSONAS: "aoi,aoi" },
+      error: /SELF_AGENT_PERSONAS.*aoi/,
+    },
+    { label: "トークンの欠け", env: { SELF_AGENT_PERSONAS: "aoi" }, error: /SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN/ },
+    {
+      label: "既定の人格と同じトークン",
+      env: { SELF_AGENT_PERSONAS: "aoi", SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "dummy-secret-default" },
+      error: /SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN.*DISCORD_TOKEN/,
+    },
+    {
+      label: "足した人格どうしで同じトークン",
+      env: {
+        ...aoi,
+        SELF_AGENT_PERSONAS: "aoi,kai",
+        SELF_AGENT_PERSONA_KAI_DISCORD_TOKEN: "dummy-secret-aoi",
+      },
+      error: /SELF_AGENT_PERSONA_KAI_DISCORD_TOKEN.*SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN/,
+    },
+    {
+      label: "表示名が 21 字",
+      env: { ...aoi, SELF_AGENT_PERSONA_AOI_NAME: "あ".repeat(21) },
+      error: /SELF_AGENT_PERSONA_AOI_NAME/,
+    },
+    { label: "エンジン", env: { ...aoi, SELF_AGENT_PERSONA_AOI_ENGINE: "gpt" }, error: /SELF_AGENT_PERSONA_AOI_ENGINE/ },
+    {
+      label: "claude の effort",
+      env: { ...aoi, SELF_AGENT_PERSONA_AOI_EFFORT: "minimal" },
+      error: /SELF_AGENT_PERSONA_AOI_EFFORT/,
+    },
+    {
+      label: "codex の effort",
+      env: { ...aoi, SELF_AGENT_PERSONA_AOI_ENGINE: "codex", SELF_AGENT_PERSONA_AOI_EFFORT: "High!" },
+      error: /SELF_AGENT_PERSONA_AOI_EFFORT/,
+    },
+  ];
+  for (const { label, env, error } of cases) {
+    assert.throws(
+      () => loadConfig({ ...base, ...env }),
+      (thrown: unknown) => {
+        assert.ok(thrown instanceof Error, label);
+        assert.match(thrown.message, error, label);
+        assert.ok(!thrown.message.includes("dummy-secret"), label);
+        return true;
+      },
+      label,
+    );
+  }
+  // 表示名は 20 字までよい
+  assert.equal(
+    loadConfig({ ...base, ...aoi, SELF_AGENT_PERSONA_AOI_NAME: "あ".repeat(20) }).personas[0]?.name,
+    "あ".repeat(20),
+  );
+});
+
+test("SELF_AGENT_PERSONAS が無ければ人格の変数は読まない（今と同じ 1 体だけ）", () => {
+  const config = loadConfig({
+    HOME: "/home/tester",
+    SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "dummy",
+    SELF_AGENT_PERSONA_AOI_ENGINE: "unknown",
+  });
+  assert.deepEqual(config.personas, []);
+  assert.equal(config.codexHome, undefined);
 });

@@ -211,6 +211,43 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE usage_log ADD COLUMN cache_creation_1h_tokens INTEGER;
   ALTER TABLE usage_log ADD COLUMN steps TEXT;
   `,
+  // v18: 人格（docs/plan/personas.md）。既存の行はすべて既定の人格（'default'）・Claude のもの。
+  // セッションの持ち主、SDK セッションのエンジン、usage の人格とエンジン、要約の人格、記憶とナレッジを保存した人格。
+  // 入口のチャンネル（#inbox・#tasks。足した人格の #<NAME> は kind 'inbox'）と切り替えの日・時刻は persona_channels に移す
+  // （guild_settings の値を既定の人格の行に写し、guild_settings の列は消す。rotated_date は #inbox だけで、#tasks の日付は rotated_at から求める）
+  `
+  ALTER TABLE sessions ADD COLUMN persona TEXT NOT NULL DEFAULT 'default';
+  ALTER TABLE channel_sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude';
+  ALTER TABLE usage_log ADD COLUMN persona TEXT NOT NULL DEFAULT 'default';
+  ALTER TABLE usage_log ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude';
+  ALTER TABLE inbox_summaries ADD COLUMN persona TEXT NOT NULL DEFAULT 'default';
+  ALTER TABLE memories ADD COLUMN created_by TEXT NOT NULL DEFAULT 'default';
+  ALTER TABLE kb_entries ADD COLUMN created_by TEXT NOT NULL DEFAULT 'default';
+  CREATE TABLE persona_channels (
+    guild_id TEXT NOT NULL,
+    persona TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('inbox', 'tasks')),
+    channel_id TEXT,
+    rotated_date TEXT,
+    rotated_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, persona, kind)
+  );
+  INSERT INTO persona_channels (guild_id, persona, kind, channel_id, rotated_date, rotated_at, created_at, updated_at)
+    SELECT guild_id, 'default', 'inbox', inbox_channel_id, inbox_rotated_date, inbox_rotated_at, created_at, updated_at
+    FROM guild_settings
+    WHERE inbox_channel_id IS NOT NULL OR inbox_rotated_date IS NOT NULL OR inbox_rotated_at IS NOT NULL;
+  INSERT INTO persona_channels (guild_id, persona, kind, channel_id, rotated_date, rotated_at, created_at, updated_at)
+    SELECT guild_id, 'default', 'tasks', tasks_channel_id, NULL, tasks_rotated_at, created_at, updated_at
+    FROM guild_settings
+    WHERE tasks_channel_id IS NOT NULL OR tasks_rotated_at IS NOT NULL;
+  ALTER TABLE guild_settings DROP COLUMN inbox_channel_id;
+  ALTER TABLE guild_settings DROP COLUMN tasks_channel_id;
+  ALTER TABLE guild_settings DROP COLUMN inbox_rotated_date;
+  ALTER TABLE guild_settings DROP COLUMN inbox_rotated_at;
+  ALTER TABLE guild_settings DROP COLUMN tasks_rotated_at;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

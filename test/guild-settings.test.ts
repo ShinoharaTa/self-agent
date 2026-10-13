@@ -5,8 +5,12 @@ import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { GuildSettingsStore, type SessionState } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
+import { KnowledgeStore } from "../src/store/knowledge.ts";
+import { MemoryStore } from "../src/store/memories.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
+import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { UsageStore } from "../src/store/usage.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 
 /** 呼ぶたびに 1 分進む時計 */
@@ -266,5 +270,179 @@ test("openDb: v13 の DB を v14 に上げても既存の要約は #inbox のも
   assert.equal(
     db.prepare("SELECT channel_kind FROM inbox_summaries WHERE id = 1").get()?.channel_kind,
     "inbox",
+  );
+});
+
+/** 表の列名 */
+function columnsOf(db: DatabaseSync, table: string): string[] {
+  return db
+    .prepare("SELECT name FROM pragma_table_info(?)")
+    .all(table)
+    .map((row) => String(row.name));
+}
+
+test("openDb: v17 の DB を v18 に上げても既存のデータは残り、#inbox・#tasks の ID と切り替えの日・時刻は既定の人格の persona_channels に移り、人格・エンジンの列は既定値になる", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // 人格より前（v17）の DB を作る
+  const v17 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 17)) v17.exec(migration);
+  v17.exec("PRAGMA user_version = 17");
+  const created = "2026-10-01T00:00:00.000Z";
+  const updated = "2026-10-01T01:00:00.000Z";
+  const insertSettings = v17.prepare(
+    "INSERT INTO guild_settings (guild_id, home_category_id, inbox_channel_id, tasks_channel_id, system_channel_id, home_panel_message_id, " +
+      "inbox_rotated_date, inbox_rotated_at, tasks_rotated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  // guild-1: すべてある / guild-2: カテゴリだけ（/setup の途中） / guild-3: #inbox と切り替えの日だけ（v10 の頃に切り替えた）
+  insertSettings.run("guild-1", "home-1", "inbox-1", "tasks-1", "system-1", "panel-1", "2026-10-01", "2026-09-30T19:00:00.000Z", "2026-09-30T19:00:01.000Z", created, updated);
+  insertSettings.run("guild-2", "home-2", null, null, null, null, null, null, null, created, updated);
+  insertSettings.run("guild-3", null, "inbox-3", null, null, null, "2026-09-29", null, null, created, updated);
+  v17.prepare("INSERT INTO tasks (title, status, created_at) VALUES ('残る', 'open', ?)").run(created);
+  v17.prepare("INSERT INTO channel_sessions (key, session_id, updated_at) VALUES ('inbox-1', 'session-1', ?)").run(created);
+  v17.prepare(
+    "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at) VALUES ('topic-1', 'guild-1', '題名', 'active', 'active-1', ?, ?)",
+  ).run(created, created);
+  v17.prepare("INSERT INTO usage_log (at, key, ok) VALUES (?, 'inbox-1', 1)").run(created);
+  v17.prepare("INSERT INTO inbox_summaries (guild_id, date, summary, created_at) VALUES ('guild-1', '2026-10-01', '- 要約', ?)").run(created);
+  v17.prepare("INSERT INTO memories (text, created_at) VALUES ('朝型', ?)").run(created);
+  v17.prepare("INSERT INTO kb_entries (title, summary, created_at, updated_at) VALUES ('資料の題名', '要点', ?, ?)").run(created, created);
+  v17.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 18);
+
+  // 読み出しは移す前と同じ
+  const store = new GuildSettingsStore(db, clock());
+  assert.deepEqual(store.get("guild-1"), {
+    guildId: "guild-1",
+    homeCategoryId: "home-1",
+    inboxChannelId: "inbox-1",
+    tasksChannelId: "tasks-1",
+    systemChannelId: "system-1",
+    homePanelMessageId: "panel-1",
+    inboxRotatedDate: "2026-10-01",
+    inboxRotatedAt: "2026-09-30T19:00:00.000Z",
+    tasksRotatedAt: "2026-09-30T19:00:01.000Z",
+    createdAt: created,
+    updatedAt: updated,
+  });
+  assert.deepEqual(store.get("guild-2"), {
+    guildId: "guild-2",
+    homeCategoryId: "home-2",
+    inboxChannelId: null,
+    tasksChannelId: null,
+    systemChannelId: null,
+    homePanelMessageId: null,
+    inboxRotatedDate: null,
+    inboxRotatedAt: null,
+    tasksRotatedAt: null,
+    createdAt: created,
+    updatedAt: updated,
+  });
+  assert.equal(store.get("guild-3")?.inboxChannelId, "inbox-3");
+  assert.equal(store.get("guild-3")?.inboxRotatedDate, "2026-09-29");
+  assert.equal(store.get("guild-3")?.tasksChannelId, null);
+
+  // 値のある分だけ既定の人格の行にし、guild_settings の列は消す
+  assert.deepEqual(
+    db
+      .prepare("SELECT guild_id, persona, kind, channel_id, rotated_date, rotated_at FROM persona_channels ORDER BY guild_id, kind")
+      .all()
+      .map((row) => ({ ...row })),
+    [
+      { guild_id: "guild-1", persona: "default", kind: "inbox", channel_id: "inbox-1", rotated_date: "2026-10-01", rotated_at: "2026-09-30T19:00:00.000Z" },
+      { guild_id: "guild-1", persona: "default", kind: "tasks", channel_id: "tasks-1", rotated_date: null, rotated_at: "2026-09-30T19:00:01.000Z" },
+      { guild_id: "guild-3", persona: "default", kind: "inbox", channel_id: "inbox-3", rotated_date: "2026-09-29", rotated_at: null },
+    ],
+  );
+  assert.deepEqual(columnsOf(db, "guild_settings"), [
+    "guild_id",
+    "home_category_id",
+    "system_channel_id",
+    "home_panel_message_id",
+    "created_at",
+    "updated_at",
+  ]);
+
+  // ほかのデータは残り、人格・エンジンの列は既存の行も新しい行も既定値
+  assert.deepEqual(
+    new TaskStore(db).list({ status: "open", limit: 20 }).map((task) => task.title),
+    ["残る"],
+  );
+  assert.equal(new SdkSessionStore(db).get("inbox-1"), "session-1");
+  assert.equal(new TopicSessionStore(db).get("topic-1")?.title, "題名");
+  assert.equal(new InboxSummaryStore(db).latest("guild-1")?.summary, "- 要約");
+  assert.deepEqual(new MemoryStore(db).list().map((memory) => memory.text), ["朝型"]);
+  const knowledge = new KnowledgeStore(db);
+  assert.deepEqual(knowledge.search("資料の").entries.map((entry) => entry.title), ["資料の題名"]);
+
+  new SdkSessionStore(db).set("inbox-2", "session-2");
+  new TopicSessionStore(db).create({ channelId: "topic-2", guildId: "guild-1", title: "次", categoryId: "active-1" });
+  new UsageStore(db).record({ key: "inbox-2", ok: true });
+  new InboxSummaryStore(db).add("guild-1", "2026-10-02", "- 次の要約");
+  new MemoryStore(db).add("夜は返事が遅い");
+  knowledge.add({ title: "次の資料", summary: "要点" });
+  for (const [table, column, value] of [
+    ["sessions", "persona", "default"],
+    ["channel_sessions", "engine", "claude"],
+    ["usage_log", "persona", "default"],
+    ["usage_log", "engine", "claude"],
+    ["inbox_summaries", "persona", "default"],
+    ["memories", "created_by", "default"],
+    ["kb_entries", "created_by", "default"],
+  ] as const) {
+    const values = db.prepare(`SELECT ${column} AS value FROM ${table}`).all().map((row) => row.value);
+    assert.deepEqual(values, [value, value], `${table}.${column}`);
+  }
+});
+
+test("GuildSettingsStore: #inbox・#tasks の ID と切り替えの日・時刻は既定の人格の persona_channels に書き、ほかの人格の行は get に出ない", (t) => {
+  const db = tempDb(t);
+  const store = new GuildSettingsStore(db, clock());
+
+  // persona_channels だけに書いても、guild_settings の行を作る（/setup 済みの印）
+  store.setInboxRotated("guild-1", "2026-10-02", new Date("2026-10-01T19:00:00.000Z"));
+  assert.equal(store.get("guild-1")?.inboxRotatedDate, "2026-10-02");
+  assert.equal(store.get("guild-1")?.createdAt, "2026-10-02T00:00:00.000Z");
+  store.setChannel("guild-1", "inboxChannelId", "inbox-1");
+  store.setChannel("guild-1", "tasksChannelId", "tasks-1");
+  store.setTasksRotated("guild-1", new Date("2026-10-01T19:00:01.000Z"));
+  assert.equal(store.get("guild-1")?.updatedAt, "2026-10-02T00:03:00.000Z");
+
+  // 足した人格の入口（kind は inbox）は既定の人格の #inbox に混ざらない
+  db.prepare(
+    "INSERT INTO persona_channels (guild_id, persona, kind, channel_id, rotated_date, rotated_at, created_at, updated_at) " +
+      "VALUES ('guild-1', 'aoi', 'inbox', 'aoi-1', '2026-10-05', '2026-10-04T19:00:00.000Z', 'x', 'x')",
+  ).run();
+  assert.deepEqual(
+    db
+      .prepare("SELECT persona, kind, channel_id, rotated_date, rotated_at FROM persona_channels ORDER BY persona, kind")
+      .all()
+      .map((row) => ({ ...row })),
+    [
+      { persona: "aoi", kind: "inbox", channel_id: "aoi-1", rotated_date: "2026-10-05", rotated_at: "2026-10-04T19:00:00.000Z" },
+      { persona: "default", kind: "inbox", channel_id: "inbox-1", rotated_date: "2026-10-02", rotated_at: "2026-10-01T19:00:00.000Z" },
+      { persona: "default", kind: "tasks", channel_id: "tasks-1", rotated_date: null, rotated_at: "2026-10-01T19:00:01.000Z" },
+    ],
+  );
+  const settings = store.get("guild-1");
+  assert.equal(settings?.inboxChannelId, "inbox-1");
+  assert.equal(settings?.inboxRotatedDate, "2026-10-02");
+  assert.equal(settings?.inboxRotatedAt, "2026-10-01T19:00:00.000Z");
+  assert.equal(settings?.tasksChannelId, "tasks-1");
+  assert.equal(settings?.tasksRotatedAt, "2026-10-01T19:00:01.000Z");
+
+  // 決めた種類以外は DB が拒む
+  assert.throws(
+    () =>
+      db
+        .prepare(
+          "INSERT INTO persona_channels (guild_id, persona, kind, created_at, updated_at) VALUES ('guild-1', 'aoi', 'system', 'x', 'x')",
+        )
+        .run(),
+    /CHECK/,
   );
 });
