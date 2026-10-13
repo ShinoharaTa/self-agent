@@ -13,6 +13,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Config } from "../config.ts";
 import { devLogResult, devLogToolInput, truncateText, type DevLogSink, type DevLogStep } from "../devlog/log.ts";
 import type { ProjectStore } from "../store/projects.ts";
+import type { DiskQuota } from "./disk.ts";
 import { FILE_TOOLS, FILE_WRITE_TOOLS, judgeFileAccess, resolveRealPath } from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
 import { buildQueryOptions } from "./query-options.ts";
@@ -249,6 +250,8 @@ export type FileGuardDeps = {
   projects: Pick<ProjectStore, "getByChannel" | "touch">;
   /** `<workDir>/projects` */
   projectsDir: string;
+  /** Write・Edit を許す前の容量の判定（workDir の空きとプロジェクトの大きさ） */
+  disk: Pick<DiskQuota, "check">;
 };
 
 /** ファイル操作の判定が例外で終わったときにモデルへ返す理由 */
@@ -267,6 +270,7 @@ function denyToolUse(reason: string): HookJSONOutput {
 
 /**
  * ファイル操作（Read・Write・Edit・Glob）を judgeFileAccess で絞る PreToolUse の hook。context はこの run のチャンネル。
+ * Write・Edit は judgeFileAccess で許すものでも、容量の上限（disk.check）を超えていれば拒否する。
  * 拒否したら理由をモデルに返し、log にはツール名だけを出す（パスは出さない）。Write・Edit を許したらプロジェクトの更新日時を今にする。
  * CLI は hook の例外を「判断なし」として通してしまうので、判定（ストアの読み書きを含む）が例外で終わったら拒否する（パス・例外の中身は log に出さない）
  */
@@ -275,7 +279,7 @@ export function createFileGuard(
   deps: FileGuardDeps,
   log: (message: string) => void,
 ): HookCallbackMatcher {
-  const { projects, projectsDir } = deps;
+  const { projects, projectsDir, disk } = deps;
   const guard: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse" || !FILE_TOOLS.includes(input.tool_name)) return {};
     try {
@@ -289,7 +293,14 @@ export function createFileGuard(
         project,
       });
       if (decision.allowed) {
-        if (project !== undefined && FILE_WRITE_TOOLS.includes(input.tool_name)) projects.touch(project.id);
+        if (project !== undefined && FILE_WRITE_TOOLS.includes(input.tool_name)) {
+          const quota = disk.check(project.slug);
+          if (!quota.allowed) {
+            log(`ファイル操作を拒否しました（${input.tool_name}・容量）`);
+            return denyToolUse(quota.reason);
+          }
+          projects.touch(project.id);
+        }
         // 判断を足さずに通す（allowedTools の許可に任せる）
         return {};
       }

@@ -1,4 +1,7 @@
+import { join } from "node:path";
+import { removeNodeModules } from "../../agent/disk.ts";
 import type { ButtonDef, ComponentRow, InteractionResponder, OutgoingMessage } from "../../discord/gateway.ts";
+import type { ProjectStore } from "../../store/projects.ts";
 import type { TaskStore } from "../../store/tasks.ts";
 import {
   CLOSE_SUMMARY_MAX_LENGTH,
@@ -34,6 +37,9 @@ export type CloseDeps = {
   /** 発言のターンと同じキュー（key は channelId）。/close のターンが発言のターンと重ならないようにする */
   turnQueue: KeyedSerialQueue;
   turn: TurnDeps;
+  /** 閉じたセッションのプロジェクトの node_modules を消す（プロジェクトのディレクトリは `<projectsDir>/<slug>`） */
+  projects: Pick<ProjectStore, "getByChannel">;
+  projectsDir: string;
   log: (message: string) => void;
 };
 
@@ -124,6 +130,25 @@ function finalizeClose(
   return chosen.length;
 }
 
+/**
+ * 閉じた後に、そのチャンネルのプロジェクト（あれば）の node_modules を消す（作り直せるもの。disk.ts の removeNodeModules）。
+ * 失敗は log だけで、/close の結果は変えない（パスは出さない）。reject しない
+ */
+async function removeClosedNodeModules(
+  deps: Pick<CloseDeps, "projects" | "projectsDir" | "log">,
+  channelId: string,
+): Promise<void> {
+  const { projects, projectsDir, log } = deps;
+  try {
+    const project = projects.getByChannel(channelId);
+    if (project === undefined) return;
+    const removed = await removeNodeModules(join(projectsDir, project.slug));
+    if (removed > 0) log(`node_modules を消しました（${removed} 件）`);
+  } catch {
+    log("node_modules を消せませんでした");
+  }
+}
+
 type CloseTurnOutcome =
   | { result: "closed" }
   | { result: "failed"; errorMessage: string }
@@ -162,7 +187,7 @@ type CloseResponse = {
 
 /**
  * /close の流れ: 閉じられるか確かめる（だめなら ephemeral で断る）→ 保留 → そのセッションの会話で要約とやることの候補を作らせ →
- * 候補があれば確認のボタンを、無ければ閉じた旨を出す。/close と [閉じる] ボタンで共通
+ * 候補があれば確認のボタンを、無ければ閉じた旨を出す（閉じたらプロジェクトの node_modules を消す）。/close と [閉じる] ボタンで共通
  */
 async function runClose(
   deps: CloseDeps,
@@ -193,7 +218,11 @@ async function runClose(
       await response.show({ text: SUMMARY_FAILURE_REPLY });
       return;
     case "finalized":
-      await response.show({ text: closedText(outcome.summary, 0) });
+      try {
+        await response.show({ text: closedText(outcome.summary, 0) });
+      } finally {
+        await removeClosedNodeModules(deps, channelId);
+      }
       return;
     case "confirm":
       await response.show({ text: confirmText(outcome.draft), components: [confirmButtons(channelId)] });
@@ -220,7 +249,7 @@ export function createCloseCommand(deps: CloseDeps): CommandHandler {
 
 /**
  * /close の確認のボタン（`close:all|pick|none:<channelId>`）とセレクト（`close:sel:<channelId>`）、/close と同じ流れを始める [閉じる]（`close:start:<channelId>`）。
- * 確認のボタンは DB の下書きで動くので、再起動の後でも押せる。下書きが無ければ /close のやり直しを案内する
+ * 確認のボタンは DB の下書きで動くので、再起動の後でも押せる。下書きが無ければ /close のやり直しを案内する。閉じたらプロジェクトの node_modules を消す
  */
 export function createCloseComponent(deps: CloseDeps): ComponentHandler {
   const { topicSessions } = deps;
@@ -278,6 +307,7 @@ export function createCloseComponent(deps: CloseDeps): ComponentHandler {
         // 閉じる処理は済んでいるので、失敗の返信にはしない
         deps.log(`/close の確認メッセージの更新に失敗しました: ${describeError(error)}`);
       }
+      await removeClosedNodeModules(deps, channelId);
     },
   };
 }

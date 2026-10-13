@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DiskQuota } from "../../src/agent/disk.ts";
 import { SdkAgentRunner } from "../../src/agent/sdk-runner.ts";
 import { createTaskMcpServer } from "../../src/agent/tools.ts";
 import { buildTurnPrompt } from "../../src/app/prompt.ts";
@@ -83,7 +84,7 @@ test(
           { reminders: new ReminderStore(db), log: () => {} },
           runContext,
         ),
-      { projects, projectsDir },
+      { projects, projectsDir, disk: new DiskQuota({ workDir: cfg.workDir, projectsDir, now: () => new Date() }) },
       (line) => logs.push(line),
     );
 

@@ -76,9 +76,10 @@ function setup(
     gateway.posts.map(({ channelId, message }) => ({ channelId, message }));
   const channelOps = new RecordingChannelOps();
   const inboxRotator = new RecordingRotator();
-  // 古い dev ログ・プロジェクトの古い .trash を消す処理。既定では呼ばれた回数を数えるだけ（中身は devlog.test.ts・project-files.test.ts で確かめる）
+  // 古い dev ログ・プロジェクトの古い .trash・workDir の .tmp・.cache を消す処理。既定では呼ばれた回数を数えるだけ（中身は devlog.test.ts・project-files.test.ts・disk.test.ts で確かめる）
   const devLogs = { calls: 0, prune: (): void => void devLogs.calls++ };
   const projectTrash = { calls: 0, prune: (): void => void projectTrash.calls++ };
+  const workDir = { calls: 0, prune: (): void => void workDir.calls++ };
   const timers = new FakeTimers();
   const logs: string[] = [];
   const scheduler = new Scheduler({
@@ -92,6 +93,7 @@ function setup(
     inboxRotator,
     pruneDevLogs: () => devLogs.prune(),
     pruneProjectTrash: () => projectTrash.prune(),
+    pruneWorkDir: () => workDir.prune(),
     now: () => clock.now,
     timers,
     log: (line) => logs.push(line),
@@ -126,6 +128,7 @@ function setup(
     inboxRotator,
     devLogs,
     projectTrash,
+    workDir,
     timers,
     logs,
     scheduler,
@@ -755,7 +758,7 @@ test("再同期: Bot が参加していない（抜けた）サーバーは一�
   assert.deepEqual(env.logs, []);
 });
 
-test("tick ごとに古い dev ログと .trash を消す処理を呼ぶ", async (t) => {
+test("tick ごとに古い dev ログと .trash と workDir の .tmp・.cache を消す処理を呼ぶ", async (t) => {
   const env = setup(t);
 
   await env.scheduler.tick();
@@ -763,11 +766,12 @@ test("tick ごとに古い dev ログと .trash を消す処理を呼ぶ", async
 
   assert.equal(env.devLogs.calls, 2);
   assert.equal(env.projectTrash.calls, 2);
+  assert.equal(env.workDir.calls, 2);
   assert.deepEqual(env.logs, []);
 });
 
-test("古い dev ログ・.trash を消すのに失敗しても log に出すだけ（パスは出さない）で、#inbox の切り替えは行う", async (t) => {
-  for (const target of ["devLogs", "projectTrash"] as const) {
+test("古い dev ログ・.trash・workDir の .tmp・.cache を消すのに失敗しても log に出すだけ（パスは出さない）で、#inbox の切り替えは行う", async (t) => {
+  for (const target of ["devLogs", "projectTrash", "workDir"] as const) {
     const env = setup(t);
     env[target].prune = () => {
       throw new Error("EACCES: permission denied, unlink '/srv/data/devlog/2026-08-01.jsonl'");

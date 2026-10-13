@@ -401,6 +401,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
     inboxRotator: { rotateDue: async () => {} },
     pruneDevLogs: () => {},
     pruneProjectTrash: () => {},
+    pruneWorkDir: () => {},
     now: () => NOW,
     timers: {
       every: (fn) => {

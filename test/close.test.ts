@@ -1,5 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { RunInput, RunResult } from "../src/agent/runner.ts";
 import { createSessionToolHandlers, type SessionReportArgs } from "../src/agent/tools.ts";
 import {
@@ -18,7 +20,7 @@ import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { EMPTY_SUMMARY } from "../src/app/summary.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import { type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
-import { createStores, tempDb } from "./helpers/db.ts";
+import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 import { FakeRunner, turnUsage } from "./helpers/runner.ts";
@@ -88,7 +90,8 @@ function labelsOf(call: ResponderCall | undefined): string[] {
 function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step[]) {
   const db = tempDb(t);
   const clock = { now: NOW };
-  const { topicSessions, tasks, sessions, seeds, inboxSummaries, memories, usage } = createStores(db, () => clock.now);
+  const { topicSessions, tasks, sessions, seeds, inboxSummaries, memories, usage, projects } = createStores(db, () => clock.now);
+  const projectsDir = join(tempDir(t), "projects");
   const runner = new FakeRunner(steps(topicSessions));
   const channelOps = new RecordingChannelOps();
   const turnQueue = new RecordingQueue(2);
@@ -102,6 +105,8 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
     channelOps,
     turnQueue,
     turn: { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log },
+    projects,
+    projectsDir,
     log,
   };
   const command = createCloseCommand(deps);
@@ -123,7 +128,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
   };
   const openTasks = (): Array<{ title: string; due: string | null }> =>
     tasks.list({ status: "open", limit: 50 }).map((task) => ({ title: task.title, due: task.due }));
-  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, channelOps, turnQueue, logs, tokenLogs, runClose, press, openTasks };
+  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, projects, projectsDir, channelOps, turnQueue, logs, tokenLogs, runClose, press, openTasks };
 }
 
 /** 閉じたあとの sessions の行と、完了カテゴリへの移動 */
@@ -359,6 +364,8 @@ test("再起動の後（新しいストアとハンドラ）でも、DB の下�
     channelOps,
     turnQueue: new KeyedSerialQueue(1),
     turn: { runner: new FakeRunner([]), ...restarted, log },
+    projects: restarted.projects,
+    projectsDir: env.projectsDir,
     log,
   });
   const responder = new FakeResponder();
@@ -470,4 +477,68 @@ test("[閉じる]: タスク候補が 0 件なら閉じて、待ちの知らせ�
     { method: "update", message: { text: closedText("話しただけで終わった", 0), components: [] } },
   ]);
   assertClosed(env, "話しただけで終わった");
+});
+
+/** topic-1 のプロジェクトを作り、node_modules（直下と site/ の下）と普通のファイルを置く。プロジェクトの dir を返す */
+function projectWithNodeModules(env: Pick<ReturnType<typeof setup>, "projects" | "projectsDir">): string {
+  const project = env.projects.create({ guildId: "guild-1", channelId: "topic-1", name: "kakeibo", title: "家計簿" });
+  const dir = join(env.projectsDir, project.slug);
+  mkdirSync(join(dir, "node_modules", "react"), { recursive: true });
+  writeFileSync(join(dir, "node_modules", "react", "index.js"), "x");
+  mkdirSync(join(dir, "site", "node_modules"), { recursive: true });
+  writeFileSync(join(dir, "site", "index.html"), "<p>");
+  return dir;
+}
+
+test("閉じたら（/close で候補 0 件・確認のボタン）そのチャンネルのプロジェクトの node_modules を消し、件数だけを log に出す。閉じなければ消さない", async (t) => {
+  const failed = setup(t, () => [() => ({ ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 })]);
+  const failedDir = projectWithNodeModules(failed);
+  await failed.runClose();
+  assert.ok(existsSync(join(failedDir, "node_modules")));
+  assert.ok(existsSync(join(failedDir, "site", "node_modules")));
+
+  const finalized = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
+  const finalizedDir = projectWithNodeModules(finalized);
+  finalized.clock.now = CLOSED_AT;
+  await finalized.runClose();
+  assertClosed(finalized, "話しただけで終わった");
+
+  const confirmed = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
+  const confirmedDir = projectWithNodeModules(confirmed);
+  const [, reply] = await confirmed.runClose();
+  // 確認を出しただけでは消さない
+  assert.ok(existsSync(join(confirmedDir, "node_modules")));
+  confirmed.clock.now = CLOSED_AT;
+  await confirmed.press(pressLabel(reply, "登録しない"));
+  assertClosed(confirmed, REPORT.summary);
+
+  for (const [label, env, dir] of [
+    ["候補 0 件", finalized, finalizedDir],
+    ["確認のボタン", confirmed, confirmedDir],
+  ] as const) {
+    assert.ok(!existsSync(join(dir, "node_modules")), label);
+    assert.ok(!existsSync(join(dir, "site", "node_modules")), label);
+    assert.ok(existsSync(join(dir, "site", "index.html")), label);
+    assert.equal(env.logs.at(-1), "node_modules を消しました（2 件）", label);
+  }
+});
+
+test("node_modules を消すのに失敗しても（プロジェクトを引けない）閉じる処理はそのまま。log にパス・例外の中身は出さない。プロジェクトが無ければ何も出さない", async (t) => {
+  const broken = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
+  broken.projects.getByChannel = () => {
+    throw new Error(`database is locked: ${broken.projectsDir}`);
+  };
+  broken.clock.now = CLOSED_AT;
+
+  const calls = await broken.runClose();
+
+  assert.deepEqual(calls.at(-1), { method: "reply", message: { text: closedText("話しただけで終わった", 0) } });
+  assertClosed(broken, "話しただけで終わった");
+  assert.equal(broken.logs.at(-1), "node_modules を消せませんでした");
+
+  const none = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
+  none.clock.now = CLOSED_AT;
+  await none.runClose();
+  assertClosed(none, "話しただけで終わった");
+  assert.ok(none.logs.every((line) => !line.includes("node_modules")));
 });
