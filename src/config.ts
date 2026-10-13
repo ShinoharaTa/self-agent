@@ -53,6 +53,8 @@ export type Config = {
   devMode: boolean;
   /** dev モードの会話ログを残す日数（これより前の日のファイルは tick で消す。dev モードでなくても消す） */
   devLogDays: number;
+  /** シェル（Bash）を使う設定。true なら起動時と tick ごとに sandbox の自己診断を行う（agent/sandbox-check.ts・docs/plan/shell.md） */
+  shell: boolean;
 };
 
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
@@ -238,6 +240,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     devMode: flag("SELF_AGENT_DEV_MODE", nonEmpty(env.SELF_AGENT_DEV_MODE)),
     devLogDays: positiveInteger("SELF_AGENT_DEV_LOG_DAYS", nonEmpty(env.SELF_AGENT_DEV_LOG_DAYS), DEFAULT_DEV_LOG_DAYS),
+    shell: flag("SELF_AGENT_SHELL", nonEmpty(env.SELF_AGENT_SHELL)),
   };
 }
 

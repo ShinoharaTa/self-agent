@@ -1,4 +1,4 @@
-// 定期処理（tick）。DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
+// 定期処理（tick）。SELF_AGENT_SHELL=1 ならシェル（Bash）の sandbox を診断し直し（shell-state.ts）、DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
 // 最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、
 // 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認し、
 // SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログと 30 日を過ぎたプロジェクトの .trash を消し、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
@@ -67,6 +67,8 @@ export type SchedulerDeps = {
   pruneDevLogs: () => void;
   /** 残す日数を過ぎたプロジェクトの .trash/<trash_id> を消す。投げたら log に出して続ける */
   pruneProjectTrash: () => void;
+  /** SELF_AGENT_SHELL=1 のときだけ渡す。シェルの自己診断をやり直し、変わっていれば知らせる（reject しない） */
+  refreshShell?: () => Promise<void>;
   now: () => Date;
   timers?: SchedulerTimers;
   log: (message: string) => void;
@@ -129,9 +131,10 @@ export class Scheduler {
 
   /**
    * 再同期・待ちへの移動・削除の確認・dev ログと .trash の削除・#inbox・#tasks の切り替えは、どれかが失敗しても残りを行う。
-   * 再同期は消えたチャンネルを先に削除済みにするため最初に、#inbox・#tasks の切り替えは LLM のターンを待つので最後に行う
+   * シェルの自己診断は数十 ms で終わるので最初に、再同期は消えたチャンネルを先に削除済みにするためその次に、#inbox・#tasks の切り替えは LLM のターンを待つので最後に行う
    */
   private async runTick(): Promise<void> {
+    await this.refreshShell();
     await this.reconcileChannels();
     await this.moveIdleSessions();
     await this.promptDeletes();
@@ -205,6 +208,16 @@ export class Scheduler {
       returned++;
     }
     if (returned > 0) log(`self-agent カテゴリの外にあるチャンネル ${returned} 件を戻します（guild=${guildId}）`);
+  }
+
+  /** シェルの自己診断をやり直す（SELF_AGENT_SHELL=1 のときだけ）。失敗は log に出すだけ */
+  private async refreshShell(): Promise<void> {
+    if (this.deps.refreshShell === undefined) return;
+    try {
+      await this.deps.refreshShell();
+    } catch (error) {
+      this.deps.log(`シェルの自己診断に失敗しました: ${describeError(error)}`);
+    }
   }
 
   /** 古い dev ログを消す。失敗は log に出すだけ（中身・パスは出さない） */

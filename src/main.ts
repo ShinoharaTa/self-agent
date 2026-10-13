@@ -1,7 +1,9 @@
 // 配線だけ: config → store → runner → gateway → handler
 import { mkdirSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { pruneProjectTrash } from "./agent/project-files.ts";
+import { checkSandbox, shellPath } from "./agent/sandbox-check.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
@@ -16,6 +18,7 @@ import { ReminderScheduler } from "./app/reminders.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
+import { ShellState } from "./app/shell-state.ts";
 import { loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -187,7 +190,24 @@ const handleInteraction = createInteractionHandler({
   }),
   log,
 });
-// 定期処理: セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
+// シェル（Bash）を使えるか（docs/plan/shell.md §4）。SELF_AGENT_SHELL=1 のときだけ起動時と tick ごとに自己診断し、変わったら log と #system に出す。
+// 今はまだ Bash を使わない（結果は log と #system だけ）
+const shellState = new ShellState({
+  cfg: config,
+  check: () =>
+    checkSandbox({
+      pathEnv: shellPath(process.execPath),
+      workDir: config.workDir,
+      dataDir: config.dataDir,
+      claudeConfigDir: config.claudeConfigDir,
+      repoDir: process.cwd(),
+      homeDir: homedir(),
+    }),
+  guildSettings,
+  gateway,
+  log,
+});
+// 定期処理: SELF_AGENT_SHELL=1 ならシェルの自己診断をやり直し、セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
 // 完了から日数の経ったセッションの削除を #system で確認し、古い dev ログ（dev モードでなくても）とプロジェクトの古い .trash を消し、#inbox・#tasks の会話を切り替える
 const scheduler = new Scheduler({
   cfg: config,
@@ -200,6 +220,7 @@ const scheduler = new Scheduler({
   inboxRotator,
   pruneDevLogs: () => pruneDevLogs(devLogDir(config.dataDir), now(), config.timeZone, config.devLogDays),
   pruneProjectTrash: () => pruneProjectTrash(projectsDir, now()),
+  refreshShell: config.shell ? () => shellState.refresh() : undefined,
   now,
   log,
 });
@@ -269,6 +290,8 @@ if (staticServer !== undefined) {
     log(`ページの配信を始められませんでした: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+// 発言を受け付ける前に 1 回診断する（#system への知らせは gateway の起動後、最初の tick で行う）
+if (config.shell) await shellState.check();
 await gateway.start(lifecycle.handlers);
 await registerCommands({ cfg: config, gateway, commands, log });
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
