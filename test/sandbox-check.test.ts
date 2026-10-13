@@ -143,7 +143,7 @@ test("checkSandbox: 失敗した項目を全部返す（項目にパスは入ら
   }
 });
 
-test("placesOverlap: workDir が他の場所と同じ・その中・その外側なら重なる（symlink は実際の場所で比べる）。名前の前方一致だけなら重ならない", (t) => {
+test("placesOverlap: workDir が他の場所と同じ・その中・その外側なら重なる（symlink は実際の場所で比べる）。名前の前方一致だけなら重ならない。解決できなければ重なるとみなす", (t) => {
   const cases: Array<{ name: string; arrange: (env: ReturnType<typeof setup>) => void; overlap: boolean }> = [
     { name: "重ならない", arrange: () => {}, overlap: false },
     { name: "dataDir が workDir と同じ", arrange: (env) => void (env.input.dataDir = env.dirs.workDir), overlap: true },
@@ -166,6 +166,31 @@ test("placesOverlap: workDir が他の場所と同じ・その中・その外側
       overlap: true,
     },
     { name: "dataDir が workDir と名前の前方だけ同じ", arrange: (env) => void (env.input.dataDir = `${env.dirs.workDir}2`), overlap: false },
+    { name: "まだ無い場所は存在する親から求める", arrange: (env) => void (env.input.dataDir = join(env.root, "new/data")), overlap: false },
+    {
+      name: "解決できない（壊れた symlink）なら重なっているとみなす",
+      arrange: (env) => {
+        env.input.claudeConfigDir = join(env.root, "broken");
+        symlinkSync(join(env.root, "no-such"), env.input.claudeConfigDir);
+      },
+      overlap: true,
+    },
+    {
+      name: "解決できない（途中がファイル: ENOTDIR）なら重なっているとみなす",
+      arrange: (env) => {
+        writeFileSync(join(env.root, "file"), "");
+        env.input.repoDir = join(env.root, "file/repo");
+      },
+      overlap: true,
+    },
+    {
+      name: "workDir が解決できなければ重なっているとみなす",
+      arrange: (env) => {
+        env.input.workDir = join(env.root, "work-broken");
+        symlinkSync(join(env.root, "no-such"), env.input.workDir);
+      },
+      overlap: true,
+    },
   ];
   for (const { name, arrange, overlap } of cases) {
     const env = setup(t);

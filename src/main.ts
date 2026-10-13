@@ -18,7 +18,7 @@ import { ReminderScheduler } from "./app/reminders.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
-import { ShellState } from "./app/shell-state.ts";
+import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -190,7 +190,7 @@ const handleInteraction = createInteractionHandler({
   }),
   log,
 });
-// シェル（Bash）を使えるか（docs/plan/shell.md §4）。SELF_AGENT_SHELL=1 のときだけ起動時と tick ごとに自己診断し、変わったら log と #system に出す。
+// シェル（Bash）を使えるか（docs/plan/shell.md §4）。SELF_AGENT_SHELL=1 のときだけ起動時と tick ごとに自己診断し、結果が変わったら log に、通る・通らないが変わったら #system に出す。
 // 今はまだ Bash を使わない（結果は log と #system だけ）
 const shellState = new ShellState({
   cfg: config,
@@ -220,7 +220,7 @@ const scheduler = new Scheduler({
   inboxRotator,
   pruneDevLogs: () => pruneDevLogs(devLogDir(config.dataDir), now(), config.timeZone, config.devLogDays),
   pruneProjectTrash: () => pruneProjectTrash(projectsDir, now()),
-  refreshShell: config.shell ? () => shellState.refresh() : undefined,
+  refreshShell: shellRefresher(config, shellState),
   now,
   log,
 });

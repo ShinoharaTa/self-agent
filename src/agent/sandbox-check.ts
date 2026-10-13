@@ -2,7 +2,7 @@
 // 失敗した項目は短い日本語で返す（log・#system に出すので、パス・ホスト名は入れない）
 import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, sep } from "node:path";
 import { resolveRealPath } from "./file-access.ts";
 
 /** Bash の子プロセスの PATH のうち、node の bin の後ろに続ける OS のディレクトリ（§2.4） */
@@ -88,22 +88,25 @@ export function findExecutable(name: string, pathEnv: string): string | undefine
   return undefined;
 }
 
-/** 実際の場所（解決できなければ絶対パスにしただけのもの） */
-function realOrResolved(path: string): string {
-  return resolveRealPath(path) ?? resolve(path);
-}
-
 /** a と b が同じか、どちらかがもう一方の中にあるか */
 function overlaps(a: string, b: string): boolean {
   const inside = (child: string, dir: string): boolean => child.startsWith(dir.endsWith(sep) ? dir : dir + sep);
   return a === b || inside(a, b) || inside(b, a);
 }
 
-/** workDir が他の場所（データ・SDK の設定・リポジトリ・`~/.config/self-agent`）と同じか、その中・外側にあるか（§2.3） */
+/**
+ * workDir が他の場所（データ・SDK の設定・リポジトリ・`~/.config/self-agent`）と同じか、その中・外側にあるか（§2.3）。
+ * 実際の場所（resolveRealPath。まだ無い部分は存在する一番深い親から求める）で比べ、
+ * どれかが解決できなければ（ENOENT 以外の失敗・壊れた symlink など）重なっているとみなす（fail-closed）
+ */
 export function placesOverlap(input: Pick<SandboxCheckInput, "workDir" | "dataDir" | "claudeConfigDir" | "repoDir" | "homeDir">): boolean {
-  const workDir = realOrResolved(input.workDir);
+  const workDir = resolveRealPath(input.workDir);
+  if (workDir === undefined) return true;
   const others = [input.dataDir, input.claudeConfigDir, input.repoDir, join(input.homeDir, ".config/self-agent")];
-  return others.some((other) => overlaps(workDir, realOrResolved(other)));
+  return others.some((other) => {
+    const real = resolveRealPath(other);
+    return real === undefined || overlaps(workDir, real);
+  });
 }
 
 /** workDir が親ディレクトリと別のファイルシステム（st_dev が違う）か（§2.7）。解決・stat できなければ false */

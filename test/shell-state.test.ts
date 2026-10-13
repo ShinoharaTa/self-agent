@@ -2,7 +2,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { SandboxCheckResult } from "../src/agent/sandbox-check.ts";
 import { Scheduler } from "../src/app/scheduler.ts";
-import { SHELL_CHECK_ERROR_ITEM, SHELL_RESUMED_NOTICE, ShellState, shellDisabledNotice } from "../src/app/shell-state.ts";
+import { SHELL_CHECK_ERROR_ITEM, SHELL_RESUMED_NOTICE, ShellState, shellDisabledNotice, shellRefresher } from "../src/app/shell-state.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps } from "./helpers/recording.ts";
@@ -10,6 +10,11 @@ import { RecordingChannelOps } from "./helpers/recording.ts";
 const OK: SandboxCheckResult = { ok: true };
 const NG: SandboxCheckResult = { ok: false, failed: ["bwrap が見つからない", "socat が見つからない"] };
 const NG_OTHER: SandboxCheckResult = { ok: false, failed: ["作業ディレクトリが別のファイルシステムでない"] };
+/** NG と同じ項目の集合（順序だけ違う） */
+const NG_REORDERED: SandboxCheckResult = { ok: false, failed: ["socat が見つからない", "bwrap が見つからない"] };
+const LOG_OK = "シェルの自己診断が通りました";
+const LOG_NG = "シェルの自己診断が通りません（bwrap が見つからない、socat が見つからない）";
+const LOG_NG_OTHER = "シェルの自己診断が通りません（作業ディレクトリが別のファイルシステムでない）";
 
 /** guild-1・guild-2 は /setup 済み（#system あり）、guild-3 は #system なし */
 function setup(t: TestContext) {
@@ -52,31 +57,33 @@ test("ShellState: 診断前は無効。結果に合わせて enabled が変わ�
   assert.equal(env.state.enabled(), true);
 });
 
-test("ShellState: log と #system の知らせは状態が変わったときだけ。最初の診断は log に出し、知らせは使えないときだけ", async (t) => {
+test("ShellState: log は結果（通る・通らない、通らない項目の集合）が変わったときだけ。#system は通る・通らないが変わったときだけで、最初の診断は通らないときだけ", async (t) => {
   const disabled = shellDisabledNotice(NG.ok ? [] : NG.failed);
-  assert.equal(disabled, "シェル（Bash）を止めています: bwrap が見つからない、socat が見つからない");
+  assert.equal(disabled, "シェル（Bash）を使えない状態です: bwrap が見つからない、socat が見つからない");
+  assert.equal(SHELL_RESUMED_NOTICE, "シェル（Bash）の自己診断が通りました");
   const toSystem = (text: string): Array<[string, string]> => [
     ["system-1", text],
     ["system-2", text],
   ];
   const cases: Array<{ name: string; sequence: SandboxCheckResult[]; logs: string[]; posts: Array<[string, string]> }> = [
-    { name: "最初から有効", sequence: [OK, OK], logs: ["Bash を有効にしました"], posts: [] },
+    { name: "最初から通る", sequence: [OK, OK], logs: [LOG_OK], posts: [] },
+    { name: "最初から通らず、同じ項目のまま（順序だけ違っても同じ）", sequence: [NG, NG, NG_REORDERED], logs: [LOG_NG], posts: toSystem(disabled) },
     {
-      name: "最初から無効（項目が変わっても無効のままなら出さない）",
-      sequence: [NG, NG, NG_OTHER],
-      logs: ["Bash を無効にしました（bwrap が見つからない、socat が見つからない）"],
+      name: "通らないまま項目が変わる（log だけ）",
+      sequence: [NG, NG_OTHER, NG_OTHER, NG],
+      logs: [LOG_NG, LOG_NG_OTHER, LOG_NG],
       posts: toSystem(disabled),
     },
     {
-      name: "有効 → 無効 → 有効",
+      name: "通る → 通らない → 通る",
       sequence: [OK, NG, NG, OK, OK],
-      logs: ["Bash を有効にしました", "Bash を無効にしました（bwrap が見つからない、socat が見つからない）", "Bash を有効にしました"],
+      logs: [LOG_OK, LOG_NG, LOG_OK],
       posts: [...toSystem(disabled), ...toSystem(SHELL_RESUMED_NOTICE)],
     },
     {
-      name: "無効 → 有効",
+      name: "通らない → 通る",
       sequence: [NG, OK],
-      logs: ["Bash を無効にしました（bwrap が見つからない、socat が見つからない）", "Bash を有効にしました"],
+      logs: [LOG_NG, LOG_OK],
       posts: [...toSystem(disabled), ...toSystem(SHELL_RESUMED_NOTICE)],
     },
   ];
@@ -107,7 +114,7 @@ test("ShellState: 診断が例外なら無効（自己診断に失敗した）�
   await env.state.refresh();
   await env.state.refresh();
   assert.equal(env.state.enabled(), false);
-  assert.deepEqual(env.logs, ["Bash を有効にしました", `Bash を無効にしました（${SHELL_CHECK_ERROR_ITEM}）`]);
+  assert.deepEqual(env.logs, [LOG_OK, `シェルの自己診断が通りません（${SHELL_CHECK_ERROR_ITEM}）`]);
   assert.deepEqual(env.posts().map(([channelId]) => channelId), ["system-1", "system-2"]);
 });
 
@@ -149,24 +156,23 @@ function scheduler(
   });
 }
 
-test("tick: SELF_AGENT_SHELL=1（refreshShell あり）なら tick ごとに診断し直す。無ければ診断も log も投稿もしない", async (t) => {
-  const env = setup(t);
-  env.results.push(NG, NG);
-  const logs: string[] = [];
-  const enabled = scheduler(t, () => env.state.refresh(), logs);
-  await enabled.tick();
-  await enabled.tick();
-  assert.equal(env.checks(), 2);
-  assert.equal(env.posts().length, 2);
-
-  const off = setup(t);
-  const offLogs: string[] = [];
-  const disabled = scheduler(t, undefined, offLogs);
-  await disabled.tick();
-  assert.equal(off.checks(), 0);
-  assert.deepEqual(off.logs, []);
-  assert.deepEqual(off.posts(), []);
-  assert.deepEqual(offLogs, []);
+test("shellRefresher: SELF_AGENT_SHELL=1 なら tick ごとに診断し直す関数を返し、無効なら undefined（tick は診断も log も投稿もしない）", async (t) => {
+  for (const shell of [true, false]) {
+    const label = `shell=${shell}`;
+    const env = setup(t);
+    env.results.push(NG, NG);
+    const refreshShell = shellRefresher({ shell }, env.state);
+    assert.equal(refreshShell === undefined, !shell, label);
+    const logs: string[] = [];
+    const ticking = scheduler(t, refreshShell, logs);
+    await ticking.tick();
+    await ticking.tick();
+    assert.equal(env.checks(), shell ? 2 : 0, label);
+    assert.deepEqual(env.logs, shell ? [LOG_NG] : [], label);
+    assert.equal(env.posts().length, shell ? 2 : 0, label);
+    assert.equal(env.state.enabled(), false, label);
+    assert.deepEqual(logs, [], label);
+  }
 });
 
 test("tick: refreshShell が投げても log に出して残りを続ける", async (t) => {
