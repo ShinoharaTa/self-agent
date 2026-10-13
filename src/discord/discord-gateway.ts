@@ -18,6 +18,8 @@ import {
 } from "discord.js";
 import {
   ALLOWED_MENTIONS,
+  allowedMentionsFor,
+  mentionPrefix,
   toButtonInteraction,
   toCommandData,
   toCommandInteraction,
@@ -198,18 +200,22 @@ export class DiscordGateway implements Gateway {
     console.log("discord: 接続しました");
   }
 
-  async send(channelId: string, text: string, replyToId?: string): Promise<void> {
+  async send(channelId: string, text: string, replyToId?: string, mentionUserId?: string): Promise<void> {
     const channel = await this.sendableChannel(channelId);
-    for (const [index, chunk] of splitMessage(text).entries()) {
+    // メンションは分割の前に付ける（最初の塊に入り、2000 字の上限も守られる）
+    const content = mentionUserId === undefined ? text : `${mentionPrefix(mentionUserId)}${text}`;
+    for (const [index, chunk] of splitMessage(content).entries()) {
+      // 鳴らすのは最初の塊だけ
+      const allowedMentions = index === 0 ? allowedMentionsFor(mentionUserId) : ALLOWED_MENTIONS;
       if (index === 0 && replyToId !== undefined) {
         // 元の発言が消えていても投稿する
         await channel.send({
           content: chunk,
-          allowedMentions: ALLOWED_MENTIONS,
+          allowedMentions,
           reply: { messageReference: replyToId, failIfNotExists: false },
         });
       } else {
-        await channel.send({ content: chunk, allowedMentions: ALLOWED_MENTIONS });
+        await channel.send({ content: chunk, allowedMentions });
       }
     }
   }

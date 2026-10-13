@@ -10,6 +10,7 @@ import type {
 import type { StaticServer } from "../serve/static-server.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
+import type { ReminderScheduler } from "./reminders.ts";
 import type { Scheduler } from "./scheduler.ts";
 
 /** 停止を始めた後に来た操作への応答（応答期限があるので、受け付けない旨だけ返す） */
@@ -22,6 +23,8 @@ export type ShutdownDeps = {
   queues: ReadonlyArray<Pick<KeyedSerialQueue, "idle">>;
   /** 定期処理。停止を始めたら止め、実行中の tick があれば終わるのを待つ */
   scheduler: Pick<Scheduler, "stop" | "idle">;
+  /** リマインドの発火。scheduler と同じ時点で止め、実行中の投稿が終わるのを待つ（まだ始めていない発火は次の起動で拾う） */
+  reminderScheduler: Pick<ReminderScheduler, "stop" | "idle">;
   /** チャンネルの移動の列。実行中の 1 件だけ終わるのを待つ（まだ始めていない移動は待たない。次の起動の再同期が直す） */
   channelOps: Pick<ChannelOpsQueue, "idle">;
   /** 作ったプロジェクトの静的サーバー。DB を閉じる前に閉じる。無ければ（機能が無効）何もしない */
@@ -66,7 +69,7 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 }
 
 export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdown {
-  const { cfg, gateway, queues, scheduler, channelOps, staticServer, closeDb, log } = deps;
+  const { cfg, gateway, queues, scheduler, reminderScheduler, channelOps, staticServer, closeDb, log } = deps;
   let stopping = false;
   /** 受け付けて、まだ終わっていない発言・操作の処理（返信を含む） */
   const inFlight = new Set<Promise<void>>();
@@ -83,7 +86,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
   const drained = async (): Promise<void> => {
     // 待っている間に増えた分（停止中の操作への応答）も待つ
     while (inFlight.size > 0) await Promise.all([...inFlight]);
-    await Promise.all([...queues.map((queue) => queue.idle()), scheduler.idle()]);
+    await Promise.all([...queues.map((queue) => queue.idle()), scheduler.idle(), reminderScheduler.idle()]);
     // ターンと定期処理が入れた移動のうち、その時点で実行中のものだけ待つ
     await channelOps.idle();
   };
@@ -112,6 +115,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
   const shutdown = async (): Promise<void> => {
     stopping = true;
     scheduler.stop();
+    reminderScheduler.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);
     if (!(await settlesWithin(drained(), cfg.shutdownGraceSec * 1000))) {
       log(`進行中の処理が ${cfg.shutdownGraceSec} 秒で終わらなかったため、待たずに終了します`);

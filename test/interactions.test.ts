@@ -98,6 +98,7 @@ test("HELP_TEXT は登録コマンドを全部説明している", (t) => {
     turnQueue: new KeyedSerialQueue(1),
     turn: { ...stores, runner: { run: async () => assert.fail("想定外の呼び出し") }, log },
     inboxRotator: { rotateNow: async () => assert.fail("想定外の呼び出し") },
+    reminders: stores.reminders,
     log,
   });
 

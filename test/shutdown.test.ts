@@ -113,6 +113,7 @@ function deps(
     gateway: new EventGateway(events),
     queues: [],
     scheduler: { stop: () => {}, idle: async () => {} },
+    reminderScheduler: { stop: () => {}, idle: async () => {} },
     channelOps: { idle: async () => {} },
     closeDb: () => {
       events.push("closeDb");
@@ -427,6 +428,28 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
 
   assert.deepEqual(events, ["setWaiting", `sendMessage ${idleNotice(12, "topic-1").text}`, "stop", "closeDb"]);
   assert.equal(listed, 1);
+});
+
+test("停止を始めたらリマインドの発火も止め、実行中の投稿が終わってから gateway を止める", async () => {
+  const events: string[] = [];
+  const gate = deferred();
+  const reminderScheduler = {
+    stop: () => {
+      events.push("reminders stop");
+    },
+    idle: async () => {
+      await gate.promise;
+      events.push("reminders idle");
+    },
+  };
+  const { shutdown } = createShutdown(deps(events, { reminderScheduler }), noopInner);
+  const done = shutdown();
+  await flush();
+  assert.deepEqual(events, ["reminders stop"]);
+
+  gate.resolve();
+  await done;
+  assert.deepEqual(events, ["reminders stop", "reminders idle", "stop", "closeDb"]);
 });
 
 test("実行中のチャンネルの移動は終わるまで待ってから gateway を止める。まだ始めていない移動は待たない", async (t) => {

@@ -9,6 +9,7 @@ import { createKbDeleteComponent, type KbDeleteDeps } from "./commands/kb-delete
 import { createMemoryUndoComponent, type MemoryUndoDeps } from "./commands/memory-undo.ts";
 import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
 import { createProjectsCommand, createProjectsComponent, type ProjectsDeps } from "./commands/projects.ts";
+import { createRemindersCommand, createRemindersComponent, type RemindersDeps } from "./commands/reminders.ts";
 import { createRenewCommand, type RenewDeps } from "./commands/renew.ts";
 import { createSessionsCommand, type SessionsDeps } from "./commands/sessions.ts";
 import { createSetupCommand, type SetupDeps } from "./commands/setup.ts";
@@ -48,7 +49,8 @@ export type CommandDeps = SetupDeps &
   SessionsDeps &
   TasksDeps &
   UsageDeps &
-  ProjectsDeps;
+  ProjectsDeps &
+  RemindersDeps;
 
 /** 登録するスラッシュコマンド */
 export function createCommands(deps: CommandDeps): CommandHandler[] {
@@ -63,6 +65,7 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
     createTasksCommand(deps),
     createUsageCommand(deps),
     createProjectsCommand(deps),
+    createRemindersCommand(deps),
   ];
 }
 
@@ -72,7 +75,8 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
  * 削除の確認の [削除する] はチャンネルを消すので、SDK セッション（sessions）と seed も要る。
  * ナレッジベースの削除の確認（kb:）と記憶の変更の [取り消す]（mem:）は、それぞれのストアだけを使う。
  * プロジェクトの削除（proj:）はディレクトリも消すので、プロジェクトの場所（projectsDir）も要る。
- * ターンの [中断]・[続ける]（turn:）は発言の handler（実行中のターンの中断と、発言と同じ経路のターンの投入）を使う
+ * ターンの [中断]・[続ける]（turn:）は発言の handler（実行中のターンの中断と、発言と同じ経路のターンの投入）を使う。
+ * リマインドのボタンと /reminders のセレクト（rem:）は、リマインドとタスクのストアを使う
  */
 export type ComponentDeps = CloseDeps &
   WaitDeps &
@@ -82,7 +86,8 @@ export type ComponentDeps = CloseDeps &
   KbDeleteDeps &
   MemoryUndoDeps &
   ProjectsDeps &
-  TurnControlsDeps;
+  TurnControlsDeps &
+  RemindersDeps;
 
 /** 名前空間ごとのボタン・セレクト・モーダルのハンドラ */
 export function createComponents(deps: ComponentDeps): ComponentHandler[] {
@@ -96,6 +101,7 @@ export function createComponents(deps: ComponentDeps): ComponentHandler[] {
     createMemoryUndoComponent(deps),
     createProjectsComponent(deps),
     createTurnControlsComponent(deps),
+    createRemindersComponent(deps),
   ];
 }
 

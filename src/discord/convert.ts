@@ -18,6 +18,16 @@ const COMMAND_OPTION_TYPE = { string: 3, integer: 4, boolean: 5 } as const;
 // @everyone・ロール・他ユーザーへの通知は出さない（返信先への通知だけ残す）
 export const ALLOWED_MENTIONS: MessageMentionOptions = { parse: [], repliedUser: true };
 
+/** 本文の先頭に付けるメンション */
+export function mentionPrefix(userId: string): string {
+  return `<@${userId}> `;
+}
+
+/** mentionUserId があればそのユーザーだけを鳴らす（@everyone・ロールは鳴らさないまま）。無ければ ALLOWED_MENTIONS */
+export function allowedMentionsFor(mentionUserId: string | undefined): MessageMentionOptions {
+  return mentionUserId === undefined ? ALLOWED_MENTIONS : { parse: [], users: [mentionUserId], repliedUser: true };
+}
+
 /** 受け付ける interaction の共通部分（discord.js の interaction をそのまま渡せる形） */
 type InteractionSource = {
   guildId: string | null;
@@ -108,11 +118,15 @@ export function toComponents(rows: readonly ComponentRow[]): ActionRowData<Messa
   }));
 }
 
-/** reply / followUp / editReply / update 共通の本文。components を省略したら送らない（update では元のまま残る） */
+/**
+ * reply / followUp / editReply / update 共通の本文。components を省略したら送らない（update では元のまま残る）。
+ * mentionUserId があれば本文の先頭にメンションを付け、そのユーザーだけを鳴らす
+ */
 export function toPayload(message: OutgoingMessage) {
+  const { mentionUserId } = message;
   return {
-    content: message.text,
-    allowedMentions: ALLOWED_MENTIONS,
+    content: mentionUserId === undefined ? message.text : `${mentionPrefix(mentionUserId)}${message.text}`,
+    allowedMentions: allowedMentionsFor(mentionUserId),
     ...(message.components === undefined ? {} : { components: toComponents(message.components) }),
   };
 }
