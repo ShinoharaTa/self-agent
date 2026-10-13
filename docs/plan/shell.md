@@ -22,8 +22,8 @@
 | キャッシュ | ○ ツール集合の変更 1 回（Bash の説明文は固定にできる） | ○ | ◎ 影響なし | ○ |
 
 - 外部サービスはどの案も増えない（運用費 0 円）。
-- **推薦: (a)**。sudo は 1 回で済み、ネットの許可リストまで SDK が持っている。弱い所（他プロジェクトに書ける・グループ権限）は §2 の denyRead とディスクの上限で埋める。(c) は (a) の後の追加の堅牢化として残す（今はやらない）。
-- (d) を採らない理由: 全プロジェクトは静的サーバーで同じオリジンなので、あるプロジェクトの JS は既に他プロジェクトの localStorage を読める。書き込みをチャンネルで分けても得るものが小さく、自作ツールと依存の追加に見合わない。
+- **推薦: (a)**。sudo は 1 回で済み、ネットの許可リストまで SDK が持っている。弱い所のうち、補助グループの権限は §2 の denyRead で埋め、ディスクはイメージと上限で抑える。他のプロジェクトに書けることは埋めずに受け入れる（下の (d) と決定 6）。(c) は (a) の後の追加の堅牢化として残す（今はやらない）。
+- (d) を採らない理由: (a) では、あるセッションの Bash が**他のプロジェクトのファイル（ソース・site・.trash の中の戻し用のものを含む）を書き換え・消せる**。これはオーナーが受け入れた（§9 の決定 6）。理由: 使うのはオーナー 1 人で、どのプロジェクトもオーナーのもの。プロジェクトごとに隔てるにはチャンネルごとに sandbox の設定を変える必要があり（= (d) の自作ツールと依存の追加。設定を run ごとに変えると Bash の説明文が変わりキャッシュも切れる。§1.1）、それに見合わない。
 
 ### 1.1 SDK の sandbox で確認したこと（SDK 0.3.286 / 同梱 CLI 2.1.286）
 確認（sdk.d.ts と CLI バイナリの文字列）:
@@ -87,7 +87,7 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 ### 2.3 読める・書ける範囲（結果）
 - 読める: workDir の中（全プロジェクト）、node（npm を含む）、/usr・/etc など OS のファイル。
 - 読めない: ホーム全体（`~/.config`（gh・self-agent の env）・`~/.ssh`・`~/workspace`（Bot のリポジトリと他プロジェクト）・`~/.local/share/self-agent/{data,claude}`（DB・devlog・会話の記録）・`~/.npmrc`・他のツールの設定）、/tmp・/run（他のサービスのソケット）、/var/log。
-- 書ける: workDir の中だけ。**他のチャンネルのプロジェクトにも書ける**（Bash は sandbox の設定を固定するため。§1 の (d) を採らない理由と同じ）。.trash にも書ける。
+- 書ける: workDir の中だけ。**他のチャンネルのプロジェクトのファイル（その .trash を含む）も書き換え・消せる**（Bash は sandbox の設定を固定するため。§1 の (d) を採らない理由・決定 6）。
 - 持ち出し: github.com・npm は相手のトークンを使えば送り先になりうる（push・publish）。持ち出せるのは sandbox の中で読めるもの = プロジェクトのファイルだけ。**プロジェクトに秘密を置かない**（project_open の注意に既にある）を前提にする。
 - 起動時の設定の確認（§4）で、秘密の場所（`dataDir`・`claudeConfigDir`・リポジトリ（process.cwd()）・`~/.config/self-agent`）のどれかが、sandbox から読める・書ける場所（allowRead の workDir と node の版のディレクトリ。allowWrite はすべて workDir の中）と同じか、その中・外側にあれば Bash を無効にする（allowRead は denyRead より優先なので、重なると秘密が読める）。realpath で比べ、解決できなければ重なるとみなす。PR 1 で実装済み（`placesOverlap`）。PR 3 では、この確認と §2.2 の denyRead・allowRead・allowWrite を同じ関数から作り、並びがずれないようにする。
 
@@ -130,13 +130,21 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 - dev モードの会話ログには、今の規則どおりコマンドと出力が入る（ローカルのファイル）。
 
 ### 2.9 ホスト側の操作と競合
-- sandbox の中から書ける場所（workDir）で、Bot 側（sandbox の外）がファイルを操作する処理がある: tick の掃除（.tmp・.cache）、/close の node_modules の削除、.trash の 30 日の削除、/projects の削除、project_files、CLI 自身の Read・Write・Edit・Glob（hook で判定し、sandbox の外で実行される）。
-- 同時に動いている sandbox の中のプロセスが、親ディレクトリを symlink にすり替えると、判定と操作の間に外へ向けられる（TOCTOU）。realpath・lstat などのパスの判定だけではこれを防ぎきれない。パスの判定は境界ではない。
-- そこで、sandbox の中のプロセスと Bot 側の操作が同時に動かないことを、次の不変条件で保つ:
-  - **I1**: sandbox の中のプロセスは、その Bash のコマンドより長く生きない（bwrap の PID 名前空間: コマンドの init が終わるとカーネルが残りを kill する）。**§7 の必須の受け入れ項目**。確かめられなければ Bash は無効のまま（`SELF_AGENT_SHELL=1` を設定しない）。
-  - **I2**: Bot 側の、sandbox から書ける場所での破壊的な操作は、セッションのターンが動いている間は行わない。tick の掃除（.tmp・.cache・.trash）はセッションのジョブが 1 つでも動いていれば飛ばし、動かすときはキューのセッションのジョブ（チャンネルではない固定の key）として行う（PR 2 で実装。掃除の途中にセッションのターンが始まらない）。/close の node_modules の削除はそのチャンネルのキューの中で行う。`SELF_AGENT_SHELL=1` のときはセッションの同時実行を 1 に固定する（PR 3）ので、2 つのセッションの Bash とファイルのツールが重ならない。/projects の削除も同じ規則に合わせる（方法は PR 3 で決める）。
-  - 1 つのターンの中では、Bash のコマンドが終わってから次のツールが動く。I1 により、そのときには sandbox の中のプロセスは残っていない。
-- 残った symlink（コマンドが作って終わったもの）は、静的な symlink・realpath の判定（今のファイル操作の hook・project_files）と、消すときの `rm --one-file-system`（相当）で扱う。
+- sandbox の中から書ける場所（workDir）にあるパスを、Bot 側（sandbox の外）が開く・読む・書く・消す処理がある: tick の掃除（.tmp・.cache）、/close の node_modules の削除、.trash の 30 日の削除、/projects の削除、project_files、CLI 自身の Read・Write・Edit・Glob（hook で判定し、sandbox の外で実行される）、静的サーバー（`src/serve/`）の配信。
+- 同時に動いている sandbox の中のプロセスが、途中のディレクトリを symlink にすり替えると、判定と操作の間に外へ向けられる（TOCTOU）。破壊的な操作だけでなく、判定してから読むだけの処理も同じ。realpath・lstat などのパスの判定だけではこれを防ぎきれない。パスの判定は境界ではない。
+- そこで、sandbox の中のプロセスと Bot 側のパスの操作が同時に動かないことを、次の不変条件で保つ:
+  - **I1**: sandbox の中のプロセスは、その Bash のコマンドより長く生きない（bwrap の PID 名前空間: コマンドの init が終わるとカーネルが残りを kill する）。コマンドの時間切れ・ターンの中断（[中断]）・打ち切りで終わったときも同じで、排他はすべての sandbox の中のプロセスが消えるまで続く。**§7 の必須の受け入れ項目**。確かめられなければ Bash は無効のまま（`SELF_AGENT_SHELL=1` を設定しない）。
+  - **I2**: Bot 側の、sandbox から書ける場所でのパスの操作は、セッションのターンが動いている間は行わない。
+    - tick の掃除（.tmp・.cache・.trash）はセッションのジョブが 1 つでも動いていれば飛ばし、動かすときはキューのセッションのジョブ（チャンネルではない固定の key）として行う（PR 2 で実装。掃除の途中にセッションのターンが始まらない）。
+    - /close の node_modules の削除はそのチャンネルのキューの中で行う。
+    - `SELF_AGENT_SHELL=1` のときはセッションの同時実行を 1 に固定する（PR 3）ので、2 つのセッションの Bash とファイルのツールが重ならない。
+    - `SELF_AGENT_SHELL=1` のとき、セッション以外のターン（#inbox・#tasks・context の無いターン）はファイルのツール（Read・Glob・Write・Edit・project_files）を hook ですべて拒否する（PR 3）。これらのターンはセッションと同時に動くので、セッションの Bash が動いている間にプロジェクトに触れない。
+    - セッションのターンの中では、ファイルのツールと Bash は同じターン（1 つしかないセッションの枠を持っている）で動き、ツールは 1 つずつ順に動く。**前提**: 1 つの assistant メッセージで Bash と Write を同時に頼まれても順に動く（§7 で確かめる）。I1 により、次のツールが動くときには sandbox の中のプロセスは残っていない。
+    - /projects の削除も同じ規則に合わせる（方法は PR 3 で決める）。
+  - **静的サーバー**はキューの外で動くので I2 では外せない。ファイルを競合に強い形で開く（PR 3）: 最後の要素を O_NOFOLLOW で開き、開いた fd の実際のパス（`readlink /proc/self/fd/<fd>`）がそのプロジェクトの `site/` の中であることを確かめ、その fd からだけ返す（パスで開き直さない）。確かめた後にすり替えた symlink の先は返さない。
+- 残った symlink（コマンドが作って終わったもの）は、静的な判定と消し方で扱う:
+  - 静的な判定は、最後の要素だけでなく実際のパス全体（すべての親）を realpath で確かめる（今の /projects の削除の `verifiedProjectDir` と同じ）。
+  - `rm --one-file-system`（相当）は引数より下でファイルシステムをまたがないだけで、引数そのものと親の symlink は防がない。消す前に引数の実際のパスを上の判定で確かめる。
 
 ## 3. git clone の流れ
 1. オーナーが URL を貼って「これを clone して〜」。#inbox なら session_open で専用のチャンネルへ。
@@ -200,7 +208,11 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 ### 6.1 bubblewrap・socat・AppArmor
 ```
 sudo apt-get install -y bubblewrap socat
+# 既に別の /etc/apparmor.d/bwrap があれば、書く前に控える（1 回だけ。控えは apparmor.d の外に置く。中の印でこの profile か見分ける）
+sudo install -d -m 700 /var/lib/self-agent
+sudo test -e /etc/apparmor.d/bwrap && ! sudo grep -q 'self-agent' /etc/apparmor.d/bwrap && sudo cp -n /etc/apparmor.d/bwrap /var/lib/self-agent/apparmor-bwrap.bak
 sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOT'
+# self-agent: bwrap に userns を許す（docs/plan/shell.md §6.1）
 abi <abi/4.0>,
 include <tunables/global>
 
@@ -230,15 +242,16 @@ sudo cp -n /etc/fstab /etc/fstab.bak-self-agent          # 最初の 1 回だけ
 sudo install -d -m 700 /var/lib/self-agent
 sudo test -e /var/lib/self-agent/work.img || sudo fallocate -l 8G /var/lib/self-agent/work.img   # 疎ファイルにしない（§2.7）
 sudo chmod 600 /var/lib/self-agent/work.img
-sudo blkid -p /var/lib/self-agent/work.img >/dev/null || sudo mkfs.ext4 -q -m 0 -L sa-work /var/lib/self-agent/work.img   # 既にファイルシステムがあれば作り直さない
+sudo blkid -p /var/lib/self-agent/work.img >/dev/null || sudo mkfs.ext4 -q -m 0 -E nodiscard -L sa-work /var/lib/self-agent/work.img   # 既にファイルシステムがあれば作り直さない。nodiscard: discard で fallocate の確保が外れないように
 grep -q '^/var/lib/self-agent/work.img ' /etc/fstab || echo '/var/lib/self-agent/work.img <home>/.local/share/self-agent/work ext4 loop,nodev,nosuid,noatime,nofail 0 2' | sudo tee -a /etc/fstab
 sudo systemctl daemon-reload
 findmnt -rn <home>/.local/share/self-agent/work >/dev/null || sudo mount <home>/.local/share/self-agent/work
 sudo chown <user>:<user> <home>/.local/share/self-agent/work
-# sudo 無し（戻す。既にあるファイルは上書きしない）
-cp -an ~/.local/share/self-agent/work.old/. ~/.local/share/self-agent/work/
+# sudo 無し（戻す。載せたばかりの空のイメージ（lost+found だけ）に写し、写せたことを比べる）
+test -e "$W/projects" || cp -a "$W.old/." "$W/"
+diff -r "$W.old" "$W"     # 出てよいのは「Only in …/work: lost+found」だけ。それ以外が出たら work.old を消さない
 ```
-- 確認: `findmnt -no SOURCE,FSTYPE ~/.local/share/self-agent/work` が `/dev/loopN ext4`、`df -h ~/.local/share/self-agent/work` が約 7.8G、`sudo du -h /var/lib/self-agent/work.img` が約 8G（領域を確保できている。疎なら小さい）、`stat -c %U ~/.local/share/self-agent/work` が <user>、`ls ~/.local/share/self-agent/work/projects` に今のプロジェクト。問題なければ `work.old` を消す（オーナーが確認してから）。
+- 確認: `findmnt -no SOURCE,FSTYPE ~/.local/share/self-agent/work` が `/dev/loopN ext4`、`df -h ~/.local/share/self-agent/work` が約 7.8G、`sudo du -h /var/lib/self-agent/work.img` が約 8G（領域を確保できている。疎なら小さい）、`stat -c %U ~/.local/share/self-agent/work` が <user>、`ls ~/.local/share/self-agent/work/projects` に今のプロジェクト、上の `diff -r` が lost+found 以外の差を出さない。それを確かめてから `work.old` を消す（オーナーが確認してから）。
 - mkfs は workDir の直下に root 所有・700 の `lost+found` を作る（消さない）。workDir の下をたどる処理（大きさの計算・掃除・一覧）は、読めないディレクトリ（EACCES）を飛ばして続けること。
 
 ### 6.3 任意（sudo 無し）: seccomp の補助
@@ -251,9 +264,12 @@ cp -an ~/.local/share/self-agent/work.old/. ~/.local/share/self-agent/work/
 ```
 # シェルを止める（env ファイルから SELF_AGENT_SHELL=1 を消して Bot を起動し直す）だけなら sudo は要らない。以下は sudo で入れたものを外すとき
 
-# AppArmor の profile を外す
-sudo apparmor_parser -R /etc/apparmor.d/bwrap
-sudo rm -f /etc/apparmor.d/bwrap
+# AppArmor の profile を外す（入れる前に別の profile があったなら、その控えに戻す）
+if sudo test -e /var/lib/self-agent/apparmor-bwrap.bak; then
+  sudo cp /var/lib/self-agent/apparmor-bwrap.bak /etc/apparmor.d/bwrap && sudo apparmor_parser -r /etc/apparmor.d/bwrap
+else
+  sudo apparmor_parser -R /etc/apparmor.d/bwrap; sudo rm -f /etc/apparmor.d/bwrap
+fi
 
 # workDir をイメージから普通のディレクトリに戻す（Bot を止めてから）
 systemctl --user stop self-agent
@@ -277,6 +293,8 @@ sudo apt-get remove bubblewrap socat
 - 自己診断: bwrap が無い・probe が非 0・時間切れ・秘密の場所と読める場所の重なり・同じファイルシステムで無効、全部通れば有効。通る・通らないが変わったときだけ #system に投稿（項目の変化は log だけ）。サーバーごとに投稿できるまで tick ごとにやり直し、投稿できたサーバーには重ねない。各 run の前の bwrap・socat の有無の確かめ直し（無ければその run に sandbox を付けない）。
 - buildQueryOptions: `SELF_AGENT_SHELL` 無しなら今と同じ Options（ツール 6 個・sandbox なし）。有りで自己診断が通れば §2.2 の値とツール 7 個、通らなければ sandbox なし・ツール 7 個。どの run でも sandbox の値が同じ（チャンネルで変わらない）。
 - 掃除: /close で node_modules を消し、dir の外を指す symlink はたどらない。.tmp・.cache の掃除。
+- I2: セッションのターンが動いている間は tick の掃除が動かない（飛ばして次の tick）。`SELF_AGENT_SHELL=1` のとき #inbox・#tasks・context の無いターンの Read・Glob・Write・Edit・project_files を拒否する（無効のときは今のまま）。
+- 静的サーバー: 判定の後に symlink にすり替えた先（site の外）を返さない（開いた fd の実際のパスで確かめる。すり替えを差し込める形でテストする）。
 
 実機（`scripts/shell-check.ts` を足す。本体と同じ Options で、決めたコマンドを 1 つずつ Bash で実行させて結果を照合。利用枠を少し使う。`npm run shell-check`）:
 - 準備（host 側）: 中身の決まったダミーの秘密のファイル（ランダムな値）を、`~` の直下・dataDir・claudeConfigDir・env ファイルのディレクトリ・リポジトリ（git の管理外のファイル名）に置き、親（shell-check のプロセス）の env にダミーの変数（`SHELL_CHECK_CANARY=<値>`）と、認証情報入りのダミーのプロキシ（`HTTPS_PROXY=http://user:<値>@127.0.0.1:9` など）を入れる。host 側でファイルが読めて中身が合うことを先に確かめる（確かめる対象が実在すること）。終わったら消す。
@@ -290,6 +308,8 @@ sudo apt-get remove bubblewrap socat
 - 上の denyRead・allowWrite・許可ドメインの結果で、Options.sandbox の `filesystem`・`network` が実際に効いていること（§1.1 の未確認）を確かめる。効いていなければ権限ルールで書く形に直す
 - `cat /proc/1/cmdline` が systemd でない（PID 名前空間）
 - **必須（§2.9 の I1）**: `sleep 300 & echo started` の Bash の結果が返った直後（ターンの終わりを待たず、PostToolUse の hook の中など）に host で `pgrep -f 'sleep 300'` が空。通らなければ Bash は有効にしない
+- **必須（§2.9 の I1）**: `sleep 300` を前景で実行している最中にターンを中断（[中断] と同じ AbortController）・打ち切り（時間切れ）させ、その直後に host で `pgrep -f 'sleep 300'` が空で、bwrap のプロセスも残っていない
+- **前提の確認（§2.9 の I2）**: 1 つの assistant メッセージで Bash（`sleep 5` の後にファイルを書く）と、同じファイルへの Write を頼み、両者が重ならずに順に動く（hook の開始・終了の時刻で確かめる）
 - （6.3 を入れたら）`python3 -c "import socket; socket.socket(socket.AF_UNIX)"` が PermissionError
 - 終わった後 `journalctl --user -u self-agent --since -10min` に上のコマンド・URL・ホスト名が出ていない
 手動（Discord）:
@@ -298,7 +318,7 @@ sudo apt-get remove bubblewrap socat
 ## 8. PR 分解（1 PR = 1 論点。implementer に渡す粒度）
 1. **設計書 + 設定 + 自己診断**（キャッシュ影響なし）: 本書を `docs/plan/shell.md` に。config に `SELF_AGENT_SHELL`。`src/agent/sandbox-check.ts`（PATH 探索・bwrap の probe（spawn は注入できる）・場所の重なり・st_dev）。main で起動時に、scheduler の tick で再診断し、変わったら #system に投稿。この PR ではツールと Options は変えない（結果は log と #system だけ）。
 2. **ディスクの上限と掃除**（キャッシュ影響なし）: プロジェクトの大きさの計算（60 秒キャッシュ）と Write・Edit の拒否、空きの判定、/close の node_modules 削除、tick の .tmp・.cache 掃除。
-3. **Bash を有効にする**（**キャッシュが外れるのはこの PR だけ**。#108 の A と同じ再起動で出す）: buildQueryOptions に sandbox と Bash（`SELF_AGENT_SHELL` と診断結果で切り替え）、childEnv の §2.4（PATH は shellPath）、各 run の前の bwrap・socat の確かめ直し（§4）、RunContext の /close の印（§2.5）、シェル有効時のセッションの同時実行 1・/projects の削除の I2（§2.9）、childEnv のプロキシの変数を写さない（§2.4）、denyRead の秘密の場所と自己診断の並びを同じ関数から（§2.3）、Bash の PreToolUse hook、途中経過のラベル、システムプロンプトの行（§5.2）、project_open の注意（§5.3）、stderr の扱い（§2.8）、`scripts/shell-check.ts`、README・README_ja・REQUIREMENTS・CLAUDE.md・build-and-serve.md の更新、measure の実測値。
+3. **Bash を有効にする**（**キャッシュが外れるのはこの PR だけ**。#108 の A と同じ再起動で出す）: buildQueryOptions に sandbox と Bash（`SELF_AGENT_SHELL` と診断結果で切り替え）、childEnv の §2.4（PATH は shellPath）、各 run の前の bwrap・socat の確かめ直し（§4）、RunContext の /close の印（§2.5）、シェル有効時のセッションの同時実行 1・セッション以外のターンのファイルのツールの拒否・/projects の削除の I2・静的サーバーの O_NOFOLLOW と fd の実際のパスでの確かめ（§2.9）、childEnv のプロキシの変数を写さない（§2.4）、denyRead の秘密の場所と自己診断の並びを同じ関数から（§2.3）、Bash の PreToolUse hook、途中経過のラベル、システムプロンプトの行（§5.2）、project_open の注意（§5.3）、stderr の扱い（§2.8）、`scripts/shell-check.ts`、README・README_ja・REQUIREMENTS・CLAUDE.md・build-and-serve.md の更新、measure の実測値。
 - 1・2 は並行で作れる。3 は 1・2 の後。§6 の sudo は 3 の前にオーナーが打つ（1 の自己診断で通ったことを確かめられる）。
 
 ## 9. 決定事項と未決
