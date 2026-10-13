@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as z from "zod";
 import { FILE_WRITE_DENIED_REASON } from "../src/agent/file-access.ts";
+import { removeTree } from "../src/agent/remove-tree.ts";
 import {
   formatTrashId,
   PROJECT_DIR_MISSING_MESSAGE,
@@ -119,6 +120,28 @@ test("trash → restore: paths を .trash/<trash_id>/ の同じ相対パスに�
   assert.deepEqual(outsideTrash(dir), files);
   assert.equal(existsSync(join(dir, TRASH_DIR_NAME, ID)), false);
   assert.deepEqual(await run({ action: "restore" }), { result: "list", trashes: [] });
+});
+
+test("restore: 戻した後に .trash/<trash_id> の空のディレクトリを消せなくても（rmdir の失敗）restored を返し、残して log だけ（パスは出さない）", async (t) => {
+  const { root, dir, files, logs, run } = setup(t);
+  await run({ action: "trash", paths: ["site/index.html"] });
+  const trashDir = join(dir, TRASH_DIR_NAME, ID);
+  // site/ は消せるが、trashDir の中の site/ を rmdir できない（trashDir に書けない）
+  chmodSync(trashDir, 0o500);
+  try {
+    assert.deepEqual(await run({ action: "restore", trash_id: ID }), {
+      result: "restored",
+      trash_id: ID,
+      restored: ["site/index.html"],
+    });
+  } finally {
+    chmodSync(trashDir, 0o700);
+  }
+  assert.deepEqual(outsideTrash(dir), files);
+  assert.deepEqual(tree(trashDir), { "site/": "" });
+  const failed = logs.filter((line) => line.includes(".trash を消せませんでした"));
+  assert.equal(failed.length, 1);
+  assert.ok(!failed[0]!.includes(root) && !failed[0]!.includes(ID));
 });
 
 test("trash: 無いものは missing に入れて続ける。同じパスの重複（書き方が違っても同じ相対パス）は最初の 1 つにまとめる", async (t) => {
@@ -479,7 +502,73 @@ test("clear: UI の土台の複製に失敗しても cleared を返し、scaffol
   for (const secret of [dir, "self-agent-test-no-such-template", "ENOENT"]) assert.ok(!logs[0]!.includes(secret), secret);
 });
 
-test("pruneProjectTrash: 名前の時刻から 30 日（days で変えられる）を過ぎた .trash/<trash_id> だけを消し、形に合わない名前・ディレクトリでないもの・symlink の先は触らない。projectsDir が無くても例外にならない", (t) => {
+test("pruneProjectTrash: 消す前に同期で .purging-<trash_id> に名前を変える（その間 restore・一覧には出ない）。前に残った .purging-* も消す", async (t) => {
+  const { dir, projectsDir, run } = setup(t);
+  const now = new Date("2026-10-11T00:00:00Z");
+  const old = formatTrashId(new Date(now.getTime() - (TRASH_RETENTION_DAYS + 1) * DAY_MS));
+  const recent = formatTrashId(new Date(now.getTime() - DAY_MS));
+  const trash = join(dir, TRASH_DIR_NAME);
+  for (const name of [old, recent, ".purging-20200101T000000Z"]) {
+    mkdirSync(join(trash, name, "site"), { recursive: true });
+    writeFileSync(join(trash, name, "site", "index.html"), "x");
+  }
+
+  // 消す処理を止めておき、その間の様子を見る
+  let release = (): void => {};
+  const blocked = new Promise<void>((resolve) => (release = resolve));
+  const removing: string[] = [];
+  const pruning = pruneProjectTrash(projectsDir, now, TRASH_RETENTION_DAYS, async (path) => {
+    removing.push(path);
+    await blocked;
+    await removeTree(path);
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // 消す前に名前を変えてある。.purging-* は一覧に出ず、restore でも not_found
+  assert.deepEqual(readdirSync(trash).sort(), [`.purging-${old}`, ".purging-20200101T000000Z", recent].sort());
+  assert.deepEqual(removing, [join(trash, ".purging-20200101T000000Z")]);
+  assert.deepEqual(await run({ action: "restore" }, now), { result: "list", trashes: [{ trash_id: recent, files: 1 }] });
+  assert.deepEqual(await run({ action: "restore", trash_id: old }, now), { result: "not_found", trash_id: old });
+  release();
+  await pruning;
+
+  assert.deepEqual(removing, [join(trash, ".purging-20200101T000000Z"), join(trash, `.purging-${old}`)]);
+  assert.deepEqual(readdirSync(trash), [recent]);
+});
+
+test("restore: .purging-* は一覧に出さず、trash_id に渡しても not_found", async (t) => {
+  const { dir, run } = setup(t);
+  const purging = `.purging-${ID}`;
+  mkdirSync(join(dir, TRASH_DIR_NAME, purging, "site"), { recursive: true });
+  writeFileSync(join(dir, TRASH_DIR_NAME, purging, "site", "index.html"), "x");
+
+  assert.equal(TRASH_ID_PATTERN.test(purging), false);
+  assert.deepEqual(await run({ action: "restore" }), { result: "list", trashes: [] });
+  assert.deepEqual(await run({ action: "restore", trash_id: purging }), { result: "not_found", trash_id: purging });
+  assert.ok(existsSync(join(dir, TRASH_DIR_NAME, purging, "site", "index.html")));
+});
+
+test("pruneProjectTrash: 1 つ消せなくても残りのプロジェクトの古い .trash は消し、最後に 1 回だけ投げる（パスは出さない）", async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const projectsDir = join(root, "projects");
+  const now = new Date("2026-10-11T00:00:00Z");
+  const old = formatTrashId(new Date(now.getTime() - (TRASH_RETENTION_DAYS + 1) * DAY_MS));
+  for (const project of ["a-locked", "b-plain", "c-plain"]) mkdirSync(join(projectsDir, project, TRASH_DIR_NAME, old, "site"), { recursive: true });
+  // a-locked の .trash に書けないので、その中の old は消せない
+  const lockedTrash = join(projectsDir, "a-locked", TRASH_DIR_NAME);
+  chmodSync(lockedTrash, 0o500);
+  try {
+    await assert.rejects(pruneProjectTrash(projectsDir, now), (error: Error) => !error.message.includes(root));
+  } finally {
+    chmodSync(lockedTrash, 0o700);
+  }
+  assert.deepEqual(readdirSync(lockedTrash), [old]);
+  assert.deepEqual(readdirSync(join(projectsDir, "b-plain", TRASH_DIR_NAME)), []);
+  assert.deepEqual(readdirSync(join(projectsDir, "c-plain", TRASH_DIR_NAME)), []);
+});
+
+test("pruneProjectTrash: 名前の時刻から 30 日（days で変えられる）を過ぎた .trash/<trash_id> だけを消し、形に合わない名前・ディレクトリでないもの・symlink の先は触らない。projectsDir が無くても例外にならない", async (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const projectsDir = join(root, "projects");
@@ -504,7 +593,7 @@ test("pruneProjectTrash: 名前の時刻から 30 日（days で変えられる�
   symlinkSync(join(projectsDir, "kakeibo"), join(projectsDir, "alias"));
   writeFileSync(join(projectsDir, "notes.txt"), "x");
 
-  pruneProjectTrash(projectsDir, now);
+  await pruneProjectTrash(projectsDir, now);
 
   assert.deepEqual(readdirSync(trash).sort(), [exact, recent, "20200101", "20200101T000000Z", "20200102T000000Z", "junk-20200101T000000Z"].sort());
   assert.deepEqual(readdirSync(join(projectsDir, "other", TRASH_DIR_NAME)), []);
@@ -515,11 +604,11 @@ test("pruneProjectTrash: 名前の時刻から 30 日（days で変えられる�
   const short = join(projectsDir, "short", TRASH_DIR_NAME);
   mkdirSync(join(short, "20261009T235959Z"), { recursive: true });
   mkdirSync(join(short, "20261010T000001Z"), { recursive: true });
-  pruneProjectTrash(projectsDir, now, 1);
+  await pruneProjectTrash(projectsDir, now, 1);
   assert.deepEqual(readdirSync(short), ["20261010T000001Z"]);
 
   // projectsDir が無くても例外にならず、作らない
-  pruneProjectTrash(join(root, "no-such-projects"), now);
+  await pruneProjectTrash(join(root, "no-such-projects"), now);
   assert.equal(existsSync(join(root, "no-such-projects")), false);
 });
 

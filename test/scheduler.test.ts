@@ -7,6 +7,7 @@ import {
   DELETE_PROMPT_BATCH_LIMIT,
   IDLE_BATCH_LIMIT,
   idleNotice,
+  MAINTENANCE_QUEUE_KEY,
   RECONCILE_BATCH_LIMIT,
   Scheduler,
   type SchedulerTimers,
@@ -15,7 +16,7 @@ import {
 import type { OutgoingMessage } from "../src/discord/gateway.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
-import { RecordingChannelOps } from "./helpers/recording.ts";
+import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
 
 const NOW = new Date("2026-10-02T12:00:00.000Z");
 const HOUR_MS = 60 * 60 * 1000;
@@ -76,9 +77,12 @@ function setup(
     gateway.posts.map(({ channelId, message }) => ({ channelId, message }));
   const channelOps = new RecordingChannelOps();
   const inboxRotator = new RecordingRotator();
-  // 古い dev ログ・プロジェクトの古い .trash を消す処理。既定では呼ばれた回数を数えるだけ（中身は devlog.test.ts・project-files.test.ts で確かめる）
+  // 古い dev ログ・プロジェクトの古い .trash・workDir の .tmp・.cache を消す処理。既定では呼ばれた回数を数えるだけ（中身は devlog.test.ts・project-files.test.ts・disk.test.ts で確かめる）
   const devLogs = { calls: 0, prune: (): void => void devLogs.calls++ };
-  const projectTrash = { calls: 0, prune: (): void => void projectTrash.calls++ };
+  const projectTrash = { calls: 0, prune: (): void | Promise<void> => void projectTrash.calls++ };
+  const workDir = { calls: 0, prune: (): void | Promise<void> => void workDir.calls++ };
+  // 発言と同じターンのキュー（.trash・.tmp・.cache の削除をセッションのジョブとして入れる）
+  const turnQueue = new RecordingQueue(2);
   const timers = new FakeTimers();
   const logs: string[] = [];
   const scheduler = new Scheduler({
@@ -91,7 +95,13 @@ function setup(
     gateway,
     inboxRotator,
     pruneDevLogs: () => devLogs.prune(),
-    pruneProjectTrash: () => projectTrash.prune(),
+    pruneProjectTrash: async () => {
+      await projectTrash.prune();
+    },
+    pruneWorkDir: async () => {
+      await workDir.prune();
+    },
+    turnQueue,
     now: () => clock.now,
     timers,
     log: (line) => logs.push(line),
@@ -126,6 +136,8 @@ function setup(
     inboxRotator,
     devLogs,
     projectTrash,
+    workDir,
+    turnQueue,
     timers,
     logs,
     scheduler,
@@ -755,7 +767,7 @@ test("再同期: Bot が参加していない（抜けた）サーバーは一�
   assert.deepEqual(env.logs, []);
 });
 
-test("tick ごとに古い dev ログと .trash を消す処理を呼ぶ", async (t) => {
+test("tick ごとに古い dev ログと .trash と workDir の .tmp・.cache を消す処理を呼ぶ", async (t) => {
   const env = setup(t);
 
   await env.scheduler.tick();
@@ -763,11 +775,83 @@ test("tick ごとに古い dev ログと .trash を消す処理を呼ぶ", async
 
   assert.equal(env.devLogs.calls, 2);
   assert.equal(env.projectTrash.calls, 2);
+  assert.equal(env.workDir.calls, 2);
   assert.deepEqual(env.logs, []);
 });
 
-test("古い dev ログ・.trash を消すのに失敗しても log に出すだけ（パスは出さない）で、#inbox の切り替えは行う", async (t) => {
-  for (const target of ["devLogs", "projectTrash"] as const) {
+test(".trash と .tmp・.cache の削除は、ターンのキューにセッションのジョブ（key は maintenance）として入れる", async (t) => {
+  const env = setup(t);
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.turnQueue.keys, [MAINTENANCE_QUEUE_KEY]);
+  assert.deepEqual(env.turnQueue.options, [{ session: true }]);
+  assert.equal(env.projectTrash.calls, 1);
+  assert.equal(env.workDir.calls, 1);
+  // チャンネル ID（数字だけ）とは重ならない
+  assert.ok(!/^\d+$/.test(MAINTENANCE_QUEUE_KEY));
+});
+
+test("セッションのジョブが実行中の tick では .trash と .tmp・.cache を消さない（キューにも入れず、log も出さない）。dev ログは消し、実行中でなくなれば消す", async (t) => {
+  const env = setup(t);
+  let release = (): void => {};
+  const turn = env.turnQueue.run("topic-1", () => new Promise<void>((resolve) => (release = resolve)), { session: true });
+  await flush();
+
+  await env.scheduler.tick();
+
+  assert.equal(env.projectTrash.calls, 0);
+  assert.equal(env.workDir.calls, 0);
+  assert.deepEqual(env.turnQueue.keys, ["topic-1"]);
+  assert.equal(env.devLogs.calls, 1);
+  assert.equal(env.inboxRotator.calls.length, 1);
+  assert.deepEqual(env.logs, []);
+
+  release();
+  await turn;
+  await env.scheduler.tick();
+
+  assert.equal(env.projectTrash.calls, 1);
+  assert.equal(env.workDir.calls, 1);
+});
+
+test("削除のジョブの間に来たセッションのジョブは、削除が終わるまで待つ", async (t) => {
+  const env = setup(t);
+  let release = (): void => {};
+  env.projectTrash.prune = () => {
+    env.projectTrash.calls++;
+    return new Promise<void>((resolve) => (release = resolve));
+  };
+  const events: string[] = [];
+
+  const ticking = env.scheduler.tick();
+  await flush();
+  assert.equal(env.projectTrash.calls, 1);
+  const turn = env.turnQueue.run("topic-1", async () => void events.push("turn"), { session: true });
+  await flush();
+  assert.deepEqual(events, []);
+  assert.equal(env.workDir.calls, 0);
+
+  release();
+  await ticking;
+  await turn;
+
+  assert.equal(env.workDir.calls, 1);
+  assert.deepEqual(events, ["turn"]);
+});
+
+test("停止を始めた後の tick では、削除のジョブをキューに入れない", async (t) => {
+  const env = setup(t);
+  env.scheduler.stop();
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.turnQueue.keys, []);
+  assert.equal(env.projectTrash.calls, 0);
+});
+
+test("古い dev ログ・.trash・workDir の .tmp・.cache を消すのに失敗しても log に出すだけ（パスは出さない）で、#inbox の切り替えは行う", async (t) => {
+  for (const target of ["devLogs", "projectTrash", "workDir"] as const) {
     const env = setup(t);
     env[target].prune = () => {
       throw new Error("EACCES: permission denied, unlink '/srv/data/devlog/2026-08-01.jsonl'");

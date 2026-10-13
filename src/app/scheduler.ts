@@ -1,7 +1,7 @@
 // 定期処理（tick）。SELF_AGENT_SHELL=1 ならシェル（Bash）の sandbox を診断し直し（shell-state.ts）、DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
 // 最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、
 // 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認し、
-// SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログと 30 日を過ぎたプロジェクトの .trash を消し、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
+// SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログと 30 日を過ぎたプロジェクトの .trash を消し、workDir の .tmp の 1 日を過ぎたものと 1 GB を超えた .cache を消し、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
 // 対象は毎回 DB と Discord から求めるので、止まっていた間に過ぎた分や失敗した移動も起動直後の tick で拾う（永続のタイマーは持たない）
 import type { Config } from "../config.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
@@ -14,6 +14,7 @@ import { closeStartButton } from "./commands/close.ts";
 import { deletePrompt } from "./commands/delete.ts";
 import { continueButton } from "./commands/wait.ts";
 import type { InboxRotator } from "./inbox-rotate.ts";
+import type { KeyedSerialQueue } from "./queue.ts";
 import { applySessionEvent } from "./session-state.ts";
 
 /** tick の間隔 */
@@ -24,6 +25,12 @@ export const IDLE_BATCH_LIMIT = 5;
 export const DELETE_PROMPT_BATCH_LIMIT = 5;
 /** 1 回の tick で 1 サーバーあたり、状態とカテゴリのずれを直す移動を入れるセッションの上限 */
 export const RECONCILE_BATCH_LIMIT = 5;
+
+/**
+ * .trash と .tmp・.cache の削除をターンのキューに入れるときの key。チャンネル ID（数字だけ）とは重ならず、チャンネルとしては扱わない
+ * （seed・usage・ターンの番号などには使わない）
+ */
+export const MAINTENANCE_QUEUE_KEY = "maintenance";
 
 /** /setup が self-agent カテゴリの中に作るチャンネル */
 const HOME_CHANNEL_FIELDS = ["inboxChannelId", "tasksChannelId", "systemChannelId"] as const;
@@ -66,9 +73,17 @@ export type SchedulerDeps = {
   /** 残す日数より前の dev ログを消す（dev モードでなくても、ディレクトリがあれば消す）。投げたら log に出して続ける */
   pruneDevLogs: () => void;
   /** 残す日数を過ぎたプロジェクトの .trash/<trash_id> を消す。投げたら log に出して続ける */
-  pruneProjectTrash: () => void;
+  pruneProjectTrash: () => Promise<void>;
   /** SELF_AGENT_SHELL=1 のときだけ渡す。シェルの自己診断をやり直し、変わっていれば知らせる（reject しない） */
   refreshShell?: () => Promise<void>;
+  /** workDir の .tmp の古いものと、上限を超えた .cache を消す。投げたら log に出して続ける */
+  pruneWorkDir: () => Promise<void>;
+  /**
+   * 発言と同じターンのキュー。.trash と .tmp・.cache の削除は、ここにセッションのジョブ（key は MAINTENANCE_QUEUE_KEY）として入れ、
+   * セッションのターンと重ねない（sandbox のコマンドが書ける場所を、ターンの最中に消さない）。
+   * tick の時点でセッションのジョブが実行中なら、その tick では入れない（長いターンの後ろで tick を待たせない）
+   */
+  turnQueue: Pick<KeyedSerialQueue, "run" | "runningSessionJobs">;
   now: () => Date;
   timers?: SchedulerTimers;
   log: (message: string) => void;
@@ -130,7 +145,7 @@ export class Scheduler {
   }
 
   /**
-   * 再同期・待ちへの移動・削除の確認・dev ログと .trash の削除・#inbox・#tasks の切り替えは、どれかが失敗しても残りを行う。
+   * 再同期・待ちへの移動・削除の確認・dev ログと .trash と workDir の .tmp・.cache の削除・#inbox・#tasks の切り替えは、どれかが失敗しても残りを行う。
    * シェルの自己診断は数十 ms で終わるので最初に、再同期は消えたチャンネルを先に削除済みにするためその次に、#inbox・#tasks の切り替えは LLM のターンを待つので最後に行う
    */
   private async runTick(): Promise<void> {
@@ -139,7 +154,7 @@ export class Scheduler {
     await this.moveIdleSessions();
     await this.promptDeletes();
     this.pruneDevLogs();
-    this.pruneProjectTrash();
+    await this.pruneSandboxAreas();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
     await this.deps.inboxRotator.rotateDue(() => this.stopped);
   }
@@ -229,12 +244,38 @@ export class Scheduler {
     }
   }
 
+  /**
+   * プロジェクトの古い .trash と workDir の .tmp・.cache を、ターンのキューのセッションのジョブとして消す。
+   * 停止を始めた・セッションのジョブが実行中なら何もしない（log も出さない）。入れた後に来たセッションのターンは、消し終わるまで待つ。reject しない
+   */
+  private async pruneSandboxAreas(): Promise<void> {
+    const { turnQueue } = this.deps;
+    if (this.stopped || turnQueue.runningSessionJobs() > 0) return;
+    await turnQueue.run(
+      MAINTENANCE_QUEUE_KEY,
+      async () => {
+        await this.pruneProjectTrash();
+        await this.pruneWorkDir();
+      },
+      { session: true },
+    );
+  }
+
   /** プロジェクトの古い .trash を消す。失敗は log に出すだけ（パスは出さない） */
-  private pruneProjectTrash(): void {
+  private async pruneProjectTrash(): Promise<void> {
     try {
-      this.deps.pruneProjectTrash();
+      await this.deps.pruneProjectTrash();
     } catch {
       this.deps.log("プロジェクトの古い .trash を消せませんでした");
+    }
+  }
+
+  /** workDir の .tmp の古いものと上限を超えた .cache を消す。失敗は log に出すだけ（パスは出さない） */
+  private async pruneWorkDir(): Promise<void> {
+    try {
+      await this.deps.pruneWorkDir();
+    } catch {
+      this.deps.log("作業場所の .tmp・.cache を消せませんでした");
     }
   }
 
