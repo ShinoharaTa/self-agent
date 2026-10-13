@@ -26,7 +26,7 @@ import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
-import { openDb } from "./store/db.ts";
+import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { InboxSummaryStore } from "./store/inbox-summaries.ts";
 import { KnowledgeStore } from "./store/knowledge.ts";
@@ -60,7 +60,11 @@ mkdirSync(config.workDir, { recursive: true });
 mkdirSync(config.claudeConfigDir, { recursive: true });
 
 const now = (): Date => new Date();
-const db = openDb(join(config.dataDir, "self-agent.db"));
+const log = (message: string): void => console.error(message);
+// 移行するなら、先に移行前の DB の控えを <dataDir>/self-agent.db.v<版>.bak に取る
+const dbPath = join(config.dataDir, "self-agent.db");
+await backupBeforeMigration(dbPath, log);
+const db = openDb(dbPath);
 const tasks = new TaskStore(db, now);
 const sessions = new SdkSessionStore(db, now);
 const usage = new UsageStore(db, now);
@@ -72,7 +76,6 @@ const knowledge = new KnowledgeStore(db, now);
 const memories = new MemoryStore(db, now);
 const projects = new ProjectStore(db, now);
 const reminders = new ReminderStore(db, now);
-const log = (message: string): void => console.error(message);
 
 // 作ったプロジェクトの場所。権限ルール（<realpath(workDir)>/projects）と同じ実際の場所にする
 const realWorkDir = realpathSync(config.workDir);
