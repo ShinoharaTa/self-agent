@@ -4,6 +4,31 @@ import { join } from "node:path";
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
 
+/** 既定の人格（今の Bot。DISCORD_TOKEN・SELF_AGENT_MODEL などの今の変数で動く）の id。予約語で、SELF_AGENT_PERSONAS には書けない */
+export const DEFAULT_PERSONA_ID = "default";
+
+/** 人格のターンを動かすエンジン */
+export const ENGINES = ["claude", "codex"] as const;
+export type Engine = (typeof ENGINES)[number];
+
+/** SELF_AGENT_PERSONAS で足した人格（docs/plan/personas.md §1）。既定の人格は含まない。トークンは変数名だけを持ち、値は持たない */
+export type PersonaConfig = {
+  /** `[a-z0-9]{1,12}`。DB のキーになるので後から変えない */
+  id: string;
+  /** 表示名（20 字以内）。未設定なら id */
+  name: string;
+  /** その人格の Bot のトークンの変数名（SELF_AGENT_PERSONA_<ID>_DISCORD_TOKEN）。値は Gateway が process.env から読む */
+  discordTokenEnv: string;
+  /** 人格の文（性格・口調・役割）のファイル。起動時に 1 回読む */
+  promptFile: string;
+  /** 未設定ならそのエンジンの既定（claude なら SELF_AGENT_MODEL） */
+  model: string | undefined;
+} & (
+  | { engine: "claude"; effort: Effort | undefined }
+  /** codex の effort の値は codex のエンジン（PR-F）で確かめる。ここでは小文字の英字だけを受け付ける */
+  | { engine: "codex"; effort: string | undefined }
+);
+
 export type Config = {
   /** CLAUDE_CODE_OAUTH_TOKEN が設定されているか。値そのものは保持しない */
   oauthTokenPresent: boolean;
@@ -55,6 +80,10 @@ export type Config = {
   devLogDays: number;
   /** シェル（Bash）を使う設定。true なら起動時と tick ごとに sandbox の自己診断を行う（agent/sandbox-check.ts・docs/plan/shell.md） */
   shell: boolean;
+  /** SELF_AGENT_PERSONAS で足した人格（設定の順）。未設定なら空で、今と同じ 1 体だけ */
+  personas: PersonaConfig[];
+  /** codex の認証と会話の記録の場所。未設定で codex の人格も無ければ undefined */
+  codexHome: string | undefined;
 };
 
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
@@ -94,11 +123,11 @@ function idList(name: string, value: string | undefined): string[] {
   return [...new Set(ids)];
 }
 
-function effortLevel(value: string | undefined): Effort | undefined {
+function effortLevel(value: string | undefined, name = "SELF_AGENT_EFFORT"): Effort | undefined {
   if (value === undefined) return undefined;
   const level = EFFORT_LEVELS.find((candidate) => candidate === value);
   if (level === undefined) {
-    throw new Error(`SELF_AGENT_EFFORT は ${EFFORT_LEVELS.join(" / ")} のいずれかで指定してください`);
+    throw new Error(`${name} は ${EFFORT_LEVELS.join(" / ")} のいずれかで指定してください`);
   }
   return level;
 }
@@ -169,8 +198,72 @@ export function loadDataConfig(env: NodeJS.ProcessEnv = process.env): Pick<Confi
   };
 }
 
+const PERSONA_ID = /^[a-z0-9]{1,12}$/;
+const PERSONA_NAME_MAX_LENGTH = 20;
+
+/**
+ * SELF_AGENT_PERSONAS と人格ごとの変数を読む（docs/plan/personas.md §1）。エラーには変数名だけを出し、値（トークンを含む）は出さない。
+ * 確かめること: id の形・重複・予約語（default）、トークンの欠け、同じトークンを 2 人格に（既定の人格の DISCORD_TOKEN を含む）、表示名の長さ、エンジン、effort
+ */
+function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[] {
+  const list = nonEmpty(env.SELF_AGENT_PERSONAS);
+  if (list === undefined) return [];
+  const ids = list
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id !== "");
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (!PERSONA_ID.test(id)) {
+      throw new Error("SELF_AGENT_PERSONAS は英小文字と数字（1〜12 字）の id をカンマ区切りで指定してください");
+    }
+    if (id === DEFAULT_PERSONA_ID) {
+      throw new Error(`SELF_AGENT_PERSONAS に ${DEFAULT_PERSONA_ID} は使えません（既定の人格の id です）`);
+    }
+    if (seen.has(id)) throw new Error(`SELF_AGENT_PERSONAS に同じ id（${id}）が 2 回あります`);
+    seen.add(id);
+  }
+
+  // 同じトークンを 2 人格に渡していないか（値は比べるだけで、エラーには変数名を出す）
+  const tokenOwners = new Map<string, string>();
+  const defaultToken = nonEmpty(env.DISCORD_TOKEN);
+  if (defaultToken !== undefined) tokenOwners.set(defaultToken, "DISCORD_TOKEN");
+
+  return ids.map((id): PersonaConfig => {
+    const prefix = `SELF_AGENT_PERSONA_${id.toUpperCase()}_`;
+    const discordTokenEnv = `${prefix}DISCORD_TOKEN`;
+    const token = nonEmpty(env[discordTokenEnv]);
+    if (token === undefined) throw new Error(`${discordTokenEnv} が設定されていません`);
+    const sameAs = tokenOwners.get(token);
+    if (sameAs !== undefined) throw new Error(`${discordTokenEnv} と ${sameAs} に同じトークンが設定されています`);
+    tokenOwners.set(token, discordTokenEnv);
+
+    const name = nonEmpty(env[`${prefix}NAME`]) ?? id;
+    if ([...name].length > PERSONA_NAME_MAX_LENGTH) {
+      throw new Error(`${prefix}NAME は ${PERSONA_NAME_MAX_LENGTH} 字以内で指定してください`);
+    }
+    const promptFile =
+      nonEmpty(env[`${prefix}PROMPT_FILE`]) ?? join(home(), ".config/self-agent/personas", `${id}.md`);
+    const model = nonEmpty(env[`${prefix}MODEL`]);
+    const engineName = `${prefix}ENGINE`;
+    const engineValue = nonEmpty(env[engineName]) ?? "claude";
+    const effortName = `${prefix}EFFORT`;
+    const effortValue = nonEmpty(env[effortName]);
+    const base = { id, name, discordTokenEnv, promptFile, model };
+    if (engineValue === "claude") return { ...base, engine: "claude", effort: effortLevel(effortValue, effortName) };
+    if (engineValue === "codex") {
+      if (effortValue !== undefined && !/^[a-z]+$/.test(effortValue)) {
+        throw new Error(`${effortName} は英小文字で指定してください`);
+      }
+      return { ...base, engine: "codex", effort: effortValue };
+    }
+    throw new Error(`${engineName} は ${ENGINES.join(" / ")} のいずれかで指定してください`);
+  });
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const home = (): string => homeDir(env);
+  const personas = personaList(env, home);
 
   return {
     oauthTokenPresent: nonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) !== undefined,
@@ -241,6 +334,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     devMode: flag("SELF_AGENT_DEV_MODE", nonEmpty(env.SELF_AGENT_DEV_MODE)),
     devLogDays: positiveInteger("SELF_AGENT_DEV_LOG_DAYS", nonEmpty(env.SELF_AGENT_DEV_LOG_DAYS), DEFAULT_DEV_LOG_DAYS),
     shell: flag("SELF_AGENT_SHELL", nonEmpty(env.SELF_AGENT_SHELL)),
+    personas,
+    codexHome:
+      nonEmpty(env.SELF_AGENT_CODEX_HOME) ??
+      (personas.some((persona) => persona.engine === "codex") ? join(home(), ".local/share/self-agent/codex") : undefined),
   };
 }
 

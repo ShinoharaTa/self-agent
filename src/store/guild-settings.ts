@@ -1,4 +1,5 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
+import { DEFAULT_PERSONA_ID } from "../config.ts";
 
 /** 状態カテゴリの種類（進行中 / 待ち / 完了） */
 export type SessionState = "active" | "waiting" | "done";
@@ -24,12 +25,28 @@ export type GuildSettings = {
 
 export type GuildChannelField = "homeCategoryId" | "inboxChannelId" | "tasksChannelId" | "systemChannelId";
 
-const CHANNEL_COLUMNS: Record<GuildChannelField, string> = {
+/** guild_settings に残る列 */
+const CHANNEL_COLUMNS: Record<"homeCategoryId" | "systemChannelId", string> = {
   homeCategoryId: "home_category_id",
-  inboxChannelId: "inbox_channel_id",
-  tasksChannelId: "tasks_channel_id",
   systemChannelId: "system_channel_id",
 };
+
+/** 入口のチャンネルの種類（persona_channels.kind）。足した人格の #<NAME> は inbox */
+type PersonaChannelKind = "inbox" | "tasks";
+
+/** persona_channels（既定の人格の行）に置く入口のチャンネル */
+const PERSONA_CHANNEL_KINDS: Record<"inboxChannelId" | "tasksChannelId", PersonaChannelKind> = {
+  inboxChannelId: "inbox",
+  tasksChannelId: "tasks",
+};
+
+// guild_settings の行に、既定の人格の #inbox・#tasks の行（persona_channels）を元の列名で付ける
+const SELECT_SETTINGS =
+  "SELECT g.*, i.channel_id AS inbox_channel_id, i.rotated_date AS inbox_rotated_date, i.rotated_at AS inbox_rotated_at, " +
+  "t.channel_id AS tasks_channel_id, t.rotated_at AS tasks_rotated_at FROM guild_settings g " +
+  "LEFT JOIN persona_channels i ON i.guild_id = g.guild_id AND i.persona = ? AND i.kind = 'inbox' " +
+  "LEFT JOIN persona_channels t ON t.guild_id = g.guild_id AND t.persona = ? AND t.kind = 'tasks' " +
+  "WHERE g.guild_id = ?";
 
 function nullableString(value: SQLOutputValue | undefined): string | null {
   return value === null || value === undefined ? null : String(value);
@@ -51,7 +68,10 @@ function toSettings(row: Record<string, SQLOutputValue>): GuildSettings {
   };
 }
 
-/** サーバーごとの設定（guild_settings）と状態カテゴリ（state_categories） */
+/**
+ * サーバーごとの設定（guild_settings）と状態カテゴリ（state_categories）。
+ * #inbox・#tasks の ID と切り替えの日・時刻は既定の人格の persona_channels の行に読み書きする（guild_settings の行が無ければ /setup 前のまま）
+ */
 export class GuildSettingsStore {
   private readonly db: DatabaseSync;
   private readonly now: () => Date;
@@ -63,12 +83,16 @@ export class GuildSettingsStore {
 
   /** /setup を一度も実行していないサーバーは undefined */
   get(guildId: string): GuildSettings | undefined {
-    const row = this.db.prepare("SELECT * FROM guild_settings WHERE guild_id = ?").get(guildId);
+    const row = this.db.prepare(SELECT_SETTINGS).get(DEFAULT_PERSONA_ID, DEFAULT_PERSONA_ID, guildId);
     return row === undefined ? undefined : toSettings(row);
   }
 
   /** カテゴリ・チャンネルの ID を 1 つ保存する。行が無ければ作る */
   setChannel(guildId: string, field: GuildChannelField, channelId: string): void {
+    if (field === "inboxChannelId" || field === "tasksChannelId") {
+      this.setPersonaChannel(guildId, PERSONA_CHANNEL_KINDS[field], { channel_id: channelId });
+      return;
+    }
     const column = CHANNEL_COLUMNS[field];
     const at = this.now().toISOString();
     this.db
@@ -92,25 +116,39 @@ export class GuildSettingsStore {
 
   /** #inbox の会話を切り替えた日（YYYY-MM-DD）と時刻（rotatedAt）を保存する。行が無ければ作る */
   setInboxRotated(guildId: string, date: string, rotatedAt: Date): void {
-    const at = this.now().toISOString();
-    this.db
-      .prepare(
-        "INSERT INTO guild_settings (guild_id, inbox_rotated_date, inbox_rotated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?) " +
-          "ON CONFLICT (guild_id) DO UPDATE SET inbox_rotated_date = excluded.inbox_rotated_date, " +
-          "inbox_rotated_at = excluded.inbox_rotated_at, updated_at = excluded.updated_at",
-      )
-      .run(guildId, date, rotatedAt.toISOString(), at, at);
+    this.setPersonaChannel(guildId, "inbox", { rotated_date: date, rotated_at: rotatedAt.toISOString() });
   }
 
   /** #tasks の会話を切り替えた時刻（rotatedAt）を保存する。行が無ければ作る */
   setTasksRotated(guildId: string, rotatedAt: Date): void {
+    this.setPersonaChannel(guildId, "tasks", { rotated_at: rotatedAt.toISOString() });
+  }
+
+  /**
+   * 既定の人格の入口のチャンネルの行（persona_channels）に values の列だけを保存する。どちらの表も行が無ければ作り、
+   * guild_settings の updated_at も今にする（guild_settings の行があることが /setup 済みの印なので、今までどおり作る）
+   */
+  private setPersonaChannel(
+    guildId: string,
+    kind: PersonaChannelKind,
+    values: Partial<Record<"channel_id" | "rotated_date" | "rotated_at", string>>,
+  ): void {
     const at = this.now().toISOString();
     this.db
       .prepare(
-        "INSERT INTO guild_settings (guild_id, tasks_rotated_at, created_at, updated_at) VALUES (?, ?, ?, ?) " +
-          "ON CONFLICT (guild_id) DO UPDATE SET tasks_rotated_at = excluded.tasks_rotated_at, updated_at = excluded.updated_at",
+        "INSERT INTO guild_settings (guild_id, created_at, updated_at) VALUES (?, ?, ?) " +
+          "ON CONFLICT (guild_id) DO UPDATE SET updated_at = excluded.updated_at",
       )
-      .run(guildId, rotatedAt.toISOString(), at, at);
+      .run(guildId, at, at);
+    const columns = Object.keys(values);
+    const updates = columns.map((column) => `${column} = excluded.${column}`).join(", ");
+    this.db
+      .prepare(
+        `INSERT INTO persona_channels (guild_id, persona, kind, ${columns.join(", ")}, created_at, updated_at) ` +
+          `VALUES (?, ?, ?, ${columns.map(() => "?").join(", ")}, ?, ?) ` +
+          `ON CONFLICT (guild_id, persona, kind) DO UPDATE SET ${updates}, updated_at = excluded.updated_at`,
+      )
+      .run(guildId, DEFAULT_PERSONA_ID, kind, ...Object.values(values), at, at);
   }
 
   getStateCategory(guildId: string, state: SessionState, ordinal: number): string | undefined {

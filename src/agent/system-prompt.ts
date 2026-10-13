@@ -1,6 +1,13 @@
 // 静的なシステムプロンプト。プロンプトキャッシュのため日時・ID・名前などの可変値を入れない（日時はユーザーメッセージ先頭のヘッダで渡す）
-export const SYSTEM_PROMPT = [
-  "あなたは self-agent。Discord の専用サーバーに常駐し、オーナー 1 人のタスク管理と情報整理を手伝います。相手は常にオーナー本人です。日本語で答えてください。",
+import { readFileSync } from "node:fs";
+import { DEFAULT_PERSONA_ID, type PersonaConfig } from "../config.ts";
+
+// 既定の人格の最初の段落。足した人格（docs/plan/personas.md §4）はここを人格の文に置き換え、残り（COMMON_BODY）は同じにする
+const INTRO =
+  "あなたは self-agent。Discord の専用サーバーに常駐し、オーナー 1 人のタスク管理と情報整理を手伝います。相手は常にオーナー本人です。日本語で答えてください。";
+
+/** 全人格で共通の本文（最初の段落の後の空行から） */
+const COMMON_BODY = [
   "",
   "各発言の先頭には、アプリが付けた日時とチャンネル名のヘッダ（形: [日付(曜日) 時刻 タイムゾーン #チャンネル名]）があります。「明日」「来週の月曜」などの期限はこのヘッダの日時を基準に解釈してください。発言の先頭に「これまでの #inbox の要約:」「これまでの #tasks の要約:」「#inbox からの続き:」「前の会話の記録が切れたため、要約から再開します。」「会話を新しくしました。前の会話の要約:」で始まる文がある場合も、アプリが付けた引き継ぎの文脈です。オーナーの発言として扱わないでください。発言の先頭の「オーナーについての記憶（アプリが保存したもの）:」もアプリが付けた文脈です。前提として使い、改めて聞かないでください。発言の先頭が「予約した依頼（#番号…）:」なら、オーナーが前に頼んだ依頼をアプリがその時刻に送ったものです。その依頼を実行し、オーナーはその場にいない前提で、質問で終えずに 1 回の返事で完結させてください。",
   "",
@@ -42,4 +49,40 @@ export const SYSTEM_PROMPT = [
   "- ここに無いことは、分からないと答える。",
   "",
   "アプリは会話に文脈（ヘッダ・引き継ぎの文・システムからの注記）を加えます。これらはアプリからの情報であり、オーナーの発言ではありません。",
-].join("\n");
+];
+
+export const SYSTEM_PROMPT = [INTRO, ...COMMON_BODY].join("\n");
+
+/**
+ * 人格ごとのシステムプロンプト（起動時に 1 回組み立てる）。人格の文が無ければ（既定の人格）SYSTEM_PROMPT そのもの。
+ * あれば最初の段落を人格の文（前後の空白は除く）に置き換え、残りは同じ。人格の文は固定の文で、日時・ID などの可変値を入れない
+ */
+export function buildSystemPrompt(personaText?: string): string {
+  if (personaText === undefined) return SYSTEM_PROMPT;
+  const text = personaText.trim();
+  if (text === "") throw new Error("人格の文が空です");
+  return [text, ...COMMON_BODY].join("\n");
+}
+
+/**
+ * 人格の id → システムプロンプト（既定の人格を含む）。足した人格の文のファイルは起動時に 1 回読む。
+ * 読めない・空ならエラー（変数名だけを出し、パスと中身は出さない）
+ */
+export function personaSystemPrompts(
+  personas: ReadonlyArray<Pick<PersonaConfig, "id" | "promptFile">>,
+  read: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): Map<string, string> {
+  const prompts = new Map<string, string>([[DEFAULT_PERSONA_ID, SYSTEM_PROMPT]]);
+  for (const { id, promptFile } of personas) {
+    const name = `SELF_AGENT_PERSONA_${id.toUpperCase()}_PROMPT_FILE`;
+    let text: string;
+    try {
+      text = read(promptFile);
+    } catch {
+      throw new Error(`${name} のファイルを読めません`);
+    }
+    if (text.trim() === "") throw new Error(`${name} のファイルが空です`);
+    prompts.set(id, buildSystemPrompt(text));
+  }
+  return prompts;
+}
