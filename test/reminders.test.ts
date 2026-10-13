@@ -572,3 +572,42 @@ test("prompt: tick はターンを待たない。同じ id のターンが走っ
   assert.equal(env.runner.inputs.length, 1);
   assert.equal(env.reminders.get(added.id)?.fireSeq, 1);
 });
+
+test("prompt: キューで待っている間に停止・cancel されたら claim せずに動かさず、実行先が無ければこの回を進めるだけ。遅れたら prompt に遅れを書く", async (t) => {
+  const waitCases: Array<{ label: string; act: (env: ReturnType<typeof setup>, id: number) => void; fireSeq: number }> = [
+    { label: "停止", act: (env) => env.scheduler.stop(), fireSeq: 0 },
+    { label: "cancel", act: (env, id) => env.reminders.cancel(id), fireSeq: 0 },
+  ];
+  for (const { label, act, fireSeq } of waitCases) {
+    const env = setup(t, [okResult("動いた")]);
+    const added = env.add({ kind: "prompt", channelId: "inbox-1", text: "今日のタスクを出して" });
+    // 同じ key の発言のターンが走っている間は、予約した依頼はキューで待つ
+    let release = (): void => {};
+    const busy = env.turnQueue.run("inbox-1", () => new Promise<void>((resolve) => (release = resolve)));
+    await env.scheduler.tick();
+    act(env, added.id);
+    release();
+    await busy;
+    await env.scheduler.idle();
+    assert.equal(env.runner.inputs.length, 0, label);
+    assert.equal(env.reminders.get(added.id)?.fireSeq, fireSeq, label);
+    assert.deepEqual(env.gateway.sent, [], label);
+  }
+
+  // /setup していないサーバー（#tasks も #inbox も無い）
+  const nowhere = setup(t);
+  const once = nowhere.add({ kind: "prompt", guildId: "guild-2", text: "今日のタスクを出して" });
+  await nowhere.scheduler.tick();
+  await nowhere.scheduler.idle();
+  assert.deepEqual([nowhere.runner.inputs.length, nowhere.turnQueue.keys.length], [0, 0]);
+  assert.equal(nowhere.reminders.get(once.id)?.status, "done");
+
+  const late = setup(t, [okResult("おはようございます")]);
+  const daily = late.add({ kind: "prompt", channelId: "inbox-1", text: "今日のタスクを出して", rule: "daily@08:00", nextAt: ago(HOUR_MS) });
+  await late.scheduler.tick();
+  await late.scheduler.idle();
+  assert.equal(
+    late.runner.inputs[0]?.prompt,
+    buildTurnPrompt(`予約した依頼（#${daily.id}・毎日 8:00・8:00 の予定から 60 分遅れ）:\n今日のタスクを出して`, NOW, "Asia/Tokyo", "inbox"),
+  );
+});

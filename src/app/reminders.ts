@@ -13,7 +13,7 @@ import type { ChannelKind, ResolveChannel } from "./access.ts";
 import { MESSAGE_MAX_LENGTH } from "./commands/sessions.ts";
 import { clip } from "./commands/tasks.ts";
 import { MAX_TURNS_REPLY } from "./commands/turn-controls.ts";
-import { EMPTY_REPLY } from "./handler.ts";
+import { COMPACTED_NOTE, EMPTY_REPLY } from "./handler.ts";
 import { buildTurnPrompt } from "./prompt.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { describeRule, nextOccurrence } from "./recurrence.ts";
@@ -101,9 +101,13 @@ export function reminderFireButtons(reminder: Pick<Reminder, "id" | "rule">, seq
 /** 元のチャンネルが無いため #tasks・#inbox に出したときの注記 */
 export const MOVED_NOTE = "（元のチャンネルが無いため、ここに出しました）";
 
-/** 予約した依頼のターンの prompt の本文（日時ヘッダの後ろ）。例: `予約した依頼（#3・毎日 8:00）:\n今日のタスクを出して` */
-export function scheduledPromptContent(reminder: Pick<Reminder, "id" | "rule" | "text">): string {
-  return `予約した依頼（#${reminder.id}・${reminder.rule === null ? "1 回だけ" : describeRule(reminder.rule)}）:\n${reminder.text}`;
+/**
+ * 予約した依頼のターンの prompt の本文（日時ヘッダの後ろ）。例: `予約した依頼（#3・毎日 8:00）:\n今日のタスクを出して`。
+ * 遅れたときは late（例: `8:00 の予定から 25 分遅れ`）を括弧の中に足す
+ */
+export function scheduledPromptContent(reminder: Pick<Reminder, "id" | "rule" | "text">, late?: string): string {
+  const repeat = reminder.rule === null ? "1 回だけ" : describeRule(reminder.rule);
+  return `予約した依頼（#${reminder.id}・${repeat}${late === undefined ? "" : `・${late}`}）:\n${reminder.text}`;
 }
 
 /** 予約した依頼の返答の末尾に足す 1 行 */
@@ -271,13 +275,13 @@ export class ReminderScheduler {
       taskTitle = task.title;
     }
 
+    if (reminder.kind === "prompt") {
+      this.startPrompt(reminder, now);
+      return;
+    }
     const occurrence = this.occurrence(reminder, now);
     if (occurrence === undefined) return;
     const update = this.nextUpdate(reminder, occurrence, now);
-    if (reminder.kind === "prompt") {
-      this.startPrompt(reminder, update);
-      return;
-    }
 
     const key = `${id}:${reminder.fireSeq}`;
     let result: PostResult;
@@ -325,20 +329,23 @@ export class ReminderScheduler {
   }
 
   /**
-   * 予約した依頼の回: 先に claim で進めてから（多くても 1 回）、ターンを発言と同じキューに入れる（tick では待たない）。
-   * 1 回だけのものは fired ではなく done にする（押すボタンが無いため）。claim できなければ（止められた）何もしない
+   * 予約した依頼の回: 実行先の key で発言と同じキューに入れる（tick では待たない）。claim はジョブの先頭で行う（runPrompt）。
+   * 実行先が無ければ、notify と同じくこの回を出さずに進める
    */
-  private startPrompt(reminder: Reminder, update: FireUpdate): void {
-    const { reminders, log } = this.deps;
+  private startPrompt(reminder: Reminder, now: Date): void {
+    const { log } = this.deps;
     const { id } = reminder;
-    if (!reminders.claim(id, reminder.fireSeq, { ...update, status: update.status === "fired" ? "done" : update.status })) {
-      log(`動かす前に予約した依頼が止められたため、実行しませんでした（#${id}）`);
+    const target = this.promptChannel(reminder);
+    if (target === undefined) {
+      const occurrence = this.occurrence(reminder, now);
+      if (occurrence === undefined) return;
+      this.giveUp(reminder, occurrence, now);
+      log(`予約した依頼の実行先が無いため、この回を諦めました（#${id}、guild=${reminder.guildId}）`);
       return;
     }
-    // キューの key は今の時点の実行先（無ければ頼んだチャンネル）。ジョブの中で決め直す
-    const key = this.promptChannel(reminder)?.channelId ?? reminder.channelId;
+    const key = target.channelId;
     const job = this.deps.turnQueue
-      .run(key, () => this.runPrompt(reminder))
+      .run(key, () => this.runPrompt(id, key))
       .catch((error: unknown) => {
         log(`予約した依頼の処理に失敗しました（#${id}）: ${describeError(error)}`);
       })
@@ -367,14 +374,39 @@ export class ReminderScheduler {
    * キューの中で予約した依頼のターンを 1 回動かし、返答（失敗なら知らせ）をオーナーをメンションして送る。やり直さない。
    * 途中経過・[中断]・[続ける] は付けない
    */
-  private async runPrompt(reminder: Reminder): Promise<void> {
-    const { cfg, gateway, turn, now, log } = this.deps;
-    const { id } = reminder;
-    const target = this.promptChannel(reminder);
-    if (target === undefined) {
-      log(`予約した依頼の実行先が無いため、この回を諦めました（#${id}、guild=${reminder.guildId}）`);
+  private async runPrompt(id: number, key: string): Promise<void> {
+    const { cfg, gateway, turn, reminders, now, log } = this.deps;
+    // 停止を始めていたら claim せずに戻る（次の起動の最初の tick で拾う）
+    if (this.stopped) {
+      log(`停止を始めたため、予約した依頼を動かしませんでした（#${id}）`);
       return;
     }
+    // キューで待っている間に止められた・変えられたものは動かさない（読み直して確かめる）
+    const at = now();
+    const reminder = reminders.get(id);
+    if (reminder === undefined || !isDue(reminder, at)) {
+      log(`動かす前に予約した依頼が止められたため、実行しませんでした（#${id}）`);
+      return;
+    }
+    const target = this.promptChannel(reminder);
+    if (target?.channelId !== key) {
+      // 待っている間に #inbox・#tasks が変わった。key と違うチャンネルで動かすと発言と直列にならないので、次の tick で入れ直す
+      log(`予約した依頼の実行先が変わったため、次の確認で動かします（#${id}）`);
+      return;
+    }
+    const occurrence = this.occurrence(reminder, at);
+    if (occurrence === undefined) return;
+    const update = this.nextUpdate(reminder, occurrence, at);
+    // 先に進めてから動かす（多くても 1 回）。1 回だけのものは fired ではなく done にする（押すボタンが無いため）
+    if (!reminders.claim(id, reminder.fireSeq, { ...update, status: update.status === "fired" ? "done" : update.status })) {
+      log(`動かす前に予約した依頼が止められたため、実行しませんでした（#${id}）`);
+      return;
+    }
+    const lateMs = at.getTime() - occurrence.at.getTime();
+    const late =
+      lateMs < REMINDER_LATE_NOTE_MS
+        ? undefined
+        : `${lateMs >= DAY_MS ? formatShortDateTime(occurrence.at, cfg.timeZone) : formatShortTime(occurrence.at, cfg.timeZone)} の予定から ${Math.floor(lateMs / MINUTE_MS)} 分遅れ`;
     const { channelId, kind } = target;
     log(`予約した依頼のターンを始めました（#${id}、guild=${reminder.guildId}）`);
     const stopTyping = gateway.startTyping(channelId);
@@ -384,7 +416,7 @@ export class ReminderScheduler {
         guildId: reminder.guildId,
         channelId,
         kind,
-        prompt: buildTurnPrompt(scheduledPromptContent(reminder), now(), cfg.timeZone, kind),
+        prompt: buildTurnPrompt(scheduledPromptContent(reminder, late), at, cfg.timeZone, kind),
         // オーナーが貼った URL は無いので WebFetch は使えない
         allowedUrls: [],
         scheduled: true,
@@ -397,7 +429,8 @@ export class ReminderScheduler {
 
     let text: string;
     if (result?.ok === true) {
-      text = `${result.text.trim() === "" ? EMPTY_REPLY : result.text}\n${scheduledReplyNote(id)}`;
+      const body = result.text.trim() === "" ? EMPTY_REPLY : result.text;
+      text = `${result.compacted === undefined ? body : `${body}\n${COMPACTED_NOTE}`}\n${scheduledReplyNote(id)}`;
     } else {
       if (result !== undefined) log(`予約した依頼のターンが失敗しました（#${id}）: ${result.errorMessage}`);
       // sdk-runner は result の失敗を subtype から書き始める

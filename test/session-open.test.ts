@@ -234,7 +234,7 @@ test("session_open: 予約した依頼のターン（context.scheduled）では 
 
   // 定義の配列は全ツールの入力の型の合併なので、引数の型は確かめない
   const result = await definition.handler(ARGS as never, {});
-  assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify({ result: "not_available" }) }]);
+  assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify({ result: "not_available", message: "予約した依頼のターンでは使えません" }) }]);
 });
 
 test("session_open: 同じ正規化題名の進行中・待ちのセッションがそのサーバーにあれば、作らずに existing を返す", async (t) => {
