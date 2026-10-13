@@ -14,6 +14,7 @@ import { closeStartButton } from "./commands/close.ts";
 import { deletePrompt } from "./commands/delete.ts";
 import { continueButton } from "./commands/wait.ts";
 import type { InboxRotator } from "./inbox-rotate.ts";
+import type { KeyedSerialQueue } from "./queue.ts";
 import { applySessionEvent } from "./session-state.ts";
 
 /** tick の間隔 */
@@ -24,6 +25,12 @@ export const IDLE_BATCH_LIMIT = 5;
 export const DELETE_PROMPT_BATCH_LIMIT = 5;
 /** 1 回の tick で 1 サーバーあたり、状態とカテゴリのずれを直す移動を入れるセッションの上限 */
 export const RECONCILE_BATCH_LIMIT = 5;
+
+/**
+ * .trash と .tmp・.cache の削除をターンのキューに入れるときの key。チャンネル ID（数字だけ）とは重ならず、チャンネルとしては扱わない
+ * （seed・usage・ターンの番号などには使わない）
+ */
+export const MAINTENANCE_QUEUE_KEY = "maintenance";
 
 /** /setup が self-agent カテゴリの中に作るチャンネル */
 const HOME_CHANNEL_FIELDS = ["inboxChannelId", "tasksChannelId", "systemChannelId"] as const;
@@ -69,6 +76,12 @@ export type SchedulerDeps = {
   pruneProjectTrash: () => Promise<void>;
   /** workDir の .tmp の古いものと、上限を超えた .cache を消す。投げたら log に出して続ける */
   pruneWorkDir: () => Promise<void>;
+  /**
+   * 発言と同じターンのキュー。.trash と .tmp・.cache の削除は、ここにセッションのジョブ（key は MAINTENANCE_QUEUE_KEY）として入れ、
+   * セッションのターンと重ねない（sandbox のコマンドが書ける場所を、ターンの最中に消さない）。
+   * tick の時点でセッションのジョブが実行中なら、その tick では入れない（長いターンの後ろで tick を待たせない）
+   */
+  turnQueue: Pick<KeyedSerialQueue, "run" | "runningSessionJobs">;
   now: () => Date;
   timers?: SchedulerTimers;
   log: (message: string) => void;
@@ -138,8 +151,7 @@ export class Scheduler {
     await this.moveIdleSessions();
     await this.promptDeletes();
     this.pruneDevLogs();
-    await this.pruneProjectTrash();
-    await this.pruneWorkDir();
+    await this.pruneSandboxAreas();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
     await this.deps.inboxRotator.rotateDue(() => this.stopped);
   }
@@ -217,6 +229,23 @@ export class Scheduler {
     } catch {
       this.deps.log("古い dev ログを消せませんでした");
     }
+  }
+
+  /**
+   * プロジェクトの古い .trash と workDir の .tmp・.cache を、ターンのキューのセッションのジョブとして消す。
+   * 停止を始めた・セッションのジョブが実行中なら何もしない（log も出さない）。入れた後に来たセッションのターンは、消し終わるまで待つ。reject しない
+   */
+  private async pruneSandboxAreas(): Promise<void> {
+    const { turnQueue } = this.deps;
+    if (this.stopped || turnQueue.runningSessionJobs() > 0) return;
+    await turnQueue.run(
+      MAINTENANCE_QUEUE_KEY,
+      async () => {
+        await this.pruneProjectTrash();
+        await this.pruneWorkDir();
+      },
+      { session: true },
+    );
   }
 
   /** プロジェクトの古い .trash を消す。失敗は log に出すだけ（パスは出さない） */

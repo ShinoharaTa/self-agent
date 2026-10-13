@@ -501,6 +501,38 @@ test("clear: UI の土台の複製に失敗しても cleared を返し、scaffol
   for (const secret of [dir, "self-agent-test-no-such-template", "ENOENT"]) assert.ok(!logs[0]!.includes(secret), secret);
 });
 
+test("pruneProjectTrash: 消す前に同期で .purging-<trash_id> に名前を変える（その間 restore・一覧には出ない）。前に残った .purging-* も消す", async (t) => {
+  const { dir, projectsDir, run } = setup(t);
+  const now = new Date("2026-10-11T00:00:00Z");
+  const old = formatTrashId(new Date(now.getTime() - (TRASH_RETENTION_DAYS + 1) * DAY_MS));
+  const recent = formatTrashId(new Date(now.getTime() - DAY_MS));
+  const trash = join(dir, TRASH_DIR_NAME);
+  for (const name of [old, recent, ".purging-20200101T000000Z"]) {
+    mkdirSync(join(trash, name, "site"), { recursive: true });
+    writeFileSync(join(trash, name, "site", "index.html"), "x");
+  }
+
+  const pruning = pruneProjectTrash(projectsDir, now);
+  // rm を待つ前（同期の部分）に名前を変えてある
+  assert.deepEqual(readdirSync(trash).sort(), [`.purging-${old}`, ".purging-20200101T000000Z", recent].sort());
+  assert.deepEqual(await run({ action: "restore", trash_id: old }, now), { result: "not_found", trash_id: old });
+  await pruning;
+
+  assert.deepEqual(readdirSync(trash), [recent]);
+});
+
+test("restore: .purging-* は一覧に出さず、trash_id に渡しても not_found", async (t) => {
+  const { dir, run } = setup(t);
+  const purging = `.purging-${ID}`;
+  mkdirSync(join(dir, TRASH_DIR_NAME, purging, "site"), { recursive: true });
+  writeFileSync(join(dir, TRASH_DIR_NAME, purging, "site", "index.html"), "x");
+
+  assert.equal(TRASH_ID_PATTERN.test(purging), false);
+  assert.deepEqual(await run({ action: "restore" }), { result: "list", trashes: [] });
+  assert.deepEqual(await run({ action: "restore", trash_id: purging }), { result: "not_found", trash_id: purging });
+  assert.ok(existsSync(join(dir, TRASH_DIR_NAME, purging, "site", "index.html")));
+});
+
 test("pruneProjectTrash: 1 つ消せなくても残りのプロジェクトの古い .trash は消し、最後に 1 回だけ投げる（パスは出さない）", async (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));

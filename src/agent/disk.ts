@@ -50,6 +50,7 @@ function isInside(child: string, dir: string): boolean {
 
 /**
  * path（そのものを含む）の中の全部の大きさ（lstat の blocks × 512）。symlink はたどらず、リンクそのものだけを数える。
+ * ハードリンクが複数あるもの（ディレクトリ以外）は (dev, ino) で 1 回だけ数える。
  * path が無ければ 0。数えている間に消えたものは飛ばす。stopAbove を超えたらそこで数えるのをやめて、その時点の値（stopAbove より大きい）を返す。
  * skipTopLevel の名前は path の直下のものだけ数えない
  */
@@ -60,6 +61,8 @@ export function treeSize(
 ): number {
   let total = 0;
   const stack = [path];
+  /** 数えたハードリンク（nlink が 2 以上のもの）の `dev:ino` */
+  const linked = new Set<string>();
   while (stack.length > 0) {
     const current = stack.pop() as string;
     let stats;
@@ -68,6 +71,11 @@ export function treeSize(
     } catch (error) {
       if (hasCode(error, "ENOENT", "ENOTDIR")) continue;
       throw error;
+    }
+    if (!stats.isDirectory() && stats.nlink > 1) {
+      const key = `${stats.dev}:${stats.ino}`;
+      if (linked.has(key)) continue;
+      linked.add(key);
     }
     total += stats.blocks * 512;
     if (total > stopAbove) return total;

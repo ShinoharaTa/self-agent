@@ -562,3 +562,26 @@ test("node_modules を消すのに失敗しても（プロジェクトを引け�
   assertClosed(none, "話しただけで終わった");
   assert.ok(none.logs.every((line) => !line.includes("node_modules")));
 });
+
+test("node_modules はキューの中で完了のままか確かめてから消す。キューを待つ間に進行中に戻っていれば消さない（log も出さない）", async (t) => {
+  const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
+  const dir = projectWithNodeModules(env);
+  const [, reply] = await env.runClose();
+  env.clock.now = CLOSED_AT;
+  // 同じチャンネルの前のジョブ（発言のターンなど）が動いている間に閉じる
+  let release = (): void => {};
+  const running = env.turnQueue.run("topic-1", () => new Promise<void>((resolve) => (release = resolve)), { session: true });
+
+  const pressed = env.press(pressLabel(reply, "登録しない"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(env.topicSessions.get("topic-1")?.state, "done");
+  // 待っている間に発言で進行中に戻る
+  env.topicSessions.setActive("topic-1");
+  release();
+  await running;
+  await pressed;
+
+  assert.ok(existsSync(join(dir, "node_modules")));
+  assert.ok(existsSync(join(dir, "app", "node_modules")));
+  assert.ok(env.logs.every((line) => !line.includes("node_modules")));
+});

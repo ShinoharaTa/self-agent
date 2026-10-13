@@ -205,6 +205,8 @@ const scheduler = new Scheduler({
   pruneDevLogs: () => pruneDevLogs(devLogDir(config.dataDir), now(), config.timeZone, config.devLogDays),
   pruneProjectTrash: () => pruneProjectTrash(projectsDir, now()),
   pruneWorkDir: () => pruneWorkDir(realWorkDir),
+  // .trash・.tmp・.cache の削除は発言と同じキューにセッションのジョブとして入れる（セッションのジョブが実行中ならその tick では消さない）
+  turnQueue,
   now,
   log,
 });

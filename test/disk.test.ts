@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   lutimesSync,
   mkdirSync,
@@ -70,6 +71,16 @@ test("treeSize: 中の全部を lstat で数え、symlink はたどらない（�
   // skipTopLevel は直下の名前だけ数えない（下の階層の同じ名前は数える）
   mkdirSync(join(dir, "site", "site"));
   assert.equal(treeSize(dir, undefined, ["site"]), used(dir) + used(join(dir, "link-file")) + used(join(dir, "link-dir")));
+});
+
+test("treeSize: ハードリンクが複数あるファイルは 1 回だけ数える", (t) => {
+  const dir = join(tempDir(t), "project");
+  mkdirSync(join(dir, "site"), { recursive: true });
+  writeFileSync(join(dir, "a.bin"), Buffer.alloc(256 * 1024));
+  linkSync(join(dir, "a.bin"), join(dir, "b.bin"));
+  linkSync(join(dir, "a.bin"), join(dir, "site", "c.bin"));
+
+  assert.equal(treeSize(dir), used(dir) + used(join(dir, "site")) + used(join(dir, "a.bin")));
 });
 
 test("DiskQuota: プロジェクトの大きさ（直下の .trash は除く）を 60 秒キャッシュし、過ぎたら数え直す。プロジェクトごとに別", (t) => {

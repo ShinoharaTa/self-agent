@@ -131,18 +131,20 @@ function finalizeClose(
 
 /**
  * 閉じた後に、そのチャンネルのプロジェクト（あれば）の node_modules を消す（作り直せるもの。disk.ts の removeNodeModules）。
- * 発言と同じキュー（turnQueue、key は channelId）の中で行い、そのチャンネルの新しいターンと重ならないようにする。
+ * 発言と同じキュー（turnQueue、key は channelId）の中で行い、そのチャンネルの新しいターンと重ならないようにする。その時点で完了でなければ（戻っていれば）消さない。
  * プロジェクトの dir を確かめられなければ何も消さない。失敗は log だけで、/close の結果は変えない（パスは出さない）。reject しない
  */
 async function removeClosedNodeModules(
-  deps: Pick<CloseDeps, "projects" | "projectsDir" | "turnQueue" | "log">,
+  deps: Pick<CloseDeps, "topicSessions" | "projects" | "projectsDir" | "turnQueue" | "log">,
   channelId: string,
 ): Promise<void> {
-  const { projects, projectsDir, turnQueue, log } = deps;
+  const { topicSessions, projects, projectsDir, turnQueue, log } = deps;
   try {
     await turnQueue.run(
       channelId,
       async () => {
+        // キューを待つ間に発言などで進行中に戻っていれば消さない
+        if (topicSessions.get(channelId)?.state !== "done") return;
         const project = projects.getByChannel(channelId);
         if (project === undefined) return;
         const removed = await removeNodeModules(projectsDir, project.slug);

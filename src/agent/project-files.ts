@@ -13,6 +13,8 @@ export const TRASH_DIR_NAME = ".trash";
 export const TRASH_RETENTION_DAYS = 30;
 /** trash の paths の上限 */
 export const PROJECT_FILES_MAX_PATHS = 50;
+/** 消している途中の .trash/<trash_id> に付ける名前の頭（`.purging-<trash_id>`。TRASH_ID_PATTERN に合わないので restore・一覧には出ない） */
+export const TRASH_PURGING_PREFIX = ".purging-";
 /** trash_id の形（UTC の YYYYMMDDTHHmmssZ。同じ秒に重なれば -2、-3…） */
 export const TRASH_ID_PATTERN = /^\d{8}T\d{6}Z(-\d+)?$/;
 
@@ -371,6 +373,8 @@ export async function runProjectFiles(
 
 /**
  * `<projectsDir>/<slug>/.trash/<name>` のうち、name が trash_id の形で、その時刻から days 日を過ぎたものを消す。
+ * 消す前に同じ .trash の中の `.purging-<trash_id>`（TRASH_ID_PATTERN に合わないので restore・一覧には出ない）に同期で名前を変えてから消す
+ * （消している間に restore されない）。前に消しきれなかった `.purging-*` も消す。
  * 形に合わない名前・ディレクトリでないもの（symlink を含む）は触らない（symlink の先も触らない）。projectsDir や .trash が無ければ何もしない。
  * 消すのは removeTree（symlink をたどらない rm）。1 つ消せなくても残りは続け、最後に失敗の数だけを投げる
  */
@@ -389,9 +393,23 @@ export async function pruneProjectTrash(projectsDir: string, now: Date, days = T
       const projectDir = join(projectsDir, project);
       const trashRoot = join(projectDir, TRASH_DIR_NAME);
       if (!isRealDirectory(projectDir) || !isRealDirectory(trashRoot)) continue;
-      for (const name of readdirSync(trashRoot)) {
+      const names = readdirSync(trashRoot);
+      // 名前を変えたもの（前の残りと今回の分）
+      const purging = names.filter((name) => name.startsWith(TRASH_PURGING_PREFIX));
+      for (const name of names) {
         const parsed = TRASH_ID_PATTERN.test(name) ? parseTrashId(name) : undefined;
         if (parsed === undefined || now.getTime() - parsed.time <= days * DAY_MS) continue;
+        const target = join(trashRoot, name);
+        const renamed = `${TRASH_PURGING_PREFIX}${name}`;
+        try {
+          if (!isRealDirectory(target) || purging.includes(renamed)) continue;
+          renameSync(target, join(trashRoot, renamed));
+          purging.push(renamed);
+        } catch {
+          failures++;
+        }
+      }
+      for (const name of purging) {
         const target = join(trashRoot, name);
         try {
           if (isRealDirectory(target)) await removeTree(target);

@@ -402,6 +402,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
     pruneDevLogs: () => {},
     pruneProjectTrash: async () => {},
     pruneWorkDir: async () => {},
+    turnQueue: new KeyedSerialQueue(2),
     now: () => NOW,
     timers: {
       every: (fn) => {
