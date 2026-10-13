@@ -54,7 +54,7 @@ function formatDuration(ms: number): string {
 
 /**
  * 見出し（時刻・種類・チャンネル ID・所要時間・トークン・ツール回数・成否）。context の無い run の種類・チャンネルは -。
- * トークンは失敗でも届いた分があれば出す。出力・ステップ数の無い古い記録はそこだけ -
+ * トークンは失敗でも届いた分があれば出す。出力の無い記録（失敗・以前の記録）とステップ数の無い以前の記録はそこだけ -
  */
 function heading(record: DevLogRecord, timeZone: string): string {
   const { result } = record;

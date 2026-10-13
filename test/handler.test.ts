@@ -249,7 +249,8 @@ test("受け付けた発言で runner を呼び、usage 記録・session 保存�
       toolCalls: 3,
       contextTokens: 900,
       kind: "inbox",
-      outputTokens: 0,
+      // 偽の結果に出力の合計が無いので NULL
+      outputTokens: null,
       cacheCreation1hInputTokens: 0,
       steps: turnUsage(10, 2000, 300).steps,
     },

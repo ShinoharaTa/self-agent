@@ -11,9 +11,9 @@ function formatCount(value: number): string {
   return value.toLocaleString("en-US");
 }
 
-/** 無い値は - */
-function formatMaybe(value: number | null): string {
-  return value === null ? "-" : formatCount(value);
+/** 無い値（null・undefined）は - */
+function formatMaybe(value: number | null | undefined): string {
+  return value === null || value === undefined ? "-" : formatCount(value);
 }
 
 /** キャッシュ率（read / total を四捨五入した %）。total が 0 なら - */
@@ -23,7 +23,7 @@ export function cacheRate(read: number, total: number): string {
 
 /**
  * ターンのトークンの console の 1 行。kind はターンの種類のラベル（inbox・session-renew など）。
- * 入力は input + read + creation、キャッシュ率は読みの割合。失敗で usage が無ければ「記録なし」
+ * 入力は input + read + creation、キャッシュ率は読みの割合。出力は成功したターンだけ（無ければ -）。失敗で usage が無ければ「記録なし」
  */
 export function formatTurnUsageLog(kind: string, result: RunResult): string {
   const label = `トークン（${kind}・${result.ok ? "成功" : "失敗"}）`;
@@ -39,11 +39,14 @@ export function formatTurnUsageLog(kind: string, result: RunResult): string {
     `${label}: ステップ ${usage.steps.length}、入力 ${formatCount(total)}` +
     `（読み ${formatCount(usage.cacheReadInputTokens)}・書き ${formatCount(usage.cacheCreationInputTokens)}` +
     `（1 時間 ${formatCount(usage.cacheCreation1hInputTokens)}）・なし ${formatCount(usage.inputTokens)}）、` +
-    `出力 ${formatCount(usage.outputTokens)}、キャッシュ率 ${cacheRate(usage.cacheReadInputTokens, total)}、1 ステップ目 ${firstStep}`
+    `出力 ${formatMaybe(usage.outputTokens)}、キャッシュ率 ${cacheRate(usage.cacheReadInputTokens, total)}、1 ステップ目 ${firstStep}`
   );
 }
 
-/** 記録 1 行のトークン。合計の列があればそれ、無ければ（失敗したターン）steps の合計、どちらも無ければ null */
+/**
+ * 記録 1 行のトークン。入力側は合計の列があればそれ、無ければ（失敗したターン）steps の合計、どちらも無ければ null。
+ * 出力は列だけ（steps に出力は無い。失敗したターンと v17 より前の行は null）
+ */
 export type EntryTokens = {
   input: number | null;
   read: number | null;
@@ -61,7 +64,7 @@ export function entryTokens(entry: UsageEntry): EntryTokens {
     read: entry.cacheReadInputTokens ?? fromSteps((step) => step.cacheReadInputTokens),
     creation: entry.cacheCreationInputTokens ?? fromSteps((step) => step.cacheCreationInputTokens),
     creation1h: entry.cacheCreation1hInputTokens ?? fromSteps((step) => step.cacheCreation1hInputTokens),
-    output: entry.outputTokens ?? fromSteps((step) => step.outputTokens),
+    output: entry.outputTokens,
   };
 }
 
@@ -107,12 +110,12 @@ export function formatUsageEntry(entry: UsageEntry, timeZone: string): string {
   ].join(" ");
 }
 
-/** npm run usage --steps の、ターンの下に出すステップごとの行（1 から数える） */
+/** npm run usage --steps の、ターンの下に出すステップごとの行（1 から数える。入力側だけ） */
 export function formatUsageSteps(steps: readonly StepUsage[]): string[] {
   return steps.map(
     (step, index) =>
       `  ${index + 1}: 読み ${formatCount(step.cacheReadInputTokens)} 書き ${formatCount(step.cacheCreationInputTokens)}` +
-      `(1h ${formatCount(step.cacheCreation1hInputTokens)}) なし ${formatCount(step.inputTokens)} 出力 ${formatCount(step.outputTokens)}`,
+      `(1h ${formatCount(step.cacheCreation1hInputTokens)}) なし ${formatCount(step.inputTokens)}`,
   );
 }
 

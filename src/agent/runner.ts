@@ -23,22 +23,25 @@ export type RunInput = {
   onProgress?: (step: ProgressStep) => void;
 };
 
-/** メインループの 1 ステップ（API 呼び出し 1 回）のトークン。cacheCreation1hInputTokens は cacheCreationInputTokens のうち 1 時間のキャッシュの分 */
+/**
+ * メインループの 1 ステップ（API 呼び出し 1 回）の入力側のトークン。cacheCreation1hInputTokens は cacheCreationInputTokens のうち 1 時間のキャッシュの分。
+ * 出力は持たない（途中の assistant メッセージの出力は確定していない）
+ */
 export type StepUsage = {
   inputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   cacheCreation1hInputTokens: number;
-  outputTokens: number;
 };
 
-/** メインループの各ステップのトークンの合計と、ステップごとの内訳（起きた順）。resume しても累計にならない、このターンの分 */
+/** メインループの各ステップの入力側のトークンの合計と、ステップごとの内訳（起きた順）。resume しても累計にならない、このターンの分 */
 export type TurnUsage = {
   inputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   cacheCreation1hInputTokens: number;
-  outputTokens: number;
+  /** このターンのメインループの出力の合計（result メッセージの usage）。成功したターンだけ入る */
+  outputTokens?: number;
   steps: StepUsage[];
 };
 

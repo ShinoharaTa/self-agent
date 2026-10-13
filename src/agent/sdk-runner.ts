@@ -56,14 +56,13 @@ export function describeResultError(result: SDKResultMessage): string {
   return errors.length === 0 ? result.subtype : `${result.subtype}: ${shorten(errors.join(" / "))}`;
 }
 
-/** ステップごとの usage（起きた順）から、このターンの usage（合計と内訳）を作る */
+/** ステップごとの usage（起きた順）から、このターンの入力側の usage（合計と内訳）を作る。出力は入れない */
 function toTurnUsage(steps: readonly StepUsage[]): TurnUsage {
   const usage: TurnUsage = {
     inputTokens: 0,
     cacheReadInputTokens: 0,
     cacheCreationInputTokens: 0,
     cacheCreation1hInputTokens: 0,
-    outputTokens: 0,
     steps: [...steps],
   };
   for (const step of steps) {
@@ -71,7 +70,6 @@ function toTurnUsage(steps: readonly StepUsage[]): TurnUsage {
     usage.cacheReadInputTokens += step.cacheReadInputTokens;
     usage.cacheCreationInputTokens += step.cacheCreationInputTokens;
     usage.cacheCreation1hInputTokens += step.cacheCreation1hInputTokens;
-    usage.outputTokens += step.outputTokens;
   }
   return usage;
 }
@@ -473,8 +471,10 @@ export class SdkAgentRunner implements AgentRunner {
       input.sessionId === undefined
         ? { ...base, maxTurns, abortController, hooks, stderr: onStderr }
         : { ...base, maxTurns, abortController, hooks, stderr: onStderr, resume: input.sessionId };
-    // メインループのステップ（message.id）ごとの usage。同じ message.id は content のブロックごとに届くので、届くたびに最新の usage で上書きする
-    // （Map は最初に入れた順を保つ）。終わりに合計と内訳（toTurnUsage）にし、失敗でも 1 ステップでもあれば返す
+    // メインループのステップ（message.id）ごとの入力側の usage。同じ message.id は content のブロックごとに 1 回ずつ届くが、
+    // 入力側（input・cache read・cache creation・1 時間の分）は message_start の時点で確定しているので、どれから取っても同じ値になる。最初に届いたものを使う。
+    // 途中の assistant メッセージの output は確定していないので使わず、出力の合計は result メッセージの usage から取る（成功したターンだけ）。
+    // 終わりに合計と内訳（toTurnUsage）にし、失敗でも 1 ステップでもあれば返す
     const stepUsages = new Map<string, StepUsage>();
     const failedUsage = (): { usage?: TurnUsage } =>
       stepUsages.size === 0 ? {} : { usage: toTurnUsage([...stepUsages.values()]) };
@@ -500,14 +500,17 @@ export class SdkAgentRunner implements AgentRunner {
           sessionId = message.session_id;
         }
         steps?.push(...devLogSteps(message));
-        if (message.type === "assistant" && message.parent_tool_use_id === null) {
+        if (
+          message.type === "assistant" &&
+          message.parent_tool_use_id === null &&
+          !stepUsages.has(message.message.id)
+        ) {
           const stepUsage = message.message.usage;
           stepUsages.set(message.message.id, {
             inputTokens: stepUsage.input_tokens,
             cacheReadInputTokens: stepUsage.cache_read_input_tokens ?? 0,
             cacheCreationInputTokens: stepUsage.cache_creation_input_tokens ?? 0,
             cacheCreation1hInputTokens: stepUsage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
-            outputTokens: stepUsage.output_tokens ?? 0,
           });
         }
         // assistant メッセージは並列ツール呼び出しでも 1 ブロックずつ届くので、message.id ではなく tool_use の id で重複を除く
@@ -570,7 +573,12 @@ export class SdkAgentRunner implements AgentRunner {
         ...failedUsage(),
       };
     }
-    const usage = toTurnUsage([...stepUsages.values()]);
+    // 出力の合計は result メッセージの usage（メインループだけ・このターンの分）。数でなければ入れない
+    const outputTokens = result.usage?.output_tokens;
+    const usage: TurnUsage = {
+      ...toTurnUsage([...stepUsages.values()]),
+      ...(typeof outputTokens === "number" ? { outputTokens } : {}),
+    };
     // メインループの最後のステップの入力（合算しない）
     const last = usage.steps.at(-1);
     const contextTokens =

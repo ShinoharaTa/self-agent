@@ -2,16 +2,15 @@
 
 import type { AgentRunner, RunInput, RunResult, TurnUsage } from "../../src/agent/runner.ts";
 
-/** 1 ステップだけのターンの usage（合計とそのステップが同じ） */
-export function turnUsage(input: number, read: number, creation: number, output: number = 0): TurnUsage {
+/** 1 ステップだけのターンの usage（入力側の合計とそのステップが同じ）。output を渡せば出力の合計（成功したターンの result の分）を入れる */
+export function turnUsage(input: number, read: number, creation: number, output?: number): TurnUsage {
   const step = {
     inputTokens: input,
     cacheReadInputTokens: read,
     cacheCreationInputTokens: creation,
     cacheCreation1hInputTokens: 0,
-    outputTokens: output,
   };
-  return { ...step, steps: [step] };
+  return { ...step, ...(output === undefined ? {} : { outputTokens: output }), steps: [step] };
 }
 
 /** 1 回の run の結果。Error は投げ、関数は受け取った入力で結果を作る（session_report を呼んだことにするなど） */
