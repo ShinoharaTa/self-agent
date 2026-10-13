@@ -21,7 +21,7 @@ import { type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.
 import { createStores, tempDb } from "./helpers/db.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
-import { FakeRunner } from "./helpers/runner.ts";
+import { FakeRunner, turnUsage } from "./helpers/runner.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 const CLOSED_AT = new Date("2026-10-03T09:00:00Z");
@@ -33,7 +33,7 @@ function ok(text: string, sessionId: string = "session-1"): RunResult {
     ok: true,
     text,
     sessionId,
-    usage: { inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300 },
+    usage: turnUsage(10, 2000, 300),
     durationMs: 4200,
     toolCalls: 1,
     contextTokens: 2310,
@@ -93,7 +93,9 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
   const channelOps = new RecordingChannelOps();
   const turnQueue = new RecordingQueue(2);
   const logs: string[] = [];
-  const log = (line: string): number => logs.push(line);
+  // ターンのトークンの行（recordTurnUsage）は tokenLogs に分ける
+  const tokenLogs: string[] = [];
+  const log = (line: string): number => (line.startsWith("トークン（") ? tokenLogs : logs).push(line);
   const deps = {
     topicSessions,
     tasks,
@@ -121,7 +123,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
   };
   const openTasks = (): Array<{ title: string; due: string | null }> =>
     tasks.list({ status: "open", limit: 50 }).map((task) => ({ title: task.title, due: task.due }));
-  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, channelOps, turnQueue, logs, runClose, press, openTasks };
+  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, channelOps, turnQueue, logs, tokenLogs, runClose, press, openTasks };
 }
 
 /** 閉じたあとの sessions の行と、完了カテゴリへの移動 */

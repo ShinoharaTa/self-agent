@@ -1,6 +1,18 @@
 // 単体テストの偽 AgentRunner。渡した結果を呼ばれた順に返す
 
-import type { AgentRunner, RunInput, RunResult } from "../../src/agent/runner.ts";
+import type { AgentRunner, RunInput, RunResult, TurnUsage } from "../../src/agent/runner.ts";
+
+/** 1 ステップだけのターンの usage（合計とそのステップが同じ） */
+export function turnUsage(input: number, read: number, creation: number, output: number = 0): TurnUsage {
+  const step = {
+    inputTokens: input,
+    cacheReadInputTokens: read,
+    cacheCreationInputTokens: creation,
+    cacheCreation1hInputTokens: 0,
+    outputTokens: output,
+  };
+  return { ...step, steps: [step] };
+}
 
 /** 1 回の run の結果。Error は投げ、関数は受け取った入力で結果を作る（session_report を呼んだことにするなど） */
 export type FakeRunStep = RunResult | Error | ((input: RunInput) => RunResult);

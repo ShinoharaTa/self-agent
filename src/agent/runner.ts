@@ -23,11 +23,23 @@ export type RunInput = {
   onProgress?: (step: ProgressStep) => void;
 };
 
-/** メインループの各ステップの入力側トークン（resume しても累計にならない、このターンの分） */
+/** メインループの 1 ステップ（API 呼び出し 1 回）のトークン。cacheCreation1hInputTokens は cacheCreationInputTokens のうち 1 時間のキャッシュの分 */
+export type StepUsage = {
+  inputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheCreation1hInputTokens: number;
+  outputTokens: number;
+};
+
+/** メインループの各ステップのトークンの合計と、ステップごとの内訳（起きた順）。resume しても累計にならない、このターンの分 */
 export type TurnUsage = {
   inputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
+  cacheCreation1hInputTokens: number;
+  outputTokens: number;
+  steps: StepUsage[];
 };
 
 /** このターン中に SDK が会話を要約した（compaction）。trigger は "auto" / "manual"、preTokens は要約前のトークン数 */
@@ -55,6 +67,8 @@ export type RunResult =
       errorMessage: string;
       /** 失敗するまでのツール呼び出しの回数（失敗した呼び出しを含む） */
       toolCalls: number;
+      /** 失敗するまでのメインループのトークン。1 ステップも届いていなければ入らない（中断・打ち切り・例外・result のエラーでも、届いた分は入る） */
+      usage?: TurnUsage;
       /** 途中で受け取った session_id（まだ受け取っていなければ resume 元の sessionId）。中断・打ち切り・例外で終わっても入る */
       sessionId?: string;
       /**

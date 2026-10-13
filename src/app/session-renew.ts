@@ -63,7 +63,7 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
 
   // オーナーの発言ではないので、WebFetch で取得できる URL は無い
   const result = await runner.run({ prompt: RENEW_PROMPT, sessionId, context: undefined, allowedUrls: [] });
-  recordTurnUsage(turn, channelId, result);
+  recordTurnUsage(turn, channelId, "session-renew", result);
 
   if (result.ok) {
     const text = result.text.trim();

@@ -30,7 +30,15 @@ export type DevLogResult =
       contextTokens: number;
       compacted?: Compaction;
     }
-  | { ok: false; errorMessage: string; sessionId?: string; sessionRecorded: boolean; toolCalls: number };
+  | {
+      ok: false;
+      errorMessage: string;
+      sessionId?: string;
+      sessionRecorded: boolean;
+      toolCalls: number;
+      /** 失敗するまでに届いたステップのトークン（RunResult に入っていたときだけ） */
+      usage?: TurnUsage;
+    };
 
 /** 1 run の記録（ファイルの 1 行） */
 export type DevLogRecord = {
@@ -88,6 +96,7 @@ export function devLogResult(result: RunResult): DevLogResult {
     ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }),
     sessionRecorded: result.sessionRecorded,
     toolCalls: result.toolCalls,
+    ...(result.usage === undefined ? {} : { usage: result.usage }),
   };
 }
 

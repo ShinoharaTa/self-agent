@@ -23,6 +23,7 @@ import { runChannelTurn } from "../src/app/turn.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingQueue } from "./helpers/recording.ts";
+import { turnUsage } from "./helpers/runner.ts";
 
 /** 2026-10-02(金) 09:12 JST */
 const NOW = new Date("2026-10-02T00:12:00Z");
@@ -150,7 +151,7 @@ test("session_open: 作ったチャンネルの最初のターンの prompt の�
         ok: true,
         text: "続けましょう",
         sessionId: "session-1",
-        usage: { inputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+        usage: turnUsage(1, 0, 0),
         durationMs: 1,
         toolCalls: 0,
         contextTokens: 1,

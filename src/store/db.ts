@@ -203,6 +203,14 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX reminders_active ON reminders (status, next_at);
   `,
+  // v17: ターンの種類（ログ用のラベル。ID は入れない）、出力トークン、キャッシュ作成のうち 1 時間の分、
+  // メインループのステップごとのトークン（JSON の配列）。既存の行は NULL
+  `
+  ALTER TABLE usage_log ADD COLUMN kind TEXT;
+  ALTER TABLE usage_log ADD COLUMN output_tokens INTEGER;
+  ALTER TABLE usage_log ADD COLUMN cache_creation_1h_tokens INTEGER;
+  ALTER TABLE usage_log ADD COLUMN steps TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

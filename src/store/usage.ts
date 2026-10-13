@@ -1,4 +1,5 @@
-import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
+import type { DatabaseSync, SQLOutputValue, SQLInputValue } from "node:sqlite";
+import type { StepUsage } from "../agent/runner.ts";
 
 export type UsageRecord = {
   key: string;
@@ -14,6 +15,13 @@ export type UsageRecord = {
   toolCalls?: number;
   /** そのターンの最後のステップの入力（input + cache read + cache creation）。省略は 0 */
   contextTokens?: number;
+  /** ターンの種類（inbox・session-renew など、ログ用のラベル。ID は入れない）。省略は NULL */
+  kind?: string;
+  outputTokens?: number;
+  /** cacheCreationInputTokens のうち 1 時間のキャッシュの分 */
+  cacheCreation1hInputTokens?: number;
+  /** メインループのステップごとのトークン（起きた順）。省略・null は NULL */
+  steps?: readonly StepUsage[] | null;
 };
 
 export type UsageEntry = {
@@ -29,7 +37,16 @@ export type UsageEntry = {
   compacted: boolean;
   toolCalls: number;
   contextTokens: number;
+  /** v17 より前の行は null（以下 3 つも同じ） */
+  kind: string | null;
+  outputTokens: number | null;
+  cacheCreation1hInputTokens: number | null;
+  /** JSON として読めない・形が違うときも null */
+  steps: StepUsage[] | null;
 };
+
+/** listRecent の範囲。since はちょうどを含み、until はちょうどを含まない。kind は完全一致 */
+export type UsageListOptions = { since?: Date; until?: Date; kind?: string; limit: number };
 
 /** ある時刻以降のターンの合計（/usage）。トークンは成功したターンの分だけ（失敗したターンは記録していない） */
 export type UsageSummary = {
@@ -48,6 +65,49 @@ function nullableNumber(value: SQLOutputValue | undefined): number | null {
   return value === null || value === undefined ? null : Number(value);
 }
 
+/** steps 列の 1 要素（input・read・creation・creation 1h・output） */
+type StoredStep = { i: number; r: number; w: number; w1h: number; o: number };
+
+function stepsToJson(steps: readonly StepUsage[]): string {
+  return JSON.stringify(
+    steps.map(
+      (step): StoredStep => ({
+        i: step.inputTokens,
+        r: step.cacheReadInputTokens,
+        w: step.cacheCreationInputTokens,
+        w1h: step.cacheCreation1hInputTokens,
+        o: step.outputTokens,
+      }),
+    ),
+  );
+}
+
+/** steps 列を読む。NULL・JSON として読めない・形が違う（数でない値がある）なら null */
+function stepsFromJson(value: SQLOutputValue | undefined): StepUsage[] | null {
+  if (typeof value !== "string") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const steps: StepUsage[] = [];
+  for (const item of parsed) {
+    if (typeof item !== "object" || item === null) return null;
+    const { i, r, w, w1h, o } = item as Record<string, unknown>;
+    if (![i, r, w, w1h, o].every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+    steps.push({
+      inputTokens: i as number,
+      cacheReadInputTokens: r as number,
+      cacheCreationInputTokens: w as number,
+      cacheCreation1hInputTokens: w1h as number,
+      outputTokens: o as number,
+    });
+  }
+  return steps;
+}
+
 function toEntry(row: Record<string, SQLOutputValue>): UsageEntry {
   return {
     id: Number(row.id),
@@ -62,6 +122,10 @@ function toEntry(row: Record<string, SQLOutputValue>): UsageEntry {
     compacted: Number(row.compacted) === 1,
     toolCalls: Number(row.tool_calls),
     contextTokens: Number(row.context_tokens),
+    kind: row.kind === null || row.kind === undefined ? null : String(row.kind),
+    outputTokens: nullableNumber(row.output_tokens),
+    cacheCreation1hInputTokens: nullableNumber(row.cache_creation_1h_tokens),
+    steps: stepsFromJson(row.steps),
   };
 }
 
@@ -78,8 +142,9 @@ export class UsageStore {
   record(record: UsageRecord): void {
     this.db
       .prepare(
-        "INSERT INTO usage_log (at, key, session_id, ok, duration_ms, input_tokens, cache_read_input_tokens, cache_creation_input_tokens, compacted, tool_calls, context_tokens) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO usage_log (at, key, session_id, ok, duration_ms, input_tokens, cache_read_input_tokens, cache_creation_input_tokens, compacted, tool_calls, context_tokens, " +
+          "kind, output_tokens, cache_creation_1h_tokens, steps) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         this.now().toISOString(),
@@ -93,12 +158,41 @@ export class UsageStore {
         record.compacted === true ? 1 : 0,
         record.toolCalls ?? 0,
         record.contextTokens ?? 0,
+        record.kind ?? null,
+        record.outputTokens ?? null,
+        record.cacheCreation1hInputTokens ?? null,
+        record.steps === undefined || record.steps === null ? null : stepsToJson(record.steps),
       );
   }
 
   /** 新しい順 */
   recent(limit: number): UsageEntry[] {
     return this.db.prepare("SELECT * FROM usage_log ORDER BY id DESC LIMIT ?").all(limit).map(toEntry);
+  }
+
+  /** 範囲（記録した時刻 at）の中の新しい limit 件を、古い順に返す */
+  listRecent(options: UsageListOptions): UsageEntry[] {
+    // at は toISOString（UTC・同じ桁数）なので文字列で比べる。同じ時刻は id で並べる
+    const conditions: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (options.since !== undefined) {
+      conditions.push("at >= ?");
+      params.push(options.since.toISOString());
+    }
+    if (options.until !== undefined) {
+      conditions.push("at < ?");
+      params.push(options.until.toISOString());
+    }
+    if (options.kind !== undefined) {
+      conditions.push("kind = ?");
+      params.push(options.kind);
+    }
+    const where = conditions.length === 0 ? "" : ` WHERE ${conditions.join(" AND ")}`;
+    return this.db
+      .prepare(`SELECT * FROM usage_log${where} ORDER BY at DESC, id DESC LIMIT ?`)
+      .all(...params, options.limit)
+      .map(toEntry)
+      .reverse();
   }
 
   /** その key のターン（成否を問わない）のうち、after より後（ちょうどは含まない）に記録した数。after が無ければすべて数える */

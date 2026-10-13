@@ -27,7 +27,7 @@ import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps } from "./helpers/recording.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
-import { FakeRunner } from "./helpers/runner.ts";
+import { FakeRunner, turnUsage } from "./helpers/runner.ts";
 
 const cfg = { allowedGuildIds: ["guild-1"], inboxChannelId: "inbox-1", ownerUserId: "owner-1", timeZone: "Asia/Tokyo" };
 const NOW = new Date("2026-10-02T00:12:00Z");
@@ -100,7 +100,7 @@ function okResult(sessionId: string, text: string): Extract<RunResult, { ok: tru
     ok: true,
     text,
     sessionId,
-    usage: { inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300 },
+    usage: turnUsage(10, 2000, 300),
     durationMs: 4200,
     toolCalls: 3,
     // 3 回ツールを呼んだターンの最後のステップの入力（合算の usage より小さい）
@@ -123,6 +123,8 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
   const channelOps = new RecordingChannelOps();
   const queue = new KeyedSerialQueue(2);
   const logs: string[] = [];
+  // ターンのトークンの行（recordTurnUsage）は tokenLogs に分ける
+  const tokenLogs: string[] = [];
   // 途中経過の経過時間は偽のタイマーの時刻で測る
   const timers = new FakeTimers();
   // guild_settings が空なので env の #inbox（inbox-1）を受け付ける
@@ -142,7 +144,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     queue,
     now: () => new Date(NOW.getTime() + timers.elapsed),
     timers,
-    log: (line) => logs.push(line),
+    log: (line) => (line.startsWith("トークン（") ? tokenLogs : logs).push(line),
   });
   const handle = handler.handleMessage;
   // [中断]・[続ける] のボタン（interactions.ts と同じく、この handler に渡す）
@@ -175,6 +177,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     clock,
     usage,
     logs,
+    tokenLogs,
     timers,
     handler,
     handle,
@@ -217,7 +220,7 @@ function setUpGuild(db: ReturnType<typeof openDb>): GuildSettingsStore {
 const TASKS_CONTEXT: RunContext = { guildId: "guild-1", channelId: "tasks-1", kind: "tasks" };
 
 test("受け付けた発言で runner を呼び、usage 記録・session 保存・返信をする", async (t) => {
-  const { gateway, runner, sessions, usage, logs, handle } = setup(t, [okResult("session-1", "登録しました")]);
+  const { gateway, runner, sessions, usage, logs, tokenLogs, handle } = setup(t, [okResult("session-1", "登録しました")]);
   // 返信の時点で usage と session は記録済み
   gateway.beforeSend = () => {
     assert.equal(usage.recent(10).length, 1);
@@ -245,11 +248,19 @@ test("受け付けた発言で runner を呼び、usage 記録・session 保存�
       compacted: false,
       toolCalls: 3,
       contextTokens: 900,
+      kind: "inbox",
+      outputTokens: 0,
+      cacheCreation1hInputTokens: 0,
+      steps: turnUsage(10, 2000, 300).steps,
     },
   ]);
   assert.equal(gateway.typingStarted, 1);
   assert.equal(gateway.typingStopped, 1);
   assert.deepEqual(logs, []);
+  // トークンの行は種類のラベルだけで、チャンネル ID は出さない
+  assert.equal(tokenLogs.length, 1);
+  assert.match(tokenLogs[0]!, /^トークン（inbox・成功）: /);
+  assert.ok(!tokenLogs[0]!.includes("inbox-1"));
 });
 
 test("2 ターン目は保存した sessionId で resume する。#inbox と /setup 済みの #tasks で同じ（context の kind とヘッダのチャンネル名はそれぞれ）", async (t) => {

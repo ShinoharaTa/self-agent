@@ -20,7 +20,7 @@ import type { SummaryChannelKind } from "../src/store/inbox-summaries.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingQueue } from "./helpers/recording.ts";
-import { FakeRunner } from "./helpers/runner.ts";
+import { FakeRunner, turnUsage } from "./helpers/runner.ts";
 
 /** 2026-10-03(土) 04:00 JST（UTC ではまだ 10/02） */
 const ROTATE_AT = new Date("2026-10-02T19:00:00.000Z");
@@ -47,7 +47,7 @@ function ok(text: string, sessionId: string = "session-1", tokens: Tokens = SMAL
     ok: true,
     text,
     sessionId,
-    usage: { inputTokens: tokens.input, cacheReadInputTokens: tokens.read, cacheCreationInputTokens: tokens.creation },
+    usage: turnUsage(tokens.input, tokens.read, tokens.creation),
     durationMs: 4200,
     toolCalls: 0,
     contextTokens: tokens.context,
@@ -112,8 +112,10 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     });
   const queue = new RecordingQueue(2);
   const logs: string[] = [];
+  // ターンのトークンの行（recordTurnUsage）は tokenLogs に分ける
+  const tokenLogs: string[] = [];
   const log = (line: string): void => {
-    logs.push(line);
+    (line.startsWith("トークン（") ? tokenLogs : logs).push(line);
   };
   const cfg = {
     allowedGuildIds: options.allowedGuildIds ?? ["guild-1"],
@@ -204,6 +206,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     events,
     queue,
     logs,
+    tokenLogs,
     rotator,
     chatAt,
     handler,
@@ -430,6 +433,9 @@ test("切り替え: 要約のターン → 要約を保存 → SDK セッショ�
     assert.equal(entry?.ok, true, k.kind);
     assert.equal(entry?.at, ROTATE_AT.toISOString(), k.kind);
     assert.equal(entry?.contextTokens, 2310, k.kind);
+    assert.equal(entry?.kind, `${k.kind}-rotate`, k.kind);
+    assertLogs(env.tokenLogs, 1, k.kind);
+    assert.match(env.tokenLogs[0]!, new RegExp(`^トークン（${k.kind}-rotate・成功）: `), k.kind);
     assertLogs(env.logs, 1, k.kind);
 
     // 切り替えた後の tick では何もしない（要約のターンの記録でまた切り替えない）

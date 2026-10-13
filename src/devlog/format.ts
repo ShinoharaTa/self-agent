@@ -52,12 +52,18 @@ function formatDuration(ms: number): string {
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }
 
-/** 見出し（時刻・種類・チャンネル ID・所要時間・トークン・ツール回数・成否）。context の無い run の種類・チャンネルは - */
+/**
+ * 見出し（時刻・種類・チャンネル ID・所要時間・トークン・ツール回数・成否）。context の無い run の種類・チャンネルは -。
+ * トークンは失敗でも届いた分があれば出す。出力・ステップ数の無い古い記録はそこだけ -
+ */
 function heading(record: DevLogRecord, timeZone: string): string {
   const { result } = record;
-  const tokens = result.ok
-    ? `input ${result.usage.inputTokens} / cache read ${result.usage.cacheReadInputTokens} / cache creation ${result.usage.cacheCreationInputTokens}`
-    : "input - / cache read - / cache creation -";
+  const usage = result.usage;
+  const tokens =
+    usage === undefined
+      ? "input - / cache read - / cache creation - / output - | ステップ -"
+      : `input ${usage.inputTokens} / cache read ${usage.cacheReadInputTokens} / cache creation ${usage.cacheCreationInputTokens}` +
+        ` / output ${usage.outputTokens ?? "-"} | ステップ ${usage.steps?.length ?? "-"}`;
   return [
     `=== ${formatTime(record.at, timeZone)} ${record.kind ?? "-"} channel=${record.channelId ?? "-"} ===`,
     `${formatDuration(record.durationMs)} | ${tokens} | ツール ${result.toolCalls} 回 | ${result.ok ? "成功" : "失敗"}`,

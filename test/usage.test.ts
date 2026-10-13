@@ -6,7 +6,8 @@ import { cacheReadRate, createUsageCommand, usageText } from "../src/app/command
 import { startOfLocalDay } from "../src/app/time.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
-import { type UsageRecord, UsageStore } from "../src/store/usage.ts";
+import type { StepUsage } from "../src/agent/runner.ts";
+import { type UsageEntry, type UsageListOptions, type UsageRecord, UsageStore } from "../src/store/usage.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { FakeResponder } from "./helpers/responder.ts";
 
@@ -34,6 +35,17 @@ const ok = (input: number, read: number, creation: number, toolCalls: number, co
   toolCalls,
   compacted,
 });
+
+/** ステップ 1 つ分の usage */
+function step(input: number, read: number, creation: number, creation1h: number, output: number): StepUsage {
+  return {
+    inputTokens: input,
+    cacheReadInputTokens: read,
+    cacheCreationInputTokens: creation,
+    cacheCreation1hInputTokens: creation1h,
+    outputTokens: output,
+  };
+}
 
 /** 今日（JST）の 0 時ちょうど・その直前、7 日前（JST 9/26）の 0 時ちょうど・その直前に記録する */
 function recordSamples(recordAt: (at: string, record: Omit<UsageRecord, "key">) => void): void {
@@ -103,6 +115,89 @@ test("openDb: v9 の DB を v10 に上げても usage_log の行は残り、cont
       [true, 200000, 0],
     ],
   );
+});
+
+test("openDb: v16 の DB を v17 に上げても usage_log の行は残り、種類・出力・1 時間の分・steps は null。以後は記録できる", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+
+  // ステップごとの記録より前（v16）の DB を作る
+  const v16 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 16)) v16.exec(migration);
+  v16.exec("PRAGMA user_version = 16");
+  v16.prepare(
+    "INSERT INTO usage_log (at, key, session_id, ok, input_tokens, cache_read_input_tokens, cache_creation_input_tokens, context_tokens) " +
+      "VALUES ('2026-10-01T00:00:00.000Z', 'inbox-1', 'session-1', 1, 10, 2000, 300, 2310)",
+  ).run();
+  v16.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 17);
+  const usage = new UsageStore(db, () => NOW);
+  usage.record({ key: "inbox-1", ok: true, kind: "inbox", outputTokens: 5, cacheCreation1hInputTokens: 100, steps: [step(1, 2, 3, 4, 5)] });
+  const pick = (entry: UsageEntry) => [
+    entry.key,
+    entry.inputTokens,
+    entry.contextTokens,
+    entry.kind,
+    entry.outputTokens,
+    entry.cacheCreation1hInputTokens,
+    entry.steps,
+  ];
+  assert.deepEqual(usage.recent(10).map(pick), [
+    ["inbox-1", null, 0, "inbox", 5, 100, [step(1, 2, 3, 4, 5)]],
+    ["inbox-1", 10, 2310, null, null, null, null],
+  ]);
+});
+
+test("UsageStore: steps は短い JSON で保存して読み戻す。NULL・読めない JSON・形が違えば null", (t) => {
+  const db = tempDb(t);
+  const usage = new UsageStore(db, () => NOW);
+  usage.record({ key: "topic-1", ok: false, kind: "session", steps: [step(3, 0, 5000, 5000, 40), step(2, 5000, 100, 0, 25)] });
+  assert.equal(
+    db.prepare("SELECT steps FROM usage_log").get()?.steps,
+    '[{"i":3,"r":0,"w":5000,"w1h":5000,"o":40},{"i":2,"r":5000,"w":100,"w1h":0,"o":25}]',
+  );
+  assert.deepEqual(usage.recent(1)[0]?.steps, [step(3, 0, 5000, 5000, 40), step(2, 5000, 100, 0, 25)]);
+
+  const cases: Array<[label: string, stored: string | null, expected: StepUsage[] | null]> = [
+    ["NULL", null, null],
+    ["空の配列", "[]", []],
+    ["JSON でない", "{", null],
+    ["配列でない", '{"i":1}', null],
+    ["要素が足りない", '[{"i":1,"r":2,"w":3,"w1h":4}]', null],
+    ["数でない値", '[{"i":"1","r":2,"w":3,"w1h":4,"o":5}]', null],
+  ];
+  for (const [label, stored, expected] of cases) {
+    db.prepare("UPDATE usage_log SET steps = ?").run(stored);
+    assert.deepEqual(usage.recent(1)[0]?.steps, expected, label);
+  }
+});
+
+test("UsageStore.listRecent: since（含む）〜until（含まない）・種類で絞り、新しい limit 件を古い順に返す", (t) => {
+  const { usage, recordAt } = setup(t);
+  recordAt("2026-10-01T14:59:59.999Z", { ok: true, kind: "inbox" });
+  recordAt("2026-10-01T15:00:00.000Z", { ok: true, kind: "inbox" });
+  recordAt("2026-10-01T16:00:00.000Z", { ok: false, kind: "session" });
+  recordAt("2026-10-01T17:00:00.000Z", { ok: true, kind: "inbox-rotate" });
+  recordAt("2026-10-01T17:00:00.000Z", { ok: true, kind: "inbox" });
+  recordAt("2026-10-02T15:00:00.000Z", { ok: true, kind: "inbox" });
+  const ids = (entries: UsageEntry[]): number[] => entries.map((entry) => entry.id);
+  const since = new Date("2026-10-01T15:00:00.000Z");
+  const until = new Date("2026-10-02T15:00:00.000Z");
+
+  const cases: Array<[label: string, options: UsageListOptions, expected: number[]]> = [
+    ["範囲", { since, until, limit: 10 }, [2, 3, 4, 5]],
+    ["新しい 2 件を古い順に（同じ時刻は id 順）", { since, until, limit: 2 }, [4, 5]],
+    ["種類は完全一致", { since, until, kind: "inbox", limit: 10 }, [2, 5]],
+    ["範囲なし", { limit: 3 }, [4, 5, 6]],
+    ["since だけ", { since: until, limit: 10 }, [6]],
+    ["until だけ", { until: since, limit: 10 }, [1]],
+    ["該当なし", { kind: "tasks", limit: 10 }, []],
+  ];
+  for (const [label, options, expected] of cases) assert.deepEqual(ids(usage.listRecent(options)), expected, label);
 });
 
 test("UsageStore.summarize: since ちょうどを含み、その前は含めない。成功・失敗・トークン・compaction・ツール呼び出しを合計する", (t) => {

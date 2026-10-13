@@ -21,7 +21,7 @@ import { RENEW_SUMMARY_MAX_LENGTH } from "../src/store/topic-sessions.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { RecordingQueue } from "./helpers/recording.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
-import { FakeRunner } from "./helpers/runner.ts";
+import { FakeRunner, turnUsage } from "./helpers/runner.ts";
 
 const NOW = new Date("2026-10-11T00:12:00Z");
 const RENEWED_AT = new Date("2026-10-11T00:15:00Z");
@@ -43,7 +43,7 @@ function ok(text: string, sessionId: string = "session-1"): RunResult {
     ok: true,
     text,
     sessionId,
-    usage: { inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300 },
+    usage: turnUsage(10, 2000, 300),
     durationMs: 4200,
     toolCalls: 0,
     contextTokens: 2310,
@@ -83,7 +83,9 @@ function setup(t: TestContext, results: RunResult[] = []) {
   const turnQueue = new RecordingQueue(2);
   const inboxRotator = new FakeRotator();
   const logs: string[] = [];
-  const log = (line: string): number => logs.push(line);
+  // ターンのトークンの行（recordTurnUsage）は tokenLogs に分ける
+  const tokenLogs: string[] = [];
+  const log = (line: string): number => (line.startsWith("トークン（") ? tokenLogs : logs).push(line);
   const turn: TurnDeps = {
     runner,
     sessions,
@@ -116,7 +118,7 @@ function setup(t: TestContext, results: RunResult[] = []) {
       renewedAt: session?.renewedAt ?? null,
     };
   };
-  return { db, clock, runner, topicSessions, guildSettings, sessions, seeds, memories, usage, turnQueue, inboxRotator, logs, turn, runRenew, state };
+  return { db, clock, runner, topicSessions, guildSettings, sessions, seeds, memories, usage, turnQueue, inboxRotator, logs, tokenLogs, turn, runRenew, state };
 }
 
 test("/renew: セッションでも #inbox・#tasks でもないチャンネルと、閉じたセッション（done・deleted）では ephemeral で断り、何もしない", async (t) => {
@@ -175,6 +177,9 @@ test("/renew（セッション）: 公開で defer → 静的な prompt で resu
   const [entry] = env.usage.recent(1);
   assert.equal(entry?.key, "topic-1");
   assert.equal(entry?.ok, true);
+  assert.equal(entry?.kind, "session-renew");
+  assert.equal(env.tokenLogs.length, 1);
+  assert.match(env.tokenLogs[0]!, /^トークン（session-renew・成功）: /);
   assert.equal(env.logs.length, 1);
   assert.ok(!env.logs[0]!.includes("topic-1"));
   assert.deepEqual(env.inboxRotator.calls, []);
