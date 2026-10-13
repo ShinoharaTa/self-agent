@@ -60,6 +60,8 @@ export type ChannelTurn = {
   signal?: AbortSignal;
   /** 途中経過（セッションのチャンネルの発言・[続ける] のターンだけ）。resume 失敗のやり直しにも渡す */
   onProgress?: (step: ProgressStep) => void;
+  /** 予約した依頼（リマインドの prompt）のターン。run の context に入れる */
+  scheduled?: true;
 };
 
 /**
@@ -123,7 +125,12 @@ export function recordTurnUsage(deps: Pick<TurnDeps, "usage" | "log">, key: stri
 export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise<RunResult> {
   const { runner, sessions, seeds, topicSessions, inboxSummaries, memories, log } = deps;
   const key = turn.channelId;
-  const context: RunContext = { guildId: turn.guildId, channelId: turn.channelId, kind: turn.kind };
+  const context: RunContext = {
+    guildId: turn.guildId,
+    channelId: turn.channelId,
+    kind: turn.kind,
+    ...(turn.scheduled === undefined ? {} : { scheduled: turn.scheduled }),
+  };
 
   const runOnce = async (prompt: string, sessionId: string | undefined): Promise<RunResult> => {
     // seed を付けてやり直すときも、取得を許すのはオーナーの発言の URL だけ

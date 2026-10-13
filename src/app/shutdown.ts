@@ -23,7 +23,7 @@ export type ShutdownDeps = {
   queues: ReadonlyArray<Pick<KeyedSerialQueue, "idle">>;
   /** 定期処理。停止を始めたら止め、実行中の tick があれば終わるのを待つ */
   scheduler: Pick<Scheduler, "stop" | "idle">;
-  /** リマインドの発火。scheduler と同じ時点で止め、実行中の投稿が終わるのを待つ（まだ始めていない発火は次の起動で拾う） */
+  /** リマインドの発火。scheduler と同じ時点で止め、実行中の投稿と予約した依頼のターン（返信まで）が終わるのを待つ（まだ始めていない発火は次の起動で拾う） */
   reminderScheduler: Pick<ReminderScheduler, "stop" | "idle">;
   /** チャンネルの移動の列。実行中の 1 件だけ終わるのを待つ（まだ始めていない移動は待たない。次の起動の再同期が直す） */
   channelOps: Pick<ChannelOpsQueue, "idle">;

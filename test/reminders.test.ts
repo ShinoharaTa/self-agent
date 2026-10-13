@@ -1,6 +1,10 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate as flush } from "node:timers/promises";
+import type { RunResult } from "../src/agent/runner.ts";
+import { createChannelResolver } from "../src/app/access.ts";
+import { MAX_TURNS_REPLY } from "../src/app/commands/turn-controls.ts";
+import { buildTurnPrompt } from "../src/app/prompt.ts";
 import {
   MOVED_NOTE,
   REMINDER_BATCH_LIMIT,
@@ -9,11 +13,14 @@ import {
   reminderFireButtons,
   ReminderScheduler,
   type ReminderTimers,
+  scheduledFailureText,
 } from "../src/app/reminders.ts";
 import type { OutgoingMessage } from "../src/discord/gateway.ts";
 import type { NewReminder } from "../src/store/reminders.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingQueue } from "./helpers/recording.ts";
+import { FakeRunner, type FakeRunStep } from "./helpers/runner.ts";
 
 /** 2026-10-13(火) 9:00 JST */
 const NOW = new Date("2026-10-13T00:00:00.000Z");
@@ -42,17 +49,41 @@ class FakeTimers implements ReminderTimers {
   }
 }
 
-/** ch-1 が頼んだチャンネル。guild-1 は /setup 済み（#tasks は tasks-1、#inbox は inbox-1）。どれも Discord 上にある */
-function setup(t: TestContext) {
+function okResult(text: string): RunResult {
+  return {
+    ok: true,
+    text,
+    sessionId: "session-1",
+    usage: { inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300 },
+    durationMs: 4200,
+    toolCalls: 1,
+    contextTokens: 900,
+  };
+}
+
+/**
+ * ch-1 が頼んだチャンネル。guild-1 は /setup 済み（#tasks は tasks-1、#inbox は inbox-1）。どれも Discord 上にある。
+ * steps は予約した依頼のターンの偽 Runner の結果
+ */
+function setup(t: TestContext, steps: FakeRunStep[] = []) {
   const db = tempDb(t);
   const clock = { now: NOW };
-  const { reminders, tasks, guildSettings, topicSessions } = createStores(db, () => clock.now);
+  const stores = createStores(db, () => clock.now);
+  const { reminders, tasks, guildSettings, topicSessions } = stores;
   guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
   guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
-  const gateway = new FakeGateway({ allow: ["sendMessage", "editMessage"], record: ["channelExists"] });
+  const gateway = new FakeGateway({
+    allow: ["sendMessage", "editMessage", "send", "startTyping"],
+    record: ["channelExists"],
+  });
   for (const channelId of ["ch-1", "tasks-1", "inbox-1"]) gateway.alive.add(channelId);
   const timers = new FakeTimers();
   const logs: string[] = [];
+  const log = (line: string): void => {
+    logs.push(line);
+  };
+  const runner = new FakeRunner(steps);
+  const turnQueue = new RecordingQueue(2);
   const scheduler = new ReminderScheduler({
     cfg: { ownerUserId: "owner-1", timeZone: "Asia/Tokyo" },
     reminders,
@@ -60,15 +91,18 @@ function setup(t: TestContext) {
     guildSettings,
     topicSessions,
     gateway,
+    resolveChannel: createChannelResolver({ inboxChannelId: undefined }, guildSettings, topicSessions),
+    turnQueue,
+    turn: { ...stores, runner, log },
     now: () => clock.now,
     timers,
-    log: (line) => logs.push(line),
+    log,
   });
   const add = (overrides: Partial<NewReminder> = {}) =>
     reminders.add({ guildId: "guild-1", channelId: "ch-1", kind: "notify", text: "薬を飲む", nextAt: NOW, ...overrides });
   /** 送れた投稿の [チャンネル, 本文] */
   const posted = (): Array<[string, string]> => gateway.posts.map(({ channelId, message }) => [channelId, message.text]);
-  return { db, clock, reminders, tasks, guildSettings, topicSessions, gateway, timers, logs, scheduler, add, posted };
+  return { ...stores, db, clock, gateway, timers, logs, runner, turnQueue, scheduler, add, posted };
 }
 
 test("start: 直後に 1 回 tick し、以後は次の分の境目 + 200ms に張り直す。stop で取り消し、その後の start・tick は何もしない", async (t) => {
@@ -203,20 +237,17 @@ test("スヌーズの回は「（もう一度）」を付けて出し直し、�
   assert.deepEqual([after.status, after.fireSeq, after.snoozeAt, after.lastMessageId], ["fired", 2, null, "message-1"]);
 });
 
-test("紐づけたタスクが open でなければ投稿せずに done にする。prompt は未対応として止める", async (t) => {
+test("紐づけたタスクが open でなければ投稿せずに done にする", async (t) => {
   const env = setup(t);
   const task = env.tasks.add({ title: "買い物" });
   env.tasks.complete(task.id);
   const linked = env.add({ taskId: task.id });
-  const prompt = env.add({ kind: "prompt", text: "今日のタスクを出して" });
 
   await env.scheduler.tick();
 
   assert.deepEqual(env.posted(), []);
   assert.equal(env.reminders.get(linked.id)?.status, "done");
-  assert.equal(env.reminders.get(prompt.id)?.status, "cancelled");
   assert.ok(env.logs.some((line) => line.includes("タスクが閉じている")), env.logs.join("\n"));
-  assert.ok(env.logs.some((line) => line.includes("未対応")), env.logs.join("\n"));
 });
 
 test("投稿に失敗したら DB を変えずに次の tick でやり直し、同じ回で 30 回失敗したら諦めて進める", async (t) => {
@@ -396,4 +427,148 @@ test("古いスヌーズ: 12 時間で飛ばした繰り返しは前のスヌー
     assert.deepEqual(env.posted(), text === null ? [] : [["ch-1", text]], label);
     if (text === null) assert.equal(env.reminders.get(added.id)?.snoozeAt, null, label);
   }
+});
+
+test("prompt: 先に claim で進めてから、実行先の key で turnQueue に入れ、その会話で 1 回動かして返答をメンションと注記付きで送る", async (t) => {
+  const cases: Array<{
+    label: string;
+    reminder: Partial<NewReminder>;
+    channel: string;
+    kind: "inbox" | "tasks";
+    repeat: string;
+    after: { status: string; nextAt: string | null };
+  }> = [
+    {
+      label: "#inbox の 1 回だけ",
+      reminder: { channelId: "inbox-1" },
+      channel: "inbox-1",
+      kind: "inbox",
+      repeat: "1 回だけ",
+      after: { status: "done", nextAt: null },
+    },
+    {
+      label: "#tasks の繰り返し",
+      reminder: { channelId: "tasks-1", rule: "daily@09:00" },
+      channel: "tasks-1",
+      kind: "tasks",
+      repeat: "毎日 9:00",
+      after: { status: "active", nextAt: "2026-10-14T00:00:00.000Z" },
+    },
+    // 頼んだチャンネルが #inbox・#tasks でなくなっていたら #tasks で動かす
+    {
+      label: "#inbox・#tasks でない",
+      reminder: {},
+      channel: "tasks-1",
+      kind: "tasks",
+      repeat: "1 回だけ",
+      after: { status: "done", nextAt: null },
+    },
+  ];
+  for (const { label, reminder, channel, kind, repeat, after } of cases) {
+    const env = setup(t, [
+      (input) => {
+        // ターンを動かす時点で DB は進めてある
+        assert.equal(env.reminders.get(added.id)?.fireSeq, 1, label);
+        assert.equal(input.context?.channelId, channel, label);
+        return okResult("今日のタスクは 3 件です");
+      },
+    ]);
+    const added = env.add({ kind: "prompt", text: "今日のタスクを出して", ...reminder });
+
+    await env.scheduler.tick();
+    await env.scheduler.idle();
+
+    assert.deepEqual(env.turnQueue.keys, [channel], label);
+    assert.deepEqual(env.turnQueue.options, [undefined], label);
+    assert.deepEqual(
+      env.runner.inputs,
+      [
+        {
+          prompt: buildTurnPrompt(`予約した依頼（#${added.id}・${repeat}）:\n今日のタスクを出して`, NOW, "Asia/Tokyo", kind),
+          sessionId: undefined,
+          context: { guildId: "guild-1", channelId: channel, kind, scheduled: true },
+          allowedUrls: [],
+        },
+      ],
+      label,
+    );
+    assert.deepEqual(
+      env.gateway.sent,
+      [
+        {
+          channelId: channel,
+          text: `今日のタスクは 3 件です\n（予約した依頼 #${added.id}）`,
+          replyToId: undefined,
+          mentionUserId: "owner-1",
+        },
+      ],
+      label,
+    );
+    assert.deepEqual([env.gateway.typingStarted, env.gateway.typingStopped], [1, 1], label);
+    assert.equal(env.usage.recent(10).length, 1, label);
+    assert.deepEqual(env.posted(), [], label);
+    const stored = env.reminders.get(added.id)!;
+    assert.deepEqual({ status: stored.status, nextAt: stored.nextAt }, after, label);
+  }
+});
+
+test("prompt: 失敗してもやり直さず、失敗の知らせ（手順の上限なら MAX_TURNS_REPLY）をメンション付きで送る", async (t) => {
+  const failure = (errorMessage: string): RunResult => ({ ok: false, errorMessage, toolCalls: 0, sessionRecorded: false });
+  const cases: Array<{ label: string; step: FakeRunStep; text: (id: number) => string }> = [
+    { label: "失敗", step: failure("timeout"), text: scheduledFailureText },
+    { label: "手順の上限", step: failure("error_max_turns: 8"), text: () => MAX_TURNS_REPLY },
+    { label: "例外", step: new Error("spawn failed"), text: scheduledFailureText },
+  ];
+  for (const { label, step, text } of cases) {
+    const env = setup(t, [step]);
+    const added = env.add({ kind: "prompt", channelId: "inbox-1", text: "今日のタスクを出して" });
+
+    await env.scheduler.tick();
+    await env.scheduler.idle();
+    await env.scheduler.tick();
+    await env.scheduler.idle();
+
+    assert.equal(env.runner.inputs.length, 1, label);
+    assert.deepEqual(
+      env.gateway.sent,
+      [{ channelId: "inbox-1", text: text(added.id), replyToId: undefined, mentionUserId: "owner-1" }],
+      label,
+    );
+    assert.equal(env.reminders.get(added.id)?.status, "done", label);
+    assert.ok(env.logs.some((line) => line.includes("失敗しました")), label);
+  }
+});
+
+test("prompt: tick はターンを待たない。同じ id のターンが走っている間は重ねず、idle は返信まで待ち、停止の後は新しく始めない", async (t) => {
+  const env = setup(t, [okResult("おはようございます"), okResult("次の日")]);
+  const added = env.add({ kind: "prompt", channelId: "inbox-1", text: "今日のタスクを出して", rule: "daily@09:00" });
+  let release = (): void => {};
+  env.runner.gates[0] = new Promise<void>((resolve) => (release = resolve));
+
+  await env.scheduler.tick();
+  await flush();
+  assert.equal(env.runner.inputs.length, 1);
+  assert.deepEqual(env.gateway.sent, []);
+
+  // 次の回が来ても、走っている間は claim も実行もしない
+  env.clock.now = new Date(NOW.getTime() + DAY_MS);
+  await env.scheduler.tick();
+  assert.equal(env.reminders.get(added.id)?.fireSeq, 1);
+  assert.deepEqual(env.turnQueue.keys, ["inbox-1"]);
+
+  let idle = false;
+  const waiting = env.scheduler.idle().then(() => {
+    idle = true;
+  });
+  await flush();
+  assert.equal(idle, false);
+  release();
+  await waiting;
+  assert.equal(env.gateway.sent.length, 1);
+
+  env.scheduler.stop();
+  await env.scheduler.tick();
+  await env.scheduler.idle();
+  assert.equal(env.runner.inputs.length, 1);
+  assert.equal(env.reminders.get(added.id)?.fireSeq, 1);
 });

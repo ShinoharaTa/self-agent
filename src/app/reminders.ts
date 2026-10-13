@@ -1,6 +1,7 @@
 // リマインドの発火（docs/plan/reminders.md §2.4〜§2.6・§5）。5 分の Scheduler とは別に、分の境目にそろえた 1 分ごとの tick で DB を見る。
 // 永続のタイマーは持たないので、止まっていた間に過ぎた分は起動直後の tick で拾う。notify は「投稿してから進める」（少なくとも 1 回届く）。
-// prompt（予約した依頼）の実行は PR-R3 まで未対応で、来たら log に出して止める
+// prompt（予約した依頼）は「進めてから動かす」（多くても 1 回）。ターンは発言と同じキューに入れ、tick では待たない
+import type { RunResult } from "../agent/runner.ts";
 import type { Config } from "../config.ts";
 import type { ButtonDef, Gateway, OutgoingMessage } from "../discord/gateway.ts";
 import { mentionPrefix } from "../discord/convert.ts";
@@ -8,10 +9,16 @@ import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { FireUpdate, Reminder, ReminderStore } from "../store/reminders.ts";
 import type { TaskStore } from "../store/tasks.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
+import type { ChannelKind, ResolveChannel } from "./access.ts";
 import { MESSAGE_MAX_LENGTH } from "./commands/sessions.ts";
 import { clip } from "./commands/tasks.ts";
+import { MAX_TURNS_REPLY } from "./commands/turn-controls.ts";
+import { EMPTY_REPLY } from "./handler.ts";
+import { buildTurnPrompt } from "./prompt.ts";
+import type { KeyedSerialQueue } from "./queue.ts";
 import { describeRule, nextOccurrence } from "./recurrence.ts";
 import { offsetMs } from "./time.ts";
+import { MAX_TURNS_ERROR_PREFIX, runChannelTurn, type TurnDeps } from "./turn.ts";
 
 /** tick は次の分の境目からこれだけ後に行う（境目ちょうどの時刻を確実に過ぎてから見る） */
 export const REMINDER_TICK_OFFSET_MS = 200;
@@ -94,6 +101,21 @@ export function reminderFireButtons(reminder: Pick<Reminder, "id" | "rule">, seq
 /** 元のチャンネルが無いため #tasks・#inbox に出したときの注記 */
 export const MOVED_NOTE = "（元のチャンネルが無いため、ここに出しました）";
 
+/** 予約した依頼のターンの prompt の本文（日時ヘッダの後ろ）。例: `予約した依頼（#3・毎日 8:00）:\n今日のタスクを出して` */
+export function scheduledPromptContent(reminder: Pick<Reminder, "id" | "rule" | "text">): string {
+  return `予約した依頼（#${reminder.id}・${reminder.rule === null ? "1 回だけ" : describeRule(reminder.rule)}）:\n${reminder.text}`;
+}
+
+/** 予約した依頼の返答の末尾に足す 1 行 */
+export function scheduledReplyNote(id: number): string {
+  return `（予約した依頼 #${id}）`;
+}
+
+/** 予約した依頼のターンが失敗したときの知らせ（手順の上限で止まったときは MAX_TURNS_REPLY） */
+export function scheduledFailureText(id: number): string {
+  return `予約した依頼（#${id}）を実行できませんでした`;
+}
+
 /** テストでは偽のタイマーに差し替える */
 export type ReminderTimers = {
   /** ms 後に fn を 1 回呼び、取り消す関数を返す */
@@ -112,7 +134,7 @@ export type ReminderSchedulerDeps = {
   cfg: Pick<Config, "ownerUserId" | "timeZone">;
   reminders: Pick<
     ReminderStore,
-    "listDue" | "get" | "markFired" | "complete" | "clearSnooze" | "cancel" | "skipNext" | "moveChannel"
+    "listDue" | "get" | "markFired" | "claim" | "complete" | "clearSnooze" | "cancel" | "skipNext" | "moveChannel"
   >;
   /** 紐づけたタスクが open か確かめ、本文に題名を出す */
   tasks: Pick<TaskStore, "get">;
@@ -120,7 +142,13 @@ export type ReminderSchedulerDeps = {
   guildSettings: Pick<GuildSettingsStore, "get">;
   /** 頼んだチャンネルが削除済みのセッションか */
   topicSessions: Pick<TopicSessionStore, "get">;
-  gateway: Pick<Gateway, "sendMessage" | "editMessage" | "channelExists">;
+  gateway: Pick<Gateway, "sendMessage" | "editMessage" | "channelExists" | "send" | "startTyping">;
+  /** 予約した依頼を動かすチャンネル（#inbox・#tasks）か */
+  resolveChannel: ResolveChannel;
+  /** 発言のターンと同じキュー（key は channelId）。予約した依頼のターンはセッション以外のジョブとして入れる */
+  turnQueue: Pick<KeyedSerialQueue, "run">;
+  /** 予約した依頼のターン（runChannelTurn。usage の記録・resume・seed は発言と同じ） */
+  turn: TurnDeps;
   now: () => Date;
   timers?: ReminderTimers;
   log: (message: string) => void;
@@ -153,6 +181,8 @@ export class ReminderScheduler {
   private running: Promise<void> | undefined;
   /** 投稿に失敗した回数（`<id>:<fire_seq>` ごと。プロセス内だけ） */
   private readonly failures = new Map<string, number>();
+  /** キューに入れてまだ終わっていない予約した依頼のターン（id ごと）。同じ id を重ねず、idle で待つ */
+  private readonly prompts = new Map<number, Promise<void>>();
 
   constructor(deps: ReminderSchedulerDeps) {
     this.deps = deps;
@@ -174,9 +204,11 @@ export class ReminderScheduler {
     this.cancelTimer = undefined;
   }
 
-  /** 実行中の tick（投稿を含む）が終わったら resolve する（停止時に使う） */
-  idle(): Promise<void> {
-    return this.running ?? Promise.resolve();
+  /** 実行中の tick（投稿を含む）と、キューに入れた予約した依頼のターン（返信まで）が終わったら resolve する（停止時に使う） */
+  async idle(): Promise<void> {
+    await this.running;
+    // 待っている間に tick が入れた分も待つ
+    while (this.prompts.size > 0) await Promise.all([...this.prompts.values()]);
   }
 
   /** 1 回分の処理。前の tick が終わっていなければ重ねずにそれを返す。reject しない（失敗は log に出す） */
@@ -226,12 +258,8 @@ export class ReminderScheduler {
   private async fire(reminder: Reminder, now: Date): Promise<void> {
     const { reminders, tasks, gateway, log } = this.deps;
     const { id } = reminder;
-    if (reminder.kind === "prompt") {
-      // 予約した依頼の実行は PR-R3 で入れる
-      reminders.cancel(id);
-      log(`予約した依頼は未対応のため止めました（#${id}）`);
-      return;
-    }
+    // 同じ予約した依頼のターンが走っている間は重ねない（DB は変えないので、終わった後の tick で拾う）
+    if (reminder.kind === "prompt" && this.prompts.has(id)) return;
     let taskTitle: string | undefined;
     if (reminder.taskId !== null) {
       const task = tasks.get(reminder.taskId);
@@ -246,6 +274,10 @@ export class ReminderScheduler {
     const occurrence = this.occurrence(reminder, now);
     if (occurrence === undefined) return;
     const update = this.nextUpdate(reminder, occurrence, now);
+    if (reminder.kind === "prompt") {
+      this.startPrompt(reminder, update);
+      return;
+    }
 
     const key = `${id}:${reminder.fireSeq}`;
     let result: PostResult;
@@ -290,6 +322,92 @@ export class ReminderScheduler {
     log(`リマインドを知らせました（#${id}、guild=${reminder.guildId}、遅れ ${lateMinutes} 分）`);
     // 移したときは前のチャンネルが無いので、前の回のボタンは外せない
     if (!moved) await this.clearPreviousButtons(reminder, taskTitle);
+  }
+
+  /**
+   * 予約した依頼の回: 先に claim で進めてから（多くても 1 回）、ターンを発言と同じキューに入れる（tick では待たない）。
+   * 1 回だけのものは fired ではなく done にする（押すボタンが無いため）。claim できなければ（止められた）何もしない
+   */
+  private startPrompt(reminder: Reminder, update: FireUpdate): void {
+    const { reminders, log } = this.deps;
+    const { id } = reminder;
+    if (!reminders.claim(id, reminder.fireSeq, { ...update, status: update.status === "fired" ? "done" : update.status })) {
+      log(`動かす前に予約した依頼が止められたため、実行しませんでした（#${id}）`);
+      return;
+    }
+    // キューの key は今の時点の実行先（無ければ頼んだチャンネル）。ジョブの中で決め直す
+    const key = this.promptChannel(reminder)?.channelId ?? reminder.channelId;
+    const job = this.deps.turnQueue
+      .run(key, () => this.runPrompt(reminder))
+      .catch((error: unknown) => {
+        log(`予約した依頼の処理に失敗しました（#${id}）: ${describeError(error)}`);
+      })
+      .finally(() => {
+        if (this.prompts.get(id) === job) this.prompts.delete(id);
+      });
+    this.prompts.set(id, job);
+  }
+
+  /**
+   * 予約した依頼を動かすチャンネル。頼んだチャンネルが #inbox・#tasks ならそこ、それ以外・無ければそのサーバーの #tasks、無ければ #inbox。
+   * どれも無ければ undefined
+   */
+  private promptChannel(reminder: Reminder): { channelId: string; kind: Exclude<ChannelKind, "session"> } | undefined {
+    const { resolveChannel, guildSettings } = this.deps;
+    const kind = resolveChannel(reminder.guildId, reminder.channelId);
+    if (kind === "inbox" || kind === "tasks") return { channelId: reminder.channelId, kind };
+    const settings = guildSettings.get(reminder.guildId);
+    if (settings === undefined) return undefined;
+    if (settings.tasksChannelId !== null) return { channelId: settings.tasksChannelId, kind: "tasks" };
+    if (settings.inboxChannelId !== null) return { channelId: settings.inboxChannelId, kind: "inbox" };
+    return undefined;
+  }
+
+  /**
+   * キューの中で予約した依頼のターンを 1 回動かし、返答（失敗なら知らせ）をオーナーをメンションして送る。やり直さない。
+   * 途中経過・[中断]・[続ける] は付けない
+   */
+  private async runPrompt(reminder: Reminder): Promise<void> {
+    const { cfg, gateway, turn, now, log } = this.deps;
+    const { id } = reminder;
+    const target = this.promptChannel(reminder);
+    if (target === undefined) {
+      log(`予約した依頼の実行先が無いため、この回を諦めました（#${id}、guild=${reminder.guildId}）`);
+      return;
+    }
+    const { channelId, kind } = target;
+    log(`予約した依頼のターンを始めました（#${id}、guild=${reminder.guildId}）`);
+    const stopTyping = gateway.startTyping(channelId);
+    let result: RunResult | undefined;
+    try {
+      result = await runChannelTurn(turn, {
+        guildId: reminder.guildId,
+        channelId,
+        kind,
+        prompt: buildTurnPrompt(scheduledPromptContent(reminder), now(), cfg.timeZone, kind),
+        // オーナーが貼った URL は無いので WebFetch は使えない
+        allowedUrls: [],
+        scheduled: true,
+      });
+    } catch (error) {
+      log(`予約した依頼のターンが失敗しました（#${id}）: ${describeError(error)}`);
+    } finally {
+      stopTyping();
+    }
+
+    let text: string;
+    if (result?.ok === true) {
+      text = `${result.text.trim() === "" ? EMPTY_REPLY : result.text}\n${scheduledReplyNote(id)}`;
+    } else {
+      if (result !== undefined) log(`予約した依頼のターンが失敗しました（#${id}）: ${result.errorMessage}`);
+      // sdk-runner は result の失敗を subtype から書き始める
+      text = result?.errorMessage.startsWith(MAX_TURNS_ERROR_PREFIX) === true ? MAX_TURNS_REPLY : scheduledFailureText(id);
+    }
+    try {
+      await gateway.send(channelId, text, undefined, cfg.ownerUserId);
+    } catch (error) {
+      log(`予約した依頼の返信に失敗しました（#${id}）: ${describeError(error)}`);
+    }
   }
 
   /**

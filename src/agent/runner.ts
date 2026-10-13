@@ -2,9 +2,10 @@
 
 /**
  * このターンを実行するチャンネル。ツールのハンドラに渡す（session_report が保存先を決める）。
- * kind はチャンネルの種類（#inbox・#tasks かセッションか）。1 ターンの上限とファイル操作の可否を決める
+ * kind はチャンネルの種類（#inbox・#tasks かセッションか）。1 ターンの上限とファイル操作の可否を決める。
+ * scheduled は予約した依頼（リマインドの prompt）のターンで立てる（session_open を not_available にする）
  */
-export type RunContext = { guildId: string; channelId: string; kind: "inbox" | "tasks" | "session" };
+export type RunContext = { guildId: string; channelId: string; kind: "inbox" | "tasks" | "session"; scheduled?: true };
 
 /** 途中経過の 1 手順（assistant メッセージの tool_use 1 つ）。label は表示用の短い文で、ファイルの中身・コマンド・URL・検索語は入れない */
 export type ProgressStep = { label: string };
