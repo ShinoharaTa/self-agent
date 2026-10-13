@@ -178,6 +178,37 @@ test("ReminderStore: snooze・complete・cancel・skipNext・moveChannel は状�
   }
 });
 
+test("ReminderStore: 止めた後の markFired・claim は false、complete は 1 回だけ・clearSnooze は繰り返しだけ、expectedSeq が違えば書き換えない", (t) => {
+  const { store } = tempStore(t);
+  const update = { nextAt: at(99), status: "active" as const, firedAt: at(0) };
+
+  // 発火を読んだ後（fire_seq 0）に止められたら、記録で active に戻さない
+  const stopped = store.add(reminder({ rule: "daily@08:00" }));
+  store.cancel(stopped.id);
+  assert.equal(store.markFired(stopped.id, 0, { ...update, messageId: "m" }), false);
+  assert.equal(store.claim(stopped.id, 0, update), false);
+  assert.equal(store.get(stopped.id)?.status, "cancelled");
+
+  const repeating = store.add(reminder({ rule: "daily@08:00" }));
+  store.snooze(repeating.id, at(40));
+  assert.equal(store.complete(repeating.id), false, "繰り返しは complete で終わらない");
+  assert.equal(store.clearSnooze(repeating.id, 1), false, "seq が違う");
+  assert.equal(store.clearSnooze(repeating.id, 0), true);
+  assert.deepEqual([store.get(repeating.id)?.status, store.get(repeating.id)?.snoozeAt], ["active", null]);
+
+  const once = store.add(reminder());
+  assert.equal(store.clearSnooze(once.id), false, "1 回だけには使わない");
+  store.markFired(once.id, 0, { ...update, nextAt: null, status: "fired", messageId: "m" });
+  const staleSeq: Array<[label: string, op: () => boolean]> = [
+    ["snooze", () => store.snooze(once.id, at(50), 0)],
+    ["complete", () => store.complete(once.id, 0)],
+    ["cancel", () => store.cancel(once.id, 0)],
+  ];
+  for (const [label, op] of staleSeq) assert.equal(op(), false, label);
+  assert.equal(store.snooze(once.id, at(50), 1), true);
+  assert.equal(store.complete(once.id, 1), true);
+});
+
 test("ReminderStore: nextForTasks は紐づけた active のうち次に知らせる時刻をタスクごとに", (t) => {
   const { store } = tempStore(t);
   store.add(reminder({ taskId: 1, nextAt: at(40) }));

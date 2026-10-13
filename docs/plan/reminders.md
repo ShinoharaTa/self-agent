@@ -157,7 +157,7 @@ CREATE INDEX reminders_active ON reminders (status, next_at);
 - 発火の対象: `status = 'active' AND ((next_at IS NOT NULL AND next_at <= now) OR (snooze_at IS NOT NULL AND snooze_at <= now))`。早い順に、1 tick で最大 20 件。
 - 規則による回を出したら snooze_at も消す（新しい回が前のスヌーズより優先する）。
 - 物理削除はしない。
-- ストア（src/store/reminders.ts。SDK・Discord に依存しない）: `add`、`get`、`listActive(limit)`（next_at と snooze_at の早い方の順）、`listDue(now, limit)`、`countActive({ kind? })`、`findDuplicate(channelId, text, rule, nextAt)`、`markFired(id, expectedSeq, { nextAt, status, messageId, firedAt })`（fire_seq が expectedSeq のときだけ書き換え、成否を返す）、`claim(id, expectedSeq, { nextAt, status, firedAt })`（prompt 用。先に進める）、`snooze(id, at)`、`complete(id)`、`cancel(id)`、`skipNext(id, nextAt)`、`moveChannel(id, channelId)`、`nextForTasks(taskIds)`（/tasks と task_list 用）。
+- ストア（src/store/reminders.ts。SDK・Discord に依存しない）: `add`、`get`、`listActive(limit)`（next_at と snooze_at の早い方の順）、`listDue(now, limit)`、`countActive({ kind? })`、`findDuplicate(channelId, text, rule, nextAt)`、`markFired(id, expectedSeq, { nextAt, status, messageId, firedAt })`（active で fire_seq が expectedSeq のときだけ書き換え、成否を返す。投稿の間に止められたら false）、`claim(id, expectedSeq, { nextAt, status, firedAt })`（prompt 用。先に進める。条件は markFired と同じ）、`snooze(id, at, expectedSeq?)`、`complete(id, expectedSeq?)`（1 回だけのもの）、`clearSnooze(id, expectedSeq?)`（繰り返しの [済んだ]。snooze_at を消すだけ）、`cancel(id, expectedSeq?)`（expectedSeq を渡せば fire_seq が一致するときだけ。ボタンの古さの判定に使う）、`skipNext(id, nextAt)`、`moveChannel(id, channelId)`、`nextForTasks(taskIds)`（/tasks と task_list 用）。
 
 ## 4. ツールの定義（PR-R4。MCP の末尾にこの順で足す）
 並びは `…, project_open, project_files, reminder_set, reminder_list, reminder_cancel`。
@@ -204,7 +204,7 @@ tick(now):
 2. 紐づけたタスクが open でなければ、投稿せずに `complete` する。log は「紐づけたタスクが閉じているため知らせませんでした（#id）」。
 3. 回の時刻を求める。snooze_at が due ならそれを回にする。next_at が due なら規則で過ぎた最後の回とその回数を数える（400 回まで）。繰り返しで最後の回が 12 時間より前なら、next_at を `nextOccurrence(rule, now)` へ進めて終わる（log「止まっていた間に過ぎたため飛ばしました（#id、n 回）」）。
 4. 投稿先を決める（§2.5 の fallback）。
-5. notify: 本文は 1 行目 `リマインド: <text>`、紐づけたタスクがあれば `（#12 <題名>）`、繰り返しなら `（毎週 月・水 8:00）`、スヌーズの回なら `（もう一度）`、遅れ・まとめの注記（§2.4）。メンション付きで sendMessage し、成功したら `markFired`（1 回だけ: next_at・snooze_at を NULL、status を fired。繰り返し: next_at を `nextOccurrence(rule, now)`、snooze_at を NULL。どちらも fire_seq +1、last_message_id を保存）。その後、前の last_message_id のボタンを外す。
+5. notify: 本文は 1 行目 `リマインド: <text>`、紐づけたタスクがあれば `（#12 <題名>）`、繰り返しなら `（毎週 月・水 8:00）`、スヌーズの回なら `（もう一度）`、遅れ・まとめの注記（§2.4）。メンション付きで sendMessage し、成功したら `markFired`（1 回だけ: next_at・snooze_at を NULL、status を fired。繰り返し: next_at を `nextOccurrence(rule, now)`、snooze_at を NULL。どちらも fire_seq +1、last_message_id を保存）。markFired が false（投稿の間に止められた）なら、いま投稿したメッセージのボタンを外す。その後、前の last_message_id のボタンを外す。12 時間より古い繰り返しの回を出さずに進めるときは skipNext、30 回失敗した 1 回だけのものは complete を使う。
 6. prompt: 先に `claim` で進める（fire_seq +1、1 回だけなら status は done）。`turnQueue.run(channelId, job)` に入れて tick では待たない（走っているターンは Set で覚え、idle で待つ）。job はチャンネルを決め直し（resolveChannel が inbox・tasks を返すものだけ。それ以外は fallback）、`runChannelTurn` に kind（そのチャンネルの種類）、prompt（`buildTurnPrompt("予約した依頼（#<id>・<繰り返しの表示 か 1 回だけ>）:\n<text>", 今, tz, "inbox"|"tasks")`）、allowedUrls `[]`、context `scheduled: true` を渡す。typing を出す。成功したら返答を `send(channelId, text + "\n（予約した依頼 #<id>）", undefined, ownerId)` で送る（分割した最初の塊にだけメンション）。失敗したら「予約した依頼（#id）を実行できませんでした」（手順の上限なら MAX_TURNS_REPLY）をメンション付きで送る。途中経過・[中断]・[続ける] は付けない。
 7. log: 「リマインドを知らせました（#id、guild=…、遅れ n 分）」「予約した依頼のターンを始めました（#id、guild=…）」、投稿の失敗は describeError。text・チャンネル ID・ユーザー ID は出さない（reminders の id は出してよい）。
 

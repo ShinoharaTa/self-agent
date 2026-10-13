@@ -161,14 +161,14 @@ export class ReminderStore {
   }
 
   /**
-   * 投稿した回を記録する。fire_seq が expectedSeq のときだけ、next_at・status・最後の投稿を書き換え、snooze_at を消し、fire_seq を 1 増やす。
+   * 投稿した回を記録する。active で fire_seq が expectedSeq のときだけ（投稿の間に止められたら false）、next_at・status・最後の投稿を書き換え、snooze_at を消し、fire_seq を 1 増やす。
    * 書き換えたら true
    */
   markFired(id: number, expectedSeq: number, update: FireUpdate & { messageId: string }): boolean {
     const result = this.db
       .prepare(
         `UPDATE reminders SET next_at = ?, snooze_at = NULL, status = ?, fire_seq = fire_seq + 1,
-          last_fired_at = ?, last_message_id = ?, updated_at = ? WHERE id = ? AND fire_seq = ?`,
+          last_fired_at = ?, last_message_id = ?, updated_at = ? WHERE id = ? AND fire_seq = ? AND status = 'active'`,
       )
       .run(
         update.nextAt === null ? null : update.nextAt.toISOString(),
@@ -187,7 +187,7 @@ export class ReminderStore {
     const result = this.db
       .prepare(
         `UPDATE reminders SET next_at = ?, snooze_at = NULL, status = ?, fire_seq = fire_seq + 1,
-          last_fired_at = ?, updated_at = ? WHERE id = ? AND fire_seq = ?`,
+          last_fired_at = ?, updated_at = ? WHERE id = ? AND fire_seq = ? AND status = 'active'`,
       )
       .run(
         update.nextAt === null ? null : update.nextAt.toISOString(),
@@ -200,29 +200,45 @@ export class ReminderStore {
     return Number(result.changes) > 0;
   }
 
-  /** at にもう一度知らせる。active・fired のときだけ（fired は active に戻す）。書き換えたら true */
-  snooze(id: number, at: Date): boolean {
-    return this.changed(
+  /**
+   * at にもう一度知らせる。active・fired のときだけ（fired は active に戻す）。
+   * expectedSeq を渡せば fire_seq が一致するときだけ（ボタンの古さの判定）。書き換えたら true
+   */
+  snooze(id: number, at: Date, expectedSeq?: number): boolean {
+    return this.changedWithSeq(
       "UPDATE reminders SET snooze_at = ?, status = 'active', updated_at = ? WHERE id = ? AND status IN ('active', 'fired')",
+      expectedSeq,
       at.toISOString(),
       this.now().toISOString(),
       id,
     );
   }
 
-  /** done にする。active・fired のときだけ。書き換えたら true */
-  complete(id: number): boolean {
-    return this.changed(
-      "UPDATE reminders SET status = 'done', updated_at = ? WHERE id = ? AND status IN ('active', 'fired')",
+  /** 1 回だけ（rule が NULL）のものを done にする。active・fired のときだけ。expectedSeq は snooze と同じ。書き換えたら true */
+  complete(id: number, expectedSeq?: number): boolean {
+    return this.changedWithSeq(
+      "UPDATE reminders SET status = 'done', updated_at = ? WHERE id = ? AND status IN ('active', 'fired') AND rule IS NULL",
+      expectedSeq,
       this.now().toISOString(),
       id,
     );
   }
 
-  /** cancelled にする。active のときだけ。書き換えたら true */
-  cancel(id: number): boolean {
-    return this.changed(
+  /** 繰り返しの回を済ませる（[済んだ]）。active の繰り返しの snooze_at を消すだけ。expectedSeq は snooze と同じ。書き換えたら true */
+  clearSnooze(id: number, expectedSeq?: number): boolean {
+    return this.changedWithSeq(
+      "UPDATE reminders SET snooze_at = NULL, updated_at = ? WHERE id = ? AND status = 'active' AND rule IS NOT NULL",
+      expectedSeq,
+      this.now().toISOString(),
+      id,
+    );
+  }
+
+  /** cancelled にする。active のときだけ。expectedSeq は snooze と同じ。書き換えたら true */
+  cancel(id: number, expectedSeq?: number): boolean {
+    return this.changedWithSeq(
       "UPDATE reminders SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'active'",
+      expectedSeq,
       this.now().toISOString(),
       id,
     );
@@ -263,6 +279,11 @@ export class ReminderStore {
       if (row.at !== null && row.at !== undefined) result.set(Number(row.task_id), String(row.at));
     }
     return result;
+  }
+
+  private changedWithSeq(sql: string, expectedSeq: number | undefined, ...params: Array<string | number>): boolean {
+    if (expectedSeq === undefined) return this.changed(sql, ...params);
+    return this.changed(`${sql} AND fire_seq = ?`, ...params, expectedSeq);
   }
 
   private changed(sql: string, ...params: Array<string | number>): boolean {
