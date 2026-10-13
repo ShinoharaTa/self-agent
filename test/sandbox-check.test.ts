@@ -9,6 +9,7 @@ import {
   checkSandbox,
   findExecutable,
   isSeparateFilesystem,
+  nodeVersionDir,
   placesOverlap,
   type ProbeResult,
   type RunProbe,
@@ -44,7 +45,14 @@ function setup(t: TestContext) {
   const bin = join(root, "bin");
   script(bin, "bwrap", "exit 0");
   script(bin, "socat", "exit 0");
-  const dirs = { workDir: join(root, "work"), dataDir: join(root, "data"), claudeConfigDir: join(root, "claude"), repoDir: join(root, "repo"), homeDir: join(root, "home") };
+  const dirs = {
+    workDir: join(root, "work"),
+    nodeDir: join(root, "node/v24"),
+    dataDir: join(root, "data"),
+    claudeConfigDir: join(root, "claude"),
+    repoDir: join(root, "repo"),
+    homeDir: join(root, "home"),
+  };
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
   const probes: Array<{ file: string; args: readonly string[]; env: Record<string, string>; timeoutMs: number }> = [];
   const probe = { result: { kind: "exited", code: 0 } as ProbeResult };
@@ -61,6 +69,10 @@ function setup(t: TestContext) {
   };
   return { root, bin, dirs, input, probes, probe };
 }
+
+test("nodeVersionDir: execPath の 2 つ上", () => {
+  assert.equal(nodeVersionDir("/home/u/.nvm/versions/node/v24.20.0/bin/node"), "/home/u/.nvm/versions/node/v24.20.0");
+});
 
 test("shellPath: node の bin を先頭に、/usr/local/bin・/usr/bin・/bin を続ける", () => {
   assert.equal(
@@ -143,7 +155,7 @@ test("checkSandbox: 失敗した項目を全部返す（項目にパスは入ら
   }
 });
 
-test("placesOverlap: workDir が他の場所と同じ・その中・その外側なら重なる（symlink は実際の場所で比べる）。名前の前方一致だけなら重ならない。解決できなければ重なるとみなす", (t) => {
+test("placesOverlap: 読める場所（workDir・node の版のディレクトリ）が秘密の場所と同じ・その中・その外側なら重なる（symlink は実際の場所で比べる）。名前の前方一致だけなら重ならない。解決できなければ重なるとみなす", (t) => {
   const cases: Array<{ name: string; arrange: (env: ReturnType<typeof setup>) => void; overlap: boolean }> = [
     { name: "重ならない", arrange: () => {}, overlap: false },
     { name: "dataDir が workDir と同じ", arrange: (env) => void (env.input.dataDir = env.dirs.workDir), overlap: true },
@@ -162,6 +174,16 @@ test("placesOverlap: workDir が他の場所と同じ・その中・その外側
       arrange: (env) => {
         env.input.workDir = join(env.root, "work-link");
         symlinkSync(env.dirs.dataDir, env.input.workDir);
+      },
+      overlap: true,
+    },
+    { name: "repoDir が node の版のディレクトリの中", arrange: (env) => void (env.input.repoDir = join(env.dirs.nodeDir, "lib/repo")), overlap: true },
+    { name: "node の版のディレクトリが dataDir の中", arrange: (env) => void (env.input.nodeDir = join(env.dirs.dataDir, "node")), overlap: true },
+    {
+      name: "node の版のディレクトリが解決できなければ重なっているとみなす",
+      arrange: (env) => {
+        env.input.nodeDir = join(env.root, "node-broken");
+        symlinkSync(join(env.root, "no-such"), env.input.nodeDir);
       },
       overlap: true,
     },

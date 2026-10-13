@@ -33,7 +33,7 @@ export const SANDBOX_CHECK_ITEMS = {
   socatMissing: "socat が見つからない",
   probeFailed: "bwrap で sandbox を作れない",
   probeTimeout: "bwrap の確認が時間内に終わらない",
-  placesOverlap: "作業ディレクトリが他の場所と重なっている",
+  placesOverlap: "sandbox から読める場所と秘密の場所が重なっている",
   sameFilesystem: "作業ディレクトリが別のファイルシステムでない",
 } as const;
 
@@ -53,6 +53,8 @@ export type SandboxCheckInput = {
   /** Bash の子プロセスと同じ PATH（shellPath） */
   pathEnv: string;
   workDir: string;
+  /** node の版のディレクトリ（nodeVersionDir。§2.2 の allowRead） */
+  nodeDir: string;
   dataDir: string;
   claudeConfigDir: string;
   /** Bot のリポジトリ（process.cwd()） */
@@ -70,6 +72,11 @@ export type SandboxCheckInput = {
 /** Bash の子プロセスの PATH（§2.4）。node の bin（execPath のディレクトリ）を先頭に置く（service の PATH には nvm が無いため） */
 export function shellPath(execPath: string): string {
   return [dirname(execPath), ...SHELL_SYSTEM_PATH_DIRS].join(delimiter);
+}
+
+/** node の版のディレクトリ（execPath の 2 つ上。npm を含む）。§2.2 の allowRead に入れる */
+export function nodeVersionDir(execPath: string): string {
+  return dirname(dirname(execPath));
 }
 
 /** PATH の絶対パスの要素から、実行できるファイル name を探す。無ければ undefined */
@@ -95,18 +102,22 @@ function overlaps(a: string, b: string): boolean {
 }
 
 /**
- * workDir が他の場所（データ・SDK の設定・リポジトリ・`~/.config/self-agent`）と同じか、その中・外側にあるか（§2.3）。
+ * sandbox から読める・書ける場所（workDir（allowWrite はすべてこの中）・node の版のディレクトリ）と、
+ * 秘密の場所（データ・SDK の設定・リポジトリ・env ファイルのある `~/.config/self-agent`）のどれかが、同じかその中・外側にあるか（§2.3）。
  * 実際の場所（resolveRealPath。まだ無い部分は存在する一番深い親から求める）で比べ、
  * どれかが解決できなければ（ENOENT 以外の失敗・壊れた symlink など）重なっているとみなす（fail-closed）
  */
-export function placesOverlap(input: Pick<SandboxCheckInput, "workDir" | "dataDir" | "claudeConfigDir" | "repoDir" | "homeDir">): boolean {
-  const workDir = resolveRealPath(input.workDir);
-  if (workDir === undefined) return true;
-  const others = [input.dataDir, input.claudeConfigDir, input.repoDir, join(input.homeDir, ".config/self-agent")];
-  return others.some((other) => {
-    const real = resolveRealPath(other);
-    return real === undefined || overlaps(workDir, real);
-  });
+export function placesOverlap(
+  input: Pick<SandboxCheckInput, "workDir" | "nodeDir" | "dataDir" | "claudeConfigDir" | "repoDir" | "homeDir">,
+): boolean {
+  const resolveAll = (paths: string[]): string[] | undefined => {
+    const reals = paths.map((path) => resolveRealPath(path));
+    return reals.every((real) => real !== undefined) ? (reals as string[]) : undefined;
+  };
+  const allowed = resolveAll([input.workDir, input.nodeDir]);
+  const secrets = resolveAll([input.dataDir, input.claudeConfigDir, input.repoDir, join(input.homeDir, ".config/self-agent")]);
+  if (allowed === undefined || secrets === undefined) return true;
+  return allowed.some((place) => secrets.some((secret) => overlaps(place, secret)));
 }
 
 /** workDir が親ディレクトリと別のファイルシステム（st_dev が違う）か（§2.7）。解決・stat できなければ false */

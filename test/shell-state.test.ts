@@ -17,7 +17,7 @@ const LOG_NG = "シェルの自己診断が通りません（bwrap が見つか�
 const LOG_NG_OTHER = "シェルの自己診断が通りません（作業ディレクトリが別のファイルシステムでない）";
 
 /** guild-1・guild-2 は /setup 済み（#system あり）、guild-3 は #system なし */
-function setup(t: TestContext) {
+function setup(t: TestContext, noticeTimeoutMs?: number) {
   const db = tempDb(t);
   const { guildSettings } = createStores(db, () => new Date("2026-10-13T00:00:00.000Z"));
   guildSettings.setChannel("guild-1", "systemChannelId", "system-1");
@@ -39,6 +39,7 @@ function setup(t: TestContext) {
     guildSettings,
     gateway,
     log: (line) => logs.push(line),
+    noticeTimeoutMs,
   });
   /** 送れた #system への投稿（チャンネルと本文） */
   const posts = (): Array<[string, string]> => gateway.posts.map(({ channelId, message }) => [channelId, message.text]);
@@ -118,16 +119,70 @@ test("ShellState: 診断が例外なら無効（自己診断に失敗した）�
   assert.deepEqual(env.posts().map(([channelId]) => channelId), ["system-1", "system-2"]);
 });
 
-test("ShellState: 投稿の失敗は log だけで、残りのサーバーには投稿し、やり直さない", async (t) => {
+test("ShellState: 投稿に失敗したサーバーだけ、状態が変わらなければ次の tick でやり直す。投稿できたサーバーには重ねて投稿しない", async (t) => {
   const env = setup(t);
+  let failures = 1;
   env.gateway.beforeSendMessage = (channelId) => {
-    if (channelId === "system-1") throw new Error("Missing Access");
+    if (channelId === "system-1" && failures-- > 0) throw new Error("Missing Access");
   };
-  env.results.push(NG, NG);
-  await env.state.refresh();
+  env.results.push(NG, NG, NG);
   await env.state.refresh();
   assert.deepEqual(env.posts().map(([channelId]) => channelId), ["system-2"]);
-  assert.deepEqual(env.logs.slice(1), ["シェルの状態の知らせの投稿に失敗しました（guild=guild-1）: Missing Access"]);
+  await env.state.refresh();
+  await env.state.refresh();
+  assert.deepEqual(env.posts().map(([channelId]) => channelId), ["system-2", "system-1"]);
+  assert.deepEqual(env.logs, [LOG_NG, "シェルの状態の知らせの投稿に失敗しました（guild=guild-1）: Missing Access"]);
+});
+
+test("ShellState: #system が無いサーバーは、状態が変わらないうちに /setup されたら次の tick で知らせる", async (t) => {
+  const env = setup(t);
+  env.results.push(NG, NG, NG);
+  await env.state.refresh();
+  assert.deepEqual(env.posts().map(([channelId]) => channelId), ["system-1", "system-2"]);
+  env.guildSettings.setChannel("guild-3", "systemChannelId", "system-3");
+  await env.state.refresh();
+  await env.state.refresh();
+  assert.deepEqual(env.posts().map(([channelId]) => channelId), ["system-1", "system-2", "system-3"]);
+  assert.deepEqual(env.logs, [LOG_NG]);
+});
+
+test("ShellState: 止まった投稿は noticeTimeoutMs で失敗として扱い、tick を止めずに残りのサーバーへ進み、次の tick でやり直す", async (t) => {
+  const env = setup(t, 20);
+  let hang = true;
+  env.gateway.beforeSendMessage = (channelId) => {
+    if (channelId === "system-1" && hang) return new Promise<void>(() => {});
+  };
+  env.results.push(NG, NG);
+  const started = Date.now();
+  await env.state.refresh();
+  assert.ok(Date.now() - started < 2000);
+  assert.deepEqual(env.posts().map(([channelId]) => channelId), ["system-2"]);
+  assert.deepEqual(env.logs, [LOG_NG, "シェルの状態の知らせの投稿に失敗しました（guild=guild-1）: 20 ms で終わりませんでした"]);
+  hang = false;
+  await env.state.refresh();
+  assert.deepEqual(env.posts().map(([channelId]) => channelId), ["system-2", "system-1"]);
+});
+
+test("ShellState: 通る・通らないが変わったら、やり直し待ちも含めて全サーバーを知らせる対象に戻す", async (t) => {
+  const env = setup(t);
+  let failing = true;
+  env.gateway.beforeSendMessage = (channelId) => {
+    if (channelId === "system-1" && failing) throw new Error("Missing Access");
+  };
+  env.results.push(NG, OK, OK, NG);
+  await env.state.refresh();
+  failing = false;
+  await env.state.refresh();
+  await env.state.refresh();
+  await env.state.refresh();
+  const disabled = shellDisabledNotice(NG.ok ? [] : NG.failed);
+  assert.deepEqual(env.posts(), [
+    ["system-2", disabled],
+    ["system-1", SHELL_RESUMED_NOTICE],
+    ["system-2", SHELL_RESUMED_NOTICE],
+    ["system-1", disabled],
+    ["system-2", disabled],
+  ]);
 });
 
 /** scheduler の最低限の依存（他の処理は対象が無い） */
