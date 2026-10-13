@@ -58,6 +58,8 @@ export type OutgoingMessage = {
   components?: ComponentRow[];
   /** reply でだけ効く。defer 後の reply は defer 時の指定に従う */
   ephemeral?: boolean;
+  /** このユーザーだけをメンションして鳴らす（本文の先頭に `<@id> ` を付ける。text と合わせて 2000 字以内） */
+  mentionUserId?: string;
 };
 
 export type ModalDef = {
@@ -131,8 +133,11 @@ export type GatewayHandlers = {
 
 export interface Gateway {
   start(handlers: GatewayHandlers): Promise<void>;
-  /** 長い本文は分割して送る。replyToId があれば最初の塊だけその発言への返信にする */
-  send(channelId: string, text: string, replyToId?: string): Promise<void>;
+  /**
+   * 長い本文は分割して送る。replyToId があれば最初の塊だけその発言への返信にする。
+   * mentionUserId があれば本文の先頭に `<@id> ` を付けて分割し、最初の塊だけそのユーザーをメンションして鳴らす
+   */
+  send(channelId: string, text: string, replyToId?: string, mentionUserId?: string): Promise<void>;
   /** ボタンなどの付いたメッセージを 1 通送り、その ID を返す（分割しない。ephemeral は効かない） */
   sendMessage(channelId: string, message: OutgoingMessage): Promise<string>;
   /** 送ったメッセージを書き換える（分割しない。components を省略すると元のコンポーネントを残し、[] で取り除く。ephemeral は効かない） */

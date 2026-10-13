@@ -34,6 +34,7 @@ It runs on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/over
 | `/wait` | Moves the session to 待ち. Posting in that channel moves it back to 進行中. |
 | `/sessions` | Lists sessions with links. |
 | `/tasks` | Lists open tasks. Pick one to mark it done. |
+| `/reminders` | Lists reminders and scheduled requests. Pick one to skip its next time or stop it. |
 | `/usage` | Turns, tokens, cache hits and tool calls for today and the last 7 days. |
 | `/help` | How to use it. |
 
@@ -67,6 +68,7 @@ Discord ──(discord.js)── Gateway ── access check (allowed servers, o
 - Content from web pages, search results and the knowledge base is treated as reference material. Instructions inside it are not followed.
 - Irreversible actions, such as deleting a channel or a knowledge base entry, happen only when you press a button.
 - Bot messages never ping `@everyone` or roles.
+- Reminders mention only the owner.
 - The Claude child process receives only allowlisted environment variables (it never sees the Discord token, for example).
 
 ## Running it
