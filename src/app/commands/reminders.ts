@@ -228,7 +228,8 @@ export function createRemindersComponent(deps: RemindersDeps): ComponentHandler 
           return;
         }
         let note = "";
-        if (reminder.taskId !== null && tasks.complete(reminder.taskId).result !== "not_found") {
+        // まだ open のタスクだけ完了にする（やめた・完了済みのタスクは変えない）
+        if (reminder.taskId !== null && tasks.get(reminder.taskId)?.status === "open" && tasks.complete(reminder.taskId).result !== "not_found") {
           note = `（#${reminder.taskId} も完了にしました）`;
         }
         log(`[完了] でリマインドを完了にしました（#${id}）`);
