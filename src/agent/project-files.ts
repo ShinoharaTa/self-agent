@@ -376,9 +376,14 @@ export async function runProjectFiles(
  * 消す前に同じ .trash の中の `.purging-<trash_id>`（TRASH_ID_PATTERN に合わないので restore・一覧には出ない）に同期で名前を変えてから消す
  * （消している間に restore されない）。前に消しきれなかった `.purging-*` も消す。
  * 形に合わない名前・ディレクトリでないもの（symlink を含む）は触らない（symlink の先も触らない）。projectsDir や .trash が無ければ何もしない。
- * 消すのは removeTree（symlink をたどらない rm）。1 つ消せなくても残りは続け、最後に失敗の数だけを投げる
+ * 消すのは removeTree（symlink をたどらない rm。remove で差し替えられる）。1 つ消せなくても残りは続け、最後に失敗の数だけを投げる
  */
-export async function pruneProjectTrash(projectsDir: string, now: Date, days = TRASH_RETENTION_DAYS): Promise<void> {
+export async function pruneProjectTrash(
+  projectsDir: string,
+  now: Date,
+  days = TRASH_RETENTION_DAYS,
+  remove: (path: string) => Promise<void> = removeTree,
+): Promise<void> {
   let projects: string[];
   try {
     projects = readdirSync(projectsDir);
@@ -412,7 +417,7 @@ export async function pruneProjectTrash(projectsDir: string, now: Date, days = T
       for (const name of purging) {
         const target = join(trashRoot, name);
         try {
-          if (isRealDirectory(target)) await removeTree(target);
+          if (isRealDirectory(target)) await remove(target);
         } catch {
           failures++;
         }

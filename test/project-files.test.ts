@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as z from "zod";
 import { FILE_WRITE_DENIED_REASON } from "../src/agent/file-access.ts";
+import { removeTree } from "../src/agent/remove-tree.ts";
 import {
   formatTrashId,
   PROJECT_DIR_MISSING_MESSAGE,
@@ -512,12 +513,26 @@ test("pruneProjectTrash: 消す前に同期で .purging-<trash_id> に名前を�
     writeFileSync(join(trash, name, "site", "index.html"), "x");
   }
 
-  const pruning = pruneProjectTrash(projectsDir, now);
-  // rm を待つ前（同期の部分）に名前を変えてある
+  // 消す処理を止めておき、その間の様子を見る
+  let release = (): void => {};
+  const blocked = new Promise<void>((resolve) => (release = resolve));
+  const removing: string[] = [];
+  const pruning = pruneProjectTrash(projectsDir, now, TRASH_RETENTION_DAYS, async (path) => {
+    removing.push(path);
+    await blocked;
+    await removeTree(path);
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // 消す前に名前を変えてある。.purging-* は一覧に出ず、restore でも not_found
   assert.deepEqual(readdirSync(trash).sort(), [`.purging-${old}`, ".purging-20200101T000000Z", recent].sort());
+  assert.deepEqual(removing, [join(trash, ".purging-20200101T000000Z")]);
+  assert.deepEqual(await run({ action: "restore" }, now), { result: "list", trashes: [{ trash_id: recent, files: 1 }] });
   assert.deepEqual(await run({ action: "restore", trash_id: old }, now), { result: "not_found", trash_id: old });
+  release();
   await pruning;
 
+  assert.deepEqual(removing, [join(trash, ".purging-20200101T000000Z"), join(trash, `.purging-${old}`)]);
   assert.deepEqual(readdirSync(trash), [recent]);
 });
 
