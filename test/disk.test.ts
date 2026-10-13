@@ -31,8 +31,9 @@ const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 const NOW = new Date("2026-10-13T03:00:00Z");
 const PLENTY = { bavail: GIB / 4096, bsize: 4096 };
-const OLD = new Date(NOW.getTime() - WORK_TMP_MAX_AGE_MS - 1000);
-const RECENT = new Date(NOW.getTime() - WORK_TMP_MAX_AGE_MS + 60 * 1000);
+// .tmp の掃除は find がシステムの時計で判定するので、今の時刻を基準にする
+const OLD = new Date(Date.now() - 2 * WORK_TMP_MAX_AGE_MS);
+const RECENT = new Date(Date.now() - WORK_TMP_MAX_AGE_MS + 60 * 60 * 1000);
 
 /** path の lstat の blocks × 512（treeSize が 1 つのものに数える大きさ） */
 function used(path: string): number {
@@ -208,7 +209,7 @@ test("pruneWorkDir: .tmp はファイルごとの更新で判定する（古い�
   for (const dir of ["mixed/deep", "mixed", "stale/a/b", "stale/a", "stale"]) utimesSync(join(tmp, dir), OLD, OLD);
   utimesSync(join(tmp, "fresh-empty"), RECENT, RECENT);
 
-  await pruneWorkDir(workDir, NOW);
+  await pruneWorkDir(workDir);
 
   assert.ok(!existsSync(join(tmp, "mixed", "old.txt")));
   assert.ok(existsSync(join(tmp, "mixed", "deep", "new.txt")));
@@ -232,13 +233,13 @@ test("pruneWorkDir: .tmp の中で消せないもの（読めないディレク�
     utimesSync(join(tmp, "old-file"), OLD, OLD);
 
     // lost+found だけなら失敗しない
-    await pruneWorkDir(workDir, NOW);
+    await pruneWorkDir(workDir);
     assert.ok(!existsSync(join(tmp, "old-file")));
 
     unlocks.push(lockedDir(join(tmp, "locked")));
     writeFileSync(join(tmp, "z-old-file"), "x");
     utimesSync(join(tmp, "z-old-file"), OLD, OLD);
-    await assert.rejects(pruneWorkDir(workDir, NOW), (error: Error) => !error.message.includes(root));
+    await assert.rejects(pruneWorkDir(workDir), (error: Error) => !error.message.includes(root));
     assert.ok(!existsSync(join(tmp, "z-old-file")));
   } finally {
     for (const unlock of unlocks) unlock();
@@ -253,11 +254,11 @@ test("pruneWorkDir: 上限を超えた .cache を丸ごと消す。.tmp・.cache
   writeFileSync(join(cache, "npm", "pkg.tgz"), Buffer.alloc(64 * 1024));
   const cacheSize = treeSize(cache);
 
-  await pruneWorkDir(workDir, NOW, cacheSize);
+  await pruneWorkDir(workDir, cacheSize);
   assert.ok(existsSync(join(cache, "npm", "pkg.tgz")));
-  await pruneWorkDir(workDir, NOW, cacheSize - 1);
+  await pruneWorkDir(workDir, cacheSize - 1);
   assert.ok(!existsSync(cache));
-  await pruneWorkDir(join(root, "missing"), NOW, 0);
+  await pruneWorkDir(join(root, "missing"), 0);
 
   const outside = join(root, "outside");
   mkdirSync(outside);
@@ -266,7 +267,7 @@ test("pruneWorkDir: 上限を超えた .cache を丸ごと消す。.tmp・.cache
   symlinkSync(outside, join(workDir, ".tmp"));
   symlinkSync(outside, join(workDir, ".cache"));
 
-  await pruneWorkDir(workDir, NOW, 0);
+  await pruneWorkDir(workDir, 0);
 
   assert.ok(existsSync(join(outside, "keep")));
   assert.ok(lstatSync(join(workDir, ".tmp")).isSymbolicLink());
@@ -315,7 +316,7 @@ test("removeNodeModules: 深さ 3 までの node_modules を消し、4 より深
   assert.equal(await removeNodeModules(projectsDir, "missing"), 0);
 });
 
-test("removeNodeModules: プロジェクトの dir が projectsDir の直下のディレクトリそのものでなければ（外を指す symlink）何も消さずに undefined", async (t) => {
+test("removeNodeModules: プロジェクトの dir が projectsDir の直下のディレクトリそのものでない（外を指す symlink）・projectsDir が symlink か realpath でないなら、何も消さずに undefined", async (t) => {
   const root = tempDir(t);
   const projectsDir = join(root, "projects");
   const outside = join(root, "outside");
@@ -330,6 +331,20 @@ test("removeNodeModules: プロジェクトの dir が projectsDir の直下の�
 
   assert.equal(await removeNodeModules(projectsDir, "kakeibo"), undefined);
   assert.equal(await removeNodeModules(projectsDir, "alias"), undefined);
+
+  // projects そのものが外への symlink・realpath でない（symlink を通った）パスでも何も消さない
+  const work = join(root, "work");
+  mkdirSync(work);
+  symlinkSync(outside, join(work, "projects"));
+  mkdirSync(join(outside, "kakeibo", "node_modules"), { recursive: true });
+  assert.equal(await removeNodeModules(join(work, "projects"), "kakeibo"), undefined);
+  symlinkSync(root, join(work, "via-link"));
+  mkdirSync(join(projectsDir, "real", "node_modules"), { recursive: true });
+  assert.equal(await removeNodeModules(join(work, "via-link", "projects"), "real"), undefined);
+  assert.ok(existsSync(join(outside, "kakeibo", "node_modules")));
+  assert.ok(existsSync(join(projectsDir, "real", "node_modules")));
+  // 同じものを本来のパスで渡せば消す
+  assert.equal(await removeNodeModules(projectsDir, "real"), 1);
 
   assert.ok(existsSync(join(outside, "node_modules", "pkg", "index.js")));
   assert.ok(existsSync(join(outside, "a", "node_modules")));
@@ -358,6 +373,16 @@ test("removeTree: 中身ごと消す。symlink を渡すとリンクだけを消
   assert.throws(() => lstatSync(join(work, "dir-link")));
   assert.throws(() => lstatSync(join(work, "file-link")));
   assert.equal(readFileSync(join(outside, "sub", "keep.txt"), "utf8"), "keep");
+  // 消せなければ（親に書けない）終了コードだけで投げる
+  const locked = join(root, "locked");
+  mkdirSync(join(locked, "child"), { recursive: true });
+  chmodSync(locked, 0o500);
+  try {
+    await assert.rejects(removeTree(join(locked, "child")), (error: Error) => error.message === "rm が失敗しました（1）");
+  } finally {
+    chmodSync(locked, 0o700);
+  }
+  assert.ok(existsSync(join(locked, "child")));
   await assert.rejects(removeTree("relative/path"));
   await assert.rejects(removeTree(`${join(work, "dir-link")}/`));
 });

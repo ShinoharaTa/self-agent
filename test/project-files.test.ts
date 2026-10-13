@@ -501,6 +501,26 @@ test("clear: UI の土台の複製に失敗しても cleared を返し、scaffol
   for (const secret of [dir, "self-agent-test-no-such-template", "ENOENT"]) assert.ok(!logs[0]!.includes(secret), secret);
 });
 
+test("pruneProjectTrash: 1 つ消せなくても残りのプロジェクトの古い .trash は消し、最後に 1 回だけ投げる（パスは出さない）", async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const projectsDir = join(root, "projects");
+  const now = new Date("2026-10-11T00:00:00Z");
+  const old = formatTrashId(new Date(now.getTime() - (TRASH_RETENTION_DAYS + 1) * DAY_MS));
+  for (const project of ["a-locked", "b-plain", "c-plain"]) mkdirSync(join(projectsDir, project, TRASH_DIR_NAME, old, "site"), { recursive: true });
+  // a-locked の .trash に書けないので、その中の old は消せない
+  const lockedTrash = join(projectsDir, "a-locked", TRASH_DIR_NAME);
+  chmodSync(lockedTrash, 0o500);
+  try {
+    await assert.rejects(pruneProjectTrash(projectsDir, now), (error: Error) => !error.message.includes(root));
+  } finally {
+    chmodSync(lockedTrash, 0o700);
+  }
+  assert.deepEqual(readdirSync(lockedTrash), [old]);
+  assert.deepEqual(readdirSync(join(projectsDir, "b-plain", TRASH_DIR_NAME)), []);
+  assert.deepEqual(readdirSync(join(projectsDir, "c-plain", TRASH_DIR_NAME)), []);
+});
+
 test("pruneProjectTrash: 名前の時刻から 30 日（days で変えられる）を過ぎた .trash/<trash_id> だけを消し、形に合わない名前・ディレクトリでないもの・symlink の先は触らない。projectsDir が無くても例外にならない", async (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));

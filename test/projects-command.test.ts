@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STALE_TEXT } from "../src/app/commands/delete.ts";
@@ -289,7 +289,7 @@ test("[やめる]: 何も消さず「やめました」にしてボタンを外�
   assert.equal(projects.get(1)?.deletedAt, null);
   assert.deepEqual(logs, []);
 });
-test("[削除する]: ディレクトリを消せない・消してはいけない（projects の外や別のプロジェクトを指す symlink・消すのに失敗）ときは残して log に出し、DB は削除済みにする", async (t) => {
+test("[削除する]: ディレクトリを消せない・消してはいけない（projects の外や別のプロジェクトを指す symlink・projects そのものが symlink・消すのに失敗）ときは残して log に出し、DB は削除済みにする", async (t) => {
   const cases: Array<{
     label: string;
     /** 消すプロジェクトを用意し、その id と、残っているべきファイルを返す */
@@ -313,6 +313,16 @@ test("[削除する]: ディレクトリを消せない・消してはいけな�
         const sibling = projects.create({ guildId: "guild-1", channelId: "ch-sibling", name: "linked", title: "隣へのリンク" });
         symlinkSync(join(projectsDir, "todo"), join(projectsDir, sibling.slug));
         return { id: sibling.id, title: sibling.title, kept: join(projectsDir, "todo", "site", "index.html") };
+      },
+    },
+    {
+      label: "projects そのものが外への symlink",
+      arrange: ({ dir, projectsDir, add }) => {
+        const project = add("linked", "家計簿");
+        const moved = join(dir, "elsewhere");
+        renameSync(projectsDir, moved);
+        symlinkSync(moved, projectsDir);
+        return { id: project.id, title: project.title, kept: join(moved, project.slug, "site", "index.html") };
       },
     },
     {

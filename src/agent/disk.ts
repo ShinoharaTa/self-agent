@@ -1,10 +1,10 @@
 // ディスクの上限と掃除（docs/plan/shell.md §2.7）。SDK に依存しない。
 // 大きさは lstat の blocks（du と同じ実際の使用量）で数え、symlink はたどらない（リンクそのものだけを数える）
 import { lstatSync, readdirSync, statfsSync } from "node:fs";
-import { lstat, readdir, realpath, rmdir, unlink } from "node:fs/promises";
+import { lstat, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { TRASH_DIR_NAME } from "./project-files.ts";
-import { removeTree } from "./remove-tree.ts";
+import { FIND_PATH, removeTree, runQuiet } from "./remove-tree.ts";
 
 /** workDir の空きがこれより少なければ、書き込み（Write・Edit）を拒否する */
 export const WORKDIR_MIN_FREE_BYTES = 512 * 1024 * 1024;
@@ -165,71 +165,67 @@ async function isRealDirectory(path: string): Promise<boolean> {
 }
 
 /**
- * `<projectsDir>/<slug>` の realpath。projectsDir の直下のそのディレクトリそのもの（symlink でない）でなければ・確かめられなければ undefined
+ * `<projectsDir>/<slug>` の realpath。次のどれかなら・確かめられなければ undefined（呼び出し側は何も消さない）:
+ * projectsDir が実際のディレクトリでない（symlink）・realpath(projectsDir) が projectsDir（main は realpath(workDir) の下を渡す）と違う・
+ * `<projectsDir>/<slug>` の realpath が projectsDir の直下のそのディレクトリそのものでない（symlink など）
  */
 export async function verifiedProjectDir(projectsDir: string, slug: string): Promise<string | undefined> {
   try {
-    const base = await realpath(projectsDir);
+    if (!(await lstat(projectsDir)).isDirectory() || (await realpath(projectsDir)) !== projectsDir) return undefined;
     const real = await realpath(join(projectsDir, slug));
-    return real === join(base, slug) ? real : undefined;
+    return real === join(projectsDir, slug) ? real : undefined;
   } catch {
     return undefined;
   }
 }
 
 /**
- * `<workDir>/.tmp` の中を symlink をたどらずに回り、更新（自分の lstat の mtime）から 1 日を過ぎたファイル・symlink を消し、
- * そのあと空になったディレクトリのうち、中を消す前の更新から 1 日を過ぎたものを下から消す（.tmp そのものは消さない）。
- * 1 つ消せなくても（EACCES など）続け、失敗した数を返す。消している間に無くなったものは失敗に数えない
+ * `<workDir>/.tmp` の中を GNU の find で回り（symlink はたどらず、別のファイルシステムには入らない）、更新から 1 日を過ぎたファイル・symlink と、
+ * 空で更新から 1 日を過ぎたディレクトリを下から消す（.tmp そのものは消さない。時刻は find が見るシステムの時計）。
+ * 1 つ消せなくても（EACCES など）find は続け、終了コードが 0 でなければ投げる
  */
-async function pruneTmp(tmp: string, now: Date): Promise<number> {
-  const cutoff = now.getTime() - WORK_TMP_MAX_AGE_MS;
-  let failures = 0;
-  const visit = async (dir: string): Promise<void> => {
-    let names: string[];
-    try {
-      names = await readdir(dir);
-    } catch (error) {
-      if (!hasCode(error, "ENOENT")) failures++;
-      return;
-    }
-    for (const name of names) {
-      const path = join(dir, name);
-      try {
-        const stats = await lstat(path);
-        if (stats.isDirectory()) {
-          await visit(path);
-          if (stats.mtimeMs < cutoff) {
-            try {
-              // 空でなければ（新しいものが残っている）消さない
-              await rmdir(path);
-            } catch (error) {
-              if (!hasCode(error, "ENOTEMPTY", "EEXIST")) throw error;
-            }
-          }
-        } else if (stats.mtimeMs < cutoff) {
-          // unlink は symlink をたどらない（リンクそのものを消す）
-          await unlink(path);
-        }
-      } catch (error) {
-        if (!hasCode(error, "ENOENT")) failures++;
-      }
-    }
-  };
-  await visit(tmp);
-  return failures;
+async function pruneTmp(tmp: string): Promise<void> {
+  const minutes = `+${WORK_TMP_MAX_AGE_MS / (60 * 1000)}`;
+  await runQuiet("find", FIND_PATH, [
+    tmp,
+    "-xdev",
+    "-mindepth",
+    "1",
+    "-depth",
+    "(",
+    "(",
+    "-type",
+    "f",
+    "-o",
+    "-type",
+    "l",
+    ")",
+    "-mmin",
+    minutes,
+    "-delete",
+    ")",
+    "-o",
+    "(",
+    "-type",
+    "d",
+    "-empty",
+    "-mmin",
+    minutes,
+    "-delete",
+    ")",
+  ]);
 }
 
 /**
- * workDir の掃除（scheduler の tick）。`<workDir>/.tmp` の中の 1 日を過ぎたもの（pruneTmp）と、
+ * workDir の掃除（scheduler の tick）。`<workDir>/.tmp` の中の 1 日を過ぎたもの（pruneTmp。.tmp が実際のディレクトリのときだけ）と、
  * cacheMaxBytes（既定 1 GB）を超えた `<workDir>/.cache` を丸ごと（removeTree で）消す。どちらも無い・実際のディレクトリでない（symlink）なら何もしない。
  * workDir の直下のほかのもの（lost+found など）は見ない。片方が失敗してももう片方は行い、失敗があれば最後にまとめて投げる（message にパスは入れない）
  */
-export async function pruneWorkDir(workDir: string, now: Date, cacheMaxBytes = WORK_CACHE_MAX_BYTES): Promise<void> {
+export async function pruneWorkDir(workDir: string, cacheMaxBytes = WORK_CACHE_MAX_BYTES): Promise<void> {
   let failures = 0;
   try {
     const tmp = join(workDir, WORK_TMP_DIR_NAME);
-    if (await isRealDirectory(tmp)) failures += await pruneTmp(tmp, now);
+    if (await isRealDirectory(tmp)) await pruneTmp(tmp);
   } catch {
     failures++;
   }

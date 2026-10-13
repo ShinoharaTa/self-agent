@@ -204,7 +204,7 @@ const scheduler = new Scheduler({
   inboxRotator,
   pruneDevLogs: () => pruneDevLogs(devLogDir(config.dataDir), now(), config.timeZone, config.devLogDays),
   pruneProjectTrash: () => pruneProjectTrash(projectsDir, now()),
-  pruneWorkDir: () => pruneWorkDir(realWorkDir, now()),
+  pruneWorkDir: () => pruneWorkDir(realWorkDir),
   now,
   log,
 });

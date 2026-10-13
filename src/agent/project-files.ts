@@ -372,7 +372,7 @@ export async function runProjectFiles(
 /**
  * `<projectsDir>/<slug>/.trash/<name>` のうち、name が trash_id の形で、その時刻から days 日を過ぎたものを消す。
  * 形に合わない名前・ディレクトリでないもの（symlink を含む）は触らない（symlink の先も触らない）。projectsDir や .trash が無ければ何もしない。
- * 消すのは removeTree（symlink をたどらない rm）
+ * 消すのは removeTree（symlink をたどらない rm）。1 つ消せなくても残りは続け、最後に失敗の数だけを投げる
  */
 export async function pruneProjectTrash(projectsDir: string, now: Date, days = TRASH_RETENTION_DAYS): Promise<void> {
   let projects: string[];
@@ -382,15 +382,26 @@ export async function pruneProjectTrash(projectsDir: string, now: Date, days = T
     if (hasCode(error, "ENOENT")) return;
     throw error;
   }
+  // 1 つ失敗しても残りは続け、最後にまとめて投げる（message にパスは入れない）
+  let failures = 0;
   for (const project of projects) {
-    const projectDir = join(projectsDir, project);
-    const trashRoot = join(projectDir, TRASH_DIR_NAME);
-    if (!isRealDirectory(projectDir) || !isRealDirectory(trashRoot)) continue;
-    for (const name of readdirSync(trashRoot)) {
-      const parsed = TRASH_ID_PATTERN.test(name) ? parseTrashId(name) : undefined;
-      if (parsed === undefined || now.getTime() - parsed.time <= days * DAY_MS) continue;
-      const target = join(trashRoot, name);
-      if (isRealDirectory(target)) await removeTree(target);
+    try {
+      const projectDir = join(projectsDir, project);
+      const trashRoot = join(projectDir, TRASH_DIR_NAME);
+      if (!isRealDirectory(projectDir) || !isRealDirectory(trashRoot)) continue;
+      for (const name of readdirSync(trashRoot)) {
+        const parsed = TRASH_ID_PATTERN.test(name) ? parseTrashId(name) : undefined;
+        if (parsed === undefined || now.getTime() - parsed.time <= days * DAY_MS) continue;
+        const target = join(trashRoot, name);
+        try {
+          if (isRealDirectory(target)) await removeTree(target);
+        } catch {
+          failures++;
+        }
+      }
+    } catch {
+      failures++;
     }
   }
+  if (failures > 0) throw new Error(`古い .trash の削除で ${failures} 件失敗しました`);
 }
