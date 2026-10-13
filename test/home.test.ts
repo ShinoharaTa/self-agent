@@ -43,7 +43,7 @@ function setup(t: TestContext) {
     allow: ["channelExists", "countChannelsIn"],
     record: ["createCategory", "createTextChannel", "send"],
   });
-  const { guildSettings, tasks } = createStores(db, () => NOW);
+  const { guildSettings, tasks, reminders } = createStores(db, () => NOW);
   const { topicSessions } = createStores(db, () => clock.now);
   const logs: string[] = [];
   const component = createHomeComponent({
@@ -51,6 +51,8 @@ function setup(t: TestContext) {
     guildSettings,
     topicSessions,
     tasks,
+    reminders,
+    cfg: { timeZone: "Asia/Tokyo" },
     queue: new KeyedSerialQueue(1),
     log: (line) => logs.push(line),
   });
@@ -65,7 +67,7 @@ function setup(t: TestContext) {
     assert.equal(result.failure, null);
     gateway.calls = [];
   };
-  return { clock, gateway, topicSessions, tasks, logs, handle, setUp };
+  return { clock, gateway, topicSessions, tasks, reminders, logs, handle, setUp };
 }
 
 test("[新しいセッション]: 題名 1 項目（必須・100 字まで）のモーダルを開く", async (t) => {
@@ -119,13 +121,13 @@ test("モーダル送信: 空白だけの題名は作らずに案内し、/setup
 });
 
 test("[タスク一覧]: /tasks と同じ一覧とセレクトを ephemeral で返す", async (t) => {
-  const { tasks, handle } = setup(t);
+  const { tasks, reminders, handle } = setup(t);
   tasks.add({ title: "買い物", due: "2026-10-03" });
   tasks.add({ title: "電話" });
 
   const calls = await handle(press("タスク一覧"));
 
-  assert.deepEqual(calls, [{ method: "reply", message: { ...taskListMessage(tasks), ephemeral: true } }]);
+  assert.deepEqual(calls, [{ method: "reply", message: { ...taskListMessage({ tasks, reminders, cfg: { timeZone: "Asia/Tokyo" } }), ephemeral: true } }]);
 });
 
 test("[待ちのセッション]: 待ちのセッションだけを ephemeral で返す。0 件なら「なし」", async (t) => {

@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { createTaskToolHandlers, type TextToolResult } from "../src/agent/tools.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { TaskStore } from "../src/store/tasks.ts";
-import { createStores } from "./helpers/db.ts";
+import { createStores, tempDb } from "./helpers/db.ts";
 
 const TZ = "Asia/Tokyo";
+/** 紐づけたリマインドが無いとき（task_list に remind が付かない） */
+const NO_REMINDERS = { nextForTasks: () => new Map<number, string>() };
 
 function tempStore(t: TestContext, now: () => Date = () => new Date("2026-10-02T00:12:00Z")): TaskStore {
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
@@ -55,7 +57,7 @@ test("TaskStore: 追加・取得・完了", (t) => {
 });
 
 test("task_add / task_list / task_complete ハンドラ", (t) => {
-  const handlers = createTaskToolHandlers(tempStore(t), TZ);
+  const handlers = createTaskToolHandlers(tempStore(t), TZ, NO_REMINDERS);
 
   assert.deepEqual(parse(handlers.taskAdd({ title: "牛乳を買う" })), { id: 1, title: "牛乳を買う", due: null });
   assert.deepEqual(parse(handlers.taskAdd({ title: "買い物に行く", due: "2026-10-03" })), {
@@ -86,7 +88,7 @@ test("task_add / task_list / task_complete ハンドラ", (t) => {
 });
 
 test("task_complete: 存在しない id・完了済みはエラーにせずその旨を返す", (t) => {
-  const handlers = createTaskToolHandlers(tempStore(t), TZ);
+  const handlers = createTaskToolHandlers(tempStore(t), TZ, NO_REMINDERS);
   handlers.taskAdd({ title: "牛乳を買う" });
   handlers.taskComplete({ id: 1 });
 
@@ -217,7 +219,7 @@ test("TaskStore.list: open は期限の昇順（期限なしは後ろ）、done�
 });
 
 test("task_update ハンドラ: before と after を返す。due を none にすると期限を外す。無い id は not_found、項目なしは no_change", (t) => {
-  const handlers = createTaskToolHandlers(tempStore(t), TZ);
+  const handlers = createTaskToolHandlers(tempStore(t), TZ, NO_REMINDERS);
   handlers.taskAdd({ title: "歯医者を予約", due: "2026-10-05" });
 
   assert.deepEqual(parse(handlers.taskUpdate({ id: 1, title: "歯医者に電話する", due: "2026-10-07" })), {
@@ -247,7 +249,7 @@ test("task_update ハンドラ: before と after を返す。due を none にす
 
 test("task_list ハンドラ: dropped は既定（open）に出ず、status dropped で closed（タイムゾーンの日付）付きで返る。due_by で期限切れと当日の未完了だけ", (t) => {
   // UTC では 10/02、Asia/Tokyo では 10/03
-  const handlers = createTaskToolHandlers(tempStore(t, () => new Date("2026-10-02T15:30:00Z")), TZ);
+  const handlers = createTaskToolHandlers(tempStore(t, () => new Date("2026-10-02T15:30:00Z")), TZ, NO_REMINDERS);
   handlers.taskAdd({ title: "期限なし" });
   handlers.taskAdd({ title: "当日", due: "2026-10-03" });
   handlers.taskAdd({ title: "期限切れ", due: "2026-10-01" });
@@ -270,9 +272,29 @@ test("task_list ハンドラ: dropped は既定（open）に出ず、status drop
   ]);
 });
 
+test("task_list ハンドラ: 紐づけた active のリマインドがあれば remind（次に知らせる時刻、YYYY-MM-DD HH:MM）を付ける。無ければキーを付けない", (t) => {
+  const { tasks, reminders } = createStores(tempDb(t), () => new Date("2026-10-02T00:12:00Z"));
+  const handlers = createTaskToolHandlers(tasks, TZ, reminders);
+  tasks.add({ title: "知らせあり" });
+  tasks.add({ title: "止めた" });
+  tasks.add({ title: "なし" });
+  const base = { guildId: "guild-1", channelId: "inbox-1", kind: "notify" as const, text: "t" };
+  // JST 10/14 9:00 と、それより早いスヌーズ（早い方を出す）
+  reminders.add({ ...base, taskId: 1, nextAt: new Date("2026-10-14T00:00:00Z") });
+  const snoozed = reminders.add({ ...base, taskId: 1, nextAt: new Date("2026-10-15T00:00:00Z") });
+  reminders.snooze(snoozed.id, new Date("2026-10-13T23:05:00Z"));
+  reminders.cancel(reminders.add({ ...base, taskId: 2, nextAt: new Date("2026-10-14T00:00:00Z") }).id);
+
+  assert.deepEqual(parse(handlers.taskList({})), [
+    { id: 1, title: "知らせあり", due: null, status: "open", remind: "2026-10-14 08:05" },
+    { id: 2, title: "止めた", due: null, status: "open" },
+    { id: 3, title: "なし", due: null, status: "open" },
+  ]);
+});
+
 test("task_update・task_list ハンドラ: 日付の形式でない due・due_by は invalid_due・invalid_due_by で、何も変えない", (t) => {
   const store = tempStore(t);
-  const handlers = createTaskToolHandlers(store, TZ);
+  const handlers = createTaskToolHandlers(store, TZ, NO_REMINDERS);
   const task = store.add({ title: "歯医者を予約", due: "2026-10-05" });
 
   for (const due of ["tomorrow", "2026-10-5", "2026-02-30", ""]) {

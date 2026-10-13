@@ -7,6 +7,7 @@ import {
   createTaskTools,
   type KbMemoryToolDeps,
   type ProjectToolDeps,
+  type ReminderToolDeps,
   type SessionOpenResult,
 } from "../src/agent/tools.ts";
 import { createChannelResolver } from "../src/app/access.ts";
@@ -228,6 +229,7 @@ test("session_open: 予約した依頼のターン（context.scheduled）では 
     async () => assert.fail("想定外の呼び出し: openSession"),
     kbMemory(db),
     projectTools(db),
+    reminderTools(db),
     { ...INBOX, scheduled: true },
   ).find((candidate) => candidate.name === "session_open");
   assert.ok(definition !== undefined);
@@ -392,6 +394,12 @@ function projectTools(db: DatabaseSync): ProjectToolDeps {
   };
 }
 
+/** リマインドのツールのストア（ここではツール定義だけを見る） */
+function reminderTools(db: DatabaseSync): ReminderToolDeps {
+  const { reminders } = createStores(db, () => NOW);
+  return { reminders, log: () => {} };
+}
+
 test("ツール定義: どのチャンネルの run でも名前・説明・入力の形は同じで、説明に可変値を入れない", (t) => {
   const { db, topicSessions } = setup(t);
   const { tasks } = createStores(db, () => NOW);
@@ -404,7 +412,7 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
   ];
 
   const definitions = contexts.map((context) =>
-    createTaskTools(tasks, topicSessions, openSession, kbMemory(db), projectTools(db), context).map((definition) => ({
+    createTaskTools(tasks, topicSessions, openSession, kbMemory(db), projectTools(db), reminderTools(db), context).map((definition) => ({
       name: definition.name,
       description: definition.description,
       inputSchema: z.toJSONSchema(z.object(definition.inputSchema)),
@@ -432,6 +440,9 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
       "memory_forget",
       "project_open",
       "project_files",
+      "reminder_set",
+      "reminder_list",
+      "reminder_cancel",
     ],
   );
   const serialized = JSON.stringify(definitions[0]);
@@ -447,6 +458,7 @@ test("ツール定義: session_open の題名は前後の空白を除いて 1〜
     async () => ({ result: "not_available" }),
     kbMemory(db),
     projectTools(db),
+    reminderTools(db),
   ).find((candidate) => candidate.name === "session_open");
   assert.ok(definition !== undefined);
   const schema = z.object(definition.inputSchema);

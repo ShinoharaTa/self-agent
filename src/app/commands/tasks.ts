@@ -1,6 +1,9 @@
+import type { Config } from "../../config.ts";
 import type { OutgoingMessage } from "../../discord/gateway.ts";
+import type { ReminderStore } from "../../store/reminders.ts";
 import type { Task, TaskStore } from "../../store/tasks.ts";
 import type { CommandHandler, ComponentHandler } from "../interactions.ts";
+import { formatShortDateTime } from "../reminders.ts";
 import { fitItems, omittedText } from "./sessions.ts";
 
 export const NO_OPEN_TASKS_TEXT = "未完了のタスクはありません";
@@ -16,6 +19,10 @@ const OPTION_LABEL_MAX_LENGTH = 100;
 
 export type TasksDeps = {
   tasks: Pick<TaskStore, "list" | "complete">;
+  /** 一覧の行に紐づけたリマインドの次の時刻を添える */
+  reminders: Pick<ReminderStore, "nextForTasks">;
+  /** リマインドの時刻の表示のタイムゾーン（SELF_AGENT_TZ） */
+  cfg: Pick<Config, "timeZone">;
   log: (message: string) => void;
 };
 
@@ -27,20 +34,30 @@ export function clip(text: string, max: number): string {
   return `${cut}…`;
 }
 
-/** 一覧の 1 行: `#id 題名（期限 YYYY-MM-DD）`。期限なしは括弧を付けない */
-export function taskLine(task: Task): string {
-  return task.due === null ? `#${task.id} ${task.title}` : `#${task.id} ${task.title}（期限 ${task.due}）`;
+/**
+ * 一覧の 1 行: `#id 題名（期限 YYYY-MM-DD）（知らせ 10/14(水) 9:00）`。期限なし・紐づけたリマインドが無ければ、その括弧を付けない。
+ * remind は紐づけた active のリマインドの次の時刻
+ */
+export function taskLine(task: Task, remind?: { at: Date; timeZone: string }): string {
+  const line = task.due === null ? `#${task.id} ${task.title}` : `#${task.id} ${task.title}（期限 ${task.due}）`;
+  return remind === undefined ? line : `${line}（知らせ ${formatShortDateTime(remind.at, remind.timeZone)}）`;
 }
 
 /**
  * 未完了のタスクの一覧（期限順、期限なしは後ろ。最大 20 件）と、完了にするものを選ぶセレクト（`tasks:done`、選択肢は表示した分）。
  * 2000 字を超えるなら末尾から削って「ほか n 件」を足す。0 件なら「未完了のタスクはありません」だけ（/tasks、ホームパネルの [タスク一覧]）
  */
-export function taskListMessage(tasks: TasksDeps["tasks"]): OutgoingMessage {
+export function taskListMessage(deps: Pick<TasksDeps, "tasks" | "reminders" | "cfg">): OutgoingMessage {
+  const { tasks, reminders, cfg } = deps;
   const open = tasks.list({ status: "open", limit: TASK_LIST_LIMIT });
   if (open.length === 0) return { text: NO_OPEN_TASKS_TEXT, components: [] };
+  const remindAt = reminders.nextForTasks(open.map((task) => task.id));
+  const line = (task: Task): string => {
+    const at = remindAt.get(task.id);
+    return taskLine(task, at === undefined ? undefined : { at: new Date(at), timeZone: cfg.timeZone });
+  };
   const { text, shown } = fitItems(open, (list, omitted) =>
-    [...list.map(taskLine), ...(omitted > 0 ? [omittedText(omitted)] : [])].join("\n"),
+    [...list.map(line), ...(omitted > 0 ? [omittedText(omitted)] : [])].join("\n"),
   );
   return {
     text,
@@ -65,11 +82,10 @@ export function taskListMessage(tasks: TasksDeps["tasks"]): OutgoingMessage {
 
 /** `/tasks`: 未完了のタスクの一覧を本人にだけ表示し、セレクトで完了にできるようにする */
 export function createTasksCommand(deps: TasksDeps): CommandHandler {
-  const { tasks } = deps;
   return {
     def: { name: "tasks", description: "未完了のタスクの一覧を表示します（選んで完了にできます）" },
     async handle(_interaction, responder) {
-      await responder.reply({ ...taskListMessage(tasks), ephemeral: true });
+      await responder.reply({ ...taskListMessage(deps), ephemeral: true });
     },
   };
 }
@@ -93,7 +109,7 @@ export function createTasksComponent(deps: TasksDeps): ComponentHandler {
         if (tasks.complete(id).result === "completed") completed++;
       }
       log(`/tasks でタスクを ${completed} 件完了にしました（guild=${guildId}）`);
-      await responder.update(taskListMessage(tasks));
+      await responder.update(taskListMessage(deps));
     },
   };
 }

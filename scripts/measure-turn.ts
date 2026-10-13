@@ -15,6 +15,7 @@ import { openDb } from "../src/store/db.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
 import { MemoryStore } from "../src/store/memories.ts";
 import { ProjectStore } from "../src/store/projects.ts";
+import { ReminderStore } from "../src/store/reminders.ts";
 import { TaskStore } from "../src/store/tasks.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 
@@ -123,6 +124,10 @@ const projectTools = {
   serving: () => false,
   log: (message: string) => console.error(message),
 };
+const reminderTools = {
+  reminders: new ReminderStore(db),
+  log: (message: string) => console.error(message),
+};
 /** 本体と同じ Options。MCP サーバーは同時に 1 つの query にしか接続できないので、ターンごとに作る */
 const baseOptions = (): Options => ({
   ...buildQueryOptions(
@@ -133,6 +138,7 @@ const baseOptions = (): Options => ({
       async () => ({ result: "not_available" }),
       kbMemory,
       projectTools,
+      reminderTools,
     ),
   ),
   maxTurns: INBOX_MAX_TURNS,

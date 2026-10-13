@@ -24,7 +24,7 @@ export const NEW_SESSION_MODAL: ModalDef = {
  * [タスク一覧]（`home:tasks`）は /tasks と同じ、[待ちのセッション]（`home:waiting`）は待ちだけの一覧を本人にだけ表示する
  */
 export function createHomeComponent(deps: HomeDeps): ComponentHandler {
-  const { tasks, topicSessions } = deps;
+  const { topicSessions } = deps;
   return {
     namespace: HOME_NAMESPACE,
     async handle(interaction, responder) {
@@ -43,7 +43,7 @@ export function createHomeComponent(deps: HomeDeps): ComponentHandler {
         return;
       }
       if (interaction.kind === "button" && action === "tasks") {
-        await responder.reply({ ...taskListMessage(tasks), ephemeral: true });
+        await responder.reply({ ...taskListMessage(deps), ephemeral: true });
         return;
       }
       if (interaction.kind === "button" && action === "waiting") {

@@ -379,7 +379,7 @@ test("memory_save・memory_forget: context が無いターン（#inbox の要約
 /** 入力の schema を見るためのツール定義（ハンドラは呼ばない） */
 function schemas(t: TestContext) {
   const env = setup(t);
-  const { tasks, topicSessions, projects } = createStores(env.db, () => NOW);
+  const { tasks, topicSessions, projects, reminders } = createStores(env.db, () => NOW);
   const tools = createTaskTools(
     tasks,
     topicSessions,
@@ -393,6 +393,7 @@ function schemas(t: TestContext) {
       serving: () => false,
       log: () => {},
     },
+    { reminders, log: () => {} },
   );
   return (name: string) => {
     const definition = tools.find((candidate) => candidate.name === name);
