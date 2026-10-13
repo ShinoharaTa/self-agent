@@ -1,6 +1,6 @@
 // 作って URL で渡すプロジェクトの一覧と削除（docs/plan/build-and-serve.md §3）
-import { realpath, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { verifiedProjectDir } from "../../agent/disk.ts";
+import { removeTree } from "../../agent/remove-tree.ts";
 import type { Config } from "../../config.ts";
 import type { OutgoingMessage } from "../../discord/gateway.ts";
 import type { Project, ProjectStore } from "../../store/projects.ts";
@@ -109,18 +109,9 @@ function parseId(raw: string | undefined): number | undefined {
   return raw !== undefined && /^[1-9]\d*$/.test(raw) ? Number(raw) : undefined;
 }
 
-/** `<projectsDir>/<slug>` の realpath。projectsDir の直下のそのディレクトリそのもの（symlink でない）でなければ・確かめられなければ undefined */
-async function verifiedProjectDir(projectsDir: string, slug: string): Promise<string | undefined> {
-  try {
-    const base = await realpath(projectsDir);
-    const real = await realpath(join(projectsDir, slug));
-    return real === join(base, slug) ? real : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** `<projectsDir>/<slug>` を消す。直下だと確かめられなければ消さずに log。消すのに失敗しても log だけ（slug・パスは出さない） */
+/**
+ * `<projectsDir>/<slug>` を消す（removeTree。symlink をたどらない rm）。直下だと確かめられなければ消さずに log。消すのに失敗しても log だけ（slug・パスは出さない）
+ */
 async function removeProjectDir(projectsDir: string, slug: string, log: (message: string) => void): Promise<void> {
   const target = await verifiedProjectDir(projectsDir, slug);
   if (target === undefined) {
@@ -128,7 +119,7 @@ async function removeProjectDir(projectsDir: string, slug: string, log: (message
     return;
   }
   try {
-    await rm(target, { recursive: true });
+    await removeTree(target);
   } catch {
     log("プロジェクトのディレクトリを消せませんでした");
   }

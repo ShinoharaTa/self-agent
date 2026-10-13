@@ -269,3 +269,28 @@ test("セッションのジョブ: 同じ key は種類によらず直列。idle
   await Promise.all(runs);
   assert.deepEqual(events, ["start 0", "end 0", "start 1", "end 1"]);
 });
+
+test("runningSessionJobs: 実行中のセッションのジョブだけを数える（枠待ち・セッションでないジョブは数えない）", async () => {
+  const queue = new KeyedSerialQueue(3);
+  const gates = { topicA: deferred(), topicB: deferred(), topicC: deferred(), inbox: deferred() };
+  const job = (name: keyof typeof gates) => () => gates[name].promise;
+  assert.equal(queue.runningSessionJobs(), 0);
+  const runs = [
+    queue.run("inbox", job("inbox")),
+    queue.run("topic-a", job("topicA"), { session: true }),
+    queue.run("topic-b", job("topicB"), { session: true }),
+    // セッションの上限（2）で枠を待つ
+    queue.run("topic-c", job("topicC"), { session: true }),
+  ];
+  await flush();
+  assert.equal(queue.runningSessionJobs(), 2);
+  gates.inbox.resolve();
+  gates.topicA.resolve();
+  await flush();
+  // topic-a が終わり、待っていた topic-c が動く
+  assert.equal(queue.runningSessionJobs(), 2);
+  gates.topicB.resolve();
+  gates.topicC.resolve();
+  await Promise.all(runs);
+  assert.equal(queue.runningSessionJobs(), 0);
+});

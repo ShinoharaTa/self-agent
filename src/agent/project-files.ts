@@ -1,9 +1,10 @@
 // project_files の本体（プロジェクトのファイルを .trash に移す・移す・作り直す・戻す）と、古い .trash の掃除。SDK に依存しない。
 // 消したものは `<dir>/.trash/<trash_id>/<同じ相対パス>` に移す（site/ の外なので配信されない）。symlink はたどらず、1 つのものとして移す。
 // ファイルの操作は同期で行う（同じターンで並べて呼ばれても、trash_id の選択と移動が混ざらない）
-import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { resolveRealPath } from "./file-access.ts";
+import { removeTree } from "./remove-tree.ts";
 import { copyWebScaffold } from "./scaffold.ts";
 
 /** プロジェクトの dir の直下の、消したものを置くディレクトリ */
@@ -12,6 +13,8 @@ export const TRASH_DIR_NAME = ".trash";
 export const TRASH_RETENTION_DAYS = 30;
 /** trash の paths の上限 */
 export const PROJECT_FILES_MAX_PATHS = 50;
+/** 消している途中の .trash/<trash_id> に付ける名前の頭（`.purging-<trash_id>`。TRASH_ID_PATTERN に合わないので restore・一覧には出ない） */
+export const TRASH_PURGING_PREFIX = ".purging-";
 /** trash_id の形（UTC の YYYYMMDDTHHmmssZ。同じ秒に重なれば -2、-3…） */
 export const TRASH_ID_PATTERN = /^\d{8}T\d{6}Z(-\d+)?$/;
 
@@ -276,7 +279,19 @@ function listTrashes(dir: string): ProjectFilesResult {
   };
 }
 
-function restore(dir: string, id: string): ProjectFilesResult {
+/**
+ * path（実際のディレクトリ）の中の空のディレクトリを下から rmdir し、最後に path そのものを rmdir する（再帰の rm は使わない。symlink はたどらない）。
+ * ディレクトリ以外が残っていれば ENOTEMPTY で投げる
+ */
+function removeEmptyDirs(path: string): void {
+  for (const name of readdirSync(path)) {
+    const child = join(path, name);
+    if (isRealDirectory(child)) removeEmptyDirs(child);
+  }
+  rmdirSync(path);
+}
+
+function restore(dir: string, id: string, log: (message: string) => void): ProjectFilesResult {
   const trashDir = join(dir, TRASH_DIR_NAME, id);
   if (!TRASH_ID_PATTERN.test(id) || !isRealDirectory(trashDir)) return { result: "not_found", trash_id: id };
   const entries = collectEntries(trashDir);
@@ -291,8 +306,12 @@ function restore(dir: string, id: string): ProjectFilesResult {
     mkdirSync(dirname(target), { recursive: true });
     renameSync(join(trashDir, rel), target);
   }
-  // 残っているのは空のディレクトリだけ
-  rmSync(trashDir, { recursive: true, force: true });
+  // 残っているのは空のディレクトリだけのはず。何か残っていて（途中で足された・消せない）も戻すのは済んでいるので、残して log だけ（パスは出さない）
+  try {
+    removeEmptyDirs(trashDir);
+  } catch {
+    log("project_files: 戻した後の .trash を消せませんでした");
+  }
   return { result: "restored", trash_id: id, restored: entries };
 }
 
@@ -345,7 +364,7 @@ export async function runProjectFiles(
       const extra = extraArgs(args, ["trash_id"]);
       if (extra !== undefined) return invalidArgs(extra);
       if (trashUnavailable) return unavailable;
-      return args.trash_id === undefined ? listTrashes(dir) : restore(dir, args.trash_id);
+      return args.trash_id === undefined ? listTrashes(dir) : restore(dir, args.trash_id, options.log);
     }
     default:
       return invalidArgs("action は trash・move・clear・restore のどれかを指定してください");
@@ -354,9 +373,17 @@ export async function runProjectFiles(
 
 /**
  * `<projectsDir>/<slug>/.trash/<name>` のうち、name が trash_id の形で、その時刻から days 日を過ぎたものを消す。
- * 形に合わない名前・ディレクトリでないもの（symlink を含む）は触らない（symlink の先も触らない）。projectsDir や .trash が無ければ何もしない
+ * 消す前に同じ .trash の中の `.purging-<trash_id>`（TRASH_ID_PATTERN に合わないので restore・一覧には出ない）に同期で名前を変えてから消す
+ * （消している間に restore されない）。前に消しきれなかった `.purging-*` も消す。
+ * 形に合わない名前・ディレクトリでないもの（symlink を含む）は触らない（symlink の先も触らない）。projectsDir や .trash が無ければ何もしない。
+ * 消すのは removeTree（symlink をたどらない rm。remove で差し替えられる）。1 つ消せなくても残りは続け、最後に失敗の数だけを投げる
  */
-export function pruneProjectTrash(projectsDir: string, now: Date, days = TRASH_RETENTION_DAYS): void {
+export async function pruneProjectTrash(
+  projectsDir: string,
+  now: Date,
+  days = TRASH_RETENTION_DAYS,
+  remove: (path: string) => Promise<void> = removeTree,
+): Promise<void> {
   let projects: string[];
   try {
     projects = readdirSync(projectsDir);
@@ -364,15 +391,40 @@ export function pruneProjectTrash(projectsDir: string, now: Date, days = TRASH_R
     if (hasCode(error, "ENOENT")) return;
     throw error;
   }
+  // 1 つ失敗しても残りは続け、最後にまとめて投げる（message にパスは入れない）
+  let failures = 0;
   for (const project of projects) {
-    const projectDir = join(projectsDir, project);
-    const trashRoot = join(projectDir, TRASH_DIR_NAME);
-    if (!isRealDirectory(projectDir) || !isRealDirectory(trashRoot)) continue;
-    for (const name of readdirSync(trashRoot)) {
-      const parsed = TRASH_ID_PATTERN.test(name) ? parseTrashId(name) : undefined;
-      if (parsed === undefined || now.getTime() - parsed.time <= days * DAY_MS) continue;
-      const target = join(trashRoot, name);
-      if (isRealDirectory(target)) rmSync(target, { recursive: true, force: true });
+    try {
+      const projectDir = join(projectsDir, project);
+      const trashRoot = join(projectDir, TRASH_DIR_NAME);
+      if (!isRealDirectory(projectDir) || !isRealDirectory(trashRoot)) continue;
+      const names = readdirSync(trashRoot);
+      // 名前を変えたもの（前の残りと今回の分）
+      const purging = names.filter((name) => name.startsWith(TRASH_PURGING_PREFIX));
+      for (const name of names) {
+        const parsed = TRASH_ID_PATTERN.test(name) ? parseTrashId(name) : undefined;
+        if (parsed === undefined || now.getTime() - parsed.time <= days * DAY_MS) continue;
+        const target = join(trashRoot, name);
+        const renamed = `${TRASH_PURGING_PREFIX}${name}`;
+        try {
+          if (!isRealDirectory(target) || purging.includes(renamed)) continue;
+          renameSync(target, join(trashRoot, renamed));
+          purging.push(renamed);
+        } catch {
+          failures++;
+        }
+      }
+      for (const name of purging) {
+        const target = join(trashRoot, name);
+        try {
+          if (isRealDirectory(target)) await remove(target);
+        } catch {
+          failures++;
+        }
+      }
+    } catch {
+      failures++;
     }
   }
+  if (failures > 0) throw new Error(`古い .trash の削除で ${failures} 件失敗しました`);
 }

@@ -2,6 +2,7 @@
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { DiskQuota, pruneWorkDir } from "./agent/disk.ts";
 import { pruneProjectTrash } from "./agent/project-files.ts";
 import { checkSandbox, nodeVersionDir, shellPath } from "./agent/sandbox-check.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
@@ -63,7 +64,10 @@ const reminders = new ReminderStore(db, now);
 const log = (message: string): void => console.error(message);
 
 // 作ったプロジェクトの場所。権限ルール（<realpath(workDir)>/projects）と同じ実際の場所にする
-const projectsDir = join(realpathSync(config.workDir), "projects");
+const realWorkDir = realpathSync(config.workDir);
+const projectsDir = join(realWorkDir, "projects");
+// 書き込みの前の容量の判定（workDir の空きと、プロジェクトごとに 60 秒キャッシュした大きさ）
+const diskQuota = new DiskQuota({ workDir: realWorkDir, projectsDir, now });
 
 const gateway = new DiscordGateway(config.allowedGuildIds);
 const resolveChannel = createChannelResolver(config, guildSettings, topicSessions);
@@ -105,11 +109,11 @@ const reminderTools = { reminders, log, now };
 const devLogSink = createDevLogSink(config);
 if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${config.devLogDays} 日で消します）`);
 // ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ。
-// ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中）に絞る
+// ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中で、容量の上限まで）に絞る
 const runner = new SdkAgentRunner(
   config,
   (context) => createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, reminderTools, context),
-  { projects, projectsDir },
+  { projects, projectsDir, disk: diskQuota },
   log,
   undefined,
   devLogSink === undefined ? undefined : { sink: devLogSink, now },
@@ -209,7 +213,7 @@ const shellState = new ShellState({
   log,
 });
 // 定期処理: SELF_AGENT_SHELL=1 ならシェルの自己診断をやり直し、セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
-// 完了から日数の経ったセッションの削除を #system で確認し、古い dev ログ（dev モードでなくても）とプロジェクトの古い .trash を消し、#inbox・#tasks の会話を切り替える
+// 完了から日数の経ったセッションの削除を #system で確認し、古い dev ログ（dev モードでなくても）とプロジェクトの古い .trash、workDir の古い .tmp と大きくなった .cache を消し、#inbox・#tasks の会話を切り替える
 const scheduler = new Scheduler({
   cfg: config,
   topicSessions,
@@ -222,6 +226,9 @@ const scheduler = new Scheduler({
   pruneDevLogs: () => pruneDevLogs(devLogDir(config.dataDir), now(), config.timeZone, config.devLogDays),
   pruneProjectTrash: () => pruneProjectTrash(projectsDir, now()),
   refreshShell: shellRefresher(config, shellState),
+  pruneWorkDir: () => pruneWorkDir(realWorkDir),
+  // .trash・.tmp・.cache の削除は発言と同じキューにセッションのジョブとして入れる（セッションのジョブが実行中ならその tick では消さない）
+  turnQueue,
   now,
   log,
 });

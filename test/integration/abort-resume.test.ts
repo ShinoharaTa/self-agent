@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRunner, RunInput, RunResult } from "../../src/agent/runner.ts";
+import { DiskQuota } from "../../src/agent/disk.ts";
 import { SdkAgentRunner, type QueryFn } from "../../src/agent/sdk-runner.ts";
 import { createTaskMcpServer } from "../../src/agent/tools.ts";
 import { buildTurnPrompt } from "../../src/app/prompt.ts";
@@ -80,7 +81,7 @@ test(
           { reminders: new ReminderStore(db), log: () => {} },
           context,
         ),
-      { projects, projectsDir },
+      { projects, projectsDir, disk: new DiskQuota({ workDir: cfg.workDir, projectsDir, now: () => new Date() }) },
       () => {},
       queryFn,
     );

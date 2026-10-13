@@ -49,6 +49,11 @@ export class KeyedSerialQueue {
     return result;
   }
 
+  /** 今実行中のセッションのジョブの数（枠を待っているものは含まない）。定期処理の掃除をセッションのジョブと重ねないために使う */
+  runningSessionJobs(): number {
+    return this.runningSessions;
+  }
+
   /** 実行中・待機中のジョブが無くなったら resolve する（停止時に使う。待つ上限は呼び出し側で決める） */
   idle(): Promise<void> {
     if (this.pending === 0) return Promise.resolve();

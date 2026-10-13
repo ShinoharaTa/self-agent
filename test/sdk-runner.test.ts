@@ -10,12 +10,14 @@ import {
   type SDKMessage,
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { DISK_FREE_REASON, DiskQuota, PROJECT_SIZE_REASON, WORKDIR_MIN_FREE_BYTES } from "../src/agent/disk.ts";
 import { FILE_NO_CONTEXT_REASON, FILE_READ_DENIED_REASON, FILE_WRITE_DENIED_REASON } from "../src/agent/file-access.ts";
 import type { ProgressStep, RunContext, RunInput, RunResult, StepUsage } from "../src/agent/runner.ts";
 import {
   describeResultError,
   type DevLogDeps,
   FILE_GUARD_FAILED_REASON,
+  type FileGuardDeps,
   INBOX_MAX_TURNS,
   progressLabel,
   SdkAgentRunner,
@@ -141,7 +143,10 @@ type QueryCall = { prompt: string; options: Options };
 function setupRunner(
   stream: (call: QueryCall) => AsyncIterable<SDKMessage>,
   overrides: Partial<typeof cfg> = {},
-  files: { projects: FakeProjects; projectsDir: string } = { projects: fakeProjects(), projectsDir: "/srv/work/projects" },
+  files: { projects: FakeProjects; projectsDir: string; disk?: FileGuardDeps["disk"] } = {
+    projects: fakeProjects(),
+    projectsDir: "/srv/work/projects",
+  },
   devLog?: DevLogDeps,
 ) {
   const calls: QueryCall[] = [];
@@ -153,7 +158,8 @@ function setupRunner(
       contexts.push(context);
       return createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] });
     },
-    files,
+    // 容量の判定は既定では常に許す
+    { disk: { check: () => ({ allowed: true }) }, ...files },
     (line) => logs.push(line),
     (call) => {
       calls.push(call);
@@ -1005,6 +1011,116 @@ test("SdkAgentRunner: ファイル操作の hook は判定が例外で終わっ�
   for (const line of [...brokenRead.logs, ...brokenTouch.logs]) {
     assert.ok(!line.includes(workDir) && !line.includes("database"), line);
   }
+});
+
+test("SdkAgentRunner: ファイル操作の hook は Write・Edit を許すものでも、容量の上限（空き 512 MB 未満・プロジェクトの上限超え）なら種類ごとの理由で拒否する。Read・Glob は容量を見ない。log はツール名と容量の種類だけ", async (t) => {
+  const workDir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  t.after(() => rmSync(workDir, { recursive: true, force: true }));
+  const projectsDir = join(workDir, "projects");
+  mkdirSync(join(projectsDir, "kakeibo", "site"), { recursive: true });
+  const file = join(projectsDir, "kakeibo", "site", "index.html");
+  const topic = { guildId: "guild-1", channelId: "topic-1", kind: "session" } as const;
+  const deny = (reason: string) => ({
+    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
+  });
+  const MIB = 1024 * 1024;
+
+  /** 空き（バイト）とプロジェクトの上限で 1 ターン走らせ、Read・Write・Edit の hook の結果と log と更新日時の記録を返す */
+  const runWith = async (free: number, projectMaxBytes?: number) => {
+    const projects = fakeProjects({ "topic-1": { id: 7, slug: "kakeibo" } });
+    const disk = new DiskQuota({
+      workDir,
+      projectsDir,
+      now: () => new Date(),
+      statfs: () => ({ bavail: free / 4096, bsize: 4096 }),
+      ...(projectMaxBytes === undefined ? {} : { projectMaxBytes }),
+    });
+    const outputs: unknown[] = [];
+    const { runner, logs } = setupRunner(
+      async function* (call) {
+        const pre = (toolName: string, input: unknown) =>
+          callPreToolUse(call, toolName, input, "Read|Write|Edit|Glob", workDir);
+        outputs.push(await pre("Read", { file_path: file }));
+        outputs.push(await pre("Write", { file_path: file, content: "<p>" }));
+        outputs.push(await pre("Edit", { file_path: file, old_string: "a", new_string: "b" }));
+        yield success("session-1", "はい");
+      },
+      {},
+      { projects, projectsDir, disk },
+    );
+    assert.ok((await runner.run({ prompt: "x", context: topic })).ok);
+    return { outputs, logs, touched: projects.touched };
+  };
+
+  const cases: Array<{ label: string; free: number; projectMaxBytes?: number; denied?: { reason: string; kind: string } }> = [
+    { label: "上限の内", free: 600 * MIB },
+    { label: "空きがちょうど 512 MB", free: WORKDIR_MIN_FREE_BYTES },
+    { label: "空きが 512 MB 未満", free: WORKDIR_MIN_FREE_BYTES - 4096, denied: { reason: DISK_FREE_REASON, kind: "空き" } },
+    {
+      label: "プロジェクトが上限を超える",
+      free: 600 * MIB,
+      projectMaxBytes: 0,
+      denied: { reason: PROJECT_SIZE_REASON, kind: "プロジェクト" },
+    },
+  ];
+  for (const item of cases) {
+    const { outputs, logs, touched } = await runWith(item.free, item.projectMaxBytes);
+    if (item.denied !== undefined) {
+      const { reason, kind } = item.denied;
+      assert.deepEqual(outputs, [{}, deny(reason), deny(reason)], item.label);
+      assert.deepEqual(touched, [], item.label);
+      assert.deepEqual(
+        logs,
+        [`ファイル操作を拒否しました（Write・容量: ${kind}）`, `ファイル操作を拒否しました（Edit・容量: ${kind}）`],
+        item.label,
+      );
+    } else {
+      assert.deepEqual(outputs, [{}, {}, {}], item.label);
+      assert.deepEqual(touched, [7, 7], item.label);
+      assert.deepEqual(logs, [], item.label);
+    }
+  }
+});
+
+test("SdkAgentRunner: 容量の判定が例外で終わったら（statfs の失敗）Write・Edit を拒否する（fail-closed）。log にパス・例外の中身は出さない", async (t) => {
+  const workDir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
+  t.after(() => rmSync(workDir, { recursive: true, force: true }));
+  const projectsDir = join(workDir, "projects");
+  mkdirSync(join(projectsDir, "kakeibo", "site"), { recursive: true });
+  const file = join(projectsDir, "kakeibo", "site", "index.html");
+  const projects = fakeProjects({ "topic-1": { id: 7, slug: "kakeibo" } });
+  const disk = new DiskQuota({
+    workDir,
+    projectsDir,
+    now: () => new Date(),
+    statfs: () => {
+      throw new Error(`ENOENT: no such file or directory, statfs '${workDir}'`);
+    },
+  });
+  const outputs: unknown[] = [];
+  const { runner, logs } = setupRunner(
+    async function* (call) {
+      outputs.push(await callPreToolUse(call, "Write", { file_path: file, content: "<p>" }, "Read|Write|Edit|Glob", workDir));
+      yield success("session-1", "はい");
+    },
+    {},
+    { projects, projectsDir, disk },
+  );
+
+  assert.ok((await runner.run({ prompt: "x", context: { guildId: "guild-1", channelId: "topic-1", kind: "session" } })).ok);
+
+  assert.deepEqual(outputs, [
+    {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: FILE_GUARD_FAILED_REASON,
+      },
+    },
+  ]);
+  assert.deepEqual(projects.touched, []);
+  assert.equal(logs.length, 1);
+  assert.ok(!logs[0]!.includes(workDir) && !logs[0]!.includes("ENOENT"));
 });
 
 test("progressLabel: ツールの種類ごとに違う label。プロジェクトの中のファイルだけ相対パスを添え、それ以外の中身（外のパス・パターン・検索語・URL・コマンド）は出さない", (t) => {

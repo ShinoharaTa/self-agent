@@ -1,6 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { SandboxCheckResult } from "../src/agent/sandbox-check.ts";
+import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { Scheduler } from "../src/app/scheduler.ts";
 import { SHELL_CHECK_ERROR_ITEM, SHELL_RESUMED_NOTICE, ShellState, shellDisabledNotice, shellRefresher } from "../src/app/shell-state.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
@@ -204,8 +205,10 @@ function scheduler(
     gateway: new FakeGateway({ allow: ["sendMessage", "listChannelParents", "isInGuild"] }),
     inboxRotator: { rotateDue },
     pruneDevLogs: () => {},
-    pruneProjectTrash: () => {},
+    pruneProjectTrash: async () => {},
     refreshShell,
+    pruneWorkDir: async () => {},
+    turnQueue: new KeyedSerialQueue(2),
     now: () => new Date("2026-10-13T00:00:00.000Z"),
     log: (line) => logs.push(line),
   });
