@@ -183,6 +183,16 @@ function toWall(at: Date, timeZone: string): Date {
   return new Date(at.getTime() + offsetMs(at, timeZone));
 }
 
+/** timeZone の壁時計 "YYYY-MM-DD HH:MM"（wallClockToUtc の逆） */
+export function formatWallClock(at: Date, timeZone: string): string {
+  const wall = toWall(at, timeZone);
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return (
+    `${wall.getUTCFullYear()}-${pad(wall.getUTCMonth() + 1)}-${pad(wall.getUTCDate())}` +
+    ` ${pad(wall.getUTCHours())}:${pad(wall.getUTCMinutes())}`
+  );
+}
+
 /** 表示用の timeZone の日時。例: 2026-10-14(水) 09:00 */
 export function formatLocalDateTime(at: Date, timeZone: string): string {
   const wall = toWall(at, timeZone);

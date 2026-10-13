@@ -646,9 +646,9 @@ test("project_files: 操作が例外で終わったら投げたまま（ツー�
   assert.equal(logs.length, 0);
 });
 
-test("ツール定義: project_files は最後（project_open の後）。引数は action（4 つ）・paths（1〜50 件、空文字は不可）・to（空文字は不可）・trash_id", (t) => {
+test("ツール定義: project_files は project_open の直後。引数は action（4 つ）・paths（1〜50 件、空文字は不可）・to（空文字は不可）・trash_id", (t) => {
   const { db, deps } = setupTool(t);
-  const { tasks, topicSessions, knowledge, memories } = createStores(db, () => NOW);
+  const { tasks, topicSessions, knowledge, memories, reminders } = createStores(db, () => NOW);
   const tools = createTaskTools(
     tasks,
     topicSessions,
@@ -661,12 +661,11 @@ test("ツール定義: project_files は最後（project_open の後）。引数
       timeZone: "Asia/Tokyo",
     },
     deps,
+    { reminders, log: () => {} },
   );
-  assert.deepEqual(
-    tools.slice(-2).map((definition) => definition.name),
-    ["project_open", "project_files"],
-  );
-  const schema = z.object(tools.at(-1)!.inputSchema);
+  const names = tools.map((definition) => definition.name);
+  assert.equal(names.indexOf("project_files"), names.indexOf("project_open") + 1);
+  const schema = z.object(tools.find((definition) => definition.name === "project_files")!.inputSchema);
   const ok = (input: unknown): boolean => schema.safeParse(input).success;
 
   for (const action of ["trash", "move", "clear", "restore"]) assert.ok(ok({ action }), action);

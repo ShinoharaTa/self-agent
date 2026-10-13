@@ -22,9 +22,9 @@ function select(values: string[], customId: string = "tasks:done"): Extract<Inte
 
 function setup(t: TestContext) {
   const db = tempDb(t);
-  const { tasks } = createStores(db, () => NOW);
+  const { tasks, reminders } = createStores(db, () => NOW);
   const logs: string[] = [];
-  const deps = { tasks, log: (line: string) => logs.push(line) };
+  const deps = { tasks, reminders, cfg: { timeZone: "Asia/Tokyo" }, log: (line: string) => logs.push(line) };
   const runTasks = async (): Promise<ResponderCall[]> => {
     const responder = new FakeResponder();
     await createTasksCommand(deps).handle(TASKS, responder);
@@ -35,7 +35,7 @@ function setup(t: TestContext) {
     await createTasksComponent(deps).handle(interaction, responder);
     return responder.calls;
   };
-  return { tasks, logs, runTasks, choose };
+  return { tasks, reminders, deps, logs, runTasks, choose };
 }
 
 function selectRow(options: Array<{ label: string; value: string; description?: string }>): ComponentRow {
@@ -81,6 +81,25 @@ test("/tasks: 未完了のタスク（完了・やめたものは出さない）
   ]);
 });
 
+test("/tasks: 紐づけた active のリマインドがあれば、行の末尾に「（知らせ 10/14(水) 9:00）」を足す（止めたものは出さない）", async (t) => {
+  const { tasks, reminders, runTasks } = setup(t);
+  tasks.add({ title: "電話", due: "2026-10-14" });
+  tasks.add({ title: "買い物" });
+  tasks.add({ title: "止めた" });
+  const base = { guildId: "guild-1", channelId: "inbox-1", kind: "notify" as const, text: "t" };
+  reminders.add({ ...base, taskId: 1, nextAt: new Date("2026-10-14T00:00:00Z") });
+  reminders.add({ ...base, taskId: 2, nextAt: new Date("2026-10-15T09:30:00Z") });
+  reminders.cancel(reminders.add({ ...base, taskId: 3, nextAt: new Date("2026-10-14T00:00:00Z") }).id);
+
+  const [call] = await runTasks();
+
+  assert.ok(call?.method === "reply");
+  assert.equal(
+    call.message.text,
+    ["#1 電話（期限 2026-10-14）（知らせ 10/14(水) 9:00）", "#2 買い物（知らせ 10/15(木) 18:30）", "#3 止めた"].join("\n"),
+  );
+});
+
 test("/tasks: 未完了が 0 件なら「未完了のタスクはありません」だけ", async (t) => {
   const { runTasks } = setup(t);
 
@@ -90,10 +109,10 @@ test("/tasks: 未完了が 0 件なら「未完了のタスクはありません
 });
 
 test("/tasks: 20 件まで。セレクトの選択肢も表示した 20 件", (t) => {
-  const { tasks } = setup(t);
+  const { tasks, deps } = setup(t);
   for (let i = 1; i <= 23; i++) tasks.add({ title: `t${i}`, due: `2026-10-${String(i).padStart(2, "0")}` });
 
-  const message = taskListMessage(tasks);
+  const message = taskListMessage(deps);
 
   const lines = message.text.split("\n");
   assert.equal(lines.length, 20);
@@ -106,11 +125,11 @@ test("/tasks: 20 件まで。セレクトの選択肢も表示した 20 件", (t
 });
 
 test("/tasks: 2000 字を超えるなら末尾から削って「ほか n 件」を足し、セレクトの選択肢は表示した分だけ。ラベルは 100 字で切る", (t) => {
-  const { tasks } = setup(t);
+  const { tasks, deps } = setup(t);
   const long = "あ".repeat(200);
   for (let i = 0; i < 20; i++) tasks.add({ title: long });
 
-  const message = taskListMessage(tasks);
+  const message = taskListMessage(deps);
 
   assert.ok(message.text.length <= MESSAGE_MAX_LENGTH, `length=${message.text.length}`);
   const lines = message.text.split("\n");
@@ -128,12 +147,12 @@ test("/tasks: 2000 字を超えるなら末尾から削って「ほか n 件」�
 });
 
 test("tasks:done: 選んだタスクを完了にし、一覧を update で書き換える（完了したものは消える）", async (t) => {
-  const { tasks, logs, choose } = setup(t);
+  const { tasks, deps, logs, choose } = setup(t);
   tasks.add({ title: "a", due: "2026-10-03" });
   tasks.add({ title: "b", due: "2026-10-04" });
   tasks.add({ title: "c" });
   // 一覧のセレクトの custom_id で選ぶ
-  const row = taskListMessage(tasks).components?.[0];
+  const row = taskListMessage(deps).components?.[0];
   assert.ok(row?.kind === "select");
 
   const calls = await choose(select(["1", "3"], row.select.customId));

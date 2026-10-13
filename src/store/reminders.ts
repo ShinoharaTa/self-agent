@@ -1,5 +1,12 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 
+/** active の件数の上限（reminder_set） */
+export const REMINDER_MAX_ACTIVE = 50;
+/** 予約した依頼（prompt）の active の件数の上限（reminder_set） */
+export const REMINDER_PROMPT_MAX_ACTIVE = 5;
+/** text の文字数の上限（reminder_set） */
+export const REMINDER_TEXT_MAX_LENGTH = 500;
+
 /** notify は決まった文を投稿するだけ、prompt はその時刻にエージェントのターンを 1 回起こす */
 export type ReminderKind = "notify" | "prompt";
 

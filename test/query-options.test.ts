@@ -33,7 +33,7 @@ test("システムプロンプトに日付や年を含めない", () => {
 });
 
 /** プロンプトの中でコマンド名・ツール名の形をしているが、名前ではない語（引数名・ツールの返り値・固有名詞） */
-const NOT_A_NAME = new Set(["due_by", "not_set_up", "Discord", "Web"]);
+const NOT_A_NAME = new Set(["due_by", "task_id", "not_set_up", "Discord", "Web"]);
 
 /** プロンプトから re に当たる語（グループがあればその中身）を重複なしで取り出す */
 function namesIn(prompt: string, re: RegExp): string[] {
@@ -42,7 +42,7 @@ function namesIn(prompt: string, re: RegExp): string[] {
 
 test("SYSTEM_PROMPT に出てくるコマンド名・ツール名・組み込みツール名はすべて実在する", () => {
   const commands = new Set(createCommands({} as CommandDeps).map((command) => command.def.name));
-  const tools = new Set(createTaskTools({} as never, {} as never, {} as never, {} as never, {} as never).map((tool) => tool.name));
+  const tools = new Set(createTaskTools({} as never, {} as never, {} as never, {} as never, {} as never, {} as never).map((tool) => tool.name));
   const builtins = new Set(buildQueryOptions(cfg, mcpServer).tools as string[]);
   const cases = [
     { label: "スラッシュコマンド", re: /(?<![\w/])\/([a-z]+)/g, known: commands },
