@@ -621,7 +621,11 @@ export function createTaskTools(
       // Discord にチャンネルを作り終えるまで待つ（ターンのタイムアウト内に収まる前提）。
       // 予約した依頼のターンでは作らない（自動のターンからチャンネルが増えるのを止める）
       async (args) =>
-        textResult(context?.scheduled === true ? { result: "not_available" } : await openSession(args, context)),
+        textResult(
+          context?.scheduled === true
+            ? { result: "not_available", message: "予約した依頼のターンでは使えません" }
+            : await openSession(args, context),
+        ),
     ),
     tool(
       "kb_save",
