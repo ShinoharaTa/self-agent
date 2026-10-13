@@ -98,9 +98,9 @@
   - 繰り返し: 過ぎた回のうち最後の 1 回だけを出し、2 回以上過ぎていれば「（ほか n 回分は止まっていた間に過ぎました）」を添える。最後の回が 12 時間より古ければ出さずに次の回へ進め、log にだけ残す。
 - 二重発火の防止と再試行:
   - notify は「投稿してから進める」（少なくとも 1 回届く）。投稿が成功したら `fire_seq` を比べて書き換える（compare-and-set）。失敗したら DB を変えず、次の tick でやり直す。同じ回で 30 回（約 30 分）失敗したらその回は諦めて進め、log に残す（回数はプロセス内で覚える）。投稿と DB 更新の間でプロセスが落ちたときだけ、再起動後に同じ回が 2 回出る（害が小さいので許す）。
-  - prompt は「進めてから動かす」（多くても 1 回）。先に DB を進めてから、ターンを発言と同じキューに入れる。失敗してもやり直さない（利用枠を使うため）。失敗したら「予約した依頼（#id）を実行できませんでした」をメンション付きで投稿する。
+  - prompt は「進めてから動かす」（多くても 1 回）。ターンを発言と同じキューに入れ、ジョブの先頭で停止していないか・まだ active で due か・実行先が key と同じかを確かめてから DB を進め（claim）、動かす。キューで待つ間に停止・止められたら claim せずに戻る（停止なら次の起動で拾う）。失敗してもやり直さない（利用枠を使うため）。失敗したら「予約した依頼（#id）を実行できませんでした」をメンション付きで投稿する。
   - 同じ tick の中では、実行中の id を Set で覚えて重ねない。
-- 停止処理（shutdown.ts）: `ReminderScheduler` に `stop()`/`idle()` を持たせ、Scheduler と同じ時点で止める。idle は実行中の notify の投稿を待つ。止めた後はまだ始めていない発火を行わない（次の起動の最初の tick で拾う）。prompt のターンは turnQueue の待ち合わせで待ち、猶予を超えたらその回は失われる（進めた後なので出し直さない）。
+- 停止処理（shutdown.ts）: `ReminderScheduler` に `stop()`/`idle()` を持たせ、Scheduler と同じ時点で止める。idle は実行中の notify の投稿と prompt のジョブを待つ。止めた後はまだ始めていない発火を行わない（次の起動の最初の tick で拾う）。キューで待っている prompt は claim せずに戻る。走り始めた prompt のターンが猶予を超えたら、その回は失われる（進めた後なので出し直さない）。
 
 ### 2.5 投稿先と通知
 - 投稿先は頼んだチャンネル（ツールの context.channelId）。#inbox・#tasks・セッションのどれでもよい（prompt は §2.1 のとおり #inbox・#tasks だけ）。セッションが完了や待ちでもそのチャンネルに出し、状態は変えない。
@@ -207,7 +207,7 @@ tick(now):
 3. 回の時刻を求める。snooze_at が due ならそれを回にする。next_at が due なら規則で過ぎた最後の回とその回数を数える（400 回まで）。繰り返しで最後の回が 12 時間より前なら、next_at を `nextOccurrence(rule, now)` へ進めて終わる（log「止まっていた間に過ぎたため飛ばしました（#id、n 回）」）。
 4. 投稿先を決める（§2.5 の fallback）。
 5. notify: 本文は 1 行目 `リマインド: <text>`、紐づけたタスクがあれば `（#12 <題名>）`、繰り返しなら `（毎週 月・水 8:00）`、スヌーズの回なら `（もう一度）`、遅れ・まとめの注記（§2.4）。メンション付きで sendMessage し、成功したら `markFired`（1 回だけ: next_at・snooze_at を NULL、status を fired。繰り返し: next_at を `nextOccurrence(rule, now)`、snooze_at を NULL。どちらも fire_seq +1、last_message_id を保存）。markFired が false（投稿の間に止められた）なら、いま投稿したメッセージのボタンを外す。その後、前の last_message_id のボタンを外す。12 時間より古い繰り返しの回を出さずに進めるときは skipNext、30 回失敗した 1 回だけのものは complete を使う。
-6. prompt: 先に `claim` で進める（fire_seq +1、1 回だけなら status は done）。`turnQueue.run(channelId, job)` に入れて tick では待たない（走っているターンは Set で覚え、idle で待つ）。job はチャンネルを決め直し（resolveChannel が inbox・tasks を返すものだけ。それ以外は fallback）、`runChannelTurn` に kind（そのチャンネルの種類）、prompt（`buildTurnPrompt("予約した依頼（#<id>・<繰り返しの表示 か 1 回だけ>）:\n<text>", 今, tz, "inbox"|"tasks")`）、allowedUrls `[]`、context `scheduled: true` を渡す。typing を出す。成功したら返答を `send(channelId, text + "\n（予約した依頼 #<id>）", undefined, ownerId)` で送る（分割した最初の塊にだけメンション）。失敗したら「予約した依頼（#id）を実行できませんでした」（手順の上限なら MAX_TURNS_REPLY）をメンション付きで送る。途中経過・[中断]・[続ける] は付けない。
+6. prompt: 実行先（resolveChannel が inbox・tasks を返すものだけ。それ以外は fallback。無ければ notify と同じくこの回を進めて log）を key に `turnQueue.run(key, job)` に入れて tick では待たない（走っているジョブは id ごとに覚え、同じ id は重ねず、idle で待つ）。job は先頭で、停止中なら戻る → 行を読み直し、active で due でなければ戻る → 実行先を決め直し、key と違えば戻る（次の tick で入れ直す）→ `claim` で進める（fire_seq +1、1 回だけなら status は done）。その後、`runChannelTurn` に kind（そのチャンネルの種類）、prompt（`buildTurnPrompt("予約した依頼（#<id>・<繰り返しの表示 か 1 回だけ>）:\n<text>", 今, tz, "inbox"|"tasks")`）、allowedUrls `[]`、context `scheduled: true` を渡す。予定から 5 分以上遅れたら括弧の中に「8:00 の予定から n 分遅れ」を足す。typing を出す。成功したら返答を `send(channelId, text + "\n（予約した依頼 #<id>）", undefined, ownerId)` で送る（分割した最初の塊にだけメンション）。失敗したら「予約した依頼（#id）を実行できませんでした」（手順の上限なら MAX_TURNS_REPLY）をメンション付きで送る。途中経過・[中断]・[続ける] は付けない。
 7. log: 「リマインドを知らせました（#id、guild=…、遅れ n 分）」「予約した依頼のターンを始めました（#id、guild=…）」、投稿の失敗は describeError。text・チャンネル ID・ユーザー ID は出さない（reminders の id は出してよい）。
 
 Discord 側の変更（PR-R2）:
