@@ -2,7 +2,8 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { MIGRATIONS, openDb } from "../src/store/db.ts";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { backupBeforeMigration, backupPath, MIGRATIONS, openDb } from "../src/store/db.ts";
 import { GuildSettingsStore, type SessionState } from "../src/store/guild-settings.ts";
 import { InboxSummaryStore } from "../src/store/inbox-summaries.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
@@ -435,6 +436,27 @@ test("GuildSettingsStore: #inbox・#tasks の ID と切り替えの日・時刻�
   assert.equal(settings?.tasksChannelId, "tasks-1");
   assert.equal(settings?.tasksRotatedAt, "2026-10-01T19:00:01.000Z");
 
+  // チャンネルの持ち主は 1 つ: 同じチャンネルを別の人格（同じ人格の別の種類も）の行にはできない
+  assert.throws(
+    () =>
+      db
+        .prepare(
+          "INSERT INTO persona_channels (guild_id, persona, kind, channel_id, created_at, updated_at) VALUES ('guild-1', 'kai', 'inbox', 'inbox-1', 'x', 'x')",
+        )
+        .run(),
+    /UNIQUE/,
+  );
+  // setChannel で重なれば、guild_settings の updated_at も変えない（2 つの書き込みは 1 つのトランザクション）
+  const before = store.get("guild-1");
+  assert.throws(() => store.setChannel("guild-1", "tasksChannelId", "aoi-1"), /UNIQUE/);
+  assert.deepEqual(store.get("guild-1"), before);
+  // 別のサーバーで重なれば、guild_settings の行も作らない（/setup 前のまま）
+  assert.throws(() => store.setChannel("guild-2", "inboxChannelId", "inbox-1"), /UNIQUE/);
+  assert.equal(store.get("guild-2"), undefined);
+  // channel_id が NULL の行（切り替えの時刻だけ）はいくつあってもよい
+  store.setTasksRotated("guild-3", new Date("2026-10-01T19:00:00.000Z"));
+  store.setTasksRotated("guild-4", new Date("2026-10-01T19:00:00.000Z"));
+
   // 決めた種類以外は DB が拒む
   assert.throws(
     () =>
@@ -445,4 +467,63 @@ test("GuildSettingsStore: #inbox・#tasks の ID と切り替えの日・時刻�
         .run(),
     /CHECK/,
   );
+});
+
+test("backupBeforeMigration: v17 から移行する前に v17 の控え（権限 600。古い列のまま読める）を取り、パスは log に出さない。同じ版の控えがあれば上書きしない", async (t) => {
+  const dir = tempDir(t);
+  const path = join(dir, "self-agent.db");
+  const makeV17 = (inbox: string): void => {
+    const v17 = new DatabaseSync(path);
+    v17.exec("PRAGMA journal_mode=WAL");
+    for (const migration of MIGRATIONS.slice(0, 17)) v17.exec(migration);
+    v17.exec("PRAGMA user_version = 17");
+    v17.prepare(
+      "INSERT INTO guild_settings (guild_id, inbox_channel_id, created_at, updated_at) VALUES ('guild-1', ?, 'x', 'x')",
+    ).run(inbox);
+    v17.close();
+  };
+  makeV17("inbox-1");
+
+  const logs: string[] = [];
+  await backupBeforeMigration(path, (message) => logs.push(message));
+  const db = openDb(path);
+  assert.equal(new GuildSettingsStore(db).get("guild-1")?.inboxChannelId, "inbox-1");
+
+  const target = backupPath(path, 17);
+  assert.equal(target, join(dir, "self-agent.db.v17.bak"));
+  assert.equal(statSync(target).mode & 0o777, 0o600);
+  assert.ok(!readdirSync(dir).some((name) => name.endsWith(".tmp")));
+  assert.deepEqual(logs, ["DB を移行する前に控えを取りました（v17）"]);
+  const bak = new DatabaseSync(target, { readOnly: true });
+  assert.equal(bak.prepare("PRAGMA user_version").get()?.user_version, 17);
+  assert.equal(bak.prepare("SELECT inbox_channel_id FROM guild_settings").get()?.inbox_channel_id, "inbox-1");
+  assert.equal(bak.prepare("SELECT name FROM sqlite_master WHERE name = 'persona_channels'").get(), undefined);
+  bak.close();
+
+  // 移行済み（最新）なら何もしない
+  await backupBeforeMigration(path, (message) => logs.push(message));
+  assert.equal(logs.length, 1);
+  db.close();
+
+  // 同じ版の控えがあれば、上書きせずにそのまま使う
+  for (const suffix of ["", "-wal", "-shm"]) {
+    if (existsSync(path + suffix)) writeFileSync(path + suffix, "");
+  }
+  makeV17("inbox-2");
+  const before = readFileSync(target);
+  await backupBeforeMigration(path, (message) => logs.push(message));
+  assert.deepEqual(readFileSync(target), before);
+  assert.equal(logs[1], "DB を移行する前の控え（v17）は既にあるので、取り直しません");
+  assert.ok(logs.every((message) => !message.includes(dir)));
+});
+
+test("backupBeforeMigration: DB が無い・新しい（v0）なら控えを取らない", async (t) => {
+  const dir = tempDir(t);
+  const path = join(dir, "self-agent.db");
+  const logs: string[] = [];
+  await backupBeforeMigration(path, (message) => logs.push(message));
+  new DatabaseSync(path).close();
+  await backupBeforeMigration(path, (message) => logs.push(message));
+  assert.deepEqual(logs, []);
+  assert.deepEqual(readdirSync(dir), ["self-agent.db"]);
 });

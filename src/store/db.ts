@@ -1,6 +1,6 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { backup, DatabaseSync } from "node:sqlite";
 
 // MIGRATIONS[i] で user_version を i から i + 1 に上げる。既存の要素は書き換えず、末尾に追加する
 export const MIGRATIONS: readonly string[] = [
@@ -214,7 +214,8 @@ export const MIGRATIONS: readonly string[] = [
   // v18: 人格（docs/plan/personas.md）。既存の行はすべて既定の人格（'default'）・Claude のもの。
   // セッションの持ち主、SDK セッションのエンジン、usage の人格とエンジン、要約の人格、記憶とナレッジを保存した人格。
   // 入口のチャンネル（#inbox・#tasks。足した人格の #<NAME> は kind 'inbox'）と切り替えの日・時刻は persona_channels に移す
-  // （guild_settings の値を既定の人格の行に写し、guild_settings の列は消す。rotated_date は #inbox だけで、#tasks の日付は rotated_at から求める）
+  // （guild_settings の値を既定の人格の行に写し、guild_settings の列は消す。rotated_date は #inbox だけで、#tasks の日付は rotated_at から求める）。
+  // チャンネルの持ち主は 1 つなので channel_id は（NULL を除いて）一意
   `
   ALTER TABLE sessions ADD COLUMN persona TEXT NOT NULL DEFAULT 'default';
   ALTER TABLE channel_sessions ADD COLUMN engine TEXT NOT NULL DEFAULT 'claude';
@@ -234,6 +235,7 @@ export const MIGRATIONS: readonly string[] = [
     updated_at TEXT NOT NULL,
     PRIMARY KEY (guild_id, persona, kind)
   );
+  CREATE UNIQUE INDEX persona_channels_channel_id ON persona_channels (channel_id) WHERE channel_id IS NOT NULL;
   INSERT INTO persona_channels (guild_id, persona, kind, channel_id, rotated_date, rotated_at, created_at, updated_at)
     SELECT guild_id, 'default', 'inbox', inbox_channel_id, inbox_rotated_date, inbox_rotated_at, created_at, updated_at
     FROM guild_settings
@@ -270,6 +272,39 @@ function migrate(db: DatabaseSync): void {
       db.exec("ROLLBACK");
       throw error;
     }
+  }
+}
+
+/** 移行する前の控えの場所（`<dataDir>/self-agent.db.v<移行前の版>.bak`） */
+export function backupPath(path: string, version: number): string {
+  return `${path}.v${version}.bak`;
+}
+
+/**
+ * openDb で移行する（今の user_version が 1 以上で最新より古い）DB なら、先に node:sqlite の backup() で控えを取る（権限 600）。
+ * 同じ版の控えが既にあれば上書きせずにそれを使う。控えを取れなければ例外（移行しない）。log にはパスを出さない。
+ * backup() は非同期なので openDb（同期）の中ではなく、openDb の前に呼ぶ
+ */
+export async function backupBeforeMigration(path: string, log: (message: string) => void): Promise<void> {
+  if (!existsSync(path)) return;
+  const db = new DatabaseSync(path);
+  try {
+    const version = userVersion(db);
+    if (version === 0 || version >= MIGRATIONS.length) return;
+    const target = backupPath(path, version);
+    if (existsSync(target)) {
+      log(`DB を移行する前の控え（v${version}）は既にあるので、取り直しません`);
+      return;
+    }
+    // 書きかけの控えを target の名前で残さないよう、一時ファイル（先に 600 で作る）に取ってから名前を変える
+    const temp = `${target}.tmp`;
+    rmSync(temp, { force: true });
+    writeFileSync(temp, "", { mode: 0o600 });
+    await backup(db, temp);
+    renameSync(temp, target);
+    log(`DB を移行する前に控えを取りました（v${version}）`);
+  } finally {
+    db.close();
   }
 }
 

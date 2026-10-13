@@ -226,13 +226,14 @@ function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[
 
   // 同じトークンを 2 人格に渡していないか（値は比べるだけで、エラーには変数名を出す）
   const tokenOwners = new Map<string, string>();
-  const defaultToken = nonEmpty(env.DISCORD_TOKEN);
+  const defaultToken = nonEmpty(env.DISCORD_TOKEN?.trim());
   if (defaultToken !== undefined) tokenOwners.set(defaultToken, "DISCORD_TOKEN");
 
   return ids.map((id): PersonaConfig => {
     const prefix = `SELF_AGENT_PERSONA_${id.toUpperCase()}_`;
     const discordTokenEnv = `${prefix}DISCORD_TOKEN`;
-    const token = nonEmpty(env[discordTokenEnv]);
+    // 前後の空白は比べる前に除く（空白だけなら無いものとする）
+    const token = nonEmpty(env[discordTokenEnv]?.trim());
     if (token === undefined) throw new Error(`${discordTokenEnv} が設定されていません`);
     const sameAs = tokenOwners.get(token);
     if (sameAs !== undefined) throw new Error(`${discordTokenEnv} と ${sameAs} に同じトークンが設定されています`);

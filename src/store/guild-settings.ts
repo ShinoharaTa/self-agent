@@ -134,21 +134,29 @@ export class GuildSettingsStore {
     values: Partial<Record<"channel_id" | "rotated_date" | "rotated_at", string>>,
   ): void {
     const at = this.now().toISOString();
-    this.db
-      .prepare(
-        "INSERT INTO guild_settings (guild_id, created_at, updated_at) VALUES (?, ?, ?) " +
-          "ON CONFLICT (guild_id) DO UPDATE SET updated_at = excluded.updated_at",
-      )
-      .run(guildId, at, at);
     const columns = Object.keys(values);
     const updates = columns.map((column) => `${column} = excluded.${column}`).join(", ");
-    this.db
-      .prepare(
-        `INSERT INTO persona_channels (guild_id, persona, kind, ${columns.join(", ")}, created_at, updated_at) ` +
-          `VALUES (?, ?, ?, ${columns.map(() => "?").join(", ")}, ?, ?) ` +
-          `ON CONFLICT (guild_id, persona, kind) DO UPDATE SET ${updates}, updated_at = excluded.updated_at`,
-      )
-      .run(guildId, DEFAULT_PERSONA_ID, kind, ...Object.values(values), at, at);
+    // 2 つの表を 1 つのトランザクションで書く（片方だけ書かれた状態を残さない）
+    this.db.exec("BEGIN");
+    try {
+      this.db
+        .prepare(
+          "INSERT INTO guild_settings (guild_id, created_at, updated_at) VALUES (?, ?, ?) " +
+            "ON CONFLICT (guild_id) DO UPDATE SET updated_at = excluded.updated_at",
+        )
+        .run(guildId, at, at);
+      this.db
+        .prepare(
+          `INSERT INTO persona_channels (guild_id, persona, kind, ${columns.join(", ")}, created_at, updated_at) ` +
+            `VALUES (?, ?, ?, ${columns.map(() => "?").join(", ")}, ?, ?) ` +
+            `ON CONFLICT (guild_id, persona, kind) DO UPDATE SET ${updates}, updated_at = excluded.updated_at`,
+        )
+        .run(guildId, DEFAULT_PERSONA_ID, kind, ...Object.values(values), at, at);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   getStateCategory(guildId: string, state: SessionState, ordinal: number): string | undefined {

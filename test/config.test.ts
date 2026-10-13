@@ -355,6 +355,25 @@ test("SELF_AGENT_PERSONAS: 不正な設定は変数名を出してエラーに�
       error: /SELF_AGENT_PERSONA_KAI_DISCORD_TOKEN.*SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN/,
     },
     {
+      label: "前後の空白だけが違う同じトークン",
+      env: {
+        ...aoi,
+        SELF_AGENT_PERSONAS: "aoi,kai",
+        SELF_AGENT_PERSONA_KAI_DISCORD_TOKEN: " dummy-secret-aoi\n",
+      },
+      error: /SELF_AGENT_PERSONA_KAI_DISCORD_TOKEN.*SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN/,
+    },
+    {
+      label: "既定の人格と前後の空白だけが違う同じトークン",
+      env: { SELF_AGENT_PERSONAS: "aoi", SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "dummy-secret-default " },
+      error: /SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN.*DISCORD_TOKEN/,
+    },
+    {
+      label: "空白だけのトークン",
+      env: { SELF_AGENT_PERSONAS: "aoi", SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "  " },
+      error: /SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN が設定されていません/,
+    },
+    {
       label: "表示名が 21 字",
       env: { ...aoi, SELF_AGENT_PERSONA_AOI_NAME: "あ".repeat(21) },
       error: /SELF_AGENT_PERSONA_AOI_NAME/,
