@@ -163,6 +163,14 @@ test("toPayload: 通知は返信先だけ。components を省略したらキー�
   });
 });
 
+test("toPayload: mentionUserId があれば本文の先頭にメンションを付け、そのユーザーだけを鳴らす（parse は空のまま）", () => {
+  assert.deepEqual(json(toPayload({ text: "リマインド: 薬を飲む @everyone", components: [], mentionUserId: "owner-1" })), {
+    content: "<@owner-1> リマインド: 薬を飲む @everyone",
+    allowedMentions: { parse: [], users: ["owner-1"], repliedUser: true },
+    components: [],
+  });
+});
+
 test("toModal: テキスト入力は Label（type 18）で包む。style の既定は short、required の既定は true", () => {
   const modal = toModal({
     customId: "edit:title:topic-1",

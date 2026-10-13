@@ -12,6 +12,7 @@ import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
 import { createNotifyMemoryChange } from "./app/commands/memory-undo.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { KeyedSerialQueue } from "./app/queue.ts";
+import { ReminderScheduler } from "./app/reminders.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
@@ -26,6 +27,7 @@ import { InboxSummaryStore } from "./store/inbox-summaries.ts";
 import { KnowledgeStore } from "./store/knowledge.ts";
 import { MemoryStore } from "./store/memories.ts";
 import { ProjectStore } from "./store/projects.ts";
+import { ReminderStore } from "./store/reminders.ts";
 import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
@@ -54,6 +56,7 @@ const inboxSummaries = new InboxSummaryStore(db, now);
 const knowledge = new KnowledgeStore(db, now);
 const memories = new MemoryStore(db, now);
 const projects = new ProjectStore(db, now);
+const reminders = new ReminderStore(db, now);
 const log = (message: string): void => console.error(message);
 
 // 作ったプロジェクトの場所。権限ルール（<realpath(workDir)>/projects）と同じ実際の場所にする
@@ -152,6 +155,7 @@ const commands = createCommands({
   turnQueue,
   turn,
   inboxRotator,
+  reminders,
   log,
 });
 const handleInteraction = createInteractionHandler({
@@ -176,6 +180,7 @@ const handleInteraction = createInteractionHandler({
     channelOps,
     turnQueue,
     turn,
+    reminders,
     log,
   }),
   log,
@@ -197,6 +202,18 @@ const scheduler = new Scheduler({
   log,
 });
 
+// リマインドの発火: 分の境目にそろえた 1 分ごとの tick で、時刻の来たリマインドをオーナーをメンションして投稿する
+const reminderScheduler = new ReminderScheduler({
+  cfg: config,
+  reminders,
+  tasks,
+  guildSettings,
+  topicSessions,
+  gateway,
+  now,
+  log,
+});
+
 // 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
 let staticServer: StaticServer | undefined;
 if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
@@ -212,13 +229,14 @@ if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
   });
 }
 
-// 停止: シグナルで新しい受付と定期処理を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・DB を閉じる
+// 停止: シグナルで新しい受付と定期処理（リマインドの発火を含む）を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・DB を閉じる
 const lifecycle = createShutdown(
   {
     cfg: config,
     gateway,
     queues: [turnQueue, layoutQueue],
     scheduler,
+    reminderScheduler,
     channelOps,
     staticServer,
     closeDb: () => db.close(),
@@ -248,6 +266,7 @@ if (staticServer !== undefined) {
 await gateway.start(lifecycle.handlers);
 await registerCommands({ cfg: config, gateway, commands, log });
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
-// 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で。停止を始めていれば何もしない
+// 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で（リマインドは分の境目ごと）。停止を始めていれば何もしない
 scheduler.start(TICK_INTERVAL_MS);
+reminderScheduler.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);
