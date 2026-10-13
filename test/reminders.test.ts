@@ -20,7 +20,7 @@ import type { NewReminder } from "../src/store/reminders.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingQueue } from "./helpers/recording.ts";
-import { FakeRunner, type FakeRunStep } from "./helpers/runner.ts";
+import { FakeRunner, type FakeRunStep, turnUsage } from "./helpers/runner.ts";
 
 /** 2026-10-13(火) 9:00 JST */
 const NOW = new Date("2026-10-13T00:00:00.000Z");
@@ -54,7 +54,7 @@ function okResult(text: string): RunResult {
     ok: true,
     text,
     sessionId: "session-1",
-    usage: { inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300 },
+    usage: turnUsage(10, 2000, 300),
     durationMs: 4200,
     toolCalls: 1,
     contextTokens: 900,
@@ -506,6 +506,8 @@ test("prompt: 先に claim で進めてから、実行先の key で turnQueue �
     );
     assert.deepEqual([env.gateway.typingStarted, env.gateway.typingStopped], [1, 1], label);
     assert.equal(env.usage.recent(10).length, 1, label);
+    // 予約した依頼のターンの種類のラベルには -scheduled を付ける
+    assert.equal(env.usage.recent(10)[0]?.kind, `${kind}-scheduled`, label);
     assert.deepEqual(env.posted(), [], label);
     const stored = env.reminders.get(added.id)!;
     assert.deepEqual({ status: stored.status, nextAt: stored.nextAt }, after, label);

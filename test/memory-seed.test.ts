@@ -11,7 +11,7 @@ import {
 } from "../src/app/turn.ts";
 import { MemoryStore } from "../src/store/memories.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
-import { FakeRunner } from "./helpers/runner.ts";
+import { FakeRunner, turnUsage } from "./helpers/runner.ts";
 
 const NOW = new Date("2026-10-07T00:00:00.000Z");
 const PROMPT = "[2026-10-07(水) 09:00 JST #旅行の計画]\n明日の天気は？";
@@ -22,7 +22,7 @@ function ok(sessionId: string): RunResult {
     ok: true,
     text: "はい",
     sessionId,
-    usage: { inputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+    usage: turnUsage(1, 0, 0),
     durationMs: 1,
     toolCalls: 0,
     contextTokens: 1,

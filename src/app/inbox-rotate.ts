@@ -256,7 +256,7 @@ export class InboxRotator {
     // ツールの context は渡さない（#inbox の session_open で要約の途中にセッションを作らせない）。
     // オーナーの発言ではないので、WebFetch で取得できる URL も無い
     const result = await runner.run({ prompt: ROTATE_PROMPTS[kind], sessionId, context: undefined, allowedUrls: [] });
-    recordTurnUsage(turn, channelId, result);
+    recordTurnUsage(turn, channelId, `${kind}-rotate`, result);
     // usage の記録より後の時刻にする（次の判定で要約のターン自身の記録を数えない）
     const rotatedAt = now();
 

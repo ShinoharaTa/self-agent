@@ -10,7 +10,10 @@ import {
   pruneDevLogs,
   truncateText,
   type DevLogRecord,
+  type DevLogResult,
 } from "../src/devlog/log.ts";
+import type { TurnUsage } from "../src/agent/runner.ts";
+import { turnUsage } from "./helpers/runner.ts";
 
 test("truncateText: 2,000 字までは切らず、超えたら先頭 2,000 字 + …（N 字を省略）。サロゲートペアの途中では切らない", () => {
   assert.equal(truncateText("あ".repeat(2000)), "あ".repeat(2000));
@@ -30,7 +33,7 @@ test("devLogToolInput: 文字列化して 2,000 字までならそのままの�
 });
 
 test("devLogResult: 成功は durationMs を除き、compacted は起きたときだけ。失敗の sessionId は無ければ入れない", () => {
-  const usage = { inputTokens: 1, cacheReadInputTokens: 2, cacheCreationInputTokens: 3 };
+  const usage = turnUsage(1, 2, 3);
   assert.deepEqual(
     devLogResult({ ok: true, text: "はい", sessionId: "s", usage, durationMs: 10, toolCalls: 1, contextTokens: 6 }),
     { ok: true, text: "はい", sessionId: "s", usage, toolCalls: 1, contextTokens: 6 },
@@ -51,6 +54,11 @@ test("devLogResult: 成功は durationMs を除き、compacted は起きたと�
   assert.deepEqual(
     devLogResult({ ok: false, errorMessage: "timeout", sessionId: undefined, sessionRecorded: false, toolCalls: 2 }),
     { ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 2 },
+  );
+  // 失敗でも届いたステップの usage があればそのまま入れる
+  assert.deepEqual(
+    devLogResult({ ok: false, errorMessage: "timeout", sessionId: "s", sessionRecorded: false, toolCalls: 2, usage }),
+    { ok: false, errorMessage: "timeout", sessionId: "s", sessionRecorded: false, toolCalls: 2, usage },
   );
 });
 
@@ -82,7 +90,7 @@ function record(fields: Partial<DevLogRecord> = {}): DevLogRecord {
       ok: true,
       text: "作りました",
       sessionId: "session-1",
-      usage: { inputTokens: 12, cacheReadInputTokens: 34000, cacheCreationInputTokens: 560 },
+      usage: turnUsage(12, 34000, 560, 80),
       toolCalls: 2,
       contextTokens: 17000,
     },
@@ -115,7 +123,7 @@ test("formatDevLogRecord: 見出し（時刻・種類・チャンネル・所要
     text,
     [
       "=== 00:30:05 session channel=topic-1 ===",
-      "1 分 15 秒 | input 12 / cache read 34000 / cache creation 560 | ツール 2 回 | 成功",
+      "1 分 15 秒 | input 12 / cache read 34000 / cache creation 560 / output 80 | ステップ 1 | ツール 2 回 | 成功",
       "--- prompt ---",
       "[2026-10-08 00:30 家計簿]",
       "家計簿を作って",
@@ -154,7 +162,7 @@ test("formatDevLogRecord: 失敗は理由を出し、トークンは -。context
     text,
     [
       "=== 03:04:05 - channel=- ===",
-      "5 分 0 秒 | input - / cache read - / cache creation - | ツール 0 回 | 失敗",
+      "5 分 0 秒 | input - / cache read - / cache creation - / output - | ステップ - | ツール 0 回 | 失敗",
       "--- prompt ---",
       "要約して",
       "--- steps ---",
@@ -163,6 +171,28 @@ test("formatDevLogRecord: 失敗は理由を出し、トークンは -。context
       "timeout",
     ].join("\n"),
   );
+});
+
+test("formatDevLogRecord: 見出しのトークンは、失敗でも届いた分があれば出す。出力・ステップ数の無い古い記録はそこだけ -", () => {
+  const failed = { ok: false as const, errorMessage: "timeout", sessionRecorded: false, toolCalls: 1 };
+  // 出力・steps を記録していなかった頃の usage
+  const oldUsage = { inputTokens: 1, cacheReadInputTokens: 2, cacheCreationInputTokens: 3 } as unknown as TurnUsage;
+  const cases: Array<{ label: string; result: DevLogResult; expected: string }> = [
+    {
+      label: "失敗で usage あり",
+      result: { ...failed, usage: turnUsage(4, 900, 50, 7) },
+      expected: "input 4 / cache read 900 / cache creation 50 / output 7 | ステップ 1 | ツール 1 回 | 失敗",
+    },
+    {
+      label: "古い記録",
+      result: { ok: true, text: "はい", sessionId: "s", usage: oldUsage, toolCalls: 0, contextTokens: 6 },
+      expected: "input 1 / cache read 2 / cache creation 3 / output - | ステップ - | ツール 0 回 | 成功",
+    },
+  ];
+  for (const { label, result, expected } of cases) {
+    const heading = formatDevLogRecord(record({ result }), "Asia/Tokyo").split("\n")[1];
+    assert.equal(heading, `1 分 15 秒 | ${expected}`, label);
+  }
 });
 
 test("parseDevLog: 1 行 1 記録。空行は無視し、JSON として読めない行は飛ばして数える", () => {

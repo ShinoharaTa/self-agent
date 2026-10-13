@@ -16,7 +16,7 @@ import type { ProjectStore } from "../store/projects.ts";
 import { FILE_TOOLS, FILE_WRITE_TOOLS, judgeFileAccess, resolveRealPath } from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
 import { buildQueryOptions } from "./query-options.ts";
-import type { AgentRunner, Compaction, RunContext, RunInput, RunResult, TurnUsage } from "./runner.ts";
+import type { AgentRunner, Compaction, RunContext, RunInput, RunResult, StepUsage, TurnUsage } from "./runner.ts";
 import { MCP_SERVER_NAME } from "./tools.ts";
 
 /** query() の形。テストでは偽のストリームを返す関数に差し替える */
@@ -54,6 +54,26 @@ export function describeResultError(result: SDKResultMessage): string {
   }
   const errors = result.errors.filter((error) => error.trim() !== "");
   return errors.length === 0 ? result.subtype : `${result.subtype}: ${shorten(errors.join(" / "))}`;
+}
+
+/** ステップごとの usage（起きた順）から、このターンの usage（合計と内訳）を作る */
+function toTurnUsage(steps: readonly StepUsage[]): TurnUsage {
+  const usage: TurnUsage = {
+    inputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheCreation1hInputTokens: 0,
+    outputTokens: 0,
+    steps: [...steps],
+  };
+  for (const step of steps) {
+    usage.inputTokens += step.inputTokens;
+    usage.cacheReadInputTokens += step.cacheReadInputTokens;
+    usage.cacheCreationInputTokens += step.cacheCreationInputTokens;
+    usage.cacheCreation1hInputTokens += step.cacheCreation1hInputTokens;
+    usage.outputTokens += step.outputTokens;
+  }
+  return usage;
 }
 
 /** ツール呼び出しの記録。hooks を Options に入れ、count でそのターンの回数を読む */
@@ -453,11 +473,11 @@ export class SdkAgentRunner implements AgentRunner {
       input.sessionId === undefined
         ? { ...base, maxTurns, abortController, hooks, stderr: onStderr }
         : { ...base, maxTurns, abortController, hooks, stderr: onStderr, resume: input.sessionId };
-    // メインループの各ステップの usage を合算する。並列ツール呼び出しは同じ message.id を共有するので重複を除く
-    const seenMessageIds = new Set<string>();
-    const usage: TurnUsage = { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
-    // メインループの最後のステップの入力（合算しない）
-    let contextTokens = 0;
+    // メインループのステップ（message.id）ごとの usage。同じ message.id は content のブロックごとに届くので、届くたびに最新の usage で上書きする
+    // （Map は最初に入れた順を保つ）。終わりに合計と内訳（toTurnUsage）にし、失敗でも 1 ステップでもあれば返す
+    const stepUsages = new Map<string, StepUsage>();
+    const failedUsage = (): { usage?: TurnUsage } =>
+      stepUsages.size === 0 ? {} : { usage: toTurnUsage([...stepUsages.values()]) };
     let sessionId = input.sessionId;
     let result: SDKResultMessage | undefined;
     let compacted: Compaction | undefined;
@@ -471,6 +491,7 @@ export class SdkAgentRunner implements AgentRunner {
       sessionId,
       sessionRecorded: false,
       toolCalls: tools.count(),
+      ...failedUsage(),
     });
 
     try {
@@ -479,18 +500,15 @@ export class SdkAgentRunner implements AgentRunner {
           sessionId = message.session_id;
         }
         steps?.push(...devLogSteps(message));
-        if (
-          message.type === "assistant" &&
-          message.parent_tool_use_id === null &&
-          !seenMessageIds.has(message.message.id)
-        ) {
-          seenMessageIds.add(message.message.id);
+        if (message.type === "assistant" && message.parent_tool_use_id === null) {
           const stepUsage = message.message.usage;
-          usage.inputTokens += stepUsage.input_tokens;
-          usage.cacheReadInputTokens += stepUsage.cache_read_input_tokens ?? 0;
-          usage.cacheCreationInputTokens += stepUsage.cache_creation_input_tokens ?? 0;
-          contextTokens =
-            stepUsage.input_tokens + (stepUsage.cache_read_input_tokens ?? 0) + (stepUsage.cache_creation_input_tokens ?? 0);
+          stepUsages.set(message.message.id, {
+            inputTokens: stepUsage.input_tokens,
+            cacheReadInputTokens: stepUsage.cache_read_input_tokens ?? 0,
+            cacheCreationInputTokens: stepUsage.cache_creation_input_tokens ?? 0,
+            cacheCreation1hInputTokens: stepUsage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
+            outputTokens: stepUsage.output_tokens ?? 0,
+          });
         }
         // assistant メッセージは並列ツール呼び出しでも 1 ブロックずつ届くので、message.id ではなく tool_use の id で重複を除く
         if (message.type === "assistant" && message.parent_tool_use_id === null && input.onProgress !== undefined) {
@@ -526,6 +544,7 @@ export class SdkAgentRunner implements AgentRunner {
         sessionId,
         sessionRecorded: false,
         toolCalls: tools.count(),
+        ...failedUsage(),
       };
     }
 
@@ -537,6 +556,7 @@ export class SdkAgentRunner implements AgentRunner {
         sessionId,
         sessionRecorded: false,
         toolCalls: tools.count(),
+        ...failedUsage(),
       };
     }
     if (result.subtype !== "success" || result.is_error) {
@@ -547,8 +567,14 @@ export class SdkAgentRunner implements AgentRunner {
         sessionId: result.session_id,
         sessionRecorded: true,
         toolCalls: tools.count(),
+        ...failedUsage(),
       };
     }
+    const usage = toTurnUsage([...stepUsages.values()]);
+    // メインループの最後のステップの入力（合算しない）
+    const last = usage.steps.at(-1);
+    const contextTokens =
+      last === undefined ? 0 : last.inputTokens + last.cacheReadInputTokens + last.cacheCreationInputTokens;
     return {
       ok: true,
       text: result.result,

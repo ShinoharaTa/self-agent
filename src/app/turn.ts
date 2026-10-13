@@ -1,4 +1,4 @@
-// 1 チャンネルの 1 ターン（発言・/close 共通）。usage の記録、SDK セッションの保存、記憶と seed の付与、resume 失敗からの復旧
+// 1 チャンネルの 1 ターン（発言・/close 共通）。usage の記録とログ、SDK セッションの保存、記憶と seed の付与、resume 失敗からの復旧
 import type { AgentRunner, ProgressStep, RunContext, RunResult } from "../agent/runner.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { InboxSummary, InboxSummaryStore, SummaryChannelKind } from "../store/inbox-summaries.ts";
@@ -7,6 +7,7 @@ import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSession, TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
 import { rotatedSeed } from "./summary.ts";
+import { formatTurnUsageLog } from "./usage-report.ts";
 
 /**
  * resume 先の会話の記録が SDK 側に無いときのエラー文。CLI に "No conversation found with session ID: ..." があるのでそれに合わせている。
@@ -87,11 +88,28 @@ export function memoryBlock(memories: readonly Pick<Memory, "id" | "text">[]): s
   return [MEMORY_BLOCK_HEADER, ...memories.map((memory) => `- [#${memory.id}] ${memory.text}`)].join("\n");
 }
 
-/** ターンの結果を usage_log に記録する（成功ならトークン・compaction・最後のステップの入力も）。compaction が起きたら log に出す */
-export function recordTurnUsage(deps: Pick<TurnDeps, "usage" | "log">, key: string, result: RunResult): void {
+/**
+ * ターンの結果を usage_log に記録し、トークンを log に 1 行出す（formatTurnUsageLog）。kind はターンの種類のラベル（ID は入れない）。
+ * 成功ならトークン・compaction・最後のステップの入力も記録する。失敗はトークンの合計を記録せず（/usage の合計は成功したターンだけ）、
+ * 届いたステップの内訳だけ残す。compaction が起きたら log に出す
+ */
+export function recordTurnUsage(
+  deps: Pick<TurnDeps, "usage" | "log">,
+  key: string,
+  kind: string,
+  result: RunResult,
+): void {
   const { usage, log } = deps;
   if (!result.ok) {
-    usage.record({ key, sessionId: result.sessionId, ok: false, toolCalls: result.toolCalls });
+    usage.record({
+      key,
+      sessionId: result.sessionId,
+      ok: false,
+      toolCalls: result.toolCalls,
+      kind,
+      steps: result.usage?.steps ?? null,
+    });
+    log(formatTurnUsageLog(kind, result));
     return;
   }
   usage.record({
@@ -105,7 +123,12 @@ export function recordTurnUsage(deps: Pick<TurnDeps, "usage" | "log">, key: stri
     compacted: result.compacted !== undefined,
     toolCalls: result.toolCalls,
     contextTokens: result.contextTokens,
+    kind,
+    outputTokens: result.usage.outputTokens,
+    cacheCreation1hInputTokens: result.usage.cacheCreation1hInputTokens,
+    steps: result.usage.steps,
   });
+  log(formatTurnUsageLog(kind, result));
   if (result.compacted !== undefined) {
     const { trigger, preTokens } = result.compacted;
     log(`会話が長くなったため SDK が古い部分を要約しました（trigger=${trigger}、要約前 ${preTokens ?? "?"} トークン）`);
@@ -125,6 +148,8 @@ export function recordTurnUsage(deps: Pick<TurnDeps, "usage" | "log">, key: stri
 export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise<RunResult> {
   const { runner, sessions, seeds, topicSessions, inboxSummaries, memories, log } = deps;
   const key = turn.channelId;
+  // usage の記録とログのラベル。予約した依頼のターンは -scheduled を付ける
+  const usageKind = turn.scheduled === true ? `${turn.kind}-scheduled` : turn.kind;
   const context: RunContext = {
     guildId: turn.guildId,
     channelId: turn.channelId,
@@ -142,7 +167,7 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
       ...(turn.signal === undefined ? {} : { signal: turn.signal }),
       ...(turn.onProgress === undefined ? {} : { onProgress: turn.onProgress }),
     });
-    recordTurnUsage(deps, key, result);
+    recordTurnUsage(deps, key, usageKind, result);
     if (result.ok) {
       sessions.set(key, result.sessionId);
     } else {

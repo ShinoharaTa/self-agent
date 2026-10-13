@@ -12,6 +12,7 @@ import type { IncomingMessage, Interaction, OutgoingMessage } from "../src/disco
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { FakeResponder } from "./helpers/responder.ts";
+import { turnUsage } from "./helpers/runner.ts";
 
 const NOW = new Date("2026-10-02T00:12:00Z");
 const cfg = {
@@ -77,7 +78,7 @@ class GatedRunner implements AgentRunner {
       ok: true,
       text: `返答 ${this.inputs.length}`,
       sessionId: "session-1",
-      usage: { inputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      usage: turnUsage(1, 0, 0),
       durationMs: 10,
       toolCalls: 0,
       contextTokens: 1,

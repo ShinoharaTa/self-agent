@@ -11,7 +11,7 @@ import {
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { FILE_NO_CONTEXT_REASON, FILE_READ_DENIED_REASON, FILE_WRITE_DENIED_REASON } from "../src/agent/file-access.ts";
-import type { ProgressStep, RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
+import type { ProgressStep, RunContext, RunInput, RunResult, StepUsage } from "../src/agent/runner.ts";
 import {
   describeResultError,
   type DevLogDeps,
@@ -85,9 +85,10 @@ function init(sessionId: string): SDKMessage {
   return sdkMessage({ type: "system", subtype: "init", session_id: sessionId });
 }
 
+/** output・cache1h（cache_creation.ephemeral_1h_input_tokens）は指定したときだけ入れる */
 function assistant(
   id: string,
-  usage: { input: number; cacheRead: number | null; cacheCreation: number | null },
+  usage: { input: number; cacheRead: number | null; cacheCreation: number | null; output?: number; cache1h?: number },
   parentToolUseId: string | null = null,
 ): SDKMessage {
   return sdkMessage({
@@ -100,9 +101,22 @@ function assistant(
         input_tokens: usage.input,
         cache_read_input_tokens: usage.cacheRead,
         cache_creation_input_tokens: usage.cacheCreation,
+        ...(usage.output === undefined ? {} : { output_tokens: usage.output }),
+        ...(usage.cache1h === undefined ? {} : { cache_creation: { ephemeral_1h_input_tokens: usage.cache1h } }),
       },
     },
   });
+}
+
+/** 結果の usage の 1 ステップ */
+function step(input: number, read: number, creation: number, creation1h = 0, output = 0): StepUsage {
+  return {
+    inputTokens: input,
+    cacheReadInputTokens: read,
+    cacheCreationInputTokens: creation,
+    cacheCreation1hInputTokens: creation1h,
+    outputTokens: output,
+  };
 }
 
 function success(sessionId: string, text: string): SDKMessage {
@@ -175,7 +189,14 @@ test("SdkAgentRunner: 成功ならメインループの usage を合算し、並
     ok: true,
     text: "登録しました",
     sessionId: "session-1",
-    usage: { inputTokens: 15, cacheReadInputTokens: 2200, cacheCreationInputTokens: 200 },
+    usage: {
+      inputTokens: 15,
+      cacheReadInputTokens: 2200,
+      cacheCreationInputTokens: 200,
+      cacheCreation1hInputTokens: 0,
+      outputTokens: 0,
+      steps: [step(10, 1000, 200), step(5, 1200, 0)],
+    },
     durationMs: 4200,
     toolCalls: 0,
     // 最後のステップ（msg-2）の入力
@@ -202,7 +223,14 @@ test("SdkAgentRunner: contextTokens はメインループの最後のステッ�
 
   assert.ok(result.ok);
   assert.equal(result.contextTokens, 52304);
-  assert.deepEqual(result.usage, { inputTokens: 7, cacheReadInputTokens: 102000, cacheCreationInputTokens: 2300 });
+  assert.deepEqual(result.usage, {
+    inputTokens: 7,
+    cacheReadInputTokens: 102000,
+    cacheCreationInputTokens: 2300,
+    cacheCreation1hInputTokens: 0,
+    outputTokens: 0,
+    steps: [step(3, 50000, 2000), step(4, 52000, 300)],
+  });
 
   // assistant メッセージが無ければ 0
   const empty = await setupRunner(messages(success("session-1", "続き"))).runner.run({ prompt: "続き" });
@@ -279,7 +307,114 @@ test("SdkAgentRunner: result が届かずに終われば失敗。途中の sessi
     sessionId: "session-1",
     sessionRecorded: false,
     toolCalls: 0,
+    usage: {
+      inputTokens: 10,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheCreation1hInputTokens: 0,
+      outputTokens: 0,
+      steps: [step(10, 0, 0)],
+    },
   });
+});
+
+test("SdkAgentRunner: usage はメインループのステップ（message.id）ごと。同じ id は届くたびに最新の usage で上書きし（並びは最初に届いた順）、1 時間のキャッシュの分と出力も足す", async () => {
+  const { runner } = setupRunner(
+    messages(
+      init("session-1"),
+      assistant("msg-1", { input: 3, cacheRead: 0, cacheCreation: 5000, cache1h: 5000, output: 1 }),
+      // 同じ id の後のブロックは出力が増えた最新の usage
+      assistant("msg-1", { input: 3, cacheRead: 0, cacheCreation: 5000, cache1h: 5000, output: 40 }),
+      assistant("msg-2", { input: 2, cacheRead: 5000, cacheCreation: 100, output: 1 }),
+      assistant("msg-sub", { input: 999, cacheRead: 999, cacheCreation: 999, cache1h: 999, output: 999 }, "toolu-1"),
+      assistant("msg-2", { input: 2, cacheRead: 5000, cacheCreation: 100, output: 25 }),
+      success("session-1", "はい"),
+    ),
+  );
+
+  const result = await runner.run({ prompt: "x" });
+
+  assert.ok(result.ok);
+  assert.deepEqual(result.usage, {
+    inputTokens: 5,
+    cacheReadInputTokens: 5000,
+    cacheCreationInputTokens: 5100,
+    cacheCreation1hInputTokens: 5000,
+    outputTokens: 65,
+    steps: [step(3, 0, 5000, 5000, 40), step(2, 5000, 100, 0, 25)],
+  });
+  assert.equal(result.contextTokens, 5102);
+});
+
+test("SdkAgentRunner: 失敗（result のエラー・result なし・例外・中断・打ち切り）でも届いたステップがあれば usage を返し、1 ステップも無ければ入れない", async () => {
+  const oneStep = assistant("msg-1", { input: 4, cacheRead: 900, cacheCreation: 50, cache1h: 50, output: 7 });
+  const expected = {
+    inputTokens: 4,
+    cacheReadInputTokens: 900,
+    cacheCreationInputTokens: 50,
+    cacheCreation1hInputTokens: 50,
+    outputTokens: 7,
+    steps: [step(4, 900, 50, 50, 7)],
+  };
+  /** init（とステップ）を流してから abort されるまで待つ */
+  const untilAbort = (withStep: boolean) =>
+    async function* (call: QueryCall): AsyncIterable<SDKMessage> {
+      yield init("session-1");
+      if (withStep) yield oneStep;
+      const signal = call.options.abortController!.signal;
+      if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+      throw new Error("Claude Code process aborted by user");
+    };
+  const head = (withStep: boolean): SDKMessage[] => (withStep ? [init("session-1"), oneStep] : [init("session-1")]);
+  const cases: Array<{
+    label: string;
+    stream: (withStep: boolean) => (call: QueryCall) => AsyncIterable<SDKMessage>;
+    errorMessage: string;
+    overrides?: Partial<typeof cfg>;
+    abort?: true;
+  }> = [
+    {
+      label: "result のエラー",
+      stream: (withStep) =>
+        messages(
+          ...head(withStep),
+          sdkMessage({ type: "result", subtype: "error_max_turns", is_error: true, errors: [], session_id: "session-1" }),
+        ),
+      errorMessage: "error_max_turns",
+    },
+    { label: "result なし", stream: (withStep) => messages(...head(withStep)), errorMessage: "result メッセージを受け取れませんでした" },
+    {
+      label: "例外",
+      stream: (withStep) =>
+        async function* () {
+          yield* head(withStep);
+          throw new Error("boom");
+        },
+      errorMessage: "exception: Error: boom",
+    },
+    { label: "打ち切り", stream: untilAbort, errorMessage: "timeout", overrides: { turnTimeoutSec: 0.01 } },
+    { label: "中断", stream: untilAbort, errorMessage: "aborted", abort: true },
+  ];
+  for (const c of cases) {
+    for (const withStep of [true, false]) {
+      const label = `${c.label}（ステップ${withStep ? "あり" : "なし"}）`;
+      const { runner } = setupRunner(c.stream(withStep), c.overrides ?? {});
+      let result: RunResult;
+      if (c.abort === true) {
+        const controller = new AbortController();
+        const running = runner.run({ prompt: "x", signal: controller.signal });
+        await new Promise((resolve) => setImmediate(resolve));
+        controller.abort();
+        result = await running;
+      } else {
+        result = await runner.run({ prompt: "x" });
+      }
+      assert.ok(!result.ok, label);
+      assert.equal(result.errorMessage, c.errorMessage, label);
+      assert.equal("usage" in result, withStep, label);
+      if (withStep) assert.deepEqual(result.usage, expected, label);
+    }
+  }
 });
 
 test("SdkAgentRunner: ストリームの例外は exception として返し（sessionRecorded は false）、子プロセスの stderr を errorMessage に添える。stderr は log に出さない", async () => {
@@ -1118,7 +1253,15 @@ test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 �
       ok: true,
       text: reply,
       sessionId: "session-1",
-      usage: { inputTokens: 3, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      // msg-1・msg-2（2 ブロック）・msg-3 の 3 ステップ
+      usage: {
+        inputTokens: 3,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheCreation1hInputTokens: 0,
+        outputTokens: 0,
+        steps: [step(1, 0, 0), step(1, 0, 0), step(1, 0, 0)],
+      },
       toolCalls: 0,
       contextTokens: 1,
       compacted: { trigger: "auto", preTokens: 150000 },
@@ -1149,7 +1292,7 @@ test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 �
       ok: true,
       text: "要約です",
       sessionId: "session-2",
-      usage: { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+      usage: { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, cacheCreation1hInputTokens: 0, outputTokens: 0, steps: [] },
       toolCalls: 0,
       contextTokens: 0,
     },
@@ -1158,6 +1301,15 @@ test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 �
 
 test("dev ログ: 失敗（例外・result の失敗）・中断・打ち切りの run も、それまでの手順と失敗の理由を記録する", async () => {
   const context: RunContext = { guildId: "guild-1", channelId: "topic-1", kind: "session" };
+  // 失敗するまでに届いた 1 ステップのトークン
+  const usage = {
+    inputTokens: 1,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheCreation1hInputTokens: 0,
+    outputTokens: 0,
+    steps: [step(1, 0, 0)],
+  };
 
   const thrown = memoryDevLog();
   await setupRunner(
@@ -1179,6 +1331,7 @@ test("dev ログ: 失敗（例外・result の失敗）・中断・打ち切り�
     sessionId: "session-1",
     sessionRecorded: false,
     toolCalls: 0,
+    usage,
   });
 
   const maxTurns = memoryDevLog();
@@ -1198,6 +1351,7 @@ test("dev ログ: 失敗（例外・result の失敗）・中断・打ち切り�
     sessionId: "session-3",
     sessionRecorded: true,
     toolCalls: 0,
+    usage,
   });
 
   /** sessionId があれば init と text を 1 つ流してから、abort されるまで待つ */
@@ -1229,6 +1383,7 @@ test("dev ログ: 失敗（例外・result の失敗）・中断・打ち切り�
     sessionId: "session-1",
     sessionRecorded: false,
     toolCalls: 0,
+    usage,
   });
 
   // session_id を受け取る前に打ち切られたら、result に sessionId を入れない
@@ -1258,7 +1413,14 @@ test("dev ログ: 書き込みに失敗してもターンは失敗せず、log �
     ok: true,
     text: "秘密の返答",
     sessionId: "session-1",
-    usage: { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+    usage: {
+      inputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheCreation1hInputTokens: 0,
+      outputTokens: 0,
+      steps: [],
+    },
     durationMs: 4200,
     toolCalls: 0,
     contextTokens: 0,
