@@ -36,8 +36,8 @@ export class FakeGateway implements Gateway {
   // 記録
   /** record で選んだメソッドの呼び出し。send は送れたものだけ、それ以外は hook の前に残す */
   calls: GatewayCall[] = [];
-  /** 送れた send */
-  sent: Array<{ channelId: string; text: string; replyToId?: string }> = [];
+  /** 送れた send（mentionUserId は渡されたときだけ入れる） */
+  sent: Array<{ channelId: string; text: string; replyToId?: string; mentionUserId?: string }> = [];
   /** 送れた sendMessage */
   posts: Array<{ channelId: string; messageId: string; message: OutgoingMessage }> = [];
   /** 書き換えられた editMessage */
@@ -113,12 +113,12 @@ export class FakeGateway implements Gateway {
   async start(): Promise<void> {
     this.expect("start");
   }
-  async send(channelId: string, text: string, replyToId?: string): Promise<void> {
+  async send(channelId: string, text: string, replyToId?: string, mentionUserId?: string): Promise<void> {
     this.expect("send");
     const pending = this.beforeSend(channelId);
     if (pending instanceof Promise) await pending;
     this.order.push("send");
-    this.sent.push({ channelId, text, replyToId });
+    this.sent.push({ channelId, text, replyToId, ...(mentionUserId === undefined ? {} : { mentionUserId }) });
     this.record({ method: "send", channelId, text });
   }
   async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {

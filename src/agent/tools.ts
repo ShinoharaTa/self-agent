@@ -618,8 +618,10 @@ export function createTaskTools(
             `#inbox でのここまでの話の要点（${SESSION_OPEN_CONTEXT_MAX_LENGTH} 字以内）。新しいチャンネルの最初のターンに渡す`,
           ),
       },
-      // Discord にチャンネルを作り終えるまで待つ（ターンのタイムアウト内に収まる前提）
-      async (args) => textResult(await openSession(args, context)),
+      // Discord にチャンネルを作り終えるまで待つ（ターンのタイムアウト内に収まる前提）。
+      // 予約した依頼のターンでは作らない（自動のターンからチャンネルが増えるのを止める）
+      async (args) =>
+        textResult(context?.scheduled === true ? { result: "not_available" } : await openSession(args, context)),
     ),
     tool(
       "kb_save",

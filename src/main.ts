@@ -202,7 +202,8 @@ const scheduler = new Scheduler({
   log,
 });
 
-// リマインドの発火: 分の境目にそろえた 1 分ごとの tick で、時刻の来たリマインドをオーナーをメンションして投稿する
+// リマインドの発火: 分の境目にそろえた 1 分ごとの tick で、時刻の来たリマインドをオーナーをメンションして投稿する。
+// 予約した依頼（prompt）のターンは発言と同じキュー（turnQueue、key は #inbox・#tasks の channelId）で行う
 const reminderScheduler = new ReminderScheduler({
   cfg: config,
   reminders,
@@ -210,6 +211,9 @@ const reminderScheduler = new ReminderScheduler({
   guildSettings,
   topicSessions,
   gateway,
+  resolveChannel,
+  turnQueue,
+  turn,
   now,
   log,
 });

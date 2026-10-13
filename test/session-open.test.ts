@@ -219,6 +219,24 @@ test("session_open: #inbox 以外（セッション・#tasks・受け付け対�
   assert.equal(seeds.get("tasks-1"), undefined);
 });
 
+test("session_open: 予約した依頼のターン（context.scheduled）では #inbox でも作成処理を呼ばずに not_available を返す", async (t) => {
+  const { db, topicSessions } = setup(t);
+  const { tasks } = createStores(db, () => NOW);
+  const definition = createTaskTools(
+    tasks,
+    topicSessions,
+    async () => assert.fail("想定外の呼び出し: openSession"),
+    kbMemory(db),
+    projectTools(db),
+    { ...INBOX, scheduled: true },
+  ).find((candidate) => candidate.name === "session_open");
+  assert.ok(definition !== undefined);
+
+  // 定義の配列は全ツールの入力の型の合併なので、引数の型は確かめない
+  const result = await definition.handler(ARGS as never, {});
+  assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify({ result: "not_available" }) }]);
+});
+
 test("session_open: 同じ正規化題名の進行中・待ちのセッションがそのサーバーにあれば、作らずに existing を返す", async (t) => {
   const { db, gateway, topicSessions, openSession, sessionCount } = setup(t);
   topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "Trip Plan!", categoryId: "active-1" });
