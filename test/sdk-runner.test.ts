@@ -1358,7 +1358,6 @@ test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 �
     guildId: "guild-1",
     channelId: "inbox-1",
     kind: "inbox",
-    persona: "default",
     model: "claude-opus-5",
     effort: null,
     maxTurns: INBOX_MAX_TURNS,

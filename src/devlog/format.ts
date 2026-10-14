@@ -6,7 +6,7 @@ import { truncateText, type DevLogRecord, type DevLogStep } from "./log.ts";
 /** steps の tool_use の input と tool_result の content は、この字数まで出す */
 export const DEV_LOG_PREVIEW_LIMIT = 300;
 
-/** 表示する記録の絞り込み。persona は人格の id（印の無い以前の記録は既定の人格）。last は絞り込んだ後の最後の last 件 */
+/** 表示する記録の絞り込み。persona は人格の id（印の無い記録（既定の人格の run・以前の記録）は既定の人格）。last は絞り込んだ後の最後の last 件 */
 export type DevLogFilter = { kind?: RunContext["kind"]; channelId?: string; persona?: string; last?: number };
 
 /** jsonl の中身を記録の配列にする。空行は無視し、JSON として読めない行は飛ばして数える */

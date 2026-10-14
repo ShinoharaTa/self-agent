@@ -10,7 +10,7 @@ import {
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
+import type { Config } from "../config.ts";
 import { devLogResult, devLogToolInput, truncateText, type DevLogSink, type DevLogStep } from "../devlog/log.ts";
 import type { ProjectStore } from "../store/projects.ts";
 import type { DiskQuota } from "./disk.ts";
@@ -364,7 +364,7 @@ export function devLogSteps(message: SDKMessage): DevLogStep[] {
 
 /**
  * runner の設定。人格ごとに 1 つ作り、model・effort はその人格のもの。systemPrompt はその人格のシステムプロンプト
- * （省略すれば既定の人格の SYSTEM_PROMPT）。persona はその人格の id（dev ログの印。省略すれば既定の人格）
+ * （省略すれば既定の人格の SYSTEM_PROMPT）。persona は足した人格の id（dev ログの印。既定の人格の runner では渡さず、記録にも付けない）
  */
 export type SdkRunnerConfig = Pick<
   Config,
@@ -446,7 +446,7 @@ export class SdkAgentRunner implements AgentRunner {
         guildId: input.context?.guildId ?? null,
         channelId: input.context?.channelId ?? null,
         kind: input.context?.kind ?? null,
-        persona: this.cfg.persona ?? DEFAULT_PERSONA_ID,
+        ...(this.cfg.persona === undefined ? {} : { persona: this.cfg.persona }),
         model: this.cfg.model,
         effort: this.cfg.effort ?? null,
         maxTurns,
