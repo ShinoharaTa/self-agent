@@ -41,6 +41,7 @@ test("ReminderStore: 追加・取得", (t) => {
     fireSeq: 0,
     lastFiredAt: null,
     lastMessageId: null,
+    lastMessageChannelId: null,
     createdAt: at(0).toISOString(),
     updatedAt: at(0).toISOString(),
   });

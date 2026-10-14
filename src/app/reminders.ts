@@ -2,7 +2,7 @@
 // 永続のタイマーは持たないので、止まっていた間に過ぎた分は起動直後の tick で拾う。notify は「投稿してから進める」（少なくとも 1 回届く）。
 // prompt（予約した依頼）は「進めてから動かす」（多くても 1 回）。ターンは発言と同じキューに入れ、tick では待たない
 import type { RunResult } from "../agent/runner.ts";
-import type { Config } from "../config.ts";
+import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { ButtonDef, Gateway, OutgoingMessage } from "../discord/gateway.ts";
 import { mentionPrefix } from "../discord/convert.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
@@ -15,6 +15,7 @@ import { clip } from "./commands/tasks.ts";
 import { MAX_TURNS_REPLY } from "./commands/turn-controls.ts";
 import { COMPACTED_NOTE, EMPTY_REPLY } from "./handler.ts";
 import { buildTurnPrompt } from "./prompt.ts";
+import type { PersonaRouter } from "./personas.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { describeRule, nextOccurrence } from "./recurrence.ts";
 import { offsetMs } from "./time.ts";
@@ -100,6 +101,8 @@ export function reminderFireButtons(reminder: Pick<Reminder, "id" | "rule">, seq
 
 /** 元のチャンネルが無いため #tasks・#inbox に出したときの注記 */
 export const MOVED_NOTE = "（元のチャンネルが無いため、ここに出しました）";
+/** 元のチャンネルの持ち主（足した人格）の Bot に接続できない・その Bot で投稿できなかったため #tasks・#inbox に出したときの注記 */
+export const OWNER_UNREACHABLE_NOTE = "（元のチャンネルの Bot に接続できないため、ここに出しました）";
 
 /**
  * 予約した依頼のターンの prompt の本文（日時ヘッダの後ろ）。例: `予約した依頼（#3・毎日 8:00）:\n今日のタスクを出して`。
@@ -148,6 +151,11 @@ export type ReminderSchedulerDeps = {
   topicSessions: Pick<TopicSessionStore, "get">;
   /** 投稿・書き換え・入力中表示はチャンネルの持ち主の Bot で行う（main で personas.ts の ownerPosts を渡す） */
   gateway: Pick<Gateway, "sendMessage" | "editMessage" | "channelExists" | "send" | "startTyping">;
+  /**
+   * 投稿先のチャンネルの持ち主の人格。足した人格のチャンネルで、その Bot が接続していない・投稿に失敗したら、やり直さずに #tasks・#inbox
+   * （既定の人格の Bot）に出す。無ければすべて既定の人格
+   */
+  personas?: Pick<PersonaRouter, "ownerOf" | "ownerConnected">;
   /** 予約した依頼を動かすチャンネル（#inbox・#tasks）か */
   resolveChannel: ResolveChannel;
   /** 発言のターンと同じキュー（key は channelId）。予約した依頼のターンはセッション以外のジョブとして入れる */
@@ -173,7 +181,8 @@ type Occurrence = {
   count: number;
 };
 
-type PostResult = { kind: "posted"; channelId: string; messageId: string } | { kind: "nowhere" };
+/** unreachable は、頼んだチャンネルの持ち主（足した人格）の Bot に接続できない・投稿できなかったため、ほかのチャンネルに出したか */
+type PostResult = { kind: "posted"; channelId: string; messageId: string; unreachable: boolean } | { kind: "nowhere" };
 
 export class ReminderScheduler {
   private readonly deps: ReminderSchedulerDeps;
@@ -287,7 +296,7 @@ export class ReminderScheduler {
     const key = `${id}:${reminder.fireSeq}`;
     let result: PostResult;
     try {
-      result = await this.post(reminder, (moved) => this.message(reminder, taskTitle, occurrence, now, moved));
+      result = await this.post(reminder, (note) => this.message(reminder, taskTitle, occurrence, now, note));
     } catch (error) {
       const failures = (this.failures.get(key) ?? 0) + 1;
       if (failures < REMINDER_MAX_ATTEMPTS) {
@@ -308,7 +317,7 @@ export class ReminderScheduler {
       return;
     }
 
-    if (!reminders.markFired(id, reminder.fireSeq, { ...update, messageId: result.messageId })) {
+    if (!reminders.markFired(id, reminder.fireSeq, { ...update, messageId: result.messageId, messageChannelId: result.channelId })) {
       // 投稿している間に止められた。いま投稿したメッセージのボタンは押しても古いので外す
       log(`投稿している間にリマインドが止められたため、記録しませんでした（#${id}）`);
       try {
@@ -321,7 +330,8 @@ export class ReminderScheduler {
       }
       return;
     }
-    const moved = result.channelId !== reminder.channelId;
+    // 元のチャンネルが無くて移したときは以後も移した先に出す。持ち主の Bot に接続できなかった回は、この回だけほかに出して channel_id は変えない
+    const moved = result.channelId !== reminder.channelId && !result.unreachable;
     if (moved) reminders.moveChannel(id, result.channelId);
     const lateMinutes = Math.floor((now.getTime() - occurrence.at.getTime()) / MINUTE_MS);
     log(`リマインドを知らせました（#${id}、guild=${reminder.guildId}、遅れ ${lateMinutes} 分）`);
@@ -525,7 +535,8 @@ export class ReminderScheduler {
     taskTitle: string | undefined,
     occurrence: Occurrence,
     now: Date,
-    moved: boolean,
+    /** 頼んだチャンネル以外に出したときの注記（MOVED_NOTE・OWNER_UNREACHABLE_NOTE） */
+    note: string | undefined,
   ): OutgoingMessage {
     const { cfg } = this.deps;
     const lines = reminderBaseLines(reminder, taskTitle);
@@ -539,7 +550,7 @@ export class ReminderScheduler {
       );
     }
     if (occurrence.count >= 2) lines.push(`（ほか ${occurrence.count - 1} 回分は止まっていた間に過ぎました）`);
-    if (moved) lines.push(MOVED_NOTE);
+    if (note !== undefined) lines.push(note);
     const mention = cfg.ownerUserId;
     const limit = MESSAGE_MAX_LENGTH - (mention === undefined ? 0 : mentionPrefix(mention).length);
     return {
@@ -552,10 +563,12 @@ export class ReminderScheduler {
   /**
    * 頼んだチャンネル → そのサーバーの #tasks → #inbox の順に投稿する。頼んだチャンネルが削除済みのセッションなら最初から飛ばす。
    * 投稿に失敗して channelExists が false なら次の候補へ。あるのに失敗した・確かめられなければ投げる（この回はやり直す）。
+   * 足した人格が持ち主のチャンネルは、その Bot が接続していない・投稿に失敗したら、やり直さずに次の候補へ（注記は OWNER_UNREACHABLE_NOTE。
+   * channel_id は変えないので、次の回はまた持ち主の Bot で頼んだチャンネルに出す）。
    * どれも無ければ nowhere
    */
-  private async post(reminder: Reminder, build: (moved: boolean) => OutgoingMessage): Promise<PostResult> {
-    const { guildSettings, topicSessions, gateway } = this.deps;
+  private async post(reminder: Reminder, build: (note: string | undefined) => OutgoingMessage): Promise<PostResult> {
+    const { guildSettings, topicSessions, gateway, personas, log } = this.deps;
     const candidates: string[] = [];
     if (topicSessions.get(reminder.channelId)?.state !== "deleted") candidates.push(reminder.channelId);
     const settings = guildSettings.get(reminder.guildId);
@@ -564,23 +577,44 @@ export class ReminderScheduler {
         candidates.push(channelId);
       }
     }
+    let unreachable = false;
     for (const channelId of candidates) {
+      const byOtherPersona = personas !== undefined && personas.ownerOf(channelId) !== DEFAULT_PERSONA_ID;
+      if (byOtherPersona && !personas.ownerConnected(channelId)) {
+        log(`リマインドのチャンネルの Bot に接続していないため、ほかのチャンネルに出します（#${reminder.id}）`);
+        unreachable = true;
+        continue;
+      }
+      const note = channelId === reminder.channelId ? undefined : unreachable ? OWNER_UNREACHABLE_NOTE : MOVED_NOTE;
       try {
-        const messageId = await gateway.sendMessage(channelId, build(channelId !== reminder.channelId));
-        return { kind: "posted", channelId, messageId };
+        const messageId = await gateway.sendMessage(channelId, build(note));
+        return { kind: "posted", channelId, messageId, unreachable };
       } catch (error) {
+        if (byOtherPersona) {
+          log(`リマインドのチャンネルの Bot で投稿できなかったため、ほかのチャンネルに出します（#${reminder.id}）: ${describeError(error)}`);
+          unreachable = true;
+          continue;
+        }
         if (await gateway.channelExists(channelId)) throw error;
       }
     }
     return { kind: "nowhere" };
   }
 
-  /** 前の回のメッセージのボタンを外す（本文は DB から作り直し、メンションは付けない）。失敗は log だけ */
+  /**
+   * 前の回のメッセージのボタンを外す（本文は DB から作り直し、メンションは付けない）。メッセージを出したチャンネル（last_message_channel_id、無ければ channel_id）で、
+   * それを出した Bot（そのチャンネルの持ち主の Bot）で書き換える。その Bot（足した人格）が接続していなければ外さない。失敗は log だけ
+   */
   private async clearPreviousButtons(reminder: Reminder, taskTitle: string | undefined): Promise<void> {
-    const { gateway, log } = this.deps;
+    const { gateway, personas, log } = this.deps;
     if (reminder.lastMessageId === null) return;
+    const channelId = reminder.lastMessageChannelId ?? reminder.channelId;
+    if (personas !== undefined && personas.ownerOf(channelId) !== DEFAULT_PERSONA_ID && !personas.ownerConnected(channelId)) {
+      log(`前のリマインドを出した Bot に接続していないため、ボタンを外しませんでした（#${reminder.id}）`);
+      return;
+    }
     try {
-      await gateway.editMessage(reminder.channelId, reminder.lastMessageId, {
+      await gateway.editMessage(channelId, reminder.lastMessageId, {
         text: reminderBaseLines(reminder, taskTitle).join("\n"),
         components: [],
       });

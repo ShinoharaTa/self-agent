@@ -13,12 +13,14 @@ import { createHandler } from "../src/app/handler.ts";
 import { InboxRotator } from "../src/app/inbox-rotate.ts";
 import { type CommandHandler, registerCommands } from "../src/app/interactions.ts";
 import {
+  DISCONNECTED_CHECKS,
   PersonaStatus,
   personaDisconnectedNotice,
   personaReconnectedNotice,
   startPersonaGateways,
 } from "../src/app/persona-status.ts";
-import { PersonaRouter, POSTED_BY_OWNER_REPLY } from "../src/app/personas.ts";
+import { commandResponse, PersonaRouter, POSTED_BY_OWNER_REPLY } from "../src/app/personas.ts";
+import { MOVED_NOTE, OWNER_UNREACHABLE_NOTE, ReminderScheduler } from "../src/app/reminders.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { Scheduler } from "../src/app/scheduler.ts";
 import { rotatedSeed } from "../src/app/summary.ts";
@@ -92,10 +94,12 @@ function setup(t: TestContext, steps: { default?: RunResult[]; mika?: RunResult[
   const mika = tracked(mikaFake);
   const defaultRunner = new FakeRunner(steps.default ?? []);
   const mikaRunner = new FakeRunner(steps.mika ?? []);
+  /** mika の Bot が接続しているか */
+  const connection = { mika: true };
   const personas = new PersonaRouter({
     personas: [
-      { id: "default", name: "default", engine: "claude", runner: defaultRunner, gateway: defaultGateway },
-      { id: "mika", name: "ミカ", engine: "claude", runner: mikaRunner, gateway: mika.gateway },
+      { id: "default", name: "default", engine: "claude", runner: defaultRunner, gateway: defaultGateway, connected: () => true },
+      { id: "mika", name: "ミカ", engine: "claude", runner: mikaRunner, gateway: mika.gateway, connected: () => connection.mika },
     ],
     guildSettings,
     topicSessions,
@@ -105,7 +109,7 @@ function setup(t: TestContext, steps: { default?: RunResult[]; mika?: RunResult[
   const logs: string[] = [];
   const log = (line: string): void => void logs.push(line);
   const turn = { runner: defaultRunner, personas, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
-  return { db, ...stores, defaultGateway, mikaFake, mika, defaultRunner, mikaRunner, personas, turn, logs, log };
+  return { db, ...stores, defaultGateway, mikaFake, mika, defaultRunner, mikaRunner, connection, personas, turn, logs, log };
 }
 
 /** usage_log の人格とエンジン（古い順） */
@@ -422,7 +426,7 @@ test("新しいセッションは作った人格を記録する（省略は既�
   assert.equal(env.topicSessions.personaOf("unknown"), undefined);
 });
 
-/** guild-1 は /setup 済み（#system あり）、guild-2 は #system なし */
+/** guild-1 は /setup 済み（#system あり）、guild-2 は #system なし。どちらの Bot もログインが終わっている */
 function statusSetup(t: TestContext) {
   const db = tempDb(t);
   const { guildSettings } = createStores(db, () => NOW);
@@ -431,41 +435,85 @@ function statusSetup(t: TestContext) {
   const gateway = new FakeGateway({ allow: ["sendMessage"] });
   const logs: string[] = [];
   const connected = { mika: true, nana: true };
+  const settled = { mika: true, nana: true };
   const status = new PersonaStatus({
     cfg: { allowedGuildIds: ["guild-1", "guild-2"] },
     personas: [
-      { id: "mika", name: "ミカ", connected: () => connected.mika },
-      { id: "nana", name: "ナナ", connected: () => connected.nana },
+      { id: "mika", name: "ミカ", connected: () => connected.mika, loginSettled: () => settled.mika },
+      { id: "nana", name: "ナナ", connected: () => connected.nana, loginSettled: () => settled.nana },
     ],
     guildSettings,
     gateway,
     log: (line) => logs.push(line),
   });
   const posts = (): Array<[string, string]> => gateway.posts.map(({ channelId, message: posted }) => [channelId, posted.text]);
-  return { gateway, logs, connected, status, posts };
+  /** refresh を n 回 */
+  const refresh = async (n: number): Promise<void> => {
+    for (let i = 0; i < n; i++) await status.refresh();
+  };
+  return { gateway, logs, connected, settled, status, posts, refresh };
 }
 
-test("PersonaStatus: 接続できない・戻ったが変わったときだけ #system に知らせる（最初は接続できないときだけ）", async (t) => {
+test("PersonaStatus: 接続できない・戻ったが変わったときだけ #system に知らせる（最初は接続できないときだけ。接続できないのは続けて 2 回で）", async (t) => {
   const env = statusSetup(t);
   env.connected.nana = false;
-  await env.status.refresh();
+  await env.refresh(1);
+  assert.deepEqual(env.posts(), []);
+  await env.refresh(1);
+  assert.equal(DISCONNECTED_CHECKS, 2);
   assert.deepEqual(env.posts(), [["system-1", personaDisconnectedNotice("ナナ")]]);
   assert.deepEqual(env.logs, ["人格の Bot に接続できません（persona=nana）"]);
 
   // 変わらなければ知らせない
-  await env.status.refresh();
+  await env.refresh(1);
   assert.equal(env.posts().length, 1);
 
+  // 戻ったのは 1 回で知らせ、切れたのは続けて 2 回で知らせる
   env.connected.mika = false;
   env.connected.nana = true;
-  await env.status.refresh();
-  assert.deepEqual(env.posts().slice(1), [
-    ["system-1", personaDisconnectedNotice("ミカ")],
-    ["system-1", personaReconnectedNotice("ナナ")],
-  ]);
-  await env.status.refresh();
+  await env.refresh(1);
+  assert.deepEqual(env.posts().slice(1), [["system-1", personaReconnectedNotice("ナナ")]]);
+  await env.refresh(1);
+  assert.deepEqual(env.posts().slice(2), [["system-1", personaDisconnectedNotice("ミカ")]]);
+  await env.refresh(1);
   assert.equal(env.posts().length, 3);
-  assert.deepEqual(env.logs.slice(1), ["人格の Bot に接続できません（persona=mika）", "人格の Bot に接続しました（persona=nana）"]);
+  assert.deepEqual(env.logs.slice(1), ["人格の Bot に接続しました（persona=nana）", "人格の Bot に接続できません（persona=mika）"]);
+});
+
+test("PersonaStatus: 1 回だけ切れてすぐ戻った（ふだんの再接続）なら知らせない", async (t) => {
+  const env = statusSetup(t);
+  await env.refresh(1);
+  for (let i = 0; i < 3; i++) {
+    env.connected.mika = false;
+    await env.refresh(1);
+    env.connected.mika = true;
+    await env.refresh(1);
+  }
+  assert.deepEqual(env.posts(), []);
+  assert.deepEqual(env.logs, []);
+});
+
+test("PersonaStatus: ログインの途中は分からないものとして知らせず、終わってから数える", async (t) => {
+  const env = statusSetup(t);
+  env.connected.mika = false;
+  env.settled.mika = false;
+  await env.refresh(3);
+  assert.deepEqual(env.posts(), []);
+  // ログインに失敗した（終わったが接続していない）
+  env.settled.mika = true;
+  await env.refresh(1);
+  assert.deepEqual(env.posts(), []);
+  await env.refresh(1);
+  assert.deepEqual(env.posts(), [["system-1", personaDisconnectedNotice("ミカ")]]);
+
+  // ログインの途中のまま接続できたら（成功）、最初の結果は接続しているなので知らせない
+  const env2 = statusSetup(t);
+  env2.connected.mika = false;
+  env2.settled.mika = false;
+  await env2.refresh(2);
+  env2.connected.mika = true;
+  await env2.refresh(2);
+  assert.deepEqual(env2.posts(), []);
 });
 
 test("PersonaStatus: 投稿に失敗したサーバーには、状態が変わらなければ次の refresh でやり直す", async (t) => {
@@ -475,19 +523,20 @@ test("PersonaStatus: 投稿に失敗したサーバーには、状態が変わ�
   env.gateway.beforeSendMessage = () => {
     if (fail) throw new Error("通信エラー");
   };
-  await env.status.refresh();
+  await env.refresh(2);
   assert.deepEqual(env.posts(), []);
   assert.match(env.logs.at(-1) ?? "", /^人格の Bot の接続の知らせの投稿に失敗しました（guild=guild-1、persona=mika）/);
   fail = false;
-  await env.status.refresh();
+  await env.refresh(1);
   assert.deepEqual(env.posts(), [["system-1", personaDisconnectedNotice("ミカ")]]);
-  await env.status.refresh();
+  await env.refresh(1);
   assert.equal(env.posts().length, 1);
 });
 
 test("startPersonaGateways: ログインの失敗・時間切れは log だけで reject しない", async () => {
   const logs: string[] = [];
   const started: string[] = [];
+  const settled: string[] = [];
   const handlers = { onMessage: () => {}, onInteraction: () => {} };
   await startPersonaGateways(
     [
@@ -497,9 +546,10 @@ test("startPersonaGateways: ログインの失敗・時間切れは log だけ�
     ],
     handlers,
     (line) => logs.push(line),
-    20,
+    { timeoutMs: 20, onSettled: (id) => settled.push(id) },
   );
   assert.deepEqual(started, ["mika"]);
+  assert.deepEqual(settled.sort(), ["kai", "mika", "nana"]);
   assert.deepEqual(logs.sort(), [
     "人格の Bot に接続できませんでした（persona=kai）: 20 ms で終わりませんでした",
     "人格の Bot に接続できませんでした（persona=nana）: An invalid token was provided.",
@@ -562,4 +612,156 @@ test("tick: 足した人格があれば Bot の接続を確かめ、投げても
   assert.equal(refreshed, 2);
   assert.equal(rotated, 2);
   assert.deepEqual(logs, ["人格の Bot の接続の確認に失敗しました: 壊れた"]);
+});
+
+test("commandResponse: 持ち主の Bot の投稿に失敗したら、結果（ボタンを含む）を本人にだけの応答に出す", async (t) => {
+  const env = setup(t);
+  env.mikaFake.beforeSendMessage = () => {
+    throw new Error("Missing Access");
+  };
+  const responder = new FakeResponder();
+  const response = commandResponse(env.personas, "topic-m", responder, env.log);
+  const result = { text: "要約", components: [{ kind: "buttons" as const, buttons: [{ customId: "close:all:topic-m", label: "全部登録" }] }] };
+  await response.defer();
+  await response.show(result);
+  assert.deepEqual(responder.calls, [
+    { method: "defer", ephemeral: true },
+    { method: "reply", message: result },
+  ]);
+  assert.match(env.logs.at(-1) ?? "", /^持ち主の Bot で結果を投稿できなかったため、応答に出します: Missing Access/);
+});
+
+test("commandResponse: 持ち主の Bot で投稿できた後の応答の失敗は log だけ（投げない・上書きしない）", async (t) => {
+  const env = setup(t);
+  const responder = new FakeResponder();
+  responder.beforeReply = () => {
+    throw new Error("Unknown Webhook");
+  };
+  const response = commandResponse(env.personas, "topic-m", responder, env.log);
+  await response.defer();
+  await response.show({ text: "要約" });
+  assert.deepEqual(env.mikaFake.posts.map(({ channelId, message: posted }) => [channelId, posted.text]), [["topic-m", "要約"]]);
+  assert.deepEqual(responder.calls, [{ method: "defer", ephemeral: true }]);
+  assert.match(env.logs.at(-1) ?? "", /^結果を投稿した後の応答に失敗しました: Unknown Webhook/);
+});
+
+/** mika のセッション topic-m に頼んだリマインド。guild-1 は /setup 済み（#tasks は tasks-1、#inbox は inbox-1、どちらも既定の人格） */
+function reminderSetup(t: TestContext) {
+  const env = setup(t);
+  env.guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
+  env.guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
+  for (const channelId of ["topic-m", "topic-d", "tasks-1", "inbox-1"]) env.defaultGateway.alive.add(channelId);
+  const clock = { now: NOW };
+  const scheduler = new ReminderScheduler({
+    cfg: { ownerUserId: "owner-1", timeZone: "Asia/Tokyo" },
+    reminders: env.reminders,
+    tasks: env.tasks,
+    guildSettings: env.guildSettings,
+    topicSessions: env.topicSessions,
+    gateway: { ...env.personas.ownerPosts(), channelExists: (channelId) => env.defaultGateway.channelExists(channelId) },
+    personas: env.personas,
+    resolveChannel: createChannelResolver({ inboxChannelId: undefined }, env.guildSettings, env.topicSessions),
+    turnQueue: new KeyedSerialQueue(2),
+    turn: env.turn,
+    now: () => clock.now,
+    timers: { after: () => () => {} },
+    log: env.log,
+  });
+  const add = (channelId: string, rule?: string) =>
+    env.reminders.add({ guildId: "guild-1", channelId, kind: "notify", text: "薬を飲む", nextAt: NOW, ...(rule === undefined ? {} : { rule }) });
+  const posted = (gateway: FakeGateway): Array<[string, string]> =>
+    gateway.posts.map(({ channelId, message: posted }) => [channelId, posted.text]);
+  return { ...env, clock, scheduler, add, posted };
+}
+
+test("リマインド: 持ち主（足した人格）の Bot が接続していれば、その Bot が頼んだチャンネルに出す", async (t) => {
+  const env = reminderSetup(t);
+  const added = env.add("topic-m");
+  await env.scheduler.tick();
+  assert.deepEqual(env.posted(env.mikaFake), [["topic-m", "リマインド: 薬を飲む"]]);
+  assert.deepEqual(env.posted(env.defaultGateway), []);
+  assert.equal(env.reminders.get(added.id)?.status, "fired");
+});
+
+test("リマインド: 持ち主（足した人格）の Bot が接続していない・投稿に失敗したら、やり直さずに既定の人格の Bot で #tasks に出し、channel_id は変えない", async (t) => {
+  for (const reason of ["disconnected", "failed"] as const) {
+    const env = reminderSetup(t);
+    if (reason === "disconnected") env.connection.mika = false;
+    else {
+      env.mikaFake.beforeSendMessage = () => {
+        throw new Error("Missing Access");
+      };
+    }
+    const added = env.add("topic-m");
+    await env.scheduler.tick();
+    assert.deepEqual(env.posted(env.mikaFake), [], reason);
+    assert.deepEqual(env.posted(env.defaultGateway), [["tasks-1", `リマインド: 薬を飲む\n${OWNER_UNREACHABLE_NOTE}`]], reason);
+    const after = env.reminders.get(added.id);
+    // この回だけ #tasks に出し、頼んだチャンネルは変えない。出したメッセージの場所は覚える
+    assert.deepEqual(
+      [after?.channelId, after?.status, after?.lastMessageId, after?.lastMessageChannelId],
+      ["topic-m", "fired", env.defaultGateway.posts[0]?.messageId, "tasks-1"],
+      reason,
+    );
+    // 持ち主のチャンネルがあるかは確かめない（あっても Bot が使えないため）
+    assert.deepEqual(env.defaultGateway.callsOf("channelExists"), [], reason);
+  }
+});
+
+test("リマインド: 繰り返しの次の回は、持ち主の Bot が戻っていればまた頼んだチャンネルに出し、前の回のボタンは出した Bot で外す", async (t) => {
+  const env = reminderSetup(t);
+  const added = env.add("topic-m", "daily@09:00");
+
+  // 1 回目: mika の Bot が切れているので既定の人格の Bot で #tasks に
+  env.connection.mika = false;
+  await env.scheduler.tick();
+  assert.deepEqual(env.posted(env.defaultGateway).map(([channelId]) => channelId), ["tasks-1"]);
+
+  // 2 回目: mika の Bot が戻った。topic-m に mika の Bot で出し、#tasks の前の回のボタンは既定の人格の Bot で外す
+  env.connection.mika = true;
+  env.clock.now = new Date(NOW.getTime() + 24 * 60 * 60 * 1000);
+  await env.scheduler.tick();
+  assert.deepEqual(env.posted(env.mikaFake).map(([channelId]) => channelId), ["topic-m"]);
+  assert.deepEqual(
+    env.defaultGateway.edits.map(({ channelId, messageId, message: edited }) => [channelId, messageId, edited.components]),
+    [["tasks-1", env.defaultGateway.posts[0]?.messageId, []]],
+  );
+  assert.deepEqual(env.mikaFake.edits, []);
+  const second = env.reminders.get(added.id);
+  assert.deepEqual([second?.channelId, second?.lastMessageChannelId], ["topic-m", "topic-m"]);
+
+  // 3 回目: mika の Bot がまた切れた。#tasks に出し、topic-m の前の回のボタンは（mika の Bot が使えないので）外さない
+  env.connection.mika = false;
+  env.clock.now = new Date(NOW.getTime() + 2 * 24 * 60 * 60 * 1000);
+  await env.scheduler.tick();
+  assert.deepEqual(env.posted(env.defaultGateway).map(([channelId]) => channelId), ["tasks-1", "tasks-1"]);
+  assert.deepEqual(env.mikaFake.edits, []);
+  assert.equal(env.defaultGateway.edits.length, 1);
+  assert.ok(env.logs.includes(`前のリマインドを出した Bot に接続していないため、ボタンを外しませんでした（#${added.id}）`));
+
+  // 4 回目: 戻った。topic-m に出し、#tasks の前の回のボタンを既定の人格の Bot で外す
+  env.connection.mika = true;
+  env.clock.now = new Date(NOW.getTime() + 3 * 24 * 60 * 60 * 1000);
+  await env.scheduler.tick();
+  assert.deepEqual(env.posted(env.mikaFake).map(([channelId]) => channelId), ["topic-m", "topic-m"]);
+  assert.deepEqual(env.defaultGateway.edits.at(-1)?.channelId, "tasks-1");
+  assert.deepEqual(env.defaultGateway.edits.at(-1)?.messageId, env.defaultGateway.posts[1]?.messageId);
+  assert.deepEqual(env.mikaFake.edits, []);
+});
+
+test("リマインド: 既定の人格のチャンネルは今までどおり（あるのに投稿に失敗したら移らずに次の tick でやり直す。無ければ #tasks へ）", async (t) => {
+  const env = reminderSetup(t);
+  env.defaultGateway.beforeSendMessage = (channelId) => {
+    if (channelId === "topic-d") throw new Error("Missing Access");
+  };
+  const added = env.add("topic-d");
+  await env.scheduler.tick();
+  assert.deepEqual(env.posted(env.defaultGateway), []);
+  assert.equal(env.reminders.get(added.id)?.status, "active");
+
+  env.defaultGateway.alive.delete("topic-d");
+  await env.scheduler.tick();
+  assert.deepEqual(env.posted(env.defaultGateway), [["tasks-1", `リマインド: 薬を飲む\n${MOVED_NOTE}`]]);
+  // 元のチャンネルが無いときは今までどおり以後も #tasks に出す
+  assert.deepEqual([env.reminders.get(added.id)?.channelId, env.reminders.get(added.id)?.lastMessageChannelId], ["tasks-1", "tasks-1"]);
 });

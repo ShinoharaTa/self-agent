@@ -251,7 +251,7 @@ export function createCloseCommand(deps: CloseDeps): CommandHandler {
         guildId,
         interaction.channelId,
         responder,
-        commandResponse(deps.personas, interaction.channelId, responder),
+        commandResponse(deps.personas, interaction.channelId, responder, deps.log),
       );
     },
   };

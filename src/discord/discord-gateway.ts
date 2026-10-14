@@ -168,7 +168,7 @@ export class DiscordGateway implements Gateway {
   private readonly tokenEnv: string;
   /** log の前置き（既定の人格は今までどおり `discord:`、足した人格は `discord(<id>):`） */
   private readonly prefix: string;
-  /** Discord に接続しているか（ready・再開で true、切断・再接続中・無効化で false。start 前とログインの失敗も false） */
+  /** Discord に接続しているか（ready・再開で true、切断・再接続中で false。start 前とログインの失敗も false） */
   private isConnected = false;
 
   constructor(allowedGuildIds: readonly string[], options: DiscordGatewayOptions = {}) {
@@ -212,9 +212,6 @@ export class DiscordGateway implements Gateway {
       this.isConnected = false;
     });
     this.client.on(Events.ShardReconnecting, () => {
-      this.isConnected = false;
-    });
-    this.client.on(Events.Invalidated, () => {
       this.isConnected = false;
     });
     this.client.on(Events.GuildCreate, (guild) => {
