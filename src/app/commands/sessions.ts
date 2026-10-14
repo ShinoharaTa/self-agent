@@ -1,3 +1,4 @@
+import type { Config, PersonaConfig } from "../../config.ts";
 import type { SessionState } from "../../store/guild-settings.ts";
 import type { TopicSession, TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { CommandHandler } from "../interactions.ts";
@@ -14,7 +15,9 @@ export const SESSION_LIST_LIMITS: Readonly<Record<SessionState, number>> = { act
 const HOUR_MS = 60 * 60 * 1000;
 
 export type SessionsDeps = {
-  topicSessions: Pick<TopicSessionStore, "listByState">;
+  topicSessions: Pick<TopicSessionStore, "listByState" | "personaOf">;
+  /** personas は足した人格（あれば、その人格のセッションに表示名を添える）。無ければ今と同じ */
+  cfg?: Partial<Pick<Config, "personas">>;
 };
 
 /**
@@ -47,21 +50,30 @@ export function formatElapsed(fromIso: string, now: Date): string {
   return `${Math.floor(hours / 24)} 日前`;
 }
 
-/** 一覧の 1 行: `<#id> 題名（最終 n 時間前）` */
-export function sessionLine(session: TopicSession, now: Date): string {
-  return `<#${session.channelId}> ${session.title}（最終 ${formatElapsed(session.lastActivityAt, now)}）`;
+/** 一覧の 1 行: `<#id> 題名（最終 n 時間前）`。personaName（足した人格のセッション）があれば `<#id> 題名（<表示名>・最終 n 時間前）` */
+export function sessionLine(session: TopicSession, now: Date, personaName?: string): string {
+  const persona = personaName === undefined ? "" : `${personaName}・`;
+  return `<#${session.channelId}> ${session.title}（${persona}最終 ${formatElapsed(session.lastActivityAt, now)}）`;
 }
 
 /**
  * 状態ごとの見出しの下にセッションを並べた本文（/sessions、ホームパネルの [待ちのセッション]）。0 件の見出しには「なし」。
- * 2000 字を超えるなら末尾から削って「ほか n 件」を足す（削って空になった見出しは出さない）
+ * 2000 字を超えるなら末尾から削って「ほか n 件」を足す（削って空になった見出しは出さない）。
+ * 足した人格（personas）があれば、その人格のセッションの行に表示名を添える（既定の人格のセッションは今のまま）
  */
 export function sessionListText(
   topicSessions: SessionsDeps["topicSessions"],
   guildId: string,
   states: readonly SessionState[],
   now: Date,
+  personas: readonly Pick<PersonaConfig, "id" | "name">[] = [],
 ): string {
+  const names = new Map(personas.map((persona) => [persona.id, persona.name]));
+  const personaName = (session: TopicSession): string | undefined => {
+    if (names.size === 0) return undefined;
+    const id = topicSessions.personaOf(session.channelId);
+    return id === undefined ? undefined : names.get(id);
+  };
   const lists = states.map((state) => ({
     state,
     sessions: topicSessions.listByState(guildId, state, SESSION_LIST_LIMITS[state]),
@@ -70,7 +82,9 @@ export function sessionListText(
   return fitItems(items, (shown, omitted) => {
     const blocks: string[] = [];
     for (const { state, sessions } of lists) {
-      const lines = shown.filter((item) => item.state === state).map((item) => sessionLine(item.session, now));
+      const lines = shown
+        .filter((item) => item.state === state)
+        .map((item) => sessionLine(item.session, now, personaName(item.session)));
       // 削って空になった見出しは出さない（元から 0 件なら「なし」）
       if (lines.length === 0 && sessions.length > 0) continue;
       blocks.push([`**${stateCategoryName(state)}**`, ...(lines.length === 0 ? [EMPTY_SECTION_TEXT] : lines)].join("\n"));
@@ -82,14 +96,20 @@ export function sessionListText(
 
 /** `/sessions`: 進行中・待ち・完了（最近の分）のセッションをリンク付きで本人にだけ表示する */
 export function createSessionsCommand(deps: SessionsDeps): CommandHandler {
-  const { topicSessions } = deps;
+  const { topicSessions, cfg } = deps;
   return {
     def: { name: "sessions", description: "進行中・待ち・完了（最近の分）のセッションの一覧を表示します" },
     async handle(interaction, responder) {
       // 許可サーバー以外（DM を含む）は interactions.ts で弾いている
       const guildId = interaction.guildId;
       if (guildId === null) throw new Error("サーバー外で /sessions が呼ばれました");
-      const text = sessionListText(topicSessions, guildId, ["active", "waiting", "done"], interaction.createdAt);
+      const text = sessionListText(
+        topicSessions,
+        guildId,
+        ["active", "waiting", "done"],
+        interaction.createdAt,
+        cfg?.personas,
+      );
       await responder.reply({ text, ephemeral: true });
     },
   };

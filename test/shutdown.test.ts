@@ -393,6 +393,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
     guildSettings: {
       get: () => assert.fail("想定外の呼び出し"),
       listStateCategories: () => assert.fail("想定外の呼び出し"),
+      personaInbox: () => assert.fail("想定外の呼び出し"),
     },
     sessions: { delete: () => assert.fail("想定外の呼び出し") },
     seeds: { delete: () => assert.fail("想定外の呼び出し") },

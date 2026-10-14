@@ -106,18 +106,6 @@ const personaGateways = config.personas.map((persona) => ({
 const resolveChannel = createChannelResolver(config, guildSettings, topicSessions);
 // /setup・/new・session_open 専用のキュー（ターンの同時実行枠とは分ける）
 const layoutQueue = new KeyedSerialQueue(1);
-// #inbox の session_open: /new と同じキュー（layoutQueue）で作る
-const openSession = createOpenSession({
-  cfg: config,
-  resolveChannel,
-  gateway,
-  guildSettings,
-  topicSessions,
-  seeds,
-  queue: layoutQueue,
-  now,
-  log,
-});
 // project_open: 配信が無効（設定が無い・待ち受けに失敗した）なら not_configured（staticServer は下で作る）。
 // project_files: このチャンネルのプロジェクトのファイルを .trash に移す・移す・作り直す・戻す
 const projectTools = {
@@ -135,7 +123,7 @@ const devLogSink = createDevLogSink(config);
 if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${config.devLogDays} 日で消します）`);
 // ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ（全人格で共通）。
 // ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中で、容量の上限まで）に絞る。
-// kbMemory は下で作る（run のときに読む）
+// openSession・kbMemory は下で作る（run のときに読む）
 const createMcpServer = (context?: RunContext) =>
   createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, reminderTools, context);
 const runnerFiles = { projects, projectsDir, disk: diskQuota };
@@ -157,7 +145,7 @@ const personaRuntimes: PersonaRuntime[] = [
     const systemPrompt = systemPrompts.get(persona.id);
     if (systemPrompt === undefined) throw new Error(`人格 ${persona.id} のシステムプロンプトがありません`);
     const personaRunner = new SdkAgentRunner(
-      { ...config, ...modelAndEffort, systemPrompt },
+      { ...config, ...modelAndEffort, systemPrompt, persona: persona.id },
       createMcpServer,
       runnerFiles,
       log,
@@ -177,6 +165,19 @@ const personaRuntimes: PersonaRuntime[] = [
 // チャンネルの持ち主の人格（persona_channels・sessions.persona）への振り分け。返事などは持ち主の Bot（ownerPosts）、管理の操作は既定の人格の Bot（gateway）
 const personas = new PersonaRouter({ personas: personaRuntimes, guildSettings, topicSessions });
 const ownerPosts = personas.ownerPosts();
+// #inbox・#<NAME> の session_open: /new と同じキュー（layoutQueue）で作る。作るセッションの持ち主は呼ばれたチャンネルの持ち主の人格で、最初の投稿はその人格の Bot
+const openSession = createOpenSession({
+  cfg: config,
+  resolveChannel,
+  gateway,
+  personas,
+  guildSettings,
+  topicSessions,
+  seeds,
+  queue: layoutQueue,
+  now,
+  log,
+});
 // ナレッジベースと記憶のツール: kb_delete の確認と記憶の変更の知らせは run のチャンネルに、その持ち主の Bot で投稿する
 const kbMemory = {
   knowledge,
@@ -312,6 +313,8 @@ const scheduler = new Scheduler({
   seeds,
   channelOps,
   gateway,
+  // 待ちに移した知らせはチャンネルの持ち主の Bot で出す
+  personas,
   inboxRotator,
   pruneDevLogs: () => pruneDevLogs(devLogDir(config.dataDir), now(), config.timeZone, config.devLogDays),
   pruneProjectTrash: () => pruneProjectTrash(projectsDir, now()),

@@ -119,7 +119,7 @@ test("[削除する]: 完了のままなら保留してチャンネルを削除�
     assert.ok(!env.logs[0]!.includes("topic-1"), label);
 
     // 削除した後は発言を受け付けない
-    const resolve = createChannelResolver({ inboxChannelId: undefined }, { get: () => undefined }, env.topicSessions);
+    const resolve = createChannelResolver({ inboxChannelId: undefined }, { get: () => undefined, entryChannel: () => undefined }, env.topicSessions);
     assert.equal(resolve("guild-1", "topic-1"), null, label);
   }
 });

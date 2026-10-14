@@ -56,6 +56,8 @@ export type DevLogRecord = {
   guildId: string | null;
   channelId: string | null;
   kind: RunContext["kind"] | null;
+  /** run を動かした人格の id。以前の記録には無い（既定の人格のもの） */
+  persona?: string;
   model: string;
   effort: string | null;
   maxTurns: number;

@@ -3,8 +3,9 @@
 // 直近の成功したターンの最後のステップの入力が SELF_AGENT_INBOX_MAX_INPUT_TOKENS を超えたとき（サイズ）に、そのチャンネルの会話を要約して残し、
 // SDK セッションを捨てて次の発言から新しいセッションにする。要約は seed として次の最初のターンに付ける。
 // 要約はツールを足さず、要約を頼むターンの返答本文を使う（ツール集合を変えるとキャッシュが全セッションで外れるため）。
-// /renew（rotateNow）は時期の判定を飛ばして同じ切り替えをすぐに行う
-import type { Config } from "../config.ts";
+// /renew（rotateNow）は時期の判定を飛ばして同じ切り替えをすぐに行う。
+// 足した人格の #<NAME>（#inbox と同じ扱い）も、その人格の要約・切り替えの日と時刻で同じように切り替える（#tasks の後に人格の設定の順）
+import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { Gateway } from "../discord/gateway.ts";
 import type { GuildSettings, GuildSettingsStore } from "../store/guild-settings.ts";
 import type { InboxSummaryStore, SummaryChannelKind } from "../store/inbox-summaries.ts";
@@ -33,8 +34,11 @@ export const ROTATE_RETRY_MS = 60 * 60 * 1000;
 /** 要約を頼むターンの prompt（チャンネルの種類ごと） */
 const ROTATE_PROMPTS: Record<SummaryChannelKind, string> = { inbox: ROTATE_PROMPT, tasks: TASKS_ROTATE_PROMPT };
 
-/** 1 つのサーバーの中で切り替える順 */
+/** 1 つのサーバーの中で、既定の人格のチャンネルを切り替える順（足した人格の #<NAME> はこの後） */
 const ROTATED_KINDS: readonly SummaryChannelKind[] = ["inbox", "tasks"];
+
+/** 切り替えるチャンネルの種類と、その持ち主の人格 */
+type RotateSlot = { kind: SummaryChannelKind; persona: string };
 
 /** 切り替える理由。日次（rotateAt を過ぎた）か、直近の成功したターンの最後のステップの入力の大きさか、/renew */
 type RotateReason = { kind: "daily" } | { kind: "size"; contextTokens: number } | { kind: "manual" };
@@ -45,10 +49,12 @@ type RotateReason = { kind: "daily" } | { kind: "size"; contextTokens: number } 
  */
 export type RotateNowResult = "rotated" | "rotated_fresh" | "no_conversation" | "not_set_up" | "failed";
 
-/** 切り替えるチャンネル（/setup 済みのサーバーの #inbox か #tasks）と、前回の切り替え */
+/** 切り替えるチャンネル（/setup 済みのサーバーの #inbox か #tasks、足した人格の #<NAME>）と、前回の切り替え */
 type RotateTarget = {
   guildId: string;
   kind: SummaryChannelKind;
+  /** チャンネルの持ち主の人格（#<NAME> はその人格、#inbox・#tasks は既定の人格） */
+  persona: string;
   channelId: string;
   /** 前回の切り替えの日（timeZone の日付、YYYY-MM-DD）。まだ切り替えていなければ null */
   rotatedDate: string | null;
@@ -57,9 +63,10 @@ type RotateTarget = {
 };
 
 export type InboxRotatorDeps = {
-  cfg: Pick<Config, "allowedGuildIds" | "timeZone" | "inboxRotateAt" | "inboxMaxInputTokens">;
-  /** #inbox・#tasks のチャンネルと、最後に切り替えた日・時刻（時刻を「前回の切り替え」とする） */
-  guildSettings: Pick<GuildSettingsStore, "get" | "setInboxRotated" | "setTasksRotated">;
+  /** personas は足した人格（その #<NAME> も切り替える）。無ければ #inbox・#tasks だけ */
+  cfg: Pick<Config, "allowedGuildIds" | "timeZone" | "inboxRotateAt" | "inboxMaxInputTokens"> & Partial<Pick<Config, "personas">>;
+  /** #inbox・#tasks・#<NAME> のチャンネルと、最後に切り替えた日・時刻（時刻を「前回の切り替え」とする） */
+  guildSettings: Pick<GuildSettingsStore, "get" | "personaInbox" | "setInboxRotated" | "setTasksRotated">;
   /** 切り替えたときの要約（チャンネルの種類ごと） */
   inboxSummaries: Pick<InboxSummaryStore, "add" | "latest">;
   /** 発言のターンと同じキュー（key は channelId）。要約のターンが発言のターンと重ならないようにする */
@@ -88,35 +95,48 @@ function localMinutes(at: Date, timeZone: string): number {
   return part("hour") * 60 + part("minute");
 }
 
-/** 失敗の時刻を覚える key（サーバーとチャンネルの種類ごと） */
-function failureKey(guildId: string, kind: SummaryChannelKind): string {
-  return `${kind}:${guildId}`;
+/** 失敗の時刻を覚える key（サーバーと人格とチャンネルの種類ごと。既定の人格は今までどおり種類とサーバーだけ） */
+function failureKey(guildId: string, kind: SummaryChannelKind, persona: string): string {
+  return persona === DEFAULT_PERSONA_ID ? `${kind}:${guildId}` : `${kind}:${persona}:${guildId}`;
+}
+
+/** log に出すチャンネルの名前（#inbox・#tasks。足した人格の #<NAME> は `#inbox（人格 <id>）`） */
+function channelLabel(kind: SummaryChannelKind, persona: string): string {
+  return persona === DEFAULT_PERSONA_ID ? `#${kind}` : `#${kind}（人格 ${persona}）`;
 }
 
 export class InboxRotator {
   private readonly deps: InboxRotatorDeps;
-  /** 切り替えに失敗した時刻（サーバーとチャンネルの種類ごと。プロセス内でだけ覚える） */
+  /** 切り替えに失敗した時刻（サーバーと人格とチャンネルの種類ごと。プロセス内でだけ覚える） */
   private readonly failedAt = new Map<string, number>();
 
   constructor(deps: InboxRotatorDeps) {
     this.deps = deps;
   }
 
+  /** 切り替えるチャンネルの順（既定の人格の #inbox → #tasks → 足した人格の #<NAME> を設定の順に） */
+  private slots(): RotateSlot[] {
+    return [
+      ...ROTATED_KINDS.map((kind) => ({ kind, persona: DEFAULT_PERSONA_ID })),
+      ...(this.deps.cfg.personas ?? []).map((persona): RotateSlot => ({ kind: "inbox", persona: persona.id })),
+    ];
+  }
+
   /**
    * 許可サーバーのうち /setup 済み（DB に #inbox・#tasks がある）のサーバーについて、切り替えの時期ならそのチャンネルを切り替える
-   * （1 サーバーずつ、#inbox → #tasks の順に 1 チャンネルずつ）。env の #inbox で受け付けているサーバーは対象外。
+   * （1 サーバーずつ、#inbox → #tasks → #<NAME> の順に 1 チャンネルずつ）。env の #inbox で受け付けているサーバーは対象外。
    * 失敗から ROTATE_RETRY_MS 経っていないチャンネルは飛ばす。stopping が true を返したら、まだ始めていない切り替えは行わない。
    * reject しない（失敗は log に出す）
    */
   async rotateDue(stopping: () => boolean): Promise<void> {
     const { cfg, guildSettings, turnQueue, now, log } = this.deps;
     for (const guildId of cfg.allowedGuildIds) {
-      for (const kind of ROTATED_KINDS) {
+      for (const { kind, persona } of this.slots()) {
         if (stopping()) return;
-        const key = failureKey(guildId, kind);
+        const key = failureKey(guildId, kind, persona);
         try {
           const settings = guildSettings.get(guildId);
-          const target = settings === undefined ? undefined : this.targetOf(settings, kind);
+          const target = settings === undefined ? undefined : this.targetOf(settings, kind, persona);
           if (target === undefined) continue;
           // まだ一度も切り替えていない（/setup 直後・更新直後）なら、今を基準として記録するだけにする。
           // 記録が無いまま判定すると、最初の会話の直後に日次の切り替えが走ってしまう
@@ -132,41 +152,48 @@ export class InboxRotator {
           await turnQueue.run(target.channelId, () => this.rotate(target, reason, stopping));
         } catch (error) {
           this.failedAt.set(key, now().getTime());
-          log(`#${kind} の切り替えに失敗しました（guild=${guildId}）: ${describeError(error)}`);
+          log(`${channelLabel(kind, persona)} の切り替えに失敗しました（guild=${guildId}）: ${describeError(error)}`);
         }
       }
     }
   }
 
   /**
-   * /renew: そのサーバーの #inbox か #tasks を今すぐ切り替える。日次・サイズの判定と、失敗の後の待ち（ROTATE_RETRY_MS）は飛ばし、
+   * /renew: そのサーバーの #inbox か #tasks（persona が足した人格ならその #<NAME>）を今すぐ切り替える。日次・サイズの判定と、失敗の後の待ち（ROTATE_RETRY_MS）は飛ばし、
    * 発言と同じキューの中で rotateDue と同じ切り替えを行う。チャンネルへの知らせは投稿しない（呼び出し側がコマンドの返信で伝える）。
    * reject しない（例外は失敗の時刻を覚えて log に出し、failed を返す）
    */
-  async rotateNow(guildId: string, kind: SummaryChannelKind): Promise<RotateNowResult> {
+  async rotateNow(guildId: string, kind: SummaryChannelKind, persona: string = DEFAULT_PERSONA_ID): Promise<RotateNowResult> {
     const { guildSettings, turnQueue, now, log } = this.deps;
     try {
       const settings = guildSettings.get(guildId);
-      const target = settings === undefined ? undefined : this.targetOf(settings, kind);
+      const target = settings === undefined ? undefined : this.targetOf(settings, kind, persona);
       if (target === undefined) return "not_set_up";
       // 停止の判定は渡さないので、rotate が何もせずに終わる（undefined）ことは無い
       const result = await turnQueue.run(target.channelId, () => this.rotate(target, { kind: "manual" }, () => false));
       return result ?? "failed";
     } catch (error) {
-      this.failedAt.set(failureKey(guildId, kind), now().getTime());
-      log(`#${kind} の切り替えに失敗しました（guild=${guildId}）: ${describeError(error)}`);
+      this.failedAt.set(failureKey(guildId, kind, persona), now().getTime());
+      log(`${channelLabel(kind, persona)} の切り替えに失敗しました（guild=${guildId}）: ${describeError(error)}`);
       return "failed";
     }
   }
 
-  /** そのサーバーの #inbox・#tasks と前回の切り替え。チャンネルがまだ無ければ undefined */
-  private targetOf(settings: GuildSettings, kind: SummaryChannelKind): RotateTarget | undefined {
+  /** そのサーバーの #inbox・#tasks・#<NAME> と前回の切り替え。チャンネルがまだ無ければ undefined */
+  private targetOf(settings: GuildSettings, kind: SummaryChannelKind, persona: string): RotateTarget | undefined {
     const { guildId } = settings;
+    if (persona !== DEFAULT_PERSONA_ID) {
+      // 足した人格の入口は #<NAME>（kind は inbox）だけ
+      const inbox = kind === "inbox" ? this.deps.guildSettings.personaInbox(guildId, persona) : undefined;
+      if (inbox === undefined || inbox.channelId === null) return undefined;
+      return { guildId, kind, persona, channelId: inbox.channelId, rotatedDate: inbox.rotatedDate, rotatedAt: inbox.rotatedAt };
+    }
     if (kind === "inbox") {
       if (settings.inboxChannelId === null) return undefined;
       return {
         guildId,
         kind,
+        persona,
         channelId: settings.inboxChannelId,
         rotatedDate: settings.inboxRotatedDate,
         rotatedAt: settings.inboxRotatedAt,
@@ -178,23 +205,30 @@ export class InboxRotator {
     return {
       guildId,
       kind,
+      persona,
       channelId: settings.tasksChannelId,
       rotatedDate: rotatedAt === null ? null : formatDate(new Date(rotatedAt), this.deps.cfg.timeZone),
       rotatedAt,
     };
   }
 
-  /** 切り替えた日（#inbox だけ記録する）と時刻を記録する */
-  private markRotated(target: Pick<RotateTarget, "guildId" | "kind">, date: string, at: Date): void {
+  /** 切り替えた日（#inbox・#<NAME> だけ記録する）と時刻を記録する */
+  private markRotated(target: Pick<RotateTarget, "guildId" | "kind" | "persona">, date: string, at: Date): void {
     const { guildSettings } = this.deps;
-    if (target.kind === "inbox") guildSettings.setInboxRotated(target.guildId, date, at);
+    if (target.kind === "inbox") guildSettings.setInboxRotated(target.guildId, date, at, target.persona);
     else guildSettings.setTasksRotated(target.guildId, at);
   }
 
-  /** 前回の切り替えの時刻（guild_settings の inbox_rotated_at・tasks_rotated_at）。まだ記録が無ければ undefined（全履歴を見る） */
-  private lastRotatedAt(target: Pick<RotateTarget, "guildId" | "kind">): Date | undefined {
-    const settings = this.deps.guildSettings.get(target.guildId);
-    const rotatedAt = (target.kind === "inbox" ? settings?.inboxRotatedAt : settings?.tasksRotatedAt) ?? null;
+  /** 前回の切り替えの時刻（persona_channels の rotated_at）。まだ記録が無ければ undefined（全履歴を見る） */
+  private lastRotatedAt(target: Pick<RotateTarget, "guildId" | "kind" | "persona">): Date | undefined {
+    const { guildSettings } = this.deps;
+    let rotatedAt: string | null;
+    if (target.persona !== DEFAULT_PERSONA_ID) {
+      rotatedAt = guildSettings.personaInbox(target.guildId, target.persona)?.rotatedAt ?? null;
+    } else {
+      const settings = guildSettings.get(target.guildId);
+      rotatedAt = (target.kind === "inbox" ? settings?.inboxRotatedAt : settings?.tasksRotatedAt) ?? null;
+    }
     return rotatedAt === null ? undefined : new Date(rotatedAt);
   }
 
@@ -239,7 +273,8 @@ export class InboxRotator {
     const { guildId, kind, channelId } = target;
     // 要約のターンはチャンネルの持ち主の人格で動かし、要約もその人格のものとして残す
     const persona = turnPersonaOf(turn, channelId);
-    const key = failureKey(guildId, kind);
+    const key = failureKey(guildId, kind, target.persona);
+    const label = channelLabel(kind, target.persona);
     // キュー待ちの間に停止を始めていたら何もしない（次の起動の tick でやり直す）
     if (stopping()) return undefined;
     const today = formatDate(now(), cfg.timeZone);
@@ -251,7 +286,7 @@ export class InboxRotator {
     if (sessionId === undefined || noTurns) {
       this.markRotated(target, today, now());
       this.failedAt.delete(key);
-      log(`#${kind} に前回の切り替えからの会話が無いため、要約せずに切り替えた日だけ記録しました（guild=${guildId}）`);
+      log(`${label} に前回の切り替えからの会話が無いため、要約せずに切り替えた日だけ記録しました（guild=${guildId}）`);
       return "no_conversation";
     }
 
@@ -272,7 +307,7 @@ export class InboxRotator {
       this.failedAt.delete(key);
       const detail =
         reason.kind === "daily" ? "日次" : reason.kind === "manual" ? "/renew" : `直近の入力 ${reason.contextTokens} トークン`;
-      log(`#${kind} の会話を要約して新しいセッションに切り替えました（guild=${guildId}、${detail}）`);
+      log(`${label} の会話を要約して新しいセッションに切り替えました（guild=${guildId}、${detail}）`);
       if (reason.kind !== "manual") await this.notify(target, ROTATED_NOTICE);
       return "rotated";
     }
@@ -287,7 +322,7 @@ export class InboxRotator {
       // 実機の文言の確認のため、元のエラー文も出す
       const carried = last === undefined ? "前回の要約なし" : "前回の要約を引き継ぎ";
       log(
-        `#${kind} の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=${guildId}、${carried}）: ${result.errorMessage}`,
+        `${label} の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=${guildId}、${carried}）: ${result.errorMessage}`,
       );
       if (reason.kind !== "manual") await this.notify(target, last === undefined ? ROTATED_NOTICE_FRESH : ROTATED_NOTICE);
       return last === undefined ? "rotated_fresh" : "rotated";
@@ -298,7 +333,7 @@ export class InboxRotator {
       sessions.set(channelId, result.sessionId);
     }
     this.failedAt.set(key, now().getTime());
-    log(`#${kind} の要約に失敗したため、切り替えませんでした（guild=${guildId}）。1 時間後以降にやり直します: ${result.errorMessage}`);
+    log(`${label} の要約に失敗したため、切り替えませんでした（guild=${guildId}）。1 時間後以降にやり直します: ${result.errorMessage}`);
     return "failed";
   }
 
@@ -307,7 +342,7 @@ export class InboxRotator {
     try {
       await this.deps.gateway.sendMessage(target.channelId, { text });
     } catch (error) {
-      this.deps.log(`#${target.kind} への切り替えの知らせの投稿に失敗しました（guild=${target.guildId}）: ${describeError(error)}`);
+      this.deps.log(`${channelLabel(target.kind, target.persona)} への切り替えの知らせの投稿に失敗しました（guild=${target.guildId}）: ${describeError(error)}`);
     }
   }
 }

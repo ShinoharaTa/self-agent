@@ -47,7 +47,7 @@ export function createHomeComponent(deps: HomeDeps): ComponentHandler {
         return;
       }
       if (interaction.kind === "button" && action === "waiting") {
-        const text = sessionListText(topicSessions, guildId, ["waiting"], interaction.createdAt);
+        const text = sessionListText(topicSessions, guildId, ["waiting"], interaction.createdAt, deps.cfg?.personas);
         await responder.reply({ text, ephemeral: true });
         return;
       }

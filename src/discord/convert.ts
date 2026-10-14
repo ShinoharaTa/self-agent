@@ -162,6 +162,7 @@ export function toCommandData(def: CommandDef): ChatInputApplicationCommandData 
           type: COMMAND_OPTION_TYPE.string,
           minLength: option.minLength,
           maxLength: option.maxLength,
+          ...(option.choices === undefined ? {} : { choices: option.choices }),
         };
       case "integer":
         return { ...common, type: COMMAND_OPTION_TYPE.integer };

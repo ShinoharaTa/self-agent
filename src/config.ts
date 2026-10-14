@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { normalizeChannelName } from "./discord/channel-name.ts";
 
 /** Agent SDK の effort と同じ値。config は SDK に依存させないので独自に定義する */
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -200,10 +201,13 @@ export function loadDataConfig(env: NodeJS.ProcessEnv = process.env): Pick<Confi
 
 const PERSONA_ID = /^[a-z0-9]{1,12}$/;
 const PERSONA_NAME_MAX_LENGTH = 20;
+/** /setup が self-agent カテゴリに作るチャンネルの名前。足した人格の #<NAME> はこれと同じ名前にできない */
+const RESERVED_CHANNEL_NAMES: readonly string[] = ["inbox", "tasks", "system"];
 
 /**
  * SELF_AGENT_PERSONAS と人格ごとの変数を読む（docs/plan/personas.md §1）。エラーには変数名だけを出し、値（トークンを含む）は出さない。
- * 確かめること: id の形・重複・予約語（default）、トークンの欠け、同じトークンを 2 人格に（既定の人格の DISCORD_TOKEN を含む）、表示名の長さ、エンジン、effort
+ * 確かめること: id の形・重複・予約語（default）、トークンの欠け、同じトークンを 2 人格に（既定の人格の DISCORD_TOKEN を含む）、表示名の長さ、
+ * 表示名から作るチャンネル名（#<NAME>）が空にならない・inbox・tasks・system と重ならない・人格どうしで重ならない、エンジン、effort
  */
 function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[] {
   const list = nonEmpty(env.SELF_AGENT_PERSONAS);
@@ -228,6 +232,8 @@ function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[
   const tokenOwners = new Map<string, string>();
   const defaultToken = nonEmpty(env.DISCORD_TOKEN?.trim());
   if (defaultToken !== undefined) tokenOwners.set(defaultToken, "DISCORD_TOKEN");
+  // #<NAME> のチャンネル名 → その表示名の変数名（人格どうしの重なりを見る）
+  const channelNameOwners = new Map<string, string>();
 
   return ids.map((id): PersonaConfig => {
     const prefix = `SELF_AGENT_PERSONA_${id.toUpperCase()}_`;
@@ -243,6 +249,17 @@ function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[
     if ([...name].length > PERSONA_NAME_MAX_LENGTH) {
       throw new Error(`${prefix}NAME は ${PERSONA_NAME_MAX_LENGTH} 字以内で指定してください`);
     }
+    // 表示名は #<NAME> とセッションのチャンネル名の接頭辞になる（未設定なら id から作るので、エラーは NAME の変数名で出す）
+    const channelName = normalizeChannelName(name);
+    if (channelName === "") {
+      throw new Error(`${prefix}NAME からチャンネル名を作れません（英数字か日本語を含めてください）`);
+    }
+    if (RESERVED_CHANNEL_NAMES.includes(channelName)) {
+      throw new Error(`${prefix}NAME は ${RESERVED_CHANNEL_NAMES.join("・")} と同じチャンネル名になるため使えません`);
+    }
+    const sameName = channelNameOwners.get(channelName);
+    if (sameName !== undefined) throw new Error(`${prefix}NAME と ${sameName} が同じチャンネル名になります`);
+    channelNameOwners.set(channelName, `${prefix}NAME`);
     const promptFile =
       nonEmpty(env[`${prefix}PROMPT_FILE`]) ?? join(home(), ".config/self-agent/personas", `${id}.md`);
     const model = nonEmpty(env[`${prefix}MODEL`]);

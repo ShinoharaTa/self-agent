@@ -1,3 +1,5 @@
+import type { Config, PersonaConfig } from "../../config.ts";
+import { normalizeChannelName } from "../../discord/channel-name.ts";
 import type { Gateway, OutgoingMessage } from "../../discord/gateway.ts";
 import type { GuildChannelField, GuildSettingsStore, SessionState } from "../../store/guild-settings.ts";
 import type { CommandHandler } from "../interactions.ts";
@@ -15,6 +17,16 @@ const HOME_CHANNELS: ReadonlyArray<{
   { field: "tasksChannelId", name: "tasks", topic: "タスクの話だけをする場所。登録・期限の変更・やめる・今日やることを Bot と話せます" },
   { field: "systemChannelId", name: "system", topic: "Bot の起動・エラー・利用状況の通知" },
 ];
+
+/** 足した人格の入口（#<NAME>）。チャンネル名は表示名から作る（config で空・inbox/tasks/system・人格どうしの重なりを弾いてある） */
+export function personaInboxName(persona: Pick<PersonaConfig, "name">): string {
+  return normalizeChannelName(persona.name);
+}
+
+/** 足した人格の #<NAME> の topic（作成時にだけ設定する） */
+export function personaInboxTopic(persona: Pick<PersonaConfig, "name">): string {
+  return `${persona.name} と話す場所。思いつきややることを書くと ${persona.name} が返事します`;
+}
 
 /** 状態カテゴリ（作る順）。/setup が作るのは各状態の 1 つ目（ordinal 1）だけ */
 const STATE_CATEGORIES: ReadonlyArray<{ state: SessionState; name: string }> = [
@@ -42,6 +54,8 @@ export function layoutQueueKey(guildId: string): string {
 }
 
 export type SetupDeps = {
+  /** personas は足した人格（#<NAME> を作る）。無ければ今と同じ */
+  cfg?: Partial<Pick<Config, "personas">>;
   gateway: Pick<
     Gateway,
     | "createCategory"
@@ -74,17 +88,20 @@ function describeError(error: unknown): string {
 /**
  * 足りないカテゴリ・チャンネルを作る。1 つ作るごとに DB へ保存するので、途中で失敗しても次の実行で続きから作る。
  * DB にあって Discord 上に残っているものは作らない（既存の同名カテゴリは再利用しない）。
- * self-agent カテゴリを作り直したときは、残っている #inbox / #tasks / #system をそこへ移す
- * （移動に失敗した分や手で動かされた分は、定期処理の再同期（scheduler.ts）が戻す）
+ * self-agent カテゴリを作り直したときは、残っている #inbox / #tasks / #<NAME> / #system をそこへ移す
+ * （移動に失敗した分や手で動かされた分は、定期処理の再同期（scheduler.ts）が戻す）。
+ * 足した人格（cfg.personas）があれば、#tasks の後にその人格の #<NAME> を self-agent カテゴリに作る（作るのは既定の人格の Bot。ホームパネルは置かない）
  */
 export async function ensureGuildLayout(
   guildId: string,
   deps: {
+    cfg?: SetupDeps["cfg"];
     gateway: Pick<SetupDeps["gateway"], "createCategory" | "createTextChannel" | "channelExists" | "moveChannel">;
     guildSettings: GuildSettingsStore;
   },
 ): Promise<SetupResult> {
   const { gateway, guildSettings } = deps;
+  const personas = deps.cfg?.personas ?? [];
   const result: SetupResult = { created: [], existing: [], failure: null };
 
   const ensure = async (
@@ -114,14 +131,31 @@ export async function ensureGuildLayout(
     );
     // カテゴリが消えると中のチャンネルはカテゴリ外に残るので、作り直したカテゴリへ戻す
     const homeRecreated = homeCategoryId !== settings?.homeCategoryId;
+    const moveIfRecreated = async (id: string): Promise<void> => {
+      if (homeRecreated) await gateway.moveChannel(id, homeCategoryId);
+    };
     for (const { field, name, topic } of HOME_CHANNELS) {
+      // #<NAME> は #tasks の後、#system の前に作る
+      if (field === "systemChannelId") {
+        for (const persona of personas) {
+          await ensure(
+            guildSettings.personaInbox(guildId, persona.id)?.channelId,
+            () =>
+              gateway.createTextChannel(guildId, {
+                name: personaInboxName(persona),
+                parentId: homeCategoryId,
+                topic: personaInboxTopic(persona),
+              }),
+            (id) => guildSettings.setPersonaInbox(guildId, persona.id, id),
+            moveIfRecreated,
+          );
+        }
+      }
       await ensure(
         settings?.[field],
         () => gateway.createTextChannel(guildId, { name, parentId: homeCategoryId, topic }),
         (id) => guildSettings.setChannel(guildId, field, id),
-        async (id) => {
-          if (homeRecreated) await gateway.moveChannel(id, homeCategoryId);
-        },
+        moveIfRecreated,
       );
     }
     for (const { state, name } of STATE_CATEGORIES) {
@@ -197,7 +231,7 @@ export function formatSetupResult(result: SetupResult): string {
   return lines.join("\n");
 }
 
-/** `/setup`: self-agent 用のカテゴリとチャンネルを作り、#inbox にホームパネルをピン留めして、結果を本人にだけ表示する */
+/** `/setup`: self-agent 用のカテゴリとチャンネル（足した人格の #<NAME> を含む）を作り、#inbox にホームパネルをピン留めして、結果を本人にだけ表示する */
 export function createSetupCommand(deps: SetupDeps): CommandHandler {
   const { queue, log } = deps;
   return {

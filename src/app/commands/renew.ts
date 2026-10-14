@@ -1,3 +1,4 @@
+import { DEFAULT_PERSONA_ID } from "../../config.ts";
 import type { GuildSettingsStore } from "../../store/guild-settings.ts";
 import type { SummaryChannelKind } from "../../store/inbox-summaries.ts";
 import { type InboxRotator, ROTATED_NOTICE, ROTATED_NOTICE_FRESH, type RotateNowResult } from "../inbox-rotate.ts";
@@ -13,9 +14,9 @@ export const NOT_SET_UP_REPLY = "/setup を実行してください";
 export const RENEW_FAILURE_REPLY = "失敗しました。もう一度 /renew を実行してください";
 
 export type RenewDeps = SessionRenewDeps & {
-  /** #inbox・#tasks のチャンネル（/setup 済みのサーバーの DB のものだけ） */
-  guildSettings: Pick<GuildSettingsStore, "get">;
-  /** #inbox・#tasks の切り替え（日次の切り替えと同じ処理を今すぐ行う） */
+  /** #inbox・#tasks・#<NAME> のチャンネル（/setup 済みのサーバーの DB のものだけ） */
+  guildSettings: Pick<GuildSettingsStore, "get" | "entryChannel">;
+  /** #inbox・#tasks・#<NAME> の切り替え（日次の切り替えと同じ処理を今すぐ行う） */
   inboxRotator: Pick<InboxRotator, "rotateNow">;
   /** チャンネルの持ち主の人格。既定の人格以外のチャンネルの結果は、持ち主の Bot がチャンネルに投稿する。無ければすべて既定の人格 */
   personas?: Pick<PersonaRouter, "ownerOf" | "gatewayFor">;
@@ -60,7 +61,7 @@ function rotateReply(result: RotateNowResult): string {
 
 /**
  * `/renew`: 会話を要約して新しい SDK セッションに切り替える（システムプロンプトなどの変更は新しいセッションから反映される）。
- * セッションのチャンネルでは session-renew.ts、#inbox・#tasks では日次の切り替えと同じ処理（rotateNow）を行う。
+ * セッションのチャンネルでは session-renew.ts、#inbox・#tasks と足した人格の #<NAME>（設定にある人格のものだけ）では日次の切り替えと同じ処理（rotateNow）を行う。
  * 受け付けたら公開で保留し、結果をチャンネルに残す（既定の人格以外のチャンネルでは、持ち主の Bot がチャンネルに投稿する）
  */
 export function createRenewCommand(deps: RenewDeps): CommandHandler {
@@ -79,12 +80,29 @@ export function createRenewCommand(deps: RenewDeps): CommandHandler {
       // #inbox・#tasks は /setup 済みのサーバーの DB のものだけ（/setup 前の env の #inbox は対象外）
       const settings = guildSettings.get(guildId);
       let channelKind: SummaryChannelKind | undefined;
+      let persona = DEFAULT_PERSONA_ID;
       if (settings?.inboxChannelId === channelId) channelKind = "inbox";
       else if (settings?.tasksChannelId === channelId) channelKind = "tasks";
+      else if (settings !== undefined && deps.personas !== undefined) {
+        // 足した人格の #<NAME>: 持ち主がその人格のまま（設定から外していない）ときだけ
+        const entry = guildSettings.entryChannel(channelId);
+        if (
+          entry !== undefined &&
+          entry.guildId === guildId &&
+          entry.kind === "inbox" &&
+          entry.persona !== DEFAULT_PERSONA_ID &&
+          deps.personas.ownerOf(channelId) === entry.persona
+        ) {
+          channelKind = "inbox";
+          persona = entry.persona;
+        }
+      }
       if (channelKind !== undefined) {
-        await responder.defer(false);
-        const result = await inboxRotator.rotateNow(guildId, channelKind);
-        await responder.reply({ text: rotateReply(result) });
+        // #<NAME> の結果は持ち主の Bot がチャンネルに投稿する（#inbox・#tasks は今までどおり公開の応答）
+        const response = commandResponse(deps.personas, channelId, responder, deps.log);
+        await response.defer();
+        const result = await inboxRotator.rotateNow(guildId, channelKind, persona);
+        await response.show({ text: rotateReply(result) });
         return;
       }
 

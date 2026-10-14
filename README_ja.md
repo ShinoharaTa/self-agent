@@ -133,6 +133,34 @@ systemctl --user stop self-agent        # 停止（進行中の返信を待っ�
 
 許可したサーバーで `/setup` を実行する。カテゴリとチャンネルができたら、`#inbox` に「明日 買い物」と書いてみる。
 
+### 6.（任意）2 体目の Bot（人格）を足す
+
+性格・役割の違う 2 体目の Bot を、同じプロセス・同じサーバーで動かせる。タスク・記憶・ナレッジは共有する。
+
+1. Developer Portal でアプリと Bot をもう 1 つ作り、トークンを発行する。**Public Bot はオフ**、**Message Content Intent はオン**
+2. 同じサーバーに招待する（スコープ: `bot` と `applications.commands`）。権限は次の 3 つだけ:
+   View Channels / Send Messages / Read Message History（Manage Channels は渡さない。チャンネルの作成・移動は 1 体目の Bot が行う）
+3. `~/.config/self-agent/env` に足す（`<ID>` は人格の id の大文字）:
+
+```
+# 人格の id（英小文字と数字の 1〜12 字、カンマ区切り）
+SELF_AGENT_PERSONAS=mika
+SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN=...
+# 表示名（20 字以内。チャンネル名 #<NAME> にもなる。未設定なら id）
+SELF_AGENT_PERSONA_MIKA_NAME=Mika
+# 任意: 性格・口調・役割の文（既定 ~/.config/self-agent/personas/<id>.md。リポジトリには置かない）
+SELF_AGENT_PERSONA_MIKA_PROMPT_FILE=...
+# 任意: claude（既定）/ codex（codex のエンジンができるまでは Claude で動く）と、そのモデル・effort
+SELF_AGENT_PERSONA_MIKA_ENGINE=claude
+SELF_AGENT_PERSONA_MIKA_MODEL=...
+SELF_AGENT_PERSONA_MIKA_EFFORT=...
+# 人格を足したら推薦
+SELF_AGENT_MAX_CONCURRENT=3
+```
+
+4. 再起動して、もう一度 `/setup` を実行する。self-agent カテゴリに `#<NAME>`（例 `#mika`）ができるので、そこに書くと 2 体目が答える。
+   2 体目とのセッションは `/new` の `persona` で選ぶ（チャンネル名は `<NAME>-<題名>`）か、`#<NAME>` で頼む。
+
 ## 開発
 
 ```bash

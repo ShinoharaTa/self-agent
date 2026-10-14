@@ -142,7 +142,7 @@ type QueryCall = { prompt: string; options: Options };
 /** queryFn に渡したストリームと、run ごとに MCP サーバーを作るときの context を記録する */
 function setupRunner(
   stream: (call: QueryCall) => AsyncIterable<SDKMessage>,
-  overrides: Partial<typeof cfg> = {},
+  overrides: Partial<typeof cfg> & { persona?: string } = {},
   files: { projects: FakeProjects; projectsDir: string; disk?: FileGuardDeps["disk"] } = {
     projects: fakeProjects(),
     projectsDir: "/srv/work/projects",
@@ -1358,6 +1358,7 @@ test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 �
     guildId: "guild-1",
     channelId: "inbox-1",
     kind: "inbox",
+    persona: "default",
     model: "claude-opus-5",
     effort: null,
     maxTurns: INBOX_MAX_TURNS,
@@ -1395,8 +1396,9 @@ test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 �
     },
   });
 
-  // 同じ日の次の run は同じファイルに追記する。context が無い run は guildId・channelId・kind が null、resume しなければ null
-  const { runner: second } = setupRunner(messages(success("session-2", "要約です")), { sessionMaxTurns: 40 }, undefined, {
+  // 同じ日の次の run は同じファイルに追記する。context が無い run は guildId・channelId・kind が null、resume しなければ null。
+  // 足した人格の runner は、その人格の id を印に残す
+  const { runner: second } = setupRunner(messages(success("session-2", "要約です")), { sessionMaxTurns: 40, persona: "mika" }, undefined, {
     sink,
     now: steppingClock("2026-10-08T14:59:59.000Z", "2026-10-08T15:00:01.000Z"),
   });
@@ -1409,6 +1411,7 @@ test("dev ログ: text・tool_use・tool_result・compact を起きた順に 1 �
     guildId: null,
     channelId: null,
     kind: null,
+    persona: "mika",
     model: "claude-opus-5",
     effort: null,
     maxTurns: INBOX_MAX_TURNS,

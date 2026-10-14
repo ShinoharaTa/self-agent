@@ -1,5 +1,5 @@
 // 定期処理（tick）。SELF_AGENT_SHELL=1 ならシェル（Bash）の sandbox を診断し直し（shell-state.ts）、足した人格があればその Bot の接続を確かめ（persona-status.ts）、DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
-// 最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、
+// 最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し（知らせはセッションの持ち主の Bot）、
 // 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認し、
 // SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログと 30 日を過ぎたプロジェクトの .trash を消し、workDir の .tmp の 1 日を過ぎたものと 1 GB を超えた .cache を消し、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
 // 対象は毎回 DB と Discord から求めるので、止まっていた間に過ぎた分や失敗した移動も起動直後の tick で拾う（永続のタイマーは持たない）
@@ -14,6 +14,7 @@ import { closeStartButton } from "./commands/close.ts";
 import { deletePrompt } from "./commands/delete.ts";
 import { continueButton } from "./commands/wait.ts";
 import type { InboxRotator } from "./inbox-rotate.ts";
+import type { PersonaRouter } from "./personas.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { applySessionEvent } from "./session-state.ts";
 
@@ -52,22 +53,24 @@ const REAL_TIMERS: SchedulerTimers = {
 };
 
 export type SchedulerDeps = {
-  /** allowedGuildIds は再同期の対象のサーバー */
-  cfg: Pick<Config, "allowedGuildIds" | "idleHours" | "deleteAfterDays">;
+  /** allowedGuildIds は再同期の対象のサーバー。personas は足した人格（その #<NAME> も self-agent カテゴリへ戻す） */
+  cfg: Pick<Config, "allowedGuildIds" | "idleHours" | "deleteAfterDays"> & Partial<Pick<Config, "personas">>;
   topicSessions: Pick<
     TopicSessionStore,
     "get" | "listIdle" | "setActive" | "setWaiting" | "listDeleteDue" | "setDeletePrompt" | "listUndeleted" | "markDeleted"
   >;
-  /** 削除の確認の投稿先（#system）と、再同期で見る self-agent カテゴリ・状態カテゴリ */
-  guildSettings: Pick<GuildSettingsStore, "get" | "listStateCategories">;
+  /** 削除の確認の投稿先（#system）と、再同期で見る self-agent カテゴリ・状態カテゴリ・#<NAME> */
+  guildSettings: Pick<GuildSettingsStore, "get" | "listStateCategories" | "personaInbox">;
   /** Discord 上で消えていたセッションのチャンネルの SDK セッション（channel_sessions）を消す */
   sessions: Pick<SdkSessionStore, "delete">;
   /** Discord 上で消えていたセッションのチャンネルの seed（channel_seeds）を消す */
   seeds: Pick<ChannelSeedStore, "delete">;
   /** 待ちにしたセッションを待ちカテゴリへ移し、再同期でずれていたチャンネルを移す */
   channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
-  /** 待ちに移した知らせと削除の確認を投稿し、再同期でサーバーのチャンネルの親カテゴリを取る */
+  /** 待ちに移した知らせ（personas が無いとき）と削除の確認を投稿し、再同期でサーバーのチャンネルの親カテゴリを取る（既定の人格の Bot） */
   gateway: Pick<Gateway, "sendMessage" | "listChannelParents" | "isInGuild">;
+  /** 待ちに移した知らせを投稿するチャンネルの持ち主の Bot。無ければ gateway */
+  personas?: Pick<PersonaRouter, "gatewayFor">;
   /** #inbox・#tasks の切り替え（日次・入力の大きさ）。要約のターンは発言と同じキューで行う */
   inboxRotator: Pick<InboxRotator, "rotateDue">;
   /** 残す日数より前の dev ログを消す（dev モードでなくても、ディレクトリがあれば消す）。投げたら log に出して続ける */
@@ -218,8 +221,12 @@ export class Scheduler {
     const homeCategoryId = settings.homeCategoryId;
     if (homeCategoryId === null || !parents.has(homeCategoryId)) return;
     let returned = 0;
-    for (const field of HOME_CHANNEL_FIELDS) {
-      const channelId = settings[field];
+    // #inbox・#tasks・#system と、足した人格の #<NAME>
+    const homeChannels = [
+      ...HOME_CHANNEL_FIELDS.map((field) => settings[field]),
+      ...(this.deps.cfg.personas ?? []).map((persona) => guildSettings.personaInbox(guildId, persona.id)?.channelId ?? null),
+    ];
+    for (const channelId of homeChannels) {
       // チャンネル自体が無ければ作り直すのは /setup
       if (channelId === null || !parents.has(channelId) || parents.get(channelId) === homeCategoryId) continue;
       channelOps.enqueueMove(channelId, { kind: "category", categoryId: homeCategoryId });
@@ -307,7 +314,9 @@ export class Scheduler {
         // 前の知らせの投稿を待つ間に、発言・[続ける] で進行中に戻っていれば投稿しない
         if (topicSessions.get(session.channelId)?.state === "active") continue;
         try {
-          await gateway.sendMessage(session.channelId, idleNotice(cfg.idleHours, session.channelId));
+          // 知らせはチャンネルの持ち主の Bot が出す（[続ける][閉じる] はその Bot のアプリに届き、結果はそのメッセージの書き換えになる）
+          const poster = this.deps.personas?.gatewayFor(session.channelId) ?? gateway;
+          await poster.sendMessage(session.channelId, idleNotice(cfg.idleHours, session.channelId));
         } catch (error) {
           // 待ちにはしてあるので、知らせだけ諦める
           log(`待ちに移した知らせの投稿に失敗しました（guild=${session.guildId}）: ${describeError(error)}`);
