@@ -13,7 +13,8 @@ export type ResolveChannel = (guildId: string, channelId: string) => ChannelKind
 export type OwnerOf = (channelId: string) => string;
 
 /**
- * 許可したサーバー（env の SELF_AGENT_ALLOWED_GUILD_IDS）の受け付け対象のチャンネルで、オーナー本人が書いた空でない発言だけを受け付ける（DM・bot・Webhook は弾く）。
+ * 許可したサーバー（env の SELF_AGENT_ALLOWED_GUILD_IDS）の受け付け対象のチャンネルで、オーナー本人が書いた発言のうち、
+ * 本文か渡せる画像の添付（event.images）があるものだけを受け付ける（DM・bot・Webhook は弾く。本文が空で読めない添付だけの発言も弾く）。
  * 全部の Bot が同じ発言を受け取るので、受け取った Bot の人格（event.persona。省略は既定の人格）がそのチャンネルの持ち主（ownerOf。省略は全部既定の人格）のときだけ受け付け、
  * それ以外の Bot の分は黙って捨てる。受け付けるならチャンネルの種類を、弾くなら null を返す
  */
@@ -29,7 +30,7 @@ export function acceptedChannel(
     event.authorId !== cfg.ownerUserId ||
     event.authorIsBot ||
     event.isWebhook ||
-    event.content.trim() === ""
+    (event.content.trim() === "" && (event.images ?? []).length === 0)
   ) {
     return null;
   }

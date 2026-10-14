@@ -136,6 +136,14 @@ export class AttachmentStore {
       .map(toAttachment);
   }
 
+  /** 残っている添付の数と大きさ（バイト）の合計（/usage に出す） */
+  totals(): { count: number; bytes: number } {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM attachments WHERE deleted_at IS NULL")
+      .get();
+    return { count: Number(row?.count ?? 0), bytes: Number(row?.bytes ?? 0) };
+  }
+
   /** 行を消す（ファイルを消した後に呼ぶ）。無い id なら false */
   delete(id: number): boolean {
     const result = this.db.prepare("DELETE FROM attachments WHERE id = ?").run(id);
