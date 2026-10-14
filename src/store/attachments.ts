@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 
 /** 受け取った添付の原本（attachments）。ファイルそのものは呼び出し側が置き・消す */
@@ -7,7 +8,7 @@ export type Attachment = {
   channelId: string;
   /** 添付が付いていた Discord のメッセージ */
   messageId: string;
-  /** 原本のファイルの場所 */
+  /** 原本のファイルの場所。`<dataDir>/attachments` からの相対パス（絶対パスは入れない。消す前に呼び出し側が realpath でその中か確かめる） */
   path: string;
   contentType: string;
   /** バイト数 */
@@ -27,6 +28,7 @@ export type NewAttachment = {
   guildId: string;
   channelId: string;
   messageId: string;
+  /** `<dataDir>/attachments` からの相対パス */
   path: string;
   contentType: string;
   size: number;
@@ -73,7 +75,11 @@ export class AttachmentStore {
     this.now = now;
   }
 
+  /** path が絶対パスか、`/` で分けた要素に `..` があれば例外（呼び出し側の誤り） */
   add(attachment: NewAttachment): Attachment {
+    if (isAbsolute(attachment.path) || attachment.path.split("/").includes("..")) {
+      throw new Error("添付のパスは <dataDir>/attachments からの相対パスにしてください");
+    }
     const row = this.db
       .prepare(
         "INSERT INTO attachments (guild_id, channel_id, message_id, path, content_type, size, width, height, sha256, created_at) " +

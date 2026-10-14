@@ -256,7 +256,7 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE reminders ADD COLUMN last_message_channel_id TEXT;
   `,
   // v20: 定型チャンネル（docs/plan/routines.md）。routines はチャンネルごとの手順・要約・切り替えの日と時刻（channel_id は一意。
-  // セッションだったチャンネルを定型に変えても sessions とは別の表）。routine_records は定型チャンネルの記録（fields は JSON。物理削除せず void）。
+  // セッションのチャンネルを定型に変えたもの（origin 'converted'）も sessions とは別の表で、sessions の行は履歴として残す）。routine_records は定型チャンネルの記録（fields は JSON。物理削除せず void）。
   // attachments は受け取った添付の原本（record_id は結びつけた記録）。guild_settings にはカテゴリ「定型」の ID
   `
   CREATE TABLE routines (
@@ -272,6 +272,7 @@ export const MIGRATIONS: readonly string[] = [
     rotated_date TEXT,
     rotated_at TEXT,
     state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'archived')),
+    origin TEXT NOT NULL DEFAULT 'new' CHECK (origin IN ('new', 'converted')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     archived_at TEXT

@@ -9,6 +9,9 @@ export const ROUTINE_INSTRUCTIONS_MAX_LENGTH = 2000;
 /** active は使っている、archived は削除した（Discord のチャンネルは無い。記録・添付・手順は残す） */
 export type RoutineState = "active" | "archived";
 
+/** new は新しく作ったチャンネル、converted はセッションのチャンネルを定型に変えたもの（sessions の行は履歴として残る） */
+export type RoutineOrigin = "new" | "converted";
+
 /** 定型チャンネル（routines。docs/plan/routines.md） */
 export type Routine = {
   channelId: string;
@@ -32,6 +35,7 @@ export type Routine = {
   /** 最後に会話を切り替えた時刻（ISO）。まだ切り替えていなければ null */
   rotatedAt: string | null;
   state: RoutineState;
+  origin: RoutineOrigin;
   createdAt: string;
   updatedAt: string;
   /** archived にした時刻。active なら null */
@@ -46,6 +50,8 @@ export type NewRoutine = {
   name: string;
   purpose?: string;
   instructions?: string;
+  /** 省略したら new */
+  origin?: RoutineOrigin;
 };
 
 export type SetInstructionsResult =
@@ -73,6 +79,7 @@ function toRoutine(row: Record<string, SQLOutputValue>): Routine {
     rotatedDate: nullableString(row.rotated_date),
     rotatedAt: nullableString(row.rotated_at),
     state: row.state === "archived" ? "archived" : "active",
+    origin: row.origin === "converted" ? "converted" : "new",
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     archivedAt: nullableString(row.archived_at),
@@ -93,15 +100,15 @@ export class RoutineStore {
   }
 
   /**
-   * active で作る（手順の版は 1、渡した版は 0）。セッションだったチャンネルも作れる（sessions とは別の表）。
+   * active で作る（手順の版は 1、渡した版は 0）。セッションだったチャンネルも作れる（sessions とは別の表。origin は converted にする）。
    * そのチャンネルの行が既にあれば（archived を含む）UNIQUE 制約のエラーを投げる（呼び出し側が先に get で確かめる）
    */
   create(routine: NewRoutine): Routine {
     const at = this.now().toISOString();
     const row = this.db
       .prepare(
-        "INSERT INTO routines (channel_id, guild_id, persona, name, purpose, instructions, created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+        "INSERT INTO routines (channel_id, guild_id, persona, name, purpose, instructions, origin, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
       )
       .get(
         routine.channelId,
@@ -110,6 +117,7 @@ export class RoutineStore {
         routine.name,
         routine.purpose ?? "",
         routine.instructions ?? "",
+        routine.origin ?? "new",
         at,
         at,
       );

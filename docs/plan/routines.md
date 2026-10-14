@@ -1,6 +1,6 @@
 # 定型チャンネル（領収書・予定など）と #inbox からの引き渡し、画像の受け取り、スキル — 設計案（#119）
 
-> 2026-10-14。spec-writer。リポジトリは変更していない。
+> 2026-10-14。spec-writer。PR #120（R1）のレビューを反映。
 > 「確認」= 2026-10-14 に main（79ec8b0）・PR #118 の差分・SDK 0.3.286 の sdk.d.ts と同梱 CLI・公式文書で確かめた事実。「未確認」= 実装・受け入れで確かめるまで前提にしない。
 
 ## 0. 目的・結論
@@ -9,10 +9,10 @@
 追加の要望（同日）: 貼った画像を見る・外部サービスを操作するのを「スキル」として使えるようにしたい。
 
 結論（推薦）:
-1. 新しいチャンネルの種類 **定型チャンネル**（kind `routine`）。カテゴリ「定型」に置く。状態（進行中/待ち/完了）・/close・idle の待ち・30 日後の削除は**無い**。#inbox と同じく日次・サイズで要約して自動で切り替える。作るのはオーナーの `/routine new` だけ。
+1. 新しいチャンネルの種類 **定型チャンネル**（kind `routine`）。カテゴリ「定型」に置く。状態（進行中/待ち/完了）・/close・idle の待ち・30 日後の削除は**無い**。#inbox と同じく日次・サイズで要約して自動で切り替える。作るのはオーナーの `/routine new` か、オーナーが明示的に頼んだときのエージェント（新しい定型チャンネルを作る・今のセッションのチャンネルを定型に変える。§2.2・§11 の決定 2）。
 2. チャンネルごとに**手順**（オーナーが決めた常設の指示、2,000 字まで）を DB に持つ。システムプロンプトには入れず、**新しい SDK セッションの最初の prompt の先頭**に毎回 DB から付ける（記憶のブロックと同じ仕組み）。会話の途中で変えたら、次のターンの先頭に新しい手順を 1 回だけ追記する（履歴は追記だけなのでキャッシュは壊れない）。
 3. データは**汎用の記録表 1 つ**（`routine_records`。日付 + 自由な項目の JSON + 添付）と**ツール 1 つ**（`routine_records`）。領収書も予定もこれで表す。定型ごとの専用ツールは作らない。予定の知らせは既存のリマインド（reminder_set）を使う。
-4. #inbox からの引き渡しは**ツール 1 つ**（`routine`：list / handoff / propose_instructions）。handoff は相手のチャンネルに依頼を投稿し、そのチャンネルのキューで 1 ターン起こす（待たない）。
+4. #inbox からの引き渡しは**ツール 1 つ**（`routine`：list / handoff / propose_instructions、オーナーが頼んだときの create / convert）。handoff は相手のチャンネルに依頼を投稿し、そのチャンネルのキューで 1 ターン起こす（待たない）。
 5. **画像の受け取りはアプリの機能**（Gateway が添付を取り、そのターンの prompt に image の content block として渡す）。スキルでは作れない（スキルは指示の文書で、Discord の添付を取る手段を持たない）。全チャンネルで効く。キャッシュは外れない。
 6. **スキル**は「やり方（手順書）」の置き場として SDK の Skills を使う。リポジトリの外のディレクトリをローカル plugin として読み、使うスキルは設定で固定する。外部サービスの**操作そのもの**はスキルではなく、アプリが持つ MCP のツール（秘密は Bot の env だけ）で足す。最初の一歩は「Skills を有効にして、領収書の読み方のスキル 1 つ」まで。外部サービスは対象を決めてから（R7 のカレンダーなど）。
 7. ツール・システムプロンプトの変更（キャッシュが全セッションで 1 回外れる）は、シェルの PR 3・#108 の A・#117 の書き出しのツールと**同じ再起動**にまとめる。
@@ -27,8 +27,8 @@
 - 受け付けるチャンネルの種類は `inbox | tasks | session`（`access.ts` の `ChannelKind`、`runner.ts` の `RunContext.kind`）。PR #118 で足した人格の `#<NAME>` は種類 `inbox` として受け付ける。
 - `acceptedChannel` は `event.content.trim() === ""` を弾く。**画像だけの発言は今は無視される**。`IncomingMessage` に添付の項目は無い（`gateway.ts`）。intents は Guilds・GuildMessages・MessageContent。
 - runner の prompt は文字列だけ（`RunInput.prompt: string`、`QueryFn` も `prompt: string`）。SDK の `query()` は `prompt: string | AsyncIterable<SDKUserMessage>` を受け、`SDKUserMessage.message` は Messages API の MessageParam（text・image・document の block を持てる）。
-- 1 ターンの上限は `context.kind === "session"` かどうかの 2 通り（sdk-runner.ts:416）。session 以外は 8 手順・`SELF_AGENT_TURN_TIMEOUT_SEC`。キューの枠も「session かそれ以外か」の 2 通り（queue.ts）。
-- 種類で分岐している箇所: project_open（session 以外は not_available）、ファイルの書き込み（session のプロジェクトだけ）、session_open（resolver が inbox のときだけ）、reminder_set の prompt（tools.ts:546 は session だけ弾く。発火側 reminders.ts:376 は inbox・tasks だけを実行先にする）、要約の seed（turn.ts:230 は tasks 以外を inbox の要約にする）、日時ヘッダのチャンネル名（handler.ts:367）。
+- 1 ターンの上限は `context.kind === "session"` かどうかの 2 通り（sdk-runner.ts の `SdkAgentRunner.run`）。session 以外は 8 手順・`SELF_AGENT_TURN_TIMEOUT_SEC`。キューの枠も「session かそれ以外か」の 2 通り（queue.ts）。
+- 種類で分岐している箇所: project_open（session 以外は not_available）、ファイルの書き込み（session のプロジェクトだけ）、session_open（resolver が inbox のときだけ）、reminder_set の prompt（tools.ts の reminder_set のハンドラは session だけ弾く。発火側の reminders.ts の `promptChannel` は inbox・tasks だけを実行先にする）、要約の seed（turn.ts の `runChannelTurn` は tasks 以外を inbox の要約にする）、日時ヘッダのチャンネル名（handler.ts の `createHandler` の `submit`）。
 - 切り替え（`inbox-rotate.ts`）は「スロット（種類 × 人格）」を順に回す形に PR #118 で一般化済み。要約の prompt は静的な文字列で種類ごと、要約は `inbox_summaries`（guild・種類・人格ごと）に残す。
 - 状態カテゴリは `state_categories`（state は CHECK で active/waiting/done）と `findStateCategory`（満杯なら `進行中 N` を作る）。
 - システムプロンプトは引き継ぎの文を名前で列挙している（「これまでの #inbox の要約:」など）。「#inbox と #tasks では短く…セッション（ヘッダが #inbox・#tasks 以外）では必要なだけ」の書き分けがある。
@@ -60,14 +60,25 @@
 | プロジェクト・ファイルの書き込み・シェル | 不可 | 可 | **不可**（必要ならセッションで） |
 
 ### 2.2 作り方・一覧・名前・削除（決定案）
-- 作る: `/routine new name:<名前> purpose:<1 行の目的> template:<領収書|予定|空>`（人格を足していれば `persona` も。PR #118 の /new と同じ形）。作ったら手順の編集モーダルを続けて出す（テンプレートを初期値に）。**エージェントは作らない**（#inbox で「経費のチャンネルがほしい」と言われたら /routine new を案内する）。理由: session_open と違い消えないチャンネルなので、勝手に増やさない。
+- 作る: `/routine new name:<名前> purpose:<1 行の目的> template:<領収書|予定|空>`（人格を足していれば `persona` も。PR #118 の /new と同じ形）。作ったら手順の編集モーダルを続けて出す（テンプレートを初期値に）。
+- エージェントが作る・変える: **オーナーが明示的に頼んだときだけ**（§11 の決定 2）。#inbox などで「これを定型にして」「経費のチャンネルを作って」と頼まれたら `routine` ツールの `create` で新しい定型チャンネルを作り、セッションのチャンネルで頼まれたら `convert` でそのチャンネルを定型に変える（下の「セッションを定型に変える」）。頼まれていないのに作ったり変えたりはしない（session_open と違い消えないチャンネルなので、勝手に増やさない）。手順はエージェントが案を作り、オーナーのボタンで確認してから保存する（§3.2 の propose_instructions と同じ）。
+- /setup 前は断る: `/routine new` もエージェントの create・convert も、/new と同じ判定で /setup 前のサーバーでは断る（`GuildSettingsStore.setRoutineCategory` も guild_settings の行が無ければ作らずに false）。上限 20（§11 の決定 3）も 3 つで同じ。
 - テンプレート: リポジトリの `templates/routines/receipts.md`・`schedule.md`（一般的な文だけ。個人の情報は入れない）。作るときに DB に写す（以後はファイルを見ない）。
 - 一覧と操作: `/routines`（本人にだけ。セレクトで選ぶ → [手順を編集][削除]）。ホームパネルにはボタンを足さない（5 個の枠を使わない）。
-- 名前: Discord のチャンネル名そのもの。改名はオーナーが Discord で行い、5 分ごとの再同期で DB の名前を合わせる（改名のコマンドは作らない）。handoff の名前の照合は DB の名前で行う。
-- 削除: [削除] → 確認 → Discord のチャンネルを消し、DB は `archived` にする。**記録・添付・手順は残す**（#117 の書き出しで取り出せる）。オーナーが Discord で直接消した場合も、再同期で `archived` に。戻す機能は作らない。
+- 名前: Discord のチャンネル名そのもの。改名はオーナーが Discord で行い、5 分ごとの再同期で DB の名前を合わせる（改名のコマンドは作らない）。handoff の名前の照合は DB の名前で行う（同じ名前が複数あれば候補を返す。§6.1）。
+- 削除: [削除] → 確認 → Discord のチャンネルを消し、DB は `archived` にする。**記録・添付・手順は残す**（#117 の書き出しで取り出せる）。オーナーが Discord で直接消した場合も、再同期で `archived` に。ストア（`RoutineStore.restore`）には戻す操作があるが、v1 には戻す UI・コマンドを作らない。
 - カテゴリ: 「定型」を 1 つ（最初の /routine new で作り、`guild_settings.routine_category_id` に保存。/setup でも消えていれば作り直す）。上限 20 なので `定型 2` のあふれは作らない（`state_categories` の CHECK を変えずに済む）。並びは self-agent の次。
 - 人格: `routines.persona`（既定 `default`）。返事・handoff の投稿は持ち主の Bot（PR #118 の `gatewayFor`）。チャンネル名に接頭辞は付けない（オーナーが名前を決めるため）。topic に人格名と目的。
 - 再同期（scheduler.ts の最初）: Discord 上に無い → archived、カテゴリが違う → 「定型」へ移す、名前が違う → DB を更新。
+
+#### セッションを定型に変える（convert）
+オーナーがセッションのチャンネルで「このチャンネルを定型にして」と頼んだときだけ（§11 の決定 2）。
+- DB: `routines` に `origin = 'converted'` の行を作る（`channel_id` は一意。sessions とは別の表）。**sessions の行はそのまま残す**（履歴。状態も書き換えない）。
+- 判定の優先: チャンネルの種類の判定（resolver）は routines の行（active）を sessions の行より先に見る。routines の行があるチャンネルは、idle で待ちに移す処理・状態カテゴリへの再同期・30 日後の削除の確認・/sessions の一覧から外す（R3）。
+- カテゴリ: 状態のカテゴリから「定型」へ移す（channel-ops の列）。topic を定型の目的と人格名に書き換える。
+- 会話: SDK セッションを捨て、新しい seed は「手順のブロック + セッションの要約」。要約は /renew と同じ要約のターン（session-renew.ts の頼み方。記録切れなら resume 失敗の復旧と同じ seed）で作る。手順の案はそれまでの会話からエージェントが作り、オーナーのボタンで確認してから保存する（確認まで手順は空）。
+- プロジェクト: そのセッションのプロジェクト（projects の行）は消さず、チャンネルとの結びつきも残す。ただし定型チャンネルはファイルの書き込み・project_open・project_files を使えない（§2.1）ので、プロジェクトは読むだけ・配信だけになる。続けて作るならセッションで（変える前にオーナーにそう伝える）。
+- 断る場合: /setup 前、active の定型が上限 20、そのチャンネルが既に定型、セッション以外のチャンネル。
 
 ---
 
@@ -147,7 +158,8 @@ CREATE INDEX routine_records_channel_date ON routine_records (channel_id, status
 ### 5.2 領収書
 - 流れ: オーナーが #領収書 に写真を貼る（文は無くてよい）→ アプリが画像をそのターンに渡す（§5.3）→ モデルが読み取り、手順の項目で `add`（attach: true）→「#12 10/14 ○○ 1,280 円（会議費）で記録しました。違えば言ってください」の 1〜2 行。
 - 読めない・曖昧なら記録せずに聞く（手順に書く）。
-- 「今月の合計」→ `list`（date_from・date_to・sum: amount）。
+- 「今月の合計」→ `list`（date_from・date_to・sum: amount）。合計に入れなかった件数（count - summed。値が数でない・項目が無い）も返事に出す。
+- 1 つの添付が結びつく記録は 1 つまで（`attachments.record_id`）。1 枚の写真に領収書が 2 枚写っていたら、写真は最初の記録に結びつけ、2 件目の記録の fields に「#<1 件目の id> の写真」と書く（受け入れる制限）。
 
 ### 5.3 画像の受け取り（アプリの機能。全チャンネル）
 
@@ -162,12 +174,12 @@ CREATE INDEX routine_records_channel_date ON routine_records (channel_id, status
 **推薦: (A)**。原本は `<dataDir>/attachments/` に置き（シェルの sandbox が読めない場所）、エージェントのツールからは触らせない。
 
 決定案:
-- 対象: 受け付けるすべてのチャンネル（#inbox・#tasks・セッション・定型）の、オーナーの発言の添付。種類は `image/jpeg`・`image/png`・`image/webp`・`image/gif`。1 発言 4 枚まで、1 枚 10 MB まで（Discord の通常の上限に合わせる）。それ以外の添付は「（添付 n 件は読めない形式のため渡していません）」をヘッダの次に付けて本文だけ渡す。
+- 対象: 受け付けるすべてのチャンネル（#inbox・#tasks・セッション・定型）の、オーナーの発言の添付。種類は `image/jpeg`・`image/png`・`image/webp`・`image/gif`。1 発言 4 枚まで、1 枚 10 MB まで（Discord の通常のアップロードの上限に合わせる。この値は未確認）。それ以外の添付は「（添付 n 件は読めない形式のため渡していません）」をヘッダの次に付けて本文だけ渡す。
 - 画像だけの発言も受け付ける（`acceptedChannel` の空の判定を「本文も読める添付も無い」に変える）。
-- 取り方: discord.js の `message.attachments` の url を Gateway で取得（タイムアウト 15 秒）。モデルに渡すのは長辺 1568px に縮めたもの（Discord の proxyURL の width/height。未確認。§5.4）。base64 で 3.75 MB（API の 5 MB の上限の手前）を超えたら渡さず、「画像が大きすぎて読めませんでした」と返す。
-- 保存: 原本を `<dataDir>/attachments/<guildId>/<channelId>/<messageId>-<n>.<ext>`（ディレクトリ 700・ファイル 600）。DB `attachments`（id・guild_id・channel_id・message_id・path・content_type・size・width・height・sha256・record_id・created_at・deleted_at）。
+- 取り方: discord.js の `message.attachments` の url を Gateway で取得（タイムアウト 15 秒）。モデルに渡すのは長辺 1568px に縮めたもの（Discord の proxyURL の width/height。未確認。§5.4）。元のバイト数で 3.75 MB（base64 で約 5 MB。API の上限の手前）を超えたら渡さず、「画像が大きすぎて読めませんでした」と返す。
+- 保存: 原本を `<dataDir>/attachments/<guildId>/<channelId>/<messageId>-<n>.<ext>`（ディレクトリ 700・ファイル 600）。DB `attachments`（id・guild_id・channel_id・message_id・path・content_type・size・width・height・sha256・record_id・created_at・deleted_at）。`path` は `<dataDir>/attachments` からの相対パス（絶対パス・`..` の要素は入れない。`AttachmentStore.add` が例外にする）。消す前に realpath がその中にあるか確かめ、外ならファイルを消さない（パスは log に出さない）。
 - 保持: 記録に結びついたもの（`record_id` あり）は残す。結びついていないものは 30 日で消す（scheduler の tick。.trash の掃除と同じ並び）。void にした記録の添付は残す（戻せるように）。
-- ターンへの渡し方: `RunInput` に `images?: { mediaType; data(base64) }[]` を足す。sdk-runner は images があれば `prompt` を `{ type: "user", message: { role: "user", content: [text, ...images] }, parent_tool_use_id: null }` を 1 件 yield する AsyncIterable にする（`client_composed` は付けない。付けるとスキルの一覧が付かない）。resume 失敗のやり直しにも同じ画像を渡す。RunContext に `attachmentIds` を足し、`routine_records` の attach と handoff で使う。
+- ターンへの渡し方: `RunInput` に `images?: { mediaType; data(base64) }[]` を足す。sdk-runner は images があれば `prompt` を `{ type: "user", message: { role: "user", content: [text, ...images] }, parent_tool_use_id: null }` を 1 件 yield する AsyncIterable にする（`client_composed` は付けない。付けるとスキルの一覧が付かないと見込む。未確認）。resume 失敗のやり直しにも同じ画像を渡す。RunContext に `attachmentIds` を足し、`routine_records` の attach と handoff で使う。
 - ログ・devlog: console には枚数だけ。devlog は `[画像 2 枚]` の印だけ（base64 を書かない）。
 - プライバシー: 画像は会話の一部として Anthropic の API に送られ、SDK の会話の記録（`CLAUDE_CONFIG_DIR` の下）にも base64 で残る（テキストと同じ扱い）。README の安全の節に 1 行書く。
 
@@ -193,14 +205,17 @@ CREATE INDEX routine_records_channel_date ON routine_records (channel_id, status
 
 ### 6.1 ツール `routine`
 - `action: "list"` → `{ routines: [{ name, purpose, channel: "<#id>" }] }`（archived は出さない）。
-- `action: "handoff"`: `name`・`request`（1〜1,000 字）・`attach?: boolean`（このターンの画像を渡す）→
+- `action: "handoff"`: `target`（チャンネルのメンション `<#id>`・ID・名前のどれか）・`request`（1〜1,000 字）・`attach?: boolean`（このターンの画像を渡す）→
   - `{ result: "queued", channel: "<#id>" }`
-  - `{ result: "not_found", routines: [...] }`（名前が合わない。候補を返す）
+  - `{ result: "not_found", routines: [...] }`（どれにも合わない。候補を返す）
+  - `{ result: "ambiguous", routines: [...] }`（名前が複数の定型チャンネルに合う。推測せずに候補を返し、メンションか ID で指定し直させる。Discord はチャンネル名の重複を許すため）
   - `{ result: "not_available", message }`: 定型チャンネル自身のターン（定型どうしで渡し合わない）、予約した依頼のターン、context の無いターン。
   - `{ result: "limit", message }`: 同じ定型へ 1 時間に 10 件まで（ループよけ）。
   - `{ result: "failed" }`: 相手のチャンネルへの投稿に失敗（ターンは入れない）。
 - `action: "propose_instructions"`（定型チャンネルのターンだけ）: §3.2。
-- 説明文（案）:「定型チャンネル（領収書・予定など、決まった仕事のチャンネル）を扱う。#inbox やセッションで、ある定型チャンネルの仕事を頼まれたら handoff で渡し、<#チャンネルID> に渡したことを 1 行で伝える（中身はそちらで進む）。名前が分からなければ list。定型チャンネルで手順を変えてと言われたら propose_instructions に新しい全文を渡す（オーナーが確認して反映する）。」
+- `action: "create"`: `name`・`purpose`・`template?`（オーナーが明示的に頼んだときだけ。§2.2）→ `{ result: "created", channel: "<#id>" }`。手順は propose_instructions と同じ確認ボタンで。/setup 前・予約した依頼のターン・context の無いターンは `not_available`、上限 20 は `limit`。
+- `action: "convert"`: 引数なし（今のセッションのチャンネルを定型に変える。オーナーが明示的に頼んだときだけ。§2.2 の「セッションを定型に変える」）→ `{ result: "converted", channel: "<#id>" }`。セッション以外のチャンネル・/setup 前・既に定型は `not_available`、上限 20 は `limit`。
+- 説明文（案）:「定型チャンネル（領収書・予定など、決まった仕事のチャンネル）を扱う。#inbox やセッションで、ある定型チャンネルの仕事を頼まれたら handoff で渡し、<#チャンネルID> に渡したことを 1 行で伝える（中身はそちらで進む）。名前が分からなければ list（同じ名前が複数あれば ambiguous の候補から <#チャンネルID> で指定し直す）。定型チャンネルで手順を変えてと言われたら propose_instructions に新しい全文を渡す（オーナーが確認して反映する）。オーナーが明示的に頼んだときだけ、create で新しい定型チャンネルを作り、セッションでは convert でそのチャンネルを定型に変える。」
 
 ### 6.2 流れ（handoff）
 1. ツールが検証 → 相手のチャンネルに持ち主の Bot で投稿: `<#元のチャンネル> からの依頼: <request>`（attach なら「（画像 n 枚）」）。
@@ -275,11 +290,11 @@ CREATE INDEX routine_records_channel_date ON routine_records (channel_id, status
 順序の前提: PR #118（人格の入口）を先にマージ（access.ts・inbox-rotate.ts・setup.ts・new.ts が重なる）。
 
 - **PR-R1 ストア**（振る舞いは変えない。キャッシュ影響なし）: DB v20（`routines`・`routine_records`・`attachments`、`guild_settings.routine_category_id`）。`src/store/routines.ts`・`routine-records.ts`・`attachments.ts` と単体テスト。
-  - `routines`: channel_id PK・guild_id・persona・name・purpose・instructions・instructions_rev・seen_rev・summary・rotated_date・rotated_at・state（active/archived）・created_at・updated_at・archived_at。サーバーごと active 20 件まで（ストアで数えられるように）。
+  - `routines`: channel_id PK・guild_id・persona・name・purpose・instructions・instructions_rev・seen_rev・summary・rotated_date・rotated_at・state（active/archived）・origin（new/converted）・created_at・updated_at・archived_at。サーバーごと active 20 件まで（ストアで数えられるように）。
 - **PR-R2 画像の受け取り**（キャッシュ影響なし）: §5.3・§5.4。Gateway の添付（取得・縮小・形式と大きさの判定）、`acceptedChannel` の空の判定、保存と 30 日の掃除、`RunInput.images` と sdk-runner の AsyncIterable、resume 失敗のやり直しでも渡す、devlog の印、/usage に添付の合計、README の 1 行。
 - **PR-R3 定型チャンネル**（キャッシュ影響なし。ツール・システムプロンプトは変えない）: kind `routine`（ChannelKind・RunContext・resolver）、`/routine new`（テンプレート 2 つ・モーダル・persona）、`/routines`（手順の編集・削除の確認）、「定型」カテゴリ、日時ヘッダの名前、手順のブロックと rev（turn.ts）、resume 失敗の seed、切り替えのスロットと要約の prompt、/renew、再同期（archived・カテゴリ・名前）、予約した依頼の実行先に routine、/help・README・CLAUDE.md。
   - この時点では記録のツール・handoff が無いので、定型チャンネルは「手順付きの常設の会話」として使える（記録はまだ会話の中だけ）。
-- **PR-R4 ツールとシステムプロンプト**（**キャッシュが外れる束**）: `routine_records`・`routine` の 2 つ（MCP の末尾に足す）、reminder_set の説明文（prompt はセッション以外）、システムプロンプトの行（下記）、handoff のジョブ、propose_instructions の確認ボタン（`rtn:` 名前空間）、`npm run measure` の増分を PR に書く。
+- **PR-R4 ツールとシステムプロンプト**（**キャッシュが外れる束**）: `routine_records`・`routine` の 2 つ（MCP の末尾に足す）、reminder_set の説明文（prompt はセッション以外）、システムプロンプトの行（下記）、handoff のジョブ、`routine` の `create`・`convert`（§2.2・§6.1。convert は §2.2 の「セッションを定型に変える」の移動・要約・seed まで）、propose_instructions とエージェントが作った手順の案の確認ボタン（`rtn:` 名前空間）、`npm run measure` の増分を PR に書く。
   - システムプロンプトに足す行（案）: 引き継ぎの文の列挙を「これまでの #… の要約:」の形にし、「このチャンネルの手順（オーナーが決めたもの）:」「手順が変わりました。」「#… からの依頼（オーナーが頼んだもの）:」をアプリの文脈として足す。「定型チャンネル（手順が付いているチャンネル）では手順に従い、短く 1〜3 行。手順に無い話題は #inbox を案内する」。「アプリについて」に定型チャンネルと /routine・/routines。
 - **PR-R5 Skills**（**同じ束**）: §8.2。`SELF_AGENT_SKILLS_DIR`・`SELF_AGENT_SKILLS`、Options（plugins・skills・tools の Skill・env・flag settings）、見本のスキル、README（スキルの置き方と注意）、measure の増分。`SELF_AGENT_SKILLS` が無ければ Options は今と同一（テストで固定）。
 
@@ -314,6 +329,8 @@ PR-R4
 - `routine_records` は定型チャンネル以外で not_available。attach: true でそのターンの添付が記録に結びつく。
 - handoff: 相手のチャンネルに「… からの依頼」が投稿され、相手の key でターンが 1 回走り、元のターンは待たずに queued を返す。定型チャンネル・予約した依頼のターンからは not_available。同じ相手へ 1 時間 11 件目は limit。投稿に失敗したらターンは走らない。
 - propose_instructions はボタンを押すまで手順を変えない。[やめる]・古いボタンでは変わらない。
+- handoff の target はメンション・ID・名前で引け、名前が複数の定型チャンネルに合えば ambiguous で候補を返してターンを入れない。
+- create: オーナーが頼んだターンで定型チャンネルができ（origin new）、/setup 前・上限 20 では作らない。convert: セッションのチャンネルで routines の行（origin converted）ができ、sessions の行は残り、チャンネルが「定型」へ移り、SDK セッションが捨てられ seed が「手順 + セッションの要約」になる。以後そのチャンネルは kind routine で受け付けられ、idle の待ち・状態カテゴリの再同期・削除の確認・/sessions の対象にならない。セッション以外のチャンネルでは not_available。
 - measure の増分（ツール 2 つ分のトークン）を PR に書く。
 
 PR-R5

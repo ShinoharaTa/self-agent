@@ -23,7 +23,7 @@ function attachment(overrides: Partial<NewAttachment> = {}): NewAttachment {
     guildId: "g",
     channelId: "rt-1",
     messageId: "msg-1",
-    path: "attachments/g/rt-1/msg-1-1.jpg",
+    path: "g/rt-1/msg-1-1.jpg",
     contentType: "image/jpeg",
     size: 2048,
     width: 1200,
@@ -41,7 +41,7 @@ test("AttachmentStore: 追加・取得。幅・高さは省略できる", (t) =>
     guildId: "g",
     channelId: "rt-1",
     messageId: "msg-1",
-    path: "attachments/g/rt-1/msg-1-1.jpg",
+    path: "g/rt-1/msg-1-1.jpg",
     contentType: "image/jpeg",
     size: 2048,
     width: 1200,
@@ -102,4 +102,20 @@ test("AttachmentStore: listUnlinkedOlderThan は結びついていない、days 
   assert.equal(store.get(old), undefined);
   setDays(40);
   assert.deepEqual(store.listUnlinkedOlderThan(30).map((x) => x.id), [recent]);
+});
+
+test("AttachmentStore: path は <dataDir>/attachments からの相対パスだけで、絶対パス・.. を含むものは例外にして行を作らない", (t) => {
+  const { store } = tempStore(t);
+  const cases: Array<[label: string, path: string, ok: boolean]> = [
+    ["相対パス", "g/rt-1/msg-1-1.jpg", true],
+    ["名前に .. を含むだけ", "g/rt-1/a..b.jpg", true],
+    ["絶対パス", "/home/user/.local/share/self-agent/data/attachments/g/x.jpg", false],
+    [".. の要素", "g/../../secret.jpg", false],
+    ["先頭の ..", "../x.jpg", false],
+  ];
+  for (const [label, path, ok] of cases) {
+    if (ok) assert.equal(store.add(attachment({ path })).path, path, label);
+    else assert.throws(() => store.add(attachment({ path })), /相対パス/, label);
+  }
+  assert.equal(store.get(3), undefined);
 });

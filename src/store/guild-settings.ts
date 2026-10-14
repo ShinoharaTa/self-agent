@@ -211,15 +211,15 @@ export class GuildSettingsStore {
     return nullableString(row?.routine_category_id);
   }
 
-  /** カテゴリ「定型」の ID を保存する（作り直したら置き換える）。行が無ければ作る */
-  setRoutineCategory(guildId: string, categoryId: string): void {
-    const at = this.now().toISOString();
-    this.db
-      .prepare(
-        "INSERT INTO guild_settings (guild_id, routine_category_id, created_at, updated_at) VALUES (?, ?, ?, ?) " +
-          "ON CONFLICT (guild_id) DO UPDATE SET routine_category_id = excluded.routine_category_id, updated_at = excluded.updated_at",
-      )
-      .run(guildId, categoryId, at, at);
+  /**
+   * カテゴリ「定型」の ID を保存する（作り直したら置き換える）。guild_settings の行（/setup 済みの印）が無ければ作らずに false
+   * （/setup 前のサーバーを /setup 済みに見せない）
+   */
+  setRoutineCategory(guildId: string, categoryId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE guild_settings SET routine_category_id = ?, updated_at = ? WHERE guild_id = ?")
+      .run(categoryId, this.now().toISOString(), guildId);
+    return Number(result.changes) > 0;
   }
 
   getStateCategory(guildId: string, state: SessionState, ordinal: number): string | undefined {
