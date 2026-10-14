@@ -91,6 +91,11 @@ export type RunResult =
        * 例外・タイムアウトなど result を受け取れなかった失敗では false
        */
       sessionRecorded: boolean;
+      /**
+       * API が画像（か大きすぎるリクエスト）を受け付けなかった（sdk-runner.ts の isImageRejection）。その会話は resume しても同じ失敗になりうる。
+       * 当てはまるときだけ入る
+       */
+      imageRejected?: true;
     };
 
 export interface AgentRunner {

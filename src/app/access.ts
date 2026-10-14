@@ -12,9 +12,16 @@ export type ResolveChannel = (guildId: string, channelId: string) => ChannelKind
 /** チャンネルの持ち主の人格の id（personas.ts の PersonaRouter.ownerOf） */
 export type OwnerOf = (channelId: string) => string;
 
+/** 渡せる画像か、渡さない（読めない形式・上限を超える）添付があるか */
+function hasAttachments(event: IncomingMessage): boolean {
+  const skipped = event.skippedAttachments;
+  return (event.images ?? []).length > 0 || (skipped !== undefined && skipped.unsupported + skipped.overLimit > 0);
+}
+
 /**
  * 許可したサーバー（env の SELF_AGENT_ALLOWED_GUILD_IDS）の受け付け対象のチャンネルで、オーナー本人が書いた発言のうち、
- * 本文か渡せる画像の添付（event.images）があるものだけを受け付ける（DM・bot・Webhook は弾く。本文が空で読めない添付だけの発言も弾く）。
+ * 本文か添付（渡せる画像の event.images か、渡さない添付の event.skippedAttachments）があるものだけを受け付ける（DM・bot・Webhook は弾く。
+ * 読めない添付だけの発言は、handler が注記を返すために受け付ける）。
  * 全部の Bot が同じ発言を受け取るので、受け取った Bot の人格（event.persona。省略は既定の人格）がそのチャンネルの持ち主（ownerOf。省略は全部既定の人格）のときだけ受け付け、
  * それ以外の Bot の分は黙って捨てる。受け付けるならチャンネルの種類を、弾くなら null を返す
  */
@@ -30,7 +37,7 @@ export function acceptedChannel(
     event.authorId !== cfg.ownerUserId ||
     event.authorIsBot ||
     event.isWebhook ||
-    (event.content.trim() === "" && (event.images ?? []).length === 0)
+    (event.content.trim() === "" && !hasAttachments(event))
   ) {
     return null;
   }

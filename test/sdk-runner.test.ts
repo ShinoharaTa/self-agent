@@ -1664,3 +1664,53 @@ test("画像: dev ログには枚数だけを残し、画像の中身（base64�
   assert.ok(!JSON.stringify(devLog.records[0]).includes(JPEG_IMAGE.data));
   assert.equal("images" in devLog.records[1]!, false);
 });
+
+test("画像の拒否: API エラーの assistant メッセージ・is_error の result・result の errors・例外の文が画像の拒否なら imageRejected を付ける（文は結果にも log にも入れない）", async () => {
+  const rejection = 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Could not process image"}}';
+  const isErrorResult = sdkMessage({
+    type: "result",
+    subtype: "success",
+    is_error: true,
+    result: rejection,
+    session_id: "session-1",
+    duration_ms: 1,
+  });
+  const apiErrorAssistant = sdkMessage({
+    type: "assistant",
+    parent_tool_use_id: null,
+    session_id: "session-1",
+    error: "invalid_request",
+    message: { id: "msg-e", content: [{ type: "text", text: rejection }], usage: { input_tokens: 0 } },
+  });
+  const cases: Array<{ label: string; stream: () => AsyncIterable<SDKMessage> }> = [
+    { label: "is_error の result", stream: messages(init("session-1"), isErrorResult) },
+    {
+      label: "API エラーの assistant メッセージ",
+      stream: messages(init("session-1"), apiErrorAssistant, errorResult("error_during_execution", [])),
+    },
+    {
+      label: "result の errors",
+      stream: messages(init("session-1"), errorResult("error_during_execution", ["API Error: 413 request_too_large"])),
+    },
+    {
+      label: "例外",
+      stream: async function* () {
+        yield init("session-1");
+        throw new Error(rejection);
+      },
+    },
+  ];
+  for (const { label, stream } of cases) {
+    const { runner, logs } = setupRunner(stream);
+    const result = await runner.run({ prompt: "x", images: [PNG_IMAGE] });
+    assert.ok(!result.ok, label);
+    assert.equal(result.imageRejected, true, label);
+    assert.ok(!logs.some((line) => line.includes("Could not process")), label);
+  }
+
+  // 画像と関係ない失敗には付けない
+  const { runner } = setupRunner(messages(init("session-1"), errorResult("error_during_execution", ["prompt is too long"])));
+  const other = await runner.run({ prompt: "x" });
+  assert.ok(!other.ok);
+  assert.equal("imageRejected" in other, false);
+});

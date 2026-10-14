@@ -98,6 +98,17 @@ export function describeResultError(result: SDKResultMessage): string {
   return errors.length === 0 ? result.subtype : `${result.subtype}: ${shorten(errors.join(" / "))}`;
 }
 
+/**
+ * API が画像（か大きすぎるリクエスト）を受け付けなかったことを示すエラー文か。エラーの経路（API エラーの assistant メッセージ・
+ * is_error の result・result の errors・例外と stderr）の文だけに使う。狭く取る: request_too_large・413、
+ * または invalid_request_error / 400 と image を両方含むもの、画像を処理できない旨の文
+ */
+export function isImageRejection(text: string): boolean {
+  if (/request_too_large|request too large|API Error: 413\b/i.test(text)) return true;
+  if (/invalid_request_error|API Error: 400\b/i.test(text) && /\bimage/i.test(text)) return true;
+  return /could not process image|image (?:exceeds|was too large|is too large|dimensions exceed)/i.test(text);
+}
+
 /** ステップごとの usage（起きた順）から、このターンの入力側の usage（合計と内訳）を作る。出力は入れない */
 function toTurnUsage(steps: readonly StepUsage[]): TurnUsage {
   const usage: TurnUsage = {
@@ -538,6 +549,9 @@ export class SdkAgentRunner implements AgentRunner {
       stepUsages.size === 0 ? {} : { usage: toTurnUsage([...stepUsages.values()]) };
     let sessionId = input.sessionId;
     let result: SDKResultMessage | undefined;
+    // API が画像（か大きすぎるリクエスト）を受け付けなかった。エラーの文は log にも結果にも入れず、印だけ返す
+    let imageRejected = false;
+    const rejected = (): { imageRejected?: true } => (imageRejected ? { imageRejected: true } : {});
     let compacted: Compaction | undefined;
     // 途中経過は tool_use ごとに 1 回（同じ tool_use の id は 1 回だけ）
     const seenToolUseIds = new Set<string>();
@@ -591,13 +605,22 @@ export class SdkAgentRunner implements AgentRunner {
             ...(typeof metadata.pre_tokens === "number" ? { preTokens: metadata.pre_tokens } : {}),
           };
         }
+        // API エラーの assistant メッセージ（CLI が作るもの）の本文
+        if (message.type === "assistant" && message.parent_tool_use_id === null && message.error !== undefined) {
+          for (const block of message.message.content ?? []) {
+            if (block.type === "text" && isImageRejection(block.text)) imageRejected = true;
+          }
+        }
         if (message.type === "result") {
           result = message;
+          const errorTexts = message.subtype === "success" ? (message.is_error ? [message.result] : []) : message.errors;
+          if (errorTexts.some(isImageRejection)) imageRejected = true;
         }
       }
     } catch (error) {
       if (abortController.signal.aborted) return stopped();
       const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      if (isImageRejection(text) || isImageRejection(stderr)) imageRejected = true;
       const tail = stderrTail(stderr);
       return {
         ok: false,
@@ -606,6 +629,7 @@ export class SdkAgentRunner implements AgentRunner {
         sessionRecorded: false,
         toolCalls: tools.count(),
         ...failedUsage(),
+        ...rejected(),
       };
     }
 
@@ -618,6 +642,7 @@ export class SdkAgentRunner implements AgentRunner {
         sessionRecorded: false,
         toolCalls: tools.count(),
         ...failedUsage(),
+        ...rejected(),
       };
     }
     if (result.subtype !== "success" || result.is_error) {
@@ -629,6 +654,7 @@ export class SdkAgentRunner implements AgentRunner {
         sessionRecorded: true,
         toolCalls: tools.count(),
         ...failedUsage(),
+        ...rejected(),
       };
     }
     // 出力の合計は result メッセージの usage（メインループだけ・このターンの分）。数でなければ入れない
