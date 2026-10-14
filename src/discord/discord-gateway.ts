@@ -1,4 +1,5 @@
-// Gateway の discord.js 実装。トークンは process.env.DISCORD_TOKEN から直接読み、保持もログ出力もしない
+// Gateway の discord.js 実装。人格ごとに 1 つ作る（docs/plan/personas.md）。
+// トークンは process.env の人格ごとの変数（既定の人格は DISCORD_TOKEN）から直接読み、保持もログ出力もしない
 import {
   type ButtonInteraction,
   ChannelType,
@@ -16,6 +17,7 @@ import {
   type SendableChannels,
   type StringSelectMenuInteraction,
 } from "discord.js";
+import { DEFAULT_PERSONA_ID } from "../config.ts";
 import {
   ALLOWED_MENTIONS,
   allowedMentionsFor,
@@ -44,7 +46,7 @@ import { splitMessage } from "./split.ts";
 
 const TYPING_INTERVAL_MS = 8_000;
 
-function toIncoming(message: Message): IncomingMessage {
+function toIncoming(message: Message, persona: string): IncomingMessage {
   return {
     id: message.id,
     channelId: message.channelId,
@@ -54,6 +56,7 @@ function toIncoming(message: Message): IncomingMessage {
     isWebhook: message.webhookId !== null && message.webhookId !== undefined,
     content: message.content,
     createdAt: message.createdAt,
+    persona,
   };
 }
 
@@ -150,17 +153,39 @@ class DiscordResponder implements InteractionResponder {
   }
 }
 
+/** どの人格の Bot か。省略すれば既定の人格（DISCORD_TOKEN） */
+export type DiscordGatewayOptions = {
+  /** 人格の id。受け取った発言に付ける（access.ts の持ち主の判定） */
+  persona?: string;
+  /** トークンの変数名（値は start で process.env から読む） */
+  tokenEnv?: string;
+};
+
 export class DiscordGateway implements Gateway {
   /** 許可していないサーバーに入っていたら警告する（メッセージは handler 側の受付判定で弾く） */
   private readonly allowedGuildIds: readonly string[];
+  private readonly persona: string;
+  private readonly tokenEnv: string;
+  /** log の前置き（既定の人格は今までどおり `discord:`、足した人格は `discord(<id>):`） */
+  private readonly prefix: string;
+  /** Discord に接続しているか（ready・再開で true、切断・再接続中・無効化で false。start 前とログインの失敗も false） */
+  private isConnected = false;
 
-  constructor(allowedGuildIds: readonly string[]) {
+  constructor(allowedGuildIds: readonly string[], options: DiscordGatewayOptions = {}) {
     this.allowedGuildIds = allowedGuildIds;
+    this.persona = options.persona ?? DEFAULT_PERSONA_ID;
+    this.tokenEnv = options.tokenEnv ?? "DISCORD_TOKEN";
+    this.prefix = this.persona === DEFAULT_PERSONA_ID ? "discord:" : `discord(${this.persona}):`;
+  }
+
+  /** Discord に接続しているか（#system の知らせに使う） */
+  connected(): boolean {
+    return this.isConnected;
   }
 
   private warnIfNotAllowed(guildId: string): void {
     if (!this.allowedGuildIds.includes(guildId)) {
-      console.error(`discord: 許可していないサーバーに参加しています（guild=${guildId}）。このサーバーでは反応しません`);
+      console.error(`${this.prefix} 許可していないサーバーに参加しています（guild=${guildId}）。このサーバーでは反応しません`);
     }
   }
 
@@ -169,22 +194,38 @@ export class DiscordGateway implements Gateway {
   });
 
   async start(handlers: GatewayHandlers): Promise<void> {
-    const token = process.env.DISCORD_TOKEN;
+    const token = process.env[this.tokenEnv];
     if (token === undefined || token === "") {
-      throw new Error("DISCORD_TOKEN が設定されていません");
+      throw new Error(`${this.tokenEnv} が設定されていません`);
     }
     this.client.on(Events.Error, (error) => {
-      console.error(`discord: ${describeError(error)}`);
+      console.error(`${this.prefix} ${describeError(error)}`);
+    });
+    // 接続の状態（discord.js は切れても自分で再接続する）
+    this.client.on(Events.ShardReady, () => {
+      this.isConnected = true;
+    });
+    this.client.on(Events.ShardResume, () => {
+      this.isConnected = true;
+    });
+    this.client.on(Events.ShardDisconnect, () => {
+      this.isConnected = false;
+    });
+    this.client.on(Events.ShardReconnecting, () => {
+      this.isConnected = false;
+    });
+    this.client.on(Events.Invalidated, () => {
+      this.isConnected = false;
     });
     this.client.on(Events.GuildCreate, (guild) => {
       this.warnIfNotAllowed(guild.id);
     });
     this.client.on(Events.MessageCreate, (message) => {
-      handlers.onMessage(toIncoming(message));
+      handlers.onMessage(toIncoming(message, this.persona));
     });
     this.client.on(Events.InteractionCreate, (interaction) => {
       if (!isSupported(interaction)) {
-        console.error(`discord: 未対応の操作を無視しました（type=${interaction.type}）`);
+        console.error(`${this.prefix} 未対応の操作を無視しました（type=${interaction.type}）`);
         return;
       }
       handlers.onInteraction(toInteraction(interaction), new DiscordResponder(interaction));
@@ -194,10 +235,11 @@ export class DiscordGateway implements Gateway {
     });
     await this.client.login(token);
     await ready;
+    this.isConnected = true;
     for (const guildId of this.client.guilds.cache.keys()) {
       this.warnIfNotAllowed(guildId);
     }
-    console.log("discord: 接続しました");
+    console.log(`${this.prefix} 接続しました`);
   }
 
   async send(channelId: string, text: string, replyToId?: string, mentionUserId?: string): Promise<void> {
@@ -260,7 +302,7 @@ export class DiscordGateway implements Gateway {
         const channel = await this.sendableChannel(channelId);
         if (!stopped) await channel.sendTyping();
       } catch (error) {
-        console.error(`discord: 入力中表示に失敗しました: ${describeError(error)}`);
+        console.error(`${this.prefix} 入力中表示に失敗しました: ${describeError(error)}`);
       }
     };
     void tick();
@@ -372,6 +414,7 @@ export class DiscordGateway implements Gateway {
   }
 
   async stop(): Promise<void> {
+    this.isConnected = false;
     await this.client.destroy();
   }
 

@@ -2,6 +2,7 @@ import type { GuildSettingsStore } from "../../store/guild-settings.ts";
 import type { SummaryChannelKind } from "../../store/inbox-summaries.ts";
 import { type InboxRotator, ROTATED_NOTICE, ROTATED_NOTICE_FRESH, type RotateNowResult } from "../inbox-rotate.ts";
 import type { CommandHandler } from "../interactions.ts";
+import { commandResponse, type PersonaRouter } from "../personas.ts";
 import { type RenewOutcome, renewSession, type SessionRenewDeps } from "../session-renew.ts";
 import { ALREADY_CLOSED_REPLY } from "./close.ts";
 
@@ -16,6 +17,8 @@ export type RenewDeps = SessionRenewDeps & {
   guildSettings: Pick<GuildSettingsStore, "get">;
   /** #inbox・#tasks の切り替え（日次の切り替えと同じ処理を今すぐ行う） */
   inboxRotator: Pick<InboxRotator, "rotateNow">;
+  /** チャンネルの持ち主の人格。既定の人格以外のチャンネルの結果は、持ち主の Bot がチャンネルに投稿する。無ければすべて既定の人格 */
+  personas?: Pick<PersonaRouter, "ownerOf" | "gatewayFor">;
 };
 
 /** セッションの会話を新しくした返信（要約を添える） */
@@ -58,7 +61,7 @@ function rotateReply(result: RotateNowResult): string {
 /**
  * `/renew`: 会話を要約して新しい SDK セッションに切り替える（システムプロンプトなどの変更は新しいセッションから反映される）。
  * セッションのチャンネルでは session-renew.ts、#inbox・#tasks では日次の切り替えと同じ処理（rotateNow）を行う。
- * 受け付けたら公開で保留し、結果をチャンネルに残す
+ * 受け付けたら公開で保留し、結果をチャンネルに残す（既定の人格以外のチャンネルでは、持ち主の Bot がチャンネルに投稿する）
  */
 export function createRenewCommand(deps: RenewDeps): CommandHandler {
   const { guildSettings, topicSessions, inboxRotator } = deps;
@@ -95,9 +98,10 @@ export function createRenewCommand(deps: RenewDeps): CommandHandler {
         return;
       }
       // 要約のターンは 3 秒を超えるので保留する
-      await responder.defer(false);
+      const response = commandResponse(deps.personas, channelId, responder);
+      await response.defer();
       const outcome = await renewSession(deps, guildId, channelId);
-      await responder.reply({ text: sessionReply(outcome) });
+      await response.show({ text: sessionReply(outcome) });
     },
   };
 }

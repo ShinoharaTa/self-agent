@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLOutputValue, SQLInputValue } from "node:sqlite";
 import type { StepUsage } from "../agent/runner.ts";
+import { DEFAULT_PERSONA_ID, type Engine } from "../config.ts";
 
 export type UsageRecord = {
   key: string;
@@ -23,6 +24,10 @@ export type UsageRecord = {
   cacheCreation1hInputTokens?: number;
   /** メインループのステップごとの入力側のトークン（起きた順）。省略・null は NULL */
   steps?: readonly StepUsage[] | null;
+  /** ターンを動かした人格の id。省略は既定の人格 */
+  persona?: string;
+  /** ターンを動かしたエンジン。省略は claude */
+  engine?: Engine;
 };
 
 export type UsageEntry = {
@@ -143,8 +148,8 @@ export class UsageStore {
     this.db
       .prepare(
         "INSERT INTO usage_log (at, key, session_id, ok, duration_ms, input_tokens, cache_read_input_tokens, cache_creation_input_tokens, compacted, tool_calls, context_tokens, " +
-          "kind, output_tokens, cache_creation_1h_tokens, steps) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "kind, output_tokens, cache_creation_1h_tokens, steps, persona, engine) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         this.now().toISOString(),
@@ -162,6 +167,8 @@ export class UsageStore {
         record.outputTokens ?? null,
         record.cacheCreation1hInputTokens ?? null,
         record.steps === undefined || record.steps === null ? null : stepsToJson(record.steps),
+        record.persona ?? DEFAULT_PERSONA_ID,
+        record.engine ?? "claude",
       );
   }
 

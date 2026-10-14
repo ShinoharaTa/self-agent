@@ -42,8 +42,8 @@ export function shellDisabledNotice(failed: readonly string[]): string {
 /** 自己診断が通るようになった知らせの本文 */
 export const SHELL_RESUMED_NOTICE = "シェル（Bash）の自己診断が通りました";
 
-/** promise を ms で打ち切る（時間切れは reject。元の投稿は止められないので、後から届くことはある） */
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+/** promise を ms で打ち切る（時間切れは reject。元の投稿は止められないので、後から届くことはある）。persona-status.ts の知らせでも使う */
+export async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${ms} ms で終わりませんでした`)), ms);

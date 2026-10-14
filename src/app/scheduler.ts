@@ -1,4 +1,4 @@
-// 定期処理（tick）。SELF_AGENT_SHELL=1 ならシェル（Bash）の sandbox を診断し直し（shell-state.ts）、DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
+// 定期処理（tick）。SELF_AGENT_SHELL=1 ならシェル（Bash）の sandbox を診断し直し（shell-state.ts）、足した人格があればその Bot の接続を確かめ（persona-status.ts）、DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
 // 最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し、
 // 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認し、
 // SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログと 30 日を過ぎたプロジェクトの .trash を消し、workDir の .tmp の 1 日を過ぎたものと 1 GB を超えた .cache を消し、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
@@ -76,6 +76,8 @@ export type SchedulerDeps = {
   pruneProjectTrash: () => Promise<void>;
   /** SELF_AGENT_SHELL=1 のときだけ渡す。シェルの自己診断をやり直し、変わっていれば知らせる（reject しない） */
   refreshShell?: () => Promise<void>;
+  /** 足した人格があるときだけ渡す。その Bot の接続を確かめ、変わっていれば #system に知らせる（reject しない） */
+  refreshPersonas?: () => Promise<void>;
   /** workDir の .tmp の古いものと、上限を超えた .cache を消す。投げたら log に出して続ける */
   pruneWorkDir: () => Promise<void>;
   /**
@@ -150,6 +152,7 @@ export class Scheduler {
    */
   private async runTick(): Promise<void> {
     await this.refreshShell();
+    await this.refreshPersonas();
     await this.reconcileChannels();
     await this.moveIdleSessions();
     await this.promptDeletes();
@@ -232,6 +235,16 @@ export class Scheduler {
       await this.deps.refreshShell();
     } catch (error) {
       this.deps.log(`シェルの自己診断に失敗しました: ${describeError(error)}`);
+    }
+  }
+
+  /** 足した人格の Bot の接続を確かめる（足した人格があるときだけ）。失敗は log に出すだけ */
+  private async refreshPersonas(): Promise<void> {
+    if (this.deps.refreshPersonas === undefined) return;
+    try {
+      await this.deps.refreshPersonas();
+    } catch (error) {
+      this.deps.log(`人格の Bot の接続の確認に失敗しました: ${describeError(error)}`);
     }
   }
 

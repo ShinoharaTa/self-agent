@@ -49,8 +49,9 @@ function projectsRulePath(workDir: string): string {
   return `//${join(realWorkDir, "projects").replace(/^\/+/, "")}/**`;
 }
 
+/** systemPrompt は人格のシステムプロンプト（system-prompt.ts の personaSystemPrompts）。省略すれば既定の人格の SYSTEM_PROMPT */
 export function buildQueryOptions(
-  cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "effort">,
+  cfg: Pick<Config, "model" | "workDir" | "claudeConfigDir" | "effort"> & { systemPrompt?: string },
   mcpServer: McpSdkServerConfigWithInstance,
 ): Options {
   const projects = projectsRulePath(cfg.workDir);
@@ -58,7 +59,7 @@ export function buildQueryOptions(
     model: cfg.model,
     // snapshot: false で、SDK にセッション初回のプロンプトを記録させず毎回この SYSTEM_PROMPT を送る（直したプロンプトが既存のセッションにも次のターンから届く。
     // 変えたターンだけ全セッションでキャッシュが 1 回外れる。#69 で実測）。既定（記録する）に戻すと各セッションの最初の記録に戻るので戻さない
-    systemPrompt: { type: "custom", prompt: SYSTEM_PROMPT, snapshot: false },
+    systemPrompt: { type: "custom", prompt: cfg.systemPrompt ?? SYSTEM_PROMPT, snapshot: false },
     settingSources: [],
     cwd: cfg.workDir,
     // 組み込みツールは Web の 2 つとファイル操作の 4 つ（シェルは無い）。キャッシュのため順序も固定。

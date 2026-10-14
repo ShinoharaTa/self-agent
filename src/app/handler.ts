@@ -1,6 +1,6 @@
 import type { AgentRunner, ProgressStep, RunResult } from "../agent/runner.ts";
 import type { Config } from "../config.ts";
-import type { Gateway, IncomingMessage, OutgoingMessage } from "../discord/gateway.ts";
+import type { IncomingMessage, OutgoingMessage } from "../discord/gateway.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { InboxSummaryStore } from "../store/inbox-summaries.ts";
 import type { MemoryStore } from "../store/memories.ts";
@@ -12,6 +12,7 @@ import type { ChannelOpsQueue } from "./channel-ops.ts";
 import { abortTurnButton, continueTurnButton, MAX_TURNS_REPLY } from "./commands/turn-controls.ts";
 import { buildTurnPrompt } from "./prompt.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
+import type { OwnerPosts, PersonaRouter } from "./personas.ts";
 import { applySessionEvent } from "./session-state.ts";
 import { ABORTED_ERROR, MAX_TURNS_ERROR_PREFIX, runChannelTurn, type TurnDeps } from "./turn.ts";
 import { extractUrls } from "./urls.ts";
@@ -94,8 +95,15 @@ export type HandlerDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "ownerUserId" | "timeZone">;
   /** 受け付け対象のチャンネルか（DB の設定、無ければ env の #inbox。/new で作ったセッション） */
   resolveChannel: ResolveChannel;
-  gateway: Gateway;
+  /** 返信・途中経過・入力中表示（チャンネルの持ち主の Bot で投稿する。personas.ts の ownerPosts） */
+  gateway: OwnerPosts;
+  /** 既定の人格の runner */
   runner: AgentRunner;
+  /**
+   * チャンネルの持ち主の人格。発言は持ち主の Bot が受け取った分だけを受け付け、ターンは持ち主の人格の runner で動かす。
+   * 無ければすべて既定の人格
+   */
+  personas?: Pick<PersonaRouter, "ownerOf" | "turnPersona">;
   sessions: SdkSessionStore;
   /** 次のターンの prompt の先頭に付ける文（resume 失敗の復旧など） */
   seeds: ChannelSeedStore;
@@ -159,6 +167,7 @@ export function createHandler(deps: HandlerDeps): Handler {
     resolveChannel,
     gateway,
     runner,
+    personas,
     sessions,
     seeds,
     topicSessions,
@@ -171,7 +180,18 @@ export function createHandler(deps: HandlerDeps): Handler {
     log,
   } = deps;
   const timers = deps.timers ?? REAL_TIMERS;
-  const turnDeps: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
+  const turnDeps: TurnDeps = {
+    runner,
+    ...(personas === undefined ? {} : { personas }),
+    sessions,
+    seeds,
+    topicSessions,
+    inboxSummaries,
+    memories,
+    usage,
+    log,
+  };
+  const ownerOf = personas === undefined ? undefined : (channelId: string) => personas.ownerOf(channelId);
   /** 実行中のセッションのチャンネルのターンの番号と中断（key は channelId。ターンが終わったら消す） */
   const running = new Map<string, { turnSeq: number; controller: AbortController }>();
   /**
@@ -364,7 +384,7 @@ export function createHandler(deps: HandlerDeps): Handler {
     handleMessage: async (event) => {
       try {
         // 受付判定は DB を引くので try の中で行う
-        const kind = acceptedChannel(event, cfg, resolveChannel);
+        const kind = acceptedChannel(event, cfg, resolveChannel, ownerOf);
         // 受け付けた発言は必ずサーバー内（guildId は null でない）
         if (kind === null || event.guildId === null) return;
         await submit({

@@ -10,6 +10,11 @@ export type IncomingMessage = {
   isWebhook: boolean;
   content: string;
   createdAt: Date;
+  /**
+   * 受け取った Bot の人格の id（docs/plan/personas.md）。全部の Bot が同じ発言を受け取るので、持ち主の Bot の分だけを受け付ける。
+   * 省略は既定の人格
+   */
+  persona?: string;
 };
 
 type InteractionBase = {

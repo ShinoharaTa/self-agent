@@ -1,5 +1,5 @@
 import { removeNodeModules } from "../../agent/disk.ts";
-import type { ButtonDef, ComponentRow, InteractionResponder, OutgoingMessage } from "../../discord/gateway.ts";
+import type { ButtonDef, ComponentRow, InteractionResponder } from "../../discord/gateway.ts";
 import type { ProjectStore } from "../../store/projects.ts";
 import type { TaskStore } from "../../store/tasks.ts";
 import {
@@ -10,6 +10,7 @@ import {
 } from "../../store/topic-sessions.ts";
 import type { ChannelOpsQueue } from "../channel-ops.ts";
 import type { CommandHandler, ComponentHandler } from "../interactions.ts";
+import { type CommandResponse, commandResponse, type PersonaRouter } from "../personas.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
 import { clip, fallbackSummary } from "../summary.ts";
 import { runChannelTurn, type TurnDeps } from "../turn.ts";
@@ -36,6 +37,8 @@ export type CloseDeps = {
   /** 発言のターンと同じキュー（key は channelId）。/close のターンが発言のターンと重ならないようにする */
   turnQueue: KeyedSerialQueue;
   turn: TurnDeps;
+  /** チャンネルの持ち主の人格。既定の人格以外のチャンネルの /close の結果は、持ち主の Bot がチャンネルに投稿する。無ければすべて既定の人格 */
+  personas?: Pick<PersonaRouter, "ownerOf" | "gatewayFor">;
   /** 閉じたセッションのプロジェクトの node_modules を消す（プロジェクトのディレクトリは `<projectsDir>/<slug>`） */
   projects: Pick<ProjectStore, "getByChannel">;
   projectsDir: string;
@@ -186,13 +189,8 @@ async function closeTurn(deps: CloseDeps, guildId: string, channelId: string): P
   return { result: "finalized", summary: draft.summary };
 }
 
-/** /close の流れの応答のしかた（/close と [閉じる] ボタンで違う） */
-type CloseResponse = {
-  /** ターンの前に保留する（LLM のターンは 3 秒を超える） */
-  defer(): Promise<void>;
-  /** ターンの結果（要約と確認のボタン、閉じた旨、失敗）を出す */
-  show(message: OutgoingMessage): Promise<void>;
-};
+/** /close の流れの応答のしかた（/close と [閉じる] ボタンで違う）。show はターンの結果（要約と確認のボタン、閉じた旨、失敗）を出す */
+type CloseResponse = CommandResponse;
 
 /**
  * /close の流れ: 閉じられるか確かめる（だめなら ephemeral で断る）→ 保留 → そのセッションの会話で要約とやることの候補を作らせ →
@@ -247,11 +245,14 @@ export function createCloseCommand(deps: CloseDeps): CommandHandler {
       // 許可サーバー以外（DM を含む）は interactions.ts で弾いている
       const guildId = interaction.guildId;
       if (guildId === null) throw new Error("サーバー外で /close が呼ばれました");
-      // 公開で保留する。要約と確認はチャンネルに残す
-      await runClose(deps, guildId, interaction.channelId, responder, {
-        defer: () => responder.defer(false),
-        show: (message) => responder.reply(message),
-      });
+      // 公開で保留する。要約と確認はチャンネルに残す（既定の人格以外のチャンネルでは、持ち主の Bot がチャンネルに投稿する）
+      await runClose(
+        deps,
+        guildId,
+        interaction.channelId,
+        responder,
+        commandResponse(deps.personas, interaction.channelId, responder),
+      );
     },
   };
 }
