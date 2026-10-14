@@ -12,7 +12,7 @@ export type IncomingImage = {
   contentType: ImageMediaType;
   /** バイト数 */
   size: number;
-  /** 幅・高さ（Discord が返さなければ null） */
+  /** 幅・高さ（Discord が返さなければ null）。参考だけで、縮めるかどうかは取った中身のヘッダから決める */
   width: number | null;
   height: number | null;
 };

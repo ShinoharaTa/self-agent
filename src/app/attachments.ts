@@ -11,20 +11,25 @@ import type { AttachmentStore } from "../store/attachments.ts";
 
 /** 1 回の取得の打ち切りまでの時間 */
 export const ATTACHMENT_FETCH_TIMEOUT_MS = 15_000;
-/** モデルに渡す画像の長辺（これより大きい画像は Discord の media proxy で縮めたものを取る） */
+/** モデルに渡す画像の長辺の上限（これより大きい画像は Discord の media proxy で縮めたものを取る。縮めたものを取れなければ渡さない） */
 export const MAX_IMAGE_LONG_SIDE = 1568;
-/** モデルに渡す画像の大きさの上限（バイト。base64 で約 5 MB になる、API の上限の手前） */
-export const MAX_PASSED_IMAGE_BYTES = 3.75 * 1024 * 1024;
+/**
+ * モデルに渡す画像の大きさの上限（バイト）。画像は SDK の会話の記録に残り、resume のたびに送り直されるので、
+ * API の上限（base64 で 5 MB）よりずっと小さくする
+ */
+export const MAX_PASSED_IMAGE_BYTES = 1024 * 1024;
 /** 記録に結びついていない添付を残す日数 */
 export const ATTACHMENT_RETENTION_DAYS = 30;
+/** 取得してよい場所（Discord の添付の CDN と media proxy。https だけ） */
+export const ATTACHMENT_HOSTS: readonly string[] = ["cdn.discordapp.com", "media.discordapp.net"];
 
 /** 縮めても大きすぎて渡さなかった画像があったときの返信 */
 export const IMAGE_TOO_LARGE_REPLY = "画像が大きすぎて読めませんでした";
-/** 取得できなかった（通信の失敗・時間切れ・中身が画像でない）画像があったときの返信 */
+/** 取得できなかった（通信の失敗・時間切れ・中身が画像でない・縮めたものを取れない）画像があったときの返信 */
 export const IMAGE_FETCH_FAILED_REPLY = "画像を取得できませんでした";
 
-/** fetch の形。テストでは偽物に差し替える */
-export type FetchFn = (url: string, init: { signal: AbortSignal }) => Promise<Response>;
+/** fetch の形。テストでは偽物に差し替える。転送はたどらない（redirect: "error"） */
+export type FetchFn = (url: string, init: { signal: AbortSignal; redirect: "error" }) => Promise<Response>;
 
 /** `<dataDir>/attachments`。attachments.path はここからの相対パス */
 export function attachmentsDir(dataDir: string): string {
@@ -53,35 +58,156 @@ export function sniffImageType(bytes: Uint8Array): ImageMediaType | undefined {
   return undefined;
 }
 
+export type ImageSize = { width: number; height: number };
+
+/** JPEG の SOF（フレームの始まり）のマーカー。幅・高さはここから読む */
+const JPEG_SOF_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+
+function jpegSize(bytes: Uint8Array, view: DataView): ImageSize | undefined {
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset] !== 0xff) return undefined;
+    const marker = bytes[offset + 1]!;
+    // 詰め物の 0xFF
+    if (marker === 0xff) {
+      offset++;
+      continue;
+    }
+    // 長さを持たないマーカー
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) {
+      offset += 2;
+      continue;
+    }
+    // 画像の終わり・スキャンの始まりまでに SOF が無い
+    if (marker === 0xd9 || marker === 0xda) return undefined;
+    const length = view.getUint16(offset + 2);
+    if (length < 2) return undefined;
+    if (JPEG_SOF_MARKERS.has(marker)) {
+      if (offset + 9 > bytes.length) return undefined;
+      return { height: view.getUint16(offset + 5), width: view.getUint16(offset + 7) };
+    }
+    offset += 2 + length;
+  }
+  return undefined;
+}
+
+function webpSize(bytes: Uint8Array, view: DataView): ImageSize | undefined {
+  if (startsWith(bytes, ascii("VP8X"), 12) && bytes.length >= 30) {
+    const uint24 = (at: number): number => bytes[at]! | (bytes[at + 1]! << 8) | (bytes[at + 2]! << 16);
+    return { width: uint24(24) + 1, height: uint24(27) + 1 };
+  }
+  if (startsWith(bytes, ascii("VP8L"), 12) && bytes.length >= 25 && bytes[20] === 0x2f) {
+    const [b0, b1, b2, b3] = [bytes[21]!, bytes[22]!, bytes[23]!, bytes[24]!];
+    return { width: 1 + (((b1 & 0x3f) << 8) | b0), height: 1 + (((b3 & 0x0f) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6)) };
+  }
+  if (startsWith(bytes, ascii("VP8 "), 12) && bytes.length >= 30 && startsWith(bytes, [0x9d, 0x01, 0x2a], 23)) {
+    return { width: view.getUint16(26, true) & 0x3fff, height: view.getUint16(28, true) & 0x3fff };
+  }
+  return undefined;
+}
+
 /**
- * 長辺を MAX_IMAGE_LONG_SIDE に縮めた画像の media proxy の URL（`width`・`height` を足す）。
- * 幅・高さが分からない・もう長辺以下・URL が読めないなら undefined（原本をそのまま渡す）
+ * 中身のヘッダから読んだ幅・高さ（Discord の width・height は信じない）。読めない・0 なら undefined。
+ * JPEG は SOF の値（EXIF の向きは見ないが、長辺は変わらない）
  */
-export function resizedProxyUrl(image: Pick<IncomingImage, "proxyUrl" | "width" | "height">): string | undefined {
-  const { width, height } = image;
-  if (width === null || height === null || width <= 0 || height <= 0) return undefined;
-  const longSide = Math.max(width, height);
-  if (longSide <= MAX_IMAGE_LONG_SIDE) return undefined;
-  const scale = MAX_IMAGE_LONG_SIDE / longSide;
+export function imageSize(bytes: Uint8Array, type: ImageMediaType): ImageSize | undefined {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let size: ImageSize | undefined;
+  if (type === "image/png") {
+    size =
+      bytes.length >= 24 && startsWith(bytes, ascii("IHDR"), 12)
+        ? { width: view.getUint32(16), height: view.getUint32(20) }
+        : undefined;
+  } else if (type === "image/gif") {
+    size = bytes.length >= 10 ? { width: view.getUint16(6, true), height: view.getUint16(8, true) } : undefined;
+  } else if (type === "image/webp") {
+    size = webpSize(bytes, view);
+  } else {
+    size = jpegSize(bytes, view);
+  }
+  return size === undefined || size.width <= 0 || size.height <= 0 ? undefined : size;
+}
+
+/**
+ * 長辺を MAX_IMAGE_LONG_SIDE 以下にした画像の media proxy の URL（`width`・`height` を足す。webp なら `format=webp` も）。
+ * size は原本の中身から読んだもの。URL が読めなければ undefined
+ */
+export function resizedProxyUrl(proxyUrl: string, size: ImageSize, webp: boolean): string | undefined {
+  const scale = Math.min(1, MAX_IMAGE_LONG_SIDE / Math.max(size.width, size.height));
   try {
-    const url = new URL(image.proxyUrl);
-    url.searchParams.set("width", String(Math.max(1, Math.round(width * scale))));
-    url.searchParams.set("height", String(Math.max(1, Math.round(height * scale))));
+    const url = new URL(proxyUrl);
+    url.searchParams.set("width", String(Math.max(1, Math.floor(size.width * scale))));
+    url.searchParams.set("height", String(Math.max(1, Math.floor(size.height * scale))));
+    if (webp) url.searchParams.set("format", "webp");
     return url.href;
   } catch {
     return undefined;
   }
 }
 
-/** 取得した中身。失敗（通信・時間切れ・2xx 以外・maxBytes を超える）なら undefined */
-async function fetchBytes(fetchFn: FetchFn, url: string, maxBytes: number): Promise<Uint8Array | undefined> {
+/** 取得してよい URL か（https で、ATTACHMENT_HOSTS のどれか。ポート・認証情報の付いたものは許さない） */
+export function isAllowedAttachmentUrl(value: string): boolean {
   try {
-    const response = await fetchFn(url, { signal: AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS) });
-    if (!response.ok) return undefined;
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    return bytes.length > maxBytes ? undefined : bytes;
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      ATTACHMENT_HOSTS.includes(url.hostname)
+    );
   } catch {
-    return undefined;
+    return false;
+  }
+}
+
+/** 取得の結果。tooLarge は maxBytes を超えた（Content-Length か読んだ量で判定）、failed はそれ以外の失敗 */
+type Fetched = { kind: "ok"; bytes: Uint8Array } | { kind: "tooLarge" } | { kind: "failed" };
+
+/**
+ * url の中身を maxBytes まで取る（全体で ATTACHMENT_FETCH_TIMEOUT_MS まで）。許した場所以外・転送・2xx 以外は失敗。
+ * Content-Length が maxBytes を超えていれば読まずに、読んでいる途中で超えたらそこで止めて tooLarge
+ */
+async function fetchBytes(fetchFn: FetchFn, url: string, maxBytes: number): Promise<Fetched> {
+  if (!isAllowedAttachmentUrl(url)) return { kind: "failed" };
+  const controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS)]);
+  try {
+    const response = await fetchFn(url, { signal, redirect: "error" });
+    if (!response.ok) {
+      controller.abort();
+      return { kind: "failed" };
+    }
+    const length = response.headers.get("content-length");
+    if (length !== null && Number(length) > maxBytes) {
+      controller.abort();
+      return { kind: "tooLarge" };
+    }
+    if (response.body === null) return { kind: "failed" };
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        controller.abort();
+        await reader.cancel().catch(() => {});
+        return { kind: "tooLarge" };
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { kind: "ok", bytes };
+  } catch {
+    controller.abort();
+    return { kind: "failed" };
   }
 }
 
@@ -94,9 +220,9 @@ export type PreparedImages = {
   images: RunImage[];
   /** 渡す画像の原本のうち保存できたものの id */
   attachmentIds: number[];
-  /** 縮めても MAX_PASSED_IMAGE_BYTES を超えたので渡さなかった数 */
+  /** 縮めても MAX_PASSED_IMAGE_BYTES を超えた（原本が 10 MB を超えたものを含む）ので渡さなかった数 */
   tooLarge: number;
-  /** 取得できなかった（中身が画像でないものを含む）数 */
+  /** 取得できなかった（中身が画像でない・幅と高さを読めない・長辺が大きいのに縮めたものを取れないものを含む）数 */
   failed: number;
 };
 
@@ -118,7 +244,7 @@ function saveOriginal(
   deps: Pick<AttachmentDeps, "dataDir" | "attachments">,
   source: AttachmentSource,
   index: number,
-  image: Pick<IncomingImage, "width" | "height">,
+  size: ImageSize,
   bytes: Uint8Array,
   contentType: ImageMediaType,
 ): number {
@@ -139,8 +265,8 @@ function saveOriginal(
       path: relativePath,
       contentType,
       size: bytes.length,
-      width: image.width,
-      height: image.height,
+      width: size.width,
+      height: size.height,
       sha256: createHash("sha256").update(bytes).digest("hex"),
     }).id;
   } catch (error) {
@@ -154,6 +280,18 @@ type PreparedImage =
   | { kind: "tooLarge" }
   | { kind: "failed" };
 
+/** 渡せる画像（中身が画像で、幅・高さを読め、長辺が上限以下で、大きさが上限以下） */
+type Passable = { kind: "ok"; bytes: Uint8Array; type: ImageMediaType } | { kind: "tooLarge" } | { kind: "failed" };
+
+function passable(bytes: Uint8Array): Passable {
+  const type = sniffImageType(bytes);
+  const size = type === undefined ? undefined : imageSize(bytes, type);
+  if (type === undefined || size === undefined || Math.max(size.width, size.height) > MAX_IMAGE_LONG_SIDE) {
+    return { kind: "failed" };
+  }
+  return bytes.length > MAX_PASSED_IMAGE_BYTES ? { kind: "tooLarge" } : { kind: "ok", bytes, type };
+}
+
 async function prepareImage(
   deps: AttachmentDeps,
   fetchFn: FetchFn,
@@ -162,46 +300,54 @@ async function prepareImage(
   index: number,
 ): Promise<PreparedImage> {
   const original = await fetchBytes(fetchFn, image.url, MAX_IMAGE_BYTES);
-  const originalType = original === undefined ? undefined : sniffImageType(original);
-  if (original === undefined || originalType === undefined) return { kind: "failed" };
-  // 渡すのは縮めたもの。proxy が縮めた画像を返さなければ（失敗・中身が画像でない）原本
-  let passed = original;
-  let passedType = originalType;
-  const proxyUrl = resizedProxyUrl(image);
-  if (proxyUrl !== undefined) {
-    const resized = await fetchBytes(fetchFn, proxyUrl, MAX_IMAGE_BYTES);
-    const resizedType = resized === undefined ? undefined : sniffImageType(resized);
-    if (resized !== undefined && resizedType !== undefined) {
-      passed = resized;
-      passedType = resizedType;
+  if (original.kind !== "ok") return original;
+  const originalType = sniffImageType(original.bytes);
+  const originalSize = originalType === undefined ? undefined : imageSize(original.bytes, originalType);
+  if (originalType === undefined || originalSize === undefined) return { kind: "failed" };
+  // 長辺も大きさも上限以下なら原本を渡す。それ以外は media proxy で縮めたもの（webp を先に、無ければ同じ形式）。
+  // どちらも渡せなければ渡さない（原本は渡さない）
+  let passed = passable(original.bytes);
+  if (passed.kind !== "ok") {
+    let tooLarge = passed.kind === "tooLarge";
+    passed = { kind: "failed" };
+    for (const webp of [true, false]) {
+      const url = resizedProxyUrl(image.proxyUrl, originalSize, webp);
+      const resized = url === undefined ? ({ kind: "failed" } as const) : await fetchBytes(fetchFn, url, MAX_PASSED_IMAGE_BYTES);
+      const candidate = resized.kind === "ok" ? passable(resized.bytes) : resized;
+      if (candidate.kind === "ok") {
+        passed = candidate;
+        break;
+      }
+      if (candidate.kind === "tooLarge") tooLarge = true;
     }
+    if (passed.kind !== "ok") return { kind: tooLarge ? "tooLarge" : "failed" };
   }
-  if (passed.length > MAX_PASSED_IMAGE_BYTES) return { kind: "tooLarge" };
   // 原本は縮めずに残す。保存に失敗しても画像は渡す（記録に結びつけられないだけ）
   let attachmentId: number | undefined;
   try {
-    attachmentId = saveOriginal(deps, source, index, image, original, originalType);
+    attachmentId = saveOriginal(deps, source, index, originalSize, original.bytes, originalType);
   } catch {
     deps.log("添付の原本を保存できませんでした");
   }
   return {
     kind: "passed",
-    image: { mediaType: passedType, data: Buffer.from(passed).toString("base64") },
+    image: { mediaType: passed.type, data: Buffer.from(passed.bytes).toString("base64") },
     attachmentId,
   };
 }
 
 /**
  * 発言の画像を取り（1 回 ATTACHMENT_FETCH_TIMEOUT_MS まで。画像ごとに並べて行う）、渡す画像と保存した原本の id を返す。
- * 長辺が MAX_IMAGE_LONG_SIDE を超えるものは media proxy で縮めたものを渡し、取れなければ原本を渡す。
- * 渡すものが MAX_PASSED_IMAGE_BYTES を超えたら渡さない（tooLarge）。保存するのは渡す画像の原本だけ。reject しない
+ * 幅・高さは中身のヘッダから読み、長辺が MAX_IMAGE_LONG_SIDE を超えるか MAX_PASSED_IMAGE_BYTES を超えるものは media proxy で縮めたもの
+ * （format=webp を先に、無ければ同じ形式）を渡す。縮めたものも渡せなければ渡さない（大きすぎれば tooLarge、それ以外は failed）。
+ * 保存するのは渡す画像の原本だけ。reject しない
  */
 export async function prepareImages(
   deps: AttachmentDeps,
   source: AttachmentSource,
   images: readonly IncomingImage[],
 ): Promise<PreparedImages> {
-  const fetchFn = deps.fetch ?? ((url, init) => fetch(url, init));
+  const fetchFn: FetchFn = deps.fetch ?? ((url, init) => fetch(url, init));
   const results = await Promise.all(
     images.map((image, index) =>
       prepareImage(deps, fetchFn, source, image, index).catch((): PreparedImage => ({ kind: "failed" })),

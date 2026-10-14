@@ -315,17 +315,25 @@ export function createHandler(deps: HandlerDeps): Handler {
    */
   const handleTurn = async (request: TurnRequest, channelName: string, revivedBeforeQueue: boolean): Promise<void> => {
     const { guildId, channelId, kind } = request;
-    // 画像はキューの中で取る（同じチャンネルの発言の順を崩さない）。渡せなかったものはヘッダの次に注記し、オーナーにも返す
-    const prepared = await prepareTurnImages(request);
-    const notes = attachmentNotes(request.attachments?.skipped, prepared);
-    const failedReply = prepared === undefined ? undefined : attachmentReply(prepared);
-    if (failedReply !== undefined) await reply(request, failedReply);
-    const images = prepared?.images ?? [];
-    // 本文も渡せる画像も残らなければターンは行わない（返信は上で済んでいる）
-    if (request.content.trim() === "" && images.length === 0) return;
-    const body = [...notes, ...(request.content.trim() === "" ? [] : [request.content])].join("\n");
     const current = kind === "session" ? topicSessions.get(channelId) : undefined;
     const revived = (current !== undefined && revive(current)) || revivedBeforeQueue;
+    // 画像はキューの中で取る（同じチャンネルの発言の順を崩さない）。渡せなかったものはヘッダの次に注記し、オーナーにも返す
+    const prepared = await prepareTurnImages(request);
+    const failedReply = prepared === undefined ? undefined : attachmentReply(prepared);
+    const images = prepared?.images ?? [];
+    // 本文も渡せる画像も残らなければ（読めない添付だけの発言を含む）ターンは行わず、理由（と進行中に戻したこと）だけを返す
+    if (request.content.trim() === "" && images.length === 0) {
+      const lines = [
+        ...(revived ? [REVIVED_NOTE] : []),
+        ...(failedReply === undefined ? [] : [failedReply]),
+        ...attachmentNotes(request.attachments?.skipped, undefined),
+      ];
+      if (lines.length > 0) await reply(request, lines.join("\n"));
+      return;
+    }
+    if (failedReply !== undefined) await reply(request, failedReply);
+    const notes = attachmentNotes(request.attachments?.skipped, prepared);
+    const body = [...notes, ...(request.content.trim() === "" ? [] : [request.content])].join("\n");
     const stopTyping = gateway.startTyping(channelId);
     const turn = kind === "session" ? { turnSeq: ++lastTurnSeq, controller: new AbortController() } : undefined;
     if (turn !== undefined) running.set(channelId, turn);

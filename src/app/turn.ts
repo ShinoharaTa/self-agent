@@ -33,6 +33,17 @@ export const ABORTED_ERROR = "aborted";
 
 export const RESUME_SEED_HEADER = "前の会話の記録が切れたため、要約から再開します。";
 
+/** API が画像を受け付けず、画像を外してやり直すときに prompt のヘッダの次に付ける注記 */
+export const IMAGE_DROPPED_NOTE = "（画像を読めなかったため、画像なしで渡しています）";
+
+/** prompt の 1 行目（日時ヘッダ）の次に IMAGE_DROPPED_NOTE を入れる。1 行しか無ければ後ろに付ける */
+export function withImageDroppedNote(prompt: string): string {
+  const newline = prompt.indexOf("\n");
+  if (newline === -1) return `${prompt}\n${IMAGE_DROPPED_NOTE}`;
+  const rest = prompt.slice(newline + 1);
+  return `${prompt.slice(0, newline + 1)}${IMAGE_DROPPED_NOTE}${rest === "" ? "" : `\n${rest}`}`;
+}
+
 /** 新しい SDK セッションの最初の prompt の先頭に付ける、記憶のブロックの見出し（システムプロンプトでこの文を説明している） */
 export const MEMORY_BLOCK_HEADER = "オーナーについての記憶（アプリが保存したもの）:";
 
@@ -162,6 +173,9 @@ export function recordTurnUsage(
  *   中断・打ち切りで終わったときは、途中で受け取った session_id があり、そのチャンネルにまだ SDK セッションが無いときだけ残し、seed も消す
  * - resume が「会話の記録が無い」で失敗したとき、または同じセッションで結果の届かない失敗（タイムアウト・中断を除く）が RESUME_FAILURE_LIMIT 回続いたときは、
  *   SDK セッションを捨て、seed（要約）を入れて、sessionId 無しで 1 回だけやり直す
+ * - API が画像（か大きすぎるリクエスト）を受け付けなかった（result.imageRejected）ときは、その会話を残さない。resume で起きたらすぐに
+ *   SDK セッションを捨てて seed を入れ、画像を外して（このターンに画像があれば IMAGE_DROPPED_NOTE を付けて）やり直す。新しいセッションで
+ *   起きたら、このターンに画像があり、まだ外していなければ 1 回だけ画像を外してやり直す（画像を外すのは 1 ターンに 1 回だけ）
  * 返す結果の失敗は呼び出し側で返信・log する
  */
 export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise<RunResult> {
@@ -179,11 +193,22 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     ...(turn.attachmentIds === undefined || turn.attachmentIds.length === 0 ? {} : { attachmentIds: turn.attachmentIds }),
   };
 
-  const runOnce = async (prompt: string, sessionId: string | undefined): Promise<RunResult> => {
-    // seed を付けてやり直すときも、取得を許すのはオーナーの発言の URL だけ。画像も同じものを渡す
+  // 画像。API が受け付けなければ外す（prompt にはそのことを注記する）
+  let images = turn.images === undefined || turn.images.length === 0 ? undefined : turn.images;
+  let prompt = turn.prompt;
+  let imagesDropped = false;
+  const dropImages = (): void => {
+    imagesDropped = true;
+    if (images === undefined) return;
+    images = undefined;
+    prompt = withImageDroppedNote(turn.prompt);
+  };
+
+  const runOnce = async (runPrompt: string, sessionId: string | undefined): Promise<RunResult> => {
+    // seed を付けてやり直すときも、取得を許すのはオーナーの発言の URL だけ。画像も（外していなければ）同じものを渡す
     const result = await runner.run({
-      prompt,
-      ...(turn.images === undefined || turn.images.length === 0 ? {} : { images: turn.images }),
+      prompt: runPrompt,
+      ...(images === undefined ? {} : { images }),
       sessionId,
       context,
       allowedUrls: turn.allowedUrls,
@@ -193,8 +218,9 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     recordTurnUsage(deps, key, usageKind, result, persona);
     if (result.ok) {
       sessions.set(key, result.sessionId);
-    } else {
-      // 途中まで（task_add 済みなど）の文脈を次のターンに残す。同じセッションなら失敗の回数はそのまま
+    } else if (result.imageRejected !== true) {
+      // 途中まで（task_add 済みなど）の文脈を次のターンに残す。同じセッションなら失敗の回数はそのまま。
+      // API が画像を受け付けなかった会話は、resume しても同じ失敗になりうるので残さない
       if (result.sessionRecorded && result.sessionId !== undefined && result.sessionId !== sessions.get(key)) {
         sessions.set(key, result.sessionId);
       } else if (
@@ -213,15 +239,22 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
 
   const sessionId = sessions.get(key);
   if (sessionId !== undefined) {
-    const result = await runOnce(turn.prompt, sessionId);
+    const result = await runOnce(prompt, sessionId);
     if (result.ok) return result;
     // 数えるのは結果が届かなかった失敗だけ。結果が届いた失敗（API エラー・手順数の上限など）は SDK が会話を読めた証拠で、
     // タイムアウトは時間がかかっただけ、中断はオーナーが止めただけで、会話自体は生きている
     const countable =
-      !result.sessionRecorded && result.errorMessage !== TIMEOUT_ERROR && result.errorMessage !== ABORTED_ERROR;
+      result.imageRejected !== true &&
+      !result.sessionRecorded &&
+      result.errorMessage !== TIMEOUT_ERROR &&
+      result.errorMessage !== ABORTED_ERROR;
     const failures = countable ? sessions.recordFailure(key) : 0;
-    // 実機の文言の確認のため、どちらも元のエラー文を出す
-    if (RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
+    // 実機の文言の確認のため、どちらも元のエラー文を出す（画像の拒否は文を出さない）
+    if (result.imageRejected === true) {
+      // 会話に残った画像で resume のたびに失敗しうるので、回数を待たずに捨てる
+      log("API が画像を受け付けなかったため、SDK セッションを捨てて画像なしで 1 回だけやり直します");
+      dropImages();
+    } else if (RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
       log(`resume に失敗したため、SDK セッションを捨てて新しいセッションで 1 回だけやり直します: ${result.errorMessage}`);
     } else if (failures >= RESUME_FAILURE_LIMIT) {
       log(
@@ -243,8 +276,14 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
   }
 
   const seed = seeds.get(key);
-  const parts = [memoryBlock(memories.list()), seed, turn.prompt].filter((part) => part !== undefined);
-  const result = await runOnce(parts.join("\n\n"), undefined);
+  const runFresh = (): Promise<RunResult> =>
+    runOnce([memoryBlock(memories.list()), seed, prompt].filter((part) => part !== undefined).join("\n\n"), undefined);
+  let result = await runFresh();
+  if (!result.ok && result.imageRejected === true && images !== undefined && !imagesDropped) {
+    log("API が画像を受け付けなかったため、画像なしで 1 回だけやり直します");
+    dropImages();
+    result = await runFresh();
+  }
   if (result.ok && seed !== undefined) seeds.delete(key);
   return result;
 }
