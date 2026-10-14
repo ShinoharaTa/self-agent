@@ -145,7 +145,7 @@ You can run a second bot with a different personality and role in the same proce
 3. Add to `~/.config/self-agent/env` (`<ID>` is the persona id in upper case):
 
 ```
-# persona ids (lower-case letters and digits, 1–12 chars, comma-separated)
+# persona ids (lower-case letters and digits, 1–12 chars, comma-separated, up to 10)
 SELF_AGENT_PERSONAS=mika
 SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN=...
 # display name (up to 20 chars; also the channel name #<NAME>; default: the id)

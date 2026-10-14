@@ -203,10 +203,12 @@ const PERSONA_ID = /^[a-z0-9]{1,12}$/;
 const PERSONA_NAME_MAX_LENGTH = 20;
 /** /setup が self-agent カテゴリに作るチャンネルの名前。足した人格の #<NAME> はこれと同じ名前にできない */
 const RESERVED_CHANNEL_NAMES: readonly string[] = ["inbox", "tasks", "system"];
+/** 足せる人格の数の上限（/new の persona の選択肢を Discord の 25 個以内に、/usage を 1 メッセージの 2,000 字以内に収める） */
+export const MAX_PERSONAS = 10;
 
 /**
  * SELF_AGENT_PERSONAS と人格ごとの変数を読む（docs/plan/personas.md §1）。エラーには変数名だけを出し、値（トークンを含む）は出さない。
- * 確かめること: id の形・重複・予約語（default）、トークンの欠け、同じトークンを 2 人格に（既定の人格の DISCORD_TOKEN を含む）、表示名の長さ、
+ * 確かめること: id の形・重複・予約語（default）・数（MAX_PERSONAS まで）、トークンの欠け、同じトークンを 2 人格に（既定の人格の DISCORD_TOKEN を含む）、表示名の長さ、
  * 表示名から作るチャンネル名（#<NAME>）が空にならない・inbox・tasks・system と重ならない・人格どうしで重ならない、エンジン、effort
  */
 function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[] {
@@ -227,6 +229,7 @@ function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[
     if (seen.has(id)) throw new Error(`SELF_AGENT_PERSONAS に同じ id（${id}）が 2 回あります`);
     seen.add(id);
   }
+  if (ids.length > MAX_PERSONAS) throw new Error(`SELF_AGENT_PERSONAS に足せる人格は ${MAX_PERSONAS} までです`);
 
   // 同じトークンを 2 人格に渡していないか（値は比べるだけで、エラーには変数名を出す）
   const tokenOwners = new Map<string, string>();

@@ -143,7 +143,7 @@ systemctl --user stop self-agent        # 停止（進行中の返信を待っ�
 3. `~/.config/self-agent/env` に足す（`<ID>` は人格の id の大文字）:
 
 ```
-# 人格の id（英小文字と数字の 1〜12 字、カンマ区切り）
+# 人格の id（英小文字と数字の 1〜12 字、カンマ区切り、10 個まで）
 SELF_AGENT_PERSONAS=mika
 SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN=...
 # 表示名（20 字以内。チャンネル名 #<NAME> にもなる。未設定なら id）

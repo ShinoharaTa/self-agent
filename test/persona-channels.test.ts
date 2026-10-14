@@ -372,6 +372,41 @@ test("切り替え: 人格が設定に無ければ #<NAME> は切り替えない
   assert.equal(env.guildSettings.personaInbox("guild-1", "mika")?.rotatedDate, "2026-10-13");
 });
 
+test("切り替え（サイズ）: #<NAME> はそのチャンネルの直近の成功したターンの最後のステップの入力で判定し、超えたらその人格で切り替える", async (t) => {
+  const env = setup(t, { mika: [ok("- 京都旅行の宿を探す", "s-m2")] });
+  // 3 つのチャンネルとも今日の 1 時間前に切り替え済み（日次の時期ではない）
+  const earlier = new Date(NOW.getTime() - HOUR_MS);
+  env.guildSettings.setInboxRotated("guild-1", "2026-10-14", earlier);
+  env.guildSettings.setTasksRotated("guild-1", earlier);
+  env.guildSettings.setInboxRotated("guild-1", "2026-10-14", earlier, "mika");
+  env.sessions.set("mika-in", "s-m");
+  // 既定の人格の #inbox の大きな入力は #mika の判定に使わない（#inbox は SDK セッションが無いので切り替えない）
+  env.usage.record({ key: "inbox-1", ok: true, contextTokens: 200000, kind: "inbox" });
+  // #mika の直近の成功したターンは上限以下
+  env.usage.record({ key: "mika-in", ok: true, contextTokens: 200000, kind: "inbox", persona: "mika" });
+  env.usage.record({ key: "mika-in", ok: true, contextTokens: 1000, kind: "inbox", persona: "mika" });
+  const inboxRotator = rotator(env);
+
+  await inboxRotator.rotateDue(() => false);
+  assert.equal(env.mikaRunner.inputs.length, 0);
+  assert.equal(env.sessions.get("mika-in"), "s-m");
+
+  // 直近の成功したターンが上限を超えた（その後の失敗したターンは数えない）
+  env.usage.record({ key: "mika-in", ok: true, contextTokens: 150001, kind: "inbox", persona: "mika" });
+  env.usage.record({ key: "mika-in", ok: false, kind: "inbox", persona: "mika" });
+  await inboxRotator.rotateDue(() => false);
+
+  assert.deepEqual(env.mikaRunner.inputs, [{ prompt: ROTATE_PROMPT, sessionId: "s-m", context: undefined, allowedUrls: [] }]);
+  assert.equal(env.defaultRunner.inputs.length, 0);
+  assert.equal(env.inboxSummaries.latest("guild-1", "inbox", "mika")?.summary, "- 京都旅行の宿を探す");
+  assert.equal(env.sessions.get("mika-in"), undefined);
+  assert.ok(env.logs.some((line) => line.includes("#inbox（人格 mika）") && line.includes("直近の入力 150001 トークン")));
+  assert.deepEqual(
+    env.mika.posts.map(({ channelId, message: posted }) => [channelId, posted.text]),
+    [["mika-in", ROTATED_NOTICE]],
+  );
+});
+
 test("/renew: #<NAME> ではその人格の会話を切り替え、結果はその人格の Bot が投稿する（応答は本人にだけ）", async (t) => {
   const env = setup(t, { mika: [ok("- 京都旅行の宿を探す", "s-m2")] });
   seedRotation(env);
@@ -433,6 +468,46 @@ test("待ちに移した知らせ（[続ける][閉じる]）は、セッショ�
     env.admin.posts.map(({ channelId, message: posted }) => [channelId, posted]),
     [["topic-d", idleNotice(12, "topic-d")]],
   );
+});
+
+test("再同期: self-agent カテゴリの外にある設定中の人格の #<NAME> は戻し、設定から外した人格の #<NAME> は触らない", async (t) => {
+  const env = setup(t);
+  env.guildSettings.setChannel("guild-1", "homeCategoryId", "home-1");
+  env.guildSettings.setChannel("guild-1", "systemChannelId", "system-1");
+  env.guildSettings.setPersonaInbox("guild-1", "gone", "gone-in");
+  const gateway = new FakeGateway({ allow: ["sendMessage", "listChannelParents", "isInGuild"] });
+  gateway.parents = new Map<string, string | null>([
+    ["home-1", null],
+    ["active-1", null],
+    ["inbox-1", "home-1"],
+    ["tasks-1", "home-1"],
+    ["system-1", "home-1"],
+    // 手で動かされた #mika と、外した人格の #gone
+    ["mika-in", "active-1"],
+    ["gone-in", null],
+  ]);
+  const channelOps = new RecordingChannelOps();
+  const scheduler = new Scheduler({
+    cfg,
+    topicSessions: env.topicSessions,
+    guildSettings: env.guildSettings,
+    sessions: env.sessions,
+    seeds: env.seeds,
+    channelOps,
+    gateway,
+    personas: env.personas,
+    inboxRotator: { rotateDue: async () => {} },
+    pruneDevLogs: () => {},
+    pruneProjectTrash: async () => {},
+    pruneWorkDir: async () => {},
+    turnQueue: new KeyedSerialQueue(2),
+    now: env.now,
+    log: env.log,
+  });
+
+  await scheduler.tick();
+
+  assert.deepEqual(channelOps.moves, [{ channelId: "mika-in", target: { kind: "category", categoryId: "home-1" } }]);
 });
 
 test("/sessions: 足した人格があれば、その人格のセッションに表示名を添える（無ければ今までどおり）", async (t) => {
@@ -507,6 +582,14 @@ test("設定: 表示名から作るチャンネル名が空・inbox/tasks/system
   for (const { label, env, error } of cases) {
     assert.throws(() => loadConfig({ ...base, ...env }), error, label);
   }
+  // 足せる人格は 10 まで（/new の選択肢を Discord の 25 個以内に、/usage を 2,000 字以内に）
+  const ids = Array.from({ length: 11 }, (_, index) => `p${index}`);
+  const tokens = Object.fromEntries(ids.map((id) => [`SELF_AGENT_PERSONA_${id.toUpperCase()}_DISCORD_TOKEN`, `dummy-${id}`]));
+  assert.throws(
+    () => loadConfig({ ...base, ...tokens, SELF_AGENT_PERSONAS: ids.join(",") }),
+    /SELF_AGENT_PERSONAS に足せる人格は 10 までです/,
+  );
+  assert.equal(loadConfig({ ...base, ...tokens, SELF_AGENT_PERSONAS: ids.slice(0, 10).join(",") }).personas.length, 10);
   assert.equal(loadConfig({ ...base, SELF_AGENT_PERSONAS: "mika", SELF_AGENT_PERSONA_MIKA_NAME: "Mika" }).personas[0]?.name, "Mika");
 });
 
