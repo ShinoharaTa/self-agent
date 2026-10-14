@@ -1,5 +1,5 @@
 // dev モードの会話ログ（<SELF_AGENT_DATA_DIR>/devlog/<YYYY-MM-DD>.jsonl）を 1 ターンずつ読みやすく出す。
-// npm run devlog -- [--date YYYY-MM-DD] [--kind inbox|tasks|session] [--channel <id>] [--last N]（既定は今日・全部）。
+// npm run devlog -- [--date YYYY-MM-DD] [--kind inbox|tasks|session] [--channel <id>] [--persona <id>] [--last N]（既定は今日・全部）。
 // 読む設定は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ だけ（トークンが無くても動く。既定値は loadConfig と同じ）
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,7 +11,8 @@ import { formatDevLogRecord, parseDevLog, selectDevLogRecords } from "../src/dev
 import { devLogDir } from "../src/devlog/log.ts";
 
 const KINDS: readonly RunContext["kind"][] = ["inbox", "tasks", "session"];
-const USAGE = "使い方: npm run devlog -- [--date YYYY-MM-DD] [--kind inbox|tasks|session] [--channel <id>] [--last N]";
+const USAGE =
+  "使い方: npm run devlog -- [--date YYYY-MM-DD] [--kind inbox|tasks|session] [--channel <id>] [--persona <id>] [--last N]";
 
 function fail(message: string): never {
   console.error(message);
@@ -19,13 +20,14 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-let values: { date?: string; kind?: string; channel?: string; last?: string };
+let values: { date?: string; kind?: string; channel?: string; persona?: string; last?: string };
 try {
   ({ values } = parseArgs({
     options: {
       date: { type: "string" },
       kind: { type: "string" },
       channel: { type: "string" },
+      persona: { type: "string" },
       last: { type: "string" },
     },
   }));
@@ -64,6 +66,7 @@ if (skipped > 0) console.error(`読めない行を ${skipped} 行飛ばしまし
 const selected = selectDevLogRecords(records, {
   ...(kind === undefined ? {} : { kind }),
   ...(values.channel === undefined ? {} : { channelId: values.channel }),
+  ...(values.persona === undefined ? {} : { persona: values.persona }),
   ...(last === undefined ? {} : { last }),
 });
 if (selected.length === 0) {

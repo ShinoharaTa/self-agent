@@ -218,8 +218,8 @@ export class UsageStore {
     return row === undefined ? undefined : toEntry(row);
   }
 
-  /** since 以降（ちょうどを含む）に記録したターンを合計する */
-  summarize(since: Date): UsageSummary {
+  /** since 以降（ちょうどを含む）に記録したターンを合計する。persona を渡せばその人格のターンだけ */
+  summarize(since: Date, persona?: string): UsageSummary {
     // at は toISOString（UTC・同じ桁数）で保存しているので、文字列の比較で時刻の前後を比べられる
     const row = this.db
       .prepare(
@@ -231,9 +231,9 @@ export class UsageStore {
           "COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens, " +
           "COALESCE(SUM(compacted), 0) AS compactions, " +
           "COALESCE(SUM(tool_calls), 0) AS tool_calls " +
-          "FROM usage_log WHERE at >= ?",
+          `FROM usage_log WHERE at >= ?${persona === undefined ? "" : " AND persona = ?"}`,
       )
-      .get(since.toISOString());
+      .get(since.toISOString(), ...(persona === undefined ? [] : [persona]));
     return {
       turns: Number(row?.turns ?? 0),
       okTurns: Number(row?.ok_turns ?? 0),

@@ -8,6 +8,9 @@ import type { Gateway, InteractionResponder, OutgoingMessage } from "../discord/
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 
+/** 既定の人格の表示（表示名の変数が無いので、/sessions・/usage ではこの名前で出す） */
+export const DEFAULT_PERSONA_LABEL = "既定の人格";
+
 /** ターンを動かす人格。engine は実際に動かすエンジン（usage に記録する。codex の人格も codex のエンジンができるまでは claude） */
 export type TurnPersona = { id: string; engine: Engine; runner: AgentRunner };
 

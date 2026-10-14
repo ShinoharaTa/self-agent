@@ -95,6 +95,8 @@ export type CommandDef = {
     /** string のときだけ効く。文字数の下限・上限（Discord 側で検証する） */
     minLength?: number;
     maxLength?: number;
+    /** string のときだけ効く。選べる値（name は表示、value は渡る値。25 個まで） */
+    choices?: Array<{ name: string; value: string }>;
   }>;
 };
 

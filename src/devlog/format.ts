@@ -1,12 +1,13 @@
 // dev モードの会話ログ（log.ts の記録）を 1 ターンずつ読みやすい文字列にする（npm run devlog）。純関数だけ
 import type { RunContext } from "../agent/runner.ts";
+import { DEFAULT_PERSONA_ID } from "../config.ts";
 import { truncateText, type DevLogRecord, type DevLogStep } from "./log.ts";
 
 /** steps の tool_use の input と tool_result の content は、この字数まで出す */
 export const DEV_LOG_PREVIEW_LIMIT = 300;
 
-/** 表示する記録の絞り込み。last は絞り込んだ後の最後の last 件 */
-export type DevLogFilter = { kind?: RunContext["kind"]; channelId?: string; last?: number };
+/** 表示する記録の絞り込み。persona は人格の id（印の無い以前の記録は既定の人格）。last は絞り込んだ後の最後の last 件 */
+export type DevLogFilter = { kind?: RunContext["kind"]; channelId?: string; persona?: string; last?: number };
 
 /** jsonl の中身を記録の配列にする。空行は無視し、JSON として読めない行は飛ばして数える */
 export function parseDevLog(text: string): { records: DevLogRecord[]; skipped: number } {
@@ -23,12 +24,13 @@ export function parseDevLog(text: string): { records: DevLogRecord[]; skipped: n
   return { records, skipped };
 }
 
-/** kind・channelId が指定されていればそれだけに絞り、last があれば最後の last 件 */
+/** kind・channelId・persona が指定されていればそれだけに絞り、last があれば最後の last 件 */
 export function selectDevLogRecords(records: readonly DevLogRecord[], filter: DevLogFilter): DevLogRecord[] {
   const selected = records.filter(
     (record) =>
       (filter.kind === undefined || record.kind === filter.kind) &&
-      (filter.channelId === undefined || record.channelId === filter.channelId),
+      (filter.channelId === undefined || record.channelId === filter.channelId) &&
+      (filter.persona === undefined || (record.persona ?? DEFAULT_PERSONA_ID) === filter.persona),
   );
   return filter.last === undefined ? selected : selected.slice(-filter.last);
 }
@@ -53,7 +55,8 @@ function formatDuration(ms: number): string {
 }
 
 /**
- * 見出し（時刻・種類・チャンネル ID・所要時間・トークン・ツール回数・成否）。context の無い run の種類・チャンネルは -。
+ * 見出し（時刻・種類・チャンネル ID・人格・所要時間・トークン・ツール回数・成否）。context の無い run の種類・チャンネルは -。
+ * 人格は印のある記録だけ出す（以前の記録には無い）。
  * トークンは失敗でも届いた分があれば出す。出力の無い記録（失敗・以前の記録）とステップ数の無い以前の記録はそこだけ -
  */
 function heading(record: DevLogRecord, timeZone: string): string {
@@ -65,7 +68,8 @@ function heading(record: DevLogRecord, timeZone: string): string {
       : `input ${usage.inputTokens} / cache read ${usage.cacheReadInputTokens} / cache creation ${usage.cacheCreationInputTokens}` +
         ` / output ${usage.outputTokens ?? "-"} | ステップ ${usage.steps?.length ?? "-"}`;
   return [
-    `=== ${formatTime(record.at, timeZone)} ${record.kind ?? "-"} channel=${record.channelId ?? "-"} ===`,
+    `=== ${formatTime(record.at, timeZone)} ${record.kind ?? "-"} channel=${record.channelId ?? "-"}` +
+      `${record.persona === undefined ? "" : ` persona=${record.persona}`} ===`,
     `${formatDuration(record.durationMs)} | ${tokens} | ツール ${result.toolCalls} 回 | ${result.ok ? "成功" : "失敗"}`,
   ].join("\n");
 }

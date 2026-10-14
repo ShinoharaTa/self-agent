@@ -32,7 +32,20 @@ const CHANNEL_COLUMNS: Record<"homeCategoryId" | "systemChannelId", string> = {
 };
 
 /** 入口のチャンネルの種類（persona_channels.kind）。足した人格の #<NAME> は inbox */
-type PersonaChannelKind = "inbox" | "tasks";
+export type PersonaChannelKind = "inbox" | "tasks";
+
+/** 入口のチャンネル（persona_channels の行）がどのサーバー・人格・種類のものか */
+export type EntryChannel = { guildId: string; persona: string; kind: PersonaChannelKind };
+
+/** 足した人格の #<NAME>（persona_channels の kind 'inbox' の行）と、その切り替えの日・時刻 */
+export type PersonaInbox = {
+  /** まだ作っていなければ null */
+  channelId: string | null;
+  /** 最後に切り替えた日（SELF_AGENT_TZ の日付、YYYY-MM-DD）。まだ切り替えていなければ null */
+  rotatedDate: string | null;
+  /** 最後に切り替えた時刻（ISO）。まだ切り替えていなければ null */
+  rotatedAt: string | null;
+};
 
 /** persona_channels（既定の人格の行）に置く入口のチャンネル */
 const PERSONA_CHANNEL_KINDS: Record<"inboxChannelId" | "tasksChannelId", PersonaChannelKind> = {
@@ -70,7 +83,8 @@ function toSettings(row: Record<string, SQLOutputValue>): GuildSettings {
 
 /**
  * サーバーごとの設定（guild_settings）と状態カテゴリ（state_categories）。
- * #inbox・#tasks の ID と切り替えの日・時刻は既定の人格の persona_channels の行に読み書きする（guild_settings の行が無ければ /setup 前のまま）
+ * #inbox・#tasks の ID と切り替えの日・時刻は既定の人格の persona_channels の行に、足した人格の #<NAME> はその人格の行（kind inbox）に読み書きする
+ * （guild_settings の行が無ければ /setup 前のまま）
  */
 export class GuildSettingsStore {
   private readonly db: DatabaseSync;
@@ -85,6 +99,31 @@ export class GuildSettingsStore {
   get(guildId: string): GuildSettings | undefined {
     const row = this.db.prepare(SELECT_SETTINGS).get(DEFAULT_PERSONA_ID, DEFAULT_PERSONA_ID, guildId);
     return row === undefined ? undefined : toSettings(row);
+  }
+
+  /** その入口のチャンネル（persona_channels の行）のサーバー・人格・種類。入口のチャンネルでなければ undefined */
+  entryChannel(channelId: string): EntryChannel | undefined {
+    const row = this.db.prepare("SELECT guild_id, persona, kind FROM persona_channels WHERE channel_id = ?").get(channelId);
+    if (row === undefined) return undefined;
+    return { guildId: String(row.guild_id), persona: String(row.persona), kind: row.kind === "tasks" ? "tasks" : "inbox" };
+  }
+
+  /** そのサーバーのその人格の #inbox（足した人格は #<NAME>）の行。まだ無ければ undefined */
+  personaInbox(guildId: string, persona: string): PersonaInbox | undefined {
+    const row = this.db
+      .prepare("SELECT channel_id, rotated_date, rotated_at FROM persona_channels WHERE guild_id = ? AND persona = ? AND kind = 'inbox'")
+      .get(guildId, persona);
+    if (row === undefined) return undefined;
+    return {
+      channelId: nullableString(row.channel_id),
+      rotatedDate: nullableString(row.rotated_date),
+      rotatedAt: nullableString(row.rotated_at),
+    };
+  }
+
+  /** 足した人格の #<NAME> のチャンネルの ID を保存する（/setup）。行が無ければ作る */
+  setPersonaInbox(guildId: string, persona: string, channelId: string): void {
+    this.setPersonaChannel(guildId, "inbox", { channel_id: channelId }, persona);
   }
 
   /** その入口のチャンネル（persona_channels の行）の持ち主の人格の id。入口のチャンネルでなければ undefined */
@@ -120,9 +159,9 @@ export class GuildSettingsStore {
       .run(guildId, messageId, at, at);
   }
 
-  /** #inbox の会話を切り替えた日（YYYY-MM-DD）と時刻（rotatedAt）を保存する。行が無ければ作る */
-  setInboxRotated(guildId: string, date: string, rotatedAt: Date): void {
-    this.setPersonaChannel(guildId, "inbox", { rotated_date: date, rotated_at: rotatedAt.toISOString() });
+  /** #inbox（persona が足した人格なら #<NAME>）の会話を切り替えた日（YYYY-MM-DD）と時刻（rotatedAt）を保存する。行が無ければ作る */
+  setInboxRotated(guildId: string, date: string, rotatedAt: Date, persona: string = DEFAULT_PERSONA_ID): void {
+    this.setPersonaChannel(guildId, "inbox", { rotated_date: date, rotated_at: rotatedAt.toISOString() }, persona);
   }
 
   /** #tasks の会話を切り替えた時刻（rotatedAt）を保存する。行が無ければ作る */
@@ -131,13 +170,14 @@ export class GuildSettingsStore {
   }
 
   /**
-   * 既定の人格の入口のチャンネルの行（persona_channels）に values の列だけを保存する。どちらの表も行が無ければ作り、
+   * 入口のチャンネルの行（persona_channels。persona を省略したら既定の人格）に values の列だけを保存する。どちらの表も行が無ければ作り、
    * guild_settings の updated_at も今にする（guild_settings の行があることが /setup 済みの印なので、今までどおり作る）
    */
   private setPersonaChannel(
     guildId: string,
     kind: PersonaChannelKind,
     values: Partial<Record<"channel_id" | "rotated_date" | "rotated_at", string>>,
+    persona: string = DEFAULT_PERSONA_ID,
   ): void {
     const at = this.now().toISOString();
     const columns = Object.keys(values);
@@ -157,7 +197,7 @@ export class GuildSettingsStore {
             `VALUES (?, ?, ?, ${columns.map(() => "?").join(", ")}, ?, ?) ` +
             `ON CONFLICT (guild_id, persona, kind) DO UPDATE SET ${updates}, updated_at = excluded.updated_at`,
         )
-        .run(guildId, DEFAULT_PERSONA_ID, kind, ...Object.values(values), at, at);
+        .run(guildId, persona, kind, ...Object.values(values), at, at);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");

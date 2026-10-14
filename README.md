@@ -135,6 +135,34 @@ systemctl --user stop self-agent        # stop (waits for in-flight replies firs
 
 Run `/setup` on an allowed server. Once the categories and channels exist, try writing 「明日 買い物」 ("shopping tomorrow") in `#inbox`.
 
+### 6. (Optional) Add a second bot (persona)
+
+You can run a second bot with a different personality and role in the same process and server. Tasks, memories and the knowledge base are shared.
+
+1. In the Developer Portal, create another application and bot, issue its token, turn **Public Bot off** and **Message Content Intent on**.
+2. Invite it to the same server (scopes: `bot` and `applications.commands`) with only these permissions:
+   View Channels / Send Messages / Read Message History (no Manage Channels; the first bot creates and moves channels)
+3. Add to `~/.config/self-agent/env` (`<ID>` is the persona id in upper case):
+
+```
+# persona ids (lower-case letters and digits, 1–12 chars, comma-separated)
+SELF_AGENT_PERSONAS=mika
+SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN=...
+# display name (up to 20 chars; also the channel name #<NAME>; default: the id)
+SELF_AGENT_PERSONA_MIKA_NAME=Mika
+# optional: personality / tone / role (default ~/.config/self-agent/personas/<id>.md; keep it out of the repository)
+SELF_AGENT_PERSONA_MIKA_PROMPT_FILE=...
+# optional: claude (default) / codex (codex runs on Claude until the codex engine lands), and its model and effort
+SELF_AGENT_PERSONA_MIKA_ENGINE=claude
+SELF_AGENT_PERSONA_MIKA_MODEL=...
+SELF_AGENT_PERSONA_MIKA_EFFORT=...
+# recommended when you add a persona
+SELF_AGENT_MAX_CONCURRENT=3
+```
+
+4. Restart, then run `/setup` again. It creates `#<NAME>` (for example `#mika`) in the self-agent category; write there to talk to the second bot.
+   To start a session with it, use `/new` with the `persona` option (the channel is named `<NAME>-<title>`), or ask it in `#<NAME>`.
+
 ## Development
 
 ```bash

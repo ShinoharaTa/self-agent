@@ -3,7 +3,7 @@ import type { IncomingMessage } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 
-/** 発言を受け付けるチャンネルの種類（#inbox、#tasks か、/new で作ったセッション） */
+/** 発言を受け付けるチャンネルの種類（#inbox（足した人格の #<NAME> も）、#tasks か、/new・session_open で作ったセッション） */
 export type ChannelKind = "inbox" | "tasks" | "session";
 
 /** そのチャンネルが受け付け対象なら種類を、対象外なら null を返す */
@@ -43,18 +43,27 @@ export function acceptedChannel(
 /**
  * /setup 済みのサーバーは DB の #inbox、guild_settings に行が無いサーバーだけ env の SELF_AGENT_INBOX_CHANNEL_ID を #inbox とみなす（env は P3 で廃止）。
  * #tasks は /setup 済みのサーバーの DB の #tasks だけ（env の fallback には無い）。
+ * 足した人格（cfg.personas）の #<NAME> は、/setup 済みのサーバーの DB のもので、その人格が今も設定にあるときだけ #inbox と同じ種類として受け付ける
+ * （人格が無ければ引かない）。
  * sessions に行があり、削除済みでなく、同じサーバーのチャンネルならセッションとして受け付ける
  */
 export function createChannelResolver(
-  cfg: Pick<Config, "inboxChannelId">,
-  guildSettings: Pick<GuildSettingsStore, "get">,
+  cfg: Pick<Config, "inboxChannelId"> & Partial<Pick<Config, "personas">>,
+  guildSettings: Pick<GuildSettingsStore, "get" | "entryChannel">,
   topicSessions: Pick<TopicSessionStore, "get">,
 ): ResolveChannel {
+  const personaIds = new Set((cfg.personas ?? []).map((persona) => persona.id));
   return (guildId, channelId) => {
     const settings = guildSettings.get(guildId);
     const inboxChannelId = settings === undefined ? cfg.inboxChannelId : settings.inboxChannelId;
     if (channelId === inboxChannelId) return "inbox";
     if (settings !== undefined && channelId === settings.tasksChannelId) return "tasks";
+    if (settings !== undefined && personaIds.size > 0) {
+      const entry = guildSettings.entryChannel(channelId);
+      if (entry !== undefined && entry.guildId === guildId && entry.kind === "inbox" && personaIds.has(entry.persona)) {
+        return "inbox";
+      }
+    }
     const session = topicSessions.get(channelId);
     return session !== undefined && session.state !== "deleted" && session.guildId === guildId ? "session" : null;
   };
