@@ -255,6 +255,57 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE reminders ADD COLUMN last_message_channel_id TEXT;
   `,
+  // v20: 定型チャンネル（docs/plan/routines.md）。routines はチャンネルごとの手順・要約・切り替えの日と時刻（channel_id は一意。
+  // セッションだったチャンネルを定型に変えても sessions とは別の表）。routine_records は定型チャンネルの記録（fields は JSON。物理削除せず void）。
+  // attachments は受け取った添付の原本（record_id は結びつけた記録）。guild_settings にはカテゴリ「定型」の ID
+  `
+  CREATE TABLE routines (
+    channel_id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    persona TEXT NOT NULL DEFAULT 'default',
+    name TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT '',
+    instructions TEXT NOT NULL DEFAULT '',
+    instructions_rev INTEGER NOT NULL DEFAULT 1,
+    seen_rev INTEGER NOT NULL DEFAULT 0,
+    summary TEXT,
+    rotated_date TEXT,
+    rotated_at TEXT,
+    state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'archived')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
+  );
+  CREATE INDEX routines_guild_state ON routines (guild_id, state);
+  CREATE TABLE routine_records (
+    id INTEGER PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    date TEXT,
+    fields TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'void')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX routine_records_channel_date ON routine_records (channel_id, status, date);
+  CREATE TABLE attachments (
+    id INTEGER PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    sha256 TEXT NOT NULL,
+    record_id INTEGER,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE INDEX attachments_record_id ON attachments (record_id);
+  CREATE INDEX attachments_unlinked ON attachments (created_at) WHERE record_id IS NULL;
+  ALTER TABLE guild_settings ADD COLUMN routine_category_id TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

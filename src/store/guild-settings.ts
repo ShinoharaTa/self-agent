@@ -205,6 +205,23 @@ export class GuildSettingsStore {
     }
   }
 
+  /** カテゴリ「定型」の ID（v20）。まだ作っていなければ（guild_settings の行が無ければ）null */
+  routineCategoryId(guildId: string): string | null {
+    const row = this.db.prepare("SELECT routine_category_id FROM guild_settings WHERE guild_id = ?").get(guildId);
+    return nullableString(row?.routine_category_id);
+  }
+
+  /** カテゴリ「定型」の ID を保存する（作り直したら置き換える）。行が無ければ作る */
+  setRoutineCategory(guildId: string, categoryId: string): void {
+    const at = this.now().toISOString();
+    this.db
+      .prepare(
+        "INSERT INTO guild_settings (guild_id, routine_category_id, created_at, updated_at) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT (guild_id) DO UPDATE SET routine_category_id = excluded.routine_category_id, updated_at = excluded.updated_at",
+      )
+      .run(guildId, categoryId, at, at);
+  }
+
   getStateCategory(guildId: string, state: SessionState, ordinal: number): string | undefined {
     const row = this.db
       .prepare("SELECT category_id FROM state_categories WHERE guild_id = ? AND state = ? AND ordinal = ?")
