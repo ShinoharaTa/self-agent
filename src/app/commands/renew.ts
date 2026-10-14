@@ -98,7 +98,7 @@ export function createRenewCommand(deps: RenewDeps): CommandHandler {
         return;
       }
       // 要約のターンは 3 秒を超えるので保留する
-      const response = commandResponse(deps.personas, channelId, responder);
+      const response = commandResponse(deps.personas, channelId, responder, deps.log);
       await response.defer();
       const outcome = await renewSession(deps, guildId, channelId);
       await response.show({ text: sessionReply(outcome) });

@@ -250,6 +250,11 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE guild_settings DROP COLUMN inbox_rotated_at;
   ALTER TABLE guild_settings DROP COLUMN tasks_rotated_at;
   `,
+  // v19: リマインドの最後の発火のメッセージを出したチャンネル。足した人格の Bot に接続できない回は channel_id を変えずに #tasks・#inbox に出すので、
+  // 前の回のボタンを外すときにここを使う。既存の行は NULL（channel_id に出した）
+  `
+  ALTER TABLE reminders ADD COLUMN last_message_channel_id TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

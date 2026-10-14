@@ -16,6 +16,8 @@ export type PersonaRuntime = TurnPersona & {
   /** 表示名（#system の知らせに使う） */
   name: string;
   gateway: Gateway;
+  /** その Bot が Discord に接続しているか（リマインドの投稿先を選ぶのに使う） */
+  connected: () => boolean;
 };
 
 /** 持ち主の Bot で行う投稿（返事・途中経過・入力中表示・リマインド・記憶の知らせ・kb_delete の確認） */
@@ -72,6 +74,11 @@ export class PersonaRouter {
     return this.runtimeFor(channelId).gateway;
   }
 
+  /** チャンネルの持ち主の Bot が Discord に接続しているか */
+  ownerConnected(channelId: string): boolean {
+    return this.runtimeFor(channelId).connected();
+  }
+
   /** チャンネルの持ち主の人格の runner（ターンはこれで動かす） */
   turnPersona(channelId: string): TurnPersona {
     const { id, engine, runner } = this.runtimeFor(channelId);
@@ -90,6 +97,10 @@ export class PersonaRouter {
   }
 }
 
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** 持ち主の Bot がチャンネルに結果を投稿したときの、コマンドへの応答（本人にだけ） */
 export const POSTED_BY_OWNER_REPLY = "結果をこのチャンネルに投稿しました";
 
@@ -104,12 +115,15 @@ export type CommandResponse = {
 /**
  * ターンを動かすコマンドの結果の出し方。コマンドは既定の人格のアプリだけが受けるので、持ち主が既定の人格（か channelId が無い・振り分けが無い）なら
  * 今までどおり公開で保留して応答に出す。それ以外の人格のチャンネルでは、本人にだけ見える形で保留し、結果は持ち主の Bot がチャンネルに投稿して、
- * 応答には投稿した旨だけを出す（interaction への応答は受けたアプリから返す）
+ * 応答には投稿した旨だけを出す（interaction への応答は受けたアプリから返す）。
+ * 持ち主の Bot の投稿に失敗したら、結果（ボタンを含む）をそのまま本人にだけの応答に出す（ボタンは既定のアプリで受けられる）。
+ * 投稿できた後の応答の失敗（期限切れなど）は log だけにする（「処理に失敗しました」で上書きしない）
  */
 export function commandResponse(
   personas: Pick<PersonaRouter, "ownerOf" | "gatewayFor"> | undefined,
   channelId: string | null,
   responder: InteractionResponder,
+  log: (message: string) => void,
 ): CommandResponse {
   if (personas === undefined || channelId === null || personas.ownerOf(channelId) === DEFAULT_PERSONA_ID) {
     return { defer: () => responder.defer(false), show: (message) => responder.reply(message) };
@@ -117,8 +131,18 @@ export function commandResponse(
   return {
     defer: () => responder.defer(true),
     show: async (message) => {
-      await personas.gatewayFor(channelId).sendMessage(channelId, message);
-      await responder.reply({ text: POSTED_BY_OWNER_REPLY });
+      try {
+        await personas.gatewayFor(channelId).sendMessage(channelId, message);
+      } catch (error) {
+        log(`持ち主の Bot で結果を投稿できなかったため、応答に出します: ${describeError(error)}`);
+        await responder.reply(message);
+        return;
+      }
+      try {
+        await responder.reply({ text: POSTED_BY_OWNER_REPLY });
+      } catch (error) {
+        log(`結果を投稿した後の応答に失敗しました: ${describeError(error)}`);
+      }
     },
   };
 }

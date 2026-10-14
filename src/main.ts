@@ -147,21 +147,31 @@ if (config.personas.some((persona) => persona.engine === "codex")) {
   log("codex のエンジンはまだ無いため、codex の人格も Claude で動かします");
 }
 const personaRuntimes: PersonaRuntime[] = [
-  { id: DEFAULT_PERSONA_ID, name: DEFAULT_PERSONA_ID, engine: "claude", runner, gateway },
+  { id: DEFAULT_PERSONA_ID, name: DEFAULT_PERSONA_ID, engine: "claude", runner, gateway, connected: () => gateway.connected() },
   ...personaGateways.map(({ persona, gateway: personaGateway }): PersonaRuntime => {
     const modelAndEffort =
       persona.engine === "claude"
         ? { model: persona.model ?? config.model, effort: persona.effort ?? config.effort }
         : { model: config.model, effort: config.effort };
+    // personaSystemPrompts は設定したすべての人格の分を作る。無ければ既定の人格のプロンプトに黙って戻さずに止める
+    const systemPrompt = systemPrompts.get(persona.id);
+    if (systemPrompt === undefined) throw new Error(`人格 ${persona.id} のシステムプロンプトがありません`);
     const personaRunner = new SdkAgentRunner(
-      { ...config, ...modelAndEffort, systemPrompt: systemPrompts.get(persona.id) },
+      { ...config, ...modelAndEffort, systemPrompt },
       createMcpServer,
       runnerFiles,
       log,
       undefined,
       runnerDevLog,
     );
-    return { id: persona.id, name: persona.name, engine: "claude", runner: personaRunner, gateway: personaGateway };
+    return {
+      id: persona.id,
+      name: persona.name,
+      engine: "claude",
+      runner: personaRunner,
+      gateway: personaGateway,
+      connected: () => personaGateway.connected(),
+    };
   }),
 ];
 // チャンネルの持ち主の人格（persona_channels・sessions.persona）への振り分け。返事などは持ち主の Bot（ownerPosts）、管理の操作は既定の人格の Bot（gateway）
@@ -274,6 +284,8 @@ const shellState = new ShellState({
   gateway,
   log,
 });
+// 足した人格の Bot のうち、起動時のログインが終わった（成功・失敗・時間切れ）もの。終わる前は接続の知らせを出さない
+const loginSettled = new Set<string>();
 // 足した人格の Bot の接続（docs/plan/personas.md §2.2）。起動直後と tick ごとに確かめ、接続できない・戻ったが変わったら #system に知らせる
 const personaStatus =
   personaGateways.length === 0
@@ -284,6 +296,7 @@ const personaStatus =
           id: persona.id,
           name: persona.name,
           connected: () => personaGateway.connected(),
+          loginSettled: () => loginSettled.has(persona.id),
         })),
         guildSettings,
         gateway,
@@ -320,6 +333,8 @@ const reminderScheduler = new ReminderScheduler({
   guildSettings,
   topicSessions,
   gateway: { ...ownerPosts, channelExists: (channelId) => gateway.channelExists(channelId) },
+  // 足した人格の Bot が接続していない・投稿に失敗したら、既定の人格の Bot で #tasks・#inbox に出す
+  personas,
   resolveChannel,
   turnQueue,
   turn,
@@ -387,11 +402,13 @@ if (staticServer !== undefined) {
 if (config.shell) await shellState.check();
 await gateway.start(lifecycle.handlers);
 await registerCommands({ cfg: config, gateway, commands, log });
-// 足した人格の Bot（同じハンドラ。発言は持ち主の Bot の分だけ、操作はどの Bot で受けても処理する）。ログインできなくても既定の人格は動かし続ける
-await startPersonaGateways(
+// 足した人格の Bot（同じハンドラ。発言は持ち主の Bot の分だけ、操作はどの Bot で受けても処理する）。ログインは待たずに並べて行い、
+// できなくても既定の人格は動かし続ける（定期処理・リマインドは先に始める）
+void startPersonaGateways(
   personaGateways.map((bot) => ({ id: bot.persona.id, gateway: bot.gateway })),
   lifecycle.handlers,
   log,
+  { onSettled: (id) => loginSettled.add(id) },
 );
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
 // 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で（リマインドは分の境目ごと）。停止を始めていれば何もしない

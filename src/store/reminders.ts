@@ -35,6 +35,8 @@ export type Reminder = {
   lastFiredAt: string | null;
   /** 最後に投稿した発火のメッセージ */
   lastMessageId: string | null;
+  /** そのメッセージを出したチャンネル。null なら channelId（v19 より前の記録を含む） */
+  lastMessageChannelId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -82,6 +84,7 @@ function toReminder(row: Record<string, SQLOutputValue>): Reminder {
     fireSeq: Number(row.fire_seq),
     lastFiredAt: nullableString(row.last_fired_at),
     lastMessageId: nullableString(row.last_message_id),
+    lastMessageChannelId: nullableString(row.last_message_channel_id),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -168,20 +171,22 @@ export class ReminderStore {
   }
 
   /**
-   * 投稿した回を記録する。active で fire_seq が expectedSeq のときだけ（投稿の間に止められたら false）、next_at・status・最後の投稿を書き換え、snooze_at を消し、fire_seq を 1 増やす。
+   * 投稿した回を記録する。active で fire_seq が expectedSeq のときだけ（投稿の間に止められたら false）、next_at・status・最後の投稿
+   * （メッセージと、それを出したチャンネル。messageChannelId を省略したら NULL = channel_id）を書き換え、snooze_at を消し、fire_seq を 1 増やす。
    * 書き換えたら true
    */
-  markFired(id: number, expectedSeq: number, update: FireUpdate & { messageId: string }): boolean {
+  markFired(id: number, expectedSeq: number, update: FireUpdate & { messageId: string; messageChannelId?: string }): boolean {
     const result = this.db
       .prepare(
         `UPDATE reminders SET next_at = ?, snooze_at = NULL, status = ?, fire_seq = fire_seq + 1,
-          last_fired_at = ?, last_message_id = ?, updated_at = ? WHERE id = ? AND fire_seq = ? AND status = 'active'`,
+          last_fired_at = ?, last_message_id = ?, last_message_channel_id = ?, updated_at = ? WHERE id = ? AND fire_seq = ? AND status = 'active'`,
       )
       .run(
         update.nextAt === null ? null : update.nextAt.toISOString(),
         update.status,
         update.firedAt.toISOString(),
         update.messageId,
+        update.messageChannelId ?? null,
         this.now().toISOString(),
         id,
         expectedSeq,
