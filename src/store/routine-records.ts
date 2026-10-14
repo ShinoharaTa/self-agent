@@ -28,7 +28,7 @@ export type RoutineRecord = {
 
 export type NewRoutineRecord = {
   channelId: string;
-  /** YYYY-MM-DD（形は呼び出し側が確かめる） */
+  /** YYYY-MM-DD（実在しない日付は invalid_date） */
   date?: string | null;
   fields: RecordFields;
 };
@@ -60,17 +60,49 @@ export type RecordListResult = {
   records: RoutineRecord[];
   /** 条件に合う件数（limit で切る前） */
   count: number;
-  /** sum を指定したときだけ。条件に合うすべて（limit で切る前）の合計 */
+  /** sum を指定したときだけ。条件に合うすべて（limit で切る前）のうち、値が有限の数の記録の合計 */
   total?: number;
+  /** sum を指定したときだけ。total に足した記録の数（count - summed 件は項目が無いか数でないため除いた） */
+  summed?: number;
 };
 
-export type AddRecordResult = { result: "added"; record: RoutineRecord } | { result: "invalid_fields"; message: string };
+export type AddRecordResult =
+  | { result: "added"; record: RoutineRecord }
+  | { result: "invalid_fields"; message: string }
+  | { result: "invalid_date"; message: string };
 
 export type UpdateRecordResult =
   | { result: "updated"; before: RoutineRecord; after: RoutineRecord }
   | { result: "no_change"; record: RoutineRecord }
   | { result: "not_found" }
-  | { result: "invalid_fields"; message: string };
+  | { result: "invalid_fields"; message: string }
+  | { result: "invalid_date"; message: string };
+
+/** fields のキーに使えない名前（オブジェクトの prototype を書き換えうる） */
+const RESERVED_FIELD_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
+const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** YYYY-MM-DD の形で、暦に実在する日付か（2026-02-30 などは false） */
+export function isRecordDate(value: string): boolean {
+  const match = DATE_PATTERN.exec(value);
+  if (match === null) return false;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+/** 日付（null は日付なし）が保存できる形か。できなければ理由（モデルに返す文）、できれば null */
+function validateDate(date: string | null | undefined): string | null {
+  return date === null || date === undefined || isRecordDate(date) ? null : "date は実在する日付を YYYY-MM-DD で指定してください";
+}
+
+/** fields のキーが使える名前か。使えなければ理由 */
+function validateFieldKey(key: string): string | null {
+  if (key.trim() === "") return "fields のキーを空にはできません";
+  if (RESERVED_FIELD_KEYS.has(key)) return `fields のキーに ${key} は使えません`;
+  return null;
+}
 
 /** fields が保存できる形か。できなければ理由（モデルに返す文）、できれば null */
 export function validateRecordFields(fields: unknown): string | null {
@@ -78,7 +110,8 @@ export function validateRecordFields(fields: unknown): string | null {
   const entries = Object.entries(fields);
   if (entries.length > ROUTINE_RECORD_MAX_FIELDS) return `fields のキーは ${ROUTINE_RECORD_MAX_FIELDS} 個までです`;
   for (const [key, value] of entries) {
-    if (key.trim() === "") return "fields のキーを空にはできません";
+    const keyMessage = validateFieldKey(key);
+    if (keyMessage !== null) return keyMessage;
     const ok = typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
     if (!ok) return "fields の値は文字列か数にしてください";
   }
@@ -126,6 +159,8 @@ export class RoutineRecordStore {
   }
 
   add(record: NewRoutineRecord): AddRecordResult {
+    const dateMessage = validateDate(record.date);
+    if (dateMessage !== null) return { result: "invalid_date", message: dateMessage };
     const message = validateRecordFields(record.fields);
     if (message !== null) return { result: "invalid_fields", message };
     const at = this.now().toISOString();
@@ -165,27 +200,41 @@ export class RoutineRecordStore {
       .prepare(`SELECT * FROM routine_records WHERE ${conditions.join(" AND ")} ORDER BY date IS NULL, date DESC, id DESC`)
       .all(...params)
       .map(toRecord);
-    const limit = Math.min(
-      Math.max(Math.trunc(options.limit ?? ROUTINE_RECORD_LIST_DEFAULT_LIMIT), 1),
-      ROUTINE_RECORD_LIST_MAX_LIMIT,
-    );
+    const requested =
+      options.limit !== undefined && Number.isFinite(options.limit) ? options.limit : ROUTINE_RECORD_LIST_DEFAULT_LIMIT;
+    const limit = Math.min(Math.max(Math.trunc(requested), 1), ROUTINE_RECORD_LIST_MAX_LIMIT);
     const result: RecordListResult = { records: all.slice(0, limit), count: all.length };
     if (options.sum !== undefined) {
       const key = options.sum;
-      result.total = all.reduce((total, record) => {
+      let total = 0;
+      let summed = 0;
+      for (const record of all) {
         const value = Object.hasOwn(record.fields, key) ? record.fields[key] : undefined;
-        return typeof value === "number" ? total + value : total;
-      }, 0);
+        if (typeof value === "number" && Number.isFinite(value)) {
+          total += value;
+          summed++;
+        }
+      }
+      result.total = total;
+      result.summed = summed;
     }
     return result;
   }
 
-  /** 変える項目だけ変える。変えた後の fields が保存できない形なら何も変えずに invalid_fields */
+  /** 変える項目だけ変える。日付が実在しなければ invalid_date、変えた後の fields が保存できない形なら invalid_fields で、どちらも何も変えない */
   update(channelId: string, id: number, changes: RecordChanges): UpdateRecordResult {
     const before = this.get(channelId, id);
     if (before === undefined) return { result: "not_found" };
+    const dateMessage = validateDate(changes.date);
+    if (dateMessage !== null) return { result: "invalid_date", message: dateMessage };
+    const changed = Object.entries(changes.fields ?? {});
+    // 使えないキーは代入する前に断る（__proto__ への代入は prototype を変える）
+    for (const [key] of changed) {
+      const keyMessage = validateFieldKey(key);
+      if (keyMessage !== null) return { result: "invalid_fields", message: keyMessage };
+    }
     const fields: RecordFields = { ...before.fields };
-    for (const [key, value] of Object.entries(changes.fields ?? {})) {
+    for (const [key, value] of changed) {
       if (value === null) delete fields[key];
       else fields[key] = value;
     }

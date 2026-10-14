@@ -66,6 +66,9 @@ test("validateRecordFields: オブジェクト・30 キー・空でないキー�
     ["null", null, false],
     ["文字列", "x", false],
     ["空のキー", { " ": "x" }, false],
+    ["__proto__ のキー（JSON から）", JSON.parse('{"__proto__": "x"}'), false],
+    ["constructor のキー", { constructor: "x" }, false],
+    ["prototype のキー", { prototype: "x" }, false],
     ["真偽値", { a: true }, false],
     ["null の値", { a: null }, false],
     ["入れ子", { a: { b: 1 } }, false],
@@ -124,23 +127,28 @@ test("RoutineRecordStore: list は期間・部分一致・状態で絞り、新�
 test("RoutineRecordStore: list の sum は条件に合うすべての数の値だけを足し、件数と合計は limit で切る前を数える", (t) => {
   const { store } = tempStore(t);
   add(store, "rt-1", "2026-10-01", { amount: 1280 });
-  add(store, "rt-1", "2026-10-02", { amount: "1,000" });
+  add(store, "rt-1", "2026-10-02", { amount: "1,280" });
   add(store, "rt-1", "2026-10-03", { amount: 0.5 });
   add(store, "rt-1", "2026-10-04", { title: "金額なし" });
   const voided = add(store, "rt-1", "2026-10-05", { amount: 9999 });
   store.markVoid("rt-1", voided);
   add(store, "rt-1", "2026-11-01", { amount: 300 });
 
-  const cases: Array<[label: string, options: RecordListOptions, records: number, count: number, total: number]> = [
-    ["文字列・項目の無い記録・void は数えない", { sum: "amount" }, 5, 5, 1580.5],
-    ["期間で絞った合計", { sum: "amount", dateFrom: "2026-10-01", dateTo: "2026-10-31" }, 4, 4, 1280.5],
-    ["limit で切っても件数・合計はすべて", { sum: "amount", limit: 2 }, 2, 5, 1580.5],
-    ["どれにも無い項目は 0", { sum: "tax" }, 5, 5, 0],
-    ["void だけの合計", { sum: "amount", status: "void" }, 1, 1, 9999],
+  // summed は total に足した記録の数（文字列の "1,280"・項目の無い記録は除く）
+  const cases: Array<[label: string, options: RecordListOptions, records: number, count: number, total: number, summed: number]> = [
+    ["文字列・項目の無い記録・void は数えない", { sum: "amount" }, 5, 5, 1580.5, 3],
+    ["期間で絞った合計", { sum: "amount", dateFrom: "2026-10-01", dateTo: "2026-10-31" }, 4, 4, 1280.5, 2],
+    ["limit で切っても件数・合計はすべて", { sum: "amount", limit: 2 }, 2, 5, 1580.5, 3],
+    ["どれにも無い項目は 0", { sum: "tax" }, 5, 5, 0, 0],
+    ["void だけの合計", { sum: "amount", status: "void" }, 1, 1, 9999, 1],
   ];
-  for (const [label, options, records, count, total] of cases) {
+  for (const [label, options, records, count, total, summed] of cases) {
     const result = store.list("rt-1", options);
-    assert.deepEqual([result.records.length, result.count, result.total], [records, count, total], label);
+    assert.deepEqual(
+      [result.records.length, result.count, result.total, result.summed],
+      [records, count, total, summed],
+      label,
+    );
   }
 });
 
@@ -176,6 +184,9 @@ test("RoutineRecordStore: list の limit は既定 30、1〜100 に収める", (
     ["0 は 1", 0, 1],
     ["負は 1", -3, 1],
     ["小数は切り捨て", 2.9, 2],
+    ["NaN は既定", Number.NaN, 30],
+    ["Infinity は既定", Number.POSITIVE_INFINITY, 30],
+    ["-Infinity は既定", Number.NEGATIVE_INFINITY, 30],
   ];
   for (const [label, limit, expected] of cases) {
     const result = store.list("rt-1", { limit });
@@ -258,4 +269,50 @@ test("RoutineRecordStore: markVoid・restore は状態だけを変え、同じ�
     assert.equal(store.get("rt-1", id)?.status, status, label);
   }
   assert.deepEqual(store.get("rt-1", id)?.fields, { amount: 1 });
+});
+
+test("RoutineRecordStore: 日付は実在する YYYY-MM-DD だけで、それ以外の add・update は invalid_date で何も変えない", (t) => {
+  const { store } = tempStore(t);
+  const id = add(store, "rt-1", "2026-10-14", { amount: 1 });
+  const cases: Array<[label: string, date: string | null, ok: boolean]> = [
+    ["実在する日付", "2026-10-15", true],
+    ["うるう日", "2028-02-29", true],
+    ["日付なし", null, true],
+    ["うるう年でない 2 月 29 日", "2026-02-29", false],
+    ["2 月 30 日", "2026-02-30", false],
+    ["13 月", "2026-13-01", false],
+    ["0 日", "2026-10-00", false],
+    ["ゼロ埋めなし", "2026-1-5", false],
+    ["スラッシュ", "2026/10/14", false],
+    ["時刻付き", "2026-10-14T00:00:00Z", false],
+    ["空", "", false],
+  ];
+  for (const [label, date, ok] of cases) {
+    const added = store.add({ channelId: "rt-1", date, fields: { amount: 2 } });
+    assert.equal(added.result, ok ? "added" : "invalid_date", label);
+    const before = store.get("rt-1", id);
+    const updated = store.update("rt-1", id, { date });
+    if (ok) assert.notEqual(updated.result, "invalid_date", label);
+    else {
+      assert.equal(updated.result, "invalid_date", label);
+      assert.deepEqual(store.get("rt-1", id), before, label);
+    }
+  }
+  // 無い記録は日付より先に not_found
+  assert.equal(store.update("rt-1", 999, { date: "x" }).result, "not_found");
+});
+
+test("RoutineRecordStore: update で __proto__・constructor・prototype のキーは invalid_fields で、何も変えず prototype も変えない", (t) => {
+  const { store } = tempStore(t);
+  const id = add(store, "rt-1", null, { amount: 1 });
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    const changes = JSON.parse(`{"${key}": {"polluted": 1}}`) as Record<string, string>;
+    assert.equal(store.update("rt-1", id, { fields: changes }).result, "invalid_fields", key);
+    const nullChange = JSON.parse(`{"${key}": null}`) as Record<string, null>;
+    assert.equal(store.update("rt-1", id, { fields: nullChange }).result, "invalid_fields", key);
+  }
+  const record = store.get("rt-1", id)!;
+  assert.deepEqual(record.fields, { amount: 1 });
+  assert.equal(Object.getPrototypeOf(record.fields), Object.prototype);
+  assert.equal(({} as Record<string, unknown>).polluted, undefined);
 });

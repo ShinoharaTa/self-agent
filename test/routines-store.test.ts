@@ -84,22 +84,27 @@ test("openDb: v19 の DB を v20 に上げても既存のデータは残り、�
   assert.deepEqual(stores.routines.listActive("g"), []);
   assert.equal(stores.routineRecords.list("rt-1").count, 0);
   assert.deepEqual(stores.attachments.listUnlinkedOlderThan(0), []);
-  // セッションだったチャンネルも定型にできる
-  assert.equal(stores.routines.create(routine({ channelId: "topic-1" })).persona, "default");
+  // セッションだったチャンネルも定型にできる（sessions の行は残る）
+  const converted = stores.routines.create(routine({ channelId: "topic-1", origin: "converted" }));
+  assert.deepEqual([converted.persona, converted.origin], ["default", "converted"]);
+  assert.equal(new TopicSessionStore(db).get("topic-1")?.state, "active");
 });
 
-test("GuildSettingsStore: 定型のカテゴリは保存・置き換えができ、ほかの列を変えない。/setup 前のサーバーは null", (t) => {
+test("GuildSettingsStore: 定型のカテゴリは /setup 済みのサーバーにだけ保存・置き換えができ、ほかの列を変えない。/setup 前のサーバーは行を作らずに false", (t) => {
   let minute = 0;
   const { guildSettings: store } = createStores(tempDb(t), () => at(minute++));
   assert.equal(store.routineCategoryId("g"), null);
+  assert.equal(store.setRoutineCategory("g", "routine-0"), false);
+  assert.equal(store.get("g"), undefined);
+  assert.equal(store.routineCategoryId("g"), null);
 
   store.setChannel("g", "homeCategoryId", "home-1");
-  store.setRoutineCategory("g", "routine-1");
+  assert.equal(store.setRoutineCategory("g", "routine-1"), true);
   assert.equal(store.routineCategoryId("g"), "routine-1");
-  store.setRoutineCategory("g", "routine-2");
+  assert.equal(store.setRoutineCategory("g", "routine-2"), true);
   assert.equal(store.routineCategoryId("g"), "routine-2");
   assert.equal(store.get("g")?.homeCategoryId, "home-1");
-  assert.equal(store.get("g")?.updatedAt, at(2).toISOString());
+  assert.equal(store.get("g")?.updatedAt, at(3).toISOString());
   assert.equal(store.routineCategoryId("other"), null);
 });
 
@@ -119,6 +124,7 @@ test("RoutineStore: 作ると active・手順の版 1・渡した版 0 で、既
     rotatedDate: null,
     rotatedAt: null,
     state: "active",
+    origin: "new",
     createdAt: at(0).toISOString(),
     updatedAt: at(0).toISOString(),
     archivedAt: null,
@@ -243,4 +249,17 @@ test("RoutineStore: 要約・切り替えの日と時刻・名前を保存する
   assert.equal(store.setSummary("none", "x"), false);
   assert.equal(store.setRotated("none", "2026-10-14", at(9)), false);
   assert.equal(store.rename("none", "x"), false);
+});
+
+test("RoutineStore: origin は new か converted で、それ以外は DB が拒む", (t) => {
+  const { store, db } = tempStore(t);
+  assert.equal(store.create(routine()).origin, "new");
+  assert.equal(store.create(routine({ channelId: "rt-2", origin: "converted" })).origin, "converted");
+  assert.throws(
+    () =>
+      db
+        .prepare("INSERT INTO routines (channel_id, guild_id, name, origin, created_at, updated_at) VALUES ('rt-3', 'g', 'x', 'other', 'x', 'x')")
+        .run(),
+    /CHECK/,
+  );
 });
