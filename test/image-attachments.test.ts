@@ -12,6 +12,8 @@ import {
   type FetchFn,
   IMAGE_FETCH_FAILED_REPLY,
   IMAGE_TOO_LARGE_REPLY,
+  imageSize,
+  isAllowedAttachmentUrl,
   MAX_IMAGE_LONG_SIDE,
   MAX_PASSED_IMAGE_BYTES,
   prepareImages,
@@ -20,7 +22,7 @@ import {
   sniffImageType,
 } from "../src/app/attachments.ts";
 import { attachmentTotalsLine, createUsageCommand } from "../src/app/commands/usage.ts";
-import { createHandler } from "../src/app/handler.ts";
+import { createHandler, REVIVED_NOTE } from "../src/app/handler.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { formatDevLogRecord } from "../src/devlog/format.ts";
@@ -39,17 +41,47 @@ const NOW = new Date("2026-10-14T00:00:00Z");
 const GUILD = "111";
 const CHANNEL = "222";
 const MESSAGE = "333";
+const CDN_URL = "https://cdn.discordapp.com/attachments/1/2/a.png?ex=1";
+const PROXY_URL = "https://media.discordapp.net/attachments/1/2/a.png?ex=1";
 
-/** 先頭が PNG の印で、全体が size バイトの中身 */
-function png(size = 64): Uint8Array {
-  const bytes = new Uint8Array(size);
+/** 幅・高さを IHDR に持つ PNG の頭で、全体が size バイトの中身 */
+function png(width = 800, height = 600, size = 64): Uint8Array {
+  const bytes = new Uint8Array(Math.max(size, 24));
+  const view = new DataView(bytes.buffer);
   bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  view.setUint32(8, 13);
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
   return bytes;
 }
 
-function jpeg(size = 32): Uint8Array {
-  const bytes = new Uint8Array(size);
+/** APP0 の後ろに幅・高さを持つ SOF0 がある JPEG の頭 */
+function jpeg(width = 800, height = 600, size = 64): Uint8Array {
+  const bytes = new Uint8Array(Math.max(size, 40));
+  const view = new DataView(bytes.buffer);
   bytes.set([0xff, 0xd8, 0xff, 0xe0]);
+  view.setUint16(4, 16);
+  bytes.set([0xff, 0xc0], 20);
+  view.setUint16(22, 17);
+  bytes[24] = 8;
+  view.setUint16(25, height);
+  view.setUint16(27, width);
+  return bytes;
+}
+
+/** VP8X の WebP の頭 */
+function webp(width = 800, height = 600, size = 64): Uint8Array {
+  const bytes = new Uint8Array(Math.max(size, 30));
+  bytes.set(new TextEncoder().encode("RIFF"), 0);
+  bytes.set(new TextEncoder().encode("WEBPVP8X"), 8);
+  const put24 = (at: number, value: number): void => {
+    bytes[at] = value & 0xff;
+    bytes[at + 1] = (value >> 8) & 0xff;
+    bytes[at + 2] = (value >> 16) & 0xff;
+  };
+  put24(24, width - 1);
+  put24(27, height - 1);
   return bytes;
 }
 
@@ -68,8 +100,8 @@ function discordAttachment(overrides: Partial<AttachmentSource> = {}): Attachmen
 
 function image(overrides: Partial<IncomingImage> = {}): IncomingImage {
   return {
-    url: "https://cdn.example/a.png",
-    proxyUrl: "https://media.example/a.png?ex=1",
+    url: CDN_URL,
+    proxyUrl: PROXY_URL,
     contentType: "image/png",
     size: 64,
     width: 800,
@@ -78,13 +110,26 @@ function image(overrides: Partial<IncomingImage> = {}): IncomingImage {
   };
 }
 
-/** URL ごとの答え（無い URL は 404）。呼ばれた URL と signal を残す */
-function fakeFetch(answers: Record<string, Uint8Array | number | Error>) {
-  const calls: Array<{ url: string; signal: AbortSignal }> = [];
+/** 原本の URL ごとの答え（url は CDN_URL の a.png を name に置き換えたもの） */
+function cdn(name: string): string {
+  return CDN_URL.replace("a.png", name);
+}
+
+/** 縮めた proxy の URL（webp か同じ形式） */
+function proxyFor(size: { width: number; height: number }, webpFormat: boolean, base = PROXY_URL): string {
+  return resizedProxyUrl(base, size, webpFormat)!;
+}
+
+type Answer = Uint8Array | number | Error | Response;
+
+/** URL ごとの答え（無い URL は 404）。呼ばれた URL と init を残す */
+function fakeFetch(answers: Record<string, Answer>) {
+  const calls: Array<{ url: string; signal: AbortSignal; redirect: string }> = [];
   const fetch: FetchFn = async (url, init) => {
-    calls.push({ url, signal: init.signal });
+    calls.push({ url, signal: init.signal, redirect: init.redirect });
     const answer = answers[url];
     if (answer instanceof Error) throw answer;
+    if (answer instanceof Response) return answer;
     if (answer === undefined) return new Response(null, { status: 404 });
     if (typeof answer === "number") return new Response(null, { status: answer });
     return new Response(new Uint8Array(answer));
@@ -152,7 +197,7 @@ test("toIncomingAttachments: 1 発言 4 枚まで・1 枚 10 MB まで。超え�
 
 // --- 受付 ---
 
-test("acceptedChannel: 本文が空でも渡せる画像があれば受け付ける。本文も画像も無い（読めない添付だけを含む）発言は今どおり弾く", () => {
+test("acceptedChannel: 本文が空でも渡せる画像か渡さない添付があれば受け付ける。本文も添付も無い発言は今どおり弾く", () => {
   const cfg = { allowedGuildIds: [GUILD], ownerUserId: "owner" };
   const resolve = () => "inbox" as const;
   const base: IncomingMessage = {
@@ -167,46 +212,98 @@ test("acceptedChannel: 本文が空でも渡せる画像があれば受け付け
   };
 
   assert.equal(acceptedChannel({ ...base, images: [image()] }, cfg, resolve), "inbox");
+  // 読めない添付だけでも受け付ける（handler が注記を返す）
+  assert.equal(acceptedChannel({ ...base, images: [], skippedAttachments: { unsupported: 1, overLimit: 0 } }, cfg, resolve), "inbox");
+  assert.equal(acceptedChannel({ ...base, images: [], skippedAttachments: { unsupported: 0, overLimit: 2 } }, cfg, resolve), "inbox");
   assert.equal(acceptedChannel({ ...base, content: "  " }, cfg, resolve), null);
-  assert.equal(acceptedChannel({ ...base, images: [], skippedAttachments: { unsupported: 1, overLimit: 0 } }, cfg, resolve), null);
+  assert.equal(acceptedChannel({ ...base, images: [], skippedAttachments: { unsupported: 0, overLimit: 0 } }, cfg, resolve), null);
   // 画像があってもオーナー以外・bot は弾く
   assert.equal(acceptedChannel({ ...base, images: [image()], authorId: "other" }, cfg, resolve), null);
   assert.equal(acceptedChannel({ ...base, images: [image()], authorIsBot: true }, cfg, resolve), null);
 });
 
-// --- 形式・縮小 ---
+// --- 形式・大きさ・縮小 ---
 
 test("sniffImageType: 中身の先頭で形式を見る。画像でなければ undefined", () => {
   assert.equal(sniffImageType(png()), "image/png");
   assert.equal(sniffImageType(jpeg()), "image/jpeg");
   assert.equal(sniffImageType(new TextEncoder().encode("GIF89a....")), "image/gif");
-  assert.equal(sniffImageType(new TextEncoder().encode("RIFF\0\0\0\0WEBPVP8 ")), "image/webp");
+  assert.equal(sniffImageType(webp()), "image/webp");
   assert.equal(sniffImageType(new TextEncoder().encode("<html>")), undefined);
   assert.equal(sniffImageType(new Uint8Array()), undefined);
 });
 
-test("resizedProxyUrl: 長辺が 1568 を超えるときだけ、縦横比を保った width・height を proxy の URL に足す", () => {
-  const url = resizedProxyUrl(image({ width: 4032, height: 3024 }));
-  assert.ok(url !== undefined);
-  const parsed = new URL(url);
+test("imageSize: PNG・JPEG・GIF・WebP（VP8X・VP8L・VP8）のヘッダから幅・高さを読む。読めない・0 なら undefined", () => {
+  assert.deepEqual(imageSize(png(4032, 3024), "image/png"), { width: 4032, height: 3024 });
+  assert.deepEqual(imageSize(jpeg(1200, 1600), "image/jpeg"), { width: 1200, height: 1600 });
+  assert.deepEqual(imageSize(webp(2000, 1000), "image/webp"), { width: 2000, height: 1000 });
+  const gif = new Uint8Array([...new TextEncoder().encode("GIF89a"), 0x20, 0x03, 0x58, 0x02]);
+  assert.deepEqual(imageSize(gif, "image/gif"), { width: 800, height: 600 });
+  // VP8L: 幅 - 1 と高さ - 1 を 14 ビットずつ
+  const lossless = new Uint8Array(30);
+  lossless.set(new TextEncoder().encode("RIFF"), 0);
+  lossless.set(new TextEncoder().encode("WEBPVP8L"), 8);
+  const bits = (100 - 1) | ((50 - 1) << 14);
+  lossless.set([0x2f, bits & 0xff, (bits >> 8) & 0xff, (bits >> 16) & 0xff, (bits >> 24) & 0xff], 20);
+  assert.deepEqual(imageSize(lossless, "image/webp"), { width: 100, height: 50 });
+  // VP8: 開始の印の後ろに 14 ビットの幅・高さ
+  const lossy = new Uint8Array(30);
+  lossy.set(new TextEncoder().encode("RIFF"), 0);
+  lossy.set(new TextEncoder().encode("WEBPVP8 "), 8);
+  lossy.set([0x9d, 0x01, 0x2a, 0x40, 0x01, 0xf0, 0x00], 23);
+  assert.deepEqual(imageSize(lossy, "image/webp"), { width: 320, height: 240 });
+
+  assert.equal(imageSize(png(0, 600), "image/png"), undefined);
+  assert.equal(imageSize(png().slice(0, 20), "image/png"), undefined);
+  // SOF が無いまま SOS に着いた JPEG
+  const noSof = new Uint8Array([0xff, 0xd8, 0xff, 0xda, 0x00, 0x08, 0, 0, 0, 0, 0, 0]);
+  assert.equal(imageSize(noSof, "image/jpeg"), undefined);
+  assert.equal(imageSize(new Uint8Array([0xff, 0xd8, 0xff]), "image/jpeg"), undefined);
+});
+
+test("resizedProxyUrl: 長辺を 1568 以下にした縦横比の width・height（と webp なら format=webp）を proxy の URL に足す。元の引数は残す", () => {
+  const parsed = new URL(resizedProxyUrl(PROXY_URL, { width: 4032, height: 3024 }, true)!);
   assert.equal(parsed.searchParams.get("ex"), "1");
   assert.equal(parsed.searchParams.get("width"), String(MAX_IMAGE_LONG_SIDE));
   assert.equal(parsed.searchParams.get("height"), "1176");
+  assert.equal(parsed.searchParams.get("format"), "webp");
 
-  assert.equal(new URL(resizedProxyUrl(image({ width: 1000, height: 3136 }))!).searchParams.get("width"), "500");
-  assert.equal(resizedProxyUrl(image({ width: 1568, height: 1000 })), undefined);
-  assert.equal(resizedProxyUrl(image({ width: null, height: null })), undefined);
-  assert.equal(resizedProxyUrl(image({ width: 4000, height: 3000, proxyUrl: "not a url" })), undefined);
+  const plain = new URL(resizedProxyUrl(PROXY_URL, { width: 1000, height: 3136 }, false)!);
+  assert.equal(plain.searchParams.get("width"), "500");
+  assert.equal(plain.searchParams.get("height"), "1568");
+  assert.equal(plain.searchParams.has("format"), false);
+  // 長辺がもう上限以下なら同じ大きさのまま（形式・画質だけ変える）
+  assert.equal(new URL(resizedProxyUrl(PROXY_URL, { width: 800, height: 600 }, true)!).searchParams.get("width"), "800");
+  assert.equal(resizedProxyUrl("not a url", { width: 4000, height: 3000 }, true), undefined);
+});
+
+test("isAllowedAttachmentUrl: https の cdn.discordapp.com・media.discordapp.net だけ", () => {
+  assert.equal(isAllowedAttachmentUrl(CDN_URL), true);
+  assert.equal(isAllowedAttachmentUrl(PROXY_URL), true);
+  for (const url of [
+    "http://cdn.discordapp.com/a.png",
+    "https://cdn.discordapp.com.evil.example/a.png",
+    "https://evil.example/cdn.discordapp.com/a.png",
+    "https://cdn.discordapp.com:8443/a.png",
+    "https://user@media.discordapp.net/a.png",
+    "file:///etc/passwd",
+    "not a url",
+  ]) {
+    assert.equal(isAllowedAttachmentUrl(url), false, url);
+  }
 });
 
 // --- 取得・保存 ---
 
-test("prepareImages: 小さい画像は原本を 1 回取り、それを渡す。原本を 600 で、ディレクトリを 700 で置き、行（相対パス・sha256・大きさ・幅・高さ）を記録する", async (t) => {
+test("prepareImages: 長辺も大きさも上限以下の画像は原本を 1 回（転送をたどらずに）取り、それを渡す。原本を 600 で、ディレクトリを 700 で置き、行（相対パス・sha256・大きさ・中身から読んだ幅・高さ）を記録する", async (t) => {
   const { attachments, dataDir, logs } = setupStore(t);
-  const original = png(100);
-  const { fetch, calls } = fakeFetch({ "https://cdn.example/a.png": original });
+  const original = png(800, 600, 100);
+  const { fetch, calls } = fakeFetch({ [CDN_URL]: original });
 
-  const prepared = await prepareImages({ dataDir, attachments, fetch, log: (line) => logs.push(line) }, SOURCE, [image()]);
+  // Discord の幅・高さは信じない（中身のヘッダの値を使う）
+  const prepared = await prepareImages({ dataDir, attachments, fetch, log: (line) => logs.push(line) }, SOURCE, [
+    image({ width: 9999, height: 9999 }),
+  ]);
 
   assert.deepEqual(prepared, {
     images: [{ mediaType: "image/png", data: base64(original) }],
@@ -215,8 +312,8 @@ test("prepareImages: 小さい画像は原本を 1 回取り、それを渡す�
     failed: 0,
   });
   assert.deepEqual(
-    calls.map((call) => call.url),
-    ["https://cdn.example/a.png"],
+    calls.map((call) => [call.url, call.redirect]),
+    [[CDN_URL, "error"]],
   );
   assert.ok(calls[0]!.signal instanceof AbortSignal);
   const root = attachmentsDir(dataDir);
@@ -235,62 +332,139 @@ test("prepareImages: 小さい画像は原本を 1 回取り、それを渡す�
   assert.deepEqual(logs, []);
 });
 
-test("prepareImages: 長辺が大きい画像は media proxy で縮めたものを渡し、原本は縮めずに残す", async (t) => {
+test("prepareImages: 長辺が大きい画像は media proxy の webp で縮めたものを渡し、原本は縮めずに残す", async (t) => {
   const { attachments, dataDir } = setupStore(t);
-  const original = jpeg(500);
-  const resized = jpeg(50);
-  const big = image({ url: "https://cdn.example/big.jpg", contentType: "image/jpeg", width: 4032, height: 3024 });
-  const proxyUrl = resizedProxyUrl(big)!;
-  const { fetch, calls } = fakeFetch({ "https://cdn.example/big.jpg": original, [proxyUrl]: resized });
+  const original = jpeg(4032, 3024, 500);
+  const resized = webp(1568, 1176, 50);
+  const size = { width: 4032, height: 3024 };
+  const { fetch, calls } = fakeFetch({ [cdn("big.jpg")]: original, [proxyFor(size, true)]: resized });
 
-  const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, [big]);
+  const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, [
+    image({ url: cdn("big.jpg"), contentType: "image/jpeg" }),
+  ]);
 
-  assert.deepEqual(prepared.images, [{ mediaType: "image/jpeg", data: base64(resized) }]);
+  assert.deepEqual(prepared.images, [{ mediaType: "image/webp", data: base64(resized) }]);
   assert.deepEqual(
     calls.map((call) => call.url),
-    ["https://cdn.example/big.jpg", proxyUrl],
+    [cdn("big.jpg"), proxyFor(size, true)],
   );
   assert.deepEqual(new Uint8Array(readFileSync(join(attachmentsDir(dataDir), GUILD, CHANNEL, `${MESSAGE}-1.jpg`))), original);
-  assert.equal(attachments.get(1)!.size, 500);
+  const row = attachments.get(1)!;
+  assert.deepEqual([row.size, row.width, row.height, row.contentType], [500, 4032, 3024, "image/jpeg"]);
 });
 
-test("prepareImages: proxy が縮めた画像を返さない（失敗・画像でない中身・例外）なら原本を渡す", async (t) => {
-  for (const answer of [500, new TextEncoder().encode("<html>"), new Error("timeout")]) {
+test("prepareImages: webp の縮小を渡せない（失敗・画像でない・長辺が大きいまま・例外）なら同じ形式の縮小を渡す", async (t) => {
+  const size = { width: 3000, height: 2000 };
+  const resized = png(1568, 1045, 80);
+  for (const answer of [500, new TextEncoder().encode("<html>"), webp(3000, 2000), new Error("timeout")]) {
     const { attachments, dataDir } = setupStore(t);
-    const original = png(80);
-    const big = image({ width: 3000, height: 2000 });
-    const { fetch } = fakeFetch({ "https://cdn.example/a.png": original, [resizedProxyUrl(big)!]: answer });
+    const { fetch } = fakeFetch({ [CDN_URL]: png(3000, 2000), [proxyFor(size, true)]: answer, [proxyFor(size, false)]: resized });
 
-    const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, [big]);
+    const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, [image()]);
 
-    assert.deepEqual(prepared.images, [{ mediaType: "image/png", data: base64(original) }], String(answer));
+    assert.deepEqual(prepared.images, [{ mediaType: "image/png", data: base64(resized) }], String(answer));
     assert.deepEqual(prepared.attachmentIds, [1]);
   }
 });
 
-test("prepareImages: 渡すものが 3.75 MB を超えたら渡さず保存もしない。取れない・画像でない原本は取得の失敗。他の画像は渡す", async (t) => {
+test("prepareImages: 縮めたものをどちらも渡せなければ原本は渡さない（取れなければ取得の失敗、1 MiB を超えれば大きすぎ）。保存もしない", async (t) => {
+  const size = { width: 3000, height: 2000 };
+  const cases: Array<{ label: string; webpAnswer: Answer; plainAnswer: Answer; expected: { tooLarge: number; failed: number } }> = [
+    { label: "どちらも取れない", webpAnswer: 404, plainAnswer: new Error("x"), expected: { tooLarge: 0, failed: 1 } },
+    { label: "縮めても大きい", webpAnswer: webp(1568, 1045, MAX_PASSED_IMAGE_BYTES + 1), plainAnswer: 500, expected: { tooLarge: 1, failed: 0 } },
+    { label: "長辺が縮まない", webpAnswer: webp(3000, 2000), plainAnswer: png(3000, 2000), expected: { tooLarge: 0, failed: 1 } },
+  ];
+  for (const { label, webpAnswer, plainAnswer, expected } of cases) {
+    const { attachments, dataDir } = setupStore(t);
+    const { fetch } = fakeFetch({ [CDN_URL]: png(3000, 2000), [proxyFor(size, true)]: webpAnswer, [proxyFor(size, false)]: plainAnswer });
+
+    const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, [image()]);
+
+    assert.deepEqual(prepared, { images: [], attachmentIds: [], ...expected }, label);
+    assert.equal(existsSync(attachmentsDir(dataDir)), false, label);
+  }
+});
+
+test("prepareImages: 長辺は小さくても 1 MiB を超える原本は、同じ大きさのまま webp に変えたものを渡す", async (t) => {
+  const { attachments, dataDir } = setupStore(t);
+  const size = { width: 1200, height: 900 };
+  const converted = webp(1200, 900, 300);
+  const { fetch } = fakeFetch({ [CDN_URL]: png(1200, 900, MAX_PASSED_IMAGE_BYTES + 1), [proxyFor(size, true)]: converted });
+
+  const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, [image()]);
+
+  assert.deepEqual(prepared.images, [{ mediaType: "image/webp", data: base64(converted) }]);
+  assert.equal(attachments.get(1)!.size, MAX_PASSED_IMAGE_BYTES + 1);
+});
+
+test("prepareImages: 中身が画像でない・幅と高さを読めない原本、許していない場所の URL は取得の失敗（許していない URL は取りに行かない）", async (t) => {
+  const { attachments, dataDir } = setupStore(t);
+  const { fetch, calls } = fakeFetch({
+    [cdn("html.png")]: new TextEncoder().encode("<html>"),
+    [cdn("zero.png")]: png(0, 0),
+    "https://evil.example/a.png": png(),
+  });
+
+  const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, [
+    image({ url: cdn("html.png") }),
+    image({ url: cdn("zero.png") }),
+    image({ url: "https://evil.example/a.png" }),
+    image({ url: "http://cdn.discordapp.com/a.png" }),
+  ]);
+
+  assert.deepEqual(prepared, { images: [], attachmentIds: [], tooLarge: 0, failed: 4 });
+  assert.deepEqual(
+    calls.map((call) => call.url).sort(),
+    [cdn("html.png"), cdn("zero.png")].sort(),
+  );
+});
+
+test("prepareImages: Content-Length が上限を超えていれば読まずに、読んでいる途中で超えたらそこで止めて大きすぎにする", async (t) => {
+  const { attachments, dataDir } = setupStore(t);
+  let pulled = 0;
+  const chunk = new Uint8Array(1024 * 1024);
+  chunk.set(png(3000, 2000).slice(0, 24));
+  // Content-Length の無い、1 MiB ずつ流れる大きな原本
+  const endless = new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(chunk.slice());
+      },
+    }),
+  );
+  const declared = new Response(new Uint8Array(png()), { headers: { "content-length": String(MAX_IMAGE_BYTES + 1) } });
+  const { fetch } = fakeFetch({ [cdn("endless.png")]: endless, [cdn("declared.png")]: declared });
+
+  const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, [
+    image({ url: cdn("endless.png") }),
+    image({ url: cdn("declared.png") }),
+  ]);
+
+  assert.deepEqual(prepared, { images: [], attachmentIds: [], tooLarge: 2, failed: 0 });
+  // 10 MB を少し超えたところで止める（全部は読まない）
+  assert.ok(pulled <= Math.ceil(MAX_IMAGE_BYTES / chunk.length) + 2, `pulled=${pulled}`);
+});
+
+test("prepareImages: 1 枚ずつ判定し、渡せたものだけを（発言の添付の順の番号で）保存する", async (t) => {
   const { attachments, dataDir } = setupStore(t);
   const { fetch } = fakeFetch({
-    "https://cdn.example/1.png": png(10),
-    "https://cdn.example/huge.png": png(MAX_PASSED_IMAGE_BYTES + 1),
-    "https://cdn.example/ok-size.png": png(MAX_PASSED_IMAGE_BYTES),
-    "https://cdn.example/html.png": new TextEncoder().encode("<html>"),
+    [cdn("1.png")]: png(800, 600, 10),
+    [cdn("huge.png")]: png(800, 600, MAX_PASSED_IMAGE_BYTES + 1),
+    [cdn("3.png")]: png(800, 600, MAX_PASSED_IMAGE_BYTES),
   });
-  const images = [
-    image({ url: "https://cdn.example/1.png" }),
-    image({ url: "https://cdn.example/huge.png" }),
-    image({ url: "https://cdn.example/ok-size.png" }),
-    image({ url: "https://cdn.example/html.png" }),
-    image({ url: "https://cdn.example/missing.png" }),
-  ];
 
-  const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, images);
+  const prepared = await prepareImages({ dataDir, attachments, fetch, log: () => {} }, SOURCE, [
+    image({ url: cdn("1.png") }),
+    image({ url: cdn("huge.png") }),
+    image({ url: cdn("3.png") }),
+    image({ url: cdn("missing.png") }),
+  ]);
 
   assert.equal(prepared.images.length, 2);
   assert.deepEqual(prepared.attachmentIds, [1, 2]);
   assert.equal(prepared.tooLarge, 1);
-  assert.equal(prepared.failed, 2);
-  // 保存したのは渡した画像の原本だけ（番号は発言の添付の順）
+  assert.equal(prepared.failed, 1);
   assert.deepEqual(
     [attachments.get(1)!.path, attachments.get(2)!.path],
     [join(GUILD, CHANNEL, `${MESSAGE}-1.png`), join(GUILD, CHANNEL, `${MESSAGE}-3.png`)],
@@ -304,7 +478,7 @@ test("prepareImages: 原本を保存できなくても（同じ名前のファ�
   const existing = join(attachmentsDir(dataDir), GUILD, CHANNEL, `${MESSAGE}-1.png`);
   mkdirSync(join(attachmentsDir(dataDir), GUILD, CHANNEL), { recursive: true });
   writeFileSync(existing, "before");
-  const { fetch } = fakeFetch({ "https://cdn.example/a.png": png() });
+  const { fetch } = fakeFetch({ [CDN_URL]: png() });
 
   const prepared = await prepareImages({ dataDir, attachments, fetch, log: (line) => logs.push(line) }, SOURCE, [image()]);
 
@@ -431,7 +605,7 @@ function okResult(): RunResult {
   return { ok: true, text: "読みました", sessionId: "s-1", usage: turnUsage(1, 2, 3), durationMs: 10, toolCalls: 0, contextTokens: 6 };
 }
 
-function setupHandler(t: TestContext, results: RunResult[], answers: Record<string, Uint8Array | number | Error>) {
+function setupHandler(t: TestContext, results: RunResult[], answers: Record<string, Answer>) {
   const db = tempDb(t);
   const dataDir = tempDir(t);
   const stores = createStores(db, () => NOW);
@@ -477,8 +651,8 @@ function ownerMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage
 }
 
 test("handler: 画像だけの発言を受け付け、runner に画像 1 件・ヘッダだけの prompt・保存した原本の id（context）を渡す。log は枚数だけ", async (t) => {
-  const original = png(40);
-  const env = setupHandler(t, [okResult()], { "https://cdn.example/a.png": original });
+  const original = png(800, 600, 40);
+  const env = setupHandler(t, [okResult()], { [CDN_URL]: original });
 
   await env.handler.handleMessage(ownerMessage({ images: [image()], skippedAttachments: { unsupported: 0, overLimit: 0 } }));
 
@@ -492,19 +666,19 @@ test("handler: 画像だけの発言を受け付け、runner に画像 1 件・�
     ["読みました"],
   );
   assert.deepEqual(env.logs, ["画像を受け取りました（渡す 1 枚・大きすぎ 0 枚・取得失敗 0 枚）"]);
-  for (const line of env.logs) assert.ok(!line.includes("cdn.example") && !line.includes(env.dataDir));
+  for (const line of env.logs) assert.ok(!line.includes("discordapp") && !line.includes(env.dataDir));
 });
 
 test("handler: 渡さない添付はヘッダの次に注記し、大きすぎる画像はオーナーに「画像が大きすぎて読めませんでした」と返す。本文と他の画像は渡す", async (t) => {
   const env = setupHandler(t, [okResult()], {
-    "https://cdn.example/a.png": png(10),
-    "https://cdn.example/huge.png": png(MAX_PASSED_IMAGE_BYTES + 1),
+    [CDN_URL]: png(800, 600, 10),
+    [cdn("huge.png")]: png(800, 600, MAX_PASSED_IMAGE_BYTES + 1),
   });
 
   await env.handler.handleMessage(
     ownerMessage({
       content: "この 2 枚を見て",
-      images: [image(), image({ url: "https://cdn.example/huge.png" })],
+      images: [image(), image({ url: cdn("huge.png") })],
       skippedAttachments: { unsupported: 1, overLimit: 0 },
     }),
   );
@@ -529,17 +703,54 @@ test("handler: 渡さない添付はヘッダの次に注記し、大きすぎ�
 });
 
 test("handler: 本文が無く、渡せる画像が 1 枚も残らなければターンを行わず、理由だけを返す", async (t) => {
-  const env = setupHandler(t, [], { "https://cdn.example/huge.png": png(MAX_PASSED_IMAGE_BYTES + 1) });
+  const env = setupHandler(t, [], { [cdn("huge.png")]: png(800, 600, MAX_PASSED_IMAGE_BYTES + 1) });
 
   await env.handler.handleMessage(
-    ownerMessage({ images: [image({ url: "https://cdn.example/huge.png" }), image({ url: "https://cdn.example/gone.png" })] }),
+    ownerMessage({
+      images: [image({ url: cdn("huge.png") }), image({ url: cdn("gone.png") })],
+      skippedAttachments: { unsupported: 0, overLimit: 1 },
+    }),
   );
 
   assert.equal(env.runner.inputs.length, 0);
   assert.deepEqual(
     env.gateway.sent.map((sent) => sent.text),
-    [`${IMAGE_TOO_LARGE_REPLY}\n${IMAGE_FETCH_FAILED_REPLY}`],
+    [
+      `${IMAGE_TOO_LARGE_REPLY}\n${IMAGE_FETCH_FAILED_REPLY}\n（画像 1 枚は上限（1 発言 4 枚・1 枚 10 MB）を超えるため渡していません）`,
+    ],
   );
+});
+
+test("handler: 読めない添付・上限を超える画像だけの発言は無視せず、注記の文を返す（ターンは行わず、取りにも行かない）", async (t) => {
+  const env = setupHandler(t, [], {});
+
+  await env.handler.handleMessage(ownerMessage({ images: [], skippedAttachments: { unsupported: 2, overLimit: 0 } }));
+  await env.handler.handleMessage(ownerMessage({ id: "334", images: [], skippedAttachments: { unsupported: 0, overLimit: 3 } }));
+
+  assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(
+    env.gateway.sent.map((sent) => [sent.text, sent.replyToId]),
+    [
+      ["（添付 2 件は読めない形式のため渡していません）", MESSAGE],
+      ["（画像 3 枚は上限（1 発言 4 枚・1 枚 10 MB）を超えるため渡していません）", "334"],
+    ],
+  );
+  assert.deepEqual(env.logs, []);
+});
+
+test("handler: 待ちのセッションで画像が 1 枚も渡せずターンを行わなくても、進行中に戻したことを返信に含める", async (t) => {
+  const env = setupHandler(t, [], {});
+  env.stores.topicSessions.create({ channelId: "444", guildId: GUILD, title: "領収書", categoryId: "active-1" });
+  env.stores.topicSessions.setWaiting("444");
+
+  await env.handler.handleMessage(ownerMessage({ channelId: "444", images: [image({ url: cdn("gone.png") })] }));
+
+  assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(
+    env.gateway.sent.map((sent) => sent.text),
+    [`${REVIVED_NOTE}\n${IMAGE_FETCH_FAILED_REPLY}`],
+  );
+  assert.equal(env.stores.topicSessions.get("444")!.state, "active");
 });
 
 test("handler: 画像の無い発言は今までどおり（images・attachmentIds を付けず、prompt は本文そのまま）", async (t) => {
@@ -559,14 +770,14 @@ test("handler: 画像の無い発言は今までどおり（images・attachmentI
 });
 
 test("handler: resume に失敗して新しいセッションでやり直すときも同じ画像を渡す", async (t) => {
-  const original = png(40);
+  const original = png(800, 600, 40);
   const resumeFailure: RunResult = {
     ok: false,
     errorMessage: "error_during_execution: No conversation found with session ID: s-old",
     sessionRecorded: false,
     toolCalls: 0,
   };
-  const env = setupHandler(t, [resumeFailure, okResult()], { "https://cdn.example/a.png": original });
+  const env = setupHandler(t, [resumeFailure, okResult()], { [CDN_URL]: original });
   env.stores.sessions.set(CHANNEL, "s-old");
 
   await env.handler.handleMessage(ownerMessage({ content: "これ", images: [image()] }));
