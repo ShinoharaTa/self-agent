@@ -1,5 +1,5 @@
 // 1 チャンネルの 1 ターン（発言・/close 共通）。usage の記録とログ、SDK セッションの保存、記憶と seed の付与、resume 失敗からの復旧
-import type { AgentRunner, ProgressStep, RunContext, RunResult } from "../agent/runner.ts";
+import type { AgentRunner, ProgressStep, RunContext, RunImage, RunResult } from "../agent/runner.ts";
 import { DEFAULT_PERSONA_ID } from "../config.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { InboxSummary, InboxSummaryStore, SummaryChannelKind } from "../store/inbox-summaries.ts";
@@ -68,6 +68,10 @@ export type ChannelTurn = {
   onProgress?: (step: ProgressStep) => void;
   /** 予約した依頼（リマインドの prompt）のターン。run の context に入れる */
   scheduled?: true;
+  /** オーナーの発言の画像（app/attachments.ts で取ったもの）。resume 失敗のやり直しにも同じものを渡す */
+  images?: readonly RunImage[];
+  /** その画像のうち保存した原本の id。空でなければ run の context に入れる */
+  attachmentIds?: readonly number[];
 };
 
 /**
@@ -172,12 +176,14 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     channelId: turn.channelId,
     kind: turn.kind,
     ...(turn.scheduled === undefined ? {} : { scheduled: turn.scheduled }),
+    ...(turn.attachmentIds === undefined || turn.attachmentIds.length === 0 ? {} : { attachmentIds: turn.attachmentIds }),
   };
 
   const runOnce = async (prompt: string, sessionId: string | undefined): Promise<RunResult> => {
-    // seed を付けてやり直すときも、取得を許すのはオーナーの発言の URL だけ
+    // seed を付けてやり直すときも、取得を許すのはオーナーの発言の URL だけ。画像も同じものを渡す
     const result = await runner.run({
       prompt,
+      ...(turn.images === undefined || turn.images.length === 0 ? {} : { images: turn.images }),
       sessionId,
       context,
       allowedUrls: turn.allowedUrls,

@@ -1,4 +1,5 @@
 import { type Config, DEFAULT_PERSONA_ID, type PersonaConfig } from "../../config.ts";
+import type { AttachmentStore } from "../../store/attachments.ts";
 import type { UsageStore, UsageSummary } from "../../store/usage.ts";
 import type { CommandHandler } from "../interactions.ts";
 import { DEFAULT_PERSONA_LABEL } from "../personas.ts";
@@ -13,6 +14,8 @@ export type UsageDeps = {
   usage: Pick<UsageStore, "summarize">;
   /** 日付の境界のタイムゾーン（SELF_AGENT_TZ）。personas は足した人格（あれば人格ごとに分けて表示する） */
   cfg: Pick<Config, "timeZone"> & Partial<Pick<Config, "personas">>;
+  /** 保存している添付の合計（あれば最後に 1 行出す） */
+  attachments?: Pick<AttachmentStore, "totals">;
 };
 
 /** キャッシュ読み取り率 = read / (input + read + creation)。分母が 0 なら「-」 */
@@ -56,14 +59,20 @@ export function usageText(
     .join("\n\n");
 }
 
-/** `/usage`: 今日と直近 7 日のターン数・トークン・キャッシュ・compaction・ツール呼び出しを本人にだけ表示する */
+/** 保存している添付の合計の 1 行（大きさは MB で小数 1 桁） */
+export function attachmentTotalsLine(totals: { count: number; bytes: number }): string {
+  return `保存している添付 ${NUMBER_FORMAT.format(totals.count)} 件（${(totals.bytes / (1024 * 1024)).toFixed(1)} MB）`;
+}
+
+/** `/usage`: 今日と直近 7 日のターン数・トークン・キャッシュ・compaction・ツール呼び出しと、保存している添付の合計を本人にだけ表示する */
 export function createUsageCommand(deps: UsageDeps): CommandHandler {
-  const { usage, cfg } = deps;
+  const { usage, cfg, attachments } = deps;
   return {
     def: { name: "usage", description: "今日と直近 7 日の利用状況（ターン数・トークン・キャッシュなど）を表示します" },
     async handle(interaction, responder) {
+      const text = usageText(usage, interaction.createdAt, cfg.timeZone, cfg.personas);
       await responder.reply({
-        text: usageText(usage, interaction.createdAt, cfg.timeZone, cfg.personas),
+        text: attachments === undefined ? text : `${text}\n\n${attachmentTotalsLine(attachments.totals())}`,
         ephemeral: true,
       });
     },

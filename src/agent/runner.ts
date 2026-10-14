@@ -3,15 +3,27 @@
 /**
  * このターンを実行するチャンネル。ツールのハンドラに渡す（session_report が保存先を決める）。
  * kind はチャンネルの種類（#inbox・#tasks かセッションか）。1 ターンの上限とファイル操作の可否を決める。
- * scheduled は予約した依頼（リマインドの prompt）のターンで立てる（session_open を not_available にする）
+ * scheduled は予約した依頼（リマインドの prompt）のターンで立てる（session_open を not_available にする）。
+ * attachmentIds はこのターンの発言の画像のうち保存した原本（attachments の id）。保存したものがあるときだけ入る（記録への結びつけに使う）
  */
-export type RunContext = { guildId: string; channelId: string; kind: "inbox" | "tasks" | "session"; scheduled?: true };
+export type RunContext = {
+  guildId: string;
+  channelId: string;
+  kind: "inbox" | "tasks" | "session";
+  scheduled?: true;
+  attachmentIds?: readonly number[];
+};
+
+/** prompt と一緒にモデルに渡す画像（base64）。形式は中身から確かめたもの */
+export type RunImage = { mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif"; data: string };
 
 /** 途中経過の 1 手順（assistant メッセージの tool_use 1 つ）。label は表示用の短い文で、ファイルの中身・コマンド・URL・検索語は入れない */
 export type ProgressStep = { label: string };
 
 export type RunInput = {
   prompt: string;
+  /** あれば prompt の後ろに画像の block として付けて渡す。無い・空なら prompt は文字列のまま渡す */
+  images?: readonly RunImage[];
   /** 指定すればそのセッションを resume する */
   sessionId?: string;
   context?: RunContext;

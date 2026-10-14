@@ -25,6 +25,7 @@ import {
   toButtonInteraction,
   toCommandData,
   toCommandInteraction,
+  toIncomingAttachments,
   toModal,
   toModalInteraction,
   toPayload,
@@ -56,6 +57,8 @@ function toIncoming(message: Message, persona: string): IncomingMessage {
     isWebhook: message.webhookId !== null && message.webhookId !== undefined,
     content: message.content,
     createdAt: message.createdAt,
+    // 添付は情報だけ（取得は受け付けた後に app 側で行う）
+    ...toIncomingAttachments(message.attachments.values()),
     persona,
   };
 }

@@ -8,7 +8,16 @@ import type {
   MessageActionRowComponentData,
   MessageMentionOptions,
 } from "discord.js";
-import type { CommandDef, ComponentRow, Interaction, ModalDef, OutgoingMessage } from "./gateway.ts";
+import type {
+  CommandDef,
+  ComponentRow,
+  ImageMediaType,
+  IncomingImage,
+  IncomingMessage,
+  Interaction,
+  ModalDef,
+  OutgoingMessage,
+} from "./gateway.ts";
 
 const COMPONENT_TYPE = { actionRow: 1, button: 2, stringSelect: 3, textInput: 4, label: 18 } as const;
 const BUTTON_STYLE = { primary: 1, secondary: 2, success: 3, danger: 4 } as const;
@@ -26,6 +35,73 @@ export function mentionPrefix(userId: string): string {
 /** mentionUserId があればそのユーザーだけを鳴らす（@everyone・ロールは鳴らさないまま）。無ければ ALLOWED_MENTIONS */
 export function allowedMentionsFor(mentionUserId: string | undefined): MessageMentionOptions {
   return mentionUserId === undefined ? ALLOWED_MENTIONS : { parse: [], users: [mentionUserId], repliedUser: true };
+}
+
+/** 1 発言で渡す画像の上限 */
+export const MAX_IMAGES_PER_MESSAGE = 4;
+/** 1 枚の画像の大きさの上限（Discord の通常の上限に合わせる） */
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/** 拡張子 → 形式（content type が無い添付のため） */
+const IMAGE_EXTENSIONS: Record<string, ImageMediaType> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
+/** 添付の形式。content type（`; …` の引数は除く）があればそれ、無ければ名前の拡張子で見る。渡せない形式なら undefined */
+export function imageMediaType(contentType: string | null, name: string): ImageMediaType | undefined {
+  if (contentType !== null && contentType.trim() !== "") {
+    const type = contentType.split(";")[0]!.trim().toLowerCase();
+    return Object.values(IMAGE_EXTENSIONS).find((known) => known === type);
+  }
+  const extension = /\.([^.]+)$/.exec(name)?.[1]?.toLowerCase();
+  return extension === undefined ? undefined : IMAGE_EXTENSIONS[extension];
+}
+
+/** 添付の情報（discord.js の Attachment をそのまま渡せる形） */
+export type AttachmentSource = {
+  url: string;
+  proxyURL: string;
+  contentType: string | null;
+  name: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+};
+
+/**
+ * 発言の添付を、渡す画像（jpeg・png・webp・gif のうち MAX_IMAGE_BYTES 以下のものを、先頭から MAX_IMAGES_PER_MESSAGE 枚まで）と
+ * 渡さない数（画像でない形式 / 上限を超える画像）に分ける。取得はしない
+ */
+export function toIncomingAttachments(
+  attachments: Iterable<AttachmentSource>,
+): Required<Pick<IncomingMessage, "images" | "skippedAttachments">> {
+  const images: IncomingImage[] = [];
+  let unsupported = 0;
+  let overLimit = 0;
+  for (const attachment of attachments) {
+    const contentType = imageMediaType(attachment.contentType, attachment.name);
+    if (contentType === undefined) {
+      unsupported++;
+      continue;
+    }
+    if (attachment.size > MAX_IMAGE_BYTES || images.length >= MAX_IMAGES_PER_MESSAGE) {
+      overLimit++;
+      continue;
+    }
+    images.push({
+      url: attachment.url,
+      proxyUrl: attachment.proxyURL,
+      contentType,
+      size: attachment.size,
+      width: attachment.width,
+      height: attachment.height,
+    });
+  }
+  return { images, skippedAttachments: { unsupported, overLimit } };
 }
 
 /** 受け付ける interaction の共通部分（discord.js の interaction をそのまま渡せる形） */

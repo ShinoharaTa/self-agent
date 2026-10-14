@@ -81,6 +81,14 @@ function setup(
   const devLogs = { calls: 0, prune: (): void => void devLogs.calls++ };
   const projectTrash = { calls: 0, prune: (): void | Promise<void> => void projectTrash.calls++ };
   const workDir = { calls: 0, prune: (): void | Promise<void> => void workDir.calls++ };
+  // 記録に結びついていない古い添付を消す処理（中身は image-attachments.test.ts）。既定では何も消さない
+  const attachments = {
+    calls: 0,
+    prune: (): number => {
+      attachments.calls++;
+      return 0;
+    },
+  };
   // 発言と同じターンのキュー（.trash・.tmp・.cache の削除をセッションのジョブとして入れる）
   const turnQueue = new RecordingQueue(2);
   const timers = new FakeTimers();
@@ -101,6 +109,7 @@ function setup(
     pruneWorkDir: async () => {
       await workDir.prune();
     },
+    pruneAttachments: () => attachments.prune(),
     turnQueue,
     now: () => clock.now,
     timers,
@@ -137,6 +146,7 @@ function setup(
     devLogs,
     projectTrash,
     workDir,
+    attachments,
     turnQueue,
     timers,
     logs,
@@ -838,6 +848,39 @@ test("削除のジョブの間に来たセッションのジョブは、削除�
 
   assert.equal(env.workDir.calls, 1);
   assert.deepEqual(events, ["turn"]);
+});
+
+test("古い添付の削除は .trash・.tmp・.cache と同じ削除のジョブで行い、消した数だけ log に出す。失敗は log に出して続ける（パスは出さない）", async (t) => {
+  const env = setup(t);
+  env.attachments.prune = () => {
+    env.attachments.calls++;
+    return 3;
+  };
+
+  await env.scheduler.tick();
+
+  assert.equal(env.attachments.calls, 1);
+  assert.deepEqual(env.turnQueue.keys, [MAINTENANCE_QUEUE_KEY]);
+  assert.deepEqual(env.logs, ["古い添付 3 件を消しました"]);
+
+  env.attachments.prune = () => {
+    throw new Error("EACCES: /secret/path");
+  };
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.logs.slice(1), ["古い添付を消せませんでした"]);
+  assert.equal(env.inboxRotator.calls.length, 2);
+
+  // セッションのジョブが実行中の tick では消さない
+  let release = (): void => {};
+  const turn = env.turnQueue.run("topic-1", () => new Promise<void>((resolve) => (release = resolve)), { session: true });
+  await flush();
+  let called = 0;
+  env.attachments.prune = () => ++called;
+  await env.scheduler.tick();
+  assert.equal(called, 0);
+  release();
+  await turn;
 });
 
 test("停止を始めた後の tick では、削除のジョブをキューに入れない", async (t) => {

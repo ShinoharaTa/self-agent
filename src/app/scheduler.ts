@@ -1,7 +1,8 @@
 // 定期処理（tick）。SELF_AGENT_SHELL=1 ならシェル（Bash）の sandbox を診断し直し（shell-state.ts）、足した人格があればその Bot の接続を確かめ（persona-status.ts）、DB のセッションの状態と Discord の親カテゴリを突き合わせてずれを直し（再同期）、
 // 最後の発言から SELF_AGENT_IDLE_HOURS 経った進行中のセッションを待ちに移し（知らせはセッションの持ち主の Bot）、
 // 完了から SELF_AGENT_DELETE_AFTER_DAYS 日経ったセッションについてチャンネルを削除するか #system で確認し、
-// SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログと 30 日を過ぎたプロジェクトの .trash を消し、workDir の .tmp の 1 日を過ぎたものと 1 GB を超えた .cache を消し、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
+// SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログと 30 日を過ぎたプロジェクトの .trash を消し、workDir の .tmp の 1 日を過ぎたものと 1 GB を超えた .cache を消し、
+// 記録に結びついていない 30 日を過ぎた添付を消し（attachments.ts）、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
 // 対象は毎回 DB と Discord から求めるので、止まっていた間に過ぎた分や失敗した移動も起動直後の tick で拾う（永続のタイマーは持たない）
 import type { Config } from "../config.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
@@ -83,6 +84,8 @@ export type SchedulerDeps = {
   refreshPersonas?: () => Promise<void>;
   /** workDir の .tmp の古いものと、上限を超えた .cache を消す。投げたら log に出して続ける */
   pruneWorkDir: () => Promise<void>;
+  /** 記録に結びついていない古い添付（行とファイル）を消し、消した数を返す。投げたら log に出して続ける。省略すれば消さない */
+  pruneAttachments?: () => number;
   /**
    * 発言と同じターンのキュー。.trash と .tmp・.cache の削除は、ここにセッションのジョブ（key は MAINTENANCE_QUEUE_KEY）として入れ、
    * セッションのターンと重ねない（sandbox のコマンドが書ける場所を、ターンの最中に消さない）。
@@ -265,7 +268,7 @@ export class Scheduler {
   }
 
   /**
-   * プロジェクトの古い .trash と workDir の .tmp・.cache を、ターンのキューのセッションのジョブとして消す。
+   * プロジェクトの古い .trash と workDir の .tmp・.cache、古い添付を、ターンのキューのセッションのジョブとして消す。
    * 停止を始めた・セッションのジョブが実行中なら何もしない（log も出さない）。入れた後に来たセッションのターンは、消し終わるまで待つ。reject しない
    */
   private async pruneSandboxAreas(): Promise<void> {
@@ -276,6 +279,7 @@ export class Scheduler {
       async () => {
         await this.pruneProjectTrash();
         await this.pruneWorkDir();
+        this.pruneAttachments();
       },
       { session: true },
     );
@@ -296,6 +300,17 @@ export class Scheduler {
       await this.deps.pruneWorkDir();
     } catch {
       this.deps.log("作業場所の .tmp・.cache を消せませんでした");
+    }
+  }
+
+  /** 記録に結びついていない古い添付を消す。失敗は log に出すだけ（パスは出さない） */
+  private pruneAttachments(): void {
+    if (this.deps.pruneAttachments === undefined) return;
+    try {
+      const deleted = this.deps.pruneAttachments();
+      if (deleted > 0) this.deps.log(`古い添付 ${deleted} 件を消しました`);
+    } catch {
+      this.deps.log("古い添付を消せませんでした");
     }
   }
 
