@@ -146,6 +146,7 @@ export type ReminderSchedulerDeps = {
   guildSettings: Pick<GuildSettingsStore, "get">;
   /** 頼んだチャンネルが削除済みのセッションか */
   topicSessions: Pick<TopicSessionStore, "get">;
+  /** 投稿・書き換え・入力中表示はチャンネルの持ち主の Bot で行う（main で personas.ts の ownerPosts を渡す） */
   gateway: Pick<Gateway, "sendMessage" | "editMessage" | "channelExists" | "send" | "startTyping">;
   /** 予約した依頼を動かすチャンネル（#inbox・#tasks）か */
   resolveChannel: ResolveChannel;

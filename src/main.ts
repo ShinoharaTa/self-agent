@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { DiskQuota, pruneWorkDir } from "./agent/disk.ts";
 import { pruneProjectTrash } from "./agent/project-files.ts";
 import { checkSandbox, nodeVersionDir, shellPath } from "./agent/sandbox-check.ts";
+import type { RunContext } from "./agent/runner.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
+import { personaSystemPrompts } from "./agent/system-prompt.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
 import { ChannelOpsQueue } from "./app/channel-ops.ts";
@@ -17,10 +19,12 @@ import { createCommands, createComponents, createInteractionHandler, registerCom
 import { KeyedSerialQueue } from "./app/queue.ts";
 import { ReminderScheduler } from "./app/reminders.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
+import { PersonaStatus, startPersonaGateways } from "./app/persona-status.ts";
+import { PersonaRouter, type PersonaRuntime } from "./app/personas.ts";
 import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
-import { loadConfig, missingForStart } from "./config.ts";
+import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
@@ -43,6 +47,15 @@ const config = loadConfig();
 const missing = missingForStart(config);
 if (missing.length > 0) {
   console.error(`起動に必要な環境変数が設定されていません: ${missing.join(", ")}`);
+  process.exit(1);
+}
+
+// 人格ごとのシステムプロンプト。足した人格の文のファイルは起動時に 1 回読み、読めない・空なら変数名を出して起動しない（既定の人格は今の SYSTEM_PROMPT）
+let systemPrompts: Map<string, string>;
+try {
+  systemPrompts = personaSystemPrompts(config.personas);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
 
@@ -83,7 +96,13 @@ const projectsDir = join(realWorkDir, "projects");
 // 書き込みの前の容量の判定（workDir の空きと、プロジェクトごとに 60 秒キャッシュした大きさ）
 const diskQuota = new DiskQuota({ workDir: realWorkDir, projectsDir, now });
 
+// 人格ごとの Bot（docs/plan/personas.md）。既定の人格は DISCORD_TOKEN で、管理の操作（カテゴリ・チャンネル・ピン留め・#system・再同期・コマンドの登録）もこの Bot が行う。
+// 足した人格は SELF_AGENT_PERSONA_<ID>_DISCORD_TOKEN（値は start で読む）で、自分のチャンネルの返事・途中経過・ボタンだけを投稿する
 const gateway = new DiscordGateway(config.allowedGuildIds);
+const personaGateways = config.personas.map((persona) => ({
+  persona,
+  gateway: new DiscordGateway(config.allowedGuildIds, { persona: persona.id, tokenEnv: persona.discordTokenEnv }),
+}));
 const resolveChannel = createChannelResolver(config, guildSettings, topicSessions);
 // /setup・/new・session_open 専用のキュー（ターンの同時実行枠とは分ける）
 const layoutQueue = new KeyedSerialQueue(1);
@@ -99,14 +118,6 @@ const openSession = createOpenSession({
   now,
   log,
 });
-// ナレッジベースと記憶のツール: kb_delete の確認と記憶の変更の知らせは run のチャンネルに投稿する
-const kbMemory = {
-  knowledge,
-  memories,
-  confirmKbDelete: createConfirmKbDelete({ gateway }),
-  notifyMemoryChange: createNotifyMemoryChange({ gateway, log }),
-  timeZone: config.timeZone,
-};
 // project_open: 配信が無効（設定が無い・待ち受けに失敗した）なら not_configured（staticServer は下で作る）。
 // project_files: このチャンネルのプロジェクトのファイルを .trash に移す・移す・作り直す・戻す
 const projectTools = {
@@ -122,19 +133,52 @@ const reminderTools = { reminders, log, now };
 // dev モードなら run ごとの会話を <dataDir>/devlog/<日付>.jsonl に残す（dev モードでなければ受け口を作らない）
 const devLogSink = createDevLogSink(config);
 if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${config.devLogDays} 日で消します）`);
-// ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ。
-// ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中で、容量の上限まで）に絞る
-const runner = new SdkAgentRunner(
-  config,
-  (context) => createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, reminderTools, context),
-  { projects, projectsDir, disk: diskQuota },
-  log,
-  undefined,
-  devLogSink === undefined ? undefined : { sink: devLogSink, now },
-);
+// ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ（全人格で共通）。
+// ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中で、容量の上限まで）に絞る。
+// kbMemory は下で作る（run のときに読む）
+const createMcpServer = (context?: RunContext) =>
+  createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, reminderTools, context);
+const runnerFiles = { projects, projectsDir, disk: diskQuota };
+const runnerDevLog = devLogSink === undefined ? undefined : { sink: devLogSink, now };
+const runner = new SdkAgentRunner(config, createMcpServer, runnerFiles, log, undefined, runnerDevLog);
+// 足した人格の runner: システムプロンプトはその人格のもの、model・effort はその人格の設定（無ければ既定の人格と同じ）。
+// codex のエンジンはまだ無いので、codex の人格も既定の人格の Claude の model・effort で動かす（usage のエンジンは claude）
+if (config.personas.some((persona) => persona.engine === "codex")) {
+  log("codex のエンジンはまだ無いため、codex の人格も Claude で動かします");
+}
+const personaRuntimes: PersonaRuntime[] = [
+  { id: DEFAULT_PERSONA_ID, name: DEFAULT_PERSONA_ID, engine: "claude", runner, gateway },
+  ...personaGateways.map(({ persona, gateway: personaGateway }): PersonaRuntime => {
+    const modelAndEffort =
+      persona.engine === "claude"
+        ? { model: persona.model ?? config.model, effort: persona.effort ?? config.effort }
+        : { model: config.model, effort: config.effort };
+    const personaRunner = new SdkAgentRunner(
+      { ...config, ...modelAndEffort, systemPrompt: systemPrompts.get(persona.id) },
+      createMcpServer,
+      runnerFiles,
+      log,
+      undefined,
+      runnerDevLog,
+    );
+    return { id: persona.id, name: persona.name, engine: "claude", runner: personaRunner, gateway: personaGateway };
+  }),
+];
+// チャンネルの持ち主の人格（persona_channels・sessions.persona）への振り分け。返事などは持ち主の Bot（ownerPosts）、管理の操作は既定の人格の Bot（gateway）
+const personas = new PersonaRouter({ personas: personaRuntimes, guildSettings, topicSessions });
+const ownerPosts = personas.ownerPosts();
+// ナレッジベースと記憶のツール: kb_delete の確認と記憶の変更の知らせは run のチャンネルに、その持ち主の Bot で投稿する
+const kbMemory = {
+  knowledge,
+  memories,
+  confirmKbDelete: createConfirmKbDelete({ gateway: ownerPosts }),
+  notifyMemoryChange: createNotifyMemoryChange({ gateway: ownerPosts, log }),
+  timeZone: config.timeZone,
+};
 // 発言と /close・/renew のターンのキュー（key は channelId）
 const turnQueue = new KeyedSerialQueue(config.maxConcurrentTurns);
-const turn = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
+// ターンはチャンネルの持ち主の人格の runner で動かす（personas）
+const turn = { runner, personas, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
 const channelOps = new ChannelOpsQueue({
   gateway,
   guildSettings,
@@ -142,12 +186,13 @@ const channelOps = new ChannelOpsQueue({
   gapMs: config.channelOpGapMs,
   log,
 });
-// セッションのチャンネルのターンには途中経過と [中断] を付け、手順の上限で止まったら [続ける] を付ける
+// セッションのチャンネルのターンには途中経過と [中断] を付け、手順の上限で止まったら [続ける] を付ける。
+// 発言はチャンネルの持ち主の Bot が受け取った分だけを受け付け、返信・途中経過・入力中表示もその Bot で行う
 const handler = createHandler({
   cfg: config,
   resolveChannel,
-  gateway,
   ...turn,
+  gateway: ownerPosts,
   channelOps,
   queue: turnQueue,
   now,
@@ -160,13 +205,15 @@ const inboxRotator = new InboxRotator({
   inboxSummaries,
   turnQueue,
   turn,
-  gateway,
+  gateway: ownerPosts,
   now,
   log,
 });
+// コマンドは既定の人格のアプリだけが登録して受ける。/close・/renew のターンはチャンネルの持ち主の人格で動かし、結果は持ち主の Bot が投稿する
 const commands = createCommands({
   cfg: config,
   gateway,
+  personas,
   guildSettings,
   topicSessions,
   queue: layoutQueue,
@@ -190,6 +237,7 @@ const handleInteraction = createInteractionHandler({
     resolveChannel,
     turns: handler,
     gateway,
+    personas,
     guildSettings,
     topicSessions,
     sessions,
@@ -226,6 +274,21 @@ const shellState = new ShellState({
   gateway,
   log,
 });
+// 足した人格の Bot の接続（docs/plan/personas.md §2.2）。起動直後と tick ごとに確かめ、接続できない・戻ったが変わったら #system に知らせる
+const personaStatus =
+  personaGateways.length === 0
+    ? undefined
+    : new PersonaStatus({
+        cfg: config,
+        personas: personaGateways.map(({ persona, gateway: personaGateway }) => ({
+          id: persona.id,
+          name: persona.name,
+          connected: () => personaGateway.connected(),
+        })),
+        guildSettings,
+        gateway,
+        log,
+      });
 // 定期処理: SELF_AGENT_SHELL=1 ならシェルの自己診断をやり直し、セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
 // 完了から日数の経ったセッションの削除を #system で確認し、古い dev ログ（dev モードでなくても）とプロジェクトの古い .trash、workDir の古い .tmp と大きくなった .cache を消し、#inbox・#tasks の会話を切り替える
 const scheduler = new Scheduler({
@@ -240,6 +303,7 @@ const scheduler = new Scheduler({
   pruneDevLogs: () => pruneDevLogs(devLogDir(config.dataDir), now(), config.timeZone, config.devLogDays),
   pruneProjectTrash: () => pruneProjectTrash(projectsDir, now()),
   refreshShell: shellRefresher(config, shellState),
+  ...(personaStatus === undefined ? {} : { refreshPersonas: () => personaStatus.refresh() }),
   pruneWorkDir: () => pruneWorkDir(realWorkDir),
   // .trash・.tmp・.cache の削除は発言と同じキューにセッションのジョブとして入れる（セッションのジョブが実行中ならその tick では消さない）
   turnQueue,
@@ -248,14 +312,14 @@ const scheduler = new Scheduler({
 });
 
 // リマインドの発火: 分の境目にそろえた 1 分ごとの tick で、時刻の来たリマインドをオーナーをメンションして投稿する。
-// 予約した依頼（prompt）のターンは発言と同じキュー（turnQueue、key は #inbox・#tasks の channelId）で行う
+// 予約した依頼（prompt）のターンは発言と同じキュー（turnQueue、key は #inbox・#tasks の channelId）で行う。投稿はそのチャンネルの持ち主の Bot で行う
 const reminderScheduler = new ReminderScheduler({
   cfg: config,
   reminders,
   tasks,
   guildSettings,
   topicSessions,
-  gateway,
+  gateway: { ...ownerPosts, channelExists: (channelId) => gateway.channelExists(channelId) },
   resolveChannel,
   turnQueue,
   turn,
@@ -282,7 +346,14 @@ if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
 const lifecycle = createShutdown(
   {
     cfg: config,
-    gateway,
+    // 全人格の Bot を止める（1 つが失敗しても残りは止める）
+    gateway: {
+      stop: async () => {
+        const results = await Promise.allSettled([gateway, ...personaGateways.map((bot) => bot.gateway)].map((bot) => bot.stop()));
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed !== undefined) throw failed.reason;
+      },
+    },
     queues: [turnQueue, layoutQueue],
     scheduler,
     reminderScheduler,
@@ -316,6 +387,12 @@ if (staticServer !== undefined) {
 if (config.shell) await shellState.check();
 await gateway.start(lifecycle.handlers);
 await registerCommands({ cfg: config, gateway, commands, log });
+// 足した人格の Bot（同じハンドラ。発言は持ち主の Bot の分だけ、操作はどの Bot で受けても処理する）。ログインできなくても既定の人格は動かし続ける
+await startPersonaGateways(
+  personaGateways.map((bot) => ({ id: bot.persona.id, gateway: bot.gateway })),
+  lifecycle.handlers,
+  log,
+);
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
 // 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で（リマインドは分の境目ごと）。停止を始めていれば何もしない
 scheduler.start(TICK_INTERVAL_MS);

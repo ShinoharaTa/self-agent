@@ -1,11 +1,13 @@
 // 1 チャンネルの 1 ターン（発言・/close 共通）。usage の記録とログ、SDK セッションの保存、記憶と seed の付与、resume 失敗からの復旧
 import type { AgentRunner, ProgressStep, RunContext, RunResult } from "../agent/runner.ts";
+import { DEFAULT_PERSONA_ID } from "../config.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { InboxSummary, InboxSummaryStore, SummaryChannelKind } from "../store/inbox-summaries.ts";
 import type { Memory, MemoryStore } from "../store/memories.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSession, TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
+import type { PersonaRouter, TurnPersona } from "./personas.ts";
 import { rotatedSeed } from "./summary.ts";
 import { formatTurnUsageLog } from "./usage-report.ts";
 
@@ -35,7 +37,10 @@ export const RESUME_SEED_HEADER = "前の会話の記録が切れたため、要
 export const MEMORY_BLOCK_HEADER = "オーナーについての記憶（アプリが保存したもの）:";
 
 export type TurnDeps = {
+  /** 既定の人格の runner（personas が無いときはすべてのチャンネルでこれを使う） */
   runner: AgentRunner;
+  /** チャンネルの持ち主の人格の runner。無ければすべて既定の人格（runner） */
+  personas?: Pick<PersonaRouter, "turnPersona">;
   /** channelId → SDK の session_id */
   sessions: SdkSessionStore;
   seeds: ChannelSeedStore;
@@ -88,18 +93,25 @@ export function memoryBlock(memories: readonly Pick<Memory, "id" | "text">[]): s
   return [MEMORY_BLOCK_HEADER, ...memories.map((memory) => `- [#${memory.id}] ${memory.text}`)].join("\n");
 }
 
+/** チャンネルの持ち主の人格（ターンを動かす runner と、usage に記録する id・エンジン） */
+export function turnPersonaOf(deps: Pick<TurnDeps, "runner" | "personas">, channelId: string): TurnPersona {
+  return deps.personas?.turnPersona(channelId) ?? { id: DEFAULT_PERSONA_ID, engine: "claude", runner: deps.runner };
+}
+
 /**
  * ターンの結果を usage_log に記録し、トークンを log に 1 行出す（formatTurnUsageLog）。kind はターンの種類のラベル（ID は入れない）。
  * 成功ならトークン・compaction・最後のステップの入力も記録する。失敗はトークンの合計を記録せず（/usage の合計は成功したターンだけ）、
- * 届いたステップの内訳だけ残す。compaction が起きたら log に出す
+ * 届いたステップの内訳だけ残す。compaction が起きたら log に出す。persona はターンを動かした人格（省略は既定の人格・claude）
  */
 export function recordTurnUsage(
   deps: Pick<TurnDeps, "usage" | "log">,
   key: string,
   kind: string,
   result: RunResult,
+  persona?: Pick<TurnPersona, "id" | "engine">,
 ): void {
   const { usage, log } = deps;
+  const by = persona === undefined ? {} : { persona: persona.id, engine: persona.engine };
   if (!result.ok) {
     usage.record({
       key,
@@ -108,6 +120,7 @@ export function recordTurnUsage(
       toolCalls: result.toolCalls,
       kind,
       steps: result.usage?.steps ?? null,
+      ...by,
     });
     log(formatTurnUsageLog(kind, result));
     return;
@@ -127,6 +140,7 @@ export function recordTurnUsage(
     outputTokens: result.usage.outputTokens,
     cacheCreation1hInputTokens: result.usage.cacheCreation1hInputTokens,
     steps: result.usage.steps,
+    ...by,
   });
   log(formatTurnUsageLog(kind, result));
   if (result.compacted !== undefined) {
@@ -137,6 +151,7 @@ export function recordTurnUsage(
 
 /**
  * チャンネルで 1 ターン実行する（会話の key は channelId）。呼び出し側で同じチャンネルのターンを直列にしておくこと。
+ * runner はチャンネルの持ち主の人格のもの（turnPersonaOf）。usage にはその人格とエンジンを記録する。
  * - SDK セッションがあれば resume する。無ければ [記憶のブロック, seed, prompt] を空行でつないで渡し（記憶が無い・seed が無いならその分は付けない）、
  *   成功したら seed を消す。記憶のブロックは毎回 DB から作る（seed には保存しない）
  * - 失敗しても SDK が会話を記録していれば（result まで届いた失敗）、その session_id を残して次のターンで続ける。
@@ -146,8 +161,10 @@ export function recordTurnUsage(
  * 返す結果の失敗は呼び出し側で返信・log する
  */
 export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise<RunResult> {
-  const { runner, sessions, seeds, topicSessions, inboxSummaries, memories, log } = deps;
+  const { sessions, seeds, topicSessions, inboxSummaries, memories, log } = deps;
   const key = turn.channelId;
+  const persona = turnPersonaOf(deps, turn.channelId);
+  const { runner } = persona;
   // usage の記録とログのラベル。予約した依頼のターンは -scheduled を付ける
   const usageKind = turn.scheduled === true ? `${turn.kind}-scheduled` : turn.kind;
   const context: RunContext = {
@@ -167,7 +184,7 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
       ...(turn.signal === undefined ? {} : { signal: turn.signal }),
       ...(turn.onProgress === undefined ? {} : { onProgress: turn.onProgress }),
     });
-    recordTurnUsage(deps, key, usageKind, result);
+    recordTurnUsage(deps, key, usageKind, result, persona);
     if (result.ok) {
       sessions.set(key, result.sessionId);
     } else {
@@ -209,11 +226,11 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     }
     sessions.delete(key);
     const session = topicSessions.get(turn.channelId);
-    // #tasks は #tasks の要約、それ以外（#inbox）は #inbox の要約を使う
+    // #tasks は #tasks の要約、それ以外（#inbox）は #inbox の要約を使う。要約はそのチャンネルの持ち主の人格のもの
     const summaryKind: SummaryChannelKind = turn.kind === "tasks" ? "tasks" : "inbox";
     const seed = resumeSeed(
       session,
-      session === undefined ? inboxSummaries.latest(turn.guildId, summaryKind) : undefined,
+      session === undefined ? inboxSummaries.latest(turn.guildId, summaryKind, persona.id) : undefined,
       summaryKind,
     );
     if (seed !== undefined) seeds.set(key, seed);

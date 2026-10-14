@@ -1,4 +1,4 @@
-import type { Config } from "../config.ts";
+import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { IncomingMessage } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
@@ -9,14 +9,19 @@ export type ChannelKind = "inbox" | "tasks" | "session";
 /** そのチャンネルが受け付け対象なら種類を、対象外なら null を返す */
 export type ResolveChannel = (guildId: string, channelId: string) => ChannelKind | null;
 
+/** チャンネルの持ち主の人格の id（personas.ts の PersonaRouter.ownerOf） */
+export type OwnerOf = (channelId: string) => string;
+
 /**
  * 許可したサーバー（env の SELF_AGENT_ALLOWED_GUILD_IDS）の受け付け対象のチャンネルで、オーナー本人が書いた空でない発言だけを受け付ける（DM・bot・Webhook は弾く）。
- * 受け付けるならチャンネルの種類を、弾くなら null を返す
+ * 全部の Bot が同じ発言を受け取るので、受け取った Bot の人格（event.persona。省略は既定の人格）がそのチャンネルの持ち主（ownerOf。省略は全部既定の人格）のときだけ受け付け、
+ * それ以外の Bot の分は黙って捨てる。受け付けるならチャンネルの種類を、弾くなら null を返す
  */
 export function acceptedChannel(
   event: IncomingMessage,
   cfg: Pick<Config, "allowedGuildIds" | "ownerUserId">,
   resolveChannel: ResolveChannel,
+  ownerOf?: OwnerOf,
 ): ChannelKind | null {
   if (
     event.guildId === null ||
@@ -29,7 +34,10 @@ export function acceptedChannel(
     return null;
   }
   // DB を引くのは他の条件をすべて満たしたときだけ
-  return resolveChannel(event.guildId, event.channelId);
+  const kind = resolveChannel(event.guildId, event.channelId);
+  if (kind === null) return null;
+  const owner = ownerOf?.(event.channelId) ?? DEFAULT_PERSONA_ID;
+  return owner === (event.persona ?? DEFAULT_PERSONA_ID) ? kind : null;
 }
 
 /**

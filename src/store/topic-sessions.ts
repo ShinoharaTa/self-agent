@@ -1,4 +1,5 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
+import { DEFAULT_PERSONA_ID } from "../config.ts";
 
 /** セッションの状態。deleted はチャンネルを消した後も要約を残すための行 */
 export type TopicSessionState = "active" | "waiting" | "done" | "deleted";
@@ -53,6 +54,8 @@ export type NewTopicSession = {
   categoryId: string;
   /** 省略すれば command */
   origin?: TopicSessionOrigin;
+  /** 作った人格の id（チャンネルの持ち主。後から変えない）。省略すれば既定の人格 */
+  persona?: string;
 };
 
 const STATES: readonly TopicSessionState[] = ["active", "waiting", "done", "deleted"];
@@ -132,11 +135,26 @@ export class TopicSessionStore {
     const at = this.now().toISOString();
     const row = this.db
       .prepare(
-        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, origin) " +
-          "VALUES (?, ?, ?, 'active', ?, ?, ?, ?) RETURNING *",
+        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, origin, persona) " +
+          "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?) RETURNING *",
       )
-      .get(session.channelId, session.guildId, session.title, session.categoryId, at, at, session.origin ?? "command");
+      .get(
+        session.channelId,
+        session.guildId,
+        session.title,
+        session.categoryId,
+        at,
+        at,
+        session.origin ?? "command",
+        session.persona ?? DEFAULT_PERSONA_ID,
+      );
     return toSession(row!);
+  }
+
+  /** そのセッションのチャンネルの持ち主の人格の id（削除済みの行も返す）。セッションでなければ undefined */
+  personaOf(channelId: string): string | undefined {
+    const row = this.db.prepare("SELECT persona FROM sessions WHERE channel_id = ?").get(channelId);
+    return row === undefined ? undefined : String(row.persona);
   }
 
   /** 最終発言の時刻を今にする。行が無ければ undefined */

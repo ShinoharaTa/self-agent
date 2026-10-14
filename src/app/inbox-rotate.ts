@@ -12,7 +12,7 @@ import { CLOSE_SUMMARY_MAX_LENGTH } from "../store/topic-sessions.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { fallbackSummary, rotatedSeed } from "./summary.ts";
 import { formatDate } from "./time.ts";
-import { recordTurnUsage, RESUME_FAILURE_PATTERN, type TurnDeps } from "./turn.ts";
+import { recordTurnUsage, RESUME_FAILURE_PATTERN, type TurnDeps, turnPersonaOf } from "./turn.ts";
 
 /** #inbox の要約を頼むターンの prompt。静的に保つ（日時ヘッダも付けない。字数は要約を切り詰める上限と揃える）。セッションに移った話題は案内と題名だけにする（中身はセッション側で進むため） */
 export const ROTATE_PROMPT =
@@ -64,9 +64,9 @@ export type InboxRotatorDeps = {
   inboxSummaries: Pick<InboxSummaryStore, "add" | "latest">;
   /** 発言のターンと同じキュー（key は channelId）。要約のターンが発言のターンと重ならないようにする */
   turnQueue: Pick<KeyedSerialQueue, "run">;
-  /** 要約のターンの runner と、SDK セッション・seed・usage */
-  turn: Pick<TurnDeps, "runner" | "sessions" | "seeds" | "usage" | "log">;
-  /** 切り替えた知らせを投稿する */
+  /** 要約のターンの runner（チャンネルの持ち主の人格のもの）と、SDK セッション・seed・usage */
+  turn: Pick<TurnDeps, "runner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
+  /** 切り替えた知らせを投稿する（チャンネルの持ち主の Bot） */
   gateway: Pick<Gateway, "sendMessage">;
   now: () => Date;
   log: (message: string) => void;
@@ -235,8 +235,10 @@ export class InboxRotator {
     stopping: () => boolean,
   ): Promise<RotateNowResult | undefined> {
     const { cfg, inboxSummaries, turn, now, log } = this.deps;
-    const { runner, sessions, seeds, usage } = turn;
+    const { sessions, seeds, usage } = turn;
     const { guildId, kind, channelId } = target;
+    // 要約のターンはチャンネルの持ち主の人格で動かし、要約もその人格のものとして残す
+    const persona = turnPersonaOf(turn, channelId);
     const key = failureKey(guildId, kind);
     // キュー待ちの間に停止を始めていたら何もしない（次の起動の tick でやり直す）
     if (stopping()) return undefined;
@@ -255,15 +257,15 @@ export class InboxRotator {
 
     // ツールの context は渡さない（#inbox の session_open で要約の途中にセッションを作らせない）。
     // オーナーの発言ではないので、WebFetch で取得できる URL も無い
-    const result = await runner.run({ prompt: ROTATE_PROMPTS[kind], sessionId, context: undefined, allowedUrls: [] });
-    recordTurnUsage(turn, channelId, `${kind}-rotate`, result);
+    const result = await persona.runner.run({ prompt: ROTATE_PROMPTS[kind], sessionId, context: undefined, allowedUrls: [] });
+    recordTurnUsage(turn, channelId, `${kind}-rotate`, result, persona);
     // usage の記録より後の時刻にする（次の判定で要約のターン自身の記録を数えない）
     const rotatedAt = now();
 
     if (result.ok) {
       // session_report が呼ばれても使わない（context が無いので not_available になる）。返答本文の先頭を要約にする
       const summary = fallbackSummary(result.text);
-      inboxSummaries.add(guildId, today, summary, kind);
+      inboxSummaries.add(guildId, today, summary, kind, persona.id);
       sessions.delete(channelId);
       seeds.set(channelId, rotatedSeed(summary, kind));
       this.markRotated(target, today, rotatedAt);
@@ -277,7 +279,7 @@ export class InboxRotator {
 
     if (RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
       // 会話の記録が既に無いので要約は作れない。同じチャンネルの前回の要約があればそれを引き継ぐ
-      const last = inboxSummaries.latest(guildId, kind);
+      const last = inboxSummaries.latest(guildId, kind, persona.id);
       sessions.delete(channelId);
       if (last !== undefined) seeds.set(channelId, rotatedSeed(last.summary, kind));
       this.markRotated(target, today, rotatedAt);

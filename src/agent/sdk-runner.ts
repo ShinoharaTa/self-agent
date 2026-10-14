@@ -362,14 +362,20 @@ export function devLogSteps(message: SDKMessage): DevLogStep[] {
   return [];
 }
 
+/**
+ * runner の設定。人格ごとに 1 つ作り、model・effort はその人格のもの。systemPrompt はその人格のシステムプロンプト
+ * （省略すれば既定の人格の SYSTEM_PROMPT）
+ */
+export type SdkRunnerConfig = Pick<
+  Config,
+  "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort" | "sessionMaxTurns" | "sessionTurnTimeoutSec"
+> & { systemPrompt?: string };
+
 /** dev モードの会話ログの受け口と、開始時刻・所要時間に使う時計 */
 export type DevLogDeps = { sink: DevLogSink; now: () => Date };
 
 export class SdkAgentRunner implements AgentRunner {
-  private readonly cfg: Pick<
-    Config,
-    "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort" | "sessionMaxTurns" | "sessionTurnTimeoutSec"
-  >;
+  private readonly cfg: SdkRunnerConfig;
   private readonly createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance;
   private readonly files: FileGuardDeps;
   private readonly log: (message: string) => void;
@@ -383,10 +389,7 @@ export class SdkAgentRunner implements AgentRunner {
    * devLog は dev モードのときだけ渡す（run ごとに 1 行記録する）。無ければ何もしない
    */
   constructor(
-    cfg: Pick<
-      Config,
-      "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort" | "sessionMaxTurns" | "sessionTurnTimeoutSec"
-    >,
+    cfg: SdkRunnerConfig,
     createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance,
     files: FileGuardDeps,
     log: (message: string) => void,

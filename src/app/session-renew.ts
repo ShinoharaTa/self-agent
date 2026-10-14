@@ -4,7 +4,7 @@
 import { RENEW_SUMMARY_MAX_LENGTH, type TopicSessionStore } from "../store/topic-sessions.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { clip, EMPTY_SUMMARY } from "./summary.ts";
-import { recordTurnUsage, RESUME_FAILURE_PATTERN, resumeSeed, type TurnDeps } from "./turn.ts";
+import { recordTurnUsage, RESUME_FAILURE_PATTERN, resumeSeed, type TurnDeps, turnPersonaOf } from "./turn.ts";
 
 /** /renew の要約を頼むターンの prompt。静的に保つ（日時ヘッダも付けない。字数は要約を切り詰める上限と揃える） */
 export const RENEW_PROMPT =
@@ -17,8 +17,8 @@ export type SessionRenewDeps = {
   topicSessions: Pick<TopicSessionStore, "get" | "setRenewed">;
   /** 発言のターンと同じキュー（key は channelId）。要約のターンが発言のターンと重ならないようにする */
   turnQueue: Pick<KeyedSerialQueue, "run">;
-  /** 要約のターンの runner と、SDK セッション・seed・usage */
-  turn: Pick<TurnDeps, "runner" | "sessions" | "seeds" | "usage" | "log">;
+  /** 要約のターンの runner（チャンネルの持ち主の人格のもの）と、SDK セッション・seed・usage */
+  turn: Pick<TurnDeps, "runner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
   log: (message: string) => void;
 };
 
@@ -54,16 +54,17 @@ export async function renewSession(deps: SessionRenewDeps, guildId: string, chan
 
 async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: string): Promise<RenewOutcome> {
   const { topicSessions, turn, log } = deps;
-  const { runner, sessions, seeds } = turn;
+  const { sessions, seeds } = turn;
   const session = topicSessions.get(channelId);
   if (session === undefined || session.guildId !== guildId) return { result: "not_session" };
   if (session.state === "done" || session.state === "deleted") return { result: "closed" };
   const sessionId = sessions.get(channelId);
   if (sessionId === undefined) return { result: "no_conversation" };
 
-  // オーナーの発言ではないので、WebFetch で取得できる URL は無い
-  const result = await runner.run({ prompt: RENEW_PROMPT, sessionId, context: undefined, allowedUrls: [] });
-  recordTurnUsage(turn, channelId, "session-renew", result);
+  // オーナーの発言ではないので、WebFetch で取得できる URL は無い。ターンはチャンネルの持ち主の人格で動かす
+  const persona = turnPersonaOf(turn, channelId);
+  const result = await persona.runner.run({ prompt: RENEW_PROMPT, sessionId, context: undefined, allowedUrls: [] });
+  recordTurnUsage(turn, channelId, "session-renew", result, persona);
 
   if (result.ok) {
     const text = result.text.trim();

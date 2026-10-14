@@ -87,6 +87,12 @@ export class GuildSettingsStore {
     return row === undefined ? undefined : toSettings(row);
   }
 
+  /** その入口のチャンネル（persona_channels の行）の持ち主の人格の id。入口のチャンネルでなければ undefined */
+  personaOfChannel(channelId: string): string | undefined {
+    const row = this.db.prepare("SELECT persona FROM persona_channels WHERE channel_id = ?").get(channelId);
+    return row === undefined ? undefined : String(row.persona);
+  }
+
   /** カテゴリ・チャンネルの ID を 1 つ保存する。行が無ければ作る */
   setChannel(guildId: string, field: GuildChannelField, channelId: string): void {
     if (field === "inboxChannelId" || field === "tasksChannelId") {
