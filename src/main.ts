@@ -28,6 +28,7 @@ import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
+import { AttachmentStore } from "./store/attachments.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
@@ -37,6 +38,8 @@ import { KnowledgeStore } from "./store/knowledge.ts";
 import { MemoryStore } from "./store/memories.ts";
 import { ProjectStore } from "./store/projects.ts";
 import { ReminderStore } from "./store/reminders.ts";
+import { RoutineRecordStore } from "./store/routine-records.ts";
+import { RoutineStore } from "./store/routines.ts";
 import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
@@ -89,6 +92,10 @@ const knowledge = new KnowledgeStore(db, now);
 const memories = new MemoryStore(db, now);
 const projects = new ProjectStore(db, now);
 const reminders = new ReminderStore(db, now);
+// 定型チャンネル（docs/plan/routines.md）。使うのは R2 以降
+const routines = new RoutineStore(db, now);
+const routineRecords = new RoutineRecordStore(db, now);
+const attachments = new AttachmentStore(db, now);
 
 // 作ったプロジェクトの場所。権限ルール（<realpath(workDir)>/projects）と同じ実際の場所にする
 const realWorkDir = realpathSync(config.workDir);
