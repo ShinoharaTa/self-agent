@@ -65,6 +65,8 @@ export type DevLogRecord = {
   resume: string | null;
   /** SDK に渡した文字列そのまま（ヘッダ・記憶のブロック・seed を含む） */
   prompt: string;
+  /** prompt と一緒に渡した画像の枚数（中身は書かない）。画像の無い run と以前の記録には無い */
+  images?: number;
   /** 起きた順 */
   steps: DevLogStep[];
   result: DevLogResult;

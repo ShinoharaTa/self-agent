@@ -19,7 +19,9 @@ import {
   FILE_GUARD_FAILED_REASON,
   type FileGuardDeps,
   INBOX_MAX_TURNS,
+  imagePrompt,
   progressLabel,
+  type QueryFn,
   SdkAgentRunner,
   WEB_FETCH_DENIED_REASON,
   WEB_FETCH_MAX_REDIRECTS,
@@ -137,7 +139,7 @@ function compactBoundary(metadata: Record<string, unknown>): SDKMessage {
   return sdkMessage({ type: "system", subtype: "compact_boundary", session_id: "session-1", compact_metadata: metadata });
 }
 
-type QueryCall = { prompt: string; options: Options };
+type QueryCall = Parameters<QueryFn>[0];
 
 /** queryFn に渡したストリームと、run ごとに MCP サーバーを作るときの context を記録する */
 function setupRunner(
@@ -1580,4 +1582,85 @@ test("dev ログ: dev モードでなければ受け口を作らず、run して
   );
   assert.equal((await runner.run({ prompt: "x" })).ok, true);
   assert.deepEqual(readdirSync(dataDir), []);
+});
+
+/** prompt が AsyncIterable なら流れたメッセージを全部集める（文字列ならそのまま返す） */
+async function collectPrompt(prompt: QueryCall["prompt"]): Promise<string | unknown[]> {
+  if (typeof prompt === "string") return prompt;
+  const collected: unknown[] = [];
+  for await (const message of prompt) collected.push(message);
+  return collected;
+}
+
+const PNG_IMAGE = { mediaType: "image/png" as const, data: "iVBORw0KGgo=" };
+const JPEG_IMAGE = { mediaType: "image/jpeg" as const, data: "/9j/4AAQ" };
+
+test("画像: images があれば prompt を [text, ...画像] のユーザーメッセージ 1 件の AsyncIterable にして渡す（client_composed は付けない）。resume・hooks・maxTurns は文字列のときと同じ", async () => {
+  const { runner, calls } = setupRunner(messages(init("session-1"), success("session-1", "読みました")));
+  const context: RunContext = { guildId: "g", channelId: "inbox-1", kind: "inbox", attachmentIds: [7] };
+
+  const textOnly = await runner.run({ prompt: "[ヘッダ]\nこんにちは", sessionId: "session-0", context });
+  const withImages = await runner.run({
+    prompt: "[ヘッダ]\n領収書",
+    sessionId: "session-0",
+    context,
+    images: [PNG_IMAGE, JPEG_IMAGE],
+  });
+
+  assert.ok(textOnly.ok && withImages.ok);
+  // 画像の無い run は今までどおり文字列
+  assert.equal(calls[0]!.prompt, "[ヘッダ]\nこんにちは");
+  assert.deepEqual(await collectPrompt(calls[1]!.prompt), [
+    {
+      type: "user",
+      session_id: "",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "[ヘッダ]\n領収書" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } },
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/4AAQ" } },
+        ],
+      },
+      parent_tool_use_id: null,
+    },
+  ]);
+  // Options は prompt 以外同じ（hooks・abortController・stderr は run ごとに作るので、キーと形だけ比べる）
+  const [first, second] = [calls[0]!.options, calls[1]!.options];
+  assert.deepEqual(Object.keys(second).sort(), Object.keys(first).sort());
+  assert.equal(second.resume, "session-0");
+  assert.equal(second.maxTurns, first.maxTurns);
+  assert.deepEqual(Object.keys(second.hooks ?? {}).sort(), Object.keys(first.hooks ?? {}).sort());
+  const { hooks: _h1, abortController: _a1, stderr: _s1, mcpServers: _m1, ...restFirst } = first;
+  const { hooks: _h2, abortController: _a2, stderr: _s2, mcpServers: _m2, ...restSecond } = second;
+  assert.deepEqual(restSecond, restFirst);
+});
+
+test("画像: images が空なら文字列のまま渡す。imagePrompt は 1 件だけ流して終わる", async () => {
+  const { runner, calls } = setupRunner(messages(init("session-1"), success("session-1", "はい")));
+
+  await runner.run({ prompt: "x", images: [] });
+
+  assert.equal(calls[0]!.prompt, "x");
+  const collected = await collectPrompt(imagePrompt("y", [PNG_IMAGE]));
+  assert.equal((collected as unknown[]).length, 1);
+});
+
+test("画像: dev ログには枚数だけを残し、画像の中身（base64）は書かない。画像の無い run には images を付けない", async () => {
+  const devLog = memoryDevLog();
+  const { runner } = setupRunner(
+    messages(init("session-1"), success("session-1", "はい")),
+    {},
+    undefined,
+    devLog,
+  );
+
+  await runner.run({ prompt: "領収書", images: [PNG_IMAGE, JPEG_IMAGE] });
+  await runner.run({ prompt: "こんにちは" });
+
+  assert.equal(devLog.records[0]!.images, 2);
+  assert.equal(devLog.records[0]!.prompt, "領収書");
+  assert.ok(!JSON.stringify(devLog.records[0]).includes(PNG_IMAGE.data));
+  assert.ok(!JSON.stringify(devLog.records[0]).includes(JPEG_IMAGE.data));
+  assert.equal("images" in devLog.records[1]!, false);
 });

@@ -66,6 +66,7 @@ Discord ──(discord.js)── Gateway ── access check (allowed servers, o
 - There is no shell. Besides WebSearch and WebFetch, the only built-in tools are the file tools (Read / Write / Edit / Glob). A hook lets them read only inside the projects directory and write only inside the current channel's own project. Files the bot deletes are moved to the project's `.trash` (so they can be restored) and removed for good after 30 days.
 - WebFetch can fetch only URLs the owner pasted in that turn's message (and where they redirect to); anything else is denied by a hook. This blocks a page's instructions from sending data to some other URL.
 - Content from web pages, search results and the knowledge base is treated as reference material. Instructions inside it are not followed.
+- Images the owner attaches (JPEG / PNG / WebP / GIF, up to 4 per message) are sent to Anthropic's API as part of the conversation, so they also stay in the SDK's conversation record (under `CLAUDE_CONFIG_DIR`); the originals are kept in `<SELF_AGENT_DATA_DIR>/attachments/` (deleted after 30 days unless linked to a record).
 - Irreversible actions, such as deleting a channel or a knowledge base entry, happen only when you press a button.
 - Bot messages never ping `@everyone` or roles.
 - Reminders mention only the owner.

@@ -94,7 +94,7 @@ function formatStep(step: DevLogStep, toolNames: ReadonlyMap<string, string>): s
 }
 
 /**
- * 1 ターン分の表示: 見出し → prompt → steps（tool_use は名前と input の先頭 300 字、tool_result は先頭 300 字と isError、text は全文）
+ * 1 ターン分の表示: 見出し → prompt（画像を渡した run は `[画像 n 枚]` の印を添える）→ steps（tool_use は名前と input の先頭 300 字、tool_result は先頭 300 字と isError、text は全文）
  * → 結果（返答の全文か失敗の理由）
  */
 export function formatDevLogRecord(record: DevLogRecord, timeZone: string): string {
@@ -105,6 +105,7 @@ export function formatDevLogRecord(record: DevLogRecord, timeZone: string): stri
     heading(record, timeZone),
     "--- prompt ---",
     record.prompt,
+    ...(record.images === undefined ? [] : [`[画像 ${record.images} 枚]`]),
     "--- steps ---",
     ...(record.steps.length === 0 ? ["（なし）"] : record.steps.map((step) => formatStep(step, toolNames))),
     result.ok ? "--- 返答 ---" : "--- 失敗 ---",

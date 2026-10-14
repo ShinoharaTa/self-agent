@@ -1,5 +1,22 @@
 // Discord との境界。discord.js を import しない（実装は discord-gateway.ts、テストでは偽物に差し替える）
 
+/** モデルに渡せる画像の形式 */
+export type ImageMediaType = "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+
+/** 発言に付いていた画像の添付（Discord の情報だけ。取得は app 側で行う） */
+export type IncomingImage = {
+  /** 原本の URL */
+  url: string;
+  /** Discord の media proxy の URL（`?width=&height=` で縮めたものを取れる） */
+  proxyUrl: string;
+  contentType: ImageMediaType;
+  /** バイト数 */
+  size: number;
+  /** 幅・高さ（Discord が返さなければ null） */
+  width: number | null;
+  height: number | null;
+};
+
 export type IncomingMessage = {
   id: string;
   channelId: string;
@@ -10,6 +27,13 @@ export type IncomingMessage = {
   isWebhook: boolean;
   content: string;
   createdAt: Date;
+  /**
+   * 渡せる画像の添付（jpeg・png・webp・gif のうち 1 枚 10 MB 以下のものを、先頭から 4 枚まで。convert.ts の toIncomingAttachments）。
+   * 省略は無し
+   */
+  images?: IncomingImage[];
+  /** 渡さない添付の数（unsupported は画像でない形式、overLimit は 5 枚目以降か 10 MB を超える画像）。省略は 0 */
+  skippedAttachments?: { unsupported: number; overLimit: number };
   /**
    * 受け取った Bot の人格の id（docs/plan/personas.md）。全部の Bot が同じ発言を受け取るので、持ち主の Bot の分だけを受け付ける。
    * 省略は既定の人格

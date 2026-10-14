@@ -10,6 +10,7 @@ import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { personaSystemPrompts } from "./agent/system-prompt.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
+import { prepareImages, pruneAttachments } from "./app/attachments.ts";
 import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
 import { InboxRotator } from "./app/inbox-rotate.ts";
@@ -95,6 +96,7 @@ const reminders = new ReminderStore(db, now);
 // 定型チャンネル（docs/plan/routines.md）。使うのは R2 以降
 const routines = new RoutineStore(db, now);
 const routineRecords = new RoutineRecordStore(db, now);
+// オーナーの発言の画像の原本（<dataDir>/attachments/ に置く）
 const attachments = new AttachmentStore(db, now);
 
 // 作ったプロジェクトの場所。権限ルール（<realpath(workDir)>/projects）と同じ実際の場所にする
@@ -205,7 +207,8 @@ const channelOps = new ChannelOpsQueue({
   log,
 });
 // セッションのチャンネルのターンには途中経過と [中断] を付け、手順の上限で止まったら [続ける] を付ける。
-// 発言はチャンネルの持ち主の Bot が受け取った分だけを受け付け、返信・途中経過・入力中表示もその Bot で行う
+// 発言はチャンネルの持ち主の Bot が受け取った分だけを受け付け、返信・途中経過・入力中表示もその Bot で行う。
+// 発言の画像はキューの中で取り、そのターンに渡して原本を <dataDir>/attachments/ に置く
 const handler = createHandler({
   cfg: config,
   resolveChannel,
@@ -214,6 +217,7 @@ const handler = createHandler({
   channelOps,
   queue: turnQueue,
   now,
+  prepareImages: (source, images) => prepareImages({ dataDir: config.dataDir, attachments, log }, source, images),
 });
 // #inbox・#tasks の切り替え: 要約のターンは発言と同じキュー（turnQueue、key はそのチャンネルの channelId）で行う。
 // 定期処理と、#inbox・#tasks での /renew で使う
@@ -238,6 +242,7 @@ const commands = createCommands({
   channelOps,
   tasks,
   usage,
+  attachments,
   projects,
   projectsDir,
   turnQueue,
@@ -311,7 +316,8 @@ const personaStatus =
         log,
       });
 // 定期処理: SELF_AGENT_SHELL=1 ならシェルの自己診断をやり直し、セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
-// 完了から日数の経ったセッションの削除を #system で確認し、古い dev ログ（dev モードでなくても）とプロジェクトの古い .trash、workDir の古い .tmp と大きくなった .cache を消し、#inbox・#tasks の会話を切り替える
+// 完了から日数の経ったセッションの削除を #system で確認し、古い dev ログ（dev モードでなくても）とプロジェクトの古い .trash、workDir の古い .tmp と大きくなった .cache、
+// 記録に結びついていない古い添付を消し、#inbox・#tasks の会話を切り替える
 const scheduler = new Scheduler({
   cfg: config,
   topicSessions,
@@ -328,6 +334,7 @@ const scheduler = new Scheduler({
   refreshShell: shellRefresher(config, shellState),
   ...(personaStatus === undefined ? {} : { refreshPersonas: () => personaStatus.refresh() }),
   pruneWorkDir: () => pruneWorkDir(realWorkDir),
+  pruneAttachments: () => pruneAttachments(config.dataDir, attachments),
   // .trash・.tmp・.cache の削除は発言と同じキューにセッションのジョブとして入れる（セッションのジョブが実行中ならその tick では消さない）
   turnQueue,
   now,

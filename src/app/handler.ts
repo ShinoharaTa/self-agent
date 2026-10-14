@@ -1,6 +1,6 @@
 import type { AgentRunner, ProgressStep, RunResult } from "../agent/runner.ts";
 import type { Config } from "../config.ts";
-import type { IncomingMessage, OutgoingMessage } from "../discord/gateway.ts";
+import type { IncomingImage, IncomingMessage, OutgoingMessage } from "../discord/gateway.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { InboxSummaryStore } from "../store/inbox-summaries.ts";
 import type { MemoryStore } from "../store/memories.ts";
@@ -8,6 +8,7 @@ import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSession, TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
 import { acceptedChannel, type ChannelKind, type ResolveChannel } from "./access.ts";
+import { type AttachmentSource, attachmentNotes, attachmentReply, type PreparedImages } from "./attachments.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
 import { abortTurnButton, continueTurnButton, MAX_TURNS_REPLY } from "./commands/turn-controls.ts";
 import { buildTurnPrompt } from "./prompt.ts";
@@ -122,6 +123,11 @@ export type HandlerDeps = {
   now: () => Date;
   /** 途中経過を出す・書き換えるタイマー。省略すれば実際のタイマー */
   timers?: ProgressTimers;
+  /**
+   * 発言の画像を取り、渡す画像と保存した原本の id を返す（attachments.ts の prepareImages）。reject しない。
+   * 省略すれば画像は渡さない（本文と注記だけ）
+   */
+  prepareImages?: (source: AttachmentSource, images: readonly IncomingImage[]) => Promise<PreparedImages>;
   log: (message: string) => void;
 };
 
@@ -151,6 +157,8 @@ type TurnRequest = {
   at: Date;
   /** 返信先の発言。無ければ返信にしない */
   replyToId?: string;
+  /** 発言の添付（渡せる画像と、渡さない添付の数）。オーナーの発言だけ */
+  attachments?: { messageId: string; images: readonly IncomingImage[]; skipped?: IncomingMessage["skippedAttachments"] };
 };
 
 function describeError(error: unknown): string {
@@ -177,6 +185,7 @@ export function createHandler(deps: HandlerDeps): Handler {
     usage,
     queue,
     now,
+    prepareImages,
     log,
   } = deps;
   const timers = deps.timers ?? REAL_TIMERS;
@@ -306,6 +315,15 @@ export function createHandler(deps: HandlerDeps): Handler {
    */
   const handleTurn = async (request: TurnRequest, channelName: string, revivedBeforeQueue: boolean): Promise<void> => {
     const { guildId, channelId, kind } = request;
+    // 画像はキューの中で取る（同じチャンネルの発言の順を崩さない）。渡せなかったものはヘッダの次に注記し、オーナーにも返す
+    const prepared = await prepareTurnImages(request);
+    const notes = attachmentNotes(request.attachments?.skipped, prepared);
+    const failedReply = prepared === undefined ? undefined : attachmentReply(prepared);
+    if (failedReply !== undefined) await reply(request, failedReply);
+    const images = prepared?.images ?? [];
+    // 本文も渡せる画像も残らなければターンは行わない（返信は上で済んでいる）
+    if (request.content.trim() === "" && images.length === 0) return;
+    const body = [...notes, ...(request.content.trim() === "" ? [] : [request.content])].join("\n");
     const current = kind === "session" ? topicSessions.get(channelId) : undefined;
     const revived = (current !== undefined && revive(current)) || revivedBeforeQueue;
     const stopTyping = gateway.startTyping(channelId);
@@ -320,7 +338,9 @@ export function createHandler(deps: HandlerDeps): Handler {
         channelId,
         kind,
         // 日時はキュー待ちでずれないよう、発言の時刻（[続ける] は押した時刻）を使う
-        prompt: buildTurnPrompt(request.content, request.at, cfg.timeZone, channelName),
+        prompt: buildTurnPrompt(body, request.at, cfg.timeZone, channelName),
+        ...(images.length === 0 ? {} : { images }),
+        ...(prepared === undefined || prepared.attachmentIds.length === 0 ? {} : { attachmentIds: prepared.attachmentIds }),
         // WebFetch で取得できるのは、この発言に貼られた URL だけ
         allowedUrls: extractUrls(request.content),
         ...(turn === undefined ? {} : { signal: turn.controller.signal }),
@@ -361,6 +381,31 @@ export function createHandler(deps: HandlerDeps): Handler {
     await reply(request, MAX_TURNS_REPLY);
   };
 
+  /**
+   * 発言の画像を取る（入力中表示を出しながら）。画像が無い・取る手段が無ければ undefined。
+   * 投げたら（prepareImages は reject しないはず）全部を取得の失敗として扱う。log は枚数だけ
+   */
+  const prepareTurnImages = async (request: TurnRequest): Promise<PreparedImages | undefined> => {
+    const attachments = request.attachments;
+    if (attachments === undefined || attachments.images.length === 0 || prepareImages === undefined) return undefined;
+    const stopTyping = gateway.startTyping(request.channelId);
+    let prepared: PreparedImages;
+    try {
+      prepared = await prepareImages(
+        { guildId: request.guildId, channelId: request.channelId, messageId: attachments.messageId },
+        attachments.images,
+      );
+    } catch {
+      prepared = { images: [], attachmentIds: [], tooLarge: 0, failed: attachments.images.length };
+    } finally {
+      stopTyping();
+    }
+    log(
+      `画像を受け取りました（渡す ${prepared.images.length} 枚・大きすぎ ${prepared.tooLarge} 枚・取得失敗 ${prepared.failed} 枚）`,
+    );
+    return prepared;
+  };
+
   /** 受け付けた依頼をキューに入れる（発言と [続ける] で共通） */
   const submit = async (request: TurnRequest): Promise<void> => {
     // 日時ヘッダのチャンネル名（#inbox・#tasks。セッションは題名）
@@ -394,6 +439,15 @@ export function createHandler(deps: HandlerDeps): Handler {
           content: event.content,
           at: event.createdAt,
           replyToId: event.id,
+          ...(event.images === undefined && event.skippedAttachments === undefined
+            ? {}
+            : {
+                attachments: {
+                  messageId: event.id,
+                  images: event.images ?? [],
+                  ...(event.skippedAttachments === undefined ? {} : { skipped: event.skippedAttachments }),
+                },
+              }),
         });
       } catch (error) {
         log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`);

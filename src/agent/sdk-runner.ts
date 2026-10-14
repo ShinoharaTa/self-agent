@@ -8,6 +8,7 @@ import {
   type Options,
   type SDKMessage,
   type SDKResultMessage,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Config } from "../config.ts";
@@ -17,11 +18,51 @@ import type { DiskQuota } from "./disk.ts";
 import { FILE_TOOLS, FILE_WRITE_TOOLS, judgeFileAccess, resolveRealPath } from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
 import { buildQueryOptions } from "./query-options.ts";
-import type { AgentRunner, Compaction, RunContext, RunInput, RunResult, StepUsage, TurnUsage } from "./runner.ts";
+import type {
+  AgentRunner,
+  Compaction,
+  RunContext,
+  RunImage,
+  RunInput,
+  RunResult,
+  StepUsage,
+  TurnUsage,
+} from "./runner.ts";
 import { MCP_SERVER_NAME } from "./tools.ts";
 
 /** query() の形。テストでは偽のストリームを返す関数に差し替える */
-export type QueryFn = (params: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>;
+export type QueryFn = (params: {
+  prompt: string | AsyncIterable<SDKUserMessage>;
+  options: Options;
+}) => AsyncIterable<SDKMessage>;
+
+/**
+ * 画像付きのターンの prompt。[text, ...画像] の content を持つユーザーメッセージを 1 件だけ流して終える。
+ * 形は SDK が文字列の prompt から作るもの（session_id は空、parent_tool_use_id は null）に画像の block を足したもの。
+ * client_composed は付けない（付けるとターンの始めの添付（スキルの一覧など）が付かない）
+ */
+export async function* imagePrompt(text: string, images: readonly RunImage[]): AsyncIterable<SDKUserMessage> {
+  yield {
+    type: "user",
+    session_id: "",
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text },
+        ...images.map((image) => ({
+          type: "image" as const,
+          source: { type: "base64" as const, media_type: image.mediaType, data: image.data },
+        })),
+      ],
+    },
+    parent_tool_use_id: null,
+  };
+}
+
+/** query() に渡す prompt。画像が無ければ文字列のまま（今までと同じ）、あれば imagePrompt */
+export function queryPrompt(input: Pick<RunInput, "prompt" | "images">): string | AsyncIterable<SDKUserMessage> {
+  return input.images === undefined || input.images.length === 0 ? input.prompt : imagePrompt(input.prompt, input.images);
+}
 
 /** #inbox・#tasks と context の無いターン（#inbox・#tasks の要約）の手順（maxTurns）の上限。セッションのチャンネルは cfg.sessionMaxTurns */
 export const INBOX_MAX_TURNS = 8;
@@ -452,6 +493,8 @@ export class SdkAgentRunner implements AgentRunner {
         maxTurns,
         resume: input.sessionId ?? null,
         prompt: input.prompt,
+        // 画像は枚数だけ（中身は書かない）
+        ...(input.images === undefined || input.images.length === 0 ? {} : { images: input.images.length }),
         steps,
         result: devLogResult(result),
       });
@@ -510,7 +553,7 @@ export class SdkAgentRunner implements AgentRunner {
     });
 
     try {
-      for await (const message of this.queryFn({ prompt: input.prompt, options })) {
+      for await (const message of this.queryFn({ prompt: queryPrompt(input), options })) {
         if ("session_id" in message && typeof message.session_id === "string") {
           sessionId = message.session_id;
         }
