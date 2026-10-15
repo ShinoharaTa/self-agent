@@ -1,6 +1,6 @@
 // tmux の包み（docs/plan/github-notifications.md §5・§7.1）。アプリ（node）の特権の操作で、LLM のツールではない。
 // execFile で起動時に解決した絶対パスの tmux を呼び、シェルを通さない。引数は固定の形（list-panes・list-clients・capture-pane・
-// load-buffer・paste-buffer・send-keys だけ）。送り先は pane_id（%N）で指し、セッション名では指さない
+// load-buffer・paste-buffer・delete-buffer・send-keys だけ）。送り先は pane_id（%N）で指し、セッション名では指さない
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
@@ -11,6 +11,8 @@ export const CHILD_TIMEOUT_MS = 20_000;
 export const CHILD_MAX_BUFFER = 5 * 1024 * 1024;
 /** 子プロセスの PATH（§7.1） */
 export const CHILD_PATH = "/usr/local/bin:/usr/bin:/bin";
+/** 1 回に貼れる文字数の上限（§5.4。テンプレートは 400 字以内） */
+export const MAX_PASTE_CHARS = 400;
 
 /** 子プロセスの終わり方。起動できなかった・時間切れ・出力の上限・シグナルで終わったときは code が null */
 export type RunResult = { code: number | null; stdout: string; stderr: string };
@@ -50,6 +52,12 @@ export function childEnv(): Record<string, string> {
   return { HOME: homedir(), PATH: CHILD_PATH, LANG: "C.UTF-8" };
 }
 
+/** tmux の子プロセスの env。childEnv に、設定されていれば TMUX_TMPDIR（ソケットの場所）を足す */
+export function tmuxEnv(): Record<string, string> {
+  const tmpdir = process.env.TMUX_TMPDIR;
+  return tmpdir === undefined || tmpdir === "" ? childEnv() : { ...childEnv(), TMUX_TMPDIR: tmpdir };
+}
+
 /** list-panes で取るペインの情報（§5.2 の 2） */
 export type TmuxPane = {
   sessionName: string;
@@ -79,10 +87,12 @@ export type Tmux = {
   listClients(): Promise<TmuxResult<TmuxClient[]>>;
   /** 見えている画面だけを SGR 付きで撮る（`capture-pane -p -e`） */
   capturePane(paneId: string): Promise<TmuxResult<string>>;
-  /** text を名前付きのバッファ（handoffBufferName）に入れる。text に制御文字があれば投げる（1 行のテンプレートだけを送る。§5.4） */
+  /** text を名前付きのバッファ（handoffBufferName）に入れる。text が空・MAX_PASTE_CHARS 字を超える・制御文字がある（1 行のテンプレートだけを送る。§5.4）なら投げる */
   loadBuffer(handoffId: number, text: string): Promise<TmuxResult<void>>;
-  /** 名前付きのバッファをペインに貼って消す（`paste-buffer -p -d`。オーナーの貼り付けのバッファは上書きしない） */
+  /** 名前付きのバッファをペインに貼って消す（`paste-buffer -p -d`。オーナーの貼り付けのバッファは上書きしない）。貼れなければバッファを消してから失敗を返す */
   pasteBuffer(handoffId: number, paneId: string): Promise<TmuxResult<void>>;
+  /** 名前付きのバッファを消す（`delete-buffer -b`）。無くても失敗を返すだけ */
+  deleteBuffer(handoffId: number): Promise<TmuxResult<void>>;
   sendEnter(paneId: string): Promise<TmuxResult<void>>;
 };
 
@@ -129,16 +139,20 @@ function assertPaneId(paneId: string): void {
   if (!PANE_ID.test(paneId)) throw new Error("ペインは %N の形で指定してください");
 }
 
-/** list-panes の出力を読む。欄の数が合わない・数字や 0/1 であるべき欄が違う行は捨てる */
-export function parsePanes(stdout: string): TmuxPane[] {
+/**
+ * list-panes の出力を読む。空行は飛ばす。欄の数が合わない・数字や 0/1 であるべき欄が違う行が 1 つでもある、
+ * または同じ pane_id が 2 回出てきたら一覧ごと undefined（パスの改行・タブでペインの行を作られても、それを信じない。fail-closed）
+ */
+export function parsePanes(stdout: string): TmuxPane[] | undefined {
   const panes: TmuxPane[] = [];
   for (const line of stdout.split("\n")) {
+    if (line === "") continue;
     const fields = line.split("\t");
-    if (fields.length !== 10) continue;
+    if (fields.length !== 10) return undefined;
     const [sessionName, windowIndex, paneIndex, paneId, windowActive, paneActive, currentPath, currentCommand, inMode, dead] =
       fields as [string, string, string, string, string, string, string, string, string, string];
-    if (!INDEX.test(windowIndex) || !INDEX.test(paneIndex) || !PANE_ID.test(paneId)) continue;
-    if (![windowActive, paneActive, inMode, dead].every((flag) => FLAG.test(flag))) continue;
+    if (!INDEX.test(windowIndex) || !INDEX.test(paneIndex) || !PANE_ID.test(paneId)) return undefined;
+    if (![windowActive, paneActive, inMode, dead].every((flag) => FLAG.test(flag))) return undefined;
     panes.push({
       sessionName,
       windowIndex: Number(windowIndex),
@@ -152,7 +166,7 @@ export function parsePanes(stdout: string): TmuxPane[] {
       dead: dead === "1",
     });
   }
-  return panes;
+  return new Set(panes.map((pane) => pane.paneId)).size === panes.length ? panes : undefined;
 }
 
 /** list-clients の出力を読む。欄の数が合わない・時刻が数字でない行は捨てる */
@@ -184,7 +198,7 @@ export function createTmux(options: TmuxOptions): Tmux {
 
   const exec = async (args: string[], input?: string): Promise<TmuxResult<string>> => {
     const result = await run(options.tmuxPath, [...prefix, ...args], {
-      env: childEnv(),
+      env: tmuxEnv(),
       timeoutMs: CHILD_TIMEOUT_MS,
       maxBuffer: CHILD_MAX_BUFFER,
       ...(input === undefined ? {} : { input }),
@@ -196,7 +210,9 @@ export function createTmux(options: TmuxOptions): Tmux {
   return {
     async listPanes() {
       const result = await exec(["list-panes", "-a", "-F", PANE_FORMAT]);
-      return result.ok ? { ok: true, value: parsePanes(result.value) } : result;
+      if (!result.ok) return result;
+      const panes = parsePanes(result.value);
+      return panes === undefined ? { ok: false, reason: "failed" } : { ok: true, value: panes };
     },
     async listClients() {
       const result = await exec(["list-clients", "-F", CLIENT_FORMAT]);
@@ -209,12 +225,20 @@ export function createTmux(options: TmuxOptions): Tmux {
     async loadBuffer(handoffId, text) {
       const name = handoffBufferName(handoffId);
       if (CONTROL_CHARS.test(text)) throw new Error("送る文字列に制御文字（改行を含む）は使えません");
+      const length = [...text].length;
+      if (length === 0 || length > MAX_PASTE_CHARS) throw new Error(`送る文字列は 1〜${MAX_PASTE_CHARS} 字にしてください`);
       return done(await exec(["load-buffer", "-b", name, "-"], text));
     },
     async pasteBuffer(handoffId, paneId) {
       const name = handoffBufferName(handoffId);
       assertPaneId(paneId);
-      return done(await exec(["paste-buffer", "-p", "-d", "-b", name, "-t", paneId]));
+      const result = await exec(["paste-buffer", "-p", "-d", "-b", name, "-t", paneId]);
+      // 貼れなければ -d が効かないので、名前付きのバッファを残さない
+      if (!result.ok) await exec(["delete-buffer", "-b", name]);
+      return done(result);
+    },
+    async deleteBuffer(handoffId) {
+      return done(await exec(["delete-buffer", "-b", handoffBufferName(handoffId)]));
     },
     async sendEnter(paneId) {
       assertPaneId(paneId);

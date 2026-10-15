@@ -6,8 +6,8 @@ import { dirname, isAbsolute, join, sep } from "node:path";
 import { CLAUDE_COMMAND, type PaneState } from "./pane-state.ts";
 import { CHILD_MAX_BUFFER, CHILD_TIMEOUT_MS, childEnv, execFileRunner, type RunCommand, type TmuxPane } from "./tmux.ts";
 
-/** remote の URL を読む git の引数（-C <dir> の後ろ） */
-export const GIT_REMOTES_ARGS: readonly string[] = ["config", "--get-regexp", "^remote\\..*\\.url$"];
+/** remote の URL を読む git の引数（-C <dir> の後ろ）。リポジトリの設定（worktree では元のリポジトリの設定）だけを読む */
+export const GIT_REMOTES_ARGS: readonly string[] = ["config", "--local", "--get-regexp", "^remote\\..*\\.url$"];
 /** worktree の元のリポジトリを求める git の引数（-C <dir> の後ろ） */
 export const GIT_COMMON_DIR_ARGS: readonly string[] = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
 
@@ -160,7 +160,7 @@ export async function buildWorkspaceMap(options: MapOptions): Promise<WorkspaceM
 /**
  * リポジトリ（`owner/repo`）のディレクトリと、送り先の候補のペイン（claude のもの）。
  * そのディレクトリのどれかに対応するペインが 1 つも無ければ、1 つ下のディレクトリの親（ワークスペースの直下のもの）にいるペインを候補にする
- * （親の中の別の子リポジトリに対応するペインは除く）
+ * （対応するディレクトリが無いか、その親そのもののペインだけ。別の子リポジトリ・worktree で別のリポジトリに対応するペインは除く）
  */
 export function findRepoPanes(map: WorkspaceMap, repo: string): { dirs: string[]; panes: TmuxPane[] } {
   const dirs = map.repos.get(repo.toLowerCase()) ?? [];
@@ -171,7 +171,7 @@ export function findRepoPanes(map: WorkspaceMap, repo: string): { dirs: string[]
     (entry) =>
       entry.cwd !== undefined &&
       parentDirs.some(
-        (parent) => isWithin(entry.cwd!, parent) && (entry.dir === undefined || entry.dir === parent || !isWithin(entry.dir, parent)),
+        (parent) => isWithin(entry.cwd!, parent) && (entry.dir === undefined || entry.dir === parent),
       ),
   );
   return { dirs, panes: fallback.map((entry) => entry.pane) };

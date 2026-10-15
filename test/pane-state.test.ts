@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import {
   classifyPane,
   classifyScreen,
+  DIALOG_MARKERS,
+  inputBoxText,
   OWNER_ACTIVE_MS,
+  pasteLanded,
   probePaneState,
   SECOND_CAPTURE_DELAY_MS,
   stripAnsi,
@@ -102,15 +105,103 @@ test("classifyScreen: 入力欄の形と dim の読み方", () => {
   // 短い罫線は入力欄の枠とみなさない
   assert.equal(classifyScreen(screen([PROMPT]).replaceAll("─".repeat(80), "─".repeat(10))), "no_prompt");
   // dim は前の行から続き、22・0・空の SGR で戻る
-  assert.equal(classifyScreen(screen([`${sgr("2")}❯${NBSP}候補`])), "idle");
-  assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2")}候補${sgr("22")}本文`])), "draft");
-  assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2")}候補${sgr("")}本文`])), "draft");
+  assert.equal(classifyScreen(screen([`${sgr("2")}❯${NBSP}Try "候補"`])), "idle");
+  assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2")}Try "候補"${sgr("22")}本文`])), "draft");
+  assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2")}Try "候補"${sgr("")}本文`])), "draft");
   // 2;37 のように混ざっていても dim。38;2;r;g;b の 2 は dim ではない
-  assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2;37")}候補`])), "idle");
+  assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2;37")}Try "候補"`])), "idle");
   assert.equal(classifyScreen(screen([`${PROMPT}${sgr("38;2;2;2;2")}本文`])), "draft");
   assert.equal(classifyScreen(screen([`${PROMPT}${sgr("38;5;2")}本文`])), "draft");
   // 空白（U+00A0 を含む）だけなら空
   assert.equal(classifyScreen(screen([`${PROMPT}   ${NBSP}`])), "idle");
+});
+
+// 作業中: スピナーの下に TODO の一覧と Tip がある（スピナーは入力欄の直前の行ではない）
+const TODO = screen([PROMPT], {
+  above: [
+    ...HISTORY,
+    `${sgr("38;5;174")}✶${sgr("39")} Working… (12s · ↓ 1.2k tokens)`,
+    `  ⎿  ☐ 作業 1（置き換え）`,
+    `     ☐ 作業 2（置き換え）`,
+    `     ☒ 作業 3（置き換え）`,
+    "",
+    `  ⎿  ${sgr("2")}Tip: ヒント（置き換え）${sgr("0")}`,
+    "",
+  ],
+});
+// 40 桁の狭いペイン: スピナーの行が折り返し、フッターに esc to interrupt が無い
+const NARROW_RULE = `${sgr("38;5;244")}${"─".repeat(40)}`;
+const NARROW = [
+  "● 返答（置き換え）",
+  "",
+  `${sgr("38;5;174")}✳${sgr("39")} Compacting (1m 3s · ↓ 1.2k`,
+  "  tokens)",
+  "",
+  NARROW_RULE,
+  PROMPT,
+  NARROW_RULE,
+  `${sgr("39")}  ⏵⏵ auto mode on`,
+  "",
+].join("\n");
+// ? のショートカットの一覧（入力欄の下に重なる）
+const SHORTCUTS = screen([PROMPT], {
+  footer: [
+    "  ! for bash mode       double tap esc to clear input",
+    "  / for commands        shift + tab to auto-accept edits",
+    "  @ for file paths      ctrl + o for verbose output",
+  ],
+});
+
+test("classifyScreen: 作業中（TODO・Tip の上のスピナー、狭い幅で折り返したスピナー）", () => {
+  assert.equal(classifyScreen(TODO), "busy");
+  assert.equal(classifyScreen(NARROW), "busy");
+  // 経過秒数だけ（… なし）のスピナー
+  assert.equal(classifyScreen(screen([PROMPT], { above: [...HISTORY, "✢ Thinking (12s)"] })), "busy");
+  // 終わった後の行は作業中ではない
+  assert.equal(classifyScreen(screen([PROMPT], { above: [...HISTORY, "✻ Worked for 9s · done 9:03 AM", "", "  ⎿  Tip: 置き換え"] })), "idle");
+  // 入力欄の上 10 行より上のスピナーは見ない（2 回撮って経過秒数の変化で弾く）
+  const far = screen([PROMPT], { above: ["✶ Working… (12s)", ...Array(11).fill("     ☐ 作業（置き換え）")] });
+  assert.equal(classifyScreen(far), "idle");
+});
+
+test("classifyScreen: ダイアログの文言は大文字小文字を問わない。? の一覧・vim のノーマルモードは idle にしない", () => {
+  for (const marker of DIALOG_MARKERS) {
+    assert.equal(classifyScreen(screen([PROMPT], { above: [...HISTORY, ` ${marker.toUpperCase()} …`] })), "dialog", marker);
+    assert.equal(classifyScreen(screen([PROMPT], { above: [...HISTORY, ` ${marker.toLowerCase()}`] })), "dialog", marker);
+  }
+  assert.equal(classifyScreen(SHORTCUTS), "dialog");
+  assert.equal(classifyScreen(screen([PROMPT], { footer: [`  ${sgr("2")}-- NORMAL --${sgr("0")}`, ...FOOTER] })), "no_prompt");
+  assert.equal(classifyScreen(screen([PROMPT], { footer: [`  ${sgr("2")}-- INSERT --${sgr("0")}`, ...FOOTER] })), "idle");
+});
+
+test("classifyScreen: 貼り付け・画像の印、候補の形でない dim の文字は書きかけ", () => {
+  assert.equal(classifyScreen(screen([`${PROMPT}[Pasted text #1 +12 lines]`])), "draft");
+  assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2")}[Pasted text #1 +12 lines]${sgr("0")}`])), "draft");
+  assert.equal(classifyScreen(screen([`${PROMPT}${sgr("1")}[Image #1]${sgr("0")} `])), "draft");
+  // 前の返答からの提案（dim）は空とみなさない
+  assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2")}run the tests${sgr("0")}`])), "draft");
+});
+
+test("pasteLanded: 貼る前に印・先頭が無く、貼った後の入力欄に先頭 24 字か [Pasted text がある", () => {
+  const text = "[self-agent から] GitHub の通知の対応依頼: owner/repo の PR #12（レビュー）。";
+  const pasted = screen([`${PROMPT}${text}`]);
+  // 狭い幅で折り返した貼り付け
+  const wrapped = screen([`${PROMPT}[self-agent から] GitHub`, "  の通知の対応依頼: owner/repo の PR"]);
+  const collapsed = screen([`${PROMPT}[Pasted text #1 +1 lines]`]);
+  assert.equal(inputBoxText(EMPTY), "");
+  assert.equal(inputBoxText(wrapped), "[self-agentから]GitHubの通知の対応依頼:owner/repoのPR");
+  assert.equal(inputBoxText("no box"), undefined);
+  assert.equal(pasteLanded(EMPTY, pasted, text), true);
+  assert.equal(pasteLanded(PLACEHOLDER, wrapped, text), true);
+  assert.equal(pasteLanded(EMPTY, collapsed, text), true);
+  // 届いていない・入力欄が無い
+  assert.equal(pasteLanded(EMPTY, EMPTY, text), false);
+  assert.equal(pasteLanded(EMPTY, DIALOG, text), false);
+  assert.equal(pasteLanded("no box", pasted, text), false);
+  // 貼る前から印や先頭があれば、貼れた証拠にしない
+  assert.equal(pasteLanded(collapsed, collapsed, text), false);
+  assert.equal(pasteLanded(pasted, pasted, text), false);
+  assert.equal(pasteLanded(EMPTY, pasted, ""), false);
 });
 
 test("classifyPane: 画面を見る前の状態（gone・not_claude・copy_mode・owner_active）", () => {
@@ -159,6 +250,7 @@ function fakeTmux(options: { panes?: TmuxResult<TmuxPane[]>; clients?: TmuxClien
     },
     loadBuffer: () => assert.fail("送らない"),
     pasteBuffer: () => assert.fail("送らない"),
+    deleteBuffer: () => assert.fail("送らない"),
     sendEnter: () => assert.fail("送らない"),
   };
   return { tmux, calls };
