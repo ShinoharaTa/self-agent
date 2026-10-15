@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   classifyNotification,
-  collectActors,
+  collectTimeline,
   DROP_LABEL,
   isBotUser,
   parseIssue,
@@ -11,7 +11,7 @@ import {
   subjectHtmlUrl,
   timelineSince,
   wantsIssueInfo,
-  type ActorSet,
+  type TimelineActivity,
   type ClassifyInput,
   type GithubIssueInfo,
   type GithubNotification,
@@ -79,12 +79,39 @@ const timelines = {
     { event: "reviewed", user: user("Copilot", "Bot"), submitted_at: after },
     { event: "line-commented", comments: [{ user: user("Copilot", "Bot"), created_at: after }] },
   ],
+  othersMerged: [
+    { event: "commented", actor: user(ME), created_at: after },
+    { event: "merged", actor: user("example-other"), created_at: after },
+    { event: "closed", actor: user("example-other"), created_at: after },
+  ],
+  /** 他人が本文で自分をメンションした新しい Issue（作成は出ない。mentioned・subscribed の actor は自分） */
+  bodyMention: [
+    { event: "mentioned", actor: user(ME), created_at: after },
+    { event: "subscribed", actor: user(ME), created_at: after },
+  ],
+  /** 他人の新しい PR で、Actions の Bot が自分にレビューを依頼し、ラベルを付けた */
+  actionsReviewRequest: [
+    { event: "labeled", actor: user("github-actions[bot]", "Bot"), created_at: after },
+    { event: "review_requested", actor: user("github-actions[bot]", "Bot"), requested_reviewer: user(ME), created_at: after },
+    { event: "subscribed", actor: user(ME), created_at: after },
+  ],
+  /** 自分のリポジトリへの他人の新しい PR に、プレビューの Bot が先にコメントした */
+  previewBotFirst: [{ event: "commented", actor: user("preview-bot[bot]", "Bot"), created_at: after }],
+  /** 宛てる操作・ほかの場所での操作だけ（どれも数えない） */
+  notCounted: [
+    { event: "assigned", actor: user("example-other"), assignee: user("example-third"), created_at: after },
+    { event: "review_requested", actor: user("example-other"), requested_team: { slug: "example-team" }, created_at: after },
+    { event: "cross-referenced", actor: user("example-other"), created_at: after },
+    { event: "referenced", actor: user("example-other"), created_at: after },
+    { event: "unsubscribed", actor: user("example-other"), created_at: after },
+    { event: "some_future_event", actor: user("example-other"), created_at: after },
+  ],
   empty: [] as unknown[],
   onlyOld: [{ event: "commented", actor: user("example-other"), created_at: before }],
 };
 
-function actors(items: readonly unknown[]): ActorSet {
-  return collectActors(items, SINCE);
+function timeline(items: readonly unknown[], issueInfo?: GithubIssueInfo): TimelineActivity {
+  return collectTimeline(items, SINCE, issueInfo);
 }
 
 function issue(login: string, createdAt: string, type: "User" | "Bot" = "User"): GithubIssueInfo {
@@ -98,7 +125,7 @@ function classify(overrides: Partial<ClassifyInput> & { notification: GithubNoti
     me: ME,
     owners: OWNERS,
     firstSeen: false,
-    actors: { known: false },
+    timeline: undefined,
     now: NOW,
     ...overrides,
   });
@@ -147,26 +174,47 @@ test("parseSubjectUrl・subjectHtmlUrl: API の URL から番号を取り、画�
   }
 });
 
-test("collectActors: 前回より後の人を集める（commented は actor、reviewed は user、line-commented は comments[].user、committed は数えない）。誰もいなければ分からない", () => {
-  assert.deepEqual(actors(timelines.onlyMe), { known: true, actors: [{ login: ME, isBot: false }], reviewedBy: [] });
-  const bots = actors(timelines.onlyBots);
-  assert.ok(bots.known);
+test("collectTimeline: 前回より後の、数える出来事の人を集める（commented は actor、reviewed は user、line-commented は comments[].user。committed は数えない）", () => {
+  assert.deepEqual(timeline(timelines.onlyMe), {
+    actors: [{ login: ME, isBot: false }],
+    commenters: [{ login: ME, isBot: false }],
+    reviewers: [],
+    addressed: [],
+    teamReviewRequested: false,
+  });
   assert.deepEqual(
-    bots.actors.map((actor) => [actor.login, actor.isBot]),
+    timeline(timelines.onlyBots).actors.map((actor) => [actor.login, actor.isBot]),
     [
       ["github-actions[bot]", true],
       ["copilot-pull-request-reviewer[bot]", true],
       ["renovate", true],
     ],
   );
-  const review = actors(timelines.othersReview);
-  assert.ok(review.known);
-  assert.deepEqual(review.reviewedBy.map((actor) => actor.login), ["example-reviewer"]);
-  assert.deepEqual(actors(timelines.empty), { known: false });
-  assert.deepEqual(actors(timelines.onlyOld), { known: false });
-  assert.deepEqual(actors([{ event: "committed", author: { name: "x" }, created_at: after }, "x", null]), { known: false });
+  assert.deepEqual(timeline(timelines.othersReview).reviewers.map((actor) => actor.login), ["example-reviewer"]);
+  const merged = timeline(timelines.othersMerged);
+  assert.deepEqual(merged.actors.map((actor) => actor.login), [ME, "example-other"]);
+  assert.deepEqual(merged.commenters.map((actor) => actor.login), [ME]);
+  for (const items of [timelines.empty, timelines.onlyOld, [{ event: "committed", author: { name: "x" }, created_at: after }, "x", null]]) {
+    assert.deepEqual(timeline(items).actors, []);
+  }
   assert.equal(isBotUser({ login: "dependabot[bot]", type: "User" }), true);
   assert.equal(isBotUser({ login: "example-other", type: "User" }), false);
+});
+
+test("collectTimeline: mentioned・subscribed・assigned・review_requested・cross-referenced などは人に数えず、宛てられた人だけを別に集める", () => {
+  const mention = timeline(timelines.bodyMention);
+  assert.deepEqual([mention.actors, mention.addressed], [[], [ME]]);
+  const request = timeline(timelines.actionsReviewRequest);
+  assert.deepEqual(request.actors.map((actor) => actor.login), ["github-actions[bot]"]);
+  assert.deepEqual(request.addressed, [ME]);
+  const other = timeline(timelines.notCounted);
+  assert.deepEqual([other.actors, other.addressed, other.teamReviewRequested], [[], ["example-third"], true]);
+});
+
+test("collectTimeline: 本体を渡せば、前回より後に作られたときだけ作成者も数える", () => {
+  const stranger = issue("example-stranger", "2026-10-15T11:05:00Z");
+  assert.deepEqual(timeline(timelines.previewBotFirst, stranger).actors.map((actor) => actor.login), ["example-stranger", "preview-bot[bot]"]);
+  assert.deepEqual(timeline(timelines.previewBotFirst, issue("example-stranger", before)).actors.map((actor) => actor.login), ["preview-bot[bot]"]);
 });
 
 test("timelineSince: 前回の updated_at → last_read_at → ポーリング間隔の 2 回分前", () => {
@@ -177,7 +225,7 @@ test("timelineSince: 前回の updated_at → last_read_at → ポーリング�
 
 test("規則 1: Issue・PullRequest 以外と、番号の取れない subject は白", () => {
   for (const type of ["CheckSuite", "Release", "Discussion", "Commit", "RepositoryVulnerabilityAlert"]) {
-    const result = classify({ notification: notification({ type, reason: "mention" }), actors: actors(timelines.othersComment) });
+    const result = classify({ notification: notification({ type, reason: "mention" }), timeline: timeline(timelines.othersComment) });
     assert.deepEqual([result.level, result.rule, result.label], ["drop", 1, DROP_LABEL], type);
   }
   assert.equal(classify({ notification: notification({ url: null, reason: "mention" }) }).rule, 1);
@@ -185,7 +233,7 @@ test("規則 1: Issue・PullRequest 以外と、番号の取れない subject �
 
 test("規則 2: ci_activity・security_alert・state_change などの reason は白", () => {
   for (const reason of ["ci_activity", "security_alert", "security_advisory_credit", "state_change", "member_feature_requested", "agent_session_finished"]) {
-    const result = classify({ notification: notification({ reason }), actors: actors(timelines.othersComment) });
+    const result = classify({ notification: notification({ reason }), timeline: timeline(timelines.othersComment) });
     assert.deepEqual([result.level, result.rule], ["drop", 2], reason);
   }
 });
@@ -195,7 +243,7 @@ test("規則 3: スレッドの作成者が Bot（Dependabot の PR）なら、�
   for (const reason of ["review_requested", "author", "subscribed"]) {
     const result = classify({
       notification: notification({ reason }),
-      actors: actors(timelines.othersComment),
+      timeline: timeline(timelines.othersComment),
       issue: dependabot,
       firstSeen: true,
     });
@@ -210,10 +258,31 @@ test("規則 4: 新しい出来事が自分だけ・Bot だけ（Copilot のレ�
     ["Copilot のレビュー", timelines.copilotReview],
   ] as const) {
     for (const reason of ["author", "comment", "mention", "review_requested"]) {
-      const result = classify({ notification: notification({ reason }), actors: actors(items) });
+      const result = classify({ notification: notification({ reason }), timeline: timeline(items) });
       assert.deepEqual([result.level, result.rule, result.actorKnown], ["drop", 4, true], `${name} ${reason}`);
     }
   }
+});
+
+test("規則 4 の例外: 自分宛ての reason で、窓の中で自分が宛てられていれば、自分と Bot しかいなくても赤", () => {
+  // 本文でのメンションだけ（数える人がいない）
+  const mention = classify({ notification: notification({ reason: "mention", type: "Issue", url: "https://api.github.com/repos/example-org/example-repo/issues/3" }), timeline: timeline(timelines.bodyMention) });
+  assert.deepEqual([mention.level, mention.rule, mention.label, mention.actorKnown], ["red", 5, "メンション", false]);
+  // 本文でのメンションの後に Bot がコメントした
+  const mentionThenBot = classify({ notification: notification({ reason: "mention" }), timeline: timeline([...timelines.bodyMention, ...timelines.previewBotFirst]) });
+  assert.deepEqual([mentionThenBot.level, mentionThenBot.rule, mentionThenBot.actorKnown], ["red", 5, true]);
+  // Actions の Bot が他人の新しい PR で自分にレビューを依頼した
+  const request = classify({ notification: notification({ reason: "review_requested" }), timeline: timeline(timelines.actionsReviewRequest) });
+  assert.deepEqual([request.level, request.rule, request.label, request.actorLogin], ["red", 5, "レビュー依頼", null]);
+  // チームへのレビュー依頼
+  const team = classify({ notification: notification({ reason: "review_requested" }), timeline: timeline([...timelines.notCounted, ...timelines.onlyBots]) });
+  assert.deepEqual([team.level, team.rule], ["red", 5]);
+  // 自分宛てでない reason（自分の PR）では、宛てられていても自分と Bot だけなら白
+  const author = classify({ notification: notification({ reason: "author" }), timeline: timeline(timelines.actionsReviewRequest) });
+  assert.deepEqual([author.level, author.rule], ["drop", 4]);
+  // 他人が宛てられただけなら例外にならない
+  const third = classify({ notification: notification({ reason: "assign" }), timeline: timeline([timelines.notCounted[0], ...timelines.onlyBots]) });
+  assert.deepEqual([third.level, third.rule], ["drop", 4]);
 });
 
 test("規則 5: review_requested・mention・team_mention・assign・approval_requested は赤（他人がいるか分からなくても）", () => {
@@ -225,23 +294,25 @@ test("規則 5: review_requested・mention・team_mention・assign・approval_re
     ["assign", "担当"],
   ] as const;
   for (const [reason, label] of cases) {
-    const known = classify({ notification: notification({ reason }), actors: actors(timelines.othersComment) });
+    const known = classify({ notification: notification({ reason }), timeline: timeline(timelines.othersComment) });
     assert.deepEqual([known.level, known.rule, known.label, known.actorLogin, known.actorKnown], ["red", 5, label, "example-other", true], reason);
-    const unknown = classify({ notification: notification({ reason }), actors: actors(timelines.empty) });
+    const unknown = classify({ notification: notification({ reason }), timeline: timeline(timelines.empty) });
     assert.deepEqual([unknown.level, unknown.rule, unknown.actorLogin, unknown.actorKnown], ["red", 5, null, false], reason);
   }
 });
 
 test("規則 6: author・comment で他人の出来事があれば赤（レビューなら種別はレビュー）。分からなければ他人がいるとみなして赤", () => {
   for (const reason of ["author", "comment"]) {
-    const comment = classify({ notification: notification({ reason }), actors: actors(timelines.othersComment) });
+    const comment = classify({ notification: notification({ reason }), timeline: timeline(timelines.othersComment) });
     assert.deepEqual([comment.level, comment.rule, comment.label, comment.actorLogin, comment.actorKnown], ["red", 6, "コメント", "example-other", true]);
-    const review = classify({ notification: notification({ reason }), actors: actors(timelines.othersReview) });
+    const review = classify({ notification: notification({ reason }), timeline: timeline(timelines.othersReview) });
     assert.deepEqual([review.level, review.rule, review.label, review.actorLogin], ["red", 6, "レビュー", "example-reviewer"]);
-    const unknown = classify({ notification: notification({ reason }), actors: actors(timelines.onlyOld) });
+    const unknown = classify({ notification: notification({ reason }), timeline: timeline(timelines.onlyOld) });
     assert.deepEqual([unknown.level, unknown.rule, unknown.label, unknown.actorLogin, unknown.actorKnown], ["red", 6, "コメント", null, false]);
+    const merged = classify({ notification: notification({ reason }), timeline: timeline(timelines.othersMerged) });
+    assert.deepEqual([merged.level, merged.rule, merged.label, merged.actorLogin], ["red", 6, "状態の変化", "example-other"]);
   }
-  const subject = classify({ notification: notification({ reason: "author" }), actors: actors(timelines.othersComment) }).subject;
+  const subject = classify({ notification: notification({ reason: "author" }), timeline: timeline(timelines.othersComment) }).subject;
   assert.deepEqual(subject, { owner: "example-org", repo: "example-repo", number: 12, kind: "pull" });
 });
 
@@ -251,7 +322,7 @@ test("規則 7: 自分のリポジトリで初めて見た、他人が 24 時間
   const yellow = classify({
     notification: newIssue,
     firstSeen: true,
-    actors: actors(timelines.empty),
+    timeline: timeline(timelines.empty),
     issue: issue("example-other", "2026-10-15T08:00:00Z"),
   });
   assert.deepEqual([yellow.level, yellow.rule, yellow.label, yellow.actorLogin, yellow.actorKnown], ["yellow", 7, "新しい Issue", "example-other", true]);
@@ -259,7 +330,7 @@ test("規則 7: 自分のリポジトリで初めて見た、他人が 24 時間
   const newPr = classify({
     notification: notification({ reason: "manual" }),
     firstSeen: true,
-    actors: actors(timelines.othersComment),
+    timeline: timeline(timelines.othersComment),
     issue: issue("example-other", "2026-10-15T11:00:00Z"),
   });
   assert.deepEqual([newPr.level, newPr.rule, newPr.label], ["yellow", 7, "新しい PR"]);
@@ -267,8 +338,17 @@ test("規則 7: 自分のリポジトリで初めて見た、他人が 24 時間
   // 持ち主の比較は大小を区別しない
   assert.equal(classify({ notification: notification({ reason: "subscribed", owner: "Example-Org" }), firstSeen: true, issue: issue("example-other", "2026-10-15T11:00:00Z") }).level, "yellow");
 
-  const unknown = classify({ notification: newIssue, firstSeen: true, actors: actors(timelines.empty) });
+  const unknown = classify({ notification: newIssue, firstSeen: true, timeline: timeline(timelines.empty) });
   assert.deepEqual([unknown.level, unknown.rule, unknown.label, unknown.actorLogin, unknown.actorKnown], ["yellow", 7, "新しい Issue", null, false]);
+});
+
+test("規則 7: 他人の新しい PR にプレビューの Bot が先にコメントしても、作成者を数えるので白にならず黄", () => {
+  const stranger = issue("example-stranger", "2026-10-15T11:05:00Z");
+  const withAuthor = classify({ notification: notification({ reason: "subscribed" }), firstSeen: true, issue: stranger, timeline: timeline(timelines.previewBotFirst, stranger) });
+  assert.deepEqual([withAuthor.level, withAuthor.rule, withAuthor.label, withAuthor.actorLogin], ["yellow", 7, "新しい PR", "example-stranger"]);
+  // 作成者を数えなければ Bot だけに見えて白（規則 4）になる
+  const without = classify({ notification: notification({ reason: "subscribed" }), firstSeen: true, issue: stranger, timeline: timeline(timelines.previewBotFirst) });
+  assert.deepEqual([without.level, without.rule], ["drop", 4]);
 });
 
 test("規則 7 に当たらないもの: 24 時間より古い・自分が作った・初めてではない・他人のリポジトリは白（規則 8）", () => {
@@ -291,8 +371,8 @@ test("規則 7 に当たらないもの: 24 時間より古い・自分が作っ
 });
 
 test("規則 8: 他人どうしのスレッドの続き（subscribed で既に見たスレッド）や、知らない reason は白", () => {
-  const followUp = classify({ notification: notification({ reason: "subscribed" }), actors: actors(timelines.othersComment) });
+  const followUp = classify({ notification: notification({ reason: "subscribed" }), timeline: timeline(timelines.othersComment) });
   assert.deepEqual([followUp.level, followUp.rule], ["drop", 8]);
-  const invitation = classify({ notification: notification({ reason: "invitation" }), actors: actors(timelines.othersComment) });
+  const invitation = classify({ notification: notification({ reason: "invitation" }), timeline: timeline(timelines.othersComment) });
   assert.deepEqual([invitation.level, invitation.rule], ["drop", 8]);
 });

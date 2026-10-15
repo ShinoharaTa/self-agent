@@ -80,6 +80,21 @@ test("isAllowedGhPath: 許可した 4 つの形と決まったクエリだけを
     "/repos/example-org/example-repo/issues/12/timeline/extra",
     "https://api.github.com/user",
     "--method=POST",
+    // パーセントエンコード・改行・# は通さない
+    "/repos/example-org/example%2Frepo/issues/12",
+    "/repos/example-org/example-repo/issues/12%2F..",
+    "/repos/example%2Dorg/example-repo/issues/12",
+    "/notifications?all=false&page=1%0A",
+    "/notifications?all%3Dtrue",
+    "/user\n",
+    "/user\r\nX-Injected: 1",
+    "/notifications?all=false\n&page=1",
+    "/notifications?all=false&page=1\n",
+    "/repos/example-org/example-repo/issues/12\n/timeline",
+    "/notifications#fragment",
+    "/notifications?all=false#x",
+    "/repos/example-org/example-repo/issues/12#x",
+    "/repos/example-org/example-repo/issues/12/timeline?page=1#x",
   ]) {
     assert.equal(isAllowedGhPath(path), false, path);
   }
@@ -205,6 +220,7 @@ test("interpretGhResult: 200 / 304（終了コード 1 でも）/ 401 / 403（Re
   assert.equal(interpretGhResult(exited(1, include("HTTP/2.0 502 Bad Gateway", []))).kind, "http_error");
 
   assert.deepEqual(interpretGhResult({ kind: "timeout" }), { kind: "failed", reason: "timeout" });
+  assert.deepEqual(interpretGhResult({ kind: "too_large" }), { kind: "failed", reason: "output_too_large" });
   assert.deepEqual(interpretGhResult({ kind: "error" }), { kind: "failed", reason: "spawn" });
   assert.deepEqual(interpretGhResult(exited(1, "")), { kind: "failed", reason: "no_status" });
   assert.deepEqual(interpretGhResult(exited(1, include("HTTP/2.0 200 OK", [], "{}"))), { kind: "failed", reason: "exit" });
@@ -248,6 +264,9 @@ test("execFileRun: 終了コード・標準出力を返し、起動できなけ�
   assert.equal(done.kind === "exited" && done.code, 1);
   assert.equal(interpretGhResult(done).kind, "not_modified");
   assert.deepEqual(await execFileRun("/nonexistent/gh", [], options), { kind: "error" });
+  assert.deepEqual(await execFileRun(process.execPath, ["-e", "process.stdout.write('x'.repeat(4096))"], { ...options, maxBuffer: 1024 }), {
+    kind: "too_large",
+  });
   assert.deepEqual(await execFileRun(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], { ...options, timeoutMs: 200 }), {
     kind: "timeout",
   });
