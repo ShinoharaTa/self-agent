@@ -46,12 +46,13 @@ const SETUP: Extract<Interaction, { kind: "command" }> = {
   createdAt: NOW,
 };
 
-function setup(t: TestContext) {
+function setup(t: TestContext, cfg?: { github: boolean }) {
   const db = tempDb(t);
   const gateway = new SetupGateway();
   const { guildSettings } = createStores(db, () => NOW);
   const logs: string[] = [];
   const command = createSetupCommand({
+    ...(cfg === undefined ? {} : { cfg }),
     gateway,
     guildSettings,
     queue: new KeyedSerialQueue(1),
@@ -130,9 +131,43 @@ test("初回: self-agent カテゴリ → #inbox/#tasks/#system → 進行中/�
     { method: "pinMessage", channelId: FIRST.inbox, messageId: "msg-1" },
   ]);
   assert.equal(guildSettings.get("guild-1")?.homePanelMessageId, "msg-1");
+  // SELF_AGENT_GITHUB が無ければ #github は作らない
+  assert.equal(guildSettings.get("guild-1")?.githubChannelId, null);
   assert.match(text, /^セットアップしました。\n作成: <#ch-1> <#ch-2> <#ch-3> <#ch-4> <#ch-5> <#ch-6> <#ch-7>$/);
   assert.equal(logs.length, 2);
   assertNoIds(logs);
+});
+
+test("SELF_AGENT_GITHUB=1: #system の後に #github を self-agent カテゴリに作って保存し、2 回目は作らず、消えていれば #github だけ作り直す", async (t) => {
+  const { gateway, guildSettings, run } = setup(t, { github: true });
+
+  await run();
+  assert.deepEqual(gateway.channelCalls, [
+    { method: "createCategory", guildId: "guild-1", name: "self-agent" },
+    textChannel("inbox", FIRST.home),
+    textChannel("tasks", FIRST.home),
+    textChannel("system", FIRST.home),
+    textChannel("github", FIRST.home),
+    { method: "createCategory", guildId: "guild-1", name: "進行中" },
+    { method: "createCategory", guildId: "guild-1", name: "待ち" },
+    { method: "createCategory", guildId: "guild-1", name: "完了" },
+  ]);
+  assert.equal(guildSettings.get("guild-1")?.githubChannelId, "ch-5");
+
+  gateway.reset();
+  const second = await run();
+  assert.deepEqual(gateway.callsOf("createCategory", "createTextChannel"), []);
+  assert.match(second, /^すべて揃っています。/);
+  assert.equal(guildSettings.get("guild-1")?.githubChannelId, "ch-5");
+
+  gateway.alive.delete("ch-5");
+  gateway.reset();
+  await run();
+  assert.deepEqual(
+    gateway.channelCalls.filter((call) => call.method === "createCategory" || call.method === "createTextChannel"),
+    [textChannel("github", FIRST.home)],
+  );
+  assert.equal(guildSettings.get("guild-1")?.githubChannelId, "ch-9");
 });
 
 test("2 回目: すべて残っていれば存在を確認するだけで何も作らない", async (t) => {

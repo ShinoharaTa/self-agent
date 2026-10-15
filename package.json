@@ -12,7 +12,8 @@
     "test:integration": "node --env-file-if-exists=${HOME}/.config/self-agent/env --test 'test/integration/*.test.ts'",
     "measure": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/measure-turn.ts",
     "devlog": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/devlog.ts",
-    "usage": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/usage.ts"
+    "usage": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/usage.ts",
+    "github-dry-run": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/github-dry-run.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.286",

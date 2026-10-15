@@ -11,6 +11,8 @@ export type GuildSettings = {
   inboxChannelId: string | null;
   tasksChannelId: string | null;
   systemChannelId: string | null;
+  /** GitHub の通知を流す #github（v21。SELF_AGENT_GITHUB=1 のときだけ /setup が作る） */
+  githubChannelId: string | null;
   /** #inbox に投稿してピン留めしたホームパネルのメッセージ */
   homePanelMessageId: string | null;
   /** #inbox の会話を最後に切り替えた日（SELF_AGENT_TZ の日付、YYYY-MM-DD）。まだ切り替えていなければ null */
@@ -23,12 +25,13 @@ export type GuildSettings = {
   updatedAt: string;
 };
 
-export type GuildChannelField = "homeCategoryId" | "inboxChannelId" | "tasksChannelId" | "systemChannelId";
+export type GuildChannelField = "homeCategoryId" | "inboxChannelId" | "tasksChannelId" | "systemChannelId" | "githubChannelId";
 
 /** guild_settings に残る列 */
-const CHANNEL_COLUMNS: Record<"homeCategoryId" | "systemChannelId", string> = {
+const CHANNEL_COLUMNS: Record<"homeCategoryId" | "systemChannelId" | "githubChannelId", string> = {
   homeCategoryId: "home_category_id",
   systemChannelId: "system_channel_id",
+  githubChannelId: "github_channel_id",
 };
 
 /** 入口のチャンネルの種類（persona_channels.kind）。足した人格の #<NAME> は inbox */
@@ -72,6 +75,7 @@ function toSettings(row: Record<string, SQLOutputValue>): GuildSettings {
     inboxChannelId: nullableString(row.inbox_channel_id),
     tasksChannelId: nullableString(row.tasks_channel_id),
     systemChannelId: nullableString(row.system_channel_id),
+    githubChannelId: nullableString(row.github_channel_id),
     homePanelMessageId: nullableString(row.home_panel_message_id),
     inboxRotatedDate: nullableString(row.inbox_rotated_date),
     inboxRotatedAt: nullableString(row.inbox_rotated_at),

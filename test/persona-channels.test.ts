@@ -556,6 +556,7 @@ test("設定: 表示名から作るチャンネル名が空・inbox/tasks/system
     SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN: "dummy-mika",
     SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "dummy-aoi",
     SELF_AGENT_PERSONA_TASKS_DISCORD_TOKEN: "dummy-tasks",
+    SELF_AGENT_PERSONA_GITHUB_DISCORD_TOKEN: "dummy-github",
   };
   const cases: Array<{ label: string; env: Record<string, string>; error: RegExp }> = [
     {
@@ -566,12 +567,17 @@ test("設定: 表示名から作るチャンネル名が空・inbox/tasks/system
     {
       label: "inbox と同じ（大文字・空白も正規化）",
       env: { SELF_AGENT_PERSONAS: "mika", SELF_AGENT_PERSONA_MIKA_NAME: " Inbox " },
-      error: /SELF_AGENT_PERSONA_MIKA_NAME は inbox・tasks・system と同じ/,
+      error: /SELF_AGENT_PERSONA_MIKA_NAME は inbox・tasks・system・github と同じ/,
     },
     {
       label: "NAME 未設定で id が tasks",
       env: { SELF_AGENT_PERSONAS: "tasks" },
-      error: /SELF_AGENT_PERSONA_TASKS_NAME は inbox・tasks・system と同じ/,
+      error: /SELF_AGENT_PERSONA_TASKS_NAME は inbox・tasks・system・github と同じ/,
+    },
+    {
+      label: "github と同じ（#github と重なる。SELF_AGENT_GITHUB が無効でも使えない）",
+      env: { SELF_AGENT_PERSONAS: "github" },
+      error: /SELF_AGENT_PERSONA_GITHUB_NAME は inbox・tasks・system・github と同じ/,
     },
     {
       label: "人格どうしで重なる",
