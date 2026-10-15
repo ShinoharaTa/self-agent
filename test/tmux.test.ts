@@ -8,6 +8,7 @@ import {
   createTmux,
   execFileRunner,
   handoffBufferName,
+  MAX_PASTE_CHARS,
   PANE_FORMAT,
   parsePanes,
   type RunCommand,
@@ -31,7 +32,7 @@ function fakeRun(result: RunResult = { code: 0, stdout: "", stderr: "" }) {
 
 const paneLine = (fields: string[]): string => fields.join("\t");
 
-test("引数が固定の形: list-panes・list-clients・capture-pane・load-buffer・paste-buffer・send-keys", async () => {
+test("引数が固定の形: list-panes・list-clients・capture-pane・load-buffer・paste-buffer・delete-buffer・send-keys", async () => {
   const { run, calls } = fakeRun();
   const tmux = createTmux({ tmuxPath: TMUX, run });
   await tmux.listPanes();
@@ -39,6 +40,7 @@ test("引数が固定の形: list-panes・list-clients・capture-pane・load-buf
   await tmux.capturePane("%3");
   await tmux.loadBuffer(12, "1 行のテンプレート");
   await tmux.pasteBuffer(12, "%3");
+  await tmux.deleteBuffer(12);
   await tmux.sendEnter("%3");
   assert.deepEqual(
     calls.map((call) => [call.file, ...call.args]),
@@ -48,19 +50,20 @@ test("引数が固定の形: list-panes・list-clients・capture-pane・load-buf
       [TMUX, "capture-pane", "-p", "-e", "-t", "%3"],
       [TMUX, "load-buffer", "-b", "self-agent-12", "-"],
       [TMUX, "paste-buffer", "-p", "-d", "-b", "self-agent-12", "-t", "%3"],
+      [TMUX, "delete-buffer", "-b", "self-agent-12"],
       [TMUX, "send-keys", "-t", "%3", "Enter"],
     ],
   );
   // 標準入力に渡すのは load-buffer だけ
   assert.deepEqual(
     calls.map((call) => call.input),
-    [undefined, undefined, undefined, "1 行のテンプレート", undefined, undefined],
+    [undefined, undefined, undefined, "1 行のテンプレート", undefined, undefined, undefined],
   );
   assert.ok(calls.every((call) => call.timeoutMs === CHILD_TIMEOUT_MS && call.maxBuffer === CHILD_MAX_BUFFER));
 });
 
 test("子の env は HOME・PATH・LANG だけ（TMUX・トークン類を渡さない）", async (t) => {
-  const keys = ["TMUX", "DISCORD_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] as const;
+  const keys = ["TMUX", "DISCORD_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "TMUX_TMPDIR"] as const;
   const saved = keys.map((key) => process.env[key]);
   t.after(() =>
     keys.forEach((key, i) => {
@@ -69,11 +72,18 @@ test("子の env は HOME・PATH・LANG だけ（TMUX・トークン類を渡さ
     }),
   );
   for (const key of keys) process.env[key] = "secret";
+  delete process.env.TMUX_TMPDIR;
   const { run, calls } = fakeRun();
-  await createTmux({ tmuxPath: TMUX, run }).listPanes();
+  const tmux = createTmux({ tmuxPath: TMUX, run });
+  await tmux.listPanes();
   assert.deepEqual(Object.keys(calls[0]!.env).sort(), ["HOME", "LANG", "PATH"]);
   assert.equal(calls[0]!.env.PATH, CHILD_PATH);
   assert.equal(calls[0]!.env.LANG, "C.UTF-8");
+  // TMUX_TMPDIR（ソケットの場所）は設定されていれば渡す
+  process.env.TMUX_TMPDIR = "/run/user/1000/tmux";
+  await tmux.listPanes();
+  assert.deepEqual(Object.keys(calls[1]!.env).sort(), ["HOME", "LANG", "PATH", "TMUX_TMPDIR"]);
+  assert.equal(calls[1]!.env.TMUX_TMPDIR, "/run/user/1000/tmux");
 });
 
 test("socketName を指定すると -L <名前> を先頭に付ける", async () => {
@@ -97,7 +107,28 @@ test("不正な引数は tmux を呼ぶ前に投げる", async () => {
     assert.throws(() => handoffBufferName(id));
   }
   for (const text of ["a\nb", "a\rb", "a\x1b[2Jb", "a\tb", "a\x7fb", "a\u009bb"]) await assert.rejects(tmux.loadBuffer(1, text));
+  // 1〜400 字（コードポイントで数える）
+  await assert.rejects(tmux.loadBuffer(1, ""));
+  await assert.rejects(tmux.loadBuffer(1, "字".repeat(MAX_PASTE_CHARS + 1)));
   assert.equal(calls.length, 0);
+  assert.deepEqual(await tmux.loadBuffer(1, "字".repeat(MAX_PASTE_CHARS)), { ok: true, value: undefined });
+});
+
+test("paste-buffer に失敗したら名前付きのバッファを消してから失敗を返す", async () => {
+  const { run, calls, state } = fakeRun({ code: 1, stdout: "", stderr: "can't find pane: %4\n" });
+  const tmux = createTmux({ tmuxPath: TMUX, run });
+  assert.deepEqual(await tmux.pasteBuffer(5, "%4"), { ok: false, reason: "not_found" });
+  assert.deepEqual(
+    calls.map((call) => call.args),
+    [
+      ["paste-buffer", "-p", "-d", "-b", "self-agent-5", "-t", "%4"],
+      ["delete-buffer", "-b", "self-agent-5"],
+    ],
+  );
+  // 貼れたら消さない（-d で消える）
+  state.result = { code: 0, stdout: "", stderr: "" };
+  await tmux.pasteBuffer(6, "%4");
+  assert.equal(calls.length, 3);
 });
 
 test("失敗の種類: サーバーが無い・ペインが無い・それ以外", async () => {
@@ -117,18 +148,10 @@ test("失敗の種類: サーバーが無い・ペインが無い・それ以外
   assert.deepEqual(await tmux.pasteBuffer(1, "%9"), { ok: true, value: undefined });
 });
 
-test("list-panes・list-clients の出力を読む。形の合わない行は捨てる", async () => {
+test("list-panes・list-clients の出力を読む", async () => {
   const good = paneLine(["work", "0", "1", "%5", "1", "0", "/home/u/workspace/a", "claude", "0", "0"]);
-  const stdout = [
-    good,
-    paneLine(["dead", "2", "0", "%6", "0", "1", "/tmp", "bash", "1", "1"]),
-    paneLine(["short", "0", "0", "%7"]),
-    paneLine(["bad-id", "0", "0", "7", "1", "1", "/tmp", "bash", "0", "0"]),
-    paneLine(["bad-flag", "0", "0", "%8", "yes", "1", "/tmp", "bash", "0", "0"]),
-    paneLine(["path\twith-tab", "0", "0", "%9", "1", "1", "/tmp", "bash", "0", "0"]),
-    "",
-  ].join("\n");
-  assert.deepEqual(parsePanes(stdout), [
+  const dead = paneLine(["dead", "2", "0", "%6", "0", "1", "/tmp", "bash", "1", "1"]);
+  assert.deepEqual(parsePanes([good, dead, ""].join("\n")), [
     {
       sessionName: "work",
       windowIndex: 0,
@@ -154,12 +177,45 @@ test("list-panes・list-clients の出力を読む。形の合わない行は捨
       dead: true,
     },
   ]);
+  assert.deepEqual(parsePanes(""), []);
   const { run, state } = fakeRun();
   state.result = { code: 0, stdout: "work\t1760000000\nother\tx\nbroken\n", stderr: "" };
   assert.deepEqual(await createTmux({ tmuxPath: TMUX, run }).listClients(), {
     ok: true,
     value: [{ sessionName: "work", activityAt: 1760000000_000 }],
   });
+});
+
+test("list-panes: 形の合わない行・同じ pane_id があれば一覧ごと信じない（パスの改行・タブで行を作られる）", async () => {
+  const good = paneLine(["work", "0", "1", "%5", "1", "0", "/home/u/workspace/a", "claude", "0", "0"]);
+  for (const bad of [
+    paneLine(["short", "0", "0", "%7"]),
+    paneLine(["bad-id", "0", "0", "7", "1", "1", "/tmp", "bash", "0", "0"]),
+    paneLine(["bad-flag", "0", "0", "%8", "yes", "1", "/tmp", "bash", "0", "0"]),
+    paneLine(["path", "0", "0", "%9", "1", "1", "/tmp/a\tb", "bash", "0", "0"]),
+  ]) {
+    assert.equal(parsePanes([good, bad].join("\n")), undefined, bad);
+  }
+  // シェルのペイン %7 のパスが「改行 + claude のペインの行（自分の %7）+ 改行」: 本当の行の切れ端は形が合わない
+  const ownId = paneLine(["shell", "0", "0", "%7", "1", "1", "/tmp/x\nwork\t0\t1\t%7\t1\t1\t/home/u/workspace/a\tclaude\t0\t0\n", "bash", "0", "0"]);
+  assert.equal(parsePanes([good, ownId].join("\n")), undefined);
+  // 切れ端もすべて形を合わせると、作った行は別のペイン（%5）と同じ pane_id になる
+  const allValid = paneLine([
+    "shell",
+    "0",
+    "0",
+    "%7",
+    "1",
+    "1",
+    "/tmp/x\tbash\t0\t0\nwork\t0\t1\t%5\t1\t1\t/home/u/workspace/a\tclaude\t0\t0\nz\t0\t0\t%99\t1\t1\t/p",
+    "bash",
+    "0",
+    "0",
+  ]);
+  assert.equal(parsePanes([good, allValid].join("\n")), undefined);
+  const { run, state } = fakeRun();
+  state.result = { code: 0, stdout: [good, ownId].join("\n"), stderr: "" };
+  assert.deepEqual(await createTmux({ tmuxPath: TMUX, run }).listPanes(), { ok: false, reason: "failed" });
 });
 
 test("execFileRunner: シェルを通さず、標準入力を渡し、終了コードを返す。起動できなければ code は null", async () => {
