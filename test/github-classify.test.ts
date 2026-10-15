@@ -223,6 +223,19 @@ test("timelineSince: 前回の updated_at → last_read_at → ポーリング�
   assert.equal(timelineSince({ previousUpdatedAt: null, lastReadAt: null, now: NOW, pollIntervalSec: 300 }).toISOString(), "2026-10-15T11:50:00.000Z");
 });
 
+test("timelineSince: 前回も last_read_at も無ければ、2 回分前と最後に取得できた時刻の早い方（止まっていた間を窓に入れる）", () => {
+  const base = { previousUpdatedAt: null, lastReadAt: null, now: NOW, pollIntervalSec: 300 };
+  assert.equal(timelineSince({ ...base, lastSuccessAt: "2026-10-15T11:00:00.000Z" }).toISOString(), "2026-10-15T11:00:00.000Z");
+  // 直前に取得できていれば 2 回分前のまま
+  assert.equal(timelineSince({ ...base, lastSuccessAt: "2026-10-15T11:55:00.000Z" }).toISOString(), "2026-10-15T11:50:00.000Z");
+  assert.equal(timelineSince({ ...base, lastSuccessAt: null }).toISOString(), "2026-10-15T11:50:00.000Z");
+  // last_read_at があればそちら
+  assert.equal(
+    timelineSince({ ...base, lastReadAt: "2026-10-15T11:58:00Z", lastSuccessAt: "2026-10-15T11:00:00.000Z" }).toISOString(),
+    "2026-10-15T11:58:00.000Z",
+  );
+});
+
 test("規則 1: Issue・PullRequest 以外と、番号の取れない subject は白", () => {
   for (const type of ["CheckSuite", "Release", "Discussion", "Commit", "RepositoryVulnerabilityAlert"]) {
     const result = classify({ notification: notification({ type, reason: "mention" }), timeline: timeline(timelines.othersComment) });

@@ -7,6 +7,8 @@ import {
   escapeDiscordText,
   GITHUB_AUTH_NOTICE,
   GITHUB_AUTH_RETRY_MS,
+  GITHUB_FORBIDDEN_NOTICE,
+  GITHUB_MAX_WAIT_MS,
   GITHUB_NETWORK_NOTICE,
   GITHUB_NETWORK_NOTICE_AFTER,
   GITHUB_NO_GH_NOTICE,
@@ -15,6 +17,7 @@ import {
   githubStartNotice,
   GithubPoller,
   type GithubTimers,
+  NO_GITHUB_CHANNEL_LOG,
 } from "../src/github/poller.ts";
 import { GithubStore } from "../src/store/github.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
@@ -95,14 +98,14 @@ class FakeGh {
   }
 }
 
-function setup(t: TestContext, options: { github?: boolean; withGh?: boolean } = {}) {
+function setup(t: TestContext, options: { github?: boolean; withGh?: boolean; githubChannel?: boolean } = {}) {
   const db = tempDb(t);
   let now = NOW;
   const clock = (): Date => now;
   const store = new GithubStore(db, clock);
   const { guildSettings } = createStores(db, clock);
   guildSettings.setChannel("guild-1", "systemChannelId", "system-1");
-  guildSettings.setChannel("guild-1", "githubChannelId", "github-1");
+  if (options.githubChannel !== false) guildSettings.setChannel("guild-1", "githubChannelId", "github-1");
   const gateway = new FakeGateway({ allow: ["sendMessage"] });
   const gh = new FakeGh();
   const logs: string[] = [];
@@ -231,6 +234,7 @@ test("赤はオーナーだけをメンションし、黄はメンションし�
 
   await env.poller.tick();
 
+  // 赤 → 黄の順（それぞれ古い順）
   const posts = env.githubPosts().map((post) => post.message);
   assert.equal(posts.length, 3);
   const repoText = escapeDiscordText(`${SECRET_OWNER}/${SECRET_REPO}`);
@@ -242,16 +246,17 @@ test("赤はオーナーだけをメンションし、黄はメンションし�
     ].join("\n"),
     mentionUserId: "owner-1",
   });
-  assert.deepEqual(posts[1], {
+  assert.deepEqual(posts[2], {
     text: [
       `🟡 新しい Issue  ${escapeDiscordText(`${ME}/${SECRET_REPO}`)}  Issue #3  （${escapeDiscordText(SECRET_LOGIN)}）`,
       escapeDiscordText(SECRET_TITLE),
       `<https://github.com/${ME}/${SECRET_REPO}/issues/3>`,
     ].join("\n"),
   });
-  assert.equal(posts[2]!.mentionUserId, "owner-1");
-  assert.ok(posts[2]!.text.startsWith(`🔴 メンション  ${repoText}  PR #13`));
-  assert.ok(posts[2]!.text.endsWith(`\n${ACTOR_UNKNOWN_NOTE}`));
+  const red2 = posts[1]!;
+  assert.equal(red2.mentionUserId, "owner-1");
+  assert.ok(red2.text.startsWith(`🔴 メンション  ${repoText}  PR #13`));
+  assert.ok(red2.text.endsWith(`\n${ACTOR_UNKNOWN_NOTE}`));
   assert.ok(env.logs.includes("GitHub の通知: 新しい 3 件（赤 2・黄 1・白 0）"));
   assertNoSecrets(env.logs);
 });
@@ -321,7 +326,10 @@ test("1 回に投稿するのは 10 件まで。11 件目以降は「ほか n �
   assert.equal(texts.length, 11);
   assert.ok(texts[0]!.includes("PR #1\n"), texts[0]);
   assert.ok(texts[9]!.includes("PR #10\n"), texts[9]);
-  assert.equal(texts[10], githubFoldedNotice(2));
+  // まとめた中に赤があれば、その数を書いてオーナーをメンションする
+  assert.equal(texts[10], githubFoldedNotice(2, 2));
+  assert.ok(texts[10]!.includes("うち自分宛て 2 件"));
+  assert.equal(env.githubPosts()[10]!.message.mentionUserId, "owner-1");
   assert.deepEqual(env.store.listUnposted(100), []);
 
   env.gh.notifications = () => notModified();
@@ -450,4 +458,146 @@ test("start は直後に 1 回取得して次の回を予約し、stop で予約
   env.scheduled[0]!();
   await env.poller.idle();
   assert.deepEqual(env.gh.requests, []);
+});
+
+test("赤 → 黄の順に投稿し、まとめた中に赤が無ければ「ほか n 件」はメンションしない", async (t) => {
+  const env = setup(t);
+  await baseline(env);
+  const yellows = Array.from({ length: 10 }, (_, index) =>
+    raw(`y-${index}`, { reason: "subscribed", type: "Issue", owner: ME, number: index + 1, updatedAt: `2026-10-15T11:51:${String(index).padStart(2, "0")}Z` }),
+  );
+  const reds = [raw("r-1", { number: 101 }), raw("r-2", { number: 102, updatedAt: "2026-10-15T11:56:00Z" })];
+  env.gh.notifications = () => ok([...reds, ...yellows]);
+
+  await env.poller.tick();
+
+  const posts = env.githubPosts().map((post) => post.message);
+  assert.equal(posts.length, 11);
+  assert.ok(posts[0]!.text.includes("PR #101\n") && posts[1]!.text.includes("PR #102\n"));
+  assert.ok(posts.slice(2, 10).every((post) => post.text.startsWith("🟡")));
+  assert.ok(posts[2]!.text.includes("Issue #1\n"));
+  assert.deepEqual(posts[10], { text: githubFoldedNotice(2) });
+});
+
+test("止まっていた後: 初めて見たスレッドの窓は最後に取得できた時刻まで広げる（他人のコメントの後に自分が返事をしても赤）", async (t) => {
+  const env = setup(t);
+  // 1 時間前に最後に取得できて、その後止まっていた
+  env.setNow(new Date(NOW.getTime() - 60 * 60 * 1000));
+  await baseline(env);
+  env.setNow(NOW);
+  env.gh.notifications = () => ok([raw("t-1", { reason: "author", updatedAt: "2026-10-15T11:20:00Z" })]);
+  env.gh.lookups.set(
+    `/repos/${SECRET_OWNER}/${SECRET_REPO}/issues/12/timeline?per_page=100&page=1`,
+    ok([
+      { event: "commented", actor: { login: SECRET_LOGIN, type: "User" }, created_at: "2026-10-15T11:10:00Z" },
+      { event: "commented", actor: { login: ME, type: "User" }, created_at: "2026-10-15T11:20:00Z" },
+    ]),
+  );
+
+  await env.poller.tick();
+
+  const posts = env.githubPosts().map((post) => post.message);
+  assert.equal(posts.length, 1);
+  assert.ok(posts[0]!.text.startsWith(`🔴 コメント  ${escapeDiscordText(`${SECRET_OWNER}/${SECRET_REPO}`)}  PR #12  （${escapeDiscordText(SECRET_LOGIN)}）`), posts[0]!.text);
+  assert.ok(!posts[0]!.text.includes(ACTOR_UNKNOWN_NOTE));
+});
+
+test("調べる枠（20 スレッド）は新しい通知から使い、溢れた古いものが「確かめられませんでした」になる", async (t) => {
+  const env = setup(t);
+  await baseline(env);
+  env.gh.notifications = () =>
+    ok(Array.from({ length: 21 }, (_, index) => raw(`t-${index}`, { reason: "author", number: index + 1, updatedAt: `2026-10-15T11:5${Math.floor(index / 10)}:${String(index % 10).padStart(2, "0")}Z` })));
+  for (let number = 1; number <= 21; number++) {
+    env.gh.lookups.set(
+      `/repos/${SECRET_OWNER}/${SECRET_REPO}/issues/${number}/timeline?per_page=100&page=1`,
+      ok([{ event: "commented", actor: { login: SECRET_LOGIN, type: "User" }, created_at: "2026-10-15T11:59:00Z" }]),
+    );
+  }
+
+  await env.poller.tick();
+
+  assert.equal(env.gh.lookupCount(), 20);
+  const texts = env.githubPosts().map((post) => post.message.text);
+  // 古い順に投稿する。いちばん古い PR #1 だけが調べられていない
+  assert.ok(texts[0]!.includes("PR #1\n") && texts[0]!.endsWith(ACTOR_UNKNOWN_NOTE), texts[0]);
+  assert.ok(texts.slice(1, 10).every((text) => !text.endsWith(ACTOR_UNKNOWN_NOTE)));
+});
+
+test("待ちは 1 日まで: X-Poll-Interval・Retry-After がそれより長くても 1 日後に取りに行く", async (t) => {
+  const env = setup(t);
+  await baseline(env);
+  env.gh.notifications = () => notModified({ "x-poll-interval": "999999" });
+  assert.equal(await env.poller.tick(), GITHUB_MAX_WAIT_MS);
+
+  env.gh.notifications = () => ({ kind: "rate_limited", status: 429, headers: { "retry-after": String(3 * 24 * 60 * 60) } });
+  assert.equal(await env.poller.tick(), GITHUB_MAX_WAIT_MS);
+  // 1 日経てば取りに行く
+  env.gh.requests = [];
+  env.setNow(new Date(NOW.getTime() + GITHUB_MAX_WAIT_MS));
+  await env.poller.tick();
+  assert.equal(env.gh.requests.length, 1);
+});
+
+test("再起動の前から続いている失敗（DB の error_kind）は #system に出し直さず、戻ったら 1 回知らせる", async (t) => {
+  const env = setup(t);
+  await baseline(env);
+  env.store.savePollState({ errorKind: "auth", errorSince: new Date(NOW.getTime() - 60 * 60 * 1000).toISOString() });
+  const restarted = new GithubPoller(env.deps);
+  env.gh.notifications = () => ({ kind: "auth", status: 401 });
+  await restarted.tick();
+  assert.deepEqual(env.systemPosts(), []);
+
+  env.gh.notifications = () => notModified();
+  await restarted.tick();
+  assert.deepEqual(env.systemPosts(), [GITHUB_RECOVERED_NOTICE]);
+});
+
+test("再起動の前の通信の失敗は、知らせるまでの回数分続いていたときだけ知らせ済みとみなす", async (t) => {
+  for (const { sinceMs, expected } of [
+    { sinceMs: 60 * 60 * 1000, expected: [] },
+    { sinceMs: 60 * 1000, expected: [GITHUB_NETWORK_NOTICE] },
+  ]) {
+    const env = setup(t);
+    await baseline(env);
+    env.store.savePollState({ errorKind: "network", errorSince: new Date(NOW.getTime() - sinceMs).toISOString() });
+    const restarted = new GithubPoller(env.deps);
+    env.gh.notifications = () => ({ kind: "failed", reason: "timeout" });
+    for (let i = 0; i < GITHUB_NETWORK_NOTICE_AFTER; i++) await restarted.tick();
+    assert.deepEqual(env.systemPosts(), expected, String(sinceMs));
+  }
+});
+
+test("#github が無ければ log に 1 回だけ出し、最初の回を終えない（再起動しても）。#github ができたら開始の知らせを出す", async (t) => {
+  const env = setup(t, { githubChannel: false });
+  env.gh.notifications = () => ok([raw("t-1")]);
+  await env.poller.tick();
+  await env.poller.tick();
+  assert.equal(env.logs.filter((line) => line === NO_GITHUB_CHANNEL_LOG).length, 1);
+  assert.equal(env.store.getPollState().baselineDone, false);
+  assert.deepEqual(env.gateway.posts, []);
+
+  const restarted = new GithubPoller(env.deps);
+  await restarted.tick();
+  assert.equal(env.store.getPollState().baselineDone, false);
+
+  env.guildSettings.setChannel("guild-1", "githubChannelId", "github-1");
+  await restarted.tick();
+  assert.deepEqual(
+    env.githubPosts().map((post) => post.message),
+    [{ text: githubStartNotice(1) }],
+  );
+  assert.equal(env.store.getPollState().baselineDone, true);
+  // 最初の回の未読は流さない
+  await restarted.tick();
+  assert.equal(env.githubPosts().length, 1);
+});
+
+test("レート制限でない 403 は「拒否しました」として #system に 1 回知らせる（通信の失敗とは分ける）", async (t) => {
+  const env = setup(t);
+  await baseline(env);
+  env.gh.notifications = () => ({ kind: "http_error", status: 403, headers: {} });
+  await env.poller.tick();
+  await env.poller.tick();
+  assert.deepEqual(env.systemPosts(), [GITHUB_FORBIDDEN_NOTICE]);
+  assert.equal(env.store.getPollState().errorKind, "forbidden");
 });
