@@ -229,19 +229,23 @@ export function parseIssue(raw: unknown): GithubIssueInfo | undefined {
 }
 
 /**
- * タイムラインを見る起点（§3.2）: 前回見た updated_at、無ければ last_read_at、それも無ければ今からポーリング間隔の 2 回分前
+ * タイムラインを見る起点（§3.2）: 前回見た updated_at、無ければ last_read_at、それも無ければ「今からポーリング間隔の 2 回分前」と
+ * 「最後に取得できた時刻（lastSuccessAt）」の早い方（止まっていた間の出来事も窓に入れる。lastSuccessAt が無ければ 2 回分前）
  */
 export function timelineSince(input: {
   previousUpdatedAt: string | null | undefined;
   lastReadAt: string | null;
   now: Date;
   pollIntervalSec: number;
+  lastSuccessAt?: string | null;
 }): Date {
   for (const value of [input.previousUpdatedAt, input.lastReadAt]) {
     const time = parseTime(value);
     if (time !== undefined) return new Date(time);
   }
-  return new Date(input.now.getTime() - 2 * input.pollIntervalSec * 1000);
+  const twoIntervals = input.now.getTime() - 2 * input.pollIntervalSec * 1000;
+  const lastSuccess = parseTime(input.lastSuccessAt);
+  return new Date(lastSuccess === undefined ? twoIntervals : Math.min(twoIntervals, lastSuccess));
 }
 
 /**

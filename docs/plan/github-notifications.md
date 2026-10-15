@@ -59,7 +59,7 @@
 ## 2. 段 1: 取得
 
 ### 2.1 ポーリング
-- 間隔: `SELF_AGENT_GITHUB_POLL_SEC`（既定 300、最小 60）。実際の間隔は `max(設定, 直近の X-Poll-Interval)`。5 分の Scheduler とは別のタイマー（リマインドと同じく自前で持ち、起動直後に 1 回）。tick は重ねない。
+- 間隔: `SELF_AGENT_GITHUB_POLL_SEC`（既定 300、最小 60）。実際の間隔は `max(設定, 直近の X-Poll-Interval)`。X-Poll-Interval・Reset・Retry-After による待ちはどれも 1 日までにする（1 日に 1 回は取りに行く）。5 分の Scheduler とは別のタイマー（リマインドと同じく自前で持ち、起動直後に 1 回）。tick は重ねない。
 - 要求: `gh api --method GET --include -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' [-H 'If-Modified-Since: <保存した Last-Modified>'] '/notifications?all=false&participating=false&per_page=50&page=<n>'`。
   - 304 → 何もしない（状態の時刻だけ更新）。
   - 200 → 最大 4 ページ（200 件）。最初のページの `Last-Modified` を保存（全ページ取れたときだけ。途中で失敗したら保存しない = 次回また 200 で取り直す）。
@@ -70,14 +70,14 @@
 ### 2.2 重複と状態（SQLite）
 - 1 件の「出来事」= `(thread_id, updated_at)`。一意制約で重ねない。
 - スレッドごとに最後に見た `updated_at` を持ち、次の出来事のタイムラインは「それより後」だけを見る（§3.2）。
-- **最初の起動（状態が無い）では、今ある未読をすべて「見た」として記録し、投稿しない。** #github に「GitHub の通知の取得を始めました（今ある未読 n 件は過去の分として流しません）」を 1 回。
-- 1 回のポーリングで投稿するのは最大 10 件。超えた分は「ほか n 件（https://github.com/notifications）」の 1 通にまとめる。同じスレッドの同じ回の出来事は 1 件にまとめる。
-- 30 日より古い行は tick で消す。
+- **最初の起動（状態が無い）では、今ある未読をすべて「見た」として記録し、投稿しない。** #github に「GitHub の通知の取得を始めました（今ある未読 n 件は過去の分として流しません）」を 1 回。この知らせを 1 つの #github にも出せない間（#github がまだ無い・投稿の失敗）は最初の回を終えたと記録せず（`baseline_done` のまま。再起動しても続く）、次の回にやり直す。#github が 1 つも無い間は log に「#github がまだ無いため投稿していません（/setup を実行してください）」を変わったときだけ出す。
+- 1 回のポーリングで投稿するのは最大 10 件で、赤 → 黄の順（それぞれ古い順）。超えた分は「ほか n 件（https://github.com/notifications）」の 1 通にまとめる。まとめた中に赤があれば「（うち自分宛て r 件）」を足してオーナーをメンションする。同じスレッドの同じ回の出来事は 1 件にまとめる。
+- 30 日より古い行は tick で消す。`updated_at` が 30 日より古い通知は見ない（スレッドの行が消えた後に、初めて見たものとして流さないため）。
 
 ### 2.3 レート制限
 - 共有: 5,000 回 / 時（オーナーの他の gh の利用と同じ枠。確認時点で 1 時間に約 140 回使っていた）。
 - 見込み: ポーリングは 12 回 / 時でほぼ 304（消費しない）。更新のあったスレッドごとに最大 3 回（タイムライン 2 + 本体 1）。1 回のポーリングで調べるスレッドは最大 20。日に 100 回程度の見込み。
-- `X-RateLimit-Remaining` が 1,000 未満なら、タイムライン・本体を取らずに reason だけで振り分ける（§3.3 の「分からない」扱い）。0 なら `X-RateLimit-Reset` まで取得も止める。
+- `X-RateLimit-Remaining` が 1,000 未満なら、タイムライン・本体を取らずに reason だけで振り分ける（§3.3 の「分からない」扱い）。調べる 20 スレッドの枠は新しい通知から使う（止まっていた後に溜まった古いものが「分からない」になり、新しいものは確かめられる）。0 なら `X-RateLimit-Reset` まで取得も止める。
 
 ---
 
@@ -101,7 +101,7 @@
 ### 3.2 「誰の操作か」の求め方
 - Issue・PR の番号は `subject.url` の末尾から取る（`/repos/<o>/<r>/(issues|pulls)/<n>` の形でなければ白）。
 - `GET /repos/<o>/<r>/issues/<n>/timeline?per_page=100`。`Link` に `rel="last"` があれば最後のページも取る（最大 2 回）。
-- 前回見た `updated_at`（初めてなら `last_read_at`、それも無ければ今の 2 回分のポーリング間隔前）より後の要素（窓）の人を集める。数えるのは **actor がその操作をした本人である種類だけ**（許可方式。知らない種類は数えない）:
+- 前回見た `updated_at`（初めてなら `last_read_at`、それも無ければ「今の 2 回分のポーリング間隔前」と「最後に取得できた時刻（`last_success_at`）」の早い方。`last_success_at` が無ければ 2 回分前）より後の要素（窓）の人を集める。止まっていた間（再起動・通信の失敗）に起きた他人の出来事を、窓の外に落とさないため（例: 1 時間止まっている間に他人がコメントし、自分が返事をしたスレッドは、窓が 2 回分だけだと自分しか見えず白になる）。数えるのは **actor がその操作をした本人である種類だけ**（許可方式。知らない種類は数えない）:
   - コメント: commented（`actor`、無ければ `user`）、commit-commented（`comments[].user`）
   - レビュー: reviewed（`user`・`submitted_at`）、line-commented（`comments[].user`・`comments[].created_at`）
   - 状態の変化（`actor`）: closed・reopened・merged・ready_for_review・convert_to_draft・renamed・labeled・unlabeled・locked・unlocked・milestoned・demilestoned・review_dismissed・head_ref_force_pushed・head_ref_deleted・head_ref_restored・base_ref_changed・marked_as_duplicate・unmarked_as_duplicate・transferred・pinned・unpinned・converted_to_discussion
@@ -311,11 +311,14 @@ src/store/github.ts      通知・スレッド・送り込み・ポーリング�
 | gh が無い・ログインしていない（401、gh の終了コード 4。トークンが keyring にある場合も同じに見える。§9） | 取得を止めずに 15 分間隔に落とす。#system に「GitHub の通知を取得できません（gh の認証）」を変わったときだけ 1 回。戻ったら 1 回 |
 | レート制限（403/429 で Remaining 0 か Retry-After） | Reset まで止める。30 分を超えるときだけ #system に 1 回 |
 | ネット・timeout・5xx | 次の回にやり直す。6 回続いたら（約 30 分）#system に 1 回、戻ったら 1 回 |
+| レート制限でない 403（scope・SSO など） | 次の回にやり直す。#system に「GitHub の通知を取得できません（GitHub が拒否しました（403））」を変わったときだけ 1 回、戻ったら 1 回 |
 | 応答の形が違う（JSON でない・必要な欄が無い） | その回を捨てる。log は種類だけ |
 | 投稿の失敗 | 行は「未投稿」のまま次の回に投稿し直す（同じ出来事を 2 回は出さない） |
 | tmux のサーバーが無い | 段 2・3 とも「tmux が動いていません」と返して積まない |
 | Manager のセッションが無い | 段 3 は「Manager のセッションがありません」と返して積まない |
 | 送り込みの途中の失敗（§5.4 の 4） | Enter を押さず、オーナーに画面の確認を頼む。やり直さない |
+
+- #system への知らせは「変わったときだけ」で、再起動をまたいでも出し直さない: 起動して最初の回に、DB の `error_kind`（auth・rate_limited・forbidden・network）を知らせ済みとして戻す。network は、`error_since` から「知らせるまでの回数 - 1」回分の間隔が経っているときだけ知らせ済みとみなす。
 
 ## 12. DB（次の版。v20 は定型チャンネル（#119）で使ったので v21）
 ```sql
