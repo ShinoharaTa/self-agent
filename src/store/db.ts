@@ -307,6 +307,61 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX attachments_unlinked ON attachments (created_at) WHERE record_id IS NULL;
   ALTER TABLE guild_settings ADD COLUMN routine_category_id TEXT;
   `,
+  // v21: GitHub の通知（docs/plan/github-notifications.md §12）。github_threads はスレッドごとに最後に見た updated_at と初めて見た時刻、
+  // github_notifications は 1 件の出来事（thread_id + updated_at で一意。白（drop）も残す）、github_handoffs は Claude Code への送り込みの待ち行列、
+  // github_poll_state はポーリングの状態（1 行だけ）。guild_settings には #github の ID
+  `
+  CREATE TABLE github_threads (
+    thread_id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    subject_type TEXT NOT NULL,
+    number INTEGER,
+    last_updated_at TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL
+  );
+  CREATE TABLE github_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    level TEXT NOT NULL CHECK (level IN ('red', 'yellow', 'drop')),
+    label TEXT NOT NULL,
+    actor_login TEXT,
+    actor_known INTEGER NOT NULL,
+    title TEXT,
+    url TEXT,
+    repo_private INTEGER NOT NULL,
+    handoff_ok INTEGER NOT NULL,
+    posted_at TEXT,
+    message_id TEXT,
+    channel_id TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (thread_id, updated_at)
+  );
+  CREATE TABLE github_handoffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    notification_id INTEGER NOT NULL,
+    target TEXT NOT NULL CHECK (target IN ('session', 'manager')),
+    session_name TEXT,
+    state TEXT NOT NULL CHECK (state IN ('queued', 'delivered', 'unconfirmed', 'failed', 'gave_up', 'cancelled')),
+    last_pane_state TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE github_poll_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_modified TEXT,
+    poll_interval_sec INTEGER,
+    last_success_at TEXT,
+    error_kind TEXT,
+    error_since TEXT,
+    rate_remaining INTEGER,
+    rate_reset_at TEXT,
+    baseline_done INTEGER NOT NULL DEFAULT 0
+  );
+  ALTER TABLE guild_settings ADD COLUMN github_channel_id TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
