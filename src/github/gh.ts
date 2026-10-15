@@ -20,8 +20,12 @@ export type RunOptions = {
   maxBuffer: number;
 };
 
-/** exited は終了した（code は終了コード。シグナルで終わったら null）。timeout は時間切れで止めた、error は起動できなかった・出力が上限を超えた */
-export type RunResult = { kind: "exited"; code: number | null; stdout: string; stderr: string } | { kind: "timeout" } | { kind: "error" };
+/** exited は終了した（code は終了コード。シグナルで終わったら null）。timeout は時間切れで止めた、too_large は出力が上限を超えて止めた、error は起動できなかった */
+export type RunResult =
+  | { kind: "exited"; code: number | null; stdout: string; stderr: string }
+  | { kind: "timeout" }
+  | { kind: "too_large" }
+  | { kind: "error" };
 
 /** 子プロセスの実行。テストでは偽物を注入する */
 export type RunCommand = (file: string, args: readonly string[], options: RunOptions) => Promise<RunResult>;
@@ -40,7 +44,10 @@ export const execFileRun: RunCommand = (file, args, { env, timeoutMs, maxBuffer 
             return;
           }
           const failure = error as NodeJS.ErrnoException & { killed?: boolean; code?: number | string | null };
-          if (failure.killed === true) {
+          // 出力が上限を超えたときも子は止められる（killed も true になる）ので先に見る
+          if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+            resolvePromise({ kind: "too_large" });
+          } else if (failure.killed === true) {
             resolvePromise({ kind: "timeout" });
           } else if (typeof failure.code === "number") {
             resolvePromise({ kind: "exited", code: failure.code, stdout, stderr });
@@ -48,7 +55,7 @@ export const execFileRun: RunCommand = (file, args, { env, timeoutMs, maxBuffer 
             // シグナルで終わった
             resolvePromise({ kind: "exited", code: null, stdout, stderr });
           } else {
-            // ENOENT などの起動の失敗・ERR_CHILD_PROCESS_STDIO_MAXBUFFER
+            // ENOENT などの起動の失敗
             resolvePromise({ kind: "error" });
           }
         },
@@ -153,7 +160,7 @@ export type GhHeaders = Readonly<Record<string, string>>;
 /**
  * 応答の判定（§2・§11）。ok は 2xx、not_modified は 304（gh は終了コード 1 を返すのでステータス行で判定）、
  * auth は 401 か gh の終了コード 4、rate_limited は 403・429 で X-RateLimit-Remaining が 0 か Retry-After がある、
- * http_error はそれ以外のステータス、failed は時間切れ・起動の失敗・ステータス行の無い出力
+ * http_error はそれ以外のステータス、failed は時間切れ・出力が上限を超えた・起動の失敗・ステータス行の無い出力
  */
 export type GhResponse =
   | { kind: "ok"; status: number; headers: GhHeaders; body: string }
@@ -161,7 +168,7 @@ export type GhResponse =
   | { kind: "auth"; status: number | null }
   | { kind: "rate_limited"; status: number; headers: GhHeaders }
   | { kind: "http_error"; status: number; headers: GhHeaders }
-  | { kind: "failed"; reason: "timeout" | "spawn" | "no_status" | "exit" };
+  | { kind: "failed"; reason: "timeout" | "output_too_large" | "spawn" | "no_status" | "exit" };
 
 /** gh api の引数（固定の形）。パスは最後で、`/` で始まるので引数のオプションとは解釈されない */
 export function ghApiArgs(request: GhRequest): string[] {
@@ -216,6 +223,7 @@ export function parseIncludeOutput(stdout: string): { status: number; headers: G
 /** 実行の結果から応答を判定する（§11 の失敗の分け方） */
 export function interpretGhResult(result: RunResult): GhResponse {
   if (result.kind === "timeout") return { kind: "failed", reason: "timeout" };
+  if (result.kind === "too_large") return { kind: "failed", reason: "output_too_large" };
   if (result.kind === "error") return { kind: "failed", reason: "spawn" };
   if (result.code === GH_EXIT_AUTH) return { kind: "auth", status: null };
   const parsed = parseIncludeOutput(result.stdout);

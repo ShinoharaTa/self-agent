@@ -181,13 +181,17 @@ export class GithubStore {
     return row === undefined ? undefined : toThread(row);
   }
 
-  /** 最後に見た updated_at を記録する。無ければ初めて見た時刻を今にして作る。既にあれば repo・種類・番号・updated_at を書き換える（first_seen_at は変えない） */
+  /**
+   * 最後に見た updated_at を記録する。無ければ初めて見た時刻を今にして作る。既にあれば repo・種類・番号を書き換え、
+   * updated_at は今より新しいときだけ進める（戻さない）。first_seen_at は変えない
+   */
   recordThread(update: ThreadUpdate): GithubThread {
     const row = this.db
       .prepare(
         "INSERT INTO github_threads (thread_id, repo, subject_type, number, last_updated_at, first_seen_at) VALUES (?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT (thread_id) DO UPDATE SET repo = excluded.repo, subject_type = excluded.subject_type, number = excluded.number, " +
-          "last_updated_at = excluded.last_updated_at RETURNING *",
+          "last_updated_at = CASE WHEN julianday(excluded.last_updated_at) > julianday(last_updated_at) " +
+          "THEN excluded.last_updated_at ELSE last_updated_at END RETURNING *",
       )
       .get(update.threadId, update.repo, update.subjectType, update.number, update.updatedAt, this.now().toISOString());
     return toThread(row!);
@@ -271,7 +275,7 @@ export class GithubStore {
 
   /** 渡した項目だけを書き換える（行が無ければ作る）。書き換えた後の状態を返す */
   savePollState(changes: Partial<GithubPollState>): GithubPollState {
-    const keys = (Object.keys(changes) as (keyof GithubPollState)[]).filter((key) => key in POLL_STATE_COLUMNS);
+    const keys = (Object.keys(changes) as (keyof GithubPollState)[]).filter((key) => Object.hasOwn(POLL_STATE_COLUMNS, key));
     this.db.prepare("INSERT INTO github_poll_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING").run();
     if (keys.length > 0) {
       const sets = keys.map((key) => `${POLL_STATE_COLUMNS[key]} = ?`).join(", ");

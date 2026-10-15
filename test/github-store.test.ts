@@ -104,6 +104,9 @@ test("GithubStore: スレッドは初めて見た時刻を残して updated_at �
   assert.equal(second.lastUpdatedAt, "2026-10-15T00:04:00Z");
   assert.equal(second.firstSeenAt, at(0).toISOString());
   assert.deepEqual(store.getThread("t-1"), second);
+  // 古い updated_at では戻さない（形の違う同じ時刻も）
+  assert.equal(store.recordThread({ threadId: "t-1", repo: "example-org/example-repo", subjectType: "PullRequest", number: 12, updatedAt: "2026-10-15T00:01:00Z" }).lastUpdatedAt, "2026-10-15T00:04:00Z");
+  assert.equal(store.recordThread({ threadId: "t-1", repo: "example-org/example-repo", subjectType: "PullRequest", number: 12, updatedAt: "2026-10-15T00:04:00.000Z" }).lastUpdatedAt, "2026-10-15T00:04:00Z");
   assert.equal(store.recordThread({ threadId: "t-2", repo: "example-org/example-repo", subjectType: "Release", number: null, updatedAt: "2026-10-15T00:00:00Z" }).number, null);
 });
 
@@ -176,6 +179,8 @@ test("GithubStore: ポーリングの状態は行が無ければ空、渡した�
     baselineDone: false,
   });
   store.savePollState({});
+  // 列に無い名前（prototype の名前を含む）は無視する
+  store.savePollState({ constructor: 1, toString: "x" } as never);
   assert.equal(store.getPollState().baselineDone, false);
   const saved = store.savePollState({ lastModified: "Wed, 14 Oct 2026 01:02:03 GMT", pollIntervalSec: 60, baselineDone: true, rateRemaining: 4900 });
   assert.deepEqual(

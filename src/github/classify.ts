@@ -4,7 +4,15 @@
 import type { GithubLevel } from "../store/github.ts";
 
 /** 投稿の 1 行目の種別（§4.3 の固定の語） */
-export type GithubLabel = "レビュー依頼" | "メンション" | "担当" | "レビュー" | "コメント" | "新しい Issue" | "新しい PR";
+export type GithubLabel =
+  | "レビュー依頼"
+  | "メンション"
+  | "担当"
+  | "レビュー"
+  | "コメント"
+  | "状態の変化"
+  | "新しい Issue"
+  | "新しい PR";
 
 /** 白（投稿しない）の行に残す種別 */
 export const DROP_LABEL = "対象外";
@@ -37,6 +45,40 @@ const THREAD_REASONS: ReadonlySet<string> = new Set(["author", "comment"]);
 /** 規則 7 の reason（watch しているリポジトリ） */
 const WATCH_REASONS: ReadonlySet<string> = new Set(["subscribed", "manual"]);
 
+/**
+ * 「誰の操作か」に数えるタイムラインの出来事（§3.2）。actor がその操作をした本人であるものだけ。
+ * commented・commit-commented はコメント、reviewed・line-commented はレビュー、ここに挙げた残りは状態の変化。
+ * mentioned・subscribed・unsubscribed（actor は宛てられた人・購読した人）、assigned・review_requested など（宛てる操作。§3.1 の規則 4 の例外に使う）、
+ * cross-referenced・referenced・connected（ほかの場所での操作）、committed（GitHub のユーザーと結びつかない）、それ以外の知らない種類は数えない
+ */
+const COMMENT_EVENTS: ReadonlySet<string> = new Set(["commented", "commit-commented"]);
+const REVIEW_EVENTS: ReadonlySet<string> = new Set(["reviewed", "line-commented"]);
+const STATE_EVENTS: ReadonlySet<string> = new Set([
+  "closed",
+  "reopened",
+  "merged",
+  "ready_for_review",
+  "convert_to_draft",
+  "renamed",
+  "labeled",
+  "unlabeled",
+  "locked",
+  "unlocked",
+  "milestoned",
+  "demilestoned",
+  "review_dismissed",
+  "head_ref_force_pushed",
+  "head_ref_deleted",
+  "head_ref_restored",
+  "base_ref_changed",
+  "marked_as_duplicate",
+  "unmarked_as_duplicate",
+  "transferred",
+  "pinned",
+  "unpinned",
+  "converted_to_discussion",
+]);
+
 /** 通知のうち振り分けに使うもの（GET /notifications の 1 要素） */
 export type GithubNotification = {
   threadId: string;
@@ -63,8 +105,18 @@ export type GithubSubject = {
 
 export type GithubActor = { login: string; isBot: boolean };
 
-/** 新しい出来事の人（§3.2）。known が false なら分からない（取得の失敗・何も見つからない・レート制限で取らなかった） */
-export type ActorSet = { known: true; actors: GithubActor[]; reviewedBy: GithubActor[] } | { known: false };
+/** タイムラインの窓（前回より後）の中の出来事（§3.2） */
+export type TimelineActivity = {
+  /** 数える出来事をした人（自分・Bot を含む。重ねない）。空なら誰の操作か分からない */
+  actors: GithubActor[];
+  /** そのうちコメントした人・レビューした人 */
+  commenters: GithubActor[];
+  reviewers: GithubActor[];
+  /** 宛てられた人のログイン（小文字）: mentioned の actor・review_requested の requested_reviewer・assigned の assignee */
+  addressed: string[];
+  /** チームへのレビュー依頼がある（自分がそのチームにいるかは分からないので、宛てられたとみなす） */
+  teamReviewRequested: boolean;
+};
 
 /** Issue・PR の本体のうち規則 3・7 に使うもの */
 export type GithubIssueInfo = { author: GithubActor; createdAt: string };
@@ -77,8 +129,9 @@ export type ClassifyInput = {
   owners: readonly string[];
   /** このスレッドを初めて見たか（github_threads に行が無い） */
   firstSeen: boolean;
-  actors: ActorSet;
-  /** 取らなかった・取れなかったら undefined */
+  /** collectTimeline の結果。取らなかった・取れなかった（レート制限を含む）なら undefined */
+  timeline: TimelineActivity | undefined;
+  /** 取らなかった・取れなかったら undefined（規則 3 はこれがあるときだけ当てる） */
   issue?: GithubIssueInfo;
   now: Date;
 };
@@ -192,44 +245,65 @@ export function timelineSince(input: {
 }
 
 /**
- * タイムラインの要素のうち since より後の出来事の人を集める（§3.2）。commented・closed などは actor、reviewed は user（submitted_at）、
- * line-commented は comments[].user（created_at）。committed は数えない。1 人も見つからなければ分からない
+ * タイムラインの要素のうち since より後の出来事を集める（§3.2）。数えるのは COMMENT_EVENTS・REVIEW_EVENTS・STATE_EVENTS の人だけ:
+ * commented などは actor（無ければ user）と created_at、reviewed は user と submitted_at、line-commented・commit-commented は comments[].user と
+ * comments[].created_at。mentioned・review_requested・assigned は宛てられた人として別に集める。
+ * issue（規則 7 の候補で本体を取ったときだけ渡す）が since より後に作られていれば、その作成者も数える
+ * （作成はタイムラインに出ないので、Bot が先に反応すると自分と Bot だけに見えてしまうため）
  */
-export function collectActors(items: readonly unknown[], since: Date): ActorSet {
+export function collectTimeline(items: readonly unknown[], since: Date, issue?: GithubIssueInfo): TimelineActivity {
   const actors = new Map<string, GithubActor>();
-  const reviewedBy = new Map<string, GithubActor>();
-  const add = (map: Map<string, GithubActor>, actor: GithubActor | undefined): void => {
-    if (actor !== undefined && !map.has(actor.login.toLowerCase())) map.set(actor.login.toLowerCase(), actor);
+  const commenters = new Map<string, GithubActor>();
+  const reviewers = new Map<string, GithubActor>();
+  const addressed = new Set<string>();
+  let teamReviewRequested = false;
+  const add = (actor: GithubActor | undefined, kind?: Map<string, GithubActor>): void => {
+    if (actor === undefined) return;
+    const key = actor.login.toLowerCase();
+    if (!actors.has(key)) actors.set(key, actor);
+    if (kind !== undefined && !kind.has(key)) kind.set(key, actor);
   };
   const after = (value: unknown): boolean => {
     const time = parseTime(value);
     return time !== undefined && time > since.getTime();
   };
+  const address = (user: unknown): void => {
+    const actor = toActor(user);
+    if (actor !== undefined) addressed.add(actor.login.toLowerCase());
+  };
+  if (issue !== undefined && after(issue.createdAt)) add(issue.author);
   for (const item of items) {
     if (!isRecord(item) || typeof item.event !== "string") continue;
-    if (item.event === "committed") continue;
-    if (item.event === "reviewed") {
-      if (!after(item.submitted_at)) continue;
-      const actor = toActor(item.user);
-      add(actors, actor);
-      add(reviewedBy, actor);
-      continue;
-    }
-    if (item.event === "line-commented") {
+    const event = item.event;
+    if (event === "reviewed") {
+      if (after(item.submitted_at)) add(toActor(item.user), reviewers);
+    } else if (event === "line-commented" || event === "commit-commented") {
       if (!Array.isArray(item.comments)) continue;
       for (const comment of item.comments) {
-        if (!isRecord(comment) || !after(comment.created_at)) continue;
-        const actor = toActor(comment.user);
-        add(actors, actor);
-        add(reviewedBy, actor);
+        if (isRecord(comment) && after(comment.created_at)) add(toActor(comment.user), event === "line-commented" ? reviewers : commenters);
       }
+    } else if (!after(item.created_at)) {
       continue;
+    } else if (COMMENT_EVENTS.has(event)) {
+      add(toActor(item.actor) ?? toActor(item.user), commenters);
+    } else if (STATE_EVENTS.has(event)) {
+      add(toActor(item.actor));
+    } else if (event === "mentioned") {
+      address(item.actor);
+    } else if (event === "assigned") {
+      address(item.assignee);
+    } else if (event === "review_requested") {
+      if (isRecord(item.requested_reviewer)) address(item.requested_reviewer);
+      else if (isRecord(item.requested_team)) teamReviewRequested = true;
     }
-    if (!after(item.created_at)) continue;
-    add(actors, toActor(item.actor) ?? toActor(item.user));
   }
-  if (actors.size === 0) return { known: false };
-  return { known: true, actors: [...actors.values()], reviewedBy: [...reviewedBy.values()] };
+  return {
+    actors: [...actors.values()],
+    commenters: [...commenters.values()],
+    reviewers: [...reviewers.values()],
+    addressed: [...addressed],
+    teamReviewRequested,
+  };
 }
 
 function sameLogin(a: string, b: string): boolean {
@@ -253,35 +327,40 @@ export function wantsIssueInfo(notification: GithubNotification, owners: readonl
 
 /** §3.1 の規則を上から順に当て、最初に当たったものを返す。分からないとき（§3.3）は流す側に倒す */
 export function classifyNotification(input: ClassifyInput): Classification {
-  const { notification, me, actors } = input;
+  const { notification, me, timeline } = input;
   const subject = notification.subjectType === "Issue" || notification.subjectType === "PullRequest" ? parseSubjectUrl(notification.subjectUrl) : undefined;
+  const known = timeline !== undefined && timeline.actors.length > 0;
   const drop = (rule: Classification["rule"]): Classification => ({
     level: "drop",
     rule,
     label: DROP_LABEL,
     actorLogin: null,
-    actorKnown: actors.known,
+    actorKnown: known,
     subject: subject ?? null,
   });
   // 1. Issue・PR 以外（番号の取れない形を含む）
   if (subject === undefined) return drop(1);
   // 2. 捨てる reason
   if (DROP_REASONS.has(notification.reason)) return drop(2);
-  // 3. スレッドの作成者が Bot
+  // 3. スレッドの作成者が Bot（本体を取ったときだけ）
   if (input.issue?.author.isBot === true) return drop(3);
-  const otherActors = actors.known ? others(actors.actors, me) : [];
-  // 4. 新しい出来事の人が分かり、自分と Bot しかいない
-  if (actors.known && otherActors.length === 0) return drop(4);
-  const firstOther = otherActors[0]?.login ?? null;
-  // 5. 自分宛て
   const direct = Object.hasOwn(DIRECT_REASONS, notification.reason) ? DIRECT_REASONS[notification.reason] : undefined;
+  const otherActors = known ? others(timeline.actors, me) : [];
+  // 窓の中で自分が宛てられた（メンション・レビュー依頼・担当）。宛てる操作は Bot がすることもあるので、自分宛ての reason では規則 4 を当てない
+  const addressedToMe = timeline !== undefined && (timeline.addressed.includes(me.toLowerCase()) || timeline.teamReviewRequested);
+  // 4. 新しい出来事の人が分かり、自分と Bot しかいない（自分宛ての reason で、窓の中で自分が宛てられていれば当てない）
+  if (known && otherActors.length === 0 && !(direct !== undefined && addressedToMe)) return drop(4);
+  const firstOther = otherActors[0]?.login ?? null;
+  // 5. 自分宛て（人が分からなくても）
   if (direct !== undefined) {
-    return { level: "red", rule: 5, label: direct, actorLogin: firstOther, actorKnown: actors.known, subject };
+    return { level: "red", rule: 5, label: direct, actorLogin: firstOther, actorKnown: known, subject };
   }
   // 6. 自分のスレッド・自分がコメントしたスレッドに他人の出来事（分からなければ他人がいるとみなす）
   if (THREAD_REASONS.has(notification.reason)) {
-    const reviewed = actors.known && others(actors.reviewedBy, me).length > 0;
-    return { level: "red", rule: 6, label: reviewed ? "レビュー" : "コメント", actorLogin: firstOther, actorKnown: actors.known, subject };
+    let label: GithubLabel = "コメント";
+    if (known && others(timeline.reviewers, me).length > 0) label = "レビュー";
+    else if (known && others(timeline.commenters, me).length === 0) label = "状態の変化";
+    return { level: "red", rule: 6, label, actorLogin: firstOther, actorKnown: known, subject };
   }
   // 7. 自分のリポジトリの新しい Issue・PR（本体が分からなければ reason・持ち主・初めて見たかだけで）
   if (
