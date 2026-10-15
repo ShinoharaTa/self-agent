@@ -52,6 +52,8 @@ export const GITHUB_NETWORK_NOTICE_AFTER = 6;
 export const GITHUB_RATE_NOTICE_MS = 30 * 60 * 1000;
 /** これより古い出来事・スレッドの行は tick で消す（§2.2） */
 export const GITHUB_PRUNE_MS = 30 * 24 * 60 * 60 * 1000;
+/** 次の回までの待ちの上限（X-Poll-Interval・Reset・Retry-After がどれだけ長くても、1 日に 1 回は取りに行く） */
+export const GITHUB_MAX_WAIT_MS = 24 * 60 * 60 * 1000;
 /** 1 回の投稿を待つ上限（止まった投稿でポーリングを止めない） */
 export const GITHUB_POST_TIMEOUT_MS = 10_000;
 /** 1 回の未投稿の読み出しの上限 */
@@ -66,15 +68,18 @@ export const GITHUB_RECOVERED_NOTICE = "GitHub の通知の取得が戻りまし
 export const GITHUB_AUTH_NOTICE = "GitHub の通知を取得できません（gh の認証）";
 export const GITHUB_NETWORK_NOTICE = "GitHub の通知を取得できません（通信の失敗が続いています）";
 export const GITHUB_NO_GH_NOTICE = "GitHub の通知を取得できません（gh が見つかりません）";
+export const GITHUB_FORBIDDEN_NOTICE = "GitHub の通知を取得できません（GitHub が拒否しました（403））";
+/** #github が 1 つも無いときの log（変わったときだけ） */
+export const NO_GITHUB_CHANNEL_LOG = "#github がまだ無いため投稿していません（/setup を実行してください）";
 
 /** 最初の回の開始の知らせ（#github） */
 export function githubStartNotice(count: number): string {
   return `GitHub の通知の取得を始めました（今ある未読 ${count} 件は過去の分として流しません）`;
 }
 
-/** 上限を超えた分をまとめた 1 通 */
-export function githubFoldedNotice(count: number): string {
-  return `ほか ${count} 件（<${GITHUB_NOTIFICATIONS_URL}>）`;
+/** 上限を超えた分をまとめた 1 通。red はそのうちの赤の数（1 件以上ならオーナーをメンションする） */
+export function githubFoldedNotice(count: number, red = 0): string {
+  return `ほか ${count} 件${red > 0 ? `（うち自分宛て ${red} 件）` : ""}（<${GITHUB_NOTIFICATIONS_URL}>）`;
 }
 
 /** レート制限で止めた知らせ（#system） */
@@ -82,12 +87,16 @@ export function githubRateLimitNotice(minutes: number): string {
   return `GitHub の通知の取得を止めています（レート制限。約 ${minutes} 分）`;
 }
 
-/** 取得の失敗の種類（§11）。shape は応答の形が違う（その回を捨てるだけで知らせない） */
+/** 取得の失敗の種類（§11）。forbidden はレート制限でない 403、shape は応答の形が違う（その回を捨てるだけで知らせない） */
 export type GithubFailure =
   | { kind: "auth" }
   | { kind: "rate_limited"; until: Date }
+  | { kind: "forbidden" }
   | { kind: "network" }
   | { kind: "shape" };
+
+/** DB に残った失敗の種類（error_kind）のうち、#system に知らせる種類 */
+const NOTICE_KINDS: ReadonlySet<string> = new Set(["auth", "rate_limited", "forbidden", "network"]);
 
 export type GhGet = Pick<GhClient, "get">;
 
@@ -104,7 +113,7 @@ export function failureOf(response: Exclude<GhResponse, { kind: "ok" | "not_modi
       return { kind: "rate_limited", until };
     }
     case "http_error":
-      return { kind: "network" };
+      return response.status === 403 ? { kind: "forbidden" } : { kind: "network" };
     case "failed":
       return response.reason === "output_too_large" ? { kind: "shape" } : { kind: "network" };
   }
@@ -213,6 +222,8 @@ export type ClassifyContext = {
   pollIntervalSec: number;
   /** このスレッドで前回見た updated_at。初めてなら null */
   previousUpdatedAt: string | null;
+  /** 最後に取得できた時刻（前回の回）。初めて見たスレッドの窓を、止まっていた間まで広げる。無ければ null */
+  lastSuccessAt: string | null;
   firstSeen: boolean;
   budget: LookupBudget;
 };
@@ -251,6 +262,7 @@ export async function classifyWithLookups(notification: GithubNotification, cont
     lastReadAt: notification.lastReadAt,
     now,
     pollIntervalSec: context.pollIntervalSec,
+    lastSuccessAt: context.lastSuccessAt,
   });
   const timeline = items === undefined ? undefined : collectTimeline(items, since, issue);
   return classifyNotification({ notification, me, owners, firstSeen, timeline, ...(issue === undefined ? {} : { issue }), now });
@@ -344,8 +356,12 @@ export class GithubPoller {
   private announcedFailure: GithubFailure["kind"] | "no_gh" | undefined;
   /** #system への知らせ（失敗・戻った） */
   private systemNotice: PendingNotice | undefined;
-  /** #github への開始の知らせ */
+  /** #github への開始の知らせのうち、最初の #github に出した後でまだ出せていないサーバーの分（プロセスの中だけ） */
   private startNotice: PendingNotice | undefined;
+  /** DB に残った失敗の種類から、知らせ済みの状態を戻したか（最初の tick で 1 回） */
+  private restored = false;
+  /** #github が 1 つも無いことを log に出したか（変わったときだけ出す） */
+  private noChannelLogged = false;
 
   constructor(deps: GithubPollerDeps) {
     this.deps = deps;
@@ -402,9 +418,9 @@ export class GithubPoller {
     });
   }
 
-  /** 通常の間隔: max(設定, 直近の X-Poll-Interval) */
+  /** 通常の間隔: max(設定, 直近の X-Poll-Interval)。GITHUB_MAX_WAIT_MS まで */
   private intervalMs(state: GithubPollState): number {
-    return effectivePollIntervalSec(this.deps.cfg.githubPollSec, state.pollIntervalSec) * 1000;
+    return Math.min(effectivePollIntervalSec(this.deps.cfg.githubPollSec, state.pollIntervalSec) * 1000, GITHUB_MAX_WAIT_MS);
   }
 
   private async runTick(): Promise<number> {
@@ -417,20 +433,50 @@ export class GithubPoller {
       store.prune(new Date(now.getTime() - GITHUB_PRUNE_MS));
       const state = store.getPollState();
       interval = this.intervalMs(state);
-      const delay = await this.poll(gh, state, now);
+      this.restoreFailure(state, now, interval);
+      const channels = this.githubChannels();
+      const delay = await this.poll(gh, state, now, channels);
       if (this.stopped) return delay;
       await this.postStartNotice();
-      await this.postPending();
+      await this.postPending(channels);
       await this.postSystemNotice();
-      return delay;
+      return Math.min(delay, GITHUB_MAX_WAIT_MS);
     } catch (error) {
       log(`GitHub の通知の処理に失敗しました（${error instanceof Error ? error.name : "unknown"}）`);
       return interval;
     }
   }
 
+  /**
+   * 再起動の前から続いている失敗（DB の error_kind）を知らせ済みとして戻す（同じ失敗を再起動のたびに #system に出さない）。
+   * 通信の失敗は、続いている時間が知らせるまでの回数分（GITHUB_NETWORK_NOTICE_AFTER - 1 回の間隔）を超えていれば知らせ済みとみなす
+   */
+  private restoreFailure(state: GithubPollState, now: Date, interval: number): void {
+    if (this.restored) return;
+    this.restored = true;
+    const kind = state.errorKind;
+    if (kind === null || !NOTICE_KINDS.has(kind)) return;
+    if (kind === "network") {
+      const since = state.errorSince === null ? Number.NaN : Date.parse(state.errorSince);
+      if (!(now.getTime() - since >= (GITHUB_NETWORK_NOTICE_AFTER - 1) * interval)) return;
+      this.networkFailures = GITHUB_NETWORK_NOTICE_AFTER;
+    }
+    this.announcedFailure = kind as GithubFailure["kind"];
+  }
+
+  /** /setup 済みのサーバーの #github。1 つも無ければ log に出す（変わったときだけ） */
+  private githubChannels(): string[] {
+    const channels = this.deps.cfg.allowedGuildIds.flatMap((guildId) => {
+      const channelId = this.githubChannelOf(guildId);
+      return channelId === null ? [] : [channelId];
+    });
+    if (channels.length === 0 && !this.noChannelLogged) this.deps.log(NO_GITHUB_CHANNEL_LOG);
+    this.noChannelLogged = channels.length === 0;
+    return channels;
+  }
+
   /** 取得して振り分け、記録する。次の tick までのミリ秒を返す */
-  private async poll(gh: GhGet, state: GithubPollState, now: Date): Promise<number> {
+  private async poll(gh: GhGet, state: GithubPollState, now: Date, channels: readonly string[]): Promise<number> {
     const interval = this.intervalMs(state);
     if (this.pausedUntil !== undefined && now.getTime() < this.pausedUntil.getTime()) {
       return Math.max(this.pausedUntil.getTime() - now.getTime(), interval);
@@ -455,43 +501,58 @@ export class GithubPoller {
     }
     if (invalid > 0) this.deps.log(`GitHub の通知のうち形の違う ${invalid} 件を飛ばしました`);
     if (!state.baselineDone) {
-      this.recordBaseline(notifications);
+      // 開始の知らせをどこにも出せなければ、最初の回を終えない（次の回・次の起動でやり直す）
+      if (!(await this.recordBaseline(notifications, channels))) return this.succeed(fetched.headers, undefined, now);
     } else {
-      const completed = await this.classifyAll(gh, notifications, fetched.remaining, now, interval / 1000);
+      const completed = await this.classifyAll(gh, notifications, fetched.remaining, now, interval / 1000, state.lastSuccessAt);
       // 止められて途中で終えたら、Last-Modified を保存しない（次の起動で取り直す）
       if (!completed) return interval;
     }
     return this.succeed(fetched.headers, lastModifiedFromHeaders(fetched.headers), now);
   }
 
-  /** 最初の回: 今ある未読をすべて「見た」として記録し、投稿しない。開始の知らせを #github に出す */
-  private recordBaseline(notifications: readonly GithubNotification[]): void {
+  /**
+   * 最初の回: 今ある未読をすべて「見た」として記録し、投稿しない。開始の知らせを #github に出し、1 つでも出せたら最初の回を終えたと記録する
+   * （出せなかったサーバーの分は、プロセスの中で次の回にやり直す）。#github が無い・どこにも出せなければ false（記録はそのまま残り、次の回にやり直す）
+   */
+  private async recordBaseline(notifications: readonly GithubNotification[], channels: readonly string[]): Promise<boolean> {
     const { store, cfg, log } = this.deps;
     for (const notification of notifications) store.recordThread(threadUpdate(notification));
+    if (channels.length === 0 || this.stopped) return false;
+    const notice: PendingNotice = { text: githubStartNotice(notifications.length), guilds: new Set(cfg.allowedGuildIds) };
+    await this.postNotice(notice, (guildId) => this.githubChannelOf(guildId));
+    if (notice.guilds.size === cfg.allowedGuildIds.length) return false;
     store.savePollState({ baselineDone: true });
-    this.startNotice = { text: githubStartNotice(notifications.length), guilds: new Set(cfg.allowedGuildIds) };
+    this.startNotice = notice;
     log(`GitHub の通知の取得を始めました（今ある未読 ${notifications.length} 件は流しません）`);
+    return true;
   }
 
-  /** 前回より新しい出来事（GITHUB_PRUNE_MS より古いものを除く）を古い順に振り分けて記録する。止められたら false */
+  /**
+   * 前回より新しい出来事（GITHUB_PRUNE_MS より古いものを除く）を振り分けて記録する。タイムライン・本体を調べる枠は新しい出来事から使い
+   * （溜まった古いものが「確かめられませんでした」になる）、記録は古い順に行う（投稿の順）。止められたら何も記録せずに false
+   */
   private async classifyAll(
     gh: GhGet,
     notifications: readonly GithubNotification[],
     remaining: number | undefined,
     now: Date,
     pollIntervalSec: number,
+    lastSuccessAt: string | null,
   ): Promise<boolean> {
     const { store, cfg, log } = this.deps;
     const me = this.me!;
     const owners = cfg.githubOwners.length > 0 ? cfg.githubOwners : [me];
     const budget = newLookupBudget(remaining);
     const counts = { red: 0, yellow: 0, drop: 0 };
-    const ordered = [...notifications].sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt));
     // 残す期間より古い出来事は見ない（スレッドの行は prune で消えるので、初めて見たものに見えて流してしまうため）
     const cutoff = now.getTime() - GITHUB_PRUNE_MS;
-    for (const notification of ordered) {
+    const newestFirst = notifications
+      .filter((notification) => Date.parse(notification.updatedAt) >= cutoff)
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    const classified: Array<{ notification: GithubNotification; classification: Classification }> = [];
+    for (const notification of newestFirst) {
       if (this.stopped) return false;
-      if (!(Date.parse(notification.updatedAt) >= cutoff)) continue;
       const thread = store.getThread(notification.threadId);
       // 前回見た出来事より新しくなければ、もう記録してある
       if (thread !== undefined && !(Date.parse(notification.updatedAt) > Date.parse(thread.lastUpdatedAt))) continue;
@@ -502,9 +563,14 @@ export class GithubPoller {
         now,
         pollIntervalSec,
         previousUpdatedAt: thread?.lastUpdatedAt ?? null,
+        lastSuccessAt,
         firstSeen: thread === undefined,
         budget,
       });
+      classified.push({ notification, classification });
+    }
+    if (this.stopped) return false;
+    for (const { notification, classification } of classified.reverse()) {
       const added = store.addNotification({
         threadId: notification.threadId,
         updatedAt: notification.updatedAt,
@@ -551,8 +617,8 @@ export class GithubPoller {
     const interval = this.intervalMs(state);
     // 残りが 0 なら Reset まで取得も止める（§2.3）
     if (remaining === 0 && resetAt !== undefined && resetAt.getTime() > now.getTime()) {
-      this.pausedUntil = resetAt;
-      return Math.max(resetAt.getTime() - now.getTime(), interval);
+      this.pausedUntil = new Date(Math.min(resetAt.getTime(), now.getTime() + GITHUB_MAX_WAIT_MS));
+      return Math.max(this.pausedUntil.getTime() - now.getTime(), interval);
     }
     return interval;
   }
@@ -573,11 +639,14 @@ export class GithubPoller {
         this.announce("auth", GITHUB_AUTH_NOTICE);
         return Math.max(GITHUB_AUTH_RETRY_MS, interval);
       case "rate_limited": {
-        this.pausedUntil = failure.until;
-        const waitMs = Math.max(failure.until.getTime() - now.getTime(), 0);
+        this.pausedUntil = new Date(Math.min(failure.until.getTime(), now.getTime() + GITHUB_MAX_WAIT_MS));
+        const waitMs = Math.max(this.pausedUntil.getTime() - now.getTime(), 0);
         if (waitMs > GITHUB_RATE_NOTICE_MS) this.announce("rate_limited", githubRateLimitNotice(Math.ceil(waitMs / 60_000)));
         return Math.max(waitMs, interval);
       }
+      case "forbidden":
+        this.announce("forbidden", GITHUB_FORBIDDEN_NOTICE);
+        return interval;
       case "network":
         this.networkFailures++;
         if (this.networkFailures >= GITHUB_NETWORK_NOTICE_AFTER) this.announce("network", GITHUB_NETWORK_NOTICE);
@@ -628,16 +697,12 @@ export class GithubPoller {
   }
 
   /**
-   * まだ投稿していない赤・黄を、/setup 済みのサーバーの #github に古い順に投稿する（§2.2・§4）。同じスレッドのものは新しい 1 件だけにする。
-   * GITHUB_MAX_POSTS 件を超えた分は「ほか n 件」の 1 通にまとめる。どこにも投稿できなかったものは未投稿のまま次の回に出し直す。
-   * #github が 1 つも無ければ何もしない（未投稿のまま残す）
+   * まだ投稿していない赤・黄を、/setup 済みのサーバーの #github に赤 → 黄の順（それぞれ古い順）で投稿する（§2.2・§4）。同じスレッドのものは新しい 1 件だけにする。
+   * GITHUB_MAX_POSTS 件を超えた分は「ほか n 件」の 1 通にまとめる（赤を含めば、その数を書いてオーナーをメンションする）。
+   * どこにも投稿できなかったものは未投稿のまま次の回に出し直す。#github が 1 つも無ければ何もしない（未投稿のまま残す）
    */
-  private async postPending(): Promise<void> {
+  private async postPending(channels: readonly string[]): Promise<void> {
     const { store, cfg, log } = this.deps;
-    const channels = cfg.allowedGuildIds.flatMap((guildId) => {
-      const channelId = this.githubChannelOf(guildId);
-      return channelId === null ? [] : [channelId];
-    });
     if (channels.length === 0) return;
     const latest = new Map<string, GithubNotificationRow>();
     for (const row of store.listUnposted(UNPOSTED_LIMIT)) {
@@ -645,7 +710,8 @@ export class GithubPoller {
       if (previous !== undefined) store.markSkipped(previous.id);
       latest.set(row.threadId, row);
     }
-    const rows = [...latest.values()].sort((a, b) => a.id - b.id);
+    const rank = (row: GithubNotificationRow): number => (row.level === "red" ? 0 : 1);
+    const rows = [...latest.values()].sort((a, b) => rank(a) - rank(b) || a.id - b.id);
     if (rows.length === 0) return;
     const toPost = rows.slice(0, GITHUB_MAX_POSTS);
     const folded = rows.slice(GITHUB_MAX_POSTS);
@@ -657,7 +723,11 @@ export class GithubPoller {
       else store.markPosted(row.id, posted.channelId, posted.messageId);
     }
     if (folded.length > 0 && !this.stopped) {
-      const posted = await this.postToAll(channels, { text: githubFoldedNotice(folded.length) });
+      const red = folded.filter((row) => row.level === "red").length;
+      const posted = await this.postToAll(channels, {
+        text: githubFoldedNotice(folded.length, red),
+        ...(red > 0 && cfg.ownerUserId !== undefined ? { mentionUserId: cfg.ownerUserId } : {}),
+      });
       if (posted === undefined) failed += folded.length;
       else for (const row of folded) store.markSkipped(row.id);
     }
