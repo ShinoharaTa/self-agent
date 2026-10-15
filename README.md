@@ -27,7 +27,7 @@ It runs on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/over
 
 | Command | What it does |
 |---|---|
-| `/setup` | Creates the categories (`self-agent`, `進行中`, `待ち`, `完了`) and the `#inbox`, `#tasks` and `#system` channels. Running it again recreates only what is missing. |
+| `/setup` | Creates the categories (`self-agent`, `進行中`, `待ち`, `完了`) and the `#inbox`, `#tasks` and `#system` channels (plus `#github` when GitHub notifications are enabled). Running it again recreates only what is missing. |
 | `/new <title>` | Creates a session channel. |
 | `/close` | Closes the session: saves a summary, lets you confirm suggested to-dos with buttons and adds them, then moves the channel to 完了. |
 | `/renew` | Summarizes the conversation and starts a fresh one (to reset a long conversation). Works in sessions, `#inbox` and `#tasks`. |
@@ -69,7 +69,8 @@ Discord ──(discord.js)── Gateway ── access check (allowed servers, o
 - Images the owner attaches (JPEG / PNG / WebP / GIF, up to 4 per message) are sent to Anthropic's API as part of the conversation, so they also stay in the SDK's conversation record (under `CLAUDE_CONFIG_DIR`); the originals are kept in `<SELF_AGENT_DATA_DIR>/attachments/` (deleted after 30 days unless linked to a record).
 - Irreversible actions, such as deleting a channel or a knowledge base entry, happen only when you press a button.
 - Bot messages never ping `@everyone` or roles.
-- Reminders mention only the owner.
+- Reminders and GitHub notifications addressed to you (red) mention only the owner.
+- GitHub notifications are fetched by the app itself with GET requests through your current `gh` login (the LLM is not involved). It never marks anything as read on GitHub, and local logs never contain repository names, titles or URLs.
 - The Claude child process receives only allowlisted environment variables (it never sees the Discord token, for example).
 
 ## Running it
@@ -149,7 +150,7 @@ You can run a second bot with a different personality and role in the same proce
 # persona ids (lower-case letters and digits, 1–12 chars, comma-separated, up to 10)
 SELF_AGENT_PERSONAS=mika
 SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN=...
-# display name (up to 20 chars; also the channel name #<NAME>; default: the id)
+# display name (up to 20 chars; also the channel name #<NAME>, so it cannot be inbox / tasks / system / github; default: the id)
 SELF_AGENT_PERSONA_MIKA_NAME=Mika
 # optional: personality / tone / role (default ~/.config/self-agent/personas/<id>.md; keep it out of the repository)
 SELF_AGENT_PERSONA_MIKA_PROMPT_FILE=...
@@ -164,6 +165,24 @@ SELF_AGENT_MAX_CONCURRENT=3
 4. Restart, then run `/setup` again. It creates `#<NAME>` (for example `#mika`) in the self-agent category; write there to talk to the second bot.
    To start a session with it, use `/new` with the `persona` option (the channel is named `<NAME>-<title>`), or ask it in `#<NAME>`.
 
+### 7. (Optional) Post GitHub notifications to `#github`
+
+Comments and reviews on your PRs, mentions and review requests (red; pings only you) and other people's new issues / PRs in your own repositories (yellow; no ping) go to `#github`. Your own actions and bots' are left out.
+
+1. Check `gh auth status`. The token must be stored in `~/.config/gh/hosts.yml` (a login stored in the keyring is not readable by the bot).
+2. Run `npm run github-dry-run` to see only the counts (red / yellow / dropped) of one fetch. It posts nothing and does not mark anything as read.
+3. Add these to `~/.config/self-agent/env`, restart, and run `/setup` again (it creates `#github` in the self-agent category):
+
+```
+SELF_AGENT_GITHUB=1
+# optional: owners whose repositories count as yours (default: your gh login). Add your orgs
+SELF_AGENT_GITHUB_OWNERS=<login>,<org>
+# optional: polling interval in seconds (60 or more; default 300)
+SELF_AGENT_GITHUB_POLL_SEC=300
+```
+
+The first fetch skips the unread notifications you already have and posts one start notice in `#github`. After that, only new ones are posted every 5 minutes (up to 10 at a time; the rest are folded into one "ほか n 件" message). Problems such as a broken `gh` login are reported in `#system`.
+
 ## Development
 
 ```bash
@@ -171,6 +190,7 @@ npm run check             # type check (tsc --noEmit; the code runs without a bu
 npm test                  # unit tests (fake Gateway / Runner and a temporary SQLite; no tokens needed)
 npm run test:integration  # integration tests (call the real SDK when a Claude token is present; uses your allowance)
 npm run measure           # measure time, memory and tokens for one turn
+npm run github-dry-run    # fetch GitHub notifications once and print only the counts per class (posts nothing)
 ```
 
 - Only three runtime dependencies (`@anthropic-ai/claude-agent-sdk`, `discord.js`, `zod`), pinned to exact versions.

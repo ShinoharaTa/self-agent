@@ -28,9 +28,12 @@ import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
+import { GhClient, resolveGhPath } from "./github/gh.ts";
+import { createGithubPoller } from "./github/poller.ts";
 import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
 import { AttachmentStore } from "./store/attachments.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
+import { GithubStore } from "./store/github.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
@@ -359,6 +362,19 @@ const reminderScheduler = new ReminderScheduler({
   log,
 });
 
+// GitHub の通知（docs/plan/github-notifications.md。SELF_AGENT_GITHUB=1 のときだけ）: 自前のタイマーで gh api の通知を取り、#github に投稿する。
+// gh は起動時に PATH から 1 回解決する（無ければ取得せず、#system に 1 回知らせる）。投稿は既定の人格の Bot
+const ghPath = config.github ? resolveGhPath() : undefined;
+const githubPoller = createGithubPoller({
+  cfg: config,
+  gh: ghPath === undefined ? undefined : new GhClient({ ghPath }),
+  store: new GithubStore(db, now),
+  guildSettings,
+  gateway,
+  now,
+  log,
+});
+
 // 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
 let staticServer: StaticServer | undefined;
 if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
@@ -374,7 +390,7 @@ if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
   });
 }
 
-// 停止: シグナルで新しい受付と定期処理（リマインドの発火を含む）を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・DB を閉じる
+// 停止: シグナルで新しい受付と定期処理（リマインドの発火・GitHub の通知のポーリングを含む）を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・DB を閉じる
 const lifecycle = createShutdown(
   {
     cfg: config,
@@ -389,6 +405,7 @@ const lifecycle = createShutdown(
     queues: [turnQueue, layoutQueue],
     scheduler,
     reminderScheduler,
+    ...(githubPoller === undefined ? {} : { githubPoller }),
     channelOps,
     staticServer,
     closeDb: () => db.close(),
@@ -431,4 +448,5 @@ logUnconfiguredGuilds({ cfg: config, guildSettings, log });
 // 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で（リマインドは分の境目ごと）。停止を始めていれば何もしない
 scheduler.start(TICK_INTERVAL_MS);
 reminderScheduler.start();
+githubPoller?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

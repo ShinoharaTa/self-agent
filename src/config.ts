@@ -85,6 +85,16 @@ export type Config = {
   personas: PersonaConfig[];
   /** codex の認証と会話の記録の場所。未設定で codex の人格も無ければ undefined */
   codexHome: string | undefined;
+} & GithubConfig;
+
+/** GitHub の通知の段 1（docs/plan/github-notifications.md §10）。npm run github-dry-run もこれだけを読む */
+export type GithubConfig = {
+  /** true なら GitHub の通知を取得して #github に流す（/setup も #github を作る）。false なら何もしない */
+  github: boolean;
+  /** ポーリングの間隔（秒、60 以上）。実際の間隔は直近の X-Poll-Interval との大きい方 */
+  githubPollSec: number;
+  /** 「自分のリポジトリ」とみなす持ち主（GitHub のログイン・org）。空なら gh のログイン 1 つ */
+  githubOwners: string[];
 };
 
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
@@ -104,6 +114,8 @@ const DEFAULT_INBOX_MAX_INPUT_TOKENS = 150000;
 const DEFAULT_SESSION_MAX_TURNS = 40;
 const DEFAULT_SESSION_TURN_TIMEOUT_SEC = 900;
 const DEFAULT_DEV_LOG_DAYS = 30;
+const DEFAULT_GITHUB_POLL_SEC = 300;
+const MIN_GITHUB_POLL_SEC = 60;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -201,8 +213,8 @@ export function loadDataConfig(env: NodeJS.ProcessEnv = process.env): Pick<Confi
 
 const PERSONA_ID = /^[a-z0-9]{1,12}$/;
 const PERSONA_NAME_MAX_LENGTH = 20;
-/** /setup が self-agent カテゴリに作るチャンネルの名前。足した人格の #<NAME> はこれと同じ名前にできない */
-const RESERVED_CHANNEL_NAMES: readonly string[] = ["inbox", "tasks", "system"];
+/** /setup が self-agent カテゴリに作るチャンネルの名前（github は SELF_AGENT_GITHUB=1 のときだけ作る）。足した人格の #<NAME> はこれと同じ名前にできない */
+const RESERVED_CHANNEL_NAMES: readonly string[] = ["inbox", "tasks", "system", "github"];
 /** 足せる人格の数の上限（/new の persona の選択肢を Discord の 25 個以内に、/usage を 1 メッセージの 2,000 字以内に収める） */
 export const MAX_PERSONAS = 10;
 
@@ -282,6 +294,28 @@ function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[
   });
 }
 
+const GITHUB_OWNER = /^[A-Za-z0-9-]{1,39}$/;
+
+/** SELF_AGENT_GITHUB・SELF_AGENT_GITHUB_POLL_SEC・SELF_AGENT_GITHUB_OWNERS を読む。loadConfig と npm run github-dry-run で共通 */
+export function loadGithubConfig(env: NodeJS.ProcessEnv = process.env): GithubConfig {
+  const pollSec = positiveInteger("SELF_AGENT_GITHUB_POLL_SEC", nonEmpty(env.SELF_AGENT_GITHUB_POLL_SEC), DEFAULT_GITHUB_POLL_SEC);
+  if (pollSec < MIN_GITHUB_POLL_SEC) {
+    throw new Error(`SELF_AGENT_GITHUB_POLL_SEC は ${MIN_GITHUB_POLL_SEC} 以上の整数で指定してください`);
+  }
+  const owners = (nonEmpty(env.SELF_AGENT_GITHUB_OWNERS) ?? "")
+    .split(",")
+    .map((owner) => owner.trim())
+    .filter((owner) => owner !== "");
+  if (owners.some((owner) => !GITHUB_OWNER.test(owner))) {
+    throw new Error("SELF_AGENT_GITHUB_OWNERS は GitHub のユーザー名・org 名をカンマ区切りで指定してください");
+  }
+  return {
+    github: flag("SELF_AGENT_GITHUB", nonEmpty(env.SELF_AGENT_GITHUB)),
+    githubPollSec: pollSec,
+    githubOwners: [...new Set(owners)],
+  };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const home = (): string => homeDir(env);
   const personas = personaList(env, home);
@@ -359,6 +393,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     codexHome:
       nonEmpty(env.SELF_AGENT_CODEX_HOME) ??
       (personas.some((persona) => persona.engine === "codex") ? join(home(), ".local/share/self-agent/codex") : undefined),
+    ...loadGithubConfig(env),
   };
 }
 

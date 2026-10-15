@@ -25,7 +25,7 @@ Discord の専用サーバーに常駐する、1 人用の AI エージェント
 
 | コマンド | 内容 |
 |---|---|
-| `/setup` | self-agent 用のカテゴリ（`self-agent`・`進行中`・`待ち`・`完了`）と `#inbox` `#tasks` `#system` を作る。2 回目以降は消えたものだけ作り直す |
+| `/setup` | self-agent 用のカテゴリ（`self-agent`・`進行中`・`待ち`・`完了`）と `#inbox` `#tasks` `#system`（GitHub の通知を有効にしていれば `#github` も）を作る。2 回目以降は消えたものだけ作り直す |
 | `/new 題名` | セッションのチャンネルを作る |
 | `/close` | セッションを閉じる。要約を残し、やることの候補をボタンで確認して登録してから「完了」へ移す |
 | `/renew` | 会話を要約して新しくする（長くなった会話の仕切り直し）。セッション・`#inbox`・`#tasks` で使える |
@@ -67,7 +67,8 @@ Discord ──(discord.js)── Gateway ── 受付判定（許可サーバ�
 - オーナーが貼った画像（JPEG・PNG・WebP・GIF。1 発言 4 枚まで）は会話の一部として Anthropic の API に送られ、SDK の会話の記録（`CLAUDE_CONFIG_DIR` の下）にも残る。原本は `<SELF_AGENT_DATA_DIR>/attachments/` に置く（記録に結びつかなければ 30 日で消える）
 - チャンネルやナレッジの削除など戻せない操作は、ボタンを押したときだけ行う
 - Bot のメッセージで `@everyone` やロールへの通知は出さない
-- リマインドはオーナーだけをメンションして鳴らす
+- リマインドと GitHub の自分宛ての通知（赤）は、オーナーだけをメンションして鳴らす
+- GitHub の通知の取得は、アプリが gh の今のログインで GET だけを行う（LLM は関わらない）。GitHub の既読は変えない。ローカルのログにはリポジトリ名・題名・URL を出さない
 - Claude の子プロセスには、許可した環境変数だけを渡す（Discord のトークンなどは渡らない）
 
 ## 動かし方
@@ -147,7 +148,7 @@ systemctl --user stop self-agent        # 停止（進行中の返信を待っ�
 # 人格の id（英小文字と数字の 1〜12 字、カンマ区切り、10 個まで）
 SELF_AGENT_PERSONAS=mika
 SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN=...
-# 表示名（20 字以内。チャンネル名 #<NAME> にもなる。未設定なら id）
+# 表示名（20 字以内。チャンネル名 #<NAME> にもなるので inbox・tasks・system・github にはできない。未設定なら id）
 SELF_AGENT_PERSONA_MIKA_NAME=Mika
 # 任意: 性格・口調・役割の文（既定 ~/.config/self-agent/personas/<id>.md。リポジトリには置かない）
 SELF_AGENT_PERSONA_MIKA_PROMPT_FILE=...
@@ -162,6 +163,24 @@ SELF_AGENT_MAX_CONCURRENT=3
 4. 再起動して、もう一度 `/setup` を実行する。self-agent カテゴリに `#<NAME>`（例 `#mika`）ができるので、そこに書くと 2 体目が答える。
    2 体目とのセッションは `/new` の `persona` で選ぶ（チャンネル名は `<NAME>-<題名>`）か、`#<NAME>` で頼む。
 
+### 7.（任意）GitHub の通知を `#github` に流す
+
+自分の PR へのコメント・レビュー、メンション、レビュー依頼（赤。オーナーだけをメンションして鳴らす）と、自分のリポジトリの他人の新しい Issue / PR（黄。鳴らさない）を `#github` に流す。自分や Bot の操作は流さない。
+
+1. `gh auth status` でログイン済みを確かめる。トークンは `~/.config/gh/hosts.yml` に保存されている必要がある（keyring に保存したログインは Bot から読めない）
+2. `npm run github-dry-run` で、取得と振り分けの件数（赤・黄・白）だけを確かめる（投稿しない・GitHub の既読も変えない）
+3. `~/.config/self-agent/env` に足して再起動し、もう一度 `/setup` を実行する（self-agent カテゴリに `#github` ができる）
+
+```
+SELF_AGENT_GITHUB=1
+# 任意: 「自分のリポジトリ」とみなす持ち主（既定は gh のログイン 1 つ）。所属する org を足す
+SELF_AGENT_GITHUB_OWNERS=<login>,<org>
+# 任意: ポーリングの間隔（秒、60 以上。既定 300）
+SELF_AGENT_GITHUB_POLL_SEC=300
+```
+
+最初の取得では今ある未読は流さず、`#github` に開始の知らせを 1 通出す。以後は 5 分ごとに新しいものだけを流す（1 回 10 件まで。残りは「ほか n 件」にまとめる）。取得できない状態（gh の認証など）は `#system` に知らせる。
+
 ## 開発
 
 ```bash
@@ -169,6 +188,7 @@ npm run check             # 型チェック（tsc --noEmit。実行はビルド�
 npm test                  # 単体テスト（偽の Gateway / Runner と一時 SQLite。トークン不要）
 npm run test:integration  # 結合テスト（Claude のトークンがあれば実際に SDK を呼ぶ。利用枠を使う）
 npm run measure           # 1 ターンの時間・メモリ・トークンの実測
+npm run github-dry-run    # GitHub の通知を 1 回だけ取得して振り分けの件数を表示（投稿しない）
 ```
 
 - 実行時の依存は `@anthropic-ai/claude-agent-sdk`・`discord.js`・`zod` の 3 つだけで、バージョンは固定

@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   effectivePollIntervalSec,
   execFileRun,
@@ -17,6 +20,7 @@ import {
   parseIncludeOutput,
   pollIntervalFromHeaders,
   rateLimitFromHeaders,
+  resolveGhPath,
   retryAfterSecFromHeaders,
   timelinePath,
   type RunCommand,
@@ -270,4 +274,20 @@ test("execFileRun: 終了コード・標準出力を返し、起動できなけ�
   assert.deepEqual(await execFileRun(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], { ...options, timeoutMs: 200 }), {
     kind: "timeout",
   });
+});
+
+test("resolveGhPath: PATH の絶対パスの要素を順に見て、実行できる gh のファイルの絶対パスを返す。無ければ undefined", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "self-agent-gh-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const notExecutable = join(root, "a");
+  const directory = join(root, "b");
+  const executable = join(root, "c");
+  for (const dir of [notExecutable, directory, executable]) mkdirSync(dir);
+  writeFileSync(join(notExecutable, "gh"), "", { mode: 0o644 });
+  mkdirSync(join(directory, "gh"));
+  writeFileSync(join(executable, "gh"), "", { mode: 0o755 });
+
+  assert.equal(resolveGhPath(["relative", notExecutable, directory, executable].join(":")), join(executable, "gh"));
+  assert.equal(resolveGhPath([notExecutable, directory].join(":")), undefined);
+  assert.equal(resolveGhPath(""), undefined);
 });
