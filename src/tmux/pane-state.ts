@@ -18,11 +18,40 @@ export const SECOND_CAPTURE_DELAY_MS = 1500;
 /** 入力欄を探す範囲（下から何行。末尾の空行は数えない） */
 export const PROMPT_SEARCH_LINES = 8;
 
-/** ダイアログの文言（plain に含まれていれば dialog） */
-export const DIALOG_MARKERS: readonly string[] = ["Enter to select", "Enter to confirm", "Esc to cancel", "Do you want to"];
+/** 入力欄の上のスピナーを探す範囲（上の `─` の行から上に何行） */
+export const SPINNER_SEARCH_LINES = 10;
+/** 入力欄を上の `─` から下の `─` まで探す上限の行数（pasteLanded） */
+export const INPUT_BOX_MAX_LINES = 20;
+/** 貼れたかを確かめるのに使うテンプレートの先頭の文字数（§5.4 の 4） */
+export const PASTE_CHECK_CHARS = 24;
+
+/** ダイアログ・重なった表示の文言（plain に大文字小文字を問わず含まれていれば dialog）。主の守りは入力欄の形（no_prompt）で、これは補助 */
+export const DIALOG_MARKERS: readonly string[] = [
+  "Enter to select",
+  "Enter to confirm",
+  "Esc to cancel",
+  "Esc to exit",
+  "Esc to go back",
+  "to navigate",
+  "Do you want to",
+  "Would you like to",
+  "Do you trust",
+  "Press Enter",
+  // ? のショートカットの一覧
+  "for bash mode",
+];
+/** 長い貼り付けがまとめられたときの印 */
+export const PASTED_TEXT_MARKER = "[Pasted text";
+/** 入力欄に貼り付け・画像がまとめて入っている印（dim でも書きかけとみなす） */
+export const INPUT_MARKERS: readonly string[] = [PASTED_TEXT_MARKER, "[Image #"];
 
 const BUSY_TEXT = /esc to interrupt/i;
-const SPINNER_LINE = /^[·✢✳✶✻✽*] .*…/;
+// スピナーの記号 + 文 + 「…」か経過秒数（「(12s」「(1m 3s」）。終わった後の「✻ Worked for 9s」は当たらない
+const SPINNER_LINE = /^[·✢✳✶✻✽*]\s+\S.*(…|\((\d+m )?\d+s\b)/;
+// vim のノーマル・ビジュアルモード（貼った文字が入力にならないかもしれない）
+const VIM_NOT_INSERT = /-- (NORMAL|VISUAL)/;
+// 入力欄の dim の文字のうち、候補（プレースホルダ）とみなすもの。前の返答からの提案など、それ以外の dim は書きかけとみなす
+const PLACEHOLDER = /^Try "/;
 const RULE_LINE = /^─{20,}$/;
 const PROMPT_PREFIX = "❯ ";
 
@@ -129,28 +158,76 @@ function findPromptLine(lines: string[]): number | undefined {
   return undefined;
 }
 
-/** 画面（capture-pane -e の出力）だけで判定する */
+/**
+ * 画面（capture-pane -e の出力）だけで判定する。
+ * - dialog: DIALOG_MARKERS のどれか（大文字小文字を問わない）
+ * - busy: `esc to interrupt`、または入力欄の上の SPINNER_SEARCH_LINES 行にスピナーの行（TODO の一覧・Tip が間にあってもよい）
+ * - no_prompt: vim のノーマル・ビジュアルモード、または入力欄の形（§5.3）が下から PROMPT_SEARCH_LINES 行以内に無い
+ * - draft: 入力行に `[Pasted text`・`[Image #` がある、dim でない見える文字がある、dim の文字が候補（`Try "`）の形でない
+ */
 export function classifyScreen(raw: string): ScreenState {
   const plain = stripAnsi(raw);
-  if (DIALOG_MARKERS.some((marker) => plain.includes(marker))) return "dialog";
+  const lower = plain.toLowerCase();
+  if (DIALOG_MARKERS.some((marker) => lower.includes(marker.toLowerCase()))) return "dialog";
   if (BUSY_TEXT.test(plain)) return "busy";
   const lines = plain.split("\n");
   const prompt = findPromptLine(lines);
   if (prompt !== undefined) {
-    // 入力欄の直前の空でない行がスピナーなら作業中
-    for (let i = prompt - 2; i >= 0; i -= 1) {
-      const line = lines[i]!.trim();
-      if (line === "") continue;
-      if (SPINNER_LINE.test(line)) return "busy";
-      break;
+    for (let i = prompt - 2; i >= Math.max(0, prompt - 1 - SPINNER_SEARCH_LINES); i -= 1) {
+      if (SPINNER_LINE.test(lines[i]!.trim())) return "busy";
     }
   }
+  if (VIM_NOT_INSERT.test(plain)) return "no_prompt";
   if (prompt === undefined) return "no_prompt";
-  // 入力行の ❯+U+00A0 の後に dim でない見える文字があれば書きかけ
+  if (INPUT_MARKERS.some((marker) => lines[prompt]!.includes(marker))) return "draft";
+  // 入力行の ❯+U+00A0 の後に dim でない見える文字があれば書きかけ。dim の文字は候補の形のときだけ空とみなす
   const cells = styledLines(raw)[prompt] ?? [];
   const rest = cells.slice([...PROMPT_PREFIX].length);
   if (rest.some((cell) => !cell.dim && cell.ch.trim() !== "")) return "draft";
+  // ここでは見える文字はすべて dim（候補の語の間の空白は dim でないことがある）
+  const dimText = rest
+    .map((cell) => cell.ch)
+    .join("")
+    .trim();
+  if (dimText !== "" && !PLACEHOLDER.test(dimText)) return "draft";
   return "idle";
+}
+
+/**
+ * 入力欄の文字（下の `─` の行と、その上で `❯`+U+00A0 の行のすぐ上にある `─` の行の間の行を、❯ を除いて空白なしでつないだもの）。
+ * 下の `─` は下から PROMPT_SEARCH_LINES 行以内、入力欄は INPUT_BOX_MAX_LINES 行まで（貼った文字が折り返して複数行になってもよい）。無ければ undefined
+ */
+export function inputBoxText(raw: string): string | undefined {
+  const lines = stripAnsi(raw).split("\n");
+  let end = lines.length;
+  while (end > 0 && lines[end - 1]!.trim() === "") end -= 1;
+  for (let bottom = end - 1; bottom >= Math.max(0, end - PROMPT_SEARCH_LINES); bottom -= 1) {
+    if (!RULE_LINE.test(lines[bottom]!.trim())) continue;
+    for (let top = bottom - 2; top >= Math.max(0, bottom - 1 - INPUT_BOX_MAX_LINES); top -= 1) {
+      if (!RULE_LINE.test(lines[top]!.trim())) continue;
+      if (!lines[top + 1]!.startsWith(PROMPT_PREFIX)) return undefined;
+      const text = lines.slice(top + 1, bottom).join("").slice([...PROMPT_PREFIX].length);
+      return text.replace(/\s/g, "");
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * 貼り付けが入力欄に届いたか（§5.4 の 4。G4 が Enter を押す前に使う）。before は貼る前に撮った画面、after は貼った後に撮った画面、text は貼った文字。
+ * before の入力欄が見つかり、そこに `[Pasted text` も text の先頭 PASTE_CHECK_CHARS 字も無く（前からあった印を貼れた証拠と取り違えない）、
+ * after の入力欄に text の先頭 PASTE_CHECK_CHARS 字（空白を除いて比べる）か `[Pasted text` があるときだけ true。false なら Enter を押さない
+ */
+export function pasteLanded(beforeRaw: string, afterRaw: string, text: string): boolean {
+  // inputBoxText は空白を除くので、比べるものも空白を除く
+  const head = [...text.replace(/\s/g, "")].slice(0, PASTE_CHECK_CHARS).join("");
+  const marker = PASTED_TEXT_MARKER.replace(/\s/g, "");
+  if (head === "") return false;
+  const before = inputBoxText(beforeRaw);
+  if (before === undefined || before.includes(marker) || before.includes(head)) return false;
+  const after = inputBoxText(afterRaw);
+  return after !== undefined && (after.includes(head) || after.includes(marker));
 }
 
 /** 画面を撮らずに決まる状態（gone・not_claude・copy_mode・owner_active）。どれでもなければ undefined */

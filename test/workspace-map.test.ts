@@ -58,7 +58,7 @@ function pane(paneId: string, currentPath: string, overrides: Partial<TmuxPane> 
  * - alpha--task: alpha の worktree（`<project>--<task>`。.git はファイル）
  * - org-site: GitHub の名前（Org/Website）と違う。ssh の origin と upstream
  * - parent: 親もリポジトリで、中に子リポジトリ child・other
- * - multi: リポジトリでない親の中に子リポジトリ sub1
+ * - multi: リポジトリでない親の中に子リポジトリ sub1 と、2 つ下に alpha の worktree（multi/tmp/wt-alpha。地図を作るときには見ない深さ）
  * - norepo: remote が無い。plain: .git が無い。gitlab: GitHub でない remote。.hidden: 隠し。link: alpha への symlink
  * - 外の wt-alpha: alpha の worktree（/tmp の scratchpad の wt-* の形）。outside: リポジトリでない
  */
@@ -87,6 +87,7 @@ function setup(t: TestContext) {
     other: repo(join(ws, "parent/other")),
     multi: dir(join(ws, "multi")),
     sub1: repo(join(ws, "multi/sub1")),
+    multiWt: repo(join(ws, "multi/tmp/wt-alpha"), true),
     norepo: repo(join(ws, "norepo")),
     plain: dir(join(ws, "plain")),
     gitlab: repo(join(ws, "gitlab")),
@@ -106,7 +107,10 @@ function setup(t: TestContext) {
     [d.gitlab, "remote.origin.url https://gitlab.com/owner/gitlab.git\n"],
     [d.hidden, "remote.origin.url https://github.com/owner/hidden.git\n"],
   ]);
-  const commonDirs = new Map<string, string>([[d.wt, `${d.alpha}/.git\n`]]);
+  const commonDirs = new Map<string, string>([
+    [d.wt, `${d.alpha}/.git\n`],
+    [d.multiWt, `${d.alpha}/.git\n`],
+  ]);
   const calls: Array<{ file: string; args: readonly string[]; env: Record<string, string> }> = [];
   const run: RunCommand = async (file, args, options) => {
     calls.push({ file, args, env: options.env });
@@ -163,11 +167,12 @@ test("buildWorkspaceMap・findRepoPanes: ペインの cwd から対応するデ�
     pane("%11", d.alphaTask),
     pane("%12", join(ws, "link")),
     pane("%13", join(ws, "removed")),
+    pane("%14", d.multiWt),
   ];
   const map = await buildWorkspaceMap({ workspaceDir: ws, gitPath: GIT, panes, run });
   const ids = (repo: string) => findRepoPanes(map, repo).panes.map((entry) => entry.paneId);
   // .claude/worktrees・/tmp の worktree・`<project>--<task>`・symlink の cwd も元のリポジトリに。シェル・pane_dead は候補にしない
-  assert.deepEqual(ids("owner/alpha"), ["%1", "%2", "%4", "%11", "%12"]);
+  assert.deepEqual(ids("owner/alpha"), ["%1", "%2", "%4", "%11", "%12", "%14"]);
   assert.deepEqual(findRepoPanes(map, "owner/alpha").dirs, [d.alpha, d.alphaTask]);
   // 名前の違い・upstream・大文字小文字
   assert.deepEqual(ids("Org/Website"), ["%7"]);
@@ -176,12 +181,13 @@ test("buildWorkspaceMap・findRepoPanes: ペインの cwd から対応するデ�
   assert.deepEqual(ids("owner/other"), ["%6"]);
   assert.deepEqual(ids("owner/child"), ["%5"]);
   assert.deepEqual(ids("owner/parent"), ["%5"]);
+  // リポジトリでない親の中でも、worktree で別のリポジトリ（alpha）に対応するペイン（%14）は親の候補にしない
   assert.deepEqual(ids("owner/sub1"), ["%10"]);
   // 地図に無い（remote 無し・GitHub でない・隠し・知らない）
   for (const repo of ["owner/norepo", "owner/gitlab", "owner/hidden", "someone/else"]) assert.deepEqual(findRepoPanes(map, repo), { dirs: [], panes: [] });
   // git の common dir を引くのは、地図のディレクトリの中にいない claude のペインだけ
   const revParse = calls.filter((call) => call.args.slice(2).join(" ") === GIT_COMMON_DIR_ARGS.join(" ")).map((call) => call.args[1]);
-  assert.deepEqual(revParse.sort(), [d.multi, d.outside, d.wt].sort());
+  assert.deepEqual(revParse.sort(), [d.multi, d.multiWt, d.outside, d.wt].sort());
   assert.deepEqual(
     map.panes.find((entry) => entry.pane.paneId === "%13"),
     { pane: panes[12], cwd: undefined, dir: undefined },
