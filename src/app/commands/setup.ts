@@ -9,7 +9,7 @@ const HOME_CATEGORY_NAME = "self-agent";
 
 /** self-agent カテゴリの中に作るテキストチャンネル（作る順）。name・topic は作成時にだけ設定する */
 const HOME_CHANNELS: ReadonlyArray<{
-  field: Exclude<GuildChannelField, "homeCategoryId">;
+  field: Exclude<GuildChannelField, "homeCategoryId" | "githubChannelId">;
   name: string;
   topic: string;
 }> = [
@@ -17,6 +17,9 @@ const HOME_CHANNELS: ReadonlyArray<{
   { field: "tasksChannelId", name: "tasks", topic: "タスクの話だけをする場所。登録・期限の変更・やめる・今日やることを Bot と話せます" },
   { field: "systemChannelId", name: "system", topic: "Bot の起動・エラー・利用状況の通知" },
 ];
+
+/** GitHub の通知を流すチャンネル（SELF_AGENT_GITHUB=1 のときだけ、#system の後に作る。docs/plan/github-notifications.md §4.1） */
+const GITHUB_CHANNEL = { name: "github", topic: "GitHub の通知（自分宛て・自分のリポジトリの新しい Issue / PR）" };
 
 /** 足した人格の入口（#<NAME>）。チャンネル名は表示名から作る（config で空・inbox/tasks/system・人格どうしの重なりを弾いてある） */
 export function personaInboxName(persona: Pick<PersonaConfig, "name">): string {
@@ -54,8 +57,8 @@ export function layoutQueueKey(guildId: string): string {
 }
 
 export type SetupDeps = {
-  /** personas は足した人格（#<NAME> を作る）。無ければ今と同じ */
-  cfg?: Partial<Pick<Config, "personas">>;
+  /** personas は足した人格（#<NAME> を作る）、github が true なら #github も作る。無ければ今と同じ */
+  cfg?: Partial<Pick<Config, "personas" | "github">>;
   gateway: Pick<
     Gateway,
     | "createCategory"
@@ -90,7 +93,8 @@ function describeError(error: unknown): string {
  * DB にあって Discord 上に残っているものは作らない（既存の同名カテゴリは再利用しない）。
  * self-agent カテゴリを作り直したときは、残っている #inbox / #tasks / #<NAME> / #system をそこへ移す
  * （移動に失敗した分や手で動かされた分は、定期処理の再同期（scheduler.ts）が戻す）。
- * 足した人格（cfg.personas）があれば、#tasks の後にその人格の #<NAME> を self-agent カテゴリに作る（作るのは既定の人格の Bot。ホームパネルは置かない）
+ * 足した人格（cfg.personas）があれば、#tasks の後にその人格の #<NAME> を self-agent カテゴリに作る（作るのは既定の人格の Bot。ホームパネルは置かない）。
+ * cfg.github が true なら、#system の後に #github を作る（false なら作らず、既にあるものも触らない）
  */
 export async function ensureGuildLayout(
   guildId: string,
@@ -155,6 +159,14 @@ export async function ensureGuildLayout(
         settings?.[field],
         () => gateway.createTextChannel(guildId, { name, parentId: homeCategoryId, topic }),
         (id) => guildSettings.setChannel(guildId, field, id),
+        moveIfRecreated,
+      );
+    }
+    if (deps.cfg?.github === true) {
+      await ensure(
+        settings?.githubChannelId,
+        () => gateway.createTextChannel(guildId, { ...GITHUB_CHANNEL, parentId: homeCategoryId }),
+        (id) => guildSettings.setChannel(guildId, "githubChannelId", id),
         moveIfRecreated,
       );
     }

@@ -456,6 +456,28 @@ test("停止を始めたらリマインドの発火も止め、実行中の投�
   assert.deepEqual(events, ["reminders stop", "reminders idle", "stop", "closeDb"]);
 });
 
+test("停止を始めたら GitHub の通知のポーリングも止め、実行中の取得・投稿が終わってから gateway を止める", async () => {
+  const events: string[] = [];
+  const gate = deferred();
+  const githubPoller = {
+    stop: () => {
+      events.push("github stop");
+    },
+    idle: async () => {
+      await gate.promise;
+      events.push("github idle");
+    },
+  };
+  const { shutdown } = createShutdown(deps(events, { githubPoller }), noopInner);
+  const done = shutdown();
+  await flush();
+  assert.deepEqual(events, ["github stop"]);
+
+  gate.resolve();
+  await done;
+  assert.deepEqual(events, ["github stop", "github idle", "stop", "closeDb"]);
+});
+
 test("実行中のチャンネルの移動は終わるまで待ってから gateway を止める。まだ始めていない移動は待たない", async (t) => {
   const db = tempDb(t);
   const events: string[] = [];

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, loadDataConfig, missingForStart } from "../src/config.ts";
+import { loadConfig, loadDataConfig, loadGithubConfig, missingForStart } from "../src/config.ts";
 
 test("未設定ならデフォルト値を使う", () => {
   const config = loadConfig({ HOME: "/home/tester" });
@@ -35,6 +35,9 @@ test("未設定ならデフォルト値を使う", () => {
     shell: false,
     personas: [],
     codexHome: undefined,
+    github: false,
+    githubPollSec: 300,
+    githubOwners: [],
   });
 });
 
@@ -212,6 +215,27 @@ test("SELF_AGENT_SHELL は 1 で有効、未設定・空・0 で無効。それ�
   }
   for (const value of ["true", "yes", "2", " 1", "on"]) {
     assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_SHELL: value }), /SELF_AGENT_SHELL/, value);
+  }
+});
+
+test("SELF_AGENT_GITHUB は 1 で有効（未設定なら無効）。間隔は 60 以上、持ち主は GitHub の名前をカンマ区切り（重複は除く）。loadGithubConfig も同じ値", () => {
+  const env = {
+    HOME: "/home/tester",
+    SELF_AGENT_GITHUB: "1",
+    SELF_AGENT_GITHUB_POLL_SEC: "60",
+    SELF_AGENT_GITHUB_OWNERS: "example-user, example-org,example-user",
+  };
+  const config = loadConfig(env);
+  assert.equal(config.github, true);
+  assert.equal(config.githubPollSec, 60);
+  assert.deepEqual(config.githubOwners, ["example-user", "example-org"]);
+  assert.deepEqual(loadGithubConfig(env), { github: true, githubPollSec: 60, githubOwners: ["example-user", "example-org"] });
+  assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_GITHUB: "yes" }), /SELF_AGENT_GITHUB /);
+  for (const value of ["59", "0", "abc"]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_GITHUB_POLL_SEC: value }), /SELF_AGENT_GITHUB_POLL_SEC/, value);
+  }
+  for (const value of ["example/org", "a b", "-".repeat(40)]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_GITHUB_OWNERS: value }), /SELF_AGENT_GITHUB_OWNERS/, value);
   }
 });
 

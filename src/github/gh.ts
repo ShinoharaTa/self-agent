@@ -2,7 +2,8 @@
 // ステータス・ヘッダ・本文に分ける。シェルを通さない（execFile に固定の形の引数）。認証は gh の今のログイン（gh が自分の設定を読む）
 
 import { execFile } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { accessSync, constants, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 
 /** 1 回の gh の時間の上限と出力の上限（§7.1） */
 export const GH_TIMEOUT_MS = 20_000;
@@ -309,6 +310,22 @@ export function issuePath(owner: string, repo: string, number: number): string {
 /** Issue・PR のタイムラインのパス（1 ページ 100 件） */
 export function timelinePath(owner: string, repo: string, number: number, page = 1): string {
   return `/repos/${owner}/${repo}/issues/${number}/timeline?per_page=100&page=${page}`;
+}
+
+/** PATH から gh の絶対パスを解決する（§10。起動時に 1 回）。PATH の絶対パスの要素だけを見て、実行できるファイルが無ければ undefined */
+export function resolveGhPath(pathEnv: string | undefined = process.env.PATH): string | undefined {
+  for (const dir of (pathEnv ?? "").split(":")) {
+    if (!isAbsolute(dir)) continue;
+    const candidate = join(dir, "gh");
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // 無い・実行できない
+    }
+  }
+  return undefined;
 }
 
 export type GhClientOptions = {
