@@ -19,6 +19,8 @@ export type RunOptions = {
   env: Record<string, string>;
   timeoutMs: number;
   maxBuffer: number;
+  /** あれば標準入力に書いて閉じる（作業ジョブの gh api の POST の本文。src/jobs/github-api.ts）。GET では渡さない */
+  input?: string;
 };
 
 /** exited は終了した（code は終了コード。シグナルで終わったら null）。timeout は時間切れで止めた、too_large は出力が上限を超えて止めた、error は起動できなかった */
@@ -32,10 +34,10 @@ export type RunResult =
 export type RunCommand = (file: string, args: readonly string[], options: RunOptions) => Promise<RunResult>;
 
 /** node:child_process の execFile で実行する（シェルを通さない）。reject しない */
-export const execFileRun: RunCommand = (file, args, { env, timeoutMs, maxBuffer }) =>
+export const execFileRun: RunCommand = (file, args, { env, timeoutMs, maxBuffer, input }) =>
   new Promise((resolvePromise) => {
     try {
-      execFile(
+      const child = execFile(
         file,
         [...args],
         { env, timeout: timeoutMs, maxBuffer, killSignal: "SIGKILL", encoding: "utf8", windowsHide: true },
@@ -61,6 +63,11 @@ export const execFileRun: RunCommand = (file, args, { env, timeoutMs, maxBuffer 
           }
         },
       );
+      if (input !== undefined) {
+        // 子が先に終わったときの EPIPE で落ちないように
+        child.stdin?.on("error", () => {});
+        child.stdin?.end(input);
+      }
     } catch {
       resolvePromise({ kind: "error" });
     }
@@ -96,12 +103,12 @@ const NOTIFICATIONS_QUERY: Readonly<Record<string, RegExp>> = {
 const TIMELINE_QUERY: Readonly<Record<string, RegExp>> = { per_page: NUMBER_PATTERN, page: NUMBER_PATTERN };
 const NO_QUERY: Readonly<Record<string, RegExp>> = {};
 
-function isOwner(value: string): boolean {
+export function isOwner(value: string): boolean {
   return OWNER_PATTERN.test(value);
 }
 
 /** `.`・`..` はパスの要素として解釈されうるので許さない */
-function isRepo(value: string): boolean {
+export function isRepo(value: string): boolean {
   return REPO_PATTERN.test(value) && value !== "." && value !== "..";
 }
 
