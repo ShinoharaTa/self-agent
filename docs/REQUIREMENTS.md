@@ -44,6 +44,7 @@ ADHD のエンジニア（オーナー 1 人）のタスク管理と情報整理
 | タスクの時刻 | タスクに時刻の列は足さず、リマインド（`reminders`。1 回だけのものは task_id でタスクに紐づける）で代える | タスクでないリマインドも表せ、既存の task_* ツールの定義が変わらない（`docs/plan/reminders.md` §2.2） |
 | 不可逆操作 | チャンネル削除はボタンで確認してから。要約は DB に残す | 戻せない操作を自動で行わない |
 | 人格（2 体目の Bot） | 同じプロセス・同じ DB で Bot を人格ごとに動かす（`SELF_AGENT_PERSONAS`）。2 体目の入口は self-agent カテゴリの #<NAME> 1 つ（#inbox と同じ扱い。日時ヘッダも `#inbox`）、セッションは /new の `persona` か #<NAME> の session_open で作り、チャンネル名は `<NAME>-<題名>`。チャンネルの持ち主は 1 人格で、答えるのは持ち主の Bot だけ。管理の操作・コマンドは既定の Bot。タスク・記憶・ナレッジは共有 | 性格・役割の違う相手と同じサーバーで話し分ける。環境を増やさず、既定の人格のプロンプトキャッシュを変えない（`docs/plan/personas.md`） |
+| 作業ジョブ | Discord（`/job`・#github の [任せる]）から頼むと、サーバーの今のログイン（Claude の OAuth と gh）だけでリポジトリを実装・テスト・コミットし、draft PR を返す（同時に 1 つ）。LLM は sandbox の中で commit まで、clone・push・PR はアプリが固定の引数で行い、push 先は `self-agent/*` の fast-forward だけ。報告は #jobs（1 ジョブ 1 メッセージ、終わりにメンション）。マージは人が決める | 鍵をアプリだけに持たせ、LLM が書いた `.git` を host 側の git に使わないことで、プロンプトインジェクションの被害を draft PR に留める（#129、`docs/plan/coding-jobs.md`。段階的に実装中） |
 
 ## フェーズ
 

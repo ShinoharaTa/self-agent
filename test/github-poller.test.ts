@@ -1,10 +1,10 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { escapeDiscordText } from "../src/discord/escape.ts";
 import type { GhHeaders, GhRequest, GhResponse } from "../src/github/gh.ts";
 import {
   ACTOR_UNKNOWN_NOTE,
   createGithubPoller,
-  escapeDiscordText,
   GITHUB_AUTH_NOTICE,
   GITHUB_AUTH_RETRY_MS,
   GITHUB_FORBIDDEN_NOTICE,

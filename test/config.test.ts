@@ -38,6 +38,13 @@ test("未設定ならデフォルト値を使う", () => {
     github: false,
     githubPollSec: 300,
     githubOwners: [],
+    jobs: false,
+    jobsRepos: [],
+    jobMaxTurns: 100,
+    jobTimeoutMin: 45,
+    jobModel: undefined,
+    jobEffort: undefined,
+    jobsRepoMaxMb: 200,
   });
 });
 
@@ -124,6 +131,9 @@ test("正の整数の設定は、正の整数でなければ変数名を出し�
     { name: "SELF_AGENT_SESSION_MAX_TURNS", key: "sessionMaxTurns", fallback: 40 },
     { name: "SELF_AGENT_SESSION_TURN_TIMEOUT_SEC", key: "sessionTurnTimeoutSec", fallback: 900 },
     { name: "SELF_AGENT_DEV_LOG_DAYS", key: "devLogDays", fallback: 30 },
+    { name: "SELF_AGENT_JOB_MAX_TURNS", key: "jobMaxTurns", fallback: 100 },
+    { name: "SELF_AGENT_JOB_TIMEOUT_MIN", key: "jobTimeoutMin", fallback: 45 },
+    { name: "SELF_AGENT_JOBS_REPO_MAX_MB", key: "jobsRepoMaxMb", fallback: 200 },
   ] as const;
   for (const { name, key, fallback } of cases) {
     for (const value of ["0", "-1", "1.5", "abc", " 2", "150k"]) {
@@ -237,6 +247,67 @@ test("SELF_AGENT_GITHUB は 1 で有効（未設定なら無効）。間隔は 6
   for (const value of ["example/org", "a b", "-".repeat(40)]) {
     assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_GITHUB_OWNERS: value }), /SELF_AGENT_GITHUB_OWNERS/, value);
   }
+});
+
+test("SELF_AGENT_JOBS は SELF_AGENT_SHELL=1 が無ければ設定エラー。PR-J4 まではシェルがあっても「まだ使えません」の設定エラー。未設定・空・0 は無効", () => {
+  for (const value of [undefined, "", "0"]) {
+    assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS: value }).jobs, false, String(value));
+    assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS: value, SELF_AGENT_SHELL: "1" }).jobs, false, String(value));
+  }
+  assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS: "1" }), /SELF_AGENT_JOBS=1 には SELF_AGENT_SHELL=1 が必要です/);
+  assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS: "1", SELF_AGENT_SHELL: "0" }), /SELF_AGENT_SHELL=1/);
+  assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS: "1", SELF_AGENT_SHELL: "1" }), /SELF_AGENT_JOBS: 作業ジョブはまだ使えません/);
+  for (const value of ["true", "yes", "2", " 1", "on"]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS: value, SELF_AGENT_SHELL: "1" }), /SELF_AGENT_JOBS /, value);
+  }
+});
+
+test("作業ジョブの変数: リポジトリは owner/* か owner/repo をカンマ区切り（重複は除く）、model・effort は任意。無効のときも形を確かめる", () => {
+  const config = loadConfig({
+    HOME: "/home/tester",
+    SELF_AGENT_JOBS_REPOS: "example-user/*, example-org/example.repo_1,example-user/*,,",
+    SELF_AGENT_JOB_MAX_TURNS: "50",
+    SELF_AGENT_JOB_TIMEOUT_MIN: "30",
+    SELF_AGENT_JOB_MODEL: "claude-sonnet-5",
+    SELF_AGENT_JOB_EFFORT: "high",
+    SELF_AGENT_JOBS_REPO_MAX_MB: "500",
+  });
+  assert.deepEqual(config.jobsRepos, ["example-user/*", "example-org/example.repo_1"]);
+  assert.equal(config.jobMaxTurns, 50);
+  assert.equal(config.jobTimeoutMin, 30);
+  assert.equal(config.jobModel, "claude-sonnet-5");
+  assert.equal(config.jobEffort, "high");
+  assert.equal(config.jobsRepoMaxMb, 500);
+  assert.equal(config.jobs, false);
+  assert.deepEqual(loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS_REPOS: "" }).jobsRepos, []);
+  // 設定したのに中身が無ければ、既定（gh のログイン）に広がらないようにエラー
+  for (const value of [",", " , ,", "  "]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS_REPOS: value }), /SELF_AGENT_JOBS_REPOS/, JSON.stringify(value));
+  }
+  // 時間の上限は 1 日（1440 分）まで
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_JOB_TIMEOUT_MIN: "1440" }).jobTimeoutMin, 1440);
+  for (const value of ["1441", "100000"]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOB_TIMEOUT_MIN: value }), /SELF_AGENT_JOB_TIMEOUT_MIN は 1440 以下/, value);
+  }
+  for (const value of [
+    "example-user",
+    "example-user/",
+    "/example-repo",
+    "*/*",
+    "example-user/repo*",
+    "example-user/a/b",
+    "example_user/repo",
+    "example-user/.",
+    "example-user/..",
+    "example-user/repo name",
+    `${"a".repeat(40)}/repo`,
+    `example-user/${"r".repeat(101)}`,
+  ]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS_REPOS: value }), /SELF_AGENT_JOBS_REPOS/, value);
+  }
+  assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOB_EFFORT: "fast" }), /SELF_AGENT_JOB_EFFORT/);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_JOB_EFFORT: "" }).jobEffort, undefined);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_JOB_MODEL: "" }).jobModel, undefined);
 });
 
 test("loadDataConfig は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ だけを読み、既定値は loadConfig と同じ。他の変数の不正値は見ない", () => {
