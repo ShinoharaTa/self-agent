@@ -1,9 +1,10 @@
 // 作業ジョブの host 側の git（docs/plan/coding-jobs.md §5.3・§6.1・§6.2）。アプリ（node）の特権の操作で、LLM のツールではない。
-// execFile で起動時に解決した絶対パスの git を呼び、シェルを通さない。引数は固定の形。LLM が書けた作業場所の `.git` の上では
+// gh.ts の execFileRun（spawn）で起動時に解決した絶対パスの git を呼び、シェルを通さない。引数は固定の形。LLM が書けた作業場所の `.git` の上では
 // git を動かさない: 作業場所からは objects とブランチの先端だけを隔離の場所に写し（設定・hooks・alternates は写さない）、
 // アプリが作った bare に fetch してから、その bare の上で検査して push する。push 先は `refs/heads/self-agent/*` だけ・--force なし。
 // 失敗は固定の語で返し、log・例外の message にリポジトリ名・URL・ブランチ名・パス・stderr を入れない
-import { copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type Stats } from "node:fs";
+import { lstat, mkdir, open, readdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { removeTree } from "../agent/remove-tree.ts";
 import { execFileRun, isOwner, isRepo, type RunCommand, type RunResult } from "../github/gh.ts";
@@ -18,6 +19,10 @@ export const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 export const GIT_CHILD_PATH = "/usr/local/bin:/usr/bin:/bin";
 /** 取り込みで写す objects の合計の上限（§5.3） */
 export const IMPORT_MAX_BYTES = 1024 * 1024 * 1024;
+/** 取り込みで写すファイルの数の上限 */
+export const IMPORT_MAX_FILES = 20_000;
+/** 取り込みで写すパックの数の上限（index-pack --strict を参照の順に並べ直してやり直すので、数を抑える） */
+export const IMPORT_MAX_PACKS = 64;
 /** push の前の検査で許す blob の大きさの上限（§6.1） */
 export const BLOB_MAX_BYTES = 50 * 1024 * 1024;
 /** ジョブのブランチの接頭辞（§6.2。push 先はこの下だけ） */
@@ -131,16 +136,22 @@ export function githubRemoteUrl(owner: string, repo: string): string {
 const GITHUB_REMOTE_PATTERN = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\.git$/;
 const LOCAL_REMOTE_PATTERN = /^\/[A-Za-z0-9._/-]+$/;
 
-/** リモートとして渡してよい形か: githubRemoteUrl の形か、記号の無い絶対パス（テスト・ローカルの bare） */
-export function isAllowedRemote(remote: string): boolean {
+/** githubRemoteUrl の形か */
+export function isGithubRemote(remote: string): boolean {
   const match = GITHUB_REMOTE_PATTERN.exec(remote);
-  if (match !== null) return isOwner(match[1]!) && isRepo(match[2]!);
+  return match !== null && isOwner(match[1]!) && isRepo(match[2]!);
+}
+
+/**
+ * テスト用のローカルのリモート（記号の無い絶対パス）の形か。本番の経路では使わない: ローカルのパスへの fetch・push では相手側の
+ * hooks（pre-receive など）が `-c core.hooksPath` に関係なく host で動くため。GitClient の remoteUrlForTests のときだけ通す
+ */
+export function isLocalTestRemote(remote: string): boolean {
   return LOCAL_REMOTE_PATTERN.test(remote) && !remote.split("/").includes("..");
 }
 
-function assertRemote(remote: string): void {
-  if (!isAllowedRemote(remote)) throw new Error("リモートの形が違います");
-}
+/** owner・repo の検証済みの指定 */
+export type RepoRef = { owner: string; repo: string };
 
 function assertDir(path: string): void {
   if (!isAbsolute(path) || path.endsWith("/") || path.split("/").includes("..")) throw new Error("場所は末尾に / の無い絶対パスで指定してください");
@@ -155,7 +166,7 @@ function assertBranch(branch: string): void {
  * 形が違えば実行せずに投げる（assertSafePushArgs でも同じことを確かめる）
  */
 export function buildPushArgs(remote: string, sha: string, branch: string): string[] {
-  assertRemote(remote);
+  if (!isGithubRemote(remote) && !isLocalTestRemote(remote)) throw new Error("リモートの形が違います");
   if (!isSha(sha)) throw new Error("push する先端の形が違います");
   if (!isJobBranch(branch)) throw new Error("push できるのは self-agent/ の下のブランチだけです");
   const args = ["push", "--porcelain", "--no-verify", remote, `${sha}:refs/heads/${branch}`];
@@ -163,29 +174,23 @@ export function buildPushArgs(remote: string, sha: string, branch: string): stri
   return args;
 }
 
-const FORBIDDEN_PUSH_OPTIONS = [
-  "--force",
-  "--force-with-lease",
-  "--force-if-includes",
-  "--mirror",
-  "--delete",
-  "--all",
-  "--tags",
-  "--prune",
-  "-f",
-  "-d",
-];
+/** push に付けてよいオプション（許可方式。これ以外のオプションは投げる） */
+const ALLOWED_PUSH_OPTIONS: ReadonlySet<string> = new Set(["--porcelain", "--no-verify"]);
 
-/** push の引数が安全な形か（§6.2）。違えば投げる */
+/** push の引数が安全な形か（§6.2）。オプションは ALLOWED_PUSH_OPTIONS だけ、残りは [リモート, refspec] の 2 つだけ。違えば投げる */
 export function assertSafePushArgs(args: readonly string[]): void {
   if (args[0] !== "push") throw new Error("push の引数の形が違います");
-  for (const arg of args) {
-    if (FORBIDDEN_PUSH_OPTIONS.some((option) => arg === option || arg.startsWith(`${option}=`))) throw new Error("push に使えない引数です");
+  const positional: string[] = [];
+  for (const arg of args.slice(1)) {
+    if (arg.startsWith("-")) {
+      if (!ALLOWED_PUSH_OPTIONS.has(arg)) throw new Error("push に使えない引数です");
+    } else {
+      positional.push(arg);
+    }
   }
-  const refspecs = args.slice(1).filter((arg) => !arg.startsWith("-"));
-  // [remote, refspec] の 2 つだけ
-  if (refspecs.length !== 2) throw new Error("push の引数の形が違います");
-  const refspec = refspecs[1]!;
+  if (positional.length !== 2) throw new Error("push の引数の形が違います");
+  if (!isGithubRemote(positional[0]!) && !isLocalTestRemote(positional[0]!)) throw new Error("リモートの形が違います");
+  const refspec = positional[1]!;
   const colon = refspec.indexOf(":");
   if (refspec.startsWith("+") || colon === -1) throw new Error("push の送り先の形が違います");
   const destination = refspec.slice(colon + 1);
@@ -195,53 +200,124 @@ export function assertSafePushArgs(args: readonly string[]): void {
   }
 }
 
-/** 写す objects の名前（ルーズオブジェクトとパック。info/（alternates・http-alternates・commit-graph など）は写さない） */
+/**
+ * 写す objects の名前（ルーズオブジェクトとパックの本体。info/（alternates・http-alternates・commit-graph など）と、パックの .idx・
+ * .rev・.bitmap などは写さない。.idx は隔離の場所で index-pack --strict が作り直す）
+ */
 const LOOSE_DIR_PATTERN = /^[0-9a-f]{2}$/;
 const LOOSE_FILE_PATTERN = /^[0-9a-f]{38}$/;
-const PACK_FILE_PATTERN = /^pack-[0-9a-f]{40}\.(pack|idx)$/;
+const PACK_FILE_PATTERN = /^pack-[0-9a-f]{40}\.pack$/;
 
-export type CopyObjectsResult =
-  | { ok: true; files: number; bytes: number; skipped: number }
-  | { ok: false; reason: "too_large" | "error" };
+/** symlink をたどらず、FIFO で止まらずに開く */
+const OPEN_NOFOLLOW = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+const COPY_CHUNK_BYTES = 1024 * 1024;
+
+/** lstat と開いた fd の fstat が同じ実際のファイル（regular・同じ dev と ino）で、ハードリンクが無い（nlink が 1）か */
+function sameRegularFile(before: Stats, after: Stats): boolean {
+  return after.isFile() && after.dev === before.dev && after.ino === before.ino && after.nlink === 1;
+}
 
 /**
- * 作業場所の `.git/objects` を隔離の場所の objects に写す（§5.3）。実際のファイル・ディレクトリだけで、symlink・FIFO などと
- * 決まった名前（`<2 桁>/<38 桁>`・`pack/pack-<40 桁>.pack|idx`）以外は飛ばして数える。合計が maxBytes を超えたら止める。
- * sandbox の中のプロセスが無いとき（I1）に呼ぶ前提なので、lstat と写すまでの間に差し替えられることは考えない
+ * 写した結果。unsafe は決まった名前のものが実際のファイル・ディレクトリでない（symlink・FIFO など）、開いた後に別のものだった、
+ * ハードリンクがある。too_large は合計の大きさ・ファイルの数・パックの数の上限を超えた
  */
-export function copyObjects(sourceObjects: string, destinationObjects: string, maxBytes = IMPORT_MAX_BYTES): CopyObjectsResult {
+export type CopyObjectsResult =
+  | { ok: true; files: number; bytes: number; skipped: number; packs: string[] }
+  | { ok: false; reason: "too_large" | "unsafe" | "error" };
+
+/** ディレクトリの名前の一覧。読む前と後の lstat が同じ実際のディレクトリ（dev・ino）でなければ undefined */
+async function readStableDir(path: string): Promise<string[] | undefined> {
+  const before = await lstat(path);
+  if (!before.isDirectory()) return undefined;
+  const names = await readdir(path);
+  const after = await lstat(path);
+  if (!after.isDirectory() || after.dev !== before.dev || after.ino !== before.ino) return undefined;
+  return names;
+}
+
+/** 実際のファイル 1 つを fd から写す（O_NOFOLLOW・O_NONBLOCK で開き、fstat で確かめてから、確かめた大きさだけ読む） */
+async function copyRegularFile(
+  source: string,
+  destination: string,
+  remainingBytes: number,
+): Promise<{ kind: "ok"; bytes: number } | { kind: "too_large" | "unsafe" | "error" }> {
+  const before = await lstat(source);
+  if (!before.isFile()) return { kind: "unsafe" };
+  const input = await open(source, OPEN_NOFOLLOW);
+  try {
+    const stat = await input.stat();
+    if (!sameRegularFile(before, stat)) return { kind: "unsafe" };
+    if (stat.size > remainingBytes) return { kind: "too_large" };
+    const output = await open(destination, "wx", 0o444);
+    let copied = 0;
+    try {
+      const buffer = Buffer.allocUnsafe(Math.max(1, Math.min(COPY_CHUNK_BYTES, stat.size)));
+      while (copied < stat.size) {
+        const { bytesRead } = await input.read(buffer, 0, Math.min(buffer.length, stat.size - copied), copied);
+        if (bytesRead === 0) break;
+        await output.write(buffer, 0, bytesRead);
+        copied += bytesRead;
+      }
+    } finally {
+      await output.close();
+    }
+    return copied === stat.size ? { kind: "ok", bytes: copied } : { kind: "error" };
+  } finally {
+    await input.close();
+  }
+}
+
+/**
+ * 作業場所の `.git/objects` を隔離の場所の objects に写す（§5.3）。写すのは決まった名前（`<2 桁>/<38 桁>`・`pack/pack-<40 桁>.pack`）
+ * の実際のファイルだけで、それ以外の名前は飛ばして数える。決まった名前のものが実際のファイル・ディレクトリでない・開いた後に別の
+ * ものだった・ハードリンクがあれば unsafe で止める（fd から読むので、すり替えられても外を読まず、FIFO で止まらない）。合計の大きさ・
+ * ファイルの数・パックの数が上限を超えたら too_large。写すのは非同期（イベントループを長く止めない）。写したパックの名前を返す
+ */
+export async function copyObjects(
+  sourceObjects: string,
+  destinationObjects: string,
+  limits: { maxBytes?: number; maxFiles?: number; maxPacks?: number } = {},
+): Promise<CopyObjectsResult> {
+  const maxBytes = limits.maxBytes ?? IMPORT_MAX_BYTES;
+  const maxFiles = limits.maxFiles ?? IMPORT_MAX_FILES;
+  const maxPacks = limits.maxPacks ?? IMPORT_MAX_PACKS;
   let files = 0;
   let bytes = 0;
   let skipped = 0;
+  const packs: string[] = [];
   try {
-    for (const name of readdirSync(sourceObjects)) {
-      const source = join(sourceObjects, name);
-      const stat = lstatSync(source);
+    const names = await readStableDir(sourceObjects);
+    if (names === undefined) return { ok: false, reason: "unsafe" };
+    for (const name of names) {
       const isLooseDir = LOOSE_DIR_PATTERN.test(name);
-      if (!stat.isDirectory() || (!isLooseDir && name !== "pack")) {
+      if (!isLooseDir && name !== "pack") {
         skipped += 1;
         continue;
       }
+      const source = join(sourceObjects, name);
+      const fileNames = await readStableDir(source);
+      if (fileNames === undefined) return { ok: false, reason: "unsafe" };
       const filePattern = isLooseDir ? LOOSE_FILE_PATTERN : PACK_FILE_PATTERN;
       const destinationDir = join(destinationObjects, name);
-      mkdirSync(destinationDir, { recursive: true });
-      for (const fileName of readdirSync(source)) {
-        const file = join(source, fileName);
-        const fileStat = lstatSync(file);
-        if (!fileStat.isFile() || !filePattern.test(fileName)) {
+      await mkdir(destinationDir, { recursive: true });
+      for (const fileName of fileNames) {
+        if (!filePattern.test(fileName)) {
           skipped += 1;
           continue;
         }
-        bytes += fileStat.size;
-        if (bytes > maxBytes) return { ok: false, reason: "too_large" };
-        copyFileSync(file, join(destinationDir, fileName));
+        if (files + 1 > maxFiles) return { ok: false, reason: "too_large" };
+        if (!isLooseDir && packs.length + 1 > maxPacks) return { ok: false, reason: "too_large" };
+        const copied = await copyRegularFile(join(source, fileName), join(destinationDir, fileName), maxBytes - bytes);
+        if (copied.kind !== "ok") return { ok: false, reason: copied.kind };
+        bytes += copied.bytes;
         files += 1;
+        if (!isLooseDir) packs.push(fileName);
       }
     }
   } catch {
     return { ok: false, reason: "error" };
   }
-  return { ok: true, files, bytes, skipped };
+  return { ok: true, files, bytes, skipped, packs };
 }
 
 /** path が実際のディレクトリか（symlink はたどらない） */
@@ -253,34 +329,54 @@ function isRealDir(path: string): boolean {
   }
 }
 
+/** 小さな実際のファイルを fd から読む（O_NOFOLLOW・O_NONBLOCK で開き、lstat と fstat が同じ・ハードリンクなし・maxBytes 以下のときだけ） */
+function readSmallFile(path: string, before: Stats, maxBytes: number): string | undefined {
+  if (!before.isFile() || before.size > maxBytes) return undefined;
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, OPEN_NOFOLLOW);
+    const stat = fstatSync(fd);
+    if (!sameRegularFile(before, stat) || stat.size > maxBytes) return undefined;
+    const buffer = Buffer.alloc(stat.size);
+    let read = 0;
+    while (read < stat.size) {
+      const count = readSync(fd, buffer, read, stat.size - read, read);
+      if (count === 0) break;
+      read += count;
+    }
+    return read === stat.size ? buffer.toString("utf8") : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 /**
  * 作業場所の `.git` からブランチの先端を読む（§5.3。git は使わない）。`refs/heads/<branch>` のファイル（途中の要素はどれも実際の
- * ディレクトリ、最後は実際のファイル）か、無ければ `packed-refs` の該当行から 40 桁の 16 進だけを読む。symbolic ref・形の違うもの・
- * 無いものは undefined（HEAD は見ない）
+ * ディレクトリ、最後は実際のファイル）か、無ければ `packed-refs`（実際のファイル）の該当行から 40 桁の 16 進だけを読む。
+ * ファイルは fd から読む（symlink・FIFO・ハードリンクは読まない）。symbolic ref・形の違うもの・無いものは undefined（HEAD は見ない）
  */
 export function readBranchTip(gitDir: string, branch: string): string | undefined {
   assertBranch(branch);
   const parts = ["refs", "heads", ...branch.split("/")];
   let path = gitDir;
-  let loose: "missing" | "found" = "found";
+  let looseStat: Stats | undefined;
   for (const [index, part] of parts.entries()) {
     path = join(path, part);
     let stat;
     try {
       stat = lstatSync(path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        loose = "missing";
-        break;
-      }
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
       return undefined;
     }
     const last = index === parts.length - 1;
     if (last ? !stat.isFile() : !stat.isDirectory()) return undefined;
-    if (last && stat.size > LOOSE_REF_MAX_BYTES) return undefined;
+    if (last) looseStat = stat;
   }
-  if (loose === "found") {
-    const match = /^([0-9a-f]{40})\n?$/.exec(readText(path) ?? "");
+  if (looseStat !== undefined) {
+    const match = /^([0-9a-f]{40})\n?$/.exec(readSmallFile(path, looseStat, LOOSE_REF_MAX_BYTES) ?? "");
     return match === null ? undefined : match[1];
   }
   const packed = join(gitDir, "packed-refs");
@@ -290,21 +386,14 @@ export function readBranchTip(gitDir: string, branch: string): string | undefine
   } catch {
     return undefined;
   }
-  if (!stat.isFile() || stat.size > PACKED_REFS_MAX_BYTES) return undefined;
+  const text = readSmallFile(packed, stat, PACKED_REFS_MAX_BYTES);
+  if (text === undefined) return undefined;
   const name = `refs/heads/${branch}`;
-  for (const line of (readText(packed) ?? "").split("\n")) {
+  for (const line of text.split("\n")) {
     const match = /^([0-9a-f]{40}) (\S+)$/.exec(line);
     if (match !== null && match[2] === name) return match[1];
   }
   return undefined;
-}
-
-function readText(path: string): string | undefined {
-  try {
-    return readFileSync(path, "utf8");
-  } catch {
-    return undefined;
-  }
 }
 
 /** diff-tree の 1 つのパスが `.github/` を変えたものか（§6.1。大文字小文字を問わない） */
@@ -325,6 +414,11 @@ export type GitClientOptions = {
   log?: (message: string) => void;
   /** 隔離の場所を消す（既定 removeTree） */
   removeTree?: (path: string) => Promise<void>;
+  /**
+   * テスト専用: owner・repo からリモートの代わりのローカルの bare の絶対パスを返す。本番では渡さない（ローカルのパスへの fetch・push
+   * では相手側の hooks が host で動く）。無ければリモートは常に githubRemoteUrl
+   */
+  remoteUrlForTests?: (owner: string, repo: string) => string;
 };
 
 type GitCall = {
@@ -336,6 +430,8 @@ type GitCall = {
   /** `-C` で移る場所（既定 `/`。リポジトリの場所は --git-dir で渡すので、親の作業ディレクトリのリポジトリを読まない） */
   cwd?: string;
   input?: string;
+  /** 失敗しても log に出さない（呼び出し側がまとめて出す） */
+  quiet?: boolean;
 };
 
 /** 作業ジョブの host 側の git。どれも reject せず、失敗は GitFailure で返す（引数の形が違うときだけ実行せずに投げる） */
@@ -346,6 +442,7 @@ export class GitClient {
   private readonly env: Record<string, string>;
   private readonly log: (message: string) => void;
   private readonly removeTree: (path: string) => Promise<void>;
+  private readonly remoteUrlForTests: ((owner: string, repo: string) => string) | undefined;
 
   constructor(options: GitClientOptions) {
     if (!isAbsolute(options.gitPath)) throw new Error("git のパスは絶対パスにしてください");
@@ -355,6 +452,16 @@ export class GitClient {
     this.env = gitChildEnv(options.sourceEnv);
     this.log = options.log ?? (() => {});
     this.removeTree = options.removeTree ?? removeTree;
+    this.remoteUrlForTests = options.remoteUrlForTests;
+  }
+
+  /** リモートの URL。owner・repo を検証して githubRemoteUrl を組み立てる（テスト専用の指定があるときだけローカルの bare） */
+  private remote(target: RepoRef): string {
+    const url = githubRemoteUrl(target.owner, target.repo);
+    if (this.remoteUrlForTests === undefined) return url;
+    const local = this.remoteUrlForTests(target.owner, target.repo);
+    if (!isLocalTestRemote(local)) throw new Error("テスト用のリモートの形が違います");
+    return local;
   }
 
   /** 実行して結果を返す。0 で終わらなければ log に操作と種類を 1 行 */
@@ -366,19 +473,31 @@ export class GitClient {
       maxBuffer: GIT_MAX_BUFFER,
       ...(call.input === undefined ? {} : { input: call.input }),
     });
-    if (result.kind !== "exited" || result.code !== 0) this.log(`ジョブの git が失敗しました（${call.op}・${describe(result)}）`);
+    if ((result.kind !== "exited" || result.code !== 0) && call.quiet !== true) this.log(`ジョブの git が失敗しました（${call.op}・${describe(result)}）`);
     return result;
   }
 
   /** 準備（初回）: リモートの base だけを bare に clone する（§5.3 の 1） */
-  async cloneBare(input: { remote: string; base: string; bareDir: string }): Promise<GitOutcome> {
-    assertRemote(input.remote);
+  async cloneBare(input: RepoRef & { base: string; bareDir: string }): Promise<GitOutcome> {
+    const remote = this.remote(input);
     assertBranch(input.base);
     assertDir(input.bareDir);
     const result = await this.git({
       op: "clone",
       network: true,
-      args: ["clone", "--bare", "--single-branch", "--branch", input.base, "--no-tags", "--template=", "--", input.remote, input.bareDir],
+      args: [
+        "clone",
+        "--bare",
+        "--no-local",
+        "--single-branch",
+        "--branch",
+        input.base,
+        "--no-tags",
+        "--template=",
+        "--",
+        remote,
+        input.bareDir,
+      ],
     });
     return succeeded(result) ? { ok: true } : { ok: false, failure: "clone_failed" };
   }
@@ -388,8 +507,8 @@ export class GitClient {
    * `refs/heads/<名前>` にリモートの先端を持つ（作業用の clone がそのまま --branch で使えるように）。ジョブのブランチが
    * リモートに無ければ branch_missing
    */
-  async fetchBare(input: { remote: string; base: string; branch: string; bareDir: string }): Promise<GitOutcome> {
-    assertRemote(input.remote);
+  async fetchBare(input: RepoRef & { base: string; branch: string; bareDir: string }): Promise<GitOutcome> {
+    const remote = this.remote(input);
     assertBranch(input.base);
     if (!isJobBranch(input.branch)) throw new Error("ジョブのブランチの形が違います");
     assertDir(input.bareDir);
@@ -402,7 +521,7 @@ export class GitClient {
         "--no-tags",
         "--no-write-fetch-head",
         "--",
-        input.remote,
+        remote,
         `+refs/heads/${input.base}:refs/heads/${input.base}`,
         `+refs/heads/${input.branch}:refs/heads/${input.branch}`,
       ],
@@ -447,9 +566,10 @@ export class GitClient {
 
   /**
    * 取り込み（§5.3 の 3）。repoDir・`.git`・`.git/objects` が実際のディレクトリか確かめ、ブランチの先端をファイルから読み、
-   * 隔離の場所（quarantineDir。あれば先に消す）を `git init --bare --template=` で作って objects を写し、先端を
-   * `refs/heads/out` に書いて、bare に transfer.fsckObjects で fetch する（`refs/self-agent/staged/<runId>`）。隔離の場所は
-   * 最後に消す。どこで失敗しても import_failed
+   * 隔離の場所（quarantineDir。あれば先に消す）を `git init --bare --template=` で作って objects を写し（copyObjects）、パックの
+   * .idx を index-pack --strict で作り直し、先端がコミットであることを確かめて `refs/heads/out` に書き、bare に transfer.fsckObjects で
+   * fetch する（`refs/self-agent/staged/<runId>`）。repoDir は git の `-C`・`--git-dir` に使わない。隔離の場所は最後に消す。
+   * どこで失敗しても import_failed
    */
   async importWork(input: {
     repoDir: string;
@@ -465,9 +585,10 @@ export class GitClient {
     const ref = stagedRef(input.runId);
     const gitDir = join(input.repoDir, ".git");
     const objects = join(gitDir, "objects");
+    const failed: GitOutcome<{ sha: string; ref: string }> = { ok: false, failure: "import_failed" };
     const fail = (reason: string): GitOutcome<{ sha: string; ref: string }> => {
       this.log(`ジョブの git が失敗しました（import・${reason}）`);
-      return { ok: false, failure: "import_failed" };
+      return failed;
     };
     if (!isRealDir(input.repoDir) || !isRealDir(gitDir) || !isRealDir(objects)) return fail("not_directory");
     const sha = readBranchTip(gitDir, input.branch);
@@ -475,15 +596,21 @@ export class GitClient {
     try {
       // 前に残ったものがあれば消す（無ければ何もしない）
       await this.removeTree(input.quarantineDir);
-      if (!succeeded(await this.git({ op: "init", args: ["init", "--bare", "--quiet", "--template=", "--", input.quarantineDir] }))) {
-        return { ok: false, failure: "import_failed" };
-      }
-      const copied = copyObjects(objects, join(input.quarantineDir, "objects"));
-      if (!copied.ok) return fail(copied.reason);
+    } catch {
+      return fail("cleanup");
+    }
+    try {
       const quarantine = `--git-dir=${input.quarantineDir}`;
-      if (!succeeded(await this.git({ op: "update-ref", args: [quarantine, "update-ref", "refs/heads/out", sha] }))) {
-        return { ok: false, failure: "import_failed" };
+      if (!succeeded(await this.git({ op: "init", args: ["init", "--bare", "--quiet", "--template=", "--", input.quarantineDir] }))) {
+        return failed;
       }
+      const copied = await copyObjects(objects, join(input.quarantineDir, "objects"));
+      if (!copied.ok) return fail(copied.reason);
+      if (!(await this.indexPacks(input.quarantineDir, copied.packs))) return failed;
+      const type = await this.git({ op: "cat-file", args: [quarantine, "cat-file", "-t", sha] });
+      if (!succeeded(type)) return failed;
+      if (type.stdout.trim() !== "commit") return fail("not_commit");
+      if (!succeeded(await this.git({ op: "update-ref", args: [quarantine, "update-ref", "refs/heads/out", sha] }))) return failed;
       const fetched = await this.git({
         op: "fetch",
         args: [
@@ -498,7 +625,7 @@ export class GitClient {
           `refs/heads/out:${ref}`,
         ],
       });
-      if (!succeeded(fetched)) return { ok: false, failure: "import_failed" };
+      if (!succeeded(fetched)) return failed;
       const staged = await this.revParse(input.bareDir, ref);
       if (staged !== sha) return fail("mismatch");
       return { ok: true, sha, ref };
@@ -509,6 +636,31 @@ export class GitClient {
         this.log("ジョブの git が失敗しました（import・cleanup）");
       }
     }
+  }
+
+  /**
+   * 隔離の場所に写したパックの .idx を `index-pack --strict` で作り直す（LLM の .idx は使わない）。--strict は参照先が既にあることを
+   * 求めるので、通らなかったパックは、ほかのパックが通った後にやり直す（1 巡で 1 つも通らなければ失敗）
+   */
+  private async indexPacks(quarantineDir: string, packs: readonly string[]): Promise<boolean> {
+    let pending = [...packs];
+    while (pending.length > 0) {
+      const failedPacks: string[] = [];
+      for (const pack of pending) {
+        const result = await this.git({
+          op: "index-pack",
+          args: [`--git-dir=${quarantineDir}`, "index-pack", "--strict", join(quarantineDir, "objects", "pack", pack)],
+          quiet: true,
+        });
+        if (!succeeded(result)) failedPacks.push(pack);
+      }
+      if (failedPacks.length === pending.length) {
+        this.log("ジョブの git が失敗しました（index-pack・strict）");
+        return false;
+      }
+      pending = failedPacks;
+    }
+    return true;
   }
 
   /** bare の ref（か sha）の指すコミットの sha。無ければ undefined */
@@ -588,9 +740,9 @@ export class GitClient {
    * push（§6.2）。bare から `<sha>:refs/heads/<branch>`（branch は self-agent/ の下だけ）。--force なし・hooks なし。
    * 拒否（porcelain の `!` の行）は push_rejected、認証の失敗は push_auth、それ以外は push_failed
    */
-  async push(input: { bareDir: string; remote: string; sha: string; branch: string }): Promise<GitOutcome> {
+  async push(input: RepoRef & { bareDir: string; sha: string; branch: string }): Promise<GitOutcome> {
     assertDir(input.bareDir);
-    const pushArgs = buildPushArgs(input.remote, input.sha, input.branch);
+    const pushArgs = buildPushArgs(this.remote(input), input.sha, input.branch);
     const result = await this.git({ op: "push", network: true, args: [`--git-dir=${input.bareDir}`, ...pushArgs] });
     if (succeeded(result)) return { ok: true };
     if (result.kind !== "exited") return { ok: false, failure: "push_failed" };

@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { execFileRun, GH_MAX_BUFFER, GH_TIMEOUT_MS, type RunCommand, type RunOptions, type RunResult } from "../src/github/gh.ts";
 import {
   alreadyExists,
@@ -313,4 +316,34 @@ test("execFileRun: input を標準入力に渡す（input が無ければ今ま�
   assert.deepEqual(await execFileRun(process.execPath, echo, { ...options, input: '{"a":1}' }), { kind: "exited", code: 0, stdout: '[{"a":1}]', stderr: "" });
   const noRead = ["-e", "process.stdout.write('x')"];
   assert.deepEqual(await execFileRun(process.execPath, noRead, options), { kind: "exited", code: 0, stdout: "x", stderr: "" });
+});
+
+test("execFileRun: 時間切れでは子のプロセスグループごと止める（孫を残さない）", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "self-agent-run-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const pidFile = join(root, "pid");
+  const script = `const c=require('child_process').spawn('/bin/sleep',['30'],{stdio:'ignore'});require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setInterval(()=>{},1000)`;
+  const result = await execFileRun(process.execPath, ["-e", script], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 500, maxBuffer: 1024 });
+  assert.deepEqual(result, { kind: "timeout" });
+  const grandchild = Number(readFileSync(pidFile, "utf8"));
+  assert.ok(grandchild > 0);
+  const alive = () => {
+    try {
+      process.kill(grandchild, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let i = 0; i < 40 && alive(); i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(alive(), false);
+});
+
+test("createDraftPull: 422 で同じ head の PR が closed・merged しか無ければ既存として返さない（http_error）", async () => {
+  const exists = status(422, { message: "Validation Failed", errors: [{ message: "A pull request already exists" }] });
+  const closed = { ...PULL, state: "closed" };
+  const merged = { ...PULL, number: 8, state: "closed", merged_at: "2026-10-01T00:00:00Z" };
+  const api = new JobGithubApi({ ghPath: GH, run: fakeRun([exists, ok([closed, merged])]).run });
+  const input = { owner: "example-org", repo: "example-repo", head: "self-agent/job-3", base: "main", title: "t", body: "b" };
+  assert.deepEqual(await api.createDraftPull(input), { ok: false, failure: "http_error", status: 422 });
 });
