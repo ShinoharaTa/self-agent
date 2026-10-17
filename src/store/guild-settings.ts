@@ -226,6 +226,23 @@ export class GuildSettingsStore {
     return Number(result.changes) > 0;
   }
 
+  /** #jobs の ID（v22。SELF_AGENT_JOBS=1 のときだけ /setup が作る）。まだ作っていなければ（guild_settings の行が無ければ）null */
+  jobsChannelId(guildId: string): string | null {
+    const row = this.db.prepare("SELECT jobs_channel_id FROM guild_settings WHERE guild_id = ?").get(guildId);
+    return nullableString(row?.jobs_channel_id);
+  }
+
+  /**
+   * #jobs の ID を保存する（作り直したら置き換える）。guild_settings の行（/setup 済みの印）が無ければ作らずに false
+   * （/setup 前のサーバーを /setup 済みに見せない）
+   */
+  setJobsChannel(guildId: string, channelId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE guild_settings SET jobs_channel_id = ?, updated_at = ? WHERE guild_id = ?")
+      .run(channelId, this.now().toISOString(), guildId);
+    return Number(result.changes) > 0;
+  }
+
   getStateCategory(guildId: string, state: SessionState, ordinal: number): string | undefined {
     const row = this.db
       .prepare("SELECT category_id FROM state_categories WHERE guild_id = ? AND state = ? AND ordinal = ?")

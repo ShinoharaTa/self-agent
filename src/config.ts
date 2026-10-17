@@ -85,7 +85,8 @@ export type Config = {
   personas: PersonaConfig[];
   /** codex の認証と会話の記録の場所。未設定で codex の人格も無ければ undefined */
   codexHome: string | undefined;
-} & GithubConfig;
+} & GithubConfig &
+  JobsConfig;
 
 /** GitHub の通知の段 1（docs/plan/github-notifications.md §10）。npm run github-dry-run もこれだけを読む */
 export type GithubConfig = {
@@ -95,6 +96,24 @@ export type GithubConfig = {
   githubPollSec: number;
   /** 「自分のリポジトリ」とみなす持ち主（GitHub のログイン・org）。空なら gh のログイン 1 つ */
   githubOwners: string[];
+};
+
+/** 作業ジョブ（docs/plan/coding-jobs.md §14） */
+export type JobsConfig = {
+  /** true なら作業ジョブを使う（SELF_AGENT_SHELL=1 が要る）。PR-J4 まではいつも false（1 にすると設定エラー） */
+  jobs: boolean;
+  /** 対象にできるリポジトリ（`owner/*` か `owner/repo`。設定の順・重複は除く）。空なら gh のログインの `<login>/*` */
+  jobsRepos: string[];
+  /** 1 run の手順（maxTurns）の上限 */
+  jobMaxTurns: number;
+  /** 1 run の時間の上限（分） */
+  jobTimeoutMin: number;
+  /** 未設定なら既定の人格と同じ */
+  jobModel: string | undefined;
+  /** 未設定なら既定の人格と同じ */
+  jobEffort: Effort | undefined;
+  /** clone するリポジトリの大きさの上限（MB。GitHub の size） */
+  jobsRepoMaxMb: number;
 };
 
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
@@ -116,6 +135,9 @@ const DEFAULT_SESSION_TURN_TIMEOUT_SEC = 900;
 const DEFAULT_DEV_LOG_DAYS = 30;
 const DEFAULT_GITHUB_POLL_SEC = 300;
 const MIN_GITHUB_POLL_SEC = 60;
+const DEFAULT_JOB_MAX_TURNS = 100;
+const DEFAULT_JOB_TIMEOUT_MIN = 45;
+const DEFAULT_JOBS_REPO_MAX_MB = 200;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -316,9 +338,47 @@ export function loadGithubConfig(env: NodeJS.ProcessEnv = process.env): GithubCo
   };
 }
 
+/** `owner/*` か `owner/repo`（名前は GitHub の形。`.`・`..` だけのリポジトリ名は除く） */
+const JOBS_REPO_PATTERN = /^[A-Za-z0-9-]{1,39}\/(\*|[A-Za-z0-9._-]{1,100})$/;
+
+/**
+ * SELF_AGENT_JOBS と作業ジョブの変数を読む（docs/plan/coding-jobs.md §14）。SELF_AGENT_JOBS=1 は SELF_AGENT_SHELL=1 が要る。
+ * ジョブの runner（PR-J4）ができるまでは、SELF_AGENT_JOBS=1 を設定エラーにする。ほかの変数は無効のときも形を確かめる
+ */
+function loadJobsConfig(env: NodeJS.ProcessEnv, shell: boolean): JobsConfig {
+  const jobs = flag("SELF_AGENT_JOBS", nonEmpty(env.SELF_AGENT_JOBS));
+  if (jobs && !shell) throw new Error("SELF_AGENT_JOBS=1 には SELF_AGENT_SHELL=1 が必要です");
+  if (jobs) throw new Error("SELF_AGENT_JOBS: 作業ジョブはまだ使えません（未設定か 0 にしてください）");
+  const repos = (nonEmpty(env.SELF_AGENT_JOBS_REPOS) ?? "")
+    .split(",")
+    .map((repo) => repo.trim())
+    .filter((repo) => repo !== "");
+  if (repos.some((repo) => !JOBS_REPO_PATTERN.test(repo) || repo.endsWith("/.") || repo.endsWith("/.."))) {
+    throw new Error("SELF_AGENT_JOBS_REPOS は owner/* か owner/repo をカンマ区切りで指定してください");
+  }
+  return {
+    jobs,
+    jobsRepos: [...new Set(repos)],
+    jobMaxTurns: positiveInteger("SELF_AGENT_JOB_MAX_TURNS", nonEmpty(env.SELF_AGENT_JOB_MAX_TURNS), DEFAULT_JOB_MAX_TURNS),
+    jobTimeoutMin: positiveInteger(
+      "SELF_AGENT_JOB_TIMEOUT_MIN",
+      nonEmpty(env.SELF_AGENT_JOB_TIMEOUT_MIN),
+      DEFAULT_JOB_TIMEOUT_MIN,
+    ),
+    jobModel: nonEmpty(env.SELF_AGENT_JOB_MODEL),
+    jobEffort: effortLevel(nonEmpty(env.SELF_AGENT_JOB_EFFORT), "SELF_AGENT_JOB_EFFORT"),
+    jobsRepoMaxMb: positiveInteger(
+      "SELF_AGENT_JOBS_REPO_MAX_MB",
+      nonEmpty(env.SELF_AGENT_JOBS_REPO_MAX_MB),
+      DEFAULT_JOBS_REPO_MAX_MB,
+    ),
+  };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const home = (): string => homeDir(env);
   const personas = personaList(env, home);
+  const shell = flag("SELF_AGENT_SHELL", nonEmpty(env.SELF_AGENT_SHELL));
 
   return {
     oauthTokenPresent: nonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) !== undefined,
@@ -388,12 +448,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     devMode: flag("SELF_AGENT_DEV_MODE", nonEmpty(env.SELF_AGENT_DEV_MODE)),
     devLogDays: positiveInteger("SELF_AGENT_DEV_LOG_DAYS", nonEmpty(env.SELF_AGENT_DEV_LOG_DAYS), DEFAULT_DEV_LOG_DAYS),
-    shell: flag("SELF_AGENT_SHELL", nonEmpty(env.SELF_AGENT_SHELL)),
+    shell,
     personas,
     codexHome:
       nonEmpty(env.SELF_AGENT_CODEX_HOME) ??
       (personas.some((persona) => persona.engine === "codex") ? join(home(), ".local/share/self-agent/codex") : undefined),
     ...loadGithubConfig(env),
+    ...loadJobsConfig(env, shell),
   };
 }
 
