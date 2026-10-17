@@ -19,7 +19,7 @@ export type RunOptions = {
   env: Record<string, string>;
   timeoutMs: number;
   maxBuffer: number;
-  /** あれば標準入力に書いて閉じる（作業ジョブの gh api の POST の本文。src/jobs/github-api.ts）。GET では渡さない */
+  /** あれば標準入力に書いて閉じる（作業ジョブの gh api の POST の本文。src/jobs/github-api.ts）。GET では渡さない（無ければ空で閉じる） */
   input?: string;
 };
 
@@ -89,7 +89,9 @@ export const execFileRun: RunCommand = (file, args, { env, timeoutMs, maxBuffer,
     timer = setTimeout(() => stop("timeout"), timeoutMs);
     // 子が先に終わったときの EPIPE で落ちないように
     child.stdin?.on("error", () => {});
+    // input が無ければ空のまま閉じる（子が標準入力を待って止まらない）
     if (input !== undefined) child.stdin?.end(input);
+    else child.stdin?.end();
   });
 
 /** プロセスグループごと SIGKILL で止める（もう居なければ何もしない） */

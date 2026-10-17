@@ -347,3 +347,13 @@ test("createDraftPull: 422 で同じ head の PR が closed・merged しか無�
   const input = { owner: "example-org", repo: "example-repo", head: "self-agent/job-3", base: "main", title: "t", body: "b" };
   assert.deepEqual(await api.createDraftPull(input), { ok: false, failure: "http_error", status: 422 });
 });
+
+test("execFileRun: input が無いときも標準入力を閉じる（標準入力を待つ子が止まらない）", async () => {
+  const waitStdin = ["-e", "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('end'))"];
+  assert.deepEqual(await execFileRun(process.execPath, waitStdin, { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5_000, maxBuffer: 1024 }), {
+    kind: "exited",
+    code: 0,
+    stdout: "end",
+    stderr: "",
+  });
+});
