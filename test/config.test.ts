@@ -280,6 +280,15 @@ test("作業ジョブの変数: リポジトリは owner/* か owner/repo をカ
   assert.equal(config.jobsRepoMaxMb, 500);
   assert.equal(config.jobs, false);
   assert.deepEqual(loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS_REPOS: "" }).jobsRepos, []);
+  // 設定したのに中身が無ければ、既定（gh のログイン）に広がらないようにエラー
+  for (const value of [",", " , ,", "  "]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOBS_REPOS: value }), /SELF_AGENT_JOBS_REPOS/, JSON.stringify(value));
+  }
+  // 時間の上限は 1 日（1440 分）まで
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_JOB_TIMEOUT_MIN: "1440" }).jobTimeoutMin, 1440);
+  for (const value of ["1441", "100000"]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_JOB_TIMEOUT_MIN: value }), /SELF_AGENT_JOB_TIMEOUT_MIN は 1440 以下/, value);
+  }
   for (const value of [
     "example-user",
     "example-user/",

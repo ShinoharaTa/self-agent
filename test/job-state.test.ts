@@ -76,29 +76,52 @@ function finished(overrides: Partial<JobRun> = {}): JobRun {
   });
 }
 
-test("canTransition: §11 の遷移の表どおり（failed から先は push_failed・pr_failed のときだけ）", () => {
+const RETRYABLE: readonly JobFailure[] = ["push_failed", "not_fast_forward", "push_rejected", "push_auth", "pr_failed"];
+
+test("canTransition: §11 の遷移の表どおり（failed から先は push・PR の段の失敗のときだけ）", () => {
   const allowed: Record<JobRunState, JobRunState[]> = {
     awaiting_confirm: ["queued", "cancelled"],
     queued: ["running", "cancelled"],
     running: ["pr_opened", "pushed", "held", "failed", "cancelled"],
-    held: ["pr_opened", "pushed"],
+    held: ["pr_opened", "pushed", "failed"],
     pushed: ["pr_opened"],
-    failed: ["pushed", "pr_opened"],
+    failed: ["pushed", "pr_opened", "failed"],
     pr_opened: [],
     cancelled: [],
   };
   for (const from of JOB_RUN_STATES) {
     const failure: JobFailure | null = from === "failed" ? "push_failed" : null;
     for (const to of JOB_RUN_STATES) {
-      assert.equal(canTransition({ state: from, failure }, to), allowed[from].includes(to), `${from} → ${to}`);
+      const toFailure: JobFailure | null = to === "failed" ? "push_failed" : null;
+      assert.equal(canTransition({ state: from, failure }, to, toFailure), allowed[from].includes(to), `${from} → ${to}`);
     }
   }
-  assert.equal(canTransition({ state: "failed", failure: "pr_failed" }, "pr_opened"), true);
-  for (const failure of JOB_FAILURES.filter((item) => item !== "push_failed" && item !== "pr_failed")) {
+  // 準備の段の失敗は queued から直接ではなく running を経る
+  assert.equal(canTransition({ state: "queued", failure: null }, "failed", "clone_failed"), false);
+  assert.equal(canTransition({ state: "running", failure: null }, "failed", "clone_failed"), true);
+  for (const failure of RETRYABLE) {
+    assert.equal(canTransition({ state: "failed", failure }, "pushed"), true, failure);
+    assert.equal(canTransition({ state: "failed", failure }, "pr_opened"), true, failure);
+  }
+  for (const failure of JOB_FAILURES.filter((item) => !RETRYABLE.includes(item))) {
     assert.equal(canTransition({ state: "failed", failure }, "pushed"), false, failure);
     assert.equal(canTransition({ state: "failed", failure }, "pr_opened"), false, failure);
+    assert.equal(canTransition({ state: "failed", failure }, "failed", "push_failed"), false, failure);
   }
   assert.equal(canTransition({ state: "failed", failure: null }, "pushed"), false);
+});
+
+test("canTransition: held → failed と failed → failed は、移った後の failure が push・PR の段の語のときだけ", () => {
+  for (const toFailure of JOB_FAILURES) {
+    const expected = RETRYABLE.includes(toFailure);
+    assert.equal(canTransition({ state: "held", failure: "max_turns" }, "failed", toFailure), expected, `held → ${toFailure}`);
+    assert.equal(canTransition({ state: "failed", failure: "push_failed" }, "failed", toFailure), expected, `failed → ${toFailure}`);
+    // running からはどの語でも failed にできる
+    assert.equal(canTransition({ state: "running", failure: null }, "failed", toFailure), true, `running → ${toFailure}`);
+  }
+  assert.equal(canTransition({ state: "held", failure: "max_turns" }, "failed"), false);
+  assert.equal(canTransition({ state: "failed", failure: "push_auth" }, "failed", "pr_failed"), true);
+  assert.equal(canTransition({ state: "failed", failure: "pr_failed" }, "failed", "push_rejected"), true);
 });
 
 test("failureAllowed: failed は語が要る、held は終わり方の語だけ、pushed は無しか pr_failed、cancelled は無しか aborted、それ以外は無し", () => {
@@ -205,8 +228,13 @@ test("formatJobMessage: push だけ・PR の作成の失敗・held・failed・ca
     "⚠ ジョブ #12 は push しましたが PR を作れませんでした  example\\-user/example\\-repo",
     "<https://github.com/example-user/example-repo/tree/self-agent/job-12>",
   ]);
-  // ブランチ名の形が違えば URL を出さない
-  assert.ok(!formatJobMessage(job({ branch: "main" }), finished({ state: "pushed", failure: "pr_failed" }), { timeoutMin: 45 }).includes("/tree/"));
+  // ブランチ名の形が違えば（BRANCH_PATTERN に合わなければ）URL を出さない
+  for (const branch of ["main", "self-agent/job-0", "self-agent/job-12/x", "self-agent/job-12 ", "self-agent/job-abc", "x/self-agent/job-12"]) {
+    for (const state of [finished({ state: "pushed", failure: "pr_failed" }), finished({ state: "pushed" })]) {
+      const text = formatJobMessage(job({ branch }), state, { timeoutMin: 45 });
+      assert.ok(!text.includes("https://"), `${branch}: ${text}`);
+    }
+  }
 
   const held = formatJobMessage(job(), finished({ state: "held", failure: "max_turns", tests: null, outcome: null, summary: null }), {
     timeoutMin: 45,

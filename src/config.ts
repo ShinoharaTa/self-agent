@@ -102,11 +102,11 @@ export type GithubConfig = {
 export type JobsConfig = {
   /** true なら作業ジョブを使う（SELF_AGENT_SHELL=1 が要る）。PR-J4 まではいつも false（1 にすると設定エラー） */
   jobs: boolean;
-  /** 対象にできるリポジトリ（`owner/*` か `owner/repo`。設定の順・重複は除く）。空なら gh のログインの `<login>/*` */
+  /** 対象にできるリポジトリ（`owner/*` か `owner/repo`。設定の順・重複は除く）。未設定なら空で、gh のログインの `<login>/*`（設定して中身が無ければ設定エラー） */
   jobsRepos: string[];
   /** 1 run の手順（maxTurns）の上限 */
   jobMaxTurns: number;
-  /** 1 run の時間の上限（分） */
+  /** 1 run の時間の上限（分。1440 まで） */
   jobTimeoutMin: number;
   /** 未設定なら既定の人格と同じ */
   jobModel: string | undefined;
@@ -137,6 +137,8 @@ const DEFAULT_GITHUB_POLL_SEC = 300;
 const MIN_GITHUB_POLL_SEC = 60;
 const DEFAULT_JOB_MAX_TURNS = 100;
 const DEFAULT_JOB_TIMEOUT_MIN = 45;
+/** SELF_AGENT_JOB_TIMEOUT_MIN の上限（1 日） */
+const MAX_JOB_TIMEOUT_MIN = 1440;
 const DEFAULT_JOBS_REPO_MAX_MB = 200;
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -349,22 +351,31 @@ function loadJobsConfig(env: NodeJS.ProcessEnv, shell: boolean): JobsConfig {
   const jobs = flag("SELF_AGENT_JOBS", nonEmpty(env.SELF_AGENT_JOBS));
   if (jobs && !shell) throw new Error("SELF_AGENT_JOBS=1 には SELF_AGENT_SHELL=1 が必要です");
   if (jobs) throw new Error("SELF_AGENT_JOBS: 作業ジョブはまだ使えません（未設定か 0 にしてください）");
-  const repos = (nonEmpty(env.SELF_AGENT_JOBS_REPOS) ?? "")
+  const reposValue = nonEmpty(env.SELF_AGENT_JOBS_REPOS);
+  const repos = (reposValue ?? "")
     .split(",")
     .map((repo) => repo.trim())
     .filter((repo) => repo !== "");
+  // 設定したのに中身が無い（"," など）なら、許可リストが黙って既定（gh のログインの <login>/*）に広がらないようにエラーにする
+  if (reposValue !== undefined && repos.length === 0) {
+    throw new Error("SELF_AGENT_JOBS_REPOS は owner/* か owner/repo をカンマ区切りで指定してください（空にするなら変数ごと消してください）");
+  }
   if (repos.some((repo) => !JOBS_REPO_PATTERN.test(repo) || repo.endsWith("/.") || repo.endsWith("/.."))) {
     throw new Error("SELF_AGENT_JOBS_REPOS は owner/* か owner/repo をカンマ区切りで指定してください");
+  }
+  const timeoutMin = positiveInteger(
+    "SELF_AGENT_JOB_TIMEOUT_MIN",
+    nonEmpty(env.SELF_AGENT_JOB_TIMEOUT_MIN),
+    DEFAULT_JOB_TIMEOUT_MIN,
+  );
+  if (timeoutMin > MAX_JOB_TIMEOUT_MIN) {
+    throw new Error(`SELF_AGENT_JOB_TIMEOUT_MIN は ${MAX_JOB_TIMEOUT_MIN} 以下の正の整数で指定してください`);
   }
   return {
     jobs,
     jobsRepos: [...new Set(repos)],
     jobMaxTurns: positiveInteger("SELF_AGENT_JOB_MAX_TURNS", nonEmpty(env.SELF_AGENT_JOB_MAX_TURNS), DEFAULT_JOB_MAX_TURNS),
-    jobTimeoutMin: positiveInteger(
-      "SELF_AGENT_JOB_TIMEOUT_MIN",
-      nonEmpty(env.SELF_AGENT_JOB_TIMEOUT_MIN),
-      DEFAULT_JOB_TIMEOUT_MIN,
-    ),
+    jobTimeoutMin: timeoutMin,
     jobModel: nonEmpty(env.SELF_AGENT_JOB_MODEL),
     jobEffort: effortLevel(nonEmpty(env.SELF_AGENT_JOB_EFFORT), "SELF_AGENT_JOB_EFFORT"),
     jobsRepoMaxMb: positiveInteger(

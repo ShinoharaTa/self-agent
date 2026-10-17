@@ -207,10 +207,12 @@ function toRun(row: Record<string, SQLOutputValue>): JobRun {
   };
 }
 
-/** fields の SET 句と値（渡した項目だけ） */
+/** fields の SET 句と値（渡した項目だけ。値が undefined の項目は飛ばし、null は NULL で書く） */
 function fieldUpdates(fields: JobRunFields | undefined): { sets: string[]; values: Array<string | number | null> } {
   if (fields === undefined) return { sets: [], values: [] };
-  const keys = (Object.keys(fields) as (keyof JobRunFields)[]).filter((key) => Object.hasOwn(RUN_FIELD_COLUMNS, key));
+  const keys = (Object.keys(fields) as (keyof JobRunFields)[]).filter(
+    (key) => Object.hasOwn(RUN_FIELD_COLUMNS, key) && fields[key] !== undefined,
+  );
   return {
     sets: keys.map((key) => `${RUN_FIELD_COLUMNS[key]} = ?`),
     values: keys.map((key) => fields[key] ?? null),
@@ -351,12 +353,15 @@ export class JobStore {
     if (current === undefined) return { result: "not_found" };
     if (current.state !== transition.from) return { result: "stale", run: current };
     const failure = transition.failure ?? null;
-    if (!canTransition(current, transition.to)) {
+    if (!canTransition(current, transition.to, failure)) {
       throw new Error(`ジョブの run は ${current.state} から ${transition.to} に移れません`);
     }
     if (!failureAllowed(transition.to, failure)) {
       throw new Error(`ジョブの run を ${transition.to} にするときの failure が合いません`);
     }
+    // 書くときの比べ合わせは DB の生の値で行う（表に無い語が入った行を、toRun が null に読み替えても永久に stale にしない）
+    const raw = this.db.prepare("SELECT failure FROM job_runs WHERE id = ?").get(runId);
+    const rawFailure = raw === undefined ? null : nullableString(raw.failure);
     const at = this.now().toISOString();
     const { sets, values } = fieldUpdates(transition.fields);
     const started = transition.to === "running" ? ", started_at = ?" : "";
@@ -375,7 +380,7 @@ export class JobStore {
         ...values,
         runId,
         current.state,
-        current.failure,
+        rawFailure,
       );
     // 読んでから書くまでに別の変更が入った
     if (row === undefined) {
@@ -385,7 +390,7 @@ export class JobStore {
     return { result: "updated", run: toRun(row) };
   }
 
-  /** 状態を変えずに結果・報告の項目を書き換える（渡した項目だけ）。無い run なら false */
+  /** 状態を変えずに結果・報告の項目を書き換える（渡した項目だけ。undefined の項目は変えず、null は NULL にする）。無い run なら false */
   updateRun(runId: number, fields: JobRunFields): boolean {
     const { sets, values } = fieldUpdates(fields);
     if (sets.length === 0) return this.getRun(runId) !== undefined;

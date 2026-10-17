@@ -1,4 +1,4 @@
-import { escapeDiscordText } from "../github/poller.ts";
+import { escapeDiscordText } from "../discord/escape.ts";
 import type { Job, JobRun } from "../store/jobs.ts";
 
 /** ジョブの入口（docs/plan/coding-jobs.md §7）。command は /job run、new_repo は /job new、github は #github の [任せる]、inbox は job_start */
@@ -75,28 +75,47 @@ export function isJobFailure(value: unknown): value is JobFailure {
   return typeof value === "string" && (JOB_FAILURES as readonly string[]).includes(value);
 }
 
-/** 状態の遷移の表（§11）。failed から先は、push・PR だけの失敗（RETRYABLE_FAILURES）のときだけ */
+/**
+ * 状態の遷移の表（§11）。failed から先（pushed・pr_opened・failed）は、push・PR の段の失敗（RETRYABLE_FAILURES）のときだけ。
+ * held → failed は [ここまでを draft PR に] の push・PR が失敗したとき、failed → failed は [もう一度] でまた失敗したとき（語が変わりうる）で、
+ * どちらも移った後の failure は RETRYABLE_FAILURES の語。
+ * 準備の段の失敗（sandbox_unavailable・disk_full・too_many・repo_*・clone_failed・branch_missing）は、キューで順番が来て running にしてから failed にする
+ * （queued → running → failed。queued から直接 failed には移さない）
+ */
 const TRANSITIONS: Readonly<Record<JobRunState, readonly JobRunState[]>> = {
   awaiting_confirm: ["queued", "cancelled"],
   queued: ["running", "cancelled"],
   running: ["pr_opened", "pushed", "held", "failed", "cancelled"],
-  held: ["pr_opened", "pushed"],
+  held: ["pr_opened", "pushed", "failed"],
   pushed: ["pr_opened"],
-  failed: ["pushed", "pr_opened"],
+  failed: ["pushed", "pr_opened", "failed"],
   pr_opened: [],
   cancelled: [],
 };
 
-/** failed から [もう一度] で push・PR だけをやり直せる失敗 */
-const RETRYABLE_FAILURES: readonly JobFailure[] = ["push_failed", "pr_failed"];
+/**
+ * push・PR の段の失敗（staged が残っていて、[もう一度] で push・PR だけをやり直せる）。pr_failed は普通は pushed に置くが、
+ * failed → failed で語が変わるときのために failed にも置ける
+ */
+const RETRYABLE_FAILURES: readonly JobFailure[] = ["push_failed", "not_fast_forward", "push_rejected", "push_auth", "pr_failed"];
 
 /** held の理由（コミットがあり検査を通ったが、終わり方が正常でない） */
 const HELD_FAILURES: readonly JobFailure[] = ["max_turns", "timeout", "aborted", "no_result"];
 
-/** from（今の状態と failure）から to に移れるか */
-export function canTransition(from: { state: JobRunState; failure: JobFailure | null }, to: JobRunState): boolean {
+/**
+ * from（今の状態と failure）から to（移った後の failure は toFailure）に移れるか。failed から先は from の failure が RETRYABLE_FAILURES のときだけ、
+ * held・failed から failed へは toFailure も RETRYABLE_FAILURES のときだけ
+ */
+export function canTransition(
+  from: { state: JobRunState; failure: JobFailure | null },
+  to: JobRunState,
+  toFailure: JobFailure | null = null,
+): boolean {
   if (!TRANSITIONS[from.state].includes(to)) return false;
-  if (from.state === "failed") return from.failure !== null && RETRYABLE_FAILURES.includes(from.failure);
+  if (from.state === "failed" && (from.failure === null || !RETRYABLE_FAILURES.includes(from.failure))) return false;
+  if ((from.state === "held" || from.state === "failed") && to === "failed") {
+    return toFailure !== null && RETRYABLE_FAILURES.includes(toFailure);
+  }
   return true;
 }
 

@@ -306,3 +306,81 @@ test("JobStore: 再起動の材料（状態ごとの run）・updateRun・PR と
   assert.equal(store.countOpen(), 2);
   assert.deepEqual(store.listOpen().map((item) => item.id), [a.job.id, c.job.id]);
 });
+
+/** running まで進めた run（staged があり held にできる） */
+function runningRun(store: JobStore): number {
+  const { run } = store.createJob(newJob(), { state: "queued", instruction: "作る" });
+  store.transitionRun(run.id, { from: "queued", to: "running" });
+  return run.id;
+}
+
+test("JobStore: held は pushed・pr_opened に移れ、[ここまでを draft PR に] の push が失敗したら push・PR の段の語で failed に移れる", (t) => {
+  const { store } = tempStore(t);
+  const toHeld = (): number => {
+    const id = runningRun(store);
+    store.transitionRun(id, { from: "running", to: "held", failure: "timeout", fields: { stagedSha: "c".repeat(40) } });
+    return id;
+  };
+  const a = toHeld();
+  assert.equal(store.transitionRun(a, { from: "held", to: "pushed" }).result, "updated");
+  const b = toHeld();
+  const opened = store.transitionRun(b, { from: "held", to: "pr_opened" });
+  assert.equal(opened.result === "updated" && opened.run.failure, null);
+  const c = toHeld();
+  assert.throws(() => store.transitionRun(c, { from: "held", to: "failed", failure: "no_commits" }), /held から failed/);
+  assert.throws(() => store.transitionRun(c, { from: "held", to: "failed" }), /held から failed/);
+  const failed = store.transitionRun(c, { from: "held", to: "failed", failure: "push_rejected" });
+  assert.equal(failed.result === "updated" && failed.run.failure, "push_rejected");
+  // staged は残る
+  assert.equal(store.getRun(c)?.stagedSha, "c".repeat(40));
+});
+
+test("JobStore: failed（push・PR の段の失敗）は [もう一度] でまた失敗したら別の語の failed に移れる。準備の段の失敗からは移れない", (t) => {
+  const { store } = tempStore(t);
+  const id = runningRun(store);
+  store.transitionRun(id, { from: "running", to: "failed", failure: "push_failed" });
+  const again = store.transitionRun(id, { from: "failed", to: "failed", failure: "pr_failed" });
+  assert.equal(again.result === "updated" && again.run.failure, "pr_failed");
+  const third = store.transitionRun(id, { from: "failed", to: "failed", failure: "push_auth" });
+  assert.equal(third.result === "updated" && third.run.failure, "push_auth");
+  assert.throws(() => store.transitionRun(id, { from: "failed", to: "failed", failure: "import_failed" }), /failed から failed/);
+  assert.equal(store.transitionRun(id, { from: "failed", to: "pushed" }).result, "updated");
+
+  const prep = runningRun(store);
+  store.transitionRun(prep, { from: "running", to: "failed", failure: "clone_failed" });
+  assert.throws(() => store.transitionRun(prep, { from: "failed", to: "failed", failure: "push_failed" }), /failed から failed/);
+});
+
+test("JobStore: failure が表に無い語の行も stale にならず、表どおりに移せる（比べ合わせは DB の生の値）", (t) => {
+  const { store, db } = tempStore(t);
+  const id = runningRun(store);
+  db.prepare("UPDATE job_runs SET failure = 'unknown_word' WHERE id = ?").run(id);
+  assert.equal(store.getRun(id)?.failure, null);
+  const result = store.transitionRun(id, { from: "running", to: "failed", failure: "interrupted" });
+  assert.equal(result.result, "updated");
+  assert.equal(store.getRun(id)?.failure, "interrupted");
+});
+
+test("JobStore: fields の undefined の項目は書き換えない（null は NULL にする）", (t) => {
+  const { store } = tempStore(t);
+  const id = runningRun(store);
+  store.updateRun(id, { summary: "要約", commits: 2, prTitle: "題名" });
+  assert.equal(store.updateRun(id, { summary: undefined, commits: undefined, prTitle: null }), true);
+  let run = store.getRun(id)!;
+  assert.equal(run.summary, "要約");
+  assert.equal(run.commits, 2);
+  assert.equal(run.prTitle, null);
+  assert.equal(store.updateRun(id, { summary: undefined }), true);
+  assert.equal(store.updateRun(99, { summary: undefined }), false);
+
+  const result = store.transitionRun(id, {
+    from: "running",
+    to: "pr_opened",
+    fields: { summary: undefined, toolCalls: 7, commits: undefined },
+  });
+  assert.equal(result.result, "updated");
+  run = store.getRun(id)!;
+  assert.equal(run.summary, "要約");
+  assert.equal(run.commits, 2);
+  assert.equal(run.toolCalls, 7);
+});
