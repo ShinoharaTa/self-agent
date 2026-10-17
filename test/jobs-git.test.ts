@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -15,20 +15,23 @@ import {
   gitChildEnv,
   gitCredentialArgs,
   GitClient,
+  type GitClientOptions,
   githubRemoteUrl,
-  isAllowedRemote,
   isBranchName,
   isForbiddenPath,
+  isGithubRemote,
   isJobBranch,
+  isLocalTestRemote,
   jobBranch,
   readBranchTip,
 } from "../src/jobs/git.ts";
-import type { RunCommand, RunOptions, RunResult } from "../src/github/gh.ts";
+import { execFileRun, type RunCommand, type RunOptions, type RunResult } from "../src/github/gh.ts";
 
 const GIT = "/usr/bin/git";
 const GH = "/usr/bin/gh";
 const AUTHOR = { name: "example", email: "1234+example@users.noreply.github.com" };
 const SHA = "0123456789abcdef0123456789abcdef01234567";
+const TARGET = { owner: "example-org", repo: "example-repo" };
 
 /** テストの中で LLM・リモートの持ち主の代わりに git を動かすときの env（global・system の設定を読まない） */
 function plainEnv(extra: Record<string, string> = {}): Record<string, string> {
@@ -67,8 +70,11 @@ type Fixture = {
   client: GitClient;
 };
 
-/** 一時ディレクトリに「リモート」（ローカルの bare。main に 1 コミット）と、bare・作業場所の場所を用意する */
-function setup(t: { after: (fn: () => void) => void }, run?: RunCommand): Fixture {
+/**
+ * 一時ディレクトリに「リモート」（ローカルの bare。main に 1 コミット）と、bare・作業場所の場所を用意する。
+ * GitClient はテスト専用の remoteUrlForTests でそのローカルの bare をリモートにする
+ */
+function setup(t: { after: (fn: () => void) => void }, options: Partial<GitClientOptions> = {}): Fixture {
   const root = mkdtempSync(join(tmpdir(), "self-agent-jobs-git-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const seed = join(root, "seed");
@@ -88,7 +94,8 @@ function setup(t: { after: (fn: () => void) => void }, run?: RunCommand): Fixtur
     ghPath: GH,
     log: (message) => logs.push(message),
     sourceEnv: { HOME: join(root, "home"), GH_TOKEN: "dummy-gh-token", CLAUDE_CODE_OAUTH_TOKEN: "dummy-oauth", DISCORD_TOKEN: "dummy-discord" },
-    ...(run === undefined ? {} : { run }),
+    remoteUrlForTests: () => remote,
+    ...options,
   });
   return {
     root,
@@ -105,15 +112,19 @@ function setup(t: { after: (fn: () => void) => void }, run?: RunCommand): Fixtur
 /** 準備（bare の clone と作業用の clone）まで済ませる */
 async function prepare(f: Fixture, branch = jobBranch(1)): Promise<void> {
   mkdirSync(join(f.root, "data", "jobs"), { recursive: true });
-  assert.deepEqual(await f.client.cloneBare({ remote: f.remote, base: "main", bareDir: f.bare }), { ok: true });
+  assert.deepEqual(await f.client.cloneBare({ ...TARGET, base: "main", bareDir: f.bare }), { ok: true });
   assert.deepEqual(
     await f.client.prepareWorkspace({ bareDir: f.bare, repoDir: f.repo, checkout: "main", newBranch: branch, author: AUTHOR }),
     { ok: true },
   );
 }
 
+function importWork(f: Fixture, runId = 1) {
+  return f.client.importWork({ repoDir: f.repo, branch: jobBranch(1), quarantineDir: f.quarantine, bareDir: f.bare, runId });
+}
+
 async function importAndInspect(f: Fixture, runId = 1) {
-  const imported = await f.client.importWork({ repoDir: f.repo, branch: jobBranch(1), quarantineDir: f.quarantine, bareDir: f.bare, runId });
+  const imported = await importWork(f, runId);
   if (!imported.ok) return imported;
   const base = await f.client.revParse(f.bare, "refs/heads/main");
   assert.ok(base !== undefined);
@@ -124,6 +135,11 @@ async function importAndInspect(f: Fixture, runId = 1) {
 function markerScript(path: string, markers: string, name: string): void {
   writeFileSync(path, `#!/bin/sh\ntouch '${join(markers, name)}'\ncat >/dev/null 2>&1\nexit 0\n`);
   chmodSync(path, 0o755);
+}
+
+/** 作業場所のブランチの先端のルーズオブジェクトのパス */
+function looseObjectPath(repo: string, sha: string): string {
+  return join(repo, ".git", "objects", sha.slice(0, 2), sha.slice(2));
 }
 
 test("準備: bare に clone し、作業用の clone はジョブのブランチ・origin なし・author は noreply（config --local）", async (t) => {
@@ -170,13 +186,12 @@ test("取り込み → 検査 → push: 作業場所に仕込んだ hooks・設�
   assert.ok(readdirSync(f.markers).length > 0);
   for (const name of readdirSync(f.markers)) rmSync(join(f.markers, name));
 
-  const imported = await f.client.importWork({ repoDir: f.repo, branch: jobBranch(1), quarantineDir: f.quarantine, bareDir: f.bare, runId: 1 });
-  assert.deepEqual(imported, { ok: true, sha, ref: "refs/self-agent/staged/1" });
+  assert.deepEqual(await importWork(f), { ok: true, sha, ref: "refs/self-agent/staged/1" });
   assert.equal(existsSync(f.quarantine), false);
   const base = await f.client.revParse(f.bare, "refs/heads/main");
   assert.ok(base !== undefined);
   assert.deepEqual(await f.client.inspect({ bareDir: f.bare, base, staged: sha, authorEmail: AUTHOR.email }), { ok: true, commits: 1 });
-  assert.deepEqual(await f.client.push({ bareDir: f.bare, remote: f.remote, sha, branch: jobBranch(1) }), { ok: true });
+  assert.deepEqual(await f.client.push({ ...TARGET, bareDir: f.bare, sha, branch: jobBranch(1) }), { ok: true });
 
   assert.equal(git(f.root, ["--git-dir", f.remote, "rev-parse", "refs/heads/self-agent/job-1"]), sha);
   assert.deepEqual(readdirSync(f.markers), []);
@@ -186,7 +201,70 @@ test("取り込み → 検査 → push: 作業場所に仕込んだ hooks・設�
   assert.equal(/hookspath|fsmonitor|filter\.|credential|insteadof|alternates/i.test(bareConfig), false, bareConfig);
 });
 
-test("取り込み: .git が gitfile・symlink、objects が symlink、作業場所が symlink なら import_failed", async (t) => {
+test("取り込み: パックも写し、.idx は写さずに index-pack --strict で作り直す（パックが複数でも順番によらない）", async (t) => {
+  const f = setup(t);
+  await prepare(f);
+  commitFile(f.repo, "a.txt", "a\n");
+  git(f.repo, ["repack", "--quiet", "-d"]);
+  commitFile(f.repo, "b.txt", "b\n");
+  git(f.repo, ["repack", "--quiet", "-d"]);
+  const sha = commitFile(f.repo, "c.txt", "c\n");
+  const packDir = join(f.repo, ".git", "objects", "pack");
+  assert.ok(readdirSync(packDir).filter((name) => name.endsWith(".pack")).length >= 2);
+  // LLM の .idx を壊しておく（写さないので影響しない）
+  for (const name of readdirSync(packDir).filter((entry) => entry.endsWith(".idx"))) {
+    chmodSync(join(packDir, name), 0o644);
+    writeFileSync(join(packDir, name), "broken");
+  }
+  assert.deepEqual(await importAndInspect(f), { ok: true, commits: 3 });
+  assert.equal(git(f.root, ["--git-dir", f.bare, "rev-parse", "refs/self-agent/staged/1"]), sha);
+});
+
+test("取り込み: 隔離の場所に hooks が無い", async (t) => {
+  // 消す前の隔離の場所に config（= 作った後）と hooks があるか
+  const seen: Array<[boolean, boolean]> = [];
+  let quarantine = "";
+  const f = setup(t, {
+    removeTree: async (path) => {
+      seen.push([existsSync(join(path, "config")), existsSync(join(path, "hooks"))]);
+      quarantine = path;
+      rmSync(path, { recursive: true, force: true });
+    },
+  });
+  await prepare(f);
+  commitFile(f.repo, "a.txt", "a\n");
+  assert.equal((await importWork(f)).ok, true);
+  assert.equal(quarantine, f.quarantine);
+  // 最初（作る前）と最後（消す前）の 2 回。作った後にも hooks は無い
+  assert.deepEqual(seen, [
+    [false, false],
+    [true, false],
+  ]);
+});
+
+test("取り込み: 準備のあとの呼び出しは作業場所を git の -C・--git-dir に使わない", async (t) => {
+  const calls: Array<readonly string[]> = [];
+  const recording: RunCommand = (file, args, options) => {
+    calls.push(args);
+    return execFileRun(file, args, options);
+  };
+  const f = setup(t, { run: recording });
+  await prepare(f);
+  commitFile(f.repo, "a.txt", "a\n");
+  calls.length = 0;
+  const imported = await importWork(f);
+  assert.ok(imported.ok);
+  await f.client.inspect({ bareDir: f.bare, base: git(f.repo, ["rev-parse", "main"]), staged: imported.sha, authorEmail: AUTHOR.email });
+  await f.client.push({ ...TARGET, bareDir: f.bare, sha: imported.sha, branch: jobBranch(1) });
+  assert.ok(calls.length > 0);
+  for (const args of calls) {
+    assert.equal(args[0], "-C");
+    assert.equal(args[1], "/");
+    for (const arg of args) assert.equal(arg.includes(f.repo), false, args.join(" "));
+  }
+});
+
+test("取り込み: .git が gitfile・symlink、objects・packed-refs が symlink、作業場所が symlink、先端が blob・tag なら import_failed", async (t) => {
   const cases: Array<[string, (f: Fixture) => void]> = [
     [
       "gitfile",
@@ -229,6 +307,15 @@ test("取り込み: .git が gitfile・symlink、objects が symlink、作業場
       },
     ],
     [
+      "packed-refs symlink",
+      (f) => {
+        git(f.repo, ["pack-refs", "--all", "--prune"]);
+        const moved = join(f.root, "moved-packed-refs");
+        execFileSync("/usr/bin/mv", [join(f.repo, ".git", "packed-refs"), moved]);
+        symlinkSync(moved, join(f.repo, ".git", "packed-refs"));
+      },
+    ],
+    [
       "branch deleted",
       (f) => {
         git(f.repo, ["switch", "--quiet", "-c", "other"]);
@@ -241,6 +328,45 @@ test("取り込み: .git が gitfile・symlink、objects が symlink、作業場
         writeFileSync(join(f.repo, ".git", "refs", "heads", "self-agent", "job-1"), "ref: refs/heads/main\n");
       },
     ],
+    [
+      "tip is blob",
+      (f) => {
+        const blob = git(f.repo, ["rev-parse", "HEAD:a.txt"]);
+        writeFileSync(join(f.repo, ".git", "refs", "heads", "self-agent", "job-1"), `${blob}\n`);
+      },
+    ],
+    [
+      "tip is tag",
+      (f) => {
+        git(f.repo, ["tag", "-a", "-m", "t", "v1"]);
+        const tag = git(f.repo, ["rev-parse", "refs/tags/v1"]);
+        writeFileSync(join(f.repo, ".git", "refs", "heads", "self-agent", "job-1"), `${tag}\n`);
+      },
+    ],
+    [
+      "object symlink",
+      (f) => {
+        const object = looseObjectPath(f.repo, git(f.repo, ["rev-parse", "HEAD"]));
+        const moved = join(f.root, "moved-object");
+        execFileSync("/usr/bin/mv", [object, moved]);
+        symlinkSync(moved, object);
+      },
+    ],
+    [
+      "object FIFO",
+      (f) => {
+        const object = looseObjectPath(f.repo, git(f.repo, ["rev-parse", "HEAD"]));
+        rmSync(object, { force: true });
+        execFileSync("/usr/bin/mkfifo", [object]);
+      },
+    ],
+    [
+      "object hardlink",
+      (f) => {
+        const object = looseObjectPath(f.repo, git(f.repo, ["rev-parse", "HEAD"]));
+        linkSync(object, join(f.root, "outside-link"));
+      },
+    ],
   ];
   for (const [name, tamper] of cases) {
     await t.test(name, async (st) => {
@@ -248,13 +374,22 @@ test("取り込み: .git が gitfile・symlink、objects が symlink、作業場
       await prepare(f);
       commitFile(f.repo, "a.txt", "a\n");
       tamper(f);
-      assert.deepEqual(
-        await f.client.importWork({ repoDir: f.repo, branch: jobBranch(1), quarantineDir: f.quarantine, bareDir: f.bare, runId: 1 }),
-        { ok: false, failure: "import_failed" },
-      );
+      assert.deepEqual(await importWork(f), { ok: false, failure: "import_failed" });
       assert.equal(existsSync(f.quarantine), false);
     });
   }
+});
+
+test("取り込み: 最初に隔離の場所を消せなければ reject せずに import_failed（log にパスを出さない）", async (t) => {
+  const f = setup(t, {
+    removeTree: async () => {
+      throw new Error("rm が失敗しました（1）");
+    },
+  });
+  await prepare(f);
+  commitFile(f.repo, "a.txt", "a\n");
+  assert.deepEqual(await importWork(f), { ok: false, failure: "import_failed" });
+  assert.deepEqual(f.logs.at(-1), "ジョブの git が失敗しました（import・cleanup）");
 });
 
 test("取り込み: packed-refs のブランチの先端も読める（loose が無いとき）", async (t) => {
@@ -267,7 +402,7 @@ test("取り込み: packed-refs のブランチの先端も読める（loose が
   assert.deepEqual(await importAndInspect(f), { ok: true, commits: 1 });
 });
 
-test("readBranchTip: 40 桁の 16 進だけを読む。形の違うものは undefined", (t) => {
+test("readBranchTip: 40 桁の 16 進だけを読む。形の違うもの・FIFO・ハードリンク・symlink は undefined", (t) => {
   const root = mkdtempSync(join(tmpdir(), "self-agent-jobs-ref-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const dir = join(root, "refs", "heads", "self-agent");
@@ -276,46 +411,75 @@ test("readBranchTip: 40 桁の 16 進だけを読む。形の違うものは und
   writeFileSync(join(dir, "job-2"), `${SHA}\nextra\n`);
   writeFileSync(join(dir, "job-3"), SHA.toUpperCase());
   mkdirSync(join(dir, "job-4"));
+  execFileSync("/usr/bin/mkfifo", [join(dir, "job-6")]);
+  writeFileSync(join(root, "outside"), `${SHA}\n`);
+  symlinkSync(join(root, "outside"), join(dir, "job-7"));
+  linkSync(join(root, "outside"), join(dir, "job-8"));
   assert.equal(readBranchTip(root, "self-agent/job-1"), SHA);
   assert.equal(readBranchTip(root, "self-agent/job-2"), undefined);
   assert.equal(readBranchTip(root, "self-agent/job-3"), undefined);
   assert.equal(readBranchTip(root, "self-agent/job-4"), undefined);
   assert.equal(readBranchTip(root, "self-agent/job-5"), undefined);
+  assert.equal(readBranchTip(root, "self-agent/job-6"), undefined);
+  assert.equal(readBranchTip(root, "self-agent/job-7"), undefined);
+  assert.equal(readBranchTip(root, "self-agent/job-8"), undefined);
   writeFileSync(join(root, "packed-refs"), `# pack-refs with: peeled fully-peeled sorted\n${SHA} refs/heads/self-agent/job-5\n^${SHA}\n`);
   assert.equal(readBranchTip(root, "self-agent/job-5"), SHA);
   assert.throws(() => readBranchTip(root, "../x"));
 });
 
-test("copyObjects: ルーズオブジェクトとパックだけを写す。symlink・info（alternates）・FIFO・ほかの名前は写さず、上限で止める", (t) => {
+test("copyObjects: ルーズオブジェクトとパックの本体だけを写す。info（alternates）・.idx・ほかの名前は飛ばす", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "self-agent-jobs-objects-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = join(root, "src");
   const destination = join(root, "dst");
-  const outside = join(root, "outside");
-  writeFileSync(outside, "secret");
   mkdirSync(join(source, "ab"), { recursive: true });
   mkdirSync(join(source, "pack"));
   mkdirSync(join(source, "info"));
   mkdirSync(destination);
   writeFileSync(join(source, "ab", "c".repeat(38)), "loose");
-  symlinkSync(outside, join(source, "ab", "d".repeat(38)));
-  writeFileSync(join(source, "ab", "not-an-object"), "x");
-  execFileSync("/usr/bin/mkfifo", [join(source, "ab", "e".repeat(38))]);
+  writeFileSync(join(source, "ab", "tmp_obj_x"), "x");
   writeFileSync(join(source, "pack", `pack-${SHA}.pack`), "pack");
   writeFileSync(join(source, "pack", `pack-${SHA}.idx`), "idx");
   writeFileSync(join(source, "pack", `pack-${SHA}.bitmap`), "bitmap");
   writeFileSync(join(source, "info", "alternates"), "/elsewhere\n");
   writeFileSync(join(source, "info", "http-alternates"), "https://example.invalid\n");
-  symlinkSync(join(root, "elsewhere"), join(source, "cd"));
+  symlinkSync(join(root, "elsewhere"), join(source, "not-an-object-dir"));
 
-  const result = copyObjects(source, destination);
-  assert.deepEqual(result, { ok: true, files: 3, bytes: 5 + 4 + 3, skipped: 6 });
+  const result = await copyObjects(source, destination);
+  assert.deepEqual(result, { ok: true, files: 2, bytes: 5 + 4, skipped: 5, packs: [`pack-${SHA}.pack`] });
   assert.deepEqual(readdirSync(join(destination, "ab")), ["c".repeat(38)]);
-  assert.deepEqual(readdirSync(join(destination, "pack")).sort(), [`pack-${SHA}.idx`, `pack-${SHA}.pack`]);
+  assert.deepEqual(readdirSync(join(destination, "pack")), [`pack-${SHA}.pack`]);
   assert.equal(existsSync(join(destination, "info")), false);
-  assert.equal(existsSync(join(destination, "cd")), false);
 
-  assert.deepEqual(copyObjects(source, join(root, "dst2"), 6), { ok: false, reason: "too_large" });
+  assert.deepEqual(await copyObjects(source, join(root, "dst2"), { maxBytes: 6 }), { ok: false, reason: "too_large" });
+  assert.deepEqual(await copyObjects(source, join(root, "dst3"), { maxFiles: 1 }), { ok: false, reason: "too_large" });
+  assert.deepEqual(await copyObjects(source, join(root, "dst4"), { maxPacks: 0 }), { ok: false, reason: "too_large" });
+});
+
+test("copyObjects: 決まった名前の symlink・FIFO・ハードリンク・symlink のディレクトリは写さずに止める（FIFO でも止まらない）", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "self-agent-jobs-unsafe-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const outside = join(root, "outside");
+  writeFileSync(outside, "secret");
+  mkdirSync(join(root, "outside-dir"));
+  const cases: Array<[string, (source: string) => void]> = [
+    ["symlink", (source) => symlinkSync(outside, join(source, "ab", "d".repeat(38)))],
+    ["fifo", (source) => execFileSync("/usr/bin/mkfifo", [join(source, "ab", "e".repeat(38))])],
+    ["hardlink", (source) => linkSync(outside, join(source, "ab", "f".repeat(38)))],
+    ["pack symlink", (source) => symlinkSync(outside, join(source, "pack", `pack-${SHA}.pack`))],
+    ["dir symlink", (source) => symlinkSync(join(root, "outside-dir"), join(source, "cd"))],
+  ];
+  for (const [name, plant] of cases) {
+    const source = join(root, `src-${name}`);
+    mkdirSync(join(source, "ab"), { recursive: true });
+    mkdirSync(join(source, "pack"));
+    plant(source);
+    const destination = join(root, `dst-${name}`);
+    mkdirSync(destination);
+    assert.deepEqual(await copyObjects(source, destination), { ok: false, reason: "unsafe" }, name);
+  }
+  assert.equal(readdirSync(root).some((name) => name.startsWith("dst-") && readdirSync(join(root, name)).includes("info")), false);
 });
 
 test("検査: .github を変えたコミット（後で消しても）は forbidden_path", async (t) => {
@@ -330,6 +494,38 @@ test("検査: .github を変えたコミット（後で消しても）は forbid
   git(g.repo, ["rm", "--quiet", "-r", ".github"]);
   git(g.repo, ["commit", "--quiet", "-m", "remove"]);
   commitFile(g.repo, "a.txt", "a\n");
+  assert.deepEqual(await importAndInspect(g), { ok: false, failure: "forbidden_path" });
+});
+
+test("検査: マージコミットだけが .github を持ち込んでも forbidden_path（-m で各親との差分を見る）", async (t) => {
+  const f = setup(t);
+  await prepare(f);
+  git(f.repo, ["switch", "--quiet", "-c", "side", "main"]);
+  commitFile(f.repo, "side.txt", "s\n");
+  git(f.repo, ["switch", "--quiet", jobBranch(1)]);
+  commitFile(f.repo, "a.txt", "a\n");
+  git(f.repo, ["merge", "--quiet", "--no-ff", "--no-commit", "side"]);
+  mkdirSync(join(f.repo, ".github", "workflows"), { recursive: true });
+  writeFileSync(join(f.repo, ".github", "workflows", "x.yml"), "on: push\n");
+  git(f.repo, ["add", ".github"]);
+  git(f.repo, ["commit", "--quiet", "--no-verify", "-m", "merge"]);
+  // マージ以外のコミットは .github を変えていない
+  assert.equal(git(f.repo, ["log", "--no-merges", "--format=", "--name-only", "main..HEAD"]).includes(".github"), false);
+  assert.deepEqual(await importAndInspect(f), { ok: false, failure: "forbidden_path" });
+});
+
+test("検査: .github という名前の symlink・gitlink も forbidden_path", async (t) => {
+  const f = setup(t);
+  await prepare(f);
+  symlinkSync("docs", join(f.repo, ".github"));
+  git(f.repo, ["add", ".github"]);
+  git(f.repo, ["commit", "--quiet", "--no-verify", "-m", "link"]);
+  assert.deepEqual(await importAndInspect(f), { ok: false, failure: "forbidden_path" });
+
+  const g = setup(t);
+  await prepare(g);
+  git(g.repo, ["update-index", "--add", "--cacheinfo", `160000,${SHA},.github`]);
+  git(g.repo, ["commit", "--quiet", "--no-verify", "-m", "gitlink"]);
   assert.deepEqual(await importAndInspect(g), { ok: false, failure: "forbidden_path" });
 });
 
@@ -384,9 +580,8 @@ test("push: リモートのブランチが先に進んでいれば push_rejected
   const theirs = git(other, ["rev-parse", "HEAD"]);
 
   const sha = commitFile(f.repo, "a.txt", "a\n");
-  const imported = await f.client.importWork({ repoDir: f.repo, branch: jobBranch(1), quarantineDir: f.quarantine, bareDir: f.bare, runId: 1 });
-  assert.ok(imported.ok);
-  assert.deepEqual(await f.client.push({ bareDir: f.bare, remote: f.remote, sha, branch: jobBranch(1) }), { ok: false, failure: "push_rejected" });
+  assert.ok((await importWork(f)).ok);
+  assert.deepEqual(await f.client.push({ ...TARGET, bareDir: f.bare, sha, branch: jobBranch(1) }), { ok: false, failure: "push_rejected" });
   assert.equal(git(f.root, ["--git-dir", f.remote, "rev-parse", `refs/heads/${jobBranch(1)}`]), theirs);
 });
 
@@ -394,39 +589,78 @@ test("続き: fetchBare でリモートのジョブのブランチを取り、�
   const f = setup(t);
   await prepare(f);
   const first = commitFile(f.repo, "a.txt", "a\n");
-  assert.ok((await f.client.importWork({ repoDir: f.repo, branch: jobBranch(1), quarantineDir: f.quarantine, bareDir: f.bare, runId: 1 })).ok);
-  assert.deepEqual(await f.client.push({ bareDir: f.bare, remote: f.remote, sha: first, branch: jobBranch(1) }), { ok: true });
+  assert.ok((await importWork(f)).ok);
+  assert.deepEqual(await f.client.push({ ...TARGET, bareDir: f.bare, sha: first, branch: jobBranch(1) }), { ok: true });
 
   rmSync(join(f.root, "active"), { recursive: true });
   mkdirSync(join(f.root, "active"));
-  assert.deepEqual(await f.client.fetchBare({ remote: f.remote, base: "main", branch: jobBranch(1), bareDir: f.bare }), { ok: true });
+  assert.deepEqual(await f.client.fetchBare({ ...TARGET, base: "main", branch: jobBranch(1), bareDir: f.bare }), { ok: true });
   assert.deepEqual(
     await f.client.prepareWorkspace({ bareDir: f.bare, repoDir: f.repo, checkout: jobBranch(1), author: AUTHOR }),
     { ok: true },
   );
   assert.equal(git(f.repo, ["rev-parse", "HEAD"]), first);
   const second = commitFile(f.repo, "b.txt", "b\n");
-  const imported = await f.client.importWork({ repoDir: f.repo, branch: jobBranch(1), quarantineDir: f.quarantine, bareDir: f.bare, runId: 2 });
-  assert.deepEqual(imported, { ok: true, sha: second, ref: "refs/self-agent/staged/2" });
+  assert.deepEqual(await importWork(f, 2), { ok: true, sha: second, ref: "refs/self-agent/staged/2" });
   const base = await f.client.revParse(f.bare, `refs/heads/${jobBranch(1)}`);
   assert.equal(base, first);
   assert.deepEqual(await f.client.inspect({ bareDir: f.bare, base: first, staged: second, authorEmail: AUTHOR.email }), { ok: true, commits: 1 });
-  assert.deepEqual(await f.client.push({ bareDir: f.bare, remote: f.remote, sha: second, branch: jobBranch(1) }), { ok: true });
+  assert.deepEqual(await f.client.push({ ...TARGET, bareDir: f.bare, sha: second, branch: jobBranch(1) }), { ok: true });
 
-  assert.deepEqual(await f.client.fetchBare({ remote: f.remote, base: "main", branch: jobBranch(9), bareDir: f.bare }), {
+  assert.deepEqual(await f.client.fetchBare({ ...TARGET, base: "main", branch: jobBranch(9), bareDir: f.bare }), {
     ok: false,
     failure: "branch_missing",
   });
 });
 
+test("ローカルのリモートの hooks（回帰）: テスト用の経路では相手側の hooks が host で動く。本番の経路は github.com の URL だけを使う", async (t) => {
+  const f = setup(t);
+  await prepare(f);
+  mkdirSync(join(f.remote, "hooks"), { recursive: true });
+  for (const hook of ["pre-receive", "update", "post-receive", "reference-transaction"]) markerScript(join(f.remote, "hooks", hook), f.markers, hook);
+  const sha = commitFile(f.repo, "a.txt", "a\n");
+  assert.ok((await importWork(f)).ok);
+  // テスト用の経路（ローカルのパス）: -c core.hooksPath=/dev/null でも相手側の hooks が動く = 本番でローカルのパスを使ってはいけない理由
+  assert.deepEqual(await f.client.push({ ...TARGET, bareDir: f.bare, sha, branch: jobBranch(1) }), { ok: true });
+  assert.ok(readdirSync(f.markers).includes("pre-receive"));
+  for (const name of readdirSync(f.markers)) rmSync(join(f.markers, name));
+
+  // 本番の経路（remoteUrlForTests なし）: リモートは owner/repo から組み立てた github.com の URL だけで、ローカルの bare には届かない
+  const calls: Array<readonly string[]> = [];
+  const production = new GitClient({
+    gitPath: GIT,
+    ghPath: GH,
+    run: async (_file, args) => {
+      calls.push(args);
+      return { kind: "exited", code: 128, stdout: "", stderr: "fatal: unable to access" };
+    },
+  });
+  await production.cloneBare({ ...TARGET, base: "main", bareDir: join(f.root, "prod.git") });
+  await production.fetchBare({ ...TARGET, base: "main", branch: jobBranch(1), bareDir: f.bare });
+  await production.push({ ...TARGET, bareDir: f.bare, sha, branch: jobBranch(1) });
+  assert.equal(calls.length, 3);
+  for (const args of calls) {
+    assert.ok(args.includes(githubRemoteUrl(TARGET.owner, TARGET.repo)), args.join(" "));
+    assert.equal(args.includes(f.remote), false);
+  }
+  assert.ok(calls[0]!.includes("--no-local"));
+  // owner・repo にパスを入れることはできない
+  await assert.rejects(production.push({ owner: f.remote, repo: "x", bareDir: f.bare, sha, branch: jobBranch(1) }));
+  await assert.rejects(production.cloneBare({ owner: "example-org", repo: "../remote.git", base: "main", bareDir: join(f.root, "x.git") }));
+  assert.deepEqual(readdirSync(f.markers), []);
+  // テスト用の指定でも、絶対パスでないものは使わない
+  const bad = new GitClient({ gitPath: GIT, ghPath: GH, remoteUrlForTests: () => "https://example.com/x.git" });
+  await assert.rejects(bad.cloneBare({ ...TARGET, base: "main", bareDir: join(f.root, "y.git") }));
+});
+
 test("log: 失敗の 1 行は操作と種類だけで、パス・ブランチ名・リモートを含まない", async (t) => {
   const f = setup(t);
-  await f.client.fetchBare({ remote: f.remote, base: "main", branch: jobBranch(9), bareDir: f.bare });
-  await f.client.importWork({ repoDir: f.repo, branch: jobBranch(1), quarantineDir: f.quarantine, bareDir: f.bare, runId: 1 });
+  await f.client.fetchBare({ ...TARGET, base: "main", branch: jobBranch(9), bareDir: f.bare });
+  await importWork(f);
   assert.ok(f.logs.length >= 2);
   for (const line of f.logs) {
     assert.match(line, /^ジョブの git が失敗しました（[a-z-]+・[a-z_ 0-9]+）$/);
-    for (const secret of [f.root, "self-agent/job", "remote.git", "main"]) assert.equal(line.includes(secret), false, line);
+    for (const secret of [f.root, "self-agent/job", "remote.git", "main", "example"]) assert.equal(line.includes(secret), false, line);
   }
 });
 
@@ -466,10 +700,10 @@ test("引数と env（偽の run）: 全コマンドに -C と固定の -c、cre
   });
   const remote = githubRemoteUrl("example-org", "example-repo");
   const bare = join(root, "1.git");
-  await client.cloneBare({ remote, base: "main", bareDir: bare });
-  await client.fetchBare({ remote, base: "main", branch: jobBranch(1), bareDir: bare });
+  await client.cloneBare({ ...TARGET, base: "main", bareDir: bare });
+  await client.fetchBare({ ...TARGET, base: "main", branch: jobBranch(1), bareDir: bare });
   await client.prepareWorkspace({ bareDir: bare, repoDir: join(root, "repo"), checkout: "main", newBranch: jobBranch(1), author: AUTHOR });
-  await client.push({ bareDir: bare, remote, sha: SHA, branch: jobBranch(1) });
+  await client.push({ ...TARGET, bareDir: bare, sha: SHA, branch: jobBranch(1) });
   await client.inspect({ bareDir: bare, base: SHA, staged: SHA, authorEmail: AUTHOR.email });
 
   const credential = gitCredentialArgs(GH);
@@ -504,32 +738,33 @@ test("引数と env（偽の run）: 全コマンドに -C と固定の -c、cre
   assert.deepEqual(gitChildEnv({ GH_TOKEN: "x" }).GH_TOKEN, undefined);
 });
 
-test("push の引数: 送り先が self-agent/ の下でない・+・--force 系・--mirror は実行せずに投げる", async () => {
+test("push の引数: 送り先が self-agent/ の下でない・+・許可していないオプションは実行せずに投げる", async () => {
   const { run, calls } = fakeRun(() => OK);
   const client = new GitClient({ gitPath: GIT, ghPath: GH, run });
   const remote = githubRemoteUrl("example-org", "example-repo");
   for (const branch of ["main", "+self-agent/job-1", "self-agent/../main", "self-agent/", "refs/heads/self-agent/job-1", "self-agent/job-1.lock", "self-agent/-x", "self-agent/a b"]) {
-    await assert.rejects(client.push({ bareDir: "/tmp/x.git", remote, sha: SHA, branch }), branch);
+    await assert.rejects(client.push({ ...TARGET, bareDir: "/tmp/x.git", sha: SHA, branch }), branch);
     assert.throws(() => buildPushArgs(remote, SHA, branch), branch);
   }
-  await assert.rejects(client.push({ bareDir: "/tmp/x.git", remote, sha: "HEAD", branch: jobBranch(1) }));
-  await assert.rejects(client.push({ bareDir: "/tmp/x.git", remote: "--upload-pack=x", sha: SHA, branch: jobBranch(1) }));
-  await assert.rejects(client.push({ bareDir: "/tmp/x.git", remote: "https://example.com/a/b.git", sha: SHA, branch: jobBranch(1) }));
+  await assert.rejects(client.push({ ...TARGET, bareDir: "/tmp/x.git", sha: "HEAD", branch: jobBranch(1) }));
+  await assert.rejects(client.push({ owner: "--upload-pack=x", repo: "r", bareDir: "/tmp/x.git", sha: SHA, branch: jobBranch(1) }));
+  assert.throws(() => buildPushArgs("https://example.com/a/b.git", SHA, jobBranch(1)));
+  assert.throws(() => buildPushArgs("--receive-pack=x", SHA, jobBranch(1)));
   assert.equal(calls.length, 0);
 
   const good = buildPushArgs(remote, SHA, jobBranch(1));
   assertSafePushArgs(good);
-  for (const extra of ["--force", "-f", "--force-with-lease", "--force-with-lease=x", "--mirror", "--delete", "--all", "--tags"]) {
+  for (const extra of ["--force", "-f", "--force-with-lease", "--force-with-lease=x", "--mirror", "--delete", "--all", "--tags", "--receive-pack=x", "--exec=x", "-o", "--push-option=x", "--atomic", "-v"]) {
     assert.throws(() => assertSafePushArgs([...good.slice(0, 1), extra, ...good.slice(1)]), extra);
   }
   assert.throws(() => assertSafePushArgs(["push", "--porcelain", remote, `+${SHA}:refs/heads/self-agent/job-1`]));
   assert.throws(() => assertSafePushArgs(["push", "--porcelain", remote, `${SHA}:refs/heads/main`]));
   assert.throws(() => assertSafePushArgs(["push", "--porcelain", remote, `${SHA}:refs/heads/self-agent/job-1`, `${SHA}:refs/heads/main`]));
   assert.throws(() => assertSafePushArgs(["push", "--porcelain", remote, `:refs/heads/self-agent/job-1`]));
+  assert.throws(() => assertSafePushArgs(["push", "--porcelain", "ext::sh -c x", `${SHA}:refs/heads/self-agent/job-1`]));
 });
 
 test("push の失敗の分け方（偽の run）: 拒否・認証・それ以外", async () => {
-  const remote = githubRemoteUrl("example-org", "example-repo");
   const cases: Array<[RunResult, string]> = [
     [{ kind: "exited", code: 1, stdout: `To x\n!\t${SHA}:refs/heads/self-agent/job-1\t[rejected] (fetch first)\nDone\n`, stderr: "" }, "push_rejected"],
     [{ kind: "exited", code: 128, stdout: "", stderr: "remote: Permission to example-org/example-repo.git denied to example.\nfatal: unable to access: The requested URL returned error: 403\n" }, "push_auth"],
@@ -541,29 +776,28 @@ test("push の失敗の分け方（偽の run）: 拒否・認証・それ以外
   for (const [result, failure] of cases) {
     const logs: string[] = [];
     const client = new GitClient({ gitPath: GIT, ghPath: GH, run: fakeRun(() => result).run, log: (line) => logs.push(line) });
-    assert.deepEqual(await client.push({ bareDir: "/tmp/x.git", remote, sha: SHA, branch: jobBranch(1) }), { ok: false, failure });
+    assert.deepEqual(await client.push({ ...TARGET, bareDir: "/tmp/x.git", sha: SHA, branch: jobBranch(1) }), { ok: false, failure });
     assert.equal(logs.length, 1);
     assert.equal(/example|github|self-agent/.test(logs[0]!), false, logs[0]);
   }
 });
 
 test("clone・fetch の失敗は clone_failed、続きでジョブのブランチが無ければ branch_missing（偽の run）", async () => {
-  const remote = githubRemoteUrl("example-org", "example-repo");
   const failed = new GitClient({ gitPath: GIT, ghPath: GH, run: fakeRun(() => ({ kind: "exited", code: 128, stdout: "", stderr: "fatal: repository not found" })).run });
-  assert.deepEqual(await failed.cloneBare({ remote, base: "main", bareDir: "/tmp/x.git" }), { ok: false, failure: "clone_failed" });
-  assert.deepEqual(await failed.fetchBare({ remote, base: "main", branch: jobBranch(1), bareDir: "/tmp/x.git" }), { ok: false, failure: "clone_failed" });
+  assert.deepEqual(await failed.cloneBare({ ...TARGET, base: "main", bareDir: "/tmp/x.git" }), { ok: false, failure: "clone_failed" });
+  assert.deepEqual(await failed.fetchBare({ ...TARGET, base: "main", branch: jobBranch(1), bareDir: "/tmp/x.git" }), { ok: false, failure: "clone_failed" });
   const missing = new GitClient({
     gitPath: GIT,
     ghPath: GH,
     run: fakeRun(() => ({ kind: "exited", code: 128, stdout: "", stderr: "fatal: couldn't find remote ref refs/heads/self-agent/job-1\n" })).run,
   });
-  assert.deepEqual(await missing.fetchBare({ remote, base: "main", branch: jobBranch(1), bareDir: "/tmp/x.git" }), { ok: false, failure: "branch_missing" });
+  assert.deepEqual(await missing.fetchBare({ ...TARGET, base: "main", branch: jobBranch(1), bareDir: "/tmp/x.git" }), { ok: false, failure: "branch_missing" });
   const baseMissing = new GitClient({
     gitPath: GIT,
     ghPath: GH,
     run: fakeRun(() => ({ kind: "exited", code: 128, stdout: "", stderr: "fatal: couldn't find remote ref refs/heads/main\n" })).run,
   });
-  assert.deepEqual(await baseMissing.fetchBare({ remote, base: "main", branch: jobBranch(1), bareDir: "/tmp/x.git" }), { ok: false, failure: "clone_failed" });
+  assert.deepEqual(await baseMissing.fetchBare({ ...TARGET, base: "main", branch: jobBranch(1), bareDir: "/tmp/x.git" }), { ok: false, failure: "clone_failed" });
 });
 
 test("名前の形: gh のパス・リモート・ブランチ", () => {
@@ -573,11 +807,13 @@ test("名前の形: gh のパス・リモート・ブランチ", () => {
   assert.throws(() => new GitClient({ gitPath: GIT, ghPath: "/opt/$(x)/gh" }));
   assert.throws(() => new GitClient({ gitPath: "git", ghPath: GH }));
 
-  assert.equal(isAllowedRemote("https://github.com/example-org/example.repo.git"), true);
-  assert.equal(isAllowedRemote("/tmp/remote.git"), true);
-  for (const remote of ["https://github.com/a/b", "http://github.com/a/b.git", "ssh://github.com/a/b.git", "ext::sh -c x", "-x", "/tmp/../etc", "/tmp/a b", "https://github.com/a/../b.git"]) {
-    assert.equal(isAllowedRemote(remote), false, remote);
+  assert.equal(isGithubRemote("https://github.com/example-org/example.repo.git"), true);
+  assert.equal(isGithubRemote("/tmp/remote.git"), false);
+  assert.equal(isLocalTestRemote("/tmp/remote.git"), true);
+  for (const remote of ["https://github.com/a/b", "http://github.com/a/b.git", "ssh://github.com/a/b.git", "ext::sh -c x", "-x", "https://github.com/a/../b.git"]) {
+    assert.equal(isGithubRemote(remote), false, remote);
   }
+  for (const remote of ["/tmp/../etc", "/tmp/a b", "relative/path", "-x"]) assert.equal(isLocalTestRemote(remote), false, remote);
   assert.throws(() => githubRemoteUrl("a/b", "c"));
   assert.throws(() => githubRemoteUrl("a", ".."));
 
