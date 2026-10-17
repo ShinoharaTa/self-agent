@@ -426,7 +426,8 @@ export class JobGithubApi {
 
   /**
    * draft PR を作る（§6.3。`POST /repos/<o>/<r>/pulls`。head は同じリポジトリのジョブのブランチ、maintainer_can_modify は false）。
-   * 既にある（422）なら findPullsByHead で引いて、head が同じリポジトリのそのブランチのものを existing: true で返す。
+   * 既にある（422）なら findPullsByHead で引いて、head が同じリポジトリのそのブランチで open のものを existing: true で返す
+   * （closed・merged しか無ければ http_error）。
    * 未確認 U5（coding-jobs.md §1.5）: `gh api --method POST --input -`（標準入力の JSON）で作れること・既にあるときの 422 の形は実機で確かめていない
    */
   async createDraftPull(input: {
@@ -456,7 +457,8 @@ export class JobGithubApi {
     const found = await this.findPullsByHead(input.owner, input.repo, input.head);
     if (!found.ok) return found;
     const fullName = `${input.owner}/${input.repo}`.toLowerCase();
-    const pull = found.value.find((item) => item.headRef === input.head && item.headRepo?.toLowerCase() === fullName);
+    // 閉じた・マージ済みの PR は使わない（作り直せないので失敗にする）
+    const pull = found.value.find((item) => item.state === "open" && item.headRef === input.head && item.headRepo?.toLowerCase() === fullName);
     if (pull === undefined) return { ok: false, failure: "http_error", status: 422 };
     return { ok: true, value: { number: pull.number, url: pullUrl(input.owner, input.repo, pull.number), existing: true } };
   }
