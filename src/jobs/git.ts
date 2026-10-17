@@ -3,8 +3,8 @@
 // git を動かさない: 作業場所からは objects とブランチの先端だけを隔離の場所に写し（設定・hooks・alternates は写さない）、
 // アプリが作った bare に fetch してから、その bare の上で検査して push する。push 先は `refs/heads/self-agent/*` だけ・--force なし。
 // 失敗は固定の語で返し、log・例外の message にリポジトリ名・URL・ブランチ名・パス・stderr を入れない
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type Stats } from "node:fs";
-import { lstat, mkdir, open, readdir } from "node:fs/promises";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, type Stats } from "node:fs";
+import { lstat, mkdir, open, readdir, readlink, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { removeTree } from "../agent/remove-tree.ts";
 import { execFileRun, isOwner, isRepo, type RunCommand, type RunResult } from "../github/gh.ts";
@@ -23,6 +23,8 @@ export const IMPORT_MAX_BYTES = 1024 * 1024 * 1024;
 export const IMPORT_MAX_FILES = 20_000;
 /** 取り込みで写すパックの数の上限（index-pack --strict を参照の順に並べ直してやり直すので、数を抑える） */
 export const IMPORT_MAX_PACKS = 64;
+/** 取り込み全体（objects の写し → index-pack → fetch）の締め切り */
+export const IMPORT_DEADLINE_MS = 10 * 60_000;
 /** push の前の検査で許す blob の大きさの上限（§6.1） */
 export const BLOB_MAX_BYTES = 50 * 1024 * 1024;
 /** ジョブのブランチの接頭辞（§6.2。push 先はこの下だけ） */
@@ -165,20 +167,27 @@ function assertBranch(branch: string): void {
  * push の引数（§6.2）。送り元は 40 桁の sha、送り先は `refs/heads/self-agent/…` だけ。`--force` 系・`+`・`--mirror`・`--delete` は作らない。
  * 形が違えば実行せずに投げる（assertSafePushArgs でも同じことを確かめる）
  */
-export function buildPushArgs(remote: string, sha: string, branch: string): string[] {
-  if (!isGithubRemote(remote) && !isLocalTestRemote(remote)) throw new Error("リモートの形が違います");
+export function buildPushArgs(remote: string, sha: string, branch: string, options: PushArgsOptions = {}): string[] {
+  if (!isAllowedPushRemote(remote, options)) throw new Error("リモートの形が違います");
   if (!isSha(sha)) throw new Error("push する先端の形が違います");
   if (!isJobBranch(branch)) throw new Error("push できるのは self-agent/ の下のブランチだけです");
   const args = ["push", "--porcelain", "--no-verify", remote, `${sha}:refs/heads/${branch}`];
-  assertSafePushArgs(args);
+  assertSafePushArgs(args, options);
   return args;
+}
+
+/** allowLocalForTests はテスト専用（GitClient の remoteUrlForTests のときだけ）。無ければリモートは github.com の URL だけ */
+export type PushArgsOptions = { allowLocalForTests?: boolean };
+
+function isAllowedPushRemote(remote: string, options: PushArgsOptions): boolean {
+  return isGithubRemote(remote) || (options.allowLocalForTests === true && isLocalTestRemote(remote));
 }
 
 /** push に付けてよいオプション（許可方式。これ以外のオプションは投げる） */
 const ALLOWED_PUSH_OPTIONS: ReadonlySet<string> = new Set(["--porcelain", "--no-verify"]);
 
 /** push の引数が安全な形か（§6.2）。オプションは ALLOWED_PUSH_OPTIONS だけ、残りは [リモート, refspec] の 2 つだけ。違えば投げる */
-export function assertSafePushArgs(args: readonly string[]): void {
+export function assertSafePushArgs(args: readonly string[], options: PushArgsOptions = {}): void {
   if (args[0] !== "push") throw new Error("push の引数の形が違います");
   const positional: string[] = [];
   for (const arg of args.slice(1)) {
@@ -189,7 +198,7 @@ export function assertSafePushArgs(args: readonly string[]): void {
     }
   }
   if (positional.length !== 2) throw new Error("push の引数の形が違います");
-  if (!isGithubRemote(positional[0]!) && !isLocalTestRemote(positional[0]!)) throw new Error("リモートの形が違います");
+  if (!isAllowedPushRemote(positional[0]!, options)) throw new Error("リモートの形が違います");
   const refspec = positional[1]!;
   const colon = refspec.indexOf(":");
   if (refspec.startsWith("+") || colon === -1) throw new Error("push の送り先の形が違います");
@@ -223,7 +232,24 @@ function sameRegularFile(before: Stats, after: Stats): boolean {
  */
 export type CopyObjectsResult =
   | { ok: true; files: number; bytes: number; skipped: number; packs: string[] }
-  | { ok: false; reason: "too_large" | "unsafe" | "error" };
+  | { ok: false; reason: "too_large" | "unsafe" | "timeout" | "error" };
+
+/** 開いた fd の実際のパス（/proc/self/fd の readlink）が root（realpath）の下か。/proc が読めなければ false（fail-closed） */
+export async function fdUnder(fd: number, root: string): Promise<boolean> {
+  try {
+    return (await readlink(`/proc/self/fd/${fd}`)).startsWith(`${root}/`);
+  } catch {
+    return false;
+  }
+}
+
+function fdUnderSync(fd: number, root: string): boolean {
+  try {
+    return readlinkSync(`/proc/self/fd/${fd}`).startsWith(`${root}/`);
+  } catch {
+    return false;
+  }
+}
 
 /** ディレクトリの名前の一覧。読む前と後の lstat が同じ実際のディレクトリ（dev・ino）でなければ undefined */
 async function readStableDir(path: string): Promise<string[] | undefined> {
@@ -235,10 +261,14 @@ async function readStableDir(path: string): Promise<string[] | undefined> {
   return names;
 }
 
-/** 実際のファイル 1 つを fd から写す（O_NOFOLLOW・O_NONBLOCK で開き、fstat で確かめてから、確かめた大きさだけ読む） */
+/**
+ * 実際のファイル 1 つを fd から写す（O_NOFOLLOW・O_NONBLOCK で開き、fstat で確かめ、fd の実際のパスが root の下かを確かめてから、
+ * 確かめた大きさだけ読む）
+ */
 async function copyRegularFile(
   source: string,
   destination: string,
+  root: string,
   remainingBytes: number,
 ): Promise<{ kind: "ok"; bytes: number } | { kind: "too_large" | "unsafe" | "error" }> {
   const before = await lstat(source);
@@ -247,6 +277,7 @@ async function copyRegularFile(
   try {
     const stat = await input.stat();
     if (!sameRegularFile(before, stat)) return { kind: "unsafe" };
+    if (!(await fdUnder(input.fd, root))) return { kind: "unsafe" };
     if (stat.size > remainingBytes) return { kind: "too_large" };
     const output = await open(destination, "wx", 0o444);
     let copied = 0;
@@ -271,12 +302,13 @@ async function copyRegularFile(
  * 作業場所の `.git/objects` を隔離の場所の objects に写す（§5.3）。写すのは決まった名前（`<2 桁>/<38 桁>`・`pack/pack-<40 桁>.pack`）
  * の実際のファイルだけで、それ以外の名前は飛ばして数える。決まった名前のものが実際のファイル・ディレクトリでない・開いた後に別の
  * ものだった・ハードリンクがあれば unsafe で止める（fd から読むので、すり替えられても外を読まず、FIFO で止まらない）。合計の大きさ・
- * ファイルの数・パックの数が上限を超えたら too_large。写すのは非同期（イベントループを長く止めない）。写したパックの名前を返す
+ * ファイルの数・パックの数が上限を超えたら too_large、締め切り（deadline。エポックからのミリ秒）を過ぎたら timeout。開いた fd の
+ * 実際のパスが sourceObjects の realpath の下でなければ unsafe。写すのは非同期（イベントループを長く止めない）。写したパックの名前を返す
  */
 export async function copyObjects(
   sourceObjects: string,
   destinationObjects: string,
-  limits: { maxBytes?: number; maxFiles?: number; maxPacks?: number } = {},
+  limits: { maxBytes?: number; maxFiles?: number; maxPacks?: number; deadline?: number } = {},
 ): Promise<CopyObjectsResult> {
   const maxBytes = limits.maxBytes ?? IMPORT_MAX_BYTES;
   const maxFiles = limits.maxFiles ?? IMPORT_MAX_FILES;
@@ -288,6 +320,7 @@ export async function copyObjects(
   try {
     const names = await readStableDir(sourceObjects);
     if (names === undefined) return { ok: false, reason: "unsafe" };
+    const root = await realpath(sourceObjects);
     for (const name of names) {
       const isLooseDir = LOOSE_DIR_PATTERN.test(name);
       if (!isLooseDir && name !== "pack") {
@@ -306,8 +339,9 @@ export async function copyObjects(
           continue;
         }
         if (files + 1 > maxFiles) return { ok: false, reason: "too_large" };
+        if (limits.deadline !== undefined && Date.now() > limits.deadline) return { ok: false, reason: "timeout" };
         if (!isLooseDir && packs.length + 1 > maxPacks) return { ok: false, reason: "too_large" };
-        const copied = await copyRegularFile(join(source, fileName), join(destinationDir, fileName), maxBytes - bytes);
+        const copied = await copyRegularFile(join(source, fileName), join(destinationDir, fileName), root, maxBytes - bytes);
         if (copied.kind !== "ok") return { ok: false, reason: copied.kind };
         bytes += copied.bytes;
         files += 1;
@@ -329,14 +363,17 @@ function isRealDir(path: string): boolean {
   }
 }
 
-/** 小さな実際のファイルを fd から読む（O_NOFOLLOW・O_NONBLOCK で開き、lstat と fstat が同じ・ハードリンクなし・maxBytes 以下のときだけ） */
-function readSmallFile(path: string, before: Stats, maxBytes: number): string | undefined {
+/**
+ * 小さな実際のファイルを fd から読む（O_NOFOLLOW・O_NONBLOCK で開き、lstat と fstat が同じ・ハードリンクなし・maxBytes 以下・
+ * fd の実際のパスが root の下のときだけ）
+ */
+function readSmallFile(path: string, before: Stats, root: string, maxBytes: number): string | undefined {
   if (!before.isFile() || before.size > maxBytes) return undefined;
   let fd: number | undefined;
   try {
     fd = openSync(path, OPEN_NOFOLLOW);
     const stat = fstatSync(fd);
-    if (!sameRegularFile(before, stat) || stat.size > maxBytes) return undefined;
+    if (!sameRegularFile(before, stat) || stat.size > maxBytes || !fdUnderSync(fd, root)) return undefined;
     const buffer = Buffer.alloc(stat.size);
     let read = 0;
     while (read < stat.size) {
@@ -355,10 +392,16 @@ function readSmallFile(path: string, before: Stats, maxBytes: number): string | 
 /**
  * 作業場所の `.git` からブランチの先端を読む（§5.3。git は使わない）。`refs/heads/<branch>` のファイル（途中の要素はどれも実際の
  * ディレクトリ、最後は実際のファイル）か、無ければ `packed-refs`（実際のファイル）の該当行から 40 桁の 16 進だけを読む。
- * ファイルは fd から読む（symlink・FIFO・ハードリンクは読まない）。symbolic ref・形の違うもの・無いものは undefined（HEAD は見ない）
+ * ファイルは fd から読む（symlink・FIFO・ハードリンク・fd の実際のパスが gitDir の realpath の外のものは読まない）。symbolic ref・形の違うもの・無いものは undefined（HEAD は見ない）
  */
 export function readBranchTip(gitDir: string, branch: string): string | undefined {
   assertBranch(branch);
+  let root: string;
+  try {
+    root = realpathSync(gitDir);
+  } catch {
+    return undefined;
+  }
   const parts = ["refs", "heads", ...branch.split("/")];
   let path = gitDir;
   let looseStat: Stats | undefined;
@@ -376,7 +419,7 @@ export function readBranchTip(gitDir: string, branch: string): string | undefine
     if (last) looseStat = stat;
   }
   if (looseStat !== undefined) {
-    const match = /^([0-9a-f]{40})\n?$/.exec(readSmallFile(path, looseStat, LOOSE_REF_MAX_BYTES) ?? "");
+    const match = /^([0-9a-f]{40})\n?$/.exec(readSmallFile(path, looseStat, root, LOOSE_REF_MAX_BYTES) ?? "");
     return match === null ? undefined : match[1];
   }
   const packed = join(gitDir, "packed-refs");
@@ -386,7 +429,7 @@ export function readBranchTip(gitDir: string, branch: string): string | undefine
   } catch {
     return undefined;
   }
-  const text = readSmallFile(packed, stat, PACKED_REFS_MAX_BYTES);
+  const text = readSmallFile(packed, stat, root, PACKED_REFS_MAX_BYTES);
   if (text === undefined) return undefined;
   const name = `refs/heads/${branch}`;
   for (const line of text.split("\n")) {
@@ -432,6 +475,8 @@ type GitCall = {
   input?: string;
   /** 失敗しても log に出さない（呼び出し側がまとめて出す） */
   quiet?: boolean;
+  /** 時間の上限（既定はネットか否かで決まる値。これより長くはしない） */
+  timeoutMs?: number;
 };
 
 /** 作業ジョブの host 側の git。どれも reject せず、失敗は GitFailure で返す（引数の形が違うときだけ実行せずに投げる） */
@@ -469,7 +514,7 @@ export class GitClient {
     const args = ["-C", call.cwd ?? "/", ...GIT_BASE_CONFIG_ARGS, ...(call.network === true ? this.credentialArgs : []), ...call.args];
     const result = await this.run(this.gitPath, args, {
       env: { ...this.env },
-      timeoutMs: call.network === true ? GIT_NET_TIMEOUT_MS : GIT_LOCAL_TIMEOUT_MS,
+      timeoutMs: Math.min(call.timeoutMs ?? Infinity, call.network === true ? GIT_NET_TIMEOUT_MS : GIT_LOCAL_TIMEOUT_MS),
       maxBuffer: GIT_MAX_BUFFER,
       ...(call.input === undefined ? {} : { input: call.input }),
     });
@@ -569,7 +614,7 @@ export class GitClient {
    * 隔離の場所（quarantineDir。あれば先に消す）を `git init --bare --template=` で作って objects を写し（copyObjects）、パックの
    * .idx を index-pack --strict で作り直し、先端がコミットであることを確かめて `refs/heads/out` に書き、bare に transfer.fsckObjects で
    * fetch する（`refs/self-agent/staged/<runId>`）。repoDir は git の `-C`・`--git-dir` に使わない。隔離の場所は最後に消す。
-   * どこで失敗しても import_failed
+   * 写し・index-pack・fetch は全体で IMPORT_DEADLINE_MS まで（各 git の時間の上限は残りの時間で切る）。どこで失敗しても import_failed
    */
   async importWork(input: {
     repoDir: string;
@@ -599,19 +644,30 @@ export class GitClient {
     } catch {
       return fail("cleanup");
     }
+    const deadline = Date.now() + IMPORT_DEADLINE_MS;
+    // 締め切りまでの残りで git を動かす。過ぎていれば動かさずに undefined
+    const step = async (call: GitCall): Promise<RunResult | undefined> => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return undefined;
+      return this.git({ ...call, timeoutMs: remaining });
+    };
     try {
       const quarantine = `--git-dir=${input.quarantineDir}`;
-      if (!succeeded(await this.git({ op: "init", args: ["init", "--bare", "--quiet", "--template=", "--", input.quarantineDir] }))) {
-        return failed;
-      }
-      const copied = await copyObjects(objects, join(input.quarantineDir, "objects"));
+      const init = await step({ op: "init", args: ["init", "--bare", "--quiet", "--template=", "--", input.quarantineDir] });
+      if (init === undefined) return fail("deadline");
+      if (!succeeded(init)) return failed;
+      const copied = await copyObjects(objects, join(input.quarantineDir, "objects"), { deadline });
       if (!copied.ok) return fail(copied.reason);
-      if (!(await this.indexPacks(input.quarantineDir, copied.packs))) return failed;
-      const type = await this.git({ op: "cat-file", args: [quarantine, "cat-file", "-t", sha] });
+      const indexed = await this.indexPacks(input.quarantineDir, copied.packs, step);
+      if (indexed !== "ok") return fail(indexed);
+      const type = await step({ op: "cat-file", args: [quarantine, "cat-file", "-t", sha] });
+      if (type === undefined) return fail("deadline");
       if (!succeeded(type)) return failed;
       if (type.stdout.trim() !== "commit") return fail("not_commit");
-      if (!succeeded(await this.git({ op: "update-ref", args: [quarantine, "update-ref", "refs/heads/out", sha] }))) return failed;
-      const fetched = await this.git({
+      const updated = await step({ op: "update-ref", args: [quarantine, "update-ref", "refs/heads/out", sha] });
+      if (updated === undefined) return fail("deadline");
+      if (!succeeded(updated)) return failed;
+      const fetched = await step({
         op: "fetch",
         args: [
           `--git-dir=${input.bareDir}`,
@@ -625,6 +681,7 @@ export class GitClient {
           `refs/heads/out:${ref}`,
         ],
       });
+      if (fetched === undefined) return fail("deadline");
       if (!succeeded(fetched)) return failed;
       const staged = await this.revParse(input.bareDir, ref);
       if (staged !== sha) return fail("mismatch");
@@ -640,27 +697,33 @@ export class GitClient {
 
   /**
    * 隔離の場所に写したパックの .idx を `index-pack --strict` で作り直す（LLM の .idx は使わない）。--strict は参照先が既にあることを
-   * 求めるので、通らなかったパックは、ほかのパックが通った後にやり直す（1 巡で 1 つも通らなければ失敗）
+   * 求めるので、通らなかったパックは、ほかのパックが通った後にやり直す（1 巡で 1 つも通らなければ strict で失敗）。時間切れ・出力の
+   * 上限・起動の失敗・締め切りはやり直さずにすぐ失敗にする
    */
-  private async indexPacks(quarantineDir: string, packs: readonly string[]): Promise<boolean> {
+  private async indexPacks(
+    quarantineDir: string,
+    packs: readonly string[],
+    step: (call: GitCall) => Promise<RunResult | undefined>,
+  ): Promise<"ok" | "strict" | "timeout" | "output_too_large" | "spawn" | "deadline"> {
     let pending = [...packs];
     while (pending.length > 0) {
       const failedPacks: string[] = [];
       for (const pack of pending) {
-        const result = await this.git({
+        const result = await step({
           op: "index-pack",
           args: [`--git-dir=${quarantineDir}`, "index-pack", "--strict", join(quarantineDir, "objects", "pack", pack)],
           quiet: true,
         });
+        if (result === undefined) return "deadline";
+        if (result.kind === "timeout") return "timeout";
+        if (result.kind === "too_large") return "output_too_large";
+        if (result.kind === "error") return "spawn";
         if (!succeeded(result)) failedPacks.push(pack);
       }
-      if (failedPacks.length === pending.length) {
-        this.log("ジョブの git が失敗しました（index-pack・strict）");
-        return false;
-      }
+      if (failedPacks.length === pending.length) return "strict";
       pending = failedPacks;
     }
-    return true;
+    return "ok";
   }
 
   /** bare の ref（か sha）の指すコミットの sha。無ければ undefined */
@@ -742,7 +805,7 @@ export class GitClient {
    */
   async push(input: RepoRef & { bareDir: string; sha: string; branch: string }): Promise<GitOutcome> {
     assertDir(input.bareDir);
-    const pushArgs = buildPushArgs(this.remote(input), input.sha, input.branch);
+    const pushArgs = buildPushArgs(this.remote(input), input.sha, input.branch, { allowLocalForTests: this.remoteUrlForTests !== undefined });
     const result = await this.git({ op: "push", network: true, args: [`--git-dir=${input.bareDir}`, ...pushArgs] });
     if (succeeded(result)) return { ok: true };
     if (result.kind !== "exited") return { ok: false, failure: "push_failed" };
