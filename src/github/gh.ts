@@ -1,7 +1,7 @@
 // gh の実行（docs/plan/github-notifications.md §2・§7.1・§9）。gh api を GET と許可したパスだけで呼び、--include の出力を
 // ステータス・ヘッダ・本文に分ける。シェルを通さない（execFile に固定の形の引数）。認証は gh の今のログイン（gh が自分の設定を読む）
 
-import { execFile } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
@@ -19,6 +19,8 @@ export type RunOptions = {
   env: Record<string, string>;
   timeoutMs: number;
   maxBuffer: number;
+  /** あれば標準入力に書いて閉じる（作業ジョブの gh api の POST の本文。src/jobs/github-api.ts）。GET では渡さない（無ければ空で閉じる） */
+  input?: string;
 };
 
 /** exited は終了した（code は終了コード。シグナルで終わったら null）。timeout は時間切れで止めた、too_large は出力が上限を超えて止めた、error は起動できなかった */
@@ -31,40 +33,76 @@ export type RunResult =
 /** 子プロセスの実行。テストでは偽物を注入する */
 export type RunCommand = (file: string, args: readonly string[], options: RunOptions) => Promise<RunResult>;
 
-/** node:child_process の execFile で実行する（シェルを通さない）。reject しない */
-export const execFileRun: RunCommand = (file, args, { env, timeoutMs, maxBuffer }) =>
+/**
+ * node:child_process の spawn で実行する（シェルを通さない。execFile と同じ結果の形）。reject しない。子は新しいプロセスグループで
+ * 動かし（detached。execFile はこの指定を子に渡さないので spawn を使う）、時間切れ・出力の上限（標準出力・標準エラーのそれぞれ）では
+ * グループごと SIGKILL で止める（git が起こす upload-pack・credential helper などの孫を残さない）
+ */
+export const execFileRun: RunCommand = (file, args, { env, timeoutMs, maxBuffer, input }) =>
   new Promise((resolvePromise) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (result: RunResult): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      resolvePromise(result);
+    };
+    let child: ChildProcess;
     try {
-      execFile(
-        file,
-        [...args],
-        { env, timeout: timeoutMs, maxBuffer, killSignal: "SIGKILL", encoding: "utf8", windowsHide: true },
-        (error, stdout, stderr) => {
-          if (error === null) {
-            resolvePromise({ kind: "exited", code: 0, stdout, stderr });
-            return;
-          }
-          const failure = error as NodeJS.ErrnoException & { killed?: boolean; code?: number | string | null };
-          // 出力が上限を超えたときも子は止められる（killed も true になる）ので先に見る
-          if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
-            resolvePromise({ kind: "too_large" });
-          } else if (failure.killed === true) {
-            resolvePromise({ kind: "timeout" });
-          } else if (typeof failure.code === "number") {
-            resolvePromise({ kind: "exited", code: failure.code, stdout, stderr });
-          } else if (failure.code === null || failure.code === undefined) {
-            // シグナルで終わった
-            resolvePromise({ kind: "exited", code: null, stdout, stderr });
-          } else {
-            // ENOENT などの起動の失敗
-            resolvePromise({ kind: "error" });
-          }
-        },
-      );
+      child = spawn(file, [...args], { env, detached: true, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     } catch {
-      resolvePromise({ kind: "error" });
+      finish({ kind: "error" });
+      return;
     }
+    let stopped: "timeout" | "too_large" | undefined;
+    const stop = (reason: "timeout" | "too_large"): void => {
+      stopped ??= reason;
+      killGroup(child.pid);
+    };
+    const collect = (stream: NodeJS.ReadableStream | null): Buffer[] => {
+      const chunks: Buffer[] = [];
+      let length = 0;
+      stream?.on("data", (chunk: Buffer) => {
+        length += chunk.length;
+        if (length > maxBuffer) stop("too_large");
+        else chunks.push(chunk);
+      });
+      return chunks;
+    };
+    const stdout = collect(child.stdout);
+    const stderr = collect(child.stderr);
+    // ENOENT などの起動の失敗
+    child.once("error", () => finish({ kind: "error" }));
+    child.once("close", (code) => {
+      // 出力が上限を超えて止めたときは先に見る
+      if (stopped === "too_large") return finish({ kind: "too_large" });
+      if (stopped === "timeout") return finish({ kind: "timeout" });
+      // code が null ならシグナルで終わった
+      finish({
+        kind: "exited",
+        code: typeof code === "number" ? code : null,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+      });
+    });
+    timer = setTimeout(() => stop("timeout"), timeoutMs);
+    // 子が先に終わったときの EPIPE で落ちないように
+    child.stdin?.on("error", () => {});
+    // input が無ければ空のまま閉じる（子が標準入力を待って止まらない）
+    if (input !== undefined) child.stdin?.end(input);
+    else child.stdin?.end();
   });
+
+/** プロセスグループごと SIGKILL で止める（もう居なければ何もしない） */
+function killGroup(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // もう居ない
+  }
+}
 
 /**
  * gh の子の env（許可方式）。HOME（gh が ~/.config/gh を読む）だけを写し、PATH・言語・gh の対話と更新の確認を止める変数を固定で足す。
@@ -96,12 +134,12 @@ const NOTIFICATIONS_QUERY: Readonly<Record<string, RegExp>> = {
 const TIMELINE_QUERY: Readonly<Record<string, RegExp>> = { per_page: NUMBER_PATTERN, page: NUMBER_PATTERN };
 const NO_QUERY: Readonly<Record<string, RegExp>> = {};
 
-function isOwner(value: string): boolean {
+export function isOwner(value: string): boolean {
   return OWNER_PATTERN.test(value);
 }
 
 /** `.`・`..` はパスの要素として解釈されうるので許さない */
-function isRepo(value: string): boolean {
+export function isRepo(value: string): boolean {
   return REPO_PATTERN.test(value) && value !== "." && value !== "..";
 }
 
