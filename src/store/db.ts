@@ -362,6 +362,51 @@ export const MIGRATIONS: readonly string[] = [
   );
   ALTER TABLE guild_settings ADD COLUMN github_channel_id TEXT;
   `,
+  // v22: 作業ジョブ（docs/plan/coding-jobs.md §11）。jobs は 1 ブランチ・1 PR の作業（branch は self-agent/job-<id> をアプリが決める）、
+  // job_runs はその 1 回の実行（状態・結果。続きは同じ job に run を足す）。guild_settings には #jobs の ID
+  `
+  CREATE TABLE jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    base_branch TEXT NOT NULL,
+    branch TEXT NOT NULL UNIQUE,
+    origin TEXT NOT NULL CHECK (origin IN ('command', 'new_repo', 'github', 'inbox')),
+    issue_number INTEGER,
+    stacked_on_pr INTEGER,
+    pr_number INTEGER,
+    pr_url TEXT,
+    pushed_sha TEXT,
+    state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT
+  );
+  CREATE TABLE job_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id),
+    kind TEXT NOT NULL CHECK (kind IN ('initial', 'followup')),
+    state TEXT NOT NULL CHECK (state IN ('awaiting_confirm', 'queued', 'running', 'held', 'pushed', 'pr_opened', 'failed', 'cancelled')),
+    failure TEXT,
+    instruction TEXT NOT NULL,
+    source_notification_id INTEGER,
+    report_channel_id TEXT,
+    report_message_id TEXT,
+    sdk_session_id TEXT,
+    outcome TEXT CHECK (outcome IN ('done', 'cannot')),
+    tests TEXT CHECK (tests IN ('passed', 'failed', 'not_run')),
+    pr_title TEXT,
+    summary TEXT,
+    staged_sha TEXT,
+    commits INTEGER,
+    tool_calls INTEGER,
+    kept_dir TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT
+  );
+  ALTER TABLE guild_settings ADD COLUMN jobs_channel_id TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
