@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, linkSync, openSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   BLOB_MAX_BYTES,
   buildPushArgs,
   copyObjects,
+  fdUnder,
   GIT_BASE_CONFIG_ARGS,
   GIT_LOCAL_TIMEOUT_MS,
   GIT_NET_TIMEOUT_MS,
@@ -833,4 +834,64 @@ test("名前の形: gh のパス・リモート・ブランチ", () => {
   assert.equal(isForbiddenPath(".github"), true);
   assert.equal(isForbiddenPath("docs/.github/x"), false);
   assert.equal(isForbiddenPath(".githubx"), false);
+});
+
+test("取り込み: index-pack が時間切れならやり直さずに import_failed（run を注入）", async (t) => {
+  const indexCalls: Array<readonly string[]> = [];
+  const run: RunCommand = (file, args, options) => {
+    if (args.includes("index-pack")) {
+      indexCalls.push(args);
+      return Promise.resolve({ kind: "timeout" });
+    }
+    return execFileRun(file, args, options);
+  };
+  const f = setup(t, { run });
+  await prepare(f);
+  commitFile(f.repo, "a.txt", "a\n");
+  git(f.repo, ["repack", "--quiet", "-d"]);
+  commitFile(f.repo, "b.txt", "b\n");
+  git(f.repo, ["repack", "--quiet", "-d"]);
+  assert.ok(readdirSync(join(f.repo, ".git", "objects", "pack")).filter((name) => name.endsWith(".pack")).length >= 2);
+  assert.deepEqual(await importWork(f), { ok: false, failure: "import_failed" });
+  assert.equal(indexCalls.length, 1);
+  assert.equal(f.logs.at(-1), "ジョブの git が失敗しました（import・timeout）");
+  assert.equal(existsSync(f.quarantine), false);
+});
+
+test("copyObjects: 締め切りを過ぎていれば timeout", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "self-agent-jobs-deadline-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "src", "ab"), { recursive: true });
+  mkdirSync(join(root, "dst"));
+  writeFileSync(join(root, "src", "ab", "c".repeat(38)), "loose");
+  assert.deepEqual(await copyObjects(join(root, "src"), join(root, "dst"), { deadline: Date.now() - 1 }), { ok: false, reason: "timeout" });
+});
+
+test("fdUnder: 開いた fd の実際のパスが root の下のときだけ true（読めない fd は false）", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "self-agent-jobs-fd-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "inside"));
+  writeFileSync(join(root, "inside", "a"), "a");
+  writeFileSync(join(root, "outside"), "b");
+  symlinkSync(join(root, "inside"), join(root, "link"));
+  const inside = openSync(join(root, "link", "a"), "r");
+  const outside = openSync(join(root, "outside"), "r");
+  t.after(() => {
+    closeSync(inside);
+    closeSync(outside);
+  });
+  assert.equal(await fdUnder(inside, join(root, "inside")), true);
+  assert.equal(await fdUnder(outside, join(root, "inside")), false);
+  assert.equal(await fdUnder(inside, join(root, "link")), false);
+  assert.equal(await fdUnder(999_999, root), false);
+});
+
+test("push の引数: ローカルのパスは既定で通さず、allowLocalForTests のときだけ", () => {
+  assert.throws(() => buildPushArgs("/tmp/remote.git", SHA, jobBranch(1)));
+  assert.throws(() => assertSafePushArgs(["push", "--porcelain", "/tmp/remote.git", `${SHA}:refs/heads/self-agent/job-1`]));
+  assert.deepEqual(buildPushArgs("/tmp/remote.git", SHA, jobBranch(1), { allowLocalForTests: true }).slice(-2), [
+    "/tmp/remote.git",
+    `${SHA}:refs/heads/self-agent/job-1`,
+  ]);
+  assert.throws(() => buildPushArgs("/tmp/../remote.git", SHA, jobBranch(1), { allowLocalForTests: true }));
 });
