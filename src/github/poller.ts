@@ -4,6 +4,7 @@
 // 取得の失敗は #system に変わったときだけ知らせる。log にはリポジトリ名・題名・URL・ログインを出さない（件数と失敗の種類だけ）
 import { withTimeout } from "../app/shell-state.ts";
 import type { Config } from "../config.ts";
+import { escapeDiscordText } from "../discord/escape.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
 import type { GithubNotificationRow, GithubPollState, GithubStore, ThreadUpdate } from "../store/github.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
@@ -266,11 +267,6 @@ export async function classifyWithLookups(notification: GithubNotification, cont
   });
   const timeline = items === undefined ? undefined : collectTimeline(items, since, issue);
   return classifyNotification({ notification, me, owners, firstSeen, timeline, ...(issue === undefined ? {} : { issue }), now });
-}
-
-/** Discord の Markdown・メンション・リンクとして解釈される文字を無効にする（第三者の文字列を 1 行で出すため） */
-export function escapeDiscordText(text: string): string {
-  return text.replace(/[\\*_~`|>#[\]()<:@-]/g, (char) => `\\${char}`);
 }
 
 const HTML_URL_PATTERN = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})\/(pull|issues)\/([1-9][0-9]{0,9})$/;

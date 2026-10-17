@@ -34,7 +34,7 @@
 - shell.md の PR1（自己診断）・PR2（ディスクの上限と掃除）はマージ済み。PR3（Bash の有効化）は未着手。
 
 ### 1.2 ホスト（確認）
-- `gh` 2.100.0、github.com にログイン済み。トークンは `~/.config/gh/hosts.yml`（600）にあり、scope は `gist`・`read:org`・`repo`・`workflow`。git の操作は https。
+- `gh` 2.100.0、github.com にログイン済み。トークンは `~/.config/gh/hosts.yml`（600）にある。git の操作は https。
 - `git` 2.43.0（Ubuntu の `1:2.43.0-1ubuntu7.3`）。global の設定: github.com の credential helper が `gh auth git-credential`、`user.name`・`user.email`（実メール）あり、`pull.rebase=true`・`push.autoSetupRemote=true`・`init.defaultBranch=main`。
 - `bwrap`・`socat` は未導入（shell.md §6 の sudo はまだ）。node は nvm の v24.20.0。
 
@@ -373,7 +373,9 @@ CREATE TABLE job_runs (                   -- 1 回の実行
 ALTER TABLE guild_settings ADD COLUMN jobs_channel_id TEXT;
 ```
 - 表を 2 つにする理由: 続き（レビュー対応）でブランチ・PR・bare を共有し、run ごとの状態・結果は別に持つ。
-- 状態の遷移（純関数 `src/jobs/state.ts`）: `awaiting_confirm → queued | cancelled`、`queued → running | cancelled`、`running → pr_opened | pushed | held | failed | cancelled`、`held → pr_opened | pushed`（[ここまでを draft PR に]）、`pushed → pr_opened`（[もう一度]）、`failed(push_failed・pr_failed) → pushed | pr_opened`（[もう一度]）。
+- 状態の遷移（純関数 `src/jobs/state.ts`）: `awaiting_confirm → queued | cancelled`、`queued → running | cancelled`、`running → pr_opened | pushed | held | failed | cancelled`、`held → pr_opened | pushed`（[ここまでを draft PR に]）、`held → failed`（その push・PR が失敗したとき）、`pushed → pr_opened`（[もう一度]）、`failed(RETRYABLE) → pushed | pr_opened | failed`（[もう一度]。failed へは、また失敗して語が変わるとき）。
+  - RETRYABLE は push・PR の段の失敗（`push_failed`・`not_fast_forward`・`push_rejected`・`push_auth`・`pr_failed`。staged が残る）。`held → failed` と `failed → failed` の移った後の failure もこの語だけ。`pr_failed` は普通は pushed に置くが、`failed → failed` で語が変わるときのために failed にも置ける。
+  - 準備の段の失敗（`sandbox_unavailable`・`disk_full`・`too_many`・`repo_*`・`clone_failed`・`branch_missing`）は、キューで順番が来て running にしてから failed にする（`queued → running → failed`。queued から直接 failed には移さない）。
 - usage: `usage_log` に kind `job`、key `job:<run_id>`（チャンネルではない）。`/usage`・`npm run usage -- --kind job` で見える。
 - log（console）: 「ジョブ #<run_id> を受け付けました（入口: command|new_repo|github|inbox）」「ジョブ #<run_id> を始めました」「ジョブ #<run_id> が終わりました（<state>・<failure>・コミット n 件・ツール n 回）」「ジョブの git が失敗しました（<操作>・<種類>）」とトークンの 1 行（既存の formatTurnUsageLog）。**リポジトリ名・題名・URL・ブランチ名・コマンド・git や gh の stderr は出さない**（非公開リポジトリの名前を漏らさない）。#jobs には repo・PR の URL を出してよい（オーナーだけのサーバー）。
 
@@ -417,9 +419,9 @@ ALTER TABLE guild_settings ADD COLUMN jobs_channel_id TEXT;
 | 変数 | 意味 |
 |---|---|
 | `SELF_AGENT_JOBS` | `1` で作業ジョブを有効にする。`SELF_AGENT_SHELL=1` が無ければ設定エラー。gh・git が見つからなければ設定エラー |
-| `SELF_AGENT_JOBS_REPOS` | 対象にできるリポジトリ（`owner/*` か `owner/repo` をカンマ区切り）。既定は gh のログインの `<login>/*` |
+| `SELF_AGENT_JOBS_REPOS` | 対象にできるリポジトリ（`owner/*` か `owner/repo` をカンマ区切り）。既定（未設定）は gh のログインの `<login>/*`。設定して中身が無い（`,` だけなど）なら設定エラー（許可リストが黙って既定に広がらないように） |
 | `SELF_AGENT_JOB_MAX_TURNS` | 1 run の手順の上限（正の整数）。既定 100 |
-| `SELF_AGENT_JOB_TIMEOUT_MIN` | 1 run の時間の上限（分）。既定 45 |
+| `SELF_AGENT_JOB_TIMEOUT_MIN` | 1 run の時間の上限（分。1〜1440）。既定 45 |
 | `SELF_AGENT_JOB_MODEL` / `SELF_AGENT_JOB_EFFORT` | ジョブのモデル・effort。無ければ既定の人格と同じ |
 | `SELF_AGENT_JOBS_REPO_MAX_MB` | clone するリポジトリの大きさの上限（GitHub の size）。既定 200 |
 - 定数（実装者が名前を決める）: 作業場所 2 GB、kept 3 日、bare の PR なし 7 日、open 20、確認の期限 24 時間、資料の文字数（§7.5）。
