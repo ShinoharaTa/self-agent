@@ -49,8 +49,8 @@ function press(customId: string): Extract<Interaction, { kind: "button" }> {
  * add は project_open と同じく `<projectsDir>/<slug>/site/index.html` まで作る。
  * ターンのキューは本物（シェルが有効なときと同じくセッションのジョブは 1 つずつ）で、入れたジョブの key と種類を queued に残す
  */
-function setup(t: TestContext, options: { publicBaseUrl: string | undefined } = { publicBaseUrl: BASE_URL }) {
-  const { publicBaseUrl } = options;
+function setup(t: TestContext, options: { publicBaseUrl: string | undefined; shell?: boolean } = { publicBaseUrl: BASE_URL }) {
+  const { publicBaseUrl, shell = false } = options;
   const turnQueue = new KeyedSerialQueue(3, { maxSessions: 1 });
   const queued: Array<{ key: string; session: boolean }> = [];
   const db = tempDb(t);
@@ -67,7 +67,7 @@ function setup(t: TestContext, options: { publicBaseUrl: string | undefined } = 
   const deps: ProjectsDeps = {
     projects,
     projectsDir,
-    cfg: { publicBaseUrl, timeZone: TZ },
+    cfg: { publicBaseUrl, timeZone: TZ, shell },
     turnQueue: {
       run: (key, fn, runOptions) => {
         queued.push({ key, session: runOptions?.session === true });
@@ -291,8 +291,8 @@ test("[削除する]: 削除済みにしてディレクトリを消し、「削�
   assert.equal(logs.length, 1);
 });
 
-test("[削除する]: ディレクトリはターンのキューのセッションのジョブ（key は掃除と同じ maintenance）の中で消す。実行中のセッションのターンが終わるまで消さない（結果は先に出す）", async (t) => {
-  const { projects, projectsDir, turnQueue, queued, add, component } = setup(t);
+test("[削除する]: シェルが有効なら、ディレクトリはターンのキューのセッションのジョブ（key は掃除と同じ maintenance）の中で消す。実行中のセッションのターンが終わるまで消さない（結果は先に出す）", async (t) => {
+  const { projects, projectsDir, turnQueue, queued, add, component } = setup(t, { publicBaseUrl: BASE_URL, shell: true });
   add("kakeibo", "家計簿");
   // 実行中のセッションのターン（Bash が動いている）
   let finishTurn = (): void => {};
@@ -314,6 +314,23 @@ test("[削除する]: ディレクトリはターンのキューのセッショ�
   await pressed;
   assert.equal(existsSync(join(projectsDir, "kakeibo")), false);
   assert.deepEqual(queued, [{ key: MAINTENANCE_QUEUE_KEY, session: true }]);
+});
+
+test("[削除する]: シェルが無効なら、キューに入れずにその場で消してから結果を出す", async (t) => {
+  const { projectsDir, turnQueue, queued, add, component } = setup(t);
+  add("kakeibo", "家計簿");
+  // 実行中のセッションのターンがあっても待たない
+  let finishTurn = (): void => {};
+  const turn = turnQueue.run("topic-1", () => new Promise<void>((resolve) => (finishTurn = resolve)), { session: true });
+  queued.length = 0;
+
+  const responder = new FakeResponder();
+  await component.handle(press("proj:del:1"), responder);
+  assert.equal(existsSync(join(projectsDir, "kakeibo")), false);
+  assert.deepEqual(responder.calls.at(-1), { method: "update", message: { text: "削除しました: 家計簿", components: [] } });
+  assert.deepEqual(queued, []);
+  finishTurn();
+  await turn;
 });
 
 test("[やめる]: 何も消さず「やめました」にしてボタンを外す", async (t) => {

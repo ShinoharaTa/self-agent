@@ -31,10 +31,10 @@ export type ProjectsDeps = {
   projects: Pick<ProjectStore, "list" | "get" | "markDeleted">;
   /** `<workDir>/projects`。プロジェクトのディレクトリは `<projectsDir>/<slug>` */
   projectsDir: string;
-  /** URL の組み立て（publicBaseUrl が無ければ配信は未設定）と、更新日のタイムゾーン（SELF_AGENT_TZ） */
-  cfg: Pick<Config, "publicBaseUrl" | "timeZone">;
+  /** URL の組み立て（publicBaseUrl が無ければ配信は未設定）と、更新日のタイムゾーン（SELF_AGENT_TZ）。shell は SELF_AGENT_SHELL=1（省略は false） */
+  cfg: Pick<Config, "publicBaseUrl" | "timeZone"> & Partial<Pick<Config, "shell">>;
   /**
-   * 発言と同じターンのキュー。ディレクトリの削除はここにセッションのジョブ（key は scheduler.ts の掃除と同じ MAINTENANCE_QUEUE_KEY）として入れ、
+   * 発言と同じターンのキュー。シェルが有効なら、ディレクトリの削除はここにセッションのジョブ（key は scheduler.ts の掃除と同じ MAINTENANCE_QUEUE_KEY）として入れ、
    * セッションのターン（Bash）と重ねない（docs/plan/shell.md §2.9 の I2）
    */
   turnQueue: Pick<KeyedSerialQueue, "run">;
@@ -144,8 +144,9 @@ export function createProjectsCommand(deps: ProjectsDeps): CommandHandler {
 
 /**
  * 一覧のセレクト（`proj:pick`）で削除の確認を本人にだけ出し、確認の [削除する]（`proj:del:<id>`）・[やめる]（`proj:keep:<id>`）を受ける。
- * [削除する] は削除済みにして（ページはここで開けなくなる）結果を出してから、`<projectsDir>/<slug>` を消す（消せなくても削除済みのまま）。
- * 消すのはターンのキューのセッションのジョブの中（実行中のセッションのターンが終わるのを待つ。待つ間に応答の期限を過ぎないよう、結果は先に出す）。
+ * [削除する] は削除済みにして `<projectsDir>/<slug>` を消す（消せなくても削除済みのまま）。シェルが無効ならその場で消してから結果を出す。
+ * シェルが有効なら、結果を先に出して（ページはここで開けなくなる）から、ターンのキューのセッションのジョブの中で消す
+ * （実行中のセッションのターンが終わるのを待つ。待つ間に応答の期限を過ぎないよう、結果は先に出す）。
  * 無い・削除済みなら「古くなっています」。DB の状態で動くので、再起動の後でも押せる
  */
 export function createProjectsComponent(deps: ProjectsDeps): ComponentHandler {
@@ -183,6 +184,12 @@ export function createProjectsComponent(deps: ProjectsDeps): ComponentHandler {
       const project = projects.get(id);
       if (project === undefined || !projects.markDeleted(id)) {
         await responder.update({ text: STALE_TEXT, components: [] });
+        return;
+      }
+      if (cfg.shell !== true) {
+        await removeProjectDir(projectsDir, project.slug, log);
+        log("[削除する] でプロジェクトを削除しました");
+        await responder.update({ text: projectDeletedText(project.title), components: [] });
         return;
       }
       log("[削除する] でプロジェクトを削除しました");

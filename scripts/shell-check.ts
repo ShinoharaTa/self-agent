@@ -3,11 +3,26 @@
 // 結果（Bash の tool_response）とホスト側の状態を照合して、通った・通らないを表にして出す。SELF_AGENT_SHELL の設定によらずシェルを有効にして試す。
 // 準備: ダミーの秘密（ランダムな値）を ~ の直下・dataDir・claudeConfigDir・env ファイルのディレクトリ・リポジトリ・<workDir>/jobs に置き、
 // この process の env にダミーの変数と認証情報入りのダミーのプロキシを入れる。プロジェクトは本体の workDir/projects に一時的に作る。
-// ツールのストアは一時ディレクトリの SQLite（本体の DB は開かない）。終わったら（Ctrl-C でも）作ったものを消す。
-// 出すのは表だけ（コマンドの出力・秘密の値は出さない）。全部の必須項目が通れば exit 0、そうでなければ 1
+// ツールのストアは一時ディレクトリの SQLite（本体の DB は開かない）。終わったら（Ctrl-C・SIGTERM・SIGHUP でも）作ったものを消す。
+// 出すのは表だけ（コマンドの出力・秘密の値は出さない。参考の行に <workDir>/.tmp の中の名前を出すのは標準出力だけで、log には出さない）。
+// 全部の必須項目が通れば exit 0、そうでなければ 1。<workDir>/.tmp の中を差し替えて試す行があるので、Bot を止めてから実行するのが望ましい
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,7 +37,7 @@ import { defaultSandboxHost, sandboxPlacesOf } from "../src/agent/query-options.
 import type { RunContext, RunResult } from "../src/agent/runner.ts";
 import { checkSandbox, missingSandboxBinaries, shellPath } from "../src/agent/sandbox-check.ts";
 import { type QueryFn, SdkAgentRunner } from "../src/agent/sdk-runner.ts";
-import { createTaskMcpServer } from "../src/agent/tools.ts";
+import { createProjectToolHandlers, createTaskMcpServer, type TextToolResult } from "../src/agent/tools.ts";
 import { loadConfig } from "../src/config.ts";
 import { openDb } from "../src/store/db.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
@@ -75,11 +90,32 @@ const createdDirs: string[] = [];
 let storeDir: string | undefined;
 let projectDir: string | undefined;
 let closeDb: (() => void) | undefined;
+/** 一時的に待ち受けた 127.0.0.1 のサーバー（SELF_AGENT_SERVE_PORT が無いとき） */
+let probeServer: Server | undefined;
+/** sandbox の中から動かせてしまったときに元へ戻すもの（[動いた先, 元の場所]） */
+const restoreMoves: Array<[string, string]> = [];
+/** 試すために置いた symlink（後始末で、まだ symlink なら外す） */
+const plantedLinks: string[] = [];
 let cleaned = false;
 function cleanup(): void {
   if (cleaned) return;
   cleaned = true;
   closeDb?.();
+  probeServer?.close();
+  for (const link of plantedLinks) {
+    try {
+      if (lstatSync(link).isSymbolicLink()) unlinkSync(link);
+    } catch {
+      // 無い
+    }
+  }
+  for (const [moved, original] of restoreMoves) {
+    try {
+      if (existsSync(moved) && !existsSync(original)) renameSync(moved, original);
+    } catch {
+      console.error("動いてしまった場所を元に戻せませんでした。手で確かめてください");
+    }
+  }
   for (const file of createdFiles) rmSync(file, { force: true });
   // 作った順の逆（深いものから）。中身があれば消さない
   for (const dir of [...createdDirs].reverse()) {
@@ -94,10 +130,16 @@ function cleanup(): void {
   if (storeDir !== undefined) rmSync(storeDir, { recursive: true, force: true });
 }
 process.on("exit", cleanup);
-process.on("SIGINT", () => {
-  cleanup();
-  process.exit(130);
-});
+for (const [signal, code] of [
+  ["SIGINT", 130],
+  ["SIGTERM", 143],
+  ["SIGHUP", 129],
+] as const) {
+  process.on(signal, () => {
+    cleanup();
+    process.exit(code);
+  });
+}
 
 /** dir が無ければ作り、後始末で（空なら）消す */
 function ensureDir(dir: string): void {
@@ -114,7 +156,7 @@ const secretFiles: string[] = [];
 for (const dir of secretDirs) {
   ensureDir(dir);
   const file = join(dir, `.shell-check-canary-${random}`);
-  writeFileSync(file, `${canary}\n`, { mode: 0o600 });
+  writeFileSync(file, `${canary}\n`, { mode: 0o600, flag: "wx" });
   createdFiles.push(file);
   if (readFileSync(file, "utf8") !== `${canary}\n`) {
     console.error("ダミーの秘密を host で読めませんでした");
@@ -405,16 +447,32 @@ await check(
   listingCommand(["/tmp", `/run/user/${process.getuid?.() ?? 1000}`, "/run", "/var/log/journal"]),
   ({ stdout }) => (listingsEmpty(stdout) ? true : "見えるものがある"),
 );
-// 7. ネット: 許可していないホストと、ホストの 127.0.0.1 に届かない
-const servePort = config.servePort ?? 9;
-await check(
-  "許可していないホスト（example.com）とホストの 127.0.0.1 の待ち受けに届かない",
-  `curl -sS -m 10 -o /dev/null https://example.com; echo "__rc=$?"; curl -sS -m 5 -o /dev/null http://127.0.0.1:${servePort}/; echo "__rc=$?"`,
-  ({ text }) => {
-    const codes = exitCodes(text);
-    return codes.length === 2 && codes.every((code) => code !== 0) ? true : "届いた";
-  },
-);
+// 7. ネット: 許可していないホストと、ホストの 127.0.0.1 に届かない。静的サーバーのポートが無ければ一時的に 127.0.0.1 で待ち受けて試す（終わったら閉じる）
+let servePort = config.servePort;
+if (servePort === undefined) {
+  const server = createServer((_req, res) => res.end("shell-check"));
+  probeServer = server;
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  servePort = typeof address === "object" && address !== null ? address.port : 9;
+}
+try {
+  await check(
+    "許可していないホスト（example.com）とホストの 127.0.0.1 の待ち受けに届かない",
+    `curl -sS -m 10 -o /dev/null https://example.com; echo "__rc=$?"; curl -sS -m 5 -o /dev/null http://127.0.0.1:${servePort}/; echo "__rc=$?"`,
+    ({ text }) => {
+      const codes = exitCodes(text);
+      return codes.length === 2 && codes.every((code) => code !== 0) ? true : "届いた";
+    },
+  );
+} finally {
+  const server = probeServer;
+  probeServer = undefined;
+  if (server !== undefined) await new Promise<void>((resolve) => server.close(() => resolve()));
+}
 // 8. GitHub と npm には届く
 const cloneDir = join(projectDir, "repos", "hello");
 await check(
@@ -444,6 +502,51 @@ await check(
 await check("/proc/1/cmdline が systemd でない（PID 名前空間）", `tr '\\0' ' ' < /proc/1/cmdline; echo; echo "__rc=$?"`, ({ stdout }) =>
   stdout.includes("systemd") || stdout.includes("/sbin/init") ? "host の init が見える" : true,
 );
+// 10-2. workDir の直下には書けない（allowWrite は projects・.cache・.tmp だけ。CLI の既定の cwd の書き込みも効いていない）
+{
+  const touchRoot = join(realWorkDir, `shell-check-x-${random}`);
+  const linkRoot = join(realWorkDir, `shell-check-link-${random}`);
+  const movedProjects = join(realWorkDir, `shell-check-p2-${random}`);
+  const movedJobs = join(realWorkDir, `shell-check-jobs-${random}`);
+  createdFiles.push(touchRoot);
+  plantedLinks.push(linkRoot);
+  restoreMoves.push([movedProjects, projectsDir], [movedJobs, jobsDir]);
+  await check(
+    "workDir の直下に書けない（touch・projects と jobs の mv・symlink の作成が失敗する）",
+    [
+      `touch ${quote(touchRoot)}`,
+      `mv ${quote(projectsDir)} ${quote(movedProjects)}`,
+      `mv ${quote(jobsDir)} ${quote(movedJobs)}`,
+      `ln -s / ${quote(linkRoot)}`,
+    ]
+      .map((command) => `${command}; echo "__rc=$?"`)
+      .join("; "),
+    ({ text }) => {
+      const codes = exitCodes(text);
+      if (codes.length !== 4) return "結果の数が合わない";
+      const changed =
+        existsSync(touchRoot) ||
+        existsSync(movedProjects) ||
+        existsSync(movedJobs) ||
+        (() => {
+          try {
+            lstatSync(linkRoot);
+            return true;
+          } catch {
+            return false;
+          }
+        })();
+      return codes.every((code) => code !== 0) && !changed ? true : "workDir の直下を変えられた";
+    },
+  );
+  // 動かせてしまっていたら、続く項目のためにすぐ戻す
+  for (const [moved, original] of [
+    [movedProjects, projectsDir],
+    [movedJobs, jobsDir],
+  ] as const) {
+    if (existsSync(moved) && !existsSync(original)) renameSync(moved, original);
+  }
+}
 
 // 11. I1: & で残したプロセスは、Bash の結果が返った直後に残っていない
 {
@@ -569,6 +672,130 @@ await stopDuringSleep(`I1: 前景の sleep 300 の最中に打ち切り（${TIME
   });
 }
 
+// 13-2. 参考: <workDir>/.tmp に CLI が作るものの名前と、それを先に symlink で置いたときの挙動（判定にはしない。名前は標準出力の表にだけ出す）
+{
+  const tmpRoot = join(realWorkDir, ".tmp");
+  /** .tmp の下（深さ 3 まで）の相対パス → 種類 */
+  const snapshot = (): Map<string, string> => {
+    const found = new Map<string, string>();
+    const walk = (dir: string, rel: string, depth: number): void => {
+      let names: string[];
+      try {
+        names = readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const name of names) {
+        const path = join(dir, name);
+        const relPath = rel === "" ? name : `${rel}/${name}`;
+        try {
+          const stats = lstatSync(path);
+          found.set(relPath, stats.isSymbolicLink() ? "symlink" : stats.isDirectory() ? "dir" : "file");
+          if (stats.isDirectory() && depth < 3) walk(path, relPath, depth + 1);
+        } catch {
+          // 途中で消えた
+        }
+      }
+    };
+    walk(tmpRoot, "", 1);
+    return found;
+  };
+  const command = `echo tmp-check; echo "__rc=$?"`;
+  commands.push(command);
+  const before = snapshot();
+  const first = await runCommand(command);
+  const created = [...snapshot()].filter(([path]) => !before.has(path));
+  const names = created.map(([path, kind]) => `${path}（${kind}）`);
+  // このターンで新しくできた直下のものを、外（一時ディレクトリ）を指す symlink に差し替えてもう一度
+  const decoy = join(storeDir, "decoy-tmp");
+  mkdirSync(decoy);
+  const topLevel = [...new Set(created.map(([path]) => path.split("/")[0]!))];
+  for (const name of topLevel) {
+    const path = join(tmpRoot, name);
+    rmSync(path, { recursive: true, force: true });
+    symlinkSync(decoy, path);
+    plantedLinks.push(path);
+  }
+  const second = topLevel.length === 0 ? undefined : await runCommand(command);
+  const followed = readdirSync(decoy).length > 0;
+  const stillLinks = topLevel.filter((name) => {
+    try {
+      return lstatSync(join(tmpRoot, name)).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  }).length;
+  rows.push({
+    item: "参考: <workDir>/.tmp に CLI が作るもの・それを外への symlink で先に置いたときの挙動",
+    status: "参考",
+    note: !first.ran
+      ? "実行されなかった"
+      : `作られたもの: ${names.length === 0 ? "なし" : names.join("、")}` +
+        (second === undefined
+          ? ""
+          : ` / symlink に差し替えた後: ${second.ran ? "実行できた" : "実行されなかった"}・symlink の先に${followed ? "書いた（たどった）" : "書いていない"}・symlink のまま ${stillLinks}/${topLevel.length}`),
+    required: false,
+  });
+  for (const name of topLevel) {
+    const path = join(tmpRoot, name);
+    try {
+      if (lstatSync(path).isSymbolicLink()) unlinkSync(path);
+    } catch {
+      // 無い
+    }
+  }
+}
+
+// 13-3. project_files・project_open（Bot のプロセス = sandbox の外）は、プロジェクトの dir（slug）を外への symlink にすり替えられても外を触らない
+{
+  const item = "project_files・project_open は、slug を外への symlink にすり替えられても外を触らない";
+  const decoy = join(storeDir, "decoy-project");
+  mkdirSync(join(decoy, "site"), { recursive: true });
+  writeFileSync(join(decoy, "keep.txt"), "keep", { flag: "wx" });
+  const moved = `${projectDir}-moved`;
+  restoreMoves.push([moved, projectDir]);
+  plantedLinks.push(projectDir);
+  // まず sandbox の中から差し替える（projects は書けるので通るはず）。だめなら host で差し替えて、Bot 側の判定だけ確かめる
+  const command = `mv ${quote(projectDir)} ${quote(moved)} && ln -s ${quote(decoy)} ${quote(projectDir)}; echo "__rc=$?"`;
+  commands.push(command);
+  await runCommand(command);
+  const isLink = (): boolean => {
+    try {
+      return lstatSync(projectDir).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  };
+  let how = "sandbox の中から差し替えた";
+  if (!isLink()) {
+    how = "sandbox の中から差し替えられなかったので host で差し替えた";
+    if (!existsSync(moved)) renameSync(projectDir, moved);
+    symlinkSync(decoy, projectDir);
+  }
+  const handlers = createProjectToolHandlers(
+    { projects, projectsDir, publicBaseUrl: "https://shell-check.invalid", serving: () => true, shellEnabled: () => true, log },
+    context,
+  );
+  const parse = (result: TextToolResult): Record<string, unknown> => JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+  const outcomes = [
+    parse(await handlers.projectFiles({ action: "trash", paths: ["keep.txt"] })).result,
+    parse(await handlers.projectFiles({ action: "move", paths: ["keep.txt"], to: "x.txt" })).result,
+    parse(await handlers.projectFiles({ action: "clear" })).result,
+    parse(await handlers.projectFiles({ action: "restore" })).result,
+    parse(await handlers.projectOpen({ name: "shell-check", title: "shell-check" })).status,
+  ];
+  const untouched = JSON.stringify(readdirSync(decoy).sort()) === JSON.stringify(["keep.txt", "site"]) && readdirSync(join(decoy, "site")).length === 0;
+  rows.push({
+    item,
+    status: outcomes.every((outcome) => outcome === "not_available") && untouched ? "通った" : "通らない",
+    note: how,
+    required: true,
+  });
+  // 元に戻す（I1・I2 はもう済んでいる）
+  if (isLink()) unlinkSync(projectDir);
+  if (existsSync(moved) && !existsSync(projectDir)) renameSync(moved, projectDir);
+}
+
 // 14. log にコマンド・URL・ホスト名・パス・秘密の値が出ていない
 {
   const forbidden = [
@@ -582,6 +809,7 @@ await stopDuringSleep(`I1: 前景の sleep 300 の最中に打ち切り（${TIME
     canary,
     realWorkDir,
     host.homeDir,
+    storeDir,
   ];
   const leaked = logs.filter((line) => forbidden.some((word) => line.includes(word)));
   rows.push({

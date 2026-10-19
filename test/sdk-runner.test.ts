@@ -1802,6 +1802,12 @@ test("Bash の hook: 無効・#inbox・#tasks・context なし・予約した依
       expected: denied(BASH_ARGS_REASON),
       log: "引数",
     },
+    // false・省略以外はすべて拒否する（文字列の "true"・数・null も）
+    { label: "run_in_background: \"true\"", context: TOPIC_WITH_PROJECT, input: { ...SECRET_COMMAND, run_in_background: "true" }, expected: denied(BASH_ARGS_REASON), log: "引数" },
+    { label: "run_in_background: 1", context: TOPIC_WITH_PROJECT, input: { ...SECRET_COMMAND, run_in_background: 1 }, expected: denied(BASH_ARGS_REASON), log: "引数" },
+    { label: "dangerouslyDisableSandbox: null", context: TOPIC_WITH_PROJECT, input: { ...SECRET_COMMAND, dangerouslyDisableSandbox: null }, expected: denied(BASH_ARGS_REASON), log: "引数" },
+    { label: "dangerouslyDisableSandbox: \"false\"", context: TOPIC_WITH_PROJECT, input: { ...SECRET_COMMAND, dangerouslyDisableSandbox: "false" }, expected: denied(BASH_ARGS_REASON), log: "引数" },
+    { label: "両方 false は通す", context: TOPIC_WITH_PROJECT, input: { ...SECRET_COMMAND, run_in_background: false, dangerouslyDisableSandbox: false }, expected: {} },
     {
       label: "空きが足りない",
       context: TOPIC_WITH_PROJECT,
@@ -1914,8 +1920,31 @@ test("Options: シェルが無効ならツール 6 個・sandbox なし（Bash �
     assert.deepEqual(options.sandbox, sandbox);
   }
   assert.deepEqual(enabled.outputs[0], {});
-  // sandbox の書き込み先は run の前に作る（.cache は掃除で消えることがある）
-  for (const name of ["projects", ".cache", ".tmp"]) assert.ok(existsSync(join(enabled.workDir, name)), name);
+  // sandbox の書き込み先と jobs は run の前に作る（.cache は掃除で消えることがある）
+  for (const name of ["projects", ".cache", ".tmp", "jobs"]) assert.ok(existsSync(join(enabled.workDir, name)), name);
+});
+
+test("Options: sandbox の場所を用意できなければ（jobs が symlink など）その run は sandbox を付けず、Bash は無効として拒否する。log にパスは出さない", async (t) => {
+  const outputs: unknown[] = [];
+  const env = shellRunner(t, async function* (call) {
+    assert.equal("sandbox" in call.options, false);
+    outputs.push(await callHook(call, "Bash", "Bash", SECRET_COMMAND));
+    yield success("session-1", "はい");
+  });
+  symlinkSync(env.root, join(env.workDir, "jobs"));
+  assert.ok((await env.runner.run({ prompt: "x", context: TOPIC_WITH_PROJECT })).ok);
+  assert.deepEqual(outputs, [denied(BASH_DISABLED_REASON)]);
+  assert.deepEqual(env.logs, ["sandbox の場所を用意できなかったため、この run ではコマンドを使いません", "Bash を拒否しました（無効）"]);
+});
+
+test("describeResultError: シェルが有効なら errors の文を入れず件数だけにする（resume 失敗の固定の文だけ残す）", () => {
+  const blocked = errorResult("error_during_execution", ["sandbox blocked evil.example.com at /home/owner/.ssh", "x"]);
+  assert.equal(describeResultError(blocked, true), "error_during_execution: errors あり（2 件）");
+  assert.match(describeResultError(blocked), /evil\.example\.com/);
+  const resume = errorResult("error_during_execution", ["No conversation found with session ID: session-0"]);
+  assert.equal(describeResultError(resume, true), "error_during_execution: errors あり（1 件）・No conversation found");
+  assert.match(describeResultError(resume, true), RESUME_FAILURE_PATTERN);
+  assert.equal(describeResultError(errorResult("error_max_turns", []), true), "error_max_turns");
 });
 
 test("ファイル操作の hook: シェルが有効なら、セッション以外のターン（#inbox・#tasks・context なし）の Read・Glob・Write・Edit・project_files を拒否する。セッションでは今までどおり。無効なら今のまま", async (t) => {

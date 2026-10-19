@@ -1,5 +1,5 @@
 // プロンプトキャッシュを効かせるため、全ターンで同じ Options を使う（resume・maxTurns・hooks は run 側で足す）
-import { mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { McpSdkServerConfigWithInstance, Options, SandboxSettings } from "@anthropic-ai/claude-agent-sdk";
@@ -43,7 +43,7 @@ export type ChildEnvShell = { workDir: string; execPath: string };
 /**
  * Claude の子プロセスの env。SDK は env を渡すと process.env と混ぜずに置き換えるので、許可した変数だけを写し
  * （無いものは入れない）、設定ディレクトリと自動メモリ無効を足す。scripts/measure-turn.ts も使う。
- * shell（SELF_AGENT_SHELL=1）なら shell.md §2.4: プロキシの変数は写さず、PATH を shellPath にし、一時ファイル・npm のキャッシュの場所、
+ * shell（SELF_AGENT_SHELL=1）なら shell.md §2.4: プロキシの変数と TMPDIR はホストから写さず（TMPDIR は <workDir>/.tmp）、PATH を shellPath にし、一時ファイル・npm のキャッシュの場所、
  * git の設定、Bash の時間、バックグラウンド実行の無効を足す
  */
 export function childEnv(
@@ -53,7 +53,7 @@ export function childEnv(
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of CHILD_ENV_ALLOWLIST) {
-    if (shell !== undefined && PROXY_ENV_KEYS.includes(key)) continue;
+    if (shell !== undefined && (PROXY_ENV_KEYS.includes(key) || key === "TMPDIR")) continue;
     const value = source[key];
     if (value !== undefined) env[key] = value;
   }
@@ -64,7 +64,8 @@ export function childEnv(
     ...env,
     // service の PATH には nvm が無いので、自己診断と同じ PATH（bwrap・socat もここから探す）
     PATH: shellPath(shell.execPath),
-    // 他の Claude Code と共有の /tmp/claude を使わない
+    // 他の Claude Code と共有の /tmp/claude を使わない（/tmp は sandbox から読めない）
+    TMPDIR: join(shell.workDir, WORK_TMP_DIR_NAME),
     CLAUDE_CODE_TMPDIR: join(shell.workDir, WORK_TMP_DIR_NAME),
     npm_config_cache: join(shell.workDir, WORK_CACHE_DIR_NAME, "npm"),
     npm_config_update_notifier: "false",
@@ -144,10 +145,21 @@ export function sandboxSettings(places: SandboxPlaces): SandboxSettings {
   };
 }
 
-/** sandbox の書き込み先（projects・.cache・.tmp）を作る（.cache は掃除で丸ごと消えることがある）。失敗したら投げる */
+/**
+ * sandbox の書き込み先（projects・.cache・.tmp）と、denyRead に入れる作業ジョブの場所（jobs）を作る（.cache は掃除で丸ごと消えることがある）。
+ * jobs が実際のディレクトリでない（symlink・ファイル）なら作らずに投げる（denyRead が symlink の先に向かないように）。失敗したら投げる
+ */
 export function ensureSandboxWriteDirs(workDir: string): void {
   const real = realPath(workDir);
   for (const name of SANDBOX_WRITE_DIR_NAMES) mkdirSync(join(real, name), { recursive: true });
+  const jobs = join(real, JOBS_DIR_NAME);
+  try {
+    const stats = lstatSync(jobs);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error("作業ジョブの場所が実際のディレクトリではありません");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    mkdirSync(jobs);
+  }
 }
 
 /** このプロセスの場所（node・リポジトリ・ホーム）と env。テストでは差し替える */

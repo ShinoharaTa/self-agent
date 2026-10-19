@@ -111,14 +111,21 @@ function stderrTail(text: string): string {
 
 /**
  * result のエラーを 1 行にする。errors があれば添える（resume 失敗の文言などを handler が判定できるように残す）。
- * result の本文（result.result）は会話の内容を含みうるので、is_error でも入れない
+ * result の本文（result.result）は会話の内容を含みうるので、is_error でも入れない。
+ * shell（SELF_AGENT_SHELL=1）なら errors の文は入れず件数だけにする（sandbox の拒否の文がホスト名・パスを含みうる。errorMessage は handler が log に出す）。
+ * resume 失敗の文言があればその固定の文だけ添える
  */
-export function describeResultError(result: SDKResultMessage): string {
+export function describeResultError(result: SDKResultMessage, shell = false): string {
   if (result.subtype === "success") {
     return "success (is_error)";
   }
   const errors = result.errors.filter((error) => error.trim() !== "");
-  return errors.length === 0 ? result.subtype : `${result.subtype}: ${shorten(errors.join(" / "))}`;
+  if (errors.length === 0) return result.subtype;
+  if (!shell) return `${result.subtype}: ${shorten(errors.join(" / "))}`;
+  const resume = errors.some((error) => error.toLowerCase().includes(RESUME_FAILURE_TEXT.toLowerCase()))
+    ? `・${RESUME_FAILURE_TEXT}`
+    : "";
+  return `${result.subtype}: errors あり（${errors.length} 件）${resume}`;
 }
 
 /**
@@ -449,7 +456,9 @@ export function createBashGuard(
       if (project === undefined) return deny("プロジェクトなし", FILE_WRITE_DENIED_REASON);
       const toolInput =
         typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
-      if (toolInput.run_in_background === true || toolInput.dangerouslyDisableSandbox === true) {
+      // false・省略以外（"true" の文字列なども）は拒否する
+      const flagged = (value: unknown): boolean => value !== undefined && value !== false;
+      if (flagged(toolInput.run_in_background) || flagged(toolInput.dangerouslyDisableSandbox)) {
         return deny("引数", BASH_ARGS_REASON);
       }
       const quota = disk.check(project.slug);
@@ -640,7 +649,7 @@ export class SdkAgentRunner implements AgentRunner {
       ensureSandboxWriteDirs(this.cfg.workDir);
       return true;
     } catch {
-      this.log("sandbox の書き込み先を作れなかったため、この run ではコマンドを使いません");
+      this.log("sandbox の場所を用意できなかったため、この run ではコマンドを使いません");
       return false;
     }
   }
@@ -789,7 +798,7 @@ export class SdkAgentRunner implements AgentRunner {
       // result まで届いたので SDK は会話を記録している（error_max_turns なら途中のツール呼び出しも含む）
       return {
         ok: false,
-        errorMessage: describeResultError(result),
+        errorMessage: describeResultError(result, shell),
         sessionId: result.session_id,
         sessionRecorded: true,
         toolCalls: tools.count(),

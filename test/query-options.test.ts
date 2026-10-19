@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import {
   buildQueryOptions,
   childEnv,
+  ensureSandboxWriteDirs,
   SANDBOX_ALLOWED_DOMAINS,
   SANDBOX_DENY_READ_SYSTEM,
   type SandboxHost,
@@ -202,6 +203,7 @@ function shellSetup(t: import("node:test").TestContext) {
       PATH: "/usr/bin",
       HOME: home,
       LANG: "ja_JP.UTF-8",
+      TMPDIR: "/tmp/host-tmp",
       HTTPS_PROXY: "http://user:dummy-proxy-secret@proxy:8080",
       http_proxy: "http://proxy:8080",
       NO_PROXY: "localhost",
@@ -306,7 +308,7 @@ function realpathOrSelf(path: string): string {
   }
 }
 
-test("childEnv: シェルが有効ならプロキシの変数を写さず、PATH を shellPath にして §2.4 の変数を足す。CLI 自身のトークンは渡し、コマンドからは credentials.envVars で消す", (t) => {
+test("childEnv: シェルが有効ならプロキシの変数と TMPDIR をホストから写さず（TMPDIR は <workDir>/.tmp）、PATH を shellPath にして §2.4 の変数を足す。CLI 自身のトークンは渡し、コマンドからは credentials.envVars で消す", (t) => {
   const { workDir, host, shellCfg } = shellSetup(t);
   const env = childEnv(shellCfg.claudeConfigDir, host.env, { workDir, execPath: host.execPath });
   assert.deepEqual(env, {
@@ -316,6 +318,7 @@ test("childEnv: シェルが有効ならプロキシの変数を写さず、PATH
     CLAUDE_CODE_OAUTH_TOKEN: "dummy-oauth-token",
     CLAUDE_CONFIG_DIR: shellCfg.claudeConfigDir,
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    TMPDIR: join(workDir, ".tmp"),
     CLAUDE_CODE_TMPDIR: join(workDir, ".tmp"),
     npm_config_cache: join(workDir, ".cache", "npm"),
     npm_config_update_notifier: "false",
@@ -334,10 +337,26 @@ test("childEnv: シェルが有効ならプロキシの変数を写さず、PATH
   const plain = childEnv(shellCfg.claudeConfigDir, host.env);
   assert.equal(plain.HTTPS_PROXY, host.env.HTTPS_PROXY);
   assert.equal(plain.PATH, "/usr/bin");
+  assert.equal(plain.TMPDIR, "/tmp/host-tmp");
   assert.equal("CLAUDE_CODE_TMPDIR" in plain, false);
   // buildQueryOptions も同じ env（sandbox の有無によらない）
   assert.deepEqual(buildQueryOptions(shellCfg, mcpServer, false, host).env, env);
   assert.deepEqual(buildQueryOptions(shellCfg, mcpServer, true, host).sandbox?.credentials, {
     envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }],
   });
+});
+
+test("ensureSandboxWriteDirs: projects・.cache・.tmp と jobs を作る。jobs が symlink・ファイルなら作らずに投げる", (t) => {
+  const { root, workDir } = shellSetup(t);
+  ensureSandboxWriteDirs(workDir);
+  for (const name of ["projects", ".cache", ".tmp", "jobs"]) assert.ok(lstatSync(join(workDir, name)).isDirectory(), name);
+  // もう一度呼んでもよい
+  ensureSandboxWriteDirs(workDir);
+
+  rmSync(join(workDir, "jobs"), { recursive: true });
+  symlinkSync(root, join(workDir, "jobs"));
+  assert.throws(() => ensureSandboxWriteDirs(workDir), /実際のディレクトリ/);
+  rmSync(join(workDir, "jobs"));
+  writeFileSync(join(workDir, "jobs"), "");
+  assert.throws(() => ensureSandboxWriteDirs(workDir), /実際のディレクトリ/);
 });

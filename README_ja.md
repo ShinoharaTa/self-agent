@@ -61,7 +61,7 @@ Discord ──(discord.js)── Gateway ── 受付判定（許可サーバ�
 ## 安全のための決まり
 
 - 反応するのは、環境変数で許可したサーバーの、オーナー本人の発言と操作だけ。DM・他のサーバー・他の人・Bot・Webhook には反応しない
-- プロジェクトのあるセッションのチャンネルでは、Bot がシェルのコマンド（Bash。`git clone`・`npm install` など）を 1 つずつの承認なしに実行できる。コマンドはすべて OS の sandbox（bubblewrap）の中で動き、書けるのは projects の中だけ、ホーム（トークン・SSH の鍵・gh の認証・Bot の DB と会話の記録・他のプロジェクト）・`/tmp`・`/run`・`/var/log` は読めず、届くのは GitHub と npm の registry だけ。Claude のトークンはコマンドの環境から消す。コマンドは 5 分で打ち切られ、プロセスを残せない
+- プロジェクトのあるセッションのチャンネルでは、Bot がシェルのコマンド（Bash。`git clone`・`npm install` など）を 1 つずつの承認なしに実行できる。コマンドはすべて OS の sandbox（bubblewrap）の中で動き、書けるのは作業ディレクトリの projects・.cache・.tmp の中だけ、ホーム（トークン・SSH の鍵・gh の認証・Bot の DB と会話の記録・他のプロジェクト）・`/tmp`・`/run`・`/var/log` は読めず、届くのは GitHub と npm の registry だけ。Claude のトークンはコマンドの環境から消す。コマンドは 5 分で打ち切られ、プロセスを残せない
 - sandbox を起動できなければシェルは止まり（コマンドは拒否される）、`#system` にそう知らせる。`SELF_AGENT_SHELL=1` を設定しない限りシェルは使わない
 - 作業ディレクトリは別の 8 GB のファイルシステムのイメージにし、大きなダウンロードが暴走してもホストのディスクを埋めない
 - 組み込みツールは WebSearch・WebFetch（シェルが有効なら Bash も）とファイル操作（Read / Write / Edit / Glob）で、読めるのは projects の中、書けるのはそのチャンネルのプロジェクトの中だけ（hook で判定する）。Bot が消したファイルはプロジェクトの `.trash` に移り（戻せる）、30 日で消える
