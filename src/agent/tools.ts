@@ -1,7 +1,7 @@
 // タスク・セッション・ナレッジベース・記憶・プロジェクト・リマインドのツール。ハンドラは SDK に依存せずストアだけを使う（session_open は Discord への作成、
 // kb_delete は確認の投稿、memory_save・memory_forget は変更の知らせがあるので、app 側の実装を受け取る。
 // project_open は配信中かどうかを main から受け取る。project_files の本体は project-files.ts）。末尾の createTaskTools・createTaskMcpServer が SDK への薄いアダプタ
-import { mkdir } from "node:fs/promises";
+import { lstat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import * as z from "zod";
@@ -14,6 +14,7 @@ import {
   wallClockToUtc,
 } from "../app/recurrence.ts";
 import { formatDate } from "../app/time.ts";
+import { verifiedProjectDir } from "./disk.ts";
 import {
   KB_BODY_MAX_LENGTH,
   KB_SEARCH_DEFAULT_LIMIT,
@@ -189,6 +190,35 @@ export const PROJECT_OPEN_NOT_AVAILABLE_MESSAGE =
   "セッションのチャンネルで使います。#inbox では session_open で専用のチャンネルを作ってください";
 /** ページの配信が無効なときの message */
 export const PROJECT_OPEN_NOT_CONFIGURED_MESSAGE = "ページの配信が設定されていません";
+/** プロジェクトのディレクトリが projects の直下の実際のディレクトリだと確かめられないとき（symlink にすり替えられたなど）の message。パスは入れない */
+export const PROJECT_DIR_UNVERIFIED_MESSAGE = "プロジェクトのディレクトリを確かめられないため使えません。オーナーに伝えてください";
+
+/**
+ * `<projectsDir>/<slug>` の状態。ok は disk.ts の verifiedProjectDir を通る実際のディレクトリ、missing は projectsDir は確かめられて slug がまだ無い、
+ * unverified はそれ以外（projectsDir や slug が symlink・ファイル・解決できない）。Bot のプロセス（sandbox の外）がプロジェクトのファイルを触る前に必ず通す。
+ * sandbox の中の Bash は projects に書けるので、slug を外を指す symlink にすり替えて、ここで外を自分の dir とみなさせる筋を塞ぐ
+ */
+async function projectDirState(projectsDir: string, slug: string): Promise<"ok" | "missing" | "unverified"> {
+  const dir = join(projectsDir, slug);
+  const verified = async (): Promise<boolean> => {
+    if ((await verifiedProjectDir(projectsDir, slug)) === undefined) return false;
+    try {
+      return (await lstat(dir)).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  if (await verified()) return "ok";
+  // 無いだけなら missing（projectsDir そのものは確かめる）
+  if ((await verifiedProjectDir(projectsDir, ".")) !== projectsDir) return "unverified";
+  try {
+    await lstat(dir);
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "ENOENT" ? "missing" : "unverified";
+  }
+  // 確かめている間に作られた（同じターンで並べて呼ばれた project_open など）ならもう一度だけ確かめる
+  return (await verified()) ? "ok" : "unverified";
+}
 /** project_open の name の文字数の上限 */
 export const PROJECT_NAME_MAX_LENGTH = 40;
 
@@ -497,7 +527,18 @@ export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunCon
       const dir = join(projectsDir, project.slug);
       const siteDir = join(dir, "site");
       const status = existing === undefined ? "created" : "existing";
+      const unverified = textResult({ status: "not_available", message: PROJECT_DIR_UNVERIFIED_MESSAGE });
+      // dir が projects の直下の実際のディレクトリ（作るならまだ無い）と確かめてから触る。作った後も確かめ直す
+      await mkdir(projectsDir, { recursive: true });
+      if ((await projectDirState(projectsDir, project.slug)) === "unverified") {
+        log("project_open: プロジェクトのディレクトリを確かめられないため使いませんでした");
+        return unverified;
+      }
       if (existing === undefined) await mkdir(siteDir, { recursive: true });
+      if (existing === undefined && (await projectDirState(projectsDir, project.slug)) !== "ok") {
+        log("project_open: プロジェクトのディレクトリを確かめられないため使いませんでした");
+        return unverified;
+      }
       const { copied, failed } = await copyWebScaffold(dir, status, templateDir);
       // パス・例外の中身は出さない
       if (failed) log("project_open: UI の土台の複製に失敗しました");
@@ -515,6 +556,11 @@ export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunCon
       const project =
         context === undefined || context.kind !== "session" ? undefined : projects.getByChannel(context.channelId);
       if (project === undefined) return textResult({ result: "not_available", message: FILE_WRITE_DENIED_REASON });
+      // dir が projects の直下の実際のディレクトリ（か、まだ無い）と確かめてから触る（どの action も）
+      if ((await projectDirState(projectsDir, project.slug)) === "unverified") {
+        log("project_files: プロジェクトのディレクトリを確かめられないため使いませんでした");
+        return textResult({ result: "not_available", message: PROJECT_DIR_UNVERIFIED_MESSAGE });
+      }
       const outcome = await runProjectFiles(join(projectsDir, project.slug), args, { now: now(), templateDir, log });
       const count = changedCount(outcome);
       if (count !== undefined) {

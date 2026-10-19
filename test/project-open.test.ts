@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as z from "zod";
@@ -11,6 +11,7 @@ import {
   createTaskTools,
   PROJECT_OPEN_NOT_AVAILABLE_MESSAGE,
   PROJECT_DESIGN_NOTE,
+  PROJECT_DIR_UNVERIFIED_MESSAGE,
   PROJECT_NO_SHELL_NOTE,
   PROJECT_OPEN_NOT_CONFIGURED_MESSAGE,
   PROJECT_SHELL_NOTE,
@@ -311,4 +312,43 @@ test("ツール定義: project_open の name は 1〜40 字、title は 1〜100 
   assert.equal(ok({ name: "a", title: "" }), false);
   assert.equal(ok({ name: "a", title: "あ".repeat(101) }), false);
   assert.equal(ok({ title: "t" }), false);
+});
+
+test("project_open: プロジェクトの dir（slug）が外を指す symlink なら、既にあるもの・これから作るもの（次の slug を先に置かれた）のどちらも not_available で、外に何も作らない", async (t) => {
+  const unverified = { status: "not_available", message: PROJECT_DIR_UNVERIFIED_MESSAGE };
+
+  // 既にあるプロジェクトの dir をすり替えた
+  {
+    const { projects, projectsDir, logs, open } = setup(t);
+    const outside = join(tempDir(t), "outside");
+    mkdirSync(outside);
+    const project = projects.create({ guildId: TOPIC.guildId, channelId: TOPIC.channelId, name: ARGS.name, title: ARGS.title });
+    mkdirSync(projectsDir, { recursive: true });
+    symlinkSync(outside, join(projectsDir, project.slug));
+    assert.deepEqual(parse(await open(TOPIC)), unverified);
+    assert.deepEqual(readdirSync(outside), []);
+    assert.equal(logs.length, 1);
+  }
+  // これから作る slug を先に symlink で置いた
+  {
+    const { projectsDir, logs, open } = setup(t);
+    const outside = join(tempDir(t), "outside");
+    mkdirSync(outside);
+    mkdirSync(projectsDir, { recursive: true });
+    symlinkSync(outside, join(projectsDir, "kakeibo-app"));
+    assert.deepEqual(parse(await open(TOPIC)), unverified);
+    assert.deepEqual(readdirSync(outside), []);
+    assert.equal(logs.length, 1);
+    assert.ok(!logs[0]!.includes(outside));
+  }
+  // projects そのものが symlink
+  {
+    const { projectsDir, open } = setup(t);
+    const outside = join(tempDir(t), "outside");
+    mkdirSync(outside);
+    mkdirSync(join(projectsDir, ".."), { recursive: true });
+    symlinkSync(outside, projectsDir);
+    assert.deepEqual(parse(await open(TOPIC)), unverified);
+    assert.deepEqual(readdirSync(outside), []);
+  }
 });

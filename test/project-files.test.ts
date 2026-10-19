@@ -32,7 +32,13 @@ import {
   type ProjectFilesArgs,
 } from "../src/agent/project-files.ts";
 import type { RunContext } from "../src/agent/runner.ts";
-import { createProjectToolHandlers, createTaskTools, type ProjectToolDeps, type TextToolResult } from "../src/agent/tools.ts";
+import {
+  createProjectToolHandlers,
+  createTaskTools,
+  PROJECT_DIR_UNVERIFIED_MESSAGE,
+  type ProjectToolDeps,
+  type TextToolResult,
+} from "../src/agent/tools.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 
 const NOW = new Date("2026-10-11T01:36:00.123Z");
@@ -767,4 +773,40 @@ test("ツール定義: project_files は project_open の直後。引数は acti
   assert.equal(ok({ action: "trash", paths: Array.from({ length: 51 }, (_, i) => `f${i}`) }), false);
   assert.equal(ok({ action: "trash", paths: [""] }), false);
   assert.equal(ok({ action: "move", paths: ["a"], to: "" }), false);
+});
+
+test("project_files: プロジェクトの dir（slug）や projects が外を指す symlink にすり替えられていたら、どの action も not_available で外を何も触らない（sandbox の Bash が projects に書けるため）", async (t) => {
+  const actions: ProjectFilesArgs[] = [
+    { action: "trash", paths: ["secret.txt"] },
+    { action: "move", paths: ["secret.txt"], to: "moved.txt" },
+    { action: "clear" },
+    { action: "restore" },
+    { action: "restore", trash_id: ID },
+  ];
+  const notAvailable = { result: "not_available", message: PROJECT_DIR_UNVERIFIED_MESSAGE };
+  for (const swap of ["slug", "projects"] as const) {
+    const { root, projectsDir, dir, touched, logs, callFiles: call } = setupTool(t);
+    const outside = join(root, "outside");
+    mkdirSync(join(outside, ".trash", ID), { recursive: true });
+    writeFileSync(join(outside, ".trash", ID, "x.txt"), "x");
+    if (swap === "slug") {
+      rmSync(dir, { recursive: true });
+      symlinkSync(outside, dir);
+    } else {
+      // projects そのものを外への symlink に（中に同じ名前の slug を置く）
+      mkdirSync(join(root, "elsewhere", "kakeibo"), { recursive: true });
+      writeFileSync(join(root, "elsewhere", "kakeibo", "secret.txt"), "secret");
+      rmSync(projectsDir, { recursive: true });
+      symlinkSync(join(root, "elsewhere"), projectsDir);
+    }
+    const before = { outside: tree(outside), elsewhere: existsSync(join(root, "elsewhere")) ? tree(join(root, "elsewhere")) : {} };
+
+    for (const args of actions) assert.deepEqual(await call(TOPIC, args), notAvailable, `${swap} ${args.action}`);
+
+    assert.deepEqual(tree(outside), before.outside, swap);
+    if (swap === "projects") assert.deepEqual(tree(join(root, "elsewhere")), before.elsewhere);
+    assert.deepEqual(touched, []);
+    assert.equal(logs.length, actions.length);
+    for (const line of logs) assert.ok(!line.includes(root), line);
+  }
 });
