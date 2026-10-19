@@ -1,4 +1,4 @@
-import type { AgentRunner, ProgressStep, RunResult } from "../agent/runner.ts";
+import type { AgentRunner, RunResult } from "../agent/runner.ts";
 import type { Config } from "../config.ts";
 import type { IncomingImage, IncomingMessage, OutgoingMessage } from "../discord/gateway.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
@@ -12,6 +12,15 @@ import { type AttachmentSource, attachmentNotes, attachmentReply, type PreparedI
 import type { ChannelOpsQueue } from "./channel-ops.ts";
 import { abortTurnButton, continueTurnButton, MAX_TURNS_REPLY } from "./commands/turn-controls.ts";
 import { buildTurnPrompt } from "./prompt.ts";
+import {
+  formatElapsed,
+  PROGRESS_INTERVAL_MS,
+  progressEndText,
+  progressText,
+  type ProgressTimers,
+  startProgress,
+  type TurnOutcome,
+} from "./progress.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import type { OwnerPosts, PersonaRouter } from "./personas.ts";
 import { applySessionEvent } from "./session-state.ts";
@@ -34,30 +43,8 @@ export const REVIVED_NOTE = "（進行中に戻しました）";
 
 /** セッションのチャンネルのターンが、開始からこれだけ経っても終わっていなければ途中経過のメッセージを出す */
 export const PROGRESS_DELAY_MS = 20_000;
-/** 途中経過のメッセージを出した後、表示が変わっていれば書き換える間隔 */
-export const PROGRESS_INTERVAL_MS = 10_000;
-
-/** 経過時間（`<m> 分 <s> 秒`。秒未満は切り捨て） */
-export function formatElapsed(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
-}
-
-/** 途中経過のメッセージの本文。直近の手順がまだ無ければ 2 行目は付けない */
-export function progressText(elapsedMs: number, toolCalls: number, label: string | undefined): string {
-  const head = `作業中…（${formatElapsed(elapsedMs)}・ツール ${toolCalls} 回）`;
-  return label === undefined ? head : `${head}\n${label}`;
-}
-
-/** ターンの終わり方（途中経過の最後の書き換えに使う）。failed は timeout・例外など、それ以外の失敗 */
-export type TurnOutcome = "done" | "max_turns" | "aborted" | "failed";
-
-const OUTCOME_LABELS: Record<TurnOutcome, string> = {
-  done: "完了",
-  max_turns: "手順の上限で止まりました",
-  aborted: "中断しました",
-  failed: "止まりました",
-};
+// 途中経過の表示は progress.ts（ジョブと共通）。これまでどおり handler からも使えるようにする
+export { formatElapsed, PROGRESS_INTERVAL_MS, progressEndText, progressText, type ProgressTimers, type TurnOutcome };
 
 /** ターンの終わり方。結果が無ければ（例外）failed */
 export function turnOutcome(result: RunResult | undefined): TurnOutcome {
@@ -67,30 +54,6 @@ export function turnOutcome(result: RunResult | undefined): TurnOutcome {
   // sdk-runner は result の失敗を subtype から書き始める
   return result.errorMessage.startsWith(MAX_TURNS_ERROR_PREFIX) ? "max_turns" : "failed";
 }
-
-/** ターンが終わった後の途中経過のメッセージの本文（「完了」「手順の上限で止まりました」「中断しました」「止まりました」） */
-export function progressEndText(outcome: TurnOutcome, elapsedMs: number, toolCalls: number): string {
-  return `${OUTCOME_LABELS[outcome]}（${formatElapsed(elapsedMs)}・ツール ${toolCalls} 回）`;
-}
-
-/** テストでは偽のタイマーに差し替える */
-export type ProgressTimers = {
-  /** ms 後に fn を 1 回呼び、取り消す関数を返す */
-  after(fn: () => void, ms: number): () => void;
-  /** fn を ms ごとに呼び、止める関数を返す */
-  every(fn: () => void, ms: number): () => void;
-};
-
-const REAL_TIMERS: ProgressTimers = {
-  after: (fn, ms) => {
-    const timer = setTimeout(fn, ms);
-    return () => clearTimeout(timer);
-  },
-  every: (fn, ms) => {
-    const timer = setInterval(fn, ms);
-    return () => clearInterval(timer);
-  },
-};
 
 export type HandlerDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "ownerUserId" | "timeZone">;
@@ -188,7 +151,7 @@ export function createHandler(deps: HandlerDeps): Handler {
     prepareImages,
     log,
   } = deps;
-  const timers = deps.timers ?? REAL_TIMERS;
+  const timers = deps.timers;
   const turnDeps: TurnDeps = {
     runner,
     ...(personas === undefined ? {} : { personas }),
@@ -235,78 +198,19 @@ export function createHandler(deps: HandlerDeps): Handler {
   };
 
   /**
-   * セッションのチャンネルのターンの途中経過。開始から PROGRESS_DELAY_MS 経っても終わっていなければ、そのターンの番号の [中断] 付きのメッセージを 1 つ送り、
-   * 以後 PROGRESS_INTERVAL_MS ごとに、表示が変わっていれば書き換える（ボタンは残す）。finish でタイマーを止め、
-   * 送っていれば終わり方（progressEndText）に書き換えてボタンを外す。送信・編集は順に行い、失敗は log だけ（ターンは止めない）
+   * セッションのチャンネルのターンの途中経過（progress.ts）。開始から PROGRESS_DELAY_MS 経っても終わっていなければ、そのターンの番号の [中断] 付きのメッセージを
+   * そのチャンネルに 1 つ送り、以後は表示が変わっていれば書き換える。終わったら終わり方に書き換えてボタンを外す
    */
-  const startProgress = (
-    channelId: string,
-    turnSeq: number,
-  ): { onProgress: (step: ProgressStep) => void; finish: (outcome: TurnOutcome) => Promise<void> } => {
-    const startedAt = now().getTime();
-    let toolCalls = 0;
-    let label: string | undefined;
-    let messageId: string | undefined;
-    let shown: string | undefined;
-    let finished = false;
-    let chain = Promise.resolve();
-    let stopEvery = (): void => {};
-    const elapsed = (): number => now().getTime() - startedAt;
-    const enqueue = (fn: () => Promise<void>): void => {
-      chain = chain.then(fn);
-    };
-    const update = (): void => {
-      enqueue(async () => {
-        if (finished || messageId === undefined) return;
-        const text = progressText(elapsed(), toolCalls, label);
-        if (text === shown) return;
-        try {
-          await gateway.editMessage(channelId, messageId, { text });
-          shown = text;
-        } catch (error) {
-          log(`途中経過の更新に失敗しました: ${describeError(error)}`);
-        }
-      });
-    };
-    const cancelDelay = timers.after(() => {
-      enqueue(async () => {
-        if (finished) return;
-        const text = progressText(elapsed(), toolCalls, label);
-        try {
-          messageId = await gateway.sendMessage(channelId, {
-            text,
-            components: [{ kind: "buttons", buttons: [abortTurnButton(channelId, turnSeq)] }],
-          });
-          shown = text;
-        } catch (error) {
-          log(`途中経過の送信に失敗しました: ${describeError(error)}`);
-        }
-      });
-      stopEvery = timers.every(update, PROGRESS_INTERVAL_MS);
-    }, PROGRESS_DELAY_MS);
-
-    return {
-      onProgress: (step) => {
-        toolCalls++;
-        label = step.label;
-      },
-      finish: async (outcome) => {
-        finished = true;
-        cancelDelay();
-        stopEvery();
-        const text = progressEndText(outcome, elapsed(), toolCalls);
-        enqueue(async () => {
-          if (messageId === undefined) return;
-          try {
-            await gateway.editMessage(channelId, messageId, { text, components: [] });
-          } catch (error) {
-            log(`途中経過の更新に失敗しました: ${describeError(error)}`);
-          }
-        });
-        await chain;
-      },
-    };
-  };
+  const startTurnProgress = (channelId: string, turnSeq: number) =>
+    startProgress({
+      send: (message) => gateway.sendMessage(channelId, message),
+      edit: (messageId, message) => gateway.editMessage(channelId, messageId, message),
+      buttons: [abortTurnButton(channelId, turnSeq)],
+      delayMs: PROGRESS_DELAY_MS,
+      now,
+      ...(timers === undefined ? {} : { timers }),
+      log,
+    });
 
   /**
    * channelName は prompt の日時ヘッダに入れるチャンネル名。revivedBeforeQueue はキュー待ちの前に進行中に戻したか。
@@ -337,7 +241,7 @@ export function createHandler(deps: HandlerDeps): Handler {
     const stopTyping = gateway.startTyping(channelId);
     const turn = kind === "session" ? { turnSeq: ++lastTurnSeq, controller: new AbortController() } : undefined;
     if (turn !== undefined) running.set(channelId, turn);
-    const progress = turn === undefined ? undefined : startProgress(channelId, turn.turnSeq);
+    const progress = turn === undefined ? undefined : startTurnProgress(channelId, turn.turnSeq);
     let result: RunResult | undefined;
     try {
       // 会話の単位はチャンネル（key は channelId）
