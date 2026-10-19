@@ -1,7 +1,8 @@
 // 作ったプロジェクトの site/ を配る静的サーバー（node:http）。127.0.0.1 で待ち受け、tailnet には tailscale serve で出す
 // log はリクエストごとには出さない（パス・slug・題名も出さない）。出すのは待ち受けた後のサーバーのエラーだけ。
 // site/ は sandbox の中の Bash が書き換えられ、このサーバーはキューの外で動くので、ファイルは判定の後に symlink にすり替えられても外を返さない形で開く
-// （最後の要素は O_NOFOLLOW、開いた fd の実際のパスが site の中かを確かめ、その fd からだけ返す。docs/plan/shell.md §2.9）
+// （最後の要素は O_NOFOLLOW、FIFO にすり替えられても止まらないよう O_NONBLOCK、開いた fd の実際のパスが site の中かと通常のファイルかを確かめ、
+// その fd からだけ返す。docs/plan/shell.md §2.9）
 import { constants } from "node:fs";
 import { open, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
 import { createServer, type IncomingMessage, type OutgoingHttpHeaders, type ServerResponse } from "node:http";
@@ -193,13 +194,13 @@ async function resolveTarget(projectsDir: string, slug: string, segments: string
 }
 
 /**
- * 判定した実パスのファイルを開く。最後の要素は O_NOFOLLOW（symlink なら開かない）、途中の要素がすり替えられていても、
+ * 判定した実パスのファイルを開く。最後の要素は O_NOFOLLOW（symlink なら開かない）、O_NONBLOCK（FIFO などにすり替えられても待たない）、途中の要素がすり替えられていても、
  * 開いた fd の実際のパス（/proc/self/fd/<fd> の readlink）が site の中でなければ閉じて undefined。通常のファイルでなくても undefined
  */
 async function openInside(path: string, site: string): Promise<{ handle: FileHandle; size: number } | undefined> {
   let handle: FileHandle;
   try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
     return undefined;
   }

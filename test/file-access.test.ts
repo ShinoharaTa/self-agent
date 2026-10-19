@@ -125,6 +125,21 @@ test("パスの要素に `..` があれば、resolve・realpath の前に拒否�
   assert.deepEqual(judge("Glob", { pattern: "*", path: `${project}/site..old` }), ALLOWED);
 });
 
+test("パス（file_path・path）が `~` で始まれば、resolve の前に拒否する（cwd がプロジェクトの中でも。CLI は ~ をホームに展開する）", (t) => {
+  const { projectsDir, judge } = setup(t);
+  const project = join(projectsDir, "kakeibo");
+  // cwd がプロジェクトの中なら、字面では projects/kakeibo/~/... になって中と誤判定しうる
+  const inProject = { cwd: project };
+  assert.deepEqual(judge("Read", { file_path: "~/.config/self-agent/env" }, inProject), READ_DENIED);
+  assert.deepEqual(judge("Read", { file_path: "~" }, inProject), READ_DENIED);
+  assert.deepEqual(judge("Write", { file_path: "~/x.txt", content: "" }, inProject), WRITE_DENIED);
+  assert.deepEqual(judge("Edit", { file_path: "~root/x", old_string: "a", new_string: "b" }, inProject), WRITE_DENIED);
+  assert.deepEqual(judge("Glob", { pattern: "*", path: "~/.ssh" }, inProject), READ_DENIED);
+  assert.deepEqual(judge("Glob", { pattern: "~/.ssh/*", path: project }, inProject), READ_DENIED);
+  // 途中の `~` は名前の一部なので通す
+  assert.deepEqual(judge("Read", { file_path: `${project}/site/~backup.html` }), ALLOWED);
+});
+
 test("Write・Edit: #inbox・#tasks・プロジェクトの無いチャンネルでは、プロジェクトの中を指しても拒否する", (t) => {
   const { projectsDir, judge } = setup(t);
   const file = join(projectsDir, "kakeibo", "site", "index.html");

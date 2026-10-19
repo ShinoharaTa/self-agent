@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request, type IncomingHttpHeaders } from "node:http";
 import { join } from "node:path";
@@ -295,6 +296,24 @@ test("判定の後・開く前に symlink にすり替えられたら、site の
   const index = await fetchRaw(server, "/p/kakeibo/");
   assert.equal(index.status, 404);
   assert.ok(!index.body.includes("outside"));
+});
+
+test("判定の後・開く前に FIFO にすり替えられても、開くところで止まらずに 404 を返す（O_NONBLOCK と fstat の通常のファイルの確かめ）", async (t) => {
+  let swap: (() => void) | undefined;
+  const { server, site } = await setup(t, undefined, () => {
+    const run = swap;
+    swap = undefined;
+    run?.();
+  });
+  swap = () => {
+    rmSync(join(site, "hello.txt"));
+    const made = spawnSync("mkfifo", [join(site, "hello.txt")]);
+    assert.equal(made.status, 0);
+  };
+  const started = Date.now();
+  const response = await fetchRaw(server, "/p/kakeibo/hello.txt");
+  assert.equal(response.status, 404);
+  assert.ok(Date.now() - started < 5000);
 });
 
 test("要素が .. でなければ .. を含む名前は通す（a..b.js・x..y/）", async (t) => {

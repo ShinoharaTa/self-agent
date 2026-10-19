@@ -91,6 +91,14 @@ function patternEscapes(toolName: string, toolInput: unknown): boolean {
 }
 
 /**
+ * パスの文字列が `~` で始まるか。CLI は `~` をホームに展開するが、ここでの resolve は cwd の下の `~` という名前にしてしまい、
+ * 中と誤判定しうるので（Bash で cwd を変えた後など）、resolve の前に拒否する
+ */
+function startsWithTilde(path: string): boolean {
+  return path.startsWith("~");
+}
+
+/**
  * パスの文字列が、`/` で分けた要素に `..` を持つか。resolve は symlink の後ろの `..` も字面で畳んでしまい、
  * 実際には外を指すパスを中と判定しうるので、resolve・realpath の前に拒否する
  */
@@ -101,7 +109,7 @@ function hasParentSegment(path: string): boolean {
 /**
  * ファイル操作を許すか。対象のパスは cwd を基準に絶対パスにし、resolveRealPath で実際の場所にして判定する（symlink で外に出られない）。
  * - context が無い: すべて拒否
- * - 対象のパス（Read・Write・Edit の file_path、Glob の path）の要素に `..` があれば拒否
+ * - 対象のパス（Read・Write・Edit の file_path、Glob の path）の要素に `..` があるか、`~` で始まれば拒否
  * - Write・Edit: セッション以外（#inbox・#tasks）・プロジェクトの無いチャンネルでは拒否。対象が `<realpath(projectsDir)>/<slug>/` の中でなければ拒否。
  *   中でも `<realpath(projectsDir)>/<slug>/.trash` そのものかその中なら拒否（戻すのは project_files の restore）
  * - Read・Glob: 対象が `<realpath(projectsDir)>/` の中でなければ拒否（.trash の中も読める）。Glob の pattern が絶対パスか `..` を含めば拒否
@@ -116,7 +124,7 @@ export function judgeFileAccess(request: FileAccessRequest): FileAccessDecision 
   if (write && (context.kind !== "session" || project === undefined)) return denied;
   if (patternEscapes(toolName, toolInput)) return denied;
   const raw = targetPath(toolName, toolInput, cwd);
-  if (raw === undefined || hasParentSegment(raw)) return denied;
+  if (raw === undefined || hasParentSegment(raw) || startsWithTilde(raw)) return denied;
   const target = resolveRealPath(resolve(cwd, raw));
   const projects = resolveRealPath(projectsDir);
   if (target === undefined || projects === undefined) return denied;
