@@ -14,6 +14,8 @@ import {
   type ProjectsDeps,
 } from "../src/app/commands/projects.ts";
 import { MESSAGE_MAX_LENGTH } from "../src/app/commands/sessions.ts";
+import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { MAINTENANCE_QUEUE_KEY } from "../src/app/scheduler.ts";
 import type { ComponentRow, Interaction } from "../src/discord/gateway.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
@@ -44,10 +46,13 @@ function press(customId: string): Extract<Interaction, { kind: "button" }> {
 
 /**
  * 一時 SQLite と一時ディレクトリ（<dir>/projects）。時計は setNow で進める（初めは 2026-10-07T00:00Z）。
- * add は project_open と同じく `<projectsDir>/<slug>/site/index.html` まで作る
+ * add は project_open と同じく `<projectsDir>/<slug>/site/index.html` まで作る。
+ * ターンのキューは本物（シェルが有効なときと同じくセッションのジョブは 1 つずつ）で、入れたジョブの key と種類を queued に残す
  */
 function setup(t: TestContext, options: { publicBaseUrl: string | undefined } = { publicBaseUrl: BASE_URL }) {
   const { publicBaseUrl } = options;
+  const turnQueue = new KeyedSerialQueue(3, { maxSessions: 1 });
+  const queued: Array<{ key: string; session: boolean }> = [];
   const db = tempDb(t);
   const dir = mkdtempSync(join(tmpdir(), "self-agent-test-"));
   const projectsDir = join(dir, "projects");
@@ -63,6 +68,12 @@ function setup(t: TestContext, options: { publicBaseUrl: string | undefined } = 
     projects,
     projectsDir,
     cfg: { publicBaseUrl, timeZone: TZ },
+    turnQueue: {
+      run: (key, fn, runOptions) => {
+        queued.push({ key, session: runOptions?.session === true });
+        return turnQueue.run(key, fn, runOptions);
+      },
+    },
     log: (line) => logs.push(line),
   };
   let channels = 0;
@@ -87,6 +98,8 @@ function setup(t: TestContext, options: { publicBaseUrl: string | undefined } = 
     dir,
     projects,
     projectsDir,
+    turnQueue,
+    queued,
     deps,
     logs,
     add,
@@ -276,6 +289,31 @@ test("[削除する]: 削除済みにしてディレクトリを消し、「削�
     { method: "update", message: { text: STALE_TEXT, components: [] } },
   ]);
   assert.equal(logs.length, 1);
+});
+
+test("[削除する]: ディレクトリはターンのキューのセッションのジョブ（key は掃除と同じ maintenance）の中で消す。実行中のセッションのターンが終わるまで消さない（結果は先に出す）", async (t) => {
+  const { projects, projectsDir, turnQueue, queued, add, component } = setup(t);
+  add("kakeibo", "家計簿");
+  // 実行中のセッションのターン（Bash が動いている）
+  let finishTurn = (): void => {};
+  const turn = turnQueue.run("topic-1", () => new Promise<void>((resolve) => (finishTurn = resolve)), { session: true });
+
+  const responder = new FakeResponder();
+  const pressed = component.handle(press("proj:del:1"), responder);
+  // 結果はキューを待たずに出し、ページはここで開けなくなる
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(responder.calls, [
+    { method: "deferUpdate" },
+    { method: "update", message: { text: "削除しました: 家計簿", components: [] } },
+  ]);
+  assert.equal(projects.getBySlug("kakeibo"), undefined);
+  assert.ok(existsSync(join(projectsDir, "kakeibo", "site", "index.html")));
+
+  finishTurn();
+  await turn;
+  await pressed;
+  assert.equal(existsSync(join(projectsDir, "kakeibo")), false);
+  assert.deepEqual(queued, [{ key: MAINTENANCE_QUEUE_KEY, session: true }]);
 });
 
 test("[やめる]: 何も消さず「やめました」にしてボタンを外す", async (t) => {
