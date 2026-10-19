@@ -730,6 +730,18 @@ export class GitClient {
     return "ok";
   }
 
+  /**
+   * bare が使える形か（clone が時間切れなどで途中で止まった残りでないか）: `rev-parse --is-bare-repository` が true で、
+   * `refs/heads/<base>` がコミットを指す。動かない・違えば false
+   */
+  async isUsableBare(bareDir: string, base: string): Promise<boolean> {
+    assertDir(bareDir);
+    assertBranch(base);
+    const bare = await this.git({ op: "rev-parse", args: [`--git-dir=${bareDir}`, "rev-parse", "--is-bare-repository"], quiet: true });
+    if (!succeeded(bare) || bare.stdout.trim() !== "true") return false;
+    return (await this.revParse(bareDir, `refs/heads/${base}`)) !== undefined;
+  }
+
   /** bare の ref（か sha）の指すコミットの sha。無ければ undefined */
   async revParse(bareDir: string, ref: string): Promise<string | undefined> {
     assertDir(bareDir);
