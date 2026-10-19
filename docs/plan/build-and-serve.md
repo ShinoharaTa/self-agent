@@ -10,7 +10,7 @@
 ## 1. 決定事項（オーナー確認済み）
 | 項目 | 決定 |
 |---|---|
-| 範囲 | 段 1（ファイル操作 + 静的な配信。シェル無し）→ 段 2（sandbox 付きの Bash で npm・ビルド）。常駐のアプリサーバー（C）はやらない |
+| 範囲 | 段 1（ファイル操作 + 静的な配信。シェル無し）→ 段 2（sandbox 付きの Bash で npm・ビルド。`docs/plan/shell.md` に置き換えた）。常駐のアプリサーバー（C）はやらない |
 | 配るもの | プロジェクトの `site/` だけ（静的）。1 ポートにパスでプロジェクトを分ける |
 | 公開範囲 | tailnet の中だけ（`tailscale serve`、HTTPS、ポート 9443）。Funnel と operator は使わない |
 | プロジェクトの寿命 | チャンネルとは別に残す。チャンネルを消してもプロジェクトと URL は残る。消すのは `/projects` の [削除する] を押したときだけ |
@@ -43,10 +43,10 @@
 - `/projects`: 削除されていないプロジェクトの一覧を新しく更新した順に本人にだけ表示する。1 行 `**<題名>** <url>（<#元のチャンネル>・更新 YYYY-MM-DD）`（url が無ければ「（配信は未設定）」）。2000 字を超えたら末尾から削って「ほか n 件」、0 件なら「プロジェクトはまだありません」。配信は全サーバー共通なので、一覧はサーバーで絞らず全サーバーの分を出す。
   - 新しい順に最大 25 件のセレクト（`proj:pick`）で選ぶと、本人にだけ確認「<題名>（<url>）を削除しますか？ ページは開けなくなり、ファイルも消えます」と [削除する]（`proj:del:<id>`）[やめる]（`proj:keep:<id>`）を出す。
   - [削除する] は `deleted_at` を入れてから `<workDir>/projects/<slug>` を消し（realpath がその直下のディレクトリのときだけ。消せなくても削除済みのまま）、「削除しました: <題名>」にする。既に無い・削除済みのものは「古くなっています」。[やめる] は「やめました」。
-- ディスクの上限（段 2 で入れる）: 1 プロジェクト 1 GB、合計 8 GB。
+- ディスクの上限（`docs/plan/shell.md` §2.7）: 1 プロジェクト 1 GB（直下の `.trash` は数えない）。workDir は 8 GB のイメージにし、空きが 512 MB を切ったら書き込みと Bash を拒否する。
 
 ## 4. ツールとガード（段 1）
-- 組み込み: `[WebSearch, WebFetch, Read, Write, Edit, Glob]`（この順で固定）。段 2 で末尾に `Bash` を足す。
+- 組み込み: `[WebSearch, WebFetch, Read, Write, Edit, Glob]`（この順で固定）。`SELF_AGENT_SHELL=1` なら末尾に `Bash` を足す（`docs/plan/shell.md`）。
   - Grep は #70 で外した（数ファイルの静的サイトでは Read で足りる。ツールの説明文の分、毎ターンの入力が減る）。
 - MCP: 既存の 11 個の末尾に `project_open` を足す。#70 でその後ろに `project_files` を足した。
 - allowedTools に足す: パスを絞ったルール `Read(//<realpath(workDir)>/projects/**)` と `Edit(//<realpath(workDir)>/projects/**)`（Edit のルールは Write にも、Read のルールは Glob にも効く。許可ルールは symlink の先も一致しないと効かないので実際の場所で書く）。それより細かい可否は PreToolUse の hook で決める（下）。permissionMode は dontAsk のまま（ルールに無いものは拒否）。
@@ -106,33 +106,7 @@
   - 手順の上限（error_max_turns）で止まったら、セッションのチャンネルだけ今の返信（「途中までで止めました（手順が多すぎました）。…」）に [続ける]（`turn:continue:<channelId>`）を付ける。押すとボタンを外し、「続けてください」をオーナーの発言と同じ経路で 1 ターン送る（日時ヘッダは押した時刻・返信先なし・URL なし）。そのチャンネルが受け付けるセッションでなくなっていたら本人にだけ「この操作は古くなっています」。
 
 ## 6. 段 2: sandbox 付きの Bash
-（段 1 が動いてから。オーナーの sudo が前提）
-- オーナーが 1 回だけ打つもの:
-  ```
-  sudo apt-get install -y bubblewrap socat
-  sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOT'
-  abi <abi/4.0>,
-  include <tunables/global>
-
-  profile bwrap /usr/bin/bwrap flags=(unconfined) {
-    userns,
-    include if exists <local/bwrap>
-  }
-  EOT
-  sudo systemctl reload apparmor
-  ```
-  このホストは `kernel.apparmor_restrict_unprivileged_userns = 1` で、bwrap 用の profile が無い（確認済み）。代償: Bot を動かすユーザーのどのプロセスも bwrap 経由で userns を作れるようになる。
-- Options の sandbox: `enabled: true`、`failIfUnavailable: true`、`autoAllowBashIfSandboxed: true`、`allowUnsandboxedCommands: false`。
-  - network: `allowedDomains: ["registry.npmjs.org"]`。
-  - filesystem: `denyRead: ["~/", "/run/user", "/tmp/tmux-<uid>", "/run/postgresql", "/run/tailscale", "/run/dbus"]`、`allowRead: [<workDir>, "~/.nvm"]`。書き込みは cwd（workDir）だけ。
-  - credentials: `CLAUDE_CODE_OAUTH_TOKEN` を deny。
-- childEnv に足す: `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`、`CLAUDE_CODE_TMPDIR=<workDir>/.tmp`、`npm_config_cache=<workDir>/.npm-cache`、`BASH_DEFAULT_TIMEOUT_MS=180000`。
-- Unix ソケットの遮断: seccomp フィルタ（`@anthropic-ai/sandbox-runtime` をユーザー領域に）。
-- hook: #inbox では Bash を拒否。`run_in_background: true` を拒否。ディスクの上限を超えていたら Bash・Write・Edit を拒否。
-- 起動時の自己診断: bwrap で userns を作れなければ sandbox を外して Bash を hook で全部拒否し、#system に知らせる。
-- /close でそのプロジェクトの `node_modules` を消す。
-- 受け入れ: `cat ~/.config/self-agent/env` が失敗、`echo ${CLAUDE_CODE_OAUTH_TOKEN:-none}` が none、`curl https://example.com` が拒否、`npm view react version` が成功、tmux・postgres・user bus のソケットに繋がらない、`npm create vite` → build（出力先 site）→ URL で開ける。
-- 未確認（受け入れで確かめる）: Bash の説明文に sandbox の設定が入るか、seccomp フィルタを CLI が見つけられるか、read-only の bind mount でソケットに connect できるか。
+`docs/plan/shell.md`（シェル（Bash）を使えるようにする設計）に移した。
 
 ## 7. PR 分解（段 1）
 1. 本書 + config（`SELF_AGENT_SERVE_PORT`・`SELF_AGENT_PUBLIC_BASE_URL`・`SELF_AGENT_SERVE_ALLOWED_LOGIN`・`SELF_AGENT_SESSION_MAX_TURNS`・`SELF_AGENT_SESSION_TURN_TIMEOUT_SEC`）+ store の `projects`（v13）と slug の生成。
@@ -140,7 +114,7 @@
 3. ツール（組み込み 5 個・project_open）、PreToolUse の guard、チャンネルの種類ごとの上限と #inbox 用の枠、システムプロンプトの行。**キャッシュに影響するのはこの PR だけ。**
 4. `/projects`（一覧と削除の確認）。
 5. 途中経過のメッセージ、[中断]、[続ける]。
-段 2 は段 1 の後に 1 PR。
+段 2 は `docs/plan/shell.md` §8 の 3 PR。
 
 ## 8. 受け入れ条件（段 1）
 - project_open: セッションのチャンネルでは url を返し、2 回目は existing、#inbox では not_available、env が無ければ not_configured（単体）。

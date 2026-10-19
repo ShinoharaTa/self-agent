@@ -79,6 +79,7 @@ filesystem: {
 },
 credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 ```
+- denyRead には上の並びに加えて `<realpath(workDir)>/jobs`（作業ジョブの作業場所。docs/plan/coding-jobs.md §4.1 の「セッションからジョブを読めない」ため）を入れる（PR 3）。
 - `allowedTools` に `Bash` は足さない（sandbox が効いているときだけ autoAllow で通る。sandbox が無ければ dontAsk で拒否される）。
 - 許可ドメインの理由: git clone（HTTPS）は github.com だけ、`github:` 依存と tarball は codeload、postinstall がよく使う GitHub の配布物の 3 つ、npm は registry。CDN（jsdelivr・unpkg）は npm で足りるので入れない。PyPI は入れない（§8 の未決）。
 - 書き込み: cwd（workDir）は CLI の既定で書ける。`Edit(//<workDir>/projects/**)` の許可ルールも書き込み許可に合流する。
