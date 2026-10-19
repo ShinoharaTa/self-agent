@@ -352,9 +352,14 @@ export function timelinePath(owner: string, repo: string, number: number, page =
 
 /** PATH から gh の絶対パスを解決する（§10。起動時に 1 回）。PATH の絶対パスの要素だけを見て、実行できるファイルが無ければ undefined */
 export function resolveGhPath(pathEnv: string | undefined = process.env.PATH): string | undefined {
+  return resolveCommandPath("gh", pathEnv);
+}
+
+/** PATH から name の絶対パスを解決する（起動時に 1 回。作業ジョブの git にも使う）。PATH の絶対パスの要素だけを見て、実行できるファイルが無ければ undefined */
+export function resolveCommandPath(name: string, pathEnv: string | undefined = process.env.PATH): string | undefined {
   for (const dir of (pathEnv ?? "").split(":")) {
     if (!isAbsolute(dir)) continue;
-    const candidate = join(dir, "gh");
+    const candidate = join(dir, name);
     try {
       if (!statSync(candidate).isFile()) continue;
       accessSync(candidate, constants.X_OK);
