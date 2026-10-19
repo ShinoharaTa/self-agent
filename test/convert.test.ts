@@ -48,6 +48,21 @@ test("toCommandInteraction: コマンド名と値のあるオプションだけ�
   assert.deepEqual(dm, { ...BASE, guildId: null, channelId: null, kind: "command", name: "help", options: {} });
 });
 
+test("toCommandInteraction: サブコマンドが選ばれていれば subcommand に名前を、その中の値のあるオプションを options に入れる", () => {
+  const interaction = toCommandInteraction({
+    ...SOURCE,
+    commandName: "job",
+    options: { data: [{ name: "run", options: [{ name: "repo", value: "example/repo" }, { name: "issue", value: 3 }] }] },
+  });
+  assert.deepEqual(interaction, {
+    ...BASE,
+    kind: "command",
+    name: "job",
+    subcommand: "run",
+    options: { repo: "example/repo", issue: 3 },
+  });
+});
+
 test("toButtonInteraction・toSelectInteraction: custom_id と選んだ値（配列は写す）、付いていたメッセージの ID", () => {
   assert.deepEqual(toButtonInteraction({ ...SOURCE, customId: "close:all:topic-1", message: { id: "message-1" } }), {
     ...BASE,
@@ -217,6 +232,41 @@ test("toCommandData: オプションの型（string 3・integer 4・boolean 5）
       { name: "public", description: "公開", required: false, type: 5 },
     ],
   });
+  assert.deepEqual(
+    json(
+      toCommandData({
+        name: "job",
+        description: "作業",
+        subcommands: [
+          {
+            name: "run",
+            description: "既存",
+            options: [
+              { type: "string", name: "repo", description: "リポジトリ", required: true },
+              { type: "integer", name: "issue", description: "番号", minValue: 1 },
+            ],
+          },
+          { name: "new", description: "新規" },
+        ],
+      }),
+    ),
+    {
+      name: "job",
+      description: "作業",
+      options: [
+        {
+          type: 1,
+          name: "run",
+          description: "既存",
+          options: [
+            { name: "repo", description: "リポジトリ", required: true, type: 3 },
+            { name: "issue", description: "番号", required: false, type: 4, minValue: 1 },
+          ],
+        },
+        { type: 1, name: "new", description: "新規", options: [] },
+      ],
+    },
+  );
   assert.deepEqual(json(toCommandData({ name: "help", description: "使い方" })), {
     name: "help",
     description: "使い方",

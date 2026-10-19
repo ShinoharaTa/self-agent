@@ -4,6 +4,7 @@ import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
 import { helpCommand } from "./commands/help.ts";
+import { createJobCommand, createJobComponent, type JobCommandDeps } from "./commands/job.ts";
 import { createHomeComponent, type HomeDeps } from "./commands/home.ts";
 import { createKbDeleteComponent, type KbDeleteDeps } from "./commands/kb-delete.ts";
 import { createMemoryUndoComponent, type MemoryUndoDeps } from "./commands/memory-undo.ts";
@@ -39,9 +40,11 @@ export type ComponentHandler = {
 
 /**
  * /setup と /new は同じキュー（queue）、/close と /renew は発言のターンと同じキュー（turnQueue）を使う。
- * /renew は #inbox・#tasks では切り替え（inboxRotator）を使う
+ * /renew は #inbox・#tasks では切り替え（inboxRotator）を使う。
+ * jobs は作業ジョブ（SELF_AGENT_JOBS が有効のときだけ渡す）。あれば /job を登録する
  */
 export type CommandDeps = SetupDeps &
+  Partial<Pick<JobCommandDeps, "jobs">> &
   NewSessionDeps &
   CloseDeps &
   RenewDeps &
@@ -66,6 +69,7 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
     createUsageCommand(deps),
     createProjectsCommand(deps),
     createRemindersCommand(deps),
+    ...(deps.jobs === undefined ? [] : [createJobCommand({ jobs: deps.jobs, log: deps.log })]),
   ];
 }
 
@@ -76,9 +80,11 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
  * ナレッジベースの削除の確認（kb:）と記憶の変更の [取り消す]（mem:）は、それぞれのストアだけを使う。
  * プロジェクトの削除（proj:）はディレクトリも消すので、プロジェクトの場所（projectsDir）も要る。
  * ターンの [中断]・[続ける]（turn:）は発言の handler（実行中のターンの中断と、発言と同じ経路のターンの投入）を使う。
- * リマインドのボタンと /reminders のセレクト（rem:）は、リマインドとタスクのストアを使う
+ * リマインドのボタンと /reminders のセレクト（rem:）は、リマインドとタスクのストアを使う。
+ * #jobs のボタンとモーダル（job:）は作業ジョブ（jobs。SELF_AGENT_JOBS が有効のときだけ渡す）を使う
  */
 export type ComponentDeps = CloseDeps &
+  Partial<Pick<JobCommandDeps, "jobs">> &
   WaitDeps &
   TasksDeps &
   HomeDeps &
@@ -102,6 +108,7 @@ export function createComponents(deps: ComponentDeps): ComponentHandler[] {
     createProjectsComponent(deps),
     createTurnControlsComponent(deps),
     createRemindersComponent(deps),
+    ...(deps.jobs === undefined ? [] : [createJobComponent({ jobs: deps.jobs, log: deps.log })]),
   ];
 }
 

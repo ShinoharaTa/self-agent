@@ -21,6 +21,9 @@ const HOME_CHANNELS: ReadonlyArray<{
 /** GitHub の通知を流すチャンネル（SELF_AGENT_GITHUB=1 のときだけ、#system の後に作る。docs/plan/github-notifications.md §4.1） */
 const GITHUB_CHANNEL = { name: "github", topic: "GitHub の通知（自分宛て・自分のリポジトリの新しい Issue / PR）" };
 
+/** 作業ジョブの報告のチャンネル（SELF_AGENT_JOBS が有効のときだけ、#github の後に作る。docs/plan/coding-jobs.md §9。発言は受け付けない） */
+const JOBS_CHANNEL = { name: "jobs", topic: "作業ジョブ（/job）の進み具合と結果。ここへの発言には返事しません" };
+
 /** 足した人格の入口（#<NAME>）。チャンネル名は表示名から作る（config で空・inbox/tasks/system・人格どうしの重なりを弾いてある） */
 export function personaInboxName(persona: Pick<PersonaConfig, "name">): string {
   return normalizeChannelName(persona.name);
@@ -57,8 +60,8 @@ export function layoutQueueKey(guildId: string): string {
 }
 
 export type SetupDeps = {
-  /** personas は足した人格（#<NAME> を作る）、github が true なら #github も作る。無ければ今と同じ */
-  cfg?: Partial<Pick<Config, "personas" | "github">>;
+  /** personas は足した人格（#<NAME> を作る）、github が true なら #github も、jobs が true なら #jobs も作る。無ければ今と同じ */
+  cfg?: Partial<Pick<Config, "personas" | "github" | "jobs">>;
   gateway: Pick<
     Gateway,
     | "createCategory"
@@ -94,7 +97,8 @@ function describeError(error: unknown): string {
  * self-agent カテゴリを作り直したときは、残っている #inbox / #tasks / #<NAME> / #system をそこへ移す
  * （移動に失敗した分や手で動かされた分は、定期処理の再同期（scheduler.ts）が戻す）。
  * 足した人格（cfg.personas）があれば、#tasks の後にその人格の #<NAME> を self-agent カテゴリに作る（作るのは既定の人格の Bot。ホームパネルは置かない）。
- * cfg.github が true なら、#system の後に #github を作る（false なら作らず、既にあるものも触らない）
+ * cfg.github が true なら、#system の後に #github を作る（false なら作らず、既にあるものも触らない）。
+ * cfg.jobs が true なら、その後に #jobs を作る（同じく false なら作らず触らない）
  */
 export async function ensureGuildLayout(
   guildId: string,
@@ -167,6 +171,16 @@ export async function ensureGuildLayout(
         settings?.githubChannelId,
         () => gateway.createTextChannel(guildId, { ...GITHUB_CHANNEL, parentId: homeCategoryId }),
         (id) => guildSettings.setChannel(guildId, "githubChannelId", id),
+        moveIfRecreated,
+      );
+    }
+    if (deps.cfg?.jobs === true) {
+      await ensure(
+        guildSettings.jobsChannelId(guildId),
+        () => gateway.createTextChannel(guildId, { ...JOBS_CHANNEL, parentId: homeCategoryId }),
+        (id) => {
+          guildSettings.setJobsChannel(guildId, id);
+        },
         moveIfRecreated,
       );
     }

@@ -54,7 +54,8 @@ type InteractionBase = {
  * ボタン・セレクトの messageId は、押された（選ばれた）コンポーネントが付いていたメッセージの ID
  */
 export type Interaction =
-  | (InteractionBase & { kind: "command"; name: string; options: Record<string, string | number | boolean> })
+  /** subcommand はサブコマンドのあるコマンドで選ばれたもの（options はそのサブコマンドのオプション） */
+  | (InteractionBase & { kind: "command"; name: string; subcommand?: string; options: Record<string, string | number | boolean> })
   | (InteractionBase & { kind: "button"; customId: string; messageId?: string })
   | (InteractionBase & { kind: "select"; customId: string; values: string[]; messageId?: string })
   /** fields はテキスト入力の customId → 入力値 */
@@ -108,20 +109,28 @@ export type ModalDef = {
   }>;
 };
 
+/** コマンド（とサブコマンド）のオプション */
+export type CommandOptionDef = {
+  type: "string" | "integer" | "boolean";
+  name: string;
+  description: string;
+  required?: boolean;
+  /** string のときだけ効く。文字数の下限・上限（Discord 側で検証する） */
+  minLength?: number;
+  maxLength?: number;
+  /** string のときだけ効く。選べる値（name は表示、value は渡る値。25 個まで） */
+  choices?: Array<{ name: string; value: string }>;
+  /** integer のときだけ効く。値の下限・上限（Discord 側で検証する） */
+  minValue?: number;
+  maxValue?: number;
+};
+
 export type CommandDef = {
   name: string;
   description: string;
-  options?: Array<{
-    type: "string" | "integer" | "boolean";
-    name: string;
-    description: string;
-    required?: boolean;
-    /** string のときだけ効く。文字数の下限・上限（Discord 側で検証する） */
-    minLength?: number;
-    maxLength?: number;
-    /** string のときだけ効く。選べる値（name は表示、value は渡る値。25 個まで） */
-    choices?: Array<{ name: string; value: string }>;
-  }>;
+  options?: CommandOptionDef[];
+  /** サブコマンド（`/job run …` の run）。あれば options は使わない */
+  subcommands?: Array<{ name: string; description: string; options?: CommandOptionDef[] }>;
 };
 
 export type TextChannelOptions = {

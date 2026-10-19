@@ -4,12 +4,14 @@ import type {
   ActionRowData,
   APIModalInteractionResponseCallbackData,
   ApplicationCommandOptionData,
+  ApplicationCommandSubCommandData,
   ChatInputApplicationCommandData,
   MessageActionRowComponentData,
   MessageMentionOptions,
 } from "discord.js";
 import type {
   CommandDef,
+  CommandOptionDef,
   ComponentRow,
   ImageMediaType,
   IncomingImage,
@@ -22,7 +24,7 @@ import type {
 const COMPONENT_TYPE = { actionRow: 1, button: 2, stringSelect: 3, textInput: 4, label: 18 } as const;
 const BUTTON_STYLE = { primary: 1, secondary: 2, success: 3, danger: 4 } as const;
 const TEXT_INPUT_STYLE = { short: 1, paragraph: 2 } as const;
-const COMMAND_OPTION_TYPE = { string: 3, integer: 4, boolean: 5 } as const;
+const COMMAND_OPTION_TYPE = { subcommand: 1, string: 3, integer: 4, boolean: 5 } as const;
 
 // @everyone・ロール・他ユーザーへの通知は出さない（返信先への通知だけ残す）
 export const ALLOWED_MENTIONS: MessageMentionOptions = { parse: [], repliedUser: true };
@@ -121,18 +123,37 @@ function interactionBase(source: InteractionSource) {
   };
 }
 
-/** スラッシュコマンド。値の無いオプション（サブコマンド等）は入れない */
+type CommandOptionSource = { name: string; value?: string | number | boolean; options?: ReadonlyArray<CommandOptionSource> };
+
+/**
+ * スラッシュコマンド。値の無いオプションは入れない。サブコマンド（値が無く、中にオプションを持つもの）が選ばれていれば、その名前を
+ * subcommand に、その中の値のあるオプションを options に入れる
+ */
 export function toCommandInteraction(
   source: InteractionSource & {
     commandName: string;
-    options: { data: ReadonlyArray<{ name: string; value?: string | number | boolean }> };
+    options: { data: ReadonlyArray<CommandOptionSource> };
   },
 ): Interaction {
   const options: Record<string, string | number | boolean> = {};
+  let subcommand: string | undefined;
   for (const option of source.options.data) {
-    if (option.value !== undefined) options[option.name] = option.value;
+    if (option.value !== undefined) {
+      options[option.name] = option.value;
+    } else if (option.options !== undefined && subcommand === undefined) {
+      subcommand = option.name;
+      for (const inner of option.options) {
+        if (inner.value !== undefined) options[inner.name] = inner.value;
+      }
+    }
   }
-  return { ...interactionBase(source), kind: "command", name: source.commandName, options };
+  return {
+    ...interactionBase(source),
+    kind: "command",
+    name: source.commandName,
+    ...(subcommand === undefined ? {} : { subcommand }),
+    options,
+  };
 }
 
 /** message はボタンが付いていたメッセージ */
@@ -228,23 +249,35 @@ export function toModal(modal: ModalDef): APIModalInteractionResponseCallbackDat
   };
 }
 
+function toOptionData(option: CommandOptionDef): ApplicationCommandOptionData {
+  const common = { name: option.name, description: option.description, required: option.required ?? false };
+  switch (option.type) {
+    case "string":
+      return {
+        ...common,
+        type: COMMAND_OPTION_TYPE.string,
+        minLength: option.minLength,
+        maxLength: option.maxLength,
+        ...(option.choices === undefined ? {} : { choices: option.choices }),
+      };
+    case "integer":
+      return { ...common, type: COMMAND_OPTION_TYPE.integer, minValue: option.minValue, maxValue: option.maxValue };
+    case "boolean":
+      return { ...common, type: COMMAND_OPTION_TYPE.boolean };
+  }
+}
+
 export function toCommandData(def: CommandDef): ChatInputApplicationCommandData {
-  const options = (def.options ?? []).map((option): ApplicationCommandOptionData => {
-    const common = { name: option.name, description: option.description, required: option.required ?? false };
-    switch (option.type) {
-      case "string":
-        return {
-          ...common,
-          type: COMMAND_OPTION_TYPE.string,
-          minLength: option.minLength,
-          maxLength: option.maxLength,
-          ...(option.choices === undefined ? {} : { choices: option.choices }),
-        };
-      case "integer":
-        return { ...common, type: COMMAND_OPTION_TYPE.integer };
-      case "boolean":
-        return { ...common, type: COMMAND_OPTION_TYPE.boolean };
-    }
-  });
-  return { name: def.name, description: def.description, options };
+  if (def.subcommands !== undefined) {
+    const options = def.subcommands.map(
+      (subcommand): ApplicationCommandOptionData => ({
+        type: COMMAND_OPTION_TYPE.subcommand,
+        name: subcommand.name,
+        description: subcommand.description,
+        options: (subcommand.options ?? []).map(toOptionData) as ApplicationCommandSubCommandData["options"],
+      }),
+    );
+    return { name: def.name, description: def.description, options };
+  }
+  return { name: def.name, description: def.description, options: (def.options ?? []).map(toOptionData) };
 }

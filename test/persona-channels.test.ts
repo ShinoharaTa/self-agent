@@ -443,7 +443,7 @@ test("待ちに移した知らせ（[続ける][閉じる]）は、セッショ�
   const scheduler = new Scheduler({
     cfg,
     topicSessions: env.topicSessions,
-    guildSettings: { get: () => undefined, listStateCategories: () => [], personaInbox: () => undefined },
+    guildSettings: { get: () => undefined, listStateCategories: () => [], personaInbox: () => undefined, jobsChannelId: () => null },
     sessions: env.sessions,
     seeds: env.seeds,
     channelOps: new RecordingChannelOps(),

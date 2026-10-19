@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DiskQuota, pruneWorkDir } from "./agent/disk.ts";
 import { pruneProjectTrash } from "./agent/project-files.ts";
 import { checkSandbox, nodeVersionDir, shellPath } from "./agent/sandbox-check.ts";
-import type { RunContext } from "./agent/runner.ts";
+import type { AgentRunner, RunContext } from "./agent/runner.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { personaSystemPrompts } from "./agent/system-prompt.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
@@ -28,8 +28,11 @@ import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
-import { GhClient, resolveGhPath } from "./github/gh.ts";
+import { GhClient, resolveCommandPath, resolveGhPath } from "./github/gh.ts";
 import { createGithubPoller } from "./github/poller.ts";
+import { GitClient } from "./jobs/git.ts";
+import { JobGithubApi } from "./jobs/github-api.ts";
+import { JobOrchestrator } from "./jobs/orchestrator.ts";
 import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
 import { AttachmentStore } from "./store/attachments.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
@@ -38,6 +41,7 @@ import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { InboxSummaryStore } from "./store/inbox-summaries.ts";
+import { JobStore } from "./store/jobs.ts";
 import { KnowledgeStore } from "./store/knowledge.ts";
 import { MemoryStore } from "./store/memories.ts";
 import { ProjectStore } from "./store/projects.ts";
@@ -234,6 +238,37 @@ const inboxRotator = new InboxRotator({
   now,
   log,
 });
+// 作業ジョブ（docs/plan/coding-jobs.md。SELF_AGENT_JOBS=1 のときだけ）: /job・#jobs のボタンで頼み、turnQueue の key `job`（セッションのジョブ）で
+// 準備 → run → 取り込み → 検査 → push → draft PR まで進め、#jobs に既定の人格の Bot で報告する。git・gh は起動時に PATH から 1 回解決する。
+// PR-J4 で入れる: ジョブ用の runner（§3 の Options の SdkAgentRunner）。それまで SELF_AGENT_JOBS=1 は設定エラーなので、ここは通らない
+const jobRunner: AgentRunner | undefined = undefined;
+const createJobs = (runner: AgentRunner | undefined): JobOrchestrator => {
+  if (runner === undefined) throw new Error("作業ジョブの runner がまだありません（PR-J4）");
+  const jobGhPath = resolveGhPath();
+  const gitPath = resolveCommandPath("git");
+  if (jobGhPath === undefined || gitPath === undefined) {
+    console.error("SELF_AGENT_JOBS=1 には gh と git が要ります（PATH を確かめてください）");
+    process.exit(1);
+  }
+  return new JobOrchestrator({
+    cfg: config,
+    workDir: realWorkDir,
+    dataDir: realpathSync(config.dataDir),
+    jobs: new JobStore(db, now),
+    guildSettings,
+    usage,
+    queue: turnQueue,
+    runner,
+    git: new GitClient({ gitPath, ghPath: jobGhPath, log }),
+    github: new JobGithubApi({ ghPath: jobGhPath }),
+    gateway,
+    // shellState は下で作る（run の準備のときに読む）
+    shellEnabled: () => shellState.enabled(),
+    now,
+    log,
+  });
+};
+const jobs = config.jobs ? createJobs(jobRunner) : undefined;
 // コマンドは既定の人格のアプリだけが登録して受ける。/close・/renew のターンはチャンネルの持ち主の人格で動かし、結果は持ち主の Bot が投稿する
 const commands = createCommands({
   cfg: config,
@@ -252,6 +287,8 @@ const commands = createCommands({
   turn,
   inboxRotator,
   reminders,
+  // /job（SELF_AGENT_JOBS=1 のときだけ登録する）
+  ...(jobs === undefined ? {} : { jobs }),
   log,
 });
 const handleInteraction = createInteractionHandler({
@@ -278,6 +315,8 @@ const handleInteraction = createInteractionHandler({
     turnQueue,
     turn,
     reminders,
+    // #jobs のボタンとモーダル（SELF_AGENT_JOBS=1 のときだけ）
+    ...(jobs === undefined ? {} : { jobs }),
     log,
   }),
   log,
@@ -406,6 +445,8 @@ const lifecycle = createShutdown(
     scheduler,
     reminderScheduler,
     ...(githubPoller === undefined ? {} : { githubPoller }),
+    // 実行中のジョブは待たずに中断し（failed / interrupted）、始めていないものは次の起動で入れ直す
+    ...(jobs === undefined ? {} : { jobs }),
     channelOps,
     staticServer,
     closeDb: () => db.close(),
@@ -445,6 +486,8 @@ void startPersonaGateways(
   { onSettled: (id) => loginSettled.add(id) },
 );
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
+// 作業ジョブ: 再起動で止まった running を failed / interrupted にして #jobs に知らせ、queued をキューに入れ直す
+await jobs?.recover();
 // 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で（リマインドは分の境目ごと）。停止を始めていれば何もしない
 scheduler.start(TICK_INTERVAL_MS);
 reminderScheduler.start();

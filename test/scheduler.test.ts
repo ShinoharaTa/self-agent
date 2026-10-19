@@ -613,6 +613,17 @@ test("再同期: #github（SELF_AGENT_GITHUB=1 の /setup で作ったもの）�
   assert.deepEqual(env.channelOps.moves, [{ channelId: "github-1", target: { kind: "category", categoryId: "home-1" } }]);
 });
 
+test("再同期: #jobs（SELF_AGENT_JOBS=1 の /setup で作ったもの）も self-agent カテゴリの外にあれば戻す", async (t) => {
+  const env = setup(t);
+  layout(env);
+  env.guildSettings.setJobsChannel("guild-1", "jobs-1");
+  env.gateway.parents = discord([["jobs-1", "done-1"]]);
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.channelOps.moves, [{ channelId: "jobs-1", target: { kind: "category", categoryId: "home-1" } }]);
+});
+
 /** 何時間前・何日前かの配列の添字を topic-<添字> として、古い順に並べる */
 function byAge(ages: number[]): string[] {
   return ages
