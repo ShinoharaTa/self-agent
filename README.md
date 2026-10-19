@@ -63,7 +63,10 @@ Discord ──(discord.js)── Gateway ── access check (allowed servers, o
 ## Safety rules
 
 - It responds only to the owner's messages and actions, and only on servers allowed by an environment variable. It ignores DMs, other servers, other people, bots and webhooks.
-- There is no shell. Besides WebSearch and WebFetch, the only built-in tools are the file tools (Read / Write / Edit / Glob). A hook lets them read only inside the projects directory and write only inside the current channel's own project. Files the bot deletes are moved to the project's `.trash` (so they can be restored) and removed for good after 30 days.
+- In session channels that have a project, the bot can run shell commands (Bash) — for example `git clone` and `npm install` — without asking each time. Every command runs inside an OS sandbox (bubblewrap): it can write only inside the projects directory, cannot read the home directory (tokens, SSH keys, gh credentials, the bot's database and conversation logs, other projects), `/tmp`, `/run` or `/var/log`, and can reach only GitHub and the npm registry. The Claude token is removed from its environment. Commands time out after 5 minutes and cannot leave processes running.
+- If the sandbox cannot start, the shell is turned off (commands are refused) and the bot says so in `#system`. The shell is off unless `SELF_AGENT_SHELL=1` is set.
+- The working directory is a separate 8 GB filesystem image, so a runaway download cannot fill the host's disk.
+- Besides WebSearch and WebFetch (and Bash when the shell is on), the built-in tools are the file tools (Read / Write / Edit / Glob). A hook lets them read only inside the projects directory and write only inside the current channel's own project. Files the bot deletes are moved to the project's `.trash` (so they can be restored) and removed for good after 30 days.
 - WebFetch can fetch only URLs the owner pasted in that turn's message (and where they redirect to); anything else is denied by a hook. This blocks a page's instructions from sending data to some other URL.
 - Content from web pages, search results and the knowledge base is treated as reference material. Instructions inside it are not followed.
 - Images the owner attaches (JPEG / PNG / WebP / GIF, up to 4 per message) are sent to Anthropic's API as part of the conversation, so they also stay in the SDK's conversation record (under `CLAUDE_CONFIG_DIR`); the originals are kept in `<SELF_AGENT_DATA_DIR>/attachments/` (deleted after 30 days unless linked to a record).
@@ -80,6 +83,7 @@ Discord ──(discord.js)── Gateway ── access check (allowed servers, o
 - Linux (headless is fine) and Node.js 24.20 or later
 - A Claude subscription (it runs with a token issued by `claude setup-token`; the default model is Opus, and it is run on the Max plan)
 - A Discord bot you create yourself
+- (for the shell) bubblewrap and socat, and an AppArmor profile for bwrap on Ubuntu 24.04+ (see [`docs/plan/shell.md`](docs/plan/shell.md) §6, in Japanese)
 
 ### 1. Create the Discord bot
 
@@ -128,6 +132,7 @@ To keep it running, make it a systemd user service (no sudo needed; if Node come
 
 ```bash
 systemd-run --user --unit=self-agent --working-directory="$PWD" \
+  -p MemoryMax=4G -p MemoryHigh=3G -p CPUQuota=300% -p TasksMax=1024 \
   "$(command -v node)" --env-file="$HOME/.config/self-agent/env" src/main.ts
 journalctl --user -u self-agent -f      # logs
 systemctl --user stop self-agent        # stop (waits for in-flight replies first)

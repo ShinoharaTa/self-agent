@@ -61,7 +61,10 @@ Discord ──(discord.js)── Gateway ── 受付判定（許可サーバ�
 ## 安全のための決まり
 
 - 反応するのは、環境変数で許可したサーバーの、オーナー本人の発言と操作だけ。DM・他のサーバー・他の人・Bot・Webhook には反応しない
-- シェルは無い。組み込みツールは WebSearch・WebFetch とファイル操作（Read / Write / Edit / Glob）だけで、読めるのは projects の中、書けるのはそのチャンネルのプロジェクトの中だけ（hook で判定する）。Bot が消したファイルはプロジェクトの `.trash` に移り（戻せる）、30 日で消える
+- プロジェクトのあるセッションのチャンネルでは、Bot がシェルのコマンド（Bash。`git clone`・`npm install` など）を 1 つずつの承認なしに実行できる。コマンドはすべて OS の sandbox（bubblewrap）の中で動き、書けるのは projects の中だけ、ホーム（トークン・SSH の鍵・gh の認証・Bot の DB と会話の記録・他のプロジェクト）・`/tmp`・`/run`・`/var/log` は読めず、届くのは GitHub と npm の registry だけ。Claude のトークンはコマンドの環境から消す。コマンドは 5 分で打ち切られ、プロセスを残せない
+- sandbox を起動できなければシェルは止まり（コマンドは拒否される）、`#system` にそう知らせる。`SELF_AGENT_SHELL=1` を設定しない限りシェルは使わない
+- 作業ディレクトリは別の 8 GB のファイルシステムのイメージにし、大きなダウンロードが暴走してもホストのディスクを埋めない
+- 組み込みツールは WebSearch・WebFetch（シェルが有効なら Bash も）とファイル操作（Read / Write / Edit / Glob）で、読めるのは projects の中、書けるのはそのチャンネルのプロジェクトの中だけ（hook で判定する）。Bot が消したファイルはプロジェクトの `.trash` に移り（戻せる）、30 日で消える
 - WebFetch は、そのターンにオーナーが発言に貼った URL（とその転送先）だけ取得できる（それ以外は hook で拒否）。外のページの指示で別の URL にデータを送る経路を塞ぐため
 - Web・検索結果・ナレッジの中身は「資料」として扱い、その中の指示には従わない
 - オーナーが貼った画像（JPEG・PNG・WebP・GIF。1 発言 4 枚まで）は会話の一部として Anthropic の API に送られ、SDK の会話の記録（`CLAUDE_CONFIG_DIR` の下）にも残る。原本は `<SELF_AGENT_DATA_DIR>/attachments/` に置く（記録に結びつかなければ 30 日で消える）
@@ -78,6 +81,7 @@ Discord ──(discord.js)── Gateway ── 受付判定（許可サーバ�
 - Linux（ヘッドレスで可）、Node.js 24.20 以上
 - Claude のサブスクリプション（`claude setup-token` で発行したトークンで動く。既定のモデルは Opus で、Max プランで運用している）
 - Discord の Bot（自分で作成）
+- （シェルを使うなら）bubblewrap と socat、Ubuntu 24.04 以降では bwrap 用の AppArmor の profile（[`docs/plan/shell.md`](docs/plan/shell.md) §6）
 
 ### 1. Discord の Bot を作る
 
@@ -126,6 +130,7 @@ npm start
 
 ```bash
 systemd-run --user --unit=self-agent --working-directory="$PWD" \
+  -p MemoryMax=4G -p MemoryHigh=3G -p CPUQuota=300% -p TasksMax=1024 \
   "$(command -v node)" --env-file="$HOME/.config/self-agent/env" src/main.ts
 journalctl --user -u self-agent -f      # ログ
 systemctl --user stop self-agent        # 停止（進行中の返信を待ってから止まる）
