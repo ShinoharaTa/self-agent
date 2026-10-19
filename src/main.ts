@@ -32,7 +32,7 @@ import { GhClient, resolveCommandPath, resolveGhPath } from "./github/gh.ts";
 import { createGithubPoller } from "./github/poller.ts";
 import { GitClient } from "./jobs/git.ts";
 import { JobGithubApi } from "./jobs/github-api.ts";
-import { JobOrchestrator } from "./jobs/orchestrator.ts";
+import { JobOrchestrator, jobPaths, removeVerifiedChild } from "./jobs/orchestrator.ts";
 import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
 import { AttachmentStore } from "./store/attachments.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
@@ -259,7 +259,13 @@ const createJobs = (runner: AgentRunner | undefined): JobOrchestrator => {
     usage,
     queue: turnQueue,
     runner,
-    git: new GitClient({ gitPath, ghPath: jobGhPath, log }),
+    // 隔離の場所（<workDir>/jobs/quarantine-<run_id>.git）は <workDir>/jobs の直下と確かめてから消す
+    git: new GitClient({
+      gitPath,
+      ghPath: jobGhPath,
+      log,
+      removeTree: (path) => removeVerifiedChild(jobPaths(realWorkDir, config.dataDir).root, path),
+    }),
     github: new JobGithubApi({ ghPath: jobGhPath }),
     gateway,
     // shellState は下で作る（run の準備のときに読む）
@@ -475,6 +481,9 @@ if (staticServer !== undefined) {
 }
 // 発言を受け付ける前に 1 回診断する（#system への知らせは gateway の起動後、最初の tick で行う）
 if (config.shell) await shellState.check();
+// 作業ジョブ: 発言・操作を受け付ける前に、再起動で止まった running を failed / interrupted にし（作業場所は kept に）、queued をキューに入れ直す
+// （知らせは gateway の起動の後。それまで run は始めない）
+await jobs?.recoverState();
 await gateway.start(lifecycle.handlers);
 await registerCommands({ cfg: config, gateway, commands, log });
 // 足した人格の Bot（同じハンドラ。発言は持ち主の Bot の分だけ、操作はどの Bot で受けても処理する）。ログインは待たずに並べて行い、
@@ -486,8 +495,8 @@ void startPersonaGateways(
   { onSettled: (id) => loginSettled.add(id) },
 );
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
-// 作業ジョブ: 再起動で止まった running を failed / interrupted にして #jobs に知らせ、queued をキューに入れ直す
-await jobs?.recover();
+// 作業ジョブ: 再起動で止まった run の #jobs への知らせを出してから、入れ直した queued を始める
+await jobs?.announceRecovered();
 // 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で（リマインドは分の境目ごと）。停止を始めていれば何もしない
 scheduler.start(TICK_INTERVAL_MS);
 reminderScheduler.start();

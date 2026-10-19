@@ -22,6 +22,7 @@ import {
   REPLY_BAD_REPO,
   REPLY_NO_JOBS_CHANNEL,
   REPLY_NOT_ALLOWED,
+  removeVerifiedChild,
   repoAllowed,
 } from "../src/jobs/orchestrator.ts";
 import { JobStore } from "../src/store/jobs.ts";
@@ -171,6 +172,10 @@ type Options = {
   /** GitClient の push を差し替える（呼ばれた順に結果を返し、尽きたら本物） */
   pushResults?: GitOutcome[];
   timers?: JobOrchestratorDeps["timers"];
+  /** GitClient の一部を差し替える */
+  gitOverrides?: Partial<JobOrchestratorDeps["git"]>;
+  /** JobStore を差し替える（transitionRun の失敗など） */
+  store?: (db: ReturnType<typeof tempDb>, now: () => Date) => JobStore;
 };
 
 function setup(t: TestContext, options: Options = {}) {
@@ -192,7 +197,7 @@ function setup(t: TestContext, options: Options = {}) {
 
   const db = tempDb(t);
   const now = () => new Date();
-  const store = new JobStore(db, now);
+  const store = options.store?.(db, now) ?? new JobStore(db, now);
   const usage = new UsageStore(db, now);
   const logs: string[] = [];
   const log = (line: string) => logs.push(line);
@@ -206,6 +211,7 @@ function setup(t: TestContext, options: Options = {}) {
     log,
     sourceEnv: { HOME: join(root, "home"), GH_TOKEN: "dummy-gh-token", CLAUDE_CODE_OAUTH_TOKEN: "dummy-oauth" },
     remoteUrlForTests: () => remote,
+    removeTree: (path) => removeVerifiedChild(join(workDir, "jobs"), path),
   });
   const pushResults = [...(options.pushResults ?? [])];
   const gitCalls: string[] = [];
@@ -215,12 +221,14 @@ function setup(t: TestContext, options: Options = {}) {
     prepareWorkspace: (input) => (gitCalls.push("prepareWorkspace"), realGit.prepareWorkspace(input)),
     importWork: (input) => (gitCalls.push("importWork"), realGit.importWork(input)),
     revParse: (bareDir, ref) => realGit.revParse(bareDir, ref),
+    isUsableBare: (bareDir, base) => realGit.isUsableBare(bareDir, base),
     inspect: (input) => (gitCalls.push("inspect"), realGit.inspect(input)),
     push: async (input) => {
       gitCalls.push("push");
       const next = pushResults.shift();
       return next ?? realGit.push(input);
     },
+    ...options.gitOverrides,
   };
   const jobsChannel = options.jobsChannel === undefined ? JOBS_CHANNEL : options.jobsChannel;
   const orchestrator = new JobOrchestrator({
@@ -397,6 +405,8 @@ test("取り込みの失敗（.git のすり替え）は failed / import_failed�
   assert.equal(workflow.gitCalls.includes("push"), false);
   assert.equal(remoteTip(workflow.remote, inspected.job.branch), undefined);
   assert.match(lastReport(workflow).message.text, /（\.github\/ を変えています）/);
+  // 途中経過の最後は最終の状態で決める（run は終わっていても push していなければ「止まりました」）
+  assert.match(workflow.gateway.edits.at(-1)!.message.text, /\n止まりました（/);
   assertCleanLogs([...swapped.logs, ...workflow.logs]);
 });
 
@@ -465,6 +475,8 @@ test("手順の上限でコミットあり → held / max_turns + [ここまで�
   assert.equal(env.usage.listRecent({ kind: "job", limit: 10 }).length, 1);
 
   assert.equal(await env.orchestrator.retry(runId), "stale");
+  // held の run がある job には続きを足さない（先に [ここまでを draft PR に]）
+  assert.equal(await env.orchestrator.continueJob(job.id, "続けて"), "stale");
   assert.equal(await env.orchestrator.pushHeld(runId), "started");
   await env.orchestrator.idle();
   assert.equal(env.store.getRun(runId)!.state, "pr_opened");
@@ -557,20 +569,26 @@ test("準備の失敗: シェル・空き・open の上限・許可リスト・�
     assert.ok(run.startedAt !== null, testCase.name);
     assert.equal(env.runner.inputs.length, 0, testCase.name);
     assert.deepEqual(buttonIds(lastReport(env).message), testCase.buttons(runId), testCase.name);
+    assert.equal(env.store.getJob(run.jobId)!.state, "closed", testCase.name);
     assertCleanLogs(env.logs);
   }
 
   // 受け付けた後に許可リストが変わった（再起動で入れ直した queued など）: 準備で repo_unavailable
   const env = setup(t, { jobsRepos: ["otherowner/*"] });
   const { run } = env.store.createJob({ guildId: GUILD, repo: REPO, baseBranch: "", origin: "command" }, { state: "queued", instruction: "x" });
-  await env.orchestrator.recover();
+  await env.orchestrator.recoverState();
+  await env.orchestrator.announceRecovered();
   await env.orchestrator.idle();
   assert.equal(env.store.getRun(run.id)!.failure, "repo_unavailable");
 
   // sandbox_unavailable の [もう一度] は同じ指示で新しい run を作る（最後の run のときだけ）
   const retry = setup(t, { shell: false });
   const failed = await runJob(retry, { instruction: "もう一度やる" });
+  // 準備で失敗し、push も bare も無い job は閉じる（open の上限に数えない）。[もう一度] で開き直す
+  assert.equal(retry.store.getJob(failed.jobId)!.state, "closed");
+  assert.equal(retry.store.countOpen(), 0);
   assert.equal(await retry.orchestrator.retry(failed.runId), "started");
+  assert.equal(retry.store.getJob(failed.jobId)!.state, "open");
   assert.equal(await retry.orchestrator.retry(failed.runId), "stale");
   await retry.orchestrator.idle();
   const runs = retry.store.listRuns(failed.jobId);
@@ -666,8 +684,14 @@ test("再起動: running は failed / interrupted（作業場所は kept/<run_id
   const queued = env.store.createJob({ guildId: GUILD, repo: REPO, baseBranch: "", origin: "command" }, { state: "queued", instruction: "b" });
   const waiting = env.store.createJob({ guildId: GUILD, repo: REPO, baseBranch: "main", origin: "inbox" }, { state: "awaiting_confirm", instruction: "c" });
 
-  await env.orchestrator.recover();
+  await env.orchestrator.recoverState();
+  // DB の後始末は gateway の起動の前に済み、知らせを出すまでは何も投稿せず、入れ直した run も始めない
   const interrupted = env.store.getRun(running.run.id)!;
+  assert.equal(env.gateway.posts.length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(env.store.getRun(queued.run.id)!.state, "queued");
+  assert.equal(env.runner.inputs.length, 0);
+  await env.orchestrator.announceRecovered();
   assert.equal(interrupted.state, "failed");
   assert.equal(interrupted.failure, "interrupted");
   assert.equal(interrupted.keptDir, join(env.workDir, "jobs", "kept", String(running.run.id)));
@@ -711,6 +735,8 @@ test("停止: 実行中の run は待たずに中断して failed / interrupted�
   assert.ok(stopped.keptDir !== null && existsSync(stopped.keptDir));
   assert.equal(env.store.getRun(second.runId)!.state, "queued");
   assert.equal(env.runner.inputs.length, 1);
+  // 直近の run がまだ終わっていない job には続きを足さない
+  assert.equal(await env.orchestrator.continueJob(second.jobId, "続けて"), "stale");
   assertCleanLogs(env.logs);
 });
 
@@ -777,4 +803,110 @@ test("prompt・本文: 囲みの印は中身から取り除き、Issue の本文
   const body = pullBody(job, run);
   assert.match(body, /^（要約なし）/);
   assert.doesNotMatch(body, /Closes/);
+});
+
+test("runner・importWork が投げても running のまま残さず failed / no_result にし、途中経過を終わらせる", async (t) => {
+  const thrown = setup(t, { scripts: [() => Promise.reject(new Error("boom"))] });
+  const first = await runJob(thrown);
+  assert.equal(first.run.state, "failed");
+  assert.equal(first.run.failure, "no_result");
+  assert.deepEqual(thrown.gateway.edits.at(-1)!.message.components, []);
+
+  const importThrows = setup(t, {
+    scripts: [commitAndDone()],
+    gitOverrides: { importWork: () => Promise.reject(new Error("boom")) },
+  });
+  const second = await runJob(importThrows);
+  assert.equal(second.run.state, "failed");
+  assert.equal(second.run.failure, "no_result");
+  assert.ok(second.run.keptDir !== null);
+  assert.deepEqual(importThrows.gateway.edits.at(-1)!.message.components, []);
+  assertCleanLogs([...thrown.logs, ...importThrows.logs]);
+});
+
+test("終わりの状態の書き換えが投げても、running のまま残さず（failed / no_result）途中経過を終わらせて log に固定の文を出す", async (t) => {
+  class ThrowingStore extends JobStore {
+    thrown = false;
+    override transitionRun(runId: number, transition: Parameters<JobStore["transitionRun"]>[1]) {
+      if (!this.thrown && transition.from === "running" && transition.to === "pr_opened") {
+        this.thrown = true;
+        throw new Error("db");
+      }
+      return super.transitionRun(runId, transition);
+    }
+  }
+  const env = setup(t, { scripts: [commitAndDone()], store: (db, now) => new ThrowingStore(db, now) });
+  const { run } = await runJob(env);
+  assert.equal(run.state, "failed");
+  assert.equal(run.failure, "no_result");
+  assert.ok(env.logs.includes("ジョブ #1 の状態を書き換えられませんでした（例外）"));
+  const last = env.gateway.edits.at(-1)!;
+  assert.deepEqual(last.message.components, []);
+  assert.match(last.message.text, /\n止まりました（/);
+});
+
+test("/job new: 許可リストに <login>/<name> が入らなければ断る（行を作らない）", async (t) => {
+  const env = setup(t, { jobsRepos: ["otherowner/*"] });
+  assert.deepEqual(await env.orchestrator.accept({ kind: "new", guildId: GUILD, name: NAME, instruction: "x" }), { ok: false, reply: REPLY_NOT_ALLOWED });
+  assert.equal(env.store.countOpen(), 0);
+  assert.deepEqual(env.github.calls, ["getUser"]);
+});
+
+test("Issue の取得: 通信の失敗は clone_failed（[もう一度]）、見られないのは repo_unavailable", async (t) => {
+  const network = setup(t);
+  network.github.issue = { ok: false, failure: "failed", status: null };
+  const first = await runJob(network, { issueNumber: 3 });
+  assert.equal(first.run.failure, "clone_failed");
+  assert.deepEqual(buttonIds(lastReport(network).message), [`job:retry:${first.runId}`]);
+
+  const missing = setup(t);
+  missing.github.issue = { ok: false, failure: "not_found", status: 404 };
+  const second = await runJob(missing, { issueNumber: 3 });
+  assert.equal(second.run.failure, "repo_unavailable");
+});
+
+test("使えない bare（clone が途中で止まった残り）は消して clone し直す", async (t) => {
+  const env = setup(t, { scripts: [commitAndDone()] });
+  const broken = join(env.dataDir, "jobs", "1.git");
+  mkdirSync(join(broken, "objects"), { recursive: true });
+  writeFileSync(join(broken, "HEAD"), "ref: refs/heads/main\n");
+  const { run } = await runJob(env);
+  assert.equal(run.state, "pr_opened");
+  assert.ok(env.gitCalls.includes("cloneBare"));
+  assert.ok(env.logs.includes("ジョブ #1 の bare が使えないため作り直します"));
+});
+
+test("push は済んだが記録する前に落ちた job: pushed_sha が無くてもリモートにジョブのブランチがあれば、その上で続けて fast-forward で push する", async (t) => {
+  const env = setup(t, { scripts: [commitAndDone("next.txt")] });
+  // リモートに self-agent/job-1 が既にある（前の run が push した）
+  const seed2 = join(env.root, "seed2");
+  git(env.root, ["clone", "--quiet", env.remote, seed2]);
+  git(seed2, ["config", "user.name", "owner"]);
+  git(seed2, ["config", "user.email", AUTHOR_EMAIL]);
+  const earlier = commitFile(seed2, "earlier.txt", "earlier\n");
+  git(seed2, ["push", "--quiet", "origin", "HEAD:refs/heads/self-agent/job-1"]);
+
+  const { run, job } = await runJob(env);
+  assert.equal(run.state, "pr_opened");
+  assert.equal(run.commits, 1);
+  assert.equal(git(env.remote, ["--git-dir", env.remote, "rev-parse", `${job.branch}^`]), earlier);
+  assert.equal(remoteTip(env.remote, job.branch), run.stagedSha);
+});
+
+test("removeVerifiedChild: 親の直下の実際のものだけを消す。親が symlink・対象が symlink・直下でなければ投げる。無ければ何もしない", async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-jobs-rm-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const parent = join(root, "jobs");
+  mkdirSync(join(parent, "active", "repo"), { recursive: true });
+  await removeVerifiedChild(parent, join(parent, "missing"));
+  await assert.rejects(removeVerifiedChild(parent, join(parent, "active", "repo")));
+  const outside = join(root, "outside");
+  mkdirSync(outside);
+  symlinkSync(outside, join(parent, "link"));
+  await assert.rejects(removeVerifiedChild(parent, join(parent, "link")));
+  symlinkSync(parent, join(root, "jobs-link"));
+  await assert.rejects(removeVerifiedChild(join(root, "jobs-link"), join(root, "jobs-link", "active")));
+  await removeVerifiedChild(parent, join(parent, "active"));
+  assert.equal(existsSync(join(parent, "active")), false);
+  assert.ok(existsSync(outside));
 });

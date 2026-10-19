@@ -15,7 +15,7 @@ import type { OutgoingMessage } from "../src/discord/gateway.ts";
 import { resolveCommandPath, resolveGhPath } from "../src/github/gh.ts";
 import { GIT_CHILD_PATH, GitClient } from "../src/jobs/git.ts";
 import { JobGithubApi } from "../src/jobs/github-api.ts";
-import { JobOrchestrator, jobPaths } from "../src/jobs/orchestrator.ts";
+import { JobOrchestrator, jobPaths, removeVerifiedChild } from "../src/jobs/orchestrator.ts";
 import { openDb } from "../src/store/db.ts";
 import { JobStore } from "../src/store/jobs.ts";
 import { UsageStore } from "../src/store/usage.ts";
@@ -118,7 +118,7 @@ const orchestrator = new JobOrchestrator({
   usage: new UsageStore(db, now),
   queue: new KeyedSerialQueue(2),
   runner,
-  git: new GitClient({ gitPath, ghPath, log }),
+  git: new GitClient({ gitPath, ghPath, log, removeTree: (path) => removeVerifiedChild(jobPaths(workDir, dataDir).root, path) }),
   github: new JobGithubApi({ ghPath }),
   gateway,
   // LLM もシェルも使わない

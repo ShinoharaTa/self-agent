@@ -5,9 +5,9 @@
 import { randomBytes } from "node:crypto";
 import { statfsSync } from "node:fs";
 import { lstat, mkdir, rename } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { AgentRunner, RunResult } from "../agent/runner.ts";
-import type { StatFs } from "../agent/disk.ts";
+import { type StatFs, verifiedProjectDir } from "../agent/disk.ts";
 import { removeTree } from "../agent/remove-tree.ts";
 import { type Progress, type ProgressTimers, REAL_TIMERS, startProgress, type TurnOutcome } from "../app/progress.ts";
 import type { KeyedSerialQueue } from "../app/queue.ts";
@@ -295,11 +295,11 @@ function newest<T>(items: readonly T[], at: (item: T) => string): T[] {
 /** run の終わり方（LLM の run の後）。result は job_result が届いて正常に終わった */
 type EndReason = "result" | "max_turns" | "timeout" | "aborted" | "interrupted" | "no_result";
 
-/** 途中経過の最後の書き換えに使う終わり方 */
-function progressOutcome(reason: EndReason | undefined): TurnOutcome {
-  if (reason === "result") return "done";
-  if (reason === "max_turns") return "max_turns";
-  if (reason === "aborted") return "aborted";
+/** 途中経過の最後の書き換えに使う終わり方（最終の状態で決める。push できたら完了、それ以外は手順の上限・中断・止まりました） */
+function progressOutcome(run: Pick<JobRun, "state" | "failure">): TurnOutcome {
+  if (run.state === "pr_opened" || (run.state === "pushed" && run.failure === null)) return "done";
+  if (run.failure === "max_turns") return "max_turns";
+  if (run.failure === "aborted") return "aborted";
   return "failed";
 }
 
@@ -316,6 +316,18 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * parent の直下の path を消す（作業場所・kept・隔離の場所・bare。§12）。parent が symlink でない実際のディレクトリで realpath が parent そのもの、
+ * path の realpath がその直下のそれ（agent/disk.ts の verifiedProjectDir）と確かめられなければ消さずに投げる。無ければ何もしない
+ */
+export async function removeVerifiedChild(parent: string, path: string, remove: (path: string) => Promise<void> = removeTree): Promise<void> {
+  if (dirname(path) !== parent) throw new Error("消す場所の形が違います");
+  if (!(await exists(path))) return;
+  const verified = await verifiedProjectDir(parent, basename(path));
+  if (verified === undefined) throw new Error("消す場所を確かめられませんでした");
+  await remove(verified);
 }
 
 /** 実行中の run（同時に 1 つ）。reason は中断の理由（[中断]・時間切れ・停止） */
@@ -340,7 +352,7 @@ type Prepared = {
 };
 
 /** 1 つの run の終わり（running から移る先） */
-type RunEnd = { to: JobRunState; failure: JobFailure | null; fields?: JobRunFields; reason?: EndReason };
+type RunEnd = { to: JobRunState; failure: JobFailure | null; fields?: JobRunFields; reason?: EndReason; fromPrepare?: true };
 
 export type JobOrchestratorDeps = {
   cfg: Pick<Config, "ownerUserId" | "jobsRepos" | "jobMaxTurns" | "jobTimeoutMin" | "jobsRepoMaxMb">;
@@ -358,7 +370,7 @@ export type JobOrchestratorDeps = {
    * 今は context を渡さない（J4 で RunContext に kind `job` と run の番号を足す）
    */
   runner: AgentRunner;
-  git: Pick<GitClient, "cloneBare" | "fetchBare" | "prepareWorkspace" | "importWork" | "revParse" | "inspect" | "push">;
+  git: Pick<GitClient, "cloneBare" | "fetchBare" | "isUsableBare" | "prepareWorkspace" | "importWork" | "revParse" | "inspect" | "push">;
   github: Pick<
     JobGithubApi,
     "getUser" | "getRepo" | "getIssue" | "listIssueComments" | "listPullReviews" | "listPullReviewComments" | "createDraftPull" | "createRepo"
@@ -410,6 +422,11 @@ export class JobOrchestrator {
   private stopping = false;
   /** キューに入れてまだ終わっていない処理（停止で待つ） */
   private readonly inFlight = new Set<Promise<void>>();
+  /** recoverState の後、announceRecovered（か停止）までは run を始めない */
+  private ready: Promise<void> = Promise.resolve();
+  private openReady: (() => void) | undefined;
+  /** recoverState で再起動の残りとして止めた run（announceRecovered で知らせる） */
+  private readonly interrupted: number[] = [];
   /** push・PR だけのやり直しをキューに入れた run（二重に押しても 1 回だけ） */
   private readonly pendingPush = new Set<number>();
 
@@ -485,6 +502,11 @@ export class JobOrchestrator {
   async continueJob(jobId: number, instructionText: string): Promise<{ ok: true; runId: number } | { ok: false; reply: string } | "stale"> {
     const job = this.deps.jobs.getJob(jobId);
     if (job === undefined || job.state !== "open") return "stale";
+    // held の run がある（[ここまでを draft PR に] が先）・直近の run がまだ終わっていない job には続きを足さない
+    const runs = this.deps.jobs.listRuns(job.id);
+    const latest = runs.at(-1);
+    if (runs.some((candidate) => candidate.state === "held")) return "stale";
+    if (latest !== undefined && (latest.state === "running" || latest.state === "queued" || latest.state === "awaiting_confirm")) return "stale";
     const instruction = instructionText.trim();
     if (instruction === "") return { ok: false, reply: REPLY_EMPTY_TASK };
     if ([...instruction].length > JOB_INSTRUCTION_MAX_CHARS) return { ok: false, reply: REPLY_LONG_TASK };
@@ -503,12 +525,17 @@ export class JobOrchestrator {
   async retry(runId: number): Promise<ButtonResult> {
     const run = this.deps.jobs.getRun(runId);
     const job = run === undefined ? undefined : this.deps.jobs.getJob(run.jobId);
-    if (run === undefined || job === undefined || job.state !== "open") return "stale";
+    if (run === undefined || job === undefined) return "stale";
+    // 準備で閉じた job（一度も push していない）は、新しい run の [もう一度] のときだけ開き直す
+    const reopenable = job.state === "closed" && job.pushedSha === null;
+    if (job.state !== "open" && !reopenable) return "stale";
     const pushOnly =
+      job.state === "open" &&
       (run.state === "failed" || (run.state === "pushed" && run.failure === "pr_failed")) && canTransition(run, "pr_opened");
     if (pushOnly) return this.enqueuePush(run);
     if (run.state !== "failed" || run.failure === null || !NEW_RUN_RETRY_FAILURES.includes(run.failure)) return "stale";
     if (this.deps.jobs.latestRun(job.id)?.id !== run.id) return "stale";
+    if (job.state === "closed") this.deps.jobs.reopen(job.id);
     const created = this.deps.jobs.addRun(job.id, run.kind, { state: "queued", instruction: run.instruction });
     if (created === undefined) return "stale";
     this.deps.log(`ジョブ #${created.id} を受け付けました（入口: retry）`);
@@ -543,11 +570,15 @@ export class JobOrchestrator {
   }
 
   /**
-   * 起動時の処理（§8）: running は failed / interrupted にして作業場所を kept に移し、#jobs に「再起動で止まりました」と [もう一度]。
-   * queued はキューに入れ直す。awaiting_confirm はそのまま
+   * 起動時の後始末（§8）。gateway の起動（コマンドの登録）の前に呼ぶ（起動の後に受け付けた run を再起動の残りと取り違えない）:
+   * running は failed / interrupted にして作業場所を kept に移し、queued はキューに入れ直す（announceRecovered が済むまで始めない）。
+   * awaiting_confirm はそのまま。#jobs への知らせは announceRecovered で出す
    */
-  async recover(): Promise<void> {
+  async recoverState(): Promise<void> {
     const { jobs, log } = this.deps;
+    this.ready = new Promise((resolve) => {
+      this.openReady = resolve;
+    });
     for (const run of jobs.listRunsByState(["running"])) {
       const keptDir = await this.keepActive(String(run.id));
       const moved = jobs.transitionRun(run.id, {
@@ -558,17 +589,36 @@ export class JobOrchestrator {
       });
       if (moved.result !== "updated") continue;
       log(`ジョブ #${run.id} は再起動で止まりました`);
-      const job = jobs.getJob(run.jobId);
-      if (job === undefined) continue;
-      await this.closeProgressMessage(job, run);
-      await this.report(job, moved.run);
+      this.interrupted.push(run.id);
     }
     for (const run of jobs.listRunsByState(["queued"])) this.enqueue(run.id);
+  }
+
+  /**
+   * 起動時の知らせ（gateway の起動・コマンドの登録の後）: 再起動で止まった run の途中経過のボタンを外し、「再起動で止まりました」と
+   * [もう一度] を #jobs に出す。その後、recoverState から止めていた run を始める
+   */
+  async announceRecovered(): Promise<void> {
+    try {
+      for (const runId of this.interrupted.splice(0)) {
+        const run = this.deps.jobs.getRun(runId);
+        const job = run === undefined ? undefined : this.deps.jobs.getJob(run.jobId);
+        if (run === undefined || job === undefined) continue;
+        await this.closeProgressMessage(job, run);
+        await this.report(job, run);
+      }
+    } finally {
+      this.openReady?.();
+      this.openReady = undefined;
+    }
   }
 
   /** 停止（SIGTERM。§8）: 新しい run を始めず、実行中の run は待たずに中断する（failed / interrupted になり、作業場所は kept に移す） */
   stop(): void {
     this.stopping = true;
+    // 起動時の知らせの前に止めるときも、待っている run を返す（queued のまま次の起動で入れ直す）
+    this.openReady?.();
+    this.openReady = undefined;
     const current = this.current;
     if (current !== undefined) {
       current.reason = "shutdown";
@@ -706,47 +756,88 @@ export class JobOrchestrator {
     });
   }
 
-  /** キューで順番が来た run を進める（queued → running → 終わり）。停止を始めていれば何もしない（queued のまま次の起動で入れ直す） */
+  /**
+   * キューで順番が来た run を進める（queued → running → 終わり）。停止を始めていれば何もしない（queued のまま次の起動で入れ直す）。
+   * 起動時の後始末（recoverState）の後は、知らせ（announceRecovered）が済むまで始めない。途中で投げても running のまま残さず、
+   * 途中経過は必ず終わらせる
+   */
   private async execute(runId: number): Promise<void> {
+    await this.ready;
     if (this.stopping) return;
     const { jobs, log } = this.deps;
     const queued = jobs.getRun(runId);
     if (queued === undefined || queued.state !== "queued") return;
     const started = jobs.transitionRun(runId, { from: "queued", to: "running" });
     if (started.result !== "updated") return;
-    let job = jobs.getJob(started.run.jobId);
-    if (job === undefined) return;
     const run = started.run;
-    log(`ジョブ #${run.id} を始めました`);
     const current: CurrentRun = { runId, controller: new AbortController(), reason: undefined, result: undefined, workspace: false };
     this.current = current;
-    const progress = this.startJobProgress(job, run);
-    let end: RunEnd;
+    let progress: Progress | undefined;
+    let outcome: TurnOutcome = "failed";
     try {
-      end = await this.process(job, run, current, progress);
-    } catch (error) {
-      log(`ジョブ #${run.id} の処理中にエラーが発生しました（${errorKind(error)}）`);
-      end = { to: "failed", failure: current.reason === "shutdown" ? "interrupted" : "no_result" };
+      let job = jobs.getJob(run.jobId);
+      if (job === undefined) {
+        log(`ジョブ #${run.id} の job がありません`);
+        this.failStuck(run.id);
+        return;
+      }
+      log(`ジョブ #${run.id} を始めました`);
+      progress = this.startJobProgress(job, run);
+      let end: RunEnd;
+      try {
+        end = await this.process(job, run, current, progress);
+      } catch (error) {
+        log(`ジョブ #${run.id} の処理中にエラーが発生しました（${errorKind(error)}）`);
+        end = { to: "failed", failure: current.reason === "shutdown" ? "interrupted" : "no_result" };
+      }
+      if (this.current === current) this.current = undefined;
+      // 作業場所: 成功（push できた）なら消し、それ以外は kept/<run_id> に残す（§12）。作る前に終わったら触らない
+      const fields: JobRunFields = { ...end.fields };
+      if (current.workspace && (end.to === "pr_opened" || end.to === "pushed")) {
+        await this.removeActive(run.id);
+      } else if (current.workspace) {
+        const keptDir = await this.keepActive(String(run.id));
+        if (keptDir !== null) fields.keptDir = keptDir;
+      }
+      let moved;
+      try {
+        moved = jobs.transitionRun(run.id, { from: "running", to: end.to, failure: end.failure, fields });
+      } catch {
+        log(`ジョブ #${run.id} の状態を書き換えられませんでした（例外）`);
+        this.failStuck(run.id);
+        return;
+      }
+      if (moved.result !== "updated") {
+        log(`ジョブ #${run.id} の状態を書き換えられませんでした（${moved.result}）`);
+        return;
+      }
+      outcome = progressOutcome(moved.run);
+      job = jobs.getJob(job.id) ?? job;
+      // 準備で失敗し、一度も push しておらず bare も無い job は閉じる（open の上限に数えない。[もう一度] で開き直す）
+      if (end.fromPrepare === true && job.pushedSha === null && !(await exists(this.bareDir(job.id)))) jobs.close(job.id);
+      // 途中経過を終わらせてから、結果を新しいメッセージで知らせる
+      const finishing = progress;
+      progress = undefined;
+      await finishing.finish(outcome);
+      this.logFinished(moved.run);
+      await this.report(job, moved.run);
     } finally {
       if (this.current === current) this.current = undefined;
+      await progress?.finish(outcome);
     }
-    // 作業場所: 成功（push できた）なら消し、それ以外は kept/<run_id> に残す（§12）。作る前に終わったら触らない
-    const fields: JobRunFields = { ...end.fields };
-    if (current.workspace && (end.to === "pr_opened" || end.to === "pushed")) {
-      await this.removeActive(run.id);
-    } else if (current.workspace) {
-      const keptDir = await this.keepActive(String(run.id));
-      if (keptDir !== null) fields.keptDir = keptDir;
+  }
+
+  /** running のまま残りそうな run を failed / no_result にする（それも失敗したら log だけ） */
+  private failStuck(runId: number): void {
+    try {
+      this.deps.jobs.transitionRun(runId, { from: "running", to: "failed", failure: "no_result" });
+    } catch {
+      this.deps.log(`ジョブ #${runId} の状態を書き換えられませんでした（例外）`);
     }
-    const moved = jobs.transitionRun(run.id, { from: "running", to: end.to, failure: end.failure, fields });
-    await progress.finish(progressOutcome(end.reason));
-    if (moved.result !== "updated") {
-      log(`ジョブ #${run.id} の状態を書き換えられませんでした（${moved.result}）`);
-      return;
-    }
-    job = jobs.getJob(job.id) ?? job;
-    this.logFinished(moved.run);
-    await this.report(job, moved.run);
+  }
+
+  private bareDir(jobId: number): string {
+    return join(this.paths.bareRoot, `${jobId}.git`);
   }
 
   private logFinished(run: JobRun): void {
@@ -759,8 +850,11 @@ export class JobOrchestrator {
   private async process(job: Job, run: JobRun, current: CurrentRun, progress: Progress): Promise<RunEnd> {
     const signal = current.controller.signal;
     const prepared = await this.prepare(job, run, current);
-    if ("failure" in prepared) return prepared.failure === "aborted" ? this.abortedBeforeRun(current) : { to: "failed", failure: prepared.failure };
-    if (signal.aborted) return this.abortedBeforeRun(current);
+    if ("failure" in prepared) {
+      const end: RunEnd = prepared.failure === "aborted" ? this.abortedBeforeRun(current) : { to: "failed", failure: prepared.failure };
+      return { ...end, fromPrepare: true };
+    }
+    if (signal.aborted) return { ...this.abortedBeforeRun(current), fromPrepare: true };
     // 準備で base が決まる
     job = this.deps.jobs.getJob(job.id) ?? job;
 
@@ -881,7 +975,7 @@ export class JobOrchestrator {
     if (!pushOnly || !canTransition(run, "pr_opened")) return;
     const target = splitRepo(job.repo);
     if (target === undefined) return;
-    const bareDir = join(this.paths.bareRoot, `${job.id}.git`);
+    const bareDir = this.bareDir(job.id);
     const end = await this.pushAndOpen(job, run, { ...target, bareDir }, from === "pushed");
     let moved: JobRun | undefined;
     if (canTransition(run, end.to, end.failure)) {
@@ -943,27 +1037,35 @@ export class JobOrchestrator {
     // 参考資料（Issue・前回の要約とレビュー）は clone の前に取る（Issue が見られなければ始めない）
     const reference = await this.reference(job, run, target);
     if (reference === "unavailable") return { failure: "repo_unavailable" };
+    if (reference === "failed") return { failure: "clone_failed" };
     if (signal.aborted) return { failure: "aborted" };
 
-    // bare（§5.3 の 1）。push 済みのジョブはリモートのジョブのブランチの上で続け、まだならリモートの base から始める
-    const bareDir = join(this.paths.bareRoot, `${job.id}.git`);
-    const fromBranch = job.pushedSha !== null;
+    // bare（§5.3 の 1）。途中で止まった clone の残り（使えない bare）は消して clone し直す
+    const bareDir = this.bareDir(job.id);
     try {
       await mkdir(this.paths.bareRoot, { recursive: true, mode: 0o700 });
+      if ((await exists(bareDir)) && !(await git.isUsableBare(bareDir, base))) {
+        log(`ジョブ #${run.id} の bare が使えないため作り直します`);
+        await removeVerifiedChild(this.paths.bareRoot, bareDir, this.removeTree);
+      }
     } catch (error) {
       log(`ジョブ #${run.id} の準備に失敗しました（${errorKind(error)}）`);
       return { failure: "clone_failed" };
     }
-    if (await exists(bareDir)) {
-      const fetched = await git.fetchBare({ ...target, base, ...(fromBranch ? { branch: job.branch } : {}), bareDir });
-      if (!fetched.ok) return { failure: fetched.failure === "branch_missing" ? "branch_missing" : "clone_failed" };
-    } else {
-      const cloned = await git.cloneBare({ ...target, base, bareDir });
-      if (!cloned.ok) return { failure: "clone_failed" };
-      if (fromBranch) {
-        const fetched = await git.fetchBare({ ...target, base, branch: job.branch, bareDir });
-        if (!fetched.ok) return { failure: fetched.failure === "branch_missing" ? "branch_missing" : "clone_failed" };
-      }
+    let cloned = false;
+    if (!(await exists(bareDir))) {
+      if (!(await git.cloneBare({ ...target, base, bareDir })).ok) return { failure: "clone_failed" };
+      cloned = true;
+    }
+    // リモートにジョブのブランチがあればその上で続ける（push の後、記録する前に落ちた job も）。push 済みなのに無ければ branch_missing、
+    // まだ push していなければリモートの base から始める
+    const fetched = await git.fetchBare({ ...target, base, branch: job.branch, bareDir });
+    let fromBranch = fetched.ok;
+    if (!fetched.ok) {
+      if (fetched.failure !== "branch_missing") return { failure: "clone_failed" };
+      if (job.pushedSha !== null) return { failure: "branch_missing" };
+      fromBranch = false;
+      if (!cloned && !(await git.fetchBare({ ...target, base, bareDir })).ok) return { failure: "clone_failed" };
     }
     const inspectBase = await git.revParse(bareDir, `refs/heads/${fromBranch ? job.branch : base}`);
     if (inspectBase === undefined) return { failure: "clone_failed" };
@@ -1005,14 +1107,19 @@ export class JobOrchestrator {
    * prompt の参考資料（§7.5）。最初の run で Issue があれば Issue の本文とコメント（Issue が見られなければ unavailable。コメントが
    * 取れなければ本文だけ）、続きなら前回の要約と PR のレビュー・コメント（前回より後のもの。取れなければ要約だけ）
    */
-  private async reference(job: Job, run: JobRun, target: { owner: string; repo: string }): Promise<JobReference | undefined | "unavailable"> {
+  private async reference(
+    job: Job,
+    run: JobRun,
+    target: { owner: string; repo: string },
+  ): Promise<JobReference | undefined | "unavailable" | "failed"> {
     const { github, jobs } = this.deps;
     if (run.kind === "initial") {
       if (job.issueNumber === null) return undefined;
       const issue = await github.getIssue(target.owner, target.repo, job.issueNumber);
       if (!issue.ok) {
         this.deps.log(`ジョブ #${run.id} の Issue を取得できませんでした（${issue.failure}）`);
-        return "unavailable";
+        // 見られない（not_found・auth・形の違う応答）は repo_unavailable、通信などの失敗は clone_failed（[もう一度] を付ける）
+        return issue.failure === "not_found" || issue.failure === "auth" || issue.failure === "bad_response" ? "unavailable" : "failed";
       }
       const comments = await this.newestPages((page) => github.listIssueComments(target.owner, target.repo, job.issueNumber!, page), run.id);
       return issueReference(issue.value, comments);
@@ -1078,17 +1185,26 @@ export class JobOrchestrator {
   private async clearActive(): Promise<void> {
     if (!(await exists(this.paths.active))) return;
     if ((await this.keepActive(`stale-${this.deps.now().toISOString().replace(/[-:.]/g, "")}`)) !== null) return;
-    await this.removeTree(this.paths.active);
+    await removeVerifiedChild(this.paths.root, this.paths.active, this.removeTree);
   }
 
-  /** 作業場所を kept/<name> に移す（同じ名前があれば時刻を足す）。無い・移せなければ null（失敗は log だけ） */
+  /**
+   * 作業場所を kept/<name> に移す（同じ名前があれば時刻を足す）。`<workDir>/jobs` が symlink でなく、active と kept の realpath がその直下の
+   * それと確かめられたときだけ移す。無い・確かめられない・移せなければ null（失敗は log だけ）
+   */
   private async keepActive(name: string): Promise<string | null> {
     if (!(await exists(this.paths.active))) return null;
     try {
       await mkdir(this.paths.kept, { recursive: true, mode: 0o700 });
-      let target = join(this.paths.kept, name);
+      const active = await verifiedProjectDir(this.paths.root, basename(this.paths.active));
+      const kept = await verifiedProjectDir(this.paths.root, basename(this.paths.kept));
+      if (active === undefined || kept === undefined) {
+        this.deps.log("ジョブの作業場所を残せませんでした（場所を確かめられません）");
+        return null;
+      }
+      let target = join(kept, name);
       if (await exists(target)) target = `${target}-${this.deps.now().getTime()}`;
-      await rename(this.paths.active, target);
+      await rename(active, target);
       return target;
     } catch (error) {
       this.deps.log(`ジョブの作業場所を残せませんでした（${errorKind(error)}）`);
@@ -1099,7 +1215,7 @@ export class JobOrchestrator {
   /** 成功した run の作業場所を消す。失敗は log だけ（次の準備で kept に移す） */
   private async removeActive(runId: number): Promise<void> {
     try {
-      await this.removeTree(this.paths.active);
+      await removeVerifiedChild(this.paths.root, this.paths.active, this.removeTree);
     } catch (error) {
       this.deps.log(`ジョブ #${runId} の作業場所を消せませんでした（${errorKind(error)}）`);
     }

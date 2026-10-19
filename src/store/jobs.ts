@@ -310,6 +310,14 @@ export class JobStore {
     return Number(result.changes) > 0;
   }
 
+  /** closed の job を open に戻す（準備で閉じた job の [もう一度]）。無い・既に open なら何もせず false */
+  reopen(jobId: number): boolean {
+    const result = this.db
+      .prepare("UPDATE jobs SET state = 'open', closed_at = NULL, updated_at = ? WHERE id = ? AND state = 'closed'")
+      .run(this.now().toISOString(), jobId);
+    return Number(result.changes) > 0;
+  }
+
   /** その job に run を足す（続き・[もう一度]）。無い job なら undefined。job の updated_at を今にする */
   addRun(jobId: number, kind: JobRunKind, run: NewJobRun): JobRun | undefined {
     const at = this.now().toISOString();
