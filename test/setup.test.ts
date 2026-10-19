@@ -46,7 +46,7 @@ const SETUP: Extract<Interaction, { kind: "command" }> = {
   createdAt: NOW,
 };
 
-function setup(t: TestContext, cfg?: { github: boolean }) {
+function setup(t: TestContext, cfg?: { github?: boolean; jobs?: boolean }) {
   const db = tempDb(t);
   const gateway = new SetupGateway();
   const { guildSettings } = createStores(db, () => NOW);
@@ -168,6 +168,46 @@ test("SELF_AGENT_GITHUB=1: #system の後に #github を self-agent カテゴリ
     [textChannel("github", FIRST.home)],
   );
   assert.equal(guildSettings.get("guild-1")?.githubChannelId, "ch-9");
+});
+
+test("SELF_AGENT_JOBS=1: #github の後に #jobs を self-agent カテゴリに作って保存し、2 回目は作らず、消えていれば #jobs だけ作り直す。無効なら作らない", async (t) => {
+  const { gateway, guildSettings, run } = setup(t, { github: true, jobs: true });
+
+  await run();
+  assert.deepEqual(gateway.channelCalls, [
+    { method: "createCategory", guildId: "guild-1", name: "self-agent" },
+    textChannel("inbox", FIRST.home),
+    textChannel("tasks", FIRST.home),
+    textChannel("system", FIRST.home),
+    textChannel("github", FIRST.home),
+    textChannel("jobs", FIRST.home),
+    { method: "createCategory", guildId: "guild-1", name: "進行中" },
+    { method: "createCategory", guildId: "guild-1", name: "待ち" },
+    { method: "createCategory", guildId: "guild-1", name: "完了" },
+  ]);
+  assert.equal(guildSettings.jobsChannelId("guild-1"), "ch-6");
+
+  gateway.reset();
+  assert.match(await run(), /^すべて揃っています。/);
+  assert.deepEqual(gateway.callsOf("createCategory", "createTextChannel"), []);
+
+  gateway.alive.delete("ch-6");
+  gateway.reset();
+  await run();
+  assert.deepEqual(
+    gateway.channelCalls.filter((call) => call.method === "createCategory" || call.method === "createTextChannel"),
+    [textChannel("jobs", FIRST.home)],
+  );
+  assert.equal(guildSettings.jobsChannelId("guild-1"), "ch-10");
+
+  // 無効なら作らない（既にあるものも触らない）
+  const disabled = setup(t, { jobs: false });
+  await disabled.run();
+  assert.equal(
+    disabled.gateway.channelCalls.some((call) => call.method === "createTextChannel" && call.options.name === "jobs"),
+    false,
+  );
+  assert.equal(disabled.guildSettings.jobsChannelId("guild-1"), null);
 });
 
 test("2 回目: すべて残っていれば存在を確認するだけで何も作らない", async (t) => {

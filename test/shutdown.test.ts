@@ -394,6 +394,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
       get: () => assert.fail("想定外の呼び出し"),
       listStateCategories: () => assert.fail("想定外の呼び出し"),
       personaInbox: () => assert.fail("想定外の呼び出し"),
+      jobsChannelId: () => assert.fail("想定外の呼び出し"),
     },
     sessions: { delete: () => assert.fail("想定外の呼び出し") },
     seeds: { delete: () => assert.fail("想定外の呼び出し") },
@@ -476,6 +477,28 @@ test("停止を始めたら GitHub の通知のポーリングも止め、実行
   gate.resolve();
   await done;
   assert.deepEqual(events, ["github stop", "github idle", "stop", "closeDb"]);
+});
+
+test("停止を始めたら作業ジョブも止め（実行中の run を中断）、その後始末が終わってから gateway を止める", async () => {
+  const events: string[] = [];
+  const gate = deferred();
+  const jobs = {
+    stop: () => {
+      events.push("jobs stop");
+    },
+    idle: async () => {
+      await gate.promise;
+      events.push("jobs idle");
+    },
+  };
+  const { shutdown } = createShutdown(deps(events, { jobs }), noopInner);
+  const done = shutdown();
+  await flush();
+  assert.deepEqual(events, ["jobs stop"]);
+
+  gate.resolve();
+  await done;
+  assert.deepEqual(events, ["jobs stop", "jobs idle", "stop", "closeDb"]);
 });
 
 test("実行中のチャンネルの移動は終わるまで待ってから gateway を止める。まだ始めていない移動は待たない", async (t) => {

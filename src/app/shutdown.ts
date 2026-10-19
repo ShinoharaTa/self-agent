@@ -1,6 +1,7 @@
 // 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバーと DB を閉じる
 import type { Config } from "../config.ts";
 import type { GithubPoller } from "../github/poller.ts";
+import type { JobOrchestrator } from "../jobs/orchestrator.ts";
 import type {
   Gateway,
   GatewayHandlers,
@@ -28,6 +29,11 @@ export type ShutdownDeps = {
   reminderScheduler: Pick<ReminderScheduler, "stop" | "idle">;
   /** GitHub の通知のポーリング（SELF_AGENT_GITHUB=1 のときだけ）。scheduler と同じ時点で止め、実行中の取得・投稿が終わるのを待つ */
   githubPoller?: Pick<GithubPoller, "stop" | "idle">;
+  /**
+   * 作業ジョブ（SELF_AGENT_JOBS が有効のときだけ）。停止を始めたら、実行中の run を待たずに中断し（failed / interrupted・作業場所は kept に）、
+   * まだ始めていない run は始めない（queued のまま次の起動で入れ直す）。中断した run の後始末と報告が終わるのを待つ
+   */
+  jobs?: Pick<JobOrchestrator, "stop" | "idle">;
   /** チャンネルの移動の列。実行中の 1 件だけ終わるのを待つ（まだ始めていない移動は待たない。次の起動の再同期が直す） */
   channelOps: Pick<ChannelOpsQueue, "idle">;
   /** 作ったプロジェクトの静的サーバー。DB を閉じる前に閉じる。無ければ（機能が無効）何もしない */
@@ -72,7 +78,7 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 }
 
 export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdown {
-  const { cfg, gateway, queues, scheduler, reminderScheduler, githubPoller, channelOps, staticServer, closeDb, log } = deps;
+  const { cfg, gateway, queues, scheduler, reminderScheduler, githubPoller, jobs, channelOps, staticServer, closeDb, log } = deps;
   let stopping = false;
   /** 受け付けて、まだ終わっていない発言・操作の処理（返信を含む） */
   const inFlight = new Set<Promise<void>>();
@@ -94,6 +100,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       scheduler.idle(),
       reminderScheduler.idle(),
       githubPoller?.idle(),
+      jobs?.idle(),
     ]);
     // ターンと定期処理が入れた移動のうち、その時点で実行中のものだけ待つ
     await channelOps.idle();
@@ -125,6 +132,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     scheduler.stop();
     reminderScheduler.stop();
     githubPoller?.stop();
+    jobs?.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);
     if (!(await settlesWithin(drained(), cfg.shutdownGraceSec * 1000))) {
       log(`進行中の処理が ${cfg.shutdownGraceSec} 秒で終わらなかったため、待たずに終了します`);

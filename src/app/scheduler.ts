@@ -34,7 +34,7 @@ export const RECONCILE_BATCH_LIMIT = 5;
  */
 export const MAINTENANCE_QUEUE_KEY = "maintenance";
 
-/** /setup が self-agent カテゴリの中に作るチャンネル（#github は SELF_AGENT_GITHUB=1 のときだけ作られる。記録があれば戻す） */
+/** /setup が self-agent カテゴリの中に作るチャンネル（#github は SELF_AGENT_GITHUB=1、#jobs は SELF_AGENT_JOBS=1 のときだけ作られる。記録があれば戻す。#jobs の ID は guild_settings の別の列） */
 const HOME_CHANNEL_FIELDS = ["inboxChannelId", "tasksChannelId", "systemChannelId", "githubChannelId"] as const;
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -61,7 +61,7 @@ export type SchedulerDeps = {
     "get" | "listIdle" | "setActive" | "setWaiting" | "listDeleteDue" | "setDeletePrompt" | "listUndeleted" | "markDeleted"
   >;
   /** 削除の確認の投稿先（#system）と、再同期で見る self-agent カテゴリ・状態カテゴリ・#<NAME> */
-  guildSettings: Pick<GuildSettingsStore, "get" | "listStateCategories" | "personaInbox">;
+  guildSettings: Pick<GuildSettingsStore, "get" | "listStateCategories" | "personaInbox" | "jobsChannelId">;
   /** Discord 上で消えていたセッションのチャンネルの SDK セッション（channel_sessions）を消す */
   sessions: Pick<SdkSessionStore, "delete">;
   /** Discord 上で消えていたセッションのチャンネルの seed（channel_seeds）を消す */
@@ -173,7 +173,7 @@ export class Scheduler {
    * （失敗した移動や手で動かされたチャンネルを直す）。サーバーごとに 1 回だけ Discord からチャンネルの一覧を取る。
    * - セッションのチャンネルが Discord 上に無ければ、手で消されたので削除済みにする（要約は残し、SDK セッションと seed を消す）
    * - 親がその状態のカテゴリのどれでもなければ、その状態のカテゴリへの移動を入れる（1 サーバーで最大 5 件。残りは次の tick）
-   * - #inbox / #tasks / #system / #github の親が self-agent カテゴリでなければ、そこへ戻す移動を入れる
+   * - #inbox / #tasks / #system / #github / #jobs の親が self-agent カテゴリでなければ、そこへ戻す移動を入れる
    * self-agent カテゴリ・その状態のカテゴリが Discord 上に 1 つも無ければ、そこへは移さない（作り直すのは /setup）
    */
   private async reconcileChannels(): Promise<void> {
@@ -224,9 +224,10 @@ export class Scheduler {
     const homeCategoryId = settings.homeCategoryId;
     if (homeCategoryId === null || !parents.has(homeCategoryId)) return;
     let returned = 0;
-    // #inbox・#tasks・#system・#github と、足した人格の #<NAME>
+    // #inbox・#tasks・#system・#github・#jobs（記録があれば）と、足した人格の #<NAME>
     const homeChannels = [
       ...HOME_CHANNEL_FIELDS.map((field) => settings[field]),
+      guildSettings.jobsChannelId(guildId),
       ...(this.deps.cfg.personas ?? []).map((persona) => guildSettings.personaInbox(guildId, persona.id)?.channelId ?? null),
     ];
     for (const channelId of homeChannels) {
