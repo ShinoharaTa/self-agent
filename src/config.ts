@@ -386,6 +386,18 @@ function loadJobsConfig(env: NodeJS.ProcessEnv, shell: boolean): JobsConfig {
   };
 }
 
+/**
+ * npm run job-dry-run が読む設定: 作業場所・データの場所（その中に一時ディレクトリを作る）と、作業ジョブの変数（許可リストなど）。
+ * SELF_AGENT_JOBS・SELF_AGENT_SHELL は見ない（LLM もシェルも使わない）
+ */
+export function loadJobDryRunConfig(env: NodeJS.ProcessEnv = process.env): Pick<Config, "workDir" | "dataDir"> & JobsConfig {
+  return {
+    workDir: nonEmpty(env.SELF_AGENT_WORKDIR) ?? join(homeDir(env), ".local/share/self-agent/work"),
+    dataDir: loadDataConfig(env).dataDir,
+    ...loadJobsConfig({ ...env, SELF_AGENT_JOBS: undefined }, false),
+  };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const home = (): string => homeDir(env);
   const personas = personaList(env, home);
