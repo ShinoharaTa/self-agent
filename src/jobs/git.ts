@@ -550,12 +550,12 @@ export class GitClient {
   /**
    * 準備（続き）: 同じ bare にリモートの base とジョブのブランチを取り直す（§5.3 の 1・§10）。bare は clone と同じく
    * `refs/heads/<名前>` にリモートの先端を持つ（作業用の clone がそのまま --branch で使えるように）。ジョブのブランチが
-   * リモートに無ければ branch_missing
+   * リモートに無ければ branch_missing。branch を省くと base だけを取り直す（まだ push していないジョブの [もう一度]・続き）
    */
-  async fetchBare(input: RepoRef & { base: string; branch: string; bareDir: string }): Promise<GitOutcome> {
+  async fetchBare(input: RepoRef & { base: string; branch?: string; bareDir: string }): Promise<GitOutcome> {
     const remote = this.remote(input);
     assertBranch(input.base);
-    if (!isJobBranch(input.branch)) throw new Error("ジョブのブランチの形が違います");
+    if (input.branch !== undefined && !isJobBranch(input.branch)) throw new Error("ジョブのブランチの形が違います");
     assertDir(input.bareDir);
     const result = await this.git({
       op: "fetch",
@@ -568,11 +568,15 @@ export class GitClient {
         "--",
         remote,
         `+refs/heads/${input.base}:refs/heads/${input.base}`,
-        `+refs/heads/${input.branch}:refs/heads/${input.branch}`,
+        ...(input.branch === undefined ? [] : [`+refs/heads/${input.branch}:refs/heads/${input.branch}`]),
       ],
     });
     if (succeeded(result)) return { ok: true };
-    const missing = result.kind === "exited" && /couldn't find remote ref refs\/heads\//.test(result.stderr) && result.stderr.includes(input.branch);
+    const missing =
+      input.branch !== undefined &&
+      result.kind === "exited" &&
+      /couldn't find remote ref refs\/heads\//.test(result.stderr) &&
+      result.stderr.includes(input.branch);
     return { ok: false, failure: missing ? "branch_missing" : "clone_failed" };
   }
 

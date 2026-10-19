@@ -614,6 +614,22 @@ test("続き: fetchBare でリモートのジョブのブランチを取り、�
   });
 });
 
+test("fetchBare の branch を省くと base だけを取り直す（まだ push していないジョブ）。ジョブのブランチが無くても branch_missing にしない", async (t) => {
+  const f = setup(t);
+  mkdirSync(join(f.root, "data", "jobs"), { recursive: true });
+  assert.deepEqual(await f.client.cloneBare({ ...TARGET, base: "main", bareDir: f.bare }), { ok: true });
+  // リモートの main が進む
+  const seed = join(f.root, "seed2");
+  git(f.root, ["clone", "--quiet", f.remote, seed]);
+  git(seed, ["config", "user.name", "owner"]);
+  git(seed, ["config", "user.email", "owner@example.com"]);
+  const advanced = commitFile(seed, "more.txt", "more\n");
+  git(seed, ["push", "--quiet", "origin", "main"]);
+  assert.deepEqual(await f.client.fetchBare({ ...TARGET, base: "main", bareDir: f.bare }), { ok: true });
+  assert.equal(await f.client.revParse(f.bare, "refs/heads/main"), advanced);
+  assert.equal(await f.client.revParse(f.bare, `refs/heads/${jobBranch(1)}`), undefined);
+});
+
 test("ローカルのリモートの hooks（回帰）: テスト用の経路では相手側の hooks が host で動く。本番の経路は github.com の URL だけを使う", async (t) => {
   const f = setup(t);
   await prepare(f);

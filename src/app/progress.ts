@@ -53,8 +53,13 @@ export const REAL_TIMERS: ProgressTimers = {
 };
 
 export type ProgressOptions = {
-  /** 最初の 1 通を送り、そのメッセージの ID を返す（ジョブは受け付けたときのメッセージを書き換えて、その ID を返す） */
+  /** 最初の 1 通を送り、そのメッセージの ID を返す（messageId があれば使わない） */
   send: (message: OutgoingMessage) => Promise<string>;
+  /**
+   * 既に送ってあるメッセージ（ジョブの受け付けのメッセージ）。あれば最初の 1 通は送らずにこれを書き換え、finish では
+   * 最初の表示の前に終わっても終わり方に書き換える
+   */
+  messageId?: string;
   /** 送ったメッセージを書き換える（components を省略するとボタンを残し、[] で外す） */
   edit: (messageId: string, message: OutgoingMessage) => Promise<void>;
   /** 途中経過に付けるボタン（[中断]） */
@@ -80,7 +85,7 @@ function describeError(error: unknown): string {
 }
 
 /**
- * 途中経過。始めてから delayMs 経っても終わっていなければ、buttons 付きのメッセージを 1 つ送り、
+ * 途中経過。始めてから delayMs 経っても終わっていなければ、buttons 付きのメッセージを 1 つ送り（messageId があればそれを書き換え）、
  * 以後 PROGRESS_INTERVAL_MS ごとに、表示が変わっていれば書き換える（ボタンは残す）。finish でタイマーを止め、
  * 送っていれば終わり方（progressEndText）に書き換えてボタンを外す。送信・編集は順に行い、失敗は log だけ（呼び出し側の処理は止めない）
  */
@@ -90,7 +95,7 @@ export function startProgress(options: ProgressOptions): Progress {
   const startedAt = now().getTime();
   let toolCalls = 0;
   let label: string | undefined;
-  let messageId: string | undefined;
+  let messageId: string | undefined = options.messageId;
   let shown: string | undefined;
   let finished = false;
   let chain = Promise.resolve();
@@ -116,8 +121,10 @@ export function startProgress(options: ProgressOptions): Progress {
     enqueue(async () => {
       if (finished) return;
       const text = progressText(elapsed(), toolCalls, label);
+      const message: OutgoingMessage = { text, components: [{ kind: "buttons", buttons: [...buttons] }] };
       try {
-        messageId = await send({ text, components: [{ kind: "buttons", buttons: [...buttons] }] });
+        if (messageId === undefined) messageId = await send(message);
+        else await edit(messageId, message);
         shown = text;
       } catch (error) {
         log(`途中経過の送信に失敗しました: ${describeError(error)}`);

@@ -274,6 +274,17 @@ export class JobStore {
     return this.db.prepare("SELECT * FROM jobs WHERE state = 'open' ORDER BY id").all().map(toJob);
   }
 
+  /**
+   * base のブランチを決める（受け付けたときは決まっていない。準備でリポジトリの既定のブランチ・作ったリポジトリの既定のブランチを引いて書く）。
+   * 無い job なら false
+   */
+  setBaseBranch(jobId: number, baseBranch: string): boolean {
+    const result = this.db
+      .prepare("UPDATE jobs SET base_branch = ?, updated_at = ? WHERE id = ?")
+      .run(baseBranch, this.now().toISOString(), jobId);
+    return Number(result.changes) > 0;
+  }
+
   /** 最後に push した先端を記録する。無い job なら false */
   setPushed(jobId: number, sha: string): boolean {
     const result = this.db
