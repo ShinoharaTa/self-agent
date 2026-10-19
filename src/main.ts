@@ -17,7 +17,7 @@ import { InboxRotator } from "./app/inbox-rotate.ts";
 import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
 import { createNotifyMemoryChange } from "./app/commands/memory-undo.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
-import { KeyedSerialQueue } from "./app/queue.ts";
+import { createTurnQueue, KeyedSerialQueue } from "./app/queue.ts";
 import { ReminderScheduler } from "./app/reminders.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { PersonaStatus, startPersonaGateways } from "./app/persona-status.ts";
@@ -207,8 +207,8 @@ const kbMemory = {
   notifyMemoryChange: createNotifyMemoryChange({ gateway: ownerPosts, log }),
   timeZone: config.timeZone,
 };
-// 発言と /close・/renew のターンのキュー（key は channelId）
-const turnQueue = new KeyedSerialQueue(config.maxConcurrentTurns);
+// 発言と /close・/renew のターンのキュー（key は channelId）。SELF_AGENT_SHELL=1 ならセッションのジョブは同時に 1 つだけ
+const turnQueue = createTurnQueue(config);
 // ターンはチャンネルの持ち主の人格の runner で動かす（personas）
 const turn = { runner, personas, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
 const channelOps = new ChannelOpsQueue({

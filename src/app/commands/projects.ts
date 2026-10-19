@@ -5,6 +5,8 @@ import type { Config } from "../../config.ts";
 import type { OutgoingMessage } from "../../discord/gateway.ts";
 import type { Project, ProjectStore } from "../../store/projects.ts";
 import type { CommandHandler, ComponentHandler } from "../interactions.ts";
+import type { KeyedSerialQueue } from "../queue.ts";
+import { MAINTENANCE_QUEUE_KEY } from "../scheduler.ts";
 import { formatDate } from "../time.ts";
 import { STALE_TEXT } from "./delete.ts";
 import { fitItems, omittedText } from "./sessions.ts";
@@ -31,6 +33,11 @@ export type ProjectsDeps = {
   projectsDir: string;
   /** URL の組み立て（publicBaseUrl が無ければ配信は未設定）と、更新日のタイムゾーン（SELF_AGENT_TZ） */
   cfg: Pick<Config, "publicBaseUrl" | "timeZone">;
+  /**
+   * 発言と同じターンのキュー。ディレクトリの削除はここにセッションのジョブ（key は scheduler.ts の掃除と同じ MAINTENANCE_QUEUE_KEY）として入れ、
+   * セッションのターン（Bash）と重ねない（docs/plan/shell.md §2.9 の I2）
+   */
+  turnQueue: Pick<KeyedSerialQueue, "run">;
   log: (message: string) => void;
 };
 
@@ -137,11 +144,12 @@ export function createProjectsCommand(deps: ProjectsDeps): CommandHandler {
 
 /**
  * 一覧のセレクト（`proj:pick`）で削除の確認を本人にだけ出し、確認の [削除する]（`proj:del:<id>`）・[やめる]（`proj:keep:<id>`）を受ける。
- * [削除する] は削除済みにしてから `<projectsDir>/<slug>` を消す（消せなくても削除済みのまま）。無い・削除済みなら「古くなっています」。
- * DB の状態で動くので、再起動の後でも押せる
+ * [削除する] は削除済みにして（ページはここで開けなくなる）結果を出してから、`<projectsDir>/<slug>` を消す（消せなくても削除済みのまま）。
+ * 消すのはターンのキューのセッションのジョブの中（実行中のセッションのターンが終わるのを待つ。待つ間に応答の期限を過ぎないよう、結果は先に出す）。
+ * 無い・削除済みなら「古くなっています」。DB の状態で動くので、再起動の後でも押せる
  */
 export function createProjectsComponent(deps: ProjectsDeps): ComponentHandler {
-  const { projects, projectsDir, cfg, log } = deps;
+  const { projects, projectsDir, cfg, turnQueue, log } = deps;
   return {
     namespace: NAMESPACE,
     async handle(interaction, responder) {
@@ -169,7 +177,7 @@ export function createProjectsComponent(deps: ProjectsDeps): ComponentHandler {
         await responder.update({ text: PROJECT_KEPT_TEXT, components: [] });
         return;
       }
-      // ディレクトリを消すのに時間がかかることがあるので先に保留する（確認メッセージはまだ変えない）
+      // 先に保留する（確認メッセージはまだ変えない）
       await responder.deferUpdate();
       // 引いてから削除済みにするまで await を挟まない
       const project = projects.get(id);
@@ -177,9 +185,13 @@ export function createProjectsComponent(deps: ProjectsDeps): ComponentHandler {
         await responder.update({ text: STALE_TEXT, components: [] });
         return;
       }
-      await removeProjectDir(projectsDir, project.slug, log);
       log("[削除する] でプロジェクトを削除しました");
       await responder.update({ text: projectDeletedText(project.title), components: [] });
+      try {
+        await turnQueue.run(MAINTENANCE_QUEUE_KEY, () => removeProjectDir(projectsDir, project.slug, log), { session: true });
+      } catch {
+        log("プロジェクトのディレクトリを消せませんでした");
+      }
     },
   };
 }

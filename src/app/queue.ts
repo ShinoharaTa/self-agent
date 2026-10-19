@@ -1,9 +1,25 @@
+import type { Config } from "../config.ts";
+
 /** run の指定。session はセッションのチャンネルのジョブ（同時に動けるのは maxConcurrent - 1 まで。最低 1） */
 export type QueueRunOptions = { session?: boolean };
 
+/** キューの作り方。maxSessions はセッションのジョブの同時実行の上限（max(1, maxConcurrent - 1) よりは増やせない） */
+export type QueueOptions = { maxSessions?: number };
+
+/** シェル（Bash）が有効なときのセッションのジョブの同時実行（docs/plan/shell.md §2.6・§2.9 の I2。2 つのセッションの Bash とファイルのツールを重ねない） */
+export const SHELL_MAX_SESSION_JOBS = 1;
+
+/**
+ * 発言・/close・/renew・作業ジョブ・掃除のターンのキュー（同時実行は SELF_AGENT_MAX_CONCURRENT）。
+ * SELF_AGENT_SHELL=1 ならセッションのジョブは同時に 1 つだけ（MAX_CONCURRENT を大きくしても 1）
+ */
+export function createTurnQueue(cfg: Pick<Config, "maxConcurrentTurns" | "shell">): KeyedSerialQueue {
+  return new KeyedSerialQueue(cfg.maxConcurrentTurns, cfg.shell ? { maxSessions: SHELL_MAX_SESSION_JOBS } : {});
+}
+
 /**
  * 同じ key のジョブは投入順に直列で実行し、全体の同時実行数を maxConcurrent までに抑える。
- * セッションのジョブは max(1, maxConcurrent - 1) までにし、残りの枠を #inbox などのジョブ用に空けておく
+ * セッションのジョブは max(1, maxConcurrent - 1) まで（options.maxSessions があればそれとの小さい方）にし、残りの枠を #inbox などのジョブ用に空けておく
  */
 export class KeyedSerialQueue {
   private readonly maxConcurrent: number;
@@ -21,12 +37,16 @@ export class KeyedSerialQueue {
   /** idle() の待ち手。pending が 0 になったら全員を起こす */
   private readonly idleWaiters: Array<() => void> = [];
 
-  constructor(maxConcurrent: number) {
+  constructor(maxConcurrent: number, options: QueueOptions = {}) {
     if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
       throw new RangeError("maxConcurrent は正の整数で指定してください");
     }
+    const { maxSessions } = options;
+    if (maxSessions !== undefined && (!Number.isInteger(maxSessions) || maxSessions < 1)) {
+      throw new RangeError("maxSessions は正の整数で指定してください");
+    }
     this.maxConcurrent = maxConcurrent;
-    this.maxSessions = Math.max(1, maxConcurrent - 1);
+    this.maxSessions = Math.min(maxSessions ?? Number.POSITIVE_INFINITY, Math.max(1, maxConcurrent - 1));
   }
 
   run<T>(key: string, fn: () => Promise<T>, options: QueueRunOptions = {}): Promise<T> {

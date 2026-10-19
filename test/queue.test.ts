@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate as flush } from "node:timers/promises";
-import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { createTurnQueue, KeyedSerialQueue } from "../src/app/queue.ts";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -293,4 +293,69 @@ test("runningSessionJobs: 実行中のセッションのジョブだけを数え
   gates.topicC.resolve();
   await Promise.all(runs);
   assert.equal(queue.runningSessionJobs(), 0);
+});
+
+/** key ごとに 1 つずつジョブを入れ、同時に動いたセッション・それ以外のジョブの最大数を返す */
+async function peakConcurrency(
+  queue: KeyedSerialQueue,
+  jobs: Array<{ key: string; session: boolean }>,
+): Promise<{ sessions: number; others: number }> {
+  let sessions = 0;
+  let others = 0;
+  const peak = { sessions: 0, others: 0 };
+  const gates = jobs.map(() => deferred());
+  const runs = jobs.map(({ key, session }, index) =>
+    queue.run(
+      key,
+      async () => {
+        if (session) peak.sessions = Math.max(peak.sessions, ++sessions);
+        else peak.others = Math.max(peak.others, ++others);
+        await gates[index]!.promise;
+        if (session) sessions--;
+        else others--;
+      },
+      { session },
+    ),
+  );
+  await flush();
+  for (const gate of gates) {
+    gate.resolve();
+    await flush();
+  }
+  await Promise.all(runs);
+  return peak;
+}
+
+test("maxSessions: セッションのジョブの同時実行を maxConcurrent より小さく絞れる（セッションでないジョブは残りの枠で動く）。正の整数でなければ例外", async () => {
+  const queue = new KeyedSerialQueue(3, { maxSessions: 1 });
+  const peak = await peakConcurrency(queue, [
+    { key: "topic-1", session: true },
+    { key: "topic-2", session: true },
+    { key: "job", session: true },
+    { key: "inbox-1", session: false },
+    { key: "tasks-1", session: false },
+  ]);
+  assert.deepEqual(peak, { sessions: 1, others: 2 });
+  // max(1, maxConcurrent - 1) より増やすことはできない
+  assert.deepEqual(
+    await peakConcurrency(new KeyedSerialQueue(2, { maxSessions: 5 }), [
+      { key: "topic-1", session: true },
+      { key: "topic-2", session: true },
+    ]),
+    { sessions: 1, others: 0 },
+  );
+  for (const maxSessions of [0, -1, 1.5, Number.NaN]) {
+    assert.throws(() => new KeyedSerialQueue(3, { maxSessions }), RangeError, String(maxSessions));
+  }
+});
+
+test("createTurnQueue: SELF_AGENT_SHELL=1 ならセッションのジョブは MAX_CONCURRENT によらず同時に 1 つ。無効なら maxConcurrent - 1 まで", async () => {
+  const sessionJobs = [
+    { key: "topic-1", session: true },
+    { key: "topic-2", session: true },
+    { key: "job", session: true },
+    { key: "maintenance", session: true },
+  ];
+  assert.equal((await peakConcurrency(createTurnQueue({ maxConcurrentTurns: 4, shell: true }), sessionJobs)).sessions, 1);
+  assert.equal((await peakConcurrency(createTurnQueue({ maxConcurrentTurns: 4, shell: false }), sessionJobs)).sessions, 3);
 });
