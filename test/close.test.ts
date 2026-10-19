@@ -181,12 +181,12 @@ test("/close: 公開で defer → 静的な prompt で resume → 要約とタ�
 
   const calls = await env.runClose();
 
-  // オーナーの発言ではないので、WebFetch に許す URL は無い
+  // オーナーの発言ではないので、WebFetch に許す URL は無い。/close のターンの印（Bash を使わせない）を context に付ける
   assert.deepEqual(env.runner.inputs, [
     {
       prompt: CLOSE_PROMPT,
       sessionId: "session-1",
-      context: { guildId: "guild-1", channelId: "topic-1", kind: "session" },
+      context: { guildId: "guild-1", channelId: "topic-1", kind: "session", purpose: "close" },
       allowedUrls: [],
     },
   ]);
@@ -431,7 +431,7 @@ test("[閉じる]: 元メッセージは変えずに保留 → /close と同じ�
     {
       prompt: CLOSE_PROMPT,
       sessionId: "session-1",
-      context: { guildId: "guild-1", channelId: "topic-1", kind: "session" },
+      context: { guildId: "guild-1", channelId: "topic-1", kind: "session", purpose: "close" },
       allowedUrls: [],
     },
   ]);

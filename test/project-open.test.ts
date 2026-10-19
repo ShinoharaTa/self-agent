@@ -11,7 +11,9 @@ import {
   createTaskTools,
   PROJECT_OPEN_NOT_AVAILABLE_MESSAGE,
   PROJECT_DESIGN_NOTE,
+  PROJECT_NO_SHELL_NOTE,
   PROJECT_OPEN_NOT_CONFIGURED_MESSAGE,
+  PROJECT_SHELL_NOTE,
   projectNotes,
   type ProjectToolDeps,
   type TextToolResult,
@@ -209,6 +211,27 @@ test("projectNotes: withDesign なら 10 項目で DESIGN.md の項目を含み�
   assert.ok(withDesign.includes(PROJECT_DESIGN_NOTE));
   assert.equal(withoutDesign.length, 9);
   assert.deepEqual(withoutDesign, withDesign.filter((note) => note !== PROJECT_DESIGN_NOTE));
+});
+
+test("projectNotes・project_open: シェルを使えるときだけ、コマンドの実行の行を Bash の使い方（5 分・GitHub と npm・repos/・1 GB）にする。他の行と順は同じ", async (t) => {
+  const url = "https://example.test:9443/p/kakeibo/";
+  const without = projectNotes("kakeibo", url, true);
+  const withShell = projectNotes("kakeibo", url, true, true);
+  assert.ok(without.includes(PROJECT_NO_SHELL_NOTE) && !without.includes(PROJECT_SHELL_NOTE));
+  assert.deepEqual(
+    withShell,
+    without.map((note) => (note === PROJECT_NO_SHELL_NOTE ? PROJECT_SHELL_NOTE : note)),
+  );
+  for (const word of ["5 分", "GitHub と npm", "repos/", "1 GB", "git clone --depth 1"]) assert.ok(PROJECT_SHELL_NOTE.includes(word), word);
+
+  // project_open は呼ばれたときのシェルの状態で注意を選ぶ
+  let shell = false;
+  const { open } = setup(t, { shellEnabled: () => shell });
+  const first = parse(await open(TOPIC)) as { notes: string[] };
+  shell = true;
+  const second = parse(await open(TOPIC)) as { notes: string[] };
+  assert.ok(first.notes.includes(PROJECT_NO_SHELL_NOTE) && !first.notes.includes(PROJECT_SHELL_NOTE));
+  assert.ok(second.notes.includes(PROJECT_SHELL_NOTE) && !second.notes.includes(PROJECT_NO_SHELL_NOTE));
 });
 
 test("project_open: 2 回目は同じプロジェクトを existing で返す（name・title が違っても作らない）。別のチャンネルは別のプロジェクト", async (t) => {

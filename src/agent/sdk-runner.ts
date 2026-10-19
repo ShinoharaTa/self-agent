@@ -15,9 +15,16 @@ import type { Config } from "../config.ts";
 import { devLogResult, devLogToolInput, truncateText, type DevLogSink, type DevLogStep } from "../devlog/log.ts";
 import type { ProjectStore } from "../store/projects.ts";
 import type { DiskQuota } from "./disk.ts";
-import { FILE_TOOLS, FILE_WRITE_TOOLS, judgeFileAccess, resolveRealPath } from "./file-access.ts";
+import {
+  FILE_NO_CONTEXT_REASON,
+  FILE_TOOLS,
+  FILE_WRITE_DENIED_REASON,
+  FILE_WRITE_TOOLS,
+  judgeFileAccess,
+  resolveRealPath,
+} from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
-import { buildQueryOptions } from "./query-options.ts";
+import { buildQueryOptions, ensureSandboxWriteDirs } from "./query-options.ts";
 import type {
   AgentRunner,
   Compaction,
@@ -75,6 +82,22 @@ const STDERR_KEEP_LENGTH = 2000;
 function shorten(text: string): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > ERROR_TEXT_LIMIT ? `${oneLine.slice(0, ERROR_TEXT_LIMIT)}…` : oneLine;
+}
+
+/**
+ * resume 先の会話の記録が無いときの CLI の文言（app/turn.ts の RESUME_FAILURE_PATTERN と同じ）。
+ * シェルが有効なときは stderr の末尾を errorMessage に入れないので、これだけは印として残す（turn.ts が resume 失敗を見分けられるように）
+ */
+const RESUME_FAILURE_TEXT = "No conversation found";
+
+/**
+ * シェルが有効なときの stderr の扱い（shell.md §2.8）。末尾は出さず（sandbox の拒否の文がホスト名・パスを含みうる）、大きさだけを返す。
+ * resume 失敗の文言があればその固定の文だけ添える。空なら空文字
+ */
+function stderrSummary(text: string): string {
+  if (text.trim() === "") return "";
+  const resume = text.toLowerCase().includes(RESUME_FAILURE_TEXT.toLowerCase()) ? `・${RESUME_FAILURE_TEXT}` : "";
+  return `stderr あり（${text.length} 字）${resume}`;
 }
 
 /** stderr を 1 行にして末尾の上限文字数だけ残す（空なら空文字）。サロゲートペアの途中から始まれば後半も落とす */
@@ -175,7 +198,7 @@ function projectRelativePath(toolInput: unknown, cwd: string, projectDir: string
 }
 
 /**
- * 途中経過に出す 1 手順の文。ファイルの中身・コマンド・URL・検索語は出さない。
+ * 途中経過に出す 1 手順の文。ファイルの中身・コマンド（Bash の command・description）・URL・検索語は出さない。
  * Write・Edit・Read の対象は、このチャンネルのプロジェクトのディレクトリ（projectDir）の中ならそこからの相対パスだけを添える
  */
 export function progressLabel(
@@ -200,6 +223,8 @@ export function progressLabel(
       return "Web を検索しています";
     case "WebFetch":
       return "ページを読んでいます";
+    case "Bash":
+      return "コマンドを実行しています";
   }
   if (toolName === `${MCP_TOOL_PREFIX}project_files`) return "ファイルを整理しています";
   if (toolName.startsWith(MCP_TOOL_PREFIX)) return `ツールを使っています: ${toolName.slice(MCP_TOOL_PREFIX.length)}`;
@@ -309,6 +334,12 @@ export type FileGuardDeps = {
 /** ファイル操作の判定が例外で終わったときにモデルへ返す理由 */
 export const FILE_GUARD_FAILED_REASON = "判定に失敗したため拒否しました";
 
+/** シェルが有効なとき、セッション以外のターン（#inbox・#tasks）でファイルのツールを拒否したときにモデルへ返す理由（shell.md §2.9 の I2） */
+export const FILE_SESSION_ONLY_REASON = "ファイルはセッションのチャンネルでだけ扱えます。project_open のあるセッションのチャンネルで頼むよう伝えてください";
+
+/** project_files（自前の MCP ツール）の名前。シェルが有効なときはファイル操作の hook の対象に入れる */
+const PROJECT_FILES_TOOL = `mcp__${MCP_SERVER_NAME}__project_files`;
+
 /** PreToolUse の hook の拒否 */
 function denyToolUse(reason: string): HookJSONOutput {
   return {
@@ -324,16 +355,26 @@ function denyToolUse(reason: string): HookJSONOutput {
  * ファイル操作（Read・Write・Edit・Glob）を judgeFileAccess で絞る PreToolUse の hook。context はこの run のチャンネル。
  * Write・Edit は judgeFileAccess で許すものでも、容量の上限（disk.check）を超えていれば拒否する。
  * 拒否したら理由をモデルに返し、log にはツール名だけを出す（パスは出さない）。Write・Edit を許したらプロジェクトの更新日時を今にする。
- * CLI は hook の例外を「判断なし」として通してしまうので、判定（ストアの読み書きを含む）が例外で終わったら拒否する（パス・例外の中身は log に出さない）
+ * CLI は hook の例外を「判断なし」として通してしまうので、判定（ストアの読み書きを含む）が例外で終わったら拒否する（パス・例外の中身は log に出さない）。
+ * shell（SELF_AGENT_SHELL=1）なら project_files も対象にし、セッション以外のターン（#inbox・#tasks・context の無いターン）では
+ * Read・Glob・Write・Edit・project_files をすべて拒否する（セッションの Bash と同時に動くターンがプロジェクトに触れないように。shell.md §2.9 の I2）
  */
 export function createFileGuard(
   context: RunContext | undefined,
   deps: FileGuardDeps,
   log: (message: string) => void,
+  shell = false,
 ): HookCallbackMatcher {
   const { projects, projectsDir, disk } = deps;
+  const tools = shell ? [...FILE_TOOLS, PROJECT_FILES_TOOL] : FILE_TOOLS;
   const guard: HookCallback = async (input) => {
-    if (input.hook_event_name !== "PreToolUse" || !FILE_TOOLS.includes(input.tool_name)) return {};
+    if (input.hook_event_name !== "PreToolUse" || !tools.includes(input.tool_name)) return {};
+    if (shell && (context === undefined || context.kind !== "session")) {
+      log(`ファイル操作を拒否しました（${input.tool_name}）`);
+      return denyToolUse(context === undefined ? FILE_NO_CONTEXT_REASON : FILE_SESSION_ONLY_REASON);
+    }
+    // project_files の可否はツールの処理（tools.ts）が決める
+    if (input.tool_name === PROJECT_FILES_TOOL) return {};
     try {
       const project = context === undefined ? undefined : projects.getByChannel(context.channelId);
       const decision = judgeFileAccess({
@@ -363,7 +404,63 @@ export function createFileGuard(
       return denyToolUse(FILE_GUARD_FAILED_REASON);
     }
   };
-  return { matcher: FILE_TOOLS.join("|"), hooks: [guard] };
+  return { matcher: tools.join("|"), hooks: [guard] };
+}
+
+/** Bash の拒否の理由（モデルへ返す） */
+export const BASH_DISABLED_REASON = "今はコマンドを実行できません";
+export const BASH_PLACE_REASON = "コマンドはセッションのチャンネルで使えます";
+export const BASH_ARGS_REASON = "バックグラウンド実行と sandbox の外での実行はできません。run_in_background・dangerouslyDisableSandbox を付けずに実行してください";
+export const BASH_GUARD_FAILED_REASON = "判定に失敗したため拒否しました";
+
+/** Bash の hook が使うもの。enabled はこの run でシェルを使えるか（自己診断が通っていて bwrap・socat があり、sandbox を付けた） */
+export type BashGuardDeps = Pick<FileGuardDeps, "projects" | "disk"> & { enabled: boolean };
+
+/**
+ * Bash の PreToolUse の hook（shell.md §2.5）。どの run にも入れる。上から順に判定して拒否し、理由をモデルに返す:
+ * 1. この run でシェルを使えない 2. context が無い・セッションでない・予約した依頼・/close のターン 3. このチャンネルのプロジェクトが無い
+ * 4. run_in_background・dangerouslyDisableSandbox 5. 容量の上限（Write・Edit と同じ disk.check。workDir の空き・プロジェクトの大きさ）。
+ * 通すときは判断を足さない（sandbox の autoAllowBashIfSandboxed に任せる）。コマンドの中身は見ず、log は「Bash を拒否しました（<種類>）」だけ
+ * （コマンド・description・パスは出さない）。判定が例外で終わったら拒否する（fail-closed）
+ */
+export function createBashGuard(
+  context: RunContext | undefined,
+  deps: BashGuardDeps,
+  log: (message: string) => void,
+): HookCallbackMatcher {
+  const { projects, disk, enabled } = deps;
+  const deny = (kind: string, reason: string): HookJSONOutput => {
+    log(`Bash を拒否しました（${kind}）`);
+    return denyToolUse(reason);
+  };
+  const guard: HookCallback = async (input) => {
+    if (input.hook_event_name !== "PreToolUse" || input.tool_name !== "Bash") return {};
+    try {
+      if (!enabled) return deny("無効", BASH_DISABLED_REASON);
+      if (
+        context === undefined ||
+        context.kind !== "session" ||
+        context.scheduled === true ||
+        context.purpose === "close"
+      ) {
+        return deny("場所", BASH_PLACE_REASON);
+      }
+      const project = projects.getByChannel(context.channelId);
+      if (project === undefined) return deny("プロジェクトなし", FILE_WRITE_DENIED_REASON);
+      const toolInput =
+        typeof input.tool_input === "object" && input.tool_input !== null ? (input.tool_input as Record<string, unknown>) : {};
+      if (toolInput.run_in_background === true || toolInput.dangerouslyDisableSandbox === true) {
+        return deny("引数", BASH_ARGS_REASON);
+      }
+      const quota = disk.check(project.slug);
+      if (!quota.allowed) return deny("容量", quota.reason);
+      // 判断を足さずに通す（sandbox の autoAllowBashIfSandboxed に任せる）
+      return {};
+    } catch {
+      return deny("判定の失敗", BASH_GUARD_FAILED_REASON);
+    }
+  };
+  return { matcher: "Bash", hooks: [guard] };
 }
 
 /** tool_result の content をテキストにする（テキスト以外のブロックは `[<type>]`） */
@@ -421,7 +518,19 @@ export function devLogSteps(message: SDKMessage): DevLogStep[] {
 export type SdkRunnerConfig = Pick<
   Config,
   "model" | "workDir" | "claudeConfigDir" | "turnTimeoutSec" | "effort" | "sessionMaxTurns" | "sessionTurnTimeoutSec"
-> & { systemPrompt?: string; persona?: string };
+> & {
+  systemPrompt?: string;
+  persona?: string;
+  /** SELF_AGENT_SHELL=1。Bash をツールに入れる（省略は false） */
+  shell?: boolean;
+  /** sandbox の denyRead に入れるデータの場所（shell のときだけ要る） */
+  dataDir?: string;
+  /**
+   * shell のとき、run の前に呼んでこの run でシェルを使えるか（自己診断が通っていて bwrap・socat がある。app/shell-state.ts の enabledForRun）。
+   * true の run だけ Options.sandbox を付けて Bash を通す。省略・例外は使えない
+   */
+  shellAvailable?: () => boolean;
+};
 
 /** dev モードの会話ログの受け口と、開始時刻・所要時間に使う時計 */
 export type DevLogDeps = { sink: DevLogSink; now: () => Date };
@@ -514,6 +623,28 @@ export class SdkAgentRunner implements AgentRunner {
     }
   }
 
+  /**
+   * この run でシェル（Bash）を使えるか。shell でなければ false。shellAvailable が true のときだけ、sandbox の書き込み先を作って true
+   * （作れなければ log に出して false）。shellAvailable の例外も false
+   */
+  private sandboxForRun(): boolean {
+    if (this.cfg.shell !== true) return false;
+    let available: boolean;
+    try {
+      available = this.cfg.shellAvailable?.() ?? false;
+    } catch {
+      available = false;
+    }
+    if (!available) return false;
+    try {
+      ensureSandboxWriteDirs(this.cfg.workDir);
+      return true;
+    } catch {
+      this.log("sandbox の書き込み先を作れなかったため、この run ではコマンドを使いません");
+      return false;
+    }
+  }
+
   /** steps を渡したら（dev モード）、受け取ったメッセージから起きた順に手順を足す */
   private async runQuery(
     input: RunInput,
@@ -521,17 +652,25 @@ export class SdkAgentRunner implements AgentRunner {
     maxTurns: number,
     steps: DevLogStep[] | undefined,
   ): Promise<RunResult> {
-    const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context));
+    const shell = this.cfg.shell === true;
+    // sandbox は自己診断が通っていて bwrap・socat がある run だけに付ける（付けると failIfUnavailable で #inbox まで失敗しうるため）
+    const sandbox = this.sandboxForRun();
+    const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context), sandbox);
     // ツール呼び出しの回数はターンごとに数え、WebFetch に許す URL（貼った URL とその転送先）とファイル操作を許す場所もターンごとに違うので、
-    // hooks は run ごとに作って足す。ファイル操作の hook はどの run にも必ず入れる
+    // hooks は run ごとに作って足す。ファイル操作と Bash の hook はどの run にも必ず入れる
     const tools = createToolCallRecorder(this.log);
     const webFetch = createWebFetchGuard(input.allowedUrls ?? [], this.log);
     const hooks: NonNullable<Options["hooks"]> = {
-      PreToolUse: [webFetch.preToolUse, createFileGuard(input.context, this.files, this.log)],
+      PreToolUse: [
+        webFetch.preToolUse,
+        createFileGuard(input.context, this.files, this.log, shell),
+        createBashGuard(input.context, { ...this.files, enabled: sandbox }, this.log),
+      ],
       ...tools.hooks,
       PostToolUse: [...(tools.hooks.PostToolUse ?? []), webFetch.postToolUse],
     };
-    // 子プロセスの stderr は末尾だけ保持し、例外で終わったときに errorMessage に添える（中身を log に直接は出さない）
+    // 子プロセスの stderr は末尾だけ保持し、例外で終わったときに errorMessage に添える（中身を log に直接は出さない）。
+    // シェルが有効なら末尾は添えず、大きさだけにする（errorMessage は handler が log に出す。shell.md §2.8）
     let stderr = "";
     const onStderr = (data: string): void => {
       stderr = (stderr + data).slice(-STDERR_KEEP_LENGTH);
@@ -621,10 +760,11 @@ export class SdkAgentRunner implements AgentRunner {
       if (abortController.signal.aborted) return stopped();
       const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       if (isImageRejection(text) || isImageRejection(stderr)) imageRejected = true;
-      const tail = stderrTail(stderr);
+      const tail = shell ? stderrSummary(stderr) : stderrTail(stderr);
+      const note = tail === "" ? "" : shell ? `（${tail}）` : `（stderr: ${tail}）`;
       return {
         ok: false,
-        errorMessage: tail === "" ? `exception: ${shorten(text)}` : `exception: ${shorten(text)}（stderr: ${tail}）`,
+        errorMessage: `exception: ${shorten(text)}${note}`,
         sessionId,
         sessionRecorded: false,
         toolCalls: tools.count(),

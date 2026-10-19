@@ -146,6 +146,8 @@ export type ProjectToolDeps = {
   publicBaseUrl: string | undefined;
   /** 静的サーバーが待ち受けているか */
   serving: () => boolean;
+  /** シェル（Bash）を使えるか（SELF_AGENT_SHELL=1 で自己診断が通っている）。true なら project_open の注意に Bash の使い方を入れる。省略は false */
+  shellEnabled?: () => boolean;
   /** UI の土台の複製に失敗したとき・project_files で変更したときの log */
   log: (message: string) => void;
   /** UI の土台の複製の元。省略すると templates/web/（テストで差し替える） */
@@ -415,18 +417,26 @@ export const PROJECT_DESIGN_NOTE =
   "base.css は編集せず、足すものは site_dir/app.css に書く。アイコンは site_dir/icons.svg を使う。" +
   "既にあるページを直すときは頼まれた範囲だけ直し、見た目の作り直しは頼まれたときだけ行う";
 
+/** project_open の注意のうち、シェル（Bash）が使えないときの行 */
+export const PROJECT_NO_SHELL_NOTE = "ビルドやコマンドの実行はできない。ライブラリは CDN から読む";
+/** project_open の注意のうち、シェル（Bash）が使えるときの行（docs/plan/shell.md §5.3） */
+export const PROJECT_SHELL_NOTE =
+  "Bash が使える（サンドボックスの中。ネットは GitHub と npm だけ、dir の外のホームや他のサービスには届かない。コマンドは 5 分まで、終わると子プロセスも止まるのでサーバーは常駐できない）。" +
+  "clone は `git clone --depth 1 <URL> repos/<名前>`（公開リポジトリだけ）。ビルドの出力は site_dir に置く。dir は 1 GB まで。";
+
 /**
  * project_open の結果に付ける、作るときの注意。
- * withDesign が false（dir/DESIGN.md と site_dir/base.css のどちらかが無い）なら、土台の使い方（2 番目）は入れない（無いファイルを読ませない）
+ * withDesign が false（dir/DESIGN.md と site_dir/base.css のどちらかが無い）なら、土台の使い方（2 番目）は入れない（無いファイルを読ませない）。
+ * shell（シェルを使える）なら、コマンドの実行の行を Bash の使い方にする
  */
-export function projectNotes(slug: string, url: string, withDesign: boolean): string[] {
+export function projectNotes(slug: string, url: string, withDesign: boolean, shell = false): string[] {
   return [
     "ファイルは dir の中に書く。配られるのは site_dir の中だけで、入口は site_dir/index.html",
     ...(withDesign ? [PROJECT_DESIGN_NOTE] : []),
     `パスは相対で書く（/ で始めない）。ページは ${url} で開かれる`,
     `localStorage のキーは ${slug} で始める（全プロジェクトが同じオリジン）。読めない・形が違うデータは黙って直したり捨てたりせず元のまま残し、保存に失敗したら成功と表示しない`,
     "API キーや秘密をページに書かない。オーナーのタスク・記憶・ナレッジ・会話の中身は、頼まれない限りページに入れない",
-    "ビルドやコマンドの実行はできない。ライブラリは CDN から読む",
+    shell ? PROJECT_SHELL_NOTE : PROJECT_NO_SHELL_NOTE,
     "Glob は path に dir を指定する",
     "消す・移す・作り直すは project_files を使う（消したものは .trash に移り、配信されず、restore で戻せる。.trash の中のファイルは今のページに使わない）",
     "決めた仕様・やり残したことは dir/SPEC.md に短く書いておく。続きを頼まれたら最初に SPEC.md を読む",
@@ -464,12 +474,12 @@ function changedCount(outcome: ProjectFilesResult): number | undefined {
  * そのチャンネルの削除されていないプロジェクトがあれば existing、無ければ作って `<slug>/site/` まで mkdir し created。
  * どちらも UI の土台（templates/web/）を複製して、複製できたものを scaffold で返す（created は 5 つ、existing は site/base.css が無いときだけ 3 つ。
  * 既にあるファイルは上書きしない）。複製に失敗したものがあれば log に出し、結果はそのまま返す。
- * 複製の後に DESIGN.md と site/base.css のどちらかが無ければ、注意に土台の使い方を入れない。
+ * 複製の後に DESIGN.md と site/base.css のどちらかが無ければ、注意に土台の使い方を入れない。シェルを使える（shellEnabled）なら注意に Bash の使い方を入れる。
  * project_files: セッションのチャンネルで、そのチャンネルの削除されていないプロジェクトがあるときだけ project-files.ts で操作する（それ以外は not_available）。
  * ファイルを変えたら（trashed で 1 件以上・moved・cleared・restored）プロジェクトの更新日時を今にし、操作と件数だけを log に出す（パス・trash_id は出さない）
  */
 export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunContext | undefined) {
-  const { projects, projectsDir, publicBaseUrl, serving, log, templateDir } = deps;
+  const { projects, projectsDir, publicBaseUrl, serving, shellEnabled, log, templateDir } = deps;
   const now = deps.now ?? (() => new Date());
   return {
     async projectOpen(args: ProjectOpenArgs): Promise<TextToolResult> {
@@ -498,7 +508,7 @@ export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunCon
         site_dir: siteDir,
         url,
         scaffold: copied,
-        notes: projectNotes(project.slug, url, await hasWebScaffold(dir)),
+        notes: projectNotes(project.slug, url, await hasWebScaffold(dir), shellEnabled?.() ?? false),
       });
     },
     async projectFiles(args: ProjectFilesArgs): Promise<TextToolResult> {

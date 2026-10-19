@@ -1,7 +1,7 @@
 // シェル（Bash）を使えるかの状態（docs/plan/shell.md §4）。SELF_AGENT_SHELL=1 のときだけ、main が起動時に check し、scheduler が tick ごとに refresh する。
 // 結果が変わったとき（通る・通らない、通らない項目）だけ log に出し、通る・通らないが変わったときだけ /setup 済みのサーバーの #system に知らせる。
 // 最初の診断の後は、通らないときだけ知らせる。知らせはサーバーごとに、投稿できるまで（#system が無い・失敗・時間切れ）tick ごとにやり直す。
-// 診断が通るまで（未設定・診断前・失敗）は enabled() が false（fail-closed）
+// 診断が通るまで（未設定・診断前・失敗）は enabled() が false（fail-closed）。各 run の前（sdk-runner）には enabledForRun が bwrap・socat の有無だけを確かめ直す
 import type { SandboxCheckResult } from "../agent/sandbox-check.ts";
 import type { Config } from "../config.ts";
 import type { Gateway } from "../discord/gateway.ts";
@@ -26,6 +26,8 @@ export type ShellStateDeps = {
   cfg: Pick<Config, "allowedGuildIds">;
   /** 自己診断（agent/sandbox-check.ts の checkSandbox） */
   check: () => Promise<SandboxCheckResult>;
+  /** run の前の確かめ直し（agent/sandbox-check.ts の missingSandboxBinaries）。無いものの項目を返す。省略すると確かめ直さない */
+  missingBinaries?: () => string[];
   /** 知らせの投稿先（#system） */
   guildSettings: Pick<GuildSettingsStore, "get">;
   gateway: Pick<Gateway, "sendMessage">;
@@ -86,6 +88,29 @@ export class ShellState {
     } catch {
       result = { ok: false, failed: [SHELL_CHECK_ERROR_ITEM] };
     }
+    this.update(result);
+  }
+
+  /**
+   * 各 run の前（sdk-runner の shellAvailable）。診断が通っていれば、bwrap・socat が今もあるかだけを確かめ直し（probe はしない）、
+   * 無ければその場で通らないに変えて false（log は check と同じく変わったときだけ。#system への知らせは次の tick の announce）。
+   * 診断が通っていなければ false
+   */
+  enabledForRun(): boolean {
+    if (!this.enabled()) return false;
+    let missing: string[];
+    try {
+      missing = this.deps.missingBinaries?.() ?? [];
+    } catch {
+      missing = [SHELL_CHECK_ERROR_ITEM];
+    }
+    if (missing.length === 0) return true;
+    this.update({ ok: false, failed: missing });
+    return false;
+  }
+
+  /** 結果を今の状態にし、変わったとき（最初の結果を含む）だけ log に出す */
+  private update(result: SandboxCheckResult): void {
     const changed = this.current === undefined || resultKey(this.current) !== resultKey(result);
     this.current = result;
     if (!changed) return;

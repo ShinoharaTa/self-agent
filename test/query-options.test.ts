@@ -4,8 +4,17 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
-import { buildQueryOptions, childEnv } from "../src/agent/query-options.ts";
-import { SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
+import {
+  buildQueryOptions,
+  childEnv,
+  SANDBOX_ALLOWED_DOMAINS,
+  SANDBOX_DENY_READ_SYSTEM,
+  type SandboxHost,
+  sandboxPlacesOf,
+  sandboxSettings,
+} from "../src/agent/query-options.ts";
+import { placesOverlap, sandboxReadablePlaces, sandboxSecretPlaces, shellPath } from "../src/agent/sandbox-check.ts";
+import { SHELL_SYSTEM_PROMPT, SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
 import { createTaskTools } from "../src/agent/tools.ts";
 import { type CommandDeps, createCommands } from "../src/app/interactions.ts";
 
@@ -32,27 +41,32 @@ test("システムプロンプトに日付や年を含めない", () => {
   assert.doesNotMatch(String(systemPrompt), /\d{4}|\d{1,2}\s*[/\-月]\s*\d{1,2}/);
 });
 
-/** プロンプトの中でコマンド名・ツール名の形をしているが、名前ではない語（引数名・ツールの返り値・固有名詞） */
-const NOT_A_NAME = new Set(["due_by", "task_id", "not_set_up", "Discord", "Web"]);
+/** プロンプトの中でコマンド名・ツール名の形をしているが、名前ではない語（引数名・ツールの返り値・固有名詞・ディレクトリ名） */
+const NOT_A_NAME = new Set(["due_by", "task_id", "not_set_up", "Discord", "Web", "node_modules"]);
 
 /** プロンプトから re に当たる語（グループがあればその中身）を重複なしで取り出す */
 function namesIn(prompt: string, re: RegExp): string[] {
   return [...new Set([...prompt.matchAll(re)].map((m) => m[1] ?? m[0]))].filter((name) => !NOT_A_NAME.has(name));
 }
 
-test("SYSTEM_PROMPT に出てくるコマンド名・ツール名・組み込みツール名はすべて実在する", () => {
+test("SYSTEM_PROMPT（シェルが有効なら SHELL_SYSTEM_PROMPT）に出てくるコマンド名・ツール名・組み込みツール名はすべて実在する", () => {
   const commands = new Set(createCommands({} as CommandDeps).map((command) => command.def.name));
   const tools = new Set(createTaskTools({} as never, {} as never, {} as never, {} as never, {} as never, {} as never).map((tool) => tool.name));
-  const builtins = new Set(buildQueryOptions(cfg, mcpServer).tools as string[]);
-  const cases = [
-    { label: "スラッシュコマンド", re: /(?<![\w/])\/([a-z]+)/g, known: commands },
-    { label: "自前のツール", re: /\b[a-z]+(?:_[a-z]+)+\b/g, known: tools },
-    { label: "組み込みツール", re: /\b[A-Z][a-z]+(?:[A-Z][a-z]+)*\b/g, known: builtins },
-  ];
-  for (const { label, re, known } of cases) {
-    const names = namesIn(SYSTEM_PROMPT, re);
-    assert.ok(names.length > 0, `${label}: 抜き出せていない`);
-    for (const name of names) assert.ok(known.has(name), `${label}: ${name}`);
+  for (const shell of [false, true]) {
+    const options = buildQueryOptions({ ...cfg, shell }, mcpServer);
+    const prompt = shell ? SHELL_SYSTEM_PROMPT : SYSTEM_PROMPT;
+    assert.deepEqual(options.systemPrompt, { type: "custom", prompt, snapshot: false });
+    const builtins = new Set(options.tools as string[]);
+    const cases = [
+      { label: "スラッシュコマンド", re: /(?<![\w/])\/([a-z]+)/g, known: commands },
+      { label: "自前のツール", re: /\b[a-z]+(?:_[a-z]+)+\b/g, known: tools },
+      { label: "組み込みツール", re: /\b[A-Z][a-z]+(?:[A-Z][a-z]+)*\b/g, known: builtins },
+    ];
+    for (const { label, re, known } of cases) {
+      const names = namesIn(prompt, re);
+      assert.ok(names.length > 0, `${label}: 抜き出せていない`);
+      for (const name of names) assert.ok(known.has(name), `shell=${shell} ${label}: ${name}`);
+    }
   }
 });
 
@@ -168,4 +182,162 @@ test("env には設定ディレクトリと自動メモリ無効を入れ、許�
 test("effort は設定したときだけ Options に入る", () => {
   assert.equal("effort" in buildQueryOptions(cfg, mcpServer), false);
   assert.equal(buildQueryOptions({ ...cfg, effort: "medium" }, mcpServer).effort, "medium");
+});
+
+/** sandbox の場所の一時ディレクトリ。dataDir はホームの外の symlink（実際の場所で書く）、リポジトリと node はホームの外 */
+function shellSetup(t: import("node:test").TestContext) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  const workDir = join(root, "work");
+  mkdirSync(join(home, ".config", "self-agent"), { recursive: true });
+  mkdirSync(join(root, "real-data"));
+  symlinkSync(join(root, "real-data"), join(root, "data"));
+  mkdirSync(workDir);
+  const host: SandboxHost = {
+    execPath: join(root, "node", "v24", "bin", "node"),
+    cwd: join(root, "repo"),
+    homeDir: home,
+    env: {
+      PATH: "/usr/bin",
+      HOME: home,
+      LANG: "ja_JP.UTF-8",
+      HTTPS_PROXY: "http://user:dummy-proxy-secret@proxy:8080",
+      http_proxy: "http://proxy:8080",
+      NO_PROXY: "localhost",
+      CLAUDE_CODE_OAUTH_TOKEN: "dummy-oauth-token",
+      DISCORD_TOKEN: "dummy-discord-token",
+    },
+  };
+  const shellCfg = { ...cfg, workDir, claudeConfigDir: join(root, "claude"), dataDir: join(root, "data"), shell: true };
+  return { root, home, workDir, host, shellCfg };
+}
+
+test("buildQueryOptions: SELF_AGENT_SHELL が無ければ今と同じ（ツール 6 個・sandbox なし・SYSTEM_PROMPT）。sandbox を渡しても付けない", () => {
+  for (const options of [buildQueryOptions(cfg, mcpServer), buildQueryOptions({ ...cfg, shell: false }, mcpServer, true)]) {
+    assert.deepEqual(options.tools, ["WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob"]);
+    assert.equal("sandbox" in options, false);
+    assert.deepEqual(options.systemPrompt, { type: "custom", prompt: SYSTEM_PROMPT, snapshot: false });
+  }
+  assert.deepEqual(buildQueryOptions({ ...cfg, shell: false }, mcpServer, true), buildQueryOptions(cfg, mcpServer));
+});
+
+test("buildQueryOptions: シェルが有効なら Bash を末尾に足して 7 個。自己診断が通った run（sandbox）だけ §2.2 の Options.sandbox を付け、通らなければ付けない。Bash は許可に入れない", (t) => {
+  const { root, workDir, host, shellCfg } = shellSetup(t);
+
+  const off = buildQueryOptions(shellCfg, mcpServer, false, host);
+  const on = buildQueryOptions(shellCfg, mcpServer, true, host);
+  for (const options of [off, on]) {
+    assert.deepEqual(options.tools, ["WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob", "Bash"]);
+    assert.ok(!(options.allowedTools ?? []).some((rule) => rule.startsWith("Bash")));
+    assert.equal(options.permissionMode, "dontAsk");
+    assert.deepEqual(options.systemPrompt, { type: "custom", prompt: SHELL_SYSTEM_PROMPT, snapshot: false });
+  }
+  assert.equal("sandbox" in off, false);
+  // sandbox の有無以外は同じ
+  const { sandbox, ...rest } = on;
+  assert.deepEqual(rest, off);
+  assert.deepEqual(sandbox, {
+    enabled: true,
+    failIfUnavailable: true,
+    autoAllowBashIfSandboxed: true,
+    allowUnsandboxedCommands: false,
+    network: { allowedDomains: [...SANDBOX_ALLOWED_DOMAINS], strictAllowlist: true },
+    filesystem: {
+      denyRead: [
+        "~",
+        "/tmp",
+        "/var/tmp",
+        "/dev/shm",
+        "/run",
+        "/var/run",
+        "/var/log",
+        "/media",
+        "/mnt",
+        join(root, "real-data"),
+        join(root, "claude"),
+        join(root, "home", ".config", "self-agent"),
+        join(root, "repo"),
+        join(workDir, "jobs"),
+      ],
+      allowRead: [workDir, join(root, "node", "v24")],
+      allowWrite: [join(workDir, "projects"), join(workDir, ".cache"), join(workDir, ".tmp")],
+      denyWrite: [join(workDir, ".claude")],
+    },
+    credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] },
+  });
+  assert.deepEqual(SANDBOX_ALLOWED_DOMAINS, [
+    "github.com",
+    "codeload.github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "registry.npmjs.org",
+  ]);
+  // 全 run で同じ値（チャンネルで変わらない）
+  assert.deepEqual(buildQueryOptions(shellCfg, mcpServer, true, host), on);
+  // dataDir が無ければ作れない
+  const { dataDir: _dataDir, ...withoutData } = shellCfg;
+  assert.throws(() => buildQueryOptions(withoutData, mcpServer, true, host), /dataDir/);
+});
+
+test("sandboxSettings: denyRead の秘密の場所と allowRead は、自己診断（placesOverlap）と同じ関数（sandboxSecretPlaces・sandboxReadablePlaces）から実際の場所で作る", (t) => {
+  const { workDir, host, shellCfg } = shellSetup(t);
+  const places = sandboxPlacesOf(shellCfg, host);
+  const settings = sandboxSettings(places);
+  const denyRead = settings.filesystem?.denyRead ?? [];
+  assert.deepEqual(denyRead.slice(0, SANDBOX_DENY_READ_SYSTEM.length), [...SANDBOX_DENY_READ_SYSTEM]);
+  assert.deepEqual(
+    denyRead.slice(SANDBOX_DENY_READ_SYSTEM.length, -1),
+    sandboxSecretPlaces(places).map((place) => realpathOrSelf(place)),
+  );
+  assert.equal(denyRead.at(-1), join(workDir, "jobs"));
+  assert.deepEqual(settings.filesystem?.allowRead, sandboxReadablePlaces(places).map((place) => realpathOrSelf(place)));
+  // この場所は重ならない（自己診断の 3 が通る）
+  assert.equal(placesOverlap(places), false);
+});
+
+/** 実際の場所（無ければそのまま） */
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+test("childEnv: シェルが有効ならプロキシの変数を写さず、PATH を shellPath にして §2.4 の変数を足す。CLI 自身のトークンは渡し、コマンドからは credentials.envVars で消す", (t) => {
+  const { workDir, host, shellCfg } = shellSetup(t);
+  const env = childEnv(shellCfg.claudeConfigDir, host.env, { workDir, execPath: host.execPath });
+  assert.deepEqual(env, {
+    PATH: shellPath(host.execPath),
+    HOME: host.homeDir,
+    LANG: "ja_JP.UTF-8",
+    CLAUDE_CODE_OAUTH_TOKEN: "dummy-oauth-token",
+    CLAUDE_CONFIG_DIR: shellCfg.claudeConfigDir,
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    CLAUDE_CODE_TMPDIR: join(workDir, ".tmp"),
+    npm_config_cache: join(workDir, ".cache", "npm"),
+    npm_config_update_notifier: "false",
+    npm_config_fund: "false",
+    npm_config_audit: "false",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    BASH_DEFAULT_TIMEOUT_MS: "120000",
+    BASH_MAX_TIMEOUT_MS: "300000",
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+  });
+  assert.ok(!JSON.stringify(env).includes("dummy-proxy-secret"));
+  assert.ok(!JSON.stringify(env).includes("dummy-discord-token"));
+  // 無効ならプロキシも PATH も今までどおり
+  const plain = childEnv(shellCfg.claudeConfigDir, host.env);
+  assert.equal(plain.HTTPS_PROXY, host.env.HTTPS_PROXY);
+  assert.equal(plain.PATH, "/usr/bin");
+  assert.equal("CLAUDE_CODE_TMPDIR" in plain, false);
+  // buildQueryOptions も同じ env（sandbox の有無によらない）
+  assert.deepEqual(buildQueryOptions(shellCfg, mcpServer, false, host).env, env);
+  assert.deepEqual(buildQueryOptions(shellCfg, mcpServer, true, host).sandbox?.credentials, {
+    envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }],
+  });
 });

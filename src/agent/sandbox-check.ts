@@ -95,6 +95,30 @@ export function findExecutable(name: string, pathEnv: string): string | undefine
   return undefined;
 }
 
+/** sandbox の場所の基準（§2.2・§2.3）。自己診断（placesOverlap）と Options.sandbox（query-options.ts の sandboxSettings）が同じものを使う */
+export type SandboxPlaces = Pick<SandboxCheckInput, "workDir" | "nodeDir" | "dataDir" | "claudeConfigDir" | "repoDir" | "homeDir">;
+
+/** sandbox から読める場所（allowRead。allowWrite はすべて workDir の中） */
+export function sandboxReadablePlaces(places: SandboxPlaces): string[] {
+  return [places.workDir, places.nodeDir];
+}
+
+/**
+ * 秘密の場所（データ・SDK の設定・env ファイルのある `~/.config/self-agent`・リポジトリ）。
+ * denyRead に実際の場所で並べ（`~` の下でなくても隠すため）、読める場所と重なれば自己診断を通さない
+ */
+export function sandboxSecretPlaces(places: SandboxPlaces): string[] {
+  return [places.dataDir, places.claudeConfigDir, join(places.homeDir, ".config/self-agent"), places.repoDir];
+}
+
+/** PATH（shellPath）に bwrap・socat が無ければ、その項目（SANDBOX_CHECK_ITEMS）。両方あれば空。各 run の前の確かめ直し（§4）に使う */
+export function missingSandboxBinaries(pathEnv: string): string[] {
+  return [
+    ...(findExecutable("bwrap", pathEnv) === undefined ? [SANDBOX_CHECK_ITEMS.bwrapMissing] : []),
+    ...(findExecutable("socat", pathEnv) === undefined ? [SANDBOX_CHECK_ITEMS.socatMissing] : []),
+  ];
+}
+
 /** a と b が同じか、どちらかがもう一方の中にあるか */
 function overlaps(a: string, b: string): boolean {
   const inside = (child: string, dir: string): boolean => child.startsWith(dir.endsWith(sep) ? dir : dir + sep);
@@ -103,19 +127,17 @@ function overlaps(a: string, b: string): boolean {
 
 /**
  * sandbox から読める・書ける場所（workDir（allowWrite はすべてこの中）・node の版のディレクトリ）と、
- * 秘密の場所（データ・SDK の設定・リポジトリ・env ファイルのある `~/.config/self-agent`）のどれかが、同じかその中・外側にあるか（§2.3）。
+ * 秘密の場所（sandboxSecretPlaces）のどれかが、同じかその中・外側にあるか（§2.3）。
  * 実際の場所（resolveRealPath。まだ無い部分は存在する一番深い親から求める）で比べ、
  * どれかが解決できなければ（ENOENT 以外の失敗・壊れた symlink など）重なっているとみなす（fail-closed）
  */
-export function placesOverlap(
-  input: Pick<SandboxCheckInput, "workDir" | "nodeDir" | "dataDir" | "claudeConfigDir" | "repoDir" | "homeDir">,
-): boolean {
+export function placesOverlap(input: SandboxPlaces): boolean {
   const resolveAll = (paths: string[]): string[] | undefined => {
     const reals = paths.map((path) => resolveRealPath(path));
     return reals.every((real) => real !== undefined) ? (reals as string[]) : undefined;
   };
-  const allowed = resolveAll([input.workDir, input.nodeDir]);
-  const secrets = resolveAll([input.dataDir, input.claudeConfigDir, input.repoDir, join(input.homeDir, ".config/self-agent")]);
+  const allowed = resolveAll(sandboxReadablePlaces(input));
+  const secrets = resolveAll(sandboxSecretPlaces(input));
   if (allowed === undefined || secrets === undefined) return true;
   return allowed.some((place) => secrets.some((secret) => overlaps(place, secret)));
 }
@@ -171,8 +193,7 @@ export const spawnProbe: RunProbe = (file, args, { env, timeoutMs }) =>
 export async function checkSandbox(input: SandboxCheckInput): Promise<SandboxCheckResult> {
   const failed: string[] = [];
   const bwrap = findExecutable("bwrap", input.pathEnv);
-  if (bwrap === undefined) failed.push(SANDBOX_CHECK_ITEMS.bwrapMissing);
-  if (findExecutable("socat", input.pathEnv) === undefined) failed.push(SANDBOX_CHECK_ITEMS.socatMissing);
+  failed.push(...missingSandboxBinaries(input.pathEnv));
   if (bwrap !== undefined) {
     const runProbe = input.runProbe ?? spawnProbe;
     const result = await runProbe(bwrap, BWRAP_PROBE_ARGS, {
