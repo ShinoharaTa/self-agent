@@ -1,9 +1,9 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request, type IncomingHttpHeaders } from "node:http";
 import { join } from "node:path";
-import { createStaticServer, type StaticServer } from "../src/serve/static-server.ts";
+import { createStaticServer, type StaticServer, type StaticServerOptions } from "../src/serve/static-server.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 
 const NOW = new Date("2026-10-07T00:12:00Z");
@@ -42,9 +42,10 @@ function write(path: string, content: string): void {
 
 /**
  * 一時ディレクトリと一時 SQLite に、プロジェクトを 2 つ（kakeibo と、削除済みの old）作る。
- * kakeibo の site には index.html・sub/index.html・ドットファイル・site の外を指す symlink などを置く
+ * kakeibo の site には index.html・sub/index.html・ドットファイル・site の外を指す symlink などを置く。
+ * beforeOpen は判定の後・ファイルを開く直前に呼ばれる（すり替えを差し込む）
  */
-async function setup(t: TestContext, allowedLogin?: string) {
+async function setup(t: TestContext, allowedLogin?: string, beforeOpen?: StaticServerOptions["beforeOpen"]) {
   const db = tempDb(t);
   const projectsDir = join(tempDir(t), "projects");
   const { projects } = createStores(db, () => NOW);
@@ -77,6 +78,7 @@ async function setup(t: TestContext, allowedLogin?: string) {
     allowedLogin,
     timeZone: "Asia/Tokyo",
     log: (line) => logs.push(line),
+    ...(beforeOpen === undefined ? {} : { beforeOpen }),
   });
   await server.start();
   t.after(() => server.close());
@@ -250,6 +252,49 @@ test("site 自体が symlink なら 404（realpath が <projectsDir>/<slug>/site
     const res = await fetchRaw(server, path);
     assert.equal(res.status, 404, path);
   }
+});
+
+test("判定の後・開く前に symlink にすり替えられたら、site の外を返さない（最後の要素は O_NOFOLLOW、途中の要素は開いた fd の実際のパスで確かめる）", async (t) => {
+  /** 次のリクエストで 1 回だけ、開く直前に swap を実行する */
+  let swap: (() => void) | undefined;
+  const { server, site, projectsDir } = await setup(t, undefined, () => {
+    const run = swap;
+    swap = undefined;
+    run?.();
+  });
+  const secret = join(projectsDir, "kakeibo-secret.txt");
+  writeFileSync(secret, "outside");
+
+  // すり替えなければ返す
+  assert.equal((await fetchRaw(server, "/p/kakeibo/hello.txt")).body, "hello");
+
+  // 最後の要素（ファイル）を site の外を指す symlink にすり替える
+  swap = () => {
+    rmSync(join(site, "hello.txt"));
+    symlinkSync(secret, join(site, "hello.txt"));
+  };
+  const last = await fetchRaw(server, "/p/kakeibo/hello.txt");
+  assert.equal(last.status, 404);
+  assert.ok(!last.body.includes("outside"));
+
+  // 途中の要素（ディレクトリ）を site の外を指す symlink にすり替える（外に同じ名前のファイルを置く）
+  const outsideDir = join(projectsDir, "kakeibo-outside");
+  write(join(outsideDir, "index.html"), "outside");
+  swap = () => {
+    renameSync(join(site, "sub"), join(projectsDir, "kakeibo-sub-moved"));
+    symlinkSync(outsideDir, join(site, "sub"));
+  };
+  const middle = await fetchRaw(server, "/p/kakeibo/sub/index.html");
+  assert.equal(middle.status, 404);
+  assert.ok(!middle.body.includes("outside"));
+  // ディレクトリの index.html も同じ
+  swap = () => {
+    rmSync(join(site, "index.html"));
+    symlinkSync(secret, join(site, "index.html"));
+  };
+  const index = await fetchRaw(server, "/p/kakeibo/");
+  assert.equal(index.status, 404);
+  assert.ok(!index.body.includes("outside"));
 });
 
 test("要素が .. でなければ .. を含む名前は通す（a..b.js・x..y/）", async (t) => {

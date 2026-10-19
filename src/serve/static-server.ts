@@ -1,6 +1,9 @@
 // 作ったプロジェクトの site/ を配る静的サーバー（node:http）。127.0.0.1 で待ち受け、tailnet には tailscale serve で出す
-// log はリクエストごとには出さない（パス・slug・題名も出さない）。出すのは待ち受けた後のサーバーのエラーだけ
-import { open, realpath, stat, type FileHandle } from "node:fs/promises";
+// log はリクエストごとには出さない（パス・slug・題名も出さない）。出すのは待ち受けた後のサーバーのエラーだけ。
+// site/ は sandbox の中の Bash が書き換えられ、このサーバーはキューの外で動くので、ファイルは判定の後に symlink にすり替えられても外を返さない形で開く
+// （最後の要素は O_NOFOLLOW、開いた fd の実際のパスが site の中かを確かめ、その fd からだけ返す。docs/plan/shell.md §2.9）
+import { constants } from "node:fs";
+import { open, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
 import { createServer, type IncomingMessage, type OutgoingHttpHeaders, type ServerResponse } from "node:http";
 import { extname, join, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -18,6 +21,8 @@ export type StaticServerOptions = {
   /** 一覧（`/`）の更新日時を表示するタイムゾーン */
   timeZone: string;
   log: (message: string) => void;
+  /** テスト用: 判定の後、ファイルを開く直前に呼ぶ（ここでパスをすり替えて、開いた後の確かめが効くかを試す） */
+  beforeOpen?: (path: string) => Promise<void> | void;
 };
 
 export type StaticServer = {
@@ -167,7 +172,8 @@ function sendStatus(req: IncomingMessage, res: ServerResponse, status: number, h
   sendBody(req, res, status, "text/plain; charset=utf-8", `${STATUS_TEXT[status] ?? status}\n`, headers);
 }
 
-type Target = { kind: "file" | "directory"; path: string };
+/** path は実パス、site は `<realpath(projectsDir)>/<slug>/site`（返してよいのはこの中だけ） */
+type Target = { kind: "file" | "directory"; path: string; site: string };
 
 /**
  * site の中の segments が指すファイルかディレクトリの実パス。
@@ -179,32 +185,51 @@ async function resolveTarget(projectsDir: string, slug: string, segments: string
     const real = await realpath(join(site, ...segments));
     if (!real.startsWith(site + sep) && real !== site) return undefined;
     const info = await stat(real);
-    if (info.isDirectory()) return { kind: "directory", path: real };
-    return info.isFile() ? { kind: "file", path: real } : undefined;
+    if (info.isDirectory()) return { kind: "directory", path: real, site };
+    return info.isFile() ? { kind: "file", path: real, site } : undefined;
   } catch {
     return undefined;
   }
 }
 
-/** ファイルをストリームで返す。開けなければ 404。HEAD には本文を付けない */
-async function sendFile(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+/**
+ * 判定した実パスのファイルを開く。最後の要素は O_NOFOLLOW（symlink なら開かない）、途中の要素がすり替えられていても、
+ * 開いた fd の実際のパス（/proc/self/fd/<fd> の readlink）が site の中でなければ閉じて undefined。通常のファイルでなくても undefined
+ */
+async function openInside(path: string, site: string): Promise<{ handle: FileHandle; size: number } | undefined> {
   let handle: FileHandle;
   try {
-    handle = await open(path, "r");
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch {
-    sendStatus(req, res, 404);
-    return;
+    return undefined;
   }
-  let size: number;
   try {
+    const actual = await readlink(`/proc/self/fd/${handle.fd}`);
+    if (!actual.startsWith(site + sep)) throw new Error("outside");
     const info = await handle.stat();
     if (!info.isFile()) throw new Error("not a file");
-    size = info.size;
+    return { handle, size: info.size };
   } catch {
     await handle.close();
+    return undefined;
+  }
+}
+
+/** 判定したファイル（target）を、開いた fd からだけストリームで返す（パスで開き直さない）。開けない・site の外なら 404。HEAD には本文を付けない */
+async function sendFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  target: Target,
+  beforeOpen: StaticServerOptions["beforeOpen"],
+): Promise<void> {
+  const { path } = target;
+  await beforeOpen?.(path);
+  const opened = await openInside(path, target.site);
+  if (opened === undefined) {
     sendStatus(req, res, 404);
     return;
   }
+  const { handle, size } = opened;
   res.writeHead(200, { ...COMMON_HEADERS, "Content-Type": contentTypeOf(path), "Content-Length": size });
   if (req.method === "HEAD" || size === 0) {
     await handle.close();
@@ -220,7 +245,7 @@ async function sendFile(req: IncomingMessage, res: ServerResponse, path: string)
 }
 
 export function createStaticServer(options: StaticServerOptions): StaticServer {
-  const { host, port, projectsDir, projects, allowedLogin, timeZone, log } = options;
+  const { host, port, projectsDir, projects, allowedLogin, timeZone, log, beforeOpen } = options;
 
   const respond = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (allowedLogin !== undefined && req.headers["tailscale-user-login"] !== allowedLogin) {
@@ -274,7 +299,7 @@ export function createStaticServer(options: StaticServerOptions): StaticServer {
       return;
     }
     if (target.kind === "file") {
-      await sendFile(req, res, target.path);
+      await sendFile(req, res, target, beforeOpen);
       return;
     }
     // 末尾 / なしのディレクトリは <そのパス>/ へ（ページの相対パスがそのディレクトリを基準にするように）
@@ -287,7 +312,7 @@ export function createStaticServer(options: StaticServerOptions): StaticServer {
       sendStatus(req, res, 404);
       return;
     }
-    await sendFile(req, res, index.path);
+    await sendFile(req, res, index, beforeOpen);
   };
 
   const server = createServer((req, res) => {
