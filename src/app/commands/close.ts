@@ -181,6 +181,8 @@ async function closeTurn(deps: CloseDeps, guildId: string, channelId: string): P
     kind: "session",
     prompt: CLOSE_PROMPT,
     allowedUrls: [],
+    // 要約のターンでは Bash を使わせない（run の context の印）
+    purpose: "close",
   });
   if (!result.ok) return { result: "failed", errorMessage: result.errorMessage };
   const draft = topicSessions.getCloseDraft(channelId) ?? { summary: fallbackSummary(result.text), tasks: [] };

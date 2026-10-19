@@ -79,6 +79,8 @@ export type ChannelTurn = {
   onProgress?: (step: ProgressStep) => void;
   /** 予約した依頼（リマインドの prompt）のターン。run の context に入れる */
   scheduled?: true;
+  /** /close のターン。run の context に入れる（Bash を使わせない） */
+  purpose?: "close";
   /** オーナーの発言の画像（app/attachments.ts で取ったもの）。resume 失敗のやり直しにも同じものを渡す */
   images?: readonly RunImage[];
   /** その画像のうち保存した原本の id。空でなければ run の context に入れる */
@@ -190,6 +192,7 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     channelId: turn.channelId,
     kind: turn.kind,
     ...(turn.scheduled === undefined ? {} : { scheduled: turn.scheduled }),
+    ...(turn.purpose === undefined ? {} : { purpose: turn.purpose }),
     ...(turn.attachmentIds === undefined || turn.attachmentIds.length === 0 ? {} : { attachmentIds: turn.attachmentIds }),
   };
 

@@ -4,6 +4,7 @@
  * このターンを実行するチャンネル。ツールのハンドラに渡す（session_report が保存先を決める）。
  * kind はチャンネルの種類（#inbox・#tasks かセッションか）。1 ターンの上限とファイル操作の可否を決める。
  * scheduled は予約した依頼（リマインドの prompt）のターンで立てる（session_open を not_available にする）。
+ * purpose は /close のターン（要約とやることの候補を作らせる）で "close" を入れる（Bash を使わせない）。
  * attachmentIds はこのターンの発言の画像のうち保存した原本（attachments の id）。保存したものがあるときだけ入る（記録への結びつけに使う）
  */
 export type RunContext = {
@@ -11,6 +12,7 @@ export type RunContext = {
   channelId: string;
   kind: "inbox" | "tasks" | "session";
   scheduled?: true;
+  purpose?: "close";
   attachmentIds?: readonly number[];
 };
 

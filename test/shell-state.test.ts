@@ -18,7 +18,7 @@ const LOG_NG = "シェルの自己診断が通りません（bwrap が見つか�
 const LOG_NG_OTHER = "シェルの自己診断が通りません（作業ディレクトリが別のファイルシステムでない）";
 
 /** guild-1・guild-2 は /setup 済み（#system あり）、guild-3 は #system なし */
-function setup(t: TestContext, noticeTimeoutMs?: number) {
+function setup(t: TestContext, noticeTimeoutMs?: number, missingBinaries?: () => string[]) {
   const db = tempDb(t);
   const { guildSettings } = createStores(db, () => new Date("2026-10-13T00:00:00.000Z"));
   guildSettings.setChannel("guild-1", "systemChannelId", "system-1");
@@ -41,6 +41,7 @@ function setup(t: TestContext, noticeTimeoutMs?: number) {
     gateway,
     log: (line) => logs.push(line),
     noticeTimeoutMs,
+    ...(missingBinaries === undefined ? {} : { missingBinaries }),
   });
   /** 送れた #system への投稿（チャンネルと本文） */
   const posts = (): Array<[string, string]> => gateway.posts.map(({ channelId, message }) => [channelId, message.text]);
@@ -248,4 +249,54 @@ test("tick: refreshShell が投げても log に出して残りを続ける", as
   assert.deepEqual(logs, ["シェルの自己診断に失敗しました: boom"]);
   // 最後の処理（#inbox・#tasks の切り替え）まで進んでいる
   assert.equal(rotated, 1);
+});
+
+test("ShellState.enabledForRun: 診断が通っていれば bwrap・socat の有無だけを確かめ直し、あれば true。診断が通っていなければ確かめずに false", async (t) => {
+  let missing: string[] = [];
+  let calls = 0;
+  const env = setup(t, undefined, () => {
+    calls++;
+    return missing;
+  });
+  // 診断前
+  assert.equal(env.state.enabledForRun(), false);
+  assert.equal(calls, 0);
+
+  env.results.push(OK);
+  await env.state.refresh();
+  assert.equal(env.state.enabledForRun(), true);
+  assert.equal(env.state.enabledForRun(), true);
+  assert.equal(calls, 2);
+  assert.deepEqual(env.logs, [LOG_OK]);
+
+  // 消えたらその場で通らないに変え（log は変わったときだけ）、以後の run も false（確かめ直さない）。#system は次の tick の announce で知らせる
+  missing = ["bwrap が見つからない"];
+  assert.equal(env.state.enabledForRun(), false);
+  assert.equal(env.state.enabled(), false);
+  assert.equal(env.state.enabledForRun(), false);
+  assert.equal(calls, 3);
+  assert.deepEqual(env.logs, [LOG_OK, "シェルの自己診断が通りません（bwrap が見つからない）"]);
+  assert.deepEqual(env.posts(), []);
+  await env.state.announce();
+  assert.deepEqual(env.posts(), [
+    ["system-1", shellDisabledNotice(["bwrap が見つからない"])],
+    ["system-2", shellDisabledNotice(["bwrap が見つからない"])],
+  ]);
+
+  // 次の tick の診断が通れば戻る
+  missing = [];
+  env.results.push(OK);
+  await env.state.refresh();
+  assert.equal(env.state.enabledForRun(), true);
+});
+
+test("ShellState.enabledForRun: 確かめ直しが例外なら通らないにして false（fail-closed）", async (t) => {
+  const env = setup(t, undefined, () => {
+    throw new Error("EACCES");
+  });
+  env.results.push(OK);
+  await env.state.refresh();
+  assert.equal(env.state.enabledForRun(), false);
+  assert.equal(env.state.enabled(), false);
+  assert.equal(env.logs.at(-1), `シェルの自己診断が通りません（${SHELL_CHECK_ERROR_ITEM}）`);
 });

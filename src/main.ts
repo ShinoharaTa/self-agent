@@ -1,10 +1,10 @@
 // 配線だけ: config → store → runner → gateway → handler
 import { mkdirSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { DiskQuota, pruneWorkDir } from "./agent/disk.ts";
 import { pruneProjectTrash } from "./agent/project-files.ts";
-import { checkSandbox, nodeVersionDir, shellPath } from "./agent/sandbox-check.ts";
+import { defaultSandboxHost, sandboxPlacesOf } from "./agent/query-options.ts";
+import { checkSandbox, missingSandboxBinaries, shellPath } from "./agent/sandbox-check.ts";
 import type { AgentRunner, RunContext } from "./agent/runner.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { personaSystemPrompts } from "./agent/system-prompt.ts";
@@ -61,10 +61,11 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-// 人格ごとのシステムプロンプト。足した人格の文のファイルは起動時に 1 回読み、読めない・空なら変数名を出して起動しない（既定の人格は今の SYSTEM_PROMPT）
+// 人格ごとのシステムプロンプト。足した人格の文のファイルは起動時に 1 回読み、読めない・空なら変数名を出して起動しない
+// （既定の人格は今の SYSTEM_PROMPT。SELF_AGENT_SHELL=1 なら Bash の行を足したもの）
 let systemPrompts: Map<string, string>;
 try {
-  systemPrompts = personaSystemPrompts(config.personas);
+  systemPrompts = personaSystemPrompts(config.personas, undefined, config.shell);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
@@ -129,6 +130,8 @@ const projectTools = {
   projectsDir,
   publicBaseUrl: config.publicBaseUrl,
   serving: () => staticServer?.listening() ?? false,
+  // shellState は下で作る（project_open のときに読む）。使えるなら注意に Bash の使い方を入れる
+  shellEnabled: () => shellState.enabled(),
   log,
   now,
 };
@@ -139,12 +142,14 @@ const devLogSink = createDevLogSink(config);
 if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${config.devLogDays} 日で消します）`);
 // ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ（全人格で共通）。
 // ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中で、容量の上限まで）に絞る。
-// openSession・kbMemory は下で作る（run のときに読む）
+// SELF_AGENT_SHELL=1 なら Bash もツールに入れ、run ごとの hook でセッションのチャンネルのプロジェクトがあるときだけ通す（sandbox は自己診断が通っていて
+// bwrap・socat がある run だけに付ける。shellAvailable は run の前に呼ぶ）。openSession・kbMemory・shellState は下で作る（run のときに読む）
 const createMcpServer = (context?: RunContext) =>
   createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, reminderTools, context);
 const runnerFiles = { projects, projectsDir, disk: diskQuota };
 const runnerDevLog = devLogSink === undefined ? undefined : { sink: devLogSink, now };
-const runner = new SdkAgentRunner(config, createMcpServer, runnerFiles, log, undefined, runnerDevLog);
+const runnerConfig = { ...config, shellAvailable: () => shellState.enabledForRun() };
+const runner = new SdkAgentRunner(runnerConfig, createMcpServer, runnerFiles, log, undefined, runnerDevLog);
 // 足した人格の runner: システムプロンプトはその人格のもの、model・effort はその人格の設定（無ければ既定の人格と同じ）。
 // codex のエンジンはまだ無いので、codex の人格も既定の人格の Claude の model・effort で動かす（usage のエンジンは claude）
 if (config.personas.some((persona) => persona.engine === "codex")) {
@@ -161,7 +166,7 @@ const personaRuntimes: PersonaRuntime[] = [
     const systemPrompt = systemPrompts.get(persona.id);
     if (systemPrompt === undefined) throw new Error(`人格 ${persona.id} のシステムプロンプトがありません`);
     const personaRunner = new SdkAgentRunner(
-      { ...config, ...modelAndEffort, systemPrompt, persona: persona.id },
+      { ...runnerConfig, ...modelAndEffort, systemPrompt, persona: persona.id },
       createMcpServer,
       runnerFiles,
       log,
@@ -328,19 +333,16 @@ const handleInteraction = createInteractionHandler({
   log,
 });
 // シェル（Bash）を使えるか（docs/plan/shell.md §4）。SELF_AGENT_SHELL=1 のときだけ起動時と tick ごとに自己診断し、結果が変わったら log に、通る・通らないが変わったら #system に出す。
-// 今はまだ Bash を使わない（結果は log と #system だけ）
+// 各 run の前には bwrap・socat の有無だけを確かめ直す（無ければその run に sandbox を付けず、通らないに変える）。
+// 秘密の場所と読める場所は Options.sandbox と同じ関数（sandboxPlacesOf）から作る
 const shellState = new ShellState({
   cfg: config,
   check: () =>
     checkSandbox({
       pathEnv: shellPath(process.execPath),
-      workDir: config.workDir,
-      nodeDir: nodeVersionDir(process.execPath),
-      dataDir: config.dataDir,
-      claudeConfigDir: config.claudeConfigDir,
-      repoDir: process.cwd(),
-      homeDir: homedir(),
+      ...sandboxPlacesOf(config, defaultSandboxHost()),
     }),
+  missingBinaries: () => missingSandboxBinaries(shellPath(process.execPath)),
   guildSettings,
   gateway,
   log,
