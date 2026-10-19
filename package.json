@@ -14,7 +14,8 @@
     "devlog": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/devlog.ts",
     "usage": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/usage.ts",
     "github-dry-run": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/github-dry-run.ts",
-    "job-dry-run": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/job-dry-run.ts"
+    "job-dry-run": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/job-dry-run.ts",
+    "shell-check": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/shell-check.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.286",
