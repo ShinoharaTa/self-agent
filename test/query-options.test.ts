@@ -224,21 +224,24 @@ test("buildQueryOptions: SELF_AGENT_SHELL が無ければ今と同じ（ツー�
   assert.deepEqual(buildQueryOptions({ ...cfg, shell: false }, mcpServer, true), buildQueryOptions(cfg, mcpServer));
 });
 
-test("buildQueryOptions: シェルが有効なら Bash を末尾に足して 7 個。自己診断が通った run（sandbox）だけ §2.2 の Options.sandbox を付け、通らなければ付けない。Bash は許可に入れない", (t) => {
+test("buildQueryOptions: シェルが有効なら Bash を末尾に足して 7 個。自己診断が通った run（sandbox）だけ §2.2 の Options.sandbox を付け、通らなければ付けない。Bash は sandbox を付ける run だけ許可の末尾に入れる", (t) => {
   const { root, workDir, host, shellCfg } = shellSetup(t);
 
   const off = buildQueryOptions(shellCfg, mcpServer, false, host);
   const on = buildQueryOptions(shellCfg, mcpServer, true, host);
   for (const options of [off, on]) {
     assert.deepEqual(options.tools, ["WebSearch", "WebFetch", "Read", "Write", "Edit", "Glob", "Bash"]);
-    assert.ok(!(options.allowedTools ?? []).some((rule) => rule.startsWith("Bash")));
     assert.equal(options.permissionMode, "dontAsk");
     assert.deepEqual(options.systemPrompt, { type: "custom", prompt: SHELL_SYSTEM_PROMPT, snapshot: false });
   }
   assert.equal("sandbox" in off, false);
-  // sandbox の有無以外は同じ
+  // sandbox を付けない run では Bash を許可に入れない（hook と dontAsk で拒否される）
+  assert.ok(!(off.allowedTools ?? []).some((rule) => rule.startsWith("Bash")));
+  // sandbox を付ける run では Bash を許可の末尾に入れる（#135）
+  assert.equal(on.allowedTools?.at(-1), "Bash");
+  // sandbox の有無と allowedTools の末尾の Bash 以外は同じ
   const { sandbox, ...rest } = on;
-  assert.deepEqual(rest, off);
+  assert.deepEqual({ ...rest, allowedTools: rest.allowedTools?.slice(0, -1) }, off);
   assert.deepEqual(sandbox, {
     enabled: true,
     failIfUnavailable: true,
@@ -281,6 +284,41 @@ test("buildQueryOptions: シェルが有効なら Bash を末尾に足して 7 �
   // dataDir が無ければ作れない
   const { dataDir: _dataDir, ...withoutData } = shellCfg;
   assert.throws(() => buildQueryOptions(withoutData, mcpServer, true, host), /dataDir/);
+});
+
+test("buildQueryOptions: sandbox を付ける run（shell かつ sandbox）だけ allowedTools の末尾に Bash を 1 つ足し、既存の許可は順序そのまま（#135）", (t) => {
+  const { workDir, host, shellCfg } = shellSetup(t);
+  const rule = `//${join(workDir, "projects").slice(1)}/**`;
+  const base = ["mcp__selfagent__*", "WebSearch", "WebFetch", `Read(${rule})`, `Edit(${rule})`];
+
+  const on = buildQueryOptions(shellCfg, mcpServer, true, host);
+  assert.deepEqual(on.allowedTools, [...base, "Bash"]);
+  assert.equal(on.allowedTools?.filter((r) => r === "Bash").length, 1);
+
+  // shell のみ（sandbox なし）と shell でない run では Bash で始まる許可は無い
+  for (const options of [
+    buildQueryOptions(shellCfg, mcpServer, false, host),
+    buildQueryOptions({ ...shellCfg, shell: false }, mcpServer, true, host),
+    buildQueryOptions({ ...shellCfg, shell: false }, mcpServer, false, host),
+  ]) {
+    assert.deepEqual(options.allowedTools, base);
+    assert.ok(!(options.allowedTools ?? []).some((r) => r.startsWith("Bash")));
+  }
+});
+
+test("buildQueryOptions: options.sandbox の有無と allowedTools の Bash の有無は常に同じ", (t) => {
+  const { host, shellCfg } = shellSetup(t);
+  for (const shell of [true, false]) {
+    for (const sandbox of [true, false]) {
+      const options = buildQueryOptions({ ...shellCfg, shell }, mcpServer, sandbox, host);
+      assert.equal(
+        (options.allowedTools ?? []).includes("Bash"),
+        "sandbox" in options,
+        `shell=${shell} sandbox=${sandbox}`,
+      );
+      assert.equal("sandbox" in options, shell && sandbox);
+    }
+  }
 });
 
 test("sandboxSettings: denyRead の秘密の場所と allowRead は、自己診断（placesOverlap）と同じ関数（sandboxSecretPlaces・sandboxReadablePlaces）から実際の場所で作る", (t) => {
