@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, sep } from "node:path";
+import { PROJECTS_DIR_NAME, WORK_CACHE_DIR_NAME, WORK_CWD_DIR_NAME, WORK_TMP_DIR_NAME } from "./disk.ts";
 import { resolveRealPath } from "./file-access.ts";
 
 /** Bash の子プロセスの PATH のうち、node の bin の後ろに続ける OS のディレクトリ（§2.4） */
@@ -98,9 +99,18 @@ export function findExecutable(name: string, pathEnv: string): string | undefine
 /** sandbox の場所の基準（§2.2・§2.3）。自己診断（placesOverlap）と Options.sandbox（query-options.ts の sandboxSettings）が同じものを使う */
 export type SandboxPlaces = Pick<SandboxCheckInput, "workDir" | "nodeDir" | "dataDir" | "claudeConfigDir" | "repoDir" | "homeDir">;
 
-/** sandbox から読める場所（allowRead。allowWrite はすべて workDir の中） */
+/**
+ * sandbox から読める場所（allowRead。allowWrite はすべてこの中の projects・.cache・.tmp）。読める場所は workDir そのものではなく、
+ * その下の projects・.cache・.tmp・cwd（CLI 2.1.286 では親を allowRead にすると cwd が読み取り専用になり bwrap が起動できない。#143）と node の版のディレクトリ
+ */
 export function sandboxReadablePlaces(places: SandboxPlaces): string[] {
-  return [places.workDir, places.nodeDir];
+  return [
+    join(places.workDir, PROJECTS_DIR_NAME),
+    join(places.workDir, WORK_CACHE_DIR_NAME),
+    join(places.workDir, WORK_TMP_DIR_NAME),
+    join(places.workDir, WORK_CWD_DIR_NAME),
+    places.nodeDir,
+  ];
 }
 
 /**
@@ -126,7 +136,7 @@ function overlaps(a: string, b: string): boolean {
 }
 
 /**
- * sandbox から読める・書ける場所（workDir（allowWrite はすべてこの中）・node の版のディレクトリ）と、
+ * sandbox から読める・書ける場所（sandboxReadablePlaces。workDir の projects・.cache・.tmp・cwd と node の版のディレクトリ）と、
  * 秘密の場所（sandboxSecretPlaces）のどれかが、同じかその中・外側にあるか（§2.3）。
  * 実際の場所（resolveRealPath。まだ無い部分は存在する一番深い親から求める）で比べ、
  * どれかが解決できなければ（ENOENT 以外の失敗・壊れた symlink など）重なっているとみなす（fail-closed）

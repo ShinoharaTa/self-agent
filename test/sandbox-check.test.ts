@@ -123,8 +123,8 @@ test("checkSandbox: 失敗した項目を全部返す（項目にパスは入ら
     { name: "probe を起動できない", arrange: (env) => void (env.probe.result = { kind: "error" }), failed: [ITEMS.probeFailed], probed: true },
     { name: "probe が時間切れ", arrange: (env) => void (env.probe.result = { kind: "timeout" }), failed: [ITEMS.probeTimeout], probed: true },
     {
-      name: "場所が重なる（dataDir が workDir の中）",
-      arrange: (env) => void (env.input.dataDir = join(env.dirs.workDir, "data")),
+      name: "場所が重なる（dataDir が workDir の projects の中）",
+      arrange: (env) => void (env.input.dataDir = join(env.dirs.workDir, "projects/data")),
       failed: [ITEMS.placesOverlap],
       probed: true,
     },
@@ -155,11 +155,16 @@ test("checkSandbox: 失敗した項目を全部返す（項目にパスは入ら
   }
 });
 
-test("placesOverlap: 読める場所（workDir・node の版のディレクトリ）が秘密の場所と同じ・その中・その外側なら重なる（symlink は実際の場所で比べる）。名前の前方一致だけなら重ならない。解決できなければ重なるとみなす", (t) => {
+test("placesOverlap: 読める場所（workDir の projects・.cache・.tmp・cwd と node の版のディレクトリ）が秘密の場所と同じ・その中・その外側なら重なる（symlink は実際の場所で比べる）。workDir の直下の別の名前・名前の前方一致だけなら重ならない。解決できなければ重なるとみなす", (t) => {
   const cases: Array<{ name: string; arrange: (env: ReturnType<typeof setup>) => void; overlap: boolean }> = [
     { name: "重ならない", arrange: () => {}, overlap: false },
-    { name: "dataDir が workDir と同じ", arrange: (env) => void (env.input.dataDir = env.dirs.workDir), overlap: true },
-    { name: "claudeConfigDir が workDir の中", arrange: (env) => void (env.input.claudeConfigDir = join(env.dirs.workDir, "claude")), overlap: true },
+    { name: "dataDir が workDir と同じ（読める場所の外側）", arrange: (env) => void (env.input.dataDir = env.dirs.workDir), overlap: true },
+    { name: "claudeConfigDir が workDir の projects の中", arrange: (env) => void (env.input.claudeConfigDir = join(env.dirs.workDir, "projects/claude")), overlap: true },
+    { name: "dataDir が workDir の .cache と同じ", arrange: (env) => void (env.input.dataDir = join(env.dirs.workDir, ".cache")), overlap: true },
+    { name: "repoDir が workDir の .tmp の中", arrange: (env) => void (env.input.repoDir = join(env.dirs.workDir, ".tmp/repo")), overlap: true },
+    { name: "claudeConfigDir が workDir の cwd の中", arrange: (env) => void (env.input.claudeConfigDir = join(env.dirs.workDir, "cwd/claude")), overlap: true },
+    { name: "dataDir が workDir の直下の jobs", arrange: (env) => void (env.input.dataDir = join(env.dirs.workDir, "jobs")), overlap: false },
+    { name: "claudeConfigDir が workDir の直下の別の名前", arrange: (env) => void (env.input.claudeConfigDir = join(env.dirs.workDir, "other")), overlap: false },
     { name: "repoDir が workDir の外側", arrange: (env) => void (env.input.repoDir = env.root), overlap: true },
     {
       name: "workDir が ~/.config/self-agent の中",
