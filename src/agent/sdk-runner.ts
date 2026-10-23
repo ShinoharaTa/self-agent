@@ -14,7 +14,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Config } from "../config.ts";
 import { devLogResult, devLogToolInput, truncateText, type DevLogSink, type DevLogStep } from "../devlog/log.ts";
 import type { ProjectStore } from "../store/projects.ts";
-import type { DiskQuota } from "./disk.ts";
+import { type DiskQuota, WORK_CWD_DIR_NAME } from "./disk.ts";
 import {
   FILE_NO_CONTEXT_REASON,
   FILE_TOOLS,
@@ -24,7 +24,7 @@ import {
   resolveRealPath,
 } from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
-import { buildQueryOptions, ensureSandboxWriteDirs, WORK_CWD_DIR_NAME } from "./query-options.ts";
+import { buildQueryOptions, ensureSandboxWriteDirs } from "./query-options.ts";
 import type {
   AgentRunner,
   Compaction,

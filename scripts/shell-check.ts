@@ -506,7 +506,7 @@ await check(
 await check("/proc/1/cmdline が systemd でない（PID 名前空間）", `tr '\\0' ' ' < /proc/1/cmdline; echo; echo "__rc=$?"`, ({ stdout }) =>
   stdout.includes("systemd") || stdout.includes("/sbin/init") ? "host の init が見える" : true,
 );
-// 10-2. workDir の直下には書けない（allowWrite は projects・.cache・.tmp だけ。cwd は `<workDir>/cwd` で denyWrite（#139））。既存の projects・jobs は動かさず、新しく作れるかだけを試す
+// 10-2. workDir の直下には書けない（allowWrite は projects・.cache・.tmp だけ。cwd は `<workDir>/cwd`（書ける専用ディレクトリ。#141））。既存の projects・jobs は動かさず、新しく作れるかだけを試す
 {
   const touchRoot = join(realWorkDir, `shell-check-x-${random}`);
   const mkdirRoot = join(realWorkDir, `shell-check-d-${random}`);
@@ -537,20 +537,6 @@ await check("/proc/1/cmdline が systemd でない（PID 名前空間）", `tr '
     },
   );
 }
-// 10-3. cwd（<workDir>/cwd）には書けない（denyWrite。#139）
-{
-  const cwdTouch = join(realWorkDir, "cwd", `shell-check-c-${random}`);
-  createdFiles.push(cwdTouch);
-  await check(
-    "cwd に書けない（touch が失敗し host にできない）",
-    `touch ${quote(cwdTouch)}; echo "__rc=$?"`,
-    ({ text }) => {
-      const codes = exitCodes(text);
-      return codes.length === 1 && codes[0] !== 0 && !existsSync(cwdTouch) ? true : "cwd に書けた";
-    },
-  );
-}
-
 // 11. I1: & で残したプロセスは、Bash の結果が返った直後に残っていない
 {
   const item = "I1: `sleep 300 & echo started` の結果が返った直後に sleep・bwrap が残っていない";

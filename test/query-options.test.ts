@@ -279,7 +279,7 @@ test("buildQueryOptions: シェルが有効なら Bash を末尾に足して 7 �
       ],
       allowRead: [workDir, join(root, "node", "v24")],
       allowWrite: [join(workDir, "projects"), join(workDir, ".cache"), join(workDir, ".tmp")],
-      denyWrite: [join(workDir, "cwd")],
+      denyWrite: [],
     },
     credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] },
   });

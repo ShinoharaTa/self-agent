@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { McpSdkServerConfigWithInstance, Options, SandboxSettings } from "@anthropic-ai/claude-agent-sdk";
 import type { Config } from "../config.ts";
-import { WORK_CACHE_DIR_NAME, WORK_TMP_DIR_NAME } from "./disk.ts";
+import { WORK_CACHE_DIR_NAME, WORK_CWD_DIR_NAME, WORK_TMP_DIR_NAME } from "./disk.ts";
 import { resolveRealPath } from "./file-access.ts";
 import {
   nodeVersionDir,
@@ -139,9 +139,6 @@ export const SANDBOX_DENY_READ_SYSTEM: readonly string[] = [
 /** 作業ジョブの作業場所（`<workDir>/jobs`。docs/plan/coding-jobs.md §4.1）。セッションの sandbox からは読ませない */
 export const JOBS_DIR_NAME = "jobs";
 
-/** CLI の cwd（`<workDir>/cwd`。空の専用ディレクトリで、sandbox からは読み取り専用。#139） */
-export const WORK_CWD_DIR_NAME = "cwd";
-
 /** sandbox が書ける workDir の中の場所（allowWrite）。無いと CLI が書き込み先から外すので、run の前に作る（ensureSandboxWriteDirs） */
 const SANDBOX_WRITE_DIR_NAMES: readonly string[] = ["projects", WORK_CACHE_DIR_NAME, WORK_TMP_DIR_NAME];
 
@@ -161,8 +158,10 @@ export function sandboxSettings(places: SandboxPlaces): SandboxSettings {
       denyRead: [...SANDBOX_DENY_READ_SYSTEM, ...sandboxSecretPlaces(places).map(realPath), join(workDir, JOBS_DIR_NAME)],
       allowRead: sandboxReadablePlaces(places).map(realPath),
       allowWrite: SANDBOX_WRITE_DIR_NAMES.map((name) => join(workDir, name)),
-      // cwd は CLI の既定で書けるので denyWrite で読み取り専用にする（denyWrite が書き込み先を覆うと CLI はその場所を読み取り専用で bind する）。#139
-      denyWrite: [join(workDir, WORK_CWD_DIR_NAME)],
+      // cwd（`<workDir>/cwd`）は CLI の既定で書ける。denyWrite で読み取り専用にすると bwrap が保護パスの空ファイル（`<cwd>/.claude/settings.json` など）を
+      // 作れず全コマンドが失敗するので（#141）、cwd は書ける空の専用ディレクトリのままにし、中身は scheduler の掃除（disk.ts の pruneWorkDir）で毎 tick 消す。
+      // workDir の直下は allowWrite に無いので書けない
+      denyWrite: [],
     },
     credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] },
   };
@@ -188,7 +187,7 @@ export function ensureSandboxWriteDirs(workDir: string): void {
 
 /**
  * CLI の cwd（`<realpath(workDir)>/cwd`）を作る（700）。既にあれば何もしない。symlink かディレクトリでなければ投げる
- * （denyWrite が symlink の先に向かないように）。作ったか既にあるパスを返す
+ * （allowWrite・cwd が symlink の先に向かないように）。作ったか既にあるパスを返す
  */
 export function ensureCwdDir(workDir: string): string {
   const path = join(realPath(workDir), WORK_CWD_DIR_NAME);
@@ -263,7 +262,7 @@ export function buildQueryOptions(
       snapshot: false,
     },
     settingSources: [],
-    // cwd は <workDir>/cwd（空の専用ディレクトリ。sandbox からは読み取り専用。記録の場所は childEnv の CLAUDE_CODE_PROJECT_DIR_NAME で今までの名前に固定。#139）
+    // cwd は <workDir>/cwd（書ける空の専用ディレクトリ。中身は tick ごとに消す。記録の場所は childEnv の CLAUDE_CODE_PROJECT_DIR_NAME で今までの名前に固定。#139）
     cwd: join(cfg.workDir, WORK_CWD_DIR_NAME),
     // 組み込みツールは Web の 2 つとファイル操作の 4 つ（シェルが有効ならその後に Bash）。キャッシュのため順序も固定。
     // WebFetch の URL とファイル操作のパス、Bash を使える場面は sdk-runner の PreToolUse の hook で絞る。
