@@ -33,11 +33,12 @@
 - SDK の `Options.tools` は「`[]` で組み込みツールをすべて無効にする」と明記。`mcpServers` は省略可。`permissionMode: "dontAsk"` は許可に無いものを拒否する。
 - `usage_log` に `kind`・`persona`・`engine` の列がある。`channel_sessions`・`channel_seeds` の key は文字列。DB の user_version は 22。
 - `inbox-rotate.ts` は guild_settings・persona_channels・inbox_summaries と LLM の要約のターンに依存する。`scheduler.ts`・`reminders.ts`・`shell-state.ts`・`persona-status.ts`・`github/poller.ts` はどれも `cfg.allowedGuildIds` か、オーナーのデータの行を回す。
+- `IncomingMessage`（gateway.ts）に「メンションされたか」「返信先」の項目は無い（`toIncoming` は id・channelId・guildId・author・content・添付だけ）。
 - devlog の記録（`DevLogRecord`）は guildId・channelId・prompt（切らない）を含む。`SdkAgentRunner` は devLog を渡した run すべてを記録する。
 
 推測・未確認:
 - 同梱 CLI 2.1.286 で `CLAUDE_CODE_OAUTH_TOKEN` と `ANTHROPIC_API_KEY` の両方が env にあるときの優先順位。ゲストの子には API キーだけ、オーナーの子には OAuth だけを渡すので問題にならないはずだが、受け入れで `apiKeySource` を見て確かめる。
-- Discord は Bot をメンションした発言と Bot への返信の本文を、MessageContent の特権 intent 無しでも渡す（公式文書の記載。今回は確かめていない）。
+- Discord が MessageContent の特権 intent 無しでも本文を渡す例外は、アプリ自身の発言・DM・アプリがメンションされた発言・コンテキストメニューの対象の 4 つだけで、**Bot への返信は含まれない**（公式文書）。→ ゲスト Bot も既存と同じ intents（Guilds・GuildMessages・MessageContent）で動かし、Developer Portal で MessageContent を有効にする（10,000 サーバー未満なら審査は不要）。intents を変える案は採らない。
 - `tools: []` のとき CLI がシステムプロンプトにツールの説明を一切入れないか。実測する。
 - `claude-opus-5-5` が CLI 2.1.286 と API キーで通るか。起動時の 1 ターンで分かる。
 
@@ -68,11 +69,19 @@
 | 0-b | `settings.apiKeyHelper`（キーを出すスクリプト）をゲストの Options に付ける | △ |
 | 0-c | 別プロセス（ゲストの unit の env に API キーだけ） | △ |
 
-- 0-a: `childEnv` を「許可する変数の一覧を引数で変えられる」形にし、ゲストは `OAUTH を除き ANTHROPIC_API_KEY を足した一覧`で作る。env は置き換え方式なので、プロセスの `CLAUDE_CODE_OAUTH_TOKEN` がゲストの子に漏れることは構造上ない。値は config に持たず有無だけ（`guestApiKeyPresent`）。
+- 0-a: `childEnv` を「許可する変数の一覧を引数で変えられる」形にし、ゲストは `OAUTH を除き ANTHROPIC_API_KEY を足した一覧`で作る。env は置き換え方式なので、**env の経路では**プロセスの `CLAUDE_CODE_OAUTH_TOKEN` がゲストの子に漏れない。ただし CLI は `CLAUDE_CONFIG_DIR` の `.credentials.json`（`claude login` の保存先）も拾いうるので、ゲストの子には**別の `CLAUDE_CONFIG_DIR`** を渡す（下の「設定ディレクトリ」）。値は config に持たず有無だけ（`guestApiKeyPresent`）。
 - 0-b: スクリプトを置く場所・権限・実行の経路が増える。
 - 0-c: 環境を増やす（#114 の方針に反する）。
 - **推し: 0-a。** 受け入れで `init` の `apiKeySource` を見て、ゲストの run が `ANTHROPIC_API_KEY`、オーナーの run が `none`（OAuth）であることを確かめる（§7）。
 - 置き場: `~/.config/self-agent/env`（600）に `SELF_AGENT_GUEST_API_KEY=...`。コミット禁止。log に出さない。
+- 設定ディレクトリ（`.credentials.json` の経路を塞ぐ）:
+
+| 案 | 内容 | 最適度 |
+|---|---|---|
+| 0-d | オーナーと同じ `CLAUDE_CONFIG_DIR` を使い、記録だけ `CLAUDE_CODE_PROJECT_DIR_NAME` の `-guest` で分ける。`CLAUDE_CONFIG_DIR` に `.credentials.json` を置かない運用で守る | △ |
+| 0-e | **ゲスト用に `CLAUDE_CONFIG_DIR` 自体を分ける（`<claudeConfigDir>-guest`。起動時に 700 で作る）。記録もその下の `projects/<既定の名前>/` に自然に分かれる** | ◎ |
+
+  - **推し: 0-e。** 隔離が単純（ゲストの子はオーナーの設定ディレクトリを一切見ない。`.credentials.json` があっても拾えない）。`settingSources: []` なので settings の共有は要らない。`CLAUDE_CODE_PROJECT_DIR_NAME` は既定と同じ名前のまま（`-guest` を足さないので、`projectDirName` の 64 字の上限（確認）に新たに引っかからない）。今の環境には `.credentials.json` が無い（確認）が、運用の注として「どちらの `CLAUDE_CONFIG_DIR` にも `claude login` しない（`.credentials.json` を置かない）」を GU3 の手順に入れる。
 - API キーが無効・残高切れのときの返事は失敗の文面（§6）。`SDKAssistantMessageError` の `authentication_failed`・`billing_error` が取れれば log を「ゲスト: 認証/請求の失敗」と分け、/setup 済みのサーバーの #system に 1 回（変わったときだけ）知らせる（GU3）。
 - `apiKeySource` が期待と違う run（ゲストで `none`、オーナーで `ANTHROPIC_API_KEY`）が来たら、**その run を失敗として扱い log に出す**（fail-closed。GU2 の runner で `init` を見る）。
 
@@ -110,7 +119,7 @@
 - **決定: 2-b。** 権限の判定は既存の interactions.ts と同じ「`userId === ownerUserId`」だけ（ゲストの interaction handler で）。オーナー以外には「オーナー専用です」（本人にだけ）。Manage Guild の判定・`memberPermissions`・`defaultMemberPermissions` は作らない。
 - オーナーがいないサーバーでは有効化できない（ゲストのサーバーに招かれる前提）。
 
-**fail-closed の規則（必ず全部）**: ゲストのターンが動くのは、(1) 発言の guildId が `SELF_AGENT_GUEST_GUILD_IDS` にあり、(2) `guest_channels` にその (guild_id, channel_id) の有効な行があり、(3) ゲスト Bot の Gateway から届いた発言で、(4) 発言者が Bot・Webhook でない、(5) ゲスト Bot へのメンションか返信、のすべてを満たすときだけ。env から外したサーバーの行は（残っていても）使わない。行の無いチャンネルは env にあっても答えない。
+**fail-closed の規則（必ず全部）**: ゲストのターンが動くのは、(1) 発言の guildId が `SELF_AGENT_GUEST_GUILD_IDS` にあり、(2) `guest_channels` にその (guild_id, channel_id) の有効な行があり、(3) ゲスト Bot の Gateway から届いた発言で、(4) 発言者が Bot・Webhook でない、(5) ゲスト Bot へのメンション（`mentionsMe`）か、ゲスト Bot の発言への返信（`replyToAuthorId` がゲスト Bot の ID）、のすべてを満たすときだけ。env から外したサーバーの行は（残っていても）使わない。行の無いチャンネルは env にあっても答えない。
 
 無効化・再有効化・外されたとき:
 - `/guest off`: その行に `disabled_at`・`disabled_reason='command'`（物理削除しない）。`/guest on` は無効な行を開き直す（SDK セッションは捨てる）。
@@ -127,13 +136,13 @@
 | 3-b | 別の `guest-runner.ts`（`query()` を使う 2 つ目のファイル） | △ |
 | 3-c | **`SdkAgentRunner` のコンストラクタに「Options・hooks・子の env の組み立て方」を注入できるようにし、既定は今のまま。ゲストは `buildGuestQueryOptions` + 全拒否の hook + API キーの env を注入** | ◎ |
 
-- **推し: 3-c。** 既定の runner の Options は 1 バイトも変わらない（既存のテストで固定）。「query() は sdk-runner.ts だけ」を保つ。
+- **推し: 3-c。** 既定の runner の Options は 1 バイトも変わらない（既存のテストで固定）。「query() は sdk-runner.ts だけ」を保つ。今は必須の `createMcpServer`・`files`（ファイル・Bash の hook の依存）は省略できる形にし、ゲストでは渡さない（MCP サーバーを作らず、ファイル・Bash・WebFetch の hook も作らない。全拒否の hook だけ）。
 
 `buildGuestQueryOptions`（全 run で同じ値。プロンプトキャッシュの規則を守る）:
 - `model: SELF_AGENT_GUEST_MODEL`（既定 `claude-opus-5-5`）、`effort: SELF_AGENT_GUEST_EFFORT`（既定 `low`）
 - `systemPrompt: { type: "custom", prompt: GUEST_SYSTEM_PROMPT, snapshot: false }`
 - `tools: []`、`allowedTools: []`、`mcpServers` は入れない、`strictMcpConfig: true`、`settingSources: []`、`permissionMode: "dontAsk"`
-- `cwd: <workDir>/cwd`、`env: childEnv(..., guestAllowlist)`（§3.0。`CLAUDE_CODE_OAUTH_TOKEN` なし・`ANTHROPIC_API_KEY` あり。shell は渡さない）。記録の場所は `CLAUDE_CODE_PROJECT_DIR_NAME` を `<既定の名前>-guest` にして、オーナーの会話の記録と別のディレクトリに置く
+- `cwd: <workDir>/cwd`（オーナーと共用。scheduler が tick ごとに中身を消すが、ツールが無いので消されても困らない前提）、`env: childEnv(..., guestAllowlist)`（§3.0。`CLAUDE_CODE_OAUTH_TOKEN` なし・`ANTHROPIC_API_KEY` あり・`CLAUDE_CONFIG_DIR` は `<claudeConfigDir>-guest`。shell は渡さない）。記録は `<claudeConfigDir>-guest/projects/<既定の名前>/` に分かれる（`CLAUDE_CODE_PROJECT_DIR_NAME` は既定と同じ）
 - `maxTurns: 1`（保険）
 - hooks: `PreToolUse` に **matcher なし（全ツール）の拒否**（理由「このモードではツールを使えません」。log は「ゲスト: ツールの呼び出しを拒否しました（<ツール名>）」）+ ツール呼び出しの記録。ファイル・Bash・WebFetch の guard は入れない（全拒否で覆う）
 - `sandbox` は付けない
@@ -158,7 +167,7 @@
 - **推し: 4-a。** key は `guest:<channelId>`（既存の `SdkSessionStore`。オーナー側の channelId と混ざらない）。ヘッダの表示名で相手を区別する（決定: 表示名を渡す）。
 - 捨てる条件（どれか 1 つ。inbox-rotate は流用しない）: ターン数が `SELF_AGENT_GUEST_SESSION_MAX_TURNS`（既定 30）/ 直近の成功したターンの `contextTokens` が `SELF_AGENT_GUEST_SESSION_MAX_INPUT_TOKENS`（既定 60000）超 / 作ってから 24 時間 / `/guest off` → `on`。判定はターンの前。seed なし。チャンネルに知らせない。
 - resume の失敗（`RESUME_FAILURE_PATTERN` か連続失敗）も捨てて新しいセッションで 1 回やり直す。
-- **捨てた SDK セッションの記録ファイル（`<CLAUDE_CONFIG_DIR>/projects/<name>-guest/*.jsonl`）は消さない**（決定。オーナー側と同じ運用）。
+- **捨てた SDK セッションの記録ファイル（`<claudeConfigDir>-guest/projects/<name>/*.jsonl`）は消さない**（決定。オーナー側と同じ運用）。
 - 画像・添付は受け取らない。
 
 ターンの prompt: `[2026-10-23(金) 09:12 JST #guest 発言者: <表示名>]\n<本文（メンションの `<@BotID>` を除いた残り）>`。表示名はサーバーのニックネーム → グローバル名 → ユーザー名。`#guest` は固定の論理名。
@@ -171,7 +180,7 @@
 | 5-b | **ゲスト Bot をメンションした発言か、ゲスト Bot の発言への返信のときだけ答える** | ◎（決定） |
 | 5-c | `/guest on mode:<mention|all>` で選ぶ | ○ |
 
-- **決定: 5-b。** MessageContent の特権 intent 無しで動かせる見込み（§1 の未確認）。
+- **決定: 5-b。** 返信の本文は MessageContent intent 無しでは届かない（§1）ので、ゲスト Bot も MessageContent を有効にする。メンション・返信の判定は IncomingMessage に足す項目（§8 GU1）で行う。
 
 上限（超えたら本文で断る）:
 
@@ -194,7 +203,7 @@
 - AI であることの開示（Usage Policy。オーナー確認）: システムプロンプト（§3.3）と `/guest on` の知らせ（§6）の両方に入れる。
 - 出力: 既存の `ALLOWED_MENTIONS`（`parse: []`）で @everyone・@here・ロール・ユーザーは鳴らない（返信の相手だけ）。本文は加工しない。2,000 字で分割。
 - log（console）: サーバー ID まで。チャンネル ID・ユーザー ID・本文・表示名・API キーは出さない。前置きは `guest:`。
-- usage_log: `kind: "guest"`、`key: "guest:<channelId>"`、`persona: "guest"`、`engine: "claude"`。/usage は人格の後に「ゲスト」の行。
+- usage_log: `kind: "guest"`、`key: "guest:<channelId>"`、`persona: "guest"`、`engine: "claude"`。/usage は人格の後に「ゲスト」の行。**既存のブロックからゲストの行を除く**: `UsageStore.summarize(since, persona)` は persona 省略時に全行を合算し、人格が無い構成では /usage が persona 無しで呼ぶ（src/app/commands/usage.ts。確認）ので、人格なしのときは `persona = 'default'` で絞るように変える（GU2）。
 - devlog: **ゲストの run は記録しない**（決定。ゲストの runner に devLog を渡さない）。
 - 子プロセスの env は許可方式のまま。ゲストの子に Discord のトークン・OAuth は渡さず、オーナーの子に API キーは渡さない（§3.0）。
 - ゲストの層から DB に書くのは `guest_channels`・`guest_turns`・`channel_sessions`（`guest:`）・`usage_log` だけ。tasks・memories・kb・reminders・projects・sessions には触らない（ゲストの handler にそれらのストアを渡さない）。
@@ -207,12 +216,14 @@
 | ボタン・セレクト | 届かない | ボタンはそれを送ったアプリに届く。ゲスト Bot は `/guest` の応答以外にコンポーネントを送らない |
 | access.ts・handler.ts・turn.ts | 変更なし | ゲストの発言はゲスト Bot の Gateway からゲストの handler にだけ届く |
 | PersonaRouter | 変更なし。ゲストは人格ではない | 人格にすると `ownerOf` の fallback、`admin` での #system・カテゴリ操作、共有ツール・記憶・inbox-rotate・persona_channels・/new の選択肢・/usage の列挙がゲストのサーバーに向く |
-| scheduler・reminders・inbox-rotate・shell-state・persona-status・github の #system | 触らない | どれも `cfg.allowedGuildIds` かオーナーの DB の行を回す |
+| scheduler・reminders・inbox-rotate・shell-state・persona-status・github の #system | Discord のゲストのサーバーには触らない（scheduler には DB の `guest_turns` の古い行の削除だけ足す） | どれも `cfg.allowedGuildIds` かオーナーの DB の行を回す |
 | 停止処理 | ゲストのキューを待ってゲスト Bot も止める | shutdown.ts の queues と gateway に足す |
 | 二重起動の lock・DB の移行・控え | 共通 | 同じ DB |
 | #inbox からゲストの状況を聞くツール | 作らない（決定） | 既定のツール集合を変えるとキャッシュが外れる。#system の知らせと /usage で足りる |
 
-### 3.8 論点 8: 段階分け（§8）
+### 3.8 論点 8: 段階分け
+
+§8 を参照。
 
 ---
 
@@ -264,6 +275,7 @@ CREATE TABLE guest_turns (
 | `SELF_AGENT_GUEST_SESSION_MAX_INPUT_TOKENS` | | 60000 | 直近の成功したターンの最後の入力がこれを超えたら捨てる（正の整数） |
 
 - 上の 3 つ（トークン・ID・API キー）は 3 つ揃うか 3 つとも無いか。1 つ・2 つだけは設定エラー（変数名だけ出す）。
+- 人格の id `guest` は予約語にする: `SELF_AGENT_PERSONAS` に `guest` があれば設定エラー（usage_log の persona・devlog の印と重ならないように。今の config は `default` しか弾かない。確認）。
 - `config.ts` に `GuestConfig`（`guest: boolean`、`guestGuildIds`、`guestApiKeyPresent`、…）を足し、`loadConfig` の末尾で `...loadGuestConfig(env, allowedGuildIds)`。
 - 定数: `GUEST_MAX_CHANNELS_PER_GUILD = 5`、`GUEST_MIN_INTERVAL_SEC = 5`、`GUEST_MAX_CONTENT_CHARS = 2000`、`GUEST_MAX_QUEUE = 5`、`GUEST_SESSION_MAX_AGE_HOURS = 24`、`GUEST_TURNS_KEEP_DAYS = 8`、呼び名 `GUEST_BOT_NAME = "しのえもん"`（コードに書く。env にしない）。
 
@@ -298,11 +310,11 @@ CREATE TABLE guest_turns (
 ## 7. 受け入れ条件（テストできる形）
 
 単体（偽 Gateway・偽 Runner・一時 SQLite。`npm test`）:
-- config: トークン・ID・API キーのうち 1 つか 2 つだけ → 設定エラー（変数名）。ID の重なり → 設定エラー。ゲストのトークンが既存のトークンと同じ → 設定エラー。3 つとも無ければ `guest: false` で今のテストが全部そのまま通る。
-- fail-closed: (a) env にあるが行が無い、(b) 行があるが env に無い、(c) 行が無効、(d) 既定の Bot の Gateway から届いた同じ発言、(e) Bot・Webhook の発言、(f) メンションでも返信でもない発言 — のどれも run が呼ばれない。全部満たすときだけ動く。
+- config: トークン・ID・API キーのうち 1 つか 2 つだけ → 設定エラー（変数名）。`SELF_AGENT_PERSONAS` に `guest` → 設定エラー。ID の重なり → 設定エラー。ゲストのトークンが既存のトークンと同じ → 設定エラー。3 つとも無ければ `guest: false` で今のテストが全部そのまま通る。
+- fail-closed: (a) env にあるが行が無い、(b) 行があるが env に無い、(c) 行が無効、(d) 既定の Bot の Gateway から届いた同じ発言、(e) Bot・Webhook の発言、(f) メンションでも返信でもない発言、(g) 他の人の発言への返信（`replyToAuthorId` がゲスト Bot でない） — のどれも run が呼ばれない。全部満たすときだけ動く。
 - `/guest on`: オーナー以外 → 「オーナー専用です」。5 つ目まで通り 6 つ目は断る。`on` → `off` → `on` で SDK セッションが捨てられる。
 - GuildDelete（と起動時の不参加）でそのサーバーの行が `left` / `startup` で無効になり、以後答えない。
-- 認証（§3.0）: ゲストの runner の `Options.env` に `ANTHROPIC_API_KEY` があり `CLAUDE_CODE_OAUTH_TOKEN`・`DISCORD_TOKEN`・`SELF_AGENT_GUEST_DISCORD_TOKEN` が無い。既定の runner の `Options.env` に `ANTHROPIC_API_KEY`・`SELF_AGENT_GUEST_API_KEY` が無い（今の childEnv のテストに 1 つ足す）。偽の query が `init` で `apiKeySource: "none"` を返したらゲストの run を失敗にして log に「ゲスト: 認証の種類が想定と違います」。
+- 認証（§3.0）: ゲストの runner の `Options.env` に `ANTHROPIC_API_KEY` があり `CLAUDE_CODE_OAUTH_TOKEN`・`DISCORD_TOKEN`・`SELF_AGENT_GUEST_DISCORD_TOKEN` が無く、`CLAUDE_CONFIG_DIR` が `<claudeConfigDir>-guest`。既定の runner の `Options.env` に `ANTHROPIC_API_KEY`・`SELF_AGENT_GUEST_API_KEY` が無い（今の childEnv のテストに 1 つ足す）。偽の query が `init` で `apiKeySource: "none"` を返したらゲストの run を失敗にして log に「ゲスト: 認証の種類が想定と違います」。
 - Options（`buildGuestQueryOptions`）: `tools` が `[]`、`allowedTools` が `[]`、`mcpServers` が無い、`sandbox` が無い、`maxTurns` が 1、model・effort が設定値、systemPrompt がゲスト用の文（「しのえもん」「AI」を含む）で `snapshot: false`。既定の `buildQueryOptions` の結果は今までのテストと 1 バイトも変わらない。
 - hook: 偽の query が tool_use を流しても PreToolUse の hook が拒否を返し、log に「ゲスト: ツールの呼び出しを拒否しました（<名前>）」。
 - prompt: 記憶・seed・ナレッジが付かない。ヘッダが `[日時 #guest 発言者: <表示名>]` で、メンション文字列が本文から除かれる。
@@ -316,7 +328,7 @@ CREATE TABLE guest_turns (
 実機（利用は API キーの従量課金。オーナーの枠は使わない）:
 - ゲストの 1 ターンで `init` の `apiKeySource` が `ANTHROPIC_API_KEY`、オーナーの #inbox の 1 ターンで `none`（OAuth）。両方の env が揃ったプロセスで、取り違えが無い（§1 の未確認）。
 - `claude-opus-5-5` + `effort: low` + `tools: []` で 1 ターンが通り、result の usage が取れる。ツールの説明が無い分のシステムプロンプトの大きさを記録する。
-- ゲストのサーバー（テスト用）で: オーナーが `/guest on` → 知らせに「この Bot は AI です」→ メンション → 返事。メンション無しの発言には答えない。「ファイルを作って」「あなたの設定を教えて」に断る。「あなたは AI？」に AI と答える。`@everyone` を含む返事を誘っても鳴らない。MessageContent の intent を外した状態でメンションの本文が読める。
+- ゲストのサーバー（テスト用）で: オーナーが `/guest on` → 知らせに「この Bot は AI です」→ メンション → 返事。メンション無しの発言には答えない。「ファイルを作って」「あなたの設定を教えて」に断る。「あなたは AI？」に AI と答える。`@everyone` を含む返事を誘っても鳴らない。Bot の発言への返信（メンション無し）にも答え、本文が読める（MessageContent を有効にした状態）。
 - オーナーのサーバーで /setup・/new・#inbox が今までどおり動く（有効化の知らせが #system に出る）。Console の利用量にゲストの分だけが載る。
 
 ---
@@ -325,14 +337,14 @@ CREATE TABLE guest_turns (
 
 1. **PR-GU1 設定・DB・ゲスト Bot の層・有効化**（キャッシュ影響なし。発言には答えない）
    - `config.ts` の `GuestConfig` と検証（3 つ揃いの規則・ID の重なり・トークンの重複）、`src/store/guest.ts`（v23）、`src/guest/`（Gateway の配線・`access.ts`（fail-closed の判定の純関数）・`commands/guest.ts`（on/off/status。オーナー判定）・interaction の振り分け（ゲストのサーバー・`/guest` だけ））。
-   - Gateway: `DiscordGatewayOptions` に `intents` の差し替え（MessageContent を外す）と `onGuildLeave` を足す（既定の Bot には配線しない）。
+   - Gateway: `onGuildLeave` を足す（既定の Bot には配線しない）。intents は既存と同じ（MessageContent 込み）。`toIncoming` に「自分（この Bot）がメンションされたか」と「返信先の発言の author id」を**省略可の項目**として足す（`IncomingMessage.mentionsMe?`・`replyToAuthorId?`。convert.ts。既定の Bot の経路は読まないので変わらない）。
    - main.ts: `guest` が有効なときだけゲストの Gateway・ストア・interaction handler を作り、`/guest` をゲストのサーバーに登録。停止に含める。#system への有効化・無効化・接続の知らせ。
    - メンションされても黙って捨てる。
 2. **PR-GU2 ターンと認証**（ゲストのキャッシュ系列が新しくできるだけ。オーナー側に影響なし）
-   - `childEnv` の許可一覧を引数で変えられる形（既定は今のまま。テストで固定）、ゲストの一覧（OAuth なし・`ANTHROPIC_API_KEY` あり）。`buildGuestQueryOptions`・`GUEST_SYSTEM_PROMPT`（しのえもん・AI の明示）・全拒否の hook。`SdkAgentRunner` に Options・hooks・env の組み立て方を注入できる形。`init` の `apiKeySource` の確認（想定と違えば失敗）。ゲストの runner のインスタンス（devLog なし）。
-   - `src/guest/handler.ts`（メンション・返信の判定、本文の整形、上限、専用キュー、SDK セッションの resume と捨てる判定、usage の記録、返信）。
-   - /usage のゲストの行。`guest_turns` の tick での削除（scheduler に 1 行）。
-3. **PR-GU3 運用**: README・README_ja・REQUIREMENTS・CLAUDE.md の更新。手順: Developer Portal（Public Bot オフ・権限・intents）、Claude Console で API キーを発行し、Max の月次 API クレジット（5x $100 / 20x $200）を使うなら Console の org をその Max のアカウントに紐づける、`~/.config/self-agent/env` への置き方。認証・請求の失敗の #system の知らせ。実機の受け入れの記録。
+   - `childEnv` の許可一覧を引数で変えられる形（既定は今のまま。テストで固定）、ゲストの一覧（OAuth なし・`ANTHROPIC_API_KEY` あり）。`buildGuestQueryOptions`・`GUEST_SYSTEM_PROMPT`（しのえもん・AI の明示）・全拒否の hook。`SdkAgentRunner` に Options・hooks・env の組み立て方を注入できる形（`createMcpServer`・`files` を省略可にし、ゲストでは渡さない）。ゲスト用の `CLAUDE_CONFIG_DIR`（`<claudeConfigDir>-guest`）を起動時に作る。`init` の `apiKeySource` の確認（想定と違えば失敗）。ゲストの runner のインスタンス（devLog なし）。
+   - `src/guest/handler.ts`（メンション・返信の判定（GU1 で足した `mentionsMe`・`replyToAuthorId`）、本文の整形、上限、専用キュー、SDK セッションの resume と捨てる判定、usage の記録、返信）。
+   - /usage のゲストの行（既存のブロックは persona `guest` を除く。人格なしのときは `'default'` で絞る）。`guest_turns` の tick での削除（scheduler に 1 行。Discord のゲストのサーバーには触らない）。
+3. **PR-GU3 運用**: README・README_ja・REQUIREMENTS・CLAUDE.md の更新。手順: Developer Portal（Public Bot オフ・権限・intents）、Claude Console で API キーを発行し、Max の月次 API クレジット（5x $100 / 20x $200）を使うなら Console の org をその Max のアカウントに紐づける、`~/.config/self-agent/env` への置き方、どちらの `CLAUDE_CONFIG_DIR` にも `claude login` しない（`.credentials.json` を置かない）こと、Developer Portal で MessageContent intent を有効にすること。認証・請求の失敗の #system の知らせ。実機の受け入れの記録。
 
 順序: GU1 → GU2 → GU3。GU1 と GU2 は並行して作れるが、マージは GU1 → GU2。
 
