@@ -78,7 +78,7 @@ filesystem: {
   allowWrite: [<realpath(workDir)>/projects, <workDir>/.cache, <workDir>/.tmp],
   denyWrite: []
 },
-credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
+credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }, { name: "CLAUDE_CODE_MESSAGING_TOKEN", mode: "deny" }] }  // MESSAGING は CLI がセッション間メッセージ用に入れる token（#145）
 ```
 - allowRead は workDir そのものでなく、その下の 4 つ（CLI 2.1.286 では親を allowRead にすると cwd が読み取り専用になり bwrap が起動できない。workDir が `~` など denyRead の下にあるとき（既定の置き場）は直下は bind されず tmpfs の上なので、sandbox の中で作れても host には残らない。`~` の外に置くと直下は OS の既定で読めるが書けない（EROFS）。#143）。
 - denyRead には上の並びに加えて `<realpath(workDir)>/jobs`（作業ジョブの作業場所。docs/plan/coding-jobs.md §4.1 の「セッションからジョブを読めない」ため）を入れる（PR 3）。

@@ -163,7 +163,8 @@ export function sandboxSettings(places: SandboxPlaces): SandboxSettings {
       // workDir の直下は allowWrite に無いので書けない
       denyWrite: [],
     },
-    credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] },
+    // CLAUDE_CODE_MESSAGING_TOKEN は CLI がセッション間メッセージ用に子プロセスへ入れる token。sandbox の中のコマンドには要らないので渡さない（#145）
+    credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }, { name: "CLAUDE_CODE_MESSAGING_TOKEN", mode: "deny" }] },
   };
 }
 

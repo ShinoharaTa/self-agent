@@ -281,7 +281,7 @@ test("buildQueryOptions: シェルが有効なら Bash を末尾に足して 7 �
       allowWrite: [join(workDir, "projects"), join(workDir, ".cache"), join(workDir, ".tmp")],
       denyWrite: [],
     },
-    credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] },
+    credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }, { name: "CLAUDE_CODE_MESSAGING_TOKEN", mode: "deny" }] },
   });
   assert.deepEqual(SANDBOX_ALLOWED_DOMAINS, [
     "github.com",
@@ -395,7 +395,7 @@ test("childEnv: シェルが有効ならプロキシの変数と TMPDIR をホ�
   // buildQueryOptions も同じ env（sandbox の有無によらない）
   assert.deepEqual(buildQueryOptions(shellCfg, mcpServer, false, host).env, env);
   assert.deepEqual(buildQueryOptions(shellCfg, mcpServer, true, host).sandbox?.credentials, {
-    envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }],
+    envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }, { name: "CLAUDE_CODE_MESSAGING_TOKEN", mode: "deny" }],
   });
 });
 
