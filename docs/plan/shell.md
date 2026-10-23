@@ -302,7 +302,7 @@ sudo apt-get remove bubblewrap socat
 - 準備（host 側）: 中身の決まったダミーの秘密のファイル（ランダムな値）を、`~` の直下・dataDir・claudeConfigDir・env ファイルのディレクトリ・リポジトリ（git の管理外のファイル名）に置き、親（shell-check のプロセス）の env にダミーの変数（`SHELL_CHECK_CANARY=<値>`）と、認証情報入りのダミーのプロキシ（`HTTPS_PROXY=http://user:<値>@127.0.0.1:9` など）を入れる。host 側でファイルが読めて中身が合うことを先に確かめる（確かめる対象が実在すること）。終わったら消す。
 - sandbox の中で: それらのファイルが読めない・見えない（`cat` が失敗し、出力にダミーの値が無い）。`env` の出力にダミーの値（変数・プロキシの認証情報）が無い。
 - `cat ~/.config/self-agent/env` が失敗、`ls ~/.ssh ~/.config/gh ~/workspace` と `ls <realpath(dataDir)> <realpath(claudeConfigDir)> <realpath(env ファイルのディレクトリ)> <realpath(リポジトリ)>` が全部無い/空（ホームの外に置いた場合も含む）
-- `[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo set || echo none` が none（値は出さない。#137）、`env | grep -c -i -E 'token|discord'` が 0、ホストのプロキシの変数（認証情報入りのダミー）が入っていない（§2.4）
+- `[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo set || echo none` が none（値は出さない。#137）、`echo "count=$(env | grep -c -i -E 'token|discord')"` が count=0、ホストのプロキシの変数（認証情報入りのダミー）が入っていない（§2.4）
 - `ls /tmp /run/user/<uid> /run /var/log/journal` が無い/空（他のサービスのソケットが見えない）
 - `curl -sS -m 10 https://example.com` が失敗、`curl -sS -m 5 http://127.0.0.1:<SERVE_PORT>/` が失敗
 - `git clone --depth 1 https://github.com/octocat/Hello-World.git <dir>/repos/hello` が成功、`npm view react version` が版を返す
