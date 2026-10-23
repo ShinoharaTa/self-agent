@@ -75,8 +75,12 @@ export function createGuestCommand(deps: GuestCommandDeps): CommandHandler {
           // 開き直したら前の会話は続けない
           sessions.delete(guestSessionKey(channelId));
           log(`guest: チャンネルを有効化しました（guild=${guildId}、${result.active}/${GUEST_MAX_CHANNELS_PER_GUILD}）`);
-          await responder.reply({ text: GUEST_ON_REPLY });
-          await notify(guestEnabledNotice(guildId, result.active));
+          // 応答に失敗しても、DB は変わっているので知らせは出す（応答は 3 秒以内なので知らせより先に）
+          try {
+            await responder.reply({ text: GUEST_ON_REPLY });
+          } finally {
+            await notify(guestEnabledNotice(guildId, result.active));
+          }
           return;
         }
         case "off": {
@@ -86,8 +90,11 @@ export function createGuestCommand(deps: GuestCommandDeps): CommandHandler {
           }
           const active = guest.countActive(guildId);
           log(`guest: チャンネルを無効化しました（guild=${guildId}、${active}/${GUEST_MAX_CHANNELS_PER_GUILD}）`);
-          await responder.reply({ text: GUEST_OFF_REPLY });
-          await notify(guestDisabledNotice(guildId, active));
+          try {
+            await responder.reply({ text: GUEST_OFF_REPLY });
+          } finally {
+            await notify(guestDisabledNotice(guildId, active));
+          }
           return;
         }
         case "status": {

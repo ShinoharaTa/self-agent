@@ -103,10 +103,23 @@ export function startGuest(deps: StartGuestDeps): GuestLayer {
   };
 
   const start = async (): Promise<void> => {
+    const login = gateway.start(handlers);
+    // ログインが終わったか（時間切れと、ログインの失敗を分ける）
+    let loginSettled = false;
+    login.then(
+      () => {
+        loginSettled = true;
+      },
+      () => {
+        loginSettled = true;
+      },
+    );
     try {
-      await withTimeout(gateway.start(handlers), deps.loginTimeoutMs ?? PERSONA_LOGIN_TIMEOUT_MS);
+      await withTimeout(login, deps.loginTimeoutMs ?? PERSONA_LOGIN_TIMEOUT_MS);
     } catch (error) {
       log(`guest: ゲスト Bot に接続できませんでした: ${describeError(error)}`);
+      // 時間切れの後にログインできても、参加の確かめと /guest の登録はやり直さない
+      if (!loginSettled) log("guest: ログインが時間切れになったため、参加の確かめと /guest の登録を行っていません");
       return;
     }
     // 止まっていた間に外されたサーバー: 参加していなければ、そのサーバーの有効なチャンネルを無効にする

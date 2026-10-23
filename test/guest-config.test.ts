@@ -90,6 +90,8 @@ test("ゲスト: 3 つとも無ければ無効で、任意の変数は読まな�
 test("ゲスト: サーバー ID の形が違う・SELF_AGENT_ALLOWED_GUILD_IDS と重なるなら設定エラー", () => {
   assert.throws(() => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: "20a" }), /SELF_AGENT_GUEST_GUILD_IDS/);
   assert.throws(() => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: "," }), /SELF_AGENT_GUEST_GUILD_IDS/);
+  // 空白だけは無いものとする（ほかの 2 つがあるので足りない変数として設定エラー）
+  assert.throws(() => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: " " }), /SELF_AGENT_GUEST_GUILD_IDS/);
   assert.throws(
     () => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: "200,100" }),
     /SELF_AGENT_GUEST_GUILD_IDS と SELF_AGENT_ALLOWED_GUILD_IDS/,
