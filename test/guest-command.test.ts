@@ -1,0 +1,364 @@
+import { test, type TestContext } from "node:test";
+import assert from "node:assert/strict";
+import { OWNER_ONLY_REPLY, INTERACTION_FAILURE_REPLY } from "../src/app/interactions.ts";
+import { RESTARTING_REPLY } from "../src/app/shutdown.ts";
+import type { CommandDef, GatewayHandlers, Interaction } from "../src/discord/gateway.ts";
+import {
+  createGuestCommand,
+  GUEST_ALREADY_ENABLED_REPLY,
+  GUEST_LIMIT_REPLY,
+  GUEST_NOT_ENABLED_REPLY,
+  GUEST_OFF_REPLY,
+  GUEST_ON_REPLY,
+} from "../src/guest/commands/guest.ts";
+import { startGuest, type GuestGateway } from "../src/guest/index.ts";
+import { createGuestInteractionHandler } from "../src/guest/interactions.ts";
+import { createGuestNotifier } from "../src/guest/notify.ts";
+import { GuestStore } from "../src/store/guest.ts";
+import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
+import { tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { FakeResponder } from "./helpers/responder.ts";
+
+const OWNER = "owner-1";
+const OWNER_GUILD = "g-owner";
+const GUEST_GUILD = "g-guest";
+/** 2026-10-23 09:00 JST */
+const NOW = new Date("2026-10-23T00:00:00.000Z");
+
+const CFG = {
+  allowedGuildIds: [OWNER_GUILD],
+  ownerUserId: OWNER,
+  timeZone: "Asia/Tokyo",
+  guestGuildIds: [GUEST_GUILD],
+  guestTokenEnv: "SELF_AGENT_GUEST_DISCORD_TOKEN",
+  guestTurnsPerDay: 300,
+};
+
+function setup(t: TestContext) {
+  const db = tempDb(t);
+  const now = () => NOW;
+  const guest = new GuestStore(db, now);
+  const sessions = new SdkSessionStore(db, now);
+  const guildSettings = new GuildSettingsStore(db, now);
+  guildSettings.setChannel(OWNER_GUILD, "systemChannelId", "system-1");
+  const admin = new FakeGateway({ allow: ["sendMessage"] });
+  const logs: string[] = [];
+  const log = (message: string) => logs.push(message);
+  const notify = createGuestNotifier({ cfg: CFG, guildSettings, gateway: admin, log });
+  const command = createGuestCommand({ cfg: CFG, guest, sessions, notify, now, log });
+  const handle = createGuestInteractionHandler({ cfg: CFG, command, log });
+  const run = async (interaction: Interaction): Promise<FakeResponder> => {
+    const responder = new FakeResponder();
+    await handle(interaction, responder);
+    return responder;
+  };
+  return { guest, sessions, guildSettings, admin, logs, run };
+}
+
+function guestCommand(subcommand: string, overrides: Partial<Interaction> = {}): Interaction {
+  return {
+    kind: "command",
+    name: "guest",
+    subcommand,
+    options: {},
+    guildId: GUEST_GUILD,
+    channelId: "c1",
+    userId: OWNER,
+    createdAt: NOW,
+    ...overrides,
+  } as Interaction;
+}
+
+/** ログに ID・本文が出ていない（サーバー ID は出してよい） */
+function assertNoIds(logs: readonly string[]): void {
+  for (const line of logs) {
+    for (const secret of ["c1", "c2", "c6", OWNER, "user-2", "system-1"]) {
+      assert.ok(!line.includes(secret), `${secret} が log に出ています: ${line}`);
+    }
+  }
+}
+
+test("/guest: オーナー以外には本人にだけ「オーナー専用です」で、何も変えない", async (t) => {
+  const { guest, admin, run } = setup(t);
+  for (const subcommand of ["on", "off", "status"]) {
+    const responder = await run(guestCommand(subcommand, { userId: "user-2" }));
+    assert.deepEqual(responder.calls, [{ method: "reply", message: { text: OWNER_ONLY_REPLY, ephemeral: true } }]);
+  }
+  assert.equal(guest.get("c1"), undefined);
+  assert.deepEqual(admin.posts, []);
+});
+
+test("/guest: ゲストのサーバーでない（オーナーのサーバー・env に無いサーバー・DM）なら応答せず、サーバー ID だけを log に 1 行", async (t) => {
+  const { guest, logs, run } = setup(t);
+  for (const guildId of [OWNER_GUILD, "g-unknown", null]) {
+    const responder = await run(guestCommand("on", { guildId }));
+    assert.deepEqual(responder.calls, []);
+  }
+  assert.equal(guest.get("c1"), undefined);
+  assert.equal(logs.length, 3);
+  assert.match(logs[0]!, /guild=g-owner/);
+  assert.match(logs[1]!, /guild=g-unknown/);
+  assertNoIds(logs);
+});
+
+test("/guest: ボタン・ほかのコマンドは応答しない", async (t) => {
+  const { run } = setup(t);
+  const button = await run({
+    kind: "button",
+    customId: "close:start:c1",
+    guildId: GUEST_GUILD,
+    channelId: "c1",
+    userId: OWNER,
+    createdAt: NOW,
+  });
+  assert.deepEqual(button.calls, []);
+  const other = await run(guestCommand("on", { name: "setup" } as Partial<Interaction>));
+  assert.deepEqual(other.calls, []);
+});
+
+test("/guest on: 公開で AI の明示付きの知らせを返し、#system に知らせ、SDK セッションを捨てる。既に有効・上限は本人にだけ", async (t) => {
+  const { guest, sessions, admin, logs, run } = setup(t);
+  sessions.set("guest:c1", "old-session");
+  const on = await run(guestCommand("on"));
+  assert.deepEqual(on.calls, [{ method: "reply", message: { text: GUEST_ON_REPLY } }]);
+  assert.match(GUEST_ON_REPLY, /しのえもん/);
+  assert.match(GUEST_ON_REPLY, /この Bot は AI です/);
+  assert.equal(guest.get("c1")?.disabledAt, null);
+  assert.equal(sessions.get("guest:c1"), undefined);
+  assert.deepEqual(
+    admin.posts.map((post) => [post.channelId, post.message.text]),
+    [["system-1", "ゲスト: サーバー g-guest でチャンネルを有効化しました（1/5）"]],
+  );
+
+  const again = await run(guestCommand("on"));
+  assert.deepEqual(again.calls, [{ method: "reply", message: { text: GUEST_ALREADY_ENABLED_REPLY, ephemeral: true } }]);
+
+  for (const channelId of ["c2", "c3", "c4", "c5"]) await run(guestCommand("on", { channelId }));
+  assert.equal(guest.countActive(GUEST_GUILD), 5);
+  const sixth = await run(guestCommand("on", { channelId: "c6" }));
+  assert.deepEqual(sixth.calls, [{ method: "reply", message: { text: GUEST_LIMIT_REPLY, ephemeral: true } }]);
+  assert.equal(GUEST_LIMIT_REPLY, "このサーバーで有効にできるチャンネルは 5 つまでです");
+  assert.equal(guest.get("c6"), undefined);
+  assert.equal(admin.posts.length, 5);
+  assertNoIds(logs);
+});
+
+test("/guest off: 公開で返し #system に知らせる。有効でなければ本人にだけ。on → off → on で SDK セッションが捨てられる", async (t) => {
+  const { guest, sessions, admin, logs, run } = setup(t);
+  const notEnabled = await run(guestCommand("off"));
+  assert.deepEqual(notEnabled.calls, [{ method: "reply", message: { text: GUEST_NOT_ENABLED_REPLY, ephemeral: true } }]);
+
+  await run(guestCommand("on"));
+  await run(guestCommand("on", { channelId: "c2" }));
+  sessions.set("guest:c1", "session-1");
+  const off = await run(guestCommand("off"));
+  assert.deepEqual(off.calls, [{ method: "reply", message: { text: GUEST_OFF_REPLY } }]);
+  assert.equal(guest.get("c1")?.disabledReason, "command");
+  assert.equal(admin.posts.at(-1)?.message.text, "ゲスト: サーバー g-guest でチャンネルを無効化しました（1/5）");
+
+  const offAgain = await run(guestCommand("off"));
+  assert.deepEqual(offAgain.calls, [{ method: "reply", message: { text: GUEST_NOT_ENABLED_REPLY, ephemeral: true } }]);
+
+  await run(guestCommand("on"));
+  assert.equal(guest.get("c1")?.disabledAt, null);
+  assert.equal(sessions.get("guest:c1"), undefined);
+  assertNoIds(logs);
+});
+
+test("/guest status: 有効なチャンネルと今日（SELF_AGENT_TZ）のサーバーの残り回数を本人にだけ", async (t) => {
+  const { guest, run } = setup(t);
+  const empty = await run(guestCommand("status"));
+  assert.deepEqual(empty.calls, [
+    { method: "reply", message: { text: "有効なチャンネルはありません\n今日の残り回数: 300/300", ephemeral: true } },
+  ]);
+
+  await run(guestCommand("on"));
+  await run(guestCommand("on", { channelId: "c2" }));
+  // 今日（JST の 2026-10-23）の分だけ数える
+  guest.recordTurn(GUEST_GUILD, "user-2", "2026-10-23");
+  guest.recordTurn(GUEST_GUILD, "user-3", "2026-10-23");
+  guest.recordTurn(GUEST_GUILD, "user-2", "2026-10-22");
+  guest.recordTurn("g-other", "user-2", "2026-10-23");
+  const status = await run(guestCommand("status"));
+  assert.deepEqual(status.calls, [
+    {
+      method: "reply",
+      message: { text: "有効なチャンネル（2/5）:\n<#c1>\n<#c2>\n今日の残り回数: 298/300", ephemeral: true },
+    },
+  ]);
+});
+
+test("/guest: #system への知らせに失敗しても応答は変わらず、log だけ。処理の失敗は本人にだけ「処理に失敗しました」", async (t) => {
+  const { guest, admin, logs, run } = setup(t);
+  admin.beforeSendMessage = () => {
+    throw new Error("Missing Access");
+  };
+  const on = await run(guestCommand("on"));
+  assert.deepEqual(on.calls, [{ method: "reply", message: { text: GUEST_ON_REPLY } }]);
+  assert.ok(logs.some((line) => line.includes("#system への知らせの投稿に失敗しました（guild=g-owner）")));
+
+  const unknown = await run(guestCommand("other"));
+  assert.deepEqual(unknown.calls, [{ method: "reply", message: { text: INTERACTION_FAILURE_REPLY, ephemeral: true } }]);
+  assert.equal(guest.countActive(GUEST_GUILD), 1);
+  assertNoIds(logs);
+});
+
+/** ゲストの層が使う Gateway の偽物。start で handlers を受け取る */
+class FakeGuestGateway implements GuestGateway {
+  handlers: GatewayHandlers | undefined;
+  joined = new Set<string>();
+  registered: Array<{ guildId: string; defs: readonly CommandDef[] }> = [];
+  stopped = 0;
+  startError: Error | undefined;
+  async start(handlers: GatewayHandlers): Promise<void> {
+    if (this.startError !== undefined) throw this.startError;
+    this.handlers = handlers;
+  }
+  async stop(): Promise<void> {
+    this.stopped++;
+  }
+  isInGuild(guildId: string): boolean {
+    return this.joined.has(guildId);
+  }
+  async registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void> {
+    this.registered.push({ guildId, defs });
+  }
+}
+
+function startWith(t: TestContext, cfg: typeof CFG = CFG) {
+  const { guest, sessions, guildSettings, admin, logs } = setup(t);
+  const gateway = new FakeGuestGateway();
+  let onGuildLeave: ((guildId: string) => void) | undefined;
+  let stopping = false;
+  const layer = (start: (fake: FakeGuestGateway) => void = () => {}) => {
+    start(gateway);
+    return startGuest({
+      cfg,
+      guest,
+      sessions,
+      guildSettings,
+      adminGateway: admin,
+      stopping: () => stopping,
+      now: () => NOW,
+      log: (message) => logs.push(message),
+      createGateway: (callback) => {
+        onGuildLeave = callback;
+        return gateway;
+      },
+    });
+  };
+  return {
+    guest,
+    admin,
+    logs,
+    gateway,
+    layer,
+    leave: (guildId: string) => onGuildLeave?.(guildId),
+    setStopping: () => {
+      stopping = true;
+    },
+  };
+}
+
+test("startGuest: 参加しているゲストのサーバーにだけ /guest を登録し、参加していないサーバーの有効な行は startup で無効にして #system に知らせる", async (t) => {
+  const cfg = { ...CFG, guestGuildIds: [GUEST_GUILD, "g-left"] };
+  const { guest, admin, logs, gateway, layer } = startWith(t, cfg);
+  guest.enable("g-left", "c-left");
+  guest.enable(GUEST_GUILD, "c1");
+  const started = layer((fake) => fake.joined.add(GUEST_GUILD));
+  await started.ready;
+
+  assert.deepEqual(
+    gateway.registered.map((entry) => [entry.guildId, entry.defs.map((def) => def.name)]),
+    [[GUEST_GUILD, ["guest"]]],
+  );
+  assert.deepEqual(gateway.registered[0]!.defs[0]!.subcommands?.map((sub) => sub.name), ["on", "off", "status"]);
+  assert.equal(guest.get("c-left")?.disabledReason, "startup");
+  assert.equal(guest.get("c1")?.disabledAt, null);
+  assert.deepEqual(admin.posts.map((post) => post.message.text), [
+    "ゲスト: サーバー g-left に参加していないため、有効なチャンネル 1 件を無効にしました",
+  ]);
+  assert.ok(logs.every((line) => !line.includes("c-left") && !line.includes("c1")));
+});
+
+test("startGuest: 発言は受付判定にかかわらず黙って捨てる（返信も log も無い）", async (t) => {
+  const { guest, admin, logs, gateway, layer } = startWith(t);
+  guest.enable(GUEST_GUILD, "c1");
+  const started = layer((fake) => fake.joined.add(GUEST_GUILD));
+  await started.ready;
+  const before = logs.length;
+  gateway.handlers!.onMessage({
+    id: "m1",
+    channelId: "c1",
+    guildId: GUEST_GUILD,
+    authorId: "user-2",
+    authorIsBot: false,
+    isWebhook: false,
+    content: "<@bot> こんにちは",
+    createdAt: NOW,
+    persona: "guest",
+    mentionsMe: true,
+  });
+  await started.idle();
+  assert.equal(logs.length, before);
+  assert.deepEqual(admin.posts, []);
+});
+
+test("startGuest: サーバーから外されたら、そのサーバーの有効な行を left で無効にして #system に知らせる（ゲストのサーバーでなければ何もしない）", async (t) => {
+  const { guest, admin, logs, layer, leave } = startWith(t);
+  guest.enable(GUEST_GUILD, "c1");
+  guest.enable(GUEST_GUILD, "c2");
+  const started = layer((fake) => fake.joined.add(GUEST_GUILD));
+  await started.ready;
+
+  leave("g-unknown");
+  leave(GUEST_GUILD);
+  await started.idle();
+  assert.equal(guest.get("c1")?.disabledReason, "left");
+  assert.equal(guest.get("c2")?.disabledReason, "left");
+  assert.equal(guest.countActive(GUEST_GUILD), 0);
+  assert.deepEqual(admin.posts.map((post) => post.message.text), [
+    "ゲスト: サーバー g-guest から外されました（有効なチャンネル 2 件を無効にしました）",
+  ]);
+  assert.ok(logs.some((line) => line.includes("guild=g-unknown")));
+  assertNoIds(logs);
+});
+
+test("startGuest: /guest はゲストの Gateway から受けて処理し、停止を始めた後はゲストのサーバーにだけ「再起動中です」", async (t) => {
+  const { guest, gateway, layer, setStopping } = startWith(t);
+  const started = layer((fake) => fake.joined.add(GUEST_GUILD));
+  await started.ready;
+
+  const on = new FakeResponder();
+  gateway.handlers!.onInteraction(guestCommand("on"), on);
+  await started.idle();
+  assert.deepEqual(on.calls, [{ method: "reply", message: { text: GUEST_ON_REPLY } }]);
+  assert.equal(guest.countActive(GUEST_GUILD), 1);
+
+  setStopping();
+  const off = new FakeResponder();
+  gateway.handlers!.onInteraction(guestCommand("off"), off);
+  const outside = new FakeResponder();
+  gateway.handlers!.onInteraction(guestCommand("off", { guildId: "g-unknown" }), outside);
+  await started.idle();
+  assert.deepEqual(off.calls, [{ method: "reply", message: { text: RESTARTING_REPLY, ephemeral: true } }]);
+  assert.deepEqual(outside.calls, []);
+  assert.equal(guest.countActive(GUEST_GUILD), 1);
+
+  await started.stop();
+  assert.equal(gateway.stopped, 1);
+});
+
+test("startGuest: ログインに失敗しても reject せず log だけで、コマンドの登録も行の無効化もしない", async (t) => {
+  const { guest, logs, gateway, layer } = startWith(t);
+  guest.enable(GUEST_GUILD, "c1");
+  const started = layer((fake) => {
+    fake.startError = new Error("An invalid token was provided.");
+  });
+  await started.ready;
+  assert.ok(logs.some((line) => line.startsWith("guest: ゲスト Bot に接続できませんでした")));
+  assert.deepEqual(gateway.registered, []);
+  assert.equal(guest.get("c1")?.disabledAt, null);
+});

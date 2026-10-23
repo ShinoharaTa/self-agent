@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { normalizeChannelName } from "./discord/channel-name.ts";
+import { GUEST_PERSONA_ID } from "./guest/constants.ts";
 
 /** Agent SDK の effort と同じ値。config は SDK に依存させないので独自に定義する */
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -86,7 +87,8 @@ export type Config = {
   /** codex の認証と会話の記録の場所。未設定で codex の人格も無ければ undefined */
   codexHome: string | undefined;
 } & GithubConfig &
-  JobsConfig;
+  JobsConfig &
+  GuestConfig;
 
 /** GitHub の通知の段 1（docs/plan/github-notifications.md §10）。npm run github-dry-run もこれだけを読む */
 export type GithubConfig = {
@@ -116,6 +118,35 @@ export type JobsConfig = {
   jobsRepoMaxMb: number;
 };
 
+/**
+ * ゲスト利用の簡易モード（docs/plan/guest-mode.md §5）。トークン・サーバー ID・API キーの 3 つが揃えば有効、3 つとも無ければ無効。
+ * 無効なら任意の変数は読まず、既定の値を入れる
+ */
+export type GuestConfig = {
+  /** true ならゲスト Bot を動かす */
+  guest: boolean;
+  /** ゲスト Bot のトークンの変数名（SELF_AGENT_GUEST_DISCORD_TOKEN）。値は Gateway が process.env から読む */
+  guestTokenEnv: string;
+  /** ゲストのサーバー（SELF_AGENT_GUEST_GUILD_IDS）。無効なら空。SELF_AGENT_ALLOWED_GUILD_IDS とは重ならない */
+  guestGuildIds: string[];
+  /** SELF_AGENT_GUEST_API_KEY が設定されているか。値そのものは保持しない */
+  guestApiKeyPresent: boolean;
+  guestModel: string;
+  guestEffort: Effort;
+  /** サーバーごとの 1 日（timeZone）のターン数の上限 */
+  guestTurnsPerDay: number;
+  /** ユーザーごとの 1 日のターン数の上限（サーバーごと） */
+  guestUserTurnsPerDay: number;
+  /** ゲストのターンの同時実行の上限 */
+  guestMaxConcurrent: number;
+  /** ゲストの 1 ターンの打ち切りまでの秒数 */
+  guestTurnTimeoutSec: number;
+  /** ここまでターンを重ねたら SDK セッションを捨てる */
+  guestSessionMaxTurns: number;
+  /** 直近の成功したターンの最後の入力がこれを超えたら SDK セッションを捨てる */
+  guestSessionMaxInputTokens: number;
+};
+
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
 export type TimeOfDay = { hour: number; minute: number };
 
@@ -140,6 +171,15 @@ const DEFAULT_JOB_TIMEOUT_MIN = 45;
 /** SELF_AGENT_JOB_TIMEOUT_MIN の上限（1 日） */
 const MAX_JOB_TIMEOUT_MIN = 1440;
 const DEFAULT_JOBS_REPO_MAX_MB = 200;
+const GUEST_TOKEN_ENV = "SELF_AGENT_GUEST_DISCORD_TOKEN";
+const DEFAULT_GUEST_MODEL = "claude-opus-5-5";
+const DEFAULT_GUEST_EFFORT: Effort = "low";
+const DEFAULT_GUEST_TURNS_PER_DAY = 300;
+const DEFAULT_GUEST_USER_TURNS_PER_DAY = 50;
+const DEFAULT_GUEST_MAX_CONCURRENT = 1;
+const DEFAULT_GUEST_TURN_TIMEOUT_SEC = 120;
+const DEFAULT_GUEST_SESSION_MAX_TURNS = 30;
+const DEFAULT_GUEST_SESSION_MAX_INPUT_TOKENS = 60000;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -261,6 +301,9 @@ function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[
     }
     if (id === DEFAULT_PERSONA_ID) {
       throw new Error(`SELF_AGENT_PERSONAS に ${DEFAULT_PERSONA_ID} は使えません（既定の人格の id です）`);
+    }
+    if (id === GUEST_PERSONA_ID) {
+      throw new Error(`SELF_AGENT_PERSONAS に ${GUEST_PERSONA_ID} は使えません（ゲスト Bot の id です）`);
     }
     if (seen.has(id)) throw new Error(`SELF_AGENT_PERSONAS に同じ id（${id}）が 2 回あります`);
     seen.add(id);
@@ -387,6 +430,101 @@ function loadJobsConfig(env: NodeJS.ProcessEnv, shell: boolean): JobsConfig {
 }
 
 /**
+ * ゲストの変数を読む（docs/plan/guest-mode.md §5）。エラーには変数名だけを出し、値（トークン・API キーを含む）は出さない。
+ * 確かめること: トークン・サーバー ID・API キーが 3 つ揃うか 3 つとも無いか、サーバー ID の形と SELF_AGENT_ALLOWED_GUILD_IDS との重なり、
+ * トークンが DISCORD_TOKEN・人格のトークンと同じでないか。無効なら任意の変数は読まない
+ */
+function loadGuestConfig(
+  env: NodeJS.ProcessEnv,
+  allowedGuildIds: readonly string[],
+  personas: readonly PersonaConfig[],
+): GuestConfig {
+  // 前後の空白は除く（空白だけなら無いものとする）
+  const token = nonEmpty(env[GUEST_TOKEN_ENV]?.trim());
+  const guildIdsValue = nonEmpty(env.SELF_AGENT_GUEST_GUILD_IDS);
+  const apiKeyPresent = nonEmpty(env.SELF_AGENT_GUEST_API_KEY?.trim()) !== undefined;
+  const required: Array<[string, boolean]> = [
+    [GUEST_TOKEN_ENV, token !== undefined],
+    ["SELF_AGENT_GUEST_GUILD_IDS", guildIdsValue !== undefined],
+    ["SELF_AGENT_GUEST_API_KEY", apiKeyPresent],
+  ];
+  const missing = required.filter(([, present]) => !present).map(([name]) => name);
+  const disabled: GuestConfig = {
+    guest: false,
+    guestTokenEnv: GUEST_TOKEN_ENV,
+    guestGuildIds: [],
+    guestApiKeyPresent: false,
+    guestModel: DEFAULT_GUEST_MODEL,
+    guestEffort: DEFAULT_GUEST_EFFORT,
+    guestTurnsPerDay: DEFAULT_GUEST_TURNS_PER_DAY,
+    guestUserTurnsPerDay: DEFAULT_GUEST_USER_TURNS_PER_DAY,
+    guestMaxConcurrent: DEFAULT_GUEST_MAX_CONCURRENT,
+    guestTurnTimeoutSec: DEFAULT_GUEST_TURN_TIMEOUT_SEC,
+    guestSessionMaxTurns: DEFAULT_GUEST_SESSION_MAX_TURNS,
+    guestSessionMaxInputTokens: DEFAULT_GUEST_SESSION_MAX_INPUT_TOKENS,
+  };
+  if (missing.length === required.length) return disabled;
+  if (missing.length > 0) throw new Error(`ゲストを使うには ${missing.join(", ")} も設定してください`);
+
+  const guestGuildIds = idList("SELF_AGENT_GUEST_GUILD_IDS", guildIdsValue);
+  if (guestGuildIds.length === 0) {
+    throw new Error("SELF_AGENT_GUEST_GUILD_IDS は数字の ID をカンマ区切りで指定してください");
+  }
+  if (guestGuildIds.some((id) => allowedGuildIds.includes(id))) {
+    throw new Error("SELF_AGENT_GUEST_GUILD_IDS と SELF_AGENT_ALLOWED_GUILD_IDS に同じサーバー ID があります");
+  }
+  // 同じトークンを既定の人格・足した人格に渡していないか（値は比べるだけで、エラーには変数名を出す）
+  const otherTokens: Array<[string, string | undefined]> = [
+    ["DISCORD_TOKEN", nonEmpty(env.DISCORD_TOKEN?.trim())],
+    ...personas.map((persona): [string, string | undefined] => [
+      persona.discordTokenEnv,
+      nonEmpty(env[persona.discordTokenEnv]?.trim()),
+    ]),
+  ];
+  const sameAs = otherTokens.find(([, value]) => value === token);
+  if (sameAs !== undefined) throw new Error(`${GUEST_TOKEN_ENV} と ${sameAs[0]} に同じトークンが設定されています`);
+
+  return {
+    guest: true,
+    guestTokenEnv: GUEST_TOKEN_ENV,
+    guestGuildIds,
+    guestApiKeyPresent: true,
+    guestModel: nonEmpty(env.SELF_AGENT_GUEST_MODEL) ?? DEFAULT_GUEST_MODEL,
+    guestEffort: effortLevel(nonEmpty(env.SELF_AGENT_GUEST_EFFORT), "SELF_AGENT_GUEST_EFFORT") ?? DEFAULT_GUEST_EFFORT,
+    guestTurnsPerDay: positiveInteger(
+      "SELF_AGENT_GUEST_TURNS_PER_DAY",
+      nonEmpty(env.SELF_AGENT_GUEST_TURNS_PER_DAY),
+      DEFAULT_GUEST_TURNS_PER_DAY,
+    ),
+    guestUserTurnsPerDay: positiveInteger(
+      "SELF_AGENT_GUEST_USER_TURNS_PER_DAY",
+      nonEmpty(env.SELF_AGENT_GUEST_USER_TURNS_PER_DAY),
+      DEFAULT_GUEST_USER_TURNS_PER_DAY,
+    ),
+    guestMaxConcurrent: positiveInteger(
+      "SELF_AGENT_GUEST_MAX_CONCURRENT",
+      nonEmpty(env.SELF_AGENT_GUEST_MAX_CONCURRENT),
+      DEFAULT_GUEST_MAX_CONCURRENT,
+    ),
+    guestTurnTimeoutSec: positiveInteger(
+      "SELF_AGENT_GUEST_TURN_TIMEOUT_SEC",
+      nonEmpty(env.SELF_AGENT_GUEST_TURN_TIMEOUT_SEC),
+      DEFAULT_GUEST_TURN_TIMEOUT_SEC,
+    ),
+    guestSessionMaxTurns: positiveInteger(
+      "SELF_AGENT_GUEST_SESSION_MAX_TURNS",
+      nonEmpty(env.SELF_AGENT_GUEST_SESSION_MAX_TURNS),
+      DEFAULT_GUEST_SESSION_MAX_TURNS,
+    ),
+    guestSessionMaxInputTokens: positiveInteger(
+      "SELF_AGENT_GUEST_SESSION_MAX_INPUT_TOKENS",
+      nonEmpty(env.SELF_AGENT_GUEST_SESSION_MAX_INPUT_TOKENS),
+      DEFAULT_GUEST_SESSION_MAX_INPUT_TOKENS,
+    ),
+  };
+}
+
+/**
  * npm run job-dry-run が読む設定: 作業場所・データの場所（その中に一時ディレクトリを作る）と、作業ジョブの変数（許可リストなど）。
  * SELF_AGENT_JOBS・SELF_AGENT_SHELL は見ない（LLM もシェルも使わない）
  */
@@ -402,6 +540,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const home = (): string => homeDir(env);
   const personas = personaList(env, home);
   const shell = flag("SELF_AGENT_SHELL", nonEmpty(env.SELF_AGENT_SHELL));
+  const allowedGuildIds = idList("SELF_AGENT_ALLOWED_GUILD_IDS", nonEmpty(env.SELF_AGENT_ALLOWED_GUILD_IDS));
 
   return {
     oauthTokenPresent: nonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) !== undefined,
@@ -411,7 +550,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     workDir: nonEmpty(env.SELF_AGENT_WORKDIR) ?? join(home(), ".local/share/self-agent/work"),
     model: nonEmpty(env.SELF_AGENT_MODEL) ?? DEFAULT_MODEL,
     ownerUserId: nonEmpty(env.SELF_AGENT_OWNER_ID),
-    allowedGuildIds: idList("SELF_AGENT_ALLOWED_GUILD_IDS", nonEmpty(env.SELF_AGENT_ALLOWED_GUILD_IDS)),
+    allowedGuildIds,
     inboxChannelId: nonEmpty(env.SELF_AGENT_INBOX_CHANNEL_ID),
     ...loadDataConfig(env),
     maxConcurrentTurns: positiveInteger(
@@ -478,6 +617,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       (personas.some((persona) => persona.engine === "codex") ? join(home(), ".local/share/self-agent/codex") : undefined),
     ...loadGithubConfig(env),
     ...loadJobsConfig(env, shell),
+    ...loadGuestConfig(env, allowedGuildIds, personas),
   };
 }
 

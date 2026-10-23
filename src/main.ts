@@ -30,6 +30,7 @@ import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { GhClient, resolveCommandPath, resolveGhPath } from "./github/gh.ts";
 import { createGithubPoller } from "./github/poller.ts";
+import { startGuest, type GuestLayer } from "./guest/index.ts";
 import { GitClient } from "./jobs/git.ts";
 import { JobGithubApi } from "./jobs/github-api.ts";
 import { JobOrchestrator, jobPaths, removeVerifiedChild } from "./jobs/orchestrator.ts";
@@ -37,6 +38,7 @@ import { createStaticServer, type StaticServer } from "./serve/static-server.ts"
 import { AttachmentStore } from "./store/attachments.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { GithubStore } from "./store/github.ts";
+import { GuestStore } from "./store/guest.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
@@ -448,19 +450,26 @@ if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
   });
 }
 
+// ゲスト利用の簡易モード（docs/plan/guest-mode.md。SELF_AGENT_GUEST_* が揃ったときだけ）。ゲスト Bot は既定の人格の Bot のコマンド登録の後に
+// 待たずに start する（下）。停止では、受け付けた /guest の処理を待ってからゲスト Bot も止める
+let guest: GuestLayer | undefined;
+
 // 停止: シグナルで新しい受付と定期処理（リマインドの発火・GitHub の通知のポーリングを含む）を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・DB を閉じる
 const lifecycle = createShutdown(
   {
     cfg: config,
-    // 全人格の Bot を止める（1 つが失敗しても残りは止める）
+    // 全人格の Bot とゲスト Bot を止める（1 つが失敗しても残りは止める）
     gateway: {
       stop: async () => {
-        const results = await Promise.allSettled([gateway, ...personaGateways.map((bot) => bot.gateway)].map((bot) => bot.stop()));
+        const results = await Promise.allSettled([
+          ...[gateway, ...personaGateways.map((bot) => bot.gateway)].map((bot) => bot.stop()),
+          ...(guest === undefined ? [] : [guest.stop()]),
+        ]);
         const failed = results.find((result) => result.status === "rejected");
         if (failed !== undefined) throw failed.reason;
       },
     },
-    queues: [turnQueue, layoutQueue],
+    queues: [turnQueue, layoutQueue, { idle: async () => guest?.idle() }],
     scheduler,
     reminderScheduler,
     ...(githubPoller === undefined ? {} : { githubPoller }),
@@ -507,6 +516,20 @@ void startPersonaGateways(
   log,
   { onSettled: (id) => loginSettled.add(id) },
 );
+// ゲスト Bot（ゲストのサーバーの /guest だけを受ける。発言にはまだ答えない）。ログインは待たず、できなくても既定の人格は動かし続ける。
+// 有効化・無効化・外されたときの知らせは既定の人格の Bot で #system に出す
+if (config.guest) {
+  guest = startGuest({
+    cfg: config,
+    guest: new GuestStore(db, now),
+    sessions,
+    guildSettings,
+    adminGateway: personas.admin,
+    stopping: lifecycle.stopping,
+    now,
+    log,
+  });
+}
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
 // 作業ジョブ: 再起動で止まった run の #jobs への知らせを出してから、入れ直した queued を始める
 await jobs?.announceRecovered();

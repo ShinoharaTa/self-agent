@@ -26,6 +26,7 @@ import {
   toCommandData,
   toCommandInteraction,
   toIncomingAttachments,
+  toMentionInfo,
   toModal,
   toModalInteraction,
   toPayload,
@@ -47,7 +48,7 @@ import { splitMessage } from "./split.ts";
 
 const TYPING_INTERVAL_MS = 8_000;
 
-function toIncoming(message: Message, persona: string): IncomingMessage {
+function toIncoming(message: Message, persona: string, selfUserId: string | undefined): IncomingMessage {
   return {
     id: message.id,
     channelId: message.channelId,
@@ -60,6 +61,8 @@ function toIncoming(message: Message, persona: string): IncomingMessage {
     // 添付は情報だけ（取得は受け付けた後に app 側で行う）
     ...toIncomingAttachments(message.attachments.values()),
     persona,
+    // メンション・返信先（ゲスト Bot の受付判定だけが読む）
+    ...toMentionInfo(message, selfUserId),
   };
 }
 
@@ -162,6 +165,8 @@ export type DiscordGatewayOptions = {
   persona?: string;
   /** トークンの変数名（値は start で process.env から読む） */
   tokenEnv?: string;
+  /** Bot がサーバーから外された（GuildDelete。一時的に使えなくなったときは呼ばない）。ゲスト Bot だけが使う */
+  onGuildLeave?: (guildId: string) => void;
 };
 
 export class DiscordGateway implements Gateway {
@@ -169,6 +174,7 @@ export class DiscordGateway implements Gateway {
   private readonly allowedGuildIds: readonly string[];
   private readonly persona: string;
   private readonly tokenEnv: string;
+  private readonly onGuildLeave: ((guildId: string) => void) | undefined;
   /** log の前置き（既定の人格は今までどおり `discord:`、足した人格は `discord(<id>):`） */
   private readonly prefix: string;
   /** Discord に接続しているか（ready・再開で true、切断・再接続中で false。start 前とログインの失敗も false） */
@@ -178,6 +184,7 @@ export class DiscordGateway implements Gateway {
     this.allowedGuildIds = allowedGuildIds;
     this.persona = options.persona ?? DEFAULT_PERSONA_ID;
     this.tokenEnv = options.tokenEnv ?? "DISCORD_TOKEN";
+    this.onGuildLeave = options.onGuildLeave;
     this.prefix = this.persona === DEFAULT_PERSONA_ID ? "discord:" : `discord(${this.persona}):`;
   }
 
@@ -220,8 +227,15 @@ export class DiscordGateway implements Gateway {
     this.client.on(Events.GuildCreate, (guild) => {
       this.warnIfNotAllowed(guild.id);
     });
+    // サーバーから外された（discord.js は一時的に使えなくなったときは GuildUnavailable を出し、GuildDelete は出さない）
+    const onGuildLeave = this.onGuildLeave;
+    if (onGuildLeave !== undefined) {
+      this.client.on(Events.GuildDelete, (guild) => {
+        onGuildLeave(guild.id);
+      });
+    }
     this.client.on(Events.MessageCreate, (message) => {
-      handlers.onMessage(toIncoming(message, this.persona));
+      handlers.onMessage(toIncoming(message, this.persona, this.client.user?.id));
     });
     this.client.on(Events.InteractionCreate, (interaction) => {
       if (!isSupported(interaction)) {

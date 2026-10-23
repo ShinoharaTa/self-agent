@@ -106,6 +106,28 @@ export function toIncomingAttachments(
   return { images, skippedAttachments: { unsupported, overLimit } };
 }
 
+/** 発言のメンションと返信の情報（discord.js の Message をそのまま渡せる形） */
+export type MentionSource = {
+  mentions: { users: { has(userId: string): boolean }; repliedUser: { id: string } | null };
+  reference: unknown;
+};
+
+/**
+ * 受け取った Bot（selfUserId。ログイン前で分からなければ undefined）がメンションされたかと、返信先の発言の author の ID。
+ * メンションはユーザーとしてのものだけ（@everyone・ロールは mentions.users に入らない）。返信先の author は発言と一緒に届いたとき
+ * （reference があり、repliedUser が分かる）だけ入れ、取りに行かない
+ */
+export function toMentionInfo(
+  source: MentionSource,
+  selfUserId: string | undefined,
+): Pick<IncomingMessage, "mentionsMe" | "replyToAuthorId"> {
+  const repliedUser = source.reference === null || source.reference === undefined ? null : source.mentions.repliedUser;
+  return {
+    mentionsMe: selfUserId !== undefined && source.mentions.users.has(selfUserId),
+    ...(repliedUser === null ? {} : { replyToAuthorId: repliedUser.id }),
+  };
+}
+
 /** 受け付ける interaction の共通部分（discord.js の interaction をそのまま渡せる形） */
 type InteractionSource = {
   guildId: string | null;

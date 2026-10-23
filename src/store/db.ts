@@ -407,6 +407,27 @@ export const MIGRATIONS: readonly string[] = [
   );
   ALTER TABLE guild_settings ADD COLUMN jobs_channel_id TEXT;
   `,
+  // v23: ゲスト利用の簡易モード（docs/plan/guest-mode.md §4）。guest_channels はゲストのサーバーで答えるチャンネル（disabled_at が NULL なら有効。
+  // 物理削除しない）、guest_turns はサーバー・ユーザーごとの 1 日（SELF_AGENT_TZ の YYYY-MM-DD）のターン数
+  `
+  CREATE TABLE guest_channels (
+    guild_id TEXT NOT NULL,
+    channel_id TEXT PRIMARY KEY,
+    enabled_at TEXT NOT NULL,
+    disabled_at TEXT,
+    disabled_reason TEXT CHECK (disabled_reason IN ('command', 'left', 'startup')),
+    session_started_at TEXT,
+    session_turns INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX guest_channels_guild ON guest_channels(guild_id, disabled_at);
+  CREATE TABLE guest_turns (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id, day)
+  );
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

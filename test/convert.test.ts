@@ -5,6 +5,7 @@ import {
   toCommandData,
   toCommandInteraction,
   toComponents,
+  toMentionInfo,
   toModal,
   toModalInteraction,
   toPayload,
@@ -271,5 +272,35 @@ test("toCommandData: オプションの型（string 3・integer 4・boolean 5）
     name: "help",
     description: "使い方",
     options: [],
+  });
+});
+
+test("toMentionInfo: この Bot のユーザーがメンションされたかと、発言と一緒に届いた返信先の author の ID", () => {
+  const users = (ids: string[]) => new Map(ids.map((id) => [id, {}]));
+  // メンションあり・返信なし
+  assert.deepEqual(toMentionInfo({ mentions: { users: users(["bot-1"]), repliedUser: null }, reference: null }, "bot-1"), {
+    mentionsMe: true,
+  });
+  // 他のユーザーだけのメンション（@everyone・ロールは mentions.users に入らない）
+  assert.deepEqual(toMentionInfo({ mentions: { users: users(["user-2"]), repliedUser: null }, reference: null }, "bot-1"), {
+    mentionsMe: false,
+  });
+  // ログイン前（自分の ID が分からない）
+  assert.deepEqual(toMentionInfo({ mentions: { users: users(["bot-1"]), repliedUser: null }, reference: null }, undefined), {
+    mentionsMe: false,
+  });
+  // 返信: reference があり、返信先の author が届いている
+  assert.deepEqual(
+    toMentionInfo({ mentions: { users: users([]), repliedUser: { id: "bot-1" } }, reference: { messageId: "m-1" } }, "bot-1"),
+    { mentionsMe: false, replyToAuthorId: "bot-1" },
+  );
+  // 返信だが返信先の author が届いていない（消えた発言など）なら入れない
+  assert.deepEqual(
+    toMentionInfo({ mentions: { users: users([]), repliedUser: null }, reference: { messageId: "m-1" } }, "bot-1"),
+    { mentionsMe: false },
+  );
+  // reference が無ければ repliedUser があっても返信とみなさない
+  assert.deepEqual(toMentionInfo({ mentions: { users: users([]), repliedUser: { id: "bot-1" } }, reference: null }, "bot-1"), {
+    mentionsMe: false,
   });
 });
