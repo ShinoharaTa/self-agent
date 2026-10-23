@@ -298,7 +298,7 @@ const shortRunner = new SdkAgentRunner(
 function commandPrompt(command: string): string {
   return [
     "shell-check（オーナーが行う sandbox の動作確認）です。Bash ツールで次のコマンドを 1 回だけ、1 文字も変えずに（cd も付けずに）実行してください。",
-    "このコマンドは sandbox の境界を確かめるためのもので、失敗するのが期待どおりの項目もあります。秘密の値は出さない形にしてあります。",
+    "このコマンドは sandbox の境界を確かめるためのもので、失敗するのが期待どおりの項目もあります。",
     "失敗しても実行し直さず、出力の説明もいりません。実行したら「済み」とだけ返してください。",
     "コマンド:",
     command,
@@ -436,11 +436,9 @@ await check(
 // 5. トークン
 await check(
   "CLAUDE_CODE_OAUTH_TOKEN が無く、env に token・discord を含む変数が無い",
-  `[ -n "\${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo set || echo none; env | grep -c -i -E 'token|discord'`,
-  ({ stdout }) => {
-    const lines = stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
-    return lines[0] === "none" && lines[1] === "0" ? true : "トークンか、token・discord を含む変数がある";
-  },
+  // grep が 0 件で終了コード 1 になっても結果が変わらないよう、件数は echo で出す（最後のコマンドの終了コードに頼らない）
+  `[ -n "\${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo set || echo none; echo "count=$(env | grep -c -i -E 'token|discord')"`,
+  ({ stdout }) => (/^none$/m.test(stdout) && /^count=0$/m.test(stdout) ? true : "トークンか、token・discord を含む変数がある"),
 );
 // 6. 他のサービスのソケット・ログが見えない
 await check(
