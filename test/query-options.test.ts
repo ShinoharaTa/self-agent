@@ -10,6 +10,7 @@ import {
   ensureCwdDir,
   ensureSandboxWriteDirs,
   projectDirName,
+  projectDirNameFor,
   SANDBOX_ALLOWED_DOMAINS,
   SANDBOX_DENY_READ_SYSTEM,
   type SandboxHost,
@@ -437,4 +438,16 @@ test("ensureCwdDir: <workDir>/cwd が無ければ 700 で作り、あれば何�
   rmSync(cwd);
   writeFileSync(cwd, "");
   assert.throws(() => ensureCwdDir(workDir), /実際のディレクトリ/);
+});
+
+test("projectDirNameFor: 末尾の / ・symlink を解いた実際の場所から名前を作る（CLI が cwd から作る名前と同じ）", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "self-agent-test-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "real-work"));
+  symlinkSync(join(root, "real-work"), join(root, "work"));
+  const expected = projectDirName(join(root, "real-work"));
+  assert.ok(expected !== undefined);
+  assert.equal(projectDirNameFor(join(root, "work")), expected);
+  assert.equal(projectDirNameFor(`${join(root, "real-work")}/`), expected);
+  assert.equal(childEnv("/srv/claude", join(root, "work"), {}).CLAUDE_CODE_PROJECT_DIR_NAME, expected);
 });

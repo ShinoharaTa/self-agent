@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { DiskQuota, pruneWorkDir } from "./agent/disk.ts";
 import { pruneProjectTrash } from "./agent/project-files.ts";
-import { defaultSandboxHost, ensureCwdDir, sandboxPlacesOf } from "./agent/query-options.ts";
+import { defaultSandboxHost, ensureCwdDir, sandboxPlacesOf, projectDirNameFor } from "./agent/query-options.ts";
 import { checkSandbox, missingSandboxBinaries, shellPath } from "./agent/sandbox-check.ts";
 import type { AgentRunner, RunContext } from "./agent/runner.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
@@ -88,6 +88,10 @@ try {
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
+}
+// 会話の記録の場所を今までの名前に固定できない（パスが長すぎる）と、既存のセッションを resume できないことがある
+if (projectDirNameFor(config.workDir) === undefined) {
+  console.error("会話の記録の場所を固定できません（SELF_AGENT_WORKDIR のパスが長すぎます）。既存のセッションは resume できないことがあります");
 }
 mkdirSync(config.claudeConfigDir, { recursive: true });
 
