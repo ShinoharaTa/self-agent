@@ -73,12 +73,14 @@ filesystem: {
   denyRead:  ["~", "/tmp", "/var/tmp", "/dev/shm", "/run", "/var/run", "/var/log", "/media", "/mnt",
               <realpath(dataDir)>, <realpath(claudeConfigDir)>, <realpath(env ファイルのディレクトリ = ~/.config/self-agent)>,
               <realpath(リポジトリ = process.cwd())>],
-  allowRead: [<realpath(workDir)>, <node の版のディレクトリ（process.execPath の 2 つ上）>],
+  allowRead: [<realpath(workDir)>/projects, <realpath(workDir)>/.cache, <realpath(workDir)>/.tmp, <realpath(workDir)>/cwd,
+              <node の版のディレクトリ（process.execPath の 2 つ上）>],
   allowWrite: [<realpath(workDir)>/projects, <workDir>/.cache, <workDir>/.tmp],
   denyWrite: []
 },
 credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 ```
+- allowRead は workDir そのものでなく、その下の 4 つ（CLI 2.1.286 では親を allowRead にすると cwd が読み取り専用になり bwrap が起動できない。workDir の直下は bind されず tmpfs の上なので、sandbox の中で作れても host には残らない。#143）。
 - denyRead には上の並びに加えて `<realpath(workDir)>/jobs`（作業ジョブの作業場所。docs/plan/coding-jobs.md §4.1 の「セッションからジョブを読めない」ため）を入れる（PR 3）。
 - `allowedTools` には、sandbox を付ける run だけ `Bash` を足す（#135）。`autoAllowBashIfSandboxed` は `$?`・`${…}` などの展開を含むコマンドを自動許可せず通常の許可の流れ（permission mode と allow rule）に回すため、dontAsk で allow rule が無いと拒否される。sandbox を付けない run は hook が全部拒否し、dontAsk でも拒否される（二重）。fail-closed は `failIfUnavailable: true`（依存が無ければ query() が失敗）と `allowUnsandboxedCommands: false`（`dangerouslyDisableSandbox` を無視）で保つ。
 - managed settings（`/etc/claude-code/managed-settings.json`）は置かない前提。そこに `excludedCommands` が入ると、そのコマンドは sandbox の外で走り、allow rule の `Bash` でそのまま許可される（`settingSources: []` でも managed は読まれる）。
@@ -87,11 +89,11 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 - 秘密の場所（DB と devlog の dataDir・会話の記録の claudeConfigDir・env ファイルのディレクトリ・Bot のリポジトリ）は、`~` の下にあるかどうかに関わらず realpath で denyRead に並べる（設定でホームの外に置かれても隠れるように）。
 
 ### 2.3 読める・書ける範囲（結果）
-- 読める: workDir の中（全プロジェクト）、node（npm を含む）、/usr・/etc など OS のファイル。
+- 読める: workDir の projects（全プロジェクト）・.cache・.tmp・cwd、node（npm を含む）、/usr・/etc など OS のファイル。
 - 読めない: ホーム全体（`~/.config`（gh・self-agent の env）・`~/.ssh`・`~/workspace`（Bot のリポジトリと他プロジェクト）・`~/.local/share/self-agent/{data,claude}`（DB・devlog・会話の記録）・`~/.npmrc`・他のツールの設定）、/tmp・/run（他のサービスのソケット）、/var/log。
 - 書ける: workDir の中の projects・.cache・.tmp と cwd（空の専用ディレクトリ。中身は tick ごとに消す）だけ。**他のチャンネルのプロジェクトのファイル（その .trash を含む）も書き換え・消せる**（Bash は sandbox の設定を固定するため。§1 の (d) を採らない理由・決定 6）。
 - 持ち出し: github.com・npm は相手のトークンを使えば送り先になりうる（push・publish）。持ち出せるのは sandbox の中で読めるもの = プロジェクトのファイルだけ。**プロジェクトに秘密を置かない**（project_open の注意に既にある）を前提にする。
-- 起動時の設定の確認（§4）で、秘密の場所（`dataDir`・`claudeConfigDir`・リポジトリ（process.cwd()）・`~/.config/self-agent`）のどれかが、sandbox から読める・書ける場所（allowRead の workDir と node の版のディレクトリ。allowWrite はすべて workDir の中）と同じか、その中・外側にあれば Bash を無効にする（allowRead は denyRead より優先なので、重なると秘密が読める）。realpath で比べ、解決できなければ重なるとみなす。PR 1 で実装済み（`placesOverlap`）。PR 3 では、この確認と §2.2 の denyRead・allowRead・allowWrite を同じ関数から作り、並びがずれないようにする。
+- 起動時の設定の確認（§4）で、秘密の場所（`dataDir`・`claudeConfigDir`・リポジトリ（process.cwd()）・`~/.config/self-agent`）のどれかが、sandbox から読める・書ける場所（allowRead の workDir の projects・.cache・.tmp・cwd と node の版のディレクトリ。allowWrite はすべてこの中）と同じか、その中・外側にあれば Bash を無効にする（allowRead は denyRead より優先なので、重なると秘密が読める）。realpath で比べ、解決できなければ重なるとみなす。PR 1 で実装済み（`placesOverlap`）。PR 3 では、この確認と §2.2 の denyRead・allowRead・allowWrite を同じ関数から作り、並びがずれないようにする。
 
 ### 2.4 子プロセスの env（childEnv に足す。全 run 共通）
 - `PATH=<node の bin>:/usr/local/bin:/usr/bin:/bin`（service の PATH に nvm が無いため、明示する）。値は `src/agent/sandbox-check.ts` の `shellPath(process.execPath)` を使う（自己診断と CLI が同じ PATH で bwrap・socat を探すように。別に組み立てない）

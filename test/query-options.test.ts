@@ -277,7 +277,7 @@ test("buildQueryOptions: シェルが有効なら Bash を末尾に足して 7 �
         join(root, "repo"),
         join(workDir, "jobs"),
       ],
-      allowRead: [workDir, join(root, "node", "v24")],
+      allowRead: [join(workDir, "projects"), join(workDir, ".cache"), join(workDir, ".tmp"), join(workDir, "cwd"), join(root, "node", "v24")],
       allowWrite: [join(workDir, "projects"), join(workDir, ".cache"), join(workDir, ".tmp")],
       denyWrite: [],
     },

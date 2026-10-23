@@ -19,6 +19,8 @@ export const WORK_CACHE_MAX_BYTES = 1024 * 1024 * 1024;
 /** /close で node_modules を探す深さ（`<dir>/node_modules` が 1、`<dir>/a/b/node_modules` が 3） */
 export const NODE_MODULES_MAX_DEPTH = 3;
 
+/** プロジェクトの置き場所（`<workDir>/projects`） */
+export const PROJECTS_DIR_NAME = "projects";
 /** コマンド・ツールが使う一時ファイルの場所（`<workDir>/.tmp`） */
 export const WORK_TMP_DIR_NAME = ".tmp";
 /** パッケージのキャッシュの場所（`<workDir>/.cache`） */

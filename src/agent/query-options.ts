@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { McpSdkServerConfigWithInstance, Options, SandboxSettings } from "@anthropic-ai/claude-agent-sdk";
 import type { Config } from "../config.ts";
-import { WORK_CACHE_DIR_NAME, WORK_CWD_DIR_NAME, WORK_TMP_DIR_NAME } from "./disk.ts";
+import { PROJECTS_DIR_NAME, WORK_CACHE_DIR_NAME, WORK_CWD_DIR_NAME, WORK_TMP_DIR_NAME } from "./disk.ts";
 import { resolveRealPath } from "./file-access.ts";
 import {
   nodeVersionDir,
@@ -140,7 +140,7 @@ export const SANDBOX_DENY_READ_SYSTEM: readonly string[] = [
 export const JOBS_DIR_NAME = "jobs";
 
 /** sandbox が書ける workDir の中の場所（allowWrite）。無いと CLI が書き込み先から外すので、run の前に作る（ensureSandboxWriteDirs） */
-const SANDBOX_WRITE_DIR_NAMES: readonly string[] = ["projects", WORK_CACHE_DIR_NAME, WORK_TMP_DIR_NAME];
+const SANDBOX_WRITE_DIR_NAMES: readonly string[] = [PROJECTS_DIR_NAME, WORK_CACHE_DIR_NAME, WORK_TMP_DIR_NAME];
 
 /**
  * Options.sandbox（shell.md §2.2。全 run で同じ値）。場所は sandbox-check.ts と同じ関数（sandboxSecretPlaces・sandboxReadablePlaces）から作り、
