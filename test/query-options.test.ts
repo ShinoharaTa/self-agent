@@ -1,13 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import {
   buildQueryOptions,
   childEnv,
+  ensureCwdDir,
   ensureSandboxWriteDirs,
+  projectDirName,
   SANDBOX_ALLOWED_DOMAINS,
   SANDBOX_DENY_READ_SYSTEM,
   type SandboxHost,
@@ -87,7 +89,7 @@ test("組み込みツールは Web の 2 つとファイル操作の 4 つ（こ
   assert.equal(options.mcpServers?.selfagent, mcpServer);
   assert.equal(options.strictMcpConfig, true);
   assert.equal(options.model, "claude-opus-5");
-  assert.equal(options.cwd, "/srv/work");
+  assert.equal(options.cwd, "/srv/work/cwd");
   // maxTurns・hooks・resume は run ごとに sdk-runner が足す
   assert.equal("maxTurns" in options, false);
   assert.equal(options.resume, undefined);
@@ -103,10 +105,10 @@ test("allowedTools の projects のルールは workDir の実際の場所（sym
 
   const rule = `//${join(root, "real-work", "projects").slice(1)}/**`;
   assert.deepEqual(allowedTools?.slice(3), [`Read(${rule})`, `Edit(${rule})`]);
-  assert.equal(cwd, join(root, "work"));
+  assert.equal(cwd, join(root, "work", "cwd"));
 });
 
-/** 許可した変数（大文字・小文字の proxy を含む）と CLAUDE_CONFIG_DIR・CLAUDE_CODE_DISABLE_AUTO_MEMORY */
+/** 許可した変数（大文字・小文字の proxy を含む）と CLAUDE_CONFIG_DIR・CLAUDE_CODE_PROJECT_DIR_NAME・CLAUDE_CODE_DISABLE_AUTO_MEMORY */
 const PASSED_KEYS = [
   "PATH",
   "HOME",
@@ -124,10 +126,11 @@ const PASSED_KEYS = [
   "no_proxy",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_PROJECT_DIR_NAME",
   "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
 ];
 
-test("childEnv: 許可した変数だけを写し、設定ディレクトリと自動メモリ無効を足す。無い変数は入れない", () => {
+test("childEnv: 許可した変数だけを写し、設定ディレクトリ・記録のディレクトリ名・自動メモリ無効を足す。無い変数は入れない", () => {
   const source = {
     PATH: "/usr/bin",
     HOME: "/home/tester",
@@ -142,7 +145,7 @@ test("childEnv: 許可した変数だけを写し、設定ディレクトリと�
     SELF_AGENT_OWNER_ID: "100",
     NODE_OPTIONS: "--inspect",
   };
-  assert.deepEqual(childEnv("/srv/claude", source), {
+  assert.deepEqual(childEnv("/srv/claude", "/srv/work", source), {
     PATH: "/usr/bin",
     HOME: "/home/tester",
     LANG: "ja_JP.UTF-8",
@@ -150,9 +153,16 @@ test("childEnv: 許可した変数だけを写し、設定ディレクトリと�
     no_proxy: "localhost",
     CLAUDE_CODE_OAUTH_TOKEN: "dummy-oauth-token",
     CLAUDE_CONFIG_DIR: "/srv/claude",
+    CLAUDE_CODE_PROJECT_DIR_NAME: projectDirName("/srv/work"),
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
   });
-  assert.deepEqual(Object.keys(childEnv("/srv/claude", {})).sort(), ["CLAUDE_CODE_DISABLE_AUTO_MEMORY", "CLAUDE_CONFIG_DIR"]);
+  assert.deepEqual(Object.keys(childEnv("/srv/claude", "/srv/work", {})).sort(), [
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+    "CLAUDE_CODE_PROJECT_DIR_NAME",
+    "CLAUDE_CONFIG_DIR",
+  ]);
+  // 名前にできない（65 字以上の）workDir なら入れない
+  assert.equal("CLAUDE_CODE_PROJECT_DIR_NAME" in childEnv("/srv/claude", `/${"w".repeat(64)}`, {}), false);
 });
 
 test("env には設定ディレクトリと自動メモリ無効を入れ、許可リスト外の変数（DISCORD_TOKEN や未知の変数）を渡さない", () => {
@@ -164,6 +174,7 @@ test("env には設定ディレクトリと自動メモリ無効を入れ、許�
     assert.ok(env !== undefined);
     assert.equal(env.CLAUDE_CONFIG_DIR, "/srv/claude");
     assert.equal(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+    assert.equal(env.CLAUDE_CODE_PROJECT_DIR_NAME, projectDirName(cfg.workDir));
     for (const key of Object.keys(env)) {
       assert.ok(PASSED_KEYS.includes(key), key);
     }
@@ -267,7 +278,7 @@ test("buildQueryOptions: シェルが有効なら Bash を末尾に足して 7 �
       ],
       allowRead: [workDir, join(root, "node", "v24")],
       allowWrite: [join(workDir, "projects"), join(workDir, ".cache"), join(workDir, ".tmp")],
-      denyWrite: [join(workDir, ".claude")],
+      denyWrite: [join(workDir, "cwd")],
     },
     credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] },
   });
@@ -348,13 +359,15 @@ function realpathOrSelf(path: string): string {
 
 test("childEnv: シェルが有効ならプロキシの変数と TMPDIR をホストから写さず（TMPDIR は <workDir>/.tmp）、PATH を shellPath にして §2.4 の変数を足す。CLI 自身のトークンは渡し、コマンドからは credentials.envVars で消す", (t) => {
   const { workDir, host, shellCfg } = shellSetup(t);
-  const env = childEnv(shellCfg.claudeConfigDir, host.env, { workDir, execPath: host.execPath });
+  const env = childEnv(shellCfg.claudeConfigDir, workDir, host.env, { workDir, execPath: host.execPath });
+  assert.ok(projectDirName(workDir) !== undefined);
   assert.deepEqual(env, {
     PATH: shellPath(host.execPath),
     HOME: host.homeDir,
     LANG: "ja_JP.UTF-8",
     CLAUDE_CODE_OAUTH_TOKEN: "dummy-oauth-token",
     CLAUDE_CONFIG_DIR: shellCfg.claudeConfigDir,
+    CLAUDE_CODE_PROJECT_DIR_NAME: projectDirName(workDir),
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     TMPDIR: join(workDir, ".tmp"),
     CLAUDE_CODE_TMPDIR: join(workDir, ".tmp"),
@@ -372,7 +385,8 @@ test("childEnv: シェルが有効ならプロキシの変数と TMPDIR をホ�
   assert.ok(!JSON.stringify(env).includes("dummy-proxy-secret"));
   assert.ok(!JSON.stringify(env).includes("dummy-discord-token"));
   // 無効ならプロキシも PATH も今までどおり
-  const plain = childEnv(shellCfg.claudeConfigDir, host.env);
+  const plain = childEnv(shellCfg.claudeConfigDir, workDir, host.env);
+  assert.equal(plain.CLAUDE_CODE_PROJECT_DIR_NAME, projectDirName(workDir));
   assert.equal(plain.HTTPS_PROXY, host.env.HTTPS_PROXY);
   assert.equal(plain.PATH, "/usr/bin");
   assert.equal(plain.TMPDIR, "/tmp/host-tmp");
@@ -384,10 +398,10 @@ test("childEnv: シェルが有効ならプロキシの変数と TMPDIR をホ�
   });
 });
 
-test("ensureSandboxWriteDirs: projects・.cache・.tmp と jobs を作る。jobs が symlink・ファイルなら作らずに投げる", (t) => {
+test("ensureSandboxWriteDirs: projects・.cache・.tmp と jobs、cwd を作る。jobs が symlink・ファイルなら作らずに投げる", (t) => {
   const { root, workDir } = shellSetup(t);
   ensureSandboxWriteDirs(workDir);
-  for (const name of ["projects", ".cache", ".tmp", "jobs"]) assert.ok(lstatSync(join(workDir, name)).isDirectory(), name);
+  for (const name of ["projects", ".cache", ".tmp", "jobs", "cwd"]) assert.ok(lstatSync(join(workDir, name)).isDirectory(), name);
   // もう一度呼んでもよい
   ensureSandboxWriteDirs(workDir);
 
@@ -397,4 +411,30 @@ test("ensureSandboxWriteDirs: projects・.cache・.tmp と jobs を作る。jobs
   rmSync(join(workDir, "jobs"));
   writeFileSync(join(workDir, "jobs"), "");
   assert.throws(() => ensureSandboxWriteDirs(workDir), /実際のディレクトリ/);
+});
+
+test("projectDirName: workDir のパスの英数字以外を - にした名前（CLI が cwd から作る記録のディレクトリ名と同じ）。1〜64 字でなければ undefined", () => {
+  assert.equal(projectDirName("/home/u/.local/share/self-agent/work"), "-home-u--local-share-self-agent-work");
+  assert.equal(projectDirName(`/${"w".repeat(63)}`), `-${"w".repeat(63)}`);
+  assert.equal(projectDirName(`/${"w".repeat(64)}`), undefined);
+  assert.equal(projectDirName(""), undefined);
+});
+
+test("ensureCwdDir: <workDir>/cwd が無ければ 700 で作り、あれば何もしない。symlink・ファイルなら投げる", (t) => {
+  const { root, workDir } = shellSetup(t);
+  const cwd = join(workDir, "cwd");
+  assert.equal(ensureCwdDir(workDir), cwd);
+  assert.ok(lstatSync(cwd).isDirectory());
+  assert.equal(statSync(cwd).mode & 0o777, 0o700);
+  // 既にあれば何もしない（中身も権限も変えない）
+  writeFileSync(join(cwd, "keep"), "");
+  assert.equal(ensureCwdDir(workDir), cwd);
+  assert.ok(lstatSync(join(cwd, "keep")).isFile());
+
+  rmSync(cwd, { recursive: true });
+  symlinkSync(root, cwd);
+  assert.throws(() => ensureCwdDir(workDir), /実際のディレクトリ/);
+  rmSync(cwd);
+  writeFileSync(cwd, "");
+  assert.throws(() => ensureCwdDir(workDir), /実際のディレクトリ/);
 });

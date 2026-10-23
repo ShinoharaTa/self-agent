@@ -1141,11 +1141,13 @@ test("progressLabel: ツールの種類ごとに違う label。プロジェク�
   mkdirSync(join(projectsDir, "other"), { recursive: true });
   // プロジェクトの中から外を指す symlink
   symlinkSync(join(projectsDir, "other"), join(projectDir, "outside"));
-  const label = (toolName: string, input: unknown) => progressLabel(toolName, input, workDir, projectDir);
+  // 本体と同じく CLI の cwd（<workDir>/cwd）を渡す
+  const cwd = join(workDir, "cwd");
+  const label = (toolName: string, input: unknown) => progressLabel(toolName, input, cwd, projectDir);
 
-  // 中のファイルは相対パスを添える（相対パスは cwd（workDir）を基準にする）
+  // 中のファイルは相対パスを添える（相対パスは CLI の cwd（<workDir>/cwd）を基準にする）
   assert.ok(label("Write", { file_path: join(projectDir, "site", "index.html"), content: "<p>秘密</p>" }).endsWith(": site/index.html"));
-  assert.ok(label("Edit", { file_path: "projects/kakeibo/site/app.js", old_string: "a", new_string: "b" }).endsWith(": site/app.js"));
+  assert.ok(label("Edit", { file_path: "../projects/kakeibo/site/app.js", old_string: "a", new_string: "b" }).endsWith(": site/app.js"));
 
   const cases: Array<{ label: string; toolName: string; input: unknown; project?: string; secret: string }> = [
     { label: "別のプロジェクト", toolName: "Write", input: { file_path: join(projectsDir, "other", "secret.html") }, secret: "secret" },
@@ -1162,7 +1164,7 @@ test("progressLabel: ツールの種類ごとに違う label。プロジェク�
   ];
   const labels = new Map<string, string>();
   for (const item of cases) {
-    const text = progressLabel(item.toolName, item.input, workDir, "project" in item ? item.project : projectDir);
+    const text = progressLabel(item.toolName, item.input, cwd, "project" in item ? item.project : projectDir);
     assert.ok(text.length > 0 && !text.includes(item.secret) && !text.includes(workDir), item.label);
     labels.set(item.toolName, text);
   }
@@ -1216,6 +1218,8 @@ test("SdkAgentRunner: メインループの tool_use ごとに onProgress を 1 
       yield toolUse("msg-3", "toolu-4", "WebSearch", { query: "家計簿 アプリ" });
       yield toolUse("msg-3", "toolu-4", "WebSearch", { query: "家計簿 アプリ" });
       yield toolUse("msg-sub", "toolu-5", "Read", { file_path: indexHtml }, "toolu-9");
+      // 相対パスは CLI の cwd（<workDir>/cwd）を基準にする
+      yield toolUse("msg-4", "toolu-6", "Edit", { file_path: "../projects/kakeibo/site/index.html" });
       yield success("session-1", "作りました");
     },
     { workDir },
@@ -1235,6 +1239,7 @@ test("SdkAgentRunner: メインループの tool_use ごとに onProgress を 1 
     { label: "ツールを使っています: project_open" },
     { label: "書いています: site/index.html" },
     { label: "Web を検索しています" },
+    { label: "書いています: site/index.html" },
   ]);
 });
 

@@ -1,13 +1,13 @@
 // P0 実測用: 2 ターン（2 回目は resume）の所要時間・子孫プロセスの RSS・トークン使用量を測る。
 // Options は本体と同じ（buildQueryOptions のシステムプロンプト・組み込みツール・許可と createTaskMcpServer のツール。maxTurns は #inbox と同じ）。
 // hooks（WebFetch・ファイル操作の guard）は付けない（測定の prompt はツールを使わない）。ツールのストアは一時ディレクトリの SQLite（本体の DB は開かない）。
-// cwd（workDir）も一時ディレクトリにし、本体の workDir は使わない。
+// workDir（CLI の cwd はその中の cwd）も一時ディレクトリにし、本体の workDir は使わない。
 // 出力は JSON 1 つだけ。メッセージストリーム全体や env は出さない。
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { query, type Options, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import { buildQueryOptions } from "../src/agent/query-options.ts";
+import { buildQueryOptions, ensureCwdDir } from "../src/agent/query-options.ts";
 import { INBOX_MAX_TURNS } from "../src/agent/sdk-runner.ts";
 import { createTaskMcpServer } from "../src/agent/tools.ts";
 import { loadConfig } from "../src/config.ts";
@@ -101,8 +101,10 @@ mkdirSync(config.claudeConfigDir, { recursive: true });
 // ツールのストアは一時ディレクトリの SQLite。ツール定義はストアや context によらず同じ（session_open・kb_delete・記憶の知らせは使わない）
 const storeDir = mkdtempSync(join(tmpdir(), "self-agent-measure-"));
 const db = openDb(join(storeDir, "self-agent.db"));
-// cwd は一時ディレクトリ（本体の workDir にファイルを作らない）
+// workDir は一時ディレクトリ（本体の workDir にファイルを作らない）
 const workDir = mkdtempSync(join(tmpdir(), "self-agent-measure-work-"));
+// CLI の cwd（<workDir>/cwd）は本体と同じく先に作る
+ensureCwdDir(workDir);
 const measureConfig = { ...config, workDir };
 // 失敗で process.exit したときも消す
 process.on("exit", () => {

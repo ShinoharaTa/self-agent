@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { DiskQuota, pruneWorkDir } from "./agent/disk.ts";
 import { pruneProjectTrash } from "./agent/project-files.ts";
-import { defaultSandboxHost, sandboxPlacesOf } from "./agent/query-options.ts";
+import { defaultSandboxHost, ensureCwdDir, sandboxPlacesOf } from "./agent/query-options.ts";
 import { checkSandbox, missingSandboxBinaries, shellPath } from "./agent/sandbox-check.ts";
 import type { AgentRunner, RunContext } from "./agent/runner.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
@@ -82,6 +82,13 @@ try {
 process.on("exit", () => dataLock.release());
 
 mkdirSync(config.workDir, { recursive: true });
+// CLI の cwd（<workDir>/cwd。空の専用ディレクトリ）。symlink・ファイルなら起動しない（#139）
+try {
+  ensureCwdDir(config.workDir);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
 mkdirSync(config.claudeConfigDir, { recursive: true });
 
 const now = (): Date => new Date();

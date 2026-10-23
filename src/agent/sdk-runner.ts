@@ -24,7 +24,7 @@ import {
   resolveRealPath,
 } from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
-import { buildQueryOptions, ensureSandboxWriteDirs } from "./query-options.ts";
+import { buildQueryOptions, ensureSandboxWriteDirs, WORK_CWD_DIR_NAME } from "./query-options.ts";
 import type {
   AgentRunner,
   Compaction,
@@ -190,7 +190,7 @@ export function createToolCallRecorder(log: (message: string) => void): ToolCall
 const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
 /**
- * file_path（cwd を基準に絶対パスにする）が projectDir の中なら、projectDir からの相対パス。
+ * file_path（CLI の cwd（`<workDir>/cwd`）を基準に絶対パスにする）が projectDir の中なら、projectDir からの相対パス。
  * どちらも resolveRealPath で実際の場所にして比べる。中でない・file_path が無い・解決できないなら undefined
  */
 function projectRelativePath(toolInput: unknown, cwd: string, projectDir: string | undefined): string | undefined {
@@ -742,7 +742,7 @@ export class SdkAgentRunner implements AgentRunner {
             const project =
               input.context === undefined ? undefined : this.files.projects.getByChannel(input.context.channelId);
             const projectDir = project === undefined ? undefined : join(this.files.projectsDir, project.slug);
-            input.onProgress({ label: progressLabel(block.name, block.input, this.cfg.workDir, projectDir) });
+            input.onProgress({ label: progressLabel(block.name, block.input, join(this.cfg.workDir, WORK_CWD_DIR_NAME), projectDir) });
           }
         }
         // 会話が長くなり SDK が古い部分を要約した。1 ターンに複数回あれば最後のもの
