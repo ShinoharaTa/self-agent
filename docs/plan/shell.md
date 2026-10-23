@@ -80,7 +80,7 @@ filesystem: {
 },
 credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 ```
-- allowRead は workDir そのものでなく、その下の 4 つ（CLI 2.1.286 では親を allowRead にすると cwd が読み取り専用になり bwrap が起動できない。workDir の直下は bind されず tmpfs の上なので、sandbox の中で作れても host には残らない。#143）。
+- allowRead は workDir そのものでなく、その下の 4 つ（CLI 2.1.286 では親を allowRead にすると cwd が読み取り専用になり bwrap が起動できない。workDir が `~` など denyRead の下にあるとき（既定の置き場）は直下は bind されず tmpfs の上なので、sandbox の中で作れても host には残らない。`~` の外に置くと直下は OS の既定で読めるが書けない（EROFS）。#143）。
 - denyRead には上の並びに加えて `<realpath(workDir)>/jobs`（作業ジョブの作業場所。docs/plan/coding-jobs.md §4.1 の「セッションからジョブを読めない」ため）を入れる（PR 3）。
 - `allowedTools` には、sandbox を付ける run だけ `Bash` を足す（#135）。`autoAllowBashIfSandboxed` は `$?`・`${…}` などの展開を含むコマンドを自動許可せず通常の許可の流れ（permission mode と allow rule）に回すため、dontAsk で allow rule が無いと拒否される。sandbox を付けない run は hook が全部拒否し、dontAsk でも拒否される（二重）。fail-closed は `failIfUnavailable: true`（依存が無ければ query() が失敗）と `allowUnsandboxedCommands: false`（`dangerouslyDisableSandbox` を無視）で保つ。
 - managed settings（`/etc/claude-code/managed-settings.json`）は置かない前提。そこに `excludedCommands` が入ると、そのコマンドは sandbox の外で走り、allow rule の `Bash` でそのまま許可される（`settingSources: []` でも managed は読まれる）。
@@ -308,6 +308,7 @@ sudo apt-get remove bubblewrap socat
 - `ls /tmp /run/user/<uid> /run /var/log/journal` が無い/空（他のサービスのソケットが見えない）
 - `curl -sS -m 10 https://example.com` が失敗、`curl -sS -m 5 http://127.0.0.1:<SERVE_PORT>/` が失敗
 - `git clone --depth 1 https://github.com/octocat/Hello-World.git <dir>/repos/hello` が成功、`npm view react version` が版を返す
+- `touch <workDir>/x`・`mkdir <workDir>/d`・`ln -s <workDir>/projects <workDir>/l` が host にできない（workDir の直下は allowRead・allowWrite に無い。denyRead の下では tmpfs の上で rc=0 になりうるので host の事実で判定。#143）
 - `touch ~/x`・`touch ~/workspace/x` で host にファイルができない（sandbox が `~` を隠すために置く一時的な領域には rc=0 で書けることがあるので、判定は host の事実で行う。#137）、`touch <dir>/ok` が成功
 - 上の denyRead・allowWrite・許可ドメインの結果で、Options.sandbox の `filesystem`・`network` が実際に効いていること（§1.1 の未確認）を確かめる。効いていなければ権限ルールで書く形に直す
 - `cat /proc/1/cmdline` が systemd でない（PID 名前空間）

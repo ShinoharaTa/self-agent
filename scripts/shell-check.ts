@@ -507,7 +507,7 @@ await check("/proc/1/cmdline が systemd でない（PID 名前空間）", `tr '
   stdout.includes("systemd") || stdout.includes("/sbin/init") ? "host の init が見える" : true,
 );
 // 10-2. workDir の直下には書けない（allowWrite は projects・.cache・.tmp だけ。cwd は `<workDir>/cwd`（書ける専用ディレクトリ。#141））。既存の projects・jobs は動かさず、新しく作れるかだけを試す。
-// host にできたかで決める（allowRead は workDir の下の projects・.cache・.tmp・cwd だけで、workDir の直下は bind されず tmpfs の上なので、sandbox の中では rc=0 になりうる。#143）
+// host にできたかで決める（allowRead は workDir の下の projects・.cache・.tmp・cwd だけで、workDir が denyRead の下（既定の置き場）なら直下は bind されず tmpfs の上なので、sandbox の中では rc=0 になりうる。#143）
 {
   const touchRoot = join(realWorkDir, `shell-check-x-${random}`);
   const mkdirRoot = join(realWorkDir, `shell-check-d-${random}`);
@@ -536,7 +536,7 @@ await check("/proc/1/cmdline が systemd でない（PID 名前空間）", `tr '
           }
         })();
       if (changed) return "workDir の直下を変えられた";
-      const note = codes.some((code) => code === 0) ? "sandbox の中では rc=0 だが host には残らない（workDir の直下は bind されず tmpfs の上）" : "";
+      const note = codes.some((code) => code === 0) ? "sandbox の中では rc=0 だが host には残らない（denyRead の下の workDir の直下は bind されず tmpfs の上）" : "";
       return { item: rootItem, status: "通った", note, required: true };
     },
   );

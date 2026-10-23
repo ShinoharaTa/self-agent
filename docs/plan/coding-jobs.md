@@ -141,7 +141,7 @@ filesystem: {
 },
 credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 ```
-- セッションの sandbox との違い: workDir 全体を読ませない（他のジョブの `kept/`・セッションのプロジェクトを読めない → 非公開リポジトリ A の中身を公開リポジトリ B の PR に写す、という持ち出しを塞ぐ）。書けるのは `active` だけ。
+- セッションの sandbox との違い: セッションが読める projects・.cache・.tmp・cwd を読ませない（他のジョブの `kept/`・セッションのプロジェクトを読めない → 非公開リポジトリ A の中身を公開リポジトリ B の PR に写す、という持ち出しを塞ぐ）。書けるのは `active` だけ。
 - `denyRead ~`（shell.md）により、`~/.config/gh`・`~/.gitconfig`・`~/.ssh`・`<dataDir>`（bare リポジトリを含む）は読めない。**だから sandbox の中では push できない**（鍵が無い。github.com は許可ドメインだが、認証の無い push は GitHub が拒む）。これは設計上の利点で、受け入れの必須項目にする（§17.2）。
 - 秘密の場所の重なりの確認（sandbox-check.ts の placesOverlap）は、ジョブの allowRead（`jobs/active`）にも同じものを使う。
 
