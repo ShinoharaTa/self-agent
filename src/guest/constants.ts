@@ -8,6 +8,8 @@ export const GUEST_MIN_INTERVAL_SEC = 5;
 export const GUEST_MAX_CONTENT_CHARS = 2000;
 /** ゲストのキューの待ちの上限。超えたら「混み合っています」 */
 export const GUEST_MAX_QUEUE = 5;
+/** 同じ SDK セッションでの resume が、結果の届かない失敗（タイムアウト・中断を除く）でこの回数続いたら、次のターンの前に捨てる */
+export const GUEST_RESUME_FAILURE_LIMIT = 3;
 /** SDK セッションを作ってからこの時間で捨てる */
 export const GUEST_SESSION_MAX_AGE_HOURS = 24;
 /** 1 日のターン数（guest_turns）を残す日数 */

@@ -27,7 +27,7 @@ export const RESUME_FAILURE_LIMIT = 3;
 export const MAX_TURNS_ERROR_PREFIX = "error_max_turns";
 
 /** 数えない失敗（重い処理で時間がかかっただけで、セッションは壊れていない） */
-const TIMEOUT_ERROR = "timeout";
+export const TIMEOUT_ERROR = "timeout";
 /** [中断] で止めた失敗。これも数えない（オーナーが止めただけで、セッションは壊れていない） */
 export const ABORTED_ERROR = "aborted";
 

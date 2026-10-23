@@ -76,6 +76,8 @@ export function guestRunnerProfile(
       }),
     preToolUse: (log) => [createGuestToolDenyHook(log)],
     acceptsApiKeySource: guestApiKeySource,
+    // 失敗の文（handler が log に出す）に API・CLI のエラー文を入れない
+    summarizeErrors: true,
   };
 }
 

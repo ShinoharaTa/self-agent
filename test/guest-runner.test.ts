@@ -269,3 +269,38 @@ test("ゲストの runner: dev ログの受け口を持たない（ゲストの�
   // createGuestRunner は dev ログを受け取らない。runner の中にも無いことを確かめる
   assert.equal((runner as unknown as { devLog: unknown }).devLog, undefined);
 });
+
+test("ゲストの runner: 失敗の errorMessage に result の errors・stderr の文を入れず、件数・大きさだけにする（resume 失敗の印は残す）。log にも出ない", async () => {
+  const secret = "ゲストの本文ひみつ";
+  const cases: Array<{ stream: (call: QueryCall) => AsyncIterable<SDKMessage>; expected: RegExp }> = [
+    {
+      stream: async function* () {
+        yield init("ANTHROPIC_API_KEY");
+        yield sdkMessage({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`API Error: 400 ${secret}`, "No conversation found with session ID: s1"],
+          session_id: "session-1",
+        });
+      },
+      expected: /^error_during_execution: errors あり（2 件）・No conversation found$/,
+    },
+    {
+      stream: async function* (call) {
+        yield init("ANTHROPIC_API_KEY");
+        call.options.stderr?.(`Error: ${secret}\n`);
+        throw new Error("Claude Code process exited with code 1");
+      },
+      expected: /^exception: Error: Claude Code process exited with code 1（stderr あり（\d+ 字））$/,
+    },
+  ];
+  for (const { stream, expected } of cases) {
+    const { runner, logs } = guestRunner(stream);
+    const result = await runner.run({ prompt: "x", sessionId: "s1" });
+    assert.ok(!result.ok);
+    assert.match(result.errorMessage, expected);
+    assert.ok(!result.errorMessage.includes(secret));
+    assert.ok(logs.every((line) => !line.includes(secret)));
+  }
+});

@@ -6,7 +6,7 @@ import type { AgentRunner, RunResult } from "../agent/runner.ts";
 import { buildTurnPrompt } from "../app/prompt.ts";
 import { KeyedSerialQueue } from "../app/queue.ts";
 import { formatDate } from "../app/time.ts";
-import { RESUME_FAILURE_PATTERN, recordTurnUsage } from "../app/turn.ts";
+import { ABORTED_ERROR, RESUME_FAILURE_PATTERN, recordTurnUsage, TIMEOUT_ERROR } from "../app/turn.ts";
 import type { Config } from "../config.ts";
 import type { Gateway, IncomingMessage } from "../discord/gateway.ts";
 import type { GuestStore } from "../store/guest.ts";
@@ -17,6 +17,7 @@ import {
   GUEST_MAX_QUEUE,
   GUEST_MIN_INTERVAL_SEC,
   GUEST_PERSONA_ID,
+  GUEST_RESUME_FAILURE_LIMIT,
   GUEST_SESSION_MAX_AGE_HOURS,
   guestSessionKey,
 } from "./constants.ts";
@@ -102,6 +103,8 @@ export function createGuestHandler(deps: GuestHandlerDeps): GuestHandler {
   let waiting = 0;
   /** サーバー・ユーザーごとの、前に反応した（ターンを受け付けたか、断る文面を返した）時刻（ミリ秒）。プロセス内だけ */
   const lastSeen = new Map<string, number>();
+  /** チャンネルごとの、resume の結果の届かない失敗（タイムアウト・中断を除く）が続いた回数。成功・捨てたら消す。プロセス内だけ */
+  const resumeFailures = new Map<string, number>();
   const intervalMs = GUEST_MIN_INTERVAL_SEC * 1000;
 
   /** 連投か。古い記録はついでに消す */
@@ -121,7 +124,9 @@ export function createGuestHandler(deps: GuestHandlerDeps): GuestHandler {
     }
   };
 
-  /** ターンの前に、捨てる条件（ターン数・会話の大きさ・経過時間）のどれかに当たる SDK セッションを捨てる。今の session_id を返す */
+  /**
+   * ターンの前に、捨てる条件（ターン数・会話の大きさ・経過時間・resume の連続失敗）のどれかに当たる SDK セッションを捨てる。今の session_id を返す
+   */
   const currentSession = (channelId: string, at: Date): string | undefined => {
     const key = guestSessionKey(channelId);
     const channel = guest.get(channelId);
@@ -135,10 +140,12 @@ export function createGuestHandler(deps: GuestHandlerDeps): GuestHandler {
     const expired =
       (channel !== undefined && channel.sessionTurns >= cfg.guestSessionMaxTurns) ||
       (usage.latestOkAfter(key, undefined)?.contextTokens ?? 0) > cfg.guestSessionMaxInputTokens ||
-      (startedAt !== null && at.getTime() - new Date(startedAt).getTime() >= GUEST_SESSION_MAX_AGE_HOURS * 3_600_000);
+      (startedAt !== null && at.getTime() - new Date(startedAt).getTime() >= GUEST_SESSION_MAX_AGE_HOURS * 3_600_000) ||
+      (resumeFailures.get(channelId) ?? 0) >= GUEST_RESUME_FAILURE_LIMIT;
     if (!expired) return sessionId;
     sessions.delete(key);
     guest.resetSession(channelId);
+    resumeFailures.delete(channelId);
     return undefined;
   };
 
@@ -154,8 +161,18 @@ export function createGuestHandler(deps: GuestHandlerDeps): GuestHandler {
     return result;
   };
 
-  /** 1 ターン（キューの中）。返事を返すまで */
-  const runTurn = async (message: IncomingMessage, guildId: string, content: string): Promise<void> => {
+  /** resume の失敗を数える。数えるのは結果の届かなかった失敗だけ（タイムアウト・中断は数えない）。成功なら 0 に戻す */
+  const countResumeFailure = (channelId: string, result: RunResult): void => {
+    if (result.ok) {
+      resumeFailures.delete(channelId);
+      return;
+    }
+    if (result.sessionRecorded || result.errorMessage === TIMEOUT_ERROR || result.errorMessage === ABORTED_ERROR) return;
+    resumeFailures.set(channelId, (resumeFailures.get(channelId) ?? 0) + 1);
+  };
+
+  /** 1 ターン（キューの中）。返事を返すまで。today は上限の判定に使った日（SELF_AGENT_TZ の YYYY-MM-DD）で、guest_turns にもこの日で数える */
+  const runTurn = async (message: IncomingMessage, guildId: string, content: string, today: string): Promise<void> => {
     const { channelId } = message;
     // 待っている間に無効にされたチャンネルでは動かさない
     const channel = guest.get(channelId);
@@ -170,7 +187,13 @@ export function createGuestHandler(deps: GuestHandlerDeps): GuestHandler {
         log(`guest: resume に失敗したため、SDK セッションを捨てて新しいセッションで 1 回だけやり直します（guild=${guildId}）`);
         sessions.delete(guestSessionKey(channelId));
         guest.resetSession(channelId);
+        resumeFailures.delete(channelId);
         result = await runOnce(channelId, prompt, undefined);
+      } else if (sessionId !== undefined) {
+        countResumeFailure(channelId, result);
+        if ((resumeFailures.get(channelId) ?? 0) >= GUEST_RESUME_FAILURE_LIMIT) {
+          log(`guest: resume の失敗が ${GUEST_RESUME_FAILURE_LIMIT} 回続いたため、次のターンは新しいセッションで始めます（guild=${guildId}）`);
+        }
       }
       if (!result.ok) {
         log(`guest: ターンが失敗しました（guild=${guildId}）: ${result.errorMessage}`);
@@ -179,7 +202,7 @@ export function createGuestHandler(deps: GuestHandlerDeps): GuestHandler {
       }
       // 数えるのは成功したターンだけ
       guest.bumpSession(channelId);
-      guest.recordTurn(guildId, message.authorId, formatDate(now(), cfg.timeZone));
+      guest.recordTurn(guildId, message.authorId, today);
       await reply(message, result.text.trim() === "" ? GUEST_EMPTY_REPLY : result.text);
     } finally {
       stopTyping();
@@ -225,7 +248,7 @@ export function createGuestHandler(deps: GuestHandlerDeps): GuestHandler {
     try {
       await queue.run(message.channelId, async () => {
         start();
-        await runTurn(message, guildId, content);
+        await runTurn(message, guildId, content, today);
       });
     } catch (error) {
       log(`guest: ターンの処理に失敗しました（guild=${guildId}）: ${describeError(error)}`);

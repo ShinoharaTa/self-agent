@@ -566,6 +566,11 @@ export type RunnerProfile = {
   preToolUse: (log: (message: string) => void) => HookCallbackMatcher[];
   /** init の apiKeySource を受け付けるか。受け付けなければその run を失敗にして query を止める */
   acceptsApiKeySource: (source: unknown) => boolean;
+  /**
+   * true なら失敗の errorMessage に stderr の末尾・result の errors の文を入れず、シェルが有効なときと同じく大きさ・件数だけにする
+   * （resume 失敗の印は残す）。API・CLI のエラー文が会話の中身を含みうるため（ゲスト）
+   */
+  summarizeErrors?: boolean;
 };
 
 export class SdkAgentRunner implements AgentRunner {
@@ -728,7 +733,8 @@ export class SdkAgentRunner implements AgentRunner {
     maxTurns: number,
     steps: DevLogStep[] | undefined,
   ): Promise<RunResult> {
-    const shell = this.cfg.shell === true;
+    // シェルが有効か、profile が求めるなら、失敗の文に stderr の末尾・result の errors の文を入れない
+    const summarizeErrors = this.cfg.shell === true || this.profile?.summarizeErrors === true;
     // ツール呼び出しの回数はターンごとに数え、WebFetch に許す URL（貼った URL とその転送先）とファイル操作を許す場所もターンごとに違うので、
     // hooks は run ごとに作って足す
     const tools = createToolCallRecorder(this.log);
@@ -739,7 +745,7 @@ export class SdkAgentRunner implements AgentRunner {
       PostToolUse: [...(tools.hooks.PostToolUse ?? []), ...toolHooks.postToolUse],
     };
     // 子プロセスの stderr は末尾だけ保持し、例外で終わったときに errorMessage に添える（中身を log に直接は出さない）。
-    // シェルが有効なら末尾は添えず、大きさだけにする（errorMessage は handler が log に出す。shell.md §2.8）
+    // シェルが有効（か profile の summarizeErrors）なら末尾は添えず、大きさだけにする（errorMessage は handler が log に出す。shell.md §2.8）
     let stderr = "";
     const onStderr = (data: string): void => {
       stderr = (stderr + data).slice(-STDERR_KEEP_LENGTH);
@@ -849,8 +855,8 @@ export class SdkAgentRunner implements AgentRunner {
       if (abortController.signal.aborted) return stopped();
       const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       if (isImageRejection(text) || isImageRejection(stderr)) imageRejected = true;
-      const tail = shell ? stderrSummary(stderr) : stderrTail(stderr);
-      const note = tail === "" ? "" : shell ? `（${tail}）` : `（stderr: ${tail}）`;
+      const tail = summarizeErrors ? stderrSummary(stderr) : stderrTail(stderr);
+      const note = tail === "" ? "" : summarizeErrors ? `（${tail}）` : `（stderr: ${tail}）`;
       return {
         ok: false,
         errorMessage: `exception: ${shorten(text)}${note}`,
@@ -879,7 +885,7 @@ export class SdkAgentRunner implements AgentRunner {
       // result まで届いたので SDK は会話を記録している（error_max_turns なら途中のツール呼び出しも含む）
       return {
         ok: false,
-        errorMessage: describeResultError(result, shell),
+        errorMessage: describeResultError(result, summarizeErrors),
         sessionId: result.session_id,
         sessionRecorded: true,
         toolCalls: tools.count(),
