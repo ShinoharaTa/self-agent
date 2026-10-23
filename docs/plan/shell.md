@@ -302,11 +302,11 @@ sudo apt-get remove bubblewrap socat
 - 準備（host 側）: 中身の決まったダミーの秘密のファイル（ランダムな値）を、`~` の直下・dataDir・claudeConfigDir・env ファイルのディレクトリ・リポジトリ（git の管理外のファイル名）に置き、親（shell-check のプロセス）の env にダミーの変数（`SHELL_CHECK_CANARY=<値>`）と、認証情報入りのダミーのプロキシ（`HTTPS_PROXY=http://user:<値>@127.0.0.1:9` など）を入れる。host 側でファイルが読めて中身が合うことを先に確かめる（確かめる対象が実在すること）。終わったら消す。
 - sandbox の中で: それらのファイルが読めない・見えない（`cat` が失敗し、出力にダミーの値が無い）。`env` の出力にダミーの値（変数・プロキシの認証情報）が無い。
 - `cat ~/.config/self-agent/env` が失敗、`ls ~/.ssh ~/.config/gh ~/workspace` と `ls <realpath(dataDir)> <realpath(claudeConfigDir)> <realpath(env ファイルのディレクトリ)> <realpath(リポジトリ)>` が全部無い/空（ホームの外に置いた場合も含む）
-- `echo ${CLAUDE_CODE_OAUTH_TOKEN:-none}` が none、`env | grep -c -i -E 'token|discord'` が 0、ホストのプロキシの変数（認証情報入りのダミー）が入っていない（§2.4）
+- `[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo set || echo none` が none（値は出さない。#137）、`env | grep -c -i -E 'token|discord'` が 0、ホストのプロキシの変数（認証情報入りのダミー）が入っていない（§2.4）
 - `ls /tmp /run/user/<uid> /run /var/log/journal` が無い/空（他のサービスのソケットが見えない）
 - `curl -sS -m 10 https://example.com` が失敗、`curl -sS -m 5 http://127.0.0.1:<SERVE_PORT>/` が失敗
 - `git clone --depth 1 https://github.com/octocat/Hello-World.git <dir>/repos/hello` が成功、`npm view react version` が版を返す
-- `touch ~/x`・`touch ~/workspace/x` が失敗、`touch <dir>/ok` が成功
+- `touch ~/x`・`touch ~/workspace/x` で host にファイルができない（sandbox が `~` を隠すために置く一時的な領域には rc=0 で書けることがあるので、判定は host の事実で行う。#137）、`touch <dir>/ok` が成功
 - 上の denyRead・allowWrite・許可ドメインの結果で、Options.sandbox の `filesystem`・`network` が実際に効いていること（§1.1 の未確認）を確かめる。効いていなければ権限ルールで書く形に直す
 - `cat /proc/1/cmdline` が systemd でない（PID 名前空間）
 - **必須（§2.9 の I1）**: `sleep 300 & echo started` の Bash の結果が返った直後（ターンの終わりを待たず、PostToolUse の hook の中など）に host で `pgrep -f 'sleep 300'` が空。通らなければ Bash は有効にしない
