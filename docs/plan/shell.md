@@ -81,6 +81,7 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 ```
 - denyRead には上の並びに加えて `<realpath(workDir)>/jobs`（作業ジョブの作業場所。docs/plan/coding-jobs.md §4.1 の「セッションからジョブを読めない」ため）を入れる（PR 3）。
 - `allowedTools` には、sandbox を付ける run だけ `Bash` を足す（#135）。`autoAllowBashIfSandboxed` は `$?`・`${…}` などの展開を含むコマンドを自動許可せず通常の許可の流れ（permission mode と allow rule）に回すため、dontAsk で allow rule が無いと拒否される。sandbox を付けない run は hook が全部拒否し、dontAsk でも拒否される（二重）。fail-closed は `failIfUnavailable: true`（依存が無ければ query() が失敗）と `allowUnsandboxedCommands: false`（`dangerouslyDisableSandbox` を無視）で保つ。
+- managed settings（`/etc/claude-code/managed-settings.json`）は置かない前提。そこに `excludedCommands` が入ると、そのコマンドは sandbox の外で走り、allow rule の `Bash` でそのまま許可される（`settingSources: []` でも managed は読まれる）。
 - 許可ドメインの理由: git clone（HTTPS）は github.com だけ、`github:` 依存と tarball は codeload、postinstall がよく使う GitHub の配布物の 3 つ、npm は registry。CDN（jsdelivr・unpkg）は npm で足りるので入れない。PyPI は入れない（§8 の未決）。
 - 書き込み: cwd（workDir）は CLI の既定で書ける。`Edit(//<workDir>/projects/**)` の許可ルールも書き込み許可に合流する。
 - 秘密の場所（DB と devlog の dataDir・会話の記録の claudeConfigDir・env ファイルのディレクトリ・Bot のリポジトリ）は、`~` の下にあるかどうかに関わらず realpath で denyRead に並べる（設定でホームの外に置かれても隠れるように）。
