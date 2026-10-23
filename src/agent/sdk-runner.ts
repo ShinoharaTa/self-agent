@@ -427,7 +427,7 @@ export type BashGuardDeps = Pick<FileGuardDeps, "projects" | "disk"> & { enabled
  * Bash の PreToolUse の hook（shell.md §2.5）。どの run にも入れる。上から順に判定して拒否し、理由をモデルに返す:
  * 1. この run でシェルを使えない 2. context が無い・セッションでない・予約した依頼・/close のターン 3. このチャンネルのプロジェクトが無い
  * 4. run_in_background・dangerouslyDisableSandbox 5. 容量の上限（Write・Edit と同じ disk.check。workDir の空き・プロジェクトの大きさ）。
- * 通すときは判断を足さない（sandbox の autoAllowBashIfSandboxed に任せる）。コマンドの中身は見ず、log は「Bash を拒否しました（<種類>）」だけ
+ * 通すときは判断を足さない（許可は allowedTools の Bash（sandbox を付ける run だけ）と sandbox の autoAllowBashIfSandboxed に任せる。#135）。コマンドの中身は見ず、log は「Bash を拒否しました（<種類>）」だけ
  * （コマンド・description・パスは出さない）。判定が例外で終わったら拒否する（fail-closed）
  */
 export function createBashGuard(
@@ -463,7 +463,7 @@ export function createBashGuard(
       }
       const quota = disk.check(project.slug);
       if (!quota.allowed) return deny("容量", quota.reason);
-      // 判断を足さずに通す（sandbox の autoAllowBashIfSandboxed に任せる）
+      // 判断を足さずに通す（許可は allowedTools の Bash と sandbox の autoAllowBashIfSandboxed に任せる。#135）
       return {};
     } catch {
       return deny("判定の失敗", BASH_GUARD_FAILED_REASON);
