@@ -41,13 +41,25 @@ export const BASH_MAX_TIMEOUT_MS = 300_000;
 export type ChildEnvShell = { workDir: string; execPath: string };
 
 /**
+ * CLI が cwd から作る会話の記録のディレクトリ名と同じ規則（docs sessions.md。英数字以外を `-` に置き換える）で、workDir のパス（realpath にしない。
+ * 今まで Options.cwd に渡していた値そのもの）から作る名前。1〜64 字でなければ undefined。
+ * cwd を `<workDir>/cwd` に変えても記録の場所を変えないために CLAUDE_CODE_PROJECT_DIR_NAME で固定する（#139）
+ */
+export function projectDirName(workDir: string): string | undefined {
+  const name = workDir.replace(/[^A-Za-z0-9]/g, "-");
+  return name.length >= 1 && name.length <= 64 ? name : undefined;
+}
+
+/**
  * Claude の子プロセスの env。SDK は env を渡すと process.env と混ぜずに置き換えるので、許可した変数だけを写し
- * （無いものは入れない）、設定ディレクトリと自動メモリ無効を足す。scripts/measure-turn.ts も使う。
+ * （無いものは入れない）、設定ディレクトリと自動メモリ無効を足す。記録の場所は CLAUDE_CODE_PROJECT_DIR_NAME（projectDirName(workDir)）で固定する。
+ * scripts/measure-turn.ts も使う。
  * shell（SELF_AGENT_SHELL=1）なら shell.md §2.4: プロキシの変数と TMPDIR はホストから写さず（TMPDIR は <workDir>/.tmp）、PATH を shellPath にし、一時ファイル・npm のキャッシュの場所、
  * git の設定、Bash の時間、バックグラウンド実行の無効を足す
  */
 export function childEnv(
   claudeConfigDir: string,
+  workDir: string,
   source: NodeJS.ProcessEnv = process.env,
   shell?: ChildEnvShell,
 ): Record<string, string> {
@@ -58,6 +70,8 @@ export function childEnv(
     if (value !== undefined) env[key] = value;
   }
   env.CLAUDE_CONFIG_DIR = claudeConfigDir;
+  const projectDir = projectDirName(workDir);
+  if (projectDir !== undefined) env.CLAUDE_CODE_PROJECT_DIR_NAME = projectDir;
   env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
   if (shell === undefined) return env;
   return {
@@ -120,6 +134,9 @@ export const SANDBOX_DENY_READ_SYSTEM: readonly string[] = [
 /** 作業ジョブの作業場所（`<workDir>/jobs`。docs/plan/coding-jobs.md §4.1）。セッションの sandbox からは読ませない */
 export const JOBS_DIR_NAME = "jobs";
 
+/** CLI の cwd（`<workDir>/cwd`。空の専用ディレクトリで、sandbox からは読み取り専用。#139） */
+export const WORK_CWD_DIR_NAME = "cwd";
+
 /** sandbox が書ける workDir の中の場所（allowWrite）。無いと CLI が書き込み先から外すので、run の前に作る（ensureSandboxWriteDirs） */
 const SANDBOX_WRITE_DIR_NAMES: readonly string[] = ["projects", WORK_CACHE_DIR_NAME, WORK_TMP_DIR_NAME];
 
@@ -139,14 +156,15 @@ export function sandboxSettings(places: SandboxPlaces): SandboxSettings {
       denyRead: [...SANDBOX_DENY_READ_SYSTEM, ...sandboxSecretPlaces(places).map(realPath), join(workDir, JOBS_DIR_NAME)],
       allowRead: sandboxReadablePlaces(places).map(realPath),
       allowWrite: SANDBOX_WRITE_DIR_NAMES.map((name) => join(workDir, name)),
-      denyWrite: [join(workDir, ".claude")],
+      // cwd は CLI の既定で書けるので denyWrite で読み取り専用にする（denyWrite が書き込み先を覆うと CLI はその場所を読み取り専用で bind する）。#139
+      denyWrite: [join(workDir, WORK_CWD_DIR_NAME)],
     },
     credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] },
   };
 }
 
 /**
- * sandbox の書き込み先（projects・.cache・.tmp）と、denyRead に入れる作業ジョブの場所（jobs）を作る（.cache は掃除で丸ごと消えることがある）。
+ * sandbox の書き込み先（projects・.cache・.tmp）と、denyRead に入れる作業ジョブの場所（jobs）、CLI の cwd（ensureCwdDir）を作る（.cache は掃除で丸ごと消えることがある）。
  * jobs が実際のディレクトリでない（symlink・ファイル）なら作らずに投げる（denyRead が symlink の先に向かないように）。失敗したら投げる
  */
 export function ensureSandboxWriteDirs(workDir: string): void {
@@ -160,6 +178,25 @@ export function ensureSandboxWriteDirs(workDir: string): void {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     mkdirSync(jobs);
   }
+  ensureCwdDir(workDir);
+}
+
+/**
+ * CLI の cwd（`<realpath(workDir)>/cwd`）を作る（700）。既にあれば何もしない。symlink かディレクトリでなければ投げる
+ * （denyWrite が symlink の先に向かないように）。作ったか既にあるパスを返す
+ */
+export function ensureCwdDir(workDir: string): string {
+  const path = join(realPath(workDir), WORK_CWD_DIR_NAME);
+  try {
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new Error("CLI の作業ディレクトリ（<workDir>/cwd）が実際のディレクトリではありません");
+    }
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    mkdirSync(path, { mode: 0o700 });
+  }
+  return path;
 }
 
 /** このプロセスの場所（node・リポジトリ・ホーム）と env。テストでは差し替える */
@@ -221,7 +258,8 @@ export function buildQueryOptions(
       snapshot: false,
     },
     settingSources: [],
-    cwd: cfg.workDir,
+    // cwd は <workDir>/cwd（空の専用ディレクトリ。sandbox からは読み取り専用。記録の場所は childEnv の CLAUDE_CODE_PROJECT_DIR_NAME で今までの名前に固定。#139）
+    cwd: join(cfg.workDir, WORK_CWD_DIR_NAME),
     // 組み込みツールは Web の 2 つとファイル操作の 4 つ（シェルが有効ならその後に Bash）。キャッシュのため順序も固定。
     // WebFetch の URL とファイル操作のパス、Bash を使える場面は sdk-runner の PreToolUse の hook で絞る。
     // 許可するのは自前の MCP ツール・Web の 2 つと、<workDir>/projects の下の読み書き（Edit のルールは Write にも、Read のルールは Glob にも効く）。
@@ -244,6 +282,7 @@ export function buildQueryOptions(
     ...(cfg.effort === undefined ? {} : { effort: cfg.effort }),
     env: childEnv(
       cfg.claudeConfigDir,
+      cfg.workDir,
       host.env,
       shell ? { workDir: realPath(cfg.workDir), execPath: host.execPath } : undefined,
     ),
