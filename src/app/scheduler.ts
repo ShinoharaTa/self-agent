@@ -29,7 +29,7 @@ export const DELETE_PROMPT_BATCH_LIMIT = 5;
 export const RECONCILE_BATCH_LIMIT = 5;
 
 /**
- * .trash と .tmp・.cache の削除をターンのキューに入れるときの key。チャンネル ID（数字だけ）とは重ならず、チャンネルとしては扱わない
+ * .trash と .tmp・.cache・cwd の削除をターンのキューに入れるときの key。チャンネル ID（数字だけ）とは重ならず、チャンネルとしては扱わない
  * （seed・usage・ターンの番号などには使わない）
  */
 export const MAINTENANCE_QUEUE_KEY = "maintenance";
@@ -87,7 +87,7 @@ export type SchedulerDeps = {
   /** 記録に結びついていない古い添付（行とファイル）を消し、消した数を返す。投げたら log に出して続ける。省略すれば消さない */
   pruneAttachments?: () => number;
   /**
-   * 発言と同じターンのキュー。.trash と .tmp・.cache の削除は、ここにセッションのジョブ（key は MAINTENANCE_QUEUE_KEY）として入れ、
+   * 発言と同じターンのキュー。.trash と .tmp・.cache・cwd の削除は、ここにセッションのジョブ（key は MAINTENANCE_QUEUE_KEY）として入れ、
    * セッションのターンと重ねない（sandbox のコマンドが書ける場所を、ターンの最中に消さない）。
    * tick の時点でセッションのジョブが実行中なら、その tick では入れない（長いターンの後ろで tick を待たせない）
    */
@@ -153,7 +153,7 @@ export class Scheduler {
   }
 
   /**
-   * 再同期・待ちへの移動・削除の確認・dev ログと .trash と workDir の .tmp・.cache の削除・#inbox・#tasks の切り替えは、どれかが失敗しても残りを行う。
+   * 再同期・待ちへの移動・削除の確認・dev ログと .trash と workDir の .tmp・.cache・cwd の削除・#inbox・#tasks の切り替えは、どれかが失敗しても残りを行う。
    * シェルの自己診断は数十 ms で終わるので最初に、再同期は消えたチャンネルを先に削除済みにするためその次に、#inbox・#tasks の切り替えは LLM のターンを待つので最後に行う
    */
   private async runTick(): Promise<void> {
@@ -269,7 +269,7 @@ export class Scheduler {
   }
 
   /**
-   * プロジェクトの古い .trash と workDir の .tmp・.cache、古い添付を、ターンのキューのセッションのジョブとして消す。
+   * プロジェクトの古い .trash と workDir の .tmp・.cache・cwd の中身、古い添付を、ターンのキューのセッションのジョブとして消す。
    * 停止を始めた・セッションのジョブが実行中なら何もしない（log も出さない）。入れた後に来たセッションのターンは、消し終わるまで待つ。reject しない
    */
   private async pruneSandboxAreas(): Promise<void> {
@@ -300,7 +300,7 @@ export class Scheduler {
     try {
       await this.deps.pruneWorkDir();
     } catch {
-      this.deps.log("作業場所の .tmp・.cache を消せませんでした");
+      this.deps.log("作業場所の .tmp・.cache・cwd を消せませんでした");
     }
   }
 
