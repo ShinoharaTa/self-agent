@@ -441,7 +441,7 @@ function loadGuestConfig(
 ): GuestConfig {
   // 前後の空白は除く（空白だけなら無いものとする）
   const token = nonEmpty(env[GUEST_TOKEN_ENV]?.trim());
-  const guildIdsValue = nonEmpty(env.SELF_AGENT_GUEST_GUILD_IDS);
+  const guildIdsValue = nonEmpty(env.SELF_AGENT_GUEST_GUILD_IDS?.trim());
   const apiKeyPresent = nonEmpty(env.SELF_AGENT_GUEST_API_KEY?.trim()) !== undefined;
   const required: Array<[string, boolean]> = [
     [GUEST_TOKEN_ENV, token !== undefined],

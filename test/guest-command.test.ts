@@ -7,6 +7,7 @@ import {
   createGuestCommand,
   GUEST_ALREADY_ENABLED_REPLY,
   GUEST_LIMIT_REPLY,
+  GUEST_NO_CHANNEL_REPLY,
   GUEST_NOT_ENABLED_REPLY,
   GUEST_OFF_REPLY,
   GUEST_ON_REPLY,
@@ -54,7 +55,7 @@ function setup(t: TestContext) {
     await handle(interaction, responder);
     return responder;
   };
-  return { guest, sessions, guildSettings, admin, logs, run };
+  return { guest, sessions, guildSettings, admin, logs, run, handle };
 }
 
 function guestCommand(subcommand: string, overrides: Partial<Interaction> = {}): Interaction {
@@ -205,6 +206,62 @@ test("/guest: #system への知らせに失敗しても応答は変わらず、l
   assertNoIds(logs);
 });
 
+test("/guest: チャンネルの無い操作には本人にだけ「チャンネルで実行してください」で、何も変えない", async (t) => {
+  const { guest, admin, run } = setup(t);
+  const responder = await run(guestCommand("on", { channelId: null }));
+  assert.deepEqual(responder.calls, [{ method: "reply", message: { text: GUEST_NO_CHANNEL_REPLY, ephemeral: true } }]);
+  assert.equal(guest.countActive(GUEST_GUILD), 0);
+  assert.deepEqual(admin.posts, []);
+});
+
+test("/guest on・off: 応答が投げても、DB の変更と SDK セッションの破棄は残り、#system の知らせは出る", async (t) => {
+  const { guest, sessions, admin, logs, handle } = setup(t);
+  const failing = (): FakeResponder => {
+    const responder = new FakeResponder();
+    responder.beforeReply = () => {
+      throw new Error("Unknown interaction");
+    };
+    return responder;
+  };
+
+  sessions.set("guest:c1", "old-session");
+  await handle(guestCommand("on"), failing());
+  assert.equal(guest.get("c1")?.disabledAt, null);
+  assert.equal(sessions.get("guest:c1"), undefined);
+  assert.deepEqual(admin.posts.map((post) => post.message.text), ["ゲスト: サーバー g-guest でチャンネルを有効化しました（1/5）"]);
+
+  await handle(guestCommand("off"), failing());
+  assert.equal(guest.get("c1")?.disabledReason, "command");
+  assert.deepEqual(admin.posts.map((post) => post.message.text), [
+    "ゲスト: サーバー g-guest でチャンネルを有効化しました（1/5）",
+    "ゲスト: サーバー g-guest でチャンネルを無効化しました（0/5）",
+  ]);
+  assert.ok(logs.some((line) => line.includes("/guest の処理中にエラーが発生しました")));
+  assertNoIds(logs);
+});
+
+test("createGuestNotifier: #system への投稿が 10 秒で終わらなければ打ち切って log だけ（reject しない）", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const db = tempDb(t);
+  const guildSettings = new GuildSettingsStore(db, () => NOW);
+  guildSettings.setChannel(OWNER_GUILD, "systemChannelId", "system-1");
+  const admin = new FakeGateway({ allow: ["sendMessage"] });
+  admin.beforeSendMessage = () => new Promise<void>(() => {});
+  const logs: string[] = [];
+  const notify = createGuestNotifier({ cfg: CFG, guildSettings, gateway: admin, log: (message) => logs.push(message) });
+  let done = false;
+  const pending = notify("ゲスト: テスト").then(() => {
+    done = true;
+  });
+  t.mock.timers.tick(9_999);
+  await Promise.resolve();
+  assert.equal(done, false);
+  t.mock.timers.tick(1);
+  await pending;
+  assert.equal(done, true);
+  assert.deepEqual(logs, ["guest: #system への知らせの投稿に失敗しました（guild=g-owner）: 10000 ms で終わりませんでした"]);
+});
+
 /** ゲストの層が使う Gateway の偽物。start で handlers を受け取る */
 class FakeGuestGateway implements GuestGateway {
   handlers: GatewayHandlers | undefined;
@@ -212,7 +269,10 @@ class FakeGuestGateway implements GuestGateway {
   registered: Array<{ guildId: string; defs: readonly CommandDef[] }> = [];
   stopped = 0;
   startError: Error | undefined;
+  /** true ならログインが終わらない */
+  hang = false;
   async start(handlers: GatewayHandlers): Promise<void> {
+    if (this.hang) await new Promise<void>(() => {});
     if (this.startError !== undefined) throw this.startError;
     this.handlers = handlers;
   }
@@ -227,7 +287,7 @@ class FakeGuestGateway implements GuestGateway {
   }
 }
 
-function startWith(t: TestContext, cfg: typeof CFG = CFG) {
+function startWith(t: TestContext, cfg: typeof CFG = CFG, loginTimeoutMs?: number) {
   const { guest, sessions, guildSettings, admin, logs } = setup(t);
   const gateway = new FakeGuestGateway();
   let onGuildLeave: ((guildId: string) => void) | undefined;
@@ -243,6 +303,7 @@ function startWith(t: TestContext, cfg: typeof CFG = CFG) {
       stopping: () => stopping,
       now: () => NOW,
       log: (message) => logs.push(message),
+      ...(loginTimeoutMs === undefined ? {} : { loginTimeoutMs }),
       createGateway: (callback) => {
         onGuildLeave = callback;
         return gateway;
@@ -359,6 +420,20 @@ test("startGuest: ログインに失敗しても reject せず log だけで、�
   });
   await started.ready;
   assert.ok(logs.some((line) => line.startsWith("guest: ゲスト Bot に接続できませんでした")));
+  assert.ok(!logs.some((line) => line.includes("時間切れ")));
+  assert.deepEqual(gateway.registered, []);
+  assert.equal(guest.get("c1")?.disabledAt, null);
+});
+
+test("startGuest: ログインが時間切れなら reject せず、参加の確かめと /guest の登録を行っていない旨を log に出す", async (t) => {
+  const { guest, logs, gateway, layer } = startWith(t, CFG, 10);
+  guest.enable(GUEST_GUILD, "c1");
+  const started = layer((fake) => {
+    fake.hang = true;
+  });
+  await started.ready;
+  assert.ok(logs.some((line) => line.startsWith("guest: ゲスト Bot に接続できませんでした")));
+  assert.ok(logs.includes("guest: ログインが時間切れになったため、参加の確かめと /guest の登録を行っていません"));
   assert.deepEqual(gateway.registered, []);
   assert.equal(guest.get("c1")?.disabledAt, null);
 });

@@ -101,7 +101,7 @@
 ゲスト Bot と既存の Bot の関係:
 - 同じサーバーに両方がいる構成は作らない（ID の重なりは設定エラー）。
 - ゲスト Bot が許可外のサーバーに招かれたら log（guild id）だけで無視。
-- ログインの失敗・切断は既定の人格が動き続け、/setup 済みのサーバーの #system に「ゲスト Bot に接続できません」（persona-status.ts と同じ規則）。
+- ログインの失敗・切断は既定の人格が動き続け、/setup 済みのサーバーの #system に「ゲスト Bot に接続できません」（persona-status.ts と同じ規則。GU3）。
 - 停止（shutdown.ts）ではゲスト Bot も止め、ゲストのキューも待つ。
 
 ### 3.2 論点 2: サーバー ID と有効化の二段構え
@@ -300,7 +300,7 @@ CREATE TABLE guest_turns (
 
 オーナーの #system（既定の人格の Bot。/setup 済みのサーバーだけ）:
 - 「ゲスト: サーバー <guild id> でチャンネルを有効化しました（n/5）」「…無効化しました（n/5）」「…から外されました（有効なチャンネル n 件を無効にしました）」
-- 「ゲスト Bot に接続できません」「ゲスト Bot に接続しました」
+- 「ゲスト Bot に接続できません」「ゲスト Bot に接続しました」（GU3）
 - 「ゲスト: API の認証に失敗しています」「ゲスト: API の請求で失敗しています」（変わったときだけ。GU3）
 
 /usage: 人格の後に「ゲスト（API キー）: ターン n（失敗 m）・入力 …・出力 …」の 1 行。
@@ -338,13 +338,13 @@ CREATE TABLE guest_turns (
 1. **PR-GU1 設定・DB・ゲスト Bot の層・有効化**（キャッシュ影響なし。発言には答えない）
    - `config.ts` の `GuestConfig` と検証（3 つ揃いの規則・ID の重なり・トークンの重複）、`src/store/guest.ts`（v23）、`src/guest/`（Gateway の配線・`access.ts`（fail-closed の判定の純関数）・`commands/guest.ts`（on/off/status。オーナー判定）・interaction の振り分け（ゲストのサーバー・`/guest` だけ））。
    - Gateway: `onGuildLeave` を足す（既定の Bot には配線しない）。intents は既存と同じ（MessageContent 込み）。`toIncoming` に「自分（この Bot）がメンションされたか」と「返信先の発言の author id」を**省略可の項目**として足す（`IncomingMessage.mentionsMe?`・`replyToAuthorId?`。convert.ts。既定の Bot の経路は読まないので変わらない）。
-   - main.ts: `guest` が有効なときだけゲストの Gateway・ストア・interaction handler を作り、`/guest` をゲストのサーバーに登録。停止に含める。#system への有効化・無効化・接続の知らせ。
+   - main.ts: `guest` が有効なときだけゲストの Gateway・ストア・interaction handler を作り、`/guest` をゲストのサーバーに登録。停止に含める。#system への有効化・無効化・外されたときの知らせ。
    - メンションされても黙って捨てる。
 2. **PR-GU2 ターンと認証**（ゲストのキャッシュ系列が新しくできるだけ。オーナー側に影響なし）
    - `childEnv` の許可一覧を引数で変えられる形（既定は今のまま。テストで固定）、ゲストの一覧（OAuth なし・`ANTHROPIC_API_KEY` あり）。`buildGuestQueryOptions`・`GUEST_SYSTEM_PROMPT`（しのえもん・AI の明示）・全拒否の hook。`SdkAgentRunner` に Options・hooks・env の組み立て方を注入できる形（`createMcpServer`・`files` を省略可にし、ゲストでは渡さない）。ゲスト用の `CLAUDE_CONFIG_DIR`（`<claudeConfigDir>-guest`）を起動時に作る。`init` の `apiKeySource` の確認（想定と違えば失敗）。ゲストの runner のインスタンス（devLog なし）。
    - `src/guest/handler.ts`（メンション・返信の判定（GU1 で足した `mentionsMe`・`replyToAuthorId`）、本文の整形、上限、専用キュー、SDK セッションの resume と捨てる判定、usage の記録、返信）。
    - /usage のゲストの行（既存のブロックは persona `guest` を除く。人格なしのときは `'default'` で絞る）。`guest_turns` の tick での削除（scheduler に 1 行。Discord のゲストのサーバーには触らない）。
-3. **PR-GU3 運用**: README・README_ja・REQUIREMENTS・CLAUDE.md の更新。手順: Developer Portal（Public Bot オフ・権限・intents）、Claude Console で API キーを発行し、Max の月次 API クレジット（5x $100 / 20x $200）を使うなら Console の org をその Max のアカウントに紐づける、`~/.config/self-agent/env` への置き方、どちらの `CLAUDE_CONFIG_DIR` にも `claude login` しない（`.credentials.json` を置かない）こと、Developer Portal で MessageContent intent を有効にすること。認証・請求の失敗の #system の知らせ。実機の受け入れの記録。
+3. **PR-GU3 運用**: README・README_ja・REQUIREMENTS・CLAUDE.md の更新。手順: Developer Portal（Public Bot オフ・権限・intents）、Claude Console で API キーを発行し、Max の月次 API クレジット（5x $100 / 20x $200）を使うなら Console の org をその Max のアカウントに紐づける、`~/.config/self-agent/env` への置き方、どちらの `CLAUDE_CONFIG_DIR` にも `claude login` しない（`.credentials.json` を置かない）こと、Developer Portal で MessageContent intent を有効にすること。認証・請求の失敗の #system の知らせ。ゲスト Bot の接続の知らせ（「ゲスト Bot に接続できません」「…接続しました」。persona-status.ts と同じ規則で scheduler の tick から）。実機の受け入れの記録。
 
 順序: GU1 → GU2 → GU3。GU1 と GU2 は並行して作れるが、マージは GU1 → GU2。
 
