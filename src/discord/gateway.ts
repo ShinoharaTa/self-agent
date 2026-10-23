@@ -39,6 +39,13 @@ export type IncomingMessage = {
    * 省略は既定の人格
    */
   persona?: string;
+  /**
+   * 受け取った Bot のユーザーがメンションされたか（@everyone・ロールは含めない。convert.ts の toMentionInfo）。
+   * ゲスト Bot の受付判定（guest/access.ts）だけが読む
+   */
+  mentionsMe?: boolean;
+  /** 返信なら、返信先の発言の author の ID（Discord が発言と一緒に渡したときだけ。取りに行かない）。ゲスト Bot の受付判定だけが読む */
+  replyToAuthorId?: string;
 };
 
 type InteractionBase = {

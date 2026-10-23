@@ -1,0 +1,23 @@
+// ゲスト利用の簡易モード（docs/plan/guest-mode.md §5）の定数。env にはしない
+
+/** サーバーごとの有効なチャンネルの上限 */
+export const GUEST_MAX_CHANNELS_PER_GUILD = 5;
+/** 同じユーザーの前のターンからの間隔（秒）。短ければ無視する */
+export const GUEST_MIN_INTERVAL_SEC = 5;
+/** 本文の長さの上限 */
+export const GUEST_MAX_CONTENT_CHARS = 2000;
+/** ゲストのキューの待ちの上限。超えたら「混み合っています」 */
+export const GUEST_MAX_QUEUE = 5;
+/** SDK セッションを作ってからこの時間で捨てる */
+export const GUEST_SESSION_MAX_AGE_HOURS = 24;
+/** 1 日のターン数（guest_turns）を残す日数 */
+export const GUEST_TURNS_KEEP_DAYS = 8;
+/** ゲスト Bot の呼び名（システムプロンプトと /guest の文面の固定の文字列） */
+export const GUEST_BOT_NAME = "しのえもん";
+/** ゲスト Bot の Gateway の persona と usage_log の persona。人格の id には使えない（SELF_AGENT_PERSONAS の予約語） */
+export const GUEST_PERSONA_ID = "guest";
+
+/** ゲストのチャンネルの SDK セッションの key（channel_sessions。オーナー側のチャンネル ID と混ざらない） */
+export function guestSessionKey(channelId: string): string {
+  return `guest:${channelId}`;
+}

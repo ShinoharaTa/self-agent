@@ -45,6 +45,18 @@ test("未設定ならデフォルト値を使う", () => {
     jobModel: undefined,
     jobEffort: undefined,
     jobsRepoMaxMb: 200,
+    guest: false,
+    guestTokenEnv: "SELF_AGENT_GUEST_DISCORD_TOKEN",
+    guestGuildIds: [],
+    guestApiKeyPresent: false,
+    guestModel: "claude-opus-5-5",
+    guestEffort: "low",
+    guestTurnsPerDay: 300,
+    guestUserTurnsPerDay: 50,
+    guestMaxConcurrent: 1,
+    guestTurnTimeoutSec: 120,
+    guestSessionMaxTurns: 30,
+    guestSessionMaxInputTokens: 60000,
   });
 });
 
