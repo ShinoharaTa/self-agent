@@ -192,7 +192,15 @@ test("placesOverlap: 読める場所（workDir の projects・.cache・.tmp・cw
       },
       overlap: true,
     },
-    { name: "dataDir が workDir と名前の前方だけ同じ", arrange: (env) => void (env.input.dataDir = `${env.dirs.workDir}2`), overlap: false },
+    { name: "dataDir が読める場所と名前の前方だけ同じ", arrange: (env) => void (env.input.dataDir = join(env.dirs.workDir, "projects2")), overlap: false },
+    {
+      name: "workDir の .cache が dataDir を指す symlink（子の symlink の先で比べる）",
+      arrange: (env) => {
+        rmSync(join(env.dirs.workDir, ".cache"), { recursive: true, force: true });
+        symlinkSync(env.dirs.dataDir, join(env.dirs.workDir, ".cache"));
+      },
+      overlap: true,
+    },
     { name: "まだ無い場所は存在する親から求める", arrange: (env) => void (env.input.dataDir = join(env.root, "new/data")), overlap: false },
     {
       name: "解決できない（壊れた symlink）なら重なっているとみなす",

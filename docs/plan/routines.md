@@ -167,7 +167,7 @@ CREATE INDEX routine_records_channel_date ON routine_records (channel_id, status
 |---|---|---|
 | 確実さ | ◎ 貼った画像は必ず見える | △ モデルが Read を呼んだときだけ |
 | 手順の消費 | ◎ 0 | △ 1 手順（#inbox は 8 まで） |
-| 許可の広さ | ◎ ファイルの許可を変えない | △ Read の許可を projects の外へ広げる。シェル（PR 3）の allowRead が workDir 全体なので、workDir に置くとセッションの Bash から全部の領収書が読める |
+| 許可の広さ | ◎ ファイルの許可を変えない | △ Read の許可を projects の外へ広げる。シェルの allowRead は workDir の projects・.cache・.tmp・cwd（#143）だが、workDir が `~` の外なら直下は OS の既定で読めるので、workDir に置くなら denyRead に入れないとセッションの Bash から全部の領収書が読める |
 | 変更の範囲 | △ runner の prompt を AsyncIterable にする | ○ |
 | キャッシュ | ◎ 会話への追記だけ | ◎ 同左 |
 

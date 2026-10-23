@@ -101,7 +101,8 @@ export type SandboxPlaces = Pick<SandboxCheckInput, "workDir" | "nodeDir" | "dat
 
 /**
  * sandbox から読める場所（allowRead。allowWrite はすべてこの中の projects・.cache・.tmp）。読める場所は workDir そのものではなく、
- * その下の projects・.cache・.tmp・cwd（CLI 2.1.286 では親を allowRead にすると cwd が読み取り専用になり bwrap が起動できない。#143）と node の版のディレクトリ
+ * その下の projects・.cache・.tmp・cwd（CLI 2.1.286 では親を allowRead にすると cwd が読み取り専用になり bwrap が起動できない。#143）と node の版のディレクトリ。
+ * workDir の直下は allowRead に無い（denyRead の下なら tmpfs の上で隠れ、外なら OS の既定で読めるが書けない）
  */
 export function sandboxReadablePlaces(places: SandboxPlaces): string[] {
   return [
