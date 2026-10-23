@@ -23,6 +23,8 @@ export const NODE_MODULES_MAX_DEPTH = 3;
 export const WORK_TMP_DIR_NAME = ".tmp";
 /** パッケージのキャッシュの場所（`<workDir>/.cache`） */
 export const WORK_CACHE_DIR_NAME = ".cache";
+/** CLI の cwd（`<workDir>/cwd`。書ける空の専用ディレクトリで、中身は scheduler の tick で消す。#139・#141） */
+export const WORK_CWD_DIR_NAME = "cwd";
 /** プロジェクトの配信する場所（`<dir>/site`）。node_modules を探すときに入らない */
 const SITE_DIR_NAME = "site";
 
@@ -227,7 +229,8 @@ async function pruneTmp(tmp: string): Promise<void> {
 /**
  * workDir の掃除（scheduler の tick）。`<workDir>/.tmp` の中の 1 日を過ぎたもの（pruneTmp。.tmp が実際のディレクトリのときだけ）と、
  * cacheMaxBytes（既定 1 GB）を超えた `<workDir>/.cache` を丸ごと（removeTree で）消す。どちらも無い・実際のディレクトリでない（symlink）なら何もしない。
- * workDir の直下のほかのもの（lost+found など）は見ない。片方が失敗してももう片方は行い、失敗があれば最後にまとめて投げる（message にパスは入れない）
+ * `<workDir>/cwd`（CLI の cwd。実際のディレクトリのときだけ）の中身を全部 removeTree で消す（cwd そのものは残す。symlink はリンクだけ消す）。
+ * workDir の直下のほかのもの（lost+found など）は見ない。1 つが失敗しても残りは行い、失敗があれば最後にまとめて投げる（message にパスは入れない）
  */
 export async function pruneWorkDir(workDir: string, cacheMaxBytes = WORK_CACHE_MAX_BYTES): Promise<void> {
   let failures = 0;
@@ -240,6 +243,20 @@ export async function pruneWorkDir(workDir: string, cacheMaxBytes = WORK_CACHE_M
   try {
     const cache = join(workDir, WORK_CACHE_DIR_NAME);
     if ((await isRealDirectory(cache)) && treeSize(cache, cacheMaxBytes) > cacheMaxBytes) await removeTree(cache);
+  } catch {
+    failures++;
+  }
+  try {
+    const cwd = join(workDir, WORK_CWD_DIR_NAME);
+    if (await isRealDirectory(cwd)) {
+      for (const name of await readdir(cwd)) {
+        try {
+          await removeTree(join(cwd, name));
+        } catch {
+          failures++;
+        }
+      }
+    }
   } catch {
     failures++;
   }

@@ -7,6 +7,7 @@ import {
   lstatSync,
   lutimesSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   symlinkSync,
@@ -283,6 +284,36 @@ test("pruneWorkDir: 上限を超えた .cache を丸ごと消す。.tmp・.cache
   assert.ok(existsSync(join(outside, "keep")));
   assert.ok(lstatSync(join(workDir, ".tmp")).isSymbolicLink());
   assert.ok(lstatSync(join(workDir, ".cache")).isSymbolicLink());
+});
+
+test("pruneWorkDir: cwd の中身（ファイル・ディレクトリ・symlink）を全部消して cwd は残す。symlink はリンクだけ消す。cwd が無い・symlink なら何もしない（指す先は消さない）", async (t) => {
+  const root = tempDir(t);
+  const workDir = join(root, "work");
+  const cwd = join(workDir, "cwd");
+  const outside = join(root, "outside");
+  mkdirSync(join(cwd, "dir"), { recursive: true });
+  mkdirSync(outside);
+  writeFileSync(join(outside, "keep"), "x");
+  writeFileSync(join(cwd, "file"), "x");
+  writeFileSync(join(cwd, "dir", "inner"), "x");
+  mkdirSync(join(cwd, ".claude"));
+  writeFileSync(join(cwd, ".claude", "settings.json"), "");
+  symlinkSync(outside, join(cwd, "link"));
+
+  await pruneWorkDir(workDir);
+
+  assert.ok(lstatSync(cwd).isDirectory());
+  assert.deepEqual(readdirSync(cwd), []);
+  assert.ok(existsSync(join(outside, "keep")));
+
+  await pruneWorkDir(join(root, "missing"));
+
+  const linked = join(root, "linked");
+  mkdirSync(linked);
+  symlinkSync(outside, join(linked, "cwd"));
+  await pruneWorkDir(linked);
+  assert.ok(lstatSync(join(linked, "cwd")).isSymbolicLink());
+  assert.ok(existsSync(join(outside, "keep")));
 });
 
 test("removeNodeModules: 深さ 3 までの node_modules を消し、4 より深いもの・直下の .trash と site の中・symlink のディレクトリの先には入らない。symlink の node_modules はリンクだけ消す", async (t) => {
