@@ -25,6 +25,7 @@ import {
   toButtonInteraction,
   toCommandData,
   toCommandInteraction,
+  toDisplayName,
   toIncomingAttachments,
   toMentionInfo,
   toModal,
@@ -63,6 +64,8 @@ function toIncoming(message: Message, persona: string, selfUserId: string | unde
     persona,
     // メンション・返信先（ゲスト Bot の受付判定だけが読む）
     ...toMentionInfo(message, selfUserId),
+    // 表示名（ゲストのターンの prompt だけが読む）
+    authorDisplayName: toDisplayName(message),
   };
 }
 
@@ -191,6 +194,11 @@ export class DiscordGateway implements Gateway {
   /** Discord に接続しているか（#system の知らせに使う） */
   connected(): boolean {
     return this.isConnected;
+  }
+
+  /** この Bot のユーザー ID（ログイン前は undefined）。ゲスト Bot の受付判定（返信先がこの Bot か）に使う */
+  selfUserId(): string | undefined {
+    return this.client.user?.id;
   }
 
   private warnIfNotAllowed(guildId: string): void {

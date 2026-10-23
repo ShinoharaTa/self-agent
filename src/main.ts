@@ -3,7 +3,13 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { DiskQuota, pruneWorkDir } from "./agent/disk.ts";
 import { pruneProjectTrash } from "./agent/project-files.ts";
-import { defaultSandboxHost, ensureCwdDir, sandboxPlacesOf, projectDirNameFor } from "./agent/query-options.ts";
+import {
+  defaultSandboxHost,
+  ensureCwdDir,
+  ensureGuestConfigDir,
+  sandboxPlacesOf,
+  projectDirNameFor,
+} from "./agent/query-options.ts";
 import { checkSandbox, missingSandboxBinaries, shellPath } from "./agent/sandbox-check.ts";
 import type { AgentRunner, RunContext } from "./agent/runner.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
@@ -25,12 +31,15 @@ import { PersonaRouter, type PersonaRuntime } from "./app/personas.ts";
 import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
+import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { GhClient, resolveCommandPath, resolveGhPath } from "./github/gh.ts";
 import { createGithubPoller } from "./github/poller.ts";
+import { GUEST_TURNS_KEEP_DAYS } from "./guest/constants.ts";
 import { startGuest, type GuestLayer } from "./guest/index.ts";
+import { createGuestRunner } from "./guest/query-options.ts";
 import { GitClient } from "./jobs/git.ts";
 import { JobGithubApi } from "./jobs/github-api.ts";
 import { JobOrchestrator, jobPaths, removeVerifiedChild } from "./jobs/orchestrator.ts";
@@ -96,6 +105,15 @@ if (projectDirNameFor(config.workDir) === undefined) {
   console.error("会話の記録の場所を固定できません（SELF_AGENT_WORKDIR のパスが長すぎます）。既存のセッションは resume できないことがあります");
 }
 mkdirSync(config.claudeConfigDir, { recursive: true });
+// ゲストの子プロセスの設定ディレクトリ（<claudeConfigDir>-guest。オーナーの設定ディレクトリを見せない）。symlink・ファイルなら起動しない
+if (config.guest) {
+  try {
+    ensureGuestConfigDir(config.claudeConfigDir);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
 
 const now = (): Date => new Date();
 const log = (message: string): void => console.error(message);
@@ -119,6 +137,8 @@ const routines = new RoutineStore(db, now);
 const routineRecords = new RoutineRecordStore(db, now);
 // オーナーの発言の画像の原本（<dataDir>/attachments/ に置く）
 const attachments = new AttachmentStore(db, now);
+// ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
+const guestStore = new GuestStore(db, now);
 
 // 作ったプロジェクトの場所。権限ルール（<realpath(workDir)>/projects）と同じ実際の場所にする
 const realWorkDir = realpathSync(config.workDir);
@@ -398,6 +418,13 @@ const scheduler = new Scheduler({
   ...(personaStatus === undefined ? {} : { refreshPersonas: () => personaStatus.refresh() }),
   pruneWorkDir: () => pruneWorkDir(realWorkDir),
   pruneAttachments: () => pruneAttachments(config.dataDir, attachments),
+  // ゲストの 1 日のターン数のうち、GUEST_TURNS_KEEP_DAYS 日より前の日の行を消す（ゲストのときだけ。Discord のゲストのサーバーには触らない）
+  ...(config.guest
+    ? {
+        pruneGuestTurns: () =>
+          guestStore.pruneTurns(formatDate(startOfLocalDay(now(), config.timeZone, GUEST_TURNS_KEEP_DAYS), config.timeZone)),
+      }
+    : {}),
   // .trash・.tmp・.cache の削除は発言と同じキューにセッションのジョブとして入れる（セッションのジョブが実行中ならその tick では消さない）
   turnQueue,
   now,
@@ -451,7 +478,7 @@ if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
 }
 
 // ゲスト利用の簡易モード（docs/plan/guest-mode.md。SELF_AGENT_GUEST_* が揃ったときだけ）。ゲスト Bot は既定の人格の Bot のコマンド登録の後に
-// 待たずに start する（下）。停止では、受け付けた /guest の処理を待ってからゲスト Bot も止める
+// 待たずに start する（下）。停止では、受け付けた /guest の処理とゲストのターン（返事まで）を待ってからゲスト Bot も止める
 let guest: GuestLayer | undefined;
 
 // 停止: シグナルで新しい受付と定期処理（リマインドの発火・GitHub の通知のポーリングを含む）を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・DB を閉じる
@@ -516,13 +543,16 @@ void startPersonaGateways(
   log,
   { onSettled: (id) => loginSettled.add(id) },
 );
-// ゲスト Bot（ゲストのサーバーの /guest だけを受ける。発言にはまだ答えない）。ログインは待たず、できなくても既定の人格は動かし続ける。
+// ゲスト Bot（ゲストのサーバーの /guest と、有効なチャンネルでのメンション・返信に答える）。ログインは待たず、できなくても既定の人格は動かし続ける。
+// ターンは API キーで動くゲスト専用の runner（ツールなし・dev ログなし）と専用のキューで行う。
 // 有効化・無効化・外されたときの知らせは既定の人格の Bot で #system に出す
 if (config.guest) {
   guest = startGuest({
     cfg: config,
-    guest: new GuestStore(db, now),
+    guest: guestStore,
     sessions,
+    runner: createGuestRunner({ cfg: config, log }),
+    usage,
     guildSettings,
     adminGateway: personas.admin,
     stopping: lifecycle.stopping,

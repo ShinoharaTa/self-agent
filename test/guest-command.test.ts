@@ -18,9 +18,11 @@ import { createGuestNotifier } from "../src/guest/notify.ts";
 import { GuestStore } from "../src/store/guest.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
+import { UsageStore } from "../src/store/usage.ts";
 import { tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { FakeResponder } from "./helpers/responder.ts";
+import { FakeRunner } from "./helpers/runner.ts";
 
 const OWNER = "owner-1";
 const OWNER_GUILD = "g-owner";
@@ -35,6 +37,10 @@ const CFG = {
   guestGuildIds: [GUEST_GUILD],
   guestTokenEnv: "SELF_AGENT_GUEST_DISCORD_TOKEN",
   guestTurnsPerDay: 300,
+  guestUserTurnsPerDay: 50,
+  guestMaxConcurrent: 1,
+  guestSessionMaxTurns: 30,
+  guestSessionMaxInputTokens: 60000,
 };
 
 function setup(t: TestContext) {
@@ -55,7 +61,8 @@ function setup(t: TestContext) {
     await handle(interaction, responder);
     return responder;
   };
-  return { guest, sessions, guildSettings, admin, logs, run, handle };
+  const usage = new UsageStore(db, now);
+  return { guest, sessions, usage, guildSettings, admin, logs, run, handle };
 }
 
 function guestCommand(subcommand: string, overrides: Partial<Interaction> = {}): Interaction {
@@ -271,6 +278,8 @@ class FakeGuestGateway implements GuestGateway {
   startError: Error | undefined;
   /** true ならログインが終わらない */
   hang = false;
+  /** 送った返信 */
+  sent: Array<{ channelId: string; text: string; replyToId?: string }> = [];
   async start(handlers: GatewayHandlers): Promise<void> {
     if (this.hang) await new Promise<void>(() => {});
     if (this.startError !== undefined) throw this.startError;
@@ -285,11 +294,22 @@ class FakeGuestGateway implements GuestGateway {
   async registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void> {
     this.registered.push({ guildId, defs });
   }
+  async send(channelId: string, text: string, replyToId?: string): Promise<void> {
+    this.sent.push({ channelId, text, ...(replyToId === undefined ? {} : { replyToId }) });
+  }
+  startTyping(): () => void {
+    return () => {};
+  }
+  selfUserId(): string | undefined {
+    return "bot-1";
+  }
 }
 
 function startWith(t: TestContext, cfg: typeof CFG = CFG, loginTimeoutMs?: number) {
-  const { guest, sessions, guildSettings, admin, logs } = setup(t);
+  const { guest, sessions, usage, guildSettings, admin, logs } = setup(t);
   const gateway = new FakeGuestGateway();
+  // 受付判定を通らない発言では run を呼ばない（呼べば「想定外の呼び出し」で失敗する）
+  const runner = new FakeRunner([]);
   let onGuildLeave: ((guildId: string) => void) | undefined;
   let stopping = false;
   const layer = (start: (fake: FakeGuestGateway) => void = () => {}) => {
@@ -298,6 +318,8 @@ function startWith(t: TestContext, cfg: typeof CFG = CFG, loginTimeoutMs?: numbe
       cfg,
       guest,
       sessions,
+      runner,
+      usage,
       guildSettings,
       adminGateway: admin,
       stopping: () => stopping,
@@ -344,7 +366,7 @@ test("startGuest: 参加しているゲストのサーバーにだけ /guest を
   assert.ok(logs.every((line) => !line.includes("c-left") && !line.includes("c1")));
 });
 
-test("startGuest: 発言は受付判定にかかわらず黙って捨てる（返信も log も無い）", async (t) => {
+test("startGuest: 受付判定を通らない発言（メンションでも返信でもない）は黙って捨てる（run も返信も log も無い）", async (t) => {
   const { guest, admin, logs, gateway, layer } = startWith(t);
   guest.enable(GUEST_GUILD, "c1");
   const started = layer((fake) => fake.joined.add(GUEST_GUILD));
@@ -357,14 +379,15 @@ test("startGuest: 発言は受付判定にかかわらず黙って捨てる（�
     authorId: "user-2",
     authorIsBot: false,
     isWebhook: false,
-    content: "<@bot> こんにちは",
+    content: "こんにちは",
     createdAt: NOW,
     persona: "guest",
-    mentionsMe: true,
+    mentionsMe: false,
   });
   await started.idle();
   assert.equal(logs.length, before);
   assert.deepEqual(admin.posts, []);
+  assert.deepEqual(gateway.sent, []);
 });
 
 test("startGuest: サーバーから外されたら、そのサーバーの有効な行を left で無効にして #system に知らせる（ゲストのサーバーでなければ何もしない）", async (t) => {

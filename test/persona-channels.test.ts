@@ -531,7 +531,7 @@ test("/sessions: 足した人格があれば、その人格のセッションに
   assert.equal(await run([]), without);
 });
 
-test("/usage: 足した人格があれば人格ごと（既定の人格 → 足した人格）に分けて出す。無ければ今までどおり全体だけ", (t) => {
+test("/usage: 足した人格があれば人格ごと（既定の人格 → 足した人格）に分けて出す。無ければ既定の人格の分だけ（ほかの persona の行は含めない）", (t) => {
   const env = setup(t);
   env.usage.record({ key: "inbox-1", ok: true, inputTokens: 10, kind: "inbox" });
   env.usage.record({ key: "mika-in", ok: true, inputTokens: 20, kind: "inbox", persona: "mika" });
@@ -540,7 +540,7 @@ test("/usage: 足した人格があれば人格ごと（既定の人格 → 足�
   const plain = usageText(env.usage, NOW, "Asia/Tokyo");
   assert.equal(usageText(env.usage, NOW, "Asia/Tokyo", []), plain);
   assert.doesNotMatch(plain, /__\*\*/);
-  assert.match(plain, /ターン 3（成功 2 \/ 失敗 1）/);
+  assert.match(plain, /ターン 1（成功 1 \/ 失敗 0）/);
 
   const split = usageText(env.usage, NOW, "Asia/Tokyo", PERSONAS);
   const [defaultPart, mikaPart] = split.split("__**Mika**__");

@@ -46,6 +46,11 @@ export type IncomingMessage = {
   mentionsMe?: boolean;
   /** 返信なら、返信先の発言の author の ID（Discord が発言と一緒に渡したときだけ。取りに行かない）。ゲスト Bot の受付判定だけが読む */
   replyToAuthorId?: string;
+  /**
+   * 発言者の表示名（サーバーのニックネーム → グローバル名 → ユーザー名。convert.ts の toDisplayName）。
+   * ゲストのターンの prompt（guest/handler.ts）だけが読む
+   */
+  authorDisplayName?: string;
 };
 
 type InteractionBase = {

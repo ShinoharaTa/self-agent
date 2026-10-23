@@ -544,34 +544,65 @@ export type SdkRunnerConfig = Pick<
 /** dev モードの会話ログの受け口と、開始時刻・所要時間に使う時計 */
 export type DevLogDeps = { sink: DevLogSink; now: () => Date };
 
+/** init の apiKeySource が想定と違う run の errorMessage（固定の文。値は入れない） */
+export const AUTH_SOURCE_MISMATCH_ERROR = "認証の種類が想定と違います";
+
+/**
+ * 既定の runner が受け付ける init の apiKeySource（オーナー側は OAuth）。ANTHROPIC_API_KEY（ゲストの API キー）で動いたら失敗にする。
+ * apiKeySource の無い init（偽の query）は受け付ける
+ */
+export function ownerApiKeySource(source: unknown): boolean {
+  return source !== "ANTHROPIC_API_KEY";
+}
+
+/**
+ * Options と hooks の組み立て方（docs/plan/guest-mode.md §3.3）。渡せば buildQueryOptions・自前の MCP サーバー・WebFetch・ファイル・Bash の hook を使わない
+ * （ツール呼び出しの記録の hook は共通で足す）。maxTurns は buildOptions の値（無ければ INBOX_MAX_TURNS）
+ */
+export type RunnerProfile = {
+  /** run の Options の土台（全 run で同じ値。env もここで入れる）。maxTurns・abortController・hooks・stderr・resume は run が足す */
+  buildOptions: () => Options;
+  /** run ごとの PreToolUse の hook。log は runner の log */
+  preToolUse: (log: (message: string) => void) => HookCallbackMatcher[];
+  /** init の apiKeySource を受け付けるか。受け付けなければその run を失敗にして query を止める */
+  acceptsApiKeySource: (source: unknown) => boolean;
+};
+
 export class SdkAgentRunner implements AgentRunner {
   private readonly cfg: SdkRunnerConfig;
-  private readonly createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance;
-  private readonly files: FileGuardDeps;
+  private readonly createMcpServer: ((context?: RunContext) => McpSdkServerConfigWithInstance) | undefined;
+  private readonly files: FileGuardDeps | undefined;
   private readonly log: (message: string) => void;
   private readonly queryFn: QueryFn;
   private readonly devLog: DevLogDeps | undefined;
+  private readonly profile: RunnerProfile | undefined;
 
   /**
    * MCP サーバーのインスタンスは同時に 1 つの query にしか接続できないため、run ごとに createMcpServer で作る。
    * ツール定義は毎回同じ（ハンドラが参照する context だけが変わる）なのでプロンプトキャッシュには影響しない。
    * files はファイル操作の hook が使う。log はツール呼び出しの記録に使う。queryFn は省略すれば SDK の query（テストで差し替える）。
-   * devLog は dev モードのときだけ渡す（run ごとに 1 行記録する）。無ければ何もしない
+   * devLog は dev モードのときだけ渡す（run ごとに 1 行記録する）。無ければ何もしない。
+   * profile（ゲスト）を渡せば Options と hooks はそれで作り、createMcpServer・files は使わない（省略してよい）。profile が無ければ両方要る
    */
   constructor(
     cfg: SdkRunnerConfig,
-    createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance,
-    files: FileGuardDeps,
+    createMcpServer: ((context?: RunContext) => McpSdkServerConfigWithInstance) | undefined,
+    files: FileGuardDeps | undefined,
     log: (message: string) => void,
     queryFn: QueryFn = query,
     devLog?: DevLogDeps,
+    profile?: RunnerProfile,
   ) {
+    if (profile === undefined && (createMcpServer === undefined || files === undefined)) {
+      throw new Error("Options の組み立て方（profile）か、MCP サーバーとファイル操作の hook の依存が要ります");
+    }
     this.cfg = cfg;
     this.createMcpServer = createMcpServer;
     this.files = files;
     this.log = log;
     this.queryFn = queryFn;
     this.devLog = devLog;
+    this.profile = profile;
   }
 
   /**
@@ -582,8 +613,15 @@ export class SdkAgentRunner implements AgentRunner {
   async run(input: RunInput): Promise<RunResult> {
     const recording =
       this.devLog === undefined ? undefined : { devLog: this.devLog, startedAt: this.devLog.now(), steps: [] as DevLogStep[] };
-    // 手順の上限はチャンネルの種類で変える（セッションのチャンネルは cfg.sessionMaxTurns、それ以外は INBOX_MAX_TURNS）
-    const maxTurns = input.context?.kind === "session" ? this.cfg.sessionMaxTurns : INBOX_MAX_TURNS;
+    // 手順の上限はチャンネルの種類で変える（セッションのチャンネルは cfg.sessionMaxTurns、それ以外は INBOX_MAX_TURNS）。
+    // profile があればその Options の値
+    const base = this.baseOptions(input.context);
+    const maxTurns =
+      this.profile !== undefined
+        ? (base.options.maxTurns ?? INBOX_MAX_TURNS)
+        : input.context?.kind === "session"
+          ? this.cfg.sessionMaxTurns
+          : INBOX_MAX_TURNS;
     const abortController = new AbortController();
     const timeoutSec = input.context?.kind === "session" ? this.cfg.sessionTurnTimeoutSec : this.cfg.turnTimeoutSec;
     const timer = setTimeout(() => abortController.abort(), timeoutSec * 1000);
@@ -592,7 +630,7 @@ export class SdkAgentRunner implements AgentRunner {
     if (input.signal?.aborted === true) abortController.abort();
     let result: RunResult;
     try {
-      result = await this.runQuery(input, abortController, maxTurns, recording?.steps);
+      result = await this.runQuery(input, base, abortController, maxTurns, recording?.steps);
     } finally {
       clearTimeout(timer);
       input.signal?.removeEventListener("abort", onAbort);
@@ -654,29 +692,51 @@ export class SdkAgentRunner implements AgentRunner {
     }
   }
 
+  /**
+   * この run の Options の土台。profile があればその buildOptions、無ければ buildQueryOptions（自前の MCP サーバーを run ごとに作り、
+   * sandbox は自己診断が通っていて bwrap・socat がある run だけに付ける。付けると failIfUnavailable で #inbox まで失敗しうるため）
+   */
+  private baseOptions(context: RunContext | undefined): { options: Options; sandbox: boolean } {
+    if (this.profile !== undefined) return { options: this.profile.buildOptions(), sandbox: false };
+    const sandbox = this.sandboxForRun();
+    return { options: buildQueryOptions(this.cfg, this.createMcpServer!(context), sandbox), sandbox };
+  }
+
+  /**
+   * run ごとの PreToolUse・PostToolUse の hook。profile があればその PreToolUse だけ。
+   * 無ければ WebFetch・ファイル操作・Bash の hook（ファイル操作と Bash の hook はどの run にも必ず入れる）
+   */
+  private toolHooks(input: RunInput, sandbox: boolean): { preToolUse: HookCallbackMatcher[]; postToolUse: HookCallbackMatcher[] } {
+    if (this.profile !== undefined) return { preToolUse: this.profile.preToolUse(this.log), postToolUse: [] };
+    const files = this.files!;
+    const webFetch = createWebFetchGuard(input.allowedUrls ?? [], this.log);
+    return {
+      preToolUse: [
+        webFetch.preToolUse,
+        createFileGuard(input.context, files, this.log, this.cfg.shell === true),
+        createBashGuard(input.context, { ...files, enabled: sandbox }, this.log),
+      ],
+      postToolUse: [webFetch.postToolUse],
+    };
+  }
+
   /** steps を渡したら（dev モード）、受け取ったメッセージから起きた順に手順を足す */
   private async runQuery(
     input: RunInput,
+    { options: base, sandbox }: { options: Options; sandbox: boolean },
     abortController: AbortController,
     maxTurns: number,
     steps: DevLogStep[] | undefined,
   ): Promise<RunResult> {
     const shell = this.cfg.shell === true;
-    // sandbox は自己診断が通っていて bwrap・socat がある run だけに付ける（付けると failIfUnavailable で #inbox まで失敗しうるため）
-    const sandbox = this.sandboxForRun();
-    const base = buildQueryOptions(this.cfg, this.createMcpServer(input.context), sandbox);
     // ツール呼び出しの回数はターンごとに数え、WebFetch に許す URL（貼った URL とその転送先）とファイル操作を許す場所もターンごとに違うので、
-    // hooks は run ごとに作って足す。ファイル操作と Bash の hook はどの run にも必ず入れる
+    // hooks は run ごとに作って足す
     const tools = createToolCallRecorder(this.log);
-    const webFetch = createWebFetchGuard(input.allowedUrls ?? [], this.log);
+    const toolHooks = this.toolHooks(input, sandbox);
     const hooks: NonNullable<Options["hooks"]> = {
-      PreToolUse: [
-        webFetch.preToolUse,
-        createFileGuard(input.context, this.files, this.log, shell),
-        createBashGuard(input.context, { ...this.files, enabled: sandbox }, this.log),
-      ],
+      PreToolUse: toolHooks.preToolUse,
       ...tools.hooks,
-      PostToolUse: [...(tools.hooks.PostToolUse ?? []), webFetch.postToolUse],
+      PostToolUse: [...(tools.hooks.PostToolUse ?? []), ...toolHooks.postToolUse],
     };
     // 子プロセスの stderr は末尾だけ保持し、例外で終わったときに errorMessage に添える（中身を log に直接は出さない）。
     // シェルが有効なら末尾は添えず、大きさだけにする（errorMessage は handler が log に出す。shell.md §2.8）
@@ -705,6 +765,17 @@ export class SdkAgentRunner implements AgentRunner {
     const seenToolUseIds = new Set<string>();
     // 中断（[中断]）と打ち切りは同じ abortController で止まるので、input.signal で見分ける。
     // 途中で受け取った session_id は返す（turn.ts が、まだ SDK セッションの無いチャンネルでだけ残す）
+    // init の apiKeySource が想定と違った（値は log にも結果にも入れない）
+    let authMismatch = false;
+    const authFailed = (): RunResult => ({
+      ok: false,
+      errorMessage: AUTH_SOURCE_MISMATCH_ERROR,
+      sessionId,
+      sessionRecorded: false,
+      toolCalls: tools.count(),
+      ...failedUsage(),
+    });
+    const acceptsApiKeySource = this.profile?.acceptsApiKeySource ?? ownerApiKeySource;
     const stopped = (): RunResult => ({
       ok: false,
       errorMessage: input.signal?.aborted === true ? "aborted" : "timeout",
@@ -720,6 +791,13 @@ export class SdkAgentRunner implements AgentRunner {
           sessionId = message.session_id;
         }
         steps?.push(...devLogSteps(message));
+        // 想定と違う認証で動いたら、それ以上進めずに止める（fail-closed。docs/plan/guest-mode.md §3.0）
+        if (message.type === "system" && message.subtype === "init" && !acceptsApiKeySource(message.apiKeySource)) {
+          authMismatch = true;
+          this.log(AUTH_SOURCE_MISMATCH_ERROR);
+          abortController.abort();
+          break;
+        }
         if (
           message.type === "assistant" &&
           message.parent_tool_use_id === null &&
@@ -739,9 +817,10 @@ export class SdkAgentRunner implements AgentRunner {
             if (block.type !== "tool_use" || seenToolUseIds.has(block.id)) continue;
             seenToolUseIds.add(block.id);
             // プロジェクトはターンの途中で project_open で作られうるので、そのたびに引く
+            const files = this.files;
             const project =
-              input.context === undefined ? undefined : this.files.projects.getByChannel(input.context.channelId);
-            const projectDir = project === undefined ? undefined : join(this.files.projectsDir, project.slug);
+              input.context === undefined || files === undefined ? undefined : files.projects.getByChannel(input.context.channelId);
+            const projectDir = project === undefined || files === undefined ? undefined : join(files.projectsDir, project.slug);
             input.onProgress({ label: progressLabel(block.name, block.input, join(this.cfg.workDir, WORK_CWD_DIR_NAME), projectDir) });
           }
         }
@@ -766,6 +845,7 @@ export class SdkAgentRunner implements AgentRunner {
         }
       }
     } catch (error) {
+      if (authMismatch) return authFailed();
       if (abortController.signal.aborted) return stopped();
       const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       if (isImageRejection(text) || isImageRejection(stderr)) imageRejected = true;
@@ -782,6 +862,7 @@ export class SdkAgentRunner implements AgentRunner {
       };
     }
 
+    if (authMismatch) return authFailed();
     if (abortController.signal.aborted) return stopped();
     if (result === undefined) {
       return {

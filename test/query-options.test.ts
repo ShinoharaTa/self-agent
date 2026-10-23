@@ -192,6 +192,31 @@ test("env には設定ディレクトリと自動メモリ無効を入れ、許�
   }
 });
 
+test("既定の Options.env には、親の env にあってもゲストの API キー（ANTHROPIC_API_KEY・SELF_AGENT_GUEST_API_KEY）とゲスト Bot のトークンを入れない（シェルの有無によらない）", (t) => {
+  const { host, shellCfg } = shellSetup(t);
+  const guestHost: SandboxHost = {
+    ...host,
+    env: {
+      ...host.env,
+      ANTHROPIC_API_KEY: "dummy-anthropic-key",
+      SELF_AGENT_GUEST_API_KEY: "dummy-guest-api-key",
+      SELF_AGENT_GUEST_DISCORD_TOKEN: "dummy-guest-discord-token",
+    },
+  };
+  for (const options of [
+    buildQueryOptions(cfg, mcpServer, false, guestHost),
+    buildQueryOptions(shellCfg, mcpServer, false, guestHost),
+  ]) {
+    const env = options.env;
+    assert.ok(env !== undefined);
+    for (const key of ["ANTHROPIC_API_KEY", "SELF_AGENT_GUEST_API_KEY", "SELF_AGENT_GUEST_DISCORD_TOKEN"]) assert.equal(key in env, false, key);
+    const text = JSON.stringify(env);
+    for (const secret of ["dummy-anthropic-key", "dummy-guest-api-key", "dummy-guest-discord-token"]) assert.ok(!text.includes(secret), secret);
+    assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, "dummy-oauth-token");
+  }
+  assert.equal("ANTHROPIC_API_KEY" in childEnv("/srv/claude", "/srv/work", guestHost.env), false);
+});
+
 test("effort は設定したときだけ Options に入る", () => {
   assert.equal("effort" in buildQueryOptions(cfg, mcpServer), false);
   assert.equal(buildQueryOptions({ ...cfg, effort: "medium" }, mcpServer).effort, "medium");

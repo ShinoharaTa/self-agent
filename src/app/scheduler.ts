@@ -86,6 +86,8 @@ export type SchedulerDeps = {
   pruneWorkDir: () => Promise<void>;
   /** 記録に結びついていない古い添付（行とファイル）を消し、消した数を返す。投げたら log に出して続ける。省略すれば消さない */
   pruneAttachments?: () => number;
+  /** ゲストのときだけ渡す。古い日のゲストのターン数（guest_turns）を消し、消した数を返す。投げたら log に出して続ける */
+  pruneGuestTurns?: () => number;
   /**
    * 発言と同じターンのキュー。.trash と .tmp・.cache・cwd の削除は、ここにセッションのジョブ（key は MAINTENANCE_QUEUE_KEY）として入れ、
    * セッションのターンと重ねない（sandbox のコマンドが書ける場所を、ターンの最中に消さない）。
@@ -163,6 +165,7 @@ export class Scheduler {
     await this.moveIdleSessions();
     await this.promptDeletes();
     this.pruneDevLogs();
+    this.pruneGuestTurns();
     await this.pruneSandboxAreas();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
     await this.deps.inboxRotator.rotateDue(() => this.stopped);
@@ -265,6 +268,16 @@ export class Scheduler {
       this.deps.pruneDevLogs();
     } catch {
       this.deps.log("古い dev ログを消せませんでした");
+    }
+  }
+
+  /** 古い日のゲストのターン数を消す。失敗は log に出すだけ */
+  private pruneGuestTurns(): void {
+    if (this.deps.pruneGuestTurns === undefined) return;
+    try {
+      this.deps.pruneGuestTurns();
+    } catch {
+      this.deps.log("guest: 古いターン数の記録を消せませんでした");
     }
   }
 
