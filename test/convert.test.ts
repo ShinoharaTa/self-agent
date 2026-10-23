@@ -5,6 +5,7 @@ import {
   toCommandData,
   toCommandInteraction,
   toComponents,
+  toDisplayName,
   toMentionInfo,
   toModal,
   toModalInteraction,
@@ -303,4 +304,14 @@ test("toMentionInfo: この Bot のユーザーがメンションされたかと
   assert.deepEqual(toMentionInfo({ mentions: { users: users([]), repliedUser: { id: "bot-1" } }, reference: null }, "bot-1"), {
     mentionsMe: false,
   });
+});
+
+test("toDisplayName: サーバーのニックネーム → グローバル名 → ユーザー名の順に、空でない最初のもの", () => {
+  const author = { globalName: "グローバル", username: "user_name" };
+  assert.equal(toDisplayName({ member: { nickname: "ニック" }, author }), "ニック");
+  assert.equal(toDisplayName({ member: { nickname: null }, author }), "グローバル");
+  assert.equal(toDisplayName({ member: { nickname: "" }, author }), "グローバル");
+  assert.equal(toDisplayName({ member: null, author }), "グローバル");
+  assert.equal(toDisplayName({ member: null, author: { globalName: null, username: "user_name" } }), "user_name");
+  assert.equal(toDisplayName({ member: null, author: { globalName: "", username: "user_name" } }), "user_name");
 });

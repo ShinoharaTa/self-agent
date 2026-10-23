@@ -218,6 +218,14 @@ export class UsageStore {
     return row === undefined ? undefined : toEntry(row);
   }
 
+  /** since 以降（ちょうどを含む）に記録したその人格のターンの出力の合計（成功したターンだけ。/usage のゲストの行） */
+  sumOutputTokens(since: Date, persona: string): number {
+    const row = this.db
+      .prepare("SELECT COALESCE(SUM(output_tokens), 0) AS output_tokens FROM usage_log WHERE at >= ? AND persona = ?")
+      .get(since.toISOString(), persona);
+    return Number(row?.output_tokens ?? 0);
+  }
+
   /** since 以降（ちょうどを含む）に記録したターンを合計する。persona を渡せばその人格のターンだけ */
   summarize(since: Date, persona?: string): UsageSummary {
     // at は toISOString（UTC・同じ桁数）で保存しているので、文字列の比較で時刻の前後を比べられる

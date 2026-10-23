@@ -10,6 +10,7 @@ import {
   MAINTENANCE_QUEUE_KEY,
   RECONCILE_BATCH_LIMIT,
   Scheduler,
+  type SchedulerDeps,
   type SchedulerTimers,
   TICK_INTERVAL_MS,
 } from "../src/app/scheduler.ts";
@@ -57,6 +58,7 @@ function setup(
   idleHours: number = 12,
   deleteAfterDays: number = 30,
   allowedGuildIds: string[] = ["guild-1"],
+  extra: Pick<SchedulerDeps, "pruneGuestTurns"> = {},
 ) {
   const db = tempDb(t);
   const clock = { now: NOW };
@@ -110,6 +112,7 @@ function setup(
       await workDir.prune();
     },
     pruneAttachments: () => attachments.prune(),
+    ...extra,
     turnQueue,
     now: () => clock.now,
     timers,
@@ -870,6 +873,33 @@ test("削除のジョブの間に来たセッションのジョブは、削除�
 
   assert.equal(env.workDir.calls, 1);
   assert.deepEqual(events, ["turn"]);
+});
+
+test("ゲストのときだけ、tick で古い日のゲストのターン数を消す（Discord には何もしない）。失敗は log だけで続ける", async (t) => {
+  // 渡さなければ何もしない
+  const plain = setup(t);
+  await plain.scheduler.tick();
+  assert.deepEqual(plain.logs, []);
+
+  let calls = 0;
+  let fail = false;
+  const env = setup(t, 12, 30, ["guild-1"], {
+    pruneGuestTurns: () => {
+      calls++;
+      if (fail) throw new Error("SQLITE_BUSY");
+      return 2;
+    },
+  });
+  await env.scheduler.tick();
+  assert.equal(calls, 1);
+  assert.deepEqual(env.logs, []);
+  assert.deepEqual(env.sent(), []);
+
+  fail = true;
+  await env.scheduler.tick();
+  assert.equal(calls, 2);
+  assert.deepEqual(env.logs, ["guest: 古いターン数の記録を消せませんでした"]);
+  assert.equal(env.inboxRotator.calls.length, 2);
 });
 
 test("古い添付の削除は .trash・.tmp・.cache と同じ削除のジョブで行い、消した数だけ log に出す。失敗は log に出して続ける（パスは出さない）", async (t) => {

@@ -1,5 +1,5 @@
 // ゲストの発言の受付判定（docs/plan/guest-mode.md §3.2 の fail-closed の規則）。純関数。
-// PR-GU1 ではこの判定を通っても何もしない（発言は黙って捨てる）。ターンは PR-GU2 で足す
+// この判定を通った発言だけを、index.ts が handler.ts のターンに渡す（通らなければ黙って捨てる）
 import type { IncomingMessage } from "../discord/gateway.ts";
 import type { GuestChannel } from "../store/guest.ts";
 import { GUEST_PERSONA_ID } from "./constants.ts";

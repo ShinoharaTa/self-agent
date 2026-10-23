@@ -12,9 +12,10 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { DISK_FREE_REASON, DiskQuota, PROJECT_SIZE_REASON, WORKDIR_MIN_FREE_BYTES } from "../src/agent/disk.ts";
 import { FILE_NO_CONTEXT_REASON, FILE_READ_DENIED_REASON, FILE_WRITE_DENIED_REASON } from "../src/agent/file-access.ts";
-import { SANDBOX_ALLOWED_DOMAINS } from "../src/agent/query-options.ts";
+import { buildQueryOptions, SANDBOX_ALLOWED_DOMAINS } from "../src/agent/query-options.ts";
 import type { ProgressStep, RunContext, RunInput, RunResult, StepUsage } from "../src/agent/runner.ts";
 import {
+  AUTH_SOURCE_MISMATCH_ERROR,
   BASH_ARGS_REASON,
   BASH_DISABLED_REASON,
   BASH_GUARD_FAILED_REASON,
@@ -250,6 +251,51 @@ test("SdkAgentRunner: contextTokens はメインループの最後のステッ�
   const empty = await setupRunner(messages(success("session-1", "続き"))).runner.run({ prompt: "続き" });
   assert.ok(empty.ok);
   assert.equal(empty.contextTokens, 0);
+});
+
+test("SdkAgentRunner: 既定の runner は init の apiKeySource が ANTHROPIC_API_KEY なら（ゲストの API キーで動いた）その run を失敗にして query を止める。none・apiKeySource なしは今までどおり", async () => {
+  let consumedAfterInit = false;
+  const mismatch = setupRunner(async function* () {
+    yield sdkMessage({ type: "system", subtype: "init", session_id: "session-1", apiKeySource: "ANTHROPIC_API_KEY" });
+    consumedAfterInit = true;
+    yield success("session-1", "答えてしまった");
+  });
+  const failed = await mismatch.runner.run({ prompt: "x" });
+  assert.deepEqual(failed, {
+    ok: false,
+    errorMessage: AUTH_SOURCE_MISMATCH_ERROR,
+    sessionId: "session-1",
+    sessionRecorded: false,
+    toolCalls: 0,
+  });
+  assert.equal(consumedAfterInit, false);
+  assert.equal(mismatch.calls[0]!.options.abortController?.signal.aborted, true);
+  assert.deepEqual(mismatch.logs, ["認証の種類が想定と違います"]);
+
+  const oauth = setupRunner(
+    messages(sdkMessage({ type: "system", subtype: "init", session_id: "session-1", apiKeySource: "none" }), success("session-1", "はい")),
+  );
+  assert.equal((await oauth.runner.run({ prompt: "x" })).ok, true);
+  assert.deepEqual(oauth.logs, []);
+});
+
+test("SdkAgentRunner: 既定の runner の Options は buildQueryOptions のまま（MCP サーバー・WebFetch・ファイル・Bash の hook がある）。profile が無いのに MCP サーバーかファイル操作の依存が無ければ作れない", async () => {
+  const { runner, calls } = setupRunner(messages(success("session-1", "はい")));
+  await runner.run({ prompt: "x" });
+  const { mcpServers, maxTurns, abortController, hooks, stderr, ...rest } = calls[0]!.options;
+  const { mcpServers: expectedServers, ...expected } = buildQueryOptions(cfg, createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] }));
+  assert.deepEqual(rest, expected);
+  assert.deepEqual(Object.keys(mcpServers ?? {}), Object.keys(expectedServers ?? {}));
+  assert.equal(maxTurns, INBOX_MAX_TURNS);
+  assert.ok(abortController !== undefined && stderr !== undefined);
+  assert.deepEqual(hooks?.PreToolUse?.map((entry) => entry.matcher), ["WebFetch", "Read|Write|Edit|Glob", "Bash"]);
+  assert.equal(hooks?.PostToolUse?.length, 2);
+
+  const files = { projects: fakeProjects(), projectsDir: "/srv/work/projects", disk: { check: () => ({ allowed: true as const }) } };
+  assert.throws(() => new SdkAgentRunner(cfg, undefined, files, () => {}));
+  assert.throws(
+    () => new SdkAgentRunner(cfg, () => createSdkMcpServer({ name: "selfagent", version: "0.1.0", tools: [] }), undefined, () => {}),
+  );
 });
 
 test("SdkAgentRunner: sessionId を渡せば resume する", async () => {

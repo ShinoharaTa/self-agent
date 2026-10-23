@@ -128,6 +128,20 @@ export function toMentionInfo(
   };
 }
 
+export type DisplayNameSource = {
+  member: { nickname: string | null } | null;
+  author: { globalName: string | null; username: string };
+};
+
+/** 発言者の表示名。サーバーのニックネーム → グローバル名 → ユーザー名の順に、空でない最初のもの */
+export function toDisplayName(source: DisplayNameSource): string {
+  const nickname = source.member?.nickname;
+  if (nickname !== null && nickname !== undefined && nickname !== "") return nickname;
+  const globalName = source.author.globalName;
+  if (globalName !== null && globalName !== "") return globalName;
+  return source.author.username;
+}
+
 /** 受け付ける interaction の共通部分（discord.js の interaction をそのまま渡せる形） */
 type InteractionSource = {
   guildId: string | null;

@@ -19,8 +19,11 @@ import { MCP_SERVER_NAME } from "./tools.ts";
 /** ホストのプロキシの変数。シェルが有効なときは子プロセスに写さない（認証情報を含みうる。sandbox は自分のプロキシを設定する。shell.md §2.4） */
 const PROXY_ENV_KEYS = ["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy"];
 
+/** オーナー側（OAuth）の認証の変数 */
+const OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+
 /** Claude の子プロセスに渡す環境変数（許可方式）。これ以外（DISCORD_TOKEN など）は渡さない */
-const CHILD_ENV_ALLOWLIST = [
+const CHILD_ENV_ALLOWLIST: readonly string[] = [
   "PATH",
   "HOME",
   "USER",
@@ -30,8 +33,14 @@ const CHILD_ENV_ALLOWLIST = [
   "TMPDIR",
   "NODE_EXTRA_CA_CERTS",
   ...PROXY_ENV_KEYS,
-  "CLAUDE_CODE_OAUTH_TOKEN",
+  OAUTH_TOKEN_ENV,
 ];
+
+/** ゲストの子プロセスに写す環境変数（docs/plan/guest-mode.md §3.0）。既定の一覧から OAuth のトークンを除いたもの */
+const GUEST_CHILD_ENV_ALLOWLIST: readonly string[] = CHILD_ENV_ALLOWLIST.filter((key) => key !== OAUTH_TOKEN_ENV);
+
+/** ゲストの API キーの変数。ゲストの子プロセスにだけ ANTHROPIC_API_KEY として渡す */
+const GUEST_API_KEY_ENV = "SELF_AGENT_GUEST_API_KEY";
 
 /** 1 コマンドの既定と上限の時間（ミリ秒。shell.md §2.4・§2.6） */
 export const BASH_DEFAULT_TIMEOUT_MS = 120_000;
@@ -60,16 +69,18 @@ export function projectDirNameFor(workDir: string): string | undefined {
  * （無いものは入れない）、設定ディレクトリと自動メモリ無効を足す。記録の場所は CLAUDE_CODE_PROJECT_DIR_NAME（projectDirName(workDir)）で固定する。
  * scripts/measure-turn.ts も使う。
  * shell（SELF_AGENT_SHELL=1）なら shell.md §2.4: プロキシの変数と TMPDIR はホストから写さず（TMPDIR は <workDir>/.tmp）、PATH を shellPath にし、一時ファイル・npm のキャッシュの場所、
- * git の設定、Bash の時間、バックグラウンド実行の無効を足す
+ * git の設定、Bash の時間、バックグラウンド実行の無効を足す。
+ * allowlist は写す変数の一覧（省略は CHILD_ENV_ALLOWLIST。ゲストは guestChildEnv）
  */
 export function childEnv(
   claudeConfigDir: string,
   workDir: string,
   source: NodeJS.ProcessEnv = process.env,
   shell?: ChildEnvShell,
+  allowlist: readonly string[] = CHILD_ENV_ALLOWLIST,
 ): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const key of CHILD_ENV_ALLOWLIST) {
+  for (const key of allowlist) {
     if (shell !== undefined && (PROXY_ENV_KEYS.includes(key) || key === "TMPDIR")) continue;
     const value = source[key];
     if (value !== undefined) env[key] = value;
@@ -98,6 +109,26 @@ export function childEnv(
     BASH_MAX_TIMEOUT_MS: String(BASH_MAX_TIMEOUT_MS),
     CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
   };
+}
+
+/** ゲスト用の CLAUDE_CONFIG_DIR（`<claudeConfigDir>-guest`。末尾の `/` は除く）。オーナーの設定ディレクトリ（.credentials.json）をゲストの子に見せない */
+export function guestClaudeConfigDir(claudeConfigDir: string): string {
+  return `${resolve(claudeConfigDir)}-guest`;
+}
+
+/**
+ * ゲストの子プロセスの env（docs/plan/guest-mode.md §3.0）。許可一覧は既定から CLAUDE_CODE_OAUTH_TOKEN を除いたもので、
+ * ANTHROPIC_API_KEY に SELF_AGENT_GUEST_API_KEY の値を入れる（無ければ入れない）。CLAUDE_CONFIG_DIR は guestConfigDir（guestClaudeConfigDir）、
+ * 記録のディレクトリ名・自動メモリ無効は既定と同じ。シェルの変数は渡さない
+ */
+export function guestChildEnv(
+  guestConfigDir: string,
+  workDir: string,
+  source: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const env = childEnv(guestConfigDir, workDir, source, undefined, GUEST_CHILD_ENV_ALLOWLIST);
+  const apiKey = source[GUEST_API_KEY_ENV];
+  return apiKey === undefined ? env : { ...env, ANTHROPIC_API_KEY: apiKey };
 }
 
 /**
@@ -196,6 +227,24 @@ export function ensureCwdDir(workDir: string): string {
     const stats = lstatSync(path);
     if (stats.isSymbolicLink() || !stats.isDirectory()) {
       throw new Error("CLI の作業ディレクトリ（<workDir>/cwd）が実際のディレクトリではありません");
+    }
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    mkdirSync(path, { mode: 0o700 });
+  }
+  return path;
+}
+
+/**
+ * ゲスト用の設定ディレクトリ（guestClaudeConfigDir）を作る（700）。既にあれば何もしない。symlink かディレクトリでなければ投げる
+ * （エラーの文にパスは入れない）。作ったか既にあるパスを返す
+ */
+export function ensureGuestConfigDir(claudeConfigDir: string): string {
+  const path = guestClaudeConfigDir(claudeConfigDir);
+  try {
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new Error("ゲスト用の設定ディレクトリ（CLAUDE_CONFIG_DIR の後ろに -guest を付けた場所）が実際のディレクトリではありません");
     }
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;

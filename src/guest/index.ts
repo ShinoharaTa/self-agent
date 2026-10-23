@@ -1,7 +1,8 @@
 // ゲスト利用の簡易モードの配線（docs/plan/guest-mode.md。SELF_AGENT_GUEST_* が揃ったときだけ main が呼ぶ）。
 // ゲスト専用の Bot（SELF_AGENT_GUEST_DISCORD_TOKEN）を既存の DiscordGateway で動かし、既定の人格の層（PersonaRouter・access.ts・interactions.ts）には入れない。
 // /guest はゲストのサーバーのうち参加しているものにだけ登録する。Bot がサーバーから外されたら（と起動時に参加していなければ）そのサーバーの有効な
-// チャンネルを無効にして、オーナーの #system に知らせる。PR-GU1 では発言に答えない（受付判定にかかわらず黙って捨てる）
+// チャンネルを無効にして、オーナーの #system に知らせる。発言は受付判定（access.ts）を通ったものだけを handler.ts のターンに渡す
+import type { AgentRunner } from "../agent/runner.ts";
 import { registerCommands } from "../app/interactions.ts";
 import { PERSONA_LOGIN_TIMEOUT_MS } from "../app/persona-status.ts";
 import { withTimeout } from "../app/shell-state.ts";
@@ -12,21 +13,40 @@ import type { Gateway, GatewayHandlers } from "../discord/gateway.ts";
 import type { GuestStore } from "../store/guest.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
+import type { UsageStore } from "../store/usage.ts";
+import { acceptsGuestMessage } from "./access.ts";
 import { createGuestCommand } from "./commands/guest.ts";
 import { GUEST_PERSONA_ID } from "./constants.ts";
+import { createGuestHandler } from "./handler.ts";
 import { createGuestInteractionHandler } from "./interactions.ts";
 import { createGuestNotifier, guestLeftNotice, guestNotJoinedNotice } from "./notify.ts";
 
-/** ゲストの層が使う Gateway の部分 */
-export type GuestGateway = Pick<Gateway, "start" | "stop" | "isInGuild" | "registerGuildCommands">;
+/** ゲストの層が使う Gateway の部分。selfUserId はゲスト Bot のユーザー ID（ログイン前は undefined） */
+export type GuestGateway = Pick<Gateway, "start" | "stop" | "isInGuild" | "registerGuildCommands" | "send" | "startTyping"> & {
+  selfUserId(): string | undefined;
+};
 
 export type StartGuestDeps = {
   cfg: Pick<
     Config,
-    "allowedGuildIds" | "ownerUserId" | "timeZone" | "guestGuildIds" | "guestTokenEnv" | "guestTurnsPerDay"
+    | "allowedGuildIds"
+    | "ownerUserId"
+    | "timeZone"
+    | "guestGuildIds"
+    | "guestTokenEnv"
+    | "guestTurnsPerDay"
+    | "guestUserTurnsPerDay"
+    | "guestMaxConcurrent"
+    | "guestSessionMaxTurns"
+    | "guestSessionMaxInputTokens"
   >;
   guest: GuestStore;
-  sessions: Pick<SdkSessionStore, "delete">;
+  /** ゲストのチャンネルの SDK セッション（key `guest:<channelId>`） */
+  sessions: Pick<SdkSessionStore, "get" | "set" | "delete">;
+  /** ゲストの runner（query-options.ts の createGuestRunner） */
+  runner: AgentRunner;
+  /** ゲストのターンの usage_log */
+  usage: UsageStore;
   /** 知らせの投稿先（オーナーのサーバーの #system） */
   guildSettings: Pick<GuildSettingsStore, "get">;
   /** 既定の人格の Bot（PersonaRouter の admin）。#system への知らせに使う */
@@ -44,7 +64,7 @@ export type StartGuestDeps = {
 export type GuestLayer = {
   /** ログイン → 参加していないサーバーの行の無効化 → /guest の登録が終わったら resolve する（ログインの失敗・時間切れを含む）。reject しない */
   ready: Promise<void>;
-  /** 受け付けた /guest の処理と、外されたときの知らせが終わるのを待つ（停止の待ち。shutdown.ts の queues に渡す） */
+  /** 受け付けた /guest の処理・ゲストのターン（返事まで）と、外されたときの知らせが終わるのを待つ（停止の待ち。shutdown.ts の queues に渡す） */
   idle: () => Promise<void>;
   stop: () => Promise<void>;
 };
@@ -88,9 +108,26 @@ export function startGuest(deps: StartGuestDeps): GuestLayer {
     deps.createGateway?.(onGuildLeave) ??
     new DiscordGateway(cfg.guestGuildIds, { persona: GUEST_PERSONA_ID, tokenEnv: cfg.guestTokenEnv, onGuildLeave });
 
+  const turns = createGuestHandler({
+    cfg,
+    guest,
+    sessions: deps.sessions,
+    usage: deps.usage,
+    runner: deps.runner,
+    gateway,
+    now: deps.now,
+    log,
+  });
+
   const handlers: GatewayHandlers = {
-    // PR-GU1 では答えない（log も出さない）
-    onMessage: () => {},
+    // 受付判定（docs/plan/guest-mode.md §3.2 の 5 条件）を通らない発言と、停止を始めた後の発言は黙って捨てる（log も出さない）
+    onMessage: (message) => {
+      if (stopping()) return;
+      const botUserId = gateway.selfUserId();
+      const channel = guest.get(message.channelId);
+      if (!acceptsGuestMessage({ message, guestGuildIds: cfg.guestGuildIds, channel, botUserId })) return;
+      track(turns.handleMessage(message, botUserId));
+    },
     onInteraction: (interaction, responder) => {
       if (!stopping()) {
         track(handleInteraction(interaction, responder));
@@ -147,6 +184,7 @@ export function startGuest(deps: StartGuestDeps): GuestLayer {
     idle: async () => {
       // 待っている間に増えた分も待つ
       while (inFlight.size > 0) await Promise.all([...inFlight]);
+      await turns.idle();
     },
     stop: () => gateway.stop(),
   };

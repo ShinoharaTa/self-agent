@@ -328,3 +328,37 @@ test("/usage: 今日と直近 7 日（SELF_AGENT_TZ の日付で区切る）を 
     for (const part of week) assert.ok(weekText!.includes(part), `${timeZone} 7 日 ${part}`);
   }
 });
+
+test("/usage: ゲストのときだけ人格の後に「ゲスト（API キー・今日）」の 1 行を出し、既存のブロックにはゲストの行を含めない（人格なしは既定の人格で絞る）", async (t) => {
+  const { usage, recordAt } = setup(t);
+  // 今日（JST 10/02）: 既定の人格 1、ゲスト 成功 2・失敗 1。昨日のゲストは数えない
+  recordAt("2026-10-01T15:00:00.000Z", ok(10, 900, 90, 0));
+  recordAt("2026-10-01T16:00:00.000Z", { ...ok(5, 1000, 2000, 0), outputTokens: 30, persona: "guest", kind: "guest" });
+  recordAt("2026-10-01T17:00:00.000Z", { ...ok(1, 0, 100, 0), outputTokens: 12, persona: "guest", kind: "guest" });
+  recordAt("2026-10-01T18:00:00.000Z", { ok: false, persona: "guest", kind: "guest" });
+  recordAt("2026-10-01T14:59:59.999Z", { ...ok(7, 7, 7, 0), outputTokens: 99, persona: "guest", kind: "guest" });
+
+  const withoutGuest = usageText(usage, NOW, "Asia/Tokyo");
+  assert.doesNotMatch(withoutGuest, /ゲスト/);
+  const [today] = withoutGuest.split("\n\n");
+  assert.match(today!, /ターン 1（成功 1 \/ 失敗 0）\n入力トークン 10\n/);
+
+  const line = "ゲスト（API キー・今日）: ターン 3（失敗 1）・入力 3,106・出力 42";
+  const withGuest = usageText(usage, NOW, "Asia/Tokyo", [], true);
+  assert.equal(withGuest, `${withoutGuest}\n\n${line}`);
+  const withPersonas = usageText(usage, NOW, "Asia/Tokyo", [{ id: "mika", name: "Mika" }], true);
+  assert.ok(withPersonas.endsWith(`\n\n${line}`));
+  assert.doesNotMatch(withPersonas.slice(0, -line.length), /ゲスト/);
+
+  const command = createUsageCommand({
+    usage,
+    cfg: { timeZone: "Asia/Tokyo", guest: true },
+    attachments: { totals: () => ({ count: 0, bytes: 0 }) },
+  });
+  const responder = new FakeResponder();
+  await command.handle(
+    { kind: "command", name: "usage", options: {}, guildId: "guild-1", channelId: "inbox-1", userId: "owner-1", createdAt: NOW },
+    responder,
+  );
+  assert.equal(responder.replies[0]?.text, `${withGuest}\n\n保存している添付 0 件（0.0 MB）`);
+});
