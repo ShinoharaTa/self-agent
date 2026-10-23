@@ -41,13 +41,18 @@ export const BASH_MAX_TIMEOUT_MS = 300_000;
 export type ChildEnvShell = { workDir: string; execPath: string };
 
 /**
- * CLI が cwd から作る会話の記録のディレクトリ名と同じ規則（docs sessions.md。英数字以外を `-` に置き換える）で、workDir のパス（realpath にしない。
- * 今まで Options.cwd に渡していた値そのもの）から作る名前。1〜64 字でなければ undefined。
- * cwd を `<workDir>/cwd` に変えても記録の場所を変えないために CLAUDE_CODE_PROJECT_DIR_NAME で固定する（#139）
+ * CLI が cwd から作る会話の記録のディレクトリ名と同じ規則（docs sessions.md。英数字以外を `-` に置き換える）で、パスから作る名前。1〜64 字でなければ undefined。
+ * cwd を `<workDir>/cwd` に変えても記録の場所を変えないために CLAUDE_CODE_PROJECT_DIR_NAME で固定する（#139）。
+ * CLI は cwd を realpath にしてから名前を作るので、呼び出し側は実際の場所（projectDirNameFor）を渡す
  */
-export function projectDirName(workDir: string): string | undefined {
-  const name = workDir.replace(/[^A-Za-z0-9]/g, "-");
+export function projectDirName(path: string): string | undefined {
+  const name = path.replace(/[^A-Za-z0-9]/g, "-");
   return name.length >= 1 && name.length <= 64 ? name : undefined;
+}
+
+/** workDir の実際の場所（末尾の `/`・相対パス・symlink を解いたもの。今まで CLI が cwd から作っていた名前）から作る記録のディレクトリ名 */
+export function projectDirNameFor(workDir: string): string | undefined {
+  return projectDirName(realPath(workDir));
 }
 
 /**
@@ -70,7 +75,7 @@ export function childEnv(
     if (value !== undefined) env[key] = value;
   }
   env.CLAUDE_CONFIG_DIR = claudeConfigDir;
-  const projectDir = projectDirName(workDir);
+  const projectDir = projectDirNameFor(workDir);
   if (projectDir !== undefined) env.CLAUDE_CODE_PROJECT_DIR_NAME = projectDir;
   env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
   if (shell === undefined) return env;

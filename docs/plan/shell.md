@@ -88,8 +88,8 @@ credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 
 ### 2.3 読める・書ける範囲（結果）
 - 読める: workDir の中（全プロジェクト）、node（npm を含む）、/usr・/etc など OS のファイル。
-- 読めない: ホーム全体（`~/.config`（gh・self-agent の env）・`~/.ssh`・`~/workspace`（Bot のリポジトリと他プロジェクト）・`~/.local/share/self-agent/{data,claude}`（DB・devlog・会話の記録）・`~/.npmrc`・他のツールの設定）、/tmp・/run（他のサービスのソケット）、/var/log、`<workDir>/cwd`（空。書けない）。
-- 書ける: workDir の中だけ。**他のチャンネルのプロジェクトのファイル（その .trash を含む）も書き換え・消せる**（Bash は sandbox の設定を固定するため。§1 の (d) を採らない理由・決定 6）。
+- 読めない: ホーム全体（`~/.config`（gh・self-agent の env）・`~/.ssh`・`~/workspace`（Bot のリポジトリと他プロジェクト）・`~/.local/share/self-agent/{data,claude}`（DB・devlog・会話の記録）・`~/.npmrc`・他のツールの設定）、/tmp・/run（他のサービスのソケット）、/var/log。
+- 書ける: workDir の中だけ（`<workDir>/cwd`（CLI の cwd。空）は denyWrite で書けない）。**他のチャンネルのプロジェクトのファイル（その .trash を含む）も書き換え・消せる**（Bash は sandbox の設定を固定するため。§1 の (d) を採らない理由・決定 6）。
 - 持ち出し: github.com・npm は相手のトークンを使えば送り先になりうる（push・publish）。持ち出せるのは sandbox の中で読めるもの = プロジェクトのファイルだけ。**プロジェクトに秘密を置かない**（project_open の注意に既にある）を前提にする。
 - 起動時の設定の確認（§4）で、秘密の場所（`dataDir`・`claudeConfigDir`・リポジトリ（process.cwd()）・`~/.config/self-agent`）のどれかが、sandbox から読める・書ける場所（allowRead の workDir と node の版のディレクトリ。allowWrite はすべて workDir の中）と同じか、その中・外側にあれば Bash を無効にする（allowRead は denyRead より優先なので、重なると秘密が読める）。realpath で比べ、解決できなければ重なるとみなす。PR 1 で実装済み（`placesOverlap`）。PR 3 では、この確認と §2.2 の denyRead・allowRead・allowWrite を同じ関数から作り、並びがずれないようにする。
 
