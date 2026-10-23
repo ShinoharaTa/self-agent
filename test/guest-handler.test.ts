@@ -272,6 +272,42 @@ test("寿命: resume が「会話の記録が無い」で失敗したら、SDK �
   assertCleanLogs(env.logs);
 });
 
+test("寿命: resume が結果の届かない失敗で 3 回続いたら、次のターンは新しいセッションで始める（タイムアウト・中断は数えず、成功で数え直す）", async (t) => {
+  const crash = failed("exception: Error: Claude Code process exited with code 1");
+  const env = setup(t, [ok("1", "s1"), crash, crash, ok("2", "s1"), crash, crash, crash, ok("3", "s2")]);
+  const times = [0, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000];
+  for (const [index, ms] of times.entries()) {
+    env.setClock(at(ms));
+    await env.send({ createdAt: at(ms), id: `r-${index}` });
+  }
+  assert.deepEqual(
+    env.runner.inputs.map((input) => input.sessionId),
+    [undefined, "s1", "s1", "s1", "s1", "s1", "s1", undefined],
+  );
+  assert.equal(env.sessions.get(guestSessionKey(CHANNEL)), "s2");
+  assert.equal(env.guest.get(CHANNEL)?.sessionTurns, 1);
+  assert.ok(env.logs.includes("guest: resume の失敗が 3 回続いたため、次のターンは新しいセッションで始めます（guild=g-guest）"));
+  assertCleanLogs(env.logs);
+
+  // タイムアウト・中断・結果の届いた失敗は数えない
+  const other = setup(t, [ok("1", "s1"), failed("timeout"), failed("aborted"), failed("error_max_turns", true), ok("2", "s1")]);
+  for (const [index, ms] of [0, 10_000, 20_000, 30_000, 40_000].entries()) {
+    other.setClock(at(ms));
+    await other.send({ createdAt: at(ms), id: `o-${index}` });
+  }
+  assert.equal(other.runner.inputs.at(-1)?.sessionId, "s1");
+});
+
+test("上限: guest_turns には上限の判定に使った日（発言の日）で数える", async (t) => {
+  // 発言は 10/23 23:59:59 JST、ターンが終わるのは 10/24
+  const sentAt = new Date("2026-10-23T14:59:59.000Z");
+  const env = setup(t, [ok("1", "s1")]);
+  env.setClock(new Date("2026-10-23T15:00:30.000Z"));
+  await env.send({ createdAt: sentAt });
+  assert.equal(env.guest.countTurns(GUILD, TODAY), 1);
+  assert.equal(env.guest.countTurns(GUILD, "2026-10-24"), 0);
+});
+
 test("上限: サーバーの 301 回目・ユーザーの 51 回目は決まった文面を返し、run は呼ばない。再起動（ストア・handler を作り直す）しても数は残る", async (t) => {
   const db = tempDb(t);
   const first = setup(t, [], {}, db);

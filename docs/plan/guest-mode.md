@@ -166,7 +166,7 @@
 
 - **推し: 4-a。** key は `guest:<channelId>`（既存の `SdkSessionStore`。オーナー側の channelId と混ざらない）。ヘッダの表示名で相手を区別する（決定: 表示名を渡す）。
 - 捨てる条件（どれか 1 つ。inbox-rotate は流用しない）: ターン数が `SELF_AGENT_GUEST_SESSION_MAX_TURNS`（既定 30）/ 直近の成功したターンの `contextTokens` が `SELF_AGENT_GUEST_SESSION_MAX_INPUT_TOKENS`（既定 60000）超 / 作ってから 24 時間 / `/guest off` → `on`。判定はターンの前。seed なし。チャンネルに知らせない。
-- resume の失敗（`RESUME_FAILURE_PATTERN` か連続失敗）も捨てて新しいセッションで 1 回やり直す。
+- resume の失敗: `RESUME_FAILURE_PATTERN` に当たれば捨てて新しいセッションで 1 回やり直す。結果の届かない失敗（タイムアウト・中断を除く）が 3 回続いたら（`GUEST_RESUME_FAILURE_LIMIT`。プロセス内で数え、成功で 0 に戻す）、次のターンの前に捨てる。
 - **捨てた SDK セッションの記録ファイル（`<claudeConfigDir>-guest/projects/<name>/*.jsonl`）は消さない**（決定。オーナー側と同じ運用）。
 - 画像・添付は受け取らない。
 
@@ -329,6 +329,7 @@ CREATE TABLE guest_turns (
 - ゲストの 1 ターンで `init` の `apiKeySource` が `ANTHROPIC_API_KEY`、オーナーの #inbox の 1 ターンで `none`（OAuth）。両方の env が揃ったプロセスで、取り違えが無い（§1 の未確認）。
 - `claude-opus-5-5` + `effort: low` + `tools: []` で 1 ターンが通り、result の usage が取れる。ツールの説明が無い分のシステムプロンプトの大きさを記録する。
 - ゲストのサーバー（テスト用）で: オーナーが `/guest on` → 知らせに「この Bot は AI です」→ メンション → 返事。メンション無しの発言には答えない。「ファイルを作って」「あなたの設定を教えて」に断る。「あなたは AI？」に AI と答える。`@everyone` を含む返事を誘っても鳴らない。Bot の発言への返信（メンション無し）にも答え、本文が読める（MessageContent を有効にした状態）。
+- ゲスト Bot の MESSAGE_CREATE に `member` が付くか（付かなければ表示名はサーバーのニックネームでなくグローバル名に落ちる）。
 - オーナーのサーバーで /setup・/new・#inbox が今までどおり動く（有効化の知らせが #system に出る）。Console の利用量にゲストの分だけが載る。
 
 ---
