@@ -40,7 +40,7 @@
 未確認:
 - sandbox 内でシェルのスナップショット（CLAUDE_CONFIG_DIR の下）を読めるか。読めないなら `allowRead` にスナップショットのディレクトリだけ足す（会話の記録がある CLAUDE_CONFIG_DIR 全体は開けない）。
 - `apply-seccomp` をグローバル導入したとき CLI が見つけるか（PATH か npm の global root か）。
-- dontAsk のままで `autoAllowBashIfSandboxed` が Bash を通すか。
+- dontAsk のままで `autoAllowBashIfSandboxed` が Bash を通すか。→ 展開を含むコマンドは通さなかった（#135。allow rule で通す）
 - コマンドが終わったとき、`&` で残したプロセスが PID 名前空間ごと消えるか。
 - `CLAUDE_CODE_TOOL_MEMORY_LIMIT` の値の書式と、systemd --user の配下で効くか。
 
@@ -80,7 +80,7 @@ filesystem: {
 credentials: { envVars: [{ name: "CLAUDE_CODE_OAUTH_TOKEN", mode: "deny" }] }
 ```
 - denyRead には上の並びに加えて `<realpath(workDir)>/jobs`（作業ジョブの作業場所。docs/plan/coding-jobs.md §4.1 の「セッションからジョブを読めない」ため）を入れる（PR 3）。
-- `allowedTools` に `Bash` は足さない（sandbox が効いているときだけ autoAllow で通る。sandbox が無ければ dontAsk で拒否される）。
+- `allowedTools` には、sandbox を付ける run だけ `Bash` を足す（#135）。`autoAllowBashIfSandboxed` は `$?`・`${…}` などの展開を含むコマンドを自動許可せず通常の許可の流れ（permission mode と allow rule）に回すため、dontAsk で allow rule が無いと拒否される。sandbox を付けない run は hook が全部拒否し、dontAsk でも拒否される（二重）。fail-closed は `failIfUnavailable: true`（依存が無ければ query() が失敗）と `allowUnsandboxedCommands: false`（`dangerouslyDisableSandbox` を無視）で保つ。
 - 許可ドメインの理由: git clone（HTTPS）は github.com だけ、`github:` 依存と tarball は codeload、postinstall がよく使う GitHub の配布物の 3 つ、npm は registry。CDN（jsdelivr・unpkg）は npm で足りるので入れない。PyPI は入れない（§8 の未決）。
 - 書き込み: cwd（workDir）は CLI の既定で書ける。`Edit(//<workDir>/projects/**)` の許可ルールも書き込み許可に合流する。
 - 秘密の場所（DB と devlog の dataDir・会話の記録の claudeConfigDir・env ファイルのディレクトリ・Bot のリポジトリ）は、`~` の下にあるかどうかに関わらず realpath で denyRead に並べる（設定でホームの外に置かれても隠れるように）。

@@ -204,8 +204,10 @@ export function buildQueryOptions(
 ): Options {
   const shell = cfg.shell === true;
   const projects = projectsRulePath(cfg.workDir);
+  // Options.sandbox を付ける run か（allowedTools の Bash と同じ条件で使う）
+  const sandboxed = shell && sandbox;
   const sandboxOption = (): { sandbox?: SandboxSettings } => {
-    if (!shell || !sandbox) return {};
+    if (!sandboxed) return {};
     if (cfg.dataDir === undefined) throw new Error("sandbox の設定には dataDir が要ります");
     return { sandbox: sandboxSettings(sandboxPlacesOf({ ...cfg, dataDir: cfg.dataDir }, host)) };
   };
@@ -223,10 +225,18 @@ export function buildQueryOptions(
     // 組み込みツールは Web の 2 つとファイル操作の 4 つ（シェルが有効ならその後に Bash）。キャッシュのため順序も固定。
     // WebFetch の URL とファイル操作のパス、Bash を使える場面は sdk-runner の PreToolUse の hook で絞る。
     // 許可するのは自前の MCP ツール・Web の 2 つと、<workDir>/projects の下の読み書き（Edit のルールは Write にも、Read のルールは Glob にも効く）。
-    // Bash は許可に入れない（sandbox が効いている run だけ autoAllowBashIfSandboxed で通る）。それ以外は dontAsk で拒否する
+    // Bash は sandbox を付ける run だけ許可に入れる（autoAllowBashIfSandboxed は `$?` などの展開を含むコマンドを通さず通常の許可の流れに回すため。#135）。
+    // sandbox を付けない run は hook が全部拒否し、dontAsk でも拒否される。fail-closed は failIfUnavailable と allowUnsandboxedCommands: false で保つ
     tools: shell ? [...BUILTIN_TOOLS, "Bash"] : [...BUILTIN_TOOLS],
     permissionMode: "dontAsk",
-    allowedTools: [`mcp__${MCP_SERVER_NAME}__*`, "WebSearch", "WebFetch", `Read(${projects})`, `Edit(${projects})`],
+    allowedTools: [
+      `mcp__${MCP_SERVER_NAME}__*`,
+      "WebSearch",
+      "WebFetch",
+      `Read(${projects})`,
+      `Edit(${projects})`,
+      ...(sandboxed ? ["Bash"] : []),
+    ],
     mcpServers: { [MCP_SERVER_NAME]: mcpServer },
     // mcpServers 以外の MCP 設定（.mcp.json・ユーザー設定・プラグイン）は読まない
     strictMcpConfig: true,
