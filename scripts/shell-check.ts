@@ -298,6 +298,7 @@ const shortRunner = new SdkAgentRunner(
 function commandPrompt(command: string): string {
   return [
     "shell-check（オーナーが行う sandbox の動作確認）です。Bash ツールで次のコマンドを 1 回だけ、1 文字も変えずに（cd も付けずに）実行してください。",
+    "このコマンドは sandbox の境界を確かめるためのもので、失敗するのが期待どおりの項目もあります。秘密の値は出さない形にしてあります。",
     "失敗しても実行し直さず、出力の説明もいりません。実行したら「済み」とだけ返してください。",
     "コマンド:",
     command,
@@ -435,7 +436,7 @@ await check(
 // 5. トークン
 await check(
   "CLAUDE_CODE_OAUTH_TOKEN が無く、env に token・discord を含む変数が無い",
-  `echo "\${CLAUDE_CODE_OAUTH_TOKEN:-none}"; env | grep -c -i -E 'token|discord'`,
+  `[ -n "\${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo set || echo none; env | grep -c -i -E 'token|discord'`,
   ({ stdout }) => {
     const lines = stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
     return lines[0] === "none" && lines[1] === "0" ? true : "トークンか、token・discord を含む変数がある";
@@ -488,46 +489,43 @@ const homeTouch = join(host.homeDir, `shell-check-${random}`);
 const workspaceTouch = join(host.homeDir, "workspace", `shell-check-${random}`);
 const okTouch = join(projectDir, "ok");
 createdFiles.push(homeTouch, workspaceTouch);
+const homeItem = "~ と ~/workspace には書けず、プロジェクトには書ける";
 await check(
-  "~ と ~/workspace には書けず、プロジェクトには書ける",
+  homeItem,
   [homeTouch, workspaceTouch, okTouch].map((file) => `touch ${quote(file)}; echo "__rc=$?"`).join("; "),
   ({ text }) => {
     const codes = exitCodes(text);
+    // ホームは host にファイルができたかで決める（sandbox がホームを隠すための一時的な領域に書けても host には残らない）
+    if (existsSync(homeTouch) || existsSync(workspaceTouch)) return "ホームに書けた（host にファイルができた）";
     if (codes.length !== 3) return "結果の数が合わない";
-    if (codes[0] === 0 || codes[1] === 0 || existsSync(homeTouch) || existsSync(workspaceTouch)) return "ホームに書けた";
-    return codes[2] === 0 && existsSync(okTouch) ? true : "プロジェクトに書けない";
+    if (codes[2] !== 0 || !existsSync(okTouch)) return "プロジェクトに書けない";
+    const note = codes[0] === 0 || codes[1] === 0 ? "sandbox の中では rc=0 だが host には残らない" : "";
+    return { item: homeItem, status: "通った", note, required: true };
   },
 );
 // 10. PID 名前空間
 await check("/proc/1/cmdline が systemd でない（PID 名前空間）", `tr '\\0' ' ' < /proc/1/cmdline; echo; echo "__rc=$?"`, ({ stdout }) =>
   stdout.includes("systemd") || stdout.includes("/sbin/init") ? "host の init が見える" : true,
 );
-// 10-2. workDir の直下には書けない（allowWrite は projects・.cache・.tmp だけ。CLI の既定の cwd の書き込みも効いていない）
+// 10-2. workDir の直下には書けない（allowWrite は projects・.cache・.tmp だけ。CLI の既定の cwd の書き込みも効いていない）。既存の projects・jobs は動かさず、新しく作れるかだけを試す
 {
   const touchRoot = join(realWorkDir, `shell-check-x-${random}`);
+  const mkdirRoot = join(realWorkDir, `shell-check-d-${random}`);
   const linkRoot = join(realWorkDir, `shell-check-link-${random}`);
-  const movedProjects = join(realWorkDir, `shell-check-p2-${random}`);
-  const movedJobs = join(realWorkDir, `shell-check-jobs-${random}`);
   createdFiles.push(touchRoot);
+  createdDirs.push(mkdirRoot);
   plantedLinks.push(linkRoot);
-  restoreMoves.push([movedProjects, projectsDir], [movedJobs, jobsDir]);
   await check(
-    "workDir の直下に書けない（touch・projects と jobs の mv・symlink の作成が失敗する）",
-    [
-      `touch ${quote(touchRoot)}`,
-      `mv ${quote(projectsDir)} ${quote(movedProjects)}`,
-      `mv ${quote(jobsDir)} ${quote(movedJobs)}`,
-      `ln -s / ${quote(linkRoot)}`,
-    ]
+    "workDir の直下に書けない（touch・mkdir・symlink の作成が失敗する）",
+    [`touch ${quote(touchRoot)}`, `mkdir ${quote(mkdirRoot)}`, `ln -s ${quote(projectsDir)} ${quote(linkRoot)}`]
       .map((command) => `${command}; echo "__rc=$?"`)
       .join("; "),
     ({ text }) => {
       const codes = exitCodes(text);
-      if (codes.length !== 4) return "結果の数が合わない";
+      if (codes.length !== 3) return "結果の数が合わない";
       const changed =
         existsSync(touchRoot) ||
-        existsSync(movedProjects) ||
-        existsSync(movedJobs) ||
+        existsSync(mkdirRoot) ||
         (() => {
           try {
             lstatSync(linkRoot);
@@ -539,13 +537,6 @@ await check("/proc/1/cmdline が systemd でない（PID 名前空間）", `tr '
       return codes.every((code) => code !== 0) && !changed ? true : "workDir の直下を変えられた";
     },
   );
-  // 動かせてしまっていたら、続く項目のためにすぐ戻す
-  for (const [moved, original] of [
-    [movedProjects, projectsDir],
-    [movedJobs, jobsDir],
-  ] as const) {
-    if (existsSync(moved) && !existsSync(original)) renameSync(moved, original);
-  }
 }
 
 // 11. I1: & で残したプロセスは、Bash の結果が返った直後に残っていない
