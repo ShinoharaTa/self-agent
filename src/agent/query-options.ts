@@ -187,7 +187,7 @@ export function ensureSandboxWriteDirs(workDir: string): void {
 
 /**
  * CLI の cwd（`<realpath(workDir)>/cwd`）を作る（700）。既にあれば何もしない。symlink かディレクトリでなければ投げる
- * （allowWrite・cwd が symlink の先に向かないように）。作ったか既にあるパスを返す
+ * （CLI が既定で書ける cwd が symlink の先に向かないように）。作ったか既にあるパスを返す
  */
 export function ensureCwdDir(workDir: string): string {
   const path = join(realPath(workDir), WORK_CWD_DIR_NAME);
