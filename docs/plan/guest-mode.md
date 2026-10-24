@@ -278,6 +278,7 @@ CREATE TABLE guest_turns (
 - 人格の id `guest` は予約語にする: `SELF_AGENT_PERSONAS` に `guest` があれば設定エラー（usage_log の persona・devlog の印と重ならないように。今の config は `default` しか弾かない。確認）。
 - `config.ts` に `GuestConfig`（`guest: boolean`、`guestGuildIds`、`guestApiKeyPresent`、…）を足し、`loadConfig` の末尾で `...loadGuestConfig(env, allowedGuildIds)`。
 - 定数: `GUEST_MAX_CHANNELS_PER_GUILD = 5`、`GUEST_MIN_INTERVAL_SEC = 5`、`GUEST_MAX_CONTENT_CHARS = 2000`、`GUEST_MAX_QUEUE = 5`、`GUEST_SESSION_MAX_AGE_HOURS = 24`、`GUEST_TURNS_KEEP_DAYS = 8`、呼び名 `GUEST_BOT_NAME = "しのえもん"`（コードに書く。env にしない）。
+- 上の 3 つは `npm run guest-setup`（#151）で対話式に `~/.config/self-agent/env` へ書ける: トークン・API キーは伏せ字で訊き、形と `DISCORD_TOKEN`・人格のトークン・`SELF_AGENT_ALLOWED_GUILD_IDS` との重なりを確かめ、Discord（`/users/@me`・`/users/@me/guilds`）と Claude（`/v1/models/<SELF_AGENT_GUEST_MODEL>`）に通るか確かめてから（`--skip-check` で飛ばす）、`env.bak` に控えを取って書く。中止・失敗では何も書かない。値は画面に出さない。反映は再起動。
 
 ---
 
@@ -345,6 +346,7 @@ CREATE TABLE guest_turns (
    - `childEnv` の許可一覧を引数で変えられる形（既定は今のまま。テストで固定）、ゲストの一覧（OAuth なし・`ANTHROPIC_API_KEY` あり）。`buildGuestQueryOptions`・`GUEST_SYSTEM_PROMPT`（しのえもん・AI の明示）・全拒否の hook。`SdkAgentRunner` に Options・hooks・env の組み立て方を注入できる形（`createMcpServer`・`files` を省略可にし、ゲストでは渡さない）。ゲスト用の `CLAUDE_CONFIG_DIR`（`<claudeConfigDir>-guest`）を起動時に作る。`init` の `apiKeySource` の確認（想定と違えば失敗）。ゲストの runner のインスタンス（devLog なし）。
    - `src/guest/handler.ts`（メンション・返信の判定（GU1 で足した `mentionsMe`・`replyToAuthorId`）、本文の整形、上限、専用キュー、SDK セッションの resume と捨てる判定、usage の記録、返信）。
    - /usage のゲストの行（既存のブロックは persona `guest` を除く。人格なしのときは `'default'` で絞る）。`guest_turns` の tick での削除（scheduler に 1 行。Discord のゲストのサーバーには触らない）。
+2b. **PR-GU2b 対話式の設定（#151）**: `npm run guest-setup`（`scripts/guest-setup.ts` と純関数の `src/guest/setup-env.ts`。§5 の 3 つを訊き、接続を確かめてから env に書く）。
 3. **PR-GU3 運用**: README・README_ja・REQUIREMENTS・CLAUDE.md の更新。手順: Developer Portal（Public Bot オフ・権限・intents）、Claude Console で API キーを発行し、Max の月次 API クレジット（5x $100 / 20x $200）を使うなら Console の org をその Max のアカウントに紐づける、`~/.config/self-agent/env` への置き方、どちらの `CLAUDE_CONFIG_DIR` にも `claude login` しない（`.credentials.json` を置かない）こと、Developer Portal で MessageContent intent を有効にすること。認証・請求の失敗の #system の知らせ。ゲスト Bot の接続の知らせ（「ゲスト Bot に接続できません」「…接続しました」。persona-status.ts と同じ規則で scheduler の tick から）。実機の受け入れの記録。
 
 順序: GU1 → GU2 → GU3。GU1 と GU2 は並行して作れるが、マージは GU1 → GU2。
