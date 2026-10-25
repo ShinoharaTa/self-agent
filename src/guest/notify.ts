@@ -6,20 +6,27 @@ import type { Gateway } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import { GUEST_MAX_CHANNELS_PER_GUILD } from "./constants.ts";
 
-export function guestEnabledNotice(guildId: string, active: number): string {
-  return `ゲスト: サーバー ${guildId} でチャンネルを有効化しました（${active}/${GUEST_MAX_CHANNELS_PER_GUILD}）`;
+/** 操作した人がオーナーでなく管理者（Manage Server）なら末尾に「（管理者）」を付ける（ユーザー ID は入れない） */
+function byAdminSuffix(byAdmin: boolean): string {
+  return byAdmin ? "（管理者）" : "";
 }
 
-export function guestDisabledNotice(guildId: string, active: number): string {
-  return `ゲスト: サーバー ${guildId} でチャンネルを無効化しました（${active}/${GUEST_MAX_CHANNELS_PER_GUILD}）`;
+export function guestEnabledNotice(guildId: string, active: number, byAdmin = false): string {
+  return `ゲスト: サーバー ${guildId} でチャンネルを有効化しました（${active}/${GUEST_MAX_CHANNELS_PER_GUILD}）${byAdminSuffix(byAdmin)}`;
 }
 
+export function guestDisabledNotice(guildId: string, active: number, byAdmin = false): string {
+  return `ゲスト: サーバー ${guildId} でチャンネルを無効化しました（${active}/${GUEST_MAX_CHANNELS_PER_GUILD}）${byAdminSuffix(byAdmin)}`;
+}
+
+/** 許可済みのサーバーから外された（GuildDelete） */
 export function guestLeftNotice(guildId: string, disabled: number): string {
-  return `ゲスト: サーバー ${guildId} から外されました（有効なチャンネル ${disabled} 件を無効にしました）`;
+  return `ゲスト: サーバー ${guildId} から外されたため、許可を取り消しました（有効なチャンネル ${disabled} 件を無効にしました）`;
 }
 
+/** 起動時に、許可済みのサーバーに参加していなかった */
 export function guestNotJoinedNotice(guildId: string, disabled: number): string {
-  return `ゲスト: サーバー ${guildId} に参加していないため、有効なチャンネル ${disabled} 件を無効にしました`;
+  return `ゲスト: サーバー ${guildId} に参加していないため、許可を取り消しました（有効なチャンネル ${disabled} 件を無効にしました）`;
 }
 
 export type GuestNotifyDeps = {

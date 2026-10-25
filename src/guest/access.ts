@@ -9,8 +9,8 @@ export type GuestAccessInput = {
     IncomingMessage,
     "guildId" | "channelId" | "authorIsBot" | "isWebhook" | "persona" | "mentionsMe" | "replyToAuthorId"
   >;
-  /** SELF_AGENT_GUEST_GUILD_IDS */
-  guestGuildIds: readonly string[];
+  /** 発言のサーバーが guest_guilds で許可済みか（呼び出し側が GuestGuildStore.isAllowed で引く。DM は false） */
+  guildAllowed: boolean;
   /** その発言のチャンネルの guest_channels の行（無ければ undefined） */
   channel: GuestChannel | undefined;
   /** ゲスト Bot のユーザー ID（ログイン前で分からなければ undefined） */
@@ -19,14 +19,14 @@ export type GuestAccessInput = {
 
 /**
  * ゲストのターンを動かしてよい発言か。次のすべてを満たすときだけ true（どれか分からなければ false）:
- * (1) サーバーが SELF_AGENT_GUEST_GUILD_IDS にある、(2) guest_channels にそのサーバー・チャンネルの有効な行がある、
+ * (1) サーバーが guest_guilds で許可済み（認証コードで許可され、取り消されていない）、(2) guest_channels にそのサーバー・チャンネルの有効な行がある、
  * (3) ゲスト Bot の Gateway から届いた、(4) 発言者が Bot・Webhook でない、
  * (5) ゲスト Bot がメンションされたか、ゲスト Bot の発言への返信
  */
 export function acceptsGuestMessage(input: GuestAccessInput): boolean {
-  const { message, guestGuildIds, channel, botUserId } = input;
+  const { message, guildAllowed, channel, botUserId } = input;
   const guildId = message.guildId;
-  if (guildId === null || !guestGuildIds.includes(guildId)) return false;
+  if (guildId === null || !guildAllowed) return false;
   if (channel === undefined || channel.disabledAt !== null) return false;
   if (channel.channelId !== message.channelId || channel.guildId !== guildId) return false;
   if (message.persona !== GUEST_PERSONA_ID) return false;

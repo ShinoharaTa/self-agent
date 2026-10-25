@@ -61,10 +61,12 @@ export class GuestStore {
 
   /**
    * チャンネルを有効にする。無効な行があれば開き直し（disabled_* を NULL、enabled_at を今、SDK セッションの数をリセット）、無ければ作る。
-   * 既に有効なら already_enabled、そのサーバーの有効なチャンネルが limit 以上なら limit（どちらも何も変えない）
+   * 既に有効なら already_enabled、そのサーバーの有効なチャンネルが limit 以上なら limit（どちらも何も変えない）。
+   * 呼び出し側のトランザクションの中（guest-invites.ts の redeem）なら、自分では BEGIN せずその中で行う
    */
   enable(guildId: string, channelId: string, limit: number = GUEST_MAX_CHANNELS_PER_GUILD): GuestEnableResult {
-    this.db.exec("BEGIN");
+    const own = !this.db.isTransaction;
+    if (own) this.db.exec("BEGIN");
     try {
       const existing = this.get(channelId);
       let result: GuestEnableResult;
@@ -83,10 +85,10 @@ export class GuestStore {
         if (row === undefined) throw new Error("ゲストのチャンネルを保存できませんでした");
         result = { result: "enabled", channel: toGuestChannel(row), active: this.countActive(guildId) };
       }
-      this.db.exec("COMMIT");
+      if (own) this.db.exec("COMMIT");
       return result;
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      if (own) this.db.exec("ROLLBACK");
       throw error;
     }
   }

@@ -23,3 +23,8 @@ export const GUEST_PERSONA_ID = "guest";
 export function guestSessionKey(channelId: string): string {
   return `guest:${channelId}`;
 }
+
+/** 認証コード（docs/plan/guest-mode.md §3.2.2）の有効期限（時間） */
+export const GUEST_INVITE_TTL_HOURS = 24;
+/** 認証コードの先頭（`guest-xxxx-…`） */
+export const GUEST_INVITE_PREFIX = "guest";

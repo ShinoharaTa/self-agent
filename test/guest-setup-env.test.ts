@@ -2,31 +2,30 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   extractDiscordBotId,
+  GUEST_DEPRECATED_ENV_KEYS,
   GUEST_ENV_KEYS,
+  removeEnvLines,
   upsertEnvLines,
   validateApiKey,
   validateDiscordToken,
-  validateGuildIds,
 } from "../src/guest/setup-env.ts";
 
 // 明らかな偽物の値だけを使う
 const TOKEN = "aaa.bbb.ccc";
 const API_KEY = "sk-ant-dummy-key-for-tests";
 const GUILD_A = "10000000000000000";
-const GUILD_B = "20000000000000000";
+// upsertEnvLines は変数の名前によらないので、3 つの変数で試す
 const ENTRIES = [
   ["SELF_AGENT_GUEST_DISCORD_TOKEN", "aaa.bbb.ccc"],
   ["SELF_AGENT_GUEST_GUILD_IDS", GUILD_A],
   ["SELF_AGENT_GUEST_API_KEY", API_KEY],
 ] as const;
+const ENTRY_KEYS = ENTRIES.map(([key]) => key);
 const COMMENT = "# guest mode (npm run guest-setup)";
 
-test("GUEST_ENV_KEYS: 3 つの変数の順", () => {
-  assert.deepEqual(GUEST_ENV_KEYS, [
-    "SELF_AGENT_GUEST_DISCORD_TOKEN",
-    "SELF_AGENT_GUEST_GUILD_IDS",
-    "SELF_AGENT_GUEST_API_KEY",
-  ]);
+test("GUEST_ENV_KEYS: 2 つの変数の順（サーバー ID は訊かない）。廃止した変数は SELF_AGENT_GUEST_GUILD_IDS", () => {
+  assert.deepEqual(GUEST_ENV_KEYS, ["SELF_AGENT_GUEST_DISCORD_TOKEN", "SELF_AGENT_GUEST_API_KEY"]);
+  assert.deepEqual(GUEST_DEPRECATED_ENV_KEYS, ["SELF_AGENT_GUEST_GUILD_IDS"]);
 });
 
 test("validateDiscordToken: . で 3 つに分かれた ASCII の値は通る（前後の空白は除いて見る）", () => {
@@ -65,36 +64,6 @@ test("validateDiscordToken・validateApiKey: 間に Unicode の空白（U+00A0�
   }
 });
 
-test("validateGuildIds: trim・空の要素を除き、重複は 1 つに", () => {
-  assert.deepEqual(validateGuildIds(` ${GUILD_A} ,,${GUILD_B}, ${GUILD_A} `, []), {
-    ok: true,
-    ids: [GUILD_A, GUILD_B],
-  });
-  assert.deepEqual(validateGuildIds("12345678901234567890", []), { ok: true, ids: ["12345678901234567890"] });
-});
-
-test("validateGuildIds: 空・桁数・数字以外は通らない", () => {
-  for (const value of ["", " , ,", "1234567890123456", "123456789012345678901", `${GUILD_A},abc`, `${GUILD_A}x`]) {
-    const result = validateGuildIds(value, []);
-    assert.equal(result.ok, false, JSON.stringify(value));
-  }
-});
-
-test("validateGuildIds: 全角数字のサーバー ID は通らない", () => {
-  const fullWidth = "１００００００００００００００００";
-  for (const value of [fullWidth, `${GUILD_A},${fullWidth}`, `1000000000000000０`]) {
-    const result = validateGuildIds(value, []);
-    assert.equal(result.ok, false, JSON.stringify(value));
-  }
-});
-
-test("validateGuildIds: SELF_AGENT_ALLOWED_GUILD_IDS と重なれば通らない", () => {
-  const result = validateGuildIds(`${GUILD_A},${GUILD_B}`, [GUILD_B]);
-  assert.equal(result.ok, false);
-  assert.ok(!result.ok && result.reason.includes("SELF_AGENT_ALLOWED_GUILD_IDS と重なっています"));
-  assert.ok(!result.ok && !result.reason.includes(GUILD_B));
-});
-
 test("validateApiKey: sk-ant- で始まる 20 字以上の ASCII は通る", () => {
   assert.equal(validateApiKey(API_KEY), undefined);
   assert.equal(validateApiKey(`  ${API_KEY}  `), undefined);
@@ -124,7 +93,7 @@ test("upsertEnvLines: 空のファイルにはコメント 1 行と 3 つの変�
     `${COMMENT}\nSELF_AGENT_GUEST_DISCORD_TOKEN=aaa.bbb.ccc\nSELF_AGENT_GUEST_GUILD_IDS=${GUILD_A}\nSELF_AGENT_GUEST_API_KEY=${API_KEY}\n`,
   );
   assert.deepEqual(result.replaced, []);
-  assert.deepEqual(result.appended, [...GUEST_ENV_KEYS]);
+  assert.deepEqual(result.appended, ENTRY_KEYS);
 });
 
 test("upsertEnvLines: 末尾に改行が無いファイルには 1 つ補ってから足す", () => {
@@ -161,7 +130,7 @@ test("upsertEnvLines: export 付き・先頭に空白の行を置き換え、2 �
       "",
     ].join("\n"),
   );
-  assert.deepEqual(result.replaced, [...GUEST_ENV_KEYS]);
+  assert.deepEqual(result.replaced, ENTRY_KEYS);
   assert.deepEqual(result.appended, []);
   // 置き換えだけならコメントは足さない
   assert.ok(!result.text.includes(COMMENT));
@@ -177,7 +146,7 @@ test("upsertEnvLines: コメント行の中の KEY= は置き換えず、名前�
   const result = upsertEnvLines(text, ENTRIES);
   assert.ok(result.text.startsWith(`${text}\n${COMMENT}\n`));
   assert.deepEqual(result.replaced, []);
-  assert.deepEqual(result.appended, [...GUEST_ENV_KEYS]);
+  assert.deepEqual(result.appended, ENTRY_KEYS);
 });
 
 test("upsertEnvLines: ほかの行（空行・コメント・CR を含む行・順）は変えず、追加のときだけコメントを 1 回置く", () => {
@@ -222,8 +191,55 @@ test("upsertEnvLines: = の前に空白・タブがある行と、export の後�
       "",
     ].join("\n"),
   );
-  assert.deepEqual(result.replaced, [...GUEST_ENV_KEYS]);
+  assert.deepEqual(result.replaced, ENTRY_KEYS);
   assert.deepEqual(result.appended, []);
+});
+
+test("removeEnvLines: 廃止した変数の行（export 付き・先頭の空白・= の前の空白・タブ・空の値・CRLF）をすべて消し、ほかの行は変えない", () => {
+  const text = [
+    "# my env",
+    "SELF_AGENT_GUEST_GUILD_IDS=1",
+    "DISCORD_TOKEN=x",
+    "export SELF_AGENT_GUEST_GUILD_IDS = 2",
+    "  export\tSELF_AGENT_GUEST_GUILD_IDS\t=3",
+    "SELF_AGENT_GUEST_GUILD_IDS=",
+    "SELF_AGENT_GUEST_GUILD_IDS=4\r",
+    "A=1\r",
+    "# SELF_AGENT_GUEST_GUILD_IDS=commented",
+    "SELF_AGENT_GUEST_GUILD_IDS_OLD=1",
+    "XSELF_AGENT_GUEST_GUILD_IDS=1",
+    "",
+  ].join("\n");
+  const result = removeEnvLines(text, GUEST_DEPRECATED_ENV_KEYS);
+  assert.equal(
+    result.text,
+    [
+      "# my env",
+      "DISCORD_TOKEN=x",
+      "A=1\r",
+      "# SELF_AGENT_GUEST_GUILD_IDS=commented",
+      "SELF_AGENT_GUEST_GUILD_IDS_OLD=1",
+      "XSELF_AGENT_GUEST_GUILD_IDS=1",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(result.removed, ["SELF_AGENT_GUEST_GUILD_IDS"]);
+});
+
+test("removeEnvLines: 行が無ければ中身を変えず removed は空。空のファイルは空のまま", () => {
+  const text = "DISCORD_TOKEN=x\nSELF_AGENT_GUEST_API_KEY=y";
+  assert.deepEqual(removeEnvLines(text, GUEST_DEPRECATED_ENV_KEYS), { text, removed: [] });
+  assert.deepEqual(removeEnvLines("", GUEST_DEPRECATED_ENV_KEYS), { text: "", removed: [] });
+  // 消した後に upsertEnvLines で 2 つを書ける（guest-setup の順）
+  const removed = removeEnvLines(`${text}\nSELF_AGENT_GUEST_GUILD_IDS=1\n`, GUEST_DEPRECATED_ENV_KEYS);
+  const update = upsertEnvLines(removed.text, [
+    ["SELF_AGENT_GUEST_DISCORD_TOKEN", TOKEN],
+    ["SELF_AGENT_GUEST_API_KEY", API_KEY],
+  ]);
+  assert.equal(
+    update.text,
+    `DISCORD_TOKEN=x\nSELF_AGENT_GUEST_API_KEY=${API_KEY}\n${COMMENT}\nSELF_AGENT_GUEST_DISCORD_TOKEN=${TOKEN}\n`,
+  );
 });
 
 test("extractDiscordBotId: 最初の部分の base64 が数字なら取れる", () => {

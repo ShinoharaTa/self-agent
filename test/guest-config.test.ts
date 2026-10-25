@@ -5,21 +5,23 @@ import { loadConfig } from "../src/config.ts";
 const TOKEN = "dummy-guest-token-value";
 const API_KEY = "dummy-guest-api-key-value";
 
-/** ゲストの 3 つが揃った env */
+/** ゲストの 2 つが揃った env */
 const GUEST_ENV = {
   HOME: "/home/tester",
   SELF_AGENT_ALLOWED_GUILD_IDS: "100",
   DISCORD_TOKEN: "dummy-default-token",
   SELF_AGENT_GUEST_DISCORD_TOKEN: TOKEN,
-  SELF_AGENT_GUEST_GUILD_IDS: "200, 201,,200",
   SELF_AGENT_GUEST_API_KEY: API_KEY,
 };
 
-test("ゲスト: 3 つ揃えば有効になり、任意の変数は既定値。トークン・API キーの値は持たない", () => {
+test("ゲスト: トークンと API キーの 2 つが揃えば有効になり、任意の変数は既定値。トークン・API キーの値は持たない", () => {
   const config = loadConfig(GUEST_ENV);
   assert.equal(config.guest, true);
   assert.equal(config.guestTokenEnv, "SELF_AGENT_GUEST_DISCORD_TOKEN");
-  assert.deepEqual(config.guestGuildIds, ["200", "201"]);
+  // サーバーの許可は DB（guest_guilds）で持つ
+  assert.ok(!("guestGuildIds" in config));
+  // @ts-expect-error GuestConfig に guestGuildIds は無い（型）
+  void config.guestGuildIds;
   assert.equal(config.guestApiKeyPresent, true);
   assert.equal(config.guestModel, "claude-opus-5-5");
   assert.equal(config.guestEffort, "low");
@@ -56,9 +58,9 @@ test("ゲスト: 任意の変数で上書きできる", () => {
   assert.equal(config.guestSessionMaxInputTokens, 1000);
 });
 
-test("ゲスト: 1 つか 2 つだけなら、足りない変数名を出して設定エラー。値は出さない", () => {
-  const names = ["SELF_AGENT_GUEST_DISCORD_TOKEN", "SELF_AGENT_GUEST_GUILD_IDS", "SELF_AGENT_GUEST_API_KEY"] as const;
-  for (const omitted of [[0], [1], [2], [0, 1], [0, 2], [1, 2]]) {
+test("ゲスト: 1 つだけなら、足りない変数名を出して設定エラー。値は出さない", () => {
+  const names = ["SELF_AGENT_GUEST_DISCORD_TOKEN", "SELF_AGENT_GUEST_API_KEY"] as const;
+  for (const omitted of [[0], [1]]) {
     const env: NodeJS.ProcessEnv = { ...GUEST_ENV };
     for (const index of omitted) delete env[names[index]!];
     assert.throws(
@@ -75,27 +77,29 @@ test("ゲスト: 1 つか 2 つだけなら、足りない変数名を出して�
   assert.throws(() => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_API_KEY: " " }), /SELF_AGENT_GUEST_API_KEY/);
 });
 
-test("ゲスト: 3 つとも無ければ無効で、任意の変数は読まない（形が違っても設定エラーにしない）", () => {
+test("ゲスト: 2 つとも無ければ無効で、任意の変数は読まない（形が違っても設定エラーにしない）", () => {
   const config = loadConfig({
     HOME: "/home/tester",
     SELF_AGENT_GUEST_EFFORT: "turbo",
     SELF_AGENT_GUEST_TURNS_PER_DAY: "0",
   });
   assert.equal(config.guest, false);
-  assert.deepEqual(config.guestGuildIds, []);
   assert.equal(config.guestEffort, "low");
   assert.equal(config.guestTurnsPerDay, 300);
 });
 
-test("ゲスト: サーバー ID の形が違う・SELF_AGENT_ALLOWED_GUILD_IDS と重なるなら設定エラー", () => {
-  assert.throws(() => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: "20a" }), /SELF_AGENT_GUEST_GUILD_IDS/);
-  assert.throws(() => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: "," }), /SELF_AGENT_GUEST_GUILD_IDS/);
-  // 空白だけは無いものとする（ほかの 2 つがあるので足りない変数として設定エラー）
-  assert.throws(() => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: " " }), /SELF_AGENT_GUEST_GUILD_IDS/);
+test("ゲスト: 廃止した SELF_AGENT_GUEST_GUILD_IDS があれば（2 つ揃いでも、無くても）廃止の文で設定エラー。空・空白だけなら無いものとして通る", () => {
+  const deprecated = /SELF_AGENT_GUEST_GUILD_IDS は v3 で廃止しました。~\/\.config\/self-agent\/env から消してください（サーバーの許可は \/guests invite の認証コードで行います）/;
+  assert.throws(() => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: "200" }), deprecated);
+  assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_GUEST_GUILD_IDS: "200" }), deprecated);
+  // 1 つだけ（足りない変数より先に廃止を知らせる）
   assert.throws(
-    () => loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: "200,100" }),
-    /SELF_AGENT_GUEST_GUILD_IDS と SELF_AGENT_ALLOWED_GUILD_IDS/,
+    () => loadConfig({ HOME: "/home/tester", SELF_AGENT_GUEST_API_KEY: API_KEY, SELF_AGENT_GUEST_GUILD_IDS: "x" }),
+    (error: Error) => deprecated.test(error.message) && !error.message.includes(API_KEY),
   );
+  assert.equal(loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: "" }).guest, true);
+  assert.equal(loadConfig({ ...GUEST_ENV, SELF_AGENT_GUEST_GUILD_IDS: "  " }).guest, true);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_GUEST_GUILD_IDS: "" }).guest, false);
 });
 
 test("ゲスト: トークンが DISCORD_TOKEN・人格のトークンと同じなら、変数名を出して設定エラー（値は出さない）", () => {

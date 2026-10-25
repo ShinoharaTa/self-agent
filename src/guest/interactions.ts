@@ -1,11 +1,12 @@
 // ゲスト Bot の操作の振り分け（docs/plan/guest-mode.md §3.1・§3.7）。既定の人格の interactions.ts とは別。
-// ゲストのサーバーの /guest だけを処理し、それ以外（ボタン・ほかのコマンド・ゲストのサーバーの外・DM）は応答しない
+// ゲストのサーバー（guest_guilds に行のあるサーバー）の /guest だけを処理し、それ以外（ボタン・ほかのコマンド・ゲストのサーバーの外・DM）は応答しない
 import { INTERACTION_FAILURE_REPLY, type CommandHandler } from "../app/interactions.ts";
-import type { Config } from "../config.ts";
 import type { Interaction, InteractionResponder } from "../discord/gateway.ts";
+import type { GuestGuildStore } from "../store/guest-guilds.ts";
 
 export type GuestInteractionDeps = {
-  cfg: Pick<Config, "guestGuildIds">;
+  /** ゲストのサーバーか（行の有無。許可済みかは /guest が見る） */
+  guilds: Pick<GuestGuildStore, "get">;
   /** /guest（commands/guest.ts） */
   command: CommandHandler;
   log: (message: string) => void;
@@ -19,10 +20,10 @@ function describeError(error: unknown): string {
 export function createGuestInteractionHandler(
   deps: GuestInteractionDeps,
 ): (interaction: Interaction, responder: InteractionResponder) => Promise<void> {
-  const { cfg, command, log } = deps;
+  const { guilds, command, log } = deps;
   return async (interaction, responder) => {
-    // DM・ゲストのサーバーの外には応答もしない
-    if (interaction.guildId === null || !cfg.guestGuildIds.includes(interaction.guildId)) {
+    // DM・ゲストのサーバーの外（参加した記録の無いサーバー）には応答もしない
+    if (interaction.guildId === null || guilds.get(interaction.guildId) === undefined) {
       log(`guest: ゲストのサーバーでない操作を無視しました（guild=${interaction.guildId ?? "DM"}）`);
       return;
     }

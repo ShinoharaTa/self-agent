@@ -106,25 +106,39 @@ export function toIncomingAttachments(
   return { images, skippedAttachments: { unsupported, overLimit } };
 }
 
+/** 返信の種類（discord-api-types の MessageReferenceType）のうち転送 */
+const MESSAGE_REFERENCE_FORWARD = 1;
+
 /** 発言のメンションと返信の情報（discord.js の Message をそのまま渡せる形） */
 export type MentionSource = {
   mentions: { users: { has(userId: string): boolean }; repliedUser: { id: string } | null };
-  reference: unknown;
+  /** type は Discord が付けなければ undefined（返信として扱う） */
+  reference: { messageId?: string | undefined; type?: number | undefined } | null;
 };
 
 /**
- * 受け取った Bot（selfUserId。ログイン前で分からなければ undefined）がメンションされたかと、返信先の発言の author の ID。
+ * 受け取った Bot（selfUserId。ログイン前で分からなければ undefined）がメンションされたかと、返信先の発言の author・メッセージの ID、
+ * 発言者の Manage Server の権限（authorCanManageGuild。呼び出し側が member から求めた値をそのまま。member が無ければ undefined）。
  * メンションはユーザーとしてのものだけ（@everyone・ロールは mentions.users に入らない）。返信先の author は発言と一緒に届いたとき
- * （reference があり、repliedUser が分かる）だけ入れ、取りに行かない
+ * （reference があり、repliedUser が分かる）だけ入れ、取りに行かない。返信先のメッセージの ID は reference に messageId があり、
+ * 転送（type が 1）でないときだけ入れる（type が無いものも返信として入れる）
  */
 export function toMentionInfo(
   source: MentionSource,
   selfUserId: string | undefined,
-): Pick<IncomingMessage, "mentionsMe" | "replyToAuthorId"> {
-  const repliedUser = source.reference === null || source.reference === undefined ? null : source.mentions.repliedUser;
+  authorCanManageGuild?: boolean,
+): Pick<IncomingMessage, "mentionsMe" | "replyToAuthorId" | "replyToMessageId" | "authorCanManageGuild"> {
+  const reference = source.reference ?? null;
+  const repliedUser = reference === null ? null : source.mentions.repliedUser;
+  const replyToMessageId =
+    reference !== null && reference.messageId !== undefined && reference.type !== MESSAGE_REFERENCE_FORWARD
+      ? reference.messageId
+      : undefined;
   return {
     mentionsMe: selfUserId !== undefined && source.mentions.users.has(selfUserId),
     ...(repliedUser === null ? {} : { replyToAuthorId: repliedUser.id }),
+    ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
+    ...(authorCanManageGuild === undefined ? {} : { authorCanManageGuild }),
   };
 }
 
@@ -163,13 +177,15 @@ type CommandOptionSource = { name: string; value?: string | number | boolean; op
 
 /**
  * スラッシュコマンド。値の無いオプションは入れない。サブコマンド（値が無く、中にオプションを持つもの）が選ばれていれば、その名前を
- * subcommand に、その中の値のあるオプションを options に入れる
+ * subcommand に、その中の値のあるオプションを options に入れる。memberCanManageGuild は呼び出し側が memberPermissions から求めた値
+ * （DM など権限が付いていなければ null で、false にする）
  */
 export function toCommandInteraction(
   source: InteractionSource & {
     commandName: string;
     options: { data: ReadonlyArray<CommandOptionSource> };
   },
+  memberCanManageGuild: boolean | null,
 ): Interaction {
   const options: Record<string, string | number | boolean> = {};
   let subcommand: string | undefined;
@@ -185,6 +201,7 @@ export function toCommandInteraction(
   }
   return {
     ...interactionBase(source),
+    memberCanManageGuild: memberCanManageGuild === true,
     kind: "command",
     name: source.commandName,
     ...(subcommand === undefined ? {} : { subcommand }),

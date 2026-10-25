@@ -13,9 +13,11 @@ import {
   type Message,
   MessageFlags,
   type ModalSubmitInteraction,
+  PermissionFlagsBits,
   RESTJSONErrorCodes,
   type SendableChannels,
   type StringSelectMenuInteraction,
+  type TextChannel,
 } from "discord.js";
 import { DEFAULT_PERSONA_ID } from "../config.ts";
 import {
@@ -48,6 +50,27 @@ import {
 import { splitMessage } from "./split.ts";
 
 const TYPING_INTERVAL_MS = 8_000;
+/** findNoticeChannels が返す候補の数の上限 */
+const NOTICE_CHANNEL_CANDIDATES = 3;
+
+/**
+ * 発言者が Manage Server（Administrator を含む）を持つか。発言に member が付いていなければ undefined。
+ * 権限を求められなかったとき（キャッシュの不足など）も undefined にして、発言の受け取りは止めない
+ */
+function authorCanManageGuild(message: Message): boolean | undefined {
+  try {
+    const member = message.member;
+    return member === null ? undefined : member.permissions.has(PermissionFlagsBits.ManageGuild);
+  } catch {
+    return undefined;
+  }
+}
+
+/** snowflake の比較（桁数 → 文字列） */
+function compareIds(a: string, b: string): number {
+  if (a.length !== b.length) return a.length - b.length;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 function toIncoming(message: Message, persona: string, selfUserId: string | undefined): IncomingMessage {
   return {
@@ -63,7 +86,7 @@ function toIncoming(message: Message, persona: string, selfUserId: string | unde
     ...toIncomingAttachments(message.attachments.values()),
     persona,
     // メンション・返信先（ゲスト Bot の受付判定だけが読む）
-    ...toMentionInfo(message, selfUserId),
+    ...toMentionInfo(message, selfUserId, authorCanManageGuild(message)),
     // 表示名（ゲストのターンの prompt だけが読む）
     authorDisplayName: toDisplayName(message),
   };
@@ -95,7 +118,10 @@ function isSupported(interaction: DiscordInteraction): interaction is SupportedI
 
 /** 種類の判定は discord.js のメソッドで行い、値の取り出しは convert.ts に任せる */
 function toInteraction(interaction: SupportedInteraction): Interaction {
-  if (interaction.isChatInputCommand()) return toCommandInteraction(interaction);
+  if (interaction.isChatInputCommand()) {
+    // 権限は Discord が計算して付けてくる（DM では null）
+    return toCommandInteraction(interaction, interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? null);
+  }
   if (interaction.isButton()) return toButtonInteraction(interaction);
   if (interaction.isStringSelectMenu()) return toSelectInteraction(interaction);
   return toModalInteraction(interaction);
@@ -170,6 +196,10 @@ export type DiscordGatewayOptions = {
   tokenEnv?: string;
   /** Bot がサーバーから外された（GuildDelete。一時的に使えなくなったときは呼ばない）。ゲスト Bot だけが使う */
   onGuildLeave?: (guildId: string) => void;
+  /** Bot が新しいサーバーに入った（GuildCreate。再起動・再接続では鳴らない）。ゲスト Bot だけが使う（GU4b で配線する） */
+  onGuildJoin?: (guildId: string) => void;
+  /** 許可していない（第 1 引数に無い）サーバーに参加していたら log で警告するか。既定 true。ゲスト Bot は false（許可は DB で持つ） */
+  warnOnUnlistedGuild?: boolean;
 };
 
 export class DiscordGateway implements Gateway {
@@ -178,6 +208,8 @@ export class DiscordGateway implements Gateway {
   private readonly persona: string;
   private readonly tokenEnv: string;
   private readonly onGuildLeave: ((guildId: string) => void) | undefined;
+  private readonly onGuildJoin: ((guildId: string) => void) | undefined;
+  private readonly warnOnUnlistedGuild: boolean;
   /** log の前置き（既定の人格は今までどおり `discord:`、足した人格は `discord(<id>):`） */
   private readonly prefix: string;
   /** Discord に接続しているか（ready・再開で true、切断・再接続中で false。start 前とログインの失敗も false） */
@@ -188,6 +220,8 @@ export class DiscordGateway implements Gateway {
     this.persona = options.persona ?? DEFAULT_PERSONA_ID;
     this.tokenEnv = options.tokenEnv ?? "DISCORD_TOKEN";
     this.onGuildLeave = options.onGuildLeave;
+    this.onGuildJoin = options.onGuildJoin;
+    this.warnOnUnlistedGuild = options.warnOnUnlistedGuild ?? true;
     this.prefix = this.persona === DEFAULT_PERSONA_ID ? "discord:" : `discord(${this.persona}):`;
   }
 
@@ -202,7 +236,7 @@ export class DiscordGateway implements Gateway {
   }
 
   private warnIfNotAllowed(guildId: string): void {
-    if (!this.allowedGuildIds.includes(guildId)) {
+    if (this.warnOnUnlistedGuild && !this.allowedGuildIds.includes(guildId)) {
       console.error(`${this.prefix} 許可していないサーバーに参加しています（guild=${guildId}）。このサーバーでは反応しません`);
     }
   }
@@ -232,8 +266,10 @@ export class DiscordGateway implements Gateway {
     this.client.on(Events.ShardReconnecting, () => {
       this.isConnected = false;
     });
+    const onGuildJoin = this.onGuildJoin;
     this.client.on(Events.GuildCreate, (guild) => {
       this.warnIfNotAllowed(guild.id);
+      onGuildJoin?.(guild.id);
     });
     // サーバーから外された（discord.js は一時的に使えなくなったときは GuildUnavailable を出し、GuildDelete は出さない）
     const onGuildLeave = this.onGuildLeave;
@@ -337,6 +373,45 @@ export class DiscordGateway implements Gateway {
 
   isInGuild(guildId: string): boolean {
     return this.client.guilds.cache.has(guildId);
+  }
+
+  /** 参加しているサーバーの ID（start 後に使う。キャッシュの鍵） */
+  listGuildIds(): string[] {
+    return [...this.client.guilds.cache.keys()];
+  }
+
+  /**
+   * 定型文の投稿先の候補（docs/plan/guest-mode.md §3.2.4）。チャンネルの ID を順に最大 3 つ: (a) システムメッセージのチャンネル、
+   * (b) テキストチャンネルを「親カテゴリの位置（カテゴリなしが先）→ 自身の位置 → id」の順に。どちらも Bot が View Channel と
+   * Send Messages を両方持つものだけ。参加していない・Bot 自身の member を取れなければ空
+   */
+  async findNoticeChannels(guildId: string): Promise<string[]> {
+    const guild = this.client.guilds.cache.get(guildId);
+    if (guild === undefined) return [];
+    let me = guild.members.me;
+    if (me === null) {
+      try {
+        me = await guild.members.fetchMe();
+      } catch (error) {
+        console.error(`${this.prefix} Bot のメンバー情報を取れませんでした（guild=${guildId}）: ${describeError(error)}`);
+        return [];
+      }
+    }
+    const member = me;
+    const canPost = (channel: TextChannel): boolean =>
+      channel.permissionsFor(member).has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]);
+    const candidates: string[] = [];
+    const system = guild.systemChannel;
+    if (system !== null && canPost(system)) candidates.push(system.id);
+    const position = (channel: TextChannel): number => (channel.parent === null ? -1 : channel.parent.rawPosition);
+    const texts = [...guild.channels.cache.values()]
+      .filter((channel): channel is TextChannel => channel.type === ChannelType.GuildText)
+      .sort((a, b) => position(a) - position(b) || a.rawPosition - b.rawPosition || compareIds(a.id, b.id));
+    for (const channel of texts) {
+      if (candidates.length >= NOTICE_CHANNEL_CANDIDATES) break;
+      if (!candidates.includes(channel.id) && canPost(channel)) candidates.push(channel.id);
+    }
+    return candidates.slice(0, NOTICE_CHANNEL_CANDIDATES);
   }
 
   async registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void> {

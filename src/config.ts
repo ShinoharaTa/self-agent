@@ -119,16 +119,14 @@ export type JobsConfig = {
 };
 
 /**
- * ゲスト利用の簡易モード（docs/plan/guest-mode.md §5）。トークン・サーバー ID・API キーの 3 つが揃えば有効、3 つとも無ければ無効。
- * 無効なら任意の変数は読まず、既定の値を入れる
+ * ゲスト利用の簡易モード（docs/plan/guest-mode.md §5）。トークン・API キーの 2 つが揃えば有効、2 つとも無ければ無効。
+ * 無効なら任意の変数は読まず、既定の値を入れる。ゲストのサーバーの許可は DB（guest_guilds）で持つ
  */
 export type GuestConfig = {
   /** true ならゲスト Bot を動かす */
   guest: boolean;
   /** ゲスト Bot のトークンの変数名（SELF_AGENT_GUEST_DISCORD_TOKEN）。値は Gateway が process.env から読む */
   guestTokenEnv: string;
-  /** ゲストのサーバー（SELF_AGENT_GUEST_GUILD_IDS）。無効なら空。SELF_AGENT_ALLOWED_GUILD_IDS とは重ならない */
-  guestGuildIds: string[];
   /** SELF_AGENT_GUEST_API_KEY が設定されているか。値そのものは保持しない */
   guestApiKeyPresent: boolean;
   guestModel: string;
@@ -431,28 +429,26 @@ function loadJobsConfig(env: NodeJS.ProcessEnv, shell: boolean): JobsConfig {
 
 /**
  * ゲストの変数を読む（docs/plan/guest-mode.md §5）。エラーには変数名だけを出し、値（トークン・API キーを含む）は出さない。
- * 確かめること: トークン・サーバー ID・API キーが 3 つ揃うか 3 つとも無いか、サーバー ID の形と SELF_AGENT_ALLOWED_GUILD_IDS との重なり、
+ * 確かめること: 廃止した SELF_AGENT_GUEST_GUILD_IDS が残っていないか、トークン・API キーが 2 つ揃うか 2 つとも無いか、
  * トークンが DISCORD_TOKEN・人格のトークンと同じでないか。無効なら任意の変数は読まない
  */
-function loadGuestConfig(
-  env: NodeJS.ProcessEnv,
-  allowedGuildIds: readonly string[],
-  personas: readonly PersonaConfig[],
-): GuestConfig {
-  // 前後の空白は除く（空白だけなら無いものとする）
+function loadGuestConfig(env: NodeJS.ProcessEnv, personas: readonly PersonaConfig[]): GuestConfig {
+  // 前後の空白は除く（空白だけなら無いものとする）。廃止した変数も同じ規則で、空なら無いものとして通す
+  if (nonEmpty(env.SELF_AGENT_GUEST_GUILD_IDS?.trim()) !== undefined) {
+    throw new Error(
+      "SELF_AGENT_GUEST_GUILD_IDS は v3 で廃止しました。~/.config/self-agent/env から消してください（サーバーの許可は /guests invite の認証コードで行います）",
+    );
+  }
   const token = nonEmpty(env[GUEST_TOKEN_ENV]?.trim());
-  const guildIdsValue = nonEmpty(env.SELF_AGENT_GUEST_GUILD_IDS?.trim());
   const apiKeyPresent = nonEmpty(env.SELF_AGENT_GUEST_API_KEY?.trim()) !== undefined;
   const required: Array<[string, boolean]> = [
     [GUEST_TOKEN_ENV, token !== undefined],
-    ["SELF_AGENT_GUEST_GUILD_IDS", guildIdsValue !== undefined],
     ["SELF_AGENT_GUEST_API_KEY", apiKeyPresent],
   ];
   const missing = required.filter(([, present]) => !present).map(([name]) => name);
   const disabled: GuestConfig = {
     guest: false,
     guestTokenEnv: GUEST_TOKEN_ENV,
-    guestGuildIds: [],
     guestApiKeyPresent: false,
     guestModel: DEFAULT_GUEST_MODEL,
     guestEffort: DEFAULT_GUEST_EFFORT,
@@ -466,13 +462,6 @@ function loadGuestConfig(
   if (missing.length === required.length) return disabled;
   if (missing.length > 0) throw new Error(`ゲストを使うには ${missing.join(", ")} も設定してください`);
 
-  const guestGuildIds = idList("SELF_AGENT_GUEST_GUILD_IDS", guildIdsValue);
-  if (guestGuildIds.length === 0) {
-    throw new Error("SELF_AGENT_GUEST_GUILD_IDS は数字の ID をカンマ区切りで指定してください");
-  }
-  if (guestGuildIds.some((id) => allowedGuildIds.includes(id))) {
-    throw new Error("SELF_AGENT_GUEST_GUILD_IDS と SELF_AGENT_ALLOWED_GUILD_IDS に同じサーバー ID があります");
-  }
   // 同じトークンを既定の人格・足した人格に渡していないか（値は比べるだけで、エラーには変数名を出す）
   const otherTokens: Array<[string, string | undefined]> = [
     ["DISCORD_TOKEN", nonEmpty(env.DISCORD_TOKEN?.trim())],
@@ -487,7 +476,6 @@ function loadGuestConfig(
   return {
     guest: true,
     guestTokenEnv: GUEST_TOKEN_ENV,
-    guestGuildIds,
     guestApiKeyPresent: true,
     guestModel: nonEmpty(env.SELF_AGENT_GUEST_MODEL) ?? DEFAULT_GUEST_MODEL,
     guestEffort: effortLevel(nonEmpty(env.SELF_AGENT_GUEST_EFFORT), "SELF_AGENT_GUEST_EFFORT") ?? DEFAULT_GUEST_EFFORT,
@@ -617,7 +605,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       (personas.some((persona) => persona.engine === "codex") ? join(home(), ".local/share/self-agent/codex") : undefined),
     ...loadGithubConfig(env),
     ...loadJobsConfig(env, shell),
-    ...loadGuestConfig(env, allowedGuildIds, personas),
+    ...loadGuestConfig(env, personas),
   };
 }
 

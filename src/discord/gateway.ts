@@ -47,6 +47,16 @@ export type IncomingMessage = {
   /** 返信なら、返信先の発言の author の ID（Discord が発言と一緒に渡したときだけ。取りに行かない）。ゲスト Bot の受付判定だけが読む */
   replyToAuthorId?: string;
   /**
+   * 返信なら、返信先のメッセージの ID（reference があり messageId があり、転送（Forward）でないときだけ。convert.ts の toMentionInfo）。
+   * ゲスト Bot の定型文への返信の判定（docs/plan/guest-mode.md §3.2.5。GU4b）だけが読む
+   */
+  replyToMessageId?: string;
+  /**
+   * 発言者がそのサーバーで Manage Server（サーバー管理）の権限を持つか。発言に member が付いていなければ undefined（分からない）。
+   * ゲスト Bot の有効化の返信の検証（GU4b）だけが読む
+   */
+  authorCanManageGuild?: boolean;
+  /**
    * 発言者の表示名（サーバーのニックネーム → グローバル名 → ユーザー名。convert.ts の toDisplayName）。
    * ゲストのターンの prompt（guest/handler.ts）だけが読む
    */
@@ -59,6 +69,8 @@ type InteractionBase = {
   channelId: string | null;
   userId: string;
   createdAt: Date;
+  /** 操作した人がそのサーバーで Manage Server（サーバー管理）の権限を持つか（スラッシュコマンドだけ。DM は false）。ゲストの /guest だけが読む */
+  memberCanManageGuild?: boolean;
 };
 
 /**
