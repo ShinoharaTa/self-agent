@@ -47,7 +47,6 @@ test("未設定ならデフォルト値を使う", () => {
     jobsRepoMaxMb: 200,
     guest: false,
     guestTokenEnv: "SELF_AGENT_GUEST_DISCORD_TOKEN",
-    guestGuildIds: [],
     guestApiKeyPresent: false,
     guestModel: "claude-opus-5-5",
     guestEffort: "low",

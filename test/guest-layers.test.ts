@@ -5,6 +5,7 @@ import { createChannelResolver } from "../src/app/access.ts";
 import { ReminderScheduler } from "../src/app/reminders.ts";
 import { Scheduler } from "../src/app/scheduler.ts";
 import { GuestStore } from "../src/store/guest.ts";
+import { GuestGuildStore } from "../src/store/guest-guilds.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
@@ -23,6 +24,9 @@ test("ゲストが有効で、ゲストのサーバーに有効なチャンネ�
   const guest = new GuestStore(db, now);
   guest.enable(GUEST_GUILD, "guest-ch-1");
   guest.recordTurn(GUEST_GUILD, "guest-user-1", "2026-10-23");
+  // ゲストのサーバーは DB（guest_guilds）で許可済み
+  const guilds = new GuestGuildStore(db);
+  guilds.allow(GUEST_GUILD, NOW);
   // ゲストを有効にした設定（Scheduler・ReminderScheduler が読むのは allowedGuildIds などだけ）
   const cfg = {
     allowedGuildIds: [OWNER_GUILD],
@@ -31,7 +35,6 @@ test("ゲストが有効で、ゲストのサーバーに有効なチャンネ�
     ownerUserId: "owner-1",
     timeZone: "Asia/Tokyo",
     guest: true,
-    guestGuildIds: [GUEST_GUILD],
   };
   const gateway = new FakeGateway({
     allow: ["sendMessage", "editMessage", "send", "startTyping", "listChannelParents", "isInGuild"],
@@ -82,5 +85,6 @@ test("ゲストが有効で、ゲストのサーバーに有効なチャンネ�
   // ゲストの行はそのまま（古い日でないので消えない）
   assert.equal(guest.countActive(GUEST_GUILD), 1);
   assert.equal(guest.countTurns(GUEST_GUILD, "2026-10-23"), 1);
+  assert.equal(guilds.isAllowed(GUEST_GUILD), true);
   assert.ok(logs.every((line) => !line.includes(GUEST_GUILD)));
 });

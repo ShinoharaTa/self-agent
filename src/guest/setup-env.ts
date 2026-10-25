@@ -1,12 +1,11 @@
 // npm run guest-setup（scripts/guest-setup.ts）の純関数。入力の形の検証と env ファイルの中身の書き換え。
 // SDK・ネットワーク・ファイルに依存しない。理由の文には値を入れない
 
-/** ゲストの 3 つの変数（docs/plan/guest-mode.md §5） */
-export const GUEST_ENV_KEYS = [
-  "SELF_AGENT_GUEST_DISCORD_TOKEN",
-  "SELF_AGENT_GUEST_GUILD_IDS",
-  "SELF_AGENT_GUEST_API_KEY",
-] as const;
+/** ゲストの 2 つの変数（docs/plan/guest-mode.md §5） */
+export const GUEST_ENV_KEYS = ["SELF_AGENT_GUEST_DISCORD_TOKEN", "SELF_AGENT_GUEST_API_KEY"] as const;
+
+/** v3 で廃止した変数（残っていると起動時に設定エラー。§3.2.1） */
+export const GUEST_DEPRECATED_ENV_KEYS = ["SELF_AGENT_GUEST_GUILD_IDS"] as const;
 
 /** 追加するときに 1 回だけ置くコメント */
 const APPEND_COMMENT = "# guest mode (npm run guest-setup)";
@@ -31,26 +30,6 @@ export function validateDiscordToken(value: string): string | undefined {
   return undefined;
 }
 
-/** ゲストのサーバー ID（カンマ区切り）。各要素は 17〜20 桁の数字で、SELF_AGENT_ALLOWED_GUILD_IDS と重ならない */
-export function validateGuildIds(
-  value: string,
-  allowedGuildIds: readonly string[],
-): { ok: true; ids: string[] } | { ok: false; reason: string } {
-  const items = value
-    .split(",")
-    .map((item) => item.trim())
-    .filter((item) => item !== "");
-  if (items.length === 0) return { ok: false, reason: "サーバー ID を 1 つ以上入れてください" };
-  if (items.some((item) => !/^\d{17,20}$/.test(item))) {
-    return { ok: false, reason: "サーバー ID は 17〜20 桁の数字をカンマ区切りで入れてください" };
-  }
-  const ids = [...new Set(items)];
-  if (ids.some((id) => allowedGuildIds.includes(id))) {
-    return { ok: false, reason: "SELF_AGENT_ALLOWED_GUILD_IDS と重なっています（ゲスト専用のサーバーを入れてください）" };
-  }
-  return { ok: true, ids };
-}
-
 /** Claude Platform の API キーの形。問題があれば短い理由 */
 export function validateApiKey(value: string): string | undefined {
   const key = value.trim();
@@ -66,6 +45,11 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** 変数の行の形（先頭の空白と省略可の `export`＋空白・タブを除いて `KEY` で始まり、`=` の前に空白・タブがあってもよい） */
+function envLinePattern(key: string): RegExp {
+  return new RegExp(`^\\s*(?:export\\s+)?${escapeRegExp(key)}[ \\t]*=`);
+}
+
 /**
  * env ファイルの中身に変数を書き込んだ新しい中身。同じ変数の行（先頭の空白と省略可の `export`＋空白・タブを除いて `KEY` で始まり、
  * `=` の前に空白・タブがあってもよい行。Node の --env-file はキーを trim するため）が
@@ -79,7 +63,7 @@ export function upsertEnvLines(
   const matchers = entries.map(([key, value]) => ({
     key,
     value,
-    pattern: new RegExp(`^\\s*(?:export\\s+)?${escapeRegExp(key)}[ \\t]*=`),
+    pattern: envLinePattern(key),
   }));
   const replaced: string[] = [];
   const lines = text === "" ? [] : text.split("\n");
@@ -102,6 +86,25 @@ export function upsertEnvLines(
     for (const matcher of toAppend) result += `${matcher.key}=${matcher.value}\n`;
   }
   return { text: result, replaced, appended: toAppend.map((matcher) => matcher.key) };
+}
+
+/**
+ * env ファイルの中身から keys の変数の行（upsertEnvLines と同じ形。`export` 付き・`=` の前の空白を含む）をすべて消した新しい中身と、
+ * 消した変数（keys の順）。ほかの行は変えない
+ */
+export function removeEnvLines(text: string, keys: readonly string[]): { text: string; removed: string[] } {
+  const matchers = keys.map((key) => ({ key, pattern: envLinePattern(key) }));
+  const found = new Set<string>();
+  const kept: string[] = [];
+  for (const line of text === "" ? [] : text.split("\n")) {
+    const matcher = matchers.find((candidate) => candidate.pattern.test(line));
+    if (matcher === undefined) {
+      kept.push(line);
+      continue;
+    }
+    found.add(matcher.key);
+  }
+  return { text: kept.join("\n"), removed: keys.filter((key) => found.has(key)) };
 }
 
 /** トークンの最初の部分（base64 の Bot のユーザー ID）を復号した数字の ID。取れなければ undefined（投げない） */

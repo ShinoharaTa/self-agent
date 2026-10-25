@@ -1,4 +1,5 @@
-// ゲスト利用の 3 つの変数を端末で対話式に訊き、~/.config/self-agent/env に書く（npm run guest-setup [-- --skip-check]。#151）。
+// ゲスト利用の 2 つの変数（ゲスト Bot のトークンと API キー）を端末で対話式に訊き、~/.config/self-agent/env に書く（npm run guest-setup [-- --skip-check]。#151）。
+// v3 で廃止した SELF_AGENT_GUEST_GUILD_IDS の行が env にあれば、消すか確認する（docs/plan/guest-mode.md §3.2.1・§5）。
 // 書く前に Discord と Claude に実際に通るか確かめ（--skip-check で飛ばす）、元のファイルの控えを env.bak に取ってから一時ファイル → rename で置き換える。
 // 途中で中止・確認に失敗したら何も書かない。反映は Bot の再起動。
 // トークン・API キー・サーバー ID・Bot の id・例外のメッセージは画面に出さない（出すのは Bot の名前・件数・変数名・HTTP の status・env と控え・一時ファイルのパスだけ）
@@ -11,14 +12,21 @@ import { parseArgs } from "node:util";
 import { DEFAULT_GUEST_MODEL } from "../src/config.ts";
 import {
   extractDiscordBotId,
+  GUEST_DEPRECATED_ENV_KEYS,
   GUEST_ENV_KEYS,
+  removeEnvLines,
   upsertEnvLines,
   validateApiKey,
   validateDiscordToken,
-  validateGuildIds,
 } from "../src/guest/setup-env.ts";
 
 const USAGE = "使い方: npm run guest-setup [-- --skip-check]";
+const HELP = [
+  USAGE,
+  "ゲスト Bot のトークンと Claude Platform の API キーの 2 つを訊き、~/.config/self-agent/env に書きます（反映は Bot の再起動）。",
+  "サーバーの許可は認証コードで行うので、サーバー ID は訊きません。廃止した SELF_AGENT_GUEST_GUILD_IDS の行があれば消すか訊きます。",
+  "--skip-check: 書く前の Discord・Claude への接続の確認を飛ばす",
+].join("\n");
 /** 1 回の fetch の上限 */
 const FETCH_TIMEOUT_MS = 10_000;
 /** 各項目で空の Enter がこの回数続いたら中止する */
@@ -28,7 +36,7 @@ const STRAY_LF_WINDOW_MS = 50;
 const DISCORD_API = "https://discord.com/api/v10";
 const DISCORD_USER_AGENT = "DiscordBot (https://github.com/ShinoharaTa/self-agent, 0)";
 const ANTHROPIC_API = "https://api.anthropic.com/v1";
-const [TOKEN_KEY, GUILD_IDS_KEY, API_KEY_KEY] = GUEST_ENV_KEYS;
+const [TOKEN_KEY, API_KEY_KEY] = GUEST_ENV_KEYS;
 
 function fail(message: string): never {
   console.error(message);
@@ -53,7 +61,7 @@ try {
   fail(USAGE);
 }
 if (values.help === true) {
-  console.log(USAGE);
+  console.log(HELP);
   process.exit(0);
 }
 
@@ -253,15 +261,6 @@ const token = await ask("ゲスト Bot のトークン（伏せ字）: ", readHi
   return undefined;
 });
 
-const allowedGuildIds = envList(process.env.SELF_AGENT_ALLOWED_GUILD_IDS);
-let guildIds: string[] = [];
-await ask("ゲストのサーバー ID（カンマ区切り可）: ", readVisible, (value) => {
-  const result = validateGuildIds(value, allowedGuildIds);
-  if (!result.ok) return result.reason;
-  guildIds = result.ids;
-  return undefined;
-});
-
 const apiKey = await ask("Claude Platform の API キー（伏せ字）: ", readHidden, validateApiKey);
 
 // ---- 接続の確認 ----
@@ -319,15 +318,7 @@ if (values["skip-check"] === true) {
   if (guilds.status !== 200 || !Array.isArray(guildsBody)) {
     console.warn(`警告: サーバーの一覧を取れませんでした（HTTP ${guilds.status}）`);
   } else {
-    const joined = new Set(
-      guildsBody
-        .map((guild: unknown) => (typeof guild === "object" && guild !== null ? (guild as { id?: unknown }).id : undefined))
-        .filter((guildId): guildId is string => typeof guildId === "string"),
-    );
-    const missing = guildIds.filter((guildId) => !joined.has(guildId)).length;
-    if (missing > 0) {
-      console.warn(`警告: ゲスト Bot がまだ参加していないサーバーがあります（${missing} 件）。招待してから起動しても構いません`);
-    }
+    console.log(`参加しているサーバー: ${guildsBody.length} 件`);
   }
 
   const model = process.env.SELF_AGENT_GUEST_MODEL?.trim() || DEFAULT_GUEST_MODEL;
@@ -346,14 +337,26 @@ if (values["skip-check"] === true) {
 }
 
 // ---- 書き込み ----
-const update = upsertEnvLines(original ?? "", [
+// v3 で廃止した行（残っていると起動時に設定エラー）。消すかは確認する
+let base = original ?? "";
+let removed: string[] = [];
+const deprecated = removeEnvLines(base, GUEST_DEPRECATED_ENV_KEYS);
+if (deprecated.removed.length > 0) {
+  if (await confirm(`v3 で廃止された行があります（${deprecated.removed.join(", ")}）。消しますか？`)) {
+    base = deprecated.text;
+    removed = deprecated.removed;
+  } else {
+    console.warn(`残します。${deprecated.removed.join(", ")} が残っていると、起動時に設定エラーになります`);
+  }
+}
+const update = upsertEnvLines(base, [
   [TOKEN_KEY, token],
-  [GUILD_IDS_KEY, guildIds.join(",")],
   [API_KEY_KEY, apiKey],
 ]);
 const changes = [
   update.replaced.length > 0 ? `置き換え: ${update.replaced.join(", ")}` : undefined,
   update.appended.length > 0 ? `追加: ${update.appended.join(", ")}` : undefined,
+  removed.length > 0 ? `削除: ${removed.join(", ")}` : undefined,
 ].filter((item) => item !== undefined);
 const backupNote = original === undefined ? "新しいファイルを作ります" : `控えを ${backupPath} に取ります`;
 if (

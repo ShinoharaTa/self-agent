@@ -16,9 +16,10 @@ import {
   headerDisplayName,
   stripBotMention,
 } from "../src/guest/handler.ts";
-import { startGuest, type GuestGateway } from "../src/guest/index.ts";
+import { createGuestLayer, type GuestGateway } from "../src/guest/index.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { GuestStore } from "../src/store/guest.ts";
+import { GuestGuildStore } from "../src/store/guest-guilds.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
 import { MemoryStore } from "../src/store/memories.ts";
@@ -389,7 +390,7 @@ test("ゲストのターン: 待っている間に無効にされたチャンネ
   assert.equal(env.gateway.sent.length, 1);
 });
 
-/** startGuest の Gateway の偽物 */
+/** createGuestLayer の Gateway の偽物 */
 class FakeGuestGateway implements GuestGateway {
   handlers: GatewayHandlers | undefined;
   sent: Array<{ channelId: string; text: string; replyToId?: string }> = [];
@@ -407,11 +408,23 @@ class FakeGuestGateway implements GuestGateway {
   async send(channelId: string, text: string, replyToId?: string): Promise<void> {
     this.sent.push({ channelId, text, ...(replyToId === undefined ? {} : { replyToId }) });
   }
+  async sendMessage(): Promise<string> {
+    throw new Error("sendMessage は呼ばれない想定です");
+  }
+  async messageExists(): Promise<boolean> {
+    throw new Error("messageExists は呼ばれない想定です");
+  }
   startTyping(): () => void {
     return () => {};
   }
   selfUserId(): string | undefined {
     return BOT;
+  }
+  listGuildIds(): string[] {
+    return [GUILD];
+  }
+  async findNoticeChannels(): Promise<string[]> {
+    throw new Error("findNoticeChannels は呼ばれない想定です");
   }
 }
 
@@ -420,31 +433,35 @@ function startWith(t: TestContext, steps: FakeRunStep[]) {
   const now = () => NOW;
   const guest = new GuestStore(db, now);
   guest.enable(GUILD, CHANNEL);
+  const guilds = new GuestGuildStore(db);
+  guilds.allow(GUILD, NOW);
   const runner = new FakeRunner(steps);
   const gateway = new FakeGuestGateway();
   const logs: string[] = [];
   let stopping = false;
-  const layer = startGuest({
+  const layer = createGuestLayer({
     cfg: {
       ...CFG,
       allowedGuildIds: ["g-owner"],
       ownerUserId: "owner-1",
-      guestGuildIds: [GUILD],
       guestTokenEnv: "SELF_AGENT_GUEST_DISCORD_TOKEN",
     },
     guest,
+    guilds,
     sessions: new SdkSessionStore(db, now),
     runner,
     usage: new UsageStore(db, now),
     guildSettings: new GuildSettingsStore(db, now),
     adminGateway: new FakeGateway({ allow: ["sendMessage"] }),
-    stopping: () => stopping,
     now,
     log: (line) => logs.push(line),
     createGateway: () => gateway,
   });
+  const ready = layer.start(() => stopping);
   return {
     layer,
+    ready,
+    guilds,
     runner,
     gateway,
     logs,
@@ -454,9 +471,9 @@ function startWith(t: TestContext, steps: FakeRunStep[]) {
   };
 }
 
-test("startGuest: 受付判定（5 条件）を通った発言だけターンにする。メンションでなくても Bot への返信なら答え、他の人への返信・既定の Bot の発言・停止を始めた後の発言は捨てる", async (t) => {
-  const { layer, runner, gateway, setStopping } = startWith(t, [ok("1", "s1"), ok("2", "s1")]);
-  await layer.ready;
+test("createGuestLayer: 受付判定（5 条件）を通った発言だけターンにする。メンションでなくても Bot への返信なら答え、他の人への返信・既定の Bot の発言・停止を始めた後の発言は捨てる", async (t) => {
+  const { layer, ready, runner, gateway, setStopping } = startWith(t, [ok("1", "s1"), ok("2", "s1")]);
+  await ready;
   const onMessage = gateway.handlers!.onMessage;
   onMessage(message({ id: "a", authorId: "u-a" }));
   onMessage(message({ id: "b", authorId: "u-b", content: BODY, mentionsMe: false, replyToAuthorId: BOT }));
@@ -472,9 +489,19 @@ test("startGuest: 受付判定（5 条件）を通った発言だけターンに
   assert.deepEqual(gateway.sent.map((sent) => sent.replyToId), ["a", "b"]);
 });
 
+test("createGuestLayer: 許可を取り消したサーバーの発言は、有効なチャンネルの行が残っていても捨てる（run も返信も無い）", async (t) => {
+  const { layer, ready, guilds, runner, gateway } = startWith(t, []);
+  await ready;
+  guilds.revoke(GUILD, "revoke", NOW);
+  gateway.handlers!.onMessage(message({ id: "m-revoked" }));
+  await layer.idle();
+  assert.equal(runner.inputs.length, 0);
+  assert.deepEqual(gateway.sent, []);
+});
+
 test("停止: idle はゲストのキューの実行中のターンの返信まで待つ", async (t) => {
-  const { layer, runner, gateway, logs } = startWith(t, [ok("やあ", "s1")]);
-  await layer.ready;
+  const { layer, ready, runner, gateway, logs } = startWith(t, [ok("やあ", "s1")]);
+  await ready;
   let release!: () => void;
   runner.gates[0] = new Promise<void>((resolve) => {
     release = resolve;

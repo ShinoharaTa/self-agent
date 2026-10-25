@@ -16,7 +16,7 @@ const CHANNEL: GuestChannel = {
 /** 5 つの条件をすべて満たす発言（メンション） */
 function input(overrides: { message?: Partial<GuestAccessInput["message"]> } & Partial<Omit<GuestAccessInput, "message">> = {}): GuestAccessInput {
   return {
-    guestGuildIds: ["g-guest"],
+    guildAllowed: true,
     channel: CHANNEL,
     botUserId: "bot-guest",
     ...overrides,
@@ -38,9 +38,9 @@ test("acceptsGuestMessage: 5 つの条件をすべて満たすときだけ true�
   assert.equal(acceptsGuestMessage(input({ message: { mentionsMe: undefined, replyToAuthorId: "bot-guest" } })), true);
 });
 
-test("acceptsGuestMessage: (1) サーバーが SELF_AGENT_GUEST_GUILD_IDS に無い・DM なら false（行が残っていても）", () => {
-  assert.equal(acceptsGuestMessage(input({ guestGuildIds: [] })), false);
-  assert.equal(acceptsGuestMessage(input({ guestGuildIds: ["other"] })), false);
+test("acceptsGuestMessage: (1) サーバーが許可済みでない（guest_guilds の行なし・未許可・取り消し）・DM なら false（チャンネルの行が残っていても）", () => {
+  // 許可済みかは呼び出し側が GuestGuildStore.isAllowed で引く（行なし・未許可・取り消しはどれも false）
+  assert.equal(acceptsGuestMessage(input({ guildAllowed: false })), false);
   assert.equal(acceptsGuestMessage(input({ message: { guildId: null } })), false);
 });
 

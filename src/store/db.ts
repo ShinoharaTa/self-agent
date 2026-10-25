@@ -428,6 +428,35 @@ export const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (guild_id, user_id, day)
   );
   `,
+  // v24: ゲストのサーバーの許可を env から DB へ（docs/plan/guest-mode.md §4。v3）。guest_guilds はゲスト Bot が参加した（ことのある）サーバーと
+  // 許可の状態・定型文の記録、guest_invites は認証コード（sha256 のハッシュだけ）。どちらも物理削除しない。
+  // v23 までに有効なチャンネルのあるサーバー（env の許可リストで許可されていたもの）は許可済みとして引き継ぐ
+  `
+  CREATE TABLE guest_guilds (
+    guild_id TEXT PRIMARY KEY,
+    joined_at TEXT NOT NULL,
+    allowed_at TEXT,
+    revoked_at TEXT,
+    revoked_reason TEXT CHECK (revoked_reason IN ('revoke', 'left')),
+    notice_channel_id TEXT,
+    notice_message_id TEXT,
+    notice_posted_at TEXT
+  );
+  CREATE TABLE guest_invites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    code_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    superseded_at TEXT,
+    used_at TEXT,
+    used_by_user_id TEXT,
+    used_channel_id TEXT
+  );
+  CREATE INDEX guest_invites_guild ON guest_invites(guild_id, used_at, superseded_at);
+  INSERT INTO guest_guilds (guild_id, joined_at, allowed_at)
+    SELECT guild_id, MIN(enabled_at), MIN(enabled_at) FROM guest_channels WHERE disabled_at IS NULL GROUP BY guild_id;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

@@ -37,17 +37,26 @@ test("toCommandInteraction: コマンド名と値のあるオプションだけ�
         { name: "group" },
       ],
     },
-  });
+  }, null);
   assert.deepEqual(interaction, {
     ...BASE,
+    memberCanManageGuild: false,
     kind: "command",
     name: "new",
     options: { title: "旅行の計画", count: 3, public: false },
   });
 
   // DM（guildId が null）もそのまま渡す（弾くのは受付判定）
-  const dm = toCommandInteraction({ ...SOURCE, guildId: null, channelId: null, commandName: "help", options: { data: [] } });
-  assert.deepEqual(dm, { ...BASE, guildId: null, channelId: null, kind: "command", name: "help", options: {} });
+  const dm = toCommandInteraction({ ...SOURCE, guildId: null, channelId: null, commandName: "help", options: { data: [] } }, null);
+  assert.deepEqual(dm, {
+    ...BASE,
+    guildId: null,
+    channelId: null,
+    memberCanManageGuild: false,
+    kind: "command",
+    name: "help",
+    options: {},
+  });
 });
 
 test("toCommandInteraction: サブコマンドが選ばれていれば subcommand に名前を、その中の値のあるオプションを options に入れる", () => {
@@ -55,14 +64,22 @@ test("toCommandInteraction: サブコマンドが選ばれていれば subcomman
     ...SOURCE,
     commandName: "job",
     options: { data: [{ name: "run", options: [{ name: "repo", value: "example/repo" }, { name: "issue", value: 3 }] }] },
-  });
+  }, false);
   assert.deepEqual(interaction, {
     ...BASE,
+    memberCanManageGuild: false,
     kind: "command",
     name: "job",
     subcommand: "run",
     options: { repo: "example/repo", issue: 3 },
   });
+});
+
+test("toCommandInteraction: memberCanManageGuild は渡された権限（Manage Server）。権限が付いていない（null・DM）は false", () => {
+  const source = { ...SOURCE, commandName: "guest", options: { data: [] } };
+  assert.equal(toCommandInteraction(source, true).memberCanManageGuild, true);
+  assert.equal(toCommandInteraction(source, false).memberCanManageGuild, false);
+  assert.equal(toCommandInteraction(source, null).memberCanManageGuild, false);
 });
 
 test("toButtonInteraction・toSelectInteraction: custom_id と選んだ値（配列は写す）、付いていたメッセージの ID", () => {
@@ -293,17 +310,36 @@ test("toMentionInfo: この Bot のユーザーがメンションされたかと
   // 返信: reference があり、返信先の author が届いている
   assert.deepEqual(
     toMentionInfo({ mentions: { users: users([]), repliedUser: { id: "bot-1" } }, reference: { messageId: "m-1" } }, "bot-1"),
-    { mentionsMe: false, replyToAuthorId: "bot-1" },
+    { mentionsMe: false, replyToAuthorId: "bot-1", replyToMessageId: "m-1" },
   );
   // 返信だが返信先の author が届いていない（消えた発言など）なら入れない
   assert.deepEqual(
     toMentionInfo({ mentions: { users: users([]), repliedUser: null }, reference: { messageId: "m-1" } }, "bot-1"),
-    { mentionsMe: false },
+    { mentionsMe: false, replyToMessageId: "m-1" },
   );
   // reference が無ければ repliedUser があっても返信とみなさない
   assert.deepEqual(toMentionInfo({ mentions: { users: users([]), repliedUser: { id: "bot-1" } }, reference: null }, "bot-1"), {
     mentionsMe: false,
   });
+});
+
+test("toMentionInfo: 返信先のメッセージの ID は reference に messageId があり、転送（type 1）でないときだけ（type 0・undefined は入る）", () => {
+  const mentions = { users: new Map<string, unknown>(), repliedUser: null };
+  assert.equal(toMentionInfo({ mentions, reference: { messageId: "m-1", type: 0 } }, "bot-1").replyToMessageId, "m-1");
+  assert.equal(toMentionInfo({ mentions, reference: { messageId: "m-1", type: undefined } }, "bot-1").replyToMessageId, "m-1");
+  assert.equal(toMentionInfo({ mentions, reference: { messageId: "m-1" } }, "bot-1").replyToMessageId, "m-1");
+  // 転送（Forward）・reference なし・messageId なしは入らない
+  assert.ok(!("replyToMessageId" in toMentionInfo({ mentions, reference: { messageId: "m-1", type: 1 } }, "bot-1")));
+  assert.ok(!("replyToMessageId" in toMentionInfo({ mentions, reference: null }, "bot-1")));
+  assert.ok(!("replyToMessageId" in toMentionInfo({ mentions, reference: { type: 0 } }, "bot-1")));
+});
+
+test("toMentionInfo: authorCanManageGuild は渡された値をそのまま（true・false・member なしの undefined は入らない）", () => {
+  const source = { mentions: { users: new Map<string, unknown>(), repliedUser: null }, reference: null };
+  assert.deepEqual(toMentionInfo(source, "bot-1", true), { mentionsMe: false, authorCanManageGuild: true });
+  assert.deepEqual(toMentionInfo(source, "bot-1", false), { mentionsMe: false, authorCanManageGuild: false });
+  assert.deepEqual(toMentionInfo(source, "bot-1", undefined), { mentionsMe: false });
+  assert.deepEqual(toMentionInfo(source, "bot-1"), { mentionsMe: false });
 });
 
 test("toDisplayName: サーバーのニックネーム → グローバル名 → ユーザー名の順に、空でない最初のもの", () => {

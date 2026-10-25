@@ -38,7 +38,7 @@ import { DiscordGateway } from "./discord/discord-gateway.ts";
 import { GhClient, resolveCommandPath, resolveGhPath } from "./github/gh.ts";
 import { createGithubPoller } from "./github/poller.ts";
 import { GUEST_TURNS_KEEP_DAYS } from "./guest/constants.ts";
-import { startGuest, type GuestLayer } from "./guest/index.ts";
+import { createGuestLayer } from "./guest/index.ts";
 import { createGuestRunner } from "./guest/query-options.ts";
 import { GitClient } from "./jobs/git.ts";
 import { JobGithubApi } from "./jobs/github-api.ts";
@@ -48,6 +48,7 @@ import { AttachmentStore } from "./store/attachments.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { GithubStore } from "./store/github.ts";
 import { GuestStore } from "./store/guest.ts";
+import { GuestGuildStore } from "./store/guest-guilds.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
@@ -139,6 +140,8 @@ const routineRecords = new RoutineRecordStore(db, now);
 const attachments = new AttachmentStore(db, now);
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
+// ゲストのサーバーと許可の状態（guest_guilds）
+const guestGuilds = new GuestGuildStore(db);
 
 // 作ったプロジェクトの場所。権限ルール（<realpath(workDir)>/projects）と同じ実際の場所にする
 const realWorkDir = realpathSync(config.workDir);
@@ -313,6 +316,24 @@ const createJobs = (runner: AgentRunner | undefined): JobOrchestrator => {
   });
 };
 const jobs = config.jobs ? createJobs(jobRunner) : undefined;
+// ゲスト利用の簡易モード（docs/plan/guest-mode.md。SELF_AGENT_GUEST_* が揃ったときだけ）。ゲスト Bot はここで作り、既定の人格の Bot のコマンド登録の後に
+// 待たずに start する（下）。停止では、受け付けた /guest の処理とゲストのターン（返事まで）を待ってからゲスト Bot も止める。
+// ターンは API キーで動くゲスト専用の runner（ツールなし・dev ログなし）と専用のキューで行う。
+// 有効化・無効化・外されたときの知らせは既定の人格の Bot で #system に出す
+const guest = config.guest
+  ? createGuestLayer({
+      cfg: config,
+      guest: guestStore,
+      guilds: guestGuilds,
+      sessions,
+      runner: createGuestRunner({ cfg: config, log }),
+      usage,
+      guildSettings,
+      adminGateway: personas.admin,
+      now,
+      log,
+    })
+  : undefined;
 // コマンドは既定の人格のアプリだけが登録して受ける。/close・/renew のターンはチャンネルの持ち主の人格で動かし、結果は持ち主の Bot が投稿する
 const commands = createCommands({
   cfg: config,
@@ -477,10 +498,6 @@ if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
   });
 }
 
-// ゲスト利用の簡易モード（docs/plan/guest-mode.md。SELF_AGENT_GUEST_* が揃ったときだけ）。ゲスト Bot は既定の人格の Bot のコマンド登録の後に
-// 待たずに start する（下）。停止では、受け付けた /guest の処理とゲストのターン（返事まで）を待ってからゲスト Bot も止める
-let guest: GuestLayer | undefined;
-
 // 停止: シグナルで新しい受付と定期処理（リマインドの発火・GitHub の通知のポーリングを含む）を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・DB を閉じる
 const lifecycle = createShutdown(
   {
@@ -543,23 +560,8 @@ void startPersonaGateways(
   log,
   { onSettled: (id) => loginSettled.add(id) },
 );
-// ゲスト Bot（ゲストのサーバーの /guest と、有効なチャンネルでのメンション・返信に答える）。ログインは待たず、できなくても既定の人格は動かし続ける。
-// ターンは API キーで動くゲスト専用の runner（ツールなし・dev ログなし）と専用のキューで行う。
-// 有効化・無効化・外されたときの知らせは既定の人格の Bot で #system に出す
-if (config.guest) {
-  guest = startGuest({
-    cfg: config,
-    guest: guestStore,
-    sessions,
-    runner: createGuestRunner({ cfg: config, log }),
-    usage,
-    guildSettings,
-    adminGateway: personas.admin,
-    stopping: lifecycle.stopping,
-    now,
-    log,
-  });
-}
+// ゲスト Bot（ゲストのサーバーの /guest と、有効なチャンネルでのメンション・返信に答える）。ログインは待たず、できなくても既定の人格は動かし続ける
+void guest?.start(lifecycle.stopping);
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
 // 作業ジョブ: 再起動で止まった run の #jobs への知らせを出してから、入れ直した queued を始める
 await jobs?.announceRecovered();
