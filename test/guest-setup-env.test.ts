@@ -58,6 +58,13 @@ test("validateDiscordToken: 空・空白・#・引用符・\\・形の違い・A
   }
 });
 
+test("validateDiscordToken・validateApiKey: 間に Unicode の空白（U+00A0・U+3000）を含む値は理由を返す", () => {
+  for (const space of ["\u00a0", "\u3000"]) {
+    assert.equal(typeof validateDiscordToken(`aaa.b${space}b.ccc`), "string", JSON.stringify(space));
+    assert.equal(typeof validateApiKey(`sk-ant-dummy${space}key-for-tests`), "string", JSON.stringify(space));
+  }
+});
+
 test("validateGuildIds: trim・空の要素を除き、重複は 1 つに", () => {
   assert.deepEqual(validateGuildIds(` ${GUILD_A} ,,${GUILD_B}, ${GUILD_A} `, []), {
     ok: true,
@@ -68,6 +75,14 @@ test("validateGuildIds: trim・空の要素を除き、重複は 1 つに", () =
 
 test("validateGuildIds: 空・桁数・数字以外は通らない", () => {
   for (const value of ["", " , ,", "1234567890123456", "123456789012345678901", `${GUILD_A},abc`, `${GUILD_A}x`]) {
+    const result = validateGuildIds(value, []);
+    assert.equal(result.ok, false, JSON.stringify(value));
+  }
+});
+
+test("validateGuildIds: 全角数字のサーバー ID は通らない", () => {
+  const fullWidth = "１００００００００００００００００";
+  for (const value of [fullWidth, `${GUILD_A},${fullWidth}`, `1000000000000000０`]) {
     const result = validateGuildIds(value, []);
     assert.equal(result.ok, false, JSON.stringify(value));
   }
@@ -176,6 +191,39 @@ test("upsertEnvLines: ほかの行（空行・コメント・CR を含む行・�
   assert.deepEqual(result.replaced, ["SELF_AGENT_GUEST_GUILD_IDS"]);
   assert.deepEqual(result.appended, ["SELF_AGENT_GUEST_DISCORD_TOKEN", "SELF_AGENT_GUEST_API_KEY"]);
   assert.equal(result.text.split(COMMENT).length, 2);
+});
+
+test("upsertEnvLines: CRLF の対象の行は行ごと LF の KEY=value に置き換え、ほかの CRLF の行は変えない", () => {
+  const text = "A=1\r\nSELF_AGENT_GUEST_DISCORD_TOKEN=old.old.old\r\nSELF_AGENT_GUEST_GUILD_IDS=1\r\nB=2\r\n";
+  const result = upsertEnvLines(text, ENTRIES);
+  assert.equal(
+    result.text,
+    `A=1\r\nSELF_AGENT_GUEST_DISCORD_TOKEN=aaa.bbb.ccc\nSELF_AGENT_GUEST_GUILD_IDS=${GUILD_A}\nB=2\r\n` +
+      `${COMMENT}\nSELF_AGENT_GUEST_API_KEY=${API_KEY}\n`,
+  );
+  assert.deepEqual(result.replaced, ["SELF_AGENT_GUEST_DISCORD_TOKEN", "SELF_AGENT_GUEST_GUILD_IDS"]);
+});
+
+test("upsertEnvLines: = の前に空白・タブがある行と、export の後がタブの行も同じ変数として置き換える", () => {
+  const text = [
+    "SELF_AGENT_GUEST_DISCORD_TOKEN =old.old.old",
+    "export\tSELF_AGENT_GUEST_GUILD_IDS=1",
+    "export SELF_AGENT_GUEST_API_KEY\t=old",
+    "SELF_AGENT_GUEST_DISCORD_TOKEN \t =older.older.older",
+    "",
+  ].join("\n");
+  const result = upsertEnvLines(text, ENTRIES);
+  assert.equal(
+    result.text,
+    [
+      "SELF_AGENT_GUEST_DISCORD_TOKEN=aaa.bbb.ccc",
+      `SELF_AGENT_GUEST_GUILD_IDS=${GUILD_A}`,
+      `SELF_AGENT_GUEST_API_KEY=${API_KEY}`,
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(result.replaced, [...GUEST_ENV_KEYS]);
+  assert.deepEqual(result.appended, []);
 });
 
 test("extractDiscordBotId: 最初の部分の base64 が数字なら取れる", () => {
