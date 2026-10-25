@@ -10,11 +10,13 @@ import {
   OWNER_ONLY_REPLY,
   registerCommands,
   UNKNOWN_REPLY,
+  type CommandDeps,
   type CommandHandler,
   type ComponentHandler,
 } from "../src/app/interactions.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import type { Interaction, InteractionResponder } from "../src/discord/gateway.ts";
+import type { GuestAdmin } from "../src/guest/commands/admin.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps } from "./helpers/recording.ts";
@@ -297,4 +299,15 @@ test("1 つのサーバーで登録に失敗しても log に出して残りを�
     ["guild-9"],
   );
   assert.match(logs[0]!, /登録に失敗しました（guild=guild-1）: Missing Access/);
+});
+
+test("/guests はゲストの層の操作（guests）を渡したときだけ（ゲストが有効のときだけ）登録する", () => {
+  const without = createCommands({} as CommandDeps).map((handler) => handler.def.name);
+  assert.equal(without.includes("guests"), false);
+  // 定義だけを見るので、どの操作も呼ばれない
+  const guests = {} as GuestAdmin;
+  const withGuests = createCommands({ guests, log: () => {} } as unknown as CommandDeps);
+  assert.equal(withGuests.at(-1)?.def.name, "guests");
+  assert.deepEqual(withGuests.at(-1)?.def.subcommands?.map((sub) => sub.name), ["invite", "revoke", "list"]);
+  assert.equal(withGuests.length, without.length + 1);
 });

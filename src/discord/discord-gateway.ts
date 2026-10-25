@@ -196,7 +196,7 @@ export type DiscordGatewayOptions = {
   tokenEnv?: string;
   /** Bot がサーバーから外された（GuildDelete。一時的に使えなくなったときは呼ばない）。ゲスト Bot だけが使う */
   onGuildLeave?: (guildId: string) => void;
-  /** Bot が新しいサーバーに入った（GuildCreate。再起動・再接続では鳴らない）。ゲスト Bot だけが使う（GU4b で配線する） */
+  /** Bot が新しいサーバーに入った（GuildCreate。再起動・再接続では鳴らない）。ゲスト Bot だけが使う（定型文の投稿と /guest の登録） */
   onGuildJoin?: (guildId: string) => void;
   /** 許可していない（第 1 引数に無い）サーバーに参加していたら log で警告するか。既定 true。ゲスト Bot は false（許可は DB で持つ） */
   warnOnUnlistedGuild?: boolean;
@@ -412,6 +412,22 @@ export class DiscordGateway implements Gateway {
       if (!candidates.includes(channel.id) && canPost(channel)) candidates.push(channel.id);
     }
     return candidates.slice(0, NOTICE_CHANNEL_CANDIDATES);
+  }
+
+  /**
+   * そのサーバーのメンバーが Manage Server（Administrator を含む）を持つか。メンバーを 1 回取る（guild.members.fetch）。
+   * 参加していない・取れない（いない・通信の失敗）・権限なしは false。ゲスト Bot の有効化の返信の検証で、発言に member が無かったときだけ使う
+   */
+  async memberCanManageGuild(guildId: string, userId: string): Promise<boolean> {
+    const guild = this.client.guilds.cache.get(guildId);
+    if (guild === undefined) return false;
+    try {
+      const member = await guild.members.fetch(userId);
+      return member.permissions.has(PermissionFlagsBits.ManageGuild);
+    } catch (error) {
+      console.error(`${this.prefix} メンバーの権限を取れませんでした（guild=${guildId}）: ${describeError(error)}`);
+      return false;
+    }
   }
 
   async registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void> {

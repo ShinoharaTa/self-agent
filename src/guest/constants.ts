@@ -28,3 +28,7 @@ export function guestSessionKey(channelId: string): string {
 export const GUEST_INVITE_TTL_HOURS = 24;
 /** 認証コードの先頭（`guest-xxxx-…`） */
 export const GUEST_INVITE_PREFIX = "guest";
+/** 認証コードの「DB を引く失敗」（not_found・wrong_guild・used・expired・superseded）を、サーバーごとに GUEST_INVITE_LOCK_MIN 分の窓でこの回数まで数える */
+export const GUEST_INVITE_FAIL_LIMIT = 5;
+/** 失敗の数の窓（分）と、上限に達したときに受け付けない時間（分） */
+export const GUEST_INVITE_LOCK_MIN = 10;
