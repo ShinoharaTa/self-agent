@@ -2,7 +2,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { IncomingMessage } from "../src/discord/gateway.ts";
-import { GUEST_ACTIVATED_LIMIT_REPLY, GUEST_ACTIVATED_REPLY } from "../src/guest/activation.ts";
+import { createGuestActivation, GUEST_ACTIVATED_LIMIT_REPLY, GUEST_ACTIVATED_REPLY } from "../src/guest/activation.ts";
 import { guestSessionKey } from "../src/guest/constants.ts";
 import { createGuestLayer } from "../src/guest/index.ts";
 import { GuestStore } from "../src/store/guest.ts";
@@ -55,6 +55,7 @@ async function setup(t: TestContext, cfg: typeof CFG = CFG) {
     issue: store.issue.bind(store),
     supersedeAll: store.supersedeAll.bind(store),
     activeFor: store.activeFor.bind(store),
+    listActive: store.listActive.bind(store),
     redeem: (...args: Parameters<GuestInviteStore["redeem"]>) => {
       redeemCalls++;
       return store.redeem(...args);
@@ -361,6 +362,38 @@ test("間隔: 1 回目から 10 分より後の 5 回目は数に入らない（
   }
   assert.deepEqual(env.admin.posts, []);
   assert.equal(env.redeemCalls(), 10);
+});
+
+test("間隔: 窓（10 分）を過ぎた失敗だけのサーバーの項目は、次に失敗を数える・引くときに消える（失敗の Map は有界）", async () => {
+  let current = NOW;
+  const activation = createGuestActivation({
+    cfg: { ownerUserId: OWNER },
+    invites: { redeem: () => ({ result: "not_found" }) },
+    guest: { countActive: () => 0 },
+    sessions: { delete: () => {} },
+    gateway: {
+      send: async () => {
+        throw new Error("想定外の呼び出し");
+      },
+      selfUserId: () => BOT,
+      memberCanManageGuild: async () => false,
+    },
+    notify: async () => {},
+    now: () => current,
+    log: () => {},
+  });
+  const bad = "guest-0000-0000-0000-0000-0000-0000";
+  await activation.handleReply(reply(bad));
+  await activation.handleReply(reply(bad, { guildId: OTHER_GUILD }));
+  assert.equal(activation.size(), 2);
+  // 11 分後にほかのサーバーの失敗を数えると、窓を過ぎた失敗だけの 2 つの項目は消える
+  current = new Date(NOW.getTime() + 11 * MINUTE);
+  await activation.handleReply(reply(bad, { guildId: "g-third" }));
+  assert.equal(activation.size(), 1);
+  // 失敗を数えない（権限の無い人の貼り付け）ときも、引いた項目の失敗が窓を過ぎていれば消える
+  current = new Date(NOW.getTime() + 22 * MINUTE);
+  await activation.handleReply(reply(bad, { guildId: "g-third", authorCanManageGuild: false }));
+  assert.equal(activation.size(), 0);
 });
 
 test("上限: チャンネルが 5 つ有効なら許可だけ成立して「このサーバーを有効にしました」と上限の文。既に有効なチャンネルなら「有効にしました」", async (t) => {

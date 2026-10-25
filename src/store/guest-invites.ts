@@ -139,6 +139,14 @@ export class GuestInviteStore {
     return row === undefined ? undefined : toGuestInvite(row);
   }
 
+  /** 生きているコードのサーバー ID と期限（作った順。/guests list。ハッシュは返さない） */
+  listActive(now: Date): { guildId: string; expiresAt: string }[] {
+    return this.db
+      .prepare(`SELECT guild_id, expires_at FROM guest_invites WHERE ${LIVE} ORDER BY created_at, id`)
+      .all(now.toISOString())
+      .map((row) => ({ guildId: String(row.guild_id), expiresAt: String(row.expires_at) }));
+  }
+
   private supersedeLive(guildId: string, at: string): number {
     const result = this.db
       .prepare(`UPDATE guest_invites SET superseded_at = ? WHERE guild_id = ? AND ${LIVE}`)
