@@ -12,7 +12,7 @@ Discord の 1 チャンネル（#inbox・#tasks と /new で作ったセッシ�
 - GitHub の通知を #github に流し、Claude Code のセッションに渡す設計: `docs/plan/github-notifications.md`（#122。今は段 1（ポーリングと #github。PR-G2）まで。[対応] と Claude Code への送り込みはまだ無い）
 - シェル（Bash）を使えるようにする設計: `docs/plan/shell.md`。`SELF_AGENT_SHELL=1` のときだけ、セッションのチャンネルのプロジェクトの中で SDK の sandbox（bwrap）付きの Bash を使える（自己診断が通らなければ止める）。受け入れの実機確認は `npm run shell-check`
 - サーバー上で動く作業ジョブ（Discord から頼むとリポジトリを実装して draft PR を返す）の設計: `docs/plan/coding-jobs.md`（#129。段階的に実装中。今は設定・DB の表・状態の遷移と #jobs の文面（PR-J1）、host 側の git と gh の包み（PR-J2）、ジョブの進行・#jobs・`/job`・ボタンと偽 Runner の dry-run（PR-J3）まで。ジョブ用の runner（PR-J4）がまだ無いので `SELF_AGENT_JOBS=1` は設定エラーになる）
-- 他の Discord サーバーで、オーナー以外の人にツールなし・Opus 5.5 low で答える「ゲスト利用の簡易モード」の設計: `docs/plan/guest-mode.md`（#147。ゲスト専用の Bot・API キー認証・サーバー ID の許可リストと `/guest on` の二段構え。今は GU2 まで（ターン・認証・上限。運用の手順と接続の知らせは GU3）
+- 他の Discord サーバーで、オーナー以外の人にツールなし・Opus 5.5 low で答える「ゲスト利用の簡易モード」の設計: `docs/plan/guest-mode.md`（#147。v3。ゲスト専用の Bot・API キー認証・サーバーの許可（メインサーバーの `/guests invite` で発行する認証コードを、ゲストのサーバーの管理者が定型文への返信で貼る。DB `guest_guilds`）と `/guest on` の二段構え。今は GU2 まで（env の `SELF_AGENT_GUEST_GUILD_IDS` の許可リスト・ターン・認証・上限）。許可の作り直しは GU4a・GU4b、運用の手順と接続の知らせは GU3）
 - 旧 Rust 版の資料は `docs/archive/`（参照のみ）
 
 ## コマンド
