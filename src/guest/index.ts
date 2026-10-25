@@ -157,9 +157,17 @@ export function createGuestLayer(deps: GuestLayerDeps): GuestLayer {
     onMessage: (message) => {
       if (stopping()) return;
       const botUserId = gateway.selfUserId();
-      const guildAllowed = message.guildId !== null && guilds.isAllowed(message.guildId);
-      const channel = guest.get(message.channelId);
-      if (!acceptsGuestMessage({ message, guildAllowed, channel, botUserId })) return;
+      // 判定（DB の読み）が投げたら受け付けない（fail-closed。discord.js のリスナーの外に例外を出さない）
+      let accepted = false;
+      try {
+        const guildAllowed = message.guildId !== null && guilds.isAllowed(message.guildId);
+        const channel = guest.get(message.channelId);
+        accepted = acceptsGuestMessage({ message, guildAllowed, channel, botUserId });
+      } catch {
+        log("guest: 発言の受付判定に失敗したため捨てました");
+        return;
+      }
+      if (!accepted) return;
       track(turns.handleMessage(message, botUserId));
     },
     onInteraction: (interaction, responder) => {
