@@ -67,7 +67,8 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * env ファイルの中身に変数を書き込んだ新しい中身。同じ変数の行（先頭の空白と省略可の `export ` を除いて `KEY=` で始まる行）が
+ * env ファイルの中身に変数を書き込んだ新しい中身。同じ変数の行（先頭の空白と省略可の `export`＋空白・タブを除いて `KEY` で始まり、
+ * `=` の前に空白・タブがあってもよい行。Node の --env-file はキーを trim するため）が
  * あれば最初の 1 行を `KEY=value` に置き換え、2 行目以降の同じ変数の行は消す（後の行が勝つため）。無ければ末尾にコメント 1 行の後に足す。
  * ほかの行は変えない。値は引用符で囲まずにそのまま書く（呼び出し側が検証済み）
  */
@@ -78,7 +79,7 @@ export function upsertEnvLines(
   const matchers = entries.map(([key, value]) => ({
     key,
     value,
-    pattern: new RegExp(`^[ \\t]*(?:export[ \\t]+)?${escapeRegExp(key)}=`),
+    pattern: new RegExp(`^\\s*(?:export\\s+)?${escapeRegExp(key)}[ \\t]*=`),
   }));
   const replaced: string[] = [];
   const lines = text === "" ? [] : text.split("\n");

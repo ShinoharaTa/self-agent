@@ -1,8 +1,8 @@
 // ゲスト利用の 3 つの変数を端末で対話式に訊き、~/.config/self-agent/env に書く（npm run guest-setup [-- --skip-check]。#151）。
 // 書く前に Discord と Claude に実際に通るか確かめ（--skip-check で飛ばす）、元のファイルの控えを env.bak に取ってから一時ファイル → rename で置き換える。
 // 途中で中止・確認に失敗したら何も書かない。反映は Bot の再起動。
-// トークン・API キー・サーバー ID・Bot の id・例外のメッセージは画面に出さない（出すのは Bot の名前・件数・変数名・HTTP の status・env のパスだけ）
-import { chmod, copyFile, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+// トークン・API キー・サーバー ID・Bot の id・例外のメッセージは画面に出さない（出すのは Bot の名前・件数・変数名・HTTP の status・env と控え・一時ファイルのパスだけ）
+import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -23,6 +23,8 @@ const USAGE = "使い方: npm run guest-setup [-- --skip-check]";
 const FETCH_TIMEOUT_MS = 10_000;
 /** 各項目で空の Enter がこの回数続いたら中止する */
 const MAX_EMPTY_ANSWERS = 3;
+/** 伏せ字の入力が \r で確定した後、別に届く \n を読み捨てる猶予 */
+const STRAY_LF_WINDOW_MS = 50;
 const DISCORD_API = "https://discord.com/api/v10";
 const DISCORD_USER_AGENT = "DiscordBot (https://github.com/ShinoharaTa/self-agent, 0)";
 const ANTHROPIC_API = "https://api.anthropic.com/v1";
@@ -83,7 +85,8 @@ async function readVisible(prompt: string): Promise<string | null> {
 /**
  * 伏せ字の 1 行（raw mode で 1 文字ずつ読み、1 文字ごとに * を出す）。Enter で確定、Backspace で 1 文字消す、Ctrl-C で中止、
  * 空のときの Ctrl-D は null。貼り付けで複数文字が一度に来ても文字ごとに扱い、Enter の後の残り（\r\n の \n など）は捨てる。
- * 矢印キーなどのエスケープシーケンスは読み飛ばす
+ * \r が chunk の最後で確定したら、確定から STRAY_LF_WINDOW_MS の間に次に届く chunk の先頭の \n を 1 つだけ捨て、残りは stdin に戻す
+ * （\r と \n が別の chunk で来る貼り付けで、次の入力の空の Enter にしない）。矢印キーなどのエスケープシーケンスは読み飛ばす
  */
 function readHidden(prompt: string): Promise<string | null> {
   const stdin = process.stdin;
@@ -92,16 +95,38 @@ function readHidden(prompt: string): Promise<string | null> {
     let buffer = "";
     // 0: 通常、1: ESC の直後、2: CSI / SS3 の中（終わりの文字まで読み飛ばす）
     let escape = 0;
-    const finish = (value: string | null): void => {
+    const finish = (value: string | null, awaitStrayLf = false): void => {
       stdin.removeListener("data", onData);
-      stdin.setRawMode(false);
-      stdin.pause();
       process.stdout.write("\n");
-      resolve(value);
+      const done = (): void => {
+        stdin.setRawMode(false);
+        stdin.pause();
+        resolve(value);
+      };
+      if (!awaitStrayLf) {
+        done();
+        return;
+      }
+      const onStray = (chunk: Buffer | string): void => {
+        clearTimeout(timer);
+        stdin.removeListener("data", onStray);
+        stdin.pause();
+        const raw = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+        const rest = raw[0] === 0x0a ? raw.subarray(1) : raw;
+        if (rest.length > 0) stdin.unshift(rest);
+        done();
+      };
+      const timer = setTimeout(() => {
+        stdin.removeListener("data", onStray);
+        done();
+      }, STRAY_LF_WINDOW_MS);
+      stdin.on("data", onStray);
     };
     const onData = (chunk: Buffer | string): void => {
       const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+      let offset = 0;
       for (const char of text) {
+        offset += char.length;
         const code = char.codePointAt(0) ?? 0;
         if (escape === 1) {
           escape = char === "[" || char === "O" ? 2 : 0;
@@ -112,7 +137,7 @@ function readHidden(prompt: string): Promise<string | null> {
           continue;
         }
         if (char === "\r" || char === "\n") {
-          finish(buffer);
+          finish(buffer, char === "\r" && offset === text.length);
           return;
         }
         if (char === "\x03") {
@@ -189,11 +214,6 @@ function envList(value: string | undefined): string[] {
 // ---- env ファイルの場所と今の中身 ----
 const envPath = join(process.env.HOME ?? homedir(), ".config", "self-agent", "env");
 const backupPath = `${envPath}.bak`;
-try {
-  await mkdir(dirname(envPath), { recursive: true, mode: 0o700 });
-} catch {
-  fail(`${dirname(envPath)} を作れませんでした`);
-}
 
 let original: string | undefined;
 let originalMode: number | undefined;
@@ -203,6 +223,7 @@ try {
   originalMode = stat.mode & 0o777;
   original = await readFile(envPath, "utf8");
 } catch (error) {
+  // ディレクトリが無いときも ENOENT（無い）として扱う。作るのは書き込みの確認の後
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") fail(`${envPath} を読めませんでした`);
 }
 if (original === undefined) console.log(`${envPath} はまだ無いので新しく作ります`);
@@ -272,6 +293,10 @@ if (values["skip-check"] === true) {
   const discordHeaders = { Authorization: `Bot ${token}`, "User-Agent": DISCORD_USER_AGENT };
 
   const me = await get(`${DISCORD_API}/users/@me`, discordHeaders, "Discord");
+  if (me.status === 429) {
+    discard(me);
+    fail("Discord のレート制限です（HTTP 429）。少し待って再実行してください");
+  }
   if (me.status !== 200) {
     discard(me);
     fail(`Discord がトークンを受け付けませんでした（HTTP ${me.status}）`);
@@ -280,8 +305,13 @@ if (values["skip-check"] === true) {
   if (typeof meBody !== "object" || meBody === null) fail("Discord の応答の形が想定と違います");
   const { username, id } = meBody as { username?: unknown; id?: unknown };
   const expectedId = extractDiscordBotId(token);
-  if (expectedId !== undefined && id !== expectedId) fail("トークンの形が想定と違います");
-  if (typeof username === "string") console.log(`ゲスト Bot: ${username}`);
+  if (expectedId !== undefined && id !== expectedId) {
+    console.warn("警告: トークンの先頭から読んだ Bot の id が /users/@me の応答と合いません（トークンの形が変わった可能性があります）");
+  }
+  if (typeof username === "string") {
+    // 制御文字（端末の制御を含む）を落として 32 字まで
+    console.log(`ゲスト Bot: ${[...username.replace(/\p{C}/gu, "")].slice(0, 32).join("")}`);
+  }
 
   const guilds = await get(`${DISCORD_API}/users/@me/guilds`, discordHeaders, "Discord");
   const guildsBody = guilds.status === 200 ? await readJson(guilds) : undefined;
@@ -308,6 +338,7 @@ if (values["skip-check"] === true) {
   );
   discard(models);
   if (models.status === 200) console.log(`API キー: OK（${model}）`);
+  else if (models.status === 429) fail("Claude のレート制限です（HTTP 429）。少し待って再実行してください");
   else if (models.status === 401 || models.status === 403) {
     fail(`Claude が API キーを受け付けませんでした（HTTP ${models.status}）`);
   } else if (models.status === 404) console.warn(`警告: API キーは通りましたが、モデル ${model} が見つかりません`);
@@ -334,34 +365,45 @@ if (
   process.exit(0);
 }
 
+/**
+ * 一時ファイル（`<target>.tmp-<pid>`。wx・600）に書いてから rename で target を置き換える。前回の一時ファイルが残っていれば
+ * それには触らずに止める。それ以外の失敗は一時ファイルを消してから止める
+ */
+async function replaceFile(target: string, text: string, failMessage: string): Promise<void> {
+  const tmpPath = `${target}.tmp-${process.pid}`;
+  try {
+    // wx: 既にあるもの（symlink を含む）には書かない
+    await writeFile(tmpPath, text, { mode: 0o600, flag: "wx" });
+    await chmod(tmpPath, 0o600);
+    await rename(tmpPath, target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      fail(`前回の一時ファイルが残っています: ${tmpPath}。消してから再実行してください`);
+    }
+    await unlink(tmpPath).catch(() => {});
+    fail(failMessage);
+  }
+}
+
+try {
+  await mkdir(dirname(envPath), { recursive: true, mode: 0o700 });
+} catch {
+  fail(`${dirname(envPath)} を作れませんでした`);
+}
+
 if (original !== undefined) {
-  // 控えの場所が symlink などなら、たどって書かないように止める
+  // 控えの場所が symlink などなら止める
   try {
     const stat = await lstat(backupPath);
     if (!stat.isFile()) fail(`${backupPath} が通常のファイルではないため、控えを取れません。何も書きませんでした`);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") fail(`${backupPath} を確かめられませんでした。何も書きませんでした`);
   }
-  try {
-    await copyFile(envPath, backupPath);
-    await chmod(backupPath, 0o600);
-  } catch {
-    fail(`控えを ${backupPath} に取れませんでした。何も書きませんでした`);
-  }
+  // 読んである元の中身を書く（既存の控えの inode には書かない）
+  await replaceFile(backupPath, original, `控えを ${backupPath} に取れませんでした。何も書きませんでした`);
 }
 
-const tmpPath = `${envPath}.tmp-${process.pid}`;
-let created = false;
-try {
-  // wx: 既にあるもの（symlink を含む）には書かない
-  await writeFile(tmpPath, update.text, { mode: 0o600, flag: "wx" });
-  created = true;
-  await chmod(tmpPath, 0o600);
-  await rename(tmpPath, envPath);
-} catch {
-  if (created) await unlink(tmpPath).catch(() => {});
-  fail(`${envPath} に書けませんでした`);
-}
+await replaceFile(envPath, update.text, `${envPath} に書けませんでした`);
 
 if (originalMode !== undefined && originalMode !== 0o600) {
   console.log(`元の env の権限は ${originalMode.toString(8)} でした。新しい env は 600 です`);
