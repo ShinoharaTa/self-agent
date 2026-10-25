@@ -452,3 +452,23 @@ test("GuestInviteStore.supersedeAll: そのサーバーの生きているコー�
   invites.issue("g", at(3));
   assert.equal(invites.supersedeAll("g", new Date(at(3).getTime() + 25 * 3_600_000)), 0);
 });
+
+test("GuestInviteStore.listActive: 生きているコードのサーバー ID と期限だけを作った順に（使用済み・置き換え済み・期限切れは出さず、ハッシュは返さない）", (t) => {
+  const { invites } = inviteStores(t);
+  assert.deepEqual(invites.listActive(at(0)), []);
+  const first = invites.issue("g-first", at(0));
+  invites.issue("g-replaced", at(1));
+  const replaced = invites.issue("g-replaced", at(2));
+  invites.issue("g-revoked", at(3));
+  invites.supersedeAll("g-revoked", at(4));
+  invites.issue("g-used", at(5));
+  invites.issue("g-old", new Date(at(0).getTime() - 25 * 3_600_000));
+  const used = invites.issue("g-used", at(6));
+  assert.equal(invites.redeem(hashInviteCode(used.code), "g-used", at(7), "u", "c").result, "ok");
+  assert.deepEqual(invites.listActive(at(8)), [
+    { guildId: "g-first", expiresAt: first.expiresAt },
+    { guildId: "g-replaced", expiresAt: replaced.expiresAt },
+  ]);
+  // 期限を過ぎたものは出さない
+  assert.deepEqual(invites.listActive(new Date(first.expiresAt)), [{ guildId: "g-replaced", expiresAt: replaced.expiresAt }]);
+});

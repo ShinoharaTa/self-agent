@@ -226,6 +226,22 @@ test("/guests list: 許可済み（チャンネル数）・未許可（コード
   assert.ok(later.replies[0]!.text.includes(`${OTHER}: 未許可・コードなし`));
 });
 
+test("/guests list: guest_guilds に行が無くても、参加前に発行した生きているコードのサーバーを未許可で出す（行のあるサーバーの後）", async (t) => {
+  const env = setup(t);
+  env.guilds.allow(GUILD, NOW);
+  env.gateway.joined.add(GUILD);
+  env.invites.issue(GUILD, NOW);
+  env.invites.issue(OTHER, NOW);
+  const list = await env.run("list");
+  assert.deepEqual(list.replies.map((reply) => reply.text), [
+    [`${GUILD}: 許可済み（チャンネル 0/5）・コード有効 2026-10-26 09:00 まで`, `${OTHER}: 未許可・コード有効 2026-10-26 09:00 まで（不参加）`].join("\n"),
+  ]);
+  // 期限を過ぎたら出さない
+  env.setNow(new Date(NOW.getTime() + 24 * 3_600_000));
+  const later = await env.run("list");
+  assert.ok(!later.replies[0]!.text.includes(OTHER));
+});
+
 test("listText: 2,000 字に収まらなければ「ほか n 件」にまとめる", () => {
   const lines = Array.from({ length: 60 }, (_, index) => `${String(index).padStart(18, "1")}: 許可済み（チャンネル 1/5）・コードなし`);
   const text = listText(lines);

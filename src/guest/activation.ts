@@ -42,6 +42,8 @@ export type GuestActivationDeps = {
 export type GuestActivation = {
   /** 定型文への返信（呼び出し側が確かめたもの）を検証して有効化する。reject しない */
   handleReply: (message: IncomingMessage) => Promise<void>;
+  /** 失敗を覚えているサーバーの数（テスト用） */
+  size: () => number;
 };
 
 /** サーバーごとの失敗の時刻（窓の中のもの）と、受け付けない期限（ミリ秒） */
@@ -56,10 +58,20 @@ export function createGuestActivation(deps: GuestActivationDeps): GuestActivatio
   // 失敗の回数はプロセス内（再起動で消える）
   const states = new Map<string, FailureState>();
 
+  /** 窓の外の失敗を落とす。落とした後に失敗も受け付けない期限も無ければ項目を消す（Map を有界にする） */
+  const prune = (guildId: string, state: FailureState, at: number): void => {
+    state.failures = state.failures.filter((time) => at - time < LOCK_MS);
+    if (state.failures.length === 0 && state.lockedUntil === undefined) states.delete(guildId);
+  };
+
   /** 受け付けない間か（期限を過ぎていれば回数を 0 に戻す） */
   const isLocked = (guildId: string, at: number): boolean => {
     const state = states.get(guildId);
-    if (state?.lockedUntil === undefined) return false;
+    if (state === undefined) return false;
+    if (state.lockedUntil === undefined) {
+      prune(guildId, state, at);
+      return false;
+    }
     if (at < state.lockedUntil) return true;
     states.delete(guildId);
     return false;
@@ -67,8 +79,12 @@ export function createGuestActivation(deps: GuestActivationDeps): GuestActivatio
 
   /** DB を引く失敗を 1 回数える。窓の中で上限に達したら true（受け付けない期限を入れる） */
   const recordFailure = (guildId: string, at: number): boolean => {
+    // ほかのサーバーの分も見て、窓を過ぎた失敗だけの項目・期限を過ぎたロックの項目を消す
+    for (const [id, other] of states) {
+      if (other.lockedUntil !== undefined && at >= other.lockedUntil) other.lockedUntil = undefined;
+      prune(id, other, at);
+    }
     const state = states.get(guildId) ?? { failures: [], lockedUntil: undefined };
-    state.failures = state.failures.filter((time) => at - time < LOCK_MS);
     state.failures.push(at);
     states.set(guildId, state);
     if (state.failures.length < GUEST_INVITE_FAIL_LIMIT) return false;
@@ -159,5 +175,6 @@ export function createGuestActivation(deps: GuestActivationDeps): GuestActivatio
         log(`guest: 案内への返信の処理に失敗しました（guild=${message.guildId ?? "DM"}）: ${describeError(error)}`);
       }
     },
+    size: () => states.size,
   };
 }

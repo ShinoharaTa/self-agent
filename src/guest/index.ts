@@ -61,7 +61,7 @@ export type GuestLayerDeps = {
   /** ゲストのサーバーと許可の状態（guest_guilds） */
   guilds: GuestGuildStore;
   /** 認証コード（guest_invites） */
-  invites: Pick<GuestInviteStore, "issue" | "redeem" | "supersedeAll" | "activeFor">;
+  invites: Pick<GuestInviteStore, "issue" | "redeem" | "supersedeAll" | "activeFor" | "listActive">;
   /** ゲストのチャンネルの SDK セッション（key `guest:<channelId>`） */
   sessions: Pick<SdkSessionStore, "get" | "set" | "delete">;
   /** ゲストの runner（query-options.ts の createGuestRunner） */

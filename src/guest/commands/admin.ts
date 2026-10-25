@@ -15,7 +15,7 @@ import { guestInviteIssuedNotice, guestNoticeFailureText, guestRevokedNotice } f
 /** /guests が使うゲストの層の操作（guest/index.ts の createGuestLayer の admin） */
 export type GuestAdmin = {
   cfg: Pick<Config, "allowedGuildIds" | "timeZone">;
-  invites: Pick<GuestInviteStore, "issue" | "supersedeAll" | "activeFor">;
+  invites: Pick<GuestInviteStore, "issue" | "supersedeAll" | "activeFor" | "listActive">;
   guilds: Pick<GuestGuildStore, "get" | "list" | "revoke" | "clearNotice">;
   guest: Pick<GuestStore, "disableGuild" | "countActive">;
   /** ゲスト Bot（参加しているか・定型文がまだあるか） */
@@ -83,6 +83,16 @@ function onboardNote(result: GuestOnboardResult): string | undefined {
   return `案内を投稿できませんでした（${guestNoticeFailureText(result)}）`;
 }
 
+/** list のコードの期限の部分 */
+function codeText(admin: GuestAdmin, expiresAt: string | undefined): string {
+  return expiresAt === undefined ? "コードなし" : `コード有効 ${formatWallClock(new Date(expiresAt), admin.cfg.timeZone)} まで`;
+}
+
+/** list の不参加の印 */
+function joinedText(admin: GuestAdmin, guildId: string): string {
+  return admin.gateway.isInGuild(guildId) ? "" : "（不参加）";
+}
+
 /** list の 1 行 */
 function listLine(admin: GuestAdmin, row: GuestGuild, at: Date): string {
   let state: string;
@@ -94,9 +104,12 @@ function listLine(admin: GuestAdmin, row: GuestGuild, at: Date): string {
     state = "未許可";
   }
   const invite = admin.invites.activeFor(row.guildId, at);
-  const code = invite === undefined ? "コードなし" : `コード有効 ${formatWallClock(new Date(invite.expiresAt), admin.cfg.timeZone)} まで`;
-  const joined = admin.gateway.isInGuild(row.guildId) ? "" : "（不参加）";
-  return `${row.guildId}: ${state}・${code}${joined}`;
+  return `${row.guildId}: ${state}・${codeText(admin, invite?.expiresAt)}${joinedText(admin, row.guildId)}`;
+}
+
+/** guest_guilds に行が無い（参加前に発行した）サーバーの list の 1 行 */
+function pendingLine(admin: GuestAdmin, invite: { guildId: string; expiresAt: string }): string {
+  return `${invite.guildId}: 未許可・${codeText(admin, invite.expiresAt)}${joinedText(admin, invite.guildId)}`;
 }
 
 /** list の本文（2,000 字に収まらなければ「ほか n 件」） */
@@ -155,7 +168,11 @@ export function createGuestsCommand(deps: GuestsCommandDeps): CommandHandler {
       const subcommand = interaction.subcommand;
       if (subcommand === "list") {
         const at = admin.now();
-        const lines = admin.guilds.list().map((row) => listLine(admin, row, at));
+        const rows = admin.guilds.list();
+        const known = new Set(rows.map((row) => row.guildId));
+        // 行が無くても生きているコードがあるサーバー（参加前に発行した）も出す
+        const pending = admin.invites.listActive(at).filter((invite) => !known.has(invite.guildId));
+        const lines = [...rows.map((row) => listLine(admin, row, at)), ...pending.map((invite) => pendingLine(admin, invite))];
         await responder.reply({ text: listText(lines), ephemeral: true });
         return;
       }
