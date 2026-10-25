@@ -1,6 +1,7 @@
 // スラッシュコマンド・ボタン・セレクト・モーダルの振り分け。発言の処理（handler.ts）とは別経路
 import type { Config } from "../config.ts";
 import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../discord/gateway.ts";
+import { createGuestsCommand, type GuestsCommandDeps } from "../guest/commands/admin.ts";
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
 import { helpCommand } from "./commands/help.ts";
@@ -41,10 +42,12 @@ export type ComponentHandler = {
 /**
  * /setup と /new は同じキュー（queue）、/close と /renew は発言のターンと同じキュー（turnQueue）を使う。
  * /renew は #inbox・#tasks では切り替え（inboxRotator）を使う。
- * jobs は作業ジョブ（SELF_AGENT_JOBS が有効のときだけ渡す）。あれば /job を登録する
+ * jobs は作業ジョブ（SELF_AGENT_JOBS が有効のときだけ渡す）。あれば /job を登録する。
+ * guests はゲストの層の操作（ゲストが有効のときだけ渡す。guest/index.ts の createGuestLayer の admin）。あれば /guests を登録する
  */
 export type CommandDeps = SetupDeps &
   Partial<Pick<JobCommandDeps, "jobs">> &
+  Partial<Pick<GuestsCommandDeps, "guests">> &
   NewSessionDeps &
   CloseDeps &
   RenewDeps &
@@ -70,6 +73,7 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
     createProjectsCommand(deps),
     createRemindersCommand(deps),
     ...(deps.jobs === undefined ? [] : [createJobCommand({ jobs: deps.jobs, log: deps.log })]),
+    ...(deps.guests === undefined ? [] : [createGuestsCommand({ guests: deps.guests, log: deps.log })]),
   ];
 }
 

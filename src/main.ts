@@ -49,6 +49,7 @@ import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { GithubStore } from "./store/github.ts";
 import { GuestStore } from "./store/guest.ts";
 import { GuestGuildStore } from "./store/guest-guilds.ts";
+import { GuestInviteStore } from "./store/guest-invites.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
@@ -142,6 +143,8 @@ const attachments = new AttachmentStore(db, now);
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
 const guestGuilds = new GuestGuildStore(db);
+// ゲストのサーバーの認証コード（guest_invites）。使ったときにサーバーを許可し、チャンネルを有効にする
+const guestInvites = new GuestInviteStore(db, { guilds: guestGuilds, channels: guestStore });
 
 // 作ったプロジェクトの場所。権限ルール（<realpath(workDir)>/projects）と同じ実際の場所にする
 const realWorkDir = realpathSync(config.workDir);
@@ -319,12 +322,13 @@ const jobs = config.jobs ? createJobs(jobRunner) : undefined;
 // ゲスト利用の簡易モード（docs/plan/guest-mode.md。SELF_AGENT_GUEST_* が揃ったときだけ）。ゲスト Bot はここで作り、既定の人格の Bot のコマンド登録の後に
 // 待たずに start する（下）。停止では、受け付けた /guest の処理とゲストのターン（返事まで）を待ってからゲスト Bot も止める。
 // ターンは API キーで動くゲスト専用の runner（ツールなし・dev ログなし）と専用のキューで行う。
-// 有効化・無効化・外されたときの知らせは既定の人格の Bot で #system に出す
+// 参加・有効化・無効化・外されたときの知らせは既定の人格の Bot で #system に出す。/guests（admin）は既定の人格の Bot のコマンドに足す
 const guest = config.guest
   ? createGuestLayer({
       cfg: config,
       guest: guestStore,
       guilds: guestGuilds,
+      invites: guestInvites,
       sessions,
       runner: createGuestRunner({ cfg: config, log }),
       usage,
@@ -354,6 +358,8 @@ const commands = createCommands({
   reminders,
   // /job（SELF_AGENT_JOBS=1 のときだけ登録する）
   ...(jobs === undefined ? {} : { jobs }),
+  // /guests（ゲストが有効のときだけ登録する。メインサーバーでオーナーが認証コードの発行・許可の取り消し・一覧を行う）
+  ...(guest === undefined ? {} : { guests: guest.admin }),
   log,
 });
 const handleInteraction = createInteractionHandler({

@@ -2,7 +2,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { DatabaseSync } from "node:sqlite";
 import type { RunResult } from "../src/agent/runner.ts";
-import type { CommandDef, GatewayHandlers, IncomingMessage } from "../src/discord/gateway.ts";
+import type { IncomingMessage } from "../src/discord/gateway.ts";
 import { GUEST_SESSION_MAX_AGE_HOURS, guestSessionKey } from "../src/guest/constants.ts";
 import {
   buildGuestPrompt,
@@ -16,10 +16,11 @@ import {
   headerDisplayName,
   stripBotMention,
 } from "../src/guest/handler.ts";
-import { createGuestLayer, type GuestGateway } from "../src/guest/index.ts";
+import { createGuestLayer } from "../src/guest/index.ts";
 import { ChannelSeedStore } from "../src/store/channel-seeds.ts";
 import { GuestStore } from "../src/store/guest.ts";
 import { GuestGuildStore } from "../src/store/guest-guilds.ts";
+import { GuestInviteStore } from "../src/store/guest-invites.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
 import { MemoryStore } from "../src/store/memories.ts";
@@ -27,6 +28,7 @@ import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
 import { tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
+import { FakeGuestGateway } from "./helpers/guest-gateway.ts";
 import { FakeRunner, type FakeRunStep, turnUsage } from "./helpers/runner.ts";
 
 const GUILD = "g-guest";
@@ -390,44 +392,6 @@ test("ゲストのターン: 待っている間に無効にされたチャンネ
   assert.equal(env.gateway.sent.length, 1);
 });
 
-/** createGuestLayer の Gateway の偽物 */
-class FakeGuestGateway implements GuestGateway {
-  handlers: GatewayHandlers | undefined;
-  sent: Array<{ channelId: string; text: string; replyToId?: string }> = [];
-  stopped = 0;
-  async start(handlers: GatewayHandlers): Promise<void> {
-    this.handlers = handlers;
-  }
-  async stop(): Promise<void> {
-    this.stopped++;
-  }
-  isInGuild(): boolean {
-    return true;
-  }
-  async registerGuildCommands(_guildId: string, _defs: readonly CommandDef[]): Promise<void> {}
-  async send(channelId: string, text: string, replyToId?: string): Promise<void> {
-    this.sent.push({ channelId, text, ...(replyToId === undefined ? {} : { replyToId }) });
-  }
-  async sendMessage(): Promise<string> {
-    throw new Error("sendMessage は呼ばれない想定です");
-  }
-  async messageExists(): Promise<boolean> {
-    throw new Error("messageExists は呼ばれない想定です");
-  }
-  startTyping(): () => void {
-    return () => {};
-  }
-  selfUserId(): string | undefined {
-    return BOT;
-  }
-  listGuildIds(): string[] {
-    return [GUILD];
-  }
-  async findNoticeChannels(): Promise<string[]> {
-    throw new Error("findNoticeChannels は呼ばれない想定です");
-  }
-}
-
 function startWith(t: TestContext, steps: FakeRunStep[]) {
   const db = tempDb(t);
   const now = () => NOW;
@@ -435,8 +399,12 @@ function startWith(t: TestContext, steps: FakeRunStep[]) {
   guest.enable(GUILD, CHANNEL);
   const guilds = new GuestGuildStore(db);
   guilds.allow(GUILD, NOW);
+  // 定型文は投稿済み（起動時の sweep は投稿しない）
+  guilds.setNotice(GUILD, "c-notice", "m-notice", NOW);
   const runner = new FakeRunner(steps);
   const gateway = new FakeGuestGateway();
+  gateway.joined.add(GUILD);
+  gateway.selfUserId = () => BOT;
   const logs: string[] = [];
   let stopping = false;
   const layer = createGuestLayer({
@@ -448,6 +416,7 @@ function startWith(t: TestContext, steps: FakeRunStep[]) {
     },
     guest,
     guilds,
+    invites: new GuestInviteStore(db, { guilds, channels: guest }),
     sessions: new SdkSessionStore(db, now),
     runner,
     usage: new UsageStore(db, now),
