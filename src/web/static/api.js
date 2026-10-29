@@ -1,4 +1,5 @@
-// サーバーとのやりとり: fetch の包み（SA.api）・/api/* の結果を持つメモリの状態（SA.store）・既読（localStorage の seen）・polling（SA.poll）
+// サーバーとのやりとり: fetch の包み（SA.api）・/api/* の結果を持つメモリの状態（SA.store）・既読（localStorage の seen）・polling（SA.poll）・
+// 実行中のターン（/api/running）とパネルの「出力」への手順・終わり方
 "use strict";
 
 (function () {
@@ -9,6 +10,11 @@
   const TURNS_INTERVAL_MS = 5000;
   /** polling が続けて失敗している間は間隔を倍にしていき、ここで止める */
   const POLL_BACKOFF_MAX_MS = 60000;
+  /** /api/running の間隔（実行中のターンがあるとき・無いとき） */
+  const RUNNING_BUSY_MS = 2000;
+  const RUNNING_IDLE_MS = 10000;
+  /** ターンが終わってから返事の行が書かれるまで（Discord への返信の後）を待って、もう一度読むまでの時間 */
+  const END_RELOAD_MS = 2500;
   /** 会話のタブで一度に読む行の数（開いたとき・上にスクロールしたとき） */
   const TURNS_PAGE = 50;
   /** 会話ログで 1 日分として読む件数（/api/devlog の last の上限） */
@@ -16,8 +22,8 @@
   const SEEN_KEY = "self-agent-web:seen";
 
   /**
-   * 失敗は 401 なら /login へ、それ以外は「<status>: <error>」のトーストを出して reject する（error.status に HTTP の status、error.toast にトーストの文）。
-   * opts.quiet ならトーストは出さない（呼び出し側が出すかを決める）
+   * 失敗は 401 なら /login へ、それ以外は「<status>: <error>」のトーストを出して reject する（error.status に HTTP の status（つながらなければ 0）、
+   * error.code に応答の error、error.toast にトーストの文）。opts.quiet ならトーストは出さない（呼び出し側が出すか・文を選ぶ）
    */
   async function request(method, path, body, opts) {
     const quiet = !!(opts && opts.quiet);
@@ -32,7 +38,10 @@
     } catch (err) {
       const text = "サーバーにつながりません";
       if (!quiet) SA.ui.toast(text);
-      if (err && typeof err === "object") err.toast = text;
+      if (err && typeof err === "object") {
+        err.status = 0;
+        err.toast = text;
+      }
       throw err;
     }
     if (res.status === 401) {
@@ -51,6 +60,7 @@
       if (!quiet) SA.ui.toast(res.status + ": " + error);
       const failure = new Error(res.status + ": " + error);
       failure.status = res.status;
+      failure.code = data && typeof data.error === "string" ? data.error : null;
       failure.toast = res.status + ": " + error;
       throw failure;
     }
@@ -59,14 +69,15 @@
 
   SA.api = {
     get: (path, opts) => request("GET", path, undefined, opts),
-    post: (path, body) => request("POST", path, body),
+    post: (path, body, opts) => request("POST", path, body, opts),
   };
 
   // ===== 状態（このタブのメモリだけ） =====
   // status: /api/status。usage: /api/usage の結果（date はサーバーが使った日付）。usageDays: /api/usage/days。
   // today: 日付を付けずに /api/usage を呼んだときにサーバーが返した日付（SELF_AGENT_TZ の今日）。
   // channels: /api/channels（guilds・personas・channels）。turns[channelId]: 会話のタブの行（古い順）と、/turns の channel・まだ前があるか。
-  // devlogDays: /api/devlog/days。devlog: /api/devlog の結果（date はサーバーが使った日付）。devlogToday: 日付を付けずに読んだときの日付
+  // devlogDays: /api/devlog/days。devlog: /api/devlog の結果（date はサーバーが使った日付）。devlogToday: 日付を付けずに読んだときの日付。
+  // running: /api/running の turns（まだ読んでいなければ null）。runningAt: それを受け取った時刻（経過時間を進めて見せる）
   const store = {
     status: null,
     usage: null,
@@ -79,6 +90,8 @@
     devlog: null,
     devlogFailed: null,
     devlogToday: null,
+    running: null,
+    runningAt: 0,
     load: {},
   };
   const loading = {};
@@ -181,10 +194,41 @@
     return before.state !== rest.state || (before.last && before.last.id) !== (rest.last && rest.last.id);
   }
 
-  /** 行を id で重ねずに足す（古い順を保つ） */
+  /** 行を id で重ねずに足す（古い順を保つ）。同じ id はサーバーの行（incoming）で置き換える（Web から送った仮の行を本物にする） */
   function mergeTurns(current, incoming) {
-    const known = new Set(current.map((t) => t.id));
-    return current.concat(incoming.filter((t) => !known.has(t.id))).sort((a, b) => a.id - b.id);
+    const byId = new Map(current.map((t) => [t.id, t]));
+    for (const t of incoming) byId.set(t.id, t);
+    return [...byId.values()].sort((a, b) => a.id - b.id);
+  }
+
+  /** サーバーから受け取った行（Web から送った直後に足した仮の行を除く） */
+  function realTurns(t) {
+    return t.turns.filter((row) => !row.optimistic);
+  }
+
+  // ===== パネルの「出力」: 実行中のターンの手順と、返事の行の終わり方 =====
+  /** 終わり方を出した返事の行（id）。ターンが終わったと分かったチャンネル（返事の行が来たら終わり方を出す） */
+  const reportedEnds = new Set();
+  const pendingEnds = new Set();
+
+  function whereOf(channelId) {
+    const t = store.turns[channelId];
+    const ch = (t && t.channel) || (store.channels ? store.channels.channels.find((c) => c.id === channelId) : null);
+    return ch ? SA.chat.channelTitle(ch) : "会話";
+  }
+
+  /**
+   * 読んだ行のうち、終わり方のある返事の行を出力に出す。incremental（after で読んだ）なら新しい行を全部、最初の読み込みでは
+   * ターンの終わりを待っているチャンネルの最後の行だけ（開いたときに昔の行を並べない）
+   */
+  function reportEnds(channelId, rows, incremental) {
+    const agents = rows.filter((row) => row.kind === "agent" && row.outcome && !reportedEnds.has(row.id));
+    const last = rows[rows.length - 1];
+    for (const row of agents) {
+      reportedEnds.add(row.id);
+      if (incremental || (pendingEnds.has(channelId) && row === last)) SA.app.addOutput(whereOf(channelId), SA.chat.endText(row));
+    }
+    if (last && last.kind === "agent" && last.outcome) pendingEnds.delete(channelId);
   }
 
   /** 開いたときは最新の 50 件、その後は最後の行より後（after）を読む */
@@ -194,10 +238,11 @@
       if (t.missing) return;
       let changed = false;
       try {
-        if (!t.loaded || t.turns.length === 0) {
+        if (!t.loaded || realTurns(t).length === 0) {
           const data = await SA.api.get(turnsPath(channelId, "limit=" + TURNS_PAGE), opts);
           const turns = Array.isArray(data && data.turns) ? data.turns : [];
-          changed = !t.loaded || turns.length > 0;
+          changed = !t.loaded || turns.length > 0 || t.turns.length > 0;
+          reportEnds(channelId, turns, false);
           t.turns = turns;
           // 最新の取得では hasMore は返らないので、件数で前があるかを決める
           t.hasMore = turns.length === TURNS_PAGE;
@@ -206,7 +251,8 @@
         } else {
           // 5 秒の間に 50 件を超えて増えることはまず無いが、超えたら続けて読む
           for (let i = 0; i < 4; i++) {
-            const lastId = t.turns[t.turns.length - 1].id;
+            const real = realTurns(t);
+            const lastId = real[real.length - 1].id;
             const data = await SA.api.get(turnsPath(channelId, "after=" + lastId + "&limit=" + TURNS_PAGE), opts);
             const turns = Array.isArray(data && data.turns) ? data.turns : [];
             if (data && data.channel) {
@@ -215,6 +261,7 @@
               if (!before || before.state !== data.channel.state || before.title !== data.channel.title) changed = true;
             }
             if (turns.length > 0) {
+              reportEnds(channelId, turns, true);
               t.turns = mergeTurns(t.turns, turns);
               changed = true;
             }
@@ -233,6 +280,76 @@
         SA.app.refresh("ch:" + channelId);
         SA.chat.channelsChanged();
       }
+    });
+
+  /** Web から送った直後に、本物の行（同じ id）が来るまでの仮の owner の行を足す（会話をまだ読んでいなければ足さない） */
+  store.addOptimisticTurn = (channelId, turnId, text) => {
+    const t = store.turns[channelId];
+    if (!t || !t.loaded || t.missing || typeof turnId !== "number" || turnId < 1) return;
+    if (t.turns.some((row) => row.id === turnId)) return;
+    const row = { id: turnId, at: new Date().toISOString(), kind: "owner", source: "web", text, outcome: null, steps: null, toolCalls: null, durationMs: null, messageId: null, link: null, optimistic: true };
+    t.turns = mergeTurns(t.turns, [row]);
+    SA.app.refresh("ch:" + channelId);
+  };
+
+  // ===== 実行中のターン（/api/running） =====
+  /** そのチャンネルの実行中のターン。無ければ null */
+  store.runningOf = (channelId) => (store.running ? store.running.find((r) => r.channelId === channelId) || null : null);
+
+  /** 経過時間（受け取った後の時間を足す） */
+  store.runningElapsed = (turn) => turn.elapsedMs + (Date.now() - store.runningAt);
+
+  /**
+   * 前回との差: 始まった・終わった・手順が進んだチャンネルの会話を読み直し、出力に手順を積む。
+   * 終わったチャンネルは返事の行が書かれるのを待ってもう一度読む
+   */
+  function applyRunning(next) {
+    const before = new Map((store.running || []).map((r) => [r.channelId, r]));
+    const after = new Map(next.map((r) => [r.channelId, r]));
+    const changed = [];
+    for (const [channelId, turn] of after) {
+      const prev = before.get(channelId);
+      const sameTurn = prev && prev.turnSeq === turn.turnSeq;
+      if (!sameTurn) SA.app.addOutput(whereOf(channelId), "ターンを始めました");
+      const known = sameTurn ? prev.toolCalls : 0;
+      const added = Math.min(Math.max(turn.toolCalls - known, 0), turn.steps.length);
+      for (const step of turn.steps.slice(turn.steps.length - added)) SA.app.addOutput(whereOf(channelId), step);
+      if (!sameTurn || prev.toolCalls !== turn.toolCalls) changed.push(channelId);
+      // 前のターンが終わって次が始まっていれば、前のターンの返事も待つ
+      if (prev && !sameTurn) pendingEnds.add(channelId);
+    }
+    const ended = [...before.keys()].filter((channelId) => !after.has(channelId) || after.get(channelId).turnSeq !== before.get(channelId).turnSeq);
+    for (const channelId of ended) {
+      pendingEnds.add(channelId);
+      if (!changed.includes(channelId)) changed.push(channelId);
+    }
+    store.running = next;
+    store.runningAt = Date.now();
+    for (const channelId of changed) {
+      const t = store.turns[channelId];
+      // 開いている会話は描き直し（実行中の行）、会話を読んだことがあるか終わったチャンネルは読み直す
+      SA.app.refresh("ch:" + channelId);
+      if ((t && t.loaded) || ended.includes(channelId)) store.load.turns(channelId);
+    }
+    for (const channelId of ended) setTimeout(() => store.load.turns(channelId), END_RELOAD_MS);
+    if (changed.length > 0 || before.size !== after.size) {
+      SA.app.refreshTabMarks();
+      SA.app.refreshSidebar();
+      SA.app.refreshStatus();
+    }
+  }
+
+  /** opts.quiet は polling から（失敗のトーストは polling が出す） */
+  store.load.running = (opts) =>
+    once("running", async () => {
+      const data = await SA.api.get("/api/running", opts);
+      const turns = Array.isArray(data && data.turns) ? data.turns.filter((r) => r && typeof r.channelId === "string") : [];
+      for (const r of turns) {
+        if (!Array.isArray(r.steps)) r.steps = [];
+        if (typeof r.toolCalls !== "number") r.toolCalls = 0;
+        if (typeof r.elapsedMs !== "number") r.elapsedMs = 0;
+      }
+      applyRunning(turns);
     });
 
   /** 上にスクロールしたとき: 最初の行より前（before）を 50 件足す */
@@ -329,7 +446,8 @@
   SA.store = store;
 
   // ===== polling（見えているときだけ。隠れたら止め、戻ったら即 1 回） =====
-  // /api/status は 10 秒、/api/channels は 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと（応答が来てから次を予約する）。
+  // /api/status は 10 秒、/api/channels は 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
+  // /api/running は実行中のターンがあれば 2 秒・無ければ 10 秒ごと（どれも応答が来てから次を予約する）。
   // 失敗のトーストは続けて失敗している間は最初の 1 回だけで、その間は間隔を倍にして POLL_BACKOFF_MAX_MS まで伸ばす。成功したら元に戻す
   const poll = { started: false, stopped: false };
 
@@ -338,11 +456,17 @@
     return channelId ? store.load.turns(channelId, opts) : Promise.resolve(null);
   }
 
-  /** run は opts（quiet）を受け、成功なら null・失敗ならその error で resolve する。fails は続けて失敗した回数 */
+  /** run は opts（quiet）を受け、成功なら null・失敗ならその error で resolve する。base は成功しているときの間隔。fails は続けて失敗した回数 */
   const polls = {
-    status: { base: STATUS_INTERVAL_MS, run: (opts) => store.load.status(opts), fails: 0, timer: null },
-    channels: { base: CHANNELS_INTERVAL_MS, run: (opts) => store.load.channels(opts), fails: 0, timer: null },
-    turns: { base: TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
+    status: { base: () => STATUS_INTERVAL_MS, run: (opts) => store.load.status(opts), fails: 0, timer: null },
+    channels: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.channels(opts), fails: 0, timer: null },
+    turns: { base: () => TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
+    running: {
+      base: () => (store.running && store.running.length > 0 ? RUNNING_BUSY_MS : RUNNING_IDLE_MS),
+      run: (opts) => store.load.running(opts),
+      fails: 0,
+      timer: null,
+    },
   };
 
   function active() {
@@ -373,7 +497,7 @@
       countFailure(p, err);
       if (!active()) return;
       clearTimeout(p.timer);
-      p.timer = setTimeout(() => runPoll(p), backoff(p.base, p.fails));
+      p.timer = setTimeout(() => runPoll(p), backoff(p.base(), p.fails));
     });
   }
 
@@ -400,6 +524,8 @@
       schedule();
     },
     stopped: () => poll.stopped,
+    /** 送った・中断した直後: 実行中のターンをすぐ読む */
+    running: () => runPoll(polls.running),
     stop() {
       poll.stopped = true;
       clearTimers();

@@ -46,6 +46,10 @@ export const REVIVED_NOTE = "（進行中に戻しました）";
 export const PROGRESS_DELAY_MS = 20_000;
 /** history に残すためにターンごとに集める手順の label の数（保存するときはストアが先頭 50 件に切る） */
 const HISTORY_STEPS_COLLECT_MAX = 60;
+/** 実行中のターン（runningTurns）に持つ直近の手順の label の数（超えたら古いものから落とす） */
+export const RUNNING_STEPS_MAX = 30;
+/** Web から送った発言を Discord に投稿するときの 1 行目（2 行目からが本文） */
+export const WEB_ECHO_PREFIX = "（Web から）";
 // 途中経過の表示は progress.ts（ジョブと共通）。これまでどおり handler からも使えるようにする
 export { formatElapsed, PROGRESS_INTERVAL_MS, progressEndText, progressText, type ProgressTimers, type TurnOutcome };
 
@@ -94,10 +98,36 @@ export type HandlerDeps = {
    * 省略すれば画像は渡さない（本文と注記だけ）
    */
   prepareImages?: (source: AttachmentSource, images: readonly IncomingImage[]) => Promise<PreparedImages>;
-  /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。無ければ書かない */
+  /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。無ければ書かない。渡したときだけ、#inbox・#tasks のターンでも手順を集める */
   history?: Pick<HistoryStore, "add">;
+  /** チャンネルの持ち主の Bot が Discord に接続しているか（personas.ts の PersonaRouter.ownerConnected）。Web からの発言の前に見る。省略は接続している扱い */
+  ownerConnected?: (channelId: string) => boolean;
   log: (message: string) => void;
 };
+
+/** 実行中のターン（Web UI の /api/running） */
+export type RunningTurn = {
+  guildId: string;
+  channelId: string;
+  turnSeq: number;
+  /** ターンを始めた時刻（ISO） */
+  startedAt: string;
+  toolCalls: number;
+  /** 直近の手順の label。まだ無ければ undefined */
+  label: string | undefined;
+  /** 直近の手順の label（古い順に RUNNING_STEPS_MAX 件まで） */
+  steps: string[];
+  source: "discord" | "web";
+  /** 中断できるか（セッションのチャンネルのターンだけ） */
+  abortable: boolean;
+};
+
+/** Web からの発言の結果 */
+export type SubmitTextResult =
+  | { result: "accepted"; turnId: number; messageId: string }
+  | { result: "not_accepted" }
+  | { result: "bot_disconnected" }
+  | { result: "echo_failed" };
 
 export type Handler = {
   /** 受け付けた発言を 1 ターンとして処理する。reject しない（失敗は log に出す） */
@@ -112,6 +142,14 @@ export type Handler = {
    * 実行中のターンが無い・番号が違う（前のターンのボタン）なら false（#inbox・#tasks・/close のターンは中断できない）
    */
   abortTurn(channelId: string, turnSeq: number): boolean;
+  /**
+   * Web から送った発言を、オーナーの発言と同じ経路（日時ヘッダ・キュー・ターン・返信）で 1 ターン入れる。受け付けるチャンネルでなければ not_accepted、
+   * 持ち主の Bot が接続していなければ bot_disconnected。キューに入れる前に持ち主の Bot で「（Web から）\n本文」を投稿し（失敗は echo_failed でターンは入れない）、
+   * その ID 付きで history の owner の行を書いてから、その投稿への返信としてターンを始める（返信までは待たない）。turnId は owner の行の id（history が無い・書けなければ 0）
+   */
+  submitText(input: { guildId: string; channelId: string; content: string; at: Date; source: "web" }): Promise<SubmitTextResult>;
+  /** 実行中のターン（発言・[続ける]。全部の種類のチャンネル） */
+  runningTurns(): RunningTurn[];
 };
 
 /** 1 ターンの依頼（オーナーの発言か [続ける]） */
@@ -136,6 +174,20 @@ type TurnRequest = {
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/** handler が持つ実行中のターン（runningTurns で RunningTurn にして返す） */
+type RunningEntry = {
+  guildId: string;
+  turnSeq: number;
+  /** 中断（セッションのチャンネルのターンだけ） */
+  controller?: AbortController;
+  startedAt: Date;
+  toolCalls: number;
+  label?: string;
+  steps: string[];
+  source: "discord" | "web";
+  kind: ChannelKind;
+};
 
 /** owner の行の text（本文。画像があれば「（画像 n 枚）」を、本文が空ならそれだけ、あれば末尾に改行して足す） */
 function ownerText(request: TurnRequest): string {
@@ -189,10 +241,13 @@ export function createHandler(deps: HandlerDeps): Handler {
   const ownerOf = personas === undefined ? undefined : (channelId: string) => personas.ownerOf(channelId);
   /** history の行の persona（チャンネルの持ち主の人格） */
   const personaOf = (channelId: string): string => ownerOf?.(channelId) ?? DEFAULT_PERSONA_ID;
-  /** 実行中のセッションのチャンネルのターンの番号と中断（key は channelId。ターンが終わったら消す） */
-  const running = new Map<string, { turnSeq: number; controller: AbortController }>();
   /**
-   * 最後に振ったターンの番号（セッションのチャンネルのターンごとに 1 ずつ増やす。[中断] のボタンに入れる）。
+   * 実行中のターン（key は channelId。ターンが終わったら消す）。番号・始めた時刻・ツール回数・手順はすべての種類のターンで持ち、
+   * 中断（controller）はセッションのチャンネルのターンだけ
+   */
+  const running = new Map<string, RunningEntry>();
+  /**
+   * 最後に振ったターンの番号（ターンごとに 1 ずつ増やす。セッションのチャンネルのターンは [中断] のボタンに入れる）。
    * 開始値は handler を作った時刻のミリ秒にし、再起動しても前の番号（残ったボタン）と重ならないようにする
    */
   let lastTurnSeq = now().getTime();
@@ -240,7 +295,7 @@ export function createHandler(deps: HandlerDeps): Handler {
   /**
    * channelName は prompt の日時ヘッダに入れるチャンネル名。revivedBeforeQueue はキュー待ちの前に進行中に戻したか。
    * セッションはキュー待ちの間に変わりうる（/close の確定で完了になる等）ので、ここで読み直して待ち・完了なら改めて進行中に戻す。
-   * セッションのチャンネルのターンは、番号を振って実行中の間だけ中断できるようにし、途中経過を出す
+   * ターンには番号を振って実行中の間だけ runningTurns に出し、セッションのチャンネルのターンはその間だけ中断できるようにし、途中経過を出す
    */
   const handleTurn = async (request: TurnRequest, channelName: string, revivedBeforeQueue: boolean): Promise<void> => {
     const { guildId, channelId, kind } = request;
@@ -271,19 +326,33 @@ export function createHandler(deps: HandlerDeps): Handler {
     const notes = attachmentNotes(request.attachments?.skipped, prepared);
     const body = [...notes, ...(request.content.trim() === "" ? [] : [request.content])].join("\n");
     const stopTyping = gateway.startTyping(channelId);
-    const turn = kind === "session" ? { turnSeq: ++lastTurnSeq, controller: new AbortController() } : undefined;
-    if (turn !== undefined) running.set(channelId, turn);
-    const progress = turn === undefined ? undefined : startTurnProgress(channelId, turn.turnSeq);
+    const turn: RunningEntry = {
+      guildId,
+      turnSeq: ++lastTurnSeq,
+      ...(kind === "session" ? { controller: new AbortController() } : {}),
+      startedAt: now(),
+      toolCalls: 0,
+      steps: [],
+      source: request.source,
+      kind,
+    };
+    running.set(channelId, turn);
+    // 途中経過と [中断] はセッションのチャンネルのターンだけ
+    const progress = turn.controller === undefined ? undefined : startTurnProgress(channelId, turn.turnSeq);
     const persona = personaOf(channelId);
     // 進行中に戻したことは、返事とは別の行に残す（返事の行の text には付けない）
     if (revived) recordHistory(history, { guildId, channelId, kind: "notice", source: request.source, persona, text: REVIVED_NOTE }, log);
-    // history に残す手順の label（history があるときだけ集める）。途中経過にもそのまま渡す
+    // history に残す手順の label と実行中のターンの手順（history があるとき（Web UI が有効なとき）だけ集める）。途中経過にもそのまま渡す
     const steps: string[] = [];
     const onProgress =
       history === undefined
         ? progress?.onProgress
         : (step: { label: string }) => {
             if (steps.length < HISTORY_STEPS_COLLECT_MAX) steps.push(step.label);
+            turn.toolCalls++;
+            turn.label = step.label;
+            turn.steps.push(step.label);
+            if (turn.steps.length > RUNNING_STEPS_MAX) turn.steps.shift();
             progress?.onProgress(step);
           };
     const startedAt = now().getTime();
@@ -300,12 +369,12 @@ export function createHandler(deps: HandlerDeps): Handler {
         ...(prepared === undefined || prepared.attachmentIds.length === 0 ? {} : { attachmentIds: prepared.attachmentIds }),
         // WebFetch で取得できるのは、この発言に貼られた URL だけ
         allowedUrls: extractUrls(request.content),
-        ...(turn === undefined ? {} : { signal: turn.controller.signal }),
+        ...(turn.controller === undefined ? {} : { signal: turn.controller.signal }),
         ...(onProgress === undefined ? {} : { onProgress }),
       });
     } finally {
       stopTyping();
-      if (turn !== undefined && running.get(channelId) === turn) running.delete(channelId);
+      if (running.get(channelId) === turn) running.delete(channelId);
       // 途中経過のタイマーはターンの終わりで必ず止める
       await progress?.finish(turnOutcome(result));
     }
@@ -464,9 +533,45 @@ export function createHandler(deps: HandlerDeps): Handler {
     },
     abortTurn: (channelId, turnSeq) => {
       const turn = running.get(channelId);
-      if (turn === undefined || turn.turnSeq !== turnSeq) return false;
+      if (turn === undefined || turn.controller === undefined || turn.turnSeq !== turnSeq) return false;
       turn.controller.abort();
       return true;
     },
+    submitText: async ({ guildId, channelId, content, at, source }) => {
+      const kind = resolveChannel(guildId, channelId);
+      if (kind === null) return { result: "not_accepted" };
+      if (deps.ownerConnected !== undefined && !deps.ownerConnected(channelId)) return { result: "bot_disconnected" };
+      // Discord の時系列に Web の発言を残す（返事はこの投稿への返信になる）。メンションは鳴らさない（sendMessage の既定）
+      let messageId: string;
+      try {
+        messageId = await gateway.sendMessage(channelId, { text: `${WEB_ECHO_PREFIX}\n${content}` });
+      } catch (error) {
+        log(`Web の発言の投稿に失敗しました: ${describeError(error)}`);
+        return { result: "echo_failed" };
+      }
+      const turnId =
+        recordHistory(
+          history,
+          { guildId, channelId, kind: "owner", source, persona: personaOf(channelId), text: content, messageId },
+          log,
+        ) ?? 0;
+      // 返信までは待たない（最終発言の記録・進行中に戻すのは submit の最初で同期に済む）。owner の行は書いたので submit では書かない
+      void submit({ guildId, channelId, kind, content, at, replyToId: messageId, source, historyId: turnId }).catch((error: unknown) =>
+        log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`),
+      );
+      return { result: "accepted", turnId, messageId };
+    },
+    runningTurns: () =>
+      [...running.entries()].map(([channelId, turn]) => ({
+        guildId: turn.guildId,
+        channelId,
+        turnSeq: turn.turnSeq,
+        startedAt: turn.startedAt.toISOString(),
+        toolCalls: turn.toolCalls,
+        label: turn.label,
+        steps: [...turn.steps],
+        source: turn.source,
+        abortable: turn.kind === "session",
+      })),
   };
 }
