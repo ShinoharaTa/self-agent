@@ -133,7 +133,7 @@ To keep it running, make it a systemd user service (no sudo needed; if Node come
 ```bash
 systemd-run --user --unit=self-agent --working-directory="$PWD" \
   -p MemoryMax=4G -p MemoryHigh=3G -p CPUQuota=300% -p TasksMax=1024 \
-  "$(command -v node)" --env-file="$HOME/.config/self-agent/env" src/main.ts
+  "$(command -v node)" --env-file="$HOME/.config/self-agent/env" src/cli.ts start
 journalctl --user -u self-agent -f      # logs
 systemctl --user stop self-agent        # stop (waits for in-flight replies first)
 ```

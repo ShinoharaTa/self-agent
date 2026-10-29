@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { copyWebScaffold, hasWebScaffold, WEB_TEMPLATE_DIR } from "../src/agent/scaffold.ts";
@@ -91,4 +91,9 @@ test("copyWebScaffold: created は 5 つを順に複製し、2 回目は何も�
   assert.deepEqual(await copyWebScaffold(dir, "created"), { copied: CREATED, failed: false });
   assert.deepEqual(await copyWebScaffold(dir, "created"), { copied: [], failed: false });
   assert.equal(await hasWebScaffold(dir), true);
+});
+
+test("WEB_TEMPLATE_DIR はパッケージの templates/web/ で、実在するディレクトリ（土台のファイルがある）", () => {
+  assert.ok(statSync(WEB_TEMPLATE_DIR).isDirectory());
+  for (const file of CREATED) assert.ok(statSync(join(WEB_TEMPLATE_DIR, file)).isFile(), file);
 });

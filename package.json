@@ -6,7 +6,7 @@
     "node": ">=24.20.0"
   },
   "scripts": {
-    "start": "node --env-file-if-exists=${HOME}/.config/self-agent/env src/main.ts",
+    "start": "node --env-file-if-exists=${HOME}/.config/self-agent/env src/cli.ts start",
     "check": "tsc --noEmit",
     "test": "node --test 'test/*.test.ts'",
     "test:integration": "node --env-file-if-exists=${HOME}/.config/self-agent/env --test 'test/integration/*.test.ts'",

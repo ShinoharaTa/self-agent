@@ -2,6 +2,7 @@
 import { lstatSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { McpSdkServerConfigWithInstance, Options, SandboxSettings } from "@anthropic-ai/claude-agent-sdk";
 import type { Config } from "../config.ts";
 import { PROJECTS_DIR_NAME, WORK_CACHE_DIR_NAME, WORK_CWD_DIR_NAME, WORK_TMP_DIR_NAME } from "./disk.ts";
@@ -253,24 +254,30 @@ export function ensureGuestConfigDir(claudeConfigDir: string): string {
   return path;
 }
 
-/** このプロセスの場所（node・リポジトリ・ホーム）と env。テストでは差し替える */
-export type SandboxHost = { execPath: string; cwd: string; homeDir: string; env: NodeJS.ProcessEnv };
+/**
+ * self-agent のパッケージの直下（package.json のあるディレクトリ。checkout ではリポジトリ、公開物ではインストールした場所）。
+ * 起動したときの cwd によらない（docs/plan/distribution.md §4.4）。末尾の `/` は付けない
+ */
+export const PACKAGE_DIR = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+
+/** このプロセスの場所（node・パッケージの直下・ホーム）と env。テストでは差し替える */
+export type SandboxHost = { execPath: string; packageDir: string; homeDir: string; env: NodeJS.ProcessEnv };
 
 export function defaultSandboxHost(): SandboxHost {
-  return { execPath: process.execPath, cwd: process.cwd(), homeDir: homedir(), env: process.env };
+  return { execPath: process.execPath, packageDir: PACKAGE_DIR, homeDir: homedir(), env: process.env };
 }
 
-/** sandbox の場所（自己診断と Options.sandbox で共通）。リポジトリは cwd、node の版のディレクトリは execPath の 2 つ上 */
+/** sandbox の場所（自己診断と Options.sandbox で共通）。秘密の場所の 1 つはパッケージの直下、node の版のディレクトリは execPath の 2 つ上 */
 export function sandboxPlacesOf(
   cfg: Pick<Config, "workDir" | "dataDir" | "claudeConfigDir">,
-  host: Pick<SandboxHost, "execPath" | "cwd" | "homeDir">,
+  host: Pick<SandboxHost, "execPath" | "packageDir" | "homeDir">,
 ): SandboxPlaces {
   return {
     workDir: cfg.workDir,
     nodeDir: nodeVersionDir(host.execPath),
     dataDir: cfg.dataDir,
     claudeConfigDir: cfg.claudeConfigDir,
-    repoDir: host.cwd,
+    packageDir: host.packageDir,
     homeDir: host.homeDir,
   };
 }

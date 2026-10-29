@@ -1,4 +1,4 @@
-// 二重起動の防止: `<dataDir>/lock` に起動したプロセスの PID と boot id を置く。同じ DB を 2 プロセスが使うと同じ発言に 2 回答えるため（docs/plan/personas.md §1）
+// 二重起動の防止: `<dataDir>/lock` に起動したプロセスの PID と boot id と引数を置く。同じ DB を 2 プロセスが使うと同じ発言に 2 回答えるため（docs/plan/personas.md §1）
 import { linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,10 +16,17 @@ export type DataLockOptions = {
   readBootId?: () => string | undefined;
   /** その PID のプロセスのコマンドライン（引数を空白でつないだもの）。読めなければ undefined。既定は /proc/<pid>/cmdline */
   readCmdline?: (pid: number) => string | undefined;
+  /**
+   * 自分のコマンドラインの argv[0] より後ろ（引数を空白でつないだもの）。lock の 3 行目に書く。読めなければ undefined。既定は /proc/self/cmdline。
+   * process.argv[1] は node が絶対パスに解決するが cmdline は起動したときの文字列のままなので、相手と同じ cmdline から作る（相対パスの起動でも一致する）
+   */
+  readOwnArgs?: () => string | undefined;
+  /** readOwnArgs が読めないときの自分の引数（node の後ろ）。既定 process.argv.slice(1) */
+  argv?: readonly string[];
 };
 
-/** この Bot のプロセスのコマンドラインに含まれる文字列（npm start は node … src/main.ts） */
-const BOT_COMMAND = "src/main.ts";
+/** 3 行目（引数）の無い古い lock の持ち主がこの Bot かを見分ける文字列（前の版の npm start は node … src/main.ts） */
+const LEGACY_BOT_COMMAND = "src/main.ts";
 
 export function lockPath(dataDir: string): string {
   return join(dataDir, "lock");
@@ -44,6 +51,17 @@ function procBootId(): string | undefined {
   }
 }
 
+function procOwnArgs(): string | undefined {
+  try {
+    const args = readFileSync("/proc/self/cmdline", "utf8").split("\0");
+    if (args.at(-1) === "") args.pop();
+    const text = args.slice(1).join(" ").trim();
+    return text === "" ? undefined : text;
+  } catch {
+    return undefined;
+  }
+}
+
 function procCmdline(pid: number): string | undefined {
   try {
     return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim();
@@ -62,17 +80,27 @@ function readLockText(path: string): string | undefined {
   }
 }
 
-type LockHolder = { pid: number; bootId: string | undefined };
+type LockHolder = { pid: number; bootId: string | undefined; command: string | undefined };
 
-/** 1 行目が PID、2 行目（任意）が boot id。形が違えば null */
+/** 改行を空白にする（lock の 1 行に収め、コマンドラインと同じ形で比べる） */
+function oneLine(text: string): string {
+  return text.replace(/[\r\n]/g, " ");
+}
+
+/** 1 行目が PID、2 行目（任意。空なら無し）が boot id、3 行目（任意。空なら無し）が引数。形が違えば null */
 function parseLock(text: string): LockHolder | null {
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
-  if (lines.length < 1 || lines.length > 2 || !/^\d+$/.test(lines[0]!)) return null;
+  if (lines.length < 1 || lines.length > 3 || !/^\d+$/.test(lines[0]!)) return null;
   const pid = Number(lines[0]);
   if (!Number.isSafeInteger(pid) || pid < 1) return null;
   const bootId = lines[1]?.trim();
-  return { pid, bootId: bootId === undefined || bootId === "" ? undefined : bootId };
+  const command = lines[2]?.trim();
+  return {
+    pid,
+    bootId: bootId === undefined || bootId === "" ? undefined : bootId,
+    command: command === undefined || command === "" ? undefined : command,
+  };
 }
 
 /** 書き終えた一時ファイルを link で置く（ファイルがあれば EEXIST）。読む側が書きかけのファイルを見ないように */
@@ -91,15 +119,18 @@ function tryCreate(path: string, pid: number, content: string): boolean {
 }
 
 /**
- * `<dataDir>/lock`（PID と boot id）を取る。ほかの self-agent が動いていればエラー。
+ * `<dataDir>/lock`（PID・boot id・自分のコマンドラインの argv[0] より後ろ（/proc/self/cmdline。読めなければ process.argv.slice(1)）の 3 行。
+ * boot id が読めなければ 2 行目は空）を取る。ほかの self-agent が動いていればエラー。
  * 次のロックは古いものとして消して取り直す（取り直しは 1 回だけ）: 形が違う・自分の PID・boot id が今と違う（再起動の前のもの）・
- * PID のプロセスが無い・PID のプロセスはあるがコマンドラインがこの Bot（src/main.ts）でない（PID の再利用）。
+ * PID のプロセスが無い・PID のプロセスはあるがコマンドラインが lock の 3 行目（書いた Bot の引数）を含まない（PID の再利用や、
+ * `self-agent devlog` のような Bot でないプロセス）。3 行目の無い古い lock は src/main.ts を含むかで比べる（docs/plan/distribution.md §4.5）。
  * boot id・コマンドラインが読めなければ、その確認は飛ばす（PID が生きていれば動いているとみなす）
  */
 export function acquireDataLock(dataDir: string, options: DataLockOptions = {}): DataLock {
   const pid = options.pid ?? process.pid;
   const isAlive = options.isAlive ?? processAlive;
   const readCmdline = options.readCmdline ?? procCmdline;
+  const command = oneLine((options.readOwnArgs ?? procOwnArgs)() ?? (options.argv ?? process.argv.slice(1)).join(" ")).trim();
   const bootId = (options.readBootId ?? procBootId)();
   const path = lockPath(dataDir);
   mkdirSync(dataDir, { recursive: true });
@@ -109,10 +140,10 @@ export function acquireDataLock(dataDir: string, options: DataLockOptions = {}):
     if (holder.bootId !== undefined && bootId !== undefined && holder.bootId !== bootId) return false;
     if (!isAlive(holder.pid)) return false;
     const cmdline = readCmdline(holder.pid);
-    return cmdline === undefined || cmdline.includes(BOT_COMMAND);
+    return cmdline === undefined || oneLine(cmdline).includes(holder.command ?? LEGACY_BOT_COMMAND);
   };
 
-  const content = bootId === undefined ? `${pid}\n` : `${pid}\n${bootId}\n`;
+  const content = `${pid}\n${bootId ?? ""}\n${command}\n`;
   for (let attempt = 0; ; attempt++) {
     if (tryCreate(path, pid, content)) break;
     const text = readLockText(path);
