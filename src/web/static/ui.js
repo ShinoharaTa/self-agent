@@ -143,8 +143,8 @@
   }
 
   // ===== トースト（多くて 2 つ。action があれば自動で消さない） =====
-  // action（[取り消す] など）の付いたトーストが上に出ている間は、後から来たものをその下に 2 つ目として出す（2 つ目が既にあれば置き換える）。
-  // それ以外は置き換える。action の付いたものは押すか閉じるまで残す
+  // 新しいトーストは下に足す。action の無いトーストは次のトーストで消し、action（[取り消す] など）の付いたものは押すか閉じるまで残す。
+  // 2 つを超えるときだけ、いちばん古いもの（action 付きでも）を消す
   const TOAST_MS = 4000;
   /** 出ているもの（上から）。{ node, action, timer } */
   let toasts = [];
@@ -160,8 +160,8 @@
   function toast(text, action) {
     const box = document.getElementById("toast");
     if (!box) return;
-    const keep = toasts.length > 0 && toasts[0].action ? toasts[0] : null;
-    for (const item of [...toasts]) if (item !== keep) removeToast(item);
+    for (const item of [...toasts]) if (!item.action) removeToast(item);
+    while (toasts.length >= 2) removeToast(toasts[0]);
     const item = { node: null, action: !!action, timer: null };
     const close = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm", type: "button", "aria-label": "閉じる" }, [icon("x")]);
     close.addEventListener("click", () => removeToast(item));
