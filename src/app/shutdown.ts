@@ -1,4 +1,4 @@
-// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバーと DB を閉じる
+// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバー・Web UI と DB を閉じる
 import type { Config } from "../config.ts";
 import type { GithubPoller } from "../github/poller.ts";
 import type { JobOrchestrator } from "../jobs/orchestrator.ts";
@@ -10,6 +10,7 @@ import type {
   InteractionResponder,
 } from "../discord/gateway.ts";
 import type { StaticServer } from "../serve/static-server.ts";
+import type { WebServer } from "../web/server.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import type { ReminderScheduler } from "./reminders.ts";
@@ -38,6 +39,8 @@ export type ShutdownDeps = {
   channelOps: Pick<ChannelOpsQueue, "idle">;
   /** 作ったプロジェクトの静的サーバー。DB を閉じる前に閉じる。無ければ（機能が無効）何もしない */
   staticServer?: Pick<StaticServer, "close">;
+  /** Web UI のサーバー。静的サーバーの次（DB を閉じる前）に閉じる。無ければ（Web UI が無効）何もしない */
+  webServer?: Pick<WebServer, "close">;
   closeDb: () => void;
   log: (message: string) => void;
 };
@@ -53,7 +56,7 @@ export type Shutdown = {
   handlers: GatewayHandlers;
   /**
    * 受付と定期処理を止め、受け付け済みの発言・操作（返信まで）とキューのジョブ・実行中の tick・実行中のチャンネルの移動が終わるのを最大 shutdownGraceSec 秒待ってから、
-   * gateway を止め、静的サーバーと DB を閉じる。待っている間も gateway は動いているので、終わったターンの返信は送られる。reject しない
+   * gateway を止め、静的サーバー・Web UI と DB を閉じる。待っている間も gateway は動いているので、終わったターンの返信は送られる。reject しない
    */
   shutdown: () => Promise<void>;
   /** 停止を始めたか */
@@ -78,7 +81,7 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 }
 
 export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdown {
-  const { cfg, gateway, queues, scheduler, reminderScheduler, githubPoller, jobs, channelOps, staticServer, closeDb, log } = deps;
+  const { cfg, gateway, queues, scheduler, reminderScheduler, githubPoller, jobs, channelOps, staticServer, webServer, closeDb, log } = deps;
   let stopping = false;
   /** 受け付けて、まだ終わっていない発言・操作の処理（返信を含む） */
   const inFlight = new Set<Promise<void>>();
@@ -147,6 +150,11 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       await staticServer?.close();
     } catch (error) {
       log(`ページの配信を止められませんでした: ${describeError(error)}`);
+    }
+    try {
+      await webServer?.close();
+    } catch (error) {
+      log(`Web UI を止められませんでした: ${describeError(error)}`);
     }
     try {
       closeDb();

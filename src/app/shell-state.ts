@@ -80,6 +80,11 @@ export class ShellState {
     return this.current?.ok === true;
   }
 
+  /** 直近の診断で通らなかった項目（Web UI の状態）。通っている・診断前は空 */
+  failedItems(): readonly string[] {
+    return this.current !== undefined && !this.current.ok ? this.current.failed : [];
+  }
+
   /** 診断して状態を更新し、結果（通る・通らない、通らない項目の集合）が変わったとき（最初の結果を含む）だけ log に出す。reject しない */
   async check(): Promise<void> {
     let result: SandboxCheckResult;
