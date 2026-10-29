@@ -94,6 +94,16 @@ export class TaskStore {
       .map(toTask);
   }
 
+  /** 状態ごとの件数（上限なし） */
+  counts(): Record<TaskStatus, number> {
+    const counts: Record<TaskStatus, number> = { open: 0, done: 0, dropped: 0 };
+    for (const row of this.db.prepare("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").all()) {
+      const status = String(row.status);
+      if (status === "open" || status === "done" || status === "dropped") counts[status] = Number(row.n);
+    }
+    return counts;
+  }
+
   complete(id: number): CompleteResult {
     const task = this.get(id);
     if (task === undefined) return { result: "not_found" };
