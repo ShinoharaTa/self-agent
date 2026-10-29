@@ -603,3 +603,38 @@ test("レート制限でない 403 は「拒否しました」として #system 
   assert.deepEqual(env.systemPosts(), [GITHUB_FORBIDDEN_NOTICE]);
   assert.equal(env.store.getPollState().errorKind, "forbidden");
 });
+
+test("status: 取得できた回の時刻・続いている失敗の種類・レート制限で止めている間の再開の時刻を返す（ポーリングは変えない）", async (t) => {
+  const env = setup(t);
+  assert.deepEqual(env.poller.status(), { enabled: true, lastFetchAt: null, failure: null, pausedUntil: null });
+
+  await baseline(env);
+  assert.deepEqual(env.poller.status(), { enabled: true, lastFetchAt: NOW.toISOString(), failure: null, pausedUntil: null });
+
+  const later = new Date(NOW.getTime() + 5 * 60 * 1000);
+  env.setNow(later);
+  env.gh.notifications = () => ({ kind: "auth", status: 401 });
+  await env.poller.tick();
+  assert.deepEqual(env.poller.status(), { enabled: true, lastFetchAt: NOW.toISOString(), failure: "auth", pausedUntil: null });
+
+  const reset = Math.floor(later.getTime() / 1000) + 60 * 60;
+  env.gh.notifications = () => ({ kind: "rate_limited", status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) } });
+  await env.poller.tick();
+  const resetAt = new Date(reset * 1000).toISOString();
+  assert.deepEqual(env.poller.status(), { enabled: true, lastFetchAt: NOW.toISOString(), failure: "rate_limited", pausedUntil: resetAt });
+
+  // 再開の時刻を過ぎて取得できたら、失敗も止めている時刻も消える
+  const resumed = new Date(reset * 1000 + 1000);
+  env.setNow(resumed);
+  assert.equal(env.poller.status().pausedUntil, null);
+  env.gh.notifications = () => notModified();
+  await env.poller.tick();
+  assert.deepEqual(env.poller.status(), { enabled: true, lastFetchAt: resumed.toISOString(), failure: null, pausedUntil: null });
+});
+
+test("status: gh が見つからなければ failure は no_gh", async (t) => {
+  const env = setup(t, { withGh: false });
+  env.poller.start();
+  await env.poller.idle();
+  assert.deepEqual(env.poller.status(), { enabled: true, lastFetchAt: null, failure: "no_gh", pausedUntil: null });
+});

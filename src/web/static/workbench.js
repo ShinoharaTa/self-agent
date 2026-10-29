@@ -349,7 +349,7 @@
     }
   }
 
-  // ===== パネル（出力は実行中のターンの手順と終わり方。知らせ・ジョブの中身は後の段） =====
+  // ===== パネル（出力は実行中のターンの手順と終わり方、知らせは #system に出したもの。ジョブの中身は後の段） =====
   function savePanel() {
     save("panel", JSON.stringify({ open: S.panelOpen, tab: S.panelTab }));
   }
@@ -357,11 +357,15 @@
   function renderPanel() {
     const tabs = el("div", { class: "panel-tabs", role: "tablist", "aria-label": "パネル" });
     for (const t of PANEL_TABS) {
-      const b = el("button", { class: "panel-tab", type: "button", role: "tab", "aria-selected": String(S.panelTab === t.id) }, [t.label]);
+      const b = el("button", { class: "panel-tab", type: "button", role: "tab", "aria-selected": String(S.panelTab === t.id) }, [
+        t.label,
+        t.id === "notices" ? el("span", { class: "sb-count", id: "panel-notices-count", title: "直近 24 時間", text: noticeCount() }) : null,
+      ]);
       b.addEventListener("click", () => {
         S.panelTab = t.id;
         savePanel();
         renderPanel();
+        if (t.id === "notices") SA.store.load.notices();
       });
       tabs.append(b);
     }
@@ -371,12 +375,60 @@
     if (S.panelTab === "output") {
       body.append(el("ol", { class: "out-list", id: "out-list", "aria-live": "polite" }, S.output.map(outLine)));
       if (S.output.length === 0) body.append(el("p", { class: "meta panel-note", text: "実行中のターンの手順と終わり方がここに出ます（この画面を開いている間だけ）。" }));
+    } else if (S.panelTab === "notices") {
+      const data = SA.store.notices;
+      if (data === null) body.append(el("p", { class: "meta panel-note", text: "読み込んでいます…" }));
+      else {
+        if (data.notices.length > 0) body.append(el("ul", { class: "notice-list" }, data.notices.map(noticeLine)));
+        body.append(el("p", { class: "meta panel-note", text: data.notices.length > 0 ? "#system に出した知らせと同じものです。" : "#system に出した知らせがここに出ます。" }));
+      }
     } else {
       body.append(el("p", { class: "meta panel-note", text: "まだありません" }));
     }
     refs.panel.replaceChildren(el("div", { class: "panel-head" }, [tabs, el("span", { class: "sb-spacer" }), close]), body);
     const list = $("out-list");
     if (list) list.scrollTop = list.scrollHeight;
+  }
+
+  /** 知らせの重さごとのアイコン */
+  const NOTICE_ICONS = { warning: "triangle-alert", danger: "triangle-alert", success: "check", info: "info" };
+
+  /** 知らせの 1 行（本文は文字のまま。Discord のリンクは投稿できたものだけ） */
+  function noticeLine(n) {
+    const level = Object.prototype.hasOwnProperty.call(NOTICE_ICONS, n.level) ? n.level : "info";
+    return el("li", { class: "notice-item is-" + level }, [
+      icon(NOTICE_ICONS[level]),
+      el("span", { class: "out-time", title: SA.ui.dateTime(n.at), text: SA.ui.shortTime(n.at) }),
+      el("span", { text: String(n.text) }),
+      typeof n.link === "string" && n.link.startsWith("https://discord.com/channels/")
+        ? el("a", { class: "meta", href: n.link, target: "_blank", rel: "noreferrer noopener", "aria-label": "Discord で開く", title: "Discord で開く" }, [icon("external-link")])
+        : null,
+    ]);
+  }
+
+  /** 直近 24 時間の知らせの数（まだ読んでいなければ空） */
+  function noticeCount() {
+    const data = SA.store.notices;
+    return data === null ? "" : String(data.recent24h);
+  }
+
+  /** パネルを開いてそのタブを出す */
+  function showPanel(tab) {
+    S.panelTab = tab;
+    if (S.panelOpen) {
+      savePanel();
+      renderPanel();
+    } else togglePanel(true);
+    if (tab === "notices") SA.store.load.notices();
+  }
+
+  /** /api/notices が変わったとき: ステータスバーとパネルの数、知らせを出していればパネル */
+  function refreshNotices() {
+    if (!refs.status) return;
+    renderStatus();
+    const badge = $("panel-notices-count");
+    if (badge) badge.textContent = noticeCount();
+    if (S.panelOpen && S.panelTab === "notices") renderPanel();
   }
 
   function outLine(o) {
@@ -463,6 +515,8 @@
         );
       }
     }
+    const notices = SA.store.notices;
+    if (notices !== null) right.append(sbarItem([icon("bell"), String(notices.recent24h)], { title: "知らせ（直近 24 時間）", run: () => showPanel("notices") }));
     const today = SA.views.todayTokens();
     if (today !== null) right.append(sbarItem(["今日 " + SA.views.compact(today)], { title: "今日のトークン（入力）", run: () => open("usage") }));
     if (status && status.version) right.append(sbarItem(["v" + status.version], { title: "状態", run: () => open("status"), cls: "hide-sm" }));
@@ -878,6 +932,7 @@
     refreshTabs: renderEditors,
     refreshTabMarks,
     refreshStatus,
+    refreshNotices,
     addOutput,
     activeTabId,
     closeDrawer,

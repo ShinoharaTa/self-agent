@@ -1,4 +1,5 @@
-// タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）・タスク・リマインド・記憶（W4）。ナレッジなどは後の段で足す
+// タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）・タスク・リマインド・記憶（W4）・GitHub・ナレッジ（W6）。
+// プロジェクト・ジョブは後の段で足す
 "use strict";
 
 (function () {
@@ -432,6 +433,190 @@
     );
   }
 
+  // ===== GitHub（W6: #github に出した通知。[対応] は段 2） =====
+  /** 検証した部品から組み立てた Issue・PR の URL（サーバーの poller.ts と同じ形）。合わなければ null（リンクにしない） */
+  const GITHUB_URL = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})\/(pull|issues)\/([1-9][0-9]{0,9})$/;
+
+  function githubParts(url) {
+    const m = typeof url === "string" ? GITHUB_URL.exec(url) : null;
+    return m ? { repo: m[1] + "/" + m[2], number: m[4] } : null;
+  }
+
+  /** 失敗の種類の表示（poller.ts の GithubFailure と no_gh） */
+  const GITHUB_FAILURES = {
+    auth: "gh の認証",
+    rate_limited: "レート制限",
+    forbidden: "GitHub が拒否しました（403）",
+    network: "通信の失敗",
+    shape: "応答の形が違います",
+    no_gh: "gh が見つかりません",
+  };
+
+  function githubFailureText(kind) {
+    return Object.prototype.hasOwnProperty.call(GITHUB_FAILURES, kind) ? GITHUB_FAILURES[kind] : String(kind);
+  }
+
+  /** 取得の状態の 1 行（最後の取得・失敗・止めている間） */
+  function githubFetchLine(g) {
+    const parts = [g && g.lastFetchAt ? "最後の取得 " + SA.ui.shortTime(g.lastFetchAt) : "まだ取得していません"];
+    if (g && g.failure) parts.push("失敗: " + githubFailureText(g.failure));
+    if (g && g.pausedUntil) parts.push(SA.ui.shortTime(g.pausedUntil) + " まで止めています");
+    return parts.join("・");
+  }
+
+  function githubItem(n) {
+    const parts = githubParts(n.url);
+    const title = (n.label ? n.label + ": " : "") + (n.title || "（題名なし）") + (parts ? " #" + parts.number : "");
+    const meta = [parts ? parts.repo : null, n.actorLogin, n.actorKnown ? null : "誰の操作か確かめられませんでした", SA.ui.shortTime(n.updatedAt)].filter((v) => v);
+    return el("li", { class: "row-list-item" }, [
+      el("span", { class: "dot " + (n.level === "red" ? "dot-bad" : "dot-warn"), "aria-hidden": "true" }),
+      el("div", { class: "item-main" }, [el("span", { class: "item-title", text: title }), el("span", { class: "meta", text: meta.join("・") })]),
+      parts ? el("a", { class: "btn btn-ghost btn-sm", href: n.url, target: "_blank", rel: "noreferrer noopener" }, [icon("external-link"), "GitHub"]) : null,
+      el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: true, title: "段 2 で足す", text: "対応" }),
+    ]);
+  }
+
+  function renderGithub(container) {
+    const data = store.github;
+    if (!data) {
+      container.replaceChildren(toolbar("git-pull-request", "GitHub の通知"), scroll([empty(null, "読み込んでいます…")]));
+      return;
+    }
+    const group = (level, title) => {
+      const items = data.notifications.filter((n) => n.level === level);
+      return section(
+        title,
+        [items.length ? el("ul", { class: "row-list" }, items.map(githubItem)) : el("p", { class: "meta", text: "ありません" })],
+        [el("span", { class: "meta", text: items.length + " 件" })],
+      );
+    };
+    container.replaceChildren(
+      toolbar("git-pull-request", "GitHub の通知", [], [el("span", { class: "meta", text: githubFetchLine(data.status) })]),
+      scroll([
+        group("red", "自分宛て"),
+        group("yellow", "自分のリポジトリの新しい Issue / PR"),
+        el("p", { class: "meta", text: "#github に出したものと同じです。[対応]（Claude Code のセッションに渡す）は段 2 です。" }),
+      ]),
+    );
+  }
+
+  // ===== ナレッジ（W6: 一覧と中身。検索は 3 文字以上。読むだけで、削除は Discord から） =====
+  // q: 検索欄の語（打っている途中も）。selected: 選んでいる項目の id
+  const kbState = { q: "", selected: null, timer: null };
+  /** 検索欄（タブとサイドバーに 1 つずつ。kbInput）。描き直しても同じ要素を使い、打っている間のフォーカスを保つ */
+  const kbInputs = [];
+  /** 打ち終わってから検索するまで */
+  const KB_SEARCH_DELAY_MS = 300;
+
+  /** 検索欄の語で読む（空なら新しい順。1〜2 文字の間は読まない） */
+  function searchKnowledge() {
+    clearTimeout(kbState.timer);
+    kbState.timer = null;
+    const q = kbState.q.trim();
+    if (q !== "" && [...q].length < 3) return;
+    store.load.knowledge(q);
+  }
+
+  function kbSearchInput() {
+    const input = el("input", { class: "input input-sm", type: "search", placeholder: "検索（3 文字以上）", "aria-label": "ナレッジを検索" });
+    input.value = kbState.q;
+    input.addEventListener("input", () => {
+      kbState.q = input.value;
+      for (const other of kbInputs) if (other !== input) other.value = input.value;
+      clearTimeout(kbState.timer);
+      kbState.timer = setTimeout(searchKnowledge, KB_SEARCH_DELAY_MS);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") searchKnowledge();
+    });
+    kbInputs.push(input);
+    return input;
+  }
+
+  /** 検索欄（which は "tab" か "sidebar"）。どちらに打っても同じ語になる */
+  const kbInputFor = {};
+  function kbInput(which) {
+    if (!kbInputFor[which]) kbInputFor[which] = kbSearchInput();
+    return kbInputFor[which];
+  }
+
+  /** 描き直しで外れたフォーカスを戻す（同じ要素なのでカーソルの位置も残る） */
+  function keepFocus(input, render) {
+    const focused = document.activeElement === input;
+    render();
+    if (focused && input.isConnected) input.focus();
+  }
+
+  function selectKb(id) {
+    kbState.selected = id;
+  }
+
+  /** 一覧で選んでいる項目（無ければ先頭） */
+  function kbSelected(entries) {
+    const found = entries.find((k) => k.id === kbState.selected);
+    return found || entries[0] || null;
+  }
+
+  function kbDetail(item) {
+    if (!item) return empty(null, store.knowledge && store.knowledge.q ? "見つかりませんでした" : "ナレッジはありません");
+    const entry = store.kbEntries[item.id];
+    if (entry === undefined) {
+      store.load.kbEntry(item.id);
+      return empty(null, "読み込んでいます…");
+    }
+    if (entry === "missing") return empty(null, "この項目はもうありません");
+    if (entry === "failed") return empty(null, "読み込めませんでした");
+    // 一覧の方が新しければ読み直す（読み直す間は前の中身を出す）
+    if (typeof item.updatedAt === "string" && item.updatedAt > entry.updatedAt) store.load.kbEntry(item.id, true);
+    const url = typeof entry.url === "string" && /^https?:\/\//.test(entry.url) ? entry.url : null;
+    return el("div", { class: "ed-page" }, [
+      el("h2", { text: entry.title }),
+      url ? el("a", { href: url, target: "_blank", rel: "noreferrer noopener", text: url }) : el("span", { class: "meta", text: entry.url ? entry.url : "URL なし" }),
+      entry.summary ? el("p", { text: entry.summary }) : null,
+      Array.isArray(entry.tags) && entry.tags.length > 0 ? el("div", { class: "row row-tight" }, entry.tags.map((tag) => el("span", { class: "badge", text: tag }))) : null,
+      entry.body ? el("p", { class: "msg-text", text: entry.body }) : null,
+      el("p", { class: "meta", text: "#" + entry.id + "・保存 " + dateOf(entry.createdAt) + (entry.updatedAt !== entry.createdAt ? "・更新 " + dateOf(entry.updatedAt) : "") }),
+      el("p", { class: "meta", text: "削除は Discord の確認（kb_delete）から行います。" }),
+    ]);
+  }
+
+  function renderKnowledge(container) {
+    const input = kbInput("tab");
+    keepFocus(input, () => {
+      const data = store.knowledge;
+      if (!data) {
+        container.replaceChildren(toolbar("book", "ナレッジ", [], [input]), scroll([empty(null, "読み込んでいます…")]));
+        return;
+      }
+      const current = kbSelected(data.entries);
+      const list = el("ul", { class: "master-list", role: "listbox", "aria-label": "ナレッジ" });
+      for (const k of data.entries) {
+        const item = el("li", { role: "option", tabindex: "0", class: "master-item", "aria-selected": String(current !== null && k.id === current.id) }, [
+          el("span", { class: "master-title", text: k.title }),
+          el("span", { class: "meta", text: "#" + k.id + "・" + dateOf(k.updatedAt) }),
+        ]);
+        const pick = () => {
+          kbState.selected = k.id;
+          SA.app.refresh("knowledge");
+          SA.app.refreshSidebar();
+        };
+        item.addEventListener("click", pick);
+        item.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            pick();
+          }
+        });
+        list.append(item);
+      }
+      const note = data.q ? (data.more ? "「" + data.q + "」の上位 " + data.entries.length + " 件" : "「" + data.q + "」 " + data.entries.length + " 件") : null;
+      container.replaceChildren(
+        toolbar("book", "ナレッジ", note ? [el("span", { class: "meta", text: note })] : [], [input]),
+        el("div", { class: "master-detail" }, [el("div", { class: "master" }, [list]), el("div", { class: "detail" }, [kbDetail(current)])]),
+      );
+    });
+  }
+
   // ===== 状態（W1） =====
   function kv(label, value) {
     return el("li", { class: "kv" }, [el("span", { class: "kv-label" }, [label]), el("span", { class: "kv-value" }, [value])]);
@@ -456,10 +641,7 @@
 
   function githubLine(g) {
     if (!g || !g.enabled) return "無効";
-    let text = "有効";
-    if (g.lastFetchAt) text += "・最後の取得 " + SA.ui.hm(new Date(g.lastFetchAt));
-    if (g.failure) text += "・失敗: " + g.failure;
-    return text;
+    return "有効・" + githubFetchLine(g);
   }
 
   function renderStatus(container) {
@@ -569,6 +751,17 @@
     tasks: { title: "タスク", icon: "square-check", render: renderTasks, onOpen: () => store.load.tasks() },
     reminders: { title: "リマインド", icon: "bell", render: renderReminders, onOpen: () => store.load.reminders() },
     memories: { title: "記憶", icon: "book", render: renderMemories, onOpen: () => store.load.memories() },
+    github: { title: "GitHub", icon: "git-pull-request", render: renderGithub, onOpen: () => store.load.github() },
+    knowledge: {
+      title: "ナレッジ",
+      icon: "book",
+      render: renderKnowledge,
+      onOpen: () => {
+        // 開いたときは今の語で一覧を、選んでいる項目の本文を読み直す
+        store.load.knowledge(store.knowledge ? store.knowledge.q : kbState.q.trim().length >= 3 ? kbState.q.trim() : "");
+        if (kbState.selected !== null) store.load.kbEntry(kbState.selected, true);
+      },
+    },
     usage: {
       title: "使用量",
       icon: "bar-chart",
@@ -591,19 +784,23 @@
     },
   };
 
-  /** 知らない・無効な機能のタブは null（開かない）。会話は ch:<チャンネル ID>。会話ログは /api/status を読んで dev モードと分かるまで開かない */
+  /**
+   * 知らない・無効な機能のタブは null（開かない）。会話は ch:<チャンネル ID>。会話ログ・GitHub は /api/status を読んで
+   * dev モード・GitHub が有効と分かるまで開かない
+   */
   function info(tabId) {
     if (tabId.startsWith("ch:")) {
       const channelId = tabId.slice(3);
       return /^\d{1,25}$/.test(channelId) ? SA.chat.info(channelId) : null;
     }
     if (tabId === "devlog" && !(store.status && store.status.devMode)) return null;
+    if (tabId === "github" && !(store.status && store.status.github && store.status.github.enabled)) return null;
     return Object.prototype.hasOwnProperty.call(STATIC, tabId) ? STATIC[tabId] : null;
   }
 
   /** /api/status を読むまで開けるか分からないタブ（読んだ後に開き直す） */
   function waitsForStatus(tabId) {
-    return tabId === "devlog" && store.status === null;
+    return (tabId === "devlog" || tabId === "github") && store.status === null;
   }
 
   SA.views = {
@@ -614,6 +811,10 @@
     usageDate: () => usageState.date,
     selectDevlogDate,
     devlogDate: () => devlogState.date,
+    selectKb,
+    kbSelectedId: () => (store.knowledge ? (kbSelected(store.knowledge.entries) || { id: null }).id : null),
+    kbInput,
+    githubParts,
     compact,
     dayLabel,
     overdue,
