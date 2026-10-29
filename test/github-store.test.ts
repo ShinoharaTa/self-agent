@@ -192,3 +192,28 @@ test("GithubStore: ポーリングの状態は行が無ければ空、渡した�
   const cleared = store.savePollState({ errorKind: null, errorSince: null, lastSuccessAt: at(4).toISOString() });
   assert.deepEqual([cleared.errorKind, cleared.errorSince, cleared.lastSuccessAt], [null, null, at(4).toISOString()]);
 });
+
+test("GithubStore.listPosted: 投稿した（投稿せずに済ませたものを含む）出来事だけを updated_at の新しい順に limit 件。未投稿・白は出ない", (t) => {
+  const { store } = tempStore(t);
+  const ids = (rows: { id: number }[]) => rows.map((row) => row.id);
+  const add = (overrides: Partial<NewGithubNotification>): number => {
+    const added = store.addNotification(event(overrides));
+    assert.ok(added.result === "added");
+    return added.notification.id;
+  };
+  const oldest = add({ threadId: "t-1", updatedAt: "2026-10-15T00:01:00Z" });
+  const newest = add({ threadId: "t-2", updatedAt: "2026-10-15T00:09:00Z", level: "yellow" });
+  const middle = add({ threadId: "t-3", updatedAt: "2026-10-15T00:05:00Z" });
+  const unposted = add({ threadId: "t-4", updatedAt: "2026-10-15T00:10:00Z" });
+  add({ threadId: "t-5", updatedAt: "2026-10-15T00:11:00Z", level: "drop" });
+  assert.deepEqual(store.listPosted(10), []);
+
+  store.markPosted(oldest, "github-1", "message-1");
+  store.markPosted(newest, "github-1", "message-2");
+  store.markSkipped(middle);
+  assert.deepEqual(ids(store.listPosted(10)), [newest, middle, oldest]);
+  assert.deepEqual(ids(store.listPosted(2)), [newest, middle]);
+  assert.deepEqual(store.listPosted(0), []);
+  assert.ok(!ids(store.listPosted(10)).includes(unposted));
+  assert.equal(store.listPosted(10)[0]!.level, "yellow");
+});

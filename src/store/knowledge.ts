@@ -188,6 +188,14 @@ export class KnowledgeStore {
     return row === undefined ? undefined : toEntry(row);
   }
 
+  /** 新しい順（updated_at）に limit 件（Web UI のナレッジ。docs/plan/web-ui.md §7.3）。limit は 0 以上に丸める。本文は返さない */
+  listRecent(limit: number): KbSearchEntry[] {
+    return this.db
+      .prepare(`SELECT ${SEARCH_COLUMNS} FROM kb_entries e ORDER BY e.updated_at DESC, e.id DESC LIMIT ?`)
+      .all(Math.max(0, Math.floor(limit)))
+      .map(toSearchEntry);
+  }
+
   /**
    * query を空白（全角を含む）で区切った語をすべて含む項目を探す（AND）。重複を除いた先頭 5 語まで、1 語 50 字まで。
    * 3 文字以上の語は kb_fts のフレーズ検索、3 文字未満の語は各列の LIKE で絞る。

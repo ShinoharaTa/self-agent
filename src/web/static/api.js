@@ -19,6 +19,10 @@
   const TURNS_PAGE = 50;
   /** 会話ログで 1 日分として読む件数（/api/devlog の last の上限） */
   const DEVLOG_LAST = 200;
+  /** 知らせ・GitHub の通知・ナレッジの一覧で読む件数 */
+  const NOTICES_LAST = 50;
+  const GITHUB_LAST = 50;
+  const KNOWLEDGE_LAST = 30;
   const SEEN_KEY = "self-agent-web:seen";
 
   /**
@@ -79,7 +83,10 @@
   // devlogDays: /api/devlog/days。devlog: /api/devlog の結果（date はサーバーが使った日付）。devlogToday: 日付を付けずに読んだときの日付。
   // running: /api/running の turns（まだ読んでいなければ null）。runningAt: それを受け取った時刻（経過時間を進めて見せる）。
   // taskStatus: タスクのタブで出している状態。tasks: その状態の /api/tasks（{ status, tasks, counts }）。openTasks: open の一覧（サイドバー）。
-  // reminders: /api/reminders。memories: /api/memories（どれもまだ読んでいなければ null）
+  // reminders: /api/reminders。memories: /api/memories（どれもまだ読んでいなければ null）。
+  // notices: /api/notices（{ notices, recent24h }）。github: /api/github（{ status, notifications }）。
+  // knowledge: /api/knowledge の結果（{ q, entries, more }。q は検索した語で、空なら新しい順）。
+  // kbEntries[id]: /api/knowledge/<id> の entry（404 なら "missing"、それ以外の失敗は "failed"）
   const store = {
     status: null,
     usage: null,
@@ -99,6 +106,10 @@
     openTasks: null,
     reminders: null,
     memories: null,
+    notices: null,
+    github: null,
+    knowledge: null,
+    kbEntries: {},
     load: {},
   };
   const loading = {};
@@ -502,19 +513,92 @@
       SA.app.refreshSidebar();
     });
 
+  // ===== 知らせ・GitHub・ナレッジ（W6） =====
+  /** opts.quiet は polling から（失敗のトーストは polling が出す） */
+  store.load.notices = (opts) =>
+    once("notices", async () => {
+      const data = await SA.api.get("/api/notices?last=" + NOTICES_LAST, opts);
+      store.notices = {
+        notices: Array.isArray(data && data.notices) ? data.notices : [],
+        recent24h: data && typeof data.recent24h === "number" ? data.recent24h : 0,
+      };
+      SA.app.refreshNotices();
+    });
+
+  store.load.github = (opts) =>
+    once("github", async () => {
+      const data = await SA.api.get("/api/github?last=" + GITHUB_LAST, opts);
+      store.github = {
+        status: data && data.status && typeof data.status === "object" ? data.status : null,
+        notifications: Array.isArray(data && data.notifications) ? data.notifications : [],
+      };
+      SA.app.refresh("github");
+      SA.app.refreshSidebar();
+    });
+
+  /**
+   * q は検索する語（前後の空白を除いたもの。空なら新しい順）。省略は今出している語。同じ語を読んでいる途中ならそれを待つ。
+   * 語を続けて変えたときは最後に頼んだものだけを使う。opts.quiet は polling から
+   */
+  let knowledgeSeq = 0;
+  let knowledgeLoading = null;
+  store.load.knowledge = (q, opts) => {
+    const query = typeof q === "string" ? q.trim() : store.knowledge ? store.knowledge.q : "";
+    if (knowledgeLoading && knowledgeLoading.q === query) return knowledgeLoading.promise;
+    const seq = ++knowledgeSeq;
+    const promise = SA.api
+      .get("/api/knowledge?last=" + KNOWLEDGE_LAST + (query === "" ? "" : "&q=" + encodeURIComponent(query)), opts)
+      .then((data) => {
+        if (seq !== knowledgeSeq) return null;
+        store.knowledge = { q: query, entries: Array.isArray(data && data.entries) ? data.entries : [], more: !!(data && data.more) };
+        SA.app.refresh("knowledge");
+        SA.app.refreshSidebar();
+        return null;
+      })
+      .catch((err) => err || new Error("failed"))
+      .finally(() => {
+        if (seq === knowledgeSeq) knowledgeLoading = null;
+      });
+    knowledgeLoading = { q: query, promise };
+    return promise;
+  };
+
+  /** 1 件（本文あり）。読んだもの（読めなかったものも）は持っておき、force のときだけ読み直す（読み直す間は前のものを出す） */
+  store.load.kbEntry = (id, force) => {
+    if (!force && store.kbEntries[id] !== undefined) return Promise.resolve(null);
+    return once("kb:" + id, async () => {
+      try {
+        const data = await SA.api.get("/api/knowledge/" + encodeURIComponent(id), { quiet: true });
+        store.kbEntries[id] = data && data.entry ? data.entry : "missing";
+      } catch (err) {
+        if (err && err.status === 404) store.kbEntries[id] = "missing";
+        else {
+          if (typeof store.kbEntries[id] !== "object") store.kbEntries[id] = "failed";
+          SA.ui.toast((err && err.toast) || "読み込めませんでした");
+        }
+      }
+      SA.app.refresh("knowledge");
+    });
+  };
+
   /** 操作の後: 読んでいる途中のもの（操作の前の中身かもしれない）が終わるのを待ってから、もう一度読む */
   store.reload = (key) => Promise.resolve(loading[key]).then(() => store.load[key]());
 
-  /** 一度読んだ一覧（タスク・リマインド・記憶）だけを読み直す（polling）。失敗があれば最初の error で resolve する */
+  /**
+   * 一度読んだ一覧（タスク・リマインド・記憶・GitHub・ナレッジ）だけを読み直す（polling）。ナレッジは今出している語で読み直す。
+   * 失敗があれば最初の error で resolve する
+   */
   store.load.lists = (opts) => {
-    const keys = ["tasks", "reminders", "memories"].filter((key) => store[key] !== null);
-    return Promise.all(keys.map((key) => store.load[key](opts))).then((errors) => errors.find((err) => err) || null);
+    const keys = ["tasks", "reminders", "memories", "github"].filter((key) => store[key] !== null);
+    const runs = keys.map((key) => store.load[key](opts));
+    if (store.knowledge !== null) runs.push(store.load.knowledge(undefined, opts));
+    return Promise.all(runs).then((errors) => errors.find((err) => err) || null);
   };
 
   SA.store = store;
 
   // ===== polling（見えているときだけ。隠れたら止め、戻ったら即 1 回） =====
-  // /api/status は 10 秒、/api/channels と一度読んだタスク・リマインド・記憶は 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
+  // /api/status は 10 秒、/api/channels・/api/notices と一度読んだタスク・リマインド・記憶・GitHub・ナレッジは 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
   // /api/running は実行中のターンがあれば 2 秒・無ければ 10 秒ごと（どれも応答が来てから次を予約する）。
   // 失敗のトーストは続けて失敗している間は最初の 1 回だけで、その間は間隔を倍にして POLL_BACKOFF_MAX_MS まで伸ばす。成功したら元に戻す
   const poll = { started: false, stopped: false };
@@ -528,6 +612,7 @@
   const polls = {
     status: { base: () => STATUS_INTERVAL_MS, run: (opts) => store.load.status(opts), fails: 0, timer: null },
     channels: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.channels(opts), fails: 0, timer: null },
+    notices: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.notices(opts), fails: 0, timer: null },
     lists: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.lists(opts), fails: 0, timer: null },
     turns: { base: () => TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
     running: {

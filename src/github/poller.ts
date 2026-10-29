@@ -271,7 +271,8 @@ export async function classifyWithLookups(notification: GithubNotification, cont
   return classifyNotification({ notification, me, owners, firstSeen, timeline, ...(issue === undefined ? {} : { issue }), now });
 }
 
-const HTML_URL_PATTERN = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})\/(pull|issues)\/([1-9][0-9]{0,9})$/;
+/** 検証した部品から組み立てた Issue・PR の画面の URL（owner・repo・pull|issues・番号）。これに合うものだけをリンクにする（#github・Web UI） */
+export const HTML_URL_PATTERN = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})\/(pull|issues)\/([1-9][0-9]{0,9})$/;
 
 /**
  * #github への投稿（§4.3）。1 行目は印・種別・リポジトリ・番号・人、2 行目は題名（先頭 100 字・改行を空白に・Markdown を無効化）、3 行目は <URL>（プレビューを出さない）。
@@ -328,6 +329,17 @@ export type GithubPollerDeps = {
   postTimeoutMs?: number;
 };
 
+/** ポーリングの状態（Web UI の /api/status・/api/github。docs/plan/web-ui.md §7.2） */
+export type GithubPollerStatus = {
+  enabled: true;
+  /** 取得できた（304 を含む）最後の回の時刻（ISO。プロセスの中だけ）。まだなら null */
+  lastFetchAt: string | null;
+  /** 続いている取得の失敗の種類。gh が見つからなければ no_gh。失敗していなければ null */
+  failure: GithubFailure["kind"] | "no_gh" | null;
+  /** レート制限で取得を止めている間は再開する時刻（ISO）。止めていなければ null */
+  pausedUntil: string | null;
+};
+
 /** まだ投稿できていない知らせ（サーバーごと。投稿できたものから除く） */
 type PendingNotice = { text: string; guilds: Set<string> };
 
@@ -365,6 +377,10 @@ export class GithubPoller {
   private restored = false;
   /** #github が 1 つも無いことを log に出したか（変わったときだけ出す） */
   private noChannelLogged = false;
+  /** 取得できた最後の回の時刻（status() で返す） */
+  private lastFetchAt: Date | undefined;
+  /** 続いている取得の失敗の種類（status() で返す。取得できたら undefined） */
+  private failure: GithubFailure["kind"] | undefined;
 
   constructor(deps: GithubPollerDeps) {
     this.deps = deps;
@@ -393,6 +409,17 @@ export class GithubPoller {
     this.stopped = true;
     this.cancelTimer?.();
     this.cancelTimer = undefined;
+  }
+
+  /** 今の状態（Web UI が読む。ポーリング・投稿には影響しない） */
+  status(): GithubPollerStatus {
+    const pausedUntil = this.pausedUntil !== undefined && this.pausedUntil.getTime() > this.deps.now().getTime() ? this.pausedUntil : undefined;
+    return {
+      enabled: true,
+      lastFetchAt: this.lastFetchAt?.toISOString() ?? null,
+      failure: this.deps.gh === undefined ? "no_gh" : (this.failure ?? null),
+      pausedUntil: pausedUntil?.toISOString() ?? null,
+    };
   }
 
   /** 実行中の tick（投稿を含む）が終わったら resolve する（停止時に使う） */
@@ -611,6 +638,8 @@ export class GithubPoller {
       ...(lastModified === undefined ? {} : { lastModified }),
     });
     this.networkFailures = 0;
+    this.lastFetchAt = now;
+    this.failure = undefined;
     if (this.loggedFailure !== undefined) log("GitHub の通知の取得が戻りました");
     this.loggedFailure = undefined;
     if (this.announcedFailure !== undefined) {
@@ -634,6 +663,7 @@ export class GithubPoller {
       errorKind: failure.kind,
       errorSince: previous.errorKind === failure.kind && previous.errorSince !== null ? previous.errorSince : now.toISOString(),
     });
+    this.failure = failure.kind;
     if (this.loggedFailure !== failure.kind) log(`GitHub の通知を取得できませんでした（${failure.kind}）`);
     this.loggedFailure = failure.kind;
     if (failure.kind !== "network") this.networkFailures = 0;

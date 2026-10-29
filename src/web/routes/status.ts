@@ -69,8 +69,8 @@ export const WEB_ENV_NAMES: readonly string[] = [
   "SELF_AGENT_WEB_HISTORY_DAYS",
 ];
 
-/** GitHub の通知のポーリングの状態（W6 で GithubPoller.status() から読む） */
-export type GithubStatus = { enabled: boolean; lastFetchAt: string | null; failure: string | null };
+/** GitHub の通知のポーリングの状態（有効なら GithubPoller.status()。pausedUntil はレート制限で止めている間の再開の時刻） */
+export type GithubStatus = { enabled: boolean; lastFetchAt: string | null; failure: string | null; pausedUntil?: string | null };
 
 export type StatusDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "timeZone" | "publicBaseUrl" | "servePort" | "devMode" | "github" | "jobs" | "guest">;
@@ -88,7 +88,7 @@ export type StatusDeps = {
   running: () => number;
   /** プロジェクトの配信が待ち受けているか */
   serving: () => boolean;
-  /** 無ければ（W6 まで）{ enabled: cfg.github, lastFetchAt: null, failure: null } */
+  /** GithubPoller.status()（SELF_AGENT_GITHUB が有効なときだけ）。無ければ { enabled: cfg.github, lastFetchAt: null, failure: null } */
   githubStatus?: () => GithubStatus;
   guildSettings: Pick<GuildSettingsStore, "get">;
   env: NodeJS.ProcessEnv;

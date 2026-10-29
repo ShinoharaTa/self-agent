@@ -18,7 +18,7 @@
     { id: "knowledge", label: "ナレッジ・記憶", icon: "book", enabled: always },
     { id: "projects", label: "プロジェクト", icon: "folder", enabled: always, stage: "w7" },
     { id: "jobs", label: "ジョブ", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
-    { id: "github", label: "GitHub", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled), stage: "w6" },
+    { id: "github", label: "GitHub", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled) },
     { id: "usage", label: "使用量", icon: "bar-chart", enabled: always },
     { id: "devlog", label: "会話ログ", icon: "file-text", enabled: (status) => !!status.devMode },
     { id: "status", label: "状態", icon: "activity", tab: "status", bottom: true, enabled: always },
@@ -148,11 +148,56 @@
     body.replaceChildren(group("rem", "動いているもの", items));
   }
 
-  // ===== ナレッジ・記憶（ナレッジは W6。今は記憶の行だけ） =====
+  // ===== ナレッジ・記憶（ナレッジは新しい順か検索の結果。検索欄はナレッジのタブと同じ語） =====
   function renderKnowledge(body) {
     if (store.memories === null) store.load.memories();
+    if (store.knowledge === null) store.load.knowledge();
+    const open = SA.app.activeTabId() === "knowledge";
+    const selected = SA.views.kbSelectedId();
+    const kb =
+      store.knowledge === null
+        ? group("kb", "ナレッジ", [], null, "読み込んでいます…")
+        : group(
+            "kb",
+            store.knowledge.q ? "検索の結果" : "ナレッジ",
+            store.knowledge.entries.map((k) =>
+              row({
+                tab: "knowledge",
+                label: k.title,
+                meta: SA.ui.dateOf(k.updatedAt),
+                title: "#" + k.id,
+                current: open && k.id === selected,
+                before: () => SA.views.selectKb(k.id),
+              }),
+            ),
+            null,
+            store.knowledge.q ? "見つかりませんでした" : "ありません",
+          );
     const meta = store.memories === null ? "" : store.memories.length + " 件";
-    body.replaceChildren(group("mem", "記憶", [row({ tab: "memories", icon: "book", label: "記憶の一覧", meta })]));
+    // 検索欄は描き直しても同じ要素（打っている間のフォーカスは render が戻す）
+    const input = SA.views.kbInput("sidebar");
+    body.replaceChildren(el("div", { class: "sb-search" }, [input]), kb, group("mem", "記憶", [row({ tab: "memories", icon: "book", label: "記憶の一覧", meta })]));
+  }
+
+  // ===== GitHub（#github に出した通知） =====
+  function renderGithub(body) {
+    if (store.github === null) {
+      store.load.github();
+      body.replaceChildren(group("gh", "最近の通知", [], null, "読み込んでいます…"));
+      return;
+    }
+    const items = store.github.notifications.map((n) => {
+      const parts = SA.views.githubParts(n.url);
+      return row({
+        tab: "github",
+        label: n.title || n.label,
+        dot: n.level === "red" ? "dot-bad" : "dot-warn",
+        dotLabel: n.level === "red" ? "自分宛て" : "新しい Issue / PR",
+        meta: SA.ui.shortTime(n.updatedAt),
+        title: parts ? parts.repo + " #" + parts.number : n.label,
+      });
+    });
+    body.replaceChildren(group("gh", "最近の通知", items));
   }
 
   // ===== 会話ログ（日付の一覧） =====
@@ -208,6 +253,7 @@
     tasks: renderTasks,
     reminders: renderReminders,
     knowledge: renderKnowledge,
+    github: renderGithub,
     usage: renderUsage,
     devlog: renderDevlog,
   };
@@ -218,6 +264,7 @@
     if (id === "reminders") return [openAll("reminders", "一覧を開く")];
     if (id === "usage") return [openAll("usage", "開く")];
     if (id === "devlog") return [openAll("devlog", "開く")];
+    if (id === "github") return [openAll("github", "開く")];
     return [];
   }
 
@@ -236,12 +283,15 @@
       container.replaceChildren();
       return;
     }
+    // 描き直しても同じ要素を使うもの（ナレッジの検索欄）にフォーカスがあれば、描き直した後に戻す
+    const focused = document.activeElement;
     const body = el("div", { class: "sb-body" });
     RENDER[id](body);
     container.replaceChildren(
       el("div", { class: "sb-header" }, [el("h2", { class: "sb-title", text: act.label }), el("span", { class: "sb-spacer" }), ...headerActions(id)]),
       body,
     );
+    if (focused && focused !== document.activeElement && container.contains(focused)) focused.focus();
   }
 
   SA.sidebar = { ACTIVITIES, visibleActivities, render };
