@@ -573,7 +573,7 @@
   // ===== キーボード =====
   function onKey(e) {
     const mod = e.ctrlKey || e.metaKey;
-    const k = e.key.toLowerCase();
+    const k = String(e.key || "").toLowerCase();
     if (mod && e.shiftKey && k === "p") {
       e.preventDefault();
       palette(">");
@@ -656,7 +656,12 @@
     $("theme-toggle").addEventListener("click", toggleTheme);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", onKey);
-    window.addEventListener("hashchange", () => open(tabFromHash(location.hash)));
+    window.addEventListener("hashchange", () => {
+      const tabId = tabFromHash(location.hash);
+      // 知らない・空の hash は開かず、今のタブの hash に戻す
+      if (tabId && SA.views.info(tabId)) open(tabId);
+      else writeHash();
+    });
     bindPalette();
 
     mqNarrow.addEventListener("change", () => {

@@ -67,7 +67,8 @@ async function statusSetup(t: TestContext, overrides: Partial<StatusDeps> = {}) 
   const deps: StatusDeps = {
     cfg: {
       allowedGuildIds: ["guild-1", "guild-2"],
-      publicBaseUrl: undefined,
+      publicBaseUrl: "https://example.invalid",
+      servePort: undefined,
       devMode: true,
       github: true,
       jobs: false,
@@ -117,7 +118,9 @@ test("/api/status: Bot・シェルの失敗の項目・キュー・GitHub（W6 �
   assert.deepEqual(body.queue, { runningSessionJobs: 1 });
   assert.equal(body.running, 0);
   assert.equal(body.serving, false);
-  assert.equal(body.publicBaseUrl, null);
+  // 公開 URL だけでポートが無ければ配信は無効
+  assert.equal(body.publicBaseUrl, "https://example.invalid");
+  assert.equal(body.serveConfigured, false);
   assert.equal(body.devMode, true);
   assert.deepEqual(body.github, { enabled: true, lastFetchAt: null, failure: null });
   assert.deepEqual(body.jobs, { enabled: false });
