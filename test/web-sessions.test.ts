@@ -93,8 +93,8 @@ async function until(condition: () => boolean): Promise<void> {
 }
 
 /**
- * /setup 済みのサーバー 111（#inbox 100・#tasks 101・進行中カテゴリ 500）と、許可しているが /setup 前の 222。
- * セッション 200（進行中）・201（完了）・202（削除済み）・203（許可していないサーバー）。会話のターンは steps の順
+ * /setup 済みのサーバー 111（#inbox 100・#tasks 101・mika の #<NAME> 102・進行中カテゴリ 500）と、許可しているが /setup 前の 222。
+ * セッション 200（進行中）・201（完了）・202（削除済み）・203（許可していないサーバー）・204（mika の進行中）。会話のターンは steps の順
  */
 async function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Array<RunResult | Error | ((input: RunInput) => RunResult)> = () => []) {
   const db = tempDb(t);
@@ -103,6 +103,7 @@ async function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) =
   guildSettings.setChannel(GUILD, "inboxChannelId", "100");
   guildSettings.setChannel(GUILD, "tasksChannelId", "101");
   guildSettings.setStateCategory(GUILD, "active", 1, "500");
+  guildSettings.setPersonaInbox(GUILD, "mika", "102");
   topicSessions.create({ channelId: "200", guildId: GUILD, title: "旅行の計画", categoryId: "500" });
   sessions.set("200", "session-1");
   topicSessions.create({ channelId: "201", guildId: GUILD, title: "終わった話", categoryId: "500" });
@@ -110,14 +111,16 @@ async function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) =
   topicSessions.create({ channelId: "202", guildId: GUILD, title: "消した話", categoryId: "500" });
   topicSessions.markDeleted("202");
   topicSessions.create({ channelId: "203", guildId: "999", title: "よその話", categoryId: "x" });
+  topicSessions.create({ channelId: "204", guildId: GUILD, title: "ミカと相談", categoryId: "500", persona: "mika" });
+  sessions.set("204", "session-2");
 
   const gateway = new FakeGateway({
-    allow: ["send", "sendMessage", "channelExists", "countChannelsIn"],
+    allow: ["send", "sendMessage", "editMessage", "channelExists", "countChannelsIn"],
     record: ["createTextChannel"],
     channelIdPrefix: "900",
   });
   gateway.alive.add("500");
-  const mikaGateway = new FakeGateway({ allow: ["send", "sendMessage"] });
+  const mikaGateway = new FakeGateway({ allow: ["send", "sendMessage", "editMessage"] });
   const connected = { value: true };
   const personas = new PersonaRouter({
     personas: [
@@ -286,12 +289,20 @@ test("POST /close: 202 の後に要約のターン → 候補があれば closeD
   ]);
   assert.equal(env.topicSessions.get("200")?.state, "done");
   assert.deepEqual(env.rows("200").at(-1), { kind: "divider", text: closedText(DRAFT.summary, 2), persona: "default" });
+  // Discord の確認のメッセージはボタン無しの結果に書き換え、別の投稿はしない
+  await until(() => env.gateway.edits.length === 1);
+  assert.deepEqual(env.gateway.edits, [
+    { channelId: "200", messageId: "message-1", message: { text: closedText(DRAFT.summary, 2), components: [] } },
+  ]);
+  assert.deepEqual(env.gateway.sent, []);
   const after = await call(env.server, "GET", "/api/channels/200/turns");
   assert.equal((after.json.channel as Record<string, unknown>).closeDraft, null);
   // 先に確定した方が勝つ（Discord の確認のボタンも no_draft になる）
   assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close/confirm", { selected: "all" }), { status: 409, json: { error: "no_draft" } });
   assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close"), { status: 409, json: { error: "closed" } });
   await env.turnQueue.idle();
+  assert.equal(env.gateway.edits.length, 1);
+  assert.deepEqual(env.gateway.sent, []);
 });
 
 test("POST /close/confirm: Discord で先に確定していれば 409 no_draft で何も変えない。selected の形が違えば 400、セッションでなければ 404", async (t) => {
@@ -305,9 +316,11 @@ test("POST /close/confirm: Discord で先に確定していれば 409 no_draft �
   assert.equal(confirmClose(GUILD, "200", "none", { ...env, channelOps: env.channelOps, log: () => 0 }).result, "closed");
   assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close/confirm", { selected: "all" }), { status: 409, json: { error: "no_draft" } });
   assert.deepEqual(env.openTasks(), []);
+  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.gateway.edits, []);
 });
 
-test("POST /close: 候補が無ければそのまま閉じて区切りの行（Discord への投稿は無い）。要約に失敗したら知らせの行。閉じられなければ 404 / 409", async (t) => {
+test("POST /close: 候補が無ければそのまま閉じて区切りの行と、持ち主の Bot で Discord に結果の文。要約に失敗したら知らせの行。閉じられなければ 404 / 409", async (t) => {
   const env = await setup(t, (topicSessions) => [
     reports({ summary: "まとめ" }, topicSessions),
     { ok: false, errorMessage: "error_during_execution: boom", sessionId: "session-1", sessionRecorded: true, toolCalls: 0 },
@@ -316,6 +329,8 @@ test("POST /close: 候補が無ければそのまま閉じて区切りの行（D
   await until(() => env.topicSessions.get("200")?.state === "done");
   await env.turnQueue.idle();
   assert.deepEqual(env.rows("200"), [{ kind: "divider", text: closedText("まとめ", 0), persona: "default" }]);
+  await until(() => env.gateway.sent.length === 1);
+  assert.deepEqual(env.gateway.sent, [{ channelId: "200", text: closedText("まとめ", 0), replyToId: undefined }]);
   assert.deepEqual(env.gateway.posts, []);
 
   // 進行中に戻してもう一度（今度は要約のターンが失敗する）
@@ -324,6 +339,7 @@ test("POST /close: 候補が無ければそのまま閉じて区切りの行（D
   await until(() => env.rows("200").some((row) => row.text === SUMMARY_FAILURE_REPLY));
   assert.equal(env.topicSessions.get("200")?.state, "active");
   assert.deepEqual(env.gateway.posts, []);
+  assert.equal(env.gateway.sent.length, 1);
 
   for (const id of ["999", "203"]) assert.deepEqual(await call(env.server, "POST", `/api/sessions/${id}/close`), { status: 404, json: { error: "not_found" } }, id);
   assert.deepEqual(await call(env.server, "POST", "/api/sessions/201/close"), { status: 409, json: { error: "closed" } });
@@ -356,4 +372,104 @@ test("POST /renew: #inbox は rotateNow。区切りの行を書かない結果�
   assert.deepEqual(await call(env.server, "POST", "/api/channels/201/renew"), { status: 409, json: { error: "closed" } });
   assert.equal(env.rotations.length, 1);
   assert.equal(env.runner.inputs.length, 0);
+});
+
+test("POST /api/sessions: 題名の制御文字（改行・タブ）は空白にして連続する空白を 1 つにし、100 字はその後で数える", async (t) => {
+  const env = await setup(t);
+  assert.equal((await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: " 旅行\n\tの\r\n計画\u0000 " })).status, 201);
+  assert.equal(env.topicSessions.get("9001")?.title, "旅行 の 計画");
+  assert.deepEqual(env.gateway.sent, [{ channelId: "9001", text: welcomeText("旅行 の 計画"), replyToId: undefined }]);
+  // 改行の連続は空白 1 つ（100 字ちょうど）は作る、空白 1 つにしても 101 字なら too_long
+  assert.equal((await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: `${"あ".repeat(50)}\n\n\n${"い".repeat(49)}` })).status, 201);
+  assert.equal(env.topicSessions.get("9002")?.title, `${"あ".repeat(50)} ${"い".repeat(49)}`);
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: `${"あ".repeat(50)}\n\n${"い".repeat(50)}` }), {
+    status: 400,
+    json: { error: "too_long" },
+  });
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "\t\u0007\n" }), { status: 400, json: { error: "empty_title" } });
+});
+
+test("GET /turns の closeDraft: Web から始めた確認待ち（最後の行がその知らせ）のときだけ。下書きだけ（Discord の /close）・その後に行が来たら null", async (t) => {
+  const env = await setup(t);
+  const closeDraftOf = async () => ((await call(env.server, "GET", "/api/channels/200/turns")).json.channel as Record<string, unknown>).closeDraft;
+  // Discord から始めた /close の確認（下書きだけ）は Web にカードを出さない
+  env.topicSessions.saveCloseDraft("200", DRAFT);
+  assert.equal(await closeDraftOf(), null);
+  // Web から始めた確認待ち
+  env.history.add({ guildId: GUILD, channelId: "200", kind: "notice", source: "system", text: CLOSE_CONFIRM_NOTICE });
+  assert.deepEqual(await closeDraftOf(), DRAFT);
+  // 知らせの後に行が来たら出さない
+  env.history.add({ guildId: GUILD, channelId: "200", kind: "owner", source: "discord", text: "やっぱり続ける" });
+  assert.equal(await closeDraftOf(), null);
+  // 確認待ちの知らせでも、下書きが無ければ出さない
+  env.topicSessions.clearCloseDraft("200");
+  env.history.add({ guildId: GUILD, channelId: "200", kind: "notice", source: "system", text: CLOSE_CONFIRM_NOTICE });
+  assert.equal(await closeDraftOf(), null);
+});
+
+test("POST /close/confirm: 確認のメッセージの書き換えに失敗したら投稿で代える。Web から投稿した確認が無ければ（Discord の /close の下書き）投稿する", async (t) => {
+  const env = await setup(t, (topicSessions) => [reports(DRAFT, topicSessions)]);
+  assert.equal((await call(env.server, "POST", "/api/sessions/200/close")).status, 202);
+  await until(() => env.gateway.posts.length === 1);
+  env.gateway.beforeEdit = () => {
+    throw new Error("Unknown Message");
+  };
+  assert.equal((await call(env.server, "POST", "/api/sessions/200/close/confirm", { selected: "none" })).status, 200);
+  await until(() => env.gateway.sent.length === 1);
+  assert.deepEqual(env.gateway.sent, [{ channelId: "200", text: closedText(DRAFT.summary, 0), replyToId: undefined }]);
+  assert.deepEqual(env.gateway.edits, []);
+  assert.ok(env.logs.some((line) => line.startsWith("/close の確認メッセージの更新に失敗したため投稿します")));
+  await env.turnQueue.idle();
+
+  // Discord で始めた /close の下書き（Web からは投稿していない）を Web で確定したら、結果の文を投稿する
+  assert.equal((await call(env.server, "POST", "/api/sessions/200/continue")).status, 200);
+  env.topicSessions.saveCloseDraft("200", DRAFT);
+  assert.equal((await call(env.server, "POST", "/api/sessions/200/close/confirm", { selected: "all" })).status, 200);
+  await until(() => env.gateway.sent.length === 2);
+  assert.deepEqual(env.gateway.sent[1], { channelId: "200", text: closedText(DRAFT.summary, 3), replyToId: undefined });
+  assert.deepEqual(env.gateway.edits, []);
+  await env.turnQueue.idle();
+});
+
+test("POST /close/confirm: Web から始めた確認を Discord で先に確定していれば 409 で、書き換えも投稿もしない", async (t) => {
+  const env = await setup(t, (topicSessions) => [reports(DRAFT, topicSessions)]);
+  assert.equal((await call(env.server, "POST", "/api/sessions/200/close")).status, 202);
+  await until(() => env.gateway.posts.length === 1);
+  assert.equal(confirmClose(GUILD, "200", "all", { ...env, channelOps: env.channelOps, log: () => 0 }).result, "closed");
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close/confirm", { selected: "none" }), { status: 409, json: { error: "no_draft" } });
+  await env.turnQueue.idle();
+  assert.deepEqual(env.gateway.edits, []);
+  assert.deepEqual(env.gateway.sent, []);
+});
+
+test("POST /close: 足した人格（mika）のセッションの確認と結果の書き換えは mika の Bot で、知らせの行の persona も mika", async (t) => {
+  const env = await setup(t, (topicSessions) => [reports(DRAFT, topicSessions)]);
+  assert.equal((await call(env.server, "POST", "/api/sessions/204/close")).status, 202);
+  await until(() => env.mikaGateway.posts.length === 1);
+  assert.deepEqual(env.mikaGateway.posts[0], {
+    channelId: "204",
+    messageId: "message-1",
+    message: { text: confirmText(DRAFT), components: [confirmButtons("204")] },
+  });
+  assert.deepEqual(env.gateway.posts, []);
+  assert.deepEqual(env.rows("204"), [{ kind: "notice", text: CLOSE_CONFIRM_NOTICE, persona: "mika" }]);
+  assert.equal((await call(env.server, "POST", "/api/sessions/204/close/confirm", { selected: [1] })).status, 200);
+  await until(() => env.mikaGateway.edits.length === 1);
+  assert.deepEqual(env.mikaGateway.edits, [
+    { channelId: "204", messageId: "message-1", message: { text: closedText(DRAFT.summary, 1), components: [] } },
+  ]);
+  assert.deepEqual(env.gateway.edits, []);
+  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.mikaGateway.sent, []);
+  await env.turnQueue.idle();
+});
+
+test("POST /renew: 足した人格の #<NAME> は rotateNow（その人格）で、結果の文はその人格の Bot で投稿する", async (t) => {
+  const env = await setup(t);
+  assert.deepEqual(await call(env.server, "POST", "/api/channels/102/renew"), { status: 202, json: { accepted: true } });
+  await until(() => env.mikaGateway.sent.length === 1);
+  assert.deepEqual(env.rotations, [{ guildId: GUILD, kind: "inbox", persona: "mika" }]);
+  assert.deepEqual(env.mikaGateway.sent, [{ channelId: "102", text: NO_CONVERSATION_REPLY, replyToId: undefined }]);
+  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.rows("102"), [{ kind: "notice", text: NO_CONVERSATION_REPLY, persona: "mika" }]);
 });

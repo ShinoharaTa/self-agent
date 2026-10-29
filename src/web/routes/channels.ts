@@ -13,6 +13,8 @@ import type { Route, RouteResult } from "../server.ts";
 
 /** /turns の limit の既定 */
 export const TURNS_DEFAULT_LIMIT = 50;
+/** Web から始めた /close の確認（候補あり）を Discord にも投稿したときの、会話の履歴の知らせ（routes/sessions.ts が書く）。これが最後の行の間だけ確認のカードを出す */
+export const CLOSE_CONFIRM_NOTICE = "確認待ちです。登録するやることを選ぶと閉じます（Discord でも選べます）";
 
 /** 一覧に出す状態（完了は新しい SESSION_LIST_LIMITS.done 件） */
 const LISTED_STATES = ["active", "waiting", "done"] as const;
@@ -273,8 +275,11 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
           ...(after === undefined ? {} : { after }),
           limit,
         });
-        // /close の確認の下書き（閉じていないセッションのものだけ）。あれば会話の末尾に確認のカードを出す
-        const closeDraft = channel.kind === "session" && channel.state !== "done" ? (topicSessions.getCloseDraft(channelId) ?? null) : null;
+        // /close の確認の下書き（閉じていないセッションのもの）。Web から始めた確認待ち（最後の行がその知らせ）の間だけ返し、会話の末尾に確認のカードを出す。
+        // Discord から始めた /close の確認と、知らせの後に行が来たもの（発言・別の操作）は出さない（Discord で選ぶ）
+        const last = channel.kind === "session" && channel.state !== "done" ? history.list(channelId, { limit: 1 })[0] : undefined;
+        const awaitingConfirm = last !== undefined && last.kind === "notice" && last.source === "system" && last.text === CLOSE_CONFIRM_NOTICE;
+        const closeDraft = awaitingConfirm ? (topicSessions.getCloseDraft(channelId) ?? null) : null;
         return {
           status: 200,
           json: {
