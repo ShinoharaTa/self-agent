@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { createChannelResolver } from "../src/app/access.ts";
 import { createHandler, type Handler, type RunningTurn, type SubmitTextResult, WEB_ECHO_PREFIX } from "../src/app/handler.ts";
+import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
+import type { PersonaConfig } from "../src/config.ts";
 import { turnRoutes, WEB_DUPLICATE_WINDOW_MS, WEB_MESSAGE_MAX_LENGTH } from "../src/web/routes/turns.ts";
 import { createWebServer, type WebServer } from "../src/web/server.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
@@ -160,14 +162,15 @@ test("POST /messages: 受け付けるチャンネル（#inbox・#tasks・セッ�
   ]);
 });
 
-test("POST /messages: submitText の結果で not_accepted 404・bot_disconnected 503・echo_failed 502。失敗した本文はすぐ送り直せる", async (t) => {
+test("POST /messages: submitText の結果で not_accepted 404・bot_disconnected 503・echo_failed 502・stopping 503。失敗した本文はすぐ送り直せる", async (t) => {
   const { server, handler, logs } = await setup(t);
-  handler.next = [{ result: "not_accepted" }, { result: "bot_disconnected" }, { result: "echo_failed" }];
+  handler.next = [{ result: "not_accepted" }, { result: "bot_disconnected" }, { result: "echo_failed" }, { result: "stopping" }];
   assert.deepEqual(await call(server, "POST", "/api/channels/100/messages", { text: "a" }), { status: 404, json: { error: "not_found" } });
   assert.deepEqual(await call(server, "POST", "/api/channels/100/messages", { text: "a" }), { status: 503, json: { error: "bot_disconnected" } });
   assert.deepEqual(await call(server, "POST", "/api/channels/100/messages", { text: "a" }), { status: 502, json: { error: "echo_failed" } });
+  assert.deepEqual(await call(server, "POST", "/api/channels/100/messages", { text: "a" }), { status: 503, json: { error: "stopping" } });
   assert.equal((await call(server, "POST", "/api/channels/100/messages", { text: "a" })).status, 202);
-  assert.equal(handler.submits.length, 4);
+  assert.equal(handler.submits.length, 5);
   assert.equal(logs.length, 1);
 });
 
@@ -232,8 +235,12 @@ test("GET /api/running: runningTurns に経過時間（elapsedMs）を足して�
   assert.deepEqual(json.turns, [{ ...handler.running[0], elapsedMs: 65_000 }]);
 });
 
-test("POST /turns/<seq>/abort: abortTurn が true なら 200、false なら 409 stale", async (t) => {
+test("POST /turns/<seq>/abort: abortTurn が true なら 200、false なら 409 stale。削除済み・知らないチャンネルは 404 で abortTurn を呼ばない", async (t) => {
   const { server, handler } = await setup(t);
+  for (const id of ["203", "999"]) {
+    assert.deepEqual(await call(server, "POST", `/api/channels/${id}/turns/5/abort`, {}), { status: 404, json: { error: "not_found" } }, id);
+  }
+  assert.deepEqual(handler.aborts, []);
   assert.deepEqual(await call(server, "POST", "/api/channels/200/turns/1759363920001/abort", {}), { status: 200, json: { aborted: true } });
   handler.abortResult = false;
   assert.deepEqual(await call(server, "POST", "/api/channels/200/turns/5/abort", {}), { status: 409, json: { error: "stale" } });
@@ -296,4 +303,77 @@ test("POST /messages（本物の handler）: 持ち主の Bot で echo を投稿
   assert.deepEqual(gateway.sent, [{ channelId: "100", text: "登録しました", replyToId: "50001" }]);
   assert.equal(runner.inputs.length, 1);
   assert.ok(logs.every((line) => !line.includes("牛乳を買う") && !line.includes("100")), logs.join("\n"));
+});
+
+test("POST /messages（本物の handler）: 設定にある人格の #<NAME> は 202 で、echo と返事はその人格の Bot から。設定から外した人格の #<NAME> は 404 で投稿しない", async (t) => {
+  const { stores } = prepare(t);
+  stores.guildSettings.setPersonaInbox(GUILD, "mika", "102");
+  const mika: PersonaConfig = {
+    id: "mika",
+    name: "ミカ",
+    discordTokenEnv: "SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN",
+    promptFile: "/dev/null",
+    model: undefined,
+    engine: "claude",
+    effort: undefined,
+  };
+  const allow = ["send", "sendMessage", "editMessage", "startTyping"] as const;
+  const defaultBot = new FakeGateway({ allow, messageIdPrefix: "5000" });
+  const mikaBot = new FakeGateway({ allow, messageIdPrefix: "6000" });
+  const defaultRunner = new FakeRunner([]);
+  const mikaRunner = new FakeRunner([
+    { ok: true, text: "ミカです", sessionId: "session-1", usage: turnUsage(10, 0, 0), durationMs: 1000, toolCalls: 0, contextTokens: 10 },
+  ]);
+
+  const serveWith = async (personaConfigs: PersonaConfig[]) => {
+    const cfg = { allowedGuildIds: [GUILD], personas: personaConfigs, publicBaseUrl: undefined, inboxChannelId: undefined };
+    const resolveChannel = createChannelResolver(cfg, stores.guildSettings, stores.topicSessions);
+    // main.ts と同じ配線: 返信・echo は持ち主の Bot（ownerPosts）、ターンは持ち主の人格の runner
+    const personas = new PersonaRouter({
+      personas: [
+        { id: "default", name: "default", engine: "claude", runner: defaultRunner, gateway: defaultBot, connected: () => true },
+        ...personaConfigs.map((p) => ({ id: p.id, name: p.name, engine: p.engine, runner: mikaRunner, gateway: mikaBot, connected: () => true })),
+      ],
+      guildSettings: stores.guildSettings,
+      topicSessions: stores.topicSessions,
+    });
+    const handler = createHandler({
+      cfg: { ...cfg, ownerUserId: "owner-1", timeZone: "Asia/Tokyo" },
+      resolveChannel,
+      gateway: personas.ownerPosts(),
+      runner: defaultRunner,
+      personas,
+      ...stores,
+      channelOps: new RecordingChannelOps(),
+      queue: new KeyedSerialQueue(2),
+      now: () => NOW,
+      history: stores.history,
+      ownerConnected: (channelId) => personas.ownerConnected(channelId),
+      log: () => undefined,
+    });
+    const routes = turnRoutes({ cfg, guildSettings: stores.guildSettings, topicSessions: stores.topicSessions, resolveChannel, handler, now: () => NOW, log: () => undefined });
+    return serve(t, routes, () => NOW);
+  };
+
+  const removed = await serveWith([]);
+  assert.deepEqual(await call(removed, "POST", "/api/channels/102/messages", { text: "こんにちは" }), { status: 404, json: { error: "not_found" } });
+  // deepEqual は型を絞るので、件数で見る
+  assert.equal(defaultBot.posts.length, 0);
+  assert.equal(mikaBot.posts.length, 0);
+
+  const server = await serveWith([mika]);
+  const result = await call(server, "POST", "/api/channels/102/messages", { text: "こんにちは" });
+  for (let i = 0; i < 50 && mikaBot.sent.length === 0; i++) await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(result.status, 202);
+  assert.equal(result.json.link, `https://discord.com/channels/${GUILD}/102/60001`);
+  assert.deepEqual(
+    mikaBot.posts.map((post) => [post.channelId, post.message]),
+    [["102", { text: `${WEB_ECHO_PREFIX}\nこんにちは` }]],
+  );
+  assert.deepEqual(mikaBot.sent, [{ channelId: "102", text: "ミカです", replyToId: "60001" }]);
+  assert.deepEqual(defaultBot.posts, []);
+  assert.deepEqual(defaultBot.sent, []);
+  assert.equal(mikaRunner.inputs.length, 1);
+  assert.equal(defaultRunner.inputs.length, 0);
 });

@@ -18,12 +18,15 @@
   /** Web から送る本文の上限（src/web/routes/turns.ts の WEB_MESSAGE_MAX_LENGTH） */
   const MESSAGE_MAX = 1900;
   const STALE_TEXT = "この操作は古くなっています";
+  const TOO_LONG_TEXT = "1,900 字までです";
+  /** 送れた（202）後に実行中のターンを読み直すまでの時間（ms）。進行中の読み込みに吸われても次で拾う */
+  const RUNNING_RECHECK_MS = [500, 1500];
   /** 送れなかったときのトースト（応答の error ごと）。無ければ「<status>: <error>」 */
   const SEND_ERRORS = {
     bot_disconnected: "Bot が接続していません",
     echo_failed: "送れませんでした（Discord に投稿できません）",
     stopping: "再起動中です。終わったら送ってください",
-    too_long: "1,900 字までです",
+    too_long: TOO_LONG_TEXT,
     not_found: "このチャンネルには送れません",
   };
 
@@ -164,16 +167,23 @@
     return el("article", { class: "msg msg-agent" }, [avatar(Array.from(p.name || "?")[0], "avatar-agent"), body]);
   }
 
+  /** 実行中の行の手順を閉じたチャンネル（描き直しで開き直さない。既定は開く。このタブのメモリだけ） */
+  const stepsClosed = new Set();
+
   /** 実行中のターンの行（is-running）。[中断] は中断できるターン（セッション）だけ */
   function renderRunning(ch, run) {
     const p = persona(ch ? ch.persona : "default");
     const steps = el("ol", { class: "steps-list" });
     run.steps.forEach((s, i) => steps.append(el("li", { class: i === run.steps.length - 1 ? "is-current" : null, text: s })));
     if (run.steps.length === 0) steps.append(el("li", { text: "まだ手順はありません" }));
-    const details = el("details", { class: "steps", open: true }, [
+    const details = el("details", { class: "steps", open: !stepsClosed.has(run.channelId) }, [
       el("summary", {}, [icon("chevron-right", "steps-chevron"), el("span", { class: "spinner", "aria-hidden": "true" }), el("span", { "data-run-progress": run.channelId, text: progressText(run) })]),
       steps,
     ]);
+    details.addEventListener("toggle", () => {
+      if (details.open) stepsClosed.delete(run.channelId);
+      else stepsClosed.add(run.channelId);
+    });
     const body = el("div", { class: "msg-body" }, [
       el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: p.name }), el("span", { class: "badge badge-accent", text: "実行中" })]),
       details,
@@ -260,7 +270,8 @@
       const n = ta.value.trim().length;
       counter.textContent = n.toLocaleString("en-US") + " / 1,900";
       counter.classList.toggle("is-over", n > MESSAGE_MAX);
-      sendBtn.disabled = sending || n === 0 || n > MESSAGE_MAX;
+      // 上限を超えても押せる（押したらトーストで知らせる）
+      sendBtn.disabled = sending || n === 0;
     };
     update();
     ta.addEventListener("input", () => {
@@ -277,7 +288,11 @@
     ]);
     const submit = async () => {
       const text = ta.value.trim();
-      if (sending || text === "" || text.length > MESSAGE_MAX) return;
+      if (sending || text === "") return;
+      if (text.length > MESSAGE_MAX) {
+        toast(TOO_LONG_TEXT);
+        return;
+      }
       sending = true;
       update();
       try {
@@ -288,6 +303,7 @@
         store.addOptimisticTurn(channelId, data && data.turnId, text);
         store.load.turns(channelId);
         SA.poll.running();
+        for (const ms of RUNNING_RECHECK_MS) setTimeout(() => store.load.running({ quiet: true }), ms);
       } catch (err) {
         // 本文は入力欄に残す
         if (err && err.toast) toast((err.code && SEND_ERRORS[err.code]) || err.toast);

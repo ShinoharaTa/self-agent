@@ -407,6 +407,19 @@
     save("drafts", JSON.stringify(S.drafts));
   }
 
+  /** 一覧（/api/channels）に無いチャンネルの書きかけを消す */
+  function pruneDrafts(channelIds) {
+    try {
+      const keep = new Set(channelIds);
+      const stale = Object.keys(S.drafts).filter((id) => !keep.has(id));
+      if (stale.length === 0) return;
+      for (const id of stale) delete S.drafts[id];
+      save("drafts", JSON.stringify(S.drafts));
+    } catch {
+      // 消せなくても書きかけが残るだけ
+    }
+  }
+
   function togglePanel(force) {
     S.panelOpen = typeof force === "boolean" ? force : !S.panelOpen;
     savePanel();
@@ -797,6 +810,7 @@
     setTheme,
     draft: (channelId) => S.drafts[channelId] || "",
     setDraft,
+    pruneDrafts,
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

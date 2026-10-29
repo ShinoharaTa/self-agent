@@ -167,6 +167,8 @@
         personas: Array.isArray(data && data.personas) ? data.personas : [],
         channels: Array.isArray(data && data.channels) ? data.channels : [],
       };
+      // 一覧に無いチャンネル（削除した・開けなくなった）の書きかけを捨てる。形の違う応答では捨てない
+      if (Array.isArray(data && data.channels)) SA.app.pruneDrafts(store.channels.channels.map((c) => c && c.id));
       SA.app.refreshSidebar();
       SA.app.refreshStatus();
       SA.chat.channelsChanged();
@@ -307,14 +309,18 @@
     const before = new Map((store.running || []).map((r) => [r.channelId, r]));
     const after = new Map(next.map((r) => [r.channelId, r]));
     const changed = [];
+    const started = [];
     for (const [channelId, turn] of after) {
       const prev = before.get(channelId);
       const sameTurn = prev && prev.turnSeq === turn.turnSeq;
-      if (!sameTurn) SA.app.addOutput(whereOf(channelId), "ターンを始めました");
+      if (!sameTurn) {
+        SA.app.addOutput(whereOf(channelId), "ターンを始めました");
+        started.push(channelId);
+      }
       const known = sameTurn ? prev.toolCalls : 0;
       const added = Math.min(Math.max(turn.toolCalls - known, 0), turn.steps.length);
       for (const step of turn.steps.slice(turn.steps.length - added)) SA.app.addOutput(whereOf(channelId), step);
-      if (!sameTurn || prev.toolCalls !== turn.toolCalls) changed.push(channelId);
+      if (!sameTurn || prev.toolCalls !== turn.toolCalls || prev.label !== turn.label) changed.push(channelId);
       // 前のターンが終わって次が始まっていれば、前のターンの返事も待つ
       if (prev && !sameTurn) pendingEnds.add(channelId);
     }
@@ -325,10 +331,11 @@
     }
     store.running = next;
     store.runningAt = Date.now();
-    for (const channelId of changed) {
+    // 開いている会話は描き直す（実行中の行）。手順・ツール回数が変わっただけなら会話は読み直さない
+    for (const channelId of changed) SA.app.refresh("ch:" + channelId);
+    // 会話を読み直すのはターンが始まった（読んだことがあるチャンネル）・終わったときだけ
+    for (const channelId of new Set([...started, ...ended])) {
       const t = store.turns[channelId];
-      // 開いている会話は描き直し（実行中の行）、会話を読んだことがあるか終わったチャンネルは読み直す
-      SA.app.refresh("ch:" + channelId);
       if ((t && t.loaded) || ended.includes(channelId)) store.load.turns(channelId);
     }
     for (const channelId of ended) setTimeout(() => store.load.turns(channelId), END_RELOAD_MS);

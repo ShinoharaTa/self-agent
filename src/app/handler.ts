@@ -102,6 +102,8 @@ export type HandlerDeps = {
   history?: Pick<HistoryStore, "add">;
   /** チャンネルの持ち主の Bot が Discord に接続しているか（personas.ts の PersonaRouter.ownerConnected）。Web からの発言の前に見る。省略は接続している扱い */
   ownerConnected?: (channelId: string) => boolean;
+  /** 停止を始めたか（shutdown.ts の stopping）。Web からの発言の echo の前とキューに入れる前に見る。省略は停止していない扱い */
+  stopping?: () => boolean;
   log: (message: string) => void;
 };
 
@@ -127,7 +129,8 @@ export type SubmitTextResult =
   | { result: "accepted"; turnId: number; messageId: string }
   | { result: "not_accepted" }
   | { result: "bot_disconnected" }
-  | { result: "echo_failed" };
+  | { result: "echo_failed" }
+  | { result: "stopping" };
 
 export type Handler = {
   /** 受け付けた発言を 1 ターンとして処理する。reject しない（失敗は log に出す） */
@@ -145,7 +148,9 @@ export type Handler = {
   /**
    * Web から送った発言を、オーナーの発言と同じ経路（日時ヘッダ・キュー・ターン・返信）で 1 ターン入れる。受け付けるチャンネルでなければ not_accepted、
    * 持ち主の Bot が接続していなければ bot_disconnected。キューに入れる前に持ち主の Bot で「（Web から）\n本文」を投稿し（失敗は echo_failed でターンは入れない）、
-   * その ID 付きで history の owner の行を書いてから、その投稿への返信としてターンを始める（返信までは待たない）。turnId は owner の行の id（history が無い・書けなければ 0）
+   * その ID 付きで history の owner の行を書いてから、その投稿への返信としてターンを始める（返信までは待たない）。turnId は owner の行の id（history が無い・書けなければ 0）。
+   * 停止を始めていれば、echo の前なら投稿せずに、echo の後ならキューに入れずに stopping。
+   * サーバーの許可と /setup 済みの判定は呼び出し側（web/routes/channels.ts の webChannelLookup）が行う
    */
   submitText(input: { guildId: string; channelId: string; content: string; at: Date; source: "web" }): Promise<SubmitTextResult>;
   /** 実行中のターン（発言・[続ける]。全部の種類のチャンネル） */
@@ -541,6 +546,7 @@ export function createHandler(deps: HandlerDeps): Handler {
       const kind = resolveChannel(guildId, channelId);
       if (kind === null) return { result: "not_accepted" };
       if (deps.ownerConnected !== undefined && !deps.ownerConnected(channelId)) return { result: "bot_disconnected" };
+      if (deps.stopping?.() === true) return { result: "stopping" };
       // Discord の時系列に Web の発言を残す（返事はこの投稿への返信になる）。メンションは鳴らさない（sendMessage の既定）
       let messageId: string;
       try {
@@ -555,6 +561,11 @@ export function createHandler(deps: HandlerDeps): Handler {
           { guildId, channelId, kind: "owner", source, persona: personaOf(channelId), text: content, messageId },
           log,
         ) ?? 0;
+      // echo の間に停止を始めていれば、ターンにしない（停止の待ちに入らないため）
+      if (deps.stopping?.() === true) {
+        log("停止中のため Web の投稿をターンにしませんでした");
+        return { result: "stopping" };
+      }
       // 返信までは待たない（最終発言の記録・進行中に戻すのは submit の最初で同期に済む）。owner の行は書いたので submit では書かない
       void submit({ guildId, channelId, kind, content, at, replyToId: messageId, source, historyId: turnId }).catch((error: unknown) =>
         log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`),
