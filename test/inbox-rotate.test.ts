@@ -97,7 +97,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
   const db = tempDb(t);
   const clock = { now: ROTATE_AT };
   const now = (): Date => clock.now;
-  const { guildSettings, inboxSummaries, sessions, seeds, usage, topicSessions, memories } = createStores(db, now);
+  const { guildSettings, inboxSummaries, sessions, seeds, usage, topicSessions, memories, history } = createStores(db, now);
   const runner = new FakeRunner(results);
   const gateway = new FakeGateway({
     allow: ["start", "startTyping", "isInGuild", "registerGuildCommands", "stop"],
@@ -124,7 +124,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     inboxMaxInputTokens: options.maxInputTokens ?? 150000,
   };
   const turn: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
-  const rotator = new InboxRotator({ cfg, guildSettings, inboxSummaries, turnQueue: queue, turn, gateway, now, log });
+  const rotator = new InboxRotator({ cfg, guildSettings, inboxSummaries, turnQueue: queue, turn, gateway, history, now, log });
 
   // guild-1 は /setup 済み（#inbox は inbox-1。#tasks は tasks-1）
   if (options.inbox ?? true) guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
@@ -212,6 +212,7 @@ function setup(t: TestContext, results: Array<RunResult | Error> = [], options: 
     handler,
     state,
     view,
+    history,
     rotate: (): Promise<void> => rotator.rotateDue(() => false),
   };
 }
@@ -976,4 +977,34 @@ test("rotateNow（/renew）: /setup していないサーバー・そのチャ�
   assert.equal(env.runner.inputs.length + noInbox.runner.inputs.length, 0);
   assert.deepEqual([...env.queue.keys, ...noInbox.queue.keys], []);
   assert.deepEqual([...env.logs, ...noInbox.logs], []);
+});
+
+test("history: 切り替え・rotateNow で divider（ROTATED_NOTICE、引き継ぐ要約が無ければ ROTATED_NOTICE_FRESH）。切り替えなければ書かない", async (t) => {
+  for (const k of KINDS) {
+    const rows = (env: ReturnType<typeof setup>) =>
+      env.history.list(k.channelId, { limit: 10 }).map(({ guildId, kind, source, persona, text }) => ({ guildId, kind, source, persona, text }));
+    const divider = (text: string) => ({ guildId: "guild-1", kind: "divider", source: "system", persona: "default", text });
+
+    const daily = setup(t, [ok(SUMMARY)], k.options);
+    daily.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, k.channelId);
+    await daily.rotate();
+    assert.deepEqual(rows(daily), [divider(ROTATED_NOTICE)], k.kind);
+
+    const fresh = setup(t, [RESUME_FAILURE], k.options);
+    fresh.chatAt(at(ROTATE_AT, -HOUR_MS), SMALL, k.channelId);
+    await fresh.rotate();
+    assert.deepEqual(rows(fresh), [divider(ROTATED_NOTICE_FRESH)], k.kind);
+
+    const manual = setup(t, [FAILED, ok(SUMMARY)], k.rotatedToday);
+    manual.chatAt(at(ROTATE_AT, HOUR_MS), SMALL, k.channelId);
+    assert.equal(await manual.rotator.rotateNow("guild-1", k.kind), "failed", k.kind);
+    assert.deepEqual(rows(manual), [], k.kind);
+    assert.equal(await manual.rotator.rotateNow("guild-1", k.kind), "rotated", k.kind);
+    assert.deepEqual(rows(manual), [divider(ROTATED_NOTICE)], k.kind);
+
+    // 会話が無ければ日付だけ記録して区切りは書かない
+    const idle = setup(t, [], k.options);
+    await idle.rotate();
+    assert.deepEqual(rows(idle), [], k.kind);
+  }
 });

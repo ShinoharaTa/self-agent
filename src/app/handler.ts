@@ -1,7 +1,8 @@
 import type { AgentRunner, RunResult } from "../agent/runner.ts";
-import type { Config } from "../config.ts";
+import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { IncomingImage, IncomingMessage, OutgoingMessage } from "../discord/gateway.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
+import { type HistoryStore, recordHistory } from "../store/history.ts";
 import type { InboxSummaryStore } from "../store/inbox-summaries.ts";
 import type { MemoryStore } from "../store/memories.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
@@ -43,6 +44,8 @@ export const REVIVED_NOTE = "（進行中に戻しました）";
 
 /** セッションのチャンネルのターンが、開始からこれだけ経っても終わっていなければ途中経過のメッセージを出す */
 export const PROGRESS_DELAY_MS = 20_000;
+/** history に残すためにターンごとに集める手順の label の数（保存するときはストアが先頭 50 件に切る） */
+const HISTORY_STEPS_COLLECT_MAX = 60;
 // 途中経過の表示は progress.ts（ジョブと共通）。これまでどおり handler からも使えるようにする
 export { formatElapsed, PROGRESS_INTERVAL_MS, progressEndText, progressText, type ProgressTimers, type TurnOutcome };
 
@@ -91,6 +94,8 @@ export type HandlerDeps = {
    * 省略すれば画像は渡さない（本文と注記だけ）
    */
   prepareImages?: (source: AttachmentSource, images: readonly IncomingImage[]) => Promise<PreparedImages>;
+  /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。無ければ書かない */
+  history?: Pick<HistoryStore, "add">;
   log: (message: string) => void;
 };
 
@@ -122,10 +127,22 @@ type TurnRequest = {
   replyToId?: string;
   /** 発言の添付（渡せる画像と、渡さない添付の数）。オーナーの発言だけ */
   attachments?: { messageId: string; images: readonly IncomingImage[]; skipped?: IncomingMessage["skippedAttachments"] };
+  /** どこから来た依頼か（history の source） */
+  source: "discord" | "web";
+  /** 呼び出し側が先に書いた owner の行の id。あれば submit は owner の行を書かない */
+  historyId?: number;
 };
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** owner の行の text（本文。画像があれば「（画像 n 枚）」を、本文が空ならそれだけ、あれば末尾に改行して足す） */
+function ownerText(request: TurnRequest): string {
+  const count = request.attachments?.images.length ?? 0;
+  if (count === 0) return request.content;
+  const images = `（画像 ${count} 枚）`;
+  return request.content.trim() === "" ? images : `${request.content}\n${images}`;
 }
 
 /**
@@ -149,6 +166,7 @@ export function createHandler(deps: HandlerDeps): Handler {
     queue,
     now,
     prepareImages,
+    history,
     log,
   } = deps;
   const timers = deps.timers;
@@ -164,6 +182,8 @@ export function createHandler(deps: HandlerDeps): Handler {
     log,
   };
   const ownerOf = personas === undefined ? undefined : (channelId: string) => personas.ownerOf(channelId);
+  /** history の行の persona（チャンネルの持ち主の人格） */
+  const personaOf = (channelId: string): string => ownerOf?.(channelId) ?? DEFAULT_PERSONA_ID;
   /** 実行中のセッションのチャンネルのターンの番号と中断（key は channelId。ターンが終わったら消す） */
   const running = new Map<string, { turnSeq: number; controller: AbortController }>();
   /**
@@ -232,7 +252,14 @@ export function createHandler(deps: HandlerDeps): Handler {
         ...(failedReply === undefined ? [] : [failedReply]),
         ...attachmentNotes(request.attachments?.skipped, undefined),
       ];
-      if (lines.length > 0) await reply(request, lines.join("\n"));
+      if (lines.length > 0) {
+        await reply(request, lines.join("\n"));
+        recordHistory(
+          history,
+          { guildId, channelId, kind: "notice", source: request.source, persona: personaOf(channelId), text: lines.join("\n") },
+          log,
+        );
+      }
       return;
     }
     if (failedReply !== undefined) await reply(request, failedReply);
@@ -242,6 +269,19 @@ export function createHandler(deps: HandlerDeps): Handler {
     const turn = kind === "session" ? { turnSeq: ++lastTurnSeq, controller: new AbortController() } : undefined;
     if (turn !== undefined) running.set(channelId, turn);
     const progress = turn === undefined ? undefined : startTurnProgress(channelId, turn.turnSeq);
+    const persona = personaOf(channelId);
+    // 進行中に戻したことは、返事とは別の行に残す（返事の行の text には付けない）
+    if (revived) recordHistory(history, { guildId, channelId, kind: "notice", source: request.source, persona, text: REVIVED_NOTE }, log);
+    // history に残す手順の label（history があるときだけ集める）。途中経過にもそのまま渡す
+    const steps: string[] = [];
+    const onProgress =
+      history === undefined
+        ? progress?.onProgress
+        : (step: { label: string }) => {
+            if (steps.length < HISTORY_STEPS_COLLECT_MAX) steps.push(step.label);
+            progress?.onProgress(step);
+          };
+    const startedAt = now().getTime();
     let result: RunResult | undefined;
     try {
       // 会話の単位はチャンネル（key は channelId）
@@ -256,7 +296,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         // WebFetch で取得できるのは、この発言に貼られた URL だけ
         allowedUrls: extractUrls(request.content),
         ...(turn === undefined ? {} : { signal: turn.controller.signal }),
-        ...(progress === undefined ? {} : { onProgress: progress.onProgress }),
+        ...(onProgress === undefined ? {} : { onProgress }),
       });
     } finally {
       stopTyping();
@@ -265,21 +305,45 @@ export function createHandler(deps: HandlerDeps): Handler {
       await progress?.finish(turnOutcome(result));
     }
 
+    const finished = result;
+    // 返事の行は返信の後に書く（text は REVIVED_NOTE を付ける前の返信の本文）
+    const recordReply = (text: string): void => {
+      recordHistory(
+        history,
+        {
+          guildId,
+          channelId,
+          kind: "agent",
+          source: request.source,
+          persona,
+          text,
+          outcome: turnOutcome(finished),
+          steps,
+          toolCalls: finished.toolCalls,
+          durationMs: finished.ok ? finished.durationMs : now().getTime() - startedAt,
+        },
+        log,
+      );
+    };
+
     if (result.ok) {
-      let text = result.text.trim() === "" ? EMPTY_REPLY : result.text;
-      if (revived) text = `${REVIVED_NOTE}\n${text}`;
-      await reply(request, result.compacted === undefined ? text : `${text}\n${COMPACTED_NOTE}`);
+      const body = result.text.trim() === "" ? EMPTY_REPLY : result.text;
+      const text = result.compacted === undefined ? body : `${body}\n${COMPACTED_NOTE}`;
+      await reply(request, revived ? `${REVIVED_NOTE}\n${text}` : text);
+      recordReply(text);
       return;
     }
 
     log(`ターンが失敗しました: ${result.errorMessage}`);
     if (result.errorMessage === ABORTED_ERROR) {
       await reply(request, ABORTED_REPLY);
+      recordReply(ABORTED_REPLY);
       return;
     }
     // sdk-runner は result の失敗を subtype から書き始める
     if (!result.errorMessage.startsWith(MAX_TURNS_ERROR_PREFIX)) {
       await reply(request, FAILURE_REPLY);
+      recordReply(FAILURE_REPLY);
       return;
     }
     // セッションのチャンネルだけ [続ける] を付ける
@@ -288,9 +352,11 @@ export function createHandler(deps: HandlerDeps): Handler {
         text: MAX_TURNS_REPLY,
         components: [{ kind: "buttons", buttons: [continueTurnButton(channelId)] }],
       });
+      recordReply(MAX_TURNS_REPLY);
       return;
     }
     await reply(request, MAX_TURNS_REPLY);
+    recordReply(MAX_TURNS_REPLY);
   };
 
   /**
@@ -331,6 +397,23 @@ export function createHandler(deps: HandlerDeps): Handler {
       // 待ち・完了なら進行中に戻して進行中カテゴリへ移す（ターンは通常どおり行い、返信の先頭で知らせる）
       revived = revive(session);
     }
+    // オーナーの発言の行はキューに入れる前に書く（Web の発言は呼び出し側が先に書いている）
+    if (request.historyId === undefined) {
+      const messageId = request.attachments?.messageId ?? request.replyToId;
+      recordHistory(
+        history,
+        {
+          guildId: request.guildId,
+          channelId: request.channelId,
+          kind: "owner",
+          source: request.source,
+          persona: personaOf(request.channelId),
+          text: ownerText(request),
+          ...(messageId === undefined ? {} : { messageId }),
+        },
+        log,
+      );
+    }
     // セッションのターンは同時実行の枠を 1 つ #inbox・#tasks 用に残す
     await queue.run(request.channelId, () => handleTurn(request, channelName, revived), {
       session: request.kind === "session",
@@ -351,6 +434,7 @@ export function createHandler(deps: HandlerDeps): Handler {
           content: event.content,
           at: event.createdAt,
           replyToId: event.id,
+          source: "discord",
           ...(event.images === undefined && event.skippedAttachments === undefined
             ? {}
             : {
@@ -368,7 +452,7 @@ export function createHandler(deps: HandlerDeps): Handler {
     continueTurn: async (guildId, channelId, at) => {
       try {
         if (resolveChannel(guildId, channelId) !== "session") return;
-        await submit({ guildId, channelId, kind: "session", content: CONTINUE_PROMPT, at });
+        await submit({ guildId, channelId, kind: "session", content: CONTINUE_PROMPT, at, source: "discord" });
       } catch (error) {
         log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`);
       }

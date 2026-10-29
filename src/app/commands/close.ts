@@ -1,5 +1,7 @@
 import { removeNodeModules } from "../../agent/disk.ts";
+import { DEFAULT_PERSONA_ID } from "../../config.ts";
 import type { ButtonDef, ComponentRow, InteractionResponder } from "../../discord/gateway.ts";
+import { type HistoryStore, recordHistory } from "../../store/history.ts";
 import type { ProjectStore } from "../../store/projects.ts";
 import type { TaskStore } from "../../store/tasks.ts";
 import {
@@ -42,6 +44,8 @@ export type CloseDeps = {
   /** 閉じたセッションのプロジェクトの node_modules を消す（プロジェクトのディレクトリは `<projectsDir>/<slug>`） */
   projects: Pick<ProjectStore, "getByChannel">;
   projectsDir: string;
+  /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。閉じたら区切りの行を書く。無ければ書かない */
+  history?: Pick<HistoryStore, "add">;
   log: (message: string) => void;
 };
 
@@ -115,7 +119,7 @@ function finalizeClose(
   session: TopicSession,
   draft: CloseDraft,
   selected: readonly number[],
-  deps: Pick<CloseDeps, "topicSessions" | "tasks" | "channelOps" | "log">,
+  deps: Pick<CloseDeps, "topicSessions" | "tasks" | "channelOps" | "personas" | "history" | "log">,
 ): number {
   const { topicSessions, tasks, channelOps, log } = deps;
   // 選んだ順ではなく候補の順に登録する
@@ -129,6 +133,18 @@ function finalizeClose(
   topicSessions.close(session.channelId, draft.summary);
   channelOps.enqueueMove(session.channelId, { kind: "state", guildId: session.guildId, state: "done" });
   log(`/close でセッションを閉じました（guild=${session.guildId}、登録 ${chosen.length} 件）`);
+  recordHistory(
+    deps.history,
+    {
+      guildId: session.guildId,
+      channelId: session.channelId,
+      kind: "divider",
+      source: "system",
+      persona: deps.personas?.ownerOf(session.channelId) ?? DEFAULT_PERSONA_ID,
+      text: closedText(draft.summary, chosen.length),
+    },
+    log,
+  );
   return chosen.length;
 }
 

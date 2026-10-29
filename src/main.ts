@@ -55,6 +55,7 @@ import { GuestInviteStore } from "./store/guest-invites.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
+import { HistoryStore } from "./store/history.ts";
 import { InboxSummaryStore } from "./store/inbox-summaries.ts";
 import { JobStore } from "./store/jobs.ts";
 import { KnowledgeStore } from "./store/knowledge.ts";
@@ -145,6 +146,9 @@ const routines = new RoutineStore(db, now);
 const routineRecords = new RoutineRecordStore(db, now);
 // オーナーの発言の画像の原本（<dataDir>/attachments/ に置く）
 const attachments = new AttachmentStore(db, now);
+// Web UI で会話を見るためのターンの記録（docs/plan/web-ui.md §4.2）。書くのは Web UI が有効なときだけで、古いものは有効・無効を問わず tick で消す
+const historyStore = new HistoryStore(db, now);
+const history = config.web ? { history: historyStore } : {};
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -275,6 +279,7 @@ const handler = createHandler({
   queue: turnQueue,
   now,
   prepareImages: (source, images) => prepareImages({ dataDir: config.dataDir, attachments, log }, source, images),
+  ...history,
 });
 // #inbox・#tasks の切り替え: 要約のターンは発言と同じキュー（turnQueue、key はそのチャンネルの channelId）で行う。
 // 定期処理と、#inbox・#tasks での /renew で使う
@@ -285,6 +290,7 @@ const inboxRotator = new InboxRotator({
   turnQueue,
   turn,
   gateway: ownerPosts,
+  ...history,
   now,
   log,
 });
@@ -366,6 +372,8 @@ const commands = createCommands({
   ...(jobs === undefined ? {} : { jobs }),
   // /guests（ゲストが有効のときだけ登録する。メインサーバーでオーナーが認証コードの発行・許可の取り消し・一覧を行う）
   ...(guest === undefined ? {} : { guests: guest.admin }),
+  // /close の確定と /renew の区切りの行（Web UI が有効なときだけ）
+  ...history,
   log,
 });
 const handleInteraction = createInteractionHandler({
@@ -394,6 +402,8 @@ const handleInteraction = createInteractionHandler({
     reminders,
     // #jobs のボタンとモーダル（SELF_AGENT_JOBS=1 のときだけ）
     ...(jobs === undefined ? {} : { jobs }),
+    // /close の確定の区切りの行（Web UI が有効なときだけ）
+    ...history,
     log,
   }),
   log,
@@ -451,6 +461,13 @@ const scheduler = new Scheduler({
   ...(personaStatus === undefined ? {} : { refreshPersonas: () => personaStatus.refresh() }),
   pruneWorkDir: () => pruneWorkDir(realWorkDir),
   pruneAttachments: () => pruneAttachments(config.dataDir, attachments),
+  // SELF_AGENT_WEB_HISTORY_DAYS 日より前のターンの記録を消す（Web UI が無効でも消す）
+  pruneHistory: () => {
+    const deleted = historyStore.prune(new Date(now().getTime() - config.webHistoryDays * 24 * 60 * 60 * 1000));
+    if (deleted > 0) log(`古いターンの記録 ${deleted} 件を消しました`);
+  },
+  // 待ちに移した知らせの行（Web UI が有効なときだけ）
+  ...history,
   // ゲストの 1 日のターン数のうち、GUEST_TURNS_KEEP_DAYS 日より前の日の行を消す（ゲストのときだけ。Discord のゲストのサーバーには触らない）
   ...(config.guest
     ? {
@@ -478,6 +495,8 @@ const reminderScheduler = new ReminderScheduler({
   resolveChannel,
   turnQueue,
   turn,
+  // 予約した依頼の依頼と返事の行（Web UI が有効なときだけ）
+  ...history,
   now,
   log,
 });
