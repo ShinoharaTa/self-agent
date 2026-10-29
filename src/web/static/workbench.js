@@ -483,6 +483,8 @@
   function commands() {
     const active = activeTabId();
     return [
+      { label: "/tasks タスクを開く", detail: "", run: () => open("tasks") },
+      { label: "/reminders リマインドを開く", detail: "", run: () => open("reminders") },
       { label: "/usage 使用量を開く", detail: "", run: () => open("usage") },
       { label: "状態を開く", detail: "", run: () => open("status") },
       { label: "設定を開く", detail: "", run: () => open("settings") },
@@ -500,6 +502,7 @@
       if (!tab) continue;
       items.push({ label: a.label, detail: "画面", icon: a.icon, run: () => open(tab) });
     }
+    items.push({ label: "記憶", detail: "画面", icon: "book", run: () => open("memories") });
     return items;
   }
 

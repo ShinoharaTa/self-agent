@@ -4,7 +4,7 @@ import type { InteractionResponder, OutgoingMessage } from "../../discord/gatewa
 import type { Reminder, ReminderStore } from "../../store/reminders.ts";
 import type { TaskStore } from "../../store/tasks.ts";
 import type { CommandHandler, ComponentHandler } from "../interactions.ts";
-import { nextOccurrence, describeRule } from "../recurrence.ts";
+import { describeRule } from "../recurrence.ts";
 import {
   formatShortDate,
   formatShortDateTime,
@@ -14,6 +14,7 @@ import {
   reminderBaseLines,
   snoozeLabel,
 } from "../reminders.ts";
+import { cancelOf, skipNextOf } from "../reminders-ops.ts";
 import { STALE_TEXT } from "./delete.ts";
 import { fitItems, omittedText } from "./sessions.ts";
 import { clip } from "./tasks.ts";
@@ -174,7 +175,7 @@ export function createRemindersComponent(deps: RemindersDeps): ComponentHandler 
           return;
         }
         if (action === "cancel") {
-          if (!reminders.cancel(id)) {
+          if (cancelOf(reminders, id) !== "cancelled") {
             await responder.update({ text: STALE_TEXT, components: [] });
             return;
           }
@@ -182,13 +183,12 @@ export function createRemindersComponent(deps: RemindersDeps): ComponentHandler 
           await responder.update({ text: `止めました: ${reminder.text}`, components: [] });
           return;
         }
-        const skipped = reminder.nextAt === null ? undefined : new Date(reminder.nextAt);
-        const next =
-          reminder.rule === null || skipped === undefined ? null : nextOccurrence(reminder.rule, skipped, cfg.timeZone);
-        if (skipped === undefined || next === null || !reminders.skipNext(id, next)) {
+        const skip = skipNextOf(reminders, id, cfg.timeZone);
+        if (skip.result !== "skipped") {
           await responder.update({ text: STALE_TEXT, components: [] });
           return;
         }
+        const { skipped, next } = skip;
         log(`/reminders でリマインドの次の回を飛ばしました（#${id}）`);
         await responder.update({
           text: `次の回（${formatShortDate(skipped, cfg.timeZone)}）を飛ばしました。次は ${formatShortDateTime(next, cfg.timeZone)}`,

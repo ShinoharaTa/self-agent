@@ -68,9 +68,12 @@ import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { UsageStore } from "./store/usage.ts";
-import { channelRoutes } from "./web/routes/channels.ts";
+import { channelRoutes, webChannelNamer } from "./web/routes/channels.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
+import { memoryRoutes } from "./web/routes/memories.ts";
+import { reminderRoutes } from "./web/routes/reminders.ts";
 import { statusRoutes } from "./web/routes/status.ts";
+import { taskRoutes } from "./web/routes/tasks.ts";
 import { turnRoutes } from "./web/routes/turns.ts";
 import { usageRoutes } from "./web/routes/usage.ts";
 import { createWebServer, type WebServer } from "./web/server.ts";
@@ -573,6 +576,14 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       ...channelRoutes({ cfg: config, guildSettings, topicSessions, projects, history: historyStore, personas, resolveChannel }),
       ...devlogRoutes({ cfg: config, now }),
       ...turnRoutes({ cfg: config, guildSettings, topicSessions, resolveChannel, handler, now, log }),
+      ...taskRoutes({ tasks, reminders, log }),
+      ...reminderRoutes({
+        cfg: config,
+        reminders,
+        channelName: webChannelNamer({ cfg: config, guildSettings, topicSessions, resolveChannel }),
+        log,
+      }),
+      ...memoryRoutes({ memories, log }),
     ],
     stopping: () => lifecycle.stopping(),
     now,

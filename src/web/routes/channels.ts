@@ -89,6 +89,44 @@ export function webChannelLookup(
   };
 }
 
+/**
+ * 入口のチャンネル（#inbox・#tasks・設定にある人格の #<NAME>）の種類と名前（inbox・tasks・人格の表示名）。そのサーバーが /setup 前・入口でなければ undefined。
+ * /turns と /api/reminders で同じ引き方にする（/api/channels の entries と同じ順）
+ */
+function entryNameOf(
+  cfg: Pick<Config, "personas">,
+  guildSettings: Pick<GuildSettingsStore, "get" | "personaInbox">,
+  guildId: string,
+  channelId: string,
+): { kind: "inbox" | "tasks"; name: string } | undefined {
+  const settings = guildSettings.get(guildId);
+  if (settings === undefined) return undefined;
+  if (settings.inboxChannelId === channelId) return { kind: "inbox", name: "inbox" };
+  if (settings.tasksChannelId === channelId) return { kind: "tasks", name: "tasks" };
+  const persona = cfg.personas.find((candidate) => guildSettings.personaInbox(guildId, candidate.id)?.channelId === channelId);
+  return persona === undefined ? undefined : { kind: "inbox", name: persona.name };
+}
+
+/**
+ * チャンネルの表示名（#inbox・#tasks・#<NAME>・セッションの題名）。/turns と同じく、許可した /setup 済みのサーバーの受け付け対象でなければ null
+ */
+export function webChannelNamer(
+  deps: Pick<ChannelRouteDeps, "cfg" | "guildSettings" | "resolveChannel"> & { topicSessions: Pick<TopicSessionStore, "get"> },
+): (channelId: string) => string | null {
+  const { cfg, guildSettings, topicSessions } = deps;
+  const lookup = webChannelLookup(deps);
+  return (channelId) => {
+    const found = lookup(channelId);
+    if (found === undefined) return null;
+    if (found.kind === "session") {
+      const item = topicSessions.get(channelId);
+      return item === undefined || item.state === "deleted" ? null : item.title;
+    }
+    const entry = entryNameOf(cfg, guildSettings, found.guildId, channelId);
+    return entry === undefined ? null : `#${entry.name}`;
+  };
+}
+
 export function channelRoutes(deps: ChannelRouteDeps): Route[] {
   const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel } = deps;
 
@@ -151,12 +189,8 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
 
   /** そのサーバー（/setup 済み）の入口のうち channelId のもの（entries と同じ順で引き、ほかの入口は組み立てない）。入口でなければ undefined */
   const entryOf = (guildId: string, channelId: string, last: Last): WebChannel | undefined => {
-    const settings = guildSettings.get(guildId);
-    if (settings === undefined) return undefined;
-    if (settings.inboxChannelId === channelId) return entry(guildId, channelId, "inbox", "inbox", last);
-    if (settings.tasksChannelId === channelId) return entry(guildId, channelId, "tasks", "tasks", last);
-    const persona = cfg.personas.find((candidate) => guildSettings.personaInbox(guildId, candidate.id)?.channelId === channelId);
-    return persona === undefined ? undefined : entry(guildId, channelId, "inbox", persona.name, last);
+    const found = entryNameOf(cfg, guildSettings, guildId, channelId);
+    return found === undefined ? undefined : entry(guildId, channelId, found.kind, found.name, last);
   };
 
   /** そのチャンネルの最後の行 */
