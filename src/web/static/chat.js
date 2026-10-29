@@ -33,6 +33,8 @@
   const CLOSED_TEXT = "このセッションは閉じています";
   /** 操作の後に会話をもう一度読むまでの時間（ms）。読んでいる途中のもの（操作の前の中身かもしれない）に吸われても次で拾う */
   const OP_RECHECK_MS = 1500;
+  /** 要約を待つ表示を解除するまでの時間（ms）。行が来ないまま（知らせを書けなかったなど）操作を止めたままにしない */
+  const PENDING_MAX_MS = 3 * 60 * 1000;
 
   /** リンクにするのは https の Discord の URL だけ */
   function discordUrl(url) {
@@ -95,8 +97,8 @@
   }
 
   // ===== セッションの操作（/wait・/close・/renew。src/web/routes/sessions.ts） =====
-  // 要約を待っている操作（{ [channelId]: { kind: "close" | "renew", afterId } }。このタブのメモリだけ）。
-  // afterId より後の行（区切り・知らせ）が来るか、閉じたら終わりとみなす
+  // 要約を待っている操作（{ [channelId]: { kind: "close" | "renew", afterId, at } }。このタブのメモリだけ）。
+  // afterId より後の行（区切り・知らせ）が来るか、閉じたら終わりとみなす。PENDING_MAX_MS 経っても終わらなければ解除して会話を読み直す
   const pending = {};
   // 確認のカードで選んだ候補（{ [channelId]: Set<添字> }。このタブのメモリだけ。描き直しても保つ）
   const picked = {};
@@ -108,12 +110,34 @@
     return real.length > 0 ? real[real.length - 1].id : 0;
   }
 
-  /** 要約を待っている操作。終わっていれば消して null */
+  /** 要約を待ち始める（PENDING_MAX_MS 後に、まだ同じものを待っていれば解除する） */
+  function setPending(channelId, kind, afterId) {
+    const p = { kind, afterId, at: Date.now() };
+    pending[channelId] = p;
+    setTimeout(() => {
+      if (pending[channelId] === p) expirePending(channelId);
+    }, PENDING_MAX_MS);
+  }
+
+  /** 待つのをやめて、会話を読み直す（描いている途中から呼ばれうるので次の tick で） */
+  function expirePending(channelId) {
+    delete pending[channelId];
+    setTimeout(() => {
+      SA.app.refresh("ch:" + channelId);
+      store.load.turns(channelId);
+    }, 0);
+  }
+
+  /** 要約を待っている操作。終わっていれば消して null（時間切れなら会話を読み直す） */
   function pendingOf(channelId, ch) {
     const p = pending[channelId];
     if (!p) return null;
     if (lastRealId(channelId) > p.afterId || (p.kind === "close" && ch && ch.state === "done")) {
       delete pending[channelId];
+      return null;
+    }
+    if (Date.now() - p.at >= PENDING_MAX_MS) {
+      expirePending(channelId);
       return null;
     }
     return p;
@@ -159,7 +183,7 @@
         const afterId = lastRealId(channelId);
         try {
           await SA.api.post("/api/sessions/" + encodeURIComponent(channelId) + "/close", {}, { quiet: true });
-          pending[channelId] = { kind: "close", afterId };
+          setPending(channelId, "close", afterId);
           toast("要約しています。終わったらここに出ます");
         } catch (err) {
           opFailed(err);
@@ -181,7 +205,7 @@
         const afterId = lastRealId(channelId);
         try {
           await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/renew", {}, { quiet: true });
-          pending[channelId] = { kind: "renew", afterId };
+          setPending(channelId, "renew", afterId);
           toast("要約しています。終わったらここに区切りが出ます");
         } catch (err) {
           opFailed(err);

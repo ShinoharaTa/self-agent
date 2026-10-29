@@ -1,10 +1,18 @@
 // セッションの操作（docs/plan/web-ui.md §6.2）: 新しいセッション・待ちにする・進行中に戻す・閉じる（と確認の確定）・会話を新しくする。
 // Discord のコマンド・ボタンと同じ session-ops.ts の関数を通す。長い処理（/close の要約のターン・/renew の要約）は 202 ですぐ返し、
 // 結果は会話の履歴（divider・notice）と状態で見せる。/close の確認（候補あり）は Discord にも同じ確認のメッセージ（ボタン付き）を持ち主の Bot で投稿し、
-// 先に確定した方が勝つ（後の方は Discord なら NO_DRAFT_REPLY、Web なら 409）。/renew の結果の文も Discord に投稿する。
+// 先に確定した方が勝つ（後の方は Discord なら NO_DRAFT_REPLY、Web なら 409）。Web で閉じたら（候補なし・確認の確定）結果の文を Discord にも出す
+// （Web から投稿した確認があればそれをボタン無しに書き換える）。/renew の結果の文も Discord に投稿する。
 // log に題名・本文・チャンネル ID は出さない
 import { DEFAULT_PERSONA_ID } from "../../config.ts";
-import { ALREADY_CLOSED_REPLY, type CloseDeps, confirmButtons, confirmText, SUMMARY_FAILURE_REPLY } from "../../app/commands/close.ts";
+import {
+  ALREADY_CLOSED_REPLY,
+  type CloseDeps,
+  closedText,
+  confirmButtons,
+  confirmText,
+  SUMMARY_FAILURE_REPLY,
+} from "../../app/commands/close.ts";
 import { type NewSessionDeps, sessionOwnerOf, TITLE_MAX_LENGTH } from "../../app/commands/new.ts";
 import type { RenewDeps } from "../../app/commands/renew.ts";
 import type { OwnerPosts, PersonaRouter } from "../../app/personas.ts";
@@ -24,10 +32,9 @@ import {
 } from "../../app/session-ops.ts";
 import { type HistoryStore, recordHistory } from "../../store/history.ts";
 import type { Route, RouteResult } from "../server.ts";
-import { type ChannelRouteDeps, webChannelLookup } from "./channels.ts";
+import { type ChannelRouteDeps, CLOSE_CONFIRM_NOTICE, webChannelLookup } from "./channels.ts";
 
-/** /close の確認（候補あり）を Discord に投稿したときの、会話の履歴の知らせ */
-export const CLOSE_CONFIRM_NOTICE = "確認待ちです。登録するやることを選ぶと閉じます（Discord でも選べます）";
+export { CLOSE_CONFIRM_NOTICE };
 /** 確定で選べる候補の添字の数の上限（session_report の tasks より十分大きい） */
 const SELECTED_MAX = 100;
 
@@ -52,8 +59,8 @@ export type SessionRouteDeps = Pick<ChannelRouteDeps, "cfg" | "resolveChannel"> 
     queue: NewSessionDeps["queue"];
     /** チャンネルの持ち主の人格と Bot */
     personas: Pick<PersonaRouter, "ownerOf" | "gatewayFor">;
-    /** 持ち主の Bot での投稿（/close の確認・/renew の結果） */
-    ownerPosts: Pick<OwnerPosts, "send" | "sendMessage">;
+    /** 持ち主の Bot での投稿（/close の確認と閉じた結果・/renew の結果） */
+    ownerPosts: Pick<OwnerPosts, "send" | "sendMessage" | "editMessage">;
     history: Pick<HistoryStore, "add">;
     log: (message: string) => void;
   };
@@ -70,6 +77,11 @@ function channelLink(guildId: string, channelId: string): string {
   return `https://discord.com/channels/${guildId}/${channelId}`;
 }
 
+/** 題名の制御文字（改行・タブを含む）を空白にし、連続する空白を 1 つにして、前後の空白を除く */
+function normalizeTitle(title: string): string {
+  return title.replace(/\p{Cc}/gu, " ").replace(/ {2,}/g, " ").trim();
+}
+
 /** 確定で選んだもの: "all"・"none" か、重ならない 0 以上の整数の配列（空は不可）。それ以外は undefined */
 function parseSelected(value: unknown): number[] | "all" | "none" | undefined {
   if (value === "all" || value === "none") return value;
@@ -81,6 +93,8 @@ function parseSelected(value: unknown): number[] | "all" | "none" | undefined {
 export function sessionRoutes(deps: SessionRouteDeps): Route[] {
   const { cfg, topicSessions, personas, ownerPosts, log } = deps;
   const lookup = webChannelLookup(deps);
+  /** Web から始めた /close の確認を Discord に投稿したメッセージ（channelId → messageId。プロセス内）。Web で確定したらボタン無しの結果に書き換える */
+  const confirmMessages = new Map<string, string>();
 
   /** セッションのチャンネルのサーバー（許可したサーバーのもの）。無ければ undefined。状態の判定は session-ops.ts が行う */
   const sessionGuild = (channelId: string): string | undefined => {
@@ -93,13 +107,36 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
     recordHistory(deps.history, { guildId, channelId, kind: "notice", source: "system", persona: personas.ownerOf(channelId), text }, log);
   };
 
-  /** /close の要約のターンが終わった後: 確認は Discord にも投稿し、失敗は知らせの行、閉じたら node_modules を消す（Discord の /close と同じ順） */
+  /** Web で閉じた結果の文を持ち主の Bot で Discord に出す。messageId（Web から投稿した確認）があればボタン無しに書き換え、できなければ投稿する（失敗は log だけ） */
+  const postClosed = async (channelId: string, text: string, messageId: string | undefined): Promise<void> => {
+    if (messageId !== undefined) {
+      try {
+        await ownerPosts.editMessage(channelId, messageId, { text, components: [] });
+        return;
+      } catch (error) {
+        log(`/close の確認メッセージの更新に失敗したため投稿します: ${describeError(error)}`);
+      }
+    }
+    try {
+      await ownerPosts.send(channelId, text);
+    } catch (error) {
+      log(`/close の結果を Discord に投稿できませんでした: ${describeError(error)}`);
+    }
+  };
+
+  /**
+   * /close の要約のターンが終わった後: 確認は Discord にも投稿し（そのメッセージを覚える）、失敗は知らせの行、
+   * 閉じたら結果の文を Discord に投稿してから node_modules を消す（Discord の /close と同じ順）
+   */
   const afterClose = async (guildId: string, channelId: string, outcome: Awaited<ReturnType<typeof closeSession>>): Promise<void> => {
+    // 前の /close の確認は使わない（要約のターンが下書きを作り直している）
+    confirmMessages.delete(channelId);
     switch (outcome.result) {
       case "confirm":
         notice(guildId, channelId, CLOSE_CONFIRM_NOTICE);
         try {
-          await ownerPosts.sendMessage(channelId, { text: confirmText(outcome.draft), components: [confirmButtons(channelId)] });
+          const messageId = await ownerPosts.sendMessage(channelId, { text: confirmText(outcome.draft), components: [confirmButtons(channelId)] });
+          confirmMessages.set(channelId, messageId);
         } catch (error) {
           log(`/close の確認を Discord に投稿できませんでした: ${describeError(error)}`);
         }
@@ -108,6 +145,7 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
         notice(guildId, channelId, SUMMARY_FAILURE_REPLY);
         return;
       case "finalized":
+        await postClosed(channelId, closedText(outcome.summary, 0), undefined);
         await removeClosedNodeModules(deps, channelId);
         return;
       case "closed":
@@ -130,11 +168,12 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
         if (personaId !== undefined && personaId !== DEFAULT_PERSONA_ID && owner === undefined) return BAD_REQUEST;
         const title = body?.title;
         if (typeof title !== "string") return BAD_REQUEST;
-        // Discord の /new と同じ字数（前後の空白を除いて数える）
-        if (title.trim().length > TITLE_MAX_LENGTH) return { status: 400, json: { error: "too_long" } };
+        // 制御文字（改行・タブ）は空白にしてから、Discord の /new と同じ字数（前後の空白を除いて数える）
+        const normalized = normalizeTitle(title);
+        if (normalized.length > TITLE_MAX_LENGTH) return { status: 400, json: { error: "too_long" } };
         // チャンネルを作るのは既定の人格の Bot
         if (!deps.defaultConnected()) return { status: 503, json: { error: "bot_disconnected" } };
-        const result = await openTopicSession(guildId, title, owner, deps, "Web から");
+        const result = await openTopicSession(guildId, normalized, owner, deps, "Web から");
         switch (result.result) {
           case "empty_title":
             return { status: 400, json: { error: "empty_title" } };
@@ -209,9 +248,12 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
         const guildId = sessionGuild(channelId);
         if (guildId === undefined) return NOT_FOUND;
         const closed = confirmClose(guildId, channelId, selected, deps);
+        const messageId = confirmMessages.get(channelId);
+        confirmMessages.delete(channelId);
+        // Discord で先に確定していれば、確認のメッセージは Discord の側で書き換わっているので何もしない
         if (closed.result === "no_draft") return { status: 409, json: { error: "no_draft" } };
-        // 結果を返してから、そのチャンネルのキューで node_modules を消す（Discord の確認のボタンと同じ順。reject しない）
-        void removeClosedNodeModules(deps, channelId);
+        // 結果を返してから、Discord に結果の文を出し、そのチャンネルのキューで node_modules を消す（Discord の確認のボタンと同じ順。reject しない）
+        void postClosed(channelId, closedText(closed.summary, closed.registered), messageId).then(() => removeClosedNodeModules(deps, channelId));
         return { status: 200, json: { summary: closed.summary, registered: closed.registered } };
       },
     },
@@ -233,6 +275,8 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
           const result = await running;
           if (result.result === "closed") return CLOSED;
           if (result.result === "not_renewable") return NOT_FOUND;
+          // done は onAccepted の後にしか返らない
+          throw new Error("/renew が受け付けずに終わりました");
         }
         log(`Web から /renew を始めました（guild=${guildId}）`);
         void running
