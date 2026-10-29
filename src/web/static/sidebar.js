@@ -16,7 +16,7 @@
     { id: "tasks", label: "タスク", icon: "square-check", enabled: always },
     { id: "reminders", label: "リマインド", icon: "bell", enabled: always },
     { id: "knowledge", label: "ナレッジ・記憶", icon: "book", enabled: always },
-    { id: "projects", label: "プロジェクト", icon: "folder", enabled: always, stage: "w7" },
+    { id: "projects", label: "プロジェクト", icon: "folder", enabled: always },
     { id: "jobs", label: "ジョブ", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
     { id: "github", label: "GitHub", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled) },
     { id: "usage", label: "使用量", icon: "bar-chart", enabled: always },
@@ -200,6 +200,22 @@
     body.replaceChildren(group("gh", "最近の通知", items));
   }
 
+  // ===== プロジェクト（W7。配信が無効でも出す） =====
+  function renderProjects(body) {
+    if (store.projects === null) {
+      store.load.projects();
+      body.replaceChildren(group("proj", "プロジェクト", [], null, "読み込んでいます…"));
+      return;
+    }
+    const items = store.projects.map((p) =>
+      row({ tab: "project:" + p.slug, icon: "folder", label: p.slug, meta: SA.ui.shortTime(p.updatedAt), title: p.channelTitle || p.title }),
+    );
+    body.replaceChildren(
+      group("proj", "プロジェクト", items),
+      el("p", { class: "sb-note-block", text: "プロジェクトはセッションの中で project_open を使うと作られます。" }),
+    );
+  }
+
   // ===== 会話ログ（日付の一覧） =====
   function renderDevlog(body) {
     if (store.devlogDays === null) {
@@ -254,6 +270,7 @@
     reminders: renderReminders,
     knowledge: renderKnowledge,
     github: renderGithub,
+    projects: renderProjects,
     usage: renderUsage,
     devlog: renderDevlog,
   };

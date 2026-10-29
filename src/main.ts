@@ -76,6 +76,7 @@ import { githubRoutes } from "./web/routes/github.ts";
 import { knowledgeRoutes } from "./web/routes/knowledge.ts";
 import { memoryRoutes } from "./web/routes/memories.ts";
 import { noticeRoutes } from "./web/routes/notices.ts";
+import { projectRoutes } from "./web/routes/projects.ts";
 import { reminderRoutes } from "./web/routes/reminders.ts";
 import { sessionRoutes } from "./web/routes/sessions.ts";
 import { statusRoutes } from "./web/routes/status.ts";
@@ -606,6 +607,13 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       // GitHub の通知（SELF_AGENT_GITHUB が無効なら 404）とナレッジは読むだけ
       ...githubRoutes({ cfg: config, store: githubStore, status: githubPoller === undefined ? undefined : () => githubPoller.status() }),
       ...knowledgeRoutes({ knowledge }),
+      // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）
+      ...projectRoutes({
+        cfg: config,
+        projects,
+        projectsDir,
+        channelName: webChannelNamer({ cfg: config, guildSettings, topicSessions, resolveChannel }),
+      }),
       // セッションの操作は Discord のコマンドと同じ session-ops.ts を通す。チャンネルを作るのは既定の人格の Bot（/new と同じキュー）、
       // /close の確認と /renew の結果は持ち主の Bot で Discord にも投稿する
       ...sessionRoutes({

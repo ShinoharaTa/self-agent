@@ -87,6 +87,8 @@
   // notices: /api/notices（{ notices, recent24h }）。github: /api/github（{ status, notifications }）。
   // knowledge: /api/knowledge の結果（{ q, entries, more }。q は検索した語で、空なら新しい順）。
   // kbEntries[id]: /api/knowledge/<id> の entry（404 なら "missing"、それ以外の失敗は "failed"）
+  // projects: /api/projects（まだ読んでいなければ null）。projectFiles[slug]: /files の結果（{ files, truncated, missing }。missing は 404）。
+  // projectFile[slug]: 選んだファイルの中身（{ path, text, error }。読んでいる間は text も error も null）
   const store = {
     status: null,
     usage: null,
@@ -110,6 +112,9 @@
     github: null,
     knowledge: null,
     kbEntries: {}, kbRetryFailed: {},
+    projects: null,
+    projectFiles: {},
+    projectFile: {},
     load: {},
   };
   const loading = {};
@@ -585,15 +590,64 @@
     });
   };
 
+  // ===== プロジェクト（W7。読むだけ） =====
+  store.load.projects = (opts) =>
+    once("projects", async () => {
+      const data = await SA.api.get("/api/projects", opts);
+      store.projects = Array.isArray(data && data.projects) ? data.projects : [];
+      SA.app.refreshSidebar();
+      const tabId = SA.app.activeTabId();
+      if (tabId && tabId.startsWith("project:")) SA.app.refresh(tabId);
+    });
+
+  function projectPath(slug, rest) {
+    return "/api/projects/" + encodeURIComponent(slug) + rest;
+  }
+
+  /** ファイルの一覧。404（削除された・ディレクトリが無い）は missing にしてトーストを出さない */
+  store.load.projectFiles = (slug) =>
+    once("projectFiles:" + slug, async () => {
+      try {
+        const data = await SA.api.get(projectPath(slug, "/files"), { quiet: true });
+        store.projectFiles[slug] = { files: Array.isArray(data && data.files) ? data.files : [], truncated: !!(data && data.truncated), missing: false };
+      } catch (err) {
+        if (err && err.status === 404) store.projectFiles[slug] = { files: [], truncated: false, missing: true };
+        else {
+          SA.ui.toast(err && typeof err.toast === "string" ? err.toast : "サーバーにつながりません");
+          throw err;
+        }
+      }
+      SA.app.refresh("project:" + slug);
+    });
+
+  /** ファイルの中身。失敗は error に応答の error（つながらなければ "network"）を入れて画面に出す。続けて選んだときは最後に選んだものだけを使う */
+  const projectFileSeq = {};
+  store.load.projectFile = (slug, path) => {
+    const seq = (projectFileSeq[slug] = (projectFileSeq[slug] || 0) + 1);
+    // 画面の描画の中から呼ぶので、ここでは描き直さない（呼んだ描画が「読み込んでいます…」を出す）
+    store.projectFile[slug] = { path, text: null, error: null };
+    return SA.api
+      .get(projectPath(slug, "/file?path=" + encodeURIComponent(path)), { quiet: true })
+      .then(
+        (data) => ({ path, text: data && typeof data.text === "string" ? data.text : "", error: null }),
+        (err) => ({ path, text: null, error: (err && err.code) || "network" }),
+      )
+      .then((result) => {
+        if (seq !== projectFileSeq[slug]) return;
+        store.projectFile[slug] = result;
+        SA.app.refresh("project:" + slug);
+      });
+  };
+
   /** 操作の後: 読んでいる途中のもの（操作の前の中身かもしれない）が終わるのを待ってから、もう一度読む */
   store.reload = (key) => Promise.resolve(loading[key]).then(() => store.load[key]());
 
   /**
-   * 一度読んだ一覧（タスク・リマインド・記憶・GitHub・ナレッジ）だけを読み直す（polling）。ナレッジは今出している語で読み直す。
+   * 一度読んだ一覧（タスク・リマインド・記憶・GitHub・プロジェクト・ナレッジ）だけを読み直す（polling）。ナレッジは今出している語で読み直す。
    * 失敗があれば最初の error で resolve する
    */
   store.load.lists = (opts) => {
-    const keys = ["tasks", "reminders", "memories", "github"].filter((key) => store[key] !== null);
+    const keys = ["tasks", "reminders", "memories", "github", "projects"].filter((key) => store[key] !== null);
     const runs = keys.map((key) => store.load[key](opts));
     if (store.knowledge !== null) runs.push(store.load.knowledge(undefined, opts));
     return Promise.all(runs).then((errors) => errors.find((err) => err) || null);
@@ -602,7 +656,7 @@
   SA.store = store;
 
   // ===== polling（見えているときだけ。隠れたら止め、戻ったら即 1 回） =====
-  // /api/status は 10 秒、/api/channels・/api/notices と一度読んだタスク・リマインド・記憶・GitHub・ナレッジは 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
+  // /api/status は 10 秒、/api/channels・/api/notices と一度読んだタスク・リマインド・記憶・GitHub・プロジェクト・ナレッジは 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
   // /api/running は実行中のターンがあれば 2 秒・無ければ 10 秒ごと（どれも応答が来てから次を予約する）。
   // 失敗のトーストは続けて失敗している間は最初の 1 回だけで、その間は間隔を倍にして POLL_BACKOFF_MAX_MS まで伸ばす。成功したら元に戻す
   const poll = { started: false, stopped: false };
