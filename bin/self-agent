@@ -1,3 +1,4 @@
 #!/bin/sh
 # checkout から self-agent を動かす（docs/plan/distribution.md §4.2）。node は SELF_AGENT_NODE で変えられる
+# checkout 専用。symlink で置くと $(dirname "$0") が symlink の場所になり動かない
 exec "${SELF_AGENT_NODE:-node}" "$(dirname "$0")/../src/cli.ts" "$@"

@@ -90,7 +90,7 @@ export type CliDeps = {
 
 /**
  * argv（node と cli.ts の後ろ）を振り分ける。--help は使い方を標準出力に出して 0、--version は版を出して 0、
- * サブコマンドが無い・知らない名前は使い方を標準エラーに出して 2。env ファイルが読めなければ（無いのはよい）1。
+ * サブコマンドが無い・知らない名前・引数付きの start は使い方を標準エラーに出して 2。env ファイルが読めなければ（無いのはよい）1。
  * それ以外はサブコマンドの本体の結果（start は undefined。呼び出し側は exit しない）
  */
 export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promise<number | undefined> {
@@ -107,6 +107,12 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
   }
   if (!isSubcommand(name)) {
     if (name !== undefined) err(`知らないサブコマンドです: ${name}`);
+    err(usageText());
+    return 2;
+  }
+  // start は引数を取らない（`self-agent start --help` で Bot を起動しない）
+  if (name === "start" && rest.length > 0) {
+    err("start は引数を取りません");
     err(usageText());
     return 2;
   }
