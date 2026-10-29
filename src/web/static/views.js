@@ -1,5 +1,5 @@
-// タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）・タスク・リマインド・記憶（W4）・GitHub・ナレッジ（W6）。
-// プロジェクト・ジョブは後の段で足す
+// タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）・タスク・リマインド・記憶（W4）・GitHub・ナレッジ（W6）・
+// プロジェクト（W7。読むだけ）。ジョブは後の段で足す
 "use strict";
 
 (function () {
@@ -500,6 +500,85 @@
     );
   }
 
+  // ===== プロジェクト（W7: ファイルの一覧と、選んだファイルの中身を読むだけ。ページはリンクで開く） =====
+  /** slug → 選んだファイルのパス（無ければ site/index.html があればそれ） */
+  const projectSel = {};
+  const PROJECT_FILE_ERRORS = {
+    not_found: "ファイルがありません（消えたか、移されました）",
+    too_large: "256 KB を超えるため表示しません",
+    binary: "テキストではないため表示しません",
+    invalid_path: "このファイルは表示できません",
+  };
+
+  function pageUrl(url) {
+    return typeof url === "string" && /^https?:\/\//.test(url) ? url : null;
+  }
+
+  function renderProject(container, slug) {
+    const p = store.projects ? store.projects.find((x) => x.slug === slug) || null : null;
+    const listing = store.projectFiles[slug];
+    const actions = [];
+    if (p && p.channelTitle) {
+      const toSession = el("button", { class: "btn btn-ghost btn-sm", type: "button" }, [icon("message-square"), p.channelTitle]);
+      toSession.addEventListener("click", () => SA.app.open("ch:" + p.channelId));
+      actions.push(toSession);
+    }
+    const url = p ? pageUrl(p.url) : null;
+    if (url) actions.push(el("a", { class: "btn btn-secondary btn-sm", href: url, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "ページを開く"]));
+    const head = toolbar("folder", slug, p && p.title !== slug ? [el("span", { class: "meta", text: p.title })] : [], actions);
+    if (!listing) {
+      container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
+      return;
+    }
+    if (listing.missing) {
+      container.replaceChildren(head, scroll([empty("folder", "このプロジェクトはありません（削除されたか、ディレクトリがありません）")]));
+      return;
+    }
+    const files = listing.files;
+    const sel = projectSel[slug] || (files.some((f) => f.path === "site/index.html") ? "site/index.html" : null);
+    const shown = store.projectFile[slug];
+    if (sel && (!shown || shown.path !== sel)) store.load.projectFile(slug, sel);
+    const rows = files.map((f) => {
+      const tr = el("tr", { class: "is-clickable" + (f.path === sel ? " is-selected" : ""), tabindex: "0", "aria-selected": String(f.path === sel) }, [
+        td([icon("file"), " ", f.path], "td-main mono"),
+        td(bytes(f.size), "td-num"),
+        td(SA.ui.shortTime(f.mtime), "td-num"),
+      ]);
+      const pick = () => {
+        projectSel[slug] = f.path;
+        SA.app.refresh("project:" + slug);
+      };
+      tr.addEventListener("click", pick);
+      tr.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") pick();
+      });
+      return tr;
+    });
+    let content = null;
+    if (sel) {
+      const current = shown && shown.path === sel ? shown : null;
+      const text = !current || (current.text === null && current.error === null) ? "読み込んでいます…" : current.error ? PROJECT_FILE_ERRORS[current.error] || "読み込めませんでした" : current.text;
+      content = section(sel, [el("pre", { class: "code-pre", text })], [el("span", { class: "meta", text: "読むだけ" })]);
+    }
+    container.replaceChildren(
+      head,
+      scroll([
+        el("p", {
+          class: "meta",
+          text: (p ? "更新 " + dateTime(p.updatedAt) + "・" : "") + "ページは別のオリジン（/p/" + slug + "/）なので、ここには埋め込まずリンクで開きます。",
+        }),
+        rows.length
+          ? table(["ファイル", { text: "大きさ", cls: "td-num" }, { text: "更新", cls: "td-num" }], rows, "table-num")
+          : empty("file", "ファイルはありません"),
+        el("p", {
+          class: "meta",
+          text: (listing.truncated ? "一覧は 500 件・深さ 6 までです。" : "") + "ドットで始まるもの（.trash など）と node_modules は出しません。",
+        }),
+        content,
+      ]),
+    );
+  }
+
   // ===== ナレッジ（W6: 一覧と中身。検索は 3 文字以上。読むだけで、削除は Discord から） =====
   // q: 検索欄の語（打っている途中も）。selected: 選んでいる項目の id
   const kbState = { q: "", selected: null, timer: null };
@@ -787,13 +866,33 @@
   };
 
   /**
-   * 知らない・無効な機能のタブは null（開かない）。会話は ch:<チャンネル ID>。会話ログ・GitHub は /api/status を読んで
+   * 知らない・無効な機能のタブは null（開かない）。会話は ch:<チャンネル ID>、プロジェクトは project:<slug>。会話ログ・GitHub は /api/status を読んで
    * dev モード・GitHub が有効と分かるまで開かない
    */
   function info(tabId) {
     if (tabId.startsWith("ch:")) {
       const channelId = tabId.slice(3);
       return /^\d{1,25}$/.test(channelId) ? SA.chat.info(channelId) : null;
+    }
+    if (tabId.startsWith("project:")) {
+      const slug = tabId.slice(8);
+      if (!/^[a-z0-9-]{1,30}$/.test(slug)) return null;
+      return {
+        title: slug,
+        icon: "folder",
+        render: (container) => renderProject(container, slug),
+        // 前に出すたびに一覧と、選んでいるファイルの中身を読み直す
+        onOpen: () => {
+          delete store.projectFile[slug];
+          store.load.projects();
+          store.load.projectFiles(slug);
+        },
+        onClose: () => {
+          delete projectSel[slug];
+          delete store.projectFile[slug];
+          delete store.projectFiles[slug];
+        },
+      };
     }
     if (tabId === "devlog" && !(store.status && store.status.devMode)) return null;
     if (tabId === "github" && !(store.status && store.status.github && store.status.github.enabled)) return null;
