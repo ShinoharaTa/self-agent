@@ -20,7 +20,7 @@ const LISTED_STATES = ["active", "waiting", "done"] as const;
 export type ChannelRouteDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "personas" | "publicBaseUrl">;
   guildSettings: Pick<GuildSettingsStore, "get" | "entryChannel" | "personaInbox">;
-  topicSessions: Pick<TopicSessionStore, "get" | "listByState">;
+  topicSessions: Pick<TopicSessionStore, "get" | "listByState" | "getCloseDraft">;
   projects: Pick<ProjectStore, "getByChannel">;
   history: Pick<HistoryStore, "list" | "latestByChannel">;
   /** PersonaRouter（all は設定の順で、最初が既定の人格） */
@@ -273,11 +273,12 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
           ...(after === undefined ? {} : { after }),
           limit,
         });
+        // /close の確認の下書き（閉じていないセッションのものだけ）。あれば会話の末尾に確認のカードを出す
+        const closeDraft = channel.kind === "session" && channel.state !== "done" ? (topicSessions.getCloseDraft(channelId) ?? null) : null;
         return {
           status: 200,
           json: {
-            // closeDraft は /close の確認（W5）で入れる
-            channel: { ...channel, closeDraft: null },
+            channel: { ...channel, closeDraft },
             turns: rows.map((row) => turnOf(row, channel.link)),
             // before で limit 件取れたら、まだ前があるかもしれない（最新の limit 件のときは画面が件数で判断する）
             hasMore: before !== undefined && rows.length === limit,

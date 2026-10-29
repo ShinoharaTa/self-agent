@@ -1,10 +1,11 @@
 // 会話（#inbox・#tasks・#<NAME>・セッション）のタブ。SA.store.turns[channelId] の行と実行中のターン（SA.store.running）を描き、見ている間は既読にする。
-// 入力欄から送ると Discord の発言と同じ経路で 1 ターン動く（POST /messages）。[中断]・[続ける] は Discord のボタンと同じ handler の関数
+// 入力欄から送ると Discord の発言と同じ経路で 1 ターン動く（POST /messages）。[中断]・[続ける] は Discord のボタンと同じ handler の関数。
+// 見出しの [待ちにする][閉じる][会話を新しくする] と /close の確認のカードは Discord の /wait・/close・/renew と同じ処理（src/app/session-ops.ts）
 "use strict";
 
 (function () {
   const SA = (window.SA = window.SA || {});
-  const { el, icon, elapsed, shortTime, linkify, toast } = SA.ui;
+  const { el, icon, elapsed, shortTime, linkify, toast, confirm } = SA.ui;
   const store = SA.store;
 
   const STATE_LABEL = { active: "進行中", waiting: "待ち", done: "完了" };
@@ -29,6 +30,9 @@
     too_long: TOO_LONG_TEXT,
     not_found: "このチャンネルには送れません",
   };
+  const CLOSED_TEXT = "このセッションは閉じています";
+  /** 操作の後に会話をもう一度読むまでの時間（ms）。読んでいる途中のもの（操作の前の中身かもしれない）に吸われても次で拾う */
+  const OP_RECHECK_MS = 1500;
 
   /** リンクにするのは https の Discord の URL だけ */
   function discordUrl(url) {
@@ -88,6 +92,159 @@
   function markSeenActive() {
     const channelId = activeChannelId();
     if (channelId) markSeen(channelId);
+  }
+
+  // ===== セッションの操作（/wait・/close・/renew。src/web/routes/sessions.ts） =====
+  // 要約を待っている操作（{ [channelId]: { kind: "close" | "renew", afterId } }。このタブのメモリだけ）。
+  // afterId より後の行（区切り・知らせ）が来るか、閉じたら終わりとみなす
+  const pending = {};
+  // 確認のカードで選んだ候補（{ [channelId]: Set<添字> }。このタブのメモリだけ。描き直しても保つ）
+  const picked = {};
+
+  /** サーバーから受け取った最後の行の id（Web から送った直後の仮の行を除く） */
+  function lastRealId(channelId) {
+    const t = store.turns[channelId];
+    const real = t ? t.turns.filter((row) => !row.optimistic) : [];
+    return real.length > 0 ? real[real.length - 1].id : 0;
+  }
+
+  /** 要約を待っている操作。終わっていれば消して null */
+  function pendingOf(channelId, ch) {
+    const p = pending[channelId];
+    if (!p) return null;
+    if (lastRealId(channelId) > p.afterId || (p.kind === "close" && ch && ch.state === "done")) {
+      delete pending[channelId];
+      return null;
+    }
+    return p;
+  }
+
+  /** 操作の後: 会話と一覧を読み直す（会話は少し後にもう一度） */
+  function reloadAfterOp(channelId) {
+    store.load.turns(channelId);
+    store.load.channels();
+    setTimeout(() => store.load.turns(channelId), OP_RECHECK_MS);
+  }
+
+  /** 操作の失敗のトースト（404 は古い、409 は閉じている。それ以外は応答の文） */
+  function opFailed(err) {
+    if (err && err.status === 404) toast(STALE_TEXT);
+    else if (err && err.status === 409) toast(err.code === "no_draft" ? STALE_TEXT : CLOSED_TEXT);
+    else if (err && err.toast) toast(err.toast);
+  }
+
+  function setWaiting(channelId) {
+    const ch = channelById(channelId);
+    if (!ch || ch.kind !== "session" || ch.state !== "active") {
+      toast("進行中のセッションだけ待ちにできます");
+      return;
+    }
+    SA.api
+      .post("/api/sessions/" + encodeURIComponent(channelId) + "/wait", {}, { quiet: true })
+      .then(() => toast("「" + ch.title + "」を待ちにしました"), opFailed)
+      .finally(() => reloadAfterOp(channelId));
+  }
+
+  function closeSession(channelId) {
+    const ch = channelById(channelId);
+    if (!ch || ch.kind !== "session" || ch.state === "done") {
+      toast("閉じられるのは進行中・待ちのセッションだけです");
+      return;
+    }
+    confirm({
+      title: "「" + ch.title + "」を閉じますか",
+      body: "会話を要約してから完了に移します。やることの候補があれば、ここと Discord に確認が出ます（先に選んだ方で閉じます）。チャンネルは残ります。",
+      ok: "閉じる",
+      run: async () => {
+        const afterId = lastRealId(channelId);
+        try {
+          await SA.api.post("/api/sessions/" + encodeURIComponent(channelId) + "/close", {}, { quiet: true });
+          pending[channelId] = { kind: "close", afterId };
+          toast("要約しています。終わったらここに出ます");
+        } catch (err) {
+          opFailed(err);
+        }
+        SA.app.refresh("ch:" + channelId);
+        reloadAfterOp(channelId);
+      },
+    });
+  }
+
+  function renew(channelId) {
+    const ch = channelById(channelId);
+    if (!ch) return;
+    confirm({
+      title: channelTitle(ch) + " の会話を新しくしますか",
+      body: "今の会話を要約して、新しい会話に引き継ぎます。状態は変わりません。",
+      ok: "新しくする",
+      run: async () => {
+        const afterId = lastRealId(channelId);
+        try {
+          await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/renew", {}, { quiet: true });
+          pending[channelId] = { kind: "renew", afterId };
+          toast("要約しています。終わったらここに区切りが出ます");
+        } catch (err) {
+          opFailed(err);
+        }
+        SA.app.refresh("ch:" + channelId);
+        reloadAfterOp(channelId);
+      },
+    });
+  }
+
+  /** /close の確認の確定（selected は添字の配列・"all"・"none"） */
+  async function confirmClose(channelId, selected, buttons) {
+    for (const b of buttons) b.disabled = true;
+    try {
+      const data = await SA.api.post("/api/sessions/" + encodeURIComponent(channelId) + "/close/confirm", { selected }, { quiet: true });
+      delete picked[channelId];
+      toast("閉じました（登録 " + (data && typeof data.registered === "number" ? data.registered : 0) + " 件）");
+      if (data && data.registered > 0 && store.tasks !== null) store.reload("tasks");
+    } catch (err) {
+      opFailed(err);
+      for (const b of buttons) b.disabled = false;
+    }
+    reloadAfterOp(channelId);
+  }
+
+  /** /close の確認のカード（要約・候補のチェックボックス・[全部登録][選んだものを登録][登録しない]） */
+  function closeCard(channelId, draft) {
+    const tasks = Array.isArray(draft.tasks) ? draft.tasks : [];
+    if (!picked[channelId]) picked[channelId] = new Set();
+    const chosen = picked[channelId];
+    const all = el("button", { class: "btn btn-primary btn-sm", type: "button" }, [icon("check"), "全部登録"]);
+    const pick = el("button", { class: "btn btn-secondary btn-sm", type: "button", text: "選んだものを登録" });
+    const none = el("button", { class: "btn btn-secondary btn-sm", type: "button", text: "登録しない" });
+    const buttons = [all, pick, none];
+    const updatePick = () => {
+      pick.disabled = chosen.size === 0;
+    };
+    const list = el("div", { class: "stack" });
+    tasks.forEach((task, i) => {
+      const box = el("input", { type: "checkbox", checked: chosen.has(i) });
+      box.addEventListener("change", () => {
+        if (box.checked) chosen.add(i);
+        else chosen.delete(i);
+        updatePick();
+      });
+      const due = task && task.due ? "（期限 " + task.due + "）" : "";
+      list.append(el("label", { class: "check" }, [box, el("span", { text: i + 1 + ". " + String(task && task.title) + due })]));
+    });
+    if (tasks.length === 0) list.append(el("p", { class: "meta", text: "やることの候補はありません" }));
+    updatePick();
+    all.addEventListener("click", () => confirmClose(channelId, "all", buttons));
+    pick.addEventListener("click", () => {
+      if (chosen.size > 0) confirmClose(channelId, [...chosen].sort((a, b) => a - b), buttons);
+    });
+    none.addEventListener("click", () => confirmClose(channelId, "none", buttons));
+    return el("section", { class: "card card-sm", "aria-label": "閉じる前の確認" }, [
+      el("div", { class: "card-head" }, [el("h3", { text: "閉じる前の確認" }), el("span", { class: "meta", text: "Discord でも選べます" })]),
+      el("p", { class: "meta", text: "要約" }),
+      el("div", { class: "msg-text", text: String(draft.summary || "") }),
+      el("p", { class: "meta", text: "やることの候補（タスクとして登録するものを選んでください）" }),
+      list,
+      el("div", { class: "msg-actions" }, tasks.length === 0 ? [none] : buttons),
+    ]);
   }
 
   // ===== 描画 =====
@@ -240,6 +397,20 @@
     }
     const discord = discordUrl(ch.link);
     if (discord) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: discord, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "Discord"]));
+    // 要約を待っている間は操作を重ねない
+    const busy = !!pendingOf(channelId, ch);
+    const ops = el("div", { class: "ed-ops" });
+    if (isSession) {
+      const wait = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy || ch.state !== "active" }, [icon("pause"), "待ちにする"]);
+      wait.addEventListener("click", () => setWaiting(channelId));
+      const close = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy || ch.state === "done" }, [icon("check"), "閉じる"]);
+      close.addEventListener("click", () => closeSession(channelId));
+      ops.append(wait, close);
+    }
+    const renewBtn = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy }, [icon("rotate-ccw"), "会話を新しくする"]);
+    renewBtn.addEventListener("click", () => renew(channelId));
+    ops.append(renewBtn);
+    actions.append(ops);
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
   }
 
@@ -374,6 +545,19 @@
       timeline.append(node);
     }
     if (run) timeline.append(renderRunning(ch, run));
+    const waiting = pendingOf(channelId, ch);
+    if (waiting) {
+      timeline.append(
+        el("div", { class: "tl-notice", "aria-busy": "true" }, [
+          el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }),
+          el("span", { text: waiting.kind === "close" ? "閉じる前の要約をしています…" : "会話を新しくしています…" }),
+        ]),
+      );
+    }
+    // /close の確認（下書きがあり、閉じていない）。この画面で閉じるのを待っている間は出さない（要約のターンの途中の下書き）
+    if (ch && ch.kind === "session" && ch.state !== "done" && ch.closeDraft && !(waiting && waiting.kind === "close")) {
+      timeline.append(closeCard(channelId, ch.closeDraft));
+    }
     if (t.turns.length === 0 && !run) timeline.append(el("p", { class: "tl-hint", text: "まだ記録はありません。ここか Discord で発言すると、ここに出ます。" }));
     if (ch && ch.kind === "session" && ch.state === "done") {
       timeline.append(el("p", { class: "tl-hint", text: "完了したセッションです。発言すると進行中に戻ります。" }));
@@ -405,6 +589,7 @@
       onOpen: () => store.load.turns(channelId),
       onClose: () => {
         delete openSteps[channelId];
+        delete picked[channelId];
       },
     };
   }
@@ -429,5 +614,11 @@
     }
   }, 1000);
 
-  SA.chat = { info, channelTitle, activeChannelId, markSeenActive, channelsChanged, endText, STATE_LABEL };
+  /** 前に出ている会話のタブのチャンネル（無ければ null） */
+  function current() {
+    const channelId = activeChannelId();
+    return channelId ? channelById(channelId) : null;
+  }
+
+  SA.chat = { info, channelTitle, activeChannelId, markSeenActive, channelsChanged, endText, STATE_LABEL, current, setWaiting, closeSession, renew };
 })();
