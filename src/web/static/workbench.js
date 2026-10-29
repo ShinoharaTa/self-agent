@@ -1,9 +1,9 @@
-// アプリの殻（VS Code の構成）: アクティビティバー・サイドバー・エディタのタブ・パネル・ステータスバー・コマンドパレット・キーボード・hash のルータ
+// アプリの殻（VS Code の構成）: アクティビティバー・サイドバー・エディタのタブ・パネル・ステータスバー・コマンドパレット・キーボード・hash のルータ・新しいセッションのダイアログ
 "use strict";
 
 (function () {
   const SA = (window.SA = window.SA || {});
-  const { el, icon } = SA.ui;
+  const { el, icon, toast, openDialog, closeDialog } = SA.ui;
   const root = document.documentElement;
 
   // ===== 保存（このブラウザだけ。読めなくても動く） =====
@@ -482,7 +482,14 @@
   // ===== コマンドパレット =====
   function commands() {
     const active = activeTabId();
+    // 前に出ている会話のタブのチャンネル（/close・/wait はセッション、/renew は会話のタブのとき）
+    const ch = SA.chat.current();
+    const sessionOnly = (fn) => (ch && ch.kind === "session" ? fn : null);
     return [
+      { label: "/new 新しいセッション", detail: "題名と人格を決めて作ります", run: newSession },
+      { label: "/close 今のセッションを閉じる", detail: "要約してから完了に移します", run: sessionOnly(() => SA.chat.closeSession(ch.id)) },
+      { label: "/wait 今のセッションを待ちにする", detail: "発言すると進行中に戻ります", run: sessionOnly(() => SA.chat.setWaiting(ch.id)) },
+      { label: "/renew 会話を新しくする", detail: "要約して新しい会話に引き継ぎます", run: ch ? () => SA.chat.renew(ch.id) : null },
       { label: "/tasks タスクを開く", detail: "", run: () => open("tasks") },
       { label: "/reminders リマインドを開く", detail: "", run: () => open("reminders") },
       { label: "/usage 使用量を開く", detail: "", run: () => open("usage") },
@@ -596,6 +603,73 @@
     });
     $("palette-backdrop").addEventListener("pointerdown", (e) => {
       if (e.target === $("palette-backdrop")) closePalette();
+    });
+  }
+
+  // ===== 新しいセッション（Discord の /new と同じ。POST /api/sessions） =====
+  /** 作れなかったときのトースト（応答の error ごと）。無ければ「<status>: <error>」 */
+  const NEW_ERRORS = {
+    not_set_up: "/setup を実行してください",
+    bot_disconnected: "Bot が接続していません",
+    too_long: "題名は 100 字までです",
+  };
+  let creating = false;
+
+  /** ダイアログを開く。サーバーは /setup 済みのもの（1 つなら隠す）、人格は足した人格があるときだけ選ぶ */
+  async function newSession() {
+    if (SA.store.channels === null) await SA.store.load.channels();
+    const channels = SA.store.channels;
+    if (channels === null) return;
+    const guilds = channels.guilds.filter((g) => g.setUp);
+    if (guilds.length === 0) {
+      toast("/setup を実行してください");
+      return;
+    }
+    $("new-guild").replaceChildren(...guilds.map((g) => el("option", { value: g.id, text: g.id })));
+    $("new-guild-field").hidden = guilds.length < 2;
+    const personas = channels.personas;
+    $("new-persona").replaceChildren(...personas.map((p) => el("option", { value: p.id, text: p.name + (p.isDefault ? "（既定）" : "") })));
+    $("new-persona-field").hidden = personas.length < 2;
+    $("new-title").value = "";
+    $("new-error").hidden = true;
+    openDialog($("dlg-new"));
+    $("new-title").focus();
+  }
+
+  function bindNewSession() {
+    const dialog = $("dlg-new");
+    $("dlg-new-cancel").addEventListener("click", () => closeDialog(dialog));
+    $("new-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (creating) return;
+      const title = $("new-title").value.trim();
+      if (title === "") {
+        $("new-error").hidden = false;
+        $("new-title").focus();
+        return;
+      }
+      const body = { guildId: $("new-guild").value, title };
+      if (!$("new-persona-field").hidden) body.persona = $("new-persona").value;
+      creating = true;
+      $("dlg-new-ok").disabled = true;
+      try {
+        const data = await SA.api.post("/api/sessions", body, { quiet: true });
+        closeDialog(dialog);
+        toast("セッション「" + title + "」を作りました（Discord にもチャンネルができました）");
+        if (data && typeof data.channelId === "string") {
+          S.activity = "chat";
+          open("ch:" + data.channelId);
+        }
+        SA.store.load.channels();
+      } catch (err) {
+        if (err && err.code === "empty_title") {
+          $("new-error").hidden = false;
+          $("new-title").focus();
+        } else if (err && err.toast) toast((err.code && NEW_ERRORS[err.code]) || err.toast);
+      } finally {
+        creating = false;
+        $("dlg-new-ok").disabled = false;
+      }
     });
   }
 
@@ -777,6 +851,7 @@
       else writeHash();
     });
     bindPalette();
+    bindNewSession();
 
     mqNarrow.addEventListener("change", () => {
       S.drawerOpen = false;
@@ -809,6 +884,7 @@
     toggleSidebar,
     togglePanel,
     palette,
+    newSession,
     theme: () => S.theme,
     setTheme,
     draft: (channelId) => S.drafts[channelId] || "",

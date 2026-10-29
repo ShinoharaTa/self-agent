@@ -88,8 +88,15 @@
     const match = (ch) => q === "" || String(ch.kind === "session" ? ch.title : ch.name).includes(q);
     const channels = store.channels.channels.filter(match);
     const by = (state) => channels.filter((c) => c.kind === "session" && c.state === state).map(channelRow);
+    // Discord の /new と同じ（新しいセッションのダイアログ）
+    const newBtn = el("button", { class: "btn btn-secondary btn-sm sb-new", type: "button" }, [icon("plus"), "新しいセッション"]);
+    newBtn.addEventListener("click", () => {
+      SA.app.closeDrawer();
+      SA.app.newSession();
+    });
     return [
       group("entrances", "入口", channels.filter((c) => c.kind !== "session").map(channelRow)),
+      el("div", { class: "sb-new-row" }, [newBtn]),
       group("active", "進行中", by("active")),
       group("waiting", "待ち", by("waiting")),
       group("done", "完了", by("done"), [el("span", { class: "sb-note", text: "新しい 10 件" })]),
