@@ -90,7 +90,7 @@ function labelsOf(call: ResponderCall | undefined): string[] {
 function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step[]) {
   const db = tempDb(t);
   const clock = { now: NOW };
-  const { topicSessions, tasks, sessions, seeds, inboxSummaries, memories, usage, projects } = createStores(db, () => clock.now);
+  const { topicSessions, tasks, sessions, seeds, inboxSummaries, memories, usage, projects, history } = createStores(db, () => clock.now);
   const projectsDir = join(tempDir(t), "projects");
   const runner = new FakeRunner(steps(topicSessions));
   const channelOps = new RecordingChannelOps();
@@ -107,6 +107,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
     turn: { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log },
     projects,
     projectsDir,
+    history,
     log,
   };
   const command = createCloseCommand(deps);
@@ -128,7 +129,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
   };
   const openTasks = (): Array<{ title: string; due: string | null }> =>
     tasks.list({ status: "open", limit: 50 }).map((task) => ({ title: task.title, due: task.due }));
-  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, projects, projectsDir, channelOps, turnQueue, logs, tokenLogs, runClose, press, openTasks };
+  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, projects, projectsDir, channelOps, turnQueue, logs, tokenLogs, runClose, press, openTasks, history };
 }
 
 /** 閉じたあとの sessions の行と、完了カテゴリへの移動 */
@@ -584,4 +585,24 @@ test("node_modules はキューの中で完了のままか確かめてから消�
   assert.ok(existsSync(join(dir, "node_modules")));
   assert.ok(existsSync(join(dir, "app", "node_modules")));
   assert.ok(env.logs.every((line) => !line.includes("node_modules")));
+});
+
+test("history: /close の確定（候補 0 件で即時・確認のボタン）で divider（閉じた返信の本文）を 1 行。確認を待つ間と失敗では書かない", async (t) => {
+  const rows = (env: ReturnType<typeof setup>) =>
+    env.history.list("topic-1", { limit: 10 }).map(({ guildId, kind, source, persona, text }) => ({ guildId, kind, source, persona, text }));
+  const divider = (text: string) => ({ guildId: "guild-1", kind: "divider", source: "system", persona: "default", text });
+
+  const immediate = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
+  await immediate.runClose();
+  assert.deepEqual(rows(immediate), [divider(closedText("話しただけで終わった", 0))]);
+
+  const confirmed = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
+  const [, reply] = await confirmed.runClose();
+  assert.deepEqual(rows(confirmed), []);
+  await confirmed.press(pressLabel(reply, "全部登録"));
+  assert.deepEqual(rows(confirmed), [divider(closedText(REPORT.summary, 3))]);
+
+  const failed = setup(t, () => [() => ({ ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 })]);
+  await failed.runClose();
+  assert.deepEqual(rows(failed), []);
 });

@@ -4,10 +4,11 @@
 // SELF_AGENT_DEV_LOG_DAYS 日より前の dev ログと 30 日を過ぎたプロジェクトの .trash を消し、workDir の .tmp の 1 日を過ぎたものと 1 GB を超えた .cache を消し、
 // 記録に結びついていない 30 日を過ぎた添付を消し（attachments.ts）、時期が来た #inbox・#tasks の会話を切り替える（inbox-rotate.ts）。
 // 対象は毎回 DB と Discord から求めるので、止まっていた間に過ぎた分や失敗した移動も起動直後の tick で拾う（永続のタイマーは持たない）
-import type { Config } from "../config.ts";
+import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { GuildSettings, GuildSettingsStore } from "../store/guild-settings.ts";
+import { type HistoryStore, recordHistory } from "../store/history.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
@@ -70,8 +71,8 @@ export type SchedulerDeps = {
   channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
   /** 待ちに移した知らせ（personas が無いとき）と削除の確認を投稿し、再同期でサーバーのチャンネルの親カテゴリを取る（既定の人格の Bot） */
   gateway: Pick<Gateway, "sendMessage" | "listChannelParents" | "isInGuild">;
-  /** 待ちに移した知らせを投稿するチャンネルの持ち主の Bot。無ければ gateway */
-  personas?: Pick<PersonaRouter, "gatewayFor">;
+  /** 待ちに移した知らせを投稿するチャンネルの持ち主の Bot（と history の行の人格）。無ければ gateway（と既定の人格） */
+  personas?: Pick<PersonaRouter, "gatewayFor" | "ownerOf">;
   /** #inbox・#tasks の切り替え（日次・入力の大きさ）。要約のターンは発言と同じキューで行う */
   inboxRotator: Pick<InboxRotator, "rotateDue">;
   /** 残す日数より前の dev ログを消す（dev モードでなくても、ディレクトリがあれば消す）。投げたら log に出して続ける */
@@ -88,6 +89,10 @@ export type SchedulerDeps = {
   pruneAttachments?: () => number;
   /** ゲストのときだけ渡す。古い日のゲストのターン数（guest_turns）を消し、消した数を返す。投げたら log に出して続ける */
   pruneGuestTurns?: () => number;
+  /** 残す日数より前のターンの記録（history）を消す（Web UI が無効でも消す。消した数の log は渡す側）。投げたら log に出して続ける。省略すれば消さない */
+  pruneHistory?: () => void;
+  /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。待ちに移したら知らせの行を書く。無ければ書かない */
+  history?: Pick<HistoryStore, "add">;
   /**
    * 発言と同じターンのキュー。.trash と .tmp・.cache・cwd の削除は、ここにセッションのジョブ（key は MAINTENANCE_QUEUE_KEY）として入れ、
    * セッションのターンと重ねない（sandbox のコマンドが書ける場所を、ターンの最中に消さない）。
@@ -166,6 +171,7 @@ export class Scheduler {
     await this.promptDeletes();
     this.pruneDevLogs();
     this.pruneGuestTurns();
+    this.pruneHistory();
     await this.pruneSandboxAreas();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
     await this.deps.inboxRotator.rotateDue(() => this.stopped);
@@ -281,6 +287,16 @@ export class Scheduler {
     }
   }
 
+  /** 古いターンの記録を消す。失敗は log に出すだけ */
+  private pruneHistory(): void {
+    if (this.deps.pruneHistory === undefined) return;
+    try {
+      this.deps.pruneHistory();
+    } catch {
+      this.deps.log("古いターンの記録を消せませんでした");
+    }
+  }
+
   /**
    * プロジェクトの古い .trash と workDir の .tmp・.cache・cwd の中身、古い添付を、ターンのキューのセッションのジョブとして消す。
    * 停止を始めた・セッションのジョブが実行中なら何もしない（log も出さない）。入れた後に来たセッションのターンは、消し終わるまで待つ。reject しない
@@ -338,6 +354,18 @@ export class Scheduler {
       for (const session of idle) {
         applySessionEvent(session, "idle", this.deps);
         log(`${cfg.idleHours} 時間発言が無いセッションを待ちに移しました（guild=${session.guildId}）`);
+        recordHistory(
+          this.deps.history,
+          {
+            guildId: session.guildId,
+            channelId: session.channelId,
+            kind: "notice",
+            source: "system",
+            persona: this.deps.personas?.ownerOf(session.channelId) ?? DEFAULT_PERSONA_ID,
+            text: idleNotice(cfg.idleHours, session.channelId).text,
+          },
+          log,
+        );
       }
       for (const session of idle) {
         // 前の知らせの投稿を待つ間に、発言・[続ける] で進行中に戻っていれば投稿しない

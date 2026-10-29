@@ -108,7 +108,8 @@ function okResult(sessionId: string, text: string): Extract<RunResult, { ok: tru
   };
 }
 
-function setup(t: TestContext, results: Array<RunResult | Error>) {
+/** options.history なら history を渡す（渡さなければ書かない） */
+function setup(t: TestContext, results: Array<RunResult | Error>, options: { history?: boolean } = {}) {
   const db = tempDb(t);
   // sendMessage で送ったものの ID は posted-<n>
   const gateway = new FakeGateway({
@@ -116,7 +117,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     messageIdPrefix: "posted-",
   });
   const runner = new FakeRunner(results);
-  const { sessions, usage, seeds, inboxSummaries, memories, guildSettings } = createStores(db, () => NOW);
+  const { sessions, usage, seeds, inboxSummaries, memories, guildSettings, history } = createStores(db, () => NOW);
   // last_activity_at の更新を見るため、sessions の時計だけ進められるようにする
   const clock = { now: NOW };
   const { topicSessions } = createStores(db, () => clock.now);
@@ -144,6 +145,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     queue,
     now: () => new Date(NOW.getTime() + timers.elapsed),
     timers,
+    ...(options.history === true ? { history } : {}),
     log: (line) => (line.startsWith("トークン（") ? tokenLogs : logs).push(line),
   });
   const handle = handler.handleMessage;
@@ -182,6 +184,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>) {
     handler,
     handle,
     press,
+    history,
   };
 }
 
@@ -1337,4 +1340,214 @@ test("途中経過: 最後の書き換えは終わり方で変えてボタンを
     );
     assert.equal(timers.pending, 0, c.label);
   }
+});
+
+/** history の行のうち、テストで見る項目（id・at・guildId・channelId は除く） */
+function historyRows(history: ReturnType<typeof createStores>["history"], channelId: string) {
+  return history
+    .list(channelId, { limit: 200 })
+    .map(({ kind, source, persona, text, outcome, steps, toolCalls, durationMs, messageId }) => ({
+      kind,
+      source,
+      persona,
+      text,
+      outcome,
+      steps,
+      toolCalls,
+      durationMs,
+      messageId,
+    }));
+}
+
+const OWNER_ROW = { source: "discord", persona: "default", outcome: null, steps: null, toolCalls: null, durationMs: null } as const;
+
+test("history: #inbox の 1 ターンで owner（discord・発言の ID）→ agent（done・手順の label・ツール回数・時間）の順に書く。返信は変えない", async (t) => {
+  const { gateway, runner, history, handle } = setup(t, [okResult("session-1", "登録しました")], { history: true });
+  runner.beforeResult = async (input) => {
+    // owner の行はキューに入れる前に書いてある
+    assert.deepEqual(historyRows(history, "inbox-1").map((row) => row.kind), ["owner"]);
+    input.onProgress?.({ label: "Web を検索しています" });
+    input.onProgress?.({ label: "ページを読んでいます" });
+  };
+
+  await handle(message());
+
+  assert.deepEqual(gateway.sent, [{ channelId: "inbox-1", text: "登録しました", replyToId: "message-1" }]);
+  assert.deepEqual(historyRows(history, "inbox-1"), [
+    { ...OWNER_ROW, kind: "owner", text: "明日買い物に行く", messageId: "message-1" },
+    {
+      kind: "agent",
+      source: "discord",
+      persona: "default",
+      text: "登録しました",
+      outcome: "done",
+      steps: ["Web を検索しています", "ページを読んでいます"],
+      toolCalls: 3,
+      durationMs: 4200,
+      messageId: null,
+    },
+  ]);
+  assert.equal(history.list("inbox-1", { limit: 1 })[0]!.guildId, "guild-1");
+});
+
+test("history: 待ちのセッションの発言は owner → notice（REVIVED_NOTE）→ agent。agent の text には REVIVED_NOTE を付けず、COMPACTED_NOTE は含める", async (t) => {
+  const { gateway, topicSessions, history, handle } = setup(
+    t,
+    [{ ...okResult("session-a", "おかえりなさい"), compacted: { trigger: "auto" } }],
+    { history: true },
+  );
+  topicSessions.create(TOPIC);
+  topicSessions.setWaiting("topic-1");
+
+  await handle(message({ channelId: "topic-1" }));
+
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [`${REVIVED_NOTE}\nおかえりなさい\n${COMPACTED_NOTE}`]);
+  const rows = historyRows(history, "topic-1");
+  assert.deepEqual(
+    rows.map((row) => [row.kind, row.text]),
+    [
+      ["owner", "明日買い物に行く"],
+      ["notice", REVIVED_NOTE],
+      ["agent", `おかえりなさい\n${COMPACTED_NOTE}`],
+    ],
+  );
+  assert.equal(rows[1]!.source, "discord");
+  assert.deepEqual(rows[2]!.steps, []);
+});
+
+test("history: 失敗・手順の上限・中断の返事も agent の行に書く（outcome と、時間は開始からの経過）", async (t) => {
+  const { gateway, runner, timers, history, handle } = setup(
+    t,
+    [CRASH, { ok: false, errorMessage: "error_max_turns", sessionId: "session-x", sessionRecorded: true, toolCalls: 8 }],
+    { history: true },
+  );
+  const release = deferred();
+  runner.beforeResult = () => release.promise;
+  const turn = handle(message());
+  await timers.advance(1500);
+  release.resolve();
+  await turn;
+  runner.beforeResult = undefined;
+  await handle(message({ id: "message-2", content: "もう一度" }));
+
+  assert.deepEqual(gateway.sent.map((sent) => sent.text), [FAILURE_REPLY, MAX_TURNS_REPLY]);
+  assert.deepEqual(
+    historyRows(history, "inbox-1")
+      .filter((row) => row.kind === "agent")
+      .map((row) => [row.text, row.outcome, row.toolCalls, row.durationMs]),
+    [
+      [FAILURE_REPLY, "failed", 0, 1500],
+      [MAX_TURNS_REPLY, "max_turns", 8, 0],
+    ],
+  );
+});
+
+test("history: 画像だけの発言の owner は「（画像 1 枚）」、本文と画像なら本文の末尾に足す。読めない添付だけの発言は注記を notice に", async (t) => {
+  const { history, handle } = setup(t, [okResult("session-1", "見ました")], { history: true });
+  const image = {
+    url: "https://cdn.discordapp.com/a.png",
+    proxyUrl: "https://media.discordapp.net/a.png",
+    contentType: "image/png",
+    size: 100,
+    width: 10,
+    height: 10,
+  } as const;
+
+  // 画像を取る手段が無いので、画像だけの発言はターンにならない
+  await handle(message({ id: "message-1", content: "", images: [image] }));
+  await handle(message({ id: "message-2", content: "これを見て", images: [image, image] }));
+  await handle(message({ id: "message-3", content: "", images: [], skippedAttachments: { unsupported: 1, overLimit: 0 } }));
+
+  const rows = historyRows(history, "inbox-1");
+  assert.deepEqual(
+    rows.map((row) => [row.kind, row.text, row.messageId]),
+    [
+      ["owner", "（画像 1 枚）", "message-1"],
+      ["owner", "これを見て\n（画像 2 枚）", "message-2"],
+      ["agent", "見ました", null],
+      ["owner", "", "message-3"],
+      ["notice", rows[4]!.text, null],
+    ],
+  );
+  assert.notEqual(rows[4]!.text, "");
+});
+
+test("history: [続ける] の owner の text は「続けてください」（返信先が無いので message_id は null）", async (t) => {
+  const { topicSessions, history, handle, press } = setup(
+    t,
+    [
+      { ok: false, errorMessage: "error_max_turns", sessionId: "session-x", sessionRecorded: true, toolCalls: 40 },
+      okResult("session-x", "続きです"),
+    ],
+    { history: true },
+  );
+  topicSessions.create(TOPIC);
+
+  await handle(message({ channelId: "topic-1" }));
+  await press("turn:continue:topic-1");
+
+  assert.deepEqual(
+    historyRows(history, "topic-1").map((row) => [row.kind, row.text, row.outcome, row.messageId]),
+    [
+      ["owner", "明日買い物に行く", null, "message-1"],
+      ["agent", MAX_TURNS_REPLY, "max_turns", null],
+      ["owner", CONTINUE_PROMPT, null, null],
+      ["agent", "続きです", "done", null],
+    ],
+  );
+});
+
+test("history: 手順の label は 60 件まで集め、保存では 51 件目が「（ほか n 手順）」になる", async (t) => {
+  const { history, runner, handle } = setup(t, [okResult("session-1", "できました")], { history: true });
+  runner.beforeResult = async (input) => {
+    for (let i = 1; i <= 70; i++) input.onProgress?.({ label: `手順 ${i}` });
+  };
+
+  await handle(message());
+
+  const steps = historyRows(history, "inbox-1")[1]!.steps!;
+  assert.equal(steps.length, 51);
+  assert.equal(steps[49], "手順 50");
+  assert.equal(steps[50], "（ほか 10 手順）");
+});
+
+test("history: 渡さなければ何も書かない", async (t) => {
+  const { db, topicSessions, handle } = setup(t, [okResult("session-1", "1"), okResult("session-2", "2")]);
+  topicSessions.create(TOPIC);
+  topicSessions.setWaiting("topic-1");
+
+  await handle(message());
+  await handle(message({ channelId: "topic-1" }));
+
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM history").get()?.n, 0);
+});
+
+test("history: 書けなくても log だけでターンと返信は続け、log に本文は出さない", async (t) => {
+  const db = tempDb(t);
+  const stores = createStores(db, () => NOW);
+  const gateway = new FakeGateway({ allow: ["send", "startTyping"] });
+  const logs: string[] = [];
+  const handler = createHandler({
+    cfg,
+    resolveChannel: createChannelResolver(cfg, stores.guildSettings, stores.topicSessions),
+    gateway,
+    runner: new FakeRunner([okResult("session-1", "登録しました")]),
+    ...stores,
+    channelOps: new RecordingChannelOps(),
+    queue: new KeyedSerialQueue(2),
+    now: () => NOW,
+    history: {
+      add: () => {
+        throw new Error("database is locked");
+      },
+    },
+    log: (line) => logs.push(line),
+  });
+
+  await handler.handleMessage(message());
+
+  assert.deepEqual(gateway.sent, [{ channelId: "inbox-1", text: "登録しました", replyToId: "message-1" }]);
+  const failures = logs.filter((line) => line.startsWith("履歴の書き込みに失敗しました"));
+  assert.equal(failures.length, 2);
+  assert.ok(logs.every((line) => !line.includes("明日買い物に行く") && !line.includes("登録しました")), logs.join("\n"));
 });

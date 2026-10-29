@@ -78,7 +78,7 @@ function setup(t: TestContext, results: RunResult[] = []) {
   const db = tempDb(t);
   const clock = { now: NOW };
   const now = (): Date => clock.now;
-  const { topicSessions, guildSettings, sessions, seeds, memories, usage, inboxSummaries } = createStores(db, now);
+  const { topicSessions, guildSettings, sessions, seeds, memories, usage, inboxSummaries, history } = createStores(db, now);
   const runner = new FakeRunner(results);
   const turnQueue = new RecordingQueue(2);
   const inboxRotator = new FakeRotator();
@@ -96,7 +96,7 @@ function setup(t: TestContext, results: RunResult[] = []) {
     usage,
     log,
   };
-  const command = createRenewCommand({ guildSettings, topicSessions, turnQueue, turn, inboxRotator, log });
+  const command = createRenewCommand({ guildSettings, topicSessions, turnQueue, turn, inboxRotator, history, log });
   // guild-1 は /setup 済み（#inbox は inbox-1、#tasks は tasks-1）
   guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
   guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");
@@ -118,7 +118,7 @@ function setup(t: TestContext, results: RunResult[] = []) {
       renewedAt: session?.renewedAt ?? null,
     };
   };
-  return { db, clock, runner, topicSessions, guildSettings, sessions, seeds, memories, usage, turnQueue, inboxRotator, logs, tokenLogs, turn, runRenew, state };
+  return { db, clock, runner, topicSessions, guildSettings, sessions, seeds, memories, usage, turnQueue, inboxRotator, logs, tokenLogs, turn, runRenew, state, history };
 }
 
 test("/renew: セッションでも #inbox・#tasks でもないチャンネルと、閉じたセッション（done・deleted）では ephemeral で断り、何もしない", async (t) => {
@@ -441,4 +441,27 @@ test("resumeSeed（セッション）: 最後に残した要約（/renew か /cl
   env.topicSessions.close("topic-1", "2 回目の /close の要約");
   env.topicSessions.setActive("topic-1");
   assert.equal(seed(), `${RESUME_SEED_HEADER}\n2 回目の /close の要約`);
+});
+
+test("history: /renew（セッション）で新しくしたら divider（返信の 1 行目 + 要約）、記録切れなら RENEWED_FRESH_REPLY。新しくしなければ書かない", async (t) => {
+  const rows = (env: ReturnType<typeof setup>) =>
+    env.history.list("topic-1", { limit: 10 }).map(({ kind, source, persona, text }) => ({ kind, source, persona, text }));
+
+  const renewed = setup(t, [ok(SUMMARY)]);
+  await renewed.runRenew();
+  assert.deepEqual(rows(renewed), [
+    { kind: "divider", source: "system", persona: "default", text: `${renewedText(SUMMARY).split("\n")[0]}\n${SUMMARY}` },
+  ]);
+
+  const fresh = setup(t, [RESUME_FAILURE]);
+  await fresh.runRenew();
+  assert.deepEqual(rows(fresh), [{ kind: "divider", source: "system", persona: "default", text: RENEWED_FRESH_REPLY }]);
+
+  const failed = setup(t, [FAILED]);
+  await failed.runRenew();
+  const none = setup(t);
+  none.sessions.delete("topic-1");
+  await none.runRenew();
+  assert.deepEqual(rows(failed), []);
+  assert.deepEqual(rows(none), []);
 });

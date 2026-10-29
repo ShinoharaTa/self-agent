@@ -94,6 +94,7 @@ function setup(t: TestContext, steps: FakeRunStep[] = []) {
     resolveChannel: createChannelResolver({ inboxChannelId: undefined }, guildSettings, topicSessions),
     turnQueue,
     turn: { ...stores, runner, log },
+    history: stores.history,
     now: () => clock.now,
     timers,
     log,
@@ -612,4 +613,78 @@ test("prompt: キューで待っている間に停止・cancel されたら clai
     late.runner.inputs[0]?.prompt,
     buildTurnPrompt(`予約した依頼（#${daily.id}・毎日 8:00・8:00 の予定から 60 分遅れ）:\n今日のタスクを出して`, NOW, "Asia/Tokyo", "inbox"),
   );
+});
+
+test("history: 予約した依頼は実際に動かしたチャンネルに owner（system・依頼の本文）→ agent（送った本文・outcome・ツール回数・時間。steps なし）", async (t) => {
+  const rows = (env: ReturnType<typeof setup>, channelId: string) =>
+    env.history
+      .list(channelId, { limit: 10 })
+      .map(({ guildId, kind, source, persona, text, outcome, steps, toolCalls, durationMs, messageId }) => ({
+        guildId,
+        kind,
+        source,
+        persona,
+        text,
+        outcome,
+        steps,
+        toolCalls,
+        durationMs,
+        messageId,
+      }));
+  const base = { guildId: "guild-1", source: "system", persona: "default", steps: null, messageId: null } as const;
+
+  // 頼んだチャンネル（ch-1）は #inbox・#tasks でないので #tasks で動かす
+  const ok = setup(t, [okResult("今日のタスクは 3 件です")]);
+  const added = ok.add({ kind: "prompt", text: "今日のタスクを出して" });
+  await ok.scheduler.tick();
+  await ok.scheduler.idle();
+  assert.deepEqual(rows(ok, "ch-1"), []);
+  assert.deepEqual(rows(ok, "tasks-1"), [
+    {
+      ...base,
+      kind: "owner",
+      text: `予約した依頼（#${added.id}・1 回だけ）:\n今日のタスクを出して`,
+      outcome: null,
+      toolCalls: null,
+      durationMs: null,
+    },
+    {
+      ...base,
+      kind: "agent",
+      text: `今日のタスクは 3 件です\n（予約した依頼 #${added.id}）`,
+      outcome: "done",
+      toolCalls: 1,
+      durationMs: 4200,
+    },
+  ]);
+
+  const failed = setup(t, [{ ok: false, errorMessage: "error_max_turns: 8", toolCalls: 8, sessionRecorded: false }]);
+  failed.add({ kind: "prompt", channelId: "inbox-1", text: "今日のタスクを出して" });
+  await failed.scheduler.tick();
+  await failed.scheduler.idle();
+  assert.deepEqual(
+    rows(failed, "inbox-1").map((row) => [row.kind, row.text, row.outcome, row.toolCalls, row.durationMs]),
+    [
+      ["owner", rows(failed, "inbox-1")[0]!.text, null, null, null],
+      ["agent", MAX_TURNS_REPLY, "max_turns", 8, 0],
+    ],
+  );
+
+  const thrown = setup(t, [new Error("spawn failed")]);
+  const crashed = thrown.add({ kind: "prompt", channelId: "inbox-1", text: "今日のタスクを出して" });
+  await thrown.scheduler.tick();
+  await thrown.scheduler.idle();
+  assert.deepEqual(
+    rows(thrown, "inbox-1").map((row) => [row.kind, row.text, row.outcome, row.toolCalls]),
+    [
+      ["owner", rows(thrown, "inbox-1")[0]!.text, null, null],
+      ["agent", scheduledFailureText(crashed.id), "failed", null],
+    ],
+  );
+
+  // notify（知らせるだけ）は書かない
+  const notify = setup(t);
+  notify.add();
+  await notify.scheduler.tick();
+  assert.deepEqual(rows(notify, "ch-1"), []);
 });
