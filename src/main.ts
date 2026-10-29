@@ -285,6 +285,8 @@ const handler = createHandler({
   prepareImages: (source, images) => prepareImages({ dataDir: config.dataDir, attachments, log }, source, images),
   ...history,
   ownerConnected: (channelId) => personas.ownerConnected(channelId),
+  // lifecycle は下で作る（Web からの発言のときに読む）
+  stopping: () => lifecycle.stopping(),
 });
 // #inbox・#tasks の切り替え: 要約のターンは発言と同じキュー（turnQueue、key はそのチャンネルの channelId）で行う。
 // 定期処理と、#inbox・#tasks での /renew で使う
