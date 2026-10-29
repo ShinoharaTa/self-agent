@@ -8,12 +8,12 @@ import { SHELL_NOTICE_TIMEOUT_MS, withTimeout } from "./shell-state.ts";
 
 /**
  * そのサーバーの #system に message を投稿し、メッセージの ID を返す。#system が無ければ undefined（記録の行は未投稿のまま残る）。
- * 投稿の失敗・時間切れ（timeoutMs。既定は SHELL_NOTICE_TIMEOUT_MS）は投げる（行は未投稿のまま。やり直すかは呼び出し側が決める）
+ * 投稿の失敗・時間切れ（timeoutMs。既定は SHELL_NOTICE_TIMEOUT_MS。null なら時間切れなしで待つ）は投げる（行は未投稿のまま。やり直すかは呼び出し側が決める）
  */
 export type SystemNotifier = (
   guildId: string,
   message: OutgoingMessage,
-  options: { level: NoticeLevel; timeoutMs?: number },
+  options: { level: NoticeLevel; timeoutMs?: number | null },
 ) => Promise<string | undefined>;
 
 export type SystemNotifierDeps = {
@@ -44,7 +44,8 @@ export function createSystemNotifier(deps: SystemNotifierDeps): SystemNotifier {
     }
     const systemChannelId = guildSettings.get(guildId)?.systemChannelId ?? null;
     if (systemChannelId === null) return undefined;
-    const messageId = await withTimeout(gateway.sendMessage(systemChannelId, message), options.timeoutMs ?? SHELL_NOTICE_TIMEOUT_MS);
+    const sending = gateway.sendMessage(systemChannelId, message);
+    const messageId = options.timeoutMs === null ? await sending : await withTimeout(sending, options.timeoutMs ?? SHELL_NOTICE_TIMEOUT_MS);
     if (notices !== undefined && id !== undefined) {
       try {
         notices.markPosted(id, messageId);

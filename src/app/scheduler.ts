@@ -415,7 +415,8 @@ export class Scheduler {
       for (const session of due) {
         let messageId: string | undefined;
         try {
-          messageId = await notify(session.guildId, deletePrompt(session, cfg.deleteAfterDays), { level: "info" });
+          // 時間切れを付けない（遅れて届いた確認と、次の tick のやり直しの確認が二重に出ないように。前と同じ）
+          messageId = await notify(session.guildId, deletePrompt(session, cfg.deleteAfterDays), { level: "info", timeoutMs: null });
         } catch (error) {
           // 記録しないので、次の tick でやり直す
           log(`削除の確認の投稿に失敗しました（guild=${session.guildId}）: ${describeError(error)}`);
