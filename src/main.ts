@@ -74,6 +74,7 @@ import { channelRoutes, webChannelNamer } from "./web/routes/channels.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
 import { memoryRoutes } from "./web/routes/memories.ts";
 import { reminderRoutes } from "./web/routes/reminders.ts";
+import { sessionRoutes } from "./web/routes/sessions.ts";
 import { statusRoutes } from "./web/routes/status.ts";
 import { taskRoutes } from "./web/routes/tasks.ts";
 import { turnRoutes } from "./web/routes/turns.ts";
@@ -596,6 +597,28 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         log,
       }),
       ...memoryRoutes({ memories, log }),
+      // セッションの操作は Discord のコマンドと同じ session-ops.ts を通す。チャンネルを作るのは既定の人格の Bot（/new と同じキュー）、
+      // /close の確認と /renew の結果は持ち主の Bot で Discord にも投稿する
+      ...sessionRoutes({
+        cfg: config,
+        resolveChannel,
+        gateway,
+        defaultConnected: () => gateway.connected(),
+        guildSettings,
+        topicSessions,
+        queue: layoutQueue,
+        personas,
+        ownerPosts,
+        tasks,
+        channelOps,
+        turnQueue,
+        turn,
+        projects,
+        projectsDir,
+        inboxRotator,
+        history: historyStore,
+        log,
+      }),
     ],
     stopping: () => lifecycle.stopping(),
     now,

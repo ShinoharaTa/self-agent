@@ -68,6 +68,30 @@
     </div>
   </dialog>
 
+  <dialog id="dlg-new" aria-labelledby="dlg-new-title">
+    <form id="new-form" class="stack" novalidate>
+      <h2 id="dlg-new-title" class="dlg-title">新しいセッション</h2>
+      <div class="field">
+        <label for="new-title">題名</label>
+        <input class="input" id="new-title" maxlength="100" placeholder="例: 冬の旅行の計画" autocomplete="off">
+      </div>
+      <div class="field" id="new-guild-field" hidden>
+        <label for="new-guild">サーバー</label>
+        <select class="select" id="new-guild"></select>
+      </div>
+      <div class="field" id="new-persona-field" hidden>
+        <label for="new-persona">人格</label>
+        <select class="select" id="new-persona"></select>
+      </div>
+      <p class="alert" id="new-error" role="alert" hidden>題名を入れてください</p>
+      <p class="meta">Discord の /new と同じです。チャンネルが「進行中」にできます。</p>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary btn-sm" id="dlg-new-cancel" type="button">やめる</button>
+        <button class="btn btn-primary btn-sm" id="dlg-new-ok" type="submit">作る</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="toast-stack" id="toast" role="status" aria-atomic="false" hidden></div>
 </body>
 </html>
