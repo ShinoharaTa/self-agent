@@ -84,7 +84,7 @@ export type StatusDeps = {
   guestConnected?: () => boolean;
   shellState: { configured: boolean; enabled: () => boolean; failedItems: () => readonly string[] };
   queue: { runningSessionJobs: () => number };
-  /** 実行中のターンの数（W3 まで 0） */
+  /** 実行中のターンの数（handler.runningTurns の数） */
   running: () => number;
   /** プロジェクトの配信が待ち受けているか */
   serving: () => boolean;

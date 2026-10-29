@@ -1,7 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { RunContext, RunInput, RunResult } from "../src/agent/runner.ts";
-import { createChannelResolver } from "../src/app/access.ts";
+import { acceptedChannel, createChannelResolver } from "../src/app/access.ts";
 import { createTurnControlsComponent, STALE_TURN_REPLY } from "../src/app/commands/turn-controls.ts";
 import {
   ABORTED_REPLY,
@@ -15,7 +15,10 @@ import {
   PROGRESS_INTERVAL_MS,
   type ProgressTimers,
   REVIVED_NOTE,
+  RUNNING_STEPS_MAX,
+  WEB_ECHO_PREFIX,
 } from "../src/app/handler.ts";
+import { ALLOWED_MENTIONS, toPayload } from "../src/discord/convert.ts";
 import { rotatedSeed } from "../src/app/summary.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
@@ -108,8 +111,12 @@ function okResult(sessionId: string, text: string): Extract<RunResult, { ok: tru
   };
 }
 
-/** options.history なら history を渡す（渡さなければ書かない） */
-function setup(t: TestContext, results: Array<RunResult | Error>, options: { history?: boolean } = {}) {
+/** options.history なら history を渡す（渡さなければ書かない）。options.ownerConnected は持ち主の Bot の接続（省略は渡さない） */
+function setup(
+  t: TestContext,
+  results: Array<RunResult | Error>,
+  options: { history?: boolean; ownerConnected?: (channelId: string) => boolean } = {},
+) {
   const db = tempDb(t);
   // sendMessage で送ったものの ID は posted-<n>
   const gateway = new FakeGateway({
@@ -146,6 +153,7 @@ function setup(t: TestContext, results: Array<RunResult | Error>, options: { his
     now: () => new Date(NOW.getTime() + timers.elapsed),
     timers,
     ...(options.history === true ? { history } : {}),
+    ...(options.ownerConnected === undefined ? {} : { ownerConnected: options.ownerConnected }),
     log: (line) => (line.startsWith("トークン（") ? tokenLogs : logs).push(line),
   });
   const handle = handler.handleMessage;
@@ -1550,4 +1558,217 @@ test("history: 書けなくても log だけでターンと返信は続け、log
   const failures = logs.filter((line) => line.startsWith("履歴の書き込みに失敗しました"));
   assert.equal(failures.length, 2);
   assert.ok(logs.every((line) => !line.includes("明日買い物に行く") && !line.includes("登録しました")), logs.join("\n"));
+});
+
+// ===== Web からの発言（submitText）と実行中のターン（runningTurns） =====
+
+/** Web から送った時刻（日時ヘッダはこれを使う） */
+const WEB_AT = new Date("2026-10-02T00:10:00Z");
+
+/** cond が満たされるまで非同期処理を進める（void で始めたターンを待つ） */
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 50 && !cond(); i++) await settle();
+  assert.ok(cond(), "条件を満たしませんでした");
+}
+
+function webInput(channelId: string, content: string) {
+  return { guildId: "guild-1", channelId, content, at: WEB_AT, source: "web" as const };
+}
+
+test("Web: submitText は受け付けないチャンネル（知らない・削除済みのセッション）では not_accepted で、投稿も history もターンも無い", async (t) => {
+  const { gateway, runner, topicSessions, history, handler } = setup(t, [], { history: true });
+  topicSessions.create(TOPIC);
+  topicSessions.markDeleted("topic-1");
+
+  assert.deepEqual(await handler.submitText(webInput("other-1", "こんにちは")), { result: "not_accepted" });
+  assert.deepEqual(await handler.submitText(webInput("topic-1", "こんにちは")), { result: "not_accepted" });
+  await settle();
+
+  assert.deepEqual(gateway.posts, []);
+  assert.equal(runner.inputs.length, 0);
+  assert.deepEqual(historyRows(history, "other-1"), []);
+  assert.deepEqual(historyRows(history, "topic-1"), []);
+});
+
+test("Web: #inbox では、キューに入れる前に持ち主の Bot で「（Web から）\\n本文」を投稿し、その ID で owner の行を書き、返事はその投稿への返信になる", async (t) => {
+  const { gateway, runner, history, handler, handle, logs } = setup(
+    t,
+    [okResult("session-1", "前の返事"), okResult("session-1", "登録しました")],
+    { history: true, ownerConnected: () => true },
+  );
+  // 前の発言のターンで #inbox のキューを塞いでおく
+  const release = deferred();
+  runner.gates[0] = release.promise;
+  const first = handle(message());
+  await settle();
+
+  const result = await handler.submitText(webInput("inbox-1", "牛乳も買う"));
+
+  const webOwner = history.list("inbox-1", { limit: 200 }).find((row) => row.source === "web");
+  assert.ok(webOwner !== undefined);
+  assert.deepEqual(result, { result: "accepted", turnId: webOwner.id, messageId: "posted-1" });
+  // キューは前のターンで塞がっているが、投稿と owner の行は済んでいて、ターンはまだ始まっていない
+  assert.deepEqual(gateway.posts, [{ channelId: "inbox-1", messageId: "posted-1", message: { text: `${WEB_ECHO_PREFIX}\n牛乳も買う` } }]);
+  // メンションは鳴らさない（返信先以外の allowedMentions は空）
+  assert.deepEqual(toPayload(gateway.posts[0]!.message).allowedMentions, ALLOWED_MENTIONS);
+  assert.equal(runner.inputs.length, 1);
+  assert.deepEqual(historyRows(history, "inbox-1"), [
+    { ...OWNER_ROW, kind: "owner", text: "明日買い物に行く", messageId: "message-1" },
+    { ...OWNER_ROW, kind: "owner", source: "web", text: "牛乳も買う", messageId: "posted-1" },
+  ]);
+
+  release.resolve();
+  await first;
+  await until(() => gateway.sent.length === 2);
+
+  assert.equal(runner.inputs[1]!.prompt, buildTurnPrompt("牛乳も買う", WEB_AT, "Asia/Tokyo", "inbox"));
+  assert.deepEqual(runner.inputs[1]!.context, context("inbox-1"));
+  assert.deepEqual(gateway.sent, [
+    { channelId: "inbox-1", text: "前の返事", replyToId: "message-1" },
+    { channelId: "inbox-1", text: "登録しました", replyToId: "posted-1" },
+  ]);
+  // owner の行は submitText が書いた 1 行だけ（submit は historyId があれば書かない）。Web の owner の行は前のターンの返事より先に書いてある
+  assert.deepEqual(
+    historyRows(history, "inbox-1").map((row) => [row.kind, row.source, row.text, row.messageId]),
+    [
+      ["owner", "discord", "明日買い物に行く", "message-1"],
+      ["owner", "web", "牛乳も買う", "posted-1"],
+      ["agent", "discord", "前の返事", null],
+      ["agent", "web", "登録しました", null],
+    ],
+  );
+  assert.ok(logs.every((line) => !line.includes("牛乳も買う") && !line.includes("inbox-1")), logs.join("\n"));
+});
+
+test("Web: Bot 自身の「（Web から）」の投稿は受け付けず（Bot の発言の除外）、ループしない", async (t) => {
+  const { gateway, runner, history, handler, handle } = setup(t, [okResult("session-1", "はい")], { history: true });
+  await handler.submitText(webInput("inbox-1", "こんにちは"));
+  await until(() => gateway.sent.length === 1);
+
+  // Discord から同じ投稿が Bot の発言として届く
+  const echo = message({ id: "posted-1", authorId: "bot-1", authorIsBot: true, content: `${WEB_ECHO_PREFIX}\nこんにちは`, createdAt: WEB_AT });
+  assert.equal(acceptedChannel(echo, cfg, () => "inbox"), null);
+  await handle(echo);
+  await settle();
+
+  assert.equal(runner.inputs.length, 1);
+  assert.equal(gateway.posts.length, 1);
+  assert.deepEqual(historyRows(history, "inbox-1").map((row) => row.kind), ["owner", "agent"]);
+});
+
+test("Web: 待ちのセッションに送ると、返す前に進行中に戻して最終発言の時刻を記録し、返事の先頭に REVIVED_NOTE を付ける", async (t) => {
+  const { gateway, topicSessions, channelOps, clock, handler } = setup(t, [okResult("session-1", "了解です")], { history: true });
+  topicSessions.create(TOPIC);
+  topicSessions.setWaiting("topic-1");
+  clock.now = new Date("2026-10-02T03:00:00Z");
+
+  const result = await handler.submitText(webInput("topic-1", "続きをやろう"));
+
+  assert.equal(result.result, "accepted");
+  assert.equal(topicSessions.get("topic-1")?.state, "active");
+  assert.equal(topicSessions.get("topic-1")?.lastActivityAt, "2026-10-02T03:00:00.000Z");
+  assert.deepEqual(channelOps.moves, [{ channelId: "topic-1", target: { guildId: "guild-1", kind: "state", state: "active" } }]);
+  await until(() => gateway.sent.length === 1);
+  assert.deepEqual(gateway.sent, [{ channelId: "topic-1", text: `${REVIVED_NOTE}\n了解です`, replyToId: "posted-1" }]);
+});
+
+test("Web: 投稿に失敗したら echo_failed で、owner の行もターンも無い（log に本文は出さない）", async (t) => {
+  const { gateway, runner, history, handler, logs } = setup(t, [], { history: true });
+  gateway.beforeSendMessage = () => {
+    throw new Error("Missing Access");
+  };
+
+  assert.deepEqual(await handler.submitText(webInput("inbox-1", "送れない本文")), { result: "echo_failed" });
+  await settle();
+
+  assert.deepEqual(gateway.posts, []);
+  assert.equal(runner.inputs.length, 0);
+  assert.deepEqual(historyRows(history, "inbox-1"), []);
+  assert.deepEqual(logs, ["Web の発言の投稿に失敗しました: Missing Access"]);
+});
+
+test("Web: 持ち主の Bot が接続していなければ bot_disconnected で、投稿もターンも無い", async (t) => {
+  const seen: string[] = [];
+  const { gateway, runner, history, handler } = setup(t, [], {
+    history: true,
+    ownerConnected: (channelId) => {
+      seen.push(channelId);
+      return false;
+    },
+  });
+
+  assert.deepEqual(await handler.submitText(webInput("inbox-1", "こんにちは")), { result: "bot_disconnected" });
+  await settle();
+
+  assert.deepEqual(seen, ["inbox-1"]);
+  assert.deepEqual(gateway.posts, []);
+  assert.equal(runner.inputs.length, 0);
+  assert.deepEqual(historyRows(history, "inbox-1"), []);
+});
+
+test("runningTurns: #inbox のターンも番号・始めた時刻・ツール回数・直近の手順（31 手順目で先頭が落ちる）付きで出し、中断はできない。終わったら消える", async (t) => {
+  const { runner, handler, handle } = setup(t, [okResult("session-1", "はい")], { history: true });
+  const release = deferred();
+  runner.beforeResult = async (input) => {
+    for (let i = 1; i <= RUNNING_STEPS_MAX + 1; i++) input.onProgress?.({ label: `手順 ${i}` });
+    await release.promise;
+  };
+
+  const turn = handle(message());
+  await until(() => runner.inputs.length === 1);
+
+  const steps = Array.from({ length: RUNNING_STEPS_MAX }, (_, i) => `手順 ${i + 2}`);
+  assert.deepEqual(handler.runningTurns(), [
+    {
+      guildId: "guild-1",
+      channelId: "inbox-1",
+      turnSeq: turnSeq(1),
+      startedAt: NOW.toISOString(),
+      toolCalls: RUNNING_STEPS_MAX + 1,
+      label: `手順 ${RUNNING_STEPS_MAX + 1}`,
+      steps,
+      source: "discord",
+      abortable: false,
+    },
+  ]);
+  assert.equal(handler.abortTurn("inbox-1", turnSeq(1)), false);
+
+  release.resolve();
+  await turn;
+  assert.deepEqual(handler.runningTurns(), []);
+});
+
+test("runningTurns: Web から送ったセッションのターンは source web・中断できる。abortTurn で止まる", async (t) => {
+  const { gateway, runner, topicSessions, handler } = setup(
+    t,
+    [{ ok: false, errorMessage: "aborted", sessionId: "session-1", sessionRecorded: false, toolCalls: 1 }],
+    { history: true },
+  );
+  topicSessions.create(TOPIC);
+  runner.beforeResult = (input) =>
+    new Promise<void>((resolve) => {
+      input.onProgress?.({ label: "読んでいます" });
+      input.signal?.addEventListener("abort", () => resolve());
+    });
+
+  await handler.submitText(webInput("topic-1", "調べて"));
+  await until(() => runner.inputs.length === 1);
+
+  const [running] = handler.runningTurns();
+  assert.deepEqual(running, {
+    guildId: "guild-1",
+    channelId: "topic-1",
+    turnSeq: turnSeq(1),
+    startedAt: NOW.toISOString(),
+    toolCalls: 1,
+    label: "読んでいます",
+    steps: ["読んでいます"],
+    source: "web",
+    abortable: true,
+  });
+  assert.equal(handler.abortTurn("topic-1", turnSeq(2)), false);
+  assert.equal(handler.abortTurn("topic-1", turnSeq(1)), true);
+  await until(() => gateway.sent.length === 1);
+  assert.deepEqual(gateway.sent, [{ channelId: "topic-1", text: ABORTED_REPLY, replyToId: "posted-1" }]);
+  assert.deepEqual(handler.runningTurns(), []);
 });

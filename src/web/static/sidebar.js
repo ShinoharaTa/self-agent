@@ -68,7 +68,10 @@
     const persona = store.channels.personas.find((p) => p.id === ch.persona);
     const badges = [];
     if (ch.kind === "session" && persona && !persona.isDefault) badges.push(el("span", { class: "badge badge-persona", text: persona.name }));
-    const unread = store.isUnread(ch);
+    // 実行中のターンがあればスピナー（その間は未読の点を出さない）
+    const running = !!store.runningOf(ch.id);
+    if (running) badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));
+    const unread = !running && store.isUnread(ch);
     return row({
       tab: "ch:" + ch.id,
       icon: ch.kind === "session" ? null : "hash",

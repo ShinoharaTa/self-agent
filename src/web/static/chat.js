@@ -1,9 +1,10 @@
-// 会話（#inbox・#tasks・#<NAME>・セッション）のタブ（読むだけ）。SA.store.turns[channelId] の行を描き、見ている間は既読にする
+// 会話（#inbox・#tasks・#<NAME>・セッション）のタブ。SA.store.turns[channelId] の行と実行中のターン（SA.store.running）を描き、見ている間は既読にする。
+// 入力欄から送ると Discord の発言と同じ経路で 1 ターン動く（POST /messages）。[中断]・[続ける] は Discord のボタンと同じ handler の関数
 "use strict";
 
 (function () {
   const SA = (window.SA = window.SA || {});
-  const { el, icon, elapsed, hm, linkify } = SA.ui;
+  const { el, icon, elapsed, hm, linkify, toast } = SA.ui;
   const store = SA.store;
 
   const STATE_LABEL = { active: "進行中", waiting: "待ち", done: "完了" };
@@ -14,6 +15,17 @@
   const DISCORD_PREFIX = "https://discord.com/channels/";
   /** これより上に近づいたら前の行を読む（px） */
   const OLDER_THRESHOLD = 64;
+  /** Web から送る本文の上限（src/web/routes/turns.ts の WEB_MESSAGE_MAX_LENGTH） */
+  const MESSAGE_MAX = 1900;
+  const STALE_TEXT = "この操作は古くなっています";
+  /** 送れなかったときのトースト（応答の error ごと）。無ければ「<status>: <error>」 */
+  const SEND_ERRORS = {
+    bot_disconnected: "Bot が接続していません",
+    echo_failed: "送れませんでした（Discord に投稿できません）",
+    stopping: "再起動中です。終わったら送ってください",
+    too_long: "1,900 字までです",
+    not_found: "このチャンネルには送れません",
+  };
 
   /** リンクにするのは https の Discord の URL だけ */
   function discordUrl(url) {
@@ -56,6 +68,11 @@
     const label = OUTCOME_LABEL[turn.outcome] || "終わりました";
     if (typeof turn.durationMs !== "number" || typeof turn.toolCalls !== "number") return label;
     return label + "（" + elapsed(turn.durationMs) + "・ツール " + turn.toolCalls + " 回）";
+  }
+
+  /** 実行中の行の 1 行目（src/app/progress.ts の progressText の 1 行目と同じ） */
+  function progressText(run) {
+    return "作業中…（" + elapsed(store.runningElapsed(run)) + "・ツール " + run.toolCalls + " 回）";
   }
 
   function activeChannelId() {
@@ -147,6 +164,61 @@
     return el("article", { class: "msg msg-agent" }, [avatar(Array.from(p.name || "?")[0], "avatar-agent"), body]);
   }
 
+  /** 実行中のターンの行（is-running）。[中断] は中断できるターン（セッション）だけ */
+  function renderRunning(ch, run) {
+    const p = persona(ch ? ch.persona : "default");
+    const steps = el("ol", { class: "steps-list" });
+    run.steps.forEach((s, i) => steps.append(el("li", { class: i === run.steps.length - 1 ? "is-current" : null, text: s })));
+    if (run.steps.length === 0) steps.append(el("li", { text: "まだ手順はありません" }));
+    const details = el("details", { class: "steps", open: true }, [
+      el("summary", {}, [icon("chevron-right", "steps-chevron"), el("span", { class: "spinner", "aria-hidden": "true" }), el("span", { "data-run-progress": run.channelId, text: progressText(run) })]),
+      steps,
+    ]);
+    const body = el("div", { class: "msg-body" }, [
+      el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: p.name }), el("span", { class: "badge badge-accent", text: "実行中" })]),
+      details,
+    ]);
+    if (run.abortable) {
+      const abort = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, [icon("square"), "中断"]);
+      abort.addEventListener("click", () => abortTurn(run, abort));
+      body.append(el("div", { class: "msg-actions" }, [abort]));
+    }
+    return el("article", { class: "msg msg-agent is-running", "aria-busy": "true" }, [avatar(Array.from(p.name || "?")[0], "avatar-agent"), body]);
+  }
+
+  async function abortTurn(run, button) {
+    button.disabled = true;
+    try {
+      await SA.api.post("/api/channels/" + encodeURIComponent(run.channelId) + "/turns/" + run.turnSeq + "/abort", {}, { quiet: true });
+    } catch (err) {
+      if (err && err.status === 409) toast(STALE_TEXT);
+      else if (err && err.toast) toast(err.toast);
+      button.disabled = false;
+    }
+    SA.poll.running();
+  }
+
+  /** [続ける]: 手順の上限で止まった最後の返事（セッション・実行中のターンが無いとき）。押したら隠す（このタブのメモリだけ） */
+  const continued = new Set();
+  function continueButton(channelId, turn) {
+    const button = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, [icon("play"), "続ける"]);
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/continue", {}, { quiet: true });
+        continued.add(turn.id);
+        SA.poll.running();
+        SA.app.refresh("ch:" + channelId);
+      } catch (err) {
+        if (err && err.status === 409) toast(err.code === "running" ? "実行中のターンがあります" : STALE_TEXT);
+        else if (err && err.status === 404) toast(STALE_TEXT);
+        else if (err && err.toast) toast(err.toast);
+        button.disabled = false;
+      }
+    });
+    return el("div", { class: "msg-actions" }, [button]);
+  }
+
   function header(ch, channelId) {
     if (!ch) {
       return el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [icon("hash"), el("h1", { text: "会話" })]), el("div", { class: "ed-actions" })]);
@@ -168,6 +240,73 @@
     const discord = discordUrl(ch.link);
     if (discord) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: discord, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "Discord"]));
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
+  }
+
+  // ===== 入力欄（Enter で送る・Shift+Enter で改行・IME の変換中の Enter は送らない） =====
+  function composer(ch, channelId) {
+    const title = ch ? channelTitle(ch) : "会話";
+    const ta = el("textarea", {
+      class: "textarea composer-input",
+      rows: "2",
+      maxlength: "4000",
+      "aria-label": title + " に送る",
+      placeholder: title + " に送る（Enter で送信・Shift+Enter で改行）",
+    });
+    ta.value = SA.app.draft(channelId);
+    const counter = el("span", { class: "counter", "aria-live": "polite" });
+    const sendBtn = el("button", { class: "btn btn-primary btn-sm", type: "submit" }, [icon("send"), "送る"]);
+    let sending = false;
+    const update = () => {
+      const n = ta.value.trim().length;
+      counter.textContent = n.toLocaleString("en-US") + " / 1,900";
+      counter.classList.toggle("is-over", n > MESSAGE_MAX);
+      sendBtn.disabled = sending || n === 0 || n > MESSAGE_MAX;
+    };
+    update();
+    ta.addEventListener("input", () => {
+      SA.app.setDraft(channelId, ta.value);
+      update();
+    });
+    const form = el("form", { class: "composer", novalidate: true }, [
+      ta,
+      el("div", { class: "composer-foot" }, [
+        el("span", { class: "composer-hint" }, [el("span", { text: "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます。" })]),
+        counter,
+        sendBtn,
+      ]),
+    ]);
+    const submit = async () => {
+      const text = ta.value.trim();
+      if (sending || text === "" || text.length > MESSAGE_MAX) return;
+      sending = true;
+      update();
+      try {
+        const data = await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/messages", { text }, { quiet: true });
+        // 送れたら書きかけを消し、本物の行が来るまで仮の行を出す
+        if (ta.value.trim() === text) ta.value = "";
+        SA.app.setDraft(channelId, ta.value);
+        store.addOptimisticTurn(channelId, data && data.turnId, text);
+        store.load.turns(channelId);
+        SA.poll.running();
+      } catch (err) {
+        // 本文は入力欄に残す
+        if (err && err.toast) toast((err.code && SEND_ERRORS[err.code]) || err.toast);
+      } finally {
+        sending = false;
+        update();
+      }
+    };
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submit();
+    });
+    ta.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+        event.preventDefault();
+        submit();
+      }
+    });
+    return el("div", { class: "composer-wrap", "data-channel": channelId }, [form]);
   }
 
   /** 前に出ている会話のタブのスクロール */
@@ -216,8 +355,19 @@
       more.addEventListener("click", () => loadOlder(channelId));
       timeline.append(el("div", { class: "tl-hint" }, [more]));
     }
-    for (const turn of t.turns) timeline.append(renderTurn(turn, channelId));
-    if (t.turns.length === 0) timeline.append(el("p", { class: "tl-hint", text: "まだ記録はありません。Discord で発言すると、ここにも出ます。" }));
+    const run = store.runningOf(channelId);
+    const last = t.turns[t.turns.length - 1];
+    for (const turn of t.turns) {
+      const node = renderTurn(turn, channelId);
+      // 手順の上限で止まった最後の返事には [続ける]（セッションで、実行中のターンが無いとき）
+      if (turn === last && turn.kind === "agent" && turn.outcome === "max_turns" && ch && ch.kind === "session" && !run && !continued.has(turn.id)) {
+        const body = node.querySelector(".msg-body");
+        if (body) body.append(continueButton(channelId, turn));
+      }
+      timeline.append(node);
+    }
+    if (run) timeline.append(renderRunning(ch, run));
+    if (t.turns.length === 0 && !run) timeline.append(el("p", { class: "tl-hint", text: "まだ記録はありません。ここか Discord で発言すると、ここに出ます。" }));
     if (ch && ch.kind === "session" && ch.state === "done") {
       timeline.append(el("p", { class: "tl-hint", text: "完了したセッションです。発言すると進行中に戻ります。" }));
     }
@@ -225,7 +375,15 @@
     scroll.addEventListener("scroll", () => {
       if (scroll.scrollTop < OLDER_THRESHOLD) loadOlder(channelId);
     });
-    container.replaceChildren(header(ch, channelId), scroll);
+    // 入力欄は作り直さない（書きかけ・フォーカス・IME の変換を保つ）。見出しと会話だけを入れ替える
+    const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-channel") === channelId);
+    if (kept) {
+      for (const child of [...container.children]) if (child !== kept) child.remove();
+      container.insertBefore(header(ch, channelId), kept);
+      container.insertBefore(scroll, kept);
+    } else {
+      container.replaceChildren(header(ch, channelId), scroll, composer(ch, channelId));
+    }
     markSeen(channelId);
   }
 
@@ -235,6 +393,7 @@
     return {
       title: ch ? channelTitle(ch) : "会話",
       icon: ch && ch.kind === "session" ? "message-square" : "hash",
+      dirty: !!store.runningOf(channelId),
       render: (container) => render(container, channelId),
       onOpen: () => store.load.turns(channelId),
       onClose: () => {
@@ -254,5 +413,14 @@
     }
   }
 
-  SA.chat = { info, channelTitle, shortTime, activeChannelId, markSeenActive, channelsChanged, STATE_LABEL };
+  /** 実行中の行の経過時間を 1 秒ごとに進める（描き直さずに文だけ） */
+  setInterval(() => {
+    if (!store.running || store.running.length === 0 || document.visibilityState !== "visible") return;
+    for (const node of document.querySelectorAll("[data-run-progress]")) {
+      const run = store.runningOf(node.getAttribute("data-run-progress"));
+      if (run) node.textContent = progressText(run);
+    }
+  }, 1000);
+
+  SA.chat = { info, channelTitle, shortTime, activeChannelId, markSeenActive, channelsChanged, endText, STATE_LABEL };
 })();
