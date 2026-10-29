@@ -9,6 +9,7 @@ import { AttachmentStore } from "../../src/store/attachments.ts";
 import { ChannelSeedStore } from "../../src/store/channel-seeds.ts";
 import { openDb } from "../../src/store/db.ts";
 import { GuildSettingsStore } from "../../src/store/guild-settings.ts";
+import { HistoryStore } from "../../src/store/history.ts";
 import { InboxSummaryStore } from "../../src/store/inbox-summaries.ts";
 import { KnowledgeStore } from "../../src/store/knowledge.ts";
 import { MemoryStore } from "../../src/store/memories.ts";
@@ -56,5 +57,6 @@ export function createStores(db: DatabaseSync, now: () => Date) {
     routines: new RoutineStore(db, now),
     routineRecords: new RoutineRecordStore(db, now),
     attachments: new AttachmentStore(db, now),
+    history: new HistoryStore(db, now),
   };
 }

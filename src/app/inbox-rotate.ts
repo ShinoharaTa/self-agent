@@ -8,6 +8,7 @@
 import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { Gateway } from "../discord/gateway.ts";
 import type { GuildSettings, GuildSettingsStore } from "../store/guild-settings.ts";
+import { type HistoryStore, recordHistory } from "../store/history.ts";
 import type { InboxSummaryStore, SummaryChannelKind } from "../store/inbox-summaries.ts";
 import { CLOSE_SUMMARY_MAX_LENGTH } from "../store/topic-sessions.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
@@ -75,6 +76,8 @@ export type InboxRotatorDeps = {
   turn: Pick<TurnDeps, "runner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
   /** 切り替えた知らせを投稿する（チャンネルの持ち主の Bot） */
   gateway: Pick<Gateway, "sendMessage">;
+  /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。切り替えたら区切りの行を書く（/renew も）。無ければ書かない */
+  history?: Pick<HistoryStore, "add">;
   now: () => Date;
   log: (message: string) => void;
 };
@@ -308,6 +311,7 @@ export class InboxRotator {
       const detail =
         reason.kind === "daily" ? "日次" : reason.kind === "manual" ? "/renew" : `直近の入力 ${reason.contextTokens} トークン`;
       log(`${label} の会話を要約して新しいセッションに切り替えました（guild=${guildId}、${detail}）`);
+      this.recordDivider(target, ROTATED_NOTICE);
       if (reason.kind !== "manual") await this.notify(target, ROTATED_NOTICE);
       return "rotated";
     }
@@ -324,6 +328,7 @@ export class InboxRotator {
       log(
         `${label} の会話の記録が見つからないため、要約せずに新しいセッションに切り替えました（guild=${guildId}、${carried}）: ${result.errorMessage}`,
       );
+      this.recordDivider(target, last === undefined ? ROTATED_NOTICE_FRESH : ROTATED_NOTICE);
       if (reason.kind !== "manual") await this.notify(target, last === undefined ? ROTATED_NOTICE_FRESH : ROTATED_NOTICE);
       return last === undefined ? "rotated_fresh" : "rotated";
     }
@@ -335,6 +340,12 @@ export class InboxRotator {
     this.failedAt.set(key, now().getTime());
     log(`${label} の要約に失敗したため、切り替えませんでした（guild=${guildId}）。1 時間後以降にやり直します: ${result.errorMessage}`);
     return "failed";
+  }
+
+  /** 切り替えた区切りの行を history に書く（無ければ何もしない。失敗は log だけ） */
+  private recordDivider(target: RotateTarget, text: string): void {
+    const { guildId, channelId, persona } = target;
+    recordHistory(this.deps.history, { guildId, channelId, kind: "divider", source: "system", persona, text }, this.deps.log);
   }
 
   /** 切り替えた知らせをそのチャンネルに投稿する。失敗しても切り替えは済んでいるので log だけ出す */

@@ -58,11 +58,13 @@ function setup(
   idleHours: number = 12,
   deleteAfterDays: number = 30,
   allowedGuildIds: string[] = ["guild-1"],
-  extra: Pick<SchedulerDeps, "pruneGuestTurns"> = {},
+  // history: true なら history（同じ DB）を渡す
+  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory"> & { history?: boolean } = {},
 ) {
   const db = tempDb(t);
   const clock = { now: NOW };
-  const { topicSessions, guildSettings, sessions, seeds } = createStores(db, () => clock.now);
+  const { topicSessions, guildSettings, sessions, seeds, history } = createStores(db, () => clock.now);
+  const { history: withHistory, ...deps } = extra;
   const gateway = new FakeGateway({ allow: ["sendMessage", "listChannelParents", "isInGuild"] });
   // parents を入れていなければ、削除済みでないセッションのチャンネルはどれも DB の category_id に置かれている（ずれなし）
   gateway.listParents = () =>
@@ -112,7 +114,8 @@ function setup(
       await workDir.prune();
     },
     pruneAttachments: () => attachments.prune(),
-    ...extra,
+    ...deps,
+    ...(withHistory === true ? { history } : {}),
     turnQueue,
     now: () => clock.now,
     timers,
@@ -156,6 +159,7 @@ function setup(
     scheduler,
     createAt,
     closeAt,
+    history,
   };
 }
 
@@ -958,4 +962,46 @@ test("古い dev ログ・.trash・workDir の .tmp・.cache を消すのに失�
     assert.ok(!env.logs[0]?.includes("/srv"), target);
     assert.equal(env.inboxRotator.calls.length, 1, target);
   }
+});
+
+test("history: 待ちに移したら notice（待ちの知らせの本文・system）を書く。待ちに移さないセッションと、渡さないときは書かない", async (t) => {
+  const env = setup(t, 12, 30, ["guild-1"], { history: true });
+  env.createAt("topic-idle", ago(12 * HOUR_MS));
+  env.createAt("topic-recent", ago(HOUR_MS));
+  await env.scheduler.tick();
+
+  assert.deepEqual(
+    env.history.list("topic-idle", { limit: 10 }).map(({ guildId, kind, source, persona, text }) => ({ guildId, kind, source, persona, text })),
+    [{ guildId: "guild-1", kind: "notice", source: "system", persona: "default", text: idleNotice(12, "topic-idle").text }],
+  );
+  assert.deepEqual(env.history.list("topic-recent", { limit: 10 }), []);
+
+  const plain = setup(t);
+  plain.createAt("topic-idle", ago(12 * HOUR_MS));
+  await plain.scheduler.tick();
+  assert.deepEqual(plain.history.list("topic-idle", { limit: 10 }), []);
+});
+
+test("tick ごとに古いターンの記録を消す処理を呼ぶ（削除のジョブより前）。失敗は log だけで続ける", async (t) => {
+  let calls = 0;
+  let fail = false;
+  const order: string[] = [];
+  const env = setup(t, 12, 30, ["guild-1"], {
+    pruneHistory: () => {
+      calls++;
+      order.push("history");
+      if (fail) throw new Error("SQLITE_BUSY");
+    },
+  });
+  env.workDir.prune = () => void order.push("maintenance");
+  await env.scheduler.tick();
+  assert.equal(calls, 1);
+  assert.deepEqual(order, ["history", "maintenance"]);
+  assert.deepEqual(env.logs, []);
+
+  fail = true;
+  await env.scheduler.tick();
+  assert.equal(calls, 2);
+  assert.deepEqual(env.logs, ["古いターンの記録を消せませんでした"]);
+  assert.equal(env.inboxRotator.calls.length, 2);
 });

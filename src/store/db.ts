@@ -457,6 +457,27 @@ export const MIGRATIONS: readonly string[] = [
   INSERT INTO guest_guilds (guild_id, joined_at, allowed_at)
     SELECT guild_id, MIN(enabled_at), MIN(enabled_at) FROM guest_channels WHERE disabled_at IS NULL GROUP BY guild_id;
   `,
+  // v25: Web UI で会話を見るためのターンの記録（docs/plan/web-ui.md §4.2）。1 行はオーナーの発言・返事・知らせ・区切りのどれか。
+  // steps は手順の label の JSON 配列、text は 4,000 字で切る。Web UI が有効なときだけ書き、日数で消す
+  `
+  CREATE TABLE history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('owner', 'agent', 'notice', 'divider')),
+    source TEXT NOT NULL CHECK (source IN ('discord', 'web', 'system')),
+    persona TEXT NOT NULL DEFAULT 'default',
+    text TEXT NOT NULL,
+    outcome TEXT CHECK (outcome IN ('done', 'max_turns', 'aborted', 'failed')),
+    steps TEXT,
+    tool_calls INTEGER,
+    duration_ms INTEGER,
+    message_id TEXT
+  );
+  CREATE INDEX history_channel ON history(channel_id, id);
+  CREATE INDEX history_at ON history(at);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

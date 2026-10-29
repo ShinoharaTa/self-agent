@@ -6,6 +6,7 @@ import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { ButtonDef, Gateway, OutgoingMessage } from "../discord/gateway.ts";
 import { mentionPrefix } from "../discord/convert.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
+import { type HistoryStore, recordHistory } from "../store/history.ts";
 import type { FireUpdate, Reminder, ReminderStore } from "../store/reminders.ts";
 import type { TaskStore } from "../store/tasks.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
@@ -13,7 +14,7 @@ import type { ChannelKind, ResolveChannel } from "./access.ts";
 import { MESSAGE_MAX_LENGTH } from "./commands/sessions.ts";
 import { clip } from "./commands/tasks.ts";
 import { MAX_TURNS_REPLY } from "./commands/turn-controls.ts";
-import { COMPACTED_NOTE, EMPTY_REPLY } from "./handler.ts";
+import { COMPACTED_NOTE, EMPTY_REPLY, turnOutcome } from "./handler.ts";
 import { buildTurnPrompt } from "./prompt.ts";
 import type { PersonaRouter } from "./personas.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
@@ -162,6 +163,8 @@ export type ReminderSchedulerDeps = {
   turnQueue: Pick<KeyedSerialQueue, "run">;
   /** 予約した依頼のターン（runChannelTurn。usage の記録・resume・seed は発言と同じ） */
   turn: TurnDeps;
+  /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。予約した依頼のターンの依頼と返事の行を書く。無ければ書かない */
+  history?: Pick<HistoryStore, "add">;
   now: () => Date;
   timers?: ReminderTimers;
   log: (message: string) => void;
@@ -386,7 +389,7 @@ export class ReminderScheduler {
    * 途中経過・[中断]・[続ける] は付けない
    */
   private async runPrompt(id: number, key: string): Promise<void> {
-    const { cfg, gateway, turn, reminders, now, log } = this.deps;
+    const { cfg, gateway, turn, reminders, history, now, log } = this.deps;
     // 停止を始めていたら claim せずに戻る（次の起動の最初の tick で拾う）
     if (this.stopped) {
       log(`停止を始めたため、予約した依頼を動かしませんでした（#${id}）`);
@@ -420,6 +423,15 @@ export class ReminderScheduler {
         : `${lateMs >= DAY_MS ? formatShortDateTime(occurrence.at, cfg.timeZone) : formatShortTime(occurrence.at, cfg.timeZone)} の予定から ${Math.floor(lateMs / MINUTE_MS)} 分遅れ`;
     const { channelId, kind } = target;
     log(`予約した依頼のターンを始めました（#${id}、guild=${reminder.guildId}）`);
+    // history の行は実際にターンを行うチャンネル（#inbox・#tasks）に、その持ち主の人格で書く
+    const historyRow = {
+      guildId: reminder.guildId,
+      channelId,
+      source: "system",
+      persona: this.deps.personas?.ownerOf(channelId) ?? DEFAULT_PERSONA_ID,
+    } as const;
+    recordHistory(history, { ...historyRow, kind: "owner", text: scheduledPromptContent(reminder, late) }, log);
+    const startedAt = now().getTime();
     const stopTyping = gateway.startTyping(channelId);
     let result: RunResult | undefined;
     try {
@@ -452,6 +464,19 @@ export class ReminderScheduler {
     } catch (error) {
       log(`予約した依頼の返信に失敗しました（#${id}）: ${describeError(error)}`);
     }
+    recordHistory(
+      history,
+      {
+        ...historyRow,
+        kind: "agent",
+        text,
+        outcome: turnOutcome(result),
+        steps: null,
+        toolCalls: result?.toolCalls ?? null,
+        durationMs: result?.ok === true ? result.durationMs : now().getTime() - startedAt,
+      },
+      log,
+    );
   }
 
   /**

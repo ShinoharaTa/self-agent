@@ -1,7 +1,9 @@
 // セッションのチャンネルの /renew。会話を要約して SDK セッションを捨て、次の発言から新しい SDK セッションで続ける
 // （長くなった会話や、前の返事の癖を引きずらずに続けたいときに使う。システムプロンプトの変更は snapshot: false で次のターンから届く）。
 // 要約はツールを足さず、要約を頼むターンの返答本文を使う（#inbox・#tasks の切り替えと同じ）。セッションの状態とカテゴリは変えない
+import { type HistoryStore, recordHistory } from "../store/history.ts";
 import { RENEW_SUMMARY_MAX_LENGTH, type TopicSessionStore } from "../store/topic-sessions.ts";
+import { RENEWED_FRESH_REPLY, renewedText } from "./commands/renew.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { clip, EMPTY_SUMMARY } from "./summary.ts";
 import { recordTurnUsage, RESUME_FAILURE_PATTERN, resumeSeed, type TurnDeps, turnPersonaOf } from "./turn.ts";
@@ -19,6 +21,8 @@ export type SessionRenewDeps = {
   turnQueue: Pick<KeyedSerialQueue, "run">;
   /** 要約のターンの runner（チャンネルの持ち主の人格のもの）と、SDK セッション・seed・usage */
   turn: Pick<TurnDeps, "runner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
+  /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。新しくしたら区切りの行を書く。無ければ書かない */
+  history?: Pick<HistoryStore, "add">;
   log: (message: string) => void;
 };
 
@@ -73,7 +77,11 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
     sessions.delete(channelId);
     seeds.set(channelId, renewedSeed(summary ?? `題名: ${session.title}`));
     log(`/renew でセッションの会話を新しくしました（guild=${guildId}）`);
-    return { result: "renewed", summary: summary ?? EMPTY_SUMMARY };
+    // 区切りの行は返信の 1 行目と要約
+    const shown = summary ?? EMPTY_SUMMARY;
+    const headline = renewedText(shown).split("\n")[0] ?? "";
+    recordDivider(deps, guildId, channelId, persona.id, `${headline}\n${shown}`);
+    return { result: "renewed", summary: shown };
   }
 
   if (RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
@@ -85,6 +93,7 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
     log(
       `/renew でセッションの会話の記録が見つからないため、要約せずに新しくしました（guild=${guildId}）: ${result.errorMessage}`,
     );
+    recordDivider(deps, guildId, channelId, persona.id, RENEWED_FRESH_REPLY);
     return { result: "renewed_fresh" };
   }
 
@@ -94,4 +103,9 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
   }
   log(`/renew の要約に失敗しました（guild=${guildId}）: ${result.errorMessage}`);
   return { result: "failed", errorMessage: result.errorMessage };
+}
+
+/** 会話を新しくした区切りの行を history に書く（無ければ何もしない。失敗は log だけ） */
+function recordDivider(deps: SessionRenewDeps, guildId: string, channelId: string, persona: string, text: string): void {
+  recordHistory(deps.history, { guildId, channelId, kind: "divider", source: "system", persona, text }, deps.log);
 }
