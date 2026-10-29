@@ -45,6 +45,8 @@
   ];
 
   const THEMES = ["dark", "light", "system"];
+  /** パネルの「出力」に残す行の数（このタブのメモリだけ） */
+  const OUTPUT_MAX = 500;
 
   const S = {
     activity: "chat",
@@ -55,6 +57,10 @@
     panelOpen: !mqNarrow.matches,
     panelTab: "output",
     theme: "dark",
+    // チャンネルごとの書きかけ（localStorage の drafts。送ったら消す）
+    drafts: {},
+    // パネルの「出力」の行（{ at, where, text }。古い順）
+    output: [],
   };
 
   const $ = (id) => document.getElementById(id);
@@ -330,7 +336,20 @@
     if (ed) renderEd(ed, tabId);
   }
 
-  // ===== パネル（W1 は枠だけ。出力・知らせ・ジョブの中身は後の段） =====
+  /** タブの見出しの実行中の印だけを付け外しする（中身は描き直さない。書きかけの入力欄を保つ） */
+  function refreshTabMarks() {
+    if (!refs.editors) return;
+    for (const tab of refs.editors.querySelectorAll(".tab")) {
+      const info = SA.views.info(tab.getAttribute("data-tab"));
+      const label = tab.querySelector(".tab-label");
+      if (!label) continue;
+      const spin = label.querySelector(".spinner");
+      if (info && info.dirty && !spin) label.append(el("span", { class: "spinner spinner-sm", role: "img", "aria-label": "実行中" }));
+      if (info && !info.dirty && spin) spin.remove();
+    }
+  }
+
+  // ===== パネル（出力は実行中のターンの手順と終わり方。知らせ・ジョブの中身は後の段） =====
   function savePanel() {
     save("panel", JSON.stringify({ open: S.panelOpen, tab: S.panelTab }));
   }
@@ -348,8 +367,44 @@
     }
     const close = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm", type: "button", "aria-label": "パネルを閉じる（Ctrl+J）", title: "パネルを閉じる（Ctrl+J）" }, [icon("x")]);
     close.addEventListener("click", () => togglePanel(false));
-    const body = el("div", { class: "panel-body", role: "tabpanel" }, [el("p", { class: "meta panel-note", text: "まだありません" })]);
+    const body = el("div", { class: "panel-body", role: "tabpanel" });
+    if (S.panelTab === "output") {
+      body.append(el("ol", { class: "out-list", id: "out-list", "aria-live": "polite" }, S.output.map(outLine)));
+      if (S.output.length === 0) body.append(el("p", { class: "meta panel-note", text: "実行中のターンの手順と終わり方がここに出ます（この画面を開いている間だけ）。" }));
+    } else {
+      body.append(el("p", { class: "meta panel-note", text: "まだありません" }));
+    }
     refs.panel.replaceChildren(el("div", { class: "panel-head" }, [tabs, el("span", { class: "sb-spacer" }), close]), body);
+    const list = $("out-list");
+    if (list) list.scrollTop = list.scrollHeight;
+  }
+
+  function outLine(o) {
+    return el("li", { class: "out-line" }, [el("span", { class: "out-time", text: o.at }), el("span", { class: "out-where", text: o.where }), el("span", { text: o.text })]);
+  }
+
+  /** パネルの「出力」に 1 行足す（OUTPUT_MAX を超えたら古いものから落とす） */
+  function addOutput(where, text) {
+    const o = { at: SA.ui.clock(new Date()), where, text };
+    S.output.push(o);
+    const dropped = S.output.length > OUTPUT_MAX;
+    if (dropped) S.output.shift();
+    const list = $("out-list");
+    if (!list) return;
+    if (dropped || list.children.length === 0) {
+      // 最初の行・落とした行があれば描き直す（案内の文を消すため）
+      if (S.panelOpen && S.panelTab === "output") renderPanel();
+      return;
+    }
+    list.append(outLine(o));
+    list.scrollTop = list.scrollHeight;
+  }
+
+  /** 書きかけを localStorage に残す（読めない・書けない環境ではこのタブのメモリだけ） */
+  function setDraft(channelId, value) {
+    if (value) S.drafts[channelId] = value;
+    else delete S.drafts[channelId];
+    save("drafts", JSON.stringify(S.drafts));
   }
 
   function togglePanel(force) {
@@ -382,8 +437,17 @@
       if (status.shell && status.shell.configured) {
         left.append(sbarItem([icon("terminal"), "シェル " + (status.shell.enabled ? "通ります" : "通りません")], { title: "シェルの自己診断", run: () => open("status"), cls: "hide-sm" }));
       }
-      if (status.running > 0) {
-        left.append(sbarItem([el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }), "実行中 " + status.running], { title: "実行中のターン", run: () => open("status") }));
+      // 実行中のターンは /api/running（2 秒ごと）があればそれ、まだ無ければ /api/status の数
+      const running = SA.store.running;
+      const count = running ? running.length : status.running;
+      if (count > 0) {
+        const first = running && running[0] ? "ch:" + running[0].channelId : null;
+        left.append(
+          sbarItem([el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }), "実行中 " + count], {
+            title: "実行中のターン",
+            run: () => (first && SA.views.info(first) ? open(first) : open("status")),
+          }),
+        );
       }
     }
     const today = SA.views.todayTokens();
@@ -670,6 +734,10 @@
     }
     S.theme = THEMES.includes(load("theme", "dark")) ? load("theme", "dark") : "dark";
     applyTheme();
+    const drafts = loadJson("drafts");
+    if (drafts && !Array.isArray(drafts)) {
+      for (const [id, v] of Object.entries(drafts)) if (typeof v === "string" && v !== "") S.drafts[id] = v;
+    }
     const panel = loadJson("panel");
     if (panel) {
       if (PANEL_TABS.some((t) => t.id === panel.tab)) S.panelTab = panel.tab;
@@ -717,7 +785,9 @@
     refresh,
     refreshSidebar: renderSidebar,
     refreshTabs: renderEditors,
+    refreshTabMarks,
     refreshStatus,
+    addOutput,
     activeTabId,
     closeDrawer,
     toggleSidebar,
@@ -725,6 +795,8 @@
     palette,
     theme: () => S.theme,
     setTheme,
+    draft: (channelId) => S.drafts[channelId] || "",
+    setDraft,
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

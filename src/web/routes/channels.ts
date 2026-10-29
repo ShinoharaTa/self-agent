@@ -1,7 +1,7 @@
 // GET /api/channels・/api/channels/<id>/turns（docs/plan/web-ui.md §4.3）。会話のサイドバーと会話のタブ（読むだけ）。
 // 対象は /setup 済みのサーバーだけ（env の SELF_AGENT_INBOX_CHANNEL_ID は使わない）。ID は Discord のリンクを作るために返す（log には出さない）
 import { type Config, DEFAULT_PERSONA_ID } from "../../config.ts";
-import type { ResolveChannel } from "../../app/access.ts";
+import type { ChannelKind, ResolveChannel } from "../../app/access.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import { DEFAULT_PERSONA_LABEL, type PersonaRouter, type PersonaRuntime } from "../../app/personas.ts";
 import type { GuildSettingsStore } from "../../store/guild-settings.ts";
@@ -60,6 +60,33 @@ function optionalId(value: string | null): number | undefined | null {
   if (!/^\d{1,15}$/.test(value)) return null;
   const parsed = Number(value);
   return parsed >= 1 ? parsed : null;
+}
+
+/**
+ * Web で開ける・送れるチャンネルのサーバーと種類（/turns・/messages などで共通）。サーバーはセッション → 入口 → 既定の人格の #inbox・#tasks の順に引き、
+ * 許可した /setup 済みのサーバーの受け付け対象（resolveChannel が null でない）でなければ undefined
+ */
+export function webChannelLookup(
+  deps: Pick<ChannelRouteDeps, "cfg" | "resolveChannel"> & {
+    guildSettings: Pick<GuildSettingsStore, "get" | "entryChannel">;
+    topicSessions: Pick<TopicSessionStore, "get">;
+  },
+): (channelId: string) => { guildId: string; kind: ChannelKind } | undefined {
+  const { cfg, guildSettings, topicSessions, resolveChannel } = deps;
+  const guildOf = (channelId: string): string | undefined => {
+    const found = topicSessions.get(channelId)?.guildId ?? guildSettings.entryChannel(channelId)?.guildId;
+    if (found !== undefined) return found;
+    return cfg.allowedGuildIds.find((guildId) => {
+      const settings = guildSettings.get(guildId);
+      return settings !== undefined && (settings.inboxChannelId === channelId || settings.tasksChannelId === channelId);
+    });
+  };
+  return (channelId) => {
+    const guildId = guildOf(channelId);
+    if (guildId === undefined || !cfg.allowedGuildIds.includes(guildId) || guildSettings.get(guildId) === undefined) return undefined;
+    const kind = resolveChannel(guildId, channelId);
+    return kind === null ? undefined : { guildId, kind };
+  };
 }
 
 export function channelRoutes(deps: ChannelRouteDeps): Route[] {
@@ -138,22 +165,13 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
     return row === undefined ? null : { id: row.id, at: row.at, kind: row.kind };
   };
 
-  /** チャンネルのサーバー（セッション → 入口 → 既定の人格の #inbox・#tasks の順に引く）。分からなければ undefined */
-  const guildOf = (channelId: string): string | undefined => {
-    const found = topicSessions.get(channelId)?.guildId ?? guildSettings.entryChannel(channelId)?.guildId;
-    if (found !== undefined) return found;
-    return cfg.allowedGuildIds.find((guildId) => {
-      const settings = guildSettings.get(guildId);
-      return settings !== undefined && (settings.inboxChannelId === channelId || settings.tasksChannelId === channelId);
-    });
-  };
+  const lookup = webChannelLookup({ cfg, guildSettings, topicSessions, resolveChannel });
 
   /** /turns の 1 チャンネル。許可した /setup 済みのサーバーの受け付け対象でなければ undefined */
   const channelOf = (channelId: string): WebChannel | undefined => {
-    const guildId = guildOf(channelId);
-    if (guildId === undefined || !cfg.allowedGuildIds.includes(guildId) || guildSettings.get(guildId) === undefined) return undefined;
-    const kind = resolveChannel(guildId, channelId);
-    if (kind === null) return undefined;
+    const found = lookup(channelId);
+    if (found === undefined) return undefined;
+    const { guildId, kind } = found;
     if (kind === "session") {
       const item = topicSessions.get(channelId);
       return item === undefined ? undefined : session(item, lastOf(channelId));

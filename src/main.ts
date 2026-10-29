@@ -71,6 +71,7 @@ import { UsageStore } from "./store/usage.ts";
 import { channelRoutes } from "./web/routes/channels.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
 import { statusRoutes } from "./web/routes/status.ts";
+import { turnRoutes } from "./web/routes/turns.ts";
 import { usageRoutes } from "./web/routes/usage.ts";
 import { createWebServer, type WebServer } from "./web/server.ts";
 import { readPackageVersion } from "./web/version.ts";
@@ -271,7 +272,8 @@ const channelOps = new ChannelOpsQueue({
 });
 // セッションのチャンネルのターンには途中経過と [中断] を付け、手順の上限で止まったら [続ける] を付ける。
 // 発言はチャンネルの持ち主の Bot が受け取った分だけを受け付け、返信・途中経過・入力中表示もその Bot で行う。
-// 発言の画像はキューの中で取り、そのターンに渡して原本を <dataDir>/attachments/ に置く
+// 発言の画像はキューの中で取り、そのターンに渡して原本を <dataDir>/attachments/ に置く。
+// Web からの発言は持ち主の Bot が接続しているときだけ受け付け、その Bot で「（Web から）」を投稿してから同じ経路で 1 ターン入れる
 const handler = createHandler({
   cfg: config,
   resolveChannel,
@@ -282,6 +284,7 @@ const handler = createHandler({
   now,
   prepareImages: (source, images) => prepareImages({ dataDir: config.dataDir, attachments, log }, source, images),
   ...history,
+  ownerConnected: (channelId) => personas.ownerConnected(channelId),
 });
 // #inbox・#tasks の切り替え: 要約のターンは発言と同じキュー（turnQueue、key はそのチャンネルの channelId）で行う。
 // 定期処理と、#inbox・#tasks での /renew で使う
@@ -559,8 +562,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
           failedItems: () => shellState.failedItems(),
         },
         queue: turnQueue,
-        // 実行中のターンの一覧は W3 で足す
-        running: () => 0,
+        running: () => handler.runningTurns().length,
         serving: () => staticServer?.listening() ?? false,
         guildSettings,
         env: process.env,
@@ -568,6 +570,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       ...usageRoutes({ cfg: config, usage, attachments, now }),
       ...channelRoutes({ cfg: config, guildSettings, topicSessions, projects, history: historyStore, personas, resolveChannel }),
       ...devlogRoutes({ cfg: config, now }),
+      ...turnRoutes({ cfg: config, guildSettings, topicSessions, resolveChannel, handler, now, log }),
     ],
     stopping: () => lifecycle.stopping(),
     now,
