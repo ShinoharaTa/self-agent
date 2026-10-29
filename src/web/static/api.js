@@ -77,7 +77,8 @@
   // today: 日付を付けずに /api/usage を呼んだときにサーバーが返した日付（SELF_AGENT_TZ の今日）。
   // channels: /api/channels（guilds・personas・channels）。turns[channelId]: 会話のタブの行（古い順）と、/turns の channel・まだ前があるか。
   // devlogDays: /api/devlog/days。devlog: /api/devlog の結果（date はサーバーが使った日付）。devlogToday: 日付を付けずに読んだときの日付。
-  // running: /api/running の turns（まだ読んでいなければ null）。runningAt: それを受け取った時刻（経過時間を進めて見せる）
+  // running: /api/running の turns（まだ読んでいなければ null）。runningAt: それを受け取った時刻（経過時間を進めて見せる）。
+  // tasks: /api/tasks の状態ごとの一覧（{ open, done, dropped }）。reminders: /api/reminders。memories: /api/memories（どれもまだ読んでいなければ null）
   const store = {
     status: null,
     usage: null,
@@ -92,6 +93,9 @@
     devlogToday: null,
     running: null,
     runningAt: 0,
+    tasks: null,
+    reminders: null,
+    memories: null,
     load: {},
   };
   const loading = {};
@@ -134,7 +138,11 @@
     return SA.api
       .get("/api/usage" + (date ? "?date=" + encodeURIComponent(date) : ""))
       .then((data) => {
-        if (!date && data && typeof data.date === "string") store.today = data.date;
+        if (!date && data && typeof data.date === "string" && store.today !== data.date) {
+          store.today = data.date;
+          // 期限を過ぎたタスクの印は今日で決まる
+          SA.app.refresh("tasks");
+        }
         if (seq !== usageSeq) return;
         store.usage = data;
         store.usageFailed = null;
@@ -450,10 +458,51 @@
       });
   };
 
+  // ===== タスク・リマインド・記憶（W4） =====
+  const TASK_STATUSES = ["open", "done", "dropped"];
+
+  /** 3 つの状態を並べて読む（状態の切り替えの数を出すため）。opts.quiet は polling から */
+  store.load.tasks = (opts) =>
+    once("tasks", async () => {
+      const lists = await Promise.all(TASK_STATUSES.map((status) => SA.api.get("/api/tasks?status=" + status, opts)));
+      const tasks = {};
+      TASK_STATUSES.forEach((status, i) => {
+        tasks[status] = Array.isArray(lists[i] && lists[i].tasks) ? lists[i].tasks : [];
+      });
+      store.tasks = tasks;
+      SA.app.refresh("tasks");
+      SA.app.refreshSidebar();
+    });
+
+  store.load.reminders = (opts) =>
+    once("reminders", async () => {
+      const data = await SA.api.get("/api/reminders", opts);
+      store.reminders = Array.isArray(data && data.reminders) ? data.reminders : [];
+      SA.app.refresh("reminders");
+      SA.app.refreshSidebar();
+    });
+
+  store.load.memories = (opts) =>
+    once("memories", async () => {
+      const data = await SA.api.get("/api/memories", opts);
+      store.memories = Array.isArray(data && data.memories) ? data.memories : [];
+      SA.app.refresh("memories");
+      SA.app.refreshSidebar();
+    });
+
+  /** 操作の後: 読んでいる途中のもの（操作の前の中身かもしれない）が終わるのを待ってから、もう一度読む */
+  store.reload = (key) => Promise.resolve(loading[key]).then(() => store.load[key]());
+
+  /** 一度読んだ一覧（タスク・リマインド・記憶）だけを読み直す（polling）。失敗があれば最初の error で resolve する */
+  store.load.lists = (opts) => {
+    const keys = ["tasks", "reminders", "memories"].filter((key) => store[key] !== null);
+    return Promise.all(keys.map((key) => store.load[key](opts))).then((errors) => errors.find((err) => err) || null);
+  };
+
   SA.store = store;
 
   // ===== polling（見えているときだけ。隠れたら止め、戻ったら即 1 回） =====
-  // /api/status は 10 秒、/api/channels は 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
+  // /api/status は 10 秒、/api/channels と一度読んだタスク・リマインド・記憶は 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
   // /api/running は実行中のターンがあれば 2 秒・無ければ 10 秒ごと（どれも応答が来てから次を予約する）。
   // 失敗のトーストは続けて失敗している間は最初の 1 回だけで、その間は間隔を倍にして POLL_BACKOFF_MAX_MS まで伸ばす。成功したら元に戻す
   const poll = { started: false, stopped: false };
@@ -467,6 +516,7 @@
   const polls = {
     status: { base: () => STATUS_INTERVAL_MS, run: (opts) => store.load.status(opts), fails: 0, timer: null },
     channels: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.channels(opts), fails: 0, timer: null },
+    lists: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.lists(opts), fails: 0, timer: null },
     turns: { base: () => TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
     running: {
       base: () => (store.running && store.running.length > 0 ? RUNNING_BUSY_MS : RUNNING_IDLE_MS),

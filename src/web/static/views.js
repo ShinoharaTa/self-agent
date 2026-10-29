@@ -1,9 +1,9 @@
-// タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）。タスクなどは後の段で足す
+// タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）・タスク・リマインド・記憶（W4）。ナレッジなどは後の段で足す
 "use strict";
 
 (function () {
   const SA = (window.SA = window.SA || {});
-  const { el, icon, count } = SA.ui;
+  const { el, icon, count, toast, confirm } = SA.ui;
   const store = SA.store;
 
   const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
@@ -26,7 +26,7 @@
   function table(headers, rows, cls) {
     return el("div", { class: "table-wrap" }, [
       el("table", { class: "table" + (cls ? " " + cls : "") }, [
-        el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { scope: "col", class: h.cls || null, text: h.text || h })))]),
+        el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { scope: "col", class: h.cls || null, text: typeof h === "string" ? h : h.text })))]),
         el("tbody", {}, rows),
       ]),
     ]);
@@ -62,6 +62,13 @@
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "-";
     return d.getMonth() + 1 + "/" + d.getDate() + "(" + WEEKDAYS[d.getDay()] + ") " + d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0");
+  }
+
+  /** ISO の時刻 → このブラウザの日付で 10/29(木) */
+  function dateOf(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "-";
+    return d.getMonth() + 1 + "/" + d.getDate() + "(" + WEEKDAYS[d.getDay()] + ")";
   }
 
   /** 今からどれだけ前か（分・時間・日） */
@@ -252,6 +259,180 @@
     );
   }
 
+  // ===== タスク・リマインド・記憶の操作（W4） =====
+  /** 操作が通らなかったとき: 404・409 は「古くなっています」、それ以外は request の文。どちらも一覧を読み直す */
+  function failed(err, key) {
+    const stale = err && (err.status === 404 || err.status === 409);
+    toast(stale ? "この操作は古くなっています" : (err && err.toast) || "操作に失敗しました");
+    store.reload(key);
+  }
+
+  /** POST して、通ったら一覧を読み直して then を呼ぶ。押したボタンは終わるまで押せなくする */
+  function act(button, path, key, then) {
+    if (button) button.disabled = true;
+    SA.api.post(path, {}, { quiet: true }).then(
+      (data) => {
+        store.reload(key);
+        if (then) then(data);
+      },
+      (err) => {
+        if (button) button.disabled = false;
+        failed(err, key);
+      },
+    );
+  }
+
+  // ===== タスク（W4: 一覧と [完了]・トーストの [取り消す]） =====
+  const taskFilter = { status: "open" };
+  const TASK_STATUSES = [
+    ["open", "未完了"],
+    ["done", "完了"],
+    ["dropped", "やめた"],
+  ];
+  /** /api/tasks の 1 回の上限（これだけあれば「200+」と出す） */
+  const TASK_LIST_LIMIT = 200;
+
+  /** 期限（YYYY-MM-DD）が今日（サーバーの日付）より前の未完了 */
+  function overdue(t) {
+    return t.status === "open" && typeof t.due === "string" && !!store.today && t.due < store.today;
+  }
+
+  function completeTask(button, t) {
+    act(button, "/api/tasks/" + t.id + "/complete", "tasks", () => {
+      toast("「" + t.title + "」を完了にしました", {
+        label: "取り消す",
+        run: () => act(null, "/api/tasks/" + t.id + "/reopen", "tasks"),
+      });
+    });
+  }
+
+  function renderTasks(container) {
+    const all = store.tasks;
+    const seg = el("div", { class: "segmented segmented-sm", role: "group", "aria-label": "状態" });
+    for (const [key, label] of TASK_STATUSES) {
+      const n = all ? all[key].length : null;
+      const text = n === null ? label : label + " " + (n >= TASK_LIST_LIMIT ? TASK_LIST_LIMIT + "+" : n);
+      const b = el("button", { type: "button", "aria-pressed": String(taskFilter.status === key), text });
+      b.addEventListener("click", () => {
+        taskFilter.status = key;
+        SA.app.refresh("tasks");
+      });
+      seg.append(b);
+    }
+    const head = toolbar("square-check", "タスク", [], [seg]);
+    if (!all) {
+      container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
+      return;
+    }
+    const rows = all[taskFilter.status].map((t) => {
+      const late = overdue(t);
+      const due = t.due === null ? "—" : dayLabel(t.due) + (late ? "・過ぎています" : "");
+      const action = el("td", { class: "td-actions" });
+      if (t.status === "open") {
+        const done = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, [icon("check"), "完了"]);
+        done.addEventListener("click", () => completeTask(done, t));
+        action.append(done);
+      }
+      const closed = (t.status === "done" ? "完了 " : "やめた ") + (t.completedAt ? dateOf(t.completedAt) : "-");
+      return el("tr", { "data-task": String(t.id) }, [
+        td("#" + t.id, "td-num"),
+        td(t.title, "td-main"),
+        td(due, late ? "is-overdue" : null),
+        td(t.status === "open" ? (t.remind ? dateTime(t.remind) : "—") : closed),
+        action,
+      ]);
+    });
+    const body =
+      rows.length === 0
+        ? empty("square-check", "このタスクはありません")
+        : table(["#", "題名", "期限", taskFilter.status === "open" ? "知らせ" : "閉じた日", { text: "", cls: "th-actions" }], rows);
+    container.replaceChildren(
+      head,
+      scroll([body, el("p", { class: "meta", text: "追加・編集は #inbox か #tasks に書いてください（Bot が task_add・task_update を使います）。" })]),
+    );
+  }
+
+  // ===== リマインド（W4: 止める・次を飛ばす） =====
+  function renderReminders(container) {
+    const list = store.reminders;
+    if (!list) {
+      container.replaceChildren(toolbar("bell", "リマインド"), scroll([empty(null, "読み込んでいます…")]));
+      return;
+    }
+    const rows = list.map((r) => {
+      const actions = el("td", { class: "td-actions" });
+      if (r.rule !== null) {
+        const skip = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "次を飛ばす" });
+        skip.addEventListener("click", () =>
+          act(skip, "/api/reminders/" + r.id + "/skip", "reminders", (data) => {
+            toast("次の回を飛ばしました。次は " + (data && data.next ? dateTime(data.next) : "-") + " です");
+          }),
+        );
+        actions.append(skip);
+      }
+      const stop = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "止める" });
+      stop.addEventListener("click", () =>
+        confirm({
+          title: "「" + r.text + "」を止めますか",
+          body: "止めたリマインドは戻せません。",
+          ok: "止める",
+          danger: true,
+          run: () =>
+            act(stop, "/api/reminders/" + r.id + "/cancel", "reminders", () => {
+              toast("「" + r.text + "」を止めました");
+            }),
+        }),
+      );
+      actions.append(stop);
+      return el("tr", {}, [
+        td(r.nextAt ? dateTime(r.nextAt) : "-", "td-nowrap"),
+        td([r.kind === "prompt" ? el("span", { class: "badge badge-accent", text: "依頼" }) : null, r.kind === "prompt" ? " " : null, r.text], "td-main"),
+        td(r.rule === null ? "1 回だけ" : r.ruleText || r.rule),
+        td(r.channelName || "—"),
+        actions,
+      ]);
+    });
+    const body =
+      rows.length === 0
+        ? empty("bell", "動いているリマインドはありません")
+        : table(["次の時刻", "内容", "繰り返し", "頼んだ場所", { text: "", cls: "th-actions" }], rows);
+    container.replaceChildren(
+      toolbar("bell", "リマインド", [el("span", { class: "meta", text: list.length + " 件" })]),
+      scroll([body, el("p", { class: "meta", text: "発火のメッセージのボタン（済んだ・10 分後・1 時間後）は Discord にだけあります。" })]),
+    );
+  }
+
+  // ===== 記憶（W4: 一覧と [忘れる]・トーストの [取り消す]） =====
+  function renderMemories(container) {
+    const list = store.memories;
+    if (!list) {
+      container.replaceChildren(toolbar("book", "記憶"), scroll([empty(null, "読み込んでいます…")]));
+      return;
+    }
+    // 新しい順に並べる（API は id 順）
+    const rows = [...list]
+      .sort((a, b) => b.id - a.id)
+      .map((m) => {
+        const forget = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "忘れる" });
+        forget.addEventListener("click", () =>
+          act(forget, "/api/memories/" + m.id + "/forget", "memories", () => {
+            toast("忘れました: " + m.text, {
+              label: "取り消す",
+              run: () => act(null, "/api/memories/" + m.id + "/restore", "memories"),
+            });
+          }),
+        );
+        return el("tr", {}, [td("#" + m.id, "td-num"), td(m.text, "td-main"), td(dateOf(m.createdAt)), el("td", { class: "td-actions" }, [forget])]);
+      });
+    container.replaceChildren(
+      toolbar("book", "記憶"),
+      scroll([
+        el("p", { class: "meta", text: "オーナーについての記憶です。毎ターンの先頭に付きます。" }),
+        rows.length ? table(["#", "記憶", "保存", { text: "", cls: "th-actions" }], rows) : empty(null, "記憶はありません"),
+      ]),
+    );
+  }
+
   // ===== 状態（W1） =====
   function kv(label, value) {
     return el("li", { class: "kv" }, [el("span", { class: "kv-label" }, [label]), el("span", { class: "kv-value" }, [value])]);
@@ -386,6 +567,9 @@
 
   // ===== タブ ID → 表示（onOpen はタブを前に出したときに呼ぶ） =====
   const STATIC = {
+    tasks: { title: "タスク", icon: "square-check", render: renderTasks, onOpen: () => store.load.tasks() },
+    reminders: { title: "リマインド", icon: "bell", render: renderReminders, onOpen: () => store.load.reminders() },
+    memories: { title: "記憶", icon: "book", render: renderMemories, onOpen: () => store.load.memories() },
     usage: {
       title: "使用量",
       icon: "bar-chart",
@@ -433,6 +617,7 @@
     devlogDate: () => devlogState.date,
     compact,
     dayLabel,
+    overdue,
     todayTokens,
   };
 })();

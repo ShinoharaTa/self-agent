@@ -13,9 +13,9 @@
   // stage の付いたものはその段で中身を足すまで出さない（足した段で stage を外す）
   const ACTIVITIES = [
     { id: "chat", label: "会話", icon: "message-square", enabled: always, count: () => store.unreadCount(), countLabel: "未読 " },
-    { id: "tasks", label: "タスク", icon: "square-check", enabled: always, stage: "w4" },
-    { id: "reminders", label: "リマインド", icon: "bell", enabled: always, stage: "w4" },
-    { id: "knowledge", label: "ナレッジ・記憶", icon: "book", enabled: always, stage: "w6" },
+    { id: "tasks", label: "タスク", icon: "square-check", enabled: always },
+    { id: "reminders", label: "リマインド", icon: "bell", enabled: always },
+    { id: "knowledge", label: "ナレッジ・記憶", icon: "book", enabled: always },
     { id: "projects", label: "プロジェクト", icon: "folder", enabled: always, stage: "w7" },
     { id: "jobs", label: "ジョブ", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
     { id: "github", label: "GitHub", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled), stage: "w6" },
@@ -115,6 +115,38 @@
     body.replaceChildren(el("div", { class: "sb-search" }, [search]), listBox);
   }
 
+  // ===== タスク・リマインド =====
+  function renderTasks(body) {
+    if (store.tasks === null) {
+      store.load.tasks();
+      body.replaceChildren(group("open", "未完了", [], null, "読み込んでいます…"));
+      return;
+    }
+    const items = store.tasks.open.map((t) =>
+      row({ tab: "tasks", label: t.title, meta: t.due ? SA.views.dayLabel(t.due) : "", cls: SA.views.overdue(t) ? "is-overdue" : null, title: "#" + t.id }),
+    );
+    body.replaceChildren(group("open", "未完了", items));
+  }
+
+  function renderReminders(body) {
+    if (store.reminders === null) {
+      store.load.reminders();
+      body.replaceChildren(group("rem", "動いているもの", [], null, "読み込んでいます…"));
+      return;
+    }
+    const items = store.reminders.map((r) =>
+      row({ tab: "reminders", icon: r.rule ? "rotate-ccw" : "clock", label: r.text, meta: r.nextAt ? SA.ui.hm(new Date(r.nextAt)) : "" }),
+    );
+    body.replaceChildren(group("rem", "動いているもの", items));
+  }
+
+  // ===== ナレッジ・記憶（ナレッジは W6。今は記憶の行だけ） =====
+  function renderKnowledge(body) {
+    if (store.memories === null) store.load.memories();
+    const meta = store.memories === null ? "" : store.memories.length + " 件";
+    body.replaceChildren(group("mem", "記憶", [row({ tab: "memories", icon: "book", label: "記憶の一覧", meta })]));
+  }
+
   // ===== 会話ログ（日付の一覧） =====
   function renderDevlog(body) {
     if (store.devlogDays === null) {
@@ -165,12 +197,17 @@
 
   const RENDER = {
     chat: renderChat,
+    tasks: renderTasks,
+    reminders: renderReminders,
+    knowledge: renderKnowledge,
     usage: renderUsage,
     devlog: renderDevlog,
   };
 
   // サイドバーの見出しの右の操作
   function headerActions(id) {
+    if (id === "tasks") return [openAll("tasks", "一覧を開く")];
+    if (id === "reminders") return [openAll("reminders", "一覧を開く")];
     if (id === "usage") return [openAll("usage", "開く")];
     if (id === "devlog") return [openAll("devlog", "開く")];
     return [];
