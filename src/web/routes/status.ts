@@ -1,4 +1,4 @@
-// GET /api/status（docs/plan/web-ui.md §3.5）。Bot の接続・シェル・キュー・配信・GitHub・サーバー・環境変数の有無。
+// GET /api/status（docs/plan/web-ui.md §3.5）。Bot の接続・シェル・キュー・配信・GitHub・サーバー・環境変数の有無と、画面の時刻のタイムゾーン。
 // 環境変数は名前と「値があるか」だけを返し、値は見ない
 import { type Config, DEFAULT_PERSONA_ID } from "../../config.ts";
 import { GUEST_BOT_NAME, GUEST_PERSONA_ID } from "../../guest/constants.ts";
@@ -73,7 +73,7 @@ export const WEB_ENV_NAMES: readonly string[] = [
 export type GithubStatus = { enabled: boolean; lastFetchAt: string | null; failure: string | null };
 
 export type StatusDeps = {
-  cfg: Pick<Config, "allowedGuildIds" | "publicBaseUrl" | "servePort" | "devMode" | "github" | "jobs" | "guest">;
+  cfg: Pick<Config, "allowedGuildIds" | "timeZone" | "publicBaseUrl" | "servePort" | "devMode" | "github" | "jobs" | "guest">;
   /** package.json の版（version.ts の readPackageVersion） */
   version: () => string | null;
   startedAt: Date;
@@ -111,6 +111,8 @@ export function statusBody(deps: StatusDeps): Record<string, unknown> {
     version: deps.version(),
     startedAt: deps.startedAt.toISOString(),
     stopping: deps.stopping(),
+    // 画面の時刻を出すタイムゾーン（SELF_AGENT_TZ。IANA 名）
+    timeZone: cfg.timeZone,
     bots,
     shell: {
       configured: deps.shellState.configured,

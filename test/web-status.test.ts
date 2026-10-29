@@ -67,6 +67,7 @@ async function statusSetup(t: TestContext, overrides: Partial<StatusDeps> = {}) 
   const deps: StatusDeps = {
     cfg: {
       allowedGuildIds: ["guild-1", "guild-2"],
+      timeZone: "Asia/Tokyo",
       publicBaseUrl: "https://example.invalid",
       servePort: undefined,
       devMode: true,
@@ -109,6 +110,7 @@ test("/api/status: Bot・シェルの失敗の項目・キュー・GitHub（W6 �
   assert.equal(body.version, "0.1.0");
   assert.equal(body.startedAt, "2026-10-02T00:00:00.000Z");
   assert.equal(body.stopping, false);
+  assert.equal(body.timeZone, "Asia/Tokyo");
   assert.deepEqual(body.bots, [
     { persona: "default", name: "既定の人格", isDefault: true, connected: true },
     { persona: "mika", name: "Mika", isDefault: false, connected: false },

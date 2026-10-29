@@ -117,12 +117,12 @@
 
   // ===== タスク・リマインド =====
   function renderTasks(body) {
-    if (store.tasks === null) {
+    if (store.openTasks === null) {
       store.load.tasks();
       body.replaceChildren(group("open", "未完了", [], null, "読み込んでいます…"));
       return;
     }
-    const items = store.tasks.open.map((t) =>
+    const items = store.openTasks.map((t) =>
       row({ tab: "tasks", label: t.title, meta: t.due ? SA.views.dayLabel(t.due) : "", cls: SA.views.overdue(t) ? "is-overdue" : null, title: "#" + t.id }),
     );
     body.replaceChildren(group("open", "未完了", items));
@@ -135,7 +135,8 @@
       return;
     }
     const items = store.reminders.map((r) =>
-      row({ tab: "reminders", icon: r.rule ? "rotate-ccw" : "clock", label: r.text, meta: r.nextAt ? SA.ui.hm(new Date(r.nextAt)) : "" }),
+      // 時刻は今日なら時刻だけ、それ以外は日付も
+      row({ tab: "reminders", icon: r.rule ? "rotate-ccw" : "clock", label: SA.views.oneLine(r.text), meta: r.nextAt ? SA.ui.shortTime(r.nextAt) : "" }),
     );
     body.replaceChildren(group("rem", "動いているもの", items));
   }
