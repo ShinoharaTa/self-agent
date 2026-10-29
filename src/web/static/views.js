@@ -127,7 +127,8 @@
     const head = toolbar("bar-chart", "使用量", [], [date]);
     // まだ読んでいない・別の日付のものしか無い
     if (!u || (want && u.date !== want)) {
-      container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
+      const failed = store.usageFailed !== null && store.usageFailed === (usageState.date || "today");
+      container.replaceChildren(head, scroll([empty(null, failed ? "読み込めませんでした" : "読み込んでいます…")]));
       return;
     }
     const cards = el(
@@ -230,7 +231,7 @@
               kv("シェルの自己診断", shellValue(s.shell)),
               kv("実行中のセッションのジョブ", String(s.queue ? s.queue.runningSessionJobs : 0)),
               kv("実行中のターン", String(s.running ?? 0)),
-              kv("プロジェクトの配信", !s.publicBaseUrl ? "無効" : s.serving ? "待ち受け中" : "止まっています"),
+              kv("プロジェクトの配信", !s.serveConfigured ? "無効" : s.serving ? "待ち受け中" : "止まっています"),
               kv("dev モード", s.devMode ? "有効" : "無効"),
               kv("GitHub の通知", githubLine(s.github)),
               kv("作業ジョブ", s.jobs && s.jobs.enabled ? "有効" : "無効"),

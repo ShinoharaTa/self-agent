@@ -71,7 +71,7 @@ export const WEB_ENV_NAMES: readonly string[] = [
 export type GithubStatus = { enabled: boolean; lastFetchAt: string | null; failure: string | null };
 
 export type StatusDeps = {
-  cfg: Pick<Config, "allowedGuildIds" | "publicBaseUrl" | "devMode" | "github" | "jobs" | "guest">;
+  cfg: Pick<Config, "allowedGuildIds" | "publicBaseUrl" | "servePort" | "devMode" | "github" | "jobs" | "guest">;
   /** package.json の版（version.ts の readPackageVersion） */
   version: () => string | null;
   startedAt: Date;
@@ -119,6 +119,8 @@ export function statusBody(deps: StatusDeps): Record<string, unknown> {
     running: deps.running(),
     serving: deps.serving(),
     publicBaseUrl: cfg.publicBaseUrl ?? null,
+    // 配信はポートと公開 URL の両方があるときだけ有効（片方だけなら機能ごと無効）
+    serveConfigured: cfg.servePort !== undefined && cfg.publicBaseUrl !== undefined,
     devMode: cfg.devMode,
     github: deps.githubStatus?.() ?? { enabled: cfg.github, lastFetchAt: null, failure: null },
     jobs: { enabled: cfg.jobs },

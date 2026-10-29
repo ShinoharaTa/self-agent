@@ -21,7 +21,8 @@
       throw err;
     }
     if (res.status === 401) {
-      location.href = "/login";
+      // / はトークンがあれば /login へ 302、無ければ「Tailscale でつないでください」を返す（/login はトークンが無いと 404）
+      location.href = "/";
       throw new Error("unauthorized");
     }
     let data = null;
@@ -46,7 +47,7 @@
   // ===== 状態（このタブのメモリだけ） =====
   // status: /api/status。usage: /api/usage の結果（date はサーバーが使った日付）。usageDays: /api/usage/days。
   // today: 日付を付けずに /api/usage を呼んだときにサーバーが返した日付（SELF_AGENT_TZ の今日）
-  const store = { status: null, usage: null, usageDays: null, today: null, load: {} };
+  const store = { status: null, usage: null, usageFailed: null, usageDays: null, today: null, load: {} };
   const loading = {};
 
   /** 同じものを同時に 2 回読まない。失敗は呼び出し側に返さず、トーストだけ（request が出す） */
@@ -67,9 +68,9 @@
       SA.app.refreshStatus();
       SA.app.refresh("status");
       SA.app.refresh("settings");
-      if (data && data.stopping === true) {
+      if (data && data.stopping === true && !SA.poll.stopped()) {
         SA.poll.stop();
-        SA.ui.toast("再起動中です");
+        SA.ui.toast("再起動中です。終わったら再読み込みしてください");
       }
     });
 
@@ -83,11 +84,16 @@
         if (!date && data && typeof data.date === "string") store.today = data.date;
         if (seq !== usageSeq) return;
         store.usage = data;
+        store.usageFailed = null;
         SA.app.refresh("usage");
         SA.app.refreshSidebar();
         SA.app.refreshStatus();
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (seq !== usageSeq) return;
+        store.usageFailed = date || "today";
+        SA.app.refresh("usage");
+      });
   };
 
   store.load.usageDays = () =>
@@ -119,6 +125,7 @@
       document.addEventListener("visibilitychange", schedule);
       schedule();
     },
+    stopped: () => poll.stopped,
     stop() {
       poll.stopped = true;
       clearInterval(poll.timer);
