@@ -3,7 +3,7 @@
 
 (function () {
   const SA = (window.SA = window.SA || {});
-  const { el, icon, elapsed, hm } = SA.ui;
+  const { el, icon, elapsed, hm, linkify } = SA.ui;
   const store = SA.store;
 
   const STATE_LABEL = { active: "進行中", waiting: "待ち", done: "完了" };
@@ -92,8 +92,13 @@
     return el("a", { class: "tl-time", href, target: "_blank", rel: "noreferrer", title: "Discord で開く", text });
   }
 
-  // 開いた手順（details）は描き直しても開いたままにする（このタブのメモリだけ）
-  const openSteps = new Set();
+  // 開いた手順（details）は描き直しても開いたままにする（このタブのメモリだけ。{ [channelId]: Set<turn.id> }。会話のタブを閉じたら消す）
+  const openSteps = {};
+
+  function openStepsOf(channelId) {
+    if (!openSteps[channelId]) openSteps[channelId] = new Set();
+    return openSteps[channelId];
+  }
 
   function stepsList(steps) {
     const list = el("ol", { class: "steps-list" });
@@ -102,7 +107,7 @@
     return list;
   }
 
-  function renderTurn(turn) {
+  function renderTurn(turn, channelId) {
     if (turn.kind === "divider") {
       return el("div", { class: "tl-divider", role: "separator" }, [el("span", { text: turn.text })]);
     }
@@ -122,7 +127,8 @@
     const p = persona(turn.persona);
     const body = el("div", { class: "msg-body" }, [el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: p.name }), timeOf(turn)])]);
     if (turn.outcome) {
-      const details = el("details", { class: "steps", open: openSteps.has(turn.id) }, [
+      const opened = openStepsOf(channelId);
+      const details = el("details", { class: "steps", open: opened.has(turn.id) }, [
         el("summary", { class: END_CLASS[turn.outcome] || null }, [
           icon("chevron-right", "steps-chevron"),
           icon(END_ICON[turn.outcome] || "info"),
@@ -131,12 +137,13 @@
         stepsList(Array.isArray(turn.steps) ? turn.steps : []),
       ]);
       details.addEventListener("toggle", () => {
-        if (details.open) openSteps.add(turn.id);
-        else openSteps.delete(turn.id);
+        if (details.open) opened.add(turn.id);
+        else opened.delete(turn.id);
       });
       body.append(details);
     }
-    body.append(el("div", { class: "msg-text", text: turn.text }));
+    // 返事の本文は http(s) の URL だけをリンクにする
+    body.append(el("div", { class: "msg-text" }, linkify(typeof turn.text === "string" ? turn.text : "")));
     return el("article", { class: "msg msg-agent" }, [avatar(Array.from(p.name || "?")[0], "avatar-agent"), body]);
   }
 
@@ -209,7 +216,7 @@
       more.addEventListener("click", () => loadOlder(channelId));
       timeline.append(el("div", { class: "tl-hint" }, [more]));
     }
-    for (const turn of t.turns) timeline.append(renderTurn(turn));
+    for (const turn of t.turns) timeline.append(renderTurn(turn, channelId));
     if (t.turns.length === 0) timeline.append(el("p", { class: "tl-hint", text: "まだ記録はありません。Discord で発言すると、ここにも出ます。" }));
     if (ch && ch.kind === "session" && ch.state === "done") {
       timeline.append(el("p", { class: "tl-hint", text: "完了したセッションです。発言すると進行中に戻ります。" }));
@@ -230,6 +237,9 @@
       icon: ch && ch.kind === "session" ? "message-square" : "hash",
       render: (container) => render(container, channelId),
       onOpen: () => store.load.turns(channelId),
+      onClose: () => {
+        delete openSteps[channelId];
+      },
     };
   }
 

@@ -45,7 +45,7 @@ export type WebChannel = {
   link: string;
 };
 
-type Latest = ReturnType<HistoryStore["latestByChannel"]>;
+type Last = WebChannel["last"];
 
 const BAD_REQUEST: RouteResult = { status: 400, json: { error: "bad_request" } };
 const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
@@ -76,7 +76,7 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
     channelId: string,
     kind: "inbox" | "tasks",
     name: string,
-    latest: Latest,
+    last: Last,
   ): WebChannel => ({
     id: channelId,
     guildId,
@@ -86,11 +86,11 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
     persona: personas.ownerOf(channelId),
     state: null,
     project: project(channelId),
-    last: latest.get(channelId) ?? null,
+    last,
     link: channelLink(guildId, channelId),
   });
 
-  const session = (item: TopicSession, latest: Latest): WebChannel | undefined => {
+  const session = (item: TopicSession, last: Last): WebChannel | undefined => {
     if (item.state === "deleted") return undefined;
     return {
       id: item.channelId,
@@ -101,23 +101,41 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
       persona: personas.ownerOf(item.channelId),
       state: item.state,
       project: project(item.channelId),
-      last: latest.get(item.channelId) ?? null,
+      last,
       link: channelLink(item.guildId, item.channelId),
     };
   };
 
   /** そのサーバー（/setup 済み）の入口（#inbox・#tasks・設定にある人格の #<NAME>） */
-  const entries = (guildId: string, latest: Latest): WebChannel[] => {
+  const entries = (guildId: string, latest: ReturnType<HistoryStore["latestByChannel"]>): WebChannel[] => {
     const settings = guildSettings.get(guildId);
     if (settings === undefined) return [];
     const list: WebChannel[] = [];
-    if (settings.inboxChannelId !== null) list.push(entry(guildId, settings.inboxChannelId, "inbox", "inbox", latest));
-    if (settings.tasksChannelId !== null) list.push(entry(guildId, settings.tasksChannelId, "tasks", "tasks", latest));
+    const add = (channelId: string, kind: "inbox" | "tasks", name: string) =>
+      list.push(entry(guildId, channelId, kind, name, latest.get(channelId) ?? null));
+    if (settings.inboxChannelId !== null) add(settings.inboxChannelId, "inbox", "inbox");
+    if (settings.tasksChannelId !== null) add(settings.tasksChannelId, "tasks", "tasks");
     for (const persona of cfg.personas) {
       const channelId = guildSettings.personaInbox(guildId, persona.id)?.channelId;
-      if (channelId !== null && channelId !== undefined) list.push(entry(guildId, channelId, "inbox", persona.name, latest));
+      if (channelId !== null && channelId !== undefined) add(channelId, "inbox", persona.name);
     }
     return list;
+  };
+
+  /** そのサーバー（/setup 済み）の入口のうち channelId のもの（entries と同じ順で引き、ほかの入口は組み立てない）。入口でなければ undefined */
+  const entryOf = (guildId: string, channelId: string, last: Last): WebChannel | undefined => {
+    const settings = guildSettings.get(guildId);
+    if (settings === undefined) return undefined;
+    if (settings.inboxChannelId === channelId) return entry(guildId, channelId, "inbox", "inbox", last);
+    if (settings.tasksChannelId === channelId) return entry(guildId, channelId, "tasks", "tasks", last);
+    const persona = cfg.personas.find((candidate) => guildSettings.personaInbox(guildId, candidate.id)?.channelId === channelId);
+    return persona === undefined ? undefined : entry(guildId, channelId, "inbox", persona.name, last);
+  };
+
+  /** そのチャンネルの最後の行 */
+  const lastOf = (channelId: string): Last => {
+    const row = history.list(channelId, { limit: 1 })[0];
+    return row === undefined ? null : { id: row.id, at: row.at, kind: row.kind };
   };
 
   /** チャンネルのサーバー（セッション → 入口 → 既定の人格の #inbox・#tasks の順に引く）。分からなければ undefined */
@@ -136,12 +154,11 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
     if (guildId === undefined || !cfg.allowedGuildIds.includes(guildId) || guildSettings.get(guildId) === undefined) return undefined;
     const kind = resolveChannel(guildId, channelId);
     if (kind === null) return undefined;
-    const latest = history.latestByChannel(guildId);
     if (kind === "session") {
       const item = topicSessions.get(channelId);
-      return item === undefined ? undefined : session(item, latest);
+      return item === undefined ? undefined : session(item, lastOf(channelId));
     }
-    return entries(guildId, latest).find((channel) => channel.id === channelId);
+    return entryOf(guildId, channelId, lastOf(channelId));
   };
 
   const turnOf = (row: HistoryRow, link: string) => ({
@@ -172,7 +189,7 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
           channels.push(...entries(guild.id, latest));
           for (const state of LISTED_STATES) {
             for (const item of topicSessions.listByState(guild.id, state, SESSION_LIST_LIMITS[state])) {
-              const channel = session(item, latest);
+              const channel = session(item, latest.get(item.channelId) ?? null);
               if (channel !== undefined) channels.push(channel);
             }
           }

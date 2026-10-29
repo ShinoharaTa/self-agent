@@ -1,6 +1,6 @@
 // GET /api/devlog/days・/api/devlog（docs/plan/web-ui.md §3.4）。dev モードの会話ログ（<dataDir>/devlog/<YYYY-MM-DD>.jsonl）を
 // npm run devlog と同じ形で読む。dev モードでなければどちらも 404。記録は本文・チャンネル ID を含むので log には出さない
-import { readdirSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunContext } from "../../agent/runner.ts";
 import { formatDate } from "../../app/time.ts";
@@ -25,13 +25,36 @@ export type DevlogRouteDeps = {
 const BAD_REQUEST: RouteResult = { status: 400, json: { error: "bad_request" } };
 const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
 
-/** ファイルが無ければ undefined */
+/** 読めない記録の text（形は合っているが npm run devlog の整形で投げた行） */
+export const DEVLOG_UNREADABLE_TEXT = "（読めない記録）";
+
+/**
+ * 通常のファイルなら中身。無い・通常のファイルでない（ディレクトリ・symlink・FIFO など。/days が数えないもの）なら undefined。
+ * symlink はたどらず、FIFO で待たないよう O_NOFOLLOW・O_NONBLOCK で開いてから確かめる
+ */
 function readIfExists(path: string): string | undefined {
+  let fd: number;
   try {
-    return readFileSync(path, "utf8");
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ELOOP" || code === "ENOTDIR") return undefined;
     throw error;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return undefined;
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** npm run devlog と同じ text。整形で投げたら（steps の要素が壊れているなど）DEVLOG_UNREADABLE_TEXT */
+function formatOrUnreadable(record: DevLogRecord, timeZone: string): string {
+  try {
+    return formatDevLogRecord(record, timeZone);
+  } catch {
+    return DEVLOG_UNREADABLE_TEXT;
   }
 }
 
@@ -118,7 +141,7 @@ export function devlogRoutes(deps: DevlogRouteDeps): Route[] {
           ok: record.result.ok,
           durationMs: record.durationMs,
           toolCalls: record.result.toolCalls,
-          text: formatDevLogRecord(record, cfg.timeZone),
+          text: formatOrUnreadable(record, cfg.timeZone),
         }));
         return { status: 200, json: { date, records } };
       },

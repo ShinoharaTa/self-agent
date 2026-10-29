@@ -408,18 +408,24 @@
     },
   };
 
-  /** 知らない・無効な機能のタブは null（開かない）。会話は ch:<チャンネル ID>。会話ログは dev モードでないと分かったら開かない */
+  /** 知らない・無効な機能のタブは null（開かない）。会話は ch:<チャンネル ID>。会話ログは /api/status を読んで dev モードと分かるまで開かない */
   function info(tabId) {
     if (tabId.startsWith("ch:")) {
       const channelId = tabId.slice(3);
       return /^\d{1,25}$/.test(channelId) ? SA.chat.info(channelId) : null;
     }
-    if (tabId === "devlog" && store.status && !store.status.devMode) return null;
+    if (tabId === "devlog" && !(store.status && store.status.devMode)) return null;
     return Object.prototype.hasOwnProperty.call(STATIC, tabId) ? STATIC[tabId] : null;
+  }
+
+  /** /api/status を読むまで開けるか分からないタブ（読んだ後に開き直す） */
+  function waitsForStatus(tabId) {
+    return tabId === "devlog" && store.status === null;
   }
 
   SA.views = {
     info,
+    waitsForStatus,
     renderWelcome,
     selectUsageDate,
     usageDate: () => usageState.date,

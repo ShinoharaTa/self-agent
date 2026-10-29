@@ -7,14 +7,20 @@
   const STATUS_INTERVAL_MS = 10000;
   const CHANNELS_INTERVAL_MS = 60000;
   const TURNS_INTERVAL_MS = 5000;
+  /** polling が続けて失敗している間は間隔を倍にしていき、ここで止める */
+  const POLL_BACKOFF_MAX_MS = 60000;
   /** 会話のタブで一度に読む行の数（開いたとき・上にスクロールしたとき） */
   const TURNS_PAGE = 50;
   /** 会話ログで 1 日分として読む件数（/api/devlog の last の上限） */
   const DEVLOG_LAST = 200;
   const SEEN_KEY = "self-agent-web:seen";
 
-  /** 失敗は 401 なら /login へ、それ以外は「<status>: <error>」のトーストを出して reject する（error.status に HTTP の status） */
-  async function request(method, path, body) {
+  /**
+   * 失敗は 401 なら /login へ、それ以外は「<status>: <error>」のトーストを出して reject する（error.status に HTTP の status、error.toast にトーストの文）。
+   * opts.quiet ならトーストは出さない（呼び出し側が出すかを決める）
+   */
+  async function request(method, path, body, opts) {
+    const quiet = !!(opts && opts.quiet);
     const init = { method, headers: { "X-Self-Agent": "1" }, credentials: "same-origin", cache: "no-store" };
     if (method === "POST") {
       init.headers["Content-Type"] = "application/json";
@@ -24,7 +30,9 @@
     try {
       res = await fetch(path, init);
     } catch (err) {
-      SA.ui.toast("サーバーにつながりません");
+      const text = "サーバーにつながりません";
+      if (!quiet) SA.ui.toast(text);
+      if (err && typeof err === "object") err.toast = text;
       throw err;
     }
     if (res.status === 401) {
@@ -40,16 +48,17 @@
     }
     if (!res.ok) {
       const error = data && typeof data.error === "string" ? data.error : res.statusText || "error";
-      SA.ui.toast(res.status + ": " + error);
+      if (!quiet) SA.ui.toast(res.status + ": " + error);
       const failure = new Error(res.status + ": " + error);
       failure.status = res.status;
+      failure.toast = res.status + ": " + error;
       throw failure;
     }
     return data;
   }
 
   SA.api = {
-    get: (path) => request("GET", path),
+    get: (path, opts) => request("GET", path, undefined, opts),
     post: (path, body) => request("POST", path, body),
   };
 
@@ -74,20 +83,27 @@
   };
   const loading = {};
 
-  /** 同じものを同時に 2 回読まない。失敗は呼び出し側に返さず、トーストだけ（request が出す） */
+  /**
+   * 同じものを同時に 2 回読まない。失敗は reject せず、トーストだけ（request が出す。quiet なら出さない）。
+   * 成功なら null、失敗ならその error で resolve する（polling が続けて失敗しているかを知るため）
+   */
   function once(key, fn) {
     if (loading[key]) return loading[key];
     loading[key] = fn()
-      .catch(() => undefined)
+      .then(
+        () => null,
+        (err) => err || new Error("failed"),
+      )
       .finally(() => {
         loading[key] = null;
       });
     return loading[key];
   }
 
-  store.load.status = () =>
+  /** opts.quiet は polling から（失敗のトーストは polling が出す） */
+  store.load.status = (opts) =>
     once("status", async () => {
-      const data = await SA.api.get("/api/status");
+      const data = await SA.api.get("/api/status", opts);
       store.status = data;
       SA.app.refreshStatus();
       SA.app.refresh("status");
@@ -130,9 +146,9 @@
     });
 
   // ===== 会話（/api/channels・/turns） =====
-  store.load.channels = () =>
+  store.load.channels = (opts) =>
     once("channels", async () => {
-      const data = await SA.api.get("/api/channels");
+      const data = await SA.api.get("/api/channels", opts);
       store.channels = {
         guilds: Array.isArray(data && data.guilds) ? data.guilds : [],
         personas: Array.isArray(data && data.personas) ? data.personas : [],
@@ -172,14 +188,14 @@
   }
 
   /** 開いたときは最新の 50 件、その後は最後の行より後（after）を読む */
-  store.load.turns = (channelId) =>
+  store.load.turns = (channelId, opts) =>
     once("turns:" + channelId, async () => {
       const t = turnsOf(channelId);
       if (t.missing) return;
       let changed = false;
       try {
         if (!t.loaded || t.turns.length === 0) {
-          const data = await SA.api.get(turnsPath(channelId, "limit=" + TURNS_PAGE));
+          const data = await SA.api.get(turnsPath(channelId, "limit=" + TURNS_PAGE), opts);
           const turns = Array.isArray(data && data.turns) ? data.turns : [];
           changed = !t.loaded || turns.length > 0;
           t.turns = turns;
@@ -191,7 +207,7 @@
           // 5 秒の間に 50 件を超えて増えることはまず無いが、超えたら続けて読む
           for (let i = 0; i < 4; i++) {
             const lastId = t.turns[t.turns.length - 1].id;
-            const data = await SA.api.get(turnsPath(channelId, "after=" + lastId + "&limit=" + TURNS_PAGE));
+            const data = await SA.api.get(turnsPath(channelId, "after=" + lastId + "&limit=" + TURNS_PAGE), opts);
             const turns = Array.isArray(data && data.turns) ? data.turns : [];
             if (data && data.channel) {
               const before = t.channel;
@@ -231,6 +247,7 @@
     });
 
   // ===== 既読（このブラウザだけ。{ [channelId]: 見た最後の history.id }。読めなくても動く） =====
+  // 同じブラウザのほかのタブも書くので、書く前に読み直してチャンネルごとに大きい方を残し、storage イベントで読み直す
   function readSeen() {
     try {
       const v = JSON.parse(window.localStorage.getItem(SEEN_KEY) || "null");
@@ -240,12 +257,25 @@
     }
   }
 
-  store.seen = readSeen();
+  /** チャンネルごとに id の大きい方 */
+  function mergeSeen(a, b) {
+    const merged = {};
+    for (const source of [a, b]) {
+      for (const [channelId, value] of Object.entries(source)) {
+        const id = Number(value);
+        if (Number.isFinite(id) && id > (merged[channelId] || 0)) merged[channelId] = id;
+      }
+    }
+    return merged;
+  }
+
+  store.seen = mergeSeen(readSeen(), {});
 
   /** id まで見たことにする。進んだら true */
   store.markSeen = (channelId, id) => {
     if (typeof id !== "number" || !(id > (Number(store.seen[channelId]) || 0))) return false;
     store.seen[channelId] = id;
+    store.seen = mergeSeen(readSeen(), store.seen);
     try {
       window.localStorage.setItem(SEEN_KEY, JSON.stringify(store.seen));
     } catch {
@@ -253,6 +283,14 @@
     }
     return true;
   };
+
+  // ほかのタブが既読を書いたら読み直す
+  window.addEventListener("storage", (e) => {
+    if (e.key !== SEEN_KEY) return;
+    store.seen = mergeSeen(readSeen(), store.seen);
+    SA.app.refreshSidebar();
+    SA.app.refreshStatus();
+  });
 
   /** 最後の行が返事で、まだ見ていない */
   store.isUnread = (channel) => !!(channel && channel.last && channel.last.kind === "agent" && channel.last.id > (Number(store.seen[channel.id]) || 0));
@@ -291,30 +329,67 @@
   SA.store = store;
 
   // ===== polling（見えているときだけ。隠れたら止め、戻ったら即 1 回） =====
-  // /api/status は 10 秒、/api/channels は 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと
-  const poll = { timers: [], started: false, stopped: false };
+  // /api/status は 10 秒、/api/channels は 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと（応答が来てから次を予約する）。
+  // 失敗のトーストは続けて失敗している間は最初の 1 回だけで、その間は間隔を倍にして POLL_BACKOFF_MAX_MS まで伸ばす。成功したら元に戻す
+  const poll = { started: false, stopped: false };
 
-  function activeTurns() {
+  function activeTurns(opts) {
     const channelId = SA.chat.activeChannelId();
-    if (channelId) store.load.turns(channelId);
+    return channelId ? store.load.turns(channelId, opts) : Promise.resolve(null);
+  }
+
+  /** run は opts（quiet）を受け、成功なら null・失敗ならその error で resolve する。fails は続けて失敗した回数 */
+  const polls = {
+    status: { base: STATUS_INTERVAL_MS, run: (opts) => store.load.status(opts), fails: 0, timer: null },
+    channels: { base: CHANNELS_INTERVAL_MS, run: (opts) => store.load.channels(opts), fails: 0, timer: null },
+    turns: { base: TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
+  };
+
+  function active() {
+    return !poll.stopped && document.visibilityState === "visible";
+  }
+
+  /** 続けて fails 回失敗した後の間隔 */
+  function backoff(base, fails) {
+    return fails === 0 ? base : Math.max(base, Math.min(base * 2 ** fails, POLL_BACKOFF_MAX_MS));
+  }
+
+  /** 失敗を数え、続く失敗の最初の 1 回だけトーストを出す。成功なら数を戻す */
+  function countFailure(p, err) {
+    if (!err) {
+      p.fails = 0;
+      return;
+    }
+    p.fails++;
+    if (p.fails === 1) SA.ui.toast(typeof err.toast === "string" ? err.toast : "サーバーにつながりません");
+  }
+
+  /** 1 回読み、終わったら次を予約する（重ねて呼ばれても予約は 1 つ） */
+  function runPoll(p) {
+    clearTimeout(p.timer);
+    p.timer = null;
+    if (!active()) return;
+    p.run({ quiet: true }).then((err) => {
+      countFailure(p, err);
+      if (!active()) return;
+      clearTimeout(p.timer);
+      p.timer = setTimeout(() => runPoll(p), backoff(p.base, p.fails));
+    });
   }
 
   function clearTimers() {
-    for (const timer of poll.timers) clearInterval(timer);
-    poll.timers = [];
+    for (const p of Object.values(polls)) {
+      clearTimeout(p.timer);
+      p.timer = null;
+    }
   }
 
   function schedule() {
     clearTimers();
-    if (poll.stopped || document.visibilityState !== "visible") return;
-    store.load.status();
-    store.load.channels();
-    activeTurns();
+    if (!active()) return;
+    for (const p of Object.values(polls)) runPoll(p);
     // 隠れている間に返事が来ていれば、戻ったときに既読にする
     SA.chat.markSeenActive();
-    poll.timers.push(setInterval(() => store.load.status(), STATUS_INTERVAL_MS));
-    poll.timers.push(setInterval(() => store.load.channels(), CHANNELS_INTERVAL_MS));
-    poll.timers.push(setInterval(activeTurns, TURNS_INTERVAL_MS));
   }
 
   SA.poll = {

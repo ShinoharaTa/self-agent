@@ -60,7 +60,7 @@
     return date.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", hour12: false });
   }
 
-  /** 本文の URL だけをリンクにする（それ以外は文字のまま） */
+  /** 本文の http(s) の URL だけをリンクにする（それ以外は文字のまま。innerHTML は使わない） */
   function linkify(text) {
     const parts = [];
     const re = /https?:\/\/[^\s<>]+/g;
@@ -68,7 +68,7 @@
     let match;
     while ((match = re.exec(text)) !== null) {
       if (match.index > last) parts.push(text.slice(last, match.index));
-      parts.push(el("a", { href: match[0], target: "_blank", rel: "noreferrer", text: match[0] }));
+      parts.push(el("a", { href: match[0], target: "_blank", rel: "noreferrer noopener", text: match[0] }));
       last = match.index + match[0].length;
     }
     if (last < text.length) parts.push(text.slice(last));
