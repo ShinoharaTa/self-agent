@@ -4,11 +4,13 @@ import type { SummaryChannelKind } from "../../store/inbox-summaries.ts";
 import { type InboxRotator, ROTATED_NOTICE, ROTATED_NOTICE_FRESH, type RotateNowResult } from "../inbox-rotate.ts";
 import type { CommandHandler } from "../interactions.ts";
 import { commandResponse, type PersonaRouter } from "../personas.ts";
-import { type RenewOutcome, renewSession, type SessionRenewDeps } from "../session-renew.ts";
+import { RENEWED_FRESH_REPLY, type RenewOutcome, renewedText, renewSession, type SessionRenewDeps } from "../session-renew.ts";
 import { ALREADY_CLOSED_REPLY } from "./close.ts";
 
+// 文面は session-renew.ts に置き（履歴の区切りの行も同じ文を使う）、ここから re-export する（循環 import を避ける）
+export { RENEWED_FRESH_REPLY, renewedText };
+
 export const NOT_RENEWABLE_REPLY = "セッションのチャンネルか #inbox・#tasks で実行してください";
-export const RENEWED_FRESH_REPLY = "前の会話の記録が見つからないため、要約せずに新しくしました。次の発言から新しい会話で続けます";
 export const NO_CONVERSATION_REPLY = "新しい会話はまだ始まっていません。次の発言から新しい会話で始まります";
 export const NOT_SET_UP_REPLY = "/setup を実行してください";
 export const RENEW_FAILURE_REPLY = "失敗しました。もう一度 /renew を実行してください";
@@ -21,11 +23,6 @@ export type RenewDeps = SessionRenewDeps & {
   /** チャンネルの持ち主の人格。既定の人格以外のチャンネルの結果は、持ち主の Bot がチャンネルに投稿する。無ければすべて既定の人格 */
   personas?: Pick<PersonaRouter, "ownerOf" | "gatewayFor">;
 };
-
-/** セッションの会話を新しくした返信（要約を添える） */
-export function renewedText(summary: string): string {
-  return `会話を新しくしました。次の発言から新しい会話で続けます。\n\n**要約**\n${summary}`;
-}
 
 function sessionReply(outcome: RenewOutcome): string {
   switch (outcome.result) {
