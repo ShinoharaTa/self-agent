@@ -16,6 +16,7 @@ import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { idleNotice, Scheduler } from "../src/app/scheduler.ts";
 import { createOpenSession, inboxSeed, inboxWelcomeText } from "../src/app/session-open.ts";
 import { rotatedSeed } from "../src/app/summary.ts";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import { loadConfig, type PersonaConfig } from "../src/config.ts";
 import { formatDevLogRecord, selectDevLogRecords } from "../src/devlog/format.ts";
 import type { DevLogRecord } from "../src/devlog/log.ts";
@@ -448,6 +449,7 @@ test("待ちに移した知らせ（[続ける][閉じる]）は、セッショ�
     seeds: env.seeds,
     channelOps: new RecordingChannelOps(),
     gateway: env.admin,
+    notify: createSystemNotifier({ guildSettings: { get: () => undefined }, gateway: env.admin, log: () => {} }),
     personas: env.personas,
     inboxRotator: { rotateDue: async () => {} },
     pruneDevLogs: () => {},
@@ -495,6 +497,7 @@ test("再同期: self-agent カテゴリの外にある設定中の人格の #<N
     seeds: env.seeds,
     channelOps,
     gateway,
+    notify: createSystemNotifier({ guildSettings: env.guildSettings, gateway, log: () => {} }),
     personas: env.personas,
     inboxRotator: { rotateDue: async () => {} },
     pruneDevLogs: () => {},

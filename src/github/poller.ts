@@ -3,11 +3,13 @@
 // 赤・黄を /setup 済みのサーバーの #github に投稿する（赤はオーナーだけをメンション）。最初の回は今ある未読を記録するだけで、開始の知らせを 1 通出す。
 // 取得の失敗は #system に変わったときだけ知らせる。log にはリポジトリ名・題名・URL・ログインを出さない（件数と失敗の種類だけ）
 import { withTimeout } from "../app/shell-state.ts";
+import type { SystemNotifier } from "../app/system-notice.ts";
 import type { Config } from "../config.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
 import type { GithubNotificationRow, GithubPollState, GithubStore, ThreadUpdate } from "../store/github.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
+import type { NoticeLevel } from "../store/notices.ts";
 import {
   type Classification,
   classifyNotification,
@@ -313,10 +315,12 @@ export type GithubPollerDeps = {
     GithubStore,
     "getThread" | "recordThread" | "addNotification" | "listUnposted" | "markPosted" | "markSkipped" | "prune" | "getPollState" | "savePollState"
   >;
-  /** 投稿先の #github と、失敗の知らせの #system */
+  /** 投稿先の #github */
   guildSettings: Pick<GuildSettingsStore, "get">;
-  /** 既定の人格の Bot */
+  /** 既定の人格の Bot（#github への投稿） */
   gateway: Pick<Gateway, "sendMessage">;
+  /** 失敗・戻ったの知らせ（#system。system-notice.ts） */
+  notify: SystemNotifier;
   now: () => Date;
   timers?: GithubTimers;
   log: (message: string) => void;
@@ -326,6 +330,9 @@ export type GithubPollerDeps = {
 
 /** まだ投稿できていない知らせ（サーバーごと。投稿できたものから除く） */
 type PendingNotice = { text: string; guilds: Set<string> };
+
+/** #system への知らせ（失敗・戻った）。level は notices の記録の重さ */
+type PendingSystemNotice = PendingNotice & { level: NoticeLevel };
 
 /** SELF_AGENT_GITHUB=1 のときだけポーラーを作る。無効なら undefined（何も動かさない） */
 export function createGithubPoller(deps: GithubPollerDeps & { cfg: Pick<Config, "github"> }): GithubPoller | undefined {
@@ -351,7 +358,7 @@ export class GithubPoller {
   /** #system に知らせている失敗の種類。知らせていなければ undefined */
   private announcedFailure: GithubFailure["kind"] | "no_gh" | undefined;
   /** #system への知らせ（失敗・戻った） */
-  private systemNotice: PendingNotice | undefined;
+  private systemNotice: PendingSystemNotice | undefined;
   /** #github への開始の知らせのうち、最初の #github に出した後でまだ出せていないサーバーの分（プロセスの中だけ） */
   private startNotice: PendingNotice | undefined;
   /** DB に残った失敗の種類から、知らせ済みの状態を戻したか（最初の tick で 1 回） */
@@ -371,7 +378,7 @@ export class GithubPoller {
     if (this.deps.gh === undefined) {
       this.deps.log("gh が見つからないため、GitHub の通知を取得しません");
       this.announcedFailure = "no_gh";
-      this.systemNotice = { text: GITHUB_NO_GH_NOTICE, guilds: new Set(this.deps.cfg.allowedGuildIds) };
+      this.systemNotice = { text: GITHUB_NO_GH_NOTICE, level: "danger", guilds: new Set(this.deps.cfg.allowedGuildIds) };
       this.running = this.postSystemNotice().then(() => 0);
       void this.running.finally(() => {
         this.running = undefined;
@@ -516,7 +523,7 @@ export class GithubPoller {
     for (const notification of notifications) store.recordThread(threadUpdate(notification));
     if (channels.length === 0 || this.stopped) return false;
     const notice: PendingNotice = { text: githubStartNotice(notifications.length), guilds: new Set(cfg.allowedGuildIds) };
-    await this.postNotice(notice, (guildId) => this.githubChannelOf(guildId));
+    await this.postNotice(notice, (guildId, text) => this.postGithubNotice(guildId, text));
     if (notice.guilds.size === cfg.allowedGuildIds.length) return false;
     store.savePollState({ baselineDone: true });
     this.startNotice = notice;
@@ -608,7 +615,7 @@ export class GithubPoller {
     this.loggedFailure = undefined;
     if (this.announcedFailure !== undefined) {
       this.announcedFailure = undefined;
-      this.systemNotice = { text: GITHUB_RECOVERED_NOTICE, guilds: new Set(this.deps.cfg.allowedGuildIds) };
+      this.systemNotice = { text: GITHUB_RECOVERED_NOTICE, level: "success", guilds: new Set(this.deps.cfg.allowedGuildIds) };
     }
     const interval = this.intervalMs(state);
     // 残りが 0 なら Reset まで取得も止める（§2.3）
@@ -652,31 +659,44 @@ export class GithubPoller {
     }
   }
 
-  /** 知らせている失敗と違うときだけ、#system への知らせを差し替える */
+  /** 知らせている失敗と違うときだけ、#system への知らせを差し替える（レート制限は warning、それ以外は danger） */
   private announce(kind: GithubFailure["kind"], text: string): void {
     if (this.announcedFailure === kind) return;
     this.announcedFailure = kind;
-    this.systemNotice = { text, guilds: new Set(this.deps.cfg.allowedGuildIds) };
+    const level: NoticeLevel = kind === "rate_limited" ? "warning" : "danger";
+    this.systemNotice = { text, level, guilds: new Set(this.deps.cfg.allowedGuildIds) };
   }
 
   /** まだ投稿できていない #system への知らせを出す（#system が無い・失敗したサーバーは次の tick でやり直す） */
   private async postSystemNotice(): Promise<void> {
-    await this.postNotice(this.systemNotice, (guildId) => this.deps.guildSettings.get(guildId)?.systemChannelId ?? null);
+    const notice = this.systemNotice;
+    if (notice === undefined) return;
+    const timeoutMs = this.deps.postTimeoutMs ?? GITHUB_POST_TIMEOUT_MS;
+    await this.postNotice(notice, (guildId, text) => this.deps.notify(guildId, { text }, { level: notice.level, timeoutMs }));
   }
 
   /** まだ投稿できていない #github への開始の知らせを出す */
   private async postStartNotice(): Promise<void> {
-    await this.postNotice(this.startNotice, (guildId) => this.githubChannelOf(guildId));
+    await this.postNotice(this.startNotice, (guildId, text) => this.postGithubNotice(guildId, text));
   }
 
-  private async postNotice(notice: PendingNotice | undefined, channelOf: (guildId: string) => string | null): Promise<void> {
+  /** #github に知らせを出す。#github が無ければ undefined */
+  private async postGithubNotice(guildId: string, text: string): Promise<string | undefined> {
+    const channelId = this.githubChannelOf(guildId);
+    return channelId === null ? undefined : this.post(channelId, { text });
+  }
+
+  /** まだ出せていないサーバーに post で出す（投稿先が無い（undefined）・失敗したサーバーは残す） */
+  private async postNotice(
+    notice: PendingNotice | undefined,
+    post: (guildId: string, text: string) => Promise<string | undefined>,
+  ): Promise<void> {
     if (notice === undefined) return;
     for (const guildId of [...notice.guilds]) {
       if (this.stopped) return;
-      const channelId = channelOf(guildId);
-      if (channelId === null) continue;
       try {
-        await this.post(channelId, { text: notice.text });
+        const messageId = await post(guildId, notice.text);
+        if (messageId === undefined) continue;
         notice.guilds.delete(guildId);
       } catch (error) {
         this.deps.log(`GitHub の通知の知らせの投稿に失敗しました（guild=${guildId}）: ${describeError(error)}`);

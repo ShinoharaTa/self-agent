@@ -400,6 +400,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
     seeds: { delete: () => assert.fail("想定外の呼び出し") },
     channelOps: { enqueueMove: () => {} },
     gateway,
+    notify: async () => assert.fail("想定外の呼び出し"),
     inboxRotator: { rotateDue: async () => {} },
     pruneDevLogs: () => {},
     pruneProjectTrash: async () => {},

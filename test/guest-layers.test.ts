@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { createChannelResolver } from "../src/app/access.ts";
 import { ReminderScheduler } from "../src/app/reminders.ts";
 import { Scheduler } from "../src/app/scheduler.ts";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import { createGuestLayer } from "../src/guest/index.ts";
 import { GuestStore } from "../src/store/guest.ts";
 import { GuestGuildStore } from "../src/store/guest-guilds.ts";
@@ -55,6 +56,7 @@ test("ゲストが有効で、ゲストのサーバーに有効なチャンネ�
     ...stores,
     channelOps: new RecordingChannelOps(),
     gateway,
+    notify: createSystemNotifier({ guildSettings: stores.guildSettings, gateway, log }),
     inboxRotator: { rotateDue: async () => {} },
     pruneDevLogs: () => {},
     pruneProjectTrash: async () => {},
@@ -137,8 +139,7 @@ function guestLayer(t: TestContext) {
     sessions: new SdkSessionStore(db, now),
     runner: new FakeRunner([]),
     usage: new UsageStore(db, now),
-    guildSettings,
-    adminGateway: admin,
+    notify: createSystemNotifier({ guildSettings, gateway: admin, log: (line) => logs.push(line) }),
     now,
     log: (line) => logs.push(line),
     createGateway: (_leave, join) => {

@@ -4,6 +4,7 @@ import type { SandboxCheckResult } from "../src/agent/sandbox-check.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { Scheduler } from "../src/app/scheduler.ts";
 import { SHELL_CHECK_ERROR_ITEM, SHELL_RESUMED_NOTICE, ShellState, shellDisabledNotice, shellRefresher } from "../src/app/shell-state.ts";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps } from "./helpers/recording.ts";
@@ -37,8 +38,7 @@ function setup(t: TestContext, noticeTimeoutMs?: number, missingBinaries?: () =>
       if (next instanceof Error) throw next;
       return next;
     },
-    guildSettings,
-    gateway,
+    notify: createSystemNotifier({ guildSettings, gateway, log: (line) => logs.push(line) }),
     log: (line) => logs.push(line),
     noticeTimeoutMs,
     ...(missingBinaries === undefined ? {} : { missingBinaries }),
@@ -204,6 +204,11 @@ function scheduler(
     seeds: stores.seeds,
     channelOps: new RecordingChannelOps(),
     gateway: new FakeGateway({ allow: ["sendMessage", "listChannelParents", "isInGuild"] }),
+    notify: createSystemNotifier({
+      guildSettings: stores.guildSettings,
+      gateway: new FakeGateway({ allow: ["sendMessage"] }),
+      log: () => {},
+    }),
     inboxRotator: { rotateDue },
     pruneDevLogs: () => {},
     pruneProjectTrash: async () => {},

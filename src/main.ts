@@ -33,6 +33,7 @@ import { PersonaRouter, type PersonaRuntime } from "./app/personas.ts";
 import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
+import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
@@ -60,6 +61,7 @@ import { InboxSummaryStore } from "./store/inbox-summaries.ts";
 import { JobStore } from "./store/jobs.ts";
 import { KnowledgeStore } from "./store/knowledge.ts";
 import { MemoryStore } from "./store/memories.ts";
+import { NOTICE_KEEP_DAYS, NoticeStore } from "./store/notices.ts";
 import { ProjectStore } from "./store/projects.ts";
 import { ReminderStore } from "./store/reminders.ts";
 import { RoutineRecordStore } from "./store/routine-records.ts";
@@ -155,6 +157,9 @@ const attachments = new AttachmentStore(db, now);
 // Web UI で会話を見るためのターンの記録（docs/plan/web-ui.md §4.2）。書くのは Web UI が有効なときだけで、古いものは有効・無効を問わず tick で消す
 const historyStore = new HistoryStore(db, now);
 const history = config.web ? { history: historyStore } : {};
+// #system への知らせの記録（docs/plan/web-ui.md §7.1）。書くのは Web UI が有効なときだけで、古いものは有効・無効を問わず tick で消す
+const noticeStore = new NoticeStore(db, now);
+const notices = config.web ? noticeStore : undefined;
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -171,6 +176,8 @@ const diskQuota = new DiskQuota({ workDir: realWorkDir, projectsDir, now });
 // 人格ごとの Bot（docs/plan/personas.md）。既定の人格は DISCORD_TOKEN で、管理の操作（カテゴリ・チャンネル・ピン留め・#system・再同期・コマンドの登録）もこの Bot が行う。
 // 足した人格は SELF_AGENT_PERSONA_<ID>_DISCORD_TOKEN（値は start で読む）で、自分のチャンネルの返事・途中経過・ボタンだけを投稿する
 const gateway = new DiscordGateway(config.allowedGuildIds);
+// #system への知らせ（シェルの状態・人格の Bot の接続・GitHub の取得の失敗・削除の確認・ゲスト）は既定の人格の Bot で、notices に記録してから投稿する
+const notify = createSystemNotifier({ guildSettings, gateway, notices, log });
 const personaGateways = config.personas.map((persona) => ({
   persona,
   gateway: new DiscordGateway(config.allowedGuildIds, { persona: persona.id, tokenEnv: persona.discordTokenEnv }),
@@ -354,8 +361,7 @@ const guest = config.guest
       sessions,
       runner: createGuestRunner({ cfg: config, log }),
       usage,
-      guildSettings,
-      adminGateway: personas.admin,
+      notify,
       now,
       log,
     })
@@ -429,8 +435,7 @@ const shellState = new ShellState({
       ...sandboxPlacesOf(config, defaultSandboxHost()),
     }),
   missingBinaries: () => missingSandboxBinaries(shellPath(process.execPath)),
-  guildSettings,
-  gateway,
+  notify,
   log,
 });
 // 足した人格の Bot のうち、起動時のログインが終わった（成功・失敗・時間切れ）もの。終わる前は接続の知らせを出さない
@@ -447,8 +452,7 @@ const personaStatus =
           connected: () => personaGateway.connected(),
           loginSettled: () => loginSettled.has(persona.id),
         })),
-        guildSettings,
-        gateway,
+        notify,
         log,
       });
 // 定期処理: SELF_AGENT_SHELL=1 ならシェルの自己診断をやり直し、セッションの状態と Discord の親カテゴリのずれを直し、発言の無い進行中のセッションを待ちに移し、
@@ -462,6 +466,8 @@ const scheduler = new Scheduler({
   seeds,
   channelOps,
   gateway,
+  // 削除の確認（#system）
+  notify,
   // 待ちに移した知らせはチャンネルの持ち主の Bot で出す
   personas,
   inboxRotator,
@@ -475,6 +481,11 @@ const scheduler = new Scheduler({
   pruneHistory: () => {
     const deleted = historyStore.prune(new Date(now().getTime() - config.webHistoryDays * 24 * 60 * 60 * 1000));
     if (deleted > 0) log(`古いターンの記録 ${deleted} 件を消しました`);
+  },
+  // NOTICE_KEEP_DAYS 日より前の #system への知らせの記録を消す（Web UI が無効でも消す）
+  pruneNotices: () => {
+    const deleted = noticeStore.prune(new Date(now().getTime() - NOTICE_KEEP_DAYS * 24 * 60 * 60 * 1000));
+    if (deleted > 0) log(`古い知らせの記録 ${deleted} 件を消しました`);
   },
   // 待ちに移した知らせの行（Web UI が有効なときだけ）
   ...history,
@@ -520,6 +531,7 @@ const githubPoller = createGithubPoller({
   store: new GithubStore(db, now),
   guildSettings,
   gateway,
+  notify,
   now,
   log,
 });

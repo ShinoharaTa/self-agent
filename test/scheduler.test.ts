@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { setImmediate as flush } from "node:timers/promises";
 import type { MoveTarget } from "../src/app/channel-ops.ts";
 import { deletePrompt } from "../src/app/commands/delete.ts";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import {
   DELETE_PROMPT_BATCH_LIMIT,
   IDLE_BATCH_LIMIT,
@@ -105,6 +106,7 @@ function setup(
     seeds,
     channelOps,
     gateway,
+    notify: createSystemNotifier({ guildSettings, gateway, log: (line) => logs.push(line) }),
     inboxRotator,
     pruneDevLogs: () => devLogs.prune(),
     pruneProjectTrash: async () => {
