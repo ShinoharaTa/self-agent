@@ -115,7 +115,7 @@ function okResult(sessionId: string, text: string): Extract<RunResult, { ok: tru
 function setup(
   t: TestContext,
   results: Array<RunResult | Error>,
-  options: { history?: boolean; ownerConnected?: (channelId: string) => boolean } = {},
+  options: { history?: boolean; ownerConnected?: (channelId: string) => boolean; stopping?: () => boolean } = {},
 ) {
   const db = tempDb(t);
   // sendMessage で送ったものの ID は posted-<n>
@@ -154,6 +154,7 @@ function setup(
     timers,
     ...(options.history === true ? { history } : {}),
     ...(options.ownerConnected === undefined ? {} : { ownerConnected: options.ownerConnected }),
+    ...(options.stopping === undefined ? {} : { stopping: options.stopping }),
     log: (line) => (line.startsWith("トークン（") ? tokenLogs : logs).push(line),
   });
   const handle = handler.handleMessage;
@@ -1704,6 +1705,38 @@ test("Web: 持ち主の Bot が接続していなければ bot_disconnected で�
   assert.deepEqual(gateway.posts, []);
   assert.equal(runner.inputs.length, 0);
   assert.deepEqual(historyRows(history, "inbox-1"), []);
+});
+
+test("Web: 停止を始めていれば、echo を投稿せずに stopping で、owner の行もターンも無い", async (t) => {
+  const { gateway, runner, history, handler } = setup(t, [], { history: true, ownerConnected: () => true, stopping: () => true });
+
+  assert.deepEqual(await handler.submitText(webInput("inbox-1", "こんにちは")), { result: "stopping" });
+  await settle();
+
+  assert.deepEqual(gateway.posts, []);
+  assert.equal(runner.inputs.length, 0);
+  assert.deepEqual(historyRows(history, "inbox-1"), []);
+});
+
+test("Web: echo の間に停止を始めたら、キューに入れずに stopping で、log に 1 行（本文・チャンネル ID は出さない）", async (t) => {
+  let stopping = false;
+  const { gateway, runner, history, handler, logs } = setup(t, [okResult("session-1", "はい")], {
+    history: true,
+    ownerConnected: () => true,
+    stopping: () => stopping,
+  });
+  // echo の投稿の途中で停止を始める
+  gateway.beforeSendMessage = () => {
+    stopping = true;
+  };
+
+  assert.deepEqual(await handler.submitText(webInput("inbox-1", "こんにちは")), { result: "stopping" });
+  await settle();
+
+  assert.deepEqual(gateway.posts.map((post) => post.messageId), ["posted-1"]);
+  assert.equal(runner.inputs.length, 0);
+  assert.deepEqual(gateway.sent, []);
+  assert.deepEqual(logs, ["停止中のため Web の投稿をターンにしませんでした"]);
 });
 
 test("runningTurns: #inbox のターンも番号・始めた時刻・ツール回数・直近の手順（31 手順目で先頭が落ちる）付きで出し、中断はできない。終わったら消える", async (t) => {

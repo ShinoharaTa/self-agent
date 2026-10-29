@@ -39,6 +39,8 @@ export function turnRoutes(deps: TurnRouteDeps): Route[] {
         return { status: 503, json: { error: "bot_disconnected" } };
       case "echo_failed":
         return { status: 502, json: { error: "echo_failed" } };
+      case "stopping":
+        return { status: 503, json: { error: "stopping" } };
       case "accepted":
         log(`Web から ${kind} に送りました（guild=${guildId}）`);
         return { status: 202, json: { turnId: result.turnId, link: messageLink(guildId, channelId, result.messageId) } };
@@ -84,7 +86,9 @@ export function turnRoutes(deps: TurnRouteDeps): Route[] {
       method: "POST",
       pattern: /^\/api\/channels\/(\d{1,25})\/turns\/(\d{1,16})\/abort$/,
       handle: async ({ params }) => {
-        const aborted = handler.abortTurn(params[0] ?? "", Number(params[1]));
+        const channelId = params[0] ?? "";
+        if (lookup(channelId) === undefined) return NOT_FOUND;
+        const aborted = handler.abortTurn(channelId, Number(params[1]));
         return aborted ? { status: 200, json: { aborted: true } } : { status: 409, json: { error: "stale" } };
       },
     },
