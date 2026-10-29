@@ -1,6 +1,7 @@
 // 配線だけ: config → store → runner → gateway → handler
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DiskQuota, pruneWorkDir } from "./agent/disk.ts";
 import { pruneProjectTrash } from "./agent/project-files.ts";
 import {
@@ -11,6 +12,7 @@ import {
   projectDirNameFor,
 } from "./agent/query-options.ts";
 import { checkSandbox, missingSandboxBinaries, shellPath } from "./agent/sandbox-check.ts";
+import { WEB_TEMPLATE_DIR } from "./agent/scaffold.ts";
 import type { AgentRunner, RunContext } from "./agent/runner.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
 import { personaSystemPrompts } from "./agent/system-prompt.ts";
@@ -65,6 +67,10 @@ import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { UsageStore } from "./store/usage.ts";
+import { statusRoutes } from "./web/routes/status.ts";
+import { usageRoutes } from "./web/routes/usage.ts";
+import { createWebServer, type WebServer } from "./web/server.ts";
+import { readPackageVersion } from "./web/version.ts";
 
 const config = loadConfig();
 
@@ -504,7 +510,51 @@ if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
   });
 }
 
-// 停止: シグナルで新しい受付と定期処理（リマインドの発火・GitHub の通知のポーリングを含む）を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・DB を閉じる
+// Web UI（docs/plan/web-ui.md）: ポートとログインの両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）。
+// lifecycle（停止中か）は下で作る（要求のときに読む）
+const startedAt = now();
+let webServer: WebServer | undefined;
+if (config.web && config.webPort !== undefined && config.webAllowedLogin !== undefined) {
+  webServer = createWebServer({
+    host: "127.0.0.1",
+    port: config.webPort,
+    allowedLogin: config.webAllowedLogin,
+    ...(process.env.SELF_AGENT_WEB_TOKEN === undefined || process.env.SELF_AGENT_WEB_TOKEN === ""
+      ? {}
+      : { token: process.env.SELF_AGENT_WEB_TOKEN }),
+    staticDir: fileURLToPath(new URL("./web/static/", import.meta.url)),
+    templateSiteDir: join(WEB_TEMPLATE_DIR, "site"),
+    routes: [
+      ...statusRoutes({
+        cfg: config,
+        version: readPackageVersion,
+        startedAt,
+        stopping: () => lifecycle.stopping(),
+        personas,
+        ...(guest === undefined ? {} : { guestConnected: () => guest.connected() }),
+        shellState: {
+          configured: config.shell,
+          enabled: () => shellState.enabled(),
+          failedItems: () => shellState.failedItems(),
+        },
+        queue: turnQueue,
+        // 実行中のターンの一覧は W3 で足す
+        running: () => 0,
+        serving: () => staticServer?.listening() ?? false,
+        guildSettings,
+        env: process.env,
+      }),
+      ...usageRoutes({ cfg: config, usage, attachments, now }),
+    ],
+    stopping: () => lifecycle.stopping(),
+    now,
+    log,
+  });
+} else if (config.webPort !== undefined || config.webAllowedLogin !== undefined) {
+  log("Web UI は無効です（SELF_AGENT_WEB_PORT と SELF_AGENT_WEB_ALLOWED_LOGIN の両方が要ります）");
+}
+
+// 停止: シグナルで新しい受付と定期処理（リマインドの発火・GitHub の通知のポーリングを含む）を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・Web UI・DB を閉じる
 const lifecycle = createShutdown(
   {
     cfg: config,
@@ -527,6 +577,7 @@ const lifecycle = createShutdown(
     ...(jobs === undefined ? {} : { jobs }),
     channelOps,
     staticServer,
+    webServer,
     closeDb: () => db.close(),
     log,
   },
@@ -549,6 +600,15 @@ if (staticServer !== undefined) {
     log(`ページの配信を始めました（127.0.0.1:${config.servePort}）`);
   } catch (error) {
     log(`ページの配信を始められませんでした: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+// Web UI も同じく、起動に失敗しても Bot は動かし続ける
+if (webServer !== undefined) {
+  try {
+    await webServer.start();
+    log(`Web UI を始めました（127.0.0.1:${config.webPort}）`);
+  } catch (error) {
+    log(`Web UI を始められませんでした: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 // 発言を受け付ける前に 1 回診断する（#system への知らせは gateway の起動後、最初の tick で行う）

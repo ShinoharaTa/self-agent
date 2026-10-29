@@ -40,6 +40,8 @@ export type GuestGateway = Pick<
   findNoticeChannels(guildId: string): Promise<string[]>;
   /** そのサーバーのメンバーが Manage Server を持つか（DiscordGateway.memberCanManageGuild。REST 1 回。失敗・いない・権限なしは false） */
   memberCanManageGuild(guildId: string, userId: string): Promise<boolean>;
+  /** Discord に接続しているか（DiscordGateway.connected。Web UI の状態。無ければ接続していないとみなす） */
+  connected?(): boolean;
 };
 
 export type { GuestAdmin } from "./commands/admin.ts";
@@ -92,6 +94,8 @@ export type GuestLayer = {
   idle: () => Promise<void>;
   /** start していなければ何もしない */
   stop: () => Promise<void>;
+  /** ゲスト Bot が Discord に接続しているか（Web UI の状態） */
+  connected: () => boolean;
 };
 
 function describeError(error: unknown): string {
@@ -353,5 +357,6 @@ export function createGuestLayer(deps: GuestLayerDeps): GuestLayer {
       if (started === undefined) return;
       await gateway.stop();
     },
+    connected: () => gateway.connected?.() ?? false,
   };
 }

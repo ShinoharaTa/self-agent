@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, loadDataConfig, loadGithubConfig, missingForStart } from "../src/config.ts";
+import { loadConfig, loadDataConfig, loadGithubConfig, loadWebConfig, missingForStart } from "../src/config.ts";
 
 test("未設定ならデフォルト値を使う", () => {
   const config = loadConfig({ HOME: "/home/tester" });
@@ -56,6 +56,11 @@ test("未設定ならデフォルト値を使う", () => {
     guestTurnTimeoutSec: 120,
     guestSessionMaxTurns: 30,
     guestSessionMaxInputTokens: 60000,
+    web: false,
+    webPort: undefined,
+    webAllowedLogin: undefined,
+    webTokenPresent: false,
+    webHistoryDays: 90,
   });
 });
 
@@ -214,6 +219,70 @@ test("SELF_AGENT_PUBLIC_BASE_URL は http:// か https:// で始まるものだ�
 
 test("SELF_AGENT_SERVE_ALLOWED_LOGIN は空なら未設定", () => {
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SERVE_ALLOWED_LOGIN: "" }).serveAllowedLogin, undefined);
+});
+
+const WEB_TOKEN = "t".repeat(32);
+
+test("Web UI は SELF_AGENT_WEB_PORT と SELF_AGENT_WEB_ALLOWED_LOGIN の両方があるときだけ有効。片方だけなら無効（設定エラーではない）。loadWebConfig も同じ値", () => {
+  const env = {
+    HOME: "/home/tester",
+    SELF_AGENT_WEB_PORT: "8791",
+    SELF_AGENT_WEB_ALLOWED_LOGIN: "owner@example.com",
+    SELF_AGENT_WEB_TOKEN: WEB_TOKEN,
+    SELF_AGENT_WEB_HISTORY_DAYS: "30",
+  };
+  const config = loadConfig(env);
+  assert.equal(config.web, true);
+  assert.equal(config.webPort, 8791);
+  assert.equal(config.webAllowedLogin, "owner@example.com");
+  assert.equal(config.webTokenPresent, true);
+  assert.equal(config.webHistoryDays, 30);
+  // トークンの値は持たない
+  assert.ok(!JSON.stringify(config).includes(WEB_TOKEN));
+  assert.deepEqual(loadWebConfig(env), {
+    web: true,
+    webPort: 8791,
+    webAllowedLogin: "owner@example.com",
+    webTokenPresent: true,
+    webHistoryDays: 30,
+  });
+
+  const portOnly = loadConfig({ HOME: "/home/tester", SELF_AGENT_WEB_PORT: "8791" });
+  assert.equal(portOnly.web, false);
+  assert.equal(portOnly.webPort, 8791);
+  const loginOnly = loadConfig({ HOME: "/home/tester", SELF_AGENT_WEB_ALLOWED_LOGIN: "owner@example.com" });
+  assert.equal(loginOnly.web, false);
+  assert.equal(loginOnly.webAllowedLogin, "owner@example.com");
+  // トークンは任意
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_WEB_PORT: "8791", SELF_AGENT_WEB_ALLOWED_LOGIN: "a@b" }).webTokenPresent, false);
+});
+
+test("Web UI の変数の形: ポートの範囲外・空白だけのログイン・32 字未満か空白を含むトークン・0 日は設定エラー（値は出さない）", () => {
+  for (const value of ["0", "65536", "abc"]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_WEB_PORT: value }), /SELF_AGENT_WEB_PORT/, value);
+  }
+  assert.throws(
+    () => loadConfig({ HOME: "/home/tester", SELF_AGENT_WEB_PORT: "8791", SELF_AGENT_WEB_ALLOWED_LOGIN: "   " }),
+    /SELF_AGENT_WEB_ALLOWED_LOGIN が空です/,
+  );
+  for (const token of ["t".repeat(31), `${"t".repeat(20)} ${"t".repeat(20)}`, `${"t".repeat(32)}\n`]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_WEB_TOKEN: token }),
+      (error: Error) => error.message.includes("SELF_AGENT_WEB_TOKEN") && !error.message.includes("tttt"),
+    );
+  }
+  assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_WEB_HISTORY_DAYS: "0" }), /SELF_AGENT_WEB_HISTORY_DAYS/);
+  // 空は未設定
+  const empty = loadConfig({
+    HOME: "/home/tester",
+    SELF_AGENT_WEB_PORT: "",
+    SELF_AGENT_WEB_ALLOWED_LOGIN: "",
+    SELF_AGENT_WEB_TOKEN: "",
+    SELF_AGENT_WEB_HISTORY_DAYS: "",
+  });
+  assert.equal(empty.web, false);
+  assert.equal(empty.webTokenPresent, false);
+  assert.equal(empty.webHistoryDays, 90);
 });
 
 test("SELF_AGENT_DEV_MODE は 1 で有効、未設定・空・0 で無効。それ以外の値はエラー", () => {

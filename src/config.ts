@@ -88,7 +88,8 @@ export type Config = {
   codexHome: string | undefined;
 } & GithubConfig &
   JobsConfig &
-  GuestConfig;
+  GuestConfig &
+  WebConfig;
 
 /** GitHub の通知の段 1（docs/plan/github-notifications.md §10）。npm run github-dry-run もこれだけを読む */
 export type GithubConfig = {
@@ -145,6 +146,19 @@ export type GuestConfig = {
   guestSessionMaxInputTokens: number;
 };
 
+/** Web UI（docs/plan/web-ui.md §2）。トークンは有無だけを持ち、値は main が process.env から読む */
+export type WebConfig = {
+  /** true なら Web UI を 127.0.0.1 の webPort で待ち受ける（SELF_AGENT_WEB_PORT と SELF_AGENT_WEB_ALLOWED_LOGIN の両方があるときだけ） */
+  web: boolean;
+  webPort: number | undefined;
+  /** Tailscale-User-Login ヘッダがこれと完全一致する要求だけを通す */
+  webAllowedLogin: string | undefined;
+  /** SELF_AGENT_WEB_TOKEN（/login に貼って Cookie を得る）が設定されているか。値そのものは保持しない */
+  webTokenPresent: boolean;
+  /** 会話の履歴を残す日数（W2 で使う） */
+  webHistoryDays: number;
+};
+
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
 export type TimeOfDay = { hour: number; minute: number };
 
@@ -178,6 +192,9 @@ const DEFAULT_GUEST_MAX_CONCURRENT = 1;
 const DEFAULT_GUEST_TURN_TIMEOUT_SEC = 120;
 const DEFAULT_GUEST_SESSION_MAX_TURNS = 30;
 const DEFAULT_GUEST_SESSION_MAX_INPUT_TOKENS = 60000;
+const DEFAULT_WEB_HISTORY_DAYS = 90;
+/** SELF_AGENT_WEB_TOKEN の最短の長さ */
+const MIN_WEB_TOKEN_LENGTH = 32;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -513,6 +530,32 @@ function loadGuestConfig(env: NodeJS.ProcessEnv, personas: readonly PersonaConfi
 }
 
 /**
+ * SELF_AGENT_WEB_* を読む（docs/plan/web-ui.md §2）。web はポートとログインの両方があるときだけ true で、片方だけなら false（設定エラーではない。log は main が出す）。
+ * 形（ポートの範囲・空白だけのログイン・32 字未満か空白を含むトークン・日数）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
+ */
+export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
+  const webPort = port("SELF_AGENT_WEB_PORT", nonEmpty(env.SELF_AGENT_WEB_PORT));
+  const loginValue = nonEmpty(env.SELF_AGENT_WEB_ALLOWED_LOGIN);
+  if (loginValue !== undefined && loginValue.trim() === "") throw new Error("SELF_AGENT_WEB_ALLOWED_LOGIN が空です");
+  const webAllowedLogin = loginValue?.trim();
+  const token = nonEmpty(env.SELF_AGENT_WEB_TOKEN);
+  if (token !== undefined && ([...token].length < MIN_WEB_TOKEN_LENGTH || /\s/.test(token))) {
+    throw new Error(`SELF_AGENT_WEB_TOKEN は空白を含まない ${MIN_WEB_TOKEN_LENGTH} 字以上で指定してください`);
+  }
+  return {
+    web: webPort !== undefined && webAllowedLogin !== undefined,
+    webPort,
+    webAllowedLogin,
+    webTokenPresent: token !== undefined,
+    webHistoryDays: positiveInteger(
+      "SELF_AGENT_WEB_HISTORY_DAYS",
+      nonEmpty(env.SELF_AGENT_WEB_HISTORY_DAYS),
+      DEFAULT_WEB_HISTORY_DAYS,
+    ),
+  };
+}
+
+/**
  * npm run job-dry-run が読む設定: 作業場所・データの場所（その中に一時ディレクトリを作る）と、作業ジョブの変数（許可リストなど）。
  * SELF_AGENT_JOBS・SELF_AGENT_SHELL は見ない（LLM もシェルも使わない）
  */
@@ -606,6 +649,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...loadGithubConfig(env),
     ...loadJobsConfig(env, shell),
     ...loadGuestConfig(env, personas),
+    ...loadWebConfig(env),
   };
 }
 
