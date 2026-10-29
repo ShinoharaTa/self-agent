@@ -123,7 +123,7 @@ function loginPage(message?: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark light">
 <title>self-agent にログイン</title>
 <link rel="stylesheet" href="/static/base.css">
 </head>
