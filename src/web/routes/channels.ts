@@ -1,0 +1,220 @@
+// GET /api/channels・/api/channels/<id>/turns（docs/plan/web-ui.md §4.3）。会話のサイドバーと会話のタブ（読むだけ）。
+// 対象は /setup 済みのサーバーだけ（env の SELF_AGENT_INBOX_CHANNEL_ID は使わない）。ID は Discord のリンクを作るために返す（log には出さない）
+import { type Config, DEFAULT_PERSONA_ID } from "../../config.ts";
+import type { ResolveChannel } from "../../app/access.ts";
+import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
+import { DEFAULT_PERSONA_LABEL, type PersonaRouter, type PersonaRuntime } from "../../app/personas.ts";
+import type { GuildSettingsStore } from "../../store/guild-settings.ts";
+import type { HistoryKind, HistoryRow, HistoryStore } from "../../store/history.ts";
+import { HISTORY_LIST_MAX } from "../../store/history.ts";
+import type { ProjectStore } from "../../store/projects.ts";
+import type { TopicSession, TopicSessionStore } from "../../store/topic-sessions.ts";
+import type { Route, RouteResult } from "../server.ts";
+
+/** /turns の limit の既定 */
+export const TURNS_DEFAULT_LIMIT = 50;
+
+/** 一覧に出す状態（完了は新しい SESSION_LIST_LIMITS.done 件） */
+const LISTED_STATES = ["active", "waiting", "done"] as const;
+
+export type ChannelRouteDeps = {
+  cfg: Pick<Config, "allowedGuildIds" | "personas" | "publicBaseUrl">;
+  guildSettings: Pick<GuildSettingsStore, "get" | "entryChannel" | "personaInbox">;
+  topicSessions: Pick<TopicSessionStore, "get" | "listByState">;
+  projects: Pick<ProjectStore, "getByChannel">;
+  history: Pick<HistoryStore, "list" | "latestByChannel">;
+  /** PersonaRouter（all は設定の順で、最初が既定の人格） */
+  personas: Pick<PersonaRouter, "ownerOf"> & { all: readonly Pick<PersonaRuntime, "id" | "name" | "connected">[] };
+  resolveChannel: ResolveChannel;
+};
+
+/** 一覧と /turns の 1 チャンネル */
+export type WebChannel = {
+  id: string;
+  guildId: string;
+  kind: "inbox" | "tasks" | "session";
+  /** 入口の名前（inbox・tasks・足した人格の表示名）。セッションは null */
+  name: string | null;
+  /** セッションの題名。入口は null */
+  title: string | null;
+  persona: string;
+  /** セッションの状態。入口は null */
+  state: "active" | "waiting" | "done" | null;
+  project: { slug: string; url: string | null } | null;
+  last: { id: number; at: string; kind: HistoryKind } | null;
+  link: string;
+};
+
+type Latest = ReturnType<HistoryStore["latestByChannel"]>;
+
+const BAD_REQUEST: RouteResult = { status: 400, json: { error: "bad_request" } };
+const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
+
+function channelLink(guildId: string, channelId: string): string {
+  return `https://discord.com/channels/${guildId}/${channelId}`;
+}
+
+/** 省略は undefined、正の整数でなければ null */
+function optionalId(value: string | null): number | undefined | null {
+  if (value === null) return undefined;
+  if (!/^\d{1,15}$/.test(value)) return null;
+  const parsed = Number(value);
+  return parsed >= 1 ? parsed : null;
+}
+
+export function channelRoutes(deps: ChannelRouteDeps): Route[] {
+  const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel } = deps;
+
+  const project = (channelId: string): WebChannel["project"] => {
+    const found = projects.getByChannel(channelId);
+    if (found === undefined) return null;
+    return { slug: found.slug, url: cfg.publicBaseUrl === undefined ? null : `${cfg.publicBaseUrl}/p/${found.slug}/` };
+  };
+
+  const entry = (
+    guildId: string,
+    channelId: string,
+    kind: "inbox" | "tasks",
+    name: string,
+    latest: Latest,
+  ): WebChannel => ({
+    id: channelId,
+    guildId,
+    kind,
+    name,
+    title: null,
+    persona: personas.ownerOf(channelId),
+    state: null,
+    project: project(channelId),
+    last: latest.get(channelId) ?? null,
+    link: channelLink(guildId, channelId),
+  });
+
+  const session = (item: TopicSession, latest: Latest): WebChannel | undefined => {
+    if (item.state === "deleted") return undefined;
+    return {
+      id: item.channelId,
+      guildId: item.guildId,
+      kind: "session",
+      name: null,
+      title: item.title,
+      persona: personas.ownerOf(item.channelId),
+      state: item.state,
+      project: project(item.channelId),
+      last: latest.get(item.channelId) ?? null,
+      link: channelLink(item.guildId, item.channelId),
+    };
+  };
+
+  /** そのサーバー（/setup 済み）の入口（#inbox・#tasks・設定にある人格の #<NAME>） */
+  const entries = (guildId: string, latest: Latest): WebChannel[] => {
+    const settings = guildSettings.get(guildId);
+    if (settings === undefined) return [];
+    const list: WebChannel[] = [];
+    if (settings.inboxChannelId !== null) list.push(entry(guildId, settings.inboxChannelId, "inbox", "inbox", latest));
+    if (settings.tasksChannelId !== null) list.push(entry(guildId, settings.tasksChannelId, "tasks", "tasks", latest));
+    for (const persona of cfg.personas) {
+      const channelId = guildSettings.personaInbox(guildId, persona.id)?.channelId;
+      if (channelId !== null && channelId !== undefined) list.push(entry(guildId, channelId, "inbox", persona.name, latest));
+    }
+    return list;
+  };
+
+  /** チャンネルのサーバー（セッション → 入口 → 既定の人格の #inbox・#tasks の順に引く）。分からなければ undefined */
+  const guildOf = (channelId: string): string | undefined => {
+    const found = topicSessions.get(channelId)?.guildId ?? guildSettings.entryChannel(channelId)?.guildId;
+    if (found !== undefined) return found;
+    return cfg.allowedGuildIds.find((guildId) => {
+      const settings = guildSettings.get(guildId);
+      return settings !== undefined && (settings.inboxChannelId === channelId || settings.tasksChannelId === channelId);
+    });
+  };
+
+  /** /turns の 1 チャンネル。許可した /setup 済みのサーバーの受け付け対象でなければ undefined */
+  const channelOf = (channelId: string): WebChannel | undefined => {
+    const guildId = guildOf(channelId);
+    if (guildId === undefined || !cfg.allowedGuildIds.includes(guildId) || guildSettings.get(guildId) === undefined) return undefined;
+    const kind = resolveChannel(guildId, channelId);
+    if (kind === null) return undefined;
+    const latest = history.latestByChannel(guildId);
+    if (kind === "session") {
+      const item = topicSessions.get(channelId);
+      return item === undefined ? undefined : session(item, latest);
+    }
+    return entries(guildId, latest).find((channel) => channel.id === channelId);
+  };
+
+  const turnOf = (row: HistoryRow, link: string) => ({
+    id: row.id,
+    at: row.at,
+    kind: row.kind,
+    source: row.source,
+    persona: row.persona,
+    text: row.text,
+    outcome: row.outcome,
+    steps: row.steps,
+    toolCalls: row.toolCalls,
+    durationMs: row.durationMs,
+    messageId: row.messageId,
+    link: row.messageId === null ? link : `${link}/${row.messageId}`,
+  });
+
+  return [
+    {
+      method: "GET",
+      pattern: /^\/api\/channels$/,
+      handle: async () => {
+        const guilds = cfg.allowedGuildIds.map((id) => ({ id, setUp: guildSettings.get(id) !== undefined }));
+        const channels: WebChannel[] = [];
+        for (const guild of guilds) {
+          if (!guild.setUp) continue;
+          const latest = history.latestByChannel(guild.id);
+          channels.push(...entries(guild.id, latest));
+          for (const state of LISTED_STATES) {
+            for (const item of topicSessions.listByState(guild.id, state, SESSION_LIST_LIMITS[state])) {
+              const channel = session(item, latest);
+              if (channel !== undefined) channels.push(channel);
+            }
+          }
+        }
+        const personaList = personas.all.map((persona) => ({
+          id: persona.id,
+          name: persona.id === DEFAULT_PERSONA_ID ? DEFAULT_PERSONA_LABEL : persona.name,
+          isDefault: persona.id === DEFAULT_PERSONA_ID,
+          connected: persona.connected(),
+        }));
+        return { status: 200, json: { guilds, personas: personaList, channels } };
+      },
+    },
+    {
+      method: "GET",
+      pattern: /^\/api\/channels\/(\d{1,25})\/turns$/,
+      handle: async ({ params, query }) => {
+        const before = optionalId(query.get("before"));
+        const after = optionalId(query.get("after"));
+        const limitText = query.get("limit");
+        const limit = limitText === null ? TURNS_DEFAULT_LIMIT : /^\d{1,4}$/.test(limitText) ? Number(limitText) : 0;
+        if (before === null || after === null || (before !== undefined && after !== undefined)) return BAD_REQUEST;
+        if (limit < 1 || limit > HISTORY_LIST_MAX) return BAD_REQUEST;
+        const channelId = params[0] ?? "";
+        const channel = channelOf(channelId);
+        if (channel === undefined) return NOT_FOUND;
+        const rows = history.list(channelId, {
+          ...(before === undefined ? {} : { before }),
+          ...(after === undefined ? {} : { after }),
+          limit,
+        });
+        return {
+          status: 200,
+          json: {
+            // closeDraft は /close の確認（W5）で入れる
+            channel: { ...channel, closeDraft: null },
+            turns: rows.map((row) => turnOf(row, channel.link)),
+            // before で limit 件取れたら、まだ前があるかもしれない（最新の limit 件のときは画面が件数で判断する）
+            hasMore: before !== undefined && rows.length === limit,
+          },
+        };
+      },
+    },
+  ];
+}

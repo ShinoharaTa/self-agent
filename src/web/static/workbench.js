@@ -47,7 +47,7 @@
   const THEMES = ["dark", "light", "system"];
 
   const S = {
-    activity: "usage",
+    activity: "chat",
     sidebarHidden: false,
     drawerOpen: false,
     tabs: [],
@@ -103,16 +103,19 @@
     const bottom = el("div", { class: "act-group act-bottom" });
     for (const a of SA.sidebar.visibleActivities()) {
       const pressed = !a.tab && S.activity === a.id && (narrow() ? S.drawerOpen : !S.sidebarHidden);
+      // 数（会話は未読のチャンネルの数）
+      const n = a.count ? a.count() : 0;
+      const label = a.label + (n > 0 ? "（" + (a.countLabel || "") + n + "）" : "");
       const btn = el(
         "button",
         {
           class: "act-btn",
           type: "button",
-          "aria-label": a.label,
-          title: a.label,
+          "aria-label": label,
+          title: label,
           "aria-pressed": a.tab ? null : String(pressed),
         },
-        [icon(a.icon), el("span", { class: "act-label", text: a.label })],
+        [icon(a.icon), el("span", { class: "act-label", text: a.label }), n > 0 ? el("span", { class: "act-count", text: String(n), "aria-hidden": "true" }) : null],
       );
       btn.addEventListener("click", () => selectActivity(a));
       (a.bottom ? bottom : top).append(btn);
@@ -686,6 +689,7 @@
     open,
     refresh,
     refreshSidebar: renderSidebar,
+    refreshTabs: renderEditors,
     refreshStatus,
     activeTabId,
     closeDrawer,
