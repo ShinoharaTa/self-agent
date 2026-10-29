@@ -51,6 +51,17 @@ test("runCli: サブコマンドが無い・知らない名前は使い方を標
   }
 });
 
+test("runCli: start は引数があれば（--help を含む）使い方を標準エラーに出して 2 で、env も本体も動かさない", async () => {
+  for (const argv of [["start", "--help"], ["start", "x"]]) {
+    const f = fakes();
+    assert.equal(await runCli(argv, f.deps), 2, argv.join(" "));
+    assert.deepEqual(f.out, [], argv.join(" "));
+    assert.equal(f.err[0], "start は引数を取りません", argv.join(" "));
+    assert.match(f.err.join("\n"), /使い方: self-agent <サブコマンド>/, argv.join(" "));
+    assert.deepEqual(f.calls, [], argv.join(" "));
+  }
+});
+
 test("runCli: --help は使い方（8 つのサブコマンド。setup・service は出さない）を標準出力に出して 0、--version は版を出して 0", async () => {
   const help = fakes();
   assert.equal(await runCli(["--help"], help.deps), 0);
@@ -68,10 +79,11 @@ test("runCli: --help は使い方（8 つのサブコマンド。setup・service
 
 test("runCli: サブコマンドは env ファイルを読んでから本体に残りの引数を渡し、その結果を返す", async () => {
   for (const name of SUBCOMMANDS) {
+    const argv = name === "start" ? [] : ["--last", "1"];
     const f = fakes();
-    assert.equal(await runCli([name, "--last", "1"], f.deps), 7, name);
+    assert.equal(await runCli([name, ...argv], f.deps), 7, name);
     assert.deepEqual(f.calls, ["env", "run"], name);
-    assert.deepEqual(f.runs, [{ name, argv: ["--last", "1"] }], name);
+    assert.deepEqual(f.runs, [{ name, argv }], name);
   }
   // start は本体が自分で終わる（undefined）
   const start = fakes({ run: async () => undefined });

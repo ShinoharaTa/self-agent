@@ -116,6 +116,7 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 
 ### 4.5 二重起動の lock（D1）
 - 固定の印（`BOT_COMMAND`）では公開物を見分けられない（§2.2）。**lock の 3 行目に自分の `/proc/self/cmdline` の argv[0] より後ろ（NUL・改行を空白に。読めなければ `process.argv.slice(1).join(" ")`）を書き、holder の `/proc/<pid>/cmdline` を同じ規則で正規化したものがそれを含むかで「同じ Bot か」を比べる**（PID が生きていて boot id が同じでも、cmdline が含まなければ PID の再利用とみなして取り直す）。`process.argv` を使わない理由: `argv[1]` は node が絶対パスに解決する（`bin/self-agent` の `bin/../src/cli.ts` の `..` も正規化する）が、cmdline は起動したときの文字列のままなので、`npm start`・transient unit（`node … src/cli.ts start`）のような相対パスの起動では一致せず、2 つ目の Bot が 1 つ目の lock を古いと判定して二重起動になる（実測）。`node src/cli.ts devlog` のような Bot でない cli のプロセスは引数が違うので Bot と誤判定されない。
+- 運用の注意: 新しい Bot（3 行の lock）が動いている間に、D1 より前のコード（main の data-lock.ts。3 行の lock を形が違うとみなし、`src/main.ts` の印も cmdline に無い）を同じ dataDir で起動すると、lock を奪って二重起動になる。ロールバックは新しい Bot を止めてから行う。
 - 移行: 3 行目が無い古い lock（今の本番が持っている）は今までどおり `src/main.ts` の印で比べる。新しい Bot が書く lock は常に 3 行。`/proc` が読めなければ今までどおりこの確認は飛ばす。
 
 ### 4.6 README（P1-a・P1-b）
