@@ -1465,7 +1465,7 @@ test("history: 画像だけの発言の owner は「（画像 1 枚）」、本�
       ["owner", "（画像 1 枚）", "message-1"],
       ["owner", "これを見て\n（画像 2 枚）", "message-2"],
       ["agent", "見ました", null],
-      ["owner", "", "message-3"],
+      ["owner", "（添付 1 件）", "message-3"],
       ["notice", rows[4]!.text, null],
     ],
   );

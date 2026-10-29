@@ -140,7 +140,12 @@ function describeError(error: unknown): string {
 /** owner の行の text（本文。画像があれば「（画像 n 枚）」を、本文が空ならそれだけ、あれば末尾に改行して足す） */
 function ownerText(request: TurnRequest): string {
   const count = request.attachments?.images.length ?? 0;
-  if (count === 0) return request.content;
+  if (count === 0) {
+    // 読めない添付だけの発言は本文が空になるので、添付の数を書く（注記は後の notice 行）
+    const skipped = request.attachments?.skipped;
+    const skippedCount = skipped === undefined ? 0 : skipped.unsupported + skipped.overLimit;
+    return request.content.trim() === "" && skippedCount > 0 ? `（添付 ${skippedCount} 件）` : request.content;
+  }
   const images = `（画像 ${count} 枚）`;
   return request.content.trim() === "" ? images : `${request.content}\n${images}`;
 }
