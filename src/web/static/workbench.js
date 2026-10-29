@@ -309,6 +309,8 @@
   function closeTab(tabId) {
     const i = S.tabs.indexOf(tabId);
     if (i < 0) return;
+    const closing = SA.views.info(tabId);
+    if (closing && closing.onClose) closing.onClose();
     S.tabs.splice(i, 1);
     if (S.active === tabId) {
       S.active = S.tabs[Math.min(i, S.tabs.length - 1)] || null;
@@ -390,9 +392,10 @@
     refs.status.replaceChildren(left, right);
   }
 
-  /** /api/status が変わったとき: ステータスバーと、出す項目が変わりうるアクティビティバー・サイドバー */
+  /** /api/status が変わったとき: ステータスバーと、出す項目が変わりうるアクティビティバー・サイドバー。status を待っていたタブを開き直す */
   function refreshStatus() {
     if (!refs.status) return;
+    reopenDeferred();
     const before = S.activity;
     renderStatus();
     renderActivity();
@@ -614,17 +617,41 @@
     renderStatus();
   }
 
+  // /api/status を読むまで開けるか分からないタブ（会話ログ）は、戻すのを status を読んだ後まで待つ（active は前に出すもの）
+  const deferred = { tabs: [], active: null };
+
+  function reopenDeferred() {
+    if (deferred.tabs.length === 0 || !SA.store.status) return;
+    const { tabs, active } = deferred;
+    deferred.tabs = [];
+    deferred.active = null;
+    for (const id of tabs) if (SA.views.info(id) && !S.tabs.includes(id)) S.tabs.push(id);
+    if (active && S.tabs.includes(active)) activate(active);
+    else {
+      saveTabs();
+      renderEditors();
+    }
+  }
+
   /** 前回のタブ（localStorage）を戻し、hash があればそのタブを開いて前に出す */
   function restoreTabs() {
+    const waits = (id) => !SA.views.info(id) && SA.views.waitsForStatus(id);
     const saved = loadJson("tabs");
     if (saved && Array.isArray(saved.tabs)) {
-      S.tabs = [...new Set(saved.tabs.filter((id) => typeof id === "string" && SA.views.info(id)))];
+      const ids = saved.tabs.filter((id) => typeof id === "string");
+      S.tabs = [...new Set(ids.filter((id) => SA.views.info(id)))];
+      deferred.tabs = [...new Set(ids.filter(waits))];
       S.active = typeof saved.active === "string" && S.tabs.includes(saved.active) ? saved.active : S.tabs[0] || null;
+      if (typeof saved.active === "string" && deferred.tabs.includes(saved.active)) deferred.active = saved.active;
     }
     const fromHash = tabFromHash(location.hash);
     if (fromHash && SA.views.info(fromHash)) {
       if (!S.tabs.includes(fromHash)) S.tabs.push(fromHash);
       S.active = fromHash;
+      deferred.active = null;
+    } else if (fromHash && waits(fromHash)) {
+      if (!deferred.tabs.includes(fromHash)) deferred.tabs.push(fromHash);
+      deferred.active = fromHash;
     }
   }
 

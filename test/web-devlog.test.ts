@@ -1,11 +1,11 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import { formatDevLogRecord } from "../src/devlog/format.ts";
 import type { DevLogRecord } from "../src/devlog/log.ts";
-import { devlogRoutes } from "../src/web/routes/devlog.ts";
+import { DEVLOG_UNREADABLE_TEXT, devlogRoutes } from "../src/web/routes/devlog.ts";
 import { createWebServer, type WebServer } from "../src/web/server.ts";
 import { tempDir } from "./helpers/db.ts";
 import { turnUsage } from "./helpers/runner.ts";
@@ -137,6 +137,36 @@ test("/api/devlog: 既定は今日（SELF_AGENT_TZ）の最後の 20 件。kind�
 
   // ファイルの無い日は空
   assert.deepEqual((await getJson(server, "/api/devlog?date=2026-09-01")).json, { date: "2026-09-01", records: [] });
+});
+
+test("/api/devlog: steps の要素が壊れた行があっても 200 で、その行の text は（読めない記録）。ほかの項目と行はそのまま", async (t) => {
+  const { server, dir } = await setup(t, true);
+  mkdirSync(dir, { recursive: true });
+  const good = record("2026-10-01T15:30:00Z", "inbox", "100");
+  const broken = { ...record("2026-10-01T15:40:00Z", "session", "200"), steps: [null] };
+  writeFileSync(join(dir, "2026-10-02.jsonl"), `${JSON.stringify(broken)}\n${JSON.stringify(good)}\n`);
+  const { status, json } = await getJson(server, "/api/devlog?date=2026-10-02");
+  assert.equal(status, 200);
+  const body = json as { records: Array<Record<string, unknown>> };
+  assert.deepEqual(
+    body.records.map((r) => [r.at, r.kind, r.channelId, r.ok, r.toolCalls, r.text]),
+    [
+      ["2026-10-01T15:40:00Z", "session", "200", true, 2, DEVLOG_UNREADABLE_TEXT],
+      ["2026-10-01T15:30:00Z", "inbox", "100", true, 2, formatDevLogRecord(good, TZ)],
+    ],
+  );
+});
+
+test("/api/devlog: <date>.jsonl がディレクトリ・symlink なら、その日は記録なし（/days と同じく数えない）", async (t) => {
+  const { server, dir } = await setup(t, true);
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(join(dir, "2026-10-02.jsonl"));
+  const target = join(tempDir(t), "other.jsonl");
+  writeFileSync(target, `${JSON.stringify(record("2026-10-01T15:30:00Z", "inbox", "100"))}\n`);
+  symlinkSync(target, join(dir, "2026-10-01.jsonl"));
+  assert.deepEqual(await getJson(server, "/api/devlog"), { status: 200, json: { date: "2026-10-02", records: [] } });
+  assert.deepEqual(await getJson(server, "/api/devlog?date=2026-10-01"), { status: 200, json: { date: "2026-10-01", records: [] } });
+  assert.deepEqual((await getJson(server, "/api/devlog/days")).json, []);
 });
 
 test("/api/devlog: 日付の形・kind・channel・persona・last が違えば 400", async (t) => {
