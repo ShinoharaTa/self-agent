@@ -113,6 +113,24 @@ test("createSystemNotifier: 時間切れ（既定 10 秒・timeoutMs）は投げ
   );
 });
 
+test("createSystemNotifier: timeoutMs が null なら時間切れなしで待ち、遅れて届いた投稿を記録する", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const env = setup(t);
+  let release: () => void = () => undefined;
+  env.gateway.beforeSendMessage = () => new Promise<void>((resolve) => (release = resolve));
+  let settled = false;
+  const pending = env.notify("guild-1", { text: "遅い" }, { level: "info", timeoutMs: null }).finally(() => (settled = true));
+  t.mock.timers.tick(60_000);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  release();
+  assert.equal(await pending, "message-1");
+  assert.deepEqual(
+    env.notices.listRecent(10).map((row) => row.messageId),
+    ["message-1"],
+  );
+});
+
 test("createSystemNotifier: notices が無ければ記録せずに投稿だけ", async (t) => {
   const env = setup(t, { notices: false });
   assert.equal(await env.notify("guild-1", { text: "A" }, { level: "info" }), "message-1");
