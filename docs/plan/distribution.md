@@ -58,7 +58,7 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 |---|---|---|---|
 | `src/agent/scaffold.ts` `WEB_TEMPLATE_DIR` | `new URL("../../templates/web/", import.meta.url)` | `dist/agent/scaffold.js` から `../../` = パッケージの直下 → `templates/web/` が隣にあれば**そのまま動く** | 無し（`dist` が `src` と同じ深さである前提。§4.1 の `rootDir: src`） |
 | `src/agent/query-options.ts` `defaultSandboxHost().cwd` → `sandbox-check.ts` の `repoDir`（秘密の場所） | `process.cwd()`（checkout で起動する前提） | `self-agent start` の cwd はどこでもよいので「リポジトリ」を指さない | **パッケージの直下（`import.meta.dirname` の親）に変える**（§4.4） |
-| `src/store/data-lock.ts` `BOT_COMMAND = "src/main.ts"` | lock の PID のコマンドラインに `src/main.ts` が無ければ古い lock とみなして取り直す | 確認（レビュアーの実測）: `npm i -g` は `<prefix>/bin/self-agent` → `dist/cli.js` の symlink で、shebang 経由の `/proc/self/cmdline` は `node /…/bin/self-agent start`（`dist/cli.js` を含まない）。2 つ目の `self-agent start` が 1 つ目の lock を古いと判定して**二重起動**になる | 自分の `argv` を lock に書いて比べる（§4.5） |
+| `src/store/data-lock.ts` `BOT_COMMAND = "src/main.ts"` | lock の PID のコマンドラインに `src/main.ts` が無ければ古い lock とみなして取り直す | 確認（レビュアーの実測）: `npm i -g` は `<prefix>/bin/self-agent` → `dist/cli.js` の symlink で、shebang 経由の `/proc/self/cmdline` は `node /…/bin/self-agent start`（`dist/cli.js` を含まない）。2 つ目の `self-agent start` が 1 つ目の lock を古いと判定して**二重起動**になる | 自分の `/proc/self/cmdline`（argv[0] より後ろ）を lock に書いて比べる（§4.5。argv[1] は node が絶対パスに解決し、相対パスの起動では cmdline と一致しないため） |
 | `src/config.ts` 人格の `_PROMPT_FILE` の既定 | `~/.config/self-agent/personas/<id>.md` | ホームなので変わらない | 無し |
 | `scripts/*.ts` | `../src/...` を import し、top-level await で動く。`parseArgs`。テストは scripts を import しない | `rootDir: src` の外なので dist に入らない | 本体を `src/cli/<name>.ts`（`main(argv)` を export）に移し、`scripts/*.ts` は呼ぶだけの薄い入口にする（§4.2） |
 | `npm run *` | `node --env-file-if-exists=$HOME/.config/self-agent/env …` | グローバルの `self-agent` では node のフラグを付けられない | `src/cli.ts` が `process.loadEnvFile` で読む（§4.3） |
@@ -106,7 +106,7 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 - `npm start` は `node --env-file-if-exists=… src/cli.ts start` に変える（今の `src/main.ts` 直接でも動くが、入口を 1 つにする）。transient unit の起動行（README §4）も `src/cli.ts start` に揃える。
 
 ### 4.3 環境変数の読み方（D1）
-- `src/cli.ts` は最初に `loadEnvFile(path)`: `SELF_AGENT_ENV_FILE` があればそれ、無ければ `~/.config/self-agent/env`。`process.loadEnvFile` を try し、`ENOENT` なら何もしない（それ以外の例外は変数名を出さずに「env ファイルを読めませんでした」で exit 1）。既にある環境変数は上書きされない（§2.1。systemd の `--env-file` と二重に読んでも同じ結果）。
+- `src/cli.ts` は `--help`・`--version`・振り分けの後、サブコマンドを import する前に `loadEnvFile(path)`: `SELF_AGENT_ENV_FILE` があればそれ、無ければ `~/.config/self-agent/env`。`process.loadEnvFile` を try し、`ENOENT` なら何もしない（それ以外の例外は変数名を出さずに「env ファイルを読めませんでした」で exit 1）。既にある環境変数は上書きされない（§2.1。systemd の `--env-file` と二重に読んでも同じ結果）。
 - 優先順位: **`SELF_AGENT_ENV_FILE` が効くのは `self-agent` コマンド（`src/cli.ts` / `dist/cli.js` の `loadEnvFile`）のときだけ。** `npm run *`・`npm start` は今までどおり node の `--env-file-if-exists` で既定の `~/.config/self-agent/env` を先に読み、その後の cli.ts の `loadEnvFile` は既存の変数を上書きしないので、二重に読んでも結果は同じ（`SELF_AGENT_ENV_FILE` を env ファイルの中に書いても、`npm run` では既に読んだ後なので効かない。README にその旨を 1 行）。
 - `main.ts`・`config.ts` は `process.env` を読むだけで変えない。
 
@@ -115,7 +115,7 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 - `scaffold.ts` の `WEB_TEMPLATE_DIR` は変えない（§2.2）。D1 のテストで `WEB_TEMPLATE_DIR` が実在するディレクトリであることを確かめる（dist でも同じテストを P1-a の受け入れで走らせる）。
 
 ### 4.5 二重起動の lock（D1）
-- 固定の印（`BOT_COMMAND`）では公開物を見分けられない（§2.2）。**lock の 3 行目に自分の `process.argv.slice(1).join(" ")` を書き、holder の `/proc/<pid>/cmdline` がそれを含むかで「同じ Bot か」を比べる**（PID が生きていて boot id が同じでも、cmdline が含まなければ PID の再利用とみなして取り直す）。`node src/cli.ts devlog` のような Bot でない cli のプロセスは argv が違うので Bot と誤判定されない。
+- 固定の印（`BOT_COMMAND`）では公開物を見分けられない（§2.2）。**lock の 3 行目に自分の `/proc/self/cmdline` の argv[0] より後ろ（NUL・改行を空白に。読めなければ `process.argv.slice(1).join(" ")`）を書き、holder の `/proc/<pid>/cmdline` を同じ規則で正規化したものがそれを含むかで「同じ Bot か」を比べる**（PID が生きていて boot id が同じでも、cmdline が含まなければ PID の再利用とみなして取り直す）。`process.argv` を使わない理由: `argv[1]` は node が絶対パスに解決する（`bin/self-agent` の `bin/../src/cli.ts` の `..` も正規化する）が、cmdline は起動したときの文字列のままなので、`npm start`・transient unit（`node … src/cli.ts start`）のような相対パスの起動では一致せず、2 つ目の Bot が 1 つ目の lock を古いと判定して二重起動になる（実測）。`node src/cli.ts devlog` のような Bot でない cli のプロセスは引数が違うので Bot と誤判定されない。
 - 移行: 3 行目が無い古い lock（今の本番が持っている）は今までどおり `src/main.ts` の印で比べる。新しい Bot が書く lock は常に 3 行。`/proc` が読めなければ今までどおりこの確認は飛ばす。
 
 ### 4.6 README（P1-a・P1-b）
@@ -154,7 +154,7 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 ## 5. 受け入れ条件
 
 単体（`npm test`。偽物・一時ディレクトリ・ネット無し）:
-- D1: `src/cli.ts` のサブコマンドの振り分け（無い名前は exit 2・`--help`・`--version`）。`loadEnvFile` が無いファイルで何もしない・既存の変数を上書きしない・`SELF_AGENT_ENV_FILE` で場所が変わる。`data-lock`: 新しい lock は 3 行で argv を含む、holder の cmdline に自分の argv が含まれれば生きている・含まなければ取り直す（`node /…/bin/self-agent start` の形と `node src/cli.ts start` の形の両方）、`node src/cli.ts devlog` の cmdline の PID は Bot でないとみなす、3 行目の無い古い lock は `src/main.ts` の印で比べる。`packageDir` が `package.json` のあるディレクトリ。`WEB_TEMPLATE_DIR` が実在する。
+- D1: `src/cli.ts` のサブコマンドの振り分け（無い名前は exit 2・`--help`・`--version`）。`loadEnvFile` が無いファイルで何もしない・既存の変数を上書きしない・`SELF_AGENT_ENV_FILE` で場所が変わる。`data-lock`: 新しい lock は 3 行で自分の cmdline（argv[0] より後ろ。読めなければ argv）を含む、holder の cmdline にそれが含まれれば生きている・含まなければ取り直す（`node /…/bin/self-agent start` の形と `node src/cli.ts start` の形の両方。相対パスで起動した（cmdline が `node src/cli.ts start`、argv[1] が絶対パス）2 つ目の Bot を拒む）、`node src/cli.ts devlog` の cmdline の PID は Bot でないとみなす、3 行目の無い古い lock は `src/main.ts` の印で比べる。`packageDir` が `package.json` のあるディレクトリ。`WEB_TEMPLATE_DIR` が実在する。
 - D2: 入力の形の検証（4 変数）。既存の env の差分の置き換えと `env.bak`。値を含む文字列が出力・log に無い。
 - D3: plist / unit の生成が純関数で、秘密の変数名・値を含まない（grep）。`ProgramArguments`/`ExecStart` が絶対パス。
 - P1-a: `npm run build` の後、`dist/**/*.js` を `\.ts["')]` で grep して 0 件。`dist/cli.js` の 1 行目が shebang。`npm pack --dry-run --json` の一覧に `src/`・`test/`・`scripts/`・`docs/`・`.env`・`*.db`・`tsconfig*.json` が無く、`dist/cli.js`・`templates/web/site/base.css`・`README.md` がある（`LICENSE` は P1-b で足してから同じ確認）。

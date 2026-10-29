@@ -58,8 +58,8 @@ export type SandboxCheckInput = {
   nodeDir: string;
   dataDir: string;
   claudeConfigDir: string;
-  /** Bot のリポジトリ（process.cwd()） */
-  repoDir: string;
+  /** self-agent のパッケージの直下（query-options.ts の PACKAGE_DIR。checkout ではリポジトリ） */
+  packageDir: string;
   /** `~/.config/self-agent` の基準 */
   homeDir: string;
   /** 既定は child_process.spawn で実行する */
@@ -97,7 +97,7 @@ export function findExecutable(name: string, pathEnv: string): string | undefine
 }
 
 /** sandbox の場所の基準（§2.2・§2.3）。自己診断（placesOverlap）と Options.sandbox（query-options.ts の sandboxSettings）が同じものを使う */
-export type SandboxPlaces = Pick<SandboxCheckInput, "workDir" | "nodeDir" | "dataDir" | "claudeConfigDir" | "repoDir" | "homeDir">;
+export type SandboxPlaces = Pick<SandboxCheckInput, "workDir" | "nodeDir" | "dataDir" | "claudeConfigDir" | "packageDir" | "homeDir">;
 
 /**
  * sandbox から読める場所（allowRead。allowWrite はすべてこの中の projects・.cache・.tmp）。読める場所は workDir そのものではなく、
@@ -115,11 +115,11 @@ export function sandboxReadablePlaces(places: SandboxPlaces): string[] {
 }
 
 /**
- * 秘密の場所（データ・SDK の設定・env ファイルのある `~/.config/self-agent`・リポジトリ）。
+ * 秘密の場所（データ・SDK の設定・env ファイルのある `~/.config/self-agent`・パッケージの直下）。
  * denyRead に実際の場所で並べ（`~` の下でなくても隠すため）、読める場所と重なれば自己診断を通さない
  */
 export function sandboxSecretPlaces(places: SandboxPlaces): string[] {
-  return [places.dataDir, places.claudeConfigDir, join(places.homeDir, ".config/self-agent"), places.repoDir];
+  return [places.dataDir, places.claudeConfigDir, join(places.homeDir, ".config/self-agent"), places.packageDir];
 }
 
 /** PATH（shellPath）に bwrap・socat が無ければ、その項目（SANDBOX_CHECK_ITEMS）。両方あれば空。各 run の前の確かめ直し（§4）に使う */

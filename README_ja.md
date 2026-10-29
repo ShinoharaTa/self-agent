@@ -131,7 +131,7 @@ npm start
 ```bash
 systemd-run --user --unit=self-agent --working-directory="$PWD" \
   -p MemoryMax=4G -p MemoryHigh=3G -p CPUQuota=300% -p TasksMax=1024 \
-  "$(command -v node)" --env-file="$HOME/.config/self-agent/env" src/main.ts
+  "$(command -v node)" --env-file="$HOME/.config/self-agent/env" src/cli.ts start
 journalctl --user -u self-agent -f      # ログ
 systemctl --user stop self-agent        # 停止（進行中の返信を待ってから止まる）
 ```

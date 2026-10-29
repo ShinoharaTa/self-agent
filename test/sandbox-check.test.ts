@@ -50,7 +50,7 @@ function setup(t: TestContext) {
     nodeDir: join(root, "node/v24"),
     dataDir: join(root, "data"),
     claudeConfigDir: join(root, "claude"),
-    repoDir: join(root, "repo"),
+    packageDir: join(root, "repo"),
     homeDir: join(root, "home"),
   };
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
@@ -138,7 +138,7 @@ test("checkSandbox: 失敗した項目を全部返す（項目にパスは入ら
       name: "全部だめ",
       arrange: (env) => {
         rmSync(env.bin, { recursive: true });
-        env.input.repoDir = env.dirs.workDir;
+        env.input.packageDir = env.dirs.workDir;
         env.input.deviceOf = () => 1;
       },
       failed: [ITEMS.bwrapMissing, ITEMS.socatMissing, ITEMS.placesOverlap, ITEMS.sameFilesystem],
@@ -161,11 +161,11 @@ test("placesOverlap: 読める場所（workDir の projects・.cache・.tmp・cw
     { name: "dataDir が workDir と同じ（読める場所の外側）", arrange: (env) => void (env.input.dataDir = env.dirs.workDir), overlap: true },
     { name: "claudeConfigDir が workDir の projects の中", arrange: (env) => void (env.input.claudeConfigDir = join(env.dirs.workDir, "projects/claude")), overlap: true },
     { name: "dataDir が workDir の .cache と同じ", arrange: (env) => void (env.input.dataDir = join(env.dirs.workDir, ".cache")), overlap: true },
-    { name: "repoDir が workDir の .tmp の中", arrange: (env) => void (env.input.repoDir = join(env.dirs.workDir, ".tmp/repo")), overlap: true },
+    { name: "packageDir が workDir の .tmp の中", arrange: (env) => void (env.input.packageDir = join(env.dirs.workDir, ".tmp/repo")), overlap: true },
     { name: "claudeConfigDir が workDir の cwd の中", arrange: (env) => void (env.input.claudeConfigDir = join(env.dirs.workDir, "cwd/claude")), overlap: true },
     { name: "dataDir が workDir の直下の jobs", arrange: (env) => void (env.input.dataDir = join(env.dirs.workDir, "jobs")), overlap: false },
     { name: "claudeConfigDir が workDir の直下の別の名前", arrange: (env) => void (env.input.claudeConfigDir = join(env.dirs.workDir, "other")), overlap: false },
-    { name: "repoDir が workDir の外側", arrange: (env) => void (env.input.repoDir = env.root), overlap: true },
+    { name: "packageDir が workDir の外側", arrange: (env) => void (env.input.packageDir = env.root), overlap: true },
     {
       name: "workDir が ~/.config/self-agent の中",
       arrange: (env) => {
@@ -182,7 +182,7 @@ test("placesOverlap: 読める場所（workDir の projects・.cache・.tmp・cw
       },
       overlap: true,
     },
-    { name: "repoDir が node の版のディレクトリの中", arrange: (env) => void (env.input.repoDir = join(env.dirs.nodeDir, "lib/repo")), overlap: true },
+    { name: "packageDir が node の版のディレクトリの中", arrange: (env) => void (env.input.packageDir = join(env.dirs.nodeDir, "lib/repo")), overlap: true },
     { name: "node の版のディレクトリが dataDir の中", arrange: (env) => void (env.input.nodeDir = join(env.dirs.dataDir, "node")), overlap: true },
     {
       name: "node の版のディレクトリが解決できなければ重なっているとみなす",
@@ -214,7 +214,7 @@ test("placesOverlap: 読める場所（workDir の projects・.cache・.tmp・cw
       name: "解決できない（途中がファイル: ENOTDIR）なら重なっているとみなす",
       arrange: (env) => {
         writeFileSync(join(env.root, "file"), "");
-        env.input.repoDir = join(env.root, "file/repo");
+        env.input.packageDir = join(env.root, "file/repo");
       },
       overlap: true,
     },

@@ -1,0 +1,80 @@
+// dev モードの会話ログ（<SELF_AGENT_DATA_DIR>/devlog/<YYYY-MM-DD>.jsonl）を 1 ターンずつ読みやすく出す。
+// npm run devlog -- [--date YYYY-MM-DD] [--kind inbox|tasks|session] [--channel <id>] [--persona <id>] [--last N]（既定は今日・全部）。
+// 読む設定は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ だけ（トークンが無くても動く。既定値は loadConfig と同じ）
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+import type { RunContext } from "../agent/runner.ts";
+import { formatDate } from "../app/time.ts";
+import { loadDataConfig } from "../config.ts";
+import { formatDevLogRecord, parseDevLog, selectDevLogRecords } from "../devlog/format.ts";
+import { devLogDir } from "../devlog/log.ts";
+
+const KINDS: readonly RunContext["kind"][] = ["inbox", "tasks", "session"];
+const USAGE =
+  "使い方: npm run devlog -- [--date YYYY-MM-DD] [--kind inbox|tasks|session] [--channel <id>] [--persona <id>] [--last N]";
+
+function fail(message: string): number {
+  console.error(message);
+  console.error(USAGE);
+  return 1;
+}
+
+export async function main(argv: readonly string[]): Promise<number> {
+  let values: { date?: string; kind?: string; channel?: string; persona?: string; last?: string };
+  try {
+    ({ values } = parseArgs({
+      args: [...argv],
+      options: {
+        date: { type: "string" },
+        kind: { type: "string" },
+        channel: { type: "string" },
+        persona: { type: "string" },
+        last: { type: "string" },
+      },
+    }));
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+
+  if (values.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(values.date)) {
+    return fail("--date は YYYY-MM-DD で指定してください");
+  }
+  const kind = KINDS.find((candidate) => candidate === values.kind);
+  if (values.kind !== undefined && kind === undefined) {
+    return fail(`--kind は ${KINDS.join(" / ")} のいずれかで指定してください`);
+  }
+  const last = values.last === undefined ? undefined : /^\d+$/.test(values.last) ? Number(values.last) : Number.NaN;
+  if (last !== undefined && (!Number.isSafeInteger(last) || last < 1)) {
+    return fail("--last は正の整数で指定してください");
+  }
+
+  const { dataDir, timeZone } = loadDataConfig();
+  const date = values.date ?? formatDate(new Date(), timeZone);
+
+  let text: string;
+  try {
+    text = readFileSync(join(devLogDir(dataDir), `${date}.jsonl`), "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      console.error(`${date} の記録はありません`);
+      return 0;
+    }
+    throw error;
+  }
+
+  const { records, skipped } = parseDevLog(text);
+  if (skipped > 0) console.error(`読めない行を ${skipped} 行飛ばしました`);
+  const selected = selectDevLogRecords(records, {
+    ...(kind === undefined ? {} : { kind }),
+    ...(values.channel === undefined ? {} : { channelId: values.channel }),
+    ...(values.persona === undefined ? {} : { persona: values.persona }),
+    ...(last === undefined ? {} : { last }),
+  });
+  if (selected.length === 0) {
+    console.error(`${date} に該当する記録はありません`);
+  } else {
+    console.log(selected.map((record) => formatDevLogRecord(record, timeZone)).join("\n\n"));
+  }
+  return 0;
+}

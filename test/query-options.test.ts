@@ -1,14 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import {
   buildQueryOptions,
   childEnv,
+  defaultSandboxHost,
   ensureCwdDir,
   ensureSandboxWriteDirs,
+  PACKAGE_DIR,
   projectDirName,
   projectDirNameFor,
   SANDBOX_ALLOWED_DOMAINS,
@@ -234,7 +236,7 @@ function shellSetup(t: import("node:test").TestContext) {
   mkdirSync(workDir);
   const host: SandboxHost = {
     execPath: join(root, "node", "v24", "bin", "node"),
-    cwd: join(root, "repo"),
+    packageDir: join(root, "repo"),
     homeDir: home,
     env: {
       PATH: "/usr/bin",
@@ -475,4 +477,11 @@ test("projectDirNameFor: 末尾の / ・symlink を解いた実際の場所か�
   assert.equal(projectDirNameFor(join(root, "work")), expected);
   assert.equal(projectDirNameFor(`${join(root, "real-work")}/`), expected);
   assert.equal(childEnv("/srv/claude", join(root, "work"), {}).CLAUDE_CODE_PROJECT_DIR_NAME, expected);
+});
+
+test("PACKAGE_DIR（sandbox の秘密の場所のパッケージの直下）は package.json のあるディレクトリで、末尾に / が無く、起動したときの cwd によらない", () => {
+  assert.equal(JSON.parse(readFileSync(join(PACKAGE_DIR, "package.json"), "utf8")).name, "self-agent");
+  assert.ok(!PACKAGE_DIR.endsWith("/"));
+  assert.equal(defaultSandboxHost().packageDir, PACKAGE_DIR);
+  assert.equal(sandboxPlacesOf({ ...cfg, dataDir: "/srv/data" }, defaultSandboxHost()).packageDir, PACKAGE_DIR);
 });
