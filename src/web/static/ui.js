@@ -50,14 +50,81 @@
     return Math.floor(sec / 60) + " 分 " + (sec % 60) + " 秒";
   }
 
+  // ===== 時刻（SELF_AGENT_TZ。/api/status の timeZone。読む前・無効な値ならブラウザの既定） =====
+  const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+  const formatters = new Map();
+
+  /** タイムゾーンごとに 1 つ作って使い回す。作れなければ（無効な名前）ブラウザの既定 */
+  function formatter() {
+    const status = SA.store && SA.store.status;
+    const zone = status && typeof status.timeZone === "string" && status.timeZone !== "" ? status.timeZone : "";
+    let f = formatters.get(zone);
+    if (!f) {
+      const opts = { year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric", hourCycle: "h23" };
+      try {
+        f = new Intl.DateTimeFormat("en-US", zone ? { ...opts, timeZone: zone } : opts);
+      } catch {
+        f = new Intl.DateTimeFormat("en-US", opts);
+      }
+      formatters.set(zone, f);
+    }
+    return f;
+  }
+
+  /** Date か ISO の文字列 → 表示のタイムゾーンでの年月日・時分秒・曜日（0 が日曜）。時刻でなければ null */
+  function zoned(value) {
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    const p = {};
+    for (const part of formatter().formatToParts(d)) p[part.type] = part.value;
+    const year = Number(p.year);
+    const month = Number(p.month);
+    const day = Number(p.day);
+    return {
+      year,
+      month,
+      day,
+      hour: Number(p.hour) % 24,
+      minute: Number(p.minute),
+      second: Number(p.second),
+      weekday: new Date(Date.UTC(year, month - 1, day)).getUTCDay(),
+      date: year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0"),
+    };
+  }
+
+  const pad2 = (n) => String(n).padStart(2, "0");
+
   /** HH:MM:SS */
   function clock(date) {
-    return date.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    const z = zoned(date);
+    return z ? pad2(z.hour) + ":" + pad2(z.minute) + ":" + pad2(z.second) : "-";
   }
 
   /** HH:MM */
   function hm(date) {
-    return date.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", hour12: false });
+    const z = zoned(date);
+    return z ? pad2(z.hour) + ":" + pad2(z.minute) : "-";
+  }
+
+  /** 10/27(火) 4:12 */
+  function dateTime(value) {
+    const z = zoned(value);
+    return z ? z.month + "/" + z.day + "(" + WEEKDAYS[z.weekday] + ") " + z.hour + ":" + pad2(z.minute) : "-";
+  }
+
+  /** 10/29(木) */
+  function dateOf(value) {
+    const z = zoned(value);
+    return z ? z.month + "/" + z.day + "(" + WEEKDAYS[z.weekday] + ")" : "-";
+  }
+
+  /** 今日（表示のタイムゾーンの今の日付）ならその時刻、それ以外は 10/27 04:12 */
+  function shortTime(value) {
+    const z = zoned(value);
+    if (!z) return "";
+    const now = zoned(new Date());
+    if (now && z.date === now.date) return pad2(z.hour) + ":" + pad2(z.minute);
+    return z.month + "/" + z.day + " " + pad2(z.hour) + ":" + pad2(z.minute);
   }
 
   /** 本文の http(s) の URL だけをリンクにする（それ以外は文字のまま。innerHTML は使わない） */
@@ -75,33 +142,44 @@
     return parts;
   }
 
-  // ===== トースト（action があれば自動で消さない） =====
-  let toastTimer;
+  // ===== トースト（多くて 2 つ。action があれば自動で消さない） =====
+  // action（[取り消す] など）の付いたトーストが上に出ている間は、後から来たものをその下に 2 つ目として出す（2 つ目が既にあれば置き換える）。
+  // それ以外は置き換える。action の付いたものは押すか閉じるまで残す
+  const TOAST_MS = 4000;
+  /** 出ているもの（上から）。{ node, action, timer } */
+  let toasts = [];
+
+  function removeToast(item) {
+    clearTimeout(item.timer);
+    item.node.remove();
+    toasts = toasts.filter((t) => t !== item);
+    const box = document.getElementById("toast");
+    if (box && toasts.length === 0) box.hidden = true;
+  }
+
   function toast(text, action) {
     const box = document.getElementById("toast");
     if (!box) return;
+    const keep = toasts.length > 0 && toasts[0].action ? toasts[0] : null;
+    for (const item of [...toasts]) if (item !== keep) removeToast(item);
+    const item = { node: null, action: !!action, timer: null };
     const close = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm", type: "button", "aria-label": "閉じる" }, [icon("x")]);
-    close.addEventListener("click", () => {
-      box.hidden = true;
-    });
+    close.addEventListener("click", () => removeToast(item));
     const children = [el("span", { text })];
     if (action) {
       const btn = el("button", { class: "btn btn-secondary btn-sm", type: "button", text: action.label });
       btn.addEventListener("click", () => {
-        box.hidden = true;
+        removeToast(item);
         action.run();
       });
       children.push(btn);
     }
     children.push(close);
-    box.replaceChildren(...children);
+    item.node = el("div", { class: "toast" }, children);
+    toasts.push(item);
+    box.append(item.node);
     box.hidden = false;
-    clearTimeout(toastTimer);
-    if (!action) {
-      toastTimer = setTimeout(() => {
-        box.hidden = true;
-      }, 4000);
-    }
+    if (!action) item.timer = setTimeout(() => removeToast(item), TOAST_MS);
   }
 
   // ===== ダイアログ（showModal が無い環境では open 属性で開く） =====
@@ -145,5 +223,5 @@
     ok.focus();
   }
 
-  SA.ui = { el, icon, count, elapsed, clock, hm, linkify, toast, confirm, openDialog, closeDialog };
+  SA.ui = { el, icon, count, elapsed, clock, hm, dateTime, dateOf, shortTime, linkify, toast, confirm, openDialog, closeDialog };
 })();

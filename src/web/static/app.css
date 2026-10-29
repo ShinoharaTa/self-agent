@@ -1709,12 +1709,22 @@ kbd {
   margin-top: var(--space-6);
 }
 
-/* VS Code と同じく右下に出す */
-.toast {
-  top: auto;
+/* VS Code と同じく右下に出す。2 つまで縦に並べる（[取り消す] の付いたものの下に後から来たもの） */
+.toast-stack {
+  position: fixed;
   right: var(--space-4);
   bottom: calc(var(--statusbar-h) + var(--space-3));
-  left: auto;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  max-width: calc(100% - var(--space-7));
+}
+
+.toast-stack .toast {
+  position: static;
+  max-width: 100%;
   transform: none;
 }
 
@@ -1872,10 +1882,15 @@ kbd {
     display: none;
   }
 
-  .toast {
+  .toast-stack {
     right: var(--space-4);
     bottom: calc(var(--bottomnav-h) + var(--statusbar-h) + var(--space-3));
     left: var(--space-4);
+    align-items: stretch;
+    max-width: none;
+  }
+
+  .toast-stack .toast {
     width: auto;
   }
 }
@@ -1904,7 +1919,7 @@ kbd {
     bottom: var(--bottomnav-h);
   }
 
-  .toast {
+  .toast-stack {
     bottom: calc(var(--bottomnav-h) + var(--space-3));
   }
 

@@ -78,7 +78,8 @@
   // channels: /api/channels（guilds・personas・channels）。turns[channelId]: 会話のタブの行（古い順）と、/turns の channel・まだ前があるか。
   // devlogDays: /api/devlog/days。devlog: /api/devlog の結果（date はサーバーが使った日付）。devlogToday: 日付を付けずに読んだときの日付。
   // running: /api/running の turns（まだ読んでいなければ null）。runningAt: それを受け取った時刻（経過時間を進めて見せる）。
-  // tasks: /api/tasks の状態ごとの一覧（{ open, done, dropped }）。reminders: /api/reminders。memories: /api/memories（どれもまだ読んでいなければ null）
+  // taskStatus: タスクのタブで出している状態。tasks: その状態の /api/tasks（{ status, tasks, counts }）。openTasks: open の一覧（サイドバー）。
+  // reminders: /api/reminders。memories: /api/memories（どれもまだ読んでいなければ null）
   const store = {
     status: null,
     usage: null,
@@ -93,7 +94,9 @@
     devlogToday: null,
     running: null,
     runningAt: 0,
+    taskStatus: "open",
     tasks: null,
+    openTasks: null,
     reminders: null,
     memories: null,
     load: {},
@@ -121,10 +124,17 @@
   store.load.status = (opts) =>
     once("status", async () => {
       const data = await SA.api.get("/api/status", opts);
+      // 時刻の表示のタイムゾーン（timeZone）が来た・変わったら、前に出ているタブとサイドバーの時刻も描き直す
+      const zoneChanged = (store.status && store.status.timeZone) !== (data && data.timeZone);
       store.status = data;
       SA.app.refreshStatus();
       SA.app.refresh("status");
       SA.app.refresh("settings");
+      if (zoneChanged) {
+        const tabId = SA.app.activeTabId();
+        if (tabId && tabId !== "status" && tabId !== "settings") SA.app.refresh(tabId);
+        SA.app.refreshSidebar();
+      }
       if (data && data.stopping === true && !SA.poll.stopped()) {
         SA.poll.stop();
         SA.ui.toast("再起動中です。終わったら再読み込みしてください");
@@ -459,17 +469,19 @@
   };
 
   // ===== タスク・リマインド・記憶（W4） =====
-  const TASK_STATUSES = ["open", "done", "dropped"];
-
-  /** 3 つの状態を並べて読む（状態の切り替えの数を出すため）。opts.quiet は polling から */
+  /**
+   * 出している状態の一覧と状態ごとの件数を 1 回で読む。open 以外を出しているときは、サイドバーの未完了のために open も読む。
+   * opts.quiet は polling から
+   */
   store.load.tasks = (opts) =>
     once("tasks", async () => {
-      const lists = await Promise.all(TASK_STATUSES.map((status) => SA.api.get("/api/tasks?status=" + status, opts)));
-      const tasks = {};
-      TASK_STATUSES.forEach((status, i) => {
-        tasks[status] = Array.isArray(lists[i] && lists[i].tasks) ? lists[i].tasks : [];
-      });
-      store.tasks = tasks;
+      const status = store.taskStatus;
+      const statuses = status === "open" ? ["open"] : [status, "open"];
+      const results = await Promise.all(statuses.map((s) => SA.api.get("/api/tasks?status=" + s, opts)));
+      const listOf = (data) => (Array.isArray(data && data.tasks) ? data.tasks : []);
+      const counts = results[0] && results[0].counts && typeof results[0].counts === "object" ? results[0].counts : null;
+      store.tasks = { status, tasks: listOf(results[0]), counts };
+      store.openTasks = listOf(results[statuses.indexOf("open")]);
       SA.app.refresh("tasks");
       SA.app.refreshSidebar();
     });

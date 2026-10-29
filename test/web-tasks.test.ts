@@ -84,15 +84,19 @@ test("GET /api/tasks: 状態ごとの一覧。open だけ紐づけた active の
     { id: late.id, title: "図書館の本を返す", due: "2026-10-20", status: "open", completedAt: null, remind: null },
     { id: none.id, title: "インクを買う", due: null, status: "open", completedAt: null, remind: null },
   ]);
-  // 省略は open
+  // 状態ごとの件数（どの状態の一覧でも同じ）
+  assert.deepEqual(open.json.counts, { open: 3, done: 1, dropped: 1 });
+  // 省略・空は open
   assert.deepEqual((await call(server, "GET", "/api/tasks")).json, open.json);
+  assert.deepEqual((await call(server, "GET", "/api/tasks?status=")).json, open.json);
   assert.deepEqual((await call(server, "GET", "/api/tasks?status=done")).json.tasks, [
     { id: done.id, title: "健康診断の予約", due: null, status: "done", completedAt: NOW.toISOString(), remind: null },
   ]);
+  assert.deepEqual((await call(server, "GET", "/api/tasks?status=done")).json.counts, open.json.counts);
   assert.deepEqual((await call(server, "GET", "/api/tasks?status=dropped")).json.tasks, [
     { id: dropped.id, title: "古いルーターを売る", due: null, status: "dropped", completedAt: NOW.toISOString(), remind: null },
   ]);
-  for (const status of ["all", "", "OPEN"]) {
+  for (const status of ["all", "OPEN"]) {
     assert.deepEqual(await call(server, "GET", `/api/tasks?status=${status}`), { status: 400, json: { error: "bad_request" } }, status);
   }
 });

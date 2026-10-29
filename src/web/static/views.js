@@ -57,19 +57,8 @@
     return Number(m[2]) + "/" + Number(m[3]) + "(" + WEEKDAYS[day.getUTCDay()] + ")";
   }
 
-  /** ISO の時刻 → このブラウザの時刻で 10/27(火) 4:12 */
-  function dateTime(iso) {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "-";
-    return d.getMonth() + 1 + "/" + d.getDate() + "(" + WEEKDAYS[d.getDay()] + ") " + d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0");
-  }
-
-  /** ISO の時刻 → このブラウザの日付で 10/29(木) */
-  function dateOf(iso) {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "-";
-    return d.getMonth() + 1 + "/" + d.getDate() + "(" + WEEKDAYS[d.getDay()] + ")";
-  }
+  // 時刻（SELF_AGENT_TZ）の表示は ui.js
+  const { dateTime, dateOf } = SA.ui;
 
   /** 今からどれだけ前か（分・時間・日） */
   function ago(iso) {
@@ -267,12 +256,17 @@
     store.reload(key);
   }
 
-  /** POST して、通ったら一覧を読み直して then を呼ぶ。押したボタンは終わるまで押せなくする */
+  /**
+   * POST して、通ったら一覧を読み直して then を呼ぶ。押したボタンは終わるまで押せなくし、読み直しが終わったら（失敗でも）押せる状態に戻す
+   * （読み直せていれば行ごと描き直されている）
+   */
   function act(button, path, key, then) {
     if (button) button.disabled = true;
     SA.api.post(path, {}, { quiet: true }).then(
       (data) => {
-        store.reload(key);
+        store.reload(key).then(() => {
+          if (button) button.disabled = false;
+        });
         if (then) then(data);
       },
       (err) => {
@@ -283,14 +277,11 @@
   }
 
   // ===== タスク（W4: 一覧と [完了]・トーストの [取り消す]） =====
-  const taskFilter = { status: "open" };
   const TASK_STATUSES = [
     ["open", "未完了"],
     ["done", "完了"],
     ["dropped", "やめた"],
   ];
-  /** /api/tasks の 1 回の上限（これだけあれば「200+」と出す） */
-  const TASK_LIST_LIMIT = 200;
 
   /** 期限（YYYY-MM-DD）が今日（サーバーの日付）より前の未完了 */
   function overdue(t) {
@@ -307,24 +298,27 @@
   }
 
   function renderTasks(container) {
-    const all = store.tasks;
+    const shown = store.taskStatus;
+    // 件数は直前に読んだもの（切り替えた直後の読み込み中も出す）
+    const counts = store.tasks ? store.tasks.counts : null;
     const seg = el("div", { class: "segmented segmented-sm", role: "group", "aria-label": "状態" });
     for (const [key, label] of TASK_STATUSES) {
-      const n = all ? all[key].length : null;
-      const text = n === null ? label : label + " " + (n >= TASK_LIST_LIMIT ? TASK_LIST_LIMIT + "+" : n);
-      const b = el("button", { type: "button", "aria-pressed": String(taskFilter.status === key), text });
+      const n = counts && typeof counts[key] === "number" ? counts[key] : null;
+      const b = el("button", { type: "button", "aria-pressed": String(shown === key), text: n === null ? label : label + " " + n });
       b.addEventListener("click", () => {
-        taskFilter.status = key;
+        if (store.taskStatus === key) return;
+        store.taskStatus = key;
         SA.app.refresh("tasks");
+        store.reload("tasks");
       });
       seg.append(b);
     }
     const head = toolbar("square-check", "タスク", [], [seg]);
-    if (!all) {
+    if (!store.tasks || store.tasks.status !== shown) {
       container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
       return;
     }
-    const rows = all[taskFilter.status].map((t) => {
+    const rows = store.tasks.tasks.map((t) => {
       const late = overdue(t);
       const due = t.due === null ? "—" : dayLabel(t.due) + (late ? "・過ぎています" : "");
       const action = el("td", { class: "td-actions" });
@@ -345,7 +339,7 @@
     const body =
       rows.length === 0
         ? empty("square-check", "このタスクはありません")
-        : table(["#", "題名", "期限", taskFilter.status === "open" ? "知らせ" : "閉じた日", { text: "", cls: "th-actions" }], rows);
+        : table(["#", "題名", "期限", shown === "open" ? "知らせ" : "閉じた日", { text: "", cls: "th-actions" }], rows);
     container.replaceChildren(
       head,
       scroll([body, el("p", { class: "meta", text: "追加・編集は #inbox か #tasks に書いてください（Bot が task_add・task_update を使います）。" })]),
@@ -353,6 +347,11 @@
   }
 
   // ===== リマインド（W4: 止める・次を飛ばす） =====
+  /** 一覧・確認のダイアログに出すリマインドの text（改行を空白に） */
+  function oneLine(text) {
+    return String(text).replace(/\s*[\r\n]+\s*/g, " ");
+  }
+
   function renderReminders(container) {
     const list = store.reminders;
     if (!list) {
@@ -373,7 +372,7 @@
       const stop = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "止める" });
       stop.addEventListener("click", () =>
         confirm({
-          title: "「" + r.text + "」を止めますか",
+          title: "「" + oneLine(r.text) + "」を止めますか",
           body: "止めたリマインドは戻せません。",
           ok: "止める",
           danger: true,
@@ -386,7 +385,7 @@
       actions.append(stop);
       return el("tr", {}, [
         td(r.nextAt ? dateTime(r.nextAt) : "-", "td-nowrap"),
-        td([r.kind === "prompt" ? el("span", { class: "badge badge-accent", text: "依頼" }) : null, r.kind === "prompt" ? " " : null, r.text], "td-main"),
+        td([r.kind === "prompt" ? el("span", { class: "badge badge-accent", text: "依頼" }) : null, r.kind === "prompt" ? " " : null, oneLine(r.text)], "td-main"),
         td(r.rule === null ? "1 回だけ" : r.ruleText || r.rule),
         td(r.channelName || "—"),
         actions,
@@ -618,6 +617,7 @@
     compact,
     dayLabel,
     overdue,
+    oneLine,
     todayTokens,
   };
 })();

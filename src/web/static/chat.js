@@ -4,7 +4,7 @@
 
 (function () {
   const SA = (window.SA = window.SA || {});
-  const { el, icon, elapsed, hm, linkify, toast } = SA.ui;
+  const { el, icon, elapsed, shortTime, linkify, toast } = SA.ui;
   const store = SA.store;
 
   const STATE_LABEL = { active: "進行中", waiting: "待ち", done: "完了" };
@@ -55,15 +55,6 @@
   function persona(id) {
     const list = store.channels ? store.channels.personas : [];
     return list.find((p) => p.id === id) || { id, name: id, isDefault: id === "default" };
-  }
-
-  /** 今日ならその時刻、それ以外は 10/27 4:12 */
-  function shortTime(iso) {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "";
-    const now = new Date();
-    if (d.toDateString() === now.toDateString()) return hm(d);
-    return d.getMonth() + 1 + "/" + d.getDate() + " " + hm(d);
   }
 
   /** 終わり方の文（「完了（m 分 s 秒・ツール n 回）」など）。時間・回数が無ければ終わり方だけ */
