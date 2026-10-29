@@ -56,6 +56,15 @@ test("TaskStore: 追加・取得・完了", (t) => {
   assert.deepEqual(store.complete(99), { result: "not_found" });
 });
 
+test("TaskStore.counts: 状態ごとの件数。行の無い状態は 0", (t) => {
+  const store = tempStore(t);
+  assert.deepEqual(store.counts(), { open: 0, done: 0, dropped: 0 });
+  store.add({ title: "A" });
+  store.add({ title: "B" });
+  store.complete(2);
+  assert.deepEqual(store.counts(), { open: 1, done: 1, dropped: 0 });
+});
+
 test("task_add / task_list / task_complete ハンドラ", (t) => {
   const handlers = createTaskToolHandlers(tempStore(t), TZ, NO_REMINDERS);
 

@@ -79,7 +79,7 @@
       badges,
       dot: unread ? "dot-unread" : null,
       dotLabel: unread ? "未読" : null,
-      meta: ch.last ? SA.chat.shortTime(ch.last.at) : "",
+      meta: ch.last ? SA.ui.shortTime(ch.last.at) : "",
     });
   }
 

@@ -429,5 +429,5 @@
     }
   }, 1000);
 
-  SA.chat = { info, channelTitle, shortTime, activeChannelId, markSeenActive, channelsChanged, endText, STATE_LABEL };
+  SA.chat = { info, channelTitle, activeChannelId, markSeenActive, channelsChanged, endText, STATE_LABEL };
 })();
