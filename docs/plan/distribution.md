@@ -11,7 +11,7 @@
 1. 配布は **npm 公開**（`npm i -g`）。tsc のビルドを導入して `dist/` を配る。
 2. Web UI は別ポート + `Tailscale-User-Login` 必須。Tailscale 以外の VPN 用に env の固定トークン + Cookie（web-ui.md）。
 3. Web UI は最初から操作も入れる。env（秘密）の編集は載せない（web-ui.md）。
-4. 順番は Web UI（W1）→ Mac（M1）。Mac のシェル（M2）は最後で、I1 が成り立たなければ入れない。
+4. 順番は Web UI（W1）→ Mac（M1）。Mac のシェル（M2）は W8（J4 の後）を除いて最後で、I1 が成り立たなければ入れない。
 5. npm の名前は **`@shinoharata/self-agent`**（`self-agent` も空きだったが scoped にする。2026-10-29 に `npm view` で E404 を確認）。アカウントはオーナーが用意する（scope と同じユーザー名 `shinoharata`）。
 6. LICENSE は **MIT**（公開の PR（P1-b）で追加）。
 7. Web UI からの投稿先は受け付けるチャンネル全部（#inbox・#tasks・#<NAME>・セッション。web-ui.md v2 §5。2026-10-29 にモック v2 の採用で v1 の「既定の人格の #inbox だけ」から変更）。
