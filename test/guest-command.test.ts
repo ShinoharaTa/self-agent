@@ -2,6 +2,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { INTERACTION_FAILURE_REPLY } from "../src/app/interactions.ts";
 import { RESTARTING_REPLY } from "../src/app/shutdown.ts";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import {
   createGuestCommand,
@@ -62,7 +63,7 @@ function setup(t: TestContext, cfg: Omit<typeof CFG, "ownerUserId"> & { ownerUse
   const admin = new FakeGateway({ allow: ["sendMessage"] });
   const logs: string[] = [];
   const log = (message: string) => logs.push(message);
-  const notify = createGuestNotifier({ cfg, guildSettings, gateway: admin, log });
+  const notify = createGuestNotifier({ cfg, notify: createSystemNotifier({ guildSettings, gateway: admin, log }), log });
   const command = createGuestCommand({ cfg, guest, guilds, sessions, notify, now, log });
   const handle = createGuestInteractionHandler({ guilds, command, log });
   const run = async (interaction: Interaction): Promise<FakeResponder> => {
@@ -316,7 +317,11 @@ test("createGuestNotifier: #system への投稿が 10 秒で終わらなけれ�
   const admin = new FakeGateway({ allow: ["sendMessage"] });
   admin.beforeSendMessage = () => new Promise<void>(() => {});
   const logs: string[] = [];
-  const notify = createGuestNotifier({ cfg: CFG, guildSettings, gateway: admin, log: (message) => logs.push(message) });
+  const notify = createGuestNotifier({
+    cfg: CFG,
+    notify: createSystemNotifier({ guildSettings, gateway: admin, log: () => {} }),
+    log: (message) => logs.push(message),
+  });
   let done = false;
   const pending = notify("ゲスト: テスト").then(() => {
     done = true;
@@ -348,8 +353,7 @@ function startWith(t: TestContext, loginTimeoutMs?: number) {
       sessions,
       runner,
       usage,
-      guildSettings,
-      adminGateway: admin,
+      notify: createSystemNotifier({ guildSettings, gateway: admin, log: () => {} }),
       now: () => NOW,
       log: (message) => logs.push(message),
       ...(loginTimeoutMs === undefined ? {} : { loginTimeoutMs }),
@@ -525,8 +529,7 @@ test("createGuestLayer: start する前の stop は Gateway に触らない。st
     sessions,
     runner: new FakeRunner([]),
     usage,
-    guildSettings,
-    adminGateway: admin,
+    notify: createSystemNotifier({ guildSettings, gateway: admin, log: () => {} }),
     now: () => NOW,
     log: (message) => logs.push(message),
     createGateway: () => gateway,

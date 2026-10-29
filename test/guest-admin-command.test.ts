@@ -2,6 +2,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createInteractionHandler, OWNER_ONLY_REPLY } from "../src/app/interactions.ts";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import {
   createGuestsCommand,
@@ -45,7 +46,7 @@ function setup(t: TestContext) {
   const adminGateway = new FakeGateway({ allow: ["sendMessage"] });
   const logs: string[] = [];
   const log = (line: string) => logs.push(line);
-  const notify = createGuestNotifier({ cfg: CFG, guildSettings, gateway: adminGateway, log });
+  const notify = createGuestNotifier({ cfg: CFG, notify: createSystemNotifier({ guildSettings, gateway: adminGateway, log }), log });
   const gateway = new FakeGuestGateway();
   const onboardGuild = createGuestOnboarding({ guilds, gateway, noticeText: buildGuestNoticeText(CFG), notify, now, log });
   const admin: GuestAdmin = { cfg: CFG, invites, guilds, guest, gateway, onboardGuild, notify, now };

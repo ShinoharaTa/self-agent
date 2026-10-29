@@ -5,6 +5,7 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ShellState } from "../src/app/shell-state.ts";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import { startOfLocalDay } from "../src/app/time.ts";
 import type { PersonaConfig } from "../src/config.ts";
 import type { UsageRecord } from "../src/store/usage.ts";
@@ -59,8 +60,7 @@ async function statusSetup(t: TestContext, overrides: Partial<StatusDeps> = {}) 
   const shell = new ShellState({
     cfg: { allowedGuildIds: [] },
     check: async () => ({ ok: false, failed: ["bwrap が無い", "socat が無い"] }),
-    guildSettings,
-    gateway: { sendMessage: async () => "m" },
+    notify: createSystemNotifier({ guildSettings, gateway: { sendMessage: async () => "m" }, log: () => undefined }),
     log: () => undefined,
   });
   await shell.check();

@@ -4,8 +4,7 @@
 // 診断が通るまで（未設定・診断前・失敗）は enabled() が false（fail-closed）。各 run の前（sdk-runner）には enabledForRun が bwrap・socat の有無だけを確かめ直す
 import type { SandboxCheckResult } from "../agent/sandbox-check.ts";
 import type { Config } from "../config.ts";
-import type { Gateway } from "../discord/gateway.ts";
-import type { GuildSettingsStore } from "../store/guild-settings.ts";
+import type { SystemNotifier } from "./system-notice.ts";
 
 /** 知らせの 1 回の投稿を待つ上限（止まった投稿で tick を止めない） */
 export const SHELL_NOTICE_TIMEOUT_MS = 10_000;
@@ -28,9 +27,8 @@ export type ShellStateDeps = {
   check: () => Promise<SandboxCheckResult>;
   /** run の前の確かめ直し（agent/sandbox-check.ts の missingSandboxBinaries）。無いものの項目を返す。省略すると確かめ直さない */
   missingBinaries?: () => string[];
-  /** 知らせの投稿先（#system） */
-  guildSettings: Pick<GuildSettingsStore, "get">;
-  gateway: Pick<Gateway, "sendMessage">;
+  /** #system への知らせ（system-notice.ts） */
+  notify: SystemNotifier;
   log: (message: string) => void;
   /** 既定は SHELL_NOTICE_TIMEOUT_MS */
   noticeTimeoutMs?: number;
@@ -44,7 +42,7 @@ export function shellDisabledNotice(failed: readonly string[]): string {
 /** 自己診断が通るようになった知らせの本文 */
 export const SHELL_RESUMED_NOTICE = "シェル（Bash）の自己診断が通りました";
 
-/** promise を ms で打ち切る（時間切れは reject。元の投稿は止められないので、後から届くことはある）。persona-status.ts の知らせでも使う */
+/** promise を ms で打ち切る（時間切れは reject。元の投稿は止められないので、後から届くことはある）。system-notice.ts の知らせでも使う */
 export async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -128,7 +126,7 @@ export class ShellState {
    * #system が無い・投稿の失敗・時間切れ（1 回 noticeTimeoutMs）のサーバーは、状態が変わらなければ次の tick でやり直す（失敗は log に出す）。reject しない
    */
   async announce(): Promise<void> {
-    const { cfg, guildSettings, gateway, log } = this.deps;
+    const { cfg, notify, log } = this.deps;
     const current = this.current;
     if (current === undefined) return;
     if (this.announced !== current.ok) {
@@ -139,9 +137,12 @@ export class ShellState {
     const text = current.ok ? SHELL_RESUMED_NOTICE : shellDisabledNotice(current.failed);
     for (const guildId of [...this.pending]) {
       try {
-        const systemChannelId = guildSettings.get(guildId)?.systemChannelId ?? null;
-        if (systemChannelId === null) continue;
-        await withTimeout(gateway.sendMessage(systemChannelId, { text }), this.deps.noticeTimeoutMs ?? SHELL_NOTICE_TIMEOUT_MS);
+        const messageId = await notify(
+          guildId,
+          { text },
+          { level: current.ok ? "success" : "warning", timeoutMs: this.deps.noticeTimeoutMs },
+        );
+        if (messageId === undefined) continue;
         this.pending.delete(guildId);
       } catch (error) {
         log(`シェルの状態の知らせの投稿に失敗しました（guild=${guildId}）: ${error instanceof Error ? error.message : String(error)}`);

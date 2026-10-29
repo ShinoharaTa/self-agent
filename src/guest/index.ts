@@ -9,13 +9,13 @@ import { registerCommands } from "../app/interactions.ts";
 import { PERSONA_LOGIN_TIMEOUT_MS } from "../app/persona-status.ts";
 import { withTimeout } from "../app/shell-state.ts";
 import { RESTARTING_REPLY } from "../app/shutdown.ts";
+import type { SystemNotifier } from "../app/system-notice.ts";
 import type { Config } from "../config.ts";
 import { DiscordGateway } from "../discord/discord-gateway.ts";
 import type { Gateway, GatewayHandlers } from "../discord/gateway.ts";
 import type { GuestStore } from "../store/guest.ts";
 import { type GuestGuildStore, isGuestGuildAllowed } from "../store/guest-guilds.ts";
 import type { GuestInviteStore } from "../store/guest-invites.ts";
-import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
 import { acceptsGuestMessage } from "./access.ts";
@@ -70,10 +70,8 @@ export type GuestLayerDeps = {
   runner: AgentRunner;
   /** ゲストのターンの usage_log */
   usage: UsageStore;
-  /** 知らせの投稿先（オーナーのサーバーの #system） */
-  guildSettings: Pick<GuildSettingsStore, "get">;
-  /** 既定の人格の Bot（PersonaRouter の admin）。#system への知らせに使う */
-  adminGateway: Pick<Gateway, "sendMessage">;
+  /** オーナーのサーバーの #system への知らせ（app/system-notice.ts。既定の人格の Bot（PersonaRouter の admin）） */
+  notify: SystemNotifier;
   now: () => Date;
   log: (message: string) => void;
   /** テスト用。既定は DiscordGateway（persona guest・トークンは cfg.guestTokenEnv） */
@@ -116,7 +114,7 @@ export function createGuestLayer(deps: GuestLayerDeps): GuestLayer {
     void settled.then(() => inFlight.delete(settled));
   };
 
-  const notify = createGuestNotifier({ cfg, guildSettings: deps.guildSettings, gateway: deps.adminGateway, log });
+  const notify = createGuestNotifier({ cfg, notify: deps.notify, log });
   const command = createGuestCommand({ cfg, guest, guilds, sessions: deps.sessions, notify, now: deps.now, log });
   const handleInteraction = createGuestInteractionHandler({ guilds, command, log });
 
@@ -138,7 +136,7 @@ export function createGuestLayer(deps: GuestLayerDeps): GuestLayer {
         const disabled = guest.disableGuild(guildId, "left");
         guilds.clearNotice(guildId);
         log(`guest: サーバーから外されたため、許可を取り消し、有効なチャンネル ${disabled} 件を無効にしました（guild=${guildId}）`);
-        await notify(guestLeftNotice(guildId, disabled));
+        await notify(guestLeftNotice(guildId, disabled), "warning");
       })(),
     );
   };
@@ -302,7 +300,7 @@ export function createGuestLayer(deps: GuestLayerDeps): GuestLayer {
         const disabled = guest.disableGuild(row.guildId, "startup");
         guilds.clearNotice(row.guildId);
         log(`guest: 参加していないサーバーのため、許可を取り消し、有効なチャンネル ${disabled} 件を無効にしました（guild=${row.guildId}）`);
-        await notify(guestNotJoinedNotice(row.guildId, disabled));
+        await notify(guestNotJoinedNotice(row.guildId, disabled), "warning");
       } catch (error) {
         log(`guest: 参加の確かめに失敗しました（guild=${row.guildId}）: ${describeError(error)}`);
       }

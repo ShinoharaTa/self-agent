@@ -24,6 +24,7 @@ import { MOVED_NOTE, OWNER_UNREACHABLE_NOTE, ReminderScheduler } from "../src/ap
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { Scheduler } from "../src/app/scheduler.ts";
 import { rotatedSeed } from "../src/app/summary.ts";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import { runChannelTurn } from "../src/app/turn.ts";
 import { DiscordGateway } from "../src/discord/discord-gateway.ts";
 import type { Gateway, IncomingMessage, Interaction } from "../src/discord/gateway.ts";
@@ -442,8 +443,7 @@ function statusSetup(t: TestContext) {
       { id: "mika", name: "ミカ", connected: () => connected.mika, loginSettled: () => settled.mika },
       { id: "nana", name: "ナナ", connected: () => connected.nana, loginSettled: () => settled.nana },
     ],
-    guildSettings,
-    gateway,
+    notify: createSystemNotifier({ guildSettings, gateway, log: (line) => logs.push(line) }),
     log: (line) => logs.push(line),
   });
   const posts = (): Array<[string, string]> => gateway.posts.map(({ channelId, message: posted }) => [channelId, posted.text]);
@@ -595,6 +595,11 @@ test("tick: 足した人格があれば Bot の接続を確かめ、投げても
     seeds: stores.seeds,
     channelOps: new RecordingChannelOps(),
     gateway: new FakeGateway({ allow: ["sendMessage", "listChannelParents", "isInGuild"] }),
+    notify: createSystemNotifier({
+      guildSettings: stores.guildSettings,
+      gateway: new FakeGateway({ allow: ["sendMessage"] }),
+      log: () => {},
+    }),
     inboxRotator: { rotateDue: async () => void rotated++ },
     pruneDevLogs: () => {},
     pruneProjectTrash: async () => {},
