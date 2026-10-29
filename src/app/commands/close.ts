@@ -1,35 +1,32 @@
-import { removeNodeModules } from "../../agent/disk.ts";
-import { DEFAULT_PERSONA_ID } from "../../config.ts";
 import type { ButtonDef, ComponentRow, InteractionResponder } from "../../discord/gateway.ts";
-import { type HistoryStore, recordHistory } from "../../store/history.ts";
+import type { HistoryStore } from "../../store/history.ts";
 import type { ProjectStore } from "../../store/projects.ts";
 import type { TaskStore } from "../../store/tasks.ts";
-import {
-  CLOSE_SUMMARY_MAX_LENGTH,
-  type CloseDraft,
-  type TopicSession,
-  type TopicSessionStore,
-} from "../../store/topic-sessions.ts";
+import type { CloseDraft, TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { ChannelOpsQueue } from "../channel-ops.ts";
 import type { CommandHandler, ComponentHandler } from "../interactions.ts";
 import { type CommandResponse, commandResponse, type PersonaRouter } from "../personas.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
-import { clip, fallbackSummary } from "../summary.ts";
-import { runChannelTurn, type TurnDeps } from "../turn.ts";
+import { closable, closeSession, confirmClose, removeClosedNodeModules } from "../session-ops.ts";
+import { clip } from "../summary.ts";
+import type { TurnDeps } from "../turn.ts";
+import {
+  ALREADY_CLOSED_REPLY,
+  CLOSE_NAMESPACE,
+  CLOSE_PROMPT,
+  closeCustomId,
+  closedText,
+  confirmButtons,
+  confirmText,
+  TASK_LABEL_MAX_LENGTH,
+} from "./close-text.ts";
 
-/** /close のターンの prompt。静的に保つ（日時ヘッダも付けない。字数は session_report の summary の上限と揃える） */
-export const CLOSE_PROMPT =
-  `このセッションを閉じます。ここまでの内容を ${CLOSE_SUMMARY_MAX_LENGTH} 字以内で要約し、まだ登録していないやることがあれば task_add は使わずに tasks に入れて、session_report を 1 回だけ呼んでください。`;
+// 文面と確認のボタンは close-text.ts に置き（session-ops.ts も使う）、ここから re-export する（循環 import を避ける）
+export { ALREADY_CLOSED_REPLY, CLOSE_PROMPT, closedText, confirmButtons, confirmText };
 
 export const NOT_SESSION_REPLY = "セッションのチャンネルで実行してください";
-export const ALREADY_CLOSED_REPLY = "このセッションは閉じています";
 export const SUMMARY_FAILURE_REPLY = "要約に失敗しました。もう一度 /close を実行してください";
 export const NO_DRAFT_REPLY = "/close をもう一度実行してください";
-
-/** ボタン・セレクトの custom_id の名前空間（`close:<action>:<channelId>`） */
-const NAMESPACE = "close";
-/** セレクトの選択肢のラベルと、確認メッセージのタスクの表示の上限（Discord の選択肢のラベルは 100 字まで） */
-const TASK_LABEL_MAX_LENGTH = 100;
 
 export type CloseDeps = {
   topicSessions: TopicSessionStore;
@@ -53,52 +50,16 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function customId(action: "all" | "pick" | "none" | "sel" | "start", channelId: string): string {
-  return `${NAMESPACE}:${action}:${channelId}`;
-}
-
 /** /close と同じ流れを始める [閉じる] ボタン（`close:start:<channelId>`。待ちに移した知らせに付ける） */
 export function closeStartButton(channelId: string): ButtonDef {
-  return { customId: customId("start", channelId), label: "閉じる" };
-}
-
-/** /close を受け付けられるセッションか（行が無い・サーバーが違えば「セッションでない」、完了・削除済みは「閉じている」） */
-function closable(session: TopicSession | undefined, guildId: string): "ok" | "not_session" | "closed" {
-  if (session === undefined || session.guildId !== guildId) return "not_session";
-  return session.state === "done" || session.state === "deleted" ? "closed" : "ok";
-}
-
-/** 要約とやることの候補（番号付き）。ボタンを押す前の確認メッセージ */
-export function confirmText(draft: CloseDraft): string {
-  const lines = ["**要約**", draft.summary, "", "**やることの候補**"];
-  draft.tasks.forEach((task, index) => {
-    const due = task.due === undefined ? "" : `（期限 ${task.due}）`;
-    lines.push(`${index + 1}. ${clip(task.title, TASK_LABEL_MAX_LENGTH, "…")}${due}`);
-  });
-  lines.push("", "タスクとして登録するものを選んでください。");
-  return lines.join("\n");
-}
-
-export function closedText(summary: string, registered: number): string {
-  return ["**要約**", summary, "", `閉じました（登録 ${registered} 件）`].join("\n");
-}
-
-function confirmButtons(channelId: string): ComponentRow {
-  return {
-    kind: "buttons",
-    buttons: [
-      { customId: customId("all", channelId), label: "全部登録", style: "primary" },
-      { customId: customId("pick", channelId), label: "選ぶ" },
-      { customId: customId("none", channelId), label: "登録しない" },
-    ],
-  };
+  return { customId: closeCustomId("start", channelId), label: "閉じる" };
 }
 
 function pickSelect(channelId: string, draft: CloseDraft): ComponentRow {
   return {
     kind: "select",
     select: {
-      customId: customId("sel", channelId),
+      customId: closeCustomId("sel", channelId),
       placeholder: "登録するものを選んでください",
       minValues: 1,
       maxValues: draft.tasks.length,
@@ -109,102 +70,6 @@ function pickSelect(channelId: string, draft: CloseDraft): ComponentRow {
       })),
     },
   };
-}
-
-/**
- * 閉じる: 選んだタスク（draft.tasks の添字）を登録 → 完了にして要約を残し下書きを消す → 完了カテゴリへの移動を列に入れる。
- * DB の更新は await を挟まずに行う（同じ下書きで 2 回登録しない）。登録した件数を返す
- */
-function finalizeClose(
-  session: TopicSession,
-  draft: CloseDraft,
-  selected: readonly number[],
-  deps: Pick<CloseDeps, "topicSessions" | "tasks" | "channelOps" | "personas" | "history" | "log">,
-): number {
-  const { topicSessions, tasks, channelOps, log } = deps;
-  // 選んだ順ではなく候補の順に登録する
-  const chosen = [...new Set(selected)]
-    .sort((a, b) => a - b)
-    .flatMap((index) => {
-      const task = draft.tasks[index];
-      return task === undefined ? [] : [task];
-    });
-  for (const task of chosen) tasks.add({ title: task.title, due: task.due });
-  topicSessions.close(session.channelId, draft.summary);
-  channelOps.enqueueMove(session.channelId, { kind: "state", guildId: session.guildId, state: "done" });
-  log(`/close でセッションを閉じました（guild=${session.guildId}、登録 ${chosen.length} 件）`);
-  recordHistory(
-    deps.history,
-    {
-      guildId: session.guildId,
-      channelId: session.channelId,
-      kind: "divider",
-      source: "system",
-      persona: deps.personas?.ownerOf(session.channelId) ?? DEFAULT_PERSONA_ID,
-      text: closedText(draft.summary, chosen.length),
-    },
-    log,
-  );
-  return chosen.length;
-}
-
-/**
- * 閉じた後に、そのチャンネルのプロジェクト（あれば）の node_modules を消す（作り直せるもの。disk.ts の removeNodeModules）。
- * 発言と同じキュー（turnQueue、key は channelId）の中で行い、そのチャンネルの新しいターンと重ならないようにする。その時点で完了でなければ（戻っていれば）消さない。
- * プロジェクトの dir を確かめられなければ何も消さない。失敗は log だけで、/close の結果は変えない（パスは出さない）。reject しない
- */
-async function removeClosedNodeModules(
-  deps: Pick<CloseDeps, "topicSessions" | "projects" | "projectsDir" | "turnQueue" | "log">,
-  channelId: string,
-): Promise<void> {
-  const { topicSessions, projects, projectsDir, turnQueue, log } = deps;
-  try {
-    await turnQueue.run(
-      channelId,
-      async () => {
-        // キューを待つ間に発言などで進行中に戻っていれば消さない
-        if (topicSessions.get(channelId)?.state !== "done") return;
-        const project = projects.getByChannel(channelId);
-        if (project === undefined) return;
-        const removed = await removeNodeModules(projectsDir, project.slug);
-        if (removed === undefined) log("プロジェクトのディレクトリを確かめられないため node_modules を消しませんでした");
-        else if (removed > 0) log(`node_modules を消しました（${removed} 件）`);
-      },
-      { session: true },
-    );
-  } catch {
-    log("node_modules を消せませんでした");
-  }
-}
-
-type CloseTurnOutcome =
-  | { result: "closed" }
-  | { result: "failed"; errorMessage: string }
-  | { result: "finalized"; summary: string }
-  | { result: "confirm"; draft: CloseDraft };
-
-/** 発言のターンと同じキューの中で行う（状態はキュー待ちの間に変わりうるので、ここでも確かめる） */
-async function closeTurn(deps: CloseDeps, guildId: string, channelId: string): Promise<CloseTurnOutcome> {
-  const { topicSessions, turn } = deps;
-  const session = topicSessions.get(channelId);
-  if (session === undefined || closable(session, guildId) !== "ok") return { result: "closed" };
-  // 前の /close や通常のターンで残った下書きは使わない
-  topicSessions.clearCloseDraft(channelId);
-  // オーナーの発言ではないので、WebFetch で取得できる URL は無い
-  const result = await runChannelTurn(turn, {
-    guildId,
-    channelId,
-    kind: "session",
-    prompt: CLOSE_PROMPT,
-    allowedUrls: [],
-    // 要約のターンでは Bash を使わせない（run の context の印）
-    purpose: "close",
-  });
-  if (!result.ok) return { result: "failed", errorMessage: result.errorMessage };
-  const draft = topicSessions.getCloseDraft(channelId) ?? { summary: fallbackSummary(result.text), tasks: [] };
-  if (draft.tasks.length > 0) return { result: "confirm", draft };
-  finalizeClose(session, draft, [], deps);
-  return { result: "finalized", summary: draft.summary };
 }
 
 /** /close の流れの応答のしかた（/close と [閉じる] ボタンで違う）。show はターンの結果（要約と確認のボタン、閉じた旨、失敗）を出す */
@@ -221,25 +86,27 @@ async function runClose(
   responder: InteractionResponder,
   response: CloseResponse,
 ): Promise<void> {
-  const { topicSessions, turnQueue, log } = deps;
-  const check = channelId === null ? "not_session" : closable(topicSessions.get(channelId), guildId);
-  if (channelId === null || check === "not_session") {
+  if (channelId === null) {
     await responder.reply({ text: NOT_SESSION_REPLY, ephemeral: true });
     return;
   }
-  if (check === "closed") {
-    await responder.reply({ text: ALREADY_CLOSED_REPLY, ephemeral: true });
+  let accepted = false;
+  const outcome = await closeSession(guildId, channelId, deps, async () => {
+    accepted = true;
+    await response.defer();
+  });
+  // 受け付ける前に断ったもの（保留していない）
+  if (!accepted) {
+    const text = outcome.result === "not_session" ? NOT_SESSION_REPLY : ALREADY_CLOSED_REPLY;
+    await responder.reply({ text, ephemeral: true });
     return;
   }
-  await response.defer();
-  // セッションのターンなので、発言のターンと同じく同時実行の枠を 1 つ #inbox 用に残す
-  const outcome = await turnQueue.run(channelId, () => closeTurn(deps, guildId, channelId), { session: true });
   switch (outcome.result) {
+    case "not_session":
     case "closed":
       await response.show({ text: ALREADY_CLOSED_REPLY });
       return;
     case "failed":
-      log(`/close のターンが失敗しました: ${outcome.errorMessage}`);
       await response.show({ text: SUMMARY_FAILURE_REPLY });
       return;
     case "finalized":
@@ -282,7 +149,7 @@ export function createCloseCommand(deps: CloseDeps): CommandHandler {
 export function createCloseComponent(deps: CloseDeps): ComponentHandler {
   const { topicSessions } = deps;
   return {
-    namespace: NAMESPACE,
+    namespace: CLOSE_NAMESPACE,
     async handle(interaction, responder) {
       const [, action, channelId] = interaction.customId.split(":");
       if (channelId === undefined || channelId === "") throw new Error("close の custom_id にチャンネルがありません");
@@ -297,19 +164,15 @@ export function createCloseComponent(deps: CloseDeps): ComponentHandler {
         });
         return;
       }
+      const guildId = interaction.guildId;
       const session = topicSessions.get(channelId);
       const draft = topicSessions.getCloseDraft(channelId);
-      if (
-        session === undefined ||
-        draft === undefined ||
-        interaction.guildId === null ||
-        closable(session, interaction.guildId) !== "ok"
-      ) {
+      if (session === undefined || draft === undefined || guildId === null || closable(session, guildId) !== "ok") {
         await responder.reply({ text: NO_DRAFT_REPLY, ephemeral: true });
         return;
       }
 
-      let selected: number[];
+      let selected: number[] | "all" | "none";
       if (interaction.kind === "button" && action === "pick" && draft.tasks.length > 0) {
         // ボタンは残したまま、同じメッセージにセレクトを足す
         await responder.update({
@@ -318,19 +181,23 @@ export function createCloseComponent(deps: CloseDeps): ComponentHandler {
         });
         return;
       } else if (interaction.kind === "button" && action === "all") {
-        selected = draft.tasks.map((_task, index) => index);
+        selected = "all";
       } else if (interaction.kind === "button" && (action === "none" || action === "pick")) {
         // 候補が無い下書きの [選ぶ] は [登録しない] と同じ
-        selected = [];
+        selected = "none";
       } else if (interaction.kind === "select" && action === "sel") {
         selected = interaction.values.map(Number).filter((index) => Number.isInteger(index));
       } else {
         throw new Error(`close の不明な操作です（${interaction.kind} ${action ?? ""}）`);
       }
 
-      const registered = finalizeClose(session, draft, selected, deps);
+      const closed = confirmClose(guildId, channelId, selected, deps);
+      if (closed.result === "no_draft") {
+        await responder.reply({ text: NO_DRAFT_REPLY, ephemeral: true });
+        return;
+      }
       try {
-        await responder.update({ text: closedText(draft.summary, registered), components: [] });
+        await responder.update({ text: closedText(closed.summary, closed.registered), components: [] });
       } catch (error) {
         // 閉じる処理は済んでいるので、失敗の返信にはしない
         deps.log(`/close の確認メッセージの更新に失敗しました: ${describeError(error)}`);
