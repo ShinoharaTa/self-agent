@@ -1,4 +1,4 @@
-// タブの中身: 状態・使用量・設定・ようこそ（W1）。会話・タスクなどは後の段で足す
+// タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）。タスクなどは後の段で足す
 "use strict";
 
 (function () {
@@ -180,6 +180,78 @@
     );
   }
 
+  // ===== 会話ログ（W2。dev モードだけ。左に一覧、右に中身） =====
+  // date: 見ている日（null はサーバーの今日）。selected: 一覧で選んでいる記録（新しい順の位置）
+  const devlogState = { date: null, kind: "all", selected: 0 };
+
+  function selectDevlogDate(date) {
+    devlogState.date = date || null;
+    devlogState.selected = 0;
+  }
+
+  const DEVLOG_KINDS = [
+    ["all", "全部"],
+    ["inbox", "#inbox"],
+    ["tasks", "#tasks"],
+    ["session", "セッション"],
+  ];
+
+  /** 記録の見出し（チャンネルが一覧にあれば #名前・題名、無ければ種類） */
+  function devlogLabel(r) {
+    if (!r.kind) return "（チャンネルなし）";
+    const ch = store.channels && r.channelId ? store.channels.channels.find((c) => c.id === r.channelId) : null;
+    if (ch) return SA.chat.channelTitle(ch);
+    return r.kind === "session" ? "セッション" : "#" + r.kind;
+  }
+
+  function renderDevlog(container) {
+    const chips = el("div", { class: "row row-tight", role: "group", "aria-label": "種類" });
+    for (const [key, label] of DEVLOG_KINDS) {
+      const c = el("button", { class: "chip chip-sm", type: "button", "aria-pressed": String(devlogState.kind === key), text: label });
+      c.addEventListener("click", () => {
+        devlogState.kind = key;
+        devlogState.selected = 0;
+        SA.app.refresh("devlog");
+      });
+      chips.append(c);
+    }
+    const want = devlogState.date || store.devlogToday;
+    const data = store.devlog;
+    if (!data || !want || data.date !== want) {
+      const failed = store.devlogFailed !== null && store.devlogFailed === (devlogState.date || "today");
+      container.replaceChildren(toolbar("file-text", "会話ログ", [], [chips]), scroll([empty(null, failed ? "読み込めませんでした" : "読み込んでいます…")]));
+      return;
+    }
+    // 新しい順に並べる（API は古い順）
+    const records = (Array.isArray(data.records) ? data.records : []).filter((r) => devlogState.kind === "all" || r.kind === devlogState.kind).reverse();
+    devlogState.selected = Math.min(devlogState.selected, Math.max(0, records.length - 1));
+    const list = el("ul", { class: "master-list", role: "listbox", "aria-label": "ターン" });
+    records.forEach((r, i) => {
+      const item = el("li", { role: "option", "aria-selected": String(i === devlogState.selected), tabindex: "0", class: "master-item" }, [
+        el("span", { class: "master-title" }, [el("span", { class: "dot " + (r.ok ? "dot-ok" : "dot-bad"), "aria-hidden": "true" }), SA.ui.clock(new Date(r.at)) + " " + devlogLabel(r)]),
+        el("span", { class: "meta", text: SA.ui.elapsed(r.durationMs || 0) + "・ツール " + (r.toolCalls ?? 0) + " 回" + (r.ok ? "" : "・失敗") }),
+      ]);
+      const pick = () => {
+        devlogState.selected = i;
+        SA.app.refresh("devlog");
+      };
+      item.addEventListener("click", pick);
+      item.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          pick();
+        }
+      });
+      list.append(item);
+    });
+    const current = records[devlogState.selected];
+    const detail = current ? el("pre", { class: "code-pre", text: current.text }) : empty(null, data.records && data.records.length > 0 ? "この種類のターンはありません" : "この日の記録はありません");
+    container.replaceChildren(
+      toolbar("file-text", "会話ログ", [el("span", { class: "meta", text: dayLabel(data.date) + "・dev モード" })], [chips]),
+      el("div", { class: "master-detail" }, [el("div", { class: "master" }, [list]), el("div", { class: "detail" }, [detail])]),
+    );
+  }
+
   // ===== 状態（W1） =====
   function kv(label, value) {
     return el("li", { class: "kv" }, [el("span", { class: "kv-label" }, [label]), el("span", { class: "kv-value" }, [value])]);
@@ -325,12 +397,36 @@
     },
     status: { title: "状態", icon: "activity", render: renderStatus, onOpen: () => store.load.status() },
     settings: { title: "設定", icon: "settings", render: renderSettings },
+    devlog: {
+      title: "会話ログ",
+      icon: "file-text",
+      render: renderDevlog,
+      onOpen: () => {
+        store.load.devlog(devlogState.date);
+        store.load.devlogDays();
+      },
+    },
   };
 
-  /** 知らない・無効な機能のタブは null（開かない） */
+  /** 知らない・無効な機能のタブは null（開かない）。会話は ch:<チャンネル ID>。会話ログは dev モードでないと分かったら開かない */
   function info(tabId) {
+    if (tabId.startsWith("ch:")) {
+      const channelId = tabId.slice(3);
+      return /^\d{1,25}$/.test(channelId) ? SA.chat.info(channelId) : null;
+    }
+    if (tabId === "devlog" && store.status && !store.status.devMode) return null;
     return Object.prototype.hasOwnProperty.call(STATIC, tabId) ? STATIC[tabId] : null;
   }
 
-  SA.views = { info, renderWelcome, selectUsageDate, usageDate: () => usageState.date, compact, dayLabel, todayTokens };
+  SA.views = {
+    info,
+    renderWelcome,
+    selectUsageDate,
+    usageDate: () => usageState.date,
+    selectDevlogDate,
+    devlogDate: () => devlogState.date,
+    compact,
+    dayLabel,
+    todayTokens,
+  };
 })();

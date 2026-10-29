@@ -68,6 +68,8 @@ import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { UsageStore } from "./store/usage.ts";
+import { channelRoutes } from "./web/routes/channels.ts";
+import { devlogRoutes } from "./web/routes/devlog.ts";
 import { statusRoutes } from "./web/routes/status.ts";
 import { usageRoutes } from "./web/routes/usage.ts";
 import { createWebServer, type WebServer } from "./web/server.ts";
@@ -564,6 +566,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         env: process.env,
       }),
       ...usageRoutes({ cfg: config, usage, attachments, now }),
+      ...channelRoutes({ cfg: config, guildSettings, topicSessions, projects, history: historyStore, personas, resolveChannel }),
+      ...devlogRoutes({ cfg: config, now }),
     ],
     stopping: () => lifecycle.stopping(),
     now,

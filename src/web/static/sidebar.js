@@ -12,7 +12,7 @@
   // enabled(status) が false の機能（dev モードでない会話ログ・GitHub 無効・ジョブ無効）は出さない。
   // stage の付いたものはその段で中身を足すまで出さない（足した段で stage を外す）
   const ACTIVITIES = [
-    { id: "chat", label: "会話", icon: "message-square", enabled: always, stage: "w2" },
+    { id: "chat", label: "会話", icon: "message-square", enabled: always, count: () => store.unreadCount(), countLabel: "未読 " },
     { id: "tasks", label: "タスク", icon: "square-check", enabled: always, stage: "w4" },
     { id: "reminders", label: "リマインド", icon: "bell", enabled: always, stage: "w4" },
     { id: "knowledge", label: "ナレッジ・記憶", icon: "book", enabled: always, stage: "w6" },
@@ -20,7 +20,7 @@
     { id: "jobs", label: "ジョブ", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
     { id: "github", label: "GitHub", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled), stage: "w6" },
     { id: "usage", label: "使用量", icon: "bar-chart", enabled: always },
-    { id: "devlog", label: "会話ログ", icon: "file-text", enabled: (status) => !!status.devMode, stage: "w2" },
+    { id: "devlog", label: "会話ログ", icon: "file-text", enabled: (status) => !!status.devMode },
     { id: "status", label: "状態", icon: "activity", tab: "status", bottom: true, enabled: always },
     { id: "settings", label: "設定", icon: "settings", tab: "settings", bottom: true, enabled: always },
   ];
@@ -31,7 +31,8 @@
     return ACTIVITIES.filter((a) => !a.stage && (status === null || a.enabled(status)));
   }
 
-  const ui = { groups: {} };
+  // 完了は既定で閉じておく
+  const ui = { query: "", groups: { done: false } };
 
   /** 一覧の 1 行。tabId を開く */
   function row(opts) {
@@ -40,6 +41,7 @@
       opts.icon ? icon(opts.icon) : null,
       el("span", { class: "sb-label", text: opts.label }),
       ...(opts.badges || []),
+      opts.dot ? el("span", { class: "dot " + opts.dot, role: opts.dotLabel ? "img" : null, "aria-label": opts.dotLabel || null }) : null,
       opts.meta ? el("span", { class: "sb-meta", text: opts.meta }) : null,
     ]);
     btn.addEventListener("click", () => {
@@ -59,6 +61,79 @@
       ui.groups[key] = details.open;
     });
     return details;
+  }
+
+  // ===== 会話（入口・進行中・待ち・完了） =====
+  function channelRow(ch) {
+    const persona = store.channels.personas.find((p) => p.id === ch.persona);
+    const badges = [];
+    if (ch.kind === "session" && persona && !persona.isDefault) badges.push(el("span", { class: "badge badge-persona", text: persona.name }));
+    const unread = store.isUnread(ch);
+    return row({
+      tab: "ch:" + ch.id,
+      icon: ch.kind === "session" ? null : "hash",
+      label: ch.kind === "session" ? ch.title : ch.name,
+      badges,
+      dot: unread ? "dot-unread" : null,
+      dotLabel: unread ? "未読" : null,
+      meta: ch.last ? SA.chat.shortTime(ch.last.at) : "",
+    });
+  }
+
+  function chatList() {
+    const q = ui.query.trim();
+    const match = (ch) => q === "" || String(ch.kind === "session" ? ch.title : ch.name).includes(q);
+    const channels = store.channels.channels.filter(match);
+    const by = (state) => channels.filter((c) => c.kind === "session" && c.state === state).map(channelRow);
+    return [
+      group("entrances", "入口", channels.filter((c) => c.kind !== "session").map(channelRow)),
+      group("active", "進行中", by("active")),
+      group("waiting", "待ち", by("waiting")),
+      group("done", "完了", by("done"), [el("span", { class: "sb-note", text: "新しい 10 件" })]),
+    ];
+  }
+
+  function renderChat(body) {
+    if (store.channels === null) {
+      store.load.channels();
+      body.replaceChildren(group("entrances", "入口", [], null, "読み込んでいます…"));
+      return;
+    }
+    if (!store.channels.guilds.some((g) => g.setUp)) {
+      body.replaceChildren(el("p", { class: "sb-note-block", text: "/setup を実行したサーバーの会話がここに出ます。" }));
+      return;
+    }
+    const listBox = el("div", { class: "sb-stack" }, chatList());
+    const search = el("input", { class: "input input-sm", type: "search", placeholder: "セッションを絞り込む", "aria-label": "セッションを絞り込む", value: ui.query });
+    search.addEventListener("input", () => {
+      ui.query = search.value;
+      listBox.replaceChildren(...chatList());
+    });
+    body.replaceChildren(el("div", { class: "sb-search" }, [search]), listBox);
+  }
+
+  // ===== 会話ログ（日付の一覧） =====
+  function renderDevlog(body) {
+    if (store.devlogDays === null) {
+      store.load.devlogDays();
+      body.replaceChildren(group("devlog", "日付", [], null, "読み込んでいます…"));
+      return;
+    }
+    const open = SA.app.activeTabId() === "devlog";
+    // 今日（サーバーの SELF_AGENT_TZ）。会話ログをまだ読んでいなければ使用量の今日
+    const today = store.devlogToday || store.today;
+    const selected = SA.views.devlogDate() || today;
+    const items = store.devlogDays.map((d) =>
+      row({
+        tab: "devlog",
+        icon: "calendar",
+        label: (d.date === today ? "今日 " : "") + SA.views.dayLabel(d.date),
+        meta: d.count + " ターン",
+        current: open && d.date === selected,
+        before: () => SA.views.selectDevlogDate(d.date === today ? null : d.date),
+      }),
+    );
+    body.replaceChildren(group("devlog", "日付", items, null, "記録はありません"));
   }
 
   // ===== 使用量（日付の一覧） =====
@@ -86,12 +161,15 @@
   }
 
   const RENDER = {
+    chat: renderChat,
     usage: renderUsage,
+    devlog: renderDevlog,
   };
 
   // サイドバーの見出しの右の操作
   function headerActions(id) {
     if (id === "usage") return [openAll("usage", "開く")];
+    if (id === "devlog") return [openAll("devlog", "開く")];
     return [];
   }
 
