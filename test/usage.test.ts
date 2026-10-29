@@ -237,6 +237,49 @@ test("UsageStore.summarize: since ちょうどを含み、その前は含めな�
   });
 });
 
+test("UsageStore.summarize・sumOutputTokens: until を渡せばその前（ちょうどは含まない）まで", (t) => {
+  const { usage, recordAt } = setup(t);
+  recordAt("2026-10-01T00:00:00.000Z", { ...ok(1, 10, 100, 1), outputTokens: 5 });
+  recordAt("2026-10-01T12:00:00.000Z", { ...ok(2, 20, 200, 2), outputTokens: 7 });
+  recordAt("2026-10-02T00:00:00.000Z", { ...ok(4, 40, 400, 4), outputTokens: 11 });
+
+  const since = new Date("2026-10-01T00:00:00.000Z");
+  const until = new Date("2026-10-02T00:00:00.000Z");
+  const summary = usage.summarize(since, "default", until);
+  assert.equal(summary.turns, 2);
+  assert.equal(summary.inputTokens, 3);
+  assert.equal(summary.toolCalls, 3);
+  assert.equal(usage.summarize(since, undefined, until).turns, 2);
+  assert.equal(usage.summarize(since).turns, 3);
+  assert.equal(usage.sumOutputTokens(since, "default", until), 12);
+  assert.equal(usage.sumOutputTokens(since, "default"), 23);
+  assert.equal(usage.sumOutputTokens(since, "guest", until), 0);
+});
+
+test("UsageStore.listDays: since 以降を timeZone の日付ごとにターン数と入力（input + read + creation。失敗は 0）で数え、古い順に返す", (t) => {
+  const { usage, recordAt } = setup(t);
+  // 2026-09-30 23:59 JST（since より前）
+  recordAt("2026-09-30T14:59:00.000Z", ok(1000, 0, 0, 0));
+  // 2026-10-01 00:00 JST と 23:59 JST
+  recordAt("2026-09-30T15:00:00.000Z", ok(1, 10, 100, 0));
+  recordAt("2026-10-01T14:59:00.000Z", ok(2, 20, 200, 0));
+  // 2026-10-02 JST（失敗は入力 0 で 1 ターン）
+  recordAt("2026-10-01T15:00:00.000Z", { ok: false, toolCalls: 0 });
+  recordAt("2026-10-02T00:00:00.000Z", ok(3, 30, 300, 0));
+
+  assert.deepEqual(usage.listDays(new Date("2026-09-30T15:00:00.000Z"), "Asia/Tokyo"), [
+    { date: "2026-10-01", turns: 2, inputTokens: 333 },
+    { date: "2026-10-02", turns: 2, inputTokens: 333 },
+  ]);
+  // UTC の日付で分ければ境界が変わる
+  assert.deepEqual(usage.listDays(new Date("2026-09-30T15:00:00.000Z"), "UTC"), [
+    { date: "2026-09-30", turns: 1, inputTokens: 111 },
+    { date: "2026-10-01", turns: 2, inputTokens: 222 },
+    { date: "2026-10-02", turns: 1, inputTokens: 333 },
+  ]);
+  assert.deepEqual(usage.listDays(new Date("2026-10-03T00:00:00.000Z"), "Asia/Tokyo"), []);
+});
+
 test("UsageStore.countAfter / latestOkAfter: その key で after より後（ちょうどは含まない）のターン。after が無ければすべて", (t) => {
   const { usage, recordAt } = setup(t);
   recordAt("2026-10-02T00:00:00.000Z", ok(1, 10, 100, 0));

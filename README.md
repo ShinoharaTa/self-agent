@@ -188,6 +188,29 @@ SELF_AGENT_GITHUB_POLL_SEC=300
 
 The first fetch skips the unread notifications you already have and posts one start notice in `#github`. After that, only new ones are posted every 5 minutes (up to 10 at a time; the rest are folded into one "ほか n 件" message). Problems such as a broken `gh` login are reported in `#system`.
 
+### 8. (Optional) Web UI
+
+A small web app on your tailnet for checking the bot's status and usage from a browser (work in progress: for now it serves `/api/status`, `/api/usage` and a placeholder page). It listens only on `127.0.0.1`; you expose it with `tailscale serve` on its own port.
+
+1. Add to `~/.config/self-agent/env` and restart (the UI is on only when both the port and the login are set):
+
+```
+# port for the Web UI (listens on 127.0.0.1 only)
+SELF_AGENT_WEB_PORT=8791
+# your Tailscale login; only requests whose Tailscale-User-Login matches it exactly get in
+SELF_AGENT_WEB_ALLOWED_LOGIN=<you>@<domain>
+# optional: a token (32+ characters, no spaces) to sign in at /login when the login header is missing
+SELF_AGENT_WEB_TOKEN=...
+```
+
+2. Expose it on the tailnet (once; it persists):
+
+```bash
+tailscale serve --bg --https=9444 http://127.0.0.1:8791
+```
+
+3. Open `https://<host>.<tailnet>.ts.net:9444/`. Without the login header (and with a token set), you are sent to `/login`; paste the token there to get a 30-day cookie. Replacing the token signs everyone out. Requests straight to `127.0.0.1` without the header get 401.
+
 ## Development
 
 ```bash

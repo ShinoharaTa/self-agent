@@ -186,6 +186,29 @@ SELF_AGENT_GITHUB_POLL_SEC=300
 
 最初の取得では今ある未読は流さず、`#github` に開始の知らせを 1 通出す。以後は 5 分ごとに新しいものだけを流す（1 回 10 件まで。残りは「ほか n 件」にまとめる）。取得できない状態（gh の認証など）は `#system` に知らせる。
 
+### 8.（任意）Web UI
+
+tailnet の中のブラウザから Bot の状態と使用量を見る小さな Web アプリ（作りかけ。今は `/api/status`・`/api/usage` と仮の画面だけ）。`127.0.0.1` だけで待ち受け、`tailscale serve` で別のポートに出す。
+
+1. `~/.config/self-agent/env` に足して再起動する（ポートとログインの両方があるときだけ有効）
+
+```
+# Web UI のポート（127.0.0.1 だけで待ち受ける）
+SELF_AGENT_WEB_PORT=8791
+# 自分の Tailscale のログイン。Tailscale-User-Login がこれと完全一致する要求だけを通す
+SELF_AGENT_WEB_ALLOWED_LOGIN=<you>@<domain>
+# 任意: ログインのヘッダが無いときに /login で貼るトークン（空白を含まない 32 字以上）
+SELF_AGENT_WEB_TOKEN=...
+```
+
+2. tailnet に出す（1 回だけ。設定は残る）
+
+```bash
+tailscale serve --bg --https=9444 http://127.0.0.1:8791
+```
+
+3. `https://<host>.<tailnet>.ts.net:9444/` を開く。ログインのヘッダが無ければ（トークンを設定していれば）`/login` に移るので、トークンを貼ると 30 日の Cookie が付く。トークンを差し替えると全員ログアウトする。ヘッダ無しで `127.0.0.1` に直接送った要求は 401 になる。
+
 ## 開発
 
 ```bash

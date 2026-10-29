@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLOutputValue, SQLInputValue } from "node:sqlite";
 import type { StepUsage } from "../agent/runner.ts";
+import { formatDate } from "../app/time.ts";
 import { DEFAULT_PERSONA_ID, type Engine } from "../config.ts";
 
 export type UsageRecord = {
@@ -54,6 +55,9 @@ export type UsageEntry = {
 
 /** listRecent の範囲。since はちょうどを含み、until はちょうどを含まない。kind は完全一致 */
 export type UsageListOptions = { since?: Date; until?: Date; kind?: string; limit: number };
+
+/** 日付（timeZone）ごとのターン数と入力の合計（listDays） */
+export type UsageDay = { date: string; turns: number; inputTokens: number };
 
 /** ある時刻以降のターンの合計（/usage）。トークンは成功したターンの分だけ（失敗したターンは記録していない） */
 export type UsageSummary = {
@@ -218,16 +222,25 @@ export class UsageStore {
     return row === undefined ? undefined : toEntry(row);
   }
 
-  /** since 以降（ちょうどを含む）に記録したその人格のターンの出力の合計（成功したターンだけ。/usage のゲストの行） */
-  sumOutputTokens(since: Date, persona: string): number {
+  /**
+   * since 以降（ちょうどを含む）に記録したその人格のターンの出力の合計（成功したターンだけ。/usage のゲストの行）。
+   * until を渡せばその前（ちょうどは含まない）まで（Web UI の日付ごとの合計）
+   */
+  sumOutputTokens(since: Date, persona: string, until?: Date): number {
     const row = this.db
-      .prepare("SELECT COALESCE(SUM(output_tokens), 0) AS output_tokens FROM usage_log WHERE at >= ? AND persona = ?")
-      .get(since.toISOString(), persona);
+      .prepare(
+        "SELECT COALESCE(SUM(output_tokens), 0) AS output_tokens FROM usage_log WHERE at >= ? AND persona = ?" +
+          (until === undefined ? "" : " AND at < ?"),
+      )
+      .get(since.toISOString(), persona, ...(until === undefined ? [] : [until.toISOString()]));
     return Number(row?.output_tokens ?? 0);
   }
 
-  /** since 以降（ちょうどを含む）に記録したターンを合計する。persona を渡せばその人格のターンだけ */
-  summarize(since: Date, persona?: string): UsageSummary {
+  /**
+   * since 以降（ちょうどを含む）に記録したターンを合計する。persona を渡せばその人格のターンだけ。
+   * until を渡せばその前（ちょうどは含まない）まで（Web UI の日付ごとの合計）
+   */
+  summarize(since: Date, persona?: string, until?: Date): UsageSummary {
     // at は toISOString（UTC・同じ桁数）で保存しているので、文字列の比較で時刻の前後を比べられる
     const row = this.db
       .prepare(
@@ -239,9 +252,13 @@ export class UsageStore {
           "COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens, " +
           "COALESCE(SUM(compacted), 0) AS compactions, " +
           "COALESCE(SUM(tool_calls), 0) AS tool_calls " +
-          `FROM usage_log WHERE at >= ?${persona === undefined ? "" : " AND persona = ?"}`,
+          `FROM usage_log WHERE at >= ?${persona === undefined ? "" : " AND persona = ?"}${until === undefined ? "" : " AND at < ?"}`,
       )
-      .get(since.toISOString(), ...(persona === undefined ? [] : [persona]));
+      .get(
+        since.toISOString(),
+        ...(persona === undefined ? [] : [persona]),
+        ...(until === undefined ? [] : [until.toISOString()]),
+      );
     return {
       turns: Number(row?.turns ?? 0),
       okTurns: Number(row?.ok_turns ?? 0),
@@ -252,5 +269,27 @@ export class UsageStore {
       compactions: Number(row?.compactions ?? 0),
       toolCalls: Number(row?.tool_calls ?? 0),
     };
+  }
+
+  /**
+   * since 以降（ちょうどを含む）のターンを、記録した時刻の timeZone の日付ごとに数える（Web UI の使用量の日ごとの表）。
+   * 入力は input + cache read + cache creation（失敗したターンは 0）。記録のある日だけを日付の古い順に返す
+   */
+  listDays(since: Date, timeZone: string): UsageDay[] {
+    const rows = this.db
+      .prepare(
+        "SELECT at, COALESCE(input_tokens, 0) + COALESCE(cache_read_input_tokens, 0) + COALESCE(cache_creation_input_tokens, 0) AS input " +
+          "FROM usage_log WHERE at >= ? ORDER BY at, id",
+      )
+      .all(since.toISOString());
+    const days = new Map<string, UsageDay>();
+    for (const row of rows) {
+      const date = formatDate(new Date(String(row.at)), timeZone);
+      const day = days.get(date) ?? { date, turns: 0, inputTokens: 0 };
+      day.turns++;
+      day.inputTokens += Number(row.input);
+      days.set(date, day);
+    }
+    return [...days.values()];
   }
 }
