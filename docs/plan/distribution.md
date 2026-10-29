@@ -14,7 +14,7 @@
 4. 順番は Web UI（W1）→ Mac（M1）。Mac のシェル（M2）は最後で、I1 が成り立たなければ入れない。
 5. npm の名前は **`@shinoharata/self-agent`**（`self-agent` も空きだったが scoped にする。2026-10-29 に `npm view` で E404 を確認）。アカウントはオーナーが用意する（scope と同じユーザー名 `shinoharata`）。
 6. LICENSE は **MIT**（公開の PR（P1-b）で追加）。
-7. Web UI からの投稿先は既定の人格の #inbox だけ（#<NAME> は後で足せる形に。web-ui.md）。
+7. Web UI からの投稿先は受け付けるチャンネル全部（#inbox・#tasks・#<NAME>・セッション。web-ui.md v2 §5。2026-10-29 にモック v2 の採用で v1 の「既定の人格の #inbox だけ」から変更）。
 
 結論:
 - **開発と本番（Ubuntu の checkout）は今までどおり `node src/main.ts`（ビルド無し）。** ビルドは公開物（`dist/`）を作るときだけ。
@@ -28,17 +28,19 @@
 |---|---|---|---|---|
 | 1 | 0 | 本計画を 2 つの設計書に置く | — | — |
 | 2 | D1 | 入口の統一（`src/cli.ts`・`bin/`・env の読み方・パスの基準） | §4.2〜§4.5 | 0 |
-| 3 | W1 | Web UI の土台 + 状態 + usage + 認証 + CSRF | web-ui.md §4 | 無し（Web は main.ts の中で動き、env は `npm start` のフラグで読める。D1 と並行可） |
-| 4 | W2 | セッション一覧 + devlog | web-ui.md §4 | W1 |
-| 5 | W3 | 操作（タスク・リマインド・#inbox への投稿） | web-ui.md §4 | W2 |
+| 3 | W1 | Web UI の土台（認証・CSRF・状態・使用量）と SPA の殻（W1-a・W1-b） | web-ui.md §8 | 無し（Web は main.ts の中で動き、env は `npm start` のフラグで読める。D1 と並行可） |
+| 4 | W2 | 会話を見る（`history` 表・会話の API と画面・devlog） | web-ui.md §8 | W1 |
+| 5 | W3 | Web から送る・実行中の途中経過・中断・続ける | web-ui.md §8 | W2 |
 | 6 | D2 | `self-agent setup`（必須 4 変数を対話で） | §4.8 | D1 |
 | 7 | D3 | `self-agent service install\|uninstall\|status`（launchd / systemd --user） | §4.9 | D1 |
 | 8 | P1-a | ビルド・`files`・`npm pack`・tarball での `npm i -g` と `service install` の確認（`private: true` のまま） | §4.1・§4.7・§5 | D1〜D3・W3 |
 | 9 | M1 | Mac で Bot が動く（シェル無し。Mac には P1-a の tarball で入れる） | §4.10 | P1-a |
 | 10 | P1-b | `private` を外し、LICENSE と README の位置づけを足して 0.1.0 を publish | §4.6・§4.7 | M1 |
-| 11 | M2 | Mac のシェル（seatbelt）。I1 が成り立たなければ入れない | §4.11 | M1 |
+| 11 | W4〜W7 | タスク・リマインド・記憶（W4）、セッションの操作（W5）、知らせ・GitHub・ナレッジ（W6）、プロジェクト（W7）。0.2.0 | web-ui.md §8 | P1-b |
+| 12 | M2 | Mac のシェル（seatbelt）。I1 が成り立たなければ入れない | §4.11 | M1 |
+| 13 | W8 | ジョブのビュー | web-ui.md §8 | PR-J4 |
 
-W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそのまま使え、公開物に最初から入る。D2・D3・P1-a は「入れる人」向けで、Mac（M1）はその tarball で入れ、Mac で動くと分かってから公開する（P1-b）。
+W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそのまま使え、公開物に最初から入る。W1〜W3 で「見る・送る・止める」が揃うので 0.1.0 はそこまでにし、W4〜W7（Discord のコマンドの抜き出しを含む）は公開の後（0.2.0）に回す（web-ui.md §8.2）。D2・D3・P1-a は「入れる人」向けで、Mac（M1）はその tarball で入れ、Mac で動くと分かってから公開する（P1-b）。
 
 ## 2. 確認した事実
 
@@ -95,6 +97,7 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 - `package.json`: `name`・`version: 0.1.0`・`description`・`license`・`repository`・`files`・`bin: { "self-agent": "dist/cli.js" }`・`engines`。`main` は置かない（ライブラリとして import させない）。`scripts` に `build: tsc -p tsconfig.build.json`、`prepack: npm run check && npm test && npm run build`、`clean: rm -rf dist`（`rm -rf` は `files` の外なので scripts に書いてよい）。`dist/` は `.gitignore` に足す（公開物をリポジトリに入れない）。
 - `tsconfig.build.json` は §3 の設定。`tsconfig.json`（型チェック）は変えない（`scripts`・`test` を含むまま）。`npm run check` は今までどおり `tsc --noEmit`。
 - `dist/cli.js` の先頭に `#!/usr/bin/env node` が要る（`src/cli.ts` の 1 行目に書く。確認（実測）: typescript 7.0.2 の emit は 1 行目の shebang をそのまま残す）。実行ビットは npm が `bin` に付ける。
+- Web UI の画面（`src/web/static/` の HTML・CSS・JS。tsc は複製しない）は `build` で `dist/web/static/` に複製する（`files` の `dist` で入る）。`src/web/static.ts` は自分の場所からの相対で読むので checkout と公開物で同じ（web-ui.md §3）。
 - `templates/web/` は今の場所のまま同梱（§2.2）。`docs/`・`test/`・`scripts/`・`src/`・`tsconfig*.json`・`.github/` は `files` に無いので入らない。
 - 依存は 3 つのまま。`npm i -g` では `dependencies` だけが入り、platform の CLI は optionalDependencies で 1 つ落ちる（§2.1）。
 - scoped の公開は `npm publish --access public` が要るか（未確認。P1-b で `npm publish --dry-run` と公式ドキュメントで確かめて手順に書く）。
@@ -183,6 +186,6 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 
 ## 7. 決めてもらうこと（推し付き）
 
-決まったこと（2026-10-29。PR #158 のレビューの後）: npm の名前は `@shinoharata/self-agent`、LICENSE は MIT（P1-b で追加）、Web UI の投稿先は既定の人格の #inbox だけ（§0 の 5〜7）。
+決まったこと（2026-10-29。PR #158 のレビューの後）: npm の名前は `@shinoharata/self-agent`、LICENSE は MIT（P1-b で追加）、Web UI の投稿先は受け付けるチャンネル全部（§0 の 5〜7。モック v2 の採用で変更）。
 
 1. **GitHub Actions**: 最初は使わない（推し。手元から publish）。provenance を付けたくなったら別の issue。

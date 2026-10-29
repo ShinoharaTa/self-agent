@@ -13,6 +13,7 @@ Discord の 1 チャンネル（#inbox・#tasks と /new で作ったセッシ�
 - シェル（Bash）を使えるようにする設計: `docs/plan/shell.md`。`SELF_AGENT_SHELL=1` のときだけ、セッションのチャンネルのプロジェクトの中で SDK の sandbox（bwrap）付きの Bash を使える（自己診断が通らなければ止める）。受け入れの実機確認は `npm run shell-check`
 - サーバー上で動く作業ジョブ（Discord から頼むとリポジトリを実装して draft PR を返す）の設計: `docs/plan/coding-jobs.md`（#129。段階的に実装中。今は設定・DB の表・状態の遷移と #jobs の文面（PR-J1）、host 側の git と gh の包み（PR-J2）、ジョブの進行・#jobs・`/job`・ボタンと偽 Runner の dry-run（PR-J3）まで。ジョブ用の runner（PR-J4）がまだ無いので `SELF_AGENT_JOBS=1` は設定エラーになる）
 - 他の Discord サーバーで、オーナー以外の人にツールなし・Opus 5.5 low で答える「ゲスト利用の簡易モード」の設計: `docs/plan/guest-mode.md`（#147。v3。ゲスト専用の Bot・API キー認証・サーバーの許可（メインサーバーの `/guests invite` で発行する認証コードを、ゲストのサーバーの管理者が定型文への返信で貼る。DB `guest_guilds`）と `/guest on` の二段構え。今は GU4b まで（運用の手順と接続の知らせは GU3）。`SELF_AGENT_GUEST_GUILD_IDS` は廃止で、残っていれば設定エラー
+- 配布（npm）・入口の統一・Mac 対応の設計: `docs/plan/distribution.md`（#157）。Web UI（tailnet の中のブラウザから使う VS Code 風の Web アプリ。別ポート・`Tailscale-User-Login` 必須）の設計: `docs/plan/web-ui.md`（#157。v2。段 W1〜W8 は #162〜#173。まだ実装は無い）
 - 旧 Rust 版の資料は `docs/archive/`（参照のみ）
 
 ## コマンド
