@@ -3,10 +3,16 @@
 // 要約はツールを足さず、要約を頼むターンの返答本文を使う（#inbox・#tasks の切り替えと同じ）。セッションの状態とカテゴリは変えない
 import { type HistoryStore, recordHistory } from "../store/history.ts";
 import { RENEW_SUMMARY_MAX_LENGTH, type TopicSessionStore } from "../store/topic-sessions.ts";
-import { RENEWED_FRESH_REPLY, renewedText } from "./commands/renew.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { clip, EMPTY_SUMMARY } from "./summary.ts";
 import { recordTurnUsage, RESUME_FAILURE_PATTERN, resumeSeed, type TurnDeps, turnPersonaOf } from "./turn.ts";
+
+export const RENEWED_FRESH_REPLY = "前の会話の記録が見つからないため、要約せずに新しくしました。次の発言から新しい会話で続けます";
+
+/** セッションの会話を新しくした返信（要約を添える） */
+export function renewedText(summary: string): string {
+  return `会話を新しくしました。次の発言から新しい会話で続けます。\n\n**要約**\n${summary}`;
+}
 
 /** /renew の要約を頼むターンの prompt。静的に保つ（日時ヘッダも付けない。字数は要約を切り詰める上限と揃える） */
 export const RENEW_PROMPT =
