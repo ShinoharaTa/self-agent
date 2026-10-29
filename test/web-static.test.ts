@@ -11,7 +11,7 @@ const files = readdirSync(STATIC_DIR);
 const read = (name: string): string => readFileSync(join(STATIC_DIR, name), "utf8");
 
 test("web static: 決めたファイルがそろっていて、base.css・icons.svg は置かない（templates/web/site のものを配る）", () => {
-  for (const name of ["index.html", "app.css", "ui.js", "api.js", "views.js", "sidebar.js", "workbench.js", "icons-app.svg"]) {
+  for (const name of ["index.html", "app.css", "ui.js", "api.js", "chat.js", "views.js", "sidebar.js", "workbench.js", "icons-app.svg"]) {
     assert.ok(files.includes(name), name);
   }
   assert.equal(files.includes("base.css"), false);
@@ -52,7 +52,14 @@ test("web static: index.html の読み込みの順と既定のテーマ", () => 
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
   assert.deepEqual(links, ["/static/base.css", "/static/app.css"]);
   const scripts = [...html.matchAll(/<script src="([^"]+)" defer><\/script>/g)].map((m) => m[1]);
-  assert.deepEqual(scripts, ["/static/ui.js", "/static/api.js", "/static/views.js", "/static/sidebar.js", "/static/workbench.js"]);
+  assert.deepEqual(scripts, [
+    "/static/ui.js",
+    "/static/api.js",
+    "/static/chat.js",
+    "/static/views.js",
+    "/static/sidebar.js",
+    "/static/workbench.js",
+  ]);
 });
 
 test("web static: モックの「提案」「モック」・分割・ダミーのデータが残っていない", () => {
