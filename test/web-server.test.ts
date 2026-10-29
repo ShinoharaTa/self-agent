@@ -156,7 +156,8 @@ test("Web UI: /login はフォームを返し、POST はトークンの長さ違
   const { server, clock, origin, logs } = await setup(t);
   const form = await send(server, "/login");
   assert.equal(form.status, 200);
-  assert.match(form.body, /<form method="post" action="\/login">/);
+  assert.match(form.body, /<form [^>]*method="post" action="\/login"/);
+  assert.match(form.body, /<link rel="stylesheet" href="\/static\/base.css">/);
   assert.doesNotMatch(form.body, /<script|<style|style=/);
   assertCommonHeaders(form, "GET /login");
 
