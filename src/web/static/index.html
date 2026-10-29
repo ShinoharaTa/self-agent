@@ -1,11 +1,72 @@
 <!doctype html>
-<html lang="ja">
+<html lang="ja" data-theme="dark">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>self-agent</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>self-agent</title>
+  <link rel="stylesheet" href="/static/base.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/ui.js" defer></script>
+  <script src="/static/api.js" defer></script>
+  <script src="/static/views.js" defer></script>
+  <script src="/static/sidebar.js" defer></script>
+  <script src="/static/workbench.js" defer></script>
 </head>
 <body>
-<h1>self-agent</h1>
+  <div class="wb" id="wb">
+    <header class="wb-titlebar">
+      <button class="btn btn-ghost btn-sm btn-icon-sm" id="sidebar-toggle" type="button" aria-label="サイドバー（Ctrl+B）" title="サイドバー（Ctrl+B）" aria-controls="sidebar" aria-expanded="true">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons-app.svg#sidebar"></use></svg>
+      </button>
+      <span class="wb-brand">self-agent</span>
+      <button class="cmd-center" id="command-center" type="button" aria-label="移動・コマンド（Ctrl+K）">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#search"></use></svg>
+        <span class="cmd-center-text">画面・コマンドを探す</span>
+        <kbd>Ctrl+K</kbd>
+      </button>
+      <div class="wb-title-actions">
+        <button class="btn btn-ghost btn-sm btn-icon-sm" id="panel-toggle" type="button" aria-label="パネル（Ctrl+J）" title="パネル（Ctrl+J）" aria-controls="panel" aria-pressed="true">
+          <svg class="icon" aria-hidden="true"><use href="/static/icons-app.svg#panel-bottom"></use></svg>
+        </button>
+        <button class="btn btn-ghost btn-sm btn-icon-sm" id="theme-toggle" type="button" aria-label="テーマを切り替える"></button>
+      </div>
+    </header>
+
+    <nav class="wb-activity" id="activity" aria-label="アクティビティ"></nav>
+    <aside class="wb-sidebar" id="sidebar" aria-label="サイドバー"></aside>
+    <div class="wb-sash wb-sash-sidebar" id="sash-sidebar" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅" tabindex="0"></div>
+
+    <main class="wb-main">
+      <div class="wb-editors" id="editors"></div>
+      <div class="wb-sash wb-sash-panel" id="sash-panel" role="separator" aria-orientation="horizontal" aria-label="パネルの高さ" tabindex="0"></div>
+      <section class="wb-panel" id="panel" aria-label="パネル"></section>
+    </main>
+
+    <footer class="wb-statusbar" id="statusbar" aria-label="ステータスバー"></footer>
+  </div>
+
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+
+  <div class="palette-backdrop" id="palette-backdrop" hidden>
+    <div class="palette" role="dialog" aria-modal="true" aria-label="コマンドパレット">
+      <div class="palette-head">
+        <input class="palette-input" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" placeholder="名前で探す。> か / でコマンド" aria-label="探す">
+        <span class="palette-mode" id="palette-mode"></span>
+      </div>
+      <ul class="palette-list" id="palette-list" role="listbox" aria-label="候補"></ul>
+    </div>
+  </div>
+
+  <dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title">
+    <h2 id="dlg-confirm-title" class="dlg-title"></h2>
+    <p id="dlg-confirm-body" class="meta"></p>
+    <div class="dialog-actions">
+      <button class="btn btn-secondary btn-sm" id="dlg-confirm-cancel" type="button">やめる</button>
+      <button class="btn btn-primary btn-sm" id="dlg-confirm-ok" type="button">OK</button>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>

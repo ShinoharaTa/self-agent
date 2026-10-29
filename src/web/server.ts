@@ -122,15 +122,21 @@ function loginPage(message?: string): string {
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>self-agent</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>self-agent にログイン</title>
+<link rel="stylesheet" href="/static/base.css">
 </head>
 <body>
+<main class="container stack">
 <h1>self-agent</h1>
-${message === undefined ? "" : `<p>${message}</p>\n`}<form method="post" action="/login">
-<label>トークン <input type="password" name="token" autocomplete="current-password" required></label>
-<button type="submit">ログイン</button>
+<p>Tailscale でつないでいないときは、トークン（SELF_AGENT_WEB_TOKEN）を貼ってください。</p>
+${message === undefined ? "" : `<p role="alert"><strong>${message}</strong></p>\n`}<form class="stack" method="post" action="/login">
+<label for="token">トークン</label>
+<input class="input" id="token" type="password" name="token" autocomplete="current-password" required>
+<button class="btn btn-primary" type="submit">ログイン</button>
 </form>
+</main>
 </body>
 </html>
 `;
