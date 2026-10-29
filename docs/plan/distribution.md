@@ -1,6 +1,6 @@
 # 配布（npm 公開）と macOS 対応 — 設計案 v1（#157）
 
-> 2026-10-29。spec-writer。素案（配布・Web UI・Mac の 3 本柱）に対するオーナーの決定（§0）を反映した版。Web UI は `docs/plan/web-ui.md`。リポジトリのソースは変更していない。
+> 2026-10-29。spec-writer。素案（配布・Web UI・Mac の 3 本柱）に対するオーナーの決定（§0）と、PR #158 のレビュー（lock の比べ方・env の優先順位・P1 の分割・D3 の実機確認ほか）を反映した版。Web UI は `docs/plan/web-ui.md`。リポジトリのソースは変更していない。
 > 「確認」= 2026-10-29 に main（d6cdb85）のコード・node_modules（typescript 7.0.2 / SDK 0.3.286）・Node 24.20.0 / npm 11.19.0 の実測・公式ドキュメントで確かめた事実。「未確認」= 手元に Mac が無い・実装で確かめるまで前提にしない。
 
 ## 0. 目的・オーナーの決定・結論
@@ -12,7 +12,9 @@
 2. Web UI は別ポート + `Tailscale-User-Login` 必須。Tailscale 以外の VPN 用に env の固定トークン + Cookie（web-ui.md）。
 3. Web UI は最初から操作も入れる。env（秘密）の編集は載せない（web-ui.md）。
 4. 順番は Web UI（W1）→ Mac（M1）。Mac のシェル（M2）は最後で、I1 が成り立たなければ入れない。
-5. npm の名前は `self-agent` と `@shinoharata/self-agent` のどちらも空き（2026-10-29 に `npm view` で E404 を確認）。推しを付けて決定事項の案にする（§3）。アカウントはオーナーが用意する。
+5. npm の名前は **`@shinoharata/self-agent`**（`self-agent` も空きだったが scoped にする。2026-10-29 に `npm view` で E404 を確認）。アカウントはオーナーが用意する（scope と同じユーザー名 `shinoharata`）。
+6. LICENSE は **MIT**（公開の PR（P1-b）で追加）。
+7. Web UI からの投稿先は既定の人格の #inbox だけ（#<NAME> は後で足せる形に。web-ui.md）。
 
 結論:
 - **開発と本番（Ubuntu の checkout）は今までどおり `node src/main.ts`（ビルド無し）。** ビルドは公開物（`dist/`）を作るときだけ。
@@ -26,16 +28,17 @@
 |---|---|---|---|---|
 | 1 | 0 | 本計画を 2 つの設計書に置く | — | — |
 | 2 | D1 | 入口の統一（`src/cli.ts`・`bin/`・env の読み方・パスの基準） | §4.2〜§4.5 | 0 |
-| 3 | W1 | Web UI の土台 + 状態 + usage + 認証 + CSRF | web-ui.md §4 | D1（`src/cli.ts` の env の読み方を使うだけ。並行可） |
+| 3 | W1 | Web UI の土台 + 状態 + usage + 認証 + CSRF | web-ui.md §4 | 無し（Web は main.ts の中で動き、env は `npm start` のフラグで読める。D1 と並行可） |
 | 4 | W2 | セッション一覧 + devlog | web-ui.md §4 | W1 |
 | 5 | W3 | 操作（タスク・リマインド・#inbox への投稿） | web-ui.md §4 | W2 |
 | 6 | D2 | `self-agent setup`（必須 4 変数を対話で） | §4.8 | D1 |
 | 7 | D3 | `self-agent service install\|uninstall\|status`（launchd / systemd --user） | §4.9 | D1 |
-| 8 | P1 | npm 公開（ビルド・`files`・publish の手順・README の位置づけ） | §4.1・§4.6・§4.7 | D1〜D3・W3 |
-| 9 | M1 | Mac で Bot が動く（シェル無し） | §4.10 | P1（Mac には `npm i -g` で入れる） |
-| 10 | M2 | Mac のシェル（seatbelt）。I1 が成り立たなければ入れない | §4.11 | M1 |
+| 8 | P1-a | ビルド・`files`・`npm pack`・tarball での `npm i -g` と `service install` の確認（`private: true` のまま） | §4.1・§4.7・§5 | D1〜D3・W3 |
+| 9 | M1 | Mac で Bot が動く（シェル無し。Mac には P1-a の tarball で入れる） | §4.10 | P1-a |
+| 10 | P1-b | `private` を外し、LICENSE と README の位置づけを足して 0.1.0 を publish | §4.6・§4.7 | M1 |
+| 11 | M2 | Mac のシェル（seatbelt）。I1 が成り立たなければ入れない | §4.11 | M1 |
 
-W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそのまま使え、公開物（P1）に最初から入る。D2・D3・P1 は「入れる人」向けで、Mac（M1）はその成果で入れる。
+W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそのまま使え、公開物に最初から入る。D2・D3・P1-a は「入れる人」向けで、Mac（M1）はその tarball で入れ、Mac で動くと分かってから公開する（P1-b）。
 
 ## 2. 確認した事実
 
@@ -55,7 +58,7 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 |---|---|---|---|
 | `src/agent/scaffold.ts` `WEB_TEMPLATE_DIR` | `new URL("../../templates/web/", import.meta.url)` | `dist/agent/scaffold.js` から `../../` = パッケージの直下 → `templates/web/` が隣にあれば**そのまま動く** | 無し（`dist` が `src` と同じ深さである前提。§4.1 の `rootDir: src`） |
 | `src/agent/query-options.ts` `defaultSandboxHost().cwd` → `sandbox-check.ts` の `repoDir`（秘密の場所） | `process.cwd()`（checkout で起動する前提） | `self-agent start` の cwd はどこでもよいので「リポジトリ」を指さない | **パッケージの直下（`import.meta.dirname` の親）に変える**（§4.4） |
-| `src/store/data-lock.ts` `BOT_COMMAND = "src/main.ts"` | lock の PID のコマンドラインに `src/main.ts` が無ければ古い lock とみなして取り直す | `dist/cli.js` で動く Bot は**自分の lock を古いと誤判定**しうる | `src/main.ts` か `cli.js` のどちらかを含む、に広げる（§4.5） |
+| `src/store/data-lock.ts` `BOT_COMMAND = "src/main.ts"` | lock の PID のコマンドラインに `src/main.ts` が無ければ古い lock とみなして取り直す | 確認（レビュアーの実測）: `npm i -g` は `<prefix>/bin/self-agent` → `dist/cli.js` の symlink で、shebang 経由の `/proc/self/cmdline` は `node /…/bin/self-agent start`（`dist/cli.js` を含まない）。2 つ目の `self-agent start` が 1 つ目の lock を古いと判定して**二重起動**になる | 自分の `argv` を lock に書いて比べる（§4.5） |
 | `src/config.ts` 人格の `_PROMPT_FILE` の既定 | `~/.config/self-agent/personas/<id>.md` | ホームなので変わらない | 無し |
 | `scripts/*.ts` | `../src/...` を import し、top-level await で動く。`parseArgs`。テストは scripts を import しない | `rootDir: src` の外なので dist に入らない | 本体を `src/cli/<name>.ts`（`main(argv)` を export）に移し、`scripts/*.ts` は呼ぶだけの薄い入口にする（§4.2） |
 | `npm run *` | `node --env-file-if-exists=$HOME/.config/self-agent/env …` | グローバルの `self-agent` では node のフラグを付けられない | `src/cli.ts` が `process.loadEnvFile` で読む（§4.3） |
@@ -70,7 +73,7 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 | 項目 | 決定 | 根拠 |
 |---|---|---|
 | 配り方 | **npm 公開**（`npm i -g`）。Homebrew tap・Docker・`npx github:` はやらない | オーナーの決定 1 |
-| npm の名前（案） | **`@shinoharata/self-agent`**（scoped）。コマンド名（`bin`）は `self-agent` | 個人用のツールで、素の `self-agent` は一般名詞に近く（将来の衝突・紛れ）、scoped なら名前の衝突も乗っ取りの紛れも無い。コマンド名は短いまま。注意: scope はオーナーの npm のユーザー名（か org）と同じでなければ publish できないので、**npm のユーザー名を `shinoharata` にする**（§7） |
+| npm の名前 | **`@shinoharata/self-agent`**（scoped。オーナーの決定 5）。コマンド名（`bin`）は `self-agent` | 個人用のツールで、素の `self-agent` は一般名詞に近く、scoped なら名前の衝突も乗っ取りの紛れも無い。scope はオーナーの npm のユーザー名と同じでなければ publish できないので、ユーザー名は `shinoharata` |
 | 開発・本番の動かし方 | **変えない**（checkout で `node src/main.ts`・`npm run *`・transient unit） | ビルドは公開物だけ。CLAUDE.md の「ビルドせず node で直接実行」は「開発と checkout の本番では」と限定して残す |
 | 公開物 | `dist/`（tsc の emit。`src` の鏡）+ `bin/` + `templates/` + README + LICENSE | §4.1 |
 | ビルドの設定 | `tsconfig.build.json`（`extends: ./tsconfig.json`、`noEmit: false`、`rootDir: src`、`outDir: dist`、`rewriteRelativeImportExtensions: true`、`include: ["src"]`、`declaration: false`） | §2.1 の実測 |
@@ -78,9 +81,9 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 | 環境変数 | `self-agent` は `~/.config/self-agent/env` を `process.loadEnvFile` で読む（無ければ読まない。`SELF_AGENT_ENV_FILE` で場所を変えられる） | §4.3 |
 | `files` | `["dist", "bin", "templates"]`（README・LICENSE・package.json は自動で入る）。`.npmignore` は使わない | §2.1 |
 | `engines` | `node >=24.20.0`（今のまま） | — |
-| `private: true` を外す | **P1 の公開の PR で**。それまで `npm publish` は拒まれる（安全側） | — |
+| `private: true` を外す | **P1-b（公開の PR）で**。P1-a と M1 の間は `npm publish` が拒まれる（安全側） | — |
 | 版 | `0.1.0` から。`npm version <minor|patch>` で package.json と tag `v<version>` を同時に。`gh release create v<version>`。publish は手元から（provenance 無し）。**publish・tag はオーナーの指示のときだけ** | §4.7 |
-| LICENSE | **要る**（無い。§2.1）。種類はオーナー（§7） | npm は LICENSE を常に同梱する |
+| LICENSE | **MIT**（オーナーの決定 6）。今は無い（§2.1）ので P1-b で `LICENSE` を足す。自分のコードだけに効く（確認（node_modules）: discord.js は Apache-2.0、zod は MIT、`@anthropic-ai/claude-agent-sdk` は「© Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements …」の独自の条件で、tarball には入らず `npm i -g` が別に入れる） | npm は LICENSE を常に同梱する |
 | README の位置づけ | 「自分の Discord サーバーと自分の Claude の契約で動かす self-host のツール」。claude.ai のログインや利用枠を第三者に提供するものではない旨を 1 段落（素案 §1.2 の Anthropic の方針） | §4.6 |
 | 常駐 | Ubuntu の本番は transient unit のまま。`npm i -g` で入れた人向けに `self-agent service install`（launchd / systemd --user） | §4.9 |
 | データの置き場 | Mac でも `~/.local/share/self-agent`・`~/.config/self-agent`（env で変えられるのは今のまま） | 素案 §4.1 |
@@ -88,42 +91,43 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 
 ## 4. 設計
 
-### 4.1 パッケージ（P1）
+### 4.1 パッケージ（P1-a）
 - `package.json`: `name`・`version: 0.1.0`・`description`・`license`・`repository`・`files`・`bin: { "self-agent": "dist/cli.js" }`・`engines`。`main` は置かない（ライブラリとして import させない）。`scripts` に `build: tsc -p tsconfig.build.json`、`prepack: npm run check && npm test && npm run build`、`clean: rm -rf dist`（`rm -rf` は `files` の外なので scripts に書いてよい）。`dist/` は `.gitignore` に足す（公開物をリポジトリに入れない）。
 - `tsconfig.build.json` は §3 の設定。`tsconfig.json`（型チェック）は変えない（`scripts`・`test` を含むまま）。`npm run check` は今までどおり `tsc --noEmit`。
 - `dist/cli.js` の先頭に `#!/usr/bin/env node` が要る（`src/cli.ts` の 1 行目に書く。確認（実測）: typescript 7.0.2 の emit は 1 行目の shebang をそのまま残す）。実行ビットは npm が `bin` に付ける。
 - `templates/web/` は今の場所のまま同梱（§2.2）。`docs/`・`test/`・`scripts/`・`src/`・`tsconfig*.json`・`.github/` は `files` に無いので入らない。
 - 依存は 3 つのまま。`npm i -g` では `dependencies` だけが入り、platform の CLI は optionalDependencies で 1 つ落ちる（§2.1）。
-- scoped の公開は `npm publish --access public` が要るか（未確認。P1 で `npm publish --dry-run` と公式ドキュメントで確かめて手順に書く）。
+- scoped の公開は `npm publish --access public` が要るか（未確認。P1-b で `npm publish --dry-run` と公式ドキュメントで確かめて手順に書く）。
 
 ### 4.2 入口の統一（D1）
 - `src/cli.ts`（shebang 付き）: `self-agent <sub> [options]`。サブコマンド: `start`（= 今の `src/main.ts`）/ `setup`（D2）/ `service`（D3）/ `devlog` / `usage` / `guest-setup` / `github-dry-run` / `shell-check` / `job-dry-run` / `measure`。無い・無しは使い方を出して exit 2。`--help`・`--version`（package.json から。`import.meta.dirname` の親の `package.json` を読む）。
-- 各サブコマンドの本体は `src/cli/<name>.ts` の `main(argv: readonly string[]): Promise<number>`（exit コード）。`scripts/<name>.ts` は `process.exit(await main(process.argv.slice(2)))` だけの薄い入口に変える（`npm run *` の互換のため。`measure-turn.ts` も同じ）。`start` は `await import("../main.ts")` で今の `main.ts` をそのまま動かす（main.ts は top-level の script のまま。**env を読んでから import する**。§4.3）。
+- 各サブコマンドの本体は `src/cli/<name>.ts` の `main(argv: readonly string[]): Promise<number>`（exit コード）。`scripts/<name>.ts` は `process.exit(await main(process.argv.slice(2)))` だけの薄い入口に変える（`npm run *` の互換のため。`measure-turn.ts` も同じ）。`start` は `await import("./main.ts")`（`src/cli.ts` から。`src/cli/start.ts` に置くなら `../main.ts`）で今の `main.ts` をそのまま動かす（main.ts は top-level の script のまま。**env を読んでから import する**。§4.3）。
 - `bin/self-agent`（checkout 用。POSIX sh。`exec "${SELF_AGENT_NODE:-node}" "$(dirname "$0")/../src/cli.ts" "$@"`）。公開物では使わない（`bin` フィールドは `dist/cli.js`）。`files` には `bin` を入れるが、中身は README の補助なので無くてもよい（実装者が決める。入れないなら `files` から外す）。
 - `npm start` は `node --env-file-if-exists=… src/cli.ts start` に変える（今の `src/main.ts` 直接でも動くが、入口を 1 つにする）。transient unit の起動行（README §4）も `src/cli.ts start` に揃える。
 
 ### 4.3 環境変数の読み方（D1）
 - `src/cli.ts` は最初に `loadEnvFile(path)`: `SELF_AGENT_ENV_FILE` があればそれ、無ければ `~/.config/self-agent/env`。`process.loadEnvFile` を try し、`ENOENT` なら何もしない（それ以外の例外は変数名を出さずに「env ファイルを読めませんでした」で exit 1）。既にある環境変数は上書きされない（§2.1。systemd の `--env-file` と二重に読んでも同じ結果）。
-- `npm run *` の `--env-file-if-exists` はそのまま残してよい（同じファイルを 2 回読んでも結果は同じ）。
+- 優先順位: **`SELF_AGENT_ENV_FILE` が効くのは `self-agent` コマンド（`src/cli.ts` / `dist/cli.js` の `loadEnvFile`）のときだけ。** `npm run *`・`npm start` は今までどおり node の `--env-file-if-exists` で既定の `~/.config/self-agent/env` を先に読み、その後の cli.ts の `loadEnvFile` は既存の変数を上書きしないので、二重に読んでも結果は同じ（`SELF_AGENT_ENV_FILE` を env ファイルの中に書いても、`npm run` では既に読んだ後なので効かない。README にその旨を 1 行）。
 - `main.ts`・`config.ts` は `process.env` を読むだけで変えない。
 
 ### 4.4 パスの基準（D1）
 - `src/agent/query-options.ts` の `defaultSandboxHost().cwd`（秘密の場所の「リポジトリ」）を **パッケージの直下**（`fileURLToPath(new URL("../..", import.meta.url))`。checkout では今の cwd と同じ、公開物では `<prefix>/lib/node_modules/@shinoharata/self-agent/`）にする。名前も `repoDir` → `packageDir` に。自己診断の「秘密の場所と重ならない」はそのまま効く。`sandbox-check.ts` の doc コメントと CLAUDE.md の説明を合わせる。
-- `scaffold.ts` の `WEB_TEMPLATE_DIR` は変えない（§2.2）。D1 のテストで `WEB_TEMPLATE_DIR` が実在するディレクトリであることを確かめる（dist でも同じテストを P1 の受け入れで走らせる）。
+- `scaffold.ts` の `WEB_TEMPLATE_DIR` は変えない（§2.2）。D1 のテストで `WEB_TEMPLATE_DIR` が実在するディレクトリであることを確かめる（dist でも同じテストを P1-a の受け入れで走らせる）。
 
 ### 4.5 二重起動の lock（D1）
-- `data-lock.ts` の `BOT_COMMAND` を配列 `["src/main.ts", "src/cli.ts", "dist/cli.js"]` にし、どれかを含めば Bot とみなす。テストは 3 つを確かめる。
+- 固定の印（`BOT_COMMAND`）では公開物を見分けられない（§2.2）。**lock の 3 行目に自分の `process.argv.slice(1).join(" ")` を書き、holder の `/proc/<pid>/cmdline` がそれを含むかで「同じ Bot か」を比べる**（PID が生きていて boot id が同じでも、cmdline が含まなければ PID の再利用とみなして取り直す）。`node src/cli.ts devlog` のような Bot でない cli のプロセスは argv が違うので Bot と誤判定されない。
+- 移行: 3 行目が無い古い lock（今の本番が持っている）は今までどおり `src/main.ts` の印で比べる。新しい Bot が書く lock は常に 3 行。`/proc` が読めなければ今までどおりこの確認は飛ばす。
 
-### 4.6 README（P1）
+### 4.6 README（P1-a・P1-b）
 - 「Installing from npm」の節（`npm i -g @shinoharata/self-agent` → `self-agent setup` → `self-agent service install` → Discord で `/setup`）と、「Running from a checkout」（今の内容）を分ける。
-- 位置づけの 1 段落: self-host・自分の契約・第三者への提供はしない。Claude Max の OAuth トークンの扱い（`claude setup-token`）は今のまま。
+- 位置づけの 1 段落（P1-b）: self-host・自分の契約・第三者への提供はしない。SDK と CLI は Anthropic の条件のもとで各自が入れる旨を 1 行。Claude Max の OAuth トークンの扱い（`claude setup-token`）は今のまま。
 - Mac の節（M1）。README_ja も同じ構成。
 
-### 4.7 版と公開の手順（P1。docs に置き、実行はオーナーの指示のときだけ）
+### 4.7 版と公開の手順（P1-a・P1-b。docs に置き、実行はオーナーの指示のときだけ）
 1. `main` で `npm run check && npm test`。
 2. `npm version minor|patch`（package.json と tag `v<version>`。`preversion` で check・test を走らせてもよい）。
-3. `npm run build && npm pack --dry-run` で中身を確かめる（受け入れ §5 の P1）。
-4. `npm publish`（初回は 2FA。scoped なら `--access public` が要るかを §4.1 の確認に従う）。provenance は付けない（手元から。GitHub Actions を足すときに `--provenance` に切り替える。費用 0 円だが、公開の権限を CI に渡すので別の論点）。
+3. `npm run build && npm pack` で中身と tarball での `npm i -g` を確かめる（受け入れ §5 の P1-a。初回は M1 の Mac にもこの tarball で入れる）。
+4. P1-b で `private` を外してから `npm publish`（初回は 2FA。scoped なら `--access public` が要るかを §4.1 の確認に従う）。provenance は付けない（手元から。GitHub Actions を足すときに `--provenance` に切り替える。費用 0 円だが、公開の権限を CI に渡すので別の論点）。
 5. `git push --follow-tags` と `gh release create v<version> --generate-notes`。
 6. 本番（Ubuntu）は `git pull` + 再起動（公開物は使わない）。
 
@@ -133,8 +137,9 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 - 既存の env は差分だけ置き換え（置き換える前に確認）。端末でなければ exit 1。値・ID は画面と log に出さない。
 
 ### 4.9 `self-agent service`（D3）
-- `install`: darwin なら `~/Library/LaunchAgents/com.shinoharata.self-agent.plist`（600。`ProgramArguments` は `process.execPath` と `dist/cli.js start` の絶対パス、`EnvironmentVariables` は `HOME`・`PATH` だけ、`KeepAlive`・`RunAtLoad`、`StandardOutPath`/`StandardErrorPath` は `~/Library/Logs/self-agent/`）を書いて `launchctl bootstrap gui/$(id -u)`。linux なら `~/.config/systemd/user/self-agent.service`（`ExecStart` は同じ絶対パス、`MemoryMax=4G`・`MemoryHigh=3G`・`CPUQuota=300%`・`TasksMax=1024`、`Restart=on-failure`）を書いて `systemctl --user daemon-reload && enable --now`（linger は案内だけ。sudo は使わない）。秘密は unit・plist に書かない（env は §4.3 で読む）。
+- `install`: darwin なら `~/Library/LaunchAgents/com.shinoharata.self-agent.plist`（600。`ProgramArguments` は `process.execPath` と `dist/cli.js start` の絶対パス、`EnvironmentVariables` は `HOME` と固定の `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin` だけ、`KeepAlive`・`RunAtLoad`、`StandardOutPath`/`StandardErrorPath` は `~/Library/Logs/self-agent/`）を書いて `launchctl bootstrap gui/$(id -u)`。linux なら `~/.config/systemd/user/self-agent.service`（`ExecStart` は同じ絶対パス、`MemoryMax=4G`・`MemoryHigh=3G`・`CPUQuota=300%`・`TasksMax=1024`、`Restart=on-failure`）を書いて `systemctl --user daemon-reload && enable --now`（linger は案内だけ。sudo は使わない）。秘密は unit・plist に書かない（env は §4.3 で読む）。
 - `uninstall`・`status`。既にあれば上書きの確認。Ubuntu の本番は使わない（transient unit のまま）。
+- 注意（README の項目に）: `ProgramArguments`/`ExecStart` の node は `process.execPath` の絶対パスで、nvm だと版入り（`~/.nvm/versions/node/v24.20.0/bin/node`）なので Node を上げると unit が壊れる。上げたら `self-agent service install` をもう一度。
 
 ### 4.10 Mac で Bot が動く（M1。素案 §4.2 から）
 1. `remove-tree.ts`: darwin なら `/bin/rm -rf -x --`（platform で定数を選ぶ関数。テストは両方の引数）。
@@ -149,16 +154,16 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 ## 5. 受け入れ条件
 
 単体（`npm test`。偽物・一時ディレクトリ・ネット無し）:
-- D1: `src/cli.ts` のサブコマンドの振り分け（無い名前は exit 2・`--help`・`--version`）。`loadEnvFile` が無いファイルで何もしない・既存の変数を上書きしない・`SELF_AGENT_ENV_FILE` で場所が変わる。`data-lock` の 3 つのコマンドライン。`packageDir` が `package.json` のあるディレクトリ。`WEB_TEMPLATE_DIR` が実在する。
+- D1: `src/cli.ts` のサブコマンドの振り分け（無い名前は exit 2・`--help`・`--version`）。`loadEnvFile` が無いファイルで何もしない・既存の変数を上書きしない・`SELF_AGENT_ENV_FILE` で場所が変わる。`data-lock`: 新しい lock は 3 行で argv を含む、holder の cmdline に自分の argv が含まれれば生きている・含まなければ取り直す（`node /…/bin/self-agent start` の形と `node src/cli.ts start` の形の両方）、`node src/cli.ts devlog` の cmdline の PID は Bot でないとみなす、3 行目の無い古い lock は `src/main.ts` の印で比べる。`packageDir` が `package.json` のあるディレクトリ。`WEB_TEMPLATE_DIR` が実在する。
 - D2: 入力の形の検証（4 変数）。既存の env の差分の置き換えと `env.bak`。値を含む文字列が出力・log に無い。
 - D3: plist / unit の生成が純関数で、秘密の変数名・値を含まない（grep）。`ProgramArguments`/`ExecStart` が絶対パス。
-- P1: `npm run build` の後、`dist/**/*.js` に `from "./…\.ts"`・`import("./…\.ts")` が 0 件。`dist/cli.js` の 1 行目が shebang。`npm pack --dry-run --json` の一覧に `src/`・`test/`・`scripts/`・`docs/`・`.env`・`*.db`・`tsconfig*.json` が無く、`dist/cli.js`・`templates/web/site/base.css`・`README.md`・`LICENSE` がある。
+- P1-a: `npm run build` の後、`dist/**/*.js` を `\.ts["')]` で grep して 0 件。`dist/cli.js` の 1 行目が shebang。`npm pack --dry-run --json` の一覧に `src/`・`test/`・`scripts/`・`docs/`・`.env`・`*.db`・`tsconfig*.json` が無く、`dist/cli.js`・`templates/web/site/base.css`・`README.md` がある（`LICENSE` は P1-b で足してから同じ確認）。
 - M1: `remove-tree` の darwin の引数。`openInside` の darwin 版（同じ (dev, ino) で通る・違えば 404）。darwin で `SELF_AGENT_JOBS=1` が設定エラー。
 
 実機（Ubuntu は実装者、Mac はオーナー。結果は #157 に貼る）:
 - D1: `./bin/self-agent --help`・`node src/cli.ts start` が `npm start` と同じ結果（env の読み方・必須変数が無いときの exit 1 と変数名）。`npm run devlog -- --last 1` などの `npm run *` が前と同じ出力。
-- P1（Ubuntu の別のディレクトリ。本番の checkout は触らない）: `npm pack` の tarball を `npm i -g ./<tarball>` で入れ、`self-agent --help`・`self-agent --version` が動き、`SELF_AGENT_DATA_DIR`・`SELF_AGENT_WORKDIR`・`SELF_AGENT_ENV_FILE` を一時の場所にして `self-agent start` が必須変数の無い exit 1 を出す。`self-agent devlog --last 1` が動く。`npm uninstall -g` で消える。
-- M1（Mac）: `npm i -g @shinoharata/self-agent`（か tarball）→ `self-agent setup` → `self-agent service install` で起動し、#inbox の 1 ターンが返る（OAuth トークンは Ubuntu と別に発行）。`SELF_AGENT_SHELL=1` なら #system に「使えない状態です」が出て Bot は動く。静的サーバーが `/p/<slug>/index.html` を 200 で返し、site の外への symlink は 404。`.tmp` の掃除（find）が動く。`npm test` が通る。`launchctl print gui/$(id -u)/com.shinoharata.self-agent` が running、plist が 600 で秘密を含まない。
+- P1-a（Ubuntu の本番とは別のディレクトリ・別の prefix。本番の checkout・unit は触らない）: `npm pack` の tarball を `npm i -g ./<tarball>` で入れ、`self-agent --help`・`self-agent --version` が動き、`SELF_AGENT_DATA_DIR`・`SELF_AGENT_WORKDIR`・`SELF_AGENT_ENV_FILE` を一時の場所にして `self-agent start` が必須変数の無い exit 1 を出す。`self-agent devlog --last 1` が動く。**D3 の確認もここで**: 別の unit 名（`SELF_AGENT_SERVICE_NAME` か固定の `self-agent-test`。実装者が決める）で `self-agent service install` → `status` が enabled/running → `uninstall` で unit が消える（本番の `self-agent` unit には触らない）。`npm uninstall -g` で消える。
+- M1（Mac。P1-a の tarball で `npm i -g ./<tarball>`）: `self-agent setup` → `self-agent service install`（launchd 版の D3 の確認はここ）で起動し、#inbox の 1 ターンが返る（OAuth トークンは Ubuntu と別に発行）。`SELF_AGENT_SHELL=1` なら #system に「使えない状態です」が出て Bot は動く。静的サーバーが `/p/<slug>/index.html` を 200 で返し、site の外への symlink は 404。`.tmp` の掃除（find）が動く。`npm test` が通る。`launchctl print gui/$(id -u)/com.shinoharata.self-agent` が running、plist が 600 で秘密を含まない。
 - M2: Mac 版 shell-check の必須項目（秘密が読めない・env にトークンが無い・ネットの許可リスト・I1）が通る。
 
 ## 6. PR の分け方
@@ -169,8 +174,8 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 | D1 | `src/cli.ts`・`src/cli/*.ts`・`scripts/*` の薄い入口・`bin/self-agent`・`loadEnvFile`・`packageDir`・`data-lock`・`npm start`・CLAUDE.md のコマンド表 | src・scripts・test・package.json・CLAUDE.md・README |
 | D2 | `self-agent setup`（guest-setup との共有） | src/cli/setup.ts・src/guest/setup-env.ts → src/cli/env-file.ts・test |
 | D3 | `self-agent service` | src/cli/service.ts・test・README |
-| P1-a | `tsconfig.build.json`・`build`・`prepack`・`files`・`bin`・`version`・`.gitignore` に dist・LICENSE・README の節・CLAUDE.md の「ビルド」の文 | package.json・tsconfig.build.json・.gitignore・LICENSE・README・CLAUDE.md |
-| P1-b | `private: true` を外す（公開の直前。オーナーの指示で） | package.json |
+| P1-a | `tsconfig.build.json`・`build`・`prepack`・`files`・`bin`・`version`・`.gitignore` に dist・README の「Installing from npm」の節・CLAUDE.md の「ビルド」の文（`private: true` のまま） | package.json・tsconfig.build.json・.gitignore・README・CLAUDE.md |
+| P1-b | `private: true` を外す・`LICENSE`（MIT）・README の位置づけの段落（§4.6）。マージと publish はオーナーの指示で | package.json・LICENSE・README |
 | M1 | §4.10 | src/agent/remove-tree.ts・src/serve/static-server.ts・src/config.ts・test・README |
 | M2 | §4.11（I1 の確認の結果で入れない判断もある） | src/agent/sandbox-check.ts・query-options.ts・scripts/shell-check.ts |
 
@@ -178,6 +183,6 @@ W1〜W3 を D2 の前に置く理由: Web UI は今の本番（checkout）でそ
 
 ## 7. 決めてもらうこと（推し付き）
 
-1. **npm の名前**: `@shinoharata/self-agent`（推し。§3）か `self-agent` か。scoped なら npm のユーザー名を `shinoharata`（小文字）で作る。
-2. **LICENSE の種類**: MIT（推し。self-host の個人用ツールに合い、短い）か、他か。公開までに要る。LICENSE は自分のコードだけに効く。確認（node_modules）: discord.js は Apache-2.0、zod は MIT、`@anthropic-ai/claude-agent-sdk` は「© Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements …」（独自の条件。tarball には入らず `npm i -g` が別に入れる）。README の位置づけの段落（§4.6）に、SDK と CLI は Anthropic の条件のもとで各自が入れる旨を 1 行足す。
-3. **GitHub Actions**: 最初は使わない（推し。手元から publish）。provenance を付けたくなったら別の issue。
+決まったこと（2026-10-29。PR #158 のレビューの後）: npm の名前は `@shinoharata/self-agent`、LICENSE は MIT（P1-b で追加）、Web UI の投稿先は既定の人格の #inbox だけ（§0 の 5〜7）。
+
+1. **GitHub Actions**: 最初は使わない（推し。手元から publish）。provenance を付けたくなったら別の issue。
