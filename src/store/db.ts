@@ -478,6 +478,21 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX history_channel ON history(channel_id, id);
   CREATE INDEX history_at ON history(at);
   `,
+  // v26: #system への知らせの記録（docs/plan/web-ui.md §7.1）。app/system-notice.ts が投稿の前に書き、投稿できたら message_id と posted_at を入れる。
+  // 同じサーバー・同じ本文の未投稿の行はやり直しで使い回す（notices_unposted）。日数で消す（未投稿も）
+  `
+  CREATE TABLE notices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    level TEXT NOT NULL CHECK (level IN ('info', 'success', 'warning', 'danger')),
+    text TEXT NOT NULL,
+    message_id TEXT,
+    posted_at TEXT
+  );
+  CREATE INDEX notices_at ON notices(at);
+  CREATE INDEX notices_unposted ON notices(guild_id, text) WHERE posted_at IS NULL;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

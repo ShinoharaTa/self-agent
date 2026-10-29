@@ -19,6 +19,7 @@ import type { InboxRotator } from "./inbox-rotate.ts";
 import type { PersonaRouter } from "./personas.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { applySessionEvent } from "./session-state.ts";
+import type { SystemNotifier } from "./system-notice.ts";
 
 /** tick の間隔 */
 export const TICK_INTERVAL_MS = 5 * 60 * 1000;
@@ -61,7 +62,7 @@ export type SchedulerDeps = {
     TopicSessionStore,
     "get" | "listIdle" | "setActive" | "setWaiting" | "listDeleteDue" | "setDeletePrompt" | "listUndeleted" | "markDeleted"
   >;
-  /** 削除の確認の投稿先（#system）と、再同期で見る self-agent カテゴリ・状態カテゴリ・#<NAME> */
+  /** 再同期で見る self-agent カテゴリ・状態カテゴリ・#<NAME> */
   guildSettings: Pick<GuildSettingsStore, "get" | "listStateCategories" | "personaInbox" | "jobsChannelId">;
   /** Discord 上で消えていたセッションのチャンネルの SDK セッション（channel_sessions）を消す */
   sessions: Pick<SdkSessionStore, "delete">;
@@ -69,8 +70,10 @@ export type SchedulerDeps = {
   seeds: Pick<ChannelSeedStore, "delete">;
   /** 待ちにしたセッションを待ちカテゴリへ移し、再同期でずれていたチャンネルを移す */
   channelOps: Pick<ChannelOpsQueue, "enqueueMove">;
-  /** 待ちに移した知らせ（personas が無いとき）と削除の確認を投稿し、再同期でサーバーのチャンネルの親カテゴリを取る（既定の人格の Bot） */
+  /** 待ちに移した知らせ（personas が無いとき）を投稿し、再同期でサーバーのチャンネルの親カテゴリを取る（既定の人格の Bot） */
   gateway: Pick<Gateway, "sendMessage" | "listChannelParents" | "isInGuild">;
+  /** 削除の確認の投稿（#system。system-notice.ts） */
+  notify: SystemNotifier;
   /** 待ちに移した知らせを投稿するチャンネルの持ち主の Bot（と history の行の人格）。無ければ gateway（と既定の人格） */
   personas?: Pick<PersonaRouter, "gatewayFor" | "ownerOf">;
   /** #inbox・#tasks の切り替え（日次・入力の大きさ）。要約のターンは発言と同じキューで行う */
@@ -91,6 +94,8 @@ export type SchedulerDeps = {
   pruneGuestTurns?: () => number;
   /** 残す日数より前のターンの記録（history）を消す（Web UI が無効でも消す。消した数の log は渡す側）。投げたら log に出して続ける。省略すれば消さない */
   pruneHistory?: () => void;
+  /** 残す日数より前の #system への知らせの記録（notices）を消す（Web UI が無効でも消す）。投げたら log に出して続ける。省略すれば消さない */
+  pruneNotices?: () => void;
   /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。待ちに移したら知らせの行を書く。無ければ書かない */
   history?: Pick<HistoryStore, "add">;
   /**
@@ -172,6 +177,7 @@ export class Scheduler {
     this.pruneDevLogs();
     this.pruneGuestTurns();
     this.pruneHistory();
+    this.pruneNotices();
     await this.pruneSandboxAreas();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
     await this.deps.inboxRotator.rotateDue(() => this.stopped);
@@ -297,6 +303,16 @@ export class Scheduler {
     }
   }
 
+  /** 古い #system への知らせの記録を消す。失敗は log に出すだけ */
+  private pruneNotices(): void {
+    if (this.deps.pruneNotices === undefined) return;
+    try {
+      this.deps.pruneNotices();
+    } catch {
+      this.deps.log("古い知らせの記録を消せませんでした");
+    }
+  }
+
   /**
    * プロジェクトの古い .trash と workDir の .tmp・.cache・cwd の中身、古い添付を、ターンのキューのセッションのジョブとして消す。
    * 停止を始めた・セッションのジョブが実行中なら何もしない（log も出さない）。入れた後に来たセッションのターンは、消し終わるまで待つ。reject しない
@@ -389,7 +405,7 @@ export class Scheduler {
    * 投稿したメッセージを記録して以後は投稿し直さない。#system が無いサーバーは飛ばし、投稿に失敗したら記録せずに次の tick でやり直す
    */
   private async promptDeletes(): Promise<void> {
-    const { cfg, topicSessions, guildSettings, gateway, now, log } = this.deps;
+    const { cfg, topicSessions, notify, now, log } = this.deps;
     try {
       // 閉じたのがちょうど deleteAfterDays 日前のものも含める
       const before = new Date(now().getTime() - cfg.deleteAfterDays * DAY_MS);
@@ -397,20 +413,19 @@ export class Scheduler {
       // #system が無いことを log に出したサーバー（1 回の tick で 1 回だけ出す）
       const unconfigured = new Set<string>();
       for (const session of due) {
-        const systemChannelId = guildSettings.get(session.guildId)?.systemChannelId ?? null;
-        if (systemChannelId === null) {
+        let messageId: string | undefined;
+        try {
+          messageId = await notify(session.guildId, deletePrompt(session, cfg.deleteAfterDays), { level: "info" });
+        } catch (error) {
+          // 記録しないので、次の tick でやり直す
+          log(`削除の確認の投稿に失敗しました（guild=${session.guildId}）: ${describeError(error)}`);
+          continue;
+        }
+        if (messageId === undefined) {
           if (!unconfigured.has(session.guildId)) {
             unconfigured.add(session.guildId);
             log(`#system が無いため、削除の確認を投稿できません（guild=${session.guildId}）。/setup を実行してください`);
           }
-          continue;
-        }
-        let messageId: string;
-        try {
-          messageId = await gateway.sendMessage(systemChannelId, deletePrompt(session, cfg.deleteAfterDays));
-        } catch (error) {
-          // 記録しないので、次の tick でやり直す
-          log(`削除の確認の投稿に失敗しました（guild=${session.guildId}）: ${describeError(error)}`);
           continue;
         }
         topicSessions.setDeletePrompt(session.channelId, messageId);

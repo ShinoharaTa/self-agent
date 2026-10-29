@@ -2,6 +2,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { DatabaseSync } from "node:sqlite";
 import type { RunResult } from "../src/agent/runner.ts";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import type { IncomingMessage } from "../src/discord/gateway.ts";
 import { GUEST_SESSION_MAX_AGE_HOURS, guestSessionKey } from "../src/guest/constants.ts";
 import {
@@ -420,8 +421,11 @@ function startWith(t: TestContext, steps: FakeRunStep[]) {
     sessions: new SdkSessionStore(db, now),
     runner,
     usage: new UsageStore(db, now),
-    guildSettings: new GuildSettingsStore(db, now),
-    adminGateway: new FakeGateway({ allow: ["sendMessage"] }),
+    notify: createSystemNotifier({
+      guildSettings: new GuildSettingsStore(db, now),
+      gateway: new FakeGateway({ allow: ["sendMessage"] }),
+      log: () => {},
+    }),
     now,
     log: (line) => logs.push(line),
     createGateway: () => gateway,

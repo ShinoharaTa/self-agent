@@ -1,6 +1,7 @@
 // 定型文への返信による有効化（docs/plan/guest-mode.md §3.2.5・§7）。createGuestLayer に偽の発言を渡して確かめる
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import type { IncomingMessage } from "../src/discord/gateway.ts";
 import { createGuestActivation, GUEST_ACTIVATED_LIMIT_REPLY, GUEST_ACTIVATED_REPLY } from "../src/guest/activation.ts";
 import { guestSessionKey } from "../src/guest/constants.ts";
@@ -78,8 +79,7 @@ async function setup(t: TestContext, cfg: typeof CFG = CFG) {
     // 定型文への返信はターンにしない（run を呼べば「想定外の呼び出し」で失敗する）
     runner: new FakeRunner([]),
     usage: new UsageStore(db, now),
-    guildSettings,
-    adminGateway: admin,
+    notify: createSystemNotifier({ guildSettings, gateway: admin, log: () => {} }),
     now,
     log: (line) => logs.push(line),
     createGateway: () => gateway,

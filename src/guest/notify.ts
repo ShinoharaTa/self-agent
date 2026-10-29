@@ -1,9 +1,8 @@
 // ゲストの知らせ（docs/plan/guest-mode.md §6）。オーナーのサーバー（/setup 済み）の #system に、既定の人格の Bot で 1 行出す。
 // 本文に入れるのはゲストのサーバーの ID と数だけ（チャンネル ID は入れない）。失敗は log だけ
-import { SHELL_NOTICE_TIMEOUT_MS, withTimeout } from "../app/shell-state.ts";
+import type { SystemNotifier } from "../app/system-notice.ts";
 import type { Config } from "../config.ts";
-import type { Gateway } from "../discord/gateway.ts";
-import type { GuildSettingsStore } from "../store/guild-settings.ts";
+import type { NoticeLevel } from "../store/notices.ts";
 import {
   GUEST_INVITE_FAIL_LIMIT,
   GUEST_INVITE_LOCK_MIN,
@@ -97,28 +96,27 @@ export function guestRevokedNotice(guildId: string, disabled: number): string {
 export type GuestNotifyDeps = {
   /** 知らせを投稿するサーバー（オーナーのサーバー） */
   cfg: Pick<Config, "allowedGuildIds">;
-  /** 投稿先（#system） */
-  guildSettings: Pick<GuildSettingsStore, "get">;
-  /** 既定の人格の Bot */
-  gateway: Pick<Gateway, "sendMessage">;
+  /** #system への知らせ（app/system-notice.ts。既定の人格の Bot） */
+  notify: SystemNotifier;
   log: (message: string) => void;
   /** 既定は SHELL_NOTICE_TIMEOUT_MS */
   timeoutMs?: number;
 };
+
+/** ゲストの知らせ。level は notices の記録の重さで、省略は info（外された・失敗の上限は warning） */
+export type GuestNotify = (text: string, level?: NoticeLevel) => Promise<void>;
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 /** /setup 済み（#system がある）のオーナーのサーバーに 1 回ずつ投稿する。やり直さない。reject しない */
-export function createGuestNotifier(deps: GuestNotifyDeps): (text: string) => Promise<void> {
-  const { cfg, guildSettings, gateway, log } = deps;
-  return async (text) => {
+export function createGuestNotifier(deps: GuestNotifyDeps): GuestNotify {
+  const { cfg, notify, log } = deps;
+  return async (text, level = "info") => {
     for (const guildId of cfg.allowedGuildIds) {
       try {
-        const systemChannelId = guildSettings.get(guildId)?.systemChannelId ?? null;
-        if (systemChannelId === null) continue;
-        await withTimeout(gateway.sendMessage(systemChannelId, { text }), deps.timeoutMs ?? SHELL_NOTICE_TIMEOUT_MS);
+        await notify(guildId, { text }, { level, timeoutMs: deps.timeoutMs });
       } catch (error) {
         log(`guest: #system への知らせの投稿に失敗しました（guild=${guildId}）: ${describeError(error)}`);
       }

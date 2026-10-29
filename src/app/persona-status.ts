@@ -6,8 +6,8 @@
 // 足した人格の Bot が落ちても既定の人格は動き続ける（その人格のチャンネルには答えられない）
 import type { Config } from "../config.ts";
 import type { Gateway, GatewayHandlers } from "../discord/gateway.ts";
-import type { GuildSettingsStore } from "../store/guild-settings.ts";
-import { SHELL_NOTICE_TIMEOUT_MS, withTimeout } from "./shell-state.ts";
+import { withTimeout } from "./shell-state.ts";
+import type { SystemNotifier } from "./system-notice.ts";
 
 /** 足した人格の Bot（既定の人格は含まない。既定の人格の Bot が接続できなければ起動しない） */
 export type PersonaConnection = {
@@ -27,10 +27,8 @@ export type PersonaStatusDeps = {
   /** 知らせを投稿するサーバー */
   cfg: Pick<Config, "allowedGuildIds">;
   personas: readonly PersonaConnection[];
-  /** 知らせの投稿先（#system） */
-  guildSettings: Pick<GuildSettingsStore, "get">;
-  /** 既定の人格の Bot */
-  gateway: Pick<Gateway, "sendMessage">;
+  /** #system への知らせ（system-notice.ts。既定の人格の Bot） */
+  notify: SystemNotifier;
   log: (message: string) => void;
   /** 既定は SHELL_NOTICE_TIMEOUT_MS */
   noticeTimeoutMs?: number;
@@ -68,7 +66,7 @@ export class PersonaStatus {
    * #system が無い・投稿の失敗・時間切れ（1 回 noticeTimeoutMs）のサーバーは、状態が変わらなければ次の tick でやり直す（失敗は log に出す）。reject しない
    */
   async refresh(): Promise<void> {
-    const { cfg, personas, guildSettings, gateway, log } = this.deps;
+    const { cfg, personas, notify, log } = this.deps;
     for (const persona of personas) {
       const now = persona.connected();
       // ログインの途中はまだ分からない
@@ -90,9 +88,12 @@ export class PersonaStatus {
       const text = connected ? personaReconnectedNotice(persona.name) : personaDisconnectedNotice(persona.name);
       for (const guildId of [...state.pending]) {
         try {
-          const systemChannelId = guildSettings.get(guildId)?.systemChannelId ?? null;
-          if (systemChannelId === null) continue;
-          await withTimeout(gateway.sendMessage(systemChannelId, { text }), this.deps.noticeTimeoutMs ?? SHELL_NOTICE_TIMEOUT_MS);
+          const messageId = await notify(
+            guildId,
+            { text },
+            { level: connected ? "success" : "warning", timeoutMs: this.deps.noticeTimeoutMs },
+          );
+          if (messageId === undefined) continue;
           state.pending.delete(guildId);
         } catch (error) {
           log(`人格の Bot の接続の知らせの投稿に失敗しました（guild=${guildId}、persona=${persona.id}）: ${describeError(error)}`);

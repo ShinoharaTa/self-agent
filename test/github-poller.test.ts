@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import { escapeDiscordText } from "../src/discord/escape.ts";
 import type { GhHeaders, GhRequest, GhResponse } from "../src/github/gh.ts";
 import {
@@ -133,6 +134,7 @@ function setup(t: TestContext, options: { github?: boolean; withGh?: boolean; gi
     store,
     guildSettings,
     gateway,
+    notify: createSystemNotifier({ guildSettings, gateway, log: () => {} }),
     now: clock,
     timers,
     log: (line: string) => logs.push(line),

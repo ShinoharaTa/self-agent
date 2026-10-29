@@ -15,6 +15,7 @@ import {
   guestActivationReplyFailedNotice,
   guestInviteLockedNotice,
   guestInviteRejectedNotice,
+  type GuestNotify,
 } from "./notify.ts";
 
 /** 有効にしたときの公開の返信 */
@@ -34,7 +35,7 @@ export type GuestActivationDeps = {
   sessions: Pick<SdkSessionStore, "delete">;
   gateway: Pick<GuestGateway, "send" | "selfUserId" | "memberCanManageGuild">;
   /** オーナーのサーバーの #system への知らせ（notify.ts。reject しない） */
-  notify: (text: string) => Promise<void>;
+  notify: GuestNotify;
   now: () => Date;
   log: (message: string) => void;
 };
@@ -134,7 +135,7 @@ export function createGuestActivation(deps: GuestActivationDeps): GuestActivatio
         log(
           `guest: 認証コードの失敗が ${GUEST_INVITE_LOCK_MIN} 分以内に ${GUEST_INVITE_FAIL_LIMIT} 回に達したため、${GUEST_INVITE_LOCK_MIN} 分間は受け付けません（guild=${guildId}）`,
         );
-        await notify(guestInviteLockedNotice(guildId));
+        await notify(guestInviteLockedNotice(guildId), "warning");
       }
       return;
     }

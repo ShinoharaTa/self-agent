@@ -1,6 +1,7 @@
 // 定型文（案内。docs/plan/guest-mode.md §3.2.4・§6・§7）の本文・投稿・/guests invite の再投稿の条件
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { createSystemNotifier } from "../src/app/system-notice.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import { createGuestsCommand, GUESTS_NOT_JOINED_NOTE, type GuestAdmin } from "../src/guest/commands/admin.ts";
 import { buildGuestNoticeText, createGuestOnboarding } from "../src/guest/notice.ts";
@@ -44,7 +45,7 @@ function setup(t: TestContext) {
   const admin = new FakeGateway({ allow: ["sendMessage"] });
   const logs: string[] = [];
   const log = (line: string) => logs.push(line);
-  const notify = createGuestNotifier({ cfg: CFG, guildSettings, gateway: admin, log });
+  const notify = createGuestNotifier({ cfg: CFG, notify: createSystemNotifier({ guildSettings, gateway: admin, log }), log });
   const gateway = new FakeGuestGateway();
   const noticeText = buildGuestNoticeText(CFG);
   const onboard = createGuestOnboarding({ guilds, gateway, noticeText, notify, now, log });
