@@ -275,3 +275,21 @@ test("KnowledgeStore: 一番大きい id を消しても、次の追加で同じ
   // 全文検索も新しい id で引ける
   assert.deepEqual(titles(store, "三つ目"), ["三つ目"]);
 });
+
+test("KnowledgeStore.listRecent: 新しい順（updated_at）に limit 件。本文は返さない", (t) => {
+  const { store } = setup(t);
+  for (let i = 1; i <= 4; i++) store.add({ title: `項目 ${i}`, summary: "要約", body: "本文" });
+  store.update(2, { title: "項目 2", summary: "要約", body: "本文" });
+
+  assert.deepEqual(
+    store.listRecent(10).map((entry) => entry.title),
+    ["項目 2", "項目 4", "項目 3", "項目 1"],
+  );
+  assert.deepEqual(
+    store.listRecent(2).map((entry) => entry.id),
+    [2, 4],
+  );
+  assert.deepEqual(store.listRecent(0), []);
+  assert.equal("body" in store.listRecent(1)[0]!, false);
+  assert.deepEqual(store.listRecent(1)[0], store.search("", 1).entries[0]);
+});

@@ -72,7 +72,10 @@ import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { UsageStore } from "./store/usage.ts";
 import { channelRoutes, webChannelNamer } from "./web/routes/channels.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
+import { githubRoutes } from "./web/routes/github.ts";
+import { knowledgeRoutes } from "./web/routes/knowledge.ts";
 import { memoryRoutes } from "./web/routes/memories.ts";
+import { noticeRoutes } from "./web/routes/notices.ts";
 import { reminderRoutes } from "./web/routes/reminders.ts";
 import { sessionRoutes } from "./web/routes/sessions.ts";
 import { statusRoutes } from "./web/routes/status.ts";
@@ -526,10 +529,11 @@ const reminderScheduler = new ReminderScheduler({
 // GitHub の通知（docs/plan/github-notifications.md。SELF_AGENT_GITHUB=1 のときだけ）: 自前のタイマーで gh api の通知を取り、#github に投稿する。
 // gh は起動時に PATH から 1 回解決する（無ければ取得せず、#system に 1 回知らせる）。投稿は既定の人格の Bot
 const ghPath = config.github ? resolveGhPath() : undefined;
+const githubStore = new GithubStore(db, now);
 const githubPoller = createGithubPoller({
   cfg: config,
   gh: ghPath === undefined ? undefined : new GhClient({ ghPath }),
-  store: new GithubStore(db, now),
+  store: githubStore,
   guildSettings,
   gateway,
   notify,
@@ -582,6 +586,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         queue: turnQueue,
         running: () => handler.runningTurns().length,
         serving: () => staticServer?.listening() ?? false,
+        ...(githubPoller === undefined ? {} : { githubStatus: () => githubPoller.status() }),
         guildSettings,
         env: process.env,
       }),
@@ -597,6 +602,10 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         log,
       }),
       ...memoryRoutes({ memories, log }),
+      ...noticeRoutes({ notices: noticeStore, guildSettings, now }),
+      // GitHub の通知（SELF_AGENT_GITHUB が無効なら 404）とナレッジは読むだけ
+      ...githubRoutes({ cfg: config, store: githubStore, status: githubPoller === undefined ? undefined : () => githubPoller.status() }),
+      ...knowledgeRoutes({ knowledge }),
       // セッションの操作は Discord のコマンドと同じ session-ops.ts を通す。チャンネルを作るのは既定の人格の Bot（/new と同じキュー）、
       // /close の確認と /renew の結果は持ち主の Bot で Discord にも投稿する
       ...sessionRoutes({

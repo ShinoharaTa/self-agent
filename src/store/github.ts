@@ -235,6 +235,17 @@ export class GithubStore {
       .map(toNotification);
   }
 
+  /**
+   * 投稿した（posted_at のある。投稿せずに済ませたものも含む）出来事を updated_at の新しい順に limit 件（Web UI の GitHub。docs/plan/web-ui.md §7.2）。
+   * 白は posted_at を書かないので出ない
+   */
+  listPosted(limit: number): GithubNotificationRow[] {
+    return this.db
+      .prepare("SELECT * FROM github_notifications WHERE posted_at IS NOT NULL ORDER BY julianday(updated_at) DESC, id DESC LIMIT ?")
+      .all(Math.max(0, Math.floor(limit)))
+      .map(toNotification);
+  }
+
   /** 投稿したことを記録する。無い・既に投稿済みなら何もせず false */
   markPosted(id: number, channelId: string, messageId: string): boolean {
     const result = this.db
