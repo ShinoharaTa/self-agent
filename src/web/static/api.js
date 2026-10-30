@@ -109,7 +109,7 @@
     notices: null,
     github: null,
     knowledge: null,
-    kbEntries: {},
+    kbEntries: {}, kbRetryFailed: {},
     load: {},
   };
   const loading = {};
@@ -563,8 +563,11 @@
     return promise;
   };
 
-  /** 1 件（本文あり）。読んだもの（読めなかったものも）は持っておき、force のときだけ読み直す（読み直す間は前のものを出す） */
-  store.load.kbEntry = (id, force) => {
+  /**
+   * 1 件（本文あり）。読んだもの（読めなかったものも）は持っておき、force のときだけ読み直す（読み直す間は前のものを出す）。
+   * 一覧の updatedAt（forUpdatedAt）で読み直して失敗したら、その updatedAt では描き直しのたびに読み直さない（store.kbRetryFailed）
+   */
+  store.load.kbEntry = (id, force, forUpdatedAt) => {
     if (!force && store.kbEntries[id] !== undefined) return Promise.resolve(null);
     return once("kb:" + id, async () => {
       try {
@@ -574,6 +577,7 @@
         if (err && err.status === 404) store.kbEntries[id] = "missing";
         else {
           if (typeof store.kbEntries[id] !== "object") store.kbEntries[id] = "failed";
+          if (forUpdatedAt !== undefined) store.kbRetryFailed[id] = forUpdatedAt;
           SA.ui.toast((err && err.toast) || "読み込めませんでした");
         }
       }
