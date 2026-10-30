@@ -213,7 +213,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - `GET /api/memories` → `memories.list()`（有効なもの）。`POST /api/memories/<id>/forget` → `softDelete` → 200 / 404。`/restore` → `restore` → 200 / 404（上限 `MEMORY_MAX_ACTIVE` は確かめない。Discord の [取り消す] と同じ）。トーストの [取り消す] は `/restore`。
 
 ### 7.4 プロジェクト（W7。読むだけ）
-- `src/agent/project-listing.ts`（SDK に依存しない）: `listProjectFiles(projectsDir, slug) → { files: [{ path, size, mtime }], truncated } | undefined`（`verifiedProjectDir` を通らなければ undefined。`lstat` で symlink・ディレクトリは出さず、`node_modules`・`.git` には入らない、深さ 6・500 件まで、`.trash` の中は出す）。`readProjectFile(projectsDir, slug, relPath) → { text } | "not_found" | "too_large" | "binary" | "invalid_path"`（`file-access.ts` と同じく要素に `..`・`/` 始まりは invalid、realpath が dir の中、`O_NOFOLLOW` で開き通常のファイルだけ、256 KB まで、UTF-8 で読めなければ（先頭 8 KB に NUL があれば）binary）。
+- `src/agent/project-listing.ts`（SDK に依存しない）: `listProjectFiles(projectsDir, slug) → { files: [{ path, size, mtime }], truncated } | undefined`（`verifiedProjectDir` を通らなければ undefined。`lstat` で symlink・ディレクトリは出さず、`node_modules` には入らない。ドットで始まる名前（`.trash`・`.git`・`.env` など）は一覧にも読み取りにも出さない。深さ 6・500 件・開くディレクトリ 2,000 まで。読めない（EACCES）ものは飛ばす）。`readProjectFile(projectsDir, slug, relPath) → { text } | "not_found" | "too_large" | "binary" | "invalid_path"`（`file-access.ts` と同じく要素に `..`・`/` 始まりは invalid、realpath が dir の中、`O_NOFOLLOW` で開き通常のファイルだけ、256 KB まで、UTF-8 で読めなければ（先頭 8 KB に NUL があれば）binary）。
 - `GET /api/projects` → `[{ slug, title, channelId, updatedAt, url }]`（`url` は `publicBaseUrl` から。無ければ null）。`/files`・`/file?path=` は上の関数。配信が無効でも一覧は出す（`url` は null）。ページは別オリジン（9443）なので埋め込まずリンク。
 
 ### 7.5 ジョブ（W8。PR-J4 の後）
