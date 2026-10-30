@@ -27,7 +27,7 @@
 
   /**
    * 失敗は 401 なら /login へ、それ以外は「<status>: <error>」のトーストを出して reject する（error.status に HTTP の status（つながらなければ 0）、
-   * error.code に応答の error、error.toast にトーストの文）。opts.quiet ならトーストは出さない（呼び出し側が出すか・文を選ぶ）
+   * error.code に応答の error、error.data に応答の JSON（読めなければ null）、error.toast にトーストの文）。opts.quiet ならトーストは出さない（呼び出し側が出すか・文を選ぶ）
    */
   async function request(method, path, body, opts) {
     const quiet = !!(opts && opts.quiet);
@@ -65,6 +65,7 @@
       const failure = new Error(res.status + ": " + error);
       failure.status = res.status;
       failure.code = data && typeof data.error === "string" ? data.error : null;
+      failure.data = data;
       failure.toast = res.status + ": " + error;
       throw failure;
     }
@@ -88,7 +89,7 @@
   // knowledge: /api/knowledge の結果（{ q, entries, more }。q は検索した語で、空なら新しい順）。
   // kbEntries[id]: /api/knowledge/<id> の entry（404 なら "missing"、それ以外の失敗は "failed"）
   // projects: /api/projects（まだ読んでいなければ null）。projectFiles[slug]: /files の結果（{ files, truncated, missing }。missing は 404）。
-  // projectFile[slug]: 選んだファイルの中身（{ path, text, error }。読んでいる間は text も error も null）
+  // projectFile[slug]: 選んだファイルの中身（{ path, text, error, maxBytes }。読んでいる間は text も error も null。maxBytes は 413 の応答の上限（無ければ null））
   const store = {
     status: null,
     usage: null,
@@ -625,12 +626,17 @@
   store.load.projectFile = (slug, path) => {
     const seq = (projectFileSeq[slug] = (projectFileSeq[slug] || 0) + 1);
     // 画面の描画の中から呼ぶので、ここでは描き直さない（呼んだ描画が「読み込んでいます…」を出す）
-    store.projectFile[slug] = { path, text: null, error: null };
+    store.projectFile[slug] = { path, text: null, error: null, maxBytes: null };
     return SA.api
       .get(projectPath(slug, "/file?path=" + encodeURIComponent(path)), { quiet: true })
       .then(
-        (data) => ({ path, text: data && typeof data.text === "string" ? data.text : "", error: null }),
-        (err) => ({ path, text: null, error: (err && err.code) || "network" }),
+        (data) => ({ path, text: data && typeof data.text === "string" ? data.text : "", error: null, maxBytes: null }),
+        (err) => ({
+          path,
+          text: null,
+          error: (err && err.code) || "network",
+          maxBytes: err && err.data && Number.isSafeInteger(err.data.maxBytes) && err.data.maxBytes > 0 ? err.data.maxBytes : null,
+        }),
       )
       .then((result) => {
         if (seq !== projectFileSeq[slug]) return;
