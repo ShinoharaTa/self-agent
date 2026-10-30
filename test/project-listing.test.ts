@@ -1,11 +1,12 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   listProjectFiles,
   PROJECT_FILE_MAX_BYTES,
+  PROJECT_LIST_MAX_DIRS,
   PROJECT_LIST_MAX_FILES,
   readProjectFile,
 } from "../src/agent/project-listing.ts";
@@ -217,4 +218,64 @@ test("listProjectFiles: ディレクトリを開く前に symlink にすり替�
   };
   const middle = await listProjectFiles(projectsDir, "kakeibo", { beforeOpen: swapMiddle });
   assert.equal(middle?.files.some((f) => f.path.includes("leak.txt")), false);
+});
+
+test("listProjectFiles: 開くディレクトリ（プロジェクトの dir を含む）の数の上限で打ち切って truncated", async (t) => {
+  assert.equal(PROJECT_LIST_MAX_DIRS, 2000);
+  const { projectsDir, dir } = setup(t);
+  rmSync(join(dir, "site"), { recursive: true });
+  rmSync(join(dir, "DESIGN.md"));
+  write(join(dir, "a.txt"), "a");
+  for (const name of ["d1", "d2", "d3"]) write(join(dir, name, "f.txt"), "x");
+  // プロジェクトの dir と d1〜d3 で 4 つ。ちょうど上限なら truncated でない
+  const exact = await listProjectFiles(projectsDir, "kakeibo", { maxDirs: 4 });
+  assert.deepEqual(exact?.files.map((f) => f.path), ["a.txt", "d1/f.txt", "d2/f.txt", "d3/f.txt"]);
+  assert.equal(exact?.truncated, false);
+  // 上限 3 なら d3 は開かずに打ち切る（それより後の名前も出さない）
+  write(join(dir, "z.txt"), "z");
+  const over = await listProjectFiles(projectsDir, "kakeibo", { maxDirs: 3 });
+  assert.deepEqual(over?.files.map((f) => f.path), ["a.txt", "d1/f.txt", "d2/f.txt"]);
+  assert.equal(over?.truncated, true);
+});
+
+/** root で動かすと権限で弾かれないのでテストにならない */
+const asRoot = process.getuid?.() === 0;
+
+test("readProjectFile・listProjectFiles: 権限の無いファイル（chmod 000）は読み取りが not_found、一覧はそのまま", { skip: asRoot }, async (t) => {
+  const { projectsDir, dir } = setup(t);
+  const locked = join(dir, "site", "locked.txt");
+  write(locked, "locked");
+  chmodSync(locked, 0o000);
+  // tempDir の後始末（t.after）より先に戻す
+  try {
+    assert.equal(await readProjectFile(projectsDir, "kakeibo", "site/locked.txt"), "not_found");
+    const listed = await listProjectFiles(projectsDir, "kakeibo");
+    assert.ok(listed?.files.some((f) => f.path === "site/locked.txt"));
+  } finally {
+    chmodSync(locked, 0o644);
+  }
+});
+
+test("readProjectFile・listProjectFiles: 入れないディレクトリ（chmod 400・000）の中は読み取りが not_found、一覧はその項目を飛ばす", { skip: asRoot }, async (t) => {
+  const { projectsDir, dir } = setup(t);
+  write(join(dir, "site", "ro", "a.txt"), "a");
+  write(join(dir, "site", "ro", "inner", "b.txt"), "b");
+  write(join(dir, "site", "none", "c.txt"), "c");
+  chmodSync(join(dir, "site", "ro"), 0o400);
+  chmodSync(join(dir, "site", "none"), 0o000);
+  // tempDir の後始末（t.after）より先に戻す
+  try {
+    assert.equal(await readProjectFile(projectsDir, "kakeibo", "site/ro/a.txt"), "not_found");
+    assert.equal(await readProjectFile(projectsDir, "kakeibo", "site/ro/inner/b.txt"), "not_found");
+    assert.equal(await readProjectFile(projectsDir, "kakeibo", "site/none/c.txt"), "not_found");
+    const listed = await listProjectFiles(projectsDir, "kakeibo");
+    assert.deepEqual(
+      listed?.files.map((f) => f.path),
+      ["DESIGN.md", "site/app.js", "site/index.html", "site/sub/a.txt"],
+    );
+    assert.equal(listed?.truncated, false);
+  } finally {
+    chmodSync(join(dir, "site", "ro"), 0o755);
+    chmodSync(join(dir, "site", "none"), 0o755);
+  }
 });

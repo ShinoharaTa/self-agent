@@ -562,6 +562,8 @@ if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
 const startedAt = now();
 let webServer: WebServer | undefined;
 if (config.web && config.webPort !== undefined && config.webAllowedLogin !== undefined) {
+  // リマインドとプロジェクトの一覧のチャンネルの表示名（同じものを渡す）
+  const webChannelName = webChannelNamer({ cfg: config, guildSettings, topicSessions, resolveChannel });
   webServer = createWebServer({
     host: "127.0.0.1",
     port: config.webPort,
@@ -599,7 +601,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       ...reminderRoutes({
         cfg: config,
         reminders,
-        channelName: webChannelNamer({ cfg: config, guildSettings, topicSessions, resolveChannel }),
+        channelName: webChannelName,
         log,
       }),
       ...memoryRoutes({ memories, log }),
@@ -612,7 +614,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         cfg: config,
         projects,
         projectsDir,
-        channelName: webChannelNamer({ cfg: config, guildSettings, topicSessions, resolveChannel }),
+        channelName: webChannelName,
       }),
       // セッションの操作は Discord のコマンドと同じ session-ops.ts を通す。チャンネルを作るのは既定の人格の Bot（/new と同じキュー）、
       // /close の確認と /renew の結果は持ち主の Bot で Discord にも投稿する

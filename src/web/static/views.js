@@ -510,6 +510,15 @@
     invalid_path: "このファイルは表示できません",
   };
 
+  /** 読めなかったときの文。too_large は応答の上限（maxBytes）があればその大きさで */
+  function projectFileError(current) {
+    if (current.error === "too_large" && current.maxBytes) {
+      const limit = current.maxBytes % 1024 === 0 ? current.maxBytes / 1024 + " KB" : bytes(current.maxBytes);
+      return limit + " を超えるため表示しません";
+    }
+    return PROJECT_FILE_ERRORS[current.error] || "読み込めませんでした";
+  }
+
   function pageUrl(url) {
     return typeof url === "string" && /^https?:\/\//.test(url) ? url : null;
   }
@@ -557,7 +566,7 @@
     let content = null;
     if (sel) {
       const current = shown && shown.path === sel ? shown : null;
-      const text = !current || (current.text === null && current.error === null) ? "読み込んでいます…" : current.error ? PROJECT_FILE_ERRORS[current.error] || "読み込めませんでした" : current.text;
+      const text = !current || (current.text === null && current.error === null) ? "読み込んでいます…" : current.error ? projectFileError(current) : current.text;
       content = section(sel, [el("pre", { class: "code-pre", text })], [el("span", { class: "meta", text: "読むだけ" })]);
     }
     container.replaceChildren(
