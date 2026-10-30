@@ -1,7 +1,13 @@
 // GET /api/projects・/api/projects/<slug>/files・/api/projects/<slug>/file?path=（docs/plan/web-ui.md §7.4）。作ったプロジェクトの一覧と、
 // ファイルの一覧・中身を読むだけ（agent/project-listing.ts）。slug は削除されていないプロジェクトのものだけ。配信が無効でも一覧は出す（url は null）。
 // ページは別のオリジン（静的サーバー）なので画面は埋め込まずリンクにする。log にパス・slug・中身は出さない
-import { listProjectFiles, readProjectFile, type ProjectListingHooks, type ReadProjectFileResult } from "../../agent/project-listing.ts";
+import {
+  listProjectFiles,
+  PROJECT_FILE_MAX_BYTES,
+  readProjectFile,
+  type ProjectListingHooks,
+  type ReadProjectFileResult,
+} from "../../agent/project-listing.ts";
 import type { Config } from "../../config.ts";
 import type { Project, ProjectStore } from "../../store/projects.ts";
 import type { Route, RouteResult } from "../server.ts";
@@ -23,7 +29,8 @@ const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
 const READ_FAILURES: Readonly<Record<Exclude<ReadProjectFileResult, { text: string }>, RouteResult>> = {
   not_found: NOT_FOUND,
   invalid_path: { status: 400, json: { error: "invalid_path" } },
-  too_large: { status: 413, json: { error: "too_large" } },
+  // 画面が上限の大きさを出せるよう maxBytes（バイト）を付ける
+  too_large: { status: 413, json: { error: "too_large", maxBytes: PROJECT_FILE_MAX_BYTES } },
   binary: { status: 415, json: { error: "binary" } },
 };
 

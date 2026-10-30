@@ -2,7 +2,8 @@
 // projects は sandbox の中の Bash が書き換えられ、Web UI はキューの外で読むので、静的サーバー（serve/static-server.ts）と同じく、
 // 判定の後に symlink にすり替えられても外を読まない形で開く（最後の要素は O_NOFOLLOW、FIFO で待たないよう O_NONBLOCK、
 // 開いた fd の実際のパス（/proc/self/fd の readlink）がプロジェクトの中か確かめ、その fd からだけ読む。ディレクトリも同じく fd から一覧する）。
-// ドットで始まる名前（.trash・.git を含む）と node_modules は一覧に出さず、ドットで始まる要素のパスは読まない
+// ドットで始まる名前（.trash・.git を含む）と node_modules は一覧に出さず、ドットで始まる要素のパスは読まない。
+// 権限が無い（EACCES・EPERM）ものは、読み取りは not_found、一覧はその項目（ファイル・ディレクトリ）を飛ばす
 import { constants } from "node:fs";
 import { lstat, open, readdir, readlink, type FileHandle } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
@@ -15,6 +16,8 @@ export const PROJECT_FILE_MAX_BYTES = 256 * 1024;
 export const PROJECT_LIST_MAX_FILES = 500;
 /** 一覧で入る深さ（直下のファイルが 1。これより深いものは出さずに truncated） */
 export const PROJECT_LIST_MAX_DEPTH = 6;
+/** 一覧で開くディレクトリ（プロジェクトの dir を含む）の数の上限。超えたら打ち切って truncated */
+export const PROJECT_LIST_MAX_DIRS = 2000;
 /** テキストかを見る先頭の大きさ（この中に NUL があれば binary） */
 export const PROJECT_FILE_SNIFF_BYTES = 8 * 1024;
 /** 読むパスの文字数の上限 */
@@ -37,10 +40,17 @@ export type ReadProjectFileResult = { text: string } | "not_found" | "too_large"
 export type ProjectListingHooks = {
   /** テスト用: 判定の後、ファイル（一覧ではディレクトリ）を開く直前に呼ぶ（ここでパスをすり替えて、開いた後の確かめが効くかを試す） */
   beforeOpen?: (path: string) => Promise<void> | void;
+  /** テスト用: 一覧で開くディレクトリの数の上限（既定 PROJECT_LIST_MAX_DIRS） */
+  maxDirs?: number;
 };
 
 function hasCode(error: unknown, ...codes: string[]): boolean {
   return error instanceof Error && "code" in error && typeof error.code === "string" && codes.includes(error.code);
+}
+
+/** 権限が無い */
+function denied(error: unknown): boolean {
+  return hasCode(error, "EACCES", "EPERM");
 }
 
 /** 一覧・読み取りで扱わない名前（ドットで始まる。.trash・.git・`.`・`..` を含む） */
@@ -89,8 +99,8 @@ async function openDirAt(expected: string): Promise<FileHandle | undefined> {
 /**
  * プロジェクトのファイルの一覧（通常のファイルだけ）。プロジェクトの dir が verifiedProjectDir を通らない（無い・slug や projects が symlink）・
  * ディレクトリでなければ undefined。symlink・ドットで始まる名前（.trash・.git）・node_modules は出さず、入らない。
- * ディレクトリは開いた fd から一覧する（すり替えられたものには入らない）。名前の順に深さ優先で、PROJECT_LIST_MAX_DEPTH・PROJECT_LIST_MAX_FILES まで。
- * どちらかで出さなかったものがあれば truncated
+ * ディレクトリは開いた fd から一覧する（すり替えられたものには入らない）。名前の順に深さ優先で、PROJECT_LIST_MAX_DEPTH・PROJECT_LIST_MAX_FILES・
+ * PROJECT_LIST_MAX_DIRS まで。どれかで出さなかったものがあれば truncated。権限の無いファイル・ディレクトリは飛ばす
  */
 export async function listProjectFiles(
   projectsDir: string,
@@ -99,17 +109,27 @@ export async function listProjectFiles(
 ): Promise<ProjectFileList | undefined> {
   const root = await projectRoot(projectsDir, slug);
   if (root === undefined) return undefined;
+  const maxDirs = hooks.maxDirs ?? PROJECT_LIST_MAX_DIRS;
   const rootHandle = await openDirAt(root);
   if (rootHandle === undefined) return undefined;
   const files: ProjectFile[] = [];
-  // full: 件数の上限に達した（以後は回らない）。truncated: 上限（件数・深さ）で出さなかったものがある
+  // full: 件数・ディレクトリの数の上限に達した（以後は回らない）。truncated: 上限（件数・深さ・ディレクトリの数）で出さなかったものがある
   let full = false;
   let truncated = false;
+  // 開いた（開こうとした）ディレクトリの数。プロジェクトの dir を含む
+  let openedDirs = 1;
 
   // dir は開いた handle の実際のパス。中の名前は fd のパス（/proc/self/fd/<fd>/<name>）で lstat し、すり替えの影響を受けない
   const visit = async (handle: FileHandle, dir: string, prefix: string, depth: number): Promise<void> => {
     const fdPath = `/proc/self/fd/${handle.fd}`;
-    const entries = (await readdir(fdPath, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    let entries;
+    try {
+      entries = await readdir(fdPath, { withFileTypes: true });
+    } catch (error) {
+      if (denied(error)) return;
+      throw error;
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
       if (full) return;
       if (hidden(entry.name) || entry.isSymbolicLink()) continue;
@@ -120,6 +140,12 @@ export async function listProjectFiles(
           truncated = true;
           continue;
         }
+        if (openedDirs >= maxDirs) {
+          full = true;
+          truncated = true;
+          return;
+        }
+        openedDirs++;
         await hooks.beforeOpen?.(join(dir, entry.name));
         const child = await openDirAt(join(dir, entry.name));
         if (child === undefined) continue;
@@ -135,7 +161,7 @@ export async function listProjectFiles(
       try {
         info = await lstat(`${fdPath}/${entry.name}`);
       } catch (error) {
-        if (hasCode(error, "ENOENT", "ENOTDIR")) continue;
+        if (hasCode(error, "ENOENT", "ENOTDIR") || denied(error)) continue;
         throw error;
       }
       if (!info.isFile()) continue;
@@ -180,7 +206,8 @@ async function readUpTo(handle: FileHandle, limit: number): Promise<Buffer> {
 /**
  * プロジェクトのファイルの中身（UTF-8 のテキスト）。
  * - パスの形が違う（pathSegments）・realpath がプロジェクトの dir の外かドットで始まる要素の下（外や .trash への symlink）なら invalid_path
- * - プロジェクトの dir が verifiedProjectDir を通らない・無い・通常のファイルでない（ディレクトリ・FIFO など）なら not_found
+ * - プロジェクトの dir が verifiedProjectDir を通らない・無い・realpath が解決できない（途中の権限が無いなど）・
+ *   通常のファイルでない（ディレクトリ・FIFO など）・権限が無い（EACCES・EPERM）なら not_found
  * - 最後の要素は O_NOFOLLOW・O_NONBLOCK で開き、開いた fd の実際のパスが中でなければ invalid_path（判定の後のすり替え）
  * - PROJECT_FILE_MAX_BYTES を超えれば too_large、先頭 PROJECT_FILE_SNIFF_BYTES に NUL があるか UTF-8 として読めなければ binary
  */
@@ -195,13 +222,14 @@ export async function readProjectFile(
   const root = await projectRoot(projectsDir, slug);
   if (root === undefined) return "not_found";
   const target = resolveRealPath(join(root, ...segments));
-  if (target === undefined || !insideVisible(target, root)) return "invalid_path";
+  if (target === undefined) return "not_found";
+  if (!insideVisible(target, root)) return "invalid_path";
   await hooks.beforeOpen?.(target);
   let handle: FileHandle;
   try {
     handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
-    if (hasCode(error, "ENOENT", "ENOTDIR")) return "not_found";
+    if (hasCode(error, "ENOENT", "ENOTDIR") || denied(error)) return "not_found";
     if (hasCode(error, "ELOOP")) return "invalid_path";
     throw error;
   }
@@ -215,7 +243,7 @@ export async function readProjectFile(
     if (content.length > PROJECT_FILE_MAX_BYTES) return "too_large";
     if (content.subarray(0, PROJECT_FILE_SNIFF_BYTES).includes(0)) return "binary";
     try {
-      return { text: new TextDecoder("utf-8", { fatal: true }).decode(content) };
+      return { text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content) };
     } catch {
       return "binary";
     }

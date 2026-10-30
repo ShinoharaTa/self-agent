@@ -154,7 +154,7 @@ test("GET /api/projects/<slug>/file?path=: 中身を text で。失敗は 404・
     assert.deepEqual(await get(server, `/api/projects/kakeibo/file?path=${path}`), { status: 400, json: { error: "invalid_path" } }, path);
   }
   assert.deepEqual(await get(server, "/api/projects/kakeibo/file"), { status: 400, json: { error: "invalid_path" } });
-  assert.deepEqual(await get(server, "/api/projects/kakeibo/file?path=big.txt"), { status: 413, json: { error: "too_large" } });
+  assert.deepEqual(await get(server, "/api/projects/kakeibo/file?path=big.txt"), { status: 413, json: { error: "too_large", maxBytes: PROJECT_FILE_MAX_BYTES } });
   assert.deepEqual(await get(server, "/api/projects/kakeibo/file?path=image.png"), { status: 415, json: { error: "binary" } });
   assert.deepEqual(await get(server, "/api/projects/old/file?path=index.html"), { status: 404, json: { error: "not_found" } });
   assert.deepEqual(await get(server, "/api/projects/nodir/file?path=index.html"), { status: 404, json: { error: "not_found" } });
