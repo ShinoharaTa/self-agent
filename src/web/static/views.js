@@ -495,7 +495,7 @@
       scroll([
         group("red", "自分宛て"),
         group("yellow", "自分のリポジトリの新しい Issue / PR"),
-        el("p", { class: "meta", text: "#github に出したものと同じです。[対応]（Claude Code のセッションに渡す）は段 2 です。" }),
+        el("p", { class: "meta", text: "#github に出したもの（「ほか n 件」にまとめたものを含む）です。[対応]（Claude Code のセッションに渡す）は段 2 です。" }),
       ]),
     );
   }
@@ -567,7 +567,9 @@
     if (entry === "missing") return empty(null, "この項目はもうありません");
     if (entry === "failed") return empty(null, "読み込めませんでした");
     // 一覧の方が新しければ読み直す（読み直す間は前の中身を出す）
-    if (typeof item.updatedAt === "string" && item.updatedAt > entry.updatedAt) store.load.kbEntry(item.id, true);
+    if (typeof item.updatedAt === "string" && item.updatedAt > entry.updatedAt && store.kbRetryFailed[item.id] !== item.updatedAt) {
+      store.load.kbEntry(item.id, true, item.updatedAt);
+    }
     const url = typeof entry.url === "string" && /^https?:\/\//.test(entry.url) ? entry.url : null;
     return el("div", { class: "ed-page" }, [
       el("h2", { text: entry.title }),

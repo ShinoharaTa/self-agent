@@ -545,8 +545,14 @@ test("再起動の前から続いている失敗（DB の error_kind）は #syst
   await baseline(env);
   env.store.savePollState({ errorKind: "auth", errorSince: new Date(NOW.getTime() - 60 * 60 * 1000).toISOString() });
   const restarted = new GithubPoller(env.deps);
-  env.gh.notifications = () => ({ kind: "auth", status: 401 });
+  // 最初の取得の間も、Web UI の status には再起動の前から続いている失敗が出る
+  let duringFetch: string | null = "unset";
+  env.gh.notifications = () => {
+    duringFetch = restarted.status().failure;
+    return { kind: "auth", status: 401 };
+  };
   await restarted.tick();
+  assert.equal(duringFetch, "auth");
   assert.deepEqual(env.systemPosts(), []);
 
   env.gh.notifications = () => notModified();

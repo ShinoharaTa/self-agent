@@ -486,6 +486,8 @@ export class GithubPoller {
     this.restored = true;
     const kind = state.errorKind;
     if (kind === null || !NOTICE_KINDS.has(kind)) return;
+    // Web UI の status にも、再起動の前から続いている失敗を出す（次の取得の結果で置き換わる）
+    this.failure = kind as GithubFailure["kind"];
     if (kind === "network") {
       const since = state.errorSince === null ? Number.NaN : Date.parse(state.errorSince);
       if (!(now.getTime() - since >= (GITHUB_NETWORK_NOTICE_AFTER - 1) * interval)) return;
