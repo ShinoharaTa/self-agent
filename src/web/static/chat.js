@@ -443,6 +443,13 @@
   const touchQuery = window.matchMedia ? window.matchMedia("(pointer: coarse) and (hover: none)") : null;
   /** 画面のキーボードが主の端末か（Shift が無いので Enter は改行にする） */
   const touchPrimary = () => Boolean(touchQuery && touchQuery.matches);
+  const placeholderOf = (title) => title + (touchPrimary() ? " に送る（改行は Enter・送るのはボタン）" : " に送る（Enter で送信・Shift+Enter で改行）");
+  // 外付けのキーボード・トラックパッドの付け外しで判定が変わったら、出ている入力欄の案内を合わせる
+  if (touchQuery && touchQuery.addEventListener) {
+    touchQuery.addEventListener("change", () => {
+      for (const ta of document.querySelectorAll(".composer-input")) ta.placeholder = placeholderOf(ta.dataset.title || "会話");
+    });
+  }
   function composer(ch, channelId) {
     const title = ch ? channelTitle(ch) : "会話";
     const ta = el("textarea", {
@@ -450,7 +457,9 @@
       rows: "2",
       maxlength: "4000",
       "aria-label": title + " に送る",
-      placeholder: title + (touchPrimary() ? " に送る（改行は Enter・送るのはボタン）" : " に送る（Enter で送信・Shift+Enter で改行）"),
+      enterkeyhint: "enter",
+      "data-title": title,
+      placeholder: placeholderOf(title),
     });
     ta.value = SA.app.draft(channelId);
     const counter = el("span", { class: "counter", "aria-live": "polite" });
@@ -508,7 +517,7 @@
     });
     ta.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
-      const send = event.ctrlKey || event.metaKey || (!event.shiftKey && !event.altKey && !touchPrimary());
+      const send = event.ctrlKey || event.metaKey || (!event.shiftKey && !touchPrimary());
       if (send) {
         event.preventDefault();
         submit();

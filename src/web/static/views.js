@@ -772,6 +772,8 @@
 
   // ===== 設定（読むだけ + この画面の表示） =====
   const KEYS = [
+    ["Enter / Shift+Enter", "送る / 改行（タッチの端末では Enter で改行）"],
+    ["Ctrl+Enter / ⌘+Enter", "送る"],
     ["Ctrl+K / Ctrl+P", "移動（画面）"],
     ["Ctrl+Shift+P", "コマンド"],
     ["Ctrl+B", "サイドバーの表示"],
