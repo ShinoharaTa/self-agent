@@ -438,7 +438,11 @@
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
   }
 
-  // ===== 入力欄（Enter で送る・Shift+Enter で改行・IME の変換中の Enter は送らない） =====
+  // ===== 入力欄（Enter で送る・Shift+Enter で改行。タッチが主の端末では Enter は改行で、送るのはボタン。
+  // どちらでも Ctrl+Enter・⌘+Enter で送る。IME の変換中の Enter は送らない） =====
+  const touchQuery = window.matchMedia ? window.matchMedia("(pointer: coarse) and (hover: none)") : null;
+  /** 画面のキーボードが主の端末か（Shift が無いので Enter は改行にする） */
+  const touchPrimary = () => Boolean(touchQuery && touchQuery.matches);
   function composer(ch, channelId) {
     const title = ch ? channelTitle(ch) : "会話";
     const ta = el("textarea", {
@@ -446,7 +450,7 @@
       rows: "2",
       maxlength: "4000",
       "aria-label": title + " に送る",
-      placeholder: title + " に送る（Enter で送信・Shift+Enter で改行）",
+      placeholder: title + (touchPrimary() ? " に送る（改行は Enter・送るのはボタン）" : " に送る（Enter で送信・Shift+Enter で改行）"),
     });
     ta.value = SA.app.draft(channelId);
     const counter = el("span", { class: "counter", "aria-live": "polite" });
@@ -503,7 +507,9 @@
       submit();
     });
     ta.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+      const send = event.ctrlKey || event.metaKey || (!event.shiftKey && !event.altKey && !touchPrimary());
+      if (send) {
         event.preventDefault();
         submit();
       }
