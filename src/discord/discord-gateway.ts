@@ -322,7 +322,11 @@ export class DiscordGateway implements Gateway {
 
   async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
     const channel = await this.sendableChannel(channelId);
-    const sent = await channel.send(toPayload(message));
+    const payload = toPayload(message);
+    // 返信先が消えていても投稿する
+    const sent = await channel.send(
+      message.replyToId === undefined ? payload : { ...payload, reply: { messageReference: message.replyToId, failIfNotExists: false } },
+    );
     return sent.id;
   }
 

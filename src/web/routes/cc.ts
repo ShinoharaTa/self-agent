@@ -1,7 +1,7 @@
 // GET /api/cc/sessions・/api/cc/sessions/<id>（docs/plan/claude-code-sessions.md §5.1。CC2）、POST /api/cc/sessions/<id>/send・
 // /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）、GET /api/cc/projects・POST /api/cc/sessions（CC4。起動は cc/starter.ts）、
 // GET /api/cc/permissions・POST /api/cc/permissions/<id>/allow|always|deny（CC5a・CC5b。保留は cc/permission-hold.ts、常に許可の線引きは
-// cc/permissions.ts）と /api/status の cc。
+// cc/permissions.ts）、POST /api/cc/sessions/<id>/unfollow（CC8。返事の追いかけをやめる。Discord の [追いかけをやめる] と同じ）と /api/status の cc。
 // この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順）と、1 つのセッションの画面の写し
 // （tmux の capture-pane を stripAnsi して最後の CC_SCREEN_LINES 行。tmux の外は screen: null）。SELF_AGENT_CC が無効なら 404。
 // GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
@@ -52,6 +52,8 @@ export type CcRouteDeps = {
     /** SELF_AGENT_CC_PERMISSION_HOLD_SEC（期限の表示） */
     holdSec: number;
   };
+  /** 返事の追いかけ（CC8）。無ければ一覧の follow は null で、/unfollow は 404 */
+  follows?: Pick<CcSessionStore, "listFollowing" | "stopFollow">;
   /** 既定は new Date */
   now?: () => Date;
 };
@@ -124,8 +126,10 @@ const START_STATUS: Readonly<Record<CcStartFailure, number>> = {
  */
 function pendingJson(
   row: CcSendRow | undefined,
-): { id: number; state: string; lastPaneState: string | null; updatedAt: string } | null {
-  return row === undefined ? null : { id: row.id, state: row.state, lastPaneState: row.lastPaneState, updatedAt: row.updatedAt };
+): { id: number; state: string; lastPaneState: string | null; replyState: string | null; updatedAt: string } | null {
+  return row === undefined
+    ? null
+    : { id: row.id, state: row.state, lastPaneState: row.lastPaneState, replyState: row.replyState, updatedAt: row.updatedAt };
 }
 
 /** 常に許可のルールの意味（Bash のルールの添え書きを「、」でつなぐ。無ければ null） */
@@ -138,7 +142,7 @@ function alwaysNote(row: CcPermissionRow): string | null {
 const ANSWER_STATUS: Readonly<Record<string, number>> = { not_found: 404, stale: 409 };
 
 export function ccRoutes(deps: CcRouteDeps): Route[] {
-  const { registry, panes, tmux, workspaceDir, home, sender, sends, starter, permissions } = deps;
+  const { registry, panes, tmux, workspaceDir, home, sender, sends, starter, permissions, follows } = deps;
   const now = deps.now ?? (() => new Date());
 
   const latestSends = (): Map<string, CcSendRow> => {
@@ -169,7 +173,17 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     resolvedAt: row.resolvedAt,
   });
 
-  const sessionJson = (view: CcSessionView, pane: TmuxPane | undefined, send: CcSendRow | undefined, permission: CcPermissionRow | undefined) => ({
+  // 追いかけ中のセッション → 始めた時刻
+  const following = (): Map<string, string | null> =>
+    new Map((follows === undefined ? [] : follows.listFollowing()).map((row) => [row.sessionId, row.followSince]));
+
+  const sessionJson = (
+    view: CcSessionView,
+    pane: TmuxPane | undefined,
+    send: CcSendRow | undefined,
+    permission: CcPermissionRow | undefined,
+    follow: Map<string, string | null>,
+  ) => ({
     sessionId: view.sessionId,
     name: view.name ?? null,
     cwdLabel: cwdLabel(view.cwd, workspaceDir, home),
@@ -191,6 +205,8 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     pending: pendingJson(send),
     // そのセッションの最新の許可の要求（保留中か、終わってから CC_PERMISSION_RECENT_MS の間。CC5a）
     permission: permission === undefined ? null : permissionJson(permission),
+    // 返事を Discord に戻しているか（CC8。追いかけ中なら始めた時刻）
+    follow: follow.has(view.sessionId) ? { since: follow.get(view.sessionId) ?? null } : null,
   });
 
   // 入れ子の claude を見分けるため、一覧のすべての pid を渡す
@@ -210,6 +226,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         const lookup = await lookupPanes(snapshot.sessions);
         const latest = latestSends();
         const latestPermission = latestPermissions();
+        const follow = following();
         return {
           status: 200,
           json: {
@@ -218,7 +235,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
             // 最後に読めた時刻（画面の「n 秒前」。まだなら null）
             fetchedAt: iso(snapshot.fetchedAt),
             sessions: snapshot.sessions.map((view) =>
-              sessionJson(view, paneOf(lookup, view), latest.get(view.sessionId), latestPermission.get(view.sessionId)),
+              sessionJson(view, paneOf(lookup, view), latest.get(view.sessionId), latestPermission.get(view.sessionId), follow),
             ),
           },
         };
@@ -241,7 +258,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
           const captured = await tmux.capturePane(pane.paneId, { historyLines: CC_SCREEN_LINES });
           if (captured.ok) screen = screenText(captured.value);
         }
-        const json = sessionJson(view, pane, latestSends().get(view.sessionId), latestPermissions().get(view.sessionId));
+        const json = sessionJson(view, pane, latestSends().get(view.sessionId), latestPermissions().get(view.sessionId), following());
         return { status: 200, json: { ...json, screen } };
       },
     },
@@ -258,6 +275,19 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         const result = await sender.submit({ sessionId: id, text: checked.text, origin: "web" });
         if (result.ok) return { status: 202, json: { sendId: result.send.id, state: result.send.state } };
         return { status: SUBMIT_STATUS[result.reason] ?? 503, json: { error: result.reason === "stopped" ? "stopping" : result.reason } };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cc\/sessions\/([^/]+)\/unfollow$/,
+      handle: async ({ params }) => {
+        if (registry === undefined || follows === undefined) return NOT_FOUND;
+        registry.touch();
+        const id = params[0] ?? "";
+        if (!isUuid(id)) return NOT_FOUND;
+        // 追いかけ中でなければ（既にやめた・始めていない）古い操作
+        if (!follows.stopFollow(id)) return { status: 409, json: { error: "stale" } };
+        return { status: 200, json: { follow: null } };
       },
     },
     {

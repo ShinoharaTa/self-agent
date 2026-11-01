@@ -243,7 +243,7 @@ export type CcConfirmRuntime = {
 
 export type CcConfirmDeps = {
   cfg: Pick<Config, "workspaceDir">;
-  ccSends: Pick<CcSendStore, "get" | "transition">;
+  ccSends: Pick<CcSendStore, "get" | "transition" | "setMessageId">;
   ccStarts: Pick<CcStartStore, "get" | "transition">;
   ccSessions: Pick<CcSessionStore, "get" | "setChannel">;
   /** 送信・起動（main では後で作るので関数で渡す。SELF_AGENT_CC が無効なら undefined） */
@@ -391,6 +391,8 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       return;
     }
     tmuxSession = result.tmuxSession;
+    // 最初の指示の返事（CC8）は、この確認の投稿への返信にする
+    if (result.sendId !== undefined && row.messageId !== null) ccSends.setMessageId(result.sendId, row.messageId);
     ccStarts.transition(id, ["started"], "started", {
       tmuxSession: result.tmuxSession,
       paneId: result.paneId,

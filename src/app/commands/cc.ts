@@ -1,10 +1,13 @@
 // Claude Code のボタン（名前空間 `cc:`。docs/plan/claude-code-sessions.md §5.2）。custom_id は `cc:<種類>:<操作>:<id>` で、2 つ目の語で振り分ける。
 // 許可の要求の `cc:perm:allow|always|deny:<id>`（CC5c）と、SDK のツール cc_send・cc_start の確認の `cc:send:<id>`・`cc:start:<id>`・
-// `cc:keep:send|start:<id>`（CC7。処理は commands/cc-confirm.ts）。
+// `cc:keep:send|start:<id>`（CC7。処理は commands/cc-confirm.ts）、返事の投稿の [追いかけをやめる] の `cc:unfollow:<cc_replies の id>`（CC8。cc/replies.ts）。
 // 許可の要求は Web と同じ permission-hold.ts の answer を通す（先に押した方が勝つ）。決めたら #system の 1 通を応答で書き換えてボタンを外し
 // （応答に失敗したら、その 1 通を gateway で書き換えて代える）、古ければ（Web・端末・RC で先に答えられた・時間切れ・停止・SELF_AGENT_CC が無効）
 // 本人にだけ「この操作は古くなっています」
 import type { CcAnswerResult, CcPermissionDecision } from "../../cc/permission-hold.ts";
+import { unfollowByReply, unfollowedText } from "../../cc/replies.ts";
+import type { CcReplyStore } from "../../store/cc-replies.ts";
+import type { CcSessionStore } from "../../store/cc-sessions.ts";
 import type { Gateway, OutgoingMessage } from "../../discord/gateway.ts";
 import type { ComponentHandler } from "../interactions.ts";
 import { type CcConfirmButtons, type CcConfirmDeps, createCcConfirmButtons } from "./cc-confirm.ts";
@@ -27,6 +30,8 @@ export type CcPermissionButtons = {
 export type CcComponentDeps = {
   /** SELF_AGENT_CC が有効なときだけ（無ければ押されても古い扱い）。main で後から作るので関数で渡す */
   ccPermissionButtons?: () => CcPermissionButtons | undefined;
+  /** 返事の追いかけ（[追いかけをやめる]。CC8）。DB だけで動くので SELF_AGENT_CC が無効でも渡す。無ければ cc:unfollow は例外 */
+  ccFollow?: { replies: Pick<CcReplyStore, "get">; sessions: Pick<CcSessionStore, "get" | "stopFollow"> };
   /** 応答に失敗したときの書き換え（既定の人格の Bot。#system の 1 通を出した Bot） */
   gateway: Pick<Gateway, "editMessage">;
   log: (message: string) => void;
@@ -67,6 +72,20 @@ export function createCcComponent(deps: CcComponentDeps): ComponentHandler {
         }
         if (kind === "keep") await confirm.keep(action as "send" | "start", id, responder);
         else await confirm[kind](id, responder);
+        return;
+      }
+      // 返事の追いかけ（CC8）: cc:unfollow:<cc_replies の id>。本文は残して一言を足し、ボタンを外す
+      if (kind === "unfollow") {
+        const id = parts.length === 3 ? parseId(parts[2]) : undefined;
+        if (interaction.kind !== "button" || id === undefined || deps.ccFollow === undefined) {
+          throw new Error(`cc:unfollow の不明な操作です（${interaction.kind}）`);
+        }
+        if (unfollowByReply(deps.ccFollow, id) !== "stopped") {
+          await responder.reply({ text: STALE_TURN_REPLY, ephemeral: true });
+          return;
+        }
+        deps.log(`Claude Code: [追いかけをやめる] で追いかけをやめました（返事 #${id}）`);
+        await responder.update({ text: unfollowedText(interaction.messageText), components: [], suppressEmbeds: true });
         return;
       }
       if (kind !== "perm") throw new Error(`cc の不明な操作です（${interaction.kind} ${kind ?? ""}）`);

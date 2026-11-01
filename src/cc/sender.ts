@@ -100,6 +100,11 @@ export type CcSenderDeps = {
   sessions: Pick<CcSessionStore, "multilineOk" | "setMultilineOk">;
   /** #system への知らせ（無ければ log だけ） */
   notify?: SystemNotifier;
+  /**
+   * 貼っている途中（delivering）から終わりの状態（delivered・unconfirmed・failed）に移した後に、移した後の行を渡す（返事を Discord に戻す
+   * cc/replies.ts の追いかけ。CC8）。投げても送信の処理は止めない
+   */
+  onFinished?: (row: CcSendRow) => void;
   now: () => Date;
   /** 既定は timers/promises の setTimeout */
   sleep?: (ms: number) => Promise<void>;
@@ -366,6 +371,14 @@ export class CcSender {
     if (!this.deps.sends.transition(id, ["delivering"], state, { lastPaneState: reason })) return;
     if (state === "failed") this.deps.log(`Claude Code: 送れませんでした（#${id}、${reason}）`);
     else this.deps.log(`Claude Code: 送りました（#${id}、${state}）`);
+    const { onFinished } = this.deps;
+    if (onFinished === undefined) return;
+    try {
+      const row = this.deps.sends.get(id);
+      if (row !== undefined) onFinished(row);
+    } catch (error) {
+      this.deps.log(`Claude Code: 送信の後の処理に失敗しました（#${id}、${errorKind(error)}）`);
+    }
   }
 
   /** 貼る前に止まった（何も貼っていない）ので queued に戻す */
