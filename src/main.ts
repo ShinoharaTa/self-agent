@@ -634,6 +634,8 @@ if (
     token: ccHookToken,
     receiver: registry,
     permissions: permissionHold,
+    // 常に許可のファイルのルールは、要求の cwd が属する workspace の直下のプロジェクトの中だけ
+    ruleContext: { workspaceDir: config.workspaceDir, home: homedir() },
     now,
     log,
   });

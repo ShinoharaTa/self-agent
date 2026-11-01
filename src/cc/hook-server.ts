@@ -8,13 +8,11 @@
 // log は種類だけ（ヘッダの値・トークン・本文・セッションの ID は出さない）
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { CC_PROMPT_MAX_CHARS, type CcHookEventName, headChars } from "../store/cc-sessions.ts";
 import { safeEqual } from "../web/auth.ts";
 import { isLoopback, parseJsonObject, readBody } from "../web/http-body.ts";
 import { isUuid } from "./agents.ts";
-import { alwaysRulesOf, type CcRule } from "./permissions.ts";
+import { alwaysRulesOf, type CcRule, type CcRuleContext } from "./permissions.ts";
 
 /** 受ける唯一のパス */
 export const CC_HOOK_PATH = "/hook";
@@ -127,12 +125,12 @@ export function unwrapPastedContent(prompt: string): string {
 
 /**
  * 本文から事象を読む（純関数）。hook_event_name が固定の集合に無い・session_id が UUID でなければ undefined。
- * workspaceDir は常に許可のファイルのルールの線引きに使う ~/workspace の場所
+ * rules は常に許可のファイルのルールの線引きに使う場所（SELF_AGENT_WORKSPACE_DIR とホーム。無ければファイルのルールは常に許可の候補にしない）
  */
 export function parseHookEvent(
   body: Record<string, unknown>,
   receivedAt: Date,
-  opts: { workspaceDir?: string } = {},
+  rules: Omit<CcRuleContext, "cwd"> = {},
 ): CcHookEvent | undefined {
   const event = EVENT_NAMES.find((name) => name === body.hook_event_name);
   if (event === undefined || !isUuid(body.session_id)) return undefined;
@@ -149,10 +147,7 @@ export function parseHookEvent(
     const cwd = typeof body.cwd === "string" ? body.cwd : undefined;
     parsed.permission = {
       ...summarizePermission(body.tool_name, body.tool_input, cwd),
-      alwaysRules: alwaysRulesOf(body.tool_name, body.permission_suggestions, {
-        cwd,
-        workspaceDir: opts.workspaceDir ?? join(homedir(), "workspace"),
-      }),
+      alwaysRules: alwaysRulesOf(body.tool_name, body.permission_suggestions, { ...rules, cwd }),
     };
   }
   return parsed;
@@ -167,6 +162,8 @@ export type CcHookServerOptions = {
   receiver: CcHookReceiver;
   /** 許可の要求の保留。無ければ PermissionRequest も即 200・空 */
   permissions?: CcPermissionHandler;
+  /** 常に許可のファイルのルールの線引きに使う場所（SELF_AGENT_WORKSPACE_DIR とホーム）。無ければファイルのルールは候補にしない */
+  ruleContext?: Omit<CcRuleContext, "cwd">;
   now: () => Date;
   log: (message: string) => void;
 };
@@ -193,9 +190,9 @@ function errorKind(error: unknown): string {
 
 /** 受け口の要求の処理（テストでは接続元を差し替えて呼ぶ） */
 export function createHookRequestListener(
-  options: Pick<CcHookServerOptions, "token" | "receiver" | "permissions" | "now" | "log">,
+  options: Pick<CcHookServerOptions, "token" | "receiver" | "permissions" | "ruleContext" | "now" | "log">,
 ): RequestListener {
-  const { token, receiver, permissions, now, log } = options;
+  const { token, receiver, permissions, ruleContext, now, log } = options;
   /** トークンが違う要求を最後に log に出した時刻 */
   let tokenLoggedAt: number | undefined;
 
@@ -239,7 +236,7 @@ export function createHookRequestListener(
     }
     let event: CcHookEvent | undefined;
     try {
-      event = parseHookEvent(body, now());
+      event = parseHookEvent(body, now(), ruleContext);
       if (event !== undefined) receiver.receive(event);
     } catch (error) {
       // 処理の失敗でも Claude Code は止めない（200・空）

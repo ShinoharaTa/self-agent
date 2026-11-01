@@ -35,7 +35,7 @@ function send(
   });
 }
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, opts: { ruleContext?: { workspaceDir?: string; home?: string } } = {}) {
   const received: CcHookEvent[] = [];
   const logs: string[] = [];
   const clock = { now: Date.parse("2026-11-01T00:00:00Z") };
@@ -45,6 +45,7 @@ async function setup(t: TestContext) {
     port: 0,
     token: TOKEN,
     receiver,
+    ...(opts.ruleContext === undefined ? {} : { ruleContext: opts.ruleContext }),
     now: () => new Date(clock.now),
     log: (line) => logs.push(line),
   });
@@ -255,4 +256,31 @@ test("unwrapPastedContent: pasted_content の開きと閉じのタグ（属性�
   assert.equal(unwrapPastedContent('前 <pasted_content id="1" lines="2">a</pasted_content> 後 <pasted_content id="2">b</pasted_content>'), "前 a 後 b");
   assert.equal(unwrapPastedContent("<pasted_contents>そのまま</other>"), "<pasted_contents>そのまま</other>");
   assert.equal(unwrapPastedContent("タグなし"), "タグなし");
+});
+
+test("hook の受け口: 常に許可のファイルのルールは options の ruleContext（workspace・ホーム）で線引きし、無ければ候補にしない", async (t) => {
+  const body = {
+    hook_event_name: "PermissionRequest",
+    session_id: S1,
+    cwd: "/home/owner/workspace/app",
+    tool_name: "Edit",
+    tool_input: { file_path: "/home/owner/workspace/app/src/x.ts" },
+    permission_suggestions: [
+      {
+        type: "addRules",
+        rules: [
+          { toolName: "Edit", ruleContent: "src/**" },
+          { toolName: "Edit", ruleContent: "~/workspace/**" },
+        ],
+        behavior: "allow",
+        destination: "localSettings",
+      },
+    ],
+  };
+  const withContext = await setup(t, { ruleContext: { workspaceDir: "/home/owner/workspace", home: "/home/owner" } });
+  await withContext.post(body);
+  assert.deepEqual(withContext.received[0]!.permission?.alwaysRules, [{ toolName: "Edit", ruleContent: "src/**" }]);
+  const without = await setup(t);
+  await without.post(body);
+  assert.equal(without.received[0]!.permission?.alwaysRules, null);
 });
