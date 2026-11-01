@@ -25,7 +25,7 @@ import { createHandler } from "./app/handler.ts";
 import { InboxRotator } from "./app/inbox-rotate.ts";
 import type { CcPermissionButtons } from "./app/commands/cc.ts";
 import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
-import { CcConfirmExpirer, type CcConfirmRuntime } from "./app/commands/cc-confirm.ts";
+import { ccRcUrl, CcConfirmExpirer, type CcConfirmRuntime } from "./app/commands/cc-confirm.ts";
 import { createCcTools } from "./app/cc-tools.ts";
 import type { CcToolDeps } from "./agent/tools.ts";
 import { createNotifyMemoryChange } from "./app/commands/memory-undo.ts";
@@ -48,6 +48,7 @@ import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
 import { CcPermissionHold } from "./cc/permission-hold.ts";
 import { CcRegistry } from "./cc/registry.ts";
+import { CcReplier } from "./cc/replies.ts";
 import { CcSender } from "./cc/sender.ts";
 import { CcStarter, procMemAvailable } from "./cc/starter.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
@@ -70,6 +71,7 @@ import { GuestGuildStore } from "./store/guest-guilds.ts";
 import { GuestInviteStore } from "./store/guest-invites.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { CC_PERMISSION_KEEP_DAYS, type CcPermissionRow, CcPermissionStore } from "./store/cc-permissions.ts";
+import { CC_REPLY_KEEP_DAYS, CcReplyStore } from "./store/cc-replies.ts";
 import { CC_SEND_KEEP_DAYS, CcSendStore } from "./store/cc-sends.ts";
 import { CC_SESSION_KEEP_DAYS, CcSessionStore } from "./store/cc-sessions.ts";
 import { CC_START_KEEP_DAYS, CcStartStore } from "./store/cc-starts.ts";
@@ -91,7 +93,7 @@ import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { UsageStore } from "./store/usage.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
 import { ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
-import { channelRoutes, webChannelNamer } from "./web/routes/channels.ts";
+import { channelRoutes, webChannelLookup, webChannelNamer } from "./web/routes/channels.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
 import { githubRoutes } from "./web/routes/github.ts";
 import { knowledgeRoutes } from "./web/routes/knowledge.ts";
@@ -203,6 +205,8 @@ const ccPermissionStore = new CcPermissionStore(db, now);
 const githubStore = new GithubStore(db, now);
 // cc_start の起動の確認（CC7）
 const ccStarts = new CcStartStore(db, now);
+// Claude Code の返事を Discord に戻した記録（CC8。本文は持たない）
+const ccReplies = new CcReplyStore(db, now);
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -466,6 +470,8 @@ const handleInteraction = createInteractionHandler({
     ccSends,
     ccStarts,
     ccSessions,
+    // 返事の投稿の [追いかけをやめる]（cc:unfollow。DB だけで動く）
+    ccFollow: { replies: ccReplies, sessions: ccSessions },
     ccRuntime: () => ccRuntime,
     ccPosts: ownerPosts,
     // #jobs のボタンとモーダル（SELF_AGENT_JOBS=1 のときだけ）
@@ -554,6 +560,8 @@ const scheduler = new Scheduler({
     if (deletedPermissions > 0) log(`古い Claude Code の許可の要求の記録 ${deletedPermissions} 件を消しました`);
     const deletedStarts = ccStarts.prune(new Date(now().getTime() - CC_START_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deletedStarts > 0) log(`古い Claude Code の起動の確認の記録 ${deletedStarts} 件を消しました`);
+    const deletedReplies = ccReplies.prune(new Date(now().getTime() - CC_REPLY_KEEP_DAYS * 24 * 60 * 60 * 1000));
+    if (deletedReplies > 0) log(`古い Claude Code の返事の記録 ${deletedReplies} 件を消しました`);
   },
   // 待ちに移した知らせの行（Web UI が有効なときだけ）
   ...history,
@@ -604,6 +612,8 @@ let ccSender: CcSender | undefined;
 let ccStarter: CcStarter | undefined;
 let ccPermissions: CcPermissionHold | undefined;
 let ccHookServer: CcHookServer | undefined;
+// 返事を Discord に戻す（CC8。Discord から頼んだ送信が届いたセッションの Stop を、頼んだチャンネルに出す）
+let ccReplier: CcReplier | undefined;
 // 画面の写し（Web）と、セッション → ペインの引き当て（pid の祖先と pane_pid。§3.1）
 let ccTmux: Tmux | undefined;
 let ccPanes: CcPaneResolver | undefined;
@@ -637,12 +647,18 @@ if (
     dirs: new ClaudeDirs(),
     store: ccSessions,
     now,
-    // 送信の待ち行列が空でない・起動したセッションをまだ一覧で見つけていない間は、見ていなくても設定の周期で一覧を読む
-    busy: () => ccSends.countActive() > 0 || ccStarter?.busy() === true,
+    // 送信の待ち行列・返事待ちが空でない・起動したセッションをまだ一覧で見つけていない間は、見ていなくても設定の周期で一覧を読む
+    busy: () => ccSends.countActive() > 0 || ccSends.countReplyWaiting() > 0 || ccStarter?.busy() === true,
     // 許可の要求を保留している間は 5 秒ごとに読み、status で「他で答えられた」を見る
     permissions: permissionHold,
-    // self-agent が起動したセッションの終了を #system に出す
-    ended: (session) => ccNotifier?.ended(session),
+    // 一覧から消えたセッション: 返事を追いかけていれば、追いかけのチャンネルに「終わりました」を出して止める（#system の終了の知らせは出さない）。
+    // 追いかけていなければ、self-agent が起動したセッションの終了を #system に出す
+    ended: (session) => {
+      if (ccReplier?.ended(session) === true) return;
+      ccNotifier?.ended(session);
+    },
+    // 採った hook の事象（Stop）を返事の追いかけに渡す
+    onEvent: (event) => ccReplier?.onEvent(event),
     log,
   });
   knownSessions = registry;
@@ -686,7 +702,37 @@ if (
   ccTmux = tmux;
   const panes = new CcPaneResolver({ tmux, parentOf: procParentPid() });
   ccPanes = panes;
-  ccSender = new CcSender({ cfg: config, registry, panes, tmux, sends: ccSends, sessions: ccSessions, notify, now, log });
+  ccSender = new CcSender({
+    cfg: config,
+    registry,
+    panes,
+    tmux,
+    sends: ccSends,
+    sessions: ccSessions,
+    notify,
+    // Discord から頼んだ送信が届いたら返事の追いかけを始め、貼っている途中に来た Stop を扱う
+    onFinished: (row) => ccReplier?.onSendFinished(row),
+    now,
+    log,
+  });
+  // 返事はそのチャンネルの持ち主の Bot で出し、Web UI が有効なら会話に notice を書く（チャンネルのサーバーは Web で開けるチャンネルと同じ引き方）
+  const channelOf = webChannelLookup({ cfg: config, resolveChannel, guildSettings, topicSessions });
+  ccReplier = new CcReplier({
+    cfg: config,
+    sessions: ccSessions,
+    sends: ccSends,
+    replies: ccReplies,
+    posts: ownerPosts,
+    rcUrl: (sessionId) => {
+      const bridge = registry.snapshot().sessions.find((session) => session.sessionId === sessionId)?.bridgeSessionId;
+      return bridge === undefined ? undefined : ccRcUrl(bridge);
+    },
+    ...history,
+    guildOf: (channelId) => channelOf(channelId)?.guildId,
+    personaOf: (channelId) => personas.ownerOf(channelId),
+    now,
+    log,
+  });
   // 受け付けを始める前に、再起動で delivering のまま残った送信を unconfirmed に、待ちの上限を過ぎたものを gave_up にする
   ccSender.recover();
   ccStarter = new CcStarter({
@@ -880,6 +926,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         ...(ccPermissions === undefined
           ? {}
           : { permissions: { hold: ccPermissions, store: ccPermissionStore, holdSec: config.ccPermissionHoldSec } }),
+        // 返事の追いかけ（一覧の follow・/unfollow）
+        ...(ccRegistry === undefined ? {} : { follows: ccSessions }),
         now,
       }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）
@@ -953,6 +1001,7 @@ const lifecycle = createShutdown(
     ...(ccNotifier === undefined ? {} : { ccNotifier }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     ccConfirmExpirer,
+    ...(ccReplier === undefined ? {} : { ccReplier }),
     closeDb: () => db.close(),
     log,
   },
@@ -1027,4 +1076,5 @@ ccStarter?.start();
 ccNotifier?.rewriteRecovered(ccRecoveredPermissions);
 ccNotifier?.start();
 ccConfirmExpirer.start();
+ccReplier?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

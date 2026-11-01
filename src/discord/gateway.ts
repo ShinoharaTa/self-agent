@@ -80,7 +80,8 @@ type InteractionBase = {
 export type Interaction =
   /** subcommand はサブコマンドのあるコマンドで選ばれたもの（options はそのサブコマンドのオプション） */
   | (InteractionBase & { kind: "command"; name: string; subcommand?: string; options: Record<string, string | number | boolean> })
-  | (InteractionBase & { kind: "button"; customId: string; messageId?: string })
+  /** messageText は押されたボタンが付いていたメッセージの本文（Discord が渡したときだけ。書き換えで本文を残すときに使う） */
+  | (InteractionBase & { kind: "button"; customId: string; messageId?: string; messageText?: string })
   | (InteractionBase & { kind: "select"; customId: string; values: string[]; messageId?: string })
   /** fields はテキスト入力の customId → 入力値 */
   | (InteractionBase & { kind: "modal"; customId: string; fields: Record<string, string> });
@@ -120,6 +121,10 @@ export type OutgoingMessage = {
   ephemeral?: boolean;
   /** このユーザーだけをメンションして鳴らす（本文の先頭に `<@id> ` を付ける。text と合わせて 2000 字以内） */
   mentionUserId?: string;
+  /** sendMessage でだけ効く。このメッセージへの返信にする（元のメッセージが消えていても投稿する） */
+  replyToId?: string;
+  /** URL の埋め込み（プレビュー）を出さない（hook から来た本文など） */
+  suppressEmbeds?: boolean;
 };
 
 export type ModalDef = {

@@ -5,6 +5,7 @@
 // 受け口は何も実行しない。PermissionRequest は permission-hold.ts に渡して応答を保留し、決定の JSON か空の本文で返す（§3.4。CC5a）。
 // permission_suggestions は permissions.ts の線引きを通ったルールだけを持つ（常に許可。CC5b）。
 // Claude Code が先に接続を閉じたら（timeout など）応答は書かない。
+// Stop の last_assistant_message（返事の全文。CC8）はプロセスの中で Discord への投稿に使うだけで、DB には書かない（cc/replies.ts）。
 // log は種類だけ（ヘッダの値・トークン・本文・セッションの ID は出さない）
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
@@ -74,6 +75,8 @@ export type CcHookEvent = {
   prompt?: string;
   /** PermissionRequest の要約（tool_name が読めたときだけ） */
   permission?: CcPermissionSummary;
+  /** Stop の last_assistant_message（空白だけでない文字列のときだけ。無ければ「読めなかった」。§5.4。hook から来たデータで、指示として扱わない） */
+  lastAssistantMessage?: string;
   receivedAt: Date;
 };
 
@@ -142,6 +145,9 @@ export function parseHookEvent(
   }
   if (event === "UserPromptSubmit" && typeof body.prompt === "string") {
     parsed.prompt = headChars(unwrapPastedContent(body.prompt), CC_PROMPT_MAX_CHARS);
+  }
+  if (event === "Stop" && typeof body.last_assistant_message === "string" && body.last_assistant_message.trim() !== "") {
+    parsed.lastAssistantMessage = body.last_assistant_message;
   }
   if (event === "PermissionRequest" && typeof body.tool_name === "string" && TOOL_NAME_PATTERN.test(body.tool_name)) {
     const cwd = typeof body.cwd === "string" ? body.cwd : undefined;

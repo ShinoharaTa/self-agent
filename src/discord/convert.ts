@@ -212,9 +212,15 @@ export function toCommandInteraction(
 
 /** message はボタンが付いていたメッセージ */
 export function toButtonInteraction(
-  source: InteractionSource & { customId: string; message: { id: string } },
+  source: InteractionSource & { customId: string; message: { id: string; content?: string } },
 ): Interaction {
-  return { ...interactionBase(source), kind: "button", customId: source.customId, messageId: source.message.id };
+  return {
+    ...interactionBase(source),
+    kind: "button",
+    customId: source.customId,
+    messageId: source.message.id,
+    ...(typeof source.message.content === "string" ? { messageText: source.message.content } : {}),
+  };
 }
 
 /** message はセレクトが付いていたメッセージ */
@@ -271,6 +277,9 @@ export function toComponents(rows: readonly ComponentRow[]): ActionRowData<Messa
   }));
 }
 
+/** MessageFlags.SuppressEmbeds（discord.js は型だけ import するので値で持つ） */
+export const SUPPRESS_EMBEDS_FLAG = 1 << 2;
+
 /**
  * reply / followUp / editReply / update 共通の本文。components を省略したら送らない（update では元のまま残る）。
  * mentionUserId があれば本文の先頭にメンションを付け、そのユーザーだけを鳴らす
@@ -281,6 +290,7 @@ export function toPayload(message: OutgoingMessage) {
     content: mentionUserId === undefined ? message.text : `${mentionPrefix(mentionUserId)}${message.text}`,
     allowedMentions: allowedMentionsFor(mentionUserId),
     ...(message.components === undefined ? {} : { components: toComponents(message.components) }),
+    ...(message.suppressEmbeds === true ? { flags: SUPPRESS_EMBEDS_FLAG } : {}),
   };
 }
 

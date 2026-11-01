@@ -706,8 +706,38 @@
     gave_up: "入力待ちにならなかったため、届けるのを諦めました",
     cancelled: "取り消しました",
   };
+  /** 届けた送信に返事が来たか（一覧の pending.replyState。CC8） */
+  const CC_REPLY_STATES = {
+    waiting: "返事を待っています",
+    posted: "返事が来ました",
+    unreadable: "終わりました（返事を読めませんでした）",
+    timed_out: "返事が来ませんでした（中断されたか、24 時間経ちました）",
+  };
   /** 書きかけ（このタブのメモリだけ。sessionId ごと） */
   const ccDrafts = {};
+
+  /** 返事の追いかけ（CC8）。追いかけ中なら [追いかけをやめる]（Discord の返事の投稿のボタンと同じ） */
+  function ccFollowFact(sessionId, s) {
+    if (!s.follow) return kv("返事", "Discord には戻していません（Discord から頼むと戻します）");
+    const stop = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "追いかけをやめる" });
+    stop.addEventListener("click", () => {
+      stop.disabled = true;
+      SA.api.post("/api/cc/sessions/" + encodeURIComponent(sessionId) + "/unfollow", {}, { quiet: true }).then(
+        () => {
+          toast("追いかけをやめました");
+          store.load.ccSession(sessionId);
+        },
+        (err) => {
+          stop.disabled = false;
+          if (err && err.status === 409) toast("この操作は古くなっています");
+          else if (err && err.toast) toast(err.toast);
+          store.load.ccSession(sessionId);
+        },
+      );
+    });
+    const since = s.follow.since ? "（" + ago(s.follow.since) + "から）" : "";
+    return kv("返事", el("span", {}, ["Discord に戻しています" + since + " ", stop]));
+  }
 
   /** 送信の状態の行。送信待ちなら [取り消す] */
   function ccPendingBar(sessionId, pending) {
@@ -718,7 +748,8 @@
         ? "ダイアログが出ているため待っています（端末か RC で答えてください）"
         : CC_SEND_STATES[pending.state] || String(pending.state);
     const cls = pending.state === "delivered" ? " is-done" : pending.state === "unconfirmed" || pending.state === "failed" || pending.state === "gave_up" ? " is-warning" : "";
-    const children = [el("span", { text: "送信 #" + pending.id + ": " + text })];
+    const reply = pending.state === "delivered" && pending.replyState ? CC_REPLY_STATES[pending.replyState] : null;
+    const children = [el("span", { text: "送信 #" + pending.id + ": " + text + (reply ? "・" + reply : "") })];
     if (pending.state === "queued" || pending.state === "delivering") children.unshift(el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }));
     if (pending.state === "queued") {
       const cancel = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "取り消す" });
@@ -942,6 +973,7 @@
       kv("ペイン", s.inTmux && s.paneLabel ? el("span", { class: "mono", text: s.paneLabel }) : "tmux の外"),
       kv("最後の指示", s.lastPromptAt ? dateTime(s.lastPromptAt) + "（" + ago(s.lastPromptAt) + "）" : "-"),
       ...(CC_STARTED_BY[s.startedBy] ? [kv("起動", CC_STARTED_BY[s.startedBy])] : []),
+      ccFollowFact(sessionId, s),
     ]);
     // trust のダイアログ（self-agent はキーを送らない。§4.2）
     const trust = s.trustPending
