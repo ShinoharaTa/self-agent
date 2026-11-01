@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentEntry } from "../src/cc/agents.ts";
-import { ccDryRunLines } from "../src/cli/cc-dry-run.ts";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { ccDryRunLines, resetMultiline } from "../src/cli/cc-dry-run.ts";
+import { CcSessionStore } from "../src/store/cc-sessions.ts";
+import { MIGRATIONS, openDb } from "../src/store/db.ts";
+import { tempDir } from "./helpers/db.ts";
 import { CC_TOKEN_PLACEHOLDER, ccHookSettings, main as ccSetup } from "../src/cli/cc-setup.ts";
 
 const S1 = "11111111-1111-4111-8111-111111111111";
@@ -110,4 +116,38 @@ test("cc-dry-run: 3 群の件数と、各行の状態・名前・最後の活動
   ]);
   const text = lines.join("\n");
   for (const secret of [S1, S2, S3, "hidden-dir", "/home/owner"]) assert.ok(!text.includes(secret), secret);
+});
+
+test("cc-dry-run --reset-multiline: DB の multiline_ok だけを 1 に戻す。無い DB は作らず、古い DB は変えない", (t) => {
+  const dir = tempDir(t);
+  const path = join(dir, "self-agent.db");
+  const out: string[] = [];
+  const err: string[] = [];
+  assert.equal(resetMultiline(path, (line) => out.push(line), (line) => err.push(line)), 1);
+  assert.equal(existsSync(path), false);
+
+  const db = openDb(path);
+  const sessions = new CcSessionStore(db);
+  sessions.upsertSeen([{ sessionId: S1, cwd: "/w/a", name: "a", pid: 1 }]);
+  sessions.setMultilineOk(false);
+  db.close();
+  assert.equal(resetMultiline(path, (line) => out.push(line), (line) => err.push(line)), 0);
+  assert.equal(resetMultiline(path, (line) => out.push(line), (line) => err.push(line)), 0);
+  assert.equal(out.length, 2);
+  const after = new DatabaseSync(path);
+  t.after(() => after.close());
+  assert.equal(new CcSessionStore(after).multilineOk(), true);
+  assert.equal(new CcSessionStore(after).get(S1)?.name, "a");
+  assert.equal(after.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+
+  const oldPath = join(dir, "old.db");
+  const old = new DatabaseSync(oldPath);
+  for (const migration of MIGRATIONS.slice(0, 26)) old.exec(migration);
+  old.exec("PRAGMA user_version = 26");
+  old.close();
+  assert.equal(resetMultiline(oldPath, (line) => out.push(line), (line) => err.push(line)), 1);
+  const reopened = new DatabaseSync(oldPath);
+  t.after(() => reopened.close());
+  assert.equal(reopened.prepare("PRAGMA user_version").get()?.user_version, 26);
+  assert.equal(err.length, 2);
 });

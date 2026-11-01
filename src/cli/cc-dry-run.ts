@@ -1,12 +1,23 @@
 // この機械の Claude Code のセッションの一覧を 1 回だけ試す（docs/plan/claude-code-sessions.md §8 CC1。npm run cc-dry-run）。
 // claude agents --json と ~/.claude の補助（RC のリンク・tmux の欄・記録の mtime）を 1 回読み、本体と同じ rankSessions で 3 群に分けて、
 // 件数と各行の状態・名前・最後の活動の時刻を端末に出す（オーナーが見るものなので名前は出す。sessionId・cwd は出さない）。
-// hook の事象は使わない（受け口を立てない）。投稿せず、DB も読み書きしない。読む設定は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ（loadDataConfig）
+// hook の事象は使わない（受け口を立てない）。投稿せず、DB も読み書きしない。読む設定は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ（loadDataConfig）。
+// `--reset-multiline` のときだけ、一覧は読まずに DB の cc_state.multiline_ok を 1 に戻す（複数行の送信を止めた後、実機で確かめ直したとき。
+// docs/plan/claude-code-sessions.md §3.2。ほかは変えない。移行はしない）
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { parseArgs } from "node:util";
 import { formatWallClock } from "../app/recurrence.ts";
 import { AgentsClient, type AgentEntry, resolveClaudePath } from "../cc/agents.ts";
 import { ClaudeDirs, type SessionFileInfo } from "../cc/claude-dirs.ts";
 import { type CcState, lastActivity, rankSessions, type RankInput } from "../cc/registry.ts";
 import { loadDataConfig } from "../config.ts";
+import { CcSessionStore } from "../store/cc-sessions.ts";
+
+const USAGE = "使い方: npm run cc-dry-run -- [--reset-multiline] [--help]";
+/** cc_state ができた user_version */
+const CC_STATE_USER_VERSION = 27;
 
 const STATE_LABELS: Readonly<Record<CcState, string>> = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
 
@@ -60,13 +71,57 @@ function fail(message: string): number {
   return 1;
 }
 
-export async function main(_argv: readonly string[]): Promise<number> {
-  let timeZone: string;
+/**
+ * DB（dbPath）の cc_state.multiline_ok を 1 に戻す（--reset-multiline）。DB は移行せずに開き、cc_state が無い（古い）なら何もしない。
+ * 戻したら 0、既に 1 なら 0（そう出す）、無い・開けない・古いなら 1
+ */
+export function resetMultiline(dbPath: string, out: (line: string) => void = console.log, err: (line: string) => void = console.error): number {
+  // 無いファイルを作らない
+  if (!existsSync(dbPath)) {
+    err("DB がありません（SELF_AGENT_DATA_DIR を確かめてください）");
+    return 1;
+  }
+  let db: DatabaseSync;
   try {
-    timeZone = loadDataConfig().timeZone;
+    db = new DatabaseSync(dbPath);
+  } catch (error) {
+    err(`DB を開けませんでした: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+  try {
+    const userVersion = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+    if (userVersion < CC_STATE_USER_VERSION) {
+      err(`DB が古いので、ボットを再起動してから使ってください（user_version=${userVersion}）`);
+      return 1;
+    }
+    const changed = new CcSessionStore(db).setMultilineOk(true);
+    out(changed ? "複数行の送信を戻しました（multiline_ok = 1）。次の送信から改行をそのまま送ります" : "複数行の送信は既に有効です（multiline_ok = 1）");
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+export async function main(argv: readonly string[]): Promise<number> {
+  let values: { "reset-multiline"?: boolean; help?: boolean };
+  try {
+    ({ values } = parseArgs({ args: [...argv], options: { "reset-multiline": { type: "boolean" }, help: { type: "boolean" } } }));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return fail(USAGE);
+  }
+  if (values.help === true) {
+    console.log(USAGE);
+    return 0;
+  }
+  let timeZone: string;
+  let dataDir: string;
+  try {
+    ({ timeZone, dataDir } = loadDataConfig());
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
+  if (values["reset-multiline"] === true) return resetMultiline(join(dataDir, "self-agent.db"));
   const claudePath = resolveClaudePath();
   if (claudePath === undefined) return fail("claude が見つかりません（~/.local/bin・/usr/local/bin・/usr/bin と PATH を確かめてください）");
   const result = await new AgentsClient({ claudePath }).list();

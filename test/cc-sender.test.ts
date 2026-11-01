@@ -349,19 +349,30 @@ test("SELF_AGENT_CC_SEND_WAIT_MIN（120 分）を過ぎた queued は gave_up", 
   assert.equal(sends.get(old.id)?.state, "gave_up");
 });
 
-test("1 行目で送信されたと分かったら unconfirmed・multiline_ok = false・#system に 1 行。以後は改行を空白に置き換えて送る", async (t) => {
-  const { env, sender, sends, sessions, notices, inputs, actions } = setup(t);
+test("1 行目で送信されたように見えるのが別の送信で 2 回続いたら multiline_ok = false・#system に 1 行。以後は改行を空白に置き換えて送る", async (t) => {
+  const { env, sender, sends, sessions, notices, inputs, actions, logs } = setup(t);
   const text = "最初の行はここにあります\n2 行目は後ろに\n3 行目";
-  env.screens.pasted = screen([`${PROMPT}2 行目は後ろに 3 行目`], {
+  const submitted = screen([`${PROMPT}2 行目は後ろに 3 行目`], {
     above: [...HISTORY, "❯ 最初の行はここにあります", "✶ Working… (1s)", ""],
     footer: BUSY_FOOTER,
   });
+  env.screens.pasted = submitted;
   const first = await sender.submit({ sessionId: S1, text, origin: "web" });
   assert.ok(first.ok);
   await sender.idle();
   assert.deepEqual([sends.get(first.send.id)?.state, sends.get(first.send.id)?.lastPaneState], ["unconfirmed", "submitted_early"]);
-  assert.equal(sessions.multilineOk(), false);
   assert.deepEqual(actions(), ["load-buffer", "paste-buffer"]);
+  // 1 回目では止めない
+  assert.equal(sessions.multilineOk(), true);
+  assert.deepEqual(notices, []);
+  assert.ok(logs.includes("Claude Code: 複数行の貼り付けが 1 行目で送信されたように見えました（1/2）"));
+
+  env.phase = "before";
+  const second = await sender.submit({ sessionId: S2, text, origin: "web" });
+  assert.ok(second.ok);
+  await sender.idle();
+  assert.equal(sends.get(second.send.id)?.lastPaneState, "submitted_early");
+  assert.equal(sessions.multilineOk(), false);
   assert.deepEqual(notices, [
     { guildId: "g1", text: CC_MULTILINE_OFF_NOTICE, level: "warning" },
     { guildId: "g2", text: CC_MULTILINE_OFF_NOTICE, level: "warning" },
@@ -369,13 +380,71 @@ test("1 行目で送信されたと分かったら unconfirmed・multiline_ok = 
 
   env.phase = "before";
   env.screens.pasted = shown("1 行目 2 行目");
-  const second = await sender.submit({ sessionId: S2, text: "1 行目\n2 行目", origin: "web" });
-  assert.ok(second.ok);
+  const third = await sender.submit({ sessionId: S1, text: "1 行目\n2 行目", origin: "web" });
+  assert.ok(third.ok);
   await sender.idle();
-  assert.equal(sends.get(second.send.id)?.state, "delivered");
-  assert.deepEqual(inputs, [text, "1 行目 2 行目"]);
-  // 知らせは変わったときだけ
+  assert.equal(sends.get(third.send.id)?.state, "delivered");
+  assert.deepEqual(inputs, [text, text, "1 行目 2 行目"]);
   assert.equal(notices.length, 2);
+});
+
+test("1 行目で送信されたように見えた後でも、複数行がそのまま貼れたら数え直す（続けて 2 回でなければ止めない）", async (t) => {
+  const { env, sender, sessions } = setup(t);
+  const text = "最初の行はここにあります\n2 行目は後ろに\n3 行目";
+  const submitted = screen([`${PROMPT}2 行目は後ろに 3 行目`], {
+    above: [...HISTORY, "❯ 最初の行はここにあります", "✶ Working… (1s)", ""],
+    footer: BUSY_FOOTER,
+  });
+  const run = async (sessionId: string, pasted: string) => {
+    env.phase = "before";
+    env.screens.pasted = pasted;
+    const result = await sender.submit({ sessionId, text, origin: "web" });
+    assert.ok(result.ok);
+    await sender.idle();
+  };
+  await run(S1, submitted);
+  await run(S2, screen([`${PROMPT}[Pasted text #1 +2 lines]`]));
+  await run(S1, submitted);
+  assert.equal(sessions.multilineOk(), true);
+});
+
+test("一覧の直近の読み取りに失敗している（stale）間は試さない", async (t) => {
+  const { env, sender, sends, snapshot, actions } = setup(t);
+  env.screens.before = BUSY;
+  const result = await sender.submit({ sessionId: S1, text: "a", origin: "web" });
+  assert.ok(result.ok);
+  await sender.idle();
+  env.screens.before = EMPTY;
+  snapshot.stale = true;
+  await sender.kick();
+  assert.deepEqual([sends.get(result.send.id)?.state, sends.get(result.send.id)?.attempts], ["queued", 1]);
+  assert.deepEqual(actions(), []);
+  snapshot.stale = false;
+  env.screens.pasted = shown("a");
+  await sender.kick();
+  assert.equal(sends.get(result.send.id)?.state, "delivered");
+});
+
+test("loadBuffer が本文の形で断った（何も貼っていない）ら failed", async (t) => {
+  const { sender, sends, actions } = setup(t);
+  // 検証を通らない本文の行（DB の手直しなど）
+  const row = sends.add({ sessionId: S1, text: "a\tb", origin: "web", state: "queued" });
+  await sender.kick();
+  assert.deepEqual([sends.get(row.id)?.state, sends.get(row.id)?.lastPaneState], ["failed", "invalid_text"]);
+  assert.deepEqual(actions(), []);
+});
+
+test("取り消した後に同じ本文を送ると、5 秒以内でも新しい送信になる", async (t) => {
+  const { env, sender } = setup(t);
+  env.screens.before = BUSY;
+  const first = await sender.submit({ sessionId: S1, text: "同じ本文", origin: "web" });
+  assert.ok(first.ok);
+  await sender.idle();
+  assert.equal(sender.cancel(first.send.id), "cancelled");
+  const again = await sender.submit({ sessionId: S1, text: "同じ本文", origin: "web" });
+  assert.ok(again.ok && !again.duplicate);
+  assert.notEqual(again.send.id, first.send.id);
+  await sender.idle();
 });
 
 test("stop の後は受け付けず、試さない", async (t) => {

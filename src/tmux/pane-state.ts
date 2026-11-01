@@ -20,8 +20,8 @@ export const PROMPT_SEARCH_LINES = 8;
 
 /** 入力欄の上のスピナーを探す範囲（上の `─` の行から上に何行） */
 export const SPINNER_SEARCH_LINES = 10;
-/** 入力欄を上の `─` から下の `─` まで探す上限の行数（pasteLanded。複数行の貼り付けがそのまま見える場合のため。docs/plan/claude-code-sessions.md §3.2） */
-export const INPUT_BOX_MAX_LINES = 60;
+/** 入力欄を上の `─` から下の `─` まで探す上限の行数（pasteLanded） */
+export const INPUT_BOX_MAX_LINES = 20;
 /** 貼れたかを確かめるのに使うテンプレートの先頭の文字数（§5.4 の 4） */
 export const PASTE_CHECK_CHARS = 24;
 
@@ -192,6 +192,13 @@ export function classifyScreen(raw: string): ScreenState {
  */
 export function inputBoxText(raw: string): string | undefined {
   const lines = stripAnsi(raw).split("\n");
+  const box = findInputBox(lines);
+  if (box === undefined) return undefined;
+  return lines.slice(box.top + 1, box.bottom).join("").slice([...PROMPT_PREFIX].length).replace(/\s/g, "");
+}
+
+/** 入力欄の上の `─` と下の `─` の行の位置（inputBoxText と同じ探し方）。無ければ undefined */
+function findInputBox(lines: string[]): { top: number; bottom: number } | undefined {
   let end = lines.length;
   while (end > 0 && lines[end - 1]!.trim() === "") end -= 1;
   for (let bottom = end - 1; bottom >= Math.max(0, end - PROMPT_SEARCH_LINES); bottom -= 1) {
@@ -199,12 +206,27 @@ export function inputBoxText(raw: string): string | undefined {
     for (let top = bottom - 2; top >= Math.max(0, bottom - 1 - INPUT_BOX_MAX_LINES); top -= 1) {
       if (!RULE_LINE.test(lines[top]!.trim())) continue;
       if (!lines[top + 1]!.startsWith(PROMPT_PREFIX)) return undefined;
-      const text = lines.slice(top + 1, bottom).join("").slice([...PROMPT_PREFIX].length);
-      return text.replace(/\s/g, "");
+      return { top, bottom };
     }
     return undefined;
   }
   return undefined;
+}
+
+/**
+ * 入力欄の dim でない文字（inputBoxText と同じ入力欄の、❯ を除いた文字のうち dim でないものを空白なしでつないだもの）。
+ * dim の候補（貼ると置き換わる）を書きかけ・前からあった文字と取り違えないため。無ければ undefined
+ */
+export function inputBoxSolidText(raw: string): string | undefined {
+  const box = findInputBox(stripAnsi(raw).split("\n"));
+  if (box === undefined) return undefined;
+  const rows = styledLines(raw).slice(box.top + 1, box.bottom);
+  const cells = rows.flatMap((row, index) => (index === 0 ? row.slice([...PROMPT_PREFIX].length) : row));
+  return cells
+    .filter((cell) => !cell.dim)
+    .map((cell) => cell.ch)
+    .join("")
+    .replace(/\s/g, "");
 }
 
 /** text から貼れたかを比べる先頭（空白を除いた先頭 PASTE_CHECK_CHARS 字。inputBoxText が空白を除くので合わせる） */
@@ -221,8 +243,8 @@ export function pastedMarkerLines(boxText: string): number[] {
 }
 
 /**
- * text を貼ったときに印 `[Pasted text #n +N lines]` の N がこれ以上なら、その印を text の貼り付けとみなす（docs/plan/claude-code-sessions.md §3.2）。
- * N は改行の数（4 行なら +3）とみなす（§12 の 20 で実機の意味を確かめる）
+ * text を貼ったときの印 `[Pasted text #n +N lines]` の N（docs/plan/claude-code-sessions.md §3.2）。N は改行の数（4 行なら +3。
+ * Claude Code 2.1.316 の実機で確かめた）。改行の無い本文は `[Pasted text #n]`（N なし = 0）
  */
 export function expectedMarkerLines(text: string): number {
   return text.split("\n").length - 1;
@@ -230,33 +252,36 @@ export function expectedMarkerLines(text: string): number {
 
 /**
  * 貼り付けが入力欄に届いたか（§5.4 の 4。G4 が Enter を押す前に使う）。before は貼る前に撮った画面、after は貼った後に撮った画面、text は貼った文字。
- * before の入力欄が見つかり、そこに `[Pasted text` も text の先頭 PASTE_CHECK_CHARS 字も無く（前からあった印を貼れた証拠と取り違えない）、
- * after の入力欄に text の先頭 PASTE_CHECK_CHARS 字（空白を除いて比べる）か、N が expectedMarkerLines(text) 以上の `[Pasted text` の印が
- * あるときだけ true（複数行なら別の短い貼り付けの印を取り違えない。1 行なら N を問わない）。false なら Enter を押さない
+ * before の入力欄が見つかり、その dim でない文字（inputBoxSolidText。dim の候補は貼ると置き換わるので比べない）に `[Pasted text` も
+ * text の先頭 PASTE_CHECK_CHARS 字も無く（前からあった印・文字を貼れた証拠と取り違えない）、after の入力欄に text の先頭 PASTE_CHECK_CHARS 字
+ * （空白を除いて比べる）か、N が expectedMarkerLines(text) と同じ `[Pasted text` の印があるときだけ true（別の貼り付けの印を取り違えない）。
+ * false なら Enter を押さない
  */
 export function pasteLanded(beforeRaw: string, afterRaw: string, text: string): boolean {
   const head = headOf(text);
   const marker = PASTED_TEXT_MARKER.replace(/\s/g, "");
   if (head === "") return false;
-  const before = inputBoxText(beforeRaw);
+  const before = inputBoxSolidText(beforeRaw);
   if (before === undefined || before.includes(marker) || before.includes(head)) return false;
   const after = inputBoxText(afterRaw);
   if (after === undefined) return false;
   if (after.includes(head)) return true;
   const expected = expectedMarkerLines(text);
-  return pastedMarkerLines(after).some((lines) => lines >= expected);
+  return pastedMarkerLines(after).some((lines) => lines === expected);
 }
 
 /**
  * 複数行の貼り付けが 1 行目で送信されたように見えるか（ブラケット貼り付けが効いていない。docs/plan/claude-code-sessions.md §3.2）。
- * Enter を押す前（貼った後）の画面 after で、text が複数行・作業中（busy）に変わっていて、text の最初の空でない行の先頭が
- * 入力欄に無く、入力欄の外（返答の側）に見えるときだけ true。true なら以後は複数行を止める
+ * before は貼る前の画面、after は Enter を押す前（貼った後）の画面。text が複数行で、text の最初の空でない行の先頭が before の画面に無く、
+ * after で作業中（busy）に変わっていて、その先頭が入力欄に無く入力欄の外（返答の側）に見えるときだけ true。
+ * 1 回では決めない（呼び出し側が別の送信で続けて当たったときに複数行を止める）
  */
-export function pasteSubmittedEarly(afterRaw: string, text: string): boolean {
+export function pasteSubmittedEarly(beforeRaw: string, afterRaw: string, text: string): boolean {
   const lines = text.split("\n");
   if (lines.length < 2) return false;
   const first = headOf(lines.find((line) => line.trim() !== "") ?? "");
   if (first === "") return false;
+  if (stripAnsi(beforeRaw).replace(/\s/g, "").includes(first)) return false;
   if (classifyScreen(afterRaw) !== "busy") return false;
   const box = inputBoxText(afterRaw);
   if (box !== undefined && box.includes(first)) return false;
