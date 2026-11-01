@@ -444,6 +444,9 @@ test("ツール定義: どのチャンネルの run でも名前・説明・入�
       "reminder_set",
       "reminder_list",
       "reminder_cancel",
+      "cc_list",
+      "cc_send",
+      "cc_start",
     ],
   );
   const serialized = JSON.stringify(definitions[0]);
