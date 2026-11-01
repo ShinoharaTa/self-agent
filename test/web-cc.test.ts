@@ -226,7 +226,8 @@ test("POST /api/cc/sessions/<id>/send: 202 で積み、一覧の pending に出�
   assert.deepEqual(await postJson(server, `/api/cc/sessions/${S1}/send`, { text: "別" }), { status: 409, json: { error: "already_queued" } });
   const list = await getJson(server, "/api/cc/sessions");
   const s1 = (list.json.sessions as Array<Record<string, unknown>>).find((s) => s.sessionId === S1)!;
-  assert.deepEqual(s1.pending, { id: sendId, state: "queued", updatedAt: new Date(clock.now).toISOString() });
+  // 最後に見たペインの状態（この偽の tmux は list-clients を知らないので failed のまま積んでいる）
+  assert.deepEqual(s1.pending, { id: sendId, state: "queued", lastPaneState: "failed", updatedAt: new Date(clock.now).toISOString() });
   const one = await getJson(server, `/api/cc/sessions/${S1}`);
   assert.deepEqual((one.json.pending as Record<string, unknown>).id, sendId);
 

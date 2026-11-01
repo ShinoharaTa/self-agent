@@ -6,7 +6,8 @@
 // CC_MULTILINE_DETECT_LIMIT 回続いたら cc_state.multiline_ok を false にして #system に 1 行、以後は改行を空白に置き換えて送る
 // （戻すのは npm run cc-dry-run -- --reset-multiline）。idle でなければ積んだまま待ち、SELF_AGENT_CC_SEND_WAIT_MIN 分で gave_up。
 // 起動の最初の指示（origin start。cc/starter.ts）はペイン宛てに積まれ、そのペインに一覧のセッションが現れたら session_id を結びつけてから同じ経路で送る
-// （それまでは積んだまま。ペインが無くなれば gone、CC_START_BIND_GRACE_MS 経ってもペインが claude でなければ not_claude）。
+// （結びつけるのは claude agents --json の cwd が起動したディレクトリ（cc_sends.start_dir）と同じものだけ。それまでは積んだまま。ペインが無くなれば gone、
+// CC_START_BIND_GRACE_MS 経ってもペインが claude でなければ not_claude、そのペインの claude の cwd が違えば cwd_mismatch）。
 // 再起動で delivering のまま残った行は unconfirmed（recover）。log は送信の番号・状態・理由の種類だけ（本文・名前・ペイン id・sessionId は出さない）
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { SystemNotifier } from "../app/system-notice.ts";
@@ -15,7 +16,7 @@ import type { CcSendOrigin, CcSendRow, CcSendStore } from "../store/cc-sends.ts"
 import type { CcSessionStore } from "../store/cc-sessions.ts";
 import { classifyScreen, pasteLanded, pasteSubmittedEarly, probePaneState } from "../tmux/pane-state.ts";
 import type { Tmux } from "../tmux/tmux.ts";
-import type { CcPaneResolver } from "./panes.ts";
+import { sessionOnStartedPane, type CcPaneResolver } from "./panes.ts";
 import type { CcRegistry, CcTimers } from "./registry.ts";
 
 /** 送る本文の上限（コードポイント。§3.2。Web の composer は 2,000 字で止める） */
@@ -271,17 +272,17 @@ export class CcSender {
       return;
     }
     if (view === undefined) {
-      // ペイン宛て（起動の最初の指示。§4.2）: そのペインを送り先にする一覧のセッションが現れたら結びつける。送る経路はセッション宛てと同じ
+      // ペイン宛て（起動の最初の指示。§4.2）: そのペインを送り先にし、cwd が起動したディレクトリの一覧のセッションが現れたら結びつける。
+      // 送る経路はセッション宛てと同じ
       const paneId = row.paneId!;
-      view = snapshot.sessions.find((session) => {
-        const found = lookup.sendable({ pid: session.pid, tmux: session.tmux });
-        return found.ok && found.pane.paneId === paneId;
-      });
+      const bound = sessionOnStartedPane(lookup, snapshot.sessions, paneId, row.startDir);
+      view = bound.found;
       if (view === undefined) {
         const pane = lookup.pane(paneId);
-        const age = now().getTime() - Date.parse(row.createdAt);
+        const late = now().getTime() - Date.parse(row.createdAt) >= CC_START_BIND_GRACE_MS;
         if (pane === undefined || pane.dead) this.fail(id, "gone");
-        else if (pane.currentCommand !== "claude" && age >= CC_START_BIND_GRACE_MS) this.fail(id, "not_claude");
+        else if (late && pane.currentCommand !== "claude") this.fail(id, "not_claude");
+        else if (late && !bound.found && bound.reason === "mismatch") this.fail(id, "cwd_mismatch");
         else sends.noteAttempt(id, "starting");
         return;
       }

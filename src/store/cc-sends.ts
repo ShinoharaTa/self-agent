@@ -28,6 +28,8 @@ export type CcSendRow = {
   text: string;
   origin: CcSendOrigin;
   state: CcSendState;
+  /** 起動の最初の指示（origin start）の起動したディレクトリ。この cwd の claude にだけ結びつける（v29） */
+  startDir: string | null;
   /** 最後に見たペインの状態か、送れなかった理由 */
   lastPaneState: string | null;
   /** 試した回数 */
@@ -49,6 +51,7 @@ function toRow(row: Record<string, SQLOutputValue>): CcSendRow {
     id: Number(row.id),
     sessionId: nullableString(row.session_id),
     paneId: nullableString(row.pane_id),
+    startDir: nullableString(row.start_dir),
     text: String(row.text),
     origin,
     state,
@@ -72,12 +75,21 @@ export class CcSendStore {
     this.now = now;
   }
 
-  /** 行を作って返す。paneId はペイン宛て（起動の最初の指示。sessionId は null）のときだけ */
-  add(input: { sessionId: string | null; paneId?: string; text: string; origin: CcSendOrigin; state: CcSendState }): CcSendRow {
+  /** 行を作って返す。paneId・startDir はペイン宛て（起動の最初の指示。sessionId は null）のときだけ */
+  add(input: {
+    sessionId: string | null;
+    paneId?: string;
+    startDir?: string;
+    text: string;
+    origin: CcSendOrigin;
+    state: CcSendState;
+  }): CcSendRow {
     const at = this.now().toISOString();
     const result = this.db
-      .prepare("INSERT INTO cc_sends (session_id, pane_id, text, origin, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(input.sessionId, input.paneId ?? null, input.text, input.origin, input.state, at, at);
+      .prepare(
+        "INSERT INTO cc_sends (session_id, pane_id, start_dir, text, origin, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(input.sessionId, input.paneId ?? null, input.startDir ?? null, input.text, input.origin, input.state, at, at);
     return this.get(Number(result.lastInsertRowid))!;
   }
 

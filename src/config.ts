@@ -589,7 +589,7 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
 
 /**
  * SELF_AGENT_CC_* を読む（docs/plan/claude-code-sessions.md §11）。SELF_AGENT_CC=1 ならポートとトークンが要る（無ければ設定エラー。認証なしでは動かさない）。
- * 形（ポートの範囲・32 字未満か空白を含むトークン・周期・保留の秒数・送信待ちの分・起動できる場所（絶対パス）・セッションの上限）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
+ * 形（ポートの範囲・32 字未満か空白を含むトークン・周期・保留の秒数・送信待ちの分・起動できる場所（# を含まない絶対パス）・セッションの上限）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
  */
 export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
   const cc = flag("SELF_AGENT_CC", nonEmpty(env.SELF_AGENT_CC));
@@ -612,7 +612,10 @@ export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
   }
   const ccSendWaitMin = positiveInteger("SELF_AGENT_CC_SEND_WAIT_MIN", nonEmpty(env.SELF_AGENT_CC_SEND_WAIT_MIN), DEFAULT_CC_SEND_WAIT_MIN);
   const workspaceDir = nonEmpty(env.SELF_AGENT_WORKSPACE_DIR) ?? join(homeDir(env), "workspace");
-  if (!isAbsolute(workspaceDir)) throw new Error("SELF_AGENT_WORKSPACE_DIR は絶対パスで指定してください");
+  // tmux の new-session -c は書式（#{…}）として展開されるので # を通さない
+  if (!isAbsolute(workspaceDir) || workspaceDir.includes("#")) {
+    throw new Error("SELF_AGENT_WORKSPACE_DIR は # を含まない絶対パスで指定してください");
+  }
   const ccMaxSessions = positiveInteger("SELF_AGENT_CC_MAX_SESSIONS", nonEmpty(env.SELF_AGENT_CC_MAX_SESSIONS), DEFAULT_CC_MAX_SESSIONS);
   if (cc && ccHookPort === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_PORT が要ります");
   if (cc && token === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_TOKEN が要ります");
