@@ -564,3 +564,54 @@ test("起動: new-session の途中で stop されたら trust の確かめの�
   assert.equal((await call(s.server, "POST", "/api/cc/sessions", { project: "alpha", title: "a" })).status, 201);
   assert.ok(!s.pending.some((entry) => entry.ms === CC_TRUST_CHECK_DELAY_MS));
 });
+
+test("check（cc_start。CC7）: launch と同じ検証と数・メモリ・tmux のサーバーを確かめるが起動しない。1 分の間隔は見ない", async (t) => {
+  const s = await setup(t);
+  assert.deepEqual(await s.starter.check({ project: "alpha", title: " fix login ", text: "最初の指示\n", permissionMode: "plan" }), {
+    ok: true,
+    project: "alpha",
+    title: "fix login",
+    mode: "plan",
+    text: "最初の指示",
+  });
+  assert.deepEqual(
+    s.commands.map((args) => args[0]),
+    ["list-panes"],
+  );
+  assert.deepEqual(await s.starter.check({ project: "alpha", title: "it's" }), { ok: false, reason: "invalid_title" });
+  assert.deepEqual(await s.starter.check({ project: "missing", title: "a" }), { ok: false, reason: "invalid_project" });
+  assert.deepEqual(await s.starter.check({ project: "alpha", title: "a", permissionMode: "dontAsk" }), { ok: false, reason: "invalid_mode" });
+  // 起動した直後でも check は通る（1 分の間隔は [起動する] のときに見る）
+  assert.equal((await s.starter.launch({ project: "alpha", title: "a", startedBy: "tool" })).ok, true);
+  assert.equal((await s.starter.check({ project: "beta", title: "b" })).ok, true);
+  assert.deepEqual(await s.starter.launch({ project: "beta", title: "b", startedBy: "tool" }), { ok: false, reason: "too_soon" });
+  s.env.noServer = true;
+  assert.deepEqual(await s.starter.check({ project: "beta", title: "b" }), { ok: false, reason: "no_server" });
+  s.env.noServer = false;
+  s.mem.value = CC_MIN_MEM_AVAILABLE_BYTES - 1;
+  assert.deepEqual(await s.starter.check({ project: "beta", title: "b" }), { ok: false, reason: "low_memory" });
+  assert.equal(s.commands.filter((args) => args[0] === "new-session").length, 1);
+});
+
+test("起動（cc_start。CC7）: 頼んだチャンネルは最初の指示の送信と cc_sessions に入り、trust のダイアログなら onTrustPending を 1 回呼ぶ", async (t) => {
+  const s = await setup(t);
+  s.env.screens["%9"] = TRUST;
+  let trust = 0;
+  const result = await s.starter.launch({
+    project: "alpha",
+    title: "a",
+    text: "最初の指示",
+    startedBy: "tool",
+    channelId: "channel-1",
+    onTrustPending: () => trust++,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(s.sends.get(1)!.channelId, "channel-1");
+  await s.fire(CC_TRUST_CHECK_DELAY_MS);
+  assert.equal(trust, 1);
+  await s.showNew();
+  await s.fire(CC_START_CHECK_MS);
+  const saved = s.store.get(NEW)!;
+  assert.deepEqual([saved.startedBy, saved.channelId], ["tool", "channel-1"]);
+  assert.equal(trust, 1);
+});
