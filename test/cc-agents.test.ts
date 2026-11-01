@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { AGENTS_ARGS, AgentsClient, agentsChildEnv, parseAgentsOutput } from "../src/cc/agents.ts";
+import { AGENTS_ARGS, AgentsClient, agentsChildEnv, parseAgentsOutput, resolveClaudePath, resolveTmuxPath } from "../src/cc/agents.ts";
 import { ClaudeDirs, projectDirName } from "../src/cc/claude-dirs.ts";
-import { CHILD_MAX_BUFFER, CHILD_TIMEOUT_MS, type RunCommand } from "../src/tmux/tmux.ts";
+import { resolveCommandPath } from "../src/github/gh.ts";
+import { CHILD_MAX_BUFFER, CHILD_PATH, CHILD_TIMEOUT_MS, type RunCommand } from "../src/tmux/tmux.ts";
 import { tempDir } from "./helpers/db.ts";
 
 const S1 = "11111111-1111-4111-8111-111111111111";
@@ -84,6 +85,8 @@ test("ClaudeDirs.sessionFile: bridgeSessionId・tmux を読む。形が合わな
   writeFileSync(join(sessions, "12.json"), "{broken");
   writeFileSync(join(sessions, "13.json"), JSON.stringify({ pid: 13, sessionId: S2, bridgeSessionId: "session_x" }));
   writeFileSync(join(sessions, "14.json"), "[]");
+  // sessionId の欄が無いファイルは、どのセッションのものか分からないので読まない
+  writeFileSync(join(sessions, "15.json"), JSON.stringify({ pid: 15, bridgeSessionId: "session_nosid", tmux: "s:0.%1" }));
   // 鍵のファイルは読まない（あっても結果は変わらない）
   writeFileSync(join(sessions, "10.abcdef.key"), "secret");
   const dirs = new ClaudeDirs(home);
@@ -92,6 +95,7 @@ test("ClaudeDirs.sessionFile: bridgeSessionId・tmux を読む。形が合わな
   assert.equal(dirs.sessionFile(12, S1), undefined);
   assert.equal(dirs.sessionFile(13, S1), undefined);
   assert.equal(dirs.sessionFile(14, S1), undefined);
+  assert.equal(dirs.sessionFile(15, S1), undefined);
   assert.equal(dirs.sessionFile(99, S1), undefined);
   assert.equal(dirs.sessionFile(-1, S1), undefined);
   assert.equal(new ClaudeDirs(join(home, "nothing")).sessionFile(10, S1), undefined);
@@ -111,4 +115,32 @@ test("ClaudeDirs.transcriptMtime: projects/<cwd を - に>/<sessionId>.jsonl の
   assert.equal(dirs.transcriptMtime("/w/my.app", S2), undefined);
   assert.equal(dirs.transcriptMtime("/w/other", S1), undefined);
   assert.equal(dirs.transcriptMtime("/w/my.app", "../x"), undefined);
+});
+
+test("resolveClaudePath・resolveTmuxPath: 子と同じ固定の PATH（claude は ~/.local/bin が先）で探し、無ければ PATH。どちらにも無ければ undefined", (t) => {
+  const root = tempDir(t);
+  const home = join(root, "home");
+  const extra = join(root, "extra");
+  const empty = join(root, "empty");
+  for (const dir of [join(home, ".local", "bin"), extra, empty]) mkdirSync(dir, { recursive: true });
+  const executable = (path: string): string => {
+    writeFileSync(path, "#!/bin/sh\n");
+    chmodSync(path, 0o755);
+    return path;
+  };
+  const inExtra = executable(join(extra, "claude"));
+  // ~/.local/bin に無ければ PATH（ほかに /usr/local/bin などにあればそれが先）
+  const fixed = resolveCommandPath("claude", "/usr/local/bin:/usr/bin:/bin");
+  assert.equal(resolveClaudePath(home, extra), fixed ?? inExtra);
+  if (fixed === undefined) assert.equal(resolveClaudePath(home, empty), undefined);
+  // ~/.local/bin にあればそれが先（PATH に無くても）
+  const local = executable(join(home, ".local", "bin", "claude"));
+  assert.equal(resolveClaudePath(home, undefined), local);
+  assert.equal(resolveClaudePath(home, extra), local);
+  // 実行できないファイルは採らない
+  writeFileSync(join(empty, "tmux"), "");
+  const tmuxFixed = resolveCommandPath("tmux", CHILD_PATH);
+  assert.equal(resolveTmuxPath(empty), tmuxFixed);
+  const tmuxExtra = executable(join(extra, "tmux"));
+  assert.equal(resolveTmuxPath(extra), tmuxFixed ?? tmuxExtra);
 });

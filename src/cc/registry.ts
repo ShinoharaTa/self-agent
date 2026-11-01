@@ -359,12 +359,13 @@ export class CcRegistry implements CcHookReceiver {
       this.failures = 0;
       this.loggedFailure = undefined;
       this.fetchedAt = now;
-      this.agents = result.agents;
       const ids = new Set(result.agents.map((agent) => agent.sessionId));
       this.deps.store.upsertSeen(
         result.agents.map((agent) => ({ sessionId: agent.sessionId, cwd: agent.cwd ?? null, name: agent.name ?? null, pid: agent.pid })),
       );
       this.deps.store.markGone([...ids]);
+      // 行を書いてから一覧を入れ替える（receive が一覧にあるとみなした session_id の行は必ずある）
+      this.agents = result.agents;
 
       const extras = new Map<string, Extra>();
       let missingFiles = 0;

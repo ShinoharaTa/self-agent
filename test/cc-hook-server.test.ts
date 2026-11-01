@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { createServer, request, type IncomingHttpHeaders, type Server } from "node:http";
 import {
   CC_HOOK_BODY_LIMIT,
+  CC_HOOK_TOKEN_LOG_INTERVAL_MS,
   createCcHookServer,
   createHookRequestListener,
   type CcHookEvent,
@@ -36,13 +37,14 @@ function send(
 async function setup(t: TestContext) {
   const received: CcHookEvent[] = [];
   const logs: string[] = [];
+  const clock = { now: Date.parse("2026-11-01T00:00:00Z") };
   const receiver = { receive: (event: CcHookEvent) => received.push(event) };
   const server: CcHookServer = createCcHookServer({
     host: "127.0.0.1",
     port: 0,
     token: TOKEN,
     receiver,
-    now: () => new Date("2026-11-01T00:00:00Z"),
+    now: () => new Date(clock.now),
     log: (line) => logs.push(line),
   });
   await server.start();
@@ -50,7 +52,7 @@ async function setup(t: TestContext) {
   const port = server.address()!.port;
   const post = (body: unknown, headers: Record<string, string> = { "X-Self-Agent-Hook": TOKEN, "Content-Type": "application/json" }) =>
     send(port, "/hook", { headers, body: typeof body === "string" ? body : JSON.stringify(body) });
-  return { server, port, received, logs, post, receiver };
+  return { server, port, received, logs, post, receiver, clock };
 }
 
 test("hook の受け口: 正しい要求は 200 で本文なし（Content-Length 0）。事象を渡す", async (t) => {
@@ -92,6 +94,20 @@ test("hook の受け口: トークンが違う（長さ違い・同じ長さ・�
   assert.ok(s.logs.length > 0);
   assert.ok(!s.logs.join("\n").includes(TOKEN.slice(0, 10)));
   assert.ok(!s.logs.join("\n").includes("short"));
+});
+
+test("hook の受け口: トークンが違う要求の log は 1 分に 1 回まで", async (t) => {
+  const s = await setup(t);
+  const body = { hook_event_name: "Stop", session_id: S1 };
+  const wrong = { "X-Self-Agent-Hook": "wrong" };
+  for (let i = 0; i < 3; i++) assert.equal((await s.post(body, wrong)).status, 403);
+  assert.deepEqual(s.logs, ["Claude Code: hook のトークンが違います"]);
+  s.clock.now += CC_HOOK_TOKEN_LOG_INTERVAL_MS - 1;
+  await s.post(body, wrong);
+  assert.equal(s.logs.length, 1);
+  s.clock.now += 1;
+  await s.post(body, wrong);
+  assert.equal(s.logs.length, 2);
 });
 
 test("hook の受け口: 本文が 1 MB を超えれば 413（Content-Length で分かっても、chunked でも）、JSON のオブジェクトでなければ 400。どちらも記録しない", async (t) => {
@@ -213,6 +229,9 @@ test("summarizePermission: Bash は command、ファイルのツールは cwd �
   assert.equal(summarizePermission("Bash", { command: "a".repeat(600) }, "/w").summary, "a".repeat(500));
   assert.equal(summarizePermission("Edit", { file_path: "/w/app/src/x.ts", old_string: "o", new_string: "n" }, "/w/app").summary, "src/x.ts");
   assert.equal(summarizePermission("Read", { file_path: "/etc/hosts" }, "/w/app").summary, "/etc/hosts");
+  // cwd が / なら相対にしない
+  assert.equal(summarizePermission("Read", { file_path: "/etc/hosts" }, "/").summary, "/etc/hosts");
+  assert.equal(summarizePermission("Edit", { file_path: "/w/app/x.ts" }, "/w/app/").summary, "x.ts");
   assert.equal(summarizePermission("NotebookEdit", { notebook_path: "/w/app/n.ipynb", new_source: "x" }, "/w/app").summary, "n.ipynb");
   assert.equal(summarizePermission("Glob", { pattern: "**/*.ts" }, "/w/app").summary, "**/*.ts");
   assert.equal(summarizePermission("WebFetch", { url: "https://example.com/a", prompt: "p" }, "/w").summary, "https://example.com/a");

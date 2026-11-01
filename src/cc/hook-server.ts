@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
 import { CC_PROMPT_MAX_CHARS, type CcHookEventName, headChars } from "../store/cc-sessions.ts";
 import { safeEqual } from "../web/auth.ts";
-import { isLoopback, parseJsonObject, readBody } from "../web/server.ts";
+import { isLoopback, parseJsonObject, readBody } from "../web/http-body.ts";
 import { isUuid } from "./agents.ts";
 
 /** 受ける唯一のパス */
@@ -17,6 +17,8 @@ export const CC_HOOK_PATH = "/hook";
 export const CC_HOOK_HEADER = "x-self-agent-hook";
 /** 本文の上限（バイト。PermissionRequest の tool_input に Write の中身が入るため） */
 export const CC_HOOK_BODY_LIMIT = 1024 * 1024;
+/** トークンが違う要求の log の間隔（続けて来ても 1 回だけ出す） */
+export const CC_HOOK_TOKEN_LOG_INTERVAL_MS = 60_000;
 /** 許可の要求の要約の長さ（§3.4） */
 export const CC_PERMISSION_SUMMARY_MAX_CHARS = 500;
 
@@ -79,9 +81,9 @@ const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 const FILE_TOOLS: ReadonlySet<string> = new Set(["Edit", "Write", "Read", "Glob", "NotebookEdit"]);
 const FILE_FIELDS = ["file_path", "notebook_path", "path", "pattern"] as const;
 
-/** cwd の中の絶対パスなら cwd からの相対に */
+/** cwd の中の絶対パスなら cwd からの相対に（cwd が `/` なら相対にしない） */
 function relativeTo(cwd: string | undefined, path: string): string {
-  if (cwd === undefined || !cwd.startsWith("/")) return path;
+  if (cwd === undefined || !cwd.startsWith("/") || /^\/+$/.test(cwd)) return path;
   const base = cwd.endsWith("/") ? cwd : `${cwd}/`;
   return path.startsWith(base) ? path.slice(base.length) : path;
 }
@@ -153,6 +155,8 @@ function errorKind(error: unknown): string {
 /** 受け口の要求の処理（テストでは接続元を差し替えて呼ぶ） */
 export function createHookRequestListener(options: Pick<CcHookServerOptions, "token" | "receiver" | "now" | "log">): RequestListener {
   const { token, receiver, now, log } = options;
+  /** トークンが違う要求を最後に log に出した時刻 */
+  let tokenLoggedAt: number | undefined;
 
   const respond = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (!isLoopback(req.socket.remoteAddress)) {
@@ -174,7 +178,11 @@ export function createHookRequestListener(options: Pick<CcHookServerOptions, "to
     const header = req.headers[CC_HOOK_HEADER];
     if (typeof header !== "string" || !safeEqual(header, token)) {
       req.resume();
-      log("Claude Code: hook のトークンが違います");
+      const at = now().getTime();
+      if (tokenLoggedAt === undefined || at - tokenLoggedAt >= CC_HOOK_TOKEN_LOG_INTERVAL_MS) {
+        tokenLoggedAt = at;
+        log("Claude Code: hook のトークンが違います");
+      }
       sendEmpty(res, 403, { Connection: "close" });
       return;
     }

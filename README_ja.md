@@ -211,7 +211,7 @@ tailscale serve --bg --https=9444 http://127.0.0.1:8791
 
 ### 9.（任意）この機械の Claude Code のセッションを見る
 
-作りかけ（`docs/plan/claude-code-sessions.md` の段 CC1）。Bot が `claude agents --json` を周期で読み、Claude Code の hooks をローカルのポートで受けて、どのセッションが判断待ち・実行中・待機かを知る。画面はまだ無く、今は `npm run cc-dry-run` で確かめるだけ。Bot の `PATH` に `claude` と `tmux` が要る。
+作りかけ（`docs/plan/claude-code-sessions.md` の段 CC1）。Bot が `claude agents --json` を周期で読み、Claude Code の hooks をローカルのポートで受けて、どのセッションが判断待ち・実行中・待機かを知る。画面はまだ無く、今は `npm run cc-dry-run` で確かめるだけ。`claude` と `tmux` が `~/.local/bin` か `/usr/local/bin`・`/usr/bin`（ほかの場所なら Bot の `PATH`）に要る。Bot は `claude agents --json` に `HOME`・`PATH`・`LANG` だけの環境を渡すが、それで動くかはまだ確かめていない。
 
 1. `npm run cc-dry-run` で、セッションを 3 群（判断待ち・実行中・待機）で確かめる（投稿しない・何も変えない）
 2. `~/.config/self-agent/env` に足す（トークンは Claude Code の hooks と共有する。空白を含まない 32 字以上）
