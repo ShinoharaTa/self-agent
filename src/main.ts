@@ -41,6 +41,7 @@ import { ClaudeDirs } from "./cc/claude-dirs.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
 import { CcRegistry } from "./cc/registry.ts";
+import { CcSender } from "./cc/sender.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -60,6 +61,7 @@ import { GuestStore } from "./store/guest.ts";
 import { GuestGuildStore } from "./store/guest-guilds.ts";
 import { GuestInviteStore } from "./store/guest-invites.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
+import { CC_SEND_KEEP_DAYS, CcSendStore } from "./store/cc-sends.ts";
 import { CC_SESSION_KEEP_DAYS, CcSessionStore } from "./store/cc-sessions.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
@@ -185,6 +187,7 @@ const noticeStore = new NoticeStore(db, now);
 const notices = config.web ? noticeStore : undefined;
 // この機械の Claude Code のセッション（docs/plan/claude-code-sessions.md §9）。書くのは SELF_AGENT_CC=1 のときだけで、古い行は有効・無効を問わず tick で消す
 const ccSessions = new CcSessionStore(db, now);
+const ccSends = new CcSendStore(db, now);
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -512,10 +515,12 @@ const scheduler = new Scheduler({
     const deleted = noticeStore.prune(new Date(now().getTime() - NOTICE_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deleted > 0) log(`古い知らせの記録 ${deleted} 件を消しました`);
   },
-  // 一覧から消えて CC_SESSION_KEEP_DAYS 日経った Claude Code のセッションの行を消す（SELF_AGENT_CC が無効でも消す）
+  // 一覧から消えて CC_SESSION_KEEP_DAYS 日経った Claude Code のセッションの行と、CC_SEND_KEEP_DAYS 日より前の終わった送信の行を消す（SELF_AGENT_CC が無効でも消す）
   pruneCcSessions: () => {
     const deleted = ccSessions.prune(new Date(now().getTime() - CC_SESSION_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deleted > 0) log(`古い Claude Code のセッションの記録 ${deleted} 件を消しました`);
+    const deletedSends = ccSends.prune(new Date(now().getTime() - CC_SEND_KEEP_DAYS * 24 * 60 * 60 * 1000));
+    if (deletedSends > 0) log(`古い Claude Code への送信の記録 ${deletedSends} 件を消しました`);
   },
   // 待ちに移した知らせの行（Web UI が有効なときだけ）
   ...history,
@@ -568,8 +573,10 @@ const githubPoller = createGithubPoller({
 });
 
 // Claude Code のセッション（docs/plan/claude-code-sessions.md。SELF_AGENT_CC=1 のときだけ）: claude agents --json を周期で読んで cc_sessions に書き、
-// hook の受け口（127.0.0.1:SELF_AGENT_CC_HOOK_PORT。Web UI とは別のサーバー）で事象を受ける
+// hook の受け口（127.0.0.1:SELF_AGENT_CC_HOOK_PORT。Web UI とは別のサーバー）で事象を受ける。Web から送る本文は cc_sends に積み、
+// 入力待ちのときだけ tmux で貼る（cc/sender.ts。待ち行列は 30 秒ごと）
 let ccRegistry: CcRegistry | undefined;
+let ccSender: CcSender | undefined;
 let ccHookServer: CcHookServer | undefined;
 // 画面の写し（Web）と、セッション → ペインの引き当て（pid の祖先と pane_pid。§3.1）
 let ccTmux: Tmux | undefined;
@@ -591,6 +598,8 @@ if (
     dirs: new ClaudeDirs(),
     store: ccSessions,
     now,
+    // 送信の待ち行列が空でない間は、見ていなくても設定の周期で一覧を読む
+    busy: () => ccSends.countActive() > 0,
     log,
   });
   ccRegistry = registry;
@@ -600,6 +609,9 @@ if (
   ccTmux = tmux;
   const panes = new CcPaneResolver({ tmux, parentOf: procParentPid() });
   ccPanes = panes;
+  ccSender = new CcSender({ cfg: config, registry, panes, tmux, sends: ccSends, sessions: ccSessions, notify, now, log });
+  // 受け付けを始める前に、再起動で delivering のまま残った送信を unconfirmed に、待ちの上限を過ぎたものを gave_up にする
+  ccSender.recover();
   ccStatusOf = () => ccStatus({ panes, hookListening: () => hookServer.address() !== undefined, store: ccSessions });
 }
 
@@ -672,7 +684,16 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       ...githubRoutes({ cfg: config, store: githubStore, status: githubPoller === undefined ? undefined : () => githubPoller.status() }),
       ...knowledgeRoutes({ knowledge }),
       // この機械の Claude Code のセッションの一覧と画面の写し（SELF_AGENT_CC が無効なら 404）
-      ...ccRoutes({ registry: ccRegistry, panes: ccPanes, tmux: ccTmux, workspaceDir: join(homedir(), "workspace"), home: homedir() }),
+      // 送信（/send・/cancel）は SELF_AGENT_CC が有効なときだけ
+      ...ccRoutes({
+        registry: ccRegistry,
+        panes: ccPanes,
+        tmux: ccTmux,
+        workspaceDir: join(homedir(), "workspace"),
+        home: homedir(),
+        ...(ccSender === undefined ? {} : { sender: ccSender, sends: ccSends }),
+        now,
+      }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）
       ...projectRoutes({
         cfg: config,
@@ -736,6 +757,7 @@ const lifecycle = createShutdown(
     staticServer,
     webServer,
     ...(ccRegistry === undefined ? {} : { ccRegistry }),
+    ...(ccSender === undefined ? {} : { ccSender }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     closeDb: () => db.close(),
     log,
@@ -804,4 +826,5 @@ scheduler.start(TICK_INTERVAL_MS);
 reminderScheduler.start();
 githubPoller?.start();
 ccRegistry?.start();
+ccSender?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

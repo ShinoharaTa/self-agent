@@ -39,7 +39,7 @@ function agent(sessionId: string, overrides: Partial<AgentEntry> = {}): AgentEnt
   };
 }
 
-function setup(t: TestContext, pollSec = 10) {
+function setup(t: TestContext, pollSec = 10, busy?: () => boolean) {
   const db = tempDb(t);
   const clock = { now: BASE };
   const now = (): Date => new Date(clock.now);
@@ -73,7 +73,16 @@ function setup(t: TestContext, pollSec = 10) {
     },
   };
   const logs: string[] = [];
-  const registry = new CcRegistry({ cfg: { ccPollSec: pollSec }, agents, dirs, store, now, timers, log: (line) => logs.push(line) });
+  const registry = new CcRegistry({
+    cfg: { ccPollSec: pollSec },
+    agents,
+    dirs,
+    store,
+    now,
+    timers,
+    ...(busy === undefined ? {} : { busy }),
+    log: (line) => logs.push(line),
+  });
   /** 次の一覧 */
   const willList = (...list: AgentEntry[]) => results.push({ ok: true, agents: list, dropped: 0 });
   const willFail = () => results.push({ ok: false, reason: "json" });
@@ -431,6 +440,20 @@ test("CcRegistry: 読んでいる途中の touch は予約を変えない", asyn
   // 読み終わった後は見ているので設定の秒数
   assert.deepEqual(delays, [10_000]);
   registry.stop();
+});
+
+test("CcRegistry: 送信の待ち行列が空でない（busy）間は、見ていなくても設定の周期で読む", async (t) => {
+  let busy = true;
+  const s = setup(t, 10, () => busy);
+  s.willList(agent(S1));
+  s.registry.start();
+  await s.registry.idle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(s.delays, [10_000]);
+  busy = false;
+  await s.fire();
+  assert.deepEqual(s.delays.slice(1), [CC_IDLE_POLL_MS]);
+  s.registry.stop();
 });
 
 test("CcRegistry: log は件数と種類だけで、名前・cwd・sessionId・本文を出さない", async (t) => {

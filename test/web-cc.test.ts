@@ -6,6 +6,8 @@ import type { SessionFileInfo } from "../src/cc/claude-dirs.ts";
 import { parseHookEvent } from "../src/cc/hook-server.ts";
 import { CcPaneResolver } from "../src/cc/panes.ts";
 import { CcRegistry } from "../src/cc/registry.ts";
+import { CC_SEND_MAX_CHARS, CcSender } from "../src/cc/sender.ts";
+import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcSessionStore } from "../src/store/cc-sessions.ts";
 import { createTmux, PANE_FORMAT, type RunCommand, type RunResult } from "../src/tmux/tmux.ts";
 import { CC_SCREEN_LINES, ccRoutes, ccStatus, cwdLabel, screenText } from "../src/web/routes/cc.ts";
@@ -52,6 +54,28 @@ function getJson(server: WebServer, path: string): Promise<{ status: number; jso
     );
     req.on("error", reject);
     req.end();
+  });
+}
+
+function postJson(server: WebServer, path: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        host: "127.0.0.1",
+        port: server.address()!.port,
+        method: "POST",
+        path,
+        headers: { "tailscale-user-login": LOGIN, "sec-fetch-site": "same-origin", "x-self-agent": "1", "content-type": "application/json" },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => resolve({ status: res.statusCode!, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) }));
+        res.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    req.end(JSON.stringify(body));
   });
 }
 
@@ -130,10 +154,26 @@ async function setup(
   const tmux = createTmux({ tmuxPath: TMUX, run });
   const parentTable: Record<number, number> = { 500: 400, 600: 410, 700: 1, 800: 1, ...opts.parentTable };
   const panes = new CcPaneResolver({ tmux, parentOf: (pid) => parentTable[pid] });
-  const server = await serve(t, ccRoutes({ registry, panes, tmux, workspaceDir: WORKSPACE, home: HOME }));
+  // 送信（CC3）。capture-pane が空の画面（入力欄が無い = no_prompt）なので、積んだものは queued のまま
+  const sends = new CcSendStore(db, now);
+  const sender = new CcSender({
+    cfg: { ccSendWaitMin: 120, allowedGuildIds: [] },
+    registry,
+    panes,
+    tmux,
+    sends,
+    sessions: store,
+    now,
+    sleep: async () => undefined,
+    timers: { after: () => () => undefined },
+    log: () => undefined,
+  });
+  const server = await serve(t, ccRoutes({ registry, panes, tmux, workspaceDir: WORKSPACE, home: HOME, sender, sends, now }));
   return {
     server,
     registry,
+    sender,
+    sends,
     tmuxState,
     calls,
     clock,
@@ -144,13 +184,59 @@ async function setup(
   };
 }
 
-test("/api/cc/*: SELF_AGENT_CC が無効（registry が無い）なら一覧も 1 件も 404", async (t) => {
+test("/api/cc/*: SELF_AGENT_CC が無効（registry が無い）なら一覧も 1 件も送信も 404", async (t) => {
   const server = await serve(t, ccRoutes({ registry: undefined, panes: undefined, tmux: undefined, workspaceDir: WORKSPACE, home: HOME }));
   for (const path of ["/api/cc/sessions", `/api/cc/sessions/${S1}`, "/api/cc/other"]) {
     const { status, json } = await getJson(server, path);
     assert.equal(status, 404, path);
     assert.deepEqual(json, { error: "not_found" });
   }
+  for (const path of [`/api/cc/sessions/${S1}/send`, "/api/cc/sends/1/cancel"]) {
+    const { status, json } = await postJson(server, path, { text: "x" });
+    assert.equal(status, 404, path);
+    assert.deepEqual(json, { error: "not_found" });
+  }
+});
+
+test("POST /api/cc/sessions/<id>/send: 本文の検証（CR・ESC・TAB は 400、4,001 字は 400、空は 400）・404・tmux の外は 409・サーバーが無ければ 503", async (t) => {
+  const { server, sends, tmuxState } = await setup(t);
+  const send = (id: string, body: unknown) => postJson(server, `/api/cc/sessions/${id}/send`, body);
+  for (const text of ["a\rb", "a\x1b[2Jb", "a\tb"]) assert.deepEqual(await send(S1, { text }), { status: 400, json: { error: "invalid_text" } });
+  assert.deepEqual(await send(S1, { text: "字".repeat(CC_SEND_MAX_CHARS + 1) }), { status: 400, json: { error: "too_long" } });
+  for (const body of [{ text: "" }, { text: "\n\n" }, {}, { text: 1 }]) assert.deepEqual(await send(S1, body), { status: 400, json: { error: "empty" } });
+  assert.deepEqual(await send("55555555-5555-4555-8555-555555555555", { text: "x" }), { status: 404, json: { error: "not_found" } });
+  assert.equal((await send("not-a-uuid", { text: "x" })).status, 404);
+  assert.deepEqual(await send(S3, { text: "x" }), { status: 409, json: { error: "not_in_tmux" } });
+  tmuxState.panes = { code: 1, stdout: "", stderr: "no server running on /tmp/tmux-1000/default\n" };
+  assert.deepEqual(await send(S1, { text: "x" }), { status: 503, json: { error: "no_server" } });
+  assert.equal(sends.countActive(), 0);
+});
+
+test("POST /api/cc/sessions/<id>/send: 202 で積み、一覧の pending に出る。同じ本文は 5 秒以内なら同じ sendId、別の本文は 409。/cancel で取り消す", async (t) => {
+  const { server, sender, sends, clock } = await setup(t);
+  const text = "1 行目\n2 行目\n\n4 行目";
+  const first = await postJson(server, `/api/cc/sessions/${S1}/send`, { text: `${text}\n` });
+  assert.equal(first.status, 202);
+  const sendId = first.json.sendId as number;
+  assert.deepEqual(first.json, { sendId, state: "queued" });
+  await sender.idle();
+  // 末尾の改行は落として DB に残す
+  assert.equal(sends.get(sendId)?.text, text);
+  assert.deepEqual(await postJson(server, `/api/cc/sessions/${S1}/send`, { text }), { status: 202, json: { sendId, state: "queued" } });
+  assert.deepEqual(await postJson(server, `/api/cc/sessions/${S1}/send`, { text: "別" }), { status: 409, json: { error: "already_queued" } });
+  const list = await getJson(server, "/api/cc/sessions");
+  const s1 = (list.json.sessions as Array<Record<string, unknown>>).find((s) => s.sessionId === S1)!;
+  assert.deepEqual(s1.pending, { id: sendId, state: "queued", updatedAt: new Date(clock.now).toISOString() });
+  const one = await getJson(server, `/api/cc/sessions/${S1}`);
+  assert.deepEqual((one.json.pending as Record<string, unknown>).id, sendId);
+
+  assert.deepEqual(await postJson(server, `/api/cc/sends/${sendId}/cancel`, {}), { status: 200, json: { state: "cancelled" } });
+  assert.deepEqual(await postJson(server, `/api/cc/sends/${sendId}/cancel`, {}), { status: 409, json: { error: "stale" } });
+  assert.deepEqual(await postJson(server, "/api/cc/sends/999/cancel", {}), { status: 404, json: { error: "not_found" } });
+  // 終わった送信は CC_SEND_RECENT_MS（10 分）の間だけ一覧に出す
+  clock.now += 10 * 60_000 + 1;
+  const later = await getJson(server, "/api/cc/sessions");
+  assert.equal((later.json.sessions as Array<Record<string, unknown>>).find((s) => s.sessionId === S1)!.pending, null);
 });
 
 test("/api/cc/sessions: 判断待ち → 実行中 → 待機の順で、ペイン・RC のリンク（bridgeSessionId があるときだけ）・ディレクトリの表示を返し、touch する", async (t) => {

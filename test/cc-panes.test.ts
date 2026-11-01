@@ -6,6 +6,7 @@ import {
   ancestorPids,
   CC_PANE_ANCESTOR_DEPTH,
   CcPaneResolver,
+  findSendablePane,
   findSessionPane,
   paneIdOfHint,
   parseStatParentPid,
@@ -130,6 +131,24 @@ test("findSessionPane: sessions/<pid>.json の tmux 欄は、そのペインの 
   assert.equal(findSessionPane({ pid: 500, tmux: "foo:@12.%1" }, [pane("%1", 400)], parentOf, NO_OTHERS)?.paneId, "%1");
 });
 
+test("findSendablePane: 主の経路（祖先が pane_pid）で当たる claude のペインだけ。tmux 欄（補助）だけで採れるペインには送らない", () => {
+  // claude 500 ← 400 ← … ← 50（9 段上。補助の経路でも祖先と確かめられない）
+  const { parentOf } = parents({ 500: 400, 400: 300, 300: 200, 200: 150, 150: 1 });
+  assert.deepEqual(findSendablePane({ pid: 500 }, [pane("%1", 400)], parentOf, NO_OTHERS), { ok: true, pane: pane("%1", 400) });
+  assert.equal(findSendablePane({ pid: 500 }, [pane("%3", 150)], parentOf, NO_OTHERS).ok, true);
+  // 祖先のペインがシェル（claude でない）なら絶対に送らない
+  assert.deepEqual(findSendablePane({ pid: 500 }, [pane("%1", 400, { currentCommand: "bash" })], parentOf, NO_OTHERS), {
+    ok: false,
+    reason: "not_claude",
+  });
+  // tmux 欄の補助でしか採れないペイン（祖先でない pane_pid）・死んだペインは tmux の外
+  const hinted = pane("%5", 888);
+  assert.deepEqual(findSendablePane({ pid: 500 }, [hinted], parentOf, NO_OTHERS), { ok: false, reason: "not_in_tmux" });
+  assert.deepEqual(findSendablePane({ pid: 500 }, [pane("%1", 400, { dead: true })], parentOf, NO_OTHERS), { ok: false, reason: "not_in_tmux" });
+  // 入れ子（たどる途中にほかのセッションの pid）は外のペインに送らない
+  assert.deepEqual(findSendablePane({ pid: 500 }, [pane("%3", 300)], parentOf, new Set([500, 400])), { ok: false, reason: "not_in_tmux" });
+});
+
 test("CcPaneResolver: lookup のたびに list-panes を読み直し、直近の結果を lastTmux に持つ。サーバーが無い・読めなければ ok: false で、resolve は undefined", async () => {
   const { parentOf } = parents({ 500: 400 });
   const results: Array<TmuxResult<TmuxPane[]>> = [
@@ -152,6 +171,7 @@ test("CcPaneResolver: lookup のたびに list-panes を読み直し、直近の
   assert.ok(first.ok);
   assert.equal(first.find({ pid: 500, tmux: undefined })?.paneId, "%1");
   assert.equal(resolver.lastTmux(), "ok");
+  assert.deepEqual(first.sendable({ pid: 500, tmux: undefined }), { ok: true, pane: pane("%1", 400) });
   assert.deepEqual(await resolver.lookup(NO_OTHERS), { ok: false, reason: "no_server" });
   assert.equal(resolver.lastTmux(), "no_server");
   assert.equal(await resolver.resolve({ pid: 500, tmux: undefined }, NO_OTHERS), undefined);

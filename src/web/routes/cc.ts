@@ -1,11 +1,14 @@
-// GET /api/cc/sessions・/api/cc/sessions/<id>（docs/plan/claude-code-sessions.md §5.1。CC2）と /api/status の cc。
+// GET /api/cc/sessions・/api/cc/sessions/<id>（docs/plan/claude-code-sessions.md §5.1。CC2）、POST /api/cc/sessions/<id>/send・
+// /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）と /api/status の cc。
 // この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順）と、1 つのセッションの画面の写し
 // （tmux の capture-pane を stripAnsi して最後の CC_SCREEN_LINES 行。tmux の外は screen: null）。SELF_AGENT_CC が無効なら 404。
-// GET のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
+// GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
 // 名前・cwd・最後の指示は hook から来たデータで、画面は textContent で出す。log は出さない（名前・パス・sessionId・ペイン id を出さない）
 import { isUuid } from "../../cc/agents.ts";
 import type { CcPaneResolver, PaneLookup } from "../../cc/panes.ts";
 import type { CcRegistry, CcSessionView } from "../../cc/registry.ts";
+import { normalizeSendText, type CcSender } from "../../cc/sender.ts";
+import type { CcSendRow, CcSendStore } from "../../store/cc-sends.ts";
 import type { CcSessionStore } from "../../store/cc-sessions.ts";
 import { stripAnsi } from "../../tmux/pane-state.ts";
 import type { Tmux, TmuxPane } from "../../tmux/tmux.ts";
@@ -16,6 +19,8 @@ import type { Route, RouteResult } from "../server.ts";
 export const CC_SCREEN_LINES = 200;
 /** RC のリンクの前半（`<これ><bridgeSessionId>`） */
 export const CC_RC_URL_PREFIX = "https://claude.ai/code/";
+/** 一覧の送信の印に、終わった送信を出す長さ（終わってからこの間だけ「届けました」などを出す） */
+export const CC_SEND_RECENT_MS = 10 * 60_000;
 
 export type CcRouteDeps = {
   /** SELF_AGENT_CC が無効なら undefined（/api/cc/* は 404） */
@@ -26,6 +31,12 @@ export type CcRouteDeps = {
   workspaceDir: string;
   /** ~ の場所（workspace の外で ~ の中なら `~/…` で出す） */
   home: string;
+  /** 送信（CC3）。無ければ /send・/cancel は 404 */
+  sender?: Pick<CcSender, "submit" | "cancel">;
+  /** 一覧の送信の印（pending） */
+  sends?: Pick<CcSendStore, "latestPerSession">;
+  /** 既定は new Date */
+  now?: () => Date;
 };
 
 const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
@@ -62,10 +73,32 @@ function sinceOf(view: CcSessionView): number | undefined {
   return view.state === "needs_input" ? (view.waitingSince ?? view.lastActivityAt) : view.lastActivityAt;
 }
 
-export function ccRoutes(deps: CcRouteDeps): Route[] {
-  const { registry, panes, tmux, workspaceDir, home } = deps;
+/** 送れなかった理由 → HTTP の状態（§5.1） */
+const SUBMIT_STATUS: Readonly<Record<string, number>> = {
+  not_found: 404,
+  already_queued: 409,
+  not_in_tmux: 409,
+  not_claude: 409,
+  no_server: 503,
+  tmux_failed: 503,
+  stopped: 503,
+};
 
-  const sessionJson = (view: CcSessionView, pane: TmuxPane | undefined) => ({
+/** 一覧の送信の印（そのセッションの最新の送信。終わったものは CC_SEND_RECENT_MS の間だけ） */
+function pendingJson(row: CcSendRow | undefined): { id: number; state: string; updatedAt: string } | null {
+  return row === undefined ? null : { id: row.id, state: row.state, updatedAt: row.updatedAt };
+}
+
+export function ccRoutes(deps: CcRouteDeps): Route[] {
+  const { registry, panes, tmux, workspaceDir, home, sender, sends } = deps;
+  const now = deps.now ?? (() => new Date());
+
+  const latestSends = (): Map<string, CcSendRow> => {
+    const rows = sends === undefined ? [] : sends.latestPerSession(new Date(now().getTime() - CC_SEND_RECENT_MS));
+    return new Map(rows.map((row) => [row.sessionId ?? "", row]));
+  };
+
+  const sessionJson = (view: CcSessionView, pane: TmuxPane | undefined, send: CcSendRow | undefined) => ({
     sessionId: view.sessionId,
     name: view.name ?? null,
     cwdLabel: cwdLabel(view.cwd, workspaceDir, home),
@@ -79,8 +112,8 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     rcUrl: view.bridgeSessionId === undefined ? null : `${CC_RC_URL_PREFIX}${view.bridgeSessionId}`,
     // 起動したもの（web / tool / github）は CC4 から。それまではすべてオーナーが起動したもの
     startedBy: "owner",
-    // 送信待ち（CC3）・保留中の許可（CC5a）はまだ無い
-    pending: null,
+    // そのセッションの最新の送信（CC3）。保留中の許可（CC5a）はまだ無い
+    pending: pendingJson(send),
     permission: null,
   });
 
@@ -99,6 +132,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         registry.touch();
         const snapshot = registry.snapshot();
         const lookup = await lookupPanes(snapshot.sessions);
+        const latest = latestSends();
         return {
           status: 200,
           json: {
@@ -106,7 +140,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
             unreadable: snapshot.unreadable,
             // 最後に読めた時刻（画面の「n 秒前」。まだなら null）
             fetchedAt: iso(snapshot.fetchedAt),
-            sessions: snapshot.sessions.map((view) => sessionJson(view, paneOf(lookup, view))),
+            sessions: snapshot.sessions.map((view) => sessionJson(view, paneOf(lookup, view), latest.get(view.sessionId))),
           },
         };
       },
@@ -128,7 +162,34 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
           const captured = await tmux.capturePane(pane.paneId, { historyLines: CC_SCREEN_LINES });
           if (captured.ok) screen = screenText(captured.value);
         }
-        return { status: 200, json: { ...sessionJson(view, pane), screen } };
+        return { status: 200, json: { ...sessionJson(view, pane, latestSends().get(view.sessionId)), screen } };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cc\/sessions\/([^/]+)\/send$/,
+      handle: async ({ params, body }) => {
+        if (registry === undefined || sender === undefined) return NOT_FOUND;
+        registry.touch();
+        const id = params[0] ?? "";
+        if (!isUuid(id)) return NOT_FOUND;
+        const checked = normalizeSendText(body?.text);
+        if (!checked.ok) return { status: 400, json: { error: checked.reason } };
+        const result = await sender.submit({ sessionId: id, text: checked.text, origin: "web" });
+        if (result.ok) return { status: 202, json: { sendId: result.send.id, state: result.send.state } };
+        return { status: SUBMIT_STATUS[result.reason] ?? 503, json: { error: result.reason === "stopped" ? "stopping" : result.reason } };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cc\/sends\/(\d{1,16})\/cancel$/,
+      handle: async ({ params }) => {
+        if (registry === undefined || sender === undefined) return NOT_FOUND;
+        registry.touch();
+        const result = sender.cancel(Number(params[0]));
+        if (result === "not_found") return NOT_FOUND;
+        if (result === "stale") return { status: 409, json: { error: "stale" } };
+        return { status: 200, json: { state: "cancelled" } };
       },
     },
   ];

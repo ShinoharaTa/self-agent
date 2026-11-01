@@ -3,7 +3,7 @@
 // 当たらなければ sessions/<pid>.json の tmux 欄（`%<pane>`。内部形式）を補助に、その pane_pid が同じ範囲の祖先と確かめられるときだけ採る。
 // どちらの経路も pane_current_command が claude で生きているペインだけ。たどる途中で一覧のほかのセッションの pid に当たったら
 // （claude の中で起動した claude）打ち切る。どちらでも決まらなければ tmux の外。
-// 画面の写し（CC2）と送信（CC3）で使う。送り先は呼ぶたびに引き直す。log は出さない（pid・ペイン id は呼び出し側も出さない）
+// 画面の写し（CC2）と送信（CC3）で使う。送り先は主の経路で当たったペインだけ（findSendablePane。補助の tmux 欄だけでは送らない）で、呼ぶたびに引き直す。log は出さない（pid・ペイン id は呼び出し側も出さない）
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Tmux, TmuxFailure, TmuxPane } from "../tmux/tmux.ts";
@@ -95,9 +95,38 @@ export function findSessionPane(
 /** list-panes の直近の結果（/api/status の cc.tmux） */
 export type TmuxState = "ok" | TmuxFailure;
 
+/** 送り先を引いた結果。not_in_tmux = 主の経路で当たるペインが無い、not_claude = 当たったペインの pane_current_command が claude でない（絶対に送らない） */
+export type SendablePane = { ok: true; pane: TmuxPane } | { ok: false; reason: "not_in_tmux" | "not_claude" };
+
+/**
+ * 送ってよいペイン（§3.1・§7 の 2。純関数）: claude の pid そのものか CC_PANE_ANCESTOR_DEPTH 段までの祖先が pane_pid の、死んでいないペインで、
+ * pane_current_command が claude のものだけ。sessions/<pid>.json の tmux 欄（補助）だけで採れるペインには送らない。
+ * たどる途中で一覧のほかのセッションの pid に当たったら（入れ子）tmux の外とする
+ */
+export function findSendablePane(
+  target: Pick<PaneTarget, "pid">,
+  panes: readonly TmuxPane[],
+  parentOf: ParentPidReader,
+  sessionPids: ReadonlySet<number>,
+): SendablePane {
+  const alive = panes.filter((pane) => !pane.dead && pane.panePid > 1);
+  for (const pid of [target.pid, ...ancestorPids(target.pid, parentOf, CC_PANE_ANCESTOR_DEPTH)]) {
+    if (pid !== target.pid && sessionPids.has(pid)) return { ok: false, reason: "not_in_tmux" };
+    const pane = alive.find((candidate) => candidate.panePid === pid);
+    if (pane !== undefined) return pane.currentCommand === "claude" ? { ok: true, pane } : { ok: false, reason: "not_claude" };
+  }
+  return { ok: false, reason: "not_in_tmux" };
+}
+
 /** 1 回の list-panes で引いた結果。tmux のサーバーが無い・読めなければ ok: false（どのセッションも tmux の外として扱う） */
 export type PaneLookup =
-  | { ok: true; find: (target: PaneTarget) => TmuxPane | undefined }
+  | {
+      ok: true;
+      /** 画面の写しに使うペイン（findSessionPane） */
+      find: (target: PaneTarget) => TmuxPane | undefined;
+      /** 送ってよいペイン（findSendablePane） */
+      sendable: (target: PaneTarget) => SendablePane;
+    }
   | { ok: false; reason: TmuxFailure };
 
 export type CcPaneResolverDeps = {
@@ -122,7 +151,12 @@ export class CcPaneResolver {
     this.last = result.ok ? "ok" : result.reason;
     if (!result.ok) return result;
     const panes = result.value;
-    return { ok: true, find: (target) => findSessionPane(target, panes, this.deps.parentOf, sessionPids) };
+    const { parentOf } = this.deps;
+    return {
+      ok: true,
+      find: (target) => findSessionPane(target, panes, parentOf, sessionPids),
+      sendable: (target) => findSendablePane(target, panes, parentOf, sessionPids),
+    };
   }
 
   /** 1 つのセッションのペイン。tmux の外・サーバーが無い・読めなければ undefined */

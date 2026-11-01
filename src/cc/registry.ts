@@ -135,6 +135,8 @@ export type CcRegistryDeps = {
   store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive">;
   now: () => Date;
   timers?: CcTimers;
+  /** 送信の待ち行列が空でない（§2.2。CC3 から）。true の間は見ていなくても設定の周期で読む */
+  busy?: () => boolean;
   log: (message: string) => void;
 };
 
@@ -320,12 +322,12 @@ export class CcRegistry implements CcHookReceiver {
     this.schedule(CC_EVENT_REFRESH_MS);
   }
 
-  /** 見ている・保留中の事象があるなら設定の周期、それ以外は 60 秒（設定の方が長ければ設定） */
+  /** 見ている・保留中の事象がある・送信の待ち行列が空でないなら設定の周期、それ以外は 60 秒（設定の方が長ければ設定） */
   private nextDelay(): number {
     const pollMs = this.deps.cfg.ccPollSec * 1000;
     const now = this.deps.now().getTime();
     const watched = this.lastTouch !== undefined && now - this.lastTouch < CC_WATCH_MS;
-    return watched || this.pending.length > 0 ? pollMs : Math.max(pollMs, CC_IDLE_POLL_MS);
+    return watched || this.pending.length > 0 || this.deps.busy?.() === true ? pollMs : Math.max(pollMs, CC_IDLE_POLL_MS);
   }
 
   private apply(event: CcHookEvent): void {

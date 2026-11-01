@@ -66,6 +66,7 @@ test("未設定ならデフォルト値を使う", () => {
     ccHookTokenPresent: false,
     ccPollSec: 10,
     ccPermissionHoldSec: 300,
+    ccSendWaitMin: 120,
   });
 });
 
@@ -609,6 +610,7 @@ test("Claude Code: SELF_AGENT_CC=1 ならポートとトークンが要る。ト
     SELF_AGENT_CC_HOOK_TOKEN: CC_TOKEN,
     SELF_AGENT_CC_POLL_SEC: "5",
     SELF_AGENT_CC_PERMISSION_HOLD_SEC: "600",
+    SELF_AGENT_CC_SEND_WAIT_MIN: "30",
   };
   const config = loadConfig(env);
   assert.equal(config.cc, true);
@@ -619,6 +621,7 @@ test("Claude Code: SELF_AGENT_CC=1 ならポートとトークンが要る。ト
     ccHookTokenPresent: true,
     ccPollSec: 5,
     ccPermissionHoldSec: 600,
+    ccSendWaitMin: 30,
   });
   for (const missing of ["SELF_AGENT_CC_HOOK_PORT", "SELF_AGENT_CC_HOOK_TOKEN"]) {
     assert.throws(
@@ -642,6 +645,8 @@ test("Claude Code: 形の違う値は無効のときも変数名だけを出し�
     ["SELF_AGENT_CC_POLL_SEC", "x"],
     ["SELF_AGENT_CC_PERMISSION_HOLD_SEC", "0"],
     ["SELF_AGENT_CC_PERMISSION_HOLD_SEC", "601"],
+    ["SELF_AGENT_CC_SEND_WAIT_MIN", "0"],
+    ["SELF_AGENT_CC_SEND_WAIT_MIN", "x"],
   ];
   for (const [name, value] of cases) {
     assert.throws(
