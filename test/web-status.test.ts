@@ -167,6 +167,27 @@ test("/api/status: シェルが通っていれば failed は空。ゲストが�
   assert.deepEqual(body.github, { enabled: true, lastFetchAt: "2026-10-02T00:10:00.000Z", failure: "auth" });
 });
 
+test("/api/status: cc は SELF_AGENT_CC が無効なら無効の形、有効なら cc の関数の結果", async (t) => {
+  const disabled = await statusSetup(t);
+  assert.deepEqual(((await getJson(disabled.server, "/api/status")).json as Record<string, unknown>).cc, {
+    enabled: false,
+    hookPort: false,
+    tmux: null,
+    multilineOk: null,
+    pendingPermissions: 0,
+  });
+  const enabled = await statusSetup(t, {
+    cc: async () => ({ enabled: true, hookPort: true, tmux: "no_server", multilineOk: true, pendingPermissions: 0 }),
+  });
+  assert.deepEqual(((await getJson(enabled.server, "/api/status")).json as Record<string, unknown>).cc, {
+    enabled: true,
+    hookPort: true,
+    tmux: "no_server",
+    multilineOk: true,
+    pendingPermissions: 0,
+  });
+});
+
 test("WEB_ENV_NAMES: CLAUDE.md の環境変数の表の名前（廃止したものを除く）と同じ", () => {
   const claudeMd = readFileSync(new URL("../CLAUDE.md", import.meta.url), "utf8");
   const table = claudeMd.slice(claudeMd.indexOf("## 環境変数"), claudeMd.indexOf("## コーディング規約"));

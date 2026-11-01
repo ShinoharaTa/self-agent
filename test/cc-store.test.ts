@@ -116,3 +116,10 @@ test("CcSessionStore.prune: gone_at が cutoff より前の行だけ消す（生
   assert.equal(store.get(S1)?.goneAt, null);
   assert.equal(store.get(S2), undefined);
 });
+
+test("CcSessionStore.multilineOk: cc_state の multiline_ok（既定 1 で true、0 で false）", (t) => {
+  const { db, store } = setup(t);
+  assert.equal(store.multilineOk(), true);
+  db.exec("UPDATE cc_state SET multiline_ok = 0");
+  assert.equal(store.multilineOk(), false);
+});

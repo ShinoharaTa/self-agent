@@ -62,6 +62,18 @@ test("引数が固定の形: list-panes・list-clients・capture-pane・load-buf
   assert.ok(calls.every((call) => call.timeoutMs === CHILD_TIMEOUT_MS && call.maxBuffer === CHILD_MAX_BUFFER));
 });
 
+test("capture-pane: historyLines を渡せば -S -<n> で履歴から撮る。範囲外・整数でなければ投げて実行しない", async () => {
+  const { run, calls } = fakeRun({ code: 0, stdout: "screen", stderr: "" });
+  const tmux = createTmux({ tmuxPath: TMUX, run });
+  assert.deepEqual(await tmux.capturePane("%3", { historyLines: 200 }), { ok: true, value: "screen" });
+  assert.deepEqual(calls.map((call) => call.args), [["capture-pane", "-p", "-e", "-S", "-200", "-t", "%3"]]);
+  for (const historyLines of [0, -1, 1.5, 10_001, Number.NaN]) {
+    await assert.rejects(tmux.capturePane("%3", { historyLines }));
+  }
+  await assert.rejects(tmux.capturePane("3", { historyLines: 200 }));
+  assert.equal(calls.length, 1);
+});
+
 test("子の env は HOME・PATH・LANG だけ（TMUX・トークン類を渡さない）", async (t) => {
   const keys = ["TMUX", "DISCORD_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "TMUX_TMPDIR"] as const;
   const saved = keys.map((key) => process.env[key]);
@@ -149,8 +161,8 @@ test("失敗の種類: サーバーが無い・ペインが無い・それ以外
 });
 
 test("list-panes・list-clients の出力を読む", async () => {
-  const good = paneLine(["work", "0", "1", "%5", "1", "0", "/home/u/workspace/a", "claude", "0", "0"]);
-  const dead = paneLine(["dead", "2", "0", "%6", "0", "1", "/tmp", "bash", "1", "1"]);
+  const good = paneLine(["work", "0", "1", "%5", "1", "0", "/home/u/workspace/a", "claude", "0", "0", "4100"]);
+  const dead = paneLine(["dead", "2", "0", "%6", "0", "1", "/tmp", "bash", "1", "1", "4200"]);
   assert.deepEqual(parsePanes([good, dead, ""].join("\n")), [
     {
       sessionName: "work",
@@ -163,6 +175,7 @@ test("list-panes・list-clients の出力を読む", async () => {
       currentCommand: "claude",
       inMode: false,
       dead: false,
+      panePid: 4100,
     },
     {
       sessionName: "dead",
@@ -175,6 +188,7 @@ test("list-panes・list-clients の出力を読む", async () => {
       currentCommand: "bash",
       inMode: true,
       dead: true,
+      panePid: 4200,
     },
   ]);
   assert.deepEqual(parsePanes(""), []);
@@ -187,17 +201,32 @@ test("list-panes・list-clients の出力を読む", async () => {
 });
 
 test("list-panes: 形の合わない行・同じ pane_id があれば一覧ごと信じない（パスの改行・タブで行を作られる）", async () => {
-  const good = paneLine(["work", "0", "1", "%5", "1", "0", "/home/u/workspace/a", "claude", "0", "0"]);
+  const good = paneLine(["work", "0", "1", "%5", "1", "0", "/home/u/workspace/a", "claude", "0", "0", "4100"]);
   for (const bad of [
     paneLine(["short", "0", "0", "%7"]),
-    paneLine(["bad-id", "0", "0", "7", "1", "1", "/tmp", "bash", "0", "0"]),
-    paneLine(["bad-flag", "0", "0", "%8", "yes", "1", "/tmp", "bash", "0", "0"]),
-    paneLine(["path", "0", "0", "%9", "1", "1", "/tmp/a\tb", "bash", "0", "0"]),
+    paneLine(["bad-id", "0", "0", "7", "1", "1", "/tmp", "bash", "0", "0", "4300"]),
+    paneLine(["bad-flag", "0", "0", "%8", "yes", "1", "/tmp", "bash", "0", "0", "4300"]),
+    paneLine(["bad-pid", "0", "0", "%8", "1", "1", "/tmp", "bash", "0", "0", "x"]),
+    paneLine(["no-pid", "0", "0", "%8", "1", "1", "/tmp", "bash", "0", "0", ""]),
+    paneLine(["old-format", "0", "0", "%8", "1", "1", "/tmp", "bash", "0", "0"]),
+    paneLine(["path", "0", "0", "%9", "1", "1", "/tmp/a\tb", "bash", "0", "0", "4300"]),
   ]) {
     assert.equal(parsePanes([good, bad].join("\n")), undefined, bad);
   }
   // シェルのペイン %7 のパスが「改行 + claude のペインの行（自分の %7）+ 改行」: 本当の行の切れ端は形が合わない
-  const ownId = paneLine(["shell", "0", "0", "%7", "1", "1", "/tmp/x\nwork\t0\t1\t%7\t1\t1\t/home/u/workspace/a\tclaude\t0\t0\n", "bash", "0", "0"]);
+  const ownId = paneLine([
+    "shell",
+    "0",
+    "0",
+    "%7",
+    "1",
+    "1",
+    "/tmp/x\nwork\t0\t1\t%7\t1\t1\t/home/u/workspace/a\tclaude\t0\t0\t4100\n",
+    "bash",
+    "0",
+    "0",
+    "4400",
+  ]);
   assert.equal(parsePanes([good, ownId].join("\n")), undefined);
   // 切れ端もすべて形を合わせると、作った行は別のペイン（%5）と同じ pane_id になる
   const allValid = paneLine([
@@ -207,10 +236,11 @@ test("list-panes: 形の合わない行・同じ pane_id があれば一覧ご�
     "%7",
     "1",
     "1",
-    "/tmp/x\tbash\t0\t0\nwork\t0\t1\t%5\t1\t1\t/home/u/workspace/a\tclaude\t0\t0\nz\t0\t0\t%99\t1\t1\t/p",
+    "/tmp/x\tbash\t0\t0\t4400\nwork\t0\t1\t%5\t1\t1\t/home/u/workspace/a\tclaude\t0\t0\t4100\nz\t0\t0\t%99\t1\t1\t/p",
     "bash",
     "0",
     "0",
+    "4400",
   ]);
   assert.equal(parsePanes([good, allValid].join("\n")), undefined);
   const { run, state } = fakeRun();

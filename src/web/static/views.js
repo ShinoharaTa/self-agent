@@ -1,5 +1,5 @@
 // タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）・タスク・リマインド・記憶（W4）・GitHub・ナレッジ（W6）・
-// プロジェクト（W7。読むだけ）。ジョブは後の段で足す
+// プロジェクト（W7。読むだけ）・Claude Code のセッション（CC2。画面の写しを読むだけ）。ジョブは後の段で足す
 "use strict";
 
 (function () {
@@ -588,6 +588,65 @@
     );
   }
 
+  // ===== Claude Code のセッション（CC2: 見出しと画面の写しを読むだけ。送信・許可は後の段） =====
+  const CC_STATES = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
+  const CC_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  /** 一覧の行の名前（名前が無ければディレクトリ） */
+  function ccName(s) {
+    return (s && (s.name || s.cwdLabel)) || "（名前なし）";
+  }
+
+  /** sessionId のセッション。タブで読んだもの（画面の写しを含む）があればそれ、無ければ一覧のもの */
+  function ccSessionOf(sessionId) {
+    const loaded = store.ccSessions[sessionId];
+    if (loaded && loaded.session) return loaded.session;
+    return store.cc ? store.cc.sessions.find((s) => s.sessionId === sessionId) || null : null;
+  }
+
+  /** RC のリンク（https://claude.ai/code/ のものだけ） */
+  function rcUrl(url) {
+    return typeof url === "string" && url.startsWith("https://claude.ai/code/") ? url : null;
+  }
+
+  function renderCcSession(container, sessionId) {
+    const loaded = store.ccSessions[sessionId];
+    const s = ccSessionOf(sessionId);
+    const rc = s ? rcUrl(s.rcUrl) : null;
+    const actions = rc ? [el("a", { class: "btn btn-secondary btn-sm", href: rc, target: "_blank", rel: "noreferrer noopener" }, [icon("external-link"), "RC で開く"])] : [];
+    const extras = s ? [el("span", { class: "badge" + (s.state === "needs_input" ? " badge-accent" : ""), text: CC_STATES[s.state] || String(s.state) })] : [];
+    const head = toolbar("terminal", s ? ccName(s) : "Claude Code", extras, actions);
+    if (loaded && loaded.missing) {
+      container.replaceChildren(head, scroll([empty("terminal", "このセッションは一覧にありません（終わったか、一覧を読めません）")]));
+      return;
+    }
+    if (!s) {
+      container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
+      return;
+    }
+    const facts = el("ul", { class: "kv-list" }, [
+      kv("ディレクトリ", el("span", { class: "mono", text: s.cwdLabel || "-" })),
+      kv("状態", (CC_STATES[s.state] || String(s.state)) + (s.since ? "（" + ago(s.since) + "から）" : "")),
+      kv("権限モード", el("span", { class: "mono", text: s.permissionMode || "-" })),
+      kv("ペイン", s.inTmux && s.paneLabel ? el("span", { class: "mono", text: s.paneLabel }) : "tmux の外"),
+      kv("最後の指示", s.lastPromptAt ? dateTime(s.lastPromptAt) + "（" + ago(s.lastPromptAt) + "）" : "-"),
+    ]);
+    const prompt = s.lastPromptText ? el("pre", { class: "code-pre", text: s.lastPromptText }) : null;
+    let screen;
+    if (!loaded || !loaded.session) screen = el("p", { class: "meta", text: "読み込んでいます…" });
+    else if (!s.inTmux) {
+      screen = el("p", { class: "meta", text: "tmux の外のセッションです。画面は見られません" + (rc ? "。RC で開いてください。" : "。") });
+    } else if (typeof s.screen !== "string") screen = el("p", { class: "meta", text: "画面を読めませんでした" });
+    else screen = el("pre", { class: "code-pre cc-screen", text: s.screen });
+    const body = scroll([
+      section("セッション", [facts, prompt].filter((x) => x)),
+      section("画面", [screen], [el("span", { class: "meta", text: "3 秒ごとに更新" })]),
+    ]);
+    // 画面の写しは最後の行（入力欄）を見たいので、下にいれば下に付ける
+    body.dataset.stick = "bottom";
+    container.replaceChildren(head, body);
+  }
+
   // ===== ナレッジ（W6: 一覧と中身。検索は 3 文字以上。読むだけで、削除は Discord から） =====
   // q: 検索欄の語（打っている途中も）。selected: 選んでいる項目の id
   const kbState = { q: "", selected: null, timer: null };
@@ -877,8 +936,8 @@
   };
 
   /**
-   * 知らない・無効な機能のタブは null（開かない）。会話は ch:<チャンネル ID>、プロジェクトは project:<slug>。会話ログ・GitHub は /api/status を読んで
-   * dev モード・GitHub が有効と分かるまで開かない
+   * 知らない・無効な機能のタブは null（開かない）。会話は ch:<チャンネル ID>、プロジェクトは project:<slug>、Claude Code は cc:<sessionId>。
+   * 会話ログ・GitHub・Claude Code は /api/status を読んで dev モード・GitHub・Claude Code の連携が有効と分かるまで開かない
    */
   function info(tabId) {
     if (tabId.startsWith("ch:")) {
@@ -905,6 +964,24 @@
         },
       };
     }
+    if (tabId.startsWith("cc:")) {
+      const sessionId = tabId.slice(3);
+      if (!CC_SESSION_ID.test(sessionId) || !store.ccEnabled()) return null;
+      const s = ccSessionOf(sessionId);
+      return {
+        title: s ? ccName(s) : "Claude Code",
+        icon: "terminal",
+        render: (container) => renderCcSession(container, sessionId),
+        // 前に出すたびに画面の写しと一覧を読み直す（その後は api.js の polling）
+        onOpen: () => {
+          store.load.ccSession(sessionId);
+          store.load.cc();
+        },
+        onClose: () => {
+          delete store.ccSessions[sessionId];
+        },
+      };
+    }
     if (tabId === "devlog" && !(store.status && store.status.devMode)) return null;
     if (tabId === "github" && !(store.status && store.status.github && store.status.github.enabled)) return null;
     return Object.prototype.hasOwnProperty.call(STATIC, tabId) ? STATIC[tabId] : null;
@@ -912,7 +989,7 @@
 
   /** /api/status を読むまで開けるか分からないタブ（読んだ後に開き直す） */
   function waitsForStatus(tabId) {
-    return (tabId === "devlog" || tabId === "github") && store.status === null;
+    return (tabId === "devlog" || tabId === "github" || tabId.startsWith("cc:")) && store.status === null;
   }
 
   SA.views = {
@@ -927,6 +1004,8 @@
     kbSelectedId: () => (store.knowledge ? (kbSelected(store.knowledge.entries) || { id: null }).id : null),
     kbInput,
     githubParts,
+    ccName,
+    ago,
     compact,
     dayLabel,
     overdue,

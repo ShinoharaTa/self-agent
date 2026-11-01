@@ -72,6 +72,8 @@ export type TmuxPane = {
   /** コピーモードなど（pane_in_mode） */
   inMode: boolean;
   dead: boolean;
+  /** ペインで最初に起動したプロセス（シェル）の pid（pane_pid。docs/plan/claude-code-sessions.md §3.1） */
+  panePid: number;
 };
 
 /** list-clients で取るクライアントの情報。activityAt は最後の活動の時刻（エポックからのミリ秒。tmux は秒で返す） */
@@ -85,8 +87,11 @@ export type TmuxResult<T> = { ok: true; value: T } | { ok: false; reason: TmuxFa
 export type Tmux = {
   listPanes(): Promise<TmuxResult<TmuxPane[]>>;
   listClients(): Promise<TmuxResult<TmuxClient[]>>;
-  /** 見えている画面だけを SGR 付きで撮る（`capture-pane -p -e`） */
-  capturePane(paneId: string): Promise<TmuxResult<string>>;
+  /**
+   * 見えている画面を SGR 付きで撮る（`capture-pane -p -e`）。historyLines を渡せば、その行数だけ前の履歴から撮る（`-S -<n>`。
+   * docs/plan/claude-code-sessions.md §5.1 の画面の写し）
+   */
+  capturePane(paneId: string, options?: { historyLines?: number }): Promise<TmuxResult<string>>;
   /** text を名前付きのバッファ（handoffBufferName）に入れる。text が空・MAX_PASTE_CHARS 字を超える・制御文字がある（1 行のテンプレートだけを送る。§5.4）なら投げる */
   loadBuffer(handoffId: number, text: string): Promise<TmuxResult<void>>;
   /** 名前付きのバッファをペインに貼って消す（`paste-buffer -p -d`。オーナーの貼り付けのバッファは上書きしない）。貼れなければバッファを消してから失敗を返す */
@@ -117,6 +122,7 @@ export const PANE_FORMAT = [
   "#{pane_current_command}",
   "#{pane_in_mode}",
   "#{pane_dead}",
+  "#{pane_pid}",
 ].join("\t");
 
 /** list-clients の -F */
@@ -125,6 +131,9 @@ export const CLIENT_FORMAT = ["#{client_session}", "#{client_activity}"].join("\
 const PANE_ID = /^%\d+$/;
 const SOCKET_NAME = /^[A-Za-z0-9._-]+$/;
 const INDEX = /^\d+$/;
+const PID = /^\d{1,10}$/;
+/** 画面の写しで撮る履歴の行数の上限 */
+const MAX_HISTORY_LINES = 10_000;
 const FLAG = /^[01]$/;
 // C0・DEL・C1 の制御文字（改行・ESC を含む）
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
@@ -148,10 +157,10 @@ export function parsePanes(stdout: string): TmuxPane[] | undefined {
   for (const line of stdout.split("\n")) {
     if (line === "") continue;
     const fields = line.split("\t");
-    if (fields.length !== 10) return undefined;
-    const [sessionName, windowIndex, paneIndex, paneId, windowActive, paneActive, currentPath, currentCommand, inMode, dead] =
-      fields as [string, string, string, string, string, string, string, string, string, string];
-    if (!INDEX.test(windowIndex) || !INDEX.test(paneIndex) || !PANE_ID.test(paneId)) return undefined;
+    if (fields.length !== 11) return undefined;
+    const [sessionName, windowIndex, paneIndex, paneId, windowActive, paneActive, currentPath, currentCommand, inMode, dead, panePid] =
+      fields as [string, string, string, string, string, string, string, string, string, string, string];
+    if (!INDEX.test(windowIndex) || !INDEX.test(paneIndex) || !PANE_ID.test(paneId) || !PID.test(panePid)) return undefined;
     if (![windowActive, paneActive, inMode, dead].every((flag) => FLAG.test(flag))) return undefined;
     panes.push({
       sessionName,
@@ -164,6 +173,7 @@ export function parsePanes(stdout: string): TmuxPane[] | undefined {
       currentCommand,
       inMode: inMode === "1",
       dead: dead === "1",
+      panePid: Number(panePid),
     });
   }
   return new Set(panes.map((pane) => pane.paneId)).size === panes.length ? panes : undefined;
@@ -218,9 +228,14 @@ export function createTmux(options: TmuxOptions): Tmux {
       const result = await exec(["list-clients", "-F", CLIENT_FORMAT]);
       return result.ok ? { ok: true, value: parseClients(result.value) } : result;
     },
-    async capturePane(paneId) {
+    async capturePane(paneId, captureOptions) {
       assertPaneId(paneId);
-      return exec(["capture-pane", "-p", "-e", "-t", paneId]);
+      const history = captureOptions?.historyLines;
+      if (history === undefined) return exec(["capture-pane", "-p", "-e", "-t", paneId]);
+      if (!Number.isSafeInteger(history) || history < 1 || history > MAX_HISTORY_LINES) {
+        throw new Error(`履歴の行数は 1〜${MAX_HISTORY_LINES} で指定してください`);
+      }
+      return exec(["capture-pane", "-p", "-e", "-S", `-${history}`, "-t", paneId]);
     },
     async loadBuffer(handoffId, text) {
       const name = handoffBufferName(handoffId);
