@@ -59,13 +59,13 @@ test("CcSendStore: add・get・同じ本文の 5 秒・まだ終わっていな�
   assert.equal(store.findRecentSame(S1, "1 行目\n2 行目", at(-5))?.id, first.id);
   assert.equal(store.findRecentSame(S1, "別", at(-5)), undefined);
   assert.equal(store.findRecentSame(S2, "1 行目\n2 行目", at(-5)), undefined);
-  // 取り消した・送れなかった・諦めた行は返さない
+  // 取り消した・送れなかった・諦めた行と、Discord の確認待ちの行は返さない
   const other = store.add({ sessionId: S2, text: "x", origin: "web", state: "queued" });
-  for (const state of ["cancelled", "failed", "gave_up"] as const) {
+  for (const state of ["cancelled", "failed", "gave_up", "awaiting_confirm"] as const) {
     store.transition(other.id, ["queued", "cancelled", "failed", "gave_up"], state);
     assert.equal(store.findRecentSame(S2, "x", at(-5)), undefined, state);
   }
-  store.transition(other.id, ["gave_up"], "unconfirmed");
+  store.transition(other.id, ["awaiting_confirm"], "unconfirmed");
   assert.equal(store.findRecentSame(S2, "x", at(-5))?.id, other.id);
   store.transition(other.id, ["unconfirmed"], "cancelled");
   clock.now = at(6);

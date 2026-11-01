@@ -159,14 +159,14 @@ export class CcSendStore {
   }
 
   /**
-   * 同じセッション・同じ本文で since 以後に作った最新の行（二重送信の判定。§3.2）。取り消した・送れなかった・諦めた行は返さない
-   * （送り直しを前の送信と取り違えない）
+   * 同じセッション・同じ本文で since 以後に作った最新の行（二重送信の判定。§3.2）。取り消した・送れなかった・諦めた行と、Discord の確認待ちの行は返さない
+   * （送り直しを前の送信と取り違えない。確認待ちは送るかどうか決まっていない）
    */
   findRecentSame(sessionId: string, text: string, since: Date): CcSendRow | undefined {
     const row = this.db
       .prepare(
         `SELECT * FROM cc_sends WHERE session_id = ? AND text = ? AND created_at >= ?
-           AND state NOT IN ('cancelled', 'failed', 'gave_up') ORDER BY id DESC LIMIT 1`,
+           AND state NOT IN ('cancelled', 'failed', 'gave_up', 'awaiting_confirm') ORDER BY id DESC LIMIT 1`,
       )
       .get(sessionId, text, since.toISOString());
     return row === undefined ? undefined : toRow(row);

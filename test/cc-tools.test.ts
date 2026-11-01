@@ -13,12 +13,16 @@ import {
   type TextToolResult,
 } from "../src/agent/tools.ts";
 import type { RunContext } from "../src/agent/runner.ts";
-import { createCcTools, CC_LIST_MAX } from "../src/app/cc-tools.ts";
+import { createCcTools, CC_LIST_MAX, CONFIRM_TOO_LONG_MESSAGE } from "../src/app/cc-tools.ts";
 import {
+  CC_CONFIRM_MAX_PAGES,
+  CC_CONFIRM_PAGE_CHARS,
   CC_CONFIRM_TTL_MS,
+  CC_DISABLED_NOTE,
   CcConfirmExpirer,
   ccSendPrompt,
-  codeBlock,
+  fitsConfirm,
+  splitConfirmBody,
   type CcConfirmRuntime,
 } from "../src/app/commands/cc-confirm.ts";
 import { createCcComponent } from "../src/app/commands/cc.ts";
@@ -114,8 +118,10 @@ function setup(t: TestContext) {
     { sessionId: S2, cwd: "/w/beta", name: "b", pid: 600 },
   ]);
   const commands: string[][] = [];
+  const tmuxEnv = { noServer: false };
   const run: RunCommand = async (_file, args) => {
     commands.push([...args]);
+    if (tmuxEnv.noServer) return { code: 1, stdout: "", stderr: "no server running on /tmp/tmux-1000/default\n" };
     switch (args[0]) {
       case "list-panes":
         return { code: 0, stdout: [paneLine("%1", 400), paneLine("%2", 410, "bash")].join("\n"), stderr: "" };
@@ -172,8 +178,10 @@ function setup(t: TestContext) {
   const edited: Array<{ channelId: string; messageId: string; message: OutgoingMessage }> = [];
   const bot = {
     failPost: false,
+    /** これまでに投稿した数がこれになったら次の投稿に失敗する（undefined なら失敗しない） */
+    failAfter: undefined as number | undefined,
     async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
-      if (this.failPost) throw new Error("Missing Access");
+      if (this.failPost || this.failAfter === posted.length) throw new Error("Missing Access");
       posted.push({ channelId, message });
       return `m-${posted.length}`;
     },
@@ -202,7 +210,7 @@ function setup(t: TestContext) {
     return responder.calls;
   };
   const handlers = (context: RunContext = CONTEXT) => createCcToolHandlers(cc, context);
-  return { db, clock, sends, starts, sessions, commands, snapshot, sender, starter, checks, launches, bot, posted, edited, cc, runtime, logs, pressButton, handlers };
+  return { tmuxEnv, db, clock, sends, starts, sessions, commands, snapshot, sender, starter, checks, launches, bot, posted, edited, cc, runtime, logs, pressButton, handlers };
 }
 
 const pasteOps = (commands: string[][]) => commands.filter((args) => ["load-buffer", "paste-buffer", "send-keys"].includes(args[0]!));
@@ -269,8 +277,8 @@ test("ツール定義: cc_list・cc_send・cc_start は末尾にあり、Claude 
   assert.deepEqual(definitions(s.cc, CONTEXT), base);
   const send = createTaskTools({} as never, {} as never, {} as never, {} as never, {} as never, {} as never).find((d) => d.name === "cc_send")!;
   const schema = z.object(send.inputSchema);
-  assert.equal(schema.safeParse({ session_id: S1, text: "a".repeat(2000) }).success, true);
-  assert.equal(schema.safeParse({ session_id: S1, text: "a".repeat(2001) }).success, false);
+  assert.equal(schema.safeParse({ session_id: S1, text: "a".repeat(4000) }).success, true);
+  assert.equal(schema.safeParse({ session_id: S1, text: "a".repeat(4001) }).success, false);
   assert.equal(schema.safeParse({ session_id: S1, text: "" }).success, false);
 });
 
@@ -317,6 +325,12 @@ test("cc_list: §2.2 の順で「従わない」の注意付き。state で絞�
   });
   assert.equal(sessions[2]!.in_tmux, false);
   assert.equal(sessions[2]!.dir, "/elsewhere");
+  // 出すものが無ければ tmux を読まない
+  const listsBefore = s.commands.filter((args) => args[0] === "list-panes").length;
+  s.snapshot.sessions = s.snapshot.sessions.filter((entry) => entry.state !== "running");
+  assert.deepEqual((parse(await s.handlers().ccList({ state: "running" })).sessions as unknown[]).length, 0);
+  assert.equal(s.commands.filter((args) => args[0] === "list-panes").length, listsBefore);
+  s.snapshot.sessions.splice(1, 0, view(S2, 600, { status: "busy", state: "running", name: "b", cwd: "/w/beta" }));
   const running = parse(await s.handlers().ccList({ state: "running" }));
   assert.deepEqual((running.sessions as Array<Record<string, unknown>>).map((entry) => entry.session_id), [S2]);
   // 最大 CC_LIST_MAX 件。残りは more
@@ -351,6 +365,9 @@ test("cc_send: 確認を投稿して cc_sends に awaiting_confirm で作るだ�
   assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S2, text: "x" })), { result: "not_in_tmux" });
   assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S3, text: "x" })), { result: "not_in_tmux" });
   assert.equal(parse(await s.handlers().ccSend({ session_id: S1, text: "a\tb" })).result, "invalid_args");
+  s.tmuxEnv.noServer = true;
+  assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S2, text: "x" })), { result: "not_available", message: "tmux のサーバーがありません" });
+  s.tmuxEnv.noServer = false;
   const logs = s.logs.join("\n");
   assert.ok(!logs.includes(SECRET_TEXT) && !logs.includes(SECRET_NAME) && !logs.includes(CHANNEL) && !logs.includes(S1));
 });
@@ -362,22 +379,93 @@ test("cc_send: 投稿に失敗したら行を取り消して投げる（送ら�
   assert.equal(s.sends.get(1)!.state, "cancelled");
 });
 
-test("確認の本文: 全文をコードブロックで出す。1,800 字までは切らず、1,801 字以上は切って「ほか n 字」。``` は閉じない", () => {
+/** 投稿の各通のコードブロックの中身をつないだもの（ゼロ幅の空白は除く） */
+function shownBody(messages: readonly OutgoingMessage[]): string {
+  return messages
+    .map((message) => /```\n([\s\S]*)\n```$/.exec(message.text)?.[1] ?? "")
+    .join("")
+    .replace(/\u200b/g, "");
+}
+
+test("確認の本文: 全文を 1 通 1,800 字ずつ最大 3 通に分け、ボタンは最後の 1 通だけ。どの通も 2,000 字以内で、``` は閉じない", () => {
   const target = { name: "a", dir: "alpha" };
-  const full = ccSendPrompt(1, target, "あ".repeat(1800)).text;
-  assert.ok(full.includes(`\`\`\`\n${"あ".repeat(1800)}\n\`\`\``));
-  assert.ok(!full.includes("ほか"));
-  const cut = ccSendPrompt(1, target, "あ".repeat(1801)).text;
-  assert.ok(cut.endsWith(`\`\`\`\n${"あ".repeat(1800)}\n\`\`\`（ほか 1 字）`), cut.slice(-30));
-  const long = ccSendPrompt(1, target, "い".repeat(2000)).text;
-  assert.ok(long.endsWith("（ほか 200 字）"));
-  assert.ok([...long].length <= 2000);
-  // 改行はそのまま、``` はブロックを閉じない
-  const block = codeBlock("1 行目\n```\nrm -rf ~\n```");
-  assert.equal(block.split("```").length, 3, block);
-  assert.ok(block.includes("1 行目\n"));
-  // 長い名前でも 2,000 字に収まる
-  assert.ok([...ccSendPrompt(1, { name: "_".repeat(200), dir: "*".repeat(200) }, "う".repeat(2000)).text].length <= 2000);
+  const one = ccSendPrompt(1, target, "あ".repeat(CC_CONFIRM_PAGE_CHARS));
+  assert.equal(one.length, 1);
+  assert.equal(shownBody(one), "あ".repeat(1800));
+  assert.ok(!one[0]!.text.includes("ほか"));
+  // 1,801 字は 2 通（切らない）
+  const two = ccSendPrompt(1, target, "あ".repeat(1801));
+  assert.equal(two.length, 2);
+  assert.equal(shownBody(two), "あ".repeat(1801));
+  assert.ok(two[0]!.text.startsWith("Claude Code の a（alpha）に送りますか？\n（1/2）\n```"));
+  assert.ok(two[1]!.text.startsWith("（続き 2/2）\n```"));
+  assert.deepEqual(two.map((message) => message.components !== undefined), [false, true]);
+  // 4,000 字（上限）は 3 通。長い名前でも各通は 2,000 字以内
+  const text = Array.from({ length: 4000 }, (_, i) => "いろはにほへと\n"[i % 8]).join("");
+  const three = ccSendPrompt(1, { name: "_".repeat(200), dir: "*".repeat(200) }, text);
+  assert.equal(three.length, CC_CONFIRM_MAX_PAGES);
+  assert.equal(shownBody(three), text);
+  for (const message of three) assert.ok([...message.text].length <= 2000, String([...message.text].length));
+  // ``` を崩すと長くなるが、1 通の中で切らずに次の通へ送る。崩した後もブロックは閉じない
+  const ticks = "a```b\n".repeat(600);
+  const pages = splitConfirmBody(ticks);
+  assert.equal(pages.join("").replace(/\u200b/g, ""), ticks);
+  for (const page of pages) {
+    assert.ok([...page].length <= CC_CONFIRM_PAGE_CHARS);
+    assert.ok(!page.includes("```"));
+  }
+  const tickMessages = ccSendPrompt(1, target, ticks);
+  for (const message of tickMessages) assert.equal(message.text.split("```").length, 3, message.text.slice(0, 40));
+  // 3 通に出しきれない本文は確認を出さない
+  assert.equal(fitsConfirm("`".repeat(4000)), false);
+  assert.equal(fitsConfirm("a".repeat(4000)), true);
+});
+
+test("cc_send: 長い本文は 3 通に分けて投稿し、ボタンの付いた最後の通を記録する。[送る]・失効で書き換えるのは最後の通だけ", async (t) => {
+  const s = setup(t);
+  const text = "x".repeat(3900);
+  assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S1, text })), { result: "confirmation_posted", send_id: 1 });
+  assert.equal(s.posted.length, 3);
+  assert.deepEqual(s.posted.map((post) => post.message.components !== undefined), [false, false, true]);
+  assert.equal(shownBody(s.posted.map((post) => post.message)), text);
+  assert.equal(s.sends.get(1)!.messageId, "m-3");
+  const message = updated(await s.pressButton(buttonId(s.posted[2]!.message, "送る")));
+  assert.ok(message.text.startsWith("Claude Code の"), message.text.slice(0, 40));
+  assert.ok(message.text.includes("（続き 3/3）"));
+  assert.ok([...message.text].length <= 2000);
+  // 失効の書き換えも最後の通だけ
+  const expirer = new CcConfirmExpirer({
+    cfg: { workspaceDir: "/w" },
+    ccSends: s.sends,
+    ccStarts: s.starts,
+    ccSessions: s.sessions,
+    ccPosts: s.bot,
+    ccEnabled: () => true,
+    now: () => new Date(s.clock.now),
+    log: () => undefined,
+  });
+  await s.handlers().ccStart({ project: "alpha", title: "fix", text: "z".repeat(2000) });
+  assert.deepEqual(s.posted.slice(3).map((post) => post.message.components !== undefined), [false, true]);
+  s.clock.now += CC_CONFIRM_TTL_MS;
+  await expirer.sweep();
+  assert.deepEqual(s.edited.map((edit) => edit.messageId), ["m-5"]);
+  assert.ok(s.edited[0]!.message.text.includes("`alpha` で起動しませんでした"));
+});
+
+test("cc_send: 途中の通の投稿に失敗したら行を取り消して投げる。3 通に出しきれない本文は投稿しない", async (t) => {
+  const s = setup(t);
+  s.bot.failAfter = 1;
+  await assert.rejects(s.handlers().ccSend({ session_id: S1, text: "x".repeat(3000) }), /Missing Access/);
+  assert.equal(s.sends.get(1)!.state, "cancelled");
+  assert.equal(s.sends.get(1)!.messageId, null);
+  s.bot.failAfter = undefined;
+  const before = s.posted.length;
+  assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S1, text: "`".repeat(4000) })), {
+    result: "invalid_args",
+    message: CONFIRM_TOO_LONG_MESSAGE,
+  });
+  assert.equal(s.posted.length, before);
+  assert.equal(s.sends.get(2), undefined);
 });
 
 test("[送る]: queued にして待ち行列を回す。入力待ちでなければ積んだまま「入力待ちになったら届けます」に書き換え、ボタンを外す", async (t) => {
@@ -448,6 +536,7 @@ test("CcConfirmExpirer: 10 分経った確認待ちの送信・起動を cancell
     ccStarts: s.starts,
     ccSessions: s.sessions,
     ccPosts: s.bot,
+    ccEnabled: () => true,
     now: () => new Date(s.clock.now),
     home: "/home/owner",
     log: (message) => s.logs.push(message),
@@ -483,7 +572,7 @@ test("cc_start: 確かめてから確認を投稿し cc_starts に awaiting_conf
   assert.deepEqual([row.project, row.title, row.text, row.permissionMode, row.channelId, row.messageId, row.state], ["alpha", "fix login", SECRET_TEXT, "plan", CHANNEL, "m-1", "awaiting_confirm"]);
   assert.equal(s.launches.length, 0);
   const prompt = s.posted[0]!.message;
-  assert.ok(prompt.text.startsWith("alpha で Claude Code の新しいセッションを起動しますか？\n題名: fix login\n権限モード: plan\n最初の指示:\n```"), prompt.text);
+  assert.ok(prompt.text.startsWith("`alpha` で Claude Code の新しいセッションを起動しますか？\n題名: `fix login`\n権限モード: plan\n最初の指示:\n```"), prompt.text);
   assert.ok(prompt.text.includes(SECRET_TEXT));
   assert.deepEqual([buttonId(prompt, "起動する"), buttonId(prompt, "やめる")], ["cc:start:1", "cc:keep:start:1"]);
 
@@ -497,7 +586,7 @@ test("cc_start: 確かめてから確認を投稿し cc_starts に awaiting_conf
   const after = s.starts.get(1)!;
   assert.deepEqual([after.state, after.tmuxSession, after.paneId], ["started", "alpha", "%9"]);
   const message = updated(calls);
-  assert.ok(message.text.startsWith("alpha で起動しました（tmux: alpha）"), message.text);
+  assert.ok(message.text.startsWith("`alpha` で起動しました（tmux: alpha）"), message.text);
   assert.deepEqual(message.components, []);
   // 起動の後に trust の確認待ちなら、確認のメッセージをその旨に書き換える
   s.launches[0]!.onTrustPending!();
@@ -510,7 +599,7 @@ test("cc_start: 確かめてから確認を投稿し cc_starts に awaiting_conf
 
   await s.handlers().ccStart({ project: "beta", title: "b" });
   const kept = updated(await s.pressButton("cc:keep:start:2"));
-  assert.ok(kept.text.startsWith("beta で起動しませんでした"), kept.text);
+  assert.ok(kept.text.startsWith("`beta` で起動しませんでした"), kept.text);
   assert.equal(s.starts.get(2)!.state, "cancelled");
   assert.equal(s.launches.length, 1);
   assert.ok(!s.logs.join("\n").includes(SECRET_TEXT) && !s.logs.join("\n").includes("alpha"));
@@ -532,10 +621,58 @@ test("cc_start: 確かめられなければ確認を出さない。[起動する
   assert.deepEqual(s.posted, []);
   s.starter.checkResult = undefined;
   await s.handlers().ccStart({ project: "alpha", title: "a" });
-  s.starter.launchResult = { ok: false, reason: "too_soon" };
+  s.starter.launchResult = { ok: false, reason: "tmux_failed" };
   const message = updated(await s.pressButton("cc:start:1"));
-  assert.ok(message.text.startsWith("alpha で起動できませんでした（前の起動から 1 分経っていません）"), message.text);
+  assert.ok(message.text.startsWith("`alpha` で起動できませんでした（tmux を使えませんでした）"), message.text);
+  assert.deepEqual(message.components, []);
   assert.equal(s.starts.get(1)!.state, "failed");
+});
+
+test("[起動する]: 一時的な理由（too_soon・limit・low_memory・no_server）で起動できなければ確認待ちに戻してボタンを残し、もう一度押せる", async (t) => {
+  const s = setup(t);
+  await s.handlers().ccStart({ project: "alpha", title: "a" });
+  for (const [reason, text] of [
+    ["too_soon", "前の起動から 1 分経っていません"],
+    ["limit", "セッションの数が上限です"],
+    ["low_memory", "メモリが足りません"],
+    ["no_server", "tmux のサーバーがありません"],
+  ] as const) {
+    s.starter.launchResult = { ok: false, reason };
+    const message = updated(await s.pressButton("cc:start:1"));
+    assert.ok(message.text.startsWith(`\`alpha\` で起動できませんでした（${text}）。少し待ってもう一度押してください`), message.text);
+    assert.equal(buttonId(message, "起動する"), "cc:start:1");
+    assert.equal(s.starts.get(1)!.state, "awaiting_confirm");
+  }
+  s.starter.launchResult = { ok: true, tmuxSession: "alpha", paneId: "%9", sendId: undefined };
+  const started = updated(await s.pressButton("cc:start:1"));
+  assert.ok(started.text.startsWith("`alpha` で起動しました"), started.text);
+  assert.equal(s.starts.get(1)!.state, "started");
+  assert.equal(s.launches.length, 5);
+});
+
+test("CcConfirmExpirer: Claude Code の連携が無効なら、残っている確認待ちを時間を待たずに取り消して注記する", async (t) => {
+  const s = setup(t);
+  await s.handlers().ccSend({ session_id: S1, text: "x" });
+  await s.handlers().ccStart({ project: "alpha", title: "a" });
+  const enabled = { value: true };
+  const expirer = new CcConfirmExpirer({
+    cfg: { workspaceDir: "/w" },
+    ccSends: s.sends,
+    ccStarts: s.starts,
+    ccSessions: s.sessions,
+    ccPosts: s.bot,
+    ccEnabled: () => enabled.value,
+    now: () => new Date(s.clock.now),
+    log: (message) => s.logs.push(message),
+  });
+  await expirer.sweep();
+  assert.deepEqual([s.sends.get(1)!.state, s.starts.get(1)!.state], ["awaiting_confirm", "awaiting_confirm"]);
+  enabled.value = false;
+  await expirer.sweep();
+  assert.deepEqual([s.sends.get(1)!.state, s.starts.get(1)!.state], ["cancelled", "cancelled"]);
+  assert.ok(s.edited[0]!.message.text.includes(`送りませんでした${CC_DISABLED_NOTE}`));
+  assert.ok(s.edited[1]!.message.text.includes(`起動しませんでした${CC_DISABLED_NOTE}`));
+  assert.ok(s.logs.includes("Claude Code: 連携が無効なため送りませんでした（#1）"));
 });
 
 test("Claude Code の連携が無効な間に押された確認は取り消す", async (t) => {
