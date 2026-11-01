@@ -144,7 +144,7 @@ test("GithubStore: 出来事は thread_id + updated_at で 1 回だけ。白は�
   assert.equal(store.markPosted(999, "github-1", "message-3"), false);
 });
 
-test("GithubStore.prune: 古い出来事と更新の無いスレッドを消す。積んでいる送り込みの通知は残す", (t) => {
+test("GithubStore.prune: 古い出来事と更新の無いスレッドを消す。まだ終わっていない送信（cc_sends）の通知は残す", (t) => {
   const { store, db, setNow } = tempStore(t);
   const old = store.addNotification(event({ threadId: "t-old" }));
   const queued = store.addNotification(event({ threadId: "t-queued" }));
@@ -152,7 +152,7 @@ test("GithubStore.prune: 古い出来事と更新の無いスレッドを消す�
   store.recordThread({ threadId: "t-new", repo: "example-org/example-repo", subjectType: "Issue", number: 2, updatedAt: "2026-10-15T00:20:00Z" });
   assert.ok(old.result === "added" && queued.result === "added");
   db.prepare(
-    "INSERT INTO github_handoffs (notification_id, target, state, created_at, updated_at) VALUES (?, 'session', 'queued', ?, ?)",
+    "INSERT INTO cc_sends (session_id, text, origin, state, notification_id, created_at, updated_at) VALUES (NULL, 'x', 'github', 'queued', ?, ?, ?)",
   ).run(queued.notification.id, at(0).toISOString(), at(0).toISOString());
   setNow(at(30));
   const fresh = store.addNotification(event({ threadId: "t-fresh" }));
