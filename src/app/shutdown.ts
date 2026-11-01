@@ -3,6 +3,7 @@
 import type { CcHookServer } from "../cc/hook-server.ts";
 import type { CcRegistry } from "../cc/registry.ts";
 import type { CcSender } from "../cc/sender.ts";
+import type { CcStarter } from "../cc/starter.ts";
 import type { Config } from "../config.ts";
 import type { GithubPoller } from "../github/poller.ts";
 import type { JobOrchestrator } from "../jobs/orchestrator.ts";
@@ -52,6 +53,11 @@ export type ShutdownDeps = {
    * 貼っている途中の 1 件が終わるのを待つ（待ちきれずに落ちれば、次の起動で unconfirmed になる）
    */
   ccSender?: Pick<CcSender, "stop" | "idle">;
+  /**
+   * Claude Code のセッションの起動（SELF_AGENT_CC=1 のときだけ）。scheduler と同じ時点で止め（新しく起動しない・確かめ直さない）、
+   * 起動の途中の 1 件と確かめている途中のものを待つ（起動した tmux のセッションは Bot の外なので残る）
+   */
+  ccStarter?: Pick<CcStarter, "stop" | "idle">;
   /** Claude Code の hook の受け口（SELF_AGENT_CC=1 のときだけ）。Web UI の次（DB を閉じる前）に閉じる */
   ccHookServer?: Pick<CcHookServer, "close">;
   closeDb: () => void;
@@ -107,6 +113,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     webServer,
     ccRegistry,
     ccSender,
+    ccStarter,
     ccHookServer,
     closeDb,
     log,
@@ -135,6 +142,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       jobs?.idle(),
       ccRegistry?.idle(),
       ccSender?.idle(),
+      ccStarter?.idle(),
     ]);
     // ターンと定期処理が入れた移動のうち、その時点で実行中のものだけ待つ
     await channelOps.idle();
@@ -169,6 +177,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     jobs?.stop();
     ccRegistry?.stop();
     ccSender?.stop();
+    ccStarter?.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);
     if (!(await settlesWithin(drained(), cfg.shutdownGraceSec * 1000))) {
       log(`進行中の処理が ${cfg.shutdownGraceSec} 秒で終わらなかったため、待たずに終了します`);

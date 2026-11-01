@@ -34,7 +34,7 @@ test("openDb: v27 の DB を v28 に上げても cc_sessions・cc_state は残�
   const db = openDb(path);
   t.after(() => db.close());
   assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
-  assert.equal(MIGRATIONS.length, 28);
+  assert.ok(MIGRATIONS.length >= 28);
   const sessions = new CcSessionStore(db, () => at(0));
   assert.equal(sessions.get(S1)?.name, "a");
   assert.equal(sessions.multilineOk(), false);

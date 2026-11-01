@@ -588,8 +588,10 @@
     );
   }
 
-  // ===== Claude Code のセッション（CC2: 見出しと画面の写し。CC3: 入力欄から送る・送信待ちの [取り消す]。許可は後の段） =====
+  // ===== Claude Code のセッション（CC2: 見出しと画面の写し。CC3: 入力欄から送る・送信待ちの [取り消す]。CC4: 起動したもの・trust の確認待ち。許可は後の段） =====
   const CC_STATES = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
+  /** 起動したもの（startedBy。owner は self-agent の外） */
+  const CC_STARTED_BY = { web: "self-agent（Web）が起動", tool: "self-agent（Discord）が起動", github: "self-agent（GitHub）が起動" };
   const CC_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   /** 今から何秒前か（60 秒以上は ago と同じ「n 分前」など） */
@@ -766,11 +768,25 @@
     }
     const facts = el("ul", { class: "kv-list" }, [
       kv("ディレクトリ", el("span", { class: "mono", text: s.cwdLabel || "-" })),
-      kv("状態", (CC_STATES[s.state] || String(s.state)) + (s.since ? "（" + ago(s.since) + "から）" : "")),
+      kv(
+        "状態",
+        (CC_STATES[s.state] || String(s.state)) +
+          (s.state === "needs_input" && s.waitingFor ? "・" + s.waitingFor : "") +
+          (s.since ? "（" + ago(s.since) + "から）" : ""),
+      ),
       kv("権限モード", el("span", { class: "mono", text: s.permissionMode || "-" })),
       kv("ペイン", s.inTmux && s.paneLabel ? el("span", { class: "mono", text: s.paneLabel }) : "tmux の外"),
       kv("最後の指示", s.lastPromptAt ? dateTime(s.lastPromptAt) + "（" + ago(s.lastPromptAt) + "）" : "-"),
+      ...(CC_STARTED_BY[s.startedBy] ? [kv("起動", CC_STARTED_BY[s.startedBy])] : []),
     ]);
+    // trust のダイアログ（self-agent はキーを送らない。§4.2）
+    const trust = s.trustPending
+      ? el("p", {
+          class: "alert",
+          role: "status",
+          text: "新しいディレクトリでは trust の確認が出ています。端末か RC で「Yes, I trust this folder」を選んでください。最初の指示はその後に届けます。",
+        })
+      : null;
     const prompt = s.lastPromptText ? el("pre", { class: "code-pre", text: s.lastPromptText }) : null;
     let screen;
     if (!loaded || !loaded.session) screen = el("p", { class: "meta", text: "読み込んでいます…" });
@@ -779,7 +795,7 @@
     } else if (typeof s.screen !== "string") screen = el("p", { class: "meta", text: "画面を読めませんでした" });
     else screen = el("pre", { class: "code-pre cc-screen", text: s.screen });
     const body = scroll([
-      section("セッション", [facts, prompt].filter((x) => x)),
+      section("セッション", [trust, facts, prompt].filter((x) => x)),
       section("画面", [screen], [el("span", { class: "meta", text: "3 秒ごとに更新" })]),
     ]);
     // 画面の写しは最後の行（入力欄）を見たいので、下にいれば下に付ける

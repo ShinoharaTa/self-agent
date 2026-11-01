@@ -42,6 +42,7 @@ import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
 import { CcRegistry } from "./cc/registry.ts";
 import { CcSender } from "./cc/sender.ts";
+import { CcStarter, procMemAvailable } from "./cc/starter.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -574,9 +575,10 @@ const githubPoller = createGithubPoller({
 
 // Claude Code のセッション（docs/plan/claude-code-sessions.md。SELF_AGENT_CC=1 のときだけ）: claude agents --json を周期で読んで cc_sessions に書き、
 // hook の受け口（127.0.0.1:SELF_AGENT_CC_HOOK_PORT。Web UI とは別のサーバー）で事象を受ける。Web から送る本文は cc_sends に積み、
-// 入力待ちのときだけ tmux で貼る（cc/sender.ts。待ち行列は 30 秒ごと）
+// 入力待ちのときだけ tmux で貼る（cc/sender.ts。待ち行列は 30 秒ごと）。Web から新しいセッションを SELF_AGENT_WORKSPACE_DIR の直下に起動する（cc/starter.ts）
 let ccRegistry: CcRegistry | undefined;
 let ccSender: CcSender | undefined;
+let ccStarter: CcStarter | undefined;
 let ccHookServer: CcHookServer | undefined;
 // 画面の写し（Web）と、セッション → ペインの引き当て（pid の祖先と pane_pid。§3.1）
 let ccTmux: Tmux | undefined;
@@ -598,8 +600,8 @@ if (
     dirs: new ClaudeDirs(),
     store: ccSessions,
     now,
-    // 送信の待ち行列が空でない間は、見ていなくても設定の周期で一覧を読む
-    busy: () => ccSends.countActive() > 0,
+    // 送信の待ち行列が空でない・起動したセッションをまだ一覧で見つけていない間は、見ていなくても設定の周期で一覧を読む
+    busy: () => ccSends.countActive() > 0 || ccStarter?.busy() === true,
     log,
   });
   ccRegistry = registry;
@@ -612,6 +614,24 @@ if (
   ccSender = new CcSender({ cfg: config, registry, panes, tmux, sends: ccSends, sessions: ccSessions, notify, now, log });
   // 受け付けを始める前に、再起動で delivering のまま残った送信を unconfirmed に、待ちの上限を過ぎたものを gave_up にする
   ccSender.recover();
+  ccStarter = new CcStarter({
+    cfg: config,
+    // 直下のディレクトリのうち、self-agent の場所と Claude Code の設定の場所に重なるものは起動しない
+    places: {
+      workspaceDir: config.workspaceDir,
+      protectedDirs: [config.workDir, config.dataDir, config.claudeConfigDir, join(homedir(), ".config/self-agent"), join(homedir(), ".claude")],
+    },
+    claudePath: ccClaudePath,
+    registry,
+    panes,
+    tmux,
+    sends: ccSends,
+    sessions: ccSessions,
+    sender: ccSender,
+    memAvailable: procMemAvailable(),
+    now,
+    log,
+  });
   ccStatusOf = () => ccStatus({ panes, hookListening: () => hookServer.address() !== undefined, store: ccSessions });
 }
 
@@ -689,9 +709,11 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         registry: ccRegistry,
         panes: ccPanes,
         tmux: ccTmux,
-        workspaceDir: join(homedir(), "workspace"),
+        workspaceDir: config.workspaceDir,
         home: homedir(),
         ...(ccSender === undefined ? {} : { sender: ccSender, sends: ccSends }),
+        // 起動（/api/cc/projects・POST /api/cc/sessions）
+        ...(ccStarter === undefined ? {} : { starter: ccStarter }),
         now,
       }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）
@@ -758,6 +780,7 @@ const lifecycle = createShutdown(
     webServer,
     ...(ccRegistry === undefined ? {} : { ccRegistry }),
     ...(ccSender === undefined ? {} : { ccSender }),
+    ...(ccStarter === undefined ? {} : { ccStarter }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     closeDb: () => db.close(),
     log,
@@ -827,4 +850,5 @@ reminderScheduler.start();
 githubPoller?.start();
 ccRegistry?.start();
 ccSender?.start();
+ccStarter?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

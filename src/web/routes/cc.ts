@@ -1,5 +1,5 @@
 // GET /api/cc/sessions・/api/cc/sessions/<id>（docs/plan/claude-code-sessions.md §5.1。CC2）、POST /api/cc/sessions/<id>/send・
-// /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）と /api/status の cc。
+// /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）、GET /api/cc/projects・POST /api/cc/sessions（CC4。起動は cc/starter.ts）と /api/status の cc。
 // この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順）と、1 つのセッションの画面の写し
 // （tmux の capture-pane を stripAnsi して最後の CC_SCREEN_LINES 行。tmux の外は screen: null）。SELF_AGENT_CC が無効なら 404。
 // GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
@@ -8,6 +8,7 @@ import { isUuid } from "../../cc/agents.ts";
 import type { CcPaneResolver, PaneLookup } from "../../cc/panes.ts";
 import type { CcRegistry, CcSessionView } from "../../cc/registry.ts";
 import { normalizeSendText, type CcSender } from "../../cc/sender.ts";
+import type { CcStartFailure, CcStarter } from "../../cc/starter.ts";
 import type { CcSendRow, CcSendStore } from "../../store/cc-sends.ts";
 import type { CcSessionStore } from "../../store/cc-sessions.ts";
 import { stripAnsi } from "../../tmux/pane-state.ts";
@@ -35,6 +36,8 @@ export type CcRouteDeps = {
   sender?: Pick<CcSender, "submit" | "cancel">;
   /** 一覧の送信の印（pending） */
   sends?: Pick<CcSendStore, "latestPerSession">;
+  /** 起動（CC4）。無ければ /api/cc/projects・POST /api/cc/sessions は 404 */
+  starter?: Pick<CcStarter, "projects" | "launch">;
   /** 既定は new Date */
   now?: () => Date;
 };
@@ -84,13 +87,30 @@ const SUBMIT_STATUS: Readonly<Record<string, number>> = {
   stopped: 503,
 };
 
+/** 起動を断った理由 → HTTP の状態（§5.1） */
+const START_STATUS: Readonly<Record<CcStartFailure, number>> = {
+  invalid_project: 400,
+  invalid_title: 400,
+  invalid_mode: 400,
+  empty: 400,
+  too_long: 400,
+  invalid_text: 400,
+  limit: 409,
+  low_memory: 409,
+  too_soon: 409,
+  not_ready: 503,
+  no_server: 503,
+  tmux_failed: 503,
+  stopped: 503,
+};
+
 /** 一覧の送信の印（そのセッションの最新の送信。終わったものは CC_SEND_RECENT_MS の間だけ） */
 function pendingJson(row: CcSendRow | undefined): { id: number; state: string; updatedAt: string } | null {
   return row === undefined ? null : { id: row.id, state: row.state, updatedAt: row.updatedAt };
 }
 
 export function ccRoutes(deps: CcRouteDeps): Route[] {
-  const { registry, panes, tmux, workspaceDir, home, sender, sends } = deps;
+  const { registry, panes, tmux, workspaceDir, home, sender, sends, starter } = deps;
   const now = deps.now ?? (() => new Date());
 
   const latestSends = (): Map<string, CcSendRow> => {
@@ -104,14 +124,18 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     cwdLabel: cwdLabel(view.cwd, workspaceDir, home),
     permissionMode: view.permissionMode,
     state: view.state,
+    // 判断待ちの理由（claude agents --json の waitingFor。status が waiting のときだけ）
+    waitingFor: view.waitingFor ?? null,
     since: iso(sinceOf(view)),
     lastPromptAt: iso(view.lastPromptAt),
     lastPromptText: view.lastPromptText,
     inTmux: pane !== undefined,
     paneLabel: pane === undefined ? null : paneLabel(pane),
     rcUrl: view.bridgeSessionId === undefined ? null : `${CC_RC_URL_PREFIX}${view.bridgeSessionId}`,
-    // 起動したもの（web / tool / github）は CC4 から。それまではすべてオーナーが起動したもの
-    startedBy: "owner",
+    // 起動したもの（owner = self-agent の外。web / tool / github は self-agent が起動したもの）
+    startedBy: view.startedBy,
+    // trust のダイアログの確認待ち（self-agent が起動したものだけ。§4.2）
+    trustPending: view.trustPending,
     // そのセッションの最新の送信（CC3）。保留中の許可（CC5a）はまだ無い
     pending: pendingJson(send),
     permission: null,
@@ -178,6 +202,34 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         const result = await sender.submit({ sessionId: id, text: checked.text, origin: "web" });
         if (result.ok) return { status: 202, json: { sendId: result.send.id, state: result.send.state } };
         return { status: SUBMIT_STATUS[result.reason] ?? 503, json: { error: result.reason === "stopped" ? "stopping" : result.reason } };
+      },
+    },
+    {
+      method: "GET",
+      pattern: /^\/api\/cc\/projects$/,
+      handle: async () => {
+        if (registry === undefined || starter === undefined) return NOT_FOUND;
+        return { status: 200, json: { projects: starter.projects().map((name) => ({ name })) } };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cc\/sessions$/,
+      handle: async ({ body }) => {
+        if (registry === undefined || starter === undefined) return NOT_FOUND;
+        registry.touch();
+        const result = await starter.launch({
+          project: body?.project,
+          title: body?.title,
+          text: body?.text,
+          permissionMode: body?.permissionMode,
+          startedBy: "web",
+        });
+        if (!result.ok) return { status: START_STATUS[result.reason], json: { error: result.reason === "stopped" ? "stopping" : result.reason } };
+        return {
+          status: 201,
+          json: { tmuxSession: result.tmuxSession, paneId: result.paneId, ...(result.sendId === undefined ? {} : { sendId: result.sendId }) },
+        };
       },
     },
     {

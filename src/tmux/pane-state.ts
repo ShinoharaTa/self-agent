@@ -312,10 +312,13 @@ export function classifyPane(meta: PaneMeta, raw1: string, raw2: string | undefi
   return stripAnsi(raw1) === stripAnsi(raw2) ? "idle" : "busy";
 }
 
+/** probePaneState が使う tmux の操作 */
+export type ProbeTmux = Pick<Tmux, "listPanes" | "listClients" | "capturePane">;
+
 export type ProbeResult = { ok: true; state: PaneState } | { ok: false; reason: "no_server" | "failed" };
 
 export type ProbeOptions = {
-  tmux: Tmux;
+  tmux: ProbeTmux;
   paneId: string;
   /** 既定は Date.now */
   now?: () => number;
@@ -324,7 +327,7 @@ export type ProbeOptions = {
 };
 
 /** ペインの情報とクライアントの活動を取る */
-async function readMeta(tmux: Tmux, paneId: string): Promise<{ ok: true; meta: PaneMeta } | { ok: false; reason: "no_server" | "failed" }> {
+async function readMeta(tmux: ProbeTmux, paneId: string): Promise<{ ok: true; meta: PaneMeta } | { ok: false; reason: "no_server" | "failed" }> {
   const panes = await tmux.listPanes();
   if (!panes.ok) return { ok: false, reason: panes.reason === "no_server" ? "no_server" : "failed" };
   const pane = panes.value.find((candidate) => candidate.paneId === paneId);
