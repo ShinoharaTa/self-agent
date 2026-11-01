@@ -3,6 +3,7 @@
 > 2026-10-14 作成（spec-writer）。2026-10-15 にオーナーが決定（§14）。PR-G1 の review で §3・§9・§11 を直した。
 > 「確認」= 2026-10-14 にコード・ホスト・公式文書で確かめた事実。「未確認」= 実装・受け入れで確かめるまで前提にしない。
 > リポジトリ名・ID・ログイン名は `<owner>/<repo>`・`<login>` などのプレースホルダで書く。
+> **2026-11-01（CC6）: 段 2・3 は Claude Code のセッションへの送信（`docs/plan/claude-code-sessions.md` §3・§4・§6）の上に載せ替えた。** 送り込みは `cc_sends`（`origin: 'github'`・`notification_id`）、段 3 は Manager ではなく「そのリポジトリのディレクトリで新しいセッションを起動して送る」。`github_handoffs`・`SELF_AGENT_GITHUB_HANDOFF`・`SELF_AGENT_MANAGER_SESSION` は作らない（表は v21 のまま残し、使わない）。§5・§6・§10〜§13 はこの形に直した。§1〜§4・§8 の段 2 のテンプレートは変えていない。
 
 ## 0. 目的と結論
 
@@ -13,8 +14,8 @@
 - 取得は `GET /notifications`（`all=false`・`participating=false`）に `If-Modified-Since` を付ける。GitHub の既読は変えない。重複はスレッド ID + `updated_at` で除く。
 - 振り分けは `reason`・`subject.type` と、更新されたスレッドのタイムライン（誰の操作か）で決める。赤 = 自分宛て、黄 = 自分のリポジトリの新しい Issue / PR、白 = 捨てる。
 - 投稿先は **/setup で作る新しい `#github`**（self-agent カテゴリ）。投稿は既定の人格の Bot。**メンションで鳴らすのは赤だけ。**
-- 段 2 の [対応] は custom_id に通知の行 ID だけを持つ。押されたら、アプリが送り先（tmux のペイン）を決め、**固定のテンプレート（リポジトリ・番号・種別・URL・注意書き）だけ**を、ペインが入力待ちのときにだけ送る。待てなければ SQLite に積んで 30 秒ごとにやり直し、2 時間で諦めて知らせる。
-- 段 3: そのリポジトリの Claude Code が動いていなければ、Manager（`agent-manager`）に同じ規則で「ここで始めるか確認して」を送る。
+- 段 2 の [対応] は custom_id に通知の行 ID だけを持つ。押されたら、アプリが送り先（そのリポジトリの Claude Code のセッション）を決め、**固定のテンプレート（リポジトリ・番号・種別・URL・注意書き）だけ**を `cc_sends` に積む。送るのは Claude Code のセッションへの送信（入力待ちのときだけ貼る・30 秒ごとにやり直す・`SELF_AGENT_CC_SEND_WAIT_MIN` で諦める）。
+- 段 3: そのリポジトリの Claude Code が動いていなければ、起動の確認（[起動して送る]）を出し、押されたらそのリポジトリのディレクトリで新しいセッションを起動して同じテンプレートを最初の指示として積む（CC4 の起動）。Manager は作らない。
 - 認証は **今の gh のログインをそのまま使う**（新しいトークンは作らない。§9）。外部サービスの追加なし・依存の追加なし・運用費 0 円。
 
 ---
@@ -148,8 +149,15 @@
 
 ## 5. 段 2: [対応] と稼働中のセッションへの送り込み
 
+> CC6 で載せ替えた形（実装は `src/app/github-handoff.ts`・`src/app/commands/github.ts`）:
+> - 送り先は押すたびに決め直す。`claude agents --json` の一覧（registry）のうち tmux の送れるペイン（claude-code-sessions.md §3.1）にいるセッションを、**一覧の cwd** で §5.2 の地図に対応させ、そのリポジトリのものを候補にする（ペインの cwd は使わない）。
+> - 候補が 1 つならそのセッションに積む（入力待ちでなければ送信の待ち行列で待つ）。複数なら §5.2 の 5 の順（入力待ち → アクティブなペイン）で 1 つに決め、**入力待ちが無い・それでも複数なら送らずに候補（セッション名）を返す**（どれに積むかを決められないため）。
+> - 積むのは `cc_sends`（`origin: 'github'`・`notification_id`）で、§5.3〜§5.5 の判定・貼り方・待ち行列は Claude Code のセッションへの送信（claude-code-sessions.md §3.2）のものをそのまま使う（待ちの上限は `SELF_AGENT_CC_SEND_WAIT_MIN`、既定 120 分。諦めたときの #github の知らせと [もう一度] は作っていない。押し直せば積む）。
+> - 同じスレッドの送信が終わっていない・30 分以内に届けたなら、押しても新しく積まず本人にだけ返す。
+> - 結果は #github では本人にだけの返信、Web では GitHub のタブのトースト。積んだら [取り消す]。
+
 ### 5.1 送れる対象
-- `SELF_AGENT_GITHUB_HANDOFF=1` のときだけ。
+- `SELF_AGENT_GITHUB=1` と `SELF_AGENT_CC=1` の両方で、`git` が見つかり、`SELF_AGENT_WORKSPACE_DIR` が workDir・dataDir と重ならないときだけ（`SELF_AGENT_GITHUB_HANDOFF` は作らない）。
 - 対象のリポジトリ: **地図（§5.2）にあるか、持ち主が `SELF_AGENT_GITHUB_OWNERS` にあるもの**だけに [対応] を付ける。他人のリポジトリでのメンションなどは投稿だけ（リポジトリ名は第三者が付けた名前で、Claude に渡したくないため。§8）。
 
 ### 5.2 リポジトリ → ディレクトリ → ペイン（地図）
@@ -205,21 +213,24 @@
 - 再起動の後も続ける。起動時に 2 時間を過ぎていたものは `gave_up`。停止処理（shutdown.ts）でタイマーを止め、実行中の 1 件を待つ。
 - tmux のサーバーが無い（`no server running`）→ 積まずに失敗で返す（「tmux が動いていません」）。
 
-### 5.6 ボタン（名前空間 `gh:`）
+### 5.6 ボタン（名前空間 `gh:`。CC6 の形）
 | custom_id | 動作 |
 |---|---|
-| `gh:act:<notification_row_id>` | 段 2 / 段 3 の送り込みを始める（deferUpdate してから。2 回撮るので 3 秒を超えうる） |
-| `gh:cancel:<handoff_id>` | `queued` を `cancelled` に |
-| `gh:retry:<notification_row_id>` | `gave_up` の後にもう一度 |
+| `gh:act:<notification_row_id>` | #github の投稿の [対応]。本人にだけ保留してから送り先を決め（2 回撮るので 3 秒を超えうる）、結果を本人にだけ返す |
+| `gh:start:<notification_row_id>` | その返信の [起動して送る]（段 3）。返信を結果に書き換える |
+| `gh:cancel:<send_id>` | その返信の [取り消す]。`origin: 'github'` の `queued` を `cancelled` に |
+- `gh:retry` は作らない（諦めた後は [対応] を押し直せば積む）。Web の GitHub のタブは `POST /api/github/<id>/act`・`/start` と `POST /api/cc/sends/<id>/cancel`。
 - 行が無い・状態が合わない → 本人にだけ「この操作は古くなっています」（turn-controls と同じ）。
 - 何をするか（送り先・本文）は押した時点のサーバー側の DB と地図だけで決める。custom_id から読むのは整数の ID だけ（形が違えば古い扱い）。
 
 ---
 
-## 6. 段 3: 動いていなければ Manager に相談
-- 段 2 で送り先が無い（地図にディレクトリはあるが `claude` のペインが無い、またはディレクトリが無い）とき、`SELF_AGENT_MANAGER_SESSION`（既定 `agent-manager`。空なら段 3 を無効）のペインに送る。
-- ペインの選び方・入力待ちの判定・送り方・待ち行列は §5 と同じ。Manager のセッションに `claude` のペインが 1 つも無ければ諦めて知らせる。
-- 返事は「Manager に相談を送りました（<repo> の作業セッションは動いていません）」。アプリは Worker を起こさない（起こすかは Manager がオーナーに聞く）。
+## 6. 段 3: 動いていなければ起動して送る（CC6 で Manager から置き換え）
+- 段 2 で候補のセッションが無い（地図にディレクトリはあるが、そこに対応する Claude Code のセッションが無い）とき、「<repo> の Claude Code のセッションは動いていません。~/workspace/<dir> で新しいセッションを起動して送りますか？」と [起動して送る] を返す。
+- [起動して送る] で、そのリポジトリのディレクトリ（地図のディレクトリのうちワークスペースの直下のものを先に、同じ深さなら名前の順で最初のもの。1 つ下も可）に、claude-code-sessions.md §4.2 の起動（`started_by: 'github'`・題名「GitHub PR|Issue <番号>」・権限モードは指定しない）をし、§8 の段 2 のテンプレートを最初の指示として `cc_sends`（ペイン宛て・`origin: 'github'`・`notification_id`）に積む。起動の上限・tmux のサーバーが無い・1 分の間隔などは起動と同じ規則で断る。trust の確認待ちの間は届かない（同じ）。
+- 押す間にセッションが現れていれば、起動せずにそれに積む（§5 と同じ判定）。
+- ディレクトリが地図に無い（ローカルに無い）なら送り先を決められないと返す（clone はしない）。
+- `SELF_AGENT_MANAGER_SESSION` と段 3 のテンプレート（§8）は作らない。
 
 ---
 
@@ -299,9 +310,8 @@ src/store/github.ts      通知・スレッド・送り込み・ポーリング�
 | `SELF_AGENT_GITHUB` | `1` で段 1 を有効（未設定なら何もしない。/setup も #github を作らない） |
 | `SELF_AGENT_GITHUB_POLL_SEC` | ポーリングの間隔（既定 300、最小 60） |
 | `SELF_AGENT_GITHUB_OWNERS` | 「自分のリポジトリ」とみなす持ち主（カンマ区切り。既定は gh のログイン 1 つ）。所属する org を足す |
-| `SELF_AGENT_GITHUB_HANDOFF` | `1` で段 2（[対応] と送り込み） |
-| `SELF_AGENT_WORKSPACE_DIR` | 地図を作る場所（既定 `~/workspace`） |
-| `SELF_AGENT_MANAGER_SESSION` | 段 3 の送り先の tmux セッション名（既定 `agent-manager`。空で段 3 を無効） |
+| `SELF_AGENT_CC` | `1` で Claude Code のセッションの連携（claude-code-sessions.md §11）。`SELF_AGENT_GITHUB=1` と両方なら段 2・3（[対応] と送り込み・起動）。`SELF_AGENT_GITHUB_HANDOFF` は作らない |
+| `SELF_AGENT_WORKSPACE_DIR` | 地図を作る場所・段 3 の起動の場所（既定 `~/workspace`。claude-code-sessions.md と共用） |
 | `SELF_AGENT_GITHUB_TOKEN` | 任意。§9 の (B) を選んだときだけ |
 - 起動時: gh・tmux・git の絶対パスを PATH から 1 回解決。無ければその段を無効にして log と #system に 1 回。
 
@@ -315,7 +325,6 @@ src/store/github.ts      通知・スレッド・送り込み・ポーリング�
 | 応答の形が違う（JSON でない・必要な欄が無い） | その回を捨てる。log は種類だけ |
 | 投稿の失敗 | 行は「未投稿」のまま次の回に投稿し直す（同じ出来事を 2 回は出さない） |
 | tmux のサーバーが無い | 段 2・3 とも「tmux が動いていません」と返して積まない |
-| Manager のセッションが無い | 段 3 は「Manager のセッションがありません」と返して積まない |
 | 送り込みの途中の失敗（§5.4 の 4） | Enter を押さず、オーナーに画面の確認を頼む。やり直さない |
 
 - #system への知らせは「変わったときだけ」で、再起動をまたいでも出し直さない: 起動して最初の回に、DB の `error_kind`（auth・rate_limited・forbidden・network）を知らせ済みとして戻す。network は、`error_since` から「知らせるまでの回数 - 1」回分の間隔が経っているときだけ知らせ済みとみなす。
@@ -338,6 +347,7 @@ CREATE TABLE github_poll_state (id INTEGER PRIMARY KEY CHECK (id = 1), last_modi
 ALTER TABLE guild_settings ADD COLUMN github_channel_id TEXT;
 ```
 - title・url は #github の書き換え（「届けました」など）に使う。ローカルの DB だけ。
+- CC6: `github_handoffs` は使わない（表は残す）。送り込みは `cc_sends` の `notification_id`（claude-code-sessions.md §9）で、`prune` は終わっていない送信の通知を残す。
 
 ---
 
@@ -356,6 +366,8 @@ ALTER TABLE guild_settings ADD COLUMN github_channel_id TEXT;
 - `src/tmux/tmux.ts`・`pane-state.ts`・`workspace-map.ts`。
 - 受け入れ（単体）: §5.3 の表の各状態（fixture: 空の入力欄・dim の候補・書きかけ・作業中のスピナー・ダイアログ・入力が複数行・コピーモード・シェル・2 回目で変化あり）。地図（偽 git: https・ssh の URL、upstream、子リポジトリ、`.claude/worktrees`、`/tmp` の worktree、`<project>--<task>`、名前の違い、remote 無し、親ディレクトリへのフォールバック）。候補が複数のときの選び方。tmux の引数が固定の形（シェルを通さない）。
 - 手動（オーナーの tmux を使わない）: 別のソケット `tmux -L sa-test` で試験用のセッションを作り、実際の Claude Code を 1 つ起動して `pane-state` が idle / busy / draft を返す。
+
+**PR-G4・PR-G5 は作らない**（CC6 で claude-code-sessions.md の送信・起動の上に載せ替えた。下は元の案として残す）
 
 **PR-G4 段 2: [対応] と送り込み・待ち行列**（G2・G3 の上）
 - `src/app/github-handoff.ts`・`commands/github.ts`（`gh:`）、config の `SELF_AGENT_GITHUB_HANDOFF`・`SELF_AGENT_WORKSPACE_DIR`、起動時の重なりの確認（§7.2）、shell.md §7 への 2 項目の追記。
