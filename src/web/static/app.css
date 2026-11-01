@@ -1320,6 +1320,27 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* Claude Code の送信の状態（入力欄の上の 1 行） */
+.cc-send-state {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-6);
+  border-top: var(--border-width) solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+.cc-send-state.is-done {
+  color: var(--success);
+}
+
+.cc-send-state.is-warning {
+  color: var(--warning);
+}
+
 /* Claude Code の画面の写し: 端末の行は折り返さず、横にスクロールする */
 .cc-screen {
   white-space: pre;
@@ -1878,6 +1899,10 @@ kbd {
   }
 
   .composer-wrap {
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .cc-send-state {
     padding: var(--space-2) var(--space-3);
   }
 

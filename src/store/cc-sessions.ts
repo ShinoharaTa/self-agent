@@ -197,6 +197,14 @@ export class CcSessionStore {
     return row === undefined || Number(row.multiline_ok) !== 0;
   }
 
+  /** multiline_ok を書く（ブラケット貼り付けが効いていないと分かったら false。§3.2）。変わったら true */
+  setMultilineOk(ok: boolean): boolean {
+    const result = this.db
+      .prepare("INSERT INTO cc_state (id, multiline_ok) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET multiline_ok = excluded.multiline_ok WHERE multiline_ok <> excluded.multiline_ok")
+      .run(ok ? 1 : 0);
+    return Number(result.changes) > 0;
+  }
+
   /** gone_at が cutoff より前の行を消し、消した数を返す（生きている行は消さない） */
   prune(cutoff: Date): number {
     const result = this.db.prepare("DELETE FROM cc_sessions WHERE gone_at IS NOT NULL AND gone_at < ?").run(cutoff.toISOString());

@@ -126,6 +126,28 @@ test("不正な引数は tmux を呼ぶ前に投げる", async () => {
   assert.deepEqual(await tmux.loadBuffer(1, "字".repeat(MAX_PASTE_CHARS)), { ok: true, value: undefined });
 });
 
+test("loadBuffer: multiline は LF だけを許し、maxChars で上限を変える。既定は今の 1 行・400 字のまま", async () => {
+  const { run, calls } = fakeRun();
+  const tmux = createTmux({ tmuxPath: TMUX, run });
+  // LF 入りの本文は 1 回の load-buffer で標準入力にそのまま渡す
+  assert.deepEqual(await tmux.loadBuffer(3, "1 行目\n\n3 行目", { multiline: true, maxChars: 4000 }), { ok: true, value: undefined });
+  assert.deepEqual(calls.map((call) => [...call.args]), [["load-buffer", "-b", "self-agent-3", "-"]]);
+  assert.equal(calls[0]!.input, "1 行目\n\n3 行目");
+  calls.length = 0;
+  // LF 以外の制御文字（CR・TAB・ESC・DEL・C1）は multiline でも断る
+  for (const text of ["a\rb", "a\r\nb", "a\tb", "a\x1b[2Jb", "a\x7fb", "a\u009bb"]) {
+    await assert.rejects(tmux.loadBuffer(1, text, { multiline: true, maxChars: 4000 }));
+  }
+  // multiline を付けなければ改行も断る（github のテンプレートは 1 行）
+  await assert.rejects(tmux.loadBuffer(1, "a\nb", { maxChars: 4000 }));
+  // 上限はコードポイントで数える
+  await assert.rejects(tmux.loadBuffer(1, "字".repeat(4001), { multiline: true, maxChars: 4000 }));
+  await assert.rejects(tmux.loadBuffer(1, "字".repeat(MAX_PASTE_CHARS + 1), { multiline: true }));
+  for (const maxChars of [0, -1, 1.5, Number.NaN]) await assert.rejects(tmux.loadBuffer(1, "x", { maxChars }));
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await tmux.loadBuffer(1, "字".repeat(4000), { multiline: true, maxChars: 4000 }), { ok: true, value: undefined });
+});
+
 test("paste-buffer に失敗したら名前付きのバッファを消してから失敗を返す", async () => {
   const { run, calls, state } = fakeRun({ code: 1, stdout: "", stderr: "can't find pane: %4\n" });
   const tmux = createTmux({ tmuxPath: TMUX, run });

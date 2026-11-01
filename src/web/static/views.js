@@ -1,5 +1,5 @@
 // タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）・タスク・リマインド・記憶（W4）・GitHub・ナレッジ（W6）・
-// プロジェクト（W7。読むだけ）・Claude Code のセッション（CC2。画面の写しを読むだけ）。ジョブは後の段で足す
+// プロジェクト（W7。読むだけ）・Claude Code のセッション（CC2 の画面の写しと CC3 の送信）。ジョブは後の段で足す
 "use strict";
 
 (function () {
@@ -588,7 +588,7 @@
     );
   }
 
-  // ===== Claude Code のセッション（CC2: 見出しと画面の写しを読むだけ。送信・許可は後の段） =====
+  // ===== Claude Code のセッション（CC2: 見出しと画面の写し。CC3: 入力欄から送る・送信待ちの [取り消す]。許可は後の段） =====
   const CC_STATES = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
   const CC_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -614,6 +614,139 @@
   /** RC のリンク（https://claude.ai/code/ のものだけ） */
   function rcUrl(url) {
     return typeof url === "string" && url.startsWith("https://claude.ai/code/") ? url : null;
+  }
+
+  /** Web から送る本文の上限（入力欄。サーバーは src/cc/sender.ts の CC_SEND_MAX_CHARS = 4,000 まで受ける） */
+  const CC_MESSAGE_MAX = 2000;
+  const CC_TOO_LONG_TEXT = "2,000 字までです";
+  /** 送れなかったときのトースト（応答の error ごと）。無ければ「<status>: <error>」 */
+  const CC_SEND_ERRORS = {
+    already_queued: "送信待ちがあります。届くか取り消してから送ってください",
+    not_in_tmux: "tmux の外のセッションには送れません。RC で開いてください",
+    not_claude: "このペインは Claude Code ではないため送れません",
+    no_server: "tmux が動いていません",
+    tmux_failed: "tmux を読めませんでした",
+    not_found: "このセッションは一覧にありません",
+    too_long: "4,000 字までです",
+    invalid_text: "改行のほかの制御文字（タブなど）は送れません",
+    empty: "本文がありません",
+    stopping: "再起動中です。終わったら送ってください",
+  };
+  /** 送信の状態の文（一覧の pending.state） */
+  const CC_SEND_STATES = {
+    awaiting_confirm: "Discord の確認を待っています",
+    queued: "送信待ち（入力待ちになったら届けます）",
+    delivering: "届けています…",
+    delivered: "届けました",
+    unconfirmed: "貼れたか・送れたかを確かめられませんでした。画面を確認してください（やり直しません）",
+    failed: "送れませんでした（セッションが終わったか、tmux の中の Claude Code ではありません）",
+    gave_up: "入力待ちにならなかったため、届けるのを諦めました",
+    cancelled: "取り消しました",
+  };
+  /** 書きかけ（このタブのメモリだけ。sessionId ごと） */
+  const ccDrafts = {};
+
+  /** 送信の状態の行。送信待ちなら [取り消す] */
+  function ccPendingBar(sessionId, pending) {
+    if (!pending || typeof pending.id !== "number") return null;
+    const text = CC_SEND_STATES[pending.state] || String(pending.state);
+    const cls = pending.state === "delivered" ? " is-done" : pending.state === "unconfirmed" || pending.state === "failed" || pending.state === "gave_up" ? " is-warning" : "";
+    const children = [el("span", { text: "送信 #" + pending.id + ": " + text })];
+    if (pending.state === "queued" || pending.state === "delivering") children.unshift(el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }));
+    if (pending.state === "queued") {
+      const cancel = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "取り消す" });
+      cancel.addEventListener("click", () => {
+        cancel.disabled = true;
+        SA.api.post("/api/cc/sends/" + pending.id + "/cancel", {}, { quiet: true }).then(
+          () => {
+            toast("取り消しました");
+            store.load.ccSession(sessionId);
+          },
+          (err) => {
+            cancel.disabled = false;
+            if (err && err.status === 409) toast("この操作は古くなっています（届けている途中か、終わっています）");
+            else if (err && err.toast) toast(err.toast);
+            store.load.ccSession(sessionId);
+          },
+        );
+      });
+      children.push(cancel);
+    }
+    return el("div", { class: "cc-send-state" + cls, "data-cc-pending": sessionId, "aria-live": "polite" }, children);
+  }
+
+  /** 入力欄（会話の入力欄と同じキー。chat.js の bindSendKeys）。描き直しでは作り直さない（書きかけ・フォーカス・IME の変換を保つ） */
+  function ccComposer(sessionId, title) {
+    const ta = el("textarea", {
+      class: "textarea composer-input",
+      rows: "3",
+      maxlength: "4000",
+      "aria-label": title + " に送る",
+      enterkeyhint: "enter",
+      "data-title": title,
+      placeholder: SA.chat.placeholderOf(title),
+    });
+    ta.value = ccDrafts[sessionId] || "";
+    const counter = el("span", { class: "counter", "aria-live": "polite" });
+    const sendBtn = el("button", { class: "btn btn-primary btn-sm", type: "submit" }, [icon("send"), "送る"]);
+    let sending = false;
+    const lengthOf = () => [...ta.value.replace(/\n+$/, "")].length;
+    const update = () => {
+      const n = lengthOf();
+      counter.textContent = n.toLocaleString("en-US") + " / 2,000";
+      counter.classList.toggle("is-over", n > CC_MESSAGE_MAX);
+      sendBtn.disabled = sending || ta.value.trim() === "";
+    };
+    update();
+    ta.addEventListener("input", () => {
+      if (ta.value) ccDrafts[sessionId] = ta.value;
+      else delete ccDrafts[sessionId];
+      update();
+    });
+    const submit = async () => {
+      const text = ta.value;
+      if (sending || text.trim() === "") return;
+      if (lengthOf() > CC_MESSAGE_MAX) {
+        toast(CC_TOO_LONG_TEXT);
+        return;
+      }
+      sending = true;
+      update();
+      try {
+        const data = await SA.api.post("/api/cc/sessions/" + encodeURIComponent(sessionId) + "/send", { text }, { quiet: true });
+        if (ta.value === text) ta.value = "";
+        if (ta.value) ccDrafts[sessionId] = ta.value;
+        else delete ccDrafts[sessionId];
+        // 届くまで送信の状態を出す（本物は次の読み直しで来る）
+        const loaded = store.ccSessions[sessionId];
+        if (loaded && loaded.session && data && typeof data.sendId === "number") loaded.session.pending = { id: data.sendId, state: data.state };
+        SA.app.refresh("cc:" + sessionId);
+        store.load.ccSession(sessionId);
+        store.load.cc({ quiet: true });
+      } catch (err) {
+        // 本文は入力欄に残す
+        if (err && err.toast) toast((err.code && CC_SEND_ERRORS[err.code]) || err.toast);
+      } finally {
+        sending = false;
+        update();
+      }
+    };
+    const form = el("form", { class: "composer", novalidate: true }, [
+      ta,
+      el("div", { class: "composer-foot" }, [
+        el("span", { class: "composer-hint" }, [
+          el("span", { text: "入力待ちのときに tmux で貼って Enter を押します。作業中なら入力待ちになるまで待ちます。改行もそのまま送ります。" }),
+        ]),
+        counter,
+        sendBtn,
+      ]),
+    ]);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submit();
+    });
+    SA.chat.bindSendKeys(ta, submit);
+    return el("div", { class: "composer-wrap", "data-cc": sessionId }, [form]);
   }
 
   function renderCcSession(container, sessionId) {
@@ -651,7 +784,20 @@
     ]);
     // 画面の写しは最後の行（入力欄）を見たいので、下にいれば下に付ける
     body.dataset.stick = "bottom";
-    container.replaceChildren(head, body);
+    const pending = ccPendingBar(sessionId, s.pending);
+    // tmux の外には送れないので入力欄を出さない
+    if (!s.inTmux) {
+      container.replaceChildren(...[head, body, pending].filter((x) => x));
+      return;
+    }
+    // 入力欄は作り直さない。見出し・中身・送信の状態だけを入れ替える
+    const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-cc") === sessionId);
+    if (kept) {
+      for (const child of [...container.children]) if (child !== kept) child.remove();
+      for (const node of [head, body, pending]) if (node) container.insertBefore(node, kept);
+    } else {
+      container.replaceChildren(...[head, body, pending].filter((x) => x), ccComposer(sessionId, ccName(s)));
+    }
   }
 
   // ===== ナレッジ（W6: 一覧と中身。検索は 3 文字以上。読むだけで、削除は Discord から） =====

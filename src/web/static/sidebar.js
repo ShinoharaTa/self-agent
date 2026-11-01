@@ -209,6 +209,7 @@
     const badges = [];
     if (s.permissionMode) badges.push(el("span", { class: "badge badge-cc mono", text: s.permissionMode }));
     if (!s.inTmux) badges.push(el("span", { class: "badge badge-cc", text: "tmux の外" }));
+    if (s.pending && (s.pending.state === "queued" || s.pending.state === "delivering")) badges.push(el("span", { class: "badge badge-cc", text: "送信待ち" }));
     if (s.state === "running") badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));
     return row({
       tab: "cc:" + s.sessionId,
