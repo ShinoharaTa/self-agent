@@ -138,7 +138,7 @@ export type CcRegistryDeps = {
   cfg: Pick<Config, "ccPollSec">;
   agents: Pick<AgentsClient, "list">;
   dirs: Pick<ClaudeDirs, "sessionFile" | "transcriptMtime">;
-  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive" | "get">;
+  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive">;
   now: () => Date;
   timers?: CcTimers;
   /** 送信の待ち行列が空でない（§2.2。CC3 から）・起動したセッションをまだ一覧で見つけていない（CC4）。true の間は見ていなくても設定の周期で読む */
@@ -154,8 +154,8 @@ export type CcRegistryDeps = {
     onListed(statuses: ReadonlyMap<string, string | undefined>, readStartedAt: Date): void;
   };
   /**
-   * セッションが終わった（SessionEnd を受けた・一覧から消えた）ときに呼ぶ（discord-notice.ts の終了の知らせ。CC5c）。
-   * 同じセッションで 2 回（SessionEnd と一覧から消えた）呼ぶことがあるので、受け手がまとめる。投げても一覧の更新には響かない
+   * セッションが claude agents --json の一覧から消えたとき（gone_at を入れる前の生きている行）に呼ぶ（discord-notice.ts の終了の知らせ。CC5c）。
+   * SessionEnd の hook は根拠にしない（偽の hook と、再起動をまたいだ二重を防ぐため。§5.2）。投げても一覧の更新には響かない
    */
   ended?: (session: CcSessionRow) => void;
   log: (message: string) => void;
@@ -374,10 +374,6 @@ export class CcRegistry implements CcHookReceiver {
       update.waitingKind = event.notificationType;
     }
     this.deps.store.applyEvent(event.sessionId, update, event.receivedAt);
-    if (event.event === "SessionEnd") {
-      const row = this.deps.store.get(event.sessionId);
-      if (row !== undefined) this.tellEnded([row]);
-    }
     if (event.event === "PermissionRequest" && event.permission !== undefined) {
       this.permissions.set(event.sessionId, { ...event.permission, at: event.receivedAt.getTime() });
     } else if (event.event === "UserPromptSubmit" || event.event === "Stop") {

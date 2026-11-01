@@ -106,10 +106,14 @@ export class CcPermissionHold {
     this.listener = listener;
   }
 
-  /** 起動時（受け口を始める前）: 前のプロセスで pending のまま残った行を expired にする */
-  recover(): void {
-    const count = this.deps.store.expirePending();
-    if (count > 0) this.deps.log(`Claude Code: 再起動の前に保留していた許可の要求 ${count} 件を時間切れにしました`);
+  /**
+   * 起動時（受け口を始める前）: 前のプロセスで pending のまま残った行を expired にし、その行を返す
+   * （main が Discord につないだ後に、#system の 1 通を書き換える。discord-notice.ts の rewriteRecovered）
+   */
+  recover(): CcPermissionRow[] {
+    const rows = this.deps.store.expirePending();
+    if (rows.length > 0) this.deps.log(`Claude Code: 再起動の前に保留していた許可の要求 ${rows.length} 件を時間切れにしました`);
+    return rows;
   }
 
   /**
