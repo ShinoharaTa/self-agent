@@ -531,6 +531,27 @@ test("Claude Code: 停止を始めたら一覧の読み取りを止めて終わ�
   assert.deepEqual(events, ["cc stop", "cc idle", "stop", "closeWeb", "closeHook", "closeDb"]);
 });
 
+test("Claude Code: 停止を始めたら送信の待ち行列を止め、貼っている途中の 1 件が終わるのを待ってから閉じる", async () => {
+  const events: string[] = [];
+  const gate = deferred();
+  const ccSender = {
+    stop: () => {
+      events.push("send stop");
+    },
+    idle: async () => {
+      await gate.promise;
+      events.push("send idle");
+    },
+  };
+  const { shutdown } = createShutdown(deps(events, { ccSender }), noopInner);
+  const done = shutdown();
+  await flush();
+  assert.deepEqual(events, ["send stop"]);
+  gate.resolve();
+  await done;
+  assert.deepEqual(events, ["send stop", "send idle", "stop", "closeDb"]);
+});
+
 test("実行中のチャンネルの移動は終わるまで待ってから gateway を止める。まだ始めていない移動は待たない", async (t) => {
   const db = tempDb(t);
   const events: string[] = [];

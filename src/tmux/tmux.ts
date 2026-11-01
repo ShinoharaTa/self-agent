@@ -11,7 +11,7 @@ export const CHILD_TIMEOUT_MS = 20_000;
 export const CHILD_MAX_BUFFER = 5 * 1024 * 1024;
 /** 子プロセスの PATH（§7.1） */
 export const CHILD_PATH = "/usr/local/bin:/usr/bin:/bin";
-/** 1 回に貼れる文字数の上限（§5.4。テンプレートは 400 字以内） */
+/** 1 回に貼れる文字数の上限の既定（§5.4。テンプレートは 400 字以内）。loadBuffer の maxChars で変える */
 export const MAX_PASTE_CHARS = 400;
 
 /** 子プロセスの終わり方。起動できなかった・時間切れ・出力の上限・シグナルで終わったときは code が null */
@@ -92,14 +92,21 @@ export type Tmux = {
    * （`-p -S -<n>`。docs/plan/claude-code-sessions.md §5.1 の画面の写し）
    */
   capturePane(paneId: string, options?: { historyLines?: number }): Promise<TmuxResult<string>>;
-  /** text を名前付きのバッファ（handoffBufferName）に入れる。text が空・MAX_PASTE_CHARS 字を超える・制御文字がある（1 行のテンプレートだけを送る。§5.4）なら投げる */
-  loadBuffer(handoffId: number, text: string): Promise<TmuxResult<void>>;
+  /**
+   * text を名前付きのバッファ（handoffBufferName）に入れる。text が空・maxChars（既定 MAX_PASTE_CHARS）字を超える・制御文字があるなら投げる。
+   * 既定は 1 行（改行も制御文字として断る。§5.4 のテンプレート）。multiline なら LF だけを許す（CR・TAB・ESC などは断る。
+   * docs/plan/claude-code-sessions.md §3.2）
+   */
+  loadBuffer(handoffId: number, text: string, options?: LoadBufferOptions): Promise<TmuxResult<void>>;
   /** 名前付きのバッファをペインに貼って消す（`paste-buffer -p -d`。オーナーの貼り付けのバッファは上書きしない）。貼れなければバッファを消してから失敗を返す */
   pasteBuffer(handoffId: number, paneId: string): Promise<TmuxResult<void>>;
   /** 名前付きのバッファを消す（`delete-buffer -b`）。無くても失敗を返すだけ */
   deleteBuffer(handoffId: number): Promise<TmuxResult<void>>;
   sendEnter(paneId: string): Promise<TmuxResult<void>>;
 };
+
+/** loadBuffer の形。multiline は LF を許すか（既定 false）、maxChars は文字数（コードポイント）の上限（既定 MAX_PASTE_CHARS） */
+export type LoadBufferOptions = { multiline?: boolean; maxChars?: number };
 
 export type TmuxOptions = {
   /** 起動時に解決した tmux の絶対パス */
@@ -137,6 +144,8 @@ const MAX_HISTORY_LINES = 10_000;
 const FLAG = /^[01]$/;
 // C0・DEL・C1 の制御文字（改行・ESC を含む）
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+// LF を除いた制御文字（複数行で貼るとき）
+const CONTROL_CHARS_EXCEPT_LF = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
 
 /** 送り込みに使う名前付きのバッファの名前（`self-agent-<handoff_id>`） */
 export function handoffBufferName(handoffId: number): string {
@@ -237,11 +246,16 @@ export function createTmux(options: TmuxOptions): Tmux {
       }
       return exec(["capture-pane", "-p", "-S", `-${history}`, "-t", paneId]);
     },
-    async loadBuffer(handoffId, text) {
+    async loadBuffer(handoffId, text, loadOptions) {
       const name = handoffBufferName(handoffId);
-      if (CONTROL_CHARS.test(text)) throw new Error("送る文字列に制御文字（改行を含む）は使えません");
+      const multiline = loadOptions?.multiline === true;
+      const maxChars = loadOptions?.maxChars ?? MAX_PASTE_CHARS;
+      if (!Number.isSafeInteger(maxChars) || maxChars < 1) throw new Error("文字数の上限は正の整数で指定してください");
+      if (multiline ? CONTROL_CHARS_EXCEPT_LF.test(text) : CONTROL_CHARS.test(text)) {
+        throw new Error(multiline ? "送る文字列に改行（LF）以外の制御文字は使えません" : "送る文字列に制御文字（改行を含む）は使えません");
+      }
       const length = [...text].length;
-      if (length === 0 || length > MAX_PASTE_CHARS) throw new Error(`送る文字列は 1〜${MAX_PASTE_CHARS} 字にしてください`);
+      if (length === 0 || length > maxChars) throw new Error(`送る文字列は 1〜${maxChars} 字にしてください`);
       return done(await exec(["load-buffer", "-b", name, "-"], text));
     },
     async pasteBuffer(handoffId, paneId) {

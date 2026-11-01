@@ -450,6 +450,18 @@
       for (const ta of document.querySelectorAll(".composer-input")) ta.placeholder = placeholderOf(ta.dataset.title || "会話");
     });
   }
+  /** 入力欄のキー（Claude Code のセッションのタブの入力欄も同じ）: Enter で送る（タッチが主の端末では改行）・Shift+Enter で改行・Ctrl+Enter・⌘+Enter はいつも送る。IME の変換中は送らない */
+  function bindSendKeys(ta, submit) {
+    ta.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+      const send = event.ctrlKey || event.metaKey || (!event.shiftKey && !touchPrimary());
+      if (send) {
+        event.preventDefault();
+        submit();
+      }
+    });
+  }
+
   function composer(ch, channelId) {
     const title = ch ? channelTitle(ch) : "会話";
     const ta = el("textarea", {
@@ -515,14 +527,7 @@
       event.preventDefault();
       submit();
     });
-    ta.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
-      const send = event.ctrlKey || event.metaKey || (!event.shiftKey && !touchPrimary());
-      if (send) {
-        event.preventDefault();
-        submit();
-      }
-    });
+    bindSendKeys(ta, submit);
     return el("div", { class: "composer-wrap", "data-channel": channelId }, [form]);
   }
 
@@ -659,5 +664,19 @@
     return channelId ? channelById(channelId) : null;
   }
 
-  SA.chat = { info, channelTitle, activeChannelId, markSeenActive, channelsChanged, endText, STATE_LABEL, current, setWaiting, closeSession, renew };
+  SA.chat = {
+    info,
+    channelTitle,
+    activeChannelId,
+    markSeenActive,
+    channelsChanged,
+    endText,
+    STATE_LABEL,
+    current,
+    setWaiting,
+    closeSession,
+    renew,
+    bindSendKeys,
+    placeholderOf,
+  };
 })();

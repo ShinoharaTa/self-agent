@@ -175,6 +175,8 @@ export type CcConfig = {
   ccPollSec: number;
   /** PermissionRequest の応答を保留する秒数（1〜600）。hooks の timeout はこれ + 5 */
   ccPermissionHoldSec: number;
+  /** 送信待ち（queued）を諦める（gave_up）までの分（正の整数） */
+  ccSendWaitMin: number;
 };
 
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
@@ -217,6 +219,7 @@ const DEFAULT_CC_POLL_SEC = 10;
 const MIN_CC_POLL_SEC = 5;
 const DEFAULT_CC_PERMISSION_HOLD_SEC = 300;
 const MAX_CC_PERMISSION_HOLD_SEC = 600;
+const DEFAULT_CC_SEND_WAIT_MIN = 120;
 /** SELF_AGENT_CC_HOOK_TOKEN の最短の長さ */
 const MIN_CC_HOOK_TOKEN_LENGTH = 32;
 
@@ -581,7 +584,7 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
 
 /**
  * SELF_AGENT_CC_* を読む（docs/plan/claude-code-sessions.md §11）。SELF_AGENT_CC=1 ならポートとトークンが要る（無ければ設定エラー。認証なしでは動かさない）。
- * 形（ポートの範囲・32 字未満か空白を含むトークン・周期・保留の秒数）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
+ * 形（ポートの範囲・32 字未満か空白を含むトークン・周期・保留の秒数・送信待ちの分）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
  */
 export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
   const cc = flag("SELF_AGENT_CC", nonEmpty(env.SELF_AGENT_CC));
@@ -602,9 +605,10 @@ export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
   if (ccPermissionHoldSec > MAX_CC_PERMISSION_HOLD_SEC) {
     throw new Error(`SELF_AGENT_CC_PERMISSION_HOLD_SEC は 1〜${MAX_CC_PERMISSION_HOLD_SEC} の整数で指定してください`);
   }
+  const ccSendWaitMin = positiveInteger("SELF_AGENT_CC_SEND_WAIT_MIN", nonEmpty(env.SELF_AGENT_CC_SEND_WAIT_MIN), DEFAULT_CC_SEND_WAIT_MIN);
   if (cc && ccHookPort === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_PORT が要ります");
   if (cc && token === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_TOKEN が要ります");
-  return { cc, ccHookPort, ccHookTokenPresent: token !== undefined, ccPollSec, ccPermissionHoldSec };
+  return { cc, ccHookPort, ccHookTokenPresent: token !== undefined, ccPollSec, ccPermissionHoldSec, ccSendWaitMin };
 }
 
 /**

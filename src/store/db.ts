@@ -520,6 +520,27 @@ export const MIGRATIONS: readonly string[] = [
   );
   INSERT INTO cc_state (id) VALUES (1);
   `,
+  // v28: Claude Code のセッションへの送信（docs/plan/claude-code-sessions.md §3.2・§9）。cc_sends は 1 回の送信（本文は 4,000 字まで）と待ち行列の状態。
+  // session_id は送り先（CC4 の起動の最初の指示は後で埋める）、pane_id は届けたときのペイン、last_pane_state は最後に見たペインの状態か送れなかった理由。
+  // origin・state の語は後の段（tool・github・start・awaiting_confirm）の分まで入れておく。30 日で消す
+  `
+  CREATE TABLE cc_sends (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    pane_id TEXT,
+    text TEXT NOT NULL,
+    origin TEXT NOT NULL CHECK (origin IN ('web', 'tool', 'github', 'start')),
+    state TEXT NOT NULL CHECK (state IN ('awaiting_confirm', 'queued', 'delivering', 'delivered', 'unconfirmed', 'failed', 'gave_up', 'cancelled')),
+    last_pane_state TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    delivered_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX cc_sends_session ON cc_sends(session_id, id);
+  CREATE INDEX cc_sends_state ON cc_sends(state, id);
+  CREATE INDEX cc_sends_created ON cc_sends(created_at);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
