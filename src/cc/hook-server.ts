@@ -221,13 +221,18 @@ export function createHookRequestListener(
     let event: CcHookEvent | undefined;
     try {
       event = parseHookEvent(body, now());
-      if (event !== undefined) {
-        receiver.receive(event);
-        if (event.event !== "PermissionRequest") permissions?.observe(event);
-      }
+      if (event !== undefined) receiver.receive(event);
     } catch (error) {
       // 処理の失敗でも Claude Code は止めない（200・空）
       log(`Claude Code: hook の事象の処理に失敗しました（${errorKind(error)}）`);
+    }
+    // 許可の要求の「他で答えられた」の検知は、一覧への反映が失敗しても行う
+    if (event !== undefined && event.event !== "PermissionRequest") {
+      try {
+        permissions?.observe(event);
+      } catch (error) {
+        log(`Claude Code: 許可の要求の処理に失敗しました（${errorKind(error)}）`);
+      }
     }
     if (event?.event === "PermissionRequest" && permissions !== undefined) {
       await holdPermission(event, permissions, res);

@@ -131,7 +131,10 @@ export class CcPermissionStore {
       .map(toRow);
   }
 
-  /** pending の行があるか、resolved_at が since 以後の行があるセッション */
+  /**
+   * pending の行があるか、resolved_at が since 以後の行があるセッション。
+   * released（limit）を含むので、判断待ちの知らせの抑え（CC5c）に使うときは除くか検討する
+   */
   sessionsActiveSince(since: Date): Set<string> {
     const rows = this.db
       .prepare("SELECT DISTINCT session_id FROM cc_permissions WHERE state = 'pending' OR resolved_at >= ?")

@@ -2,7 +2,8 @@
 // cc_permissions に pending で記録し、応答を最長 SELF_AGENT_CC_PERMISSION_HOLD_SEC 保留する。その間に Web で [許可]・[拒否] が押されれば
 // 決定の JSON を返す。保留の間も端末・RC には普段のダイアログが出ていて、そこで先に答えられると Claude Code は先へ進み、hook の接続は開いたまま残る。
 // それを次のどれかで「他で答えられた」（answered_elsewhere）と判断し、空の本文を返して閉じる: 同じセッションの次の PermissionRequest・
-// そのセッションの Stop・UserPromptSubmit（via hook）、受信から 3 秒以上後に読み始めた claude agents --json の status が waiting でない（via status）。
+// そのセッションの Stop・UserPromptSubmit（via hook）、受信から 3 秒以上後に読み始めた claude agents --json の status が waiting でない（via status。
+// 形が読めない status では閉じない）。一覧から消えたセッションの保留は expired にする。
 // 保留が切れたら空の本文で expired、Claude Code が先に接続を閉じたら書かずに expired、停止では全部に空の本文で released（shutdown）、
 // 同じセッションから 1 分に 20 件を超えたら保留せず released（limit）。一覧に無いセッションの要求は記録も保留もしない。
 // allow を返すのはオーナーが押したときだけ（自動で allow する経路は無い）。
@@ -19,6 +20,8 @@ export const CC_PERMISSION_RATE_LIMIT = 20;
 export const CC_PERMISSION_STATUS_GRACE_MS = 3_000;
 /** 解決してからこの間は、そのセッションの permission_prompt の Notification を判断待ちの元にしない（§2.2。保留中でも 6 秒で来るため） */
 export const CC_PERMISSION_SUPPRESS_MS = 60_000;
+/** 一覧に無いセッションの要求を断った log の間隔（続けて来ても 1 回だけ出す） */
+export const CC_PERMISSION_UNKNOWN_LOG_INTERVAL_MS = 60_000;
 /** [拒否] の message（端末に `Error: <message>` と出て、モデルにも渡る） */
 export const CC_PERMISSION_DENY_MESSAGE = "self-agent（Discord / Web）から拒否しました";
 
@@ -69,6 +72,8 @@ export class CcPermissionHold {
   private readonly timers: CcTimers;
   private readonly held = new Map<number, Held>();
   private stopped = false;
+  /** 一覧に無いセッションの要求を最後に log に出した時刻 */
+  private unknownLoggedAt: number | undefined;
 
   constructor(deps: CcPermissionHoldDeps) {
     this.deps = deps;
@@ -92,7 +97,11 @@ export class CcPermissionHold {
     const sessionId = event.sessionId;
     // 一覧に無いセッション（偽の hook の対策。§2.2）は記録も保留もしない
     if (!this.deps.known(sessionId)) {
-      log("Claude Code: 一覧に無いセッションの許可の要求は保留しませんでした");
+      const at = this.deps.now().getTime();
+      if (this.unknownLoggedAt === undefined || at - this.unknownLoggedAt >= CC_PERMISSION_UNKNOWN_LOG_INTERVAL_MS) {
+        this.unknownLoggedAt = at;
+        log("Claude Code: 一覧に無いセッションの許可の要求は保留しませんでした");
+      }
       return Promise.resolve(undefined);
     }
     // 1 件ずつ来るので、次が来た = 前は端末か RC で決まった
@@ -153,13 +162,19 @@ export class CcPermissionHold {
 
   /**
    * claude agents --json を読めたとき（registry.ts）。readStartedAt は読み始めた時刻。受信から CC_PERMISSION_STATUS_GRACE_MS 以上後に
-   * 読み始めた一覧で status が waiting でない（一覧から消えたものを含む）セッションの保留は、他で答えられた
+   * 読み始めた一覧で、status が waiting でない（形が読めない undefined は除く）セッションの保留は他で答えられた。
+   * 一覧から消えたセッション（claude が終わった）の保留は expired
    */
   onListed(statuses: ReadonlyMap<string, string | undefined>, readStartedAt: Date): void {
     const at = readStartedAt.getTime();
     for (const [id, held] of [...this.held]) {
       if (at - held.receivedAt < CC_PERMISSION_STATUS_GRACE_MS) continue;
-      if (statuses.get(held.sessionId) !== "waiting") this.close(id, "answered_elsewhere", "status");
+      if (!statuses.has(held.sessionId)) {
+        this.close(id, "expired", null);
+        continue;
+      }
+      const status = statuses.get(held.sessionId);
+      if (status !== undefined && status !== "waiting") this.close(id, "answered_elsewhere", "status");
     }
   }
 
@@ -210,7 +225,8 @@ export class CcPermissionHold {
   }
 }
 
-/** Web に出す 1 件（cc_permissions の行 + 保留の期限） */
-export function permissionExpiresAt(row: Pick<CcPermissionRow, "createdAt">, holdSec: number): string {
+/** 保留の期限（Web に出す）。保留中の行だけで、終わった行は null */
+export function permissionExpiresAt(row: Pick<CcPermissionRow, "createdAt" | "state">, holdSec: number): string | null {
+  if (row.state !== "pending") return null;
   return new Date(Date.parse(row.createdAt) + holdSec * 1000).toISOString();
 }
