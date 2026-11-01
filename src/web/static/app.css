@@ -1341,6 +1341,35 @@ kbd {
   color: var(--warning);
 }
 
+/* Claude Code の許可の要求のカード（見出しの下に固定。要約は長ければ中でスクロールする） */
+.cc-permission-wrap {
+  flex: none;
+  padding: var(--space-3) var(--space-6);
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.cc-permission.is-pending {
+  border-color: var(--warning);
+}
+
+.cc-permission .code-pre {
+  max-height: 10rem;
+  overflow: auto;
+}
+
+.cc-permission-end {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+.cc-permission.is-done .cc-permission-end {
+  color: var(--success);
+}
+
+.cc-permission.is-warning .cc-permission-end {
+  color: var(--warning);
+}
+
 /* Claude Code の画面の写し: 端末の行は折り返さず、横にスクロールする */
 .cc-screen {
   white-space: pre;
@@ -1903,6 +1932,10 @@ kbd {
   }
 
   .cc-send-state {
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .cc-permission-wrap {
     padding: var(--space-2) var(--space-3);
   }
 

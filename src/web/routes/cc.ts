@@ -1,14 +1,17 @@
 // GET /api/cc/sessions・/api/cc/sessions/<id>（docs/plan/claude-code-sessions.md §5.1。CC2）、POST /api/cc/sessions/<id>/send・
-// /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）、GET /api/cc/projects・POST /api/cc/sessions（CC4。起動は cc/starter.ts）と /api/status の cc。
+// /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）、GET /api/cc/projects・POST /api/cc/sessions（CC4。起動は cc/starter.ts）、
+// GET /api/cc/permissions・POST /api/cc/permissions/<id>/allow|deny（CC5a。保留は cc/permission-hold.ts）と /api/status の cc。
 // この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順）と、1 つのセッションの画面の写し
 // （tmux の capture-pane を stripAnsi して最後の CC_SCREEN_LINES 行。tmux の外は screen: null）。SELF_AGENT_CC が無効なら 404。
 // GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
 // 名前・cwd・最後の指示は hook から来たデータで、画面は textContent で出す。log は出さない（名前・パス・sessionId・ペイン id を出さない）
 import { isUuid } from "../../cc/agents.ts";
+import { type CcPermissionHold, permissionExpiresAt } from "../../cc/permission-hold.ts";
 import type { CcPaneResolver, PaneLookup } from "../../cc/panes.ts";
 import type { CcRegistry, CcSessionView } from "../../cc/registry.ts";
 import { normalizeSendText, type CcSender } from "../../cc/sender.ts";
 import type { CcStartFailure, CcStarter } from "../../cc/starter.ts";
+import type { CcPermissionRow, CcPermissionStore } from "../../store/cc-permissions.ts";
 import type { CcSendRow, CcSendStore } from "../../store/cc-sends.ts";
 import type { CcSessionStore } from "../../store/cc-sessions.ts";
 import { stripAnsi } from "../../tmux/pane-state.ts";
@@ -22,6 +25,8 @@ export const CC_SCREEN_LINES = 200;
 export const CC_RC_URL_PREFIX = "https://claude.ai/code/";
 /** 一覧の送信の印に、終わった送信を出す長さ（終わってからこの間だけ「届けました」などを出す） */
 export const CC_SEND_RECENT_MS = 10 * 60_000;
+/** 一覧の許可のカードに、終わった要求を出す長さ（終わってからこの間だけ「端末か RC で答えられました」などを出す） */
+export const CC_PERMISSION_RECENT_MS = 10 * 60_000;
 
 export type CcRouteDeps = {
   /** SELF_AGENT_CC が無効なら undefined（/api/cc/* は 404） */
@@ -38,6 +43,13 @@ export type CcRouteDeps = {
   sends?: Pick<CcSendStore, "latestPerSession">;
   /** 起動（CC4）。無ければ /api/cc/projects・POST /api/cc/sessions は 404 */
   starter?: Pick<CcStarter, "projects" | "launch">;
+  /** 許可の要求（CC5a）。無ければ一覧の permission は null で、/api/cc/permissions は 404 */
+  permissions?: {
+    hold: Pick<CcPermissionHold, "answer">;
+    store: Pick<CcPermissionStore, "latestPerSession" | "listPending">;
+    /** SELF_AGENT_CC_PERMISSION_HOLD_SEC（期限の表示） */
+    holdSec: number;
+  };
   /** 既定は new Date */
   now?: () => Date;
 };
@@ -114,8 +126,11 @@ function pendingJson(
   return row === undefined ? null : { id: row.id, state: row.state, lastPaneState: row.lastPaneState, updatedAt: row.updatedAt };
 }
 
+/** 押した操作の結果 → HTTP の状態 */
+const ANSWER_STATUS: Readonly<Record<string, number>> = { not_found: 404, stale: 409 };
+
 export function ccRoutes(deps: CcRouteDeps): Route[] {
-  const { registry, panes, tmux, workspaceDir, home, sender, sends, starter } = deps;
+  const { registry, panes, tmux, workspaceDir, home, sender, sends, starter, permissions } = deps;
   const now = deps.now ?? (() => new Date());
 
   const latestSends = (): Map<string, CcSendRow> => {
@@ -123,7 +138,29 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     return new Map(rows.map((row) => [row.sessionId ?? "", row]));
   };
 
-  const sessionJson = (view: CcSessionView, pane: TmuxPane | undefined, send: CcSendRow | undefined) => ({
+  const latestPermissions = (): Map<string, CcPermissionRow> => {
+    const rows = permissions === undefined ? [] : permissions.store.latestPerSession(new Date(now().getTime() - CC_PERMISSION_RECENT_MS));
+    return new Map(rows.map((row) => [row.sessionId, row]));
+  };
+
+  /** 許可の要求の 1 件（Web は textContent で出す。要約・ツール名は hook から来たデータ） */
+  const permissionJson = (row: CcPermissionRow) => ({
+    id: row.id,
+    sessionId: row.sessionId,
+    state: row.state,
+    via: row.via,
+    toolName: row.toolName,
+    summary: row.summary,
+    // 常に許可は CC5b（今はいつも null）
+    alwaysRule: null,
+    requestHash: row.requestHash,
+    permissionMode: row.permissionMode,
+    createdAt: row.createdAt,
+    expiresAt: permissionExpiresAt(row, permissions?.holdSec ?? 0),
+    resolvedAt: row.resolvedAt,
+  });
+
+  const sessionJson = (view: CcSessionView, pane: TmuxPane | undefined, send: CcSendRow | undefined, permission: CcPermissionRow | undefined) => ({
     sessionId: view.sessionId,
     name: view.name ?? null,
     cwdLabel: cwdLabel(view.cwd, workspaceDir, home),
@@ -141,9 +178,10 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     startedBy: view.startedBy,
     // trust のダイアログの確認待ち（self-agent が起動したものだけ。§4.2）
     trustPending: view.trustPending,
-    // そのセッションの最新の送信（CC3）。保留中の許可（CC5a）はまだ無い
+    // そのセッションの最新の送信（CC3）
     pending: pendingJson(send),
-    permission: null,
+    // そのセッションの最新の許可の要求（保留中か、終わってから CC_PERMISSION_RECENT_MS の間。CC5a）
+    permission: permission === undefined ? null : permissionJson(permission),
   });
 
   // 入れ子の claude を見分けるため、一覧のすべての pid を渡す
@@ -162,6 +200,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         const snapshot = registry.snapshot();
         const lookup = await lookupPanes(snapshot.sessions);
         const latest = latestSends();
+        const latestPermission = latestPermissions();
         return {
           status: 200,
           json: {
@@ -169,7 +208,9 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
             unreadable: snapshot.unreadable,
             // 最後に読めた時刻（画面の「n 秒前」。まだなら null）
             fetchedAt: iso(snapshot.fetchedAt),
-            sessions: snapshot.sessions.map((view) => sessionJson(view, paneOf(lookup, view), latest.get(view.sessionId))),
+            sessions: snapshot.sessions.map((view) =>
+              sessionJson(view, paneOf(lookup, view), latest.get(view.sessionId), latestPermission.get(view.sessionId)),
+            ),
           },
         };
       },
@@ -191,7 +232,8 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
           const captured = await tmux.capturePane(pane.paneId, { historyLines: CC_SCREEN_LINES });
           if (captured.ok) screen = screenText(captured.value);
         }
-        return { status: 200, json: { ...sessionJson(view, pane, latestSends().get(view.sessionId)), screen } };
+        const json = sessionJson(view, pane, latestSends().get(view.sessionId), latestPermissions().get(view.sessionId));
+        return { status: 200, json: { ...json, screen } };
       },
     },
     {
@@ -249,10 +291,34 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         return { status: 200, json: { state: "cancelled" } };
       },
     },
+    {
+      method: "GET",
+      pattern: /^\/api\/cc\/permissions$/,
+      handle: async () => {
+        if (registry === undefined || permissions === undefined) return NOT_FOUND;
+        registry.touch();
+        return { status: 200, json: { permissions: permissions.store.listPending().map(permissionJson) } };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cc\/permissions\/(\d{1,16})\/(allow|deny)$/,
+      handle: async ({ params, body }) => {
+        if (registry === undefined || permissions === undefined) return NOT_FOUND;
+        registry.touch();
+        // requestHash（任意）: 画面が出していた要求と行が同じことを確かめる（§3.4）
+        const requestHash = body?.requestHash;
+        if (requestHash !== undefined && typeof requestHash !== "string") return { status: 400, json: { error: "bad_request" } };
+        const decision = params[1] === "allow" ? "allow" : "deny";
+        const result = permissions.hold.answer(Number(params[0]), decision, "web", requestHash);
+        if (result.ok) return { status: 200, json: { state: result.state } };
+        return { status: ANSWER_STATUS[result.reason] ?? 409, json: { error: result.reason } };
+      },
+    },
   ];
 }
 
-/** /api/status の cc（§5.1）。tmux は直近の list-panes の結果（ok / no_server / failed。まだ読んでいなければ null）。許可の保留は CC5a から */
+/** /api/status の cc（§5.1）。tmux は直近の list-panes の結果（ok / no_server / failed。まだ読んでいなければ null）。pendingPermissions は保留中の許可の要求の数 */
 export type CcStatus = {
   enabled: boolean;
   /** hook の受け口が待ち受けているか */
@@ -268,6 +334,7 @@ export type CcStatusDeps = {
   panes: Pick<CcPaneResolver, "lastTmux">;
   hookListening: () => boolean;
   store: Pick<CcSessionStore, "multilineOk">;
+  permissions?: Pick<CcPermissionStore, "countPending">;
 };
 
 /** SELF_AGENT_CC が有効なときの /api/status の cc。tmux は /api/cc/* が引いた直近の結果で、ここでは list-panes を起動しない */
@@ -278,6 +345,6 @@ export function ccStatus(deps: CcStatusDeps): CcStatus {
     hookPort: deps.hookListening(),
     tmux: tmux === undefined ? null : tmux === "ok" || tmux === "no_server" ? tmux : "failed",
     multilineOk: deps.store.multilineOk(),
-    pendingPermissions: 0,
+    pendingPermissions: deps.permissions?.countPending() ?? 0,
   };
 }

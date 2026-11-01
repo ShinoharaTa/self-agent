@@ -555,6 +555,27 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE cc_sessions ADD COLUMN waiting_for TEXT;
   ALTER TABLE cc_sends ADD COLUMN start_dir TEXT;
   `,
+  // v30: Claude Code の許可の要求（docs/plan/claude-code-sessions.md §3.4・§9）。id は受け口の受信の連番で、Web（と後の段の Discord）のボタンはこれを指す。
+  // request_hash は tool_name と tool_input（JSON）の sha256（表示の照合用）、summary は §3.4 の要約（tool_input の全体は持たない）。
+  // 1 セッションに pending は 1 件だけ（部分一意索引）。released は self-agent が保留せず・保留をやめて空の本文を返したもの（停止・1 分 20 件の上限）。
+  // state・via の語は後の段（allowed_always・discord）の分まで入れておく。30 日で消す
+  `
+  CREATE TABLE cc_permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    permission_mode TEXT,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'allowed', 'allowed_always', 'denied', 'answered_elsewhere', 'expired', 'released')),
+    via TEXT CHECK (via IN ('web', 'discord', 'hook', 'status', 'shutdown', 'limit')),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+  );
+  CREATE UNIQUE INDEX cc_permissions_pending ON cc_permissions(session_id) WHERE state = 'pending';
+  CREATE INDEX cc_permissions_session ON cc_permissions(session_id, id);
+  CREATE INDEX cc_permissions_created ON cc_permissions(created_at);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

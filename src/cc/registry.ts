@@ -21,6 +21,8 @@ export const CC_PENDING_MS = 30_000;
 export const CC_PENDING_MAX = 100;
 /** 続けて読めなかったらこの回数で一覧を空にする */
 export const CC_STALE_LIMIT = 5;
+/** 保留中の許可の要求があるときの周期（「他で答えられた」の検知。§2.2） */
+export const CC_PERMISSION_POLL_MS = 5_000;
 
 /** needs_input = 判断待ち、running = 実行中、idle = 待機 */
 export type CcState = "needs_input" | "running" | "idle";
@@ -30,7 +32,7 @@ export type RankInput = {
   sessionId: string;
   /** claude agents --json の status（busy / waiting / idle） */
   status: string | undefined;
-  /** 保留中の PermissionRequest がある（CC5a から。今はいつも false） */
+  /** 保留中の PermissionRequest がある（permission-hold.ts） */
   pendingPermission: boolean;
   /** hook で判断待ちにした Notification の種類。その後の UserPromptSubmit・Stop で null */
   waitingKind: string | null;
@@ -141,6 +143,16 @@ export type CcRegistryDeps = {
   timers?: CcTimers;
   /** 送信の待ち行列が空でない（§2.2。CC3 から）・起動したセッションをまだ一覧で見つけていない（CC4）。true の間は見ていなくても設定の周期で読む */
   busy?: () => boolean;
+  /**
+   * 許可の要求の保留（permission-hold.ts。CC5a から）。保留中は CC_PERMISSION_POLL_MS ごとに読み、読めた一覧の status を渡す。
+   * 保留中のセッションは判断待ちにし、pending か直近に解決した行のあるセッションの permission_prompt の Notification は判断待ちの元にしない
+   */
+  permissions?: {
+    holding(): boolean;
+    pendingSessions(): ReadonlySet<string>;
+    suppressedSessions(): ReadonlySet<string>;
+    onListed(statuses: ReadonlyMap<string, string | undefined>, readStartedAt: Date): void;
+  };
   log: (message: string) => void;
 };
 
@@ -236,13 +248,22 @@ export class CcRegistry implements CcHookReceiver {
     this.scheduleSoon();
   }
 
+  /** 直近に読めた一覧にあるセッションか（許可の要求を保留してよいか。§2.2） */
+  knows(sessionId: string): boolean {
+    return this.agents.some((agent) => agent.sessionId === sessionId);
+  }
+
   /** 今の一覧（状態を付けて並べたもの） */
   snapshot(): CcSnapshot {
     const rows = new Map(this.deps.store.listAlive().map((row) => [row.sessionId, row]));
+    const pendingPermissions = this.deps.permissions?.pendingSessions() ?? new Set<string>();
+    const suppressed = this.deps.permissions?.suppressedSessions() ?? new Set<string>();
     const views: Array<Omit<CcSessionView, "state">> = this.agents.map((agent) => {
       const row = rows.get(agent.sessionId);
       const extra = this.extras.get(agent.sessionId);
-      const waitingKind = row?.waitingKind ?? null;
+      // 保留中でも 6 秒で来る permission_prompt は、許可の要求で分かっているので判断待ちの元にしない
+      const rawKind = row?.waitingKind ?? null;
+      const waitingKind = rawKind === "permission_prompt" && suppressed.has(agent.sessionId) ? null : rawKind;
       const hookWaiting = waitingKind === null ? undefined : parseTime(row?.waitingSince ?? null);
       const observed = this.observedWaiting.get(agent.sessionId);
       const waitingSince =
@@ -250,7 +271,7 @@ export class CcRegistry implements CcHookReceiver {
       const view = {
         sessionId: agent.sessionId,
         status: agent.status,
-        pendingPermission: false,
+        pendingPermission: pendingPermissions.has(agent.sessionId),
         waitingKind,
         waitingSince,
         lastPromptAt: parseTime(row?.lastPromptAt ?? null),
@@ -328,9 +349,13 @@ export class CcRegistry implements CcHookReceiver {
     this.schedule(CC_EVENT_REFRESH_MS);
   }
 
-  /** 見ている・保留中の事象がある・送信の待ち行列が空でないなら設定の周期、それ以外は 60 秒（設定の方が長ければ設定） */
+  /**
+   * 保留中の許可の要求があれば CC_PERMISSION_POLL_MS（設定の方が短ければ設定）。見ている・保留中の事象がある・送信の待ち行列が空でないなら
+   * 設定の周期、それ以外は 60 秒（設定の方が長ければ設定）
+   */
   private nextDelay(): number {
     const pollMs = this.deps.cfg.ccPollSec * 1000;
+    if (this.deps.permissions?.holding() === true) return Math.min(pollMs, CC_PERMISSION_POLL_MS);
     const now = this.deps.now().getTime();
     const watched = this.lastTouch !== undefined && now - this.lastTouch < CC_WATCH_MS;
     return watched || this.pending.length > 0 || this.deps.busy?.() === true ? pollMs : Math.max(pollMs, CC_IDLE_POLL_MS);
@@ -354,7 +379,8 @@ export class CcRegistry implements CcHookReceiver {
   private async refresh(): Promise<void> {
     if (this.stopped) return;
     const { log } = this.deps;
-    this.lastAttemptAt = this.deps.now().getTime();
+    const startedAt = this.deps.now().getTime();
+    this.lastAttemptAt = startedAt;
     try {
       const result = await this.deps.agents.list();
       if (this.stopped) return;
@@ -392,6 +418,10 @@ export class CcRegistry implements CcHookReceiver {
       this.deps.store.markGone([...ids]);
       // 行を書いてから一覧を入れ替える（receive が一覧にあるとみなした session_id の行は必ずある）
       this.agents = result.agents;
+      this.deps.permissions?.onListed(
+        new Map(result.agents.map((agent) => [agent.sessionId, agent.status])),
+        new Date(startedAt),
+      );
 
       const extras = new Map<string, Extra>();
       let missingFiles = 0;
