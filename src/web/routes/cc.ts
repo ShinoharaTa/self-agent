@@ -306,9 +306,9 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
       handle: async ({ params, body }) => {
         if (registry === undefined || permissions === undefined) return NOT_FOUND;
         registry.touch();
-        // requestHash（任意）: 画面が出していた要求と行が同じことを確かめる（§3.4）
+        // requestHash: 画面が出していた要求と行が同じことを確かめる（§3.4）。無ければ 400
         const requestHash = body?.requestHash;
-        if (requestHash !== undefined && typeof requestHash !== "string") return { status: 400, json: { error: "bad_request" } };
+        if (typeof requestHash !== "string") return { status: 400, json: { error: "bad_request" } };
         const decision = params[1] === "allow" ? "allow" : "deny";
         const result = permissions.hold.answer(Number(params[0]), decision, "web", requestHash);
         if (result.ok) return { status: 200, json: { state: result.state } };

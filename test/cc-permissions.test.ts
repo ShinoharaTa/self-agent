@@ -8,6 +8,7 @@ import { createCcHookServer, summarizePermission } from "../src/cc/hook-server.t
 import {
   CC_PERMISSION_DENY_MESSAGE,
   CC_PERMISSION_RATE_LIMIT,
+  CC_PERMISSION_UNKNOWN_LOG_INTERVAL_MS,
   CcPermissionHold,
   decisionBody,
 } from "../src/cc/permission-hold.ts";
@@ -318,6 +319,21 @@ test("CC5a: 受信 3 秒以後に読み始めた一覧の status が idle・busy
   await s.list();
   assert.equal((await second.reply).body, "");
   assert.equal(s.store.get(second.id)?.via, "status");
+  // status の形が読めない（undefined）なら閉じない
+  s.setAgents([agent(S1), agent(S2)]);
+  await s.list();
+  const third = await s.ask(S1);
+  s.setAgents([agent(S1, { status: undefined, waitingFor: undefined }), agent(S2)]);
+  s.clock.now = BASE + 20_000;
+  await s.list();
+  assert.equal(s.store.get(third.id)?.state, "pending");
+  // 一覧から消えた（claude が終わった）なら expired（via null）
+  s.setAgents([agent(S2)]);
+  s.clock.now = BASE + 25_000;
+  await s.list();
+  assert.equal((await third.reply).body, "");
+  assert.equal(s.store.get(third.id)?.state, "expired");
+  assert.equal(s.store.get(third.id)?.via, null);
 });
 
 test("CC5a: 一覧に無い session_id の要求は記録も保留もせず、すぐ 200・空", async (t) => {
@@ -428,6 +444,51 @@ test("CC5a: 保留中は一覧を 5 秒ごとに読む（それ以外は 60 秒�
   await s.fireRegistry();
   assert.equal(s.registryDelays.at(-1), CC_IDLE_POLL_MS);
   s.registry.stop();
+});
+
+test("CC5a: 一覧に無いセッションの要求の log は 60 秒に 1 回まで", async (t) => {
+  const s = await setup(t);
+  const line = "Claude Code: 一覧に無いセッションの許可の要求は保留しませんでした";
+  const count = () => s.logs.filter((l) => l === line).length;
+  await s.send(permissionBody(S9));
+  await s.send(permissionBody(S9));
+  assert.equal(count(), 1);
+  s.clock.now = BASE + CC_PERMISSION_UNKNOWN_LOG_INTERVAL_MS - 1;
+  await s.send(permissionBody(S9));
+  assert.equal(count(), 1);
+  s.clock.now = BASE + CC_PERMISSION_UNKNOWN_LOG_INTERVAL_MS;
+  await s.send(permissionBody(S9));
+  assert.equal(count(), 2);
+});
+
+test("CC5a: 一覧への反映（receiver）が投げても、Stop で保留中の要求は閉じる", async (t) => {
+  const db = tempDb(t);
+  const now = (): Date => new Date(BASE);
+  const store = new CcPermissionStore(db, now);
+  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300 }, store, known: () => true, now, timers: { after: () => () => undefined }, log: () => undefined });
+  const server = createCcHookServer({
+    host: "127.0.0.1",
+    port: 0,
+    token: TOKEN,
+    receiver: {
+      receive: (event) => {
+        if (event.event === "Stop") throw new Error("boom");
+      },
+    },
+    permissions: hold,
+    now,
+    log: () => undefined,
+  });
+  await server.start();
+  t.after(() => server.close());
+  const port = server.address()!.port;
+  const asked = post(port, permissionBody(S1));
+  await until(() => store.pendingFor(S1) !== undefined, "pending の行");
+  const id = store.pendingFor(S1)!.id;
+  const stop = await post(port, { hook_event_name: "Stop", session_id: S1 }).reply;
+  assert.equal(stop.status, 200);
+  assert.equal((await asked.reply).body, "");
+  assert.equal(store.get(id)?.state, "answered_elsewhere");
 });
 
 test("CC5a: log は番号・状態・経路だけで、コマンド・cwd・セッションの ID を出さない", async (t) => {
