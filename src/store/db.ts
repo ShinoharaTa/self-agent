@@ -621,6 +621,36 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE cc_sends ADD COLUMN message_id TEXT;
   ALTER TABLE cc_sessions ADD COLUMN channel_id TEXT;
   `,
+  // v35（docs/plan/claude-code-sessions.md §9。CC8）: Claude Code の返事を Discord に戻す（§5.4）。cc_sessions の follow は追いかけ中か、
+  // follow_channel_id は返事を出すチャンネル（最後に Discord から頼んだもの）、follow_since は追いかけを始めた時刻、follow_last_stop_at は最後の Stop の時刻、
+  // reply_count_day・reply_count はその日（SELF_AGENT_TZ の YYYY-MM-DD）に出した返事の数（1 日の上限）。cc_sends の reply_state は送信に返事が来たかの印
+  // （delivered で waiting、最初の Stop で posted か unreadable、24 時間来なければ timed_out）。cc_replies は Stop ごとの 1 行で、本文は持たず
+  // sha256 と長さだけ（10 秒以内の同じ本文は skipped）。30 日で消す
+  `
+  ALTER TABLE cc_sessions ADD COLUMN follow INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE cc_sessions ADD COLUMN follow_channel_id TEXT;
+  ALTER TABLE cc_sessions ADD COLUMN follow_since TEXT;
+  ALTER TABLE cc_sessions ADD COLUMN follow_last_stop_at TEXT;
+  ALTER TABLE cc_sessions ADD COLUMN reply_count_day TEXT;
+  ALTER TABLE cc_sessions ADD COLUMN reply_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE cc_sends ADD COLUMN reply_state TEXT CHECK (reply_state IN ('waiting', 'posted', 'timed_out', 'unreadable'));
+  ALTER TABLE cc_sends ADD COLUMN reply_posted_at TEXT;
+  CREATE INDEX cc_sends_reply ON cc_sends(session_id, id) WHERE reply_state = 'waiting';
+  CREATE TABLE cc_replies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
+    text_length INTEGER NOT NULL,
+    send_id INTEGER,
+    channel_id TEXT NOT NULL,
+    message_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('posted', 'failed', 'skipped')),
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX cc_replies_session ON cc_replies(session_id, received_at);
+  CREATE INDEX cc_replies_created ON cc_replies(created_at);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

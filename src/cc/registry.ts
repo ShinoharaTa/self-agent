@@ -158,6 +158,11 @@ export type CcRegistryDeps = {
    * SessionEnd の hook は根拠にしない（偽の hook と、再起動をまたいだ二重を防ぐため。§5.2）。投げても一覧の更新には響かない
    */
   ended?: (session: CcSessionRow) => void;
+  /**
+   * 採った（一覧にあるセッションの）hook の事象を、行に反映した後に渡す（返事を Discord に戻す cc/replies.ts。CC8）。一覧に無い session_id の事象は渡さない。
+   * 投げても一覧の処理は止めない
+   */
+  onEvent?: (event: CcHookEvent) => void;
   log: (message: string) => void;
 };
 
@@ -378,6 +383,13 @@ export class CcRegistry implements CcHookReceiver {
       this.permissions.set(event.sessionId, { ...event.permission, at: event.receivedAt.getTime() });
     } else if (event.event === "UserPromptSubmit" || event.event === "Stop") {
       this.permissions.delete(event.sessionId);
+    }
+    if (this.deps.onEvent !== undefined) {
+      try {
+        this.deps.onEvent(event);
+      } catch (error) {
+        this.deps.log(`Claude Code: hook の事象の後の処理に失敗しました（${errorKind(error)}）`);
+      }
     }
   }
 

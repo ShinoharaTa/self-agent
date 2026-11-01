@@ -16,6 +16,14 @@ export type CcSendState = "awaiting_confirm" | "queued" | "delivering" | "delive
 /** まだ終わっていない状態（1 セッションに 1 件だけ） */
 export const CC_SEND_ACTIVE_STATES: readonly CcSendState[] = ["awaiting_confirm", "queued", "delivering"];
 
+/**
+ * 送信に返事が来たかの印（§5.4。CC8）。waiting = 届けて返事（Stop）を待っている、posted = 届けた後の最初の Stop が来た、
+ * unreadable = その Stop に返事の本文が無かった、timed_out = 24 時間来なかった（Esc の中断では Stop が来ない）。届けていない送信は null
+ */
+export type CcReplyState = "waiting" | "posted" | "timed_out" | "unreadable";
+
+const REPLY_STATES: readonly CcReplyState[] = ["waiting", "posted", "timed_out", "unreadable"];
+
 const STATES: readonly CcSendState[] = ["awaiting_confirm", "queued", "delivering", "delivered", "unconfirmed", "failed", "gave_up", "cancelled"];
 const ORIGINS: readonly CcSendOrigin[] = ["web", "tool", "github", "start"];
 
@@ -41,6 +49,10 @@ export type CcSendRow = {
   channelId: string | null;
   /** 確認のメッセージ（Discord から頼んだ送信だけ。CC7） */
   messageId: string | null;
+  /** 返事が来たかの印（CC8）。届けていなければ null */
+  replyState: CcReplyState | null;
+  /** 返事の印を posted・unreadable にした時刻 */
+  replyPostedAt: string | null;
   /** 作った時刻。Discord の確認待ちの行は [送る] を押した時刻に進める（待ちの上限はそこから数える） */
   createdAt: string;
   updatedAt: string;
@@ -72,6 +84,8 @@ function toRow(row: Record<string, SQLOutputValue>): CcSendRow {
     notificationId: nullableNumber(row.notification_id),
     channelId: nullableString(row.channel_id),
     messageId: nullableString(row.message_id),
+    replyState: REPLY_STATES.find((value) => value === row.reply_state) ?? null,
+    replyPostedAt: nullableString(row.reply_posted_at),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -218,7 +232,7 @@ export class CcSendStore {
 
   /**
    * 今の状態が from のどれかのときだけ to に移す（compare-and-set）。fields があれば同じ更新で書く（undefined の項目は変えない）。
-   * to が delivered なら delivered_at を今にする。移したら true
+   * to が delivered なら delivered_at を今にし、返事の印を waiting にする（§5.4）。移したら true
    */
   transition(
     id: number,
@@ -231,11 +245,56 @@ export class CcSendStore {
     const result = this.db
       .prepare(
         `UPDATE cc_sends SET state = ?, updated_at = ?, pane_id = COALESCE(?, pane_id), last_pane_state = COALESCE(?, last_pane_state),
-           delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END
+           delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END,
+           reply_state = CASE WHEN ? = 'delivered' THEN 'waiting' ELSE reply_state END
          WHERE id = ? AND state IN (${placeholders})`,
       )
-      .run(to, at, fields.paneId ?? null, fields.lastPaneState ?? null, to, at, id, ...from);
+      .run(to, at, fields.paneId ?? null, fields.lastPaneState ?? null, to, at, to, id, ...from);
     return Number(result.changes) > 0;
+  }
+
+  /**
+   * そのセッションの返事を待っている（reply_state が waiting の）最新の送信に、来た返事の印（posted・unreadable）を付けて、付ける前の行を返す（§5.4。
+   * 届けた後の最初の Stop）。それより前の返事待ちは、もう返事が来ない（Esc で中断された）ので timed_out にする。返事待ちが無ければ undefined
+   */
+  takeReplyWaiting(sessionId: string, state: "posted" | "unreadable"): CcSendRow | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM cc_sends WHERE session_id = ? AND reply_state = 'waiting' ORDER BY id DESC LIMIT 1")
+      .get(sessionId);
+    if (row === undefined) return undefined;
+    const found = toRow(row);
+    const at = this.now().toISOString();
+    this.db.exec("BEGIN");
+    try {
+      this.db
+        .prepare("UPDATE cc_sends SET reply_state = ?, reply_posted_at = ?, updated_at = ? WHERE id = ? AND reply_state = 'waiting'")
+        .run(state, at, at, found.id);
+      this.db
+        .prepare("UPDATE cc_sends SET reply_state = 'timed_out', updated_at = ? WHERE session_id = ? AND reply_state = 'waiting' AND id < ?")
+        .run(at, sessionId, found.id);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return found;
+  }
+
+  /** delivered_at が cutoff より前の返事待ちを timed_out にし、その id を返す（24 時間。§5.4） */
+  timeOutReplies(cutoff: Date): number[] {
+    const ids = this.db
+      .prepare("SELECT id FROM cc_sends WHERE reply_state = 'waiting' AND delivered_at < ? ORDER BY id")
+      .all(cutoff.toISOString())
+      .map((row) => Number(row.id));
+    const statement = this.db.prepare("UPDATE cc_sends SET reply_state = 'timed_out', updated_at = ? WHERE id = ? AND reply_state = 'waiting'");
+    const at = this.now().toISOString();
+    return ids.filter((id) => Number(statement.run(at, id).changes) > 0);
+  }
+
+  /** 返事を待っている送信の数（一覧を設定の周期で読む間。§2.2） */
+  countReplyWaiting(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM cc_sends WHERE reply_state = 'waiting'").get();
+    return Number(row?.n ?? 0);
   }
 
   /** queued の行に、試した回数を 1 増やして最後に見たペインの状態を書く（queued でなければ何もしない） */

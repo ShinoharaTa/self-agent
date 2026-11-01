@@ -50,6 +50,18 @@ export type CcSessionRow = {
   notifiedAt: string | null;
   /** 最後に Discord から頼んだチャンネル（cc_send の [送る]・cc_start の [起動する]。CC7） */
   channelId: string | null;
+  /** 返事を Discord に戻しているか（追いかけ。§5.4。CC8） */
+  follow: boolean;
+  /** 返事を出すチャンネル（最後に Discord から頼んで届いたもの） */
+  followChannelId: string | null;
+  /** 追いかけを始めた時刻（止まっている間に頼まれて始め直したら進める） */
+  followSince: string | null;
+  /** 最後の Stop を受けた時刻（追いかけの無活動の判定） */
+  followLastStopAt: string | null;
+  /** reply_count を数えている日（SELF_AGENT_TZ の YYYY-MM-DD） */
+  replyCountDay: string | null;
+  /** その日に返事として数えた Stop の数（1 日の上限） */
+  replyCount: number;
 };
 
 /** self-agent が起動したセッションの記録（recordStart） */
@@ -112,6 +124,12 @@ function toRow(row: Record<string, SQLOutputValue>): CcSessionRow {
     trustPendingAt: nullableString(row.trust_pending_at),
     notifiedAt: nullableString(row.notified_at),
     channelId: nullableString(row.channel_id),
+    follow: Number(row.follow ?? 0) === 1,
+    followChannelId: nullableString(row.follow_channel_id),
+    followSince: nullableString(row.follow_since),
+    followLastStopAt: nullableString(row.follow_last_stop_at),
+    replyCountDay: nullableString(row.reply_count_day),
+    replyCount: Number(row.reply_count ?? 0),
   };
 }
 
@@ -265,6 +283,50 @@ export class CcSessionStore {
   setChannel(sessionId: string, channelId: string): boolean {
     const result = this.db.prepare("UPDATE cc_sessions SET channel_id = ? WHERE session_id = ?").run(channelId, sessionId);
     return Number(result.changes) > 0;
+  }
+
+  /**
+   * 追いかけを始める（§5.4。Discord から頼んだ送信が届いたとき）。返事を出すチャンネルを channelId にし、止まっていたなら follow_since を今にする
+   * （追いかけ中なら follow_since は変えず、チャンネルだけ移す）。行があれば true
+   */
+  startFollow(sessionId: string, channelId: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE cc_sessions SET follow_channel_id = ?, follow_since = CASE WHEN follow = 1 THEN follow_since ELSE ? END, follow = 1
+         WHERE session_id = ?`,
+      )
+      .run(channelId, this.now().toISOString(), sessionId);
+    return Number(result.changes) > 0;
+  }
+
+  /** 追いかけをやめる（follow = 0。チャンネルと始めた時刻は残す）。追いかけ中だったときだけ true（compare-and-set） */
+  stopFollow(sessionId: string): boolean {
+    const result = this.db.prepare("UPDATE cc_sessions SET follow = 0 WHERE session_id = ? AND follow = 1").run(sessionId);
+    return Number(result.changes) > 0;
+  }
+
+  /** 最後の Stop を受けた時刻を書く（追いかけの無活動の判定） */
+  noteStop(sessionId: string, at: Date): void {
+    this.db.prepare("UPDATE cc_sessions SET follow_last_stop_at = ? WHERE session_id = ?").run(at.toISOString(), sessionId);
+  }
+
+  /**
+   * その日（day）の返事の数を 1 つ数え、数えた後の数を返す（日が変われば 1 から数え直す）。行が無ければ undefined。
+   * 数えるのと読むのを 1 つの文で行う（同時に来た Stop でも同じ数を返さない）
+   */
+  countReply(sessionId: string, day: string): number | undefined {
+    const row = this.db
+      .prepare(
+        `UPDATE cc_sessions SET reply_count = CASE WHEN reply_count_day = ? THEN reply_count + 1 ELSE 1 END, reply_count_day = ?
+         WHERE session_id = ? RETURNING reply_count`,
+      )
+      .get(day, day, sessionId);
+    return row === undefined ? undefined : Number(row.reply_count);
+  }
+
+  /** 追いかけ中の行（生きているかを問わない）を session_id の順に */
+  listFollowing(): CcSessionRow[] {
+    return this.db.prepare("SELECT * FROM cc_sessions WHERE follow = 1 ORDER BY session_id").all().map(toRow);
   }
 
   /** trust の確認待ちの時刻を書く（null で外す）。行があれば true */
