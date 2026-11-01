@@ -1,5 +1,6 @@
 // Claude Code のセッションへの送信（docs/plan/claude-code-sessions.md §3.2・§7 の 2〜4・6。CC3）。Web の composer（routes/cc.ts）が submit で
 // cc_sends に queued で積み、待ち行列（起動後は CC_SEND_RETRY_MS ごと。積んだときはすぐ）が古い順に 1 件ずつ試す（アプリ全体で同時に 1 つ）。
+// SDK のツール cc_send（CC7）は propose で Discord の確認待ち（awaiting_confirm）の行を作り、[送る]（confirm）で queued にする。
 // 試すたびに一覧（registry）の pid から送り先のペインを引き直し（祖先の関係で当たり pane_current_command が claude のものだけ。panes.ts の
 // findSendablePane）、probePaneState が idle（2 回）のときだけ load-buffer → paste-buffer -p -d → 0.5 秒後に pasteLanded → Enter → 2 秒後に確かめる。
 // 貼れたか確かめられなければ Enter を押さず unconfirmed（やり直さない）。複数行が 1 行目で送信されたように見えるのが別の送信で
@@ -68,6 +69,15 @@ export type CcSubmitResult =
 
 export type CcCancelResult = "cancelled" | "not_found" | "stale";
 
+/** 送り先を確かめられなかった理由（submit・propose で共通） */
+export type CcTargetFailure = "not_found" | "not_in_tmux" | "not_claude" | "no_server" | "tmux_failed" | "stopped";
+
+/** Discord の確認待ちの送信を作った結果（cc_send。CC7） */
+export type CcProposeResult = { ok: true; send: CcSendRow } | { ok: false; reason: CcTargetFailure | "already_queued" };
+
+/** [送る] の結果（queued にした・行が無い・確認待ちでない） */
+export type CcConfirmResult = "queued" | "not_found" | "stale";
+
 export type CcSenderDeps = {
   cfg: Pick<Config, "ccSendWaitMin" | "allowedGuildIds">;
   registry: Pick<CcRegistry, "snapshot">;
@@ -85,6 +95,7 @@ export type CcSenderDeps = {
     | "recoverDelivering"
     | "giveUpOlderThan"
     | "bindSession"
+    | "confirm"
   >;
   sessions: Pick<CcSessionStore, "multilineOk" | "setMultilineOk">;
   /** #system への知らせ（無ければ log だけ） */
@@ -161,16 +172,9 @@ export class CcSender {
    * それ以外は queued で積んで待ち行列をすぐ回す。notificationId は GitHub の [対応]（origin github。CC6）のときだけ
    */
   async submit(input: { sessionId: string; text: string; origin: CcSendOrigin; notificationId?: number }): Promise<CcSubmitResult> {
-    const { registry, panes, sends, now, log } = this.deps;
-    if (this.stopped) return { ok: false, reason: "stopped" };
-    const { sessions } = registry.snapshot();
-    const view = sessions.find((session) => session.sessionId === input.sessionId);
-    if (view === undefined) return { ok: false, reason: "not_found" };
-    const lookup = await panes.lookup(sessionPids(sessions));
-    if (!lookup.ok) return { ok: false, reason: lookup.reason === "no_server" ? "no_server" : "tmux_failed" };
-    const target = lookup.sendable({ pid: view.pid, tmux: view.tmux });
-    if (!target.ok) return { ok: false, reason: target.reason };
-    if (this.stopped) return { ok: false, reason: "stopped" };
+    const { sends, now, log } = this.deps;
+    const checked = await this.checkTarget(input.sessionId);
+    if (checked !== undefined) return { ok: false, reason: checked };
     // ここから行を作るまで await しない（同時に来た 2 つの要求でも二重に積まない）
     const same = sends.findRecentSame(input.sessionId, input.text, new Date(now().getTime() - CC_SEND_DUPLICATE_MS));
     if (same !== undefined) return { ok: true, send: same, duplicate: true };
@@ -185,6 +189,48 @@ export class CcSender {
     log(`Claude Code: 送りました（#${send.id}、queued）`);
     void this.kick();
     return { ok: true, send, duplicate: false };
+  }
+
+  /**
+   * Discord の確認待ちの送信を作る（cc_send。§5.3）。送り先を submit と同じく確かめ、そのセッションにまだ終わっていない行があれば already_queued、
+   * それ以外は awaiting_confirm（origin tool）で作る。送るのは [送る]（confirm）の後。text は normalizeSendText を通したもの
+   */
+  async propose(input: { sessionId: string; text: string; channelId: string }): Promise<CcProposeResult> {
+    const checked = await this.checkTarget(input.sessionId);
+    if (checked !== undefined) return { ok: false, reason: checked };
+    // ここから行を作るまで await しない
+    if (this.deps.sends.activeFor(input.sessionId) !== undefined) return { ok: false, reason: "already_queued" };
+    const send = this.deps.sends.add({
+      sessionId: input.sessionId,
+      text: input.text,
+      origin: "tool",
+      state: "awaiting_confirm",
+      channelId: input.channelId,
+    });
+    return { ok: true, send };
+  }
+
+  /** [送る]: 確認待ちの送信を queued にする（待ち行列を回すのは呼び出し側の kick）。確認待ちでなければ stale */
+  confirm(id: number): CcConfirmResult {
+    if (this.deps.sends.get(id) === undefined) return "not_found";
+    if (!this.deps.sends.confirm(id)) return "stale";
+    this.deps.log(`Claude Code: 送りました（#${id}、queued）`);
+    return "queued";
+  }
+
+  /** 送り先を確かめる（一覧に居る・tmux の claude のペインに当たる）。通れば undefined */
+  private async checkTarget(sessionId: string): Promise<CcTargetFailure | undefined> {
+    const { registry, panes } = this.deps;
+    if (this.stopped) return "stopped";
+    const { sessions } = registry.snapshot();
+    const view = sessions.find((session) => session.sessionId === sessionId);
+    if (view === undefined) return "not_found";
+    const lookup = await panes.lookup(sessionPids(sessions));
+    if (!lookup.ok) return lookup.reason === "no_server" ? "no_server" : "tmux_failed";
+    const target = lookup.sendable({ pid: view.pid, tmux: view.tmux });
+    if (!target.ok) return target.reason;
+    if (this.stopped) return "stopped";
+    return undefined;
   }
 
   /** queued（と Discord の確認待ち）の送信を取り消す。貼っている途中・終わったものは stale */

@@ -7,6 +7,7 @@
 // cc_sessions に started_by などを書く（cwd が起動したディレクトリの claude だけ）。起動から CC_TRUST_CHECK_DELAY_MS で、その後も CC_START_BIND_MS の間は
 // tick ごとに、画面が trust のダイアログなら trust の確認待ちにし、消えたら外す（それより後・再起動の後は確認待ちの行だけを撮り直して外す）。
 // 上限: 生きている claude が SELF_AGENT_CC_MAX_SESSIONS 以上・MemAvailable が 1 GB 未満・前の起動から 1 分未満なら断る。
+// SDK のツール cc_start（CC7）は確認を出す前に check で検証と上限（1 分の間隔は除く）を確かめ、[起動する] で launch する。
 // log は起動したもの（web など）・送信の番号・件数・失敗の種類だけ（プロジェクト名・題名・パス・tmux のセッション名・ペイン id・sessionId は出さない）
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -74,7 +75,17 @@ export type CcStartInput = {
   nested?: boolean;
   /** 最初の指示を GitHub の [対応]（origin github）として積むときの通知（CC6）。無ければ origin start */
   notificationId?: number;
+  /** Discord から頼んだ起動（cc_start。CC7）なら頼んだチャンネル（最初の指示の送信と cc_sessions に書く） */
+  channelId?: string;
+  /** 起動の後に trust のダイアログの確認待ちに気づいたら 1 回呼ぶ（cc_start の確認の書き換え。CC7） */
+  onTrustPending?: () => void;
 };
+
+/** 検証を通った起動の入力 */
+export type CcStartPlan = { project: string; title: string; mode: string | undefined; text: string | undefined };
+
+/** 起動できるか確かめた結果（check。起動はしない） */
+export type CcStartCheck = ({ ok: true } & CcStartPlan) | { ok: false; reason: CcStartFailure };
 
 /** 題名の検証（純関数）。前後の空白を除いて CC_TITLE_PATTERN に合えばそれ */
 export function normalizeTitle(raw: unknown): string | undefined {
@@ -241,6 +252,8 @@ type Started = {
   /** 結びつけた一覧のセッション */
   sessionId: string | undefined;
   trustPendingAt: Date | null;
+  channelId: string | undefined;
+  onTrustPending: (() => void) | undefined;
 };
 
 const REAL_TIMERS: CcTimers = {
@@ -301,9 +314,23 @@ export class CcStarter {
     await Promise.allSettled([this.running, this.inFlight]);
   }
 
-  /** 起動する（§4.2）。検証・上限を通ったら tmux に新しいセッションを作り、最初の指示があればペイン宛てに積む */
-  async launch(input: CcStartInput): Promise<CcStartResult> {
+  /**
+   * 起動できるか確かめる（cc_start の確認を出す前。CC7）。launch と同じ検証と、上限（数・メモリ）・tmux のサーバーを確かめるが、
+   * 1 分の間隔は見ない（起動するのはオーナーが [起動する] を押したとき）。起動はしない
+   */
+  async check(input: Omit<CcStartInput, "startedBy">): Promise<CcStartCheck> {
     if (this.stopped) return { ok: false, reason: "stopped" };
+    const plan = this.validate(input);
+    if (!plan.ok) return plan;
+    const capacity = this.capacity();
+    if (capacity !== undefined) return { ok: false, reason: capacity };
+    const panes = await this.deps.tmux.listPanes();
+    if (!panes.ok) return { ok: false, reason: panes.reason === "no_server" ? "no_server" : "tmux_failed" };
+    return { ok: true, project: plan.project, title: plan.title, mode: plan.mode, text: plan.text };
+  }
+
+  /** 入力の検証（題名・権限モード・最初の指示・ディレクトリ） */
+  private validate(input: Omit<CcStartInput, "startedBy">): ({ ok: true; dir: string } & CcStartPlan) | { ok: false; reason: CcStartFailure } {
     const title = normalizeTitle(input.title);
     if (title === undefined) return { ok: false, reason: "invalid_title" };
     const mode = input.permissionMode === undefined || input.permissionMode === null || input.permissionMode === "" ? undefined : input.permissionMode;
@@ -318,17 +345,40 @@ export class CcStarter {
     }
     const dir = projectDir(input.project, this.deps.places, { nested: input.nested === true });
     if (dir === undefined) return { ok: false, reason: "invalid_project" };
+    return { ok: true, dir, project: input.project as string, title, mode: mode as string | undefined, text };
+  }
+
+  /** 一覧を読めていない・生きている claude が上限・MemAvailable が足りなければその理由 */
+  private capacity(): "not_ready" | "limit" | "low_memory" | undefined {
+    const snapshot = this.deps.registry.snapshot();
+    // 一覧をまだ読めていない・読めない間は数を確かめられないので起動しない
+    if (snapshot.fetchedAt === undefined || snapshot.unreadable) return "not_ready";
+    const unbound = this.started.filter((entry) => entry.sessionId === undefined).length;
+    if (snapshot.sessions.length + unbound >= this.deps.cfg.ccMaxSessions) return "limit";
+    const mem = this.deps.memAvailable();
+    if (mem !== undefined && mem < CC_MIN_MEM_AVAILABLE_BYTES) return "low_memory";
+    return undefined;
+  }
+
+  /** 起動する（§4.2）。検証・上限を通ったら tmux に新しいセッションを作り、最初の指示があればペイン宛てに積む */
+  async launch(input: CcStartInput): Promise<CcStartResult> {
+    if (this.stopped) return { ok: false, reason: "stopped" };
+    const plan = this.validate(input);
+    if (!plan.ok) return plan;
+    const { dir, project, title, mode, text } = plan;
     // 同時に 2 つは起動しない（2 つ目は 1 分の間隔と同じ扱い）
     if (this.starting) return { ok: false, reason: "too_soon" };
     this.starting = true;
     const run = this.run({
-      project: input.project as string,
+      project,
       dir,
       title,
       mode,
       text,
       startedBy: input.startedBy,
       ...(input.notificationId === undefined ? {} : { notificationId: input.notificationId }),
+      channelId: input.channelId,
+      onTrustPending: input.onTrustPending,
     });
     this.inFlight = run;
     try {
@@ -347,17 +397,14 @@ export class CcStarter {
     text: string | undefined;
     startedBy: Exclude<CcStartedBy, "owner">;
     notificationId?: number;
+    channelId: string | undefined;
+    onTrustPending: (() => void) | undefined;
   }): Promise<CcStartResult> {
-    const { cfg, registry, tmux, sends, now, log } = this.deps;
+    const { tmux, sends, now, log } = this.deps;
     const at = now().getTime();
     if (this.lastStartAt !== undefined && at - this.lastStartAt < CC_START_INTERVAL_MS) return { ok: false, reason: "too_soon" };
-    const snapshot = registry.snapshot();
-    // 一覧をまだ読めていない・読めない間は数を確かめられないので起動しない
-    if (snapshot.fetchedAt === undefined || snapshot.unreadable) return { ok: false, reason: "not_ready" };
-    const unbound = this.started.filter((entry) => entry.sessionId === undefined).length;
-    if (snapshot.sessions.length + unbound >= cfg.ccMaxSessions) return { ok: false, reason: "limit" };
-    const mem = this.deps.memAvailable();
-    if (mem !== undefined && mem < CC_MIN_MEM_AVAILABLE_BYTES) return { ok: false, reason: "low_memory" };
+    const capacity = this.capacity();
+    if (capacity !== undefined) return { ok: false, reason: capacity };
     // サーバーが無ければ new-session はサーバーを起こしてしまうので、先に確かめて断る（決定 8）
     const panes = await tmux.listPanes();
     if (!panes.ok) return { ok: false, reason: panes.reason === "no_server" ? "no_server" : "tmux_failed" };
@@ -386,6 +433,7 @@ export class CcStarter {
             text: input.text,
             state: "queued",
             ...(input.notificationId === undefined ? { origin: "start" } : { origin: "github", notificationId: input.notificationId }),
+            ...(input.channelId === undefined ? {} : { channelId: input.channelId }),
           });
     const entry: Started = {
       startedBy: input.startedBy,
@@ -397,6 +445,8 @@ export class CcStarter {
       sendId: send?.id,
       sessionId: undefined,
       trustPendingAt: null,
+      channelId: input.channelId,
+      onTrustPending: input.onTrustPending,
     };
     this.started.push(entry);
     log(`Claude Code: 起動しました（${input.startedBy}${send === undefined ? "" : `、最初の指示 #${send.id}`}）`);
@@ -426,6 +476,7 @@ export class CcStarter {
         entry.trustPendingAt = this.deps.now();
         if (entry.sessionId !== undefined) this.deps.sessions.setTrustPending(entry.sessionId, entry.trustPendingAt);
         this.deps.log("Claude Code: 起動したセッションが trust の確認を待っています");
+        entry.onTrustPending?.();
       } else if (!dialog && entry.trustPendingAt !== null) {
         entry.trustPendingAt = null;
         if (entry.sessionId !== undefined) this.deps.sessions.setTrustPending(entry.sessionId, null);
@@ -497,6 +548,7 @@ export class CcStarter {
         tmuxSessionId: entry.tmuxSessionId,
         paneId: entry.paneId,
         trustPendingAt: entry.trustPendingAt,
+        ...(entry.channelId === undefined ? {} : { channelId: entry.channelId }),
       });
       if (entry.sendId !== undefined && this.deps.sends.bindSession(entry.sendId, view.sessionId)) bound = true;
     }

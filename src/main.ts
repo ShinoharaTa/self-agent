@@ -25,6 +25,9 @@ import { createHandler } from "./app/handler.ts";
 import { InboxRotator } from "./app/inbox-rotate.ts";
 import type { CcPermissionButtons } from "./app/commands/cc.ts";
 import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
+import { CcConfirmExpirer, type CcConfirmRuntime } from "./app/commands/cc-confirm.ts";
+import { createCcTools } from "./app/cc-tools.ts";
+import type { CcToolDeps } from "./agent/tools.ts";
 import { createNotifyMemoryChange } from "./app/commands/memory-undo.ts";
 import { GithubHandoff } from "./app/github-handoff.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
@@ -69,6 +72,7 @@ import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
 import { CC_PERMISSION_KEEP_DAYS, type CcPermissionRow, CcPermissionStore } from "./store/cc-permissions.ts";
 import { CC_SEND_KEEP_DAYS, CcSendStore } from "./store/cc-sends.ts";
 import { CC_SESSION_KEEP_DAYS, CcSessionStore } from "./store/cc-sessions.ts";
+import { CC_START_KEEP_DAYS, CcStartStore } from "./store/cc-starts.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { HistoryStore } from "./store/history.ts";
@@ -197,6 +201,8 @@ const ccSends = new CcSendStore(db, now);
 const ccPermissionStore = new CcPermissionStore(db, now);
 // GitHub の通知のスレッド・出来事・ポーリングの状態（SELF_AGENT_GITHUB=1 のときだけ書く。古い行は tick で消す）
 const githubStore = new GithubStore(db, now);
+// cc_start の起動の確認（CC7）
+const ccStarts = new CcStartStore(db, now);
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -242,9 +248,10 @@ if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${c
 // ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ（全人格で共通）。
 // ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中で、容量の上限まで）に絞る。
 // SELF_AGENT_SHELL=1 なら Bash もツールに入れ、run ごとの hook でセッションのチャンネルのプロジェクトがあるときだけ通す（sandbox は自己診断が通っていて
-// bwrap・socat がある run だけに付ける。shellAvailable は run の前に呼ぶ）。openSession・kbMemory・shellState は下で作る（run のときに読む）
+// bwrap・socat がある run だけに付ける。shellAvailable は run の前に呼ぶ）。openSession・kbMemory・shellState・ccTools は下で作る（run のときに読む）。
+// Claude Code のツール（cc_list・cc_send・cc_start）は SELF_AGENT_CC が無効でも定義し、ccTools が無ければ not_available を返す
 const createMcpServer = (context?: RunContext) =>
-  createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, reminderTools, context);
+  createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, reminderTools, context, ccTools);
 const runnerFiles = { projects, projectsDir, disk: diskQuota };
 const runnerDevLog = devLogSink === undefined ? undefined : { sink: devLogSink, now };
 const runnerConfig = { ...config, shellAvailable: () => shellState.enabledForRun() };
@@ -455,6 +462,12 @@ const handleInteraction = createInteractionHandler({
     turnQueue,
     turn,
     reminders,
+    // cc_send・cc_start の確認のボタン（cc:）。送信・起動は SELF_AGENT_CC=1 のときだけ下で作る（押したときに読む）。書き換えは確認を投稿した持ち主の Bot
+    ccSends,
+    ccStarts,
+    ccSessions,
+    ccRuntime: () => ccRuntime,
+    ccPosts: ownerPosts,
     // #jobs のボタンとモーダル（SELF_AGENT_JOBS=1 のときだけ）
     ...(jobs === undefined ? {} : { jobs }),
     // #system の許可の要求のボタン（SELF_AGENT_CC=1 で SELF_AGENT_CC_NOTIFY が 1 のときだけ。下で作る）
@@ -539,6 +552,8 @@ const scheduler = new Scheduler({
     if (deletedSends > 0) log(`古い Claude Code への送信の記録 ${deletedSends} 件を消しました`);
     const deletedPermissions = ccPermissionStore.prune(new Date(now().getTime() - CC_PERMISSION_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deletedPermissions > 0) log(`古い Claude Code の許可の要求の記録 ${deletedPermissions} 件を消しました`);
+    const deletedStarts = ccStarts.prune(new Date(now().getTime() - CC_START_KEEP_DAYS * 24 * 60 * 60 * 1000));
+    if (deletedStarts > 0) log(`古い Claude Code の起動の確認の記録 ${deletedStarts} 件を消しました`);
   },
   // 待ちに移した知らせの行（Web UI が有効なときだけ）
   ...history,
@@ -594,6 +609,10 @@ let ccTmux: Tmux | undefined;
 let ccPanes: CcPaneResolver | undefined;
 // /api/status の cc（hook の受け口が待ち受けているか・tmux のサーバー・複数行）
 let ccStatusOf: (() => CcStatus) | undefined;
+// SDK のツール cc_list・cc_send・cc_start（CC7）と、その確認のボタンが使う送信・起動。確認の失効（10 分）は ccConfirmExpirer
+let ccTools: CcToolDeps | undefined;
+let ccRuntime: CcConfirmRuntime | undefined;
+let ccConfirmExpirer: CcConfirmExpirer | undefined;
 const ccHookToken = process.env.SELF_AGENT_CC_HOOK_TOKEN;
 if (
   config.cc &&
@@ -691,6 +710,20 @@ if (
   });
   ccStatusOf = () =>
     ccStatus({ panes, hookListening: () => hookServer.address() !== undefined, store: ccSessions, permissions: ccPermissionStore });
+  // 確認は頼んだチャンネルに、その持ち主の Bot で投稿する
+  ccTools = createCcTools({
+    cfg: config,
+    registry,
+    panes,
+    sender: ccSender,
+    starter: ccStarter,
+    sends: ccSends,
+    starts: ccStarts,
+    gateway: ownerPosts,
+    log,
+  });
+  ccRuntime = { sender: ccSender, starter: ccStarter, registry, panes };
+  ccConfirmExpirer = new CcConfirmExpirer({ cfg: config, ccSends, ccStarts, ccSessions, ccPosts: ownerPosts, now, log });
 }
 
 // GitHub の通知の [対応]（docs/plan/github-notifications.md §5・§6、docs/plan/claude-code-sessions.md §6。SELF_AGENT_GITHUB と SELF_AGENT_CC の両方のときだけ）:
@@ -910,6 +943,7 @@ const lifecycle = createShutdown(
     // #system への知らせ（停止の後は新しく出さず、保留をやめた 1 通の書き換えは待つ）
     ...(ccNotifier === undefined ? {} : { ccNotifier }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
+    ...(ccConfirmExpirer === undefined ? {} : { ccConfirmExpirer }),
     closeDb: () => db.close(),
     log,
   },
@@ -983,4 +1017,5 @@ ccSender?.start();
 ccStarter?.start();
 ccNotifier?.rewriteRecovered(ccRecoveredPermissions);
 ccNotifier?.start();
+ccConfirmExpirer?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);
