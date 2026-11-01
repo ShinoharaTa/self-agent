@@ -3,6 +3,7 @@ import type { Config } from "../config.ts";
 import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../discord/gateway.ts";
 import { createGuestsCommand, type GuestsCommandDeps } from "../guest/commands/admin.ts";
 import { type CcComponentDeps, createCcComponent } from "./commands/cc.ts";
+import type { CcConfirmDeps } from "./commands/cc-confirm.ts";
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
 import { createGithubComponent, type GithubComponentDeps } from "./commands/github.ts";
@@ -88,11 +89,13 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
  * ターンの [中断]・[続ける]（turn:）は発言の handler（実行中のターンの中断と、発言と同じ経路のターンの投入）を使う。
  * リマインドのボタンと /reminders のセレクト（rem:）は、リマインドとタスクのストアを使う。
  * #jobs のボタンとモーダル（job:）は作業ジョブ（jobs。SELF_AGENT_JOBS が有効のときだけ渡す）を使う。
- * Claude Code のボタン（cc:）は許可の要求の保留（ccPermissionButtons。SELF_AGENT_CC が有効なときだけ）を使う。
+ * Claude Code のボタン（cc:）は許可の要求の保留（ccPermissionButtons。SELF_AGENT_CC が有効なときだけ）と、SDK のツールの確認の [送る]・[起動する]・[やめる]
+ * のための cc_sends・cc_starts・送信・起動（ccRuntime。SELF_AGENT_CC が有効なときだけ）を使う。
  * #github の [対応]（gh:）は GitHub の通知の送り込み（githubHandoff。SELF_AGENT_GITHUB と SELF_AGENT_CC が有効のときだけ渡す）を使う
  */
 export type ComponentDeps = CloseDeps &
   CcComponentDeps &
+  CcConfirmDeps &
   Partial<Pick<JobCommandDeps, "jobs">> &
   Partial<Pick<GithubComponentDeps, "githubHandoff">> &
   WaitDeps &

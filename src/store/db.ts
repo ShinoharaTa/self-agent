@@ -596,6 +596,31 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE cc_sends ADD COLUMN notification_id INTEGER;
   CREATE INDEX cc_sends_notification ON cc_sends(notification_id) WHERE notification_id IS NOT NULL;
   `,
+  // v34（docs/plan/claude-code-sessions.md §9。CC7）: SDK のエージェントのツール cc_send・cc_start の確認（§5.3）。cc_starts は cc_start の 1 回の
+  // 起動の確認（awaiting_confirm → [起動する] で started か failed、[やめる]・10 分の放置で cancelled）と起動したもの（tmux のセッション名・ペイン・最初の指示の送信）。
+  // cc_sends の channel_id・message_id は確認を投稿したチャンネルとメッセージ（Discord から頼んだ送信だけ）、cc_sessions の channel_id は最後に頼んだチャンネル
+  `
+  CREATE TABLE cc_starts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    title TEXT NOT NULL,
+    text TEXT,
+    permission_mode TEXT,
+    channel_id TEXT NOT NULL,
+    message_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('awaiting_confirm', 'started', 'cancelled', 'failed')),
+    tmux_session TEXT,
+    pane_id TEXT,
+    send_id INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX cc_starts_state ON cc_starts(state, id);
+  CREATE INDEX cc_starts_created ON cc_starts(created_at);
+  ALTER TABLE cc_sends ADD COLUMN channel_id TEXT;
+  ALTER TABLE cc_sends ADD COLUMN message_id TEXT;
+  ALTER TABLE cc_sessions ADD COLUMN channel_id TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
