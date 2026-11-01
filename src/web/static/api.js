@@ -549,6 +549,7 @@
       store.github = {
         status: data && data.status && typeof data.status === "object" ? data.status : null,
         notifications: Array.isArray(data && data.notifications) ? data.notifications : [],
+        handoff: !!(data && data.handoff),
       };
       SA.app.refresh("github");
       SA.app.refreshSidebar();

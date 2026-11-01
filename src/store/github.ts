@@ -165,7 +165,8 @@ const POLL_STATE_COLUMNS: Readonly<Record<keyof GithubPollState, string>> = {
 
 /**
  * GitHub の通知のスレッド・出来事・ポーリングの状態（docs/plan/github-notifications.md §2.2・§12）。
- * 送り込み（github_handoffs）の読み書きは段 2 で足す。ここでは古い行を消すときに、積んでいる送り込みの通知を残すためだけに見る
+ * [対応] の送り込みは Claude Code のセッションへの送信（cc_sends の notification_id。CC6）で、github_handoffs は使わない。
+ * ここでは古い行を消すときに、まだ終わっていない送信の通知を残すためだけに cc_sends を見る
  */
 export class GithubStore {
   private readonly db: DatabaseSync;
@@ -264,14 +265,14 @@ export class GithubStore {
 
   /**
    * cutoff より前に作った出来事と、cutoff より前から更新の無いスレッドを消す（§2.2 の 30 日）。
-   * 積んでいる（queued）送り込みの通知は残す。消した出来事の数を返す
+   * まだ終わっていない（awaiting_confirm・queued・delivering）送信の通知は残す。消した出来事の数を返す
    */
   prune(cutoff: Date): number {
     const iso = cutoff.toISOString();
     const result = this.db
       .prepare(
         "DELETE FROM github_notifications WHERE created_at < ? AND NOT EXISTS " +
-          "(SELECT 1 FROM github_handoffs h WHERE h.notification_id = github_notifications.id AND h.state = 'queued')",
+          "(SELECT 1 FROM cc_sends s WHERE s.notification_id = github_notifications.id AND s.state IN ('awaiting_confirm', 'queued', 'delivering'))",
       )
       .run(iso);
     // last_updated_at は GitHub の形（ミリ秒なし）なので、文字列ではなく時刻で比べる
