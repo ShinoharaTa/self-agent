@@ -6,6 +6,7 @@ import type { CcPermissionHold } from "../cc/permission-hold.ts";
 import type { CcRegistry } from "../cc/registry.ts";
 import type { CcSender } from "../cc/sender.ts";
 import type { CcStarter } from "../cc/starter.ts";
+import type { CcConfirmExpirer } from "./commands/cc-confirm.ts";
 import type { Config } from "../config.ts";
 import type { GithubPoller } from "../github/poller.ts";
 import type { JobOrchestrator } from "../jobs/orchestrator.ts";
@@ -70,6 +71,8 @@ export type ShutdownDeps = {
    * 投稿・書き換えの途中のもの（保留をやめた 1 通の書き換えを含む）を待つ
    */
   ccNotifier?: Pick<CcDiscordNotifier, "stop" | "idle">;
+  /** cc_send・cc_start の確認の失効（SELF_AGENT_CC=1 のときだけ）。scheduler と同じ時点で止め、書き換えの途中のものを待つ */
+  ccConfirmExpirer?: Pick<CcConfirmExpirer, "stop" | "idle">;
   /** Claude Code の hook の受け口（SELF_AGENT_CC=1 のときだけ）。Web UI の次（DB を閉じる前）に閉じる */
   ccHookServer?: Pick<CcHookServer, "close">;
   closeDb: () => void;
@@ -128,6 +131,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccStarter,
     ccPermissions,
     ccNotifier,
+    ccConfirmExpirer,
     ccHookServer,
     closeDb,
     log,
@@ -158,6 +162,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       ccSender?.idle(),
       ccStarter?.idle(),
       ccNotifier?.idle(),
+      ccConfirmExpirer?.idle(),
     ]);
     // ターンと定期処理が入れた移動のうち、その時点で実行中のものだけ待つ
     await channelOps.idle();
@@ -195,6 +200,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccStarter?.stop();
     ccPermissions?.stop();
     ccNotifier?.stop();
+    ccConfirmExpirer?.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);
     if (!(await settlesWithin(drained(), cfg.shutdownGraceSec * 1000))) {
       log(`進行中の処理が ${cfg.shutdownGraceSec} 秒で終わらなかったため、待たずに終了します`);

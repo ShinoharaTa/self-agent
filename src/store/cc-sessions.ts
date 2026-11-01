@@ -48,6 +48,8 @@ export type CcSessionRow = {
   trustPendingAt: string | null;
   /** 判断待ちを #system に最後に知らせた時刻（v32。CC5c。待ち始めより後なら、その待ちは知らせ済み） */
   notifiedAt: string | null;
+  /** 最後に Discord から頼んだチャンネル（cc_send の [送る]・cc_start の [起動する]。CC7） */
+  channelId: string | null;
 };
 
 /** self-agent が起動したセッションの記録（recordStart） */
@@ -57,6 +59,8 @@ export type CcStartRecord = {
   tmuxSessionId: string;
   paneId: string;
   trustPendingAt: Date | null;
+  /** Discord から頼んだ起動（cc_start）なら頼んだチャンネル */
+  channelId?: string;
 };
 
 /** 1 つの hook の事象で行に反映するもの */
@@ -107,6 +111,7 @@ function toRow(row: Record<string, SQLOutputValue>): CcSessionRow {
     startPaneId: nullableString(row.start_pane_id),
     trustPendingAt: nullableString(row.trust_pending_at),
     notifiedAt: nullableString(row.notified_at),
+    channelId: nullableString(row.channel_id),
   };
 }
 
@@ -240,7 +245,8 @@ export class CcSessionStore {
   recordStart(sessionId: string, record: CcStartRecord): boolean {
     const result = this.db
       .prepare(
-        `UPDATE cc_sessions SET started_by = ?, tmux_session = ?, tmux_session_id = ?, start_pane_id = ?, trust_pending_at = ?
+        `UPDATE cc_sessions SET started_by = ?, tmux_session = ?, tmux_session_id = ?, start_pane_id = ?, trust_pending_at = ?,
+           channel_id = COALESCE(?, channel_id)
          WHERE session_id = ? AND started_by = 'owner'`,
       )
       .run(
@@ -249,8 +255,15 @@ export class CcSessionStore {
         record.tmuxSessionId,
         record.paneId,
         record.trustPendingAt === null ? null : record.trustPendingAt.toISOString(),
+        record.channelId ?? null,
         sessionId,
       );
+    return Number(result.changes) > 0;
+  }
+
+  /** 最後に Discord から頼んだチャンネルを書く（cc_send の [送る]。CC7）。行があれば true */
+  setChannel(sessionId: string, channelId: string): boolean {
+    const result = this.db.prepare("UPDATE cc_sessions SET channel_id = ? WHERE session_id = ?").run(channelId, sessionId);
     return Number(result.changes) > 0;
   }
 

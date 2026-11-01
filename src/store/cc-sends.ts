@@ -3,7 +3,7 @@ import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 /** 送信の行を残す日数（scheduler の tick で、created_at がこれより前の終わった行を消す。docs/plan/claude-code-sessions.md §9） */
 export const CC_SEND_KEEP_DAYS = 30;
 
-/** 送信の出所（web = Web の composer、github = #github・Web の GitHub の [対応]（CC6）、start = 起動の最初の指示（CC4）。tool は後の段） */
+/** 送信の出所（web = Web の composer、tool = SDK のツール cc_send（CC7）、github = #github・Web の GitHub の [対応]（CC6）、start = 起動の最初の指示（CC4）） */
 export type CcSendOrigin = "web" | "tool" | "github" | "start";
 
 /**
@@ -37,6 +37,11 @@ export type CcSendRow = {
   deliveredAt: string | null;
   /** [対応] を押した通知（github_notifications.id。origin github だけ。CC6） */
   notificationId: number | null;
+  /** 確認を投稿したチャンネル（Discord から頼んだ送信だけ。CC7） */
+  channelId: string | null;
+  /** 確認のメッセージ（Discord から頼んだ送信だけ。CC7） */
+  messageId: string | null;
+  /** 作った時刻。Discord の確認待ちの行は [送る] を押した時刻に進める（待ちの上限はそこから数える） */
   createdAt: string;
   updatedAt: string;
 };
@@ -65,6 +70,8 @@ function toRow(row: Record<string, SQLOutputValue>): CcSendRow {
     attempts: Number(row.attempts),
     deliveredAt: nullableString(row.delivered_at),
     notificationId: nullableNumber(row.notification_id),
+    channelId: nullableString(row.channel_id),
+    messageId: nullableString(row.message_id),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -82,7 +89,7 @@ export class CcSendStore {
     this.now = now;
   }
 
-  /** 行を作って返す。paneId・startDir はペイン宛て（起動の最初の指示。sessionId は null）のときだけ、notificationId は GitHub の [対応] のときだけ */
+  /** 行を作って返す。paneId・startDir はペイン宛て（起動の最初の指示。sessionId は null）のときだけ、notificationId は GitHub の [対応] のときだけ、channelId は Discord から頼んだ送信のときだけ */
   add(input: {
     sessionId: string | null;
     paneId?: string;
@@ -91,14 +98,51 @@ export class CcSendStore {
     origin: CcSendOrigin;
     state: CcSendState;
     notificationId?: number;
+    channelId?: string;
   }): CcSendRow {
     const at = this.now().toISOString();
     const result = this.db
       .prepare(
-        "INSERT INTO cc_sends (session_id, pane_id, start_dir, text, origin, state, notification_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO cc_sends (session_id, pane_id, start_dir, text, origin, state, notification_id, channel_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .run(input.sessionId, input.paneId ?? null, input.startDir ?? null, input.text, input.origin, input.state, input.notificationId ?? null, at, at);
+      .run(
+        input.sessionId,
+        input.paneId ?? null,
+        input.startDir ?? null,
+        input.text,
+        input.origin,
+        input.state,
+        input.notificationId ?? null,
+        input.channelId ?? null,
+        at,
+        at,
+      );
     return this.get(Number(result.lastInsertRowid))!;
+  }
+
+  /** 確認のメッセージを書く（CC7） */
+  setMessageId(id: number, messageId: string): void {
+    this.db.prepare("UPDATE cc_sends SET message_id = ?, updated_at = ? WHERE id = ?").run(messageId, this.now().toISOString(), id);
+  }
+
+  /**
+   * Discord の確認待ち（awaiting_confirm）を queued にする（[送る]。§5.3）。created_at も今にして、送信の待ちの上限を [送る] から数える。
+   * 確認待ちでなければ何もせず false
+   */
+  confirm(id: number): boolean {
+    const at = this.now().toISOString();
+    const result = this.db
+      .prepare("UPDATE cc_sends SET state = 'queued', created_at = ?, updated_at = ? WHERE id = ? AND state = 'awaiting_confirm'")
+      .run(at, at, id);
+    return Number(result.changes) > 0;
+  }
+
+  /** created_at が cutoff 以前の確認待ち（awaiting_confirm）を古い順に（10 分の失効。§5.3） */
+  listAwaitingConfirmBefore(cutoff: Date): CcSendRow[] {
+    return this.db
+      .prepare("SELECT * FROM cc_sends WHERE state = 'awaiting_confirm' AND created_at <= ? ORDER BY id")
+      .all(cutoff.toISOString())
+      .map(toRow);
   }
 
   /** ペイン宛ての行（session_id が NULL）にセッションを結びつける（§4.2）。結びつけたら true */
