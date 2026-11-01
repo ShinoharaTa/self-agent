@@ -8,6 +8,7 @@
 // 保留が切れたら空の本文で expired、Claude Code が先に接続を閉じたら書かずに expired、停止では全部に空の本文で released（shutdown）、
 // 同じセッションから 1 分に 20 件を超えたら保留せず released（limit）。一覧に無いセッションの要求は記録も保留もしない。
 // allow を返すのはオーナーが押したときだけ（自動で allow する経路は無い）。
+// 保留を始めた・終わった行は listen で渡した相手（discord-notice.ts。#system の 1 通の投稿と書き換え。CC5c）に知らせる。
 // log は「Claude Code: 許可の要求（#id）→ <状態>（<経路>）」と件数だけ（ツール名・要約・セッションの ID は出さない）
 import type { CcPermissionRow, CcPermissionState, CcPermissionStore, CcPermissionVia } from "../store/cc-permissions.ts";
 import type { CcHookEvent } from "./hook-server.ts";
@@ -62,6 +63,14 @@ export type CcPermissionHoldDeps = {
 /** 押した結果。not_found = その id の行が無い、stale = 保留していない（終わった・時間切れ・他で答えられた）か request_hash が合わない */
 export type CcAnswerResult = { ok: true; state: CcPermissionState } | { ok: false; reason: "not_found" | "stale" };
 
+/** 保留を始めた・終わった行の受け手（discord-notice.ts の CcDiscordNotifier）。投げても保留には響かない（log だけ） */
+export type CcPermissionListener = {
+  /** pending で記録した直後 */
+  held(row: CcPermissionRow): void;
+  /** pending から移した直後（移した後の行） */
+  resolved(row: CcPermissionRow): void;
+};
+
 /** 保留している 1 件（プロセスの中だけ） */
 type Held = {
   sessionId: string;
@@ -85,10 +94,16 @@ export class CcPermissionHold {
   private stopped = false;
   /** 一覧に無いセッションの要求を最後に log に出した時刻 */
   private unknownLoggedAt: number | undefined;
+  private listener: CcPermissionListener | undefined;
 
   constructor(deps: CcPermissionHoldDeps) {
     this.deps = deps;
     this.timers = deps.timers ?? REAL_TIMERS;
+  }
+
+  /** 保留を始めた・終わった行の受け手を決める（main が作った後に渡す） */
+  listen(listener: CcPermissionListener): void {
+    this.listener = listener;
   }
 
   /** 起動時（受け口を始める前）: 前のプロセスで pending のまま残った行を expired にする */
@@ -158,6 +173,7 @@ export class CcPermissionHold {
         this.close(row.id, "expired", null);
       };
       this.held.set(row.id, held);
+      this.tell("held", row);
       held.cancelTimer = this.timers.after(() => this.close(row.id, "expired", null), this.deps.cfg.ccPermissionHoldSec * 1000);
       if (closed.aborted) onClosed();
       else closed.addEventListener("abort", onClosed, { once: true });
@@ -240,8 +256,21 @@ export class CcPermissionHold {
     const held = this.held.get(id);
     this.held.delete(id);
     held?.settle(moved ? body : undefined);
-    if (moved) this.logResult(id, to, via);
+    if (moved) {
+      this.logResult(id, to, via);
+      const row = this.deps.store.get(id);
+      if (row !== undefined) this.tell("resolved", row);
+    }
     return moved;
+  }
+
+  private tell(kind: keyof CcPermissionListener, row: CcPermissionRow): void {
+    if (this.listener === undefined) return;
+    try {
+      this.listener[kind](row);
+    } catch (error) {
+      this.deps.log(`Claude Code: 許可の要求の知らせに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
+    }
   }
 
   private logResult(id: number, state: CcPermissionState, via: CcPermissionVia | null): void {

@@ -351,3 +351,8 @@ test("toDisplayName: サーバーのニックネーム → グローバル名 �
   assert.equal(toDisplayName({ member: null, author: { globalName: null, username: "user_name" } }), "user_name");
   assert.equal(toDisplayName({ member: null, author: { globalName: "", username: "user_name" } }), "user_name");
 });
+
+test("toComponents: リンクのボタンの行は style 5 と url（custom_id なし）", () => {
+  const rows = toComponents([{ kind: "links", links: [{ label: "RC で開く", url: "https://claude.ai/code/session_x" }] }]);
+  assert.deepEqual(json(rows), [{ type: 1, components: [{ type: 2, style: 5, label: "RC で開く", url: "https://claude.ai/code/session_x" }] }]);
+});

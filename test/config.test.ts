@@ -69,6 +69,7 @@ test("未設定ならデフォルト値を使う", () => {
     ccSendWaitMin: 120,
     workspaceDir: "/home/tester/workspace",
     ccMaxSessions: 30,
+    ccNotify: true,
   });
 });
 
@@ -627,6 +628,7 @@ test("Claude Code: SELF_AGENT_CC=1 ならポートとトークンが要る。ト
     ccSendWaitMin: 30,
     workspaceDir: "/home/tester/workspace",
     ccMaxSessions: 30,
+    ccNotify: true,
   });
   for (const missing of ["SELF_AGENT_CC_HOOK_PORT", "SELF_AGENT_CC_HOOK_TOKEN"]) {
     assert.throws(
@@ -635,6 +637,10 @@ test("Claude Code: SELF_AGENT_CC=1 ならポートとトークンが要る。ト
       missing,
     );
   }
+  // SELF_AGENT_CC_NOTIFY は既定 1 で、0 なら知らせない（CC5c）
+  assert.equal(loadCcConfig({ ...env, SELF_AGENT_CC_NOTIFY: "0" }).ccNotify, false);
+  assert.equal(loadCcConfig({ ...env, SELF_AGENT_CC_NOTIFY: "1" }).ccNotify, true);
+  assert.equal(loadCcConfig({ ...env, SELF_AGENT_CC_NOTIFY: "" }).ccNotify, true);
   // 0 は無効で、ポート・トークンが無くてよい
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_CC: "0" }).cc, false);
 });
@@ -656,6 +662,7 @@ test("Claude Code: 形の違う値は無効のときも変数名だけを出し�
     ["SELF_AGENT_WORKSPACE_DIR", "/srv/#{pane_id}"],
     ["SELF_AGENT_CC_MAX_SESSIONS", "0"],
     ["SELF_AGENT_CC_MAX_SESSIONS", "x"],
+    ["SELF_AGENT_CC_NOTIFY", "yes"],
   ];
   for (const [name, value] of cases) {
     assert.throws(

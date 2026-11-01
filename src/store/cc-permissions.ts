@@ -35,6 +35,9 @@ export type CcPermissionRow = {
   createdAt: string;
   /** pending でなくなった時刻 */
   resolvedAt: string | null;
+  /** #system に出した 1 通のメッセージの ID とそのチャンネル（CC5c。出していなければ null） */
+  messageId: string | null;
+  messageChannelId: string | null;
 };
 
 function nullableString(value: SQLOutputValue | undefined): string | null {
@@ -57,6 +60,8 @@ function toRow(row: Record<string, SQLOutputValue>): CcPermissionRow {
     via,
     createdAt: String(row.created_at),
     resolvedAt: nullableString(row.resolved_at),
+    messageId: nullableString(row.message_id),
+    messageChannelId: nullableString(row.message_channel_id),
   };
 }
 
@@ -141,13 +146,32 @@ export class CcPermissionStore {
 
   /**
    * pending の行があるか、resolved_at が since 以後の行があるセッション。
-   * released（limit）を含むので、判断待ちの知らせの抑え（CC5c）に使うときは除くか検討する
+   * released（limit）を含む（判断待ちの元の抑え。判断待ちの知らせの抑えは released を除いた sessionsAnsweredSince）
    */
   sessionsActiveSince(since: Date): Set<string> {
     const rows = this.db
       .prepare("SELECT DISTINCT session_id FROM cc_permissions WHERE state = 'pending' OR resolved_at >= ?")
       .all(since.toISOString());
     return new Set(rows.map((row) => String(row.session_id)));
+  }
+
+  /**
+   * pending の行があるか、resolved_at が since 以後の行があるセッションのうち、released（保留しなかった・やめた。#system に 1 通を出していない）を除いたもの。
+   * 判断待ちの知らせ（CC5c）はこのセッションには出さない（許可の要求の 1 通で済ませる。§5.2）
+   */
+  sessionsAnsweredSince(since: Date): Set<string> {
+    const rows = this.db
+      .prepare("SELECT DISTINCT session_id FROM cc_permissions WHERE state = 'pending' OR (resolved_at >= ? AND state <> 'released')")
+      .all(since.toISOString());
+    return new Set(rows.map((row) => String(row.session_id)));
+  }
+
+  /** #system に出した 1 通を記録する（CC5c。書き換えてボタンを外すため）。行があれば true */
+  setMessage(id: number, channelId: string, messageId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE cc_permissions SET message_id = ?, message_channel_id = ? WHERE id = ?")
+      .run(messageId, channelId, id);
+    return Number(result.changes) > 0;
   }
 
   /** そのセッションで since 以後に作った行の数（1 分の上限。§3.4） */

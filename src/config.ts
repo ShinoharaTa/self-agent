@@ -181,6 +181,8 @@ export type CcConfig = {
   workspaceDir: string;
   /** 生きている claude の上限（正の整数）。これ以上なら起動を断る */
   ccMaxSessions: number;
+  /** SELF_AGENT_CC_NOTIFY（既定 true）。false なら #system に許可の要求・判断待ち・終了を出さない（許可の保留は Web だけで、長さは同じ） */
+  ccNotify: boolean;
 };
 
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
@@ -589,7 +591,7 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
 
 /**
  * SELF_AGENT_CC_* を読む（docs/plan/claude-code-sessions.md §11）。SELF_AGENT_CC=1 ならポートとトークンが要る（無ければ設定エラー。認証なしでは動かさない）。
- * 形（ポートの範囲・32 字未満か空白を含むトークン・周期・保留の秒数・送信待ちの分・起動できる場所（# を含まない絶対パス）・セッションの上限）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
+ * 形（ポートの範囲・32 字未満か空白を含むトークン・周期・保留の秒数・送信待ちの分・起動できる場所（# を含まない絶対パス）・セッションの上限・知らせの 0 / 1）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
  */
 export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
   const cc = flag("SELF_AGENT_CC", nonEmpty(env.SELF_AGENT_CC));
@@ -617,6 +619,9 @@ export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
     throw new Error("SELF_AGENT_WORKSPACE_DIR は # を含まない絶対パスで指定してください");
   }
   const ccMaxSessions = positiveInteger("SELF_AGENT_CC_MAX_SESSIONS", nonEmpty(env.SELF_AGENT_CC_MAX_SESSIONS), DEFAULT_CC_MAX_SESSIONS);
+  // 既定は知らせる（0 で止める）
+  const notifyValue = nonEmpty(env.SELF_AGENT_CC_NOTIFY);
+  const ccNotify = notifyValue === undefined ? true : flag("SELF_AGENT_CC_NOTIFY", notifyValue);
   if (cc && ccHookPort === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_PORT が要ります");
   if (cc && token === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_TOKEN が要ります");
   return {
@@ -628,6 +633,7 @@ export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
     ccSendWaitMin,
     workspaceDir: workspaceDir.replace(/(.)\/+$/, "$1"),
     ccMaxSessions,
+    ccNotify,
   };
 }
 

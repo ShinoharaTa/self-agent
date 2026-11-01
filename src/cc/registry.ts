@@ -4,7 +4,7 @@
 // その間の一覧に現れれば採り、現れなければ捨てる（PermissionRequest は保留しない）。状態と並びは純関数の rankSessions。
 // log は件数と失敗の種類だけ（名前・cwd・パス・本文・sessionId は出さない）
 import type { Config } from "../config.ts";
-import type { CcEventUpdate, CcSessionStore, CcStartedBy } from "../store/cc-sessions.ts";
+import type { CcEventUpdate, CcSessionRow, CcSessionStore, CcStartedBy } from "../store/cc-sessions.ts";
 import type { AgentEntry, AgentsClient } from "./agents.ts";
 import type { ClaudeDirs } from "./claude-dirs.ts";
 import { CC_WAITING_NOTIFICATIONS, type CcHookEvent, type CcHookReceiver, type CcPermissionSummary } from "./hook-server.ts";
@@ -138,7 +138,7 @@ export type CcRegistryDeps = {
   cfg: Pick<Config, "ccPollSec">;
   agents: Pick<AgentsClient, "list">;
   dirs: Pick<ClaudeDirs, "sessionFile" | "transcriptMtime">;
-  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive">;
+  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive" | "get">;
   now: () => Date;
   timers?: CcTimers;
   /** 送信の待ち行列が空でない（§2.2。CC3 から）・起動したセッションをまだ一覧で見つけていない（CC4）。true の間は見ていなくても設定の周期で読む */
@@ -153,6 +153,11 @@ export type CcRegistryDeps = {
     suppressedSessions(): ReadonlySet<string>;
     onListed(statuses: ReadonlyMap<string, string | undefined>, readStartedAt: Date): void;
   };
+  /**
+   * セッションが終わった（SessionEnd を受けた・一覧から消えた）ときに呼ぶ（discord-notice.ts の終了の知らせ。CC5c）。
+   * 同じセッションで 2 回（SessionEnd と一覧から消えた）呼ぶことがあるので、受け手がまとめる。投げても一覧の更新には響かない
+   */
+  ended?: (session: CcSessionRow) => void;
   log: (message: string) => void;
 };
 
@@ -369,6 +374,10 @@ export class CcRegistry implements CcHookReceiver {
       update.waitingKind = event.notificationType;
     }
     this.deps.store.applyEvent(event.sessionId, update, event.receivedAt);
+    if (event.event === "SessionEnd") {
+      const row = this.deps.store.get(event.sessionId);
+      if (row !== undefined) this.tellEnded([row]);
+    }
     if (event.event === "PermissionRequest" && event.permission !== undefined) {
       this.permissions.set(event.sessionId, { ...event.permission, at: event.receivedAt.getTime() });
     } else if (event.event === "UserPromptSubmit" || event.event === "Stop") {
@@ -415,7 +424,10 @@ export class CcRegistry implements CcHookReceiver {
           waitingFor: agent.waitingFor ?? null,
         })),
       );
+      // 一覧から消えたセッション（終了の知らせ）は、gone_at を入れる前の生きている行から
+      const goneRows = this.deps.ended === undefined ? [] : this.deps.store.listAlive().filter((row) => !ids.has(row.sessionId));
       this.deps.store.markGone([...ids]);
+      this.tellEnded(goneRows);
       // 行を書いてから一覧を入れ替える（receive が一覧にあるとみなした session_id の行は必ずある）
       this.agents = result.agents;
       this.deps.permissions?.onListed(
@@ -451,6 +463,16 @@ export class CcRegistry implements CcHookReceiver {
       this.logCounts();
     } catch (error) {
       log(`Claude Code: 一覧の更新に失敗しました（${errorKind(error)}）`);
+    }
+  }
+
+  private tellEnded(rows: readonly CcSessionRow[]): void {
+    for (const row of rows) {
+      try {
+        this.deps.ended?.(row);
+      } catch (error) {
+        this.deps.log(`Claude Code: 終了の知らせに失敗しました（${errorKind(error)}）`);
+      }
     }
   }
 
