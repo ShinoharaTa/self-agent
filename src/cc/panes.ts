@@ -6,6 +6,7 @@
 // 画面の写し（CC2）と送信（CC3）で使う。送り先は主の経路で当たったペインだけ（findSendablePane。補助の tmux 欄だけでは送らない）で、呼ぶたびに引き直す。log は出さない（pid・ペイン id は呼び出し側も出さない）
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CLAUDE_COMMAND } from "../tmux/pane-state.ts";
 import type { Tmux, TmuxFailure, TmuxPane } from "../tmux/tmux.ts";
 
 /** 親 pid をたどる段数（§3.1 の 3 段に、間にラッパーが入る分の余裕を足したもの。補助の経路も同じ） */
@@ -75,7 +76,7 @@ export function findSessionPane(
   parentOf: ParentPidReader,
   sessionPids: ReadonlySet<number>,
 ): TmuxPane | undefined {
-  const alive = panes.filter((pane) => !pane.dead && pane.panePid > 1 && pane.currentCommand === "claude");
+  const alive = panes.filter((pane) => !pane.dead && pane.panePid > 1 && pane.currentCommand === CLAUDE_COMMAND);
   const chain = [target.pid];
   for (const pid of chain.concat(ancestorPids(target.pid, parentOf, CC_PANE_ANCESTOR_DEPTH))) {
     if (pid !== target.pid) {
@@ -113,7 +114,7 @@ export function findSendablePane(
   for (const pid of [target.pid, ...ancestorPids(target.pid, parentOf, CC_PANE_ANCESTOR_DEPTH)]) {
     if (pid !== target.pid && sessionPids.has(pid)) return { ok: false, reason: "not_in_tmux" };
     const pane = alive.find((candidate) => candidate.panePid === pid);
-    if (pane !== undefined) return pane.currentCommand === "claude" ? { ok: true, pane } : { ok: false, reason: "not_claude" };
+    if (pane !== undefined) return pane.currentCommand === CLAUDE_COMMAND ? { ok: true, pane } : { ok: false, reason: "not_claude" };
   }
   return { ok: false, reason: "not_in_tmux" };
 }
