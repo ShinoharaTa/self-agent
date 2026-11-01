@@ -691,3 +691,13 @@ test("cc: の custom_id の形が違えば投げる（振り分けの失敗の�
     await assert.rejects(s.pressButton(id), Error, id);
   }
 });
+
+test("[起動する]: 最初の指示の送信があれば、その確認の投稿を送信の message_id にする（返事をその投稿への返信にする。CC8）", async (t) => {
+  const s = setup(t);
+  await s.handlers().ccStart({ project: "alpha", title: "fix login", text: SECRET_TEXT });
+  const send = s.sends.add({ sessionId: null, paneId: "%9", startDir: "/w/alpha", text: SECRET_TEXT, origin: "start", state: "queued", channelId: CHANNEL });
+  s.starter.launchResult = { ok: true, tmuxSession: "alpha", paneId: "%9", sendId: send.id };
+  await s.pressButton("cc:start:1");
+  assert.equal(s.sends.get(send.id)?.messageId, s.starts.get(1)?.messageId);
+  assert.equal(s.starts.get(1)?.sendId, send.id);
+});

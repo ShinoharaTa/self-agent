@@ -10,7 +10,7 @@ import {
   CcSender,
   normalizeSendText,
 } from "../src/cc/sender.ts";
-import { CcSendStore } from "../src/store/cc-sends.ts";
+import { CcSendStore, type CcSendRow } from "../src/store/cc-sends.ts";
 import { CcSessionStore } from "../src/store/cc-sessions.ts";
 import { createTmux, type RunCommand } from "../src/tmux/tmux.ts";
 import { tempDb } from "./helpers/db.ts";
@@ -113,6 +113,8 @@ function setup(t: TestContext) {
   const notices: Array<{ guildId: string; text: string; level: string }> = [];
   const logs: string[] = [];
   const sleeps: number[] = [];
+  /** 貼っている途中から終わった送信（onFinished。CC8） */
+  const finished: CcSendRow[] = [];
   const sender = new CcSender({
     cfg: { ccSendWaitMin: 120, allowedGuildIds: ["g1", "g2"] },
     registry,
@@ -127,11 +129,12 @@ function setup(t: TestContext) {
     now,
     sleep: async (ms) => void sleeps.push(ms),
     timers: { after: () => () => undefined },
+    onFinished: (row) => void finished.push(row),
     log: (message) => logs.push(message),
   });
   /** 送り込みの操作（load・paste・Enter）だけ */
   const actions = () => commands.filter((args) => ["load-buffer", "paste-buffer", "send-keys"].includes(args[0]!)).map((args) => args[0]);
-  return { db, clock, sends, sessions, env, commands, inputs, snapshot, sender, notices, logs, sleeps, actions };
+  return { db, clock, sends, sessions, env, commands, inputs, snapshot, sender, notices, logs, sleeps, actions, finished };
 }
 
 /** 貼った文字が入力欄に見える画面 */
@@ -456,4 +459,23 @@ test("stop の後は受け付けず、試さない", async (t) => {
   const row = sends.add({ sessionId: S1, text: "a", origin: "web", state: "queued" });
   await sender.kick();
   assert.equal(sends.get(row.id)?.state, "queued");
+});
+
+test("onFinished: 届けたら delivered の行（返事の印は waiting）を渡す。貼れたか確かめられないものは unconfirmed で渡し、返事の印は付けない（CC8）", async (t) => {
+  const { env, sender, finished } = setup(t);
+  env.screens.pasted = shown("届ける本文");
+  const result = await sender.submit({ sessionId: S1, text: "届ける本文", origin: "web" });
+  assert.ok(result.ok);
+  await sender.idle();
+  assert.deepEqual(
+    finished.map((row) => [row.id, row.state, row.replyState]),
+    [[result.send.id, "delivered", "waiting"]],
+  );
+
+  env.phase = "before";
+  env.screens.pasted = EMPTY;
+  const second = await sender.submit({ sessionId: S2, text: "貼れない本文", origin: "web" });
+  assert.ok(second.ok);
+  await sender.idle();
+  assert.deepEqual(finished.at(-1) && [finished.at(-1)!.id, finished.at(-1)!.state, finished.at(-1)!.replyState], [second.send.id, "unconfirmed", null]);
 });

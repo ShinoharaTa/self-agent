@@ -170,9 +170,10 @@ async function setup(
     timers: { after: () => () => undefined },
     log: () => undefined,
   });
-  const server = await serve(t, ccRoutes({ registry, panes, tmux, workspaceDir: WORKSPACE, home: HOME, sender, sends, now }));
+  const server = await serve(t, ccRoutes({ registry, panes, tmux, workspaceDir: WORKSPACE, home: HOME, sender, sends, follows: store, now }));
   return {
     server,
+    store,
     registry,
     sender,
     sends,
@@ -229,7 +230,7 @@ test("POST /api/cc/sessions/<id>/send: 202 で積み、一覧の pending に出�
   const list = await getJson(server, "/api/cc/sessions");
   const s1 = (list.json.sessions as Array<Record<string, unknown>>).find((s) => s.sessionId === S1)!;
   // 最後に見たペインの状態（この偽の tmux は list-clients を知らないので failed のまま積んでいる）
-  assert.deepEqual(s1.pending, { id: sendId, state: "queued", lastPaneState: "failed", updatedAt: new Date(clock.now).toISOString() });
+  assert.deepEqual(s1.pending, { id: sendId, state: "queued", lastPaneState: "failed", replyState: null, updatedAt: new Date(clock.now).toISOString() });
   const one = await getJson(server, `/api/cc/sessions/${S1}`);
   assert.deepEqual((one.json.pending as Record<string, unknown>).id, sendId);
 
@@ -277,6 +278,7 @@ test("/api/cc/sessions: 判断待ち → 実行中 → 待機の順で、ペイ�
     trustPending: false,
     pending: null,
     permission: null,
+    follow: null,
   });
   assert.equal(byId.get(S2)!.paneLabel, "work:0.2");
   assert.equal(byId.get(S2)!.cwdLabel, "beta/sub");
@@ -640,4 +642,26 @@ test("POST /api/cc/permissions/<id>/always: 危ないルールだけの提案は
   // [許可] は押せる
   assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: pending.requestHash })).status, 200);
   assert.equal(JSON.parse((await reply)!).hookSpecificOutput.decision.updatedPermissions, undefined);
+});
+
+test("POST /api/cc/sessions/<id>/unfollow: 追いかけ中なら止めて 200、もう一度・追いかけていないなら 409、UUID でなければ 404。一覧の follow に出る（CC8）", async (t) => {
+  const { server, store } = await setup(t);
+  assert.ok(store.startFollow(S1, "channel-1"));
+  const list = await getJson(server, "/api/cc/sessions");
+  const byId = new Map((list.json.sessions as Array<Record<string, unknown>>).map((s) => [s.sessionId, s]));
+  assert.deepEqual(byId.get(S1)!.follow, { since: new Date(BASE).toISOString() });
+  assert.equal(byId.get(S2)!.follow, null);
+  assert.deepEqual((await getJson(server, `/api/cc/sessions/${S1}`)).json.follow, { since: new Date(BASE).toISOString() });
+
+  assert.deepEqual(await postJson(server, `/api/cc/sessions/${S1}/unfollow`, {}), { status: 200, json: { follow: null } });
+  assert.equal(store.get(S1)?.follow, false);
+  assert.deepEqual(await postJson(server, `/api/cc/sessions/${S1}/unfollow`, {}), { status: 409, json: { error: "stale" } });
+  assert.deepEqual(await postJson(server, `/api/cc/sessions/${S2}/unfollow`, {}), { status: 409, json: { error: "stale" } });
+  assert.equal((await postJson(server, "/api/cc/sessions/not-a-uuid/unfollow", {})).status, 404);
+  assert.equal((await getJson(server, `/api/cc/sessions/${S1}`)).json.follow, null);
+});
+
+test("POST /api/cc/sessions/<id>/unfollow: 追いかけ（follows）を渡していなければ 404", async (t) => {
+  const server = await serve(t, ccRoutes({ registry: undefined, panes: undefined, tmux: undefined, workspaceDir: WORKSPACE, home: HOME }));
+  assert.equal((await postJson(server, `/api/cc/sessions/${S1}/unfollow`, {})).status, 404);
 });
