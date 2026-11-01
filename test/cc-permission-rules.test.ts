@@ -128,6 +128,25 @@ test("alwaysRulesOf: Bash の最初の語のクォート・エスケープ（飾
   }
 });
 
+test("alwaysRulesOf: Bash の最初の語に / があるもの（パスで指したコマンド・スクリプト）は外す", () => {
+  for (const content of [
+    "./script.sh *",
+    "./script.sh",
+    "bin/x *",
+    "/usr/bin/foo *",
+    "/usr/bin/git status *",
+    "/bin/ls",
+    "node_modules/.bin/tsc *",
+    "~/bin/x *",
+    "../x *",
+  ]) {
+    assert.equal(bashAllowed(content), false, content);
+  }
+  // 後ろの語の / は構わない
+  assert.equal(bashAllowed("ls src/ *"), true);
+  assert.equal(bashAllowed("cat docs/plan/x.md"), true);
+});
+
 test("alwaysRulesOf: Bash のサブシェル・波括弧は外す", () => {
   for (const content of ["(rm -rf x)", "ls (x) *", "{ rm x; }", "echo {a,b} *", "ls )"]) {
     assert.equal(bashAllowed(content), false, content);
