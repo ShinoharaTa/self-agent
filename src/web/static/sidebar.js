@@ -214,6 +214,9 @@
     if (s.startedBy && s.startedBy !== "owner") badges.push(el("span", { class: "badge badge-cc", text: "self-agent が起動" }));
     if (!s.inTmux) badges.push(el("span", { class: "badge badge-cc", text: "tmux の外" }));
     if (s.pending && (s.pending.state === "queued" || s.pending.state === "delivering")) badges.push(el("span", { class: "badge badge-cc", text: "送信待ち" }));
+    // 許可の要求を保留している（タブのカードで [許可][拒否]）
+    const asking = s.permission && s.permission.state === "pending";
+    if (asking) badges.push(el("span", { class: "badge badge-accent", text: "許可待ち" }));
     if (s.state === "running") badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));
     return row({
       tab: "cc:" + s.sessionId,
@@ -222,7 +225,7 @@
       dot: s.state === "needs_input" ? "dot-warn" : null,
       dotLabel: s.state === "needs_input" ? "判断待ち" : null,
       meta: s.since ? SA.views.ago(s.since) : "",
-      title: s.cwdLabel || null,
+      title: asking ? (s.cwdLabel ? s.cwdLabel + "\n" : "") + s.permission.toolName + ": " + SA.views.oneLine(String(s.permission.summary || "")) : s.cwdLabel || null,
     });
   }
 

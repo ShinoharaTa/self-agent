@@ -26,6 +26,8 @@
   /** Claude Code のセッションの一覧（見ている間）と、前に出ているセッションのタブの画面の写しを読む間隔 */
   const CC_LIST_INTERVAL_MS = 10000;
   const CC_SCREEN_INTERVAL_MS = 3000;
+  /** 許可の要求を保留しているセッションがあるときの一覧の間隔 */
+  const CC_PERMISSION_INTERVAL_MS = 3000;
   const SEEN_KEY = "self-agent-web:seen";
 
   /**
@@ -665,6 +667,11 @@
     return tabId && tabId.startsWith("cc:") ? tabId.slice(3) : null;
   }
 
+  /** 一覧に許可の要求を保留しているセッションがある */
+  function ccAsking() {
+    return !!(store.cc && store.cc.sessions.some((s) => s.permission && s.permission.state === "pending"));
+  }
+
   /** 一覧を見ている（サイドバーに Claude Code を出している・セッションのタブが前に出ている） */
   function ccWatching() {
     return store.ccEnabled() && (SA.app.sidebarShows("cc") || activeCcSession() !== null);
@@ -730,7 +737,7 @@
 
   // ===== polling（見えているときだけ。隠れたら止め、戻ったら即 1 回） =====
   // /api/status は 10 秒、/api/channels・/api/notices と一度読んだタスク・リマインド・記憶・GitHub・プロジェクト・ナレッジは 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
-  // /api/running は実行中のターンがあれば 2 秒・無ければ 10 秒ごと、Claude Code の一覧は見ている間 10 秒・前に出ているセッションのタブの画面は 3 秒ごと
+  // /api/running は実行中のターンがあれば 2 秒・無ければ 10 秒ごと、Claude Code の一覧は見ている間 10 秒（許可の要求を保留していれば 3 秒）・前に出ているセッションのタブの画面は 3 秒ごと
   // （どれも応答が来てから次を予約する）。
   // 失敗のトーストは続けて失敗している間は最初の 1 回だけで、その間は間隔を倍にして POLL_BACKOFF_MAX_MS まで伸ばす。成功したら元に戻す
   const poll = { started: false, stopped: false };
@@ -749,7 +756,8 @@
     turns: { base: () => TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
     // Claude Code: 一覧は見ている間だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと。見ていなければ次を予約せず、
     // 見始めたとき（サイドバーを出した・タブを前に出した。SA.poll.kickCc）と、隠れていた画面が戻ったとき（schedule）に始め直す
-    cc: { base: () => CC_LIST_INTERVAL_MS, when: ccWatching, run: (opts) => store.load.cc(opts), fails: 0, timer: null },
+    // 許可の要求を保留しているセッションがあれば一覧も 3 秒ごと
+    cc: { base: () => (ccAsking() ? CC_PERMISSION_INTERVAL_MS : CC_LIST_INTERVAL_MS), when: ccWatching, run: (opts) => store.load.cc(opts), fails: 0, timer: null },
     ccScreen: {
       base: () => CC_SCREEN_INTERVAL_MS,
       when: () => store.ccEnabled() && activeCcSession() !== null,

@@ -1,5 +1,5 @@
 // タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）・タスク・リマインド・記憶（W4）・GitHub・ナレッジ（W6）・
-// プロジェクト（W7。読むだけ）・Claude Code のセッション（CC2 の画面の写しと CC3 の送信）。ジョブは後の段で足す
+// プロジェクト（W7。読むだけ）・Claude Code のセッション（CC2 の画面の写しと CC3 の送信と CC5a の許可のカード）。ジョブは後の段で足す
 "use strict";
 
 (function () {
@@ -588,7 +588,7 @@
     );
   }
 
-  // ===== Claude Code のセッション（CC2: 見出しと画面の写し。CC3: 入力欄から送る・送信待ちの [取り消す]。CC4: 起動したもの・trust の確認待ち。許可は後の段） =====
+  // ===== Claude Code のセッション（CC2: 見出しと画面の写し。CC3: 入力欄から送る・送信待ちの [取り消す]。CC4: 起動したもの・trust の確認待ち。CC5a: 許可のカード） =====
   const CC_STATES = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
   /** 起動したもの（startedBy。owner は self-agent の外） */
   const CC_STARTED_BY = { web: "self-agent（Web）が起動", tool: "self-agent（Discord）が起動", github: "self-agent（GitHub）が起動" };
@@ -755,6 +755,83 @@
     return el("div", { class: "composer-wrap", "data-cc": sessionId }, [form]);
   }
 
+  // ----- 許可の要求（CC5a）: 保留中なら [許可][拒否]、終わったものは終わり方。保留の間も端末・RC のダイアログは出ている -----
+  /** 押した要求（応答が来るまでボタンを止める。このタブのメモリだけ） */
+  const ccPermissionBusy = new Set();
+
+  /** 終わった要求の文（state・via ごと） */
+  function ccPermissionEndText(p) {
+    const by = p.via === "discord" ? "（Discord）" : p.via === "web" ? "（Web）" : "";
+    if (p.state === "allowed") return "許可しました" + by;
+    if (p.state === "allowed_always") return "常に許可しました" + by;
+    if (p.state === "denied") return "拒否しました" + by;
+    if (p.state === "answered_elsewhere") return "端末か RC で答えられました";
+    if (p.state === "expired") return "時間切れ。端末か RC で答えてください";
+    if (p.state === "released" && p.via === "limit") return "要求が多すぎるため保留しませんでした。端末か RC で答えてください";
+    if (p.state === "released") return "self-agent の再起動のため保留をやめました。端末か RC で答えてください";
+    return String(p.state);
+  }
+
+  /** 保留の残り（m 分 s 秒）。過ぎていれば null */
+  function remainingText(iso) {
+    const ms = new Date(iso).getTime() - Date.now();
+    if (!Number.isFinite(ms) || ms <= 0) return null;
+    const sec = Math.ceil(ms / 1000);
+    return (sec >= 60 ? Math.floor(sec / 60) + " 分 " : "") + (sec % 60) + " 秒";
+  }
+
+  function answerCcPermission(sessionId, p, decision) {
+    if (ccPermissionBusy.has(p.id)) return;
+    ccPermissionBusy.add(p.id);
+    SA.app.refresh("cc:" + sessionId);
+    SA.api.post("/api/cc/permissions/" + p.id + "/" + decision, { requestHash: p.requestHash }, { quiet: true }).then(
+      () => toast(decision === "allow" ? "許可しました" : "拒否しました"),
+      (err) => {
+        if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
+        else if (err && err.status === 404) toast("この要求はもうありません");
+        else if (err && err.toast) toast(err.toast);
+      },
+    ).then(() => {
+      ccPermissionBusy.delete(p.id);
+      store.load.ccSession(sessionId);
+      store.load.cc({ quiet: true });
+    });
+  }
+
+  /** 許可のカード（要約・ツール名は hook から来たデータなので textContent で出す） */
+  function ccPermissionCard(sessionId, p, rc) {
+    if (!p || typeof p.id !== "number") return null;
+    const pending = p.state === "pending";
+    const left = pending ? remainingText(p.expiresAt) : null;
+    const head = el("div", { class: "card-head" }, [
+      el("h3", { text: pending ? "許可を待っています" : "許可の要求" }),
+      el("span", { class: "meta", text: pending ? (left ? "残り " + left : "まもなく時間切れ") : ago(p.resolvedAt || p.createdAt) }),
+    ]);
+    const facts = [
+      el("p", { class: "meta" }, [el("span", { class: "mono", text: String(p.toolName) }), p.permissionMode ? " ・ " + p.permissionMode : null]),
+      el("pre", { class: "code-pre", text: String(p.summary || "") }),
+    ];
+    if (!pending) {
+      const end = [el("span", { text: ccPermissionEndText(p) })];
+      if (rc && (p.state === "expired" || p.state === "released")) {
+        end.push(" ", el("a", { href: rc, target: "_blank", rel: "noreferrer noopener", text: "RC で開く" }));
+      }
+      const cls = p.state === "allowed" || p.state === "allowed_always" ? " is-done" : p.state === "expired" || p.state === "released" ? " is-warning" : "";
+      return el("section", { class: "card card-sm cc-permission" + cls, "aria-label": "許可の要求" }, [head, ...facts, el("p", { class: "cc-permission-end" }, end)]);
+    }
+    const busy = ccPermissionBusy.has(p.id);
+    const allow = el("button", { class: "btn btn-primary btn-sm", type: "button", disabled: busy }, [icon("check"), "許可"]);
+    const deny = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy }, [icon("x"), "拒否"]);
+    allow.addEventListener("click", () => answerCcPermission(sessionId, p, "allow"));
+    deny.addEventListener("click", () => answerCcPermission(sessionId, p, "deny"));
+    return el("section", { class: "card card-sm cc-permission is-pending", "aria-label": "許可の要求" }, [
+      head,
+      ...facts,
+      el("div", { class: "msg-actions" }, [allow, deny]),
+      el("p", { class: "meta", text: "端末や RC のダイアログでも答えられます（先に答えた方が効きます）。" }),
+    ]);
+  }
+
   function renderCcSession(container, sessionId) {
     const loaded = store.ccSessions[sessionId];
     const s = ccSessionOf(sessionId);
@@ -798,6 +875,9 @@
       screen = el("p", { class: "meta", text: "tmux の外のセッションです。画面は見られません" + (rc ? "。RC で開いてください。" : "。") });
     } else if (typeof s.screen !== "string") screen = el("p", { class: "meta", text: "画面を読めませんでした" });
     else screen = el("pre", { class: "code-pre cc-screen", text: s.screen });
+    // 許可のカードは見出しの下に固定する（画面の写しは下に付けて読むので、中に入れると見えなくなる）
+    const card = ccPermissionCard(sessionId, s.permission, rc);
+    const permission = card ? el("div", { class: "cc-permission-wrap" }, [card]) : null;
     const body = scroll([
       section("セッション", [trust, facts, prompt].filter((x) => x)),
       section("画面", [screen], [el("span", { class: "meta", text: "3 秒ごとに更新" })]),
@@ -807,16 +887,16 @@
     const pending = ccPendingBar(sessionId, s.pending);
     // tmux の外には送れないので入力欄を出さない
     if (!s.inTmux) {
-      container.replaceChildren(...[head, body, pending].filter((x) => x));
+      container.replaceChildren(...[head, permission, body, pending].filter((x) => x));
       return;
     }
-    // 入力欄は作り直さない。見出し・中身・送信の状態だけを入れ替える
+    // 入力欄は作り直さない。見出し・許可のカード・中身・送信の状態だけを入れ替える
     const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-cc") === sessionId);
     if (kept) {
       for (const child of [...container.children]) if (child !== kept) child.remove();
-      for (const node of [head, body, pending]) if (node) container.insertBefore(node, kept);
+      for (const node of [head, permission, body, pending]) if (node) container.insertBefore(node, kept);
     } else {
-      container.replaceChildren(...[head, body, pending].filter((x) => x), ccComposer(sessionId, ccName(s)));
+      container.replaceChildren(...[head, permission, body, pending].filter((x) => x), ccComposer(sessionId, ccName(s)));
     }
   }
 

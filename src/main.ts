@@ -40,6 +40,7 @@ import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
+import { CcPermissionHold } from "./cc/permission-hold.ts";
 import { CcRegistry } from "./cc/registry.ts";
 import { CcSender } from "./cc/sender.ts";
 import { CcStarter, procMemAvailable } from "./cc/starter.ts";
@@ -62,6 +63,7 @@ import { GuestStore } from "./store/guest.ts";
 import { GuestGuildStore } from "./store/guest-guilds.ts";
 import { GuestInviteStore } from "./store/guest-invites.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
+import { CC_PERMISSION_KEEP_DAYS, CcPermissionStore } from "./store/cc-permissions.ts";
 import { CC_SEND_KEEP_DAYS, CcSendStore } from "./store/cc-sends.ts";
 import { CC_SESSION_KEEP_DAYS, CcSessionStore } from "./store/cc-sessions.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
@@ -189,6 +191,7 @@ const notices = config.web ? noticeStore : undefined;
 // この機械の Claude Code のセッション（docs/plan/claude-code-sessions.md §9）。書くのは SELF_AGENT_CC=1 のときだけで、古い行は有効・無効を問わず tick で消す
 const ccSessions = new CcSessionStore(db, now);
 const ccSends = new CcSendStore(db, now);
+const ccPermissionStore = new CcPermissionStore(db, now);
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -516,12 +519,15 @@ const scheduler = new Scheduler({
     const deleted = noticeStore.prune(new Date(now().getTime() - NOTICE_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deleted > 0) log(`古い知らせの記録 ${deleted} 件を消しました`);
   },
-  // 一覧から消えて CC_SESSION_KEEP_DAYS 日経った Claude Code のセッションの行と、CC_SEND_KEEP_DAYS 日より前の終わった送信の行を消す（SELF_AGENT_CC が無効でも消す）
+  // 一覧から消えて CC_SESSION_KEEP_DAYS 日経った Claude Code のセッションの行と、CC_SEND_KEEP_DAYS 日より前の終わった送信の行、
+  // CC_PERMISSION_KEEP_DAYS 日より前の終わった許可の要求の行を消す（SELF_AGENT_CC が無効でも消す）
   pruneCcSessions: () => {
     const deleted = ccSessions.prune(new Date(now().getTime() - CC_SESSION_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deleted > 0) log(`古い Claude Code のセッションの記録 ${deleted} 件を消しました`);
     const deletedSends = ccSends.prune(new Date(now().getTime() - CC_SEND_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deletedSends > 0) log(`古い Claude Code への送信の記録 ${deletedSends} 件を消しました`);
+    const deletedPermissions = ccPermissionStore.prune(new Date(now().getTime() - CC_PERMISSION_KEEP_DAYS * 24 * 60 * 60 * 1000));
+    if (deletedPermissions > 0) log(`古い Claude Code の許可の要求の記録 ${deletedPermissions} 件を消しました`);
   },
   // 待ちに移した知らせの行（Web UI が有効なときだけ）
   ...history,
@@ -575,10 +581,12 @@ const githubPoller = createGithubPoller({
 
 // Claude Code のセッション（docs/plan/claude-code-sessions.md。SELF_AGENT_CC=1 のときだけ）: claude agents --json を周期で読んで cc_sessions に書き、
 // hook の受け口（127.0.0.1:SELF_AGENT_CC_HOOK_PORT。Web UI とは別のサーバー）で事象を受ける。Web から送る本文は cc_sends に積み、
-// 入力待ちのときだけ tmux で貼る（cc/sender.ts。待ち行列は 30 秒ごと）。Web から新しいセッションを SELF_AGENT_WORKSPACE_DIR の直下に起動する（cc/starter.ts）
+// 入力待ちのときだけ tmux で貼る（cc/sender.ts。待ち行列は 30 秒ごと）。Web から新しいセッションを SELF_AGENT_WORKSPACE_DIR の直下に起動する（cc/starter.ts）。
+// 許可の要求は応答を保留し、Web の [許可]・[拒否] で返す（cc/permission-hold.ts）
 let ccRegistry: CcRegistry | undefined;
 let ccSender: CcSender | undefined;
 let ccStarter: CcStarter | undefined;
+let ccPermissions: CcPermissionHold | undefined;
 let ccHookServer: CcHookServer | undefined;
 // 画面の写し（Web）と、セッション → ペインの引き当て（pid の祖先と pane_pid。§3.1）
 let ccTmux: Tmux | undefined;
@@ -594,6 +602,16 @@ if (
   ccHookToken !== undefined &&
   ccHookToken !== ""
 ) {
+  // 保留してよいのは一覧にあるセッションの要求だけ（registry は下で作る）
+  let knownSessions: CcRegistry | undefined;
+  const permissionHold = new CcPermissionHold({
+    cfg: config,
+    store: ccPermissionStore,
+    known: (sessionId) => knownSessions?.knows(sessionId) ?? false,
+    now,
+    log,
+  });
+  ccPermissions = permissionHold;
   const registry = new CcRegistry({
     cfg: config,
     agents: new AgentsClient({ claudePath: ccClaudePath }),
@@ -602,10 +620,23 @@ if (
     now,
     // 送信の待ち行列が空でない・起動したセッションをまだ一覧で見つけていない間は、見ていなくても設定の周期で一覧を読む
     busy: () => ccSends.countActive() > 0 || ccStarter?.busy() === true,
+    // 許可の要求を保留している間は 5 秒ごとに読み、status で「他で答えられた」を見る
+    permissions: permissionHold,
     log,
   });
+  knownSessions = registry;
   ccRegistry = registry;
-  const hookServer = createCcHookServer({ host: "127.0.0.1", port: config.ccHookPort, token: ccHookToken, receiver: registry, now, log });
+  // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする
+  permissionHold.recover();
+  const hookServer = createCcHookServer({
+    host: "127.0.0.1",
+    port: config.ccHookPort,
+    token: ccHookToken,
+    receiver: registry,
+    permissions: permissionHold,
+    now,
+    log,
+  });
   ccHookServer = hookServer;
   const tmux = createTmux({ tmuxPath: ccTmuxPath });
   ccTmux = tmux;
@@ -632,7 +663,8 @@ if (
     now,
     log,
   });
-  ccStatusOf = () => ccStatus({ panes, hookListening: () => hookServer.address() !== undefined, store: ccSessions });
+  ccStatusOf = () =>
+    ccStatus({ panes, hookListening: () => hookServer.address() !== undefined, store: ccSessions, permissions: ccPermissionStore });
 }
 
 // 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
@@ -714,6 +746,10 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         ...(ccSender === undefined ? {} : { sender: ccSender, sends: ccSends }),
         // 起動（/api/cc/projects・POST /api/cc/sessions）
         ...(ccStarter === undefined ? {} : { starter: ccStarter }),
+        // 許可の要求（/api/cc/permissions と一覧の permission）
+        ...(ccPermissions === undefined
+          ? {}
+          : { permissions: { hold: ccPermissions, store: ccPermissionStore, holdSec: config.ccPermissionHoldSec } }),
         now,
       }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）
@@ -781,6 +817,8 @@ const lifecycle = createShutdown(
     ...(ccRegistry === undefined ? {} : { ccRegistry }),
     ...(ccSender === undefined ? {} : { ccSender }),
     ...(ccStarter === undefined ? {} : { ccStarter }),
+    // 保留中の許可の要求には空の本文を返す（端末・RC のダイアログは残る）
+    ...(ccPermissions === undefined ? {} : { ccPermissions }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     closeDb: () => db.close(),
     log,
