@@ -80,9 +80,13 @@ export function createGithubComponent(deps: GithubComponentDeps): ComponentHandl
         await responder.reply({ ...githubResultMessage(parsed.id, result), ephemeral: true });
         return;
       }
-      // [起動して送る]: 確認の返信を書き換える
+      // [起動して送る]: 確認の返信を書き換える。同じ通知を処理している途中（二重の押下）なら、返信は書き換えずに本人にだけ返す
       await responder.deferUpdate();
       const result = await handoff.start(parsed.id);
+      if (result.kind === "busy") {
+        await responder.reply({ ...githubResultMessage(parsed.id, result), ephemeral: true });
+        return;
+      }
       await responder.update(githubResultMessage(parsed.id, result));
     },
   };

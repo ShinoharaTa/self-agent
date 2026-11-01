@@ -307,6 +307,8 @@ sudo apt-get remove bubblewrap socat
 - `[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo set || echo none` が none（値は出さない。#137）、`echo "count=$(env | grep -c -i -E 'token|discord')"` が count=0、ホストのプロキシの変数（認証情報入りのダミー）が入っていない（§2.4）
 - `ls /tmp /run/user/<uid> /run /var/log/journal` が無い/空（他のサービスのソケットが見えない）
 - `curl -sS -m 10 https://example.com` が失敗、`curl -sS -m 5 http://127.0.0.1:<SERVE_PORT>/` が失敗
+- `tmux -S <TMUX_TMPDIR か /tmp>/tmux-<uid>/default list-sessions` が失敗（tmux の既定のソケットに届かない。GitHub の [対応]・Claude Code への送信は host の tmux に貼るため。github-notifications.md §7.2。CC6 で足した）
+- `cat ~/.config/gh/hosts.yml` が失敗し、`gh auth status` も失敗（gh の認証を読めない。同じく CC6 で足した）
 - `git clone --depth 1 https://github.com/octocat/Hello-World.git <dir>/repos/hello` が成功、`npm view react version` が版を返す
 - `touch <workDir>/x`・`mkdir <workDir>/d`・`ln -s <workDir>/projects <workDir>/l` が host にできない（workDir の直下は allowRead・allowWrite に無い。denyRead の下では tmpfs の上で rc=0 になりうるので host の事実で判定。#143）
 - `touch ~/x`・`touch ~/workspace/x` で host にファイルができない（sandbox が `~` を隠すために置く一時的な領域には rc=0 で書けることがあるので、判定は host の事実で行う。#137）、`touch <dir>/ok` が成功

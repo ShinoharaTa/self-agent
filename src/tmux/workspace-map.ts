@@ -159,8 +159,9 @@ export async function buildWorkspaceMap(options: MapOptions): Promise<WorkspaceM
 
 /**
  * リポジトリ（`owner/repo`）のディレクトリと、送り先の候補のペイン（claude のもの）。
- * そのディレクトリのどれかに対応するペインが 1 つも無ければ、1 つ下のディレクトリの親（ワークスペースの直下のもの）にいるペインを候補にする
- * （対応するディレクトリが無いか、その親そのもののペインだけ。別の子リポジトリ・worktree で別のリポジトリに対応するペインは除く）
+ * そのディレクトリのどれかに対応するペインが 1 つも無ければ、1 つ下のディレクトリの親（ワークスペースの直下のもの）にいるペインを候補にする。
+ * ただし地図のどのディレクトリにも対応しないペインだけ（親そのものが別のリポジトリなら、そこのペインはそのリポジトリのものなので候補にしない。
+ * 別の子リポジトリ・worktree で別のリポジトリに対応するペインも除く）
  */
 export function findRepoPanes(map: WorkspaceMap, repo: string): { dirs: string[]; panes: TmuxPane[] } {
   const dirs = map.repos.get(repo.toLowerCase()) ?? [];
@@ -171,7 +172,7 @@ export function findRepoPanes(map: WorkspaceMap, repo: string): { dirs: string[]
     (entry) =>
       entry.cwd !== undefined &&
       parentDirs.some(
-        (parent) => isWithin(entry.cwd!, parent) && (entry.dir === undefined || entry.dir === parent),
+        (parent) => isWithin(entry.cwd!, parent) && entry.dir === undefined,
       ),
   );
   return { dirs, panes: fallback.map((entry) => entry.pane) };

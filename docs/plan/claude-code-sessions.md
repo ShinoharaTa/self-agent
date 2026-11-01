@@ -336,6 +336,7 @@ CC1 で全部は作らず、**その段で要る表・列だけ**足す（`MIGRA
 | v35 | CC8 | `cc_sessions` に `follow INTEGER NOT NULL DEFAULT 0`・`follow_channel_id`・`follow_since`・`follow_last_stop_at`・`reply_count_day`・`reply_count INTEGER NOT NULL DEFAULT 0`、`cc_sends` に `reply_state CHECK IN ('waiting','posted','timed_out','unreadable')`・`reply_posted_at`、`cc_replies(id PK AUTOINCREMENT, session_id NOT NULL, received_at NOT NULL, text_hash NOT NULL, send_id, channel_id NOT NULL, message_id, state CHECK IN ('posted','failed','skipped'), created_at)` |
 
 - 版の番号は目安（実装時に `MIGRATIONS.length` で確かめ、間に別の機能の移行が入れば繰り下げる）。
+- CC6（`cc_sends.notification_id`）は CC5a〜c と並行に作ったが、CC5c（v32）の上に載せ直して表どおり v33 にした（作っている間は v30 だった。テストは版の番号に頼らず `MIGRATIONS.length` で確かめる）。
 - `cc_sessions` は `gone_at` から 30 日、`cc_sends`・`cc_permissions`・`cc_starts`・`cc_replies` は 30 日で消す（tick）。`cwd`・`name`・`text`・`summary`・`always_rules`・`last_prompt_text` はローカルの DB（600）だけ。
 
 ## 10. 決定事項
