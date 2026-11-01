@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { normalizeChannelName } from "./discord/channel-name.ts";
 import { GUEST_PERSONA_ID } from "./guest/constants.ts";
 
@@ -177,6 +177,10 @@ export type CcConfig = {
   ccPermissionHoldSec: number;
   /** 送信待ち（queued）を諦める（gave_up）までの分（正の整数） */
   ccSendWaitMin: number;
+  /** 新しいセッションを起動できる場所（SELF_AGENT_WORKSPACE_DIR。既定 ~/workspace。絶対パス）。直下のディレクトリだけが候補 */
+  workspaceDir: string;
+  /** 生きている claude の上限（正の整数）。これ以上なら起動を断る */
+  ccMaxSessions: number;
 };
 
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
@@ -220,6 +224,7 @@ const MIN_CC_POLL_SEC = 5;
 const DEFAULT_CC_PERMISSION_HOLD_SEC = 300;
 const MAX_CC_PERMISSION_HOLD_SEC = 600;
 const DEFAULT_CC_SEND_WAIT_MIN = 120;
+const DEFAULT_CC_MAX_SESSIONS = 30;
 /** SELF_AGENT_CC_HOOK_TOKEN の最短の長さ */
 const MIN_CC_HOOK_TOKEN_LENGTH = 32;
 
@@ -584,7 +589,7 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
 
 /**
  * SELF_AGENT_CC_* を読む（docs/plan/claude-code-sessions.md §11）。SELF_AGENT_CC=1 ならポートとトークンが要る（無ければ設定エラー。認証なしでは動かさない）。
- * 形（ポートの範囲・32 字未満か空白を含むトークン・周期・保留の秒数・送信待ちの分）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
+ * 形（ポートの範囲・32 字未満か空白を含むトークン・周期・保留の秒数・送信待ちの分・起動できる場所（絶対パス）・セッションの上限）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
  */
 export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
   const cc = flag("SELF_AGENT_CC", nonEmpty(env.SELF_AGENT_CC));
@@ -606,9 +611,21 @@ export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
     throw new Error(`SELF_AGENT_CC_PERMISSION_HOLD_SEC は 1〜${MAX_CC_PERMISSION_HOLD_SEC} の整数で指定してください`);
   }
   const ccSendWaitMin = positiveInteger("SELF_AGENT_CC_SEND_WAIT_MIN", nonEmpty(env.SELF_AGENT_CC_SEND_WAIT_MIN), DEFAULT_CC_SEND_WAIT_MIN);
+  const workspaceDir = nonEmpty(env.SELF_AGENT_WORKSPACE_DIR) ?? join(homeDir(env), "workspace");
+  if (!isAbsolute(workspaceDir)) throw new Error("SELF_AGENT_WORKSPACE_DIR は絶対パスで指定してください");
+  const ccMaxSessions = positiveInteger("SELF_AGENT_CC_MAX_SESSIONS", nonEmpty(env.SELF_AGENT_CC_MAX_SESSIONS), DEFAULT_CC_MAX_SESSIONS);
   if (cc && ccHookPort === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_PORT が要ります");
   if (cc && token === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_TOKEN が要ります");
-  return { cc, ccHookPort, ccHookTokenPresent: token !== undefined, ccPollSec, ccPermissionHoldSec, ccSendWaitMin };
+  return {
+    cc,
+    ccHookPort,
+    ccHookTokenPresent: token !== undefined,
+    ccPollSec,
+    ccPermissionHoldSec,
+    ccSendWaitMin,
+    workspaceDir: workspaceDir.replace(/(.)\/+$/, "$1"),
+    ccMaxSessions,
+  };
 }
 
 /**

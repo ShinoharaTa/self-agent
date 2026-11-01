@@ -23,7 +23,7 @@ const ORIGINS: readonly CcSendOrigin[] = ["web", "tool", "github", "start"];
 export type CcSendRow = {
   id: number;
   sessionId: string | null;
-  /** 届けたときのペイン（%N） */
+  /** 届けたときのペイン（%N）。起動の最初の指示（origin start）は起動したペインで、session_id は一覧に現れたら埋める */
   paneId: string | null;
   text: string;
   origin: CcSendOrigin;
@@ -72,13 +72,21 @@ export class CcSendStore {
     this.now = now;
   }
 
-  /** 行を作って返す */
-  add(input: { sessionId: string | null; text: string; origin: CcSendOrigin; state: CcSendState }): CcSendRow {
+  /** 行を作って返す。paneId はペイン宛て（起動の最初の指示。sessionId は null）のときだけ */
+  add(input: { sessionId: string | null; paneId?: string; text: string; origin: CcSendOrigin; state: CcSendState }): CcSendRow {
     const at = this.now().toISOString();
     const result = this.db
-      .prepare("INSERT INTO cc_sends (session_id, text, origin, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(input.sessionId, input.text, input.origin, input.state, at, at);
+      .prepare("INSERT INTO cc_sends (session_id, pane_id, text, origin, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(input.sessionId, input.paneId ?? null, input.text, input.origin, input.state, at, at);
     return this.get(Number(result.lastInsertRowid))!;
+  }
+
+  /** ペイン宛ての行（session_id が NULL）にセッションを結びつける（§4.2）。結びつけたら true */
+  bindSession(id: number, sessionId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE cc_sends SET session_id = ?, updated_at = ? WHERE id = ? AND session_id IS NULL")
+      .run(sessionId, this.now().toISOString(), id);
+    return Number(result.changes) > 0;
   }
 
   get(id: number): CcSendRow | undefined {

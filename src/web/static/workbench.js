@@ -1,4 +1,4 @@
-// アプリの殻（VS Code の構成）: アクティビティバー・サイドバー・エディタのタブ・パネル・ステータスバー・コマンドパレット・キーボード・hash のルータ・新しいセッションのダイアログ
+// アプリの殻（VS Code の構成）: アクティビティバー・サイドバー・エディタのタブ・パネル・ステータスバー・コマンドパレット・キーボード・hash のルータ・新しいセッションのダイアログ・Claude Code の起動のダイアログ
 "use strict";
 
 (function () {
@@ -732,6 +732,99 @@
     });
   }
 
+  // ===== 新しい Claude Code のセッション（POST /api/cc/sessions。docs/plan/claude-code-sessions.md §4.2・§5.1） =====
+  /** 題名の形（サーバーの src/cc/starter.ts の CC_TITLE_PATTERN と同じ） */
+  const CC_TITLE = /^[\p{L}\p{N} _.-]{1,40}$/u;
+  /** 起動できなかったときの文（応答の error ごと）。無ければトーストの「<status>: <error>」 */
+  const CC_START_ERRORS = {
+    invalid_project: "このプロジェクトでは起動できません（~/workspace の直下の実際のディレクトリだけです）",
+    invalid_title: "題名は文字・数字・空白・_ . - の 40 字までです（' などの記号は使えません）",
+    invalid_mode: "権限モードを選び直してください",
+    too_long: "最初の指示は 4,000 字までです",
+    invalid_text: "最初の指示に改行のほかの制御文字（タブなど）は使えません",
+    limit: "Claude Code のセッションが上限の数に達しています",
+    low_memory: "空きメモリが 1 GB 未満のため起動しません",
+    too_soon: "前の起動から 1 分経っていません。少し待ってください",
+    not_ready: "セッションの一覧をまだ読めていません。少し待ってください",
+    no_server: "tmux が動いていません（self-agent からは tmux を起こしません）",
+    tmux_failed: "tmux でセッションを作れませんでした",
+    stopping: "再起動中です。終わったら起動してください",
+  };
+  const CC_TEXT_MAX = 2000;
+  let ccStarting = false;
+
+  function ccStartError(text) {
+    $("cc-start-error").textContent = text;
+    $("cc-start-error").hidden = false;
+  }
+
+  /** ダイアログを開く。プロジェクトは /api/cc/projects（SELF_AGENT_WORKSPACE_DIR の直下）から */
+  async function ccStart() {
+    let data;
+    try {
+      data = await SA.api.get("/api/cc/projects", { quiet: true });
+    } catch (err) {
+      toast(err && err.toast ? err.toast : "サーバーにつながりません");
+      return;
+    }
+    const projects = Array.isArray(data && data.projects) ? data.projects.filter((p) => p && typeof p.name === "string") : [];
+    if (projects.length === 0) {
+      toast("起動できるプロジェクトがありません（~/workspace の直下のディレクトリ）");
+      return;
+    }
+    const keep = $("cc-start-project").value;
+    $("cc-start-project").replaceChildren(...projects.map((p) => el("option", { value: p.name, text: p.name })));
+    if (projects.some((p) => p.name === keep)) $("cc-start-project").value = keep;
+    $("cc-start-title").value = "";
+    $("cc-start-text").value = "";
+    $("cc-start-mode").value = "";
+    $("cc-start-error").hidden = true;
+    openDialog($("dlg-cc-start"));
+    $("cc-start-title").focus();
+  }
+
+  function bindCcStart() {
+    const dialog = $("dlg-cc-start");
+    $("dlg-cc-start-cancel").addEventListener("click", () => closeDialog(dialog));
+    $("cc-start-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (ccStarting) return;
+      const title = $("cc-start-title").value.trim();
+      if (!CC_TITLE.test(title)) {
+        ccStartError(CC_START_ERRORS.invalid_title);
+        $("cc-start-title").focus();
+        return;
+      }
+      const text = $("cc-start-text").value;
+      if ([...text.replace(/\n+$/, "")].length > CC_TEXT_MAX) {
+        ccStartError("最初の指示は 2,000 字までです");
+        $("cc-start-text").focus();
+        return;
+      }
+      const body = { project: $("cc-start-project").value, title };
+      if (text.trim() !== "") body.text = text;
+      if ($("cc-start-mode").value !== "") body.permissionMode = $("cc-start-mode").value;
+      ccStarting = true;
+      $("dlg-cc-start-ok").disabled = true;
+      $("cc-start-error").hidden = true;
+      try {
+        await SA.api.post("/api/cc/sessions", body, { quiet: true });
+        closeDialog(dialog);
+        toast(
+          "「" + title + "」を起動しました。" + (body.text ? "最初の指示は入力待ちになったら届けます。" : "") + "新しいディレクトリなら端末か RC で trust を選んでください",
+        );
+        SA.store.load.cc({ quiet: true });
+      } catch (err) {
+        const known = err && err.code && CC_START_ERRORS[err.code];
+        if (known) ccStartError(known);
+        else if (err && err.toast) toast(err.toast);
+      } finally {
+        ccStarting = false;
+        $("dlg-cc-start-ok").disabled = false;
+      }
+    });
+  }
+
   // ===== 幅・高さの変更（つまみ） =====
   // CSS の変数は CSSOM（style.setProperty）で変える。style 属性は書かない（CSP の style-src 'self' でも動く）
   const SIZES = {
@@ -911,6 +1004,7 @@
     });
     bindPalette();
     bindNewSession();
+    bindCcStart();
 
     mqNarrow.addEventListener("change", () => {
       S.drawerOpen = false;
@@ -946,6 +1040,7 @@
     togglePanel,
     palette,
     newSession,
+    ccStart,
     theme: () => S.theme,
     setTheme,
     draft: (channelId) => S.drafts[channelId] || "",

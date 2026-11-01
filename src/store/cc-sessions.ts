@@ -8,6 +8,11 @@ export const CC_SESSION_KEEP_DAYS = 30;
 /** hook の事象の名前（§2.3 の固定の集合） */
 export type CcHookEventName = "SessionStart" | "UserPromptSubmit" | "Stop" | "SessionEnd" | "Notification" | "PermissionRequest";
 
+/** 起動したもの（owner = self-agent の外で起動したもの。web・tool・github は self-agent が起動したもの。§4.2） */
+export type CcStartedBy = "owner" | "web" | "tool" | "github";
+
+const STARTED_BY: readonly CcStartedBy[] = ["owner", "web", "tool", "github"];
+
 /** cc_sessions の 1 行（時刻は ISO） */
 export type CcSessionRow = {
   sessionId: string;
@@ -29,6 +34,27 @@ export type CcSessionRow = {
   waitingKind: string | null;
   /** 判断待ちが始まった時刻（続けて来た Notification では進めない） */
   waitingSince: string | null;
+  /** claude agents --json の waitingFor（status が waiting のときだけ。最後に見た一覧の値） */
+  waitingFor: string | null;
+  /** 起動したもの（v29） */
+  startedBy: CcStartedBy;
+  /** self-agent が起動したときに付けた tmux のセッション名（表示用。オーナーの hook で変わりうる） */
+  tmuxSession: string | null;
+  /** self-agent が起動したときの tmux のセッション id（$N） */
+  tmuxSessionId: string | null;
+  /** self-agent が起動したときのペイン id（%N） */
+  startPaneId: string | null;
+  /** trust のダイアログの確認待ちに気づいた時刻（消えたら null） */
+  trustPendingAt: string | null;
+};
+
+/** self-agent が起動したセッションの記録（recordStart） */
+export type CcStartRecord = {
+  startedBy: Exclude<CcStartedBy, "owner">;
+  tmuxSession: string;
+  tmuxSessionId: string;
+  paneId: string;
+  trustPendingAt: Date | null;
 };
 
 /** 1 つの hook の事象で行に反映するもの */
@@ -72,6 +98,12 @@ function toRow(row: Record<string, SQLOutputValue>): CcSessionRow {
     lastEventAt: nullableString(row.last_event_at),
     waitingKind: nullableString(row.waiting_kind),
     waitingSince: nullableString(row.waiting_since),
+    waitingFor: nullableString(row.waiting_for),
+    startedBy: STARTED_BY.find((value) => value === row.started_by) ?? "owner",
+    tmuxSession: nullableString(row.tmux_session),
+    tmuxSessionId: nullableString(row.tmux_session_id),
+    startPaneId: nullableString(row.start_pane_id),
+    trustPendingAt: nullableString(row.trust_pending_at),
   };
 }
 
@@ -91,18 +123,25 @@ export class CcSessionStore {
     this.now = now;
   }
 
-  /** claude agents --json で見たセッションを書く（無ければ作り、あれば cwd・名前・pid・last_seen_at を今にして gone_at を外す） */
-  upsertSeen(sessions: ReadonlyArray<{ sessionId: string; cwd: string | null; name: string | null; pid: number }>): void {
+  /**
+   * claude agents --json で見たセッションを書く（無ければ作り、あれば cwd・名前・pid・waitingFor・last_seen_at を今にして gone_at を外す）。
+   * waitingFor は status が waiting のときだけの値で、無ければ NULL にする
+   */
+  upsertSeen(
+    sessions: ReadonlyArray<{ sessionId: string; cwd: string | null; name: string | null; pid: number; waitingFor?: string | null }>,
+  ): void {
     if (sessions.length === 0) return;
     const at = this.now().toISOString();
     const statement = this.db.prepare(
-      `INSERT INTO cc_sessions (session_id, cwd, name, pid, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO cc_sessions (session_id, cwd, name, pid, waiting_for, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (session_id) DO UPDATE SET cwd = excluded.cwd, name = excluded.name, pid = excluded.pid,
-         last_seen_at = excluded.last_seen_at, gone_at = NULL`,
+         waiting_for = excluded.waiting_for, last_seen_at = excluded.last_seen_at, gone_at = NULL`,
     );
     this.db.exec("BEGIN");
     try {
-      for (const session of sessions) statement.run(session.sessionId, session.cwd, session.name, session.pid, at, at);
+      for (const session of sessions) {
+        statement.run(session.sessionId, session.cwd, session.name, session.pid, session.waitingFor ?? null, at, at);
+      }
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -189,6 +228,43 @@ export class CcSessionStore {
   /** 生きている（gone_at が NULL の）行を session_id の順に */
   listAlive(): CcSessionRow[] {
     return this.db.prepare("SELECT * FROM cc_sessions WHERE gone_at IS NULL ORDER BY session_id").all().map(toRow);
+  }
+
+  /**
+   * self-agent が起動したセッションの記録を書く（§4.2。行は一覧で見たときに作られている）。既に記録があれば（started_by が owner でない）書かない。
+   * 書いたら true
+   */
+  recordStart(sessionId: string, record: CcStartRecord): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE cc_sessions SET started_by = ?, tmux_session = ?, tmux_session_id = ?, start_pane_id = ?, trust_pending_at = ?
+         WHERE session_id = ? AND started_by = 'owner'`,
+      )
+      .run(
+        record.startedBy,
+        record.tmuxSession,
+        record.tmuxSessionId,
+        record.paneId,
+        record.trustPendingAt === null ? null : record.trustPendingAt.toISOString(),
+        sessionId,
+      );
+    return Number(result.changes) > 0;
+  }
+
+  /** trust の確認待ちの時刻を書く（null で外す）。行があれば true */
+  setTrustPending(sessionId: string, at: Date | null): boolean {
+    const result = this.db
+      .prepare("UPDATE cc_sessions SET trust_pending_at = ? WHERE session_id = ?")
+      .run(at === null ? null : at.toISOString(), sessionId);
+    return Number(result.changes) > 0;
+  }
+
+  /** 生きている行のうち trust の確認待ちのもの */
+  listTrustPending(): CcSessionRow[] {
+    return this.db
+      .prepare("SELECT * FROM cc_sessions WHERE gone_at IS NULL AND trust_pending_at IS NOT NULL ORDER BY session_id")
+      .all()
+      .map(toRow);
   }
 
   /** 複数行をそのまま送ってよいか（cc_state.multiline_ok。行が無ければ true。§3.2） */

@@ -4,7 +4,7 @@
 // その間の一覧に現れれば採り、現れなければ捨てる（PermissionRequest は保留しない）。状態と並びは純関数の rankSessions。
 // log は件数と失敗の種類だけ（名前・cwd・パス・本文・sessionId は出さない）
 import type { Config } from "../config.ts";
-import type { CcEventUpdate, CcSessionStore } from "../store/cc-sessions.ts";
+import type { CcEventUpdate, CcSessionStore, CcStartedBy } from "../store/cc-sessions.ts";
 import type { AgentEntry, AgentsClient } from "./agents.ts";
 import type { ClaudeDirs } from "./claude-dirs.ts";
 import { CC_WAITING_NOTIFICATIONS, type CcHookEvent, type CcHookReceiver, type CcPermissionSummary } from "./hook-server.ts";
@@ -101,6 +101,10 @@ export type CcSessionView = RankInput & {
   /** RC のリンクの id（sessions/<pid>.json。読めなければ undefined） */
   bridgeSessionId: string | undefined;
   tmux: string | undefined;
+  /** 起動したもの（cc_sessions.started_by。self-agent が起動したものは CC4 から） */
+  startedBy: CcStartedBy;
+  /** trust のダイアログの確認待ち（cc_sessions.trust_pending_at がある） */
+  trustPending: boolean;
   /** 直近の PermissionRequest の要約（CC1 では保留せず記録するだけ。その後の UserPromptSubmit・Stop で消す。プロセスの中だけ） */
   permission: (CcPermissionSummary & { at: number }) | undefined;
 };
@@ -135,7 +139,7 @@ export type CcRegistryDeps = {
   store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive">;
   now: () => Date;
   timers?: CcTimers;
-  /** 送信の待ち行列が空でない（§2.2。CC3 から）。true の間は見ていなくても設定の周期で読む */
+  /** 送信の待ち行列が空でない（§2.2。CC3 から）・起動したセッションをまだ一覧で見つけていない（CC4）。true の間は見ていなくても設定の周期で読む */
   busy?: () => boolean;
   log: (message: string) => void;
 };
@@ -263,6 +267,8 @@ export class CcRegistry implements CcHookReceiver {
         bridgeSessionId: extra?.bridgeSessionId,
         tmux: extra?.tmux,
         permission: this.permissions.get(agent.sessionId),
+        startedBy: row?.startedBy ?? "owner",
+        trustPending: row?.trustPendingAt !== null && row?.trustPendingAt !== undefined,
       };
       view.lastActivityAt = lastActivity(view);
       return view;
@@ -375,7 +381,13 @@ export class CcRegistry implements CcHookReceiver {
       this.fetchedAt = now;
       const ids = new Set(result.agents.map((agent) => agent.sessionId));
       this.deps.store.upsertSeen(
-        result.agents.map((agent) => ({ sessionId: agent.sessionId, cwd: agent.cwd ?? null, name: agent.name ?? null, pid: agent.pid })),
+        result.agents.map((agent) => ({
+          sessionId: agent.sessionId,
+          cwd: agent.cwd ?? null,
+          name: agent.name ?? null,
+          pid: agent.pid,
+          waitingFor: agent.waitingFor ?? null,
+        })),
       );
       this.deps.store.markGone([...ids]);
       // 行を書いてから一覧を入れ替える（receive が一覧にあるとみなした session_id の行は必ずある）

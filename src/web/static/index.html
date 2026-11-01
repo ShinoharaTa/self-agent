@@ -92,6 +92,40 @@
     </form>
   </dialog>
 
+  <dialog id="dlg-cc-start" aria-labelledby="dlg-cc-start-title">
+    <form id="cc-start-form" class="stack" novalidate>
+      <h2 id="dlg-cc-start-title" class="dlg-title">新しい Claude Code のセッション</h2>
+      <div class="field">
+        <label for="cc-start-project">プロジェクト</label>
+        <select class="select" id="cc-start-project"></select>
+      </div>
+      <div class="field">
+        <label for="cc-start-title">題名</label>
+        <input class="input" id="cc-start-title" maxlength="40" placeholder="例: fix-login" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="cc-start-text">最初の指示（任意）</label>
+        <textarea class="textarea" id="cc-start-text" rows="4" maxlength="2000"></textarea>
+      </div>
+      <div class="field">
+        <label for="cc-start-mode">権限モード</label>
+        <select class="select" id="cc-start-mode">
+          <option value="">既定（settings.json に従う）</option>
+          <option value="default">default</option>
+          <option value="acceptEdits">acceptEdits</option>
+          <option value="plan">plan</option>
+          <option value="auto">auto</option>
+        </select>
+      </div>
+      <p class="alert" id="cc-start-error" role="alert" hidden></p>
+      <p class="meta">この機械の tmux に新しいセッションを作り、claude を起動します。題名は文字・数字・空白・_ . - の 40 字までです。新しいディレクトリでは trust の確認が端末・RC に出ます。self-agent は答えないので、端末か RC で「Yes, I trust this folder」を選んでください。最初の指示はその後、入力待ちになってから届けます。</p>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary btn-sm" id="dlg-cc-start-cancel" type="button">やめる</button>
+        <button class="btn btn-primary btn-sm" id="dlg-cc-start-ok" type="submit">起動する</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="toast-stack" id="toast" role="status" aria-atomic="false" hidden></div>
 </body>
 </html>

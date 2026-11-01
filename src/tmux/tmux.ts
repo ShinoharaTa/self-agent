@@ -1,6 +1,6 @@
 // tmux の包み（docs/plan/github-notifications.md §5・§7.1）。アプリ（node）の特権の操作で、LLM のツールではない。
 // execFile で起動時に解決した絶対パスの tmux を呼び、シェルを通さない。引数は固定の形（list-panes・list-clients・capture-pane・
-// load-buffer・paste-buffer・delete-buffer・send-keys だけ）。送り先は pane_id（%N）で指し、セッション名では指さない
+// load-buffer・paste-buffer・delete-buffer・send-keys・new-session だけ）。送り先は pane_id（%N）で指し、セッション名では指さない
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
@@ -103,7 +103,21 @@ export type Tmux = {
   /** 名前付きのバッファを消す（`delete-buffer -b`）。無くても失敗を返すだけ */
   deleteBuffer(handoffId: number): Promise<TmuxResult<void>>;
   sendEnter(paneId: string): Promise<TmuxResult<void>>;
+  /**
+   * 新しいセッションを裏で作る（`new-session -d -P -F '#{session_id} #{pane_id}' -s <name> -c <dir> -- <command>`。
+   * docs/plan/claude-code-sessions.md §4.2）。command は既定のシェルが 1 つの文字列として実行する（呼び出し側が検証して単引用符で囲んだもの）。
+   * 返すのはセッション id（$N）とペイン id（%N）で、名前はオーナーの hook で変わりうるので以後はこれで追う。
+   * tmux のサーバーが無いと new-session はサーバーを起こしてしまうので、呼び出し側が先に listPanes でサーバーがあることを確かめる。
+   * name（英数字・_・-）・dir（絶対パス。制御文字・`#` なし）・command（空でなく制御文字なし）が形に合わなければ投げる
+   */
+  newSession(input: NewSessionInput): Promise<TmuxResult<TmuxNewSession>>;
 };
+
+/** newSession の入力 */
+export type NewSessionInput = { name: string; dir: string; command: string };
+
+/** newSession で作ったセッション（$N と %N） */
+export type TmuxNewSession = { sessionId: string; paneId: string };
 
 /** loadBuffer の形。multiline は LF を許すか（既定 false）、maxChars は文字数（コードポイント）の上限（既定 MAX_PASTE_CHARS） */
 export type LoadBufferOptions = { multiline?: boolean; maxChars?: number };
@@ -132,10 +146,17 @@ export const PANE_FORMAT = [
   "#{pane_pid}",
 ].join("\t");
 
+/** new-session -P の -F（セッション id とペイン id） */
+export const NEW_SESSION_FORMAT = "#{session_id} #{pane_id}";
+
 /** list-clients の -F */
 export const CLIENT_FORMAT = ["#{client_session}", "#{client_activity}"].join("\t");
 
 const PANE_ID = /^%\d+$/;
+/** new-session -P の出力（`$N %N`） */
+const NEW_SESSION_OUTPUT = /^(\$\d{1,9}) (%\d{1,9})\n?$/;
+/** 作るセッションの名前（tmux が区切りに使う `.`・`:` と、書式の `#` を含まない） */
+const SESSION_NAME = /^[A-Za-z0-9_-]{1,100}$/;
 const SOCKET_NAME = /^[A-Za-z0-9._-]+$/;
 const INDEX = /^\d+$/;
 const PID = /^\d{1,10}$/;
@@ -146,6 +167,12 @@ const FLAG = /^[01]$/;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
 // LF を除いた制御文字（複数行で貼るとき）
 const CONTROL_CHARS_EXCEPT_LF = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
+
+/** new-session -P の出力を読む。形が合わなければ undefined */
+export function parseNewSession(stdout: string): TmuxNewSession | undefined {
+  const match = NEW_SESSION_OUTPUT.exec(stdout);
+  return match === null ? undefined : { sessionId: match[1]!, paneId: match[2]! };
+}
 
 /** 送り込みに使う名前付きのバッファの名前（`self-agent-<handoff_id>`） */
 export function handoffBufferName(handoffId: number): string {
@@ -272,6 +299,16 @@ export function createTmux(options: TmuxOptions): Tmux {
     async sendEnter(paneId) {
       assertPaneId(paneId);
       return done(await exec(["send-keys", "-t", paneId, "Enter"]));
+    },
+    async newSession({ name, dir, command }) {
+      if (!SESSION_NAME.test(name)) throw new Error("セッションの名前は英数字・_・- で指定してください");
+      // -c は tmux の書式（#{…}）として展開されるので # を通さない
+      if (!isAbsolute(dir) || CONTROL_CHARS.test(dir) || dir.includes("#")) throw new Error("ディレクトリは絶対パスで指定してください");
+      if (command === "" || CONTROL_CHARS.test(command)) throw new Error("コマンドが不正です");
+      const result = await exec(["new-session", "-d", "-P", "-F", NEW_SESSION_FORMAT, "-s", name, "-c", dir, "--", command]);
+      if (!result.ok) return result;
+      const created = parseNewSession(result.value);
+      return created === undefined ? { ok: false, reason: "failed" } : { ok: true, value: created };
     },
   };
 }

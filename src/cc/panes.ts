@@ -127,6 +127,8 @@ export type PaneLookup =
       find: (target: PaneTarget) => TmuxPane | undefined;
       /** 送ってよいペイン（findSendablePane） */
       sendable: (target: PaneTarget) => SendablePane;
+      /** ペイン id のペイン（生死・コマンドを問わない。起動したペインがまだあるか。CC4） */
+      pane: (paneId: string) => TmuxPane | undefined;
     }
   | { ok: false; reason: TmuxFailure };
 
@@ -157,6 +159,7 @@ export class CcPaneResolver {
       ok: true,
       find: (target) => findSessionPane(target, panes, parentOf, sessionPids),
       sendable: (target) => findSendablePane(target, panes, parentOf, sessionPids),
+      pane: (paneId) => panes.find((candidate) => candidate.paneId === paneId),
     };
   }
 
