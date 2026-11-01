@@ -221,6 +221,8 @@ test("hook の受け口: PermissionRequest は保留せず即 200・空。要約
     toolName: "Write",
     summary: "a.txt",
     requestHash: createHash("sha256").update(`Write\n${JSON.stringify(toolInput)}`).digest("hex"),
+    // permission_suggestions が無ければ常に許可のルールは無い
+    alwaysRules: null,
   });
   assert.ok(!JSON.stringify(event).includes("FULL-"));
 });

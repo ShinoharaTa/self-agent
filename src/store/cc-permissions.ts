@@ -1,10 +1,11 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
+import { type CcRule, parseStoredRules } from "../cc/permissions.ts";
 
 /** 許可の要求の行を残す日数（scheduler の tick で、created_at がこれより前の終わった行を消す。docs/plan/claude-code-sessions.md §9） */
 export const CC_PERMISSION_KEEP_DAYS = 30;
 
 /**
- * 許可の要求の状態（§3.4）。pending = 応答を保留している、allowed / denied = オーナーが押した（allowed_always は CC5b）、
+ * 許可の要求の状態（§3.4）。pending = 応答を保留している、allowed / allowed_always / denied = オーナーが押した（allowed_always は常に許可）、
  * answered_elsewhere = 端末・RC で先に答えられた（と判断した）、expired = 保留が切れた・Claude Code が先に接続を閉じた・再起動で残った、
  * released = self-agent が保留せず・保留をやめて空の本文を返した（停止・1 分の上限）
  */
@@ -27,6 +28,8 @@ export type CcPermissionRow = {
   /** §3.4 の要約（先頭 500 字） */
   summary: string;
   permissionMode: string | null;
+  /** 常に許可にできるルール（線引きを通った提案。無ければ null = [常に許可] は出せない） */
+  alwaysRules: CcRule[] | null;
   state: CcPermissionState;
   via: CcPermissionVia | null;
   createdAt: string;
@@ -49,6 +52,7 @@ function toRow(row: Record<string, SQLOutputValue>): CcPermissionRow {
     toolName: String(row.tool_name),
     summary: String(row.summary),
     permissionMode: nullableString(row.permission_mode),
+    alwaysRules: parseStoredRules(nullableString(row.always_rules)),
     state,
     via,
     createdAt: String(row.created_at),
@@ -76,14 +80,15 @@ export class CcPermissionStore {
     toolName: string;
     summary: string;
     permissionMode: string | null;
+    alwaysRules?: readonly CcRule[] | null;
     state: "pending" | "released";
     via?: CcPermissionVia;
   }): CcPermissionRow {
     const at = this.now().toISOString();
     const result = this.db
       .prepare(
-        `INSERT INTO cc_permissions (session_id, request_hash, tool_name, summary, permission_mode, state, via, created_at, resolved_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO cc_permissions (session_id, request_hash, tool_name, summary, permission_mode, always_rules, state, via, created_at, resolved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.sessionId,
@@ -91,6 +96,9 @@ export class CcPermissionStore {
         input.toolName,
         input.summary,
         input.permissionMode,
+        input.alwaysRules === undefined || input.alwaysRules === null || input.alwaysRules.length === 0
+          ? null
+          : JSON.stringify(input.alwaysRules),
         input.state,
         input.via ?? null,
         at,

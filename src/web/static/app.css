@@ -1357,6 +1357,18 @@ kbd {
   overflow: auto;
 }
 
+/* 常に許可のボタンはルールを含んで長いので、狭い画面では折り返す */
+.cc-permission-always {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.cc-permission-rule code {
+  overflow-wrap: anywhere;
+}
+
 .cc-permission-end {
   color: var(--text-muted);
   font-size: var(--font-sm);

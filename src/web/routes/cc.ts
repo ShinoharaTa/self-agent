@@ -1,12 +1,14 @@
 // GET /api/cc/sessions・/api/cc/sessions/<id>（docs/plan/claude-code-sessions.md §5.1。CC2）、POST /api/cc/sessions/<id>/send・
 // /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）、GET /api/cc/projects・POST /api/cc/sessions（CC4。起動は cc/starter.ts）、
-// GET /api/cc/permissions・POST /api/cc/permissions/<id>/allow|deny（CC5a。保留は cc/permission-hold.ts）と /api/status の cc。
+// GET /api/cc/permissions・POST /api/cc/permissions/<id>/allow|always|deny（CC5a・CC5b。保留は cc/permission-hold.ts、常に許可の線引きは
+// cc/permissions.ts）と /api/status の cc。
 // この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順）と、1 つのセッションの画面の写し
 // （tmux の capture-pane を stripAnsi して最後の CC_SCREEN_LINES 行。tmux の外は screen: null）。SELF_AGENT_CC が無効なら 404。
 // GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
 // 名前・cwd・最後の指示は hook から来たデータで、画面は textContent で出す。log は出さない（名前・パス・sessionId・ペイン id を出さない）
 import { isUuid } from "../../cc/agents.ts";
 import { type CcPermissionHold, permissionExpiresAt } from "../../cc/permission-hold.ts";
+import { describeRule, formatRule } from "../../cc/permissions.ts";
 import type { CcPaneResolver, PaneLookup } from "../../cc/panes.ts";
 import type { CcRegistry, CcSessionView } from "../../cc/registry.ts";
 import { normalizeSendText, type CcSender } from "../../cc/sender.ts";
@@ -126,6 +128,12 @@ function pendingJson(
   return row === undefined ? null : { id: row.id, state: row.state, lastPaneState: row.lastPaneState, updatedAt: row.updatedAt };
 }
 
+/** 常に許可のルールの意味（Bash のルールの添え書きを「、」でつなぐ。無ければ null） */
+function alwaysNote(row: CcPermissionRow): string | null {
+  const notes = (row.alwaysRules ?? []).map(describeRule).filter((note): note is string => note !== null);
+  return notes.length === 0 ? null : notes.join("、");
+}
+
 /** 押した操作の結果 → HTTP の状態 */
 const ANSWER_STATUS: Readonly<Record<string, number>> = { not_found: 404, stale: 409 };
 
@@ -151,8 +159,9 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     via: row.via,
     toolName: row.toolName,
     summary: row.summary,
-    // 常に許可は CC5b（今はいつも null）
-    alwaysRule: null,
+    // 常に許可にすると加わるルール（`Bash(npm test *)`。複数なら「、」でつなぐ）とその意味（Bash だけ）。提案が無ければ null
+    alwaysRule: row.alwaysRules === null ? null : row.alwaysRules.map(formatRule).join("、"),
+    alwaysNote: alwaysNote(row),
     requestHash: row.requestHash,
     permissionMode: row.permissionMode,
     createdAt: row.createdAt,
@@ -302,14 +311,15 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     },
     {
       method: "POST",
-      pattern: /^\/api\/cc\/permissions\/(\d{1,16})\/(allow|deny)$/,
+      pattern: /^\/api\/cc\/permissions\/(\d{1,16})\/(allow|always|deny)$/,
       handle: async ({ params, body }) => {
         if (registry === undefined || permissions === undefined) return NOT_FOUND;
         registry.touch();
         // requestHash: 画面が出していた要求と行が同じことを確かめる（§3.4）。無ければ 400
         const requestHash = body?.requestHash;
         if (typeof requestHash !== "string") return { status: 400, json: { error: "bad_request" } };
-        const decision = params[1] === "allow" ? "allow" : "deny";
+        // always は行にルールが無ければ 409（stale）
+        const decision = params[1] === "allow" ? "allow" : params[1] === "always" ? "always" : "deny";
         const result = permissions.hold.answer(Number(params[0]), decision, "web", requestHash);
         if (result.ok) return { status: 200, json: { state: result.state } };
         return { status: ANSWER_STATUS[result.reason] ?? 409, json: { error: result.reason } };
