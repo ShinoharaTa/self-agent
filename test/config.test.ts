@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, loadDataConfig, loadGithubConfig, loadWebConfig, missingForStart } from "../src/config.ts";
+import { loadCcConfig, loadConfig, loadDataConfig, loadGithubConfig, loadWebConfig, missingForStart } from "../src/config.ts";
 
 test("未設定ならデフォルト値を使う", () => {
   const config = loadConfig({ HOME: "/home/tester" });
@@ -61,6 +61,11 @@ test("未設定ならデフォルト値を使う", () => {
     webAllowedLogin: undefined,
     webTokenPresent: false,
     webHistoryDays: 90,
+    cc: false,
+    ccHookPort: undefined,
+    ccHookTokenPresent: false,
+    ccPollSec: 10,
+    ccPermissionHoldSec: 300,
   });
 });
 
@@ -592,4 +597,57 @@ test("SELF_AGENT_PERSONAS が無ければ人格の変数は読まない（今と
   });
   assert.deepEqual(config.personas, []);
   assert.equal(config.codexHome, undefined);
+});
+
+const CC_TOKEN = "c".repeat(32);
+
+test("Claude Code: SELF_AGENT_CC=1 ならポートとトークンが要る。トークンは有無だけを持ち、loadCcConfig も同じ値", () => {
+  const env = {
+    HOME: "/home/tester",
+    SELF_AGENT_CC: "1",
+    SELF_AGENT_CC_HOOK_PORT: "8792",
+    SELF_AGENT_CC_HOOK_TOKEN: CC_TOKEN,
+    SELF_AGENT_CC_POLL_SEC: "5",
+    SELF_AGENT_CC_PERMISSION_HOLD_SEC: "600",
+  };
+  const config = loadConfig(env);
+  assert.equal(config.cc, true);
+  assert.ok(!JSON.stringify(config).includes(CC_TOKEN));
+  assert.deepEqual(loadCcConfig(env), {
+    cc: true,
+    ccHookPort: 8792,
+    ccHookTokenPresent: true,
+    ccPollSec: 5,
+    ccPermissionHoldSec: 600,
+  });
+  for (const missing of ["SELF_AGENT_CC_HOOK_PORT", "SELF_AGENT_CC_HOOK_TOKEN"]) {
+    assert.throws(
+      () => loadConfig({ ...env, [missing]: "" }),
+      (error: Error) => error.message.includes(missing) && !error.message.includes(CC_TOKEN),
+      missing,
+    );
+  }
+  // 0 は無効で、ポート・トークンが無くてよい
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_CC: "0" }).cc, false);
+});
+
+test("Claude Code: 形の違う値は無効のときも変数名だけを出して設定エラー", () => {
+  const cases: Array<[string, string]> = [
+    ["SELF_AGENT_CC", "yes"],
+    ["SELF_AGENT_CC_HOOK_PORT", "0"],
+    ["SELF_AGENT_CC_HOOK_PORT", "65536"],
+    ["SELF_AGENT_CC_HOOK_TOKEN", "short"],
+    ["SELF_AGENT_CC_HOOK_TOKEN", `${"c".repeat(31)} c`],
+    ["SELF_AGENT_CC_POLL_SEC", "4"],
+    ["SELF_AGENT_CC_POLL_SEC", "x"],
+    ["SELF_AGENT_CC_PERMISSION_HOLD_SEC", "0"],
+    ["SELF_AGENT_CC_PERMISSION_HOLD_SEC", "601"],
+  ];
+  for (const [name, value] of cases) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", [name]: value }),
+      (error: Error) => error.message.includes(name) && (name !== "SELF_AGENT_CC_HOOK_TOKEN" || !error.message.includes(value)),
+      `${name}=${value}`,
+    );
+  }
 });

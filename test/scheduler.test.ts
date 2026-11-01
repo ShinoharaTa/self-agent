@@ -60,7 +60,7 @@ function setup(
   deleteAfterDays: number = 30,
   allowedGuildIds: string[] = ["guild-1"],
   // history: true なら history（同じ DB）を渡す
-  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory"> & { history?: boolean } = {},
+  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory" | "pruneCcSessions"> & { history?: boolean } = {},
 ) {
   const db = tempDb(t);
   const clock = { now: NOW };
@@ -982,6 +982,26 @@ test("history: 待ちに移したら notice（待ちの知らせの本文・syst
   plain.createAt("topic-idle", ago(12 * HOUR_MS));
   await plain.scheduler.tick();
   assert.deepEqual(plain.history.list("topic-idle", { limit: 10 }), []);
+});
+
+test("tick ごとに古い Claude Code のセッションの行を消す処理を呼ぶ。失敗は log だけで続ける", async (t) => {
+  let calls = 0;
+  let fail = false;
+  const env = setup(t, 12, 30, ["guild-1"], {
+    pruneCcSessions: () => {
+      calls++;
+      if (fail) throw new Error("SQLITE_BUSY");
+    },
+  });
+  await env.scheduler.tick();
+  assert.equal(calls, 1);
+  assert.deepEqual(env.logs, []);
+
+  fail = true;
+  await env.scheduler.tick();
+  assert.equal(calls, 2);
+  assert.deepEqual(env.logs, ["古い Claude Code のセッションの記録を消せませんでした"]);
+  assert.equal(env.inboxRotator.calls.length, 2);
 });
 
 test("tick ごとに古いターンの記録を消す処理を呼ぶ（削除のジョブより前）。失敗は log だけで続ける", async (t) => {

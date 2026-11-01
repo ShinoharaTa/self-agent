@@ -35,6 +35,10 @@ import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
+import { AgentsClient } from "./cc/agents.ts";
+import { ClaudeDirs } from "./cc/claude-dirs.ts";
+import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
+import { CcRegistry } from "./cc/registry.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -54,6 +58,7 @@ import { GuestStore } from "./store/guest.ts";
 import { GuestGuildStore } from "./store/guest-guilds.ts";
 import { GuestInviteStore } from "./store/guest-invites.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
+import { CC_SESSION_KEEP_DAYS, CcSessionStore } from "./store/cc-sessions.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { HistoryStore } from "./store/history.ts";
@@ -91,6 +96,13 @@ const config = loadConfig();
 const missing = missingForStart(config);
 if (missing.length > 0) {
   console.error(`起動に必要な環境変数が設定されていません: ${missing.join(", ")}`);
+  process.exit(1);
+}
+
+// Claude Code のセッション（SELF_AGENT_CC=1 のときだけ）: claude と tmux の絶対パスを PATH から 1 回解決する。無ければ起動しない
+const ccClaudePath = config.cc ? resolveCommandPath("claude") : undefined;
+if (config.cc && (ccClaudePath === undefined || resolveCommandPath("tmux") === undefined)) {
+  console.error("SELF_AGENT_CC=1 には claude と tmux が要ります（PATH を確かめてください）");
   process.exit(1);
 }
 
@@ -165,6 +177,8 @@ const history = config.web ? { history: historyStore } : {};
 // #system への知らせの記録（docs/plan/web-ui.md §7.1）。書くのは Web UI が有効なときだけで、古いものは有効・無効を問わず tick で消す
 const noticeStore = new NoticeStore(db, now);
 const notices = config.web ? noticeStore : undefined;
+// この機械の Claude Code のセッション（docs/plan/claude-code-sessions.md §9）。書くのは SELF_AGENT_CC=1 のときだけで、古い行は有効・無効を問わず tick で消す
+const ccSessions = new CcSessionStore(db, now);
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -492,6 +506,11 @@ const scheduler = new Scheduler({
     const deleted = noticeStore.prune(new Date(now().getTime() - NOTICE_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deleted > 0) log(`古い知らせの記録 ${deleted} 件を消しました`);
   },
+  // 一覧から消えて CC_SESSION_KEEP_DAYS 日経った Claude Code のセッションの行を消す（SELF_AGENT_CC が無効でも消す）
+  pruneCcSessions: () => {
+    const deleted = ccSessions.prune(new Date(now().getTime() - CC_SESSION_KEEP_DAYS * 24 * 60 * 60 * 1000));
+    if (deleted > 0) log(`古い Claude Code のセッションの記録 ${deleted} 件を消しました`);
+  },
   // 待ちに移した知らせの行（Web UI が有効なときだけ）
   ...history,
   // ゲストの 1 日のターン数のうち、GUEST_TURNS_KEEP_DAYS 日より前の日の行を消す（ゲストのときだけ。Discord のゲストのサーバーには触らない）
@@ -541,6 +560,24 @@ const githubPoller = createGithubPoller({
   now,
   log,
 });
+
+// Claude Code のセッション（docs/plan/claude-code-sessions.md。SELF_AGENT_CC=1 のときだけ）: claude agents --json を周期で読んで cc_sessions に書き、
+// hook の受け口（127.0.0.1:SELF_AGENT_CC_HOOK_PORT。Web UI とは別のサーバー）で事象を受ける
+let ccRegistry: CcRegistry | undefined;
+let ccHookServer: CcHookServer | undefined;
+const ccHookToken = process.env.SELF_AGENT_CC_HOOK_TOKEN;
+if (config.cc && ccClaudePath !== undefined && config.ccHookPort !== undefined && ccHookToken !== undefined && ccHookToken !== "") {
+  const registry = new CcRegistry({
+    cfg: config,
+    agents: new AgentsClient({ claudePath: ccClaudePath }),
+    dirs: new ClaudeDirs(),
+    store: ccSessions,
+    now,
+    log,
+  });
+  ccRegistry = registry;
+  ccHookServer = createCcHookServer({ host: "127.0.0.1", port: config.ccHookPort, token: ccHookToken, receiver: registry, now, log });
+}
 
 // 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
 let staticServer: StaticServer | undefined;
@@ -671,6 +708,8 @@ const lifecycle = createShutdown(
     channelOps,
     staticServer,
     webServer,
+    ...(ccRegistry === undefined ? {} : { ccRegistry }),
+    ...(ccHookServer === undefined ? {} : { ccHookServer }),
     closeDb: () => db.close(),
     log,
   },
@@ -704,6 +743,15 @@ if (webServer !== undefined) {
     log(`Web UI を始められませんでした: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+// Claude Code の hook の受け口も同じく、起動に失敗しても Bot は動かし続ける（hooks は connection refused で普段どおり進む）
+if (ccHookServer !== undefined) {
+  try {
+    await ccHookServer.start();
+    log(`Claude Code の hook の受け口を始めました（127.0.0.1:${config.ccHookPort}）`);
+  } catch (error) {
+    log(`Claude Code の hook の受け口を始められませんでした: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 // 発言を受け付ける前に 1 回診断する（#system への知らせは gateway の起動後、最初の tick で行う）
 if (config.shell) await shellState.check();
 // 作業ジョブ: 発言・操作を受け付ける前に、再起動で止まった running を failed / interrupted にし（作業場所は kept に）、queued をキューに入れ直す
@@ -728,4 +776,5 @@ await jobs?.announceRecovered();
 scheduler.start(TICK_INTERVAL_MS);
 reminderScheduler.start();
 githubPoller?.start();
+ccRegistry?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

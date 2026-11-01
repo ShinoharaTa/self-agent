@@ -502,6 +502,35 @@ test("停止を始めたら作業ジョブも止め（実行中の run を中断
   assert.deepEqual(events, ["jobs stop", "jobs idle", "stop", "closeDb"]);
 });
 
+test("Claude Code: 停止を始めたら一覧の読み取りを止めて終わるのを待ち、hook の受け口は Web UI の次（DB を閉じる前）に閉じる", async () => {
+  const events: string[] = [];
+  const gate = deferred();
+  const ccRegistry = {
+    stop: () => {
+      events.push("cc stop");
+    },
+    idle: async () => {
+      await gate.promise;
+      events.push("cc idle");
+    },
+  };
+  const { shutdown } = createShutdown(
+    deps(events, {
+      ccRegistry,
+      webServer: { close: async () => void events.push("closeWeb") },
+      ccHookServer: { close: async () => void events.push("closeHook") },
+    }),
+    noopInner,
+  );
+  const done = shutdown();
+  await flush();
+  assert.deepEqual(events, ["cc stop"]);
+
+  gate.resolve();
+  await done;
+  assert.deepEqual(events, ["cc stop", "cc idle", "stop", "closeWeb", "closeHook", "closeDb"]);
+});
+
 test("実行中のチャンネルの移動は終わるまで待ってから gateway を止める。まだ始めていない移動は待たない", async (t) => {
   const db = tempDb(t);
   const events: string[] = [];

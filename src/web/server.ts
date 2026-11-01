@@ -142,10 +142,10 @@ ${message === undefined ? "" : `<p role="alert"><strong>${message}</strong></p>\
 `;
 }
 
-type BodyResult = { kind: "ok"; body: Buffer } | { kind: "too_large" };
+export type BodyResult = { kind: "ok"; body: Buffer } | { kind: "too_large" };
 
 /** 本文を limit バイトまで読む。超えたら（Content-Length で分かれば読まずに）too_large にし、残りは読み捨てる */
-function readBody(req: IncomingMessage, limit: number): Promise<BodyResult> {
+export function readBody(req: IncomingMessage, limit: number): Promise<BodyResult> {
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers["content-length"]);
     if (Number.isFinite(declared) && declared > limit) {
@@ -176,7 +176,7 @@ function readBody(req: IncomingMessage, limit: number): Promise<BodyResult> {
 }
 
 /** 本文が JSON のオブジェクト（配列・null は除く）ならそれ、それ以外は undefined */
-function parseJsonObject(body: Buffer): Record<string, unknown> | undefined {
+export function parseJsonObject(body: Buffer): Record<string, unknown> | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.toString("utf8"));
