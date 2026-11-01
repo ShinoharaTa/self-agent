@@ -65,7 +65,7 @@ import { GuestStore } from "./store/guest.ts";
 import { GuestGuildStore } from "./store/guest-guilds.ts";
 import { GuestInviteStore } from "./store/guest-invites.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
-import { CC_PERMISSION_KEEP_DAYS, CcPermissionStore } from "./store/cc-permissions.ts";
+import { CC_PERMISSION_KEEP_DAYS, type CcPermissionRow, CcPermissionStore } from "./store/cc-permissions.ts";
 import { CC_SEND_KEEP_DAYS, CcSendStore } from "./store/cc-sends.ts";
 import { CC_SESSION_KEEP_DAYS, CcSessionStore } from "./store/cc-sessions.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
@@ -591,6 +591,8 @@ const githubPoller = createGithubPoller({
 let ccRegistry: CcRegistry | undefined;
 let ccNotifier: CcDiscordNotifier | undefined;
 let ccPermissionButtons: CcPermissionButtons | undefined;
+// 再起動の前に保留していて expired にした許可の要求（#system の 1 通を「時間切れ」に書き換える）
+let ccRecoveredPermissions: CcPermissionRow[] = [];
 let ccSender: CcSender | undefined;
 let ccStarter: CcStarter | undefined;
 let ccPermissions: CcPermissionHold | undefined;
@@ -653,11 +655,11 @@ if (
     permissionHold.listen(notifier);
     ccPermissionButtons = {
       answer: (id, decision) => permissionHold.answer(id, decision, "discord"),
-      resolvedText: (id) => notifier.resolvedText(id),
+      resolvedMessage: (id) => notifier.resolvedMessage(id),
     };
   }
-  // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする
-  permissionHold.recover();
+  // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする（#system の 1 通は Discord につないだ後に書き換える）
+  ccRecoveredPermissions = permissionHold.recover();
   const hookServer = createCcHookServer({
     host: "127.0.0.1",
     port: config.ccHookPort,
@@ -925,5 +927,6 @@ githubPoller?.start();
 ccRegistry?.start();
 ccSender?.start();
 ccStarter?.start();
+ccNotifier?.rewriteRecovered(ccRecoveredPermissions);
 ccNotifier?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

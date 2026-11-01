@@ -190,12 +190,27 @@ export class CcPermissionStore {
     return Number(result.changes) > 0;
   }
 
-  /** 再起動の後: pending のまま残った行（応答を返す前に落ちた）を expired にし、その数を返す */
-  expirePending(): number {
-    const result = this.db
-      .prepare("UPDATE cc_permissions SET state = 'expired', via = NULL, resolved_at = ? WHERE state = 'pending'")
-      .run(this.now().toISOString());
-    return Number(result.changes);
+  /**
+   * 再起動の後: pending のまま残った行（応答を返す前に落ちた）を expired にし、移した後の行を返す
+   * （#system に出した 1 通を「時間切れ」に書き換えるため。CC5c）
+   */
+  expirePending(): CcPermissionRow[] {
+    const ids = this.db
+      .prepare("SELECT id FROM cc_permissions WHERE state = 'pending' ORDER BY id")
+      .all()
+      .map((row) => Number(row.id));
+    if (ids.length === 0) return [];
+    const statement = this.db.prepare("UPDATE cc_permissions SET state = 'expired', via = NULL, resolved_at = ? WHERE id = ? AND state = 'pending'");
+    const at = this.now().toISOString();
+    this.db.exec("BEGIN");
+    try {
+      for (const id of ids) statement.run(at, id);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return ids.map((id) => this.get(id)).filter((row): row is CcPermissionRow => row !== undefined);
   }
 
   /** created_at が cutoff より前の終わった行を消し、消した数を返す（pending は消さない） */

@@ -2,12 +2,13 @@
 // （0 なら作らず、許可の要求は Web と端末・RC だけで答える。保留の長さは変わらない）。
 // - 許可の要求: 保留を始めたら（permission-hold.ts の listen）1 通（warning・オーナーだけをメンション）。1 行目 [許可][このセッションでは常に許可][拒否]
 //   （`cc:perm:allow|always|deny:<id>`。常に許可はルールがあるときだけ）、2 行目 [RC で開く]（リンク。RC の id が分かるときだけ）。
-//   終わったら（Web で押された・他で答えられた・時間切れ・停止）その 1 通を書き換えてボタンを外す。Discord で押されたものは
-//   app/commands/cc.ts が応答で書き換えるので、ここでは書き換えない。
+//   終わったら（Web で押された・他で答えられた・時間切れ・停止・再起動の前に残った）その 1 通の見出しの後ろを結果の行にしてボタンを外す
+//   （[RC で開く] は残す）。Discord で押されたものは app/commands/cc.ts が応答で書き換えるので、ここでは書き換えない。
 // - 判断待ち: 許可の要求以外の判断待ち（registry の needs_input）が CC_WAIT_NOTIFY_MS 続いたら 1 回（待ちごとに 1 回。cc_sessions.notified_at）。
 //   1 時間に CC_WAIT_NOTIFY_LIMIT 件までで、超えた分は「ほか n 件」の 1 通にまとめて書き換える。保留中か直近 60 秒に解決した許可の要求
 //   （released を除く。released は 1 通を出していない）のあるセッションには出さない（保留中でも 6 秒で来る permission_prompt のため）。
-// - 終了: self-agent が起動したセッション（started_by が owner でない）が終わったら（SessionEnd・一覧から消えた）info で 1 行（1 セッション 1 回。プロセスの中）。
+// - 終了: self-agent が起動したセッション（started_by が owner でない）が claude agents --json の一覧から消えたら info で 1 行
+//   （1 セッション 1 回。プロセスの中。SessionEnd の hook は根拠にしない）。
 // 投稿先は SELF_AGENT_ALLOWED_GUILD_IDS の順で最初の、#system のあるサーバー（1 通だけ出すため）。
 // 名前・ディレクトリ・要約・ルールは hook から来たデータなので、Markdown とメンションを無効にする（要約はコードブロックに入れる）。
 // log は id と件数・失敗の種類だけ（名前・cwd・ツール名・要約・セッションの ID は出さない）
@@ -170,13 +171,17 @@ export function permissionResultLine(row: Pick<CcPermissionRow, "state" | "via" 
   }
 }
 
-/** 終わった許可の要求の 1 通の本文（見出し + 結果の行。ボタンは外す。純関数） */
-export function permissionResolvedText(
+/** 終わった許可の要求の 1 通（見出し + 結果の行。押すボタンは外し、[RC で開く] は RC のリンクが分かれば残す。純関数） */
+export function permissionResolvedMessage(
   row: CcPermissionRow,
   session: CcNoticeSession | undefined,
   places: { workspaceDir: string; home: string },
-): string {
-  return fit(`${permissionHead(row, session, places)}\n${permissionResultLine(row, rcUrlOf(session)) ?? ""}`, MESSAGE_MAX_CHARS);
+): OutgoingMessage {
+  const rcUrl = rcUrlOf(session);
+  return {
+    text: fit(`${permissionHead(row, session, places)}\n${permissionResultLine(row, rcUrl) ?? ""}`, MESSAGE_MAX_CHARS),
+    components: rcUrl === undefined ? [] : [{ kind: "links", links: [{ label: "RC で開く", url: rcUrl }] }],
+  };
 }
 
 /** 判断待ちの理由（claude agents --json の waitingFor か、hook の Notification の種類） */
@@ -300,13 +305,26 @@ export class CcDiscordNotifier implements CcPermissionListener {
     this.track(this.editResolved(row));
   }
 
-  /** Discord のボタンで終えた要求の書き換え後の本文（app/commands/cc.ts の応答）。行が無ければ undefined */
-  resolvedText(id: number): string | undefined {
+  /**
+   * Discord のボタンで終えた要求の書き換え後の 1 通と、それを出した場所（app/commands/cc.ts の応答。応答に失敗したらその場所を書き換える）。
+   * 行が無ければ undefined
+   */
+  resolvedMessage(id: number): { message: OutgoingMessage; channelId: string | null; messageId: string | null } | undefined {
     const row = this.deps.permissions.get(id);
-    return row === undefined ? undefined : permissionResolvedText(row, this.sessionOf(row.sessionId), this.places());
+    if (row === undefined) return undefined;
+    return {
+      message: permissionResolvedMessage(row, this.sessionOf(row.sessionId), this.places()),
+      channelId: row.messageChannelId,
+      messageId: row.messageId,
+    };
   }
 
-  /** セッションが終わった（registry.ts の ended）: self-agent が起動したものだけ info で 1 行 */
+  /** 再起動の前に保留していて expired にした行（permission-hold.ts の recover）の 1 通を「時間切れ」に書き換える。Discord につないだ後に呼ぶ */
+  rewriteRecovered(rows: readonly CcPermissionRow[]): void {
+    for (const row of rows) if (row.messageId !== null && row.messageChannelId !== null) this.track(this.editResolved(row));
+  }
+
+  /** セッションが一覧から消えた（registry.ts の ended）: self-agent が起動したものだけ info で 1 行 */
   ended(session: CcSessionRow): void {
     if (this.stopped || session.startedBy === "owner" || this.endedIds.has(session.sessionId)) return;
     this.endedIds.add(session.sessionId);
@@ -448,9 +466,9 @@ export class CcDiscordNotifier implements CcPermissionListener {
 
   private async editResolved(row: CcPermissionRow): Promise<void> {
     if (row.messageId === null || row.messageChannelId === null) return;
-    const text = permissionResolvedText(row, this.sessionOf(row.sessionId), this.places());
+    const message = permissionResolvedMessage(row, this.sessionOf(row.sessionId), this.places());
     try {
-      await this.deps.gateway.editMessage(row.messageChannelId, row.messageId, { text, components: [] });
+      await this.deps.gateway.editMessage(row.messageChannelId, row.messageId, message);
     } catch (error) {
       this.deps.log(`Claude Code: 許可の要求（#${row.id}）の知らせを書き換えられませんでした（${errorKind(error)}）`);
     }
