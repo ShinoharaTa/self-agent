@@ -188,6 +188,8 @@ SELF_AGENT_GITHUB_POLL_SEC=300
 
 The first fetch skips the unread notifications you already have and posts one start notice in `#github`. After that, only new ones are posted every 5 minutes (up to 10 at a time; the rest are folded into one "ほか n 件" message). Problems such as a broken `gh` login are reported in `#system`.
 
+When the Claude Code integration of section 9 (`SELF_AGENT_CC=1`) is also on and `git` is available, notifications for your own repositories (`SELF_AGENT_GITHUB_OWNERS`) and for repositories cloned directly under `SELF_AGENT_WORKSPACE_DIR` (or one level below) get a [対応] button (also in the GitHub tab of the Web UI). It queues a one-line request (repository, number, kind and URL only; no title or body) for the Claude Code session running in that repository's directory, delivered once the session waits for input. If several sessions match and they cannot be narrowed down to one waiting for input, nothing is sent and the candidates are listed. If no session is running, [起動して送る] starts a new session in that directory (same conditions as in section 9) and delivers the same request. Pressing again while the request waits, or within 30 minutes after it was delivered, does not queue another one.
+
 ### 8. (Optional) Web UI
 
 A small web app on your tailnet for checking the bot's status and usage from a browser (work in progress: for now it serves `/api/status`, `/api/usage` and a placeholder page). It listens only on `127.0.0.1`; you expose it with `tailscale serve` on its own port.
