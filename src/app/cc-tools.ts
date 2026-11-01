@@ -1,6 +1,7 @@
 // SDK のエージェントのツール cc_list・cc_send・cc_start の処理（docs/plan/claude-code-sessions.md §5.3。CC7）。SELF_AGENT_CC=1 のときだけ main が作る。
 // cc_list は registry の一覧（§2.2 の順）を最大 CC_LIST_MAX 件。cc_send・cc_start は送り先・起動の場所を確かめてから、頼んだチャンネルに
-// 確認（commands/cc-confirm.ts）をそのチャンネルの持ち主の Bot で投稿するだけで、送る・起動するのはオーナーがボタンを押したとき。
+// 確認（commands/cc-confirm.ts。本文の全文を最大 3 通に分け、ボタンは最後の 1 通）をそのチャンネルの持ち主の Bot で投稿するだけで、
+// 送る・起動するのはオーナーがボタンを押したとき。確認に出しきれない本文は断る（見せていない部分は送らない）。
 // 使えるターンの判定（not_available）は agent/tools.ts の createCcToolHandlers。log は番号だけ（本文・名前・ディレクトリ・チャンネル ID は出さない）
 import { homedir } from "node:os";
 import type { CcListEntry, CcListResult, CcSendResult, CcStartResult, CcToolDeps } from "../agent/tools.ts";
@@ -14,11 +15,14 @@ import type { Config } from "../config.ts";
 import type { Gateway } from "../discord/gateway.ts";
 import type { CcSendStore } from "../store/cc-sends.ts";
 import type { CcStartStore } from "../store/cc-starts.ts";
-import { CC_RC_URL_PREFIX, cwdLabel } from "../web/routes/cc.ts";
-import { ccSendPrompt, ccStartPrompt } from "./commands/cc-confirm.ts";
+import type { OutgoingMessage } from "../discord/gateway.ts";
+import { cwdLabel } from "../web/routes/cc.ts";
+import { ccRcUrl, ccSendPrompt, ccStartPrompt, fitsConfirm } from "./commands/cc-confirm.ts";
 
 /** cc_list が返す件数の上限 */
 export const CC_LIST_MAX = 30;
+/** 本文が確認（最大 3 通）に出しきれないとき（``` を崩すと長くなる）の message */
+export const CONFIRM_TOO_LONG_MESSAGE = "本文に ` が多く、確認に全文を出しきれないため使えません。短くしてください";
 
 export type CcToolsDeps = {
   cfg: Pick<Config, "workspaceDir" | "timeZone">;
@@ -74,14 +78,21 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
   const { cfg, registry, panes, sender, starter, sends, starts, gateway, log } = deps;
   const home = deps.home ?? homedir();
   const time = (ms: number | undefined): string | null => (ms === undefined ? null : formatWallClock(new Date(ms), cfg.timeZone));
+  /** 確認の各通を順に投稿し、最後の 1 通（ボタンの付いたもの）のメッセージ ID を返す。どれかに失敗したら投げる */
+  const postPages = async (channelId: string, pages: OutgoingMessage[]): Promise<string> => {
+    let last = "";
+    for (const page of pages) last = await gateway.sendMessage(channelId, page);
+    return last;
+  };
 
   return {
     async list(args): Promise<CcListResult> {
       const snapshot = registry.snapshot();
       const views = snapshot.sessions.filter((view) => args.state === undefined || view.state === args.state);
-      const lookup = await panes.lookup(new Set(snapshot.sessions.map((view) => view.pid)));
+      // 出すものが無ければ tmux を読まない
+      const lookup = views.length === 0 ? undefined : await panes.lookup(new Set(snapshot.sessions.map((view) => view.pid)));
       const sessions = views.slice(0, CC_LIST_MAX).map((view): CcListEntry => {
-        const inTmux = lookup.ok && lookup.find({ pid: view.pid, tmux: view.tmux }) !== undefined;
+        const inTmux = lookup !== undefined && lookup.ok && lookup.find({ pid: view.pid, tmux: view.tmux }) !== undefined;
         return {
           session_id: view.sessionId,
           name: view.name ?? null,
@@ -93,7 +104,7 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
           last_prompt: view.lastPromptText,
           in_tmux: inTmux,
           permission_mode: view.permissionMode,
-          ...(view.bridgeSessionId === undefined ? {} : { rc_url: `${CC_RC_URL_PREFIX}${view.bridgeSessionId}` }),
+          ...(view.bridgeSessionId === undefined ? {} : { rc_url: ccRcUrl(view.bridgeSessionId) }),
         };
       });
       return {
@@ -109,6 +120,7 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
       if (!checked.ok) {
         return { result: "invalid_args", message: "本文が空か、改行以外の制御文字（タブなど）を含むか、長すぎます" };
       }
+      if (!fitsConfirm(checked.text)) return { result: "invalid_args", message: CONFIRM_TOO_LONG_MESSAGE };
       const proposed = await sender.propose({ sessionId: args.session_id, text: checked.text, channelId: context.channelId });
       if (!proposed.ok) {
         switch (proposed.reason) {
@@ -118,8 +130,9 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
             return { result: "already_queued" };
           case "not_in_tmux":
           case "not_claude":
-          case "no_server":
             return { result: "not_in_tmux" };
+          case "no_server":
+            return { result: "not_available", message: "tmux のサーバーがありません" };
           case "tmux_failed":
             return { result: "not_available", message: "tmux を使えませんでした" };
           case "stopped":
@@ -131,9 +144,9 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
       const target = { name: view?.name ?? null, dir: cwdLabel(view?.cwd, cfg.workspaceDir, home) };
       let messageId: string;
       try {
-        messageId = await gateway.sendMessage(context.channelId, ccSendPrompt(send.id, target, send.text));
+        messageId = await postPages(context.channelId, ccSendPrompt(send.id, target, send.text));
       } catch (error) {
-        // 確認を出せなければ送らない
+        // 確認を出しきれなければ送らない（出せた前の通は残る。ボタンは最後の通だけなので押せない）
         sends.transition(send.id, ["awaiting_confirm"], "cancelled", { lastPaneState: "post_failed" });
         throw error;
       }
@@ -150,6 +163,7 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
         ...(args.permission_mode === undefined ? {} : { permissionMode: args.permission_mode }),
       });
       if (!checked.ok) return startFailure(checked.reason);
+      if (checked.text !== undefined && !fitsConfirm(checked.text)) return { result: "invalid_args", message: CONFIRM_TOO_LONG_MESSAGE };
       const row = starts.add({
         project: checked.project,
         title: checked.title,
@@ -159,7 +173,7 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
       });
       let messageId: string;
       try {
-        messageId = await gateway.sendMessage(context.channelId, ccStartPrompt(row));
+        messageId = await postPages(context.channelId, ccStartPrompt(row));
       } catch (error) {
         starts.transition(row.id, ["awaiting_confirm"], "cancelled");
         throw error;

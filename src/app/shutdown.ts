@@ -71,7 +71,7 @@ export type ShutdownDeps = {
    * 投稿・書き換えの途中のもの（保留をやめた 1 通の書き換えを含む）を待つ
    */
   ccNotifier?: Pick<CcDiscordNotifier, "stop" | "idle">;
-  /** cc_send・cc_start の確認の失効（SELF_AGENT_CC=1 のときだけ）。scheduler と同じ時点で止め、書き換えの途中のものを待つ */
+  /** cc_send・cc_start の確認の失効（SELF_AGENT_CC の有効・無効によらず動かす）。scheduler と同じ時点で止め、書き換えの途中のものを待つ */
   ccConfirmExpirer?: Pick<CcConfirmExpirer, "stop" | "idle">;
   /** Claude Code の hook の受け口（SELF_AGENT_CC=1 のときだけ）。Web UI の次（DB を閉じる前）に閉じる */
   ccHookServer?: Pick<CcHookServer, "close">;
