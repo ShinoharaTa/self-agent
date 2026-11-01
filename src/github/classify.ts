@@ -14,6 +14,9 @@ export type GithubLabel =
   | "新しい Issue"
   | "新しい PR";
 
+/** GithubLabel のすべて（DB から読んだ種別が固定の語かを確かめる。app/github-handoff.ts） */
+export const GITHUB_LABELS: readonly GithubLabel[] = ["レビュー依頼", "メンション", "担当", "レビュー", "コメント", "状態の変化", "新しい Issue", "新しい PR"];
+
 /** 白（投稿しない）の行に残す種別 */
 export const DROP_LABEL = "対象外";
 

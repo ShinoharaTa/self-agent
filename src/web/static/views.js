@@ -525,7 +525,7 @@
     const attrs = { class: "btn btn-secondary btn-sm", type: "button", text: "対応" };
     if (!n.handoff) {
       attrs.disabled = true;
-      attrs.title = store.github && store.github.handoff ? "このリポジトリには送れません" : "SELF_AGENT_CC が無効です";
+      attrs.title = store.github && store.github.handoff ? "このリポジトリには送れません（または [対応] を付ける前の通知です）" : "SELF_AGENT_CC が無効です";
       return el("button", attrs);
     }
     attrs.title = "このリポジトリの Claude Code のセッションに対応依頼を送る";

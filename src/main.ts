@@ -706,7 +706,13 @@ if (config.github && ccRegistry !== undefined && ccPanes !== undefined && ccTmux
     }
   })();
   const overlaps = (a: string, b: string): boolean => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
-  const dataReal = realpathSync(config.dataDir);
+  const dataReal = (() => {
+    try {
+      return realpathSync(config.dataDir);
+    } catch {
+      return config.dataDir;
+    }
+  })();
   if (handoffGitPath === undefined) log("git が見つからないため、#github に [対応] を付けません");
   else if (workspaceReal !== undefined && (overlaps(workspaceReal, realWorkDir) || overlaps(workspaceReal, dataReal))) {
     log("SELF_AGENT_WORKSPACE_DIR が workDir・dataDir と重なるため、#github に [対応] を付けません");

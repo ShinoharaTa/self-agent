@@ -13,7 +13,8 @@ import { relative, sep } from "node:path";
 import type { CcPaneResolver } from "../cc/panes.ts";
 import type { CcRegistry, CcSessionView } from "../cc/registry.ts";
 import type { CcSender } from "../cc/sender.ts";
-import type { CcStartFailure, CcStarter } from "../cc/starter.ts";
+import { CC_PROJECT_PATTERN, type CcStartFailure, type CcStarter } from "../cc/starter.ts";
+import { GITHUB_LABELS } from "../github/classify.ts";
 import { HTML_URL_PATTERN } from "../github/poller.ts";
 import type { CcSendRow, CcSendState, CcSendStore } from "../store/cc-sends.ts";
 import type { GithubNotificationRow, GithubStore } from "../store/github.ts";
@@ -21,8 +22,10 @@ import { probePaneState } from "../tmux/pane-state.ts";
 import type { RunCommand, Tmux, TmuxPane } from "../tmux/tmux.ts";
 import { buildWorkspaceMap, choosePane, findRepoPanes, paneLabel } from "../tmux/workspace-map.ts";
 
-/** 同じスレッドの送信をこの間に届けていれば、押しても新しく積まない（§5.5） */
+/** 同じスレッドの送信をこの間に届けていれば（貼ったが確かめられなかったものも）、押しても新しく積まない（§5.5） */
 export const GITHUB_HANDOFF_RECENT_MS = 30 * 60_000;
+/** 地図にあるリポジトリ（[対応] を付けるかの判定）を使い回す長さ */
+export const GITHUB_HANDOFF_MAP_CACHE_MS = 60_000;
 
 /** テンプレートに入れる、検証した部品（URL は HTML_URL_PATTERN の形だけ） */
 export type HandoffTarget = {
@@ -35,9 +38,10 @@ export type HandoffTarget = {
   url: string;
 };
 
-/** 通知の行から送り込みの対象を作る（純関数）。[対応] を付けない行・URL が検証した形でない行は undefined */
+/** 通知の行から送り込みの対象を作る（純関数）。[対応] を付けない行・URL が検証した形でない行・種別が固定の語でない行は undefined */
 export function handoffTarget(row: Pick<GithubNotificationRow, "handoffOk" | "level" | "url" | "label">): HandoffTarget | undefined {
   if (!row.handoffOk || row.level === "drop" || row.url === null) return undefined;
+  if (!(GITHUB_LABELS as readonly string[]).includes(row.label)) return undefined;
   const match = HTML_URL_PATTERN.exec(row.url);
   if (match === null) return undefined;
   return { owner: match[1]!, repo: match[2]!, kind: match[3] === "pull" ? "pull" : "issues", number: Number(match[4]), label: row.label, url: row.url };
@@ -64,12 +68,16 @@ export function handoffTitle(target: HandoffTarget): string {
 
 /**
  * 起動するディレクトリ（純関数）: 地図のディレクトリのうち、ワークスペースの直下のものを先に、同じ深さなら名前の順で最初のもの。
- * ワークスペースからの相対パス（1〜2 段）にして返す。ワークスペースの外・3 段以上は除く
+ * ワークスペースからの相対パス（1〜2 段で、どの段も起動できる名前（cc/starter.ts の CC_PROJECT_PATTERN。`#`・`.` を含まない））にして返す。
+ * ワークスペースの外・3 段以上・名前の合わないものは除き、残らなければ undefined
  */
 export function startDirOf(dirs: readonly string[], workspaceRoot: string): string | undefined {
   const relatives = dirs
     .map((dir) => relative(workspaceRoot, dir))
-    .filter((rel) => rel !== "" && !rel.startsWith("..") && !rel.startsWith(sep) && rel.split(sep).length <= 2);
+    .filter((rel) => {
+      const parts = rel.split(sep);
+      return rel !== "" && !rel.startsWith(sep) && parts.length <= 2 && parts.every((part) => CC_PROJECT_PATTERN.test(part) && !part.includes("#"));
+    });
   relatives.sort((a, b) => a.split(sep).length - b.split(sep).length || (a < b ? -1 : a > b ? 1 : 0));
   return relatives[0];
 }
@@ -144,19 +152,26 @@ export class GithubHandoff {
   private readonly deps: GithubHandoffDeps;
   /** 処理している途中のスレッド（同じ通知・スレッドの押下を重ねない） */
   private readonly inFlight = new Set<string>();
+  /** mappedRepos の結果（GITHUB_HANDOFF_MAP_CACHE_MS の間だけ使う） */
+  private mapped: { at: number; repos: ReadonlySet<string> } | undefined;
 
   constructor(deps: GithubHandoffDeps) {
     this.deps = deps;
   }
 
-  /** 地図にあるリポジトリ（`owner/repo` の小文字。[対応] を付けるかの判定。§5.1）。読めなければ空 */
+  /** 地図にあるリポジトリ（`owner/repo` の小文字。[対応] を付けるかの判定。§5.1）。GITHUB_HANDOFF_MAP_CACHE_MS の間は前の結果を使う。読めなければ空 */
   async mappedRepos(): Promise<ReadonlySet<string>> {
+    const at = this.deps.now().getTime();
+    if (this.mapped !== undefined && at - this.mapped.at < GITHUB_HANDOFF_MAP_CACHE_MS) return this.mapped.repos;
+    let repos: ReadonlySet<string>;
     try {
       const map = await buildWorkspaceMap({ workspaceDir: this.deps.workspaceDir, gitPath: this.deps.gitPath, panes: [], ...this.runOption() });
-      return new Set(map.repos.keys());
+      repos = new Set(map.repos.keys());
     } catch {
-      return new Set();
+      repos = new Set();
     }
+    this.mapped = { at, repos };
+    return repos;
   }
 
   /** [対応]: 候補のセッションに積む。候補が無ければ起動の確認（no_session）を返す */
@@ -197,17 +212,17 @@ export class GithubHandoff {
     }
   }
 
-  /** 同じスレッドの送信が終わっていない・最近届けたなら already */
+  /** 同じスレッドの送信が終わっていない・最近届けた（貼ったが確かめられなかったものも）なら already */
   private already(threadId: string): GithubHandoffResult | undefined {
     const latest: CcSendRow | undefined = this.deps.sends.latestForThread(threadId);
     if (latest === undefined) return undefined;
     if (latest.state === "awaiting_confirm" || latest.state === "queued" || latest.state === "delivering") {
       return { kind: "already", sendId: latest.id, state: latest.state };
     }
-    if (latest.state === "delivered" && latest.deliveredAt !== null) {
-      if (this.deps.now().getTime() - Date.parse(latest.deliveredAt) < GITHUB_HANDOFF_RECENT_MS) {
-        return { kind: "already", sendId: latest.id, state: latest.state };
-      }
+    // unconfirmed は貼ったかもしれない（届いているかもしれない）ので、届けたものと同じに数える。時刻は届けた時刻か、無ければ最後に変わった時刻
+    if (latest.state === "delivered" || latest.state === "unconfirmed") {
+      const at = Date.parse(latest.deliveredAt ?? latest.updatedAt);
+      if (this.deps.now().getTime() - at < GITHUB_HANDOFF_RECENT_MS) return { kind: "already", sendId: latest.id, state: latest.state };
     }
     return undefined;
   }
@@ -219,16 +234,18 @@ export class GithubHandoff {
     if (snapshot.fetchedAt === undefined || snapshot.unreadable) return { kind: "failed", reason: "not_ready" };
     const lookup = await panes.lookup(new Set(snapshot.sessions.map((session) => session.pid)));
     if (!lookup.ok) return { kind: "failed", reason: lookup.reason === "no_server" ? "no_server" : "tmux_failed" };
-    const inTmux: Candidate[] = [];
+    const inTmux: Array<Candidate & { cwd: string }> = [];
     for (const view of snapshot.sessions) {
+      // セッションのディレクトリは一覧の cwd だけで引く（無いものは候補にしない。ペインの cwd には落とさない）
+      if (view.cwd === undefined || view.cwd === "") continue;
       const found = lookup.sendable({ pid: view.pid, tmux: view.tmux });
-      if (found.ok) inTmux.push({ view, pane: found.pane });
+      if (found.ok) inTmux.push({ view, pane: found.pane, cwd: view.cwd });
     }
-    // セッションのディレクトリは一覧の cwd で引く（無ければペインの cwd）。地図は押すたびに作り直す
+    // 地図は押すたびに作り直す
     const map = await buildWorkspaceMap({
       workspaceDir: this.deps.workspaceDir,
       gitPath: this.deps.gitPath,
-      panes: inTmux.map((entry) => ({ ...entry.pane, currentPath: entry.view.cwd ?? entry.pane.currentPath })),
+      panes: inTmux.map((entry) => ({ ...entry.pane, currentPath: entry.cwd })),
       ...this.runOption(),
     });
     const found = findRepoPanes(map, handoffRepo(target));
@@ -315,6 +332,7 @@ const STATE_TEXT: Partial<Record<CcSendState, string>> = {
   queued: "入力待ちになったら届けます",
   delivering: "届けている途中です",
   delivered: "届けました",
+  unconfirmed: "貼りましたが、届いたかを確かめられませんでした",
 };
 
 /**
@@ -326,8 +344,8 @@ export function handoffResultText(result: GithubHandoffResult, escape: (text: st
     case "queued":
       return `Claude Code の ${escape(result.session)} に対応依頼を積みました（送信 #${result.sendId}）。${STATE_TEXT[result.state] ?? ""}`;
     case "already":
-      return result.state === "delivered"
-        ? `この通知の対応依頼は ${Math.round(GITHUB_HANDOFF_RECENT_MS / 60_000)} 分以内に届けています（送信 #${result.sendId}）`
+      return result.state === "delivered" || result.state === "unconfirmed"
+        ? `この通知の対応依頼は ${Math.round(GITHUB_HANDOFF_RECENT_MS / 60_000)} 分以内に貼っています（送信 #${result.sendId}${result.state === "unconfirmed" ? "。届いたかは確かめられていません" : ""}）`
         : `この通知の対応依頼は送信待ちです（送信 #${result.sendId}）`;
     case "ambiguous":
       return `送り先が複数あり、どれも入力待ちでないか決められないため送っていません: ${result.sessions.map(escape).join("、")}。Web の Claude Code から選んで送ってください`;
