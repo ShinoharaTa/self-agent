@@ -2,7 +2,8 @@
 // 127.0.0.1:<SELF_AGENT_CC_HOOK_PORT> で待ち受ける（tailscale serve には出さない）。受けるのは POST /hook だけで、
 // 接続元が loopback でなければ 403、X-Self-Agent-Hook がトークンと一致しなければ 403、本文が 1 MB を超えれば 413、JSON のオブジェクトでなければ 400、
 // それ以外は 200 で本文なし（処理の失敗でも。2xx の空の本文は hooks で「成功」。本文を返すと non-blocking error になりうる）。
-// 受け口は何も実行しない。PermissionRequest は CC1 では保留せず、要約（§3.4）だけを渡して即 200・空で返す（保留は CC5a）。
+// 受け口は何も実行しない。PermissionRequest は permission-hold.ts に渡して応答を保留し、決定の JSON か空の本文で返す（§3.4。CC5a）。
+// Claude Code が先に接続を閉じたら（timeout など）応答は書かない。
 // log は種類だけ（ヘッダの値・トークン・本文・セッションの ID は出さない）
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
@@ -75,6 +76,14 @@ export type CcHookEvent = {
 /** 事象の渡し先（registry.ts の CcRegistry） */
 export type CcHookReceiver = { receive(event: CcHookEvent): void };
 
+/** 許可の要求の保留（permission-hold.ts の CcPermissionHold） */
+export type CcPermissionHandler = {
+  /** PermissionRequest の応答の本文（undefined は空の本文）。closed は Claude Code が先に接続を閉じた印。reject しない */
+  request(event: CcHookEvent, closed: AbortSignal): Promise<string | undefined>;
+  /** PermissionRequest 以外の事象（Stop・UserPromptSubmit で保留中の要求を閉じる） */
+  observe(event: CcHookEvent): void;
+};
+
 const PERMISSION_MODE_PATTERN = /^[A-Za-z]{1,32}$/;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 /** 要約にパスを使うツールと、見る欄の順 */
@@ -137,6 +146,8 @@ export type CcHookServerOptions = {
   /** SELF_AGENT_CC_HOOK_TOKEN */
   token: string;
   receiver: CcHookReceiver;
+  /** 許可の要求の保留。無ければ PermissionRequest も即 200・空 */
+  permissions?: CcPermissionHandler;
   now: () => Date;
   log: (message: string) => void;
 };
@@ -162,8 +173,10 @@ function errorKind(error: unknown): string {
 }
 
 /** 受け口の要求の処理（テストでは接続元を差し替えて呼ぶ） */
-export function createHookRequestListener(options: Pick<CcHookServerOptions, "token" | "receiver" | "now" | "log">): RequestListener {
-  const { token, receiver, now, log } = options;
+export function createHookRequestListener(
+  options: Pick<CcHookServerOptions, "token" | "receiver" | "permissions" | "now" | "log">,
+): RequestListener {
+  const { token, receiver, permissions, now, log } = options;
   /** トークンが違う要求を最後に log に出した時刻 */
   let tokenLoggedAt: number | undefined;
 
@@ -205,14 +218,45 @@ export function createHookRequestListener(options: Pick<CcHookServerOptions, "to
       sendEmpty(res, 400);
       return;
     }
+    let event: CcHookEvent | undefined;
     try {
-      const event = parseHookEvent(body, now());
-      if (event !== undefined) receiver.receive(event);
+      event = parseHookEvent(body, now());
+      if (event !== undefined) {
+        receiver.receive(event);
+        if (event.event !== "PermissionRequest") permissions?.observe(event);
+      }
     } catch (error) {
       // 処理の失敗でも Claude Code は止めない（200・空）
       log(`Claude Code: hook の事象の処理に失敗しました（${errorKind(error)}）`);
     }
+    if (event?.event === "PermissionRequest" && permissions !== undefined) {
+      await holdPermission(event, permissions, res);
+      return;
+    }
     sendEmpty(res, 200);
+  };
+
+  /** 許可の要求: 決定か保留の終わりまで待って返す。Claude Code が先に閉じていれば書かない */
+  const holdPermission = async (event: CcHookEvent, handler: CcPermissionHandler, res: ServerResponse): Promise<void> => {
+    const closed = new AbortController();
+    const onClose = (): void => {
+      if (!res.writableFinished) closed.abort();
+    };
+    res.once("close", onClose);
+    let reply: string | undefined;
+    try {
+      reply = await handler.request(event, closed.signal);
+    } catch (error) {
+      log(`Claude Code: 許可の要求の処理に失敗しました（${errorKind(error)}）`);
+    }
+    res.off("close", onClose);
+    if (closed.signal.aborted || res.destroyed) return;
+    if (reply === undefined) {
+      sendEmpty(res, 200);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(reply) });
+    res.end(reply);
   };
 
   return (req, res) => {

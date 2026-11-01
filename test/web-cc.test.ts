@@ -4,9 +4,11 @@ import { request } from "node:http";
 import type { AgentEntry, AgentsResult } from "../src/cc/agents.ts";
 import type { SessionFileInfo } from "../src/cc/claude-dirs.ts";
 import { parseHookEvent } from "../src/cc/hook-server.ts";
+import { CcPermissionHold } from "../src/cc/permission-hold.ts";
 import { CcPaneResolver } from "../src/cc/panes.ts";
 import { CcRegistry } from "../src/cc/registry.ts";
 import { CC_SEND_MAX_CHARS, CcSender } from "../src/cc/sender.ts";
+import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcSessionStore } from "../src/store/cc-sessions.ts";
 import { createTmux, PANE_FORMAT, type RunCommand, type RunResult } from "../src/tmux/tmux.ts";
@@ -186,12 +188,12 @@ async function setup(
 
 test("/api/cc/*: SELF_AGENT_CC が無効（registry が無い）なら一覧も 1 件も送信も 404", async (t) => {
   const server = await serve(t, ccRoutes({ registry: undefined, panes: undefined, tmux: undefined, workspaceDir: WORKSPACE, home: HOME }));
-  for (const path of ["/api/cc/sessions", `/api/cc/sessions/${S1}`, "/api/cc/other"]) {
+  for (const path of ["/api/cc/sessions", `/api/cc/sessions/${S1}`, "/api/cc/other", "/api/cc/permissions"]) {
     const { status, json } = await getJson(server, path);
     assert.equal(status, 404, path);
     assert.deepEqual(json, { error: "not_found" });
   }
-  for (const path of [`/api/cc/sessions/${S1}/send`, "/api/cc/sends/1/cancel"]) {
+  for (const path of [`/api/cc/sessions/${S1}/send`, "/api/cc/sends/1/cancel", "/api/cc/permissions/1/allow", "/api/cc/permissions/1/deny"]) {
     const { status, json } = await postJson(server, path, { text: "x" });
     assert.equal(status, 404, path);
     assert.deepEqual(json, { error: "not_found" });
@@ -448,4 +450,134 @@ test("ccStatus: hook の受け口・tmux（直近の lookup の ok / no_server /
   assert.equal(ccStatus(deps).tmux, "failed");
   ccStatus(deps);
   assert.equal(runs, 3);
+});
+
+/**
+ * 許可の要求（CC5a）: 本物の CcRegistry（偽の一覧）・CcPermissionHold（偽のタイマー）・一時 SQLite に、HTTP を通さず要求を保留させる
+ */
+async function permissionSetup(t: TestContext) {
+  const db = tempDb(t);
+  const clock = { now: BASE };
+  const now = (): Date => new Date(clock.now);
+  const sessions = new CcSessionStore(db, now);
+  const store = new CcPermissionStore(db, now);
+  const timers: Array<() => void> = [];
+  let registry!: CcRegistry;
+  const hold = new CcPermissionHold({
+    cfg: { ccPermissionHoldSec: 300 },
+    store,
+    known: (id) => registry.knows(id),
+    now,
+    timers: {
+      after: (fn) => {
+        timers.push(fn);
+        return () => undefined;
+      },
+    },
+    log: () => undefined,
+  });
+  registry = new CcRegistry({
+    cfg: { ccPollSec: 10 },
+    agents: { list: async () => ({ ok: true, agents: [agent(S1, { pid: 700, status: "waiting" }), agent(S2, { pid: 800 })], dropped: 0 }) },
+    dirs: { sessionFile: () => undefined, transcriptMtime: () => undefined },
+    store: sessions,
+    now,
+    timers: { after: () => () => undefined },
+    permissions: hold,
+    log: () => undefined,
+  });
+  await registry.tick();
+  const server = await serve(
+    t,
+    ccRoutes({ registry, panes: undefined, tmux: undefined, workspaceDir: WORKSPACE, home: HOME, permissions: { hold, store, holdSec: 300 }, now }),
+  );
+  const ask = (sessionId: string, command: string) => {
+    const event = parseHookEvent(
+      { hook_event_name: "PermissionRequest", session_id: sessionId, cwd: `${WORKSPACE}/alpha`, permission_mode: "default", tool_name: "Bash", tool_input: { command } },
+      now(),
+    )!;
+    registry.receive(event);
+    return hold.request(event, new AbortController().signal);
+  };
+  return { db, clock, store, hold, registry, server, ask, timers, sessions };
+}
+
+test("GET /api/cc/permissions: 保留中の要求（id・sessionId・toolName・summary・alwaysRule: null・requestHash・expiresAt）。一覧の permission と status", async (t) => {
+  const s = await permissionSetup(t);
+  const reply = s.ask(S1, "npm test");
+  const pending = s.store.pendingFor(S1)!;
+  const { status, json } = await getJson(s.server, "/api/cc/permissions");
+  assert.equal(status, 200);
+  assert.deepEqual(json, {
+    permissions: [
+      {
+        id: pending.id,
+        sessionId: S1,
+        state: "pending",
+        via: null,
+        toolName: "Bash",
+        summary: "npm test",
+        alwaysRule: null,
+        requestHash: pending.requestHash,
+        permissionMode: "default",
+        createdAt: new Date(BASE).toISOString(),
+        expiresAt: new Date(BASE + 300_000).toISOString(),
+        resolvedAt: null,
+      },
+    ],
+  });
+  // 一覧と 1 件の permission。保留中のセッションは判断待ち
+  const list = await getJson(s.server, "/api/cc/sessions");
+  const sessions = list.json.sessions as Array<Record<string, unknown>>;
+  const one = sessions.find((session) => session.sessionId === S1)!;
+  assert.equal(one.state, "needs_input");
+  assert.equal((one.permission as Record<string, unknown>).id, pending.id);
+  assert.equal(sessions.find((session) => session.sessionId === S2)!.permission, null);
+  const detail = await getJson(s.server, `/api/cc/sessions/${S1}`);
+  assert.equal((detail.json.permission as Record<string, unknown>).state, "pending");
+  // /api/status の pendingPermissions
+  const panes = new CcPaneResolver({ tmux: createTmux({ tmuxPath: TMUX, run: async () => ({ code: 0, stdout: "", stderr: "" }) }), parentOf: () => undefined });
+  assert.equal(ccStatus({ panes, hookListening: () => true, store: s.sessions, permissions: s.store }).pendingPermissions, 1);
+  s.hold.answer(pending.id, "deny", "web");
+  await reply;
+  assert.equal(ccStatus({ panes, hookListening: () => true, store: s.sessions, permissions: s.store }).pendingPermissions, 0);
+});
+
+test("POST /api/cc/permissions/<id>/allow|deny: 200 { state }・応答の本文。2 回目・時間切れ・request_hash が違えば 409 stale、無い id は 404", async (t) => {
+  const s = await permissionSetup(t);
+  const reply = s.ask(S1, "npm test");
+  const pending = s.store.pendingFor(S1)!;
+  // request_hash が違う
+  const wrong = await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: "0".repeat(64) });
+  assert.equal(wrong.status, 409);
+  assert.deepEqual(wrong.json, { error: "stale" });
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: 1 })).status, 400);
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id + 9}/allow`, {})).status, 404);
+  // always は CC5b（今は無い）
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/always`, {})).status, 404);
+  const ok = await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: pending.requestHash });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { state: "allowed" });
+  assert.equal(JSON.parse((await reply)!).hookSpecificOutput.decision.behavior, "allow");
+  const again = await postJson(s.server, `/api/cc/permissions/${pending.id}/deny`, {});
+  assert.equal(again.status, 409);
+  // 終わった要求は一覧の permission に残る（カードの「許可しました（Web）」）
+  const detail = await getJson(s.server, `/api/cc/sessions/${S1}`);
+  assert.deepEqual(
+    [(detail.json.permission as Record<string, unknown>).state, (detail.json.permission as Record<string, unknown>).via],
+    ["allowed", "web"],
+  );
+  assert.deepEqual((await getJson(s.server, "/api/cc/permissions")).json, { permissions: [] });
+  // 拒否
+  const second = s.ask(S1, "touch x");
+  const row = s.store.pendingFor(S1)!;
+  const denied = await postJson(s.server, `/api/cc/permissions/${row.id}/deny`, {});
+  assert.deepEqual(denied.json, { state: "denied" });
+  assert.equal(JSON.parse((await second)!).hookSpecificOutput.decision.behavior, "deny");
+  // 時間切れの後
+  const third = s.ask(S1, "touch y");
+  const expired = s.store.pendingFor(S1)!;
+  s.timers.at(-1)!();
+  assert.equal(await third, undefined);
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${expired.id}/allow`, {})).status, 409);
 });

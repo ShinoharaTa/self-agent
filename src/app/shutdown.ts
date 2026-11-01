@@ -1,6 +1,7 @@
 // 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバー・Web UI・
 // Claude Code の hook の受け口と DB を閉じる
 import type { CcHookServer } from "../cc/hook-server.ts";
+import type { CcPermissionHold } from "../cc/permission-hold.ts";
 import type { CcRegistry } from "../cc/registry.ts";
 import type { CcSender } from "../cc/sender.ts";
 import type { CcStarter } from "../cc/starter.ts";
@@ -58,6 +59,11 @@ export type ShutdownDeps = {
    * 起動の途中の 1 件と確かめている途中のものを待つ（起動した tmux のセッションは Bot の外なので残る）
    */
   ccStarter?: Pick<CcStarter, "stop" | "idle">;
+  /**
+   * Claude Code の許可の要求の保留（SELF_AGENT_CC=1 のときだけ）。scheduler と同じ時点で、保留中の全部に空の本文を返して released にし
+   * （端末・RC のダイアログは残る）、以後の要求は保留しない
+   */
+  ccPermissions?: Pick<CcPermissionHold, "stop">;
   /** Claude Code の hook の受け口（SELF_AGENT_CC=1 のときだけ）。Web UI の次（DB を閉じる前）に閉じる */
   ccHookServer?: Pick<CcHookServer, "close">;
   closeDb: () => void;
@@ -114,6 +120,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccRegistry,
     ccSender,
     ccStarter,
+    ccPermissions,
     ccHookServer,
     closeDb,
     log,
@@ -178,6 +185,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccRegistry?.stop();
     ccSender?.stop();
     ccStarter?.stop();
+    ccPermissions?.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);
     if (!(await settlesWithin(drained(), cfg.shutdownGraceSec * 1000))) {
       log(`進行中の処理が ${cfg.shutdownGraceSec} 秒で終わらなかったため、待たずに終了します`);
