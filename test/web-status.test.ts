@@ -177,7 +177,7 @@ test("/api/status: cc は SELF_AGENT_CC が無効なら無効の形、有効な�
     pendingPermissions: 0,
   });
   const enabled = await statusSetup(t, {
-    cc: async () => ({ enabled: true, hookPort: true, tmux: "no_server", multilineOk: true, pendingPermissions: 0 }),
+    cc: () => ({ enabled: true, hookPort: true, tmux: "no_server", multilineOk: true, pendingPermissions: 0 }),
   });
   assert.deepEqual(((await getJson(enabled.server, "/api/status")).json as Record<string, unknown>).cc, {
     enabled: true,

@@ -82,6 +82,9 @@ test("ClaudeDirs.sessionFile: bridgeSessionId・tmux を読む。形が合わな
     JSON.stringify({ pid: 10, sessionId: S1, bridgeSessionId: "session_abcDEF123", tmux: "self-agent:0.%12", name: "a", cwd: "/w/a" }),
   );
   writeFileSync(join(sessions, "11.json"), JSON.stringify({ pid: 11, sessionId: S1, bridgeSessionId: "https://evil", tmux: "a\nb:0.%1" }));
+  // 実際のファイルの形（window は番号ではなく @<window_id>）
+  writeFileSync(join(sessions, "16.json"), JSON.stringify({ pid: 16, sessionId: S1, bridgeSessionId: "session_real", tmux: "foo:@12.%34" }));
+  writeFileSync(join(sessions, "17.json"), JSON.stringify({ pid: 17, sessionId: S1, tmux: "foo:@@12.%34" }));
   writeFileSync(join(sessions, "12.json"), "{broken");
   writeFileSync(join(sessions, "13.json"), JSON.stringify({ pid: 13, sessionId: S2, bridgeSessionId: "session_x" }));
   writeFileSync(join(sessions, "14.json"), "[]");
@@ -92,6 +95,8 @@ test("ClaudeDirs.sessionFile: bridgeSessionId・tmux を読む。形が合わな
   const dirs = new ClaudeDirs(home);
   assert.deepEqual(dirs.sessionFile(10, S1), { bridgeSessionId: "session_abcDEF123", tmux: "self-agent:0.%12" });
   assert.deepEqual(dirs.sessionFile(11, S1), { bridgeSessionId: undefined, tmux: undefined });
+  assert.deepEqual(dirs.sessionFile(16, S1), { bridgeSessionId: "session_real", tmux: "foo:@12.%34" });
+  assert.deepEqual(dirs.sessionFile(17, S1), { bridgeSessionId: undefined, tmux: undefined });
   assert.equal(dirs.sessionFile(12, S1), undefined);
   assert.equal(dirs.sessionFile(13, S1), undefined);
   assert.equal(dirs.sessionFile(14, S1), undefined);

@@ -80,7 +80,10 @@ const sgr = (params: string): string => `\u001b[${params}m`;
  * 本物の CcRegistry（偽の claude agents --json・一時 SQLite）と、偽の tmux（list-panes・capture-pane）。
  * pid 500 → 400（%1 の pane_pid）、pid 600 → 410（%2）、pid 700 は tmux の外
  */
-async function setup(t: TestContext, opts: { agents?: AgentEntry[]; files?: Record<string, SessionFileInfo> } = {}) {
+async function setup(
+  t: TestContext,
+  opts: { agents?: AgentEntry[]; files?: Record<string, SessionFileInfo>; parentTable?: Record<number, number> } = {},
+) {
   const db = tempDb(t);
   const clock = { now: BASE };
   const now = (): Date => new Date(clock.now);
@@ -125,7 +128,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; files?: Reco
     return { code: 1, stdout: "", stderr: "unexpected" };
   };
   const tmux = createTmux({ tmuxPath: TMUX, run });
-  const parentTable: Record<number, number> = { 500: 400, 600: 410, 700: 1, 800: 1 };
+  const parentTable: Record<number, number> = { 500: 400, 600: 410, 700: 1, 800: 1, ...opts.parentTable };
   const panes = new CcPaneResolver({ tmux, parentOf: (pid) => parentTable[pid] });
   const server = await serve(t, ccRoutes({ registry, panes, tmux, workspaceDir: WORKSPACE, home: HOME }));
   return {
@@ -156,6 +159,7 @@ test("/api/cc/sessions: 判断待ち → 実行中 → 待機の順で、ペイ�
   assert.equal(status, 200);
   assert.equal(json.stale, false);
   assert.equal(json.unreadable, false);
+  assert.equal(json.fetchedAt, new Date(BASE).toISOString());
   const sessions = json.sessions as Array<Record<string, unknown>>;
   assert.deepEqual(
     sessions.map((s) => [s.sessionId, s.state]),
@@ -233,6 +237,19 @@ test("/api/cc/sessions: 最後の指示（hook）と判断待ちの始まりで�
   assert.deepEqual(empty.json.sessions, []);
 });
 
+test("/api/cc/sessions: ほかのセッションの中で起動した claude（入れ子）は、外のセッションのペインに結びつけない", async (t) => {
+  // S2（pid 600）の pane_pid は 410。S5 の claude（pid 650）は S2 の claude の子
+  const S5 = "55555555-5555-4555-8555-555555555555";
+  const { server } = await setup(t, {
+    agents: [agent(S2, { pid: 600, status: "busy" }), agent(S5, { pid: 650, name: "inner" })],
+    parentTable: { 650: 600 },
+  });
+  const sessions = (await getJson(server, "/api/cc/sessions")).json.sessions as Array<Record<string, unknown>>;
+  const byId = new Map(sessions.map((s) => [s.sessionId, s]));
+  assert.equal(byId.get(S2)!.paneLabel, "work:0.2");
+  assert.equal(byId.get(S5)!.inTmux, false);
+});
+
 test("/api/cc/sessions: tmux のサーバーが無ければ、どれも tmux の外（一覧は出る）", async (t) => {
   const { server, tmuxState } = await setup(t);
   tmuxState.panes = { code: 1, stdout: "", stderr: "no server running on /tmp/tmux-1000/default\n" };
@@ -259,7 +276,8 @@ test("/api/cc/sessions/<id>: 画面は capture-pane -S -200 を stripAnsi し、
   assert.equal(shown[0], "line 6060");
   assert.equal(shown[shown.length - 1], "line 259259");
   assert.doesNotMatch(screen, /\u001b/);
-  assert.deepEqual(calls[calls.length - 1], ["capture-pane", "-p", "-e", "-S", `-${CC_SCREEN_LINES}`, "-t", "%1"]);
+  // 写しは SGR なし（-e を付けない）で履歴から撮る
+  assert.deepEqual(calls[calls.length - 1], ["capture-pane", "-p", "-S", `-${CC_SCREEN_LINES}`, "-t", "%1"]);
   assert.equal(touches(), 1);
 });
 
@@ -307,7 +325,7 @@ test("screenText: 制御シーケンスを落とし、末尾の空行を除く",
   assert.equal(screenText(""), "");
 });
 
-test("ccStatus: hook の受け口・tmux（ok / no_server / failed）・複数行・保留中の許可（CC2 は 0）", async (t) => {
+test("ccStatus: hook の受け口・tmux（直近の lookup の ok / no_server / failed。まだなら null）・複数行・保留中の許可（CC2 は 0）。list-panes は起動しない", async (t) => {
   const db = tempDb(t);
   const store = new CcSessionStore(db);
   const results: RunResult[] = [
@@ -315,12 +333,27 @@ test("ccStatus: hook の受け口・tmux（ok / no_server / failed）・複数�
     { code: 1, stdout: "", stderr: "no server running on /tmp/tmux-1000/default\n" },
     { code: 1, stdout: "", stderr: "something else\n" },
   ];
-  const tmux = createTmux({ tmuxPath: TMUX, run: async () => results.shift()! });
+  let runs = 0;
+  const tmux = createTmux({
+    tmuxPath: TMUX,
+    run: async () => {
+      runs++;
+      return results.shift()!;
+    },
+  });
+  const panes = new CcPaneResolver({ tmux, parentOf: () => undefined });
   let listening = true;
-  const deps = { tmux, hookListening: () => listening, store };
-  assert.deepEqual(await ccStatus(deps), { enabled: true, hookPort: true, tmux: "ok", multilineOk: true, pendingPermissions: 0 });
+  const deps = { panes, hookListening: () => listening, store };
+  assert.deepEqual(ccStatus(deps), { enabled: true, hookPort: true, tmux: null, multilineOk: true, pendingPermissions: 0 });
+  assert.equal(runs, 0);
+  await panes.lookup(new Set());
+  assert.deepEqual(ccStatus(deps), { enabled: true, hookPort: true, tmux: "ok", multilineOk: true, pendingPermissions: 0 });
   listening = false;
   db.exec("UPDATE cc_state SET multiline_ok = 0");
-  assert.deepEqual(await ccStatus(deps), { enabled: true, hookPort: false, tmux: "no_server", multilineOk: false, pendingPermissions: 0 });
-  assert.equal((await ccStatus(deps)).tmux, "failed");
+  await panes.lookup(new Set());
+  assert.deepEqual(ccStatus(deps), { enabled: true, hookPort: false, tmux: "no_server", multilineOk: false, pendingPermissions: 0 });
+  await panes.lookup(new Set());
+  assert.equal(ccStatus(deps).tmux, "failed");
+  ccStatus(deps);
+  assert.equal(runs, 3);
 });

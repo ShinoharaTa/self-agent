@@ -226,9 +226,11 @@
       body.replaceChildren(group("cc-needs", "判断待ち", [], null, "読み込んでいます…"));
       return;
     }
-    if (store.cc === null || Date.now() - store.ccAt > CC_FRESH_MS) store.load.cc(store.cc === null ? undefined : { quiet: true });
+    // 見始めたら polling を始め直す。止まっていた間に古くなっていれば読み直す（読めなくても ccAt は進む）
+    SA.poll.kickCc();
+    if (store.ccAt === 0 || Date.now() - store.ccAt > CC_FRESH_MS) store.load.cc(store.cc === null ? undefined : { quiet: true });
     if (store.cc === null) {
-      body.replaceChildren(group("cc-needs", "判断待ち", [], null, "読み込んでいます…"));
+      body.replaceChildren(group("cc-needs", "判断待ち", [], null, store.ccFailed ? "一覧を読めませんでした" : "読み込んでいます…"));
       return;
     }
     const by = (state) => store.cc.sessions.filter((s) => s.state === state).map(ccRow);
@@ -238,7 +240,13 @@
         ? "一覧を読めませんでした。前に読めた一覧です。"
         : null;
     const groups = [group("cc-needs", "判断待ち", by("needs_input")), group("cc-running", "実行中", by("running")), group("cc-idle", "待機", by("idle"))];
-    body.replaceChildren(...(note ? [el("p", { class: "sb-note-block", text: note })] : []), ...groups);
+    // 一覧を最後に読めた時刻（claude agents --json。サーバーの読み取り）
+    const fetched = store.cc.fetchedAt ? "一覧は " + SA.views.secondsAgo(store.cc.fetchedAt) + "のもの" + (store.ccFailed ? "（今は読めません）" : "") : null;
+    body.replaceChildren(
+      ...(note ? [el("p", { class: "sb-note-block", text: note })] : []),
+      ...groups,
+      ...(fetched ? [el("p", { class: "sb-note-block", text: fetched })] : []),
+    );
   }
 
   // ===== プロジェクト（W7。配信が無効でも出す） =====

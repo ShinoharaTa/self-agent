@@ -592,6 +592,13 @@
   const CC_STATES = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
   const CC_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+  /** 今から何秒前か（60 秒以上は ago と同じ「n 分前」など） */
+  function secondsAgo(iso) {
+    const ms = Date.now() - new Date(iso).getTime();
+    if (!Number.isFinite(ms)) return "";
+    return ms < 60000 ? Math.max(0, Math.floor(ms / 1000)) + " 秒前" : ago(iso);
+  }
+
   /** 一覧の行の名前（名前が無ければディレクトリ） */
   function ccName(s) {
     return (s && (s.name || s.cwdLabel)) || "（名前なし）";
@@ -976,6 +983,7 @@
         onOpen: () => {
           store.load.ccSession(sessionId);
           store.load.cc();
+          SA.poll.kickCc();
         },
         onClose: () => {
           delete store.ccSessions[sessionId];
@@ -1006,6 +1014,7 @@
     githubParts,
     ccName,
     ago,
+    secondsAgo,
     compact,
     dayLabel,
     overdue,

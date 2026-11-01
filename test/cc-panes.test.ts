@@ -71,48 +71,66 @@ test("ancestorPids: 親から順に depth 段まで。init（1）・不明・循
   assert.deepEqual(ancestorPids(5, loop.parentOf, 10), [6]);
 });
 
-test("paneIdOfHint: `<session>:<window>.%<pane>` の %N だけ", () => {
+test("paneIdOfHint: `<session>:@<window_id>.%<pane>`（実際の形）と `<session>:<window>.%<pane>` の %N だけ", () => {
+  assert.equal(paneIdOfHint("foo:@12.%34"), "%34");
   assert.equal(paneIdOfHint("work:1.%23"), "%23");
+  assert.equal(paneIdOfHint("work:@@1.%23"), undefined);
   assert.equal(paneIdOfHint("a:b:0.%7"), "%7");
   assert.equal(paneIdOfHint(undefined), undefined);
   assert.equal(paneIdOfHint("work:1.23"), undefined);
   assert.equal(paneIdOfHint("%23x"), undefined);
 });
 
-test("findSessionPane: pane_pid が claude の親（シェル）〜 3 段上のペイン。claude の pid そのものも当たる", () => {
-  // claude 500 ← bash 400（%1 の pane_pid）
-  const { parentOf } = parents({ 500: 400, 400: 300, 300: 200, 200: 100, 100: 1 });
-  const panes = [pane("%0", 999), pane("%1", 400, { currentCommand: "bash" })];
-  // pane_current_command が claude でなくても、祖先関係で決まる（画面の写しのため。送ってよいかは送信の段で別に確かめる）
-  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, panes, parentOf)?.paneId, "%1");
-  assert.equal(findSessionPane({ pid: 999, tmux: undefined }, panes, parentOf)?.paneId, "%0");
-  // 3 段上（200）までは当たる
-  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, [pane("%2", 200)], parentOf)?.paneId, "%2");
-  assert.equal(CC_PANE_ANCESTOR_DEPTH, 3);
-  // 4 段上（100）は当たらない（hint も無い）
-  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, [pane("%3", 100)], parentOf), undefined);
+const NO_OTHERS: ReadonlySet<number> = new Set([500]);
+
+test("findSessionPane: pane_pid が claude の親（シェル）〜 8 段上の claude のペイン。claude の pid そのものも当たる", () => {
+  // claude 500 ← bash 400（%1 の pane_pid）← 300 ← … ← 20
+  const chain: Record<number, number> = { 500: 400, 400: 300, 300: 200, 200: 100, 100: 90, 90: 80, 80: 70, 70: 60, 60: 50, 50: 1 };
+  const { parentOf } = parents(chain);
+  const panes = [pane("%0", 999), pane("%1", 400)];
+  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, panes, parentOf, NO_OTHERS)?.paneId, "%1");
+  assert.equal(findSessionPane({ pid: 999, tmux: undefined }, panes, parentOf, new Set([999]))?.paneId, "%0");
+  assert.equal(CC_PANE_ANCESTOR_DEPTH, 8);
+  // 8 段上（60）までは当たる
+  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, [pane("%2", 60)], parentOf, NO_OTHERS)?.paneId, "%2");
+  // 9 段上（50）は当たらない（tmux 欄で指していても）
+  assert.equal(findSessionPane({ pid: 500, tmux: "work:0.%3" }, [pane("%3", 50)], parentOf, NO_OTHERS), undefined);
   // 死んだペインは採らない
-  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, [pane("%1", 400, { dead: true })], parentOf), undefined);
+  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, [pane("%1", 400, { dead: true })], parentOf, NO_OTHERS), undefined);
   // どのペインにも当たらない（RC のサーバーモード・VS Code など）
-  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, [pane("%4", 777)], parentOf), undefined);
+  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, [pane("%4", 777)], parentOf, NO_OTHERS), undefined);
 });
 
-test("findSessionPane: sessions/<pid>.json の tmux 欄は、そのペインが claude で祖先関係を確かめられるときだけ採る", () => {
-  // claude 500 ← 400 ← 300 ← 200 ← 150（%5 の pane_pid。4 段上）
-  const { parentOf } = parents({ 500: 400, 400: 300, 300: 200, 200: 150, 150: 1 });
-  const deep = pane("%5", 150);
-  assert.equal(findSessionPane({ pid: 500, tmux: "work:0.%5" }, [deep], parentOf)?.paneId, "%5");
-  // tmux 欄が無ければ採らない
-  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, [deep], parentOf), undefined);
-  // claude でないペインは採らない
-  assert.equal(findSessionPane({ pid: 500, tmux: "work:0.%5" }, [pane("%5", 150, { currentCommand: "bash" })], parentOf), undefined);
+test("findSessionPane: pane_pid が当たっても pane_current_command が claude でないペインは採らない（主の経路・tmux 欄とも）", () => {
+  const { parentOf } = parents({ 500: 400, 400: 1 });
+  const shell = pane("%1", 400, { currentCommand: "bash" });
+  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, [shell], parentOf, NO_OTHERS), undefined);
+  assert.equal(findSessionPane({ pid: 500, tmux: "work:0.%1" }, [shell], parentOf, NO_OTHERS), undefined);
+});
+
+test("findSessionPane: たどる途中で一覧のほかのセッションの pid に当たれば（入れ子の claude）打ち切る", () => {
+  // 外の claude 600 ← bash 400（%1）。内の claude 500 は外の claude の Bash（550）から起動した
+  const { parentOf } = parents({ 500: 550, 550: 600, 600: 400, 400: 1 });
+  const panes = [pane("%1", 400)];
+  const all = new Set([500, 600]);
+  assert.equal(findSessionPane({ pid: 600, tmux: undefined }, panes, parentOf, all)?.paneId, "%1");
+  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, panes, parentOf, all), undefined);
+  // tmux 欄でそのペインを指していても同じ
+  assert.equal(findSessionPane({ pid: 500, tmux: "work:0.%1" }, panes, parentOf, all), undefined);
+  // 一覧に外の claude が無ければ（入れ子と分からない）祖先のペインに当たる
+  assert.equal(findSessionPane({ pid: 500, tmux: undefined }, panes, parentOf, new Set([500]))?.paneId, "%1");
+});
+
+test("findSessionPane: sessions/<pid>.json の tmux 欄は、そのペインの pane_pid が同じ範囲の祖先のときだけ採る", () => {
+  const { parentOf } = parents({ 500: 400, 400: 1 });
   // 祖先でないペイン（tmux 欄が古い・別のセッションのもの）は採らない
-  assert.equal(findSessionPane({ pid: 500, tmux: "work:0.%6" }, [deep, pane("%6", 888)], parentOf), undefined);
+  assert.equal(findSessionPane({ pid: 500, tmux: "work:0.%6" }, [pane("%6", 888)], parentOf, NO_OTHERS), undefined);
   // tmux 欄のペインが無い
-  assert.equal(findSessionPane({ pid: 500, tmux: "work:0.%9" }, [deep], parentOf), undefined);
+  assert.equal(findSessionPane({ pid: 500, tmux: "work:0.%9" }, [pane("%6", 888)], parentOf, NO_OTHERS), undefined);
+  assert.equal(findSessionPane({ pid: 500, tmux: "foo:@12.%1" }, [pane("%1", 400)], parentOf, NO_OTHERS)?.paneId, "%1");
 });
 
-test("CcPaneResolver: lookup のたびに list-panes を読み直す。サーバーが無い・読めなければ ok: false で、resolve は undefined", async () => {
+test("CcPaneResolver: lookup のたびに list-panes を読み直し、直近の結果を lastTmux に持つ。サーバーが無い・読めなければ ok: false で、resolve は undefined", async () => {
   const { parentOf } = parents({ 500: 400 });
   const results: Array<TmuxResult<TmuxPane[]>> = [
     { ok: true, value: [pane("%1", 400)] },
@@ -129,11 +147,15 @@ test("CcPaneResolver: lookup のたびに list-panes を読み直す。サーバ
     },
     parentOf,
   });
-  const first = await resolver.lookup();
+  assert.equal(resolver.lastTmux(), undefined);
+  const first = await resolver.lookup(NO_OTHERS);
   assert.ok(first.ok);
   assert.equal(first.find({ pid: 500, tmux: undefined })?.paneId, "%1");
-  assert.deepEqual(await resolver.lookup(), { ok: false, reason: "no_server" });
-  assert.equal(await resolver.resolve({ pid: 500, tmux: undefined }), undefined);
-  assert.equal(await resolver.resolve({ pid: 500, tmux: undefined }), undefined);
+  assert.equal(resolver.lastTmux(), "ok");
+  assert.deepEqual(await resolver.lookup(NO_OTHERS), { ok: false, reason: "no_server" });
+  assert.equal(resolver.lastTmux(), "no_server");
+  assert.equal(await resolver.resolve({ pid: 500, tmux: undefined }, NO_OTHERS), undefined);
+  assert.equal(resolver.lastTmux(), "failed");
+  assert.equal(await resolver.resolve({ pid: 500, tmux: undefined }, NO_OTHERS), undefined);
   assert.equal(calls, 4);
 });

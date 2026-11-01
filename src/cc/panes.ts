@@ -1,16 +1,15 @@
 // Claude Code のセッション → tmux のペイン（docs/plan/claude-code-sessions.md §3.1）。claude の pid から /proc/<pid>/stat の親 pid を
 // CC_PANE_ANCESTOR_DEPTH 段までたどり、`tmux list-panes -a` の pane_pid に当たるペインを採る（pane_pid はシェルで、claude はその子）。
-// 当たらなければ sessions/<pid>.json の tmux 欄（`%<pane>`。内部形式）を補助に、そのペインの pane_current_command が claude で、
-// その pane_pid が claude の祖先（CC_PANE_HINT_ANCESTOR_DEPTH 段まで）と確かめられるときだけ採る。どちらでも決まらなければ tmux の外。
+// 当たらなければ sessions/<pid>.json の tmux 欄（`%<pane>`。内部形式）を補助に、その pane_pid が同じ範囲の祖先と確かめられるときだけ採る。
+// どちらの経路も pane_current_command が claude で生きているペインだけ。たどる途中で一覧のほかのセッションの pid に当たったら
+// （claude の中で起動した claude）打ち切る。どちらでも決まらなければ tmux の外。
 // 画面の写し（CC2）と送信（CC3）で使う。送り先は呼ぶたびに引き直す。log は出さない（pid・ペイン id は呼び出し側も出さない）
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Tmux, TmuxFailure, TmuxPane } from "../tmux/tmux.ts";
 
-/** 親 pid をたどる段数（§3.1） */
-export const CC_PANE_ANCESTOR_DEPTH = 3;
-/** sessions/<pid>.json の tmux 欄を補助に使うときに祖先関係を確かめる段数 */
-export const CC_PANE_HINT_ANCESTOR_DEPTH = 8;
+/** 親 pid をたどる段数（§3.1 の 3 段に、間にラッパーが入る分の余裕を足したもの。補助の経路も同じ） */
+export const CC_PANE_ANCESTOR_DEPTH = 8;
 
 /** pid の親 pid。分からなければ undefined */
 export type ParentPidReader = (pid: number) => number | undefined;
@@ -54,29 +53,47 @@ export function ancestorPids(pid: number, parentOf: ParentPidReader, depth: numb
   return result;
 }
 
-/** sessions/<pid>.json の tmux 欄（`<session>:<window>.%<pane>`）からペイン id（`%N`）。形が合わなければ undefined */
+/**
+ * sessions/<pid>.json の tmux 欄（`<session>:@<window_id>.%<pane>`。claude-dirs.ts と同じく `<session>:<window>.%<pane>` も）から
+ * ペイン id（`%N`）。形が合わなければ undefined
+ */
 export function paneIdOfHint(hint: string | undefined): string | undefined {
-  const match = hint === undefined ? null : /\.(%\d{1,9})$/.exec(hint);
+  const match = hint === undefined ? null : /:@?\d{1,6}\.(%\d{1,9})$/.exec(hint);
   return match === null ? undefined : match[1];
 }
 
 /** ペインを決める材料（claude agents --json の pid と、sessions/<pid>.json の tmux 欄） */
 export type PaneTarget = { pid: number; tmux: string | undefined };
 
-/** pid が claude の pid そのものか祖先のペイン。死んだペインは採らない（純関数。parentOf だけ /proc を読む） */
-export function findSessionPane(target: PaneTarget, panes: readonly TmuxPane[], parentOf: ParentPidReader): TmuxPane | undefined {
-  const alive = panes.filter((pane) => !pane.dead && pane.panePid > 1);
-  const near = [target.pid, ...ancestorPids(target.pid, parentOf, CC_PANE_ANCESTOR_DEPTH)];
-  for (const pid of near) {
+/**
+ * pane_pid が claude の pid そのものか祖先のペイン（純関数。parentOf だけ /proc を読む）。死んだペイン・pane_current_command が claude で
+ * ないペインは採らない。sessionPids は一覧のすべてのセッションの pid で、たどる途中で自分以外のものに当たったら undefined
+ */
+export function findSessionPane(
+  target: PaneTarget,
+  panes: readonly TmuxPane[],
+  parentOf: ParentPidReader,
+  sessionPids: ReadonlySet<number>,
+): TmuxPane | undefined {
+  const alive = panes.filter((pane) => !pane.dead && pane.panePid > 1 && pane.currentCommand === "claude");
+  const chain = [target.pid];
+  for (const pid of chain.concat(ancestorPids(target.pid, parentOf, CC_PANE_ANCESTOR_DEPTH))) {
+    if (pid !== target.pid) {
+      // 入れ子（ほかのセッションの中で起動した claude）: そのペインはほかのセッションのもの
+      if (sessionPids.has(pid)) return undefined;
+      chain.push(pid);
+    }
     const pane = alive.find((candidate) => candidate.panePid === pid);
     if (pane !== undefined) return pane;
   }
   const hinted = paneIdOfHint(target.tmux);
   if (hinted === undefined) return undefined;
   const pane = alive.find((candidate) => candidate.paneId === hinted);
-  if (pane === undefined || pane.currentCommand !== "claude") return undefined;
-  return ancestorPids(target.pid, parentOf, CC_PANE_HINT_ANCESTOR_DEPTH).includes(pane.panePid) ? pane : undefined;
+  return pane !== undefined && chain.includes(pane.panePid) ? pane : undefined;
 }
+
+/** list-panes の直近の結果（/api/status の cc.tmux） */
+export type TmuxState = "ok" | TmuxFailure;
 
 /** 1 回の list-panes で引いた結果。tmux のサーバーが無い・読めなければ ok: false（どのセッションも tmux の外として扱う） */
 export type PaneLookup =
@@ -88,24 +105,34 @@ export type CcPaneResolverDeps = {
   parentOf: ParentPidReader;
 };
 
-/** セッション → ペインを引く。lookup() のたびに list-panes を 1 回読み直す（送り先・画面の写しは使うたびに引き直す） */
+/**
+ * セッション → ペインを引く。lookup() のたびに list-panes を 1 回読み直す（送り先・画面の写しは使うたびに引き直す）。
+ * sessionPids は今の一覧（registry の snapshot）のすべての pid
+ */
 export class CcPaneResolver {
   private readonly deps: CcPaneResolverDeps;
+  private last: TmuxState | undefined;
 
   constructor(deps: CcPaneResolverDeps) {
     this.deps = deps;
   }
 
-  async lookup(): Promise<PaneLookup> {
+  async lookup(sessionPids: ReadonlySet<number>): Promise<PaneLookup> {
     const result = await this.deps.tmux.listPanes();
+    this.last = result.ok ? "ok" : result.reason;
     if (!result.ok) return result;
     const panes = result.value;
-    return { ok: true, find: (target) => findSessionPane(target, panes, this.deps.parentOf) };
+    return { ok: true, find: (target) => findSessionPane(target, panes, this.deps.parentOf, sessionPids) };
   }
 
   /** 1 つのセッションのペイン。tmux の外・サーバーが無い・読めなければ undefined */
-  async resolve(target: PaneTarget): Promise<TmuxPane | undefined> {
-    const lookup = await this.lookup();
+  async resolve(target: PaneTarget, sessionPids: ReadonlySet<number>): Promise<TmuxPane | undefined> {
+    const lookup = await this.lookup(sessionPids);
     return lookup.ok ? lookup.find(target) : undefined;
+  }
+
+  /** 直近の lookup の list-panes の結果。まだ読んでいなければ undefined（/api/status は spawn せずにこれを出す） */
+  lastTmux(): TmuxState | undefined {
+    return this.last;
   }
 }

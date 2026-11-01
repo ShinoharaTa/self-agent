@@ -103,6 +103,13 @@ export function summarizePermission(toolName: string, toolInput: unknown, cwd: s
   return { toolName, summary: headChars(summary ?? json, CC_PERMISSION_SUMMARY_MAX_CHARS), requestHash };
 }
 
+/**
+ * 長い貼り付けの prompt は `<pasted_content id="…">…</pasted_content …>` で包まれて届くので、開きと閉じのタグ（属性付き）を外して中身だけにする（純関数）
+ */
+export function unwrapPastedContent(prompt: string): string {
+  return prompt.replace(/<\/?pasted_content\b[^>]*>/g, "");
+}
+
 /** 本文から事象を読む（純関数）。hook_event_name が固定の集合に無い・session_id が UUID でなければ undefined */
 export function parseHookEvent(body: Record<string, unknown>, receivedAt: Date): CcHookEvent | undefined {
   const event = EVENT_NAMES.find((name) => name === body.hook_event_name);
@@ -113,7 +120,9 @@ export function parseHookEvent(body: Record<string, unknown>, receivedAt: Date):
   if (event === "Notification") {
     parsed.notificationType = CC_NOTIFICATION_TYPES.find((type) => type === body.notification_type) ?? "other";
   }
-  if (event === "UserPromptSubmit" && typeof body.prompt === "string") parsed.prompt = headChars(body.prompt, CC_PROMPT_MAX_CHARS);
+  if (event === "UserPromptSubmit" && typeof body.prompt === "string") {
+    parsed.prompt = headChars(unwrapPastedContent(body.prompt), CC_PROMPT_MAX_CHARS);
+  }
   if (event === "PermissionRequest" && typeof body.tool_name === "string" && TOOL_NAME_PATTERN.test(body.tool_name)) {
     const cwd = typeof body.cwd === "string" ? body.cwd : undefined;
     parsed.permission = summarizePermission(body.tool_name, body.tool_input, cwd);

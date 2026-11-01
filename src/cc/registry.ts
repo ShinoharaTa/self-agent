@@ -173,6 +173,8 @@ export class CcRegistry implements CcHookReceiver {
   /** 一覧に無い session_id の事象（受けた順） */
   private pending: CcHookEvent[] = [];
   private lastTouch: number | undefined;
+  /** 最後に読み取りを始めた時刻（読めた・読めなかったを問わない） */
+  private lastAttemptAt: number | undefined;
   /** 直近に log に出した一覧の件数（件数か判断待ちが変わったときだけ出す） */
   private loggedCounts: string | undefined;
   private loggedFailure: string | undefined;
@@ -203,9 +205,18 @@ export class CcRegistry implements CcHookReceiver {
     await this.running;
   }
 
-  /** 誰かが一覧を見ている印（Web の /api/cc/* の GET が呼ぶ。CC2 から）。CC_WATCH_MS の間は周期を短くする */
+  /**
+   * 誰かが一覧を見ている印（Web の /api/cc/* の GET が呼ぶ）。CC_WATCH_MS の間は周期を短くする。見ていなかった状態から見た状態に変わったとき、
+   * 最後に読み始めてから SELF_AGENT_CC_POLL_SEC 経っていれば、待っている（最長 60 秒の）予約を取り消してすぐ 1 回読む。
+   * 読んでいる途中・事象の早い読み取りを予約している・start の前・stop の後は予約を変えない
+   */
   touch(): void {
-    this.lastTouch = this.deps.now().getTime();
+    const now = this.deps.now().getTime();
+    const watched = this.lastTouch !== undefined && now - this.lastTouch < CC_WATCH_MS;
+    this.lastTouch = now;
+    if (watched || !this.started || this.stopped || this.running !== undefined || this.soon) return;
+    if (this.lastAttemptAt !== undefined && now - this.lastAttemptAt < this.deps.cfg.ccPollSec * 1000) return;
+    this.schedule(0);
   }
 
   /** hook の事象を受ける（hook-server.ts）。一覧にあれば反映し、無ければ保留する。どちらでも早めに 1 回読む */
@@ -335,6 +346,7 @@ export class CcRegistry implements CcHookReceiver {
   private async refresh(): Promise<void> {
     if (this.stopped) return;
     const { log } = this.deps;
+    this.lastAttemptAt = this.deps.now().getTime();
     try {
       const result = await this.deps.agents.list();
       if (this.stopped) return;

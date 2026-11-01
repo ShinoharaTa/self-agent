@@ -13,8 +13,11 @@ export const CC_TOKEN_PLACEHOLDER = "<~/.config/self-agent/env の SELF_AGENT_CC
 
 const USAGE = "使い方: npm run cc-setup -- --print（~/.claude/settings.json に足す hooks の設定を標準出力に出す。ファイルは書かない）";
 
-/** hooks を付ける事象（§2.4。matcher は付けない） */
-const EVENTS = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "Notification", "PermissionRequest"] as const;
+/**
+ * hooks を付ける事象（§2.4。matcher は付けない）。SessionStart は http hook に対応していない（Claude Code の debug log で確かめた）ので付けない
+ * （受け口は受けられるまま）
+ */
+const EVENTS = ["UserPromptSubmit", "Stop", "SessionEnd", "Notification", "PermissionRequest"] as const;
 
 /** ~/.claude/settings.json に足す env と hooks（純関数） */
 export function ccHookSettings(cfg: Pick<CcConfig, "ccPermissionHoldSec">, port: number): Record<string, unknown> {

@@ -575,7 +575,7 @@ let ccHookServer: CcHookServer | undefined;
 let ccTmux: Tmux | undefined;
 let ccPanes: CcPaneResolver | undefined;
 // /api/status の cc（hook の受け口が待ち受けているか・tmux のサーバー・複数行）
-let ccStatusOf: (() => Promise<CcStatus>) | undefined;
+let ccStatusOf: (() => CcStatus) | undefined;
 const ccHookToken = process.env.SELF_AGENT_CC_HOOK_TOKEN;
 if (
   config.cc &&
@@ -598,8 +598,9 @@ if (
   ccHookServer = hookServer;
   const tmux = createTmux({ tmuxPath: ccTmuxPath });
   ccTmux = tmux;
-  ccPanes = new CcPaneResolver({ tmux, parentOf: procParentPid() });
-  ccStatusOf = () => ccStatus({ tmux, hookListening: () => hookServer.address() !== undefined, store: ccSessions });
+  const panes = new CcPaneResolver({ tmux, parentOf: procParentPid() });
+  ccPanes = panes;
+  ccStatusOf = () => ccStatus({ panes, hookListening: () => hookServer.address() !== undefined, store: ccSessions });
 }
 
 // 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
