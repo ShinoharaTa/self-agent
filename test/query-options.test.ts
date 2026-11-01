@@ -48,7 +48,7 @@ test("システムプロンプトに日付や年を含めない", () => {
 });
 
 /** プロンプトの中でコマンド名・ツール名の形をしているが、名前ではない語（引数名・ツールの返り値・固有名詞・ディレクトリ名） */
-const NOT_A_NAME = new Set(["due_by", "task_id", "not_set_up", "Discord", "Web", "node_modules"]);
+const NOT_A_NAME = new Set(["due_by", "task_id", "not_set_up", "Discord", "Web", "node_modules", "Claude", "Code"]);
 
 /** プロンプトから re に当たる語（グループがあればその中身）を重複なしで取り出す */
 function namesIn(prompt: string, re: RegExp): string[] {
