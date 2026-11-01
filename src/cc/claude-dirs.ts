@@ -35,7 +35,7 @@ export class ClaudeDirs {
 
   /**
    * `sessions/<pid>.json` の bridgeSessionId・tmux。無い・読めない・JSON のオブジェクトでない・大きすぎる・
-   * sessionId の欄が sessionId と違う（pid が使い回された古いファイル）なら undefined
+   * sessionId の欄が無いか sessionId と違う（pid が使い回された古いファイル）なら undefined
    */
   sessionFile(pid: number, sessionId: string): SessionFileInfo | undefined {
     if (!Number.isSafeInteger(pid) || pid < 1) return undefined;
@@ -46,7 +46,7 @@ export class ClaudeDirs {
       const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
       const item = parsed as Record<string, unknown>;
-      if (item.sessionId !== undefined && item.sessionId !== sessionId) return undefined;
+      if (item.sessionId !== sessionId) return undefined;
       const bridge = item.bridgeSessionId;
       const tmux = item.tmux;
       return {

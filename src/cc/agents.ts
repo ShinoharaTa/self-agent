@@ -3,7 +3,8 @@
 // 子の env は HOME・PATH・LANG だけ（Bot の CLAUDE_CONFIG_DIR を渡すと別の設定ディレクトリの一覧になる。トークン類も渡さない）
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { CHILD_MAX_BUFFER, CHILD_TIMEOUT_MS, execFileRunner, type RunCommand } from "../tmux/tmux.ts";
+import { resolveCommandPath } from "../github/gh.ts";
+import { CHILD_MAX_BUFFER, CHILD_PATH, CHILD_TIMEOUT_MS, execFileRunner, type RunCommand } from "../tmux/tmux.ts";
 
 /** 固定の引数 */
 export const AGENTS_ARGS: readonly string[] = ["agents", "--json"];
@@ -16,6 +17,19 @@ export function agentsChildPath(home: string): string {
 /** 子の env（許可方式。HOME・PATH・LANG だけ） */
 export function agentsChildEnv(home: string = homedir()): Record<string, string> {
   return { HOME: home, PATH: agentsChildPath(home), LANG: "C.UTF-8" };
+}
+
+/**
+ * claude の絶対パスを起動時に 1 回解決する。子に渡すのと同じ固定の PATH（`~/.local/bin` が先）で探し、無ければ pathEnv（既定は process.env.PATH）。
+ * Bot の transient unit の PATH には `~/.local/bin` が無いため、PATH だけでは探さない
+ */
+export function resolveClaudePath(home: string = homedir(), pathEnv: string | undefined = process.env.PATH): string | undefined {
+  return resolveCommandPath("claude", `${agentsChildPath(home)}:${pathEnv ?? ""}`);
+}
+
+/** tmux の絶対パスを起動時に 1 回解決する。tmux.ts の子の固定の PATH で探し、無ければ pathEnv（既定は process.env.PATH） */
+export function resolveTmuxPath(pathEnv: string | undefined = process.env.PATH): string | undefined {
+  return resolveCommandPath("tmux", `${CHILD_PATH}:${pathEnv ?? ""}`);
 }
 
 /** 一覧の 1 要素（未知の欄は捨てる。形の合わない欄は無いものとする） */

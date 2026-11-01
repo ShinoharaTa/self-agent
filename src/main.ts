@@ -35,7 +35,7 @@ import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
-import { AgentsClient } from "./cc/agents.ts";
+import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcRegistry } from "./cc/registry.ts";
@@ -99,10 +99,11 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-// Claude Code のセッション（SELF_AGENT_CC=1 のときだけ）: claude と tmux の絶対パスを PATH から 1 回解決する。無ければ起動しない
-const ccClaudePath = config.cc ? resolveCommandPath("claude") : undefined;
-if (config.cc && (ccClaudePath === undefined || resolveCommandPath("tmux") === undefined)) {
-  console.error("SELF_AGENT_CC=1 には claude と tmux が要ります（PATH を確かめてください）");
+// Claude Code のセッション（SELF_AGENT_CC=1 のときだけ）: claude と tmux の絶対パスを 1 回解決する（子に渡すのと同じ固定の PATH（claude は ~/.local/bin が先）、
+// 無ければ PATH）。無ければ起動しない
+const ccClaudePath = config.cc ? resolveClaudePath() : undefined;
+if (config.cc && (ccClaudePath === undefined || resolveTmuxPath() === undefined)) {
+  console.error("SELF_AGENT_CC=1 には claude と tmux が要ります（~/.local/bin・/usr/local/bin・/usr/bin と PATH を確かめてください）");
   process.exit(1);
 }
 

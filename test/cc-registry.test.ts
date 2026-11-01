@@ -6,6 +6,7 @@ import { parseHookEvent, type CcHookEvent } from "../src/cc/hook-server.ts";
 import {
   CC_EVENT_REFRESH_MS,
   CC_IDLE_POLL_MS,
+  CC_PENDING_MAX,
   CC_PENDING_MS,
   CC_STALE_LIMIT,
   CcRegistry,
@@ -351,4 +352,19 @@ test("parseHookEvent: 固定の集合に無い事象・UUID でない session_id
     at,
   );
   assert.deepEqual(event, { event: "Stop", sessionId: S1, receivedAt: at });
+});
+
+test("CcRegistry: 保留できる事象は CC_PENDING_MAX 件までで、超えた分は捨てる（後で一覧に現れても反映しない）", async (t) => {
+  const s = setup(t);
+  await s.registry.tick();
+  for (let i = 0; i < CC_PENDING_MAX; i++) s.hook({ hook_event_name: "Stop", session_id: S1 });
+  assert.equal(s.registry.pendingCount(), CC_PENDING_MAX);
+  // 101 件目は捨てる
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "101 件目" });
+  assert.equal(s.registry.pendingCount(), CC_PENDING_MAX);
+  s.willList(agent(S1));
+  await s.registry.tick();
+  assert.equal(s.registry.pendingCount(), 0);
+  assert.equal(s.store.get(S1)?.lastEvent, "Stop");
+  assert.equal(s.store.get(S1)?.lastPromptText, null);
 });

@@ -213,7 +213,7 @@ tailscale serve --bg --https=9444 http://127.0.0.1:8791
 
 ### 9. (Optional) Watch the Claude Code sessions on this machine
 
-Work in progress (`docs/plan/claude-code-sessions.md`, stage CC1): the bot reads `claude agents --json` periodically and receives Claude Code's hooks on a local port, so it knows which sessions are waiting for you, running or idle. There is no screen for it yet; for now you can only check it with `npm run cc-dry-run`. It needs `claude` and `tmux` on the bot's `PATH`.
+Work in progress (`docs/plan/claude-code-sessions.md`, stage CC1): the bot reads `claude agents --json` periodically and receives Claude Code's hooks on a local port, so it knows which sessions are waiting for you, running or idle. There is no screen for it yet; for now you can only check it with `npm run cc-dry-run`. It needs `claude` and `tmux` in `~/.local/bin`, `/usr/local/bin` or `/usr/bin` (anywhere else, on the bot's `PATH`). Whether `claude agents --json` works with only `HOME`, `PATH` and `LANG` in its environment (which is all the bot passes to it) is not confirmed yet.
 
 1. Run `npm run cc-dry-run` to see the sessions in three groups (waiting for you / running / idle). It posts nothing and changes nothing.
 2. Add to `~/.config/self-agent/env` (the token is shared with Claude Code's hooks; 32+ characters, no spaces):

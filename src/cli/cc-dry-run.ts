@@ -1,13 +1,12 @@
 // この機械の Claude Code のセッションの一覧を 1 回だけ試す（docs/plan/claude-code-sessions.md §8 CC1。npm run cc-dry-run）。
 // claude agents --json と ~/.claude の補助（RC のリンク・tmux の欄・記録の mtime）を 1 回読み、本体と同じ rankSessions で 3 群に分けて、
 // 件数と各行の状態・名前・最後の活動の時刻を端末に出す（オーナーが見るものなので名前は出す。sessionId・cwd は出さない）。
-// hook の事象は使わない（受け口を立てない）。投稿せず、DB も読み書きしない。読む設定は SELF_AGENT_TZ だけ
+// hook の事象は使わない（受け口を立てない）。投稿せず、DB も読み書きしない。読む設定は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ（loadDataConfig）
 import { formatWallClock } from "../app/recurrence.ts";
-import { AgentsClient, type AgentEntry } from "../cc/agents.ts";
+import { AgentsClient, type AgentEntry, resolveClaudePath } from "../cc/agents.ts";
 import { ClaudeDirs, type SessionFileInfo } from "../cc/claude-dirs.ts";
 import { type CcState, lastActivity, rankSessions, type RankInput } from "../cc/registry.ts";
 import { loadDataConfig } from "../config.ts";
-import { resolveCommandPath } from "../github/gh.ts";
 
 const STATE_LABELS: Readonly<Record<CcState, string>> = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
 
@@ -68,8 +67,8 @@ export async function main(_argv: readonly string[]): Promise<number> {
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
-  const claudePath = resolveCommandPath("claude");
-  if (claudePath === undefined) return fail("claude が見つかりません（PATH を確かめてください）");
+  const claudePath = resolveClaudePath();
+  if (claudePath === undefined) return fail("claude が見つかりません（~/.local/bin・/usr/local/bin・/usr/bin と PATH を確かめてください）");
   const result = await new AgentsClient({ claudePath }).list();
   if (!result.ok) return fail(`claude agents --json を読めませんでした（${result.reason}）`);
   const dirs = new ClaudeDirs();

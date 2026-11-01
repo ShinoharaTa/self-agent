@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { authenticate, issueCookie, LoginWindow, safeEqual, setCookieHeader } from "../src/web/auth.ts";
 import { csrfOk, sameOrigin } from "../src/web/csrf.ts";
-import { isLoopback } from "../src/web/server.ts";
+import { isLoopback } from "../src/web/http-body.ts";
 import { staticFileFor } from "../src/web/static.ts";
 
 const NOW = new Date("2026-10-29T00:00:00Z");
