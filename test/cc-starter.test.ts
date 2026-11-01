@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import type { AgentEntry, AgentsResult } from "../src/cc/agents.ts";
@@ -10,6 +10,7 @@ import { CC_START_BIND_GRACE_MS, CcSender } from "../src/cc/sender.ts";
 import {
   buildClaudeCommand,
   CC_MIN_MEM_AVAILABLE_BYTES,
+  CC_START_BIND_MS,
   CC_START_CHECK_MS,
   CC_START_INTERVAL_MS,
   CC_TRUST_CHECK_DELAY_MS,
@@ -66,7 +67,7 @@ test("buildClaudeCommand: 固定の形で、claude・題名・モードを単引
     buildClaudeCommand({ claudePath: CLAUDE, title: "ログイン修正_2.1-a", permissionMode: "acceptEdits" }),
     `'${CLAUDE}' -n 'ログイン修正_2.1-a' --permission-mode 'acceptEdits'; exec "$SHELL"`,
   );
-  for (const title of ["it's", "a;b", "$(x)", "a`b", 'a"b', "a\nb", "", "a".repeat(41)]) {
+  for (const title of ["it's", "a;b", "$(x)", "a`b", 'a"b', "a\nb", "", "a".repeat(41), "-rf", "--help", "_a", ".a"]) {
     assert.throws(() => buildClaudeCommand({ claudePath: CLAUDE, title }), Error, title);
     assert.equal(normalizeTitle(title), undefined, title);
   }
@@ -194,6 +195,8 @@ async function setup(t: TestContext, opts: { sessions?: number; mem?: number } =
   const env = {
     noServer: false,
     newSessionFails: false,
+    /** new-session を受けたときに呼ぶ（停止の途中を作る） */
+    onNewSession: undefined as (() => void) | undefined,
     panes: [paneLine("work", "%1", 400)],
     /** ペインごとの画面 */
     screens: { "%1": EMPTY, "%9": EMPTY } as Record<string, string>,
@@ -212,6 +215,7 @@ async function setup(t: TestContext, opts: { sessions?: number; mem?: number } =
         return { code: 0, stdout: "", stderr: "" };
       case "new-session":
         if (env.newSessionFails) return { code: 1, stdout: "", stderr: "failed" };
+        env.onNewSession?.();
         env.panes.push(paneLine(env.renamed, "%9", 900));
         return { code: 0, stdout: "$7 %9\n", stderr: "" };
       case "capture-pane":
@@ -280,9 +284,9 @@ async function setup(t: TestContext, opts: { sessions?: number; mem?: number } =
     await new Promise((resolve) => setImmediate(resolve));
     await starter.tick();
   };
-  /** 起動した claude を一覧に出す */
-  const showNew = async (): Promise<void> => {
-    agents.push(agent(NEW, 950, { name: "fix login", cwd: join(ws, "alpha") }));
+  /** 起動した claude を一覧に出す（cwd は既定で起動したディレクトリ） */
+  const showNew = async (cwd = join(realpathSync(ws), "alpha")): Promise<void> => {
+    agents.push(agent(NEW, 950, { name: "fix login", cwd }));
     await registry.tick();
   };
   return { ws, db, clock, store, sends, registry, sender, starter, server, env, commands, pending, logs, mem, fire, showNew, setList: (r: AgentsResult) => (listResult = r) };
@@ -321,6 +325,7 @@ test("POST /api/cc/sessions: ' を含む題名・知らないモード・直下�
   const cases: Array<[Record<string, unknown>, string]> = [
     [{ project: "alpha", title: "it's" }, "invalid_title"],
     [{ project: "alpha", title: "a; rm -rf ~" }, "invalid_title"],
+    [{ project: "alpha", title: "-rf" }, "invalid_title"],
     [{ project: "alpha" }, "invalid_title"],
     [{ project: "alpha", title: "a", permissionMode: "bypassPermissions" }, "invalid_mode"],
     [{ project: "alpha", title: "a", permissionMode: "dontAsk" }, "invalid_mode"],
@@ -446,6 +451,9 @@ test("起動: trust のダイアログ（dialog）の間は Enter もキーも�
   assert.equal(s.sends.get(1)!.lastPaneState, "dialog");
   assert.deepEqual(actions(s.commands), []);
   assert.ok(!s.commands.some((args) => args[0] === "send-keys"));
+  // 送信の状態にも最後に見たペインの状態（dialog）が出る（画面は「ダイアログが出ているため待っています」）
+  const one = await call(s.server, "GET", `/api/cc/sessions/${NEW}`);
+  assert.deepEqual([(one.json.pending as Record<string, unknown>).state, (one.json.pending as Record<string, unknown>).lastPaneState], ["queued", "dialog"]);
   // オーナーが端末で承認した → 入力待ち。確かめ直しで外れ、最初の指示が届く
   s.env.screens["%9"] = EMPTY;
   await s.fire(CC_START_CHECK_MS);
@@ -459,7 +467,7 @@ test("起動: trust のダイアログが出ないディレクトリでは trust
   const res = await call(s.server, "POST", "/api/cc/sessions", { project: "beta", title: "b", text: "  " });
   assert.deepEqual(res, { status: 201, json: { tmuxSession: "beta", paneId: "%9" } });
   await s.fire(CC_TRUST_CHECK_DELAY_MS);
-  await s.showNew();
+  await s.showNew(join(realpathSync(s.ws), "beta"));
   await s.fire(CC_START_CHECK_MS);
   assert.equal(s.store.get(NEW)!.trustPendingAt, null);
   assert.equal(s.store.get(NEW)!.startedBy, "web");
@@ -492,4 +500,53 @@ test("起動: stop の後は起動しない（503 stopping）", async (t) => {
   s.starter.stop();
   assert.deepEqual(await call(s.server, "POST", "/api/cc/sessions", { project: "alpha", title: "a" }), { status: 503, json: { error: "stopping" } });
   assert.deepEqual(s.commands, []);
+});
+
+test("起動: 同じ %N を別のディレクトリの claude が得ても結びつけず送らない。60 秒で failed（cwd_mismatch）", async (t) => {
+  const s = await setup(t);
+  await call(s.server, "POST", "/api/cc/sessions", { project: "alpha", title: "a", text: "最初の指示" });
+  assert.equal(s.sends.get(1)!.startDir, join(realpathSync(s.ws), "alpha"));
+  // %9 の claude の cwd が起動したディレクトリと違う
+  await s.showNew(join(realpathSync(s.ws), "beta"));
+  await s.fire(CC_START_CHECK_MS);
+  assert.equal(s.store.get(NEW)!.startedBy, "owner");
+  assert.equal(s.starter.busy(), true);
+  await s.sender.kick();
+  assert.deepEqual([s.sends.get(1)!.sessionId, s.sends.get(1)!.state, s.sends.get(1)!.lastPaneState], [null, "queued", "starting"]);
+  s.clock.now += CC_START_BIND_GRACE_MS;
+  await s.sender.kick();
+  assert.deepEqual([s.sends.get(1)!.sessionId, s.sends.get(1)!.state, s.sends.get(1)!.lastPaneState], [null, "failed", "cwd_mismatch"]);
+  assert.deepEqual(actions(s.commands), []);
+});
+
+test("起動: 結びつけた後も CC_START_BIND_MS の間は tick ごとに trust のダイアログを見る。過ぎたら確認待ちの行だけ撮り直す", async (t) => {
+  const s = await setup(t);
+  await call(s.server, "POST", "/api/cc/sessions", { project: "alpha", title: "a" });
+  await s.fire(CC_TRUST_CHECK_DELAY_MS);
+  await s.showNew();
+  await s.fire(CC_START_CHECK_MS);
+  assert.equal(s.store.get(NEW)!.trustPendingAt, null);
+  // 結びつけた後にダイアログが出た
+  s.env.screens["%9"] = TRUST;
+  s.clock.now += CC_START_CHECK_MS;
+  await s.starter.tick();
+  assert.notEqual(s.store.get(NEW)!.trustPendingAt, null);
+  // 10 分を過ぎたら追わない（確認待ちの行は撮り直して、消えたら外す）
+  s.clock.now += CC_START_BIND_MS;
+  await s.starter.tick();
+  assert.notEqual(s.store.get(NEW)!.trustPendingAt, null);
+  s.env.screens["%9"] = EMPTY;
+  await s.starter.tick();
+  assert.equal(s.store.get(NEW)!.trustPendingAt, null);
+  // 追っていないので、また出ても確認待ちにはしない
+  s.env.screens["%9"] = TRUST;
+  await s.starter.tick();
+  assert.equal(s.store.get(NEW)!.trustPendingAt, null);
+});
+
+test("起動: new-session の途中で stop されたら trust の確かめの予約を張らない", async (t) => {
+  const s = await setup(t);
+  s.env.onNewSession = () => s.starter.stop();
+  assert.equal((await call(s.server, "POST", "/api/cc/sessions", { project: "alpha", title: "a" })).status, 201);
+  assert.ok(!s.pending.some((entry) => entry.ms === CC_TRUST_CHECK_DELAY_MS));
 });

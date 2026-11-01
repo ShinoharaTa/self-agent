@@ -641,7 +641,7 @@
     delivering: "届けています…",
     delivered: "届けました",
     unconfirmed: "貼れたか・送れたかを確かめられませんでした。画面を確認してください（やり直しません）",
-    failed: "送れませんでした（セッションが終わったか、tmux の中の Claude Code ではありません）",
+    failed: "送れませんでした（セッションが終わったか、tmux の中の Claude Code ではないか、起動したディレクトリの Claude Code ではありません）",
     gave_up: "入力待ちにならなかったため、届けるのを諦めました",
     cancelled: "取り消しました",
   };
@@ -651,7 +651,11 @@
   /** 送信の状態の行。送信待ちなら [取り消す] */
   function ccPendingBar(sessionId, pending) {
     if (!pending || typeof pending.id !== "number") return null;
-    const text = CC_SEND_STATES[pending.state] || String(pending.state);
+    // ダイアログ（trust・許可など）が出ている間は積んだまま待つ（再起動の後も、最後に見たペインの状態で分かる）
+    const text =
+      pending.state === "queued" && pending.lastPaneState === "dialog"
+        ? "ダイアログが出ているため待っています（端末か RC で答えてください）"
+        : CC_SEND_STATES[pending.state] || String(pending.state);
     const cls = pending.state === "delivered" ? " is-done" : pending.state === "unconfirmed" || pending.state === "failed" || pending.state === "gave_up" ? " is-warning" : "";
     const children = [el("span", { text: "送信 #" + pending.id + ": " + text })];
     if (pending.state === "queued" || pending.state === "delivering") children.unshift(el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }));

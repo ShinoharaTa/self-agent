@@ -4,7 +4,8 @@
 // （tmux のサーバーが無ければ断る。決定 8）。引数は固定の形で、題名・モードは検証してから単引用符で囲む（`'` を含む題名は通さない）。
 // セッション名は表示用で、オーナーの hook で変わりうるので、以後は返った $N・%N で追う。最初の指示は cc_sends にペイン宛て（origin start）で積み、
 // 送るのは cc/sender.ts（入力待ちになるまで積んだまま。trust のダイアログにはキーを送らない）。起動したペインを一覧のセッションで見つけたら
-// cc_sessions に started_by などを書く。起動から CC_TRUST_CHECK_DELAY_MS で画面が trust のダイアログなら trust の確認待ちにし、消えたら外す。
+// cc_sessions に started_by などを書く（cwd が起動したディレクトリの claude だけ）。起動から CC_TRUST_CHECK_DELAY_MS で、その後も CC_START_BIND_MS の間は
+// tick ごとに、画面が trust のダイアログなら trust の確認待ちにし、消えたら外す（それより後・再起動の後は確認待ちの行だけを撮り直して外す）。
 // 上限: 生きている claude が SELF_AGENT_CC_MAX_SESSIONS 以上・MemAvailable が 1 GB 未満・前の起動から 1 分未満なら断る。
 // log は起動したもの（web など）・送信の番号・件数・失敗の種類だけ（プロジェクト名・題名・パス・tmux のセッション名・ペイン id・sessionId は出さない）
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -14,14 +15,14 @@ import type { CcSendStore } from "../store/cc-sends.ts";
 import type { CcSessionStore, CcStartedBy } from "../store/cc-sessions.ts";
 import { classifyScreen, stripAnsi } from "../tmux/pane-state.ts";
 import type { Tmux } from "../tmux/tmux.ts";
-import type { CcPaneResolver } from "./panes.ts";
+import { sessionOnStartedPane, type CcPaneResolver } from "./panes.ts";
 import type { CcRegistry, CcTimers } from "./registry.ts";
 import { normalizeSendText, type CcSender } from "./sender.ts";
 
 /** 起動できるディレクトリの名前（直下だけ） */
 export const CC_PROJECT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-/** 題名（-n に渡す名前）。`'`・`"`・`$`・`;` などシェルで意味のある文字を含まない */
-export const CC_TITLE_PATTERN = /^[\p{L}\p{N} _.-]{1,40}$/u;
+/** 題名（-n に渡す名前）。文字か数字で始まり（先頭の - を通さない）、`'`・`"`・`$`・`;` などシェルで意味のある文字を含まない */
+export const CC_TITLE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,39}$/u;
 /** 選べる権限モード（決定 4。bypassPermissions・dontAsk は選べない） */
 export const CC_PERMISSION_MODES: readonly string[] = ["default", "acceptEdits", "plan", "auto"];
 /** 前の起動からこの間は起動しない（§4.2 の 1 分に 1 回） */
@@ -32,7 +33,7 @@ export const CC_MIN_MEM_AVAILABLE_BYTES = 1024 * 1024 * 1024;
 export const CC_TRUST_CHECK_DELAY_MS = 10_000;
 /** 起動したセッションを一覧で探す・trust の確認待ちを確かめ直す間隔 */
 export const CC_START_CHECK_MS = 10_000;
-/** 起動したペインを一覧で探す長さ（過ぎたら記録をあきらめる。最初の指示は送信の待ちの上限まで積んだまま） */
+/** 起動したペインを一覧で探し、trust のダイアログを tick ごとに確かめる長さ（過ぎたら記録をあきらめる。最初の指示は送信の待ちの上限まで積んだまま） */
 export const CC_START_BIND_MS = 10 * 60_000;
 /** /api/cc/projects に出す数の上限 */
 export const CC_PROJECTS_MAX = 500;
@@ -215,17 +216,18 @@ export type CcStarterDeps = {
   log: (message: string) => void;
 };
 
-/** 起動して、まだ一覧のセッションと結びつけていない・trust を確かめていないもの（プロセスの中だけ） */
+/** 起動してから CC_START_BIND_MS の間のもの（一覧のセッションとの結びつけと trust の確かめ。プロセスの中だけ） */
 type Started = {
   startedBy: Exclude<CcStartedBy, "owner">;
   tmuxSession: string;
   tmuxSessionId: string;
   paneId: string;
+  /** 起動したディレクトリ（cwd がこれの claude にだけ結びつける） */
+  dir: string;
   startedAt: number;
   sendId: number | undefined;
   /** 結びつけた一覧のセッション */
   sessionId: string | undefined;
-  trustChecked: boolean;
   trustPendingAt: Date | null;
 };
 
@@ -354,57 +356,64 @@ export class CcStarter {
     this.lastStartAt = now().getTime();
     const { sessionId: tmuxSessionId, paneId } = created.value;
     const send =
-      input.text === undefined ? undefined : sends.add({ sessionId: null, paneId, text: input.text, origin: "start", state: "queued" });
+      input.text === undefined
+        ? undefined
+        : sends.add({ sessionId: null, paneId, startDir: input.dir, text: input.text, origin: "start", state: "queued" });
     const entry: Started = {
       startedBy: input.startedBy,
       tmuxSession: name,
       tmuxSessionId,
       paneId,
+      dir: input.dir,
       startedAt: this.lastStartAt,
       sendId: send?.id,
       sessionId: undefined,
-      trustChecked: false,
       trustPendingAt: null,
     };
     this.started.push(entry);
     log(`Claude Code: 起動しました（${input.startedBy}${send === undefined ? "" : `、最初の指示 #${send.id}`}）`);
-    const cancel = this.timers.after(() => {
-      this.trustTimers.delete(cancel);
-      void this.checkTrust(entry);
-    }, CC_TRUST_CHECK_DELAY_MS);
-    this.trustTimers.add(cancel);
+    // 停止を始めた後は張らない（stop が消した後に残らないように）
+    if (!this.stopped) {
+      const cancel = this.timers.after(() => {
+        this.trustTimers.delete(cancel);
+        void this.checkTrust(entry);
+      }, CC_TRUST_CHECK_DELAY_MS);
+      this.trustTimers.add(cancel);
+    }
     if (send !== undefined) void this.deps.sender?.kick();
     return { ok: true, tmuxSession: name, paneId, sendId: send?.id };
   }
 
-  /** 1 回だけ: 起動から CC_TRUST_CHECK_DELAY_MS で画面が trust のダイアログなら確認待ちにする（キーは送らない。§4.2） */
+  /**
+   * 画面が trust のダイアログなら確認待ちにし（キーは送らない。§4.2）、消えていれば（ペインが無くなっていても）外す。結びつけていれば cc_sessions にも書く。
+   * 起動から CC_TRUST_CHECK_DELAY_MS で 1 回と、CC_START_BIND_MS の間は tick ごと
+   */
   private async checkTrust(entry: Started): Promise<void> {
     if (this.stopped) return;
     try {
       const shot = await this.deps.tmux.capturePane(entry.paneId);
-      entry.trustChecked = true;
-      if (!shot.ok || !isTrustDialog(shot.value)) return;
-      entry.trustPendingAt = this.deps.now();
-      if (entry.sessionId !== undefined) this.deps.sessions.setTrustPending(entry.sessionId, entry.trustPendingAt);
-      this.deps.log("Claude Code: 起動したセッションが trust の確認を待っています");
+      if (!shot.ok && shot.reason !== "not_found") return;
+      const dialog = shot.ok && isTrustDialog(shot.value);
+      if (dialog && entry.trustPendingAt === null) {
+        entry.trustPendingAt = this.deps.now();
+        if (entry.sessionId !== undefined) this.deps.sessions.setTrustPending(entry.sessionId, entry.trustPendingAt);
+        this.deps.log("Claude Code: 起動したセッションが trust の確認を待っています");
+      } else if (!dialog && entry.trustPendingAt !== null) {
+        entry.trustPendingAt = null;
+        if (entry.sessionId !== undefined) this.deps.sessions.setTrustPending(entry.sessionId, null);
+      }
     } catch (error) {
-      entry.trustChecked = true;
       this.deps.log(`Claude Code: trust のダイアログを確かめられませんでした（${errorKind(error)}）`);
-    } finally {
-      this.forgetDone();
     }
   }
 
-  /** 結びつけて trust も確かめたもの・探す長さを過ぎたものを忘れる */
+  /** 起動から CC_START_BIND_MS を過ぎたものを忘れる（まだ一覧で見つけていなければ log） */
   private forgetDone(): void {
     const now = this.deps.now().getTime();
     this.started = this.started.filter((entry) => {
-      if (entry.sessionId !== undefined && entry.trustChecked) return false;
-      if (entry.sessionId === undefined && now - entry.startedAt >= CC_START_BIND_MS) {
-        this.deps.log("Claude Code: 起動したセッションを一覧で見つけられませんでした");
-        return false;
-      }
-      return true;
+      if (now - entry.startedAt < CC_START_BIND_MS) return true;
+      if (entry.sessionId === undefined) this.deps.log("Claude Code: 起動したセッションを一覧で見つけられませんでした");
+      return false;
     });
   }
 
@@ -428,15 +437,19 @@ export class CcStarter {
 
   private async pass(): Promise<void> {
     try {
-      await this.bind();
-      await this.recheckTrust();
       this.forgetDone();
+      await this.bind();
+      for (const entry of [...this.started]) await this.checkTrust(entry);
+      await this.recheckTrust();
     } catch (error) {
       this.deps.log(`Claude Code: 起動したセッションを確かめられませんでした（${errorKind(error)}）`);
     }
   }
 
-  /** 起動したペインを送り先にする一覧のセッションを探し、見つけたら cc_sessions に記録して最初の指示を結びつける */
+  /**
+   * 起動したペインを送り先にし、cwd が起動したディレクトリの一覧のセッションを探し（%N が同じというだけでは採らない）、
+   * 見つけたら cc_sessions に記録して最初の指示を結びつける
+   */
   private async bind(): Promise<void> {
     const waiting = this.started.filter((entry) => entry.sessionId === undefined);
     if (waiting.length === 0 || this.stopped) return;
@@ -447,10 +460,7 @@ export class CcStarter {
     if (!lookup.ok) return;
     let bound = false;
     for (const entry of waiting) {
-      const view = snapshot.sessions.find((session) => {
-        const found = lookup.sendable({ pid: session.pid, tmux: session.tmux });
-        return found.ok && found.pane.paneId === entry.paneId;
-      });
+      const view = sessionOnStartedPane(lookup, snapshot.sessions, entry.paneId, entry.dir).found;
       if (view === undefined) continue;
       entry.sessionId = view.sessionId;
       this.deps.sessions.recordStart(view.sessionId, {
@@ -465,10 +475,15 @@ export class CcStarter {
     if (bound) void this.deps.sender?.kick();
   }
 
-  /** trust の確認待ちのセッションの画面を撮り直し、ダイアログが消えていれば（ペインが無くなっていても）外す */
+  /**
+   * trust の確認待ちのセッション（起動から CC_START_BIND_MS を過ぎた・再起動の前に起動したもの）の画面を撮り直し、
+   * ダイアログが消えていれば（ペインが無くなっていても）外す
+   */
   private async recheckTrust(): Promise<void> {
+    const tracked = new Set(this.started.map((entry) => entry.sessionId).filter((id) => id !== undefined));
     for (const row of this.deps.sessions.listTrustPending()) {
       if (this.stopped) return;
+      if (tracked.has(row.sessionId)) continue;
       if (row.startPaneId === null) {
         this.deps.sessions.setTrustPending(row.sessionId, null);
         continue;
