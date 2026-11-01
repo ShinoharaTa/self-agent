@@ -595,6 +595,11 @@ kbd {
   flex: none;
 }
 
+/* Claude Code のセッションの行の印（権限モード・tmux の外） */
+.badge-cc {
+  flex: none;
+}
+
 .sb-empty {
   padding: 0 var(--space-3) var(--space-2) var(--space-6);
   color: var(--text-muted);
@@ -1313,6 +1318,14 @@ kbd {
   line-height: var(--leading-normal);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* Claude Code の画面の写し: 端末の行は折り返さず、横にスクロールする */
+.cc-screen {
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  font-size: var(--font-xs);
 }
 
 /* ===== 名前と値の一覧 ===== */

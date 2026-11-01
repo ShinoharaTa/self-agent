@@ -48,6 +48,7 @@ function pane(paneId: string, currentPath: string, overrides: Partial<TmuxPane> 
     currentCommand: "claude",
     inMode: false,
     dead: false,
+    panePid: 4100,
     ...overrides,
   };
 }

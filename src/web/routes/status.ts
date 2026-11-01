@@ -1,10 +1,11 @@
-// GET /api/status（docs/plan/web-ui.md §3.5）。Bot の接続・シェル・キュー・配信・GitHub・サーバー・環境変数の有無と、画面の時刻のタイムゾーン。
+// GET /api/status（docs/plan/web-ui.md §3.5）。Bot の接続・シェル・キュー・配信・GitHub・Claude Code・サーバー・環境変数の有無と、画面の時刻のタイムゾーン。
 // 環境変数は名前と「値があるか」だけを返し、値は見ない
 import { type Config, DEFAULT_PERSONA_ID } from "../../config.ts";
 import { GUEST_BOT_NAME, GUEST_PERSONA_ID } from "../../guest/constants.ts";
 import type { GuildSettingsStore } from "../../store/guild-settings.ts";
 import { DEFAULT_PERSONA_LABEL, type PersonaRuntime } from "../../app/personas.ts";
 import type { Route } from "../server.ts";
+import { CC_STATUS_DISABLED, type CcStatus } from "./cc.ts";
 
 /**
  * 設定の画面に有無を出す環境変数（CLAUDE.md の環境変数の表の名前。廃止した SELF_AGENT_GUEST_GUILD_IDS は除く）。
@@ -97,6 +98,8 @@ export type StatusDeps = {
   githubStatus?: () => GithubStatus;
   guildSettings: Pick<GuildSettingsStore, "get">;
   env: NodeJS.ProcessEnv;
+  /** Claude Code のセッションの状態（SELF_AGENT_CC が有効なときだけ。cc.ts の ccStatus）。無ければ無効の形 */
+  cc?: () => Promise<CcStatus>;
 };
 
 type BotStatus = { persona: string; name: string; isDefault?: boolean; guest?: true; connected: boolean };
@@ -143,5 +146,11 @@ export function statusBody(deps: StatusDeps): Record<string, unknown> {
 }
 
 export function statusRoutes(deps: StatusDeps): Route[] {
-  return [{ method: "GET", pattern: /^\/api\/status$/, handle: async () => ({ status: 200, json: statusBody(deps) }) }];
+  return [
+    {
+      method: "GET",
+      pattern: /^\/api\/status$/,
+      handle: async () => ({ status: 200, json: { ...statusBody(deps), cc: deps.cc === undefined ? CC_STATUS_DISABLED : await deps.cc() } }),
+    },
+  ];
 }

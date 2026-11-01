@@ -1,5 +1,6 @@
 // 配線だけ: config → store → runner → gateway → handler
 import { mkdirSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DiskQuota, pruneWorkDir } from "./agent/disk.ts";
@@ -38,6 +39,7 @@ import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
+import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
 import { CcRegistry } from "./cc/registry.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
@@ -75,6 +77,8 @@ import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { UsageStore } from "./store/usage.ts";
+import { createTmux, type Tmux } from "./tmux/tmux.ts";
+import { ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
 import { channelRoutes, webChannelNamer } from "./web/routes/channels.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
 import { githubRoutes } from "./web/routes/github.ts";
@@ -102,7 +106,8 @@ if (missing.length > 0) {
 // Claude Code のセッション（SELF_AGENT_CC=1 のときだけ）: claude と tmux の絶対パスを 1 回解決する（子に渡すのと同じ固定の PATH（claude は ~/.local/bin が先）、
 // 無ければ PATH）。無ければ起動しない
 const ccClaudePath = config.cc ? resolveClaudePath() : undefined;
-if (config.cc && (ccClaudePath === undefined || resolveTmuxPath() === undefined)) {
+const ccTmuxPath = config.cc ? resolveTmuxPath() : undefined;
+if (config.cc && (ccClaudePath === undefined || ccTmuxPath === undefined)) {
   console.error("SELF_AGENT_CC=1 には claude と tmux が要ります（~/.local/bin・/usr/local/bin・/usr/bin と PATH を確かめてください）");
   process.exit(1);
 }
@@ -566,8 +571,20 @@ const githubPoller = createGithubPoller({
 // hook の受け口（127.0.0.1:SELF_AGENT_CC_HOOK_PORT。Web UI とは別のサーバー）で事象を受ける
 let ccRegistry: CcRegistry | undefined;
 let ccHookServer: CcHookServer | undefined;
+// 画面の写し（Web）と、セッション → ペインの引き当て（pid の祖先と pane_pid。§3.1）
+let ccTmux: Tmux | undefined;
+let ccPanes: CcPaneResolver | undefined;
+// /api/status の cc（hook の受け口が待ち受けているか・tmux のサーバー・複数行）
+let ccStatusOf: (() => Promise<CcStatus>) | undefined;
 const ccHookToken = process.env.SELF_AGENT_CC_HOOK_TOKEN;
-if (config.cc && ccClaudePath !== undefined && config.ccHookPort !== undefined && ccHookToken !== undefined && ccHookToken !== "") {
+if (
+  config.cc &&
+  ccClaudePath !== undefined &&
+  ccTmuxPath !== undefined &&
+  config.ccHookPort !== undefined &&
+  ccHookToken !== undefined &&
+  ccHookToken !== ""
+) {
   const registry = new CcRegistry({
     cfg: config,
     agents: new AgentsClient({ claudePath: ccClaudePath }),
@@ -577,7 +594,12 @@ if (config.cc && ccClaudePath !== undefined && config.ccHookPort !== undefined &
     log,
   });
   ccRegistry = registry;
-  ccHookServer = createCcHookServer({ host: "127.0.0.1", port: config.ccHookPort, token: ccHookToken, receiver: registry, now, log });
+  const hookServer = createCcHookServer({ host: "127.0.0.1", port: config.ccHookPort, token: ccHookToken, receiver: registry, now, log });
+  ccHookServer = hookServer;
+  const tmux = createTmux({ tmuxPath: ccTmuxPath });
+  ccTmux = tmux;
+  ccPanes = new CcPaneResolver({ tmux, parentOf: procParentPid() });
+  ccStatusOf = () => ccStatus({ tmux, hookListening: () => hookServer.address() !== undefined, store: ccSessions });
 }
 
 // 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
@@ -630,6 +652,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         ...(githubPoller === undefined ? {} : { githubStatus: () => githubPoller.status() }),
         guildSettings,
         env: process.env,
+        ...(ccStatusOf === undefined ? {} : { cc: ccStatusOf }),
       }),
       ...usageRoutes({ cfg: config, usage, attachments, now }),
       ...channelRoutes({ cfg: config, guildSettings, topicSessions, projects, history: historyStore, personas, resolveChannel }),
@@ -647,6 +670,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       // GitHub の通知（SELF_AGENT_GITHUB が無効なら 404）とナレッジは読むだけ
       ...githubRoutes({ cfg: config, store: githubStore, status: githubPoller === undefined ? undefined : () => githubPoller.status() }),
       ...knowledgeRoutes({ knowledge }),
+      // この機械の Claude Code のセッションの一覧と画面の写し（SELF_AGENT_CC が無効なら 404）
+      ...ccRoutes({ registry: ccRegistry, panes: ccPanes, tmux: ccTmux, workspaceDir: join(homedir(), "workspace"), home: homedir() }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）
       ...projectRoutes({
         cfg: config,

@@ -23,6 +23,9 @@
   const NOTICES_LAST = 50;
   const GITHUB_LAST = 50;
   const KNOWLEDGE_LAST = 30;
+  /** Claude Code のセッションの一覧（見ている間）と、前に出ているセッションのタブの画面の写しを読む間隔 */
+  const CC_LIST_INTERVAL_MS = 10000;
+  const CC_SCREEN_INTERVAL_MS = 3000;
   const SEEN_KEY = "self-agent-web:seen";
 
   /**
@@ -90,6 +93,8 @@
   // kbEntries[id]: /api/knowledge/<id> の entry（404 なら "missing"、それ以外の失敗は "failed"）
   // projects: /api/projects（まだ読んでいなければ null）。projectFiles[slug]: /files の結果（{ files, truncated, missing }。missing は 404）。
   // projectFile[slug]: 選んだファイルの中身（{ path, text, error, maxBytes }。読んでいる間は text も error も null。maxBytes は 413 の応答の上限（無ければ null））
+  // cc: /api/cc/sessions（{ stale, unreadable, sessions }。まだ読んでいなければ null）。ccAt: それを受け取った時刻。
+  // ccSessions[sessionId]: /api/cc/sessions/<id> の結果（{ session, missing }。session は 1 件 + screen。missing は 404）
   const store = {
     status: null,
     usage: null,
@@ -116,6 +121,9 @@
     projects: null,
     projectFiles: {},
     projectFile: {},
+    cc: null,
+    ccAt: 0,
+    ccSessions: {},
     load: {},
   };
   const loading = {};
@@ -645,6 +653,52 @@
       });
   };
 
+  // ===== Claude Code のセッション（CC2。一覧と画面の写しを読むだけ） =====
+  /** /api/status で Claude Code の連携が有効と分かっている */
+  store.ccEnabled = () => !!(store.status && store.status.cc && store.status.cc.enabled);
+
+  /** 前に出ているタブが Claude Code のセッションなら、その sessionId */
+  function activeCcSession() {
+    const tabId = SA.app.activeTabId();
+    return tabId && tabId.startsWith("cc:") ? tabId.slice(3) : null;
+  }
+
+  /** 一覧を見ている（サイドバーに Claude Code を出している・セッションのタブが前に出ている） */
+  function ccWatching() {
+    return store.ccEnabled() && (SA.app.sidebarShows("cc") || activeCcSession() !== null);
+  }
+
+  /** opts.quiet は polling から（失敗のトーストは polling が出す） */
+  store.load.cc = (opts) =>
+    once("cc", async () => {
+      const data = await SA.api.get("/api/cc/sessions", opts);
+      store.cc = {
+        stale: !!(data && data.stale),
+        unreadable: !!(data && data.unreadable),
+        sessions: Array.isArray(data && data.sessions) ? data.sessions.filter((s) => s && typeof s.sessionId === "string") : [],
+      };
+      store.ccAt = Date.now();
+      SA.app.refreshSidebar();
+      // タブの見出しの名前が変わりうる
+      if (activeCcSession() !== null) SA.app.refreshTabs();
+    });
+
+  /** 1 つのセッション（画面の写しを含む）。404（一覧から消えた）は missing にしてトーストを出さない */
+  store.load.ccSession = (sessionId, opts) =>
+    once("ccSession:" + sessionId, async () => {
+      try {
+        const data = await SA.api.get("/api/cc/sessions/" + encodeURIComponent(sessionId), Object.assign({}, opts, { quiet: true }));
+        store.ccSessions[sessionId] = { session: data && typeof data === "object" ? data : null, missing: false };
+      } catch (err) {
+        if (err && err.status === 404) store.ccSessions[sessionId] = { session: null, missing: true };
+        else {
+          if (!(opts && opts.quiet)) SA.ui.toast(err && typeof err.toast === "string" ? err.toast : "サーバーにつながりません");
+          throw err;
+        }
+      }
+      SA.app.refresh("cc:" + sessionId);
+    });
+
   /** 操作の後: 読んでいる途中のもの（操作の前の中身かもしれない）が終わるのを待ってから、もう一度読む */
   store.reload = (key) => Promise.resolve(loading[key]).then(() => store.load[key]());
 
@@ -663,7 +717,8 @@
 
   // ===== polling（見えているときだけ。隠れたら止め、戻ったら即 1 回） =====
   // /api/status は 10 秒、/api/channels・/api/notices と一度読んだタスク・リマインド・記憶・GitHub・プロジェクト・ナレッジは 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
-  // /api/running は実行中のターンがあれば 2 秒・無ければ 10 秒ごと（どれも応答が来てから次を予約する）。
+  // /api/running は実行中のターンがあれば 2 秒・無ければ 10 秒ごと、Claude Code の一覧は見ている間 10 秒・前に出ているセッションのタブの画面は 3 秒ごと
+  // （どれも応答が来てから次を予約する）。
   // 失敗のトーストは続けて失敗している間は最初の 1 回だけで、その間は間隔を倍にして POLL_BACKOFF_MAX_MS まで伸ばす。成功したら元に戻す
   const poll = { started: false, stopped: false };
 
@@ -679,6 +734,17 @@
     notices: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.notices(opts), fails: 0, timer: null },
     lists: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.lists(opts), fails: 0, timer: null },
     turns: { base: () => TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
+    // Claude Code: 一覧は見ている間だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと
+    cc: { base: () => CC_LIST_INTERVAL_MS, run: (opts) => (ccWatching() ? store.load.cc(opts) : Promise.resolve(null)), fails: 0, timer: null },
+    ccScreen: {
+      base: () => CC_SCREEN_INTERVAL_MS,
+      run: (opts) => {
+        const sessionId = store.ccEnabled() ? activeCcSession() : null;
+        return sessionId ? store.load.ccSession(sessionId, opts) : Promise.resolve(null);
+      },
+      fails: 0,
+      timer: null,
+    },
     running: {
       base: () => (store.running && store.running.length > 0 ? RUNNING_BUSY_MS : RUNNING_IDLE_MS),
       run: (opts) => store.load.running(opts),

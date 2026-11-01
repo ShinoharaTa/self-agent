@@ -103,12 +103,17 @@
     S.activity = first ? first.id : null;
   }
 
+  /** そのアクティビティのサイドバー（狭い画面ではドロワー）が見えている */
+  function sidebarShows(id) {
+    return S.activity === id && (narrow() ? S.drawerOpen : !S.sidebarHidden);
+  }
+
   function renderActivity() {
     ensureActivity();
     const top = el("div", { class: "act-group" });
     const bottom = el("div", { class: "act-group act-bottom" });
     for (const a of SA.sidebar.visibleActivities()) {
-      const pressed = !a.tab && S.activity === a.id && (narrow() ? S.drawerOpen : !S.sidebarHidden);
+      const pressed = !a.tab && sidebarShows(a.id);
       // 数（会話は未読のチャンネルの数）
       const n = a.count ? a.count() : 0;
       const label = a.label + (n > 0 ? "（" + (a.countLabel || "") + n + "）" : "");
@@ -196,7 +201,7 @@
   }
 
   // ===== hash のルータ（#/status・#/ch/<id> など。サーバーには届かない） =====
-  const PREFIXED = ["ch", "project", "job"];
+  const PREFIXED = ["ch", "project", "job", "cc"];
 
   function tabFromHash(hash) {
     const path = String(hash || "").replace(/^#\/?/, "");
@@ -935,6 +940,7 @@
     refreshNotices,
     addOutput,
     activeTabId,
+    sidebarShows,
     closeDrawer,
     toggleSidebar,
     togglePanel,
