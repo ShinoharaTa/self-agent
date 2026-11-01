@@ -23,6 +23,7 @@ import type {
 
 const COMPONENT_TYPE = { actionRow: 1, button: 2, stringSelect: 3, textInput: 4, label: 18 } as const;
 const BUTTON_STYLE = { primary: 1, secondary: 2, success: 3, danger: 4 } as const;
+const LINK_BUTTON_STYLE = 5;
 const TEXT_INPUT_STYLE = { short: 1, paragraph: 2 } as const;
 const COMMAND_OPTION_TYPE = { subcommand: 1, string: 3, integer: 4, boolean: 5 } as const;
 
@@ -255,16 +256,18 @@ export function toComponents(rows: readonly ComponentRow[]): ActionRowData<Messa
             style: BUTTON_STYLE[button.style ?? "secondary"],
             disabled: button.disabled ?? false,
           }))
-        : [
-            {
-              type: COMPONENT_TYPE.stringSelect,
-              customId: row.select.customId,
-              placeholder: row.select.placeholder,
-              minValues: row.select.minValues,
-              maxValues: row.select.maxValues,
-              options: row.select.options,
-            },
-          ],
+        : row.kind === "links"
+          ? row.links.map((link) => ({ type: COMPONENT_TYPE.button, style: LINK_BUTTON_STYLE, label: link.label, url: link.url }))
+          : [
+              {
+                type: COMPONENT_TYPE.stringSelect,
+                customId: row.select.customId,
+                placeholder: row.select.placeholder,
+                minValues: row.select.minValues,
+                maxValues: row.select.maxValues,
+                options: row.select.options,
+              },
+            ],
   }));
 }
 

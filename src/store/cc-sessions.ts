@@ -46,6 +46,8 @@ export type CcSessionRow = {
   startPaneId: string | null;
   /** trust のダイアログの確認待ちに気づいた時刻（消えたら null） */
   trustPendingAt: string | null;
+  /** 判断待ちを #system に最後に知らせた時刻（v32。CC5c。待ち始めより後なら、その待ちは知らせ済み） */
+  notifiedAt: string | null;
 };
 
 /** self-agent が起動したセッションの記録（recordStart） */
@@ -104,6 +106,7 @@ function toRow(row: Record<string, SQLOutputValue>): CcSessionRow {
     tmuxSessionId: nullableString(row.tmux_session_id),
     startPaneId: nullableString(row.start_pane_id),
     trustPendingAt: nullableString(row.trust_pending_at),
+    notifiedAt: nullableString(row.notified_at),
   };
 }
 
@@ -256,6 +259,12 @@ export class CcSessionStore {
     const result = this.db
       .prepare("UPDATE cc_sessions SET trust_pending_at = ? WHERE session_id = ?")
       .run(at === null ? null : at.toISOString(), sessionId);
+    return Number(result.changes) > 0;
+  }
+
+  /** 判断待ちを #system に知らせた時刻を書く（CC5c）。行があれば true */
+  setNotifiedAt(sessionId: string, at: Date): boolean {
+    const result = this.db.prepare("UPDATE cc_sessions SET notified_at = ? WHERE session_id = ?").run(at.toISOString(), sessionId);
     return Number(result.changes) > 0;
   }
 
