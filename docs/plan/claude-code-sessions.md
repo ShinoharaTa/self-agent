@@ -322,9 +322,9 @@ CC1 で全部は作らず、**その段で要る表・列だけ**足す（`MIGRA
 
 | 版 | 段 | 変更 |
 |---|---|---|
-| v27 | CC1 | `cc_sessions(session_id PK, cwd, name, pid, permission_mode, first_seen_at, last_seen_at, gone_at, last_prompt_at, last_prompt_text, last_event, last_event_at, waiting_kind, waiting_for, waiting_since)`、`cc_state(id = 1, multiline_ok INTEGER NOT NULL DEFAULT 1)`（`waiting_for` は `claude agents --json` の `waitingFor` の文字列。PR #203 に無ければ CC2 で足す） |
+| v27 | CC1 | `cc_sessions(session_id PK, cwd, name, pid, permission_mode, first_seen_at, last_seen_at, gone_at, last_prompt_at, last_prompt_text, last_event, last_event_at, waiting_kind, waiting_since)`、`cc_state(id = 1, multiline_ok INTEGER NOT NULL DEFAULT 1)`（`waiting_for` は CC1 では入らなかったので v29 で足した） |
 | v28 | CC3 | `cc_sends(id PK AUTOINCREMENT, session_id, pane_id, text NOT NULL, origin CHECK IN ('web','tool','github','start'), state CHECK IN ('awaiting_confirm','queued','delivering','delivered','unconfirmed','failed','gave_up','cancelled'), last_pane_state, attempts DEFAULT 0, delivered_at, created_at, updated_at)` |
-| v29 | CC4 | `cc_sessions` に `started_by TEXT NOT NULL DEFAULT 'owner' CHECK IN ('owner','web','tool','github')`・`tmux_session TEXT`（表示用）・`tmux_session_id TEXT`（`$N`）・`start_pane_id TEXT`（`%N`）・`trust_pending_at TEXT` |
+| v29 | CC4 | `cc_sessions` に `started_by TEXT NOT NULL DEFAULT 'owner' CHECK IN ('owner','web','tool','github')`・`tmux_session TEXT`（表示用）・`tmux_session_id TEXT`（`$N`）・`start_pane_id TEXT`（`%N`）・`trust_pending_at TEXT`・`waiting_for TEXT`（`claude agents --json` の `waitingFor` の文字列。registry が一覧を読むたびに書き、`waiting` でなければ NULL。API の `waitingFor` に出す。§2.2） |
 | v30 | CC5a | `cc_permissions(id PK AUTOINCREMENT（受信の連番）, session_id NOT NULL, request_hash NOT NULL, tool_name NOT NULL, summary NOT NULL, permission_mode, state CHECK IN ('pending','allowed','allowed_always','denied','answered_elsewhere','expired','released'), via CHECK IN ('web','discord','hook','status','shutdown','limit'), created_at NOT NULL, resolved_at)`。部分索引 `cc_permissions_pending ON cc_permissions(session_id) WHERE state = 'pending'` を一意に（1 セッション 1 件）。`released` は self-agent が保留せず・保留をやめて空の本文を返したもの（停止・1 分 20 件の上限） |
 | v31 | CC5b | `cc_permissions` に `always_rules TEXT`（線引きを通った提案の rules の JSON。無ければ NULL = 常に許可は出せない） |
 | v32 | CC5c | `cc_permissions` に `message_id TEXT`、`cc_sessions` に `notified_at TEXT` |
