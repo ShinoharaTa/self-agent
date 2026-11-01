@@ -26,6 +26,7 @@ import { InboxRotator } from "./app/inbox-rotate.ts";
 import type { CcPermissionButtons } from "./app/commands/cc.ts";
 import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
 import { createNotifyMemoryChange } from "./app/commands/memory-undo.ts";
+import { GithubHandoff } from "./app/github-handoff.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { createTurnQueue, KeyedSerialQueue } from "./app/queue.ts";
 import { ReminderScheduler } from "./app/reminders.ts";
@@ -194,6 +195,8 @@ const notices = config.web ? noticeStore : undefined;
 const ccSessions = new CcSessionStore(db, now);
 const ccSends = new CcSendStore(db, now);
 const ccPermissionStore = new CcPermissionStore(db, now);
+// GitHub の通知のスレッド・出来事・ポーリングの状態（SELF_AGENT_GITHUB=1 のときだけ書く。古い行は tick で消す）
+const githubStore = new GithubStore(db, now);
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -426,6 +429,8 @@ const commands = createCommands({
   ...history,
   log,
 });
+// GitHub の通知の [対応]（下の Claude Code の配線の後で作る。ボタンは押されたときに読む）
+let githubHandoff: GithubHandoff | undefined;
 const handleInteraction = createInteractionHandler({
   cfg: config,
   commands,
@@ -454,6 +459,8 @@ const handleInteraction = createInteractionHandler({
     ...(jobs === undefined ? {} : { jobs }),
     // #system の許可の要求のボタン（SELF_AGENT_CC=1 で SELF_AGENT_CC_NOTIFY が 1 のときだけ。下で作る）
     ccPermissionButtons: () => ccPermissionButtons,
+    // #github の [対応]（SELF_AGENT_GITHUB と SELF_AGENT_CC のときだけ。送り込みは下で作る）
+    ...(config.github && config.cc ? { githubHandoff: () => githubHandoff } : {}),
     // /close の確定の区切りの行（Web UI が有効なときだけ）
     ...history,
     log,
@@ -564,21 +571,6 @@ const reminderScheduler = new ReminderScheduler({
   turn,
   // 予約した依頼の依頼と返事の行（Web UI が有効なときだけ）
   ...history,
-  now,
-  log,
-});
-
-// GitHub の通知（docs/plan/github-notifications.md。SELF_AGENT_GITHUB=1 のときだけ）: 自前のタイマーで gh api の通知を取り、#github に投稿する。
-// gh は起動時に PATH から 1 回解決する（無ければ取得せず、#system に 1 回知らせる）。投稿は既定の人格の Bot
-const ghPath = config.github ? resolveGhPath() : undefined;
-const githubStore = new GithubStore(db, now);
-const githubPoller = createGithubPoller({
-  cfg: config,
-  gh: ghPath === undefined ? undefined : new GhClient({ ghPath }),
-  store: githubStore,
-  guildSettings,
-  gateway,
-  notify,
   now,
   log,
 });
@@ -701,6 +693,56 @@ if (
     ccStatus({ panes, hookListening: () => hookServer.address() !== undefined, store: ccSessions, permissions: ccPermissionStore });
 }
 
+// GitHub の通知の [対応]（docs/plan/github-notifications.md §5・§6、docs/plan/claude-code-sessions.md §6。SELF_AGENT_GITHUB と SELF_AGENT_CC の両方のときだけ）:
+// そのリポジトリの Claude Code のセッションに固定のテンプレートを cc_sends（origin github）で積み、無ければそのディレクトリで起動して積む。
+// 地図（~/workspace の remote）を読む git は起動時に PATH から 1 回解決する。無い・ワークスペースが workDir・dataDir と重なるなら [対応] を付けない（§7.2）
+if (config.github && ccRegistry !== undefined && ccPanes !== undefined && ccTmux !== undefined && ccSender !== undefined && ccStarter !== undefined) {
+  const handoffGitPath = resolveCommandPath("git");
+  const workspaceReal = (() => {
+    try {
+      return realpathSync(config.workspaceDir);
+    } catch {
+      return undefined;
+    }
+  })();
+  const overlaps = (a: string, b: string): boolean => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+  const dataReal = realpathSync(config.dataDir);
+  if (handoffGitPath === undefined) log("git が見つからないため、#github に [対応] を付けません");
+  else if (workspaceReal !== undefined && (overlaps(workspaceReal, realWorkDir) || overlaps(workspaceReal, dataReal))) {
+    log("SELF_AGENT_WORKSPACE_DIR が workDir・dataDir と重なるため、#github に [対応] を付けません");
+  } else {
+    githubHandoff = new GithubHandoff({
+      workspaceDir: config.workspaceDir,
+      gitPath: handoffGitPath,
+      store: githubStore,
+      sends: ccSends,
+      registry: ccRegistry,
+      panes: ccPanes,
+      tmux: ccTmux,
+      sender: ccSender,
+      starter: ccStarter,
+      now,
+      log,
+    });
+  }
+}
+
+// GitHub の通知（docs/plan/github-notifications.md。SELF_AGENT_GITHUB=1 のときだけ）: 自前のタイマーで gh api の通知を取り、#github に投稿する。
+// gh は起動時に PATH から 1 回解決する（無ければ取得せず、#system に 1 回知らせる）。投稿は既定の人格の Bot
+const ghPath = config.github ? resolveGhPath() : undefined;
+const githubPoller = createGithubPoller({
+  cfg: config,
+  // [対応] を付ける（SELF_AGENT_CC も有効で、送り込みを準備できたときだけ）
+  ...(githubHandoff === undefined ? {} : { handoff: githubHandoff }),
+  gh: ghPath === undefined ? undefined : new GhClient({ ghPath }),
+  store: githubStore,
+  guildSettings,
+  gateway,
+  notify,
+  now,
+  log,
+});
+
 // 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
 let staticServer: StaticServer | undefined;
 if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
@@ -767,7 +809,13 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       ...memoryRoutes({ memories, log }),
       ...noticeRoutes({ notices: noticeStore, guildSettings, now }),
       // GitHub の通知（SELF_AGENT_GITHUB が無効なら 404）とナレッジは読むだけ
-      ...githubRoutes({ cfg: config, store: githubStore, status: githubPoller === undefined ? undefined : () => githubPoller.status() }),
+      ...githubRoutes({
+        cfg: config,
+        store: githubStore,
+        status: githubPoller === undefined ? undefined : () => githubPoller.status(),
+        // [対応]・[起動して送る]（SELF_AGENT_CC も有効なときだけ）
+        ...(githubHandoff === undefined ? {} : { handoff: githubHandoff }),
+      }),
       ...knowledgeRoutes({ knowledge }),
       // この機械の Claude Code のセッションの一覧と画面の写し（SELF_AGENT_CC が無効なら 404）
       // 送信（/send・/cancel）は SELF_AGENT_CC が有効なときだけ

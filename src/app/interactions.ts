@@ -5,6 +5,7 @@ import { createGuestsCommand, type GuestsCommandDeps } from "../guest/commands/a
 import { type CcComponentDeps, createCcComponent } from "./commands/cc.ts";
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
+import { createGithubComponent, type GithubComponentDeps } from "./commands/github.ts";
 import { helpCommand } from "./commands/help.ts";
 import { createJobCommand, createJobComponent, type JobCommandDeps } from "./commands/job.ts";
 import { createHomeComponent, type HomeDeps } from "./commands/home.ts";
@@ -87,11 +88,13 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
  * ターンの [中断]・[続ける]（turn:）は発言の handler（実行中のターンの中断と、発言と同じ経路のターンの投入）を使う。
  * リマインドのボタンと /reminders のセレクト（rem:）は、リマインドとタスクのストアを使う。
  * #jobs のボタンとモーダル（job:）は作業ジョブ（jobs。SELF_AGENT_JOBS が有効のときだけ渡す）を使う。
- * Claude Code のボタン（cc:）は許可の要求の保留（ccPermissionButtons。SELF_AGENT_CC が有効なときだけ）を使う
+ * Claude Code のボタン（cc:）は許可の要求の保留（ccPermissionButtons。SELF_AGENT_CC が有効なときだけ）を使う。
+ * #github の [対応]（gh:）は GitHub の通知の送り込み（githubHandoff。SELF_AGENT_GITHUB と SELF_AGENT_CC が有効のときだけ渡す）を使う
  */
 export type ComponentDeps = CloseDeps &
   CcComponentDeps &
   Partial<Pick<JobCommandDeps, "jobs">> &
+  Partial<Pick<GithubComponentDeps, "githubHandoff">> &
   WaitDeps &
   TasksDeps &
   HomeDeps &
@@ -117,6 +120,7 @@ export function createComponents(deps: ComponentDeps): ComponentHandler[] {
     createRemindersComponent(deps),
     createCcComponent(deps),
     ...(deps.jobs === undefined ? [] : [createJobComponent({ jobs: deps.jobs, log: deps.log })]),
+    ...(deps.githubHandoff === undefined ? [] : [createGithubComponent({ githubHandoff: deps.githubHandoff, log: deps.log })]),
   ];
 }
 

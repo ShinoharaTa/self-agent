@@ -158,9 +158,9 @@ export class CcSender {
   /**
    * 送信を受け付ける（§3.2）。text は normalizeSendText を通したもの。送り先のペインを確かめてから（tmux の外・claude でない・サーバーが無いなら積まない）、
    * 同じセッション・同じ本文の CC_SEND_DUPLICATE_MS 以内の行があればそれを、そのセッションにまだ終わっていない行があれば already_queued を返し、
-   * それ以外は queued で積んで待ち行列をすぐ回す
+   * それ以外は queued で積んで待ち行列をすぐ回す。notificationId は GitHub の [対応]（origin github。CC6）のときだけ
    */
-  async submit(input: { sessionId: string; text: string; origin: CcSendOrigin }): Promise<CcSubmitResult> {
+  async submit(input: { sessionId: string; text: string; origin: CcSendOrigin; notificationId?: number }): Promise<CcSubmitResult> {
     const { registry, panes, sends, now, log } = this.deps;
     if (this.stopped) return { ok: false, reason: "stopped" };
     const { sessions } = registry.snapshot();
@@ -175,7 +175,13 @@ export class CcSender {
     const same = sends.findRecentSame(input.sessionId, input.text, new Date(now().getTime() - CC_SEND_DUPLICATE_MS));
     if (same !== undefined) return { ok: true, send: same, duplicate: true };
     if (sends.activeFor(input.sessionId) !== undefined) return { ok: false, reason: "already_queued" };
-    const send = sends.add({ sessionId: input.sessionId, text: input.text, origin: input.origin, state: "queued" });
+    const send = sends.add({
+      sessionId: input.sessionId,
+      text: input.text,
+      origin: input.origin,
+      state: "queued",
+      ...(input.notificationId === undefined ? {} : { notificationId: input.notificationId }),
+    });
     log(`Claude Code: 送りました（#${send.id}、queued）`);
     void this.kick();
     return { ok: true, send, duplicate: false };

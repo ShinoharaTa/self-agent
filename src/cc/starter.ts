@@ -1,5 +1,5 @@
 // Claude Code の新しいセッションの起動（docs/plan/claude-code-sessions.md §4.2・§7 の 5。CC4）。SELF_AGENT_WORKSPACE_DIR の直下の実際のディレクトリ
-// （名前は CC_PROJECT_PATTERN、realpath がそのもの、workDir・dataDir・~/.config/self-agent・~/.claude・CLAUDE_CONFIG_DIR と重ならない）で、
+// （名前は CC_PROJECT_PATTERN、realpath がそのもの、workDir・dataDir・~/.config/self-agent・~/.claude・CLAUDE_CONFIG_DIR と重ならない。GitHub の [対応] の起動だけは 1 つ下も可。CC6）で、
 // 既定のソケットの tmux に `new-session -d -P -F '#{session_id} #{pane_id}'` で `'<claude>' -n '<題名>' [--permission-mode '<mode>']; exec "$SHELL"` を起動する
 // （tmux のサーバーが無ければ断る。決定 8）。引数は固定の形で、題名・モードは検証してから単引用符で囲む（`'` を含む題名は通さない）。
 // セッション名は表示用で、オーナーの hook で変わりうるので、以後は返った $N・%N で追う。最初の指示は cc_sends にペイン宛て（origin start）で積み、
@@ -67,6 +67,13 @@ export type CcStartInput = {
   text?: unknown;
   permissionMode?: unknown;
   startedBy: Exclude<CcStartedBy, "owner">;
+  /**
+   * project に直下の 1 つ下（`<直下>/<名前>`）も許す（GitHub の [対応] の起動だけ。リポジトリの地図はワークスペースの 1 つ下まで見る。CC6）。
+   * Web の起動は渡さない（直下だけ）
+   */
+  nested?: boolean;
+  /** 最初の指示を GitHub の [対応]（origin github）として積むときの通知（CC6）。無ければ origin start */
+  notificationId?: number;
 };
 
 /** 題名の検証（純関数）。前後の空白を除いて CC_TITLE_PATTERN に合えばそれ */
@@ -140,20 +147,25 @@ export type CcPlaces = {
 
 /**
  * 起動してよいディレクトリ（§4.2）。名前が CC_PROJECT_PATTERN で、`<realpath(workspace)>/<name>` が symlink でない実際のディレクトリで、
- * その realpath がそれそのもので、重なってはいけない場所と重ならず、tmux の書式の `#` を含まないときだけ、その絶対パス。それ以外は undefined
+ * その realpath がそれそのもので、重なってはいけない場所と重ならず、tmux の書式の `#` を含まないときだけ、その絶対パス。それ以外は undefined。
+ * nested なら `<直下>/<名前>`（どちらの要素も CC_PROJECT_PATTERN で、どちらの段も symlink でない実際のディレクトリ）も許す（GitHub の [対応]。CC6）
  */
-export function projectDir(name: unknown, places: CcPlaces): string | undefined {
-  if (typeof name !== "string" || !CC_PROJECT_PATTERN.test(name)) return undefined;
+export function projectDir(name: unknown, places: CcPlaces, options: { nested?: boolean } = {}): string | undefined {
+  if (typeof name !== "string") return undefined;
+  const parts = name.split("/");
+  if (parts.length > (options.nested === true ? 2 : 1) || !parts.every((part) => CC_PROJECT_PATTERN.test(part))) return undefined;
   let root: string;
   try {
     root = realpathSync(places.workspaceDir);
   } catch {
     return undefined;
   }
-  const dir = join(root, name);
+  const dir = join(root, ...parts);
   try {
-    const stat = lstatSync(dir);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return undefined;
+    for (let depth = 1; depth <= parts.length; depth++) {
+      const stat = lstatSync(join(root, ...parts.slice(0, depth)));
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return undefined;
+    }
     if (realpathSync(dir) !== dir) return undefined;
   } catch {
     return undefined;
@@ -304,12 +316,20 @@ export class CcStarter {
     } else if (input.text !== undefined && input.text !== null && typeof input.text !== "string") {
       return { ok: false, reason: "invalid_text" };
     }
-    const dir = projectDir(input.project, this.deps.places);
+    const dir = projectDir(input.project, this.deps.places, { nested: input.nested === true });
     if (dir === undefined) return { ok: false, reason: "invalid_project" };
     // 同時に 2 つは起動しない（2 つ目は 1 分の間隔と同じ扱い）
     if (this.starting) return { ok: false, reason: "too_soon" };
     this.starting = true;
-    const run = this.run({ project: input.project as string, dir, title, mode, text, startedBy: input.startedBy });
+    const run = this.run({
+      project: input.project as string,
+      dir,
+      title,
+      mode,
+      text,
+      startedBy: input.startedBy,
+      ...(input.notificationId === undefined ? {} : { notificationId: input.notificationId }),
+    });
     this.inFlight = run;
     try {
       return await run;
@@ -326,6 +346,7 @@ export class CcStarter {
     mode: string | undefined;
     text: string | undefined;
     startedBy: Exclude<CcStartedBy, "owner">;
+    notificationId?: number;
   }): Promise<CcStartResult> {
     const { cfg, registry, tmux, sends, now, log } = this.deps;
     const at = now().getTime();
@@ -358,7 +379,14 @@ export class CcStarter {
     const send =
       input.text === undefined
         ? undefined
-        : sends.add({ sessionId: null, paneId, startDir: input.dir, text: input.text, origin: "start", state: "queued" });
+        : sends.add({
+            sessionId: null,
+            paneId,
+            startDir: input.dir,
+            text: input.text,
+            state: "queued",
+            ...(input.notificationId === undefined ? { origin: "start" } : { origin: "github", notificationId: input.notificationId }),
+          });
     const entry: Started = {
       startedBy: input.startedBy,
       tmuxSession: name,

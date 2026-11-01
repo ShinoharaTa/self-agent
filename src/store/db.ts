@@ -589,6 +589,13 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE cc_permissions ADD COLUMN message_channel_id TEXT;
   ALTER TABLE cc_sessions ADD COLUMN notified_at TEXT;
   `,
+  // v33: GitHub の通知の [対応] を Claude Code のセッションへの送信に載せ替える（docs/plan/claude-code-sessions.md §6・§9。CC6）。
+  // notification_id は [対応] を押した通知（github_notifications.id。origin github の行だけ）。同じスレッドの二重の押下の判定に使う。
+  // github_handoffs は使わない（表は残す）
+  `
+  ALTER TABLE cc_sends ADD COLUMN notification_id INTEGER;
+  CREATE INDEX cc_sends_notification ON cc_sends(notification_id) WHERE notification_id IS NOT NULL;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
