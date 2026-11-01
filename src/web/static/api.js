@@ -93,7 +93,8 @@
   // kbEntries[id]: /api/knowledge/<id> の entry（404 なら "missing"、それ以外の失敗は "failed"）
   // projects: /api/projects（まだ読んでいなければ null）。projectFiles[slug]: /files の結果（{ files, truncated, missing }。missing は 404）。
   // projectFile[slug]: 選んだファイルの中身（{ path, text, error, maxBytes }。読んでいる間は text も error も null。maxBytes は 413 の応答の上限（無ければ null））
-  // cc: /api/cc/sessions（{ stale, unreadable, sessions }。まだ読んでいなければ null）。ccAt: それを受け取った時刻。
+  // cc: /api/cc/sessions（{ stale, unreadable, fetchedAt, sessions }。まだ読んでいなければ null）。ccAt: 最後に読み終えた時刻（読めなくても進める）。
+  // ccFailed: 最後の読み取りに失敗した。
   // ccSessions[sessionId]: /api/cc/sessions/<id> の結果（{ session, missing }。session は 1 件 + screen。missing は 404）
   const store = {
     status: null,
@@ -123,6 +124,7 @@
     projectFile: {},
     cc: null,
     ccAt: 0,
+    ccFailed: false,
     ccSessions: {},
     load: {},
   };
@@ -671,13 +673,24 @@
   /** opts.quiet は polling から（失敗のトーストは polling が出す） */
   store.load.cc = (opts) =>
     once("cc", async () => {
-      const data = await SA.api.get("/api/cc/sessions", opts);
+      let data;
+      try {
+        data = await SA.api.get("/api/cc/sessions", opts);
+      } catch (err) {
+        // 読めなくても ccAt は進める（サイドバーを描き直すたびに読み直さない）
+        store.ccAt = Date.now();
+        store.ccFailed = true;
+        SA.app.refreshSidebar();
+        throw err;
+      }
+      store.ccAt = Date.now();
+      store.ccFailed = false;
       store.cc = {
         stale: !!(data && data.stale),
         unreadable: !!(data && data.unreadable),
+        fetchedAt: data && typeof data.fetchedAt === "string" ? data.fetchedAt : null,
         sessions: Array.isArray(data && data.sessions) ? data.sessions.filter((s) => s && typeof s.sessionId === "string") : [],
       };
-      store.ccAt = Date.now();
       SA.app.refreshSidebar();
       // タブの見出しの名前が変わりうる
       if (activeCcSession() !== null) SA.app.refreshTabs();
@@ -734,14 +747,13 @@
     notices: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.notices(opts), fails: 0, timer: null },
     lists: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.lists(opts), fails: 0, timer: null },
     turns: { base: () => TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
-    // Claude Code: 一覧は見ている間だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと
-    cc: { base: () => CC_LIST_INTERVAL_MS, run: (opts) => (ccWatching() ? store.load.cc(opts) : Promise.resolve(null)), fails: 0, timer: null },
+    // Claude Code: 一覧は見ている間だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと。見ていなければ次を予約せず、
+    // 見始めたとき（サイドバーを出した・タブを前に出した。SA.poll.kickCc）と、隠れていた画面が戻ったとき（schedule）に始め直す
+    cc: { base: () => CC_LIST_INTERVAL_MS, when: ccWatching, run: (opts) => store.load.cc(opts), fails: 0, timer: null },
     ccScreen: {
       base: () => CC_SCREEN_INTERVAL_MS,
-      run: (opts) => {
-        const sessionId = store.ccEnabled() ? activeCcSession() : null;
-        return sessionId ? store.load.ccSession(sessionId, opts) : Promise.resolve(null);
-      },
+      when: () => store.ccEnabled() && activeCcSession() !== null,
+      run: (opts) => store.load.ccSession(activeCcSession(), opts),
       fails: 0,
       timer: null,
     },
@@ -772,14 +784,16 @@
     if (p.fails === 1) SA.ui.toast(typeof err.toast === "string" ? err.toast : "サーバーにつながりません");
   }
 
-  /** 1 回読み、終わったら次を予約する（重ねて呼ばれても予約は 1 つ） */
+  /** 1 回読み、終わったら次を予約する（重ねて呼ばれても予約は 1 つ）。when のあるものは、それが false なら読まず次も予約しない */
   function runPoll(p) {
     clearTimeout(p.timer);
     p.timer = null;
-    if (!active()) return;
+    if (!active() || (p.when && !p.when())) return;
+    p.inFlight = true;
     p.run({ quiet: true }).then((err) => {
+      p.inFlight = false;
       countFailure(p, err);
-      if (!active()) return;
+      if (!active() || (p.when && !p.when())) return;
       clearTimeout(p.timer);
       p.timer = setTimeout(() => runPoll(p), backoff(p.base(), p.fails));
     });
@@ -810,6 +824,10 @@
     stopped: () => poll.stopped,
     /** 送った・中断した直後: 実行中のターンをすぐ読む */
     running: () => runPoll(polls.running),
+    /** Claude Code を見始めた: 止まっている（予約も読み取りも無い）一覧・画面の polling を始め直す */
+    kickCc: () => {
+      for (const p of [polls.cc, polls.ccScreen]) if (p.timer === null && !p.inFlight) runPoll(p);
+    },
     stop() {
       poll.stopped = true;
       clearTimers();

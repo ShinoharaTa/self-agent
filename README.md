@@ -231,9 +231,9 @@ SELF_AGENT_CC_HOOK_TOKEN=...
 npm run cc-setup -- --print
 ```
 
-It prints an `env` entry and `hooks` for six events (`SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`, `Notification`, `PermissionRequest`), all `type: "http"` to `http://127.0.0.1:<port>/hook` with the header `X-Self-Agent-Hook: $SELF_AGENT_CC_HOOK_TOKEN`. Replace the placeholder in `env` with the same token as in `~/.config/self-agent/env`, and keep `~/.claude/settings.json` at mode 600. If the token is not picked up from `settings.json`'s `env`, export `SELF_AGENT_CC_HOOK_TOKEN` in the shell that starts your tmux server instead.
+It prints an `env` entry and `hooks` for five events (`UserPromptSubmit`, `Stop`, `SessionEnd`, `Notification`, `PermissionRequest`; `SessionStart` is left out because it does not support http hooks), all `type: "http"` to `http://127.0.0.1:<port>/hook` with the header `X-Self-Agent-Hook: $SELF_AGENT_CC_HOOK_TOKEN`. Replace the placeholder in `env` with the same token as in `~/.config/self-agent/env`, and keep `~/.claude/settings.json` at mode 600. If the token is not picked up from `settings.json`'s `env`, export `SELF_AGENT_CC_HOOK_TOKEN` in the shell that starts your tmux server instead.
 
-4. Restart the bot. While it is down, the hooks get "connection refused" and Claude Code carries on as usual (the timeout is 3 seconds).
+4. Restart the bot. While the bot is stopped, prompts are not delayed, but the terminal (and probably RC) shows a hook error line (`hook error … ECONNREFUSED`) on every turn.
 
 ## Development
 

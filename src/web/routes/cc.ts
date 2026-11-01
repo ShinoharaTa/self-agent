@@ -84,7 +84,9 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     permission: null,
   });
 
-  const lookupPanes = async (): Promise<PaneLookup | undefined> => (panes === undefined ? undefined : panes.lookup());
+  // 入れ子の claude を見分けるため、一覧のすべての pid を渡す
+  const lookupPanes = async (views: readonly CcSessionView[]): Promise<PaneLookup | undefined> =>
+    panes === undefined ? undefined : panes.lookup(new Set(views.map((view) => view.pid)));
   const paneOf = (lookup: PaneLookup | undefined, view: CcSessionView): TmuxPane | undefined =>
     lookup !== undefined && lookup.ok ? lookup.find({ pid: view.pid, tmux: view.tmux }) : undefined;
 
@@ -96,12 +98,14 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         if (registry === undefined) return NOT_FOUND;
         registry.touch();
         const snapshot = registry.snapshot();
-        const lookup = await lookupPanes();
+        const lookup = await lookupPanes(snapshot.sessions);
         return {
           status: 200,
           json: {
             stale: snapshot.stale,
             unreadable: snapshot.unreadable,
+            // 最後に読めた時刻（画面の「n 秒前」。まだなら null）
+            fetchedAt: iso(snapshot.fetchedAt),
             sessions: snapshot.sessions.map((view) => sessionJson(view, paneOf(lookup, view))),
           },
         };
@@ -115,9 +119,10 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         registry.touch();
         const id = params[0] ?? "";
         if (!isUuid(id)) return NOT_FOUND;
-        const view = registry.snapshot().sessions.find((session) => session.sessionId === id);
+        const sessions = registry.snapshot().sessions;
+        const view = sessions.find((session) => session.sessionId === id);
         if (view === undefined) return NOT_FOUND;
-        const pane = paneOf(await lookupPanes(), view);
+        const pane = paneOf(await lookupPanes(sessions), view);
         let screen: string | null = null;
         if (pane !== undefined && tmux !== undefined) {
           const captured = await tmux.capturePane(pane.paneId, { historyLines: CC_SCREEN_LINES });
@@ -129,7 +134,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
   ];
 }
 
-/** /api/status の cc（§5.1）。tmux は list-panes の結果（ok / no_server / failed）。許可の保留は CC5a から */
+/** /api/status の cc（§5.1）。tmux は直近の list-panes の結果（ok / no_server / failed。まだ読んでいなければ null）。許可の保留は CC5a から */
 export type CcStatus = {
   enabled: boolean;
   /** hook の受け口が待ち受けているか */
@@ -142,18 +147,18 @@ export type CcStatus = {
 export const CC_STATUS_DISABLED: CcStatus = { enabled: false, hookPort: false, tmux: null, multilineOk: null, pendingPermissions: 0 };
 
 export type CcStatusDeps = {
-  tmux: Pick<Tmux, "listPanes">;
+  panes: Pick<CcPaneResolver, "lastTmux">;
   hookListening: () => boolean;
   store: Pick<CcSessionStore, "multilineOk">;
 };
 
-/** SELF_AGENT_CC が有効なときの /api/status の cc */
-export async function ccStatus(deps: CcStatusDeps): Promise<CcStatus> {
-  const panes = await deps.tmux.listPanes();
+/** SELF_AGENT_CC が有効なときの /api/status の cc。tmux は /api/cc/* が引いた直近の結果で、ここでは list-panes を起動しない */
+export function ccStatus(deps: CcStatusDeps): CcStatus {
+  const tmux = deps.panes.lastTmux();
   return {
     enabled: true,
     hookPort: deps.hookListening(),
-    tmux: panes.ok ? "ok" : panes.reason === "no_server" ? "no_server" : "failed",
+    tmux: tmux === undefined ? null : tmux === "ok" || tmux === "no_server" ? tmux : "failed",
     multilineOk: deps.store.multilineOk(),
     pendingPermissions: 0,
   };

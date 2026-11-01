@@ -140,6 +140,30 @@ test("CcRegistry: UserPromptSubmit で最後の指示が進み、本文は先頭
   assert.equal(s.store.get(S1)?.lastPromptText, "x".repeat(200));
 });
 
+test("CcRegistry: 長い貼り付けの prompt は pasted_content のタグを外した中身の先頭 200 字", async (t) => {
+  const s = setup(t);
+  s.willList(agent(S1));
+  await s.registry.tick();
+  const pasted = `<pasted_content id="p1">${"y".repeat(250)}</pasted_content id="p1">`;
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: `見て: ${pasted}` });
+  assert.equal(s.store.get(S1)?.lastPromptText, `見て: ${"y".repeat(196)}`);
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: '<pasted_content id="a" lines="3">1\n2\n3</pasted_content>' });
+  assert.equal(s.store.get(S1)?.lastPromptText, "1\n2\n3");
+});
+
+test("CcRegistry: permission_mode の無い事象（Notification）は行の permission_mode を消さない", async (t) => {
+  const s = setup(t);
+  s.willList(agent(S1));
+  await s.registry.tick();
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "a", permission_mode: "auto" });
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "permission_prompt" });
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "idle_prompt" });
+  assert.equal(s.store.get(S1)?.permissionMode, "auto");
+  assert.equal(s.registry.snapshot().sessions[0]!.permissionMode, "auto");
+  s.hook({ hook_event_name: "Stop", session_id: S1 });
+  assert.equal(s.store.get(S1)?.permissionMode, "auto");
+});
+
 test("CcRegistry: permission_prompt で判断待ち、Stop で解消。idle_prompt は判断待ちにしない。busy の間は実行中", async (t) => {
   const s = setup(t);
   s.willList(agent(S1));
@@ -320,6 +344,93 @@ test("CcRegistry: 周期は見ていなければ 60 秒、touch から 30 秒は
   assert.equal(s.scheduled.length, 0);
   s.hook({ hook_event_name: "Stop", session_id: S1 });
   assert.equal(s.scheduled.length, 0);
+});
+
+test("CcRegistry: 見ていなかった状態で touch されたら、最後に読み始めてから設定の秒数経っていれば 60 秒の予約を取り消してすぐ読む", async (t) => {
+  // start の前は何もしない
+  const before = setup(t, 10);
+  before.registry.touch();
+  assert.equal(before.scheduled.length, 0);
+
+  const s = setup(t, 10);
+  s.willList(agent(S1));
+  s.registry.start();
+  await s.registry.idle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(s.delays, [CC_IDLE_POLL_MS]);
+
+  // 最後に読み始めてから 15 秒（10 秒以上）: すぐ読む予約に変わる
+  s.clock.now = BASE + 15_000;
+  s.registry.touch();
+  assert.deepEqual(s.delays.slice(1), [0]);
+  assert.equal(s.scheduled.length, 1);
+  await s.fire();
+  assert.equal(s.calls(), 2);
+  // 読み終わった後の予約は今どおり（見ているので設定の秒数）
+  assert.deepEqual(s.delays.slice(2), [10_000]);
+  // 見ている間の touch は予約を変えない
+  s.registry.touch();
+  assert.deepEqual(s.delays.slice(3), []);
+
+  // 見なくなってから（touch から 30 秒超）、読み始めて 10 秒未満なら予約を変えない（読めなかった読み取りも数える）
+  s.clock.now = BASE + 60_000;
+  s.willFail();
+  await s.fire();
+  assert.equal(s.calls(), 3);
+  assert.deepEqual(s.delays.slice(3), [CC_IDLE_POLL_MS]);
+  s.clock.now = BASE + 65_000;
+  s.registry.touch();
+  assert.deepEqual(s.delays.slice(4), []);
+
+  // 事象の早い読み取りを予約している間は変えない
+  s.clock.now = BASE + 200_000;
+  s.hook({ hook_event_name: "Stop", session_id: S1 });
+  assert.deepEqual(s.delays.slice(4), [CC_EVENT_REFRESH_MS]);
+  s.registry.touch();
+  assert.deepEqual(s.delays.slice(5), []);
+
+  // 停止の後は何もしない
+  s.registry.stop();
+  s.clock.now = BASE + 400_000;
+  s.registry.touch();
+  assert.equal(s.scheduled.length, 0);
+});
+
+test("CcRegistry: 読んでいる途中の touch は予約を変えない", async (t) => {
+  const db = tempDb(t);
+  const clock = { now: BASE };
+  const now = (): Date => new Date(clock.now);
+  let release: (() => void) | undefined;
+  const delays: number[] = [];
+  const registry = new CcRegistry({
+    cfg: { ccPollSec: 10 },
+    agents: {
+      list: () =>
+        new Promise<AgentsResult>((resolve) => {
+          release = () => resolve({ ok: true, agents: [agent(S1)], dropped: 0 });
+        }),
+    },
+    dirs: { sessionFile: () => undefined, transcriptMtime: () => undefined },
+    store: new CcSessionStore(db, now),
+    now,
+    timers: {
+      after: (_fn, ms) => {
+        delays.push(ms);
+        return () => undefined;
+      },
+    },
+    log: () => undefined,
+  });
+  registry.start();
+  clock.now = BASE + 20_000;
+  registry.touch();
+  assert.deepEqual(delays, []);
+  release?.();
+  await registry.idle();
+  await new Promise((resolve) => setImmediate(resolve));
+  // 読み終わった後は見ているので設定の秒数
+  assert.deepEqual(delays, [10_000]);
+  registry.stop();
 });
 
 test("CcRegistry: log は件数と種類だけで、名前・cwd・sessionId・本文を出さない", async (t) => {

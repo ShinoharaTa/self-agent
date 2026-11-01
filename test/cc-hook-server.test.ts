@@ -10,6 +10,7 @@ import {
   type CcHookEvent,
   type CcHookServer,
   summarizePermission,
+  unwrapPastedContent,
 } from "../src/cc/hook-server.ts";
 
 const TOKEN = "hook-token-for-tests-0123456789abcdef";
@@ -245,4 +246,11 @@ test("summarizePermission: Bash は command、ファイルのツールは cwd �
   assert.equal(summarizePermission("Bash", { command: "ls" }, "/other").requestHash, a);
   assert.notEqual(summarizePermission("Bash", { command: "ls -a" }, "/w").requestHash, a);
   assert.notEqual(summarizePermission("Read", { command: "ls" }, "/w").requestHash, a);
+});
+
+test("unwrapPastedContent: pasted_content の開きと閉じのタグ（属性付き）を外して中身だけにする", () => {
+  assert.equal(unwrapPastedContent('<pasted_content id="abc">本文\n2 行目</pasted_content id="abc">'), "本文\n2 行目");
+  assert.equal(unwrapPastedContent('前 <pasted_content id="1" lines="2">a</pasted_content> 後 <pasted_content id="2">b</pasted_content>'), "前 a 後 b");
+  assert.equal(unwrapPastedContent("<pasted_contents>そのまま</other>"), "<pasted_contents>そのまま</other>");
+  assert.equal(unwrapPastedContent("タグなし"), "タグなし");
 });
