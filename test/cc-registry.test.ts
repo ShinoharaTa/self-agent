@@ -491,7 +491,8 @@ test("parseHookEvent: 固定の集合に無い事象・UUID でない session_id
     { hook_event_name: "Stop", session_id: S1, permission_mode: "bad mode!", transcript_path: "/x", last_assistant_message: "hi" },
     at,
   );
-  assert.deepEqual(event, { event: "Stop", sessionId: S1, receivedAt: at });
+  // last_assistant_message は Stop の返事として読む（CC8）
+  assert.deepEqual(event, { event: "Stop", sessionId: S1, receivedAt: at, lastAssistantMessage: "hi" });
 });
 
 test("CcRegistry: 保留できる事象は CC_PENDING_MAX 件までで、超えた分は捨てる（後で一覧に現れても反映しない）", async (t) => {

@@ -356,3 +356,15 @@ test("toComponents: リンクのボタンの行は style 5 と url（custom_id �
   const rows = toComponents([{ kind: "links", links: [{ label: "RC で開く", url: "https://claude.ai/code/session_x" }] }]);
   assert.deepEqual(json(rows), [{ type: 1, components: [{ type: 2, style: 5, label: "RC で開く", url: "https://claude.ai/code/session_x" }] }]);
 });
+
+test("toButtonInteraction: 付いていたメッセージの本文があれば messageText に。toPayload: suppressEmbeds で埋め込みを出さない flags（返信先は sendMessage だけが読む）", () => {
+  assert.equal(
+    (toButtonInteraction({ ...SOURCE, customId: "cc:unfollow:1", message: { id: "message-1", content: "本文" } }) as { messageText?: string }).messageText,
+    "本文",
+  );
+  assert.deepEqual(json(toPayload({ text: "x", suppressEmbeds: true, replyToId: "message-1" })), {
+    content: "x",
+    allowedMentions: { parse: [], repliedUser: true },
+    flags: 4,
+  });
+});
