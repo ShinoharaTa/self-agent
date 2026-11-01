@@ -551,15 +551,18 @@ test("POST /api/cc/permissions/<id>/allow|deny: 200 { state }・応答の本文�
   const wrong = await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: "0".repeat(64) });
   assert.equal(wrong.status, 409);
   assert.deepEqual(wrong.json, { error: "stale" });
+  // requestHash は必須（無い・文字列でなければ 400）
   assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: 1 })).status, 400);
-  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id + 9}/allow`, {})).status, 404);
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, {})).status, 400);
+  assert.equal(s.store.get(pending.id)?.state, "pending");
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id + 9}/allow`, { requestHash: pending.requestHash })).status, 404);
   // always は CC5b（今は無い）
   assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/always`, {})).status, 404);
   const ok = await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: pending.requestHash });
   assert.equal(ok.status, 200);
   assert.deepEqual(ok.json, { state: "allowed" });
   assert.equal(JSON.parse((await reply)!).hookSpecificOutput.decision.behavior, "allow");
-  const again = await postJson(s.server, `/api/cc/permissions/${pending.id}/deny`, {});
+  const again = await postJson(s.server, `/api/cc/permissions/${pending.id}/deny`, { requestHash: pending.requestHash });
   assert.equal(again.status, 409);
   // 終わった要求は一覧の permission に残る（カードの「許可しました（Web）」）
   const detail = await getJson(s.server, `/api/cc/sessions/${S1}`);
@@ -567,11 +570,13 @@ test("POST /api/cc/permissions/<id>/allow|deny: 200 { state }・応答の本文�
     [(detail.json.permission as Record<string, unknown>).state, (detail.json.permission as Record<string, unknown>).via],
     ["allowed", "web"],
   );
+  // 終わった要求の期限は null
+  assert.equal((detail.json.permission as Record<string, unknown>).expiresAt, null);
   assert.deepEqual((await getJson(s.server, "/api/cc/permissions")).json, { permissions: [] });
   // 拒否
   const second = s.ask(S1, "touch x");
   const row = s.store.pendingFor(S1)!;
-  const denied = await postJson(s.server, `/api/cc/permissions/${row.id}/deny`, {});
+  const denied = await postJson(s.server, `/api/cc/permissions/${row.id}/deny`, { requestHash: row.requestHash });
   assert.deepEqual(denied.json, { state: "denied" });
   assert.equal(JSON.parse((await second)!).hookSpecificOutput.decision.behavior, "deny");
   // 時間切れの後
@@ -579,5 +584,5 @@ test("POST /api/cc/permissions/<id>/allow|deny: 200 { state }・応答の本文�
   const expired = s.store.pendingFor(S1)!;
   s.timers.at(-1)!();
   assert.equal(await third, undefined);
-  assert.equal((await postJson(s.server, `/api/cc/permissions/${expired.id}/allow`, {})).status, 409);
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${expired.id}/allow`, { requestHash: expired.requestHash })).status, 409);
 });

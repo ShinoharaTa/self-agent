@@ -853,8 +853,10 @@ if (webServer !== undefined) {
     log(`Web UI を始められませんでした: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
-// Claude Code の hook の受け口も同じく、起動に失敗しても Bot は動かし続ける（hooks は connection refused で普段どおり進む）
+// Claude Code の hook の受け口も同じく、起動に失敗しても Bot は動かし続ける（hooks は connection refused で普段どおり進む）。
+// 一覧に無いセッションの許可の要求は保留しないので、受け口を始める前に一覧を 1 回読んでおく（読めなくても始める。周期の読み取りは後の start から）
 if (ccHookServer !== undefined) {
+  await ccRegistry?.tick();
   try {
     await ccHookServer.start();
     log(`Claude Code の hook の受け口を始めました（127.0.0.1:${config.ccHookPort}）`);
