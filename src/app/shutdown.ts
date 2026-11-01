@@ -1,4 +1,7 @@
-// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバー・Web UI と DB を閉じる
+// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバー・Web UI・
+// Claude Code の hook の受け口と DB を閉じる
+import type { CcHookServer } from "../cc/hook-server.ts";
+import type { CcRegistry } from "../cc/registry.ts";
 import type { Config } from "../config.ts";
 import type { GithubPoller } from "../github/poller.ts";
 import type { JobOrchestrator } from "../jobs/orchestrator.ts";
@@ -41,6 +44,10 @@ export type ShutdownDeps = {
   staticServer?: Pick<StaticServer, "close">;
   /** Web UI のサーバー。静的サーバーの次（DB を閉じる前）に閉じる。無ければ（Web UI が無効）何もしない */
   webServer?: Pick<WebServer, "close">;
+  /** Claude Code のセッションの一覧（SELF_AGENT_CC=1 のときだけ）。scheduler と同じ時点で止め、実行中の読み取りが終わるのを待つ */
+  ccRegistry?: Pick<CcRegistry, "stop" | "idle">;
+  /** Claude Code の hook の受け口（SELF_AGENT_CC=1 のときだけ）。Web UI の次（DB を閉じる前）に閉じる */
+  ccHookServer?: Pick<CcHookServer, "close">;
   closeDb: () => void;
   log: (message: string) => void;
 };
@@ -81,7 +88,22 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
 }
 
 export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdown {
-  const { cfg, gateway, queues, scheduler, reminderScheduler, githubPoller, jobs, channelOps, staticServer, webServer, closeDb, log } = deps;
+  const {
+    cfg,
+    gateway,
+    queues,
+    scheduler,
+    reminderScheduler,
+    githubPoller,
+    jobs,
+    channelOps,
+    staticServer,
+    webServer,
+    ccRegistry,
+    ccHookServer,
+    closeDb,
+    log,
+  } = deps;
   let stopping = false;
   /** 受け付けて、まだ終わっていない発言・操作の処理（返信を含む） */
   const inFlight = new Set<Promise<void>>();
@@ -104,6 +126,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       reminderScheduler.idle(),
       githubPoller?.idle(),
       jobs?.idle(),
+      ccRegistry?.idle(),
     ]);
     // ターンと定期処理が入れた移動のうち、その時点で実行中のものだけ待つ
     await channelOps.idle();
@@ -136,6 +159,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     reminderScheduler.stop();
     githubPoller?.stop();
     jobs?.stop();
+    ccRegistry?.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);
     if (!(await settlesWithin(drained(), cfg.shutdownGraceSec * 1000))) {
       log(`進行中の処理が ${cfg.shutdownGraceSec} 秒で終わらなかったため、待たずに終了します`);
@@ -155,6 +179,11 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       await webServer?.close();
     } catch (error) {
       log(`Web UI を止められませんでした: ${describeError(error)}`);
+    }
+    try {
+      await ccHookServer?.close();
+    } catch (error) {
+      log(`Claude Code の hook の受け口を止められませんでした: ${describeError(error)}`);
     }
     try {
       closeDb();

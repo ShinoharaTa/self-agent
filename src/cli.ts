@@ -14,6 +14,8 @@ const SUBCOMMANDS = {
   "github-dry-run": "GitHub の通知を 1 回だけ取得して振り分け、件数だけを表示する（投稿しない）",
   "shell-check": "シェル（Bash）の受け入れの実機確認（利用枠を消費する）",
   "job-dry-run": "作業ジョブのアプリ側を LLM なしで 1 回試す",
+  "cc-dry-run": "この機械の Claude Code のセッションを 1 回だけ読み、3 群の件数と各行を表示する（投稿しない）",
+  "cc-setup": "Claude Code の hooks の設定を表示する（--print。ファイルは書かない）",
   measure: "ターン時間・RSS・トークン使用量の実測（利用枠を消費する）",
 } as const;
 
@@ -71,6 +73,10 @@ async function runSubcommand(name: SubcommandName, argv: readonly string[]): Pro
       return (await import("./cli/shell-check.ts")).main(argv);
     case "job-dry-run":
       return (await import("./cli/job-dry-run.ts")).main(argv);
+    case "cc-dry-run":
+      return (await import("./cli/cc-dry-run.ts")).main(argv);
+    case "cc-setup":
+      return (await import("./cli/cc-setup.ts")).main(argv);
     case "measure":
       return (await import("./cli/measure.ts")).main(argv);
   }

@@ -209,6 +209,30 @@ tailscale serve --bg --https=9444 http://127.0.0.1:8791
 
 3. `https://<host>.<tailnet>.ts.net:9444/` を開く。ログインのヘッダが無ければ（トークンを設定していれば）`/login` に移るので、トークンを貼ると 30 日の Cookie が付く。トークンを差し替えると全員ログアウトする。ヘッダ無しで `127.0.0.1` に直接送った要求は 401 になる。
 
+### 9.（任意）この機械の Claude Code のセッションを見る
+
+作りかけ（`docs/plan/claude-code-sessions.md` の段 CC1）。Bot が `claude agents --json` を周期で読み、Claude Code の hooks をローカルのポートで受けて、どのセッションが判断待ち・実行中・待機かを知る。画面はまだ無く、今は `npm run cc-dry-run` で確かめるだけ。Bot の `PATH` に `claude` と `tmux` が要る。
+
+1. `npm run cc-dry-run` で、セッションを 3 群（判断待ち・実行中・待機）で確かめる（投稿しない・何も変えない）
+2. `~/.config/self-agent/env` に足す（トークンは Claude Code の hooks と共有する。空白を含まない 32 字以上）
+
+```
+SELF_AGENT_CC=1
+# hook の受け口のポート（127.0.0.1 だけで待ち受ける。tailscale serve には出さない）
+SELF_AGENT_CC_HOOK_PORT=8792
+SELF_AGENT_CC_HOOK_TOKEN=...
+```
+
+3. hooks の設定を出して、自分で `~/.claude/settings.json` に足す（Bot は `~/.claude` に書かない）
+
+```bash
+npm run cc-setup -- --print
+```
+
+`env` の 1 行と、6 つの事象（`SessionStart`・`UserPromptSubmit`・`Stop`・`SessionEnd`・`Notification`・`PermissionRequest`）の `hooks` が出る。どれも `http://127.0.0.1:<port>/hook` への `type: "http"` で、ヘッダは `X-Self-Agent-Hook: $SELF_AGENT_CC_HOOK_TOKEN`。`env` の置き場所の文は `~/.config/self-agent/env` と同じトークンに置き換え、`~/.claude/settings.json` は 600 のままにする。`settings.json` の `env` からトークンが読まれないときは、tmux のサーバーを起こすシェルで `SELF_AGENT_CC_HOOK_TOKEN` を `export` する。
+
+4. Bot を再起動する。Bot が止まっている間は hooks が connection refused になり、Claude Code は普段どおり進む（timeout は 3 秒）。
+
 ## 開発
 
 ```bash
@@ -217,6 +241,7 @@ npm test                  # 単体テスト（偽の Gateway / Runner と一時 
 npm run test:integration  # 結合テスト（Claude のトークンがあれば実際に SDK を呼ぶ。利用枠を使う）
 npm run measure           # 1 ターンの時間・メモリ・トークンの実測
 npm run github-dry-run    # GitHub の通知を 1 回だけ取得して振り分けの件数を表示（投稿しない）
+npm run cc-dry-run        # この機械の Claude Code のセッションを 1 回だけ読んで 3 群で表示（投稿しない）
 ```
 
 - 実行時の依存は `@anthropic-ai/claude-agent-sdk`・`discord.js`・`zod` の 3 つだけで、バージョンは固定

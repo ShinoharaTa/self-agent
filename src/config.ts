@@ -89,7 +89,8 @@ export type Config = {
 } & GithubConfig &
   JobsConfig &
   GuestConfig &
-  WebConfig;
+  WebConfig &
+  CcConfig;
 
 /** GitHub の通知の段 1（docs/plan/github-notifications.md §10）。npm run github-dry-run もこれだけを読む */
 export type GithubConfig = {
@@ -159,6 +160,23 @@ export type WebConfig = {
   webHistoryDays: number;
 };
 
+/**
+ * この機械の Claude Code（CLI）のセッション（docs/plan/claude-code-sessions.md §11）。hook のトークンは有無だけを持ち、値は main が process.env から読む。
+ * npm run cc-setup もこれだけを読む
+ */
+export type CcConfig = {
+  /** true なら claude agents --json を周期で読み、hook の受け口を 127.0.0.1 の ccHookPort で待ち受ける */
+  cc: boolean;
+  /** hook の受け口のポート。cc なら必ずある */
+  ccHookPort: number | undefined;
+  /** SELF_AGENT_CC_HOOK_TOKEN（hook の共有トークン）が設定されているか。値そのものは保持しない */
+  ccHookTokenPresent: boolean;
+  /** claude agents --json を読む周期（秒、5 以上）。誰も見ていないときは 60 秒 */
+  ccPollSec: number;
+  /** PermissionRequest の応答を保留する秒数（1〜600）。hooks の timeout はこれ + 5 */
+  ccPermissionHoldSec: number;
+};
+
 /** 1 日の中の時刻（時は 0〜23、分は 0〜59） */
 export type TimeOfDay = { hour: number; minute: number };
 
@@ -195,6 +213,12 @@ const DEFAULT_GUEST_SESSION_MAX_INPUT_TOKENS = 60000;
 const DEFAULT_WEB_HISTORY_DAYS = 90;
 /** SELF_AGENT_WEB_TOKEN の最短の長さ */
 const MIN_WEB_TOKEN_LENGTH = 32;
+const DEFAULT_CC_POLL_SEC = 10;
+const MIN_CC_POLL_SEC = 5;
+const DEFAULT_CC_PERMISSION_HOLD_SEC = 300;
+const MAX_CC_PERMISSION_HOLD_SEC = 600;
+/** SELF_AGENT_CC_HOOK_TOKEN の最短の長さ */
+const MIN_CC_HOOK_TOKEN_LENGTH = 32;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -556,6 +580,34 @@ export function loadWebConfig(env: NodeJS.ProcessEnv = process.env): WebConfig {
 }
 
 /**
+ * SELF_AGENT_CC_* を読む（docs/plan/claude-code-sessions.md §11）。SELF_AGENT_CC=1 ならポートとトークンが要る（無ければ設定エラー。認証なしでは動かさない）。
+ * 形（ポートの範囲・32 字未満か空白を含むトークン・周期・保留の秒数）は無効のときも確かめる。エラーには変数名だけを出し、トークンの値は出さない
+ */
+export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
+  const cc = flag("SELF_AGENT_CC", nonEmpty(env.SELF_AGENT_CC));
+  const ccHookPort = port("SELF_AGENT_CC_HOOK_PORT", nonEmpty(env.SELF_AGENT_CC_HOOK_PORT));
+  const token = nonEmpty(env.SELF_AGENT_CC_HOOK_TOKEN);
+  if (token !== undefined && ([...token].length < MIN_CC_HOOK_TOKEN_LENGTH || /\s/.test(token))) {
+    throw new Error(`SELF_AGENT_CC_HOOK_TOKEN は空白を含まない ${MIN_CC_HOOK_TOKEN_LENGTH} 字以上で指定してください`);
+  }
+  const ccPollSec = positiveInteger("SELF_AGENT_CC_POLL_SEC", nonEmpty(env.SELF_AGENT_CC_POLL_SEC), DEFAULT_CC_POLL_SEC);
+  if (ccPollSec < MIN_CC_POLL_SEC) {
+    throw new Error(`SELF_AGENT_CC_POLL_SEC は ${MIN_CC_POLL_SEC} 以上の整数で指定してください`);
+  }
+  const ccPermissionHoldSec = positiveInteger(
+    "SELF_AGENT_CC_PERMISSION_HOLD_SEC",
+    nonEmpty(env.SELF_AGENT_CC_PERMISSION_HOLD_SEC),
+    DEFAULT_CC_PERMISSION_HOLD_SEC,
+  );
+  if (ccPermissionHoldSec > MAX_CC_PERMISSION_HOLD_SEC) {
+    throw new Error(`SELF_AGENT_CC_PERMISSION_HOLD_SEC は 1〜${MAX_CC_PERMISSION_HOLD_SEC} の整数で指定してください`);
+  }
+  if (cc && ccHookPort === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_PORT が要ります");
+  if (cc && token === undefined) throw new Error("SELF_AGENT_CC=1 には SELF_AGENT_CC_HOOK_TOKEN が要ります");
+  return { cc, ccHookPort, ccHookTokenPresent: token !== undefined, ccPollSec, ccPermissionHoldSec };
+}
+
+/**
  * npm run job-dry-run が読む設定: 作業場所・データの場所（その中に一時ディレクトリを作る）と、作業ジョブの変数（許可リストなど）。
  * SELF_AGENT_JOBS・SELF_AGENT_SHELL は見ない（LLM もシェルも使わない）
  */
@@ -650,6 +702,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...loadJobsConfig(env, shell),
     ...loadGuestConfig(env, personas),
     ...loadWebConfig(env),
+    ...loadCcConfig(env),
   };
 }
 

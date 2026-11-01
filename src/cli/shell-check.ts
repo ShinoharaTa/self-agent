@@ -59,6 +59,15 @@ const GONE_WAIT_MS = 2_000;
 const ORDER_SLEEP_SEC = 5;
 
 type Status = "通った" | "通らない" | "判定できない" | "参考";
+
+/** 127.0.0.1 の port（0 なら空いているポート）で待ち受ける。待ち受けられなければ（使用中など）undefined */
+function listenLoopback(port: number): Promise<Server | undefined> {
+  return new Promise((resolve) => {
+    const server = createServer((_req, res) => res.end("shell-check"));
+    server.once("error", () => resolve(undefined));
+    server.listen(port, "127.0.0.1", () => resolve(server));
+  });
+}
 type Row = { item: string; status: Status; note: string; required: boolean };
 
 export async function main(_argv: readonly string[]): Promise<number> {
@@ -473,6 +482,32 @@ export async function main(_argv: readonly string[]): Promise<number> {
     const server = probeServer;
     probeServer = undefined;
     if (server !== undefined) await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  // 7-2. Claude Code の hook の受け口（SELF_AGENT_CC_HOOK_PORT。docs/plan/claude-code-sessions.md §2.3）に届かない。ポートが空いていれば（Bot が止まっていれば）
+  // その場で 127.0.0.1 に待ち受け、ポートが無ければ空いているポートで待ち受けて試す（終わったら閉じる）。Bot が待ち受けていれば（使用中）そのまま試す
+  {
+    const listened = await listenLoopback(config.ccHookPort ?? 0);
+    probeServer = listened;
+    const address = listened?.address();
+    const hookPort = typeof address === "object" && address !== null ? address.port : config.ccHookPort;
+    try {
+      if (hookPort === undefined) {
+        rows.push({ item: "Claude Code の hook の受け口に届かない", status: "判定できない", note: "試験用のポートで待ち受けられなかった", required: true });
+      } else {
+        await check(
+          "Claude Code の hook の受け口（SELF_AGENT_CC_HOOK_PORT。無ければ試験用のポート）に届かない",
+          `curl -sS -m 5 -o /dev/null -X POST http://127.0.0.1:${hookPort}/hook; echo "__rc=$?"`,
+          ({ text }) => {
+            const codes = exitCodes(text);
+            return codes.length === 1 && codes[0] !== 0 ? true : "届いた";
+          },
+        );
+      }
+    } finally {
+      const server = probeServer;
+      probeServer = undefined;
+      if (server !== undefined) await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   }
   // 8. GitHub と npm には届く
   const cloneDir = join(projectDir, "repos", "hello");

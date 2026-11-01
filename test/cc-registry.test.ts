@@ -1,0 +1,354 @@
+import { test, type TestContext } from "node:test";
+import assert from "node:assert/strict";
+import type { AgentEntry, AgentsResult } from "../src/cc/agents.ts";
+import type { SessionFileInfo } from "../src/cc/claude-dirs.ts";
+import { parseHookEvent, type CcHookEvent } from "../src/cc/hook-server.ts";
+import {
+  CC_EVENT_REFRESH_MS,
+  CC_IDLE_POLL_MS,
+  CC_PENDING_MS,
+  CC_STALE_LIMIT,
+  CcRegistry,
+  type CcTimers,
+  rankSessions,
+  type RankInput,
+} from "../src/cc/registry.ts";
+import { CcSessionStore } from "../src/store/cc-sessions.ts";
+import { tempDb } from "./helpers/db.ts";
+
+const BASE = Date.parse("2026-11-01T00:00:00.000Z");
+const S1 = "11111111-1111-4111-8111-111111111111";
+const S2 = "22222222-2222-4222-8222-222222222222";
+const S3 = "33333333-3333-4333-8333-333333333333";
+const S4 = "44444444-4444-4444-8444-444444444444";
+const SECRET_NAME = "secret-project-name";
+const SECRET_CWD = "/home/owner/workspace/secret-dir";
+
+function agent(sessionId: string, overrides: Partial<AgentEntry> = {}): AgentEntry {
+  return {
+    pid: 100,
+    sessionId,
+    cwd: SECRET_CWD,
+    name: SECRET_NAME,
+    kind: "interactive",
+    startedAt: BASE - 3_600_000,
+    status: "idle",
+    waitingFor: undefined,
+    ...overrides,
+  };
+}
+
+function setup(t: TestContext, pollSec = 10) {
+  const db = tempDb(t);
+  const clock = { now: BASE };
+  const now = (): Date => new Date(clock.now);
+  const store = new CcSessionStore(db, now);
+  const results: AgentsResult[] = [];
+  let lastResult: AgentsResult = { ok: true, agents: [], dropped: 0 };
+  let listCalls = 0;
+  const agents = {
+    list: async (): Promise<AgentsResult> => {
+      listCalls++;
+      lastResult = results.shift() ?? lastResult;
+      return lastResult;
+    },
+  };
+  const files = new Map<string, SessionFileInfo>();
+  const mtimes = new Map<string, number>();
+  const dirs = {
+    sessionFile: (_pid: number, sessionId: string) => files.get(sessionId),
+    transcriptMtime: (_cwd: string, sessionId: string) => mtimes.get(sessionId),
+  };
+  const delays: number[] = [];
+  const scheduled: Array<() => void> = [];
+  const timers: CcTimers = {
+    after: (fn, ms) => {
+      delays.push(ms);
+      scheduled.push(fn);
+      return () => {
+        const index = scheduled.indexOf(fn);
+        if (index !== -1) scheduled.splice(index, 1);
+      };
+    },
+  };
+  const logs: string[] = [];
+  const registry = new CcRegistry({ cfg: { ccPollSec: pollSec }, agents, dirs, store, now, timers, log: (line) => logs.push(line) });
+  /** 次の一覧 */
+  const willList = (...list: AgentEntry[]) => results.push({ ok: true, agents: list, dropped: 0 });
+  const willFail = () => results.push({ ok: false, reason: "json" });
+  /** 予約したタイマーを 1 つ動かし、読み取りが終わるのを待つ */
+  const fire = async () => {
+    const fn = scheduled.shift();
+    assert.ok(fn, "予約したタイマーが無い");
+    fn();
+    await registry.idle();
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  /** hook の本文から事象を作って渡す */
+  const hook = (body: Record<string, unknown>) => {
+    const event = parseHookEvent(body, new Date(clock.now));
+    assert.ok(event);
+    registry.receive(event);
+    return event;
+  };
+  return { db, clock, store, registry, willList, willFail, fire, hook, files, mtimes, delays, scheduled, logs, calls: () => listCalls };
+}
+
+function states(registry: CcRegistry): Array<[string, string]> {
+  return registry.snapshot().sessions.map((session) => [session.sessionId, session.state]);
+}
+
+test("CcRegistry: 読めなければ前回の一覧を stale で残し、CC_STALE_LIMIT 回続けば空にする。読めたら戻る", async (t) => {
+  const s = setup(t);
+  s.willList(agent(S1), agent(S2));
+  await s.registry.tick();
+  assert.equal(s.registry.snapshot().stale, false);
+  for (let i = 1; i < CC_STALE_LIMIT; i++) {
+    s.willFail();
+    await s.registry.tick();
+    const snapshot = s.registry.snapshot();
+    assert.equal(snapshot.stale, true, `${i}`);
+    assert.equal(snapshot.unreadable, false, `${i}`);
+    assert.deepEqual(snapshot.sessions.map((session) => session.sessionId), [S1, S2].sort(), `${i}`);
+  }
+  s.willFail();
+  await s.registry.tick();
+  assert.deepEqual(s.registry.snapshot().sessions, []);
+  assert.equal(s.registry.snapshot().unreadable, true);
+  // 失敗の間は gone にしない
+  assert.equal(s.store.get(S1)?.goneAt, null);
+  s.willList(agent(S1));
+  await s.registry.tick();
+  const snapshot = s.registry.snapshot();
+  assert.equal(snapshot.stale, false);
+  assert.equal(snapshot.unreadable, false);
+  assert.deepEqual(snapshot.sessions.map((session) => session.sessionId), [S1]);
+  assert.notEqual(s.store.get(S2)?.goneAt, null);
+});
+
+test("CcRegistry: UserPromptSubmit で最後の指示が進み、本文は先頭 200 字", async (t) => {
+  const s = setup(t);
+  s.willList(agent(S1));
+  await s.registry.tick();
+  s.clock.now = BASE + 5000;
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "x".repeat(300), permission_mode: "auto", cwd: SECRET_CWD });
+  const view = s.registry.snapshot().sessions[0]!;
+  assert.equal(view.lastPromptAt, BASE + 5000);
+  assert.equal(view.lastPromptText, "x".repeat(200));
+  assert.equal(view.permissionMode, "auto");
+  assert.equal(s.store.get(S1)?.lastPromptText, "x".repeat(200));
+});
+
+test("CcRegistry: permission_prompt で判断待ち、Stop で解消。idle_prompt は判断待ちにしない。busy の間は実行中", async (t) => {
+  const s = setup(t);
+  s.willList(agent(S1));
+  await s.registry.tick();
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "idle_prompt" });
+  assert.deepEqual(states(s.registry), [[S1, "idle"]]);
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "permission_prompt" });
+  assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
+  // 実行中（busy）なら判断待ちにしない
+  s.willList(agent(S1, { status: "busy" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "running"]]);
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
+  s.hook({ hook_event_name: "Stop", session_id: S1 });
+  assert.deepEqual(states(s.registry), [[S1, "idle"]]);
+  // 知らない notification_type は other で、判断待ちにしない
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "something_new" });
+  assert.deepEqual(states(s.registry), [[S1, "idle"]]);
+  for (const type of ["elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"]) {
+    s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: type });
+    assert.deepEqual(states(s.registry), [[S1, "needs_input"]], type);
+    s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "続けて" });
+    assert.deepEqual(states(s.registry), [[S1, "idle"]], type);
+  }
+});
+
+test("CcRegistry: status: waiting は hook が無くても判断待ち（待ち始めは最初に見た時刻）", async (t) => {
+  const s = setup(t);
+  s.willList(agent(S1, { status: "waiting", waitingFor: "permission prompt" }), agent(S2));
+  await s.registry.tick();
+  s.clock.now = BASE + 20_000;
+  s.willList(agent(S1, { status: "waiting", waitingFor: "permission prompt" }), agent(S2, { status: "waiting" }));
+  await s.registry.tick();
+  const sessions = s.registry.snapshot().sessions;
+  assert.deepEqual(
+    sessions.map((session) => [session.sessionId, session.state, session.waitingSince]),
+    [
+      [S1, "needs_input", BASE],
+      [S2, "needs_input", BASE + 20_000],
+    ],
+  );
+  assert.equal(sessions[0]!.waitingFor, "permission prompt");
+});
+
+test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中（最後の指示の新しい順）→ 待機（最後の指示 → 記録の mtime → 起動の新しい順）", () => {
+  const base: RankInput = {
+    sessionId: "",
+    status: "idle",
+    pendingPermission: false,
+    waitingKind: null,
+    waitingSince: undefined,
+    lastPromptAt: undefined,
+    transcriptMtime: undefined,
+    startedAt: undefined,
+  };
+  const items: RankInput[] = [
+    { ...base, sessionId: "idle-started", startedAt: 500 },
+    { ...base, sessionId: "idle-old-prompt", lastPromptAt: 100, transcriptMtime: 900 },
+    { ...base, sessionId: "idle-mtime", transcriptMtime: 600 },
+    { ...base, sessionId: "idle-none" },
+    { ...base, sessionId: "running-old", status: "busy", lastPromptAt: 200 },
+    { ...base, sessionId: "running-new", status: "busy", lastPromptAt: 300 },
+    { ...base, sessionId: "wait-new", status: "waiting", waitingSince: 50 },
+    { ...base, sessionId: "wait-old", waitingKind: "permission_prompt", waitingSince: 10 },
+    { ...base, sessionId: "wait-busy", status: "busy", waitingKind: "permission_prompt", waitingSince: 1, lastPromptAt: 250 },
+    { ...base, sessionId: "wait-held", status: "busy", pendingPermission: true, waitingSince: 30 },
+    { ...base, sessionId: "idle-prompt", lastPromptAt: 700 },
+  ];
+  assert.deepEqual(
+    rankSessions(items).map((item) => [item.sessionId, item.state]),
+    [
+      ["wait-old", "needs_input"],
+      ["wait-held", "needs_input"],
+      ["wait-new", "needs_input"],
+      ["running-new", "running"],
+      ["wait-busy", "running"],
+      ["running-old", "running"],
+      ["idle-prompt", "idle"],
+      ["idle-mtime", "idle"],
+      ["idle-started", "idle"],
+      ["idle-old-prompt", "idle"],
+      ["idle-none", "idle"],
+    ],
+  );
+});
+
+test("CcRegistry: 一覧に無い session_id の Stop・UserPromptSubmit は 30 秒保留し、現れなければ捨てる（DB に残らない）", async (t) => {
+  const s = setup(t);
+  s.willList(agent(S1));
+  await s.registry.tick();
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S2, prompt: "偽の指示" });
+  s.hook({ hook_event_name: "Stop", session_id: S2 });
+  assert.equal(s.registry.pendingCount(), 2);
+  await s.registry.tick();
+  assert.equal(s.registry.pendingCount(), 2);
+  s.clock.now = BASE + CC_PENDING_MS;
+  await s.registry.tick();
+  assert.equal(s.registry.pendingCount(), 0);
+  // 後から同じ session_id が一覧に現れても、捨てた事象は反映されない
+  s.willList(agent(S1), agent(S2));
+  await s.registry.tick();
+  assert.equal(s.store.get(S2)?.lastPromptAt, null);
+  assert.equal(s.store.get(S2)?.lastPromptText, null);
+  assert.equal(s.store.get(S2)?.lastEvent, null);
+  assert.equal(
+    s.db.prepare("SELECT COUNT(*) AS n FROM cc_sessions WHERE last_prompt_text IS NOT NULL OR last_event IS NOT NULL").get()?.n,
+    0,
+  );
+});
+
+test("CcRegistry: 一覧に無い session_id の事象は、30 秒以内の一覧に現れれば受けた時刻で反映する。PermissionRequest は保留しない", async (t) => {
+  const s = setup(t);
+  await s.registry.tick();
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "はじめ" });
+  s.hook({ hook_event_name: "PermissionRequest", session_id: S1, tool_name: "Bash", tool_input: { command: "ls" } });
+  assert.equal(s.registry.pendingCount(), 1);
+  s.clock.now = BASE + 10_000;
+  s.willList(agent(S1));
+  await s.registry.tick();
+  assert.equal(s.registry.pendingCount(), 0);
+  const view = s.registry.snapshot().sessions[0]!;
+  assert.equal(view.lastPromptAt, BASE);
+  assert.equal(view.lastPromptText, "はじめ");
+  assert.equal(view.permission, undefined);
+});
+
+test("CcRegistry: PermissionRequest は §3.4 の要約とハッシュだけを持ち、tool_input の全体は DB にも一覧にも残らない", async (t) => {
+  const s = setup(t);
+  s.willList(agent(S1));
+  await s.registry.tick();
+  const content = "FULL-CONTENT-".repeat(100);
+  s.hook({
+    hook_event_name: "PermissionRequest",
+    session_id: S1,
+    cwd: "/w/app",
+    tool_name: "Write",
+    tool_input: { file_path: "/w/app/src/x.ts", content },
+    permission_mode: "default",
+  });
+  const view = s.registry.snapshot().sessions[0]!;
+  assert.equal(view.permission?.toolName, "Write");
+  assert.equal(view.permission?.summary, "src/x.ts");
+  assert.match(view.permission?.requestHash ?? "", /^[0-9a-f]{64}$/);
+  assert.ok(!JSON.stringify(s.registry.snapshot()).includes("FULL-CONTENT"));
+  const rows = s.db.prepare("SELECT * FROM cc_sessions").all();
+  assert.ok(!JSON.stringify(rows).includes("FULL-CONTENT"));
+  // その後の UserPromptSubmit で消える
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "次" });
+  assert.equal(s.registry.snapshot().sessions[0]!.permission, undefined);
+});
+
+test("CcRegistry: 周期は見ていなければ 60 秒、touch から 30 秒は設定の秒数。hook の事象が来たら 2 秒後に 1 回（続けて来ても 1 回）", async (t) => {
+  const s = setup(t, 10);
+  s.willList(agent(S1));
+  s.registry.start();
+  await s.registry.idle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(s.calls(), 1);
+  assert.deepEqual(s.delays, [CC_IDLE_POLL_MS]);
+  s.registry.touch();
+  await s.fire();
+  assert.equal(s.calls(), 2);
+  assert.deepEqual(s.delays.slice(1), [10_000]);
+  // 事象が続けて来ても予約は 1 つ（2 秒後）
+  s.hook({ hook_event_name: "Stop", session_id: S1 });
+  s.hook({ hook_event_name: "Stop", session_id: S1 });
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "a" });
+  assert.deepEqual(s.delays.slice(2), [CC_EVENT_REFRESH_MS]);
+  assert.equal(s.scheduled.length, 1);
+  s.clock.now = BASE + 40_000;
+  await s.fire();
+  assert.equal(s.calls(), 3);
+  // touch から 30 秒を過ぎたので 60 秒
+  assert.deepEqual(s.delays.slice(3), [CC_IDLE_POLL_MS]);
+  s.registry.stop();
+  assert.equal(s.scheduled.length, 0);
+  s.hook({ hook_event_name: "Stop", session_id: S1 });
+  assert.equal(s.scheduled.length, 0);
+});
+
+test("CcRegistry: log は件数と種類だけで、名前・cwd・sessionId・本文を出さない", async (t) => {
+  const s = setup(t);
+  s.files.set(S1, { bridgeSessionId: "session_secretbridge", tmux: "secret-tmux:0.%3" });
+  s.willList(agent(S1, { status: "busy" }), agent(S2), agent(S3, { status: "waiting" }), agent(S4));
+  await s.registry.tick();
+  s.hook({ hook_event_name: "UserPromptSubmit", session_id: S2, prompt: "secret prompt text" });
+  s.hook({ hook_event_name: "PermissionRequest", session_id: S2, tool_name: "Bash", tool_input: { command: "secret-command" } });
+  s.willFail();
+  await s.registry.tick();
+  s.willList(agent(S1));
+  await s.registry.tick();
+  assert.ok(s.logs.length > 0);
+  assert.ok(s.logs.includes("Claude Code: 一覧 4 件（判断待ち 1・実行中 1）"), s.logs.join("\n"));
+  assert.ok(s.logs.includes("Claude Code: 一覧を読めませんでした（json）"), s.logs.join("\n"));
+  const text = s.logs.join("\n");
+  for (const secret of [SECRET_NAME, SECRET_CWD, "secret-dir", S1, S2, S3, S4, "secret prompt", "secret-command", "secretbridge", "secret-tmux"]) {
+    assert.ok(!text.includes(secret), secret);
+  }
+});
+
+test("parseHookEvent: 固定の集合に無い事象・UUID でない session_id は読まない", () => {
+  const at = new Date(BASE);
+  assert.equal(parseHookEvent({ hook_event_name: "PreToolUse", session_id: S1 }, at), undefined);
+  assert.equal(parseHookEvent({ hook_event_name: "Stop", session_id: "abc" }, at), undefined);
+  assert.equal(parseHookEvent({ hook_event_name: "Stop" }, at), undefined);
+  const event: CcHookEvent | undefined = parseHookEvent(
+    { hook_event_name: "Stop", session_id: S1, permission_mode: "bad mode!", transcript_path: "/x", last_assistant_message: "hi" },
+    at,
+  );
+  assert.deepEqual(event, { event: "Stop", sessionId: S1, receivedAt: at });
+});

@@ -96,6 +96,8 @@ export type SchedulerDeps = {
   pruneHistory?: () => void;
   /** 残す日数より前の #system への知らせの記録（notices）を消す（Web UI が無効でも消す）。投げたら log に出して続ける。省略すれば消さない */
   pruneNotices?: () => void;
+  /** 一覧から消えて日数の経った Claude Code のセッションの行（cc_sessions）を消す。投げたら log に出して続ける。省略すれば消さない */
+  pruneCcSessions?: () => void;
   /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。待ちに移したら知らせの行を書く。無ければ書かない */
   history?: Pick<HistoryStore, "add">;
   /**
@@ -178,6 +180,7 @@ export class Scheduler {
     this.pruneGuestTurns();
     this.pruneHistory();
     this.pruneNotices();
+    this.pruneCcSessions();
     await this.pruneSandboxAreas();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
     await this.deps.inboxRotator.rotateDue(() => this.stopped);
@@ -310,6 +313,16 @@ export class Scheduler {
       this.deps.pruneNotices();
     } catch {
       this.deps.log("古い知らせの記録を消せませんでした");
+    }
+  }
+
+  /** 古い Claude Code のセッションの行を消す。失敗は log に出すだけ */
+  private pruneCcSessions(): void {
+    if (this.deps.pruneCcSessions === undefined) return;
+    try {
+      this.deps.pruneCcSessions();
+    } catch {
+      this.deps.log("古い Claude Code のセッションの記録を消せませんでした");
     }
   }
 

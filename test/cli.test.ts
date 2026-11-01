@@ -14,6 +14,8 @@ const SUBCOMMANDS: SubcommandName[] = [
   "github-dry-run",
   "shell-check",
   "job-dry-run",
+  "cc-dry-run",
+  "cc-setup",
   "measure",
 ];
 
@@ -62,7 +64,7 @@ test("runCli: start は引数があれば（--help を含む）使い方を標�
   }
 });
 
-test("runCli: --help は使い方（8 つのサブコマンド。setup・service は出さない）を標準出力に出して 0、--version は版を出して 0", async () => {
+test("runCli: --help は使い方（10 のサブコマンド。setup・service は出さない）を標準出力に出して 0、--version は版を出して 0", async () => {
   const help = fakes();
   assert.equal(await runCli(["--help"], help.deps), 0);
   assert.deepEqual(help.err, []);

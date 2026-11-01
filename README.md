@@ -211,6 +211,30 @@ tailscale serve --bg --https=9444 http://127.0.0.1:8791
 
 3. Open `https://<host>.<tailnet>.ts.net:9444/`. Without the login header (and with a token set), you are sent to `/login`; paste the token there to get a 30-day cookie. Replacing the token signs everyone out. Requests straight to `127.0.0.1` without the header get 401.
 
+### 9. (Optional) Watch the Claude Code sessions on this machine
+
+Work in progress (`docs/plan/claude-code-sessions.md`, stage CC1): the bot reads `claude agents --json` periodically and receives Claude Code's hooks on a local port, so it knows which sessions are waiting for you, running or idle. There is no screen for it yet; for now you can only check it with `npm run cc-dry-run`. It needs `claude` and `tmux` on the bot's `PATH`.
+
+1. Run `npm run cc-dry-run` to see the sessions in three groups (waiting for you / running / idle). It posts nothing and changes nothing.
+2. Add to `~/.config/self-agent/env` (the token is shared with Claude Code's hooks; 32+ characters, no spaces):
+
+```
+SELF_AGENT_CC=1
+# port for the hook endpoint (listens on 127.0.0.1 only; do not expose it with tailscale serve)
+SELF_AGENT_CC_HOOK_PORT=8792
+SELF_AGENT_CC_HOOK_TOKEN=...
+```
+
+3. Print the hooks settings and add them to `~/.claude/settings.json` yourself (the bot never writes to `~/.claude`):
+
+```bash
+npm run cc-setup -- --print
+```
+
+It prints an `env` entry and `hooks` for six events (`SessionStart`, `UserPromptSubmit`, `Stop`, `SessionEnd`, `Notification`, `PermissionRequest`), all `type: "http"` to `http://127.0.0.1:<port>/hook` with the header `X-Self-Agent-Hook: $SELF_AGENT_CC_HOOK_TOKEN`. Replace the placeholder in `env` with the same token as in `~/.config/self-agent/env`, and keep `~/.claude/settings.json` at mode 600. If the token is not picked up from `settings.json`'s `env`, export `SELF_AGENT_CC_HOOK_TOKEN` in the shell that starts your tmux server instead.
+
+4. Restart the bot. While it is down, the hooks get "connection refused" and Claude Code carries on as usual (the timeout is 3 seconds).
+
 ## Development
 
 ```bash
@@ -219,6 +243,7 @@ npm test                  # unit tests (fake Gateway / Runner and a temporary SQ
 npm run test:integration  # integration tests (call the real SDK when a Claude token is present; uses your allowance)
 npm run measure           # measure time, memory and tokens for one turn
 npm run github-dry-run    # fetch GitHub notifications once and print only the counts per class (posts nothing)
+npm run cc-dry-run        # read the Claude Code sessions on this machine once and print them in three groups (posts nothing)
 ```
 
 - Only three runtime dependencies (`@anthropic-ai/claude-agent-sdk`, `discord.js`, `zod`), pinned to exact versions.

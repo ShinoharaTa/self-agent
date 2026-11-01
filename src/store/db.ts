@@ -493,6 +493,33 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX notices_at ON notices(at);
   CREATE INDEX notices_unposted ON notices(guild_id, text) WHERE posted_at IS NULL;
   `,
+  // v27: この機械の Claude Code のセッション（docs/plan/claude-code-sessions.md §9）。cc_sessions は claude agents --json で見たセッションと
+  // hook の事象から決めた時刻・判断待ち（last_prompt_text は先頭 200 字）。一覧から消えたら gone_at を入れ、30 日で消す。
+  // cc_state は 1 行だけの状態（multiline_ok は CC3 で使う）
+  `
+  CREATE TABLE cc_sessions (
+    session_id TEXT PRIMARY KEY,
+    cwd TEXT,
+    name TEXT,
+    pid INTEGER,
+    permission_mode TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    gone_at TEXT,
+    last_prompt_at TEXT,
+    last_prompt_text TEXT,
+    last_event TEXT,
+    last_event_at TEXT,
+    waiting_kind TEXT,
+    waiting_since TEXT
+  );
+  CREATE INDEX cc_sessions_gone ON cc_sessions(gone_at) WHERE gone_at IS NOT NULL;
+  CREATE TABLE cc_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    multiline_ok INTEGER NOT NULL DEFAULT 1
+  );
+  INSERT INTO cc_state (id) VALUES (1);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
