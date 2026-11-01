@@ -73,9 +73,9 @@ export const WEB_ENV_NAMES: readonly string[] = [
   "SELF_AGENT_CC_HOOK_TOKEN",
   "SELF_AGENT_CC_POLL_SEC",
   "SELF_AGENT_CC_PERMISSION_HOLD_SEC",
-  "SELF_AGENT_CC_SEND_WAIT_MIN",
   "SELF_AGENT_WORKSPACE_DIR",
   "SELF_AGENT_CC_MAX_SESSIONS",
+  "SELF_AGENT_CC_SEND_WAIT_MIN",
 ];
 
 /** GitHub の通知のポーリングの状態（有効なら GithubPoller.status()。pausedUntil はレート制限で止めている間の再開の時刻） */

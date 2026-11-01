@@ -28,7 +28,10 @@ test("openDb: v27 の DB を v28 に上げても cc_sessions・cc_state は残�
   const v27 = new DatabaseSync(path);
   for (const migration of MIGRATIONS.slice(0, 27)) v27.exec(migration);
   v27.exec("PRAGMA user_version = 27");
-  new CcSessionStore(v27, () => at(0)).upsertSeen([{ sessionId: S1, cwd: "/w/a", name: "a", pid: 1 }]);
+  // v27 の形の行（今のストアは v29 の列を書くので使わない）
+  v27
+    .prepare("INSERT INTO cc_sessions (session_id, cwd, name, pid, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(S1, "/w/a", "a", 1, at(0).toISOString(), at(0).toISOString());
   v27.exec("UPDATE cc_state SET multiline_ok = 0");
   v27.close();
   const db = openDb(path);

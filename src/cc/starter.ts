@@ -441,7 +441,8 @@ export class CcStarter {
     const waiting = this.started.filter((entry) => entry.sessionId === undefined);
     if (waiting.length === 0 || this.stopped) return;
     const snapshot = this.deps.registry.snapshot();
-    if (snapshot.fetchedAt === undefined || snapshot.unreadable) return;
+    // 前回の一覧（stale）では結びつけない（送信の経路と同じ）
+    if (snapshot.fetchedAt === undefined || snapshot.unreadable || snapshot.stale) return;
     const lookup = await this.deps.panes.lookup(new Set(snapshot.sessions.map((session) => session.pid)));
     if (!lookup.ok) return;
     let bound = false;
