@@ -61,7 +61,7 @@ function post(port: number, body: Record<string, unknown>): { reply: Promise<Rep
   return { reply, req };
 }
 
-function permissionBody(sessionId: string, command = SECRET_COMMAND): Record<string, unknown> {
+function permissionBody(sessionId: string, command = SECRET_COMMAND, suggestions: unknown[] = []): Record<string, unknown> {
   return {
     hook_event_name: "PermissionRequest",
     session_id: sessionId,
@@ -69,7 +69,7 @@ function permissionBody(sessionId: string, command = SECRET_COMMAND): Record<str
     permission_mode: "default",
     tool_name: "Bash",
     tool_input: { command, description: "x" },
-    permission_suggestions: [],
+    permission_suggestions: suggestions,
   };
 }
 
@@ -143,9 +143,9 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
   t.after(() => server.close());
   const port = server.address()!.port;
   /** 許可の要求を送り、pending の行ができるまで待つ */
-  const ask = async (sessionId: string, command = SECRET_COMMAND) => {
+  const ask = async (sessionId: string, command = SECRET_COMMAND, suggestions: unknown[] = []) => {
     const before = store.pendingFor(sessionId)?.id;
-    const sent = post(port, permissionBody(sessionId, command));
+    const sent = post(port, permissionBody(sessionId, command, suggestions));
     await until(() => {
       const row = store.pendingFor(sessionId);
       return row !== undefined && row.id !== before;
@@ -556,4 +556,106 @@ test("openDb: v29 の DB を v30 に上げても cc_sends は残り、cc_permiss
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM cc_sends").get()?.n, 1);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM cc_permissions").get()?.n, 0);
   assert.ok(MIGRATIONS.length >= 30);
+});
+
+// ----- CC5b: このセッションでは常に許可 -----
+
+/** 実機の npm test の提案（addRules・destination localSettings）に、使わない提案（deny・ほかのツール・addDirectories・setMode）を混ぜたもの */
+const NPM_TEST_SUGGESTIONS: unknown[] = [
+  { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test *" }, { toolName: "Read", ruleContent: "src/**" }], behavior: "allow", destination: "localSettings" },
+  { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm run build *" }], behavior: "deny", destination: "userSettings" },
+  { type: "addDirectories", directories: ["/tmp/x"], destination: "session" },
+  { type: "setMode", mode: "acceptEdits", destination: "session" },
+];
+
+test("CC5b: [常に許可] は updatedPermissions が addRules・allow・session の 1 件（localSettings は session に、deny・ほかのツール・addDirectories・setMode は落ちる）", async (t) => {
+  const s = await setup(t);
+  const asked = await s.ask(S1, "npm test", NPM_TEST_SUGGESTIONS);
+  // 線引きを通ったルールだけを行に残す
+  assert.deepEqual(s.store.get(asked.id)?.alwaysRules, [{ toolName: "Bash", ruleContent: "npm test *" }]);
+  assert.deepEqual(s.hold.answer(asked.id, "always", "web"), { ok: true, state: "allowed_always" });
+  const reply = await asked.reply;
+  assert.equal(reply.status, 200);
+  assert.deepEqual(JSON.parse(reply.body), {
+    hookSpecificOutput: {
+      hookEventName: "PermissionRequest",
+      decision: {
+        behavior: "allow",
+        updatedPermissions: [
+          { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test *" }], behavior: "allow", destination: "session" },
+        ],
+      },
+    },
+  });
+  for (const word of ["localSettings", "userSettings", "projectSettings", "addDirectories", "setMode", "deny", "updatedInput"]) {
+    assert.ok(!reply.body.includes(word), word);
+  }
+  const row = s.store.get(asked.id)!;
+  assert.equal(row.state, "allowed_always");
+  assert.equal(row.via, "web");
+  // 1 行に応答は 1 回
+  assert.deepEqual(s.hold.answer(asked.id, "always", "web"), { ok: false, reason: "stale" });
+  assert.deepEqual(s.hold.answer(asked.id, "allow", "web"), { ok: false, reason: "stale" });
+  assert.ok(s.logs.some((line) => line === `Claude Code: 許可の要求（#${asked.id}）→ allowed_always（web）`));
+  // log にルール・コマンドは出ない
+  assert.ok(!s.logs.join("\n").includes("npm test"));
+});
+
+test("CC5b: 提案が無い・線引きで残らない要求の always は stale（保留は続き、[許可] は押せる）", async (t) => {
+  const s = await setup(t);
+  // addDirectories・setMode だけ（touch の実機の形）
+  const touch = await s.ask(S1, "touch x", [
+    { type: "addDirectories", directories: ["/tmp/x"], destination: "session" },
+    { type: "setMode", mode: "acceptEdits", destination: "session" },
+  ]);
+  assert.equal(s.store.get(touch.id)?.alwaysRules, null);
+  assert.deepEqual(s.hold.answer(touch.id, "always", "web"), { ok: false, reason: "stale" });
+  assert.equal(s.store.get(touch.id)?.state, "pending");
+  assert.deepEqual(s.hold.answer(touch.id, "allow", "web"), { ok: true, state: "allowed" });
+  assert.equal(JSON.parse((await touch.reply).body).hookSpecificOutput.decision.updatedPermissions, undefined);
+  // 広い・危ない Bash のルールだけ
+  for (const ruleContent of ["rm *", "rm:*", "*", " *", ":*", "npm test | tee x *"]) {
+    const asked = await s.ask(S1, "x", [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent }], behavior: "allow", destination: "localSettings" }]);
+    assert.equal(s.store.get(asked.id)?.alwaysRules, null, ruleContent);
+    assert.deepEqual(s.hold.answer(asked.id, "always", "web"), { ok: false, reason: "stale" }, ruleContent);
+    s.hold.answer(asked.id, "deny", "web");
+    await asked.reply;
+  }
+});
+
+test("CC5b: 常に許可の内容は押した時点の DB の行のルールから作る", async (t) => {
+  const s = await setup(t);
+  const asked = await s.ask(S1, "npm test", NPM_TEST_SUGGESTIONS);
+  s.db.prepare("UPDATE cc_permissions SET always_rules = ? WHERE id = ?").run('[{"toolName":"Bash","ruleContent":"npm run lint"}]', asked.id);
+  assert.deepEqual(s.hold.answer(asked.id, "always", "web"), { ok: true, state: "allowed_always" });
+  const decision = JSON.parse((await asked.reply).body).hookSpecificOutput.decision;
+  assert.deepEqual(decision.updatedPermissions[0].rules, [{ toolName: "Bash", ruleContent: "npm run lint" }]);
+  assert.equal(decision.updatedPermissions[0].destination, "session");
+});
+
+test("decisionBody: always は allow + session の updatedPermissions", () => {
+  const body = JSON.parse(decisionBody("always", [{ toolName: "Bash", ruleContent: "npm test *" }]));
+  assert.equal(body.hookSpecificOutput.decision.behavior, "allow");
+  assert.equal(body.hookSpecificOutput.decision.updatedPermissions.length, 1);
+  assert.equal(body.hookSpecificOutput.decision.updatedPermissions[0].destination, "session");
+});
+
+test("openDb: always_rules の列を足す版で、前の行は残り always_rules は NULL", (t) => {
+  const dir = tempDir(t);
+  const path = join(dir, "self-agent.db");
+  const before = MIGRATIONS.findIndex((migration) => migration.includes("ADD COLUMN always_rules"));
+  assert.ok(before > 0);
+  const old = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, before)) old.exec(migration);
+  old.exec(`PRAGMA user_version = ${before}`);
+  old.exec(
+    `INSERT INTO cc_permissions (session_id, request_hash, tool_name, summary, state, created_at) VALUES ('${S1}', 'h', 'Bash', 's', 'allowed', 'a')`,
+  );
+  old.close();
+  const db = openDb(path);
+  t.after(() => db.close());
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  const row = new CcPermissionStore(db).get(1)!;
+  assert.equal(row.state, "allowed");
+  assert.equal(row.alwaysRules, null);
 });

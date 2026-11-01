@@ -1,6 +1,7 @@
 // Claude Code の許可の要求（PermissionRequest）の保留（docs/plan/claude-code-sessions.md §3.4。CC5a）。hook-server.ts が受けた要求を
-// cc_permissions に pending で記録し、応答を最長 SELF_AGENT_CC_PERMISSION_HOLD_SEC 保留する。その間に Web で [許可]・[拒否] が押されれば
-// 決定の JSON を返す。保留の間も端末・RC には普段のダイアログが出ていて、そこで先に答えられると Claude Code は先へ進み、hook の接続は開いたまま残る。
+// cc_permissions に pending で記録し、応答を最長 SELF_AGENT_CC_PERMISSION_HOLD_SEC 保留する。その間に Web で [許可]・[このセッションでは常に許可]・[拒否] が
+// 押されれば決定の JSON を返す（常に許可（CC5b）のルールは permissions.ts の線引きを通って行に残したものだけで、destination は session）。
+// 保留の間も端末・RC には普段のダイアログが出ていて、そこで先に答えられると Claude Code は先へ進み、hook の接続は開いたまま残る。
 // それを次のどれかで「他で答えられた」（answered_elsewhere）と判断し、空の本文を返して閉じる: 同じセッションの次の PermissionRequest・
 // そのセッションの Stop・UserPromptSubmit（via hook）、受信から 3 秒以上後に読み始めた claude agents --json の status が waiting でない（via status。
 // 形が読めない status では閉じない）。一覧から消えたセッションの保留は expired にする。
@@ -10,6 +11,7 @@
 // log は「Claude Code: 許可の要求（#id）→ <状態>（<経路>）」と件数だけ（ツール名・要約・セッションの ID は出さない）
 import type { CcPermissionRow, CcPermissionState, CcPermissionStore, CcPermissionVia } from "../store/cc-permissions.ts";
 import type { CcHookEvent } from "./hook-server.ts";
+import { type CcRule, sessionRulesUpdate } from "./permissions.ts";
 import type { CcTimers } from "./registry.ts";
 
 /** 同じセッションの要求を数える窓 */
@@ -25,13 +27,22 @@ export const CC_PERMISSION_UNKNOWN_LOG_INTERVAL_MS = 60_000;
 /** [拒否] の message（端末に `Error: <message>` と出て、モデルにも渡る） */
 export const CC_PERMISSION_DENY_MESSAGE = "self-agent（Discord / Web）から拒否しました";
 
-/** 押された決定（CC5a は許可・拒否だけ） */
-export type CcPermissionDecision = "allow" | "deny";
+/** 押された決定（always は「このセッションでは常に許可」。CC5b） */
+export type CcPermissionDecision = "allow" | "always" | "deny";
 
-/** 決定の応答の本文（§3.4）。allow は behavior だけで、updatedPermissions・updatedInput は付けない。deny は message だけで interrupt は付けない */
-export function decisionBody(decision: CcPermissionDecision): string {
+/**
+ * 決定の応答の本文（§3.4）。allow は behavior だけで、updatedPermissions・updatedInput は付けない。deny は message だけで interrupt は付けない。
+ * always は allow に updatedPermissions（addRules・behavior allow・destination session の 1 件。permissions.ts）を足す。rules は always のときだけ使う
+ */
+export function decisionBody(decision: "allow" | "deny"): string;
+export function decisionBody(decision: "always", rules: readonly CcRule[]): string;
+export function decisionBody(decision: CcPermissionDecision, rules: readonly CcRule[] = []): string {
   const body =
-    decision === "allow" ? { behavior: "allow" } : { behavior: "deny", message: CC_PERMISSION_DENY_MESSAGE };
+    decision === "allow"
+      ? { behavior: "allow" }
+      : decision === "always"
+        ? { behavior: "allow", updatedPermissions: sessionRulesUpdate(rules) }
+        : { behavior: "deny", message: CC_PERMISSION_DENY_MESSAGE };
   return JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: body } });
 }
 
@@ -114,6 +125,7 @@ export class CcPermissionHold {
       toolName: permission.toolName,
       summary: permission.summary,
       permissionMode: event.permissionMode ?? null,
+      alwaysRules: permission.alwaysRules ?? null,
     };
     if (this.stopped) {
       const row = store.add({ ...fields, state: "released", via: "shutdown" });
@@ -178,14 +190,26 @@ export class CcPermissionHold {
     }
   }
 
-  /** Web（と後の段の Discord）の [許可]・[拒否]。先に押した方が勝つ（pending からの compare-and-set）。requestHash を渡せば行と合うときだけ */
+  /**
+   * Web（と後の段の Discord）の [許可]・[このセッションでは常に許可]・[拒否]。先に押した方が勝つ（pending からの compare-and-set）。
+   * requestHash を渡せば行と合うときだけ。常に許可は押した時点の行のルールから作り、行にルールが無ければ stale
+   */
   answer(id: number, decision: CcPermissionDecision, via: "web" | "discord", requestHash?: string): CcAnswerResult {
     const row = this.deps.store.get(id);
     if (row === undefined) return { ok: false, reason: "not_found" };
     if (row.state !== "pending" || !this.held.has(id)) return { ok: false, reason: "stale" };
     if (requestHash !== undefined && requestHash !== row.requestHash) return { ok: false, reason: "stale" };
-    const to = decision === "allow" ? "allowed" : "denied";
-    if (!this.close(id, to, via, decisionBody(decision))) return { ok: false, reason: "stale" };
+    let to: "allowed" | "allowed_always" | "denied";
+    let body: string;
+    if (decision === "always") {
+      if (row.alwaysRules === null || row.alwaysRules.length === 0) return { ok: false, reason: "stale" };
+      to = "allowed_always";
+      body = decisionBody("always", row.alwaysRules);
+    } else {
+      to = decision === "allow" ? "allowed" : "denied";
+      body = decisionBody(decision);
+    }
+    if (!this.close(id, to, via, body)) return { ok: false, reason: "stale" };
     return { ok: true, state: to };
   }
 
