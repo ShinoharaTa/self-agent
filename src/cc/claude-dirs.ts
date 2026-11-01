@@ -10,13 +10,16 @@ const SESSION_FILE_MAX_BYTES = 64 * 1024;
 
 /** `session_…`（`https://claude.ai/code/<id>` の id） */
 const BRIDGE_SESSION_PATTERN = /^session_[A-Za-z0-9_-]{1,128}$/;
-/** `<session>:<window>.%<pane>`（tmux のセッション名は改行・制御文字を含まない） */
-const TMUX_PATTERN = /^[^\u0000-\u001f\u007f]{1,200}:\d{1,6}\.%\d{1,9}$/;
+/**
+ * `<session>:@<window_id>.%<pane>`（実際のファイルの形。例 `foo:@12.%34`）か `<session>:<window>.%<pane>`。
+ * tmux のセッション名は改行・制御文字を含まない
+ */
+const TMUX_PATTERN = /^[^\u0000-\u001f\u007f]{1,200}:@?\d{1,6}\.%\d{1,9}$/;
 
 /** sessions/<pid>.json から読む欄（どちらも形が合わなければ undefined） */
 export type SessionFileInfo = {
   bridgeSessionId: string | undefined;
-  /** `<session>:<window>.%<pane>` */
+  /** `<session>:@<window_id>.%<pane>`（か `<session>:<window>.%<pane>`） */
   tmux: string | undefined;
 };
 

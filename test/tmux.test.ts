@@ -62,11 +62,11 @@ test("引数が固定の形: list-panes・list-clients・capture-pane・load-buf
   assert.ok(calls.every((call) => call.timeoutMs === CHILD_TIMEOUT_MS && call.maxBuffer === CHILD_MAX_BUFFER));
 });
 
-test("capture-pane: historyLines を渡せば -S -<n> で履歴から撮る。範囲外・整数でなければ投げて実行しない", async () => {
+test("capture-pane: historyLines を渡せば -S -<n> で履歴から SGR なし（-e なし）で撮る。範囲外・整数でなければ投げて実行しない", async () => {
   const { run, calls } = fakeRun({ code: 0, stdout: "screen", stderr: "" });
   const tmux = createTmux({ tmuxPath: TMUX, run });
   assert.deepEqual(await tmux.capturePane("%3", { historyLines: 200 }), { ok: true, value: "screen" });
-  assert.deepEqual(calls.map((call) => call.args), [["capture-pane", "-p", "-e", "-S", "-200", "-t", "%3"]]);
+  assert.deepEqual(calls.map((call) => call.args), [["capture-pane", "-p", "-S", "-200", "-t", "%3"]]);
   for (const historyLines of [0, -1, 1.5, 10_001, Number.NaN]) {
     await assert.rejects(tmux.capturePane("%3", { historyLines }));
   }

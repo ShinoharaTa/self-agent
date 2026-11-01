@@ -45,7 +45,8 @@ test("cc-setup: 6 つの事象に同じ url・headers・allowedEnvVars の http 
     hooks: Record<string, Array<{ matcher?: string; hooks: Array<Record<string, unknown>> }>>;
   };
   assert.deepEqual(settings.env, { SELF_AGENT_CC_HOOK_TOKEN: CC_TOKEN_PLACEHOLDER });
-  assert.deepEqual(Object.keys(settings.hooks), ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "Notification", "PermissionRequest"]);
+  // SessionStart は http hook に対応していないので出さない
+  assert.deepEqual(Object.keys(settings.hooks), ["UserPromptSubmit", "Stop", "SessionEnd", "Notification", "PermissionRequest"]);
   for (const [event, groups] of Object.entries(settings.hooks)) {
     assert.equal(groups.length, 1);
     assert.equal(groups[0]!.matcher, undefined);

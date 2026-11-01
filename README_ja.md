@@ -229,9 +229,9 @@ SELF_AGENT_CC_HOOK_TOKEN=...
 npm run cc-setup -- --print
 ```
 
-`env` の 1 行と、6 つの事象（`SessionStart`・`UserPromptSubmit`・`Stop`・`SessionEnd`・`Notification`・`PermissionRequest`）の `hooks` が出る。どれも `http://127.0.0.1:<port>/hook` への `type: "http"` で、ヘッダは `X-Self-Agent-Hook: $SELF_AGENT_CC_HOOK_TOKEN`。`env` の置き場所の文は `~/.config/self-agent/env` と同じトークンに置き換え、`~/.claude/settings.json` は 600 のままにする。`settings.json` の `env` からトークンが読まれないときは、tmux のサーバーを起こすシェルで `SELF_AGENT_CC_HOOK_TOKEN` を `export` する。
+`env` の 1 行と、5 つの事象（`UserPromptSubmit`・`Stop`・`SessionEnd`・`Notification`・`PermissionRequest`。`SessionStart` は http hook に対応していないので外している）の `hooks` が出る。どれも `http://127.0.0.1:<port>/hook` への `type: "http"` で、ヘッダは `X-Self-Agent-Hook: $SELF_AGENT_CC_HOOK_TOKEN`。`env` の置き場所の文は `~/.config/self-agent/env` と同じトークンに置き換え、`~/.claude/settings.json` は 600 のままにする。`settings.json` の `env` からトークンが読まれないときは、tmux のサーバーを起こすシェルで `SELF_AGENT_CC_HOOK_TOKEN` を `export` する。
 
-4. Bot を再起動する。Bot が止まっている間は hooks が connection refused になり、Claude Code は普段どおり進む（timeout は 3 秒）。
+4. Bot を再起動する。Bot を止めている間も発言は遅れないが、毎ターン端末に hook のエラーの行（`hook error … ECONNREFUSED`）が出る（RC にも出るはず）。
 
 ## 開発
 

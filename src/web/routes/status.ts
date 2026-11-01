@@ -99,7 +99,7 @@ export type StatusDeps = {
   guildSettings: Pick<GuildSettingsStore, "get">;
   env: NodeJS.ProcessEnv;
   /** Claude Code のセッションの状態（SELF_AGENT_CC が有効なときだけ。cc.ts の ccStatus）。無ければ無効の形 */
-  cc?: () => Promise<CcStatus>;
+  cc?: () => CcStatus;
 };
 
 type BotStatus = { persona: string; name: string; isDefault?: boolean; guest?: true; connected: boolean };
@@ -150,7 +150,7 @@ export function statusRoutes(deps: StatusDeps): Route[] {
     {
       method: "GET",
       pattern: /^\/api\/status$/,
-      handle: async () => ({ status: 200, json: { ...statusBody(deps), cc: deps.cc === undefined ? CC_STATUS_DISABLED : await deps.cc() } }),
+      handle: async () => ({ status: 200, json: { ...statusBody(deps), cc: deps.cc === undefined ? CC_STATUS_DISABLED : deps.cc() } }),
     },
   ];
 }

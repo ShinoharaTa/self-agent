@@ -88,8 +88,8 @@ export type Tmux = {
   listPanes(): Promise<TmuxResult<TmuxPane[]>>;
   listClients(): Promise<TmuxResult<TmuxClient[]>>;
   /**
-   * 見えている画面を SGR 付きで撮る（`capture-pane -p -e`）。historyLines を渡せば、その行数だけ前の履歴から撮る（`-S -<n>`。
-   * docs/plan/claude-code-sessions.md §5.1 の画面の写し）
+   * 見えている画面を SGR 付きで撮る（`capture-pane -p -e`）。historyLines を渡せば、その行数だけ前の履歴から SGR なしで撮る
+   * （`-p -S -<n>`。docs/plan/claude-code-sessions.md §5.1 の画面の写し）
    */
   capturePane(paneId: string, options?: { historyLines?: number }): Promise<TmuxResult<string>>;
   /** text を名前付きのバッファ（handoffBufferName）に入れる。text が空・MAX_PASTE_CHARS 字を超える・制御文字がある（1 行のテンプレートだけを送る。§5.4）なら投げる */
@@ -235,7 +235,7 @@ export function createTmux(options: TmuxOptions): Tmux {
       if (!Number.isSafeInteger(history) || history < 1 || history > MAX_HISTORY_LINES) {
         throw new Error(`履歴の行数は 1〜${MAX_HISTORY_LINES} で指定してください`);
       }
-      return exec(["capture-pane", "-p", "-e", "-S", `-${history}`, "-t", paneId]);
+      return exec(["capture-pane", "-p", "-S", `-${history}`, "-t", paneId]);
     },
     async loadBuffer(handoffId, text) {
       const name = handoffBufferName(handoffId);
