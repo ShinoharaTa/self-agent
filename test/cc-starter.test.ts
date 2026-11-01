@@ -118,6 +118,20 @@ test("projectDir・listProjects: 直下の実際のディレクトリだけ。sy
   assert.deepEqual(listProjects({ workspaceDir: join(ws, "nope"), protectedDirs: [] }), []);
 });
 
+test("projectDir（nested）: GitHub の [対応] の起動だけ 1 つ下も許す。symlink の段・2 つ下・形の違う名前は通さない", (t) => {
+  const { ws, places } = workspace(t);
+  mkdirSync(join(ws, "alpha", "sub", "deeper"));
+  mkdirSync(join(ws, "beta", "real"));
+  symlinkSync(join(ws, "beta", "real"), join(ws, "beta", "linked"));
+  assert.equal(projectDir("alpha/sub", places, { nested: true }), join(ws, "alpha", "sub"));
+  assert.equal(projectDir("alpha", places, { nested: true }), join(ws, "alpha"));
+  for (const name of ["link/sub", "beta/linked", "alpha/sub/deeper", "alpha/../beta", "alpha/", "/alpha", "alpha/bad name", "selfdata/x"]) {
+    assert.equal(projectDir(name, places, { nested: true }), undefined, name);
+  }
+  // 既定（Web の起動）は直下だけ
+  assert.equal(projectDir("alpha/sub", places), undefined);
+});
+
 test("isTrustDialog: trust のダイアログだけ（ほかのダイアログ・入力待ちは違う）", () => {
   assert.equal(isTrustDialog(TRUST), true);
   assert.equal(isTrustDialog(EMPTY), false);

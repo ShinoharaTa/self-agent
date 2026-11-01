@@ -99,7 +99,10 @@ class FakeGh {
   }
 }
 
-function setup(t: TestContext, options: { github?: boolean; withGh?: boolean; githubChannel?: boolean } = {}) {
+function setup(
+  t: TestContext,
+  options: { github?: boolean; withGh?: boolean; githubChannel?: boolean; handoff?: { mappedRepos(): Promise<ReadonlySet<string>> } } = {},
+) {
   const db = tempDb(t);
   let now = NOW;
   const clock = (): Date => now;
@@ -138,6 +141,7 @@ function setup(t: TestContext, options: { github?: boolean; withGh?: boolean; gi
     now: clock,
     timers,
     log: (line: string) => logs.push(line),
+    ...(options.handoff === undefined ? {} : { handoff: options.handoff }),
   };
   const poller = createGithubPoller(deps);
   return {
@@ -643,4 +647,47 @@ test("status: gh が見つからなければ failure は no_gh", async (t) => {
   env.poller.start();
   await env.poller.idle();
   assert.deepEqual(env.poller.status(), { enabled: true, lastFetchAt: null, failure: "no_gh", pausedUntil: null });
+});
+
+test("送り込みがあれば、自分のリポジトリと地図にあるリポジトリの赤・黄にだけ [対応]（gh:act:<行 ID>）を付ける", async (t) => {
+  let mapCalls = 0;
+  const mapped = new Set([`mapped-org/${SECRET_REPO}`]);
+  const env = setup(t, {
+    handoff: {
+      mappedRepos: async () => {
+        mapCalls++;
+        return mapped;
+      },
+    },
+  });
+  await baseline(env);
+  env.gh.notifications = () =>
+    ok([
+      raw("red-1", { reason: "mention", number: 12 }),
+      raw("red-2", { reason: "mention", owner: "Mapped-Org", number: 14, updatedAt: "2026-10-15T11:56:00Z" }),
+      raw("red-3", { reason: "mention", owner: ME, number: 15, updatedAt: "2026-10-15T11:57:00Z" }),
+    ]);
+  await env.poller.tick();
+  const posts = env.githubPosts().map((post) => post.message);
+  assert.equal(posts.length, 3);
+  // 他人のリポジトリで地図にも無いもの: [対応] なし
+  assert.equal(posts[0]!.components, undefined);
+  for (const [index, post] of [posts[1]!, posts[2]!].entries()) {
+    const row = env.store.listPosted(10).find((candidate) => candidate.url?.endsWith(`/pull/${14 + index}`));
+    assert.ok(row?.handoffOk, `#${14 + index}`);
+    assert.deepEqual(post.components, [{ kind: "buttons", buttons: [{ customId: `gh:act:${row.id}`, label: "対応" }] }]);
+  }
+  assert.equal(mapCalls, 1);
+  assertNoSecrets(env.logs);
+});
+
+test("送り込みが無ければ [対応] を付けず、handoff_ok も立てない", async (t) => {
+  const env = setup(t);
+  await baseline(env);
+  env.gh.notifications = () => ok([raw("red-1", { reason: "mention", owner: ME, number: 15 })]);
+  await env.poller.tick();
+  const posts = env.githubPosts();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0]!.message.components, undefined);
+  assert.equal(env.store.listPosted(10)[0]?.handoffOk, false);
 });
