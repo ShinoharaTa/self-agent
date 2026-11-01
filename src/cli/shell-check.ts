@@ -509,6 +509,30 @@ export async function main(_argv: readonly string[]): Promise<number> {
       if (server !== undefined) await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }
+  // 7-3. tmux の既定のソケットに届かない（GitHub の [対応]・Claude Code への送信は host の tmux に貼るので、sandbox の Bash から tmux を操作できると
+  // Web のページの指示で Claude Code に文字を送れてしまう。docs/plan/github-notifications.md §7.2）。tmux が無くても（rc 127）届かないので通る
+  {
+    const socket = join(process.env.TMUX_TMPDIR || "/tmp", `tmux-${process.getuid?.() ?? 1000}`, "default");
+    await check(
+      "tmux の既定のソケットに届かない（tmux -S <既定のソケット> list-sessions が通らない）",
+      `tmux -S ${quote(socket)} list-sessions >/dev/null 2>&1; echo "__rc=$?"`,
+      ({ text }) => {
+        const codes = exitCodes(text);
+        return codes.length === 1 && codes[0] !== 0 ? true : "list-sessions が通った";
+      },
+    );
+  }
+  // 7-4. gh の認証（~/.config/gh）を読めない（§7.2。読めると GitHub に書き込める）。hosts.yml を読めず、gh auth status もログインしていない
+  await check(
+    "gh の認証（~/.config/gh/hosts.yml）を読めず、gh auth status が通らない",
+    `cat ${quote(join(host.homeDir, ".config", "gh", "hosts.yml"))} >/dev/null 2>&1; echo "__rc=$?"; gh auth status >/dev/null 2>&1; echo "__rc=$?"`,
+    ({ text }) => {
+      const codes = exitCodes(text);
+      if (codes.length !== 2) return "結果の数が合わない";
+      if (codes[0] === 0) return "hosts.yml を読めた";
+      return codes[1] !== 0 ? true : "gh auth status が通った";
+    },
+  );
   // 8. GitHub と npm には届く
   const cloneDir = join(projectDir, "repos", "hello");
   await check(

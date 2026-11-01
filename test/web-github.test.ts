@@ -229,3 +229,17 @@ test("POST /api/github/<id>/act: 送り込みが無ければ 404", async (t) => 
   assert.deepEqual(await post(server, `/api/github/${id}/act`), { status: 404, json: { error: "not_found" } });
   assert.deepEqual(await post(server, `/api/github/${id}/start`), { status: 404, json: { error: "not_found" } });
 });
+
+test("POST /api/github/<id>/act: 地図に無いリポジトリ（not_local）は 200 で種類と文を返す", async (t) => {
+  const store = new GithubStore(tempDb(t), () => NOW);
+  const handoff = {
+    act: async () => ({ kind: "not_local", repo: "example-org/example-repo" }) as GithubHandoffResult,
+    start: async () => ({ kind: "stale" }) as GithubHandoffResult,
+  };
+  const server = await serve(t, githubRoutes({ cfg: { github: true }, store, status: () => STATUS, handoff }), () => NOW);
+  const response = await post(server, "/api/github/1/act");
+  assert.equal(response.status, 200);
+  assert.equal(response.json.result, "not_local");
+  assert.equal(response.json.text, "example-org/example-repo は ~/workspace にありません（送り先を決められません）");
+  assert.equal(response.json.startable, undefined);
+});

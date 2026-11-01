@@ -178,9 +178,10 @@ test("buildWorkspaceMap・findRepoPanes: ペインの cwd から対応するデ�
   // 名前の違い・upstream・大文字小文字
   assert.deepEqual(ids("Org/Website"), ["%7"]);
   assert.deepEqual(ids("upstream/website"), ["%7"]);
-  // 子リポジトリ: 自分のペインがあればそれ、無ければ親のディレクトリにいるペイン（別の子リポジトリのペインは除く）
+  // 子リポジトリ: 自分のペインがあればそれ。無ければ親のディレクトリにいるペインを候補にするが、親そのものが別のリポジトリ（owner/parent）なら
+  // そこのペイン（%5）はそのリポジトリのものなので候補にしない
   assert.deepEqual(ids("owner/other"), ["%6"]);
-  assert.deepEqual(ids("owner/child"), ["%5"]);
+  assert.deepEqual(ids("owner/child"), []);
   assert.deepEqual(ids("owner/parent"), ["%5"]);
   // リポジトリでない親の中でも、worktree で別のリポジトリ（alpha）に対応するペイン（%14）は親の候補にしない
   assert.deepEqual(ids("owner/sub1"), ["%10"]);
