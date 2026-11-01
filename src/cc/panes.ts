@@ -132,6 +132,26 @@ export type PaneLookup =
     }
   | { ok: false; reason: TmuxFailure };
 
+/**
+ * 起動したペイン（%N）を送り先にする一覧のセッション（純関数。docs/plan/claude-code-sessions.md §4.2。CC4 の起動の記録と最初の指示）。
+ * 主の経路（sendable）でそのペインに当たり、かつ claude agents --json の cwd が起動したディレクトリ（dir）と同じものだけを採る
+ * （%N が同じというだけでは結びつけない）。当たるセッションがあるが cwd が違うだけなら mismatch、当たるものが無ければ none
+ */
+export function sessionOnStartedPane<T extends { pid: number; tmux: string | undefined; cwd: string | undefined }>(
+  lookup: Extract<PaneLookup, { ok: true }>,
+  sessions: readonly T[],
+  paneId: string,
+  dir: string | null,
+): { found: T } | { found: undefined; reason: "mismatch" | "none" } {
+  const onPane = sessions.filter((session) => {
+    const target = lookup.sendable({ pid: session.pid, tmux: session.tmux });
+    return target.ok && target.pane.paneId === paneId;
+  });
+  const found = dir === null ? undefined : onPane.find((session) => session.cwd === dir);
+  if (found !== undefined) return { found };
+  return { found: undefined, reason: onPane.length > 0 ? "mismatch" : "none" };
+}
+
 export type CcPaneResolverDeps = {
   tmux: Pick<Tmux, "listPanes">;
   parentOf: ParentPidReader;

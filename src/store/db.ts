@@ -544,7 +544,8 @@ export const MIGRATIONS: readonly string[] = [
   // v29: Claude Code のセッションの起動（docs/plan/claude-code-sessions.md §4.2・§9。CC4）。started_by は起動したもの（owner = self-agent の外。
   // web / tool / github は self-agent が起動したもの）、tmux_session は起動のときに付けた tmux のセッション名（表示用。オーナーの hook で変わりうる）、
   // tmux_session_id・start_pane_id は new-session -P で返った $N・%N、trust_pending_at は trust のダイアログの確認待ちに気づいた時刻（消えたら NULL）。
-  // waiting_for は claude agents --json の waitingFor（status が waiting のときだけ。v27 で入れるはずだったもの。§2.2）
+  // waiting_for は claude agents --json の waitingFor（status が waiting のときだけ。v27 で入れるはずだったもの。§2.2）。
+  // cc_sends の start_dir は起動の最初の指示（origin start）の起動したディレクトリ（その cwd の claude にだけ結びつける）
   `
   ALTER TABLE cc_sessions ADD COLUMN started_by TEXT NOT NULL DEFAULT 'owner' CHECK (started_by IN ('owner', 'web', 'tool', 'github'));
   ALTER TABLE cc_sessions ADD COLUMN tmux_session TEXT;
@@ -552,6 +553,7 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE cc_sessions ADD COLUMN start_pane_id TEXT;
   ALTER TABLE cc_sessions ADD COLUMN trust_pending_at TEXT;
   ALTER TABLE cc_sessions ADD COLUMN waiting_for TEXT;
+  ALTER TABLE cc_sends ADD COLUMN start_dir TEXT;
   `,
 ];
 

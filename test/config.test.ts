@@ -653,6 +653,7 @@ test("Claude Code: 形の違う値は無効のときも変数名だけを出し�
     ["SELF_AGENT_CC_SEND_WAIT_MIN", "0"],
     ["SELF_AGENT_CC_SEND_WAIT_MIN", "x"],
     ["SELF_AGENT_WORKSPACE_DIR", "workspace"],
+    ["SELF_AGENT_WORKSPACE_DIR", "/srv/#{pane_id}"],
     ["SELF_AGENT_CC_MAX_SESSIONS", "0"],
     ["SELF_AGENT_CC_MAX_SESSIONS", "x"],
   ];

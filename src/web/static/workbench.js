@@ -734,11 +734,11 @@
 
   // ===== 新しい Claude Code のセッション（POST /api/cc/sessions。docs/plan/claude-code-sessions.md §4.2・§5.1） =====
   /** 題名の形（サーバーの src/cc/starter.ts の CC_TITLE_PATTERN と同じ） */
-  const CC_TITLE = /^[\p{L}\p{N} _.-]{1,40}$/u;
+  const CC_TITLE = /^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,39}$/u;
   /** 起動できなかったときの文（応答の error ごと）。無ければトーストの「<status>: <error>」 */
   const CC_START_ERRORS = {
-    invalid_project: "このプロジェクトでは起動できません（~/workspace の直下の実際のディレクトリだけです）",
-    invalid_title: "題名は文字・数字・空白・_ . - の 40 字までです（' などの記号は使えません）",
+    invalid_project: "このプロジェクトでは起動できません（起動できる場所の直下の実際のディレクトリだけです）",
+    invalid_title: "題名は文字か数字で始まる、文字・数字・空白・_ . - の 40 字までです（' などの記号は使えません）",
     invalid_mode: "権限モードを選び直してください",
     too_long: "最初の指示は 4,000 字までです",
     invalid_text: "最初の指示に改行のほかの制御文字（タブなど）は使えません",
@@ -769,7 +769,7 @@
     }
     const projects = Array.isArray(data && data.projects) ? data.projects.filter((p) => p && typeof p.name === "string") : [];
     if (projects.length === 0) {
-      toast("起動できるプロジェクトがありません（~/workspace の直下のディレクトリ）");
+      toast("起動できるプロジェクトがありません（起動できる場所の直下のディレクトリ）");
       return;
     }
     const keep = $("cc-start-project").value;

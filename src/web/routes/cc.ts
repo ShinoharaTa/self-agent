@@ -104,9 +104,14 @@ const START_STATUS: Readonly<Record<CcStartFailure, number>> = {
   stopped: 503,
 };
 
-/** 一覧の送信の印（そのセッションの最新の送信。終わったものは CC_SEND_RECENT_MS の間だけ） */
-function pendingJson(row: CcSendRow | undefined): { id: number; state: string; updatedAt: string } | null {
-  return row === undefined ? null : { id: row.id, state: row.state, updatedAt: row.updatedAt };
+/**
+ * 一覧の送信の印（そのセッションの最新の送信。終わったものは CC_SEND_RECENT_MS の間だけ）。lastPaneState は最後に見たペインの状態か送れなかった理由
+ * （dialog なら画面に「ダイアログが出ているため待っています」を出す）
+ */
+function pendingJson(
+  row: CcSendRow | undefined,
+): { id: number; state: string; lastPaneState: string | null; updatedAt: string } | null {
+  return row === undefined ? null : { id: row.id, state: row.state, lastPaneState: row.lastPaneState, updatedAt: row.updatedAt };
 }
 
 export function ccRoutes(deps: CcRouteDeps): Route[] {
