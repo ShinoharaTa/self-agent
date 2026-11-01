@@ -755,7 +755,8 @@
     return el("div", { class: "composer-wrap", "data-cc": sessionId }, [form]);
   }
 
-  // ----- 許可の要求（CC5a）: 保留中なら [許可][拒否]、終わったものは終わり方。保留の間も端末・RC のダイアログは出ている -----
+  // ----- 許可の要求（CC5a・CC5b）: 保留中なら [許可][このセッションでは常に許可（<ルール>）][拒否]（常に許可はルールがあるときだけ）、
+  // 終わったものは終わり方。保留の間も端末・RC のダイアログは出ている -----
   /** 押した要求（応答が来るまでボタンを止める。このタブのメモリだけ） */
   const ccPermissionBusy = new Set();
 
@@ -785,7 +786,7 @@
     ccPermissionBusy.add(p.id);
     SA.app.refresh("cc:" + sessionId);
     SA.api.post("/api/cc/permissions/" + p.id + "/" + decision, { requestHash: p.requestHash }, { quiet: true }).then(
-      () => toast(decision === "allow" ? "許可しました" : "拒否しました"),
+      () => toast(decision === "allow" ? "許可しました" : decision === "always" ? "このセッションでは常に許可しました" : "拒否しました"),
       (err) => {
         if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
         else if (err && err.status === 404) toast("この要求はもうありません");
@@ -811,6 +812,17 @@
       el("p", { class: "meta" }, [el("span", { class: "mono", text: String(p.toolName) }), p.permissionMode ? " ・ " + p.permissionMode : null]),
       el("pre", { class: "code-pre", text: String(p.summary || "") }),
     ];
+    // 常に許可にすると加わるルール（保留中と、常に許可したものだけ）。ルール・意味は hook から来たデータなので textContent
+    const rule = typeof p.alwaysRule === "string" && p.alwaysRule ? p.alwaysRule : null;
+    if (rule && (pending || p.state === "allowed_always")) {
+      facts.push(
+        el("p", { class: "meta cc-permission-rule" }, [
+          pending ? "常に許可にすると: " : "常に許可したルール: ",
+          el("code", { class: "mono", text: rule }),
+          typeof p.alwaysNote === "string" && p.alwaysNote ? "（" + p.alwaysNote + "）" : null,
+        ]),
+      );
+    }
     if (!pending) {
       const end = [el("span", { text: ccPermissionEndText(p) })];
       if (rc && (p.state === "expired" || p.state === "released")) {
@@ -822,13 +834,23 @@
     const busy = ccPermissionBusy.has(p.id);
     const allow = el("button", { class: "btn btn-primary btn-sm", type: "button", disabled: busy }, [icon("check"), "許可"]);
     const deny = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy }, [icon("x"), "拒否"]);
+    const always = rule
+      ? el("button", { class: "btn btn-secondary btn-sm cc-permission-always", type: "button", disabled: busy }, [
+          icon("check"),
+          "このセッションでは常に許可（" + rule + "）",
+        ])
+      : null;
     allow.addEventListener("click", () => answerCcPermission(sessionId, p, "allow"));
+    if (always) always.addEventListener("click", () => answerCcPermission(sessionId, p, "always"));
     deny.addEventListener("click", () => answerCcPermission(sessionId, p, "deny"));
     return el("section", { class: "card card-sm cc-permission is-pending", "aria-label": "許可の要求" }, [
       head,
       ...facts,
-      el("div", { class: "msg-actions" }, [allow, deny]),
-      el("p", { class: "meta", text: "端末や RC のダイアログでも答えられます（先に答えた方が効きます）。" }),
+      el("div", { class: "msg-actions" }, [allow, always, deny].filter((x) => x)),
+      el("p", {
+        class: "meta",
+        text: "端末や RC のダイアログでも答えられます（先に答えた方が効きます）。[常に許可] は Claude Code が規則を提案したときだけ出ます。",
+      }),
     ]);
   }
 

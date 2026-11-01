@@ -491,10 +491,19 @@ async function permissionSetup(t: TestContext) {
     t,
     ccRoutes({ registry, panes: undefined, tmux: undefined, workspaceDir: WORKSPACE, home: HOME, permissions: { hold, store, holdSec: 300 }, now }),
   );
-  const ask = (sessionId: string, command: string) => {
+  const ask = (sessionId: string, command: string, suggestions: unknown[] = []) => {
     const event = parseHookEvent(
-      { hook_event_name: "PermissionRequest", session_id: sessionId, cwd: `${WORKSPACE}/alpha`, permission_mode: "default", tool_name: "Bash", tool_input: { command } },
+      {
+        hook_event_name: "PermissionRequest",
+        session_id: sessionId,
+        cwd: `${WORKSPACE}/alpha`,
+        permission_mode: "default",
+        tool_name: "Bash",
+        tool_input: { command },
+        permission_suggestions: suggestions,
+      },
       now(),
+      { workspaceDir: WORKSPACE },
     )!;
     registry.receive(event);
     return hold.request(event, new AbortController().signal);
@@ -502,7 +511,7 @@ async function permissionSetup(t: TestContext) {
   return { db, clock, store, hold, registry, server, ask, timers, sessions };
 }
 
-test("GET /api/cc/permissions: 保留中の要求（id・sessionId・toolName・summary・alwaysRule: null・requestHash・expiresAt）。一覧の permission と status", async (t) => {
+test("GET /api/cc/permissions: 保留中の要求（id・sessionId・toolName・summary・alwaysRule: null・alwaysNote: null・requestHash・expiresAt）。一覧の permission と status", async (t) => {
   const s = await permissionSetup(t);
   const reply = s.ask(S1, "npm test");
   const pending = s.store.pendingFor(S1)!;
@@ -518,6 +527,7 @@ test("GET /api/cc/permissions: 保留中の要求（id・sessionId・toolName・
         toolName: "Bash",
         summary: "npm test",
         alwaysRule: null,
+        alwaysNote: null,
         requestHash: pending.requestHash,
         permissionMode: "default",
         createdAt: new Date(BASE).toISOString(),
@@ -556,8 +566,11 @@ test("POST /api/cc/permissions/<id>/allow|deny: 200 { state }・応答の本文�
   assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, {})).status, 400);
   assert.equal(s.store.get(pending.id)?.state, "pending");
   assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id + 9}/allow`, { requestHash: pending.requestHash })).status, 404);
-  // always は CC5b（今は無い）
-  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/always`, {})).status, 404);
+  // 提案の無い要求の always は 409（常に許可のルールが無い）
+  const always = await postJson(s.server, `/api/cc/permissions/${pending.id}/always`, { requestHash: pending.requestHash });
+  assert.equal(always.status, 409);
+  assert.deepEqual(always.json, { error: "stale" });
+  assert.equal(s.store.get(pending.id)?.state, "pending");
   const ok = await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: pending.requestHash });
   assert.equal(ok.status, 200);
   assert.deepEqual(ok.json, { state: "allowed" });
@@ -585,4 +598,46 @@ test("POST /api/cc/permissions/<id>/allow|deny: 200 { state }・応答の本文�
   s.timers.at(-1)!();
   assert.equal(await third, undefined);
   assert.equal((await postJson(s.server, `/api/cc/permissions/${expired.id}/allow`, { requestHash: expired.requestHash })).status, 409);
+});
+
+test("POST /api/cc/permissions/<id>/always: 一覧に alwaysRule（Bash(npm test *)）と alwaysNote、200 { state: allowed_always } と session の updatedPermissions", async (t) => {
+  const s = await permissionSetup(t);
+  const reply = s.ask(S1, "npm test", [
+    { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test *" }], behavior: "allow", destination: "localSettings" },
+  ]);
+  const pending = s.store.pendingFor(S1)!;
+  const listed = (await getJson(s.server, "/api/cc/permissions")).json.permissions as Array<Record<string, unknown>>;
+  assert.equal(listed[0]!.alwaysRule, "Bash(npm test *)");
+  assert.equal(listed[0]!.alwaysNote, "「npm test」で始まるコマンド");
+  // request_hash が違えば 409
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/always`, { requestHash: "0".repeat(64) })).status, 409);
+  const ok = await postJson(s.server, `/api/cc/permissions/${pending.id}/always`, { requestHash: pending.requestHash });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { state: "allowed_always" });
+  const decision = JSON.parse((await reply)!).hookSpecificOutput.decision;
+  assert.deepEqual(decision, {
+    behavior: "allow",
+    updatedPermissions: [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test *" }], behavior: "allow", destination: "session" }],
+  });
+  // 2 回目は 409。終わった要求の permission に常に許可したルールが残る
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/always`, { requestHash: pending.requestHash })).status, 409);
+  const detail = (await getJson(s.server, `/api/cc/sessions/${S1}`)).json.permission as Record<string, unknown>;
+  assert.deepEqual([detail.state, detail.via, detail.alwaysRule], ["allowed_always", "web", "Bash(npm test *)"]);
+});
+
+test("POST /api/cc/permissions/<id>/always: 危ないルールだけの提案は alwaysRule: null で 409", async (t) => {
+  const s = await permissionSetup(t);
+  const reply = s.ask(S1, "rm -rf build", [
+    { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "rm *" }], behavior: "allow", destination: "localSettings" },
+  ]);
+  const pending = s.store.pendingFor(S1)!;
+  const listed = (await getJson(s.server, "/api/cc/permissions")).json.permissions as Array<Record<string, unknown>>;
+  assert.equal(listed[0]!.alwaysRule, null);
+  assert.equal(listed[0]!.alwaysNote, null);
+  const always = await postJson(s.server, `/api/cc/permissions/${pending.id}/always`, { requestHash: pending.requestHash });
+  assert.equal(always.status, 409);
+  assert.deepEqual(always.json, { error: "stale" });
+  // [許可] は押せる
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: pending.requestHash })).status, 200);
+  assert.equal(JSON.parse((await reply)!).hookSpecificOutput.decision.updatedPermissions, undefined);
 });

@@ -576,6 +576,11 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX cc_permissions_session ON cc_permissions(session_id, id);
   CREATE INDEX cc_permissions_created ON cc_permissions(created_at);
   `,
+  // v31: 許可の要求の「このセッションでは常に許可」（docs/plan/claude-code-sessions.md §3.4・§9。CC5b）。always_rules は
+  // 要求の permission_suggestions のうち cc/permissions.ts の線引きを通った rules の JSON（無ければ NULL = 常に許可は出せない）
+  `
+  ALTER TABLE cc_permissions ADD COLUMN always_rules TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

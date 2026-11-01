@@ -3,14 +3,18 @@
 // 接続元が loopback でなければ 403、X-Self-Agent-Hook がトークンと一致しなければ 403、本文が 1 MB を超えれば 413、JSON のオブジェクトでなければ 400、
 // それ以外は 200 で本文なし（処理の失敗でも。2xx の空の本文は hooks で「成功」。本文を返すと non-blocking error になりうる）。
 // 受け口は何も実行しない。PermissionRequest は permission-hold.ts に渡して応答を保留し、決定の JSON か空の本文で返す（§3.4。CC5a）。
+// permission_suggestions は permissions.ts の線引きを通ったルールだけを持つ（常に許可。CC5b）。
 // Claude Code が先に接続を閉じたら（timeout など）応答は書かない。
 // log は種類だけ（ヘッダの値・トークン・本文・セッションの ID は出さない）
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { CC_PROMPT_MAX_CHARS, type CcHookEventName, headChars } from "../store/cc-sessions.ts";
 import { safeEqual } from "../web/auth.ts";
 import { isLoopback, parseJsonObject, readBody } from "../web/http-body.ts";
 import { isUuid } from "./agents.ts";
+import { alwaysRulesOf, type CcRule } from "./permissions.ts";
 
 /** 受ける唯一のパス */
 export const CC_HOOK_PATH = "/hook";
@@ -57,6 +61,8 @@ export type CcPermissionSummary = {
   summary: string;
   /** tool_name と tool_input（JSON）の sha256（hex） */
   requestHash: string;
+  /** permission_suggestions のうち常に許可にできるルール（permissions.ts の線引き。CC5b）。無ければ null */
+  alwaysRules?: CcRule[] | null;
 };
 
 /** 受け口が読んだ 1 つの事象（読む欄は §2.3 の固定の集合だけ） */
@@ -119,8 +125,15 @@ export function unwrapPastedContent(prompt: string): string {
   return prompt.replace(/<\/?pasted_content\b[^>]*>/g, "");
 }
 
-/** 本文から事象を読む（純関数）。hook_event_name が固定の集合に無い・session_id が UUID でなければ undefined */
-export function parseHookEvent(body: Record<string, unknown>, receivedAt: Date): CcHookEvent | undefined {
+/**
+ * 本文から事象を読む（純関数）。hook_event_name が固定の集合に無い・session_id が UUID でなければ undefined。
+ * workspaceDir は常に許可のファイルのルールの線引きに使う ~/workspace の場所
+ */
+export function parseHookEvent(
+  body: Record<string, unknown>,
+  receivedAt: Date,
+  opts: { workspaceDir?: string } = {},
+): CcHookEvent | undefined {
   const event = EVENT_NAMES.find((name) => name === body.hook_event_name);
   if (event === undefined || !isUuid(body.session_id)) return undefined;
   const parsed: CcHookEvent = { event, sessionId: body.session_id, receivedAt };
@@ -134,7 +147,13 @@ export function parseHookEvent(body: Record<string, unknown>, receivedAt: Date):
   }
   if (event === "PermissionRequest" && typeof body.tool_name === "string" && TOOL_NAME_PATTERN.test(body.tool_name)) {
     const cwd = typeof body.cwd === "string" ? body.cwd : undefined;
-    parsed.permission = summarizePermission(body.tool_name, body.tool_input, cwd);
+    parsed.permission = {
+      ...summarizePermission(body.tool_name, body.tool_input, cwd),
+      alwaysRules: alwaysRulesOf(body.tool_name, body.permission_suggestions, {
+        cwd,
+        workspaceDir: opts.workspaceDir ?? join(homedir(), "workspace"),
+      }),
+    };
   }
   return parsed;
 }
