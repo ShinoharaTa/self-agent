@@ -1,12 +1,14 @@
 // GitHub の通知のポーリング（docs/plan/github-notifications.md §2・§4・§11）。SELF_AGENT_GITHUB=1 のときだけ main が作る。
 // 自前のタイマーで起動直後に 1 回、以後は max(設定, 直近の X-Poll-Interval) ごとに gh api で未読の通知を取り、振り分けて（classify.ts）
 // 赤・黄を /setup 済みのサーバーの #github に投稿する（赤はオーナーだけをメンション）。最初の回は今ある未読を記録するだけで、開始の知らせを 1 通出す。
-// 取得の失敗は #system に変わったときだけ知らせる。log にはリポジトリ名・題名・URL・ログインを出さない（件数と失敗の種類だけ）
+// 取得の失敗は #system に変わったときだけ知らせる。log にはリポジトリ名・題名・URL・ログインを出さない（件数と失敗の種類だけ）。
+// 送り込み（handoff。SELF_AGENT_CC も有効なときだけ main が渡す）があれば、自分の（SELF_AGENT_GITHUB_OWNERS の）リポジトリか地図にあるリポジトリの赤・黄に
+// [対応]（gh:act:<行 ID>。app/commands/github.ts）を付ける（§5.1。CC6）
 import { withTimeout } from "../app/shell-state.ts";
 import type { SystemNotifier } from "../app/system-notice.ts";
 import type { Config } from "../config.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
-import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
+import type { ButtonDef, Gateway, OutgoingMessage } from "../discord/gateway.ts";
 import type { GithubNotificationRow, GithubPollState, GithubStore, ThreadUpdate } from "../store/github.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { NoticeLevel } from "../store/notices.ts";
@@ -274,11 +276,17 @@ export async function classifyWithLookups(notification: GithubNotification, cont
 /** 検証した部品から組み立てた Issue・PR の画面の URL（owner・repo・pull|issues・番号）。これに合うものだけをリンクにする（#github・Web UI） */
 export const HTML_URL_PATTERN = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})\/(pull|issues)\/([1-9][0-9]{0,9})$/;
 
+/** #github の投稿の [対応]（app/commands/github.ts が受ける。custom_id は行 ID だけ） */
+export function githubActButton(notificationId: number): ButtonDef {
+  return { customId: `gh:act:${notificationId}`, label: "対応" };
+}
+
 /**
  * #github への投稿（§4.3）。1 行目は印・種別・リポジトリ・番号・人、2 行目は題名（先頭 100 字・改行を空白に・Markdown を無効化）、3 行目は <URL>（プレビューを出さない）。
- * 誰の操作か確かめられなかったものは 4 行目に注記する。赤はオーナーだけをメンションする
+ * 誰の操作か確かめられなかったものは 4 行目に注記する。赤はオーナーだけをメンションする。
+ * handoff（送り込みが有効）で、行が [対応] を付けてよいもの（handoff_ok）で URL が検証した形なら [対応] を付ける
  */
-export function formatGithubPost(row: GithubNotificationRow, ownerUserId: string | undefined): OutgoingMessage {
+export function formatGithubPost(row: GithubNotificationRow, ownerUserId: string | undefined, handoff = false): OutgoingMessage {
   const match = row.url === null ? null : HTML_URL_PATTERN.exec(row.url);
   const mark = row.level === "red" ? "🔴" : "🟡";
   const where = match === null ? "" : `  ${escapeDiscordText(`${match[1]}/${match[2]}`)}  ${match[3] === "pull" ? "PR" : "Issue"} #${match[4]}`;
@@ -291,6 +299,7 @@ export function formatGithubPost(row: GithubNotificationRow, ownerUserId: string
   return {
     text: lines.join("\n"),
     ...(row.level === "red" && ownerUserId !== undefined ? { mentionUserId: ownerUserId } : {}),
+    ...(handoff && row.handoffOk && match !== null ? { components: [{ kind: "buttons", buttons: [githubActButton(row.id)] }] } : {}),
   };
 }
 
@@ -327,6 +336,11 @@ export type GithubPollerDeps = {
   log: (message: string) => void;
   /** 既定は GITHUB_POST_TIMEOUT_MS */
   postTimeoutMs?: number;
+  /**
+   * Claude Code への送り込み（SELF_AGENT_CC も有効なときだけ。app/github-handoff.ts）。あれば [対応] を付ける。
+   * mappedRepos は地図（~/workspace の remote）にあるリポジトリ（`owner/repo` の小文字）
+   */
+  handoff?: { mappedRepos(): Promise<ReadonlySet<string>> };
 };
 
 /** ポーリングの状態（Web UI の /api/status・/api/github。docs/plan/web-ui.md §7.2） */
@@ -602,6 +616,8 @@ export class GithubPoller {
       classified.push({ notification, classification });
     }
     if (this.stopped) return false;
+    // [対応] を付けるか（§5.1）: 送り込みが有効で、自分の（owners の）リポジトリか地図にあるリポジトリの赤・黄。地図は要るときだけ 1 回作る
+    const handoffOk = await this.handoffJudge(classified.map((entry) => entry.classification), owners);
     for (const { notification, classification } of classified.reverse()) {
       const added = store.addNotification({
         threadId: notification.threadId,
@@ -614,8 +630,7 @@ export class GithubPoller {
         title: notification.title,
         url: classification.subject === null ? null : subjectHtmlUrl(classification.subject),
         repoPrivate: notification.repoPrivate,
-        // [対応] は段 2（PR-G4）から
-        handoffOk: false,
+        handoffOk: handoffOk(classification),
       });
       store.recordThread(threadUpdate(notification));
       if (added.result === "added") counts[classification.level]++;
@@ -623,6 +638,32 @@ export class GithubPoller {
     const total = counts.red + counts.yellow + counts.drop;
     if (total > 0) log(`GitHub の通知: 新しい ${total} 件（赤 ${counts.red}・黄 ${counts.yellow}・白 ${counts.drop}）`);
     return true;
+  }
+
+  /** [対応] を付けてよいかの判定（送り込みが無効なら常に false）。地図は赤・黄があり、owners で決まらないものがあるときだけ作る */
+  private async handoffJudge(
+    classifications: readonly Classification[],
+    owners: readonly string[],
+  ): Promise<(classification: Classification) => boolean> {
+    const handoff = this.deps.handoff;
+    if (handoff === undefined) return () => false;
+    const ownerSet = new Set(owners.map((owner) => owner.toLowerCase()));
+    const owned = (classification: Classification): boolean =>
+      classification.subject !== null && ownerSet.has(classification.subject.owner.toLowerCase());
+    const needsMap = classifications.some((c) => c.level !== "drop" && c.subject !== null && !owned(c));
+    let mapped: ReadonlySet<string> = new Set();
+    if (needsMap) {
+      try {
+        mapped = await handoff.mappedRepos();
+      } catch {
+        // 地図を作れなければ owners のものだけ
+      }
+    }
+    return (classification) => {
+      const subject = classification.subject;
+      if (classification.level === "drop" || subject === null) return false;
+      return owned(classification) || mapped.has(`${subject.owner}/${subject.repo}`.toLowerCase());
+    };
   }
 
   /** 取得できた: 状態を記録し、失敗を知らせていたら戻ったことを知らせる。次の tick までのミリ秒を返す */
@@ -766,7 +807,7 @@ export class GithubPoller {
     let failed = 0;
     for (const row of toPost) {
       if (this.stopped) return;
-      const posted = await this.postToAll(channels, formatGithubPost(row, cfg.ownerUserId));
+      const posted = await this.postToAll(channels, formatGithubPost(row, cfg.ownerUserId, this.deps.handoff !== undefined));
       if (posted === undefined) failed++;
       else store.markPosted(row.id, posted.channelId, posted.messageId);
     }

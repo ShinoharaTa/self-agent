@@ -433,7 +433,7 @@
     );
   }
 
-  // ===== GitHub（W6: #github に出した通知。[対応] は段 2） =====
+  // ===== GitHub（W6: #github に出した通知。[対応] は Claude Code のセッションへの送り込み（CC6）） =====
   /** 検証した部品から組み立てた Issue・PR の URL（サーバーの poller.ts と同じ形）。合わなければ null（リンクにしない） */
   const GITHUB_URL = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})\/(pull|issues)\/([1-9][0-9]{0,9})$/;
 
@@ -464,6 +464,50 @@
     return parts.join("・");
   }
 
+  /** [対応] と [起動して送る] の結果（サーバーの文をトーストに。積んだら [取り消す]、セッションが無ければ起動の確認） */
+  function githubHandoffDone(n, data) {
+    const text = data && typeof data.text === "string" ? data.text : "送りました";
+    if (data && data.result === "no_session" && data.startable === true) {
+      confirm({
+        title: "新しいセッションを起動して送る",
+        body: text,
+        ok: "起動して送る",
+        run: () => githubHandoff(null, n, "start"),
+      });
+      return;
+    }
+    const sendId = data && typeof data.sendId === "number" ? data.sendId : null;
+    const cancellable = sendId !== null && (data.result === "started" || data.state === "queued");
+    toast(
+      text,
+      cancellable
+        ? {
+            label: "取り消す",
+            run: () =>
+              SA.api.post("/api/cc/sends/" + sendId + "/cancel", {}, { quiet: true }).then(
+                () => toast("取り消しました"),
+                (err) => toast(err && err.status === 409 ? "この操作は古くなっています（届けている途中か、終わっています）" : (err && err.toast) || "取り消せませんでした"),
+              ),
+          }
+        : undefined,
+    );
+  }
+
+  /** POST /api/github/<id>/act（[対応]）・start（[起動して送る]）。押したボタンは終わるまで押せなくする */
+  function githubHandoff(button, n, action) {
+    if (button) button.disabled = true;
+    SA.api.post("/api/github/" + n.id + "/" + action, {}, { quiet: true }).then(
+      (data) => {
+        if (button) button.disabled = false;
+        githubHandoffDone(n, data);
+      },
+      (err) => {
+        if (button) button.disabled = false;
+        failed(err, "github");
+      },
+    );
+  }
+
   function githubItem(n) {
     const parts = githubParts(n.url);
     const title = (n.label ? n.label + ": " : "") + (n.title || "（題名なし）") + (parts ? " #" + parts.number : "");
@@ -472,8 +516,22 @@
       el("span", { class: "dot " + (n.level === "red" ? "dot-bad" : "dot-warn"), "aria-hidden": "true" }),
       el("div", { class: "item-main" }, [el("span", { class: "item-title", text: title }), el("span", { class: "meta", text: meta.join("・") })]),
       parts ? el("a", { class: "btn btn-ghost btn-sm", href: n.url, target: "_blank", rel: "noreferrer noopener" }, [icon("external-link"), "GitHub"]) : null,
-      el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: true, title: "段 2 で足す", text: "対応" }),
+      githubActButton(n),
     ]);
+  }
+
+  /** [対応]。使えないもの（送り込みが無効・自分のでも地図にも無いリポジトリ）は押せない */
+  function githubActButton(n) {
+    const attrs = { class: "btn btn-secondary btn-sm", type: "button", text: "対応" };
+    if (!n.handoff) {
+      attrs.disabled = true;
+      attrs.title = store.github && store.github.handoff ? "このリポジトリには送れません" : "SELF_AGENT_CC が無効です";
+      return el("button", attrs);
+    }
+    attrs.title = "このリポジトリの Claude Code のセッションに対応依頼を送る";
+    const button = el("button", attrs);
+    button.addEventListener("click", () => githubHandoff(button, n, "act"));
+    return button;
   }
 
   function renderGithub(container) {
@@ -495,7 +553,10 @@
       scroll([
         group("red", "自分宛て"),
         group("yellow", "自分のリポジトリの新しい Issue / PR"),
-        el("p", { class: "meta", text: "#github に出したもの（「ほか n 件」にまとめたものを含む）です。[対応]（Claude Code のセッションに渡す）は段 2 です。" }),
+        el("p", {
+          class: "meta",
+          text: "#github に出したもの（「ほか n 件」にまとめたものを含む）です。[対応] でそのリポジトリの Claude Code のセッションに対応依頼（リポジトリ・番号・URL だけの 1 行）を送ります。セッションが無ければ起動を確かめます。",
+        }),
       ]),
     );
   }

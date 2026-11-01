@@ -3,7 +3,7 @@ import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 /** 送信の行を残す日数（scheduler の tick で、created_at がこれより前の終わった行を消す。docs/plan/claude-code-sessions.md §9） */
 export const CC_SEND_KEEP_DAYS = 30;
 
-/** 送信の出所（web = Web の composer。tool・github・start は後の段） */
+/** 送信の出所（web = Web の composer、github = #github・Web の GitHub の [対応]（CC6）、start = 起動の最初の指示（CC4）。tool は後の段） */
 export type CcSendOrigin = "web" | "tool" | "github" | "start";
 
 /**
@@ -35,12 +35,18 @@ export type CcSendRow = {
   /** 試した回数 */
   attempts: number;
   deliveredAt: string | null;
+  /** [対応] を押した通知（github_notifications.id。origin github だけ。CC6） */
+  notificationId: number | null;
   createdAt: string;
   updatedAt: string;
 };
 
 function nullableString(value: SQLOutputValue | undefined): string | null {
   return value === null || value === undefined ? null : String(value);
+}
+
+function nullableNumber(value: SQLOutputValue | undefined): number | null {
+  return value === null || value === undefined ? null : Number(value);
 }
 
 function toRow(row: Record<string, SQLOutputValue>): CcSendRow {
@@ -58,6 +64,7 @@ function toRow(row: Record<string, SQLOutputValue>): CcSendRow {
     lastPaneState: nullableString(row.last_pane_state),
     attempts: Number(row.attempts),
     deliveredAt: nullableString(row.delivered_at),
+    notificationId: nullableNumber(row.notification_id),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -75,7 +82,7 @@ export class CcSendStore {
     this.now = now;
   }
 
-  /** 行を作って返す。paneId・startDir はペイン宛て（起動の最初の指示。sessionId は null）のときだけ */
+  /** 行を作って返す。paneId・startDir はペイン宛て（起動の最初の指示。sessionId は null）のときだけ、notificationId は GitHub の [対応] のときだけ */
   add(input: {
     sessionId: string | null;
     paneId?: string;
@@ -83,13 +90,14 @@ export class CcSendStore {
     text: string;
     origin: CcSendOrigin;
     state: CcSendState;
+    notificationId?: number;
   }): CcSendRow {
     const at = this.now().toISOString();
     const result = this.db
       .prepare(
-        "INSERT INTO cc_sends (session_id, pane_id, start_dir, text, origin, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO cc_sends (session_id, pane_id, start_dir, text, origin, state, notification_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .run(input.sessionId, input.paneId ?? null, input.startDir ?? null, input.text, input.origin, input.state, at, at);
+      .run(input.sessionId, input.paneId ?? null, input.startDir ?? null, input.text, input.origin, input.state, input.notificationId ?? null, at, at);
     return this.get(Number(result.lastInsertRowid))!;
   }
 
@@ -125,6 +133,20 @@ export class CcSendStore {
     const row = this.db
       .prepare(`SELECT * FROM cc_sends WHERE session_id = ? AND state IN (${ACTIVE_SQL}) ORDER BY id DESC LIMIT 1`)
       .get(sessionId);
+    return row === undefined ? undefined : toRow(row);
+  }
+
+  /**
+   * 同じ GitHub のスレッドの通知（github_notifications の thread_id）から積んだ送信の最新の行（[対応] の二重の押下の判定。CC6）。
+   * 取り消した・送れなかった・諦めた行は返さない（押し直しを妨げない）
+   */
+  latestForThread(threadId: string): CcSendRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT s.* FROM cc_sends s JOIN github_notifications n ON n.id = s.notification_id
+           WHERE n.thread_id = ? AND s.state NOT IN ('cancelled', 'failed', 'gave_up') ORDER BY s.id DESC LIMIT 1`,
+      )
+      .get(threadId);
     return row === undefined ? undefined : toRow(row);
   }
 
