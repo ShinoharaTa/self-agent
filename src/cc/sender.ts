@@ -2,8 +2,9 @@
 // cc_sends に queued で積み、待ち行列（起動後は CC_SEND_RETRY_MS ごと。積んだときはすぐ）が古い順に 1 件ずつ試す（アプリ全体で同時に 1 つ）。
 // 試すたびに一覧（registry）の pid から送り先のペインを引き直し（祖先の関係で当たり pane_current_command が claude のものだけ。panes.ts の
 // findSendablePane）、probePaneState が idle（2 回）のときだけ load-buffer → paste-buffer -p -d → 0.5 秒後に pasteLanded → Enter → 2 秒後に確かめる。
-// 貼れたか確かめられなければ Enter を押さず unconfirmed（やり直さない）。複数行が 1 行目で送信されたと分かったら cc_state.multiline_ok を false にして
-// #system に 1 行、以後は改行を空白に置き換えて送る。idle でなければ積んだまま待ち、SELF_AGENT_CC_SEND_WAIT_MIN 分で gave_up。
+// 貼れたか確かめられなければ Enter を押さず unconfirmed（やり直さない）。複数行が 1 行目で送信されたように見えるのが別の送信で
+// CC_MULTILINE_DETECT_LIMIT 回続いたら cc_state.multiline_ok を false にして #system に 1 行、以後は改行を空白に置き換えて送る
+// （戻すのは npm run cc-dry-run -- --reset-multiline）。idle でなければ積んだまま待ち、SELF_AGENT_CC_SEND_WAIT_MIN 分で gave_up。
 // 再起動で delivering のまま残った行は unconfirmed（recover）。log は送信の番号・状態・理由の種類だけ（本文・名前・ペイン id・sessionId は出さない）
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { SystemNotifier } from "../app/system-notice.ts";
@@ -25,6 +26,9 @@ export const CC_SEND_DUPLICATE_MS = 5_000;
 export const CC_PASTE_CHECK_DELAY_MS = 500;
 /** Enter を押してから送信できたかを撮るまで */
 export const CC_ENTER_CHECK_DELAY_MS = 2_000;
+
+/** 複数行が 1 行目で送信されたように見えるのが、別の送信でこの回数続いたら複数行を止める（数えるのはプロセスの中だけ） */
+export const CC_MULTILINE_DETECT_LIMIT = 2;
 
 /** 改行（LF）以外の制御文字（C0・DEL・C1） */
 const CONTROL_EXCEPT_LF = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
@@ -51,7 +55,7 @@ export function singleLine(text: string): string {
 
 /** multiline_ok を false にしたときの #system の 1 行（名前・本文は入れない） */
 export const CC_MULTILINE_OFF_NOTICE =
-  "Claude Code: 複数行の貼り付けが 1 行目で送信されたため、以後は改行を空白に置き換えて送ります（ブラケット貼り付けが効いていません）";
+  "Claude Code: 複数行の貼り付けが続けて 1 行目で送信されたため、以後は改行を空白に置き換えて送ります（ブラケット貼り付けが効いていません。確かめたら npm run cc-dry-run -- --reset-multiline で戻せます）";
 
 export type CcSubmitResult =
   | { ok: true; send: CcSendRow; duplicate: boolean }
@@ -103,6 +107,8 @@ export class CcSender {
   private stopped = false;
   private running: Promise<void> | undefined;
   private rerun = false;
+  /** 複数行が 1 行目で送信されたように見えた送信が続いた数（複数行が貼れたら 0 に戻す） */
+  private earlySubmits = 0;
 
   constructor(deps: CcSenderDeps) {
     this.deps = deps;
@@ -212,8 +218,8 @@ export class CcSender {
     try {
       this.expire();
       const snapshot = this.deps.registry.snapshot();
-      // 一覧をまだ読めていない・読めない間は試さない（送り先が無いと取り違えない）
-      if (snapshot.fetchedAt === undefined || snapshot.unreadable) return;
+      // 一覧をまだ読めていない・直近の読み取りに失敗している間は試さない（古い pid で送り先を取り違えない・送り先が無いと取り違えない）
+      if (snapshot.fetchedAt === undefined || snapshot.unreadable || snapshot.stale) return;
       for (const row of this.deps.sends.listQueued()) {
         if (this.stopped) return;
         await this.attempt(row.id);
@@ -235,7 +241,7 @@ export class CcSender {
     const row = sends.get(id);
     if (row === undefined || row.state !== "queued" || row.sessionId === null) return;
     const snapshot = registry.snapshot();
-    if (snapshot.unreadable) return;
+    if (snapshot.unreadable || snapshot.stale) return;
     const view = snapshot.sessions.find((session) => session.sessionId === row.sessionId);
     if (view === undefined) {
       this.fail(id, "gone");
@@ -269,10 +275,10 @@ export class CcSender {
   }
 
   /** delivering から終わりの状態に移して log */
-  private finish(id: number, state: "delivered" | "unconfirmed", reason: string): void {
-    if (this.deps.sends.transition(id, ["delivering"], state, { lastPaneState: reason })) {
-      this.deps.log(`Claude Code: 送りました（#${id}、${state}）`);
-    }
+  private finish(id: number, state: "delivered" | "unconfirmed" | "failed", reason: string): void {
+    if (!this.deps.sends.transition(id, ["delivering"], state, { lastPaneState: reason })) return;
+    if (state === "failed") this.deps.log(`Claude Code: 送れませんでした（#${id}、${reason}）`);
+    else this.deps.log(`Claude Code: 送りました（#${id}、${state}）`);
   }
 
   /** 貼る前に止まった（何も貼っていない）ので queued に戻す */
@@ -298,7 +304,14 @@ export class CcSender {
         this.requeue(row.id, beforeState);
         return;
       }
-      const loaded = await tmux.loadBuffer(row.id, text, { multiline, maxChars: CC_SEND_MAX_CHARS });
+      let loaded;
+      try {
+        loaded = await tmux.loadBuffer(row.id, text, { multiline, maxChars: CC_SEND_MAX_CHARS });
+      } catch {
+        // 本文の形で断られた（何も貼っていない）。やり直しても同じなので送れない
+        this.finish(row.id, "failed", "invalid_text");
+        return;
+      }
       if (!loaded.ok) {
         await tmux.deleteBuffer(row.id);
         this.requeue(row.id, "load_failed");
@@ -317,14 +330,16 @@ export class CcSender {
         return;
       }
       if (!pasteLanded(before.value, after.value, text)) {
-        if (multiline && pasteSubmittedEarly(after.value, text)) {
+        if (multiline && pasteSubmittedEarly(before.value, after.value, text)) {
           this.finish(row.id, "unconfirmed", "submitted_early");
-          this.multilineOff();
+          this.earlySubmitted();
         } else {
           this.finish(row.id, "unconfirmed", "paste_unconfirmed");
         }
         return;
       }
+      // 複数行がそのまま貼れたら、続けて数えた分を戻す
+      if (multiline && text.includes("\n")) this.earlySubmits = 0;
       const entered = await tmux.sendEnter(paneId);
       if (!entered.ok) {
         this.finish(row.id, "unconfirmed", "enter_failed");
@@ -340,6 +355,17 @@ export class CcSender {
       this.deps.log(`Claude Code: 送信の途中で失敗しました（#${row.id}、${errorKind(error)}）`);
       this.finish(row.id, "unconfirmed", "error");
     }
+  }
+
+  /** 複数行が 1 行目で送信されたように見えた。別の送信で CC_MULTILINE_DETECT_LIMIT 回続いたら複数行を止める */
+  private earlySubmitted(): void {
+    this.earlySubmits++;
+    if (this.earlySubmits < CC_MULTILINE_DETECT_LIMIT) {
+      this.deps.log(`Claude Code: 複数行の貼り付けが 1 行目で送信されたように見えました（${this.earlySubmits}/${CC_MULTILINE_DETECT_LIMIT}）`);
+      return;
+    }
+    this.earlySubmits = 0;
+    this.multilineOff();
   }
 
   /** 複数行を止め（cc_state.multiline_ok = false）、変わったときだけ log と /setup 済みのサーバーの #system に 1 行 */

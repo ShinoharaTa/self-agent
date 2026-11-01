@@ -211,7 +211,7 @@ tailscale serve --bg --https=9444 http://127.0.0.1:8791
 
 ### 9.（任意）この機械の Claude Code のセッションを見る・送る
 
-作りかけ（`docs/plan/claude-code-sessions.md` の段 CC3）。Bot が `claude agents --json` を周期で読み、Claude Code の hooks をローカルのポートで受けて、どのセッションが判断待ち・実行中・待機かを知る。Web UI（有効なとき）のアクティビティ「Claude Code」に 3 群の一覧と、tmux の中のセッションの画面の写し（3 秒ごと）が出る。tmux の中のセッションのタブの入力欄から指示を送れる（複数行可・2,000 字まで。入力待ちのときだけ貼って Enter を押し、作業中なら入力待ちになるまで待つ。`SELF_AGENT_CC_SEND_WAIT_MIN`（既定 120 分）待っても届かなければ諦める。待っている間は [取り消す] で止められる）。貼れたか確かめられなかったときは Enter を押さないので、画面を見て確かめる。起動・許可の応答はまだできない。`npm run cc-dry-run` でも確かめられる。`claude` と `tmux` が `~/.local/bin` か `/usr/local/bin`・`/usr/bin`（ほかの場所なら Bot の `PATH`）に要る。Bot は `claude agents --json` に `HOME`・`PATH`・`LANG` だけの環境を渡すが、それで動くかはまだ確かめていない。
+作りかけ（`docs/plan/claude-code-sessions.md` の段 CC3）。Bot が `claude agents --json` を周期で読み、Claude Code の hooks をローカルのポートで受けて、どのセッションが判断待ち・実行中・待機かを知る。Web UI（有効なとき）のアクティビティ「Claude Code」に 3 群の一覧と、tmux の中のセッションの画面の写し（3 秒ごと）が出る。tmux の中のセッションのタブの入力欄から指示を送れる（複数行可・2,000 字まで。入力待ちのときだけ貼って Enter を押し、作業中なら入力待ちになるまで待つ。`SELF_AGENT_CC_SEND_WAIT_MIN`（既定 120 分）待っても届かなければ諦める。待っている間は [取り消す] で止められる）。貼れたか確かめられなかったときは Enter を押さないので、画面を見て確かめる。複数行の貼り付けが 1 行目で送信されたように見えることが続くと、以後は改行を空白に置き換えて送り、#system に知らせる。端末で確かめて問題が無ければ `npm run cc-dry-run -- --reset-multiline` で戻す（DB のその値だけを変える）。起動・許可の応答はまだできない。`npm run cc-dry-run` でも確かめられる。`claude` と `tmux` が `~/.local/bin` か `/usr/local/bin`・`/usr/bin`（ほかの場所なら Bot の `PATH`）に要る。Bot は `claude agents --json` に `HOME`・`PATH`・`LANG` だけの環境を渡すが、それで動くかはまだ確かめていない。
 
 1. `npm run cc-dry-run` で、セッションを 3 群（判断待ち・実行中・待機）で確かめる（投稿しない・何も変えない）
 2. `~/.config/self-agent/env` に足す（トークンは Claude Code の hooks と共有する。空白を含まない 32 字以上）

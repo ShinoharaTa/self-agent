@@ -6,6 +6,7 @@ import {
   DIALOG_MARKERS,
   expectedMarkerLines,
   INPUT_BOX_MAX_LINES,
+  inputBoxSolidText,
   inputBoxText,
   OWNER_ACTIVE_MS,
   pasteLanded,
@@ -190,12 +191,13 @@ test("classifyScreen: 貼り付け・画像の印、候補の形でない dim �
   assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2")}run the tests${sgr("0")}x`])), "draft");
 });
 
-test("pasteLanded: 貼る前に印・先頭が無く、貼った後の入力欄に先頭 24 字か [Pasted text がある", () => {
+test("pasteLanded: 貼る前に印・先頭が無く、貼った後の入力欄に先頭 24 字か [Pasted text の印がある", () => {
   const text = "[self-agent から] GitHub の通知の対応依頼: owner/repo の PR #12（レビュー）。";
   const pasted = screen([`${PROMPT}${text}`]);
   // 狭い幅で折り返した貼り付け
   const wrapped = screen([`${PROMPT}[self-agent から] GitHub`, "  の通知の対応依頼: owner/repo の PR"]);
-  const collapsed = screen([`${PROMPT}[Pasted text #1 +1 lines]`]);
+  // 改行の無い長い本文は N の無い印にまとまる
+  const collapsed = screen([`${PROMPT}[Pasted text #1]`]);
   assert.equal(inputBoxText(EMPTY), "");
   assert.equal(inputBoxText(wrapped), "[self-agentから]GitHubの通知の対応依頼:owner/repoのPR");
   assert.equal(inputBoxText("no box"), undefined);
@@ -212,17 +214,17 @@ test("pasteLanded: 貼る前に印・先頭が無く、貼った後の入力欄�
   assert.equal(pasteLanded(EMPTY, pasted, ""), false);
 });
 
-test("pasteLanded: 複数行は印 [Pasted text #n +N lines] の N が改行の数以上のときだけ（4 行に +3 は通り、+1 は通らない）", () => {
+test("pasteLanded: 複数行は印 [Pasted text #n +N lines] の N が改行の数と同じときだけ（4 行に +3 は通り、+1・+5 は通らない）", () => {
   const text = ["1 行目の文章はこちらです。長い指示の始まり", "2 行目", "3 行目", "4 行目"].join("\n");
   assert.equal(expectedMarkerLines(text), 3);
   assert.equal(expectedMarkerLines("1 行"), 0);
   const marker = (n: number) => screen([`${PROMPT}[Pasted text #1 +${n} lines]`]);
   assert.equal(pasteLanded(EMPTY, marker(3), text), true);
-  assert.equal(pasteLanded(EMPTY, marker(5), text), true);
+  assert.equal(pasteLanded(EMPTY, marker(5), text), false);
   assert.equal(pasteLanded(EMPTY, marker(1), text), false);
   // 折り返して 2 行に分かれた印も読む
   assert.equal(pasteLanded(EMPTY, screen([`${PROMPT}[Pasted text #2`, "  +3 lines]"]), text), true);
-  // + N の無い印は改行の無い本文にだけ効く
+  // + N の無い印は改行の無い本文にだけ効く（801 字以上の 1 行はこの形にまとまる）
   assert.equal(pasteLanded(EMPTY, screen([`${PROMPT}[Pasted text #1]`]), text), false);
   assert.equal(pasteLanded(EMPTY, screen([`${PROMPT}[Pasted text #1]`]), "1 行だけの長い本文"), true);
   // 複数行がそのまま見えるなら先頭 24 字で当たる（入力欄の行は空白なしでつなぐ）
@@ -231,28 +233,35 @@ test("pasteLanded: 複数行は印 [Pasted text #n +N lines] の N が改行の�
   assert.deepEqual(pastedMarkerLines("[Pastedtext#1+3lines]x[Pastedtext#2]"), [3, 0]);
 });
 
-test("inputBoxText: 入力欄は INPUT_BOX_MAX_LINES（60）行まで探す", () => {
-  assert.equal(INPUT_BOX_MAX_LINES, 60);
-  const lines = Array.from({ length: 50 }, (_, i) => `  行${i}`);
+test("pasteLanded: 貼る前の入力行が全部 dim（候補）なら、本文の先頭と同じでも前からあった文字とみなさない", () => {
+  const text = "run the tests and fix the failures please";
+  const suggested = screen([`${PROMPT}${sgr("2")}${text}${sgr("0")}`]);
+  assert.equal(inputBoxSolidText(suggested), "");
+  assert.equal(pasteLanded(suggested, screen([`${PROMPT}${text}`]), text), true);
+  // dim でない同じ文字（書きかけ）が前からあれば貼れた証拠にしない
+  assert.equal(pasteLanded(screen([`${PROMPT}${text}`]), screen([`${PROMPT}${text}`]), text), false);
+});
+
+test("inputBoxText: 入力欄は INPUT_BOX_MAX_LINES（20）行まで探す", () => {
+  assert.equal(INPUT_BOX_MAX_LINES, 20);
+  const lines = Array.from({ length: 15 }, (_, i) => `  行${i}`);
   assert.equal(inputBoxText(screen([`${PROMPT}先頭`, ...lines])), `先頭${lines.map((line) => line.trim()).join("")}`);
   assert.equal(inputBoxText(screen([`${PROMPT}先頭`, ...Array.from({ length: INPUT_BOX_MAX_LINES }, () => "  x")])), undefined);
 });
 
-test("pasteSubmittedEarly: 複数行で、貼った後に作業中になり、1 行目が入力欄の外に見えるときだけ", () => {
+test("pasteSubmittedEarly: 複数行で、貼る前に 1 行目が無く、貼った後に作業中になり、1 行目が入力欄の外に見えるときだけ", () => {
   const text = "最初の行はここにあります\n2 行目は後ろに\n3 行目";
-  const submitted = screen([`${PROMPT}2 行目は後ろに 3 行目`], {
-    above: [...HISTORY, "❯ 最初の行はここにあります", `${sgr("38;5;174")}✶${sgr("39")} Working… (1s)`, ""],
-    footer: BUSY_FOOTER,
-  });
-  assert.equal(pasteSubmittedEarly(submitted, text), true);
+  const working = `${sgr("38;5;174")}✶${sgr("39")} Working… (1s)`;
+  const submitted = screen([`${PROMPT}2 行目は後ろに 3 行目`], { above: [...HISTORY, "❯ 最初の行はここにあります", working, ""], footer: BUSY_FOOTER });
+  assert.equal(pasteSubmittedEarly(EMPTY, submitted, text), true);
+  // 貼る前から 1 行目が画面にある（前の会話に同じ文がある）なら決めない
+  const echoed = screen([PROMPT], { above: ["❯ 最初の行はここにあります", ""] });
+  assert.equal(pasteSubmittedEarly(echoed, submitted, text), false);
   // 1 行だけの本文・作業中でない・1 行目がまだ入力欄にある・1 行目が見えない
-  assert.equal(pasteSubmittedEarly(submitted, "最初の行はここにあります"), false);
-  assert.equal(pasteSubmittedEarly(screen([`${PROMPT}最初の行はここにあります`]), text), false);
-  assert.equal(
-    pasteSubmittedEarly(screen([`${PROMPT}最初の行はここにあります`], { above: [...HISTORY, `${sgr("38;5;174")}✶${sgr("39")} Working… (1s)`, ""] }), text),
-    false,
-  );
-  assert.equal(pasteSubmittedEarly(screen([PROMPT], { footer: BUSY_FOOTER }), text), false);
+  assert.equal(pasteSubmittedEarly(EMPTY, submitted, "最初の行はここにあります"), false);
+  assert.equal(pasteSubmittedEarly(EMPTY, screen([`${PROMPT}最初の行はここにあります`]), text), false);
+  assert.equal(pasteSubmittedEarly(EMPTY, screen([`${PROMPT}最初の行はここにあります`], { above: [...HISTORY, working, ""] }), text), false);
+  assert.equal(pasteSubmittedEarly(EMPTY, screen([PROMPT], { footer: BUSY_FOOTER }), text), false);
 });
 
 test("classifyPane: 画面を見る前の状態（gone・not_claude・copy_mode・owner_active）", () => {
