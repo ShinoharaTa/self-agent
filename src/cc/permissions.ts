@@ -3,7 +3,7 @@
 // この線引きはオーナーがボタンの文面（ルールそのもの）を読むことの後ろ盾で、境界ではない。迷うものは外す（ボタンを出さない）。
 // rules は toolName が要求の tool_name と同じものだけ残し、さらに次の線引きを通ったものだけを候補にする:
 // - Bash: ruleContent の末尾の ` *`・`:*` を接頭辞の印として外し、語が無い・`*` が残る・シェルの記号（CC_ALWAYS_BASH_DENIED_CHARS）を含む・
-//   最初の語にクォート・`\` がある・最初の語（パスなら名前）が CC_ALWAYS_BASH_DENIED_WORDS（危ない語・包み語・任意のコードを実行できる入口）にある・
+//   最初の語にクォート・`\`・`/`（パスで指したコマンド・スクリプト）がある・最初の語が CC_ALWAYS_BASH_DENIED_WORDS（危ない語・包み語・任意のコードを実行できる入口）にある・
 //   npm で `npm test`・`npm run <名前>` の形でない・git で最初の語の次がサブコマンドでないか CC_ALWAYS_BASH_DENIED_PHRASES の語を含む・
 //   find で接頭辞の印があるか -exec などを含むものは外す
 // - ファイルのツール（Edit・Write など）: 要求の cwd が属する <workspaceDir>/<直下> の中のパスだけ（cwd からの相対・`~/…`・`//<絶対パス>`）で、`..` を含まないもの
@@ -18,7 +18,7 @@ export type CcRule = { toolName: string; ruleContent?: string };
 export type CcRuleContext = { cwd?: string; workspaceDir?: string; home?: string };
 
 /**
- * Bash のルールで、最初の語（パスなら名前）がこれなら常に許可の候補から外す（決定 18。緩めるならここから語を消す）。
+ * Bash のルールで、最初の語がこれなら常に許可の候補から外す（決定 18。緩めるならここから語を消す）。
  * 危ない語・ほかのコマンドを包む語・任意のコードを実行できる入口
  */
 export const CC_ALWAYS_BASH_DENIED_WORDS: readonly string[] = [
@@ -74,8 +74,8 @@ export const CC_ALWAYS_BASH_DENIED_PHRASES: readonly { head: string; after: read
 ];
 /** Bash の接頭辞に含まれていれば外す文字（パイプ・連結・リダイレクト・背景・置換・サブシェル・波括弧・改行） */
 export const CC_ALWAYS_BASH_DENIED_CHARS: readonly string[] = ["|", ";", "&", ">", "<", "`", "$", "(", ")", "{", "}", "\n", "\r"];
-/** 最初の語に含まれていれば外す文字（クォート・エスケープで語を飾ったもの） */
-const BASH_FIRST_WORD_DENIED_CHARS: readonly string[] = ['"', "'", "\\"];
+/** 最初の語に含まれていれば外す文字（クォート・エスケープで語を飾ったもの、`/` でパスを指したもの（`./script.sh`・`/bin/rm`）） */
+const BASH_FIRST_WORD_DENIED_CHARS: readonly string[] = ['"', "'", "\\", "/"];
 /** `npm run <名前>` の名前 */
 const NPM_SCRIPT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_.-]*$/;
 /** ファイルのルールを許すツール */
@@ -107,7 +107,7 @@ function bashRuleAllowed(ruleContent: string | undefined): boolean {
   const words = prefix.split(/\s+/).filter((word) => word !== "");
   if (words.length === 0) return false;
   if (BASH_FIRST_WORD_DENIED_CHARS.some((char) => words[0]!.includes(char))) return false;
-  const first = posix.basename(words[0]!);
+  const first = words[0]!;
   if (CC_ALWAYS_BASH_DENIED_WORDS.includes(first)) return false;
   const rest = words.slice(1);
   // npm は `npm test …` と `npm run <名前> …` だけ（npm exec・`npm run *` などは外す）
