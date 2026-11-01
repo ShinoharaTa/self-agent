@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcSessionStore } from "../src/store/cc-sessions.ts";
+import { GithubStore } from "../src/store/github.ts";
 import { tempDb, tempDir } from "./helpers/db.ts";
 
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
@@ -138,4 +139,39 @@ test("CcSessionStore.setMultilineOk: 変わったときだけ true", (t) => {
   assert.equal(sessions.multilineOk(), false);
   assert.equal(sessions.setMultilineOk(true), true);
   assert.equal(sessions.multilineOk(), true);
+});
+
+test("CcSendStore: notification_id を残し、同じスレッドの通知から積んだ最新の行を引く（取り消し・失敗・諦めは除く）", (t) => {
+  const { db, store } = setup(t);
+  const github = new GithubStore(db, () => at(0));
+  const notice = (threadId: string, updatedAt: string): number => {
+    const added = github.addNotification({
+      threadId,
+      updatedAt,
+      reason: "mention",
+      level: "red",
+      label: "メンション",
+      actorLogin: null,
+      actorKnown: false,
+      title: null,
+      url: null,
+      repoPrivate: false,
+      handoffOk: true,
+    });
+    assert.ok(added.result === "added");
+    return added.notification.id;
+  };
+  const n1 = notice("t-1", "2026-11-01T00:00:00Z");
+  const n2 = notice("t-1", "2026-11-01T00:05:00Z");
+  const other = notice("t-2", "2026-11-01T00:00:00Z");
+  assert.equal(store.latestForThread("t-1"), undefined);
+  const first = store.add({ sessionId: S1, text: "a", origin: "github", state: "queued", notificationId: n1 });
+  assert.equal(first.notificationId, n1);
+  assert.equal(store.add({ sessionId: S1, text: "b", origin: "web", state: "queued" }).notificationId, null);
+  store.add({ sessionId: S2, text: "c", origin: "github", state: "queued", notificationId: other });
+  assert.equal(store.latestForThread("t-1")?.id, first.id);
+  const second = store.add({ sessionId: S2, text: "d", origin: "github", state: "queued", notificationId: n2 });
+  assert.equal(store.latestForThread("t-1")?.id, second.id);
+  store.transition(second.id, ["queued"], "cancelled");
+  assert.equal(store.latestForThread("t-1")?.id, first.id);
 });

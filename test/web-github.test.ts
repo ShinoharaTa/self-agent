@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import type { GithubHandoffResult } from "../src/app/github-handoff.ts";
 import type { GithubPollerStatus } from "../src/github/poller.ts";
 import { GithubStore, type NewGithubNotification } from "../src/store/github.ts";
 import { githubRoutes } from "../src/web/routes/github.ts";
@@ -24,6 +25,28 @@ function get(server: WebServer, path: string): Promise<Response> {
     );
     req.on("error", reject);
     req.end();
+  });
+}
+
+function post(server: WebServer, path: string): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        host: "127.0.0.1",
+        port: server.address()!.port,
+        method: "POST",
+        path,
+        headers: { "tailscale-user-login": LOGIN, "sec-fetch-site": "same-origin", "x-self-agent": "1", "content-type": "application/json" },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => resolve({ status: res.statusCode!, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) }));
+        res.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    req.end("{}");
   });
 }
 
@@ -106,6 +129,7 @@ test("GET /api/github: 投稿した赤・黄だけを updated_at の新しい順
     status: 200,
     json: {
       status: STATUS,
+      handoff: false,
       notifications: [
         {
           id: yellow,
@@ -116,6 +140,7 @@ test("GET /api/github: 投稿した赤・黄だけを updated_at の新しい順
           actorLogin: null,
           actorKnown: false,
           updatedAt: "2026-10-15T00:05:00Z",
+          handoff: false,
         },
         {
           id: red,
@@ -126,6 +151,7 @@ test("GET /api/github: 投稿した赤・黄だけを updated_at の新しい順
           actorLogin: "example-other",
           actorKnown: true,
           updatedAt: "2026-10-15T00:01:00Z",
+          handoff: false,
         },
         {
           id: odd,
@@ -136,6 +162,7 @@ test("GET /api/github: 投稿した赤・黄だけを updated_at の新しい順
           actorLogin: "example-other",
           actorKnown: true,
           updatedAt: "2026-10-15T00:00:30Z",
+          handoff: false,
         },
       ],
     },
@@ -152,4 +179,53 @@ test("GET /api/github: 投稿した赤・黄だけを updated_at の新しい順
 test("GET /api/github: SELF_AGENT_GITHUB が無効なら 404", async (t) => {
   const { server } = await setup(t, { github: false });
   assert.deepEqual(await get(server, "/api/github"), { status: 404, json: { error: "not_found" } });
+});
+
+test("GET /api/github・POST act / start: 送り込みがあれば [対応] を付けられる行に handoff、結果は文と種類で返す", async (t) => {
+  const store = new GithubStore(tempDb(t), () => NOW);
+  const calls: string[] = [];
+  const results: Record<string, GithubHandoffResult> = {
+    act: { kind: "no_session", repo: "example-org/example-repo", dir: "example-repo" },
+    start: { kind: "started", tmuxSession: "example-repo", sendId: 7, dir: "example-repo" },
+  };
+  const handoff = {
+    act: async (id: number) => {
+      calls.push(`act ${id}`);
+      return id === 999 ? ({ kind: "stale" } as const) : results.act!;
+    },
+    start: async (id: number) => {
+      calls.push(`start ${id}`);
+      return results.start!;
+    },
+  };
+  const server = await serve(t, githubRoutes({ cfg: { github: true }, store, status: () => STATUS, handoff }), () => NOW);
+  const ok = store.addNotification(event({ threadId: "t-1", handoffOk: true }));
+  const no = store.addNotification(event({ threadId: "t-2", handoffOk: false }));
+  assert.ok(ok.result === "added" && no.result === "added");
+  store.markPosted(ok.notification.id, "github-1", "message-1");
+  store.markPosted(no.notification.id, "github-1", "message-2");
+
+  const listed = await get(server, "/api/github");
+  assert.equal(listed.json.handoff, true);
+  const rows = listed.json.notifications as Array<{ id: number; handoff: boolean }>;
+  assert.equal(rows.find((row) => row.id === ok.notification.id)?.handoff, true);
+  assert.equal(rows.find((row) => row.id === no.notification.id)?.handoff, false);
+
+  const acted = await post(server, `/api/github/${ok.notification.id}/act`);
+  assert.equal(acted.status, 200);
+  assert.equal(acted.json.result, "no_session");
+  assert.equal(acted.json.startable, true);
+  assert.match(String(acted.json.text), /起動して送りますか/);
+  const started = await post(server, `/api/github/${ok.notification.id}/start`);
+  assert.deepEqual(started.json.sendId, 7);
+  assert.equal(started.json.result, "started");
+  assert.deepEqual(await post(server, "/api/github/999/act"), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(calls, [`act ${ok.notification.id}`, `start ${ok.notification.id}`, "act 999"]);
+});
+
+test("POST /api/github/<id>/act: 送り込みが無ければ 404", async (t) => {
+  const { server, add } = await setup(t);
+  const id = add({ handoffOk: true });
+  assert.deepEqual(await post(server, `/api/github/${id}/act`), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(await post(server, `/api/github/${id}/start`), { status: 404, json: { error: "not_found" } });
 });
