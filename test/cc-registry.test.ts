@@ -217,6 +217,12 @@ test("CcRegistry: status: waiting は hook が無くても判断待ち（待ち�
     ],
   );
   assert.equal(sessions[0]!.waitingFor, "permission prompt");
+  // waitingFor は cc_sessions にも残り（v29）、waiting でなくなれば消える
+  assert.equal(s.store.get(S1)!.waitingFor, "permission prompt");
+  assert.equal(s.store.get(S2)!.waitingFor, null);
+  s.willList(agent(S1), agent(S2));
+  await s.registry.tick();
+  assert.equal(s.store.get(S1)!.waitingFor, null);
 });
 
 test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中（最後の指示の新しい順）→ 待機（最後の指示 → 記録の mtime → 起動の新しい順）", () => {

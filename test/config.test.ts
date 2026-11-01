@@ -67,6 +67,8 @@ test("未設定ならデフォルト値を使う", () => {
     ccPollSec: 10,
     ccPermissionHoldSec: 300,
     ccSendWaitMin: 120,
+    workspaceDir: "/home/tester/workspace",
+    ccMaxSessions: 30,
   });
 });
 
@@ -414,6 +416,7 @@ test("HOME が無く既定のディレクトリが必要ならエラー。ディ
     CLAUDE_CONFIG_DIR: "/srv/claude",
     SELF_AGENT_WORKDIR: "/srv/work",
     SELF_AGENT_DATA_DIR: "/srv/data",
+    SELF_AGENT_WORKSPACE_DIR: "/srv/workspace",
   });
   assert.equal(config.claudeConfigDir, "/srv/claude");
   assert.equal(config.workDir, "/srv/work");
@@ -622,6 +625,8 @@ test("Claude Code: SELF_AGENT_CC=1 ならポートとトークンが要る。ト
     ccPollSec: 5,
     ccPermissionHoldSec: 600,
     ccSendWaitMin: 30,
+    workspaceDir: "/home/tester/workspace",
+    ccMaxSessions: 30,
   });
   for (const missing of ["SELF_AGENT_CC_HOOK_PORT", "SELF_AGENT_CC_HOOK_TOKEN"]) {
     assert.throws(
@@ -647,6 +652,9 @@ test("Claude Code: 形の違う値は無効のときも変数名だけを出し�
     ["SELF_AGENT_CC_PERMISSION_HOLD_SEC", "601"],
     ["SELF_AGENT_CC_SEND_WAIT_MIN", "0"],
     ["SELF_AGENT_CC_SEND_WAIT_MIN", "x"],
+    ["SELF_AGENT_WORKSPACE_DIR", "workspace"],
+    ["SELF_AGENT_CC_MAX_SESSIONS", "0"],
+    ["SELF_AGENT_CC_MAX_SESSIONS", "x"],
   ];
   for (const [name, value] of cases) {
     assert.throws(
@@ -655,4 +663,14 @@ test("Claude Code: 形の違う値は無効のときも変数名だけを出し�
       `${name}=${value}`,
     );
   }
+});
+
+test("Claude Code: SELF_AGENT_WORKSPACE_DIR（絶対パス。末尾の / を除く）と SELF_AGENT_CC_MAX_SESSIONS", () => {
+  const config = loadConfig({ HOME: "/home/tester", SELF_AGENT_WORKSPACE_DIR: "/srv/ws/", SELF_AGENT_CC_MAX_SESSIONS: "5" });
+  assert.equal(config.workspaceDir, "/srv/ws");
+  assert.equal(config.ccMaxSessions, 5);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_WORKSPACE_DIR: "/" }).workspaceDir, "/");
+  const defaults = loadConfig({ HOME: "/home/tester" });
+  assert.equal(defaults.workspaceDir, "/home/tester/workspace");
+  assert.equal(defaults.ccMaxSessions, 30);
 });
