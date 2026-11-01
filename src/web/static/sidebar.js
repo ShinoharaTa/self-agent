@@ -9,7 +9,7 @@
   const always = () => true;
 
   // tab があるものはサイドバーを開かずにそのタブを開く（状態・設定）。
-  // enabled(status) が false の機能（dev モードでない会話ログ・GitHub 無効・ジョブ無効）は出さない。
+  // enabled(status) が false の機能（dev モードでない会話ログ・GitHub 無効・ジョブ無効・Claude Code の連携が無効）は出さない。
   // stage の付いたものはその段で中身を足すまで出さない（足した段で stage を外す）
   const ACTIVITIES = [
     { id: "chat", label: "会話", icon: "message-square", enabled: always, count: () => store.unreadCount(), countLabel: "未読 " },
@@ -17,6 +17,7 @@
     { id: "reminders", label: "リマインド", icon: "bell", enabled: always },
     { id: "knowledge", label: "ナレッジ・記憶", icon: "book", enabled: always },
     { id: "projects", label: "プロジェクト", icon: "folder", enabled: always },
+    { id: "cc", label: "Claude Code", icon: "terminal", enabled: (status) => !!(status.cc && status.cc.enabled) },
     { id: "jobs", label: "ジョブ", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
     { id: "github", label: "GitHub", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled) },
     { id: "usage", label: "使用量", icon: "bar-chart", enabled: always },
@@ -200,6 +201,46 @@
     body.replaceChildren(group("gh", "最近の通知", items));
   }
 
+  // ===== Claude Code（この機械のセッション。判断待ち → 実行中 → 待機） =====
+  /** 一覧をこの時間より前に読んだものなら、サイドバーを出したときに読み直す */
+  const CC_FRESH_MS = 10000;
+
+  function ccRow(s) {
+    const badges = [];
+    if (s.permissionMode) badges.push(el("span", { class: "badge badge-cc mono", text: s.permissionMode }));
+    if (!s.inTmux) badges.push(el("span", { class: "badge badge-cc", text: "tmux の外" }));
+    if (s.state === "running") badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));
+    return row({
+      tab: "cc:" + s.sessionId,
+      label: SA.views.ccName(s),
+      badges,
+      dot: s.state === "needs_input" ? "dot-warn" : null,
+      dotLabel: s.state === "needs_input" ? "判断待ち" : null,
+      meta: s.since ? SA.views.ago(s.since) : "",
+      title: s.cwdLabel || null,
+    });
+  }
+
+  function renderCc(body) {
+    if (!store.ccEnabled()) {
+      body.replaceChildren(group("cc-needs", "判断待ち", [], null, "読み込んでいます…"));
+      return;
+    }
+    if (store.cc === null || Date.now() - store.ccAt > CC_FRESH_MS) store.load.cc(store.cc === null ? undefined : { quiet: true });
+    if (store.cc === null) {
+      body.replaceChildren(group("cc-needs", "判断待ち", [], null, "読み込んでいます…"));
+      return;
+    }
+    const by = (state) => store.cc.sessions.filter((s) => s.state === state).map(ccRow);
+    const note = store.cc.unreadable
+      ? "claude agents --json を続けて読めないため、一覧を空にしています。"
+      : store.cc.stale
+        ? "一覧を読めませんでした。前に読めた一覧です。"
+        : null;
+    const groups = [group("cc-needs", "判断待ち", by("needs_input")), group("cc-running", "実行中", by("running")), group("cc-idle", "待機", by("idle"))];
+    body.replaceChildren(...(note ? [el("p", { class: "sb-note-block", text: note })] : []), ...groups);
+  }
+
   // ===== プロジェクト（W7。配信が無効でも出す） =====
   function renderProjects(body) {
     if (store.projects === null) {
@@ -271,6 +312,7 @@
     knowledge: renderKnowledge,
     github: renderGithub,
     projects: renderProjects,
+    cc: renderCc,
     usage: renderUsage,
     devlog: renderDevlog,
   };

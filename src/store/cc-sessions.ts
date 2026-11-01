@@ -191,6 +191,12 @@ export class CcSessionStore {
     return this.db.prepare("SELECT * FROM cc_sessions WHERE gone_at IS NULL ORDER BY session_id").all().map(toRow);
   }
 
+  /** 複数行をそのまま送ってよいか（cc_state.multiline_ok。行が無ければ true。§3.2） */
+  multilineOk(): boolean {
+    const row = this.db.prepare("SELECT multiline_ok FROM cc_state WHERE id = 1").get();
+    return row === undefined || Number(row.multiline_ok) !== 0;
+  }
+
   /** gone_at が cutoff より前の行を消し、消した数を返す（生きている行は消さない） */
   prune(cutoff: Date): number {
     const result = this.db.prepare("DELETE FROM cc_sessions WHERE gone_at IS NOT NULL AND gone_at < ?").run(cutoff.toISOString());
