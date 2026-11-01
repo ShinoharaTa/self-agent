@@ -581,6 +581,14 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE cc_permissions ADD COLUMN always_rules TEXT;
   `,
+  // v32: 許可の要求と判断待ちの Discord の知らせ（docs/plan/claude-code-sessions.md §5.2・§9。CC5c）。cc_permissions の message_id・
+  // message_channel_id は #system に出した 1 通（書き換えてボタンを外すため）、cc_sessions の notified_at は判断待ちを最後に知らせた時刻
+  // （待ちごとに 1 回。待ち始めより後なら知らせ済み）
+  `
+  ALTER TABLE cc_permissions ADD COLUMN message_id TEXT;
+  ALTER TABLE cc_permissions ADD COLUMN message_channel_id TEXT;
+  ALTER TABLE cc_sessions ADD COLUMN notified_at TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

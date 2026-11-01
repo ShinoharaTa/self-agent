@@ -23,6 +23,7 @@ import { prepareImages, pruneAttachments } from "./app/attachments.ts";
 import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
 import { InboxRotator } from "./app/inbox-rotate.ts";
+import type { CcPermissionButtons } from "./app/commands/cc.ts";
 import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
 import { createNotifyMemoryChange } from "./app/commands/memory-undo.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
@@ -38,6 +39,7 @@ import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
+import { CcDiscordNotifier } from "./cc/discord-notice.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
 import { CcPermissionHold } from "./cc/permission-hold.ts";
@@ -450,6 +452,8 @@ const handleInteraction = createInteractionHandler({
     reminders,
     // #jobs のボタンとモーダル（SELF_AGENT_JOBS=1 のときだけ）
     ...(jobs === undefined ? {} : { jobs }),
+    // #system の許可の要求のボタン（SELF_AGENT_CC=1 で SELF_AGENT_CC_NOTIFY が 1 のときだけ。下で作る）
+    ccPermissionButtons: () => ccPermissionButtons,
     // /close の確定の区切りの行（Web UI が有効なときだけ）
     ...history,
     log,
@@ -582,8 +586,11 @@ const githubPoller = createGithubPoller({
 // Claude Code のセッション（docs/plan/claude-code-sessions.md。SELF_AGENT_CC=1 のときだけ）: claude agents --json を周期で読んで cc_sessions に書き、
 // hook の受け口（127.0.0.1:SELF_AGENT_CC_HOOK_PORT。Web UI とは別のサーバー）で事象を受ける。Web から送る本文は cc_sends に積み、
 // 入力待ちのときだけ tmux で貼る（cc/sender.ts。待ち行列は 30 秒ごと）。Web から新しいセッションを SELF_AGENT_WORKSPACE_DIR の直下に起動する（cc/starter.ts）。
-// 許可の要求は応答を保留し、Web の [許可]・[拒否] で返す（cc/permission-hold.ts）
+// 許可の要求は応答を保留し、Web と #system の [許可]・[このセッションでは常に許可]・[拒否] で返す（cc/permission-hold.ts）。
+// SELF_AGENT_CC_NOTIFY が 1 なら、許可の要求・判断待ち・self-agent が起動したセッションの終了を #system に出す（cc/discord-notice.ts）
 let ccRegistry: CcRegistry | undefined;
+let ccNotifier: CcDiscordNotifier | undefined;
+let ccPermissionButtons: CcPermissionButtons | undefined;
 let ccSender: CcSender | undefined;
 let ccStarter: CcStarter | undefined;
 let ccPermissions: CcPermissionHold | undefined;
@@ -622,10 +629,33 @@ if (
     busy: () => ccSends.countActive() > 0 || ccStarter?.busy() === true,
     // 許可の要求を保留している間は 5 秒ごとに読み、status で「他で答えられた」を見る
     permissions: permissionHold,
+    // self-agent が起動したセッションの終了を #system に出す
+    ended: (session) => ccNotifier?.ended(session),
     log,
   });
   knownSessions = registry;
   ccRegistry = registry;
+  if (config.ccNotify) {
+    const notifier = new CcDiscordNotifier({
+      cfg: config,
+      guildSettings,
+      notify,
+      // notify と同じ既定の人格の Bot で書き換える
+      gateway,
+      permissions: ccPermissionStore,
+      sessions: ccSessions,
+      registry,
+      home: homedir(),
+      now,
+      log,
+    });
+    ccNotifier = notifier;
+    permissionHold.listen(notifier);
+    ccPermissionButtons = {
+      answer: (id, decision) => permissionHold.answer(id, decision, "discord"),
+      resolvedText: (id) => notifier.resolvedText(id),
+    };
+  }
   // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする
   permissionHold.recover();
   const hookServer = createCcHookServer({
@@ -821,6 +851,8 @@ const lifecycle = createShutdown(
     ...(ccStarter === undefined ? {} : { ccStarter }),
     // 保留中の許可の要求には空の本文を返す（端末・RC のダイアログは残る）
     ...(ccPermissions === undefined ? {} : { ccPermissions }),
+    // #system への知らせ（停止の後は新しく出さず、保留をやめた 1 通の書き換えは待つ）
+    ...(ccNotifier === undefined ? {} : { ccNotifier }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     closeDb: () => db.close(),
     log,
@@ -893,4 +925,5 @@ githubPoller?.start();
 ccRegistry?.start();
 ccSender?.start();
 ccStarter?.start();
+ccNotifier?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

@@ -2,6 +2,7 @@
 import type { Config } from "../config.ts";
 import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../discord/gateway.ts";
 import { createGuestsCommand, type GuestsCommandDeps } from "../guest/commands/admin.ts";
+import { type CcComponentDeps, createCcComponent } from "./commands/cc.ts";
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
 import { helpCommand } from "./commands/help.ts";
@@ -85,9 +86,11 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
  * プロジェクトの削除（proj:）はディレクトリも消すので、プロジェクトの場所（projectsDir）も要る。
  * ターンの [中断]・[続ける]（turn:）は発言の handler（実行中のターンの中断と、発言と同じ経路のターンの投入）を使う。
  * リマインドのボタンと /reminders のセレクト（rem:）は、リマインドとタスクのストアを使う。
- * #jobs のボタンとモーダル（job:）は作業ジョブ（jobs。SELF_AGENT_JOBS が有効のときだけ渡す）を使う
+ * #jobs のボタンとモーダル（job:）は作業ジョブ（jobs。SELF_AGENT_JOBS が有効のときだけ渡す）を使う。
+ * Claude Code のボタン（cc:）は許可の要求の保留（ccPermissionButtons。SELF_AGENT_CC が有効なときだけ）を使う
  */
 export type ComponentDeps = CloseDeps &
+  CcComponentDeps &
   Partial<Pick<JobCommandDeps, "jobs">> &
   WaitDeps &
   TasksDeps &
@@ -112,6 +115,7 @@ export function createComponents(deps: ComponentDeps): ComponentHandler[] {
     createProjectsComponent(deps),
     createTurnControlsComponent(deps),
     createRemindersComponent(deps),
+    createCcComponent(deps),
     ...(deps.jobs === undefined ? [] : [createJobComponent({ jobs: deps.jobs, log: deps.log })]),
   ];
 }

@@ -102,8 +102,14 @@ export type SelectDef = {
   options: Array<{ label: string; value: string; description?: string }>;
 };
 
-/** メッセージの 1 行。ボタンは 1 行 5 個まで、セレクトは 1 行に 1 つ。1 メッセージ 5 行まで */
-export type ComponentRow = { kind: "buttons"; buttons: ButtonDef[] } | { kind: "select"; select: SelectDef };
+/** リンクのボタン（押すとブラウザで url を開く。操作は Bot に届かない）。url は https:// で始まる */
+export type LinkButtonDef = { label: string; url: string };
+
+/** メッセージの 1 行。ボタン（リンクのボタンを含む）は 1 行 5 個まで、セレクトは 1 行に 1 つ。1 メッセージ 5 行まで */
+export type ComponentRow =
+  | { kind: "buttons"; buttons: ButtonDef[] }
+  | { kind: "links"; links: LinkButtonDef[] }
+  | { kind: "select"; select: SelectDef };
 
 export type OutgoingMessage = {
   /** 2000 字以内（分割しない） */
