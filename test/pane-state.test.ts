@@ -312,6 +312,7 @@ function fakeTmux(options: { panes?: TmuxResult<TmuxPane[]>; clients?: TmuxClien
     pasteBuffer: () => assert.fail("送らない"),
     deleteBuffer: () => assert.fail("送らない"),
     sendEnter: () => assert.fail("送らない"),
+    newSession: () => assert.fail("起動しない"),
   };
   return { tmux, calls };
 }

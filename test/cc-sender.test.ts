@@ -59,6 +59,8 @@ function view(sessionId: string, pid: number): CcSessionView {
     bridgeSessionId: undefined,
     tmux: undefined,
     permission: undefined,
+    startedBy: "owner",
+    trustPending: false,
   };
 }
 

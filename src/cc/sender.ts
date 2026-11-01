@@ -5,6 +5,8 @@
 // 貼れたか確かめられなければ Enter を押さず unconfirmed（やり直さない）。複数行が 1 行目で送信されたように見えるのが別の送信で
 // CC_MULTILINE_DETECT_LIMIT 回続いたら cc_state.multiline_ok を false にして #system に 1 行、以後は改行を空白に置き換えて送る
 // （戻すのは npm run cc-dry-run -- --reset-multiline）。idle でなければ積んだまま待ち、SELF_AGENT_CC_SEND_WAIT_MIN 分で gave_up。
+// 起動の最初の指示（origin start。cc/starter.ts）はペイン宛てに積まれ、そのペインに一覧のセッションが現れたら session_id を結びつけてから同じ経路で送る
+// （それまでは積んだまま。ペインが無くなれば gone、CC_START_BIND_GRACE_MS 経ってもペインが claude でなければ not_claude）。
 // 再起動で delivering のまま残った行は unconfirmed（recover）。log は送信の番号・状態・理由の種類だけ（本文・名前・ペイン id・sessionId は出さない）
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { SystemNotifier } from "../app/system-notice.ts";
@@ -26,6 +28,8 @@ export const CC_SEND_DUPLICATE_MS = 5_000;
 export const CC_PASTE_CHECK_DELAY_MS = 500;
 /** Enter を押してから送信できたかを撮るまで */
 export const CC_ENTER_CHECK_DELAY_MS = 2_000;
+/** ペイン宛ての送信（起動の最初の指示）で、作ってからこの間はペインが claude でなくても待つ（起動の途中はシェルのことがある） */
+export const CC_START_BIND_GRACE_MS = 60_000;
 
 /** 複数行が 1 行目で送信されたように見えるのが、別の送信でこの回数続いたら複数行を止める（数えるのはプロセスの中だけ） */
 export const CC_MULTILINE_DETECT_LIMIT = 2;
@@ -70,7 +74,16 @@ export type CcSenderDeps = {
   tmux: Pick<Tmux, "listPanes" | "listClients" | "capturePane" | "loadBuffer" | "pasteBuffer" | "deleteBuffer" | "sendEnter">;
   sends: Pick<
     CcSendStore,
-    "add" | "get" | "findRecentSame" | "activeFor" | "listQueued" | "transition" | "noteAttempt" | "recoverDelivering" | "giveUpOlderThan"
+    | "add"
+    | "get"
+    | "findRecentSame"
+    | "activeFor"
+    | "listQueued"
+    | "transition"
+    | "noteAttempt"
+    | "recoverDelivering"
+    | "giveUpOlderThan"
+    | "bindSession"
   >;
   sessions: Pick<CcSessionStore, "multilineOk" | "setMultilineOk">;
   /** #system への知らせ（無ければ log だけ） */
@@ -239,11 +252,15 @@ export class CcSender {
   private async attempt(id: number): Promise<void> {
     const { registry, panes, sends, tmux, now } = this.deps;
     const row = sends.get(id);
-    if (row === undefined || row.state !== "queued" || row.sessionId === null) return;
+    if (row === undefined || row.state !== "queued") return;
+    if (row.sessionId === null && row.paneId === null) {
+      this.fail(id, "gone");
+      return;
+    }
     const snapshot = registry.snapshot();
     if (snapshot.unreadable || snapshot.stale) return;
-    const view = snapshot.sessions.find((session) => session.sessionId === row.sessionId);
-    if (view === undefined) {
+    let view = row.sessionId === null ? undefined : snapshot.sessions.find((session) => session.sessionId === row.sessionId);
+    if (row.sessionId !== null && view === undefined) {
       this.fail(id, "gone");
       return;
     }
@@ -252,6 +269,23 @@ export class CcSender {
     if (!lookup.ok) {
       sends.noteAttempt(id, lookup.reason);
       return;
+    }
+    if (view === undefined) {
+      // ペイン宛て（起動の最初の指示。§4.2）: そのペインを送り先にする一覧のセッションが現れたら結びつける。送る経路はセッション宛てと同じ
+      const paneId = row.paneId!;
+      view = snapshot.sessions.find((session) => {
+        const found = lookup.sendable({ pid: session.pid, tmux: session.tmux });
+        return found.ok && found.pane.paneId === paneId;
+      });
+      if (view === undefined) {
+        const pane = lookup.pane(paneId);
+        const age = now().getTime() - Date.parse(row.createdAt);
+        if (pane === undefined || pane.dead) this.fail(id, "gone");
+        else if (pane.currentCommand !== "claude" && age >= CC_START_BIND_GRACE_MS) this.fail(id, "not_claude");
+        else sends.noteAttempt(id, "starting");
+        return;
+      }
+      sends.bindSession(id, view.sessionId);
     }
     const target = lookup.sendable({ pid: view.pid, tmux: view.tmux });
     if (!target.ok) {

@@ -208,6 +208,10 @@
   function ccRow(s) {
     const badges = [];
     if (s.permissionMode) badges.push(el("span", { class: "badge badge-cc mono", text: s.permissionMode }));
+    // 判断待ちの理由（permission prompt など。claude agents --json の waitingFor）
+    if (s.state === "needs_input" && s.waitingFor) badges.push(el("span", { class: "badge badge-cc", text: s.waitingFor }));
+    if (s.trustPending) badges.push(el("span", { class: "badge badge-cc", text: "trust の確認待ち" }));
+    if (s.startedBy && s.startedBy !== "owner") badges.push(el("span", { class: "badge badge-cc", text: "self-agent が起動" }));
     if (!s.inTmux) badges.push(el("span", { class: "badge badge-cc", text: "tmux の外" }));
     if (s.pending && (s.pending.state === "queued" || s.pending.state === "delivering")) badges.push(el("span", { class: "badge badge-cc", text: "送信待ち" }));
     if (s.state === "running") badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));
@@ -235,6 +239,12 @@
       return;
     }
     const by = (state) => store.cc.sessions.filter((s) => s.state === state).map(ccRow);
+    // この機械の tmux に新しいセッションを起動する（起動のダイアログ）
+    const startBtn = el("button", { class: "btn btn-secondary btn-sm sb-new", type: "button" }, [icon("plus"), "新しいセッション"]);
+    startBtn.addEventListener("click", () => {
+      SA.app.closeDrawer();
+      SA.app.ccStart();
+    });
     const note = store.cc.unreadable
       ? "claude agents --json を続けて読めないため、一覧を空にしています。"
       : store.cc.stale
@@ -245,6 +255,7 @@
     const fetched = store.cc.fetchedAt ? "一覧は " + SA.views.secondsAgo(store.cc.fetchedAt) + "のもの" + (store.ccFailed ? "（今は読めません）" : "") : null;
     body.replaceChildren(
       ...(note ? [el("p", { class: "sb-note-block", text: note })] : []),
+      el("div", { class: "sb-new-row" }, [startBtn]),
       ...groups,
       ...(fetched ? [el("p", { class: "sb-note-block", text: fetched })] : []),
     );
