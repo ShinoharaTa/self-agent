@@ -1,7 +1,7 @@
-// SDK のツール cc_send・cc_start の確認（docs/plan/claude-code-sessions.md §5.3・§7 の 6。CC7）。ツールが頼んだチャンネルに本文の全文と
-// [送る][やめる]（`cc:send:<id>`・`cc:keep:send:<id>`）/ [起動する][やめる]（`cc:start:<id>`・`cc:keep:start:<id>`）を投稿し、オーナーが押したときだけ
+// SDK のツール cc_send・cc_start の確認（docs/plan/claude-code-sessions.md §5.3・§7 の 6。CC7）。ツールが頼んだチャンネルに本文の全文（1 通
+// CC_CONFIRM_PAGE_CHARS 字ずつ CC_CONFIRM_MAX_PAGES 通まで。見せていない部分は送らない）と、最後の 1 通に [送る][やめる]（`cc:send:<id>`・`cc:keep:send:<id>`）/ [起動する][やめる]（`cc:start:<id>`・`cc:keep:start:<id>`）を投稿し、オーナーが押したときだけ
 // 送る（cc_sends を queued にして cc/sender.ts の待ち行列へ）・起動する（cc/starter.ts の launch）。確認は CC_CONFIRM_TTL_MS で失効し、
-// [やめる] と同じく cancelled にしてボタンを外す（CcConfirmExpirer が CC_CONFIRM_SWEEP_MS ごとに確かめる。押したときにも確かめる）。
+// [やめる] と同じく cancelled にしてボタンを外す（書き換えるのはボタンの付いた最後の 1 通だけ。CcConfirmExpirer が CC_CONFIRM_SWEEP_MS ごとに確かめる。押したときにも確かめる）。
 // 名前空間 `cc:` は許可のボタン（`cc:perm:*`。CC5c）と共有し、custom_id の振り分けは commands/cc.ts の createCcComponent がまとめて行う。log は番号と結果の種類だけ（本文・名前・ディレクトリ・ペイン・チャンネル ID は出さない）
 import { homedir } from "node:os";
 import type { CcPaneResolver } from "../../cc/panes.ts";
@@ -25,19 +25,26 @@ export const CC_NAMESPACE = "cc";
 export const CC_CONFIRM_TTL_MS = 10 * 60_000;
 /** 失効を確かめる間隔 */
 export const CC_CONFIRM_SWEEP_MS = 60_000;
-/** 確認に出す本文の長さ（コードポイント。超えた分は「（ほか n 字）」。§5.3） */
-export const CC_CONFIRM_BODY_MAX = 1800;
+/** 確認の 1 通のコードブロックの中身の上限（``` を崩した後の字数。コードポイント。§5.3） */
+export const CC_CONFIRM_PAGE_CHARS = 1800;
+/** 確認の投稿の数の上限（本文 4,000 字が収まる。§5.3） */
+export const CC_CONFIRM_MAX_PAGES = 3;
 /** Discord の 1 メッセージの上限 */
 const MESSAGE_MAX = 2000;
-/** 見出しに出す名前・ディレクトリの長さ（コードポイント。超えたら … で切る） */
+/** 見出しに出す名前・ディレクトリの長さ（コードポイント。超えたら … で切る。1 通目の見出しが 2,000 字から本文の分を引いた長さに収まるように） */
 const NAME_MAX = 30;
 const DIR_MAX = 40;
 
 /** [やめる]・失効で取り消したときの一言 */
 export const CC_SEND_CANCELLED = "送りませんでした";
 export const CC_START_CANCELLED = "起動しませんでした";
-/** SELF_AGENT_CC が無効なときに押されたら添える */
-const CC_DISABLED_NOTE = "（Claude Code の連携が無効です）";
+/** SELF_AGENT_CC が無効なときに押された・残っていたら添える */
+export const CC_DISABLED_NOTE = "（Claude Code の連携が無効です）";
+/** [起動する] が一時的な理由で失敗したときに添える（確認待ちに戻してボタンを残す） */
+export const CC_START_RETRY_NOTE = "。少し待ってもう一度押してください";
+
+/** [起動する] が失敗しても確認待ちに戻す（時間が経てば通りうる）理由 */
+const START_RETRY_REASONS: readonly CcStartFailure[] = ["too_soon", "limit", "low_memory", "no_server"];
 
 /** 起動を断った理由の文（確認の書き換え） */
 const START_FAILURE_TEXT: Readonly<Record<CcStartFailure, string>> = {
@@ -60,6 +67,10 @@ function chars(text: string): string[] {
   return [...text];
 }
 
+function length(text: string): number {
+  return chars(text).length;
+}
+
 /** 1 行にして max 字で切り、Markdown・メンションを無効にする */
 function inline(text: string, max: number): string {
   const flat = chars(text.replace(/\s+/g, " ").trim());
@@ -67,35 +78,67 @@ function inline(text: string, max: number): string {
   return escapeDiscordText(cut);
 }
 
-/**
- * 本文をコードブロックにする（純関数）。``` はゼロ幅の空白を挟んで閉じないようにし、ブロックの中身が max 字（コードポイント）を超えるなら
- * そこまでにして、出さなかった元の字数を「（ほか n 字）」でブロックの後に添える
- */
-export function codeBlock(text: string, max: number = CC_CONFIRM_BODY_MAX): string {
-  const source = chars(text);
-  let shown = "";
-  let shownLength = 0;
-  let used = 0;
-  for (const char of source) {
-    // ``` にならないよう、2 つ続いた ` の後の ` の前にゼロ幅の空白を挟む
-    const piece = char === "`" && shown.endsWith("``") ? "​`" : char;
-    const length = chars(piece).length;
-    if (shownLength + length > max) break;
-    shown += piece;
-    shownLength += length;
-    used++;
-  }
-  const rest = source.length - used;
-  return `\`\`\`\n${shown}\n\`\`\`${rest > 0 ? `（ほか ${rest} 字）` : ""}`;
+/** RC のリンク（一覧の rc_url と確認の書き換えで共通） */
+export function ccRcUrl(bridgeSessionId: string): string {
+  return `${CC_RC_URL_PREFIX}${encodeURIComponent(bridgeSessionId)}`;
 }
 
-/** 見出しと本文（コードブロック）を 1 つのメッセージにする。本文は CC_CONFIRM_BODY_MAX 字までで、全体が 2,000 字に収まるよう縮める */
-function withBody(lines: string[], body: string | null): string {
-  const head = lines.join("\n");
-  if (body === null) return head;
-  // コードブロックの囲み・改行・「（ほか n 字）」の分を残す
-  const room = MESSAGE_MAX - chars(head).length - 30;
-  return `${head}\n${codeBlock(body, Math.max(0, Math.min(CC_CONFIRM_BODY_MAX, room)))}`;
+/**
+ * 本文をコードブロックの中身に分ける（純関数）。``` にならないよう 2 つ続いた ` の後の ` の前にゼロ幅の空白を挟み、崩した後の字数で
+ * 1 つ CC_CONFIRM_PAGE_CHARS 字までにする（文字の途中・崩しの途中では切らない）。本文はすべてどれかに入る（省かない）
+ */
+export function splitConfirmBody(text: string): string[] {
+  const pages: string[] = [];
+  let page = "";
+  let pageLength = 0;
+  for (const char of chars(text)) {
+    let piece = char === "`" && page.endsWith("``") ? "\u200b`" : char;
+    if (pageLength + length(piece) > CC_CONFIRM_PAGE_CHARS) {
+      pages.push(page);
+      page = "";
+      pageLength = 0;
+      piece = char;
+    }
+    page += piece;
+    pageLength += length(piece);
+  }
+  if (page !== "" || pages.length === 0) pages.push(page);
+  return pages;
+}
+
+/** 本文が CC_CONFIRM_MAX_PAGES 通の確認に収まるか（収まらなければ確認を出さない＝送らない） */
+export function fitsConfirm(text: string): boolean {
+  return splitConfirmBody(text).length <= CC_CONFIRM_MAX_PAGES;
+}
+
+function block(body: string): string {
+  return `\`\`\`\n${body}\n\`\`\``;
+}
+
+/**
+ * 確認の各通の本文（純関数）。1 通目は見出し + 本文の 1 つ目、2 通目からは「（続き i/n）」+ 本文の続き。body が null なら見出しだけの 1 通。
+ * 最後の通の最初の行を result の候補（長い順）のうち 2,000 字に収まる最初のものに置き換える（無ければ置き換えない）
+ */
+function pageTexts(head: string[], body: string | null, result?: readonly string[]): string[] {
+  const parts = body === null ? [] : splitConfirmBody(body);
+  const total = Math.max(1, parts.length);
+  const texts = Array.from({ length: total }, (_, i) => {
+    const lines = i === 0 ? [...head] : [`（続き ${i + 1}/${total}）`];
+    if (i === 0 && total > 1) lines.push(`（1/${total}）`);
+    return { lines, body: parts[i] };
+  });
+  const join = (page: { lines: string[]; body: string | undefined }): string =>
+    page.body === undefined ? page.lines.join("\n") : `${page.lines.join("\n")}\n${block(page.body)}`;
+  const last = texts[total - 1]!;
+  if (result !== undefined && result.length > 0) {
+    // 1 通なら見出しの 1 行目を結果に、2 通以上なら「（続き n/n）」の前に結果の行を足す
+    const candidates = result.map((line) => ({
+      lines: total === 1 ? [line, ...last.lines.slice(1)] : [line, ...last.lines],
+      body: last.body,
+    }));
+    texts[total - 1] = candidates.find((page) => length(join(page)) <= MESSAGE_MAX) ?? candidates[candidates.length - 1]!;
+  }
+  return texts.map(join);
 }
 
 /** 送り先の表示（名前と、ディレクトリ名があれば括弧で） */
@@ -118,45 +161,76 @@ function buttons(confirmId: string, confirmLabel: string, keepId: string): Outgo
   ];
 }
 
-/** cc_send の確認（§5.3）: 「Claude Code の <名前>（<ディレクトリ名>）に送りますか？」+ 本文の全文 + [送る][やめる] */
-export function ccSendPrompt(id: number, target: CcSendTarget, text: string): OutgoingMessage {
-  return {
-    text: withBody([`Claude Code の ${targetLabel(target)}に送りますか？`], text),
-    components: buttons(`${CC_NAMESPACE}:send:${id}`, "送る", `${CC_NAMESPACE}:keep:send:${id}`),
-  };
+/** 投稿する各通。ボタンは最後の 1 通だけ */
+function withButtons(texts: string[], components: OutgoingMessage["components"]): OutgoingMessage[] {
+  return texts.map((text, i) => (i === texts.length - 1 ? { text, components } : { text }));
 }
 
-/** cc_send の確認を押した後・失効した後の本文（見出しを結果に変え、本文は残す） */
-export function ccSendResultText(target: CcSendTarget, text: string, result: string): string {
-  return withBody([`Claude Code の ${targetLabel(target)}に${result}`], text);
+/** cc_send の確認のボタン（[送る][やめる]） */
+export function ccSendButtons(id: number): OutgoingMessage["components"] {
+  return buttons(`${CC_NAMESPACE}:send:${id}`, "送る", `${CC_NAMESPACE}:keep:send:${id}`);
 }
 
-/** cc_start の確認の本文（見出しの後の題名・権限モード・最初の指示） */
-function startLines(row: Pick<CcStartRow, "title" | "permissionMode" | "text">): string[] {
+/** cc_start の確認のボタン（[起動する][やめる]） */
+export function ccStartButtons(id: number): OutgoingMessage["components"] {
+  return buttons(`${CC_NAMESPACE}:start:${id}`, "起動する", `${CC_NAMESPACE}:keep:start:${id}`);
+}
+
+/**
+ * cc_send の確認（§5.3）: 「Claude Code の <名前>（<ディレクトリ名>）に送りますか？」+ 本文の全文（1 通 CC_CONFIRM_PAGE_CHARS 字ずつ、
+ * CC_CONFIRM_MAX_PAGES 通まで）。[送る][やめる] は最後の 1 通だけ。収まらない本文は呼び出し側が fitsConfirm で先に断る
+ */
+export function ccSendPrompt(id: number, target: CcSendTarget, text: string): OutgoingMessage[] {
+  return withButtons(pageTexts([`Claude Code の ${targetLabel(target)}に送りますか？`], text), ccSendButtons(id));
+}
+
+/** cc_send の確認の最後の 1 通を押した後・失効した後に書き換える本文。results は結果の候補（長い順。2,000 字に収まる最初のものを使う） */
+export function ccSendResultText(target: CcSendTarget, text: string, results: readonly string[]): string {
+  const texts = pageTexts(
+    [`Claude Code の ${targetLabel(target)}に送りますか？`],
+    text,
+    results.map((result) => `Claude Code の ${targetLabel(target)}に${result}`),
+  );
+  return texts[texts.length - 1]!;
+}
+
+/** cc_start の確認の見出し（題名・プロジェクトは英数字などだけなのでインラインのコードで出す） */
+function startHead(row: Pick<CcStartRow, "project" | "title" | "permissionMode" | "text">, first: string): string[] {
   return [
-    `題名: ${inline(row.title, 40)}`,
+    first,
+    `題名: \`${row.title}\``,
     `権限モード: ${row.permissionMode ?? "default"}`,
     row.text === null ? "最初の指示: なし" : "最初の指示:",
   ];
 }
 
-/** cc_start の確認（§5.3）: 「<project> で新しいセッションを起動しますか？」+ 題名・権限モード・最初の指示 + [起動する][やめる] */
-export function ccStartPrompt(row: Pick<CcStartRow, "id" | "project" | "title" | "permissionMode" | "text">): OutgoingMessage {
-  return {
-    text: withBody([`${inline(row.project, 64)} で Claude Code の新しいセッションを起動しますか？`, ...startLines(row)], row.text),
-    components: buttons(`${CC_NAMESPACE}:start:${row.id}`, "起動する", `${CC_NAMESPACE}:keep:start:${row.id}`),
-  };
+function projectLabel(project: string): string {
+  return `\`${project}\``;
 }
 
-/** cc_start の確認を押した後・失効した後の本文 */
-export function ccStartResultText(row: Pick<CcStartRow, "project" | "title" | "permissionMode" | "text">, result: string): string {
-  return withBody([`${inline(row.project, 64)} で${result}`, ...startLines(row)], row.text);
+/** cc_start の確認（§5.3）: 「<project> で新しいセッションを起動しますか？」+ 題名・権限モード・最初の指示（全文）。[起動する][やめる] は最後の 1 通だけ */
+export function ccStartPrompt(row: Pick<CcStartRow, "id" | "project" | "title" | "permissionMode" | "text">): OutgoingMessage[] {
+  const first = `${projectLabel(row.project)} で Claude Code の新しいセッションを起動しますか？`;
+  return withButtons(pageTexts(startHead(row, first), row.text), ccStartButtons(row.id));
 }
 
-/** 起動できたときの一言（trust の確認待ちなら、その旨を添える） */
-export function ccStartedText(tmuxSession: string, trustPending: boolean): string {
+/** cc_start の確認の最後の 1 通を押した後・失効した後に書き換える本文。results は結果の候補（長い順） */
+export function ccStartResultText(row: Pick<CcStartRow, "project" | "title" | "permissionMode" | "text">, results: readonly string[]): string {
+  const first = `${projectLabel(row.project)} で Claude Code の新しいセッションを起動しますか？`;
+  const texts = pageTexts(
+    startHead(row, first),
+    row.text,
+    results.map((result) => `${projectLabel(row.project)} で${result}`),
+  );
+  return texts[texts.length - 1]!;
+}
+
+/** 起動できたときの一言の候補（長い順。trust の確認待ちなら、その旨を添える） */
+export function ccStartedTexts(tmuxSession: string, trustPending: boolean): string[] {
   const started = `起動しました（tmux: ${inline(tmuxSession, 40)}）`;
-  return trustPending ? `${started}。このフォルダの trust の確認を待っています（端末か RC で答えてください）` : started;
+  return trustPending
+    ? [`${started}。このフォルダの trust の確認を待っています（端末か RC で答えてください）`, "起動しました。trust の確認を待っています"]
+    : [started, "起動しました"];
 }
 
 /** 起動の後の送信・起動（SELF_AGENT_CC が無効なら無い） */
@@ -232,7 +306,7 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       }
       log(`Claude Code: ${runtime === undefined ? "連携が無効" : "確認の期限が過ぎた"}ため送りませんでした（#${id}）`);
       const note = runtime === undefined ? CC_DISABLED_NOTE : "";
-      await responder.update({ text: ccSendResultText(target, row.text, `${CC_SEND_CANCELLED}${note}`), components: [] });
+      await responder.update({ text: ccSendResultText(target, row.text, [`${CC_SEND_CANCELLED}${note}`]), components: [] });
       return;
     }
     await responder.deferUpdate();
@@ -244,25 +318,25 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
     // 入力待ちならこの場で届く。待ちなら積んだまま（30 秒ごとに試す）
     await runtime.sender.kick();
     const after = ccSends.get(id);
-    let result: string;
+    let results: string[];
     switch (after?.state) {
       case "delivered":
-        result = `送りました${await location(runtime, row.sessionId)}`;
+        results = [`送りました${await location(runtime, row.sessionId)}`, "送りました"];
         break;
       case "queued":
       case "delivering":
-        result = "送ります。入力待ちになったら届けます";
+        results = ["送ります。入力待ちになったら届けます"];
         break;
       case "unconfirmed":
-        result = "貼りましたが、届いたか確かめられませんでした";
+        results = ["貼りましたが、届いたか確かめられませんでした"];
         break;
       case "cancelled":
-        result = CC_SEND_CANCELLED;
+        results = [CC_SEND_CANCELLED];
         break;
       default:
-        result = "送れませんでした";
+        results = ["送れませんでした"];
     }
-    await responder.update({ text: ccSendResultText(target, row.text, result), components: [] });
+    await responder.update({ text: ccSendResultText(target, row.text, results), components: [] });
   };
 
   const onStart = async (id: number, responder: Responder): Promise<void> => {
@@ -279,11 +353,11 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       }
       log(`Claude Code: ${runtime === undefined ? "連携が無効" : "確認の期限が過ぎた"}ため起動しませんでした（#${id}）`);
       const note = runtime === undefined ? CC_DISABLED_NOTE : "";
-      await responder.update({ text: ccStartResultText(row, `${CC_START_CANCELLED}${note}`), components: [] });
+      await responder.update({ text: ccStartResultText(row, [`${CC_START_CANCELLED}${note}`]), components: [] });
       return;
     }
     await responder.deferUpdate();
-    // 先に started にして、二度押し・失効と重ならないようにする（起動できなければ failed に移す）
+    // 先に started にして、二度押し・失効と重ならないようにする（起動できなければ failed に移すか、一時的な理由なら確認待ちに戻す）
     if (!ccStarts.transition(id, ["awaiting_confirm"], "started")) {
       await stale(responder);
       return;
@@ -299,17 +373,21 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       onTrustPending: () => {
         if (tmuxSession === undefined || row.messageId === null) return;
         void ccPosts
-          .editMessage(row.channelId, row.messageId, { text: ccStartResultText(row, ccStartedText(tmuxSession, true)), components: [] })
+          .editMessage(row.channelId, row.messageId, { text: ccStartResultText(row, ccStartedTexts(tmuxSession, true)), components: [] })
           .catch((error: unknown) => log(`Claude Code: 起動の確認を書き換えられませんでした（#${id}、${errorKind(error)}）`));
       },
     });
     if (!result.ok) {
+      const failed = `起動できませんでした（${START_FAILURE_TEXT[result.reason]}）`;
+      // 時間が経てば通りうる理由なら確認待ちに戻してボタンを残す（10 分の失効は作った時刻から数えたまま）
+      if (START_RETRY_REASONS.includes(result.reason) && ccStarts.transition(id, ["started"], "awaiting_confirm")) {
+        log(`Claude Code: 起動できませんでした。確認待ちに戻しました（#${id}、${result.reason}）`);
+        await responder.update({ text: ccStartResultText(row, [`${failed}${CC_START_RETRY_NOTE}`]), components: ccStartButtons(id) });
+        return;
+      }
       ccStarts.transition(id, ["started"], "failed");
       log(`Claude Code: 起動できませんでした（#${id}、${result.reason}）`);
-      await responder.update({
-        text: ccStartResultText(row, `起動できませんでした（${START_FAILURE_TEXT[result.reason]}）`),
-        components: [],
-      });
+      await responder.update({ text: ccStartResultText(row, [failed]), components: [] });
       return;
     }
     tmuxSession = result.tmuxSession;
@@ -318,7 +396,7 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       paneId: result.paneId,
       ...(result.sendId === undefined ? {} : { sendId: result.sendId }),
     });
-    await responder.update({ text: ccStartResultText(row, ccStartedText(result.tmuxSession, false)), components: [] });
+    await responder.update({ text: ccStartResultText(row, ccStartedTexts(result.tmuxSession, false)), components: [] });
   };
 
   const onKeep = async (kind: "send" | "start", id: number, responder: Responder): Promise<void> => {
@@ -329,7 +407,7 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
         return;
       }
       log(`Claude Code: [やめる] で送りませんでした（#${id}）`);
-      await responder.update({ text: ccSendResultText(sendTarget(deps, row), row.text, CC_SEND_CANCELLED), components: [] });
+      await responder.update({ text: ccSendResultText(sendTarget(deps, row), row.text, [CC_SEND_CANCELLED]), components: [] });
       return;
     }
     if (kind === "start") {
@@ -339,7 +417,7 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
         return;
       }
       log(`Claude Code: [やめる] で起動しませんでした（#${id}）`);
-      await responder.update({ text: ccStartResultText(row, CC_START_CANCELLED), components: [] });
+      await responder.update({ text: ccStartResultText(row, [CC_START_CANCELLED]), components: [] });
     }
   };
 
@@ -360,7 +438,7 @@ async function location(runtime: CcConfirmRuntime, sessionId: string | null): Pr
   } catch {
     // ペインが分からなくても送れたことは伝える
   }
-  if (view.bridgeSessionId !== undefined) parts.push(`RC: <${CC_RC_URL_PREFIX}${encodeURIComponent(view.bridgeSessionId)}>`);
+  if (view.bridgeSessionId !== undefined) parts.push(`RC: <${ccRcUrl(view.bridgeSessionId)}>`);
   return parts.length === 0 ? "" : `（${parts.join("・")}）`;
 }
 
@@ -371,6 +449,8 @@ function errorKind(error: unknown): string {
 export type CcConfirmExpirerDeps = Pick<CcConfirmDeps, "cfg" | "ccSessions" | "ccPosts" | "home" | "log"> & {
   ccSends: Pick<CcSendStore, "listAwaitingConfirmBefore" | "transition">;
   ccStarts: Pick<CcStartStore, "listAwaitingConfirmBefore" | "transition">;
+  /** SELF_AGENT_CC が有効か（無効なら残っている確認待ちを時間を待たずに取り消して注記する。押したときと同じ） */
+  ccEnabled: () => boolean;
   now: () => Date;
   timers?: CcTimers;
 };
@@ -382,7 +462,11 @@ const REAL_TIMERS: CcTimers = {
   },
 };
 
-/** 確認の失効（§5.3）。CC_CONFIRM_SWEEP_MS ごとに、作ってから CC_CONFIRM_TTL_MS 経った確認待ちを取り消し、確認のボタンを外して「送りませんでした」などに書き換える */
+/**
+ * 確認の失効（§5.3）。CC_CONFIRM_SWEEP_MS ごとに、作ってから CC_CONFIRM_TTL_MS 経った確認待ちを取り消し、確認の最後の 1 通（ボタンの付いたもの）の
+ * ボタンを外して「送りませんでした」などに書き換える。SELF_AGENT_CC が無効なら（再起動の前に出した確認が残っていれば）時間を待たずに取り消して注記する。
+ * SELF_AGENT_CC の有効・無効によらず main が作って動かす
+ */
 export class CcConfirmExpirer {
   private readonly deps: CcConfirmExpirerDeps;
   private readonly timers: CcTimers;
@@ -437,7 +521,10 @@ export class CcConfirmExpirer {
   private async pass(): Promise<void> {
     const { ccSends, ccStarts, ccPosts, now, log } = this.deps;
     try {
-      const cutoff = new Date(now().getTime() - CC_CONFIRM_TTL_MS);
+      const enabled = this.deps.ccEnabled();
+      const cutoff = enabled ? new Date(now().getTime() - CC_CONFIRM_TTL_MS) : now();
+      const why = enabled ? "確認の期限が過ぎた" : "連携が無効な";
+      const note = enabled ? "" : CC_DISABLED_NOTE;
       const edits: Array<Promise<void>> = [];
       const edit = (channelId: string | null, messageId: string | null, text: string, label: string): void => {
         if (channelId === null || messageId === null) return;
@@ -448,14 +535,14 @@ export class CcConfirmExpirer {
         );
       };
       for (const row of ccSends.listAwaitingConfirmBefore(cutoff)) {
-        if (!ccSends.transition(row.id, ["awaiting_confirm"], "cancelled", { lastPaneState: "expired" })) continue;
-        log(`Claude Code: 確認の期限が過ぎたため送りませんでした（#${row.id}）`);
-        edit(row.channelId, row.messageId, ccSendResultText(sendTarget(this.deps, row), row.text, CC_SEND_CANCELLED), `送信 #${row.id}`);
+        if (!ccSends.transition(row.id, ["awaiting_confirm"], "cancelled", { lastPaneState: enabled ? "expired" : "disabled" })) continue;
+        log(`Claude Code: ${why}ため送りませんでした（#${row.id}）`);
+        edit(row.channelId, row.messageId, ccSendResultText(sendTarget(this.deps, row), row.text, [`${CC_SEND_CANCELLED}${note}`]), `送信 #${row.id}`);
       }
       for (const row of ccStarts.listAwaitingConfirmBefore(cutoff)) {
         if (!ccStarts.transition(row.id, ["awaiting_confirm"], "cancelled")) continue;
-        log(`Claude Code: 確認の期限が過ぎたため起動しませんでした（#${row.id}）`);
-        edit(row.channelId, row.messageId, ccStartResultText(row, CC_START_CANCELLED), `起動 #${row.id}`);
+        log(`Claude Code: ${why}ため起動しませんでした（#${row.id}）`);
+        edit(row.channelId, row.messageId, ccStartResultText(row, [`${CC_START_CANCELLED}${note}`]), `起動 #${row.id}`);
       }
       await Promise.all(edits);
     } catch (error) {

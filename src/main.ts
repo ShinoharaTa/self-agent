@@ -609,10 +609,9 @@ let ccTmux: Tmux | undefined;
 let ccPanes: CcPaneResolver | undefined;
 // /api/status の cc（hook の受け口が待ち受けているか・tmux のサーバー・複数行）
 let ccStatusOf: (() => CcStatus) | undefined;
-// SDK のツール cc_list・cc_send・cc_start（CC7）と、その確認のボタンが使う送信・起動。確認の失効（10 分）は ccConfirmExpirer
+// SDK のツール cc_list・cc_send・cc_start（CC7）と、その確認のボタンが使う送信・起動。確認の失効（10 分）は下の ccConfirmExpirer
 let ccTools: CcToolDeps | undefined;
 let ccRuntime: CcConfirmRuntime | undefined;
-let ccConfirmExpirer: CcConfirmExpirer | undefined;
 const ccHookToken = process.env.SELF_AGENT_CC_HOOK_TOKEN;
 if (
   config.cc &&
@@ -723,8 +722,18 @@ if (
     log,
   });
   ccRuntime = { sender: ccSender, starter: ccStarter, registry, panes };
-  ccConfirmExpirer = new CcConfirmExpirer({ cfg: config, ccSends, ccStarts, ccSessions, ccPosts: ownerPosts, now, log });
 }
+// cc_send・cc_start の確認の失効（10 分）。SELF_AGENT_CC が無効でも動かし、再起動の前に出した確認が残っていれば取り消して注記する
+const ccConfirmExpirer = new CcConfirmExpirer({
+  cfg: config,
+  ccSends,
+  ccStarts,
+  ccSessions,
+  ccPosts: ownerPosts,
+  ccEnabled: () => ccRuntime !== undefined,
+  now,
+  log,
+});
 
 // GitHub の通知の [対応]（docs/plan/github-notifications.md §5・§6、docs/plan/claude-code-sessions.md §6。SELF_AGENT_GITHUB と SELF_AGENT_CC の両方のときだけ）:
 // そのリポジトリの Claude Code のセッションに固定のテンプレートを cc_sends（origin github）で積み、無ければそのディレクトリで起動して積む。
@@ -943,7 +952,7 @@ const lifecycle = createShutdown(
     // #system への知らせ（停止の後は新しく出さず、保留をやめた 1 通の書き換えは待つ）
     ...(ccNotifier === undefined ? {} : { ccNotifier }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
-    ...(ccConfirmExpirer === undefined ? {} : { ccConfirmExpirer }),
+    ccConfirmExpirer,
     closeDb: () => db.close(),
     log,
   },
@@ -1017,5 +1026,5 @@ ccSender?.start();
 ccStarter?.start();
 ccNotifier?.rewriteRecovered(ccRecoveredPermissions);
 ccNotifier?.start();
-ccConfirmExpirer?.start();
+ccConfirmExpirer.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);
