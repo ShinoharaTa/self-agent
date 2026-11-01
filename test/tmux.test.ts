@@ -9,7 +9,9 @@ import {
   execFileRunner,
   handoffBufferName,
   MAX_PASTE_CHARS,
+  NEW_SESSION_FORMAT,
   PANE_FORMAT,
+  parseNewSession,
   parsePanes,
   type RunCommand,
   type RunResult,
@@ -281,4 +283,42 @@ test("execFileRunner: シェルを通さず、標準入力を渡し、終了コ�
   assert.deepEqual(failed, { code: 3, stdout: "", stderr: "err\n" });
   const missing = await execFileRunner("/nonexistent/tmux", [], options);
   assert.equal(missing.code, null);
+});
+
+test("newSession: new-session -d -P -F で $N・%N を受ける。コマンドは 1 つの引数で、-- の後ろ", async () => {
+  const { run, calls, state } = fakeRun({ code: 0, stdout: "$12 %34\n", stderr: "" });
+  const tmux = createTmux({ tmuxPath: TMUX, run });
+  const command = `'/home/u/.local/bin/claude' -n 'fix login'; exec "$SHELL"`;
+  assert.deepEqual(await tmux.newSession({ name: "alpha--fix-login", dir: "/home/u/workspace/alpha", command }), {
+    ok: true,
+    value: { sessionId: "$12", paneId: "%34" },
+  });
+  assert.deepEqual(calls.map((call) => [call.file, ...call.args]), [
+    [TMUX, "new-session", "-d", "-P", "-F", NEW_SESSION_FORMAT, "-s", "alpha--fix-login", "-c", "/home/u/workspace/alpha", "--", command],
+  ]);
+  assert.equal(NEW_SESSION_FORMAT, "#{session_id} #{pane_id}");
+  // 形の合わない出力は失敗
+  state.result = { code: 0, stdout: "alpha:0.1\n", stderr: "" };
+  assert.deepEqual(await tmux.newSession({ name: "alpha", dir: "/w/alpha", command }), { ok: false, reason: "failed" });
+  state.result = { code: 1, stdout: "", stderr: "duplicate session: alpha\n" };
+  assert.deepEqual(await tmux.newSession({ name: "alpha", dir: "/w/alpha", command }), { ok: false, reason: "failed" });
+  assert.deepEqual(parseNewSession("$1 %2"), { sessionId: "$1", paneId: "%2" });
+  assert.equal(parseNewSession("$1 %2 extra"), undefined);
+  assert.equal(parseNewSession("1 2"), undefined);
+});
+
+test("newSession: 名前・ディレクトリ・コマンドの形が違えば tmux を呼ぶ前に投げる", async () => {
+  const { run, calls } = fakeRun({ code: 0, stdout: "$1 %1\n", stderr: "" });
+  const tmux = createTmux({ tmuxPath: TMUX, run });
+  const command = "'/c' -n 'x'";
+  for (const name of ["", "a.b", "a:b", "a b", "#{pane_id}", "a".repeat(101)]) {
+    await assert.rejects(tmux.newSession({ name, dir: "/w/a", command }), Error, name);
+  }
+  for (const dir of ["relative", "/w/#{pane_id}", "/w/a\nb"]) {
+    await assert.rejects(tmux.newSession({ name: "a", dir, command }), Error, dir);
+  }
+  for (const bad of ["", "x\ny", "x\u001by"]) {
+    await assert.rejects(tmux.newSession({ name: "a", dir: "/w/a", command: bad }));
+  }
+  assert.equal(calls.length, 0);
 });

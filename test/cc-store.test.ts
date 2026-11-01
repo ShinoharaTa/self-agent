@@ -123,3 +123,51 @@ test("CcSessionStore.multilineOk: cc_state の multiline_ok（既定 1 で true�
   db.exec("UPDATE cc_state SET multiline_ok = 0");
   assert.equal(store.multilineOk(), false);
 });
+
+test("openDb: v28 の DB を v29 に上げても cc_sessions の行は残り、started_by は owner・起動の列と waiting_for は NULL。started_by の語は CHECK", (t) => {
+  const dir = tempDir(t);
+  const path = join(dir, "self-agent.db");
+  const v28 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 28)) v28.exec(migration);
+  v28.exec("PRAGMA user_version = 28");
+  v28
+    .prepare("INSERT INTO cc_sessions (session_id, cwd, name, pid, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(S1, "/w/a", "a", 10, at(0).toISOString(), at(0).toISOString());
+  v28.close();
+  const db = openDb(path);
+  t.after(() => db.close());
+  assert.ok(MIGRATIONS.length >= 29);
+  const row = new CcSessionStore(db).get(S1)!;
+  assert.deepEqual(
+    [row.startedBy, row.tmuxSession, row.tmuxSessionId, row.startPaneId, row.trustPendingAt, row.waitingFor],
+    ["owner", null, null, null, null, null],
+  );
+  assert.throws(() => db.prepare("UPDATE cc_sessions SET started_by = 'other' WHERE session_id = ?").run(S1));
+});
+
+test("CcSessionStore: upsertSeen は waitingFor を書き（無ければ NULL）、recordStart は 1 回だけ、trust の確認待ちを書いて外す", (t) => {
+  const { clock, store } = setup(t);
+  store.upsertSeen([{ sessionId: S1, cwd: "/w/a", name: "a", pid: 10, waitingFor: "permission prompt" }, { sessionId: S2, cwd: null, name: null, pid: 20 }]);
+  assert.equal(store.get(S1)!.waitingFor, "permission prompt");
+  assert.equal(store.get(S2)!.waitingFor, null);
+  store.upsertSeen([{ sessionId: S1, cwd: "/w/a", name: "a", pid: 10, waitingFor: null }]);
+  assert.equal(store.get(S1)!.waitingFor, null);
+
+  const record = { startedBy: "web" as const, tmuxSession: "alpha", tmuxSessionId: "$3", paneId: "%4", trustPendingAt: at(5) };
+  assert.equal(store.recordStart(S1, record), true);
+  assert.equal(store.recordStart(S1, { ...record, startedBy: "tool", paneId: "%5" }), false);
+  const row = store.get(S1)!;
+  assert.deepEqual(
+    [row.startedBy, row.tmuxSession, row.tmuxSessionId, row.startPaneId, row.trustPendingAt],
+    ["web", "alpha", "$3", "%4", at(5).toISOString()],
+  );
+  assert.equal(store.recordStart("33333333-3333-4333-8333-333333333333", record), false);
+  assert.deepEqual(store.listTrustPending().map((r) => r.sessionId), [S1]);
+  clock.now = at(10);
+  assert.equal(store.setTrustPending(S1, null), true);
+  assert.deepEqual(store.listTrustPending(), []);
+  // 一覧から消えたものは確かめ直さない
+  store.setTrustPending(S2, at(11));
+  store.markGone([S1]);
+  assert.deepEqual(store.listTrustPending(), []);
+});

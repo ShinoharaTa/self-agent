@@ -118,7 +118,7 @@ async function setup(
       agent(S1, { pid: 500, name: "alpha", status: "idle" }),
       agent(S2, { pid: 600, name: "beta", status: "busy", cwd: `${WORKSPACE}/beta/sub` }),
       agent(S3, { pid: 700, name: "gamma", status: "idle", cwd: "/home/owner/other" }),
-      agent(S4, { pid: 800, name: undefined, status: "waiting", cwd: "/srv/x" }),
+      agent(S4, { pid: 800, name: undefined, status: "waiting", waitingFor: "permission prompt", cwd: "/srv/x" }),
     ],
     dropped: 0,
   };
@@ -263,6 +263,7 @@ test("/api/cc/sessions: 判断待ち → 実行中 → 待機の順で、ペイ�
     cwdLabel: "alpha",
     permissionMode: null,
     state: "idle",
+    waitingFor: null,
     since: new Date(BASE - 3_600_000).toISOString(),
     lastPromptAt: null,
     lastPromptText: null,
@@ -270,6 +271,7 @@ test("/api/cc/sessions: 判断待ち → 実行中 → 待機の順で、ペイ�
     paneLabel: "work:0.1",
     rcUrl: "https://claude.ai/code/session_abc123",
     startedBy: "owner",
+    trustPending: false,
     pending: null,
     permission: null,
   });
@@ -282,6 +284,9 @@ test("/api/cc/sessions: 判断待ち → 実行中 → 待機の順で、ペイ�
   assert.equal(byId.get(S3)!.paneLabel, null);
   assert.equal(byId.get(S3)!.cwdLabel, "~/other");
   assert.equal(byId.get(S4)!.name, null);
+  // 判断待ちの理由（waitingFor）は waiting のときだけ
+  assert.equal(byId.get(S4)!.state, "needs_input");
+  assert.equal(byId.get(S4)!.waitingFor, "permission prompt");
   assert.equal(byId.get(S4)!.cwdLabel, "/srv/x");
   assert.equal(touches(), 1);
   // 一覧では画面を撮らない（list-panes を 1 回だけ）
