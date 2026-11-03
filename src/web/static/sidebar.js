@@ -229,6 +229,20 @@
     });
   }
 
+  /** 起動したがまだ一覧に出ていないもの（sessionId が無いのでタブは開かない）。trust の確認待ちなら答え方を添える */
+  function ccStartingRow(s) {
+    const badges = [];
+    if (s.trustPending) badges.push(el("span", { class: "badge badge-accent", text: "trust の確認待ち" }));
+    return el("li", {}, [
+      el("div", { class: "sb-row sb-row-static", title: s.project || null }, [
+        el("span", { class: "sb-label", text: s.title }),
+        ...badges,
+        s.startedAt ? el("span", { class: "sb-meta", text: SA.views.ago(s.startedAt) }) : null,
+      ]),
+      s.trustPending ? el("p", { class: "sb-hint", text: "端末か RC で trust に答えてください" }) : null,
+    ]);
+  }
+
   function renderCc(body) {
     if (!store.ccEnabled()) {
       body.replaceChildren(group("cc-needs", "判断待ち", [], null, "読み込んでいます…"));
@@ -254,6 +268,8 @@
         ? "一覧を読めませんでした。前に読めた一覧です。"
         : null;
     const groups = [group("cc-needs", "判断待ち", by("needs_input")), group("cc-running", "実行中", by("running")), group("cc-idle", "待機", by("idle"))];
+    // 起動中（trust の確認待ちの claude は claude agents --json に出ないので、起動したがまだ一覧に無いものを別に出す）。無ければ群ごと出さない
+    if (store.cc.starting.length > 0) groups.unshift(group("cc-starting", "起動中", store.cc.starting.map(ccStartingRow)));
     // 一覧を最後に読めた時刻（claude agents --json。サーバーの読み取り）
     const fetched = store.cc.fetchedAt ? "一覧は " + SA.views.secondsAgo(store.cc.fetchedAt) + "のもの" + (store.ccFailed ? "（今は読めません）" : "") : null;
     body.replaceChildren(

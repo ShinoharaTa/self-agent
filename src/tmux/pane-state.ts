@@ -50,7 +50,17 @@ const BUSY_TEXT = /esc to interrupt/i;
 const SPINNER_LINE = /^[·✢✳✶✻✽*]\s+\S.*(…|\((\d+m )?\d+s\b)/;
 // vim のノーマル・ビジュアルモード（貼った文字が入力にならないかもしれない）
 const VIM_NOT_INSERT = /-- (NORMAL|VISUAL)/;
-const RULE_LINE = /^─{20,}$/;
+// 入力欄の上下の罫線。Claude Code 2.1.317 は `-n` の名前を上の罫線の中か末尾に `─── <名前> ─` の形で入れる（名前は罫線の文字を含まない 1〜60 字で、
+// 前後に空白）。名前の前の `─` が 2 本以上・後ろが 1 本以上で、`─` が合わせて 20 本以上のときだけ罫線とみなす（本文の行を取り違えない）
+const RULE_PLAIN = /^─{20,}$/;
+const RULE_NAMED = /^(─{2,}) [^─\s](?:[^─]{0,58}[^─\s])? (─+)$/;
+
+/** 入力欄の罫線か（trim した行） */
+export function isRuleLine(line: string): boolean {
+  if (RULE_PLAIN.test(line)) return true;
+  const named = RULE_NAMED.exec(line);
+  return named !== null && named[1]!.length + named[2]!.length >= 20;
+}
 const PROMPT_PREFIX = "❯ ";
 
 /** classifyPane に渡すペインの情報 */
@@ -151,7 +161,7 @@ function findPromptLine(lines: string[]): number | undefined {
   while (end > 0 && lines[end - 1]!.trim() === "") end -= 1;
   const start = Math.max(0, end - PROMPT_SEARCH_LINES);
   for (let i = end - 2; i - 1 >= start; i -= 1) {
-    if (RULE_LINE.test(lines[i - 1]!.trim()) && lines[i]!.startsWith(PROMPT_PREFIX) && RULE_LINE.test(lines[i + 1]!.trim())) return i;
+    if (isRuleLine(lines[i - 1]!.trim()) && lines[i]!.startsWith(PROMPT_PREFIX) && isRuleLine(lines[i + 1]!.trim())) return i;
   }
   return undefined;
 }
@@ -202,9 +212,9 @@ function findInputBox(lines: string[]): { top: number; bottom: number } | undefi
   let end = lines.length;
   while (end > 0 && lines[end - 1]!.trim() === "") end -= 1;
   for (let bottom = end - 1; bottom >= Math.max(0, end - PROMPT_SEARCH_LINES); bottom -= 1) {
-    if (!RULE_LINE.test(lines[bottom]!.trim())) continue;
+    if (!isRuleLine(lines[bottom]!.trim())) continue;
     for (let top = bottom - 2; top >= Math.max(0, bottom - 1 - INPUT_BOX_MAX_LINES); top -= 1) {
-      if (!RULE_LINE.test(lines[top]!.trim())) continue;
+      if (!isRuleLine(lines[top]!.trim())) continue;
       if (!lines[top + 1]!.startsWith(PROMPT_PREFIX)) return undefined;
       return { top, bottom };
     }

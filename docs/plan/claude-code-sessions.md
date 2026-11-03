@@ -68,6 +68,7 @@
 - **入力欄のまとめ（`[Pasted text …]`）の条件: 改行が 3 つ以上、または 800 字を超える**。印は `[Pasted text #n +N lines]` で、**N は改行の数（= 行数 − 1）**。改行の無い長文（801 字以上の 1 行）は **`[Pasted text #n]`（`+N lines` なし）**。`#n` はセッションの中の通し番号（消しても戻らない）。まとまらないもの（改行 2 つ以下かつ 800 字以下）はそのまま複数行で見える。送った後の会話にはまとめたものも全文が出る。
 - ターンの後に入力欄に **dim の提案（前の手順の続きのコマンドなど）** が出ることがある。貼ると提案は消えて貼った文字だけになる（提案の文字は入らない）。今の `classifyScreen` はこれを `draft` と判定する（`Try "` の形でないため）。
 - 今の `classifyScreen` は、まとまらない複数行（と 800 字以下の折り返し）を `no_prompt` と判定する（`findPromptLine` が 1 行の入力欄しか探さない）。貼った後の判定では害が無い（§3.2）。
+- **Claude Code 2.1.317 では `-n` で付けた名前が入力欄の上の罫線に出る**（`────…──── <名前> ─`。空白を含む名前もそのまま。実機の通し確認）。素の罫線（`─` だけ）を前提にした判定は、名前付きのセッションを入力欄なし（`no_prompt`）とみなす。
 - 新しいディレクトリの trust のダイアログ（「Accessing workspace: … Is this a project you created or one you trust? … ❯ No, exit / Yes, I trust this folder … Enter to confirm · Esc to cancel」）は `classifyScreen` で `dialog`。**既定の選択は「No, exit」**（Enter だけ押すと claude が終わる）。trust する前は hook が何も来ない（承認の後の発言から来る）。
 
 ### 1.7 コード（確認）
@@ -98,7 +99,7 @@
   2. **実行中（running）**: `status === "busy"`。
   3. **待機（idle）**: それ以外。
   並び: needs_input は待ち始めの古い順 → running は最後の指示の新しい順 → idle は最後の指示の新しい順（無ければ jsonl の mtime → `startedAt`）。
-- 「最後の指示」= `UserPromptSubmit` を受けた時刻（self-agent から送ったものも RC・端末から打ったものも同じ）。本文は **先頭 200 字を DB に残す（30 日）**（決定 1）。**保存の前に、まとめた貼り付けの包み（先頭の `\n\n<pasted_content id="[0-9a-f]+">\n` と末尾の閉じタグ。途中に複数あれば中身だけ残す）を外してから 200 字に切る**（§1.4）。log には出さない。`permission_mode` も行に残して一覧に印を出す（`auto` / `default` / …）。**`permission_mode` を更新するのは `UserPromptSubmit`・`Stop`・`PermissionRequest` だけ**（`Notification` には無い。`COALESCE` で消さない）。
+- 「最後の指示」= `UserPromptSubmit` を受けた時刻（self-agent から送ったものも RC・端末から打ったものも同じ）。本文は **先頭 200 字を DB に残す（30 日）**（決定 1）。**保存の前に、まとめた貼り付けの包み（先頭の `\n\n<pasted_content id="[0-9a-f]+">\n` と末尾の閉じタグ。途中に複数あれば中身だけ残す）を外し、前後の改行・空白を除いてから 200 字に切る**（§1.4）。log には出さない。`permission_mode` も行に残して一覧に印を出す（`auto` / `default` / …）。**`permission_mode` を更新するのは `UserPromptSubmit`・`Stop`・`PermissionRequest` だけ**（`Notification` には無い。`COALESCE` で消さない）。
 - 内部形式（C）は `src/cc/claude-dirs.ts` に閉じ込め、形の検証に通らなければ `undefined`（例外にしない。log は件数だけ、変わったとき 1 回）。`tmux` 欄は `<session>:@<window_id>.%<pane>` の形（`/:@?\d{1,9}\.%\d{1,9}$/`。`@` の無い古い形も通す）。
 - Bot 自身の SDK の run は受け口に来ない（§1.7）。**`claude agents --json` に無い `session_id` の事象は採らない**（CC1 から。§7 の 11: 偽の hook への対策の (a)）。起動直後で一覧にまだ無いことがあるので 30 秒だけ保留し、次の一覧に現れれば採り、現れなければ捨てる（`PermissionRequest` は保留せず、一覧に無ければ即「空の本文」）。
 
@@ -142,9 +143,10 @@ self-agent は `~/.claude` を触らない。README（日・英）に次の形�
   - 入力欄のまとめは「改行が 3 つ以上、または 800 字を超える」とき。印の形は **`/\[Pasted text #\d+( \+\d+ lines)?\]/`** で、**`+N lines` の N は本文の改行の数（末尾の改行を落とした後。= 行数 − 1）**。改行の無い 801 字以上は `+N lines` が付かない。`pasteLanded` は (a) 入力欄に `#n` が貼る前の最大の `#n` より大きい印があり、`+N lines` があるなら `N === 改行の数`、無いなら本文に改行が無い、か (b) 先頭 24 字が入力欄にある（まとまらないとき。`inputBoxText` が行をつなぐ）、のどちらかで貼れたとみなす（`#n` の比較で、前からある印を取り違えない）。
   - `INPUT_BOX_MAX_LINES` は 20 のまま（まとまらないのは改行 2 つ以下・800 字以下だけで、80 桁でも 13 行以内）。
   - `classifyScreen` がまとまらない複数行を `no_prompt` にするのは貼った後の判定だけなので害が無い（送る前の判定は貼る前の画面）。オーナーが複数行を書きかけているときも idle にならないので安全側。
+  - 入力欄の上下の罫線は `─` が 20 本以上の行で、**上の罫線の中か末尾に ` <名前> ` の区切りを許す**（§1.6。`-n` の名前。名前は `─` を含まない 1〜60 字で前後が空白でなく、前の `─` が 2 本以上・後ろが 1 本以上、合わせて 20 本以上。罫線の後ろに文が続く行・名前の後に `─` の無い行は罫線にしない）。
   - **入力欄の見える文字が全部 dim なら idle とみなす**（`classifyScreen` の変更。`Try "` の候補に限らない。ターンの後に出る dim の提案は貼れば置き換わり、提案の文字は入らない。オーナーが打った文字は dim にならない。§1.6）。これを変えないと、提案が出た後のセッションには積んだまま 120 分で `gave_up` になる。github-notifications の G4 の判定にも同じ変更が効く。
   - **ブラケット貼り付けが効いていない（1 行目で送信された）ことを検出したら、その送信は `unconfirmed` にして以後の送信を止め**（`cc_state.multiline_ok = false`。#system に 1 行）、オーナーが実機で確かめ直すまで `multiline: false`（改行を空白に）で送る。検出: Enter を押す前の確かめで入力欄に 1 行目だけがあり、画面に 2 行目以降の文字が「返答の側」に見える（`busy` に変わっている）とき。**実機では起きていない**（決定 3 の保険として残す。優先度は低い）。
-- idle でなければ `cc_sends` に `queued` で積み、30 秒ごとに古い順に試す。上限 `SELF_AGENT_CC_SEND_WAIT_MIN`（既定 120 分）で `gave_up`。[取り消す] で `cancelled`。再起動の後も続ける。
+- idle でなければ `cc_sends` に `queued` で積み、30 秒ごとと、`Stop` の hook を受けたとき（ターンが終わった。周期を待たない）に古い順に試す。上限 `SELF_AGENT_CC_SEND_WAIT_MIN`（既定 120 分）で `gave_up`。[取り消す] で `cancelled`。再起動の後も続ける。
 - 送れないとき: `no_server` / `not_in_tmux`（RC のリンクを出す）/ `gone` / `not_claude`（**絶対に送らない**）/ `unconfirmed`（Enter を押さず、画面の確認を頼む。やり直さない）。
 - 二重送信: (1) 同じセッション・同じ本文が 5 秒以内なら前回の id で 202。(2) 同じセッションに `queued`・`delivering`・`awaiting_confirm`（§5.3）があれば 409 `already_queued`。(3) 送信の本体は mutex。(4) 再起動で `delivering` のまま残った行は `unconfirmed`。
 
@@ -216,9 +218,9 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
 ### 4.2 決定
 - 場所: `SELF_AGENT_WORKSPACE_DIR`（既定 `~/workspace`）の **直下の実際のディレクトリ**だけ。名前は `^[A-Za-z0-9_-]{1,64}$`、`realpath` が `<workspace>/<name>` そのもの、workDir・dataDir・`~/.config/self-agent`・`~/.claude` と重ならない。無いディレクトリは作らない（clone もしない）。候補は `/api/cc/projects`。
 - tmux: 既定のソケットの既定のサーバー。サーバーが無ければ **断る**（決定 8）。セッション名は `<slug(name)>`、既にあれば `<slug(name)>--<slug(題名)>`、それもあれば `-2`, `-3`。既存のセッションにウィンドウを足さない。**名前はオーナーの `session-created` の hook と timer で作った直後に変わりうる**（§1.1）ので、**self-agent は名前に頼らず、`new-session -d -P -F '#{session_id} #{pane_id}'` で返る `$N`・`%N` を記録して追う**（`tmux_session` の列は表示用で、`list-panes` から引き直す）。`<name>--<題名>` の形を保つかはオーナーの hook 側の話（§13）。
-- コマンド: `tmux new-session -d -P -F '#{session_id} #{pane_id}' -s <session> -c <dir> -- '<claude の絶対パス>' -n '<題名>' [--permission-mode <mode>] ; exec "$SHELL"` の **1 つの shell-command 文字列**。各値は検証（claude のパスは起動時に 1 回解決した絶対パスで空白・`'` を含まない、題名は `^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,39}$`（文字か数字で始まる。先頭の `-` を通さない）、mode は固定の集合）してから単引用符で囲む。
+- コマンド: `tmux new-session -d -P -F '#{session_id} #{pane_id}' -s <session> -c <dir> -- set -m; '<claude の絶対パス>' -n '<題名>' [--permission-mode <mode>] ; exec "$SHELL"` の **1 つの shell-command 文字列**。`set -m` は、tmux が `default-shell -c` で走らせる非対話のシェルにジョブ制御をさせ、claude を自分のプロセスグループで前面に出すため（無いと claude は前面にいてもシェルのプロセスグループのままで、`pane_current_command` が `bash` になり、§7 の 2 の条件でペインを採れない。実機の通し確認。`set -m` で足りるかは要実機確認）。各値は検証（claude のパスは起動時に 1 回解決した絶対パスで空白・`'` を含まない、題名は `^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,39}$`（文字か数字で始まる。先頭の `-` を通さない）、mode は固定の集合）してから単引用符で囲む。
 - 権限モード（決定 4）: 既定は指定しない（`settings.json` に従う）。選べるのは `default` / `acceptEdits` / `plan` / `auto`。`bypassPermissions`・`dontAsk` は選べない。
-- **trust のダイアログ**（§1.6）: まだ trust していないディレクトリでは「Accessing workspace … ❯ No, exit / Yes, I trust this folder」が出る。**既定の選択は「No, exit」なので、self-agent は Enter もほかのキーも送らない**（§7 の 3）。trust 済みかは `~/.claude.json`（内部形式）にあるが読まない。起動の後 10 秒で `probePaneState` が `dialog`（画面に `trust this folder`）なら Web・Discord の起動の結果に「新しいディレクトリでは trust の確認が出ています。端末か RC で『Yes, I trust this folder』を選んでください」を出し（RC にこのダイアログが出るかは未確認。§12 の 1）、一覧の行に「trust の確認待ち」の印（その後も起動から 10 分は 10 秒ごとに画面を見て、出た・消えたを反映する。それより後と再起動の後は確認待ちの行だけ撮り直して外す。送信の状態の行には、最後に見たペインが `dialog` なら「ダイアログが出ているため待っています」）。承認されるまで hook は来ない（`claude agents --json` には出る）。起動の流れの選択肢は §13（オーナーに聞くこと）。
+- **trust のダイアログ**（§1.6）: まだ trust していないディレクトリでは「Accessing workspace … ❯ No, exit / Yes, I trust this folder」が出る。**既定の選択は「No, exit」なので、self-agent は Enter もほかのキーも送らない**（§7 の 3）。trust 済みかは `~/.claude.json`（内部形式）にあるが読まない。起動の後 10 秒で `probePaneState` が `dialog`（画面に `trust this folder`）なら Web・Discord の起動の結果に「新しいディレクトリでは trust の確認が出ています。端末か RC で『Yes, I trust this folder』を選んでください」を出し（RC にこのダイアログが出るかは未確認。§12 の 1）、一覧の行に「trust の確認待ち」の印（その後も起動から 10 分は 10 秒ごとに画面を見て、出た・消えたを反映する。それより後と再起動の後は確認待ちの行だけ撮り直して外す。送信の状態の行には、最後に見たペインが `dialog` なら「ダイアログが出ているため待っています」）。承認されるまで hook は来ず、**`claude agents --json` にも出ない**（2.1.317 の実機の通し確認）ので、一覧の行は無い。確認待ちは starter がプロセスの中に持つ「結びつく前の起動」から `/api/cc/sessions` の `starting` に出す（§5.1）。起動の流れの選択肢は §13（オーナーに聞くこと）。
 - 最初の指示: `cc_sends` に **ペイン id 宛て**（`session_id` は後で埋める。`origin: 'start'`。起動したディレクトリを `start_dir` に残し、**そのペインを送り先にし、`claude agents --json` の `cwd` が `start_dir` と同じセッションにだけ結びつける**。%N が同じというだけでは結びつけない。60 秒経っても一致しなければ `failed`（`cwd_mismatch`））で積み、§3 の経路で送る（trust のダイアログの間は `dialog` で積まれ、承認されて idle になったら届く。120 分で `gave_up`）。
 - RC: 何もしない。`bridgeSessionId` が現れたらリンクを添える。
 - 上限: 生きている `claude` が `SELF_AGENT_CC_MAX_SESSIONS`（既定 30）以上なら断る。`MemAvailable` が 1 GB 未満でも断る。1 分に 1 回。
@@ -228,12 +230,12 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
 
 ### 5.1 Web UI
 - アクティビティ「Claude Code」（`SELF_AGENT_CC=1` のときだけ。`/api/status` に `cc: { enabled, hookPort: boolean, tmux: "ok" | "no_server", multilineOk, pendingPermissions }`）。
-- サイドバー: 3 つの群（判断待ち / 実行中 / 待機）を §2.2 の順で。行は 名前・ディレクトリ名（`~/workspace/` からの相対）・`permission_mode`・経過・印（tmux の外・self-agent が起動・送信待ち・**許可待ち**・trust の確認待ち）。判断待ちの行には `waitingFor` の文（`permission prompt` など）を添える。
+- サイドバー: 3 つの群（判断待ち / 実行中 / 待機）を §2.2 の順で。その前に、起動したがまだ一覧に出ていないもの（`starting`）があれば「起動中」の群（題名・経過。trust の確認待ちなら印と「端末か RC で trust に答えてください」。sessionId が無いのでタブは開かない）。行は 名前・ディレクトリ名（`~/workspace/` からの相対）・`permission_mode`・経過・印（tmux の外・self-agent が起動・送信待ち・**許可待ち**・trust の確認待ち）。判断待ちの行には `waitingFor` の文（`permission prompt` など）を添える。
 - タブ（1 セッション）: 見出し（名前・ディレクトリ・状態・`<session>:@<w>.<p>`・[RC で開く]）、**許可のカード**（保留中なら最上部に §3.4 の内容と [許可][このセッションでは常に許可（<ルール>）][拒否]・残り分秒・「端末や RC のダイアログでも答えられます」。閉じた後は「端末か RC で答えられました」/「時間切れ。端末か RC で答えてください」）、**画面の写し**（`capture-pane -p -S -200` を `stripAnsi`。3 秒ごと）、最後の指示（200 字）、composer（複数行。Shift+Enter で改行。2,000 字。送信待ちがあれば [取り消す]）。
 - 会話の表示は画面の写しを採り、jsonl は読まない（v1 のまま）。
 - 起動ダイアログ: プロジェクト・題名・最初の指示（任意。複数行）・権限モード。説明に「新しいディレクトリでは trust の確認が端末・RC に出ます」。
 - API（認証 + POST は CSRF の 3 条件。無効なら 404）:
-  - `GET /api/cc/sessions` → `{ stale, sessions: [{ sessionId, name, cwdLabel, permissionMode, state, waitingFor, since, lastPromptAt, lastPromptText, inTmux, paneLabel, rcUrl, startedBy, trustPending, pending: { id, state } | null, permission: { id, toolName, summary, expiresAt } | null }] }`
+  - `GET /api/cc/sessions` → `{ stale, sessions: [{ sessionId, name, cwdLabel, permissionMode, state, waitingFor, since, lastPromptAt, lastPromptText, inTmux, paneLabel, rcUrl, startedBy, trustPending, pending: { id, state } | null, permission: { id, toolName, summary, expiresAt } | null }], starting: [{ project, title, trustPending, startedAt }] }`（`starting` は starter が起動して一覧のセッションとまだ結びつけていないもの（起動から 10 分まで・プロセスの中だけ）。sessionId はまだ無い）
   - `GET /api/cc/sessions/<id>` → 上の 1 件 + `screen: string | null`
   - `POST /api/cc/sessions/<id>/send` `{ text }` → 202 `{ sendId, state }` / 400 / 404 / 409 / 503
   - `POST /api/cc/sends/<id>/cancel` → 200 / 409

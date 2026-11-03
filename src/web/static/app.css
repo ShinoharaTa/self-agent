@@ -565,6 +565,11 @@ kbd {
   .sb-row:hover {
     background: var(--muted);
   }
+
+  /* 押せない行（Claude Code の起動中） */
+  .sb-row-static:hover {
+    background: transparent;
+  }
 }
 
 .sb-row[aria-current="true"] {
@@ -600,7 +605,8 @@ kbd {
   flex: none;
 }
 
-.sb-empty {
+.sb-empty,
+.sb-hint {
   padding: 0 var(--space-3) var(--space-2) var(--space-6);
   color: var(--text-muted);
   font-size: var(--font-xs);

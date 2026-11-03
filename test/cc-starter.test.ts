@@ -62,10 +62,10 @@ const TRUST = [
 ].join("\n");
 
 test("buildClaudeCommand: 固定の形で、claude・題名・モードを単引用符で囲む。' を含む題名・知らないモードは投げる", () => {
-  assert.equal(buildClaudeCommand({ claudePath: CLAUDE, title: "fix login" }), `'${CLAUDE}' -n 'fix login'; exec "$SHELL"`);
+  assert.equal(buildClaudeCommand({ claudePath: CLAUDE, title: "fix login" }), `set -m; '${CLAUDE}' -n 'fix login'; exec "$SHELL"`);
   assert.equal(
     buildClaudeCommand({ claudePath: CLAUDE, title: "ログイン修正_2.1-a", permissionMode: "acceptEdits" }),
-    `'${CLAUDE}' -n 'ログイン修正_2.1-a' --permission-mode 'acceptEdits'; exec "$SHELL"`,
+    `set -m; '${CLAUDE}' -n 'ログイン修正_2.1-a' --permission-mode 'acceptEdits'; exec "$SHELL"`,
   );
   for (const title of ["it's", "a;b", "$(x)", "a`b", 'a"b', "a\nb", "", "a".repeat(41), "-rf", "--help", "_a", ".a"]) {
     assert.throws(() => buildClaudeCommand({ claudePath: CLAUDE, title }), Error, title);
@@ -325,7 +325,7 @@ test("POST /api/cc/sessions: 引数は固定の形で単引用符に入る。201
     "-c",
     join(ws, "alpha"),
     "--",
-    `'${CLAUDE}' -n 'fix login' --permission-mode 'plan'; exec "$SHELL"`,
+    `set -m; '${CLAUDE}' -n 'fix login' --permission-mode 'plan'; exec "$SHELL"`,
   ]);
   // サーバーがあるかを先に list-panes で確かめてから
   assert.equal(commands[0]![0], "list-panes");
@@ -507,6 +507,30 @@ test("起動: ペイン宛ての送信は、ペインが無くなれば gone、�
   assert.equal(g.sends.get(1)!.state, "failed");
   assert.equal(g.sends.get(1)!.lastPaneState, "gone");
   assert.deepEqual(actions(g.commands), []);
+});
+
+test("一覧の API: 起動したがまだ一覧に出ていないものを starting に出す（trust の確認待ちは claude agents --json に出ない）。結びついたら消える", async (t) => {
+  const s = await setup(t);
+  const startedAt = new Date(s.clock.now).toISOString();
+  s.env.screens["%9"] = TRUST;
+  let list = await call(s.server, "GET", "/api/cc/sessions");
+  assert.deepEqual(list.json.starting, []);
+  await call(s.server, "POST", "/api/cc/sessions", { project: "alpha", title: "fix login", text: "最初の指示" });
+  list = await call(s.server, "GET", "/api/cc/sessions");
+  assert.deepEqual(list.json.starting, [{ project: "alpha", title: "fix login", trustPending: false, startedAt }]);
+  // 10 秒でダイアログ → 確認待ち（一覧の sessions にはまだ無い）
+  await s.fire(CC_TRUST_CHECK_DELAY_MS);
+  list = await call(s.server, "GET", "/api/cc/sessions");
+  assert.deepEqual(list.json.starting, [{ project: "alpha", title: "fix login", trustPending: true, startedAt }]);
+  assert.ok(!(list.json.sessions as Array<Record<string, unknown>>).some((v) => v.sessionId === NEW));
+  assert.deepEqual(s.starter.pendingStarts(), [{ project: "alpha", title: "fix login", trustPending: true, startedAt: Date.parse(startedAt) }]);
+  // 承認されて一覧に現れ、結びついたら starting から消える
+  s.env.screens["%9"] = EMPTY;
+  await s.showNew();
+  await s.fire(CC_START_CHECK_MS);
+  list = await call(s.server, "GET", "/api/cc/sessions");
+  assert.deepEqual(list.json.starting, []);
+  assert.ok((list.json.sessions as Array<Record<string, unknown>>).some((v) => v.sessionId === NEW));
 });
 
 test("起動: stop の後は起動しない（503 stopping）", async (t) => {

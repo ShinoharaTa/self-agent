@@ -17,6 +17,7 @@ import type { CcSendOrigin, CcSendRow, CcSendStore } from "../store/cc-sends.ts"
 import type { CcSessionStore } from "../store/cc-sessions.ts";
 import { classifyScreen, pasteLanded, pasteSubmittedEarly, probePaneState } from "../tmux/pane-state.ts";
 import type { Tmux } from "../tmux/tmux.ts";
+import type { CcHookEvent } from "./hook-server.ts";
 import { sessionOnStartedPane, type CcPaneResolver } from "./panes.ts";
 import type { CcRegistry, CcTimers } from "./registry.ts";
 
@@ -245,6 +246,13 @@ export class CcSender {
     if (!this.deps.sends.transition(id, ["queued", "awaiting_confirm"], "cancelled")) return "stale";
     this.deps.log(`Claude Code: 送信を取り消しました（#${id}）`);
     return "cancelled";
+  }
+
+  /**
+   * 採った hook の事象（registry の onEvent）。Stop ならターンが終わったので、作業中に積んだ送信を CC_SEND_RETRY_MS の周期を待たずに試す
+   */
+  onEvent(event: Pick<CcHookEvent, "event">): void {
+    if (event.event === "Stop") void this.kick();
   }
 
   /** 待ち行列を 1 回回す。回している途中なら、終わった後にもう 1 回回す。reject しない */
