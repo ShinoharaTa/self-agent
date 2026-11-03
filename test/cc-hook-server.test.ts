@@ -7,11 +7,13 @@ import {
   CC_HOOK_TOKEN_LOG_INTERVAL_MS,
   createCcHookServer,
   createHookRequestListener,
+  parseHookEvent,
   type CcHookEvent,
   type CcHookServer,
   summarizePermission,
   unwrapPastedContent,
 } from "../src/cc/hook-server.ts";
+import { CC_PROMPT_MAX_CHARS } from "../src/store/cc-sessions.ts";
 
 const TOKEN = "hook-token-for-tests-0123456789abcdef";
 const S1 = "11111111-1111-4111-8111-111111111111";
@@ -256,6 +258,16 @@ test("unwrapPastedContent: pasted_content の開きと閉じのタグ（属性�
   assert.equal(unwrapPastedContent('前 <pasted_content id="1" lines="2">a</pasted_content> 後 <pasted_content id="2">b</pasted_content>'), "前 a 後 b");
   assert.equal(unwrapPastedContent("<pasted_contents>そのまま</other>"), "<pasted_contents>そのまま</other>");
   assert.equal(unwrapPastedContent("タグなし"), "タグなし");
+});
+
+test("parseHookEvent: まとめた貼り付けの prompt はタグを外して前後の改行・空白を除いてから先頭 200 字にする", () => {
+  const at = new Date(0);
+  const prompt = (text: string) => parseHookEvent({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: text }, at)?.prompt;
+  // Claude Code の形（\n\n<pasted_content …>…</pasted_content>\n）
+  assert.equal(prompt('\n\n<pasted_content id="1">1 行目\n2 行目</pasted_content id="1">\n'), "1 行目\n2 行目");
+  assert.equal(prompt("  前後の空白  "), "前後の空白");
+  const long = prompt(`\n\n\n${"字".repeat(CC_PROMPT_MAX_CHARS + 10)}`);
+  assert.equal(long, "字".repeat(CC_PROMPT_MAX_CHARS));
 });
 
 test("hook の受け口: 常に許可のファイルのルールは options の ruleContext（workspace・ホーム）で線引きし、無ければ候補にしない", async (t) => {

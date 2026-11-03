@@ -95,7 +95,7 @@
   // kbEntries[id]: /api/knowledge/<id> の entry（404 なら "missing"、それ以外の失敗は "failed"）
   // projects: /api/projects（まだ読んでいなければ null）。projectFiles[slug]: /files の結果（{ files, truncated, missing }。missing は 404）。
   // projectFile[slug]: 選んだファイルの中身（{ path, text, error, maxBytes }。読んでいる間は text も error も null。maxBytes は 413 の応答の上限（無ければ null））
-  // cc: /api/cc/sessions（{ stale, unreadable, fetchedAt, sessions }。まだ読んでいなければ null）。ccAt: 最後に読み終えた時刻（読めなくても進める）。
+  // cc: /api/cc/sessions（{ stale, unreadable, fetchedAt, sessions, starting }。starting は起動したがまだ一覧に出ていないもの。まだ読んでいなければ null）。ccAt: 最後に読み終えた時刻（読めなくても進める）。
   // ccFailed: 最後の読み取りに失敗した。
   // ccSessions[sessionId]: /api/cc/sessions/<id> の結果（{ session, missing }。session は 1 件 + screen。missing は 404）
   const store = {
@@ -698,6 +698,7 @@
         unreadable: !!(data && data.unreadable),
         fetchedAt: data && typeof data.fetchedAt === "string" ? data.fetchedAt : null,
         sessions: Array.isArray(data && data.sessions) ? data.sessions.filter((s) => s && typeof s.sessionId === "string") : [],
+        starting: Array.isArray(data && data.starting) ? data.starting.filter((s) => s && typeof s.title === "string") : [],
       };
       SA.app.refreshSidebar();
       // タブの見出しの名前が変わりうる
