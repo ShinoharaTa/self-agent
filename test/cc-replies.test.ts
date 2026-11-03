@@ -16,7 +16,9 @@ import {
   CC_REPLY_WAIT_MS,
   CC_UNFOLLOW_NOTE,
   CcReplier,
+  breakMaskedLinks,
   replyLimitText,
+  replyTexts,
   splitReplyBody,
   unfollowedText,
 } from "../src/cc/replies.ts";
@@ -498,4 +500,52 @@ test("CcRegistry: 一覧に居るセッションの hook の事象だけを onEv
   // 保留した S2 は一覧に現れずに捨てられる
   await registry.tick();
   assert.equal(seen.length, 1);
+});
+
+test("replyTexts: 開き直しの行は fence と情報文字列の先頭 20 字まで。どの通も 2,000 字に収まり、溢れた分は次の通・「ほか n 字」に回る", () => {
+  const info = "x".repeat(500);
+  // 1 通目の終わりでコードブロックが開いたまま。長い情報文字列が 2・3 通目の先頭に付いても溢れない
+  const body = `\`\`\`${info}\n${"a".repeat(5401)}`;
+  const texts = replyTexts("名前", body, RC);
+  assert.equal(texts.length, 3);
+  assert.ok(texts.every((text) => [...text].length <= 2000), texts.map((text) => [...text].length).join(","));
+  assert.ok(texts[1]!.includes(`\n\`\`\`${"x".repeat(20)}\n`));
+  assert.ok(!texts[1]!.includes("x".repeat(21)));
+  // 収めるために減らした分も「ほか n 字」に数える
+  const shown = texts.reduce((sum, text) => sum + [...text.replace(/^[^\n]*\n/, "").replace(/\n（ほか .*$/, "")].filter((c) => c === "a").length, 0);
+  const rest = Number(/ほか ([\d,]+) 字/.exec(texts[2]!)![1]!.replace(/,/g, ""));
+  assert.equal(shown + rest, 5401);
+  // 長い名前・RC のリンクでも溢れない
+  const many = replyTexts("名".repeat(30), "字".repeat(9000), `${RC}${"z".repeat(200)}`);
+  assert.ok(many.every((text) => [...text].length <= 2000));
+});
+
+test("breakMaskedLinks: コードブロックの外の `](` だけを `]\\(` に崩す", () => {
+  assert.equal(breakMaskedLinks("[押す](https://evil.example)\n```\n[a](b)\n```\n[c](d)"), "[押す]\\(https://evil.example)\n```\n[a](b)\n```\n[c]\\(d)");
+  const texts = replyTexts("名前", "[押す](https://evil.example)", undefined);
+  assert.ok(texts[0]!.endsWith("[押す]\\(https://evil.example)"));
+});
+
+test("出せなかった返事のやり直しは、その時に追いかけ中のときだけ。[追いかけをやめる] の後は出さない", async (t) => {
+  const { bot, sessions, replies, posted, deliver, stop, replier, logs } = setup(t);
+  deliver(S1, INBOX);
+  bot.failNext = 1;
+  await stop(S1, "出せなかった返事");
+  assert.equal(replies.get(1)?.state, "failed");
+  assert.ok(sessions.stopFollow(S1));
+  await replier.sweep();
+  assert.equal(posted.length, 0);
+  assert.equal(replies.get(1)?.state, "failed");
+  assert.ok(logs.includes("Claude Code: 追いかけをやめたため返事をやり直しません（返事 #1）"));
+  assert.ok(logs.some((line) => line.startsWith("Claude Code: 返事を出せませんでした（返事 #1、0/1 通まで出しました、")));
+});
+
+test("一覧から消えたセッションの返事待ちは、次の sweep で timed_out（24 時間待たない）", async (t) => {
+  const { sessions, sends, deliver, replier } = setup(t);
+  const sendId = deliver(S2, undefined, "c", "web");
+  await replier.sweep();
+  assert.equal(sends.get(sendId)?.replyState, "waiting");
+  assert.equal(sessions.markGone([S1]), 1);
+  await replier.sweep();
+  assert.equal(sends.get(sendId)?.replyState, "timed_out");
 });
