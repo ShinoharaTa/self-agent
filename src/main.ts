@@ -647,8 +647,8 @@ if (
     dirs: new ClaudeDirs(),
     store: ccSessions,
     now,
-    // 送信の待ち行列・返事待ちが空でない・起動したセッションをまだ一覧で見つけていない間は、見ていなくても設定の周期で一覧を読む
-    busy: () => ccSends.countActive() > 0 || ccSends.countReplyWaiting() > 0 || ccStarter?.busy() === true,
+    // 送信の待ち行列が空でない・起動したセッションをまだ一覧で見つけていない間は、見ていなくても設定の周期で一覧を読む（返事は hook で届くので待たない）
+    busy: () => ccSends.countActive() > 0 || ccStarter?.busy() === true,
     // 許可の要求を保留している間は 5 秒ごとに読み、status で「他で答えられた」を見る
     permissions: permissionHold,
     // 一覧から消えたセッション: 返事を追いかけていれば、追いかけのチャンネルに「終わりました」を出して止める（#system の終了の知らせは出さない）。
@@ -927,7 +927,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
           ? {}
           : { permissions: { hold: ccPermissions, store: ccPermissionStore, holdSec: config.ccPermissionHoldSec } }),
         // 返事の追いかけ（一覧の follow・/unfollow）
-        ...(ccRegistry === undefined ? {} : { follows: ccSessions }),
+        ...(ccRegistry === undefined ? {} : { follows: ccSessions, log }),
         now,
       }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）

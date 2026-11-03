@@ -291,10 +291,18 @@ export class CcSendStore {
     return ids.filter((id) => Number(statement.run(at, id).changes) > 0);
   }
 
-  /** 返事を待っている送信の数（一覧を設定の周期で読む間。§2.2） */
-  countReplyWaiting(): number {
-    const row = this.db.prepare("SELECT COUNT(*) AS n FROM cc_sends WHERE reply_state = 'waiting'").get();
-    return Number(row?.n ?? 0);
+  /** 一覧から消えた（cc_sessions.gone_at のある）セッションの返事待ちを timed_out にし、その id を返す（もう返事は来ない） */
+  timeOutGoneReplies(): number[] {
+    const ids = this.db
+      .prepare(
+        `SELECT id FROM cc_sends WHERE reply_state = 'waiting'
+           AND session_id IN (SELECT session_id FROM cc_sessions WHERE gone_at IS NOT NULL) ORDER BY id`,
+      )
+      .all()
+      .map((row) => Number(row.id));
+    const statement = this.db.prepare("UPDATE cc_sends SET reply_state = 'timed_out', updated_at = ? WHERE id = ? AND reply_state = 'waiting'");
+    const at = this.now().toISOString();
+    return ids.filter((id) => Number(statement.run(at, id).changes) > 0);
   }
 
   /** queued の行に、試した回数を 1 増やして最後に見たペインの状態を書く（queued でなければ何もしない） */
