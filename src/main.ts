@@ -657,8 +657,11 @@ if (
       if (ccReplier?.ended(session) === true) return;
       ccNotifier?.ended(session);
     },
-    // 採った hook の事象（Stop）を返事の追いかけに渡す
-    onEvent: (event) => ccReplier?.onEvent(event),
+    // 採った hook の事象（Stop）を返事の追いかけと送信に渡す（Stop で作業中に積んだ送信を周期を待たずに試す）
+    onEvent: (event) => {
+      ccSender?.onEvent(event);
+      ccReplier?.onEvent(event);
+    },
     log,
   });
   knownSessions = registry;

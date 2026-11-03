@@ -144,7 +144,7 @@ export function parseHookEvent(
     parsed.notificationType = CC_NOTIFICATION_TYPES.find((type) => type === body.notification_type) ?? "other";
   }
   if (event === "UserPromptSubmit" && typeof body.prompt === "string") {
-    parsed.prompt = headChars(unwrapPastedContent(body.prompt), CC_PROMPT_MAX_CHARS);
+    parsed.prompt = headChars(unwrapPastedContent(body.prompt).trim(), CC_PROMPT_MAX_CHARS);
   }
   if (event === "Stop" && typeof body.last_assistant_message === "string" && body.last_assistant_message.trim() !== "") {
     parsed.lastAssistantMessage = body.last_assistant_message;

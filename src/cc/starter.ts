@@ -1,6 +1,7 @@
 // Claude Code の新しいセッションの起動（docs/plan/claude-code-sessions.md §4.2・§7 の 5。CC4）。SELF_AGENT_WORKSPACE_DIR の直下の実際のディレクトリ
 // （名前は CC_PROJECT_PATTERN、realpath がそのもの、workDir・dataDir・~/.config/self-agent・~/.claude・CLAUDE_CONFIG_DIR と重ならない。GitHub の [対応] の起動だけは 1 つ下も可。CC6）で、
-// 既定のソケットの tmux に `new-session -d -P -F '#{session_id} #{pane_id}'` で `'<claude>' -n '<題名>' [--permission-mode '<mode>']; exec "$SHELL"` を起動する
+// 既定のソケットの tmux に `new-session -d -P -F '#{session_id} #{pane_id}'` で `set -m; '<claude>' -n '<題名>' [--permission-mode '<mode>']; exec "$SHELL"` を起動する
+// （set -m は非対話のシェルでも claude を自分のプロセスグループで前面に出し、tmux の pane_current_command を claude にするため）
 // （tmux のサーバーが無ければ断る。決定 8）。引数は固定の形で、題名・モードは検証してから単引用符で囲む（`'` を含む題名は通さない）。
 // セッション名は表示用で、オーナーの hook で変わりうるので、以後は返った $N・%N で追う。最初の指示は cc_sends にペイン宛て（origin start）で積み、
 // 送るのは cc/sender.ts（入力待ちになるまで積んだまま。trust のダイアログにはキーを送らない）。起動したペインを一覧のセッションで見つけたら
@@ -101,7 +102,7 @@ export function quoteShellArg(value: string): string {
 }
 
 /**
- * tmux の new-session に渡す 1 つのシェルの文字列（純関数。§4.2）: `'<claude>' -n '<題名>' [--permission-mode '<mode>']; exec "$SHELL"`。
+ * tmux の new-session に渡す 1 つのシェルの文字列（純関数。§4.2）: `set -m; '<claude>' -n '<題名>' [--permission-mode '<mode>']; exec "$SHELL"`。
  * claude のパスは絶対パスで空白・`'` を含まないもの、題名は CC_TITLE_PATTERN、モードは CC_PERMISSION_MODES のどれか。合わなければ投げる
  */
 export function buildClaudeCommand(input: { claudePath: string; title: string; permissionMode?: string }): string {
@@ -110,7 +111,7 @@ export function buildClaudeCommand(input: { claudePath: string; title: string; p
   if (!CC_TITLE_PATTERN.test(title)) throw new Error("題名が不正です");
   if (permissionMode !== undefined && !CC_PERMISSION_MODES.includes(permissionMode)) throw new Error("権限モードが不正です");
   const mode = permissionMode === undefined ? "" : ` --permission-mode ${quoteShellArg(permissionMode)}`;
-  return `${quoteShellArg(claudePath)} -n ${quoteShellArg(title)}${mode}; exec "$SHELL"`;
+  return `set -m; ${quoteShellArg(claudePath)} -n ${quoteShellArg(title)}${mode}; exec "$SHELL"`;
 }
 
 /** tmux のセッション名に使う形（純関数）: 小文字にして英数字以外を - にまとめ、前後の - を除いて 40 字まで */
@@ -239,9 +240,22 @@ export type CcStarterDeps = {
   log: (message: string) => void;
 };
 
+/** 起動したがまだ一覧のセッションと結びつけていないもの（pendingStarts） */
+export type CcPendingStart = {
+  project: string;
+  title: string;
+  /** trust のダイアログが出ている */
+  trustPending: boolean;
+  /** 起動した時刻（ミリ秒） */
+  startedAt: number;
+};
+
 /** 起動してから CC_START_BIND_MS の間のもの（一覧のセッションとの結びつけと trust の確かめ。プロセスの中だけ） */
 type Started = {
   startedBy: Exclude<CcStartedBy, "owner">;
+  /** 起動したディレクトリの名前と題名（一覧に出る前の「起動中」の表示。/api/cc/sessions の starting） */
+  project: string;
+  title: string;
   tmuxSession: string;
   tmuxSessionId: string;
   paneId: string;
@@ -293,6 +307,16 @@ export class CcStarter {
   /** 起動したペインをまだ一覧で見つけていない（registry の周期を短くする） */
   busy(): boolean {
     return this.started.some((entry) => entry.sessionId === undefined);
+  }
+
+  /**
+   * 起動したが一覧のセッションとまだ結びつけていないもの（起動の古い順）。trust の確認を待っている claude は claude agents --json に出ないので、
+   * Web の一覧はこれを「起動中」として出す（§5.1）
+   */
+  pendingStarts(): CcPendingStart[] {
+    return this.started
+      .filter((entry) => entry.sessionId === undefined)
+      .map((entry) => ({ project: entry.project, title: entry.title, trustPending: entry.trustPendingAt !== null, startedAt: entry.startedAt }));
   }
 
   /** CC_START_CHECK_MS ごとに、起動したセッションを一覧で探し、trust の確認待ちを確かめ直す。stop の後・2 回目は何もしない */
@@ -437,6 +461,8 @@ export class CcStarter {
           });
     const entry: Started = {
       startedBy: input.startedBy,
+      project: input.project,
+      title: input.title,
       tmuxSession: name,
       tmuxSessionId,
       paneId,

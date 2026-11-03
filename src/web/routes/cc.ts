@@ -2,7 +2,7 @@
 // /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）、GET /api/cc/projects・POST /api/cc/sessions（CC4。起動は cc/starter.ts）、
 // GET /api/cc/permissions・POST /api/cc/permissions/<id>/allow|always|deny（CC5a・CC5b。保留は cc/permission-hold.ts、常に許可の線引きは
 // cc/permissions.ts）、POST /api/cc/sessions/<id>/unfollow（CC8。返事の追いかけをやめる。Discord の [追いかけをやめる] と同じ）と /api/status の cc。
-// この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順）と、1 つのセッションの画面の写し
+// この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順。starting は cc/starter.ts の起動したがまだ一覧に出ていないもの）と、1 つのセッションの画面の写し
 // （tmux の capture-pane を stripAnsi して最後の CC_SCREEN_LINES 行。tmux の外は screen: null）。SELF_AGENT_CC が無効なら 404。
 // GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
 // 名前・cwd・最後の指示は hook から来たデータで、画面は textContent で出す。log は /unfollow の 1 行だけ（名前・パス・sessionId・ペイン id を出さない）
@@ -44,7 +44,7 @@ export type CcRouteDeps = {
   /** 一覧の送信の印（pending） */
   sends?: Pick<CcSendStore, "latestPerSession">;
   /** 起動（CC4）。無ければ /api/cc/projects・POST /api/cc/sessions は 404 */
-  starter?: Pick<CcStarter, "projects" | "launch">;
+  starter?: Pick<CcStarter, "projects" | "launch" | "pendingStarts">;
   /** 許可の要求（CC5a）。無ければ一覧の permission は null で、/api/cc/permissions は 404 */
   permissions?: {
     hold: Pick<CcPermissionHold, "answer">;
@@ -239,6 +239,13 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
             sessions: snapshot.sessions.map((view) =>
               sessionJson(view, paneOf(lookup, view), latest.get(view.sessionId), latestPermission.get(view.sessionId), follow),
             ),
+            // 起動したがまだ一覧に出ていないもの（trust の確認待ちの claude は claude agents --json に出ない。sessionId はまだ無い）
+            starting: (starter?.pendingStarts() ?? []).map((entry) => ({
+              project: entry.project,
+              title: entry.title,
+              trustPending: entry.trustPending,
+              startedAt: iso(entry.startedAt),
+            })),
           },
         };
       },

@@ -8,6 +8,7 @@ import {
   INPUT_BOX_MAX_LINES,
   inputBoxSolidText,
   inputBoxText,
+  isRuleLine,
   OWNER_ACTIVE_MS,
   pasteLanded,
   pastedMarkerLines,
@@ -189,6 +190,42 @@ test("classifyScreen: 貼り付け・画像の印、候補の形でない dim �
   assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2")}run${sgr("0")} ${sgr("2")}the tests${sgr("0")}`])), "idle");
   // dim でない文字が 1 つでも混ざれば書きかけ
   assert.equal(classifyScreen(screen([`${PROMPT}${sgr("2")}run the tests${sgr("0")}x`])), "draft");
+});
+
+// Claude Code 2.1.317 の `-n` のセッション: 入力欄の上の罫線に名前が入る（実機の写し。名前は置き換え）。
+// 1 語の名前は 1 つの SGR、空白を含む名前は語ごとに色を付け直して出る
+const NAMED_RULE = `${sgr("38;5;244")}${"─".repeat(69)}${sgr("39")} ${sgr("38;5;244")}name${sgr("39")} ${sgr("38;5;244")}s2${sgr("39")} ${sgr("38;5;244")}─`;
+const NAMED_RULE_ONE_WORD = `${sgr("38;5;244")}${"─".repeat(189)} name-s1 ─`;
+const NAMED_FOOTER = [`${sgr("39")}  ${sgr("38;5;246")}⏸${sgr("39")} ${sgr("38;5;246")}manual${sgr("39")} ${sgr("38;5;246")}mode${sgr("39")} ${sgr("38;5;246")}on${sgr("39")}`];
+
+function namedScreen(top: string, input: string[]): string {
+  return [...HISTORY, top, ...input, RULE, ...NAMED_FOOTER, ...Array(6).fill("")].join("\n");
+}
+
+test("classifyScreen: -n の名前が入った上の罫線でも入力欄とみなす（Claude Code 2.1.317）", () => {
+  assert.equal(classifyScreen(namedScreen(NAMED_RULE_ONE_WORD, [PROMPT])), "idle");
+  assert.equal(classifyScreen(namedScreen(NAMED_RULE, [`${PROMPT}${sgr("2")}Try${sgr("0")} ${sgr("2")}"how do I log an error?"${sgr("0")}`])), "idle");
+  assert.equal(classifyScreen(namedScreen(NAMED_RULE, [`${PROMPT}書きかけの文`])), "draft");
+  assert.equal(inputBoxText(namedScreen(NAMED_RULE, [`${PROMPT}1 行目`, "  2 行目"])), "1行目2行目");
+  // 名前が罫線の中ほどにあってもよい
+  assert.equal(classifyScreen(namedScreen(`${"─".repeat(30)} name ${"─".repeat(30)}`, [PROMPT])), "idle");
+});
+
+test("isRuleLine: 名前入りの罫線は通し、本文の行は罫線にしない", () => {
+  assert.equal(isRuleLine("─".repeat(20)), true);
+  assert.equal(isRuleLine(`${"─".repeat(69)} name s2 ─`), true);
+  assert.equal(isRuleLine(`${"─".repeat(18)} name ─`), false); // ─ が合わせて 19 本
+  assert.equal(isRuleLine("─".repeat(19)), false);
+  // 本文の行（罫線の後ろに文が続く・名前の後に ─ が無い・前に ─ が 1 本だけ・名前に ─ を含む・名前が長すぎる）
+  assert.equal(isRuleLine(`${"─".repeat(40)} 見出し`), false);
+  assert.equal(isRuleLine(`${"─".repeat(40)} 見出し ─ 続きの文`), false);
+  assert.equal(isRuleLine(`─ 本文の行 ${"─".repeat(40)}`), false);
+  assert.equal(isRuleLine(`${"─".repeat(30)} a ─ b ${"─".repeat(30)}`), false);
+  assert.equal(isRuleLine(`${"─".repeat(30)} ${"x".repeat(61)} ─`), false);
+  assert.equal(isRuleLine(`${"─".repeat(30)}  name ─`), false);
+  assert.equal(isRuleLine("● 返答の本文"), false);
+  // 名前入りの罫線の下の行が ❯ で始まらない（本文）なら入力欄ではない
+  assert.equal(classifyScreen(namedScreen(NAMED_RULE, ["本文の行"])), "no_prompt");
 });
 
 test("pasteLanded: 貼る前に印・先頭が無く、貼った後の入力欄に先頭 24 字か [Pasted text の印がある", () => {

@@ -288,7 +288,7 @@ test("execFileRunner: シェルを通さず、標準入力を渡し、終了コ�
 test("newSession: new-session -d -P -F で $N・%N を受ける。コマンドは 1 つの引数で、-- の後ろ", async () => {
   const { run, calls, state } = fakeRun({ code: 0, stdout: "$12 %34\n", stderr: "" });
   const tmux = createTmux({ tmuxPath: TMUX, run });
-  const command = `'/home/u/.local/bin/claude' -n 'fix login'; exec "$SHELL"`;
+  const command = `set -m; '/home/u/.local/bin/claude' -n 'fix login'; exec "$SHELL"`;
   assert.deepEqual(await tmux.newSession({ name: "alpha--fix-login", dir: "/home/u/workspace/alpha", command }), {
     ok: true,
     value: { sessionId: "$12", paneId: "%34" },

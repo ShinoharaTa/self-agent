@@ -197,6 +197,27 @@ test("idle でなければ積んだまま（30 秒ごとに試す）で、入力
   assert.deepEqual(actions(), ["load-buffer", "paste-buffer", "send-keys"]);
 });
 
+test("onEvent: Stop を受けたら待ち行列を 1 回回し、作業中に積んだ送信を周期を待たずに届ける。Stop 以外では回さない", async (t) => {
+  const { env, sender, sends, actions } = setup(t);
+  env.screens.before = BUSY;
+  const result = await sender.submit({ sessionId: S1, text: "作業が終わったら", origin: "web" });
+  assert.ok(result.ok);
+  await sender.idle();
+  assert.equal(sends.get(result.send.id)?.state, "queued");
+  env.screens.before = EMPTY;
+  env.screens.pasted = shown("作業が終わったら");
+  for (const event of ["UserPromptSubmit", "Notification", "PermissionRequest"] as const) {
+    sender.onEvent({ event });
+    await sender.idle();
+    assert.equal(sends.get(result.send.id)?.state, "queued", event);
+  }
+  assert.deepEqual(actions(), []);
+  sender.onEvent({ event: "Stop" });
+  await sender.idle();
+  assert.equal(sends.get(result.send.id)?.state, "delivered");
+  assert.deepEqual(actions(), ["load-buffer", "paste-buffer", "send-keys"]);
+});
+
 test("貼れたか確かめられなければ Enter を送らず unconfirmed にし、やり直さない", async (t) => {
   const { env, sender, sends, actions, logs } = setup(t);
   // 貼った後も入力欄が空のまま
