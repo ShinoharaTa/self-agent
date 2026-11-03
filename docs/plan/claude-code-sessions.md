@@ -92,7 +92,7 @@
 ### 2.2 決定
 - **A を土台、B で時刻・判断待ち・許可、C は RC のリンクと `tmux` 欄の補助、D は mtime だけ**（中身は読まない）。
 - 一覧の 1 行 = `claude agents --json` の 1 要素（`sessionId` が主キー）。`pid` が無い・`sessionId` が UUID でない要素は捨てる。配列でない・JSON でない出力は「その回を捨てて前回の一覧を出す」（`stale: true`。5 回続けば空にして「読めません」）。未知の欄は無視する。`waitingFor` は文字列ならそのまま表示に使う（固定の集合に限らない）。
-- 周期: `SELF_AGENT_CC_POLL_SEC`（既定 10。最小 5）。**Web の一覧を誰かが開いている（直近 30 秒に `/api/cc/*` の GET があった）か、送信の待ち行列・返事待ち（§5.4）が空でないときだけ回す**。それ以外は 60 秒。**保留中の許可（§3.4）があるときは 5 秒**（「他で答えられた」の検知のため）。hook の事象が来たら次の周期を待たずに 1 回読む（連続は 2 秒にまとめる）。
+- 周期: `SELF_AGENT_CC_POLL_SEC`（既定 10。最小 5）。**Web の一覧を誰かが開いている（直近 30 秒に `/api/cc/*` の GET があった）か、送信の待ち行列が空でないときだけ回す（返事待ち（§5.4）は含めない。返事は hook で届くので速く読む必要が無い）**。それ以外は 60 秒。**保留中の許可（§3.4）があるときは 5 秒**（「他で答えられた」の検知のため）。hook の事象が来たら次の周期を待たずに 1 回読む（連続は 2 秒にまとめる）。
 - 状態の決め方（上から順）:
   1. **判断待ち（needs_input）**: 保留中の `PermissionRequest` がある、`status === "waiting"`（`waitingFor` を添える）、または `Notification`（`permission_prompt` / `elicitation_dialog` / `elicitation_url_dialog` / `agent_needs_input`。どれも出てから約 6 秒後に来る）が **その後の `UserPromptSubmit`・`Stop`・`PermissionRequest` の解決より新しく、かつその後に読んだ `status` が `busy` でも 2 回続けて `idle` でもない**（Esc の中断では `Stop` が来ないので、`status` で解く）。`idle_prompt` は判断待ちにしない。そのセッションに `pending` の `cc_permissions` の行があるか、直近 60 秒に解決した行があれば、`permission_prompt` の `Notification` は判断待ちの元にしない（保留中でも 6 秒で来るため。§5.2）。
   2. **実行中（running）**: `status === "busy"`。
@@ -275,7 +275,7 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
 - 合図は **`Stop` hook の `last_assistant_message`**（公式。確認: 長い返事でも全文）。記録（jsonl。内部形式）は読まない。`last_assistant_message` が無い・空・文字列でなければ「終わりました（返事を読めませんでした）」だけ。**Esc で中断されたターンには `Stop` が来ない**（確認）ので、その返事は戻らない（Web の追いかけの表示で、`Stop` の来ない `busy → idle` を「中断されました」と出すかは実装者が決めてよい）。
 - **追いかけ（follow）**: Discord から頼んだ送信（`origin` が `tool` / `start` / `github`）が `delivered` になったら、そのセッションの `cc_sessions.follow = 1`・`follow_channel_id`（頼んだチャンネル。後から別のチャンネルで頼めばそちらに移る）・`follow_since` を立てる。**以後、そのセッションの `Stop` はすべて**（RC・端末・Web から打ったターンの返事も）`follow_channel_id` に持ち主の Bot（`ownerPosts`）で投稿する。Web から送った指示の返事も、追いかけ中なら出す（Web だけで使っているセッションは追いかけにならない）。
 - 止め方（本書で決める。既定）:
-  - 返事の投稿ごとに [追いかけをやめる]（`cc:unfollow:<session 行の id>`）を付ける（押せば `follow = 0` にして「追いかけをやめました」に書き換え。その後の返事は出ない。古い id・既に 0 なら「この操作は古くなっています」）。Web のタブにも同じ操作。
+  - 返事の投稿ごとに [追いかけをやめる]（`cc:unfollow:<cc_replies の id>`。その返事がいまの追いかけ（`follow_since` 以後）に受けたものなら効く。投稿先を別のチャンネルに移した後でも、古いチャンネルの返事のボタンで止まる）を付ける（押せば `follow = 0` にして「追いかけをやめました」に書き換え。その後の返事は出ない。古い id・既に 0 なら「この操作は古くなっています」）。Web のタブにも同じ操作。
   - セッションが終わった（`SessionEnd`・pid が消えた）ら「終わりました」を 1 行出して `follow = 0`。
   - 最後の `Stop` から **3 日**（`CC_FOLLOW_IDLE_DAYS`。定数）`Stop` が無ければ黙って `follow = 0`（次に Discord から頼めばまた立つ）。
   - 1 セッション 1 日 50 通（`CC_REPLY_DAILY_LIMIT`。定数。`SELF_AGENT_TZ` の日付）に達したら「今日はここまで（上限 50）。RC で読む <リンク>」を 1 回出して、その日は出さない（`follow` は保つ。翌日にまた出る）。

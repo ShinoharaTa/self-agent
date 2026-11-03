@@ -2,7 +2,8 @@
 // origin tool / start / github）が届いたら（sender.ts の onFinished）、そのセッションを追いかけ（cc_sessions.follow = 1・follow_channel_id = 頼んだチャンネル）にし、
 // 以後そのセッションの Stop（registry.ts の onEvent。一覧に居るセッションの事象だけ）の last_assistant_message を、そのチャンネルにチャンネルの持ち主の Bot で出す
 // （RC・端末・Web から打ったターンの返事も）。返事は hook から来たデータなので「Claude Code の返事（hook）」と出所を書き、メンションは鳴らさず
-// （allowedMentions の parse: []）、URL の埋め込みも出さない。ターンの prompt には入れない（Web の会話には history の notice として出す）。
+// （allowedMentions の parse: []。返信先の人も鳴らさない）、URL の埋め込みも出さず、masked link の `](` は崩す。ターンの prompt には入れない
+// （SDK のエージェントは読まない）が、history の notice には入る（Web の会話に出す）。
 // 1 通 CC_REPLY_PAGE_CHARS 字で CC_REPLY_MAX_PAGES 通まで（超えた分は「ほか n 字」）、最後の 1 通に [追いかけをやめる]（`cc:unfollow:<cc_replies の id>`）。
 // 最初の返事（届けた後の最初の Stop）は確認の投稿への返信、以後は返信先なし。10 秒以内の同じ本文は skipped、1 日 CC_REPLY_DAILY_LIMIT 通を超えたら上限の 1 行を
 // 1 回出してその日は出さない。一覧から消えたら（registry.ts の ended。SessionEnd の hook は根拠にしない）「終わりました」を出して follow = 0、最後の Stop から CC_FOLLOW_IDLE_DAYS 日で黙って follow = 0。
@@ -66,35 +67,73 @@ export function replyDigest(text: string | undefined): { hash: string; length: n
 /** コードブロックの開き・閉じの行（行頭の空白 3 つまで + ``` 以上） */
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 
-/** text の終わりで開いたままのコードブロックの開きの行（無ければ null）。open は text の前から開いているもの */
+/** 開き直すときに持つ開きの行の情報文字列（言語名など）の長さ */
+const FENCE_INFO_MAX = 20;
+
+/**
+ * text の終わりで開いたままのコードブロックの開きの行（無ければ null）。open は text の前から開いているもの。
+ * 開きの行は fence の記号と情報文字列の先頭 FENCE_INFO_MAX 字までに切る（開き直しで通が長くなりすぎないように）
+ */
 function openFenceAfter(text: string, open: string | null): string | null {
   let current = open;
   for (const line of text.split("\n")) {
-    if (!FENCE.test(line)) continue;
-    current = current === null ? line.trim() : null;
+    const match = FENCE.exec(line);
+    if (match === null) continue;
+    const info = chars(line.trim().slice(match[1]!.length)).slice(0, FENCE_INFO_MAX).join("");
+    current = current === null ? `${match[1]}${info}` : null;
   }
   return current;
 }
 
+/** コードブロックの外の masked link（`[文字](URL)`）の `](` を `]\(` に崩す（純関数。hook から来た本文でリンクを偽らせない） */
+export function breakMaskedLinks(text: string): string {
+  let open = false;
+  return text
+    .split("\n")
+    .map((line) => {
+      if (FENCE.test(line)) {
+        open = !open;
+        return line;
+      }
+      return open ? line : line.replaceAll("](", "]\\(");
+    })
+    .join("\n");
+}
+
+/** 1 通の本文（開き直しの行 + 本文 + 開いたままなら閉じ）と、その後に開いたままのコードブロック */
+function pageBody(piece: string, open: string | null): { body: string; open: string | null } {
+  const reopened = open === null ? piece : `${open}\n${piece}`;
+  const after = openFenceAfter(piece, open);
+  return { body: after === null ? reopened : `${reopened}${reopened.endsWith("\n") ? "" : "\n"}\`\`\``, open: after };
+}
+
 /**
  * 返事の本文を通に分ける（純関数。§5.4）。1 通 CC_REPLY_PAGE_CHARS 字（コードポイント）ずつ CC_REPLY_MAX_PAGES 通まで、残りの字数を rest に。
- * コードブロックが通の途中で切れたら、その通の終わりで閉じて次の通の始めで同じ開きの行から開き直す（足した行は字数に数えない）
+ * コードブロックが通の途中で切れたら、その通の終わりで閉じて次の通の始めで同じ開きの行から開き直す（足した行は字数に数えない）。
+ * fits を渡すと、各通（i 番目・通の数・本文・その通が最後なら残りの字数）が収まるまでその通の字数を減らし、減らした分は次の通（最後なら rest）に回す
  */
-export function splitReplyBody(text: string): { pages: string[]; rest: number } {
+export function splitReplyBody(
+  text: string,
+  fits: (page: { index: number; total: number; body: string; rest: number }) => boolean = () => true,
+): { pages: string[]; rest: number } {
   const all = chars(text);
-  const raw: string[] = [];
-  for (let i = 0; i < all.length && raw.length < CC_REPLY_MAX_PAGES; i += CC_REPLY_PAGE_CHARS) {
-    raw.push(all.slice(i, i + CC_REPLY_PAGE_CHARS).join(""));
-  }
-  const rest = Math.max(0, all.length - CC_REPLY_MAX_PAGES * CC_REPLY_PAGE_CHARS);
+  const total = Math.min(CC_REPLY_MAX_PAGES, Math.ceil(all.length / CC_REPLY_PAGE_CHARS));
   const pages: string[] = [];
   let open: string | null = null;
-  for (const page of raw) {
-    const reopened = open === null ? page : `${open}\n${page}`;
-    open = openFenceAfter(page, open);
-    pages.push(open === null ? reopened : `${reopened}${reopened.endsWith("\n") ? "" : "\n"}\`\`\``);
+  let pos = 0;
+  for (let index = 0; index < total && pos < all.length; index++) {
+    const last = index === total - 1;
+    let n = Math.min(CC_REPLY_PAGE_CHARS, all.length - pos);
+    let page = pageBody(all.slice(pos, pos + n).join(""), open);
+    while (n > 1 && !fits({ index, total, body: page.body, rest: last ? all.length - pos - n : 0 })) {
+      n--;
+      page = pageBody(all.slice(pos, pos + n).join(""), open);
+    }
+    pages.push(page.body);
+    open = page.open;
+    pos += n;
   }
-  return { pages, rest };
+  return { pages, rest: all.length - pos };
 }
 
 /** 返事の投稿の出所の表示（名前を 1 行にして切り、Markdown・メンションを無効にしたもの。無ければ「名前なし」） */
@@ -118,16 +157,18 @@ function rcRead(rcUrl: string | undefined): string {
  */
 export function replyTexts(label: string, body: string | undefined, rcUrl: string | undefined): string[] {
   if (body === undefined) return [`Claude Code（${label}）が終わりました（返事を読めませんでした）`];
-  const { pages, rest } = splitReplyBody(body);
-  const total = pages.length;
-  return pages.map((page, i) => {
-    const head =
-      i === 0
-        ? `Claude Code（${label}）の返事（hook）${total > 1 ? `（1/${total}）` : ""}:`
-        : `Claude Code（${label}）の返事の続き（${i + 1}/${total}）:`;
-    const tail = i === total - 1 && rest > 0 ? `\n（ほか ${rest.toLocaleString("en-US")} 字。${rcRead(rcUrl)}）` : "";
-    return `${head}\n${page}${tail}`;
-  });
+  const head = (i: number, total: number): string =>
+    i === 0
+      ? `Claude Code（${label}）の返事（hook）${total > 1 ? `（1/${total}）` : ""}:`
+      : `Claude Code（${label}）の返事の続き（${i + 1}/${total}）:`;
+  const tail = (rest: number): string => (rest > 0 ? `\n（ほか ${rest.toLocaleString("en-US")} 字。${rcRead(rcUrl)}）` : "");
+  const text = (i: number, total: number, page: string, rest: number): string => `${head(i, total)}\n${page}${tail(rest)}`;
+  // 各通を Discord の 1 通（MESSAGE_MAX 字）に収める。溢れた分は次の通か「ほか n 字」に回す
+  const { pages, rest } = splitReplyBody(
+    breakMaskedLinks(body),
+    (page) => chars(text(page.index, page.total, page.body, page.rest)).length <= MESSAGE_MAX,
+  );
+  return pages.map((page, i) => text(i, pages.length, page, i === pages.length - 1 ? rest : 0));
 }
 
 /** 1 日の上限に達したときの 1 行 */
@@ -171,7 +212,7 @@ export function unfollowByReply(
 export type CcReplierDeps = {
   cfg: Pick<Config, "timeZone">;
   sessions: Pick<CcSessionStore, "get" | "startFollow" | "stopFollow" | "noteStop" | "countReply" | "listFollowing">;
-  sends: Pick<CcSendStore, "activeFor" | "takeReplyWaiting" | "timeOutReplies">;
+  sends: Pick<CcSendStore, "activeFor" | "takeReplyWaiting" | "timeOutReplies" | "timeOutGoneReplies">;
   replies: Pick<CcReplyStore, "add" | "findRecentSame" | "finish">;
   /** 返事の投稿（チャンネルの持ち主の Bot。ownerPosts） */
   posts: Pick<Gateway, "sendMessage">;
@@ -198,7 +239,7 @@ function errorKind(error: unknown): string {
 }
 
 /** 出せなかった返事の残り（次の tick に 1 回だけやり直す。プロセスの中だけ） */
-type Retry = { replyId: number; channelId: string; messages: OutgoingMessage[]; total: number; markPosted: boolean };
+type Retry = { replyId: number; sessionId: string; channelId: string; messages: OutgoingMessage[]; total: number; markPosted: boolean };
 
 export class CcReplier {
   private readonly deps: CcReplierDeps;
@@ -371,7 +412,8 @@ export class CcReplier {
       }
       return;
     }
-    const reply = replies.add({ ...base, state: "posted" });
+    // 出せたら posted にする（落ちても posted のまま残らないよう、failed で作る）
+    const reply = replies.add({ ...base, state: "failed" });
     const texts = replyTexts(label, message, rcUrl);
     // 届けた後の最初の返事は、その送信の確認の投稿への返信にする（同じチャンネルのときだけ）
     const replyToId = send !== undefined && send.channelId === channelId && send.messageId !== null ? send.messageId : undefined;
@@ -388,8 +430,8 @@ export class CcReplier {
   }
 
   /**
-   * messages を順に出し、最後の 1 通の ID を cc_replies に書く。markPosted なら状態も posted に（上限の 1 行は skipped のまま）。
-   * 途中で失敗したら（markPosted なら failed にして）出せなかった通から先を次の tick に 1 回だけやり直す。全部出せたら true
+   * messages を順に出し、最後の 1 通の ID を cc_replies に書く。markPosted なら状態も posted に（行は failed で作ってある。上限の 1 行は skipped のまま）。
+   * 途中で失敗したら出せなかった通から先を次の tick に 1 回だけやり直す（そのときまで追いかけ中なら）。全部出せたら true
    */
   private async post(reply: CcReplyRow, channelId: string, messages: OutgoingMessage[], markPosted: boolean): Promise<boolean> {
     const { posts, replies, log } = this.deps;
@@ -398,15 +440,14 @@ export class CcReplier {
       try {
         last = await posts.sendMessage(channelId, message);
       } catch (error) {
-        if (markPosted) replies.finish(reply.id, "failed");
-        log(`Claude Code: 返事を出せませんでした（返事 #${reply.id}、${errorKind(error)}）`);
+        log(`Claude Code: 返事を出せませんでした（返事 #${reply.id}、${i}/${messages.length} 通まで出しました、${errorKind(error)}）`);
         // 出せなかった通から先をやり直す（前の通は出ているので、返信先は最初の通のときだけ残す）
         const rest = messages.slice(i).map((page, j) => {
           if (i === 0 && j === 0) return page;
           const { replyToId: _replyToId, ...others } = page;
           return others;
         });
-        this.retries.push({ replyId: reply.id, channelId, messages: rest, total: messages.length, markPosted });
+        this.retries.push({ replyId: reply.id, sessionId: reply.sessionId, channelId, messages: rest, total: messages.length, markPosted });
         return false;
       }
     }
@@ -446,6 +487,11 @@ export class CcReplier {
       this.retries = [];
       for (const retry of retries) {
         if (this.stopped) return;
+        // [追いかけをやめる]・終わりなどで止めていれば出さない
+        if (sessions.get(retry.sessionId)?.follow !== true) {
+          log(`Claude Code: 追いかけをやめたため返事をやり直しません（返事 #${retry.replyId}）`);
+          continue;
+        }
         let last: string | undefined;
         try {
           for (const message of retry.messages) last = await posts.sendMessage(retry.channelId, message);
@@ -461,7 +507,8 @@ export class CcReplier {
         this.held.delete(sessionId);
         this.enqueue(event);
       }
-      const timedOut = sends.timeOutReplies(new Date(at - CC_REPLY_WAIT_MS));
+      // 一覧から消えたセッションの返事待ちは、もう返事が来ない
+      const timedOut = [...sends.timeOutReplies(new Date(at - CC_REPLY_WAIT_MS)), ...sends.timeOutGoneReplies()];
       if (timedOut.length > 0) log(`Claude Code: 返事の来なかった送信 ${timedOut.length} 件を時間切れにしました`);
       for (const row of sessions.listFollowing()) {
         if (row.goneAt !== null) {

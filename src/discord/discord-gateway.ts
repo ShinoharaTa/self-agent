@@ -325,7 +325,14 @@ export class DiscordGateway implements Gateway {
     const payload = toPayload(message);
     // 返信先が消えていても投稿する
     const sent = await channel.send(
-      message.replyToId === undefined ? payload : { ...payload, reply: { messageReference: message.replyToId, failIfNotExists: false } },
+      message.replyToId === undefined
+        ? payload
+        : {
+            ...payload,
+            // 返信先の人（確認の投稿を出した Bot 自身など）も鳴らさない
+            allowedMentions: { ...payload.allowedMentions, repliedUser: false },
+            reply: { messageReference: message.replyToId, failIfNotExists: false },
+          },
     );
     return sent.id;
   }
