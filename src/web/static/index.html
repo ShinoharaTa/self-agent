@@ -60,7 +60,7 @@
   <div class="palette-backdrop" id="palette-backdrop" hidden>
     <div class="palette" role="dialog" aria-modal="true" aria-label="コマンドパレット">
       <div class="palette-head">
-        <input class="palette-input" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" enterkeyhint="search" placeholder="名前で探す。> か / でコマンド" aria-label="探す">
+        <input class="palette-input" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" enterkeyhint="search" placeholder="探す" title="名前で探します。&gt; か / で始めるとコマンド" aria-label="探す">
         <span class="palette-mode" id="palette-mode"></span>
       </div>
       <ul class="palette-list" id="palette-list" role="listbox" aria-label="候補"></ul>
@@ -72,7 +72,7 @@
     <p id="dlg-confirm-body" class="meta"></p>
     <div class="dialog-actions">
       <button class="btn btn-secondary btn-sm" id="dlg-confirm-cancel" type="button">やめる</button>
-      <button class="btn btn-primary btn-sm" id="dlg-confirm-ok" type="button">OK</button>
+      <button class="btn btn-primary btn-sm" id="dlg-confirm-ok" type="button">実行する</button>
     </div>
   </dialog>
 
@@ -102,7 +102,7 @@
 
   <dialog id="dlg-cc-start" aria-labelledby="dlg-cc-start-title">
     <form id="cc-start-form" class="stack" novalidate>
-      <h2 id="dlg-cc-start-title" class="dlg-title">新しい Claude Code のセッション</h2>
+      <h2 id="dlg-cc-start-title" class="dlg-title">Claude Code を起動</h2>
       <div class="field">
         <label for="cc-start-project">プロジェクト</label>
         <select class="select" id="cc-start-project"></select>
@@ -118,15 +118,15 @@
       <div class="field">
         <label for="cc-start-mode">権限モード</label>
         <select class="select" id="cc-start-mode">
-          <option value="">既定（settings.json に従う）</option>
-          <option value="default">default</option>
-          <option value="acceptEdits">acceptEdits</option>
-          <option value="plan">plan</option>
-          <option value="auto">auto</option>
+          <option value="">既定（この機械の設定に従う）</option>
+          <option value="default">default（使うたびに確認）</option>
+          <option value="acceptEdits">acceptEdits（編集は確認なし）</option>
+          <option value="plan">plan（計画だけ）</option>
+          <option value="auto">auto（自動で判断）</option>
         </select>
       </div>
       <p class="alert" id="cc-start-error" role="alert" hidden></p>
-      <p class="meta">この機械の tmux に新しいセッションを作り、claude を起動します。題名は文字か数字で始まる、文字・数字・空白・_ . - の 40 字までです。新しいディレクトリでは trust の確認が端末・RC に出ます。self-agent は答えないので、端末か RC で「Yes, I trust this folder」を選んでください。最初の指示はその後、入力待ちになってから届けます。</p>
+      <p class="meta">この機械の tmux に新しいセッションを作り、claude を起動します。題名は 40 字までです。</p>
       <div class="dialog-actions">
         <button class="btn btn-secondary btn-sm" id="dlg-cc-start-cancel" type="button">やめる</button>
         <button class="btn btn-primary btn-sm" id="dlg-cc-start-ok" type="submit">起動する</button>

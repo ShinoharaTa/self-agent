@@ -253,7 +253,7 @@
     document.getElementById("dlg-confirm-title").textContent = opts.title;
     document.getElementById("dlg-confirm-body").textContent = opts.body || "";
     const ok = document.getElementById("dlg-confirm-ok");
-    ok.textContent = opts.ok || "OK";
+    ok.textContent = opts.ok || "実行する";
     ok.className = "btn btn-sm " + (opts.danger ? "btn-danger" : "btn-primary");
     const cancel = document.getElementById("dlg-confirm-cancel");
     let finished = false;

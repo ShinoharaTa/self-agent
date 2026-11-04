@@ -392,16 +392,16 @@
     const body = el("div", { class: "panel-body", role: "tabpanel" });
     if (S.panelTab === "output") {
       body.append(el("ol", { class: "out-list", id: "out-list", "aria-live": "polite" }, S.output.map(outLine)));
-      if (S.output.length === 0) body.append(el("p", { class: "meta panel-note", text: "実行中のターンの手順と終わり方がここに出ます（この画面を開いている間だけ）。" }));
+      if (S.output.length === 0) body.append(el("p", { class: "meta panel-note", text: "実行中のターンの手順と終わり方がここに出ます。この画面を開いている間だけ残ります。" }));
     } else if (S.panelTab === "notices") {
       const data = SA.store.notices;
       if (data === null) body.append(el("p", { class: "meta panel-note", text: "読み込んでいます…" }));
       else {
         if (data.notices.length > 0) body.append(el("ul", { class: "notice-list" }, data.notices.map(noticeLine)));
-        body.append(el("p", { class: "meta panel-note", text: data.notices.length > 0 ? "#system に出した知らせと同じものです。" : "#system に出した知らせがここに出ます。" }));
+        body.append(el("p", { class: "meta panel-note", text: data.notices.length > 0 ? "#system に出した知らせと同じものです。" : "知らせはありません。#system に出たものがここにも出ます。" }));
       }
     } else {
-      body.append(el("p", { class: "meta panel-note", text: "まだありません" }));
+      body.append(el("p", { class: "meta panel-note", text: "ジョブはまだありません。" }));
     }
     refs.panel.replaceChildren(el("div", { class: "panel-head" }, [tabs, el("span", { class: "sb-spacer" }), close]), body);
     const list = $("out-list");
@@ -585,20 +585,22 @@
     // 前に出ている会話のタブのチャンネル（/close・/wait はセッション、/renew は会話のタブのとき）
     const ch = SA.chat.current();
     const sessionOnly = (fn) => (ch && ch.kind === "session" ? fn : null);
+    // label は動詞句、Discord のコマンド名・キーは右の kbd（keys）。使えないときは why を detail の位置に出す
+    const sessionWhy = "セッションの会話のタブで使えます";
     return [
-      { label: "/new 新しいセッション", detail: "題名と人格を決めて作ります", run: newSession },
-      { label: "/close 今のセッションを閉じる", detail: "要約してから完了に移します", run: sessionOnly(() => SA.chat.closeSession(ch.id)) },
-      { label: "/wait 今のセッションを待ちにする", detail: "発言すると進行中に戻ります", run: sessionOnly(() => SA.chat.setWaiting(ch.id)) },
-      { label: "/renew 会話を新しくする", detail: "要約して新しい会話に引き継ぎます", run: ch ? () => SA.chat.renew(ch.id) : null },
-      { label: "/tasks タスクを開く", detail: "", run: () => open("tasks") },
-      { label: "/reminders リマインドを開く", detail: "", run: () => open("reminders") },
-      { label: "/usage 使用量を開く", detail: "", run: () => open("usage") },
+      { label: "新しいセッションを作る", keys: "/new", detail: "題名と人格を決めて作ります", run: newSession },
+      { label: "今のセッションを閉じる", keys: "/close", detail: "要約してから完了に移します", run: sessionOnly(() => SA.chat.closeSession(ch.id)), why: sessionWhy },
+      { label: "今のセッションを待ちにする", keys: "/wait", detail: "発言すると進行中に戻ります", run: sessionOnly(() => SA.chat.setWaiting(ch.id)), why: sessionWhy },
+      { label: "会話を新しくする", keys: "/renew", detail: "要約して新しい会話に引き継ぎます", run: ch ? () => SA.chat.renew(ch.id) : null, why: "会話のタブで使えます" },
+      { label: "タスクを開く", keys: "/tasks", detail: "", run: () => open("tasks") },
+      { label: "リマインドを開く", keys: "/reminders", detail: "", run: () => open("reminders") },
+      { label: "使用量を開く", keys: "/usage", detail: "", run: () => open("usage") },
       { label: "状態を開く", detail: "", run: () => open("status") },
       { label: "設定を開く", detail: "", run: () => open("settings") },
-      { label: "表示: サイドバーの切り替え", keys: "Ctrl+B", run: toggleSidebar },
-      { label: "表示: パネルの切り替え", keys: "Ctrl+J", run: () => togglePanel() },
-      { label: "表示: タブを閉じる", keys: "Alt+W", run: active ? () => closeTab(active) : null },
-      { label: "表示: テーマを切り替える", detail: "ダーク / ライト", run: toggleTheme },
+      { label: "サイドバーを切り替える", keys: "Ctrl+B", run: toggleSidebar },
+      { label: "パネルを切り替える", keys: "Ctrl+J", run: () => togglePanel() },
+      { label: "タブを閉じる", keys: "Alt+W", run: active ? () => closeTab(active) : null, why: "開いているタブがありません" },
+      { label: "テーマを切り替える", detail: "ダーク / ライト", run: toggleTheme },
     ];
   }
 
@@ -635,7 +637,7 @@
     const isCmd = raw.startsWith(">") || raw.startsWith("/");
     const q = (raw.startsWith(">") ? raw.slice(1) : raw).trim().toLowerCase();
     const source = isCmd ? commands() : gotoItems();
-    P.items = source.filter((it) => q === "" || (it.label + " " + (it.detail || "")).toLowerCase().includes(q));
+    P.items = source.filter((it) => q === "" || (it.label + " " + (it.detail || "") + " " + (it.keys || "")).toLowerCase().includes(q));
     P.index = Math.min(P.index, Math.max(0, P.items.length - 1));
     $("palette-mode").textContent = isCmd ? "コマンド" : "移動（> でコマンド）";
     const list = $("palette-list");
@@ -649,7 +651,7 @@
         const li = el("li", { class: "palette-item" + (it.run ? "" : " is-disabled"), role: "option", id: "pal-" + i, "aria-selected": String(i === P.index), "aria-disabled": it.run ? null : "true" }, [
           it.icon ? icon(it.icon) : icon("chevron-right"),
           el("span", { class: "palette-label", text: it.label }),
-          el("span", { class: "palette-detail", text: it.run ? it.detail || "" : "今は使えません" }),
+          el("span", { class: "palette-detail", text: it.run ? it.detail || "" : it.why || "今は使えません" }),
           it.keys ? el("kbd", { text: it.keys }) : null,
         ]);
         li.addEventListener("mousemove", () => {
@@ -707,10 +709,10 @@
   }
 
   // ===== 新しいセッション（Discord の /new と同じ。POST /api/sessions） =====
-  /** 作れなかったときのトースト（応答の error ごと）。無ければ「<status>: <error>」 */
+  /** 作れなかったときのトースト（応答の error ごと）。無ければ api.js の「操作に失敗しました。…」 */
   const NEW_ERRORS = {
-    not_set_up: "/setup を実行してください",
-    bot_disconnected: "Bot が接続していません",
+    not_set_up: "作れませんでした。Discord で /setup を実行してください",
+    bot_disconnected: "作れませんでした。Bot が Discord につながっていません",
     too_long: "題名は 100 字までです",
   };
   let creating = false;
@@ -722,7 +724,7 @@
     if (channels === null) return;
     const guilds = channels.guilds.filter((g) => g.setUp);
     if (guilds.length === 0) {
-      toast("/setup を実行してください");
+      toast("セッションを作れるサーバーがありません。Discord で /setup を実行してください");
       return;
     }
     $("new-guild").replaceChildren(...guilds.map((g) => el("option", { value: g.id, text: g.id })));
@@ -755,7 +757,7 @@
       try {
         const data = await SA.api.post("/api/sessions", body, { quiet: true });
         closeDialog(dialog);
-        toast("セッション「" + title + "」を作りました（Discord にもチャンネルができました）");
+        toast("セッション「" + title + "」を作りました");
         if (data && typeof data.channelId === "string") {
           S.activity = "chat";
           open("ch:" + data.channelId);
@@ -776,9 +778,9 @@
   // ===== 新しい Claude Code のセッション（POST /api/cc/sessions。docs/plan/claude-code-sessions.md §4.2・§5.1） =====
   /** 題名の形（サーバーの src/cc/starter.ts の CC_TITLE_PATTERN と同じ） */
   const CC_TITLE = /^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,39}$/u;
-  /** 起動できなかったときの文（応答の error ごと）。無ければトーストの「<status>: <error>」 */
+  /** 起動できなかったときの文（応答の error ごと）。無ければ api.js のトーストの「操作に失敗しました。…」 */
   const CC_START_ERRORS = {
-    invalid_project: "このプロジェクトでは起動できません（起動できる場所の直下の実際のディレクトリだけです）",
+    invalid_project: "このプロジェクトでは起動できません。起動できるのはワークスペースの直下のディレクトリだけです",
     invalid_title: "題名は文字か数字で始まる、文字・数字・空白・_ . - の 40 字までです（' などの記号は使えません）",
     invalid_mode: "権限モードを選び直してください",
     too_long: "最初の指示は 4,000 字までです",
@@ -787,7 +789,7 @@
     low_memory: "空きメモリが 1 GB 未満のため起動しません",
     too_soon: "前の起動から 1 分経っていません。少し待ってください",
     not_ready: "セッションの一覧をまだ読めていません。少し待ってください",
-    no_server: "tmux が動いていません（self-agent からは tmux を起こしません）",
+    no_server: "tmux が動いていません。端末で tmux を始めてから起動してください",
     tmux_failed: "tmux でセッションを作れませんでした",
     stopping: "再起動中です。終わったら起動してください",
   };
@@ -810,7 +812,7 @@
     }
     const projects = Array.isArray(data && data.projects) ? data.projects.filter((p) => p && typeof p.name === "string") : [];
     if (projects.length === 0) {
-      toast("起動できるプロジェクトがありません（起動できる場所の直下のディレクトリ）");
+      toast("起動できるプロジェクトがありません。ワークスペースの直下にディレクトリを作ってください");
       return;
     }
     const keep = $("cc-start-project").value;
@@ -851,9 +853,8 @@
       try {
         await SA.api.post("/api/cc/sessions", body, { quiet: true });
         closeDialog(dialog);
-        toast(
-          "「" + title + "」を起動しました。" + (body.text ? "最初の指示は入力待ちになったら届けます。" : "") + "新しいディレクトリなら端末か RC で trust を選んでください",
-        );
+        // trust の答え方はサイドバーの起動中の行に出す
+        toast("「" + title + "」を起動しました" + (body.text ? "。最初の指示は入力待ちになったら届けます" : ""));
         SA.store.load.cc({ quiet: true });
       } catch (err) {
         const known = err && err.code && CC_START_ERRORS[err.code];

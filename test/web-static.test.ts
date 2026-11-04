@@ -294,6 +294,33 @@ test("web static: index.html に失敗のトーストの容れ物（role=alert�
   assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
 });
 
+// ===== 画面の言葉（docs/design/WEB-UI-GUIDELINES.md §7・§10） =====
+/** JS の "…" の文字列（コメントを除いてから拾う。https:// の // はコメントとみなさない） */
+function stringLiterals(js: string): string[] {
+  const code = js.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'\\])\/\/.*$/gm, "$1");
+  return [...code.matchAll(/"((?:[^"\\\n]|\\.)*)"/g)].map((m) => m[1] ?? "");
+}
+
+test("web static: 画面の言葉に「！」・ツール名・HTTP の番号が主役の文・語彙の表で使わない語が無い", () => {
+  const TOOL_NAME = /\b[a-z]+_(add|list|complete|update|report|open|save|search|get|delete|forget|files|set|cancel)\b/;
+  const HTTP_STATUS = /^[1-5]\d\d\s*[:：]|[（(][1-5]\d\d[）)]|\bHTTP\b/;
+  const AVOID = /送信|キャンセル|クローズ|\bOK\b|--json|SELF_AGENT_|settings\.json/;
+  const texts: Array<[string, string]> = [];
+  for (const name of files.filter((n) => n.endsWith(".js"))) {
+    const js = read(name);
+    for (const s of stringLiterals(js)) texts.push([name, s]);
+    // 応答の status をそのままトーストの文にしない
+    assert.doesNotMatch(js, /toast\s*=\s*res\.status|toast\([^;]*\.status\s*\+/, name);
+  }
+  texts.push(["index.html", read("index.html").replace(/<!doctype[^>]*>/i, "")]);
+  for (const [name, text] of texts) {
+    assert.doesNotMatch(text, /[！!]/, `${name}: ${text}`);
+    assert.doesNotMatch(text, TOOL_NAME, `${name}: ${text}`);
+    assert.doesNotMatch(text, HTTP_STATUS, `${name}: ${text}`);
+    assert.doesNotMatch(text, AVOID, `${name}: ${text}`);
+  }
+});
+
 // ===== ホーム画面（PWA。docs/plan/web-ui.md §11） =====
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
