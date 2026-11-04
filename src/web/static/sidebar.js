@@ -12,7 +12,7 @@
   // enabled(status) が false の機能（dev モードでない会話ログ・GitHub 無効・ジョブ無効・Claude Code の連携が無効）は出さない。
   // stage の付いたものはその段で中身を足すまで出さない（足した段で stage を外す）
   const ACTIVITIES = [
-    { id: "chat", label: "会話", icon: "message-square", enabled: always, count: () => store.unreadCount(), countLabel: "未読 " },
+    { id: "chat", label: "会話", icon: "message-square", enabled: always, count: () => store.unreadCount(), countLabel: "未読 ", running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
     { id: "tasks", label: "タスク", icon: "square-check", enabled: always },
     { id: "reminders", label: "リマインド", icon: "bell", enabled: always },
     { id: "knowledge", label: "ナレッジ・記憶", icon: "book", enabled: always },

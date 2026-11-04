@@ -71,9 +71,17 @@
   }
 
   // ===== テーマ =====
+  // ブラウザの上の帯の色（--surface。index.html の theme-color の 2 つと同じ値）
+  const THEME_COLORS = { light: "#ffffff", dark: "#11141c" };
+
   function applyTheme() {
     if (S.theme === "system") delete root.dataset.theme;
     else root.dataset.theme = S.theme;
+    // OS に合わせるときは media ごとの元の値、決めたときは 2 つともそのテーマの値
+    for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+      const own = (meta.getAttribute("media") || "").includes("dark") ? "dark" : "light";
+      meta.setAttribute("content", THEME_COLORS[S.theme === "system" ? own : S.theme]);
+    }
     const dark = S.theme === "dark" || (S.theme === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
     const btn = $("theme-toggle");
     if (btn) {
@@ -128,6 +136,11 @@
         },
         [icon(a.icon), el("span", { class: "act-label", text: a.label }), n > 0 ? el("span", { class: "act-count", text: String(n), "aria-hidden": "true" }) : null],
       );
+      // 実行中のターンがあれば、スマホでは会話の数の位置にスピナーを出す（CSS で 639px 以下だけ）
+      if (a.running && a.running() > 0) {
+        btn.classList.add("is-running");
+        btn.append(el("span", { class: "spinner spinner-sm act-spin", role: "img", "aria-label": "実行中" }));
+      }
       btn.addEventListener("click", () => selectActivity(a));
       (a.bottom ? bottom : top).append(btn);
     }
@@ -526,6 +539,34 @@
     if (today !== null) right.append(sbarItem(["今日 " + SA.views.compact(today)], { title: "今日のトークン（入力）", run: () => open("usage") }));
     if (status && status.version) right.append(sbarItem(["v" + status.version], { title: "状態", run: () => open("status"), cls: "hide-sm" }));
     refs.status.replaceChildren(left, right);
+    renderTitleStatus();
+  }
+
+  /** スマホ（ステータスバーを出さない幅）のタイトルバーの右: 既定の人格の Bot の接続の点と、知らせの鈴（CSS で 639px 以下だけ） */
+  function renderTitleStatus() {
+    if (!refs.titleStatus) return;
+    const status = SA.store.status;
+    const items = [];
+    const bot = status && status.bots ? status.bots[0] : null;
+    if (bot) {
+      const label = bot.name + " の Bot: " + (bot.connected ? "接続中" : "接続できません");
+      const b = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm", type: "button", "aria-label": label, title: label }, [
+        el("span", { class: "dot " + (bot.connected ? "dot-ok" : "dot-bad"), "aria-hidden": "true" }),
+      ]);
+      b.addEventListener("click", () => open("status"));
+      items.push(b);
+    }
+    const notices = SA.store.notices;
+    if (notices !== null) {
+      const label = "知らせ（直近 24 時間 " + notices.recent24h + " 件）";
+      const b = el("button", { class: "btn btn-ghost btn-sm title-bell", type: "button", "aria-label": label, title: label }, [
+        icon("bell"),
+        notices.recent24h > 0 ? el("span", { class: "title-bell-count", text: String(notices.recent24h), "aria-hidden": "true" }) : null,
+      ]);
+      b.addEventListener("click", () => showPanel("notices"));
+      items.push(b);
+    }
+    refs.titleStatus.replaceChildren(...items);
   }
 
   /** /api/status が変わったとき: ステータスバーと、出す項目が変わりうるアクティビティバー・サイドバー。status を待っていたタブを開き直す */
@@ -968,6 +1009,8 @@
     refs.editors = $("editors");
     refs.panel = $("panel");
     refs.status = $("statusbar");
+    refs.titleStatus = el("div", { class: "wb-title-status" });
+    document.querySelector(".wb-title-actions").prepend(refs.titleStatus);
 
     // 前回の幅・高さ・表示
     for (const size of Object.values(SIZES)) {

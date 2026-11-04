@@ -16,7 +16,7 @@
 | 3 | 文字の役割が `--text` / `--text-muted` の 2 つ。時刻・ラベル・ヒント・補足が同じ灰色 12px（app.css:116-119・592-597・937-942・1106-1112） | §2.3 3 役 | `--text-secondary` を足し、`.meta`・`.sb-meta`・`.tl-time`・`th`・`.card-head .meta` を secondary、`.composer-hint`・placeholder・`.sb-empty`・無効を muted に |
 | 4 | `::selection`・`caret-color` 未指定（grep 0 件） | §2.3 ブラウザの面 | `::selection`・`caret-color` を app.css に |
 
-### UI-1 スマホの基礎（CSS + meta + JS 数行）
+### UI-1 スマホの基礎（CSS + meta + JS 数行）（済）
 
 | # | 事実（今） | 決まり | 直し |
 |---|---|---|---|
@@ -109,7 +109,7 @@
 5. `::selection { background: var(--accent); color: var(--primary-text) }`、`input, textarea { caret-color: var(--accent) }`。
 6. 受け入れ: app.css の `#` の色がトークンの定義の中にだけある（grep）。GUIDELINES §2.2 の表の値を再計算して一致する（スクリプトは scratchpad でよい）。ダーク・ライト・OS に合わせる の 3 つで状態・使用量・会話のタブを目視。
 
-### UI-1 スマホの基礎（#5〜#15）
+### UI-1 スマホの基礎（#5〜#15）（済。#15 の使用量の表は UI-5 に回した）
 触る: `index.html`、`app.css`、`workbench.js`（theme-color の 5 行 + タイトルバー右の点と鈴）、`chat.js`（`enterkeyhint`）、`sidebar.js`（下タブの実行中）。
 1. `index.html`: `<meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">` と dark `#11141c` を `color-scheme` の次に。`#new-title`・`#cc-start-title` に `enterkeyhint="done"`、`#palette-input` に `enterkeyhint="search"`。
 2. `app.css`: `html, body { overscroll-behavior: none }`。`.tl`・`.wb-sidebar`・`.wb-panel`・`.palette-list`・`.master` に `overscroll-behavior: contain`。`.act-btn`・`.tab`・`.sb-row`・`.panel-tab`・`.sbar-item`・`.btn` に `touch-action: manipulation; user-select: none; -webkit-user-select: none`。
