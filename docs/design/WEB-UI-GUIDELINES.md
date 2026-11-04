@@ -39,7 +39,7 @@
 
 決定（オーナー）: ink 寄りの中立 + 自前のコバルト。Tailwind の既定色から離れる。文字の役割は **本文・二次・薄い** の 3 つ。
 
-### 2.1 トークン（app.css の `:root[data-theme="dark"]` / `:root[data-theme="light"]` の 2 ブロックで上書きする。base.css は触らない）
+### 2.1 トークン（app.css の `:root[data-theme="dark"]` / `:root[data-theme="light"]` と、「OS に合わせる」の `:root:not([data-theme])` / `@media (prefers-color-scheme: dark)` の 4 ブロックで上書きする。base.css は触らない）
 
 | トークン | 役割 | ダーク | ライト | base.css の対応 |
 |---|---|---|---|---|

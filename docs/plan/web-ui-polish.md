@@ -13,7 +13,7 @@
 |---|---|---|---|
 | 1 | 色が Tailwind の既定そのまま（zinc + blue-500 / red-500 / green-500 / amber-500。base.css:3 のコメント、app.css:44-78） | §1 性格 A・§2.1 | app.css の `:root[data-theme]` 2 ブロックを §2.1 の値に差し替え。`:root:not([data-theme])` + `prefers-color-scheme` の 2 ブロックを足す |
 | 2 | **ライトの `--text-muted #71717a` on `--muted #f4f4f5` = 4.4:1**（kbd 127-138・`.sb-count` 520-530・選択中の行の `.sb-meta` 575-597・segmented の非選択） | §2.2（薄い on muted ≥ 4.5） | #1 で解消（新しい値は 4.7） |
-| 3 | 文字の役割が `--text` / `--text-muted` の 2 つ。時刻・ラベル・ヒント・補足が同じ灰色 12px（app.css:116-119・592-597・937-942・1106-1112） | §2.3 3 役 | `--text-secondary` を足し、`.meta`・`.sb-meta`・`.tl-time`・`th`・`.card-head .meta` を secondary、`.composer-hint`・placeholder・`.sb-empty`・無効を muted に |
+| 3 | 文字の役割が `--text` / `--text-muted` の 2 つ。時刻・ラベル・ヒント・補足が同じ灰色 12px（app.css:116-119・592-597・937-942・1106-1112） | §2.3 3 役 | `--text-secondary` を足し、`.meta`（カードの見出しの中のものを含む）・`.sb-meta`・`.tl-time`・`th` を secondary、`.composer-hint`・placeholder・`.sb-empty`・無効を muted に |
 | 4 | `::selection`・`caret-color` 未指定（grep 0 件） | §2.3 ブラウザの面 | `::selection`・`caret-color` を app.css に |
 
 ### UI-1 スマホの基礎（CSS + meta + JS 数行）
@@ -105,7 +105,7 @@
 1. `:root[data-theme="dark"]`・`:root[data-theme="light"]` の値を GUIDELINES §2.1 の表に差し替える（`--backdrop`・`--shadow-sm` を含む）。
 2. 同じ 2 組の値で `:root:not([data-theme])`（ライト）と `@media (prefers-color-scheme: dark) { :root:not([data-theme]) }`（ダーク）を足す（「OS に合わせる」で base.css の zinc に落ちないため）。
 3. `--text-secondary` を 4 ブロック全部に足す。
-4. 役割の振り直し: `.meta`・`.sb-meta`・`.tl-time`・`.table th`・`.card-head .meta`・`.metrics dt`・`.counter`・`.out-time`・`.panel-note` → `var(--text-secondary)`。`.composer-hint`・`.sb-empty`・`.empty`・`::placeholder`（base.css が `--text-muted` なので変更なし）・`.btn:disabled` → `var(--text-muted)` のまま。アイコンの色（`.sb-row .icon`・`.ed-title > .icon`・`.act-btn`）は `--text-secondary`。
+4. 役割の振り直し: `.meta`（`.card-head` の中のものも `.meta` で揃う）・`.sb-meta`・`.tl-time`・`.table th`・`.metrics dt`・`.counter`・`.out-time`・`.panel-note`・`.kv-label`・`.sbar-item`・`.panel-tab`（選択中は `--text`）・`.sb-title`・`.tl-divider`・`.tl-notice`・`.steps-list` → `var(--text-secondary)`。`.kv-value` は値なので `var(--text)`。`.composer-hint`・`.sb-empty`・`.empty`・`::placeholder`（base.css が `--text-muted` なので変更なし）・`.btn:disabled` → `var(--text-muted)` のまま。アイコンの色（`.sb-row .icon`・`.ed-title > .icon`・`.act-btn`・`.table .td-main .icon`・`.notice-item .icon`・`.palette-item .icon`）は `--text-secondary`、区切りのアイコン（`.tab-close`・`.steps-chevron`）は `--text-muted` のまま。`.dot` の既定の色は `--accent`（§6.1）。
 5. `::selection { background: var(--accent); color: var(--primary-text) }`、`input, textarea { caret-color: var(--accent) }`。
 6. 受け入れ: app.css の `#` の色がトークンの定義の中にだけある（grep）。GUIDELINES §2.2 の表の値を再計算して一致する（スクリプトは scratchpad でよい）。ダーク・ライト・OS に合わせる の 3 つで状態・使用量・会話のタブを目視。
 
