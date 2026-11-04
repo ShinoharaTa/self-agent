@@ -150,11 +150,11 @@
     setTimeout(() => store.load.turns(channelId), OP_RECHECK_MS);
   }
 
-  /** 操作の失敗のトースト（404 は古い、409 は閉じている。それ以外は応答の文） */
-  function opFailed(err) {
+  /** 操作の失敗のトースト（404 は古い、409 は閉じている。それ以外は応答の文を失敗のトーストで。retry があれば [もう一度]） */
+  function opFailed(err, retry) {
     if (err && err.status === 404) toast(STALE_TEXT);
     else if (err && err.status === 409) toast(err.code === "no_draft" ? STALE_TEXT : CLOSED_TEXT);
-    else if (err && err.toast) toast(err.toast);
+    else if (err && err.toast) toast(err.toast, null, { level: "error", retry });
   }
 
   function setWaiting(channelId) {
@@ -165,7 +165,10 @@
     }
     SA.api
       .post("/api/sessions/" + encodeURIComponent(channelId) + "/wait", {}, { quiet: true })
-      .then(() => toast("「" + ch.title + "」を待ちにしました"), opFailed)
+      .then(
+        () => toast("「" + ch.title + "」を待ちにしました"),
+        (err) => opFailed(err, () => setWaiting(channelId)),
+      )
       .finally(() => reloadAfterOp(channelId));
   }
 
@@ -179,18 +182,21 @@
       title: "「" + ch.title + "」を閉じますか",
       body: "会話を要約してから完了に移します。やることの候補があれば、ここと Discord に確認が出ます（先に選んだ方で閉じます）。チャンネルは残ります。",
       ok: "閉じる",
-      run: async () => {
-        const afterId = lastRealId(channelId);
-        try {
-          await SA.api.post("/api/sessions/" + encodeURIComponent(channelId) + "/close", {}, { quiet: true });
-          setPending(channelId, "close", afterId);
-        } catch (err) {
-          opFailed(err);
-        }
-        SA.app.refresh("ch:" + channelId);
-        reloadAfterOp(channelId);
-      },
+      run: () => startClose(channelId),
     });
+  }
+
+  /** /close を始める（確認の後。[もう一度] は確認を挟まずにここから） */
+  async function startClose(channelId) {
+    const afterId = lastRealId(channelId);
+    try {
+      await SA.api.post("/api/sessions/" + encodeURIComponent(channelId) + "/close", {}, { quiet: true });
+      setPending(channelId, "close", afterId);
+    } catch (err) {
+      opFailed(err, () => startClose(channelId));
+    }
+    SA.app.refresh("ch:" + channelId);
+    reloadAfterOp(channelId);
   }
 
   function renew(channelId) {
@@ -200,18 +206,21 @@
       title: channelTitle(ch) + " の会話を新しくしますか",
       body: "今の会話を要約して、新しい会話に引き継ぎます。状態は変わりません。",
       ok: "新しくする",
-      run: async () => {
-        const afterId = lastRealId(channelId);
-        try {
-          await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/renew", {}, { quiet: true });
-          setPending(channelId, "renew", afterId);
-        } catch (err) {
-          opFailed(err);
-        }
-        SA.app.refresh("ch:" + channelId);
-        reloadAfterOp(channelId);
-      },
+      run: () => startRenew(channelId),
     });
+  }
+
+  /** /renew を始める（確認の後。[もう一度] は確認を挟まずにここから） */
+  async function startRenew(channelId) {
+    const afterId = lastRealId(channelId);
+    try {
+      await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/renew", {}, { quiet: true });
+      setPending(channelId, "renew", afterId);
+    } catch (err) {
+      opFailed(err, () => startRenew(channelId));
+    }
+    SA.app.refresh("ch:" + channelId);
+    reloadAfterOp(channelId);
   }
 
   /** /close の確認の確定（selected は添字の配列・"all"・"none"） */
@@ -223,7 +232,7 @@
       toast("閉じました（登録 " + (data && typeof data.registered === "number" ? data.registered : 0) + " 件）");
       if (data && data.registered > 0 && store.tasks !== null) store.reload("tasks");
     } catch (err) {
-      opFailed(err);
+      opFailed(err, () => confirmClose(channelId, selected, []));
       for (const b of buttons) b.disabled = false;
     }
     reloadAfterOp(channelId);
@@ -360,20 +369,21 @@
     ]);
     if (run.abortable) {
       const abort = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, [icon("square"), "中断"]);
-      abort.addEventListener("click", () => abortTurn(run, abort));
+      abort.addEventListener("click", () => abortTurn(run.channelId, run.turnSeq, abort));
       body.append(el("div", { class: "msg-actions" }, [abort]));
     }
     return el("article", { class: "msg msg-agent is-running", "aria-busy": "true" }, [avatar(Array.from(p.name || "?")[0], "avatar-agent"), body]);
   }
 
-  async function abortTurn(run, button) {
-    button.disabled = true;
+  /** [中断]。button は押したもの（[もう一度] からは null） */
+  async function abortTurn(channelId, turnSeq, button) {
+    if (button) button.disabled = true;
     try {
-      await SA.api.post("/api/channels/" + encodeURIComponent(run.channelId) + "/turns/" + run.turnSeq + "/abort", {}, { quiet: true });
+      await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/turns/" + turnSeq + "/abort", {}, { quiet: true });
     } catch (err) {
       if (err && err.status === 409) toast(STALE_TEXT);
-      else if (err && err.toast) toast(err.toast);
-      button.disabled = false;
+      else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => abortTurn(channelId, turnSeq, null) });
+      if (button) button.disabled = false;
     }
     SA.poll.running();
   }
@@ -382,21 +392,24 @@
   const continued = new Set();
   function continueButton(channelId, turn) {
     const button = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, [icon("play"), "続ける"]);
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      try {
-        await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/continue", {}, { quiet: true });
-        continued.add(turn.id);
-        SA.poll.running();
-        SA.app.refresh("ch:" + channelId);
-      } catch (err) {
-        if (err && err.status === 409) toast(err.code === "running" ? "実行中のターンがあります" : STALE_TEXT);
-        else if (err && err.status === 404) toast(STALE_TEXT);
-        else if (err && err.toast) toast(err.toast);
-        button.disabled = false;
-      }
-    });
+    button.addEventListener("click", () => continueTurn(channelId, turn, button));
     return el("div", { class: "msg-actions" }, [button]);
+  }
+
+  /** [続ける] を送る。button は押したもの（[もう一度] からは null） */
+  async function continueTurn(channelId, turn, button) {
+    if (button) button.disabled = true;
+    try {
+      await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/continue", {}, { quiet: true });
+      continued.add(turn.id);
+      SA.poll.running();
+      SA.app.refresh("ch:" + channelId);
+    } catch (err) {
+      if (err && err.status === 409) toast(err.code === "running" ? "実行中のターンがあります" : STALE_TEXT);
+      else if (err && err.status === 404) toast(STALE_TEXT);
+      else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => continueTurn(channelId, turn, null) });
+      if (button) button.disabled = false;
+    }
   }
 
   function header(ch, channelId) {
@@ -519,8 +532,8 @@
         SA.poll.running();
         for (const ms of RUNNING_RECHECK_MS) setTimeout(() => store.load.running({ quiet: true }), ms);
       } catch (err) {
-        // 本文は入力欄に残す
-        if (err && err.toast) toast((err.code && SEND_ERRORS[err.code]) || err.toast);
+        // 本文は入力欄に残す。[もう一度] は入力欄の今の本文を送り直す
+        if (err && err.toast) toast((err.code && SEND_ERRORS[err.code]) || err.toast, null, { level: "error", retry: submit });
       } finally {
         sending = false;
         update();
