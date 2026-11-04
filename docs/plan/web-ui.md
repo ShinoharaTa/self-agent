@@ -293,7 +293,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 | `orientation` | 書かない | 固定しない |
 | `icons` | `icon-192.png`（192×192, `any`）、`icon-512.png`（512×512, `any`）、`icon-512-maskable.png`（512×512, `maskable`） | Android と PC Chrome 用。iOS は読まない（§2） |
 
-配り方（事実: `src/web/static.ts:21` の `STATIC_NAME` は `html|css|js|svg` だけ、`CONTENT_TYPES` も同じ 4 つ）:
+配り方（事実: `src/web/static.ts:21` の `STATIC_NAME` は `html|css|js|svg` だけ、`CONTENT_TYPES` も同じ 4 つ。UI-3 で済）:
 - 拡張子に `png`（`image/png`）と `webmanifest`（`application/manifest+json; charset=utf-8`）を足す。名前の形 `[A-Za-z0-9_-]+` と 1 要素だけの制限は変えない。
 - `/static/*` は認証なし（事実）。manifest・アイコンに秘密は無いのでそのままでよい。`Cache-Control: no-cache` + ETag も今のまま（更新がすぐ効く）。
 - CSP `default-src 'self'` は `manifest-src` の既定になるので変えない（事実: server.ts の CSP に個別の指定は無い）。
@@ -305,6 +305,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
 <meta name="theme-color" media="(prefers-color-scheme: dark)"  content="#11141c">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="self-agent">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">   <!-- 180×180 PNG。透過なし・角丸なし（iOS が丸める） -->
@@ -313,7 +314,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - 値はタイトルバーの地（`--surface`。GUIDELINES §2.1: ライト `#ffffff` / ダーク `#11141c`）に合わせる。`--bg` ではない（画面の上端の色が基準）。色を変えたら manifest・meta・JS の 3 箇所を同時に直す。
 - 画面のテーマは OS でなく `data-theme` で切り替わる（事実: workbench.js の `applyTheme`）。**切り替え時に JS で 2 つの `theme-color` の `content` を今のテーマの色に書き換える**（media 付きのままだと OS の設定に従ってしまう）。`system` のときは元の 2 値に戻す。ライト・ダークを残すと決めたので、この JS は必須。
 - `status-bar-style` は `default` から始める。ダークのときに黒い帯が残るなら `black-translucent` に変え、タイトルバーに `padding-top: env(safe-area-inset-top)` を足す（GAP の UI-1 で入る）。どちらが合うかは**未確認**（iOS の版で挙動が違う）。
-- iOS 17 以降は manifest の `display` も読むが、古い iOS のために `apple-mobile-web-app-capable` も残す。
+- iOS 17 以降は manifest の `display` も読むが、古い iOS のために `apple-mobile-web-app-capable` も残す。Chrome は `apple-mobile-web-app-capable` だけだと非推奨の警告を出すので、`mobile-web-app-capable` も並べる。
 
 ### 3. service worker
 
