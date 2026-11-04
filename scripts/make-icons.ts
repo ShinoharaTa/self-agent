@@ -25,7 +25,7 @@ const DOT = { cx: 0.73, cy: 0.6, r: 0.07 };
 type Variant = {
   /** 地を角丸にして角を透過にする（false なら一面を塗り、透過なし） */
   rounded: boolean;
-  /** 印を中央からこの倍率で縮める（maskable は中央 80% の円に余裕を持って収める） */
+  /** 印を中央からこの倍率で縮める（maskable は中央 80% の円に収める。点の外端が中心から約 0.29 で、半径 0.4 の内） */
   scale: number;
 };
 
@@ -136,10 +136,16 @@ function svg(): string {
 
 const ANY: Variant = { rounded: true, scale: 1 };
 const FLAT: Variant = { rounded: false, scale: 1 };
-const MASKABLE: Variant = { rounded: false, scale: 0.8 };
+const MASKABLE: Variant = { rounded: false, scale: 0.9 };
 
+const USAGE = "使い方: node scripts/make-icons.ts [--out <dir>]";
 const outIndex = process.argv.indexOf("--out");
-const outDir = outIndex >= 0 && process.argv[outIndex + 1] ? process.argv[outIndex + 1]! : fileURLToPath(new URL("../src/web/static/", import.meta.url));
+const outArg = outIndex >= 0 ? process.argv[outIndex + 1] : undefined;
+if (outIndex >= 0 && (outArg === undefined || outArg === "" || outArg.startsWith("--"))) {
+  console.error(USAGE);
+  process.exit(2);
+}
+const outDir = outArg ?? fileURLToPath(new URL("../src/web/static/", import.meta.url));
 mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, "app-icon.svg"), svg());
 writeFileSync(join(outDir, "apple-touch-icon.png"), png(180, FLAT));

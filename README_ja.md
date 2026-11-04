@@ -211,7 +211,7 @@ tailscale serve --bg --https=9444 http://127.0.0.1:8791
 
 3. `https://<host>.<tailnet>.ts.net:9444/` を開く。ログインのヘッダが無ければ（トークンを設定していれば）`/login` に移るので、トークンを貼ると 30 日の Cookie が付く。トークンを差し替えると全員ログアウトする。ヘッダ無しで `127.0.0.1` に直接送った要求は 401 になる。
 
-4.（任意）iPhone では Safari で 3. の https の URL を開き、共有 →「ホーム画面に追加」で、アプリのように枠なしで開ける（アイコンと名前 self-agent 付き。Android・PC の Chrome はメニューの「アプリをインストール」）。https の `tailscale serve` 経由が前提で、http では認証を通れない（Cookie が `Secure` 付きのため）。オフラインでは動かない。
+4. （任意）iPhone では Safari で 3. の https の URL を開き、共有 →「ホーム画面に追加」で、アプリのように枠なしで開ける（アイコンと名前 self-agent 付き。Android・PC の Chrome はメニューの「アプリをインストール」）。https の `tailscale serve` 経由が前提で、http では認証を通れない（Cookie が `Secure` 付きのため）。オフラインでは動かない。
 
 ### 9.（任意）この機械の Claude Code のセッションを見る・送る・起動する
 
