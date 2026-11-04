@@ -39,7 +39,8 @@
   function row(opts) {
     const current = opts.current !== undefined ? opts.current : SA.app.activeTabId() === opts.tab;
     const btn = el("button", { class: "sb-row" + (opts.cls ? " " + opts.cls : ""), type: "button", "aria-current": current ? "true" : null, title: opts.title || null }, [
-      opts.icon ? icon(opts.icon) : null,
+      // アイコンの無い行も 16px の空の箱でラベルの開始位置を揃える（GUIDELINES §4）
+      opts.icon ? icon(opts.icon) : el("span", { class: "icon icon-blank", "aria-hidden": "true" }),
       el("span", { class: "sb-label", text: opts.label }),
       ...(opts.badges || []),
       opts.dot ? el("span", { class: "dot " + opts.dot, role: opts.dotLabel ? "img" : null, "aria-label": opts.dotLabel || null }) : null,
@@ -206,18 +207,28 @@
   const CC_FRESH_MS = 10000;
 
   function ccRow(s) {
-    const badges = [];
-    if (s.permissionMode) badges.push(el("span", { class: "badge badge-cc mono", text: s.permissionMode }));
-    // 判断待ちの理由（permission prompt など。claude agents --json の waitingFor）
-    if (s.state === "needs_input" && s.waitingFor) badges.push(el("span", { class: "badge badge-cc", text: s.waitingFor }));
-    if (s.trustPending) badges.push(el("span", { class: "badge badge-cc", text: "trust の確認待ち" }));
-    if (s.startedBy && s.startedBy !== "owner") badges.push(el("span", { class: "badge badge-cc", text: "self-agent が起動" }));
-    if (!s.inTmux) badges.push(el("span", { class: "badge badge-cc", text: "tmux の外" }));
-    if (s.pending && (s.pending.state === "queued" || s.pending.state === "delivering")) badges.push(el("span", { class: "badge badge-cc", text: "届け待ち" }));
-    // 許可の要求を保留している（タブのカードで [許可][拒否]）
+    // 行のバッジは最重要の 1 つだけ（許可待ち > 届け待ち > trust の確認待ち > tmux の外。GUIDELINES §5 バッジ）。残りは title とタブに
     const asking = s.permission && s.permission.state === "pending";
-    if (asking) badges.push(el("span", { class: "badge badge-accent", text: "許可待ち" }));
+    const delivering = !!(s.pending && (s.pending.state === "queued" || s.pending.state === "delivering"));
+    const top = asking ? "許可待ち" : delivering ? "届け待ち" : s.trustPending ? "trust の確認待ち" : !s.inTmux ? "tmux の外" : null;
+    const badges = [];
+    if (top) badges.push(el("span", { class: "badge " + (asking ? "badge-accent" : "badge-cc"), text: top }));
     if (s.state === "running") badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));
+    // title: 場所、許可の要求の中身、出さなかった印（権限モード・判断待ちの理由・起動した人・ほかの状態）
+    const notes = [];
+    if (s.cwdLabel) notes.push(s.cwdLabel);
+    if (asking) notes.push(s.permission.toolName + ": " + SA.views.oneLine(String(s.permission.summary || "")));
+    if (s.permissionMode) notes.push("権限モード: " + s.permissionMode);
+    // 判断待ちの理由（permission prompt など。一覧の waitingFor）
+    if (s.state === "needs_input" && s.waitingFor) notes.push("判断待ち: " + s.waitingFor);
+    if (s.startedBy && s.startedBy !== "owner") notes.push("self-agent が起動");
+    for (const [on, text] of [
+      [delivering, "届け待ち"],
+      [s.trustPending, "trust の確認待ち"],
+      [!s.inTmux, "tmux の外"],
+    ]) {
+      if (on && text !== top) notes.push(text);
+    }
     return row({
       tab: "cc:" + s.sessionId,
       label: SA.views.ccName(s),
@@ -225,7 +236,7 @@
       dot: s.state === "needs_input" ? "dot-warn" : null,
       dotLabel: s.state === "needs_input" ? "判断待ち" : null,
       meta: s.since ? SA.views.ago(s.since) : "",
-      title: asking ? (s.cwdLabel ? s.cwdLabel + "\n" : "") + s.permission.toolName + ": " + SA.views.oneLine(String(s.permission.summary || "")) : s.cwdLabel || null,
+      title: notes.length ? notes.join("\n") : null,
     });
   }
 

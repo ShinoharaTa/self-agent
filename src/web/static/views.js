@@ -898,6 +898,7 @@
       counter.textContent = n.toLocaleString("en-US") + " / 2,000";
       counter.classList.toggle("is-over", n > CC_MESSAGE_MAX);
       sendBtn.disabled = sending || ta.value.trim() === "";
+      sendBtn.title = sending ? "送っています" : ta.value.trim() === "" ? "本文を入れると送れます" : "";
     };
     update();
     ta.addEventListener("input", () => {

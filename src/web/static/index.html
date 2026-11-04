@@ -24,6 +24,7 @@
   <script src="/static/workbench.js" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#editors">本文へ</a>
   <div class="wb" id="wb">
     <header class="wb-titlebar">
       <button class="btn btn-ghost btn-sm btn-icon-sm" id="sidebar-toggle" type="button" aria-label="サイドバー（Ctrl+B）" title="サイドバー（Ctrl+B）" aria-controls="sidebar" aria-expanded="true">
@@ -48,7 +49,7 @@
     <div class="wb-sash wb-sash-sidebar" id="sash-sidebar" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅" tabindex="0"></div>
 
     <main class="wb-main">
-      <div class="wb-editors" id="editors"></div>
+      <div class="wb-editors" id="editors" tabindex="-1"></div>
       <div class="wb-sash wb-sash-panel" id="sash-panel" role="separator" aria-orientation="horizontal" aria-label="パネルの高さ" tabindex="0"></div>
       <section class="wb-panel" id="panel" aria-label="パネル"></section>
     </main>

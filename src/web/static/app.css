@@ -39,6 +39,15 @@
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
+/* 重なりの段（docs/design/WEB-UI-GUIDELINES.md §4。数字を直接書かない。<dialog> は top layer なので要らない） */
+:root {
+  --z-sash: 10;
+  --z-drawer-backdrop: 40;
+  --z-drawer: 41;
+  --z-palette: 50;
+  --z-toast: 60;
+}
+
 /* 指で触る端末では、行とタブを 44px にする */
 @media (pointer: coarse) {
   :root {
@@ -203,6 +212,44 @@ body {
 .welcome-link:active,
 .cmd-center:active {
   transform: scale(0.97);
+}
+
+/* 無効のボタンも hover で理由（title）を読めるよう pointer-events を戻し、押せない印を出す（GUIDELINES §5 ボタン） */
+.btn:disabled {
+  pointer-events: auto;
+  cursor: not-allowed;
+}
+
+.btn-ghost:disabled:hover {
+  background: transparent;
+}
+
+/* チェックの色は accent（base.css は --primary） */
+.check > input {
+  accent-color: var(--accent);
+}
+
+/* アイコンの無い行・候補の 16px の空の箱（ラベルの開始位置を揃える。GUIDELINES §4） */
+.icon-blank {
+  display: inline-block;
+}
+
+/* 本文へのスキップリンク（フォーカスしたときだけ見える。GUIDELINES §8） */
+.skip-link {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: var(--z-toast);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  color: var(--text);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  transform: translateY(calc(-100% - var(--space-4)));
+}
+
+.skip-link:focus-visible {
+  transform: none;
 }
 
 .sb-row:not(.sb-row-static):active,
@@ -691,16 +738,11 @@ kbd {
   transform: rotate(90deg);
 }
 
+/* 群の見出しの件数は文字（塗りのピルは未読の数だけ。GUIDELINES §5 バッジ） */
 .sb-count {
-  min-width: var(--space-5);
-  padding: 0 var(--space-1);
-  background: var(--muted);
-  color: var(--text-muted);
-  border-radius: var(--radius-full);
-  font-size: var(--font-xs);
-  font-weight: var(--weight-medium);
-  line-height: var(--leading-normal);
-  text-align: center;
+  color: var(--text-secondary);
+  font-weight: var(--weight-normal);
+  font-variant-numeric: tabular-nums;
 }
 
 .sb-note {
@@ -1023,6 +1065,11 @@ kbd {
   gap: var(--space-1);
 }
 
+/* 狭い画面で会話の見出しの操作をまとめる […]（≥640px では出さない） */
+.ed-ops-more {
+  display: none;
+}
+
 .ed-ops {
   display: flex;
   flex-wrap: wrap;
@@ -1177,15 +1224,16 @@ kbd {
   height: var(--icon-sm);
 }
 
-.steps > summary.is-done .icon:not(.steps-chevron) {
+/* 終わり方はアイコンを足さず文の色で（1 要素 1 アイコン。chevron だけ） */
+.steps > summary.is-done > span {
   color: var(--success);
 }
 
-.steps > summary.is-warning .icon:not(.steps-chevron) {
+.steps > summary.is-warning > span {
   color: var(--warning);
 }
 
-.steps > summary.is-danger .icon:not(.steps-chevron) {
+.steps > summary.is-danger > span {
   color: var(--danger);
 }
 
@@ -1482,6 +1530,11 @@ kbd {
 }
 
 /* ===== 確認のカード（/close の下書き・許可の要求） ===== */
+/* レイアウトの中のカードに影を付けない（影は浮いているものだけ。base.css の --shadow-sm を打ち消す。GUIDELINES §2.3） */
+.card {
+  box-shadow: none;
+}
+
 .card-sm {
   display: flex;
   flex-direction: column;
@@ -1676,7 +1729,17 @@ kbd {
   white-space: pre;
   overflow-wrap: normal;
   overflow-x: auto;
-  font-size: var(--font-xs);
+  background: var(--bg);
+  font-size: var(--font-sm);
+  line-height: 1.35;
+  tab-size: 4;
+}
+
+/* 指の端末では 13px（端末の 80 桁が収まる幅に寄せる。GUIDELINES §3） */
+@media (pointer: coarse) {
+  .cc-screen {
+    font-size: 13px;
+  }
 }
 
 /* ===== 名前と値の一覧 ===== */
@@ -1940,7 +2003,7 @@ kbd {
 .palette-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--z-palette);
 }
 
 .palette {
@@ -2088,7 +2151,7 @@ kbd {
   position: fixed;
   right: var(--space-4);
   bottom: calc(var(--statusbar-h) + var(--space-3));
-  z-index: 50;
+  z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -2238,7 +2301,7 @@ dialog[open]::backdrop {
 .drawer-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 44;
+  z-index: var(--z-drawer-backdrop);
   background: var(--backdrop);
 }
 
@@ -2270,7 +2333,7 @@ dialog[open]::backdrop {
     top: calc(var(--titlebar-h) + env(safe-area-inset-top, 0px));
     bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + var(--statusbar-h));
     left: 0;
-    z-index: 45;
+    z-index: var(--z-drawer);
     width: min(85vw, var(--drawer-max));
     border-right: var(--border-width) solid var(--border);
     box-shadow: var(--shadow-sm);
@@ -2429,5 +2492,14 @@ dialog[open]::backdrop {
     margin-left: 0;
     padding-left: 0;
     border-left: 0;
+  }
+
+  /* 会話の見出しの操作は […] 1 つにまとめ、パレットのコマンドで選ぶ */
+  .ed-ops > .btn:not(.ed-ops-more) {
+    display: none;
+  }
+
+  .ed-ops > .ed-ops-more {
+    display: inline-flex;
   }
 }
