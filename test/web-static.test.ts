@@ -1,18 +1,35 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import vm from "node:vm";
+import { inflateSync } from "node:zlib";
+import { staticFileFor } from "../src/web/static.ts";
 
 // Web UI の画面（src/web/static）。DOM が無いので、構文と CSP（default-src 'self'）で動く書き方かだけを確かめる
 const STATIC_DIR = fileURLToPath(new URL("../src/web/static/", import.meta.url));
 const files = readdirSync(STATIC_DIR);
 const read = (name: string): string => readFileSync(join(STATIC_DIR, name), "utf8");
+/** scripts/make-icons.ts が書くもの（docs/plan/web-ui.md §11.5） */
+const ICON_FILES = ["app-icon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-512-maskable.png"];
 
 test("web static: 決めたファイルがそろっていて、base.css・icons.svg は置かない（templates/web/site のものを配る）", () => {
-  for (const name of ["index.html", "app.css", "ui.js", "api.js", "chat.js", "views.js", "sidebar.js", "workbench.js", "icons-app.svg"]) {
+  for (const name of [
+    "index.html",
+    "app.css",
+    "ui.js",
+    "api.js",
+    "chat.js",
+    "views.js",
+    "sidebar.js",
+    "workbench.js",
+    "icons-app.svg",
+    "manifest.webmanifest",
+    ...ICON_FILES,
+  ]) {
     assert.ok(files.includes(name), name);
   }
   assert.equal(files.includes("base.css"), false);
@@ -20,7 +37,19 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
 });
 
 test("web static: ファイル名はサーバーが配る形（/static/<name>）だけ", () => {
-  for (const name of files) assert.match(name, /^[A-Za-z0-9_-]+\.(html|css|js|svg)$/, name);
+  for (const name of files) assert.match(name, /^[A-Za-z0-9_-]+\.(html|css|js|svg|png|webmanifest)$/, name);
+});
+
+test("web static: staticFileFor は png・webmanifest を Content-Type 付きで返し、表に無い拡張子・2 要素・名前の無いものは返さない", () => {
+  const dirs = { staticDir: "/s", templateSiteDir: "/t" };
+  assert.deepEqual(staticFileFor("/static/icon-192.png", dirs), { file: "/s/icon-192.png", contentType: "image/png" });
+  assert.deepEqual(staticFileFor("/static/manifest.webmanifest", dirs), {
+    file: "/s/manifest.webmanifest",
+    contentType: "application/manifest+json; charset=utf-8",
+  });
+  for (const path of ["/static/x.json", "/static/a/b.png", "/static/.png", "/static/../icon-192.png", "/static/icon.png.txt"]) {
+    assert.equal(staticFileFor(path, dirs), undefined, path);
+  }
 });
 
 test("web static: JS はすべて node --check を通る", () => {
@@ -236,4 +265,132 @@ test("web static: index.html に失敗のトーストの容れ物（role=alert�
   const html = read("index.html");
   assert.match(html, /<div class="toast-stack" id="toast" role="status"[^>]*hidden><\/div>/);
   assert.match(html, /<div class="toast-stack toast-stack-alert" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
+});
+
+// ===== ホーム画面（PWA。docs/plan/web-ui.md §11） =====
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** PNG を読む（フィルタ 0 の行だけ。make-icons.ts の書き方に合わせた最小のもの） */
+function decodePng(buf: Buffer): { width: number; height: number; colorType: number; pixels: Buffer } {
+  assert.ok(buf.subarray(0, 8).equals(PNG_SIGNATURE), "PNG のシグネチャ");
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let colorType = -1;
+  const idat: Buffer[] = [];
+  const types: string[] = [];
+  while (offset < buf.length) {
+    const length = buf.readUInt32BE(offset);
+    const type = buf.toString("ascii", offset + 4, offset + 8);
+    const body = buf.subarray(offset + 8, offset + 8 + length);
+    types.push(type);
+    if (type === "IHDR") {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      assert.equal(body[8], 8, "ビット深度");
+      colorType = body[9]!;
+    } else if (type === "IDAT") idat.push(body);
+    offset += 12 + length;
+  }
+  assert.equal(types[0], "IHDR");
+  assert.equal(types.at(-1), "IEND");
+  const channels = colorType === 6 ? 4 : 3;
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  assert.equal(raw.length, (stride + 1) * height);
+  const pixels = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    assert.equal(raw[y * (stride + 1)], 0, "フィルタ 0");
+    raw.copy(pixels, y * stride, y * (stride + 1) + 1, (y + 1) * (stride + 1));
+  }
+  return { width, height, colorType, pixels };
+}
+
+test("web static: index.html に manifest・favicon・theme-color 2 つ・apple の meta とアイコンがある", () => {
+  const html = read("index.html");
+  assert.match(html, /<link rel="manifest" href="\/static\/manifest\.webmanifest">/);
+  assert.match(html, /<link rel="icon" href="\/static\/app-icon\.svg" type="image\/svg\+xml">/);
+  assert.match(html, /<link rel="apple-touch-icon" href="\/static\/apple-touch-icon\.png">/);
+  assert.equal([...html.matchAll(/<meta name="theme-color" /g)].length, 2);
+  assert.match(html, /<meta name="apple-mobile-web-app-capable" content="yes">/);
+  assert.match(html, /<meta name="apple-mobile-web-app-status-bar-style" content="default">/);
+  assert.match(html, /<meta name="apple-mobile-web-app-title" content="self-agent">/);
+  // service worker は置かない（§11.3）
+  assert.doesNotMatch(html, /serviceWorker/);
+  for (const name of files.filter((n) => n.endsWith(".js"))) assert.doesNotMatch(read(name), /serviceWorker/, name);
+});
+
+test("web static: manifest は §11.1 の値で、アイコンは配るファイルを指す", () => {
+  const manifest = JSON.parse(read("manifest.webmanifest")) as Record<string, unknown>;
+  assert.equal(manifest.name, "self-agent");
+  assert.equal(manifest.short_name, "self-agent");
+  assert.equal(manifest.id, "/");
+  assert.equal(manifest.start_url, "/");
+  assert.equal(manifest.scope, "/");
+  assert.equal(manifest.display, "standalone");
+  assert.equal(manifest.background_color, "#0b0d14");
+  assert.equal(manifest.theme_color, "#11141c");
+  assert.equal(manifest.lang, "ja");
+  assert.equal("orientation" in manifest, false);
+  assert.deepEqual(manifest.icons, [
+    { src: "/static/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: "/static/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+    { src: "/static/icon-512-maskable.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+  ]);
+  for (const icon of manifest.icons as Array<{ src: string }>) assert.ok(files.includes(icon.src.replace("/static/", "")), icon.src);
+});
+
+test("web static: PNG のシグネチャと IHDR の大きさ。apple-touch-icon と maskable は透過なし", () => {
+  const sizes: Record<string, [number, number]> = {
+    "apple-touch-icon.png": [180, 2],
+    "icon-192.png": [192, 6],
+    "icon-512.png": [512, 6],
+    "icon-512-maskable.png": [512, 2],
+  };
+  for (const [name, [size, colorType]] of Object.entries(sizes)) {
+    const png = decodePng(readFileSync(join(STATIC_DIR, name)));
+    assert.equal(png.width, size, name);
+    assert.equal(png.height, size, name);
+    assert.equal(png.colorType, colorType, name);
+  }
+});
+
+test("web static: maskable は中央 80% の円の外側が地の色（#11141c）だけ", () => {
+  const { width, pixels } = decodePng(readFileSync(join(STATIC_DIR, "icon-512-maskable.png")));
+  const c = width / 2;
+  const r = width * 0.4;
+  let outside = 0;
+  for (let y = 0; y < width; y++) {
+    for (let x = 0; x < width; x++) {
+      const dx = x + 0.5 - c;
+      const dy = y + 0.5 - c;
+      if (dx * dx + dy * dy <= r * r) continue;
+      outside++;
+      const i = (y * width + x) * 3;
+      assert.deepEqual([pixels[i], pixels[i + 1], pixels[i + 2]], [0x11, 0x14, 0x1c], `${x},${y}`);
+    }
+  }
+  assert.ok(outside > 0);
+});
+
+test("web static: scripts/make-icons.ts の出力が commit したものと一致する（SVG は全体、PNG は IHDR とピクセル）", (t) => {
+  const out = mkdtempSync(join(tmpdir(), "make-icons-"));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL("../scripts/make-icons.ts", import.meta.url));
+  const result = spawnSync(process.execPath, [script, "--out", out], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readdirSync(out).sort(), [...ICON_FILES].sort());
+  for (const name of ICON_FILES) {
+    const made = readFileSync(join(out, name));
+    const committed = readFileSync(join(STATIC_DIR, name));
+    if (name.endsWith(".svg")) {
+      assert.equal(made.toString("utf8"), committed.toString("utf8"), name);
+      continue;
+    }
+    // deflate の出力は zlib の版で変わりうるので、比べるのは中身
+    const a = decodePng(made);
+    const b = decodePng(committed);
+    assert.deepEqual([a.width, a.height, a.colorType], [b.width, b.height, b.colorType], name);
+    assert.ok(a.pixels.equals(b.pixels), `${name}: npm run make-icons で作り直す`);
+  }
 });

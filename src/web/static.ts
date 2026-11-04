@@ -1,5 +1,5 @@
 // Web UI の画面のファイルの配信（docs/plan/web-ui.md §3.3）。`/` は staticDir の index.html、`/static/<name>` は staticDir のファイル
-// （base.css・icons.svg だけは templates/web/site/ のものを複製せずに配る）。名前は 1 要素だけで、html・css・js・svg のものだけを返す。
+// （base.css・icons.svg だけは templates/web/site/ のものを複製せずに配る）。名前は 1 要素だけで、html・css・js・svg・png・webmanifest のものだけを返す。
 // `/static/*` は認証なしで配る（秘密は無く、未認証の /login も base.css を読む）。`/` は認証が要る（server.ts）
 import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -11,6 +11,8 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   css: "text/css; charset=utf-8",
   js: "text/javascript; charset=utf-8",
   svg: "image/svg+xml; charset=utf-8",
+  png: "image/png",
+  webmanifest: "application/manifest+json; charset=utf-8",
 };
 
 /** templates/web/site/ から配るもの */
@@ -18,7 +20,7 @@ const TEMPLATE_FILES: ReadonlySet<string> = new Set(["base.css", "icons.svg"]);
 
 const STATIC_PREFIX = "/static/";
 /** `..`・ドットファイル・拡張子の無いもの・表に無い拡張子は合わない */
-const STATIC_NAME = /^[A-Za-z0-9_-]+\.(html|css|js|svg)$/;
+const STATIC_NAME = /^[A-Za-z0-9_-]+\.(html|css|js|svg|png|webmanifest)$/;
 
 export type StaticDirs = {
   /** `src/web/static` */
@@ -33,7 +35,7 @@ export function isStaticAssetPath(path: string): boolean {
 }
 
 /**
- * パスに対応するファイル。`/` は index.html、`/static/<name>` は name が `[A-Za-z0-9_-]+.(html|css|js|svg)` のものだけ。
+ * パスに対応するファイル。`/` は index.html、`/static/<name>` は name が `[A-Za-z0-9_-]+.(html|css|js|svg|png|webmanifest)` のものだけ。
  * それ以外は undefined（404）
  */
 export function staticFileFor(path: string, dirs: StaticDirs): { file: string; contentType: string } | undefined {
