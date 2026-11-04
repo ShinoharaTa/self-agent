@@ -276,7 +276,7 @@
       },
       (err) => {
         if (button) button.disabled = false;
-        failed(err, key, () => act(button, path, key, then));
+        failed(err, key, () => act(null, path, key, then));
       },
     );
   }
@@ -487,11 +487,7 @@
       cancellable
         ? {
             label: "取り消す",
-            run: () =>
-              SA.api.post("/api/cc/sends/" + sendId + "/cancel", {}, { quiet: true }).then(
-                () => toast("取り消しました"),
-                (err) => toast(err && err.status === 409 ? "この操作は古くなっています（届けている途中か、終わっています）" : (err && err.toast) || "取り消せませんでした"),
-              ),
+            run: () => cancelCcSend(sendId, null, null),
           }
         : undefined,
     );
@@ -724,23 +720,43 @@
   function ccFollowFact(sessionId, s) {
     if (!s.follow) return kv("返事", "Discord には戻していません（Discord から頼むと戻します）");
     const stop = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "追いかけをやめる" });
-    stop.addEventListener("click", () => {
-      stop.disabled = true;
-      SA.api.post("/api/cc/sessions/" + encodeURIComponent(sessionId) + "/unfollow", {}, { quiet: true }).then(
-        () => {
-          toast("追いかけをやめました");
-          store.load.ccSession(sessionId);
-        },
-        (err) => {
-          stop.disabled = false;
-          if (err && err.status === 409) toast("この操作は古くなっています");
-          else if (err && err.toast) toast(err.toast);
-          store.load.ccSession(sessionId);
-        },
-      );
-    });
+    stop.addEventListener("click", () => unfollowCc(sessionId, stop));
     const since = s.follow.since ? "（" + ago(s.follow.since) + "から）" : "";
     return kv("返事", el("span", {}, ["Discord に戻しています" + since + " ", stop]));
+  }
+
+  /** [追いかけをやめる]。button は押したもの（[もう一度] からは null） */
+  function unfollowCc(sessionId, button) {
+    if (button) button.disabled = true;
+    SA.api.post("/api/cc/sessions/" + encodeURIComponent(sessionId) + "/unfollow", {}, { quiet: true }).then(
+      () => {
+        toast("追いかけをやめました");
+        store.load.ccSession(sessionId);
+      },
+      (err) => {
+        if (button) button.disabled = false;
+        if (err && err.status === 409) toast("この操作は古くなっています");
+        else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => unfollowCc(sessionId, null) });
+        store.load.ccSession(sessionId);
+      },
+    );
+  }
+
+  /** 送信待ちの取り消し。sessionId があれば終わった後にそのセッションを読み直す。button は押したもの（[もう一度] からは null） */
+  function cancelCcSend(sendId, sessionId, button) {
+    if (button) button.disabled = true;
+    SA.api.post("/api/cc/sends/" + sendId + "/cancel", {}, { quiet: true }).then(
+      () => {
+        toast("取り消しました");
+        if (sessionId) store.load.ccSession(sessionId);
+      },
+      (err) => {
+        if (button) button.disabled = false;
+        if (err && err.status === 409) toast("この操作は古くなっています（届けている途中か、終わっています）");
+        else toast((err && err.toast) || "取り消せませんでした", null, { level: "error", retry: () => cancelCcSend(sendId, sessionId, null) });
+        if (sessionId) store.load.ccSession(sessionId);
+      },
+    );
   }
 
   /** 送信の状態の行。送信待ちなら [取り消す] */
@@ -757,21 +773,7 @@
     if (pending.state === "queued" || pending.state === "delivering") children.unshift(el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }));
     if (pending.state === "queued") {
       const cancel = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "取り消す" });
-      cancel.addEventListener("click", () => {
-        cancel.disabled = true;
-        SA.api.post("/api/cc/sends/" + pending.id + "/cancel", {}, { quiet: true }).then(
-          () => {
-            toast("取り消しました");
-            store.load.ccSession(sessionId);
-          },
-          (err) => {
-            cancel.disabled = false;
-            if (err && err.status === 409) toast("この操作は古くなっています（届けている途中か、終わっています）");
-            else if (err && err.toast) toast(err.toast);
-            store.load.ccSession(sessionId);
-          },
-        );
-      });
+      cancel.addEventListener("click", () => cancelCcSend(pending.id, sessionId, cancel));
       children.push(cancel);
     }
     return el("div", { class: "cc-send-state" + cls, "data-cc-pending": sessionId, "aria-live": "polite" }, children);
@@ -826,8 +828,8 @@
         store.load.ccSession(sessionId);
         store.load.cc({ quiet: true });
       } catch (err) {
-        // 本文は入力欄に残す
-        if (err && err.toast) toast((err.code && CC_SEND_ERRORS[err.code]) || err.toast);
+        // 本文は入力欄に残す。[もう一度] は入力欄の今の本文を送り直す
+        if (err && err.toast) toast((err.code && CC_SEND_ERRORS[err.code]) || err.toast, null, { level: "error", retry: submit });
       } finally {
         sending = false;
         update();
@@ -886,7 +888,9 @@
   /** 許可の残り時間を 1 秒ごとに進める（GUIDELINES §6.1。描き直さずに文だけ。カードが無い・隠れたタブでは何もしない） */
   setInterval(() => {
     if (document.visibilityState !== "visible") return;
-    for (const node of document.querySelectorAll("[data-permission-left]")) {
+    const nodes = document.querySelectorAll("[data-permission-left]");
+    if (nodes.length === 0) return;
+    for (const node of nodes) {
       const text = permissionLeftText(node.getAttribute("data-permission-left"));
       if (node.textContent !== text) node.textContent = text;
     }

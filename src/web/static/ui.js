@@ -145,11 +145,14 @@
   // ===== トースト（GUIDELINES §5。知らせは #toast、失敗は #toast-alert） =====
   // 知らせ（role="status"）は多くて 2 つ。新しいトーストは下に足す。action の無いトーストは次のトーストで消し、action（[取り消す] など）の
   // 付いたものは押すか閉じるまで残す。2 つを超えるときだけ、いちばん古いもの（action 付きでも）を消す。action の無いものは TOAST_MS で消え、
-  // hover・focus の間は止めて、離れたら TOAST_MS から数え直す。
+  // マウスが乗っている間（pointerType が mouse のときだけ。指のタップでは止めない）と focus の間は止めて、離れたら TOAST_MS から数え直す。
   // 失敗（opts.level === "error"）は #toast-alert（role="alert"）に入れて自動で消さない。opts.retry があれば [もう一度] を付ける。こちらも多くて 2 つ
   const TOAST_MS = 4000;
-  /** 消える動きの長さ（app.css の --dur-short の 65%）。この後に DOM から外す */
-  const TOAST_LEAVE_MS = 130;
+  /**
+   * 消える動き（長さは app.css の .is-leaving）の transitionend で DOM から外す。transition が無い（prefers-reduced-motion・
+   * 非対応）と transitionend が来ないので、この時間で必ず外す保険（動きの長さより長く）
+   */
+  const TOAST_LEAVE_FALLBACK_MS = 400;
   /** 出ているもの（古い順）。{ node, box, action, auto, timer, hover, focus } */
   let toasts = [];
 
@@ -157,11 +160,19 @@
     if (!toasts.includes(item)) return;
     clearTimeout(item.timer);
     toasts = toasts.filter((t) => t !== item);
-    item.node.classList.add("is-leaving");
-    setTimeout(() => {
+    let done = false;
+    const detach = () => {
+      if (done) return;
+      done = true;
       item.node.remove();
       if (item.box.childElementCount === 0) item.box.hidden = true;
-    }, TOAST_LEAVE_MS);
+    };
+    // 中のボタンの transform の transitionend も上がってくるので、トーストそのもののものだけを使う
+    item.node.addEventListener("transitionend", (event) => {
+      if (event.target === item.node) detach();
+    });
+    setTimeout(detach, TOAST_LEAVE_FALLBACK_MS);
+    item.node.classList.add("is-leaving");
   }
 
   /** 自動で消すものだけ、hover・focus が無ければ TOAST_MS 後に消す（あれば止めたまま） */
@@ -200,11 +211,13 @@
     }
     children.push(close);
     item.node = el("div", { class: error ? "toast toast-alert" : "toast" }, children);
-    item.node.addEventListener("mouseenter", () => {
+    item.node.addEventListener("pointerenter", (event) => {
+      if (event.pointerType !== "mouse") return;
       item.hover = true;
       armToast(item);
     });
-    item.node.addEventListener("mouseleave", () => {
+    item.node.addEventListener("pointerleave", (event) => {
+      if (event.pointerType !== "mouse") return;
       item.hover = false;
       armToast(item);
     });
@@ -261,7 +274,9 @@
     cancel.addEventListener("click", onCancel);
     dialog.addEventListener("close", onClose);
     openDialog(dialog);
-    ok.focus();
+    // 危険な操作は最初のフォーカスを [やめる] に（Enter で実行しない。GUIDELINES §5）
+    if (opts.danger) cancel.focus();
+    else ok.focus();
   }
 
   SA.ui = { el, icon, count, elapsed, clock, hm, dateTime, dateOf, shortTime, linkify, toast, confirm, openDialog, closeDialog };

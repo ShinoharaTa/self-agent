@@ -125,13 +125,18 @@
 12. 受け入れ: iPhone 実機で、下タブがインジケータに隠れない・ステータスバーの色が合う（3 テーマ）・会話の本文 16px・入力で拡大しない・タップの点滅と hover の残りが無い・タブの × が押せる・タイトルバーに接続の点と鈴が出る・実行中に下タブにスピナー。PC は見た目が変わらない。`npm test`・inline なしの grep。
 
 ### UI-2 押した感と動き（#16〜#20）（済）
-触る: `app.css`、`ui.js`、`index.html`（失敗のトーストの容れ物）、`views.js`（許可の残り時間・失敗のトーストの呼び出し）、`chat.js`（要約のトーストを消す）。
+触る: `app.css`、`ui.js`、`index.html`（失敗のトーストの容れ物）、`views.js`（許可の残り時間・失敗のトーストの呼び出し）、`chat.js`（要約のトーストを消す・失敗のトーストの呼び出し）、`workbench.js`（失敗のトーストの呼び出し）。
 1. `app.css` の `:root` に `--dur-micro: 120ms; --dur-short: 200ms; --dur-long: 300ms; --ease-out: cubic-bezier(0.23, 1, 0.32, 1)`。
-2. `.btn:active, .act-btn:active, .tab:active, .sbar-item:active, .welcome-link:active { transform: scale(0.97) }`（`transition: transform var(--dur-micro) var(--ease-out)`）。`.sb-row:active { background: var(--muted) }`。
+2. `.btn:active, .act-btn:active, .tab:has(.tab-label:active), .panel-tab:active, .sbar-item:active, .welcome-link:active, .cmd-center:active { transform: scale(0.97) }`（`transition: transform var(--dur-micro) var(--ease-out)`。タブはラベルを押したときだけで、× では縮めない）。`.sb-row:active, .master-item:active, .is-clickable:active { background: var(--muted) }`。
 3. ドロワー: 開く `transform var(--dur-long) var(--ease-out)`、`.wb:not(.is-drawer-open) .wb-sidebar` は 200ms。`dialog[open]` と `.toast` に `@starting-style`（opacity 0・scale(0.98) / translateY(8px)）、閉じる側は `transition` を 130ms。パレットには付けない。
-4. `index.html`: `<div class="toast-stack toast-stack-alert" id="toast-alert" role="alert" hidden>` を `#toast` の次に。`ui.js` の `toast(text, action, opts)` に `opts.level === "error"` で `#toast-alert` に入れ、`action` が無くても `opts.retry` があれば [もう一度] を付け、自動で消さない。`.toast-alert` は左 2px の `--danger`。
-5. `ui.js`: `mouseenter` / `focusin` で `clearTimeout`、`mouseleave` / `focusout` で残りを再開（残り時間は `TOAST_MS` でよい）。
-6. `views.js`: 失敗の `toast(...)` 呼び出し（`act` の失敗・読み直しの失敗）を `level: "error"` に。許可のカードの「残り m 分 s 秒」を `setInterval` 1 秒で文字だけ更新（`data-permission-left` の `textContent`。カードが消えたら `clearInterval`）。
+4. `index.html`: `<div class="toast-stack" id="toast-alert" role="alert" hidden>` を `#toast` の次に（2 つを `.toast-region` で囲み、置き場所は囲みが持つ。重ならないため）。`ui.js` の `toast(text, action, opts)` に `opts.level === "error"` で `#toast-alert` に入れ、`action` が無くても `opts.retry` があれば [もう一度] を付け、自動で消さない。`.toast-alert` は左 2px の `--danger`。消えるときは `.is-leaving` を付け、トーストそのものの `transitionend`（動きが無いときは保険の 400ms）で外す（長さは CSS だけが持つ）。
+5. `ui.js`: `pointerenter`（`pointerType === "mouse"` のときだけ。指のタップでは止めない）/ `focusin` で `clearTimeout`、`pointerleave` / `focusout`（焦点がトーストの外へ出たとき）で `TOAST_MS` から数え直す。
+6. 操作の失敗のトーストを `{ level: "error", retry }` に（retry は押したボタンを掴まずに同じ操作をもう一度。自然に作れないものは retry なし）:
+   - `views.js`: タスク・リマインド・記憶の操作（`act`。retry は `act(null, …)`）・GitHub の [対応]・[起動して送る]・CC の許可への回答・送信待ちの取り消し・[追いかけをやめる]・CC への送信（retry は入力欄の今の本文を送り直す）。
+   - `chat.js`: `opFailed`（/wait・/close・/renew・/close の確定。/close・/renew の retry は確認を挟まずに始め直す）・[中断]・[続ける]・送信（retry は入力欄の今の本文）。
+   - `workbench.js`: /new と CC の起動の失敗（ダイアログが開いたままで、押し直せるので retry なし）、CC の起動の前のプロジェクトの読み込みの失敗（retry は開き直し）。
+   - **知らせのまま残すもの**: 404・409 の「古くなっています」（失敗ではなく、読み直しで画面が正しくなる）・入力の検査（「1,900 字までです」など。直すのは入力欄）・`api.js` の読み直しの失敗（ポーリングは間隔を延ばして自動で戻り、続く失敗の最初の 1 回だけ出す。消えないトーストにすると戻った後も残る）・画面側に失敗の表示がある単発の読み込み（ナレッジの本文・プロジェクトのファイルなど。画面の空の表示が失敗を示す）。
+   - 許可のカードの「残り m 分 s 秒」は `setInterval` 1 秒で文字だけ更新（`data-permission-left` の `textContent`）。interval は chat.js の経過時間と同じく常に 1 つで、カードが無い・隠れたタブでは何もしない（カードごとの `clearInterval` は持たない）。
 7. `chat.js`: 187・209 の「要約しています…」のトーストを消す（spinner の行が既にある）。
 8. 受け入れ: 全部の押せるものが押下で縮む。ドロワー 300 / 200。ダイアログ・トーストが出入りし、閉じる方が速い。パレットは動かない。失敗のトーストが `#toast-alert` に出て消えず [もう一度] が効く。許可の残り時間が 1 秒ずつ減る。reduced-motion で崩れない。
 

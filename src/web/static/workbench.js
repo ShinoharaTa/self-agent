@@ -765,7 +765,7 @@
         if (err && err.code === "empty_title") {
           $("new-error").hidden = false;
           $("new-title").focus();
-        } else if (err && err.toast) toast((err.code && NEW_ERRORS[err.code]) || err.toast);
+        } else if (err && err.toast) toast((err.code && NEW_ERRORS[err.code]) || err.toast, null, { level: "error" });
       } finally {
         creating = false;
         $("dlg-new-ok").disabled = false;
@@ -805,7 +805,7 @@
     try {
       data = await SA.api.get("/api/cc/projects", { quiet: true });
     } catch (err) {
-      toast(err && err.toast ? err.toast : "サーバーにつながりません");
+      toast(err && err.toast ? err.toast : "サーバーにつながりません", null, { level: "error", retry: ccStart });
       return;
     }
     const projects = Array.isArray(data && data.projects) ? data.projects.filter((p) => p && typeof p.name === "string") : [];
@@ -858,7 +858,7 @@
       } catch (err) {
         const known = err && err.code && CC_START_ERRORS[err.code];
         if (known) ccStartError(known);
-        else if (err && err.toast) toast(err.toast);
+        else if (err && err.toast) toast(err.toast, null, { level: "error" });
       } finally {
         ccStarting = false;
         $("dlg-cc-start-ok").disabled = false;

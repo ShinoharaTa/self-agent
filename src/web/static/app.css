@@ -194,9 +194,10 @@ body {
   transition: transform var(--dur-micro) var(--ease-out);
 }
 
+/* タブはラベルを押したときだけ縮める（× を押してタブ全体が縮まないように） */
 .btn:not(:disabled):active,
 .act-btn:active,
-.tab:active,
+.tab:has(.tab-label:active),
 .panel-tab:active,
 .sbar-item:active,
 .welcome-link:active,
