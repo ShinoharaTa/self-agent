@@ -111,14 +111,14 @@
 
 ### UI-1 スマホの基礎（#5〜#15）（済。#15 の使用量の表は UI-5 に回した）
 触る: `index.html`、`app.css`、`workbench.js`（theme-color の 5 行 + タイトルバー右の点と鈴）、`chat.js`（`enterkeyhint`）、`sidebar.js`（下タブの実行中）。
-1. `index.html`: `<meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">` と dark `#11141c` を `color-scheme` の次に。`#new-title`・`#cc-start-title` に `enterkeyhint="done"`、`#palette-input` に `enterkeyhint="search"`。
-2. `app.css`: `html, body { overscroll-behavior: none }`。`.tl`・`.wb-sidebar`・`.wb-panel`・`.palette-list`・`.master` に `overscroll-behavior: contain`。`.act-btn`・`.tab`・`.sb-row`・`.panel-tab`・`.sbar-item`・`.btn` に `touch-action: manipulation; user-select: none; -webkit-user-select: none`。
+1. `index.html`: `<meta name="theme-color">` を light・dark の media で 2 つ、`color-scheme` の次に。値は 2 つとも既定の `data-theme="dark"` に合わせた `#11141c`（OS に合わせるときの書き分けは 8 の JS）。`#new-title`・`#cc-start-title` に `enterkeyhint="done"`、`#palette-input` に `enterkeyhint="search"`。
+2. `app.css`: `html, body { overscroll-behavior: none }`。実際のスクロール容器 `.ed-scroll`・`.sb-body`・`.panel-body`・`.out-list`・`.master`・`.palette-list` に `overscroll-behavior: contain`。`.act-btn`・`.tab`・`.sb-row`・`.panel-tab`・`.sbar-item`・`.btn` に `touch-action: manipulation; user-select: none; -webkit-user-select: none`。
 3. `app.css` の 1023 以下: `.wb` の最後の行を `calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px))`、`.wb-activity` に `padding-bottom: env(safe-area-inset-bottom, 0px)`、`.wb-titlebar` に `padding-top: env(safe-area-inset-top, 0px)` と行の高さの加算、`.toast-stack`・`.wb-sidebar` の `bottom` に同じ加算。
 4. `app.css`: 7 箇所の `@media (hover: hover)` を `and (pointer: fine)` に。base.css の `.btn-*:hover` は `@media (hover: hover) and (pointer: coarse) { .btn-primary:hover, .btn-secondary:hover, .btn-danger:hover { opacity: 1 } .btn-ghost:hover { background: transparent } }` で打ち消す。
 5. `app.css`: `@media (pointer: coarse) { .msg-text, .kb-body（ナレッジの本文のクラス）, .composer-input { font-size: var(--font-base) } }`。
-6. `app.css`: `@media (pointer: coarse) { .tab-close { position: relative } .tab-close::before { content: ""; position: absolute; inset: -8px } }`。
+6. `app.css`: `.tab-close` は `pointer: coarse` で既に 44px（`--tap`）なので `::before` で当たりを広げない（広げるとタブの題名の端に食い込む）。`.tab:hover .tab-close` は `(hover: hover) and (pointer: fine)` の中に。
 7. `app.css`: `.toast > span, .notice-item > span:not(.out-time) { min-width: 0; overflow-wrap: anywhere }`。
-8. `workbench.js` の `applyTheme`: `meta[name="theme-color"]` 2 つの `content` を `dark` なら `#11141c`、`light` なら `#ffffff`、`system` なら media ごとの元の値に。
+8. `workbench.js` の `applyTheme`: `meta[name="theme-color"]` 2 つの `content` を `dark` なら `#11141c`、`light` なら `#ffffff`、`system` のときだけ media ごとの値（light `#ffffff`・dark `#11141c`）に。
 9. `workbench.js`: `.wb-title-actions` の先頭に、接続の `.dot`（既定の人格の Bot。押すと状態のタブ）と鈴（押すとパネルの知らせ。`recent24h` の数）を足し、`app.css` で ≥640px は `display: none`。`sidebar.js`: 実行中が 1 以上なら下タブ「会話」の `.act-count` の位置に `.spinner-sm`。
 10. `chat.js`: composer の `textarea` に `enterkeyhint`（タッチが主なら `"enter"`、それ以外 `"send"`）。
 11. 受け入れ: iPhone 実機で、下タブがインジケータに隠れない・ステータスバーの色が合う（3 テーマ）・会話の本文 16px・入力で拡大しない・タップの点滅と hover の残りが無い・タブの × が押せる・タイトルバーに接続の点と鈴が出る・実行中に下タブにスピナー。PC は見た目が変わらない。`npm test`・inline なしの grep。
