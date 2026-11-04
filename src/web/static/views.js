@@ -387,7 +387,7 @@
         : table(["#", "題名", "期限", shown === "open" ? "知らせ" : "閉じた日", { text: "", cls: "th-actions" }], rows);
     container.replaceChildren(
       head,
-      scroll([body, el("p", { class: "meta", text: "タスクは #inbox か #tasks の会話で頼むと増え、変わります。" })]),
+      scroll([body, el("p", { class: "meta", text: "タスクの追加・変更は #inbox か #tasks の会話で頼みます。" })]),
     );
   }
 
@@ -442,7 +442,7 @@
         : table(["次の時刻", "内容", "繰り返し", "頼んだ場所", { text: "", cls: "th-actions" }], rows);
     container.replaceChildren(
       toolbar("bell", "リマインド", [el("span", { class: "meta", text: list.length + " 件" })]),
-      scroll([body, el("p", { class: "meta", text: "知らせのメッセージのボタン（済んだ、10 分後、1 時間後）は Discord にだけあります。" })]),
+      scroll([body, el("p", { class: "meta", text: "済んだ、10 分後、1 時間後は Discord の知らせのボタンで選びます。" })]),
     );
   }
 
@@ -502,13 +502,17 @@
     return Object.prototype.hasOwnProperty.call(GITHUB_FAILURES, kind) ? GITHUB_FAILURES[kind] : String(kind);
   }
 
-  /** 取得の状態の 1 行（最後の取得・失敗。止めている間は失敗の後の括弧に。「・」は 2 要素まで） */
-  function githubFetchLine(g) {
+  /** 取得の状態（line は最後の取得・失敗の「・」2 要素まで、paused は止めている間の文か null） */
+  function githubFetchParts(g) {
     const parts = [g && g.lastFetchAt ? "最後の取得 " + SA.ui.shortTime(g.lastFetchAt) : "まだ取得していません"];
-    const paused = g && g.pausedUntil ? SA.ui.shortTime(g.pausedUntil) + " まで止めています" : null;
-    if (g && g.failure) parts.push("失敗: " + githubFailureText(g.failure) + (paused ? "（" + paused + "）" : ""));
-    else if (paused) parts.push(paused);
-    return parts.join("・");
+    if (g && g.failure) parts.push("失敗: " + githubFailureText(g.failure));
+    return { line: parts.join("・"), paused: g && g.pausedUntil ? SA.ui.shortTime(g.pausedUntil) + " まで止めています" : null };
+  }
+
+  /** 取得の状態の 1 行。止めている間は失敗の後の括弧に */
+  function githubFetchLine(g) {
+    const { line, paused } = githubFetchParts(g);
+    return paused ? line + "（" + paused + "）" : line;
   }
 
   /** [対応] と [起動して送る] の結果（サーバーの文をトーストに。積んだら [やめる]、セッションが無ければ起動の確認） */
@@ -754,8 +758,8 @@
     queued: "届け待ち。入力待ちになったら届けます",
     delivering: "届けています…",
     delivered: "届けました",
-    unconfirmed: "届いたかを確かめられませんでした。画面で確かめてください。やり直しはしません",
-    failed: "送れませんでした。セッションが終わったか、別の Claude Code に変わっています",
+    unconfirmed: "届いたかを確かめられませんでした。画面で確かめてください（やり直しはしません）",
+    failed: "送れませんでした。セッションが終わったか、送り先の Claude Code ではなくなっています",
     gave_up: "入力待ちにならなかったため、届けるのをやめました",
     cancelled: "送るのをやめました",
   };
@@ -822,7 +826,7 @@
         : CC_SEND_STATES[pending.state] || String(pending.state);
     const cls = pending.state === "delivered" ? " is-done" : pending.state === "unconfirmed" || pending.state === "failed" || pending.state === "gave_up" ? " is-warning" : "";
     const reply = pending.state === "delivered" && pending.replyState ? CC_REPLY_STATES[pending.replyState] : null;
-    const children = [el("span", { text: "本文 #" + pending.id + ": " + text + (reply ? "・" + reply : "") })];
+    const children = [el("span", { text: "#" + pending.id + " " + text + (reply ? "・" + reply : "") })];
     if (pending.state === "queued" || pending.state === "delivering") children.unshift(el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }));
     if (pending.state === "queued") {
       const cancel = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "やめる" });
@@ -1243,7 +1247,9 @@
 
   function githubLine(g) {
     if (!g || !g.enabled) return "無効";
-    return "有効（" + githubFetchLine(g) + "）";
+    // 括弧を重ねない（止めている間は括弧の外に）
+    const { line, paused } = githubFetchParts(g);
+    return "有効（" + line + "）" + (paused ? "。" + paused : "");
   }
 
   function renderStatus(container) {

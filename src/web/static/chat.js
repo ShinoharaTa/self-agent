@@ -273,7 +273,7 @@
       el("div", { class: "card-head" }, [el("h3", { text: "閉じる前の確認" }), el("span", { class: "meta", text: "Discord でも選べます" })]),
       el("p", { class: "meta", text: "要約" }),
       el("div", { class: "msg-text", text: String(draft.summary || "") }),
-      el("p", { class: "meta", text: "タスクにする候補" }),
+      el("p", { class: "meta", text: "やることの候補" }),
       list,
       el("div", { class: "msg-actions" }, tasks.length === 0 ? [none] : buttons),
     ]);

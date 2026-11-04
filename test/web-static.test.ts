@@ -301,7 +301,7 @@ function stringLiterals(js: string): string[] {
   return [...code.matchAll(/"((?:[^"\\\n]|\\.)*)"/g)].map((m) => m[1] ?? "");
 }
 
-test("web static: 画面の言葉に「！」・ツール名・HTTP の番号が主役の文・語彙の表で使わない語が無い", () => {
+test("web static: 画面の言葉に「！」「？」「〜」・ツール名・HTTP の番号が主役の文・語彙の表で使わない語が無い", () => {
   const TOOL_NAME = /\b[a-z]+_(add|list|complete|update|report|open|save|search|get|delete|forget|files|set|cancel)\b/;
   const HTTP_STATUS = /^[1-5]\d\d\s*[:：]|[（(][1-5]\d\d[）)]|\bHTTP\b/;
   const AVOID = /送信|キャンセル|クローズ|\bOK\b|--json|SELF_AGENT_|settings\.json/;
@@ -312,9 +312,9 @@ test("web static: 画面の言葉に「！」・ツール名・HTTP の番号が
     // 応答の status をそのままトーストの文にしない
     assert.doesNotMatch(js, /toast\s*=\s*res\.status|toast\([^;]*\.status\s*\+/, name);
   }
-  texts.push(["index.html", read("index.html").replace(/<!doctype[^>]*>/i, "")]);
+  texts.push(["index.html", read("index.html").replace(/<!doctype[^>]*>/i, "").replace(/<!--[\s\S]*?-->/g, "")]);
   for (const [name, text] of texts) {
-    assert.doesNotMatch(text, /[！!]/, `${name}: ${text}`);
+    assert.doesNotMatch(text, /[！!？〜]/, `${name}: ${text}`);
     assert.doesNotMatch(text, TOOL_NAME, `${name}: ${text}`);
     assert.doesNotMatch(text, HTTP_STATUS, `${name}: ${text}`);
     assert.doesNotMatch(text, AVOID, `${name}: ${text}`);

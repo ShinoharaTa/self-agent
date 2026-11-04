@@ -263,7 +263,7 @@
       SA.app.ccStart();
     });
     const note = store.cc.unreadable
-      ? "一覧を読めませんでした。"
+      ? "一覧を読めませんでした。しばらくして読み直します。"
       : store.cc.stale
         ? "一覧を読めませんでした。前に読めた一覧です。"
         : null;
