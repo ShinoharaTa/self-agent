@@ -250,10 +250,14 @@
   }
 
   // ===== タスク・リマインド・記憶の操作（W4） =====
-  /** 操作が通らなかったとき: 404・409 は「古くなっています」、それ以外は request の文。どちらも一覧を読み直す */
-  function failed(err, key) {
+  /**
+   * 操作が通らなかったとき: 404・409 は「古くなっています」、それ以外は request の文を失敗のトースト（消えない。retry があれば [もう一度]）で。
+   * どちらも一覧を読み直す
+   */
+  function failed(err, key, retry) {
     const stale = err && (err.status === 404 || err.status === 409);
-    toast(stale ? "この操作は古くなっています" : (err && err.toast) || "操作に失敗しました");
+    if (stale) toast("この操作は古くなっています");
+    else toast((err && err.toast) || "操作に失敗しました", null, { level: "error", retry });
     store.reload(key);
   }
 
@@ -272,7 +276,7 @@
       },
       (err) => {
         if (button) button.disabled = false;
-        failed(err, key);
+        failed(err, key, () => act(button, path, key, then));
       },
     );
   }
@@ -503,7 +507,7 @@
       },
       (err) => {
         if (button) button.disabled = false;
-        failed(err, "github");
+        failed(err, "github", () => githubHandoff(null, n, action));
       },
     );
   }
@@ -873,6 +877,21 @@
     return (sec >= 60 ? Math.floor(sec / 60) + " 分 " : "") + (sec % 60) + " 秒";
   }
 
+  /** 許可のカードの見出しの残り時間の文 */
+  function permissionLeftText(iso) {
+    const left = remainingText(iso);
+    return left ? "残り " + left : "まもなく時間切れ";
+  }
+
+  /** 許可の残り時間を 1 秒ごとに進める（GUIDELINES §6.1。描き直さずに文だけ。カードが無い・隠れたタブでは何もしない） */
+  setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    for (const node of document.querySelectorAll("[data-permission-left]")) {
+      const text = permissionLeftText(node.getAttribute("data-permission-left"));
+      if (node.textContent !== text) node.textContent = text;
+    }
+  }, 1000);
+
   function answerCcPermission(sessionId, p, decision) {
     if (ccPermissionBusy.has(p.id)) return;
     ccPermissionBusy.add(p.id);
@@ -882,7 +901,7 @@
       (err) => {
         if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
         else if (err && err.status === 404) toast("この要求はもうありません");
-        else if (err && err.toast) toast(err.toast);
+        else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => answerCcPermission(sessionId, p, decision) });
       },
     ).then(() => {
       ccPermissionBusy.delete(p.id);
@@ -895,10 +914,13 @@
   function ccPermissionCard(sessionId, p, rc) {
     if (!p || typeof p.id !== "number") return null;
     const pending = p.state === "pending";
-    const left = pending ? remainingText(p.expiresAt) : null;
     const head = el("div", { class: "card-head" }, [
       el("h3", { text: pending ? "許可を待っています" : "許可の要求" }),
-      el("span", { class: "meta", text: pending ? (left ? "残り " + left : "まもなく時間切れ") : ago(p.resolvedAt || p.createdAt) }),
+      el("span", {
+        class: "meta",
+        "data-permission-left": pending && typeof p.expiresAt === "string" ? p.expiresAt : null,
+        text: pending ? permissionLeftText(p.expiresAt) : ago(p.resolvedAt || p.createdAt),
+      }),
     ]);
     const facts = [
       el("p", { class: "meta" }, [el("span", { class: "mono", text: String(p.toolName) }), p.permissionMode ? " ・ " + p.permissionMode : null]),
