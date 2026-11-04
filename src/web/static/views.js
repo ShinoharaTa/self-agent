@@ -898,7 +898,8 @@
       counter.textContent = n.toLocaleString("en-US") + " / 2,000";
       counter.classList.toggle("is-over", n > CC_MESSAGE_MAX);
       sendBtn.disabled = sending || ta.value.trim() === "";
-      sendBtn.title = sending ? "送っています" : ta.value.trim() === "" ? "本文を入れると送れます" : "";
+      if (sendBtn.disabled) sendBtn.title = sending ? "送っています" : "本文を入れると送れます";
+      else sendBtn.removeAttribute("title");
     };
     update();
     ta.addEventListener("input", () => {
@@ -1036,6 +1037,8 @@
     const rule = typeof p.alwaysRule === "string" && p.alwaysRule ? p.alwaysRule : null;
     const note = typeof p.alwaysNote === "string" && p.alwaysNote ? "（" + p.alwaysNote + "）" : null;
     if (!pending) {
+      // 終わった要求のチェックは覚えておかない
+      ccPermissionAlways.delete(p.id);
       if (rule && p.state === "allowed_always") {
         facts.push(el("p", { class: "meta cc-permission-rule" }, ["常に許可したルール: ", el("code", { class: "mono", text: rule }), note]));
       }
@@ -1525,5 +1528,6 @@
     oneLine,
     todayTokens,
     ccPermissionCard,
+    loading,
   };
 })();

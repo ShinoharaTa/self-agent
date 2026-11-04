@@ -234,6 +234,11 @@ body {
   display: inline-block;
 }
 
+/* スキップリンクの飛び先（焦点を受けるためだけの tabindex="-1"。エディタ全体に輪を出さない） */
+.wb-editors:focus {
+  outline: none;
+}
+
 /* 本文へのスキップリンク（フォーカスしたときだけ見える。GUIDELINES §8） */
 .skip-link {
   position: absolute;
@@ -2125,7 +2130,7 @@ kbd {
 
 /* 入力のエラーの場所（出たときに下が跳ばないよう 1 行分を予約する。GUIDELINES §5 入力欄） */
 .alert-slot {
-  min-height: 1lh;
+  min-height: calc(1lh + var(--space-4));
 }
 
 .alert {

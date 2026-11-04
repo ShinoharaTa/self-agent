@@ -148,7 +148,7 @@
 
 | 部品 | 決まり |
 |---|---|
-| ボタン | `.btn` に primary / secondary / ghost / danger の 4 種。**primary は 1 画面（ダイアログ・カード）に 1 つ、secondary は 2 つまで、残りは ghost か `…`（ellipsis）の 1 つにまとめる**。danger は確認ダイアログの中だけ。**危険な側・戻せない側を primary にしない**（許可 / 拒否なら許可は secondary）。アイコンだけのボタンは `aria-label` 必須。文字は動詞で 2〜6 字。**文字を折り返させない**（長い補足はボタンの外へ）。無効は `disabled` 属性 + 見た目 + 理由（`title`）。押している間 `scale(0.97)` [hallmark][emil][impeccable] |
+| ボタン | `.btn` に primary / secondary / ghost / danger の 4 種。**primary は 1 画面（ダイアログ・カード）に 1 つ、secondary は 2 つまで、残りは ghost か `…`（ellipsis）の 1 つにまとめる**。danger は確認ダイアログの中だけ。**危険な側・戻せない側を primary にしない**（許可 / 拒否なら許可は secondary）。アイコンだけのボタンは `aria-label` 必須。文字は動詞で 2〜6 字。**文字を折り返させない**（長い補足はボタンの外へ）。無効は `disabled` 属性 + 見た目 + 理由（`title`）（`disabled` のボタンは焦点を受けないので、理由はキーボードには届かない。`aria-disabled` に変えるのは後の段）。押している間 `scale(0.97)` [hallmark][emil][impeccable] |
 | 部品の状態 | 押せるものは **既定・hover・focus・active・disabled・読み込み中・エラー・成功**の 8 つを持つ（要らない状態は「無い」と決めて書く）。読み込み中はラベルを読めるまま、幅を変えない [hallmark][impeccable] |
 | バッジ・点 | 状態は `.dot`（8px の丸）か文字色だけ。塗りつぶしのピルは**未読の数だけ**（群の見出しの件数は文字）。一覧の行のバッジは**最重要の 1 つ**まで（残りは `title` と中身の画面に）。`PRO`・`Beta` のような飾りのバッジは作らない [unslop][hallmark] |
 | カード | 使うのは「確認のカード」（/close の下書き・許可）だけ。数字は表か `dl`。**同じ形のカードが 3 つ以上並ぶなら表**。枠は 1px、影なし。カードの中の `<pre>` は枠なし・`--radius-sm`・地は `--bg` [unslop][impeccable][hallmark] |
