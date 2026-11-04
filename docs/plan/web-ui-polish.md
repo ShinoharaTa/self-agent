@@ -32,7 +32,7 @@
 | 14 | トースト（ui.js:168）と知らせ（workbench.js:407、app.css:1575-1582）の本文 `span` に `min-width: 0` / `overflow-wrap` が無い（推測: 長い題名・URL で溢れる） | §3 折り返し | CSS 2 行 |
 | 15 | 使用量のターンの表が 9 列（views.js:165）。推測: スマホで横スクロール | §4 表 | ≤639px は 5 列、残りは行の `details`（表の組み替えは UI-5 と同じ PR でもよい） |
 
-### UI-2 押した感と動き（CSS + ui.js の小さな JS）
+### UI-2 押した感と動き（CSS + ui.js の小さな JS）（済）
 
 | # | 事実（今） | 決まり | 直し |
 |---|---|---|---|
@@ -124,7 +124,7 @@
 11. 使用量の表（#15）: ≤639px で `hide-sm` を 4 列に付け、残りを行末の `details` に（表の組み替えを UI-5 でやるなら、ここは `hide-sm` だけでよい）。
 12. 受け入れ: iPhone 実機で、下タブがインジケータに隠れない・ステータスバーの色が合う（3 テーマ）・会話の本文 16px・入力で拡大しない・タップの点滅と hover の残りが無い・タブの × が押せる・タイトルバーに接続の点と鈴が出る・実行中に下タブにスピナー。PC は見た目が変わらない。`npm test`・inline なしの grep。
 
-### UI-2 押した感と動き（#16〜#20）
+### UI-2 押した感と動き（#16〜#20）（済）
 触る: `app.css`、`ui.js`、`index.html`（失敗のトーストの容れ物）、`views.js`（許可の残り時間・失敗のトーストの呼び出し）、`chat.js`（要約のトーストを消す）。
 1. `app.css` の `:root` に `--dur-micro: 120ms; --dur-short: 200ms; --dur-long: 300ms; --ease-out: cubic-bezier(0.23, 1, 0.32, 1)`。
 2. `.btn:active, .act-btn:active, .tab:active, .sbar-item:active, .welcome-link:active { transform: scale(0.97) }`（`transition: transform var(--dur-micro) var(--ease-out)`）。`.sb-row:active { background: var(--muted) }`。

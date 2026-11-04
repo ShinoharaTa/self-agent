@@ -184,7 +184,6 @@
         try {
           await SA.api.post("/api/sessions/" + encodeURIComponent(channelId) + "/close", {}, { quiet: true });
           setPending(channelId, "close", afterId);
-          toast("要約しています。終わったらここに出ます");
         } catch (err) {
           opFailed(err);
         }
@@ -206,7 +205,6 @@
         try {
           await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/renew", {}, { quiet: true });
           setPending(channelId, "renew", afterId);
-          toast("要約しています。終わったらここに区切りが出ます");
         } catch (err) {
           opFailed(err);
         }

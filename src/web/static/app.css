@@ -28,6 +28,17 @@
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
+/*
+ * 動きの長さと曲線（docs/design/WEB-UI-GUIDELINES.md §6）。押下は micro、ダイアログ・トーストの出は short、ドロワーの開きは long。
+ * 消えるときは出るときの 65%（ダイアログ・トースト）か short（ドロワー）。prefers-reduced-motion では base.css が transition を全部止める
+ */
+:root {
+  --dur-micro: 120ms;
+  --dur-short: 200ms;
+  --dur-long: 300ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
 /* 指で触る端末では、行とタブを 44px にする */
 @media (pointer: coarse) {
   :root {
@@ -160,6 +171,43 @@ body {
   touch-action: manipulation;
   -webkit-user-select: none;
   user-select: none;
+}
+
+/*
+ * 押した感（GUIDELINES §6）: 押している間だけ scale(0.97)。行は縮めずに --muted の地だけ。
+ * .btn は base.css の色の transition を写して transform を足す（.act-btn は下の定義に足してある）
+ */
+.btn {
+  transition:
+    background-color var(--dur-micro) ease,
+    border-color var(--dur-micro) ease,
+    color var(--dur-micro) ease,
+    opacity var(--dur-micro) ease,
+    transform var(--dur-micro) var(--ease-out);
+}
+
+.tab,
+.panel-tab,
+.sbar-item,
+.welcome-link,
+.cmd-center {
+  transition: transform var(--dur-micro) var(--ease-out);
+}
+
+.btn:not(:disabled):active,
+.act-btn:active,
+.tab:active,
+.panel-tab:active,
+.sbar-item:active,
+.welcome-link:active,
+.cmd-center:active {
+  transform: scale(0.97);
+}
+
+.sb-row:not(.sb-row-static):active,
+.master-item:active,
+.is-clickable:active {
+  background: var(--muted);
 }
 
 /* base.css の .btn-*:hover は (hover: hover) だけなので、指の端末（hover を名乗るもの）ではタップの後に残さない */
@@ -392,8 +440,13 @@ kbd {
   }
 }
 
+/* 動きを減らす設定では回さずに、静止した点にする（隣の文・aria-label で「実行中」「作業中…」が分かる） */
 @media (prefers-reduced-motion: reduce) {
   .spinner {
+    width: var(--dot);
+    height: var(--dot);
+    background: var(--accent);
+    border: 0;
     animation: none;
   }
 }
@@ -487,7 +540,9 @@ kbd {
   background: transparent;
   color: var(--text-secondary);
   border: 0;
-  transition: color var(--duration) ease;
+  transition:
+    color var(--dur-micro) ease,
+    transform var(--dur-micro) var(--ease-out);
 }
 
 .act-btn .icon {
@@ -1923,8 +1978,11 @@ kbd {
   margin-top: var(--space-6);
 }
 
-/* VS Code と同じく右下に出す。2 つまで縦に並べる（[取り消す] の付いたものの下に後から来たもの） */
-.toast-stack {
+/*
+ * VS Code と同じく右下に出す。知らせ（#toast）は 2 つまで縦に並べ（[取り消す] の付いたものの下に後から来たもの）、
+ * その下に失敗（#toast-alert。role="alert"・左 2px の --danger・自動で消えない）を並べる
+ */
+.toast-region {
   position: fixed;
   right: var(--space-4);
   bottom: calc(var(--statusbar-h) + var(--space-3));
@@ -1934,12 +1992,91 @@ kbd {
   align-items: flex-end;
   gap: var(--space-2);
   max-width: calc(100% - var(--space-7));
+  pointer-events: none;
 }
 
+.toast-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  max-width: 100%;
+}
+
+.toast-stack[hidden] {
+  display: none;
+}
+
+/* 出るときは下から 8px と opacity（short）、消えるときは同じ方向へ 65% の長さで（ui.js が is-leaving を付けてから外す） */
 .toast-stack .toast {
   position: static;
   max-width: 100%;
   transform: none;
+  pointer-events: auto;
+  transition:
+    opacity var(--dur-short) var(--ease-out),
+    transform var(--dur-short) var(--ease-out);
+}
+
+@starting-style {
+  .toast-stack .toast {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.toast-stack .toast.is-leaving {
+  opacity: 0;
+  transform: translateY(8px);
+  transition-duration: calc(var(--dur-short) * 0.65);
+  pointer-events: none;
+}
+
+.toast-stack .toast-alert {
+  box-shadow: inset var(--ring-width) 0 0 var(--danger), var(--shadow-sm);
+}
+
+/* ダイアログ: 開くときは opacity と scale(0.98) から short、閉じるときは 65% の長さで（display・overlay を離散で待たせる） */
+dialog {
+  opacity: 0;
+  transform: scale(0.98);
+  transition:
+    opacity calc(var(--dur-short) * 0.65) var(--ease-out),
+    transform calc(var(--dur-short) * 0.65) var(--ease-out),
+    overlay calc(var(--dur-short) * 0.65) allow-discrete,
+    display calc(var(--dur-short) * 0.65) allow-discrete;
+}
+
+dialog[open] {
+  opacity: 1;
+  transform: none;
+  transition-duration: var(--dur-short);
+}
+
+@starting-style {
+  dialog[open] {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+dialog::backdrop {
+  opacity: 0;
+  transition:
+    opacity calc(var(--dur-short) * 0.65) var(--ease-out),
+    overlay calc(var(--dur-short) * 0.65) allow-discrete,
+    display calc(var(--dur-short) * 0.65) allow-discrete;
+}
+
+dialog[open]::backdrop {
+  opacity: 1;
+  transition-duration: var(--dur-short);
+}
+
+@starting-style {
+  dialog[open]::backdrop {
+    opacity: 0;
+  }
 }
 
 .empty {
@@ -2016,6 +2153,7 @@ kbd {
     padding-top: env(safe-area-inset-top, 0px);
   }
 
+  /* 開くのは long、閉じるのは short（.is-drawer-open で長さだけ変える） */
   .wb-sidebar {
     position: fixed;
     top: calc(var(--titlebar-h) + env(safe-area-inset-top, 0px));
@@ -2028,13 +2166,14 @@ kbd {
     transform: translateX(-100%);
     visibility: hidden;
     transition:
-      transform var(--duration) ease,
-      visibility var(--duration) ease;
+      transform var(--dur-short) var(--ease-out),
+      visibility var(--dur-short) var(--ease-out);
   }
 
   .wb.is-drawer-open .wb-sidebar {
     transform: none;
     visibility: visible;
+    transition-duration: var(--dur-long);
   }
 
   .wb-activity {
@@ -2110,12 +2249,16 @@ kbd {
     display: none;
   }
 
-  .toast-stack {
+  .toast-region {
     right: var(--space-4);
     bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + var(--statusbar-h) + var(--space-3));
     left: var(--space-4);
     align-items: stretch;
     max-width: none;
+  }
+
+  .toast-stack {
+    align-items: stretch;
   }
 
   .toast-stack .toast {
@@ -2147,7 +2290,7 @@ kbd {
     bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px));
   }
 
-  .toast-stack {
+  .toast-region {
     bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + var(--space-3));
   }
 

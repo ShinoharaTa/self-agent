@@ -142,27 +142,43 @@
     return parts;
   }
 
-  // ===== トースト（多くて 2 つ。action があれば自動で消さない） =====
-  // 新しいトーストは下に足す。action の無いトーストは次のトーストで消し、action（[取り消す] など）の付いたものは押すか閉じるまで残す。
-  // 2 つを超えるときだけ、いちばん古いもの（action 付きでも）を消す
+  // ===== トースト（GUIDELINES §5。知らせは #toast、失敗は #toast-alert） =====
+  // 知らせ（role="status"）は多くて 2 つ。新しいトーストは下に足す。action の無いトーストは次のトーストで消し、action（[取り消す] など）の
+  // 付いたものは押すか閉じるまで残す。2 つを超えるときだけ、いちばん古いもの（action 付きでも）を消す。action の無いものは TOAST_MS で消え、
+  // hover・focus の間は止めて、離れたら TOAST_MS から数え直す。
+  // 失敗（opts.level === "error"）は #toast-alert（role="alert"）に入れて自動で消さない。opts.retry があれば [もう一度] を付ける。こちらも多くて 2 つ
   const TOAST_MS = 4000;
-  /** 出ているもの（上から）。{ node, action, timer } */
+  /** 消える動きの長さ（app.css の --dur-short の 65%）。この後に DOM から外す */
+  const TOAST_LEAVE_MS = 130;
+  /** 出ているもの（古い順）。{ node, box, action, auto, timer, hover, focus } */
   let toasts = [];
 
   function removeToast(item) {
+    if (!toasts.includes(item)) return;
     clearTimeout(item.timer);
-    item.node.remove();
     toasts = toasts.filter((t) => t !== item);
-    const box = document.getElementById("toast");
-    if (box && toasts.length === 0) box.hidden = true;
+    item.node.classList.add("is-leaving");
+    setTimeout(() => {
+      item.node.remove();
+      if (item.box.childElementCount === 0) item.box.hidden = true;
+    }, TOAST_LEAVE_MS);
   }
 
-  function toast(text, action) {
-    const box = document.getElementById("toast");
+  /** 自動で消すものだけ、hover・focus が無ければ TOAST_MS 後に消す（あれば止めたまま） */
+  function armToast(item) {
+    clearTimeout(item.timer);
+    item.timer = null;
+    if (item.auto && !item.hover && !item.focus) item.timer = setTimeout(() => removeToast(item), TOAST_MS);
+  }
+
+  function toast(text, action, opts) {
+    const error = !!(opts && opts.level === "error");
+    const retry = error && opts && typeof opts.retry === "function" ? opts.retry : null;
+    const box = document.getElementById(error ? "toast-alert" : "toast");
     if (!box) return;
-    for (const item of [...toasts]) if (!item.action) removeToast(item);
-    while (toasts.length >= 2) removeToast(toasts[0]);
-    const item = { node: null, action: !!action, timer: null };
+    if (!error) for (const item of toasts.filter((t) => t.box === box)) if (!item.action) removeToast(item);
+    for (let mine = toasts.filter((t) => t.box === box); mine.length >= 2; mine = toasts.filter((t) => t.box === box)) removeToast(mine[0]);
+    const item = { node: null, box, action: !!action, auto: !error && !action, timer: null, hover: false, focus: false };
     const close = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm", type: "button", "aria-label": "閉じる" }, [icon("x")]);
     close.addEventListener("click", () => removeToast(item));
     const children = [el("span", { text })];
@@ -174,12 +190,37 @@
       });
       children.push(btn);
     }
+    if (retry) {
+      const btn = el("button", { class: "btn btn-secondary btn-sm", type: "button", text: "もう一度" });
+      btn.addEventListener("click", () => {
+        removeToast(item);
+        retry();
+      });
+      children.push(btn);
+    }
     children.push(close);
-    item.node = el("div", { class: "toast" }, children);
+    item.node = el("div", { class: error ? "toast toast-alert" : "toast" }, children);
+    item.node.addEventListener("mouseenter", () => {
+      item.hover = true;
+      armToast(item);
+    });
+    item.node.addEventListener("mouseleave", () => {
+      item.hover = false;
+      armToast(item);
+    });
+    item.node.addEventListener("focusin", () => {
+      item.focus = true;
+      armToast(item);
+    });
+    item.node.addEventListener("focusout", (event) => {
+      if (event.relatedTarget && item.node.contains(event.relatedTarget)) return;
+      item.focus = false;
+      armToast(item);
+    });
     toasts.push(item);
     box.append(item.node);
     box.hidden = false;
-    if (!action) item.timer = setTimeout(() => removeToast(item), TOAST_MS);
+    armToast(item);
   }
 
   // ===== ダイアログ（showModal が無い環境では open 属性で開く） =====
