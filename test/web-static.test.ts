@@ -205,15 +205,15 @@ function loadToast() {
   return { ui, boxes, advance };
 }
 
-test("web static: 知らせのトーストは 4 秒で消え、hover・focus の間は消えない", () => {
+test("web static: 知らせのトーストは 4 秒で消え、マウスが乗っている間・focus の間は消えない（指のタップでは止めない）", () => {
   const { ui, boxes, advance } = loadToast();
   ui.toast("保存しました");
   assert.equal(boxes.toast.hidden, false);
   const node = boxes.toast.children[0]!;
-  node.dispatch("mouseenter");
+  node.dispatch("pointerenter", { pointerType: "mouse" });
   advance(10000);
   assert.equal(boxes.toast.children.length, 1, "hover の間は残る");
-  node.dispatch("mouseleave");
+  node.dispatch("pointerleave", { pointerType: "mouse" });
   node.dispatch("focusin");
   advance(10000);
   assert.equal(boxes.toast.children.length, 1, "focus の間は残る");
@@ -226,9 +226,36 @@ test("web static: 知らせのトーストは 4 秒で消え、hover・focus の
   assert.equal(boxes.toast.children.length, 1);
   advance(1);
   assert.ok(node.classList.contains("is-leaving"), "消える動きの印");
-  advance(130);
+  // 中のボタンの transitionend では外さず、トーストそのものの transitionend で外す
+  node.dispatch("transitionend", { target: node.buttons()[0] });
+  assert.equal(boxes.toast.children.length, 1);
+  node.dispatch("transitionend", { target: node });
   assert.equal(boxes.toast.children.length, 0);
   assert.equal(boxes.toast.hidden, true);
+  // 指のタップ（pointerType が touch）では止めない。transitionend が来なくても保険の時間で外す
+  ui.toast("もう 1 つ");
+  const touched = boxes.toast.children[0]!;
+  touched.dispatch("pointerenter", { pointerType: "touch" });
+  advance(4000);
+  assert.ok(touched.classList.contains("is-leaving"));
+  advance(400);
+  assert.equal(boxes.toast.children.length, 0);
+});
+
+test("web static: 旧い呼び出し toast(text, action) は action 付きなら自動で消えず、次の知らせでも消されない", () => {
+  const { ui, boxes, advance } = loadToast();
+  let undone = 0;
+  ui.toast("完了にしました", { label: "取り消す", run: () => undone++ });
+  advance(60000);
+  assert.equal(boxes.toast.children.length, 1, "自動では消えない");
+  ui.toast("別の知らせ");
+  advance(400);
+  assert.deepEqual(boxes.toast.children.map((c) => c.children[0]!.textContent), ["完了にしました", "別の知らせ"]);
+  assert.equal(boxes["toast-alert"].children.length, 0, "失敗の容れ物には入れない");
+  const undo = boxes.toast.children[0]!.buttons().find((b) => b.textContent === "取り消す");
+  assert.ok(undo);
+  undo.dispatch("click");
+  assert.equal(undone, 1);
 });
 
 test("web static: 失敗のトーストは #toast-alert に出て自動で消えず、[もう一度] で retry を呼ぶ", () => {
@@ -249,14 +276,14 @@ test("web static: 失敗のトーストは #toast-alert に出て自動で消え
   assert.ok(again);
   again.dispatch("click");
   assert.equal(retried, 1);
-  advance(130);
+  advance(400);
   assert.equal(boxes["toast-alert"].children.length, 0);
   assert.equal(boxes["toast-alert"].hidden, true);
   // retry が無ければ [もう一度] は出ない。多くて 2 つ
   ui.toast("a", null, { level: "error" });
   ui.toast("b", null, { level: "error" });
   ui.toast("c", null, { level: "error" });
-  advance(130);
+  advance(400);
   assert.deepEqual(boxes["toast-alert"].children.map((c) => c.children[0]!.textContent), ["b", "c"]);
   assert.equal(boxes["toast-alert"].children[0]!.buttons().some((b) => b.textContent === "もう一度"), false);
 });
@@ -264,7 +291,7 @@ test("web static: 失敗のトーストは #toast-alert に出て自動で消え
 test("web static: index.html に失敗のトーストの容れ物（role=alert）がある", () => {
   const html = read("index.html");
   assert.match(html, /<div class="toast-stack" id="toast" role="status"[^>]*hidden><\/div>/);
-  assert.match(html, /<div class="toast-stack toast-stack-alert" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
+  assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
 });
 
 // ===== ホーム画面（PWA。docs/plan/web-ui.md §11） =====
