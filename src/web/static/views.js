@@ -27,7 +27,7 @@
   function table(headers, rows, cls) {
     return el("div", { class: "table-wrap" }, [
       el("table", { class: "table" + (cls ? " " + cls : "") }, [
-        el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { scope: "col", class: h.cls || null, text: typeof h === "string" ? h : h.text })))]),
+        el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { scope: "col", class: h.cls || null, "aria-label": h.label || null, text: typeof h === "string" ? h : h.text })))]),
         el("tbody", {}, rows),
       ]),
     ]);
@@ -45,6 +45,11 @@
       again.addEventListener("click", retry);
     }
     return el("div", { class: "empty" }, [iconName ? icon(iconName) : null, el("p", { text }), again]);
+  }
+
+  /** 読み込み中（枠も余白も無い文だけ。読めた瞬間に跳ばないよう .empty を流用しない。GUIDELINES §5） */
+  function loading() {
+    return el("p", { class: "loading", "aria-busy": "true", text: "読み込んでいます…" });
   }
 
   /** 権限モードの表示（識別子は値として残し、説明を添える。GUIDELINES §5 チェック・選択）。知らないものは識別子だけ */
@@ -147,45 +152,77 @@
       const failed = store.usageFailed !== null && store.usageFailed === (usageState.date || "today");
       container.replaceChildren(
         head,
-        scroll([failed ? empty(null, "使用量を読み込めませんでした。", () => store.load.usage(usageState.date)) : empty(null, "読み込んでいます…")]),
+        scroll([failed ? empty(null, "使用量を読み込めませんでした。", () => store.load.usage(usageState.date)) : loading()]),
       );
       return;
     }
-    const cards = el(
-      "div",
-      { class: "metric-grid" },
-      (u.totals || []).map((t) => {
-        const s = t.summary || {};
-        const input = inputOf(s.inputTokens, s.cacheReadInputTokens, s.cacheCreationInputTokens);
-        return el("div", { class: "card card-sm" }, [
-          el("div", { class: "card-head" }, [el("h3", { text: t.name }), el("span", { class: "meta", text: "ターン " + (s.turns ?? 0) + (s.failedTurns > 0 ? "（失敗 " + s.failedTurns + "）" : "") })]),
-          el("dl", { class: "metrics" }, [
-            el("div", {}, [el("dt", { text: "入力" }), el("dd", { text: count(input) })]),
-            el("div", {}, [el("dt", { text: "キャッシュ率" }), el("dd", { text: rate(s.cacheReadInputTokens, input) })]),
-            el("div", {}, [el("dt", { text: "出力" }), el("dd", { text: count(t.outputTokens) })]),
-          ]),
-        ]);
-      }),
+    // 人格ごとの行の表（GUIDELINES §5 使用量の数字）。キャッシュ率だけ大きく。≤639px は失敗の列を隠し、ターンの後に添える
+    const personas = (u.totals || []).map((t) => {
+      const s = t.summary || {};
+      const input = inputOf(s.inputTokens, s.cacheReadInputTokens, s.cacheCreationInputTokens);
+      const failedTurns = s.failedTurns > 0 ? s.failedTurns : 0;
+      return el("tr", {}, [
+        td(t.name, "td-main"),
+        td([String(s.turns ?? 0), failedTurns > 0 ? el("span", { class: "show-sm", text: "（失敗 " + failedTurns + "）" }) : null], "td-num"),
+        td(failedTurns > 0 ? String(failedTurns) : "", "td-num hide-sm"),
+        td(count(input), "td-num"),
+        td(count(t.outputTokens), "td-num"),
+        td(rate(s.cacheReadInputTokens, input), "td-num td-rate"),
+      ]);
+    });
+    const totals = table(
+      [
+        "人格",
+        { text: "ターン", cls: "td-num" },
+        { text: "失敗", cls: "td-num hide-sm" },
+        { text: "入力", cls: "td-num" },
+        { text: "出力", cls: "td-num" },
+        { text: "キャッシュ率", cls: "td-num" },
+      ],
+      personas,
+      "table-num",
     );
+    // ターンの表。≤639px は 5 列（時刻・種類・結果・入力・率）にし、残りは行末の details に（GUIDELINES §4）
     const rows = (u.rows || []).map((r) => {
       const input = inputOf(r.inputTokens, r.cacheReadInputTokens, r.cacheCreationInputTokens);
+      const more = el("details", { class: "td-more-box" }, [
+        el("summary", { "aria-label": "ほかの数" }, [icon("ellipsis")]),
+        el("dl", { class: "td-more-list" }, [
+          el("div", {}, [el("dt", { text: "ツール" }), el("dd", { text: String(r.toolCalls ?? 0) })]),
+          el("div", {}, [el("dt", { text: "読み" }), el("dd", { text: count(r.cacheReadInputTokens) })]),
+          el("div", {}, [el("dt", { text: "書き" }), el("dd", { text: count(r.cacheCreationInputTokens) })]),
+          el("div", {}, [el("dt", { text: "出力" }), el("dd", { text: count(r.outputTokens) })]),
+        ]),
+      ]);
       return el("tr", {}, [
         td(SA.ui.clock(new Date(r.at)), "td-num"),
         td(r.kind || "-"),
         td(r.ok ? "成功" : "失敗", r.ok ? null : "is-overdue"),
-        td(String(r.toolCalls ?? 0), "td-num"),
+        td(String(r.toolCalls ?? 0), "td-num hide-sm"),
         td(count(input), "td-num"),
-        td(count(r.cacheReadInputTokens), "td-num"),
-        td(count(r.cacheCreationInputTokens), "td-num"),
-        td(count(r.outputTokens), "td-num"),
+        td(count(r.cacheReadInputTokens), "td-num hide-sm"),
+        td(count(r.cacheCreationInputTokens), "td-num hide-sm"),
+        td(count(r.outputTokens), "td-num hide-sm"),
         td(rate(r.cacheReadInputTokens, input), "td-num"),
+        td(more, "td-more show-sm"),
       ]);
     });
     const turns =
       rows.length === 0
         ? empty("bar-chart", "この日のターンはありません。日付を変えると別の日を見られます。")
         : table(
-            ["時刻", "種類", "結果", { text: "ツール", cls: "td-num" }, { text: "入力", cls: "td-num" }, { text: "読み", cls: "td-num" }, { text: "書き", cls: "td-num" }, { text: "出力", cls: "td-num" }, { text: "率", cls: "td-num" }],
+            [
+              "時刻",
+              "種類",
+              "結果",
+              { text: "ツール", cls: "td-num hide-sm" },
+              { text: "入力", cls: "td-num" },
+              { text: "読み", cls: "td-num hide-sm" },
+              { text: "書き", cls: "td-num hide-sm" },
+              { text: "出力", cls: "td-num hide-sm" },
+              { text: "率", cls: "td-num" },
+              { text: "", cls: "show-sm", label: "ほか" },
+            ],
             rows,
             "table-num",
           );
@@ -193,7 +230,7 @@
     container.replaceChildren(
       head,
       scroll([
-        cards,
+        totals,
         section("ターン", [turns], rows.length > 0 ? [el("span", { class: "meta", text: "新しい " + rows.length + " 件" })] : []),
         el("p", { class: "meta", text: "保存している添付: " + count(att.count ?? 0) + " 件・" + bytes(att.bytes ?? 0) }),
       ]),
@@ -241,7 +278,7 @@
       const failed = store.devlogFailed !== null && store.devlogFailed === (devlogState.date || "today");
       container.replaceChildren(
         toolbar("file-text", "会話ログ", [], [chips]),
-        scroll([failed ? empty(null, "会話ログを読み込めませんでした。", () => store.load.devlog(devlogState.date)) : empty(null, "読み込んでいます…")]),
+        scroll([failed ? empty(null, "会話ログを読み込めませんでした。", () => store.load.devlog(devlogState.date)) : loading()]),
       );
       return;
     }
@@ -309,6 +346,8 @@
       },
       (err) => {
         if (button) button.disabled = false;
+        // チェックで押したもの（タスクの完了）は、通らなければチェックを外す
+        if (button && button.type === "checkbox") button.checked = false;
         failed(err, key, () => act(null, path, key, then));
       },
     );
@@ -360,31 +399,34 @@
     }
     const head = toolbar("square-check", "タスク", [], [seg]);
     if (!store.tasks || store.tasks.status !== shown) {
-      container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
+      container.replaceChildren(head, scroll([loading()]));
       return;
     }
+    // 行の操作は 1 つ（完了はチェック。GUIDELINES §5 一覧の行）。id は題名の下の補足、空のセルは空のまま
+    const open = shown === "open";
     const rows = store.tasks.tasks.map((t) => {
       const late = overdue(t);
-      const due = t.due === null ? "—" : dayLabel(t.due) + (late ? "・過ぎています" : "");
-      const action = el("td", { class: "td-actions" });
-      if (t.status === "open") {
-        const done = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, [icon("check"), "完了"]);
-        done.addEventListener("click", () => completeTask(done, t));
-        action.append(done);
+      const due = t.due === null ? "" : dayLabel(t.due) + (late ? "・過ぎています" : "");
+      const cells = [];
+      if (open) {
+        const done = el("input", { type: "checkbox", "aria-label": "「" + t.title + "」を完了にする" });
+        done.addEventListener("change", () => {
+          if (done.checked) completeTask(done, t);
+        });
+        cells.push(el("td", { class: "td-check" }, [el("label", { class: "check check-sm" }, [done])]));
       }
       const closed = (t.status === "done" ? "完了 " : "やめた ") + (t.completedAt ? dateOf(t.completedAt) : "-");
-      return el("tr", { "data-task": String(t.id) }, [
-        td("#" + t.id, "td-num"),
-        td(t.title, "td-main"),
+      cells.push(
+        td([el("span", { class: "td-title", text: t.title }), el("span", { class: "meta td-sub", text: "#" + t.id })], "td-main"),
         td(due, late ? "is-overdue" : null),
-        td(t.status === "open" ? (t.remind ? dateTime(t.remind) : "—") : closed),
-        action,
-      ]);
+        td(open ? (t.remind ? dateTime(t.remind) : "") : closed),
+      );
+      return el("tr", { "data-task": String(t.id) }, cells);
     });
     const body =
       rows.length === 0
         ? empty("square-check", TASK_EMPTY[shown] || "タスクはありません。")
-        : table(["#", "題名", "期限", shown === "open" ? "知らせ" : "閉じた日", { text: "", cls: "th-actions" }], rows);
+        : table([...(open ? [{ text: "", cls: "th-check", label: "完了" }] : []), "題名", "期限", open ? "知らせ" : "閉じた日"], rows);
     container.replaceChildren(
       head,
       scroll([body, el("p", { class: "meta", text: "タスクは #inbox か #tasks の会話で頼むと増え、変わります。" })]),
@@ -400,11 +442,12 @@
   function renderReminders(container) {
     const list = store.reminders;
     if (!list) {
-      container.replaceChildren(toolbar("bell", "リマインド"), scroll([empty(null, "読み込んでいます…")]));
+      container.replaceChildren(toolbar("bell", "リマインド"), scroll([loading()]));
       return;
     }
     const rows = list.map((r) => {
-      const actions = el("td", { class: "td-actions" });
+      // [止める]（戻せない）は [次を飛ばす] から離して右端に（GUIDELINES §4・§5 一覧の行）
+      const actions = el("div", { class: "td-apart" });
       if (r.rule !== null) {
         const skip = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "次を飛ばす" });
         skip.addEventListener("click", () =>
@@ -431,9 +474,10 @@
       return el("tr", {}, [
         td(r.nextAt ? dateTime(r.nextAt) : "-", "td-nowrap"),
         td([r.kind === "prompt" ? el("span", { class: "badge badge-accent", text: "依頼" }) : null, r.kind === "prompt" ? " " : null, oneLine(r.text)], "td-main"),
-        td(r.rule === null ? "1 回だけ" : r.ruleText || r.rule),
-        td(r.channelName || "—"),
-        actions,
+        // 種類はサイドバーと同じアイコン（繰り返しは rotate-ccw、1 回だけは clock）
+        td(el("span", {}, [icon(r.rule === null ? "clock" : "rotate-ccw"), r.rule === null ? "1 回だけ" : r.ruleText || r.rule]), "td-kind"),
+        td(r.channelName || ""),
+        td(actions, "td-actions"),
       ]);
     });
     const body =
@@ -450,7 +494,7 @@
   function renderMemories(container) {
     const list = store.memories;
     if (!list) {
-      container.replaceChildren(toolbar("book", "記憶"), scroll([empty(null, "読み込んでいます…")]));
+      container.replaceChildren(toolbar("book", "記憶"), scroll([loading()]));
       return;
     }
     // 新しい順に並べる（API は id 順）
@@ -589,7 +633,7 @@
   function renderGithub(container) {
     const data = store.github;
     if (!data) {
-      container.replaceChildren(toolbar("git-pull-request", "GitHub の通知"), scroll([empty(null, "読み込んでいます…")]));
+      container.replaceChildren(toolbar("git-pull-request", "GitHub の通知"), scroll([loading()]));
       return;
     }
     const group = (level, title) => {
@@ -653,7 +697,7 @@
     }
     const head = toolbar("folder", slug, p && p.title !== slug ? [el("span", { class: "meta", text: p.title })] : [], actions);
     if (!listing) {
-      container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
+      container.replaceChildren(head, scroll([loading()]));
       return;
     }
     if (listing.missing) {
@@ -1036,7 +1080,7 @@
       return;
     }
     if (!s) {
-      container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
+      container.replaceChildren(head, scroll([loading()]));
       return;
     }
     const facts = el("ul", { class: "kv-list" }, [
@@ -1162,7 +1206,7 @@
     const entry = store.kbEntries[item.id];
     if (entry === undefined) {
       store.load.kbEntry(item.id);
-      return empty(null, "読み込んでいます…");
+      return loading();
     }
     if (entry === "missing") return empty(null, "この項目はもうありません。一覧から選び直してください。");
     if (entry === "failed") return empty(null, "この項目を読み込めませんでした。", () => store.load.kbEntry(item.id, true));
@@ -1187,7 +1231,7 @@
     keepFocus(input, () => {
       const data = store.knowledge;
       if (!data) {
-        container.replaceChildren(toolbar("book", "ナレッジ", [], [input]), scroll([empty(null, "読み込んでいます…")]));
+        container.replaceChildren(toolbar("book", "ナレッジ", [], [input]), scroll([loading()]));
         return;
       }
       const current = kbSelected(data.entries);
@@ -1252,7 +1296,7 @@
     const head = toolbar("activity", "状態");
     head.querySelector("h1").title = "10 秒ごとに更新";
     if (!s) {
-      container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
+      container.replaceChildren(head, scroll([loading()]));
       return;
     }
     const guilds = Array.isArray(s.guilds) ? s.guilds : [];
@@ -1323,7 +1367,7 @@
           el("p", { class: "meta", text: "あるかないかだけを出します。値は出しません。変えるときは ~/.config/self-agent/env を編集して再起動します。" }),
           env
             ? el("ul", { class: "kv-list kv-grid" }, env.map(([name, has]) => kv(el("span", { class: "mono", text: name }), el("span", { class: "badge", text: has ? "あり" : "なし" }))))
-            : empty(null, "読み込んでいます…"),
+            : loading(),
         ]),
       ]),
     );

@@ -1326,7 +1326,7 @@ kbd {
   height: var(--row);
   padding: 0 var(--space-3);
   color: var(--text-secondary);
-  font-size: var(--font-xs);
+  font-size: var(--font-sm);
   font-weight: var(--weight-semibold);
   text-align: left;
   white-space: nowrap;
@@ -1379,6 +1379,99 @@ kbd {
   white-space: nowrap;
 }
 
+/* 完了のチェック（先頭の列。行の操作はこれ 1 つ） */
+.table .td-check,
+.table .th-check {
+  width: 1%;
+  padding-right: 0;
+}
+
+/* 名前の下の補足（id など） */
+.table .td-title,
+.table .td-sub {
+  display: block;
+}
+
+.table .td-sub {
+  font-size: var(--font-xs);
+}
+
+.table .td-kind {
+  white-space: nowrap;
+}
+
+.table .td-kind > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.table .td-kind .icon {
+  flex: none;
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  color: var(--text-secondary);
+}
+
+/* 戻せない操作（[止める]）を隣の操作から離す */
+.td-apart {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-4);
+}
+
+/* 使用量のキャッシュ率（この製品でいちばん意味のある数なので、表の中でこれだけ大きく） */
+.table .td-rate {
+  font-size: var(--font-base);
+  font-weight: var(--weight-medium);
+}
+
+/* 狭い画面で隠した列の数（行末の details。≥640px では出さない） */
+.show-sm {
+  display: none;
+}
+
+.td-more-box > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--row);
+  min-height: var(--row);
+  color: var(--text-secondary);
+  list-style: none;
+  cursor: pointer;
+}
+
+.td-more-box > summary::-webkit-details-marker {
+  display: none;
+}
+
+.td-more-box > summary .icon {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.td-more-list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-bottom: var(--space-2);
+}
+
+.td-more-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.td-more-list dt {
+  color: var(--text-secondary);
+}
+
+.td-more-list dd {
+  margin: 0;
+}
+
 .table tr.is-clickable {
   cursor: pointer;
 }
@@ -1388,13 +1481,7 @@ kbd {
   box-shadow: inset var(--ring-width) 0 0 var(--accent);
 }
 
-/* ===== 数字のカード ===== */
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
-  gap: var(--space-3);
-}
-
+/* ===== 確認のカード（/close の下書き・許可の要求） ===== */
 .card-sm {
   display: flex;
   flex-direction: column;
@@ -1412,25 +1499,6 @@ kbd {
 
 .card-head h3 {
   font-size: var(--font-sm);
-}
-
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-2) var(--space-3);
-  margin: 0;
-}
-
-.metrics dt {
-  color: var(--text-secondary);
-  font-size: var(--font-xs);
-}
-
-.metrics dd {
-  margin: 0;
-  font-size: var(--font-base);
-  font-weight: var(--weight-medium);
-  font-variant-numeric: tabular-nums;
 }
 
 .progress-card {
@@ -2084,6 +2152,15 @@ dialog[open]::backdrop {
   flex-direction: column;
 }
 
+/* 読み込み中（枠も余白も無い文だけ。.empty を流用すると読めた瞬間に枠が消えて跳ぶ） */
+.loading {
+  min-height: var(--space-8);
+  margin: 0;
+  padding: var(--space-3) 0;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
 /* ===== ようこそ（タブが無いとき） ===== */
 .welcome {
   display: flex;
@@ -2285,6 +2362,10 @@ dialog[open]::backdrop {
   .hide-sm,
   .wb-brand {
     display: none;
+  }
+
+  .show-sm {
+    display: revert;
   }
 
   .wb-sidebar {

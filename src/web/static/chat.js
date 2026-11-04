@@ -580,7 +580,7 @@
     const t = store.turns[channelId];
     const ch = channelById(channelId);
     if (!t || !t.loaded) {
-      container.replaceChildren(header(ch, channelId), el("div", { class: "ed-scroll" }, [el("div", { class: "empty" }, [el("p", { text: "読み込んでいます…" })])]));
+      container.replaceChildren(header(ch, channelId), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [el("p", { class: "loading", "aria-busy": "true", text: "読み込んでいます…" })])]));
       return;
     }
     if (t.missing) {
