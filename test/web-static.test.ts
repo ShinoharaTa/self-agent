@@ -294,6 +294,85 @@ test("web static: index.html に失敗のトーストの容れ物（role=alert�
   assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
 });
 
+// ===== 許可のカード（views.js。GUIDELINES §5 許可のカード）を偽の DOM で描く =====
+/** 子孫の要素を順に（深さ優先） */
+function descendants(node: FakeNode): FakeNode[] {
+  return node.children.flatMap((c) => [c, ...descendants(c)]);
+}
+
+function loadViews() {
+  const document = {
+    getElementById: () => null,
+    createElement: (tag: string) => new FakeNode(tag),
+    createElementNS: (_ns: string, tag: string) => new FakeNode(tag),
+    createTextNode: (text: string) => Object.assign(new FakeNode("#text"), { text }),
+    querySelectorAll: () => [],
+  };
+  const posts: string[] = [];
+  const context = {
+    window: {} as Record<string, unknown>,
+    document,
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    setInterval: () => 0,
+    Intl,
+    Date,
+    Number,
+  };
+  vm.runInNewContext(read("ui.js"), context);
+  const SA = (context.window as { SA: Record<string, unknown> }).SA;
+  SA.store = { load: { ccSession: () => undefined, cc: () => undefined } };
+  SA.app = { refresh: () => undefined };
+  SA.api = {
+    post: (path: string) => {
+      posts.push(path);
+      return Promise.resolve({});
+    },
+  };
+  vm.runInNewContext(read("views.js"), context);
+  const views = SA.views as { ccPermissionCard: (sessionId: string, p: unknown, rc: string | null) => FakeNode | null };
+  return { views, posts };
+}
+
+test("web static: 許可のカードは [許可][拒否] の 2 つ（許可 secondary・拒否 ghost）と常に許可のチェックで、チェックで [許可] の送り先が always に変わる", async () => {
+  const { views, posts } = loadViews();
+  const p = { id: 7, state: "pending", toolName: "Bash", summary: "ls", expiresAt: new Date(Date.now() + 60000).toISOString(), requestHash: "h", alwaysRule: "Bash(ls:*)" };
+  const card = views.ccPermissionCard("s1", p, null)!;
+  const buttons = card.buttons();
+  assert.deepEqual(buttons.map((b) => b.textContent), ["許可", "拒否"]);
+  assert.ok(buttons[0]!.classes.has("btn-secondary"), "許可は secondary");
+  assert.ok(buttons[1]!.classes.has("btn-ghost"), "拒否は ghost");
+  assert.equal(descendants(card).filter((n) => n.classes.has("btn-primary")).length, 0, "primary は無い");
+  assert.ok(descendants(card).some((n) => n.tagName === "h2"), "見出しは h2");
+  const label = descendants(card).find((n) => n.tagName === "label")!;
+  assert.ok(label.classes.has("check"));
+  assert.match(label.textContent, /このセッションでは常に許可/);
+  const rule = descendants(card).find((n) => n.tagName === "code")!;
+  assert.equal(rule.textContent, "Bash(ls:*)", "ルールは次の行の <code>");
+  // チェックなし → allow
+  buttons[0]!.dispatch("click");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(posts, ["/api/cc/permissions/7/allow"]);
+  // チェックを入れると描き直しても残り、[許可] は always
+  const again = views.ccPermissionCard("s1", { ...p, id: 8 }, null)!;
+  const box = descendants(again).find((n) => n.tagName === "input")!;
+  assert.equal(box.getAttribute("type"), "checkbox");
+  (box as unknown as { checked: boolean }).checked = true;
+  box.dispatch("change");
+  const redrawn = views.ccPermissionCard("s1", { ...p, id: 8 }, null)!;
+  const box2 = descendants(redrawn).find((n) => n.tagName === "input")! as unknown as { checked: boolean };
+  assert.equal(box2.checked, true, "描き直しでもチェックが残る");
+  redrawn.buttons()[0]!.dispatch("click");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(posts.slice(1), ["/api/cc/permissions/8/always"]);
+  // [拒否] は deny。ルールが無ければチェックは出ない
+  const noRule = views.ccPermissionCard("s1", { ...p, id: 9, alwaysRule: null }, null)!;
+  assert.equal(descendants(noRule).some((n) => n.tagName === "input"), false);
+  noRule.buttons()[1]!.dispatch("click");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(posts.slice(2), ["/api/cc/permissions/9/deny"]);
+});
+
 // ===== 画面の言葉（docs/design/WEB-UI-GUIDELINES.md §7・§10） =====
 /** JS の "…" の文字列（コメントを除いてから拾う。https:// の // はコメントとみなさない） */
 function stringLiterals(js: string): string[] {

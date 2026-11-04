@@ -82,7 +82,7 @@
       <h2 id="dlg-new-title" class="dlg-title">新しいセッション</h2>
       <div class="field">
         <label for="new-title">題名</label>
-        <input class="input" id="new-title" maxlength="100" enterkeyhint="done" placeholder="例: 冬の旅行の計画" autocomplete="off">
+        <input class="input" id="new-title" maxlength="100" enterkeyhint="done" placeholder="例: 冬の旅行の計画" autocomplete="off" required aria-required="true" aria-describedby="new-error">
       </div>
       <div class="field" id="new-guild-field" hidden>
         <label for="new-guild">サーバー</label>
@@ -92,7 +92,7 @@
         <label for="new-persona">人格</label>
         <select class="select" id="new-persona"></select>
       </div>
-      <p class="alert" id="new-error" role="alert" hidden>題名を入れてください</p>
+      <div class="alert-slot"><p class="alert" id="new-error" role="alert" hidden>題名を入れてください</p></div>
       <p class="meta">Discord の /new と同じです。チャンネルが「進行中」にできます。</p>
       <div class="dialog-actions">
         <button class="btn btn-secondary btn-sm" id="dlg-new-cancel" type="button">やめる</button>
@@ -110,11 +110,11 @@
       </div>
       <div class="field">
         <label for="cc-start-title">題名</label>
-        <input class="input" id="cc-start-title" maxlength="40" enterkeyhint="done" placeholder="例: fix-login" autocomplete="off">
+        <input class="input" id="cc-start-title" maxlength="40" enterkeyhint="done" placeholder="例: fix-login" autocomplete="off" required aria-required="true" aria-describedby="cc-start-error">
       </div>
       <div class="field">
         <label for="cc-start-text">最初の指示（任意）</label>
-        <textarea class="textarea" id="cc-start-text" rows="4" maxlength="2000"></textarea>
+        <textarea class="textarea" id="cc-start-text" rows="4" maxlength="2000" aria-describedby="cc-start-error"></textarea>
       </div>
       <div class="field">
         <label for="cc-start-mode">権限モード</label>
@@ -126,7 +126,7 @@
           <option value="auto">auto（自動で判断）</option>
         </select>
       </div>
-      <p class="alert" id="cc-start-error" role="alert" hidden></p>
+      <div class="alert-slot"><p class="alert" id="cc-start-error" role="alert" hidden></p></div>
       <p class="meta">この機械の tmux に新しいセッションを作り、claude を起動します。題名は 40 字までです。</p>
       <div class="dialog-actions">
         <button class="btn btn-secondary btn-sm" id="dlg-cc-start-cancel" type="button">やめる</button>

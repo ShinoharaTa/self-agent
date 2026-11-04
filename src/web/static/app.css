@@ -1497,8 +1497,32 @@ kbd {
   gap: var(--space-2);
 }
 
-.card-head h3 {
+.card-head h2 {
   font-size: var(--font-sm);
+}
+
+/* カードの中のラベルと値（/close の確認の要約・候補） */
+.card-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.card-facts dt {
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.card-facts dd {
+  margin: 0 0 var(--space-2);
+}
+
+/* カードの中の <pre> は枠なし・小さい角丸・地の色（カードの中のカードにしない。GUIDELINES §4・§5） */
+.card .code-pre {
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
 }
 
 .progress-card {
@@ -1618,12 +1642,16 @@ kbd {
   overflow: auto;
 }
 
-/* 常に許可のボタンはルールを含んで長いので、狭い画面では折り返す */
+/* 「このセッションでは常に許可」のチェックと、次の行のルール */
 .cc-permission-always {
-  max-width: 100%;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.cc-permission-always .cc-permission-rule {
+  margin: 0;
+  padding-left: calc(var(--check-size) + var(--space-2));
 }
 
 .cc-permission-rule code {
@@ -2030,6 +2058,11 @@ kbd {
 .field > label {
   font-size: var(--font-sm);
   font-weight: var(--weight-medium);
+}
+
+/* 入力のエラーの場所（出たときに下が跳ばないよう 1 行分を予約する。GUIDELINES §5 入力欄） */
+.alert-slot {
+  min-height: 1lh;
 }
 
 .alert {

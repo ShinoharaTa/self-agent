@@ -270,11 +270,14 @@
     });
     none.addEventListener("click", () => confirmClose(channelId, "none", buttons));
     return el("section", { class: "card card-sm", "aria-label": "閉じる前の確認" }, [
-      el("div", { class: "card-head" }, [el("h3", { text: "閉じる前の確認" }), el("span", { class: "meta", text: "Discord でも選べます" })]),
-      el("p", { class: "meta", text: "要約" }),
-      el("div", { class: "msg-text", text: String(draft.summary || "") }),
-      el("p", { class: "meta", text: "タスクにする候補" }),
-      list,
+      el("div", { class: "card-head" }, [el("h2", { text: "閉じる前の確認" }), el("span", { class: "meta", text: "Discord でも選べます" })]),
+      // ラベルと値は dl（GUIDELINES §8 見出し）
+      el("dl", { class: "card-facts" }, [
+        el("dt", { text: "要約" }),
+        el("dd", {}, [el("div", { class: "msg-text", text: String(draft.summary || "") })]),
+        el("dt", { text: "タスクにする候補" }),
+        el("dd", {}, [list]),
+      ]),
       el("div", { class: "msg-actions" }, tasks.length === 0 ? [none] : buttons),
     ]);
   }
