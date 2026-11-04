@@ -186,7 +186,19 @@
   }
 
   /** /close を始める（確認の後。[もう一度] は確認を挟まずにここから） */
+  /** 要約を待っている間の文（/close・/renew を重ねない。見出しのボタンの title・パレット・トーストで共通） */
+  const BUSY_TEXT = "要約しています。終わると使えます";
+
+  /** 要約を待っているか（パレットの候補を止めるのにも使う） */
+  function busy(channelId) {
+    return !!pendingOf(channelId, channelById(channelId));
+  }
+
   async function startClose(channelId) {
+    if (busy(channelId)) {
+      toast(BUSY_TEXT);
+      return;
+    }
     const afterId = lastRealId(channelId);
     try {
       await SA.api.post("/api/sessions/" + encodeURIComponent(channelId) + "/close", {}, { quiet: true });
@@ -211,6 +223,10 @@
 
   /** /renew を始める（確認の後。[もう一度] は確認を挟まずにここから） */
   async function startRenew(channelId) {
+    if (busy(channelId)) {
+      toast(BUSY_TEXT);
+      return;
+    }
     const afterId = lastRealId(channelId);
     try {
       await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/renew", {}, { quiet: true });
@@ -249,7 +265,8 @@
     const buttons = [all, pick, none];
     const updatePick = () => {
       pick.disabled = chosen.size === 0;
-      pick.title = pick.disabled ? "候補を選ぶと押せます" : "";
+      if (pick.disabled) pick.title = "候補を選ぶと押せます";
+      else pick.removeAttribute("title");
     };
     const list = el("div", { class: "stack" });
     tasks.forEach((task, i) => {
@@ -440,7 +457,7 @@
     const busy = !!pendingOf(channelId, ch);
     const ops = el("div", { class: "ed-ops" });
     // secondary は [閉じる] だけ、他は ghost（GUIDELINES §5 ボタン）。押せないときは理由を title に
-    const busyWhy = "要約しています。終わると押せます";
+    const busyWhy = BUSY_TEXT;
     if (isSession) {
       const waitOff = busy || ch.state !== "active";
       const wait = el("button", { class: "btn btn-ghost btn-sm", type: "button", disabled: waitOff, title: waitOff ? (busy ? busyWhy : "進行中のときだけ待ちにできます") : null }, [
@@ -518,7 +535,8 @@
       counter.classList.toggle("is-over", n > MESSAGE_MAX);
       // 上限を超えても押せる（押したらトーストで知らせる）
       sendBtn.disabled = sending || n === 0;
-      sendBtn.title = sending ? "送っています" : n === 0 ? "本文を入れると送れます" : "";
+      if (sendBtn.disabled) sendBtn.title = sending ? "送っています" : "本文を入れると送れます";
+      else sendBtn.removeAttribute("title");
     };
     update();
     ta.addEventListener("input", () => {
@@ -597,7 +615,7 @@
     const t = store.turns[channelId];
     const ch = channelById(channelId);
     if (!t || !t.loaded) {
-      container.replaceChildren(header(ch, channelId), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [el("p", { class: "loading", "aria-busy": "true", text: "読み込んでいます…" })])]));
+      container.replaceChildren(header(ch, channelId), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [SA.views.loading()])]));
       return;
     }
     if (t.missing) {
@@ -712,6 +730,8 @@
     setWaiting,
     closeSession,
     renew,
+    busy,
+    BUSY_TEXT,
     bindSendKeys,
     placeholderOf,
     enterHint,
