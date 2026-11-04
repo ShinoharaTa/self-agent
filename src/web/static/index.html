@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#11141c">
   <title>self-agent</title>
   <link rel="stylesheet" href="/static/base.css">
   <link rel="stylesheet" href="/static/app.css">
@@ -52,7 +54,7 @@
   <div class="palette-backdrop" id="palette-backdrop" hidden>
     <div class="palette" role="dialog" aria-modal="true" aria-label="コマンドパレット">
       <div class="palette-head">
-        <input class="palette-input" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" placeholder="名前で探す。> か / でコマンド" aria-label="探す">
+        <input class="palette-input" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" enterkeyhint="search" placeholder="名前で探す。> か / でコマンド" aria-label="探す">
         <span class="palette-mode" id="palette-mode"></span>
       </div>
       <ul class="palette-list" id="palette-list" role="listbox" aria-label="候補"></ul>
@@ -73,7 +75,7 @@
       <h2 id="dlg-new-title" class="dlg-title">新しいセッション</h2>
       <div class="field">
         <label for="new-title">題名</label>
-        <input class="input" id="new-title" maxlength="100" placeholder="例: 冬の旅行の計画" autocomplete="off">
+        <input class="input" id="new-title" maxlength="100" enterkeyhint="done" placeholder="例: 冬の旅行の計画" autocomplete="off">
       </div>
       <div class="field" id="new-guild-field" hidden>
         <label for="new-guild">サーバー</label>
@@ -101,7 +103,7 @@
       </div>
       <div class="field">
         <label for="cc-start-title">題名</label>
-        <input class="input" id="cc-start-title" maxlength="40" placeholder="例: fix-login" autocomplete="off">
+        <input class="input" id="cc-start-title" maxlength="40" enterkeyhint="done" placeholder="例: fix-login" autocomplete="off">
       </div>
       <div class="field">
         <label for="cc-start-text">最初の指示（任意）</label>

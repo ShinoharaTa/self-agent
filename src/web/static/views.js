@@ -780,7 +780,7 @@
       rows: "3",
       maxlength: "4000",
       "aria-label": title + " に送る",
-      enterkeyhint: "enter",
+      enterkeyhint: SA.chat.enterHint(),
       "data-title": title,
       placeholder: SA.chat.placeholderOf(title),
     });

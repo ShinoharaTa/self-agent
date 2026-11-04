@@ -136,6 +136,54 @@ body {
   overflow: hidden;
 }
 
+/* 引っぱって更新・画面ごとの跳ね返りを止める（中のスクロールは下の contain で自分の端で止める） */
+html,
+body {
+  overscroll-behavior: none;
+}
+
+.tl,
+.wb-sidebar,
+.wb-panel,
+.palette-list,
+.master {
+  overscroll-behavior: contain;
+}
+
+/* 押せるもの: 2 回目のタップを待たない・長押しで文字を選ばない（本文には付けない） */
+.act-btn,
+.tab,
+.sb-row,
+.panel-tab,
+.sbar-item,
+.btn {
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* base.css の .btn-*:hover は (hover: hover) だけなので、指の端末（hover を名乗るもの）ではタップの後に残さない */
+@media (hover: hover) and (pointer: coarse) {
+  .btn-primary:hover,
+  .btn-secondary:hover,
+  .btn-danger:hover {
+    opacity: 1;
+  }
+
+  .btn-ghost:hover {
+    background: transparent;
+  }
+}
+
+/* 指の端末では会話の本文（ナレッジの中身を含む）とパレットの入力欄を 16px にする（入力欄は iOS の拡大も防ぐ。
+ * composer は base.css の .textarea で 16px） */
+@media (pointer: coarse) {
+  .msg-text,
+  .palette-input {
+    font-size: var(--font-base);
+  }
+}
+
 .wb,
 .palette,
 dialog {
@@ -400,7 +448,7 @@ kbd {
   white-space: nowrap;
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
   .cmd-center:hover {
     border-color: var(--text-muted);
   }
@@ -452,7 +500,7 @@ kbd {
   box-shadow: inset var(--ring-width) 0 0 var(--accent);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
   .act-btn:hover {
     color: var(--text);
   }
@@ -491,6 +539,23 @@ kbd {
   font-weight: var(--weight-semibold);
   line-height: var(--leading-tight);
   text-align: center;
+}
+
+/* 実行中のスピナーはスマホ（ステータスバーを出さない幅）だけ数の位置に出す */
+.act-spin {
+  display: none;
+}
+
+/* スマホのタイトルバーの右の接続の点と鈴は、ステータスバーを出さない幅だけ */
+.wb-title-status {
+  display: none;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.title-bell {
+  gap: var(--space-1);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ===== サイドバー ===== */
@@ -614,7 +679,7 @@ kbd {
   color: var(--text-secondary);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
   .sb-row:hover {
     background: var(--muted);
   }
@@ -701,11 +766,16 @@ kbd {
   box-shadow: inset 0 var(--border-width) 0 var(--border);
 }
 
-.wb-sash:hover,
 .wb-sash.is-dragging,
 .wb-sash:focus-visible {
   background: var(--accent);
   outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .wb-sash:hover {
+    background: var(--accent);
+  }
 }
 
 /* ===== エディタ領域 ===== */
@@ -821,7 +891,7 @@ kbd {
   opacity: 1;
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
   .tab-close:hover {
     background: var(--muted);
     color: var(--text);
@@ -830,9 +900,17 @@ kbd {
 
 @media (pointer: coarse) {
   .tab-close {
+    position: relative;
     width: var(--tap);
     height: var(--tap);
     opacity: 1;
+  }
+
+  /* 見た目を変えずに当たりだけ広げる */
+  .tab-close::before {
+    content: "";
+    position: absolute;
+    inset: calc(-1 * var(--space-2));
   }
 }
 
@@ -1209,7 +1287,7 @@ kbd {
   border-top: var(--border-width) solid var(--border);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
   .table tbody tr:hover {
     background: var(--muted);
   }
@@ -1634,6 +1712,13 @@ kbd {
   font-size: var(--font-sm);
 }
 
+/* 長い題名・URL でも溢れずに折り返す */
+.toast > span,
+.notice-item > span:not(.out-time) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .notice-item .icon {
   width: var(--icon-sm);
   height: var(--icon-sm);
@@ -1692,7 +1777,7 @@ kbd {
   height: var(--font-sm);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
   .sbar-item:hover {
     background: var(--muted);
     color: var(--text);
@@ -1744,12 +1829,6 @@ kbd {
 
 .palette-input:focus-visible {
   outline: none;
-}
-
-@media (pointer: coarse) {
-  .palette-input {
-    font-size: var(--font-base);
-  }
 }
 
 .palette-mode {
@@ -1902,7 +1981,7 @@ kbd {
   font-size: var(--font-sm);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
   .welcome-link:hover {
     background: var(--muted);
   }
@@ -1919,7 +1998,7 @@ kbd {
 @media (max-width: 1023px) {
   .wb {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: var(--titlebar-h) minmax(0, 1fr) var(--statusbar-h) var(--bottomnav-h);
+    grid-template-rows: calc(var(--titlebar-h) + env(safe-area-inset-top, 0px)) minmax(0, 1fr) var(--statusbar-h) calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px));
     grid-template-areas:
       "title"
       "main"
@@ -1932,10 +2011,15 @@ kbd {
     display: none !important;
   }
 
+  /* notch とホームインジケータ（viewport-fit=cover）: タイトルバーは上、下タブは下に足す */
+  .wb-titlebar {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
   .wb-sidebar {
     position: fixed;
-    top: var(--titlebar-h);
-    bottom: calc(var(--bottomnav-h) + var(--statusbar-h));
+    top: calc(var(--titlebar-h) + env(safe-area-inset-top, 0px));
+    bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + var(--statusbar-h));
     left: 0;
     z-index: 45;
     width: min(85vw, var(--drawer-max));
@@ -1955,6 +2039,7 @@ kbd {
 
   .wb-activity {
     flex-direction: row;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     overflow-x: auto;
     border-top: var(--border-width) solid var(--border);
     border-right: 0;
@@ -2027,7 +2112,7 @@ kbd {
 
   .toast-stack {
     right: var(--space-4);
-    bottom: calc(var(--bottomnav-h) + var(--statusbar-h) + var(--space-3));
+    bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + var(--statusbar-h) + var(--space-3));
     left: var(--space-4);
     align-items: stretch;
     max-width: none;
@@ -2040,7 +2125,7 @@ kbd {
 
 @media (max-width: 639px) {
   .wb {
-    grid-template-rows: var(--titlebar-h) minmax(0, 1fr) 0 var(--bottomnav-h);
+    grid-template-rows: calc(var(--titlebar-h) + env(safe-area-inset-top, 0px)) minmax(0, 1fr) 0 calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px));
   }
 
   /* 名前を出さないので、切り替え・検索・右の操作の 3 列にする */
@@ -2059,11 +2144,27 @@ kbd {
   }
 
   .wb-sidebar {
-    bottom: var(--bottomnav-h);
+    bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px));
   }
 
   .toast-stack {
-    bottom: calc(var(--bottomnav-h) + var(--space-3));
+    bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + var(--space-3));
+  }
+
+  /* ステータスバーの代わりに、タイトルバーの右に接続の点と鈴、下タブ「会話」に実行中のスピナー */
+  .wb-title-status {
+    display: flex;
+  }
+
+  .act-btn.is-running .act-count {
+    display: none;
+  }
+
+  .act-btn.is-running .act-spin {
+    display: block;
+    position: absolute;
+    top: var(--space-1);
+    right: var(--space-1);
   }
 
   .ed-ops {
