@@ -31,7 +31,7 @@
   const SEEN_KEY = "self-agent-web:seen";
 
   /**
-   * 失敗は 401 なら /login へ、それ以外は「<status>: <error>」のトーストを出して reject する（error.status に HTTP の status（つながらなければ 0）、
+   * 失敗は 401 なら /login へ、それ以外は「操作に失敗しました。もう一度試してください」のトーストを出して reject する（error.status に HTTP の status（つながらなければ 0）、
    * error.code に応答の error、error.data に応答の JSON（読めなければ null）、error.toast にトーストの文）。opts.quiet ならトーストは出さない（呼び出し側が出すか・文を選ぶ）
    */
   async function request(method, path, body, opts) {
@@ -66,12 +66,14 @@
     }
     if (!res.ok) {
       const error = data && typeof data.error === "string" ? data.error : res.statusText || "error";
-      if (!quiet) SA.ui.toast(res.status + ": " + error);
+      // 画面には HTTP の番号・応答の error を出さない（GUIDELINES §7）。種類ごとの文は呼び出し側が error.code から選ぶ
+      const text = "操作に失敗しました。もう一度試してください";
+      if (!quiet) SA.ui.toast(text);
       const failure = new Error(res.status + ": " + error);
       failure.status = res.status;
       failure.code = data && typeof data.error === "string" ? data.error : null;
       failure.data = data;
-      failure.toast = res.status + ": " + error;
+      failure.toast = text;
       throw failure;
     }
     return data;

@@ -22,10 +22,10 @@
   const TOO_LONG_TEXT = "1,900 字までです";
   /** 送れた（202）後に実行中のターンを読み直すまでの時間（ms）。進行中の読み込みに吸われても次で拾う */
   const RUNNING_RECHECK_MS = [500, 1500];
-  /** 送れなかったときのトースト（応答の error ごと）。無ければ「<status>: <error>」 */
+  /** 送れなかったときのトースト（応答の error ごと）。無ければ api.js の「操作に失敗しました。…」 */
   const SEND_ERRORS = {
-    bot_disconnected: "Bot が接続していません",
-    echo_failed: "送れませんでした（Discord に投稿できません）",
+    bot_disconnected: "送れませんでした。Bot が Discord につながっていません",
+    echo_failed: "送れませんでした。Discord に投稿できません",
     stopping: "再起動中です。終わったら送ってください",
     too_long: TOO_LONG_TEXT,
     not_found: "このチャンネルには送れません",
@@ -180,7 +180,7 @@
     }
     confirm({
       title: "「" + ch.title + "」を閉じますか",
-      body: "会話を要約してから完了に移します。やることの候補があれば、ここと Discord に確認が出ます（先に選んだ方で閉じます）。チャンネルは残ります。",
+      body: "会話を要約してから完了に移します。やることの候補があれば、ここか Discord で選んでから閉じます。",
       ok: "閉じる",
       run: () => startClose(channelId),
     });
@@ -229,7 +229,8 @@
     try {
       const data = await SA.api.post("/api/sessions/" + encodeURIComponent(channelId) + "/close/confirm", { selected }, { quiet: true });
       delete picked[channelId];
-      toast("閉じました（登録 " + (data && typeof data.registered === "number" ? data.registered : 0) + " 件）");
+      const registered = data && typeof data.registered === "number" ? data.registered : 0;
+      toast(registered > 0 ? "閉じました。タスクを " + registered + " 件登録しました" : "閉じました");
       if (data && data.registered > 0 && store.tasks !== null) store.reload("tasks");
     } catch (err) {
       opFailed(err, () => confirmClose(channelId, selected, []));
@@ -261,7 +262,7 @@
       const due = task && task.due ? "（期限 " + task.due + "）" : "";
       list.append(el("label", { class: "check" }, [box, el("span", { text: i + 1 + ". " + String(task && task.title) + due })]));
     });
-    if (tasks.length === 0) list.append(el("p", { class: "meta", text: "やることの候補はありません" }));
+    if (tasks.length === 0) list.append(el("p", { class: "meta", text: "やることの候補はありません。" }));
     updatePick();
     all.addEventListener("click", () => confirmClose(channelId, "all", buttons));
     pick.addEventListener("click", () => {
@@ -272,7 +273,7 @@
       el("div", { class: "card-head" }, [el("h3", { text: "閉じる前の確認" }), el("span", { class: "meta", text: "Discord でも選べます" })]),
       el("p", { class: "meta", text: "要約" }),
       el("div", { class: "msg-text", text: String(draft.summary || "") }),
-      el("p", { class: "meta", text: "やることの候補（タスクとして登録するものを選んでください）" }),
+      el("p", { class: "meta", text: "タスクにする候補" }),
       list,
       el("div", { class: "msg-actions" }, tasks.length === 0 ? [none] : buttons),
     ]);
@@ -456,7 +457,8 @@
   const touchPrimary = () => Boolean(touchQuery && touchQuery.matches);
   /** 画面のキーボードの Enter の表示（タッチが主なら改行、それ以外は送る） */
   const enterHint = () => (touchPrimary() ? "enter" : "send");
-  const placeholderOf = (title) => title + (touchPrimary() ? " に送る（改行は Enter・送るのはボタン）" : " に送る（Enter で送信・Shift+Enter で改行）");
+  // placeholder は動詞句だけ（GUIDELINES §5 入力欄）。キーの説明は設定のキー一覧と入力欄の title
+  const placeholderOf = (title) => title + " に送る";
   // 外付けのキーボード・トラックパッドの付け外しで判定が変わったら、出ている入力欄の案内を合わせる
   if (touchQuery && touchQuery.addEventListener) {
     touchQuery.addEventListener("change", () => {
@@ -488,6 +490,7 @@
       enterkeyhint: enterHint(),
       "data-title": title,
       placeholder: placeholderOf(title),
+      title: "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます",
     });
     ta.value = SA.app.draft(channelId);
     const counter = el("span", { class: "counter", "aria-live": "polite" });
@@ -508,7 +511,7 @@
     const form = el("form", { class: "composer", novalidate: true }, [
       ta,
       el("div", { class: "composer-foot" }, [
-        el("span", { class: "composer-hint" }, [el("span", { text: "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます。" })]),
+        el("span", { class: "composer-hint" }),
         counter,
         sendBtn,
       ]),
@@ -583,7 +586,7 @@
     if (t.missing) {
       container.replaceChildren(
         header(null, channelId),
-        el("div", { class: "ed-scroll" }, [el("div", { class: "empty" }, [icon("info"), el("p", { text: "このチャンネルは開けません（削除されたか、受け付けないチャンネルです）" })])]),
+        el("div", { class: "ed-scroll" }, [el("div", { class: "empty" }, [icon("info"), el("p", { text: "このチャンネルは開けません。削除されたか、受け付けないチャンネルです。" })])]),
       );
       return;
     }
@@ -618,7 +621,7 @@
     if (ch && ch.kind === "session" && ch.state !== "done" && ch.closeDraft && !(waiting && waiting.kind === "close")) {
       timeline.append(closeCard(channelId, ch.closeDraft));
     }
-    if (t.turns.length === 0 && !run) timeline.append(el("p", { class: "tl-hint", text: "まだ記録はありません。ここか Discord で発言すると、ここに出ます。" }));
+    if (t.turns.length === 0 && !run) timeline.append(el("p", { class: "tl-hint", text: "まだ会話はありません。下の欄か Discord で送ると始まります。" }));
     if (ch && ch.kind === "session" && ch.state === "done") {
       timeline.append(el("p", { class: "tl-hint", text: "完了したセッションです。発言すると進行中に戻ります。" }));
     }

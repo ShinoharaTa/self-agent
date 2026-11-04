@@ -111,7 +111,7 @@
       return;
     }
     if (!store.channels.guilds.some((g) => g.setUp)) {
-      body.replaceChildren(el("p", { class: "sb-note-block", text: "/setup を実行したサーバーの会話がここに出ます。" }));
+      body.replaceChildren(el("p", { class: "sb-note-block", text: "会話はまだありません。Discord で /setup を実行すると、ここに出ます。" }));
       return;
     }
     const listBox = el("div", { class: "sb-stack" }, chatList());
@@ -213,7 +213,7 @@
     if (s.trustPending) badges.push(el("span", { class: "badge badge-cc", text: "trust の確認待ち" }));
     if (s.startedBy && s.startedBy !== "owner") badges.push(el("span", { class: "badge badge-cc", text: "self-agent が起動" }));
     if (!s.inTmux) badges.push(el("span", { class: "badge badge-cc", text: "tmux の外" }));
-    if (s.pending && (s.pending.state === "queued" || s.pending.state === "delivering")) badges.push(el("span", { class: "badge badge-cc", text: "送信待ち" }));
+    if (s.pending && (s.pending.state === "queued" || s.pending.state === "delivering")) badges.push(el("span", { class: "badge badge-cc", text: "届け待ち" }));
     // 許可の要求を保留している（タブのカードで [許可][拒否]）
     const asking = s.permission && s.permission.state === "pending";
     if (asking) badges.push(el("span", { class: "badge badge-accent", text: "許可待ち" }));
@@ -256,14 +256,14 @@
       return;
     }
     const by = (state) => store.cc.sessions.filter((s) => s.state === state).map(ccRow);
-    // この機械の tmux に新しいセッションを起動する（起動のダイアログ）
-    const startBtn = el("button", { class: "btn btn-secondary btn-sm sb-new", type: "button" }, [icon("plus"), "新しいセッション"]);
+    // この機械の tmux に新しいセッションを起動する（起動のダイアログ）。会話の「新しいセッション」と語を分ける（GUIDELINES §7）
+    const startBtn = el("button", { class: "btn btn-secondary btn-sm sb-new", type: "button" }, [icon("plus"), "Claude Code を起動"]);
     startBtn.addEventListener("click", () => {
       SA.app.closeDrawer();
       SA.app.ccStart();
     });
     const note = store.cc.unreadable
-      ? "claude agents --json を続けて読めないため、一覧を空にしています。"
+      ? "一覧を読めませんでした。"
       : store.cc.stale
         ? "一覧を読めませんでした。前に読めた一覧です。"
         : null;
@@ -292,7 +292,7 @@
     );
     body.replaceChildren(
       group("proj", "プロジェクト", items),
-      el("p", { class: "sb-note-block", text: "プロジェクトはセッションの中で project_open を使うと作られます。" }),
+      el("p", { class: "sb-note-block", text: "プロジェクトは会話でページを作ると増えます。" }),
     );
   }
 

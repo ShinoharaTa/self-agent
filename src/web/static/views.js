@@ -37,8 +37,28 @@
     return el("td", { class: cls || null }, Array.isArray(content) ? content : [content]);
   }
 
-  function empty(iconName, text) {
-    return el("div", { class: "empty" }, [iconName ? icon(iconName) : null, el("p", { text })]);
+  /** 空の表示（何が無いか・次にすること。GUIDELINES §5）。retry があれば [読み直す]（読めなかったとき） */
+  function empty(iconName, text, retry) {
+    let again = null;
+    if (retry) {
+      again = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "読み直す" });
+      again.addEventListener("click", retry);
+    }
+    return el("div", { class: "empty" }, [iconName ? icon(iconName) : null, el("p", { text }), again]);
+  }
+
+  /** 権限モードの表示（識別子は値として残し、説明を添える。GUIDELINES §5 チェック・選択）。知らないものは識別子だけ */
+  const PERMISSION_MODES = {
+    default: "default（使うたびに確認）",
+    acceptEdits: "acceptEdits（編集は確認なし）",
+    plan: "plan（計画だけ）",
+    auto: "auto（自動で判断）",
+    dontAsk: "dontAsk（確認せずに拒否）",
+    bypassPermissions: "bypassPermissions（確認なし）",
+  };
+
+  function permissionModeText(mode) {
+    return Object.prototype.hasOwnProperty.call(PERMISSION_MODES, mode) ? PERMISSION_MODES[mode] : String(mode);
   }
 
   // ===== 数と日付の表示 =====
@@ -125,7 +145,10 @@
     // まだ読んでいない・別の日付のものしか無い
     if (!u || (want && u.date !== want)) {
       const failed = store.usageFailed !== null && store.usageFailed === (usageState.date || "today");
-      container.replaceChildren(head, scroll([empty(null, failed ? "読み込めませんでした" : "読み込んでいます…")]));
+      container.replaceChildren(
+        head,
+        scroll([failed ? empty(null, "使用量を読み込めませんでした。", () => store.load.usage(usageState.date)) : empty(null, "読み込んでいます…")]),
+      );
       return;
     }
     const cards = el(
@@ -160,7 +183,7 @@
     });
     const turns =
       rows.length === 0
-        ? empty("bar-chart", "この日のターンはありません")
+        ? empty("bar-chart", "この日のターンはありません。日付を変えると別の日を見られます。")
         : table(
             ["時刻", "種類", "結果", { text: "ツール", cls: "td-num" }, { text: "入力", cls: "td-num" }, { text: "読み", cls: "td-num" }, { text: "書き", cls: "td-num" }, { text: "出力", cls: "td-num" }, { text: "率", cls: "td-num" }],
             rows,
@@ -216,7 +239,10 @@
     const data = store.devlog;
     if (!data || !want || data.date !== want) {
       const failed = store.devlogFailed !== null && store.devlogFailed === (devlogState.date || "today");
-      container.replaceChildren(toolbar("file-text", "会話ログ", [], [chips]), scroll([empty(null, failed ? "読み込めませんでした" : "読み込んでいます…")]));
+      container.replaceChildren(
+        toolbar("file-text", "会話ログ", [], [chips]),
+        scroll([failed ? empty(null, "会話ログを読み込めませんでした。", () => store.load.devlog(devlogState.date)) : empty(null, "読み込んでいます…")]),
+      );
       return;
     }
     // 新しい順に並べる（API は古い順）
@@ -226,7 +252,7 @@
     records.forEach((r, i) => {
       const item = el("li", { role: "option", "aria-selected": String(i === devlogState.selected), tabindex: "0", class: "master-item" }, [
         el("span", { class: "master-title" }, [el("span", { class: "dot " + (r.ok ? "dot-ok" : "dot-bad"), "aria-hidden": "true" }), SA.ui.clock(new Date(r.at)) + " " + devlogLabel(r)]),
-        el("span", { class: "meta", text: SA.ui.elapsed(r.durationMs || 0) + "・ツール " + (r.toolCalls ?? 0) + " 回" + (r.ok ? "" : "・失敗") }),
+        el("span", { class: "meta", text: SA.ui.elapsed(r.durationMs || 0) + "・ツール " + (r.toolCalls ?? 0) + " 回" + (r.ok ? "" : "（失敗）") }),
       ]);
       const pick = () => {
         devlogState.selected = i;
@@ -242,7 +268,14 @@
       list.append(item);
     });
     const current = records[devlogState.selected];
-    const detail = current ? el("pre", { class: "code-pre", text: current.text }) : empty(null, data.records && data.records.length > 0 ? "この種類のターンはありません" : "この日の記録はありません");
+    const detail = current
+      ? el("pre", { class: "code-pre", text: current.text })
+      : empty(
+          null,
+          data.records && data.records.length > 0
+            ? "この種類のターンはありません。種類を「全部」に戻すと出ます。"
+            : "この日の記録はありません。日付を変えると別の日を見られます。",
+        );
     container.replaceChildren(
       toolbar("file-text", "会話ログ", [el("span", { class: "meta", text: dayLabel(data.date) + "・dev モード" })], [chips]),
       el("div", { class: "master-detail" }, [el("div", { class: "master" }, [list]), el("div", { class: "detail" }, [detail])]),
@@ -257,7 +290,7 @@
   function failed(err, key, retry) {
     const stale = err && (err.status === 404 || err.status === 409);
     if (stale) toast("この操作は古くなっています");
-    else toast((err && err.toast) || "操作に失敗しました", null, { level: "error", retry });
+    else toast((err && err.toast) || "操作に失敗しました。もう一度試してください", null, { level: "error", retry });
     store.reload(key);
   }
 
@@ -287,6 +320,13 @@
     ["done", "完了"],
     ["dropped", "やめた"],
   ];
+
+  /** 状態ごとの空の表示 */
+  const TASK_EMPTY = {
+    open: "未完了のタスクはありません。会話で「やることに足して」と頼むと増えます。",
+    done: "完了したタスクはありません。",
+    dropped: "やめたタスクはありません。",
+  };
 
   /** 期限（YYYY-MM-DD）が今日（サーバーの日付）より前の未完了 */
   function overdue(t) {
@@ -343,11 +383,11 @@
     });
     const body =
       rows.length === 0
-        ? empty("square-check", "このタスクはありません")
+        ? empty("square-check", TASK_EMPTY[shown] || "タスクはありません。")
         : table(["#", "題名", "期限", shown === "open" ? "知らせ" : "閉じた日", { text: "", cls: "th-actions" }], rows);
     container.replaceChildren(
       head,
-      scroll([body, el("p", { class: "meta", text: "追加・編集は #inbox か #tasks に書いてください（Bot が task_add・task_update を使います）。" })]),
+      scroll([body, el("p", { class: "meta", text: "タスクは #inbox か #tasks の会話で頼むと増え、変わります。" })]),
     );
   }
 
@@ -398,11 +438,11 @@
     });
     const body =
       rows.length === 0
-        ? empty("bell", "動いているリマインドはありません")
+        ? empty("bell", "動いているリマインドはありません。会話で「明日 9 時に知らせて」と頼むと増えます。")
         : table(["次の時刻", "内容", "繰り返し", "頼んだ場所", { text: "", cls: "th-actions" }], rows);
     container.replaceChildren(
       toolbar("bell", "リマインド", [el("span", { class: "meta", text: list.length + " 件" })]),
-      scroll([body, el("p", { class: "meta", text: "発火のメッセージのボタン（済んだ・10 分後・1 時間後）は Discord にだけあります。" })]),
+      scroll([body, el("p", { class: "meta", text: "知らせのメッセージのボタン（済んだ、10 分後、1 時間後）は Discord にだけあります。" })]),
     );
   }
 
@@ -432,7 +472,9 @@
       toolbar("book", "記憶"),
       scroll([
         el("p", { class: "meta", text: "オーナーについての記憶です。毎ターンの先頭に付きます。" }),
-        rows.length ? table(["#", "記憶", "保存", { text: "", cls: "th-actions" }], rows) : empty(null, "記憶はありません"),
+        rows.length
+          ? table(["#", "記憶", "保存", { text: "", cls: "th-actions" }], rows)
+          : empty(null, "記憶はありません。会話で「覚えておいて」と頼むと増えます。"),
       ]),
     );
   }
@@ -448,9 +490,9 @@
 
   /** 失敗の種類の表示（poller.ts の GithubFailure と no_gh） */
   const GITHUB_FAILURES = {
-    auth: "gh の認証",
+    auth: "gh の認証が通りません",
     rate_limited: "レート制限",
-    forbidden: "GitHub が拒否しました（403）",
+    forbidden: "GitHub に拒否されました",
     network: "通信の失敗",
     shape: "応答の形が違います",
     no_gh: "gh が見つかりません",
@@ -460,20 +502,21 @@
     return Object.prototype.hasOwnProperty.call(GITHUB_FAILURES, kind) ? GITHUB_FAILURES[kind] : String(kind);
   }
 
-  /** 取得の状態の 1 行（最後の取得・失敗・止めている間） */
+  /** 取得の状態の 1 行（最後の取得・失敗。止めている間は失敗の後の括弧に。「・」は 2 要素まで） */
   function githubFetchLine(g) {
     const parts = [g && g.lastFetchAt ? "最後の取得 " + SA.ui.shortTime(g.lastFetchAt) : "まだ取得していません"];
-    if (g && g.failure) parts.push("失敗: " + githubFailureText(g.failure));
-    if (g && g.pausedUntil) parts.push(SA.ui.shortTime(g.pausedUntil) + " まで止めています");
+    const paused = g && g.pausedUntil ? SA.ui.shortTime(g.pausedUntil) + " まで止めています" : null;
+    if (g && g.failure) parts.push("失敗: " + githubFailureText(g.failure) + (paused ? "（" + paused + "）" : ""));
+    else if (paused) parts.push(paused);
     return parts.join("・");
   }
 
-  /** [対応] と [起動して送る] の結果（サーバーの文をトーストに。積んだら [取り消す]、セッションが無ければ起動の確認） */
+  /** [対応] と [起動して送る] の結果（サーバーの文をトーストに。積んだら [やめる]、セッションが無ければ起動の確認） */
   function githubHandoffDone(n, data) {
     const text = data && typeof data.text === "string" ? data.text : "送りました";
     if (data && data.result === "no_session" && data.startable === true) {
       confirm({
-        title: "新しいセッションを起動して送る",
+        title: "Claude Code を起動して送りますか",
         body: text,
         ok: "起動して送る",
         run: () => githubHandoff(null, n, "start"),
@@ -486,7 +529,7 @@
       text,
       cancellable
         ? {
-            label: "取り消す",
+            label: "やめる",
             run: () => cancelCcSend(sendId, null, null),
           }
         : undefined,
@@ -511,10 +554,16 @@
   function githubItem(n) {
     const parts = githubParts(n.url);
     const title = (n.label ? n.label + ": " : "") + (n.title || "（題名なし）") + (parts ? " #" + parts.number : "");
-    const meta = [parts ? parts.repo : null, n.actorLogin, n.actorKnown ? null : "誰の操作か確かめられませんでした", SA.ui.shortTime(n.updatedAt)].filter((v) => v);
+    // 補足の「・」は 2 要素まで（GUIDELINES §7）。リポジトリ・人と、時刻・注記を 2 つの span に分ける
+    const who = [parts ? parts.repo : null, n.actorLogin].filter((v) => v);
+    const when = [SA.ui.shortTime(n.updatedAt), n.actorKnown ? null : "誰の操作か確かめられませんでした"].filter((v) => v);
     return el("li", { class: "row-list-item" }, [
       el("span", { class: "dot " + (n.level === "red" ? "dot-bad" : "dot-warn"), "aria-hidden": "true" }),
-      el("div", { class: "item-main" }, [el("span", { class: "item-title", text: title }), el("span", { class: "meta", text: meta.join("・") })]),
+      el("div", { class: "item-main" }, [
+        el("span", { class: "item-title", text: title }),
+        who.length ? el("span", { class: "meta", text: who.join("・") }) : null,
+        el("span", { class: "meta", text: when.join("・") }),
+      ]),
       parts ? el("a", { class: "btn btn-ghost btn-sm", href: n.url, target: "_blank", rel: "noreferrer noopener" }, [icon("external-link"), "GitHub"]) : null,
       githubActButton(n),
     ]);
@@ -525,10 +574,13 @@
     const attrs = { class: "btn btn-secondary btn-sm", type: "button", text: "対応" };
     if (!n.handoff) {
       attrs.disabled = true;
-      attrs.title = store.github && store.github.handoff ? "このリポジトリには送れません（または [対応] を付ける前の通知です）" : "SELF_AGENT_CC が無効です";
+      attrs.title =
+        store.github && store.github.handoff
+          ? "この通知は送れません。この機械に無いリポジトリか、[対応] を足す前の通知です"
+          : "Claude Code の連携が無効です（設定で有効にできます）";
       return el("button", attrs);
     }
-    attrs.title = "このリポジトリの Claude Code のセッションに対応依頼を送る";
+    attrs.title = "このリポジトリの Claude Code のセッションに対応依頼（リポジトリ、番号、URL の 1 行）を送ります。セッションが無ければ起動するか確かめます";
     const button = el("button", attrs);
     button.addEventListener("click", () => githubHandoff(button, n, "act"));
     return button;
@@ -544,7 +596,7 @@
       const items = data.notifications.filter((n) => n.level === level);
       return section(
         title,
-        [items.length ? el("ul", { class: "row-list" }, items.map(githubItem)) : el("p", { class: "meta", text: "ありません" })],
+        [items.length ? el("ul", { class: "row-list" }, items.map(githubItem)) : el("p", { class: "meta", text: "ありません。" })],
         [el("span", { class: "meta", text: items.length + " 件" })],
       );
     };
@@ -553,10 +605,7 @@
       scroll([
         group("red", "自分宛て"),
         group("yellow", "自分のリポジトリの新しい Issue / PR"),
-        el("p", {
-          class: "meta",
-          text: "#github に出したもの（「ほか n 件」にまとめたものを含む）です。[対応] でそのリポジトリの Claude Code のセッションに対応依頼（リポジトリ・番号・URL だけの 1 行）を送ります。セッションが無ければ起動を確かめます。",
-        }),
+        el("p", { class: "meta", text: "#github に出したもの（「ほか n 件」にまとめたものを含む）です。" }),
       ]),
     );
   }
@@ -565,19 +614,19 @@
   /** slug → 選んだファイルのパス（無ければ site/index.html があればそれ） */
   const projectSel = {};
   const PROJECT_FILE_ERRORS = {
-    not_found: "ファイルがありません（消えたか、移されました）",
-    too_large: "256 KB を超えるため表示しません",
-    binary: "テキストではないため表示しません",
-    invalid_path: "このファイルは表示できません",
+    not_found: "ファイルがありません。消えたか、移されました。",
+    too_large: "256 KB を超えるため表示しません。",
+    binary: "テキストではないため表示しません。",
+    invalid_path: "このファイルは表示できません。",
   };
 
   /** 読めなかったときの文。too_large は応答の上限（maxBytes）があればその大きさで */
   function projectFileError(current) {
     if (current.error === "too_large" && current.maxBytes) {
       const limit = current.maxBytes % 1024 === 0 ? current.maxBytes / 1024 + " KB" : bytes(current.maxBytes);
-      return limit + " を超えるため表示しません";
+      return limit + " を超えるため表示しません。";
     }
-    return PROJECT_FILE_ERRORS[current.error] || "読み込めませんでした";
+    return PROJECT_FILE_ERRORS[current.error] || "このファイルを読み込めませんでした。";
   }
 
   function pageUrl(url) {
@@ -594,14 +643,21 @@
       actions.push(toSession);
     }
     const url = p ? pageUrl(p.url) : null;
-    if (url) actions.push(el("a", { class: "btn btn-secondary btn-sm", href: url, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "ページを開く"]));
+    if (url) {
+      actions.push(
+        el("a", { class: "btn btn-secondary btn-sm", href: url, target: "_blank", rel: "noreferrer", title: "ページは別のオリジン（/p/" + slug + "/）なので、埋め込まずに開きます" }, [
+          icon("external-link"),
+          "ページを開く",
+        ]),
+      );
+    }
     const head = toolbar("folder", slug, p && p.title !== slug ? [el("span", { class: "meta", text: p.title })] : [], actions);
     if (!listing) {
       container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
       return;
     }
     if (listing.missing) {
-      container.replaceChildren(head, scroll([empty("folder", "このプロジェクトはありません（削除されたか、ディレクトリがありません）")]));
+      container.replaceChildren(head, scroll([empty("folder", "このプロジェクトはありません。削除されたか、ディレクトリが消えています。")]));
       return;
     }
     const files = listing.files;
@@ -633,13 +689,10 @@
     container.replaceChildren(
       head,
       scroll([
-        el("p", {
-          class: "meta",
-          text: (p ? "更新 " + dateTime(p.updatedAt) + "・" : "") + "ページは別のオリジン（/p/" + slug + "/）なので、ここには埋め込まずリンクで開きます。",
-        }),
+        p ? el("p", { class: "meta", text: "更新 " + dateTime(p.updatedAt) }) : null,
         rows.length
           ? table(["ファイル", { text: "大きさ", cls: "td-num" }, { text: "更新", cls: "td-num" }], rows, "table-num")
-          : empty("file", "ファイルはありません"),
+          : empty("file", "ファイルはありません。会話でページを作ると増えます。"),
         el("p", {
           class: "meta",
           text: (listing.truncated ? "一覧は 500 件・深さ 6 までです。" : "") + "ドットで始まるもの（.trash など）と node_modules は出しません。",
@@ -682,9 +735,9 @@
   /** Web から送る本文の上限（入力欄。サーバーは src/cc/sender.ts の CC_SEND_MAX_CHARS = 4,000 まで受ける） */
   const CC_MESSAGE_MAX = 2000;
   const CC_TOO_LONG_TEXT = "2,000 字までです";
-  /** 送れなかったときのトースト（応答の error ごと）。無ければ「<status>: <error>」 */
+  /** 送れなかったときのトースト（応答の error ごと）。無ければ api.js の「操作に失敗しました。…」 */
   const CC_SEND_ERRORS = {
-    already_queued: "送信待ちがあります。届くか取り消してから送ってください",
+    already_queued: "届け待ちの本文があります。届くか、やめてから送ってください",
     not_in_tmux: "tmux の外のセッションには送れません。RC で開いてください",
     not_claude: "このペインは Claude Code ではないため送れません",
     no_server: "tmux が動いていません",
@@ -695,16 +748,16 @@
     empty: "本文がありません",
     stopping: "再起動中です。終わったら送ってください",
   };
-  /** 送信の状態の文（一覧の pending.state） */
+  /** 送った本文の状態の文（一覧の pending.state） */
   const CC_SEND_STATES = {
     awaiting_confirm: "Discord の確認を待っています",
-    queued: "送信待ち（入力待ちになったら届けます）",
+    queued: "届け待ち。入力待ちになったら届けます",
     delivering: "届けています…",
     delivered: "届けました",
-    unconfirmed: "貼れたか・送れたかを確かめられませんでした。画面を確認してください（やり直しません）",
-    failed: "送れませんでした（セッションが終わったか、tmux の中の Claude Code ではないか、起動したディレクトリの Claude Code ではありません）",
-    gave_up: "入力待ちにならなかったため、届けるのを諦めました",
-    cancelled: "取り消しました",
+    unconfirmed: "届いたかを確かめられませんでした。画面で確かめてください。やり直しはしません",
+    failed: "送れませんでした。セッションが終わったか、別の Claude Code に変わっています",
+    gave_up: "入力待ちにならなかったため、届けるのをやめました",
+    cancelled: "送るのをやめました",
   };
   /** 届けた送信に返事が来たか（一覧の pending.replyState。CC8） */
   const CC_REPLY_STATES = {
@@ -742,24 +795,24 @@
     );
   }
 
-  /** 送信待ちの取り消し。sessionId があれば終わった後にそのセッションを読み直す。button は押したもの（[もう一度] からは null） */
+  /** 届け待ちを取り下げる（[やめる]）。sessionId があれば終わった後にそのセッションを読み直す。button は押したもの（[もう一度] からは null） */
   function cancelCcSend(sendId, sessionId, button) {
     if (button) button.disabled = true;
     SA.api.post("/api/cc/sends/" + sendId + "/cancel", {}, { quiet: true }).then(
       () => {
-        toast("取り消しました");
+        toast("送るのをやめました");
         if (sessionId) store.load.ccSession(sessionId);
       },
       (err) => {
         if (button) button.disabled = false;
         if (err && err.status === 409) toast("この操作は古くなっています（届けている途中か、終わっています）");
-        else toast((err && err.toast) || "取り消せませんでした", null, { level: "error", retry: () => cancelCcSend(sendId, sessionId, null) });
+        else toast((err && err.toast) || "送るのをやめられませんでした", null, { level: "error", retry: () => cancelCcSend(sendId, sessionId, null) });
         if (sessionId) store.load.ccSession(sessionId);
       },
     );
   }
 
-  /** 送信の状態の行。送信待ちなら [取り消す] */
+  /** 送った本文の状態の行。届け待ちなら [やめる] */
   function ccPendingBar(sessionId, pending) {
     if (!pending || typeof pending.id !== "number") return null;
     // ダイアログ（trust・許可など）が出ている間は積んだまま待つ（再起動の後も、最後に見たペインの状態で分かる）
@@ -769,10 +822,10 @@
         : CC_SEND_STATES[pending.state] || String(pending.state);
     const cls = pending.state === "delivered" ? " is-done" : pending.state === "unconfirmed" || pending.state === "failed" || pending.state === "gave_up" ? " is-warning" : "";
     const reply = pending.state === "delivered" && pending.replyState ? CC_REPLY_STATES[pending.replyState] : null;
-    const children = [el("span", { text: "送信 #" + pending.id + ": " + text + (reply ? "・" + reply : "") })];
+    const children = [el("span", { text: "本文 #" + pending.id + ": " + text + (reply ? "・" + reply : "") })];
     if (pending.state === "queued" || pending.state === "delivering") children.unshift(el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }));
     if (pending.state === "queued") {
-      const cancel = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "取り消す" });
+      const cancel = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "やめる" });
       cancel.addEventListener("click", () => cancelCcSend(pending.id, sessionId, cancel));
       children.push(cancel);
     }
@@ -789,6 +842,7 @@
       enterkeyhint: SA.chat.enterHint(),
       "data-title": title,
       placeholder: SA.chat.placeholderOf(title),
+      title: "入力待ちのときに tmux で貼って Enter を押します。作業中なら入力待ちになるまで待ちます",
     });
     ta.value = ccDrafts[sessionId] || "";
     const counter = el("span", { class: "counter", "aria-live": "polite" });
@@ -838,9 +892,7 @@
     const form = el("form", { class: "composer", novalidate: true }, [
       ta,
       el("div", { class: "composer-foot" }, [
-        el("span", { class: "composer-hint" }, [
-          el("span", { text: "入力待ちのときに tmux で貼って Enter を押します。作業中なら入力待ちになるまで待ちます。改行もそのまま送ります。" }),
-        ]),
+        el("span", { class: "composer-hint" }),
         counter,
         sendBtn,
       ]),
@@ -927,7 +979,7 @@
       }),
     ]);
     const facts = [
-      el("p", { class: "meta" }, [el("span", { class: "mono", text: String(p.toolName) }), p.permissionMode ? " ・ " + p.permissionMode : null]),
+      el("p", { class: "meta" }, [el("span", { class: "mono", text: String(p.toolName) }), p.permissionMode ? " ・ " + permissionModeText(p.permissionMode) : null]),
       el("pre", { class: "code-pre", text: String(p.summary || "") }),
     ];
     // 常に許可にすると加わるルール（保留中と、常に許可したものだけ）。ルール・意味は hook から来たデータなので textContent
@@ -980,7 +1032,7 @@
     const extras = s ? [el("span", { class: "badge" + (s.state === "needs_input" ? " badge-accent" : ""), text: CC_STATES[s.state] || String(s.state) })] : [];
     const head = toolbar("terminal", s ? ccName(s) : "Claude Code", extras, actions);
     if (loaded && loaded.missing) {
-      container.replaceChildren(head, scroll([empty("terminal", "このセッションは一覧にありません（終わったか、一覧を読めません）")]));
+      container.replaceChildren(head, scroll([empty("terminal", "このセッションは一覧にありません。終わったセッションなら、このタブを閉じてください。")]));
       return;
     }
     if (!s) {
@@ -995,7 +1047,7 @@
           (s.state === "needs_input" && s.waitingFor ? "・" + s.waitingFor : "") +
           (s.since ? "（" + ago(s.since) + "から）" : ""),
       ),
-      kv("権限モード", el("span", { class: "mono", text: s.permissionMode || "-" })),
+      kv("権限モード", el("span", { class: "mono", text: s.permissionMode ? permissionModeText(s.permissionMode) : "-" })),
       kv("ペイン", s.inTmux && s.paneLabel ? el("span", { class: "mono", text: s.paneLabel }) : "tmux の外"),
       kv("最後の指示", s.lastPromptAt ? dateTime(s.lastPromptAt) + "（" + ago(s.lastPromptAt) + "）" : "-"),
       ...(CC_STARTED_BY[s.startedBy] ? [kv("起動", CC_STARTED_BY[s.startedBy])] : []),
@@ -1006,7 +1058,7 @@
       ? el("p", {
           class: "alert",
           role: "status",
-          text: "新しいディレクトリでは trust の確認が出ています。端末か RC で「Yes, I trust this folder」を選んでください。最初の指示はその後に届けます。",
+          text: "trust の確認が出ています。端末か RC で「Yes, I trust this folder」を選ぶと、最初の指示を届けます。",
         })
       : null;
     const prompt = s.lastPromptText ? el("pre", { class: "code-pre", text: s.lastPromptText }) : null;
@@ -1014,15 +1066,15 @@
     if (!loaded || !loaded.session) screen = el("p", { class: "meta", text: "読み込んでいます…" });
     else if (!s.inTmux) {
       screen = el("p", { class: "meta", text: "tmux の外のセッションです。画面は見られません" + (rc ? "。RC で開いてください。" : "。") });
-    } else if (typeof s.screen !== "string") screen = el("p", { class: "meta", text: "画面を読めませんでした" });
+    } else if (typeof s.screen !== "string") screen = el("p", { class: "meta", text: "画面を読めませんでした。" });
     else screen = el("pre", { class: "code-pre cc-screen", text: s.screen });
     // 許可のカードは見出しの下に固定する（画面の写しは下に付けて読むので、中に入れると見えなくなる）
     const card = ccPermissionCard(sessionId, s.permission, rc);
     const permission = card ? el("div", { class: "cc-permission-wrap" }, [card]) : null;
-    const body = scroll([
-      section("セッション", [trust, facts, prompt].filter((x) => x)),
-      section("画面", [screen], [el("span", { class: "meta", text: "3 秒ごとに更新" })]),
-    ]);
+    // 更新の間隔は常設の文にせず見出しの title に（GUIDELINES §5）
+    const screenSection = section("画面", [screen]);
+    screenSection.querySelector("h2").title = "3 秒ごとに更新";
+    const body = scroll([section("セッション", [trust, facts, prompt].filter((x) => x)), screenSection]);
     // 画面の写しは最後の行（入力欄）を見たいので、下にいれば下に付ける
     body.dataset.stick = "bottom";
     const pending = ccPendingBar(sessionId, s.pending);
@@ -1059,7 +1111,7 @@
   }
 
   function kbSearchInput() {
-    const input = el("input", { class: "input input-sm", type: "search", placeholder: "検索（3 文字以上）", "aria-label": "ナレッジを検索" });
+    const input = el("input", { class: "input input-sm", type: "search", placeholder: "探す", title: "3 文字以上で探します", "aria-label": "ナレッジを探す" });
     input.value = kbState.q;
     input.addEventListener("input", () => {
       kbState.q = input.value;
@@ -1099,14 +1151,21 @@
   }
 
   function kbDetail(item) {
-    if (!item) return empty(null, store.knowledge && store.knowledge.q ? "見つかりませんでした" : "ナレッジはありません");
+    if (!item) {
+      return empty(
+        null,
+        store.knowledge && store.knowledge.q
+          ? "「" + store.knowledge.q + "」に合うナレッジはありません。別の語で探してください。"
+          : "ナレッジはありません。会話で URL を貼って「保存して」と頼むと増えます。",
+      );
+    }
     const entry = store.kbEntries[item.id];
     if (entry === undefined) {
       store.load.kbEntry(item.id);
       return empty(null, "読み込んでいます…");
     }
-    if (entry === "missing") return empty(null, "この項目はもうありません");
-    if (entry === "failed") return empty(null, "読み込めませんでした");
+    if (entry === "missing") return empty(null, "この項目はもうありません。一覧から選び直してください。");
+    if (entry === "failed") return empty(null, "この項目を読み込めませんでした。", () => store.load.kbEntry(item.id, true));
     // 一覧の方が新しければ読み直す（読み直す間は前の中身を出す）
     if (typeof item.updatedAt === "string" && item.updatedAt > entry.updatedAt && store.kbRetryFailed[item.id] !== item.updatedAt) {
       store.load.kbEntry(item.id, true, item.updatedAt);
@@ -1118,8 +1177,8 @@
       entry.summary ? el("p", { text: entry.summary }) : null,
       Array.isArray(entry.tags) && entry.tags.length > 0 ? el("div", { class: "row row-tight" }, entry.tags.map((tag) => el("span", { class: "badge", text: tag }))) : null,
       entry.body ? el("p", { class: "msg-text", text: entry.body }) : null,
-      el("p", { class: "meta", text: "#" + entry.id + "・保存 " + dateOf(entry.createdAt) + (entry.updatedAt !== entry.createdAt ? "・更新 " + dateOf(entry.updatedAt) : "") }),
-      el("p", { class: "meta", text: "削除は Discord の確認（kb_delete）から行います。" }),
+      el("p", { class: "meta", text: "#" + entry.id + "・保存 " + dateOf(entry.createdAt) + (entry.updatedAt !== entry.createdAt ? "（更新 " + dateOf(entry.updatedAt) + "）" : "") }),
+      el("p", { class: "meta", text: "削除は Discord の確認から行います。" }),
     ]);
   }
 
@@ -1184,12 +1243,14 @@
 
   function githubLine(g) {
     if (!g || !g.enabled) return "無効";
-    return "有効・" + githubFetchLine(g);
+    return "有効（" + githubFetchLine(g) + "）";
   }
 
   function renderStatus(container) {
     const s = store.status;
-    const head = toolbar("activity", "状態", [el("span", { class: "meta", text: "10 秒ごとに更新" })]);
+    // 更新の間隔は常設の文にせず見出しの title に（GUIDELINES §5）
+    const head = toolbar("activity", "状態");
+    head.querySelector("h1").title = "10 秒ごとに更新";
     if (!s) {
       container.replaceChildren(head, scroll([empty(null, "読み込んでいます…")]));
       return;
@@ -1232,7 +1293,7 @@
     ["Ctrl+B", "サイドバーの表示"],
     ["Ctrl+J", "パネルの表示"],
     ["Alt+W", "タブを閉じる"],
-    ["Alt+1〜9", "n 番目のタブ"],
+    ["Alt+数字", "その番号のタブ（1 から 9）"],
     ["Esc", "パレット・ドロワーを閉じる"],
   ];
 
