@@ -72,7 +72,7 @@
 | 34 | `confirm` が danger でも `ok.focus()`（ui.js:223） | §5 ダイアログ | `opts.danger ? cancel.focus() : ok.focus()` |
 | 35 | ダイアログの入力に `aria-describedby` / `aria-invalid` / `required` が無い（workbench.js:704-708・793-803、index.html:76・104）。`p.alert` が hidden から出ると跳ぶ（index.html:86・120） | §5 入力欄・§8 | 属性 3 つ。`.alert` の場所に `min-height: 1lh` |
 | 36 | 見出しの段が飛ぶ（h1 → h3。views.js:138・900、chat.js:265）。閉じる前の確認の「要約」「候補」が `p.meta`（chat.js:265-268） | §8 見出し | `h2`・`dl` |
-| 37 | Claude Code の行のバッジが最大 7 個（sidebar.js:208-220） | §5 バッジ（行は 1 つ） | 最重要 1 つ（許可待ち > 送信待ち > trust > tmux の外）。残りは `title` とタブ |
+| 37 | Claude Code の行のバッジが最大 7 個（sidebar.js:208-220） | §5 バッジ（行は 1 つ） | 最重要 1 つ（許可待ち > 届け待ち > trust > tmux の外）。残りは `title` とタブ |
 | 38 | 群の見出しの数のピル `.sb-count`（sidebar.js:58、app.css:520-530） | §5 バッジ（ピルは未読だけ） | 文字に |
 | 39 | タスクの表: id 先頭・`—` 2 列・行ごとに secondary の [完了]（views.js:322-343）。リマインド: 行ごとに [次を飛ばす][止める]（views.js:363-386） | §5 表・一覧の行（行の操作は 1 つ） | 先頭を `label.check`（チェック = 完了）、id は題名の下。リマインドの行は [次を飛ばす] だけ、[止める] は右端に離すか `…` |
 | 40 | `.cc-screen` が 12px の `pre`（app.css:1392-1397） | §3 端末の写し | 14px（coarse 13。段階の唯一の例外）・行間 1.35・地 `--bg`・`tab-size: 4` |

@@ -584,14 +584,17 @@
     const active = activeTabId();
     // 前に出ている会話のタブのチャンネル（/close・/wait はセッション、/renew は会話のタブのとき）
     const ch = SA.chat.current();
-    const sessionOnly = (fn) => (ch && ch.kind === "session" ? fn : null);
+    // 要約を待っている間は /close・/renew を重ねない
+    const busy = !!ch && SA.chat.busy(ch.id);
+    const sessionOnly = (fn) => (ch && ch.kind === "session" && !busy ? fn : null);
+    const sessionWhyOf = (why) => (busy && ch && ch.kind === "session" ? SA.chat.BUSY_TEXT : why);
     // label は動詞句、Discord のコマンド名・キーは右の kbd（keys）。使えないときは why を detail の位置に出す
-    const sessionWhy = "セッションの会話のタブで使えます";
+    const sessionWhy = sessionWhyOf("セッションの会話のタブで使えます");
     return [
       { label: "新しいセッションを作る", keys: "/new", detail: "題名と人格を決めて作ります", run: newSession },
       { label: "今のセッションを閉じる", keys: "/close", detail: "要約してから完了に移します", run: sessionOnly(() => SA.chat.closeSession(ch.id)), why: sessionWhy },
       { label: "今のセッションを待ちにする", keys: "/wait", detail: "発言すると進行中に戻ります", run: sessionOnly(() => SA.chat.setWaiting(ch.id)), why: sessionWhy },
-      { label: "会話を新しくする", keys: "/renew", detail: "要約して新しい会話に引き継ぎます", run: ch ? () => SA.chat.renew(ch.id) : null, why: "会話のタブで使えます" },
+      { label: "会話を新しくする", keys: "/renew", detail: "要約して新しい会話に引き継ぎます", run: ch && !busy ? () => SA.chat.renew(ch.id) : null, why: busy ? SA.chat.BUSY_TEXT : "会話のタブで使えます" },
       { label: "タスクを開く", keys: "/tasks", detail: "", run: () => open("tasks") },
       { label: "リマインドを開く", keys: "/reminders", detail: "", run: () => open("reminders") },
       { label: "使用量を開く", keys: "/usage", detail: "", run: () => open("usage") },
@@ -741,6 +744,7 @@
 
   /** 題名のエラーの表示（欄のすぐ下の role=alert と、欄の aria-invalid。GUIDELINES §5 入力欄） */
   function newError(shown) {
+    $("new-error").textContent = shown ? "題名を入れてください" : "";
     $("new-error").hidden = !shown;
     if (shown) $("new-title").setAttribute("aria-invalid", "true");
     else $("new-title").removeAttribute("aria-invalid");
