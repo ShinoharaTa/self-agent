@@ -87,12 +87,14 @@
 | `--warning` | 4.9 | 5.3 | 4.6 |
 
 - `--primary-text` on `--primary` 16.2 / 16.5、on `--accent` 6.7 / 5.5、on `--danger` 5.8 / 5.1（ボタンの文字）。
-- `--border` は飾りの線（1.3〜1.5）で、入力欄の枠にも使う。枠だけで欄を識別させない（ラベルと地の色の差で分かる）。フォーカスの輪（`--accent`）は地に対して 5.5 以上 [hallmark]
+- `--border` は飾りの線（1.2〜1.5）で、入力欄の枠にも使う。枠だけで欄を識別させない（ラベルと地の色の差で分かる）。フォーカスの輪（`--accent`）は地に対して 5.1 以上（3:1 を満たす） [hallmark]
+- ライトの `--muted` はこれより暗くしない（`--warning` on `--muted` の 4.6 が 4.5 を割る）。
 - 値を変えるときは同じ表を計算し直して載せる。「薄い on muted」が 4.5 を割らないことが基準（事実: 旧の `#71717a` on `#f4f4f5` は 4.4 で割っていた）。
 
 ### 2.3 決まり
 
 - 文字の役割は 3 つだけ。本文 = `--text`、二次 = `--text-secondary`（時刻・ラベル・表の見出し・一覧の補足・`.meta`）、薄い = `--text-muted`（placeholder・入力欄のヒント・空の表示・無効・区切りのアイコン）。似た灰色を増やさない [unslop]
+- アイコンの色の線引き: 押せるもの（一覧の行・アクティビティ・ボタンの中）のアイコンは二次、押せない飾り・区切りのアイコンは薄い
 - 意味の色は **accent / danger / success / warning の 4 つ**だけ。新しい状態に新しい色を足さない。意味の色は意味のためにだけ使い、飾りに使わない [unslop][ui-skills]
 - accent が画面に占めるのは数 %（主な操作・選択中・フォーカス・未読の点・生きている点）。1 画面に accent は 1 役 [unslop][hallmark][ui-skills]
 - 意味の色は **文字・アイコン・点（`.dot`）・2px の線**に使う。面に塗るのは `.btn-danger` と `.alert` の枠だけ。色だけで状態を伝えない（文かアイコンを添える） [ui-skills]
@@ -106,7 +108,7 @@
 ## 3. タイポグラフィ
 
 - フォントは `--font-family`（`system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif`）の **1 家族**。道具の画面に見出し用の別の書体は要らない [impeccable]。Web フォント・CDN は使わない（CSP でも読めない）
-- 段階は **12 / 14 / 16** の 3 つで組む（固定の px。画面幅で伸び縮みさせない）。18 以上は使わない [impeccable]
+- 段階は **12 / 14 / 16** の 3 つで組む（固定の px。画面幅で伸び縮みさせない）。18 以上は使わない [impeccable]。例外は 1 つだけ: 端末の写し（`.cc-screen`）の指の端末の 13px（下の端末の写しの項）。ほかに 13 を使わない
 - 骨組み（バー・一覧・表・補足）は 14。**本文（会話の返事・ナレッジの中身・入力欄）は 16**。指の端末では会話の本文も 16（事実: 今は `.wb` の 14 を継いでいる） [impeccable][hallmark]
 - 太さは 400 / 500 だけで、600 は名前・見出し・選択中の強調に限る。700 以上は使わない。階層は太さでなく大きさと色（3 つの役割）で作る [unslop]
 - 行間: 本文 1.5、1 行の部品（行・ボタン・タブ）1.25。日本語の本文に `letter-spacing` や `font-feature-settings: "palt"` は付けない。小さい文字に負の字間は絶対に付けない [unslop][ui-skills]
@@ -114,7 +116,7 @@
 - 和文と英数字・数字の間は半角空白 1 つ。数字と単位・`Ctrl+K` のような組は途中で折り返させない（`white-space: nowrap`） [hallmark]
 - 数字は画面の中で 1 つの形（桁区切りあり・小数の桁を揃える）。縦に並ぶ所と刻む数字は `font-variant-numeric: tabular-nums` [unslop][ui-skills]
 - 等幅（`--font-mono`）を使うのは **kbd・ログと記録の `<pre>`・端末の写し（`.cc-screen`）・ID / ハッシュ / パス・ルール文字列**だけ。ラベル・補足・表の見出し・数字には使わない [unslop][impeccable][hallmark]
-- 端末の写し（`.cc-screen`）は 14px（指の端末 13px）・行間 1.35・地は `--bg`・`tab-size: 4`。この製品でいちばん本物の材料をいちばん小さい文字にしない（事実: 今は 12px）
+- 端末の写し（`.cc-screen`）は 14px（指の端末 13px。12 / 14 / 16 の段階の唯一の例外）・行間 1.35・地は `--bg`・`tab-size: 4`。この製品でいちばん本物の材料をいちばん小さい文字にしない（事実: 今は 12px）
 - 大文字だけのラベル・字間を広げた小さな見出し・見出しの上の「アイブロウ」は使わない。ラベルは本文の書体の 1 段小さいもの [unslop][hallmark][anthropic]
 - 斜体で強調しない。見出しの一語だけ色や太さを変えない [unslop][hallmark]
 
@@ -141,7 +143,7 @@
   - 押せるものに `touch-action: manipulation` と `user-select: none`（本文には付けない） [emil][vercel]
   - `html, body { overscroll-behavior: none }`、中のスクロールに `overscroll-behavior: contain` [emil][vercel]
   - `:hover` は **`@media (hover: hover) and (pointer: fine)`** の中だけ（事実: 今は `(hover: hover)` だけ） [emil][hallmark]
-  - `theme-color` はライト・ダークで 1 つずつ、`--surface` の値（§PWA） [emil][vercel]
+  - `theme-color` はライト・ダークで 1 つずつ、`--surface` の値（`docs/plan/web-ui.md` §11.2） [emil][vercel]
   - 直したら iPhone の実機で確かめ、「実機 / エミュレータ」のどちらで見たかを書く [emil][impeccable]
 
 ## 5. 部品
@@ -157,12 +159,12 @@
 | 表 | 見出し行は 14・`--text-secondary`・折り返さない。先頭の列は名前（id は名前の下の補足）。数字の列は右寄せ + tabular。空のセルは空のまま（`—` を置かない）。横の線だけ。50 行を超えるなら API 側で絞る [hallmark] |
 | 使用量の数字 | 人格ごとの行の表。**キャッシュ率を 1 つだけ大きく**（この製品でいちばん意味のある数）、入力・出力は同じ行の補足。日ごとのグラフは 1 色で今日だけ強調、目盛りは `--text-secondary` [unslop][impeccable] |
 | トースト | 右下（スマホは下タブの上）。多くて 2 つ。文 + 任意の [取り消す] + ×。**画面に結果が見えるなら成功のトーストを出さない**（失敗と見えない結果だけ）。失敗は `role="alert"` の別の容れ物（左 2px の `--danger`）で、[もう一度] を持ち、自動で消えない。hover と focus の間は自動で消えない。本文は折り返す [hallmark] |
-| ダイアログ | `<dialog>` の `showModal()`。最大 512px、角丸 12、1 つの目的。見出し 16・本文は `.meta`。ボタンは右寄せで [やめる][実行]。危険な操作は実行を danger にし、本文に対象の名前を入れ、**最初のフォーカスは [やめる]**。元に戻せる操作は確認せず、やってから [取り消す]。まずモーダルにしない [hallmark][impeccable][ui-skills] |
+| ダイアログ | `<dialog>` の `showModal()`。最大 512px、角丸 12、1 つの目的。見出し 16・本文は `.meta`。ボタンは右寄せで [やめる][実行する]。危険な操作は [実行する] を danger にし、本文に対象の名前を入れ、**最初のフォーカスは [やめる]**。元に戻せる操作は確認せず、やってから [取り消す]。まずモーダルにしない [hallmark][impeccable][ui-skills] |
 | 入力欄 | `<label>` を必ず付ける。**placeholder は例か動詞句（「探す」「<題名> に送る」）で、操作の説明を書かない**。操作の説明（Enter で送る など）は設定のキー一覧と `title` に。枠の太さは状態で変えない。隣のボタンと同じ高さ。非認証の欄は `autocomplete="off"`。送る欄は `enterkeyhint="send"`、探す欄は `"search"`。必須は `required` + `aria-required`。エラーは欄のすぐ下に `role="alert"` + `aria-describedby` + `aria-invalid` で、**高さを `min-height: 1lh` で予約**して跳ばない [hallmark][ui-skills][vercel][unslop] |
 | チェック・選択 | native のまま。チェックは `accent-color: var(--accent)`、select は背景と文字色を明示。権限モードのような選択肢は識別子に説明を添える（「acceptEdits（編集は確認なし）」） [hallmark][vercel] |
 | 空の表示 | `.empty`（アイコン 1 つ + 文）。**何が無いか・次にすること**を書く。初めて・検索で 0 件・絞り込みで 0 件・失敗の 4 つを言い分け、失敗には [読み直す] [impeccable][ui-skills][hallmark] |
 | 読み込み中 | `.loading`（**枠も余白も無し**。文「読み込んでいます…」だけ、`min-height: var(--space-8)`、`aria-busy`）。`.empty` を流用しない（読めた瞬間に枠が消えて跳ぶ）。スケルトンは作らない（一覧は小さく 2 秒以内に来る。skill は形のあるスケルトンを勧めるが文で足りると決めた）。スピナーはボタンの中と実行中のターンだけ [hallmark] |
-| コマンドパレット | 開閉に動きを付けない。入力欄は 16px で placeholder は「探す」（mode の表示と二重にしない）。候補は「動詞句」+ 右に `/new` の kbd 風（接頭辞 + 名詞 + 説明の二重にしない）。アイコンの無い候補は空の 16px の箱（一律の chevron を置かない）。絞り込みで動かさない。検索は 250〜300ms の debounce [hallmark][emil][unslop] |
+| コマンドパレット | 開閉に動きを付けない。入力欄は指の端末で 16px（PC は 14。iOS の拡大を防ぐのが目的）で placeholder は「探す」（mode の表示と二重にしない）。候補は「動詞句」+ 右に `/new` の kbd 風（接頭辞 + 名詞 + 説明の二重にしない）。アイコンの無い候補は空の 16px の箱（一律の chevron を置かない）。絞り込みで動かさない。検索は 250〜300ms の debounce [hallmark][emil][unslop] |
 | ポップオーバー・メニュー | 作るなら `popover` 属性か `position: fixed`。`overflow: hidden` の親の中に絶対配置しない [impeccable][hallmark] |
 | コピーのボタン（作るなら） | ラベルを 2.5 秒「コピーしました」に変える。トーストは出さない [hallmark] |
 
@@ -327,7 +329,7 @@
 
 決定（オーナー。2026-11-04）:
 1. 方針 A（VS Code 風の密度を保つ）。
-2. アイコンは幾何学の印を Node で PNG に（PWA.md §5 の a）。
+2. アイコンは幾何学の印を Node で PNG に（`docs/plan/web-ui.md` §11.5 の a）。
 3. ライト・ダークを残す（theme-color は JS で切り替え）。
 4. PWA は https（tailscale serve）だけを対象にする。http の中継は対象外。
 5. 性格 A「夜勤の計器盤」: ink 寄りの中立 + 自前のコバルト（§2.1 の値）。署名の仕草は「生きている点」と 1 秒の刻み（§6.1）。
