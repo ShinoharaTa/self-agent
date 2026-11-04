@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import vm from "node:vm";
-import { inflateSync } from "node:zlib";
+import { crc32, inflateSync } from "node:zlib";
 import { staticFileFor } from "../src/web/static.ts";
 
 // Web UI の画面（src/web/static）。DOM が無いので、構文と CSP（default-src 'self'）で動く書き方かだけを確かめる
@@ -337,12 +337,14 @@ function decodePng(buf: Buffer): { width: number; height: number; colorType: num
     const length = buf.readUInt32BE(offset);
     const type = buf.toString("ascii", offset + 4, offset + 8);
     const body = buf.subarray(offset + 8, offset + 8 + length);
+    assert.equal(buf.readUInt32BE(offset + 8 + length), crc32(buf.subarray(offset + 4, offset + 8 + length)), `${type} の CRC`);
     types.push(type);
     if (type === "IHDR") {
       width = body.readUInt32BE(0);
       height = body.readUInt32BE(4);
       assert.equal(body[8], 8, "ビット深度");
       colorType = body[9]!;
+      assert.deepEqual([body[10], body[11], body[12]], [0, 0, 0], "compression・filter・interlace");
     } else if (type === "IDAT") idat.push(body);
     offset += 12 + length;
   }
@@ -367,6 +369,7 @@ test("web static: index.html に manifest・favicon・theme-color 2 つ・apple 
   assert.match(html, /<link rel="apple-touch-icon" href="\/static\/apple-touch-icon\.png">/);
   assert.equal([...html.matchAll(/<meta name="theme-color" /g)].length, 2);
   assert.match(html, /<meta name="apple-mobile-web-app-capable" content="yes">/);
+  assert.match(html, /<meta name="mobile-web-app-capable" content="yes">/);
   assert.match(html, /<meta name="apple-mobile-web-app-status-bar-style" content="default">/);
   assert.match(html, /<meta name="apple-mobile-web-app-title" content="self-agent">/);
   // service worker は置かない（§11.3）
@@ -434,6 +437,10 @@ test("web static: scripts/make-icons.ts の出力が commit したものと一�
   const result = spawnSync(process.execPath, [script, "--out", out], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(readdirSync(out).sort(), [...ICON_FILES].sort());
+  // --out の値が無ければ使い方を出して 2
+  const bad = spawnSync(process.execPath, [script, "--out"], { encoding: "utf8" });
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /使い方/);
   for (const name of ICON_FILES) {
     const made = readFileSync(join(out, name));
     const committed = readFileSync(join(STATIC_DIR, name));
