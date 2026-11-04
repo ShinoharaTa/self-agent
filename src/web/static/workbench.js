@@ -649,7 +649,8 @@
     list.replaceChildren(
       ...P.items.map((it, i) => {
         const li = el("li", { class: "palette-item" + (it.run ? "" : " is-disabled"), role: "option", id: "pal-" + i, "aria-selected": String(i === P.index), "aria-disabled": it.run ? null : "true" }, [
-          it.icon ? icon(it.icon) : icon("chevron-right"),
+          // アイコンの無い候補は空の 16px の箱（一律の chevron を置かない。GUIDELINES §5 パレット）
+          it.icon ? icon(it.icon) : el("span", { class: "icon icon-blank", "aria-hidden": "true" }),
           el("span", { class: "palette-label", text: it.label }),
           el("span", { class: "palette-detail", text: it.run ? it.detail || "" : it.why || "今は使えません" }),
           it.keys ? el("kbd", { text: it.keys }) : null,

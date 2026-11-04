@@ -12,7 +12,6 @@
   // 終わり方の文は src/app/progress.ts の progressEndText と同じ
   const OUTCOME_LABEL = { done: "完了", max_turns: "手順の上限で止まりました", aborted: "中断しました", failed: "止まりました" };
   const END_CLASS = { done: "is-done", max_turns: "is-warning", aborted: null, failed: "is-danger" };
-  const END_ICON = { done: "check", max_turns: "triangle-alert", aborted: "square", failed: "triangle-alert" };
   const DISCORD_PREFIX = "https://discord.com/channels/";
   /** これより上に近づいたら前の行を読む（px） */
   const OLDER_THRESHOLD = 64;
@@ -250,6 +249,7 @@
     const buttons = [all, pick, none];
     const updatePick = () => {
       pick.disabled = chosen.size === 0;
+      pick.title = pick.disabled ? "候補を選ぶと押せます" : "";
     };
     const list = el("div", { class: "stack" });
     tasks.forEach((task, i) => {
@@ -334,7 +334,7 @@
       const details = el("details", { class: "steps", open: opened.has(turn.id) }, [
         el("summary", { class: END_CLASS[turn.outcome] || null }, [
           icon("chevron-right", "steps-chevron"),
-          icon(END_ICON[turn.outcome] || "info"),
+          // 終わり方は文の色で（アイコンは chevron の 1 つだけ）
           el("span", { text: endText(turn) }),
         ]),
         stepsList(Array.isArray(turn.steps) ? turn.steps : []),
@@ -439,16 +439,29 @@
     // 要約を待っている間は操作を重ねない
     const busy = !!pendingOf(channelId, ch);
     const ops = el("div", { class: "ed-ops" });
+    // secondary は [閉じる] だけ、他は ghost（GUIDELINES §5 ボタン）。押せないときは理由を title に
+    const busyWhy = "要約しています。終わると押せます";
     if (isSession) {
-      const wait = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy || ch.state !== "active" }, [icon("pause"), "待ちにする"]);
+      const waitOff = busy || ch.state !== "active";
+      const wait = el("button", { class: "btn btn-ghost btn-sm", type: "button", disabled: waitOff, title: waitOff ? (busy ? busyWhy : "進行中のときだけ待ちにできます") : null }, [
+        icon("pause"),
+        "待ちにする",
+      ]);
       wait.addEventListener("click", () => setWaiting(channelId));
-      const close = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy || ch.state === "done" }, [icon("check"), "閉じる"]);
+      const closeOff = busy || ch.state === "done";
+      const close = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: closeOff, title: closeOff ? (busy ? busyWhy : "閉じています") : null }, [
+        icon("check"),
+        "閉じる",
+      ]);
       close.addEventListener("click", () => closeSession(channelId));
       ops.append(wait, close);
     }
-    const renewBtn = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy }, [icon("rotate-ccw"), "会話を新しくする"]);
+    const renewBtn = el("button", { class: "btn btn-ghost btn-sm", type: "button", disabled: busy, title: busy ? busyWhy : null }, [icon("rotate-ccw"), "会話を新しくする"]);
     renewBtn.addEventListener("click", () => renew(channelId));
-    ops.append(renewBtn);
+    // 狭い画面（≤639px）では上の操作を隠し、[…] でパレットのコマンドを開く（CSS で出し分ける）
+    const more = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-ops-more", type: "button", "aria-label": "ほかの操作", title: "ほかの操作" }, [icon("ellipsis")]);
+    more.addEventListener("click", () => SA.app.palette(">"));
+    ops.append(renewBtn, more);
     actions.append(ops);
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
   }
@@ -505,6 +518,7 @@
       counter.classList.toggle("is-over", n > MESSAGE_MAX);
       // 上限を超えても押せる（押したらトーストで知らせる）
       sendBtn.disabled = sending || n === 0;
+      sendBtn.title = sending ? "送っています" : n === 0 ? "本文を入れると送れます" : "";
     };
     update();
     ta.addEventListener("input", () => {

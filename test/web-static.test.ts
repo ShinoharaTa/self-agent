@@ -373,6 +373,30 @@ test("web static: 許可のカードは [許可][拒否] の 2 つ（許可 seco
   assert.deepEqual(posts.slice(2), ["/api/cc/permissions/9/deny"]);
 });
 
+test("web static: 本文へのスキップリンク・入力の必須とエラーの属性・z-index の変数（GUIDELINES §4・§5・§8）", () => {
+  const html = read("index.html");
+  // body の最初の要素がスキップリンクで、飛び先は焦点を受けられる
+  assert.match(html, /<body>\s*<a class="skip-link" href="#editors">本文へ<\/a>/);
+  assert.match(html, /id="editors" tabindex="-1"/);
+  for (const [id, error] of [
+    ["new-title", "new-error"],
+    ["cc-start-title", "cc-start-error"],
+  ]) {
+    const input = new RegExp(`<input[^>]*id="${id}"[^>]*>`).exec(html)?.[0] ?? "";
+    assert.match(input, /\brequired\b/, id);
+    assert.match(input, /aria-required="true"/, id);
+    assert.match(input, new RegExp(`aria-describedby="${error}"`), id);
+    assert.match(html, new RegExp(`<div class="alert-slot"><p class="alert" id="${error}" role="alert"`), error);
+  }
+  // z-index は変数だけ（数字を直接書くのは :root の段の定義の中だけ）
+  const css = read("app.css");
+  const raw = [...css.matchAll(/z-index:\s*([^;]+);/g)].map((m) => m[1]!.trim());
+  assert.ok(raw.length > 0);
+  for (const value of raw) assert.match(value, /^var\(--z-[a-z-]+\)$/, value);
+  // 見出しの段を飛ばさない（h1 の下に h3 を書かない）
+  for (const name of files.filter((n) => n.endsWith(".js"))) assert.doesNotMatch(read(name), /el\("h3"/, name);
+});
+
 // ===== 画面の言葉（docs/design/WEB-UI-GUIDELINES.md §7・§10） =====
 /** JS の "…" の文字列（コメントを除いてから拾う。https:// の // はコメントとみなさない） */
 function stringLiterals(js: string): string[] {

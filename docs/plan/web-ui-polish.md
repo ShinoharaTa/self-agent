@@ -60,7 +60,7 @@
 | 27 | パレットの label が「/new 新しいセッション」で detail と二重（workbench.js:548-561） | §5 パレット | label は動詞句、`/new` は右の kbd 風 |
 | 28 | 補足を「・」で 3〜4 要素つなぐ（views.js:514・1095・461-465） | §7 2 要素まで | 改行か別の `span` |
 
-### UI-5 部品の整理（CSS + JS）
+### UI-5 部品の整理（CSS + JS）（済）
 
 | # | 事実（今） | 決まり | 直し |
 |---|---|---|---|
@@ -186,7 +186,7 @@
 
 テスト: `test/web-static.test.ts` の「画面の言葉」が JS の文字列（コメントを除く）と index.html に「！」・ツール名（`<小文字>_(add|list|…)`）・HTTP の番号が主役の文（`403:`・`（403）`・HTTP）・語彙の表で使わない語（送信・キャンセル・クローズ・OK・`--json`・`SELF_AGENT_`・`settings.json`）が無いことと、トーストの文に応答の status をつながないことを確かめる。
 
-### UI-5 部品の整理（#29〜#47）
+### UI-5 部品の整理（#29〜#47）（済。3 コミット（UI-5a 表と一覧・UI-5b 許可のカードとダイアログ・UI-5c 細部）。`.card-sm` は確認のカードが使うので残した。日ごとのグラフはまだ無いので 1 色の決まりは作るときに守る。`--z-sash` は今は使う所が無い（定義だけ））
 触る: `views.js`・`sidebar.js`・`chat.js`・`ui.js`・`workbench.js`・`app.css`・`index.html`。論点ごとに commit を分ける（1 PR 1 論点が重ければ UI-5a 表と一覧 / UI-5b 許可のカードとダイアログ / UI-5c 細部 の 3 PR に割ってよい）。
 1. 使用量（#29）: `.metric-grid` のカードを `table`（人格 / ターン / 失敗 / 入力 / 出力 / キャッシュ率）に。キャッシュ率のセルだけ `--font-base`・500。`app.css` の `.metric-grid`・`.card-sm`・`.metrics` を消す。
 2. 読み込み中（#31）: `app.css` に `.loading { min-height: var(--space-8); color: var(--text-muted); font-size: var(--font-sm); padding: var(--space-3) 0 }`。views.js の `empty(null, "読み込んでいます…")` を `loading()`（`aria-busy="true"`）に。
