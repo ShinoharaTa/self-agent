@@ -277,10 +277,10 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 
 
 > 何のために: iPhone のホーム画面から 1 タップで開き、Safari の枠なし（standalone）で、ステータスバーの色が画面と合う。**オフラインの動作は目的に含めない**（Bot が応えなければ画面に意味が無い）。
-> 決定（2026-11-04。オーナー）: Web UI は tailscale serve の https に出す。**PWA は https だけを対象にする。http の中継は対象外**（§4）。アイコンは幾何学の印を Node だけで PNG にする（§5 の a）。ライト・ダークを残し、theme-color は JS で切り替える（§2）。
+> 決定（2026-11-04。オーナー）: Web UI は tailscale serve の https に出す。**PWA は https だけを対象にする。http の中継は対象外**（§11.4）。アイコンは幾何学の印を Node だけで PNG にする（§11.5 の a）。ライト・ダークを残し、theme-color は JS で切り替える（§11.2）。
 > 「事実」= 2026-11-04 の main で確かめたこと。「未確認」= 実機で確かめるまで前提にしない。
 
-### 1. manifest（`/static/manifest.webmanifest`）
+### 11.1 manifest（`/static/manifest.webmanifest`）
 
 | 項目 | 値 | 理由 |
 |---|---|---|
@@ -288,18 +288,18 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 | `id` / `start_url` / `scope` | `/` / `/` / `/` | hash のルーティングなので `/` だけ。`/login` は scope の中でもよい（302 で戻る） |
 | `display` | `standalone` | ブラウザの枠を消す。`fullscreen` にしない（ステータスバーが消えると時計が見えない） |
 | `background_color` | `#0b0d14` | 起動の一瞬の地。既定のダークの `--bg`（GUIDELINES §2.1） |
-| `theme_color` | `#11141c` | タイトルバーの `--surface`（ダーク）。ライトは meta で上書き（§2） |
+| `theme_color` | `#11141c` | タイトルバーの `--surface`（ダーク）。ライトは meta で上書き（§11.2） |
 | `lang` / `dir` | `ja` / `ltr` | |
 | `orientation` | 書かない | 固定しない |
-| `icons` | `icon-192.png`（192×192, `any`）、`icon-512.png`（512×512, `any`）、`icon-512-maskable.png`（512×512, `maskable`） | Android と PC Chrome 用。iOS は読まない（§2） |
+| `icons` | `icon-192.png`（192×192, `any`）、`icon-512.png`（512×512, `any`）、`icon-512-maskable.png`（512×512, `maskable`） | Android と PC Chrome 用。iOS は読まない（§11.2） |
 
 配り方（事実: `src/web/static.ts:21` の `STATIC_NAME` は `html|css|js|svg` だけ、`CONTENT_TYPES` も同じ 4 つ。UI-3 で済）:
-- 拡張子に `png`（`image/png`）と `webmanifest`（`application/manifest+json; charset=utf-8`）を足す。名前の形 `[A-Za-z0-9_-]+` と 1 要素だけの制限は変えない。
+- 拡張子に `png`（`image/png`）と `webmanifest`（`application/manifest+json; charset=utf-8`）を足す。名前の形 `[A-Za-z0-9_-]+` と 1 要素だけの制限は変えない。`static.ts` の先頭のコメントの「html・css・js・svg」、`staticFileFor` の JSDoc の `(html|css|js|svg)`、`server.ts` の `/static/*` のコメントの「CSS・JS・SVG」も同時に直す。
 - `/static/*` は認証なし（事実）。manifest・アイコンに秘密は無いのでそのままでよい。`Cache-Control: no-cache` + ETag も今のまま（更新がすぐ効く）。
 - CSP `default-src 'self'` は `manifest-src` の既定になるので変えない（事実: server.ts の CSP に個別の指定は無い）。
-- `index.html` に `<link rel="manifest" href="/static/manifest.webmanifest">` と、favicon が無い（事実）ので `<link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">` を足す。
+- `index.html` に `<link rel="manifest" href="/static/manifest.webmanifest">` と、favicon が無い（事実）ので `<link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">` を足す（名前は `icons.svg`（Lucide の sprite）と紛れないよう `app-icon.svg`）。
 
-### 2. iOS の meta と theme-color
+### 11.2 iOS の meta と theme-color
 
 ```html
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
@@ -316,7 +316,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - `status-bar-style` は `default` から始める。ダークのときに黒い帯が残るなら `black-translucent` に変え、タイトルバーに `padding-top: env(safe-area-inset-top)` を足す（GAP の UI-1 で入る）。どちらが合うかは**未確認**（iOS の版で挙動が違う）。
 - iOS 17 以降は manifest の `display` も読むが、古い iOS のために `apple-mobile-web-app-capable` も残す。Chrome は `apple-mobile-web-app-capable` だけだと非推奨の警告を出すので、`mobile-web-app-capable` も並べる。
 
-### 3. service worker
+### 11.3 service worker
 
 | | 1: 置かない（推薦） | 2: 素通しの SW を置く |
 |---|---|---|
@@ -327,10 +327,10 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 | 配信 | ◎ 変更なし | ✗ scope を `/` にするには `/sw.js`（`/static/` の外）か `Service-Worker-Allowed` ヘッダが要り、ルータに 1 本足す |
 | 実装コスト | ◎ 0 | △ ルート + テスト + 版の管理 |
 
-**推薦: 1。** オフラインに意味が無く、Chrome もメニューからのインストールに SW を要求しなくなったので、置く理由が無い（自動の案内は要らない。1 人用で、入れ方は §6 に書く）。
+**推薦: 1。** オフラインに意味が無く、Chrome もメニューからのインストールに SW を要求しなくなったので、置く理由が無い（自動の案内は要らない。1 人用で、入れ方は §11.6 に書く）。
 置くなら: `self.addEventListener("fetch", () => {})`（`respondWith` しない）だけの `/sw.js`。CSP は `worker-src` が `default-src 'self'` に落ちるので変えない。`static.ts` の名前の制限は `/sw.js` に当たらないので、`server.ts` に `GET /sw.js` を 1 本足す（認証なし。`Cache-Control: no-cache`）。
 
-### 4. 出し方（tailscale serve の https）と、http の中継が対象外である理由
+### 11.4 出し方（tailscale serve の https）と、PWA が https だけである理由
 
 手順（オーナー。1 回だけ。ポートの値はこの文書に書かない）:
 1. env に `SELF_AGENT_WEB_PORT`（127.0.0.1 で待ち受ける Web UI のポート）と `SELF_AGENT_WEB_ALLOWED_LOGIN`（自分の Tailscale のログイン名）を置いて Bot を再起動する。
@@ -338,29 +338,28 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 3. iPhone の Safari で `https://<この機械の MagicDNS 名>:<公開するポート>/` を開く。tailnet の中からだけ届く。
 
 なぜ https だけか:
-- `SELF_AGENT_WEB_ALLOWED_LOGIN` の認証は、tailscale serve が中継のときに付ける `Tailscale-User-Login` ヘッダの完全一致で通る（事実: web-ui.md §2・auth.ts）。**serve 経由なら Cookie もトークンも要らず、ログインの画面が出ない。** 同じ機械の http の中継はこのヘッダを付けないので、`SELF_AGENT_WEB_TOKEN` の Cookie に頼ることになるが、その Cookie は `Secure` 付き（事実）で http では保存されない。つまり http の中継では認証を通れない。
-- manifest のインストール（Android / PC Chrome）と service worker は secure context（https か localhost）が要る。
+- manifest のインストール（Android / PC Chrome）と service worker は secure context（https か localhost）が要る。理由はこれだけで足りる。
 - iOS の「ホーム画面に追加」自体は http でもできるが、standalone・アイコンの meta が効くかは未確認で、確かめる価値が無い。
 
 参考（https で効くもの）: `Tailscale-User-Login` の認証 ○ / Cookie ○ / ホーム画面に追加 ○ / manifest のインストール ○ / theme-color・apple-touch-icon ○ / CSRF の 3 条件（`Sec-Fetch-Site` / `Origin`）は serve 越しで通るかが web-ui.md §9 の W1 の確認項目（未確認） / standalone の Cookie は iOS ではホーム画面のアプリと Safari で保存領域が別になりうる（未確認・版による）が、serve のヘッダ認証なら Cookie が要らないので影響なし。
 
-### 5. アイコンの作り方（決定: a）
+### 11.5 アイコンの作り方（決定: a）
 
 事実: この機械に rsvg-convert・ImageMagick・Inkscape は無く、node_modules に画像の依存も無い。依存は 3 つのまま増やさない。
 
 | | a: 幾何学の印を Node で描いて PNG に（決定） | b: 一度ブラウザで作って commit | c: apt の rsvg-convert |
 |---|---|---|---|
-| 依存 | ◎ 無し（`node:zlib` で PNG を書く 100 行ほどの `scripts/make-icons.ts`） | ◎ 無し | ✗ sudo・CI に無い |
+| 依存 | ◎ 無し（`node:zlib` で PNG を書く 100 行ほどの `scripts/make-icons.ts`。CRC32 は `node:zlib` の `crc32`（Node 22.2 以降）が使える） | ◎ 無し | ✗ sudo・CI に無い |
 | 再現性 | ◎ いつでも同じ PNG | △ 作った人の環境 | ○ |
 | 絵の自由度 | △ 矩形・円・線の組み合わせだけ（文字は描けない） | ◎ SVG そのまま | ◎ |
 | 運用 | ◎ SVG と PNG を同じスクリプトから | △ SVG を変えたら手で作り直す | — |
 
-- 出すもの: `app-icon.svg`（favicon・元。`icons.svg` と紛れないようこの名前）、`apple-touch-icon.png` 180、`icon-192.png`、`icon-512.png`、`icon-512-maskable.png`。`scripts/make-icons.ts` が SVG と 4 つの PNG を同じ図形の定義から書く（`npm run make-icons`。出力は `src/web/static/` に commit する）。
+- 出すもの: `app-icon.svg`（favicon・元）、`apple-touch-icon.png` 180、`icon-192.png`、`icon-512.png`、`icon-512-maskable.png`。`scripts/make-icons.ts` が SVG と 4 つの PNG を同じ図形の定義から書く（`npm run make-icons`。出力は `src/web/static/` に commit する）。`scripts/make-icons.ts` は開発用の生成で self-agent のサブコマンドではないので、`src/cli.ts` と `src/cli/` には足さない。
 - 印の形（a の制約の中で）: 角丸の正方形の地（`--surface` のダーク `#11141c`）に、`--text`（`#eef0f5`）で「会話を表す 2 本の横線」と右下に `--accent`（`#6b9aff`）の点 1 つ。線は矩形、点は円で描ける。文字は使わない。署名の仕草「生きている点」（GUIDELINES §6.1）と同じ「行 + 生きた点」の絵なので、画面と印が同じ語で話す。
 - maskable: 地を塗り（透過なし）、印は**中央の直径 80% の円の中**に収める。`any` 用は余白を少なめにしてよい。
-- PNG の書き方: RGBA のピクセル配列 → フィルタ 0 の行 → `zlib.deflateSync` → IHDR / IDAT / IEND と CRC32。アンチエイリアスは矩形・円の縁を 4×4 のスーパーサンプルで取る。テストは「PNG の先頭 8 バイトと IHDR の幅・高さ」「maskable の中央 80% の外側が地の色だけ」の 2 つ。
+- PNG の書き方: RGBA のピクセル配列 → フィルタ 0 の行 → `zlib.deflateSync` → IHDR / IDAT / IEND と CRC32（`zlib.crc32`）。アンチエイリアスは矩形・円の縁を 4×4 のスーパーサンプルで取る。テストは「PNG の先頭 8 バイトと IHDR の幅・高さ」「maskable の中央 80% の外側が地の色だけ」の 2 つ。
 
-### 6. 受け入れ
+### 11.6 受け入れ
 
 iPhone（Safari・https。tailscale serve 経由）:
 - 共有 → ホーム画面に追加 で、アイコンが**スクリーンショットでなく**用意した絵になる。名前は `self-agent`。
