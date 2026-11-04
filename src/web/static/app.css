@@ -447,7 +447,7 @@ kbd {
   width: var(--dot);
   height: var(--dot);
   border-radius: var(--radius-full);
-  background: var(--text-muted);
+  background: var(--accent);
 }
 
 .dot-ok {
@@ -682,7 +682,7 @@ kbd {
 }
 
 .sb-title {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-xs);
   font-weight: var(--weight-semibold);
   white-space: nowrap;
@@ -1240,7 +1240,7 @@ kbd {
 .steps-list {
   margin: 0;
   padding: var(--space-2) var(--space-3) var(--space-2) var(--space-8);
-  color: var(--text-muted);
+  color: var(--text-secondary);
   border-top: var(--border-width) solid var(--border);
 }
 
@@ -1261,7 +1261,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-xs);
 }
 
@@ -1284,7 +1284,7 @@ kbd {
   align-items: center;
   gap: var(--space-2);
   padding-left: calc(var(--avatar) + var(--space-3));
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-sm);
 }
 
@@ -1414,7 +1414,7 @@ kbd {
 .table .td-main .icon {
   width: var(--icon-sm);
   height: var(--icon-sm);
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .table .td-nowrap {
@@ -1769,13 +1769,14 @@ kbd {
 .kv-label {
   flex: 1;
   min-width: 0;
+  color: var(--text-secondary);
 }
 
 .kv-value {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: var(--text-muted);
+  color: var(--text);
   text-align: right;
 }
 
@@ -1864,7 +1865,7 @@ kbd {
   gap: var(--space-1);
   padding: 0 var(--space-2);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   border: 0;
   font-size: var(--font-xs);
   font-weight: var(--weight-semibold);
@@ -1937,7 +1938,7 @@ kbd {
 .notice-item .icon {
   width: var(--icon-sm);
   height: var(--icon-sm);
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .notice-item.is-warning .icon {
@@ -1981,7 +1982,7 @@ kbd {
   height: 100%;
   padding: 0 var(--space-2);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   border: 0;
   font-size: var(--font-xs);
   white-space: nowrap;
@@ -2071,7 +2072,7 @@ kbd {
 .palette-item .icon {
   width: var(--icon-sm);
   height: var(--icon-sm);
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .palette-item[aria-selected="true"] {
