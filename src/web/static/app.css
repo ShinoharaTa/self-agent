@@ -38,43 +38,96 @@
 }
 
 /*
- * テーマの切り替え。既定は data-theme="dark"。設定で「OS に合わせる」を選ぶと data-theme を外し、base.css の prefers-color-scheme に任せる。
- * 値は base.css のライト・ダークの定義と同じものを写している（base.css を変えないため）
+ * テーマの切り替え。既定は data-theme="dark"。設定で「OS に合わせる」を選ぶと data-theme を外し、prefers-color-scheme で選ぶ。
+ * 値は docs/design/WEB-UI-GUIDELINES.md §2.1 の決まり（夜勤の計器盤）で、base.css の同名の変数を上書きする（base.css は変えない）。
+ * --text-secondary（二次の文字）は app.css だけの変数。data-theme が無いときも base.css の既定に落ちないよう、同じ値を 4 か所に書く
  */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #09090b;
-  --surface: #18181b;
-  --muted: #27272a;
-  --border: #3f3f46;
-  --text: #fafafa;
-  --text-muted: #a1a1aa;
-  --primary: #fafafa;
-  --primary-text: #18181b;
-  --accent: #3b82f6;
-  --danger: #ef4444;
-  --success: #22c55e;
-  --warning: #f59e0b;
+  --bg: #0b0d14;
+  --surface: #11141c;
+  --muted: #1a1e28;
+  --border: #2a3040;
+  --text: #eef0f5;
+  --text-secondary: #aab1c1;
+  --text-muted: #8a93a6;
+  --primary: #eef0f5;
+  --primary-text: #11141c;
+  --accent: #6b9aff;
+  --danger: #f0616a;
+  --success: #4cc38a;
+  --warning: #f2b544;
   --backdrop: rgb(0 0 0 / 0.7);
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #fafafa;
+  --bg: #f5f7fa;
   --surface: #ffffff;
-  --muted: #f4f4f5;
-  --border: #e4e4e7;
-  --text: #09090b;
-  --text-muted: #71717a;
-  --primary: #18181b;
-  --primary-text: #fafafa;
-  --accent: #2563eb;
-  --danger: #dc2626;
-  --success: #15803d;
-  --warning: #b45309;
-  --backdrop: rgb(0 0 0 / 0.5);
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --muted: #eceff4;
+  --border: #d7dce6;
+  --text: #111827;
+  --text-secondary: #4b5565;
+  --text-muted: #5f6b80;
+  --primary: #111827;
+  --primary-text: #f5f7fa;
+  --accent: #2a5bd7;
+  --danger: #c92a2a;
+  --success: #1b7a3e;
+  --warning: #a05a07;
+  --backdrop: rgb(17 24 39 / 0.5);
+  --shadow-sm: 0 1px 2px 0 rgb(17 24 39 / 0.06);
+}
+
+:root:not([data-theme]) {
+  color-scheme: light;
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --muted: #eceff4;
+  --border: #d7dce6;
+  --text: #111827;
+  --text-secondary: #4b5565;
+  --text-muted: #5f6b80;
+  --primary: #111827;
+  --primary-text: #f5f7fa;
+  --accent: #2a5bd7;
+  --danger: #c92a2a;
+  --success: #1b7a3e;
+  --warning: #a05a07;
+  --backdrop: rgb(17 24 39 / 0.5);
+  --shadow-sm: 0 1px 2px 0 rgb(17 24 39 / 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #0b0d14;
+    --surface: #11141c;
+    --muted: #1a1e28;
+    --border: #2a3040;
+    --text: #eef0f5;
+    --text-secondary: #aab1c1;
+    --text-muted: #8a93a6;
+    --primary: #eef0f5;
+    --primary-text: #11141c;
+    --accent: #6b9aff;
+    --danger: #f0616a;
+    --success: #4cc38a;
+    --warning: #f2b544;
+    --backdrop: rgb(0 0 0 / 0.7);
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  }
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--primary-text);
+}
+
+input,
+textarea {
+  caret-color: var(--accent);
 }
 
 /* ===== 全体 ===== */
@@ -114,7 +167,7 @@ dialog {
 }
 
 .meta {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-sm);
 }
 
@@ -384,7 +437,7 @@ kbd {
   height: var(--activity-w);
   padding: 0;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   border: 0;
   transition: color var(--duration) ease;
 }
@@ -558,7 +611,7 @@ kbd {
 .sb-row .icon {
   width: var(--icon-sm);
   height: var(--icon-sm);
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 @media (hover: hover) {
@@ -591,7 +644,7 @@ kbd {
 
 .sb-meta {
   flex: none;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-xs);
   font-variant-numeric: tabular-nums;
 }
@@ -819,7 +872,7 @@ kbd {
 }
 
 .ed-title > .icon {
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .ed-title h1 {
@@ -935,7 +988,7 @@ kbd {
 }
 
 .tl-time {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1112,7 +1165,7 @@ kbd {
 }
 
 .counter {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-xs);
   font-variant-numeric: tabular-nums;
 }
@@ -1138,7 +1191,7 @@ kbd {
 .table th {
   height: var(--row);
   padding: 0 var(--space-3);
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-xs);
   font-weight: var(--weight-semibold);
   text-align: left;
@@ -1235,7 +1288,7 @@ kbd {
 }
 
 .metrics dt {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-xs);
 }
 
@@ -1557,7 +1610,7 @@ kbd {
 
 .out-time {
   flex: none;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1601,6 +1654,7 @@ kbd {
 
 .panel-note {
   padding-top: var(--space-2);
+  color: var(--text-secondary);
   font-size: var(--font-xs);
 }
 

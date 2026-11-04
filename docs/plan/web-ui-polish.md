@@ -7,7 +7,7 @@
 
 ## 1. 差の一覧（段ごと）
 
-### UI-6 性格と色（CSS のトークンだけ）
+### UI-6 性格と色（CSS のトークンだけ）（済）
 
 | # | 事実（今） | 決まり | 直し |
 |---|---|---|---|
@@ -100,7 +100,7 @@
 
 ## 3. implementer に渡す分解
 
-### UI-6 性格と色（#1〜#4）
+### UI-6 性格と色（#1〜#4）（済）
 触る: `app.css` だけ。
 1. `:root[data-theme="dark"]`・`:root[data-theme="light"]` の値を GUIDELINES §2.1 の表に差し替える（`--backdrop`・`--shadow-sm` を含む）。
 2. 同じ 2 組の値で `:root:not([data-theme])`（ライト）と `@media (prefers-color-scheme: dark) { :root:not([data-theme]) }`（ダーク）を足す（「OS に合わせる」で base.css の zinc に落ちないため）。
