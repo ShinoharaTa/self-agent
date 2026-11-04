@@ -733,9 +733,16 @@
     $("new-persona").replaceChildren(...personas.map((p) => el("option", { value: p.id, text: p.name + (p.isDefault ? "（既定）" : "") })));
     $("new-persona-field").hidden = personas.length < 2;
     $("new-title").value = "";
-    $("new-error").hidden = true;
+    newError(false);
     openDialog($("dlg-new"));
     $("new-title").focus();
+  }
+
+  /** 題名のエラーの表示（欄のすぐ下の role=alert と、欄の aria-invalid。GUIDELINES §5 入力欄） */
+  function newError(shown) {
+    $("new-error").hidden = !shown;
+    if (shown) $("new-title").setAttribute("aria-invalid", "true");
+    else $("new-title").removeAttribute("aria-invalid");
   }
 
   function bindNewSession() {
@@ -746,10 +753,11 @@
       if (creating) return;
       const title = $("new-title").value.trim();
       if (title === "") {
-        $("new-error").hidden = false;
+        newError(true);
         $("new-title").focus();
         return;
       }
+      newError(false);
       const body = { guildId: $("new-guild").value, title };
       if (!$("new-persona-field").hidden) body.persona = $("new-persona").value;
       creating = true;
@@ -765,7 +773,7 @@
         SA.store.load.channels();
       } catch (err) {
         if (err && err.code === "empty_title") {
-          $("new-error").hidden = false;
+          newError(true);
           $("new-title").focus();
         } else if (err && err.toast) toast((err.code && NEW_ERRORS[err.code]) || err.toast, null, { level: "error" });
       } finally {
@@ -796,9 +804,14 @@
   const CC_TEXT_MAX = 2000;
   let ccStarting = false;
 
-  function ccStartError(text) {
-    $("cc-start-error").textContent = text;
-    $("cc-start-error").hidden = false;
+  /** 起動のエラーを欄の下に出す。field（題名・最初の指示の欄）があればそれに aria-invalid を付ける。text が null なら消す */
+  function ccStartError(text, field) {
+    $("cc-start-error").textContent = text || "";
+    $("cc-start-error").hidden = text === null;
+    for (const id of ["cc-start-title", "cc-start-text"]) {
+      if (id === field) $(id).setAttribute("aria-invalid", "true");
+      else $(id).removeAttribute("aria-invalid");
+    }
   }
 
   /** ダイアログを開く。プロジェクトは /api/cc/projects（SELF_AGENT_WORKSPACE_DIR の直下）から */
@@ -821,7 +834,7 @@
     $("cc-start-title").value = "";
     $("cc-start-text").value = "";
     $("cc-start-mode").value = "";
-    $("cc-start-error").hidden = true;
+    ccStartError(null);
     openDialog($("dlg-cc-start"));
     $("cc-start-title").focus();
   }
@@ -834,13 +847,13 @@
       if (ccStarting) return;
       const title = $("cc-start-title").value.trim();
       if (!CC_TITLE.test(title)) {
-        ccStartError(CC_START_ERRORS.invalid_title);
+        ccStartError(CC_START_ERRORS.invalid_title, "cc-start-title");
         $("cc-start-title").focus();
         return;
       }
       const text = $("cc-start-text").value;
       if ([...text.replace(/\n+$/, "")].length > CC_TEXT_MAX) {
-        ccStartError("最初の指示は 2,000 字までです");
+        ccStartError("最初の指示は 2,000 字までです", "cc-start-text");
         $("cc-start-text").focus();
         return;
       }
@@ -849,7 +862,7 @@
       if ($("cc-start-mode").value !== "") body.permissionMode = $("cc-start-mode").value;
       ccStarting = true;
       $("dlg-cc-start-ok").disabled = true;
-      $("cc-start-error").hidden = true;
+      ccStartError(null);
       try {
         await SA.api.post("/api/cc/sessions", body, { quiet: true });
         closeDialog(dialog);
@@ -858,7 +871,7 @@
         SA.store.load.cc({ quiet: true });
       } catch (err) {
         const known = err && err.code && CC_START_ERRORS[err.code];
-        if (known) ccStartError(known);
+        if (known) ccStartError(known, err.code === "invalid_title" ? "cc-start-title" : err.code === "too_long" || err.code === "invalid_text" ? "cc-start-text" : null);
         else if (err && err.toast) toast(err.toast, null, { level: "error" });
       } finally {
         ccStarting = false;

@@ -949,10 +949,12 @@
     return el("div", { class: "composer-wrap", "data-cc": sessionId }, [form]);
   }
 
-  // ----- 許可の要求（CC5a・CC5b）: 保留中なら [許可][このセッションでは常に許可（<ルール>）][拒否]（常に許可はルールがあるときだけ）、
-  // 終わったものは終わり方。保留の間も端末・RC のダイアログは出ている -----
+  // ----- 許可の要求（CC5a・CC5b）: 保留中なら [許可][拒否] と「このセッションでは常に許可」のチェック（ルールがあるときだけ。
+  // チェックが入っていれば [許可] は always、無ければ allow）、終わったものは終わり方。保留の間も端末・RC のダイアログは出ている -----
   /** 押した要求（応答が来るまでボタンを止める。このタブのメモリだけ） */
   const ccPermissionBusy = new Set();
+  /** 「このセッションでは常に許可」にチェックを入れた要求（3 秒ごとの描き直しでも残す。このタブのメモリだけ） */
+  const ccPermissionAlways = new Set();
 
   /** 終わった要求の文（state・via ごと） */
   function ccPermissionEndText(p) {
@@ -997,7 +999,10 @@
     ccPermissionBusy.add(p.id);
     SA.app.refresh("cc:" + sessionId);
     SA.api.post("/api/cc/permissions/" + p.id + "/" + decision, { requestHash: p.requestHash }, { quiet: true }).then(
-      () => toast(decision === "allow" ? "許可しました" : decision === "always" ? "このセッションでは常に許可しました" : "拒否しました"),
+      () => {
+        ccPermissionAlways.delete(p.id);
+        toast(decision === "allow" ? "許可しました" : decision === "always" ? "このセッションでは常に許可しました" : "拒否しました");
+      },
       (err) => {
         if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
         else if (err && err.status === 404) toast("この要求はもうありません");
@@ -1010,12 +1015,12 @@
     });
   }
 
-  /** 許可のカード（要約・ツール名は hook から来たデータなので textContent で出す） */
+  /** 許可のカード（要約・ツール名は hook から来たデータなので textContent で出す。GUIDELINES §5 許可のカード） */
   function ccPermissionCard(sessionId, p, rc) {
     if (!p || typeof p.id !== "number") return null;
     const pending = p.state === "pending";
     const head = el("div", { class: "card-head" }, [
-      el("h3", { text: pending ? "許可を待っています" : "許可の要求" }),
+      el("h2", { text: pending ? "許可を待っています" : "許可の要求" }),
       el("span", {
         class: "meta",
         "data-permission-left": pending && typeof p.expiresAt === "string" ? p.expiresAt : null,
@@ -1028,16 +1033,11 @@
     ];
     // 常に許可にすると加わるルール（保留中と、常に許可したものだけ）。ルール・意味は hook から来たデータなので textContent
     const rule = typeof p.alwaysRule === "string" && p.alwaysRule ? p.alwaysRule : null;
-    if (rule && (pending || p.state === "allowed_always")) {
-      facts.push(
-        el("p", { class: "meta cc-permission-rule" }, [
-          pending ? "常に許可にすると: " : "常に許可したルール: ",
-          el("code", { class: "mono", text: rule }),
-          typeof p.alwaysNote === "string" && p.alwaysNote ? "（" + p.alwaysNote + "）" : null,
-        ]),
-      );
-    }
+    const note = typeof p.alwaysNote === "string" && p.alwaysNote ? "（" + p.alwaysNote + "）" : null;
     if (!pending) {
+      if (rule && p.state === "allowed_always") {
+        facts.push(el("p", { class: "meta cc-permission-rule" }, ["常に許可したルール: ", el("code", { class: "mono", text: rule }), note]));
+      }
       const end = [el("span", { text: ccPermissionEndText(p) })];
       if (rc && (p.state === "expired" || p.state === "released")) {
         end.push(" ", el("a", { href: rc, target: "_blank", rel: "noreferrer noopener", text: "RC で開く" }));
@@ -1046,26 +1046,37 @@
       return el("section", { class: "card card-sm cc-permission" + cls, "aria-label": "許可の要求" }, [head, ...facts, el("p", { class: "cc-permission-end" }, end)]);
     }
     const busy = ccPermissionBusy.has(p.id);
-    const allow = el("button", { class: "btn btn-primary btn-sm", type: "button", disabled: busy }, [icon("check"), "許可"]);
-    const deny = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy }, [icon("x"), "拒否"]);
-    const always = rule
-      ? el("button", { class: "btn btn-secondary btn-sm cc-permission-always", type: "button", disabled: busy }, [
-          icon("check"),
-          "このセッションでは常に許可（" + rule + "）",
-        ])
-      : null;
-    allow.addEventListener("click", () => answerCcPermission(sessionId, p, "allow"));
-    if (always) always.addEventListener("click", () => answerCcPermission(sessionId, p, "always"));
+    const disabledTitle = busy ? "答えを送っています" : null;
+    // ルールがあるときだけ「このセッションでは常に許可」のチェック。ルールは次の行の <code>
+    let always = null;
+    if (rule) {
+      always = el("input", { type: "checkbox", disabled: busy });
+      always.checked = ccPermissionAlways.has(p.id);
+      always.addEventListener("change", () => {
+        if (always.checked) ccPermissionAlways.add(p.id);
+        else ccPermissionAlways.delete(p.id);
+      });
+      facts.push(
+        el("div", { class: "cc-permission-always" }, [
+          el("label", { class: "check check-sm", title: disabledTitle }, [always, "このセッションでは常に許可"]),
+          el("p", { class: "meta cc-permission-rule" }, [el("code", { class: "mono", text: rule }), note]),
+        ]),
+      );
+    }
+    // 許可は戻せない側なので primary にしない（許可 secondary・拒否 ghost）
+    const allow = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy, title: disabledTitle }, [icon("check"), "許可"]);
+    const deny = el("button", { class: "btn btn-ghost btn-sm", type: "button", disabled: busy, title: disabledTitle }, [icon("x"), "拒否"]);
+    allow.addEventListener("click", () => answerCcPermission(sessionId, p, always && always.checked ? "always" : "allow"));
     deny.addEventListener("click", () => answerCcPermission(sessionId, p, "deny"));
-    return el("section", { class: "card card-sm cc-permission is-pending", "aria-label": "許可の要求" }, [
-      head,
-      ...facts,
-      el("div", { class: "msg-actions" }, [allow, always, deny].filter((x) => x)),
-      el("p", {
-        class: "meta",
-        text: "端末や RC のダイアログでも答えられます（先に答えた方が効きます）。[常に許可] は Claude Code が規則を提案したときだけ出ます。",
-      }),
-    ]);
+    return el(
+      "section",
+      {
+        class: "card card-sm cc-permission is-pending",
+        "aria-label": "許可の要求",
+        title: "端末や RC のダイアログでも答えられます。先に答えた方が効きます",
+      },
+      [head, ...facts, el("div", { class: "msg-actions" }, [allow, deny])],
+    );
   }
 
   function renderCcSession(container, sessionId) {
@@ -1512,5 +1523,6 @@
     overdue,
     oneLine,
     todayTokens,
+    ccPermissionCard,
   };
 })();
