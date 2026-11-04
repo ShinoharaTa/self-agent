@@ -30,7 +30,7 @@
 | 12 | 28px 未満の当たりがありうる（`.tab-close`。推測: 実寸は要確認） | §4 | `pointer: coarse` で `::before { inset: -8px }` |
 | 13 | ≤639px でステータスバーごと `display: none`（app.css:2001-2005）。Bot の切断・実行中・知らせが**どこにも出ない** | §4 スマホでも状態の要点 | タイトルバー右に接続の点 + 鈴（≤639px だけ表示）、下タブ「会話」の数の位置に実行中のスピナー |
 | 14 | トースト（ui.js:168）と知らせ（workbench.js:407、app.css:1575-1582）の本文 `span` に `min-width: 0` / `overflow-wrap` が無い（推測: 長い題名・URL で溢れる） | §3 折り返し | CSS 2 行 |
-| 15 | 使用量のターンの表が 9 列（views.js:165）。推測: スマホで横スクロール | §4 表 | ≤639px は 5 列、残りは行の `details`（表の組み替えは UI-5 と同じ PR でもよい） |
+| 15 | 使用量のターンの表が 9 列（views.js:165）。推測: スマホで横スクロール | §4 表 | ≤639px は 5 列、残りは行の `details`。**UI-5 へ**（views.js の組み替えと一緒に） |
 
 ### UI-2 押した感と動き（CSS + ui.js の小さな JS）
 
@@ -121,8 +121,7 @@
 8. `workbench.js` の `applyTheme`: `meta[name="theme-color"]` 2 つの `content` を `dark` なら `#11141c`、`light` なら `#ffffff`、`system` なら media ごとの元の値に。
 9. `workbench.js`: `.wb-title-actions` の先頭に、接続の `.dot`（既定の人格の Bot。押すと状態のタブ）と鈴（押すとパネルの知らせ。`recent24h` の数）を足し、`app.css` で ≥640px は `display: none`。`sidebar.js`: 実行中が 1 以上なら下タブ「会話」の `.act-count` の位置に `.spinner-sm`。
 10. `chat.js`: composer の `textarea` に `enterkeyhint`（タッチが主なら `"enter"`、それ以外 `"send"`）。
-11. 使用量の表（#15）: ≤639px で `hide-sm` を 4 列に付け、残りを行末の `details` に（表の組み替えを UI-5 でやるなら、ここは `hide-sm` だけでよい）。
-12. 受け入れ: iPhone 実機で、下タブがインジケータに隠れない・ステータスバーの色が合う（3 テーマ）・会話の本文 16px・入力で拡大しない・タップの点滅と hover の残りが無い・タブの × が押せる・タイトルバーに接続の点と鈴が出る・実行中に下タブにスピナー。PC は見た目が変わらない。`npm test`・inline なしの grep。
+11. 受け入れ: iPhone 実機で、下タブがインジケータに隠れない・ステータスバーの色が合う（3 テーマ）・会話の本文 16px・入力で拡大しない・タップの点滅と hover の残りが無い・タブの × が押せる・タイトルバーに接続の点と鈴が出る・実行中に下タブにスピナー。PC は見た目が変わらない。`npm test`・inline なしの grep。
 
 ### UI-2 押した感と動き（#16〜#20）
 触る: `app.css`、`ui.js`、`index.html`（失敗のトーストの容れ物）、`views.js`（許可の残り時間・失敗のトーストの呼び出し）、`chat.js`（要約のトーストを消す）。
@@ -155,7 +154,7 @@
 
 ### UI-5 部品の整理（#29〜#47）
 触る: `views.js`・`sidebar.js`・`chat.js`・`ui.js`・`workbench.js`・`app.css`・`index.html`。論点ごとに commit を分ける（1 PR 1 論点が重ければ UI-5a 表と一覧 / UI-5b 許可のカードとダイアログ / UI-5c 細部 の 3 PR に割ってよい）。
-1. 使用量（#29）: `.metric-grid` のカードを `table`（人格 / ターン / 失敗 / 入力 / 出力 / キャッシュ率）に。キャッシュ率のセルだけ `--font-base`・500。`app.css` の `.metric-grid`・`.card-sm`・`.metrics` を消す。
+1. 使用量（#29）: `.metric-grid` のカードを `table`（人格 / ターン / 失敗 / 入力 / 出力 / キャッシュ率）に。キャッシュ率のセルだけ `--font-base`・500。`app.css` の `.metric-grid`・`.card-sm`・`.metrics` を消す。ターンの表（#15）は ≤639px で 5 列 + 行末の `details`（残りの 4 列は `hide-sm`）。
 2. 読み込み中（#31）: `app.css` に `.loading { min-height: var(--space-8); color: var(--text-muted); font-size: var(--font-sm); padding: var(--space-3) 0 }`。views.js の `empty(null, "読み込んでいます…")` を `loading()`（`aria-busy="true"`）に。
 3. 会話の見出し（#32）: [閉じる] secondary、[待ちにする][会話を新しくする] ghost。≤639px は `…`（`aria-label="ほかの操作"`）で、押すとパレットをそのチャンネルのコマンドで開く。
 4. 許可のカード（#33）: `h2`。ボタンは [許可]（secondary）[拒否]（ghost）。`label.check` + `input[type=checkbox]`「このセッションでは常に許可」+ 次の行に `<code>` のルール。チェックで [許可] の送り先が `always`。末尾の段落は `title`。`.card .code-pre` の枠を外し `--radius-sm`・地 `--bg`。

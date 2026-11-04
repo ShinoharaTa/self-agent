@@ -134,13 +134,13 @@
 - 幅は `100%`（`100vw` を書かない）。flex の縮む子に `min-width: 0`、アイコンと画像に `flex: none` [hallmark]
 - 表は 639 以下で 5 列まで（時刻・種類・結果・主な数 2 つ）。残りは行の `details` に。行の名前の列と操作の列は常に見える [hallmark]
 - mobile-native の要点（`index.html` と `app.css` で守る）:
-  - `viewport-fit=cover`（事実: ある）+ **`env(safe-area-inset-*)`** をタイトルバーの上・下タブの下・ドロワー・トーストに（事実: app.css に `env()` は無い）。端の余白は `max(var(--space-4), env(safe-area-inset-left))` の形で変数に折り込む [emil][hallmark][ui-skills]
+  - `viewport-fit=cover`（事実: ある）+ **`env(safe-area-inset-*)`** をタイトルバーの上・下タブの下・ドロワー・トーストに（事実: app.css に `env()` は無い → UI-1 で解消）。端の余白は `max(var(--space-4), env(safe-area-inset-left))` の形で変数に折り込む [emil][hallmark][ui-skills]
   - 高さは `100dvh`（事実: ある）。`100vh` は書かない [emil][ui-skills]
   - 入力欄の文字は **16px 以上**（iOS の拡大を防ぐ。`maximum-scale` で止めない） [emil]
   - `html { -webkit-tap-highlight-color: transparent }`（事実: base.css にある）の代わりに **全部の押せるものに `:active` を付ける**（§6） [emil]
   - 押せるものに `touch-action: manipulation` と `user-select: none`（本文には付けない） [emil][vercel]
   - `html, body { overscroll-behavior: none }`、中のスクロールに `overscroll-behavior: contain` [emil][vercel]
-  - `:hover` は **`@media (hover: hover) and (pointer: fine)`** の中だけ（事実: 今は `(hover: hover)` だけ） [emil][hallmark]
+  - `:hover` は **`@media (hover: hover) and (pointer: fine)`** の中だけ（事実: 今は `(hover: hover)` だけ → UI-1 で解消） [emil][hallmark]
   - `theme-color` はライト・ダークで 1 つずつ、`--surface` の値（§PWA） [emil][vercel]
   - 直したら iPhone の実機で確かめ、「実機 / エミュレータ」のどちらで見たかを書く [emil][impeccable]
 

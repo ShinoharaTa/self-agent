@@ -71,13 +71,13 @@
   }
 
   // ===== テーマ =====
-  // ブラウザの上の帯の色（--surface。index.html の theme-color の 2 つと同じ値）
+  // ブラウザの上の帯の色（--surface の値）
   const THEME_COLORS = { light: "#ffffff", dark: "#11141c" };
 
   function applyTheme() {
     if (S.theme === "system") delete root.dataset.theme;
     else root.dataset.theme = S.theme;
-    // OS に合わせるときは media ごとの元の値、決めたときは 2 つともそのテーマの値
+    // index.html は既定（ダーク）の値で 2 つとも書く。OS に合わせるときだけ media ごとの値、決めたときは 2 つともそのテーマの値
     for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
       const own = (meta.getAttribute("media") || "").includes("dark") ? "dark" : "light";
       meta.setAttribute("content", THEME_COLORS[S.theme === "system" ? own : S.theme]);
@@ -124,7 +124,8 @@
       const pressed = !a.tab && sidebarShows(a.id);
       // 数（会話は未読のチャンネルの数）
       const n = a.count ? a.count() : 0;
-      const label = a.label + (n > 0 ? "（" + (a.countLabel || "") + n + "）" : "");
+      const running = a.running ? a.running() > 0 : false;
+      const label = a.label + (n > 0 ? "（" + (a.countLabel || "") + n + "）" : "") + (running ? "・実行中" : "");
       const btn = el(
         "button",
         {
@@ -137,7 +138,7 @@
         [icon(a.icon), el("span", { class: "act-label", text: a.label }), n > 0 ? el("span", { class: "act-count", text: String(n), "aria-hidden": "true" }) : null],
       );
       // 実行中のターンがあれば、スマホでは会話の数の位置にスピナーを出す（CSS で 639px 以下だけ）
-      if (a.running && a.running() > 0) {
+      if (running) {
         btn.classList.add("is-running");
         btn.append(el("span", { class: "spinner spinner-sm act-spin", role: "img", "aria-label": "実行中" }));
       }
