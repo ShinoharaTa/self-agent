@@ -297,7 +297,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - 拡張子に `png`（`image/png`）と `webmanifest`（`application/manifest+json; charset=utf-8`）を足す。名前の形 `[A-Za-z0-9_-]+` と 1 要素だけの制限は変えない。
 - `/static/*` は認証なし（事実）。manifest・アイコンに秘密は無いのでそのままでよい。`Cache-Control: no-cache` + ETag も今のまま（更新がすぐ効く）。
 - CSP `default-src 'self'` は `manifest-src` の既定になるので変えない（事実: server.ts の CSP に個別の指定は無い）。
-- `index.html` に `<link rel="manifest" href="/static/manifest.webmanifest">` と、favicon が無い（事実）ので `<link rel="icon" href="/static/icon.svg" type="image/svg+xml">` を足す。
+- `index.html` に `<link rel="manifest" href="/static/manifest.webmanifest">` と、favicon が無い（事実）ので `<link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">` を足す。
 
 ### 2. iOS の meta と theme-color
 
@@ -354,7 +354,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 | 絵の自由度 | △ 矩形・円・線の組み合わせだけ（文字は描けない） | ◎ SVG そのまま | ◎ |
 | 運用 | ◎ SVG と PNG を同じスクリプトから | △ SVG を変えたら手で作り直す | — |
 
-- 出すもの: `icon.svg`（favicon・元）、`apple-touch-icon.png` 180、`icon-192.png`、`icon-512.png`、`icon-512-maskable.png`。`scripts/make-icons.ts` が SVG と 4 つの PNG を同じ図形の定義から書く（`npm run make-icons`。出力は `src/web/static/` に commit する）。
+- 出すもの: `app-icon.svg`（favicon・元。`icons.svg` と紛れないようこの名前）、`apple-touch-icon.png` 180、`icon-192.png`、`icon-512.png`、`icon-512-maskable.png`。`scripts/make-icons.ts` が SVG と 4 つの PNG を同じ図形の定義から書く（`npm run make-icons`。出力は `src/web/static/` に commit する）。
 - 印の形（a の制約の中で）: 角丸の正方形の地（`--surface` のダーク `#11141c`）に、`--text`（`#eef0f5`）で「会話を表す 2 本の横線」と右下に `--accent`（`#6b9aff`）の点 1 つ。線は矩形、点は円で描ける。文字は使わない。署名の仕草「生きている点」（GUIDELINES §6.1）と同じ「行 + 生きた点」の絵なので、画面と印が同じ語で話す。
 - maskable: 地を塗り（透過なし）、印は**中央の直径 80% の円の中**に収める。`any` 用は余白を少なめにしてよい。
 - PNG の書き方: RGBA のピクセル配列 → フィルタ 0 の行 → `zlib.deflateSync` → IHDR / IDAT / IEND と CRC32。アンチエイリアスは矩形・円の縁を 4×4 のスーパーサンプルで取る。テストは「PNG の先頭 8 バイトと IHDR の幅・高さ」「maskable の中央 80% の外側が地の色だけ」の 2 つ。

@@ -45,6 +45,9 @@ async function setup(t: TestContext, options: SetupOptions = {}) {
   const staticDir = tempDir(t);
   writeFileSync(join(staticDir, "index.html"), INDEX_HTML);
   writeFileSync(join(staticDir, "app.js"), "console.log(1);");
+  writeFileSync(join(staticDir, "manifest.webmanifest"), '{"name":"self-agent"}');
+  writeFileSync(join(staticDir, "icon-192.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  writeFileSync(join(staticDir, "x.json"), "{}");
   const clock = { now: new Date("2026-10-29T00:00:00Z") };
   const logs: string[] = [];
   const posted: Array<Record<string, unknown> | undefined> = [];
@@ -315,6 +318,22 @@ test("Web UI: /static/* は認証なしで配り、名前が合わなければ 4
   const index = await send(server, "/", { headers: LOGIN_HEADER });
   assert.equal((await send(server, "/", { headers: { ...LOGIN_HEADER, "if-none-match": index.headers.etag! } })).status, 304);
   assert.equal((await send(server, "/static/app.js", { method: "POST", headers: POST_HEADERS, body: "{}" })).status, 405);
+});
+
+test("Web UI: manifest とアイコンの PNG は認証なしで配り、Content-Type が合う。表に無い拡張子・2 要素・名前の無いものは 404（UI-3）", async (t) => {
+  const { server } = await setup(t);
+  const manifest = await send(server, "/static/manifest.webmanifest");
+  assert.equal(manifest.status, 200);
+  assert.equal(manifest.headers["content-type"], "application/manifest+json; charset=utf-8");
+  assert.equal(manifest.headers["cache-control"], "no-cache");
+  assertCommonHeaders(manifest, "manifest");
+  const icon = await send(server, "/static/icon-192.png");
+  assert.equal(icon.status, 200);
+  assert.equal(icon.headers["content-type"], "image/png");
+  assert.equal(icon.headers["content-length"], "4");
+  for (const path of ["/static/x.json", "/static/a/b.png", "/static/.png", "/static/icon-192.PNG"]) {
+    assert.equal((await send(server, path)).status, 404, path);
+  }
 });
 
 test("Web UI: 全部の応答に CSP・X-Frame-Options・nosniff・Referrer-Policy・CORP を付け、log にログイン・Cookie・トークンを出さない", async (t) => {

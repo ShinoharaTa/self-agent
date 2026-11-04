@@ -42,7 +42,7 @@
 | 19 | 許可の残り時間が描き直し（3 秒）のときだけ進む（views.js:869-874・901） | §6.1 1 秒の刻み | chat.js:653-659 と同じ 1 秒の interval で文字だけ更新 |
 | 20 | 「要約しています…」のトースト（chat.js:187・209）とタイムラインの spinner 行（594-599）が同時 | §5 トースト（見える結果にはトーストを出さない） | トーストを消す。失敗だけ |
 
-### UI-3 PWA
+### UI-3 PWA（済）
 
 | # | 事実（今） | 決まり | 直し |
 |---|---|---|---|
@@ -135,10 +135,10 @@
 7. `chat.js`: 187・209 の「要約しています…」のトーストを消す（spinner の行が既にある）。
 8. 受け入れ: 全部の押せるものが押下で縮む。ドロワー 300 / 200。ダイアログ・トーストが出入りし、閉じる方が速い。パレットは動かない。失敗のトーストが `#toast-alert` に出て消えず [もう一度] が効く。許可の残り時間が 1 秒ずつ減る。reduced-motion で崩れない。
 
-### UI-3 PWA（#21）
+### UI-3 PWA（#21）（済。favicon の名前は icons.svg と紛れないよう `app-icon.svg` にした）
 触る: `src/web/static.ts`、`index.html`、`src/web/static/`（manifest・SVG・PNG）、`scripts/make-icons.ts`、`package.json`（`make-icons`）、`test/`。
 1. `static.ts`: `STATIC_NAME` に `png|webmanifest`、`CONTENT_TYPES` に `png: "image/png"`・`webmanifest: "application/manifest+json; charset=utf-8"`。
-2. `scripts/make-icons.ts`: 図形の定義（角丸の正方形の地 `#11141c`、2 本の横線 `#eef0f5`、右下の点 `#6b9aff`）から `icon.svg`・`apple-touch-icon.png`（180）・`icon-192.png`・`icon-512.png`・`icon-512-maskable.png`（印は中央 80% の円の中）を `node:zlib` だけで書く（PWA §5）。
+2. `scripts/make-icons.ts`: 図形の定義（角丸の正方形の地 `#11141c`、2 本の横線 `#eef0f5`、右下の点 `#6b9aff`）から `app-icon.svg`・`apple-touch-icon.png`（180）・`icon-192.png`・`icon-512.png`・`icon-512-maskable.png`（印は中央 80% の円の中）を `node:zlib` だけで書く（PWA §5）。
 3. `manifest.webmanifest`（PWA §1。`background_color` `#0b0d14`・`theme_color` `#11141c`）。
 4. `index.html`: `rel="manifest"`・`rel="icon"`（SVG）・`apple-touch-icon`・`apple-mobile-web-app-capable`・`apple-mobile-web-app-status-bar-style`・`apple-mobile-web-app-title`。
 5. テスト: `/static/manifest.webmanifest`・`/static/icon-192.png` が認証なしで 200 と正しい Content-Type。`/static/x.json`・`/static/a/b.png`・`/static/.png` は 404。index.html の grep（manifest・theme-color 2 つ・apple-touch-icon・inline なし）。PNG の先頭 8 バイトと IHDR の幅・高さ。maskable の中央 80% の外側が地の色だけ。`make-icons` の出力が commit と一致。

@@ -101,13 +101,13 @@ test("isLoopback: 127.0.0.1・::1・::ffff:127.0.0.1 だけ", () => {
   }
 });
 
-test("staticFileFor: / は index.html、/static/<name> は 1 要素の html・css・js・svg だけ。base.css・icons.svg は templates から", () => {
+test("staticFileFor: / は index.html、/static/<name> は 1 要素の html・css・js・svg・png・webmanifest だけ。base.css・icons.svg は templates から", () => {
   const dirs = { staticDir: "/s", templateSiteDir: "/t" };
   assert.deepEqual(staticFileFor("/", dirs), { file: "/s/index.html", contentType: "text/html; charset=utf-8" });
   assert.deepEqual(staticFileFor("/static/app.js", dirs), { file: "/s/app.js", contentType: "text/javascript; charset=utf-8" });
   assert.deepEqual(staticFileFor("/static/base.css", dirs), { file: "/t/base.css", contentType: "text/css; charset=utf-8" });
   assert.deepEqual(staticFileFor("/static/icons.svg", dirs), { file: "/t/icons.svg", contentType: "image/svg+xml; charset=utf-8" });
-  for (const path of ["/static/..", "/static/.x", "/static/a", "/static/../x", "/static/a/b.js", "/static/a.png", "/static/%2e%2e", "/static/", "/static/.env.js", "/other"]) {
+  for (const path of ["/static/..", "/static/.x", "/static/a", "/static/../x", "/static/a/b.js", "/static/a.json", "/static/%2e%2e", "/static/", "/static/.env.js", "/other"]) {
     assert.equal(staticFileFor(path, dirs), undefined, path);
   }
 });

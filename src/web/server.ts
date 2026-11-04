@@ -202,7 +202,7 @@ export function createWebServer(options: WebServerOptions): WebServer {
       return;
     }
 
-    // 画面の部品（CSS・JS・SVG）は秘密を含まないので認証なしで配る（未認証の /login も base.css を読む）
+    // 画面の部品（CSS・JS・SVG・アイコンの PNG・manifest）は秘密を含まないので認証なしで配る（未認証の /login も base.css を読む）
     if (isStaticAssetPath(path)) {
       req.resume();
       if (req.method === "GET") await sendStatic(req, res, path, dirs);
