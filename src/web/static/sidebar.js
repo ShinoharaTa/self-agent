@@ -12,11 +12,12 @@
   // enabled(status) が false の機能（dev モードでない会話ログ・GitHub 無効・ジョブ無効）は出さない。
   // stage の付いたものはその段で中身を足すまで出さない（足した段で stage を外す）
   // phone はスマホ（639px 以下）の置き場: primary は下タブ、more は「その他」のシート（docs/plan/web-ui-polish.md の NAV）。
+  // phoneTab はスマホで一覧を開かずにタブ（表）を直接開くもの（UI-7）
   // Claude Code は会話の一覧の群（docs/plan/claude-code-channels.md §2）で、アクティビティには置かない。会話の数は未読 + 判断待ち
   const ACTIVITIES = [
     { id: "chat", label: "会話", phone: "primary", icon: "message-square", enabled: always, count: () => store.unreadCount() + store.ccNeedsInputCount(), countLabel: chatCountLabel, running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
-    { id: "tasks", label: "タスク", phone: "primary", icon: "square-check", enabled: always },
-    { id: "reminders", label: "リマインド", phone: "primary", icon: "bell", enabled: always },
+    { id: "tasks", label: "タスク", phone: "primary", phoneTab: true, icon: "square-check", enabled: always },
+    { id: "reminders", label: "リマインド", phone: "primary", phoneTab: true, icon: "bell", enabled: always },
     { id: "knowledge", label: "ナレッジ・記憶", phone: "more", icon: "book", enabled: always },
     { id: "projects", label: "プロジェクト", phone: "more", icon: "folder", enabled: always },
     { id: "jobs", label: "ジョブ", phone: "more", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
