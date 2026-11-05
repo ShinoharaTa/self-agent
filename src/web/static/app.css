@@ -1198,6 +1198,11 @@ kbd {
   margin: 0;
 }
 
+/* 見出しは上の段落から遠く、下の本文に近く */
+.msg-md .md-heading:not(:first-child) {
+  margin-top: var(--space-4);
+}
+
 .msg-md .md-list {
   margin: 0;
   padding-left: var(--space-6);
@@ -1220,7 +1225,7 @@ kbd {
   background: var(--muted);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: 0.9em;
+  font-size: var(--font-sm);
 }
 
 /* フェンスは砕かずに横スクロール（.code-pre の pre-wrap・anywhere を上書き） */
