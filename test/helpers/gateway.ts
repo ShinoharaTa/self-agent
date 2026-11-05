@@ -75,6 +75,8 @@ export class FakeGateway implements Gateway {
   /** createCategory・createTextChannel の直前（名前を渡す） */
   beforeCreate: Hook<[name: string]> = () => {};
   beforeExists: Hook<[channelId: string]> = () => {};
+  /** countChannelsIn の直前（カテゴリの ID を渡す） */
+  beforeCount: Hook<[categoryId: string]> = () => {};
   beforeMove: Hook<[channelId: string]> = () => {};
   beforeDelete: Hook<[channelId: string]> = () => {};
   /** listChannelParents の中（答えを写した後、返す前） */
@@ -195,6 +197,8 @@ export class FakeGateway implements Gateway {
   async countChannelsIn(categoryId: string): Promise<number> {
     this.expect("countChannelsIn");
     this.record({ method: "countChannelsIn", categoryId });
+    const pending = this.beforeCount(categoryId);
+    if (pending instanceof Promise) await pending;
     let count = this.manual.get(categoryId) ?? 0;
     for (const parentId of this.parents.values()) if (parentId === categoryId) count++;
     return count;

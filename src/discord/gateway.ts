@@ -200,6 +200,14 @@ export class UnknownChannelError extends Error {
   }
 }
 
+/** countChannelsIn に渡した ID がカテゴリでない（消えた・別の種類のチャンネル）。カテゴリ「Claude Code」の作成で /setup 前とみなす */
+export class NotCategoryError extends Error {
+  constructor() {
+    super("カテゴリではありません");
+    this.name = "NotCategoryError";
+  }
+}
+
 export type GatewayHandlers = {
   onMessage: (message: IncomingMessage) => void;
   /** 許可外のサーバー・DM のものも含めて渡す（受付判定は app 側） */
@@ -233,7 +241,7 @@ export interface Gateway {
   createTextChannel(guildId: string, options: TextChannelOptions): Promise<string>;
   /** チャンネル（カテゴリを含む）がまだ Discord 上にあるか。無い以外の失敗（権限・通信）は投げる */
   channelExists(channelId: string): Promise<boolean>;
-  /** カテゴリの中にあるチャンネルの数（キャッシュではなく Discord 上の実数。手動で置かれた分も数える） */
+  /** カテゴリの中にあるチャンネルの数（キャッシュではなく Discord 上の実数。手動で置かれた分も数える）。カテゴリでなければ NotCategoryError */
   countChannelsIn(categoryId: string): Promise<number>;
   /**
    * サーバーの全チャンネル（カテゴリを含む。スレッドは含まない）の ID → 今の親カテゴリの ID（カテゴリの外なら null）。

@@ -138,7 +138,7 @@ export type CcRegistryDeps = {
   cfg: Pick<Config, "ccPollSec">;
   agents: Pick<AgentsClient, "list">;
   dirs: Pick<ClaudeDirs, "sessionFile" | "transcriptMtime">;
-  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive" | "get">;
+  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive" | "listGone">;
   now: () => Date;
   timers?: CcTimers;
   /** 送信の待ち行列が空でない（§2.2。CC3 から）・起動したセッションをまだ一覧で見つけていない（CC4）。true の間は見ていなくても設定の周期で読む */
@@ -429,12 +429,7 @@ export class CcRegistry implements CcHookReceiver {
       this.fetchedAt = now;
       const ids = new Set(result.agents.map((agent) => agent.sessionId));
       // 戻ったセッションは、gone_at を外す前の行から
-      const revivedRows =
-        this.deps.revived === undefined
-          ? []
-          : result.agents
-              .map((agent) => this.deps.store.get(agent.sessionId))
-              .filter((row): row is CcSessionRow => row !== undefined && row.goneAt !== null);
+      const revivedRows = this.deps.revived === undefined ? [] : this.deps.store.listGone().filter((row) => ids.has(row.sessionId));
       this.deps.store.upsertSeen(
         result.agents.map((agent) => ({
           sessionId: agent.sessionId,
