@@ -881,3 +881,48 @@ test("Q2: SELF_AGENT_CC が無効（ボタンの口が無い）・質問でな�
   assert.deepEqual(responder.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
   assert.equal(s.store.get(asked.id)?.state, "pending");
 });
+
+test("Q4: 判断待ちのチャンネルを作れなければ上限の枠を使わない（同じ待ちにやり直さない）。作れたら枠を使う", async (t) => {
+  const busy = { status: "busy", waitingFor: undefined } as const;
+  const s = await setup(t, { agents: [agent(S1, busy), agent(S2, busy)], channel: false });
+  s.ensure.fails = true;
+  await s.hook(S2, "Notification", { notificationType: "agent_needs_input" });
+  await s.setAgents([agent(S1, busy), agent(S2, { status: "waiting" })]);
+  s.clock.now += CC_WAIT_NOTIFY_MS;
+  await s.tickWaiting();
+  assert.deepEqual(s.ensure.calls, [{ sessionId: S2, origin: "waiting" }]);
+  assert.equal(s.gateway.posts.length, 0);
+  // 枠は 10 件とも残っている
+  for (let i = 0; i < CC_WAIT_NOTIFY_LIMIT; i++) assert.equal(s.waitBudget.take(s.clock.now), true);
+  assert.equal(s.waitBudget.take(s.clock.now), false);
+  // 同じ待ちにはやり直さない
+  s.clock.now += 60_000;
+  await s.tickWaiting();
+  assert.equal(s.ensure.calls.length, 1);
+});
+
+test("Q4: 上限に達していればチャンネルの無いセッションのためには作らない。作れたら枠を 1 つ使う", async (t) => {
+  const busy = { status: "busy", waitingFor: undefined } as const;
+  const s = await setup(t, { agents: [agent(S1, busy), agent(S2, busy)], channel: false });
+  for (let i = 0; i < CC_WAIT_NOTIFY_LIMIT - 1; i++) s.waitBudget.take(s.clock.now);
+  await s.hook(S2, "Notification", { notificationType: "agent_needs_input" });
+  await s.setAgents([agent(S1, busy), agent(S2, { status: "waiting" })]);
+  s.clock.now += CC_WAIT_NOTIFY_MS;
+  await s.tickWaiting();
+  assert.equal(s.ensure.calls.length, 1);
+  assert.equal(s.gateway.posts.length, 1);
+  assert.equal(s.waitBudget.available(s.clock.now), false);
+});
+
+test("Q4: SELF_AGENT_CC_NOTIFY=0 でチャンネルの無いセッションの要求は、出さなかった log を 1 時間に 1 回だけ出す", async (t) => {
+  const s = await setup(t, { notify: false, channel: false });
+  const notice = "Claude Code: SELF_AGENT_CC_NOTIFY=0 のため、チャンネルの無いセッションの許可の要求・質問は Discord に出しません";
+  await s.ask(S1);
+  await s.ask(S2);
+  assert.equal(s.logs.filter((line) => line === notice).length, 1);
+  assert.ok(!s.logs.some((line) => line.includes("を出すチャンネルがありません")));
+  s.clock.now += 60 * 60_000;
+  await s.ask(S2, "ls");
+  assert.equal(s.logs.filter((line) => line === notice).length, 2);
+  assert.equal(s.gateway.posts.length, 0);
+});

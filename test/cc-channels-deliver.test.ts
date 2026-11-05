@@ -10,6 +10,7 @@ import {
   CC_MARK_FAILED,
   CC_MARK_UNCONFIRMED,
   CC_MARK_WAITING,
+  CC_NOT_IN_TMUX_REPLY,
   CC_QUEUE_FULL_REPLY,
   CC_CHANNEL_REOPENED_TEXT,
   CC_CHANNEL_CLOSED_TEXT,
@@ -710,4 +711,36 @@ test("Web の会話（CC14）: 閉じたときの知らせは /cc close の応�
   assert.deepEqual([last.kind, last.text], ["notice", ccClosedText(2)]);
   assert.match(ccClosedText(2), /\n閉じたので、届け待ちの 2 件を送るのをやめました$/);
   assert.equal(ccClosedText(0), CC_CHANNEL_CLOSED_TEXT);
+});
+
+const S3 = "33333333-3333-4333-8333-333333333333";
+
+test("Q4: tmux の外のセッションに知らせのチャンネルを作り、そこへの発言は積まずに CC_NOT_IN_TMUX_REPLY で断る", async (t) => {
+  const s = setup(t);
+  // pid 700 はどのペインの子でもない（tmux の外）
+  s.snapshot.sessions.push(view(S3, 700, "gamma"));
+  const made = await s.channels.ensureFor(S3, "waiting");
+  assert.equal(made.ok, true);
+  const channelId = made.ok ? made.channelId : "";
+  const intro = s.gateway.posts.at(-1)!.message.text;
+  assert.ok(!intro.includes("ここに書くとこのセッションに届きます"), intro);
+  assert.ok(intro.endsWith(CC_NOT_IN_TMUX_REPLY), intro);
+  const msg = s.message("届けて", { channelId });
+  assert.equal(await s.channels.handleMessage(msg), true);
+  await s.settle();
+  assert.equal(s.sends.get(1), undefined);
+  const reply = s.gateway.posts.at(-1)!;
+  assert.deepEqual([reply.channelId, reply.message.text, reply.message.replyToId], [channelId, CC_NOT_IN_TMUX_REPLY, msg.id]);
+  assert.deepEqual(s.actions(), []);
+  assertQuietLogs(s.logs);
+});
+
+test("Q4: 同じセッションへの ensureFor が同時に 2 回来ても、チャンネルは 1 つだけ作る", async (t) => {
+  const s = setup(t);
+  const [first, second] = await Promise.all([s.channels.ensureFor(S2, "permission"), s.channels.ensureFor(S2, "waiting")]);
+  assert.equal(s.gateway.callsOf("createTextChannel").length, 1);
+  assert.equal(s.store.listUndeleted("guild-1").filter((row) => row.sessionId === S2).length, 1);
+  const results = [first, second].map((result) => (result.ok ? "ok" : result.reason)).sort();
+  assert.deepEqual(results, ["exists", "ok"]);
+  assert.equal(s.store.anyFor(S2)?.origin, "permission");
 });
