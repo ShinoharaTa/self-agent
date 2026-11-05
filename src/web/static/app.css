@@ -2137,6 +2137,19 @@ kbd {
   display: none;
 }
 
+/* ダイアログの「詳しい設定」（Claude Code の起動の権限モード。既定で閉じる） */
+.dlg-more > summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--row);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.dlg-more[open] > summary {
+  margin-bottom: var(--space-2);
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -2579,7 +2592,7 @@ dialog[open]::backdrop {
     display: none;
   }
 
-  /* トーストはタイトルバーの下に 1 つ（入力欄・送るボタン・キーボードに重ねない。UI-8）。出入りは上から */
+  /* トーストはタイトルバーの下に 1 つ（入力欄・送るボタン・キーボードに重ねない。会話の見出しには重なるが 4 秒で消える。UI-8）。出入りは上から */
   .toast-region {
     top: calc(var(--titlebar-h) + env(safe-area-inset-top, 0px) + var(--space-2));
     bottom: auto;
@@ -2635,6 +2648,17 @@ dialog[open]::backdrop {
 
   .wb.is-keyboard .wb-activity {
     display: none;
+  }
+
+  /* 一覧の絞り込み欄でキーボードが出たときも、一覧の下端をキーボードの上に */
+  .wb.is-keyboard .wb-sidebar {
+    bottom: var(--kb, 0px);
+  }
+
+  /* visualViewport の上のずれ（--vvt。iOS で 0 に戻らないとき）に .wb を追従させる */
+  .wb {
+    position: relative;
+    top: var(--vvt, 0px);
   }
 
   /* ステータスバーの代わりに、タイトルバーの右に接続の点と鈴、下タブ「会話」に実行中のスピナー */

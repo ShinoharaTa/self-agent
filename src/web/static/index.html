@@ -72,7 +72,7 @@
     </div>
   </div>
 
-  <dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title">
+  <dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title" aria-describedby="dlg-confirm-target dlg-confirm-body">
     <h2 id="dlg-confirm-title" class="dlg-title"></h2>
     <p id="dlg-confirm-target" class="dlg-target" hidden></p>
     <p id="dlg-confirm-body" class="meta"></p>
@@ -119,18 +119,21 @@
       </div>
       <div class="field">
         <label for="cc-start-text">最初の指示（任意）</label>
-        <textarea class="textarea" id="cc-start-text" rows="4" maxlength="2000" aria-describedby="cc-start-error"></textarea>
+        <textarea class="textarea" id="cc-start-text" rows="3" maxlength="2000" aria-describedby="cc-start-error"></textarea>
       </div>
-      <div class="field">
-        <label for="cc-start-mode">権限モード</label>
-        <select class="select" id="cc-start-mode">
-          <option value="">既定（この機械の設定に従う）</option>
-          <option value="default">default（使うたびに確認）</option>
-          <option value="acceptEdits">acceptEdits（編集は確認なし）</option>
-          <option value="plan">plan（計画だけ）</option>
-          <option value="auto">auto（自動で判断）</option>
-        </select>
-      </div>
+      <details class="dlg-more" id="cc-start-more">
+        <summary>詳しい設定</summary>
+        <div class="field">
+          <label for="cc-start-mode">権限モード</label>
+          <select class="select" id="cc-start-mode">
+            <option value="">既定（この機械の設定に従う）</option>
+            <option value="default">default（使うたびに確認）</option>
+            <option value="acceptEdits">acceptEdits（編集は確認なし）</option>
+            <option value="plan">plan（計画だけ）</option>
+            <option value="auto">auto（自動で判断）</option>
+          </select>
+        </div>
+      </details>
       <div class="alert-slot"><p class="alert" id="cc-start-error" role="alert" hidden></p></div>
       <p class="meta">この機械の tmux に新しいセッションを作り、claude を起動します。題名は 40 字までです。</p>
       <div class="dialog-actions">

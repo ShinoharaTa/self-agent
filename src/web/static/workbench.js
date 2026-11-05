@@ -1110,6 +1110,7 @@
     $("cc-start-title").value = "";
     $("cc-start-text").value = "";
     $("cc-start-mode").value = "";
+    $("cc-start-more").open = false;
     ccStartError(null);
     openDialog($("dlg-cc-start"));
     $("cc-start-title").focus();
@@ -1159,22 +1160,39 @@
   // ===== スマホのキーボード（visualViewport。UI-8） =====
   // iOS はキーボードで layout viewport を縮めないので、見えている高さを --vvh に書いて .wb をそれに合わせ、ずらされたページを戻す。
   // キーボードが出ている間は .is-keyboard（≤639px で下タブを隠す）。--kb はキーボードの高さ（シートのダイアログを上に出す）。PC では書かない
+  // キーボードの判定は幅ごとの最大の見えている高さとの差で見る（Android は interactive-widget=resizes-content で innerHeight ごと縮むので、innerHeight とは比べられない）。
+  // --vvt は visualViewport の上のずれ（iOS で 0 に戻らないときに .wb を追従させる。実機で確かめること）
   const KEYBOARD_MIN_PX = 100;
+  /** ピンチの後に scale が 1 に戻った最後の状態を拾い直すまでの時間（ms） */
+  const PINCH_RECHECK_MS = 250;
+  /** 幅（px）ごとの最大の見えている高さ */
+  const fullHeights = new Map();
+  let pinchTimer = null;
 
   function fitViewport() {
     const vv = window.visualViewport;
     if (!vv || !phone()) {
       root.style.removeProperty("--vvh");
       root.style.removeProperty("--kb");
+      root.style.removeProperty("--vvt");
       if (refs.wb) refs.wb.classList.remove("is-keyboard");
       return;
     }
-    // ピンチで拡大している間の高さはキーボードではないので書き換えない
-    if (Math.abs(vv.scale - 1) > 0.01) return;
+    // ピンチで拡大している間の高さはキーボードではないので書き換えず、少し後に（scale が 1 に戻っていれば）計算し直す
+    clearTimeout(pinchTimer);
+    if (Math.abs(vv.scale - 1) > 0.01) {
+      pinchTimer = setTimeout(fitViewport, PINCH_RECHECK_MS);
+      return;
+    }
+    const width = Math.round(vv.width);
+    const full = Math.max(fullHeights.get(width) || 0, vv.height);
+    fullHeights.set(width, full);
+    const keyboard = vv.height < full - KEYBOARD_MIN_PX;
     const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
     root.style.setProperty("--vvh", Math.round(vv.height) + "px");
     root.style.setProperty("--kb", kb + "px");
-    refs.wb.classList.toggle("is-keyboard", vv.height < window.innerHeight - KEYBOARD_MIN_PX);
+    root.style.setProperty("--vvt", Math.round(vv.offsetTop) + "px");
+    refs.wb.classList.toggle("is-keyboard", keyboard);
     if (window.scrollY !== 0) window.scrollTo(0, 0);
   }
 

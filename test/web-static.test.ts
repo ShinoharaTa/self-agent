@@ -944,9 +944,27 @@ test("web static: ≤639px のダイアログは下からのシート・トー�
   assert.match(wb, /root\.style\.setProperty\("--vvh", /);
   assert.match(wb, /sheetHead\("その他"\)/);
   // backdrop（箱の外）の click で閉じる
-  assert.match(read("ui.js"), /if \(!inside\) closeDialog\(dialog\);/);
+  assert.match(read("ui.js"), /if \(close\) closeDialog\(dialog\);/);
   // 確認の見出しは動詞だけ（対象は target）
   for (const name of ["chat.js", "views.js"]) assert.doesNotMatch(read(name), /title: "「" \+/, name);
   assert.match(read("chat.js"), /title: "閉じますか",\n {6}target: ch\.title,/);
   assert.match(read("views.js"), /title: "止めますか",\n {10}target: r\.text,/);
+});
+
+test("web static: UI-8 のレビュー: キーボードは幅ごとの最大の高さで判定・backdrop は押し始めも外・確認の説明・起動の詳しい設定", () => {
+  const wb = read("workbench.js");
+  assert.match(wb, /const keyboard = vv\.height < full - KEYBOARD_MIN_PX;/);
+  assert.match(wb, /root\.style\.setProperty\("--vvt", /);
+  assert.match(wb, /pinchTimer = setTimeout\(fitViewport, PINCH_RECHECK_MS\);/);
+  const ui = read("ui.js");
+  assert.match(ui, /dialog\.addEventListener\("pointerdown"/);
+  assert.match(ui, /const close = downOutside && outside\(event\);/);
+  assert.match(ui, /opts\.target\.trim\(\) !== ""/);
+  const html = read("index.html");
+  assert.match(html, /<dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title" aria-describedby="dlg-confirm-target dlg-confirm-body">/);
+  assert.match(html, /<textarea class="textarea" id="cc-start-text" rows="3"/);
+  assert.match(html, /<details class="dlg-more" id="cc-start-more">\s*<summary>詳しい設定<\/summary>\s*<div class="field">\s*<label for="cc-start-mode">/);
+  const phone = phoneCss();
+  assert.match(phone, /\.wb\.is-keyboard \.wb-sidebar \{\n {4}bottom: var\(--kb, 0px\);/);
+  assert.match(phone, /top: var\(--vvt, 0px\);/);
 });
