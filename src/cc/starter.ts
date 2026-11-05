@@ -81,6 +81,8 @@ export type CcStartInput = {
   channelId?: string;
   /** 起動の後に trust のダイアログの確認待ちに気づいたら 1 回呼ぶ（cc_start の確認の書き換え。CC7） */
   onTrustPending?: () => void;
+  /** Claude Code のチャンネルを作るサーバー（Discord の [起動して送る] の押したサーバー。DB には入れず onBound に渡すだけ。CC11） */
+  guildId?: string;
 };
 
 /** 検証を通った起動の入力 */
@@ -238,7 +240,13 @@ export type CcStarterDeps = {
    * 起動したペインを一覧のセッションに結びつけた後に 1 回（startedBy・頼んだチャンネル・最初の指示の送信）。Claude Code のチャンネルを作る（CC11）。
    * 投げても・reject しても結びつけは止めない
    */
-  onBound?: (bound: { sessionId: string; startedBy: Exclude<CcStartedBy, "owner">; channelId?: string; sendId?: number }) => void | Promise<void>;
+  onBound?: (bound: {
+    sessionId: string;
+    startedBy: Exclude<CcStartedBy, "owner">;
+    channelId?: string;
+    sendId?: number;
+    guildId?: string;
+  }) => void | Promise<void>;
   /** MemAvailable（バイト）。読めなければ undefined（そのときは確かめない） */
   memAvailable: () => number | undefined;
   now: () => Date;
@@ -274,6 +282,8 @@ type Started = {
   trustPendingAt: Date | null;
   channelId: string | undefined;
   onTrustPending: (() => void) | undefined;
+  /** チャンネルを作るサーバー（onBound に渡す） */
+  guildId: string | undefined;
 };
 
 const REAL_TIMERS: CcTimers = {
@@ -409,6 +419,7 @@ export class CcStarter {
       ...(input.notificationId === undefined ? {} : { notificationId: input.notificationId }),
       channelId: input.channelId,
       onTrustPending: input.onTrustPending,
+      guildId: input.guildId,
     });
     this.inFlight = run;
     try {
@@ -429,6 +440,7 @@ export class CcStarter {
     notificationId?: number;
     channelId: string | undefined;
     onTrustPending: (() => void) | undefined;
+    guildId: string | undefined;
   }): Promise<CcStartResult> {
     const { tmux, sends, now, log } = this.deps;
     const at = now().getTime();
@@ -479,6 +491,7 @@ export class CcStarter {
       trustPendingAt: null,
       channelId: input.channelId,
       onTrustPending: input.onTrustPending,
+      guildId: input.guildId,
     };
     this.started.push(entry);
     log(`Claude Code: 起動しました（${input.startedBy}${send === undefined ? "" : `、最初の指示 #${send.id}`}）`);
@@ -599,6 +612,7 @@ export class CcStarter {
         startedBy: entry.startedBy,
         ...(entry.channelId === undefined ? {} : { channelId: entry.channelId }),
         ...(entry.sendId === undefined ? {} : { sendId: entry.sendId }),
+        ...(entry.guildId === undefined ? {} : { guildId: entry.guildId }),
       });
       if (result instanceof Promise) void result.catch(fail);
     } catch (error) {

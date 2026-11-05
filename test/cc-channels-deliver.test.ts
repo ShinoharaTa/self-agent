@@ -129,7 +129,7 @@ function setup(t: TestContext, options: { setUp?: boolean } = {}) {
     sends,
     sessions,
     channels: {
-      announce: async (row) => channels?.announce(row),
+      announce: async (row, guildId) => channels?.announce(row, guildId),
       settled: (row) => channels?.settled(row),
       dialog: (row) => channels?.dialog(row),
     },
@@ -490,4 +490,61 @@ test("再起動: delivering のまま残った発言は unconfirmed にし、Dis
   await s.settle();
   assert.deepEqual(s.gateway.reactionsOn("cc-1", "m-old"), [CC_MARK_UNCONFIRMED]);
   assert.deepEqual(s.gateway.posts.map((post) => [post.message.text, post.message.replyToId]), [[CC_UNCONFIRMED_REPLY, "m-old"]]);
+});
+
+test("[対応]・[起動して送る]（Discord）: 押したサーバー（guildId）に作る。DB の channel_id には入れない。許可外のサーバーなら既定のサーバー", async (t) => {
+  const s = setup(t);
+  s.guildSettings.setChannel("guild-2", "homeCategoryId", "home-2");
+  s.guildSettings.setCcCategory("guild-2", "cat-cc-2");
+  s.gateway.alive.add("cat-cc-2");
+  s.env.screens.before = BUSY;
+  await s.sender.submit({ sessionId: S2, text: "対応依頼", origin: "github", notificationId: 3, guildId: "guild-2" });
+  await s.settle();
+  assert.deepEqual([s.store.openFor(S2)?.guildId, s.store.openFor(S2)?.origin], ["guild-2", "github"]);
+  // 写しの後の channel_id は cc のチャンネル（#github ではない）
+  assert.equal(s.sends.get(1)!.channelId, "chan-1");
+
+  const t2 = setup(t);
+  await t2.channels.started({ sessionId: S2, startedBy: "github", guildId: "guild-9" });
+  assert.equal(t2.store.openFor(S2)?.guildId, "guild-1");
+});
+
+test("再起動: 待ちの上限を過ぎた queued の発言は recover で gave_up にし、start で ❌ と返信を付ける", async (t) => {
+  const s = setup(t);
+  const row = s.sends.add({ sessionId: S1, text: "古い", origin: "discord", state: "queued", channelId: "cc-1", messageId: "m-old" });
+  s.clock.now += 121 * 60_000;
+  s.sender.recover();
+  assert.equal(s.sends.get(row.id)!.state, "gave_up");
+  await s.settle();
+  assert.deepEqual(s.gateway.reactionsOn("cc-1", "m-old"), []);
+  s.sender.start();
+  s.sender.stop();
+  await s.settle();
+  assert.deepEqual(s.gateway.reactionsOn("cc-1", "m-old"), [CC_MARK_FAILED]);
+  assert.deepEqual(s.gateway.posts.map((post) => [post.message.text, post.message.replyToId]), [[CC_GAVE_UP_REPLY, "m-old"]]);
+});
+
+test("発言: 5 秒以内に同じ本文を 2 回書いたら 2 通目は積まず、前の行の印（⏳）を付け、届いたら 2 通目も ✅ にする（返信は 1 通目だけ）", async (t) => {
+  const s = setup(t);
+  s.env.screens.before = BUSY;
+  const first = s.message("同じ");
+  const second = s.message("同じ");
+  await s.channels.handleMessage(first);
+  await s.channels.handleMessage(second);
+  await s.settle();
+  assert.equal(s.sends.get(2), undefined);
+  assert.deepEqual(s.gateway.reactionsOn("cc-1", second.id), [CC_MARK_WAITING]);
+  s.env.screens.before = EMPTY;
+  s.env.screens.pasted = shown("同じ");
+  await s.sender.kick();
+  await s.settle();
+  assert.equal(s.sends.get(1)!.state, "delivered");
+  assert.deepEqual(s.gateway.reactionsOn("cc-1", first.id), [CC_MARK_DELIVERED]);
+  assert.deepEqual(s.gateway.reactionsOn("cc-1", second.id), [CC_MARK_DELIVERED]);
+  // 終わった後の同じ本文（5 秒以内）には、終わりの印をすぐ付ける
+  const third = s.message("同じ");
+  await s.channels.handleMessage(third);
+  await s.settle();
+  assert.deepEqual(s.gateway.reactionsOn("cc-1", third.id), [CC_MARK_DELIVERED]);
+  assert.equal(s.gateway.posts.length, 0);
 });

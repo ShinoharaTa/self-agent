@@ -43,7 +43,7 @@ import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
-import { CcChannels, ccEndedHandler, routeCcChannelMessages } from "./cc/channels.ts";
+import { CcChannels, ccEndedHandler, ccPermissionAnsweredHandler, routeCcChannelMessages } from "./cc/channels.ts";
 import { CcChannelPosts } from "./cc/channel-posts.ts";
 import { CcDiscordNotifier, CcWaitBudget } from "./cc/discord-notice.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
@@ -215,13 +215,7 @@ const ccChannelStore = new CcChannelStore(db, now);
 // SELF_AGENT_CC=1 で連携が動くときだけ下で作る（/cc・cc:pick・再同期・Web は呼ぶときに読む）
 let ccChannels: CcChannels | undefined;
 /** 許可の要求に答えた後（Web・Discord）: そのセッションのチャンネルを作る（guildId を省けば最初の /setup 済みのサーバー。待たない・投げない） */
-const ccPermissionAnswered = (id: number, guildId: string | undefined): void => {
-  const row = ccPermissionStore.get(id);
-  if (row === undefined || ccChannels === undefined) return;
-  void ccChannels.ensureFor(row.sessionId, "permission", guildId).catch((error: unknown) => {
-    log(`Claude Code: 許可の応答の後にチャンネルを用意できませんでした（${error instanceof Error ? error.name : typeof error}）`);
-  });
-};
+const ccPermissionAnswered = ccPermissionAnsweredHandler({ permissions: ccPermissionStore, channels: () => ccChannels, log });
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -772,7 +766,7 @@ if (
     onFinished: (row) => ccReplier?.onSendFinished(row),
     // 積んだ直後にチャンネルを作って写し、届け待ち・終わりの印を付ける（CC11。ccChannels は下で作る）
     channels: {
-      announce: async (row) => ccChannels?.announce(row),
+      announce: async (row, guildId) => ccChannels?.announce(row, guildId),
       settled: (row) => ccChannels?.settled(row),
       dialog: (row) => ccChannels?.dialog(row),
     },
@@ -793,6 +787,11 @@ if (
     },
     // 開いている Claude Code のチャンネルがあれば、返事は常にそこへ（CC11）
     channelFor: (sessionId) => ccChannelStore.openFor(sessionId)?.channelId,
+    // 削除されていない cc のチャンネル（そこからの送信では追いかけを立てない）
+    isCcChannel: (channelId) => {
+      const row = ccChannelStore.get(channelId);
+      return row !== undefined && row.state !== "deleted";
+    },
     ...history,
     guildOf: (channelId) => channelOf(channelId)?.guildId,
     personaOf: (channelId) => personas.ownerOf(channelId),
