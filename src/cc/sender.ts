@@ -9,7 +9,11 @@
 // 起動の最初の指示（origin start。cc/starter.ts）はペイン宛てに積まれ、そのペインに一覧のセッションが現れたら session_id を結びつけてから同じ経路で送る
 // （結びつけるのは claude agents --json の cwd が起動したディレクトリ（cc_sends.start_dir）と同じものだけ。それまでは積んだまま。ペインが無くなれば gone、
 // CC_START_BIND_GRACE_MS 経ってもペインが claude でなければ not_claude、そのペインの claude の cwd が違えば cwd_mismatch）。
-// 再起動で delivering のまま残った行は unconfirmed（recover）。log は送信の番号・状態・理由の種類だけ（本文・名前・ペイン id・sessionId は出さない）
+// 再起動で delivering のまま残った行は unconfirmed（recover）。log は送信の番号・状態・理由の種類だけ（本文・名前・ペイン id・sessionId は出さない）。
+// Claude Code のチャンネル（docs/plan/claude-code-channels.md §3.3。CC11）: チャンネルへのオーナーの発言は origin discord で確認なしに積み、同じセッションに
+// CC_CHANNEL_QUEUE_MAX 件まで積める（Web・ツール・GitHub の送信は今までどおり、まだ終わっていない行があれば already_queued）。同じセッションに貼った pass では、
+// そのセッションの次の queued を試さない（次の Stop か CC_SEND_RETRY_MS 後の pass で試す）。積んだ直後・終わったとき・ダイアログで待っているときは channels に渡す
+// （チャンネルを作る・写す・印を付ける）
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { SystemNotifier } from "../app/system-notice.ts";
 import type { Config } from "../config.ts";
@@ -33,6 +37,9 @@ export const CC_PASTE_CHECK_DELAY_MS = 500;
 export const CC_ENTER_CHECK_DELAY_MS = 2_000;
 /** ペイン宛ての送信（起動の最初の指示）で、作ってからこの間はペインが claude でなくても待つ（起動の途中はシェルのことがある） */
 export const CC_START_BIND_GRACE_MS = 60_000;
+
+/** Claude Code のチャンネルから同じセッションに積める、オーナーの発言（origin discord）の queued の数（§3.3） */
+export const CC_CHANNEL_QUEUE_MAX = 5;
 
 /** 複数行が 1 行目で送信されたように見えるのが、別の送信でこの回数続いたら複数行を止める（数えるのはプロセスの中だけ） */
 export const CC_MULTILINE_DETECT_LIMIT = 2;
@@ -64,9 +71,23 @@ export function singleLine(text: string): string {
 export const CC_MULTILINE_OFF_NOTICE =
   "Claude Code: 複数行の貼り付けが続けて 1 行目で送信されたため、以後は改行を空白に置き換えて送ります（ブラケット貼り付けが効いていません。確かめたら npm run cc-dry-run -- --reset-multiline で戻せます）";
 
+/** submit の結果。channelId は送り先のセッションの開いている Claude Code のチャンネル（あれば。返事はそこに出る） */
 export type CcSubmitResult =
-  | { ok: true; send: CcSendRow; duplicate: boolean }
-  | { ok: false; reason: "not_found" | "already_queued" | "not_in_tmux" | "not_claude" | "no_server" | "tmux_failed" | "stopped" };
+  | { ok: true; send: CcSendRow; duplicate: boolean; channelId?: string }
+  | { ok: false; reason: "not_found" | "already_queued" | "queue_full" | "not_in_tmux" | "not_claude" | "no_server" | "tmux_failed" | "stopped" };
+
+/** Claude Code のチャンネル（cc/channels.ts。CC11）に渡すもの。どれも投げても送信の処理は止めない */
+export type CcSenderChannels = {
+  /**
+   * 送信を queued にした直後（貼る前）。外から積んだ送信（web・tool・github）ならチャンネルを作り（作れなければそのまま）写しを出し、
+   * 届け待ちの印を付ける。送り先のセッションの開いているチャンネルの ID を返す
+   */
+  announce(row: CcSendRow): Promise<string | undefined>;
+  /** 送信が終わった（delivered・unconfirmed・failed・gave_up・cancelled）。印を付け替える */
+  settled(row: CcSendRow): void;
+  /** 送り先のダイアログ（dialog）で待っている */
+  dialog(row: CcSendRow): void;
+};
 
 export type CcCancelResult = "cancelled" | "not_found" | "stale";
 
@@ -97,6 +118,8 @@ export type CcSenderDeps = {
     | "giveUpOlderThan"
     | "bindSession"
     | "confirm"
+    | "countQueuedDiscord"
+    | "listDelivering"
   >;
   sessions: Pick<CcSessionStore, "multilineOk" | "setMultilineOk">;
   /** #system への知らせ（無ければ log だけ） */
@@ -106,6 +129,8 @@ export type CcSenderDeps = {
    * cc/replies.ts の追いかけ。CC8）。投げても送信の処理は止めない
    */
   onFinished?: (row: CcSendRow) => void;
+  /** Claude Code のチャンネル（CC11。SELF_AGENT_CC=1 のときだけ）。無ければチャンネルには何もしない */
+  channels?: CcSenderChannels;
   now: () => Date;
   /** 既定は timers/promises の setTimeout */
   sleep?: (ms: number) => Promise<void>;
@@ -140,6 +165,8 @@ export class CcSender {
   private rerun = false;
   /** 複数行が 1 行目で送信されたように見えた送信が続いた数（複数行が貼れたら 0 に戻す） */
   private earlySubmits = 0;
+  /** 再起動の前に貼っていて unconfirmed にした送信（start で印を付け直す） */
+  private recovered: number[] = [];
 
   constructor(deps: CcSenderDeps) {
     this.deps = deps;
@@ -149,6 +176,7 @@ export class CcSender {
 
   /** 起動時（受け付けを始める前）に 1 回: delivering のまま残った行を unconfirmed に、待ちの上限を過ぎた queued を gave_up にする */
   recover(): void {
+    this.recovered = this.deps.sends.listDelivering().map((row) => row.id);
     const recovered = this.deps.sends.recoverDelivering();
     if (recovered > 0) this.deps.log(`Claude Code: 再起動の前に貼っていた送信 ${recovered} 件を確かめられないものにしました`);
     this.expire();
@@ -158,6 +186,9 @@ export class CcSender {
   start(): void {
     if (this.started || this.stopped) return;
     this.started = true;
+    // Discord につないだ後なので、再起動の前に貼っていた送信の印をここで付け直す
+    for (const id of this.recovered) this.settled(id);
+    this.recovered = [];
     this.loop();
   }
 
@@ -175,26 +206,71 @@ export class CcSender {
   /**
    * 送信を受け付ける（§3.2）。text は normalizeSendText を通したもの。送り先のペインを確かめてから（tmux の外・claude でない・サーバーが無いなら積まない）、
    * 同じセッション・同じ本文の CC_SEND_DUPLICATE_MS 以内の行があればそれを、そのセッションにまだ終わっていない行があれば already_queued を返し、
-   * それ以外は queued で積んで待ち行列をすぐ回す。notificationId は GitHub の [対応]（origin github。CC6）のときだけ
+   * それ以外は queued で積んで待ち行列をすぐ回す。notificationId は GitHub の [対応]（origin github。CC6）のときだけ。
+   * origin discord（Claude Code のチャンネルへのオーナーの発言。channelId・messageId はその発言）は、まだ終わっていない行があっても
+   * そのセッションの origin discord の queued が CC_CHANNEL_QUEUE_MAX 件未満なら積む（それ以上は queue_full）。
+   * 積んだら channels の announce（チャンネルを作る・写す・印）を待ってから待ち行列を回す（作る → 写す → 積む の順）
    */
-  async submit(input: { sessionId: string; text: string; origin: CcSendOrigin; notificationId?: number }): Promise<CcSubmitResult> {
+  async submit(input: {
+    sessionId: string;
+    text: string;
+    origin: CcSendOrigin;
+    notificationId?: number;
+    channelId?: string;
+    messageId?: string;
+  }): Promise<CcSubmitResult> {
     const { sends, now, log } = this.deps;
     const checked = await this.checkTarget(input.sessionId);
     if (checked !== undefined) return { ok: false, reason: checked };
     // ここから行を作るまで await しない（同時に来た 2 つの要求でも二重に積まない）
     const same = sends.findRecentSame(input.sessionId, input.text, new Date(now().getTime() - CC_SEND_DUPLICATE_MS));
     if (same !== undefined) return { ok: true, send: same, duplicate: true };
-    if (sends.activeFor(input.sessionId) !== undefined) return { ok: false, reason: "already_queued" };
+    if (input.origin === "discord") {
+      if (sends.countQueuedDiscord(input.sessionId) >= CC_CHANNEL_QUEUE_MAX) return { ok: false, reason: "queue_full" };
+    } else if (sends.activeFor(input.sessionId) !== undefined) {
+      return { ok: false, reason: "already_queued" };
+    }
     const send = sends.add({
       sessionId: input.sessionId,
       text: input.text,
       origin: input.origin,
       state: "queued",
       ...(input.notificationId === undefined ? {} : { notificationId: input.notificationId }),
+      ...(input.channelId === undefined ? {} : { channelId: input.channelId }),
+      ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
     });
     log(`Claude Code: 送りました（#${send.id}、queued）`);
+    const channelId = await this.announce(send.id);
     void this.kick();
-    return { ok: true, send, duplicate: false };
+    return { ok: true, send: sends.get(send.id) ?? send, duplicate: false, ...(channelId === undefined ? {} : { channelId }) };
+  }
+
+  /**
+   * 積んだ直後の送信を channels に渡す（チャンネルを作る・写す・届け待ちの印。submit と、[送る]（confirm）の後に cc-confirm.ts が呼ぶ）。
+   * 送り先のセッションの開いている Claude Code のチャンネルの ID を返す。reject しない
+   */
+  async announce(id: number): Promise<string | undefined> {
+    const { channels, sends, log } = this.deps;
+    const row = sends.get(id);
+    if (channels === undefined || row === undefined) return undefined;
+    try {
+      return await channels.announce(row);
+    } catch (error) {
+      log(`Claude Code: 送信をチャンネルに渡せませんでした（#${id}、${errorKind(error)}）`);
+      return undefined;
+    }
+  }
+
+  /** 終わった送信を channels に渡す（印の付け替え）。投げても止めない */
+  private settled(id: number): void {
+    const { channels, sends, log } = this.deps;
+    if (channels === undefined) return;
+    try {
+      const row = sends.get(id);
+      if (row !== undefined) channels.settled(row);
+    } catch (error) {
+      log(`Claude Code: 送信の印を付け替えられませんでした（#${id}、${errorKind(error)}）`);
+    }
   }
 
   /**
@@ -245,6 +321,7 @@ export class CcSender {
     if (row === undefined) return "not_found";
     if (!this.deps.sends.transition(id, ["queued", "awaiting_confirm"], "cancelled")) return "stale";
     this.deps.log(`Claude Code: 送信を取り消しました（#${id}）`);
+    this.settled(id);
     return "cancelled";
   }
 
@@ -290,6 +367,7 @@ export class CcSender {
     const cutoff = new Date(this.deps.now().getTime() - this.deps.cfg.ccSendWaitMin * 60_000);
     for (const id of this.deps.sends.giveUpOlderThan(cutoff)) {
       this.deps.log(`Claude Code: 送信待ちを諦めました（#${id}）`);
+      this.settled(id);
     }
   }
 
@@ -299,9 +377,14 @@ export class CcSender {
       const snapshot = this.deps.registry.snapshot();
       // 一覧をまだ読めていない・直近の読み取りに失敗している間は試さない（古い pid で送り先を取り違えない・送り先が無いと取り違えない）
       if (snapshot.fetchedAt === undefined || snapshot.unreadable || snapshot.stale) return;
+      // この pass で貼ったセッション（貼った直後の画面がまだ idle に見えても、同じセッションの次の queued は続けて貼らない。§3.3）
+      const pasted = new Set<string>();
       for (const row of this.deps.sends.listQueued()) {
         if (this.stopped) return;
+        if (row.sessionId !== null && pasted.has(row.sessionId)) continue;
         await this.attempt(row.id);
+        const after = this.deps.sends.get(row.id);
+        if (after?.sessionId != null && (after.state === "delivered" || after.state === "unconfirmed")) pasted.add(after.sessionId);
       }
     } catch (error) {
       this.deps.log(`Claude Code: 送信の待ち行列を回せませんでした（${errorKind(error)}）`);
@@ -312,6 +395,7 @@ export class CcSender {
   private fail(id: number, reason: string): void {
     if (this.deps.sends.transition(id, ["queued"], "failed", { lastPaneState: reason })) {
       this.deps.log(`Claude Code: 送れませんでした（#${id}、${reason}）`);
+      this.settled(id);
     }
   }
 
@@ -369,6 +453,13 @@ export class CcSender {
     }
     if (probe.state !== "idle") {
       sends.noteAttempt(id, probe.state);
+      if (probe.state === "dialog" && this.deps.channels !== undefined) {
+        try {
+          this.deps.channels.dialog(row);
+        } catch (error) {
+          this.deps.log(`Claude Code: ダイアログで待っていることを知らせられませんでした（#${id}、${errorKind(error)}）`);
+        }
+      }
       return;
     }
     await this.deliver(row, target.pane.paneId);
@@ -379,6 +470,7 @@ export class CcSender {
     if (!this.deps.sends.transition(id, ["delivering"], state, { lastPaneState: reason })) return;
     if (state === "failed") this.deps.log(`Claude Code: 送れませんでした（#${id}、${reason}）`);
     else this.deps.log(`Claude Code: 送りました（#${id}、${state}）`);
+    this.settled(id);
     const { onFinished } = this.deps;
     if (onFinished === undefined) return;
     try {

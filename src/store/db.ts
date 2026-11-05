@@ -676,6 +676,43 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX cc_channels_guild ON cc_channels(guild_id, state);
   ALTER TABLE guild_settings ADD COLUMN cc_category_id TEXT;
   `,
+  // v37（docs/plan/claude-code-channels.md §4。CC11）: cc_sends の origin に discord（Claude Code のチャンネルへのオーナーの発言）を足す。
+  // SQLite は CHECK を後から変えられないので表を作り直し、全列と AUTOINCREMENT の番号を写して索引 5 つを同じ定義で作り直す（外部キーは無い）。
+  // channel_id・message_id は、確認の投稿（CC7）・オーナーの発言（origin discord）・チャンネルへの写しの投稿（CC11）のチャンネルとメッセージ
+  `
+  CREATE TABLE cc_sends_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    pane_id TEXT,
+    text TEXT NOT NULL,
+    origin TEXT NOT NULL CHECK (origin IN ('web', 'tool', 'github', 'start', 'discord')),
+    state TEXT NOT NULL CHECK (state IN ('awaiting_confirm', 'queued', 'delivering', 'delivered', 'unconfirmed', 'failed', 'gave_up', 'cancelled')),
+    last_pane_state TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    delivered_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    start_dir TEXT,
+    notification_id INTEGER,
+    channel_id TEXT,
+    message_id TEXT,
+    reply_state TEXT CHECK (reply_state IN ('waiting', 'posted', 'timed_out', 'unreadable')),
+    reply_posted_at TEXT
+  );
+  INSERT INTO cc_sends_new (id, session_id, pane_id, text, origin, state, last_pane_state, attempts, delivered_at, created_at, updated_at,
+      start_dir, notification_id, channel_id, message_id, reply_state, reply_posted_at)
+    SELECT id, session_id, pane_id, text, origin, state, last_pane_state, attempts, delivered_at, created_at, updated_at,
+      start_dir, notification_id, channel_id, message_id, reply_state, reply_posted_at FROM cc_sends;
+  DELETE FROM sqlite_sequence WHERE name = 'cc_sends_new';
+  INSERT INTO sqlite_sequence (name, seq) SELECT 'cc_sends_new', seq FROM sqlite_sequence WHERE name = 'cc_sends';
+  DROP TABLE cc_sends;
+  ALTER TABLE cc_sends_new RENAME TO cc_sends;
+  CREATE INDEX cc_sends_session ON cc_sends(session_id, id);
+  CREATE INDEX cc_sends_state ON cc_sends(state, id);
+  CREATE INDEX cc_sends_created ON cc_sends(created_at);
+  CREATE INDEX cc_sends_notification ON cc_sends(notification_id) WHERE notification_id IS NOT NULL;
+  CREATE INDEX cc_sends_reply ON cc_sends(session_id, id) WHERE reply_state = 'waiting';
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

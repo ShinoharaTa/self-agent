@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import type { CcOpenResult, CcPickItem } from "../src/cc/channels.ts";
 import type { CcChannelOrigin } from "../src/store/cc-channels.ts";
 import {
+  CC_CANCEL_NONE_REPLY,
+  CC_CANCEL_NOT_CHANNEL_REPLY,
   CC_NO_SESSIONS_REPLY,
   CC_NOT_SET_UP_REPLY,
   CC_UNAVAILABLE_REPLY,
@@ -35,12 +37,13 @@ function pick(values: string[]): Extract<Interaction, { kind: "select" }> {
 }
 
 /** openChannel の呼び出しを記録し、決めた結果を返す偽の CcChannels */
-function fakeChannels(items: CcPickItem[], result: CcOpenResult) {
+function fakeChannels(items: CcPickItem[], result: CcOpenResult, cancelled: Record<string, number> = {}) {
   const opened: Array<{ guildId: string; sessionId: string; origin: CcChannelOrigin }> = [];
   return {
     opened,
     channels: {
       pickItems: () => items,
+      cancelQueued: (channelId: string): number | undefined => cancelled[channelId],
       openChannel: async (guildId: string, sessionId: string, origin: CcChannelOrigin) => {
         opened.push({ guildId, sessionId, origin });
         return result;
@@ -59,7 +62,7 @@ test("/cc は ccChannels を渡したとき（SELF_AGENT_CC=1）だけ登録し�
   assert.equal(without.includes("cc"), false);
   const withCc = createCommands({ ccChannels: () => undefined, log: () => {} } as unknown as CommandDeps);
   assert.equal(withCc.at(-1)?.def.name, "cc");
-  assert.deepEqual(withCc.at(-1)?.def.subcommands?.map((sub) => sub.name), ["open"]);
+  assert.deepEqual(withCc.at(-1)?.def.subcommands?.map((sub) => sub.name), ["open", "cancel"]);
   assert.equal(withCc.length, without.length + 1);
 });
 
@@ -132,4 +135,45 @@ test("openResultReply: 結果ごとの応答", () => {
   assert.match(openResultReply({ ok: false, reason: "full" }), /満杯/);
   assert.match(openResultReply({ ok: false, reason: "not_found" }), /一覧にありません/);
   assert.match(openResultReply({ ok: false, reason: "failed" }), /作れませんでした/);
+});
+
+test("/cc cancel: Claude Code のチャンネルの中ならそのセッションの届け待ちを取り消して件数を本人にだけ返す。0 件・チャンネルの外は断る", async () => {
+  const { channels } = fakeChannels(ITEMS, { ok: false, reason: "failed" }, { "cc-chan": 2, "cc-empty": 0 });
+  const command = createCcCommand({ ccChannels: () => channels, guildSettings: { ccCategoryId: () => "cat-cc" }, log: () => {} });
+  const replies: string[] = [];
+  for (const channelId of ["cc-chan", "cc-empty", "channel-1"]) {
+    const responder = new FakeResponder();
+    await command.handle({ ...OPEN, subcommand: "cancel", channelId }, responder);
+    assert.equal(responder.replies.length, 1);
+    assert.equal(responder.replies[0]!.ephemeral, true);
+    replies.push(responder.replies[0]!.text);
+  }
+  assert.deepEqual(replies, ["届け待ちを 2 件取り消しました", CC_CANCEL_NONE_REPLY, CC_CANCEL_NOT_CHANNEL_REPLY]);
+});
+
+test("cc:perm（CC11）: 答えたら押したサーバーで answered を呼ぶ（チャンネルを作る）。古い押下では呼ばない", async () => {
+  const answered: Array<[number, string | null]> = [];
+  let ok = true;
+  const component = createCcComponent({
+    ccPermissionButtons: () => ({
+      answer: () => (ok ? { ok: true, state: "allowed" } : { ok: false, reason: "stale" }),
+      resolvedMessage: () => undefined,
+      answered: (id, guildId) => void answered.push([id, guildId]),
+    }),
+    gateway: new FakeGateway(),
+    log: () => {},
+  });
+  const press = (): Extract<Interaction, { kind: "button" }> => ({
+    kind: "button",
+    customId: "cc:perm:allow:7",
+    guildId: "guild-1",
+    channelId: "system-1",
+    userId: "owner-1",
+    createdAt: new Date(0),
+  });
+  await component.handle(press(), new FakeResponder());
+  assert.deepEqual(answered, [[7, "guild-1"]]);
+  ok = false;
+  await component.handle(press(), new FakeResponder());
+  assert.deepEqual(answered, [[7, "guild-1"]]);
 });

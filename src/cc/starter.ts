@@ -9,6 +9,7 @@
 // tick ごとに、画面が trust のダイアログなら trust の確認待ちにし、消えたら外す（それより後・再起動の後は確認待ちの行だけを撮り直して外す）。
 // 上限: 生きている claude が SELF_AGENT_CC_MAX_SESSIONS 以上・MemAvailable が 1 GB 未満・前の起動から 1 分未満なら断る。
 // SDK のツール cc_start（CC7）は確認を出す前に check で検証と上限（1 分の間隔は除く）を確かめ、[起動する] で launch する。
+// 起動したペインを一覧のセッションに結びつけたら onBound を呼ぶ（Claude Code のチャンネルを作る・最初の指示を写す。docs/plan/claude-code-channels.md §3.1。CC11）。
 // log は起動したもの（web など）・送信の番号・件数・失敗の種類だけ（プロジェクト名・題名・パス・tmux のセッション名・ペイン id・sessionId は出さない）
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -233,6 +234,11 @@ export type CcStarterDeps = {
   sessions: Pick<CcSessionStore, "recordStart" | "setTrustPending" | "listTrustPending">;
   /** 最初の指示を積んだ・結びつけたら待ち行列を回す */
   sender?: Pick<CcSender, "kick">;
+  /**
+   * 起動したペインを一覧のセッションに結びつけた後に 1 回（startedBy・頼んだチャンネル・最初の指示の送信）。Claude Code のチャンネルを作る（CC11）。
+   * 投げても・reject しても結びつけは止めない
+   */
+  onBound?: (bound: { sessionId: string; startedBy: Exclude<CcStartedBy, "owner">; channelId?: string; sendId?: number }) => void | Promise<void>;
   /** MemAvailable（バイト）。読めなければ undefined（そのときは確かめない） */
   memAvailable: () => number | undefined;
   now: () => Date;
@@ -577,8 +583,27 @@ export class CcStarter {
         ...(entry.channelId === undefined ? {} : { channelId: entry.channelId }),
       });
       if (entry.sendId !== undefined && this.deps.sends.bindSession(entry.sendId, view.sessionId)) bound = true;
+      this.notifyBound(entry, view.sessionId);
     }
     if (bound) void this.deps.sender?.kick();
+  }
+
+  /** 結びつけたことを onBound に渡す（待たない。投げても止めない） */
+  private notifyBound(entry: Started, sessionId: string): void {
+    const { onBound, log } = this.deps;
+    if (onBound === undefined) return;
+    const fail = (error: unknown): void => log(`Claude Code: 起動したセッションの結びつけの後の処理に失敗しました（${errorKind(error)}）`);
+    try {
+      const result = onBound({
+        sessionId,
+        startedBy: entry.startedBy,
+        ...(entry.channelId === undefined ? {} : { channelId: entry.channelId }),
+        ...(entry.sendId === undefined ? {} : { sendId: entry.sendId }),
+      });
+      if (result instanceof Promise) void result.catch(fail);
+    } catch (error) {
+      fail(error);
+    }
   }
 
   /**

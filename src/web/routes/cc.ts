@@ -51,6 +51,8 @@ export type CcRouteDeps = {
   /** 許可の要求（CC5a）。無ければ一覧の permission は null で、/api/cc/permissions は 404 */
   permissions?: {
     hold: Pick<CcPermissionHold, "answer">;
+    /** 答えた後（応答を返す直前）。そのセッションの Claude Code のチャンネルを作る（CC11。待たない・投げない） */
+    answered?: (id: number) => void;
     store: Pick<CcPermissionStore, "latestPerSession" | "listPending">;
     /** SELF_AGENT_CC_PERMISSION_HOLD_SEC（期限の表示） */
     holdSec: number;
@@ -104,6 +106,7 @@ function sinceOf(view: CcSessionView): number | undefined {
 const SUBMIT_STATUS: Readonly<Record<string, number>> = {
   not_found: 404,
   already_queued: 409,
+  queue_full: 409,
   not_in_tmux: 409,
   not_claude: 409,
   no_server: 503,
@@ -397,7 +400,10 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         // always は行にルールが無ければ 409（stale）
         const decision = params[1] === "allow" ? "allow" : params[1] === "always" ? "always" : "deny";
         const result = permissions.hold.answer(Number(params[0]), decision, "web", requestHash);
-        if (result.ok) return { status: 200, json: { state: result.state } };
+        if (result.ok) {
+          permissions.answered?.(Number(params[0]));
+          return { status: 200, json: { state: result.state } };
+        }
         return { status: ANSWER_STATUS[result.reason] ?? 409, json: { error: result.reason } };
       },
     },

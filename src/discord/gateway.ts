@@ -227,6 +227,10 @@ export interface Gateway {
   editMessage(channelId: string, messageId: string, message: OutgoingMessage): Promise<void>;
   /** メッセージをピン留めする */
   pinMessage(channelId: string, messageId: string): Promise<void>;
+  /** メッセージにこの Bot のリアクション（Unicode の絵文字）を付ける（既に付いていれば何もしない。Claude Code のチャンネルの印。CC11） */
+  addReaction(channelId: string, messageId: string, emoji: string): Promise<void>;
+  /** メッセージからこの Bot のリアクションを外す（付いていなければ何もしない） */
+  removeOwnReaction(channelId: string, messageId: string, emoji: string): Promise<void>;
   /** メッセージ（とそのチャンネル）がまだ Discord 上にあるか。無い以外の失敗（権限・通信）は投げる */
   messageExists(channelId: string, messageId: string): Promise<boolean>;
   /** 入力中表示を始め、止める関数を返す */

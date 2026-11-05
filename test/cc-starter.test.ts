@@ -264,6 +264,8 @@ async function setup(t: TestContext, opts: { sessions?: number; mem?: number } =
   const pending: Array<{ fn: () => void; ms: number }> = [];
   const logs: string[] = [];
   const mem = { value: opts.mem as number | undefined };
+  /** 結びつけた後の onBound（CC11） */
+  const bound: Array<Record<string, unknown>> = [];
   const starter = new CcStarter({
     cfg: { workspaceDir: ws, ccMaxSessions: 30 },
     places,
@@ -274,6 +276,7 @@ async function setup(t: TestContext, opts: { sessions?: number; mem?: number } =
     sends,
     sessions: store,
     sender,
+    onBound: (entry) => void bound.push(entry),
     memAvailable: () => mem.value,
     now,
     timers: {
@@ -303,7 +306,7 @@ async function setup(t: TestContext, opts: { sessions?: number; mem?: number } =
     agents.push(agent(NEW, 950, { name: "fix login", cwd }));
     await registry.tick();
   };
-  return { ws, db, clock, store, sends, registry, sender, starter, server, env, commands, pending, logs, mem, fire, showNew, setList: (r: AgentsResult) => (listResult = r) };
+  return { ws, db, clock, store, sends, registry, sender, starter, server, env, commands, pending, logs, mem, bound, fire, showNew, setList: (r: AgentsResult) => (listResult = r) };
 }
 
 const actions = (commands: string[][]) => commands.filter((args) => ["load-buffer", "paste-buffer", "send-keys"].includes(args[0]!)).map((a) => a[0]);
@@ -638,4 +641,26 @@ test("起動（cc_start。CC7）: 頼んだチャンネルは最初の指示の�
   const saved = s.store.get(NEW)!;
   assert.deepEqual([saved.startedBy, saved.channelId], ["tool", "channel-1"]);
   assert.equal(trust, 1);
+});
+
+test("起動（CC11）: 一覧のセッションに結びつけたときだけ onBound を 1 回（起動したもの・頼んだチャンネル・最初の指示の送信）。trust の確認待ちで一覧に出ない間は呼ばない", async (t) => {
+  const s = await setup(t);
+  s.env.screens["%9"] = TRUST;
+  const result = await s.starter.launch({ project: "alpha", title: "a", text: "最初の指示", startedBy: "tool", channelId: "channel-1" });
+  assert.equal(result.ok, true);
+  await s.fire(CC_TRUST_CHECK_DELAY_MS);
+  await s.fire(CC_START_CHECK_MS);
+  assert.deepEqual(s.bound, []);
+  s.env.screens["%9"] = EMPTY;
+  await s.showNew();
+  await s.fire(CC_START_CHECK_MS);
+  assert.deepEqual(s.bound, [{ sessionId: NEW, startedBy: "tool", channelId: "channel-1", sendId: 1 }]);
+  await s.fire(CC_START_CHECK_MS);
+  assert.equal(s.bound.length, 1);
+  // Web からの最初の指示の無い起動は channelId・sendId を渡さない
+  const web = await setup(t);
+  await web.starter.launch({ project: "alpha", title: "b", startedBy: "web" });
+  await web.showNew();
+  await web.fire(CC_START_CHECK_MS);
+  assert.deepEqual(web.bound, [{ sessionId: NEW, startedBy: "web" }]);
 });

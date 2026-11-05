@@ -15,6 +15,7 @@ import {
   type ModalSubmitInteraction,
   PermissionFlagsBits,
   RESTJSONErrorCodes,
+  Routes,
   type SendableChannels,
   type StringSelectMenuInteraction,
   type TextChannel,
@@ -346,6 +347,16 @@ export class DiscordGateway implements Gateway {
   async pinMessage(channelId: string, messageId: string): Promise<void> {
     const channel = await this.sendableChannel(channelId);
     await channel.messages.pin(messageId);
+  }
+
+  async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    const channel = await this.sendableChannel(channelId);
+    await channel.messages.react(messageId, emoji);
+  }
+
+  async removeOwnReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    // discord.js の Manager はキャッシュに無いメッセージのリアクションを外せないので、REST で直接外す（絵文字は自分で URL エンコードする）
+    await this.client.rest.delete(Routes.channelMessageOwnReaction(channelId, messageId, encodeURIComponent(emoji)));
   }
 
   async messageExists(channelId: string, messageId: string): Promise<boolean> {

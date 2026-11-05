@@ -413,3 +413,10 @@ test("[起動して送る] の二重の押下（busy）は返信を書き換え�
   assert.equal(responder.replies[0]?.ephemeral, true);
   assert.match(responder.replies[0]!.text, /処理している途中/);
 });
+
+test("githubResultMessage（CC11）: 送り先のセッションに Claude Code のチャンネルがあれば「返事は <#…> に出ます」を足す（Web の文には足さない）", () => {
+  const queued = { kind: "queued", sendId: 4, state: "queued", session: "a", channelId: "cc-chan" } as const;
+  assert.match(githubResultMessage(1, queued).text, /（返事は <#cc-chan> に出ます）$/);
+  assert.doesNotMatch(handoffResultText(queued), /cc-chan/);
+  assert.doesNotMatch(githubResultMessage(1, { ...queued, channelId: undefined }).text, /返事は/);
+});

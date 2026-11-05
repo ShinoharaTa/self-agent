@@ -6,22 +6,30 @@
 // - 終わった（ended。registry が一覧から消えたセッションを渡す）: open の行を ended にして 1 行を出し、完了カテゴリへ移す。
 // - 戻った（revived。同じ session_id が一覧に戻った）: その session_id の ended の行を open に戻して 1 行を出し、カテゴリ「Claude Code」へ戻す。
 // - 再同期（reconcile。scheduler.ts の tick）: Discord 上に無い行を削除済みに、open でカテゴリ「Claude Code」の外のもの・ended で完了の外のものを戻す。
-// 発言はまだ届けず（CC11）、返事もまだチャンネルに出さない。投稿は既定の人格の Bot。名前・ディレクトリは hook から来たデータなので、
-// Markdown とメンションを無効にする。log はサーバー ID と種類・件数だけ（チャンネル ID・名前・cwd・sessionId は出さない。作った後の DB の失敗だけ例外）
+// - 関わった（CC11。§3.1）: Web・cc_send の [送る]・GitHub の [対応] で積んだ直後（announce）と、起動したセッションを一覧のセッションに結びつけたとき
+//   （started）に ensureFor で作り、本文をチャンネルに写して（「（Web から）」など）その投稿を印と返事の返信先にする（作れなければ写さない）。
+// - 発言（handleMessage。§3.3）: 許可サーバー・オーナー本人・Bot と Webhook でない・既定の人格の Bot で受けた、open の行のチャンネルの発言を
+//   確認なしで cc_sends（origin discord）に積む（sender.submit。同じセッションに CC_CHANNEL_QUEUE_MAX 件まで）。SDK のターンは動かさない（LLM を呼ばない）。
+//   resuming の間は断り、ended（CC13 で [起動して続ける]）の発言は黙って捨てる。
+// - 印（§3.3）: 届け待ちは ⏳、届けたら ✅、確かめられなければ ⚠️ と返信、送れなければ ❌ と返信、取り消したら ⏳ を外す（リアクション。失敗は log だけ）。
+// 投稿・リアクションは既定の人格の Bot。名前・ディレクトリは hook から来たデータなので、Markdown とメンションを無効にする。
+// log はサーバー ID と種類・件数・送信の番号だけ（チャンネル ID・名前・cwd・sessionId・本文は出さない。作った後の DB の失敗だけ例外）
 import { layoutQueueKey } from "../app/commands/setup.ts";
 import type { ChannelOpsQueue } from "../app/channel-ops.ts";
 import type { KeyedSerialQueue } from "../app/queue.ts";
 import type { SystemNotifier } from "../app/system-notice.ts";
-import type { Config } from "../config.ts";
+import { DEFAULT_PERSONA_ID, type Config } from "../config.ts";
 import { normalizeChannelName, CHANNEL_NAME_MAX_LENGTH } from "../discord/channel-name.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
 import { type Gateway, type IncomingMessage, NotCategoryError } from "../discord/gateway.ts";
 import type { CcChannelOrigin, CcChannelRow, CcChannelStore } from "../store/cc-channels.ts";
-import { headChars, type CcSessionRow } from "../store/cc-sessions.ts";
+import type { CcSendOrigin, CcSendRow, CcSendStore } from "../store/cc-sends.ts";
+import { headChars, type CcSessionRow, type CcStartedBy } from "../store/cc-sessions.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import { cwdLabel } from "./labels.ts";
 import type { CcPaneResolver } from "./panes.ts";
 import type { CcRegistry, CcSessionView, CcState } from "./registry.ts";
+import { CC_CHANNEL_QUEUE_MAX, normalizeSendText, type CcSender, type CcSubmitResult } from "./sender.ts";
 
 /** Discord で 1 つのカテゴリに入れられるチャンネル数（カテゴリ「Claude Code」は 1 つだけで、満杯なら作らずに断る） */
 export const CC_CATEGORY_CHANNEL_LIMIT = 50;
@@ -58,6 +66,89 @@ const FAILURE_NOTICE: Readonly<Record<"not_set_up" | "full" | "failed", string>>
   full: `Claude Code のチャンネルを作れませんでした（カテゴリ「Claude Code」が満杯（${CC_CATEGORY_CHANNEL_LIMIT}）です。完了したチャンネルを消すか、/setup を確かめてください）`,
   failed: "Claude Code のチャンネルを作れませんでした（Discord の操作に失敗しました。次に関わったときにまた試します）",
 };
+
+/** Discord の 1 メッセージの上限 */
+const MESSAGE_MAX = 2000;
+
+/** 印（リアクション。§3.3） */
+export const CC_MARK_WAITING = "⏳";
+export const CC_MARK_DELIVERED = "✅";
+export const CC_MARK_UNCONFIRMED = "⚠️";
+export const CC_MARK_FAILED = "❌";
+
+/** 印に添える返信 */
+export const CC_UNCONFIRMED_REPLY = "届いたかを確かめられませんでした。画面で確かめてください";
+export const CC_GAVE_UP_REPLY = "入力待ちにならなかったため、届けるのをやめました";
+export const CC_DIALOG_REPLY = "ダイアログが出ているため待っています（端末か RC で答えてください）";
+
+/** チャンネルの発言を断る返信 */
+export const CC_ATTACHMENT_REPLY = "画像・ファイルは送れません";
+export const CC_RESUMING_REPLY = "起動中です。少し待ってから書いてください";
+export const CC_QUEUE_FULL_REPLY = `届け待ちが ${CC_CHANNEL_QUEUE_MAX} 件あります。届いてから送ってください`;
+const TEXT_REJECT_REPLY: Readonly<Record<"too_long" | "invalid_text", string>> = {
+  too_long: "長すぎます（4,000 字まで）",
+  invalid_text: "改行のほかの制御文字は送れません",
+};
+const SUBMIT_REJECT_REPLY: Readonly<Record<Exclude<CcSubmitResult, { ok: true }>["reason"], string>> = {
+  not_found: "このセッションは一覧にありません（終わったかもしれません）",
+  already_queued: "届け待ちの送信があります。届いてから送ってください",
+  queue_full: CC_QUEUE_FULL_REPLY,
+  not_in_tmux: "tmux の外のセッションには送れません",
+  not_claude: "送り先のペインが claude ではありません",
+  no_server: "tmux のサーバーがありません",
+  tmux_failed: "tmux を使えませんでした",
+  stopped: "停止中です",
+};
+
+/** 送れなかった理由（cc_sends.last_pane_state）の表示 */
+const FAILURE_REASON_TEXT: Readonly<Record<string, string>> = {
+  gone: "セッションが一覧にありません",
+  not_claude: "送り先が claude ではありません",
+  not_in_tmux: "tmux の外です",
+  cwd_mismatch: "起動したディレクトリと違います",
+  invalid_text: "送れない文字があります",
+};
+
+/** 送れなかったときの返信（純関数） */
+export function ccFailedReply(reason: string | null): string {
+  return `送れませんでした（${(reason === null ? undefined : FAILURE_REASON_TEXT[reason]) ?? "送り先に届けられませんでした"}）`;
+}
+
+/** 積んだ送信の出所 → 作るときのきっかけ（start は起動したセッションを結びつけたとき（started）に作る。discord はチャンネルの中の発言） */
+const SEND_CHANNEL_ORIGIN: Readonly<Partial<Record<CcSendOrigin, CcChannelOrigin>>> = { web: "web_send", tool: "tool_send", github: "github" };
+/** 起動したもの → 作るときのきっかけ */
+const START_CHANNEL_ORIGIN: Readonly<Record<Exclude<CcStartedBy, "owner">, CcChannelOrigin>> = {
+  web: "web_start",
+  tool: "tool_start",
+  github: "github",
+};
+
+/** 写しの見出し（純関数。§3.3）。tool は頼んだチャンネル（requestedChannelId）を `<#…>` で */
+export function ccMirrorLabel(origin: CcSendOrigin, requestedChannelId: string | null): string {
+  switch (origin) {
+    case "web":
+      return "（Web から）";
+    case "tool":
+      return requestedChannelId === null ? "（cc_send から）" : `（<#${requestedChannelId}> から）`;
+    case "github":
+      return "（#github の [対応]）";
+    case "start":
+      return "（起動の最初の指示）";
+    case "discord":
+      return "";
+  }
+}
+
+/**
+ * 写しの各通（純関数）。1 通目は見出し + 改行 + 本文、収まらない分は 2 通目以降に（1 通 MESSAGE_MAX 字。コードポイントで切る）
+ */
+export function ccMirrorTexts(label: string, text: string): string[] {
+  const all = [...text];
+  const firstRoom = MESSAGE_MAX - [...label].length - 1;
+  const texts = [`${label}\n${all.slice(0, firstRoom).join("")}`];
+  for (let pos = firstRoom; pos < all.length; pos += MESSAGE_MAX) texts.push(all.slice(pos, pos + MESSAGE_MAX).join(""));
+  return texts;
+}
 
 export const CC_CHANNEL_ENDED_TEXT = "セッションが終わりました。";
 export const CC_CHANNEL_REVIVED_TEXT = "セッションが戻りました。";
@@ -100,23 +191,29 @@ export function ccChannelTopic(name: string | null, dir: string | null): string 
   return `Claude Code: ${topicPart(label)}${dir === null || dir === "" ? "" : `（${topicPart(dir)}）`}`;
 }
 
-/** 最初の投稿（純関数）。発言を届けるのは CC11 なので、まだ届かないことを書く */
+/** 最初の投稿（純関数） */
 export function ccChannelIntro(name: string | null, dir: string | null, origin: CcChannelOrigin): string {
   const label = name === null || name === "" ? "（名前なし）" : name;
   return (
     `Claude Code のセッション「${plain(label)}」${dir === null || dir === "" ? "" : `（${plain(dir)}）`}のチャンネルです（${ORIGIN_LABEL[origin]} で作りました）。` +
-    "セッションが終わると完了に移し、戻るとここに戻します。今はまだ、ここに書いてもセッションには届きません"
+    "ここに書くとこのセッションに届きます。返事はここに出ます。セッションが終わると完了に移し、戻るとここに戻します"
   );
 }
 
 export type CcChannelsDeps = {
-  cfg: Pick<Config, "allowedGuildIds" | "workspaceDir">;
+  cfg: Pick<Config, "allowedGuildIds" | "workspaceDir" | "ownerUserId">;
   store: CcChannelStore;
+  /** 写しを印と返事の返信先にする・/cc cancel の対象 */
+  sends: Pick<CcSendStore, "get" | "setMirror" | "listQueuedFor">;
+  /** チャンネルの発言を積む・/cc cancel で取り消す（main では後で作るので関数で渡す） */
+  sender: () => Pick<CcSender, "submit" | "cancel"> | undefined;
+  /** Discord から頼んだ送信・起動の頼んだチャンネルのサーバー（そのサーバーに作る。分からなければ defaultGuild） */
+  guildOf?: (channelId: string) => string | undefined;
   guildSettings: Pick<GuildSettingsStore, "get" | "ccCategoryId" | "listStateCategories">;
   registry: Pick<CcRegistry, "snapshot">;
   panes: Pick<CcPaneResolver, "lookup">;
-  /** 作成・最初の投稿・終わった / 戻ったの 1 行（既定の人格の Bot） */
-  gateway: Pick<Gateway, "createTextChannel" | "channelExists" | "countChannelsIn" | "sendMessage">;
+  /** 作成・最初の投稿・終わった / 戻ったの 1 行・写し・印（既定の人格の Bot） */
+  gateway: Pick<Gateway, "createTextChannel" | "channelExists" | "countChannelsIn" | "sendMessage" | "addReaction" | "removeOwnReaction">;
   /** /setup・/new と同じキュー（key は layoutQueueKey） */
   queue: Pick<KeyedSerialQueue, "run">;
   /** 完了カテゴリ・カテゴリ「Claude Code」への移動 */
@@ -132,6 +229,12 @@ export type CcChannelsDeps = {
 /** /cc open のセレクトの 1 件 */
 export type CcPickItem = { sessionId: string; label: string; state: CcState; dir: string | null; hasChannel: boolean };
 
+/** 添付（渡せる画像・渡さない添付）があるか */
+function hasAttachments(message: IncomingMessage): boolean {
+  const skipped = message.skippedAttachments;
+  return (message.images?.length ?? 0) > 0 || (skipped !== undefined && skipped.unsupported + skipped.overLimit > 0);
+}
+
 function errorKind(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
@@ -141,6 +244,12 @@ export class CcChannels {
   /** 理由 → 最後に #system に出した時刻（ensureFor。同じ理由は 1 時間に 1 回） */
   private readonly noticedAt = new Map<string, number>();
   private readonly inFlight = new Set<Promise<void>>();
+  /** 送信ごとの印の操作の列（付ける・外すを順に行う） */
+  private readonly markChains = new Map<number, Promise<void>>();
+  /** 終わりの印を付けた送信（返信を二重に出さない。プロセスの中だけ） */
+  private readonly finalMarked = new Set<number>();
+  /** ダイアログで待っていると返信した送信 */
+  private readonly dialogNoticed = new Set<number>();
 
   constructor(deps: CcChannelsDeps) {
     this.deps = deps;
@@ -210,6 +319,228 @@ export class CcChannels {
       }
     }
     return result;
+  }
+
+  /**
+   * 送信を queued にした直後（sender の announce。§3.1・§3.3）。外から積んだ送信（web・tool・github）なら、そのきっかけでチャンネルを作り
+   * （tool は頼んだチャンネルのサーバー、それ以外は defaultGuild。作れなくても止めない）、開いているチャンネルに本文を写して、その投稿を印と返事の返信先にする。
+   * オーナーの発言（discord）は届け待ちの印を付けるだけ。送り先のセッションの開いているチャンネルの ID を返す
+   */
+  async announce(row: CcSendRow): Promise<string | undefined> {
+    if (row.sessionId === null) return undefined;
+    if (row.origin === "discord") {
+      this.mark(row);
+      return this.deps.store.openFor(row.sessionId)?.channelId;
+    }
+    const origin = SEND_CHANNEL_ORIGIN[row.origin];
+    if (origin !== undefined) await this.ensureFor(row.sessionId, origin, this.guildOfChannel(row.channelId));
+    return this.mirrorSend(row);
+  }
+
+  /**
+   * 起動したセッションを一覧のセッションに結びつけた（starter の onBound。§3.1 の 2・5・6）: 起動したもの（web・tool・github）のきっかけでチャンネルを作り
+   * （tool は頼んだチャンネルのサーバー）、最初の指示があれば写す（届いた後なら返信先には使わない）。reject しない
+   */
+  async started(input: { sessionId: string; startedBy: Exclude<CcStartedBy, "owner">; channelId?: string; sendId?: number }): Promise<void> {
+    try {
+      await this.ensureFor(input.sessionId, START_CHANNEL_ORIGIN[input.startedBy], this.guildOfChannel(input.channelId ?? null));
+      const row = input.sendId === undefined ? undefined : this.deps.sends.get(input.sendId);
+      if (row !== undefined) await this.mirrorSend(row);
+    } catch (error) {
+      this.deps.log(`Claude Code: 起動したセッションのチャンネルを用意できませんでした（${errorKind(error)}）`);
+    }
+  }
+
+  /** 送信が終わった（sender の settled）: 印を付け替える */
+  settled(row: CcSendRow): void {
+    this.mark(row);
+  }
+
+  /** 送り先のダイアログで待っている（sender の dialog）: その送信のチャンネルの投稿に 1 回だけ返信する */
+  dialog(row: CcSendRow): void {
+    const target = this.markTarget(row);
+    if (target === undefined || this.dialogNoticed.has(row.id)) return;
+    this.dialogNoticed.add(row.id);
+    this.chain(row.id, async () => {
+      await this.deps.gateway.sendMessage(target.channelId, { text: CC_DIALOG_REPLY, replyToId: target.messageId, suppressEmbeds: true });
+    });
+  }
+
+  /**
+   * Claude Code のチャンネルへの発言（main の振り分け。§3.3）。cc のチャンネル（削除されていない cc_channels の行）なら true を返して扱い
+   * （SDK のターンにはしない）、それ以外は false（handler へ）。積むのは許可サーバー・オーナー本人・Bot と Webhook でない・既定の人格の Bot で受けた、
+   * open の行のチャンネルの発言だけ（それ以外は黙って捨てる）。本文が送れない形・添付だけ・列が満杯なら返信で断り、積まない
+   */
+  async handleMessage(message: IncomingMessage): Promise<boolean> {
+    const { store, cfg, log } = this.deps;
+    const row = store.get(message.channelId);
+    if (row === undefined || row.state === "deleted") return false;
+    if ((message.persona ?? DEFAULT_PERSONA_ID) !== DEFAULT_PERSONA_ID) return true;
+    if (
+      message.guildId === null ||
+      !cfg.allowedGuildIds.includes(message.guildId) ||
+      message.guildId !== row.guildId ||
+      cfg.ownerUserId === undefined ||
+      message.authorId !== cfg.ownerUserId ||
+      message.authorIsBot ||
+      message.isWebhook
+    ) {
+      return true;
+    }
+    if (row.state === "resuming") {
+      await this.reply(message, CC_RESUMING_REPLY);
+      return true;
+    }
+    // 終わったチャンネルの [起動して続ける] は CC13
+    if (row.state !== "open") return true;
+    const checked = normalizeSendText(message.content);
+    if (!checked.ok) {
+      if (checked.reason !== "empty") await this.reply(message, TEXT_REJECT_REPLY[checked.reason]);
+      else if (hasAttachments(message)) await this.reply(message, CC_ATTACHMENT_REPLY);
+      return true;
+    }
+    const sender = this.deps.sender();
+    if (sender === undefined) {
+      await this.reply(message, SUBMIT_REJECT_REPLY.stopped);
+      return true;
+    }
+    const result = await sender.submit({ sessionId: row.sessionId, text: checked.text, origin: "discord", channelId: row.channelId, messageId: message.id });
+    if (!result.ok) {
+      log(`Claude Code: チャンネルの発言を積みませんでした（${result.reason}）`);
+      await this.reply(message, SUBMIT_REJECT_REPLY[result.reason]);
+      return true;
+    }
+    if (!result.duplicate) log(`Claude Code: チャンネルの発言を積みました（#${result.send.id}）`);
+    return true;
+  }
+
+  /**
+   * /cc cancel（チャンネルの中で）: そのチャンネルのセッションの queued を全部取り消し、取り消した数を返す（印は sender の settled で外れる）。
+   * cc のチャンネル（削除されていない行）でなければ undefined
+   */
+  cancelQueued(channelId: string): number | undefined {
+    const row = this.deps.store.get(channelId);
+    if (row === undefined || row.state === "deleted") return undefined;
+    const sender = this.deps.sender();
+    if (sender === undefined) return 0;
+    let cancelled = 0;
+    for (const send of this.deps.sends.listQueuedFor(row.sessionId)) {
+      if (sender.cancel(send.id) === "cancelled") cancelled++;
+    }
+    if (cancelled > 0) this.deps.log(`Claude Code: チャンネルの届け待ちを ${cancelled} 件取り消しました（guild=${row.guildId}）`);
+    return cancelled;
+  }
+
+  /** 頼んだチャンネルのサーバー（許可サーバーのときだけ） */
+  private guildOfChannel(channelId: string | null): string | undefined {
+    if (channelId === null || this.deps.guildOf === undefined) return undefined;
+    const guildId = this.deps.guildOf(channelId);
+    return guildId !== undefined && this.deps.cfg.allowedGuildIds.includes(guildId) ? guildId : undefined;
+  }
+
+  /**
+   * 送信をそのセッションの開いているチャンネルに写し（§3.3）、まだ届けていなければその投稿を印と返事の返信先にする。開いているチャンネルの ID を返す。
+   * 写しの投稿に失敗しても止めない（印と返信先が無いだけ）
+   */
+  private async mirrorSend(row: CcSendRow): Promise<string | undefined> {
+    const { store, sends, log } = this.deps;
+    if (row.sessionId === null) return undefined;
+    const channel = store.openFor(row.sessionId);
+    if (channel === undefined) return undefined;
+    // 既に写した（返信先がこのチャンネル）なら出し直さない
+    if (row.channelId === channel.channelId) return channel.channelId;
+    let messageId: string | undefined;
+    try {
+      for (const text of ccMirrorTexts(ccMirrorLabel(row.origin, row.channelId), row.text)) {
+        const id = await this.deps.gateway.sendMessage(channel.channelId, { text, suppressEmbeds: true });
+        messageId ??= id;
+      }
+      log(`Claude Code: 写しを出しました（#${row.id}）`);
+    } catch (error) {
+      log(`Claude Code: 写しを出せませんでした（#${row.id}、${errorKind(error)}）`);
+    }
+    if (messageId !== undefined && sends.setMirror(row.id, channel.channelId, messageId)) {
+      const updated = sends.get(row.id);
+      if (updated !== undefined) this.mark(updated);
+    }
+    return channel.channelId;
+  }
+
+  /** 印を付ける先（cc のチャンネルの、オーナーの発言か写しの投稿）。無ければ undefined */
+  private markTarget(row: CcSendRow): { channelId: string; messageId: string } | undefined {
+    if (row.channelId === null || row.messageId === null) return undefined;
+    const channel = this.deps.store.get(row.channelId);
+    if (channel === undefined || channel.state === "deleted") return undefined;
+    return { channelId: row.channelId, messageId: row.messageId };
+  }
+
+  /** 送信の今の状態の印（§3.3）。終わりの印と返信は 1 回だけ */
+  private mark(row: CcSendRow): void {
+    const target = this.markTarget(row);
+    if (target === undefined) return;
+    const { gateway } = this.deps;
+    const { channelId, messageId } = target;
+    const add = (emoji: string) => () => gateway.addReaction(channelId, messageId, emoji);
+    const remove = () => () => gateway.removeOwnReaction(channelId, messageId, CC_MARK_WAITING);
+    const reply = (text: string) => async () => {
+      await gateway.sendMessage(channelId, { text, replyToId: messageId, suppressEmbeds: true });
+    };
+    let steps: Array<() => Promise<void>>;
+    switch (row.state) {
+      case "queued":
+      case "delivering":
+        steps = [add(CC_MARK_WAITING)];
+        break;
+      case "delivered":
+        steps = [remove(), add(CC_MARK_DELIVERED)];
+        break;
+      case "unconfirmed":
+        steps = [remove(), add(CC_MARK_UNCONFIRMED), reply(CC_UNCONFIRMED_REPLY)];
+        break;
+      case "failed":
+        steps = [remove(), add(CC_MARK_FAILED), reply(ccFailedReply(row.lastPaneState))];
+        break;
+      case "gave_up":
+        steps = [remove(), add(CC_MARK_FAILED), reply(CC_GAVE_UP_REPLY)];
+        break;
+      case "cancelled":
+        steps = [remove()];
+        break;
+      default:
+        return;
+    }
+    if (row.state !== "queued" && row.state !== "delivering") {
+      if (this.finalMarked.has(row.id)) return;
+      this.finalMarked.add(row.id);
+    }
+    for (const step of steps) this.chain(row.id, step);
+  }
+
+  /** 送信ごとの列に Discord の操作を足す（失敗は log だけ） */
+  private chain(sendId: number, step: () => Promise<void>): void {
+    const previous = this.markChains.get(sendId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      try {
+        await step();
+      } catch (error) {
+        this.deps.log(`Claude Code: 印を付けられませんでした（#${sendId}、${errorKind(error)}）`);
+      }
+    });
+    this.markChains.set(sendId, next);
+    this.inFlight.add(next);
+    void next.finally(() => {
+      this.inFlight.delete(next);
+      if (this.markChains.get(sendId) === next) this.markChains.delete(sendId);
+    });
+  }
+
+  /** オーナーの発言への返信（失敗は log だけ） */
+  private async reply(message: IncomingMessage, text: string): Promise<void> {
+    try {
+      await this.deps.gateway.sendMessage(message.channelId, { text, replyToId: message.id, suppressEmbeds: true });
+    } catch (error) {
+      this.deps.log(`Claude Code: チャンネルの発言に返信できませんでした（${errorKind(error)}）`);
+    }
   }
 
   /**
@@ -386,16 +717,17 @@ export function ccEndedHandler(deps: {
 }
 
 /**
- * 発言の handler の包み（main の配線。CC10）: 削除されていない cc_channels の行のチャンネルへの発言は、ターンにせず黙って捨てる
- * （届けるのは CC11）。それ以外は handle に渡す
+ * 発言の handler の包み（main の配線。§3.3・§3.8）: 削除されていない cc_channels の行のチャンネルへの発言は、ターンにせず channels の handleMessage で
+ * 届ける（連携が動いていなければ黙って捨てる）。それ以外は handle に渡す
  */
-export function dropCcChannelMessages(
+export function routeCcChannelMessages(
   store: Pick<CcChannelStore, "get">,
+  channels: () => Pick<CcChannels, "handleMessage"> | undefined,
   handle: (message: IncomingMessage) => Promise<void>,
 ): (message: IncomingMessage) => Promise<void> {
-  return (message) => {
+  return async (message) => {
     const row = store.get(message.channelId);
-    if (row !== undefined && row.state !== "deleted") return Promise.resolve();
-    return handle(message);
+    if (row === undefined || row.state === "deleted") return handle(message);
+    await channels()?.handleMessage(message);
   };
 }

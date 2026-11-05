@@ -96,7 +96,8 @@ export type HandoffFailure =
 /** [対応]・[起動して送る] の結果 */
 export type GithubHandoffResult =
   /** そのセッションに積んだ（duplicate は 5 秒以内の同じ本文で前の送信を返したもの） */
-  | { kind: "queued"; sendId: number; state: CcSendState; session: string }
+  /** channelId は送り先のセッションの Claude Code のチャンネル（あれば返事はそこに出る。CC11） */
+  | { kind: "queued"; sendId: number; state: CcSendState; session: string; channelId?: string }
   /** 同じスレッドの送信が終わっていない（queued など）か、GITHUB_HANDOFF_RECENT_MS 以内に届けた */
   | { kind: "already"; sendId: number; state: CcSendState }
   /** 送り先が複数（入力待ちが無い・入力待ちでアクティブなものが複数）。送っていない */
@@ -292,8 +293,15 @@ export class GithubHandoff {
     }
     if (chosen === undefined) return { kind: "failed", reason: "not_found" };
     const submitted = await sender.submit({ sessionId: chosen.view.sessionId, text, origin: "github", notificationId: row.id });
-    if (!submitted.ok) return { kind: "failed", reason: submitted.reason };
-    return { kind: "queued", sendId: submitted.send.id, state: submitted.send.state, session: sessionLabel(chosen) };
+    // queue_full は Claude Code のチャンネルの発言（origin discord）だけのもので、ここには来ない
+    if (!submitted.ok) return { kind: "failed", reason: submitted.reason === "queue_full" ? "already_queued" : submitted.reason };
+    return {
+      kind: "queued",
+      sendId: submitted.send.id,
+      state: submitted.send.state,
+      session: sessionLabel(chosen),
+      ...(submitted.channelId === undefined ? {} : { channelId: submitted.channelId }),
+    };
   }
 }
 

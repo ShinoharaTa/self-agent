@@ -4,6 +4,7 @@
 // 送り先・本文は押した時点の DB と地図だけで決め、custom_id から読むのは整数の ID だけ（形が違えば古い扱い）
 import { escapeDiscordText } from "../../discord/escape.ts";
 import type { ButtonDef, OutgoingMessage } from "../../discord/gateway.ts";
+import { ccRepliesIn } from "./cc-confirm.ts";
 import { type GithubHandoff, type GithubHandoffResult, handoffResultText } from "../github-handoff.ts";
 import type { ComponentHandler } from "../interactions.ts";
 
@@ -34,7 +35,9 @@ export function githubResultMessage(notificationId: number, result: GithubHandof
       buttons.push({ customId: `${NAMESPACE}:cancel:${result.sendId}`, label: "取り消す" });
     }
   }
-  return { text: handoffResultText(result, escapeDiscordText), components: buttons.length === 0 ? [] : [{ kind: "buttons", buttons }] };
+  // 返事は Claude Code のチャンネルに出る（CC11。Web のトーストには出さない）
+  const where = result.kind === "queued" && result.channelId !== undefined ? `（${ccRepliesIn(result.channelId)}）` : "";
+  return { text: `${handoffResultText(result, escapeDiscordText)}${where}`, components: buttons.length === 0 ? [] : [{ kind: "buttons", buttons }] };
 }
 
 /** `gh:<act|start|cancel>:<1 以上の整数>` を読む。形が違えば undefined */
