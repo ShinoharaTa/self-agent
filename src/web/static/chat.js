@@ -182,7 +182,8 @@
       return;
     }
     confirm({
-      title: "「" + ch.title + "」を閉じますか",
+      title: "閉じますか",
+      target: ch.title,
       body: "会話を要約してから完了に移します。やることの候補があれば、ここか Discord で選んでから閉じます。",
       ok: "閉じる",
       run: () => startClose(channelId),
@@ -218,7 +219,8 @@
     const ch = channelById(channelId);
     if (!ch) return;
     confirm({
-      title: channelTitle(ch) + " の会話を新しくしますか",
+      title: "会話を新しくしますか",
+      target: channelTitle(ch),
       body: "今の会話を要約して、新しい会話に引き継ぎます。状態は変わりません。",
       ok: "新しくする",
       run: () => startRenew(channelId),
@@ -339,7 +341,8 @@
     const ch = channelById(channelId);
     if (!ch || ch.kind !== "cc") return;
     confirm({
-      title: channelTitle(ch) + " のチャンネルを閉じますか",
+      title: "チャンネルを閉じますか",
+      target: channelTitle(ch),
       body: "Discord のチャンネルを完了に移し、届け待ちの本文をやめます。セッションは止めません。書くと続けられます。",
       ok: "閉じる",
       run: () =>

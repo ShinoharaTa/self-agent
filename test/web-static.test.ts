@@ -171,7 +171,7 @@ class FakeNode {
   }
 }
 
-function loadToast() {
+function loadToast(opts: { phone?: boolean } = {}) {
   const boxes = { toast: new FakeNode("div"), "toast-alert": new FakeNode("div") };
   boxes.toast.hidden = true;
   boxes["toast-alert"].hidden = true;
@@ -185,7 +185,7 @@ function loadToast() {
     createTextNode: (text: string) => Object.assign(new FakeNode("#text"), { text }),
   };
   const context = {
-    window: {} as Record<string, unknown>,
+    window: (opts.phone ? { matchMedia: () => ({ matches: true }) } : {}) as Record<string, unknown>,
     document,
     setTimeout: (fn: () => void, ms: number) => {
       timers.set(++seq, { at: now + ms, fn });
@@ -884,4 +884,54 @@ test("web static: 会話・Claude Code の見出しの […] はそのチャン�
   assert.match(wb, /sheet: openSheet,/);
   // 「その他」の aria-expanded は「その他」のシートのときだけ
   assert.match(wb, /"aria-expanded": String\(S\.moreOpen && S\.sheetKind === "more"\)/);
+});
+
+test("web static: スマホ（≤639px）のトーストはそれぞれ 1 つまでで、[取り消す] 付きも 4 秒で消える（UI-8。#251）", () => {
+  const { ui, boxes, advance } = loadToast({ phone: true });
+  ui.toast("完了にしました", { label: "取り消す", run: () => undefined });
+  ui.toast("別の知らせ");
+  advance(400);
+  assert.deepEqual(boxes.toast.children.map((c) => c.children[0]!.textContent), ["別の知らせ"], "新しいもので置き換える");
+  ui.toast("完了にしました", { label: "取り消す", run: () => undefined });
+  advance(4000);
+  advance(400);
+  assert.equal(boxes.toast.children.length, 0, "[取り消す] 付きも消える");
+  ui.toast("送れませんでした", null, { level: "error" });
+  ui.toast("読めませんでした", null, { level: "error" });
+  advance(400);
+  assert.deepEqual(boxes["toast-alert"].children.map((c) => c.children[0]!.textContent), ["読めませんでした"]);
+  advance(60000);
+  assert.equal(boxes["toast-alert"].children.length, 1, "失敗は自動で消えない");
+});
+
+test("web static: ≤639px のダイアログは下からのシート・トーストは上・キーボードの間は下タブを隠す（UI-8。#251）", () => {
+  const phone = phoneCss();
+  const dialog = /\n {2}dialog \{([^}]*)\}/.exec(phone)?.[1] ?? "";
+  assert.match(dialog, /width: 100%;/);
+  assert.match(dialog, /max-width: none;/);
+  assert.match(dialog, /margin: auto 0 var\(--kb, 0px\);/);
+  assert.match(dialog, /padding-bottom: calc\(var\(--space-6\) \+ env\(safe-area-inset-bottom, 0px\)\);/);
+  assert.match(dialog, /border-radius: var\(--radius-lg\) var\(--radius-lg\) 0 0;/);
+  assert.match(dialog, /transform: translateY\(100%\);/);
+  assert.match(phone, /@starting-style \{\n {4}dialog\[open\] \{\n {6}opacity: 1;\n {6}transform: translateY\(100%\);/);
+  assert.match(phone, /\n {2}\.dialog-actions \{\n {4}display: grid;\n {4}grid-template-columns: 1fr 1fr;/);
+  const toast = /\n {2}\.toast-region \{([^}]*)\}/.exec(phone)?.[1] ?? "";
+  assert.match(toast, /top: calc\(var\(--titlebar-h\) \+ env\(safe-area-inset-top, 0px\)/);
+  assert.match(toast, /bottom: auto;/);
+  assert.match(phone, /\.toast-stack \.toast\.is-leaving \{\n {4}transform: translateY\(-8px\);/);
+  assert.match(phone, /\.wb\.is-keyboard \.wb-activity \{\n {4}display: none;/);
+  assert.match(phone, /\.more-row \.icon \{\n {4}width: var\(--icon-sm\);/);
+  assert.match(read("app.css"), /\n\.wb \{\n {2}display: grid;\n {2}height: var\(--vvh, 100dvh\);/);
+  assert.match(read("index.html"), /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">/);
+  assert.match(read("index.html"), /<p id="dlg-confirm-target" class="dlg-target" hidden><\/p>/);
+  const wb = read("workbench.js");
+  assert.match(wb, /vv\.addEventListener\("resize", fitViewport\)/);
+  assert.match(wb, /root\.style\.setProperty\("--vvh", /);
+  assert.match(wb, /sheetHead\("その他"\)/);
+  // backdrop（箱の外）の click で閉じる
+  assert.match(read("ui.js"), /if \(!inside\) closeDialog\(dialog\);/);
+  // 確認の見出しは動詞だけ（対象は target）
+  for (const name of ["chat.js", "views.js"]) assert.doesNotMatch(read(name), /title: "「" \+/, name);
+  assert.match(read("chat.js"), /title: "閉じますか",\n {6}target: ch\.title,/);
+  assert.match(read("views.js"), /title: "止めますか",\n {10}target: r\.text,/);
 });

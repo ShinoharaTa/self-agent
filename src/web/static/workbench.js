@@ -228,7 +228,14 @@
       return el("li", {}, [btn]);
     });
     $("more-sheet").setAttribute("aria-label", "その他の画面");
-    $("more-sheet").replaceChildren(el("ul", { class: "more-list" }, items));
+    $("more-sheet").replaceChildren(sheetHead("その他"), el("ul", { class: "more-list" }, items));
+  }
+
+  /** シートの題と ×（閉じ方を見せる。UI-8） */
+  function sheetHead(title) {
+    const close = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm sheet-close", type: "button", "aria-label": "閉じる" }, [icon("x")]);
+    close.addEventListener("click", () => closeMore());
+    return el("div", { class: "sheet-head" }, [el("span", { class: "sheet-title", text: title }), close]);
   }
 
   /** シートを出す（中身は描いた後） */
@@ -277,7 +284,7 @@
       return el("li", {}, [row]);
     });
     $("more-sheet").setAttribute("aria-label", label);
-    $("more-sheet").replaceChildren(el("ul", { class: "more-list" }, rows));
+    $("more-sheet").replaceChildren(sheetHead(label), el("ul", { class: "more-list" }, rows));
     showSheet();
   }
 
@@ -1126,6 +1133,36 @@
     });
   }
 
+  // ===== スマホのキーボード（visualViewport。UI-8） =====
+  // iOS はキーボードで layout viewport を縮めないので、見えている高さを --vvh に書いて .wb をそれに合わせ、ずらされたページを戻す。
+  // キーボードが出ている間は .is-keyboard（≤639px で下タブを隠す）。--kb はキーボードの高さ（シートのダイアログを上に出す）。PC では書かない
+  const KEYBOARD_MIN_PX = 100;
+
+  function fitViewport() {
+    const vv = window.visualViewport;
+    if (!vv || !phone()) {
+      root.style.removeProperty("--vvh");
+      root.style.removeProperty("--kb");
+      if (refs.wb) refs.wb.classList.remove("is-keyboard");
+      return;
+    }
+    // ピンチで拡大している間の高さはキーボードではないので書き換えない
+    if (Math.abs(vv.scale - 1) > 0.01) return;
+    const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+    root.style.setProperty("--vvh", Math.round(vv.height) + "px");
+    root.style.setProperty("--kb", kb + "px");
+    refs.wb.classList.toggle("is-keyboard", vv.height < window.innerHeight - KEYBOARD_MIN_PX);
+    if (window.scrollY !== 0) window.scrollTo(0, 0);
+  }
+
+  function bindViewport() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    vv.addEventListener("resize", fitViewport);
+    vv.addEventListener("scroll", fitViewport);
+    fitViewport();
+  }
+
   // ===== 幅・高さの変更（つまみ） =====
   // CSS の変数は CSSOM（style.setProperty）で変える。style 属性は書かない（CSP の style-src 'self' でも動く）
   const SIZES = {
@@ -1310,7 +1347,7 @@
     // 開いている間は Tab / Shift+Tab を最初と最後の行で折り返す（aria-modal）
     $("more-sheet").addEventListener("keydown", (e) => {
       if (e.key !== "Tab") return;
-      const rows = $("more-sheet").querySelectorAll(".more-row:not([disabled])");
+      const rows = $("more-sheet").querySelectorAll(".sheet-close, .more-row:not([disabled])");
       if (rows.length === 0) return;
       const first = rows[0];
       const last = rows[rows.length - 1];
@@ -1354,7 +1391,9 @@
     mqPhone.addEventListener("change", () => {
       closeMore({ keepFocus: true });
       renderActivity();
+      fitViewport();
     });
+    bindViewport();
 
     // 最初の描画では一覧（ドロワー）を動かさない（1 フレームだけ transition を止める）
     refs.wb.classList.add("no-transition");

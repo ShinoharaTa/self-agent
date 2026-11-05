@@ -460,7 +460,8 @@
       const stop = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "止める" });
       stop.addEventListener("click", () =>
         confirm({
-          title: "「" + oneLine(r.text) + "」を止めますか",
+          title: "止めますか",
+          target: r.text,
           body: "止めたリマインドは戻せません。",
           ok: "止める",
           danger: true,

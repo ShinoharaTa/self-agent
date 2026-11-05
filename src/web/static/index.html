@@ -2,7 +2,7 @@
 <html lang="ja" data-theme="dark">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#11141c">
@@ -74,6 +74,7 @@
 
   <dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title">
     <h2 id="dlg-confirm-title" class="dlg-title"></h2>
+    <p id="dlg-confirm-target" class="dlg-target" hidden></p>
     <p id="dlg-confirm-body" class="meta"></p>
     <div class="dialog-actions">
       <button class="btn btn-secondary btn-sm" id="dlg-confirm-cancel" type="button">やめる</button>
@@ -97,7 +98,7 @@
         <select class="select" id="new-persona"></select>
       </div>
       <div class="alert-slot"><p class="alert" id="new-error" role="alert" hidden></p></div>
-      <p class="meta">Discord の /new と同じです。チャンネルが「進行中」にできます。</p>
+      <p class="meta">Discord にチャンネルができます。</p>
       <div class="dialog-actions">
         <button class="btn btn-secondary btn-sm" id="dlg-new-cancel" type="button">やめる</button>
         <button class="btn btn-primary btn-sm" id="dlg-new-ok" type="submit">作る</button>

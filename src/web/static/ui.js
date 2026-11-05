@@ -147,7 +147,10 @@
   // 付いたものは押すか閉じるまで残す。2 つを超えるときだけ、いちばん古いもの（action 付きでも）を消す。action の無いものは TOAST_MS で消え、
   // マウスが乗っている間（pointerType が mouse のときだけ。指のタップでは止めない）と focus の間は止めて、離れたら TOAST_MS から数え直す。
   // 失敗（opts.level === "error"）は #toast-alert（role="alert"）に入れて自動で消さない。opts.retry があれば [もう一度] を付ける。こちらも多くて 2 つ
+  // スマホ（≤639px。トーストは上に出る）はそれぞれ 1 つまで（新しいもので置き換える）で、[取り消す] の付いたものも TOAST_MS で消す（見出しを覆い続けない。UI-8）
   const TOAST_MS = 4000;
+  const phoneQuery = window.matchMedia ? window.matchMedia("(max-width: 639px)") : null;
+  const phone = () => Boolean(phoneQuery && phoneQuery.matches);
   /**
    * 消える動き（長さは app.css の .is-leaving）の transitionend で DOM から外す。transition が無い（prefers-reduced-motion・
    * 非対応）と transitionend が来ないので、この時間で必ず外す保険（動きの長さより長く）
@@ -188,8 +191,9 @@
     const box = document.getElementById(error ? "toast-alert" : "toast");
     if (!box) return;
     if (!error) for (const item of toasts.filter((t) => t.box === box)) if (!item.action) removeToast(item);
-    for (let mine = toasts.filter((t) => t.box === box); mine.length >= 2; mine = toasts.filter((t) => t.box === box)) removeToast(mine[0]);
-    const item = { node: null, box, action: !!action, auto: !error && !action, timer: null, hover: false, focus: false };
+    const max = phone() ? 1 : 2;
+    for (let mine = toasts.filter((t) => t.box === box); mine.length >= max; mine = toasts.filter((t) => t.box === box)) removeToast(mine[0]);
+    const item = { node: null, box, action: !!action, auto: !error && (!action || phone()), timer: null, hover: false, focus: false };
     const close = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm", type: "button", "aria-label": "閉じる" }, [icon("x")]);
     close.addEventListener("click", () => removeToast(item));
     const children = [el("span", { text })];
@@ -244,7 +248,20 @@
   }
 
   // ===== ダイアログ（showModal が無い環境では open 属性で開く） =====
+  /** backdrop の click で閉じるのを登録したダイアログ（1 回だけ） */
+  const backdropBound = new WeakSet();
+
   function openDialog(dialog) {
+    // backdrop（ダイアログの箱の外）を押すと閉じる。箱の余白の click も target は dialog なので、位置で外かを見る（スマホのシートの約束。UI-8）
+    if (!backdropBound.has(dialog)) {
+      backdropBound.add(dialog);
+      dialog.addEventListener("click", (event) => {
+        if (event.target !== dialog) return;
+        const r = dialog.getBoundingClientRect();
+        const inside = event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
+        if (!inside) closeDialog(dialog);
+      });
+    }
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");
   }
@@ -254,10 +271,25 @@
     else dialog.removeAttribute("open");
   }
 
-  /** 確認。ok なら run を呼ぶ */
+  /** 確認の対象の 1 行（改行・連続する空白を 1 つにし、80 字を超えたら「…」）。「」で囲む */
+  const TARGET_MAX = 80;
+  function targetLine(text) {
+    const chars = [...String(text).replace(/\s+/g, " ").trim()];
+    return "「" + (chars.length > TARGET_MAX ? chars.slice(0, TARGET_MAX).join("") + "…" : chars.join("")) + "」";
+  }
+
+  /**
+   * 確認。ok なら run を呼ぶ。title は動詞だけ（「閉じますか」）、target（任意）は対象の題名で本文の前の 1 行に出す
+   * （長い題名で見出しを何行にもしない。UI-8）
+   */
   function confirm(opts) {
     const dialog = document.getElementById("dlg-confirm");
     document.getElementById("dlg-confirm-title").textContent = opts.title;
+    const target = document.getElementById("dlg-confirm-target");
+    if (target) {
+      target.textContent = opts.target ? targetLine(opts.target) : "";
+      target.hidden = !opts.target;
+    }
     document.getElementById("dlg-confirm-body").textContent = opts.body || "";
     const ok = document.getElementById("dlg-confirm-ok");
     ok.textContent = opts.ok || "実行する";
