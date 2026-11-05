@@ -144,12 +144,13 @@
 
   // ===== 返事の最小限の Markdown（docs/plan/web-ui-polish.md の UI-11） =====
   // 見出し（# 〜 ###。太字の行にし <h*> は作らない）・太字 **x**・箇条書き（- * と 1.。入れ子は 1 段まで）・フェンス ```（情報文字列は使わない）・
-  // インラインコード `x`・リンク（linkify と同じ http(s) の URL だけ）。表・引用・画像・HTML はそのまま文字。閉じない ** やフェンスも文字のまま。
+  // インラインコード `x`・リンク（linkify と同じ http(s) の URL だけ）。表・引用・画像・HTML はそのまま文字。閉じない ** も文字のまま。
+  // 閉じないフェンスは CommonMark と同じく末尾までコード（history の本文は 4,000 字で切られ、途中で切れたコードの # や - を見出し・箇条書きにしないため）。
   // parseBlocks は文字列 → ブロックの配列の純関数（テストはこれを見る）、renderText はそれを要素に組む（innerHTML は使わない）
   const FENCE_RE = /^\s*```/;
   const FENCE_CLOSE_RE = /^\s*```\s*$/;
   const HEADING_RE = /^#{1,3}[ \t]+(\S.*)$/;
-  const ITEM_RE = /^([ \t]*)([-*]|\d{1,9}\.)[ \t]+(.*)$/;
+  const ITEM_RE = /^([ \t]*)([-*]|\d{1,9}\.)[ \t]+(\S.*)$/;
 
   /** 本文をブロックに分ける。{ type: "paragraph"|"heading"|"code", text } と { type: "list", ordered, start, items: [{ text, children }] } */
   function parseBlocks(text) {
@@ -168,21 +169,14 @@
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (FENCE_RE.test(line)) {
-        let end = -1;
-        for (let j = i + 1; j < lines.length; j++) {
-          if (FENCE_CLOSE_RE.test(lines[j])) {
-            end = j;
-            break;
-          }
-        }
-        // 閉じないフェンスは開きの行を文字のまま段落に入れて続ける
-        if (end >= 0) {
-          flushPara();
-          flushList();
-          blocks.push({ type: "code", text: lines.slice(i + 1, end).join("\n") });
-          i = end;
-          continue;
-        }
+        // 閉じないフェンスは末尾までコード
+        let end = i + 1;
+        while (end < lines.length && !FENCE_CLOSE_RE.test(lines[end])) end++;
+        flushPara();
+        flushList();
+        blocks.push({ type: "code", text: lines.slice(i + 1, end).join("\n") });
+        i = end;
+        continue;
       }
       if (line.trim() === "") {
         flushPara();
@@ -222,16 +216,20 @@
     return blocks;
   }
 
-  /** 1 行の中の記法。{ type: "text"|"strong"|"code", text } の配列（リンクは描くときに linkify） */
+  /**
+   * 1 行の中の記法。{ type: "text"|"strong"|"code"|"link", text } の配列。左から先に始まるものを取るので、URL の中の ** や ` で URL は切れない。
+   * 太字の中の URL は描くときに linkify
+   */
   function parseInline(text) {
     const out = [];
-    const re = /`([^`\n]+)`|\*\*([^*\n](?:[^\n]*?[^*\n])?)\*\*/g;
+    const re = /`([^`\n]+)`|\*\*([^*\n](?:[^\n]*?[^*\n])??)\*\*|(https?:\/\/[^\s<>]+)/g;
     let last = 0;
     let match;
     while ((match = re.exec(text)) !== null) {
       if (match.index > last) out.push({ type: "text", text: text.slice(last, match.index) });
       if (match[1] !== undefined) out.push({ type: "code", text: match[1] });
-      else out.push({ type: "strong", text: match[2] });
+      else if (match[2] !== undefined) out.push({ type: "strong", text: match[2] });
+      else out.push({ type: "link", text: match[3] });
       last = match.index + match[0].length;
     }
     if (last < text.length) out.push({ type: "text", text: text.slice(last) });
@@ -243,7 +241,8 @@
     for (const part of parseInline(text)) {
       if (part.type === "code") nodes.push(el("code", { class: "md-code", text: part.text }));
       else if (part.type === "strong") nodes.push(el("strong", {}, linkify(part.text)));
-      else nodes.push(...linkify(part.text));
+      else if (part.type === "link") nodes.push(...linkify(part.text));
+      else nodes.push(part.text);
     }
     return nodes;
   }

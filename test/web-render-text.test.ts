@@ -62,8 +62,39 @@ test("renderText: フェンスは中身をそのまま code に（情報文字�
   ]);
 });
 
-test("renderText: 閉じないフェンスは文字のまま段落に残す", () => {
-  assert.deepEqual(blocks("```\nconst a = 1;"), [{ type: "paragraph", text: "```\nconst a = 1;" }]);
+test("renderText: 閉じないフェンスは末尾までコード（後ろの - や # を箇条書き・見出しにしない）", () => {
+  assert.deepEqual(blocks("前\n```\nconst a = 1;\n- item\n# comment"), [
+    { type: "paragraph", text: "前" },
+    { type: "code", text: "const a = 1;\n- item\n# comment" },
+  ]);
+});
+
+test("renderText: フェンスの中の - # 1. はそのまま", () => {
+  assert.deepEqual(blocks("```\n- a\n# b\n1. c\n```"), [{ type: "code", text: "- a\n# b\n1. c" }]);
+});
+
+test("renderText: CRLF は LF として読む", () => {
+  assert.deepEqual(blocks("# 題\r\n- a\r\n```\r\nx\r\n```\r\n本文"), [
+    { type: "heading", text: "題" },
+    { type: "list", ordered: false, start: 1, items: [{ text: "a", children: null }] },
+    { type: "code", text: "x" },
+    { type: "paragraph", text: "本文" },
+  ]);
+});
+
+test("renderText: 「- 」だけ・「# 」だけの行は文字のまま", () => {
+  assert.deepEqual(blocks("- \n# "), [{ type: "paragraph", text: "- \n# " }]);
+});
+
+test("renderText: 入れ子の番号は最初の項目の番号から始まる", () => {
+  assert.deepEqual(blocks("1. a\n   3. b"), [
+    { type: "list", ordered: true, start: 1, items: [{ text: "a", children: { ordered: true, start: 3, items: [{ text: "b" }] } }] },
+  ]);
+});
+
+test("renderText: 全角の ＊＊ と全角の空白で字下げした - は文字のまま", () => {
+  assert.deepEqual(blocks("＊＊太＊＊\n　- a"), [{ type: "paragraph", text: "＊＊太＊＊\n　- a" }]);
+  assert.deepEqual(inline("＊＊太＊＊"), [{ type: "text", text: "＊＊太＊＊" }]);
 });
 
 test("renderText: 表・引用はそのまま文字", () => {
@@ -82,4 +113,21 @@ test("renderText: 太字とインラインコード。閉じない ** は文字�
   assert.deepEqual(inline("****"), [{ type: "text", text: "****" }]);
   // コードの中の ** は太字にしない
   assert.deepEqual(inline("`**a**`"), [{ type: "code", text: "**a**" }]);
+});
+
+test("renderText: 太字が 2 つ並ぶ", () => {
+  assert.deepEqual(inline("**a** **b**"), [
+    { type: "strong", text: "a" },
+    { type: "text", text: " " },
+    { type: "strong", text: "b" },
+  ]);
+});
+
+test("renderText: URL の中の ** や ` で URL は切れない。太字の中の URL は太字のまま", () => {
+  assert.deepEqual(inline("見て https://a.example/**x**`y` 終"), [
+    { type: "text", text: "見て " },
+    { type: "link", text: "https://a.example/**x**`y`" },
+    { type: "text", text: " 終" },
+  ]);
+  assert.deepEqual(inline("**https://a.example/x**"), [{ type: "strong", text: "https://a.example/x" }]);
 });
