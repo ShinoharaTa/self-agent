@@ -381,7 +381,7 @@ WEB-UI-GUIDELINES.md §11 の 7 つ。オーナーに聞くことは無し。
 8. パレットの commands: スマホでは サイドバー・パネル・タブを閉じる・テーマ を出さない（`pcOnly`）。≤639 `.palette-item kbd { display: none }`。
 9. 受け入れ: 375px で上 = タイトルバー 1 段 + 見出し 1 段。一覧 ⇄ 本文が [‹] と「会話」と戻る（端のスワイプ）で往復。タスクを押すと表が直接。鈴で知らせのタブ。PC は変わらない。
 
-#### UI-8 モーダル・シート・トースト・キーボード（#97〜#105・#110・#113）（済。#251。iOS はキーボードで layout viewport を縮めないので、シートのダイアログがキーボードの裏に入らないよう `--kb`（キーボードの高さ）を `margin-bottom` に足した。スマホのトーストは 1 つなので、[取り消す] 付きも 4 秒で消す（見出しを覆い続けない）。#98 の権限モードの `details`・textarea の rows 3 は入れていない。#102 の文は「Discord にチャンネルができます。」に）
+#### UI-8 モーダル・シート・トースト・キーボード（#97〜#105・#110・#113）（済。#251。iOS はキーボードで layout viewport を縮めないので、シートのダイアログがキーボードの裏に入らないよう `--kb`（キーボードの高さ）を `margin-bottom` に足した。スマホのトーストは 1 つなので、[取り消す] 付きも 4 秒で消す（会話の見出しには重なるが、覆い続けない）。キーボードの判定（`.is-keyboard`）は幅ごとの最大の見えている高さとの差で見る（Android は `interactive-widget=resizes-content` で innerHeight ごと縮むため）。一覧の絞り込み欄でキーボードが出たときは一覧の下端を `--kb` に。backdrop で閉じるのは押し始めも箱の外のときだけ。#98 は textarea を rows 3、権限モードを「詳しい設定」の `details` に。#102 の文は「Discord にチャンネルができます。」に）
 
 1. `app.css` ≤639 の `dialog` を下からのシート（全幅・上だけ角丸・safe-area の下余白）に。出入りは `translateY(100%)`。`.dialog-actions` を 2 等分。
 2. `ui.js` `openDialog`: backdrop の click で閉じる（1 回だけ登録）。`confirm` の `title` は動詞だけ、`body` の先頭に対象（`oneLine` + 80 字）。呼び出し側（chat.js・views.js）も直す。
@@ -389,6 +389,7 @@ WEB-UI-GUIDELINES.md §11 の 7 つ。オーナーに聞くことは無し。
 4. `workbench.js` `init`: `visualViewport` の `resize`・`scroll` で `--vvh` を書き、キーボードが出ている間は `.wb.is-keyboard`（≤639 で下タブを隠す）。`index.html` の viewport に `interactive-widget=resizes-content`。
 5. `#more-sheet` に見出し + ×。`.more-row .icon` 16px。
 6. 受け入れ（実機）: 確認・新しいセッション・起動の 3 つが下から出て、キーボードを出しても欄とボタンが見える。トーストが入力欄に重ならない。backdrop で閉じる。`prefers-reduced-motion` で崩れない。
+7. 実機で確かめること: iOS でキーボードを閉じた後に `visualViewport.offsetTop` が 0 に戻らないとき、`--vvt`（`.wb` の `top`）で画面がずれずに追従するか。Android（`interactive-widget=resizes-content`）で下タブが隠れ、キーボードを閉じると戻るか。
 
 #### UI-9 視認性（#54・#56・#59・#62・#66〜#68・#79・#80・#83・#86・#111・#114〜#116・ピル）
 

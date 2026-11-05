@@ -252,14 +252,23 @@
   const backdropBound = new WeakSet();
 
   function openDialog(dialog) {
-    // backdrop（ダイアログの箱の外）を押すと閉じる。箱の余白の click も target は dialog なので、位置で外かを見る（スマホのシートの約束。UI-8）
+    // backdrop（ダイアログの箱の外）を押すと閉じる。箱の余白の click も target は dialog なので、位置で外かを見る（スマホのシートの約束。UI-8）。
+    // 押し始め（pointerdown）も外だったときだけ（本文の文字を選んで外で離したときは閉じない）
     if (!backdropBound.has(dialog)) {
       backdropBound.add(dialog);
-      dialog.addEventListener("click", (event) => {
-        if (event.target !== dialog) return;
+      const outside = (event) => {
+        if (event.target !== dialog) return false;
         const r = dialog.getBoundingClientRect();
-        const inside = event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
-        if (!inside) closeDialog(dialog);
+        return !(event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom);
+      };
+      let downOutside = false;
+      dialog.addEventListener("pointerdown", (event) => {
+        downOutside = outside(event);
+      });
+      dialog.addEventListener("click", (event) => {
+        const close = downOutside && outside(event);
+        downOutside = false;
+        if (close) closeDialog(dialog);
       });
     }
     if (typeof dialog.showModal === "function") dialog.showModal();
@@ -287,8 +296,9 @@
     document.getElementById("dlg-confirm-title").textContent = opts.title;
     const target = document.getElementById("dlg-confirm-target");
     if (target) {
-      target.textContent = opts.target ? targetLine(opts.target) : "";
-      target.hidden = !opts.target;
+      const has = typeof opts.target === "string" && opts.target.trim() !== "";
+      target.textContent = has ? targetLine(opts.target) : "";
+      target.hidden = !has;
     }
     document.getElementById("dlg-confirm-body").textContent = opts.body || "";
     const ok = document.getElementById("dlg-confirm-ok");
