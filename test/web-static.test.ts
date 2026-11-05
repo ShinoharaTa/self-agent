@@ -105,7 +105,7 @@ test("web static: モックの「提案」「モック」・分割・ダミー�
 test("web static: JS は style 属性・innerHTML を書かない（CSP の style-src 'self'。CSS の変数は setProperty）", () => {
   for (const name of files.filter((n) => n.endsWith(".js"))) {
     const text = read(name);
-    assert.doesNotMatch(text, /setAttribute\(\s*"style"|\.innerHTML|\.outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function\(/, name);
+    assert.doesNotMatch(text, /setAttribute\(\s*"style"|\.innerHTML|\.outerHTML|insertAdjacentHTML|DOMParser|document\.write|\beval\(|new Function\(/, name);
   }
 });
 

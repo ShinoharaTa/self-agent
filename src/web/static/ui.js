@@ -142,6 +142,132 @@
     return parts;
   }
 
+  // ===== 返事の最小限の Markdown（docs/plan/web-ui-polish.md の UI-11） =====
+  // 見出し（# 〜 ###。太字の行にし <h*> は作らない）・太字 **x**・箇条書き（- * と 1.。入れ子は 1 段まで）・フェンス ```（情報文字列は使わない）・
+  // インラインコード `x`・リンク（linkify と同じ http(s) の URL だけ）。表・引用・画像・HTML はそのまま文字。閉じない ** やフェンスも文字のまま。
+  // parseBlocks は文字列 → ブロックの配列の純関数（テストはこれを見る）、renderText はそれを要素に組む（innerHTML は使わない）
+  const FENCE_RE = /^\s*```/;
+  const FENCE_CLOSE_RE = /^\s*```\s*$/;
+  const HEADING_RE = /^#{1,3}[ \t]+(\S.*)$/;
+  const ITEM_RE = /^([ \t]*)([-*]|\d{1,9}\.)[ \t]+(.*)$/;
+
+  /** 本文をブロックに分ける。{ type: "paragraph"|"heading"|"code", text } と { type: "list", ordered, start, items: [{ text, children }] } */
+  function parseBlocks(text) {
+    const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+    const blocks = [];
+    let para = [];
+    let list = null;
+    const flushPara = () => {
+      if (para.length > 0) blocks.push({ type: "paragraph", text: para.join("\n") });
+      para = [];
+    };
+    const flushList = () => {
+      if (list) blocks.push(list);
+      list = null;
+    };
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (FENCE_RE.test(line)) {
+        let end = -1;
+        for (let j = i + 1; j < lines.length; j++) {
+          if (FENCE_CLOSE_RE.test(lines[j])) {
+            end = j;
+            break;
+          }
+        }
+        // 閉じないフェンスは開きの行を文字のまま段落に入れて続ける
+        if (end >= 0) {
+          flushPara();
+          flushList();
+          blocks.push({ type: "code", text: lines.slice(i + 1, end).join("\n") });
+          i = end;
+          continue;
+        }
+      }
+      if (line.trim() === "") {
+        flushPara();
+        flushList();
+        continue;
+      }
+      const heading = HEADING_RE.exec(line);
+      if (heading) {
+        flushPara();
+        flushList();
+        blocks.push({ type: "heading", text: heading[1].trim() });
+        continue;
+      }
+      const item = ITEM_RE.exec(line);
+      if (item) {
+        flushPara();
+        const ordered = item[2] !== "-" && item[2] !== "*";
+        const nested = item[1].replace(/\t/g, "  ").length >= 2 && list !== null && list.items.length > 0;
+        if (nested) {
+          // 入れ子は 1 段まで（それより深いものも同じ段）
+          const parent = list.items[list.items.length - 1];
+          if (!parent.children) parent.children = { ordered, start: ordered ? Number.parseInt(item[2], 10) : 1, items: [] };
+          parent.children.items.push({ text: item[3] });
+          continue;
+        }
+        if (list && list.ordered !== ordered) flushList();
+        if (!list) list = { type: "list", ordered, start: ordered ? Number.parseInt(item[2], 10) : 1, items: [] };
+        list.items.push({ text: item[3], children: null });
+        continue;
+      }
+      // 箇条書きの後の地の行は段落にする（項目の続きとはみなさない）
+      flushList();
+      para.push(line);
+    }
+    flushPara();
+    flushList();
+    return blocks;
+  }
+
+  /** 1 行の中の記法。{ type: "text"|"strong"|"code", text } の配列（リンクは描くときに linkify） */
+  function parseInline(text) {
+    const out = [];
+    const re = /`([^`\n]+)`|\*\*([^*\n](?:[^\n]*?[^*\n])?)\*\*/g;
+    let last = 0;
+    let match;
+    while ((match = re.exec(text)) !== null) {
+      if (match.index > last) out.push({ type: "text", text: text.slice(last, match.index) });
+      if (match[1] !== undefined) out.push({ type: "code", text: match[1] });
+      else out.push({ type: "strong", text: match[2] });
+      last = match.index + match[0].length;
+    }
+    if (last < text.length) out.push({ type: "text", text: text.slice(last) });
+    return out;
+  }
+
+  function inlineNodes(text) {
+    const nodes = [];
+    for (const part of parseInline(text)) {
+      if (part.type === "code") nodes.push(el("code", { class: "md-code", text: part.text }));
+      else if (part.type === "strong") nodes.push(el("strong", {}, linkify(part.text)));
+      else nodes.push(...linkify(part.text));
+    }
+    return nodes;
+  }
+
+  function listNode(list) {
+    const node = el(list.ordered ? "ol" : "ul", { class: "md-list", start: list.ordered && list.start !== 1 ? list.start : null });
+    for (const item of list.items) {
+      node.append(el("li", {}, [...inlineNodes(item.text), item.children ? listNode(item.children) : null]));
+    }
+    return node;
+  }
+
+  /** 返事の本文を要素に組む（DocumentFragment） */
+  function renderText(text) {
+    const frag = document.createDocumentFragment();
+    for (const block of parseBlocks(typeof text === "string" ? text : "")) {
+      if (block.type === "code") frag.append(el("pre", { class: "code-pre md-pre", text: block.text }));
+      else if (block.type === "heading") frag.append(el("p", { class: "md-p md-heading" }, [el("strong", {}, inlineNodes(block.text))]));
+      else if (block.type === "list") frag.append(listNode(block));
+      else frag.append(el("p", { class: "md-p" }, inlineNodes(block.text)));
+    }
+    return frag;
+  }
+
   // ===== トースト（GUIDELINES §5。知らせは #toast、失敗は #toast-alert） =====
   // 知らせ（role="status"）は多くて 2 つ。新しいトーストは下に足す。action の無いトーストは次のトーストで消し、action（[取り消す] など）の
   // 付いたものは押すか閉じるまで残す。2 つを超えるときだけ、いちばん古いもの（action 付きでも）を消す。action の無いものは TOAST_MS で消え、
@@ -279,5 +405,5 @@
     else ok.focus();
   }
 
-  SA.ui = { el, icon, count, elapsed, clock, hm, dateTime, dateOf, shortTime, linkify, toast, confirm, openDialog, closeDialog };
+  SA.ui = { el, icon, count, elapsed, clock, hm, dateTime, dateOf, shortTime, linkify, parseBlocks, parseInline, renderText, toast, confirm, openDialog, closeDialog };
 })();

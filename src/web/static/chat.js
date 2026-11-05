@@ -8,7 +8,7 @@
 
 (function () {
   const SA = (window.SA = window.SA || {});
-  const { el, icon, elapsed, shortTime, linkify, toast, confirm } = SA.ui;
+  const { el, icon, elapsed, shortTime, renderText, toast, confirm } = SA.ui;
   const store = SA.store;
 
   const STATE_LABEL = { active: "進行中", waiting: "待ち", done: "完了" };
@@ -462,7 +462,7 @@
         avatar("C", "avatar-agent"),
         el("div", { class: "msg-body" }, [
           el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: "Claude Code" }), timeOf(turn)]),
-          el("div", { class: "msg-text" }, linkify(typeof turn.text === "string" ? turn.text : "")),
+          el("div", { class: "msg-text msg-md" }, [renderText(turn.text)]),
         ]),
       ]);
     }
@@ -484,8 +484,8 @@
       });
       body.append(details);
     }
-    // 返事の本文は http(s) の URL だけをリンクにする
-    body.append(el("div", { class: "msg-text" }, linkify(typeof turn.text === "string" ? turn.text : "")));
+    // 返事の本文は最小限の Markdown（ui.js の renderText。リンクは http(s) の URL だけ）
+    body.append(el("div", { class: "msg-text msg-md" }, [renderText(turn.text)]));
     return el("article", { class: "msg msg-agent" }, [avatar(Array.from(p.name || "?")[0], "avatar-agent"), body]);
   }
 
