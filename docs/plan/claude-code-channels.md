@@ -139,11 +139,11 @@
 - 終了の 1 行「セッションが終わりました」は §3.6。
 
 ### 3.5 許可の要求・判断待ち・端末の指示の写し（CC12。決定 3）
-- 許可の要求: そのセッションに開いているチャンネルがあれば、#system ではなく**そのチャンネル**に CC5c と同じ 1 通（[許可][このセッションでは常に許可][拒否] + [RC で開く]。オーナーをメンション）。`cc_permissions.message_channel_id` に残すので、書き換え（押された・他で答えられた・時間切れ・停止）は今の仕組みのまま。**#system には出さない**（二重のカードを避ける）。`permission-hold.ts` の `listen` は複数の listener を持てるようにし、チャンネルの投稿（`cc/channel-posts.ts`）が「自分の担当」と答えた要求は `discord-notice.ts` が飛ばす（1 件は 1 か所）。チャンネルの無いセッションの要求は #system のまま（答えたらチャンネルができ、**次の要求から**チャンネルに出る）。
-- 判断待ちの知らせ（60 秒・1 時間 10 件）・終了の知らせ: 同じくチャンネルがあればチャンネルへ、無ければ今までどおり #system。上限の数え方は #system と合わせて 1 つ。
+- 許可の要求: そのセッションに開いているチャンネルがあれば、#system ではなく**そのチャンネル**に CC5c と同じ 1 通（[許可][このセッションでは常に許可][拒否] + [RC で開く]。オーナーをメンション）。`cc_permissions.message_channel_id` に残すので、書き換え（押された・他で答えられた・時間切れ・停止）は今の仕組みのまま。**#system には出さない**（二重のカードを避ける）。`permission-hold.ts` の `listen` は複数の listener を持てるようにし、チャンネルの投稿（`cc/channel-posts.ts`）が「自分の担当」と答えた要求は `discord-notice.ts` が飛ばす（1 件は 1 か所）。チャンネルに出せなければ（投稿の失敗・チャンネルが見つからない）`release(id)` で引き受けを戻して #system に出す（Discord のどこにも出ないままにしない）。チャンネルの無いセッションの要求は #system のまま（答えたらチャンネルができ、**次の要求から**チャンネルに出る）。
+- 判断待ちの知らせ（60 秒・1 時間 10 件）・終了の知らせ: 同じくチャンネルがあればチャンネルへ、無ければ今までどおり #system。上限の数え方は #system と合わせて 1 つ。上限を超えた分はチャンネルには出さず、そのチャンネルに 1 時間に 1 回だけ「判断待ちの知らせが上限…しばらく出しません」の 1 行（メンションなし）。
 - `SELF_AGENT_CC_NOTIFY=0` のとき: #system への知らせは止まるが、**チャンネルへの投稿は止めない**（チャンネルはオーナーが関わって作られたもの。返事・許可・判断待ち・終了の全部がチャンネルの目的）。README に書く。
 - Web の許可のカード・`/api/cc/permissions` は変わらない（Web でも Discord でも先に押した方が勝つ）。
-- **端末・RC から打った指示の写し**（決定 3）: `UserPromptSubmit` のうち self-agent が届けたものでないものを、チャンネルに「（端末か RC から）」+ 本文の先頭 `CC_CHANNEL_PROMPT_MIRROR_CHARS`（1,000）字で出す（`escapeDiscordText`・メンション無効・埋め込み無し。超えた分は「（ほか n 字）」）。受け口は `prompt` を 200 字でなく 1,000 字まで事象に乗せ、**DB に残すのは今までどおり 200 字**（確定版の決定 1 は変えない）。「self-agent が届けたもの」の判定: そのセッションの直近 30 秒に `delivered` になった送信（か `delivering` 中のもの）の本文の先頭 200 字と、包みを外した `prompt` の先頭 200 字が同じなら写さない。**比べる本文は貼ったときの形（改行を空白に置き換える `singleLine` を当てた後）で、両方の空白（改行・連続する空白・前後の空白）を 1 つの空白に正規化してから比べる**（`cc_sends.text` のままだと、改行を空白に置き換えて送ったときに一致しないため）。写した投稿に返事は返信にしない。写しだけではチャンネルを作らない。
+- **端末・RC から打った指示の写し**（決定 3）: `UserPromptSubmit` のうち self-agent が届けたものでないものを、チャンネルに「（端末か RC から）」+ 本文の先頭 `CC_PROMPT_MIRROR_MAX_CHARS`（1,000）字で出す（`escapeDiscordText`・メンション無効・埋め込み無し。超えた分は「（ほか n 字）」）。受け口は `prompt` を 200 字でなく 1,000 字まで事象に乗せ、**DB に残すのは今までどおり 200 字**（確定版の決定 1 は変えない）。「self-agent が届けたもの」の判定: そのセッションの直近 30 秒に `delivered` になった送信（か `delivering` 中のもの）の本文の先頭 200 字と、包みを外した `prompt` の先頭 200 字が同じなら写さない。**比べる本文は貼ったときの形（改行を空白に置き換える `singleLine` を当てた後）で、両方の空白（改行・連続する空白・前後の空白）を 1 つの空白に正規化してから比べる**（`cc_sends.text` のままだと、改行を空白に置き換えて送ったときに一致しないため）。写した投稿に返事は返信にしない。写しだけではチャンネルを作らない。
 - 写すことでチャンネルは「オーナーの発言（Discord）・外からの送信の写し・端末からの指示の写し・返事・許可」の流れになり、RC で打った分の返事が唐突に見えなくなる。
 
 ### 3.6 終わったとき・戻ったとき・続けるとき（CC10・CC13。決定 2）
@@ -233,7 +233,7 @@
 
 本書で決めたこと（§9 の決定の下で）: 群の位置（入口の次）、「関わった」の 6 つのきっかけと作る時点（送信は積んだ直後・起動は結びついたとき・許可は答えた直後）、許可の応答は Web でも #system のボタンでも同じきっかけ、作るサーバーの選び方、作れなかったときは元の処理を止めず #system に 1 時間 1 回、自動の再試行はしない、手動の口は 2 つ、カテゴリ「Claude Code」は 1 つで 50 で断る、名前は `cc-<名前>` で追いかけない、発言は確認なし・`origin discord`・5 件の列、外からの送信の写し、印はリアクション、返事はチャンネル優先で [追いかけをやめる] 無し・上限 200、許可の要求はチャンネルだけ（#system に出さない）、`NOTIFY=0` でもチャンネルには出す、戻ったら開き直す、続けるは [起動して続ける]（新しいチャンネルは作らない）、`/cc open|cancel|close` を持つ、`cc_sessions.started_by` は `tool` で代える、history の行の種類、段の切り方。
 
-実装者が決めてよいこと: 表・列・関数の名前、リアクションの絵文字（上の 3 つは目安）、最初の投稿・写し・返信の文言、`CC_CHANNEL_QUEUE_MAX`・`CC_CHANNEL_REPLY_DAILY_LIMIT`・`CC_CHANNEL_PROMPT_MIRROR_CHARS` の置き場所、`/cc open` のセレクトの行の形、`cc_sends` の作り直しの手順の細部、chat.js の cc の節の見た目、写しの判定の窓（30 秒）、作れなかったときの #system の 1 行の窓（1 時間）の持ち方（プロセスの中）。
+実装者が決めてよいこと: 表・列・関数の名前、リアクションの絵文字（上の 3 つは目安）、最初の投稿・写し・返信の文言、`CC_CHANNEL_QUEUE_MAX`・`CC_CHANNEL_REPLY_DAILY_LIMIT`・`CC_PROMPT_MIRROR_MAX_CHARS` の置き場所、`/cc open` のセレクトの行の形、`cc_sends` の作り直しの手順の細部、chat.js の cc の節の見た目、写しの判定の窓（30 秒）、作れなかったときの #system の 1 行の窓（1 時間）の持ち方（プロセスの中）。
 
 ## 9. 決定事項（オーナー。2026-11-05）
 
@@ -318,7 +318,8 @@
 | `cc-channels.test.ts`（新規） | `openChannel`・`ensureFor`（きっかけ 6 つ・作らない条件・作れなかったときの #system 1 時間 1 回）・`mirror`・`ended`・`revived`・`handleMessage`（受付・5 件・リアクション・終わったチャンネル）・`resume`・`reconcile` | CC10〜CC13 |
 | `cc-replies.test.ts` | チャンネル優先・[追いかけをやめる] 無し・返信先・上限 200。既存は通る | CC11 |
 | `cc-sender.test.ts`・`cc-starter.test.ts` | `origin discord` の 5 件と Web の 1 件・1 pass で同じセッションに 1 件だけ・`ensureFor` の呼び出し・結びつけの後の `onBound` | CC11 |
-| `cc-permissions.test.ts`・`cc-discord-notice.test.ts` | `answer` の後の `ensureFor`・複数 listener・claim・チャンネルのあるセッションは #system に出ない | CC11・CC12 |
+| `cc-permissions.test.ts`・`cc-discord-notice.test.ts` | `answer` の後の `ensureFor`。既存の #system の知らせは通る | CC11 |
+| `cc-channel-posts.test.ts`（新規） | 複数 listener・claim（投げたら次へ）・release で #system に落とす・チャンネルのあるセッションは #system に出ない・判断待ち（上限の共有と上限の 1 行）・写し（30 秒・先頭 200 字・`delivering`／`unconfirmed` も写さない・「ほか n 字」）・`NOTIFY=0`・再起動の後の書き換えの振り分け | CC12 |
 | `cc-hook-server.test.ts` | `prompt` が事象に 1,000 字、DB に 200 字 | CC12 |
 | `scheduler.test.ts`・`setup.test.ts` | カテゴリ「Claude Code」・再同期・削除の確認 | CC10・CC13 |
 | `web-cc.test.ts`・`web-channels.test.ts` | `/channel`・`channel`・kind cc・`/messages` の cc | CC10・CC14 |

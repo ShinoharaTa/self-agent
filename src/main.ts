@@ -703,6 +703,8 @@ if (
     sends: ccSends,
     registry,
     waitBudget,
+    // チャンネルに出せなかった許可の要求は #system（notifier）に回す
+    release: (id) => permissionHold.release(id),
     home: homedir(),
     now,
     log,
