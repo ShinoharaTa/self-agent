@@ -50,13 +50,15 @@
   // 完了は既定で閉じておく
   const ui = { query: "", groups: { done: false } };
 
-  /** 一覧の 1 行。tabId を開く */
+  /** 一覧の 1 行。tabId を開く。opts.sub は 2 行目（スマホだけ出す。PC は title） */
   function row(opts) {
     const current = opts.current !== undefined ? opts.current : SA.app.activeTabId() === opts.tab;
     const btn = el("button", { class: "sb-row" + (opts.cls ? " " + opts.cls : ""), type: "button", "aria-current": current ? "true" : null, title: opts.title || null }, [
       // アイコンの無い行も 16px の空の箱でラベルの開始位置を揃える（GUIDELINES §4）
       opts.icon ? icon(opts.icon) : el("span", { class: "icon icon-blank", "aria-hidden": "true" }),
-      el("span", { class: "sb-label", text: opts.label }),
+      opts.sub
+        ? el("span", { class: "sb-text" }, [el("span", { class: "sb-label", text: opts.label }), el("span", { class: "sb-sub show-sm", text: opts.sub })])
+        : el("span", { class: "sb-label", text: opts.label }),
       ...(opts.badges || []),
       opts.dot ? el("span", { class: "dot " + opts.dot, role: opts.dotLabel ? "img" : null, "aria-label": opts.dotLabel || null }) : null,
       opts.meta ? el("span", { class: "sb-meta", text: opts.meta }) : null,
@@ -240,7 +242,9 @@
     const delivering = !!(s.pending && (s.pending.state === "queued" || s.pending.state === "delivering"));
     const top = asking ? "許可待ち" : delivering ? "届け待ち" : s.trustPending ? "trust の確認待ち" : !s.inTmux ? "tmux の外" : null;
     const badges = [];
-    if (top) badges.push(el("span", { class: "badge " + (asking ? "badge-accent" : "badge-cc"), text: top }));
+    // スマホ（≤639px）は文字のバッジを出さず点の色だけ（文字はタブの見出しと中身に）。同じ色の点が既にあれば足さない
+    if (top) badges.push(el("span", { class: "badge hide-sm " + (asking ? "badge-accent" : "badge-cc"), text: top }));
+    const topDot = asking || s.trustPending ? "dot-warn" : delivering ? "dot-unread" : null;
     if (s.state === "running") badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));
     // title: 場所、許可の要求の中身、出さなかった印（権限モード・判断待ちの理由・起動した人・ほかの状態）
     const notes = [];
@@ -267,7 +271,8 @@
       tab: channelId ? "ch:" + channelId : "cc:" + s.sessionId,
       icon: channelId ? "hash" : null,
       label: SA.views.ccName(s),
-      badges,
+      sub: s.cwdLabel || null,
+      badges: topDot && topDot !== dot ? [...badges, el("span", { class: "dot show-sm " + topDot, role: "img", "aria-label": top })] : badges,
       dot,
       dotLabel: s.state === "needs_input" ? "判断待ち" : unread ? "未読" : null,
       meta: s.since ? SA.views.ago(s.since) : "",

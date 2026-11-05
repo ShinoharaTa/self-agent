@@ -182,6 +182,15 @@ body {
   user-select: none;
 }
 
+/* 長押しでリンク・行のプレビュー（iOS のメニュー）を出さない */
+.btn,
+.act-btn,
+.tab,
+.sb-row,
+.more-row {
+  -webkit-touch-callout: none;
+}
+
 /*
  * 押した感（GUIDELINES §6）: 押している間だけ scale(0.97)。行は縮めずに --muted の地だけ。
  * .btn は base.css の色の transition を写して transform を足す（.act-btn は下の定義に足してある）
@@ -406,6 +415,13 @@ kbd {
 
 .row-tight {
   gap: var(--space-1);
+}
+
+/* バッジは無地の色付き文字（塗りのピルは未読の数 .act-count だけ。GUIDELINES §5 バッジ）。色は下の .badge-* と状態の class */
+.badge {
+  padding: 0;
+  background: transparent;
+  color: var(--text-secondary);
 }
 
 .badge > .icon {
@@ -815,6 +831,14 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 2 行目のある行（Claude Code）。2 行目（.sb-sub）はスマホだけ出す */
+.sb-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .sb-meta {
@@ -1248,6 +1272,12 @@ kbd {
 
 .steps > summary.is-danger > span {
   color: var(--danger);
+}
+
+/* 実行中の「作業中…（経過・ツール n 回）」は 1 秒で刻む数字なので本文の色・等幅の数字（GUIDELINES §6.1） */
+.steps > summary > [data-run-progress] {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 .steps-list {
@@ -1701,6 +1731,23 @@ kbd {
 
 .cc-permission.is-pending {
   border-color: var(--warning);
+}
+
+/* 保留の残り時間は 1 秒で刻む数字なので本文の色・等幅の数字。残り 60 秒を切ったら warning（views.js が is-urgent を付ける） */
+.cc-permission [data-permission-left] {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-permission [data-permission-left].is-urgent {
+  color: var(--warning);
+}
+
+/* 「端末や RC のダイアログでも答えられます」はスマホだけ常設（PC は title） */
+.cc-permission-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
 }
 
 .cc-permission .code-pre {
@@ -2805,5 +2852,121 @@ dialog[open]::backdrop {
   .more-row .sb-meta {
     margin-left: auto;
     font-variant-numeric: tabular-nums;
+  }
+
+  /*
+   * 視認性（UI-9）: 一覧の題 16・群 14。12px は補足（時刻・カウンタ・区切り・kbd・td-sub・meta）だけに残し、主な文字は 14（GUIDELINES §3）
+   */
+  .sb-title {
+    font-size: var(--font-base);
+  }
+
+  .sb-group > summary,
+  .sb-empty,
+  .sb-hint,
+  .sb-note-block,
+  .chip-sm {
+    font-size: var(--font-sm);
+  }
+
+  /* 全幅の一覧の行は PC のインデントにしない */
+  .sb-row {
+    padding-left: var(--space-4);
+  }
+
+  .sb-empty,
+  .sb-hint {
+    padding-left: var(--space-4);
+  }
+
+  /* Claude Code の行の 2 行目（場所）。PC は title */
+  .sb-text {
+    padding: var(--space-1) 0;
+  }
+
+  .sb-sub {
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: var(--font-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 状態の切り替え: 14px・行の高さ・非選択は二次の文字 */
+  .segmented-sm {
+    padding: 0;
+  }
+
+  .segmented-sm > button {
+    min-height: var(--row);
+    font-size: var(--font-sm);
+  }
+
+  .segmented-sm > button:not([aria-pressed="true"]) {
+    color: var(--text-secondary);
+  }
+
+  /* 返事はアバターを出さず 1 列（1 行の字数を増やす） */
+  .msg-agent {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .msg-agent > .avatar {
+    display: none;
+  }
+
+  /* ダークの入力欄は地と見分けがつくよう一段明るく */
+  :root[data-theme="dark"] .composer {
+    background: var(--muted);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .composer {
+      background: var(--muted);
+    }
+  }
+
+  /* 許可のカード: 見出し 16、保留中は左 2px の warning、[許可][拒否] は全幅で 2 等分、要約は全部見せる */
+  .cc-permission .card-head h2 {
+    font-size: var(--font-base);
+  }
+
+  .cc-permission.is-pending {
+    border-color: var(--border);
+    border-left: var(--ring-width) solid var(--warning);
+  }
+
+  .cc-permission .msg-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-3);
+  }
+
+  .cc-permission .msg-actions > .btn-ghost {
+    border-color: var(--border);
+  }
+
+  .cc-permission .code-pre {
+    max-height: none;
+    overscroll-behavior: contain;
+  }
+
+  .cc-permission-rule code {
+    display: block;
+    overflow-x: auto;
+    overflow-wrap: normal;
+    white-space: nowrap;
+  }
+
+  /* 下タブ: 選んでいるものはアイコンと文字を accent。数・スピナーはアイコンの右上 */
+  .act-btn[aria-pressed="true"],
+  .act-more.is-current {
+    color: var(--accent);
+  }
+
+  .act-count,
+  .act-btn.is-running .act-spin {
+    right: auto;
+    left: calc(50% + var(--space-1));
   }
 }
