@@ -2755,7 +2755,7 @@ dialog[open]::backdrop {
 
   /* 使用量の人格: 人格ごとのブロック。1 行目 名前とキャッシュ率（20px。GUIDELINES §3 の 18px 超の唯一の例外）、2 行目 ターン・入力・出力 */
   .table-personas tr {
-    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) auto;
     grid-template-areas:
       "name name rate"
       "turns input output";
@@ -2764,6 +2764,7 @@ dialog[open]::backdrop {
   .table-personas .td-main {
     grid-area: name;
     font-weight: var(--weight-semibold);
+    overflow-wrap: anywhere;
   }
 
   .table-num.table-stack .td-rate {
@@ -2827,7 +2828,7 @@ dialog[open]::backdrop {
   }
 
   .master-detail-phone > .master,
-  .ed-toolbar:has(+ .master-detail-phone) .ed-actions {
+  .ed-toolbar-kb .ed-actions {
     display: none;
   }
 

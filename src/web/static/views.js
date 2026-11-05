@@ -9,8 +9,8 @@
 
   const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
-  function toolbar(iconName, title, extras, actions) {
-    return el("header", { class: "ed-toolbar" }, [
+  function toolbar(iconName, title, extras, actions, cls) {
+    return el("header", { class: "ed-toolbar" + (cls ? " " + cls : "") }, [
       el("div", { class: "ed-title" }, [icon(iconName), el("h1", { text: title }), ...(extras || [])]),
       el("div", { class: "ed-actions" }, actions || []),
     ]);
@@ -1286,7 +1286,7 @@
     keepFocus(input, () => {
       const data = store.knowledge;
       if (!data) {
-        container.replaceChildren(toolbar("book", "ナレッジ", [], [input]), scroll([loading()]));
+        container.replaceChildren(toolbar("book", "ナレッジ", [], [input], "ed-toolbar-kb"), scroll([loading()]));
         return;
       }
       const current = kbSelected(data.entries);
@@ -1312,7 +1312,7 @@
       }
       const note = data.q ? (data.more ? "「" + data.q + "」の上位 " + data.entries.length + " 件" : "「" + data.q + "」 " + data.entries.length + " 件") : null;
       container.replaceChildren(
-        toolbar("book", "ナレッジ", note ? [el("span", { class: "meta", text: note })] : [], [input]),
+        toolbar("book", "ナレッジ", note ? [el("span", { class: "meta", text: note })] : [], [input], "ed-toolbar-kb"),
         // ≤639px は中身だけ（一覧と検索はサイドバー。.master-detail-phone）
         el("div", { class: "master-detail master-detail-phone" }, [el("div", { class: "master" }, [list]), el("div", { class: "detail" }, [kbDetail(current)])]),
       );
@@ -1396,11 +1396,6 @@
     ["Alt+数字", "その番号のタブ（1 から 9）"],
     ["Esc", "パレット・ドロワーを閉じる"],
   ];
-  /** スマホ（≤639px）で「キーボード」の代わりに出す操作 */
-  const PHONE_KEYS = [
-    ["Enter", "改行"],
-    ["送る", "入力欄の [送る] ボタン"],
-  ];
 
   function renderSettings(container) {
     const theme = SA.app.theme();
@@ -1422,9 +1417,13 @@
             el("ul", { class: "kv-list" }, [kv("テーマ", seg)]),
             el("p", { class: "meta", text: "表示の設定はこのブラウザにだけ残ります。" }),
           ]),
-          // キーボードは ≤639px で隠し、代わりにスマホの操作の 2 行
+          // キーボードは ≤639px で隠し、代わりにスマホの操作（Enter の扱いは chat.js の指の端末の判定によるので、条件に触れる文にする）
           el("div", { class: "hide-sm" }, [section("キーボード", [el("ul", { class: "kv-list" }, KEYS.map(([k, v]) => kv(el("kbd", { text: k }), v)))])]),
-          el("div", { class: "show-sm" }, [section("スマホの操作", [el("ul", { class: "kv-list" }, PHONE_KEYS.map(([k, v]) => kv(k, v)))])]),
+          el("div", { class: "show-sm" }, [
+            section("スマホの操作", [
+              el("p", { class: "meta", text: "送るのは入力欄の [送る] です。タッチの端末では Enter は改行で、Ctrl+Enter（⌘+Enter）でも送れます。" }),
+            ]),
+          ]),
         ]),
         section("環境変数", [
           el("p", { class: "meta", text: "あるかないかだけを出します。値は出しません。変えるときは ~/.config/self-agent/env を編集して再起動します。" }),
