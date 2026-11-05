@@ -62,7 +62,7 @@
  * --text-secondary（二次の文字）は app.css だけの変数。data-theme が無いときも base.css の既定に落ちないよう、同じ値を 4 か所に書く。
  * --bubble-*（会話の吹き出し。#263）も app.css だけの変数: owner はオーナーの地（ダーク 20%・ライト 15% の --accent を --bg に混ぜた色）、
  * agent は Bot の地（ライトは --bg より一段暗い #e4e8ef、ダークは --surface が --bg と見分けにくいので --muted）、
- * inset は Bot の吹き出しの中の手順・コードの地（ライトは白、ダークは --surface）
+ * inset は Bot の吹き出しの中のコードの地（ライトは白、ダークは --surface）
  */
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -796,7 +796,7 @@ kbd {
 }
 
 .sb-group[open] > summary .sb-chevron,
-.steps[open] > summary .steps-chevron {
+.steps-plain[open] > summary .steps-chevron {
   transform: rotate(90deg);
 }
 
@@ -1335,73 +1335,79 @@ kbd {
   margin-top: var(--space-1);
 }
 
-.steps {
-  background: var(--surface);
-  border: var(--border-width) solid var(--border);
-  border-radius: var(--radius-md);
+/* 実行中の行の 1 行目（スピナー + 「作業中…（経過・ツール n 回）」）。枠も地も付けない */
+.run-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text);
   font-size: var(--font-sm);
 }
 
-.steps > summary {
+/* 1 秒で刻む数字なので本文の色・等幅の数字（GUIDELINES §6.1） */
+.run-line > [data-run-progress] {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 直近の手順は薄い文字で（最後が今の手順）。ラベルは相対パスを含むので狭い幅で砕く */
+.run-recent {
+  margin: var(--space-1) 0 0;
+  /* 文の頭を 1 行目の文字（スピナー 16px + 間 8px の後）に揃える */
+  padding-left: var(--space-6);
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  line-height: var(--leading-normal);
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.run-recent > li.is-current {
+  color: var(--text-secondary);
+}
+
+/* 押して開く手順（実行中の「すべての手順（n）」と、終わった返事の「完了（…）」）。枠も地も付けない */
+.steps-plain {
+  font-size: var(--font-sm);
+}
+
+.steps-plain > summary {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-height: var(--row);
-  padding: 0 var(--space-3) 0 var(--space-2);
   color: var(--text-muted);
   list-style: none;
   cursor: pointer;
 }
 
-.steps > summary::-webkit-details-marker {
+.steps-plain > summary::-webkit-details-marker {
   display: none;
 }
 
-.steps > summary .icon {
-  width: var(--icon-sm);
-  height: var(--icon-sm);
-}
-
 /* 終わり方はアイコンを足さず文の色で（1 要素 1 アイコン。chevron だけ） */
-.steps > summary.is-done > span {
+.steps-plain > summary.is-done > span {
   color: var(--success);
 }
 
-.steps > summary.is-warning > span {
+.steps-plain > summary.is-warning > span {
   color: var(--warning);
 }
 
-.steps > summary.is-danger > span {
+.steps-plain > summary.is-danger > span {
   color: var(--danger);
-}
-
-/* 実行中の「作業中…（経過・ツール n 回）」は 1 秒で刻む数字なので本文の色・等幅の数字（GUIDELINES §6.1） */
-.steps > summary > [data-run-progress] {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
 }
 
 .steps-list {
   margin: 0;
-  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-8);
+  padding: 0 0 var(--space-1) var(--space-7);
   color: var(--text-secondary);
-  border-top: var(--border-width) solid var(--border);
-  /* 手順のラベルは相対パスを含むので、狭い幅でカードから溢れないように砕く（A7） */
+  /* 手順のラベルは相対パスを含むので、狭い幅で吹き出しから溢れないように砕く（A7） */
   overflow-wrap: anywhere;
 }
 
 .steps-list > li {
   line-height: var(--leading-normal);
-}
-
-.steps-list > li.is-current {
-  color: var(--text);
-  font-weight: var(--weight-medium);
-}
-
-/* 吹き出しの中の手順は吹き出しと見分けられる地に */
-.msg-bubble .steps {
-  background: var(--bubble-inset);
 }
 
 .tl-divider {
