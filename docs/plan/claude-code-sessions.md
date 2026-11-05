@@ -243,11 +243,12 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
   - `GET /api/cc/projects`、`POST /api/cc/sessions` `{ project, title, text?, permissionMode? }` → 201 `{ tmuxSession, paneId, sendId? }` / 400（`invalid_project`・`invalid_title`・`invalid_mode`・`empty`・`too_long`・`invalid_text`）/ 409（`limit`・`low_memory`・`too_soon`）/ 503（`no_server`・`not_ready`・`tmux_failed`・`stopping`）
 - polling: 一覧 10 秒、開いているタブの画面 3 秒、保留中の許可があれば一覧も 3 秒（visible のときだけ）。
 
-### 5.2 Discord（#system）
-- **投稿先**: `SELF_AGENT_ALLOWED_GUILD_IDS` の順で最初の、#system のある（/setup 済みの）サーバー 1 つだけ（許可の要求を 1 通にするため。無ければ投稿しない）。**チャンネルのあるセッション（`cc_channels`。claude-code-channels.md §3.5。CC12）は、#system ではなくそのチャンネルに出す。**
+### 5.2 Discord（Q4 から #system ではなくセッションのチャンネル）
+> Q4（`docs/plan/claude-code-questions.md` §5。2026-11-05）で #system の経路（`cc/discord-notice.ts` の `CcDiscordNotifier`）を消した。下の 1 通の形・書き換えはそのまま（文面は `cc/notice-text.ts`）で、出す先だけが変わった。
+- **投稿先**: そのセッションの Claude Code のチャンネル（`cc_channels`。claude-code-channels.md §3.5）。無ければ `ensureFor`（origin `permission` / `question` / `waiting`）で作ってから出す（tmux の外のセッションにも作る）。作れない（/setup 前・満杯・Discord の失敗）ときは log だけで、Web と端末・RC で答える。**#system には出さない**（#system に残るのは削除の確認（`cc:del`）と複数行の送信が止まった知らせ（`multiline_ok`）だけ）。
 - **許可の要求（CC5）**: `PermissionRequest` を受けたら即 1 通（`SystemNotifier` の level warning。オーナーをメンション。**鳴る**）: 「Claude Code が許可を待っています: <名前>（<ディレクトリ名>・<mode>）\n<ツール名>: <要約（コードブロック）>\n常に許可にすると: <ルール>（あるときだけ）\n端末や RC のダイアログでも答えられます」+ 1 行目 [許可][このセッションでは常に許可][拒否]、2 行目 [RC で開く]（リンクボタン。RC の id が分かるときだけ）。常に許可のルールの表示が 800 字を超えるときは Discord には [このセッションでは常に許可] を出さず、Web で押すよう案内する（ルールが無いときは「[このセッションでは常に許可] は Claude Code が規則を提案したときだけ出ます」）。投稿した 1 通は `cc_permissions.message_id`・`message_channel_id` に残す。終わったら、**見出し（名前・ツール名・要約）の後ろを結果の行に**書き換え、押すボタンを外す（[RC で開く] は残す）: 押されたら「<許可|常に許可（<ルール>）|拒否>（Discord）」（Discord の応答で書き換える。応答に失敗したら Bot が 1 通を書き換えて代える）。Web で答えられたら同じ文で「（Web）」。他で答えられたら「端末か RC で答えられました」。時間切れ（再起動の前に保留していて expired にしたものを含む。Discord につないだ後に書き換える）は「時間切れ。端末か RC で答えてください <リンク>」。停止で保留をやめたもの（released）は「self-agent が止まるため受け付けをやめました。端末か RC で答えてください <リンク>」。
-- **判断待ちの知らせ（決定 2）**: 許可の要求以外の判断待ち（`status: "waiting"`・`Notification` の `elicitation_*`・`agent_needs_input`・時間切れ後のダイアログ）は **60 秒続いたら 1 回**（待ちごとに 1 回。1 時間 10 件、超えた分は「ほか n 件」）。**許可の要求で既に 1 通出しているもの（`cc_permissions` に `pending` か直近 60 秒に解決した行（保留せず 1 通も出していない `released` を除く）があるセッション）には出さない**（書き換えで済ませる。`permission_prompt` の `Notification` は保留中でも 6 秒で来るため。§1.4）。`SELF_AGENT_CC_NOTIFY=0` で止める（許可の要求の投稿も止まる = Web だけで答える）。
-- self-agent が起動したセッションの終了は、**`claude agents --json` の一覧から消えたときだけ**を根拠に info で 1 行（`SessionEnd` の hook は根拠にしない。偽の hook で出せてしまうのと、再起動をまたいで二重に出るのを防ぐため。一覧から消えたときに `gone_at` が入るので、再起動の後に同じセッションで出し直さない）。trust の確認待ち（§4.2）は起動の確認の投稿（`cc_start`）の書き換えで出す。
+- **判断待ちの知らせ（決定 2）**: 許可の要求以外の判断待ち（`status: "waiting"`・`Notification` の `elicitation_*`・`agent_needs_input`・時間切れ後のダイアログ）は **60 秒続いたら 1 回**（待ちごとに 1 回。1 時間 10 件、超えた分は出さず、チャンネルがあればそこに 1 時間に 1 回だけ短い 1 行。Q4 で「ほか n 件」の 1 通は消した）。**許可の要求で既に 1 通出しているもの（`cc_permissions` に `pending` か直近 60 秒に解決した行（保留せず 1 通も出していない `released` を除く）があるセッション）には出さない**（書き換えで済ませる。`permission_prompt` の `Notification` は保留中でも 6 秒で来るため。§1.4）。`SELF_AGENT_CC_NOTIFY=0` ではこれらのためにチャンネルを作らない（既にあるチャンネルには出す。無ければ Web と端末・RC で答える）。
+- セッションの終了は、**`claude agents --json` の一覧から消えたときだけ**を根拠に、チャンネルがあるときだけそこに 1 行（Q4 から。無ければ出さない）（`SessionEnd` の hook は根拠にしない。偽の hook で出せてしまうのと、再起動をまたいで二重に出るのを防ぐため。一覧から消えたときに `gone_at` が入るので、再起動の後に同じセッションで出し直さない）。trust の確認待ち（§4.2）は起動の確認の投稿（`cc_start`）の書き換えで出す。
 - **`cc_send` / `cc_start` の確認**（§5.3）は #system ではなく **頼んだチャンネル**に出す。
 - `/cc` のコマンドは CC10 で持つ（`open`・`cancel`・`close`。claude-code-channels.md §3.8。作る・閉じる・やめるは LLM を通さない操作で、Web だけだとスマホからの手が無いため）。それ以前は無い。
 
@@ -390,7 +391,7 @@ CC1 で全部は作らず、**その段で要る表・列だけ**足す（`MIGRA
 | `SELF_AGENT_WORKSPACE_DIR` | 起動できる場所（既定 `~/workspace`。github-notifications §10 と共用） |
 | `SELF_AGENT_CC_MAX_SESSIONS` | 生きている `claude` の上限（既定 30） |
 | `SELF_AGENT_CC_SEND_WAIT_MIN` | 届け待ちを諦めるまでの分（既定 120） |
-| `SELF_AGENT_CC_NOTIFY` | `0` で Discord の知らせ（許可の要求を含む）を止める（既定 1） |
+| `SELF_AGENT_CC_NOTIFY` | `0` で許可の要求・質問・判断待ちの知らせのために Claude Code のチャンネルを作らない（既にあるチャンネルには出す。既定 1。Q4 で意味を変えた。それまでは #system への知らせを止める） |
 | `SELF_AGENT_WEB_PORT` / `SELF_AGENT_WEB_ALLOWED_LOGIN` | Web UI が無ければ Web の入口が無い（Discord のボタン・ツール・dry-run は動く） |
 
 ## 12. 未確認（オーナーか実機で確かめること）
