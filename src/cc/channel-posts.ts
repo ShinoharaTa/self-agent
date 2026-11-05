@@ -11,15 +11,18 @@
 //   CC_PROMPT_MIRROR_MAX_CHARS 字で出す（超えた分は「（ほか n 字）」）。self-agent が届けたもの = そのセッションの貼っている途中か直近
 //   CC_PROMPT_MIRROR_WINDOW_MS に届けた送信で、貼ったときの形（singleLine の後）と prompt の両方の空白を 1 つにして先頭 200 字が同じもの。
 //   写しだけではチャンネルを作らず、写した投稿を返事の返信先にもしない。
+// Web の会話（CC14。§5.2。history を渡したときだけ）: 許可の要求とその結果・判断待ちを notice、端末・RC からの指示の写しを owner（source system・
+// 「（端末か RC から）」+ 本文）で書く（guild_id は cc_channels の行、persona は既定。本文は Discord のエスケープをしない文字のまま）。
 // 終了の 1 行は cc/channels.ts の ended（ccEndedHandler）が出す。投稿は既定の人格の Bot。本文・名前・ディレクトリ・要約は hook から来たデータなので、
 // Markdown とメンションを無効にし（allowedMentions の parse: [] は Gateway の既定）、埋め込みを出さない。
 // log は id と種類だけ（チャンネル ID・名前・cwd・本文・セッションの ID は出さない）
-import type { Config } from "../config.ts";
+import { DEFAULT_PERSONA_ID, type Config } from "../config.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
 import type { CcChannelStore } from "../store/cc-channels.ts";
 import type { CcPermissionRow, CcPermissionStore } from "../store/cc-permissions.ts";
 import type { CcSendStore } from "../store/cc-sends.ts";
+import { recordHistory, type HistoryStore } from "../store/history.ts";
 import { CC_PROMPT_MAX_CHARS, type CcSessionStore, headChars } from "../store/cc-sessions.ts";
 import {
   CC_WAIT_CHECK_MS,
@@ -31,6 +34,7 @@ import {
   noticeSessionOf,
   permissionNotice,
   permissionResolvedMessage,
+  permissionResultLine,
   waitingNotice,
 } from "./discord-notice.ts";
 import { CC_PROMPT_MIRROR_MAX_CHARS, type CcHookEvent } from "./hook-server.ts";
@@ -105,10 +109,23 @@ export type CcChannelPostsDeps = {
   release?: (id: number) => void;
   /** ~ の場所（ディレクトリの表示） */
   home: string;
+  /** Web UI の会話の記録（CC14。Web UI が有効なときだけ。無ければ書かない） */
+  history?: Pick<HistoryStore, "add">;
   now: () => Date;
   timers?: CcTimers;
   log: (message: string) => void;
 };
+
+/** 許可の要求の Web の会話の 1 行（純関数。文字のまま） */
+export function permissionHistoryText(row: Pick<CcPermissionRow, "toolName" | "summary">): string {
+  return `許可を待っています: ${row.toolName}\n${row.summary}`;
+}
+
+/** 終わった許可の要求の Web の会話の 1 行（純関数）。pending なら undefined */
+export function permissionResultHistoryText(row: Pick<CcPermissionRow, "toolName" | "state" | "via" | "alwaysRules">): string | undefined {
+  const line = permissionResultLine(row, undefined);
+  return line === undefined ? undefined : `許可の要求（${row.toolName}）: ${line}`;
+}
 
 const REAL_TIMERS: CcTimers = {
   after: (fn, ms) => {
@@ -168,6 +185,8 @@ export class CcChannelPosts implements CcPermissionListener {
 
   /** 終わった許可の要求: 1 通を書き換えてボタンを外す。Discord で押したものは応答で書き換える。投稿の途中なら投稿の後に書き換える */
   resolved(row: CcPermissionRow): void {
+    // 結果を Web の会話に（チャンネルに出した要求だけ。投稿の前に終わったものは postPermission が書く）
+    if (row.messageChannelId !== null) this.recordResult(row);
     if (row.via === "discord" || row.messageId === null || row.messageChannelId === null) return;
     this.track(this.editResolved(row));
   }
@@ -220,6 +239,7 @@ export class CcChannelPosts implements CcPermissionListener {
         continue;
       }
       const message = waitingNotice(view, { ...this.places(), ownerUserId: cfg.ownerUserId });
+      this.record(channelId, "notice", view.waitingFor === undefined || view.waitingFor === "" ? "判断を待っています" : `判断を待っています: ${view.waitingFor}`);
       this.track(
         this.deps.gateway.sendMessage(channelId, { ...message, suppressEmbeds: true }).then(
           () => {
@@ -247,6 +267,9 @@ export class CcChannelPosts implements CcPermissionListener {
     if (this.deps.sends.listRecentDelivered(event.sessionId, since).some((send) => promptKey(singleLine(send.text)) === key)) return;
     const texts = ccPromptMirrorTexts(event.prompt, event.promptChars ?? [...event.prompt].length);
     const channelId = channel.channelId;
+    const total = event.promptChars ?? [...event.prompt].length;
+    const rest = total - [...event.prompt].length;
+    this.record(channelId, "owner", `${CC_PROMPT_MIRROR_LABEL}\n${event.prompt}${rest > 0 ? `\n（ほか ${rest} 字）` : ""}`);
     this.track(
       (async () => {
         try {
@@ -327,9 +350,36 @@ export class CcChannelPosts implements CcPermissionListener {
     }
     permissions.setMessage(row.id, channel.channelId, messageId);
     log(`Claude Code: 許可の要求（#${row.id}）をチャンネルに出しました`);
-    // 投稿の間に終わっていれば（Web・他で答えられた・時間切れ）書き換える
+    this.record(channel.channelId, "notice", permissionHistoryText(row));
+    // 投稿の間に終わっていれば（Web・他で答えられた・時間切れ）書き換える（resolved は 1 通の場所が分かる前に来たので、結果もここで書く）
     const latest = permissions.get(row.id);
-    if (latest !== undefined && latest.state !== "pending" && latest.via !== "discord") await this.editResolved(latest);
+    if (latest !== undefined && latest.state !== "pending") {
+      this.recordResult(latest);
+      if (latest.via !== "discord") await this.editResolved(latest);
+    }
+  }
+
+  /** Web の会話に 1 行（削除されていない cc のチャンネルのときだけ。書けなくても log だけ） */
+  private record(channelId: string, kind: "owner" | "notice", text: string): void {
+    if (this.deps.history === undefined) return;
+    const channel = this.deps.channels.get(channelId);
+    if (channel === undefined || channel.state === "deleted") return;
+    recordHistory(
+      this.deps.history,
+      { guildId: channel.guildId, channelId, kind, source: "system", persona: DEFAULT_PERSONA_ID, text },
+      this.deps.log,
+    );
+  }
+
+  /** 終わった許可の要求の結果（1 件につき 1 回。プロセスの中） */
+  private readonly resultRecorded = new Set<number>();
+
+  private recordResult(row: CcPermissionRow): void {
+    if (row.messageChannelId === null || this.resultRecorded.has(row.id)) return;
+    const text = permissionResultHistoryText(row);
+    if (text === undefined) return;
+    this.resultRecorded.add(row.id);
+    this.record(row.messageChannelId, "notice", text);
   }
 
   private async editResolved(row: CcPermissionRow): Promise<void> {

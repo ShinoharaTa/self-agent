@@ -18,6 +18,9 @@
 // - 閉じる（/cc close。close）: open を ended にして完了へ移し、届け待ちを取り消す（セッションが生きていても。次に関われば開き直す）。
 // - 削除の確認（CC13）: scheduler.ts が ccDeletePrompt を #system に出し、app/commands/cc.ts の cc:del・cc:del:keep が処理する。
 // - 印（§3.3）: 届け待ちは ⏳、届けたら ✅、確かめられなければ ⚠️ と返信、送れなければ ❌ と返信、取り消したら ⏳ を外す（リアクション。失敗は log だけ）。
+// - Web の会話（CC14。§5.2。history を渡したとき（Web UI が有効）だけ）: オーナーの発言・外からの送信の写しを owner、届かなかった・ダイアログで待っている・
+//   終わった・戻った・閉じた・終わったチャンネルの発言への返信を notice、[起動して続ける] で付け替えたことを divider で書く（guild_id は cc_channels の行、persona は既定）。
+//   Web の会話の入力欄からの送信（submitWeb）は /api/cc/sessions/<id>/send と同じ sender.submit（origin web）で積み、写しと owner の行は announce が書く。
 // 投稿・リアクションは既定の人格の Bot。名前・ディレクトリは hook から来たデータなので、Markdown とメンションを無効にする。
 // log はサーバー ID と種類・件数・送信の番号だけ（チャンネル ID・名前・cwd・sessionId・本文は出さない。作った後の DB の失敗だけ例外）
 import { basename, dirname } from "node:path";
@@ -36,6 +39,7 @@ import type { CcPermissionStore } from "../store/cc-permissions.ts";
 import type { CcSendOrigin, CcSendRow, CcSendStore } from "../store/cc-sends.ts";
 import { headChars, type CcSessionRow, type CcSessionStore, type CcStartedBy } from "../store/cc-sessions.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
+import { recordHistory, type HistoryKind, type HistorySource, type HistoryStore } from "../store/history.ts";
 import { cwdLabel } from "./labels.ts";
 import type { CcPaneResolver } from "./panes.ts";
 import type { CcRegistry, CcSessionView, CcState } from "./registry.ts";
@@ -204,6 +208,16 @@ export function ccResumedText(name: string): string {
   return `${plain(name)} として起動しました。続けます`;
 }
 
+/** Web の会話の区切り（[起動して続ける] で付け替えた。CC14。history は文字のまま出すので Markdown を無効にしない） */
+export function ccResumedDivider(name: string): string {
+  return `${headChars(name.replace(/[\u0000-\u001f\u007f]/g, " "), LABEL_MAX_CHARS)} として起動しました`;
+}
+
+/** Web の会話の入力欄からの送信（submitWeb。CC14）の結果。ended・resuming・not_channel は積まない */
+export type CcSubmitWebResult =
+  | { ok: true; sendId: number; channelId: string; messageId: string | null }
+  | { ok: false; reason: Exclude<CcSubmitResult, { ok: true }>["reason"] | "not_channel" | "ended" | "resuming" | "empty" | "too_long" | "invalid_text" };
+
 /** [起動して続ける] の結果 */
 export type CcResumeResult =
   | { ok: true; message: OutgoingMessage }
@@ -341,6 +355,8 @@ export type CcChannelsDeps = {
   channelOps: Pick<ChannelOpsQueue, "enqueueMove" | "cancel">;
   /** ensureFor で作れなかったときの #system の 1 行 */
   notify: SystemNotifier;
+  /** Web UI の会話の記録（CC14。Web UI が有効なときだけ。無ければ書かない） */
+  history?: Pick<HistoryStore, "add">;
   /** ~ の場所（ディレクトリの表示） */
   home: string;
   now: () => Date;
@@ -500,6 +516,7 @@ export class CcChannels {
     const target = this.markTarget(row);
     if (target === undefined || this.dialogNoticed.has(row.id)) return;
     this.dialogNoticed.add(row.id);
+    this.recordAt(target.channelId, "notice", CC_DIALOG_REPLY);
     this.chain(row.id, async () => {
       await this.deps.gateway.sendMessage(target.channelId, { text: CC_DIALOG_REPLY, replyToId: target.messageId, suppressEmbeds: true });
     });
@@ -539,7 +556,9 @@ export class CcChannels {
     // 終わったチャンネルの発言: セッションが一覧にある（/cc close で閉じただけ）なら関わったとして開き直して積み、
     // 無ければ積まずに [起動して続ける] を出す（起動はボタンでだけ。§3.6）
     if (row.state === "ended" && !this.reopenIfListed(row)) {
+      this.record(row, "owner", "discord", checked.text, message.id);
       await this.promptResume(message, checked.text);
+      this.record(row, "notice", "system", CC_RESUME_PROMPT_TEXT);
       return true;
     }
     if (store.get(row.channelId)?.state !== "open") return true;
@@ -561,7 +580,10 @@ export class CcChannels {
       await this.replyTo(channelId, messageId, SUBMIT_REJECT_REPLY[result.reason]);
       return;
     }
-    if (!result.duplicate) log(`Claude Code: チャンネルの発言を積みました（#${result.send.id}）`);
+    if (!result.duplicate) {
+      log(`Claude Code: チャンネルの発言を積みました（#${result.send.id}）`);
+      this.record(row, "owner", "discord", text, messageId);
+    }
     // 5 秒以内の同じ本文（二重送信の規則）: 新しくは積まず、この発言にも前の行の印を付ける（無反応にしない）
     else this.markDuplicate(result.send, channelId, messageId);
   }
@@ -594,17 +616,42 @@ export class CcChannels {
    * /cc close（チャンネルの中で。§3.8）: open のチャンネルを ended にして完了へ移す（セッションが生きていても閉じる）。
    * cc のチャンネルでなければ not_channel、open でなければその状態
    */
-  close(channelId: string): CcCloseResult {
+  close(channelId: string, options: { fromWeb?: boolean } = {}): CcCloseResult {
     const row = this.deps.store.get(channelId);
     if (row === undefined || row.state === "deleted") return { result: "not_channel" };
     if (row.state !== "open") return { result: row.state };
     if (!this.deps.store.setState(channelId, "ended", ["open"])) {
       return { result: this.deps.store.get(channelId)?.state === "resuming" ? "resuming" : "ended" };
     }
-    this.deps.log(`Claude Code: /cc close でチャンネルを閉じました（guild=${row.guildId}）`);
+    this.deps.log(`Claude Code: ${options.fromWeb === true ? "Web から" : "/cc close で"}チャンネルを閉じました（guild=${row.guildId}）`);
     this.deps.channelOps.enqueueMove(channelId, { kind: "state", guildId: row.guildId, state: "done" });
+    this.record(row, "notice", "system", CC_CHANNEL_CLOSED_TEXT);
     // 閉じたチャンネルの届け待ちは取り消す（⏳ は sender の settled で外れる）
     return { result: "closed", cancelled: this.cancelQueued(channelId) ?? 0 };
+  }
+
+  /** Web から閉じた（POST /api/cc/channels/<id>/close。CC14）: /cc close の応答と同じ文をチャンネルに投稿する（失敗は log だけ） */
+  postClosed(channelId: string, text: string): void {
+    const row = this.deps.store.get(channelId);
+    if (row !== undefined && row.state !== "deleted") this.post(row, text);
+  }
+
+  /**
+   * Web の会話の入力欄からの送信（POST /api/channels/<id>/messages の cc。§5.2）: /api/cc/sessions/<id>/send と同じ sender.submit（origin web）で積む
+   * （写し「（Web から）」・owner の行・印は announce が付ける）。open のチャンネルだけで、ended・resuming は積まない
+   */
+  async submitWeb(channelId: string, text: string): Promise<CcSubmitWebResult> {
+    const row = this.deps.store.get(channelId);
+    if (row === undefined || row.state === "deleted") return { ok: false, reason: "not_channel" };
+    if (row.state !== "open") return { ok: false, reason: row.state };
+    const checked = normalizeSendText(text);
+    if (!checked.ok) return { ok: false, reason: checked.reason };
+    const sender = this.deps.sender();
+    if (sender === undefined) return { ok: false, reason: "stopped" };
+    const result = await sender.submit({ sessionId: row.sessionId, text: checked.text, origin: "web" });
+    if (!result.ok) return result;
+    const send = this.deps.sends.get(result.send.id) ?? result.send;
+    return { ok: true, sendId: send.id, channelId, messageId: send.channelId === channelId ? send.messageId : null };
   }
 
   /**
@@ -739,6 +786,7 @@ export class CcChannels {
     });
     this.moveToCategory(updated);
     this.post(updated, ccResumedText(name ?? dir ?? "（名前なし）"));
+    this.record(updated, "divider", "system", ccResumedDivider(name ?? dir ?? "（名前なし）"));
     return true;
   }
 
@@ -792,6 +840,14 @@ export class CcChannels {
     } catch (error) {
       log(`Claude Code: 写しを出せませんでした（#${row.id}、${errorKind(error)}）`);
     }
+    // Web の会話の owner の行（写しの投稿に失敗しても書く。Web の送信は source web、それ以外は出所を見出しで）
+    this.record(
+      channel,
+      "owner",
+      row.origin === "web" ? "web" : "system",
+      row.origin === "web" ? row.text : `${ccMirrorLabel(row.origin, null)}\n${row.text}`,
+      messageId ?? null,
+    );
     if (messageId !== undefined && sends.setMirror(row.id, channel.channelId, messageId)) {
       const updated = sends.get(row.id);
       if (updated !== undefined) this.mark(updated);
@@ -819,6 +875,8 @@ export class CcChannels {
       await gateway.sendMessage(channelId, { text, replyToId: messageId, suppressEmbeds: true });
     };
     let steps: Array<() => Promise<void>>;
+    /** Web の会話の知らせ（届かなかったもの。終わりの印と同じく 1 回だけ） */
+    let notice: string | undefined;
     switch (row.state) {
       case "queued":
       case "delivering":
@@ -829,12 +887,15 @@ export class CcChannels {
         break;
       case "unconfirmed":
         steps = [remove(), add(CC_MARK_UNCONFIRMED), reply(CC_UNCONFIRMED_REPLY)];
+        notice = CC_UNCONFIRMED_REPLY;
         break;
       case "failed":
         steps = [remove(), add(CC_MARK_FAILED), reply(ccFailedReply(row.lastPaneState))];
+        notice = ccFailedReply(row.lastPaneState);
         break;
       case "gave_up":
         steps = [remove(), add(CC_MARK_FAILED), reply(CC_GAVE_UP_REPLY)];
+        notice = CC_GAVE_UP_REPLY;
         break;
       case "cancelled":
         steps = [remove()];
@@ -848,6 +909,7 @@ export class CcChannels {
       // 同じ本文を続けて書いた発言にも同じ終わりの印（返信は最初の発言だけ）
       for (const extra of this.duplicates.get(row.id) ?? []) for (const step of this.markSteps(extra, row.state)) this.chain(row.id, step);
       this.duplicates.delete(row.id);
+      if (notice !== undefined) this.recordAt(channelId, "notice", notice);
     }
     for (const step of steps) this.chain(row.id, step);
   }
@@ -913,6 +975,7 @@ export class CcChannels {
     if (row === undefined || !this.deps.store.setState(row.channelId, "ended", ["open"])) return false;
     this.deps.log(`Claude Code: セッションが終わったため、チャンネルを完了に移します（guild=${row.guildId}）`);
     this.post(row, CC_CHANNEL_ENDED_TEXT);
+    this.record(row, "notice", "system", CC_CHANNEL_ENDED_TEXT);
     this.deps.channelOps.enqueueMove(row.channelId, { kind: "state", guildId: row.guildId, state: "done" });
     return true;
   }
@@ -930,6 +993,7 @@ export class CcChannels {
         : `Claude Code: 閉じたチャンネルのセッションに関わったため、開き直します（guild=${row.guildId}）`,
     );
     this.post(row, reason === "back" ? CC_CHANNEL_REVIVED_TEXT : CC_CHANNEL_REOPENED_TEXT);
+    this.record(row, "notice", "system", reason === "back" ? CC_CHANNEL_REVIVED_TEXT : CC_CHANNEL_REOPENED_TEXT);
     this.moveToCategory(row);
     return true;
   }
@@ -1029,6 +1093,28 @@ export class CcChannels {
     // カテゴリを作り直すのは /setup（作り直した後は再同期が戻す）
     if (categoryId === null) return;
     this.deps.channelOps.enqueueMove(row.channelId, { kind: "category", categoryId });
+  }
+
+  /** Web の会話に 1 行（CC14。history を渡したときだけ。書けなくても log だけで止めない） */
+  private record(
+    row: Pick<CcChannelRow, "guildId" | "channelId">,
+    kind: HistoryKind,
+    source: HistorySource,
+    text: string,
+    messageId: string | null = null,
+  ): void {
+    recordHistory(
+      this.deps.history,
+      { guildId: row.guildId, channelId: row.channelId, kind, source, persona: DEFAULT_PERSONA_ID, text, messageId },
+      this.deps.log,
+    );
+  }
+
+  /** そのチャンネル（削除されていない cc のチャンネルのときだけ）の Web の会話に知らせを 1 行 */
+  private recordAt(channelId: string, kind: "notice", text: string): void {
+    const row = this.deps.store.get(channelId);
+    if (row === undefined || row.state === "deleted") return;
+    this.record(row, kind, "system", text);
   }
 
   /** そのチャンネルに 1 行（失敗は log だけ） */

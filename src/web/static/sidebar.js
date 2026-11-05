@@ -111,7 +111,8 @@
   function chatList() {
     const q = ui.query.trim();
     const match = (ch) => q === "" || String(ch.kind === "session" ? ch.title : ch.name).includes(q);
-    const channels = store.channels.channels.filter(match);
+    // Claude Code のチャンネル（kind cc）は群「Claude Code」の行から開く（CC14）
+    const channels = store.channels.channels.filter((c) => c.kind !== "cc").filter(match);
     const by = (state) => channels.filter((c) => c.kind === "session" && c.state === state).map(channelRow);
     // Discord の /new と同じ（新しいセッションのダイアログ）
     const newBtn = el("button", { class: "btn btn-secondary btn-sm sb-new", type: "button" }, [icon("plus"), "新しいセッション"]);
@@ -255,14 +256,19 @@
     ]) {
       if (on && text !== top) notes.push(text);
     }
+    // Discord のチャンネル（Claude Code のチャンネル）があるものは # で、会話のタブ（ch:<id>。CC14）を開く。未読の点は会話と同じ（history の最後の行）。
+    // 無いものは今の Claude Code のタブ
+    const channelId = s.channel && typeof s.channel.channelId === "string" && s.channel.state !== "deleted" ? s.channel.channelId : null;
+    const channel = channelId && store.channels ? store.channels.channels.find((c) => c.id === channelId) || null : null;
+    const unread = !!channel && store.isUnread(channel);
+    const dot = s.state === "needs_input" ? "dot-warn" : unread ? "dot-unread" : null;
     return row({
-      // Discord のチャンネル（Claude Code のチャンネル）があるものは #。CC10 で一覧に channel が載るまでは無い
-      tab: "cc:" + s.sessionId,
-      icon: s.channel ? "hash" : null,
+      tab: channelId ? "ch:" + channelId : "cc:" + s.sessionId,
+      icon: channelId ? "hash" : null,
       label: SA.views.ccName(s),
       badges,
-      dot: s.state === "needs_input" ? "dot-warn" : null,
-      dotLabel: s.state === "needs_input" ? "判断待ち" : null,
+      dot,
+      dotLabel: s.state === "needs_input" ? "判断待ち" : unread ? "未読" : null,
       meta: s.since ? SA.views.ago(s.since) : "",
       title: notes.length ? notes.join("\n") : null,
     });

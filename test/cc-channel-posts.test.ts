@@ -23,6 +23,7 @@ import { CcPermissionStore, type CcPermissionRow } from "../src/store/cc-permiss
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcSessionStore } from "../src/store/cc-sessions.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { HistoryStore } from "../src/store/history.ts";
 import { tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { FakeResponder } from "./helpers/responder.ts";
@@ -92,6 +93,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   const channels = new CcChannelStore(db, now);
   const sends = new CcSendStore(db, now);
   const guildSettings = new GuildSettingsStore(db, now);
+  const history = new HistoryStore(db, now);
   guildSettings.setChannel(GUILD, "systemChannelId", SYSTEM);
   if (opts.channel !== false) channels.create({ channelId: CHANNEL, guildId: GUILD, sessionId: S1, name: "cc-secret-name", cwd: SECRET_CWD, origin: "web" });
   const logs: string[] = [];
@@ -141,6 +143,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     waitBudget,
     release: (id) => hold.release(id),
     home: HOME,
+    history,
     now,
     timers: postsTimers,
     log,
@@ -219,6 +222,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   return {
     db,
     clock,
+    history,
     store,
     sessions,
     channels,
@@ -618,4 +622,38 @@ test("CC12: チャンネルのあるセッションが終わったら #system �
   await s.idle();
   assert.deepEqual(ended, [S1]);
   assert.equal(s.gateway.posts.length, 0);
+});
+
+test("Web の会話（CC14）: チャンネルに出した許可の要求とその結果・判断待ちは notice、端末の指示の写しは owner（system）。文字のまま（エスケープしない）", async (t) => {
+  const busy = { status: "busy", waitingFor: undefined } as const;
+  const s = await setup(t, { agents: [agent(S1, busy), agent(S2, busy)] });
+  await s.hook(S1, "Notification", { notificationType: "agent_needs_input" });
+  await s.setAgents([agent(S1, { status: "waiting", waitingFor: "input" }), agent(S2, busy)]);
+  s.clock.now += CC_WAIT_NOTIFY_MS;
+  await s.tickWaiting();
+  await s.setAgents([agent(S1, busy), agent(S2, busy)]);
+  const asked = await s.ask(S1);
+  s.hold.answer(asked.id, "deny", "web");
+  await s.idle();
+  // Discord で押したもの（resolved は応答で書き換える）も結果を書く
+  const second = await s.ask(S1, "ls");
+  await s.press(`cc:perm:allow:${second.id}`);
+  await s.idle();
+  await s.hookBody({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "**太字** のまま" });
+  const rows = s.history.list(CHANNEL, { limit: 20 });
+  assert.deepEqual(
+    rows.map((row) => [row.kind, row.source, row.text, row.guildId, row.persona]),
+    [
+      ["notice", "system", "判断を待っています: input", GUILD, "default"],
+      ["notice", "system", `許可を待っています: Bash\n${SECRET_COMMAND}`, GUILD, "default"],
+      ["notice", "system", "許可の要求（Bash）: 拒否（Web）", GUILD, "default"],
+      ["notice", "system", "許可を待っています: Bash\nls", GUILD, "default"],
+      ["notice", "system", "許可の要求（Bash）: 許可（Discord）", GUILD, "default"],
+      ["owner", "system", `${CC_PROMPT_MIRROR_LABEL}\n**太字** のまま`, GUILD, "default"],
+    ],
+  );
+  // チャンネルの無いセッション（#system に出たもの）は書かない
+  await s.ask(S2);
+  assert.equal(s.history.list(CHANNEL, { limit: 20 }).length, rows.length);
+  assert.equal(s.history.list(SYSTEM, { limit: 20 }).length, 0);
 });

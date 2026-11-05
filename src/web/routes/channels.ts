@@ -1,7 +1,10 @@
 // GET /api/channels・/api/channels/<id>/turns（docs/plan/web-ui.md §4.3）。会話のサイドバーと会話のタブ（読むだけ）。
-// 対象は /setup 済みのサーバーだけ（env の SELF_AGENT_INBOX_CHANNEL_ID は使わない）。ID は Discord のリンクを作るために返す（log には出さない）
+// 対象は /setup 済みのサーバーだけ（env の SELF_AGENT_INBOX_CHANNEL_ID は使わない）。ID は Discord のリンクを作るために返す（log には出さない）。
+// Claude Code のチャンネル（docs/plan/claude-code-channels.md §5.2。CC14）: cc を渡したときだけ、削除されていない cc_channels の行を kind "cc" で一覧と /turns に出す
+// （種類は ChannelKind | "cc"。access.ts の ChannelKind は変えない。SDK のターンが無いので /renew・/continue・/abort は呼び出し側で 404）
 import { type Config, DEFAULT_PERSONA_ID } from "../../config.ts";
 import type { ChannelKind, ResolveChannel } from "../../app/access.ts";
+import type { CcChannelRow, CcChannelStore } from "../../store/cc-channels.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import { DEFAULT_PERSONA_LABEL, type PersonaRouter, type PersonaRuntime } from "../../app/personas.ts";
 import type { GuildSettingsStore } from "../../store/guild-settings.ts";
@@ -16,6 +19,25 @@ export const TURNS_DEFAULT_LIMIT = 50;
 /** Web から始めた /close の確認（候補あり）を Discord にも投稿したときの、会話の履歴の知らせ（routes/sessions.ts が書く）。これが最後の行の間だけ確認のカードを出す */
 export const CLOSE_CONFIRM_NOTICE = "確認待ちです。登録するやることを選ぶと閉じます（Discord でも選べます）";
 
+/** Web で開ける・送れるチャンネルの種類（Claude Code のチャンネルは cc。CC14） */
+export type WebChannelKind = ChannelKind | "cc";
+
+/** Claude Code のチャンネルのセッションの今（CC14。state の ended はチャンネルが終わった・一覧に無い。permission・pending は /api/cc/sessions と同じ形） */
+export type WebCcInfo = {
+  sessionId: string;
+  state: "needs_input" | "running" | "idle" | "ended";
+  cwdLabel: string | null;
+  inTmux: boolean;
+  permission: unknown;
+  pending: unknown;
+};
+
+/** Claude Code のチャンネル（CC14）。describe は 1 回の要求で 1 回呼び、返した関数で各行の今を引く（一覧・送信・許可を読むのは 1 回だけ） */
+export type WebCcChannelDeps = {
+  store: Pick<CcChannelStore, "get" | "listUndeleted">;
+  describe: () => (row: CcChannelRow) => { name: string | null; info: WebCcInfo };
+};
+
 /** 一覧に出す状態（完了は新しい SESSION_LIST_LIMITS.done 件） */
 const LISTED_STATES = ["active", "waiting", "done"] as const;
 
@@ -28,14 +50,16 @@ export type ChannelRouteDeps = {
   /** PersonaRouter（all は設定の順で、最初が既定の人格） */
   personas: Pick<PersonaRouter, "ownerOf"> & { all: readonly Pick<PersonaRuntime, "id" | "name" | "connected">[] };
   resolveChannel: ResolveChannel;
+  /** Claude Code のチャンネル（SELF_AGENT_CC が動くときだけ。無ければ出さない） */
+  cc?: WebCcChannelDeps;
 };
 
 /** 一覧と /turns の 1 チャンネル */
 export type WebChannel = {
   id: string;
   guildId: string;
-  kind: "inbox" | "tasks" | "session";
-  /** 入口の名前（inbox・tasks・足した人格の表示名）。セッションは null */
+  kind: "inbox" | "tasks" | "session" | "cc";
+  /** 入口の名前（inbox・tasks・足した人格の表示名）・Claude Code のセッション名。セッションは null */
   name: string | null;
   /** セッションの題名。入口は null */
   title: string | null;
@@ -45,6 +69,8 @@ export type WebChannel = {
   project: { slug: string; url: string | null } | null;
   last: { id: number; at: string; kind: HistoryKind } | null;
   link: string;
+  /** Claude Code のチャンネルのセッションの今（kind cc だけ） */
+  cc?: WebCcInfo;
 };
 
 type Last = WebChannel["last"];
@@ -72,9 +98,11 @@ export function webChannelLookup(
   deps: Pick<ChannelRouteDeps, "cfg" | "resolveChannel"> & {
     guildSettings: Pick<GuildSettingsStore, "get" | "entryChannel">;
     topicSessions: Pick<TopicSessionStore, "get">;
+    /** Claude Code のチャンネル（CC14）。渡したときだけ、削除されていない行を kind cc で通す */
+    ccChannels?: Pick<CcChannelStore, "get">;
   },
-): (channelId: string) => { guildId: string; kind: ChannelKind } | undefined {
-  const { cfg, guildSettings, topicSessions, resolveChannel } = deps;
+): (channelId: string) => { guildId: string; kind: WebChannelKind } | undefined {
+  const { cfg, guildSettings, topicSessions, resolveChannel, ccChannels } = deps;
   const guildOf = (channelId: string): string | undefined => {
     const found = topicSessions.get(channelId)?.guildId ?? guildSettings.entryChannel(channelId)?.guildId;
     if (found !== undefined) return found;
@@ -83,9 +111,12 @@ export function webChannelLookup(
       return settings !== undefined && (settings.inboxChannelId === channelId || settings.tasksChannelId === channelId);
     });
   };
+  const setUp = (guildId: string) => cfg.allowedGuildIds.includes(guildId) && guildSettings.get(guildId) !== undefined;
   return (channelId) => {
+    const cc = ccChannels?.get(channelId);
+    if (cc !== undefined && cc.state !== "deleted") return setUp(cc.guildId) ? { guildId: cc.guildId, kind: "cc" } : undefined;
     const guildId = guildOf(channelId);
-    if (guildId === undefined || !cfg.allowedGuildIds.includes(guildId) || guildSettings.get(guildId) === undefined) return undefined;
+    if (guildId === undefined || !setUp(guildId)) return undefined;
     const kind = resolveChannel(guildId, channelId);
     return kind === null ? undefined : { guildId, kind };
   };
@@ -113,13 +144,21 @@ function entryNameOf(
  * チャンネルの表示名（#inbox・#tasks・#<NAME>・セッションの題名）。/turns と同じく、許可した /setup 済みのサーバーの受け付け対象でなければ null
  */
 export function webChannelNamer(
-  deps: Pick<ChannelRouteDeps, "cfg" | "guildSettings" | "resolveChannel"> & { topicSessions: Pick<TopicSessionStore, "get"> },
+  deps: Pick<ChannelRouteDeps, "cfg" | "guildSettings" | "resolveChannel"> & {
+    topicSessions: Pick<TopicSessionStore, "get">;
+    ccChannels?: Pick<CcChannelStore, "get">;
+  },
 ): (channelId: string) => string | null {
-  const { cfg, guildSettings, topicSessions } = deps;
+  const { cfg, guildSettings, topicSessions, ccChannels } = deps;
   const lookup = webChannelLookup(deps);
   return (channelId) => {
     const found = lookup(channelId);
     if (found === undefined) return null;
+    // Claude Code のチャンネルは Discord のチャンネル名（cc-<名前>）
+    if (found.kind === "cc") {
+      const row = ccChannels?.get(channelId);
+      return row === undefined ? null : `#${row.name}`;
+    }
     if (found.kind === "session") {
       const item = topicSessions.get(channelId);
       return item === undefined || item.state === "deleted" ? null : item.title;
@@ -130,7 +169,7 @@ export function webChannelNamer(
 }
 
 export function channelRoutes(deps: ChannelRouteDeps): Route[] {
-  const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel } = deps;
+  const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel, cc } = deps;
 
   const project = (channelId: string): WebChannel["project"] => {
     const found = projects.getByChannel(channelId);
@@ -173,6 +212,24 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
     };
   };
 
+  /** Claude Code のチャンネル（CC14）。名前はセッション名（分からなければチャンネル名） */
+  const ccChannel = (row: CcChannelRow, describe: ReturnType<WebCcChannelDeps["describe"]>, last: Last): WebChannel => {
+    const { name, info } = describe(row);
+    return {
+      id: row.channelId,
+      guildId: row.guildId,
+      kind: "cc",
+      name: name ?? row.name,
+      title: null,
+      persona: DEFAULT_PERSONA_ID,
+      state: null,
+      project: null,
+      last,
+      link: channelLink(row.guildId, row.channelId),
+      cc: info,
+    };
+  };
+
   /** そのサーバー（/setup 済み）の入口（#inbox・#tasks・設定にある人格の #<NAME>） */
   const entries = (guildId: string, latest: ReturnType<HistoryStore["latestByChannel"]>): WebChannel[] => {
     const settings = guildSettings.get(guildId);
@@ -201,13 +258,17 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
     return row === undefined ? null : { id: row.id, at: row.at, kind: row.kind };
   };
 
-  const lookup = webChannelLookup({ cfg, guildSettings, topicSessions, resolveChannel });
+  const lookup = webChannelLookup({ cfg, guildSettings, topicSessions, resolveChannel, ...(cc === undefined ? {} : { ccChannels: cc.store }) });
 
   /** /turns の 1 チャンネル。許可した /setup 済みのサーバーの受け付け対象でなければ undefined */
   const channelOf = (channelId: string): WebChannel | undefined => {
     const found = lookup(channelId);
     if (found === undefined) return undefined;
     const { guildId, kind } = found;
+    if (kind === "cc") {
+      const row = cc?.store.get(channelId);
+      return row === undefined || cc === undefined ? undefined : ccChannel(row, cc.describe(), lastOf(channelId));
+    }
     if (kind === "session") {
       const item = topicSessions.get(channelId);
       return item === undefined ? undefined : session(item, lastOf(channelId));
@@ -237,6 +298,7 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
       handle: async () => {
         const guilds = cfg.allowedGuildIds.map((id) => ({ id, setUp: guildSettings.get(id) !== undefined }));
         const channels: WebChannel[] = [];
+        const describe = cc?.describe();
         for (const guild of guilds) {
           if (!guild.setUp) continue;
           const latest = history.latestByChannel(guild.id);
@@ -246,6 +308,10 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
               const channel = session(item, latest.get(item.channelId) ?? null);
               if (channel !== undefined) channels.push(channel);
             }
+          }
+          // Claude Code のチャンネル（サイドバーは群「Claude Code」の行から開き、未読の点にこの last を使う）
+          if (cc !== undefined && describe !== undefined) {
+            for (const row of cc.store.listUndeleted(guild.id)) channels.push(ccChannel(row, describe, latest.get(row.channelId) ?? null));
           }
         }
         const personaList = personas.all.map((persona) => ({

@@ -1,6 +1,11 @@
 // Web から送る・実行中のターン・[中断]・[続ける]（docs/plan/web-ui.md §5.2）。送った発言は handler の submitText で、Discord の発言と同じ経路で 1 ターン入る。
-// [中断]・[続ける] は Discord のボタン（turn-controls.ts）と同じ handler の関数を呼ぶ。log に本文・チャンネル ID は出さない
+// [中断]・[続ける] は Discord のボタン（turn-controls.ts）と同じ handler の関数を呼ぶ。log に本文・チャンネル ID は出さない。
+// Claude Code のチャンネル（kind cc。docs/plan/claude-code-channels.md §5.2。CC14）への送信はターンにせず、/api/cc/sessions/<id>/send と同じ経路で
+// そのセッションに積む（cc/channels.ts の submitWeb）。SDK のターンが無いので /abort・/continue は 404
 import type { Handler } from "../../app/handler.ts";
+import type { CcChannels } from "../../cc/channels.ts";
+import type { CcChannelStore } from "../../store/cc-channels.ts";
+import { SUBMIT_STATUS } from "./cc.ts";
 import type { Route, RouteResult } from "../server.ts";
 import { type ChannelRouteDeps, webChannelLookup } from "./channels.ts";
 
@@ -11,6 +16,8 @@ export const WEB_DUPLICATE_WINDOW_MS = 5000;
 
 export type TurnRouteDeps = Pick<ChannelRouteDeps, "cfg" | "guildSettings" | "topicSessions" | "resolveChannel"> & {
   handler: Pick<Handler, "submitText" | "runningTurns" | "abortTurn" | "continueTurn">;
+  /** Claude Code のチャンネル（SELF_AGENT_CC が動くときだけ。無ければ cc のチャンネルは受け付けない） */
+  cc?: { store: Pick<CcChannelStore, "get">; channels: Pick<CcChannels, "submitWeb"> };
   now: () => Date;
   log: (message: string) => void;
 };
@@ -23,14 +30,30 @@ function messageLink(guildId: string, channelId: string, messageId: string): str
 
 export function turnRoutes(deps: TurnRouteDeps): Route[] {
   const { handler, now, log } = deps;
-  const lookup = webChannelLookup(deps);
+  const lookup = webChannelLookup({ ...deps, ...(deps.cc === undefined ? {} : { ccChannels: deps.cc.store }) });
   /**
    * チャンネルごとの直近の送信（二重送信の判定）。結果は Promise で持ち、同時に来た 2 回目も 1 回目の結果を待って同じものを返す。
    * 受け付けなかった（202 以外）ものは消して、やり直せるようにする
    */
   const recent = new Map<string, { text: string; at: number; response: Promise<RouteResult> }>();
 
+  /** Claude Code のチャンネル: そのセッションに積む（写し「（Web から）」と owner の行は submitWeb が付ける）。link は写しの投稿（無ければチャンネル） */
+  const sendCc = async (guildId: string, channelId: string, text: string): Promise<RouteResult> => {
+    if (deps.cc === undefined) return NOT_FOUND;
+    const result = await deps.cc.channels.submitWeb(channelId, text);
+    if (!result.ok) {
+      if (result.reason === "not_channel") return NOT_FOUND;
+      if (result.reason === "ended" || result.reason === "resuming") return { status: 409, json: { error: result.reason } };
+      if (result.reason === "empty" || result.reason === "too_long" || result.reason === "invalid_text") return { status: 400, json: { error: result.reason } };
+      return { status: SUBMIT_STATUS[result.reason] ?? 503, json: { error: result.reason === "stopped" ? "stopping" : result.reason } };
+    }
+    log(`Web から Claude Code のチャンネルに送りました（guild=${guildId}、#${result.sendId}）`);
+    const link = result.messageId === null ? `https://discord.com/channels/${guildId}/${channelId}` : messageLink(guildId, channelId, result.messageId);
+    return { status: 202, json: { sendId: result.sendId, link } };
+  };
+
   const send = async (guildId: string, channelId: string, kind: string, text: string): Promise<RouteResult> => {
+    if (kind === "cc") return sendCc(guildId, channelId, text);
     const result = await handler.submitText({ guildId, channelId, content: text, at: now(), source: "web" });
     switch (result.result) {
       case "not_accepted":
@@ -87,7 +110,9 @@ export function turnRoutes(deps: TurnRouteDeps): Route[] {
       pattern: /^\/api\/channels\/(\d{1,25})\/turns\/(\d{1,16})\/abort$/,
       handle: async ({ params }) => {
         const channelId = params[0] ?? "";
-        if (lookup(channelId) === undefined) return NOT_FOUND;
+        const found = lookup(channelId);
+        // Claude Code のチャンネルには SDK のターンが無い
+        if (found === undefined || found.kind === "cc") return NOT_FOUND;
         const aborted = handler.abortTurn(channelId, Number(params[1]));
         return aborted ? { status: 200, json: { aborted: true } } : { status: 409, json: { error: "stale" } };
       },

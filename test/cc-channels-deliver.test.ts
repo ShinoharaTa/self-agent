@@ -12,6 +12,9 @@ import {
   CC_MARK_WAITING,
   CC_QUEUE_FULL_REPLY,
   CC_CHANNEL_REOPENED_TEXT,
+  CC_CHANNEL_CLOSED_TEXT,
+  CC_CHANNEL_ENDED_TEXT,
+  CC_CHANNEL_REVIVED_TEXT,
   CC_RESUME_PROMPT_TEXT,
   CC_RESUMING_REPLY,
   CC_UNCONFIRMED_REPLY,
@@ -27,6 +30,7 @@ import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcSessionStore } from "../src/store/cc-sessions.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { HistoryStore } from "../src/store/history.ts";
 import { createTmux, type RunCommand } from "../src/tmux/tmux.ts";
 import { tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
@@ -74,7 +78,7 @@ function view(sessionId: string, pid: number, name: string): CcSessionView {
 
 type Phase = "before" | "pasted" | "entered";
 
-function setup(t: TestContext, options: { setUp?: boolean } = {}) {
+function setup(t: TestContext, options: { setUp?: boolean; history?: boolean } = {}) {
   const db = tempDb(t);
   const clock = { now: BASE };
   const now = (): Date => new Date(clock.now);
@@ -82,6 +86,7 @@ function setup(t: TestContext, options: { setUp?: boolean } = {}) {
   const sends = new CcSendStore(db, now);
   const sessions = new CcSessionStore(db, now);
   const guildSettings = new GuildSettingsStore(db, now);
+  const history = new HistoryStore(db, now);
   const gateway = new FakeGateway({
     allow: ["sendMessage", "channelExists", "countChannelsIn"],
     record: ["createTextChannel", "addReaction", "removeOwnReaction"],
@@ -157,6 +162,8 @@ function setup(t: TestContext, options: { setUp?: boolean } = {}) {
       return "notice-1";
     },
     home: "/home/owner",
+    // Web の会話の記録（CC14）
+    ...(options.history === true ? { history } : {}),
     now,
     log: (message) => logs.push(message),
   });
@@ -181,7 +188,7 @@ function setup(t: TestContext, options: { setUp?: boolean } = {}) {
     await channels!.idle();
   };
   const actions = () => commands.filter((args) => ["load-buffer", "paste-buffer", "send-keys"].includes(args[0]!)).map((args) => args[0]);
-  return { db, clock, store, sends, guildSettings, gateway, env, snapshot, sender, channels, notices, logs, message, settle, actions, commands };
+  return { db, clock, store, sends, guildSettings, history, gateway, env, snapshot, sender, channels, notices, logs, message, settle, actions, commands };
 }
 
 /** log にチャンネル ID・本文を出していない */
@@ -562,4 +569,96 @@ test("発言: 5 秒以内に同じ本文を 2 回書いたら 2 通目は積ま�
   await s.settle();
   assert.deepEqual(s.gateway.reactionsOn("cc-1", third.id), [CC_MARK_DELIVERED]);
   assert.equal(s.gateway.posts.length, 0);
+});
+
+// ===== Web の会話（CC14。docs/plan/claude-code-channels.md §5.2） =====
+/** そのチャンネルの history の行（種類・出所・本文・message_id） */
+function rowsOf(s: ReturnType<typeof setup>, channelId: string) {
+  return s.history.list(channelId, { limit: 50 }).map((row) => [row.kind, row.source, row.text, row.messageId, row.guildId, row.persona]);
+}
+
+test("Web の会話（CC14）: オーナーの発言は owner（discord・message_id）、届かなかった・ダイアログは notice。history を渡さなければ書かない", async (t) => {
+  const s = setup(t, { history: true });
+  s.env.screens.pasted = shown(SECRET_TEXT);
+  const msg = s.message(SECRET_TEXT);
+  await s.channels.handleMessage(msg);
+  await s.settle();
+  // 2 回目: 貼っても入力欄に出ない → unconfirmed
+  s.env.phase = "before";
+  s.env.screens.pasted = EMPTY;
+  const second = s.message("届いたか分からない");
+  await s.channels.handleMessage(second);
+  await s.settle();
+  assert.equal(s.sends.get(2)!.state, "unconfirmed");
+  assert.deepEqual(rowsOf(s, "cc-1"), [
+    ["owner", "discord", SECRET_TEXT, msg.id, "guild-1", "default"],
+    ["owner", "discord", "届いたか分からない", second.id, "guild-1", "default"],
+    ["notice", "system", CC_UNCONFIRMED_REPLY, null, "guild-1", "default"],
+  ]);
+  // 二重送信の規則で積まなかった発言は書かない
+  await s.channels.handleMessage(s.message("届いたか分からない"));
+  assert.equal(s.history.list("cc-1", { limit: 50 }).length, 3);
+
+  const quiet = setup(t);
+  await quiet.channels.handleMessage(quiet.message("x"));
+  await quiet.settle();
+  assert.equal(quiet.history.list("cc-1", { limit: 50 }).length, 0);
+});
+
+test("Web の会話（CC14）: submitWeb は /send と同じ origin web で積み、写し「（Web から）」・owner（web・message_id は写し）・cc_sends の channel_id と message_id が写し", async (t) => {
+  const s = setup(t, { history: true });
+  s.env.screens.pasted = shown(SECRET_TEXT);
+  const result = await s.channels.submitWeb("cc-1", `${SECRET_TEXT}\n`);
+  assert.equal(result.ok, true);
+  const mirror = s.gateway.posts[0]!;
+  assert.deepEqual([mirror.channelId, mirror.message.text], ["cc-1", `（Web から）\n${SECRET_TEXT}`]);
+  assert.deepEqual(result, { ok: true, sendId: 1, channelId: "cc-1", messageId: mirror.messageId });
+  const row = s.sends.get(1)!;
+  assert.deepEqual([row.origin, row.sessionId, row.channelId, row.messageId, row.text], ["web", S1, "cc-1", mirror.messageId, SECRET_TEXT]);
+  assert.deepEqual(rowsOf(s, "cc-1"), [["owner", "web", SECRET_TEXT, mirror.messageId, "guild-1", "default"]]);
+  await s.settle();
+  assert.equal(s.sends.get(1)!.state, "delivered");
+  // 届け待ちがあれば already_queued（/send と同じ）
+  s.env.phase = "before";
+  s.env.screens.before = BUSY;
+  await s.channels.submitWeb("cc-1", "1");
+  assert.deepEqual(await s.channels.submitWeb("cc-1", "2"), { ok: false, reason: "already_queued" });
+  // 形の違う本文・cc でない・終わった・起動中は積まない
+  assert.deepEqual(await s.channels.submitWeb("cc-1", "a\tb"), { ok: false, reason: "invalid_text" });
+  assert.deepEqual(await s.channels.submitWeb("inbox-1", "x"), { ok: false, reason: "not_channel" });
+  s.store.setState("cc-1", "ended");
+  assert.deepEqual(await s.channels.submitWeb("cc-1", "x"), { ok: false, reason: "ended" });
+  s.store.setState("cc-1", "resuming");
+  assert.deepEqual(await s.channels.submitWeb("cc-1", "x"), { ok: false, reason: "resuming" });
+  assertQuietLogs(s.logs);
+});
+
+test("Web の会話（CC14）: ツール・GitHub の写しは owner（system・見出し付き）、終わった・戻った・閉じたは notice、[起動して続ける] の前の発言は owner と notice", async (t) => {
+  const s = setup(t, { history: true });
+  s.env.screens.before = BUSY;
+  await s.sender.submit({ sessionId: S1, text: "ツールから", origin: "tool", channelId: "inbox-1" });
+  await s.settle();
+  assert.equal(s.channels.ended({ sessionId: S1 }), true);
+  assert.equal(s.channels.revived({ sessionId: S1 }), true);
+  // Web から閉じた: チャンネルにも閉じた文を出す
+  const closed = s.channels.close("cc-1", { fromWeb: true });
+  assert.equal(closed.result, "closed");
+  s.channels.postClosed("cc-1", CC_CHANNEL_CLOSED_TEXT);
+  // 一覧に無いセッションの終わったチャンネルへの発言
+  s.snapshot.sessions = s.snapshot.sessions.filter((view) => view.sessionId !== S1);
+  const late = s.message("続けたい");
+  await s.channels.handleMessage(late);
+  await s.settle();
+  const rows = rowsOf(s, "cc-1").map(([kind, source, text, messageId]) => [kind, source, text, messageId === null ? null : "id"]);
+  assert.deepEqual(rows, [
+    ["owner", "system", "（cc_send から）\nツールから", "id"],
+    ["notice", "system", CC_CHANNEL_ENDED_TEXT, null],
+    ["notice", "system", CC_CHANNEL_REVIVED_TEXT, null],
+    ["notice", "system", CC_CHANNEL_CLOSED_TEXT, null],
+    ["owner", "discord", "続けたい", "id"],
+    ["notice", "system", CC_RESUME_PROMPT_TEXT, null],
+  ]);
+  assert.ok(s.gateway.posts.some((post) => post.channelId === "cc-1" && post.message.text === CC_CHANNEL_CLOSED_TEXT));
+  assert.ok(s.logs.some((line) => line.includes("Web からチャンネルを閉じました")));
+  assertQuietLogs(s.logs);
 });

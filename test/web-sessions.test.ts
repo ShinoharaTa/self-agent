@@ -10,6 +10,7 @@ import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { confirmClose, NO_CONVERSATION_REPLY, WAITED_REPLY, CONTINUED_TEXT, welcomeText } from "../src/app/session-ops.ts";
 import { renewedText } from "../src/app/session-renew.ts";
+import { CcChannelStore } from "../src/store/cc-channels.ts";
 import type { PersonaConfig } from "../src/config.ts";
 import type { CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { channelRoutes } from "../src/web/routes/channels.ts";
@@ -184,7 +185,7 @@ async function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) =
   /** そのチャンネルの履歴の行（種類と本文） */
   const rows = (channelId: string) => history.list(channelId, { limit: 50 }).map((row) => ({ kind: row.kind, text: row.text, persona: row.persona }));
   const openTasks = () => tasks.list({ status: "open", limit: 50 }).map((task) => ({ title: task.title, due: task.due }));
-  return { server, gateway, mikaGateway, connected, runner, turnQueue, channelOps, rotations, rotator, logs, rows, openTasks, ...stores };
+  return { db, server, gateway, mikaGateway, connected, runner, turnQueue, channelOps, rotations, rotator, logs, rows, openTasks, ...stores };
 }
 
 test("POST /api/sessions: 既定の人格の Bot で進行中カテゴリにチャンネルを作り、最初の投稿をして 201 と channelId・link。log は Web から", async (t) => {
@@ -472,4 +473,12 @@ test("POST /renew: 足した人格の #<NAME> は rotateNow（その人格）で
   assert.deepEqual(env.mikaGateway.sent, [{ channelId: "102", text: NO_CONVERSATION_REPLY, replyToId: undefined }]);
   assert.deepEqual(env.gateway.sent, []);
   assert.deepEqual(env.rows("102"), [{ kind: "notice", text: NO_CONVERSATION_REPLY, persona: "mika" }]);
+});
+
+test("POST /renew: Claude Code のチャンネル（CC14）は SDK のターンが無いので 404 で、要約も切り替えもしない", async (t) => {
+  const env = await setup(t);
+  new CcChannelStore(env.db, () => NOW).create({ channelId: "300", guildId: GUILD, sessionId: "11111111-1111-4111-8111-111111111111", name: "cc-a", cwd: null, origin: "web" });
+  assert.deepEqual(await call(env.server, "POST", "/api/channels/300/renew"), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(env.rotations, []);
+  assert.equal(env.runner.inputs.length, 0);
 });

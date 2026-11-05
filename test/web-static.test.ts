@@ -430,7 +430,17 @@ test("web static: スマホの下タブは固定 4（会話・タスク・リマ
 // ===== 会話の一覧の群「Claude Code」（sidebar.js。docs/plan/claude-code-channels.md §2）を偽の DOM で描く =====
 type CcFake = { sessions: Array<Record<string, unknown>>; starting: Array<Record<string, unknown>>; stale: boolean; unreadable: boolean; fetchedAt: string | null };
 
-function loadSidebar(opts: { ccEnabled: boolean; cc: CcFake | null; setUp?: boolean; shows?: boolean; channels?: boolean; unread?: number }) {
+function loadSidebar(opts: {
+  ccEnabled: boolean;
+  cc: CcFake | null;
+  setUp?: boolean;
+  shows?: boolean;
+  channels?: boolean;
+  unread?: number;
+  /** 会話の一覧に足す Claude Code のチャンネル（kind cc。CC14）と、未読にするチャンネル */
+  ccChannels?: string[];
+  unreadIds?: string[];
+}) {
   const document = {
     activeElement: null,
     getElementById: () => null,
@@ -448,7 +458,7 @@ function loadSidebar(opts: { ccEnabled: boolean; cc: CcFake | null; setUp?: bool
     channels: opts.channels === false ? null : {
       guilds: [{ id: "g", setUp: opts.setUp !== false }],
       personas: [{ id: "default", name: "既定の人格", isDefault: true }],
-      channels: [channel("c1", "inbox", "inbox"), channel("c2", "session", "調べもの", "active")],
+      channels: [channel("c1", "inbox", "inbox"), channel("c2", "session", "調べもの", "active"), ...(opts.ccChannels ?? []).map((id) => channel(id, "cc", "cc-" + id))],
     },
     cc: opts.cc,
     ccAt: opts.cc ? Date.now() : 0,
@@ -458,7 +468,7 @@ function loadSidebar(opts: { ccEnabled: boolean; cc: CcFake | null; setUp?: bool
     ccNeedsInputCount: () => (opts.cc ? opts.cc.sessions.filter((s) => s.state === "needs_input").length : 0),
     unreadCount: () => opts.unread ?? 1,
     runningOf: () => null,
-    isUnread: () => false,
+    isUnread: (ch: { id: string }) => (opts.unreadIds ?? []).includes(ch.id),
     load: {
       cc: () => {
         calls.loadCc++;
@@ -564,6 +574,34 @@ test("web static: 会話の一覧は 入口 → Claude Code → 進行中 → �
   assert.deepEqual(calls.opened, ["cc:s-need"]);
   // 会話の一覧を出したら Claude Code の polling を始め直す
   assert.equal(calls.kickCc, 1);
+});
+
+test("web static: Claude Code のチャンネルのある行は # で会話のタブ（ch:<id>）を開き、未読の点は会話と同じ。cc のチャンネルは入口に出ない（CC14）", () => {
+  const { groups, titleOf, ccGroup, calls } = loadSidebar({
+    ccEnabled: true,
+    cc: {
+      sessions: [
+        ccSession("s-ch", "with-channel", "idle", { channel: { channelId: "c9", state: "open" } }),
+        ccSession("s-gone", "deleted-channel", "idle", { channel: { channelId: "c8", state: "deleted" } }),
+        ccSession("s-none", "no-channel", "idle"),
+      ],
+      starting: [],
+      stale: false,
+      unreadable: false,
+      fetchedAt: null,
+    },
+    ccChannels: ["c9"],
+    unreadIds: ["c9"],
+  });
+  const entrances = groups.find((g) => titleOf(g) === "入口")!;
+  assert.doesNotMatch(entrances.textContent, /cc-c9/);
+  assert.ok(ccGroup);
+  const list = ccGroup.children.find((c) => c.tagName === "ul")!;
+  const rowOf = (i: number) => list.children[i]!;
+  assert.ok(descendants(rowOf(0)).some((n) => n.classes.has("dot-unread")));
+  assert.equal(descendants(rowOf(1)).some((n) => n.classes.has("dot-unread")), false);
+  for (let i = 0; i < 3; i++) rowOf(i).buttons()[0]!.dispatch("click");
+  assert.deepEqual(calls.opened, ["ch:c9", "cc:s-gone", "cc:s-none"]);
 });
 
 test("web static: Claude Code の群の見出しの数は、判断待ちが 0 なら全体（起動中を含む）の数", () => {
@@ -766,4 +804,16 @@ test("web static: scripts/make-icons.ts の出力が commit したものと一�
     assert.deepEqual([a.width, a.height, a.colorType], [b.width, b.height, b.colorType], name);
     assert.ok(a.pixels.equals(b.pixels), `${name}: npm run make-icons で作り直す`);
   }
+});
+
+test("web static: 会話のタブは Claude Code のチャンネル（kind cc）で許可のカードを共用し、閉じるは /api/cc/channels/<id>/close。/renew はパレットで出さない（CC14）", () => {
+  const chat = read("chat.js");
+  assert.match(chat, /SA\.views\.ccPermissionCard\(live\.sessionId, p, live\.rc, "ch:" \+ channelId\)/);
+  assert.match(chat, /"\/api\/cc\/channels\/" \+ encodeURIComponent\(channelId\) \+ "\/close"/);
+  assert.match(chat, /SA\.views\.ccPendingBar\(/);
+  // ターンが無いので実行中の行は出さない
+  assert.match(chat, /const run = isCc \? null : store\.runningOf\(channelId\)/);
+  assert.match(read("workbench.js"), /ch\.kind !== "cc" && !busy \? \(\) => SA\.chat\.renew\(ch\.id\)/);
+  // 画面の写しは cc のチャンネルの会話のタブでも読む（閉じていれば一覧と同じ間隔）
+  assert.match(read("api.js"), /ccScreenIdle\(\) \? CC_LIST_INTERVAL_MS : CC_SCREEN_INTERVAL_MS/);
 });

@@ -1041,10 +1041,11 @@
     }
   }, 1000);
 
-  function answerCcPermission(sessionId, p, decision) {
+  /** tabId は描き直すタブ（Claude Code のチャンネルの会話のタブから押したときは ch:<id>。CC14） */
+  function answerCcPermission(sessionId, p, decision, tabId) {
     if (ccPermissionBusy.has(p.id)) return;
     ccPermissionBusy.add(p.id);
-    SA.app.refresh("cc:" + sessionId);
+    SA.app.refresh(tabId || "cc:" + sessionId);
     SA.api.post("/api/cc/permissions/" + p.id + "/" + decision, { requestHash: p.requestHash }, { quiet: true }).then(
       () => {
         ccPermissionAlways.delete(p.id);
@@ -1053,7 +1054,7 @@
       (err) => {
         if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
         else if (err && err.status === 404) toast("この要求はもうありません");
-        else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => answerCcPermission(sessionId, p, decision) });
+        else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => answerCcPermission(sessionId, p, decision, tabId) });
       },
     ).then(() => {
       ccPermissionBusy.delete(p.id);
@@ -1062,8 +1063,8 @@
     });
   }
 
-  /** 許可のカード（要約・ツール名は hook から来たデータなので textContent で出す。GUIDELINES §5 許可のカード） */
-  function ccPermissionCard(sessionId, p, rc) {
+  /** 許可のカード（要約・ツール名は hook から来たデータなので textContent で出す。GUIDELINES §5 許可のカード）。tabId は押した後に描き直すタブ（省けば cc:<sessionId>） */
+  function ccPermissionCard(sessionId, p, rc, tabId) {
     if (!p || typeof p.id !== "number") return null;
     const pending = p.state === "pending";
     const head = el("div", { class: "card-head" }, [
@@ -1115,8 +1116,8 @@
     // 許可は戻せない側なので primary にしない（許可 secondary・拒否 ghost）
     const allow = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: busy, title: disabledTitle }, [icon("check"), "許可"]);
     const deny = el("button", { class: "btn btn-ghost btn-sm", type: "button", disabled: busy, title: disabledTitle }, [icon("x"), "拒否"]);
-    allow.addEventListener("click", () => answerCcPermission(sessionId, p, always && always.checked ? "always" : "allow"));
-    deny.addEventListener("click", () => answerCcPermission(sessionId, p, "deny"));
+    allow.addEventListener("click", () => answerCcPermission(sessionId, p, always && always.checked ? "always" : "allow", tabId));
+    deny.addEventListener("click", () => answerCcPermission(sessionId, p, "deny", tabId));
     return el(
       "section",
       {
@@ -1577,6 +1578,12 @@
     oneLine,
     todayTokens,
     ccPermissionCard,
+    // Claude Code のチャンネルの会話のタブ（chat.js。CC14）と共用する
+    ccPendingBar,
+    ccSessionOf,
+    rcUrl,
+    CC_STATES,
+    CC_SEND_ERRORS,
     loading,
   };
 })();
