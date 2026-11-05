@@ -80,7 +80,13 @@ async function setup(t: TestContext) {
   ccStore.markDeleted("302");
   ccStore.create({ channelId: "303", guildId: GUILD_NOT_SET_UP, sessionId: "44444444-4444-4444-8444-444444444444", name: "cc-other", cwd: null, origin: "web" });
   const sessions = [view(S1), view(S2, { name: "beta", state: "idle" })];
-  const registry = { snapshot: () => ({ sessions, stale: false, unreadable: false, fetchedAt: NOW.getTime() }), touch: () => undefined };
+  const touches = { count: 0 };
+  const registry = {
+    snapshot: () => ({ sessions, stale: false, unreadable: false, fetchedAt: NOW.getTime() }),
+    touch: () => {
+      touches.count++;
+    },
+  };
   const cfg = { allowedGuildIds: [GUILD, GUILD_NOT_SET_UP], personas: [], publicBaseUrl: undefined, inboxChannelId: undefined };
   const resolveChannel = createChannelResolver(cfg, guildSettings, topicSessions);
   const personas = new PersonaRouter({
@@ -144,7 +150,7 @@ async function setup(t: TestContext) {
       topicSessions,
       resolveChannel,
       handler,
-      cc: { store: ccStore, channels },
+      cc: { store: ccStore, channels, registry },
       now: () => NOW,
       log: (line) => logs.push(line),
     }),
@@ -154,7 +160,11 @@ async function setup(t: TestContext) {
       tmux: undefined,
       workspaceDir: "/home/owner/workspace",
       home: "/home/owner",
-      channels: { store: ccChannelsFake, allowedGuildIds: cfg.allowedGuildIds },
+      channels: {
+        store: ccChannelsFake,
+        allowedGuildIds: cfg.allowedGuildIds,
+        lookup: webChannelLookup({ cfg, resolveChannel, guildSettings, topicSessions, ccChannels: ccStore }),
+      },
     }),
   ];
   const server = createWebServer({
@@ -170,7 +180,7 @@ async function setup(t: TestContext) {
   });
   await server.start();
   t.after(() => server.close());
-  return { server, cfg, resolveChannel, ccStore, sends, history, guildSettings, topicSessions, handler: handlerCalls, submits, nextSubmit, closes, closedPosts, nextClose, logs };
+  return { server, cfg, resolveChannel, ccStore, sends, history, guildSettings, topicSessions, handler: handlerCalls, touches, submits, nextSubmit, closes, closedPosts, nextClose, logs };
 }
 
 test("/api/channels: 削除されていない Claude Code のチャンネル（/setup 済みのサーバー）を kind cc で、名前はセッション名・cc の今を付ける", async (t) => {
@@ -185,7 +195,7 @@ test("/api/channels: 削除されていない Claude Code のチャンネル（/
     [
       ["100", "inbox", "inbox", null, "default", null],
       ["300", "cc", "alpha", null, "default", null],
-      ["301", "cc", "cc-beta", null, "default", null],
+      ["301", "cc", "beta", null, "default", null],
     ],
   );
   const open = channels[1]!;
@@ -199,7 +209,7 @@ test("/api/channels: 削除されていない Claude Code のチャンネル（/
     permission: null,
     pending: { id: send.id, state: "queued", lastPaneState: null, replyState: null, updatedAt: NOW.toISOString() },
   });
-  // 閉じたチャンネルは、セッションが一覧に居ても ended（名前はチャンネル名）
+  // 閉じたチャンネルは、セッションが一覧に居ても ended（名前は開いているときと同じ形）
   assert.equal((channels[2]!.cc as Record<string, unknown>).state, "ended");
   // 入口・セッションの行には cc が無い
   assert.equal("cc" in channels[0]!, false);
@@ -234,6 +244,8 @@ test("POST /messages（cc）: submitWeb で積んで 202 と sendId・写しへ�
   assert.deepEqual(env.submits, [{ channelId: "300", text: "届けて" }]);
   assert.deepEqual(env.handler.submits, []);
   assert.deepEqual(env.logs, [`Web から Claude Code のチャンネルに送りました（guild=${GUILD}、#1）`]);
+  // 見ている間は一覧を読む（/api/cc/* と同じ）
+  assert.equal(env.touches.count, 1);
   // 写しを出せなければリンクはチャンネル
   env.nextSubmit.push({ ok: true, sendId: 7, channelId: "300", messageId: null });
   assert.deepEqual(await call(env.server, "POST", "/api/channels/300/messages", { text: "2" }), {
@@ -269,19 +281,22 @@ test("POST /turns/<seq>/abort・/continue: Claude Code のチャンネルは SDK
   assert.deepEqual(env.handler.continues, []);
 });
 
-test("POST /api/cc/channels/<id>/close: /cc close と同じ close で 200、結果の文をチャンネルに投稿する。cc でなければ 404、閉じている・起動中は 409", async (t) => {
+test("POST /api/cc/channels/<id>/close: /cc close と同じ close で 200、結果の文をチャンネルに投稿する。/messages と同じ引き方で cc でなければ 404、閉じている・起動中は 409", async (t) => {
   const env = await setup(t);
   env.nextClose.push({ result: "closed", cancelled: 2 });
   assert.deepEqual(await call(env.server, "POST", "/api/cc/channels/300/close", {}), { status: 200, json: { state: "ended", cancelled: 2 } });
   assert.equal(env.closedPosts.length, 1);
   assert.equal(env.closedPosts[0]!.channelId, "300");
   assert.match(env.closedPosts[0]!.text, /^閉じました。ここに書くと起動して続けられます\n/);
-  env.nextClose.push({ result: "not_channel" }, { result: "ended" }, { result: "resuming" });
-  assert.deepEqual(await call(env.server, "POST", "/api/cc/channels/999/close", {}), { status: 404, json: { error: "not_found" } });
+  env.nextClose.push({ result: "ended" }, { result: "resuming" });
   assert.deepEqual(await call(env.server, "POST", "/api/cc/channels/301/close", {}), { status: 409, json: { error: "ended" } });
   assert.deepEqual(await call(env.server, "POST", "/api/cc/channels/300/close", {}), { status: 409, json: { error: "resuming" } });
+  // /messages と同じ引き方: cc でない（#inbox）・知らない・削除済み・/setup 前のサーバーは close を呼ばずに 404
+  for (const id of ["100", "999", "302", "303"]) {
+    assert.deepEqual(await call(env.server, "POST", `/api/cc/channels/${id}/close`, {}), { status: 404, json: { error: "not_found" } }, id);
+  }
   assert.equal(env.closedPosts.length, 1);
-  assert.deepEqual(env.closes, ["300", "999", "301", "300"]);
+  assert.deepEqual(env.closes, ["300", "301", "300"]);
 });
 
 test("webChannelLookup・webChannelNamer: ccChannels を渡したときだけ cc（/setup 済みのサーバーの削除されていない行）。名前は #<チャンネル名>", async (t) => {
@@ -297,4 +312,20 @@ test("webChannelLookup・webChannelNamer: ccChannels を渡したときだけ cc
   assert.equal(namer("300"), "#cc-alpha");
   assert.equal(namer("100"), "#inbox");
   assert.equal(namer("302"), null);
+});
+
+test("ccChannelDescriber: 名前は一覧の名前 → cc_sessions の名前 → チャンネル名から cc- を外したもの（閉じた行でも同じ形）", () => {
+  const describe = ccChannelDescriber({
+    registry: { snapshot: () => ({ sessions: [view(S1, { name: "listed" })], stale: false, unreadable: false, fetchedAt: NOW.getTime() }), touch: () => undefined },
+    workspaceDir: "/home/owner/workspace",
+    home: "/home/owner",
+    sessions: { get: (sessionId: string) => (sessionId === S2 ? ({ name: "stored" } as never) : undefined) },
+    now: () => NOW,
+  })();
+  const row = (sessionId: string, state: "open" | "ended", name: string) =>
+    ({ channelId: "1", guildId: GUILD, sessionId, name, cwd: null, state }) as never;
+  assert.equal(describe(row(S1, "ended", "cc-x")).name, "listed");
+  assert.equal(describe(row(S2, "ended", "cc-x")).name, "stored");
+  assert.equal(describe(row(S3, "open", "cc-from-channel")).name, "from-channel");
+  assert.equal(describe(row(S1, "ended", "cc-x")).info.state, "ended");
 });

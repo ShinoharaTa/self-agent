@@ -984,9 +984,18 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
             home: homedir(),
             sends: ccSends,
             permissions: { store: ccPermissionStore, holdSec: config.ccPermissionHoldSec },
+            sessions: ccSessions,
             now,
           }),
         };
+  // /messages と /api/cc/channels/<id>/close で同じ引き方（Claude Code のチャンネルも通す）
+  const webChannelOf = webChannelLookup({
+    cfg: config,
+    resolveChannel,
+    guildSettings,
+    topicSessions,
+    ...(ccChannels === undefined ? {} : { ccChannels: ccChannelStore }),
+  });
   webServer = createWebServer({
     host: "127.0.0.1",
     port: config.webPort,
@@ -1035,7 +1044,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         topicSessions,
         resolveChannel,
         handler,
-        ...(ccChannels === undefined ? {} : { cc: { store: ccChannelStore, channels: ccChannels } }),
+        ...(ccChannels === undefined ? {} : { cc: { store: ccChannelStore, channels: ccChannels, ...(ccRegistry === undefined ? {} : { registry: ccRegistry }) } }),
         now,
         log,
       }),
@@ -1083,7 +1092,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         // 返事の追いかけ（一覧の follow・/unfollow）
         ...(ccRegistry === undefined ? {} : { follows: ccSessions, log }),
         // セッションの Discord のチャンネル（一覧の channel・/channel）
-        ...(ccChannels === undefined ? {} : { channels: { store: ccChannels, allowedGuildIds: config.allowedGuildIds } }),
+        ...(ccChannels === undefined ? {} : { channels: { store: ccChannels, allowedGuildIds: config.allowedGuildIds, lookup: webChannelOf } }),
         now,
       }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）

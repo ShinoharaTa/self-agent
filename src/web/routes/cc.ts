@@ -67,7 +67,15 @@ export type CcRouteDeps = {
    * セッションの Discord のチャンネル（CC10）。無ければ一覧の channel は null で、/channel は 404。
    * allowedGuildIds は /channel の guildId の許可（SELF_AGENT_ALLOWED_GUILD_IDS）
    */
-  channels?: { store: Pick<CcChannels, "openChannel" | "channelOf" | "defaultGuild" | "close" | "postClosed">; allowedGuildIds: readonly string[] };
+  channels?: {
+    store: Pick<CcChannels, "openChannel" | "channelOf" | "defaultGuild" | "close" | "postClosed">;
+    allowedGuildIds: readonly string[];
+    /**
+     * Web で開けるチャンネルの引き方（routes/channels.ts の webChannelLookup に ccChannels を渡したもの。/messages と同じ）。
+     * POST /api/cc/channels/<id>/close はこれが kind cc を返すチャンネルだけを閉じる（無ければ 404）
+     */
+    lookup?: (channelId: string) => { guildId: string; kind: string } | undefined;
+  };
   /** /unfollow の log（無ければ出さない） */
   log?: (message: string) => void;
   /** 既定は new Date */
@@ -176,11 +184,13 @@ function permissionJson(row: CcPermissionRow, holdSec: number) {
 /**
  * /api/channels の Claude Code のチャンネルの行の今（CC14。docs/plan/claude-code-channels.md §5.2）。返した関数は 1 回の要求の中で使い、
  * 一覧・送信・許可は最初に 1 回だけ読む。ペインは引かず、inTmux は一覧の tmux の有無（画面の写しと送る先の確かめは /api/cc/sessions/<id> と送信が行う）。
- * チャンネルが open でない・一覧に無いセッションは ended
+ * チャンネルが open でない・一覧に無いセッションは ended。名前は一覧の名前 → cc_sessions の名前 → チャンネル名から `cc-` を外したもの（閉じた行でも同じ形）
  */
 export function ccChannelDescriber(
   deps: Pick<CcRouteDeps, "registry" | "workspaceDir" | "home" | "sends" | "now"> & {
     permissions?: { store: Pick<CcPermissionStore, "latestPerSession">; holdSec: number };
+    /** 一覧に居ないセッションの名前（cc_sessions） */
+    sessions?: Pick<CcSessionStore, "get">;
   },
 ): () => (row: CcChannelRow) => { name: string | null; info: WebCcInfo } {
   const now = deps.now ?? (() => new Date());
@@ -192,10 +202,12 @@ export function ccChannelDescriber(
       (deps.permissions?.store.latestPerSession(new Date(at - CC_PERMISSION_RECENT_MS)) ?? []).map((row) => [row.sessionId, row]),
     );
     return (row) => {
-      const view = row.state === "open" || row.state === "resuming" ? sessions.find((session) => session.sessionId === row.sessionId) : undefined;
+      const listed = sessions.find((session) => session.sessionId === row.sessionId);
+      const view = row.state === "open" || row.state === "resuming" ? listed : undefined;
       const permission = permissions.get(row.sessionId);
+      const name = listed?.name ?? deps.sessions?.get(row.sessionId)?.name ?? row.name.replace(/^cc-/, "");
       return {
-        name: view?.name ?? null,
+        name: name === "" ? null : name,
         info: {
           sessionId: row.sessionId,
           state: view === undefined ? "ended" : view.state,
@@ -396,7 +408,10 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
       handle: async ({ params }) => {
         if (registry === undefined || channels === undefined) return NOT_FOUND;
         // /cc close と同じ（open を ended にして完了へ移す）。結果の文はチャンネルにも投稿する
+        registry.touch();
         const channelId = params[0] ?? "";
+        // /messages と同じく、許可した /setup 済みのサーバーの削除されていない Claude Code のチャンネルだけ
+        if (channels.lookup?.(channelId)?.kind !== "cc") return NOT_FOUND;
         const closed = channels.store.close(channelId, { fromWeb: true });
         if (closed.result !== "closed") return CLOSE_STATUS[closed.result];
         channels.store.postClosed(channelId, closeReply(closed).text);
