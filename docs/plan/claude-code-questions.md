@@ -37,15 +37,16 @@
 - `PermissionRequest` の hook の timeout の上限は docs に無い（http hook の既定は 600 秒。§11 の 4）。
 
 ### 1.2 コード（確認）
+> main（9920cd0）の時点の形。#system の経路（`discord-notice.ts`・`CcDiscordNotifier`・`claims` / `release`・`noticeFailure`・`owns`）は Q4（#270）で消した。今の形は §5 と CLAUDE.md。
 - 受け口（`src/cc/hook-server.ts`）: `summarizePermission` は Bash・WebFetch・ファイルのツール以外を `tool_input` の JSON の先頭 500 字にする（`CC_PERMISSION_SUMMARY_MAX_CHARS`）。**`tool_input` の全体は持たない**（`CcPermissionSummary` に無い）。`requestHash` は `tool_name` + `tool_input` の sha256。本文の上限は 1 MB。
-- 保留（`src/cc/permission-hold.ts`）: `request` → `cc_permissions` に `pending` → `SELF_AGENT_CC_PERMISSION_HOLD_SEC` 保留。`answer(id, "allow" | "always" | "deny", via, requestHash)` が `pending` からの compare-and-set。`decisionBody` は `allow` に `updatedInput` を付けない。`observe`（Stop・UserPromptSubmit）・`onListed`（status が waiting でない）で `answered_elsewhere`。`listen` は複数の受け手（`claims` / `held` / `resolved`）、`release` で次の受け手へ。
+- 保留（`src/cc/permission-hold.ts`）: `request` → `cc_permissions` に `pending` → `SELF_AGENT_CC_PERMISSION_HOLD_SEC` 保留。`answer(id, "allow" | "always" | "deny", via, requestHash)` が `pending` からの compare-and-set。`decisionBody` は `allow` に `updatedInput` を付けない。`observe`（Stop・UserPromptSubmit）・`onListed`（status が waiting でない）で `answered_elsewhere`。`listen` は複数の受け手（`claims` / `held` / `resolved`）、`release` で次の受け手へ（Q4 より前の形。Q4 で `claims`・`release` を消し、受け手は `channel-posts.ts` だけ）。
 - 表（`src/store/cc-permissions.ts`・`db.ts` v30〜v32）: `state` の CHECK は 7 つ、`via` の CHECK は `web / discord / hook / status / shutdown / limit`。`state` と `via` の CHECK は独立（`released` + `via web` は通る）。`summary`・`always_rules`・`message_id`・`message_channel_id`。1 セッションに `pending` は 1 件（部分一意索引）。
-- Discord の 1 通（`src/cc/discord-notice.ts` の `permissionNotice` / `permissionResolvedMessage` / `permissionResultLine`。`src/cc/channel-posts.ts` も同じ関数）: 見出し（名前・ディレクトリ・mode）+ ツール名 + 要約のコードブロック + 常に許可の説明 + 「端末や RC のダイアログでも答えられます（ボタンは n 分効きます）」。1 行目 [許可][常に許可][拒否]、2 行目 [RC で開く]。
+- Discord の 1 通（Q4 より前は `src/cc/discord-notice.ts`、Q4 から `src/cc/notice-text.ts` の `permissionNotice` / `permissionResolvedMessage` / `permissionResultLine`。`src/cc/channel-posts.ts` も同じ関数）: 見出し（名前・ディレクトリ・mode）+ ツール名 + 要約のコードブロック + 常に許可の説明 + 「端末や RC のダイアログでも答えられます（ボタンは n 分効きます）」。1 行目 [許可][常に許可][拒否]、2 行目 [RC で開く]。
 - ボタン（`src/app/commands/cc.ts`）: `cc:<種類>:<操作>:<id>` を 2 つ目の語で振り分け（`perm` / `send` / `start` / `keep` / `unfollow` / `pick` / `resume` / `del`）。`cc:perm:*` は `buttons.answer` → `responder.update(resolved.message)`（失敗したら `editMessage`）→ `finally` で `answered`（`ensureFor(permission)`）。
 - Discord の部品（`src/discord/gateway.ts`）: `ComponentRow` は `buttons`（1 行 5 個）/ `links` / `select`（1 行 1 つ・25 項目）。1 メッセージ 5 行。`ModalDef` は TextInput 5 個まで（`short` / `paragraph`・`maxLength`）。`Interaction` は `button` / `select`（`values`）/ `modal`（`fields`）。`responder` は `deferUpdate` / `update` / `reply` / `showModal`。
 - Web（`src/web/routes/cc.ts`）: `permissionJson` は `id / sessionId / state / via / toolName / summary / alwaysRule / alwaysNote / requestHash / permissionMode / createdAt / expiresAt / resolvedAt`。`POST /api/cc/permissions/<id>/allow|always|deny` は `{ requestHash }` 必須。`views.js` の `ccPermissionCard` は `pending` なら [許可][拒否] と「常に許可」のチェック。
-- チャンネル（`src/cc/channels.ts`）: `ensureFor(sessionId, origin, guildId?)` は既にあれば `exists`（終わっていれば開き直す）、無ければ `defaultGuild`（最初のカテゴリ「Claude Code」のあるサーバー）に `openChannel`。作れなければ `not_set_up` / `full` / `failed` を **#system に 1 行（1 時間に 1 回）**（`noticeFailure`）。`openChannel` は一覧に無ければ `not_found`、`findSendablePane` が当たらなければ `not_in_tmux`。`cc_channels.origin` の CHECK は 8 つ（`web / command / web_send / web_start / permission / tool_send / tool_start / github`）。
-- 知らせの振り分け（`src/main.ts:706-753`）: `CcChannelPosts`（チャンネル）を先に `listen`、`config.ccNotify` なら `CcDiscordNotifier`（#system）を後に `listen`。`ccEndedHandler` はチャンネルも追いかけも無いときだけ notifier の `ended`。`rewriteRecovered` は `owns` で振り分け。
+- チャンネル（`src/cc/channels.ts`）: `ensureFor(sessionId, origin, guildId?)` は既にあれば `exists`（終わっていれば開き直す）、無ければ `defaultGuild`（最初のカテゴリ「Claude Code」のあるサーバー）に `openChannel`。作れなければ `not_set_up` / `full` / `failed` を **#system に 1 行（1 時間に 1 回）**（`noticeFailure`。Q4 で消し、log だけにした）。`openChannel` は一覧に無ければ `not_found`、`findSendablePane` が当たらなければ `not_in_tmux`。`cc_channels.origin` の CHECK は 8 つ（`web / command / web_send / web_start / permission / tool_send / tool_start / github`）。
+- 知らせの振り分け（`src/main.ts:706-753`）: `CcChannelPosts`（チャンネル）を先に `listen`、`config.ccNotify` なら `CcDiscordNotifier`（#system）を後に `listen`。`ccEndedHandler` はチャンネルも追いかけも無いときだけ notifier の `ended`。`rewriteRecovered` は `owns` で振り分け（Q4 より前の形。Q4 で `CcDiscordNotifier`・`owns` を消した）。
 - 実行中の行（`src/web/static/chat.js:535-557`・`app.css:1338-1405`）: `details.steps`（`summary` にスピナー + 「作業中…」、中に全手順の `ol.steps-list`）を Bot の吹き出しの中に。既定は開く（`stepsClosed`）。`.msg-bubble .steps` は `--bubble-inset` の地と枠。
 
 ### 1.3 推測・未確認（§11 に集める）
@@ -165,6 +166,7 @@
 | 終わったチャンネルの削除の確認（`cc:del`） | #system | #system のまま（セッションのチャンネルと同じ扱い。決定 2） | — |
 | `cc_send` / `cc_start` の確認 | 頼んだチャンネル | 同じ | — |
 
+- **閉じた（`/cc close`。`ended` でセッションは生きている）チャンネルも、許可の要求・質問・判断待ちで開き直す**（`ensureFor` → `reopenIfListed`。答える場所が要るため。Q4 で確かめた意図どおりの振る舞い）。
 - 「何も起きないセッションには作らない」: 作るきっかけは上の 3 つ（許可の要求・質問・判断待ち）と CC11 の「関わった」だけ。一覧に出た・写し・終了・`cc_list` では作らない。
 - 作る先: `defaultGuild`（`SELF_AGENT_ALLOWED_GUILD_IDS` の順で最初のカテゴリ「Claude Code」のあるサーバー）。
 - **tmux の外のセッション**（RC のサーバーモードなど。`openChannel` が `not_in_tmux` で断る）: 知らせの origin（`permission` / `question` / `waiting`）のときは **tmux の外でも作る**（`create` の `findSendablePane` の確かめを飛ばす）。そのチャンネルへの発言は `sender.submit` が `not_in_tmux` で断るので、返信で「このセッションは tmux の外なので、ここからは送れません（RC で開いてください）」（最初の投稿にも同じ 1 行）。許可の応答は hook なので tmux の外でも効く（未確認。§11 の 6）。決定 §13.1 の 3。
