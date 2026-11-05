@@ -10,6 +10,9 @@
 // - 終了: self-agent が起動したセッション（started_by が owner でない）が claude agents --json の一覧から消えたら info で 1 行
 //   （1 セッション 1 回。プロセスの中。SessionEnd の hook は根拠にしない）。
 // 投稿先は SELF_AGENT_ALLOWED_GUILD_IDS の順で最初の、#system のあるサーバー（1 通だけ出すため）。
+// Claude Code のチャンネル（docs/plan/claude-code-channels.md §3.5。CC12）が開いているセッションの許可の要求・判断待ちは cc/channel-posts.ts が
+// そのチャンネルに出すので、ここでは出さない（許可の要求は permission-hold.ts が先に channel-posts に尋ね、引き受けたものはここに来ない。
+// 判断待ちは hasChannel で除く。1 時間の上限は CcWaitBudget を channel-posts と共有して 1 つで数える）。終了はチャンネルがあれば cc/channels.ts の ccEndedHandler が出さない。
 // 名前・ディレクトリ・要約・ルールは hook から来たデータなので、Markdown とメンションを無効にする（要約はコードブロックに入れる）。
 // log は id と件数・失敗の種類だけ（名前・cwd・ツール名・要約・セッションの ID は出さない）
 import type { SystemNotifier } from "../app/system-notice.ts";
@@ -43,6 +46,56 @@ const LABEL_MAX_CHARS = 100;
 const MESSAGE_MAX_CHARS = 2000;
 /** 終了を知らせたセッションを覚えておく数（超えたら古いものから忘れる） */
 const ENDED_MEMORY = 1000;
+
+/** 判断待ちの知らせの 1 時間の上限（#system と Claude Code のチャンネルで共有して 1 つで数える。プロセスの中） */
+export class CcWaitBudget {
+  private times: number[] = [];
+
+  /** 窓の中で CC_WAIT_NOTIFY_LIMIT 件に達していなければ 1 件使って true */
+  take(now: number): boolean {
+    this.times = this.times.filter((at) => now - at < CC_WAIT_NOTIFY_WINDOW_MS);
+    if (this.times.length >= CC_WAIT_NOTIFY_LIMIT) return false;
+    this.times.push(now);
+    return true;
+  }
+}
+
+/**
+ * 知らせる判断待ち: 許可の要求以外の判断待ちが CC_WAIT_NOTIFY_MS 続き、その待ちをまだ知らせていないセッション。保留中か直近 60 秒に
+ * 解決した許可の要求（released を除く）のあるセッションは除く。include で絞る（#system とチャンネルで分ける）
+ */
+export function dueWaitingViews(
+  deps: {
+    registry: Pick<CcRegistry, "snapshot">;
+    permissions: Pick<CcPermissionStore, "sessionsAnsweredSince">;
+    sessions: Pick<CcSessionStore, "get">;
+  },
+  now: number,
+  include: (sessionId: string) => boolean,
+): CcSessionView[] {
+  const views = deps.registry
+    .snapshot()
+    .sessions.filter((view) => view.state === "needs_input" && !view.pendingPermission && include(view.sessionId));
+  if (views.length === 0) return [];
+  const answered = deps.permissions.sessionsAnsweredSince(new Date(now - CC_PERMISSION_SUPPRESS_MS));
+  return views.filter((view) => {
+    if (answered.has(view.sessionId) || view.waitingSince === undefined || now - view.waitingSince < CC_WAIT_NOTIFY_MS) return false;
+    const notifiedAt = Date.parse(deps.sessions.get(view.sessionId)?.notifiedAt ?? "");
+    return !(Number.isFinite(notifiedAt) && notifiedAt >= view.waitingSince);
+  });
+}
+
+/** 表示に使うセッションの情報（DB の行。生きていれば一覧の RC の id も）。どちらにも無ければ undefined */
+export function noticeSessionOf(
+  sessions: Pick<CcSessionStore, "get">,
+  registry: Pick<CcRegistry, "snapshot">,
+  sessionId: string,
+): CcNoticeSession | undefined {
+  const row = sessions.get(sessionId);
+  const view = registry.snapshot().sessions.find((candidate) => candidate.sessionId === sessionId);
+  if (row === undefined && view === undefined) return undefined;
+  return { name: row?.name ?? view?.name ?? null, cwd: row?.cwd ?? view?.cwd ?? null, bridgeSessionId: view?.bridgeSessionId };
+}
 
 /** 許可の要求のボタンの custom_id（`cc:perm:<action>:<id>`。app/commands/cc.ts が受ける） */
 export function permissionCustomId(action: "allow" | "always" | "deny", id: number): string {
@@ -234,6 +287,10 @@ export type CcDiscordNotifierDeps = {
   permissions: Pick<CcPermissionStore, "get" | "setMessage" | "sessionsAnsweredSince">;
   sessions: Pick<CcSessionStore, "get" | "setNotifiedAt">;
   registry: Pick<CcRegistry, "snapshot">;
+  /** Claude Code のチャンネルが開いているセッションか（判断待ちはそちらに出すので、ここでは出さない。CC12）。無ければどれも無い */
+  hasChannel?: (sessionId: string) => boolean;
+  /** 判断待ちの知らせの 1 時間の上限（cc/channel-posts.ts と共有する。無ければ自分だけで数える） */
+  waitBudget?: CcWaitBudget;
   /** ~ の場所（ディレクトリの表示） */
   home: string;
   now: () => Date;
@@ -262,8 +319,8 @@ export class CcDiscordNotifier implements CcPermissionListener {
   private started = false;
   private stopped = false;
   private readonly inFlight = new Set<Promise<void>>();
-  /** 窓の中で 1 通ずつ出した判断待ちの知らせの時刻 */
-  private waitTimes: number[] = [];
+  /** 判断待ちの知らせの 1 時間の上限 */
+  private readonly waitBudget: CcWaitBudget;
   private overflow: Overflow | undefined;
   /** 終了を知らせたセッション（古い順） */
   private readonly endedIds = new Set<string>();
@@ -273,6 +330,7 @@ export class CcDiscordNotifier implements CcPermissionListener {
   constructor(deps: CcDiscordNotifierDeps) {
     this.deps = deps;
     this.timers = deps.timers ?? REAL_TIMERS;
+    this.waitBudget = deps.waitBudget ?? new CcWaitBudget();
   }
 
   /** 判断待ちを CC_WAIT_CHECK_MS ごとに確かめ始める。stop の後・2 回目は何もしない */
@@ -351,26 +409,17 @@ export class CcDiscordNotifier implements CcPermissionListener {
   /** 判断待ちを 1 回確かめる（周期のほか、テストから呼ぶ） */
   checkWaiting(): void {
     if (this.stopped) return;
-    const { registry, permissions, sessions } = this.deps;
+    const { sessions, hasChannel } = this.deps;
     const now = this.deps.now().getTime();
-    const views = registry.snapshot().sessions.filter((view) => view.state === "needs_input" && !view.pendingPermission);
-    if (views.length === 0) return;
-    // 許可の要求で 1 通出しているセッション（保留中か、直近に解決した行がある）には出さない
-    const answered = permissions.sessionsAnsweredSince(new Date(now - CC_PERMISSION_SUPPRESS_MS));
-    const due = views.filter((view) => {
-      if (answered.has(view.sessionId) || view.waitingSince === undefined || now - view.waitingSince < CC_WAIT_NOTIFY_MS) return false;
-      const notifiedAt = Date.parse(sessions.get(view.sessionId)?.notifiedAt ?? "");
-      return !(Number.isFinite(notifiedAt) && notifiedAt >= view.waitingSince);
-    });
+    // 許可の要求で 1 通出しているセッション（保留中か、直近に解決した行がある）と、Claude Code のチャンネルのあるセッションには出さない
+    const due = dueWaitingViews(this.deps, now, (sessionId) => hasChannel?.(sessionId) !== true);
     if (due.length === 0) return;
     const target = this.target();
     if (target === undefined) return;
     for (const view of due) {
       // 出せなくてもやり直さない（待ちごとに 1 回）
       sessions.setNotifiedAt(view.sessionId, new Date(now));
-      this.waitTimes = this.waitTimes.filter((at) => now - at < CC_WAIT_NOTIFY_WINDOW_MS);
-      if (this.waitTimes.length < CC_WAIT_NOTIFY_LIMIT) {
-        this.waitTimes.push(now);
+      if (this.waitBudget.take(now)) {
         this.overflow = undefined;
         const message = waitingNotice(view, { ...this.places(), ownerUserId: this.deps.cfg.ownerUserId });
         this.track(
@@ -436,10 +485,7 @@ export class CcDiscordNotifier implements CcPermissionListener {
 
   /** 表示に使うセッションの情報（DB の行。生きていれば一覧の RC の id も） */
   private sessionOf(sessionId: string): CcNoticeSession | undefined {
-    const row = this.deps.sessions.get(sessionId);
-    const view = this.deps.registry.snapshot().sessions.find((candidate) => candidate.sessionId === sessionId);
-    if (row === undefined && view === undefined) return undefined;
-    return { name: row?.name ?? view?.name ?? null, cwd: row?.cwd ?? view?.cwd ?? null, bridgeSessionId: view?.bridgeSessionId };
+    return noticeSessionOf(this.deps.sessions, this.deps.registry, sessionId);
   }
 
   private async postPermission(row: CcPermissionRow): Promise<void> {

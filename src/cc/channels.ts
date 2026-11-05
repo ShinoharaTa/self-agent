@@ -196,7 +196,7 @@ export function ccChannelIntro(name: string | null, dir: string | null, origin: 
   const label = name === null || name === "" ? "（名前なし）" : name;
   return (
     `Claude Code のセッション「${plain(label)}」${dir === null || dir === "" ? "" : `（${plain(dir)}）`}のチャンネルです（${ORIGIN_LABEL[origin]} で作りました）。` +
-    "ここに書くとこのセッションに届きます。返事はここに出ます。セッションが終わると完了に移し、戻るとここに戻します"
+    "ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます。セッションが終わると完了に移し、戻るとここに戻します"
   );
 }
 

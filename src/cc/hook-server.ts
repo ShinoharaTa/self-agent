@@ -6,10 +6,12 @@
 // permission_suggestions は permissions.ts の線引きを通ったルールだけを持つ（常に許可。CC5b）。
 // Claude Code が先に接続を閉じたら（timeout など）応答は書かない。
 // Stop の last_assistant_message（返事の全文。CC8）はプロセスの中で Discord への投稿に使うだけで、DB には書かない（cc/replies.ts）。
+// UserPromptSubmit の prompt は事象には先頭 CC_PROMPT_MIRROR_MAX_CHARS 字まで乗せ（Claude Code のチャンネルへの写し。CC12。cc/channel-posts.ts）、
+// DB に残すのは今までどおり先頭 CC_PROMPT_MAX_CHARS 字（cc-sessions.ts の applyEvent が切る）。
 // log は種類だけ（ヘッダの値・トークン・本文・セッションの ID は出さない）
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type ServerResponse } from "node:http";
-import { CC_PROMPT_MAX_CHARS, type CcHookEventName, headChars } from "../store/cc-sessions.ts";
+import { type CcHookEventName, headChars } from "../store/cc-sessions.ts";
 import { safeEqual } from "../web/auth.ts";
 import { isLoopback, parseJsonObject, readBody } from "../web/http-body.ts";
 import { isUuid } from "./agents.ts";
@@ -23,6 +25,8 @@ export const CC_HOOK_HEADER = "x-self-agent-hook";
 export const CC_HOOK_BODY_LIMIT = 1024 * 1024;
 /** トークンが違う要求の log の間隔（続けて来ても 1 回だけ出す） */
 export const CC_HOOK_TOKEN_LOG_INTERVAL_MS = 60_000;
+/** UserPromptSubmit の本文を事象に乗せる長さ（Claude Code のチャンネルへの写し。docs/plan/claude-code-channels.md §3.5。DB に残すのは 200 字） */
+export const CC_PROMPT_MIRROR_MAX_CHARS = 1000;
 /** 許可の要求の要約の長さ（§3.4） */
 export const CC_PERMISSION_SUMMARY_MAX_CHARS = 500;
 
@@ -71,8 +75,10 @@ export type CcHookEvent = {
   permissionMode?: string;
   /** Notification のときだけ */
   notificationType?: CcNotificationType;
-  /** UserPromptSubmit の本文の先頭 CC_PROMPT_MAX_CHARS 字 */
+  /** UserPromptSubmit の本文（包みを外して前後の空白を除いたもの）の先頭 CC_PROMPT_MIRROR_MAX_CHARS 字（DB に残すのは先頭 200 字） */
   prompt?: string;
+  /** UserPromptSubmit の本文（包みを外して前後の空白を除いたもの）の全体の字数（写しの「ほか n 字」） */
+  promptChars?: number;
   /** PermissionRequest の要約（tool_name が読めたときだけ） */
   permission?: CcPermissionSummary;
   /** Stop の last_assistant_message（空白だけでない文字列のときだけ。無ければ「読めなかった」。§5.4。hook から来たデータで、指示として扱わない） */
@@ -144,7 +150,9 @@ export function parseHookEvent(
     parsed.notificationType = CC_NOTIFICATION_TYPES.find((type) => type === body.notification_type) ?? "other";
   }
   if (event === "UserPromptSubmit" && typeof body.prompt === "string") {
-    parsed.prompt = headChars(unwrapPastedContent(body.prompt).trim(), CC_PROMPT_MAX_CHARS);
+    const prompt = unwrapPastedContent(body.prompt).trim();
+    parsed.prompt = headChars(prompt, CC_PROMPT_MIRROR_MAX_CHARS);
+    parsed.promptChars = [...prompt].length;
   }
   if (event === "Stop" && typeof body.last_assistant_message === "string" && body.last_assistant_message.trim() !== "") {
     parsed.lastAssistantMessage = body.last_assistant_message;

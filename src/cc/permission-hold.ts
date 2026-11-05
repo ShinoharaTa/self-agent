@@ -8,7 +8,9 @@
 // 保留が切れたら空の本文で expired、Claude Code が先に接続を閉じたら書かずに expired、停止では全部に空の本文で released（shutdown）、
 // 同じセッションから 1 分に 20 件を超えたら保留せず released（limit）。一覧に無いセッションの要求は記録も保留もしない。
 // allow を返すのはオーナーが押したときだけ（自動で allow する経路は無い）。
-// 保留を始めた・終わった行は listen で渡した相手（discord-notice.ts。#system の 1 通の投稿と書き換え。CC5c）に知らせる。
+// 保留を始めた・終わった行は listen で渡した相手に知らせる（複数。CC12）。保留を始めた行は、渡した順に claims が true を返した最初の相手
+// （claims の無い相手は全部を引き受ける）だけに知らせ（cc/channel-posts.ts → discord-notice.ts の順。1 件は 1 か所に出す）、
+// 終わった行はその相手だけに知らせる（このプロセスで保留を始めたものでなければ全部に）。
 // log は「Claude Code: 許可の要求（#id）→ <状態>（<経路>）」と件数だけ（ツール名・要約・セッションの ID は出さない）
 import type { CcPermissionRow, CcPermissionState, CcPermissionStore, CcPermissionVia } from "../store/cc-permissions.ts";
 import type { CcHookEvent } from "./hook-server.ts";
@@ -63,8 +65,10 @@ export type CcPermissionHoldDeps = {
 /** 押した結果。not_found = その id の行が無い、stale = 保留していない（終わった・時間切れ・他で答えられた）か request_hash が合わない */
 export type CcAnswerResult = { ok: true; state: CcPermissionState } | { ok: false; reason: "not_found" | "stale" };
 
-/** 保留を始めた・終わった行の受け手（discord-notice.ts の CcDiscordNotifier）。投げても保留には響かない（log だけ） */
+/** 保留を始めた・終わった行の受け手（cc/channel-posts.ts・discord-notice.ts）。投げても保留には響かない（log だけ） */
 export type CcPermissionListener = {
+  /** 保留を始めた行を引き受けるか（無ければ全部を引き受ける）。先に true を返した相手だけが held を受ける */
+  claims?(row: CcPermissionRow): boolean;
   /** pending で記録した直後 */
   held(row: CcPermissionRow): void;
   /** pending から移した直後（移した後の行） */
@@ -94,16 +98,18 @@ export class CcPermissionHold {
   private stopped = false;
   /** 一覧に無いセッションの要求を最後に log に出した時刻 */
   private unknownLoggedAt: number | undefined;
-  private listener: CcPermissionListener | undefined;
+  private readonly listeners: CcPermissionListener[] = [];
+  /** 保留を始めた行を引き受けた相手（終わったときにその相手だけに知らせる） */
+  private readonly claimedBy = new Map<number, CcPermissionListener>();
 
   constructor(deps: CcPermissionHoldDeps) {
     this.deps = deps;
     this.timers = deps.timers ?? REAL_TIMERS;
   }
 
-  /** 保留を始めた・終わった行の受け手を決める（main が作った後に渡す） */
+  /** 保留を始めた・終わった行の受け手を足す（main が作った後に渡す。先に足した相手から claims を尋ねる） */
   listen(listener: CcPermissionListener): void {
-    this.listener = listener;
+    this.listeners.push(listener);
   }
 
   /**
@@ -177,7 +183,7 @@ export class CcPermissionHold {
         this.close(row.id, "expired", null);
       };
       this.held.set(row.id, held);
-      this.tell("held", row);
+      this.tellHeld(row);
       held.cancelTimer = this.timers.after(() => this.close(row.id, "expired", null), this.deps.cfg.ccPermissionHoldSec * 1000);
       if (closed.aborted) onClosed();
       else closed.addEventListener("abort", onClosed, { once: true });
@@ -263,15 +269,35 @@ export class CcPermissionHold {
     if (moved) {
       this.logResult(id, to, via);
       const row = this.deps.store.get(id);
-      if (row !== undefined) this.tell("resolved", row);
+      const claimant = this.claimedBy.get(id);
+      this.claimedBy.delete(id);
+      if (row !== undefined) for (const listener of claimant === undefined ? this.listeners : [claimant]) this.tell(() => listener.resolved(row));
+    } else {
+      this.claimedBy.delete(id);
     }
     return moved;
   }
 
-  private tell(kind: keyof CcPermissionListener, row: CcPermissionRow): void {
-    if (this.listener === undefined) return;
+  /** 保留を始めた行を、claims が true を返した最初の相手（claims の無い相手は引き受ける）だけに知らせる */
+  private tellHeld(row: CcPermissionRow): void {
+    for (const listener of this.listeners) {
+      let claimed = true;
+      try {
+        claimed = listener.claims === undefined || listener.claims(row);
+      } catch (error) {
+        claimed = false;
+        this.deps.log(`Claude Code: 許可の要求の知らせに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
+      }
+      if (!claimed) continue;
+      this.claimedBy.set(row.id, listener);
+      this.tell(() => listener.held(row));
+      return;
+    }
+  }
+
+  private tell(fn: () => void): void {
     try {
-      this.listener[kind](row);
+      fn();
     } catch (error) {
       this.deps.log(`Claude Code: 許可の要求の知らせに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
     }

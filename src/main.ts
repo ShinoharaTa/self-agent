@@ -44,7 +44,8 @@ import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
 import { CcChannels, ccEndedHandler, routeCcChannelMessages } from "./cc/channels.ts";
-import { CcDiscordNotifier } from "./cc/discord-notice.ts";
+import { CcChannelPosts } from "./cc/channel-posts.ts";
+import { CcDiscordNotifier, CcWaitBudget } from "./cc/discord-notice.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
 import { CcPermissionHold } from "./cc/permission-hold.ts";
@@ -626,9 +627,11 @@ const reminderScheduler = new ReminderScheduler({
 // hook の受け口（127.0.0.1:SELF_AGENT_CC_HOOK_PORT。Web UI とは別のサーバー）で事象を受ける。Web から送る本文は cc_sends に積み、
 // 入力待ちのときだけ tmux で貼る（cc/sender.ts。待ち行列は 30 秒ごと）。Web から新しいセッションを SELF_AGENT_WORKSPACE_DIR の直下に起動する（cc/starter.ts）。
 // 許可の要求は応答を保留し、Web と #system の [許可]・[このセッションでは常に許可]・[拒否] で返す（cc/permission-hold.ts）。
-// SELF_AGENT_CC_NOTIFY が 1 なら、許可の要求・判断待ち・self-agent が起動したセッションの終了を #system に出す（cc/discord-notice.ts）
+// SELF_AGENT_CC_NOTIFY が 1 なら、許可の要求・判断待ち・self-agent が起動したセッションの終了を #system に出す（cc/discord-notice.ts）。
+// Claude Code のチャンネルが開いているセッションの許可の要求・判断待ちと端末・RC からの指示の写しは、SELF_AGENT_CC_NOTIFY によらずそのチャンネルに出す（cc/channel-posts.ts。CC12）
 let ccRegistry: CcRegistry | undefined;
 let ccNotifier: CcDiscordNotifier | undefined;
+let ccChannelPosts: CcChannelPosts | undefined;
 let ccPermissionButtons: CcPermissionButtons | undefined;
 // 再起動の前に保留していて expired にした許可の要求（#system の 1 通を「時間切れ」に書き換える）
 let ccRecoveredPermissions: CcPermissionRow[] = [];
@@ -684,14 +687,34 @@ if (
       ccChannels?.revived(session);
     },
     // 採った hook の事象（Stop）を返事の追いかけと送信に渡す（Stop で作業中に積んだ送信を周期を待たずに試す）
+    // 端末・RC から打った指示（UserPromptSubmit）は、チャンネルがあればそこに写す（CC12）
     onEvent: (event) => {
       ccSender?.onEvent(event);
       ccReplier?.onEvent(event);
+      ccChannelPosts?.onEvent(event);
     },
     log,
   });
   knownSessions = registry;
   ccRegistry = registry;
+  // 判断待ちの知らせの 1 時間の上限は #system とチャンネルで 1 つ
+  const waitBudget = new CcWaitBudget();
+  // チャンネルが開いているセッションの許可の要求は、#system より先にチャンネルが引き受ける（1 件は 1 か所）
+  const channelPosts = new CcChannelPosts({
+    cfg: config,
+    channels: ccChannelStore,
+    gateway,
+    permissions: ccPermissionStore,
+    sessions: ccSessions,
+    sends: ccSends,
+    registry,
+    waitBudget,
+    home: homedir(),
+    now,
+    log,
+  });
+  ccChannelPosts = channelPosts;
+  permissionHold.listen(channelPosts);
   if (config.ccNotify) {
     const notifier = new CcDiscordNotifier({
       cfg: config,
@@ -702,19 +725,23 @@ if (
       permissions: ccPermissionStore,
       sessions: ccSessions,
       registry,
+      // チャンネルのあるセッションの判断待ちは channelPosts が出す
+      hasChannel: (sessionId) => ccChannelStore.openFor(sessionId) !== undefined,
+      waitBudget,
       home: homedir(),
       now,
       log,
     });
     ccNotifier = notifier;
     permissionHold.listen(notifier);
-    ccPermissionButtons = {
-      answer: (id, decision) => permissionHold.answer(id, decision, "discord"),
-      resolvedMessage: (id) => notifier.resolvedMessage(id),
-      // 答えた（関わった）ら、押したサーバーにそのセッションのチャンネルを作る（CC11）
-      answered: (id, guildId) => ccPermissionAnswered(id, guildId ?? undefined),
-    };
   }
+  // 許可の要求のボタン（#system とチャンネルのどちらの 1 通でも）。SELF_AGENT_CC_NOTIFY=0 でもチャンネルのボタンが効くよう、notifier によらず作る
+  ccPermissionButtons = {
+    answer: (id, decision) => permissionHold.answer(id, decision, "discord"),
+    resolvedMessage: (id) => channelPosts.resolvedMessage(id),
+    // 答えた（関わった）ら、押したサーバーにそのセッションのチャンネルを作る（CC11）
+    answered: (id, guildId) => ccPermissionAnswered(id, guildId ?? undefined),
+  };
   // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする（#system の 1 通は Discord につないだ後に書き換える）
   ccRecoveredPermissions = permissionHold.recover();
   const hookServer = createCcHookServer({
@@ -1069,6 +1096,8 @@ const lifecycle = createShutdown(
     ...(ccPermissions === undefined ? {} : { ccPermissions }),
     // #system への知らせ（停止の後は新しく出さず、保留をやめた 1 通の書き換えは待つ）
     ...(ccNotifier === undefined ? {} : { ccNotifier }),
+    // Claude Code のチャンネルへの許可の要求・判断待ち・写し（同じく）
+    ...(ccChannelPosts === undefined ? {} : { ccChannelPosts }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     ccConfirmExpirer,
     ...(ccReplier === undefined ? {} : { ccReplier }),
@@ -1144,8 +1173,11 @@ githubPoller?.start();
 ccRegistry?.start();
 ccSender?.start();
 ccStarter?.start();
-ccNotifier?.rewriteRecovered(ccRecoveredPermissions);
+// 再起動の前に保留していた要求の 1 通を「時間切れ」に書き換える（チャンネルに出したものと #system に出したものに分ける）
+ccChannelPosts?.rewriteRecovered(ccRecoveredPermissions);
+ccNotifier?.rewriteRecovered(ccRecoveredPermissions.filter((row) => ccChannelPosts?.owns(row) !== true));
 ccNotifier?.start();
+ccChannelPosts?.start();
 ccConfirmExpirer.start();
 ccReplier?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

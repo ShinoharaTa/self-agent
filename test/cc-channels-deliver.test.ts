@@ -381,7 +381,7 @@ test("きっかけ（Web から送った）: queued の直後に web_send のチ
   assert.equal(result.ok && result.channelId, "chan-1");
   const channel = s.store.openFor(S2)!;
   assert.deepEqual([channel.channelId, channel.origin, channel.guildId], ["chan-1", "web_send", "guild-1"]);
-  assert.match(s.gateway.posts[0]!.message.text, /Web からの送信 で作りました）。ここに書くとこのセッションに届きます。返事はここに出ます/);
+  assert.match(s.gateway.posts[0]!.message.text, /Web からの送信 で作りました）。ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます/);
   assert.doesNotMatch(s.gateway.posts[0]!.message.text, /届きません/);
   assert.deepEqual([s.gateway.posts[1]!.channelId, s.gateway.posts[1]!.message.text], ["chan-1", `（Web から）\n${SECRET_TEXT}`]);
   assert.equal(s.gateway.posts[1]!.message.suppressEmbeds, true);
