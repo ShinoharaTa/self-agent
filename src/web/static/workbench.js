@@ -686,6 +686,8 @@
     const sessionWhy = sessionWhyOf("セッションの会話のタブで使えます");
     return [
       { label: "新しいセッションを作る", keys: "/new", detail: "題名と人格を決めて作ります", run: newSession },
+      // Claude Code の起動（会話の一覧の群「Claude Code」の [Claude Code を起動] と同じダイアログ）。連携が無効なら出さない
+      ...(SA.store.ccEnabled() ? [{ label: "Claude Code を起動", detail: "この機械の tmux に新しいセッションを作ります", run: ccStart }] : []),
       { label: "今のセッションを閉じる", keys: "/close", detail: "要約してから完了に移します", run: sessionOnly(() => SA.chat.closeSession(ch.id)), why: sessionWhy },
       { label: "今のセッションを待ちにする", keys: "/wait", detail: "発言すると進行中に戻ります", run: sessionOnly(() => SA.chat.setWaiting(ch.id)), why: sessionWhy },
       { label: "会話を新しくする", keys: "/renew", detail: "要約して新しい会話に引き継ぎます", run: ch && !busy ? () => SA.chat.renew(ch.id) : null, why: busy ? SA.chat.BUSY_TEXT : "会話のタブで使えます" },
