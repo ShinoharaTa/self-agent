@@ -12,7 +12,7 @@ import {
   createCcComponent,
   openResultReply,
 } from "../src/app/commands/cc.ts";
-import { type CommandDeps, createCommands } from "../src/app/interactions.ts";
+import { type CommandDeps, createCommands, createInteractionHandler } from "../src/app/interactions.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { FakeResponder } from "./helpers/responder.ts";
@@ -179,4 +179,23 @@ test("cc:perm（CC11）: 答えたら押したサーバーで answered を呼ぶ
   ok = false;
   await component.handle(press(), new FakeResponder());
   assert.deepEqual(answered, [[7, "guild-1"]]);
+});
+
+test("cc:q:*（Q2）: モーダルの送信・セレクトも名前空間 cc で cc のハンドラに届く。ボタンの口が無ければ本人にだけ古い", async () => {
+  const handle = createInteractionHandler({
+    cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },
+    commands: [],
+    components: [createCcComponent({ gateway: new FakeGateway(), log: () => {} })],
+    log: () => {},
+  });
+  const base = { guildId: "guild-1", channelId: "channel-1", userId: "owner-1", createdAt: NOW };
+  for (const interaction of [
+    { ...base, kind: "modal", customId: "cc:q:text:1:0", fields: { text: "x" } },
+    { ...base, kind: "select", customId: "cc:q:sel:1:0", values: ["0"] },
+    { ...base, kind: "button", customId: "cc:q:drop:1" },
+  ] as Interaction[]) {
+    const responder = new FakeResponder();
+    await handle(interaction, responder);
+    assert.deepEqual(responder.calls, [{ method: "reply", message: { text: "この操作は古くなっています", ephemeral: true } }], interaction.kind);
+  }
 });

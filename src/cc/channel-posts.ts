@@ -5,6 +5,8 @@
 //   [RC で開く]）を出し、cc_permissions.message_channel_id に残す。終わったら（Web で押された・他で答えられた・時間切れ・停止・再起動の前に残った）
 //   その 1 通を書き換えてボタンを外す。Discord で押されたものは app/commands/cc.ts が応答で書き換える。チャンネルの無いセッションは #system のまま。
 //   チャンネルに出せなかったら（投稿の失敗・チャンネルが見つからない）引き受けを戻し（permission-hold.ts の release）、#system に落とす。
+//   質問（AskUserQuestion。docs/plan/claude-code-questions.md §3。Q2）の行は選択肢のボタン・セレクトの 1 通（discord-notice.ts の questionNotice）で、
+//   押された操作（app/commands/cc-question.ts）が pendingQuestion・questionStepMessage で次の問に書き換え、終わったら答えの行にする。
 // - 判断待ち: discord-notice.ts と同じ条件（許可の要求以外が 60 秒）で、チャンネルのあるセッションだけをそのチャンネルに出す。1 時間の上限は
 //   discord-notice.ts と CcWaitBudget を共有して 1 つで数え、超えた分は出さずに、そのチャンネルに 1 時間に 1 回だけ短い 1 行（メンションなし）を出す。
 // - 端末・RC から打った指示の写し: UserPromptSubmit のうち self-agent が届けたものでないものを「（端末か RC から）」+ 本文の先頭
@@ -35,10 +37,14 @@ import {
   permissionNotice,
   permissionResolvedMessage,
   permissionResultLine,
+  questionHistoryText,
+  questionNotice,
+  questionResultHistoryText,
   waitingNotice,
 } from "./discord-notice.ts";
 import { CC_PROMPT_MIRROR_MAX_CHARS, type CcHookEvent } from "./hook-server.ts";
 import type { CcPermissionListener } from "./permission-hold.ts";
+import { type CcQuestion, type CcQuestionPick, parseQuestionInput } from "./questions.ts";
 import type { CcRegistry, CcTimers } from "./registry.ts";
 import { promptKey, singleLine } from "./sender.ts";
 
@@ -91,7 +97,7 @@ export function ccPromptMirrorTexts(prompt: string, total: number): string[] {
 }
 
 export type CcChannelPostsDeps = {
-  cfg: Pick<Config, "ownerUserId" | "workspaceDir" | "ccPermissionHoldSec">;
+  cfg: Pick<Config, "ownerUserId" | "workspaceDir" | "ccPermissionHoldSec" | "ccQuestionHoldSec">;
   /** 開いているチャンネル（cc_channels） */
   channels: Pick<CcChannelStore, "openFor" | "get">;
   /** 投稿・書き換え（既定の人格の Bot） */
@@ -114,13 +120,19 @@ export type CcChannelPostsDeps = {
   log: (message: string) => void;
 };
 
-/** 許可の要求の Web の会話の 1 行（純関数。文字のまま） */
-export function permissionHistoryText(row: Pick<CcPermissionRow, "toolName" | "summary">): string {
+/** 許可の要求の Web の会話の 1 行（純関数。文字のまま）。質問の行は「質問: …（n 問）」 */
+export function permissionHistoryText(row: Pick<CcPermissionRow, "toolName" | "summary" | "questionInput">): string {
+  const parsed = parseQuestionInput(row.questionInput);
+  if (parsed !== undefined) return questionHistoryText(parsed.questions);
   return `許可を待っています: ${row.toolName}\n${row.summary}`;
 }
 
-/** 終わった許可の要求の Web の会話の 1 行（純関数）。pending なら undefined */
-export function permissionResultHistoryText(row: Pick<CcPermissionRow, "toolName" | "state" | "via" | "alwaysRules">): string | undefined {
+/** 終わった許可の要求の Web の会話の 1 行（純関数）。pending なら undefined。質問の行は「質問の答え: …」 */
+export function permissionResultHistoryText(
+  row: Pick<CcPermissionRow, "toolName" | "state" | "via" | "alwaysRules" | "questionInput" | "answers">,
+): string | undefined {
+  const parsed = parseQuestionInput(row.questionInput);
+  if (parsed !== undefined) return questionResultHistoryText(row, parsed.questions);
   const line = permissionResultLine(row, undefined);
   return line === undefined ? undefined : `許可の要求（${row.toolName}）: ${line}`;
 }
@@ -201,6 +213,35 @@ export class CcChannelPosts implements CcPermissionListener {
       channelId: row.messageChannelId,
       messageId: row.messageId,
     };
+  }
+
+  /**
+   * 保留中（pending）の質問の行の問と request_hash（app/commands/cc-question.ts が押された操作を確かめる）。行が無い・pending でない・
+   * question_input が読めなければ undefined
+   */
+  pendingQuestion(id: number): { requestHash: string; questions: CcQuestion[] } | undefined {
+    const row = this.deps.permissions.get(id);
+    if (row === undefined || row.state !== "pending") return undefined;
+    const parsed = parseQuestionInput(row.questionInput);
+    return parsed === undefined ? undefined : { requestHash: row.requestHash, questions: parsed.questions };
+  }
+
+  /**
+   * 質問の次の問の 1 通と、それを出した場所（app/commands/cc-question.ts の応答で書き換える。#system に出したものも同じ形）。
+   * picks は答えた問の答え。書き換えでは鳴らさないのでメンションは付けない。行が無い・質問でなければ undefined
+   */
+  questionStepMessage(
+    id: number,
+    picks: readonly CcQuestionPick[],
+  ): { message: OutgoingMessage; channelId: string | null; messageId: string | null } | undefined {
+    const row = this.deps.permissions.get(id);
+    const parsed = parseQuestionInput(row?.questionInput ?? null);
+    if (row === undefined || parsed === undefined) return undefined;
+    const message = questionNotice(row, parsed.questions, picks, this.sessionOf(row.sessionId), {
+      ...this.places(),
+      holdSec: this.deps.cfg.ccQuestionHoldSec,
+    });
+    return { message: { ...message, suppressEmbeds: true }, channelId: row.messageChannelId, messageId: row.messageId };
   }
 
   /** その要求の 1 通を Claude Code のチャンネルに出したか（再起動の前の行の書き換えを振り分ける） */
@@ -343,6 +384,7 @@ export class CcChannelPosts implements CcPermissionListener {
     const message = permissionNotice(row, this.sessionOf(row.sessionId), {
       ...this.places(),
       holdSec: cfg.ccPermissionHoldSec,
+      questionHoldSec: cfg.ccQuestionHoldSec,
       ownerUserId: cfg.ownerUserId,
     });
     let messageId: string;

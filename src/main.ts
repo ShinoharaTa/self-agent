@@ -45,6 +45,7 @@ import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
 import { CcChannels, ccEndedHandler, ccPermissionAnsweredHandler, routeCcChannelMessages } from "./cc/channels.ts";
 import { CcChannelPosts } from "./cc/channel-posts.ts";
+import { CcQuestionFlow } from "./cc/question-flow.ts";
 import { CcDiscordNotifier, CcWaitBudget } from "./cc/discord-notice.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
@@ -750,6 +751,13 @@ if (
     resolvedMessage: (id) => channelPosts.resolvedMessage(id),
     // 答えた（関わった）ら、押したサーバーにそのセッションのチャンネルを作る（CC11）
     answered: (id, guildId) => ccPermissionAnswered(id, guildId ?? undefined),
+    // 質問（AskUserQuestion）の選択肢のボタン・セレクト・モーダル（Q2）。途中の答えはプロセスの中
+    questions: {
+      flow: new CcQuestionFlow(),
+      pendingQuestion: (id) => channelPosts.pendingQuestion(id),
+      answerQuestion: (id, requestHash, picks) => permissionHold.answerQuestion(id, requestHash, picks, "discord"),
+      stepMessage: (id, picks) => channelPosts.questionStepMessage(id, picks),
+    },
   };
   // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする（#system の 1 通は Discord につないだ後に書き換える）
   ccRecoveredPermissions = permissionHold.recover();
