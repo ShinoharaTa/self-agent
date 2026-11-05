@@ -827,10 +827,19 @@ test("web static: ≤639px でも Claude Code のチャンネルを閉じられ�
   assert.match(ccHeader, /el\("div", \{ class: "ed-ops" \}, \[close, more\]\)/);
   // [画面] 以外のリンクは ≤639px で隠す
   assert.equal((ccHeader.match(/btn btn-ghost btn-sm hide-sm/g) ?? []).length, 2);
+  // […] はパレットのコマンドを開く
+  assert.match(ccHeader, /more\.addEventListener\("click", \(\) => SA\.app\.palette\(">"\)\)/);
   const wb = read("workbench.js");
-  assert.match(wb, /ch && ch\.kind === "cc" \? ccCommands\(ch\) : \[\]/);
-  assert.match(wb, /label: "このチャンネルを閉じる"[\s\S]{0,200}SA\.chat\.closeCcChannel\(ch\.id\)/);
-  assert.match(chat, /\n {4}closeCcChannel,\n/);
+  // cc のタブでは /close・/wait の代わりに「このチャンネルを閉じる」などを並べる（無効の /close を先に出さない）
+  assert.match(wb, /\.\.\.\(ch && ch\.kind === "cc"\n {8}\? ccCommands\(ch\)\n {8}: \[\n {12}\{ label: "今のセッションを閉じる"/);
+  const ccCommands = /function ccCommands\(ch\) \{([\s\S]*?)\n  \}\n/.exec(wb)?.[1] ?? "";
+  assert.match(ccCommands, /const state = SA\.chat\.ccCommandState\(ch\.id\);/);
+  // 閉じるは終わったチャンネルでは無効（run が null で why「閉じています」）
+  assert.match(ccCommands, /label: "このチャンネルを閉じる"[\s\S]{0,200}run: state\.closable \? \(\) => SA\.chat\.closeCcChannel\(ch\.id\) : null,\n {8}why: "閉じています"/);
+  assert.match(ccCommands, /if \(rc\) items\.push\(\{ label: "RC で開く"/);
+  assert.match(ccCommands, /if \(discord\) items\.push\(\{ label: "Discord で開く"/);
+  assert.match(chat, /\n {4}closeCcChannel,\n {4}ccCommandState,\n/);
+  assert.match(chat, /return \{ closable: live\.state !== "ended", rc: live\.rc, discord: discordUrl\(ch\.link\) \};/);
 });
 
 /** app.css の ≤639px のブロック（ファイルの最後の @media (max-width: 639px)） */
