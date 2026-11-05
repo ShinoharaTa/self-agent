@@ -5,7 +5,7 @@
 // （allowedMentions の parse: []。返信先の人も鳴らさない）、URL の埋め込みも出さず、masked link の `](` は崩す。ターンの prompt には入れない
 // （SDK のエージェントは読まない）が、history の notice には入る（Web の会話に出す）。
 // 1 通 CC_REPLY_PAGE_CHARS 字で CC_REPLY_MAX_PAGES 通まで（超えた分は「ほか n 字」）、最後の 1 通に [追いかけをやめる]（`cc:unfollow:<cc_replies の id>`）。
-// 最初の返事（届けた後の最初の Stop）は確認の投稿への返信、以後は返信先なし。10 秒以内の同じ本文は skipped、1 日 CC_REPLY_DAILY_LIMIT 通を超えたら上限の 1 行を
+// 最初の返事（届けた（delivered か unconfirmed の）後の最初の Stop）は確認の投稿への返信、以後は返信先なし。10 秒以内の同じ本文は skipped、1 日 CC_REPLY_DAILY_LIMIT 通を超えたら上限の 1 行を
 // 1 回出してその日は出さない。一覧から消えたら（registry.ts の ended。SessionEnd の hook は根拠にしない）「終わりました」を出して follow = 0、最後の Stop から CC_FOLLOW_IDLE_DAYS 日で黙って follow = 0。
 // 貼っている途中（delivering）に来た Stop は、その送信が終わるまで（最長 CC_REPLY_HOLD_MS）待ってから扱う（届けた送信の返事として結びつけるため）。
 // 本文はプロセスの中だけで使い、DB（cc_replies）には sha256 と長さだけを書く。log は番号と件数だけ（本文・名前・チャンネル ID・sessionId は出さない）。
@@ -222,7 +222,7 @@ export function unfollowByReply(
 export type CcReplierDeps = {
   cfg: Pick<Config, "timeZone">;
   sessions: Pick<CcSessionStore, "get" | "startFollow" | "stopFollow" | "noteStop" | "countReply" | "listFollowing">;
-  sends: Pick<CcSendStore, "activeFor" | "takeReplyWaiting" | "timeOutReplies" | "timeOutGoneReplies">;
+  sends: Pick<CcSendStore, "deliveringFor" | "takeReplyWaiting" | "timeOutReplies" | "timeOutGoneReplies">;
   replies: Pick<CcReplyStore, "add" | "findRecentSame" | "finish">;
   /** 返事の投稿（チャンネルの持ち主の Bot。ownerPosts） */
   posts: Pick<Gateway, "sendMessage">;
@@ -366,8 +366,9 @@ export class CcReplier {
   private onStop(event: CcHookEvent): void {
     const { sessions, sends } = this.deps;
     sessions.noteStop(event.sessionId, event.receivedAt);
-    // 貼っている途中なら、その送信の返事として結びつけるため、送信が終わるまで待つ（idle を確かめてから貼るので、その間の Stop は貼ったものの返事）
-    if (sends.activeFor(event.sessionId)?.state === "delivering") {
+    // 貼っている途中なら、その送信の返事として結びつけるため、送信が終わるまで待つ（idle を確かめてから貼るので、その間の Stop は貼ったものの返事）。
+    // 同じセッションに次の送信が積まれていても（チャンネルの発言は 5 件まで積める）、貼っている途中の行があれば待つ
+    if (sends.deliveringFor(event.sessionId) !== undefined) {
       const before = this.held.get(event.sessionId);
       if (before !== undefined) this.enqueue(before);
       this.held.set(event.sessionId, event);

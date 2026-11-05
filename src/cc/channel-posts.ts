@@ -23,7 +23,7 @@ import type { CcChannelStore } from "../store/cc-channels.ts";
 import type { CcPermissionRow, CcPermissionStore } from "../store/cc-permissions.ts";
 import type { CcSendStore } from "../store/cc-sends.ts";
 import { recordHistory, type HistoryStore } from "../store/history.ts";
-import { CC_PROMPT_MAX_CHARS, type CcSessionStore, headChars } from "../store/cc-sessions.ts";
+import { type CcSessionStore, headChars } from "../store/cc-sessions.ts";
 import {
   CC_WAIT_CHECK_MS,
   CC_WAIT_NOTIFY_LIMIT,
@@ -40,7 +40,10 @@ import {
 import { CC_PROMPT_MIRROR_MAX_CHARS, type CcHookEvent } from "./hook-server.ts";
 import type { CcPermissionListener } from "./permission-hold.ts";
 import type { CcRegistry, CcTimers } from "./registry.ts";
-import { singleLine } from "./sender.ts";
+import { promptKey, singleLine } from "./sender.ts";
+
+// 比べるための形は sender.ts（unconfirmed を UserPromptSubmit で delivered に直すのと同じ）
+export { promptKey };
 
 /** self-agent が届けたものとみなす窓（届けてからこの間の UserPromptSubmit は、本文が同じなら写さない） */
 export const CC_PROMPT_MIRROR_WINDOW_MS = 30_000;
@@ -50,11 +53,6 @@ export const CC_PROMPT_MIRROR_LABEL = "（端末か RC から）";
 const MESSAGE_MAX = 2000;
 /** 判断待ちの知らせが上限に達したときの 1 行（メンションなし。チャンネルごとに CC_WAIT_NOTIFY_WINDOW_MS に 1 回） */
 export const CC_CHANNEL_WAIT_OVERFLOW_TEXT = `判断待ちの知らせが上限（1 時間に ${CC_WAIT_NOTIFY_LIMIT} 件）に達したので、しばらく出しません（Web で確かめてください）`;
-
-/** 比べるための形（空白（改行を含む）の連なりを 1 つの空白にして前後を除き、先頭 CC_PROMPT_MAX_CHARS 字） */
-export function promptKey(text: string): string {
-  return headChars(text.replace(/\s+/g, " ").trim(), CC_PROMPT_MAX_CHARS);
-}
 
 /**
  * 端末・RC からの指示の写しの各通（純関数）。1 通目は見出し + 改行 + 本文。本文は改行以外の制御文字を空白にして 1 字ずつ Markdown とメンションを

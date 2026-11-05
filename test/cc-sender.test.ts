@@ -115,6 +115,10 @@ function setup(t: TestContext) {
   const sleeps: number[] = [];
   /** 貼っている途中から終わった送信（onFinished。CC8） */
   const finished: CcSendRow[] = [];
+  /** 印の付け替え（channels.settled）に渡った送信の id と状態 */
+  const settled: Array<[number, string]> = [];
+  /** sleep の中で呼ぶもの（Enter の後の確かめの待ちの間に hook の事象を入れる） */
+  const hooks: { onSleep?: (ms: number) => void } = {};
   const sender = new CcSender({
     cfg: { ccSendWaitMin: 120, allowedGuildIds: ["g1", "g2"] },
     registry,
@@ -127,14 +131,22 @@ function setup(t: TestContext) {
       return "m1";
     },
     now,
-    sleep: async (ms) => void sleeps.push(ms),
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      hooks.onSleep?.(ms);
+    },
     timers: { after: () => () => undefined },
     onFinished: (row) => void finished.push(row),
+    channels: {
+      announce: async () => undefined,
+      settled: (row) => void settled.push([row.id, row.state]),
+      dialog: () => undefined,
+    },
     log: (message) => logs.push(message),
   });
   /** 送り込みの操作（load・paste・Enter）だけ */
   const actions = () => commands.filter((args) => ["load-buffer", "paste-buffer", "send-keys"].includes(args[0]!)).map((args) => args[0]);
-  return { db, clock, sends, sessions, env, commands, inputs, snapshot, sender, notices, logs, sleeps, actions, finished };
+  return { db, clock, sends, sessions, env, commands, inputs, snapshot, sender, notices, logs, sleeps, actions, finished, settled, hooks };
 }
 
 /** 貼った文字が入力欄に見える画面 */
@@ -482,7 +494,90 @@ test("stop の後は受け付けず、試さない", async (t) => {
   assert.equal(sends.get(row.id)?.state, "queued");
 });
 
-test("onFinished: 届けたら delivered の行（返事の印は waiting）を渡す。貼れたか確かめられないものは unconfirmed で渡し、返事の印は付けない（CC8）", async (t) => {
+// 許可のダイアログ（入力欄の代わりに出る）
+const PERMISSION_DIALOG = [...HISTORY, RULE, " Bash command", "", "   date", "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", "", " Esc to cancel", "", ""].join("\n");
+
+test("Enter の後にダイアログが出ても、貼った文字が入力欄から消えていれば delivered（dialog）。入力欄に残っていれば unconfirmed", async (t) => {
+  const { env, sender, sends, finished } = setup(t);
+  env.screens.pasted = shown("許可が要る指示");
+  env.screens.entered = PERMISSION_DIALOG;
+  const result = await sender.submit({ sessionId: S1, text: "許可が要る指示", origin: "web" });
+  assert.ok(result.ok);
+  await sender.idle();
+  assert.deepEqual([sends.get(result.send.id)?.state, sends.get(result.send.id)?.lastPaneState], ["delivered", "dialog"]);
+  assert.deepEqual([finished.at(-1)?.state, finished.at(-1)?.replyState], ["delivered", "waiting"]);
+  // 入力欄が残っていて、その上にダイアログの印がある（貼った文字が残っている）
+  env.phase = "before";
+  env.screens.pasted = shown("残る指示");
+  env.screens.entered = screen([`${PROMPT}残る指示`], { above: ["Do you want to proceed?", ""] });
+  const second = await sender.submit({ sessionId: S2, text: "残る指示", origin: "web" });
+  assert.ok(second.ok);
+  await sender.idle();
+  assert.deepEqual([sends.get(second.send.id)?.state, sends.get(second.send.id)?.lastPaneState], ["unconfirmed", "enter_unconfirmed"]);
+});
+
+test("unconfirmed の送信は、30 秒以内に本文が同じ UserPromptSubmit を受けたら delivered に直し、印を付け替えて onFinished に渡す", async (t) => {
+  const { env, clock, sender, sends, finished, settled, logs } = setup(t);
+  env.screens.pasted = shown("確かめられない 指示");
+  env.screens.entered = shown("確かめられない 指示");
+  const result = await sender.submit({ sessionId: S1, text: "確かめられない\n指示", origin: "web" });
+  assert.ok(result.ok);
+  await sender.idle();
+  const id = result.send.id;
+  assert.equal(sends.get(id)?.state, "unconfirmed");
+  // 別のセッション・別の本文では直さない
+  clock.now += 10_000;
+  sender.onEvent({ event: "UserPromptSubmit", sessionId: S2, prompt: "確かめられない 指示", receivedAt: new Date(clock.now) });
+  sender.onEvent({ event: "UserPromptSubmit", sessionId: S1, prompt: "ほかの指示", receivedAt: new Date(clock.now) });
+  assert.equal(sends.get(id)?.state, "unconfirmed");
+  // 空白・改行の違いは同じとみなす
+  sender.onEvent({ event: "UserPromptSubmit", sessionId: S1, prompt: "  確かめられない   指示 ", receivedAt: new Date(clock.now) });
+  await sender.idle();
+  const row = sends.get(id)!;
+  assert.deepEqual([row.state, row.lastPaneState, row.deliveredAt !== null, row.replyState], ["delivered", "prompt_submit", true, "waiting"]);
+  assert.deepEqual(settled.slice(-2), [
+    [id, "unconfirmed"],
+    [id, "delivered"],
+  ]);
+  assert.deepEqual([finished.at(-1)?.id, finished.at(-1)?.state], [id, "delivered"]);
+  assert.ok(logs.every((line) => !line.includes("確かめられない")));
+
+  // 30 秒を過ぎてから来たものでは直さない
+  env.phase = "before";
+  env.screens.pasted = shown("遅い指示");
+  env.screens.entered = shown("遅い指示");
+  const late = await sender.submit({ sessionId: S2, text: "遅い指示", origin: "web" });
+  assert.ok(late.ok);
+  await sender.idle();
+  clock.now += 30_001;
+  sender.onEvent({ event: "UserPromptSubmit", sessionId: S2, prompt: "遅い指示", receivedAt: new Date(clock.now) });
+  assert.equal(sends.get(late.send.id)?.state, "unconfirmed");
+});
+
+test("Enter の後の確かめを待っている間に本文が同じ UserPromptSubmit を受けていれば、確かめられなくても delivered（prompt_submit）", async (t) => {
+  const { env, clock, sender, sends, hooks } = setup(t);
+  env.screens.pasted = shown("先に届いた指示");
+  env.screens.entered = shown("先に届いた指示");
+  // 貼る前に受けた同じ本文（オーナーが前に打ったもの）は証拠にしない
+  sender.onEvent({ event: "UserPromptSubmit", sessionId: S1, prompt: "先に届いた指示", receivedAt: new Date(clock.now - 1000) });
+  const result = await sender.submit({ sessionId: S1, text: "先に届いた指示", origin: "web" });
+  assert.ok(result.ok);
+  await sender.idle();
+  assert.equal(sends.get(result.send.id)?.state, "unconfirmed");
+
+  hooks.onSleep = (ms) => {
+    if (ms === CC_ENTER_CHECK_DELAY_MS) sender.onEvent({ event: "UserPromptSubmit", sessionId: S2, prompt: "待つ間に届いた指示", receivedAt: new Date(clock.now) });
+  };
+  env.phase = "before";
+  env.screens.pasted = shown("待つ間に届いた指示");
+  env.screens.entered = shown("待つ間に届いた指示");
+  const second = await sender.submit({ sessionId: S2, text: "待つ間に届いた指示", origin: "web" });
+  assert.ok(second.ok);
+  await sender.idle();
+  assert.deepEqual([sends.get(second.send.id)?.state, sends.get(second.send.id)?.lastPaneState], ["delivered", "prompt_submit"]);
+});
+
+test("onFinished: 届けたら delivered の行（返事の印は waiting）を渡す。貼れたか確かめられないものは unconfirmed で渡し、返事の印は waiting（最初の返事を発言への返信にする）", async (t) => {
   const { env, sender, finished } = setup(t);
   env.screens.pasted = shown("届ける本文");
   const result = await sender.submit({ sessionId: S1, text: "届ける本文", origin: "web" });
@@ -498,5 +593,5 @@ test("onFinished: 届けたら delivered の行（返事の印は waiting）を�
   const second = await sender.submit({ sessionId: S2, text: "貼れない本文", origin: "web" });
   assert.ok(second.ok);
   await sender.idle();
-  assert.deepEqual(finished.at(-1) && [finished.at(-1)!.id, finished.at(-1)!.state, finished.at(-1)!.replyState], [second.send.id, "unconfirmed", null]);
+  assert.deepEqual(finished.at(-1) && [finished.at(-1)!.id, finished.at(-1)!.state, finished.at(-1)!.replyState], [second.send.id, "unconfirmed", "waiting"]);
 });

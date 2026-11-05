@@ -64,15 +64,16 @@ export type CcOpenResult =
   | { ok: false; reason: CcChannelFailure };
 
 /** きっかけの表示（最初の投稿） */
+// 最初の投稿の「（<きっかけ>で作りました）」。日本語で終わるものは空白を挟まず、ボタン・コマンドの名前で終わるものだけ空白を挟む
 const ORIGIN_LABEL: Readonly<Record<CcChannelOrigin, string>> = {
-  web: "Web の [Discord のチャンネルを作る]",
-  command: "/cc open",
+  web: "Web の [Discord のチャンネルを作る] ",
+  command: "/cc open ",
   web_send: "Web からの送信",
   web_start: "Web からの起動",
   permission: "許可の応答",
-  tool_send: "cc_send の [送る]",
-  tool_start: "cc_start の [起動する]",
-  github: "#github の [対応]",
+  tool_send: "cc_send の [送る] ",
+  tool_start: "cc_start の [起動する] ",
+  github: "#github の [対応] ",
 };
 
 /** 作れなかった理由の #system の 1 行と log の語 */
@@ -333,7 +334,7 @@ export function ccChannelTopic(name: string | null, dir: string | null): string 
 export function ccChannelIntro(name: string | null, dir: string | null, origin: CcChannelOrigin): string {
   const label = name === null || name === "" ? "（名前なし）" : name;
   return (
-    `Claude Code のセッション「${plain(label)}」${dir === null || dir === "" ? "" : `（${plain(dir)}）`}のチャンネルです（${ORIGIN_LABEL[origin]} で作りました）。` +
+    `Claude Code のセッション「${plain(label)}」${dir === null || dir === "" ? "" : `（${plain(dir)}）`}のチャンネルです（${ORIGIN_LABEL[origin]}で作りました）。` +
     "ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます。セッションが終わると完了に移し、戻るとここに戻します"
   );
 }
@@ -397,6 +398,8 @@ export class CcChannels {
   private readonly finalMarked = new Set<number>();
   /** 同じ本文を続けて書いた発言（送信 → そのチャンネルとメッセージ）。終わりの印をそこにも付ける */
   private readonly duplicates = new Map<number, Array<{ channelId: string; messageId: string }>>();
+  /** ⚠️ を付けた送信 → 付けた投稿（後で UserPromptSubmit で届いたと分かったら ✅ に付け替える。sender.ts の CC_PROMPT_CONFIRM_WINDOW_MS） */
+  private readonly unconfirmedMarked = new Map<number, Array<{ channelId: string; messageId: string }>>();
   /** ダイアログで待っていると返信した送信 */
   private readonly dialogNoticed = new Set<number>();
   /** 終わったチャンネルの発言（`<channel_id>:<message_id>` → 本文と確認の投稿）。[起動して続ける] の最初の指示（CC13） */
@@ -921,10 +924,22 @@ export class CcChannels {
         return;
     }
     if (row.state !== "queued" && row.state !== "delivering") {
-      if (this.finalMarked.has(row.id)) return;
+      if (this.finalMarked.has(row.id)) {
+        // unconfirmed の後に届いたと分かった（UserPromptSubmit）: ⚠️ を外して ✅（返信・Web の知らせは足さない）
+        const marked = this.unconfirmedMarked.get(row.id);
+        if (row.state !== "delivered" || marked === undefined) return;
+        this.unconfirmedMarked.delete(row.id);
+        for (const at of marked) {
+          this.chain(row.id, () => gateway.removeOwnReaction(at.channelId, at.messageId, CC_MARK_UNCONFIRMED));
+          this.chain(row.id, () => gateway.addReaction(at.channelId, at.messageId, CC_MARK_DELIVERED));
+        }
+        return;
+      }
       this.finalMarked.add(row.id);
+      const extras = this.duplicates.get(row.id) ?? [];
+      if (row.state === "unconfirmed") this.unconfirmedMarked.set(row.id, [target, ...extras]);
       // 同じ本文を続けて書いた発言にも同じ終わりの印（返信は最初の発言だけ）
-      for (const extra of this.duplicates.get(row.id) ?? []) for (const step of this.markSteps(extra, row.state)) this.chain(row.id, step);
+      for (const extra of extras) for (const step of this.markSteps(extra, row.state)) this.chain(row.id, step);
       this.duplicates.delete(row.id);
       if (notice !== undefined) this.recordAt(channelId, "notice", notice);
     }
@@ -985,11 +1000,19 @@ export class CcChannels {
 
   /**
    * セッションが一覧から消えた（registry の ended）: open のチャンネルを ended にして 1 行を出し、完了カテゴリへ移す。
-   * 開いているチャンネルが無ければ false
+   * 既に ended（閉じた）のチャンネルなら、状態とカテゴリは変えずに 1 行だけ出して引き受ける（#system には出さない）。
+   * 削除されていないチャンネルが無ければ false
    */
   ended(session: Pick<CcSessionRow, "sessionId">): boolean {
-    const row = this.deps.store.openFor(session.sessionId);
-    if (row === undefined || !this.deps.store.setState(row.channelId, "ended", ["open"])) return false;
+    const row = this.deps.store.anyFor(session.sessionId);
+    if (row === undefined) return false;
+    if (row.state === "ended") {
+      this.deps.log(`Claude Code: 閉じたチャンネルのセッションが終わりました（guild=${row.guildId}）`);
+      this.post(row, CC_CHANNEL_ENDED_TEXT);
+      this.record(row, "notice", "system", CC_CHANNEL_ENDED_TEXT);
+      return true;
+    }
+    if (!this.deps.store.setState(row.channelId, "ended", ["open"])) return false;
     this.deps.log(`Claude Code: セッションが終わったため、チャンネルを完了に移します（guild=${row.guildId}）`);
     this.post(row, CC_CHANNEL_ENDED_TEXT);
     this.record(row, "notice", "system", CC_CHANNEL_ENDED_TEXT);

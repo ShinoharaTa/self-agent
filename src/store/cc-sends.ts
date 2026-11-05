@@ -169,6 +169,34 @@ export class CcSendStore {
     return Number(row?.n ?? 0);
   }
 
+  /** そのセッションの貼っている途中（delivering）の行（多くて 1 つ。返事の Stop を送信が終わるまで待たせるか。CC8） */
+  deliveringFor(sessionId: string): CcSendRow | undefined {
+    const row = this.db.prepare("SELECT * FROM cc_sends WHERE session_id = ? AND state = 'delivering' ORDER BY id DESC LIMIT 1").get(sessionId);
+    return row === undefined ? undefined : toRow(row);
+  }
+
+  /** そのセッションの、since 以後に unconfirmed にした行を新しい順に（UserPromptSubmit で届いたと分かったら delivered に直す。docs/plan/claude-code-channels.md §3.3） */
+  listUnconfirmedSince(sessionId: string, since: Date): CcSendRow[] {
+    return this.db
+      .prepare("SELECT * FROM cc_sends WHERE session_id = ? AND state = 'unconfirmed' AND updated_at >= ? ORDER BY id DESC")
+      .all(sessionId, since.toISOString())
+      .map(toRow);
+  }
+
+  /**
+   * unconfirmed の行を delivered に直す（UserPromptSubmit の本文が同じだった）。delivered_at は unconfirmed にした時刻、返事の印は変えない
+   * （既に返事が来ていれば、それを返事待ちに戻さない）。直したら true
+   */
+  confirmUnconfirmed(id: number, lastPaneState: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE cc_sends SET state = 'delivered', delivered_at = COALESCE(delivered_at, updated_at), updated_at = ?, last_pane_state = ?
+           WHERE id = ? AND state = 'unconfirmed'`,
+      )
+      .run(this.now().toISOString(), lastPaneState, id);
+    return Number(result.changes) > 0;
+  }
+
   /** そのセッションの queued の行を古い順に（/cc cancel） */
   listQueuedFor(sessionId: string): CcSendRow[] {
     return this.db.prepare("SELECT * FROM cc_sends WHERE session_id = ? AND state = 'queued' ORDER BY id").all(sessionId).map(toRow);
@@ -286,7 +314,8 @@ export class CcSendStore {
 
   /**
    * 今の状態が from のどれかのときだけ to に移す（compare-and-set）。fields があれば同じ更新で書く（undefined の項目は変えない）。
-   * to が delivered なら delivered_at を今にし、返事の印を waiting にする（§5.4）。移したら true
+   * to が delivered なら delivered_at を今にし、返事の印を waiting にする（§5.4）。unconfirmed も返事の印を waiting にする（届いていれば最初の返事を
+   * その送信の message_id への返信にする。docs/plan/claude-code-channels.md §3.4）。移したら true
    */
   transition(
     id: number,
@@ -300,7 +329,7 @@ export class CcSendStore {
       .prepare(
         `UPDATE cc_sends SET state = ?, updated_at = ?, pane_id = COALESCE(?, pane_id), last_pane_state = COALESCE(?, last_pane_state),
            delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END,
-           reply_state = CASE WHEN ? = 'delivered' THEN 'waiting' ELSE reply_state END
+           reply_state = CASE WHEN ? IN ('delivered', 'unconfirmed') THEN 'waiting' ELSE reply_state END
          WHERE id = ? AND state IN (${placeholders})`,
       )
       .run(to, at, fields.paneId ?? null, fields.lastPaneState ?? null, to, at, to, id, ...from);
@@ -334,10 +363,10 @@ export class CcSendStore {
     return found;
   }
 
-  /** delivered_at が cutoff より前の返事待ちを timed_out にし、その id を返す（24 時間。§5.4） */
+  /** delivered_at（unconfirmed は終わった時刻）が cutoff より前の返事待ちを timed_out にし、その id を返す（24 時間。§5.4） */
   timeOutReplies(cutoff: Date): number[] {
     const ids = this.db
-      .prepare("SELECT id FROM cc_sends WHERE reply_state = 'waiting' AND delivered_at < ? ORDER BY id")
+      .prepare("SELECT id FROM cc_sends WHERE reply_state = 'waiting' AND COALESCE(delivered_at, updated_at) < ? ORDER BY id")
       .all(cutoff.toISOString())
       .map((row) => Number(row.id));
     const statement = this.db.prepare("UPDATE cc_sends SET reply_state = 'timed_out', updated_at = ? WHERE id = ? AND reply_state = 'waiting'");

@@ -103,7 +103,7 @@
 
 どのサーバーに作るか: きっかけが Discord なら**そのサーバー**。Web・GitHub の [対応]（Web から）なら `SELF_AGENT_ALLOWED_GUILD_IDS` の順で最初の /setup 済み（カテゴリ「Claude Code」がある）サーバー（#system の知らせと同じ規則）。手動の Web の口は、/setup 済みのサーバーが複数なら選ばせる。
 
-作るときの流れ（`src/cc/channels.ts` の `openChannel(guildId, sessionId, origin)`）: `/setup` と同じ `layoutQueueKey(guildId)` のキューで → 既にそのセッションの削除されていない行があれば `exists`（終わっていれば開き直す。§3.6）→ 対象が `claude agents --json` に居て tmux の中（`findSendablePane` が当たる）でなければ `not_in_tmux` → カテゴリ「Claude Code」（`guild_settings.cc_category_id`）が無い・消えていれば `not_set_up` → 中のチャンネルが 50 なら `full` → `createTextChannel` → `cc_channels` に行 → 最初の投稿「Claude Code のセッション「<名前>」（<ディレクトリ>）のチャンネルです（<きっかけ> で作りました）。ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます」（名前・ディレクトリは `escapeDiscordText`）→ 結果。DB の保存に失敗したら、セッションのチャンネルと同じくチャンネル ID を log に出す（log 方針の例外）。
+作るときの流れ（`src/cc/channels.ts` の `openChannel(guildId, sessionId, origin)`）: `/setup` と同じ `layoutQueueKey(guildId)` のキューで → 既にそのセッションの削除されていない行があれば `exists`（終わっていれば開き直す。§3.6）→ 対象が `claude agents --json` に居て tmux の中（`findSendablePane` が当たる）でなければ `not_in_tmux` → カテゴリ「Claude Code」（`guild_settings.cc_category_id`）が無い・消えていれば `not_set_up` → 中のチャンネルが 50 なら `full` → `createTextChannel` → `cc_channels` に行 → 最初の投稿「Claude Code のセッション「<名前>」（<ディレクトリ>）のチャンネルです（<きっかけ>で作りました。きっかけがボタン・コマンドの名前で終わるときだけ空白を挟む）。ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます」（名前・ディレクトリは `escapeDiscordText`）→ 結果。DB の保存に失敗したら、セッションのチャンネルと同じくチャンネル ID を log に出す（log 方針の例外）。
 
 作れなかったとき（`not_set_up`・`full`・Discord の失敗・tmux の外）: **きっかけの処理は止めない**（送信は積まれ、起動は進み、許可の応答は返る）。返事は CC8 の追いかけの規則（頼んだチャンネルへ。Web だけのものは出ない）、許可の要求は #system、のまま。log に 1 行（理由だけ）と、`not_set_up`・`full`・Discord の失敗は #system に 1 行（同じ理由は 1 時間に 1 回。`/setup` の案内を添える）。自動の再試行はせず、**次に関わったときにまた試す**。手動の口は理由を応答に出す（Web は 404 `not_found`（一覧に無い）/ 409 `exists` / 409 `not_in_tmux` / 409 `full` / 503 `not_set_up` / 502 `failed`（Discord の失敗）、`/cc open` は本人にだけ）。
 
@@ -128,12 +128,13 @@
   | `failed`・`gave_up` | ❌ | 返信「送れませんでした（<理由>）」/「入力待ちにならなかったため、届けるのをやめました」 |
   | `cancelled`（`/cc cancel`・Web の [やめる]） | ⏳ を外す | 無し |
   リアクションの失敗は log だけ（送信は止めない）。
+- 届いたかの確かめ（実機の通し確認の後に直した）: Enter の 2 秒後の画面が `dialog`（Enter の直後に許可・案内のダイアログが出た）でも、貼った本文が入力欄から消えていれば（入力欄が無いか、本文の先頭も `[Pasted text` の印も無い）`delivered`。さらに `unconfirmed` の送信は、貼り始めた後（終わった後は 30 秒以内）にそのセッションの `UserPromptSubmit` の `prompt` が本文（`singleLine` の後・空白を正規化・先頭 200 字）と同じなら `delivered` に直し、印を ⚠️ から ✅ に付け替える（返信は足さない）。
 - `/cc cancel`（チャンネルの中で。本人にだけ）: そのセッションの `queued` を全部 `cancelled` に。無ければ「届け待ちはありません」。
 - 二重送信の規則（5 秒の同一本文）はそのまま。再起動で `delivering` のまま残った行は `unconfirmed`（印は再起動の後に付け直す）。
 
 ### 3.4 返事（`Stop`）をチャンネルへ（CC11）
 - `replies.ts` の投稿先を **「そのセッションの開いている `cc_channels` の行 → 無ければ CC8 の `follow_channel_id`」** にする。チャンネルがある間は `follow` を見ない（常に出す）。[追いかけをやめる] は付けない（チャンネルの目的そのもの。止めたければ `/cc close`）。
-- 形は CC8 のまま（「返事（hook）:」+ 本文。チャンネルでは名前を省く。1 通 1,800 字 × 3 通。メンション無効・埋め込み無し・masked link を崩す）。**最初の返事は、その送信の `message_id`（オーナーの発言か写し）への返信**（CC8 の仕組みのまま。`send.channelId === channelId` のときだけ）。
+- 形は CC8 のまま（「返事（hook）:」+ 本文。チャンネルでは名前を省く。1 通 1,800 字 × 3 通。メンション無効・埋め込み無し・masked link を崩す）。**最初の返事は、その送信の `message_id`（オーナーの発言か写し）への返信**（CC8 の仕組みのまま。`send.channelId === channelId` のときだけ）。返信先にするのは、その送信が `delivered` か `unconfirmed` で `message_id` があるとき（`unconfirmed` も返事待ちにする）。貼っている途中（`delivering`）に来た `Stop` は、同じセッションに次の発言が積まれていても、その送信が終わるまで待ってから扱う。
 - 1 日の上限: チャンネルでは `CC_CHANNEL_REPLY_DAILY_LIMIT`（200）。超えたら 1 回「今日はここまで（上限 200）。RC で読む <リンク>」。
 - チャンネルがある（作れた）セッションに #inbox から `cc_send` で頼んだとき: [送る] は今までどおり届けるが、追いかけは立てず（`startFollow` を呼ばない）、確認の投稿の結果に「返事は <#チャンネル> に出ます」を足す。GitHub の [対応] も同じ。作れなかったときは CC8 のまま（追いかけ）。
 - 終了の 1 行「セッションが終わりました」は §3.6。
@@ -155,7 +156,7 @@
 | 実装 | ○ `findStateCategory("done")` と `enqueueMove` をそのまま | ◎ | ○ |
 
 **A を採る（オーナーの決定）。**
-- 終わった（`registry` の `ended`。一覧から消えたときだけ。`SessionEnd` の hook は根拠にしない）: `cc_channels.state = 'ended'`・`ended_at` → 「セッションが終わりました。ここに書くと、同じディレクトリで起動して続けられます」を 1 行 → 完了カテゴリへ移す。#system の終了の知らせは出さない（チャンネルに出した）。
+- 終わった（`registry` の `ended`。一覧から消えたときだけ。`SessionEnd` の hook は根拠にしない）: `cc_channels.state = 'ended'`・`ended_at` → 「セッションが終わりました。ここに書くと、同じディレクトリで起動して続けられます」を 1 行 → 完了カテゴリへ移す。#system の終了の知らせは出さない（チャンネルに出した）。既に閉じた（`/cc close`・Web の [閉じる] で `ended` の、削除されていない）チャンネルのセッションが後で終わったときも、状態とカテゴリは変えずにチャンネルに同じ 1 行を出して引き受け、#system には出さない。
 - 戻った（同じ `session_id` が再び一覧に現れた。`registry` に `revived(row)` を足す。`gone_at` が NULL でない行を `upsertSeen` する前に拾う）。**開き直すのは `cc_channels` に `session_id` が一致する削除されていない行があるときだけ**（付け替え（rebind）の後の古い id は `previous_session_id` では開き直さない）: `state = 'open'`・`ended_at = NULL` → 「セッションが戻りました」→ Claude Code カテゴリへ戻す。
 - 続ける（終わったチャンネルでの発言。CC13）: そのセッションがまだ一覧にある（`/cc close` で閉じただけ）なら、発言を「関わった」として扱い、`revived` で `open` に戻して「開き直しました」を出し、その発言をそのまま積む（[起動して続ける] は出さない）。一覧に無いときだけ、発言は積まずに、返信で「このセッションは終わっています」+ [起動して続ける][やめる]（`cc:resume:<channel_id>:<message_id>`。押したサーバーが行と違えば古い。保留した本文が無い（再起動の後など）ボタンは、ボタンを外して「この操作は古くなっています」に書き換える）。[起動して続ける] を押したときにセッションが一覧にあれば、起動せずに開き直してその発言を積む。[起動して続ける] は、まず `cc_channels.state` を `ended` → `resuming` に compare-and-set で移し（移せなければ「この操作は古くなっています」。二重起動を防ぐ）、 `starter.launch` を**そのセッションの `cwd`**（`cc_sessions.cwd`。`SELF_AGENT_WORKSPACE_DIR` の直下でなければ「起動できる場所ではありません。Web か端末で起動してください」）・題名はセッション名・最初の指示はその発言の本文・`startedBy: 'tool'`（`cc_sessions.started_by` の CHECK に `discord` が無いので代える。v29 の CHECK を作り直さない）で起動し、一覧に現れて結びついたら `cc_channels.session_id` を新しい `session_id` に**付け替え**（`previous_session_id` に前の id を残す。新しいチャンネルは作らない）、`state = 'open'`、topic を書き換え、Claude Code カテゴリへ戻し、「<名前> として起動しました。続けます」を出す。trust の確認待ちは確認の投稿の書き換え（CC7 と同じ文）。起動の失敗（`limit`・`low_memory`・`too_soon`・`no_server`・`launch` の例外・結びつく前の失敗）は `state` を `ended` に戻し、ボタンを残して「少し待ってもう一度押してください」。`resuming` の間のそのチャンネルの発言は積まずに返信で「起動中です。少し待ってから書いてください」と断る。再起動で `resuming` のまま残った行は起動時に `ended` に戻す。
 - 削除の確認（CC13）: 完了（`ended_at`）から `SELF_AGENT_DELETE_AFTER_DAYS` 日経ったチャンネルは、セッションと同じく #system に [削除する][残す]（`scheduler` の `listDeleteDue` と同じ形を `cc_channels` にも。ボタンは `cc:del:<channel_id>` / `cc:del:keep:<channel_id>`（CC7 の `cc:keep:send|start:<id>` と重ならないよう、`cc:del:` の下に置く）。[残す] は `ended_at` を今にする。`open` に戻した（戻った・開き直した・続けた）ら `delete_prompt_message_id` を外し、次に終わったらまた確認する）。[削除する] で `deleteChannel` → `channelOps.cancel(channelId)`（未実行のカテゴリ移動を捨てる）→ `state = 'deleted'`・`deleted_at`。戻った・続けたチャンネルは `open` になるので対象から外れる。

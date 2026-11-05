@@ -281,6 +281,17 @@ export function pasteLanded(beforeRaw: string, afterRaw: string, text: string): 
 }
 
 /**
+ * Enter の後に、貼った文字が入力欄から消えたか（docs/plan/claude-code-sessions.md §3.2。Enter の直後にダイアログが出たときの確かめ）。
+ * 入力欄が見つからない（ダイアログが入力欄の代わりに出ている）か、入力欄に text の先頭 PASTE_CHECK_CHARS 字も `[Pasted text` の印も無ければ true
+ */
+export function pasteCleared(afterRaw: string, text: string): boolean {
+  const box = inputBoxText(afterRaw);
+  if (box === undefined) return true;
+  const head = headOf(text);
+  return (head === "" || !box.includes(head)) && pastedMarkerLines(box).length === 0;
+}
+
+/**
  * 複数行の貼り付けが 1 行目で送信されたように見えるか（ブラケット貼り付けが効いていない。docs/plan/claude-code-sessions.md §3.2）。
  * before は貼る前の画面、after は Enter を押す前（貼った後）の画面。text が複数行で、text の最初の空でない行の先頭が before の画面に無く、
  * after で作業中（busy）に変わっていて、その先頭が入力欄に無く入力欄の外（返答の側）に見えるときだけ true。

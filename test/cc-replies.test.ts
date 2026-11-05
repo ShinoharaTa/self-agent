@@ -581,6 +581,41 @@ test("チャンネル（CC11）: 開いているチャンネルがあれば foll
   assertQuietLogs(logs);
 });
 
+test("チャンネル（CC e2e）: 送信が unconfirmed でも、最初の返事はその送信の message_id への返信", async (t) => {
+  const { sends, posted, replier, stop, ccChannels } = setup(t);
+  ccChannels.set(S1, "cc-chan");
+  const send = sends.add({ sessionId: S1, text: "発言", origin: "discord", state: "queued", channelId: "cc-chan", messageId: "owner-msg" });
+  assert.ok(sends.transition(send.id, ["queued"], "delivering"));
+  assert.ok(sends.transition(send.id, ["delivering"], "unconfirmed", { lastPaneState: "enter_unconfirmed" }));
+  replier.onSendFinished(sends.get(send.id)!);
+  await stop(S1, "返事");
+  await stop(S1, "次の返事");
+  assert.deepEqual(
+    posted.map((post) => post.message.replyToId),
+    ["owner-msg", undefined],
+  );
+  assert.equal(sends.get(send.id)?.replyState, "posted");
+});
+
+test("チャンネル（CC e2e）: 同じセッションに次の発言が積まれていても、貼っている途中に来た Stop は送信が終わるまで待ち、その発言への返信で出す", async (t) => {
+  const { sends, posted, replier, now, ccChannels } = setup(t);
+  ccChannels.set(S1, "cc-chan");
+  const first = sends.add({ sessionId: S1, text: "1 つ目", origin: "discord", state: "queued", channelId: "cc-chan", messageId: "msg-1" });
+  sends.add({ sessionId: S1, text: "2 つ目", origin: "discord", state: "queued", channelId: "cc-chan", messageId: "msg-2" });
+  assert.ok(sends.transition(first.id, ["queued"], "delivering"));
+  // Enter の後の確かめを待っている間に答え終わった
+  replier.onEvent({ event: "Stop", sessionId: S1, receivedAt: now(), lastAssistantMessage: "すぐ答えた" });
+  await replier.idle();
+  assert.equal(posted.length, 0);
+  assert.ok(sends.transition(first.id, ["delivering"], "delivered"));
+  replier.onSendFinished(sends.get(first.id)!);
+  await replier.idle();
+  assert.deepEqual(
+    posted.map((post) => [post.channelId, post.message.replyToId]),
+    [["cc-chan", "msg-1"]],
+  );
+});
+
 test("チャンネル（CC11）: #inbox から cc_send で頼んでも追いかけは立てず返事はチャンネルへ（確認の投稿への返信にはしない）。チャンネルが閉じたら CC8 のまま", async (t) => {
   const { sessions, posted, deliver, stop, ccChannels } = setup(t);
   ccChannels.set(S1, "cc-chan");
