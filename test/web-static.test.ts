@@ -1028,6 +1028,13 @@ test("web static: ≤639px はタスク・リマインド・使用量の表を�
   assert.match(views, /master-detail master-detail-phone/);
   assert.match(views, /kv-list kv-grid kv-env/);
   assert.match(views, /section\("スマホの操作"/);
+  // grid-area で置く td の class は views.js と 639px 以下の app.css の両方にある
+  const phoneCss = read("app.css").slice(read("app.css").lastIndexOf("@media (max-width: 639px) {"));
+  for (const cls of ["td-check", "td-main", "td-due", "td-remind", "td-next", "td-kind", "td-place", "td-actions", "td-turns", "td-input", "td-output", "td-rate", "td-time", "td-kind-name", "td-result", "td-turn-rate"]) {
+    assert.match(views, new RegExp(`"(?:[^"]* )?${cls}(?: [^"]*)?"`), cls);
+    assert.match(phoneCss, new RegExp(`\\.${cls}\\b[^{]*\\{[^}]*grid-area:`), cls);
+  }
+  assert.match(views, /"ed-toolbar-kb"/);
   // 会話の数のピルは桁区切り
   assert.match(read("workbench.js"), /class: "act-count", text: count\(n\)/);
 
