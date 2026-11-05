@@ -129,6 +129,9 @@ class FakeNode {
   getAttribute(name: string): string | null {
     return this.attrs.get(name) ?? null;
   }
+  removeAttribute(name: string): void {
+    this.attrs.delete(name);
+  }
   get classList() {
     return { add: (c: string) => this.classes.add(c), contains: (c: string) => this.classes.has(c) };
   }
@@ -314,6 +317,9 @@ function loadViews() {
     querySelectorAll: () => [],
   };
   const posts: string[] = [];
+  const bodies: unknown[] = [];
+  const toasts: string[] = [];
+  let reply: (path: string) => Promise<unknown> = () => Promise.resolve({});
   const context = {
     window: {} as Record<string, unknown>,
     document,
@@ -326,17 +332,23 @@ function loadViews() {
   };
   vm.runInNewContext(read("ui.js"), context);
   const SA = (context.window as { SA: Record<string, unknown> }).SA;
-  SA.store = { load: { ccSession: () => undefined, cc: () => undefined } };
+  SA.store = { load: { ccSession: () => undefined, cc: () => undefined }, ccSessions: {}, cc: { sessions: [{ sessionId: "s1", name: "web-ui" }] } };
   SA.app = { refresh: () => undefined };
   SA.api = {
-    post: (path: string) => {
+    post: (path: string, body: unknown) => {
       posts.push(path);
-      return Promise.resolve({});
+      bodies.push(body);
+      return reply(path);
     },
   };
+  // トーストは記録だけ（views.js は読み込みのときに SA.ui.toast を受け取る）
+  (SA.ui as { toast: unknown }).toast = (text: string) => toasts.push(text);
   vm.runInNewContext(read("views.js"), context);
-  const views = SA.views as { ccPermissionCard: (sessionId: string, p: unknown, rc: string | null) => FakeNode | null };
-  return { views, posts };
+  const views = SA.views as {
+    ccPermissionCard: (sessionId: string, p: unknown, rc: string | null) => FakeNode | null;
+    ccQuestionPicks: (questions: unknown, drafts: unknown) => unknown;
+  };
+  return { views, posts, bodies, toasts, setReply: (fn: (path: string) => Promise<unknown>) => (reply = fn) };
 }
 
 test("web static: 許可のカードは [許可][拒否] の 2 つ（許可 secondary・拒否 ghost）と常に許可のチェックで、チェックで [許可] の送り先が always に変わる", async () => {
@@ -995,6 +1007,175 @@ test("web static: 視認性（UI-9。#252）: 刻む数字は本文の色と tab
   assert.match(sidebar, /sub: s\.cwdLabel \|\| null,/);
   assert.match(sidebar, /class: "sb-sub show-sm"/);
   assert.match(sidebar, /class: "badge hide-sm "/);
+});
+
+// ===== 質問のカード（AskUserQuestion。docs/plan/claude-code-questions.md §4。Q3） =====
+const QUESTIONS = [
+  {
+    question: "どの色にしますか",
+    header: "色",
+    multiSelect: false,
+    options: [
+      { label: "赤", description: "目立つ" },
+      { label: "青", description: "" },
+    ],
+  },
+  {
+    question: "どれを入れますか",
+    header: "",
+    multiSelect: true,
+    options: [
+      { label: "A", description: "" },
+      { label: "B", description: "" },
+      { label: "C", description: "" },
+    ],
+  },
+];
+
+function questionPermission(id: number, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    state: "pending",
+    toolName: "AskUserQuestion",
+    summary: "質問 2 問: どの色にしますか",
+    expiresAt: new Date(Date.now() + 600000).toISOString(),
+    requestHash: "qh",
+    question: { questions: QUESTIONS, answers: null },
+    ...extra,
+  };
+}
+
+/** 選択肢の input（label の文で探す） */
+function optionInput(card: FakeNode, text: string): FakeNode & { checked: boolean } {
+  const label = descendants(card).find((n) => n.tagName === "label" && n.textContent.startsWith(text))!;
+  return descendants(label).find((n) => n.tagName === "input")! as FakeNode & { checked: boolean };
+}
+
+function pick(input: FakeNode & { checked: boolean }, checked = true): void {
+  input.checked = checked;
+  input.dispatch("change");
+}
+
+test("web static: 質問のカードは問ごとに見出し・問の文・選択肢（単一はラジオ・複数はチェック）と「その他」を出し、ツール名は出さない", () => {
+  const { views } = loadViews();
+  const card = views.ccPermissionCard("s1", questionPermission(20), null)!;
+  assert.equal(descendants(card).find((n) => n.tagName === "h2")!.textContent, "質問を待っています");
+  assert.ok(descendants(card).some((n) => n.getAttribute("data-permission-left")), "残り時間は許可と同じ刻み");
+  assert.doesNotMatch(card.textContent, /AskUserQuestion/);
+  assert.match(card.textContent, /web-ui/, "名前（セッション）は出す");
+  const fieldsets = descendants(card).filter((n) => n.tagName === "fieldset");
+  assert.equal(fieldsets.length, 2);
+  assert.equal(descendants(fieldsets[0]!).find((n) => n.tagName === "legend")!.textContent, "色");
+  assert.equal(descendants(fieldsets[1]!).find((n) => n.tagName === "legend")!.textContent, "どれを入れますか", "header が無ければ問の文");
+  assert.match(fieldsets[0]!.textContent, /どの色にしますか/);
+  const types = (f: FakeNode) => descendants(f).filter((n) => n.tagName === "input").map((n) => n.getAttribute("type"));
+  assert.deepEqual(types(fieldsets[0]!), ["radio", "radio", "radio"], "選択肢 2 つ + その他");
+  assert.deepEqual(types(fieldsets[1]!), ["checkbox", "checkbox", "checkbox", "checkbox"]);
+  // label は太く、説明はその下（二次の色）
+  const red = descendants(fieldsets[0]!).find((n) => n.tagName === "label")!;
+  assert.ok(red.classes.has("check"), "当たりは .check（44px）");
+  assert.equal(descendants(red).find((n) => n.tagName === "strong")!.textContent, "赤");
+  assert.equal(descendants(red).find((n) => n.classes.has("cc-question-desc"))!.textContent, "目立つ");
+  assert.ok(descendants(fieldsets[0]!).some((n) => n.tagName === "strong" && n.textContent === "その他"));
+  // 「その他」の textarea は選ぶまで隠す
+  const other = descendants(fieldsets[0]!).find((n) => n.tagName === "textarea")!;
+  assert.equal(other.hidden, true);
+  assert.equal(other.getAttribute("maxlength"), "1000");
+  // [答える]（primary）[やめる]（ghost）
+  const buttons = card.buttons();
+  assert.deepEqual(buttons.map((b) => b.textContent), ["答える", "やめる"]);
+  assert.ok(buttons[0]!.classes.has("btn-primary"));
+  assert.ok(buttons[1]!.classes.has("btn-ghost"));
+});
+
+test("web static: 質問のカードは全部の問に答えるまで [答える] が無効で、answers は問の順に labels（選択肢の順）か other", async () => {
+  const { views, posts, bodies } = loadViews();
+  const card = views.ccPermissionCard("s1", questionPermission(21), null)!;
+  const answer = card.buttons()[0]! as FakeNode & { disabled: boolean; title: string };
+  assert.equal(answer.disabled, true);
+  assert.match(answer.title, /すべての問に答えると押せます/);
+  pick(optionInput(card, "青"));
+  assert.equal(answer.disabled, true, "1 問だけでは押せない");
+  pick(optionInput(card, "C"));
+  pick(optionInput(card, "A"));
+  assert.equal(answer.disabled, false);
+  assert.equal(answer.getAttribute("title"), null);
+  // 押せない状態で押しても送らない・押せば /answer
+  answer.dispatch("click");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(posts, ["/api/cc/permissions/21/answer"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(bodies[0])), { requestHash: "qh", answers: [{ labels: ["青"] }, { labels: ["A", "C"] }] });
+
+  // 「その他」: 選ぶと textarea が出て、空なら押せない。選択肢と同時には選べない
+  const p22 = questionPermission(22);
+  const card2 = views.ccPermissionCard("s1", p22, null)!;
+  const answer2 = card2.buttons()[0]! as FakeNode & { disabled: boolean };
+  pick(optionInput(card2, "赤"));
+  const fieldsets = descendants(card2).filter((n) => n.tagName === "fieldset");
+  const otherBox = descendants(fieldsets[1]!).filter((n) => n.tagName === "input").at(-1)! as FakeNode & { checked: boolean };
+  pick(optionInput(card2, "B"));
+  pick(otherBox);
+  assert.equal(optionInput(card2, "B").checked, false, "その他を選ぶと選択肢は外れる");
+  const text = descendants(fieldsets[1]!).find((n) => n.tagName === "textarea")! as FakeNode & { value: string };
+  assert.equal(text.hidden, false);
+  assert.equal(answer2.disabled, true, "その他が空なら押せない");
+  text.value = "  D を入れる  ";
+  text.dispatch("input");
+  assert.equal(answer2.disabled, false);
+  // 描き直しても選んだ状態が残る（同じ要素）
+  const again = views.ccPermissionCard("s1", { ...p22 }, null)!;
+  assert.equal(again, card2, "中身が変わらなければ同じ要素");
+  answer2.dispatch("click");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(JSON.parse(JSON.stringify(bodies[1])), { requestHash: "qh", answers: [{ labels: ["赤"] }, { other: "D を入れる" }] });
+  // 純関数: 答えていない問があれば null
+  assert.equal(views.ccQuestionPicks(QUESTIONS, [{ labels: ["赤"], other: false, text: "" }, { labels: [], other: false, text: "" }]), null);
+});
+
+test("web static: 質問のカードの [やめる] は確認なしで /deny、409 は古い・400 は形が合わない", async () => {
+  const { views, posts, bodies, toasts, setReply } = loadViews();
+  const card = views.ccPermissionCard("s1", questionPermission(23), null)!;
+  card.buttons()[1]!.dispatch("click");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(posts, ["/api/cc/permissions/23/deny"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(bodies[0])), { requestHash: "qh" });
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 409 })));
+  views.ccPermissionCard("s1", questionPermission(24), null)!.buttons()[1]!.dispatch("click");
+  await new Promise((r) => setImmediate(r));
+  assert.match(toasts.at(-1)!, /この操作は古くなっています/);
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 400 })));
+  views.ccPermissionCard("s1", questionPermission(25), null)!.buttons()[1]!.dispatch("click");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(toasts.at(-1), "答えの形が合いません");
+});
+
+test("web static: 終わった質問のカードは answers から「1. <見出し>: <答え>」、答えなかった・端末で答えた・時間切れの文", () => {
+  const { views } = loadViews();
+  const answered = views.ccPermissionCard(
+    "s1",
+    questionPermission(30, { state: "allowed", via: "web", resolvedAt: new Date().toISOString(), question: { questions: QUESTIONS, answers: { "どの色にしますか": "青", "どれを入れますか": "A, C" } } }),
+    null,
+  )!;
+  assert.equal(answered.buttons().length, 0);
+  assert.equal(descendants(answered).some((n) => n.tagName === "fieldset"), false);
+  assert.match(answered.textContent, /答えました（Web）/);
+  assert.match(answered.textContent, /1\. 色: 青/);
+  assert.match(answered.textContent, /2\. どれを入れますか: A, C/);
+  const discord = views.ccPermissionCard("s1", questionPermission(31, { state: "allowed", via: "discord", question: { questions: QUESTIONS, answers: {} } }), null)!;
+  assert.match(discord.textContent, /答えました（Discord）/);
+  assert.match(views.ccPermissionCard("s1", questionPermission(32, { state: "denied", via: "web" }), null)!.textContent, /答えませんでした（Web）/);
+  assert.match(views.ccPermissionCard("s1", questionPermission(33, { state: "answered_elsewhere" }), null)!.textContent, /端末か RC で答えられました/);
+  assert.match(views.ccPermissionCard("s1", questionPermission(34, { state: "expired" }), null)!.textContent, /時間切れ/);
+});
+
+test("web static: 質問のカードは innerHTML を使わず、サイドバーの印は「質問」（title に最初の問）", () => {
+  const views = read("views.js");
+  const start = views.indexOf("function ccQuestionCard");
+  assert.ok(start > 0);
+  assert.doesNotMatch(views, /innerHTML/);
+  const sidebar = read("sidebar.js");
+  assert.match(sidebar, /questions \? "質問" : "許可待ち"/);
+  assert.match(sidebar, /"質問: " \+ SA\.views\.oneLine\(String\(questions\[0\]\.question/);
 });
 
 test("web static: 許可のカードの説明はスマホで常設、残り 60 秒を切ったら is-urgent（UI-9）", () => {
