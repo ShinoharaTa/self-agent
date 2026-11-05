@@ -15,7 +15,8 @@ import type { CcSendRow, CcSendStore } from "../../store/cc-sends.ts";
 import type { CcSessionStore } from "../../store/cc-sessions.ts";
 import type { CcStartRow, CcStartStore } from "../../store/cc-starts.ts";
 import { paneLabel } from "../../tmux/workspace-map.ts";
-import { CC_RC_URL_PREFIX, cwdLabel } from "../../web/routes/cc.ts";
+import { cwdLabel } from "../../cc/labels.ts";
+import { CC_RC_URL_PREFIX } from "../../web/routes/cc.ts";
 import type { ComponentHandler } from "../interactions.ts";
 import { STALE_TEXT } from "./delete.ts";
 

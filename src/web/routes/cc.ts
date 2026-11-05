@@ -8,6 +8,7 @@
 // GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
 // 名前・cwd・最後の指示は hook から来たデータで、画面は textContent で出す。log は /unfollow の 1 行だけ（名前・パス・sessionId・ペイン id を出さない）
 import { isUuid } from "../../cc/agents.ts";
+import { cwdLabel } from "../../cc/labels.ts";
 import { type CcPermissionHold, permissionExpiresAt } from "../../cc/permission-hold.ts";
 import { describeRule, formatRule } from "../../cc/permissions.ts";
 import type { CcChannelFailure, CcChannels } from "../../cc/channels.ts";
@@ -82,22 +83,6 @@ const CHANNEL_STATUS: Readonly<Record<CcChannelFailure, number>> = {
   not_set_up: 503,
   failed: 502,
 };
-
-/** cwd の表示（`~/workspace/` からの相対。その外で ~ の中なら `~/…`、それ以外はそのまま）。無ければ null */
-export function cwdLabel(cwd: string | undefined, workspaceDir: string, home: string): string | null {
-  if (cwd === undefined || cwd === "") return null;
-  const within = (base: string): string | undefined => {
-    const root = base.replace(/\/+$/, "");
-    if (root === "") return undefined;
-    if (cwd === root) return "";
-    return cwd.startsWith(`${root}/`) ? cwd.slice(root.length + 1) : undefined;
-  };
-  const inWorkspace = within(workspaceDir);
-  if (inWorkspace !== undefined && inWorkspace !== "") return inWorkspace;
-  const inHome = within(home);
-  if (inHome !== undefined) return inHome === "" ? "~" : `~/${inHome}`;
-  return cwd;
-}
 
 /** 画面の写し: 制御シーケンスを落とし、末尾の空行を除いて最後の CC_SCREEN_LINES 行（純関数） */
 export function screenText(raw: string): string {

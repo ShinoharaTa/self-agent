@@ -15,11 +15,11 @@ import type { SystemNotifier } from "../app/system-notice.ts";
 import type { Config } from "../config.ts";
 import { normalizeChannelName, CHANNEL_NAME_MAX_LENGTH } from "../discord/channel-name.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
-import type { Gateway } from "../discord/gateway.ts";
+import { type Gateway, type IncomingMessage, NotCategoryError } from "../discord/gateway.ts";
 import type { CcChannelOrigin, CcChannelRow, CcChannelStore } from "../store/cc-channels.ts";
 import { headChars, type CcSessionRow } from "../store/cc-sessions.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
-import { cwdLabel } from "../web/routes/cc.ts";
+import { cwdLabel } from "./labels.ts";
 import type { CcPaneResolver } from "./panes.ts";
 import type { CcRegistry, CcSessionView, CcState } from "./registry.ts";
 
@@ -251,11 +251,9 @@ export class CcChannels {
       .filter((id) => parents.has(id));
     let moved = 0;
     let deleted = 0;
-    for (const candidate of store.listUndeleted(guildId)) {
+    for (const row of store.listUndeleted(guildId)) {
       // 一覧を取っている間に作った行は、一覧に無くても消さない
-      if (Date.parse(candidate.createdAt) >= listedAt.getTime()) continue;
-      const row = store.get(candidate.channelId);
-      if (row === undefined || row.state === "deleted") continue;
+      if (Date.parse(row.createdAt) >= listedAt.getTime()) continue;
       if (!parents.has(row.channelId)) {
         if (store.markDeleted(row.channelId)) {
           channelOps.cancel(row.channelId);
@@ -296,7 +294,15 @@ export class CcChannels {
     if (!(await this.inTmux(view, sessions))) return { ok: false, reason: "not_in_tmux" };
     const categoryId = guildSettings.ccCategoryId(guildId);
     if (categoryId === null || !(await gateway.channelExists(categoryId))) return { ok: false, reason: "not_set_up" };
-    if ((await gateway.countChannelsIn(categoryId)) >= CC_CATEGORY_CHANNEL_LIMIT) return { ok: false, reason: "full" };
+    let count: number;
+    try {
+      count = await gateway.countChannelsIn(categoryId);
+    } catch (error) {
+      // 記録した ID が別の種類のチャンネルになっている（カテゴリが消えた）のは /setup 前と同じ
+      if (error instanceof NotCategoryError) return { ok: false, reason: "not_set_up" };
+      throw error;
+    }
+    if (count >= CC_CATEGORY_CHANNEL_LIMIT) return { ok: false, reason: "full" };
     const name = view.name ?? null;
     const cwd = view.cwd ?? null;
     const dir = cwdLabel(view.cwd, this.deps.cfg.workspaceDir, this.deps.home);
@@ -361,4 +367,35 @@ export class CcChannels {
     this.inFlight.add(task);
     void task.finally(() => this.inFlight.delete(task));
   }
+}
+
+/**
+ * registry の ended に渡す関数（main の配線。§3.6）: チャンネルがあれば ended にして完了へ移し、返事の追いかけ（replier）は今までどおり止め、
+ * #system の終了の知らせ（notifier）はチャンネルも追いかけも無いときだけ出す（チャンネルに出したので二重にしない）
+ */
+export function ccEndedHandler(deps: {
+  channels: () => Pick<CcChannels, "ended"> | undefined;
+  replier: () => { ended(session: CcSessionRow): boolean } | undefined;
+  notifier: () => { ended(session: CcSessionRow): void } | undefined;
+}): (session: CcSessionRow) => void {
+  return (session) => {
+    const inChannel = deps.channels()?.ended(session) === true;
+    const followed = deps.replier()?.ended(session) === true;
+    if (!inChannel && !followed) deps.notifier()?.ended(session);
+  };
+}
+
+/**
+ * 発言の handler の包み（main の配線。CC10）: 削除されていない cc_channels の行のチャンネルへの発言は、ターンにせず黙って捨てる
+ * （届けるのは CC11）。それ以外は handle に渡す
+ */
+export function dropCcChannelMessages(
+  store: Pick<CcChannelStore, "get">,
+  handle: (message: IncomingMessage) => Promise<void>,
+): (message: IncomingMessage) => Promise<void> {
+  return (message) => {
+    const row = store.get(message.channelId);
+    if (row !== undefined && row.state !== "deleted") return Promise.resolve();
+    return handle(message);
+  };
 }

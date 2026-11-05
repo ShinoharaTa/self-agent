@@ -45,6 +45,7 @@ import {
   type ModalDef,
   type OutgoingMessage,
   type TextChannelOptions,
+  NotCategoryError,
   UnknownChannelError,
 } from "./gateway.ts";
 import { splitMessage } from "./split.ts";
@@ -475,7 +476,7 @@ export class DiscordGateway implements Gateway {
   async countChannelsIn(categoryId: string): Promise<number> {
     const category = await this.client.channels.fetch(categoryId);
     if (category === null || category.type !== ChannelType.GuildCategory) {
-      throw new Error("カテゴリではありません");
+      throw new NotCategoryError();
     }
     // category.children（キャッシュ）ではなく、サーバーの全チャンネルを Discord から取り直して数える
     const parents = await this.listChannelParents(category.guildId);
