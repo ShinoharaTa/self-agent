@@ -1130,6 +1130,11 @@
       if (typeof panel.open === "boolean") S.panelOpen = panel.open && !narrow();
     }
     restoreTabs();
+    // スマホでタブも hash も無い（戻すのを待つタブも無い）起動は、ようこそでなく会話の一覧から始める
+    if (phone() && S.tabs.length === 0 && deferred.tabs.length === 0 && !tabFromHash(location.hash)) {
+      S.activity = "chat";
+      S.drawerOpen = true;
+    }
 
     makeSash($("sash-sidebar"), sidebarSash);
     makeSash($("sash-panel"), panelSash);
