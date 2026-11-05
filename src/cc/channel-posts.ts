@@ -91,7 +91,7 @@ export function ccPromptMirrorTexts(prompt: string, total: number): string[] {
 }
 
 export type CcChannelPostsDeps = {
-  cfg: Pick<Config, "ownerUserId" | "workspaceDir" | "ccPermissionHoldSec">;
+  cfg: Pick<Config, "ownerUserId" | "workspaceDir" | "ccPermissionHoldSec" | "ccQuestionHoldSec">;
   /** 開いているチャンネル（cc_channels） */
   channels: Pick<CcChannelStore, "openFor" | "get">;
   /** 投稿・書き換え（既定の人格の Bot） */
@@ -342,7 +342,8 @@ export class CcChannelPosts implements CcPermissionListener {
     }
     const message = permissionNotice(row, this.sessionOf(row.sessionId), {
       ...this.places(),
-      holdSec: cfg.ccPermissionHoldSec,
+      // 質問（question_input のある行）は質問の保留の長さ（permissionExpiresAt と同じ分岐）
+      holdSec: row.questionInput !== null ? cfg.ccQuestionHoldSec : cfg.ccPermissionHoldSec,
       ownerUserId: cfg.ownerUserId,
     });
     let messageId: string;

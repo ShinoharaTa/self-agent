@@ -277,7 +277,7 @@ export function endedNotice(session: CcNoticeSession, places: { workspaceDir: st
 }
 
 export type CcDiscordNotifierDeps = {
-  cfg: Pick<Config, "allowedGuildIds" | "ownerUserId" | "workspaceDir" | "ccPermissionHoldSec">;
+  cfg: Pick<Config, "allowedGuildIds" | "ownerUserId" | "workspaceDir" | "ccPermissionHoldSec" | "ccQuestionHoldSec">;
   /** 投稿先（#system）を選ぶ */
   guildSettings: Pick<GuildSettingsStore, "get">;
   /** #system への投稿（app/system-notice.ts） */
@@ -494,7 +494,8 @@ export class CcDiscordNotifier implements CcPermissionListener {
     if (target === undefined) return;
     const message = permissionNotice(row, this.sessionOf(row.sessionId), {
       ...this.places(),
-      holdSec: cfg.ccPermissionHoldSec,
+      // 質問（question_input のある行）は質問の保留の長さ（permissionExpiresAt と同じ分岐）
+      holdSec: row.questionInput !== null ? cfg.ccQuestionHoldSec : cfg.ccPermissionHoldSec,
       ownerUserId: cfg.ownerUserId,
     });
     let messageId: string | undefined;

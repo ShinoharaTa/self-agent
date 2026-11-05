@@ -133,7 +133,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   const waitBudget = new CcWaitBudget();
   const postsTimers = fakeTimers();
   posts = new CcChannelPosts({
-    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300 },
+    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
     channels,
     gateway,
     permissions: store,
@@ -152,7 +152,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   const notifierTimers = fakeTimers();
   if (opts.notify !== false) {
     notifier = new CcDiscordNotifier({
-      cfg: { allowedGuildIds: [GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300 },
+      cfg: { allowedGuildIds: [GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
       guildSettings,
       notify: createSystemNotifier({ guildSettings, gateway, log }),
       gateway,
@@ -276,6 +276,22 @@ test("CC12: チャンネルのあるセッションの許可の要求はチャ�
   assert.equal(row.messageId, post.messageId);
   assert.ok(s.gateway.posts.every((p) => p.channelId !== SYSTEM));
   assertNoSecrets(s.logs);
+});
+
+test("Q1: チャンネルに出す質問（AskUserQuestion）の 1 通の「ボタンは n 分効きます」は質問の保留の長さ（15 分）", async (t) => {
+  const s = await setup(t);
+  const event = parseHookEvent(
+    { hook_event_name: "PermissionRequest", session_id: S1, cwd: SECRET_CWD, permission_mode: "default", tool_name: "AskUserQuestion", tool_input: { questions: [{ question: "色は？", options: [{ label: "red" }, { label: "blue" }] }] } },
+    new Date(s.clock.now),
+  )!;
+  s.registry.receive(event);
+  const reply = s.hold.request(event, new AbortController().signal);
+  await s.idle();
+  assert.equal(s.gateway.posts.length, 1);
+  assert.equal(s.gateway.posts[0]!.channelId, CHANNEL);
+  assert.ok(s.gateway.posts[0]!.message.text.includes("（ボタンは 15 分効きます）"), s.gateway.posts[0]!.message.text);
+  s.hold.stop();
+  await reply;
 });
 
 test("CC12: チャンネルの [許可] は CC5c と同じ応答と書き換え。2 回目は古い。押した後に answered が呼ばれる", async (t) => {

@@ -114,3 +114,10 @@ test("parseStoredAnswers: 文字列の値のオブジェクトだけ", () => {
   assert.equal(parseStoredAnswers("[]"), null);
   assert.equal(parseStoredAnswers("{"), null);
 });
+
+test("validateAnswers: 問の文が __proto__ でも答えのキーとして残り、JSON に出る", () => {
+  const questions = parseQuestions({ questions: [{ question: "__proto__", options: [option("a"), option("b")] }] })!;
+  const answers = validateAnswers(questions, [{ labels: ["b"] }])!;
+  assert.equal(JSON.stringify(answers), '{"__proto__":"b"}');
+  assert.deepEqual(Object.keys(answers), ["__proto__"]);
+});

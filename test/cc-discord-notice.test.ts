@@ -114,7 +114,7 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
   const notifierTimers = fakeTimers();
   if (opts.notify !== false) {
     notifier = new CcDiscordNotifier({
-      cfg: { allowedGuildIds: ["guild-0", GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: opts.holdSec ?? 300 },
+      cfg: { allowedGuildIds: ["guild-0", GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: opts.holdSec ?? 300, ccQuestionHoldSec: 900 },
       guildSettings,
       notify: createSystemNotifier({ guildSettings, gateway, log }),
       gateway,
@@ -239,6 +239,21 @@ test("CC5c: 提案が無ければ [このセッションでは常に許可] を�
   const post = s.gateway.posts[0]!;
   assert.deepEqual(buttonIds(post.message), [[`cc:perm:allow:${asked.id}`, `cc:perm:deny:${asked.id}`]]);
   assert.ok(post.message.text.includes("[このセッションでは常に許可] は Claude Code が規則を提案したときだけ出ます"));
+});
+
+test("Q1: 質問（AskUserQuestion）の 1 通の「ボタンは n 分効きます」は質問の保留の長さ（15 分）", async (t) => {
+  const s = await setup(t);
+  const event = parseHookEvent(
+    { hook_event_name: "PermissionRequest", session_id: S1, cwd: SECRET_CWD, permission_mode: "default", tool_name: "AskUserQuestion", tool_input: { questions: [{ question: "色は？", options: [{ label: "red" }, { label: "blue" }] }] } },
+    new Date(s.clock.now),
+  )!;
+  s.registry.receive(event);
+  const reply = s.hold.request(event, new AbortController().signal);
+  await s.notifier.idle();
+  assert.equal(s.gateway.posts.length, 1);
+  assert.ok(s.gateway.posts[0]!.message.text.includes("（ボタンは 15 分効きます）"), s.gateway.posts[0]!.message.text);
+  s.hold.stop();
+  await reply;
 });
 
 test("CC5c: 要約の ``` とメンションは閉じられず、鳴らない", () => {
