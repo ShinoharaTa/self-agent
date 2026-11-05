@@ -270,7 +270,7 @@ test("Q1: 質問（AskUserQuestion）の 1 通の「ボタンは n 分効きま�
   )!;
   s.registry.receive(event);
   const reply = s.hold.request(event, new AbortController().signal);
-  await s.notifier.idle();
+  await s.posts.idle();
   assert.equal(s.gateway.posts.length, 1);
   assert.ok(s.gateway.posts[0]!.message.text.includes("（ボタンは 15 分効きます）"), s.gateway.posts[0]!.message.text);
   s.hold.stop();
