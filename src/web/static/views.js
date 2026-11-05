@@ -1017,7 +1017,7 @@
     return String(p.state);
   }
 
-  const PERMISSION_NOTE = "端末や RC のダイアログでも答えられます。先に答えた方が効きます";
+  const PERMISSION_NOTE = "端末や RC のダイアログでも答えられます。先に答えた方が効きます。";
 
   /** 保留の残り（m 分 s 秒）。過ぎていれば null */
   function remainingText(iso) {

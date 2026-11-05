@@ -950,7 +950,8 @@ test("web static: 視認性（UI-9。#252）: 刻む数字は本文の色と tab
   assert.match(phone, /\n {2}\.sb-title \{\n {4}font-size: var\(--font-base\);/);
   assert.match(phone, /\n {2}\.sb-group > summary,\n[^{]*\{\n {4}font-size: var\(--font-sm\);/);
   assert.match(phone, /\n {2}\.sb-row \{\n {4}padding-left: var\(--space-4\);/);
-  assert.match(phone, /\n {2}\.segmented-sm > button \{\n {4}min-height: var\(--row\);\n {4}font-size: var\(--font-sm\);/);
+  assert.match(phone, /\n {2}\.segmented-sm > button \{\n {4}min-height: var\(--row\);\n {4}border-radius: var\(--radius-md\);\n {4}font-size: var\(--font-sm\);/);
+  assert.match(phone, /\n {2}\.sb-text \{\n {4}line-height: var\(--leading-tight\);/);
   assert.match(phone, /\n {2}\.msg-agent > \.avatar \{\n {4}display: none;/);
   assert.match(phone, /:root\[data-theme="dark"\] \.composer \{\n {4}background: var\(--muted\);/);
   assert.match(phone, /\n {2}\.cc-permission \.card-head h2 \{\n {4}font-size: var\(--font-base\);/);
