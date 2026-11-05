@@ -87,7 +87,7 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
   const holdTimers = fakeTimers();
   let registry!: CcRegistry;
   const hold = new CcPermissionHold({
-    cfg: { ccPermissionHoldSec: opts.holdSec ?? 300 },
+    cfg: { ccPermissionHoldSec: opts.holdSec ?? 300, ccQuestionHoldSec: 900 },
     store,
     known: (sessionId) => registry.knows(sessionId),
     now,
@@ -257,6 +257,8 @@ test("CC5c: 要約の ``` とメンションは閉じられず、鳴らない", 
       resolvedAt: null,
       messageId: null,
       messageChannelId: null,
+      questionInput: null,
+      answers: null,
     },
     { name: "@everyone **x**", cwd: null },
     { workspaceDir: WORKSPACE, home: HOME, holdSec: 90 },
@@ -521,7 +523,7 @@ test("CC5c: 再起動の前に保留していた要求の 1 通は、recover の
   const asked = await s.ask(S1);
   const postedId = s.gateway.posts[0]!.messageId;
   // 次のプロセスの保留（同じ DB）
-  const next = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300 }, store: s.store, known: () => true, now: () => new Date(s.clock.now), log: () => {} });
+  const next = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store: s.store, known: () => true, now: () => new Date(s.clock.now), log: () => {} });
   const rows = next.recover();
   assert.deepEqual(rows.map((row) => [row.id, row.state]), [[asked.id, "expired"]]);
   assert.equal(s.gateway.edits.length, 0);

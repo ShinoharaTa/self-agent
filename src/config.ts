@@ -173,8 +173,10 @@ export type CcConfig = {
   ccHookTokenPresent: boolean;
   /** claude agents --json を読む周期（秒、5 以上）。誰も見ていないときは 60 秒 */
   ccPollSec: number;
-  /** PermissionRequest の応答を保留する秒数（1〜600）。hooks の timeout はこれ + 5 */
+  /** PermissionRequest の応答を保留する秒数（1〜600）。hooks の timeout はこれと ccQuestionHoldSec の大きい方 + 5 */
   ccPermissionHoldSec: number;
+  /** 質問（AskUserQuestion）の応答を保留する秒数（1〜1,800。SELF_AGENT_CC_QUESTION_HOLD_SEC） */
+  ccQuestionHoldSec: number;
   /** 送信待ち（queued）を諦める（gave_up）までの分（正の整数） */
   ccSendWaitMin: number;
   /** 新しいセッションを起動できる場所（SELF_AGENT_WORKSPACE_DIR。既定 ~/workspace。絶対パス）。直下のディレクトリだけが候補 */
@@ -225,6 +227,8 @@ const DEFAULT_CC_POLL_SEC = 10;
 const MIN_CC_POLL_SEC = 5;
 const DEFAULT_CC_PERMISSION_HOLD_SEC = 300;
 const MAX_CC_PERMISSION_HOLD_SEC = 600;
+const DEFAULT_CC_QUESTION_HOLD_SEC = 900;
+const MAX_CC_QUESTION_HOLD_SEC = 1800;
 const DEFAULT_CC_SEND_WAIT_MIN = 120;
 const DEFAULT_CC_MAX_SESSIONS = 30;
 /** SELF_AGENT_CC_HOOK_TOKEN の最短の長さ */
@@ -612,6 +616,14 @@ export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
   if (ccPermissionHoldSec > MAX_CC_PERMISSION_HOLD_SEC) {
     throw new Error(`SELF_AGENT_CC_PERMISSION_HOLD_SEC は 1〜${MAX_CC_PERMISSION_HOLD_SEC} の整数で指定してください`);
   }
+  const ccQuestionHoldSec = positiveInteger(
+    "SELF_AGENT_CC_QUESTION_HOLD_SEC",
+    nonEmpty(env.SELF_AGENT_CC_QUESTION_HOLD_SEC),
+    DEFAULT_CC_QUESTION_HOLD_SEC,
+  );
+  if (ccQuestionHoldSec > MAX_CC_QUESTION_HOLD_SEC) {
+    throw new Error(`SELF_AGENT_CC_QUESTION_HOLD_SEC は 1〜${MAX_CC_QUESTION_HOLD_SEC} の整数で指定してください`);
+  }
   const ccSendWaitMin = positiveInteger("SELF_AGENT_CC_SEND_WAIT_MIN", nonEmpty(env.SELF_AGENT_CC_SEND_WAIT_MIN), DEFAULT_CC_SEND_WAIT_MIN);
   const workspaceDir = nonEmpty(env.SELF_AGENT_WORKSPACE_DIR) ?? join(homeDir(env), "workspace");
   // tmux の new-session -c は書式（#{…}）として展開されるので # を通さない
@@ -630,6 +642,7 @@ export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
     ccHookTokenPresent: token !== undefined,
     ccPollSec,
     ccPermissionHoldSec,
+    ccQuestionHoldSec,
     ccSendWaitMin,
     workspaceDir: workspaceDir.replace(/(.)\/+$/, "$1"),
     ccMaxSessions,

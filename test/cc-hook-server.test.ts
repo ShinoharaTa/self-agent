@@ -254,6 +254,32 @@ test("summarizePermission: Bash は command、ファイルのツールは cwd �
   assert.notEqual(summarizePermission("Read", { command: "ls" }, "/w").requestHash, a);
 });
 
+test("summarizePermission: AskUserQuestion は形が通れば questionInput（tool_input の JSON そのまま）と「質問 n 問: …」の要約。読めない形・32 KB 超・ほかのツールは持たない", () => {
+  const input = {
+    questions: [
+      { question: `${"長".repeat(150)}？`, header: "H", options: [{ label: "a", description: "" }, { label: "b", description: "" }], multiSelect: false },
+      { question: "2 問目", header: "H2", options: [{ label: "x" }, { label: "y" }] },
+    ],
+  };
+  const summary = summarizePermission("AskUserQuestion", input, "/w");
+  assert.equal(summary.questionInput, JSON.stringify(input));
+  assert.equal(summary.summary, `質問 2 問: ${"長".repeat(100)}`);
+  assert.ok(!summary.summary.includes("{"));
+  assert.equal(summary.requestHash, summarizePermission("AskUserQuestion", input, "/other").requestHash);
+  // 読めない形（選択肢 1 つ）は今までどおり JSON の要約で、questionInput は無い
+  const broken = summarizePermission("AskUserQuestion", { questions: [{ question: "q", options: [{ label: "a" }] }] }, "/w");
+  assert.equal(broken.questionInput, undefined);
+  assert.ok(broken.summary.startsWith('{"questions"'));
+  // 32 KB を超える JSON は持たない
+  const big = {
+    questions: [{ question: "q", options: [{ label: "a", description: "d".repeat(1000) }, { label: "b", description: "" }] }],
+    padding: "p".repeat(33 * 1024),
+  };
+  assert.equal(summarizePermission("AskUserQuestion", big, "/w").questionInput, undefined);
+  // ほかのツールは同じ形でも持たない
+  assert.equal(summarizePermission("mcp__x__y", input, "/w").questionInput, undefined);
+});
+
 test("unwrapPastedContent: pasted_content の開きと閉じのタグ（属性付き）を外して中身だけにする", () => {
   assert.equal(unwrapPastedContent('<pasted_content id="abc">本文\n2 行目</pasted_content id="abc">'), "本文\n2 行目");
   assert.equal(unwrapPastedContent('前 <pasted_content id="1" lines="2">a</pasted_content> 後 <pasted_content id="2">b</pasted_content>'), "前 a 後 b");

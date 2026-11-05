@@ -104,7 +104,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   const holdTimers = fakeTimers();
   let registry!: CcRegistry;
   const hold = new CcPermissionHold({
-    cfg: { ccPermissionHoldSec: 300 },
+    cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
     store,
     known: (sessionId) => registry.knows(sessionId),
     now,
@@ -366,7 +366,7 @@ test("CC12: SELF_AGENT_CC_NOTIFY=0 でもチャンネルには出て、ボタン
 test("CC12: permission-hold は複数の受け手を持ち、claims した最初の 1 つだけが held・resolved を受ける", async (t) => {
   const db = tempDb(t);
   const store = new CcPermissionStore(db, () => new Date(BASE));
-  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300 }, store, known: () => true, now: () => new Date(BASE), timers: fakeTimers(), log: () => {} });
+  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store, known: () => true, now: () => new Date(BASE), timers: fakeTimers(), log: () => {} });
   const calls: string[] = [];
   const listener = (name: string, claims?: (row: CcPermissionRow) => boolean): CcPermissionListener => ({
     ...(claims === undefined ? {} : { claims }),
@@ -401,7 +401,7 @@ test("CC12: claims が投げた受け手は飛ばして次の受け手に渡す�
   const store = new CcPermissionStore(db, () => new Date(BASE));
   const logs: string[] = [];
   const hold = new CcPermissionHold({
-    cfg: { ccPermissionHoldSec: 300 },
+    cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
     store,
     known: () => true,
     now: () => new Date(BASE),
@@ -596,7 +596,7 @@ test("CC12: 再起動の前に保留していた要求は、チャンネルに�
   const s = await setup(t);
   const inChannel = await s.ask(S1);
   const inSystem = await s.ask(S2);
-  const next = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300 }, store: s.store, known: () => true, now: () => new Date(s.clock.now), log: () => {} });
+  const next = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store: s.store, known: () => true, now: () => new Date(s.clock.now), log: () => {} });
   const rows = next.recover();
   assert.equal(rows.length, 2);
   // main と同じ振り分け

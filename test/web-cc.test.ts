@@ -477,7 +477,7 @@ async function permissionSetup(t: TestContext) {
   const timers: Array<() => void> = [];
   let registry!: CcRegistry;
   const hold = new CcPermissionHold({
-    cfg: { ccPermissionHoldSec: 300 },
+    cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
     store,
     known: (id) => registry.knows(id),
     now,
@@ -510,7 +510,7 @@ async function permissionSetup(t: TestContext) {
       tmux: undefined,
       workspaceDir: WORKSPACE,
       home: HOME,
-      permissions: { hold, store, holdSec: 300, answered: (id) => void answered.push(id) },
+      permissions: { hold, store, holdSec: 300, questionHoldSec: 900, answered: (id) => void answered.push(id) },
       now,
     }),
   );
@@ -556,6 +556,7 @@ test("GET /api/cc/permissions: 保留中の要求（id・sessionId・toolName・
         createdAt: new Date(BASE).toISOString(),
         expiresAt: new Date(BASE + 300_000).toISOString(),
         resolvedAt: null,
+        question: null,
       },
     ],
   });
@@ -574,6 +575,80 @@ test("GET /api/cc/permissions: 保留中の要求（id・sessionId・toolName・
   s.hold.answer(pending.id, "deny", "web");
   await reply;
   assert.equal(ccStatus({ panes, hookListening: () => true, store: s.sessions, permissions: s.store }).pendingPermissions, 0);
+});
+
+test("Q1: 質問の行の permission.question と expiresAt（質問の長さ）。POST /api/cc/permissions/<id>/answer は 400 / 404 / 409 / 200、質問の /allow は 409・/deny は「断りました」", async (t) => {
+  const s = await permissionSetup(t);
+  const input = {
+    questions: [
+      { question: "色は？", header: "Color", options: [{ label: "red", description: "赤" }, { label: "blue", description: "青" }], multiSelect: false },
+      { question: "部品は？", header: "Parts", options: [{ label: "a", description: "" }, { label: "b", description: "" }], multiSelect: true },
+    ],
+  };
+  const askQuestion = () => {
+    const event = parseHookEvent(
+      { hook_event_name: "PermissionRequest", session_id: S1, cwd: `${WORKSPACE}/alpha`, permission_mode: "default", tool_name: "AskUserQuestion", tool_input: input },
+      new Date(s.clock.now),
+    )!;
+    s.registry.receive(event);
+    return s.hold.request(event, new AbortController().signal);
+  };
+  const reply = askQuestion();
+  const pending = s.store.pendingFor(S1)!;
+  const listed = (await getJson(s.server, "/api/cc/permissions")).json.permissions as Array<Record<string, unknown>>;
+  assert.equal(listed[0]!.summary, "質問 2 問: 色は？");
+  assert.equal(listed[0]!.expiresAt, new Date(BASE + 900_000).toISOString());
+  assert.deepEqual(listed[0]!.question, {
+    questions: [
+      { question: "色は？", header: "Color", options: [{ label: "red", description: "赤" }, { label: "blue", description: "青" }], multiSelect: false },
+      { question: "部品は？", header: "Parts", options: [{ label: "a", description: "" }, { label: "b", description: "" }], multiSelect: true },
+    ],
+    answers: null,
+  });
+  const url = `/api/cc/permissions/${pending.id}/answer`;
+  // 形の違い・問に合わない答えは 400
+  for (const body of [
+    { answers: [{ labels: ["red"] }, { labels: ["a"] }] },
+    { requestHash: pending.requestHash },
+    { requestHash: pending.requestHash, answers: "red" },
+    { requestHash: pending.requestHash, answers: [{ labels: ["red"], other: "x" }, { labels: ["a"] }] },
+    { requestHash: pending.requestHash, answers: [{ labels: ["red"] }] },
+    { requestHash: pending.requestHash, answers: [{ labels: ["green"] }, { labels: ["a"] }] },
+    { requestHash: pending.requestHash, answers: [{ labels: ["red", "blue"] }, { labels: ["a"] }] },
+  ]) {
+    const result = await postJson(s.server, url, body);
+    assert.equal(result.status, 400, JSON.stringify(body));
+    assert.deepEqual(result.json, { error: "bad_request" });
+  }
+  // 無い id は 404、hash 違いは 409、質問の /allow は 409
+  const answers = [{ labels: ["blue"] }, { labels: ["b", "a"] }];
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id + 9}/answer`, { requestHash: pending.requestHash, answers })).status, 404);
+  assert.deepEqual((await postJson(s.server, url, { requestHash: "0".repeat(64), answers })).json, { error: "stale" });
+  assert.equal((await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: pending.requestHash })).status, 409);
+  assert.equal(s.store.get(pending.id)?.state, "pending");
+  assert.deepEqual(s.answered, []);
+  const ok = await postJson(s.server, url, { requestHash: pending.requestHash, answers });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { state: "allowed" });
+  assert.deepEqual(s.answered, [pending.id]);
+  const decision = JSON.parse((await reply)!).hookSpecificOutput.decision;
+  assert.deepEqual(decision, { behavior: "allow", updatedInput: { ...input, answers: { "色は？": "blue", "部品は？": "a, b" } } });
+  // 終わった質問は answers を出し、期限は null。2 回目は 409
+  const detail = (await getJson(s.server, `/api/cc/sessions/${S1}`)).json.permission as Record<string, unknown>;
+  assert.deepEqual((detail.question as Record<string, unknown>).answers, { "色は？": "blue", "部品は？": "a, b" });
+  assert.equal(detail.expiresAt, null);
+  assert.equal((await postJson(s.server, url, { requestHash: pending.requestHash, answers })).status, 409);
+  // 質問でない行の /answer は 409
+  const bash = s.ask(S1, "npm test");
+  const row = s.store.pendingFor(S1)!;
+  assert.deepEqual((await postJson(s.server, `/api/cc/permissions/${row.id}/answer`, { requestHash: row.requestHash, answers })).json, { error: "stale" });
+  s.hold.answer(row.id, "deny", "web");
+  await bash;
+  // 質問の [答えない] は /deny（message は「断りました」）
+  const second = askQuestion();
+  const next = s.store.pendingFor(S1)!;
+  assert.deepEqual((await postJson(s.server, `/api/cc/permissions/${next.id}/deny`, { requestHash: next.requestHash })).json, { state: "denied" });
+  assert.equal(JSON.parse((await second)!).hookSpecificOutput.decision.message, "self-agent（Discord / Web）から断りました");
 });
 
 test("POST /api/cc/permissions/<id>/allow|deny: 200 { state }・応答の本文。2 回目・時間切れ・request_hash が違えば 409 stale、無い id は 404", async (t) => {

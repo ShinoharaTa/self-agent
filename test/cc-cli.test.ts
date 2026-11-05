@@ -45,8 +45,8 @@ async function capture(run: () => Promise<number>): Promise<{ code: number; out:
   }
 }
 
-test("cc-setup: 6 つの事象に同じ url・headers・allowedEnvVars の http hook。timeout は 3 秒、PermissionRequest だけ保留 + 5 秒", () => {
-  const settings = ccHookSettings({ ccPermissionHoldSec: 300 }, 8792) as {
+test("cc-setup: 6 つの事象に同じ url・headers・allowedEnvVars の http hook。timeout は 3 秒、PermissionRequest だけ保留（許可と質問の大きい方）+ 5 秒", () => {
+  const settings = ccHookSettings({ ccPermissionHoldSec: 300, ccQuestionHoldSec: 200 }, 8792) as {
     env: Record<string, string>;
     hooks: Record<string, Array<{ matcher?: string; hooks: Array<Record<string, unknown>> }>>;
   };
@@ -66,12 +66,15 @@ test("cc-setup: 6 つの事象に同じ url・headers・allowedEnvVars の http 
       },
     ]);
   }
-  const custom = ccHookSettings({ ccPermissionHoldSec: 60 }, 1) as { hooks: Record<string, Array<{ hooks: Array<{ timeout: number }> }>> };
+  const custom = ccHookSettings({ ccPermissionHoldSec: 60, ccQuestionHoldSec: 30 }, 1) as { hooks: Record<string, Array<{ hooks: Array<{ timeout: number }> }>> };
   assert.equal(custom.hooks.PermissionRequest![0]!.hooks[0]!.timeout, 65);
+  // 質問の保留の方が長ければそちら + 5
+  const question = ccHookSettings({ ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, 1) as { hooks: Record<string, Array<{ hooks: Array<{ timeout: number }> }>> };
+  assert.equal(question.hooks.PermissionRequest![0]!.hooks[0]!.timeout, 905);
 });
 
 test("cc-setup: --print は JSON を標準出力に出す（トークンの値は出さない）。--print が無ければ使い方で 2、ポートが無ければ 1", async () => {
-  const env = { HOME: "/home/tester", SELF_AGENT_CC_HOOK_PORT: "8792", SELF_AGENT_CC_HOOK_TOKEN: TOKEN, SELF_AGENT_CC_PERMISSION_HOLD_SEC: "120" };
+  const env = { HOME: "/home/tester", SELF_AGENT_CC_HOOK_PORT: "8792", SELF_AGENT_CC_HOOK_TOKEN: TOKEN, SELF_AGENT_CC_PERMISSION_HOLD_SEC: "120", SELF_AGENT_CC_QUESTION_HOLD_SEC: "100" };
   const printed = await capture(() => ccSetup(["--print"], env));
   assert.equal(printed.code, 0);
   const json = JSON.parse(printed.out.join("\n")) as { hooks: Record<string, Array<{ hooks: Array<{ timeout: number }> }>> };

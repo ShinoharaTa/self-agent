@@ -7,10 +7,12 @@ import type { AgentEntry, AgentsResult } from "../src/cc/agents.ts";
 import { createCcHookServer, summarizePermission } from "../src/cc/hook-server.ts";
 import {
   CC_PERMISSION_DENY_MESSAGE,
+  CC_QUESTION_DENY_MESSAGE,
   CC_PERMISSION_RATE_LIMIT,
   CC_PERMISSION_UNKNOWN_LOG_INTERVAL_MS,
   CcPermissionHold,
   decisionBody,
+  permissionExpiresAt,
 } from "../src/cc/permission-hold.ts";
 import { CC_EVENT_REFRESH_MS, CC_IDLE_POLL_MS, CC_PERMISSION_POLL_MS, CcRegistry, type CcTimers } from "../src/cc/registry.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
@@ -85,7 +87,7 @@ async function until(check: () => boolean, label: string): Promise<void> {
 /**
  * 本物の受け口（127.0.0.1・空いているポート）・本物の CcRegistry（偽の claude agents --json）・本物の CcPermissionHold（偽のタイマー）と一時 SQLite
  */
-async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEntry[] } = {}) {
+async function setup(t: TestContext, opts: { holdSec?: number; questionHoldSec?: number; agents?: AgentEntry[] } = {}) {
   const db = tempDb(t);
   const clock = { now: BASE };
   const now = (): Date => new Date(clock.now);
@@ -111,7 +113,7 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
   const registryScheduled: Array<() => void> = [];
   let registry!: CcRegistry;
   const hold = new CcPermissionHold({
-    cfg: { ccPermissionHoldSec: opts.holdSec ?? 300 },
+    cfg: { ccPermissionHoldSec: opts.holdSec ?? 300, ccQuestionHoldSec: opts.questionHoldSec ?? 900 },
     store,
     known: (sessionId) => registry.knows(sessionId),
     now,
@@ -465,7 +467,7 @@ test("CC5a: 一覧への反映（receiver）が投げても、Stop で保留中�
   const db = tempDb(t);
   const now = (): Date => new Date(BASE);
   const store = new CcPermissionStore(db, now);
-  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300 }, store, known: () => true, now, timers: { after: () => () => undefined }, log: () => undefined });
+  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store, known: () => true, now, timers: { after: () => () => undefined }, log: () => undefined });
   const server = createCcHookServer({
     host: "127.0.0.1",
     port: 0,
@@ -507,7 +509,7 @@ test("CcPermissionHold.recover: 再起動の前に pending で残った行は ex
   const store = new CcPermissionStore(db, () => new Date(BASE));
   const row = store.add({ sessionId: S1, requestHash: "h", toolName: "Bash", summary: "x", permissionMode: null, state: "pending" });
   const logs: string[] = [];
-  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300 }, store, known: () => true, now: () => new Date(BASE), log: (l) => logs.push(l) });
+  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store, known: () => true, now: () => new Date(BASE), log: (l) => logs.push(l) });
   hold.recover();
   assert.equal(store.get(row.id)?.state, "expired");
   assert.equal(logs.length, 1);
@@ -658,4 +660,160 @@ test("openDb: always_rules の列を足す版で、前の行は残り always_rul
   const row = new CcPermissionStore(db).get(1)!;
   assert.equal(row.state, "allowed");
   assert.equal(row.alwaysRules, null);
+});
+
+// ----- Q1: 質問（AskUserQuestion） -----
+
+const SECRET_QUESTION = "secret-question: どの色にしますか？";
+const QUESTION_INPUT = {
+  questions: [
+    { question: SECRET_QUESTION, header: "Color", options: [{ label: "red", description: "赤" }, { label: "blue", description: "青" }], multiSelect: false },
+    { question: "どれを入れますか？", header: "Parts", options: [{ label: "a", description: "" }, { label: "b", description: "" }, { label: "c", description: "" }], multiSelect: true },
+  ],
+};
+
+function questionBody(sessionId: string, input: unknown = QUESTION_INPUT): Record<string, unknown> {
+  return {
+    hook_event_name: "PermissionRequest",
+    session_id: sessionId,
+    cwd: SECRET_CWD,
+    permission_mode: "default",
+    tool_name: "AskUserQuestion",
+    tool_input: input,
+    permission_suggestions: [],
+  };
+}
+
+/** 質問を受け口に送り、pending の行ができるまで待つ */
+async function askQuestion(s: Awaited<ReturnType<typeof setup>>, sessionId: string, input: unknown = QUESTION_INPUT) {
+  const before = s.store.pendingFor(sessionId)?.id;
+  const sent = post(s.port, questionBody(sessionId, input));
+  await until(() => {
+    const row = s.store.pendingFor(sessionId);
+    return row !== undefined && row.id !== before;
+  }, "pending の行");
+  return { ...sent, id: s.store.pendingFor(sessionId)!.id };
+}
+
+test("Q1: AskUserQuestion は question_input に tool_input の JSON そのままを持ち、answerQuestion で allow + updatedInput（tool_input + answers）を返す", async (t) => {
+  const s = await setup(t, { holdSec: 300, questionHoldSec: 900 });
+  const asked = await askQuestion(s, S1);
+  const row = s.store.get(asked.id)!;
+  assert.equal(row.toolName, "AskUserQuestion");
+  assert.equal(row.questionInput, JSON.stringify(QUESTION_INPUT));
+  assert.equal(row.summary, `質問 2 問: ${SECRET_QUESTION}`);
+  // 保留の長さは SELF_AGENT_CC_QUESTION_HOLD_SEC
+  assert.equal(s.holdTimers.at(-1)!.ms, 900_000);
+  assert.equal(permissionExpiresAt(row, 300, 900), new Date(BASE + 900_000).toISOString());
+  // 質問に [許可]・[常に許可] は効かない（答えは answerQuestion）
+  assert.deepEqual(s.hold.answer(asked.id, "allow", "web"), { ok: false, reason: "stale" });
+  assert.deepEqual(s.hold.answer(asked.id, "always", "web"), { ok: false, reason: "stale" });
+  // hash 違いは stale、問に合わない答えは invalid（どちらも行は pending のまま）
+  assert.deepEqual(s.hold.answerQuestion(asked.id, "0".repeat(64), [{ labels: ["red"] }, { labels: ["a"] }], "web"), { ok: false, reason: "stale" });
+  assert.deepEqual(s.hold.answerQuestion(asked.id, row.requestHash, [{ labels: ["red"] }], "web"), { ok: false, reason: "invalid" });
+  assert.deepEqual(s.hold.answerQuestion(asked.id, row.requestHash, [{ labels: ["red", "blue"] }, { labels: ["a"] }], "web"), {
+    ok: false,
+    reason: "invalid",
+  });
+  assert.deepEqual(s.hold.answerQuestion(asked.id, row.requestHash, [{ labels: ["green"] }, { labels: ["a"] }], "web"), { ok: false, reason: "invalid" });
+  assert.deepEqual(s.hold.answerQuestion(asked.id + 9, row.requestHash, [], "web"), { ok: false, reason: "not_found" });
+  assert.equal(s.store.get(asked.id)?.state, "pending");
+  // 複数選択は選択肢の順に ", " でつなぐ
+  assert.deepEqual(s.hold.answerQuestion(asked.id, row.requestHash, [{ labels: ["blue"] }, { labels: ["c", "a"] }], "discord"), {
+    ok: true,
+    state: "allowed",
+  });
+  const reply = await asked.reply;
+  assert.equal(reply.status, 200);
+  const answers = { [SECRET_QUESTION]: "blue", "どれを入れますか？": "a, c" };
+  assert.deepEqual(JSON.parse(reply.body), {
+    hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { ...QUESTION_INPUT, answers } } },
+  });
+  const done = s.store.get(asked.id)!;
+  assert.equal(done.state, "allowed");
+  assert.equal(done.via, "discord");
+  assert.deepEqual(done.answers, answers);
+  assert.equal(permissionExpiresAt(done, 300, 900), null);
+  // 2 回目は stale
+  assert.deepEqual(s.hold.answerQuestion(asked.id, row.requestHash, [{ labels: ["red"] }, { labels: ["a"] }], "web"), { ok: false, reason: "stale" });
+  // log は「質問（#id）」と状態・経路だけ（問の文・答えは出さない）
+  assert.ok(s.logs.includes(`Claude Code: 質問（#${asked.id}）→ allowed（discord）`));
+  assert.ok(!s.logs.join("\n").includes("secret-question"));
+  assert.ok(!s.logs.join("\n").includes("blue"));
+});
+
+test("Q1: 質問の「その他」は打った文字列（改行以外の制御文字は空白・前後の空白を除く）。空・1,000 字超は invalid", async (t) => {
+  const s = await setup(t);
+  const asked = await askQuestion(s, S1);
+  const hash = s.store.get(asked.id)!.requestHash;
+  assert.deepEqual(s.hold.answerQuestion(asked.id, hash, [{ other: "   " }, { labels: ["a"] }], "web"), { ok: false, reason: "invalid" });
+  assert.deepEqual(s.hold.answerQuestion(asked.id, hash, [{ other: "x".repeat(1001) }, { labels: ["a"] }], "web"), { ok: false, reason: "invalid" });
+  assert.deepEqual(s.hold.answerQuestion(asked.id, hash, [{ other: "  緑\tにして\n ください " }, { labels: ["b"] }], "web"), { ok: true, state: "allowed" });
+  const body = JSON.parse((await asked.reply).body);
+  assert.deepEqual(body.hookSpecificOutput.decision.updatedInput.answers, { [SECRET_QUESTION]: "緑 にして\n ください", "どれを入れますか？": "b" });
+});
+
+test("Q1: 質問の [やめる] は deny + 「断りました」（interrupt なし）。押さずに保留が切れたら空の本文（自動の allow は無い）", async (t) => {
+  const s = await setup(t);
+  const asked = await askQuestion(s, S1);
+  assert.deepEqual(s.hold.answer(asked.id, "deny", "web"), { ok: true, state: "denied" });
+  const json = JSON.parse((await asked.reply).body);
+  assert.deepEqual(json, {
+    hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: CC_QUESTION_DENY_MESSAGE } },
+  });
+  assert.equal(s.store.get(asked.id)?.answers, null);
+  // 押さなければ時間切れで空の本文
+  const second = await askQuestion(s, S1);
+  s.holdTimers.at(-1)!.fn();
+  const reply = await second.reply;
+  assert.equal(reply.body, "");
+  assert.equal(s.store.get(second.id)?.state, "expired");
+});
+
+test("Q1: 形の読めない AskUserQuestion は今までどおりの許可の要求（question_input は NULL・保留は許可の長さ・[許可] は効く）", async (t) => {
+  const s = await setup(t, { holdSec: 300, questionHoldSec: 900 });
+  const asked = await askQuestion(s, S1, { questions: [{ question: "q", options: [{ label: "only" }] }] });
+  const row = s.store.get(asked.id)!;
+  assert.equal(row.questionInput, null);
+  assert.equal(s.holdTimers.at(-1)!.ms, 300_000);
+  assert.deepEqual(s.hold.answerQuestion(asked.id, row.requestHash, [{ labels: ["only"] }], "web"), { ok: false, reason: "stale" });
+  assert.deepEqual(s.hold.answer(asked.id, "deny", "web"), { ok: true, state: "denied" });
+  assert.equal(JSON.parse((await asked.reply).body).hookSpecificOutput.decision.message, CC_PERMISSION_DENY_MESSAGE);
+});
+
+test("decisionBody: question は allow + updatedInput（tool_input + answers）、質問の deny は「断りました」", () => {
+  assert.deepEqual(JSON.parse(decisionBody("question", { questions: [], x: 1 }, { q: "a" })), {
+    hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { questions: [], x: 1, answers: { q: "a" } } } },
+  });
+  assert.equal(JSON.parse(decisionBody("deny", { question: true })).hookSpecificOutput.decision.message, CC_QUESTION_DENY_MESSAGE);
+  assert.equal(JSON.parse(decisionBody("deny", { question: false })).hookSpecificOutput.decision.message, CC_PERMISSION_DENY_MESSAGE);
+});
+
+test("openDb: v37 の DB を v38 に上げると cc_permissions に question_input・answers が足され、前の行は NULL", (t) => {
+  const dir = tempDir(t);
+  const path = join(dir, "self-agent.db");
+  const before = MIGRATIONS.findIndex((migration) => migration.includes("ADD COLUMN question_input"));
+  assert.equal(before, 37);
+  const old = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, before)) old.exec(migration);
+  old.exec(`PRAGMA user_version = ${before}`);
+  old.exec(
+    `INSERT INTO cc_permissions (session_id, request_hash, tool_name, summary, state, created_at) VALUES ('${S1}', 'h', 'AskUserQuestion', 's', 'pending', 'a')`,
+  );
+  old.close();
+  const db = openDb(path);
+  t.after(() => db.close());
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  const store = new CcPermissionStore(db);
+  const row = store.get(1)!;
+  assert.equal(row.questionInput, null);
+  assert.equal(row.answers, null);
+  // answers は resolve と同じ UPDATE で書き、移せなければ書かない
+  assert.equal(store.resolve(1, "allowed", "web", { q: "a" }), true);
+  assert.deepEqual(store.get(1)!.answers, { q: "a" });
+  assert.equal(store.resolve(1, "denied", "web", { q: "b" }), false);
+  assert.deepEqual(store.get(1)!.answers, { q: "a" });
+  // 形の違う answers は null で読む
+  db.exec("UPDATE cc_permissions SET answers = '[1]' WHERE id = 1");
+  assert.equal(store.get(1)!.answers, null);
 });
