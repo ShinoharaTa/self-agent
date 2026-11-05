@@ -86,7 +86,7 @@
 
 問題なし（記録だけ）: 絵文字・大文字ラベル・グラデーション・`→`・`transition: all`・`will-change`・感嘆符は 0 件。「…」・tabular-nums・`aria-label`・`aria-pressed`・`aria-current`・`role="combobox"`・`Intl`・`scrollbar-color`・`minmax(0, 1fr)`・`dvh` は使っている。`.dot` は生きた状態を表すので可。オーナーの吹き出しと人格の裸の文の非対称は性格なので変えない。`<select>` の色は base.css で明示済み。
 
-### NAV スマホの下タブ（CSS + JS。NAV-1 タブとシート / NAV-2 全幅の一覧）
+### NAV スマホの下タブ（CSS + JS。NAV-1 タブとシート / NAV-2 全幅の一覧）（済）
 
 | # | 事実（今） | 決まり | 直し |
 |---|---|---|---|
@@ -218,7 +218,7 @@ NAV-1（タブとシート。#48・#49・#52・#53）→ NAV-2（全幅の一覧
 9. 細部（#30・#40・#41・#43・#45・#46・#47）: `.card { box-shadow: none }`。`.cc-screen { font-size: var(--font-sm); line-height: 1.35; background: var(--bg); tab-size: 4 }` + coarse で 13px（GUIDELINES §3 の段階の唯一の例外。ほかに 13 を使わない）。`:root` に `--z-sash: 10; --z-drawer-backdrop: 40; --z-drawer: 41; --z-palette: 50; --z-toast: 60` と置き換え。`.steps > summary` の終わり方のアイコンを消し色は文に。`.btn:disabled { pointer-events: auto; cursor: not-allowed }` + 無効の理由の `title`。app.css で `.check > input { accent-color: var(--accent) }`（base.css の `--primary` を上書き）。`<a class="skip-link" href="#editors">本文へ</a>` を `body` の先頭に（フォーカス時だけ表示）。
 10. 受け入れ: 人格 3 体のダミーで使用量が表。読み込み中に枠が出ず跳ばない。会話の見出しの secondary が 1 つ。許可のカードが 2 ボタン + チェック。危険な確認で Enter を押しても実行されない。`h1` の次が `h2`（grep `el("h3"` の親を目視）。z-index の直書き 0 件。Tab の 1 回目でスキップリンク。
 
-### NAV の分解（implementer に渡す）
+### NAV の分解（implementer に渡す）（済。判断待ちの数を返す store の関数がまだ無いので「会話」の数は未読だけ。GitHub には数が無いので「その他」の点はまだ出ない。シートは `.wb` の外に置いたので開いた形は `.wb.is-more-open ~ .more-sheet`、`#more-backdrop` は全幅の一覧の上に重ねるため ≤639 で `--z-drawer`）
 
 触る: `src/web/static/sidebar.js`、`src/web/static/workbench.js`、`src/web/static/index.html`、`src/web/static/views.js`、`src/web/static/app.css`、`docs/design/WEB-UI-GUIDELINES.md`（§3 の文をそのまま）、`docs/plan/web-ui.md` §3.2 の注記、`test/web-static.test.ts`。
 

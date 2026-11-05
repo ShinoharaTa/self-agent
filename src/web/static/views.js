@@ -1390,22 +1390,25 @@
 
   // ===== ようこそ（タブが無いとき） =====
   function renderWelcome(container) {
-    const action = (label, keys, fn) => {
-      const b = el("button", { class: "welcome-link", type: "button" }, [el("span", { text: label }), keys ? el("kbd", { text: keys }) : null]);
+    const action = (label, keys, fn, cls) => {
+      const b = el("button", { class: "welcome-link" + (cls ? " " + cls : ""), type: "button" }, [el("span", { text: label }), keys ? el("kbd", { text: keys }) : null]);
       b.addEventListener("click", fn);
       return b;
     };
     container.replaceChildren(
       el("div", { class: "welcome" }, [
         el("h1", { text: "self-agent" }),
-        el("p", { class: "meta", text: "左の一覧から開くか、コマンドで移動します。" }),
+        el("p", { class: "meta" }, [
+          el("span", { class: "hide-sm", text: "左の一覧から開くか、コマンドで移動します。" }),
+          el("span", { class: "show-sm", text: "下の「会話」から開くか、検索で移動します。" }),
+        ]),
         el("div", { class: "welcome-links" }, [
           action("移動", "Ctrl+K", () => SA.app.palette("")),
           action("コマンド", "Ctrl+Shift+P", () => SA.app.palette(">")),
           action("状態を開く", "", () => SA.app.open("status")),
           action("使用量を開く", "", () => SA.app.open("usage")),
-          action("サイドバー", "Ctrl+B", () => SA.app.toggleSidebar()),
-          action("パネル", "Ctrl+J", () => SA.app.togglePanel()),
+          action("サイドバー", "Ctrl+B", () => SA.app.toggleSidebar(), "hide-sm"),
+          action("パネル", "Ctrl+J", () => SA.app.togglePanel(), "hide-sm"),
         ]),
       ]),
     );
