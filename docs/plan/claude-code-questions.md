@@ -142,7 +142,7 @@
 - `POST /api/cc/permissions/<id>/answer` `{ requestHash, answers: Array<{ labels: string[] } | { other: string }> }`（問の順）。`requestHash` が文字列でない・`answers` が配列でない・形が違う（`validateAnswers` を通らない）は 400 `bad_request`。`answerQuestion(…, "web")` で 200 `{ state: "allowed" }`、無い id は 404、`stale` は 409。通ったら `answered`（`ensureFor`）。
 - [やめる]（答えない）は今の `POST /api/cc/permissions/<id>/deny`（質問の行では message が「断りました」になる。API は変えない）。
 - カード（`views.js` の `ccQuestionCard`。`ccPermissionCard` が `p.question` のあるときに委ねる。`chat.js` の cc のタブと `cc:<sessionId>` のタブで共用）:
-  - 保留中: 見出し「質問を待っています」+ 残り（Q3 で決めた語。ツール名は出さずセッションの名前）。問ごとに `fieldset`（`legend` に header・問の文は `<p>`。textContent）: 1 つ選ぶ形はラジオ（label と description）、複数選択はチェックボックス、最後に「その他」のラジオ / チェックと 1 行の `textarea`（1,000 字。選ぶと有効）。下に [答える]（primary。Q3 で決めた）[やめる]（ghost。確認なしで `/deny`。Discord の [やめる] と同じ語）。全部の問に答えが無ければ [答える] は押せない（`title` に理由）。選んだ状態はタブのメモリ（`ccQuestionDraft`。描き直しでも残す。終わったら消す）。押したら応答が来るまで止め、409 はトースト「この操作は古くなっています」。
+  - 保留中: 見出し「質問を待っています」+ 残り（Q3 で決めた語。ツール名は出さずセッションの名前）。問ごとに `fieldset`（`legend` に header・問の文は `<p>`。textContent）: 1 つ選ぶ形はラジオ（label と description）、複数選択はチェックボックス、最後に「その他」のラジオ / チェックと 2 行の `textarea`（1,000 字。選ぶと出る）。下に [答える]（primary。Q3 で決めた）[やめる]（ghost。確認なしで `/deny`。Discord の [やめる] と同じ語）。全部の問に答えが無ければ [答える] は押せない（`title` に理由）。選んだ状態はタブのメモリ（`ccQuestionDraft`。描き直しでも残す。終わったら消す）。押したら応答が来るまで止め、409 はトースト「この操作は古くなっています」。
   - 終わったもの: 「答えました（Web）」+ 問ごとの「1. <header>: <値>」の行 /「答えませんでした（Web）」/「端末か RC で答えられました」/「時間切れ…」。
   - 「端末や RC のダイアログでも答えられます」は許可と同じ（PC は `title`、スマホは常設）。
 - サイドバーのバッジ「許可待ち」は質問のときは「質問」（`title` に要約）。順は 許可待ち・質問 > 届け待ち > trust > tmux の外（同じ位置）。

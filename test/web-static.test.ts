@@ -163,6 +163,20 @@ class FakeNode {
     if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
     this.parent = null;
   }
+  get firstElementChild(): FakeNode | null {
+    return this.children[0] ?? null;
+  }
+  get nextElementSibling(): FakeNode | null {
+    if (!this.parent) return null;
+    return this.parent.children[this.parent.children.indexOf(this) + 1] ?? null;
+  }
+  insertBefore(node: FakeNode, ref: FakeNode | null): void {
+    node.remove();
+    node.parent = this;
+    const at = ref ? this.children.indexOf(ref) : -1;
+    if (at < 0) this.children.push(node);
+    else this.children.splice(at, 0, node);
+  }
   contains(other: unknown): boolean {
     return other === this || this.children.some((c) => c.contains(other));
   }
@@ -347,6 +361,8 @@ function loadViews() {
   const views = SA.views as {
     ccPermissionCard: (sessionId: string, p: unknown, rc: string | null) => FakeNode | null;
     ccQuestionPicks: (questions: unknown, drafts: unknown) => unknown;
+    ccQuestionForget: (id: number) => void;
+    placeChildren: (container: FakeNode, nodes: Array<FakeNode | null>) => void;
   };
   return { views, posts, bodies, toasts, setReply: (fn: (path: string) => Promise<unknown>) => (reply = fn) };
 }
@@ -1066,7 +1082,7 @@ test("web static: 質問のカードは問ごとに見出し・問の文・選�
   const fieldsets = descendants(card).filter((n) => n.tagName === "fieldset");
   assert.equal(fieldsets.length, 2);
   assert.equal(descendants(fieldsets[0]!).find((n) => n.tagName === "legend")!.textContent, "色");
-  assert.equal(descendants(fieldsets[1]!).find((n) => n.tagName === "legend")!.textContent, "どれを入れますか", "header が無ければ問の文");
+  assert.equal(descendants(fieldsets[1]!).find((n) => n.tagName === "legend")!.textContent, "問 2", "header が無ければ「問 n」（問の文と重ねない）");
   assert.match(fieldsets[0]!.textContent, /どの色にしますか/);
   const types = (f: FakeNode) => descendants(f).filter((n) => n.tagName === "input").map((n) => n.getAttribute("type"));
   assert.deepEqual(types(fieldsets[0]!), ["radio", "radio", "radio"], "選択肢 2 つ + その他");
@@ -1147,6 +1163,47 @@ test("web static: 質問のカードの [やめる] は確認なしで /deny、4
   views.ccPermissionCard("s1", questionPermission(25), null)!.buttons()[1]!.dispatch("click");
   await new Promise((r) => setImmediate(r));
   assert.equal(toasts.at(-1), "答えの形が合いません");
+});
+
+test("web static: 質問のカードは cc: と ch: のタブで選んだ状態を共有し、同じタブでは同じ要素を返す。終わった・古い要求の選んだ状態は捨てる", async () => {
+  const { views, setReply } = loadViews();
+  const p = questionPermission(40);
+  const inCc = views.ccPermissionCard("s1", p, null)!;
+  const inCh = (views.ccPermissionCard as (s: string, p: unknown, rc: null, tab: string) => FakeNode)("s1", p, null, "ch:c1");
+  assert.notEqual(inCc, inCh, "タブごとに別の要素");
+  pick(optionInput(inCh, "赤"));
+  // cc: のタブを描き直すと、ch: で選んだものが写る（[答える] も更新される）
+  assert.equal(views.ccPermissionCard("s1", p, null), inCc);
+  assert.equal(optionInput(inCc, "赤").checked, true);
+  pick(optionInput(inCc, "A"));
+  assert.equal((inCc.buttons()[0] as FakeNode & { disabled: boolean }).disabled, false);
+  // ccQuestionForget で選んだ状態とカードを捨てる（次は新しい要素・空）
+  views.ccQuestionForget(40);
+  const fresh = views.ccPermissionCard("s1", p, null)!;
+  assert.notEqual(fresh, inCc);
+  assert.equal(optionInput(fresh, "赤").checked, false);
+  // 409 で捨てる
+  pick(optionInput(fresh, "青"));
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 409 })));
+  fresh.buttons()[1]!.dispatch("click");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(optionInput(views.ccPermissionCard("s1", p, null)!, "青").checked, false);
+});
+
+test("web static: placeChildren は中に残る要素を動かさず（外さず）、ほかを前後に差し込む", () => {
+  const { views } = loadViews();
+  const box = new FakeNode("div");
+  const [a, b, kept, c, composer] = ["a", "b", "kept", "c", "composer"].map((t) => Object.assign(new FakeNode("div"), { text: t }));
+  box.append(a!, kept!, composer!);
+  let removed = 0;
+  const remove = kept!.remove.bind(kept);
+  kept!.remove = () => {
+    removed++;
+    remove();
+  };
+  views.placeChildren(box, [b!, kept!, null, c!, composer!]);
+  assert.deepEqual(box.children.map((n) => n.text), ["b", "kept", "c", "composer"]);
+  assert.equal(removed, 0, "残る要素は一度も外さない");
 });
 
 test("web static: 終わった質問のカードは answers から「1. <見出し>: <答え>」、答えなかった・端末で答えた・時間切れの文", () => {
