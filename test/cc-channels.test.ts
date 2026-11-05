@@ -262,11 +262,14 @@ test("ensureFor: 知らせのきっかけ（permission・question・waiting）�
   const intro = s.gateway.posts.at(-1)!.message.text;
   assert.match(intro, /判断待ちの知らせで作りました/);
   assert.ok(intro.endsWith(`\n${CC_NOT_IN_TMUX_REPLY}`));
+  // tmux の外では「ここに書くと届きます」を言わない（送れないため）
+  assert.ok(!intro.includes("ここに書くとこのセッションに届きます"), intro);
   // tmux の中のセッションには足さない。きっかけの語
   assert.equal((await s.channels.ensureFor(S1, "question")).ok, true);
   const inside = s.gateway.posts.at(-1)!.message.text;
   assert.match(inside, /質問で作りました/);
   assert.ok(!inside.includes(CC_NOT_IN_TMUX_REPLY));
+  assert.ok(inside.includes("ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます"));
   assert.equal((await s.channels.ensureFor(S2, "permission")).ok, true);
   assert.match(s.gateway.posts.at(-1)!.message.text, /許可の要求で作りました/);
   assertQuietLogs(s.logs);

@@ -39,10 +39,15 @@ export class CcWaitBudget {
 
   /** 窓の中で CC_WAIT_NOTIFY_LIMIT 件に達していなければ 1 件使って true */
   take(now: number): boolean {
-    this.times = this.times.filter((at) => now - at < CC_WAIT_NOTIFY_WINDOW_MS);
-    if (this.times.length >= CC_WAIT_NOTIFY_LIMIT) return false;
+    if (!this.available(now)) return false;
     this.times.push(now);
     return true;
+  }
+
+  /** 窓の中で CC_WAIT_NOTIFY_LIMIT 件に達していないか（使わない。チャンネルを作る前に確かめる） */
+  available(now: number): boolean {
+    this.times = this.times.filter((at) => now - at < CC_WAIT_NOTIFY_WINDOW_MS);
+    return this.times.length < CC_WAIT_NOTIFY_LIMIT;
   }
 }
 

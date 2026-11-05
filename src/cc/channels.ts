@@ -332,12 +332,15 @@ export function ccChannelTopic(name: string | null, dir: string | null): string 
   return `Claude Code: ${topicPart(label)}${dir === null || dir === "" ? "" : `（${topicPart(dir)}）`}`;
 }
 
-/** 最初の投稿（純関数）。tmux の外のセッション（知らせのために作ったもの）なら、ここからは送れない旨の 1 行を足す */
+/**
+ * 最初の投稿（純関数）。tmux の外のセッション（知らせのために作ったもの）なら「ここに書くと届きます」を言わず、ここからは送れない旨の 1 行を足す
+ */
 export function ccChannelIntro(name: string | null, dir: string | null, origin: CcChannelOrigin, inTmux = true): string {
   const label = name === null || name === "" ? "（名前なし）" : name;
   return (
     `Claude Code のセッション「${plain(label)}」${dir === null || dir === "" ? "" : `（${plain(dir)}）`}のチャンネルです（${ORIGIN_LABEL[origin]}で作りました）。` +
-    "ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます。セッションが終わると完了に移し、戻るとここに戻します" +
+    (inTmux ? "ここに書くとこのセッションに届きます。" : "") +
+    "返事と許可の要求はここに出ます。セッションが終わると完了に移し、戻るとここに戻します" +
     (inTmux ? "" : `\n${CC_NOT_IN_TMUX_REPLY}`)
   );
 }

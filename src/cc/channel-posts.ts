@@ -58,6 +58,8 @@ export const CC_PROMPT_MIRROR_WINDOW_MS = 30_000;
 export const CC_PROMPT_MIRROR_LABEL = "（端末か RC から）";
 /** Discord の 1 メッセージの上限 */
 const MESSAGE_MAX = 2000;
+/** SELF_AGENT_CC_NOTIFY=0 でチャンネルの無いセッションの知らせを出さなかった log の間隔 */
+const NOTIFY_OFF_LOG_MS = 60 * 60_000;
 /** 判断待ちの知らせが上限に達したときの 1 行（メンションなし。チャンネルごとに CC_WAIT_NOTIFY_WINDOW_MS に 1 回） */
 export const CC_CHANNEL_WAIT_OVERFLOW_TEXT = `判断待ちの知らせが上限（1 時間に ${CC_WAIT_NOTIFY_LIMIT} 件）に達したので、しばらく出しません（Web で確かめてください）`;
 
@@ -272,11 +274,12 @@ export class CcChannelPosts implements CcPermissionListener {
     let skipped = 0;
     for (const view of due) {
       const channelId = channelOf.get(view.sessionId);
-      // 出せなくてもやり直さない（待ちごとに 1 回）
+      // 出せなくてもやり直さない（待ちごとに 1 回。作っている間に次の確認で二重にしないよう、先に印を付ける）
       sessions.setNotifiedAt(view.sessionId, new Date(now));
-      if (!waitBudget.take(now)) {
+      // 上限の枠は、チャンネルのあるセッションはここで使い、無いセッションは作れた後に使う（作れないときに枠を使わない）。
+      // 上限に達していれば作らない（上限の 1 行はチャンネルのあるセッションだけ）
+      if (channelId !== undefined ? !waitBudget.take(now) : !waitBudget.available(now)) {
         skipped++;
-        // 上限の 1 行は、チャンネルのあるセッションだけ（そのためにチャンネルを作らない）
         if (channelId !== undefined) this.noticeOverflow(channelId, now);
         continue;
       }
@@ -284,8 +287,16 @@ export class CcChannelPosts implements CcPermissionListener {
       const historyText = view.waitingFor === undefined || view.waitingFor === "" ? "判断を待っています" : `判断を待っています: ${view.waitingFor}`;
       this.track(
         (async () => {
-          const target = channelId ?? (await this.channelFor(view.sessionId, "waiting"));
-          if (target === undefined) return;
+          let target = channelId;
+          if (target === undefined) {
+            target = await this.channelFor(view.sessionId, "waiting");
+            if (target === undefined) return;
+            // 作っている間にほかの判断待ちで枠を使い切っていれば出さない
+            if (!waitBudget.take(now)) {
+              log("Claude Code: 判断待ちの知らせを上限のためチャンネルに出しませんでした（1 件）");
+              return;
+            }
+          }
           try {
             await this.deps.gateway.sendMessage(target, { ...message, suppressEmbeds: true });
           } catch (error) {
@@ -391,11 +402,22 @@ export class CcChannelPosts implements CcPermissionListener {
     return this.deps.channels.openFor(sessionId)?.channelId;
   }
 
+  /** SELF_AGENT_CC_NOTIFY=0 でチャンネルの無いセッションの知らせを出さなかった log（1 時間に 1 回。プロセスの中） */
+  private notifyOffLoggedAt: number | undefined;
+
+  private logNotifyOff(): void {
+    const now = this.deps.now().getTime();
+    if (this.notifyOffLoggedAt !== undefined && now - this.notifyOffLoggedAt < NOTIFY_OFF_LOG_MS) return;
+    this.notifyOffLoggedAt = now;
+    this.deps.log("Claude Code: SELF_AGENT_CC_NOTIFY=0 のため、チャンネルの無いセッションの許可の要求・質問は Discord に出しません");
+  }
+
   private async postPermission(row: CcPermissionRow): Promise<void> {
     const { permissions, cfg, gateway, log } = this.deps;
     const channelId = await this.channelFor(row.sessionId, row.questionInput !== null ? "question" : "permission");
     if (channelId === undefined) {
-      log(`Claude Code: 許可の要求（#${row.id}）を出すチャンネルがありません`);
+      if (cfg.ccNotify) log(`Claude Code: 許可の要求（#${row.id}）を出すチャンネルがありません`);
+      else this.logNotifyOff();
       return;
     }
     const channel = { channelId };
