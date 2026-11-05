@@ -162,10 +162,8 @@ function permissionHead(
 export type CcPermissionNoticeOptions = {
   workspaceDir: string;
   home: string;
-  /** SELF_AGENT_CC_PERMISSION_HOLD_SEC（ボタンが効く時間） */
+  /** ボタンが効く時間（呼び出し側が行で選ぶ: 質問の行は SELF_AGENT_CC_QUESTION_HOLD_SEC、それ以外は SELF_AGENT_CC_PERMISSION_HOLD_SEC） */
   holdSec: number;
-  /** SELF_AGENT_CC_QUESTION_HOLD_SEC（質問のボタンが効く時間）。無ければ holdSec */
-  questionHoldSec?: number | undefined;
   ownerUserId?: string | undefined;
 };
 
@@ -179,7 +177,7 @@ export const CC_QUESTION_UNREADABLE_NOTE = "質問の形を読めませんでし
 export function permissionNotice(row: CcPermissionRow, session: CcNoticeSession | undefined, options: CcPermissionNoticeOptions): OutgoingMessage {
   const parsed = parseQuestionInput(row.questionInput);
   if (parsed !== undefined) {
-    return questionNotice(row, parsed.questions, [], session, { ...options, holdSec: options.questionHoldSec ?? options.holdSec });
+    return questionNotice(row, parsed.questions, [], session, options);
   }
   const rules = rulesText(row);
   const lines = [permissionHead(row, session, options)];
@@ -477,13 +475,15 @@ export function questionHistoryText(questions: readonly CcQuestion[]): string {
   return `質問: ${header}${body}（${questions.length} 問）`;
 }
 
-/** 終わった質問の Web の会話の 1 行（純関数。文字のまま）。pending なら undefined */
+/** 終わった質問の Web の会話の 1 行（純関数。文字のまま）。答えたものは「質問の答え: …」、それ以外は「質問の結果: …」。pending なら undefined */
 export function questionResultHistoryText(
   row: Pick<CcPermissionRow, "state" | "via" | "alwaysRules" | "answers">,
   questions: readonly CcQuestion[],
 ): string | undefined {
   const line = questionResultLine(row, questions, undefined, false);
-  return line === undefined ? undefined : `質問の答え: ${line}`;
+  if (line === undefined) return undefined;
+  // 答えた・答えなかった（Discord・Web）は「質問の答え」、端末か RC で答えられた・時間切れ・停止は「質問の結果」
+  return row.state === "allowed" || row.state === "denied" ? `質問の答え: ${line}` : `質問の結果: ${line}`;
 }
 
 /** 判断待ちの理由（claude agents --json の waitingFor か、hook の Notification の種類） */
