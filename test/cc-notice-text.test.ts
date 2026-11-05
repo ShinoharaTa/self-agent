@@ -1,32 +1,38 @@
+// 許可の要求・判断待ちの知らせ（CC5c の文面と押したときの流れ。docs/plan/claude-code-sessions.md §5.2）。Q4 から #system ではなくそのセッションの
+// Claude Code のチャンネルに出す（cc/channel-posts.ts。文面は cc/notice-text.ts の純関数。docs/plan/claude-code-questions.md §5）
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createCcComponent, type CcPermissionButtons } from "../src/app/commands/cc.ts";
 import { createInteractionHandler, OWNER_ONLY_REPLY } from "../src/app/interactions.ts";
-import { createSystemNotifier } from "../src/app/system-notice.ts";
 import type { AgentEntry, AgentsResult } from "../src/cc/agents.ts";
+import { CcChannelPosts } from "../src/cc/channel-posts.ts";
+import type { CcOpenResult } from "../src/cc/channels.ts";
 import {
   CC_WAIT_CHECK_MS,
   CC_WAIT_NOTIFY_LIMIT,
   CC_WAIT_NOTIFY_MS,
-  CcDiscordNotifier,
+  CcWaitBudget,
   permissionNotice,
   permissionResultLine,
-} from "../src/cc/discord-notice.ts";
+} from "../src/cc/notice-text.ts";
 import { type CcHookEvent, parseHookEvent } from "../src/cc/hook-server.ts";
 import { CC_PERMISSION_DENY_MESSAGE, CC_PERMISSION_RATE_LIMIT, CcPermissionHold, decisionBody } from "../src/cc/permission-hold.ts";
 import { CcRegistry, type CcTimers } from "../src/cc/registry.ts";
 import type { Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
+import { type CcChannelOrigin, CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
+import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcSessionStore } from "../src/store/cc-sessions.ts";
 import { MIGRATIONS } from "../src/store/db.ts";
-import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { FakeResponder } from "./helpers/responder.ts";
 
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
 const GUILD = "guild-1";
-const SYSTEM = "system-1";
+/** S1・S2 の Claude Code のチャンネル */
+const CHANNEL = "cc-channel-1";
+const CHANNEL2 = "cc-channel-2";
 const OWNER = "owner-1";
 const S1 = "11111111-1111-4111-8111-111111111111";
 const S2 = "22222222-2222-4222-8222-222222222222";
@@ -71,14 +77,21 @@ function fakeTimers(): CcTimers & { entries: Array<{ fn: () => void; ms: number;
   };
 }
 
-async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEntry[]; notify?: boolean; system?: boolean } = {}) {
+/**
+ * main と同じ配線（許可の要求の受け手は cc/channel-posts.ts）。S1・S2 にはチャンネルがある（channels: false で無し）。チャンネルの無いセッションの
+ * 知らせは偽の ensureFor（cc-made-<n> を作る。ensure.fails で not_set_up）で作る。notify: false は SELF_AGENT_CC_NOTIFY=0
+ */
+async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEntry[]; notify?: boolean; channels?: boolean } = {}) {
   const db = tempDb(t);
   const clock = { now: BASE };
   const now = (): Date => new Date(clock.now);
   const sessions = new CcSessionStore(db, now);
   const store = new CcPermissionStore(db, now);
-  const guildSettings = new GuildSettingsStore(db, now);
-  if (opts.system !== false) guildSettings.setChannel(GUILD, "systemChannelId", SYSTEM);
+  const channels = new CcChannelStore(db, now);
+  if (opts.channels !== false) {
+    channels.create({ channelId: CHANNEL, guildId: GUILD, sessionId: S1, name: "cc-a", cwd: SECRET_CWD, origin: "web" });
+    channels.create({ channelId: CHANNEL2, guildId: GUILD, sessionId: S2, name: "cc-b", cwd: SECRET_CWD, origin: "web" });
+  }
   const logs: string[] = [];
   const log = (line: string): void => {
     logs.push(line);
@@ -94,7 +107,6 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
     timers: holdTimers,
     log,
   });
-  let notifier: CcDiscordNotifier | undefined;
   registry = new CcRegistry({
     cfg: { ccPollSec: 10 },
     agents: { list: async () => next },
@@ -106,33 +118,41 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
     now,
     timers: fakeTimers(),
     permissions: hold,
-    ended: (session) => notifier?.ended(session),
     log,
   });
   await registry.tick();
   const gateway = new FakeGateway({ allow: ["sendMessage", "editMessage"] });
-  const notifierTimers = fakeTimers();
-  if (opts.notify !== false) {
-    notifier = new CcDiscordNotifier({
-      cfg: { allowedGuildIds: ["guild-0", GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: opts.holdSec ?? 300, ccQuestionHoldSec: 900 },
-      guildSettings,
-      notify: createSystemNotifier({ guildSettings, gateway, log }),
-      gateway,
-      permissions: store,
-      sessions,
-      registry,
-      home: HOME,
-      now,
-      timers: notifierTimers,
-      log,
-    });
-    hold.listen(notifier);
-    notifier.start();
-  }
-  const buttons: CcPermissionButtons | undefined =
-    notifier === undefined
-      ? undefined
-      : { answer: (id, decision) => hold.answer(id, decision, "discord"), resolvedMessage: (id) => notifier!.resolvedMessage(id) };
+  const postsTimers = fakeTimers();
+  const ensure = { calls: [] as Array<{ sessionId: string; origin: CcChannelOrigin }>, fails: false, made: 0 };
+  const posts = new CcChannelPosts({
+    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: opts.holdSec ?? 300, ccQuestionHoldSec: 900, ccNotify: opts.notify !== false },
+    channels,
+    ensureChannel: () => ({
+      ensureFor: async (sessionId: string, origin: CcChannelOrigin): Promise<CcOpenResult> => {
+        ensure.calls.push({ sessionId, origin });
+        if (ensure.fails) return { ok: false, reason: "not_set_up" };
+        const channelId = `cc-made-${++ensure.made}`;
+        channels.create({ channelId, guildId: GUILD, sessionId, name: channelId, cwd: null, origin });
+        return { ok: true, channelId, guildId: GUILD };
+      },
+    }),
+    gateway,
+    permissions: store,
+    sessions,
+    sends: new CcSendStore(db, now),
+    registry,
+    waitBudget: new CcWaitBudget(),
+    home: HOME,
+    now,
+    timers: postsTimers,
+    log,
+  });
+  hold.listen(posts);
+  posts.start();
+  const buttons: CcPermissionButtons = {
+    answer: (id, decision) => hold.answer(id, decision, "discord"),
+    resolvedMessage: (id) => posts.resolvedMessage(id),
+  };
   const component = createCcComponent({ ccPermissionButtons: () => buttons, gateway, log });
 
   /** 許可の要求を受けて保留する（本文の Promise と行の id）。投稿が終わるまで待つ */
@@ -153,7 +173,7 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
     registry.receive(event);
     const closed = new AbortController();
     const reply = hold.request(event, closed.signal);
-    await notifier?.idle();
+    await posts.idle();
     const row = store.pendingFor(sessionId);
     return { reply, closed, id: row?.id ?? store.get(Number(db.prepare("SELECT MAX(id) AS id FROM cc_permissions").get()?.id))!.id };
   };
@@ -165,17 +185,17 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
   };
   /** ボタンを押す */
   const press = async (customId: string, responder = new FakeResponder()): Promise<FakeResponder> => {
-    const interaction: Interaction = { kind: "button", customId, guildId: GUILD, channelId: SYSTEM, userId: OWNER, messageId: "message-1" } as Interaction;
+    const interaction: Interaction = { kind: "button", customId, guildId: GUILD, channelId: CHANNEL, userId: OWNER, messageId: "message-1" } as Interaction;
     await component.handle(interaction as Extract<Interaction, { kind: "button" }>, responder);
     return responder;
   };
   /** 判断待ちを確かめる周期を 1 回動かす */
   const tickWaiting = async (): Promise<void> => {
-    const entry = notifierTimers.entries.filter((candidate) => !candidate.cancelled && candidate.ms === CC_WAIT_CHECK_MS).at(-1);
+    const entry = postsTimers.entries.filter((candidate) => !candidate.cancelled && candidate.ms === CC_WAIT_CHECK_MS).at(-1);
     assert.ok(entry, "判断待ちの確認の予約が無い");
     entry.cancelled = true;
     entry.fn();
-    await notifier?.idle();
+    await posts.idle();
   };
   return {
     db,
@@ -185,7 +205,8 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
     hold,
     registry,
     gateway,
-    notifier: notifier!,
+    posts,
+    ensure,
     component,
     buttons,
     logs,
@@ -207,12 +228,12 @@ function buttonIds(message: OutgoingMessage): string[][] {
   );
 }
 
-test("CC5c: 許可の要求で #system に 1 通（オーナーをメンション・ボタン 2 行）。要約はコードブロック、名前は Markdown を無効に", async (t) => {
+test("CC5c・Q4: 許可の要求でチャンネルに 1 通（オーナーをメンション・ボタン 2 行）。要約はコードブロック、名前は Markdown を無効に", async (t) => {
   const s = await setup(t);
   const asked = await s.ask(S1, "npm test", NPM_TEST_SUGGESTION);
   assert.equal(s.gateway.posts.length, 1);
   const post = s.gateway.posts[0]!;
-  assert.equal(post.channelId, SYSTEM);
+  assert.equal(post.channelId, CHANNEL);
   assert.equal(post.message.mentionUserId, OWNER);
   assert.deepEqual(buttonIds(post.message), [
     [`cc:perm:allow:${asked.id}`, `cc:perm:always:${asked.id}`, `cc:perm:deny:${asked.id}`],
@@ -226,7 +247,7 @@ test("CC5c: 許可の要求で #system に 1 通（オーナーをメンショ�
   // 書き換えのために記録する
   const row = s.store.get(asked.id)!;
   assert.equal(row.messageId, post.messageId);
-  assert.equal(row.messageChannelId, SYSTEM);
+  assert.equal(row.messageChannelId, CHANNEL);
   // log に名前・パス・コマンドが無い
   for (const line of s.logs) {
     assert.ok(!line.includes(SECRET_NAME) && !line.includes("secret-dir") && !line.includes("npm test"), line);
@@ -299,7 +320,7 @@ test("CC5c: Discord の [許可] は Web と同じ応答（behavior: allow だ�
   assert.deepEqual(update.message.components, RC_ROW);
   assert.ok(update.message.text.endsWith("\n許可（Discord）"), update.message.text);
   assert.ok(update.message.text.startsWith("Claude Code が許可を待っています: "));
-  // Discord で押したものは notifier では書き換えない（応答で書き換えた）
+  // Discord で押したものはここでは書き換えない（応答で書き換えた）
   assert.equal(s.gateway.edits.length, 0);
   // もう 1 回押すと古い（本人にだけ）
   const again = await s.press(`cc:perm:deny:${asked.id}`);
@@ -343,10 +364,10 @@ test("CC5c: Web で先に押されていれば Discord は「古くなってい�
   const s = await setup(t);
   const asked = await s.ask(S1);
   assert.deepEqual(s.hold.answer(asked.id, "allow", "web"), { ok: true, state: "allowed" });
-  await s.notifier.idle();
+  await s.posts.idle();
   assert.equal(s.gateway.edits.length, 1);
   const edit = s.gateway.edits[0]!;
-  assert.equal(edit.channelId, SYSTEM);
+  assert.equal(edit.channelId, CHANNEL);
   assert.equal(edit.messageId, s.gateway.posts[0]!.messageId);
   assert.deepEqual(edit.message.components, RC_ROW);
   assert.ok(edit.message.text.endsWith("\n許可（Web）"), edit.message.text);
@@ -359,7 +380,7 @@ test("CC5c: 他で答えられたら（Stop・次の要求）1 通が「端末�
   const s = await setup(t);
   const first = await s.ask(S1);
   s.hook(S1, "Stop");
-  await s.notifier.idle();
+  await s.posts.idle();
   assert.equal(await first.reply, undefined);
   assert.equal(s.store.get(first.id)?.state, "answered_elsewhere");
   assert.equal(s.gateway.edits.length, 1);
@@ -379,14 +400,14 @@ test("CC5c: 時間切れは「時間切れ。端末か RC で答えてくださ�
   const s = await setup(t);
   const asked = await s.ask(S1);
   s.holdTimers.entries.at(-1)!.fn();
-  await s.notifier.idle();
+  await s.posts.idle();
   assert.equal(await asked.reply, undefined);
   assert.ok(s.gateway.edits[0]!.message.text.endsWith(`\n時間切れ。端末か RC で答えてください <https://claude.ai/code/${BRIDGE}>`));
 
   const other = await s.ask(S2);
   s.hold.stop();
-  s.notifier.stop();
-  await s.notifier.idle();
+  s.posts.stop();
+  await s.posts.idle();
   assert.equal(s.store.get(other.id)?.state, "released");
   assert.ok(s.gateway.edits.at(-1)!.message.text.endsWith("\nself-agent が止まるため受け付けをやめました。端末か RC で答えてください"));
   // RC のリンクが分からないセッション（S2）はボタンの行を全部外す
@@ -395,7 +416,7 @@ test("CC5c: 時間切れは「時間切れ。端末か RC で答えてくださ�
 
 test("CC5c: 投稿の途中で終わった要求は、投稿の後に書き換える", async (t) => {
   const s = await setup(t);
-  let release!: () => void;
+  let release: (() => void) | undefined;
   s.gateway.beforeSendMessage = () =>
     new Promise<void>((resolve) => {
       release = resolve;
@@ -408,8 +429,10 @@ test("CC5c: 投稿の途中で終わった要求は、投稿の後に書き換�
   const id = s.store.pendingFor(S1)!.id;
   assert.deepEqual(s.hold.answer(id, "deny", "web"), { ok: true, state: "denied" });
   assert.equal(s.gateway.edits.length, 0);
+  // チャンネルを引いてから投稿するので、投稿に入るまで待つ
+  while (release === undefined) await new Promise((resolve) => setImmediate(resolve));
   release();
-  await s.notifier.idle();
+  await s.posts.idle();
   await reply;
   assert.equal(s.gateway.posts.length, 1);
   assert.equal(s.gateway.edits.length, 1);
@@ -428,7 +451,7 @@ test("CC5c: 保留中に来た permission_prompt の Notification では判断�
   assert.equal(s.gateway.posts.length, 1, "許可の要求の 1 通だけ");
   // Web で答えた後も、直近 60 秒に解決した行があるので出ない
   s.hold.answer(asked.id, "allow", "web");
-  await s.notifier.idle();
+  await s.posts.idle();
   s.clock.now += 30_000;
   await s.tickWaiting();
   assert.equal(s.gateway.posts.length, 1);
@@ -478,10 +501,10 @@ test("CC5c: 1 分 20 件の上限で保留しなかった要求（released）は
   for (let i = 1; i < CC_PERMISSION_RATE_LIMIT; i++) last = await s.ask(S1, `echo ${i}`);
   // 保留していた最後の要求は Web で答える（ここで解決した行は 61 秒後には窓の外）
   assert.deepEqual(s.hold.answer(last.id, "allow", "web"), { ok: true, state: "allowed" });
-  await s.notifier.idle();
+  await s.posts.idle();
   const posted = s.gateway.posts.length;
   assert.equal(posted, CC_PERMISSION_RATE_LIMIT);
-  // 59 秒後の要求は上限で保留しない（released・limit）。#system にも出さない
+  // 59 秒後の要求は上限で保留しない（released・limit）。チャンネルにも出さない
   s.clock.now += 59_000;
   const released = await s.ask(S1, "echo over");
   assert.equal(s.store.get(released.id)?.state, "released");
@@ -494,7 +517,7 @@ test("CC5c: 1 分 20 件の上限で保留しなかった要求（released）は
   assert.ok(s.gateway.posts.at(-1)!.message.text.startsWith("Claude Code が判断を待っています"));
 });
 
-test("CC5c: 判断待ちの知らせは 1 時間に 10 件。11 件目は「ほか 1 件」の 1 通、12 件目はその書き換え", async (t) => {
+test("CC5c・Q4: 判断待ちの知らせは 1 時間に 10 件（チャンネルを作って出す）。11 件目からは出さず、そのためにチャンネルも作らない", async (t) => {
   const ids = Array.from({ length: CC_WAIT_NOTIFY_LIMIT + 2 }, (_, i) => `${String(i + 10).padStart(8, "0")}-1111-4111-8111-111111111111`);
   const s = await setup(t, { agents: ids.map((sessionId) => agent(sessionId, { status: "idle", waitingFor: undefined })) });
   for (const sessionId of ids) {
@@ -503,34 +526,11 @@ test("CC5c: 判断待ちの知らせは 1 時間に 10 件。11 件目は「ほ�
     await s.tickWaiting();
   }
   const texts = s.gateway.posts.map((post) => post.message.text);
-  assert.equal(texts.length, CC_WAIT_NOTIFY_LIMIT + 1);
-  assert.ok(texts.slice(0, CC_WAIT_NOTIFY_LIMIT).every((text) => text.startsWith("Claude Code が判断を待っています")));
-  assert.ok(texts.at(-1)!.includes("ほかに判断待ちが 1 件あります"), texts.at(-1));
-  assert.equal(s.gateway.posts.at(-1)!.message.mentionUserId, undefined);
-  assert.equal(s.gateway.edits.length, 1);
-  assert.equal(s.gateway.edits[0]!.messageId, s.gateway.posts.at(-1)!.messageId);
-  assert.ok(s.gateway.edits[0]!.message.text.includes("ほかに判断待ちが 2 件あります"));
-});
-
-test("CC5c: self-agent が起動したセッションの終了は一覧から消えたときだけ info で 1 回（SessionEnd では出さない）。オーナーが起動したものは出さない", async (t) => {
-  const s = await setup(t);
-  s.sessions.recordStart(S1, { startedBy: "web", tmuxSession: "t", tmuxSessionId: "$1", paneId: "%1", trustPendingAt: null });
-  // SessionEnd の hook（偽物でも送れる）だけでは知らせない
-  s.hook(S1, "SessionEnd");
-  await s.notifier.idle();
-  assert.equal(s.gateway.posts.length, 0);
-  // 一覧から消えたら 1 回。オーナーのセッション（S2）は出さない
-  await s.setAgents([]);
-  await s.notifier.idle();
-  assert.equal(s.gateway.posts.length, 1);
-  assert.equal(s.gateway.posts[0]!.message.text, "Claude Code のセッションが終わりました: secret\\-name（secret\\-dir）");
-  assert.equal(s.gateway.posts[0]!.message.mentionUserId, undefined);
-  assert.ok(s.logs.includes("Claude Code: セッションの終了を知らせました"));
-  // また現れて消えても（同じプロセスでは）2 回目は出さない
-  await s.setAgents([agent(S1)]);
-  await s.setAgents([]);
-  await s.notifier.idle();
-  assert.equal(s.gateway.posts.length, 1);
+  assert.equal(texts.length, CC_WAIT_NOTIFY_LIMIT);
+  assert.ok(texts.every((text) => text.startsWith("Claude Code が判断を待っています")));
+  assert.equal(s.ensure.calls.length, CC_WAIT_NOTIFY_LIMIT);
+  assert.ok(s.ensure.calls.every((call) => call.origin === "waiting"));
+  assert.equal(s.gateway.edits.length, 0);
 });
 
 test("CC5c: 再起動の前に保留していた要求の 1 通は、recover の後に「時間切れ」に書き換える", async (t) => {
@@ -542,16 +542,16 @@ test("CC5c: 再起動の前に保留していた要求の 1 通は、recover の
   const rows = next.recover();
   assert.deepEqual(rows.map((row) => [row.id, row.state]), [[asked.id, "expired"]]);
   assert.equal(s.gateway.edits.length, 0);
-  s.notifier.rewriteRecovered(rows);
-  await s.notifier.idle();
+  s.posts.rewriteRecovered(rows);
+  await s.posts.idle();
   assert.equal(s.gateway.edits.length, 1);
   const edit = s.gateway.edits[0]!;
   assert.equal(edit.messageId, postedId);
   assert.ok(edit.message.text.endsWith(`\n時間切れ。端末か RC で答えてください <https://claude.ai/code/${BRIDGE}>`), edit.message.text);
   assert.deepEqual(edit.message.components, RC_ROW);
-  // 投稿していない行（#system が無かった・NOTIFY=0）は書き換えない
-  s.notifier.rewriteRecovered([{ ...rows[0]!, messageId: null, messageChannelId: null }]);
-  await s.notifier.idle();
+  // 投稿していない行（チャンネルを作れなかった・NOTIFY=0）は書き換えない
+  s.posts.rewriteRecovered([{ ...rows[0]!, messageId: null, messageChannelId: null }]);
+  await s.posts.idle();
   assert.equal(s.gateway.edits.length, 1);
 });
 
@@ -566,7 +566,7 @@ test("CC5c: Discord のボタンの後に応答（update）が失敗したら、
   assert.equal(await asked.reply, decisionBody("allow"));
   assert.equal(s.gateway.edits.length, 1);
   const edit = s.gateway.edits[0]!;
-  assert.equal(edit.channelId, SYSTEM);
+  assert.equal(edit.channelId, CHANNEL);
   assert.equal(edit.messageId, s.gateway.posts[0]!.messageId);
   assert.ok(edit.message.text.endsWith("\n許可（Discord）"));
   assert.deepEqual(edit.message.components, RC_ROW);
@@ -585,35 +585,34 @@ test("CC5c: オーナー以外・許可外のサーバーの cc:perm は振り�
   });
   const customId = `cc:perm:allow:${asked.id}`;
   const stranger = new FakeResponder();
-  await handle({ kind: "button", customId, guildId: GUILD, channelId: SYSTEM, userId: "someone-else", messageId: "message-1" } as Interaction, stranger);
+  await handle({ kind: "button", customId, guildId: GUILD, channelId: CHANNEL, userId: "someone-else", messageId: "message-1" } as Interaction, stranger);
   assert.deepEqual(stranger.replies, [{ text: OWNER_ONLY_REPLY, ephemeral: true }]);
   const outside = new FakeResponder();
-  await handle({ kind: "button", customId, guildId: "guild-other", channelId: SYSTEM, userId: OWNER, messageId: "message-1" } as Interaction, outside);
+  await handle({ kind: "button", customId, guildId: "guild-other", channelId: CHANNEL, userId: OWNER, messageId: "message-1" } as Interaction, outside);
   assert.deepEqual(outside.calls, []);
   assert.equal(s.store.get(asked.id)?.state, "pending");
   // オーナーが許可したサーバーで押せば通る
   const owner = new FakeResponder();
-  await handle({ kind: "button", customId, guildId: GUILD, channelId: SYSTEM, userId: OWNER, messageId: "message-1" } as Interaction, owner);
+  await handle({ kind: "button", customId, guildId: GUILD, channelId: CHANNEL, userId: OWNER, messageId: "message-1" } as Interaction, owner);
   assert.equal(s.store.get(asked.id)?.state, "allowed");
 });
 
-test("CC5c: SELF_AGENT_CC_NOTIFY=0（notifier なし）なら投稿が無く、保留は 5 分のまま。ボタンは古い", async (t) => {
-  const s = await setup(t, { notify: false });
+test("Q4: SELF_AGENT_CC_NOTIFY=0 でチャンネルが無ければ作らず投稿も無く、保留は 5 分のまま。Web で答えられる", async (t) => {
+  const s = await setup(t, { notify: false, channels: false });
   const asked = await s.ask(S1);
   assert.equal(s.gateway.posts.length, 0);
+  assert.deepEqual(s.ensure.calls, []);
   assert.equal(s.holdTimers.entries.at(-1)!.ms, 300_000);
   assert.equal(s.store.get(asked.id)?.state, "pending");
-  const responder = await s.press(`cc:perm:allow:${asked.id}`);
-  assert.deepEqual(responder.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
-  assert.equal(s.store.get(asked.id)?.state, "pending");
-  // Web では答えられる
   assert.deepEqual(s.hold.answer(asked.id, "allow", "web"), { ok: true, state: "allowed" });
   assert.equal(await asked.reply, decisionBody("allow"));
 });
 
-test("CC5c: #system が無ければ投稿しない（保留は続く）", async (t) => {
-  const s = await setup(t, { system: false });
+test("Q4: チャンネルを作れなければ（/setup 前など）投稿しない（保留は続く）", async (t) => {
+  const s = await setup(t, { channels: false });
+  s.ensure.fails = true;
   const asked = await s.ask(S1);
+  assert.deepEqual(s.ensure.calls, [{ sessionId: S1, origin: "permission" }]);
   assert.equal(s.gateway.posts.length, 0);
   assert.equal(s.store.get(asked.id)?.state, "pending");
   assert.equal(s.store.get(asked.id)?.messageId, null);

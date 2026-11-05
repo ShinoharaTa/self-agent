@@ -783,7 +783,6 @@ test("POST /api/cc/sessions/<id>/channel: 201 でチャンネルを作り一覧�
     gateway,
     queue: new KeyedSerialQueue(1),
     channelOps: new RecordingChannelOps(),
-    notify: async () => undefined,
     home: HOME,
     now,
     log: () => undefined,

@@ -1,8 +1,8 @@
-// CC12: Claude Code のチャンネルへの許可の要求・判断待ち・端末の指示の写し（docs/plan/claude-code-channels.md §3.5）
+// CC12: Claude Code のチャンネルへの許可の要求・判断待ち・端末の指示の写し（docs/plan/claude-code-channels.md §3.5）。
+// Q4: チャンネルが無ければ知らせのために作り（ensureFor）、#system には出さない（docs/plan/claude-code-questions.md §5）
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createCcComponent, type CcPermissionButtons } from "../src/app/commands/cc.ts";
-import { createSystemNotifier } from "../src/app/system-notice.ts";
 import type { AgentEntry, AgentsResult } from "../src/cc/agents.ts";
 import {
   CC_CHANNEL_WAIT_OVERFLOW_TEXT,
@@ -12,15 +12,15 @@ import {
   ccPromptMirrorTexts,
   promptKey,
 } from "../src/cc/channel-posts.ts";
-import { ccEndedHandler } from "../src/cc/channels.ts";
-import { CC_WAIT_CHECK_MS, CC_WAIT_NOTIFY_LIMIT, CC_WAIT_NOTIFY_MS, CcDiscordNotifier, CcWaitBudget } from "../src/cc/discord-notice.ts";
+import { ccEndedHandler, type CcOpenResult } from "../src/cc/channels.ts";
+import { CC_WAIT_CHECK_MS, CC_WAIT_NOTIFY_LIMIT, CC_WAIT_NOTIFY_MS, CcWaitBudget } from "../src/cc/notice-text.ts";
 import { type CcHookEvent, parseHookEvent } from "../src/cc/hook-server.ts";
-import { CcPermissionHold, type CcPermissionListener, decisionBody } from "../src/cc/permission-hold.ts";
+import { CcPermissionHold, decisionBody } from "../src/cc/permission-hold.ts";
 import { CcQuestionFlow } from "../src/cc/question-flow.ts";
 import { CcRegistry, type CcTimers } from "../src/cc/registry.ts";
 import type { Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
-import { CcChannelStore } from "../src/store/cc-channels.ts";
-import { CcPermissionStore, type CcPermissionRow } from "../src/store/cc-permissions.ts";
+import { type CcChannelOrigin, CcChannelStore } from "../src/store/cc-channels.ts";
+import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcSessionStore } from "../src/store/cc-sessions.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
@@ -82,7 +82,8 @@ function fire(timers: ReturnType<typeof fakeTimers>, ms: number): void {
 }
 
 /**
- * main と同じ配線: 許可の要求の受け手は channelPosts → notifier（NOTIFY=1 のときだけ）、判断待ちの上限は共有、ボタンは notifier によらず channelPosts から。
+ * main と同じ配線: 許可の要求の受け手は channelPosts、ボタンも channelPosts から。チャンネルの無いセッションの知らせは ensureChannel（偽。
+ * cc_channels に cc-made-<n> を作る。ensure.fails で not_set_up）で作る（notify: false は SELF_AGENT_CC_NOTIFY=0 で作らない）。
  * S1 にはチャンネル（CHANNEL）がある（channel: false で無し）
  */
 async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boolean; channel?: boolean } = {}) {
@@ -112,7 +113,6 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     timers: holdTimers,
     log,
   });
-  let notifier: CcDiscordNotifier | undefined;
   let posts!: CcChannelPosts;
   registry = new CcRegistry({
     cfg: { ccPollSec: 10 },
@@ -125,7 +125,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     now,
     timers: fakeTimers(),
     permissions: hold,
-    ended: ccEndedHandler({ channels: () => undefined, replier: () => undefined, notifier: () => notifier }),
+    ended: ccEndedHandler({ channels: () => undefined, replier: () => undefined }),
     onEvent: (event) => posts.onEvent(event),
     log,
   });
@@ -133,16 +133,28 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   const gateway = new FakeGateway({ allow: ["sendMessage", "editMessage"] });
   const waitBudget = new CcWaitBudget();
   const postsTimers = fakeTimers();
+  /** 知らせのためのチャンネルの作成（cc/channels.ts の ensureFor の代わり） */
+  const ensure = { calls: [] as Array<{ sessionId: string; origin: CcChannelOrigin }>, fails: false, made: 0 };
   posts = new CcChannelPosts({
-    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
+    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300, ccQuestionHoldSec: 900, ccNotify: opts.notify !== false },
     channels,
+    ensureChannel: () => ({
+      ensureFor: async (sessionId: string, origin: CcChannelOrigin): Promise<CcOpenResult> => {
+        ensure.calls.push({ sessionId, origin });
+        if (ensure.fails) return { ok: false, reason: "not_set_up" };
+        const existing = channels.anyFor(sessionId);
+        if (existing !== undefined) return { ok: false, reason: "exists", channelId: existing.channelId, guildId: existing.guildId };
+        const channelId = `cc-made-${++ensure.made}`;
+        channels.create({ channelId, guildId: GUILD, sessionId, name: channelId, cwd: SECRET_CWD, origin });
+        return { ok: true, channelId, guildId: GUILD };
+      },
+    }),
     gateway,
     permissions: store,
     sessions,
     sends,
     registry,
     waitBudget,
-    release: (id) => hold.release(id),
     home: HOME,
     history,
     now,
@@ -150,26 +162,6 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     log,
   });
   hold.listen(posts);
-  const notifierTimers = fakeTimers();
-  if (opts.notify !== false) {
-    notifier = new CcDiscordNotifier({
-      cfg: { allowedGuildIds: [GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
-      guildSettings,
-      notify: createSystemNotifier({ guildSettings, gateway, log }),
-      gateway,
-      permissions: store,
-      sessions,
-      registry,
-      hasChannel: (sessionId) => channels.openFor(sessionId) !== undefined,
-      waitBudget,
-      home: HOME,
-      now,
-      timers: notifierTimers,
-      log,
-    });
-    hold.listen(notifier);
-    notifier.start();
-  }
   posts.start();
   const answered: Array<{ id: number; guildId: string | null }> = [];
   const buttons: CcPermissionButtons = {
@@ -188,7 +180,6 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   const component = createCcComponent({ ccPermissionButtons: () => buttons, gateway, log });
   const idle = async (): Promise<void> => {
     await posts.idle();
-    await notifier?.idle();
   };
 
   const ask = async (sessionId: string, command = SECRET_COMMAND) => {
@@ -248,7 +239,6 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   };
   const tickWaiting = async (): Promise<void> => {
     fire(postsTimers, CC_WAIT_CHECK_MS);
-    if (notifier !== undefined) fire(notifierTimers, CC_WAIT_CHECK_MS);
     await idle();
   };
   return {
@@ -263,7 +253,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     registry,
     gateway,
     posts,
-    notifier,
+    ensure,
     waitBudget,
     logs,
     holdTimers,
@@ -368,7 +358,6 @@ test("CC12: Web で押された・他で答えられた・時間切れ・停止�
   const released = await s.ask(S1, "whoami");
   s.hold.stop();
   s.posts.stop();
-  s.notifier?.stop();
   await s.idle();
   assert.equal(s.store.get(released.id)?.state, "released");
   assert.ok(s.gateway.edits.at(-1)!.message.text.includes("self-agent が止まるため受け付けをやめました"));
@@ -376,27 +365,44 @@ test("CC12: Web で押された・他で答えられた・時間切れ・停止�
   assert.equal(s.gateway.edits.length, 4);
 });
 
-test("CC12: チャンネルの無いセッションは #system のまま。答えてチャンネルができたら、次の要求からチャンネル", async (t) => {
+test("Q4: チャンネルの無いセッションの許可の要求は ensureFor（origin permission）で作ってそこに 1 通（#system には出ない）。終わったらそこを書き換える", async (t) => {
   const s = await setup(t, { channel: false });
   const first = await s.ask(S1);
+  assert.deepEqual(s.ensure.calls, [{ sessionId: S1, origin: "permission" }]);
   assert.equal(s.gateway.posts.length, 1);
-  assert.equal(s.gateway.posts[0]!.channelId, SYSTEM);
-  assert.equal(s.store.get(first.id)?.messageChannelId, SYSTEM);
-  // [許可]（#system のボタン）→ 答えた（関わった）ので main はチャンネルを作る
-  const responder = await s.press(`cc:perm:allow:${first.id}`, SYSTEM);
-  assert.ok(responder.calls.some((call) => call.method === "update"));
-  assert.deepEqual(s.answered, [{ id: first.id, guildId: GUILD }]);
-  s.channels.create({ channelId: CHANNEL, guildId: GUILD, sessionId: S1, name: "cc-secret-name", cwd: SECRET_CWD, origin: "permission" });
-  const second = await s.ask(S1, "ls");
-  assert.equal(s.gateway.posts.length, 2);
-  assert.equal(s.gateway.posts[1]!.channelId, CHANNEL);
-  assert.equal(s.store.get(second.id)?.messageChannelId, CHANNEL);
-  // 他のセッション（チャンネルなし）は #system
+  assert.equal(s.gateway.posts[0]!.channelId, "cc-made-1");
+  assert.equal(s.gateway.posts[0]!.message.mentionUserId, OWNER);
+  assert.deepEqual(buttonIds(s.gateway.posts[0]!.message)[0], [`cc:perm:allow:${first.id}`, `cc:perm:deny:${first.id}`]);
+  assert.equal(s.store.get(first.id)?.messageChannelId, "cc-made-1");
+  s.hold.answer(first.id, "allow", "web");
+  await s.idle();
+  assert.equal(s.gateway.edits.at(-1)?.channelId, "cc-made-1");
+  // 次の要求はできたチャンネルにそのまま（作り直さない）
+  await s.ask(S1, "ls");
+  assert.equal(s.ensure.calls.length, 1);
+  assert.equal(s.gateway.posts[1]!.channelId, "cc-made-1");
+  // 他のセッションも同じく作る
   await s.ask(S2);
-  assert.equal(s.gateway.posts[2]!.channelId, SYSTEM);
+  assert.deepEqual(s.ensure.calls.at(-1), { sessionId: S2, origin: "permission" });
+  assert.equal(s.gateway.posts[2]!.channelId, "cc-made-2");
+  assert.ok([...s.gateway.posts, ...s.gateway.edits].every((p) => p.channelId !== SYSTEM));
+  assertNoSecrets(s.logs);
 });
 
-test("CC12: SELF_AGENT_CC_NOTIFY=0 でもチャンネルには出て、ボタンが効く（#system には何も出ない）", async (t) => {
+test("Q4: チャンネルを作れなければ log だけ（#system に出ない）。保留は続き、Web で答えられる", async (t) => {
+  const s = await setup(t, { channel: false });
+  s.ensure.fails = true;
+  const asked = await s.ask(S1);
+  assert.equal(s.gateway.posts.length, 0);
+  assert.equal(s.store.get(asked.id)?.state, "pending");
+  assert.ok(s.logs.includes(`Claude Code: 許可の要求（#${asked.id}）を出すチャンネルがありません`));
+  assert.deepEqual(s.hold.answer(asked.id, "allow", "web"), { ok: true, state: "allowed" });
+  await s.idle();
+  assert.equal(s.gateway.edits.length, 0);
+  assertNoSecrets(s.logs);
+});
+
+test("CC12・Q4: SELF_AGENT_CC_NOTIFY=0 ではチャンネルを作らないが、あるチャンネルには出て、ボタンが効く（#system には何も出ない）", async (t) => {
   const s = await setup(t, { notify: false });
   const asked = await s.ask(S1);
   assert.equal(s.gateway.posts.length, 1);
@@ -404,49 +410,17 @@ test("CC12: SELF_AGENT_CC_NOTIFY=0 でもチャンネルには出て、ボタン
   const responder = await s.press(`cc:perm:deny:${asked.id}`);
   assert.ok(responder.calls.some((call) => call.method === "update"));
   assert.equal(s.store.get(asked.id)?.state, "denied");
-  // チャンネルの無いセッションの要求はどこにも出ない（#system は止まっている）
+  // チャンネルの無いセッションの要求は作らず、どこにも出ない
   await s.ask(S2);
   assert.equal(s.gateway.posts.length, 1);
+  assert.deepEqual(s.ensure.calls, []);
   // 判断待ち・写しもチャンネルには出る
   await s.hook(S1, "UserPromptSubmit", { prompt: "端末から", promptChars: 4 });
   assert.equal(s.gateway.posts.length, 2);
   assert.equal(s.gateway.posts[1]!.message.text, `${CC_PROMPT_MIRROR_LABEL}\n端末から`);
 });
 
-test("CC12: permission-hold は複数の受け手を持ち、claims した最初の 1 つだけが held・resolved を受ける", async (t) => {
-  const db = tempDb(t);
-  const store = new CcPermissionStore(db, () => new Date(BASE));
-  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store, known: () => true, now: () => new Date(BASE), timers: fakeTimers(), log: () => {} });
-  const calls: string[] = [];
-  const listener = (name: string, claims?: (row: CcPermissionRow) => boolean): CcPermissionListener => ({
-    ...(claims === undefined ? {} : { claims }),
-    held: (row) => calls.push(`${name}:held:${row.id}`),
-    resolved: (row) => calls.push(`${name}:resolved:${row.id}`),
-  });
-  hold.listen(listener("channel", (row) => row.sessionId === S1));
-  hold.listen(listener("system"));
-  const ask = (sessionId: string) => {
-    const event = parseHookEvent({ hook_event_name: "PermissionRequest", session_id: sessionId, tool_name: "Bash", tool_input: { command: "ls" } }, new Date(BASE))!;
-    void hold.request(event, new AbortController().signal);
-    return store.pendingFor(sessionId)!.id;
-  };
-  const a = ask(S1);
-  const b = ask(S2);
-  hold.answer(a, "allow", "web");
-  hold.answer(b, "deny", "web");
-  assert.deepEqual(calls, [`channel:held:${a}`, `system:held:${b}`, `channel:resolved:${a}`, `system:resolved:${b}`]);
-
-  // release: 引き受けを戻すと次の受け手に held、終わったときもそちらだけ。2 回目・保留中でなければ何もしない
-  calls.length = 0;
-  const c = ask(S1);
-  hold.release(c);
-  hold.release(c);
-  hold.answer(c, "allow", "web");
-  hold.release(c);
-  assert.deepEqual(calls, [`channel:held:${c}`, `system:held:${c}`, `system:resolved:${c}`]);
-});
-
-test("CC12: claims が投げた受け手は飛ばして次の受け手に渡す（log だけ）", async (t) => {
+test("Q4: permission-hold は足した受け手の全部に held・resolved を渡す。受け手が投げても保留は続く（log だけ）", async (t) => {
   const db = tempDb(t);
   const store = new CcPermissionStore(db, () => new Date(BASE));
   const logs: string[] = [];
@@ -460,22 +434,22 @@ test("CC12: claims が投げた受け手は飛ばして次の受け手に渡す�
   });
   const calls: string[] = [];
   hold.listen({
-    claims: () => {
+    held: () => {
       throw new Error("broken");
     },
-    held: (row) => calls.push(`broken:held:${row.id}`),
     resolved: (row) => calls.push(`broken:resolved:${row.id}`),
   });
-  hold.listen({ held: (row) => calls.push(`system:held:${row.id}`), resolved: (row) => calls.push(`system:resolved:${row.id}`) });
+  hold.listen({ held: (row) => calls.push(`posts:held:${row.id}`), resolved: (row) => calls.push(`posts:resolved:${row.id}`) });
   const event = parseHookEvent({ hook_event_name: "PermissionRequest", session_id: S1, tool_name: "Bash", tool_input: { command: "ls" } }, new Date(BASE))!;
   void hold.request(event, new AbortController().signal);
   const id = store.pendingFor(S1)!.id;
+  assert.equal(store.get(id)?.state, "pending");
   hold.answer(id, "allow", "web");
-  assert.deepEqual(calls, [`system:held:${id}`, `system:resolved:${id}`]);
+  assert.deepEqual(calls, [`posts:held:${id}`, `broken:resolved:${id}`, `posts:resolved:${id}`]);
   assert.ok(logs.some((line) => line.startsWith("Claude Code: 許可の要求の知らせに失敗しました（Error）")));
 });
 
-test("CC12: 判断待ちはチャンネルがあればチャンネル、無ければ #system（1 件は 1 か所）", async (t) => {
+test("CC12・Q4: 判断待ちはチャンネルがあればそこ、無ければ ensureFor（origin waiting）で作ってそこ（#system には出ない）", async (t) => {
   const busy = { status: "busy", waitingFor: undefined } as const;
   const s = await setup(t, { agents: [agent(S1, busy), agent(S2, busy)] });
   await s.hook(S1, "Notification", { notificationType: "agent_needs_input" });
@@ -483,9 +457,10 @@ test("CC12: 判断待ちはチャンネルがあればチャンネル、無け�
   await s.setAgents([agent(S1, { status: "waiting" }), agent(S2, { status: "waiting" })]);
   s.clock.now += CC_WAIT_NOTIFY_MS;
   await s.tickWaiting();
+  assert.deepEqual(s.ensure.calls, [{ sessionId: S2, origin: "waiting" }]);
   assert.deepEqual(
     s.gateway.posts.map((post) => post.channelId).sort(),
-    [CHANNEL, SYSTEM].sort(),
+    [CHANNEL, "cc-made-1"].sort(),
   );
   const inChannel = s.gateway.posts.find((post) => post.channelId === CHANNEL)!;
   assert.ok(inChannel.message.text.startsWith("Claude Code が判断を待っています（1 分以上）: secret\\-name（secret\\-dir）"), inChannel.message.text);
@@ -497,7 +472,19 @@ test("CC12: 判断待ちはチャンネルがあればチャンネル、無け�
   assertNoSecrets(s.logs);
 });
 
-test("CC12: 判断待ちの上限は #system とチャンネルで 1 つ（共有の CcWaitBudget）", () => {
+test("Q4: SELF_AGENT_CC_NOTIFY=0 では判断待ちのためにチャンネルを作らない（あるチャンネルには出す）", async (t) => {
+  const busy = { status: "busy", waitingFor: undefined } as const;
+  const s = await setup(t, { agents: [agent(S1, busy), agent(S2, busy)], notify: false });
+  await s.hook(S1, "Notification", { notificationType: "agent_needs_input" });
+  await s.hook(S2, "Notification", { notificationType: "agent_needs_input" });
+  await s.setAgents([agent(S1, { status: "waiting" }), agent(S2, { status: "waiting" })]);
+  s.clock.now += CC_WAIT_NOTIFY_MS;
+  await s.tickWaiting();
+  assert.deepEqual(s.ensure.calls, []);
+  assert.deepEqual(s.gateway.posts.map((post) => post.channelId), [CHANNEL]);
+});
+
+test("CC12: 判断待ちの上限は 1 時間に CC_WAIT_NOTIFY_LIMIT 件（CcWaitBudget）", () => {
   const budget = new CcWaitBudget();
   for (let i = 0; i < CC_WAIT_NOTIFY_LIMIT; i++) assert.equal(budget.take(BASE + i), true);
   assert.equal(budget.take(BASE + 100), false);
@@ -505,20 +492,23 @@ test("CC12: 判断待ちの上限は #system とチャンネルで 1 つ（共�
   assert.equal(budget.take(BASE + 60 * 60_000 + 1), true);
 });
 
-test("CC12: 判断待ちの上限を #system で使い切っていれば、チャンネルには出さない（log だけ）", async (t) => {
-  const s = await setup(t, { agents: [agent(S1, { status: "busy", waitingFor: undefined })] });
-  // #system 側で使い切った（同じ budget）
+test("CC12: 判断待ちの上限を使い切っていれば、チャンネルには出さない（log だけ）。チャンネルの無いセッションのためには作らない", async (t) => {
+  const busy = { status: "busy", waitingFor: undefined } as const;
+  const s = await setup(t, { agents: [agent(S1, busy), agent(S2, busy)] });
+  // ほかの判断待ちで使い切った（同じ budget）
   for (let i = 0; i < CC_WAIT_NOTIFY_LIMIT; i++) s.waitBudget.take(BASE);
   await s.hook(S1, "Notification", { notificationType: "agent_needs_input" });
-  await s.setAgents([agent(S1, { status: "waiting" })]);
+  await s.hook(S2, "Notification", { notificationType: "agent_needs_input" });
+  await s.setAgents([agent(S1, { status: "waiting" }), agent(S2, { status: "waiting" })]);
   s.clock.now += CC_WAIT_NOTIFY_MS;
   await s.tickWaiting();
+  assert.deepEqual(s.ensure.calls, []);
   // 判断待ちの 1 通は出さず、鳴らさない短い 1 行だけ
   assert.equal(s.gateway.posts.length, 1);
   assert.equal(s.gateway.posts[0]!.channelId, CHANNEL);
   assert.equal(s.gateway.posts[0]!.message.text, CC_CHANNEL_WAIT_OVERFLOW_TEXT);
   assert.equal(s.gateway.posts[0]!.message.mentionUserId, undefined);
-  assert.ok(s.logs.some((line) => line.includes("上限のためチャンネルに出しませんでした（1 件）")));
+  assert.ok(s.logs.some((line) => line.includes("上限のためチャンネルに出しませんでした（2 件）")));
   // 次の待ちも上限の内なら、1 時間はその 1 行を出し直さない
   await s.hook(S1, "Stop");
   await s.hook(S1, "Notification", { notificationType: "agent_needs_input" });
@@ -527,33 +517,18 @@ test("CC12: 判断待ちの上限を #system で使い切っていれば、チ�
   assert.equal(s.gateway.posts.length, 1);
 });
 
-test("CC12: チャンネルへの許可の 1 通の投稿に失敗したら、引き受けを戻して #system に出す（ボタンも効く）", async (t) => {
+test("Q4: チャンネルへの許可の 1 通の投稿に失敗したら log だけ（#system に回さない）。保留は続き、Web で答えられる", async (t) => {
   const s = await setup(t);
-  s.gateway.beforeSendMessage = (channelId) => {
-    if (channelId === CHANNEL) throw new Error("discord down");
-  };
-  const asked = await s.ask(S1);
-  assert.equal(s.gateway.posts.length, 1);
-  assert.equal(s.gateway.posts[0]!.channelId, SYSTEM);
-  assert.equal(s.store.get(asked.id)?.messageChannelId, SYSTEM);
-  assert.ok(s.logs.some((line) => line.includes(`許可の要求（#${asked.id}）をチャンネルに出せなかったため #system に回します`)));
-  // 終わったら #system の 1 通を書き換える
-  s.hold.answer(asked.id, "allow", "web");
-  await s.idle();
-  assert.equal(s.gateway.edits.length, 1);
-  assert.equal(s.gateway.edits[0]!.channelId, SYSTEM);
-  assertNoSecrets(s.logs);
-});
-
-test("CC12: 投稿に失敗して NOTIFY=0（次の受け手が無い）なら、どこにも出ないが保留は続き、Web で答えられる", async (t) => {
-  const s = await setup(t, { notify: false });
   s.gateway.beforeSendMessage = () => {
     throw new Error("discord down");
   };
   const asked = await s.ask(S1);
   assert.equal(s.gateway.posts.length, 0);
+  assert.equal(s.store.get(asked.id)?.messageChannelId, null);
+  assert.ok(s.logs.some((line) => line.startsWith(`Claude Code: 許可の要求（#${asked.id}）をチャンネルに出せませんでした`)));
   assert.equal(s.store.get(asked.id)?.state, "pending");
   assert.deepEqual(s.hold.answer(asked.id, "allow", "web"), { ok: true, state: "allowed" });
+  assertNoSecrets(s.logs);
 });
 
 test("CC12: 端末・RC からの UserPromptSubmit は「（端末か RC から）」で写す。Markdown・メンションは無効、DB は 200 字", async (t) => {
@@ -642,21 +617,21 @@ test("ccPromptMirrorTexts: 2,000 字を超えたら字の境目で 2 通目に�
   assert.equal(ccPromptMirrorTexts("a\u0007b\nc", 5)[0], `${CC_PROMPT_MIRROR_LABEL}\na b\nc`);
 });
 
-test("CC12: 再起動の前に保留していた要求は、チャンネルに出したものはチャンネルを、#system のものは #system を書き換える", async (t) => {
+test("CC12・Q4: 再起動の前に保留していた要求の 1 通を書き換える（Q4 より前に #system に出したものも）。Web の会話はチャンネルのものだけ", async (t) => {
   const s = await setup(t);
   const inChannel = await s.ask(S1);
   const inSystem = await s.ask(S2);
+  // Q4 より前に #system に出した 1 通
+  s.store.setMessage(inSystem.id, SYSTEM, "system-message-1");
   const next = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store: s.store, known: () => true, now: () => new Date(s.clock.now), log: () => {} });
   const rows = next.recover();
   assert.equal(rows.length, 2);
-  // main と同じ振り分け
   s.posts.rewriteRecovered(rows);
-  s.notifier!.rewriteRecovered(rows.filter((row) => !s.posts.owns(row)));
   await s.idle();
   assert.equal(s.gateway.edits.length, 2);
   const byId = new Map(s.gateway.edits.map((edit) => [edit.messageId, edit.channelId]));
   assert.equal(byId.get(s.store.get(inChannel.id)!.messageId!), CHANNEL);
-  assert.equal(byId.get(s.store.get(inSystem.id)!.messageId!), SYSTEM);
+  assert.equal(byId.get("system-message-1"), SYSTEM);
   // Web の会話にも結果（時間切れ）を書く（CC14。チャンネルに出したものだけ・1 回）
   s.posts.rewriteRecovered(rows);
   await s.idle();
@@ -664,21 +639,17 @@ test("CC12: 再起動の前に保留していた要求は、チャンネルに�
     s.history.list(CHANNEL, { limit: 10 }).map((row) => row.text),
     [`許可を待っています: Bash\n${SECRET_COMMAND}`, "許可の要求（Bash）: 時間切れ。端末か RC で答えてください"],
   );
+  assert.equal(s.history.list(SYSTEM, { limit: 10 }).length, 0);
 });
 
-test("CC12: チャンネルのあるセッションが終わったら #system の終了の知らせは出さない（チャンネルの 1 行は cc/channels.ts）", async (t) => {
-  const s = await setup(t);
-  const ended: string[] = [];
-  const handler = ccEndedHandler({
-    channels: () => ({ ended: (session) => s.channels.openFor(session.sessionId) !== undefined && ended.push(session.sessionId) > 0 }),
-    replier: () => undefined,
-    notifier: () => s.notifier,
-  });
+test("Q4: セッションが終わっても、チャンネルが無ければ何も出さない（#system の終了の知らせは無い）", async (t) => {
+  const s = await setup(t, { channel: false });
+  const handler = ccEndedHandler({ channels: () => ({ ended: () => false }), replier: () => undefined });
   s.sessions.recordStart(S1, { startedBy: "web", tmuxSession: "t", tmuxSessionId: "$1", paneId: "%1", trustPendingAt: null });
   handler(s.sessions.get(S1)!);
   await s.idle();
-  assert.deepEqual(ended, [S1]);
   assert.equal(s.gateway.posts.length, 0);
+  assert.deepEqual(s.ensure.calls, []);
 });
 
 test("Web の会話（CC14）: チャンネルに出した許可の要求とその結果・判断待ちは notice、端末の指示の写しは owner（system）。文字のまま（エスケープしない）", async (t) => {
@@ -709,10 +680,10 @@ test("Web の会話（CC14）: チャンネルに出した許可の要求とそ�
       ["owner", "system", `${CC_PROMPT_MIRROR_LABEL}\n**太字** のまま`, GUILD, "default"],
     ],
   );
-  // チャンネルの無いセッション（#system に出たもの）は書かない
+  // ほかのセッションの要求（作ったチャンネル）は、そのチャンネルの会話に書く
   await s.ask(S2);
   assert.equal(s.history.list(CHANNEL, { limit: 20 }).length, rows.length);
-  assert.equal(s.history.list(SYSTEM, { limit: 20 }).length, 0);
+  assert.equal(s.history.list("cc-made-1", { limit: 20 }).length, 1);
 });
 
 test("Web の会話（CC14）: 判断待ちはチャンネルに出せたときだけ history に書く", async (t) => {
@@ -879,13 +850,14 @@ test("Q2: Web で先に答えられた・時間切れは 1 通を書き換え、
   );
 });
 
-test("Q2: チャンネルの無いセッションの質問は #system に同じ 1 通。読めない形の AskUserQuestion は許可の 1 通に注記", async (t) => {
+test("Q2・Q4: チャンネルの無いセッションの質問は ensureFor（origin question）で作ってそこに 1 通。読めない形の AskUserQuestion は許可の 1 通に注記", async (t) => {
   const s = await setup(t, { channel: false });
   const asked = await s.askQuestion(S1, { questions: [Q_COLOR] });
+  assert.deepEqual(s.ensure.calls, [{ sessionId: S1, origin: "question" }]);
   const post = s.gateway.posts.at(-1)!;
-  assert.equal(post.channelId, SYSTEM);
+  assert.equal(post.channelId, "cc-made-1");
   assert.equal(buttonIds(post.message)[0]![0], `cc:q:pick:${asked.id}:0:0`);
-  const responder = await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:0` }, SYSTEM);
+  const responder = await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:0` }, "cc-made-1");
   assert.ok(updateOf(responder).text.endsWith("\n答えました（Discord）:\n1. 「Color」red"));
 
   const unreadable = await s.askQuestion(S2, { questions: [{ question: "x", options: [{ label: "only" }] }] });

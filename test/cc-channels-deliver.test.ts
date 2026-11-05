@@ -126,7 +126,6 @@ function setup(t: TestContext, options: { setUp?: boolean; history?: boolean } =
   const panes = new CcPaneResolver({ tmux, parentOf: (pid) => parents[pid] });
   const snapshot: CcSnapshot = { sessions: [view(S1, 500, "alpha"), view(S2, 600, "beta")], stale: false, unreadable: false, fetchedAt: BASE };
   const registry = { snapshot: () => snapshot };
-  const notices: Array<{ guildId: string; message: OutgoingMessage }> = [];
   const logs: string[] = [];
   let channels: CcChannels | undefined;
   const sender = new CcSender({
@@ -158,10 +157,6 @@ function setup(t: TestContext, options: { setUp?: boolean; history?: boolean } =
     gateway,
     queue: new RecordingQueue(1),
     channelOps: new RecordingChannelOps(),
-    notify: async (guildId, message) => {
-      notices.push({ guildId, message });
-      return "notice-1";
-    },
     home: "/home/owner",
     // Web の会話の記録（CC14）
     ...(options.history === true ? { history } : {}),
@@ -189,7 +184,7 @@ function setup(t: TestContext, options: { setUp?: boolean; history?: boolean } =
     await channels!.idle();
   };
   const actions = () => commands.filter((args) => ["load-buffer", "paste-buffer", "send-keys"].includes(args[0]!)).map((args) => args[0]);
-  return { db, clock, store, sends, guildSettings, history, gateway, env, snapshot, sender, channels, notices, logs, message, settle, actions, commands };
+  return { db, clock, store, sends, guildSettings, history, gateway, env, snapshot, sender, channels, logs, message, settle, actions, commands };
 }
 
 /** log にチャンネル ID・本文を出していない */
@@ -444,7 +439,7 @@ test("きっかけ（Web から送った）: queued の直後に web_send のチ
   assertQuietLogs(s.logs);
 });
 
-test("きっかけ: カテゴリが無ければ作らず写さないが送信は積んで届け、#system に 1 行（同じ理由は 1 時間に 1 回）", async (t) => {
+test("きっかけ: カテゴリが無ければ作らず写さないが送信は積んで届け、log に 1 行（同じ理由は 1 時間に 1 回。#system には出さない）", async (t) => {
   const s = setup(t, { setUp: false });
   s.env.screens.pasted = shown("x");
   const first = await s.sender.submit({ sessionId: S2, text: "x", origin: "web" });
@@ -458,9 +453,8 @@ test("きっかけ: カテゴリが無ければ作らず写さないが送信は
   s.env.screens.pasted = shown("y");
   await s.sender.submit({ sessionId: S2, text: "y", origin: "web" });
   await s.settle();
-  assert.equal(s.notices.length, 1);
-  assert.equal(s.notices[0]!.guildId, "guild-1");
-  assert.match(s.notices[0]!.message.text, /\/setup/);
+  assert.equal(s.logs.filter((line) => line === "Claude Code: チャンネルを作れませんでした（not_set_up）").length, 1);
+  assert.equal(s.gateway.posts.length, 0);
 });
 
 test("きっかけ（cc_send の [送る]）: tool_send で頼んだチャンネルのサーバーに作り、「（<#…> から）」の写しを返信先に。確認だけでは作らない", async (t) => {

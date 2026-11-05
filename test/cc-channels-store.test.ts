@@ -1,9 +1,11 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
-import { MIGRATIONS } from "../src/store/db.ts";
+import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
-import { tempDb } from "./helpers/db.ts";
+import { tempDb, tempDir } from "./helpers/db.ts";
 
 const BASE = Date.parse("2026-11-05T00:00:00.000Z");
 const S1 = "11111111-1111-4111-8111-111111111111";
@@ -36,6 +38,49 @@ test("cc_channels: 最新の版で表と一意の部分索引があり、guild_s
       .prepare("INSERT INTO cc_channels (channel_id, guild_id, session_id, name, state, origin, created_at, updated_at) VALUES ('x', 'g', 's', 'n', 'open', 'hook', 'a', 'a')")
       .run(),
   );
+});
+
+test("openDb: v38 の DB を v39 に上げると cc_channels を作り直して全列と索引 2 つが残り、origin に question・waiting が入る", (t) => {
+  const dir = tempDir(t);
+  const path = join(dir, "self-agent.db");
+  const v38 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 38)) v38.exec(migration);
+  v38.exec("PRAGMA user_version = 38");
+  v38
+    .prepare(
+      `INSERT INTO cc_channels (channel_id, guild_id, session_id, previous_session_id, name, cwd, state, origin, created_at, ended_at,
+         delete_prompt_message_id, deleted_at, updated_at)
+       VALUES ('ch-1', 'guild-1', ?, ?, 'cc-alpha', '/w/alpha', 'ended', 'permission', 'c', 'e', 'del-msg', NULL, 'u')`,
+    )
+    .run(S1, S2);
+  // v38 では question は入らない
+  assert.throws(() =>
+    v38
+      .prepare("INSERT INTO cc_channels (channel_id, guild_id, session_id, name, state, origin, created_at, updated_at) VALUES ('x', 'g', 's', 'n', 'open', 'question', 'a', 'a')")
+      .run(),
+  );
+  v38.close();
+  const db = openDb(path);
+  t.after(() => db.close());
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  assert.ok(MIGRATIONS.length >= 39);
+  const store = new CcChannelStore(db, () => new Date(BASE));
+  const row = store.get("ch-1");
+  assert.equal(row?.sessionId, S1);
+  assert.equal(row?.previousSessionId, S2);
+  assert.equal(row?.name, "cc-alpha");
+  assert.equal(row?.cwd, "/w/alpha");
+  assert.equal(row?.state, "ended");
+  assert.equal(row?.origin, "permission");
+  assert.equal(row?.endedAt, "e");
+  assert.equal(row?.deletePromptMessageId, "del-msg");
+  const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'cc_channels' AND sql IS NOT NULL ORDER BY name").all();
+  assert.deepEqual(indexes.map((index) => index.name), ["cc_channels_guild", "cc_channels_session"]);
+  // 一意の部分索引は残る（同じセッションに削除されていない 2 つ目は作れない）
+  assert.throws(() => store.create({ channelId: "ch-2", guildId: "guild-1", sessionId: S1, name: "cc-2", cwd: null, origin: "web" }), /UNIQUE/);
+  assert.equal(store.create({ channelId: "ch-3", guildId: "guild-1", sessionId: S2, name: "cc-3", cwd: null, origin: "question" }).origin, "question");
+  store.markDeleted("ch-3");
+  assert.equal(store.create({ channelId: "ch-4", guildId: "guild-1", sessionId: S2, name: "cc-4", cwd: null, origin: "waiting" }).origin, "waiting");
 });
 
 test("CcChannelStore: 1 セッションに削除されていないチャンネルは 1 つ（サーバーをまたいでも）。削除済みなら同じセッションにまた作れる", (t) => {

@@ -154,7 +154,7 @@ export type CcRegistryDeps = {
     onListed(statuses: ReadonlyMap<string, string | undefined>, readStartedAt: Date): void;
   };
   /**
-   * セッションが claude agents --json の一覧から消えたとき（gone_at を入れる前の生きている行）に呼ぶ（discord-notice.ts の終了の知らせ。CC5c）。
+   * セッションが claude agents --json の一覧から消えたとき（gone_at を入れる前の生きている行）に呼ぶ（cc/channels.ts の ccEndedHandler: チャンネルの終了の 1 行と返事の追いかけの終わり）。
    * SessionEnd の hook は根拠にしない（偽の hook と、再起動をまたいだ二重を防ぐため。§5.2）。投げても一覧の更新には響かない
    */
   ended?: (session: CcSessionRow) => void;

@@ -2,7 +2,9 @@
 // - 作る（openChannel）: /setup・/new と同じ layoutQueueKey のキューで、1 セッション 1 チャンネル（既にあれば exists）・一覧にあって tmux の中
 //   （findSendablePane が当たる）・カテゴリ「Claude Code」（guild_settings.cc_category_id）があって 50 未満のときだけ、`cc-<セッション名>` を作り、
 //   cc_channels に行を書いて最初の 1 通を投稿する。手動の口（Web のタブの [Discord のチャンネルを作る]・/cc open）が呼ぶ。
-//   ensureFor は「関わった」きっかけ（CC11）から呼ぶ口で、既にあれば何もせず、作れなくても投げず、log と #system に 1 行（同じ理由は 1 時間に 1 回）。
+//   ensureFor は「関わった」きっかけ（CC11）と、許可の要求・質問・判断待ちの知らせ（docs/plan/claude-code-questions.md §5。Q4。cc/channel-posts.ts）から
+//   呼ぶ口で、既にあれば何もせず、作れなくても投げず、log だけ（同じ理由は 1 時間に 1 回。#system には出さない）。
+//   知らせのきっかけ（permission・question・waiting）では tmux の外のセッションにも作る（そのチャンネルへの発言は sender が not_in_tmux で断る）。
 // - 終わった（ended。registry が一覧から消えたセッションを渡す）: open の行を ended にして 1 行を出し、完了カテゴリへ移す。
 // - 戻った（revived。同じ session_id が一覧に戻った）: その session_id の ended の行を open に戻して 1 行を出し、カテゴリ「Claude Code」へ戻す。
 // - 再同期（reconcile。scheduler.ts の tick）: Discord 上に無い行を削除済みに、open でカテゴリ「Claude Code」の外のもの・ended で完了の外のものを戻す。
@@ -29,7 +31,6 @@ import { CC_START_RETRY_NOTE, ccStartedTexts, START_FAILURE_TEXT } from "../app/
 import { layoutQueueKey } from "../app/commands/setup.ts";
 import type { ChannelOpsQueue } from "../app/channel-ops.ts";
 import type { KeyedSerialQueue } from "../app/queue.ts";
-import type { SystemNotifier } from "../app/system-notice.ts";
 import { DEFAULT_PERSONA_ID, type Config } from "../config.ts";
 import { normalizeChannelName, CHANNEL_NAME_MAX_LENGTH } from "../discord/channel-name.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
@@ -48,8 +49,8 @@ import { normalizeTitle, type CcStartFailure, type CcStarter, type CcStartResult
 
 /** Discord で 1 つのカテゴリに入れられるチャンネル数（カテゴリ「Claude Code」は 1 つだけで、満杯なら作らずに断る） */
 export const CC_CATEGORY_CHANNEL_LIMIT = 50;
-/** 作れなかった同じ理由を #system に出す間隔（プロセスの中） */
-export const CC_CHANNEL_FAILURE_NOTICE_MS = 60 * 60_000;
+/** 作れなかった同じ理由を log に出す間隔（プロセスの中） */
+export const CC_CHANNEL_FAILURE_LOG_MS = 60 * 60_000;
 /** /cc open のセレクトに出す件数（Discord のセレクトの上限） */
 export const CC_PICK_LIMIT = 25;
 /** 名前・ディレクトリを出す長さ */
@@ -70,18 +71,19 @@ const ORIGIN_LABEL: Readonly<Record<CcChannelOrigin, string>> = {
   command: "/cc open ",
   web_send: "Web から送った本文",
   web_start: "Web からの起動",
-  permission: "許可の応答",
+  permission: "許可の要求",
   tool_send: "cc_send の [送る] ",
   tool_start: "cc_start の [起動する] ",
   github: "#github の [対応] ",
+  question: "質問",
+  waiting: "判断待ちの知らせ",
 };
 
-/** 作れなかった理由の #system の 1 行と log の語 */
-const FAILURE_NOTICE: Readonly<Record<"not_set_up" | "full" | "failed", string>> = {
-  not_set_up: "Claude Code のチャンネルを作れませんでした（カテゴリ「Claude Code」がありません。/setup を実行してください）",
-  full: `Claude Code のチャンネルを作れませんでした（カテゴリ「Claude Code」が満杯（${CC_CATEGORY_CHANNEL_LIMIT}）です。完了したチャンネルを消すか、/setup を確かめてください）`,
-  failed: "Claude Code のチャンネルを作れませんでした（Discord の操作に失敗しました。次に関わったときにまた試します）",
-};
+/** 知らせのきっかけ（docs/plan/claude-code-questions.md §5。tmux の外のセッションにも作る） */
+const NOTICE_ORIGINS: ReadonlySet<CcChannelOrigin> = new Set(["permission", "question", "waiting"]);
+
+/** tmux の外のセッションのチャンネルへの発言の返信と、そのチャンネルの最初の投稿に足す 1 行 */
+export const CC_NOT_IN_TMUX_REPLY = "このセッションは tmux の外なので、ここからは送れません（RC で開いてください）";
 
 /** Discord の 1 メッセージの上限 */
 const MESSAGE_MAX = 2000;
@@ -109,7 +111,7 @@ const SUBMIT_REJECT_REPLY: Readonly<Record<Exclude<CcSubmitResult, { ok: true }>
   not_found: "このセッションは一覧にありません（終わったかもしれません）",
   already_queued: "届け待ちの本文があります。届くか、やめてから送ってください",
   queue_full: CC_QUEUE_FULL_REPLY,
-  not_in_tmux: "tmux の外のセッションには送れません",
+  not_in_tmux: CC_NOT_IN_TMUX_REPLY,
   not_claude: "送り先のペインが claude ではありません",
   no_server: "tmux のサーバーがありません",
   tmux_failed: "tmux を使えませんでした",
@@ -330,12 +332,13 @@ export function ccChannelTopic(name: string | null, dir: string | null): string 
   return `Claude Code: ${topicPart(label)}${dir === null || dir === "" ? "" : `（${topicPart(dir)}）`}`;
 }
 
-/** 最初の投稿（純関数） */
-export function ccChannelIntro(name: string | null, dir: string | null, origin: CcChannelOrigin): string {
+/** 最初の投稿（純関数）。tmux の外のセッション（知らせのために作ったもの）なら、ここからは送れない旨の 1 行を足す */
+export function ccChannelIntro(name: string | null, dir: string | null, origin: CcChannelOrigin, inTmux = true): string {
   const label = name === null || name === "" ? "（名前なし）" : name;
   return (
     `Claude Code のセッション「${plain(label)}」${dir === null || dir === "" ? "" : `（${plain(dir)}）`}のチャンネルです（${ORIGIN_LABEL[origin]}で作りました）。` +
-    "ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます。セッションが終わると完了に移し、戻るとここに戻します"
+    "ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます。セッションが終わると完了に移し、戻るとここに戻します" +
+    (inTmux ? "" : `\n${CC_NOT_IN_TMUX_REPLY}`)
   );
 }
 
@@ -364,8 +367,6 @@ export type CcChannelsDeps = {
   queue: Pick<KeyedSerialQueue, "run">;
   /** 完了カテゴリ・カテゴリ「Claude Code」への移動 */
   channelOps: Pick<ChannelOpsQueue, "enqueueMove" | "cancel">;
-  /** ensureFor で作れなかったときの #system の 1 行 */
-  notify: SystemNotifier;
   /** Web UI の会話の記録（CC14。Web UI が有効なときだけ。無ければ書かない） */
   history?: Pick<HistoryStore, "add">;
   /** ~ の場所（ディレクトリの表示） */
@@ -389,8 +390,8 @@ function errorKind(error: unknown): string {
 
 export class CcChannels {
   private readonly deps: CcChannelsDeps;
-  /** 理由 → 最後に #system に出した時刻（ensureFor。同じ理由は 1 時間に 1 回） */
-  private readonly noticedAt = new Map<string, number>();
+  /** 理由 → 最後に log に出した時刻（ensureFor。同じ理由は 1 時間に 1 回） */
+  private readonly failureLoggedAt = new Map<string, number>();
   private readonly inFlight = new Set<Promise<void>>();
   /** 送信ごとの印の操作の列（付ける・外すを順に行う） */
   private readonly markChains = new Map<number, Promise<void>>();
@@ -456,8 +457,8 @@ export class CcChannels {
   }
 
   /**
-   * 関わったきっかけから呼ぶ口（CC11 で sender・starter・許可の応答から呼ぶ）。既にあれば何もしない。guildId を省けば defaultGuild。
-   * 作れなくても投げず、log に 1 行と、not_set_up・full・failed は #system に 1 行（同じ理由は 1 時間に 1 回）
+   * 関わったきっかけ（CC11 で sender・starter・許可の応答）と知らせ（Q4。cc/channel-posts.ts の許可の要求・質問・判断待ち）から呼ぶ口。
+   * 既にあれば何もしない。guildId を省けば defaultGuild。作れなくても投げず、log だけ（同じ理由は 1 時間に 1 回。#system には出さない）
    */
   async ensureFor(sessionId: string, origin: CcChannelOrigin, guildId?: string): Promise<CcOpenResult> {
     const existing = this.deps.store.anyFor(sessionId);
@@ -467,14 +468,7 @@ export class CcChannels {
     }
     const target = guildId ?? this.defaultGuild();
     const result: CcOpenResult = target === undefined ? { ok: false, reason: "not_set_up" } : await this.openChannel(target, sessionId, origin);
-    if (!result.ok && result.reason !== "exists") {
-      // failed は openChannel が種類付きで出している
-      if (result.reason !== "failed") this.deps.log(`Claude Code: チャンネルを作れませんでした（${result.reason}）`);
-      if (result.reason === "not_set_up" || result.reason === "full" || result.reason === "failed") {
-        const noticeGuild = target ?? this.deps.cfg.allowedGuildIds.find((id) => this.deps.guildSettings.get(id) !== undefined);
-        if (noticeGuild !== undefined) this.noticeFailure(noticeGuild, result.reason);
-      }
-    }
+    if (!result.ok && result.reason !== "exists") this.logFailure(result.reason, NOTICE_ORIGINS.has(origin));
     return result;
   }
 
@@ -1088,7 +1082,9 @@ export class CcChannels {
     const sessions = registry.snapshot().sessions;
     const view = sessions.find((candidate) => candidate.sessionId === sessionId);
     if (view === undefined) return { ok: false, reason: "not_found" };
-    if (!(await this.inTmux(view, sessions))) return { ok: false, reason: "not_in_tmux" };
+    // 知らせのきっかけでは tmux の外でも作る（発言は sender が断る。最初の投稿にその旨の 1 行）
+    const inTmux = await this.inTmux(view, sessions);
+    if (!inTmux && !NOTICE_ORIGINS.has(origin)) return { ok: false, reason: "not_in_tmux" };
     const categoryId = guildSettings.ccCategoryId(guildId);
     if (categoryId === null || !(await gateway.channelExists(categoryId))) return { ok: false, reason: "not_set_up" };
     let count: number;
@@ -1115,7 +1111,7 @@ export class CcChannels {
     }
     log(`Claude Code: チャンネルを作りました（guild=${guildId}、${origin}）`);
     try {
-      await gateway.sendMessage(channelId, { text: ccChannelIntro(name, dir, origin), suppressEmbeds: true });
+      await gateway.sendMessage(channelId, { text: ccChannelIntro(name, dir, origin, inTmux), suppressEmbeds: true });
     } catch (error) {
       log(`Claude Code: チャンネルの最初の投稿に失敗しました（${errorKind(error)}）`);
     }
@@ -1170,37 +1166,29 @@ export class CcChannels {
     void task.finally(() => this.inFlight.delete(task));
   }
 
-  /** 作れなかった理由を #system に 1 行（同じ理由は CC_CHANNEL_FAILURE_NOTICE_MS に 1 回。失敗は log だけ） */
-  private noticeFailure(guildId: string, reason: "not_set_up" | "full" | "failed"): void {
+  /** 作れなかった理由を log に 1 行（同じ理由は CC_CHANNEL_FAILURE_LOG_MS に 1 回）。failed は openChannel が種類付きで毎回出している */
+  private logFailure(reason: CcChannelFailure, notice: boolean): void {
+    if (reason === "failed") return;
+    const key = `${notice ? "notice" : "touch"}:${reason}`;
     const now = this.deps.now().getTime();
-    const last = this.noticedAt.get(reason);
-    if (last !== undefined && now - last < CC_CHANNEL_FAILURE_NOTICE_MS) return;
-    this.noticedAt.set(reason, now);
-    const task = (async () => {
-      try {
-        await this.deps.notify(guildId, { text: FAILURE_NOTICE[reason] }, { level: "warning" });
-      } catch (error) {
-        this.deps.log(`Claude Code: チャンネルを作れなかった知らせに失敗しました（${errorKind(error)}）`);
-      }
-    })();
-    this.inFlight.add(task);
-    void task.finally(() => this.inFlight.delete(task));
+    const last = this.failureLoggedAt.get(key);
+    if (last !== undefined && now - last < CC_CHANNEL_FAILURE_LOG_MS) return;
+    this.failureLoggedAt.set(key, now);
+    this.deps.log(`Claude Code: ${notice ? "知らせの" : ""}チャンネルを作れませんでした（${reason}）`);
   }
 }
 
 /**
- * registry の ended に渡す関数（main の配線。§3.6）: チャンネルがあれば ended にして完了へ移し、返事の追いかけ（replier）は今までどおり止め、
- * #system の終了の知らせ（notifier）はチャンネルも追いかけも無いときだけ出す（チャンネルに出したので二重にしない）
+ * registry の ended に渡す関数（main の配線。§3.6）: チャンネルがあれば ended にして終わったことを 1 行出し完了へ移し、返事の追いかけ（replier）は
+ * 今までどおり止める。チャンネルが無ければ終了は知らせない（#system には出さない。docs/plan/claude-code-questions.md §5.1）
  */
 export function ccEndedHandler(deps: {
   channels: () => Pick<CcChannels, "ended"> | undefined;
   replier: () => { ended(session: CcSessionRow): boolean } | undefined;
-  notifier: () => { ended(session: CcSessionRow): void } | undefined;
 }): (session: CcSessionRow) => void {
   return (session) => {
-    const inChannel = deps.channels()?.ended(session) === true;
-    const followed = deps.replier()?.ended(session) === true;
-    if (!inChannel && !followed) deps.notifier()?.ended(session);
+    deps.channels()?.ended(session);
+    deps.replier()?.ended(session);
   };
 }
 
