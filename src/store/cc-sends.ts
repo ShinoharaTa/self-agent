@@ -174,6 +174,20 @@ export class CcSendStore {
     return this.db.prepare("SELECT * FROM cc_sends WHERE session_id = ? AND state = 'queued' ORDER BY id").all(sessionId).map(toRow);
   }
 
+  /**
+   * そのセッションの、貼っている途中（delivering）か since 以後に届けた（delivered・unconfirmed）送信（端末の指示の写しで、self-agent が届けたものを
+   * 見分ける。docs/plan/claude-code-channels.md §3.5。CC12）
+   */
+  listRecentDelivered(sessionId: string, since: Date): CcSendRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM cc_sends WHERE session_id = ? AND (state = 'delivering'
+           OR (state IN ('delivered', 'unconfirmed') AND COALESCE(delivered_at, updated_at) >= ?)) ORDER BY id`,
+      )
+      .all(sessionId, since.toISOString())
+      .map(toRow);
+  }
+
   /** delivering の行（再起動の後に unconfirmed にする前に、印を付け直す行を覚える） */
   listDelivering(): CcSendRow[] {
     return this.db.prepare("SELECT * FROM cc_sends WHERE state = 'delivering' ORDER BY id").all().map(toRow);

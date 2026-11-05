@@ -1,5 +1,6 @@
 // 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバー・Web UI・
 // Claude Code の hook の受け口と DB を閉じる
+import type { CcChannelPosts } from "../cc/channel-posts.ts";
 import type { CcDiscordNotifier } from "../cc/discord-notice.ts";
 import type { CcHookServer } from "../cc/hook-server.ts";
 import type { CcPermissionHold } from "../cc/permission-hold.ts";
@@ -72,6 +73,11 @@ export type ShutdownDeps = {
    * 投稿・書き換えの途中のもの（保留をやめた 1 通の書き換えを含む）を待つ
    */
   ccNotifier?: Pick<CcDiscordNotifier, "stop" | "idle">;
+  /**
+   * Claude Code のチャンネルへの許可の要求・判断待ち・写し（SELF_AGENT_CC=1 のときだけ。CC12）。ccNotifier と同じく、許可の要求の保留をやめた後に止め、
+   * 投稿・書き換えの途中のものを待つ
+   */
+  ccChannelPosts?: Pick<CcChannelPosts, "stop" | "idle">;
   /** cc_send・cc_start の確認の失効（SELF_AGENT_CC の有効・無効によらず動かす）。scheduler と同じ時点で止め、書き換えの途中のものを待つ */
   ccConfirmExpirer?: Pick<CcConfirmExpirer, "stop" | "idle">;
   /** Claude Code の返事を Discord に戻す（SELF_AGENT_CC=1 のときだけ）。scheduler と同じ時点で止め（新しい Stop を扱わない）、投稿の途中のものを待つ */
@@ -134,6 +140,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccStarter,
     ccPermissions,
     ccNotifier,
+    ccChannelPosts,
     ccConfirmExpirer,
     ccReplier,
     ccHookServer,
@@ -166,6 +173,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       ccSender?.idle(),
       ccStarter?.idle(),
       ccNotifier?.idle(),
+      ccChannelPosts?.idle(),
       ccConfirmExpirer?.idle(),
       ccReplier?.idle(),
     ]);
@@ -205,6 +213,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccStarter?.stop();
     ccPermissions?.stop();
     ccNotifier?.stop();
+    ccChannelPosts?.stop();
     ccConfirmExpirer?.stop();
     ccReplier?.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);
