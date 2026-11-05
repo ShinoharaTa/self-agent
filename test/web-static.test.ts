@@ -1340,7 +1340,7 @@ test("web static: 会話の行は吹き出し（#263）: オーナーは右・Bo
   assert.match(css, /\n\.tl-notice \{(?![^}]*padding-left)[^}]*\}/);
 });
 
-test("web static: 実行中の行は 1 行 + 直近 3 つの手順の薄い文字、すべての手順は押して開く（Q5・#118）", () => {
+test("web static: 実行中の行は 1 行 + 直近 3 つの手順の二次の文字、すべての手順は押して開く（Q5・#118）", () => {
   const chat = read("chat.js");
   // 1 行目はスピナー + 刻む数字の「作業中…」
   assert.match(chat, /el\("div", \{ class: "run-line" \}, \[el\("span", \{ class: "spinner", "aria-hidden": "true" \}\), el\("span", \{ "data-run-progress": run\.channelId, text: progressText\(run\) \}\)\]\)/);
@@ -1352,7 +1352,10 @@ test("web static: 実行中の行は 1 行 + 直近 3 つの手順の薄い文�
   // 3 つを超えたときだけ「すべての手順（n）」。既定は閉じ、開いたチャンネルを覚える
   assert.match(chat, /if \(run\.steps\.length > RECENT_STEPS\) \{/);
   assert.match(chat, /el\("details", \{ class: "steps-plain", open: stepsOpened\.has\(run\.channelId\) \}/);
-  assert.match(chat, /"すべての手順（" \+ run\.steps\.length \+ "）"/);
+  assert.match(chat, /el\("span", \{ text: allStepsLabel\(run\) \}\)/);
+  assert.match(chat, /\(run\.toolCalls > run\.steps\.length \? "直近の手順（" : "すべての手順（"\) \+ run\.steps\.length \+ "）"/);
+  // タブを閉じたら開いた印を消す
+  assert.match(chat, /delete openSteps\[channelId\];\n {8}stepsOpened\.delete\(channelId\);/);
   assert.doesNotMatch(chat, /stepsClosed/);
   // 終わった返事の手順も枠の無い details
   assert.match(chat, /el\("details", \{ class: "steps-plain", open: opened\.has\(turn\.id\) \}/);
@@ -1362,8 +1365,11 @@ test("web static: 実行中の行は 1 行 + 直近 3 つの手順の薄い文�
   assert.doesNotMatch(css, /(^|\n)\.steps \{/);
   assert.doesNotMatch(css, /\.msg-bubble \.steps/);
   assert.doesNotMatch(css, /\.steps > /);
-  assert.match(css, /\n\.run-recent \{[^}]*color: var\(--text-muted\);[^}]*font-size: var\(--font-xs\);[^}]*list-style: none;[^}]*overflow-wrap: anywhere;/);
-  assert.match(css, /\n\.run-recent > li\.is-current \{\n {2}color: var\(--text-secondary\);/);
+  // --text-muted は Bot の吹き出しの上に置かない（ライトで 4.4:1。GUIDELINES §2.2）
+  assert.match(css, /\n\.run-recent \{[^}]*color: var\(--text-secondary\);[^}]*font-size: var\(--font-sm\);[^}]*list-style: none;[^}]*overflow-wrap: anywhere;/);
+  assert.match(css, /\n\.run-recent > li\.is-current \{\n {2}color: var\(--text\);/);
+  assert.match(css, /\n\.steps-plain > summary \{[^}]*color: var\(--text-secondary\);/);
+  assert.doesNotMatch(css, /\n\.(run-recent|steps-plain|steps-list)[^{]*\{[^}]*--text-muted/);
   assert.match(css, /\n\.steps-plain \{\n {2}font-size: var\(--font-sm\);\n\}/);
   assert.doesNotMatch(css, /\.steps-plain \{[^}]*(border|background)/);
 });

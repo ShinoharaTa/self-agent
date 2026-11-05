@@ -1350,20 +1350,20 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
-/* 直近の手順は薄い文字で（最後が今の手順）。ラベルは相対パスを含むので狭い幅で砕く */
+/* 直近の手順は二次の文字で（最後の今の手順だけ本文の色）。--text-muted は Bot の吹き出しの上に置かない（GUIDELINES §2.2）。ラベルは相対パスを含むので狭い幅で砕く */
 .run-recent {
   margin: var(--space-1) 0 0;
   /* 文の頭を 1 行目の文字（スピナー 16px + 間 8px の後）に揃える */
   padding-left: var(--space-6);
-  color: var(--text-muted);
-  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
   line-height: var(--leading-normal);
   list-style: none;
   overflow-wrap: anywhere;
 }
 
 .run-recent > li.is-current {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 
 /* 押して開く手順（実行中の「すべての手順（n）」と、終わった返事の「完了（…）」）。枠も地も付けない */
@@ -1376,7 +1376,7 @@ kbd {
   align-items: center;
   gap: var(--space-2);
   min-height: var(--row);
-  color: var(--text-muted);
+  color: var(--text-secondary);
   list-style: none;
   cursor: pointer;
 }
@@ -1400,7 +1400,7 @@ kbd {
 
 .steps-list {
   margin: 0;
-  padding: 0 0 var(--space-1) var(--space-7);
+  padding: 0 0 var(--space-1) var(--space-6);
   color: var(--text-secondary);
   /* 手順のラベルは相対パスを含むので、狭い幅で吹き出しから溢れないように砕く（A7） */
   overflow-wrap: anywhere;
