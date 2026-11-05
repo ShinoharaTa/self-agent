@@ -1,6 +1,6 @@
-# Web UI の磨き（UI-1〜UI-6）: 今の画面と決まりの差と PR の段
+# Web UI の磨き（UI-1〜UI-6・NAV）: 今の画面と決まりの差と PR の段
 
-関連 issue: #225（決まりと画面）・#224（PWA）。決まりは `docs/design/WEB-UI-GUIDELINES.md`、PWA の節は `docs/plan/web-ui.md` §11。
+関連 issue: #225（決まりと画面）・#224（PWA）・#235（スマホの下タブ）。決まりは `docs/design/WEB-UI-GUIDELINES.md`、PWA の節は `docs/plan/web-ui.md` §11。
 
 
 > 2026-11-04。main のコードで確かめたもの（行番号つき。推測は「推測」と書く）。v3: 設計レビュー（unslop / impeccable / hallmark / ui-skills の観点）の指摘を取り込み、オーナーの 7 つの決定（WEB-UI-GUIDELINES.md §11）で段を UI-1〜UI-6 に確定した。段の順と理由は §2。
@@ -86,6 +86,19 @@
 
 問題なし（記録だけ）: 絵文字・大文字ラベル・グラデーション・`→`・`transition: all`・`will-change`・感嘆符は 0 件。「…」・tabular-nums・`aria-label`・`aria-pressed`・`aria-current`・`role="combobox"`・`Intl`・`scrollbar-color`・`minmax(0, 1fr)`・`dvh` は使っている。`.dot` は生きた状態を表すので可。オーナーの吹き出しと人格の裸の文の非対称は性格なので変えない。`<select>` の色は base.css で明示済み。
 
+### NAV スマホの下タブ（CSS + JS。NAV-1 タブとシート / NAV-2 全幅の一覧）
+
+| # | 事実（今） | 決まり | 直し |
+|---|---|---|---|
+| 48 | ≤1023px の下のバーが `overflow-x: auto` で、8〜11 個 × 64px が iPhone の幅に入らず横スクロール（app.css:2359-2378） | §4 スマホの下タブは固定 4 + その他 | ≤639px で `ACTIVITIES` を主要（会話・タスク・リマインド）と「その他」に分け、4 個を等幅に。`overflow-x: hidden` |
+| 49 | 残りのアクティビティ（ナレッジ・記憶・プロジェクト・GitHub・使用量・会話ログ・状態・設定）の置き場が無い | §5 ポップオーバー・メニュー（`position: fixed`）・§6 シート | 「その他」で下タブの上に下からのシート（`#more-sheet`。`role="dialog"`）。行は `.sb-row` と同じ形。有効でないものは行ごと出さない |
+| 50 | 一覧が左からの 85vw のドロワー + backdrop（app.css:2337-2357）。1 行が狭く、後ろに本文が透ける | 決定 2（全幅） | ≤639px で `.wb-sidebar { width: 100% }`、右の線と影を外し、backdrop を出さない。開閉の JS は今のまま |
+| 51 | 起動時にタブが無いとようこそ（views.js:1392-1412）。文が「左の一覧から」でスマホに合わない | 決定 3・§7 言葉 | ≤639px かつタブ無し・hash 無しなら会話の一覧を開いて起動。ようこその文を `hide-sm` / `show-sm` の 2 つの `span` に |
+| 52 | 「会話」の数が未読のチャンネル数だけ（sidebar.js:15） | 決定 5 | 未読 + Claude Code の判断待ちの数。`aria-label`「会話（未読・判断待ち n）」。「その他」は中に数のあるものがあれば `.dot` 1 つ |
+| 53 | Esc がパレット → ドロワーの順（workbench.js:970-973）。幅を跨いだときの後始末が `mqNarrow` だけ（1071-1075） | §8 | Esc はパレット → シート → ドロワー。`mqPhone` の change でもシートを閉じて描き直す |
+
+注記（Claude Code の統合との順）: 統合の PR が `ACTIVITIES` の `cc` を消す。NAV が先に merge されるなら `cc` に `phone: "more"` の印を付けて「その他」の末尾に置き、統合の PR で項目ごと消す。統合が先なら印は要らない。判断待ちの数は統合の設計が store に持つ関数（判断待ちのセッション数）を使い、まだ無ければ未読だけ。
+
 ## 2. 段の順と理由
 
 **UI-6 → UI-1 → UI-2 → UI-3 → UI-4 → UI-5。**
@@ -97,6 +110,12 @@
 - **UI-5**: いちばん大きく、JS の組み替え（表・許可のカード・サイドバー）を含む。最後。
 
 0.1.0 の公開に入れるなら UI-6 → UI-1 → UI-2 → UI-3 まで。`base.css`・`templates/web/DESIGN.md` は**どの段でも変えない**（base.css の hover・`:disabled`・`.card` の影は app.css で打ち消す）。
+
+- **NAV は UI-5 の後**。Claude Code の統合（会話の一覧の群）とは独立で、どちらが先でもよい（§1 の NAV の注記）。
+
+### NAV の段の順
+
+NAV-1（タブとシート。#48・#49・#52・#53）→ NAV-2（全幅の一覧と起動時の会話。#50・#51）。同じ PR の 2 コミットでよい。NAV-2 は NAV-1 の CSS の隣に足すだけで独立している。
 
 ## 3. implementer に渡す分解
 
@@ -198,6 +217,69 @@
 8. 表と行（#39・#44）: タスクの先頭列を `label.check`（チェック = complete。トーストの [取り消す] はそのまま）、id は題名の下の `span.meta`、`—` を空に。リマインドの行は [次を飛ばす] だけ、[止める] は `…` のメニュー（`popover`）か右端に `gap: var(--space-4)` で離す。タブの種類の列に同じアイコン。
 9. 細部（#30・#40・#41・#43・#45・#46・#47）: `.card { box-shadow: none }`。`.cc-screen { font-size: var(--font-sm); line-height: 1.35; background: var(--bg); tab-size: 4 }` + coarse で 13px（GUIDELINES §3 の段階の唯一の例外。ほかに 13 を使わない）。`:root` に `--z-sash: 10; --z-drawer-backdrop: 40; --z-drawer: 41; --z-palette: 50; --z-toast: 60` と置き換え。`.steps > summary` の終わり方のアイコンを消し色は文に。`.btn:disabled { pointer-events: auto; cursor: not-allowed }` + 無効の理由の `title`。app.css で `.check > input { accent-color: var(--accent) }`（base.css の `--primary` を上書き）。`<a class="skip-link" href="#editors">本文へ</a>` を `body` の先頭に（フォーカス時だけ表示）。
 10. 受け入れ: 人格 3 体のダミーで使用量が表。読み込み中に枠が出ず跳ばない。会話の見出しの secondary が 1 つ。許可のカードが 2 ボタン + チェック。危険な確認で Enter を押しても実行されない。`h1` の次が `h2`（grep `el("h3"` の親を目視）。z-index の直書き 0 件。Tab の 1 回目でスキップリンク。
+
+### NAV の分解（implementer に渡す）
+
+触る: `src/web/static/sidebar.js`、`src/web/static/workbench.js`、`src/web/static/index.html`、`src/web/static/views.js`、`src/web/static/app.css`、`docs/design/WEB-UI-GUIDELINES.md`（§3 の文をそのまま）、`docs/plan/web-ui.md` §3.2 の注記、`test/web-static.test.ts`。
+
+#### NAV-1 タブとシート
+
+1. `sidebar.js` の `ACTIVITIES`（14-27）: 各項目に `phone: "primary" | "more"` を足す。`chat`・`tasks`・`reminders` が primary、それ以外（`knowledge`・`projects`・`github`・`usage`・`devlog`・`status`・`settings`。`cc` が残っていれば more）が more。`jobs` は `stage` があるので今までどおり出ない。
+2. `sidebar.js`: `visibleActivities()` の隣に `phoneActivities()` を足す: `visibleActivities()` を `phone` で分けて `{ primary, more }`（順は `ACTIVITIES` のまま）。`SA.sidebar` に export。
+3. `workbench.js:39` の隣: `const mqPhone = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false, addEventListener() {} }`、`function phone() { return mqPhone.matches }`。`mqNarrow` はそのまま（ドロワーの判定は 1023 のまま）。
+4. `workbench.js` の `S`（51-64）に `moreOpen: false`。
+5. `workbench.js` の `renderActivity`（119-148）: `phone()` なら `phoneActivities().primary` のボタン（今の作り方のまま。`act-group` は 1 つ）+ 「その他」のボタン: `class="act-btn act-more"`、`icon("ellipsis")`、`span.act-label`「その他」、`aria-expanded: String(S.moreOpen)`、`aria-controls: "more-sheet"`、`aria-pressed` は「more の中の一覧が見えている（`sidebarShows(id)` が true の more の id がある）か、more の `tab`（状態・設定）か `memories` が前に出ている」とき。more の中に `count()` が 1 以上のものがあれば `span.dot.dot-unread`（`role="img"`・`aria-label="未読あり"`）。`bottom: true` の 2 群分けはスマホでは使わない。
+6. 「会話」の数（決定 5）: `sidebar.js:15` の `count` を `store.unreadCount() + <判断待ちの数>` に。判断待ちの数は統合の設計の store の関数（無ければ 0）。`countLabel` を「未読・判断待ち 」に（判断待ちが 0 のときは「未読 」のまま。「・」は 2 要素まで）。PC のアクティビティバーの数も同じ値になる（PC でも判断待ちは見るべきものなので揃える）。
+7. `workbench.js` 新規 `renderMore()` / `openMore()` / `closeMore()`:
+   - `renderMore`: `#more-sheet` に `ul` と行（`li > button.more-row`: `icon(a.icon)`・`span.sb-label`（`a.label`）・数があれば `span.sb-meta`（数字。tabular））。行の click は `closeMore()` → `selectActivity(a)`（`a.tab` のものは `open`、一覧のものは `openDrawer`。既存の関数のまま）。
+   - `openMore`: `S.moreOpen = true`、`renderMore()`、`refs.wb.classList.add("is-more-open")`、`$("more-backdrop").hidden = false`、`renderActivity()`、最初の `.more-row` に `focus()`。ドロワーが開いていても閉じない（一覧の上にシートが重なる。`z-index` は同じ `--z-drawer` で、DOM で後の要素が上）。
+   - `closeMore`: 逆。`S.moreOpen` が false なら何もしない。焦点を `.act-more` に戻す。
+8. `workbench.js` の `onKey`（970-973）: Esc の順をパレット → シート → ドロワーに。
+9. `workbench.js` の `init`（1024-1087）: `$("more-backdrop")` の click で `closeMore`。`mqPhone.addEventListener("change", () => { closeMore(); renderActivity(); })`。`mqNarrow` の change でも `closeMore()`。
+10. `index.html`: `#drawer-backdrop`（60）の次に `<div class="drawer-backdrop" id="more-backdrop" hidden></div>` と `<div class="more-sheet" id="more-sheet" role="dialog" aria-label="その他の画面" tabindex="-1"></div>`。inline の script・style・style 属性は書かない。
+11. `app.css` の `@media (max-width: 639px)`（2449-2511）に:
+
+| 対象 | 宣言 | 理由 |
+|---|---|---|
+| `.wb-activity` | `overflow-x: hidden` | 横スクロールを止める |
+| `.act-group` | `flex: 1 1 0; min-width: 0` | 1 群を全幅に |
+| `.act-btn` | `flex: 1 1 0; min-width: 0; padding: 0 var(--space-1)` | 4 個で等分（1023 のブロックの `min-width` を打ち消す）。320px で 80px、44 以上 |
+| `.act-label` | `max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap` | 「リマインド」（5 字 × 12px = 60px）が折り返さない保険。ブラウザで未確認 |
+| `.act-more .dot` | `position: absolute; top: var(--space-1); right: var(--space-1)` | 数のピルと同じ位置 |
+| `.more-sheet` | `position: fixed; left: 0; right: 0; bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px)); z-index: var(--z-drawer); max-height: 60dvh; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-2) 0; background: var(--surface); border-top: var(--border-width) solid var(--border); box-shadow: var(--shadow-sm); transform: translateY(100%); visibility: hidden; transition: transform 130ms var(--ease-out), visibility 130ms var(--ease-out)` | §5 メニューは `position: fixed`。浮いているものの影は可（§2.3）。`dvh`・safe-area。消 130ms（ダイアログと同じ比） |
+| `.wb.is-more-open .more-sheet` | `transform: none; visibility: visible; transition-duration: var(--dur-short)` | 出 200ms |
+| `.more-row` | `display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: var(--row); padding: 0 var(--space-4); background: transparent; color: var(--text); border: 0; font-size: var(--font-sm); touch-action: manipulation; user-select: none; -webkit-user-select: none` と `.more-row:active { background: var(--muted) }`、`.more-row .icon { color: var(--text-secondary) }` | §5 一覧の行・§6 押下。44px は `--row` が coarse で持つ |
+| `.more-row .sb-meta` | `margin-left: auto; font-variant-numeric: tabular-nums` | 数は右に |
+
+    ブロックの外（既定の規則）に `.more-sheet, #more-backdrop { display: none }` を書き、≤639 のブロックの `.more-sheet` で `display: block`、`#more-backdrop` は `hidden` 属性で制御（`[hidden]` は base.css の既定のまま。≤639 で `#more-backdrop:not([hidden]) { display: block }`）。
+12. `docs/design/WEB-UI-GUIDELINES.md`: §3 の文をそのまま。`docs/plan/web-ui.md` §3.2（71 行目「1023px 以下は下の横」）に「639 以下は固定 4 + その他（`docs/plan/web-ui-polish.md` の NAV）」の注記。
+13. `test/web-static.test.ts`: index.html に `#more-sheet`（`role="dialog"`・`aria-label`）と `#more-backdrop` がある。`app.css` に `.more-sheet` の `transition` が `transform`・`visibility` だけ（`height`・`all` を含まない）。画面の言葉のテストは新しい文字列（「その他」「その他の画面」「未読あり」「未読・判断待ち」）を自動で見る。
+
+#### NAV-2 全幅の一覧と起動時の会話
+
+1. `app.css` の ≤639 ブロックに `.wb-sidebar { width: 100%; border-right: 0; box-shadow: none }` と `#drawer-backdrop { display: none }`（JS の `hidden` の切り替えはそのまま）。`transform: translateX(-100%)` と 300 / 200 の transition は 1023 のブロックのまま（一覧が根・本文が先なので、左から戻る向きで通る）。
+2. `workbench.js` の `init`（1050 の `restoreTabs()` の後）: `if (phone() && S.tabs.length === 0 && !tabFromHash(location.hash)) { S.activity = "chat"; S.drawerOpen = true; }`（`renderAll()` の前）。`deferred` のタブがあるときは開かない。
+3. `views.js` の `renderWelcome`（1401）: `p.meta` の中を `span.hide-sm`「左の一覧から開くか、コマンドで移動します。」と `span.show-sm`「下の「会話」から開くか、検索で移動します。」に。`welcome-links` の「サイドバー」「パネル」の行に `hide-sm`（スマホでは意味が薄い）。
+4. ようこそはタブを全部閉じたときだけ出る（`closeTab` の後は今のまま。会話の一覧は開かない）。
+
+#### 受け入れ（iPhone 実機 + PC。「実機 / エミュレータ」のどちらで見たかを書く）
+
+| # | 確認 |
+|---|---|
+| 1 | ≤639px の下タブが 4 個（会話・タスク・リマインド・その他）で等幅。`nav.scrollWidth === nav.clientWidth`。320px（iPhone SE）でも文字が折り返さない・「…」にならない |
+| 2 | 起動（タブ無し・hash 無し）で会話の一覧が全幅で出る。前回のタブがあればそのタブが本文。`#/status` の hash なら状態のタブ |
+| 3 | 会話の行を押すと一覧が閉じて会話のタブ。もう一度「会話」か ≡（`#sidebar-toggle`）で一覧に戻る。タスク・リマインドも同じ。一覧の後ろに backdrop が無い |
+| 4 | 「その他」でシートが下タブの上に出る（ホームインジケータに重ならない）。行は有効なものだけ（dev モード無しで会話ログが無い、GitHub 無効で GitHub が無い）。Claude Code の行が無い。Esc・backdrop・行で閉じ、焦点が「その他」に戻る。開いたとき最初の行に焦点 |
+| 5 | シートの「状態」「設定」はタブを直接開く。「ナレッジ・記憶」「プロジェクト」「使用量」はその一覧を全幅で出す。その間「その他」が `aria-pressed="true"`、ほかの 3 つは false |
+| 6 | 「会話」に未読 + 判断待ちの数のピル、実行中にスピナー。判断待ちが 1 つ増えると数が 1 増え、`aria-label` に「判断待ち」が入る。GitHub に自分宛てがあると「その他」に点、シートの GitHub の行に数 |
+| 7 | 鈴と接続の点はタイトルバーのまま。鈴でパネルの知らせが開く |
+| 8 | 640〜1023px（iPad・PC の窓を狭めたもの）: 今の横 1 列のまま。≥1024px: 見た目も振る舞いも変わらない（`app.css` の diff が ≤639 のブロックと `.more-sheet` の既定の 1 行だけ。PC の「会話」の数は決定 5 で判断待ちを足す分だけ変わる） |
+| 9 | 幅を跨いで変えても（PC の窓を広げる・縮める、iPhone の回転）シートとドロワーが開きっぱなしにならない |
+| 10 | hash（`#/ch/<id>`・`#/status`）で開く・戻すは今のまま。タブの保存（localStorage）も同じ |
+| 11 | reduced-motion でシートが動かずに出る。シートの transition が `transform`・`visibility` だけ。出 200 / 消 130 |
+| 12 | 入力欄に焦点を当ててキーボードが出たとき、下タブとシートが崩れない（iOS Safari。実機でだけ分かる） |
+| 13 | ライト・ダーク・OS に合わせる の 3 つでシートの地・線・行の色がトークンどおり |
+| 14 | `npm test`・`npm run check` が通る。`web-static.test.ts` の inline 無し・言葉のテストが通る。grep で `100vw`・`transition: all`・`z-index: <数字>` が増えていない |
 
 ## 4. 決定事項（オーナー。2026-11-04）
 
