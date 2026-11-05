@@ -229,6 +229,8 @@ export type CcReplierDeps = {
   rcUrl?: (sessionId: string) => string | undefined;
   /** そのセッションの開いている Claude Code のチャンネル（CC11。あれば返事は常にそこへ）。無ければ CC8 の追いかけだけ */
   channelFor?: (sessionId: string) => string | undefined;
+  /** 削除されていない Claude Code のチャンネルか（そこからの送信（発言・写し）では追いかけを立てない） */
+  isCcChannel?: (channelId: string) => boolean;
   /** Web UI の会話の記録（Web UI が有効なときだけ）。チャンネルのサーバーと持ち主の人格が分かるときだけ notice を書く */
   history?: Pick<HistoryStore, "add">;
   guildOf?: (channelId: string) => string | undefined;
@@ -321,7 +323,10 @@ export class CcReplier {
     if (this.stopped) return;
     const { sessions, log } = this.deps;
     // チャンネルのあるセッションは返事がそこに出るので、追いかけは立てない（§3.4）
-    const inChannel = row.sessionId !== null && this.deps.channelFor?.(row.sessionId) !== undefined;
+    // 送信の channel_id が cc のチャンネル（発言・写し）なら、チャンネルが閉じた後でも追いかけはそこで始めない
+    const inChannel =
+      (row.sessionId !== null && this.deps.channelFor?.(row.sessionId) !== undefined) ||
+      (row.channelId !== null && this.deps.isCcChannel?.(row.channelId) === true);
     if (row.state === "delivered" && row.sessionId !== null && row.channelId !== null && !inChannel) {
       const before = sessions.get(row.sessionId);
       if (sessions.startFollow(row.sessionId, row.channelId)) {

@@ -77,6 +77,7 @@ function setup(t: TestContext) {
   const replier = new CcReplier({
     cfg: { timeZone: "Asia/Tokyo" },
     channelFor: (sessionId) => ccChannels.get(sessionId),
+    isCcChannel: (channelId) => channelId.startsWith("cc-"),
     sessions,
     sends,
     replies,
@@ -609,4 +610,13 @@ test("チャンネル（CC11）: 1 日 200 通。201 通目は上限の 1 行（
   assert.equal(posted.at(-1)!.message.components, undefined);
   await stop(S1, "202 通目");
   assert.equal(posted.length, CC_CHANNEL_REPLY_DAILY_LIMIT + 1);
+});
+
+test("チャンネル（CC11）: 送信の channel_id が cc のチャンネルなら、そのチャンネルが閉じた後に届いても追いかけを立てない", async (t) => {
+  const { sends, sessions, replier } = setup(t);
+  const send = sends.add({ sessionId: S1, text: "発言", origin: "discord", state: "queued", channelId: "cc-chan", messageId: "owner-msg" });
+  sends.transition(send.id, ["queued"], "delivering");
+  sends.transition(send.id, ["delivering"], "delivered");
+  replier.onSendFinished(sends.get(send.id)!);
+  assert.equal(sessions.get(S1)?.follow, false);
 });

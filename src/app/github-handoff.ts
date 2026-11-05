@@ -175,14 +175,17 @@ export class GithubHandoff {
     return repos;
   }
 
-  /** [対応]: 候補のセッションに積む。候補が無ければ起動の確認（no_session）を返す */
-  act(notificationId: number): Promise<GithubHandoffResult> {
-    return this.handle(notificationId, false);
+  /**
+   * [対応]: 候補のセッションに積む。候補が無ければ起動の確認（no_session）を返す。guildId は Discord で押したサーバー
+   * （そのセッションの Claude Code のチャンネルをそこに作る。CC11。Web は省いて最初の /setup 済みのサーバー）
+   */
+  act(notificationId: number, guildId?: string): Promise<GithubHandoffResult> {
+    return this.handle(notificationId, false, guildId);
   }
 
-  /** [起動して送る]: [対応] と同じく送り先を決め直し、候補が無ければそのリポジトリのディレクトリで新しいセッションを起動して積む */
-  start(notificationId: number): Promise<GithubHandoffResult> {
-    return this.handle(notificationId, true);
+  /** [起動して送る]: [対応] と同じく送り先を決め直し、候補が無ければそのリポジトリのディレクトリで新しいセッションを起動して積む（guildId は act と同じ） */
+  start(notificationId: number, guildId?: string): Promise<GithubHandoffResult> {
+    return this.handle(notificationId, true, guildId);
   }
 
   /** [取り消す]: GitHub の [対応] で積んだ送信だけを取り消す */
@@ -196,7 +199,7 @@ export class GithubHandoff {
     return this.deps.run === undefined ? {} : { run: this.deps.run };
   }
 
-  private async handle(notificationId: number, allowStart: boolean): Promise<GithubHandoffResult> {
+  private async handle(notificationId: number, allowStart: boolean, guildId: string | undefined): Promise<GithubHandoffResult> {
     const row = this.deps.store.getNotification(notificationId);
     const target = row === undefined ? undefined : handoffTarget(row);
     if (row === undefined || target === undefined) return { kind: "stale" };
@@ -205,7 +208,7 @@ export class GithubHandoff {
     if (this.inFlight.has(row.threadId)) return { kind: "busy" };
     this.inFlight.add(row.threadId);
     try {
-      const result = await this.route(row, target, allowStart);
+      const result = await this.route(row, target, allowStart, guildId);
       this.deps.log(`GitHub の対応: ${result.kind}（通知 #${row.id}${"sendId" in result && result.sendId !== undefined ? `、送信 #${result.sendId}` : ""}）`);
       return result;
     } finally {
@@ -228,7 +231,12 @@ export class GithubHandoff {
     return undefined;
   }
 
-  private async route(row: GithubNotificationRow, target: HandoffTarget, allowStart: boolean): Promise<GithubHandoffResult> {
+  private async route(
+    row: GithubNotificationRow,
+    target: HandoffTarget,
+    allowStart: boolean,
+    guildId: string | undefined,
+  ): Promise<GithubHandoffResult> {
     const { registry, panes, tmux, sender, now } = this.deps;
     const repo = `${target.owner}/${target.repo}`;
     const snapshot = registry.snapshot();
@@ -265,6 +273,7 @@ export class GithubHandoff {
         startedBy: "github",
         nested: true,
         notificationId: row.id,
+        ...(guildId === undefined ? {} : { guildId }),
       });
       if (!started.ok) return { kind: "start_failed", reason: started.reason };
       return { kind: "started", tmuxSession: started.tmuxSession, sendId: started.sendId, dir };
@@ -292,7 +301,13 @@ export class GithubHandoff {
       }
     }
     if (chosen === undefined) return { kind: "failed", reason: "not_found" };
-    const submitted = await sender.submit({ sessionId: chosen.view.sessionId, text, origin: "github", notificationId: row.id });
+    const submitted = await sender.submit({
+      sessionId: chosen.view.sessionId,
+      text,
+      origin: "github",
+      notificationId: row.id,
+      ...(guildId === undefined ? {} : { guildId }),
+    });
     // queue_full は Claude Code のチャンネルの発言（origin discord）だけのもので、ここには来ない
     if (!submitted.ok) return { kind: "failed", reason: submitted.reason === "queue_full" ? "already_queued" : submitted.reason };
     return {
