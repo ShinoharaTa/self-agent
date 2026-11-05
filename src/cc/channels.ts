@@ -23,6 +23,7 @@ import { normalizeChannelName, CHANNEL_NAME_MAX_LENGTH } from "../discord/channe
 import { escapeDiscordText } from "../discord/escape.ts";
 import { type Gateway, type IncomingMessage, NotCategoryError } from "../discord/gateway.ts";
 import type { CcChannelOrigin, CcChannelRow, CcChannelStore } from "../store/cc-channels.ts";
+import type { CcPermissionStore } from "../store/cc-permissions.ts";
 import type { CcSendOrigin, CcSendRow, CcSendStore } from "../store/cc-sends.ts";
 import { headChars, type CcSessionRow, type CcStartedBy } from "../store/cc-sessions.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
@@ -107,6 +108,15 @@ const FAILURE_REASON_TEXT: Readonly<Record<string, string>> = {
   not_in_tmux: "tmux の外です",
   cwd_mismatch: "起動したディレクトリと違います",
   invalid_text: "送れない文字があります",
+};
+
+/** 終わりの状態の印（cancelled は ⏳ を外すだけなので空） */
+const FINAL_MARK: Readonly<Partial<Record<CcSendRow["state"], string>>> = {
+  delivered: CC_MARK_DELIVERED,
+  unconfirmed: CC_MARK_UNCONFIRMED,
+  failed: CC_MARK_FAILED,
+  gave_up: CC_MARK_FAILED,
+  cancelled: "",
 };
 
 /** 送れなかったときの返信（純関数） */
@@ -248,6 +258,8 @@ export class CcChannels {
   private readonly markChains = new Map<number, Promise<void>>();
   /** 終わりの印を付けた送信（返信を二重に出さない。プロセスの中だけ） */
   private readonly finalMarked = new Set<number>();
+  /** 同じ本文を続けて書いた発言（送信 → そのチャンネルとメッセージ）。終わりの印をそこにも付ける */
+  private readonly duplicates = new Map<number, Array<{ channelId: string; messageId: string }>>();
   /** ダイアログで待っていると返信した送信 */
   private readonly dialogNoticed = new Set<number>();
 
@@ -323,17 +335,17 @@ export class CcChannels {
 
   /**
    * 送信を queued にした直後（sender の announce。§3.1・§3.3）。外から積んだ送信（web・tool・github）なら、そのきっかけでチャンネルを作り
-   * （tool は頼んだチャンネルのサーバー、それ以外は defaultGuild。作れなくても止めない）、開いているチャンネルに本文を写して、その投稿を印と返事の返信先にする。
-   * オーナーの発言（discord）は届け待ちの印を付けるだけ。送り先のセッションの開いているチャンネルの ID を返す
+   * （guildId（Discord で押した [対応] のサーバー）→ tool は頼んだチャンネルのサーバー → defaultGuild。作れなくても止めない）、開いているチャンネルに本文を写して、
+   * その投稿を印と返事の返信先にする。オーナーの発言（discord）は届け待ちの印を付けるだけ。送り先のセッションの開いているチャンネルの ID を返す
    */
-  async announce(row: CcSendRow): Promise<string | undefined> {
+  async announce(row: CcSendRow, guildId?: string): Promise<string | undefined> {
     if (row.sessionId === null) return undefined;
     if (row.origin === "discord") {
       this.mark(row);
       return this.deps.store.openFor(row.sessionId)?.channelId;
     }
     const origin = SEND_CHANNEL_ORIGIN[row.origin];
-    if (origin !== undefined) await this.ensureFor(row.sessionId, origin, this.guildOfChannel(row.channelId));
+    if (origin !== undefined) await this.ensureFor(row.sessionId, origin, this.allowedGuild(guildId) ?? this.guildOfChannel(row.channelId));
     return this.mirrorSend(row);
   }
 
@@ -341,9 +353,17 @@ export class CcChannels {
    * 起動したセッションを一覧のセッションに結びつけた（starter の onBound。§3.1 の 2・5・6）: 起動したもの（web・tool・github）のきっかけでチャンネルを作り
    * （tool は頼んだチャンネルのサーバー）、最初の指示があれば写す（届いた後なら返信先には使わない）。reject しない
    */
-  async started(input: { sessionId: string; startedBy: Exclude<CcStartedBy, "owner">; channelId?: string; sendId?: number }): Promise<void> {
+  async started(input: {
+    sessionId: string;
+    startedBy: Exclude<CcStartedBy, "owner">;
+    channelId?: string;
+    sendId?: number;
+    /** Discord で押した [起動して送る] のサーバー */
+    guildId?: string;
+  }): Promise<void> {
     try {
-      await this.ensureFor(input.sessionId, START_CHANNEL_ORIGIN[input.startedBy], this.guildOfChannel(input.channelId ?? null));
+      const guildId = this.allowedGuild(input.guildId) ?? this.guildOfChannel(input.channelId ?? null);
+      await this.ensureFor(input.sessionId, START_CHANNEL_ORIGIN[input.startedBy], guildId);
       const row = input.sendId === undefined ? undefined : this.deps.sends.get(input.sendId);
       if (row !== undefined) await this.mirrorSend(row);
     } catch (error) {
@@ -411,6 +431,8 @@ export class CcChannels {
       return true;
     }
     if (!result.duplicate) log(`Claude Code: チャンネルの発言を積みました（#${result.send.id}）`);
+    // 5 秒以内の同じ本文（二重送信の規則）: 新しくは積まず、この発言にも前の行の印を付ける（無反応にしない）
+    else this.markDuplicate(result.send, message.channelId, message.id);
     return true;
   }
 
@@ -434,7 +456,11 @@ export class CcChannels {
   /** 頼んだチャンネルのサーバー（許可サーバーのときだけ） */
   private guildOfChannel(channelId: string | null): string | undefined {
     if (channelId === null || this.deps.guildOf === undefined) return undefined;
-    const guildId = this.deps.guildOf(channelId);
+    return this.allowedGuild(this.deps.guildOf(channelId));
+  }
+
+  /** 許可サーバーならそれ */
+  private allowedGuild(guildId: string | undefined): string | undefined {
     return guildId !== undefined && this.deps.cfg.allowedGuildIds.includes(guildId) ? guildId : undefined;
   }
 
@@ -512,8 +538,32 @@ export class CcChannels {
     if (row.state !== "queued" && row.state !== "delivering") {
       if (this.finalMarked.has(row.id)) return;
       this.finalMarked.add(row.id);
+      // 同じ本文を続けて書いた発言にも同じ終わりの印（返信は最初の発言だけ）
+      for (const extra of this.duplicates.get(row.id) ?? []) for (const step of this.markSteps(extra, row.state)) this.chain(row.id, step);
+      this.duplicates.delete(row.id);
     }
     for (const step of steps) this.chain(row.id, step);
+  }
+
+  /** 印だけの手順（返信は付けない）。終わりの状態なら ⏳ を外してその印、それ以外は ⏳ */
+  private markSteps(target: { channelId: string; messageId: string }, state: CcSendRow["state"]): Array<() => Promise<void>> {
+    const { gateway } = this.deps;
+    const { channelId, messageId } = target;
+    const final = FINAL_MARK[state];
+    if (final === undefined) return [() => gateway.addReaction(channelId, messageId, CC_MARK_WAITING)];
+    return [() => gateway.removeOwnReaction(channelId, messageId, CC_MARK_WAITING), ...(final === "" ? [] : [() => gateway.addReaction(channelId, messageId, final)])];
+  }
+
+  /** 二重送信の規則で積まなかった発言に、前の行の今の状態の印を付ける（まだ終わっていなければ終わったときにも付ける） */
+  private markDuplicate(row: CcSendRow, channelId: string, messageId: string): void {
+    const target = { channelId, messageId };
+    const done = this.finalMarked.has(row.id) || FINAL_MARK[row.state] !== undefined;
+    if (!done) {
+      const list = this.duplicates.get(row.id) ?? [];
+      list.push(target);
+      this.duplicates.set(row.id, list);
+    }
+    for (const step of this.markSteps(target, row.state)) this.chain(row.id, step);
   }
 
   /** 送信ごとの列に Discord の操作を足す（失敗は log だけ） */
@@ -729,5 +779,24 @@ export function routeCcChannelMessages(
     const row = store.get(message.channelId);
     if (row === undefined || row.state === "deleted") return handle(message);
     await channels()?.handleMessage(message);
+  };
+}
+
+/**
+ * 許可の要求に答えた後（Web・Discord。main の配線。§3.1 の 3）: その要求のセッションのチャンネルを origin permission で作る
+ * （guildId は Discord で押したサーバー。省けば最初の /setup 済みのサーバー）。待たない・投げない
+ */
+export function ccPermissionAnsweredHandler(deps: {
+  permissions: Pick<CcPermissionStore, "get">;
+  channels: () => Pick<CcChannels, "ensureFor"> | undefined;
+  log: (message: string) => void;
+}): (id: number, guildId: string | undefined) => void {
+  return (id, guildId) => {
+    const row = deps.permissions.get(id);
+    const channels = deps.channels();
+    if (row === undefined || channels === undefined) return;
+    void channels.ensureFor(row.sessionId, "permission", guildId).catch((error: unknown) => {
+      deps.log(`Claude Code: 許可の応答の後にチャンネルを用意できませんでした（${errorKind(error)}）`);
+    });
   };
 }

@@ -128,7 +128,7 @@ function setup(
     unreadable: false,
     fetchedAt: BASE,
   };
-  const submits: Array<{ sessionId: string; text: string; origin: string; notificationId?: number }> = [];
+  const submits: Array<{ sessionId: string; text: string; origin: string; notificationId?: number; guildId?: string }> = [];
   const launches: CcStartInput[] = [];
   const logs: string[] = [];
   const handoff = new GithubHandoff({
@@ -326,6 +326,8 @@ test("gh: のボタン: [対応] は本人にだけの保留の後に結果を�
   const updated = start.calls[1];
   assert.ok(updated?.method === "update");
   assert.match(updated.message.text, /起動しました/);
+  // Claude Code のチャンネルは押したサーバーに作る（CC11。DB には入れず onBound へ）
+  assert.equal(env.launches[0]!.guildId, "g");
   assert.equal((await press("gh:act:abc")).replies[0]?.text, GITHUB_STALE_TEXT);
   const off = createGithubComponent({ githubHandoff: () => undefined, log: () => undefined });
   const responder = new FakeResponder();
@@ -419,4 +421,15 @@ test("githubResultMessage（CC11）: 送り先のセッションに Claude Code 
   assert.match(githubResultMessage(1, queued).text, /（返事は <#cc-chan> に出ます）$/);
   assert.doesNotMatch(handoffResultText(queued), /cc-chan/);
   assert.doesNotMatch(githubResultMessage(1, { ...queued, channelId: undefined }).text, /返事は/);
+});
+
+test("act（CC11）: Discord で押したサーバーを submit に渡し（チャンネルをそこに作る）、Web（省略）は渡さない。channel_id には入れない", async (t) => {
+  const env = setup(t);
+  const id = env.notify();
+  await env.handoff.act(id, "guild-9");
+  assert.equal(env.submits[0]!.guildId, "guild-9");
+  assert.equal(env.sends.get(1)!.channelId, null);
+  const web = setup(t);
+  await web.handoff.act(web.notify());
+  assert.equal("guildId" in web.submits[0]!, false);
 });

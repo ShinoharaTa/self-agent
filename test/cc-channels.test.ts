@@ -11,6 +11,7 @@ import {
   CcChannels,
   ccEndedHandler,
   routeCcChannelMessages,
+  ccPermissionAnsweredHandler,
 } from "../src/cc/channels.ts";
 import { NotCategoryError } from "../src/discord/gateway.ts";
 import type { IncomingMessage } from "../src/discord/gateway.ts";
@@ -422,4 +423,38 @@ test("routeCcChannelMessages: 削除されていない cc のチャンネルへ�
   const dropped = routeCcChannelMessages(s.store, () => undefined, async (m: IncomingMessage) => void handled.push(m.channelId));
   await dropped(message("cc-open"));
   assert.deepEqual(handled, ["cc-gone", "inbox-1"]);
+});
+
+test("ccPermissionAnsweredHandler: 答えた要求のセッションで ensureFor（permission・押したサーバー）を呼ぶ。行が無い・連携が無ければ呼ばない。失敗は log だけ", async () => {
+  const calls: Array<[string, string, string | undefined]> = [];
+  const logs: string[] = [];
+  let fail = false;
+  const channels = {
+    ensureFor: async (sessionId: string, origin: string, guildId?: string) => {
+      calls.push([sessionId, origin, guildId]);
+      if (fail) throw new Error("boom");
+      return { ok: false as const, reason: "not_set_up" as const };
+    },
+  };
+  let current: typeof channels | undefined = channels;
+  const handler = ccPermissionAnsweredHandler({
+    permissions: { get: (id: number) => (id === 7 ? ({ sessionId: S1 } as never) : undefined) },
+    channels: () => current,
+    log: (line) => logs.push(line),
+  });
+  handler(7, "guild-1");
+  handler(7, undefined);
+  handler(8, "guild-1");
+  current = undefined;
+  handler(7, "guild-1");
+  assert.deepEqual(calls, [
+    [S1, "permission", "guild-1"],
+    [S1, "permission", undefined],
+  ]);
+  current = channels;
+  fail = true;
+  handler(7, "guild-1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(logs.length, 1);
+  assertQuietLogs(logs);
 });
