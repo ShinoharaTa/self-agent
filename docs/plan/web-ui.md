@@ -68,7 +68,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - 更新（polling。`document.visibilityState === "visible"` のときだけ。隠れたら止め、戻ったら即 1 回）: `/api/status` 10 秒。`/api/running` は実行中のターンが 1 つでもあれば 2 秒、無ければ 10 秒。開いている会話のタブの `turns?after=<最後の id>` は、`/api/running` の結果がそのチャンネルで変わったとき（始まった・終わった）と 5 秒ごと。一覧（channels・tasks・reminders・…）は開いたときと 60 秒ごと、操作の後は即。`/api/status` の応答に `stopping: true` が来たらトースト「再起動中です」を出して polling を止める。
 
 ### 3.2 殻（W1）
-- タイトルバー（サイドバーの切り替え・名前・コマンドセンター（Ctrl+K）・パネルの切り替え・テーマ）、アクティビティバー（PC は左の縦、1023px 以下は下の横。639px 以下は固定 4 + その他（`docs/plan/web-ui-polish.md` の NAV）。項目は §3.4 の表の順。無効な機能（dev モードでない devlog・GitHub 無効・ジョブ無効・配信無効のプロジェクト）は `/api/status` を見て**項目ごと出さない**）、サイドバー（PC は幅のつまみ付き、狭い画面はドロワー）、エディタ（タブ。Alt+1〜9・Alt+W・中クリックで閉じる・矢印で移動）、パネル（出力・知らせ・ジョブ。Ctrl+J。狭い画面は既定で閉じる）、ステータスバー（Bot の接続の点・シェル・実行中 n・ジョブ n・知らせ n・今日のトークン・版）、コマンドパレット、確認ダイアログ、トースト、ようこそ。振る舞いはモックの `workbench.js` のとおり（分割を除く）。
+- タイトルバー（サイドバーの切り替え・名前・コマンドセンター（Ctrl+K）・パネルの切り替え・テーマ）、アクティビティバー（PC は左の縦、1023px 以下は下の横。639px 以下は固定 4 + その他（`docs/plan/web-ui-polish.md` の NAV）。項目は §3.4 の表の順。**CC9 から「Claude Code」の項目は無く、会話のサイドバーの群「Claude Code」（入口の次）になる（`docs/plan/claude-code-channels.md` §2）。**無効な機能（dev モードでない devlog・GitHub 無効・ジョブ無効・配信無効のプロジェクト）は `/api/status` を見て**項目ごと出さない**）、サイドバー（PC は幅のつまみ付き、狭い画面はドロワー）、エディタ（タブ。Alt+1〜9・Alt+W・中クリックで閉じる・矢印で移動）、パネル（出力・知らせ・ジョブ。Ctrl+J。狭い画面は既定で閉じる）、ステータスバー（Bot の接続の点・シェル・実行中 n・ジョブ n・知らせ n・今日のトークン・版）、コマンドパレット、確認ダイアログ、トースト、ようこそ。振る舞いはモックの `workbench.js` のとおり（分割を除く）。
 - テーマ: 既定 **dark**（`<html data-theme="dark">`。モックと同じ）。`system` を選ぶと `data-theme` を外して base.css の `prefers-color-scheme` に任せる。色の値は app.css の `:root[data-theme]` に base.css の写し（確認。base.css は編集しない）。
 - 密度: app.css の `--row`（PC 28px、`pointer: coarse` で `--tap` = 44px）、`.btn-sm`・`.input-sm`・`.chip-sm`・`.segmented-sm`。**`templates/web/DESIGN.md` の「押せるものは 44×44px 以上」「.container 640px」は LLM が作るページの決まりで、Web UI には当てはめない**（Web UI 専用の app.css で上書きする。DESIGN.md・base.css は変えない。両者の関係は app.css の先頭のコメントと本文書に書く）。
 - 設定の画面: テーマ、キーボードの一覧、環境変数の**有無**（`/api/status` の `env`。値は返さない）。
@@ -83,8 +83,8 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 | 状態 | `/api/status`（§3.5） | — | W1 |
 | 使用量 | `/api/usage?date=YYYY-MM-DD&last=N&kind=`・`/api/usage/days?n=30` | — | W1 |
 | 設定 | （`/api/status` の `env`） | — | W1 |
-| 会話（サイドバー） | `/api/channels`（§4.3） | — | W2 |
-| 会話のタブ | `/api/channels/<id>/turns?before=&after=&limit=`（§4.3） | `/api/channels/<id>/messages`・`/turns/<seq>/abort`・`/continue`（§5） | W2 / W3 |
+| 会話（サイドバー） | `/api/channels`（§4.3）。CC9 から `/api/cc/sessions`（群「Claude Code」。`docs/plan/claude-code-channels.md` §2） | — | W2 / CC9 |
+| 会話のタブ | `/api/channels/<id>/turns?before=&after=&limit=`（§4.3） | `/api/channels/<id>/messages`・`/turns/<seq>/abort`・`/continue`（§5）。CC14 から `kind: "cc"`（Claude Code のチャンネル。claude-code-channels.md §5） | W2 / W3 |
 | 実行中 | `/api/running`（§5.2） | — | W3 |
 | 会話ログ | `/api/devlog/days`・`/api/devlog?date=&kind=&channel=&persona=&last=`（dev モードでなければ 404） | — | W2 |
 | タスク | `/api/tasks?status=` | `/api/tasks/<id>/complete`・`/api/tasks/<id>/reopen`（取り消し） | W4 |
@@ -142,10 +142,11 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
   - `close.ts` の `finalizeClose`: `divider` 行（「閉じました。要約: …（登録 n 件）」）。
   - `scheduler.ts` の idle・`handler.revive`: `notice` 行（「12 時間発言がないので待ちに移しました」/ REVIVED_NOTE。revive の notice は owner 行の後・agent 行の前）。
   - W5 のセッションの操作（/wait・[続ける]）も `notice` 行。
+- CC14 の Claude Code のチャンネル（`cc_channels`）: オーナーの発言・外からの送信の写し・端末の指示の写し → `owner`、返事 → `agent`（steps・tool_calls・duration は NULL）、届かなかった・許可の結果・終了・戻った → `notice`、起動して続けた → `divider`（`docs/plan/claude-code-channels.md` §5.2）。
 - 消す: `scheduler` の tick で `history.prune(今 - SELF_AGENT_WEB_HISTORY_DAYS 日)`（既定 90。Web UI が無効でも書くし消す。表は Discord だけでも役に立たないので、**Web UI が無効なら書かない**（`history` を渡さない）→ 推し。消すのは有効・無効を問わず）。
 
 ### 4.3 API
-- `GET /api/channels` → `{ guilds: [{ id, setUp }], personas: [{ id, name, isDefault, connected }], channels: [ { id, guildId, kind: "inbox" | "tasks" | "session", name: "inbox" | "tasks" | "<NAME>" | null, title: <題名> | null, persona, state: "active" | "waiting" | "done" | null, project: { slug, url } | null, last: { id, at, kind } | null, link: "https://discord.com/channels/<g>/<c>" } ] }`。対象は **/setup 済みのサーバーだけ**（`guildSettings.get(guildId)` が無いサーバーは `guilds` に `setUp: false` で出すだけで、env の #inbox も返さない）。入口は `guildSettings.get`（inbox / tasks）と設定にある人格の `personaInbox`、セッションは `listByState` × active・waiting（上限 `SESSION_LIST_LIMITS`）と done（新しい 10 件）。`last` は `history.latestByChannel`。`project` は `projects.getByChannel`。
+- `GET /api/channels` → `{ guilds: [{ id, setUp }], personas: [{ id, name, isDefault, connected }], channels: [ { id, guildId, kind: "inbox" | "tasks" | "session", name: "inbox" | "tasks" | "<NAME>" | null, title: <題名> | null, persona, state: "active" | "waiting" | "done" | null, project: { slug, url } | null, last: { id, at, kind } | null, link: "https://discord.com/channels/<g>/<c>" } ] }`。対象は **/setup 済みのサーバーだけ**（`guildSettings.get(guildId)` が無いサーバーは `guilds` に `setUp: false` で出すだけで、env の #inbox も返さない）。入口は `guildSettings.get`（inbox / tasks）と設定にある人格の `personaInbox`、セッションは `listByState` × active・waiting（上限 `SESSION_LIST_LIMITS`）と done（新しい 10 件）。`last` は `history.latestByChannel`。`project` は `projects.getByChannel`。CC14 から `kind: "cc"` の行（`cc: { sessionId, state, cwdLabel, inTmux, permission, pending }`。claude-code-channels.md §5.2）。
 - `GET /api/channels/<id>/turns?before=&after=&limit=50` → `{ channel: {…上と同じ 1 件}, turns: [ { id, at, kind, source, persona, text, outcome, steps, toolCalls, durationMs, messageId, link } ], hasMore }`。チャンネルが受け付け対象でなければ 404（削除済みのセッションも 404。完了は 200）。
 - 表示の対応（`chat.js`）: `owner` → `msg-owner`、`agent` → `msg-agent`（`steps` の details と `end`（`outcome` と `progressEndText` 相当の文を `toolCalls`・`durationMs` から client で作る）。`outcome === "max_turns"` かつそのチャンネルの最後の行かつセッションなら [続ける]）、`notice` → `tl-notice`、`divider` → `tl-divider`。`running` はこの API には無く、`/api/running`（§5.2）から足す。
 
