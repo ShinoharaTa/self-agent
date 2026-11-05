@@ -237,10 +237,12 @@
   const CC_FRESH_MS = 10000;
 
   function ccRow(s) {
-    // 行のバッジは最重要の 1 つだけ（許可待ち > 届け待ち > trust の確認待ち > tmux の外。GUIDELINES §5 バッジ）。残りは title とタブに
+    // 行のバッジは最重要の 1 つだけ（許可待ち・質問 > 届け待ち > trust の確認待ち > tmux の外。GUIDELINES §5 バッジ）。残りは title とタブに
     const asking = s.permission && s.permission.state === "pending";
+    // 質問（AskUserQuestion。Q3）は「許可待ち」と区別して「質問」
+    const questions = asking && s.permission.question && Array.isArray(s.permission.question.questions) && s.permission.question.questions.length > 0 ? s.permission.question.questions : null;
     const delivering = !!(s.pending && (s.pending.state === "queued" || s.pending.state === "delivering"));
-    const top = asking ? "許可待ち" : delivering ? "届け待ち" : s.trustPending ? "trust の確認待ち" : !s.inTmux ? "tmux の外" : null;
+    const top = asking ? (questions ? "質問" : "許可待ち") : delivering ? "届け待ち" : s.trustPending ? "trust の確認待ち" : !s.inTmux ? "tmux の外" : null;
     const badges = [];
     // スマホ（≤639px）は文字のバッジを出さず点の色だけ（文字はタブの見出しと中身に）。同じ色の点が既にあれば足さない
     if (top) badges.push(el("span", { class: "badge hide-sm " + (asking ? "badge-accent" : "badge-cc"), text: top }));
@@ -249,7 +251,8 @@
     // title: 場所、許可の要求の中身、出さなかった印（権限モード・判断待ちの理由・起動した人・ほかの状態）
     const notes = [];
     if (s.cwdLabel) notes.push(s.cwdLabel);
-    if (asking) notes.push(s.permission.toolName + ": " + SA.views.oneLine(String(s.permission.summary || "")));
+    if (questions) notes.push("質問: " + SA.views.oneLine(String(questions[0].question || "")));
+    else if (asking) notes.push(s.permission.toolName + ": " + SA.views.oneLine(String(s.permission.summary || "")));
     if (s.permissionMode) notes.push("権限モード: " + s.permissionMode);
     // 判断待ちの理由（permission prompt など。一覧の waitingFor）
     if (s.state === "needs_input" && s.waitingFor) notes.push("判断待ち: " + s.waitingFor);
