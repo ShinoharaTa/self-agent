@@ -1209,7 +1209,7 @@ export function routeCcChannelMessages(
 }
 
 /**
- * 許可の要求に答えた後（Web・Discord。main の配線。§3.1 の 3）: その要求のセッションのチャンネルを origin permission で作る
+ * 許可の要求に答えた後（Web・Discord。main の配線。§3.1 の 3）: その要求のセッションのチャンネルを origin permission（質問の行は question）で作る
  * （guildId は Discord で押したサーバー。省けば最初の /setup 済みのサーバー）。待たない・投げない
  */
 export function ccPermissionAnsweredHandler(deps: {
@@ -1221,7 +1221,8 @@ export function ccPermissionAnsweredHandler(deps: {
     const row = deps.permissions.get(id);
     const channels = deps.channels();
     if (row === undefined || channels === undefined) return;
-    void channels.ensureFor(row.sessionId, "permission", guildId).catch((error: unknown) => {
+    const origin = row.questionInput !== null ? "question" : "permission";
+    void channels.ensureFor(row.sessionId, origin, guildId).catch((error: unknown) => {
       deps.log(`Claude Code: 許可の応答の後にチャンネルを用意できませんでした（${errorKind(error)}）`);
     });
   };
