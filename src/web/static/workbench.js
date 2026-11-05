@@ -36,6 +36,8 @@
   }
 
   const mqNarrow = window.matchMedia ? window.matchMedia("(max-width: 1023px)") : { matches: false, addEventListener() {} };
+  // スマホ（639px 以下）: 下タブは固定 4（会話・タスク・リマインド・その他）。ドロワーの判定は mqNarrow のまま
+  const mqPhone = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false, addEventListener() {} };
 
   // ===== 状態 =====
   const PANEL_TABS = [
@@ -52,6 +54,8 @@
     activity: "chat",
     sidebarHidden: false,
     drawerOpen: false,
+    // スマホの「その他」のシート
+    moreOpen: false,
     tabs: [],
     active: null,
     panelOpen: !mqNarrow.matches,
@@ -68,6 +72,10 @@
 
   function narrow() {
     return mqNarrow.matches;
+  }
+
+  function phone() {
+    return mqPhone.matches;
   }
 
   // ===== テーマ =====
@@ -116,35 +124,108 @@
     return S.activity === id && (narrow() ? S.drawerOpen : !S.sidebarHidden);
   }
 
+  /** アクティビティのボタン 1 つ（数・実行中のスピナー付き） */
+  function activityButton(a) {
+    const pressed = !a.tab && sidebarShows(a.id);
+    // 数（会話は未読のチャンネルの数）
+    const n = a.count ? a.count() : 0;
+    const label = a.label + (n > 0 ? "（" + (a.countLabel || "") + n + "）" : "");
+    const btn = el(
+      "button",
+      {
+        class: "act-btn",
+        type: "button",
+        "aria-label": label,
+        title: label,
+        "aria-pressed": a.tab ? null : String(pressed),
+      },
+      [icon(a.icon), el("span", { class: "act-label", text: a.label }), n > 0 ? el("span", { class: "act-count", text: String(n), "aria-hidden": "true" }) : null],
+    );
+    // 実行中のターンがあれば、スマホでは会話の数の位置にスピナーを出す（CSS で 639px 以下だけ）
+    if (a.running && a.running() > 0) {
+      btn.classList.add("is-running");
+      btn.append(el("span", { class: "spinner spinner-sm act-spin", role: "img", "aria-label": "実行中" }));
+    }
+    btn.addEventListener("click", () => selectActivity(a));
+    return btn;
+  }
+
+  /** 「その他」の中の画面が前に出ている（一覧が見えている・状態や設定のタブ・ナレッジから開いた記憶のタブ） */
+  function moreShows(more) {
+    return more.some((a) => (a.tab ? S.active === a.tab : sidebarShows(a.id))) || S.active === "memories";
+  }
+
   function renderActivity() {
     ensureActivity();
-    const top = el("div", { class: "act-group" });
-    const bottom = el("div", { class: "act-group act-bottom" });
-    for (const a of SA.sidebar.visibleActivities()) {
-      const pressed = !a.tab && sidebarShows(a.id);
-      // 数（会話は未読のチャンネルの数）
-      const n = a.count ? a.count() : 0;
-      const label = a.label + (n > 0 ? "（" + (a.countLabel || "") + n + "）" : "");
+    if (phone()) {
+      // スマホは主要の 3 つ + 「その他」の 1 群（bottom の 2 群分けは使わない）
+      const { primary, more } = SA.sidebar.phoneActivities();
+      const group = el("div", { class: "act-group" });
+      for (const a of primary) group.append(activityButton(a));
+      const hasCount = more.some((a) => a.count && a.count() > 0);
       const btn = el(
         "button",
         {
-          class: "act-btn",
+          class: "act-btn act-more",
           type: "button",
-          "aria-label": label,
-          title: label,
-          "aria-pressed": a.tab ? null : String(pressed),
+          "aria-label": "その他",
+          title: "その他",
+          "aria-expanded": String(S.moreOpen),
+          "aria-controls": "more-sheet",
+          "aria-pressed": String(moreShows(more)),
         },
-        [icon(a.icon), el("span", { class: "act-label", text: a.label }), n > 0 ? el("span", { class: "act-count", text: String(n), "aria-hidden": "true" }) : null],
+        [icon("ellipsis"), el("span", { class: "act-label", text: "その他" }), hasCount ? el("span", { class: "dot dot-unread", role: "img", "aria-label": "未読あり" }) : null],
       );
-      // 実行中のターンがあれば、スマホでは会話の数の位置にスピナーを出す（CSS で 639px 以下だけ）
-      if (a.running && a.running() > 0) {
-        btn.classList.add("is-running");
-        btn.append(el("span", { class: "spinner spinner-sm act-spin", role: "img", "aria-label": "実行中" }));
-      }
-      btn.addEventListener("click", () => selectActivity(a));
-      (a.bottom ? bottom : top).append(btn);
+      btn.addEventListener("click", () => (S.moreOpen ? closeMore() : openMore()));
+      group.append(btn);
+      refs.activity.replaceChildren(group);
+      return;
     }
+    const top = el("div", { class: "act-group" });
+    const bottom = el("div", { class: "act-group act-bottom" });
+    for (const a of SA.sidebar.visibleActivities()) (a.bottom ? bottom : top).append(activityButton(a));
     refs.activity.replaceChildren(top, bottom);
+  }
+
+  // ===== スマホの「その他」のシート =====
+  function renderMore() {
+    const items = SA.sidebar.phoneActivities().more.map((a) => {
+      const n = a.count ? a.count() : 0;
+      const btn = el("button", { class: "more-row", type: "button" }, [
+        icon(a.icon),
+        el("span", { class: "sb-label", text: a.label }),
+        n > 0 ? el("span", { class: "sb-meta", text: String(n) }) : null,
+      ]);
+      btn.addEventListener("click", () => {
+        closeMore({ keepFocus: true });
+        selectActivity(a);
+      });
+      return el("li", {}, [btn]);
+    });
+    $("more-sheet").replaceChildren(el("ul", { class: "more-list" }, items));
+  }
+
+  function openMore() {
+    S.moreOpen = true;
+    renderMore();
+    refs.wb.classList.add("is-more-open");
+    $("more-backdrop").hidden = false;
+    renderActivity();
+    const first = $("more-sheet").querySelector(".more-row");
+    if (first) first.focus();
+  }
+
+  /** opts.keepFocus は行を選んだとき（焦点は開いた先が決める） */
+  function closeMore(opts) {
+    if (!S.moreOpen) return;
+    S.moreOpen = false;
+    refs.wb.classList.remove("is-more-open");
+    $("more-backdrop").hidden = true;
+    renderActivity();
+    if (!(opts && opts.keepFocus)) {
+      const btn = refs.activity.querySelector(".act-more");
+      if (btn) btn.focus();
+    }
   }
 
   function selectActivity(a) {
@@ -969,6 +1050,7 @@
       }
     } else if (e.key === "Escape") {
       if (!$("palette-backdrop").hidden) closePalette();
+      else if (S.moreOpen) closeMore();
       else if (S.drawerOpen) closeDrawer();
     }
   }
@@ -1057,6 +1139,7 @@
     $("command-center").addEventListener("click", () => palette(""));
     $("theme-toggle").addEventListener("click", toggleTheme);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
+    $("more-backdrop").addEventListener("click", () => closeMore());
     document.addEventListener("keydown", onKey);
     window.addEventListener("hashchange", () => {
       const tabId = tabFromHash(location.hash);
@@ -1069,9 +1152,14 @@
     bindCcStart();
 
     mqNarrow.addEventListener("change", () => {
+      closeMore({ keepFocus: true });
       S.drawerOpen = false;
       if (narrow()) S.panelOpen = false;
       renderAll();
+    });
+    mqPhone.addEventListener("change", () => {
+      closeMore({ keepFocus: true });
+      renderActivity();
     });
 
     renderAll();
