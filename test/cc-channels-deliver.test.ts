@@ -11,6 +11,7 @@ import {
   CC_MARK_UNCONFIRMED,
   CC_MARK_WAITING,
   CC_QUEUE_FULL_REPLY,
+  CC_CHANNEL_REOPENED_TEXT,
   CC_RESUME_PROMPT_TEXT,
   CC_RESUMING_REPLY,
   CC_UNCONFIRMED_REPLY,
@@ -299,20 +300,30 @@ test("発言: 足した人格の Bot で受けた・Bot・Webhook・オーナー
   assert.equal(s.sends.get(1)?.origin, "discord");
 });
 
-test("発言: resuming の間は「起動中です」で断り、ended のチャンネル（CC13）は積まない", async (t) => {
+test("発言: resuming の間は「起動中です」で断り、ended のチャンネル（CC13）は一覧に無ければ積まずに [起動して続ける]、一覧にあれば開き直して積む", async (t) => {
   const s = setup(t);
   assert.equal(s.store.setState("cc-1", "resuming"), true);
   const resuming = s.message("x");
   await s.channels.handleMessage(resuming);
   s.store.setState("cc-1", "ended");
+  // 一覧に無い
+  const listed = s.snapshot.sessions;
+  s.snapshot.sessions = listed.filter((view) => view.sessionId !== S1);
   await s.channels.handleMessage(s.message("x"));
   await s.settle();
   assert.equal(s.sends.get(1), undefined);
+  // 一覧にある（/cc close で閉じただけ）: 開き直して積む
+  s.snapshot.sessions = listed;
+  await s.channels.handleMessage(s.message("y"));
+  await s.settle();
+  assert.equal(s.store.get("cc-1")?.state, "open");
+  assert.equal(s.sends.get(1)?.text, "y");
   assert.deepEqual(
-    s.gateway.posts.map((post) => [post.message.text, post.message.replyToId]),
+    s.gateway.posts.slice(0, 3).map((post) => [post.message.text, post.message.replyToId]),
     [
       [CC_RESUMING_REPLY, resuming.id],
       [CC_RESUME_PROMPT_TEXT, "m-2"],
+      [CC_CHANNEL_REOPENED_TEXT, undefined],
     ],
   );
 });
