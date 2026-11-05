@@ -14,7 +14,7 @@
   // phone はスマホ（639px 以下）の置き場: primary は下タブ、more は「その他」のシート（docs/plan/web-ui-polish.md の NAV）。
   // Claude Code は会話の一覧の群（docs/plan/claude-code-channels.md §2）で、アクティビティには置かない。会話の数は未読 + 判断待ち
   const ACTIVITIES = [
-    { id: "chat", label: "会話", phone: "primary", icon: "message-square", enabled: always, count: () => store.unreadCount() + store.ccNeedsInputCount(), countLabel: "未読・判断待ち ", running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
+    { id: "chat", label: "会話", phone: "primary", icon: "message-square", enabled: always, count: () => store.unreadCount() + store.ccNeedsInputCount(), countLabel: chatCountLabel, running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
     { id: "tasks", label: "タスク", phone: "primary", icon: "square-check", enabled: always },
     { id: "reminders", label: "リマインド", phone: "primary", icon: "bell", enabled: always },
     { id: "knowledge", label: "ナレッジ・記憶", phone: "more", icon: "book", enabled: always },
@@ -26,6 +26,13 @@
     { id: "status", label: "状態", phone: "more", icon: "activity", tab: "status", bottom: true, enabled: always },
     { id: "settings", label: "設定", phone: "more", icon: "settings", tab: "settings", bottom: true, enabled: always },
   ];
+
+  /** 会話の数の語（未読だけ・判断待ちだけ・両方） */
+  function chatCountLabel() {
+    const unread = store.unreadCount() > 0;
+    const needs = store.ccNeedsInputCount() > 0;
+    return unread && needs ? "未読・判断待ち " : needs ? "判断待ち " : "未読 ";
+  }
 
   /** 今出すアクティビティ。/api/status を読む前は enabled を見ずに段の印だけで決める */
   function visibleActivities() {
@@ -61,11 +68,11 @@
     return el("li", {}, [btn]);
   }
 
-  /** opts.count は見出しの数（既定は行の数）、opts.before・opts.after は行の前・後に置く要素（群を閉じると隠れる） */
+  /** opts.count は見出しの数（既定は行の数）、opts.title は見出しの title、opts.before・opts.after は行の前・後に置く要素（群を閉じると隠れる） */
   function group(key, title, items, extras, emptyText, opts) {
     const o = opts || {};
     const details = el("details", { class: "sb-group", open: ui.groups[key] !== false }, [
-      el("summary", {}, [
+      el("summary", { title: o.title || null }, [
         icon("chevron-right", "sb-chevron"),
         el("span", { text: title }),
         el("span", { class: "sb-count", text: String(o.count !== undefined ? o.count : items.length) }),
@@ -126,7 +133,7 @@
     watchCc();
     if (store.channels === null) {
       store.load.channels();
-      body.replaceChildren(group("entrances", "入口", [], null, "読み込んでいます…"));
+      body.replaceChildren(group("entrances", "入口", [], null, "読み込んでいます…"), ...ccGroup(""));
       return;
     }
     if (!store.channels.guilds.some((g) => g.setUp)) {
@@ -275,9 +282,9 @@
     ]);
   }
 
-  /** 会話の一覧を出している間: polling を始め直し、止まっていた間に古くなっていれば読み直す（読めなくても ccAt は進む） */
+  /** 会話の一覧を出している間: polling を始め直し、止まっていた間に古くなっていれば読み直す（読めなくても ccAt は進む）。出していなければ読まない */
   function watchCc() {
-    if (!store.ccEnabled()) return;
+    if (!store.ccEnabled() || !SA.app.sidebarShows("chat")) return;
     SA.poll.kickCc();
     if (store.ccAt === 0 || Date.now() - store.ccAt > CC_FRESH_MS) store.load.cc(store.cc === null ? undefined : { quiet: true });
   }
@@ -294,9 +301,9 @@
     // 見出しの数は判断待ちの数（0 なら全体の数）
     const needs = sessions.filter((s) => s.state === "needs_input").length;
     const note = store.cc.unreadable ? "一覧を読めませんでした。" : store.cc.stale ? "一覧を読めませんでした。前に読めた一覧です。" : null;
-    // 一覧を最後に読めた時刻（サーバーの読み取り）
+    // 一覧を最後に読めた時刻（サーバーの読み取り）は見出しの title に
     const fetched = store.cc.fetchedAt ? "一覧は " + SA.views.secondsAgo(store.cc.fetchedAt) + "のもの" + (store.ccFailed ? "（今は読めません）" : "") : null;
-    // この機械の tmux に新しいセッションを起動する（起動のダイアログ）。会話の「新しいセッション」と語を分ける（GUIDELINES §7）
+    // この機械の tmux に新しいセッションを起動する（起動のダイアログ）。会話の「新しいセッション」と同じ形で群の外に置き、語を分ける（GUIDELINES §7）
     const startBtn = el("button", { class: "btn btn-secondary btn-sm sb-new", type: "button" }, [icon("plus"), "Claude Code を起動"]);
     startBtn.addEventListener("click", () => {
       SA.app.closeDrawer();
@@ -305,9 +312,10 @@
     return [
       group("cc", "Claude Code", items, null, null, {
         count: needs > 0 ? needs : items.length,
+        title: fetched,
         before: note ? [el("p", { class: "sb-hint", text: note })] : [],
-        after: [...(fetched ? [el("p", { class: "sb-hint", text: fetched })] : []), el("div", { class: "sb-new-row" }, [startBtn])],
       }),
+      el("div", { class: "sb-new-row" }, [startBtn]),
     ];
   }
 
@@ -411,8 +419,13 @@
       container.replaceChildren();
       return;
     }
-    // 描き直しても同じ要素を使うもの（ナレッジの検索欄）にフォーカスがあれば、描き直した後に戻す
+    // 描き直しても同じ要素を使うもの（ナレッジの検索欄）にフォーカスがあれば、描き直した後に戻す。
+    // 作り直す入力欄（会話の絞り込み）は同じ aria-label の新しい欄に焦点と選択範囲を戻す
     const focused = document.activeElement;
+    const rebuilt =
+      focused && focused.tagName === "INPUT" && container.contains(focused) && focused.getAttribute("aria-label")
+        ? { label: focused.getAttribute("aria-label"), start: focused.selectionStart, end: focused.selectionEnd }
+        : null;
     const body = el("div", { class: "sb-body" });
     RENDER[id](body);
     container.replaceChildren(
@@ -420,6 +433,17 @@
       body,
     );
     if (focused && focused !== document.activeElement && container.contains(focused)) focused.focus();
+    else if (rebuilt) {
+      const input = [...container.querySelectorAll("input")].find((n) => n.getAttribute("aria-label") === rebuilt.label);
+      if (input) {
+        input.focus();
+        try {
+          input.setSelectionRange(rebuilt.start, rebuilt.end);
+        } catch {
+          // 選択範囲を持たない種類の欄なら焦点だけ
+        }
+      }
+    }
   }
 
   SA.sidebar = { ACTIVITIES, visibleActivities, phoneActivities, render };
