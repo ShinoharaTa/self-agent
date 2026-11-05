@@ -216,10 +216,11 @@ test("act: 一覧の cwd がリポジトリのディレクトリのセッショ�
   assert.ok(!env.submits[0]!.text.includes(TITLE_MARKER));
   const row = env.sends.get(result.kind === "queued" ? result.sendId : 0)!;
   assert.equal(row.notificationId, id);
-  assert.match(handoffResultText(result), /alpha-work に対応依頼を積みました/);
+  assert.match(handoffResultText(result), new RegExp(`alpha-work に対応依頼を積みました（本文 #${row.id}）`));
   // 同じ通知をもう一度押しても積まない
   const again = await env.handoff.act(id);
   assert.deepEqual(again, { kind: "already", sendId: row.id, state: "queued" });
+  assert.equal(handoffResultText(again), `この通知の対応依頼は届け待ちです（本文 #${row.id}）`);
   for (const line of env.logs) for (const secret of ["Alpha", "alpha", TITLE_MARKER, "github.com", S1]) assert.ok(!line.includes(secret), line);
 });
 

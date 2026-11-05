@@ -365,11 +365,11 @@ const STATE_TEXT: Partial<Record<CcSendState, string>> = {
 export function handoffResultText(result: GithubHandoffResult, escape: (text: string) => string = (text) => text): string {
   switch (result.kind) {
     case "queued":
-      return `Claude Code の ${escape(result.session)} に対応依頼を積みました（#${result.sendId}）。${STATE_TEXT[result.state] ?? ""}`;
+      return `Claude Code の ${escape(result.session)} に対応依頼を積みました（本文 #${result.sendId}）。${STATE_TEXT[result.state] ?? ""}`;
     case "already":
       return result.state === "delivered" || result.state === "unconfirmed"
-        ? `この通知の対応依頼は ${Math.round(GITHUB_HANDOFF_RECENT_MS / 60_000)} 分以内に貼っています（#${result.sendId}${result.state === "unconfirmed" ? "。届いたかは確かめられていません" : ""}）`
-        : `この通知の対応依頼は届け待ちです（#${result.sendId}）`;
+        ? `この通知の対応依頼は ${Math.round(GITHUB_HANDOFF_RECENT_MS / 60_000)} 分以内に貼っています（本文 #${result.sendId}${result.state === "unconfirmed" ? "。届いたかは確かめられていません" : ""}）`
+        : `この通知の対応依頼は届け待ちです（本文 #${result.sendId}）`;
     case "ambiguous":
       return `送り先が複数あり、どれも入力待ちでないか決められないため送っていません: ${result.sessions.map(escape).join("、")}。Web の Claude Code から選んで送ってください`;
     case "no_session":
@@ -379,7 +379,7 @@ export function handoffResultText(result: GithubHandoffResult, escape: (text: st
     case "not_local":
       return `${escape(result.repo)} は ~/workspace にありません（送り先を決められません）`;
     case "started":
-      return `~/workspace/${escape(result.dir)} で新しいセッション（${escape(result.tmuxSession)}）を起動しました。入力待ちになったら対応依頼を届けます${result.sendId === undefined ? "" : `（#${result.sendId}）`}`;
+      return `~/workspace/${escape(result.dir)} で新しいセッション（${escape(result.tmuxSession)}）を起動しました。入力待ちになったら対応依頼を届けます${result.sendId === undefined ? "" : `（本文 #${result.sendId}）`}`;
     case "start_failed":
       return START_FAILURE_TEXT[result.reason];
     case "failed":
