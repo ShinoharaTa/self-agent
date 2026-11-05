@@ -114,7 +114,7 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
   const notifierTimers = fakeTimers();
   if (opts.notify !== false) {
     notifier = new CcDiscordNotifier({
-      cfg: { allowedGuildIds: ["guild-0", GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: opts.holdSec ?? 300 },
+      cfg: { allowedGuildIds: ["guild-0", GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: opts.holdSec ?? 300, ccQuestionHoldSec: 900 },
       guildSettings,
       notify: createSystemNotifier({ guildSettings, gateway, log }),
       gateway,

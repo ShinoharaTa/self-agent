@@ -1,6 +1,7 @@
 // Claude Code のボタン（名前空間 `cc:`。docs/plan/claude-code-sessions.md §5.2）。custom_id は `cc:<種類>:<操作>:<id>` で、2 つ目の語で振り分ける。
 // 許可の要求の `cc:perm:allow|always|deny:<id>`（CC5c）と、SDK のツール cc_send・cc_start の確認の `cc:send:<id>`・`cc:start:<id>`・
 // `cc:keep:send|start:<id>`（CC7。処理は commands/cc-confirm.ts）、返事の投稿の [追いかけをやめる] の `cc:unfollow:<cc_replies の id>`（CC8。cc/replies.ts）。
+// 質問（AskUserQuestion）の `cc:q:pick|other|text|sel|ok|drop:…`（ボタン・セレクト・モーダル。docs/plan/claude-code-questions.md §3.2。Q2。処理は commands/cc-question.ts）。
 // 許可の要求は Web と同じ permission-hold.ts の answer を通す（先に押した方が勝つ）。決めたら #system か Claude Code のチャンネル（CC12）の 1 通を応答で書き換えてボタンを外し
 // （応答に失敗したら、その 1 通を gateway で書き換えて代える）、古ければ（Web・端末・RC で先に答えられた・時間切れ・停止・SELF_AGENT_CC が無効）
 // 本人にだけ「この操作は古くなっています」。
@@ -35,6 +36,7 @@ import type { GuildSettingsStore } from "../../store/guild-settings.ts";
 import type { CommandHandler, ComponentHandler } from "../interactions.ts";
 import { clip } from "./tasks.ts";
 import { type CcConfirmButtons, type CcConfirmDeps, createCcConfirmButtons } from "./cc-confirm.ts";
+import { type CcQuestionButtons, handleQuestion } from "./cc-question.ts";
 import { STALE_TURN_REPLY } from "./turn-controls.ts";
 
 const NAMESPACE = "cc";
@@ -184,6 +186,8 @@ export type CcPermissionButtons = {
    * 待たない・投げない
    */
   answered?(id: number, guildId: string | null): void;
+  /** 質問（AskUserQuestion）の `cc:q:*`（docs/plan/claude-code-questions.md §3.2。Q2。commands/cc-question.ts）。無ければ押されても古い扱い */
+  questions?: CcQuestionButtons;
 };
 
 /**
@@ -382,6 +386,11 @@ export function createCcComponent(deps: CcComponentDeps): ComponentHandler {
         }
         deps.log(`Claude Code: [追いかけをやめる] で追いかけをやめました（返事 #${id}）`);
         await responder.update({ text: unfollowedText(interaction.messageText), components: [], suppressEmbeds: true });
+        return;
+      }
+      // 質問（Q2）: cc:q:pick|other|text|sel|ok|drop:…（ボタン・セレクト・モーダル）
+      if (kind === "q") {
+        await handleQuestion(parts, interaction, responder, deps.ccPermissionButtons?.(), deps);
         return;
       }
       if (kind !== "perm") throw new Error(`cc の不明な操作です（${interaction.kind} ${kind ?? ""}）`);

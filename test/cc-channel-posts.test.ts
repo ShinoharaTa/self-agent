@@ -16,6 +16,7 @@ import { ccEndedHandler } from "../src/cc/channels.ts";
 import { CC_WAIT_CHECK_MS, CC_WAIT_NOTIFY_LIMIT, CC_WAIT_NOTIFY_MS, CcDiscordNotifier, CcWaitBudget } from "../src/cc/discord-notice.ts";
 import { type CcHookEvent, parseHookEvent } from "../src/cc/hook-server.ts";
 import { CcPermissionHold, type CcPermissionListener, decisionBody } from "../src/cc/permission-hold.ts";
+import { CcQuestionFlow } from "../src/cc/question-flow.ts";
 import { CcRegistry, type CcTimers } from "../src/cc/registry.ts";
 import type { Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
@@ -133,7 +134,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   const waitBudget = new CcWaitBudget();
   const postsTimers = fakeTimers();
   posts = new CcChannelPosts({
-    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300 },
+    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
     channels,
     gateway,
     permissions: store,
@@ -152,7 +153,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   const notifierTimers = fakeTimers();
   if (opts.notify !== false) {
     notifier = new CcDiscordNotifier({
-      cfg: { allowedGuildIds: [GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300 },
+      cfg: { allowedGuildIds: [GUILD], ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
       guildSettings,
       notify: createSystemNotifier({ guildSettings, gateway, log }),
       gateway,
@@ -177,6 +178,12 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     answered: (id, guildId) => {
       answered.push({ id, guildId });
     },
+    questions: {
+      flow: new CcQuestionFlow(),
+      pendingQuestion: (id) => posts.pendingQuestion(id),
+      answerQuestion: (id, requestHash, picks) => hold.answerQuestion(id, requestHash, picks, "discord"),
+      stepMessage: (id, picks) => posts.questionStepMessage(id, picks),
+    },
   };
   const component = createCcComponent({ ccPermissionButtons: () => buttons, gateway, log });
   const idle = async (): Promise<void> => {
@@ -194,6 +201,31 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     const reply = hold.request(event, new AbortController().signal);
     await idle();
     return { reply, id: store.pendingFor(sessionId)?.id ?? Number(db.prepare("SELECT MAX(id) AS id FROM cc_permissions").get()?.id) };
+  };
+  /** AskUserQuestion の PermissionRequest（受け口と同じく読む） */
+  const askQuestion = async (sessionId: string, toolInput: Record<string, unknown>) => {
+    const event = parseHookEvent(
+      { hook_event_name: "PermissionRequest", session_id: sessionId, cwd: SECRET_CWD, permission_mode: "default", tool_name: "AskUserQuestion", tool_input: toolInput },
+      now(),
+      { workspaceDir: WORKSPACE, home: HOME },
+    )!;
+    registry.receive(event);
+    const reply = hold.request(event, new AbortController().signal);
+    await idle();
+    return { reply, id: store.pendingFor(sessionId)?.id ?? Number(db.prepare("SELECT MAX(id) AS id FROM cc_permissions").get()?.id) };
+  };
+  /** ボタン・セレクト・モーダルの操作（押されたメッセージは message-1） */
+  const interact = async (
+    interaction:
+      | { kind: "button"; customId: string }
+      | { kind: "select"; customId: string; values: string[] }
+      | { kind: "modal"; customId: string; fields: Record<string, string> },
+    channelId = CHANNEL,
+  ): Promise<FakeResponder> => {
+    const responder = new FakeResponder();
+    const full = { ...interaction, guildId: GUILD, channelId, userId: OWNER, createdAt: now(), messageId: "message-1" } as Interaction;
+    await component.handle(full as Exclude<Interaction, { kind: "command" }>, responder);
+    return responder;
   };
   /** hook の本文を受け口と同じく読んで registry と保留に渡す */
   const hookBody = async (body: Record<string, unknown>): Promise<void> => {
@@ -238,6 +270,8 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     answered,
     idle,
     ask,
+    askQuestion,
+    interact,
     hook,
     hookBody,
     press,
@@ -677,4 +711,201 @@ test("Web の会話（CC14）: 判断待ちはチャンネルに出せたとき�
   await s.tickWaiting();
   assert.ok(s.logs.some((line) => line.includes("判断待ちをチャンネルに知らせられませんでした")));
   assert.equal(s.history.list(CHANNEL, { limit: 10 }).length, 0);
+});
+
+// ---- Q2: 質問（AskUserQuestion）に Discord の選択肢で答える（docs/plan/claude-code-questions.md §3） ----
+
+const Q_COLOR = { question: "色は？", header: "Color", options: [{ label: "red", description: "赤" }, { label: "blue" }], multiSelect: false };
+const Q_TAGS = {
+  question: "どれを付けますか？",
+  header: "Tags",
+  options: [{ label: "a" }, { label: "b" }, { label: "c" }],
+  multiSelect: true,
+};
+
+function decisionOf(body: string | undefined): Record<string, unknown> {
+  assert.ok(body !== undefined);
+  return (JSON.parse(body) as { hookSpecificOutput: { decision: Record<string, unknown> } }).hookSpecificOutput.decision;
+}
+
+function updateOf(responder: FakeResponder): OutgoingMessage {
+  const update = responder.calls.find((call) => call.method === "update");
+  assert.ok(update?.method === "update", JSON.stringify(responder.calls));
+  return update.message;
+}
+
+test("Q2: 1 問・1 つ選ぶ質問はチャンネルに選択肢のボタンの 1 通。押すとすぐ答えが返り、答えの行に書き換える", async (t) => {
+  const s = await setup(t);
+  const asked = await s.askQuestion(S1, { questions: [Q_COLOR] });
+  assert.equal(s.gateway.posts.length, 1);
+  const post = s.gateway.posts[0]!;
+  assert.equal(post.channelId, CHANNEL);
+  assert.equal(post.message.mentionUserId, OWNER);
+  assert.deepEqual(buttonIds(post.message), [
+    [`cc:q:pick:${asked.id}:0:0`, `cc:q:pick:${asked.id}:0:1`, `cc:q:other:${asked.id}:0`],
+    [`cc:q:drop:${asked.id}`],
+    [`https://claude.ai/code/${BRIDGE}`],
+  ]);
+  assert.ok(post.message.text.startsWith("Claude Code が質問しています（1 問）: secret\\-name（secret\\-dir・default）\n質問 1/1「Color」\n色は？\n1. red — 赤\n2. blue\n"), post.message.text);
+  assert.ok(post.message.text.endsWith("（ボタンは 15 分効きます）"), post.message.text);
+
+  const responder = await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:1` });
+  const decision = decisionOf(await asked.reply);
+  assert.equal(decision.behavior, "allow");
+  assert.deepEqual((decision.updatedInput as { answers: unknown }).answers, { "色は？": "blue" });
+  const row = s.store.get(asked.id)!;
+  assert.equal(row.state, "allowed");
+  assert.equal(row.via, "discord");
+  const message = updateOf(responder);
+  assert.ok(message.text.endsWith("\n答えました（Discord）:\n1. 「Color」blue"), message.text);
+  assert.deepEqual(message.components, RC_ROW);
+  await s.idle();
+  assert.equal(s.gateway.edits.length, 0);
+  assert.deepEqual(s.answered, [{ id: asked.id, guildId: GUILD }]);
+  assert.ok(s.logs.includes(`Claude Code: 質問（#${asked.id}）→ allowed（discord）`));
+  // 2 回目は古い
+  const again = await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:0` });
+  assert.deepEqual(again.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
+  assertNoSecrets(s.logs);
+});
+
+test("Q2: 2 問は 1 通目 → 次の問に書き換え → 複数選択はセレクト + [決める]。選ばずに [決める] は本人にだけ", async (t) => {
+  const s = await setup(t);
+  const asked = await s.askQuestion(S1, { questions: [Q_COLOR, Q_TAGS] });
+  const first = await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:0` });
+  const step = updateOf(first);
+  assert.ok(step.text.includes("\n答え済み:\n1. 「Color」red\n質問 2/2「Tags」\nどれを付けますか？\n"), step.text);
+  assert.ok(step.text.includes("（いくつでも選べます。選んでから [決める] を押してください）"));
+  assert.equal(step.mentionUserId, undefined);
+  const select = step.components?.[0];
+  assert.ok(select?.kind === "select");
+  assert.equal(select.select.customId, `cc:q:sel:${asked.id}:1`);
+  assert.equal(select.select.maxValues, 3);
+  assert.deepEqual(buttonIds(step).slice(1), [[`cc:q:ok:${asked.id}:1`, `cc:q:other:${asked.id}:1`, `cc:q:drop:${asked.id}`], [`https://claude.ai/code/${BRIDGE}`]]);
+  assert.equal(s.store.get(asked.id)?.state, "pending");
+  // 前の問のボタン（古い 1 通）は古い
+  const old = await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:1` });
+  assert.deepEqual(old.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
+
+  const empty = await s.interact({ kind: "button", customId: `cc:q:ok:${asked.id}:1` });
+  assert.deepEqual(empty.replies, [{ text: "選んでから [決める] を押してください", ephemeral: true }]);
+  const selected = await s.interact({ kind: "select", customId: `cc:q:sel:${asked.id}:1`, values: ["2", "0"] });
+  assert.deepEqual(selected.calls, [{ method: "deferUpdate" }]);
+  assert.equal(s.store.get(asked.id)?.state, "pending");
+  const ok = await s.interact({ kind: "button", customId: `cc:q:ok:${asked.id}:1` });
+  const decision = decisionOf(await asked.reply);
+  assert.deepEqual((decision.updatedInput as { answers: unknown }).answers, { "色は？": "red", "どれを付けますか？": "a, c" });
+  assert.ok(updateOf(ok).text.endsWith("\n答えました（Discord）:\n1. 「Color」red\n2. 「Tags」a, c"));
+});
+
+test("Q2: [その他] はモーダルを開き、送った文字列が答えになる。空は本人にだけ断る", async (t) => {
+  const s = await setup(t);
+  const asked = await s.askQuestion(S1, { questions: [Q_COLOR] });
+  const other = await s.interact({ kind: "button", customId: `cc:q:other:${asked.id}:0` });
+  assert.equal(other.calls.length, 1);
+  const call = other.calls[0]!;
+  assert.ok(call.method === "showModal");
+  assert.equal(call.modal.customId, `cc:q:text:${asked.id}:0`);
+  assert.equal(call.modal.title, "その他（Color）");
+  assert.deepEqual(
+    call.modal.fields.map((field) => [field.customId, field.style, field.maxLength, field.required]),
+    [["text", "paragraph", 1000, true]],
+  );
+  const blank = await s.interact({ kind: "modal", customId: `cc:q:text:${asked.id}:0`, fields: { text: "   " } });
+  assert.deepEqual(blank.replies, [{ text: "「その他」は 1〜1,000 字で書いてください", ephemeral: true }]);
+  assert.equal(s.store.get(asked.id)?.state, "pending");
+  const sent = await s.interact({ kind: "modal", customId: `cc:q:text:${asked.id}:0`, fields: { text: "  緑\tがいい  " } });
+  const decision = decisionOf(await asked.reply);
+  assert.deepEqual((decision.updatedInput as { answers: unknown }).answers, { "色は？": "緑 がいい" });
+  assert.ok(updateOf(sent).text.endsWith("\n答えました（Discord）:\n1. 「Color」緑 がいい"));
+  // ログに答えは出さない
+  assert.ok(s.logs.every((line) => !line.includes("緑")));
+});
+
+test("Q2: [やめる] は deny（message は「断りました」）で「答えませんでした（Discord）」。途中の答えは捨てる", async (t) => {
+  const s = await setup(t);
+  const asked = await s.askQuestion(S1, { questions: [Q_COLOR, Q_TAGS] });
+  await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:0` });
+  const responder = await s.interact({ kind: "button", customId: `cc:q:drop:${asked.id}` });
+  assert.equal(await asked.reply, decisionBody("deny", { question: true }));
+  assert.equal(s.store.get(asked.id)?.state, "denied");
+  const message = updateOf(responder);
+  assert.ok(message.text.endsWith("\n答えませんでした（Discord）"), message.text);
+  assert.deepEqual(message.components, RC_ROW);
+  assert.deepEqual(s.answered, [{ id: asked.id, guildId: GUILD }]);
+  const again = await s.interact({ kind: "button", customId: `cc:q:drop:${asked.id}` });
+  assert.deepEqual(again.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
+});
+
+test("Q2: Web で先に答えられた・時間切れは 1 通を書き換え、その後のボタンは古い。Web の会話に質問と答えを書く", async (t) => {
+  const s = await setup(t);
+  const asked = await s.askQuestion(S1, { questions: [Q_COLOR] });
+  const hash = s.store.get(asked.id)!.requestHash;
+  assert.deepEqual(s.hold.answerQuestion(asked.id, hash, [{ labels: ["red"] }], "web"), { ok: true, state: "allowed" });
+  await s.idle();
+  assert.equal(s.gateway.edits.length, 1);
+  assert.ok(s.gateway.edits[0]!.message.text.endsWith("\n答えました（Web）:\n1. 「Color」red"));
+  assert.deepEqual(s.gateway.edits[0]!.message.components, RC_ROW);
+  const late = await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:1` });
+  assert.deepEqual(late.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
+
+  const expired = await s.askQuestion(S1, { questions: [{ ...Q_COLOR, question: "形は？", header: "" }] });
+  // 質問の保留は 900 秒
+  const timer = s.holdTimers.entries.at(-1)!;
+  assert.equal(timer.ms, 900_000);
+  timer.fn();
+  await s.idle();
+  assert.equal(await expired.reply, undefined);
+  assert.ok(s.gateway.edits.at(-1)!.message.text.endsWith(`\n時間切れ。端末か RC で答えてください <https://claude.ai/code/${BRIDGE}>`));
+  assert.deepEqual(
+    s.history.list(CHANNEL, { limit: 10 }).map((row) => row.text),
+    ["質問: 「Color」色は？（1 問）", "質問の答え: 答えました（Web）:\n1. 「Color」red", "質問: 形は？（1 問）", "質問の答え: 時間切れ。端末か RC で答えてください"],
+  );
+});
+
+test("Q2: チャンネルの無いセッションの質問は #system に同じ 1 通。読めない形の AskUserQuestion は許可の 1 通に注記", async (t) => {
+  const s = await setup(t, { channel: false });
+  const asked = await s.askQuestion(S1, { questions: [Q_COLOR] });
+  const post = s.gateway.posts.at(-1)!;
+  assert.equal(post.channelId, SYSTEM);
+  assert.equal(buttonIds(post.message)[0]![0], `cc:q:pick:${asked.id}:0:0`);
+  const responder = await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:0` }, SYSTEM);
+  assert.ok(updateOf(responder).text.endsWith("\n答えました（Discord）:\n1. 「Color」red"));
+
+  const unreadable = await s.askQuestion(S2, { questions: [{ question: "x", options: [{ label: "only" }] }] });
+  const plainPost = s.gateway.posts.at(-1)!;
+  assert.equal(s.store.get(unreadable.id)?.questionInput, null);
+  assert.deepEqual(buttonIds(plainPost.message)[0], [`cc:perm:allow:${unreadable.id}`, `cc:perm:deny:${unreadable.id}`]);
+  assert.ok(plainPost.message.text.includes("\n質問の形を読めませんでした。端末か RC で答えてください\n"), plainPost.message.text);
+});
+
+test("Q2: SELF_AGENT_CC が無効（ボタンの口が無い）・質問でない行・形の違う custom_id", async (t) => {
+  const s = await setup(t);
+  const permission = await s.ask(S1);
+  const notQuestion = await s.interact({ kind: "button", customId: `cc:q:pick:${permission.id}:0:0` });
+  assert.deepEqual(notQuestion.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
+  const asked = await s.askQuestion(S2, { questions: [Q_COLOR] });
+  await assert.rejects(s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0` }));
+  await assert.rejects(s.interact({ kind: "select", customId: `cc:q:pick:${asked.id}:0:0`, values: ["0"] }));
+  await assert.rejects(s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:x:0` }));
+  await assert.rejects(s.interact({ kind: "button", customId: `cc:q:nope:${asked.id}:0` }));
+  // 選択肢の添字が範囲外は古い
+  const outOfRange = await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:5` });
+  assert.deepEqual(outOfRange.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
+  // 1 つ選ぶ問のセレクトに 2 つは例外
+  await assert.rejects(s.interact({ kind: "select", customId: `cc:q:sel:${asked.id}:0`, values: ["0", "1"] }));
+  // 範囲外のセレクトの値も例外
+  await assert.rejects(s.interact({ kind: "select", customId: `cc:q:sel:${asked.id}:0`, values: ["9"] }));
+  // 質問の行に [許可] は効かない（Q1）
+  const allow = await s.press(`cc:perm:allow:${asked.id}`);
+  assert.deepEqual(allow.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
+
+  const off = createCcComponent({ gateway: s.gateway, log: () => {} });
+  const responder = new FakeResponder();
+  await off.handle(
+    { kind: "button", customId: `cc:q:pick:${asked.id}:0:0`, guildId: GUILD, channelId: CHANNEL, userId: OWNER, createdAt: new Date(BASE) },
+    responder,
+  );
+  assert.deepEqual(responder.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
+  assert.equal(s.store.get(asked.id)?.state, "pending");
 });
