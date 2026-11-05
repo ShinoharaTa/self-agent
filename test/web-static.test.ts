@@ -985,7 +985,7 @@ test("web static: 視認性（UI-9。#252）: 刻む数字は本文の色と tab
   assert.match(phone, /\n {2}\.sb-row \{\n {4}padding-left: var\(--space-4\);/);
   assert.match(phone, /\n {2}\.segmented-sm > button \{\n {4}min-height: var\(--row\);\n {4}border-radius: var\(--radius-md\);\n {4}font-size: var\(--font-sm\);/);
   assert.match(phone, /\n {2}\.sb-text \{\n {4}line-height: var\(--leading-tight\);/);
-  assert.match(phone, /\n {2}\.msg-agent > \.avatar \{\n {4}display: none;/);
+  assert.match(phone, /\n {2}\.msg-bubble \{\n {4}max-width: 85%;/);
   assert.match(phone, /:root\[data-theme="dark"\] \.composer \{\n {4}background: var\(--muted\);/);
   assert.match(phone, /\n {2}\.cc-permission \.card-head h2 \{\n {4}font-size: var\(--font-base\);/);
   assert.match(phone, /\n {2}\.cc-permission \.msg-actions \{\n {4}display: grid;\n {4}grid-template-columns: 1fr 1fr;/);
@@ -1056,4 +1056,37 @@ test("web static: ≤639px はタスク・リマインド・使用量の表を�
   assert.match(phone, /\.master-detail-phone > \.master,/);
   assert.match(rule(".kv-env > .kv"), /flex-direction: column;/);
   assert.doesNotMatch(css, /data-label|td-more/);
+});
+
+test("web static: 会話の行は吹き出し（#263）: オーナーは右・Bot は左、地の色は 4 つの色のブロックにあり、アバターは無い", () => {
+  const css = read("app.css");
+  const rule = (sel: string): string => {
+    const at = css.indexOf("\n" + sel + " {");
+    assert.ok(at >= 0, sel);
+    return css.slice(at, css.indexOf("}", at));
+  };
+  assert.match(rule(".msg"), /align-items: flex-start;/);
+  assert.match(rule(".msg-owner"), /align-items: flex-end;/);
+  assert.match(rule(".msg-owner > .msg-bubble"), /background: var\(--bubble-owner\);/);
+  assert.match(rule(".msg-agent > .msg-bubble"), /background: var\(--bubble-agent\);/);
+  assert.match(rule(".msg-bubble"), /max-width: 75%;/);
+  assert.match(rule(".msg-text"), /user-select: text;/);
+  assert.match(rule(".tl"), /gap: var\(--space-3\);/);
+  // 色の 4 ブロック（dark・light・data-theme なし・その dark）のそれぞれに吹き出しの地
+  const blocks = [
+    /:root\[data-theme="dark"\] \{[^}]*--bubble-owner: #[0-9a-f]{6};[^}]*\}/,
+    /:root\[data-theme="light"\] \{[^}]*--bubble-owner: #[0-9a-f]{6};[^}]*\}/,
+    /\n:root:not\(\[data-theme\]\) \{[^}]*--bubble-owner: #[0-9a-f]{6};[^}]*\}/,
+    /@media \(prefers-color-scheme: dark\) \{\n {2}:root:not\(\[data-theme\]\) \{[^}]*--bubble-owner: #[0-9a-f]{6};[^}]*\}/,
+  ];
+  for (const re of blocks) assert.match(css, re);
+  assert.equal(css.match(/--bubble-owner: #/g)?.length, 4);
+  assert.equal(css.match(/--bubble-agent: #/g)?.length, 4);
+  assert.doesNotMatch(css, /avatar/);
+  const chat = read("chat.js");
+  assert.doesNotMatch(chat, /avatar/);
+  assert.match(chat, /bubbleRow\("owner", null,/);
+  // Bot の名前は人格が 2 体以上か Claude Code のチャンネルのときだけ
+  assert.match(chat, /function showsAgentName\(ch\) \{\n {4}return !!\(ch && ch\.kind === "cc"\) \|\| !!\(store\.channels && store\.channels\.personas\.length > 1\);/);
+  assert.match(css, /\n\.tl-notice \{(?![^}]*padding-left)[^}]*\}/);
 });

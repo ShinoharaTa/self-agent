@@ -442,8 +442,18 @@
   }
 
   // ===== 描画 =====
-  function avatar(letter, cls) {
-    return el("span", { class: "avatar " + (cls || ""), "aria-hidden": "true", text: letter });
+  /** Bot の名前を吹き出しの上に出すか（人格が 2 体以上のときと Claude Code のチャンネル。オーナーの名前は出さない） */
+  function showsAgentName(ch) {
+    return !!(ch && ch.kind === "cc") || !!(store.channels && store.channels.personas.length > 1);
+  }
+
+  /** 吹き出しの 1 行（msg-owner は右・msg-agent は左）。name は吹き出しの上、time は吹き出しの下 */
+  function bubbleRow(side, name, bubbleChildren, time, attrs) {
+    return el("article", Object.assign({ class: "msg msg-" + side }, attrs || {}), [
+      name ? el("span", { class: "msg-name", text: name }) : null,
+      el("div", { class: "msg-bubble" }, bubbleChildren),
+      time,
+    ]);
   }
 
   /** 時刻。Discord の発言があればそこへのリンク */
@@ -477,26 +487,14 @@
       return el("div", { class: "tl-notice" }, [icon("info"), el("span", { text: turn.text }), timeOf(turn)]);
     }
     if (turn.kind === "owner") {
-      return el("article", { class: "msg msg-owner" }, [
-        avatar("オ", "avatar-owner"),
-        el("div", { class: "msg-body" }, [
-          el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: "オーナー" }), timeOf(turn)]),
-          el("div", { class: "msg-text", text: turn.text }),
-        ]),
-      ]);
+      return bubbleRow("owner", null, [el("div", { class: "msg-text", text: turn.text })], timeOf(turn));
     }
     // agent。Claude Code のチャンネルの返事は名前を Claude Code にし、手順は出さない（記録が無い）
     if (ch && ch.kind === "cc") {
-      return el("article", { class: "msg msg-agent" }, [
-        avatar("C", "avatar-agent"),
-        el("div", { class: "msg-body" }, [
-          el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: "Claude Code" }), timeOf(turn)]),
-          el("div", { class: "msg-text msg-md" }, [renderText(turn.text)]),
-        ]),
-      ]);
+      return bubbleRow("agent", "Claude Code", [el("div", { class: "msg-text msg-md" }, [renderText(turn.text)])], timeOf(turn));
     }
     const p = persona(turn.persona);
-    const body = el("div", { class: "msg-body" }, [el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: p.name }), timeOf(turn)])]);
+    const body = [];
     if (turn.outcome) {
       const opened = openStepsOf(channelId);
       const details = el("details", { class: "steps", open: opened.has(turn.id) }, [
@@ -511,11 +509,11 @@
         if (details.open) opened.add(turn.id);
         else opened.delete(turn.id);
       });
-      body.append(details);
+      body.push(details);
     }
     // 返事の本文は最小限の Markdown（ui.js の renderText。リンクは http(s) の URL だけ）
-    body.append(el("div", { class: "msg-text msg-md" }, [renderText(turn.text)]));
-    return el("article", { class: "msg msg-agent" }, [avatar(Array.from(p.name || "?")[0], "avatar-agent"), body]);
+    body.push(el("div", { class: "msg-text msg-md" }, [renderText(turn.text)]));
+    return bubbleRow("agent", showsAgentName(ch) ? p.name : null, body, timeOf(turn));
   }
 
   /** 実行中の行の手順を閉じたチャンネル（描き直しで開き直さない。既定は開く。このタブのメモリだけ） */
@@ -535,16 +533,14 @@
       if (details.open) stepsClosed.delete(run.channelId);
       else stepsClosed.add(run.channelId);
     });
-    const body = el("div", { class: "msg-body" }, [
-      el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: p.name }), el("span", { class: "badge badge-accent", text: "実行中" })]),
-      details,
-    ]);
+    // 「作業中…」の手順と [中断] は Bot 側の吹き出しの中（実行中であることはスピナーと「作業中…」で分かる）
+    const body = [details];
     if (run.abortable) {
       const abort = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, [icon("square"), "中断"]);
       abort.addEventListener("click", () => abortTurn(run.channelId, run.turnSeq, abort));
-      body.append(el("div", { class: "msg-actions" }, [abort]));
+      body.push(el("div", { class: "msg-actions" }, [abort]));
     }
-    return el("article", { class: "msg msg-agent is-running", "aria-busy": "true" }, [avatar(Array.from(p.name || "?")[0], "avatar-agent"), body]);
+    return bubbleRow("agent", showsAgentName(ch) ? p.name : null, body, null, { class: "msg msg-agent is-running", "aria-busy": "true" });
   }
 
   /** [中断]。button は押したもの（[もう一度] からは null） */
@@ -818,8 +814,8 @@
       const node = renderTurn(turn, channelId, ch);
       // 手順の上限で止まった最後の返事には [続ける]（セッションで、実行中のターンが無いとき）
       if (turn === last && turn.kind === "agent" && turn.outcome === "max_turns" && ch && ch.kind === "session" && !run && !continued.has(turn.id)) {
-        const body = node.querySelector(".msg-body");
-        if (body) body.append(continueButton(channelId, turn));
+        // 吹き出しの下に左寄せ
+        node.append(continueButton(channelId, turn));
       }
       timeline.append(node);
     }

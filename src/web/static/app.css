@@ -18,7 +18,6 @@
   --bottomnav-h: 56px;
   --icon-sm: 16px;
   --dot: 8px;
-  --avatar: 28px;
   --tab-max: 200px;
   --cmd-max: 520px;
   --timeline-max: 840px;
@@ -60,7 +59,9 @@
 /*
  * テーマの切り替え。既定は data-theme="dark"。設定で「OS に合わせる」を選ぶと data-theme を外し、prefers-color-scheme で選ぶ。
  * 値は docs/design/WEB-UI-GUIDELINES.md §2.1 の決まり（夜勤の計器盤）で、base.css の同名の変数を上書きする（base.css は変えない）。
- * --text-secondary（二次の文字）は app.css だけの変数。data-theme が無いときも base.css の既定に落ちないよう、同じ値を 4 か所に書く
+ * --text-secondary（二次の文字）は app.css だけの変数。data-theme が無いときも base.css の既定に落ちないよう、同じ値を 4 か所に書く。
+ * --bubble-*（会話の吹き出し。#263）も app.css だけの変数: owner はオーナーの地（ダーク 20%・ライト 15% の --accent を --bg に混ぜた色）、
+ * agent は Bot の地（ライトは --surface、ダークは --surface が --bg と見分けにくいので --muted）、inset は Bot の吹き出しの中の手順・コードの地
  */
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -79,6 +80,9 @@
   --warning: #f2b544;
   --backdrop: rgb(0 0 0 / 0.7);
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --bubble-owner: #1e2943;
+  --bubble-agent: #1a1e28;
+  --bubble-inset: #11141c;
 }
 
 :root[data-theme="light"] {
@@ -98,6 +102,9 @@
   --warning: #a05a07;
   --backdrop: rgb(17 24 39 / 0.5);
   --shadow-sm: 0 1px 2px 0 rgb(17 24 39 / 0.06);
+  --bubble-owner: #d7e0f5;
+  --bubble-agent: #ffffff;
+  --bubble-inset: #eceff4;
 }
 
 :root:not([data-theme]) {
@@ -117,6 +124,9 @@
   --warning: #a05a07;
   --backdrop: rgb(17 24 39 / 0.5);
   --shadow-sm: 0 1px 2px 0 rgb(17 24 39 / 0.06);
+  --bubble-owner: #d7e0f5;
+  --bubble-agent: #ffffff;
+  --bubble-inset: #eceff4;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -137,6 +147,9 @@
     --warning: #f2b544;
     --backdrop: rgb(0 0 0 / 0.7);
     --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --bubble-owner: #1e2943;
+    --bubble-agent: #1a1e28;
+    --bubble-inset: #11141c;
   }
 }
 
@@ -1178,51 +1191,55 @@ kbd {
 .tl {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-3);
   max-width: var(--timeline-max);
   margin-inline: auto;
   padding: var(--space-5) var(--space-6) var(--space-6);
 }
 
+/* 会話の行は吹き出し（#263）。オーナーは右・accent の薄い地、Bot は左・--bubble-agent の地。名前は上、時刻は下 */
 .msg {
-  display: grid;
-  grid-template-columns: var(--avatar) minmax(0, 1fr);
-  gap: var(--space-3);
-}
-
-.avatar {
-  display: grid;
-  place-items: center;
-  width: var(--avatar);
-  height: var(--avatar);
-  background: var(--muted);
-  color: var(--text);
-  border-radius: var(--radius-full);
-  font-size: var(--font-xs);
-  font-weight: var(--weight-semibold);
-}
-
-.avatar-agent {
-  background: var(--primary);
-  color: var(--primary-text);
-}
-
-.msg-body {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: var(--space-1);
   min-width: 0;
 }
 
-.msg-head {
+.msg-owner {
+  align-items: flex-end;
+}
+
+/* 同じ側の発言が続くときは間を詰める */
+.msg-owner + .msg-owner,
+.msg-agent + .msg-agent {
+  margin-top: calc(var(--space-1) - var(--space-3));
+}
+
+.msg-bubble {
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
   gap: var(--space-2);
-  min-height: var(--avatar);
+  min-width: 0;
+  max-width: 75%;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text);
+  border-radius: var(--radius-lg);
+}
+
+.msg-owner > .msg-bubble {
+  background: var(--bubble-owner);
+  border-bottom-right-radius: var(--radius-sm);
+}
+
+.msg-agent > .msg-bubble {
+  background: var(--bubble-agent);
+  border-bottom-left-radius: var(--radius-sm);
 }
 
 .msg-name {
-  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
 }
 
 .tl-time {
@@ -1234,6 +1251,8 @@ kbd {
 
 .msg-text {
   line-height: var(--leading-normal);
+  user-select: text;
+  -webkit-user-select: text;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1273,7 +1292,7 @@ kbd {
 
 .msg-md .md-code {
   padding: 0 var(--space-1);
-  background: var(--muted);
+  background: var(--bubble-inset);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: var(--font-sm);
@@ -1289,12 +1308,9 @@ kbd {
   tab-size: 4;
 }
 
-.msg-owner .msg-text {
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface);
-  border: var(--border-width) solid var(--border);
-  border-radius: var(--radius-md);
+/* 吹き出しの中のフェンスは吹き出しと見分けられる地に */
+.msg-bubble .code-pre {
+  background: var(--bubble-inset);
 }
 
 .msg-actions {
@@ -1369,8 +1385,9 @@ kbd {
   font-weight: var(--weight-medium);
 }
 
-.is-running .msg-head .badge {
-  align-self: center;
+/* 吹き出しの中の手順は吹き出しと見分けられる地に */
+.msg-bubble .steps {
+  background: var(--bubble-inset);
 }
 
 .tl-divider {
@@ -1399,7 +1416,6 @@ kbd {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  padding-left: calc(var(--avatar) + var(--space-3));
   color: var(--text-secondary);
   font-size: var(--font-sm);
 }
@@ -2964,13 +2980,9 @@ dialog[open]::backdrop {
     color: var(--text-secondary);
   }
 
-  /* 返事はアバターを出さず 1 列（1 行の字数を増やす） */
-  .msg-agent {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .msg-agent > .avatar {
-    display: none;
+  /* 吹き出しは幅の 85% まで（PC は --timeline-max の中で 75%） */
+  .msg-bubble {
+    max-width: 85%;
   }
 
   /* ダークの入力欄は地と見分けがつくよう一段明るく */
