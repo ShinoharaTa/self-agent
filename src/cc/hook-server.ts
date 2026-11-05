@@ -4,6 +4,8 @@
 // それ以外は 200 で本文なし（処理の失敗でも。2xx の空の本文は hooks で「成功」。本文を返すと non-blocking error になりうる）。
 // 受け口は何も実行しない。PermissionRequest は permission-hold.ts に渡して応答を保留し、決定の JSON か空の本文で返す（§3.4。CC5a）。
 // permission_suggestions は permissions.ts の線引きを通ったルールだけを持つ（常に許可。CC5b）。
+// AskUserQuestion（質問）は questions.ts で形を確かめ、通れば tool_input の JSON そのまま（32 KB まで）を questionInput に持つ
+// （tool_input の全体を持たない決まりの唯一の例外。答えの updatedInput の元。docs/plan/claude-code-questions.md §2.2）。
 // Claude Code が先に接続を閉じたら（timeout など）応答は書かない。
 // Stop の last_assistant_message（返事の全文。CC8）はプロセスの中で Discord への投稿に使うだけで、DB には書かない（cc/replies.ts）。
 // UserPromptSubmit の prompt は事象には先頭 CC_PROMPT_MIRROR_MAX_CHARS 字まで乗せ（Claude Code のチャンネルへの写し。CC12。cc/channel-posts.ts）、
@@ -16,6 +18,7 @@ import { safeEqual } from "../web/auth.ts";
 import { isLoopback, parseJsonObject, readBody } from "../web/http-body.ts";
 import { isUuid } from "./agents.ts";
 import { alwaysRulesOf, type CcRule, type CcRuleContext } from "./permissions.ts";
+import { CC_QUESTION_INPUT_MAX_BYTES, CC_QUESTION_TOOL, parseQuestions, questionSummary } from "./questions.ts";
 
 /** 受ける唯一のパス */
 export const CC_HOOK_PATH = "/hook";
@@ -57,15 +60,20 @@ export const CC_WAITING_NOTIFICATIONS: readonly CcNotificationType[] = [
   "agent_needs_input",
 ];
 
-/** 許可の要求の要約（§3.4）。tool_input の全体は持たない */
+/** 許可の要求の要約（§3.4）。tool_input の全体は持たない（AskUserQuestion の questionInput だけ例外） */
 export type CcPermissionSummary = {
   toolName: string;
-  /** Bash は command、ファイルのツールは cwd からの相対パス、WebFetch は url、それ以外は tool_input の JSON（どれも先頭 500 字） */
+  /**
+   * Bash は command、ファイルのツールは cwd からの相対パス、WebFetch は url、質問は「質問 n 問: <最初の問>」、
+   * それ以外は tool_input の JSON（どれも先頭 500 字）
+   */
   summary: string;
   /** tool_name と tool_input（JSON）の sha256（hex） */
   requestHash: string;
   /** permission_suggestions のうち常に許可にできるルール（permissions.ts の線引き。CC5b）。無ければ null */
   alwaysRules?: CcRule[] | null;
+  /** AskUserQuestion で質問の形が通り、JSON が CC_QUESTION_INPUT_MAX_BYTES 以下のときだけ、tool_input の JSON そのまま */
+  questionInput?: string;
 };
 
 /** 受け口が読んだ 1 つの事象（読む欄は §2.3 の固定の集合だけ） */
@@ -110,10 +118,16 @@ function relativeTo(cwd: string | undefined, path: string): string {
   return path.startsWith(base) ? path.slice(base.length) : path;
 }
 
-/** 許可の要求の要約（§3.4。純関数）。tool_input の全体は返さない */
+/** 許可の要求の要約（§3.4。純関数）。tool_input の全体は返さない（形の通った AskUserQuestion の questionInput だけ例外） */
 export function summarizePermission(toolName: string, toolInput: unknown, cwd: string | undefined): CcPermissionSummary {
   const json = JSON.stringify(toolInput ?? null) ?? "null";
   const requestHash = createHash("sha256").update(`${toolName}\n${json}`).digest("hex");
+  if (toolName === CC_QUESTION_TOOL && Buffer.byteLength(json) <= CC_QUESTION_INPUT_MAX_BYTES) {
+    const questions = parseQuestions(toolInput);
+    if (questions !== undefined) {
+      return { toolName, summary: headChars(questionSummary(questions), CC_PERMISSION_SUMMARY_MAX_CHARS), requestHash, questionInput: json };
+    }
+  }
   const input = typeof toolInput === "object" && toolInput !== null && !Array.isArray(toolInput) ? (toolInput as Record<string, unknown>) : {};
   let summary: string | undefined;
   if (toolName === "Bash" && typeof input.command === "string") summary = input.command;

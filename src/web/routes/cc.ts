@@ -1,7 +1,7 @@
 // GET /api/cc/sessions・/api/cc/sessions/<id>（docs/plan/claude-code-sessions.md §5.1。CC2）、POST /api/cc/sessions/<id>/send・
 // /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）、GET /api/cc/projects・POST /api/cc/sessions（CC4。起動は cc/starter.ts）、
 // GET /api/cc/permissions・POST /api/cc/permissions/<id>/allow|always|deny（CC5a・CC5b。保留は cc/permission-hold.ts、常に許可の線引きは
-// cc/permissions.ts）、POST /api/cc/sessions/<id>/unfollow（CC8。返事の追いかけをやめる。Discord の [追いかけをやめる] と同じ）、
+// cc/permissions.ts）、POST /api/cc/permissions/<id>/answer（質問（AskUserQuestion）に答える。docs/plan/claude-code-questions.md §4。Q1）、POST /api/cc/sessions/<id>/unfollow（CC8。返事の追いかけをやめる。Discord の [追いかけをやめる] と同じ）、
 // POST /api/cc/sessions/<id>/channel（CC10。そのセッションの Discord のチャンネルを作る。cc/channels.ts。docs/plan/claude-code-channels.md §3.1）、
 // POST /api/cc/channels/<id>/close（CC14。/cc close と同じ）と /api/status の cc。ccChannelDescriber は /api/channels の kind cc の行の今（CC14）。
 // この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順。starting は cc/starter.ts の起動したがまだ一覧に出ていないもの）と、1 つのセッションの画面の写し
@@ -13,6 +13,7 @@ import { isUuid } from "../../cc/agents.ts";
 import { cwdLabel } from "../../cc/labels.ts";
 import { type CcPermissionHold, permissionExpiresAt } from "../../cc/permission-hold.ts";
 import { describeRule, formatRule } from "../../cc/permissions.ts";
+import { parsePicks, parseQuestionInput } from "../../cc/questions.ts";
 import type { CcChannelFailure, CcChannels } from "../../cc/channels.ts";
 import type { CcPaneResolver, PaneLookup } from "../../cc/panes.ts";
 import type { CcRegistry, CcSessionView } from "../../cc/registry.ts";
@@ -54,12 +55,14 @@ export type CcRouteDeps = {
   starter?: Pick<CcStarter, "projects" | "launch" | "pendingStarts">;
   /** 許可の要求（CC5a）。無ければ一覧の permission は null で、/api/cc/permissions は 404 */
   permissions?: {
-    hold: Pick<CcPermissionHold, "answer">;
+    hold: Pick<CcPermissionHold, "answer" | "answerQuestion">;
     /** 答えた後（応答を返す直前）。そのセッションの Claude Code のチャンネルを作る（CC11。待たない・投げない） */
     answered?: (id: number) => void;
     store: Pick<CcPermissionStore, "latestPerSession" | "listPending">;
     /** SELF_AGENT_CC_PERMISSION_HOLD_SEC（期限の表示） */
     holdSec: number;
+    /** SELF_AGENT_CC_QUESTION_HOLD_SEC（質問の行の期限の表示） */
+    questionHoldSec: number;
   };
   /** 返事の追いかけ（CC8）。無ければ一覧の follow は null で、/unfollow は 404 */
   follows?: Pick<CcSessionStore, "listFollowing" | "stopFollow">;
@@ -161,8 +164,20 @@ function alwaysNote(row: CcPermissionRow): string | null {
   return notes.length === 0 ? null : notes.join("、");
 }
 
-/** 許可の要求の 1 件（Web は textContent で出す。要約・ツール名は hook から来たデータ） */
-function permissionJson(row: CcPermissionRow, holdSec: number) {
+/** 保留の長さ（許可の要求と質問） */
+type HoldSeconds = { holdSec: number; questionHoldSec: number };
+
+/**
+ * 質問の行の問と答え（question_input から作る。表示用に切らない。画面が切る）。質問でない・読めなければ null。
+ * answers は答えたときに返したもの（question の文 → 値）で、答えていなければ null
+ */
+function questionJson(row: CcPermissionRow) {
+  const parsed = parseQuestionInput(row.questionInput);
+  return parsed === undefined ? null : { questions: parsed.questions, answers: row.answers };
+}
+
+/** 許可の要求の 1 件（Web は textContent で出す。要約・ツール名・質問は hook から来たデータ） */
+function permissionJson(row: CcPermissionRow, hold: HoldSeconds) {
   return {
     id: row.id,
     sessionId: row.sessionId,
@@ -176,8 +191,10 @@ function permissionJson(row: CcPermissionRow, holdSec: number) {
     requestHash: row.requestHash,
     permissionMode: row.permissionMode,
     createdAt: row.createdAt,
-    expiresAt: permissionExpiresAt(row, holdSec),
+    expiresAt: permissionExpiresAt(row, hold.holdSec, hold.questionHoldSec),
     resolvedAt: row.resolvedAt,
+    // 質問（AskUserQuestion）なら { questions, answers }、それ以外は null
+    question: questionJson(row),
   };
 }
 
@@ -188,7 +205,7 @@ function permissionJson(row: CcPermissionRow, holdSec: number) {
  */
 export function ccChannelDescriber(
   deps: Pick<CcRouteDeps, "registry" | "workspaceDir" | "home" | "sends" | "now"> & {
-    permissions?: { store: Pick<CcPermissionStore, "latestPerSession">; holdSec: number };
+    permissions?: { store: Pick<CcPermissionStore, "latestPerSession"> } & HoldSeconds;
     /** 一覧に居ないセッションの名前（cc_sessions） */
     sessions?: Pick<CcSessionStore, "get">;
   },
@@ -213,7 +230,7 @@ export function ccChannelDescriber(
           state: view === undefined ? "ended" : view.state,
           cwdLabel: cwdLabel(view?.cwd ?? row.cwd ?? undefined, deps.workspaceDir, deps.home),
           inTmux: view?.tmux !== undefined,
-          permission: permission === undefined ? null : permissionJson(permission, deps.permissions?.holdSec ?? 0),
+          permission: permission === undefined ? null : permissionJson(permission, deps.permissions ?? NO_HOLD),
           pending: pendingJson(sends.get(row.sessionId)),
         },
       };
@@ -231,6 +248,9 @@ const CLOSE_STATUS: Readonly<Record<"not_channel" | "resuming" | "ended", RouteR
 /** 押した操作の結果 → HTTP の状態 */
 const ANSWER_STATUS: Readonly<Record<string, number>> = { not_found: 404, stale: 409 };
 
+/** 許可の要求を扱わないとき（期限は出ない） */
+const NO_HOLD: HoldSeconds = { holdSec: 0, questionHoldSec: 0 };
+
 export function ccRoutes(deps: CcRouteDeps): Route[] {
   const { registry, panes, tmux, workspaceDir, home, sender, sends, starter, permissions, follows, channels } = deps;
   const now = deps.now ?? (() => new Date());
@@ -245,7 +265,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     return new Map(rows.map((row) => [row.sessionId, row]));
   };
 
-  const holdSec = permissions?.holdSec ?? 0;
+  const hold: HoldSeconds = permissions ?? NO_HOLD;
 
   // 追いかけ中のセッション → 始めた時刻
   const following = (): Map<string, string | null> =>
@@ -278,7 +298,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     // そのセッションの最新の送信（CC3）
     pending: pendingJson(send),
     // そのセッションの最新の許可の要求（保留中か、終わってから CC_PERMISSION_RECENT_MS の間。CC5a）
-    permission: permission === undefined ? null : permissionJson(permission, holdSec),
+    permission: permission === undefined ? null : permissionJson(permission, hold),
     // 返事を Discord に戻しているか（CC8。追いかけ中なら始めた時刻）
     follow: follow.has(view.sessionId) ? { since: follow.get(view.sessionId) ?? null } : null,
     // そのセッションの Discord のチャンネル（CC10。削除されていないもの）
@@ -464,7 +484,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
       handle: async () => {
         if (registry === undefined || permissions === undefined) return NOT_FOUND;
         registry.touch();
-        return { status: 200, json: { permissions: permissions.store.listPending().map((row) => permissionJson(row, holdSec)) } };
+        return { status: 200, json: { permissions: permissions.store.listPending().map((row) => permissionJson(row, hold)) } };
       },
     },
     {
@@ -483,6 +503,26 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
           permissions.answered?.(Number(params[0]));
           return { status: 200, json: { state: result.state } };
         }
+        return { status: ANSWER_STATUS[result.reason] ?? 409, json: { error: result.reason } };
+      },
+    },
+    {
+      // 質問に答える（docs/plan/claude-code-questions.md §4）。answers は問の順に { labels } か { other }。
+      // 形が違う・問の数や選択肢に合わなければ 400、無い id は 404、保留していない・requestHash が違う・質問でない行は 409（stale）
+      method: "POST",
+      pattern: /^\/api\/cc\/permissions\/(\d{1,16})\/answer$/,
+      handle: async ({ params, body }) => {
+        if (registry === undefined || permissions === undefined) return NOT_FOUND;
+        registry.touch();
+        const requestHash = body?.requestHash;
+        const picks = parsePicks(body?.answers);
+        if (typeof requestHash !== "string" || picks === undefined) return { status: 400, json: { error: "bad_request" } };
+        const result = permissions.hold.answerQuestion(Number(params[0]), requestHash, picks, "web");
+        if (result.ok) {
+          permissions.answered?.(Number(params[0]));
+          return { status: 200, json: { state: result.state } };
+        }
+        if (result.reason === "invalid") return { status: 400, json: { error: "bad_request" } };
         return { status: ANSWER_STATUS[result.reason] ?? 409, json: { error: result.reason } };
       },
     },

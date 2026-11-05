@@ -713,6 +713,13 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX cc_sends_notification ON cc_sends(notification_id) WHERE notification_id IS NOT NULL;
   CREATE INDEX cc_sends_reply ON cc_sends(session_id, id) WHERE reply_state = 'waiting';
   `,
+  // v38: Claude Code の質問（AskUserQuestion。docs/plan/claude-code-questions.md §2.2・§9。Q1）。question_input は AskUserQuestion の
+  // tool_input の JSON そのまま（答えの updatedInput の元と表示。32 KB まで。読めない形・大きすぎれば NULL で、今までどおりの許可の要求）。
+  // tool_input の全体を持たない決まりは AskUserQuestion だけ例外。answers は返した answers の JSON（答えたときだけ）。CHECK は変えない
+  `
+  ALTER TABLE cc_permissions ADD COLUMN question_input TEXT;
+  ALTER TABLE cc_permissions ADD COLUMN answers TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

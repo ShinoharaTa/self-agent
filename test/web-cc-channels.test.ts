@@ -99,7 +99,7 @@ async function setup(t: TestContext) {
     workspaceDir: "/home/owner/workspace",
     home: "/home/owner",
     sends,
-    permissions: { store: permissions, holdSec: 300 },
+    permissions: { store: permissions, holdSec: 300, questionHoldSec: 900 },
     now: () => NOW,
   });
   // Web の会話の入力欄からの送信（submitWeb）と閉じる（close）は偽物

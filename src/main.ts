@@ -983,7 +983,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
             workspaceDir: config.workspaceDir,
             home: homedir(),
             sends: ccSends,
-            permissions: { store: ccPermissionStore, holdSec: config.ccPermissionHoldSec },
+            permissions: { store: ccPermissionStore, holdSec: config.ccPermissionHoldSec, questionHoldSec: config.ccQuestionHoldSec },
             sessions: ccSessions,
             now,
           }),
@@ -1087,6 +1087,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
                 answered: (id: number) => ccPermissionAnswered(id, undefined),
                 store: ccPermissionStore,
                 holdSec: config.ccPermissionHoldSec,
+                questionHoldSec: config.ccQuestionHoldSec,
               },
             }),
         // 返事の追いかけ（一覧の follow・/unfollow）

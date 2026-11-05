@@ -12,10 +12,15 @@
 // （claims の無い相手は全部を引き受ける）だけに知らせ（cc/channel-posts.ts → discord-notice.ts の順。1 件は 1 か所に出す）、
 // 終わった行はその相手だけに知らせる（このプロセスで保留を始めたものでなければ全部に）。引き受けた相手が出せなかったときは release で
 // 引き受けを戻し、次の相手（discord-notice.ts）に渡す（どこにも出ないままにしない）。
-// log は「Claude Code: 許可の要求（#id）→ <状態>（<経路>）」と件数だけ（ツール名・要約・セッションの ID は出さない）
+// 質問（AskUserQuestion。question_input のある行。docs/plan/claude-code-questions.md §2。Q1）も同じ行・同じ保留で扱い、保留の長さだけ
+// SELF_AGENT_CC_QUESTION_HOLD_SEC にする。答えは answerQuestion（allow + updatedInput に answers）、[やめる] は deny（message は「断りました」）。
+// 質問の行に [許可]・[常に許可] は効かない（stale）。
+// log は「Claude Code: 許可の要求（#id）→ <状態>（<経路>）」「Claude Code: 質問（#id）→ <状態>（<経路>）」と件数だけ
+// （ツール名・要約・問の文・答え・セッションの ID は出さない）
 import type { CcPermissionRow, CcPermissionState, CcPermissionStore, CcPermissionVia } from "../store/cc-permissions.ts";
 import type { CcHookEvent } from "./hook-server.ts";
 import { type CcRule, sessionRulesUpdate } from "./permissions.ts";
+import { type CcQuestionPick, parseQuestionInput, validateAnswers } from "./questions.ts";
 import type { CcTimers } from "./registry.ts";
 
 /** 同じセッションの要求を数える窓 */
@@ -30,28 +35,41 @@ export const CC_PERMISSION_SUPPRESS_MS = 60_000;
 export const CC_PERMISSION_UNKNOWN_LOG_INTERVAL_MS = 60_000;
 /** [拒否] の message（端末に `Error: <message>` と出て、モデルにも渡る） */
 export const CC_PERMISSION_DENY_MESSAGE = "self-agent（Discord / Web）から拒否しました";
+/** 質問の [やめる]（答えない）の message（Claude は止まらず、答えが無いまま次の手を考える） */
+export const CC_QUESTION_DENY_MESSAGE = "self-agent（Discord / Web）から断りました";
 
 /** 押された決定（always は「このセッションでは常に許可」。CC5b） */
 export type CcPermissionDecision = "allow" | "always" | "deny";
 
 /**
- * 決定の応答の本文（§3.4）。allow は behavior だけで、updatedPermissions・updatedInput は付けない。deny は message だけで interrupt は付けない。
- * always は allow に updatedPermissions（addRules・behavior allow・destination session の 1 件。permissions.ts）を足す。rules は always のときだけ使う
+ * 決定の応答の本文（§3.4）。allow は behavior だけで、updatedPermissions・updatedInput は付けない。deny は message だけで interrupt は付けない
+ * （質問の行では { question: true } で message を CC_QUESTION_DENY_MESSAGE に）。
+ * always は allow に updatedPermissions（addRules・behavior allow・destination session の 1 件。permissions.ts）を足す。
+ * question は allow に updatedInput（tool_input そのまま + answers。docs/plan/claude-code-questions.md §2.3）を足す
  */
-export function decisionBody(decision: "allow" | "deny"): string;
+export function decisionBody(decision: "allow"): string;
+export function decisionBody(decision: "deny", options?: { question: boolean }): string;
 export function decisionBody(decision: "always", rules: readonly CcRule[]): string;
-export function decisionBody(decision: CcPermissionDecision, rules: readonly CcRule[] = []): string {
-  const body =
-    decision === "allow"
-      ? { behavior: "allow" }
-      : decision === "always"
-        ? { behavior: "allow", updatedPermissions: sessionRulesUpdate(rules) }
-        : { behavior: "deny", message: CC_PERMISSION_DENY_MESSAGE };
+export function decisionBody(decision: "question", input: Readonly<Record<string, unknown>>, answers: Readonly<Record<string, string>>): string;
+export function decisionBody(
+  decision: CcPermissionDecision | "question",
+  extra?: readonly CcRule[] | { question: boolean } | Readonly<Record<string, unknown>>,
+  answers?: Readonly<Record<string, string>>,
+): string {
+  let body: Record<string, unknown>;
+  if (decision === "allow") body = { behavior: "allow" };
+  else if (decision === "always") body = { behavior: "allow", updatedPermissions: sessionRulesUpdate((extra ?? []) as readonly CcRule[]) };
+  else if (decision === "question") body = { behavior: "allow", updatedInput: { ...(extra as Record<string, unknown>), answers } };
+  else {
+    const question = (extra as { question?: boolean } | undefined)?.question === true;
+    body = { behavior: "deny", message: question ? CC_QUESTION_DENY_MESSAGE : CC_PERMISSION_DENY_MESSAGE };
+  }
   return JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: body } });
 }
 
 export type CcPermissionHoldDeps = {
-  cfg: { ccPermissionHoldSec: number };
+  /** 許可の要求の保留（SELF_AGENT_CC_PERMISSION_HOLD_SEC）と質問の保留（SELF_AGENT_CC_QUESTION_HOLD_SEC）の秒数 */
+  cfg: { ccPermissionHoldSec: number; ccQuestionHoldSec: number };
   store: Pick<
     CcPermissionStore,
     "add" | "get" | "pendingFor" | "resolve" | "countSince" | "sessionsActiveSince" | "expirePending"
@@ -66,6 +84,9 @@ export type CcPermissionHoldDeps = {
 /** 押した結果。not_found = その id の行が無い、stale = 保留していない（終わった・時間切れ・他で答えられた）か request_hash が合わない */
 export type CcAnswerResult = { ok: true; state: CcPermissionState } | { ok: false; reason: "not_found" | "stale" };
 
+/** 質問に答えた結果。invalid = 答えが行の問に合わない（数・無い label・1 つ選ぶ問に 2 つ・「その他」が空か長すぎる） */
+export type CcQuestionAnswerResult = { ok: true; state: "allowed" } | { ok: false; reason: "not_found" | "stale" | "invalid" };
+
 /** 保留を始めた・終わった行の受け手（cc/channel-posts.ts・discord-notice.ts）。投げても保留には響かない（log だけ） */
 export type CcPermissionListener = {
   /** 保留を始めた行を引き受けるか（無ければ全部を引き受ける）。先に true を返した相手だけが held を受ける */
@@ -79,6 +100,8 @@ export type CcPermissionListener = {
 /** 保留している 1 件（プロセスの中だけ） */
 type Held = {
   sessionId: string;
+  /** 質問（question_input のある行）か */
+  question: boolean;
   receivedAt: number;
   /** 応答の本文で接続を閉じる（undefined は空の本文）。2 回目以降は何もしない */
   settle: (body: string | undefined) => void;
@@ -154,16 +177,18 @@ export class CcPermissionHold {
       summary: permission.summary,
       permissionMode: event.permissionMode ?? null,
       alwaysRules: permission.alwaysRules ?? null,
+      questionInput: permission.questionInput ?? null,
     };
+    const question = fields.questionInput !== null;
     if (this.stopped) {
       const row = store.add({ ...fields, state: "released", via: "shutdown" });
-      this.logResult(row.id, "released", "shutdown");
+      this.logResult(row.id, "released", "shutdown", question);
       return Promise.resolve(undefined);
     }
     const now = this.deps.now().getTime();
     if (store.countSince(sessionId, new Date(now - CC_PERMISSION_RATE_WINDOW_MS)) >= CC_PERMISSION_RATE_LIMIT) {
       const row = store.add({ ...fields, state: "released", via: "limit" });
-      this.logResult(row.id, "released", "limit");
+      this.logResult(row.id, "released", "limit", question);
       return Promise.resolve(undefined);
     }
     const row = store.add({ ...fields, state: "pending" });
@@ -171,6 +196,7 @@ export class CcPermissionHold {
       let settled = false;
       const held: Held = {
         sessionId,
+        question,
         receivedAt: now,
         settle: (body) => {
           if (settled) return;
@@ -187,7 +213,8 @@ export class CcPermissionHold {
       };
       this.held.set(row.id, held);
       this.tellHeld(row);
-      held.cancelTimer = this.timers.after(() => this.close(row.id, "expired", null), this.deps.cfg.ccPermissionHoldSec * 1000);
+      const holdSec = question ? this.deps.cfg.ccQuestionHoldSec : this.deps.cfg.ccPermissionHoldSec;
+      held.cancelTimer = this.timers.after(() => this.close(row.id, "expired", null), holdSec * 1000);
       if (closed.aborted) onClosed();
       else closed.addEventListener("abort", onClosed, { once: true });
     });
@@ -221,25 +248,48 @@ export class CcPermissionHold {
 
   /**
    * Web（と後の段の Discord）の [許可]・[このセッションでは常に許可]・[拒否]。先に押した方が勝つ（pending からの compare-and-set）。
-   * requestHash を渡せば行と合うときだけ。常に許可は押した時点の行のルールから作り、行にルールが無ければ stale
+   * requestHash を渡せば行と合うときだけ。常に許可は押した時点の行のルールから作り、行にルールが無ければ stale。
+   * 質問の行（question_input あり）は allow・always が stale（答えは answerQuestion）で、deny は message が「断りました」
    */
   answer(id: number, decision: CcPermissionDecision, via: "web" | "discord", requestHash?: string): CcAnswerResult {
     const row = this.deps.store.get(id);
     if (row === undefined) return { ok: false, reason: "not_found" };
     if (row.state !== "pending" || !this.held.has(id)) return { ok: false, reason: "stale" };
     if (requestHash !== undefined && requestHash !== row.requestHash) return { ok: false, reason: "stale" };
+    const question = row.questionInput !== null;
+    if (question && decision !== "deny") return { ok: false, reason: "stale" };
     let to: "allowed" | "allowed_always" | "denied";
     let body: string;
-    if (decision === "always") {
+    if (decision === "deny") {
+      to = "denied";
+      body = decisionBody("deny", { question });
+    } else if (decision === "always") {
       if (row.alwaysRules === null || row.alwaysRules.length === 0) return { ok: false, reason: "stale" };
       to = "allowed_always";
       body = decisionBody("always", row.alwaysRules);
     } else {
-      to = decision === "allow" ? "allowed" : "denied";
-      body = decisionBody(decision);
+      to = "allowed";
+      body = decisionBody("allow");
     }
     if (!this.close(id, to, via, body)) return { ok: false, reason: "stale" };
     return { ok: true, state: to };
+  }
+
+  /**
+   * 質問に答える（Web と後の段の Discord。docs/plan/claude-code-questions.md §2.2）。行が pending で保留していて、requestHash が合い、
+   * question_input が読めるときだけ。picks は問の順の答え（questions.ts の validateAnswers で行の問と照らす。合わなければ invalid）。
+   * 先に答えた方が勝つ（pending から allowed への compare-and-set。answers の列も同じ UPDATE で書く）。応答は allow + updatedInput
+   */
+  answerQuestion(id: number, requestHash: string, picks: readonly CcQuestionPick[], via: "web" | "discord"): CcQuestionAnswerResult {
+    const row = this.deps.store.get(id);
+    if (row === undefined) return { ok: false, reason: "not_found" };
+    if (row.state !== "pending" || !this.held.has(id) || requestHash !== row.requestHash) return { ok: false, reason: "stale" };
+    const parsed = parseQuestionInput(row.questionInput);
+    if (parsed === undefined) return { ok: false, reason: "stale" };
+    const answers = validateAnswers(parsed.questions, picks);
+    if (answers === undefined) return { ok: false, reason: "invalid" };
+    if (!this.close(id, "allowed", via, decisionBody("question", parsed.input, answers), answers)) return { ok: false, reason: "stale" };
+    return { ok: true, state: "allowed" };
   }
 
   /**
@@ -278,15 +328,24 @@ export class CcPermissionHold {
     for (const id of [...this.held.keys()]) this.close(id, "released", "shutdown");
   }
 
-  /** pending から to に移せたら、保留している接続を body（undefined は空の本文）で閉じて log に出す。移せたら true */
-  private close(id: number, to: Exclude<CcPermissionState, "pending">, via: CcPermissionVia | null, body?: string): boolean {
-    const moved = this.deps.store.resolve(id, to, via);
+  /**
+   * pending から to に移せたら、保留している接続を body（undefined は空の本文）で閉じて log に出す。移せたら true。
+   * answers（質問に答えたときだけ）は移すのと同じ UPDATE で行に書く
+   */
+  private close(
+    id: number,
+    to: Exclude<CcPermissionState, "pending">,
+    via: CcPermissionVia | null,
+    body?: string,
+    answers?: Readonly<Record<string, string>>,
+  ): boolean {
+    const moved = this.deps.store.resolve(id, to, via, answers);
     const held = this.held.get(id);
     this.held.delete(id);
     held?.settle(moved ? body : undefined);
     if (moved) {
-      this.logResult(id, to, via);
       const row = this.deps.store.get(id);
+      this.logResult(id, to, via, held?.question ?? (row !== undefined && row.questionInput !== null));
       const claimant = this.claimedBy.get(id);
       this.claimedBy.delete(id);
       this.released.delete(id);
@@ -325,13 +384,18 @@ export class CcPermissionHold {
     }
   }
 
-  private logResult(id: number, state: CcPermissionState, via: CcPermissionVia | null): void {
-    this.deps.log(`Claude Code: 許可の要求（#${id}）→ ${state}${via === null ? "" : `（${via}）`}`);
+  private logResult(id: number, state: CcPermissionState, via: CcPermissionVia | null, question: boolean): void {
+    this.deps.log(`Claude Code: ${question ? "質問" : "許可の要求"}（#${id}）→ ${state}${via === null ? "" : `（${via}）`}`);
   }
 }
 
-/** 保留の期限（Web に出す）。保留中の行だけで、終わった行は null */
-export function permissionExpiresAt(row: Pick<CcPermissionRow, "createdAt" | "state">, holdSec: number): string | null {
+/** 保留の期限（Web に出す）。保留中の行だけで、終わった行は null。質問の行（question_input あり）は questionHoldSec で数える */
+export function permissionExpiresAt(
+  row: Pick<CcPermissionRow, "createdAt" | "state" | "questionInput">,
+  holdSec: number,
+  questionHoldSec: number,
+): string | null {
   if (row.state !== "pending") return null;
-  return new Date(Date.parse(row.createdAt) + holdSec * 1000).toISOString();
+  const seconds = row.questionInput !== null ? questionHoldSec : holdSec;
+  return new Date(Date.parse(row.createdAt) + seconds * 1000).toISOString();
 }

@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { type CcRule, parseStoredRules } from "../cc/permissions.ts";
+import { parseStoredAnswers } from "../cc/questions.ts";
 
 /** 許可の要求の行を残す日数（scheduler の tick で、created_at がこれより前の終わった行を消す。docs/plan/claude-code-sessions.md §9） */
 export const CC_PERMISSION_KEEP_DAYS = 30;
@@ -38,6 +39,10 @@ export type CcPermissionRow = {
   /** #system に出した 1 通のメッセージの ID とそのチャンネル（CC5c。出していなければ null） */
   messageId: string | null;
   messageChannelId: string | null;
+  /** AskUserQuestion の tool_input の JSON そのまま（質問の形が読めたときだけ。Q1）。無ければ null = 今までどおりの許可の要求 */
+  questionInput: string | null;
+  /** 質問に答えたときに返した answers（question の文 → 値）。無ければ・形が違えば null */
+  answers: Record<string, string> | null;
 };
 
 function nullableString(value: SQLOutputValue | undefined): string | null {
@@ -62,6 +67,8 @@ function toRow(row: Record<string, SQLOutputValue>): CcPermissionRow {
     resolvedAt: nullableString(row.resolved_at),
     messageId: nullableString(row.message_id),
     messageChannelId: nullableString(row.message_channel_id),
+    questionInput: nullableString(row.question_input),
+    answers: parseStoredAnswers(nullableString(row.answers)),
   };
 }
 
@@ -86,14 +93,16 @@ export class CcPermissionStore {
     summary: string;
     permissionMode: string | null;
     alwaysRules?: readonly CcRule[] | null;
+    /** AskUserQuestion の tool_input の JSON（質問の形が読めたときだけ） */
+    questionInput?: string | null;
     state: "pending" | "released";
     via?: CcPermissionVia;
   }): CcPermissionRow {
     const at = this.now().toISOString();
     const result = this.db
       .prepare(
-        `INSERT INTO cc_permissions (session_id, request_hash, tool_name, summary, permission_mode, always_rules, state, via, created_at, resolved_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO cc_permissions (session_id, request_hash, tool_name, summary, permission_mode, always_rules, question_input, state, via, created_at, resolved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.sessionId,
@@ -104,6 +113,7 @@ export class CcPermissionStore {
         input.alwaysRules === undefined || input.alwaysRules === null || input.alwaysRules.length === 0
           ? null
           : JSON.stringify(input.alwaysRules),
+        input.questionInput ?? null,
         input.state,
         input.via ?? null,
         at,
@@ -182,11 +192,16 @@ export class CcPermissionStore {
     return Number(row?.n ?? 0);
   }
 
-  /** 今が pending のときだけ to に移し、via と resolved_at（今）を書く（compare-and-set）。移したら true */
-  resolve(id: number, to: Exclude<CcPermissionState, "pending">, via: CcPermissionVia | null): boolean {
+  /**
+   * 今が pending のときだけ to に移し、via と resolved_at（今）を書く（compare-and-set）。移したら true。
+   * answers（質問に答えたときだけ）を渡せば同じ UPDATE で answers の列も書く（移せなければ書かない）
+   */
+  resolve(id: number, to: Exclude<CcPermissionState, "pending">, via: CcPermissionVia | null, answers?: Readonly<Record<string, string>>): boolean {
     const result = this.db
-      .prepare("UPDATE cc_permissions SET state = ?, via = ?, resolved_at = ? WHERE id = ? AND state = 'pending'")
-      .run(to, via, this.now().toISOString(), id);
+      .prepare(
+        "UPDATE cc_permissions SET state = ?, via = ?, resolved_at = ?, answers = COALESCE(?, answers) WHERE id = ? AND state = 'pending'",
+      )
+      .run(to, via, this.now().toISOString(), answers === undefined ? null : JSON.stringify(answers), id);
     return Number(result.changes) > 0;
   }
 
