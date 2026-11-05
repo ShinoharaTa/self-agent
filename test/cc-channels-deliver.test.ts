@@ -13,6 +13,7 @@ import {
   CC_QUEUE_FULL_REPLY,
   CC_CHANNEL_REOPENED_TEXT,
   CC_CHANNEL_CLOSED_TEXT,
+  ccClosedText,
   CC_CHANNEL_ENDED_TEXT,
   CC_CHANNEL_REVIVED_TEXT,
   CC_RESUME_PROMPT_TEXT,
@@ -626,8 +627,6 @@ test("Web の会話（CC14）: submitWeb は /send と同じ origin web で積�
   // 形の違う本文・cc でない・終わった・起動中は積まない
   assert.deepEqual(await s.channels.submitWeb("cc-1", "a\tb"), { ok: false, reason: "invalid_text" });
   assert.deepEqual(await s.channels.submitWeb("inbox-1", "x"), { ok: false, reason: "not_channel" });
-  s.store.setState("cc-1", "ended");
-  assert.deepEqual(await s.channels.submitWeb("cc-1", "x"), { ok: false, reason: "ended" });
   s.store.setState("cc-1", "resuming");
   assert.deepEqual(await s.channels.submitWeb("cc-1", "x"), { ok: false, reason: "resuming" });
   assertQuietLogs(s.logs);
@@ -643,7 +642,7 @@ test("Web の会話（CC14）: ツール・GitHub の写しは owner（system・
   // Web から閉じた: チャンネルにも閉じた文を出す
   const closed = s.channels.close("cc-1", { fromWeb: true });
   assert.equal(closed.result, "closed");
-  s.channels.postClosed("cc-1", CC_CHANNEL_CLOSED_TEXT);
+  s.channels.postClosed("cc-1", ccClosedText(1));
   // 一覧に無いセッションの終わったチャンネルへの発言
   s.snapshot.sessions = s.snapshot.sessions.filter((view) => view.sessionId !== S1);
   const late = s.message("続けたい");
@@ -654,11 +653,47 @@ test("Web の会話（CC14）: ツール・GitHub の写しは owner（system・
     ["owner", "system", "（cc_send から）\nツールから", "id"],
     ["notice", "system", CC_CHANNEL_ENDED_TEXT, null],
     ["notice", "system", CC_CHANNEL_REVIVED_TEXT, null],
-    ["notice", "system", CC_CHANNEL_CLOSED_TEXT, null],
+    // 作業中で届け待ちだったツールの本文は閉じたときに取り消す
+    ["notice", "system", ccClosedText(1), null],
     ["owner", "discord", "続けたい", "id"],
     ["notice", "system", CC_RESUME_PROMPT_TEXT, null],
   ]);
-  assert.ok(s.gateway.posts.some((post) => post.channelId === "cc-1" && post.message.text === CC_CHANNEL_CLOSED_TEXT));
+  assert.ok(s.gateway.posts.some((post) => post.channelId === "cc-1" && post.message.text === ccClosedText(1)));
   assert.ok(s.logs.some((line) => line.includes("Web からチャンネルを閉じました")));
   assertQuietLogs(s.logs);
+});
+
+test("Web の会話（CC14）: submitWeb は閉じただけ（一覧にある）なら Discord の発言と同じく開き直して積み、一覧に無ければ ended で積まない", async (t) => {
+  const s = setup(t, { history: true });
+  s.env.screens.before = BUSY;
+  s.store.setState("cc-1", "ended");
+  // 形の違う本文では開き直さない
+  assert.deepEqual(await s.channels.submitWeb("cc-1", "a\tb"), { ok: false, reason: "invalid_text" });
+  assert.equal(s.store.get("cc-1")?.state, "ended");
+  const result = await s.channels.submitWeb("cc-1", "続きを頼む");
+  assert.equal(result.ok, true);
+  assert.equal(s.store.get("cc-1")?.state, "open");
+  assert.ok(s.gateway.posts.some((post) => post.channelId === "cc-1" && post.message.text === CC_CHANNEL_REOPENED_TEXT));
+  assert.equal(s.sends.get(1)?.text, "続きを頼む");
+  await s.settle();
+  // 一覧に無い（終わった）なら ended
+  s.sender.cancel(1);
+  s.store.setState("cc-1", "ended");
+  s.snapshot.sessions = s.snapshot.sessions.filter((view) => view.sessionId !== S1);
+  assert.deepEqual(await s.channels.submitWeb("cc-1", "もう一度"), { ok: false, reason: "ended" });
+  assert.equal(s.store.get("cc-1")?.state, "ended");
+  assert.equal(s.sends.get(2), undefined);
+});
+
+test("Web の会話（CC14）: 閉じたときの知らせは /cc close の応答と同じ文（取り消した届け待ちの件数の行を含む）", async (t) => {
+  const s = setup(t, { history: true });
+  s.env.screens.before = BUSY;
+  await s.channels.handleMessage(s.message("1"));
+  await s.channels.handleMessage(s.message("2"));
+  const closed = s.channels.close("cc-1", { fromWeb: true });
+  assert.deepEqual(closed, { result: "closed", cancelled: 2 });
+  const last = s.history.list("cc-1", { limit: 50 }).at(-1)!;
+  assert.deepEqual([last.kind, last.text], ["notice", ccClosedText(2)]);
+  assert.match(ccClosedText(2), /\n閉じたので届け待ちを 2 件取り消しました$/);
+  assert.equal(ccClosedText(0), CC_CHANNEL_CLOSED_TEXT);
 });

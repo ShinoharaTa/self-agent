@@ -17,7 +17,7 @@ export const WEB_DUPLICATE_WINDOW_MS = 5000;
 export type TurnRouteDeps = Pick<ChannelRouteDeps, "cfg" | "guildSettings" | "topicSessions" | "resolveChannel"> & {
   handler: Pick<Handler, "submitText" | "runningTurns" | "abortTurn" | "continueTurn">;
   /** Claude Code のチャンネル（SELF_AGENT_CC が動くときだけ。無ければ cc のチャンネルは受け付けない） */
-  cc?: { store: Pick<CcChannelStore, "get">; channels: Pick<CcChannels, "submitWeb"> };
+  cc?: { store: Pick<CcChannelStore, "get">; channels: Pick<CcChannels, "submitWeb">; registry?: { touch(): void } };
   now: () => Date;
   log: (message: string) => void;
 };
@@ -40,6 +40,8 @@ export function turnRoutes(deps: TurnRouteDeps): Route[] {
   /** Claude Code のチャンネル: そのセッションに積む（写し「（Web から）」と owner の行は submitWeb が付ける）。link は写しの投稿（無ければチャンネル） */
   const sendCc = async (guildId: string, channelId: string, text: string): Promise<RouteResult> => {
     if (deps.cc === undefined) return NOT_FOUND;
+    // 見ている間は一覧を設定の周期で読む（/api/cc/* と同じ）
+    deps.cc.registry?.touch();
     const result = await deps.cc.channels.submitWeb(channelId, text);
     if (!result.ok) {
       if (result.reason === "not_channel") return NOT_FOUND;

@@ -212,7 +212,12 @@ export class CcChannelPosts implements CcPermissionListener {
 
   /** 再起動の前に保留していて expired にした行のうち、Claude Code のチャンネルに出した 1 通を「時間切れ」に書き換える。Discord につないだ後に呼ぶ */
   rewriteRecovered(rows: readonly CcPermissionRow[]): void {
-    for (const row of rows) if (row.messageId !== null && this.owns(row)) this.track(this.editResolved(row));
+    for (const row of rows) {
+      if (row.messageId === null || !this.owns(row)) continue;
+      // Web の会話にも結果（時間切れ）を書く
+      this.recordResult(row);
+      this.track(this.editResolved(row));
+    }
   }
 
   /** 判断待ちを 1 回確かめる（周期のほか、テストから呼ぶ）: チャンネルのあるセッションだけ、そのチャンネルに出す */
@@ -239,11 +244,13 @@ export class CcChannelPosts implements CcPermissionListener {
         continue;
       }
       const message = waitingNotice(view, { ...this.places(), ownerUserId: cfg.ownerUserId });
-      this.record(channelId, "notice", view.waitingFor === undefined || view.waitingFor === "" ? "判断を待っています" : `判断を待っています: ${view.waitingFor}`);
+      const historyText = view.waitingFor === undefined || view.waitingFor === "" ? "判断を待っています" : `判断を待っています: ${view.waitingFor}`;
       this.track(
         this.deps.gateway.sendMessage(channelId, { ...message, suppressEmbeds: true }).then(
           () => {
             log("Claude Code: 判断待ちをチャンネルに知らせました");
+            // Web の会話には出せたものだけ書く（許可の要求と同じ）
+            this.record(channelId, "notice", historyText);
           },
           (error: unknown) => {
             log(`Claude Code: 判断待ちをチャンネルに知らせられませんでした（${errorKind(error)}）`);

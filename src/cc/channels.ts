@@ -181,6 +181,16 @@ export const CC_CHANNEL_REOPENED_TEXT = "開き直しました";
 /** /cc close の応答（チャンネルに出す） */
 export const CC_CHANNEL_CLOSED_TEXT = "閉じました。ここに書くと起動して続けられます";
 
+/** /cc close で取り消した届け待ちの 1 行（純関数） */
+export function ccClosedCancelledText(count: number): string {
+  return `閉じたので届け待ちを ${count} 件取り消しました`;
+}
+
+/** 閉じたときの文（純関数。/cc close の応答・Web から閉じたときの投稿・Web の会話の知らせで共通） */
+export function ccClosedText(cancelled: number): string {
+  return cancelled > 0 ? `${CC_CHANNEL_CLOSED_TEXT}\n${ccClosedCancelledText(cancelled)}` : CC_CHANNEL_CLOSED_TEXT;
+}
+
 /** 終わったチャンネルの発言への返信（[起動して続ける][やめる]。CC13） */
 export const CC_RESUME_PROMPT_TEXT = "このセッションは終わっています。[起動して続ける] で同じディレクトリで起動し、この発言を最初の指示として送ります";
 export const CC_RESUME_KEPT_TEXT = "起動しませんでした";
@@ -625,9 +635,11 @@ export class CcChannels {
     }
     this.deps.log(`Claude Code: ${options.fromWeb === true ? "Web から" : "/cc close で"}チャンネルを閉じました（guild=${row.guildId}）`);
     this.deps.channelOps.enqueueMove(channelId, { kind: "state", guildId: row.guildId, state: "done" });
-    this.record(row, "notice", "system", CC_CHANNEL_CLOSED_TEXT);
     // 閉じたチャンネルの届け待ちは取り消す（⏳ は sender の settled で外れる）
-    return { result: "closed", cancelled: this.cancelQueued(channelId) ?? 0 };
+    const cancelled = this.cancelQueued(channelId) ?? 0;
+    // Web の会話には /cc close の応答と同じ文（取り消した件数の行を含む）
+    this.record(row, "notice", "system", ccClosedText(cancelled));
+    return { result: "closed", cancelled };
   }
 
   /** Web から閉じた（POST /api/cc/channels/<id>/close。CC14）: /cc close の応答と同じ文をチャンネルに投稿する（失敗は log だけ） */
@@ -638,14 +650,19 @@ export class CcChannels {
 
   /**
    * Web の会話の入力欄からの送信（POST /api/channels/<id>/messages の cc。§5.2）: /api/cc/sessions/<id>/send と同じ sender.submit（origin web）で積む
-   * （写し「（Web から）」・owner の行・印は announce が付ける）。open のチャンネルだけで、ended・resuming は積まない
+   * （写し「（Web から）」・owner の行・印は announce が付ける）。open のチャンネルだけで、ended はセッションが一覧にあれば開き直して積み、
+   * 無ければ積まない。resuming は積まない
    */
   async submitWeb(channelId: string, text: string): Promise<CcSubmitWebResult> {
     const row = this.deps.store.get(channelId);
     if (row === undefined || row.state === "deleted") return { ok: false, reason: "not_channel" };
-    if (row.state !== "open") return { ok: false, reason: row.state };
     const checked = normalizeSendText(text);
     if (!checked.ok) return { ok: false, reason: checked.reason };
+    // 閉じただけ（セッションが一覧にある）なら Discord の発言と同じく開き直して届ける。一覧に無ければ ended（Discord で [起動して続ける]）
+    if (row.state === "ended") this.reopenIfListed(row);
+    const state = this.deps.store.get(channelId)?.state ?? "deleted";
+    if (state === "deleted") return { ok: false, reason: "not_channel" };
+    if (state !== "open") return { ok: false, reason: state };
     const sender = this.deps.sender();
     if (sender === undefined) return { ok: false, reason: "stopped" };
     const result = await sender.submit({ sessionId: row.sessionId, text: checked.text, origin: "web" });

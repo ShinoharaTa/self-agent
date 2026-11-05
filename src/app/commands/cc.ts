@@ -17,7 +17,7 @@ import {
   type CcOpenResult,
   ccDeletedText,
   ccKeptText,
-  CC_CHANNEL_CLOSED_TEXT,
+  ccClosedText,
   CC_RESUME_KEPT_TEXT,
   CC_RESUME_STALE_TEXT,
 } from "../../cc/channels.ts";
@@ -53,17 +53,15 @@ export const CC_NO_SESSIONS_REPLY = "Claude Code のセッションがありま�
 export const CC_CANCEL_NOT_CHANNEL_REPLY = "Claude Code のチャンネルで実行してください";
 export const CC_CANCEL_NONE_REPLY = "届け待ちはありません";
 
-/** /cc close で取り消した届け待ちの 1 行（純関数） */
-export function ccClosedCancelledText(count: number): string {
-  return `閉じたので届け待ちを ${count} 件取り消しました`;
-}
+// 閉じたときの文は cc/channels.ts（Web から閉じたときと Web の会話の知らせも同じ文）
+export { ccClosedCancelledText } from "../../cc/channels.ts";
 
 /** /cc close の応答（純関数。closed はチャンネルに出す） */
 export function closeReply(closed: ReturnType<CcChannels["close"]>): { text: string; ephemeral: boolean } {
   switch (closed.result) {
     case "closed":
       return {
-        text: closed.cancelled > 0 ? `${CC_CHANNEL_CLOSED_TEXT}\n${ccClosedCancelledText(closed.cancelled)}` : CC_CHANNEL_CLOSED_TEXT,
+        text: ccClosedText(closed.cancelled),
         ephemeral: false,
       };
     case "not_channel":

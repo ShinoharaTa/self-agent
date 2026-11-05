@@ -607,6 +607,13 @@ test("CC12: 再起動の前に保留していた要求は、チャンネルに�
   const byId = new Map(s.gateway.edits.map((edit) => [edit.messageId, edit.channelId]));
   assert.equal(byId.get(s.store.get(inChannel.id)!.messageId!), CHANNEL);
   assert.equal(byId.get(s.store.get(inSystem.id)!.messageId!), SYSTEM);
+  // Web の会話にも結果（時間切れ）を書く（CC14。チャンネルに出したものだけ・1 回）
+  s.posts.rewriteRecovered(rows);
+  await s.idle();
+  assert.deepEqual(
+    s.history.list(CHANNEL, { limit: 10 }).map((row) => row.text),
+    [`許可を待っています: Bash\n${SECRET_COMMAND}`, "許可の要求（Bash）: 時間切れ。端末か RC で答えてください"],
+  );
 });
 
 test("CC12: チャンネルのあるセッションが終わったら #system の終了の知らせは出さない（チャンネルの 1 行は cc/channels.ts）", async (t) => {
@@ -656,4 +663,18 @@ test("Web の会話（CC14）: チャンネルに出した許可の要求とそ�
   await s.ask(S2);
   assert.equal(s.history.list(CHANNEL, { limit: 20 }).length, rows.length);
   assert.equal(s.history.list(SYSTEM, { limit: 20 }).length, 0);
+});
+
+test("Web の会話（CC14）: 判断待ちはチャンネルに出せたときだけ history に書く", async (t) => {
+  const busy = { status: "busy", waitingFor: undefined } as const;
+  const s = await setup(t, { agents: [agent(S1, busy), agent(S2, busy)] });
+  await s.hook(S1, "Notification", { notificationType: "agent_needs_input" });
+  await s.setAgents([agent(S1, { status: "waiting", waitingFor: "input" }), agent(S2, busy)]);
+  s.clock.now += CC_WAIT_NOTIFY_MS;
+  s.gateway.beforeSendMessage = (channelId) => {
+    if (channelId === CHANNEL) throw new Error("Missing Access");
+  };
+  await s.tickWaiting();
+  assert.ok(s.logs.some((line) => line.includes("判断待ちをチャンネルに知らせられませんでした")));
+  assert.equal(s.history.list(CHANNEL, { limit: 10 }).length, 0);
 });
