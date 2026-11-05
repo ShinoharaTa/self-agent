@@ -8,10 +8,7 @@
 // 保留が切れたら空の本文で expired、Claude Code が先に接続を閉じたら書かずに expired、停止では全部に空の本文で released（shutdown）、
 // 同じセッションから 1 分に 20 件を超えたら保留せず released（limit）。一覧に無いセッションの要求は記録も保留もしない。
 // allow を返すのはオーナーが押したときだけ（自動で allow する経路は無い）。
-// 保留を始めた・終わった行は listen で渡した相手に知らせる（複数。CC12）。保留を始めた行は、渡した順に claims が true を返した最初の相手
-// （claims の無い相手は全部を引き受ける）だけに知らせ（cc/channel-posts.ts → discord-notice.ts の順。1 件は 1 か所に出す）、
-// 終わった行はその相手だけに知らせる（このプロセスで保留を始めたものでなければ全部に）。引き受けた相手が出せなかったときは release で
-// 引き受けを戻し、次の相手（discord-notice.ts）に渡す（どこにも出ないままにしない）。
+// 保留を始めた・終わった行は listen で渡した相手（cc/channel-posts.ts。Claude Code のチャンネルに出す）に知らせる。
 // 質問（AskUserQuestion。question_input のある行。docs/plan/claude-code-questions.md §2。Q1）も同じ行・同じ保留で扱い、保留の長さだけ
 // SELF_AGENT_CC_QUESTION_HOLD_SEC にする。答えは answerQuestion（allow + updatedInput に answers）、[やめる] は deny（message は「断りました」）。
 // 質問の行に [許可]・[常に許可] は効かない（stale）。
@@ -87,10 +84,8 @@ export type CcAnswerResult = { ok: true; state: CcPermissionState } | { ok: fals
 /** 質問に答えた結果。invalid = 答えが行の問に合わない（数・無い label・1 つ選ぶ問に 2 つ・「その他」が空か長すぎる） */
 export type CcQuestionAnswerResult = { ok: true; state: "allowed" } | { ok: false; reason: "not_found" | "stale" | "invalid" };
 
-/** 保留を始めた・終わった行の受け手（cc/channel-posts.ts・discord-notice.ts）。投げても保留には響かない（log だけ） */
+/** 保留を始めた・終わった行の受け手（cc/channel-posts.ts）。投げても保留には響かない（log だけ） */
 export type CcPermissionListener = {
-  /** 保留を始めた行を引き受けるか（無ければ全部を引き受ける）。先に true を返した相手だけが held を受ける */
-  claims?(row: CcPermissionRow): boolean;
   /** pending で記録した直後 */
   held(row: CcPermissionRow): void;
   /** pending から移した直後（移した後の行） */
@@ -123,24 +118,20 @@ export class CcPermissionHold {
   /** 一覧に無いセッションの要求を最後に log に出した時刻 */
   private unknownLoggedAt: number | undefined;
   private readonly listeners: CcPermissionListener[] = [];
-  /** 保留を始めた行を引き受けた相手（終わったときにその相手だけに知らせる。null はどの相手も引き受けなかった） */
-  private readonly claimedBy = new Map<number, CcPermissionListener | null>();
-  /** 引き受けを戻した行（戻すのは 1 件に 1 回だけ。2 回目以降は何もしない） */
-  private readonly released = new Set<number>();
 
   constructor(deps: CcPermissionHoldDeps) {
     this.deps = deps;
     this.timers = deps.timers ?? REAL_TIMERS;
   }
 
-  /** 保留を始めた・終わった行の受け手を足す（main が作った後に渡す。先に足した相手から claims を尋ねる） */
+  /** 保留を始めた・終わった行の受け手を足す（main が作った後に渡す） */
   listen(listener: CcPermissionListener): void {
     this.listeners.push(listener);
   }
 
   /**
    * 起動時（受け口を始める前）: 前のプロセスで pending のまま残った行を expired にし、その行を返す
-   * （main が Discord につないだ後に、#system の 1 通を書き換える。discord-notice.ts の rewriteRecovered）
+   * （main が Discord につないだ後に、出した 1 通を書き換える。channel-posts.ts の rewriteRecovered）
    */
   recover(): CcPermissionRow[] {
     const rows = this.deps.store.expirePending();
@@ -212,7 +203,7 @@ export class CcPermissionHold {
         this.close(row.id, "expired", null);
       };
       this.held.set(row.id, held);
-      this.tellHeld(row);
+      for (const listener of this.listeners) this.tell(() => listener.held(row));
       const holdSec = question ? this.deps.cfg.ccQuestionHoldSec : this.deps.cfg.ccPermissionHoldSec;
       held.cancelTimer = this.timers.after(() => this.close(row.id, "expired", null), holdSec * 1000);
       if (closed.aborted) onClosed();
@@ -292,21 +283,6 @@ export class CcPermissionHold {
     return { ok: true, state: "allowed" };
   }
 
-  /**
-   * 引き受けを戻す（引き受けた相手が 1 通を出せなかったとき。cc/channel-posts.ts）: まだ保留中なら、足した順でその相手より後の受け手のうち
-   * claims が true を返した最初のもの（claims の無い受け手は引き受ける）に held を渡す。保留中でない・引き受けた相手が居ない・
-   * 既に 1 回戻した行なら何もしない
-   */
-  release(id: number): void {
-    const claimant = this.claimedBy.get(id);
-    if (claimant === undefined || claimant === null || !this.held.has(id) || this.released.has(id)) return;
-    this.released.add(id);
-    this.claimedBy.set(id, null);
-    const row = this.deps.store.get(id);
-    if (row === undefined || row.state !== "pending") return;
-    this.tellHeld(row, this.listeners.indexOf(claimant) + 1);
-  }
-
   /** 保留している要求があるか（registry.ts は保留中は一覧を 5 秒ごとに読む） */
   holding(): boolean {
     return this.held.size > 0;
@@ -346,34 +322,9 @@ export class CcPermissionHold {
     if (moved) {
       const row = this.deps.store.get(id);
       this.logResult(id, to, via, held?.question ?? (row !== undefined && row.questionInput !== null));
-      const claimant = this.claimedBy.get(id);
-      this.claimedBy.delete(id);
-      this.released.delete(id);
-      const targets = claimant === undefined ? this.listeners : claimant === null ? [] : [claimant];
-      if (row !== undefined) for (const listener of targets) this.tell(() => listener.resolved(row));
-    } else {
-      this.claimedBy.delete(id);
-      this.released.delete(id);
+      if (row !== undefined) for (const listener of this.listeners) this.tell(() => listener.resolved(row));
     }
     return moved;
-  }
-
-  /** 保留を始めた行を、from 番目から順に claims が true を返した最初の相手（claims の無い相手は引き受ける）だけに知らせる */
-  private tellHeld(row: CcPermissionRow, from = 0): void {
-    this.claimedBy.set(row.id, null);
-    for (const listener of this.listeners.slice(from)) {
-      let claimed = true;
-      try {
-        claimed = listener.claims === undefined || listener.claims(row);
-      } catch (error) {
-        claimed = false;
-        this.deps.log(`Claude Code: 許可の要求の知らせに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
-      }
-      if (!claimed) continue;
-      this.claimedBy.set(row.id, listener);
-      this.tell(() => listener.held(row));
-      return;
-    }
   }
 
   private tell(fn: () => void): void {

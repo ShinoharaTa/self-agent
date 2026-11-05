@@ -10,7 +10,7 @@ import {
   questionSummary,
   validateAnswers,
 } from "../src/cc/questions.ts";
-import { permissionResolvedMessage, questionModalTitle, questionNotice, questionResolvedMessage } from "../src/cc/discord-notice.ts";
+import { permissionResolvedMessage, questionModalTitle, questionNotice, questionResolvedMessage } from "../src/cc/notice-text.ts";
 import type { OutgoingMessage } from "../src/discord/gateway.ts";
 import type { CcPermissionRow } from "../src/store/cc-permissions.ts";
 
@@ -118,7 +118,7 @@ test("parseStoredAnswers: 文字列の値のオブジェクトだけ", () => {
   assert.equal(parseStoredAnswers("{"), null);
 });
 
-// ---- Q2: Discord の 1 通（discord-notice.ts。docs/plan/claude-code-questions.md §3.2） ----
+// ---- Q2: Discord の 1 通（notice-text.ts。docs/plan/claude-code-questions.md §3.2） ----
 
 const PLACES = { workspaceDir: "/home/owner/workspace", home: "/home/owner" };
 const SESSION = { name: "@everyone **name**", cwd: "/home/owner/workspace/proj", bridgeSessionId: "session_01ABC" };

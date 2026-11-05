@@ -640,7 +640,7 @@ test("Claude Code: SELF_AGENT_CC=1 ならポートとトークンが要る。ト
       missing,
     );
   }
-  // SELF_AGENT_CC_NOTIFY は既定 1 で、0 なら知らせない（CC5c）
+  // SELF_AGENT_CC_NOTIFY は既定 1 で、0 なら知らせのためにチャンネルを作らない（Q4）
   assert.equal(loadCcConfig({ ...env, SELF_AGENT_CC_NOTIFY: "0" }).ccNotify, false);
   assert.equal(loadCcConfig({ ...env, SELF_AGENT_CC_NOTIFY: "1" }).ccNotify, true);
   assert.equal(loadCcConfig({ ...env, SELF_AGENT_CC_NOTIFY: "" }).ccNotify, true);

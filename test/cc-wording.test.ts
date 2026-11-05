@@ -10,7 +10,7 @@ const FILES = [
   "src/app/commands/cc-confirm.ts",
   "src/app/commands/cc.ts",
   "src/app/commands/github.ts",
-  "src/cc/discord-notice.ts",
+  "src/cc/notice-text.ts",
   "src/cc/replies.ts",
   "src/cc/channels.ts",
   "src/cc/channel-posts.ts",

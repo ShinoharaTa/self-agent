@@ -4,7 +4,8 @@ import { layoutQueueKey } from "../src/app/commands/setup.ts";
 import {
   CC_CATEGORY_CHANNEL_LIMIT,
   CC_CHANNEL_ENDED_TEXT,
-  CC_CHANNEL_FAILURE_NOTICE_MS,
+  CC_CHANNEL_FAILURE_LOG_MS,
+  CC_NOT_IN_TMUX_REPLY,
   CC_CHANNEL_REVIVED_TEXT,
   ccChannelName,
   ccChannelTopic,
@@ -77,7 +78,6 @@ function setup(t: TestContext, options: { setUp?: boolean } = {}) {
   };
   const queue = new RecordingQueue(1);
   const channelOps = new RecordingChannelOps();
-  const notices: Array<{ guildId: string; message: OutgoingMessage; level: string }> = [];
   const logs: string[] = [];
   const channels = new CcChannels({
     cfg: { allowedGuildIds: ["guild-1", "guild-2"], workspaceDir: WORKSPACE, ownerUserId: "owner-1" },
@@ -90,15 +90,11 @@ function setup(t: TestContext, options: { setUp?: boolean } = {}) {
     gateway,
     queue,
     channelOps,
-    notify: async (guildId, message, opts) => {
-      notices.push({ guildId, message, level: opts.level });
-      return "notice-1";
-    },
     home: "/home/owner",
     now,
     log: (line) => logs.push(line),
   });
-  return { db, clock, store, guildSettings, gateway, sessions, inTmux, queue, channelOps, notices, logs, channels };
+  return { db, clock, store, guildSettings, gateway, sessions, inTmux, queue, channelOps, logs, channels };
 }
 
 /** log にチャンネル ID・名前・sessionId・ディレクトリを出していない */
@@ -204,41 +200,39 @@ test("openChannel: Discord の作成に失敗しても投げずに failed。記�
   assert.ok(s.logs.includes("Claude Code: チャンネルの最初の投稿に失敗しました（Error）"));
 });
 
-test("ensureFor: 既にあれば何もしない。作れなければ投げず、log と、not_set_up・full・failed は #system に 1 行（同じ理由は 1 時間に 1 回）", async (t) => {
+test("ensureFor: 既にあれば何もしない。作れなければ投げず、log だけ（同じ理由は 1 時間に 1 回。#system には出さない）", async (t) => {
   const s = setup(t);
-  // カテゴリ「Claude Code」のあるサーバーが無ければ not_set_up（#system は /setup 済みのサーバーへ）
-  s.guildSettings.setCcCategory("guild-1", "cat-cc");
+  const failures = (reason: string, notice = false) =>
+    s.logs.filter((line) => line === `Claude Code: ${notice ? "知らせの" : ""}チャンネルを作れませんでした（${reason}）`).length;
+  // カテゴリ「Claude Code」が Discord 上に無ければ not_set_up
   s.gateway.alive.delete("cat-cc");
   assert.deepEqual(await s.channels.ensureFor(S1, "web_send"), { ok: false, reason: "not_set_up" });
   await s.channels.idle();
-  assert.equal(s.notices.length, 1);
-  assert.equal(s.notices[0]!.guildId, "guild-1");
-  assert.equal(s.notices[0]!.level, "warning");
-  assert.match(s.notices[0]!.message.text, /\/setup/);
+  assert.equal(failures("not_set_up"), 1);
   // 同じ理由の 2 回目は 1 時間出さない
-  s.clock.now = BASE + CC_CHANNEL_FAILURE_NOTICE_MS - 1;
+  s.clock.now = BASE + CC_CHANNEL_FAILURE_LOG_MS - 1;
   await s.channels.ensureFor(S1, "web_send");
-  await s.channels.idle();
-  assert.equal(s.notices.length, 1);
+  assert.equal(failures("not_set_up"), 1);
+  // 知らせのきっかけは別に数える
+  await s.channels.ensureFor(S1, "permission");
+  assert.equal(failures("not_set_up", true), 1);
   // 別の理由は出す
   s.gateway.alive.add("cat-cc");
   s.gateway.manual.set("cat-cc", CC_CATEGORY_CHANNEL_LIMIT);
-  assert.deepEqual(await s.channels.ensureFor(S1, "permission"), { ok: false, reason: "full" });
-  await s.channels.idle();
-  assert.equal(s.notices.length, 2);
+  assert.deepEqual(await s.channels.ensureFor(S1, "web_send"), { ok: false, reason: "full" });
+  assert.equal(failures("full"), 1);
   // 1 時間経てばまた出す
   s.gateway.alive.delete("cat-cc");
-  s.clock.now = BASE + CC_CHANNEL_FAILURE_NOTICE_MS;
+  s.clock.now = BASE + CC_CHANNEL_FAILURE_LOG_MS;
   await s.channels.ensureFor(S1, "web_send");
-  await s.channels.idle();
-  assert.equal(s.notices.length, 3);
-  // tmux の外は log だけ
+  assert.equal(failures("not_set_up"), 2);
+  // tmux の外は関わったきっかけでは作らない
   s.gateway.alive.add("cat-cc");
   s.gateway.manual.delete("cat-cc");
   assert.deepEqual(await s.channels.ensureFor(S3, "web_send"), { ok: false, reason: "not_in_tmux" });
-  await s.channels.idle();
-  assert.equal(s.notices.length, 3);
-  assert.ok(s.logs.includes("Claude Code: チャンネルを作れませんでした（not_in_tmux）"));
+  assert.equal(failures("not_in_tmux"), 1);
+  // #system には何も出さない（投稿は無い）
+  assert.equal(s.gateway.posts.length, 0);
   // 作れたら、2 回目は何もしない（作成もキューも通らない）
   assert.equal((await s.channels.ensureFor(S1, "tool_send")).ok, true);
   const keys = s.queue.keys.length;
@@ -249,16 +243,33 @@ test("ensureFor: 既にあれば何もしない。作れなければ投げず、
   assertQuietLogs(s.logs);
 });
 
-test("ensureFor: どのサーバーもカテゴリ「Claude Code」が無ければ not_set_up で、#system は最初の /setup 済みのサーバー", async (t) => {
+test("ensureFor: どのサーバーもカテゴリ「Claude Code」が無ければ not_set_up で、log だけ（作らない・投稿しない）", async (t) => {
   const s = setup(t, { setUp: false });
   s.guildSettings.setChannel("guild-2", "homeCategoryId", "home-2");
-  assert.deepEqual(await s.channels.ensureFor(S1, "web_send"), { ok: false, reason: "not_set_up" });
+  assert.deepEqual(await s.channels.ensureFor(S1, "question"), { ok: false, reason: "not_set_up" });
   await s.channels.idle();
-  assert.deepEqual(
-    s.notices.map((notice) => notice.guildId),
-    ["guild-2"],
-  );
+  assert.ok(s.logs.includes("Claude Code: 知らせのチャンネルを作れませんでした（not_set_up）"));
   assert.equal(s.gateway.callsOf("createTextChannel").length, 0);
+  assert.equal(s.gateway.posts.length, 0);
+});
+
+test("ensureFor: 知らせのきっかけ（permission・question・waiting）では tmux の外のセッションにも作り、最初の投稿に「送れません」の 1 行を足す", async (t) => {
+  const s = setup(t);
+  assert.equal(s.inTmux.has(300), false);
+  const result = await s.channels.ensureFor(S3, "waiting");
+  assert.equal(result.ok, true);
+  assert.equal(s.store.anyFor(S3)?.origin, "waiting");
+  const intro = s.gateway.posts.at(-1)!.message.text;
+  assert.match(intro, /判断待ちの知らせで作りました/);
+  assert.ok(intro.endsWith(`\n${CC_NOT_IN_TMUX_REPLY}`));
+  // tmux の中のセッションには足さない。きっかけの語
+  assert.equal((await s.channels.ensureFor(S1, "question")).ok, true);
+  const inside = s.gateway.posts.at(-1)!.message.text;
+  assert.match(inside, /質問で作りました/);
+  assert.ok(!inside.includes(CC_NOT_IN_TMUX_REPLY));
+  assert.equal((await s.channels.ensureFor(S2, "permission")).ok, true);
+  assert.match(s.gateway.posts.at(-1)!.message.text, /許可の要求で作りました/);
+  assertQuietLogs(s.logs);
 });
 
 test("ended: open のチャンネルを ended にして 1 行を出し、完了カテゴリへ移す。チャンネルの無いセッションは何もしない", async (t) => {
@@ -276,8 +287,6 @@ test("ended: open のチャンネルを ended にして 1 行を出し、完了�
   // チャンネルの無いセッション
   assert.equal(s.channels.ended({ sessionId: S2 }), false);
   assert.equal(s.channelOps.moves.length, 1);
-  // #system には出さない（notify を呼ばない）
-  assert.equal(s.notices.length, 0);
   assertQuietLogs(s.logs);
 });
 
@@ -293,7 +302,6 @@ test("ended: 閉じた（ended の）チャンネルのセッションが後で�
   ccEndedHandler({
     channels: () => s.channels,
     replier: () => ({ ended: () => (calls.push("replier"), false) }),
-    notifier: () => ({ ended: () => void calls.push("notifier") }),
   })({ sessionId: S1 } as CcSessionRow);
   await s.channels.idle();
   assert.deepEqual(calls, ["replier"]);
@@ -301,8 +309,7 @@ test("ended: 閉じた（ended の）チャンネルのセッションが後で�
   assert.deepEqual(s.channelOps.moves, []);
   assert.equal(s.gateway.posts.length, posts + 1);
   assert.deepEqual([s.gateway.posts.at(-1)?.channelId, s.gateway.posts.at(-1)?.message.text], ["chan-1", CC_CHANNEL_ENDED_TEXT]);
-  assert.equal(s.notices.length, 0);
-  // 削除済みのチャンネルは引き受けない（#system に回す）
+  // 削除済みのチャンネルは引き受けない
   s.store.markDeleted("chan-1");
   assert.equal(s.channels.ended({ sessionId: S1 }), false);
   assertQuietLogs(s.logs);
@@ -409,25 +416,20 @@ test("openChannel: 記録したカテゴリの ID がカテゴリでなければ
   assert.equal(s.gateway.callsOf("createTextChannel").length, 0);
 });
 
-test("ccEndedHandler: チャンネルがあれば #system の終了の知らせを出さない（追いかけは止める）。どちらも無いときだけ #system", () => {
+test("ccEndedHandler: チャンネルの終了と返事の追いかけの終わりをどちらも呼ぶ（#system には出さない）", () => {
   const calls: string[] = [];
   const session = { sessionId: S1 } as CcSessionRow;
   const handler = (inChannel: boolean, followed: boolean) =>
     ccEndedHandler({
       channels: () => ({ ended: () => (calls.push("channel"), inChannel) }),
       replier: () => ({ ended: () => (calls.push("replier"), followed) }),
-      notifier: () => ({ ended: () => void calls.push("notifier") }),
     });
   handler(true, false)(session);
   assert.deepEqual(calls.splice(0), ["channel", "replier"]);
-  handler(true, true)(session);
-  assert.deepEqual(calls.splice(0), ["channel", "replier"]);
-  handler(false, true)(session);
-  assert.deepEqual(calls.splice(0), ["channel", "replier"]);
   handler(false, false)(session);
-  assert.deepEqual(calls.splice(0), ["channel", "replier", "notifier"]);
+  assert.deepEqual(calls.splice(0), ["channel", "replier"]);
   // 連携が動いていない（どれも無い）なら何もしない
-  ccEndedHandler({ channels: () => undefined, replier: () => undefined, notifier: () => undefined })(session);
+  ccEndedHandler({ channels: () => undefined, replier: () => undefined })(session);
 });
 
 test("routeCcChannelMessages: 削除されていない cc のチャンネルへの発言は channels に渡し（連携が無ければ捨てる）、それ以外（削除済み・ほかのチャンネル）は handler に渡す", async (t) => {

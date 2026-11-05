@@ -115,7 +115,6 @@ function setup(t: TestContext) {
     gateway,
     queue: new RecordingQueue(1),
     channelOps,
-    notify: async () => "notice-1",
     home: "/home/owner",
     now,
     log: (line) => logs.push(line),
