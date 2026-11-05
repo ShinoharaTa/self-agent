@@ -397,6 +397,30 @@ test("web static: 本文へのスキップリンク・入力の必須とエラ�
   for (const name of files.filter((n) => n.endsWith(".js"))) assert.doesNotMatch(read(name), /el\("h3"/, name);
 });
 
+test("web static: スマホの下タブは固定 4（会話・タスク・リマインド・その他）で、「その他」のシートと backdrop の容れ物がある（docs/plan/web-ui-polish.md の NAV）", () => {
+  const html = read("index.html");
+  const sheet = /<div[^>]*id="more-sheet"[^>]*>/.exec(html)?.[0] ?? "";
+  assert.match(sheet, /role="dialog"/);
+  assert.match(sheet, /aria-label="その他の画面"/);
+  assert.match(html, /<div class="drawer-backdrop" id="more-backdrop" hidden><\/div>/);
+  // 下タブの主要の 3 つと、「その他」に入るもの（順は ACTIVITIES のまま）
+  const js = read("sidebar.js");
+  const phoneOf = (id: string): string | undefined => new RegExp(`\\{ id: "${id}",[^\\n]*?phone: "(primary|more)"`).exec(js)?.[1];
+  for (const id of ["chat", "tasks", "reminders"]) assert.equal(phoneOf(id), "primary", id);
+  for (const id of ["knowledge", "projects", "cc", "jobs", "github", "usage", "devlog", "status", "settings"]) assert.equal(phoneOf(id), "more", id);
+  assert.match(read("workbench.js"), /"aria-controls": "more-sheet"/);
+  // シートの動きは transform と visibility だけ（height・all を動かさない）
+  const css = read("app.css");
+  const rule = /\n {2}\.more-sheet \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const transition = /transition:([^;]*);/.exec(rule)?.[1] ?? "";
+  assert.ok(transition.length > 0);
+  assert.match(transition, /\btransform\b/);
+  assert.match(transition, /\bvisibility\b/);
+  assert.doesNotMatch(transition, /\b(height|all)\b/);
+  // シートと backdrop は 639px 以下だけ出す（既定は display: none）
+  assert.match(css, /\n\.more-sheet,\n#more-backdrop \{\n {2}display: none;\n\}/);
+});
+
 // ===== 画面の言葉（docs/design/WEB-UI-GUIDELINES.md §7・§10） =====
 /** JS の "…" の文字列（コメントを除いてから拾う。https:// の // はコメントとみなさない） */
 function stringLiterals(js: string): string[] {

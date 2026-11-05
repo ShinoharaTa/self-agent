@@ -2311,6 +2311,12 @@ dialog[open]::backdrop {
   background: var(--backdrop);
 }
 
+/* スマホ（639px 以下）の「その他」のシートとその backdrop は、その幅だけ出す */
+.more-sheet,
+#more-backdrop {
+  display: none;
+}
+
 /* ===== 狭い幅（タブレット・スマホ）: アクティビティは下のタブ、サイドバーはドロワー ===== */
 @media (max-width: 1023px) {
   .wb {
@@ -2507,5 +2513,103 @@ dialog[open]::backdrop {
 
   .ed-ops > .ed-ops-more {
     display: inline-flex;
+  }
+
+  /* 下タブは固定 4（会話・タスク・リマインド・その他）で等幅。横スクロールにしない */
+  .wb-activity {
+    overflow-x: hidden;
+  }
+
+  .act-group {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .act-btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 var(--space-1);
+  }
+
+  .act-label {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .act-more .dot {
+    position: absolute;
+    top: var(--space-1);
+    right: var(--space-1);
+  }
+
+  /* 「その他」: 下タブの上に下からのシート。出るのは short、消えるのは 130ms */
+  .more-sheet {
+    display: block;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px));
+    z-index: var(--z-drawer);
+    max-height: 60dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: var(--space-2) 0;
+    background: var(--surface);
+    border-top: var(--border-width) solid var(--border);
+    box-shadow: var(--shadow-sm);
+    transform: translateY(100%);
+    visibility: hidden;
+    transition:
+      transform calc(var(--dur-short) * 0.65) var(--ease-out),
+      visibility calc(var(--dur-short) * 0.65) var(--ease-out);
+  }
+
+  .wb.is-more-open ~ .more-sheet {
+    transform: none;
+    visibility: visible;
+    transition-duration: var(--dur-short);
+  }
+
+  /* 全幅の一覧（ドロワー）の上にも重ねる */
+  #more-backdrop:not([hidden]) {
+    display: block;
+    z-index: var(--z-drawer);
+  }
+
+  .more-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .more-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    min-height: var(--row);
+    padding: 0 var(--space-4);
+    background: transparent;
+    color: var(--text);
+    border: 0;
+    font-size: var(--font-sm);
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .more-row:active {
+    background: var(--muted);
+  }
+
+  .more-row .icon {
+    color: var(--text-secondary);
+  }
+
+  .more-row .sb-meta {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
   }
 }
