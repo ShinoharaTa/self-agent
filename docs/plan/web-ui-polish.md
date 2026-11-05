@@ -377,7 +377,7 @@ WEB-UI-GUIDELINES.md §11 の 7 つ。オーナーに聞くことは無し。
 4. 会話の見出し（`chat.js` の `header`・`ccHeader`）と `views.js` の `toolbar` の先頭に [‹]（`ui.js` の `backButton`。`chevron-left`・`aria-label="一覧へ"`。押すと `SA.app.openDrawer()`）。≥640 では出さない。会話の見出しは ≤639 で 1 行（題名は省略、プロジェクト・リンクは […] へ）。
 5. 見出しの […] は `SA.app.sheet(label, items, opener)`（`#more-sheet` の部品を一般化。items は `{ icon, label, run?, href?, why? }`）で、そのチャンネルの操作だけ（待ちにする・閉じる・会話を新しくする・ページを開く・Discord で開く。Claude Code は RC で開く・Discord で開く・閉じる）。パレットは移動用。
 6. 鈴: スマホは知らせのタブ（`views.js` の `STATIC.notices`。行は `workbench.js` の `noticeLine` を共用）。
-7. 履歴: スマホで一覧を閉じて本文が見えたら `history.pushState({ saBody: true })`、`popstate` で一覧を開く。一覧を開く操作（[‹]・下タブ「会話」）は、本文が積んだ履歴の上なら `history.back()` で同じ 1 段に戻す。hash は `replaceState(history.state, …)` で印を残す。
+7. 履歴: スマホで一覧を閉じて本文が見えたら、今の entry に `replaceState({ saList: true })` の印を付けてから `history.pushState({ saBody: true })`。`popstate` は印のある entry だけを扱い（スキップリンクなどの hash の移動では一覧を開かない）、`saList` なら一覧を開き、「進む」で `saBody` に来たら積まずに一覧を閉じるだけ。一覧を開く操作（[‹]・下タブ「会話」）は、本文が積んだ履歴の上なら `history.back()` で同じ 1 段に戻す（300ms で開かなければその場で開く保険）。hash は `replaceState(history.state, …)` で印を残す。指の端末では一覧を開いても絞り込みの欄に焦点を当てない（キーボードを出さない）。
 8. パレットの commands: スマホでは サイドバー・パネル・タブを閉じる・テーマ を出さない（`pcOnly`）。≤639 `.palette-item kbd { display: none }`。
 9. 受け入れ: 375px で上 = タイトルバー 1 段 + 見出し 1 段。一覧 ⇄ 本文が [‹] と「会話」と戻る（端のスワイプ）で往復。タスクを押すと表が直接。鈴で知らせのタブ。PC は変わらない。
 
