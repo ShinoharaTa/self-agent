@@ -14,6 +14,8 @@ import type { TopicSessionStore } from "../store/topic-sessions.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
 import { closeStartButton } from "./commands/close.ts";
 import { deletePrompt } from "./commands/delete.ts";
+import { ccDeletePrompt } from "../cc/channels.ts";
+import type { CcChannelStore } from "../store/cc-channels.ts";
 import { continueButton } from "./commands/wait.ts";
 import type { InboxRotator } from "./inbox-rotate.ts";
 import type { PersonaRouter } from "./personas.ts";
@@ -101,6 +103,11 @@ export type SchedulerDeps = {
    * カテゴリが状態と合わないものを戻す。無ければ見ない
    */
   ccChannels?: { reconcile(guildId: string, parents: ReadonlyMap<string, string | null>, listedAt: Date, limit: number): number };
+  /**
+   * 終わってから deleteAfterDays 日経った Claude Code のチャンネルの削除の確認（CC13。cc_channels）。許可サーバーごとに #system に [削除する][残す]。
+   * 無ければ出さない
+   */
+  ccDeletes?: Pick<CcChannelStore, "listDeleteDue" | "setDeletePrompt">;
   /** 一覧から消えて日数の経った Claude Code のセッションの行（cc_sessions）を消す。投げたら log に出して続ける。省略すれば消さない */
   pruneCcSessions?: () => void;
   /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。待ちに移したら知らせの行を書く。無ければ書かない */
@@ -181,6 +188,7 @@ export class Scheduler {
     await this.reconcileChannels();
     await this.moveIdleSessions();
     await this.promptDeletes();
+    await this.promptCcDeletes();
     this.pruneDevLogs();
     this.pruneGuestTurns();
     this.pruneHistory();
@@ -458,4 +466,39 @@ export class Scheduler {
       log(`定期処理に失敗しました: ${describeError(error)}`);
     }
   }
+
+  /**
+   * Claude Code のチャンネル（ccDeletes があれば）について、終わってから deleteAfterDays 日経ち、まだ確認していないものをそのサーバーの #system に
+   * [削除する][残す] で知らせる（1 tick で DELETE_PROMPT_BATCH_LIMIT 件まで。セッションと同じく時間切れなし・失敗は次の tick でやり直す）
+   */
+  private async promptCcDeletes(): Promise<void> {
+    const { cfg, ccDeletes, notify, now, log } = this.deps;
+    if (ccDeletes === undefined) return;
+    try {
+      const before = new Date(now().getTime() - cfg.deleteAfterDays * DAY_MS);
+      let remaining = DELETE_PROMPT_BATCH_LIMIT;
+      for (const guildId of cfg.allowedGuildIds) {
+        if (remaining <= 0) break;
+        for (const row of ccDeletes.listDeleteDue(guildId, before, remaining)) {
+          remaining--;
+          let messageId: string | undefined;
+          try {
+            messageId = await notify(guildId, ccDeletePrompt(row, cfg.deleteAfterDays), { level: "info", timeoutMs: null });
+          } catch (error) {
+            log(`Claude Code のチャンネルの削除の確認の投稿に失敗しました（guild=${guildId}）: ${describeError(error)}`);
+            continue;
+          }
+          if (messageId === undefined) {
+            log(`#system が無いため、Claude Code のチャンネルの削除の確認を投稿できません（guild=${guildId}）。/setup を実行してください`);
+            break;
+          }
+          ccDeletes.setDeletePrompt(row.channelId, messageId);
+          log(`終わってから ${cfg.deleteAfterDays} 日経った Claude Code のチャンネルの削除の確認を投稿しました（guild=${guildId}）`);
+        }
+      }
+    } catch (error) {
+      log(`定期処理に失敗しました: ${describeError(error)}`);
+    }
+  }
+
 }

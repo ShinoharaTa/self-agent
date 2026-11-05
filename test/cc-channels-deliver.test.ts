@@ -11,6 +11,7 @@ import {
   CC_MARK_UNCONFIRMED,
   CC_MARK_WAITING,
   CC_QUEUE_FULL_REPLY,
+  CC_RESUME_PROMPT_TEXT,
   CC_RESUMING_REPLY,
   CC_UNCONFIRMED_REPLY,
   CcChannels,
@@ -309,7 +310,10 @@ test("発言: resuming の間は「起動中です」で断り、ended のチャ
   assert.equal(s.sends.get(1), undefined);
   assert.deepEqual(
     s.gateway.posts.map((post) => [post.message.text, post.message.replyToId]),
-    [[CC_RESUMING_REPLY, resuming.id]],
+    [
+      [CC_RESUMING_REPLY, resuming.id],
+      [CC_RESUME_PROMPT_TEXT, "m-2"],
+    ],
   );
 });
 

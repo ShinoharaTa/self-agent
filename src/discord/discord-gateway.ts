@@ -473,6 +473,17 @@ export class DiscordGateway implements Gateway {
     return channel.id;
   }
 
+  async setChannelTopic(channelId: string, topic: string): Promise<void> {
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (channel === null || channel.type !== ChannelType.GuildText) throw new Error("topic を変えられないチャンネルです");
+      await channel.setTopic(topic);
+    } catch (error) {
+      if (isUnknownChannel(error)) throw new UnknownChannelError();
+      throw error;
+    }
+  }
+
   async channelExists(channelId: string): Promise<boolean> {
     try {
       // キャッシュではなく Discord に問い合わせる（/setup・/new と、リマインドの投稿に失敗したときに使う）

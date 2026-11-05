@@ -10,10 +10,18 @@
 //   （started）に ensureFor で作り、本文をチャンネルに写して（「（Web から）」など）その投稿を印と返事の返信先にする（作れなければ写さない）。
 // - 発言（handleMessage。§3.3）: 許可サーバー・オーナー本人・Bot と Webhook でない・既定の人格の Bot で受けた、open の行のチャンネルの発言を
 //   確認なしで cc_sends（origin discord）に積む（sender.submit。同じセッションに CC_CHANNEL_QUEUE_MAX 件まで）。SDK のターンは動かさない（LLM を呼ばない）。
-//   resuming の間は断り、ended（CC13 で [起動して続ける]）の発言は黙って捨てる。
+//   resuming の間は断る。
+// - 続ける（CC13。§3.6）: ended のチャンネルの発言は積まずに「このセッションは終わっています」+ [起動して続ける][やめる] を返信する。[起動して続ける]（resume）は ended → resuming の compare-and-set の後、そのセッションの cwd
+//   （SELF_AGENT_WORKSPACE_DIR の直下だけ）で starter.launch（startedBy tool・最初の指示はその発言）し、結びついたら（started の resumeChannelId）
+//   session_id を付け替えて open に戻し、topic を書き換えてカテゴリ「Claude Code」へ戻す。起動の失敗・結びつけられなかったら ended に戻す。
+// - 閉じる（/cc close。close）: open を ended にして完了へ移す（セッションが生きていても。次に関われば（ensureFor）開き直す）。
+// - 削除の確認（CC13）: scheduler.ts が ccDeletePrompt を #system に出し、app/commands/cc.ts の cc:del・cc:del:keep が処理する。
 // - 印（§3.3）: 届け待ちは ⏳、届けたら ✅、確かめられなければ ⚠️ と返信、送れなければ ❌ と返信、取り消したら ⏳ を外す（リアクション。失敗は log だけ）。
 // 投稿・リアクションは既定の人格の Bot。名前・ディレクトリは hook から来たデータなので、Markdown とメンションを無効にする。
 // log はサーバー ID と種類・件数・送信の番号だけ（チャンネル ID・名前・cwd・sessionId・本文は出さない。作った後の DB の失敗だけ例外）
+import { basename, dirname } from "node:path";
+import { realpathSync } from "node:fs";
+import { CC_START_RETRY_NOTE, ccStartedTexts, START_FAILURE_TEXT } from "../app/commands/cc-confirm.ts";
 import { layoutQueueKey } from "../app/commands/setup.ts";
 import type { ChannelOpsQueue } from "../app/channel-ops.ts";
 import type { KeyedSerialQueue } from "../app/queue.ts";
@@ -21,16 +29,17 @@ import type { SystemNotifier } from "../app/system-notice.ts";
 import { DEFAULT_PERSONA_ID, type Config } from "../config.ts";
 import { normalizeChannelName, CHANNEL_NAME_MAX_LENGTH } from "../discord/channel-name.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
-import { type Gateway, type IncomingMessage, NotCategoryError } from "../discord/gateway.ts";
+import { type Gateway, type IncomingMessage, type OutgoingMessage, NotCategoryError } from "../discord/gateway.ts";
 import type { CcChannelOrigin, CcChannelRow, CcChannelStore } from "../store/cc-channels.ts";
 import type { CcPermissionStore } from "../store/cc-permissions.ts";
 import type { CcSendOrigin, CcSendRow, CcSendStore } from "../store/cc-sends.ts";
-import { headChars, type CcSessionRow, type CcStartedBy } from "../store/cc-sessions.ts";
+import { headChars, type CcSessionRow, type CcSessionStore, type CcStartedBy } from "../store/cc-sessions.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import { cwdLabel } from "./labels.ts";
 import type { CcPaneResolver } from "./panes.ts";
 import type { CcRegistry, CcSessionView, CcState } from "./registry.ts";
 import { CC_CHANNEL_QUEUE_MAX, normalizeSendText, type CcSender, type CcSubmitResult } from "./sender.ts";
+import { normalizeTitle, type CcStartFailure, type CcStarter } from "./starter.ts";
 
 /** Discord で 1 つのカテゴリに入れられるチャンネル数（カテゴリ「Claude Code」は 1 つだけで、満杯なら作らずに断る） */
 export const CC_CATEGORY_CHANNEL_LIMIT = 50;
@@ -160,8 +169,90 @@ export function ccMirrorTexts(label: string, text: string): string[] {
   return texts;
 }
 
-export const CC_CHANNEL_ENDED_TEXT = "セッションが終わりました。";
+export const CC_CHANNEL_ENDED_TEXT = "セッションが終わりました。ここに書くと、同じディレクトリで起動して続けられます";
 export const CC_CHANNEL_REVIVED_TEXT = "セッションが戻りました。";
+/** /cc close の応答（チャンネルに出す） */
+export const CC_CHANNEL_CLOSED_TEXT = "閉じました。ここに書くと起動して続けられます";
+
+/** 終わったチャンネルの発言への返信（[起動して続ける][やめる]。CC13） */
+export const CC_RESUME_PROMPT_TEXT = "このセッションは終わっています。[起動して続ける] で同じディレクトリで起動し、この発言を最初の指示として送ります";
+export const CC_RESUME_KEPT_TEXT = "起動しませんでした";
+export const CC_RESUME_BAD_PLACE_TEXT = "起動できる場所ではありません。Web か端末で起動してください";
+export const CC_RESUME_GAVE_UP_TEXT = "起動したセッションを一覧で見つけられませんでした";
+/** [起動して続ける] の custom_id の頭（`cc:resume:<channel_id>:<message_id>`・`cc:resume:keep:<channel_id>:<message_id>`） */
+export const CC_RESUME_PREFIX = "cc:resume";
+
+/** 終わったチャンネルの [起動して続ける][やめる]（純関数） */
+export function ccResumeButtons(channelId: string, messageId: string): NonNullable<OutgoingMessage["components"]> {
+  return [
+    {
+      kind: "buttons",
+      buttons: [
+        { customId: `${CC_RESUME_PREFIX}:${channelId}:${messageId}`, label: "起動して続ける", style: "primary" },
+        { customId: `${CC_RESUME_PREFIX}:keep:${channelId}:${messageId}`, label: "やめる" },
+      ],
+    },
+  ];
+}
+
+/** 結びついたときの 1 行（純関数） */
+export function ccResumedText(name: string): string {
+  return `${plain(name)} として起動しました。続けます`;
+}
+
+/** [起動して続ける] の結果 */
+export type CcResumeResult =
+  | { ok: true; message: OutgoingMessage }
+  | { ok: false; reason: "stale" }
+  | { ok: false; reason: CcResumeFailure; message: OutgoingMessage };
+
+/** [起動して続ける] で起動できなかった理由（bad_place = cwd が SELF_AGENT_WORKSPACE_DIR の直下でない） */
+export type CcResumeFailure = "bad_place" | CcStartFailure;
+
+/** 削除の確認（純関数。scheduler.ts が #system に出す。CC13）。[削除する]（`cc:del:<channel_id>`）・[残す]（`cc:del:keep:<channel_id>`） */
+export function ccDeletePrompt(row: Pick<CcChannelRow, "channelId" | "name">, deleteAfterDays: number): OutgoingMessage {
+  return {
+    text: `<#${row.channelId}>（${escapeDiscordText(row.name)}）は Claude Code のセッションが終わってから ${deleteAfterDays} 日経ちました。チャンネルを削除しますか？`,
+    components: [
+      {
+        kind: "buttons",
+        buttons: [
+          { customId: `cc:del:${row.channelId}`, label: "削除する", style: "danger" },
+          { customId: `cc:del:keep:${row.channelId}`, label: "残す" },
+        ],
+      },
+    ],
+  };
+}
+
+export function ccDeletedText(name: string): string {
+  return `${escapeDiscordText(name)} を削除しました`;
+}
+
+export function ccKeptText(name: string, deleteAfterDays: number): string {
+  return `${escapeDiscordText(name)} を残しました。${deleteAfterDays} 日後にもう一度確認します`;
+}
+
+/**
+ * [起動して続ける] で起動するディレクトリの名前（純関数に近い。§3.6）: cwd の親が SELF_AGENT_WORKSPACE_DIR（realpath も見る）なら最後の名前、それ以外は undefined。
+ * 実際に起動してよいかは starter.launch が projectDir で確かめる
+ */
+export function resumeProject(cwd: string | null, workspaceDir: string): string | undefined {
+  if (cwd === null || cwd === "") return undefined;
+  const parent = dirname(cwd);
+  let real: string | undefined;
+  try {
+    real = realpathSync(workspaceDir);
+  } catch {
+    real = undefined;
+  }
+  if (parent !== workspaceDir.replace(/\/+$/, "") && parent !== real) return undefined;
+  const name = basename(cwd);
+  return name === "" ? undefined : name;
+}
+
+/** 終わったチャンネルの発言の保留（[起動して続ける] を押すまで。プロセスの中だけで、再起動の後のボタンは古い） */
+const RESUME_PENDING_MAX = 50;
 
 /** 1 行の表示（制御文字を空白にし、Markdown とメンションを無効にする） */
 function plain(text: string): string {
@@ -213,17 +304,24 @@ export function ccChannelIntro(name: string | null, dir: string | null, origin: 
 export type CcChannelsDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "workspaceDir" | "ownerUserId">;
   store: CcChannelStore;
-  /** 写しを印と返事の返信先にする・/cc cancel の対象 */
-  sends: Pick<CcSendStore, "get" | "setMirror" | "listQueuedFor">;
+  /** 写しを印と返事の返信先にする・/cc cancel の対象・[起動して続ける] の最初の指示の返信先 */
+  sends: Pick<CcSendStore, "get" | "setMirror" | "listQueuedFor" | "setMessageId">;
   /** チャンネルの発言を積む・/cc cancel で取り消す（main では後で作るので関数で渡す） */
   sender: () => Pick<CcSender, "submit" | "cancel"> | undefined;
+  /** [起動して続ける] の起動（CC13。無ければ「停止中です」） */
+  starter?: () => Pick<CcStarter, "launch"> | undefined;
+  /** [起動して続ける] のセッションの cwd・名前（cc_sessions。行が消えていれば cc_channels の cwd） */
+  sessions?: Pick<CcSessionStore, "get">;
   /** Discord から頼んだ送信・起動の頼んだチャンネルのサーバー（そのサーバーに作る。分からなければ defaultGuild） */
   guildOf?: (channelId: string) => string | undefined;
   guildSettings: Pick<GuildSettingsStore, "get" | "ccCategoryId" | "listStateCategories">;
   registry: Pick<CcRegistry, "snapshot">;
   panes: Pick<CcPaneResolver, "lookup">;
   /** 作成・最初の投稿・終わった / 戻ったの 1 行・写し・印（既定の人格の Bot） */
-  gateway: Pick<Gateway, "createTextChannel" | "channelExists" | "countChannelsIn" | "sendMessage" | "addReaction" | "removeOwnReaction">;
+  gateway: Pick<
+    Gateway,
+    "createTextChannel" | "channelExists" | "countChannelsIn" | "sendMessage" | "editMessage" | "addReaction" | "removeOwnReaction" | "setChannelTopic"
+  >;
   /** /setup・/new と同じキュー（key は layoutQueueKey） */
   queue: Pick<KeyedSerialQueue, "run">;
   /** 完了カテゴリ・カテゴリ「Claude Code」への移動 */
@@ -262,6 +360,8 @@ export class CcChannels {
   private readonly duplicates = new Map<number, Array<{ channelId: string; messageId: string }>>();
   /** ダイアログで待っていると返信した送信 */
   private readonly dialogNoticed = new Set<number>();
+  /** 終わったチャンネルの発言（`<channel_id>:<message_id>` → 本文と確認の投稿）。[起動して続ける] の最初の指示（CC13） */
+  private readonly resumePending = new Map<string, { text: string; promptMessageId: string }>();
 
   constructor(deps: CcChannelsDeps) {
     this.deps = deps;
@@ -319,7 +419,11 @@ export class CcChannels {
    */
   async ensureFor(sessionId: string, origin: CcChannelOrigin, guildId?: string): Promise<CcOpenResult> {
     const existing = this.deps.store.anyFor(sessionId);
-    if (existing !== undefined) return { ok: false, reason: "exists", channelId: existing.channelId, guildId: existing.guildId };
+    if (existing !== undefined) {
+      // /cc close で閉じたチャンネルは、セッションが一覧にあれば関わったときに開き直す（§3.8）
+      if (existing.state === "ended" && this.listed(sessionId)) this.revived({ sessionId });
+      return { ok: false, reason: "exists", channelId: existing.channelId, guildId: existing.guildId };
+    }
     const target = guildId ?? this.defaultGuild();
     const result: CcOpenResult = target === undefined ? { ok: false, reason: "not_set_up" } : await this.openChannel(target, sessionId, origin);
     if (!result.ok && result.reason !== "exists") {
@@ -360,8 +464,11 @@ export class CcChannels {
     sendId?: number;
     /** Discord で押した [起動して送る] のサーバー */
     guildId?: string;
+    /** [起動して続ける] のチャンネル（CC13。新しいチャンネルは作らずに付け替える） */
+    resumeChannelId?: string;
   }): Promise<void> {
     try {
+      if (input.resumeChannelId !== undefined && this.rebound(input.resumeChannelId, input.sessionId)) return;
       const guildId = this.allowedGuild(input.guildId) ?? this.guildOfChannel(input.channelId ?? null);
       await this.ensureFor(input.sessionId, START_CHANNEL_ORIGIN[input.startedBy], guildId);
       const row = input.sendId === undefined ? undefined : this.deps.sends.get(input.sendId);
@@ -411,14 +518,18 @@ export class CcChannels {
       await this.reply(message, CC_RESUMING_REPLY);
       return true;
     }
-    // 終わったチャンネルの [起動して続ける] は CC13
-    if (row.state !== "open") return true;
     const checked = normalizeSendText(message.content);
     if (!checked.ok) {
       if (checked.reason !== "empty") await this.reply(message, TEXT_REJECT_REPLY[checked.reason]);
       else if (hasAttachments(message)) await this.reply(message, CC_ATTACHMENT_REPLY);
       return true;
     }
+    // 終わったチャンネルの発言は積まずに [起動して続ける] を出す（起動はボタンでだけ。§3.6）
+    if (row.state === "ended") {
+      await this.promptResume(message, checked.text);
+      return true;
+    }
+    if (row.state !== "open") return true;
     const sender = this.deps.sender();
     if (sender === undefined) {
       await this.reply(message, SUBMIT_REJECT_REPLY.stopped);
@@ -451,6 +562,160 @@ export class CcChannels {
     }
     if (cancelled > 0) this.deps.log(`Claude Code: チャンネルの届け待ちを ${cancelled} 件取り消しました（guild=${row.guildId}）`);
     return cancelled;
+  }
+
+  /**
+   * /cc close（チャンネルの中で。§3.8）: open のチャンネルを ended にして完了へ移す（セッションが生きていても閉じる）。
+   * cc のチャンネルでなければ not_channel、open でなければその状態
+   */
+  close(channelId: string): "closed" | "not_channel" | "resuming" | "ended" {
+    const row = this.deps.store.get(channelId);
+    if (row === undefined || row.state === "deleted") return "not_channel";
+    if (row.state !== "open") return row.state;
+    if (!this.deps.store.setState(channelId, "ended", ["open"])) return this.deps.store.get(channelId)?.state === "resuming" ? "resuming" : "ended";
+    this.deps.log(`Claude Code: /cc close でチャンネルを閉じました（guild=${row.guildId}）`);
+    this.deps.channelOps.enqueueMove(channelId, { kind: "state", guildId: row.guildId, state: "done" });
+    return "closed";
+  }
+
+  /**
+   * [起動して続ける]（cc:resume。§3.6）: その発言を保留していて、チャンネルを ended → resuming に移せたときだけ、そのセッションの cwd で起動する。
+   * 保留が無い・移せなければ stale（二重起動を防ぐ）。直下でない cwd・起動の失敗は ended に戻す。結果は確認の投稿の書き換え
+   */
+  async resume(channelId: string, messageId: string): Promise<CcResumeResult> {
+    const { store, cfg, log } = this.deps;
+    const key = `${channelId}:${messageId}`;
+    const pending = this.resumePending.get(key);
+    const row = store.get(channelId);
+    if (pending === undefined || row === undefined || row.state !== "ended" || !store.setState(channelId, "resuming", ["ended"])) {
+      return { ok: false, reason: "stale" };
+    }
+    const back = (reason: CcResumeFailure, text: string, retry: boolean): CcResumeResult => {
+      store.setState(channelId, "ended", ["resuming"]);
+      log(`Claude Code: [起動して続ける] で起動できませんでした（${reason}、guild=${row.guildId}）`);
+      return { ok: false, reason, message: { text, components: retry ? ccResumeButtons(channelId, messageId) : [] } };
+    };
+    const session = this.deps.sessions?.get(row.sessionId);
+    const project = resumeProject(session?.cwd ?? row.cwd, cfg.workspaceDir);
+    if (project === undefined) return back("bad_place", CC_RESUME_BAD_PLACE_TEXT, false);
+    const starter = this.deps.starter?.();
+    if (starter === undefined) return back("stopped", SUBMIT_REJECT_REPLY.stopped, true);
+    const title = normalizeTitle(session?.name ?? "") ?? normalizeTitle(project) ?? "claude";
+    let tmuxSession: string | undefined;
+    const result = await starter.launch({
+      project,
+      title,
+      text: pending.text,
+      // cc_sessions.started_by の CHECK に discord が無いので tool で代える（§3.6）
+      startedBy: "tool",
+      // 最初の指示の送信の頼んだチャンネルをこのチャンネルにする（印と返事の返信先。追いかけにはしない）
+      channelId,
+      guildId: row.guildId,
+      resumeChannelId: channelId,
+      onTrustPending: () => {
+        if (tmuxSession === undefined) return;
+        this.editPrompt(channelId, pending.promptMessageId, { text: ccStartedTexts(tmuxSession, true)[0]!, components: [] });
+      },
+      onGaveUp: () => {
+        if (!store.setState(channelId, "ended", ["resuming"])) return;
+        log(`Claude Code: [起動して続ける] のセッションを結びつけられなかったため、チャンネルを終わったままにしました（guild=${row.guildId}）`);
+        this.editPrompt(channelId, pending.promptMessageId, {
+          text: `${CC_RESUME_GAVE_UP_TEXT}${CC_START_RETRY_NOTE}`,
+          components: ccResumeButtons(channelId, messageId),
+        });
+      },
+    });
+    if (!result.ok) return back(result.reason, `起動できませんでした（${START_FAILURE_TEXT[result.reason]}）${CC_START_RETRY_NOTE}`, true);
+    tmuxSession = result.tmuxSession;
+    log(`Claude Code: [起動して続ける] で起動しました（guild=${row.guildId}${result.sendId === undefined ? "" : `、最初の指示 #${result.sendId}`}）`);
+    // 最初の指示の印と返事は、その発言に付ける
+    if (result.sendId !== undefined) {
+      this.deps.sends.setMessageId(result.sendId, messageId);
+      const send = this.deps.sends.get(result.sendId);
+      if (send !== undefined) this.mark(send);
+    }
+    return { ok: true, message: { text: ccStartedTexts(result.tmuxSession, false)[0]!, components: [] } };
+  }
+
+  /** [やめる]（cc:resume:keep）: その発言の保留を捨てる。保留が無ければ false（古い） */
+  keepEnded(channelId: string, messageId: string): boolean {
+    return this.resumePending.delete(`${channelId}:${messageId}`);
+  }
+
+  /** そのセッションが今の一覧にあるか */
+  private listed(sessionId: string): boolean {
+    return this.deps.registry.snapshot().sessions.some((view) => view.sessionId === sessionId);
+  }
+
+  /** 終わったチャンネルの発言に [起動して続ける][やめる] を返信し、本文を保留する（積まない） */
+  private async promptResume(message: IncomingMessage, text: string): Promise<void> {
+    try {
+      const promptMessageId = await this.deps.gateway.sendMessage(message.channelId, {
+        text: CC_RESUME_PROMPT_TEXT,
+        replyToId: message.id,
+        suppressEmbeds: true,
+        components: ccResumeButtons(message.channelId, message.id),
+      });
+      this.resumePending.set(`${message.channelId}:${message.id}`, { text, promptMessageId });
+      // 古いものから捨てる（Map は足した順）
+      while (this.resumePending.size > RESUME_PENDING_MAX) {
+        const oldest = this.resumePending.keys().next().value;
+        if (oldest === undefined) break;
+        this.resumePending.delete(oldest);
+      }
+    } catch (error) {
+      this.deps.log(`Claude Code: 終わったチャンネルの発言に返信できませんでした（${errorKind(error)}）`);
+    }
+  }
+
+  /**
+   * [起動して続ける] で起動したセッションを結びつけた（started の resumeChannelId）: resuming のチャンネルの session_id を付け替えて open に戻し、
+   * topic を書き換え、カテゴリ「Claude Code」へ戻して 1 行を出す。resuming でなければ（消された・ended に戻した後）false（通常の起動として扱う）
+   */
+  private rebound(channelId: string, sessionId: string): boolean {
+    const { store, registry, log } = this.deps;
+    const row = store.get(channelId);
+    if (row === undefined || row.state !== "resuming") return false;
+    // 新しいセッションに別のチャンネルが既にあれば付け替えない（一意の索引）
+    if (store.anyFor(sessionId) !== undefined || !store.rebind(channelId, sessionId) || !store.setState(channelId, "open", ["resuming"])) {
+      store.setState(channelId, "ended", ["resuming"]);
+      log(`Claude Code: [起動して続ける] のチャンネルを付け替えられませんでした（guild=${row.guildId}）`);
+      return false;
+    }
+    for (const key of [...this.resumePending.keys()]) if (key.startsWith(`${channelId}:`)) this.resumePending.delete(key);
+    const view = registry.snapshot().sessions.find((candidate) => candidate.sessionId === sessionId);
+    const name = view?.name ?? null;
+    const dir = cwdLabel(view?.cwd ?? row.cwd ?? undefined, this.deps.cfg.workspaceDir, this.deps.home);
+    log(`Claude Code: [起動して続ける] のセッションにチャンネルを付け替えました（guild=${row.guildId}）`);
+    const updated = store.get(channelId) ?? row;
+    this.track(async () => {
+      try {
+        await this.deps.gateway.setChannelTopic(channelId, ccChannelTopic(name, dir));
+      } catch (error) {
+        log(`Claude Code: チャンネルの topic を書き換えられませんでした（${errorKind(error)}）`);
+      }
+    });
+    this.moveToCategory(updated);
+    this.post(updated, ccResumedText(name ?? dir ?? "（名前なし）"));
+    return true;
+  }
+
+  /** 確認の投稿を書き換える（失敗は log だけ） */
+  private editPrompt(channelId: string, messageId: string, message: OutgoingMessage): void {
+    this.track(async () => {
+      try {
+        await this.deps.gateway.editMessage(channelId, messageId, message);
+      } catch (error) {
+        this.deps.log(`Claude Code: [起動して続ける] の確認を書き換えられませんでした（${errorKind(error)}）`);
+      }
+    });
+  }
+
+  /** 待てる非同期の処理（idle で待つ） */
+  private track(fn: () => Promise<void>): void {
+    const task = fn();
+    this.inFlight.add(task);
+    void task.finally(() => this.inFlight.delete(task));
   }
 
   /** 頼んだチャンネルのサーバー（許可サーバーのときだけ） */

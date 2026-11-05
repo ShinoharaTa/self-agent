@@ -15,6 +15,7 @@ export type GatewayCall =
   | { method: "messageExists"; channelId: string; messageId: string }
   | { method: "createCategory"; guildId: string; name: string }
   | { method: "createTextChannel"; guildId: string; options: TextChannelOptions }
+  | { method: "setChannelTopic"; channelId: string; topic: string }
   | { method: "channelExists"; channelId: string }
   | { method: "countChannelsIn"; categoryId: string }
   | { method: "moveChannel"; channelId: string; parentId: string }
@@ -213,6 +214,10 @@ export class FakeGateway implements Gateway {
     const id = this.newChannelId();
     this.parents.set(id, options.parentId);
     return id;
+  }
+  async setChannelTopic(channelId: string, topic: string): Promise<void> {
+    this.expect("setChannelTopic");
+    this.record({ method: "setChannelTopic", channelId, topic });
   }
   async channelExists(channelId: string): Promise<boolean> {
     this.expect("channelExists");
