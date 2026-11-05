@@ -675,9 +675,12 @@
     return !!(store.cc && store.cc.sessions.some((s) => s.permission && s.permission.state === "pending"));
   }
 
-  /** 一覧を見ている（サイドバーに Claude Code を出している・セッションのタブが前に出ている） */
+  /** 判断待ちのセッションの数（会話のアクティビティの数に足す） */
+  store.ccNeedsInputCount = () => (store.ccEnabled() && store.cc ? store.cc.sessions.filter((s) => s.state === "needs_input").length : 0);
+
+  /** 一覧を見ている（会話の一覧（群「Claude Code」）を出している・セッションのタブが前に出ている） */
   function ccWatching() {
-    return store.ccEnabled() && (SA.app.sidebarShows("cc") || activeCcSession() !== null);
+    return store.ccEnabled() && (SA.app.sidebarShows("chat") || activeCcSession() !== null);
   }
 
   /** opts.quiet は polling から（失敗のトーストは polling が出す） */
@@ -703,6 +706,8 @@
         starting: Array.isArray(data && data.starting) ? data.starting.filter((s) => s && typeof s.title === "string") : [],
       };
       SA.app.refreshSidebar();
+      // 会話のアクティビティの数（判断待ち）が変わりうる
+      SA.app.refreshStatus();
       // タブの見出しの名前が変わりうる
       if (activeCcSession() !== null) SA.app.refreshTabs();
     });
@@ -758,8 +763,8 @@
     notices: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.notices(opts), fails: 0, timer: null },
     lists: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.lists(opts), fails: 0, timer: null },
     turns: { base: () => TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
-    // Claude Code: 一覧は見ている間だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと。見ていなければ次を予約せず、
-    // 見始めたとき（サイドバーを出した・タブを前に出した。SA.poll.kickCc）と、隠れていた画面が戻ったとき（schedule）に始め直す
+    // Claude Code: 一覧は見ている間（会話の一覧を出している・セッションのタブが前に出ている）だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと。見ていなければ次を予約せず、
+    // 見始めたとき（会話の一覧を出した・タブを前に出した。SA.poll.kickCc）と、隠れていた画面が戻ったとき（schedule）に始め直す
     // 許可の要求を保留しているセッションがあれば一覧も 3 秒ごと
     cc: { base: () => (ccAsking() ? CC_PERMISSION_INTERVAL_MS : CC_LIST_INTERVAL_MS), when: ccWatching, run: (opts) => store.load.cc(opts), fails: 0, timer: null },
     ccScreen: {
@@ -836,7 +841,7 @@
     stopped: () => poll.stopped,
     /** 送った・中断した直後: 実行中のターンをすぐ読む */
     running: () => runPoll(polls.running),
-    /** Claude Code を見始めた: 止まっている（予約も読み取りも無い）一覧・画面の polling を始め直す */
+    /** Claude Code を見始めた（会話の一覧・セッションのタブ）: 止まっている（予約も読み取りも無い）一覧・画面の polling を始め直す */
     kickCc: () => {
       for (const p of [polls.cc, polls.ccScreen]) if (p.timer === null && !p.inFlight) runPoll(p);
     },

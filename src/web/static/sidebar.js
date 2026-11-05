@@ -9,17 +9,16 @@
   const always = () => true;
 
   // tab があるものはサイドバーを開かずにそのタブを開く（状態・設定）。
-  // enabled(status) が false の機能（dev モードでない会話ログ・GitHub 無効・ジョブ無効・Claude Code の連携が無効）は出さない。
+  // enabled(status) が false の機能（dev モードでない会話ログ・GitHub 無効・ジョブ無効）は出さない。
   // stage の付いたものはその段で中身を足すまで出さない（足した段で stage を外す）
   // phone はスマホ（639px 以下）の置き場: primary は下タブ、more は「その他」のシート（docs/plan/web-ui-polish.md の NAV）。
-  // cc は Claude Code の統合（会話の一覧の群）で項目ごと消すまで more に置く
+  // Claude Code は会話の一覧の群（docs/plan/claude-code-channels.md §2）で、アクティビティには置かない。会話の数は未読 + 判断待ち
   const ACTIVITIES = [
-    { id: "chat", label: "会話", phone: "primary", icon: "message-square", enabled: always, count: () => store.unreadCount(), countLabel: "未読 ", running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
+    { id: "chat", label: "会話", phone: "primary", icon: "message-square", enabled: always, count: () => store.unreadCount() + store.ccNeedsInputCount(), countLabel: "未読・判断待ち ", running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
     { id: "tasks", label: "タスク", phone: "primary", icon: "square-check", enabled: always },
     { id: "reminders", label: "リマインド", phone: "primary", icon: "bell", enabled: always },
     { id: "knowledge", label: "ナレッジ・記憶", phone: "more", icon: "book", enabled: always },
     { id: "projects", label: "プロジェクト", phone: "more", icon: "folder", enabled: always },
-    { id: "cc", label: "Claude Code", phone: "more", icon: "terminal", enabled: (status) => !!(status.cc && status.cc.enabled) },
     { id: "jobs", label: "ジョブ", phone: "more", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
     { id: "github", label: "GitHub", phone: "more", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled) },
     { id: "usage", label: "使用量", phone: "more", icon: "bar-chart", enabled: always },
@@ -62,10 +61,19 @@
     return el("li", {}, [btn]);
   }
 
-  function group(key, title, items, extras, emptyText) {
+  /** opts.count は見出しの数（既定は行の数）、opts.before・opts.after は行の前・後に置く要素（群を閉じると隠れる） */
+  function group(key, title, items, extras, emptyText, opts) {
+    const o = opts || {};
     const details = el("details", { class: "sb-group", open: ui.groups[key] !== false }, [
-      el("summary", {}, [icon("chevron-right", "sb-chevron"), el("span", { text: title }), el("span", { class: "sb-count", text: String(items.length) }), ...(extras || [])]),
+      el("summary", {}, [
+        icon("chevron-right", "sb-chevron"),
+        el("span", { text: title }),
+        el("span", { class: "sb-count", text: String(o.count !== undefined ? o.count : items.length) }),
+        ...(extras || []),
+      ]),
+      ...(o.before || []),
       items.length ? el("ul", { class: "sb-list" }, items) : el("p", { class: "sb-empty", text: emptyText || "ありません" }),
+      ...(o.after || []),
     ]);
     details.addEventListener("toggle", () => {
       ui.groups[key] = details.open;
@@ -73,7 +81,7 @@
     return details;
   }
 
-  // ===== 会話（入口・進行中・待ち・完了） =====
+  // ===== 会話（入口・Claude Code・進行中・待ち・完了） =====
   function channelRow(ch) {
     const persona = store.channels.personas.find((p) => p.id === ch.persona);
     const badges = [];
@@ -106,6 +114,7 @@
     });
     return [
       group("entrances", "入口", channels.filter((c) => c.kind !== "session").map(channelRow)),
+      ...ccGroup(q),
       el("div", { class: "sb-new-row" }, [newBtn]),
       group("active", "進行中", by("active")),
       group("waiting", "待ち", by("waiting")),
@@ -114,13 +123,15 @@
   }
 
   function renderChat(body) {
+    watchCc();
     if (store.channels === null) {
       store.load.channels();
       body.replaceChildren(group("entrances", "入口", [], null, "読み込んでいます…"));
       return;
     }
     if (!store.channels.guilds.some((g) => g.setUp)) {
-      body.replaceChildren(el("p", { class: "sb-note-block", text: "会話はまだありません。Discord で /setup を実行すると、ここに出ます。" }));
+      // Claude Code の群は Discord の /setup によらず出す
+      body.replaceChildren(el("p", { class: "sb-note-block", text: "会話はまだありません。Discord で /setup を実行すると、ここに出ます。" }), ...ccGroup(""));
       return;
     }
     const listBox = el("div", { class: "sb-stack" }, chatList());
@@ -210,8 +221,8 @@
     body.replaceChildren(group("gh", "最近の通知", items));
   }
 
-  // ===== Claude Code（この機械のセッション。判断待ち → 実行中 → 待機） =====
-  /** 一覧をこの時間より前に読んだものなら、サイドバーを出したときに読み直す */
+  // ===== Claude Code（会話の一覧の群。この機械のセッション。並びはサーバーの rankSessions: 判断待ち → 実行中 → 最近の指示） =====
+  /** 一覧をこの時間より前に読んだものなら、会話の一覧を出したときに読み直す */
   const CC_FRESH_MS = 10000;
 
   function ccRow(s) {
@@ -238,7 +249,9 @@
       if (on && text !== top) notes.push(text);
     }
     return row({
+      // Discord のチャンネル（Claude Code のチャンネル）があるものは #。CC10 で一覧に channel が載るまでは無い
       tab: "cc:" + s.sessionId,
+      icon: s.channel ? "hash" : null,
       label: SA.views.ccName(s),
       badges,
       dot: s.state === "needs_input" ? "dot-warn" : null,
@@ -262,41 +275,40 @@
     ]);
   }
 
-  function renderCc(body) {
-    if (!store.ccEnabled()) {
-      body.replaceChildren(group("cc-needs", "判断待ち", [], null, "読み込んでいます…"));
-      return;
-    }
-    // 見始めたら polling を始め直す。止まっていた間に古くなっていれば読み直す（読めなくても ccAt は進む）
+  /** 会話の一覧を出している間: polling を始め直し、止まっていた間に古くなっていれば読み直す（読めなくても ccAt は進む） */
+  function watchCc() {
+    if (!store.ccEnabled()) return;
     SA.poll.kickCc();
     if (store.ccAt === 0 || Date.now() - store.ccAt > CC_FRESH_MS) store.load.cc(store.cc === null ? undefined : { quiet: true });
-    if (store.cc === null) {
-      body.replaceChildren(group("cc-needs", "判断待ち", [], null, store.ccFailed ? "一覧を読めませんでした" : "読み込んでいます…"));
-      return;
-    }
-    const by = (state) => store.cc.sessions.filter((s) => s.state === state).map(ccRow);
+  }
+
+  /** 群「Claude Code」（Claude Code の連携が無効なら出さない）。q は絞り込みの語（名前・場所・題名に効く） */
+  function ccGroup(q) {
+    if (!store.ccEnabled()) return [];
+    if (store.cc === null) return [group("cc", "Claude Code", [], null, store.ccFailed ? "一覧を読めませんでした" : "読み込んでいます…")];
+    const match = (...texts) => q === "" || texts.some((t) => typeof t === "string" && t.includes(q));
+    const sessions = store.cc.sessions.filter((s) => match(SA.views.ccName(s), s.cwdLabel));
+    // 起動中（trust の確認待ちの claude は一覧に出ないので、起動したがまだ一覧に無いもの）を先頭に
+    const starting = store.cc.starting.filter((s) => match(s.title, s.project));
+    const items = [...starting.map(ccStartingRow), ...sessions.map(ccRow)];
+    // 見出しの数は判断待ちの数（0 なら全体の数）
+    const needs = sessions.filter((s) => s.state === "needs_input").length;
+    const note = store.cc.unreadable ? "一覧を読めませんでした。" : store.cc.stale ? "一覧を読めませんでした。前に読めた一覧です。" : null;
+    // 一覧を最後に読めた時刻（サーバーの読み取り）
+    const fetched = store.cc.fetchedAt ? "一覧は " + SA.views.secondsAgo(store.cc.fetchedAt) + "のもの" + (store.ccFailed ? "（今は読めません）" : "") : null;
     // この機械の tmux に新しいセッションを起動する（起動のダイアログ）。会話の「新しいセッション」と語を分ける（GUIDELINES §7）
     const startBtn = el("button", { class: "btn btn-secondary btn-sm sb-new", type: "button" }, [icon("plus"), "Claude Code を起動"]);
     startBtn.addEventListener("click", () => {
       SA.app.closeDrawer();
       SA.app.ccStart();
     });
-    const note = store.cc.unreadable
-      ? "一覧を読めませんでした。"
-      : store.cc.stale
-        ? "一覧を読めませんでした。前に読めた一覧です。"
-        : null;
-    const groups = [group("cc-needs", "判断待ち", by("needs_input")), group("cc-running", "実行中", by("running")), group("cc-idle", "待機", by("idle"))];
-    // 起動中（trust の確認待ちの claude は claude agents --json に出ないので、起動したがまだ一覧に無いものを別に出す）。無ければ群ごと出さない
-    if (store.cc.starting.length > 0) groups.unshift(group("cc-starting", "起動中", store.cc.starting.map(ccStartingRow)));
-    // 一覧を最後に読めた時刻（claude agents --json。サーバーの読み取り）
-    const fetched = store.cc.fetchedAt ? "一覧は " + SA.views.secondsAgo(store.cc.fetchedAt) + "のもの" + (store.ccFailed ? "（今は読めません）" : "") : null;
-    body.replaceChildren(
-      ...(note ? [el("p", { class: "sb-note-block", text: note })] : []),
-      el("div", { class: "sb-new-row" }, [startBtn]),
-      ...groups,
-      ...(fetched ? [el("p", { class: "sb-note-block", text: fetched })] : []),
-    );
+    return [
+      group("cc", "Claude Code", items, null, null, {
+        count: needs > 0 ? needs : items.length,
+        before: note ? [el("p", { class: "sb-hint", text: note })] : [],
+        after: [...(fetched ? [el("p", { class: "sb-hint", text: fetched })] : []), el("div", { class: "sb-new-row" }, [startBtn])],
+      }),
+    ];
   }
 
   // ===== プロジェクト（W7。配信が無効でも出す） =====
@@ -370,7 +382,6 @@
     knowledge: renderKnowledge,
     github: renderGithub,
     projects: renderProjects,
-    cc: renderCc,
     usage: renderUsage,
     devlog: renderDevlog,
   };

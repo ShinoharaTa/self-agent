@@ -151,6 +151,11 @@ class FakeNode {
       this.children.push(node);
     }
   }
+  replaceChildren(...nodes: Array<FakeNode | string>): void {
+    for (const c of this.children) c.parent = null;
+    this.children = [];
+    this.append(...nodes);
+  }
   remove(): void {
     if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
     this.parent = null;
@@ -407,7 +412,7 @@ test("web static: スマホの下タブは固定 4（会話・タスク・リマ
   const js = read("sidebar.js");
   const phoneOf = (id: string): string | undefined => new RegExp(`\\{ id: "${id}",[^\\n]*?phone: "(primary|more)"`).exec(js)?.[1];
   for (const id of ["chat", "tasks", "reminders"]) assert.equal(phoneOf(id), "primary", id);
-  for (const id of ["knowledge", "projects", "cc", "jobs", "github", "usage", "devlog", "status", "settings"]) assert.equal(phoneOf(id), "more", id);
+  for (const id of ["knowledge", "projects", "jobs", "github", "usage", "devlog", "status", "settings"]) assert.equal(phoneOf(id), "more", id);
   assert.match(read("workbench.js"), /"aria-controls": "more-sheet"/);
   // シートの動きは transform と visibility だけ（height・all を動かさない）
   const css = read("app.css");
@@ -419,6 +424,133 @@ test("web static: スマホの下タブは固定 4（会話・タスク・リマ
   assert.doesNotMatch(transition, /\b(height|all)\b/);
   // シートと backdrop は 639px 以下だけ出す（既定は display: none）
   assert.match(css, /\n\.more-sheet,\n#more-backdrop \{\n {2}display: none;\n\}/);
+});
+
+// ===== 会話の一覧の群「Claude Code」（sidebar.js。docs/plan/claude-code-channels.md §2）を偽の DOM で描く =====
+type CcFake = { sessions: Array<Record<string, unknown>>; starting: Array<Record<string, unknown>>; stale: boolean; unreadable: boolean; fetchedAt: string | null };
+
+function loadSidebar(opts: { ccEnabled: boolean; cc: CcFake | null; setUp?: boolean }) {
+  const document = {
+    activeElement: null,
+    getElementById: () => null,
+    createElement: (tag: string) => new FakeNode(tag),
+    createElementNS: (_ns: string, tag: string) => new FakeNode(tag),
+    createTextNode: (text: string) => Object.assign(new FakeNode("#text"), { text }),
+  };
+  const context = { window: {} as Record<string, unknown>, document, setTimeout: () => 0, clearTimeout: () => undefined, Intl, Date, Number };
+  vm.runInNewContext(read("ui.js"), context);
+  const SA = (context.window as { SA: Record<string, unknown> }).SA;
+  const calls = { kickCc: 0, loadCc: 0, opened: [] as string[] };
+  const channel = (id: string, kind: string, name: string, state?: string) => ({ id, kind, name, title: name, state, persona: "default", last: null });
+  SA.store = {
+    status: { cc: { enabled: opts.ccEnabled } },
+    channels: {
+      guilds: [{ id: "g", setUp: opts.setUp !== false }],
+      personas: [{ id: "default", name: "既定の人格", isDefault: true }],
+      channels: [channel("c1", "inbox", "inbox"), channel("c2", "session", "調べもの", "active")],
+    },
+    cc: opts.cc,
+    ccAt: opts.cc ? Date.now() : 0,
+    ccFailed: false,
+    running: [],
+    ccEnabled: () => opts.ccEnabled,
+    ccNeedsInputCount: () => (opts.cc ? opts.cc.sessions.filter((s) => s.state === "needs_input").length : 0),
+    unreadCount: () => 1,
+    runningOf: () => null,
+    isUnread: () => false,
+    load: {
+      cc: () => {
+        calls.loadCc++;
+      },
+      channels: () => undefined,
+    },
+  };
+  SA.app = {
+    activeTabId: () => null,
+    open: (tab: string) => calls.opened.push(tab),
+    closeDrawer: () => undefined,
+  };
+  SA.poll = {
+    kickCc: () => {
+      calls.kickCc++;
+    },
+  };
+  SA.views = {
+    ccName: (s: { name?: string; cwdLabel?: string }) => s.name || s.cwdLabel || "（名前なし）",
+    ago: () => "1 分前",
+    secondsAgo: () => "3 秒前",
+  };
+  vm.runInNewContext(read("sidebar.js"), context);
+  const sidebar = SA.sidebar as { ACTIVITIES: Array<{ id: string; count?: () => number; countLabel?: string }>; render: (container: FakeNode, id: string) => void };
+  const container = new FakeNode("div");
+  sidebar.render(container, "chat");
+  const groups = descendants(container).filter((n) => n.tagName === "details");
+  const titleOf = (g: FakeNode) => g.children[0]!.children[1]!.text;
+  const countOf = (g: FakeNode) => g.children[0]!.children[2]!.text;
+  const ccGroup = groups.find((g) => titleOf(g) === "Claude Code");
+  return { sidebar, container, groups, titleOf, countOf, ccGroup, calls };
+}
+
+const ccSession = (sessionId: string, name: string, state: string, extra: Record<string, unknown> = {}) => ({ sessionId, name, state, inTmux: true, cwdLabel: "~/w/" + name, ...extra });
+
+test("web static: ACTIVITIES に Claude Code（cc）は無く、会話の数は未読 + 判断待ち", () => {
+  const { sidebar } = loadSidebar({
+    ccEnabled: true,
+    cc: { sessions: [ccSession("a", "x", "needs_input"), ccSession("b", "y", "needs_input"), ccSession("c", "z", "idle")], starting: [], stale: false, unreadable: false, fetchedAt: null },
+  });
+  assert.equal(sidebar.ACTIVITIES.some((a) => a.id === "cc"), false);
+  const chat = sidebar.ACTIVITIES.find((a) => a.id === "chat")!;
+  // 未読 1 + 判断待ち 2
+  assert.equal(chat.count!(), 3);
+  assert.equal(chat.countLabel, "未読・判断待ち ");
+  assert.doesNotMatch(read("sidebar.js"), /\{ id: "cc",/);
+});
+
+test("web static: 会話の一覧は 入口 → Claude Code → 進行中 → 待ち → 完了 で、Claude Code の群は起動中 → 一覧の順（サーバーの並び）・見出しの数は判断待ち・行は cc:<id> を開く", () => {
+  const { groups, titleOf, countOf, ccGroup, calls } = loadSidebar({
+    ccEnabled: true,
+    cc: {
+      sessions: [ccSession("s-need", "need", "needs_input"), ccSession("s-run", "run", "running"), ccSession("s-idle", "idle", "idle", { channel: { channelId: "x" } })],
+      starting: [{ title: "new-one", project: "p" }],
+      stale: true,
+      unreadable: false,
+      fetchedAt: new Date().toISOString(),
+    },
+  });
+  assert.deepEqual(groups.map(titleOf), ["入口", "Claude Code", "進行中", "待ち", "完了"]);
+  assert.ok(ccGroup);
+  assert.equal(countOf(ccGroup), "1");
+  const list = ccGroup.children.find((c) => c.tagName === "ul")!;
+  const labels = list.children.map((li) => descendants(li).find((n) => n.classes.has("sb-label"))!.text);
+  assert.deepEqual(labels, ["new-one", "need", "run", "idle"]);
+  // 判断待ちは点、実行中はスピナー、チャンネルのあるものは #（無いものは空の箱）
+  const rowOf = (i: number) => list.children[i]!;
+  assert.ok(descendants(rowOf(1)).some((n) => n.classes.has("dot-warn")));
+  assert.ok(descendants(rowOf(2)).some((n) => n.classes.has("spinner")));
+  const iconHref = (li: FakeNode) => descendants(li).find((n) => n.tagName === "use")?.getAttribute("href") ?? null;
+  assert.match(iconHref(rowOf(3)) ?? "", /#hash$/);
+  assert.ok(descendants(rowOf(1)).some((n) => n.classes.has("icon-blank")));
+  // 読めなかった注記と [Claude Code を起動] は群の中
+  assert.match(ccGroup.textContent, /前に読めた一覧です/);
+  assert.ok(ccGroup.buttons().some((b) => b.textContent === "Claude Code を起動"));
+  rowOf(1).buttons()[0]!.dispatch("click");
+  assert.deepEqual(calls.opened, ["cc:s-need"]);
+  // 会話の一覧を出したら Claude Code の polling を始め直す
+  assert.equal(calls.kickCc, 1);
+});
+
+test("web static: Claude Code の連携が無効なら群を出さず polling もしない。一覧をまだ読んでいなければ読み込み中の群", () => {
+  const off = loadSidebar({ ccEnabled: false, cc: null });
+  assert.equal(off.ccGroup, undefined);
+  assert.equal(off.calls.kickCc, 0);
+  assert.equal(off.calls.loadCc, 0);
+  const loading = loadSidebar({ ccEnabled: true, cc: null });
+  assert.ok(loading.ccGroup);
+  assert.match(loading.ccGroup.textContent, /読み込んでいます…/);
+  assert.equal(loading.calls.loadCc, 1);
+  // /setup 前でも Claude Code の群は出す
+  const notSetUp = loadSidebar({ ccEnabled: true, cc: { sessions: [ccSession("a", "x", "idle")], starting: [], stale: false, unreadable: false, fetchedAt: null }, setUp: false });
+  assert.ok(notSetUp.ccGroup);
 });
 
 // ===== 画面の言葉（docs/design/WEB-UI-GUIDELINES.md §7・§10） =====
