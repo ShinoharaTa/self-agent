@@ -1000,7 +1000,7 @@ test("web static: UI-8 のレビュー: キーボードは幅ごとの最大の�
 test("web static: 視認性（UI-9。#252）: 刻む数字は本文の色と tabular-nums、≤639px の一覧の題 16・群 14、バッジは無地、長押しのプレビューを出さない", () => {
   const css = read("app.css");
   // 実行中の行・許可の残り時間（PC も同じ）
-  assert.match(css, /\n\.steps > summary > \[data-run-progress\] \{\n {2}color: var\(--text\);\n {2}font-variant-numeric: tabular-nums;/);
+  assert.match(css, /\n\.run-line > \[data-run-progress\] \{\n {2}color: var\(--text\);\n {2}font-variant-numeric: tabular-nums;/);
   assert.match(css, /\n\.cc-permission \[data-permission-left\] \{\n {2}color: var\(--text\);\n {2}font-variant-numeric: tabular-nums;/);
   assert.match(css, /\[data-permission-left\]\.is-urgent \{\n {2}color: var\(--warning\);/);
   // .badge は無地（塗りのピルは .act-count だけ）
@@ -1330,7 +1330,7 @@ test("web static: 会話の行は吹き出し（#263）: オーナーは右・Bo
   // 同じ話者の Bot が続くときは名前を出さない
   assert.match(chat, /renderTurn\(turn, channelId, ch, prev\)/);
   assert.match(chat, /renderRunning\(ch, run, prev\)/);
-  // ライトの Bot の吹き出しは地より一段暗く、中のコード・手順は白
+  // ライトの Bot の吹き出しは地より一段暗く、中のコードは白
   assert.equal(css.match(/--bubble-agent: #e4e8ef;/g)?.length, 2);
   assert.equal(css.match(/--bubble-inset: #ffffff;/g)?.length, 2);
   // 指の端末では時刻のリンクの当たりを広げる
@@ -1338,4 +1338,32 @@ test("web static: 会話の行は吹き出し（#263）: オーナーは右・Bo
   // Bot の名前は人格が 2 体以上か Claude Code のチャンネルのときだけ
   assert.match(chat, /function showsAgentName\(ch\) \{\n {4}return !!\(ch && ch\.kind === "cc"\) \|\| !!\(store\.channels && store\.channels\.personas\.length > 1\);/);
   assert.match(css, /\n\.tl-notice \{(?![^}]*padding-left)[^}]*\}/);
+});
+
+test("web static: 実行中の行は 1 行 + 直近 3 つの手順の薄い文字、すべての手順は押して開く（Q5・#118）", () => {
+  const chat = read("chat.js");
+  // 1 行目はスピナー + 刻む数字の「作業中…」
+  assert.match(chat, /el\("div", \{ class: "run-line" \}, \[el\("span", \{ class: "spinner", "aria-hidden": "true" \}\), el\("span", \{ "data-run-progress": run\.channelId, text: progressText\(run\) \}\)\]\)/);
+  // 直近の 3 つ（最後が今の手順）
+  assert.match(chat, /const RECENT_STEPS = 3;/);
+  assert.match(chat, /el\("ol", \{ class: "run-recent" \}\)/);
+  assert.match(chat, /run\.steps\.slice\(-RECENT_STEPS\)/);
+  assert.match(chat, /i === last\.length - 1 \? "is-current" : null/);
+  // 3 つを超えたときだけ「すべての手順（n）」。既定は閉じ、開いたチャンネルを覚える
+  assert.match(chat, /if \(run\.steps\.length > RECENT_STEPS\) \{/);
+  assert.match(chat, /el\("details", \{ class: "steps-plain", open: stepsOpened\.has\(run\.channelId\) \}/);
+  assert.match(chat, /"すべての手順（" \+ run\.steps\.length \+ "）"/);
+  assert.doesNotMatch(chat, /stepsClosed/);
+  // 終わった返事の手順も枠の無い details
+  assert.match(chat, /el\("details", \{ class: "steps-plain", open: opened\.has\(turn\.id\) \}/);
+  assert.doesNotMatch(chat, /class: "steps"/);
+  const css = read("app.css");
+  // 枠・地のカード（.steps）は無い
+  assert.doesNotMatch(css, /(^|\n)\.steps \{/);
+  assert.doesNotMatch(css, /\.msg-bubble \.steps/);
+  assert.doesNotMatch(css, /\.steps > /);
+  assert.match(css, /\n\.run-recent \{[^}]*color: var\(--text-muted\);[^}]*font-size: var\(--font-xs\);[^}]*list-style: none;[^}]*overflow-wrap: anywhere;/);
+  assert.match(css, /\n\.run-recent > li\.is-current \{\n {2}color: var\(--text-secondary\);/);
+  assert.match(css, /\n\.steps-plain \{\n {2}font-size: var\(--font-sm\);\n\}/);
+  assert.doesNotMatch(css, /\.steps-plain \{[^}]*(border|background)/);
 });

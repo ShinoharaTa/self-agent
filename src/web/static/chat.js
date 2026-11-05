@@ -508,7 +508,8 @@
     const body = [];
     if (turn.outcome) {
       const opened = openStepsOf(channelId);
-      const details = el("details", { class: "steps", open: opened.has(turn.id) }, [
+      // 枠も地も付けない 1 行（終わり方の文）。押すとすべての手順
+      const details = el("details", { class: "steps-plain", open: opened.has(turn.id) }, [
         el("summary", { class: END_CLASS[turn.outcome] || null }, [
           icon("chevron-right", "steps-chevron"),
           // 終わり方は文の色で（アイコンは chevron の 1 つだけ）
@@ -528,25 +529,35 @@
     return bubbleRow("agent", p.name, name, body, timeOf(turn));
   }
 
-  /** 実行中の行の手順を閉じたチャンネル（描き直しで開き直さない。既定は開く。このタブのメモリだけ） */
-  const stepsClosed = new Set();
+  /** 実行中の行の「すべての手順」を開いたチャンネル（描き直しで閉じ直さない。既定は閉じる。このタブのメモリだけ） */
+  const stepsOpened = new Set();
+  /** 実行中の行に薄い文字で出す直近の手順の数 */
+  const RECENT_STEPS = 3;
 
   /** 実行中のターンの行（is-running）。[中断] は中断できるターン（セッション）だけ */
   function renderRunning(ch, run, prev) {
     const p = persona(ch ? ch.persona : "default");
-    const steps = el("ol", { class: "steps-list" });
-    run.steps.forEach((s, i) => steps.append(el("li", { class: i === run.steps.length - 1 ? "is-current" : null, text: s })));
-    if (run.steps.length === 0) steps.append(el("li", { text: "まだ手順はありません" }));
-    const details = el("details", { class: "steps", open: !stepsClosed.has(run.channelId) }, [
-      el("summary", {}, [icon("chevron-right", "steps-chevron"), el("span", { class: "spinner", "aria-hidden": "true" }), el("span", { "data-run-progress": run.channelId, text: progressText(run) })]),
-      steps,
-    ]);
-    details.addEventListener("toggle", () => {
-      if (details.open) stepsClosed.delete(run.channelId);
-      else stepsClosed.add(run.channelId);
-    });
-    // 「作業中…」の手順と [中断] は Bot 側の吹き出しの中（実行中であることはスピナーと「作業中…」で分かる）
-    const body = [details];
+    // 1 行目: スピナー + 「作業中…（経過・ツール n 回）」（数字は 1 秒ごとに data-run-progress の文字だけ変える）
+    const line = el("div", { class: "run-line" }, [el("span", { class: "spinner", "aria-hidden": "true" }), el("span", { "data-run-progress": run.channelId, text: progressText(run) })]);
+    // 直近の手順を薄い文字で（最後が今の手順）
+    const recent = el("ol", { class: "run-recent" });
+    const last = run.steps.slice(-RECENT_STEPS);
+    last.forEach((s, i) => recent.append(el("li", { class: i === last.length - 1 ? "is-current" : null, text: s })));
+    if (run.steps.length === 0) recent.append(el("li", { text: "まだ手順はありません" }));
+    const body = [line, recent];
+    // 直近に収まらないときだけ、押して開くすべての手順
+    if (run.steps.length > RECENT_STEPS) {
+      const details = el("details", { class: "steps-plain", open: stepsOpened.has(run.channelId) }, [
+        el("summary", {}, [icon("chevron-right", "steps-chevron"), el("span", { text: "すべての手順（" + run.steps.length + "）" })]),
+        stepsList(run.steps),
+      ]);
+      details.addEventListener("toggle", () => {
+        if (details.open) stepsOpened.add(run.channelId);
+        else stepsOpened.delete(run.channelId);
+      });
+      body.push(details);
+    }
+    // [中断] も Bot 側の吹き出しの中（実行中であることはスピナーと「作業中…」で分かる）
     if (run.abortable) {
       const abort = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, [icon("square"), "中断"]);
       abort.addEventListener("click", () => abortTurn(run.channelId, run.turnSeq, abort));
