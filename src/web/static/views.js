@@ -1067,9 +1067,239 @@
     });
   }
 
+  // ----- 質問（AskUserQuestion。docs/plan/claude-code-questions.md §4。Q3）: 問ごとに選択肢（1 つ選ぶ形はラジオ・複数はチェック）と「その他」。
+  // 全部の問に答えるまで [答える] は押せない。[やめる] は答えない（/deny）。終わったものは答えか終わり方 -----
+  /** 「その他」の上限（字。サーバーは src/cc/questions.ts の CC_QUESTION_OTHER_MAX_CHARS） */
+  const CC_QUESTION_OTHER_MAX = 1000;
+  /** 選んだ状態（要求の id → 問ごとの { labels（選んだ label）, other（「その他」を選んだか）, text（「その他」の文） }）。
+   * 描き直しでも残す（このタブのメモリだけ）。終わったら消す */
+  const ccQuestionDrafts = new Map();
+  /** 描いた保留中のカード（"<タブ>|<要求の id>" → { key, node }）。中身が変わらなければ同じ要素を返し、「その他」の書きかけ・焦点を保つ */
+  const ccQuestionNodes = new Map();
+
+  /** 問の draft（無ければ空で作る） */
+  function ccQuestionDraft(id, count) {
+    let drafts = ccQuestionDrafts.get(id);
+    if (!drafts) {
+      drafts = [];
+      for (let i = 0; i < count; i++) drafts.push({ labels: [], other: false, text: "" });
+      ccQuestionDrafts.set(id, drafts);
+    }
+    return drafts;
+  }
+
+  /** 「その他」の文が送れる形か（前後の空白を除いて 1〜1,000 字） */
+  function otherReady(text) {
+    const length = [...String(text).trim()].length;
+    return length >= 1 && length <= CC_QUESTION_OTHER_MAX;
+  }
+
+  /** 問ごとの答え（問の順。/answer の answers）。答えていない問があれば null。複数選択の label は選択肢の順 */
+  function ccQuestionPicks(questions, drafts) {
+    const picks = [];
+    for (let i = 0; i < questions.length; i++) {
+      const d = drafts[i];
+      if (!d) return null;
+      if (d.other) {
+        if (!otherReady(d.text)) return null;
+        picks.push({ other: d.text.trim() });
+        continue;
+      }
+      const labels = questions[i].options.map((o) => o.label).filter((label) => d.labels.includes(label));
+      if (labels.length === 0) return null;
+      picks.push({ labels });
+    }
+    return picks;
+  }
+
+  /** 問の見出し（header が無ければ問の文の先頭 40 字） */
+  function questionHeading(q, index) {
+    const header = typeof q.header === "string" && q.header.trim() ? q.header : null;
+    if (header) return header;
+    const chars = [...oneLine(String(q.question || ""))];
+    return chars.length > 40 ? chars.slice(0, 40).join("") + "…" : chars.join("") || "問 " + (index + 1);
+  }
+
+  /** 終わった質問の文（答えたなら answers から「1. <見出し>: <答え>」の行） */
+  function ccQuestionEndLines(p) {
+    const by = p.via === "discord" ? "（Discord）" : p.via === "web" ? "（Web）" : "";
+    if (p.state === "allowed") {
+      const questions = p.question.questions;
+      const answers = p.question.answers && typeof p.question.answers === "object" ? p.question.answers : {};
+      const lines = questions.map((q, i) => (i + 1) + ". " + questionHeading(q, i) + ": " + (typeof answers[q.question] === "string" ? answers[q.question] : "-"));
+      return ["答えました" + by, ...lines];
+    }
+    if (p.state === "denied") return ["答えませんでした" + by];
+    return [ccPermissionEndText(p)];
+  }
+
+  /** 質問の答えを送る（path は answer か deny） */
+  function postCcQuestion(sessionId, p, path, body, tabId) {
+    if (ccPermissionBusy.has(p.id)) return;
+    ccPermissionBusy.add(p.id);
+    SA.app.refresh(tabId || "cc:" + sessionId);
+    SA.api.post("/api/cc/permissions/" + p.id + "/" + path, body, { quiet: true }).then(
+      () => {
+        ccQuestionDrafts.delete(p.id);
+        toast(path === "answer" ? "答えました" : "答えませんでした");
+      },
+      (err) => {
+        if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
+        else if (err && err.status === 400) toast("答えの形が合いません");
+        else if (err && err.status === 404) toast("この質問はもうありません");
+        else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => postCcQuestion(sessionId, p, path, body, tabId) });
+      },
+    ).then(() => {
+      ccPermissionBusy.delete(p.id);
+      store.load.ccSession(sessionId);
+      store.load.cc({ quiet: true });
+    });
+  }
+
+  /** 保留の残り時間の見出し（許可のカードと同じ刻み） */
+  function questionHead(title, p, pending) {
+    return el("div", { class: "card-head" }, [
+      el("h2", { text: title }),
+      el("span", {
+        class: "meta" + (pending && typeof p.expiresAt === "string" && permissionUrgent(p.expiresAt) ? " is-urgent" : ""),
+        "data-permission-left": pending && typeof p.expiresAt === "string" ? p.expiresAt : null,
+        text: pending ? permissionLeftText(p.expiresAt) : ago(p.resolvedAt || p.createdAt),
+      }),
+    ]);
+  }
+
+  /** 1 問の fieldset（legend に見出し・問の文・選択肢と「その他」）。sync は選んだ状態を input に写し、[答える] を更新する */
+  function questionFieldset(p, q, index, draft, busy, onChange) {
+    const multi = !!q.multiSelect;
+    const name = "ccq-" + p.id + "-" + index;
+    const inputs = [];
+    const other = el("textarea", {
+      class: "textarea cc-question-other",
+      rows: 2,
+      maxlength: CC_QUESTION_OTHER_MAX,
+      "aria-label": "その他の答え（" + questionHeading(q, index) + "）",
+      disabled: busy,
+    });
+    other.value = draft.text;
+    const sync = () => {
+      for (const { input, label } of inputs) input.checked = label === null ? draft.other : !draft.other && draft.labels.includes(label);
+      other.hidden = !draft.other;
+    };
+    const option = (label, children) => {
+      const input = el("input", { type: multi ? "checkbox" : "radio", name, disabled: busy });
+      inputs.push({ input, label });
+      input.addEventListener("change", () => {
+        if (label === null) {
+          // 「その他」と選択肢は同時に選べない（答えは labels か other の 1 つ）
+          draft.other = multi ? input.checked : true;
+          if (draft.other) draft.labels = [];
+        } else {
+          draft.other = false;
+          if (!multi) draft.labels = [label];
+          else if (input.checked) draft.labels = draft.labels.includes(label) ? draft.labels : [...draft.labels, label];
+          else draft.labels = draft.labels.filter((l) => l !== label);
+        }
+        sync();
+        onChange();
+        if (label === null && draft.other && typeof other.focus === "function") other.focus();
+      });
+      return el("label", { class: "check cc-question-option" }, [input, el("span", { class: "cc-question-label" }, children)]);
+    };
+    const options = q.options.map((o) =>
+      option(o.label, [el("strong", { text: String(o.label) }), o.description ? el("span", { class: "cc-question-desc", text: String(o.description) }) : null]),
+    );
+    other.addEventListener("input", () => {
+      draft.text = other.value;
+      onChange();
+    });
+    sync();
+    return el("fieldset", { class: "cc-question" }, [
+      el("legend", { text: questionHeading(q, index) }),
+      el("p", { class: "cc-question-text", text: String(q.question || "") }),
+      ...(multi ? [el("p", { class: "meta", text: "いくつでも選べます" })] : []),
+      ...options,
+      option(null, [el("strong", { text: "その他" })]),
+      other,
+    ]);
+  }
+
+  /** 質問のカード（問・選択肢・説明は hook から来たデータなので textContent で出す。GUIDELINES §5 質問のカード）。ccPermissionCard が委ねる */
+  function ccQuestionCard(sessionId, p, rc, tabId) {
+    const questions = p.question.questions;
+    const pending = p.state === "pending";
+    const cacheKey = (tabId || "cc:" + sessionId) + "|" + p.id;
+    const s = store.ccSessions ? ccSessionOf(sessionId) : null;
+    const who = s ? el("p", { class: "meta", text: ccName(s) + (p.permissionMode ? " ・ " + permissionModeText(p.permissionMode) : "") }) : null;
+    if (!pending) {
+      ccQuestionDrafts.delete(p.id);
+      ccQuestionNodes.delete(cacheKey);
+      const [first, ...lines] = ccQuestionEndLines(p);
+      const end = [el("span", { text: first })];
+      if (rc && (p.state === "expired" || p.state === "released")) end.push(" ", el("a", { href: rc, target: "_blank", rel: "noreferrer noopener", text: "RC で開く" }));
+      const cls = p.state === "allowed" ? " is-done" : p.state === "expired" || p.state === "released" ? " is-warning" : "";
+      return el("section", { class: "card card-sm cc-permission cc-question-card" + cls, "aria-label": "質問" }, [
+        questionHead("質問", p, false),
+        who,
+        el("p", { class: "cc-permission-end" }, end),
+        ...lines.map((line) => el("p", { class: "cc-question-answer", text: line })),
+      ]);
+    }
+    const busy = ccPermissionBusy.has(p.id);
+    // 中身が変わらなければ同じ要素を返す（描き直しで「その他」の書きかけ・焦点・IME を保つ。入力欄と同じ）
+    const key = JSON.stringify([p.requestHash, p.expiresAt, busy, rc, who ? who.textContent : null]);
+    const cached = ccQuestionNodes.get(cacheKey);
+    if (cached && cached.key === key) {
+      const active = document.activeElement;
+      if (active && cached.node.contains(active)) {
+        // 親が入れ替えるときに外れる焦点を戻す（同じ要素なのでカーソルの位置も残る）
+        const start = active.selectionStart;
+        const endPos = active.selectionEnd;
+        Promise.resolve().then(() => {
+          if (!active.isConnected || document.activeElement === active) return;
+          active.focus({ preventScroll: true });
+          if (typeof start === "number" && typeof active.setSelectionRange === "function") active.setSelectionRange(start, endPos);
+        });
+      }
+      return cached.node;
+    }
+    const drafts = ccQuestionDraft(p.id, questions.length);
+    const answer = el("button", { class: "btn btn-primary btn-sm", type: "button" }, [icon("check"), "答える"]);
+    const drop = el("button", { class: "btn btn-ghost btn-sm", type: "button", disabled: busy, title: busy ? "答えを送っています" : null }, [icon("x"), "やめる"]);
+    const update = () => {
+      const ready = ccQuestionPicks(questions, drafts) !== null;
+      answer.disabled = busy || !ready;
+      // 空の title はカードの title（端末でも答えられる旨）を隠すので、押せるときは外す
+      if (busy || !ready) answer.title = busy ? "答えを送っています" : "すべての問に答えると押せます";
+      else answer.removeAttribute("title");
+    };
+    const fieldsets = questions.map((q, i) => questionFieldset(p, q, i, drafts[i], busy, update));
+    update();
+    answer.addEventListener("click", () => {
+      const picks = ccQuestionPicks(questions, drafts);
+      if (picks) postCcQuestion(sessionId, p, "answer", { requestHash: p.requestHash, answers: picks }, tabId);
+    });
+    // 確認なしで答えない（Claude Code に「断りました」を返す）
+    drop.addEventListener("click", () => postCcQuestion(sessionId, p, "deny", { requestHash: p.requestHash }, tabId));
+    const node = el(
+      "section",
+      { class: "card card-sm cc-permission cc-question-card is-pending", "aria-label": "質問", title: PERMISSION_NOTE },
+      [
+        questionHead("質問を待っています", p, true),
+        who,
+        ...fieldsets,
+        el("div", { class: "msg-actions" }, [answer, drop]),
+        el("p", { class: "cc-permission-note show-sm", text: PERMISSION_NOTE }),
+      ],
+    );
+    ccQuestionNodes.set(cacheKey, { key, node });
+    return node;
+  }
+
   /** 許可のカード（要約・ツール名は hook から来たデータなので textContent で出す。GUIDELINES §5 許可のカード）。tabId は押した後に描き直すタブ（省けば cc:<sessionId>） */
   function ccPermissionCard(sessionId, p, rc, tabId) {
     if (!p || typeof p.id !== "number") return null;
+    // 質問（AskUserQuestion）は質問のカード（Q3）
+    if (p.question && Array.isArray(p.question.questions) && p.question.questions.length > 0) return ccQuestionCard(sessionId, p, rc, tabId);
     const pending = p.state === "pending";
     const head = el("div", { class: "card-head" }, [
       el("h2", { text: pending ? "許可を待っています" : "許可の要求" }),
@@ -1608,6 +1838,7 @@
     oneLine,
     todayTokens,
     ccPermissionCard,
+    ccQuestionPicks,
     // Claude Code のチャンネルの会話のタブ（chat.js。CC14）と共用する
     ccPendingBar,
     ccSessionOf,
