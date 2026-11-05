@@ -138,7 +138,8 @@ export function validateAnswers(questions: readonly CcQuestion[], picks: readonl
       value = normalizeOther(pick.other);
     }
     if (value === undefined) return undefined;
-    answers[question.question] = value;
+    // 問の文が __proto__ でも自分のキーとして持つ（代入だと prototype を変えて答えが落ちる）
+    Object.defineProperty(answers, question.question, { value, enumerable: true, writable: true, configurable: true });
   }
   return answers;
 }
