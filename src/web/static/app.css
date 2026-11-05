@@ -2476,8 +2476,16 @@ dialog[open]::backdrop {
     display: revert;
   }
 
+  /* 一覧はドロワーでなく全幅（後ろに本文を透かさない。backdrop も出さない） */
   .wb-sidebar {
     bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px));
+    width: 100%;
+    border-right: 0;
+    box-shadow: none;
+  }
+
+  #drawer-backdrop {
+    display: none;
   }
 
   .toast-region {
