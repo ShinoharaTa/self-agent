@@ -1446,7 +1446,7 @@
         el("h1", { text: "self-agent" }),
         el("p", { class: "meta" }, [
           el("span", { class: "hide-sm", text: "左の一覧から開くか、コマンドで移動します。" }),
-          el("span", { class: "show-sm", text: "下の「会話」から開くか、検索で移動します。" }),
+          el("span", { class: "show-sm", text: "下の「会話」から開くか、上の「探す」で移動します。" }),
         ]),
         el("div", { class: "welcome-links" }, [
           action("移動", "Ctrl+K", () => SA.app.palette("")),

@@ -146,7 +146,11 @@
       btn.classList.add("is-running");
       btn.append(el("span", { class: "spinner spinner-sm act-spin", role: "img", "aria-label": "実行中" }));
     }
-    btn.addEventListener("click", () => selectActivity(a));
+    btn.addEventListener("click", () => {
+      // スマホで「その他」のシートが開いていれば閉じてから
+      closeMore({ keepFocus: true });
+      selectActivity(a);
+    });
     return btn;
   }
 
@@ -163,18 +167,19 @@
       const group = el("div", { class: "act-group" });
       for (const a of primary) group.append(activityButton(a));
       const hasCount = more.some((a) => a.count && a.count() > 0);
+      const label = hasCount ? "その他（未読あり）" : "その他";
+      // 開閉は aria-expanded だけ（aria-pressed と重ねない）。中の画面が前に出ている間は印の線だけ付ける
       const btn = el(
         "button",
         {
-          class: "act-btn act-more",
+          class: "act-btn act-more" + (moreShows(more) ? " is-current" : ""),
           type: "button",
-          "aria-label": "その他",
-          title: "その他",
+          "aria-label": label,
+          title: label,
           "aria-expanded": String(S.moreOpen),
           "aria-controls": "more-sheet",
-          "aria-pressed": String(moreShows(more)),
         },
-        [icon("ellipsis"), el("span", { class: "act-label", text: "その他" }), hasCount ? el("span", { class: "dot dot-unread", role: "img", "aria-label": "未読あり" }) : null],
+        [icon("ellipsis"), el("span", { class: "act-label", text: "その他" }), hasCount ? el("span", { class: "dot dot-unread", "aria-hidden": "true" }) : null],
       );
       btn.addEventListener("click", () => (S.moreOpen ? closeMore() : openMore()));
       group.append(btn);
@@ -196,9 +201,17 @@
         el("span", { class: "sb-label", text: a.label }),
         n > 0 ? el("span", { class: "sb-meta", text: String(n) }) : null,
       ]);
+      // シートの行は「開く」（同じものを選んでも閉じない）
       btn.addEventListener("click", () => {
         closeMore({ keepFocus: true });
-        selectActivity(a);
+        if (a.tab) {
+          open(a.tab);
+          closeDrawer();
+          refs.editors.focus();
+        } else {
+          S.activity = a.id;
+          openDrawer();
+        }
       });
       return el("li", {}, [btn]);
     });
@@ -1145,6 +1158,21 @@
     $("theme-toggle").addEventListener("click", toggleTheme);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     $("more-backdrop").addEventListener("click", () => closeMore());
+    // 開いている間は Tab / Shift+Tab を最初と最後の行で折り返す（aria-modal）
+    $("more-sheet").addEventListener("keydown", (e) => {
+      if (e.key !== "Tab") return;
+      const rows = $("more-sheet").querySelectorAll(".more-row");
+      if (rows.length === 0) return;
+      const first = rows[0];
+      const last = rows[rows.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    });
     document.addEventListener("keydown", onKey);
     window.addEventListener("hashchange", () => {
       const tabId = tabFromHash(location.hash);
@@ -1167,7 +1195,10 @@
       renderActivity();
     });
 
+    // 最初の描画では一覧（ドロワー）を動かさない（1 フレームだけ transition を止める）
+    refs.wb.classList.add("no-transition");
     renderAll();
+    requestAnimationFrame(() => requestAnimationFrame(() => refs.wb.classList.remove("no-transition")));
     writeHash();
     saveTabs();
     const info = S.active ? SA.views.info(S.active) : null;
