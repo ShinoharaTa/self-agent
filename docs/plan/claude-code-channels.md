@@ -34,7 +34,7 @@
 - `cc_sessions.channel_id` は「最後に Discord から頼んだチャンネル」（CC7。`cc_send` の [送る]・`cc_start` の [起動する]）。`follow`・`follow_channel_id`・`follow_since`・`follow_last_stop_at`・`reply_count_day`・`reply_count` は CC8 の追いかけ。
 - `cc_sends.origin` の CHECK は `'web','tool','github','start'` の 4 つ（`src/store/db.ts` の v28）。**SQLite は CHECK を後から変えられないので、`'discord'` を足すには表の作り直しが要る**。`channel_id`・`message_id` は確認の投稿のもの（CC7）。1 セッションに同時に持てる終わっていない送信（`awaiting_confirm`・`queued`・`delivering`）は 1 件（`activeFor`。`src/cc/sender.ts:187`）。
 - 返事（`src/cc/replies.ts`）: `Stop` を受けたら `follow = 1` のセッションだけ `follow_channel_id` に持ち主の Bot（`ownerPosts`）で投稿し、最後の 1 通に [追いかけをやめる]。最初の返事は `send.messageId`（確認の投稿）への返信（`send.channelId === channelId` のとき）。1 日 `CC_REPLY_DAILY_LIMIT`（50）通。`history` の notice は `guildOf`（main の `webChannelLookup`。**受け付けるチャンネル（#inbox・#tasks・セッション）だけ**）が分かるときだけ書く（`src/main.ts:722-735`）。
-- 許可の要求（`src/cc/discord-notice.ts`）: `SELF_AGENT_CC_NOTIFY` が 1 のときだけ作られ、**`SELF_AGENT_ALLOWED_GUILD_IDS` の順で最初の #system のあるサーバー 1 つ**に 1 通（`:422-423`）。出した場所は `cc_permissions.message_id`・`message_channel_id`（v32）。`permission-hold.ts` の `listen(listener)` は listener を 1 つ受ける（`:105`。複数にするなら変更）。`answer(id, decision, via)` の `via` は `web` / `discord`。判断待ちの知らせ・終了の知らせも同じクラス。
+- （Q4 より前の形。Q4（claude-code-questions.md §5）で `discord-notice.ts` の #system の経路を消し、文面は `notice-text.ts`。今の形は §3.5）許可の要求（`src/cc/discord-notice.ts`）: `SELF_AGENT_CC_NOTIFY` が 1 のときだけ作られ、**`SELF_AGENT_ALLOWED_GUILD_IDS` の順で最初の #system のあるサーバー 1 つ**に 1 通（`:422-423`）。出した場所は `cc_permissions.message_id`・`message_channel_id`（v32）。`permission-hold.ts` の `listen(listener)` は listener を 1 つ受ける（`:105`。複数にするなら変更）。`answer(id, decision, via)` の `via` は `web` / `discord`。判断待ちの知らせ・終了の知らせも同じクラス。
 - hook の受け口は `UserPromptSubmit` の `prompt` を**受けた時点で先頭 200 字に切る**（`src/cc/hook-server.ts:146`・`CC_PROMPT_MAX_CHARS`）。
 - `cc_send`・`cc_start` の確認（`src/app/commands/cc-confirm.ts`）: ボタンは [送る][やめる] / [起動する][やめる]。`cc_starts` に `channel_id`（頼んだチャンネル）。GitHub の [対応]（`src/app/github-handoff.ts`。CC6）は `cc_sends` に `origin github`・`notification_id` で積み、無ければ [起動して送る]。
 - 起動（`src/cc/starter.ts`）: `SELF_AGENT_WORKSPACE_DIR` の**直下**の実際のディレクトリだけ。`check`（起動せず確かめる）と `launch`。起動したペインと一覧のセッションの結びつけは `cwd` が同じものだけ（結びつくまで `session_id` は無い）。
@@ -163,6 +163,7 @@
 **A を採る（オーナーの決定）。**
 - 終わった（`registry` の `ended`。一覧から消えたときだけ。`SessionEnd` の hook は根拠にしない）: `cc_channels.state = 'ended'`・`ended_at` → 「セッションが終わりました。ここに書くと、同じディレクトリで起動して続けられます」を 1 行 → 完了カテゴリへ移す。#system の終了の知らせは無い（Q4 で消した。チャンネルの無いセッションの終了は知らせない）。既に閉じた（`/cc close`・Web の [閉じる] で `ended` の、削除されていない）チャンネルのセッションが後で終わったときも、状態とカテゴリは変えずにチャンネルに同じ 1 行を出して引き受け、#system には出さない。
 - 戻った（同じ `session_id` が再び一覧に現れた。`registry` に `revived(row)` を足す。`gone_at` が NULL でない行を `upsertSeen` する前に拾う）。**開き直すのは `cc_channels` に `session_id` が一致する削除されていない行があるときだけ**（付け替え（rebind）の後の古い id は `previous_session_id` では開き直さない）: `state = 'open'`・`ended_at = NULL` → 「セッションが戻りました」→ Claude Code カテゴリへ戻す。
+- 閉じた（`/cc close`）チャンネルは、セッションが一覧にある間に許可の要求・質問・判断待ちの知らせが来ても開き直す（`ensureFor` → `reopenIfListed`。答える場所が要るため。Q4）。
 - 続ける（終わったチャンネルでの発言。CC13）: そのセッションがまだ一覧にある（`/cc close` で閉じただけ）なら、発言を「関わった」として扱い、`revived` で `open` に戻して「開き直しました」を出し、その発言をそのまま積む（[起動して続ける] は出さない）。一覧に無いときだけ、発言は積まずに、返信で「このセッションは終わっています」+ [起動して続ける][やめる]（`cc:resume:<channel_id>:<message_id>`。押したサーバーが行と違えば古い。保留した本文が無い（再起動の後など）ボタンは、ボタンを外して「この操作は古くなっています」に書き換える）。[起動して続ける] を押したときにセッションが一覧にあれば、起動せずに開き直してその発言を積む。[起動して続ける] は、まず `cc_channels.state` を `ended` → `resuming` に compare-and-set で移し（移せなければ「この操作は古くなっています」。二重起動を防ぐ）、 `starter.launch` を**そのセッションの `cwd`**（`cc_sessions.cwd`。`SELF_AGENT_WORKSPACE_DIR` の直下でなければ「起動できる場所ではありません。Web か端末で起動してください」）・題名はセッション名・最初の指示はその発言の本文・`startedBy: 'tool'`（`cc_sessions.started_by` の CHECK に `discord` が無いので代える。v29 の CHECK を作り直さない）で起動し、一覧に現れて結びついたら `cc_channels.session_id` を新しい `session_id` に**付け替え**（`previous_session_id` に前の id を残す。新しいチャンネルは作らない）、`state = 'open'`、topic を書き換え、Claude Code カテゴリへ戻し、「<名前> として起動しました。続けます」を出す。trust の確認待ちは確認の投稿の書き換え（CC7 と同じ文）。起動の失敗（`limit`・`low_memory`・`too_soon`・`no_server`・`launch` の例外・結びつく前の失敗）は `state` を `ended` に戻し、ボタンを残して「少し待ってもう一度押してください」。`resuming` の間のそのチャンネルの発言は積まずに返信で「起動中です。少し待ってから書いてください」と断る。再起動で `resuming` のまま残った行は起動時に `ended` に戻す。
 - 削除の確認（CC13）: 完了（`ended_at`）から `SELF_AGENT_DELETE_AFTER_DAYS` 日経ったチャンネルは、セッションと同じく #system に [削除する][残す]（`scheduler` の `listDeleteDue` と同じ形を `cc_channels` にも。ボタンは `cc:del:<channel_id>` / `cc:del:keep:<channel_id>`（CC7 の `cc:keep:send|start:<id>` と重ならないよう、`cc:del:` の下に置く）。[残す] は `ended_at` を今にする。`open` に戻した（戻った・開き直した・続けた）ら `delete_prompt_message_id` を外し、次に終わったらまた確認する）。[削除する] で `deleteChannel` → `channelOps.cancel(channelId)`（未実行のカテゴリ移動を捨てる）→ `state = 'deleted'`・`deleted_at`。戻った・続けたチャンネルは `open` になるので対象から外れる。
 - セッションのチャンネルの規則（`SELF_AGENT_IDLE_HOURS` の待ちへの移動・`/wait`・`topic_sessions` の削除の確認）は cc のチャンネルには当たらない（`topic_sessions` に行が無い）。
@@ -276,6 +277,7 @@
 | `guild-settings.ts` | `ccCategoryId(guildId)`・`setCcCategory(guildId, id)`（`routineCategoryId`・`setRoutineCategory` と同じ形。行が無ければ false） | CC10 |
 
 ### 12.2 Claude Code（`src/cc/`）
+> CC10〜CC14 の時点の分解。Q4（claude-code-questions.md §5）で `discord-notice.ts` は `notice-text.ts`（純関数だけ）に移し、`permission-hold.ts` の `claims`・`release` は消した。
 
 | ファイル | 変更 | 段 |
 |---|---|---|
@@ -285,8 +287,8 @@
 | `sender.ts` | `submit`・`confirm` の後に `channels.ensureFor`（origin web → `web_send`、tool → `tool_send`、github → `github`）→ `mirror` → `message_id` の更新。`already_queued` の判定を origin で分ける（`discord` は `countQueuedDiscord < CC_CHANNEL_QUEUE_MAX`、それ以外はチャンネルの列が空でなければ `already_queued`）。`onFinished` の後に印の更新。`origin: "discord"` の受け入れ。同じセッションで `delivered` にした pass では、そのセッションの次の `queued` を試さない（次の `Stop` か 30 秒後） | CC11 |
 | `starter.ts` | 結びつけの後に `onBound(sessionId, started)` の口（`startedBy` と頼んだチャンネルから `web_start` / `tool_start` / `github` で `ensureFor`。CC13 の `rebind` も同じ口）。`launch` の `startedBy` に `"tool"`（続ける） | CC11・CC13 |
 | `replies.ts` | 投稿先の決め方 `targetOf(sessionId)`（`channels.openFor` → `follow_channel_id`）。チャンネル宛ては [追いかけをやめる] を付けず・上限 `CC_CHANNEL_REPLY_DAILY_LIMIT`・返信先は `send.messageId`。`onSendFinished` の `startFollow` はチャンネルがあるときは呼ばない。`record` の `guildOf` は cc のチャンネルも引けるように（CC14 で `agent` 行） | CC11・CC14 |
-| `permission-hold.ts` | `listen` を複数に（配列）。listener が `claims(row) → boolean` を返せるようにし、先に claim したものだけが投稿する（channel-posts → discord-notice の順） | CC11・CC12 |
-| `discord-notice.ts` | claim 済みの要求・チャンネルのあるセッションの判断待ち・終了は出さない。それ以外は変更なし | CC12 |
+| `permission-hold.ts` | `listen` を複数に（配列）。listener が `claims(row) → boolean` を返せるようにし、先に claim したものだけが投稿する（channel-posts → discord-notice の順） | CC11・CC12（Q4 で消した） |
+| `discord-notice.ts` | claim 済みの要求・チャンネルのあるセッションの判断待ち・終了は出さない。それ以外は変更なし | CC12（Q4 で消した） |
 | `hook-server.ts` | `UserPromptSubmit` の `prompt` を事象には `CC_PROMPT_MIRROR_MAX_CHARS`（1,000）まで乗せる。DB に残す 200 字は `cc-sessions.ts` の `applyEvent` がそのまま切る | CC12 |
 
 ### 12.3 アプリ（`src/app/`・`src/main.ts`・`src/discord/`）
