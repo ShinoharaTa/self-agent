@@ -4,7 +4,14 @@ import assert from "node:assert/strict";
 import { createCcComponent, type CcPermissionButtons } from "../src/app/commands/cc.ts";
 import { createSystemNotifier } from "../src/app/system-notice.ts";
 import type { AgentEntry, AgentsResult } from "../src/cc/agents.ts";
-import { CC_PROMPT_MIRROR_LABEL, CC_PROMPT_MIRROR_WINDOW_MS, CcChannelPosts, ccPromptMirrorTexts, promptKey } from "../src/cc/channel-posts.ts";
+import {
+  CC_CHANNEL_WAIT_OVERFLOW_TEXT,
+  CC_PROMPT_MIRROR_LABEL,
+  CC_PROMPT_MIRROR_WINDOW_MS,
+  CcChannelPosts,
+  ccPromptMirrorTexts,
+  promptKey,
+} from "../src/cc/channel-posts.ts";
 import { ccEndedHandler } from "../src/cc/channels.ts";
 import { CC_WAIT_CHECK_MS, CC_WAIT_NOTIFY_LIMIT, CC_WAIT_NOTIFY_MS, CcDiscordNotifier, CcWaitBudget } from "../src/cc/discord-notice.ts";
 import { type CcHookEvent, parseHookEvent } from "../src/cc/hook-server.ts";
@@ -132,6 +139,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     sends,
     registry,
     waitBudget,
+    release: (id) => hold.release(id),
     home: HOME,
     now,
     timers: postsTimers,
@@ -373,6 +381,44 @@ test("CC12: permission-hold は複数の受け手を持ち、claims した最初
   hold.answer(a, "allow", "web");
   hold.answer(b, "deny", "web");
   assert.deepEqual(calls, [`channel:held:${a}`, `system:held:${b}`, `channel:resolved:${a}`, `system:resolved:${b}`]);
+
+  // release: 引き受けを戻すと次の受け手に held、終わったときもそちらだけ。2 回目・保留中でなければ何もしない
+  calls.length = 0;
+  const c = ask(S1);
+  hold.release(c);
+  hold.release(c);
+  hold.answer(c, "allow", "web");
+  hold.release(c);
+  assert.deepEqual(calls, [`channel:held:${c}`, `system:held:${c}`, `system:resolved:${c}`]);
+});
+
+test("CC12: claims が投げた受け手は飛ばして次の受け手に渡す（log だけ）", async (t) => {
+  const db = tempDb(t);
+  const store = new CcPermissionStore(db, () => new Date(BASE));
+  const logs: string[] = [];
+  const hold = new CcPermissionHold({
+    cfg: { ccPermissionHoldSec: 300 },
+    store,
+    known: () => true,
+    now: () => new Date(BASE),
+    timers: fakeTimers(),
+    log: (line) => logs.push(line),
+  });
+  const calls: string[] = [];
+  hold.listen({
+    claims: () => {
+      throw new Error("broken");
+    },
+    held: (row) => calls.push(`broken:held:${row.id}`),
+    resolved: (row) => calls.push(`broken:resolved:${row.id}`),
+  });
+  hold.listen({ held: (row) => calls.push(`system:held:${row.id}`), resolved: (row) => calls.push(`system:resolved:${row.id}`) });
+  const event = parseHookEvent({ hook_event_name: "PermissionRequest", session_id: S1, tool_name: "Bash", tool_input: { command: "ls" } }, new Date(BASE))!;
+  void hold.request(event, new AbortController().signal);
+  const id = store.pendingFor(S1)!.id;
+  hold.answer(id, "allow", "web");
+  assert.deepEqual(calls, [`system:held:${id}`, `system:resolved:${id}`]);
+  assert.ok(logs.some((line) => line.startsWith("Claude Code: 許可の要求の知らせに失敗しました（Error）")));
 });
 
 test("CC12: 判断待ちはチャンネルがあればチャンネル、無ければ #system（1 件は 1 か所）", async (t) => {
@@ -413,8 +459,47 @@ test("CC12: 判断待ちの上限を #system で使い切っていれば、チ�
   await s.setAgents([agent(S1, { status: "waiting" })]);
   s.clock.now += CC_WAIT_NOTIFY_MS;
   await s.tickWaiting();
-  assert.equal(s.gateway.posts.length, 0);
+  // 判断待ちの 1 通は出さず、鳴らさない短い 1 行だけ
+  assert.equal(s.gateway.posts.length, 1);
+  assert.equal(s.gateway.posts[0]!.channelId, CHANNEL);
+  assert.equal(s.gateway.posts[0]!.message.text, CC_CHANNEL_WAIT_OVERFLOW_TEXT);
+  assert.equal(s.gateway.posts[0]!.message.mentionUserId, undefined);
   assert.ok(s.logs.some((line) => line.includes("上限のためチャンネルに出しませんでした（1 件）")));
+  // 次の待ちも上限の内なら、1 時間はその 1 行を出し直さない
+  await s.hook(S1, "Stop");
+  await s.hook(S1, "Notification", { notificationType: "agent_needs_input" });
+  s.clock.now += CC_WAIT_NOTIFY_MS;
+  await s.tickWaiting();
+  assert.equal(s.gateway.posts.length, 1);
+});
+
+test("CC12: チャンネルへの許可の 1 通の投稿に失敗したら、引き受けを戻して #system に出す（ボタンも効く）", async (t) => {
+  const s = await setup(t);
+  s.gateway.beforeSendMessage = (channelId) => {
+    if (channelId === CHANNEL) throw new Error("discord down");
+  };
+  const asked = await s.ask(S1);
+  assert.equal(s.gateway.posts.length, 1);
+  assert.equal(s.gateway.posts[0]!.channelId, SYSTEM);
+  assert.equal(s.store.get(asked.id)?.messageChannelId, SYSTEM);
+  assert.ok(s.logs.some((line) => line.includes(`許可の要求（#${asked.id}）をチャンネルに出せなかったため #system に回します`)));
+  // 終わったら #system の 1 通を書き換える
+  s.hold.answer(asked.id, "allow", "web");
+  await s.idle();
+  assert.equal(s.gateway.edits.length, 1);
+  assert.equal(s.gateway.edits[0]!.channelId, SYSTEM);
+  assertNoSecrets(s.logs);
+});
+
+test("CC12: 投稿に失敗して NOTIFY=0（次の受け手が無い）なら、どこにも出ないが保留は続き、Web で答えられる", async (t) => {
+  const s = await setup(t, { notify: false });
+  s.gateway.beforeSendMessage = () => {
+    throw new Error("discord down");
+  };
+  const asked = await s.ask(S1);
+  assert.equal(s.gateway.posts.length, 0);
+  assert.equal(s.store.get(asked.id)?.state, "pending");
+  assert.deepEqual(s.hold.answer(asked.id, "allow", "web"), { ok: true, state: "allowed" });
 });
 
 test("CC12: 端末・RC からの UserPromptSubmit は「（端末か RC から）」で写す。Markdown・メンションは無効、DB は 200 字", async (t) => {
@@ -471,6 +556,16 @@ test("CC12: 先頭 200 字が同じなら届けたものとみなす（201 字�
   assert.equal(promptKey(" a\n\n b "), "a b");
   // 別のセッション（S2）に同じ本文が来ても、S2 にはチャンネルが無いので写さない
   await s.hookBody({ hook_event_name: "UserPromptSubmit", session_id: S2, prompt: `${head}送った` });
+  assert.equal(s.gateway.posts.length, 0);
+});
+
+test("CC12: 届いたか確かめられなかった（unconfirmed）送信の本文も、30 秒以内なら写さない", async (t) => {
+  const s = await setup(t);
+  const send = s.sends.add({ sessionId: S1, text: "確かめられなかった", origin: "web", state: "queued" });
+  s.sends.transition(send.id, ["queued"], "delivering");
+  s.sends.transition(send.id, ["delivering"], "unconfirmed");
+  s.clock.now += 10_000;
+  await s.hookBody({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "確かめられなかった" });
   assert.equal(s.gateway.posts.length, 0);
 });
 
