@@ -813,7 +813,9 @@
       );
       return;
     }
-    const timeline = el("div", { class: "tl" });
+    // 会話の行は先に並べ、最後に .tl に入れる（質問のカードが前と同じなら、前の .tl を残してカードを動かさない）
+    const parts = [];
+    const timeline = { append: (...nodes) => parts.push(...nodes) };
     if (t.hasMore) {
       const more = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "前の会話を読む" });
       more.addEventListener("click", () => loadOlder(channelId));
@@ -849,6 +851,7 @@
       timeline.append(closeCard(channelId, ch.closeDraft));
     }
     let ccPending = null;
+    let card = null;
     if (isCc) {
       const live = ccLive(ch);
       // 一度も読んでいなければセッションの今を読む（その後は api.js の polling）
@@ -857,8 +860,11 @@
       SA.poll.kickCc();
       const p = live.permission;
       if (p && p.state === "pending") {
-        const card = SA.views.ccPermissionCard(live.sessionId, p, live.rc, "ch:" + channelId);
+        card = SA.views.ccPermissionCard(live.sessionId, p, live.rc, "ch:" + channelId);
         if (card) timeline.append(card);
+      } else if (p && typeof p.id === "number") {
+        // 終わった質問の選んだ状態を捨てる（このタブでは終わったカードを出さない）
+        SA.views.ccQuestionForget(p.id);
       }
       const screen = ccScreenSection(ch, channelId);
       if (screen) timeline.append(screen);
@@ -875,21 +881,23 @@
     if (ch && ch.kind === "session" && ch.state === "done") {
       timeline.append(el("p", { class: "tl-hint", text: "完了したセッションです。発言すると進行中に戻ります。" }));
     }
-    const scroll = el("div", { class: "ed-scroll", "data-stick": "bottom" }, [timeline]);
-    scroll.addEventListener("scroll", () => {
-      if (scroll.scrollTop < OLDER_THRESHOLD) loadOlder(channelId);
-    });
+    // 前に描いたカード（質問の書きかけ）が前の .tl にあれば、その .ed-scroll と .tl を残して中身だけを並べ直す（外すと焦点・IME の変換が切れる）
+    const oldScroll = card ? [...container.children].find((child) => child.classList.contains("ed-scroll") && child.getAttribute("data-channel") === channelId) : null;
+    const oldTimeline = oldScroll && card.parentNode && card.parentNode.parentNode === oldScroll ? card.parentNode : null;
+    let scroll;
+    if (oldTimeline) {
+      SA.views.placeChildren(oldTimeline, parts);
+      scroll = oldScroll;
+    } else {
+      scroll = el("div", { class: "ed-scroll", "data-stick": "bottom", "data-channel": channelId }, [el("div", { class: "tl" }, parts)]);
+      scroll.addEventListener("scroll", () => {
+        if (scroll.scrollTop < OLDER_THRESHOLD) loadOlder(channelId);
+      });
+    }
     // 入力欄は作り直さない（書きかけ・フォーカス・IME の変換を保つ）。見出しと会話だけを入れ替える
     const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-channel") === channelId);
     // 送った本文の状態（Claude Code のチャンネル。[やめる]）は入力欄の上
-    if (kept) {
-      for (const child of [...container.children]) if (child !== kept) child.remove();
-      container.insertBefore(header(ch, channelId), kept);
-      container.insertBefore(scroll, kept);
-      if (ccPending) container.insertBefore(ccPending, kept);
-    } else {
-      container.replaceChildren(...[header(ch, channelId), scroll, ccPending, composer(ch, channelId)].filter((x) => x));
-    }
+    SA.views.placeChildren(container, [header(ch, channelId), scroll, ccPending, kept || composer(ch, channelId)]);
     markSeen(channelId);
   }
 
