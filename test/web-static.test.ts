@@ -1085,7 +1085,18 @@ test("web static: 会話の行は吹き出し（#263）: オーナーは右・Bo
   assert.doesNotMatch(css, /avatar/);
   const chat = read("chat.js");
   assert.doesNotMatch(chat, /avatar/);
-  assert.match(chat, /bubbleRow\("owner", null,/);
+  // 読み上げの話者（article の aria-label）
+  assert.match(chat, /bubbleRow\("owner", "オーナー", null,/);
+  assert.match(chat, /bubbleRow\("agent", "作業中", name,/);
+  assert.match(chat, /"aria-label": label/);
+  // 同じ話者の Bot が続くときは名前を出さない
+  assert.match(chat, /renderTurn\(turn, channelId, ch, prev\)/);
+  assert.match(chat, /renderRunning\(ch, run, prev\)/);
+  // ライトの Bot の吹き出しは地より一段暗く、中のコード・手順は白
+  assert.equal(css.match(/--bubble-agent: #e4e8ef;/g)?.length, 2);
+  assert.equal(css.match(/--bubble-inset: #ffffff;/g)?.length, 2);
+  // 指の端末では時刻のリンクの当たりを広げる
+  assert.match(css, /@media \(pointer: coarse\) \{\n {2}a\.tl-time \{\n {4}position: relative;\n {2}\}\n\n {2}a\.tl-time::before \{\n {4}content: "";\n {4}position: absolute;\n {4}inset: -8px;/);
   // Bot の名前は人格が 2 体以上か Claude Code のチャンネルのときだけ
   assert.match(chat, /function showsAgentName\(ch\) \{\n {4}return !!\(ch && ch\.kind === "cc"\) \|\| !!\(store\.channels && store\.channels\.personas\.length > 1\);/);
   assert.match(css, /\n\.tl-notice \{(?![^}]*padding-left)[^}]*\}/);
