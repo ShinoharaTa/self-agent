@@ -356,10 +356,16 @@
    * 一覧を開く。スマホで、本文が一覧から開いた履歴（pushState の saBody）の上にあれば戻る（popstate で一覧を開く。
    * [‹]・下タブ「会話」・ブラウザの戻る・端のスワイプが同じ履歴の 1 段になる）
    */
+  /** history.back() の後、これだけ待っても popstate で一覧が開かなければその場で開く（戻る entry が無い環境の保険） */
+  const BACK_FALLBACK_MS = 300;
+
   function openDrawer() {
     if (phone() && !S.drawerOpen && history.state && history.state.saBody) {
       try {
         history.back();
+        setTimeout(() => {
+          if (!S.drawerOpen) showDrawer();
+        }, BACK_FALLBACK_MS);
         return;
       } catch {
         // 戻れなければその場で開く
@@ -368,23 +374,36 @@
     showDrawer();
   }
 
+  // 指が主の端末では、一覧を開いたときに絞り込みの欄へ焦点を当てない（iOS でキーボードが出るため）
+  const mqCoarse = window.matchMedia ? window.matchMedia("(pointer: coarse)") : { matches: false };
+
   function showDrawer() {
     S.drawerOpen = true;
     applyLayout();
     renderActivity();
     renderSidebar();
-    const first = refs.sidebar.querySelector("input, button");
+    const first = mqCoarse.matches ? refs.sidebar.querySelector("button") || refs.sidebar : refs.sidebar.querySelector("input, button");
     if (first) first.focus();
   }
 
-  /** 一覧を閉じる。スマホで本文が見えるようになったら、その本文を履歴に積む（戻ると一覧） */
-  function closeDrawer() {
+  /** 一覧を閉じるだけ（履歴は触らない。「進む」で本文の entry に来たとき） */
+  function hideDrawer() {
     if (!S.drawerOpen) return;
     S.drawerOpen = false;
     applyLayout();
     renderActivity();
+  }
+
+  /**
+   * 一覧を閉じる。スマホで本文が見えるようになったら、今の entry に一覧の印（saList）を付けてから本文を履歴に積む（saBody。戻ると一覧）。
+   * popstate は印のある entry だけを扱う（スキップリンクなどの同じ文書の hash の移動では一覧を開かない）
+   */
+  function closeDrawer() {
+    if (!S.drawerOpen) return;
+    hideDrawer();
     if (phone() && S.active) {
       try {
+        history.replaceState({ saList: true }, "");
         history.pushState({ saBody: true }, "", "#/" + S.active.replace(":", "/"));
       } catch {
         // 積めなくても [‹] で一覧に戻れる
@@ -1308,6 +1327,8 @@
     refs.wb = $("wb");
     refs.activity = $("activity");
     refs.sidebar = $("sidebar");
+    // 指の端末で一覧を開いたときの焦点の置き場（showDrawer）
+    if (!refs.sidebar.hasAttribute("tabindex")) refs.sidebar.setAttribute("tabindex", "-1");
     refs.editors = $("editors");
     refs.panel = $("panel");
     refs.status = $("statusbar");
@@ -1373,13 +1394,17 @@
       else writeHash();
     });
     // スマホ: 一覧から開いた本文で戻ると一覧へ（closeDrawer が積んだ履歴）。hash は今のタブのものに書き直す
-    window.addEventListener("popstate", () => {
+    // 「進む」で本文の entry に来たら、積まずに一覧を閉じるだけ
+    window.addEventListener("popstate", (e) => {
       if (!phone()) return;
-      if (!S.drawerOpen) {
+      const st = e.state;
+      if (st && st.saList && !S.drawerOpen) {
         closeMore({ keepFocus: true });
         closePalette();
         showDrawer();
-      }
+      } else if (st && st.saBody && S.drawerOpen) {
+        hideDrawer();
+      } else return;
       writeHash();
     });
     bindPalette();

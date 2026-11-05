@@ -827,8 +827,8 @@ test("web static: ≤639px でも Claude Code のチャンネルを閉じられ�
   assert.match(ccHeader, /el\("div", \{ class: "ed-ops" \}, \[close, more\]\)/);
   // [画面] 以外のリンクは ≤639px で隠す
   assert.equal((ccHeader.match(/btn btn-ghost btn-sm hide-sm/g) ?? []).length, 2);
-  // […] はパレットのコマンドを開く
-  assert.match(ccHeader, /more\.addEventListener\("click", \(\) => SA\.app\.palette\(">"\)\)/);
+  // […] はこのチャンネルの操作だけのシートを開く（UI-7。fix の段ではパレットのコマンドだった）
+  assert.match(ccHeader, /more\.addEventListener\("click", \(\) =>\n {6}SA\.app\.sheet\(/);
   const wb = read("workbench.js");
   // cc のタブでは /close・/wait の代わりに「このチャンネルを閉じる」などを並べる（無効の /close を先に出さない）
   assert.match(wb, /\.\.\.\(ch && ch\.kind === "cc"\n {8}\? ccCommands\(ch\)\n {8}: \[\n {12}\{ label: "今のセッションを閉じる"/);
@@ -872,8 +872,14 @@ test("web static: スマホの殻（UI-7。#250）: ≤639px はタブの帯・�
   const wb = read("workbench.js");
   assert.match(wb, /if \(phone\(\) && a\.phoneTab\) \{\n {6}open\(a\.id\);\n {6}closeDrawer\(\);/);
   // 一覧 → 本文は履歴に積み、戻る（popstate）で一覧へ
-  assert.match(wb, /history\.pushState\(\{ saBody: true \}/);
-  assert.match(wb, /window\.addEventListener\("popstate"/);
+  assert.match(wb, /history\.replaceState\(\{ saList: true \}, ""\);\n {8}history\.pushState\(\{ saBody: true \}/);
+  // popstate は印のある entry だけ: 一覧の entry（saList）で一覧を開き、本文の entry（saBody。「進む」）では積まずに閉じるだけ
+  assert.match(wb, /window\.addEventListener\("popstate", \(e\) => \{/);
+  assert.match(wb, /if \(st && st\.saList && !S\.drawerOpen\) \{/);
+  assert.match(wb, /\} else if \(st && st\.saBody && S\.drawerOpen\) \{\n {8}hideDrawer\(\);/);
+  // history.back() で開かなければ保険で開く・指の端末では絞り込みの欄に焦点を当てない
+  assert.match(wb, /setTimeout\(\(\) => \{\n {10}if \(!S\.drawerOpen\) showDrawer\(\);\n {8}\}, BACK_FALLBACK_MS\);/);
+  assert.match(wb, /mqCoarse\.matches \? refs\.sidebar\.querySelector\("button"\) \|\| refs\.sidebar/);
   assert.match(wb, /history\.replaceState\(history\.state,/);
   // パレットはスマホで PC の部品（サイドバー・パネル・タブを閉じる・テーマ）を出さない
   assert.equal((wb.match(/pcOnly: true \}/g) ?? []).length, 4);
