@@ -244,7 +244,7 @@
     const badges = [];
     // スマホ（≤639px）は文字のバッジを出さず点の色だけ（文字はタブの見出しと中身に）。同じ色の点が既にあれば足さない
     if (top) badges.push(el("span", { class: "badge hide-sm " + (asking ? "badge-accent" : "badge-cc"), text: top }));
-    const topDot = asking || s.trustPending ? "dot-warn" : delivering ? "dot-unread" : null;
+    const topDot = asking ? "dot-warn" : delivering ? "dot-unread" : s.trustPending ? "dot-warn" : null;
     if (s.state === "running") badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));
     // title: 場所、許可の要求の中身、出さなかった印（権限モード・判断待ちの理由・起動した人・ほかの状態）
     const notes = [];

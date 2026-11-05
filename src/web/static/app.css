@@ -414,7 +414,7 @@ kbd {
 }
 
 .row-tight {
-  gap: var(--space-1);
+  gap: var(--space-2);
 }
 
 /* バッジは無地の色付き文字（塗りのピルは未読の数 .act-count だけ。GUIDELINES §5 バッジ）。色は下の .badge-* と状態の class */
@@ -2925,7 +2925,7 @@ dialog[open]::backdrop {
 
   /* Claude Code の行の 2 行目（場所）。PC は title */
   .sb-text {
-    padding: var(--space-1) 0;
+    line-height: var(--leading-tight);
   }
 
   .sb-sub {
@@ -2941,8 +2941,10 @@ dialog[open]::backdrop {
     padding: 0;
   }
 
+  /* 容器の余白を外したので、選択中の角は容器の角に合わせる */
   .segmented-sm > button {
     min-height: var(--row);
+    border-radius: var(--radius-md);
     font-size: var(--font-sm);
   }
 
@@ -3009,7 +3011,8 @@ dialog[open]::backdrop {
   }
 
   .act-count,
-  .act-btn.is-running .act-spin {
+  .act-btn.is-running .act-spin,
+  .act-more .dot {
     right: auto;
     left: calc(50% + var(--space-1));
   }
