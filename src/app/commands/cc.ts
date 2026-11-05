@@ -19,6 +19,7 @@ import {
   ccKeptText,
   CC_CHANNEL_CLOSED_TEXT,
   CC_RESUME_KEPT_TEXT,
+  CC_RESUME_STALE_TEXT,
 } from "../../cc/channels.ts";
 import type { CcChannelStore } from "../../store/cc-channels.ts";
 import type { ChannelOpsQueue } from "../channel-ops.ts";
@@ -52,11 +53,19 @@ export const CC_NO_SESSIONS_REPLY = "Claude Code のセッションがありま�
 export const CC_CANCEL_NOT_CHANNEL_REPLY = "Claude Code のチャンネルで実行してください";
 export const CC_CANCEL_NONE_REPLY = "届け待ちはありません";
 
+/** /cc close で取り消した届け待ちの 1 行（純関数） */
+export function ccClosedCancelledText(count: number): string {
+  return `閉じたので届け待ちを ${count} 件取り消しました`;
+}
+
 /** /cc close の応答（純関数。closed はチャンネルに出す） */
-export function closeReply(result: ReturnType<CcChannels["close"]>): { text: string; ephemeral: boolean } {
-  switch (result) {
+export function closeReply(closed: ReturnType<CcChannels["close"]>): { text: string; ephemeral: boolean } {
+  switch (closed.result) {
     case "closed":
-      return { text: CC_CHANNEL_CLOSED_TEXT, ephemeral: false };
+      return {
+        text: closed.cancelled > 0 ? `${CC_CHANNEL_CLOSED_TEXT}\n${ccClosedCancelledText(closed.cancelled)}` : CC_CHANNEL_CLOSED_TEXT,
+        ephemeral: false,
+      };
     case "not_channel":
       return { text: CC_CANCEL_NOT_CHANNEL_REPLY, ephemeral: true };
     case "resuming":
@@ -121,7 +130,7 @@ export function createCcCommand(deps: CcCommandDeps): CommandHandler {
         return;
       }
       if (interaction.subcommand === "close") {
-        const result = interaction.channelId === null ? "not_channel" : channels.close(interaction.channelId);
+        const result = interaction.channelId === null ? { result: "not_channel" as const } : channels.close(interaction.channelId);
         await responder.reply({ ...closeReply(result), suppressEmbeds: true });
         return;
       }
@@ -317,26 +326,30 @@ export function createCcComponent(deps: CcComponentDeps): ComponentHandler {
           throw new Error(`cc:resume の不明な操作です（${interaction.kind}）`);
         }
         const channels = deps.ccChannels?.();
+        // 保留が無い（再起動・[やめる]・付け替えの後・連携が止まった）ボタンは、確認のボタンを外して古いと書き換える
+        const expire = (): Promise<void> => responder.update({ text: CC_RESUME_STALE_TEXT, components: [], suppressEmbeds: true });
         if (keep) {
           if (channels === undefined || !channels.keepEnded(channelId, messageId)) {
-            await responder.reply({ text: STALE_TURN_REPLY, ephemeral: true });
+            await expire();
             return;
           }
           await responder.update({ text: CC_RESUME_KEPT_TEXT, components: [], suppressEmbeds: true });
           return;
         }
         if (channels === undefined) {
-          await responder.reply({ text: STALE_TURN_REPLY, ephemeral: true });
+          await expire();
           return;
         }
         // 起動は tmux に問い合わせるので先に保留する
         await responder.deferUpdate();
-        const result = await channels.resume(channelId, messageId);
-        if (!result.ok && result.reason === "stale") {
+        const result = await channels.resume(channelId, messageId, interaction.guildId);
+        if ("message" in result) {
+          await responder.update({ ...result.message, suppressEmbeds: true });
+        } else if (result.reason === "expired") {
+          await expire();
+        } else {
           await responder.reply({ text: STALE_TURN_REPLY, ephemeral: true });
-          return;
         }
-        await responder.update({ ...result.message, suppressEmbeds: true });
         return;
       }
       // 削除の確認（CC13）: cc:del:<channel_id>・cc:del:keep:<channel_id>

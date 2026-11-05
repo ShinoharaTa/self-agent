@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { CcOpenResult, CcPickItem, CcResumeResult } from "../src/cc/channels.ts";
+import type { CcCloseResult, CcOpenResult, CcPickItem, CcResumeResult } from "../src/cc/channels.ts";
 import type { CcChannelOrigin } from "../src/store/cc-channels.ts";
 import {
   CC_CANCEL_NONE_REPLY,
@@ -48,7 +48,7 @@ function fakeChannels(items: CcPickItem[], result: CcOpenResult, cancelled: Reco
         opened.push({ guildId, sessionId, origin });
         return result;
       },
-      close: (): "closed" | "not_channel" | "resuming" | "ended" => "not_channel",
+      close: (): CcCloseResult => ({ result: "not_channel" }),
       resume: async (): Promise<CcResumeResult> => ({ ok: false, reason: "stale" }),
       keepEnded: (): boolean => false,
     },

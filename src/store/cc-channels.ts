@@ -116,7 +116,8 @@ export class CcChannelStore {
 
   /**
    * 状態を移す（deleted へは markDeleted）。from を渡せば今の状態がそのどれかのときだけ移す（compare-and-set。resuming への移動に使う）。
-   * ended にすると ended_at を今に、open に戻すと ended_at を NULL にする。削除済み・行が無い・from に合わなければ false
+   * ended にすると ended_at を今に、open に戻すと ended_at と削除の確認（delete_prompt_message_id）を NULL にする（戻った・続けたチャンネルの古い確認を効かなくし、
+   * 次に終わったらまた確認する）。削除済み・行が無い・from に合わなければ false
    */
   setState(channelId: string, to: Exclude<CcChannelState, "deleted">, from?: readonly Exclude<CcChannelState, "deleted">[]): boolean {
     const at = this.now().toISOString();
@@ -127,10 +128,11 @@ export class CcChannelStore {
     const keepEndedAt = to === "resuming" ? 1 : 0;
     const result = this.db
       .prepare(
-        `UPDATE cc_channels SET state = ?, ended_at = CASE WHEN ? = 1 THEN ended_at ELSE ? END, updated_at = ?
+        `UPDATE cc_channels SET state = ?, ended_at = CASE WHEN ? = 1 THEN ended_at ELSE ? END,
+           delete_prompt_message_id = CASE WHEN ? = 'open' THEN NULL ELSE delete_prompt_message_id END, updated_at = ?
          WHERE channel_id = ? AND state IN (${allowed.map(() => "?").join(", ")})`,
       )
-      .run(to, keepEndedAt, endedAt, at, channelId, ...allowed);
+      .run(to, keepEndedAt, endedAt, to, at, channelId, ...allowed);
     return Number(result.changes) > 0;
   }
 
