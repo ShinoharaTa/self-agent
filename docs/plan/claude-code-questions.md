@@ -68,10 +68,10 @@
 ### 2.2 決定（DB と受け口）
 - **v38**: `cc_permissions` に `question_input TEXT`（AskUserQuestion の `tool_input` の JSON **そのまま**。読めない形・大きすぎれば NULL）と `answers TEXT`（返した `answers` の JSON。答えたときだけ）を ALTER で足す。CHECK は変えない。
 - 受け口（`hook-server.ts`）: `tool_name` が `AskUserQuestion` なら `parseQuestions(tool_input)`（純関数。`cc/questions.ts`）で形を確かめる: `questions` は 1〜4 個の配列、各要素は `question`（1〜2,000 字の文字列）・`header`（省略可。100 字まで）・`options`（2〜8 個の `{ label（1〜200 字）, description?（1,000 字まで） }`）・`multiSelect`（省略可。boolean）。通れば `tool_input` の JSON（`CC_QUESTION_INPUT_MAX_BYTES` = 32 KB 以下）を `questionInput` として事象に乗せる。通らなければ今までどおり（要約は JSON の先頭 500 字）。
-  - 要約（`summary`）は質問のときは「質問 n 件: <header か question の先頭 40 字>・…」（500 字まで）にする（一覧のバッジ・log 以外の表示に使う）。
+  - 要約（`summary`）は質問のときは「質問 n 問: <最初の問の question の先頭 100 字>」（500 字まで。JSON は出さない）にする（一覧のバッジ・log 以外の表示に使う）。
   - 「`tool_input` の全体を持たない」決まりの折り合い: **持つのは AskUserQuestion だけ**（Write の中身のような大きな・秘密になりうる入力は今までどおり持たない）。質問の文は表示する内容そのものなので、持つことで漏れるものが増えない。上限 32 KB（hook の本文の上限 1 MB とは別）。30 日で消える（`prune`）のは今までどおり。
   - `question_input` を**そのまま**持つ理由: `answers` のキーは `question` の文の完全一致（docs）。表示用に切った文をキーにすると当たらない。表示で切るのは画面の側（§3・§4）。
-- 保留（`permission-hold.ts`）: `request` は変えない（質問も `pending` で保留。1 セッション 1 件・`answered_elsewhere` の検知・上限・停止はそのまま）。**`answerQuestion(id, answers, via, requestHash)`** を足す: 行が `pending` で保留中・`requestHash` が合う・`question_input` がある・`answers` のキーが `questions` の `question` の集合と一致（`validateAnswers`。§2.3）のときだけ compare-and-set で `allowed`（`via` は `web` / `discord`）にし、`answers` の列を書いて `decisionBody("question", input, answers)` で閉じる。それ以外は `stale`。
+- 保留（`permission-hold.ts`）: `request` は変えない（質問も `pending` で保留。1 セッション 1 件・`answered_elsewhere` の検知・上限・停止はそのまま）。**`answerQuestion(id, requestHash, picks, via)`** を足す: 行が無ければ `not_found`、`pending` で保留中・`requestHash` が合う・`question_input` が読めるのでなければ `stale`、`picks` が行の問に合わなければ（`validateAnswers`。問の数・無い label・1 つ選ぶ問に 2 つ以上・「その他」が空か 1,000 字超。§2.3）`invalid`。通れば compare-and-set で `allowed`（`via` は `web` / `discord`）にし、同じ UPDATE（`CcPermissionStore.resolve` の `answers` の引数）で `answers` の列を書いて `decisionBody("question", input, answers)` で閉じる。
 - **[やめる]（答えない）**: 今の `answer(id, "deny", via, requestHash)` をそのまま使う（`denied`）。質問の行では deny の message を `CC_QUESTION_DENY_MESSAGE`「self-agent（Discord / Web）から断りました」にする（`decisionBody("deny", { question: true })`）。端末に任せる（`released`）口は作らない（決定 §13.1 の 1）。
 - `cc_list`（SDK のツール）・`/api/status` の `pendingPermissions`・`sessionsAnsweredSince`（判断待ちの抑え）は変えない（質問も「許可の要求」として数える）。
 
@@ -139,7 +139,7 @@
 ## 4. Web の UI と API（論点 C）
 
 - `GET /api/cc/sessions`・`/api/cc/sessions/<id>`・`/api/cc/permissions`・`/api/channels` の `cc.permission` に **`question`** を足す: `{ questions: [{ question, header, options: [{ label, description }], multiSelect }], answers: { [question]: value } | null } | null`（`question_input` から作る。表示用に切らない（画面が切る）。`question_input` が無ければ `null`）。`expiresAt` は質問の長さで。
-- `POST /api/cc/permissions/<id>/answer` `{ requestHash, answers: Array<{ labels: string[] } | { other: string }> }`（問の順）。`requestHash` が文字列でない・`answers` が配列でない・形が違う（`validateAnswers` を通らない）は 400 `bad_request`。`answerQuestion(…, "web")` で 200 `{ state: "allowed" }`、無い id は 404、`stale` は 409。通ったら `answered`（`ensureFor`）。
+- `POST /api/cc/permissions/<id>/answer` `{ requestHash, answers: Array<{ labels: string[] } | { other: string }> }`（問の順）。`requestHash` が文字列でない・`answers` が配列でない・形が違う（`parsePicks`）・問に合わない（`answerQuestion` の `invalid`）は 400 `bad_request`。`answerQuestion(…, "web")` で 200 `{ state: "allowed" }`、無い id は 404、`stale`（保留していない・`requestHash` が違う・質問でない行）は 409。通ったら `answered`（`ensureFor`）。
 - [答えない] は今の `POST /api/cc/permissions/<id>/deny`（質問の行では message が「断りました」になる。API は変えない）。
 - カード（`views.js` の `ccQuestionCard`。`ccPermissionCard` が `p.question` のあるときに委ねる。`chat.js` の cc のタブと `cc:<sessionId>` のタブで共用）:
   - 保留中: 見出し「質問に答えてください」+ 残り。問ごとに `fieldset`（`legend` に header・問の文は `<p>`。textContent）: 1 つ選ぶ形はラジオ（label と description）、複数選択はチェックボックス、最後に「その他」のラジオ / チェックと 1 行の `textarea`（1,000 字。選ぶと有効）。下に [答える]（secondary）[答えない]（ghost）。全部の問に答えが無ければ [答える] は押せない（`title` に理由）。選んだ状態はタブのメモリ（`ccQuestionDraft`。描き直しでも残す。終わったら消す）。押したら応答が来るまで止め、409 はトースト「この操作は古くなっています」。
@@ -212,7 +212,7 @@
 | 段 | 内容 | 受け入れ（単体: `npm test`。偽 Gateway・偽 registry・一時 SQLite） | 実機（オーナー） |
 |---|---|---|---|
 | **Q5** 実行中の行 | `chat.js` の `renderRunning`・`app.css`・GUIDELINES・web-ui-polish.md（§6）。API の変更なし | JS は `node --check`。`index.html` に inline 無し。既存の web のテストが通る | スマホの会話のタブで、作業中の行が 1 行 + 薄い 3 行になり、「すべての手順」を押すと全部出る。[中断] が効く。終わると「完了（…）」の行になる |
-| **Q1** 受け口・DB・応答・Web の API | v38・`cc/questions.ts`（`parseQuestions`・`validateAnswers`・`answersOf`・`questionSummary`。純関数）・`hook-server.ts`（`questionInput`）・`CcPermissionStore`（列・`setAnswers`）・`permission-hold.ts`（`answerQuestion`・質問の deny の message・`decisionBody("question")`・`permissionExpiresAt` の長さ）・`config.ts`（`SELF_AGENT_CC_QUESTION_HOLD_SEC`）・`cli/cc-setup.ts`（timeout）・`routes/cc.ts`（`question` の項目・`/answer`）。Discord・Web の画面は変えない（画面は今の許可のカードのまま。[許可] は質問では `stale`（`question_input` のある行の `answer("allow")` は断る）） | 形の合う `tool_input` が `question_input` に入り、合わない・33 KB は NULL で今までどおり。`answerQuestion` が `updatedInput`（`tool_input` そのまま + `answers`）の JSON を返し、複数選択は `, `、`other` は文字列。キーの不足・余計・無い label・`multiSelect` でない 2 つは `stale`。質問の行の `deny` は message が「断りました」。時間切れは質問の長さ。`cc-setup` の timeout が大きい方 + 5。押さなければ空の本文（自動の allow が無い）。`/answer` の 400 / 404 / 409 / 200 | `npm run check`・`npm test`。実機は Q3 で |
+| **Q1** 受け口・DB・応答・Web の API（**済**。#267） | v38・`cc/questions.ts`（`parseQuestions`・`parseQuestionInput`・`validateAnswers`・`parsePicks`・`questionSummary`。純関数）・`hook-server.ts`（`questionInput`）・`CcPermissionStore`（列・`resolve` の `answers` の引数）・`permission-hold.ts`（`answerQuestion`・質問の deny の message・`decisionBody("question")`・`permissionExpiresAt` の長さ）・`config.ts`（`SELF_AGENT_CC_QUESTION_HOLD_SEC`）・`cli/cc-setup.ts`（timeout）・`routes/cc.ts`（`question` の項目・`/answer`）。Discord・Web の画面は変えない（画面は今の許可のカードのまま。[許可] は質問では `stale`（`question_input` のある行の `answer("allow")` は断る）） | 形の合う `tool_input` が `question_input` に入り、合わない・33 KB は NULL で今までどおり。`answerQuestion` が `updatedInput`（`tool_input` そのまま + `answers`）の JSON を返し、複数選択は `, `、`other` は文字列。問の数の違い・無い label・`multiSelect` でない 2 つ・空の「その他」は `invalid`（`/answer` は 400）。質問の行の `deny` は message が「断りました」。時間切れは質問の長さ。`cc-setup` の timeout が大きい方 + 5。押さなければ空の本文（自動の allow が無い）。`/answer` の 400 / 404 / 409 / 200 | `npm run check`・`npm test`。実機は Q3 で |
 | **Q2** Discord の UI | `cc/question-flow.ts`（途中の答え）・`notice-text`（`questionNotice`・`questionResolvedMessage`。Q4 まで `discord-notice.ts` に置く）・`channel-posts.ts`（質問は `questionNotice`、終わりは `questionResolvedMessage`）・`commands/cc.ts`（`cc:q:pick|sel|ok|other|text|drop`。モーダル・セレクト）・history の文 | 1 問 1 択はボタンで即答え、2 問は 1 通目 → 書き換え → 2 問目 → 答えの行。複数選択はセレクト + [決める]、選ばずに [決める] は本人にだけ。[その他] のモーダルの文字列が値。[やめる] で `denied`（message は「断りました」）。Web で先に答えられたら `editMessage` で答えの行。再起動の後のボタンは古い。読めない形は許可の 1 通 + 注記。本文が 2,000 字に収まる（長い description・question を落とす）。名前・問の文がエスケープされる | 端末で `AskUserQuestion` を 1 問・4 問・複数選択で出させ、スマホで答える → `PostToolUse` に `answers`（`npm run cc-dry-run` は使わず、端末の記録で確かめる）。「その他」の文字列が Claude に渡る。[やめる] で端末に `Denied by PermissionRequest hook` と「断りました」が出て Claude が進む |
 | **Q3** Web の UI | `views.js` の `ccQuestionCard`・`chat.js`・`sidebar.js` のバッジ・GUIDELINES §5・§7 | `node --check`・inline 無し。既存の `web-cc*.test.ts` が通る | Web の会話のタブ（チャンネルあり）と `cc:` のタブで質問のカードが出て、ラジオ / チェック / その他で答える。Discord で先に答えたらカードが「端末か RC で…」ではなく「答えました（Discord）」になる |
 | **Q4** #system を使わない | v39（`cc_channels.origin`）・`channel-posts.ts`（`ensureFor` → 1 通。判断待ちも）・`channels.ts`（`noticeFailure` 削除・tmux の外の知らせの origin・最初の投稿の文）・`permission-hold.ts`（`claims` / `release` 削除）・`discord-notice.ts` → `notice-text.ts`（クラス削除）・`main.ts`・`config.ts`（`ccNotify` の説明）・README・CLAUDE.md | チャンネルの無いセッションの `PermissionRequest` で `cc_channels`（origin `permission`）ができ 1 通がそこに出る。質問は `question`、60 秒の判断待ちは `waiting`。`not_set_up` / `full` / `failed` / tmux の外（判断待ちは作る）では #system に何も出ず log だけ、保留は続く。終了はチャンネルがあるときだけ。`NOTIFY=0` ではチャンネルを作らず、あるチャンネルには出る。`SystemNotifier` を cc が呼ばない（`multiline_ok` を除く）。既存の `cc-discord-notice.test.ts` は純関数の分だけ残す | `/setup` 済みで、チャンネルの無い端末のセッションで `npm test` の許可 → `cc-<名前>` ができて 1 通。答える → そのチャンネル。#system に出ない。RC のサーバーモードのセッション（あれば）の質問 → チャンネルができ、書くと「送れません」 |
@@ -222,7 +222,7 @@
 | 段 | issue の題名案 | 触るファイル |
 |---|---|---|
 | Q5 | Web の会話の実行中の行を軽くする（1 行 + 直近 3 手順・全部は開閉） | `src/web/static/chat.js`（`renderRunning`・`stepsOpened`）・`src/web/static/app.css`・`docs/design/WEB-UI-GUIDELINES.md` §4・`docs/plan/web-ui-polish.md`（UI-12） |
-| Q1 | Claude Code の AskUserQuestion を質問として受け、答えを返す口（DB v38・保留・Web の API） | `src/store/db.ts`（v38）・`src/store/cc-permissions.ts`・`src/cc/questions.ts`（新規）・`src/cc/hook-server.ts`・`src/cc/permission-hold.ts`・`src/config.ts`・`src/cli/cc-setup.ts`・`src/web/routes/cc.ts`・`test/cc-questions.test.ts`（新規）・`test/cc-permissions.test.ts`・`test/cc-hook-server.test.ts`・`test/cc-store.test.ts`・`test/cc-cli.test.ts`・`test/web-cc.test.ts`・README・CLAUDE.md |
+| Q1 | Claude Code の AskUserQuestion を質問として受け、答えを返す口（DB v38・保留・Web の API） | `src/store/db.ts`（v38）・`src/store/cc-permissions.ts`・`src/cc/questions.ts`（新規）・`src/cc/hook-server.ts`・`src/cc/permission-hold.ts`・`src/config.ts`・`src/cli/cc-setup.ts`・`src/web/routes/cc.ts`・`test/cc-questions.test.ts`（新規）・`test/cc-permissions.test.ts`（v38 の移行も）・`test/cc-hook-server.test.ts`・`test/cc-cli.test.ts`・`test/web-cc.test.ts`・README・CLAUDE.md |
 | Q2 | Claude Code の質問に Discord の選択肢のボタンで答える（1 通を 1 問ずつ・その他はモーダル） | `src/cc/question-flow.ts`（新規）・`src/cc/questions.ts`（文面）・`src/cc/discord-notice.ts`（Q4 までここ）・`src/cc/channel-posts.ts`・`src/app/commands/cc.ts`・`src/main.ts`（`ccPermissionButtons`）・`test/cc-command.test.ts`・`test/cc-channel-posts.test.ts`・`test/cc-questions.test.ts`・CLAUDE.md |
 | Q3 | Claude Code の質問に Web のカードで答える | `src/web/static/views.js`（`ccQuestionCard`）・`src/web/static/chat.js`・`src/web/static/sidebar.js`・`src/web/static/app.css`・`docs/design/WEB-UI-GUIDELINES.md` §5・§7・CLAUDE.md |
 | Q4 | Claude Code の知らせを #system に出さず、セッションのチャンネルを自動で作って出す（DB v39） | `src/store/db.ts`（v39）・`src/store/cc-channels.ts`・`src/cc/channel-posts.ts`・`src/cc/channels.ts`・`src/cc/permission-hold.ts`・`src/cc/discord-notice.ts` → `src/cc/notice-text.ts`・`src/app/commands/cc.ts`（import）・`src/main.ts`・`src/config.ts`（`ccNotify` の説明）・`test/cc-channel-posts.test.ts`・`test/cc-channels.test.ts`・`test/cc-channels-store.test.ts`・`test/cc-discord-notice.test.ts` → `test/cc-notice-text.test.ts`・`test/cc-permissions.test.ts`・README・CLAUDE.md |
@@ -236,7 +236,7 @@
 | v38 | Q1 | `ALTER TABLE cc_permissions ADD COLUMN question_input TEXT; ALTER TABLE cc_permissions ADD COLUMN answers TEXT;`（`question_input` は AskUserQuestion の `tool_input` の JSON そのまま（32 KB まで。読めない形は NULL）、`answers` は返した `answers` の JSON。CHECK は変えない） |
 | v39 | Q4 | `cc_channels` の作り直し（`origin` の CHECK に `'question'`・`'waiting'`。v37 の `cc_sends` と同じ手順: `cc_channels_new` → `INSERT … SELECT` → `DROP` → `RENAME` → 一意の部分索引 `cc_channels_session` と `cc_channels_guild` を同じ定義で） |
 
-- `CcPermissionStore`: `add` に `questionInput?`、`setAnswers(id, answers)`、`CcPermissionRow` に `questionInput: string | null`・`answers: Record<string, string> | null`（読むときに形を確かめ、違えば null）。`prune` は変えない。
+- `CcPermissionStore`: `add` に `questionInput?`、`resolve(id, to, via, answers?)`（答えたときは状態の移行と同じ UPDATE で `answers` を書く。移せなければ書かない）、`CcPermissionRow` に `questionInput: string | null`・`answers: Record<string, string> | null`（読むときに形を確かめ、違えば null）。`prune` は変えない。
 - 版の番号は目安（`MIGRATIONS.length` で確かめる）。移行の前の控え（`self-agent.db.v37.bak` など）は今の仕組みのまま。
 
 ## 10. 設定（環境変数）
@@ -264,7 +264,7 @@
 | ファイル | 変更 | 段 |
 |---|---|---|
 | `db.ts` | v38（2 列の ALTER）、v39（`cc_channels` の作り直し） | Q1・Q4 |
-| `cc-permissions.ts` | `questionInput`・`answers` の列と `setAnswers`、`add` の `questionInput?` | Q1 |
+| `cc-permissions.ts` | `questionInput`・`answers` の列と `resolve` の `answers` の引数、`add` の `questionInput?` | Q1 |
 | `cc-channels.ts` | `CcChannelOrigin` に `question`・`waiting` | Q4 |
 
 ### 12.2 Claude Code（`src/cc/`）
@@ -300,10 +300,10 @@
 ### 12.5 テスト（`test/`）
 | ファイル | 変更 | 段 |
 |---|---|---|
-| `cc-questions.test.ts`（新規） | `parseQuestions`（形・上限・4 問・2〜8 択）・`validateAnswers`（連結・other・不足・余計）・`questionNotice`（2,000 字・エスケープ・行の数）・`questionResolvedMessage` | Q1・Q2 |
+| `cc-questions.test.ts`（新規） | `parseQuestions`（形・上限・4 問・2〜8 択）・`validateAnswers`（連結・other・数の違い・無い label）・`questionNotice`（2,000 字・エスケープ・行の数）・`questionResolvedMessage` | Q1・Q2 |
 | `cc-permissions.test.ts` | `answerQuestion`・質問の deny の message・`decisionBody("question")`・時間切れの長さ・自動の allow が無い・`allow` は質問で `stale` | Q1 |
 | `cc-hook-server.test.ts` | AskUserQuestion の `questionInput`・33 KB・読めない形 | Q1 |
-| `cc-store.test.ts` | v38 の列・`setAnswers` | Q1 |
+| `cc-permissions.test.ts`（移行） | v38 の列・`resolve` の `answers` | Q1 |
 | `cc-cli.test.ts` | `cc-setup` の timeout | Q1 |
 | `web-cc.test.ts` | `question` の項目・`/answer`・質問の `/deny` | Q1 |
 | `cc-command.test.ts` | `cc:q:*` の流れ（1 問・複数の問・セレクト・モーダル・やめる・古い） | Q2 |
