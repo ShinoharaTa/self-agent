@@ -12,6 +12,7 @@ import {
 } from "../src/cc/questions.ts";
 import { permissionResolvedMessage, questionModalTitle, questionNotice, questionResolvedMessage } from "../src/cc/discord-notice.ts";
 import type { OutgoingMessage } from "../src/discord/gateway.ts";
+import { CC_QUESTION_FLOW_MAX, CcQuestionFlow } from "../src/cc/question-flow.ts";
 import type { CcPermissionRow } from "../src/store/cc-permissions.ts";
 
 const option = (label: string, description?: string) => (description === undefined ? { label } : { label, description });
@@ -251,4 +252,28 @@ test("validateAnswers: 問の文が __proto__ でも答えのキーとして残�
   const answers = validateAnswers(questions, [{ labels: ["b"] }])!;
   assert.equal(JSON.stringify(answers), '{"__proto__":"b"}');
   assert.deepEqual(Object.keys(answers), ["__proto__"]);
+});
+
+test("CcQuestionFlow: 次の問だけ答えられる。上限では空の行を古いものから忘れ、進行中の行だけなら新しい行を受けない", () => {
+  const flow = new CcQuestionFlow();
+  assert.equal(flow.answer(1, 1, { labels: ["a"] }), undefined);
+  assert.deepEqual(flow.answer(1, 0, { labels: ["a"] }), [{ labels: ["a"] }]);
+  assert.equal(flow.step(1), 1);
+  assert.equal(flow.select(1, 0, ["x"]), false);
+  assert.equal(flow.select(1, 1, ["x", "y"]), true);
+  assert.deepEqual(flow.selected(1, 1), ["x", "y"]);
+  assert.deepEqual(flow.answer(1, 1, { labels: ["x", "y"] }), [{ labels: ["a"] }, { labels: ["x", "y"] }]);
+  assert.equal(flow.selected(1, 1), undefined);
+  flow.drop(1);
+  assert.equal(flow.step(1), 0);
+
+  // 上限まで進行中の行で埋めると、新しい行は受けない（進行中の行は消さない）
+  const full = new CcQuestionFlow();
+  for (let id = 1; id <= CC_QUESTION_FLOW_MAX; id++) full.answer(id, 0, { other: "x" });
+  assert.equal(full.answer(CC_QUESTION_FLOW_MAX + 1, 0, { other: "y" }), undefined);
+  assert.equal(full.select(CC_QUESTION_FLOW_MAX + 1, 0, ["a"]), false);
+  for (let id = 1; id <= CC_QUESTION_FLOW_MAX; id++) assert.equal(full.step(id), 1);
+  // 1 つ終われば受ける
+  full.drop(1);
+  assert.deepEqual(full.answer(CC_QUESTION_FLOW_MAX + 1, 0, { other: "y" }), [{ other: "y" }]);
 });

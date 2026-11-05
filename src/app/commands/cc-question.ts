@@ -167,7 +167,11 @@ export async function handleQuestion(
     }
     // 選択肢の順に覚える
     const labels = question.options.filter((_, index) => indexes.includes(index)).map((option) => option.label);
-    questions.flow.select(id, questionIndex, labels);
+    // 途中の答えが上限（進行中の行だけ）で覚えられなければ古い扱い
+    if (!questions.flow.select(id, questionIndex, labels)) {
+      await stale();
+      return;
+    }
     await responder.deferUpdate();
     return;
   } else if (action === "ok") {
@@ -201,6 +205,11 @@ export async function handleQuestion(
   }
   if (picks.length < pending.questions.length) {
     await show(questions.stepMessage(id, picks));
+    // 書き換えの間に Web・端末で答えられた（・時間切れになった）なら、次の問のボタンを残さないよう結果の 1 通で上書きする
+    if (questions.pendingQuestion(id) === undefined) {
+      questions.flow.drop(id);
+      await show(buttons.resolvedMessage(id));
+    }
     return;
   }
   const result = questions.answerQuestion(id, pending.requestHash, picks);

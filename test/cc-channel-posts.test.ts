@@ -221,8 +221,8 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
       | { kind: "select"; customId: string; values: string[] }
       | { kind: "modal"; customId: string; fields: Record<string, string> },
     channelId = CHANNEL,
+    responder = new FakeResponder(),
   ): Promise<FakeResponder> => {
-    const responder = new FakeResponder();
     const full = { ...interaction, guildId: GUILD, channelId, userId: OWNER, createdAt: now(), messageId: "message-1" } as Interaction;
     await component.handle(full as Exclude<Interaction, { kind: "command" }>, responder);
     return responder;
@@ -875,7 +875,7 @@ test("Q2: Web で先に答えられた・時間切れは 1 通を書き換え、
   assert.ok(s.gateway.edits.at(-1)!.message.text.endsWith(`\n時間切れ。端末か RC で答えてください <https://claude.ai/code/${BRIDGE}>`));
   assert.deepEqual(
     s.history.list(CHANNEL, { limit: 10 }).map((row) => row.text),
-    ["質問: 「Color」色は？（1 問）", "質問の答え: 答えました（Web）:\n1. 「Color」red", "質問: 形は？（1 問）", "質問の答え: 時間切れ。端末か RC で答えてください"],
+    ["質問: 「Color」色は？（1 問）", "質問の答え: 答えました（Web）:\n1. 「Color」red", "質問: 形は？（1 問）", "質問の結果: 時間切れ。端末か RC で答えてください"],
   );
 });
 
@@ -924,4 +924,26 @@ test("Q2: SELF_AGENT_CC が無効（ボタンの口が無い）・質問でな�
   );
   assert.deepEqual(responder.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
   assert.equal(s.store.get(asked.id)?.state, "pending");
+});
+
+test("Q2: 次の問に書き換える間に Web で答えられたら、次の問のボタンを残さず結果の 1 通で上書きする", async (t) => {
+  const s = await setup(t);
+  const asked = await s.askQuestion(S1, { questions: [Q_COLOR, Q_TAGS] });
+  const responder = new FakeResponder();
+  let once = false;
+  responder.beforeUpdate = () => {
+    if (once) return;
+    once = true;
+    assert.equal(s.hold.answer(asked.id, "deny", "web").ok, true);
+  };
+  await s.interact({ kind: "button", customId: `cc:q:pick:${asked.id}:0:0` }, CHANNEL, responder);
+  const updates = responder.calls.flatMap((call) => (call.method === "update" ? [call.message] : []));
+  assert.equal(updates.length, 2);
+  assert.ok(updates[0]!.text.includes("質問 2/2"));
+  assert.ok(updates[1]!.text.endsWith("\n答えませんでした（Web）"), updates[1]!.text);
+  assert.deepEqual(updates[1]!.components, RC_ROW);
+  assert.equal(updates[1]!.suppressEmbeds, true);
+  // 途中の答えは捨てた（同じ行の次の問のボタンは古い）
+  const late = await s.interact({ kind: "button", customId: `cc:q:ok:${asked.id}:1` });
+  assert.deepEqual(late.replies, [{ text: "この操作は古くなっています", ephemeral: true }]);
 });

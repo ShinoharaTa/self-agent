@@ -209,7 +209,7 @@ export class CcChannelPosts implements CcPermissionListener {
     const row = this.deps.permissions.get(id);
     if (row === undefined) return undefined;
     return {
-      message: permissionResolvedMessage(row, this.sessionOf(row.sessionId), this.places()),
+      message: { ...permissionResolvedMessage(row, this.sessionOf(row.sessionId), this.places()), suppressEmbeds: true },
       channelId: row.messageChannelId,
       messageId: row.messageId,
     };
