@@ -360,6 +360,18 @@
     });
   }
 
+  /** 閉じられるか（終わっていない。パレットの「このチャンネルを閉じる」） */
+  function ccClosable(channelId) {
+    const ch = channelById(channelId);
+    return !!ch && ch.kind === "cc" && ccLive(ch).state !== "ended";
+  }
+
+  /** そのチャンネルのセッションの RC のリンク（読んだ 1 件にあるときだけ） */
+  function ccRcUrl(channelId) {
+    const ch = channelById(channelId);
+    return ch && ch.kind === "cc" ? ccLive(ch).rc : null;
+  }
+
   /** 見出し（状態・[RC で開く]・[画面]・[Discord で開く]・[閉じる]） */
   function ccHeader(ch, channelId) {
     const live = ccLive(ch);
@@ -372,7 +384,8 @@
       live.state === "running" ? el("span", { class: "spinner", role: "img", "aria-label": "実行中" }) : null,
     ]);
     const actions = el("div", { class: "ed-actions" });
-    if (live.rc) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: live.rc, target: "_blank", rel: "noreferrer noopener" }, [icon("external-link"), "RC で開く"]));
+    // 狭い画面（≤639px）では [画面] だけ残し、リンクと [閉じる] は […] のコマンドへ（hide-sm と .ed-ops の規則）
+    if (live.rc) actions.append(el("a", { class: "btn btn-ghost btn-sm hide-sm", href: live.rc, target: "_blank", rel: "noreferrer noopener" }, [icon("external-link"), "RC で開く"]));
     const opened = ccScreenOpen(channelId);
     const screen = el("button", {
       class: "btn btn-ghost btn-sm",
@@ -392,11 +405,13 @@
     });
     actions.append(screen);
     const discord = discordUrl(ch.link);
-    if (discord) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: discord, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "Discord で開く"]));
+    if (discord) actions.append(el("a", { class: "btn btn-ghost btn-sm hide-sm", href: discord, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "Discord で開く"]));
     const closeOff = live.state === "ended";
     const close = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: closeOff, title: closeOff ? "閉じています" : null }, [icon("check"), "閉じる"]);
     close.addEventListener("click", () => closeCcChannel(channelId));
-    actions.append(el("div", { class: "ed-ops" }, [close]));
+    const more = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-ops-more", type: "button", "aria-label": "ほかの操作", title: "ほかの操作" }, [icon("ellipsis")]);
+    more.addEventListener("click", () => SA.app.palette(">"));
+    actions.append(el("div", { class: "ed-ops" }, [close, more]));
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
   }
 
@@ -907,5 +922,9 @@
     placeholderOf,
     enterHint,
     ccScreenOpen,
+    closeCcChannel,
+    ccClosable,
+    ccRcUrl,
+    discordUrl,
   };
 })();

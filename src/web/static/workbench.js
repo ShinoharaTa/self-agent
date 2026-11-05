@@ -699,6 +699,8 @@
         run: ch && ch.kind !== "cc" && !busy ? () => SA.chat.renew(ch.id) : null,
         why: busy ? SA.chat.BUSY_TEXT : ch && ch.kind === "cc" ? "Claude Code のチャンネルでは使えません" : "会話のタブで使えます",
       },
+      // Claude Code のチャンネルの [閉じる]・リンク（≤639px の見出しでは […] からここへ。Discord の /cc close と同じ）
+      ...(ch && ch.kind === "cc" ? ccCommands(ch) : []),
       { label: "タスクを開く", keys: "/tasks", detail: "", run: () => open("tasks") },
       { label: "リマインドを開く", keys: "/reminders", detail: "", run: () => open("reminders") },
       { label: "使用量を開く", keys: "/usage", detail: "", run: () => open("usage") },
@@ -709,6 +711,24 @@
       { label: "タブを閉じる", keys: "Alt+W", run: active ? () => closeTab(active) : null, why: "開いているタブがありません" },
       { label: "テーマを切り替える", detail: "ダーク / ライト", run: toggleTheme },
     ];
+  }
+
+  /** Claude Code のチャンネルのコマンド（閉じる・RC で開く・Discord で開く） */
+  function ccCommands(ch) {
+    const rc = SA.chat.ccRcUrl(ch.id);
+    const discord = SA.chat.discordUrl(ch.link);
+    const items = [
+      {
+        label: "このチャンネルを閉じる",
+        keys: "/cc close",
+        detail: "Discord のチャンネルを完了に移します",
+        run: SA.chat.ccClosable(ch.id) ? () => SA.chat.closeCcChannel(ch.id) : null,
+        why: "閉じています",
+      },
+    ];
+    if (rc) items.push({ label: "RC で開く", detail: "", run: () => window.open(rc, "_blank", "noopener,noreferrer") });
+    if (discord) items.push({ label: "Discord で開く", detail: "", run: () => window.open(discord, "_blank", "noopener,noreferrer") });
+    return items;
   }
 
   function gotoItems() {

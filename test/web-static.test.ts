@@ -817,3 +817,18 @@ test("web static: 会話のタブは Claude Code のチャンネル（kind cc）
   // 画面の写しは cc のチャンネルの会話のタブでも読む（閉じていれば一覧と同じ間隔）
   assert.match(read("api.js"), /ccScreenIdle\(\) \? CC_LIST_INTERVAL_MS : CC_SCREEN_INTERVAL_MS/);
 });
+
+test("web static: ≤639px でも Claude Code のチャンネルを閉じられる（見出しの […] とパレットの「このチャンネルを閉じる」。#249）", () => {
+  const chat = read("chat.js");
+  const ccHeader = /function ccHeader\(ch, channelId\) \{([\s\S]*?)\n  \}\n/.exec(chat)?.[1] ?? "";
+  assert.ok(ccHeader.length > 0);
+  // [閉じる] と同じ .ed-ops に […] がある（≤639px で [閉じる] を隠しても口が残る）
+  assert.match(ccHeader, /ed-ops-more/);
+  assert.match(ccHeader, /el\("div", \{ class: "ed-ops" \}, \[close, more\]\)/);
+  // [画面] 以外のリンクは ≤639px で隠す
+  assert.equal((ccHeader.match(/btn btn-ghost btn-sm hide-sm/g) ?? []).length, 2);
+  const wb = read("workbench.js");
+  assert.match(wb, /ch && ch\.kind === "cc" \? ccCommands\(ch\) : \[\]/);
+  assert.match(wb, /label: "このチャンネルを閉じる"[\s\S]{0,200}SA\.chat\.closeCcChannel\(ch\.id\)/);
+  assert.match(chat, /\n {4}closeCcChannel,\n/);
+});
