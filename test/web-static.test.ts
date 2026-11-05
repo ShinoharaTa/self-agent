@@ -720,7 +720,7 @@ test("web static: index.html に manifest・favicon・theme-color 2 つ・apple 
   assert.equal([...html.matchAll(/<meta name="theme-color" /g)].length, 2);
   assert.match(html, /<meta name="apple-mobile-web-app-capable" content="yes">/);
   assert.match(html, /<meta name="mobile-web-app-capable" content="yes">/);
-  assert.match(html, /<meta name="apple-mobile-web-app-status-bar-style" content="default">/);
+  assert.match(html, /<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">/);
   assert.match(html, /<meta name="apple-mobile-web-app-title" content="self-agent">/);
   // service worker は置かない（§11.3）
   assert.doesNotMatch(html, /serviceWorker/);

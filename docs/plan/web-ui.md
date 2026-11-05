@@ -307,14 +307,14 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 <meta name="theme-color" media="(prefers-color-scheme: dark)"  content="#11141c">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="self-agent">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">   <!-- 180×180 PNG。透過なし・角丸なし（iOS が丸める） -->
 ```
 
 - 値はタイトルバーの地（`--surface`。GUIDELINES §2.1: ライト `#ffffff` / ダーク `#11141c`）に合わせる。`--bg` ではない（画面の上端の色が基準）。色を変えたら manifest・meta・JS の 3 箇所を同時に直す。
 - 画面のテーマは OS でなく `data-theme` で切り替わる（事実: workbench.js の `applyTheme`）。**切り替え時に JS で 2 つの `theme-color` の `content` を今のテーマの色に書き換える**（media 付きのままだと OS の設定に従ってしまう）。`system` のときは元の 2 値に戻す。ライト・ダークを残すと決めたので、この JS は必須。
-- `status-bar-style` は `default` から始める。ダークのときに黒い帯が残るなら `black-translucent` に変え、タイトルバーに `padding-top: env(safe-area-inset-top)` を足す（GAP の UI-1 で入る）。どちらが合うかは**未確認**（iOS の版で挙動が違う）。
+- **ステータスバーは `black-translucent`**（決定。#255・docs/plan/web-ui-polish.md の UI-12）。`default` は iOS 13 以降 OS の外観に従うので、既定のダークのアプリを OS がライトの端末で開くと上に白い帯が出る。`black-translucent` はステータスバーを透かして白い文字で描き、裏はタイトルバーの `padding-top: env(safe-area-inset-top)` の帯になる。**ライトのときの上端の帯は暗い色（`--primary`）で妥協する**（白地に白い文字を避ける。meta は起動時に固定でテーマに合わせて変えられないため。`app.css` の `@media (display-mode: standalone)`）。実機（iOS の版）での見え方は未確認。
 - iOS 17 以降は manifest の `display` も読むが、古い iOS のために `apple-mobile-web-app-capable` も残す。Chrome は `apple-mobile-web-app-capable` だけだと非推奨の警告を出すので、`mobile-web-app-capable` も並べる。
 
 ### 11.3 service worker
