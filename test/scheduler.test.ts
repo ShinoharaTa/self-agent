@@ -60,7 +60,7 @@ function setup(
   deleteAfterDays: number = 30,
   allowedGuildIds: string[] = ["guild-1"],
   // history: true なら history（同じ DB）を渡す
-  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory" | "pruneCcSessions"> & { history?: boolean } = {},
+  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory" | "pruneCcSessions" | "ccChannels"> & { history?: boolean } = {},
 ) {
   const db = tempDb(t);
   const clock = { now: NOW };
@@ -609,6 +609,26 @@ test("再同期: #inbox / #tasks / #system の親が self-agent カテゴリで�
     { channelId: "system-1", target: { kind: "category", categoryId: "home-1" } },
   ]);
   assert.equal(env.logs.length, 1);
+});
+
+test("再同期: Claude Code のチャンネル（ccChannels）には同じ一覧と、一覧を取る前の時刻と上限 5 を渡す", async (t) => {
+  const calls: Array<{ guildId: string; parents: ReadonlyMap<string, string | null>; listedAt: Date; limit: number }> = [];
+  const env = setup(t, 12, 30, ["guild-1"], {
+    ccChannels: {
+      reconcile: (guildId, parents, listedAt, limit) => {
+        calls.push({ guildId, parents, listedAt, limit });
+        return 0;
+      },
+    },
+  });
+  layout(env);
+  env.gateway.parents = discord([["cc-1", "cc-cat"]]);
+  await env.scheduler.tick();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.guildId, "guild-1");
+  assert.equal(calls[0]!.parents.get("cc-1"), "cc-cat");
+  assert.equal(calls[0]!.listedAt.getTime(), env.clock.now.getTime());
+  assert.equal(calls[0]!.limit, 5);
 });
 
 test("再同期: #github（SELF_AGENT_GITHUB=1 の /setup で作ったもの）も self-agent カテゴリの外にあれば戻す", async (t) => {

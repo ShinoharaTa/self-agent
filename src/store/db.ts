@@ -651,6 +651,31 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX cc_replies_session ON cc_replies(session_id, received_at);
   CREATE INDEX cc_replies_created ON cc_replies(created_at);
   `,
+  // v36（docs/plan/claude-code-channels.md §4。CC10）: Claude Code のセッションに結びつけた Discord のチャンネル。1 セッションに削除されていない
+  // チャンネルは 1 つ（サーバーをまたいでも。一意の部分索引）。state は open（カテゴリ「Claude Code」）・resuming（[起動して続ける] の間。CC13）・
+  // ended（一覧から消えた。完了カテゴリ）・deleted。previous_session_id は付け替え（CC13）の前の id、delete_prompt_message_id は削除の確認（CC13）。
+  // name・cwd は作ったときのチャンネル名（cc-<セッション名>）とセッションのディレクトリ（ローカルの DB だけ）。カテゴリは持たない（再同期は Discord の親を見る）。
+  // guild_settings.cc_category_id は /setup が作るカテゴリ「Claude Code」
+  `
+  CREATE TABLE cc_channels (
+    channel_id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    previous_session_id TEXT,
+    name TEXT NOT NULL,
+    cwd TEXT,
+    state TEXT NOT NULL CHECK (state IN ('open', 'resuming', 'ended', 'deleted')),
+    origin TEXT NOT NULL CHECK (origin IN ('web', 'command', 'web_send', 'web_start', 'permission', 'tool_send', 'tool_start', 'github')),
+    created_at TEXT NOT NULL,
+    ended_at TEXT,
+    delete_prompt_message_id TEXT,
+    deleted_at TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX cc_channels_session ON cc_channels(session_id) WHERE state <> 'deleted';
+  CREATE INDEX cc_channels_guild ON cc_channels(guild_id, state);
+  ALTER TABLE guild_settings ADD COLUMN cc_category_id TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

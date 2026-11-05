@@ -3,17 +3,114 @@
 // `cc:keep:send|start:<id>`（CC7。処理は commands/cc-confirm.ts）、返事の投稿の [追いかけをやめる] の `cc:unfollow:<cc_replies の id>`（CC8。cc/replies.ts）。
 // 許可の要求は Web と同じ permission-hold.ts の answer を通す（先に押した方が勝つ）。決めたら #system の 1 通を応答で書き換えてボタンを外し
 // （応答に失敗したら、その 1 通を gateway で書き換えて代える）、古ければ（Web・端末・RC で先に答えられた・時間切れ・停止・SELF_AGENT_CC が無効）
-// 本人にだけ「この操作は古くなっています」
+// 本人にだけ「この操作は古くなっています」。
+// /cc（SELF_AGENT_CC=1 のときだけ登録。docs/plan/claude-code-channels.md §3.8。CC10 は open だけ）は一覧を rankSessions の順に最大 25 件の
+// セレクト `cc:pick` で本人にだけ出し、選ぶとそのセッションの Discord のチャンネルを作る（cc/channels.ts の openChannel。origin command）
+import type { CcChannelFailure, CcChannels, CcOpenResult } from "../../cc/channels.ts";
+import type { CcState } from "../../cc/registry.ts";
 import type { CcAnswerResult, CcPermissionDecision } from "../../cc/permission-hold.ts";
 import { unfollowByReply, unfollowedText } from "../../cc/replies.ts";
 import type { CcReplyStore } from "../../store/cc-replies.ts";
 import type { CcSessionStore } from "../../store/cc-sessions.ts";
 import type { Gateway, OutgoingMessage } from "../../discord/gateway.ts";
-import type { ComponentHandler } from "../interactions.ts";
+import { isUuid } from "../../cc/agents.ts";
+import type { GuildSettingsStore } from "../../store/guild-settings.ts";
+import type { CommandHandler, ComponentHandler } from "../interactions.ts";
+import { clip } from "./tasks.ts";
 import { type CcConfirmButtons, type CcConfirmDeps, createCcConfirmButtons } from "./cc-confirm.ts";
 import { STALE_TURN_REPLY } from "./turn-controls.ts";
 
 const NAMESPACE = "cc";
+/** /cc open のセレクト */
+const PICK_SELECT_ID = `${NAMESPACE}:pick`;
+/** セレクトの選択肢のラベル・説明の上限（Discord は 100 字まで） */
+const OPTION_MAX_LENGTH = 100;
+
+/** /cc と cc:pick が使うチャンネルの操作（SELF_AGENT_CC=1 で動いているときだけ。main で後から作るので関数で渡す） */
+export type CcChannelsGetter = () => Pick<CcChannels, "openChannel" | "pickItems"> | undefined;
+
+/** Claude Code の連携が動いていないとき（hook の受け口の設定が無いなど） */
+export const CC_UNAVAILABLE_REPLY = "Claude Code の連携が動いていません";
+export const CC_NOT_SET_UP_REPLY = "カテゴリ「Claude Code」がありません。/setup を実行してください";
+export const CC_NO_SESSIONS_REPLY = "Claude Code のセッションがありません";
+
+const STATE_LABEL: Readonly<Record<CcState, string>> = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
+
+/** 作れなかった理由の応答（/cc open） */
+const OPEN_FAILURE_REPLY: Readonly<Record<CcChannelFailure, string>> = {
+  not_found: "このセッションは一覧にありません",
+  not_in_tmux: "tmux の外のセッションにはチャンネルを作れません",
+  not_set_up: CC_NOT_SET_UP_REPLY,
+  full: "カテゴリ「Claude Code」が満杯（50）のため作れません。完了したチャンネルを消してください",
+  failed: "チャンネルを作れませんでした",
+};
+
+/** openChannel の結果の応答（純関数） */
+export function openResultReply(result: CcOpenResult): string {
+  if (result.ok) return `チャンネルを作りました: <#${result.channelId}>`;
+  if (result.reason === "exists") return `このセッションのチャンネルは既にあります: <#${result.channelId}>`;
+  return OPEN_FAILURE_REPLY[result.reason];
+}
+
+export type CcCommandDeps = {
+  ccChannels: CcChannelsGetter;
+  /** /setup 前のサーバー（カテゴリ「Claude Code」が無い）では断る */
+  guildSettings: Pick<GuildSettingsStore, "ccCategoryId">;
+  log: (message: string) => void;
+};
+
+/** `/cc open`: Claude Code のセッションを選ぶセレクトを本人にだけ出す（選んだら cc:pick でチャンネルを作る） */
+export function createCcCommand(deps: CcCommandDeps): CommandHandler {
+  return {
+    def: {
+      name: "cc",
+      description: "Claude Code のセッションの Discord のチャンネルを操作します",
+      subcommands: [{ name: "open", description: "Claude Code のセッションを選んで、そのチャンネルを作ります" }],
+    },
+    async handle(interaction, responder) {
+      if (interaction.subcommand !== "open") throw new Error(`/cc の不明なサブコマンドです（${interaction.subcommand ?? ""}）`);
+      const guildId = interaction.guildId;
+      if (guildId === null) throw new Error("サーバー外で /cc が呼ばれました");
+      const channels = deps.ccChannels();
+      if (channels === undefined) {
+        await responder.reply({ text: CC_UNAVAILABLE_REPLY, ephemeral: true });
+        return;
+      }
+      if (deps.guildSettings.ccCategoryId(guildId) === null) {
+        await responder.reply({ text: CC_NOT_SET_UP_REPLY, ephemeral: true });
+        return;
+      }
+      const items = channels.pickItems();
+      if (items.length === 0) {
+        await responder.reply({ text: CC_NO_SESSIONS_REPLY, ephemeral: true });
+        return;
+      }
+      await responder.reply({
+        text: "チャンネルを作るセッションを選んでください",
+        ephemeral: true,
+        components: [
+          {
+            kind: "select",
+            select: {
+              customId: PICK_SELECT_ID,
+              placeholder: "Claude Code のセッション",
+              minValues: 1,
+              maxValues: 1,
+              options: items.map((item) => ({
+                label: clip(item.label.replace(/\s+/g, " "), OPTION_MAX_LENGTH),
+                value: item.sessionId,
+                description: clip(
+                  [STATE_LABEL[item.state], item.dir, item.hasChannel ? "チャンネルあり" : null].filter((part) => part !== null && part !== "").join("・"),
+                  OPTION_MAX_LENGTH,
+                ),
+              })),
+            },
+          },
+        ],
+      });
+    },
+  };
+}
 
 /** 許可の要求のボタンが使うもの（main が permission-hold.ts と cc/discord-notice.ts から作る） */
 export type CcPermissionButtons = {
@@ -32,6 +129,8 @@ export type CcComponentDeps = {
   ccPermissionButtons?: () => CcPermissionButtons | undefined;
   /** 返事の追いかけ（[追いかけをやめる]。CC8）。DB だけで動くので SELF_AGENT_CC が無効でも渡す。無ければ cc:unfollow は例外 */
   ccFollow?: { replies: Pick<CcReplyStore, "get">; sessions: Pick<CcSessionStore, "get" | "stopFollow"> };
+  /** /cc open のセレクト（cc:pick）。無ければ cc:pick は例外 */
+  ccChannels?: CcChannelsGetter;
   /** 応答に失敗したときの書き換え（既定の人格の Bot。#system の 1 通を出した Bot） */
   gateway: Pick<Gateway, "editMessage">;
   log: (message: string) => void;
@@ -62,6 +161,22 @@ export function createCcComponent(deps: CcComponentDeps): ComponentHandler {
   return {
     namespace: NAMESPACE,
     async handle(interaction, responder) {
+      // /cc open のセレクト（CC10）: 選んだセッションのチャンネルを作る（作成は数秒かかりうるので先に保留する）
+      if (interaction.customId === PICK_SELECT_ID) {
+        if (interaction.kind !== "select" || deps.ccChannels === undefined) throw new Error(`cc:pick の不明な操作です（${interaction.kind}）`);
+        const guildId = interaction.guildId;
+        const sessionId = interaction.values[0];
+        if (guildId === null || sessionId === undefined || !isUuid(sessionId)) throw new Error("cc:pick の選択が正しくありません");
+        const channels = deps.ccChannels();
+        if (channels === undefined) {
+          await responder.reply({ text: CC_UNAVAILABLE_REPLY, ephemeral: true });
+          return;
+        }
+        await responder.defer(true);
+        const result = await channels.openChannel(guildId, sessionId, "command");
+        await responder.reply({ text: openResultReply(result), ephemeral: true });
+        return;
+      }
       const parts = interaction.customId.split(":");
       const [, kind, action, rawId, ...rest] = parts;
       // 確認（CC7）: cc:send:<id>・cc:start:<id>・cc:keep:send|start:<id>

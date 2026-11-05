@@ -376,6 +376,8 @@ test("openDb: v17 の DB を v18 に上げても既存のデータは残り、#i
     "github_channel_id",
     // v22 で足した列
     "jobs_channel_id",
+    // v36 で足した列
+    "cc_category_id",
   ]);
 
   // ほかのデータは残り、人格・エンジンの列は既存の行も新しい行も既定値

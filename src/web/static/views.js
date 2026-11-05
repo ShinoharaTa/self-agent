@@ -822,6 +822,51 @@
     return kv("返事", el("span", {}, ["Discord に戻しています" + since + " ", stop]));
   }
 
+  /** チャンネルを作れなかったときのトースト（応答の error ごと。CC10） */
+  const CC_CHANNEL_ERRORS = {
+    not_in_tmux: "tmux の外のセッションにはチャンネルを作れません",
+    full: "カテゴリ「Claude Code」が満杯（50）です。完了したチャンネルを消してください",
+    not_set_up: "カテゴリ「Claude Code」がありません。Discord で /setup を実行してください",
+    not_found: "このセッションは一覧にありません",
+    failed: "チャンネルを作れませんでした",
+  };
+
+  /**
+   * Discord のチャンネル（CC10）。あればリンク、無ければ [Discord のチャンネルを作る]（tmux の中だけ）。
+   * /setup 済みのサーバーが複数なら、作る先を選ぶ
+   */
+  function ccChannelFact(sessionId, s) {
+    if (s.channel && typeof s.channel.link === "string" && s.channel.link.startsWith("https://discord.com/channels/")) {
+      const link = el("a", { href: s.channel.link, target: "_blank", rel: "noreferrer noopener", text: "チャンネルを開く" });
+      return kv("Discord", el("span", {}, [(s.channel.state === "ended" ? "完了に移しています" : "チャンネルがあります") + " ", link]));
+    }
+    if (!s.inTmux) return kv("Discord", "tmux の外のため、チャンネルは作れません");
+    const guilds = store.channels ? store.channels.guilds.filter((g) => g.setUp) : [];
+    const pick = guilds.length > 1 ? el("select", { class: "select select-sm", "aria-label": "作るサーバー" }, guilds.map((g) => el("option", { value: g.id, text: g.id }))) : null;
+    const create = el("button", { class: "btn btn-secondary btn-sm", type: "button", text: "Discord のチャンネルを作る" });
+    create.addEventListener("click", () => createCcChannel(sessionId, pick ? pick.value : null, create));
+    return kv("Discord", el("span", {}, [...(pick ? [pick, " "] : []), create]));
+  }
+
+  /** [Discord のチャンネルを作る]。guildId は選んだサーバー（null ならサーバーが決める）。button は押したもの（[もう一度] からは null） */
+  function createCcChannel(sessionId, guildId, button) {
+    if (button) button.disabled = true;
+    const body = guildId ? { guildId } : {};
+    SA.api.post("/api/cc/sessions/" + encodeURIComponent(sessionId) + "/channel", body, { quiet: true }).then(
+      () => {
+        toast("Discord のチャンネルを作りました");
+        store.load.ccSession(sessionId);
+      },
+      (err) => {
+        if (button) button.disabled = false;
+        if (err && err.code === "exists") toast("このセッションのチャンネルは既にあります");
+        else if (err && CC_CHANNEL_ERRORS[err.code]) toast(CC_CHANNEL_ERRORS[err.code], null, { level: "error" });
+        else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => createCcChannel(sessionId, guildId, null) });
+        store.load.ccSession(sessionId);
+      },
+    );
+  }
+
   /** [追いかけをやめる]。button は押したもの（[もう一度] からは null） */
   function unfollowCc(sessionId, button) {
     if (button) button.disabled = true;
@@ -1111,6 +1156,7 @@
       kv("最後の指示", s.lastPromptAt ? dateTime(s.lastPromptAt) + "（" + ago(s.lastPromptAt) + "）" : "-"),
       ...(CC_STARTED_BY[s.startedBy] ? [kv("起動", CC_STARTED_BY[s.startedBy])] : []),
       ccFollowFact(sessionId, s),
+      ccChannelFact(sessionId, s),
     ]);
     // trust のダイアログ（self-agent はキーを送らない。§4.2）
     const trust = s.trustPending

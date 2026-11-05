@@ -43,6 +43,9 @@ const STATE_CATEGORIES: ReadonlyArray<{ state: SessionState; name: string }> = [
 
 const FIRST_ORDINAL = 1;
 
+/** Claude Code のセッションのチャンネルを置くカテゴリ（SELF_AGENT_CC=1 のときだけ、状態カテゴリの後に作る。docs/plan/claude-code-channels.md §3.2） */
+export const CC_CATEGORY_NAME = "Claude Code";
+
 export const HOME_PANEL_TEXT = "self-agent のホーム。ボタンかスラッシュコマンドで操作できます。";
 /** ホームパネルのボタンの custom_id の名前空間（`home:<action>`。処理は home.ts） */
 export const HOME_NAMESPACE = "home";
@@ -60,8 +63,11 @@ export function layoutQueueKey(guildId: string): string {
 }
 
 export type SetupDeps = {
-  /** personas は足した人格（#<NAME> を作る）、github が true なら #github も、jobs が true なら #jobs も作る。無ければ今と同じ */
-  cfg?: Partial<Pick<Config, "personas" | "github" | "jobs">>;
+  /**
+   * personas は足した人格（#<NAME> を作る）、github が true なら #github も、jobs が true なら #jobs も、cc が true ならカテゴリ「Claude Code」も作る。
+   * 無ければ今と同じ
+   */
+  cfg?: Partial<Pick<Config, "personas" | "github" | "jobs" | "cc">>;
   gateway: Pick<
     Gateway,
     | "createCategory"
@@ -98,7 +104,8 @@ function describeError(error: unknown): string {
  * （移動に失敗した分や手で動かされた分は、定期処理の再同期（scheduler.ts）が戻す）。
  * 足した人格（cfg.personas）があれば、#tasks の後にその人格の #<NAME> を self-agent カテゴリに作る（作るのは既定の人格の Bot。ホームパネルは置かない）。
  * cfg.github が true なら、#system の後に #github を作る（false なら作らず、既にあるものも触らない）。
- * cfg.jobs が true なら、その後に #jobs を作る（同じく false なら作らず触らない）
+ * cfg.jobs が true なら、その後に #jobs を作る（同じく false なら作らず触らない）。
+ * cfg.cc が true なら、状態カテゴリの後にカテゴリ「Claude Code」を作る（同じく。中のチャンネルを戻すのは scheduler.ts の再同期）
  */
 export async function ensureGuildLayout(
   guildId: string,
@@ -189,6 +196,15 @@ export async function ensureGuildLayout(
         guildSettings.getStateCategory(guildId, state, FIRST_ORDINAL),
         () => gateway.createCategory(guildId, name),
         (id) => guildSettings.setStateCategory(guildId, state, FIRST_ORDINAL, id),
+      );
+    }
+    if (deps.cfg?.cc === true) {
+      await ensure(
+        guildSettings.ccCategoryId(guildId),
+        () => gateway.createCategory(guildId, CC_CATEGORY_NAME),
+        (id) => {
+          guildSettings.setCcCategory(guildId, id);
+        },
       );
     }
   } catch (error) {

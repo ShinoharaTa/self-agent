@@ -46,7 +46,7 @@ const SETUP: Extract<Interaction, { kind: "command" }> = {
   createdAt: NOW,
 };
 
-function setup(t: TestContext, cfg?: { github?: boolean; jobs?: boolean }) {
+function setup(t: TestContext, cfg?: { github?: boolean; jobs?: boolean; cc?: boolean }) {
   const db = tempDb(t);
   const gateway = new SetupGateway();
   const { guildSettings } = createStores(db, () => NOW);
@@ -208,6 +208,37 @@ test("SELF_AGENT_JOBS=1: #github の後に #jobs を self-agent カテゴリに�
     false,
   );
   assert.equal(disabled.guildSettings.jobsChannelId("guild-1"), null);
+});
+
+test("SELF_AGENT_CC=1: 状態カテゴリの後にカテゴリ「Claude Code」を作って保存し、2 回目は作らず、消えていればそれだけ作り直す。無効なら作らない", async (t) => {
+  const { gateway, guildSettings, run } = setup(t, { cc: true });
+
+  await run();
+  assert.deepEqual(gateway.channelCalls.filter((call) => call.method === "createCategory"), [
+    { method: "createCategory", guildId: "guild-1", name: "self-agent" },
+    { method: "createCategory", guildId: "guild-1", name: "進行中" },
+    { method: "createCategory", guildId: "guild-1", name: "待ち" },
+    { method: "createCategory", guildId: "guild-1", name: "完了" },
+    { method: "createCategory", guildId: "guild-1", name: "Claude Code" },
+  ]);
+  assert.equal(guildSettings.ccCategoryId("guild-1"), "ch-8");
+
+  gateway.reset();
+  assert.match(await run(), /^すべて揃っています。/);
+  assert.deepEqual(gateway.callsOf("createCategory", "createTextChannel"), []);
+
+  gateway.alive.delete("ch-8");
+  gateway.reset();
+  await run();
+  assert.deepEqual(gateway.callsOf("createCategory", "createTextChannel"), [
+    { method: "createCategory", guildId: "guild-1", name: "Claude Code" },
+  ]);
+  assert.equal(guildSettings.ccCategoryId("guild-1"), "ch-9");
+
+  const disabled = setup(t, { cc: false });
+  await disabled.run();
+  assert.equal(disabled.gateway.channelCalls.some((call) => call.method === "createCategory" && call.name === "Claude Code"), false);
+  assert.equal(disabled.guildSettings.ccCategoryId("guild-1"), null);
 });
 
 test("2 回目: すべて残っていれば存在を確認するだけで何も作らない", async (t) => {
