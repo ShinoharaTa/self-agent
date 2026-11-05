@@ -245,3 +245,10 @@ test("questionResolvedMessage・questionModalTitle: 答え・答えなかった�
   assert.equal(questionModalTitle({ ...questions[0]!, header: "" }), "その他");
   assert.ok([...questionModalTitle({ ...questions[0]!, header: "x".repeat(100) })].length <= 45);
 });
+
+test("validateAnswers: 問の文が __proto__ でも答えのキーとして残り、JSON に出る", () => {
+  const questions = parseQuestions({ questions: [{ question: "__proto__", options: [option("a"), option("b")] }] })!;
+  const answers = validateAnswers(questions, [{ labels: ["b"] }])!;
+  assert.equal(JSON.stringify(answers), '{"__proto__":"b"}');
+  assert.deepEqual(Object.keys(answers), ["__proto__"]);
+});
