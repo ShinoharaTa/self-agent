@@ -129,7 +129,8 @@
     const pressed = !a.tab && sidebarShows(a.id);
     // 数（会話は未読のチャンネルの数）
     const n = a.count ? a.count() : 0;
-    const label = a.label + (n > 0 ? "（" + (a.countLabel || "") + n + "）" : "");
+    const countLabel = typeof a.countLabel === "function" ? a.countLabel() : a.countLabel || "";
+    const label = a.label + (n > 0 ? "（" + countLabel + n + "）" : "");
     const btn = el(
       "button",
       {
@@ -1185,6 +1186,7 @@
     open,
     refresh,
     refreshSidebar: renderSidebar,
+    refreshActivity: renderActivity,
     refreshTabs: renderEditors,
     refreshTabMarks,
     refreshStatus,

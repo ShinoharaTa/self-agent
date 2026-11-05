@@ -683,6 +683,12 @@
     return store.ccEnabled() && (SA.app.sidebarShows("chat") || activeCcSession() !== null);
   }
 
+  /** 一覧の中身（最後に読めた時刻を除く）が同じ */
+  function sameCcList(a, b) {
+    const key = (c) => JSON.stringify([c.sessions, c.starting, c.stale, c.unreadable]);
+    return a !== null && b !== null && key(a) === key(b);
+  }
+
   /** opts.quiet は polling から（失敗のトーストは polling が出す） */
   store.load.cc = (opts) =>
     once("cc", async () => {
@@ -690,14 +696,17 @@
       try {
         data = await SA.api.get("/api/cc/sessions", opts);
       } catch (err) {
-        // 読めなくても ccAt は進める（サイドバーを描き直すたびに読み直さない）
+        // 読めなくても ccAt は進める（サイドバーを描き直すたびに読み直さない）。描き直すのは読めなくなったときだけ
         store.ccAt = Date.now();
+        const was = store.ccFailed;
         store.ccFailed = true;
-        SA.app.refreshSidebar();
+        if (!was) SA.app.refreshSidebar();
         throw err;
       }
       store.ccAt = Date.now();
+      const wasFailed = store.ccFailed;
       store.ccFailed = false;
+      const before = store.cc;
       store.cc = {
         stale: !!(data && data.stale),
         unreadable: !!(data && data.unreadable),
@@ -705,9 +714,11 @@
         sessions: Array.isArray(data && data.sessions) ? data.sessions.filter((s) => s && typeof s.sessionId === "string") : [],
         starting: Array.isArray(data && data.starting) ? data.starting.filter((s) => s && typeof s.title === "string") : [],
       };
+      // 中身（sessions・starting・stale・unreadable）が前と同じなら描き直さない（10 秒ごとの polling で会話の一覧を作り直さない）
+      if (!wasFailed && sameCcList(before, store.cc)) return;
       SA.app.refreshSidebar();
       // 会話のアクティビティの数（判断待ち）が変わりうる
-      SA.app.refreshStatus();
+      SA.app.refreshActivity();
       // タブの見出しの名前が変わりうる
       if (activeCcSession() !== null) SA.app.refreshTabs();
     });
