@@ -256,6 +256,11 @@ export class CcSessionStore {
     return this.db.prepare("SELECT * FROM cc_sessions WHERE gone_at IS NULL ORDER BY session_id").all().map(toRow);
   }
 
+  /** 一覧から消えた（gone_at のある）行を session_id の順に（戻ったセッションを見つける。registry.ts の revived） */
+  listGone(): CcSessionRow[] {
+    return this.db.prepare("SELECT * FROM cc_sessions WHERE gone_at IS NOT NULL ORDER BY session_id").all().map(toRow);
+  }
+
   /**
    * self-agent が起動したセッションの記録を書く（§4.2。行は一覧で見たときに作られている）。既に記録があれば（started_by が owner でない）書かない。
    * 書いたら true

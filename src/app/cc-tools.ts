@@ -16,7 +16,7 @@ import type { Gateway } from "../discord/gateway.ts";
 import type { CcSendStore } from "../store/cc-sends.ts";
 import type { CcStartStore } from "../store/cc-starts.ts";
 import type { OutgoingMessage } from "../discord/gateway.ts";
-import { cwdLabel } from "../web/routes/cc.ts";
+import { cwdLabel } from "../cc/labels.ts";
 import { ccRcUrl, ccSendPrompt, ccStartPrompt, fitsConfirm } from "./commands/cc-confirm.ts";
 
 /** cc_list が返す件数の上限 */

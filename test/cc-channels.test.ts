@@ -9,7 +9,12 @@ import {
   ccChannelName,
   ccChannelTopic,
   CcChannels,
+  ccEndedHandler,
+  dropCcChannelMessages,
 } from "../src/cc/channels.ts";
+import { NotCategoryError } from "../src/discord/gateway.ts";
+import type { IncomingMessage } from "../src/discord/gateway.ts";
+import type { CcSessionRow } from "../src/store/cc-sessions.ts";
 import type { PaneLookup } from "../src/cc/panes.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { OutgoingMessage } from "../src/discord/gateway.ts";
@@ -359,4 +364,52 @@ test("pickItems: 一覧の順に 25 件まで、ディレクトリの表示と�
   assert.deepEqual(items[0], { sessionId: S1, label: SECRET_NAME, state: "idle", dir: "alpha", hasChannel: true });
   // 名前が無ければディレクトリ
   assert.deepEqual(items[1], { sessionId: S2, label: "beta", state: "idle", dir: "beta", hasChannel: false });
+});
+
+test("openChannel: 記録したカテゴリの ID がカテゴリでなければ（NotCategoryError）not_set_up。それ以外の失敗は failed", async (t) => {
+  const s = setup(t);
+  s.gateway.beforeCount = () => {
+    throw new NotCategoryError();
+  };
+  assert.deepEqual(await s.channels.openChannel("guild-1", S1, "web"), { ok: false, reason: "not_set_up" });
+  s.gateway.beforeCount = () => {
+    throw new Error("network");
+  };
+  assert.deepEqual(await s.channels.openChannel("guild-1", S1, "web"), { ok: false, reason: "failed" });
+  assert.equal(s.gateway.callsOf("createTextChannel").length, 0);
+});
+
+test("ccEndedHandler: チャンネルがあれば #system の終了の知らせを出さない（追いかけは止める）。どちらも無いときだけ #system", () => {
+  const calls: string[] = [];
+  const session = { sessionId: S1 } as CcSessionRow;
+  const handler = (inChannel: boolean, followed: boolean) =>
+    ccEndedHandler({
+      channels: () => ({ ended: () => (calls.push("channel"), inChannel) }),
+      replier: () => ({ ended: () => (calls.push("replier"), followed) }),
+      notifier: () => ({ ended: () => void calls.push("notifier") }),
+    });
+  handler(true, false)(session);
+  assert.deepEqual(calls.splice(0), ["channel", "replier"]);
+  handler(true, true)(session);
+  assert.deepEqual(calls.splice(0), ["channel", "replier"]);
+  handler(false, true)(session);
+  assert.deepEqual(calls.splice(0), ["channel", "replier"]);
+  handler(false, false)(session);
+  assert.deepEqual(calls.splice(0), ["channel", "replier", "notifier"]);
+  // 連携が動いていない（どれも無い）なら何もしない
+  ccEndedHandler({ channels: () => undefined, replier: () => undefined, notifier: () => undefined })(session);
+});
+
+test("dropCcChannelMessages: 削除されていない cc のチャンネルへの発言は黙って捨て、それ以外（削除済み・ほかのチャンネル）は handler に渡す", async (t) => {
+  const s = setup(t);
+  s.store.create({ channelId: "cc-open", guildId: "guild-1", sessionId: S1, name: "cc-a", cwd: null, origin: "web" });
+  s.store.create({ channelId: "cc-ended", guildId: "guild-1", sessionId: S2, name: "cc-b", cwd: null, origin: "web" });
+  s.store.setState("cc-ended", "ended");
+  s.store.create({ channelId: "cc-gone", guildId: "guild-1", sessionId: S3, name: "cc-c", cwd: null, origin: "web" });
+  s.store.markDeleted("cc-gone");
+  const handled: string[] = [];
+  const handle = dropCcChannelMessages(s.store, async (message) => void handled.push(message.channelId));
+  const message = (channelId: string) => ({ id: "m", channelId, guildId: "guild-1", content: "x" }) as IncomingMessage;
+  for (const channelId of ["cc-open", "cc-ended", "cc-gone", "inbox-1"]) await handle(message(channelId));
+  assert.deepEqual(handled, ["cc-gone", "inbox-1"]);
 });

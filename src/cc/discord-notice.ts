@@ -21,7 +21,8 @@ import type { CcPermissionRow, CcPermissionStore } from "../store/cc-permissions
 import type { CcSessionRow, CcSessionStore } from "../store/cc-sessions.ts";
 import { headChars } from "../store/cc-sessions.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
-import { CC_RC_URL_PREFIX, cwdLabel } from "../web/routes/cc.ts";
+import { CC_RC_URL_PREFIX } from "../web/routes/cc.ts";
+import { cwdLabel } from "./labels.ts";
 import { CC_PERMISSION_SUPPRESS_MS, type CcPermissionListener } from "./permission-hold.ts";
 import { describeRule, formatRule } from "./permissions.ts";
 import type { CcRegistry, CcSessionView, CcTimers } from "./registry.ts";

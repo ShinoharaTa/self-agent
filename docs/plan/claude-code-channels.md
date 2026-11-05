@@ -105,7 +105,7 @@
 
 作るときの流れ（`src/cc/channels.ts` の `openChannel(guildId, sessionId, origin)`）: `/setup` と同じ `layoutQueueKey(guildId)` のキューで → 既にそのセッションの削除されていない行があれば `exists`（終わっていれば開き直す。§3.6）→ 対象が `claude agents --json` に居て tmux の中（`findSendablePane` が当たる）でなければ `not_in_tmux` → カテゴリ「Claude Code」（`guild_settings.cc_category_id`）が無い・消えていれば `not_set_up` → 中のチャンネルが 50 なら `full` → `createTextChannel` → `cc_channels` に行 → 最初の投稿「Claude Code のセッション「<名前>」（<ディレクトリ>）のチャンネルです（<きっかけ> で作りました）。ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます」（名前・ディレクトリは `escapeDiscordText`）→ 結果。DB の保存に失敗したら、セッションのチャンネルと同じくチャンネル ID を log に出す（log 方針の例外）。
 
-作れなかったとき（`not_set_up`・`full`・Discord の失敗・tmux の外）: **きっかけの処理は止めない**（送信は積まれ、起動は進み、許可の応答は返る）。返事は CC8 の追いかけの規則（頼んだチャンネルへ。Web だけのものは出ない）、許可の要求は #system、のまま。log に 1 行（理由だけ）と、`not_set_up`・`full`・Discord の失敗は #system に 1 行（同じ理由は 1 時間に 1 回。`/setup` の案内を添える）。自動の再試行はせず、**次に関わったときにまた試す**。手動の口は理由を応答に出す（Web は 409 `exists` / 409 `not_in_tmux` / 409 `full` / 503 `not_set_up`、`/cc open` は本人にだけ）。
+作れなかったとき（`not_set_up`・`full`・Discord の失敗・tmux の外）: **きっかけの処理は止めない**（送信は積まれ、起動は進み、許可の応答は返る）。返事は CC8 の追いかけの規則（頼んだチャンネルへ。Web だけのものは出ない）、許可の要求は #system、のまま。log に 1 行（理由だけ）と、`not_set_up`・`full`・Discord の失敗は #system に 1 行（同じ理由は 1 時間に 1 回。`/setup` の案内を添える）。自動の再試行はせず、**次に関わったときにまた試す**。手動の口は理由を応答に出す（Web は 404 `not_found`（一覧に無い）/ 409 `exists` / 409 `not_in_tmux` / 409 `full` / 503 `not_set_up` / 502 `failed`（Discord の失敗）、`/cc open` は本人にだけ）。
 
 ### 3.2 カテゴリ・名前・topic
 - カテゴリ「Claude Code」は `/setup` が状態カテゴリの後に作る（`cfg.cc` が true のときだけ。消えたものだけ作り直す。ID は `guild_settings.cc_category_id`）。再同期は開いているチャンネルをここへ戻す。満杯（50）なら作らずに断る（`Claude Code 2` は作らない。開いているチャンネルは生きているセッションの数（`SELF_AGENT_CC_MAX_SESSIONS` 既定 30）以下で、終わったものは完了へ移すため）。
@@ -273,7 +273,7 @@
 
 | ファイル | 変更 | 段 |
 |---|---|---|
-| `channels.ts`（新規） | `CcChannels`: `openChannel(guildId, sessionId, origin)`（`layoutQueueKey` のキュー・一意・tmux の中・カテゴリ・50・最初の投稿・作れなかったときの #system の 1 行（1 時間 1 回））、`ensureFor(sessionId, origin, guildId?)`（きっかけから呼ぶ。既にあれば何もしない・作れなくても投げない）、`mirror(sessionId, label, text) → messageId | undefined`（外からの送信の写し）、`handleMessage(event) → boolean`（CC11。受付・検証・5 件・リアクション・終わったチャンネルの [起動して続ける]（CC13））、`ended(row)`・`revived(row)`（`session_id` が一致する削除されていない行だけ）、`close(channelId)`、`reconcile(guildId, parents)`、`resume(channelId, messageId)`（CC13）、`submitWeb`（CC14） | CC10〜 |
+| `channels.ts`（新規） | `CcChannels`: `openChannel(guildId, sessionId, origin)`（`layoutQueueKey` のキュー・一意・tmux の中・カテゴリ・50・最初の投稿・作れなかったときの #system の 1 行（1 時間 1 回））、`ensureFor(sessionId, origin, guildId?)`（きっかけから呼ぶ。既にあれば何もしない・作れなくても投げない）、`mirror(sessionId, label, text) → messageId | undefined`（外からの送信の写し）、`handleMessage(event) → boolean`（CC11。受付・検証・5 件・リアクション・終わったチャンネルの [起動して続ける]（CC13））、`ended(row)`・`revived(row)`（`session_id` が一致する削除されていない行だけ）、`close(channelId)`、`reconcile(guildId, parents)`、`resume(channelId, messageId)`（CC13）、`submitWeb`（CC14）。**TODO**: CC10 は発言が届かないので最初の投稿と終了の 1 行を縮めてある（「今はまだ届きません」・「セッションが終わりました。」だけ）。CC11 で最初の投稿を §3.1 の文に、CC13 で終了の文を §3.6 の文（「ここに書くと、同じディレクトリで起動して続けられます」）に戻す | CC10〜 |
 | `channel-posts.ts`（新規） | チャンネルへの投稿（純関数 + 投稿）: 許可の 1 通（`discord-notice.ts` の `permissionNotice` を再利用）・判断待ち・終了・戻った・写し（`escapeDiscordText`・メンション無効・`suppressEmbeds`）・送信の失敗の返信・印（リアクション） | CC11・CC12 |
 | `registry.ts` | deps に `revived?: (row: CcSessionRow) => void`（`upsertSeen` の前に「`gone_at` が NULL でない行のうち今回の一覧にあるもの」を引いて呼ぶ） | CC10 |
 | `sender.ts` | `submit`・`confirm` の後に `channels.ensureFor`（origin web → `web_send`、tool → `tool_send`、github → `github`）→ `mirror` → `message_id` の更新。`already_queued` の判定を origin で分ける（`discord` は `countQueuedDiscord < CC_CHANNEL_QUEUE_MAX`、それ以外はチャンネルの列が空でなければ `already_queued`）。`onFinished` の後に印の更新。`origin: "discord"` の受け入れ。同じセッションで `delivered` にした pass では、そのセッションの次の `queued` を試さない（次の `Stop` か 30 秒後） | CC11 |
@@ -305,7 +305,7 @@
 | `static/views.js` | cc のタブの見出しに [Discord のチャンネルを作る]（CC10）・[Discord で開く]（チャンネルがあれば）。`ccPermissionCard` を chat.js から使えるように export（CC14） | CC10・CC14 |
 | `static/chat.js` | kind cc の見出し・画面の節・許可のカード・送信の状態・入力欄（1,900 字）。`channelTitle` の cc | CC14 |
 | `static/workbench.js` | hash `#/cc/<id>` と `cc:` のタブはそのまま。アクティビティ `cc` の既定を外す | CC9 |
-| `routes/cc.ts` | `sessionJson` に `channel: { channelId, guildId, link, state } \| null`（CC10）。`POST /api/cc/sessions/<id>/channel { guildId }` → 201 `{ channelId, link }` / 404 / 409 `exists` / 409 `not_in_tmux` / 409 `full` / 503 `not_set_up`。`POST /api/cc/channels/<id>/close` → 200 / 404 / 409（CC14）。Web の許可のカードの応答の後に `ensureFor(sessionId, "permission", <最初の /setup 済みサーバー>)`（CC11） | CC10・CC11・CC14 |
+| `routes/cc.ts` | `sessionJson` に `channel: { channelId, guildId, link, state } \| null`（CC10）。`POST /api/cc/sessions/<id>/channel { guildId }` → 201 `{ channelId, link }` / 404 `not_found` / 409 `exists` / 409 `not_in_tmux` / 409 `full` / 503 `not_set_up` / 502 `failed`。`POST /api/cc/channels/<id>/close` → 200 / 404 / 409（CC14）。Web の許可のカードの応答の後に `ensureFor(sessionId, "permission", <最初の /setup 済みサーバー>)`（CC11） | CC10・CC11・CC14 |
 | `routes/channels.ts` | `WebChannel.kind` を `ChannelKind | "cc"` に広げる（`access.ts` は変えない）・`cc` の項目。cc への `/renew`・`/continue`・`/turns/<seq>/abort` は 404。`webChannelLookup`・`webChannelNamer` に `ccChannels`。一覧に cc の行 | CC14 |
 | `routes/turns.ts` | kind cc の `POST /messages` → `channels.submitWeb` | CC14 |
 | `routes/status.ts` | 変更なし | — |

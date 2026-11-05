@@ -43,7 +43,7 @@ import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
-import { CcChannels } from "./cc/channels.ts";
+import { CcChannels, ccEndedHandler, dropCcChannelMessages } from "./cc/channels.ts";
 import { CcDiscordNotifier } from "./cc/discord-notice.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
@@ -667,14 +667,10 @@ if (
     busy: () => ccSends.countActive() > 0 || ccStarter?.busy() === true,
     // 許可の要求を保留している間は 5 秒ごとに読み、status で「他で答えられた」を見る
     permissions: permissionHold,
-    // 一覧から消えたセッション: 返事を追いかけていれば、追いかけのチャンネルに「終わりました」を出して止める（#system の終了の知らせは出さない）。
-    // 追いかけていなければ、self-agent が起動したセッションの終了を #system に出す
-    // チャンネルがあれば、終わったことをそこに 1 行出して完了カテゴリへ移す（#system の終了の知らせは今のまま。チャンネルへ移すのは CC12）
-    ended: (session) => {
-      ccChannels?.ended(session);
-      if (ccReplier?.ended(session) === true) return;
-      ccNotifier?.ended(session);
-    },
+    // 一覧から消えたセッション: チャンネルがあれば、終わったことをそこに 1 行出して完了カテゴリへ移す。
+    // 返事を追いかけていれば、追いかけのチャンネルに「終わりました」を出して止める。どちらも無いときだけ、
+    // self-agent が起動したセッションの終了を #system に出す（cc/channels.ts の ccEndedHandler）
+    ended: ccEndedHandler({ channels: () => ccChannels, replier: () => ccReplier, notifier: () => ccNotifier }),
     // 同じ session_id が一覧に戻ったら、終わったチャンネルを開き直してカテゴリ「Claude Code」へ戻す
     revived: (session) => {
       ccChannels?.revived(session);
@@ -1048,14 +1044,7 @@ const lifecycle = createShutdown(
     log,
   },
   // Claude Code のチャンネル（削除されていない cc_channels の行）への発言は、ターンにせず黙って捨てる（CC10。届けるのは CC11）
-  {
-    handleMessage: (message) => {
-      const ccChannel = ccChannelStore.get(message.channelId);
-      if (ccChannel !== undefined && ccChannel.state !== "deleted") return Promise.resolve();
-      return handler.handleMessage(message);
-    },
-    handleInteraction,
-  },
+  { handleMessage: dropCcChannelMessages(ccChannelStore, handler.handleMessage), handleInteraction },
 );
 const onSignal = (): void => {
   if (lifecycle.stopping()) {
