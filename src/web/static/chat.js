@@ -360,16 +360,15 @@
     });
   }
 
-  /** 閉じられるか（終わっていない。パレットの「このチャンネルを閉じる」） */
-  function ccClosable(channelId) {
+  /**
+   * パレットの Claude Code のチャンネルのコマンドの材料: 閉じられるか（終わっていない）・RC のリンク（読んだ 1 件にあるときだけ）・Discord のリンク。
+   * cc のチャンネルでなければ null
+   */
+  function ccCommandState(channelId) {
     const ch = channelById(channelId);
-    return !!ch && ch.kind === "cc" && ccLive(ch).state !== "ended";
-  }
-
-  /** そのチャンネルのセッションの RC のリンク（読んだ 1 件にあるときだけ） */
-  function ccRcUrl(channelId) {
-    const ch = channelById(channelId);
-    return ch && ch.kind === "cc" ? ccLive(ch).rc : null;
+    if (!ch || ch.kind !== "cc") return null;
+    const live = ccLive(ch);
+    return { closable: live.state !== "ended", rc: live.rc, discord: discordUrl(ch.link) };
   }
 
   /** 見出し（状態・[RC で開く]・[画面]・[Discord で開く]・[閉じる]） */
@@ -949,8 +948,6 @@
     enterHint,
     ccScreenOpen,
     closeCcChannel,
-    ccClosable,
-    ccRcUrl,
-    discordUrl,
+    ccCommandState,
   };
 })();
