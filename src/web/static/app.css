@@ -1480,50 +1480,9 @@ kbd {
   font-weight: var(--weight-medium);
 }
 
-/* 狭い画面で隠した列の数（行末の details。≥640px では出さない） */
+/* 狭い画面でだけ出すもの（積んだ行の値の前の語など。≥640px では出さない） */
 .show-sm {
   display: none;
-}
-
-.td-more-box > summary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--row);
-  min-height: var(--row);
-  color: var(--text-secondary);
-  list-style: none;
-  cursor: pointer;
-}
-
-.td-more-box > summary::-webkit-details-marker {
-  display: none;
-}
-
-.td-more-box > summary .icon {
-  width: var(--icon-sm);
-  height: var(--icon-sm);
-}
-
-.td-more-list {
-  display: grid;
-  gap: var(--space-1);
-  margin: 0;
-  padding-bottom: var(--space-2);
-}
-
-.td-more-list > div {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.td-more-list dt {
-  color: var(--text-secondary);
-}
-
-.td-more-list dd {
-  margin: 0;
 }
 
 .table tr.is-clickable {
@@ -2633,5 +2592,252 @@ dialog[open]::backdrop {
   .more-row .sb-meta {
     margin-left: auto;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* ===== 表の積み（views.js の table の stack。UI-10）。th は隠し、tr を grid にして各 td の置き場所を grid-area で決める。
+     1 行目は名前、2 行目は補足（12px・二次の色。値の前の語は .td-label）、操作は末尾。横にスクロールさせない ===== */
+  .table-wrap-stack {
+    overflow-x: visible;
+  }
+
+  .table-stack,
+  .table-stack tbody {
+    display: block;
+  }
+
+  .table-stack thead {
+    display: none;
+  }
+
+  .table-stack tr {
+    display: grid;
+    align-items: center;
+    column-gap: var(--space-3);
+    row-gap: var(--space-1);
+    min-height: var(--row);
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .table-stack tbody tr + tr {
+    border-top: var(--border-width) solid var(--border);
+  }
+
+  .table-stack tbody tr + tr td {
+    border-top: 0;
+  }
+
+  .table-stack td {
+    min-width: 0;
+    height: auto;
+    padding: 0;
+  }
+
+  .table-stack .td-main {
+    width: auto;
+  }
+
+  .table-num.table-stack .td-num {
+    text-align: left;
+  }
+
+  .table-stack .td-label {
+    color: var(--text-secondary);
+  }
+
+  .table-tasks .td-due,
+  .table-tasks .td-remind,
+  .table-reminders .td-next,
+  .table-reminders .td-kind,
+  .table-reminders .td-place,
+  .table-personas .td-turns,
+  .table-personas .td-input,
+  .table-personas .td-output,
+  .table-turns .td-input,
+  .table-turns .td-output,
+  .table-turns .td-turn-rate {
+    color: var(--text-secondary);
+    font-size: var(--font-xs);
+  }
+
+  .table-stack .is-overdue {
+    color: var(--danger);
+  }
+
+  /* タスク: 1 行目 題名 #id、2 行目 期限・知らせ（閉じた日）。完了のチェックは左に 2 行分の高さ・幅 48px の当たり */
+  .table-tasks tr {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "check main main"
+      "check due remind";
+    column-gap: 0;
+  }
+
+  .table-tasks .td-check {
+    grid-area: check;
+    align-self: stretch;
+    width: auto;
+    margin: calc(-1 * var(--space-2)) 0 calc(-1 * var(--space-2)) calc(-1 * var(--space-4));
+  }
+
+  .table-tasks .td-check .check {
+    justify-content: center;
+    width: 48px;
+    height: 100%;
+    min-height: 48px;
+  }
+
+  .table-tasks .td-main {
+    grid-area: main;
+  }
+
+  .table-tasks .td-title,
+  .table-tasks .td-sub {
+    display: inline;
+  }
+
+  .table-tasks .td-sub {
+    margin-left: var(--space-2);
+  }
+
+  .table-tasks .td-due {
+    grid-area: due;
+  }
+
+  .table-tasks .td-due:not(:empty) {
+    margin-right: var(--space-3);
+  }
+
+  .table-tasks .td-remind {
+    grid-area: remind;
+  }
+
+  /* リマインド: 1 行目 内容、2 行目 次の時刻・繰り返し・頼んだ場所、3 行目 [次を飛ばす] と右端に [止める] */
+  .table-reminders tr {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "main main main"
+      "next kind place"
+      "act act act";
+  }
+
+  .table-reminders .td-main {
+    grid-area: main;
+  }
+
+  .table-reminders .td-next {
+    grid-area: next;
+  }
+
+  .table-reminders .td-kind {
+    grid-area: kind;
+    white-space: normal;
+  }
+
+  .table-reminders .td-place {
+    grid-area: place;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .table-reminders .td-actions {
+    grid-area: act;
+    text-align: left;
+  }
+
+  .table-reminders .td-apart {
+    justify-content: flex-start;
+  }
+
+  .table-reminders .td-apart > :last-child {
+    margin-left: auto;
+  }
+
+  /* 使用量の人格: 人格ごとのブロック。1 行目 名前とキャッシュ率（20px。GUIDELINES §3 の 18px 超の唯一の例外）、2 行目 ターン・入力・出力 */
+  .table-personas tr {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "name name rate"
+      "turns input output";
+  }
+
+  .table-personas .td-main {
+    grid-area: name;
+    font-weight: var(--weight-semibold);
+  }
+
+  .table-num.table-stack .td-rate {
+    grid-area: rate;
+    font-size: var(--font-xl);
+    text-align: right;
+  }
+
+  .table-personas .td-turns {
+    grid-area: turns;
+  }
+
+  .table-personas .td-input {
+    grid-area: input;
+  }
+
+  .table-personas .td-output {
+    grid-area: output;
+  }
+
+  /* 使用量のターン: 1 行目 時刻・種類・結果、2 行目 入力・出力・率（ツール・読み・書きは hide-sm で出さない） */
+  .table-turns tr {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "time kind result"
+      "input output rate";
+  }
+
+  .table-turns .td-time {
+    grid-area: time;
+  }
+
+  .table-turns .td-kind-name {
+    grid-area: kind;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .table-turns .td-result {
+    grid-area: result;
+    text-align: right;
+  }
+
+  .table-turns .td-input {
+    grid-area: input;
+  }
+
+  .table-turns .td-output {
+    grid-area: output;
+  }
+
+  .table-num.table-stack .td-turn-rate {
+    grid-area: rate;
+    text-align: right;
+  }
+
+  /* 一覧と中身（ナレッジ）は中身だけ。一覧と検索はサイドバーから選ぶ */
+  .master-detail-phone {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .master-detail-phone > .master,
+  .ed-toolbar:has(+ .master-detail-phone) .ed-actions {
+    display: none;
+  }
+
+  /* 設定の環境変数は名前（12px 等幅）と値を縦に */
+  .kv-env > .kv {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .kv-env .kv-label {
+    font-size: var(--font-xs);
   }
 }

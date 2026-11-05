@@ -24,9 +24,14 @@
     return el("section", { class: "ed-section" }, [el("div", { class: "ed-section-head" }, [el("h2", { text: title }), ...(extras || [])]), ...children]);
   }
 
-  function table(headers, rows, cls) {
-    return el("div", { class: "table-wrap" }, [
-      el("table", { class: "table" + (cls ? " " + cls : "") }, [
+  /**
+   * 表。opts.stack なら ≤639px で行の積み（tr を grid にし、th は隠す。各 td の置き場所は表の class ごとに app.css の grid-area で決める）。
+   * 積んだ行では見出しが見えないので、2 行目の値には label() の語を添える
+   */
+  function table(headers, rows, cls, opts) {
+    const stack = !!(opts && opts.stack);
+    return el("div", { class: "table-wrap" + (stack ? " table-wrap-stack" : "") }, [
+      el("table", { class: "table" + (stack ? " table-stack" : "") + (cls ? " " + cls : "") }, [
         el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { scope: "col", class: h.cls || null, "aria-label": h.label || null, text: typeof h === "string" ? h : h.text })))]),
         el("tbody", {}, rows),
       ]),
@@ -35,6 +40,11 @@
 
   function td(content, cls) {
     return el("td", { class: cls || null }, Array.isArray(content) ? content : [content]);
+  }
+
+  /** 積んだ行（≤639px）でだけ出す値の前の語（「期限 」など。≥640px は表の見出しがあるので出さない） */
+  function label(text) {
+    return el("span", { class: "td-label show-sm", text: text + " " });
   }
 
   /** 空の表示（何が無いか・次にすること。GUIDELINES §5）。retry があれば [読み直す]（読めなかったとき） */
@@ -156,17 +166,18 @@
       );
       return;
     }
-    // 人格ごとの行の表（GUIDELINES §5 使用量の数字）。キャッシュ率だけ大きく。≤639px は失敗の列を隠し、ターンの後に添える
+    // 人格ごとの行の表（GUIDELINES §5 使用量の数字）。キャッシュ率だけ大きく。≤639px は人格ごとのブロック（1 行目に名前とキャッシュ率、
+    // 2 行目にターン・入力・出力）で、失敗の列を隠してターンの後に添える
     const personas = (u.totals || []).map((t) => {
       const s = t.summary || {};
       const input = inputOf(s.inputTokens, s.cacheReadInputTokens, s.cacheCreationInputTokens);
       const failedTurns = s.failedTurns > 0 ? s.failedTurns : 0;
       return el("tr", {}, [
         td(t.name, "td-main"),
-        td([String(s.turns ?? 0), failedTurns > 0 ? el("span", { class: "show-sm", text: "（失敗 " + failedTurns + "）" }) : null], "td-num"),
+        td([label("ターン"), String(s.turns ?? 0), failedTurns > 0 ? el("span", { class: "show-sm", text: "（失敗 " + failedTurns + "）" }) : null], "td-num td-turns"),
         td(failedTurns > 0 ? String(failedTurns) : "", "td-num hide-sm"),
-        td(count(input), "td-num"),
-        td(count(t.outputTokens), "td-num"),
+        td([label("入力"), count(input)], "td-num td-input"),
+        td([label("出力"), count(t.outputTokens)], "td-num td-output"),
         td(rate(s.cacheReadInputTokens, input), "td-num td-rate"),
       ]);
     });
@@ -180,31 +191,22 @@
         { text: "キャッシュ率", cls: "td-num" },
       ],
       personas,
-      "table-num",
+      "table-num table-personas",
+      { stack: true },
     );
-    // ターンの表。≤639px は 5 列（時刻・種類・結果・入力・率）にし、残りは行末の details に（GUIDELINES §4）
+    // ターンの表。≤639px は行の積み（1 行目: 時刻・種類・結果、2 行目: 入力・出力・率）にし、ツール・読み・書きは出さない（GUIDELINES §4）
     const rows = (u.rows || []).map((r) => {
       const input = inputOf(r.inputTokens, r.cacheReadInputTokens, r.cacheCreationInputTokens);
-      const more = el("details", { class: "td-more-box" }, [
-        el("summary", { "aria-label": "ほかの数" }, [icon("ellipsis")]),
-        el("dl", { class: "td-more-list" }, [
-          el("div", {}, [el("dt", { text: "ツール" }), el("dd", { text: String(r.toolCalls ?? 0) })]),
-          el("div", {}, [el("dt", { text: "読み" }), el("dd", { text: count(r.cacheReadInputTokens) })]),
-          el("div", {}, [el("dt", { text: "書き" }), el("dd", { text: count(r.cacheCreationInputTokens) })]),
-          el("div", {}, [el("dt", { text: "出力" }), el("dd", { text: count(r.outputTokens) })]),
-        ]),
-      ]);
       return el("tr", {}, [
-        td(SA.ui.clock(new Date(r.at)), "td-num"),
-        td(r.kind || "-"),
-        td(r.ok ? "成功" : "失敗", r.ok ? null : "is-overdue"),
+        td(SA.ui.clock(new Date(r.at)), "td-num td-time"),
+        td(r.kind || "-", "td-kind-name"),
+        td(r.ok ? "成功" : "失敗", "td-result" + (r.ok ? "" : " is-overdue")),
         td(String(r.toolCalls ?? 0), "td-num hide-sm"),
-        td(count(input), "td-num"),
+        td([label("入力"), count(input)], "td-num td-input"),
         td(count(r.cacheReadInputTokens), "td-num hide-sm"),
         td(count(r.cacheCreationInputTokens), "td-num hide-sm"),
-        td(count(r.outputTokens), "td-num hide-sm"),
-        td(rate(r.cacheReadInputTokens, input), "td-num"),
-        td(more, "td-more show-sm"),
+        td([label("出力"), count(r.outputTokens)], "td-num td-output"),
+        td([label("率"), rate(r.cacheReadInputTokens, input)], "td-num td-turn-rate"),
       ]);
     });
     const turns =
@@ -219,12 +221,12 @@
               { text: "入力", cls: "td-num" },
               { text: "読み", cls: "td-num hide-sm" },
               { text: "書き", cls: "td-num hide-sm" },
-              { text: "出力", cls: "td-num hide-sm" },
+              { text: "出力", cls: "td-num" },
               { text: "率", cls: "td-num" },
-              { text: "", cls: "show-sm", label: "ほか" },
             ],
             rows,
-            "table-num",
+            "table-num table-turns",
+            { stack: true },
           );
     const att = u.attachments || {};
     container.replaceChildren(
@@ -413,24 +415,22 @@
         done.addEventListener("change", () => {
           if (done.checked) completeTask(done, t);
         });
+        // 当たりは ≤639px で行の高さ・幅 48px（行のタップでは完了にしない。戻せるが誤操作が多い）
         cells.push(el("td", { class: "td-check" }, [el("label", { class: "check check-sm" }, [done])]));
       }
       const closed = (t.status === "done" ? "完了 " : "やめた ") + (t.completedAt ? dateOf(t.completedAt) : "-");
       cells.push(
         td([el("span", { class: "td-title", text: t.title }), el("span", { class: "meta td-sub", text: "#" + t.id })], "td-main"),
-        td(due, late ? "is-overdue" : null),
-        td(open ? (t.remind ? dateTime(t.remind) : "") : closed),
+        td(due ? [label("期限"), due] : "", "td-due" + (late ? " is-overdue" : "")),
+        td(open ? (t.remind ? [label("知らせ"), dateTime(t.remind)] : "") : closed, "td-remind"),
       );
       return el("tr", { "data-task": String(t.id) }, cells);
     });
     const body =
       rows.length === 0
         ? empty("square-check", TASK_EMPTY[shown] || "タスクはありません。")
-        : table([...(open ? [{ text: "", cls: "th-check", label: "完了" }] : []), "題名", "期限", open ? "知らせ" : "閉じた日"], rows);
-    container.replaceChildren(
-      head,
-      scroll([body, el("p", { class: "meta", text: "タスクは #inbox か #tasks の会話で頼むと増え、変わります。" })]),
-    );
+        : table([...(open ? [{ text: "", cls: "th-check", label: "完了" }] : []), "題名", "期限", open ? "知らせ" : "閉じた日"], rows, "table-tasks", { stack: true });
+    container.replaceChildren(head, scroll([body]));
   }
 
   // ===== リマインド（W4: 止める・次を飛ばす） =====
@@ -466,28 +466,25 @@
           danger: true,
           run: () =>
             act(stop, "/api/reminders/" + r.id + "/cancel", "reminders", () => {
-              toast("「" + r.text + "」を止めました");
+              toast("「" + oneLine(r.text) + "」を止めました");
             }),
         }),
       );
       actions.append(stop);
       return el("tr", {}, [
-        td(r.nextAt ? dateTime(r.nextAt) : "-", "td-nowrap"),
+        td(r.nextAt ? dateTime(r.nextAt) : "-", "td-nowrap td-next"),
         td([r.kind === "prompt" ? el("span", { class: "badge badge-accent", text: "依頼" }) : null, r.kind === "prompt" ? " " : null, oneLine(r.text)], "td-main"),
         // 種類はサイドバーと同じアイコン（繰り返しは rotate-ccw、1 回だけは clock）
         td(el("span", {}, [icon(r.rule === null ? "clock" : "rotate-ccw"), r.rule === null ? "1 回だけ" : r.ruleText || r.rule]), "td-kind"),
-        td(r.channelName || ""),
+        td(r.channelName || "", "td-place"),
         td(actions, "td-actions"),
       ]);
     });
     const body =
       rows.length === 0
         ? empty("bell", "動いているリマインドはありません。会話で「明日 9 時に知らせて」と頼むと増えます。")
-        : table(["次の時刻", "内容", "繰り返し", "頼んだ場所", { text: "", cls: "th-actions" }], rows);
-    container.replaceChildren(
-      toolbar("bell", "リマインド", [el("span", { class: "meta", text: list.length + " 件" })]),
-      scroll([body, el("p", { class: "meta", text: "知らせのメッセージのボタン（済んだ、10 分後、1 時間後）は Discord にだけあります。" })]),
-    );
+        : table(["次の時刻", "内容", "繰り返し", "頼んだ場所", { text: "", cls: "th-actions" }], rows, "table-reminders", { stack: true });
+    container.replaceChildren(toolbar("bell", "リマインド", [el("span", { class: "meta", text: list.length + " 件" })]), scroll([body]));
   }
 
   // ===== 記憶（W4: 一覧と [忘れる]・トーストの [取り消す]） =====
@@ -649,7 +646,6 @@
       scroll([
         group("red", "自分宛て"),
         group("yellow", "自分のリポジトリの新しい Issue / PR"),
-        el("p", { class: "meta", text: "#github に出したもの（「ほか n 件」にまとめたものを含む）です。" }),
       ]),
     );
   }
@@ -736,11 +732,8 @@
         p ? el("p", { class: "meta", text: "更新 " + dateTime(p.updatedAt) }) : null,
         rows.length
           ? table(["ファイル", { text: "大きさ", cls: "td-num" }, { text: "更新", cls: "td-num" }], rows, "table-num")
-          : empty("file", "ファイルはありません。会話でページを作ると増えます。"),
-        el("p", {
-          class: "meta",
-          text: (listing.truncated ? "一覧は 500 件・深さ 6 までです。" : "") + "ドットで始まるもの（.trash など）と node_modules は出しません。",
-        }),
+          : empty("file", "ファイルはありません（ドットで始まるものと node_modules は出しません）。会話でページを作ると増えます。"),
+        listing.truncated ? el("p", { class: "meta", text: "一覧は 500 件・深さ 6 までです。" }) : null,
         content,
       ]),
     );
@@ -1320,7 +1313,8 @@
       const note = data.q ? (data.more ? "「" + data.q + "」の上位 " + data.entries.length + " 件" : "「" + data.q + "」 " + data.entries.length + " 件") : null;
       container.replaceChildren(
         toolbar("book", "ナレッジ", note ? [el("span", { class: "meta", text: note })] : [], [input]),
-        el("div", { class: "master-detail" }, [el("div", { class: "master" }, [list]), el("div", { class: "detail" }, [kbDetail(current)])]),
+        // ≤639px は中身だけ（一覧と検索はサイドバー。.master-detail-phone）
+        el("div", { class: "master-detail master-detail-phone" }, [el("div", { class: "master" }, [list]), el("div", { class: "detail" }, [kbDetail(current)])]),
       );
     });
   }
@@ -1402,6 +1396,11 @@
     ["Alt+数字", "その番号のタブ（1 から 9）"],
     ["Esc", "パレット・ドロワーを閉じる"],
   ];
+  /** スマホ（≤639px）で「キーボード」の代わりに出す操作 */
+  const PHONE_KEYS = [
+    ["Enter", "改行"],
+    ["送る", "入力欄の [送る] ボタン"],
+  ];
 
   function renderSettings(container) {
     const theme = SA.app.theme();
@@ -1423,12 +1422,14 @@
             el("ul", { class: "kv-list" }, [kv("テーマ", seg)]),
             el("p", { class: "meta", text: "表示の設定はこのブラウザにだけ残ります。" }),
           ]),
-          section("キーボード", [el("ul", { class: "kv-list" }, KEYS.map(([k, v]) => kv(el("kbd", { text: k }), v)))]),
+          // キーボードは ≤639px で隠し、代わりにスマホの操作の 2 行
+          el("div", { class: "hide-sm" }, [section("キーボード", [el("ul", { class: "kv-list" }, KEYS.map(([k, v]) => kv(el("kbd", { text: k }), v)))])]),
+          el("div", { class: "show-sm" }, [section("スマホの操作", [el("ul", { class: "kv-list" }, PHONE_KEYS.map(([k, v]) => kv(k, v)))])]),
         ]),
         section("環境変数", [
           el("p", { class: "meta", text: "あるかないかだけを出します。値は出しません。変えるときは ~/.config/self-agent/env を編集して再起動します。" }),
           env
-            ? el("ul", { class: "kv-list kv-grid" }, env.map(([name, has]) => kv(el("span", { class: "mono", text: name }), el("span", { class: "badge", text: has ? "あり" : "なし" }))))
+            ? el("ul", { class: "kv-list kv-grid kv-env" }, env.map(([name, has]) => kv(el("span", { class: "mono", text: name }), el("span", { class: "badge", text: has ? "あり" : "なし" }))))
             : loading(),
         ]),
       ]),

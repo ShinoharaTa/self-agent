@@ -3,7 +3,7 @@
 
 (function () {
   const SA = (window.SA = window.SA || {});
-  const { el, icon, toast, openDialog, closeDialog } = SA.ui;
+  const { el, icon, count, toast, openDialog, closeDialog } = SA.ui;
   const root = document.documentElement;
 
   // ===== 保存（このブラウザだけ。読めなくても動く） =====
@@ -140,7 +140,7 @@
         title: label,
         "aria-pressed": a.tab ? null : String(pressed),
       },
-      [icon(a.icon), el("span", { class: "act-label", text: a.label }), n > 0 ? el("span", { class: "act-count", text: String(n), "aria-hidden": "true" }) : null],
+      [icon(a.icon), el("span", { class: "act-label", text: a.label }), n > 0 ? el("span", { class: "act-count", text: count(n), "aria-hidden": "true" }) : null],
     );
     // 実行中のターンがあれば、スマホでは会話の数の位置にスピナーを出す（CSS で 639px 以下だけ）
     if (a.running && a.running() > 0) {

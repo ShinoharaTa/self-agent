@@ -817,3 +817,44 @@ test("web static: 会話のタブは Claude Code のチャンネル（kind cc）
   // 画面の写しは cc のチャンネルの会話のタブでも読む（閉じていれば一覧と同じ間隔）
   assert.match(read("api.js"), /ccScreenIdle\(\) \? CC_LIST_INTERVAL_MS : CC_SCREEN_INTERVAL_MS/);
 });
+
+test("web static: ≤639px はタスク・リマインド・使用量の表を行の積みにし（tr を grid・th を隠す・data-label なし）、ナレッジは中身だけ・環境変数は縦（UI-10）", () => {
+  const views = read("views.js");
+  // table() の stack と、それを使う 4 つの表（タスク・リマインド・使用量の人格とターン）
+  assert.match(views, /function table\(headers, rows, cls, opts\)/);
+  assert.match(views, /"table-wrap" \+ \(stack \? " table-wrap-stack" : ""\)/);
+  for (const cls of ["table-tasks", "table-reminders", "table-num table-personas", "table-num table-turns"]) {
+    assert.match(views, new RegExp(`"${cls}",?\\s*\\{ stack: true \\}`), cls);
+  }
+  assert.doesNotMatch(views, /data-label/);
+  assert.doesNotMatch(views, /td-more/);
+  // 末尾の常設の説明文を消し、止めたトーストは 1 行に
+  assert.doesNotMatch(views, /タスクは #inbox か #tasks の会話で頼むと増え、変わります。/);
+  assert.doesNotMatch(views, /Discord にだけあります。/);
+  assert.doesNotMatch(views, /#github に出したもの/);
+  assert.match(views, /toast\("「" \+ oneLine\(r\.text\) \+ "」を止めました"\)/);
+  assert.match(views, /master-detail master-detail-phone/);
+  assert.match(views, /kv-list kv-grid kv-env/);
+  assert.match(views, /section\("スマホの操作"/);
+  // 会話の数のピルは桁区切り
+  assert.match(read("workbench.js"), /class: "act-count", text: count\(n\)/);
+
+  // 積みの規則は 639px 以下のブロックの中だけ（PC は変えない）
+  const css = read("app.css");
+  const at = css.lastIndexOf("@media (max-width: 639px) {");
+  assert.ok(at > 0);
+  const before = css.slice(0, at);
+  const phone = css.slice(at);
+  assert.doesNotMatch(before, /table-stack|master-detail-phone|kv-env/);
+  const rule = (sel: string): string => new RegExp(`\\n {2}${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`).exec(phone)?.[1] ?? "";
+  assert.match(rule(".table-stack thead"), /display: none;/);
+  assert.match(rule(".table-stack tr"), /display: grid;/);
+  assert.match(rule(".table-wrap-stack"), /overflow-x: visible;/);
+  for (const t of ["tasks", "reminders", "personas", "turns"]) assert.match(rule(`.table-${t} tr`), /grid-template-areas:/, t);
+  assert.match(rule(".table-num.table-stack .td-rate"), /font-size: var\(--font-xl\);/);
+  assert.match(rule(".table-tasks .td-check .check"), /width: 48px;/);
+  assert.match(rule(".table-reminders .td-apart > :last-child"), /margin-left: auto;/);
+  assert.match(phone, /\.master-detail-phone > \.master,/);
+  assert.match(rule(".kv-env > .kv"), /flex-direction: column;/);
+  assert.doesNotMatch(css, /data-label|td-more/);
+});
