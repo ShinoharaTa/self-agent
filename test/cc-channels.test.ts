@@ -453,7 +453,7 @@ test("routeCcChannelMessages: 削除されていない cc のチャンネルへ�
   assert.deepEqual(handled, ["cc-gone", "inbox-1"]);
 });
 
-test("ccPermissionAnsweredHandler: 答えた要求のセッションで ensureFor（permission・押したサーバー）を呼ぶ。行が無い・連携が無ければ呼ばない。失敗は log だけ", async () => {
+test("ccPermissionAnsweredHandler: 答えた要求のセッションで ensureFor（permission。質問は question・押したサーバー）を呼ぶ。行が無い・連携が無ければ呼ばない。失敗は log だけ", async () => {
   const calls: Array<[string, string, string | undefined]> = [];
   const logs: string[] = [];
   let fail = false;
@@ -466,18 +466,21 @@ test("ccPermissionAnsweredHandler: 答えた要求のセッションで ensureFo
   };
   let current: typeof channels | undefined = channels;
   const handler = ccPermissionAnsweredHandler({
-    permissions: { get: (id: number) => (id === 7 ? ({ sessionId: S1 } as never) : undefined) },
+    permissions: { get: (id: number) => (id === 7 ? ({ sessionId: S1, questionInput: null } as never) : id === 9 ? ({ sessionId: S2, questionInput: "{}" } as never) : undefined) },
     channels: () => current,
     log: (line) => logs.push(line),
   });
   handler(7, "guild-1");
   handler(7, undefined);
   handler(8, "guild-1");
+  // 質問の行は question
+  handler(9, "guild-1");
   current = undefined;
   handler(7, "guild-1");
   assert.deepEqual(calls, [
     [S1, "permission", "guild-1"],
     [S1, "permission", undefined],
+    [S2, "question", "guild-1"],
   ]);
   current = channels;
   fail = true;
