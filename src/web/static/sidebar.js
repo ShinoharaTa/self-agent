@@ -11,25 +11,33 @@
   // tab があるものはサイドバーを開かずにそのタブを開く（状態・設定）。
   // enabled(status) が false の機能（dev モードでない会話ログ・GitHub 無効・ジョブ無効・Claude Code の連携が無効）は出さない。
   // stage の付いたものはその段で中身を足すまで出さない（足した段で stage を外す）
+  // phone はスマホ（639px 以下）の置き場: primary は下タブ、more は「その他」のシート（docs/plan/web-ui-polish.md の NAV）。
+  // cc は Claude Code の統合（会話の一覧の群）で項目ごと消すまで more に置く
   const ACTIVITIES = [
-    { id: "chat", label: "会話", icon: "message-square", enabled: always, count: () => store.unreadCount(), countLabel: "未読 ", running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
-    { id: "tasks", label: "タスク", icon: "square-check", enabled: always },
-    { id: "reminders", label: "リマインド", icon: "bell", enabled: always },
-    { id: "knowledge", label: "ナレッジ・記憶", icon: "book", enabled: always },
-    { id: "projects", label: "プロジェクト", icon: "folder", enabled: always },
-    { id: "cc", label: "Claude Code", icon: "terminal", enabled: (status) => !!(status.cc && status.cc.enabled) },
-    { id: "jobs", label: "ジョブ", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
-    { id: "github", label: "GitHub", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled) },
-    { id: "usage", label: "使用量", icon: "bar-chart", enabled: always },
-    { id: "devlog", label: "会話ログ", icon: "file-text", enabled: (status) => !!status.devMode },
-    { id: "status", label: "状態", icon: "activity", tab: "status", bottom: true, enabled: always },
-    { id: "settings", label: "設定", icon: "settings", tab: "settings", bottom: true, enabled: always },
+    { id: "chat", label: "会話", phone: "primary", icon: "message-square", enabled: always, count: () => store.unreadCount(), countLabel: "未読 ", running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
+    { id: "tasks", label: "タスク", phone: "primary", icon: "square-check", enabled: always },
+    { id: "reminders", label: "リマインド", phone: "primary", icon: "bell", enabled: always },
+    { id: "knowledge", label: "ナレッジ・記憶", phone: "more", icon: "book", enabled: always },
+    { id: "projects", label: "プロジェクト", phone: "more", icon: "folder", enabled: always },
+    { id: "cc", label: "Claude Code", phone: "more", icon: "terminal", enabled: (status) => !!(status.cc && status.cc.enabled) },
+    { id: "jobs", label: "ジョブ", phone: "more", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
+    { id: "github", label: "GitHub", phone: "more", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled) },
+    { id: "usage", label: "使用量", phone: "more", icon: "bar-chart", enabled: always },
+    { id: "devlog", label: "会話ログ", phone: "more", icon: "file-text", enabled: (status) => !!status.devMode },
+    { id: "status", label: "状態", phone: "more", icon: "activity", tab: "status", bottom: true, enabled: always },
+    { id: "settings", label: "設定", phone: "more", icon: "settings", tab: "settings", bottom: true, enabled: always },
   ];
 
   /** 今出すアクティビティ。/api/status を読む前は enabled を見ずに段の印だけで決める */
   function visibleActivities() {
     const status = store.status;
     return ACTIVITIES.filter((a) => !a.stage && (status === null || a.enabled(status)));
+  }
+
+  /** スマホの下タブ（primary）と「その他」のシート（more）に分けた visibleActivities()。順は ACTIVITIES のまま */
+  function phoneActivities() {
+    const visible = visibleActivities();
+    return { primary: visible.filter((a) => a.phone === "primary"), more: visible.filter((a) => a.phone !== "primary") };
   }
 
   // 完了は既定で閉じておく
@@ -403,5 +411,5 @@
     if (focused && focused !== document.activeElement && container.contains(focused)) focused.focus();
   }
 
-  SA.sidebar = { ACTIVITIES, visibleActivities, render };
+  SA.sidebar = { ACTIVITIES, visibleActivities, phoneActivities, render };
 })();
