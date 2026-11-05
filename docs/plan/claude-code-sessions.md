@@ -385,7 +385,8 @@ CC1 で全部は作らず、**その段で要る表・列だけ**足す（`MIGRA
 | `SELF_AGENT_CC_HOOK_PORT` | hook の受け口（1〜65535。`127.0.0.1` だけ）。`SELF_AGENT_CC=1` で必須 |
 | `SELF_AGENT_CC_HOOK_TOKEN` | hook の共有トークン（32 字以上・空白なし）。`SELF_AGENT_CC=1` で必須。同じ値を `~/.claude/settings.json` の `env` に置く（§2.4。`allowedEnvVars` で解決される。確認）。コミット禁止 |
 | `SELF_AGENT_CC_POLL_SEC` | `claude agents --json` の周期（既定 10、最小 5）。見ていないときは 60、保留中の許可があるときは 5 |
-| `SELF_AGENT_CC_PERMISSION_HOLD_SEC` | `PermissionRequest` の応答を保留する秒数（既定 **300**、1〜600）= Web・Discord のボタンが効く時間（その間も端末・RC のダイアログは出ている）。hooks の `timeout` はこれ + 5。`SELF_AGENT_CC_NOTIFY` によらず同じ |
+| `SELF_AGENT_CC_PERMISSION_HOLD_SEC` | `PermissionRequest` の応答を保留する秒数（既定 **300**、1〜600）= Web・Discord のボタンが効く時間（その間も端末・RC のダイアログは出ている）。hooks の `timeout` はこれと `SELF_AGENT_CC_QUESTION_HOLD_SEC` の大きい方 + 5。`SELF_AGENT_CC_NOTIFY` によらず同じ |
+| `SELF_AGENT_CC_QUESTION_HOLD_SEC` | 質問（AskUserQuestion）の応答を保留する秒数（既定 **900**、1〜1,800。`docs/plan/claude-code-questions.md`）。許可の要求には効かない |
 | `SELF_AGENT_WORKSPACE_DIR` | 起動できる場所（既定 `~/workspace`。github-notifications §10 と共用） |
 | `SELF_AGENT_CC_MAX_SESSIONS` | 生きている `claude` の上限（既定 30） |
 | `SELF_AGENT_CC_SEND_WAIT_MIN` | 届け待ちを諦めるまでの分（既定 120） |
