@@ -1074,8 +1074,14 @@
   /** 選んだ状態（要求の id → 問ごとの { labels（選んだ label）, other（「その他」を選んだか）, text（「その他」の文） }）。
    * 描き直しでも残す（このタブのメモリだけ）。終わったら消す */
   const ccQuestionDrafts = new Map();
-  /** 描いた保留中のカード（"<タブ>|<要求の id>" → { key, node }）。中身が変わらなければ同じ要素を返し、「その他」の書きかけ・焦点を保つ */
+  /** 描いた保留中のカード（タブ → { id, key, node, sync }。タブごとに 1 つ）。中身が変わらなければ同じ要素を返し、「その他」の書きかけ・焦点を保つ */
   const ccQuestionNodes = new Map();
+
+  /** 終わった・無くなった質問の選んだ状態と描いたカードを捨てる（chat.js が保留中でない要求を見たときにも呼ぶ） */
+  function ccQuestionForget(id) {
+    ccQuestionDrafts.delete(id);
+    for (const [tab, entry] of ccQuestionNodes) if (entry.id === id) ccQuestionNodes.delete(tab);
+  }
 
   /** 問の draft（無ければ空で作る） */
   function ccQuestionDraft(id, count) {
@@ -1112,7 +1118,12 @@
     return picks;
   }
 
-  /** 問の見出し（header が無ければ問の文の先頭 40 字） */
+  /** fieldset の legend（header が無ければ「問 n」。問の文は直下に出すので重ねない） */
+  function questionLegend(q, index) {
+    return typeof q.header === "string" && q.header.trim() ? q.header : "問 " + (index + 1);
+  }
+
+  /** 終わったカードの答えの行の見出し（header が無ければ問の文の先頭 40 字） */
   function questionHeading(q, index) {
     const header = typeof q.header === "string" && q.header.trim() ? q.header : null;
     if (header) return header;
@@ -1147,6 +1158,8 @@
         if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
         else if (err && err.status === 400) toast("答えの形が合いません");
         else if (err && err.status === 404) toast("この質問はもうありません");
+        // 古い・無い要求の選んだ状態は使わない
+        if (err && (err.status === 404 || err.status === 409)) ccQuestionForget(p.id);
         else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => postCcQuestion(sessionId, p, path, body, tabId) });
       },
     ).then(() => {
@@ -1168,7 +1181,7 @@
     ]);
   }
 
-  /** 1 問の fieldset（legend に見出し・問の文・選択肢と「その他」）。sync は選んだ状態を input に写し、[答える] を更新する */
+  /** 1 問の fieldset（legend に見出し・問の文・選択肢と「その他」）。sync は選んだ状態を input に写す（ほかのタブで選んだものも） */
   function questionFieldset(p, q, index, draft, busy, onChange) {
     const multi = !!q.multiSelect;
     const name = "ccq-" + p.id + "-" + index;
@@ -1177,17 +1190,20 @@
       class: "textarea cc-question-other",
       rows: 2,
       maxlength: CC_QUESTION_OTHER_MAX,
-      "aria-label": "その他の答え（" + questionHeading(q, index) + "）",
+      "aria-label": "その他の答え（" + questionLegend(q, index) + "）",
       disabled: busy,
     });
     other.value = draft.text;
     const sync = () => {
       for (const { input, label } of inputs) input.checked = label === null ? draft.other : !draft.other && draft.labels.includes(label);
       other.hidden = !draft.other;
+      if (other.value !== draft.text && document.activeElement !== other) other.value = draft.text;
     };
     const option = (label, children) => {
       const input = el("input", { type: multi ? "checkbox" : "radio", name, disabled: busy });
       inputs.push({ input, label });
+      // 「その他」の文の欄に焦点を移すのは指・マウスで選んだときだけ（矢印キーで選んだ瞬間には飛ばさない）
+      let byPointer = false;
       input.addEventListener("change", () => {
         if (label === null) {
           // 「その他」と選択肢は同時に選べない（答えは labels か other の 1 つ）
@@ -1201,9 +1217,14 @@
         }
         sync();
         onChange();
-        if (label === null && draft.other && typeof other.focus === "function") other.focus();
+        if (label === null && draft.other && byPointer && typeof other.focus === "function") other.focus();
+        byPointer = false;
       });
-      return el("label", { class: "check cc-question-option" }, [input, el("span", { class: "cc-question-label" }, children)]);
+      const row = el("label", { class: "check cc-question-option" }, [input, el("span", { class: "cc-question-label" }, children)]);
+      row.addEventListener("pointerdown", () => {
+        byPointer = true;
+      });
+      return row;
     };
     const options = q.options.map((o) =>
       option(o.label, [el("strong", { text: String(o.label) }), o.description ? el("span", { class: "cc-question-desc", text: String(o.description) }) : null]),
@@ -1213,26 +1234,26 @@
       onChange();
     });
     sync();
-    return el("fieldset", { class: "cc-question" }, [
-      el("legend", { text: questionHeading(q, index) }),
+    const node = el("fieldset", { class: "cc-question" }, [
+      el("legend", { text: questionLegend(q, index) }),
       el("p", { class: "cc-question-text", text: String(q.question || "") }),
       ...(multi ? [el("p", { class: "meta", text: "いくつでも選べます" })] : []),
       ...options,
       option(null, [el("strong", { text: "その他" })]),
       other,
     ]);
+    return { node, sync };
   }
 
   /** 質問のカード（問・選択肢・説明は hook から来たデータなので textContent で出す。GUIDELINES §5 質問のカード）。ccPermissionCard が委ねる */
   function ccQuestionCard(sessionId, p, rc, tabId) {
     const questions = p.question.questions;
     const pending = p.state === "pending";
-    const cacheKey = (tabId || "cc:" + sessionId) + "|" + p.id;
+    const cacheKey = tabId || "cc:" + sessionId;
     const s = store.ccSessions ? ccSessionOf(sessionId) : null;
     const who = s ? el("p", { class: "meta", text: ccName(s) + (p.permissionMode ? " ・ " + permissionModeText(p.permissionMode) : "") }) : null;
     if (!pending) {
-      ccQuestionDrafts.delete(p.id);
-      ccQuestionNodes.delete(cacheKey);
+      ccQuestionForget(p.id);
       const [first, ...lines] = ccQuestionEndLines(p);
       const end = [el("span", { text: first })];
       if (rc && (p.state === "expired" || p.state === "released")) end.push(" ", el("a", { href: rc, target: "_blank", rel: "noreferrer noopener", text: "RC で開く" }));
@@ -1245,10 +1266,12 @@
       ]);
     }
     const busy = ccPermissionBusy.has(p.id);
-    // 中身が変わらなければ同じ要素を返す（描き直しで「その他」の書きかけ・焦点・IME を保つ。入力欄と同じ）
+    // 中身が変わらなければ同じ要素を返す（描き直しで「その他」の書きかけ・焦点を保つ。親は placeChildren でこの要素を動かさない）
     const key = JSON.stringify([p.requestHash, p.expiresAt, busy, rc, who ? who.textContent : null]);
     const cached = ccQuestionNodes.get(cacheKey);
-    if (cached && cached.key === key) {
+    if (cached && cached.id === p.id && cached.key === key) {
+      // ほかのタブ（cc: と ch:）で選んだものをこのカードにも写す
+      cached.sync();
       const active = document.activeElement;
       if (active && cached.node.contains(active)) {
         // 親が入れ替えるときに外れる焦点を戻す（同じ要素なのでカーソルの位置も残る）
@@ -1274,6 +1297,10 @@
     };
     const fieldsets = questions.map((q, i) => questionFieldset(p, q, i, drafts[i], busy, update));
     update();
+    const sync = () => {
+      for (const f of fieldsets) f.sync();
+      update();
+    };
     answer.addEventListener("click", () => {
       const picks = ccQuestionPicks(questions, drafts);
       if (picks) postCcQuestion(sessionId, p, "answer", { requestHash: p.requestHash, answers: picks }, tabId);
@@ -1286,13 +1313,27 @@
       [
         questionHead("質問を待っています", p, true),
         who,
-        ...fieldsets,
+        ...fieldsets.map((f) => f.node),
         el("div", { class: "msg-actions" }, [answer, drop]),
         el("p", { class: "cc-permission-note show-sm", text: PERMISSION_NOTE }),
       ],
     );
-    ccQuestionNodes.set(cacheKey, { key, node });
+    ccQuestionNodes.set(cacheKey, { id: p.id, key, node, sync });
     return node;
+  }
+
+  /**
+   * container の子を nodes の順にする。既に中にある要素は動かさず、無いものだけを前後に差し込む（外す・付け直すと焦点・IME の変換が切れるため。
+   * 入力欄と質問のカード）。nodes に無い子は外す。中に残る要素どうしの順は nodes と同じであること
+   */
+  function placeChildren(container, nodes) {
+    const keep = new Set(nodes.filter((n) => n));
+    for (const child of [...container.children]) if (!keep.has(child)) child.remove();
+    let ref = container.firstElementChild;
+    for (const node of keep) {
+      if (node === ref) ref = ref.nextElementSibling;
+      else container.insertBefore(node, ref);
+    }
   }
 
   /** 許可のカード（要約・ツール名は hook から来たデータなので textContent で出す。GUIDELINES §5 許可のカード）。tabId は押した後に描き直すタブ（省けば cc:<sessionId>） */
@@ -1411,7 +1452,9 @@
     else screen = el("pre", { class: "code-pre cc-screen", text: s.screen });
     // 許可のカードは見出しの下に固定する（画面の写しは下に付けて読むので、中に入れると見えなくなる）
     const card = ccPermissionCard(sessionId, s.permission, rc);
-    const permission = card ? el("div", { class: "cc-permission-wrap" }, [card]) : null;
+    // 同じカード（質問の書きかけ）なら、それを入れている枠ごと残して動かさない
+    const oldWrap = [...container.children].find((child) => child.classList.contains("cc-permission-wrap"));
+    const permission = card ? (oldWrap && oldWrap.firstElementChild === card ? oldWrap : el("div", { class: "cc-permission-wrap" }, [card])) : null;
     // 更新の間隔は常設の文にせず見出しの title に（GUIDELINES §5）
     const screenSection = section("画面", [screen]);
     screenSection.querySelector("h2").title = "3 秒ごとに更新";
@@ -1421,17 +1464,12 @@
     const pending = ccPendingBar(sessionId, s.pending);
     // tmux の外には送れないので入力欄を出さない
     if (!s.inTmux) {
-      container.replaceChildren(...[head, permission, body, pending].filter((x) => x));
+      placeChildren(container, [head, permission, body, pending]);
       return;
     }
-    // 入力欄は作り直さない。見出し・許可のカード・中身・送信の状態だけを入れ替える
+    // 入力欄と同じカードの枠は作り直さず動かさない。見出し・中身・送信の状態だけを入れ替える
     const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-cc") === sessionId);
-    if (kept) {
-      for (const child of [...container.children]) if (child !== kept) child.remove();
-      for (const node of [head, permission, body, pending]) if (node) container.insertBefore(node, kept);
-    } else {
-      container.replaceChildren(...[head, permission, body, pending].filter((x) => x), ccComposer(sessionId, ccName(s)));
-    }
+    placeChildren(container, [head, permission, body, pending, kept || ccComposer(sessionId, ccName(s))]);
   }
 
   // ===== ナレッジ（W6: 一覧と中身。検索は 3 文字以上。読むだけで、削除は Discord から） =====
@@ -1839,6 +1877,8 @@
     todayTokens,
     ccPermissionCard,
     ccQuestionPicks,
+    ccQuestionForget,
+    placeChildren,
     // Claude Code のチャンネルの会話のタブ（chat.js。CC14）と共用する
     ccPendingBar,
     ccSessionOf,
