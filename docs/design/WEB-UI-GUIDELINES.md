@@ -133,7 +133,7 @@
 - スマホ（639 以下）の下タブは**固定 4（会話・タスク・リマインド・その他）で等幅**。残りの画面は「その他」の下からのシート（§5）に置き、横スクロールのバーにしない。一覧（会話・タスクなど）はドロワーでなく**全幅**で出し、起動時は会話の一覧から始める。640〜1023 は横 1 列のまま（幅の段は足さない） [emil][hallmark]
 - 角丸は階層で分ける: `--radius-sm` 6（行・kbd・小さなボタン・カードの中の `<pre>`）/ `--radius-md` 8（入力欄・ボタン・カード・トースト）/ `--radius-lg` 12（ダイアログだけ）/ `--radius-full`（点・アバター・バッジ）。入れ子は「内 = 外 − 内側の余白」（最低 4）。**カードの中に同じ枠・同じ角丸のものを入れない**（カードの中のカード） [unslop][ui-skills][hallmark]
 - 線は 1px の `--border`。区切りは線で表し、影や背景の段差で表さない。カードは枠か影のどちらか [hallmark][impeccable]
-- 重なりの段は変数で持ち、数字を直接書かない: `--z-sash` 10 / `--z-drawer-backdrop` 40 / `--z-drawer` 41 / `--z-palette` 50 / `--z-dialog`（native の `<dialog>` は top layer なので不要）/ `--z-toast` 60 [ui-skills][hallmark]
+- 重なりの段は変数で持ち、数字を直接書かない: `--z-sash` 10 / `--z-drawer-backdrop` 40 / `--z-drawer` 41 / `--z-palette` 50 / `--z-dialog`（native の `<dialog>` は top layer なので不要）/ `--z-toast` 60。スマホの「その他」の backdrop は全幅の一覧の上に重ねるため `--z-drawer` [ui-skills][hallmark]
 - 幅は `100%`（`100vw` を書かない）。flex の縮む子に `min-width: 0`、アイコンと画像に `flex: none` [hallmark]
 - 表は 639 以下で 5 列まで（時刻・種類・結果・主な数 2 つ）。残りは行の `details` に。行の名前の列と操作の列は常に見える [hallmark]
 - mobile-native の要点（`index.html` と `app.css` で守る）:
@@ -250,6 +250,7 @@
 - 押せるものは `<button>`（`type` を明示）、移動は `<a>`。`div` に click を付けない。`tabindex` は 0 か -1 だけ [ui-skills]
 - アイコンは `aria-hidden="true"`（事実: `SA.ui.icon`）。アイコンだけのボタンに `aria-label` [hallmark][ui-skills]
 - 状態は属性で: 選択 `aria-pressed` / `aria-current`、開閉 `aria-expanded` + `aria-controls`、実行中 `aria-busy`、知らせ `role="status"`、**失敗は `role="alert"`**（トーストも）。入力のエラーは `aria-describedby` + `aria-invalid="true"`、必須は `required` + `aria-required` [ui-skills][hallmark]
+- 開閉するボタン（スマホの「その他」など）は `aria-expanded` + `aria-controls` だけを持ち、`aria-pressed` を重ねない。中の画面が前に出ている印は見た目だけで付ける
 - ダイアログは `showModal()`（焦点を閉じ込め、Esc で閉じ、後ろは `inert`）。閉じたら開いたボタンに焦点を戻す。danger の最初の焦点は [やめる] [ui-skills][hallmark]
 - タブの中身の見出しは `h1` を 1 つ（タブごと）。その下は `h2`、その下は `h3`。**段を飛ばさない**（h1 → h3 を書かない。カードの見出しは `h2`、ラベルと値は `dl`） [vercel][hallmark]
 - 本文の先頭に「本文へ」のスキップリンクを 1 つ（フォーカス時だけ見える） [vercel]

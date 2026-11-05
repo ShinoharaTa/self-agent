@@ -401,6 +401,7 @@ test("web static: スマホの下タブは固定 4（会話・タスク・リマ
   const html = read("index.html");
   const sheet = /<div[^>]*id="more-sheet"[^>]*>/.exec(html)?.[0] ?? "";
   assert.match(sheet, /role="dialog"/);
+  assert.match(sheet, /aria-modal="true"/);
   assert.match(sheet, /aria-label="その他の画面"/);
   assert.match(html, /<div class="drawer-backdrop" id="more-backdrop" hidden><\/div>/);
   // 下タブの主要の 3 つと、「その他」に入るもの（順は ACTIVITIES のまま）
