@@ -1,6 +1,9 @@
 // 会話（#inbox・#tasks・#<NAME>・セッション）のタブ。SA.store.turns[channelId] の行と実行中のターン（SA.store.running）を描き、見ている間は既読にする。
 // 入力欄から送ると Discord の発言と同じ経路で 1 ターン動く（POST /messages）。[中断]・[続ける] は Discord のボタンと同じ handler の関数。
-// 見出しの [待ちにする][閉じる][会話を新しくする] と /close の確認のカードは Discord の /wait・/close・/renew と同じ処理（src/app/session-ops.ts）
+// 見出しの [待ちにする][閉じる][会話を新しくする] と /close の確認のカードは Discord の /wait・/close・/renew と同じ処理（src/app/session-ops.ts）。
+// Claude Code のチャンネル（kind cc。docs/plan/claude-code-channels.md §5.2。CC14）は同じタブで Discord と同じ流れ（発言・写し・返事・許可・終わり）を出し、
+// 見出しに状態・[RC で開く]・[画面]・[Discord で開く]・[閉じる]、末尾に許可のカード（保留中だけ）と送った本文の状態、入力欄から送るとそのセッションに届ける
+// （ターンは動かないので実行中の行・[中断]・[続ける]・[会話を新しくする] は無い）。セッションの今は /api/cc/sessions/<id>（api.js の polling）
 "use strict";
 
 (function () {
@@ -54,6 +57,7 @@
 
   function channelTitle(ch) {
     if (ch.kind === "session") return ch.title || "セッション";
+    if (ch.kind === "cc") return ch.name || "Claude Code";
     return "#" + (ch.name || ch.kind);
   }
 
@@ -299,6 +303,115 @@
     ]);
   }
 
+  // ===== Claude Code のチャンネル（CC14） =====
+  const CC_STATE_LABEL = { needs_input: "判断待ち", running: "実行中", idle: "待機", ended: "終わりました" };
+  const CC_SEND_ERRORS_EXTRA = {
+    ended: "このセッションは終わっています。Discord のチャンネルに書くと、起動して続けられます",
+    resuming: "起動中です。少し待ってから送ってください",
+  };
+  /** 画面の節を開いているチャンネル（既定は閉じる。このタブのメモリだけ） */
+  const ccScreenOpened = new Set();
+  const ccScreenOpen = (channelId) => ccScreenOpened.has(channelId);
+
+  /**
+   * そのチャンネルのセッションの今。/api/cc/sessions/<id> で読んだものがあればそれ（一覧から消えていれば ended）、無ければ /api/channels の cc。
+   * session は読んだ 1 件（画面の写し・RC のリンクを含む。無ければ null）
+   */
+  function ccLive(ch) {
+    const info = ch.cc || {};
+    const loaded = typeof info.sessionId === "string" ? store.ccSessions[info.sessionId] : undefined;
+    const session = loaded && loaded.session ? loaded.session : null;
+    const ended = info.state === "ended" || !!(loaded && loaded.missing);
+    return {
+      sessionId: info.sessionId,
+      session,
+      loaded: !!loaded,
+      state: ended ? "ended" : session ? session.state : info.state,
+      permission: session ? session.permission : info.permission,
+      pending: session ? session.pending : info.pending,
+      inTmux: session ? !!session.inTmux : !!info.inTmux,
+      rc: session ? SA.views.rcUrl(session.rcUrl) : null,
+    };
+  }
+
+  /** [閉じる]（Discord の /cc close と同じ。確認の後） */
+  function closeCcChannel(channelId) {
+    const ch = channelById(channelId);
+    if (!ch || ch.kind !== "cc") return;
+    confirm({
+      title: channelTitle(ch) + " のチャンネルを閉じますか",
+      body: "Discord のチャンネルを完了に移し、届け待ちの本文をやめます。セッションは止めません。書くと続けられます。",
+      ok: "閉じる",
+      run: () =>
+        SA.api
+          .post("/api/cc/channels/" + encodeURIComponent(channelId) + "/close", {}, { quiet: true })
+          .then(
+            () => toast("閉じました"),
+            (err) => {
+              if (err && (err.status === 404 || err.status === 409)) toast(err.code === "ended" ? "このチャンネルは既に閉じています" : STALE_TEXT);
+              else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => closeCcChannel(channelId) });
+            },
+          )
+          .finally(() => {
+            reloadAfterOp(channelId);
+            const live = ccLive(ch);
+            if (live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
+          }),
+    });
+  }
+
+  /** 見出し（状態・[RC で開く]・[画面]・[Discord で開く]・[閉じる]） */
+  function ccHeader(ch, channelId) {
+    const live = ccLive(ch);
+    const titleRow = el("div", { class: "ed-title" }, [
+      icon("terminal"),
+      el("h1", { text: channelTitle(ch) }),
+      live.state && CC_STATE_LABEL[live.state]
+        ? el("span", { class: "badge" + (live.state === "needs_input" ? " badge-accent" : ""), text: CC_STATE_LABEL[live.state] })
+        : null,
+      live.state === "running" ? el("span", { class: "spinner", role: "img", "aria-label": "実行中" }) : null,
+    ]);
+    const actions = el("div", { class: "ed-actions" });
+    if (live.rc) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: live.rc, target: "_blank", rel: "noreferrer noopener" }, [icon("external-link"), "RC で開く"]));
+    const opened = ccScreenOpen(channelId);
+    const screen = el("button", {
+      class: "btn btn-ghost btn-sm",
+      type: "button",
+      "aria-expanded": opened ? "true" : "false",
+      "aria-controls": "cc-screen-" + channelId,
+      title: "開いている間は 3 秒ごとに更新",
+    }, [
+      icon("terminal"),
+      "画面",
+    ]);
+    screen.addEventListener("click", () => {
+      if (ccScreenOpened.has(channelId)) ccScreenOpened.delete(channelId);
+      else ccScreenOpened.add(channelId);
+      if (ccScreenOpened.has(channelId) && live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
+      SA.app.refresh("ch:" + channelId);
+    });
+    actions.append(screen);
+    const discord = discordUrl(ch.link);
+    if (discord) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: discord, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "Discord で開く"]));
+    const closeOff = live.state === "ended";
+    const close = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: closeOff, title: closeOff ? "閉じています" : null }, [icon("check"), "閉じる"]);
+    close.addEventListener("click", () => closeCcChannel(channelId));
+    actions.append(el("div", { class: "ed-ops" }, [close]));
+    return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
+  }
+
+  /** 画面の写しの節（開いているときだけ） */
+  function ccScreenSection(ch, channelId) {
+    if (!ccScreenOpen(channelId)) return null;
+    const live = ccLive(ch);
+    let body;
+    if (!live.session) body = el("p", { class: "meta", text: live.state === "ended" ? "セッションが一覧にありません。" : "読み込んでいます…" });
+    else if (!live.inTmux) body = el("p", { class: "meta", text: "tmux の外のセッションです。画面は見られません。" });
+    else if (typeof live.session.screen !== "string") body = el("p", { class: "meta", text: "画面を読めませんでした。" });
+    else body = el("pre", { class: "code-pre cc-screen", text: live.session.screen });
+    return el("section", { class: "card card-sm", id: "cc-screen-" + channelId, "aria-label": "画面" }, [el("div", { class: "card-head" }, [el("h2", { text: "画面" })]), body]);
+  }
+
   // ===== 描画 =====
   function avatar(letter, cls) {
     return el("span", { class: "avatar " + (cls || ""), "aria-hidden": "true", text: letter });
@@ -327,7 +440,7 @@
     return list;
   }
 
-  function renderTurn(turn, channelId) {
+  function renderTurn(turn, channelId, ch) {
     if (turn.kind === "divider") {
       return el("div", { class: "tl-divider", role: "separator" }, [el("span", { text: turn.text })]);
     }
@@ -343,7 +456,16 @@
         ]),
       ]);
     }
-    // agent
+    // agent。Claude Code のチャンネルの返事は名前を Claude Code にし、手順は出さない（記録が無い）
+    if (ch && ch.kind === "cc") {
+      return el("article", { class: "msg msg-agent" }, [
+        avatar("C", "avatar-agent"),
+        el("div", { class: "msg-body" }, [
+          el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: "Claude Code" }), timeOf(turn)]),
+          el("div", { class: "msg-text" }, linkify(typeof turn.text === "string" ? turn.text : "")),
+        ]),
+      ]);
+    }
     const p = persona(turn.persona);
     const body = el("div", { class: "msg-body" }, [el("div", { class: "msg-head" }, [el("span", { class: "msg-name", text: p.name }), timeOf(turn)])]);
     if (turn.outcome) {
@@ -434,6 +556,7 @@
   }
 
   function header(ch, channelId) {
+    if (ch && ch.kind === "cc") return ccHeader(ch, channelId);
     if (!ch) {
       return el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [icon("hash"), el("h1", { text: "会話" })]), el("div", { class: "ed-actions" })]);
     }
@@ -523,7 +646,10 @@
       enterkeyhint: enterHint(),
       "data-title": title,
       placeholder: placeholderOf(title),
-      title: "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます",
+      title:
+        ch && ch.kind === "cc"
+          ? "このセッションに届けます（入力待ちのときに貼ります）。返事はここと Discord の両方に出ます"
+          : "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます",
     });
     ta.value = SA.app.draft(channelId);
     const counter = el("span", { class: "counter", "aria-live": "polite" });
@@ -565,13 +691,22 @@
         // 送れたら書きかけを消し、本物の行が来るまで仮の行を出す
         if (ta.value.trim() === text) ta.value = "";
         SA.app.setDraft(channelId, ta.value);
+        const current = channelById(channelId);
+        if (current && current.kind === "cc") {
+          // Claude Code のチャンネル: 行（写し）はサーバーが書いている。届くまでの状態はセッションの今で出す
+          store.load.turns(channelId);
+          const live = ccLive(current);
+          if (live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
+          return;
+        }
         store.addOptimisticTurn(channelId, data && data.turnId, text);
         store.load.turns(channelId);
         SA.poll.running();
         for (const ms of RUNNING_RECHECK_MS) setTimeout(() => store.load.running({ quiet: true }), ms);
       } catch (err) {
         // 本文は入力欄に残す。[もう一度] は入力欄の今の本文を送り直す
-        if (err && err.toast) toast((err.code && SEND_ERRORS[err.code]) || err.toast, null, { level: "error", retry: submit });
+        const known = err && err.code && (SEND_ERRORS[err.code] || CC_SEND_ERRORS_EXTRA[err.code] || SA.views.CC_SEND_ERRORS[err.code]);
+        if (err && err.toast) toast(known || err.toast, null, { level: "error", retry: submit });
       } finally {
         sending = false;
         update();
@@ -631,10 +766,12 @@
       more.addEventListener("click", () => loadOlder(channelId));
       timeline.append(el("div", { class: "tl-hint" }, [more]));
     }
-    const run = store.runningOf(channelId);
+    const isCc = !!(ch && ch.kind === "cc");
+    // Claude Code のチャンネルにはターンが無い（実行中の行・[続ける] は出さない）
+    const run = isCc ? null : store.runningOf(channelId);
     const last = t.turns[t.turns.length - 1];
     for (const turn of t.turns) {
-      const node = renderTurn(turn, channelId);
+      const node = renderTurn(turn, channelId, ch);
       // 手順の上限で止まった最後の返事には [続ける]（セッションで、実行中のターンが無いとき）
       if (turn === last && turn.kind === "agent" && turn.outcome === "max_turns" && ch && ch.kind === "session" && !run && !continued.has(turn.id)) {
         const body = node.querySelector(".msg-body");
@@ -656,7 +793,30 @@
     if (ch && ch.kind === "session" && ch.state !== "done" && ch.closeDraft && !(waiting && waiting.kind === "close")) {
       timeline.append(closeCard(channelId, ch.closeDraft));
     }
-    if (t.turns.length === 0 && !run) timeline.append(el("p", { class: "tl-hint", text: "まだ会話はありません。下の欄か Discord で送ると始まります。" }));
+    let ccPending = null;
+    if (isCc) {
+      const live = ccLive(ch);
+      // 一度も読んでいなければセッションの今を読む（その後は api.js の polling）
+      if (!live.loaded && live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
+      // 一覧から開いた直後（チャンネルがまだ分からなかった）でも、セッションの今の polling を始める
+      SA.poll.kickCc();
+      const p = live.permission;
+      if (p && p.state === "pending") {
+        const card = SA.views.ccPermissionCard(live.sessionId, p, live.rc, "ch:" + channelId);
+        if (card) timeline.append(card);
+      }
+      const screen = ccScreenSection(ch, channelId);
+      if (screen) timeline.append(screen);
+      if (live.state === "ended") {
+        timeline.append(el("p", { class: "tl-hint", text: "このセッションは終わっています。Discord のチャンネルに書くと、同じディレクトリで起動して続けられます。" }));
+      }
+      ccPending = live.sessionId ? SA.views.ccPendingBar(live.sessionId, live.pending) : null;
+    }
+    if (t.turns.length === 0 && !run) {
+      timeline.append(
+        el("p", { class: "tl-hint", text: isCc ? "まだ会話はありません。下の欄か Discord で送ると、このセッションに届きます。" : "まだ会話はありません。下の欄か Discord で送ると始まります。" }),
+      );
+    }
     if (ch && ch.kind === "session" && ch.state === "done") {
       timeline.append(el("p", { class: "tl-hint", text: "完了したセッションです。発言すると進行中に戻ります。" }));
     }
@@ -666,12 +826,14 @@
     });
     // 入力欄は作り直さない（書きかけ・フォーカス・IME の変換を保つ）。見出しと会話だけを入れ替える
     const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-channel") === channelId);
+    // 送った本文の状態（Claude Code のチャンネル。[やめる]）は入力欄の上
     if (kept) {
       for (const child of [...container.children]) if (child !== kept) child.remove();
       container.insertBefore(header(ch, channelId), kept);
       container.insertBefore(scroll, kept);
+      if (ccPending) container.insertBefore(ccPending, kept);
     } else {
-      container.replaceChildren(header(ch, channelId), scroll, composer(ch, channelId));
+      container.replaceChildren(...[header(ch, channelId), scroll, ccPending, composer(ch, channelId)].filter((x) => x));
     }
     markSeen(channelId);
   }
@@ -681,13 +843,22 @@
     const ch = channelById(channelId);
     return {
       title: ch ? channelTitle(ch) : "会話",
-      icon: ch && ch.kind === "session" ? "message-square" : "hash",
+      icon: ch && ch.kind === "session" ? "message-square" : ch && ch.kind === "cc" ? "terminal" : "hash",
       dirty: !!store.runningOf(channelId),
       render: (container) => render(container, channelId),
-      onOpen: () => store.load.turns(channelId),
+      onOpen: () => {
+        store.load.turns(channelId);
+        // Claude Code のチャンネル: セッションの今を読み、一覧・画面の polling を始め直す
+        if (ch && ch.kind === "cc") {
+          const live = ccLive(ch);
+          if (live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
+          SA.poll.kickCc();
+        }
+      },
       onClose: () => {
         delete openSteps[channelId];
         delete picked[channelId];
+        ccScreenOpened.delete(channelId);
       },
     };
   }
@@ -735,5 +906,6 @@
     bindSendKeys,
     placeholderOf,
     enterHint,
+    ccScreenOpen,
   };
 })();

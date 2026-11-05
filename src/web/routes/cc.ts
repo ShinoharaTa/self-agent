@@ -2,11 +2,13 @@
 // /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）、GET /api/cc/projects・POST /api/cc/sessions（CC4。起動は cc/starter.ts）、
 // GET /api/cc/permissions・POST /api/cc/permissions/<id>/allow|always|deny（CC5a・CC5b。保留は cc/permission-hold.ts、常に許可の線引きは
 // cc/permissions.ts）、POST /api/cc/sessions/<id>/unfollow（CC8。返事の追いかけをやめる。Discord の [追いかけをやめる] と同じ）、
-// POST /api/cc/sessions/<id>/channel（CC10。そのセッションの Discord のチャンネルを作る。cc/channels.ts。docs/plan/claude-code-channels.md §3.1）と /api/status の cc。
+// POST /api/cc/sessions/<id>/channel（CC10。そのセッションの Discord のチャンネルを作る。cc/channels.ts。docs/plan/claude-code-channels.md §3.1）、
+// POST /api/cc/channels/<id>/close（CC14。/cc close と同じ）と /api/status の cc。ccChannelDescriber は /api/channels の kind cc の行の今（CC14）。
 // この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順。starting は cc/starter.ts の起動したがまだ一覧に出ていないもの）と、1 つのセッションの画面の写し
 // （tmux の capture-pane を stripAnsi して最後の CC_SCREEN_LINES 行。tmux の外は screen: null）。SELF_AGENT_CC が無効なら 404。
 // GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
 // 名前・cwd・最後の指示は hook から来たデータで、画面は textContent で出す。log は /unfollow の 1 行だけ（名前・パス・sessionId・ペイン id を出さない）
+import { closeReply } from "../../app/commands/cc.ts";
 import { isUuid } from "../../cc/agents.ts";
 import { cwdLabel } from "../../cc/labels.ts";
 import { type CcPermissionHold, permissionExpiresAt } from "../../cc/permission-hold.ts";
@@ -16,6 +18,7 @@ import type { CcPaneResolver, PaneLookup } from "../../cc/panes.ts";
 import type { CcRegistry, CcSessionView } from "../../cc/registry.ts";
 import { normalizeSendText, type CcSender } from "../../cc/sender.ts";
 import type { CcStartFailure, CcStarter } from "../../cc/starter.ts";
+import type { CcChannelRow } from "../../store/cc-channels.ts";
 import type { CcPermissionRow, CcPermissionStore } from "../../store/cc-permissions.ts";
 import type { CcSendRow, CcSendStore } from "../../store/cc-sends.ts";
 import type { CcSessionStore } from "../../store/cc-sessions.ts";
@@ -23,6 +26,7 @@ import { stripAnsi } from "../../tmux/pane-state.ts";
 import type { Tmux, TmuxPane } from "../../tmux/tmux.ts";
 import { paneLabel } from "../../tmux/workspace-map.ts";
 import type { Route, RouteResult } from "../server.ts";
+import type { WebCcInfo } from "./channels.ts";
 
 /** 画面の写しの行数（capture-pane -S で撮る履歴の行数も同じ） */
 export const CC_SCREEN_LINES = 200;
@@ -63,7 +67,7 @@ export type CcRouteDeps = {
    * セッションの Discord のチャンネル（CC10）。無ければ一覧の channel は null で、/channel は 404。
    * allowedGuildIds は /channel の guildId の許可（SELF_AGENT_ALLOWED_GUILD_IDS）
    */
-  channels?: { store: Pick<CcChannels, "openChannel" | "channelOf" | "defaultGuild">; allowedGuildIds: readonly string[] };
+  channels?: { store: Pick<CcChannels, "openChannel" | "channelOf" | "defaultGuild" | "close" | "postClosed">; allowedGuildIds: readonly string[] };
   /** /unfollow の log（無ければ出さない） */
   log?: (message: string) => void;
   /** 既定は new Date */
@@ -102,8 +106,8 @@ function sinceOf(view: CcSessionView): number | undefined {
   return view.state === "needs_input" ? (view.waitingSince ?? view.lastActivityAt) : view.lastActivityAt;
 }
 
-/** 送れなかった理由 → HTTP の状態（§5.1） */
-const SUBMIT_STATUS: Readonly<Record<string, number>> = {
+/** 送れなかった理由 → HTTP の状態（§5.1。routes/turns.ts の Claude Code のチャンネルの送信も同じ） */
+export const SUBMIT_STATUS: Readonly<Record<string, number>> = {
   not_found: 404,
   already_queued: 409,
   queue_full: 409,
@@ -149,6 +153,69 @@ function alwaysNote(row: CcPermissionRow): string | null {
   return notes.length === 0 ? null : notes.join("、");
 }
 
+/** 許可の要求の 1 件（Web は textContent で出す。要約・ツール名は hook から来たデータ） */
+function permissionJson(row: CcPermissionRow, holdSec: number) {
+  return {
+    id: row.id,
+    sessionId: row.sessionId,
+    state: row.state,
+    via: row.via,
+    toolName: row.toolName,
+    summary: row.summary,
+    // 常に許可にすると加わるルール（`Bash(npm test *)`。複数なら「、」でつなぐ）とその意味（Bash だけ）。提案が無ければ null
+    alwaysRule: row.alwaysRules === null ? null : row.alwaysRules.map(formatRule).join("、"),
+    alwaysNote: alwaysNote(row),
+    requestHash: row.requestHash,
+    permissionMode: row.permissionMode,
+    createdAt: row.createdAt,
+    expiresAt: permissionExpiresAt(row, holdSec),
+    resolvedAt: row.resolvedAt,
+  };
+}
+
+/**
+ * /api/channels の Claude Code のチャンネルの行の今（CC14。docs/plan/claude-code-channels.md §5.2）。返した関数は 1 回の要求の中で使い、
+ * 一覧・送信・許可は最初に 1 回だけ読む。ペインは引かず、inTmux は一覧の tmux の有無（画面の写しと送る先の確かめは /api/cc/sessions/<id> と送信が行う）。
+ * チャンネルが open でない・一覧に無いセッションは ended
+ */
+export function ccChannelDescriber(
+  deps: Pick<CcRouteDeps, "registry" | "workspaceDir" | "home" | "sends" | "now"> & {
+    permissions?: { store: Pick<CcPermissionStore, "latestPerSession">; holdSec: number };
+  },
+): () => (row: CcChannelRow) => { name: string | null; info: WebCcInfo } {
+  const now = deps.now ?? (() => new Date());
+  return () => {
+    const at = now().getTime();
+    const sessions = deps.registry?.snapshot().sessions ?? [];
+    const sends = new Map((deps.sends?.latestPerSession(new Date(at - CC_SEND_RECENT_MS)) ?? []).map((row) => [row.sessionId ?? "", row]));
+    const permissions = new Map(
+      (deps.permissions?.store.latestPerSession(new Date(at - CC_PERMISSION_RECENT_MS)) ?? []).map((row) => [row.sessionId, row]),
+    );
+    return (row) => {
+      const view = row.state === "open" || row.state === "resuming" ? sessions.find((session) => session.sessionId === row.sessionId) : undefined;
+      const permission = permissions.get(row.sessionId);
+      return {
+        name: view?.name ?? null,
+        info: {
+          sessionId: row.sessionId,
+          state: view === undefined ? "ended" : view.state,
+          cwdLabel: cwdLabel(view?.cwd ?? row.cwd ?? undefined, deps.workspaceDir, deps.home),
+          inTmux: view?.tmux !== undefined,
+          permission: permission === undefined ? null : permissionJson(permission, deps.permissions?.holdSec ?? 0),
+          pending: pendingJson(sends.get(row.sessionId)),
+        },
+      };
+    };
+  };
+}
+
+/** /api/cc/channels/<id>/close の結果 → HTTP の状態（closed は 200） */
+const CLOSE_STATUS: Readonly<Record<"not_channel" | "resuming" | "ended", RouteResult>> = {
+  not_channel: NOT_FOUND,
+  resuming: { status: 409, json: { error: "resuming" } },
+  ended: { status: 409, json: { error: "ended" } },
+};
+
 /** 押した操作の結果 → HTTP の状態 */
 const ANSWER_STATUS: Readonly<Record<string, number>> = { not_found: 404, stale: 409 };
 
@@ -166,23 +233,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     return new Map(rows.map((row) => [row.sessionId, row]));
   };
 
-  /** 許可の要求の 1 件（Web は textContent で出す。要約・ツール名は hook から来たデータ） */
-  const permissionJson = (row: CcPermissionRow) => ({
-    id: row.id,
-    sessionId: row.sessionId,
-    state: row.state,
-    via: row.via,
-    toolName: row.toolName,
-    summary: row.summary,
-    // 常に許可にすると加わるルール（`Bash(npm test *)`。複数なら「、」でつなぐ）とその意味（Bash だけ）。提案が無ければ null
-    alwaysRule: row.alwaysRules === null ? null : row.alwaysRules.map(formatRule).join("、"),
-    alwaysNote: alwaysNote(row),
-    requestHash: row.requestHash,
-    permissionMode: row.permissionMode,
-    createdAt: row.createdAt,
-    expiresAt: permissionExpiresAt(row, permissions?.holdSec ?? 0),
-    resolvedAt: row.resolvedAt,
-  });
+  const holdSec = permissions?.holdSec ?? 0;
 
   // 追いかけ中のセッション → 始めた時刻
   const following = (): Map<string, string | null> =>
@@ -215,7 +266,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     // そのセッションの最新の送信（CC3）
     pending: pendingJson(send),
     // そのセッションの最新の許可の要求（保留中か、終わってから CC_PERMISSION_RECENT_MS の間。CC5a）
-    permission: permission === undefined ? null : permissionJson(permission),
+    permission: permission === undefined ? null : permissionJson(permission, holdSec),
     // 返事を Discord に戻しているか（CC8。追いかけ中なら始めた時刻）
     follow: follow.has(view.sessionId) ? { since: follow.get(view.sessionId) ?? null } : null,
     // そのセッションの Discord のチャンネル（CC10。削除されていないもの）
@@ -340,6 +391,19 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
       },
     },
     {
+      method: "POST",
+      pattern: /^\/api\/cc\/channels\/(\d{1,25})\/close$/,
+      handle: async ({ params }) => {
+        if (registry === undefined || channels === undefined) return NOT_FOUND;
+        // /cc close と同じ（open を ended にして完了へ移す）。結果の文はチャンネルにも投稿する
+        const channelId = params[0] ?? "";
+        const closed = channels.store.close(channelId, { fromWeb: true });
+        if (closed.result !== "closed") return CLOSE_STATUS[closed.result];
+        channels.store.postClosed(channelId, closeReply(closed).text);
+        return { status: 200, json: { state: "ended", cancelled: closed.cancelled } };
+      },
+    },
+    {
       method: "GET",
       pattern: /^\/api\/cc\/projects$/,
       handle: async () => {
@@ -385,7 +449,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
       handle: async () => {
         if (registry === undefined || permissions === undefined) return NOT_FOUND;
         registry.touch();
-        return { status: 200, json: { permissions: permissions.store.listPending().map(permissionJson) } };
+        return { status: 200, json: { permissions: permissions.store.listPending().map((row) => permissionJson(row, holdSec)) } };
       },
     },
     {

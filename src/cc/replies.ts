@@ -11,7 +11,8 @@
 // 本文はプロセスの中だけで使い、DB（cc_replies）には sha256 と長さだけを書く。log は番号と件数だけ（本文・名前・チャンネル ID・sessionId は出さない）。
 // Claude Code のチャンネル（docs/plan/claude-code-channels.md §3.4。CC11）: そのセッションに開いているチャンネルがあれば、follow によらず常にそこへ出す
 // （見出しの名前は省き、[追いかけをやめる] は付けず、1 日の上限は CC_CHANNEL_REPLY_DAILY_LIMIT。最初の返事はその送信の message_id（オーナーの発言か写し）への返信）。
-// チャンネルのあるセッションでは、Discord から頼んだ送信が届いても追いかけを始めない
+// チャンネルのあるセッションでは、Discord から頼んだ送信が届いても追いかけを始めない。
+// Web の会話（CC14。§5.2）: チャンネルに出した返事は history の agent の行（本文・outcome done。手順・ツール回数・時間は無し）に書く（読めなかったものと上限の 1 行は notice）
 import { createHash } from "node:crypto";
 import { formatDate } from "../app/time.ts";
 import type { Config } from "../config.ts";
@@ -395,15 +396,23 @@ export class CcReplier {
     return replyLabel(row.name ?? (dir === undefined || dir === "" ? null : dir));
   }
 
-  /** Web UI の会話に notice を 1 行（チャンネルのサーバーが分かるときだけ） */
-  private record(channelId: string, text: string): void {
+  /** Web UI の会話に 1 行（チャンネルのサーバーが分かるときだけ）。agent は Claude Code のチャンネルの返事（CC14） */
+  private record(channelId: string, text: string, kind: "notice" | "agent" = "notice"): void {
     const { history, guildOf, personaOf, log } = this.deps;
     if (history === undefined || guildOf === undefined) return;
     const guildId = guildOf(channelId);
     if (guildId === undefined) return;
     recordHistory(
       history,
-      { guildId, channelId, kind: "notice", source: "system", ...(personaOf === undefined ? {} : { persona: personaOf(channelId) }), text },
+      {
+        guildId,
+        channelId,
+        kind,
+        source: "system",
+        ...(personaOf === undefined ? {} : { persona: personaOf(channelId) }),
+        text,
+        ...(kind === "agent" ? { outcome: "done" as const } : {}),
+      },
       log,
     );
   }
@@ -465,7 +474,8 @@ export class CcReplier {
     if (await this.post(reply, channelId, messages, true, toChannel)) {
       log(`Claude Code: 返事を戻しました（${send === undefined ? "" : `#${send.id}、`}返事 #${reply.id}、${messages.length} 通）`);
     }
-    this.record(channelId, message === undefined ? texts[0]! : `${who(label)}の返事（hook）:\n${message}`);
+    if (toChannel && message !== undefined) this.record(channelId, message, "agent");
+    else this.record(channelId, message === undefined ? texts[0]! : `${who(label)}の返事（hook）:\n${message}`);
   }
 
   /**

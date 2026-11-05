@@ -84,7 +84,8 @@ function setup(t: TestContext) {
     posts: bot,
     rcUrl: (sessionId) => (sessionId === S1 ? RC : undefined),
     history,
-    guildOf: (channelId) => (channelId === INBOX || channelId === SESSION_CHANNEL ? "guild-1" : undefined),
+    // Claude Code のチャンネル（cc-…）も Web で開ける（CC14）
+    guildOf: (channelId) => (channelId === INBOX || channelId === SESSION_CHANNEL || channelId.startsWith("cc-") ? "guild-1" : undefined),
     personaOf: () => "default",
     now,
     timers: { after: () => () => undefined },
@@ -619,4 +620,20 @@ test("チャンネル（CC11）: 送信の channel_id が cc のチャンネル�
   sends.transition(send.id, ["delivering"], "delivered");
   replier.onSendFinished(sends.get(send.id)!);
   assert.equal(sessions.get(S1)?.follow, false);
+});
+
+test("Web の会話（CC14）: チャンネルに出した返事は history の agent（本文・outcome done・手順なし）。読めなかったものは notice", async (t) => {
+  const { history, stop, ccChannels } = setup(t);
+  ccChannels.set(S1, "cc-chan");
+  await stop(S1, SECRET_BODY);
+  await stop(S1, undefined);
+  const rows = history.list("cc-chan", { limit: 10 });
+  assert.deepEqual(
+    rows.map((row) => [row.kind, row.source, row.outcome, row.steps, row.toolCalls, row.durationMs, row.guildId]),
+    [
+      ["agent", "system", "done", null, null, null, "guild-1"],
+      ["notice", "system", null, null, null, null, "guild-1"],
+    ],
+  );
+  assert.equal(rows[0]!.text, SECRET_BODY);
 });

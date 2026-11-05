@@ -95,7 +95,7 @@ import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { UsageStore } from "./store/usage.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
-import { ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
+import { ccChannelDescriber, ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
 import { channelRoutes, webChannelLookup, webChannelNamer } from "./web/routes/channels.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
 import { githubRoutes } from "./web/routes/github.ts";
@@ -717,6 +717,8 @@ if (
     // チャンネルに出せなかった許可の要求は #system（notifier）に回す
     release: (id) => permissionHold.release(id),
     home: homedir(),
+    // Web UI が有効なら、許可の要求・判断待ち・端末の指示の写しを会話に書く（CC14）
+    ...history,
     now,
     log,
   });
@@ -786,8 +788,9 @@ if (
     now,
     log,
   });
-  // 返事はそのチャンネルの持ち主の Bot で出し、Web UI が有効なら会話に notice を書く（チャンネルのサーバーは Web で開けるチャンネルと同じ引き方）
-  const channelOf = webChannelLookup({ cfg: config, resolveChannel, guildSettings, topicSessions });
+  // 返事はそのチャンネルの持ち主の Bot で出し、Web UI が有効なら会話に notice（Claude Code のチャンネルは agent）を書く
+  // （チャンネルのサーバーは Web で開けるチャンネルと同じ引き方。Claude Code のチャンネルも引く）
+  const channelOf = webChannelLookup({ cfg: config, resolveChannel, guildSettings, topicSessions, ccChannels: ccChannelStore });
   ccReplier = new CcReplier({
     cfg: config,
     sessions: ccSessions,
@@ -867,6 +870,8 @@ if (
     channelOps,
     notify,
     home: homedir(),
+    // Web UI が有効なら、発言・写し・届かなかった・終わった・戻ったを会話に書く（CC14）
+    ...history,
     now,
     log,
   });
@@ -960,7 +965,28 @@ const startedAt = now();
 let webServer: WebServer | undefined;
 if (config.web && config.webPort !== undefined && config.webAllowedLogin !== undefined) {
   // リマインドとプロジェクトの一覧のチャンネルの表示名（同じものを渡す）
-  const webChannelName = webChannelNamer({ cfg: config, guildSettings, topicSessions, resolveChannel });
+  const webChannelName = webChannelNamer({
+    cfg: config,
+    guildSettings,
+    topicSessions,
+    resolveChannel,
+    ...(ccChannels === undefined ? {} : { ccChannels: ccChannelStore }),
+  });
+  // Claude Code のチャンネル（CC14。SELF_AGENT_CC で連携が動くときだけ）: 会話の一覧・/turns に kind cc で出し、送信はそのセッションに積む
+  const webCc =
+    ccChannels === undefined || ccRegistry === undefined
+      ? undefined
+      : {
+          store: ccChannelStore,
+          describe: ccChannelDescriber({
+            registry: ccRegistry,
+            workspaceDir: config.workspaceDir,
+            home: homedir(),
+            sends: ccSends,
+            permissions: { store: ccPermissionStore, holdSec: config.ccPermissionHoldSec },
+            now,
+          }),
+        };
   webServer = createWebServer({
     host: "127.0.0.1",
     port: config.webPort,
@@ -992,9 +1018,27 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         ...(ccStatusOf === undefined ? {} : { cc: ccStatusOf }),
       }),
       ...usageRoutes({ cfg: config, usage, attachments, now }),
-      ...channelRoutes({ cfg: config, guildSettings, topicSessions, projects, history: historyStore, personas, resolveChannel }),
+      ...channelRoutes({
+        cfg: config,
+        guildSettings,
+        topicSessions,
+        projects,
+        history: historyStore,
+        personas,
+        resolveChannel,
+        ...(webCc === undefined ? {} : { cc: webCc }),
+      }),
       ...devlogRoutes({ cfg: config, now }),
-      ...turnRoutes({ cfg: config, guildSettings, topicSessions, resolveChannel, handler, now, log }),
+      ...turnRoutes({
+        cfg: config,
+        guildSettings,
+        topicSessions,
+        resolveChannel,
+        handler,
+        ...(ccChannels === undefined ? {} : { cc: { store: ccChannelStore, channels: ccChannels } }),
+        now,
+        log,
+      }),
       ...taskRoutes({ tasks, reminders, log }),
       ...reminderRoutes({
         cfg: config,

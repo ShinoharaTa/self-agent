@@ -664,10 +664,18 @@
   /** /api/status で Claude Code の連携が有効と分かっている */
   store.ccEnabled = () => !!(store.status && store.status.cc && store.status.cc.enabled);
 
-  /** 前に出ているタブが Claude Code のセッションなら、その sessionId */
+  /** 前に出ているタブが Claude Code のセッション（cc のタブか、Claude Code のチャンネルの会話のタブ。CC14）なら、その sessionId */
   function activeCcSession() {
     const tabId = SA.app.activeTabId();
-    return tabId && tabId.startsWith("cc:") ? tabId.slice(3) : null;
+    if (tabId && tabId.startsWith("cc:")) return tabId.slice(3);
+    const ch = SA.chat.current();
+    return ch && ch.kind === "cc" && ch.cc && typeof ch.cc.sessionId === "string" ? ch.cc.sessionId : null;
+  }
+
+  /** 前に出ているのが Claude Code のチャンネルの会話のタブで、画面の節を閉じている（画面の写しは要らないので一覧と同じ間隔で読む） */
+  function ccScreenIdle() {
+    const ch = SA.chat.current();
+    return !!(ch && ch.kind === "cc" && !SA.chat.ccScreenOpen(ch.id));
   }
 
   /** 一覧に許可の要求を保留しているセッションがある */
@@ -737,6 +745,14 @@
         }
       }
       SA.app.refresh("cc:" + sessionId);
+      // Claude Code のチャンネルの会話のタブ（CC14）も、同じセッションの今を出す
+      const loaded = store.ccSessions[sessionId];
+      const channel = loaded && loaded.session && loaded.session.channel;
+      if (channel && typeof channel.channelId === "string") SA.app.refresh("ch:" + channel.channelId);
+      else {
+        const ch = SA.chat.current();
+        if (ch && ch.kind === "cc" && ch.cc && ch.cc.sessionId === sessionId) SA.app.refresh("ch:" + ch.id);
+      }
     });
 
   /** 操作の後: 読んでいる途中のもの（操作の前の中身かもしれない）が終わるのを待ってから、もう一度読む */
@@ -778,8 +794,9 @@
     // 見始めたとき（会話の一覧を出した・タブを前に出した。SA.poll.kickCc）と、隠れていた画面が戻ったとき（schedule）に始め直す
     // 許可の要求を保留しているセッションがあれば一覧も 3 秒ごと
     cc: { base: () => (ccAsking() ? CC_PERMISSION_INTERVAL_MS : CC_LIST_INTERVAL_MS), when: ccWatching, run: (opts) => store.load.cc(opts), fails: 0, timer: null },
+    // Claude Code のチャンネルの会話のタブは、画面の節を開いている間だけ 3 秒、閉じていれば 10 秒（CC14）
     ccScreen: {
-      base: () => CC_SCREEN_INTERVAL_MS,
+      base: () => (ccScreenIdle() ? CC_LIST_INTERVAL_MS : CC_SCREEN_INTERVAL_MS),
       when: () => store.ccEnabled() && activeCcSession() !== null,
       run: (opts) => store.load.ccSession(activeCcSession(), opts),
       fails: 0,
