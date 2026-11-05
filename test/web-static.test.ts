@@ -832,3 +832,56 @@ test("web static: ≤639px でも Claude Code のチャンネルを閉じられ�
   assert.match(wb, /label: "このチャンネルを閉じる"[\s\S]{0,200}SA\.chat\.closeCcChannel\(ch\.id\)/);
   assert.match(chat, /\n {4}closeCcChannel,\n/);
 });
+
+/** app.css の ≤639px のブロック（ファイルの最後の @media (max-width: 639px)） */
+function phoneCss(): string {
+  const css = read("app.css");
+  const at = css.lastIndexOf("@media (max-width: 639px) {");
+  assert.ok(at >= 0);
+  return css.slice(at);
+}
+
+test("web static: スマホの殻（UI-7。#250）: ≤639px はタブの帯・パネル・切り替えを隠し、見出しの [‹] と下タブで一覧 ⇄ 本文を行き来する", () => {
+  const phone = phoneCss();
+  assert.match(phone, /\n {2}\.tabbar,\n {2}#panel-toggle,\n {2}#theme-toggle,\n {2}#sidebar-toggle,\n {2}\.wb-panel,\n {2}\.wb-sash-panel \{\n {4}display: none;\n {2}\}/);
+  assert.match(phone, /\n {2}\.ed-back \{\n {4}display: inline-flex;/);
+  assert.match(phone, /\.palette-item kbd \{\n {4}display: none;/);
+  // ≥640px では [‹]・今の画面の名前を出さない
+  const css = read("app.css");
+  assert.match(css, /\n\.ed-ops-more,\n\.ed-back \{\n {2}display: none;\n\}/);
+  assert.match(css, /\n\.wb-brand-status,\n\.wb-title-current \{\n {2}display: none;\n\}/);
+  assert.match(read("index.html"), /<span class="wb-title-current" id="title-current"><\/span>/);
+  // [‹] は ui.js の 1 つの部品で、会話の見出し（3 つ）と views.js の toolbar が使う
+  assert.match(read("ui.js"), /class: "btn btn-ghost btn-sm btn-icon-sm ed-back"[^\n]*"aria-label": "一覧へ"/);
+  assert.match(read("ui.js"), /addEventListener\("click", \(\) => SA\.app\.openDrawer\(\)\)/);
+  assert.equal((read("chat.js").match(/SA\.ui\.backButton\(\)/g) ?? []).length, 3);
+  assert.match(read("views.js"), /el\("div", \{ class: "ed-title" \}, \[SA\.ui\.backButton\(\), icon\(iconName\)/);
+  // 下タブ: タスク・リマインドはタブを直接開き、会話は押すたびに一覧を開く（トグルしない）
+  const sidebar = read("sidebar.js");
+  for (const id of ["tasks", "reminders"]) assert.match(sidebar, new RegExp(`\\{ id: "${id}",[^\\n]*phoneTab: true`), id);
+  assert.doesNotMatch(sidebar, /\{ id: "chat",[^\n]*phoneTab/);
+  const wb = read("workbench.js");
+  assert.match(wb, /if \(phone\(\) && a\.phoneTab\) \{\n {6}open\(a\.id\);\n {6}closeDrawer\(\);/);
+  // 一覧 → 本文は履歴に積み、戻る（popstate）で一覧へ
+  assert.match(wb, /history\.pushState\(\{ saBody: true \}/);
+  assert.match(wb, /window\.addEventListener\("popstate"/);
+  assert.match(wb, /history\.replaceState\(history\.state,/);
+  // パレットはスマホで PC の部品（サイドバー・パネル・タブを閉じる・テーマ）を出さない
+  assert.equal((wb.match(/pcOnly: true \}/g) ?? []).length, 4);
+  assert.match(wb, /\.filter\(\(it\) => !\(it\.pcOnly && phone\(\)\)\)/);
+  // 鈴はスマホでは知らせのタブ
+  assert.match(wb, /if \(phone\(\)\) \{\n {10}open\("notices"\);/);
+  assert.match(read("views.js"), /notices: \{ title: "知らせ", icon: "bell", render: renderNotices/);
+});
+
+test("web static: 会話・Claude Code の見出しの […] はそのチャンネルの操作だけのシートで、パレットを開かない（UI-7 の K1）", () => {
+  const chat = read("chat.js");
+  assert.doesNotMatch(chat, /SA\.app\.palette\(/);
+  assert.equal((chat.match(/SA\.app\.sheet\(/g) ?? []).length, 2);
+  for (const label of ["待ちにする", "閉じる", "会話を新しくする", "ページを開く", "Discord で開く", "RC で開く"]) assert.match(chat, new RegExp(`label: "${label}"`), label);
+  const wb = read("workbench.js");
+  assert.match(wb, /function openSheet\(label, items, opener\)/);
+  assert.match(wb, /sheet: openSheet,/);
+  // 「その他」の aria-expanded は「その他」のシートのときだけ
+  assert.match(wb, /"aria-expanded": String\(S\.moreOpen && S\.sheetKind === "more"\)/);
+});

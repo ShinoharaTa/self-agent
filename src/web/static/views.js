@@ -11,7 +11,7 @@
 
   function toolbar(iconName, title, extras, actions) {
     return el("header", { class: "ed-toolbar" }, [
-      el("div", { class: "ed-title" }, [icon(iconName), el("h1", { text: title }), ...(extras || [])]),
+      el("div", { class: "ed-title" }, [SA.ui.backButton(), icon(iconName), el("h1", { text: title }), ...(extras || [])]),
       el("div", { class: "ed-actions" }, actions || []),
     ]);
   }
@@ -1435,6 +1435,23 @@
     );
   }
 
+  // ===== 知らせ（スマホの鈴で開くタブ。PC はパネルの「知らせ」。行は workbench.js の noticeLine を共用） =====
+  function renderNotices(container) {
+    const data = store.notices;
+    if (data === null) {
+      container.replaceChildren(toolbar("bell", "知らせ"), scroll([loading()]));
+      return;
+    }
+    container.replaceChildren(
+      toolbar("bell", "知らせ", [el("span", { class: "meta", text: "直近 24 時間 " + data.recent24h + " 件" })]),
+      scroll([
+        data.notices.length > 0
+          ? el("ul", { class: "notice-list" }, data.notices.map(SA.app.noticeLine))
+          : empty("bell", "知らせはありません。#system に出たものがここにも出ます。"),
+      ]),
+    );
+  }
+
   // ===== ようこそ（タブが無いとき） =====
   function renderWelcome(container) {
     const action = (label, keys, fn, cls) => {
@@ -1487,6 +1504,7 @@
       },
     },
     status: { title: "状態", icon: "activity", render: renderStatus, onOpen: () => store.load.status() },
+    notices: { title: "知らせ", icon: "bell", render: renderNotices, onOpen: () => store.load.notices() },
     settings: { title: "設定", icon: "settings", render: renderSettings },
     devlog: {
       title: "会話ログ",

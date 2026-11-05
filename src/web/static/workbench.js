@@ -54,8 +54,10 @@
     activity: "chat",
     sidebarHidden: false,
     drawerOpen: false,
-    // スマホの「その他」のシート
+    // スマホの下からのシート（開いているか・"more" は「その他」、"ops" は見出しの […] のチャンネルの操作・ops を開いたボタン）
     moreOpen: false,
+    sheetKind: "more",
+    sheetOpener: null,
     tabs: [],
     active: null,
     panelOpen: !mqNarrow.matches,
@@ -126,7 +128,9 @@
 
   /** アクティビティのボタン 1 つ（数・実行中のスピナー付き） */
   function activityButton(a) {
-    const pressed = !a.tab && sidebarShows(a.id);
+    // スマホでタブを直接開くもの（タスク・リマインド）は、そのタブが前に出ている間が押された状態
+    const asTab = phone() && a.phoneTab;
+    const pressed = asTab ? S.active === a.id && !S.drawerOpen : !a.tab && sidebarShows(a.id);
     // 数（会話は未読のチャンネルの数）
     const n = a.count ? a.count() : 0;
     const countLabel = typeof a.countLabel === "function" ? a.countLabel() : a.countLabel || "";
@@ -138,7 +142,7 @@
         type: "button",
         "aria-label": label,
         title: label,
-        "aria-pressed": a.tab ? null : String(pressed),
+        "aria-pressed": a.tab && !asTab ? null : String(pressed),
       },
       [icon(a.icon), el("span", { class: "act-label", text: a.label }), n > 0 ? el("span", { class: "act-count", text: String(n), "aria-hidden": "true" }) : null],
     );
@@ -162,6 +166,7 @@
 
   function renderActivity() {
     ensureActivity();
+    renderTitle();
     if (phone()) {
       // スマホは主要の 3 つ + 「その他」の 1 群（bottom の 2 群分けは使わない）
       const { primary, more } = SA.sidebar.phoneActivities();
@@ -177,12 +182,18 @@
           type: "button",
           "aria-label": label,
           title: label,
-          "aria-expanded": String(S.moreOpen),
+          "aria-expanded": String(S.moreOpen && S.sheetKind === "more"),
           "aria-controls": "more-sheet",
         },
         [icon("ellipsis"), el("span", { class: "act-label", text: "その他" }), hasCount ? el("span", { class: "dot dot-unread", "aria-hidden": "true" }) : null],
       );
-      btn.addEventListener("click", () => (S.moreOpen ? closeMore() : openMore()));
+      btn.addEventListener("click", () => {
+        if (S.moreOpen && S.sheetKind === "more") closeMore();
+        else {
+          closeMore({ keepFocus: true });
+          openMore();
+        }
+      });
       group.append(btn);
       refs.activity.replaceChildren(group);
       return;
@@ -193,7 +204,7 @@
     refs.activity.replaceChildren(top, bottom);
   }
 
-  // ===== スマホの「その他」のシート =====
+  // ===== スマホの下からのシート（「その他」と、見出しの […] のチャンネルの操作。同じ #more-sheet を使う） =====
   function renderMore() {
     const items = SA.sidebar.phoneActivities().more.map((a) => {
       const n = a.count ? a.count() : 0;
@@ -216,17 +227,58 @@
       });
       return el("li", {}, [btn]);
     });
+    $("more-sheet").setAttribute("aria-label", "その他の画面");
     $("more-sheet").replaceChildren(el("ul", { class: "more-list" }, items));
   }
 
-  function openMore() {
+  /** シートを出す（中身は描いた後） */
+  function showSheet() {
     S.moreOpen = true;
-    renderMore();
     refs.wb.classList.add("is-more-open");
     $("more-backdrop").hidden = false;
     renderActivity();
-    const first = $("more-sheet").querySelector(".more-row");
+    const first = $("more-sheet").querySelector(".more-row:not([disabled])");
     if (first) first.focus();
+  }
+
+  function openMore() {
+    S.sheetKind = "more";
+    S.sheetOpener = null;
+    renderMore();
+    showSheet();
+  }
+
+  /**
+   * 見出しの […] のシート（そのチャンネルの操作だけ。docs/plan/web-ui-polish.md の UI-7）。
+   * items は { icon, label, run?, href?, why? }: href は新しいタブで開くリンク、run が無ければ押せない行で why を右に出す。opener は閉じた後に焦点を戻すボタン
+   */
+  function openSheet(label, items, opener) {
+    closeMore({ keepFocus: true });
+    S.sheetKind = "ops";
+    S.sheetOpener = opener || null;
+    const rows = items.map((it) => {
+      let row;
+      if (it.href) {
+        row = el("a", { class: "more-row", href: it.href, target: "_blank", rel: "noreferrer noopener" }, [icon(it.icon || "external-link"), el("span", { class: "sb-label", text: it.label })]);
+        row.addEventListener("click", () => closeMore({ keepFocus: true }));
+      } else {
+        row = el("button", { class: "more-row", type: "button", disabled: !it.run }, [
+          icon(it.icon || "circle"),
+          el("span", { class: "sb-label", text: it.label }),
+          !it.run && it.why ? el("span", { class: "sb-meta", text: it.why }) : null,
+        ]);
+        if (it.run) {
+          row.addEventListener("click", () => {
+            closeMore({ keepFocus: true });
+            it.run();
+          });
+        }
+      }
+      return el("li", {}, [row]);
+    });
+    $("more-sheet").setAttribute("aria-label", label);
+    $("more-sheet").replaceChildren(el("ul", { class: "more-list" }, rows));
+    showSheet();
   }
 
   /** opts.keepFocus は行を選んだとき（焦点は開いた先が決める） */
@@ -237,12 +289,24 @@
     $("more-backdrop").hidden = true;
     renderActivity();
     if (!(opts && opts.keepFocus)) {
-      const btn = refs.activity.querySelector(".act-more");
-      if (btn) btn.focus();
+      const opener = S.sheetKind === "ops" ? S.sheetOpener : refs.activity.querySelector(".act-more");
+      if (opener && document.contains(opener)) opener.focus();
     }
+    S.sheetOpener = null;
   }
 
   function selectActivity(a) {
+    // スマホ: タスク・リマインドはタブを直接開き、一覧のあるもの（会話）は押すたびに一覧を開く（閉じない）
+    if (phone() && a.phoneTab) {
+      open(a.id);
+      closeDrawer();
+      return;
+    }
+    if (phone() && !a.tab) {
+      S.activity = a.id;
+      openDrawer();
+      return;
+    }
     if (a.tab) {
       open(a.tab);
       closeDrawer();
@@ -281,7 +345,23 @@
     $("panel-toggle").setAttribute("aria-pressed", String(S.panelOpen));
   }
 
+  /**
+   * 一覧を開く。スマホで、本文が一覧から開いた履歴（pushState の saBody）の上にあれば戻る（popstate で一覧を開く。
+   * [‹]・下タブ「会話」・ブラウザの戻る・端のスワイプが同じ履歴の 1 段になる）
+   */
   function openDrawer() {
+    if (phone() && !S.drawerOpen && history.state && history.state.saBody) {
+      try {
+        history.back();
+        return;
+      } catch {
+        // 戻れなければその場で開く
+      }
+    }
+    showDrawer();
+  }
+
+  function showDrawer() {
     S.drawerOpen = true;
     applyLayout();
     renderActivity();
@@ -290,11 +370,19 @@
     if (first) first.focus();
   }
 
+  /** 一覧を閉じる。スマホで本文が見えるようになったら、その本文を履歴に積む（戻ると一覧） */
   function closeDrawer() {
     if (!S.drawerOpen) return;
     S.drawerOpen = false;
     applyLayout();
     renderActivity();
+    if (phone() && S.active) {
+      try {
+        history.pushState({ saBody: true }, "", "#/" + S.active.replace(":", "/"));
+      } catch {
+        // 積めなくても [‹] で一覧に戻れる
+      }
+    }
   }
 
   function toggleSidebar() {
@@ -306,6 +394,21 @@
     S.sidebarHidden = !S.sidebarHidden;
     applyLayout();
     renderActivity();
+  }
+
+  // ===== スマホのタイトルバーの中央（今の画面の名前。一覧なら一覧の名前、本文なら題名） =====
+  function renderTitle() {
+    const node = $("title-current");
+    if (!node) return;
+    let text = "";
+    if (S.drawerOpen) {
+      const a = SA.sidebar.visibleActivities().find((x) => x.id === S.activity);
+      text = a ? a.label : "";
+    } else if (S.active) {
+      const info = SA.views.info(S.active);
+      text = info ? info.title : "";
+    }
+    if (node.textContent !== text) node.textContent = text;
   }
 
   // ===== hash のルータ（#/status・#/ch/<id> など。サーバーには届かない） =====
@@ -321,8 +424,9 @@
 
   function writeHash() {
     try {
-      if (S.active) history.replaceState(null, "", "#/" + S.active.replace(":", "/"));
-      else history.replaceState(null, "", location.pathname + location.search);
+      // 履歴の印（saBody）は残す
+      if (S.active) history.replaceState(history.state, "", "#/" + S.active.replace(":", "/"));
+      else history.replaceState(history.state, "", location.pathname + location.search);
     } catch {
       // hash を書けなくても画面は動く
     }
@@ -338,6 +442,7 @@
   }
 
   function renderEditors() {
+    renderTitle();
     const box = refs.editors;
     const section = el("section", { class: "wb-group is-active", "aria-label": "エディタ" });
     if (S.tabs.length === 0) {
@@ -542,6 +647,7 @@
     const badge = $("panel-notices-count");
     if (badge) badge.textContent = noticeCount();
     if (S.panelOpen && S.panelTab === "notices") renderPanel();
+    refresh("notices");
   }
 
   function outLine(o) {
@@ -637,7 +743,7 @@
     renderTitleStatus();
   }
 
-  /** スマホ（ステータスバーを出さない幅）のタイトルバーの右: 既定の人格の Bot の接続の点と、知らせの鈴（CSS で 639px 以下だけ） */
+  /** スマホ（ステータスバーを出さない幅）のタイトルバー: 名前の右に既定の人格の Bot の接続の点、右に知らせの鈴（CSS で 639px 以下だけ） */
   function renderTitleStatus() {
     if (!refs.titleStatus) return;
     const status = SA.store.status;
@@ -648,9 +754,13 @@
       const b = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm", type: "button", "aria-label": label, title: label }, [
         el("span", { class: "dot " + (bot.connected ? "dot-ok" : "dot-bad"), "aria-hidden": "true" }),
       ]);
-      b.addEventListener("click", () => open("status"));
-      items.push(b);
-    }
+      b.addEventListener("click", () => {
+        open("status");
+        closeDrawer();
+      });
+      // スマホでは名前（self-agent）の右に置く（署名の「生きている点」）
+      if (refs.brandStatus) refs.brandStatus.replaceChildren(b);
+    } else if (refs.brandStatus) refs.brandStatus.replaceChildren();
     const notices = SA.store.notices;
     if (notices !== null) {
       const label = "知らせ（直近 24 時間 " + notices.recent24h + " 件）";
@@ -658,7 +768,13 @@
         icon("bell"),
         notices.recent24h > 0 ? el("span", { class: "title-bell-count", text: String(notices.recent24h), "aria-hidden": "true" }) : null,
       ]);
-      b.addEventListener("click", () => showPanel("notices"));
+      // スマホにパネルは無いので、知らせのタブを開く
+      b.addEventListener("click", () => {
+        if (phone()) {
+          open("notices");
+          closeDrawer();
+        } else showPanel("notices");
+      });
       items.push(b);
     }
     refs.titleStatus.replaceChildren(...items);
@@ -706,11 +822,12 @@
       { label: "使用量を開く", keys: "/usage", detail: "", run: () => open("usage") },
       { label: "状態を開く", detail: "", run: () => open("status") },
       { label: "設定を開く", detail: "", run: () => open("settings") },
-      { label: "サイドバーを切り替える", keys: "Ctrl+B", run: toggleSidebar },
-      { label: "パネルを切り替える", keys: "Ctrl+J", run: () => togglePanel() },
-      { label: "タブを閉じる", keys: "Alt+W", run: active ? () => closeTab(active) : null, why: "開いているタブがありません" },
-      { label: "テーマを切り替える", detail: "ダーク / ライト", run: toggleTheme },
-    ];
+      // PC の画面の部品（スマホにはサイドバー・パネル・タブの帯が無く、テーマは設定で変える）
+      { label: "サイドバーを切り替える", keys: "Ctrl+B", run: toggleSidebar, pcOnly: true },
+      { label: "パネルを切り替える", keys: "Ctrl+J", run: () => togglePanel(), pcOnly: true },
+      { label: "タブを閉じる", keys: "Alt+W", run: active ? () => closeTab(active) : null, why: "開いているタブがありません", pcOnly: true },
+      { label: "テーマを切り替える", detail: "ダーク / ライト", run: toggleTheme, pcOnly: true },
+    ].filter((it) => !(it.pcOnly && phone()));
   }
 
   /** Claude Code のチャンネルのコマンド（閉じる・RC で開く・Discord で開く） */
@@ -1155,6 +1272,8 @@
     refs.status = $("statusbar");
     refs.titleStatus = el("div", { class: "wb-title-status" });
     document.querySelector(".wb-title-actions").prepend(refs.titleStatus);
+    refs.brandStatus = el("span", { class: "wb-brand-status" });
+    document.querySelector(".wb-brand").after(refs.brandStatus);
 
     // 前回の幅・高さ・表示
     for (const size of Object.values(SIZES)) {
@@ -1191,7 +1310,7 @@
     // 開いている間は Tab / Shift+Tab を最初と最後の行で折り返す（aria-modal）
     $("more-sheet").addEventListener("keydown", (e) => {
       if (e.key !== "Tab") return;
-      const rows = $("more-sheet").querySelectorAll(".more-row");
+      const rows = $("more-sheet").querySelectorAll(".more-row:not([disabled])");
       if (rows.length === 0) return;
       const first = rows[0];
       const last = rows[rows.length - 1];
@@ -1206,9 +1325,21 @@
     document.addEventListener("keydown", onKey);
     window.addEventListener("hashchange", () => {
       const tabId = tabFromHash(location.hash);
+      // 戻る（popstate）で今のタブの hash に書き直した後のものは何もしない
+      if (tabId && tabId === S.active) return;
       // 知らない・空の hash は開かず、今のタブの hash に戻す
       if (tabId && SA.views.info(tabId)) open(tabId);
       else writeHash();
+    });
+    // スマホ: 一覧から開いた本文で戻ると一覧へ（closeDrawer が積んだ履歴）。hash は今のタブのものに書き直す
+    window.addEventListener("popstate", () => {
+      if (!phone()) return;
+      if (!S.drawerOpen) {
+        closeMore({ keepFocus: true });
+        closePalette();
+        showDrawer();
+      }
+      writeHash();
     });
     bindPalette();
     bindNewSession();
@@ -1252,7 +1383,10 @@
     addOutput,
     activeTabId,
     sidebarShows,
+    openDrawer,
     closeDrawer,
+    sheet: openSheet,
+    noticeLine,
     toggleSidebar,
     togglePanel,
     palette,

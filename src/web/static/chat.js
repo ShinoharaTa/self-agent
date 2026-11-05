@@ -376,6 +376,7 @@
   function ccHeader(ch, channelId) {
     const live = ccLive(ch);
     const titleRow = el("div", { class: "ed-title" }, [
+      SA.ui.backButton(),
       icon("terminal"),
       el("h1", { text: channelTitle(ch) }),
       live.state && CC_STATE_LABEL[live.state]
@@ -410,7 +411,18 @@
     const close = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: closeOff, title: closeOff ? "閉じています" : null }, [icon("check"), "閉じる"]);
     close.addEventListener("click", () => closeCcChannel(channelId));
     const more = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-ops-more", type: "button", "aria-label": "ほかの操作", title: "ほかの操作" }, [icon("ellipsis")]);
-    more.addEventListener("click", () => SA.app.palette(">"));
+    // このチャンネルの操作だけのシート（パレットは移動用）
+    more.addEventListener("click", () =>
+      SA.app.sheet(
+        channelTitle(ch) + " の操作",
+        [
+          live.rc ? { icon: "external-link", label: "RC で開く", href: live.rc } : null,
+          discord ? { icon: "external-link", label: "Discord で開く", href: discord } : null,
+          { icon: "check", label: "閉じる", run: closeOff ? null : () => closeCcChannel(channelId), why: "閉じています" },
+        ].filter(Boolean),
+        more,
+      ),
+    );
     actions.append(el("div", { class: "ed-ops" }, [close, more]));
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
   }
@@ -573,37 +585,39 @@
   function header(ch, channelId) {
     if (ch && ch.kind === "cc") return ccHeader(ch, channelId);
     if (!ch) {
-      return el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [icon("hash"), el("h1", { text: "会話" })]), el("div", { class: "ed-actions" })]);
+      return el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [SA.ui.backButton(), icon("hash"), el("h1", { text: "会話" })]), el("div", { class: "ed-actions" })]);
     }
     const isSession = ch.kind === "session";
     const p = persona(ch.persona);
     const titleRow = el("div", { class: "ed-title" }, [
+      SA.ui.backButton(),
       icon(isSession ? "message-square" : "hash"),
       el("h1", { text: isSession ? ch.title || "" : ch.name || ch.kind }),
       isSession && STATE_LABEL[ch.state] ? el("span", { class: "badge state-" + ch.state, text: STATE_LABEL[ch.state] }) : null,
       el("span", { class: "badge", text: p.name + (p.isDefault ? "" : "（人格）") }),
     ]);
     const actions = el("div", { class: "ed-actions" });
+    // 狭い画面（≤639px）ではプロジェクト・リンクも隠し、[…] のシートに入れる（見出しを 1 行にする）
+    const url = ch.project ? pageUrl(ch.project.url) : null;
     if (ch.project) {
-      actions.append(el("span", { class: "badge", title: "プロジェクト" }, [icon("folder"), ch.project.slug]));
-      const url = pageUrl(ch.project.url);
-      if (url) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: url, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "ページ"]));
+      actions.append(el("span", { class: "badge hide-sm", title: "プロジェクト" }, [icon("folder"), ch.project.slug]));
+      if (url) actions.append(el("a", { class: "btn btn-ghost btn-sm hide-sm", href: url, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "ページ"]));
     }
     const discord = discordUrl(ch.link);
-    if (discord) actions.append(el("a", { class: "btn btn-ghost btn-sm", href: discord, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "Discord"]));
+    if (discord) actions.append(el("a", { class: "btn btn-ghost btn-sm hide-sm", href: discord, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "Discord"]));
     // 要約を待っている間は操作を重ねない
     const busy = !!pendingOf(channelId, ch);
     const ops = el("div", { class: "ed-ops" });
     // secondary は [閉じる] だけ、他は ghost（GUIDELINES §5 ボタン）。押せないときは理由を title に
     const busyWhy = BUSY_TEXT;
+    const waitOff = busy || ch.state !== "active";
+    const closeOff = busy || ch.state === "done";
     if (isSession) {
-      const waitOff = busy || ch.state !== "active";
       const wait = el("button", { class: "btn btn-ghost btn-sm", type: "button", disabled: waitOff, title: waitOff ? (busy ? busyWhy : "進行中のときだけ待ちにできます") : null }, [
         icon("pause"),
         "待ちにする",
       ]);
       wait.addEventListener("click", () => setWaiting(channelId));
-      const closeOff = busy || ch.state === "done";
       const close = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: closeOff, title: closeOff ? (busy ? busyWhy : "閉じています") : null }, [
         icon("check"),
         "閉じる",
@@ -613,9 +627,21 @@
     }
     const renewBtn = el("button", { class: "btn btn-ghost btn-sm", type: "button", disabled: busy, title: busy ? busyWhy : null }, [icon("rotate-ccw"), "会話を新しくする"]);
     renewBtn.addEventListener("click", () => renew(channelId));
-    // 狭い画面（≤639px）では上の操作を隠し、[…] でパレットのコマンドを開く（CSS で出し分ける）
+    // 狭い画面（≤639px）では上の操作を隠し、[…] でこのチャンネルの操作だけのシートを開く（CSS で出し分ける。パレットは移動用）
     const more = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-ops-more", type: "button", "aria-label": "ほかの操作", title: "ほかの操作" }, [icon("ellipsis")]);
-    more.addEventListener("click", () => SA.app.palette(">"));
+    more.addEventListener("click", () =>
+      SA.app.sheet(
+        channelTitle(ch) + " の操作",
+        [
+          isSession ? { icon: "pause", label: "待ちにする", run: waitOff ? null : () => setWaiting(channelId), why: busy ? busyWhy : "進行中のときだけ" } : null,
+          isSession ? { icon: "check", label: "閉じる", run: closeOff ? null : () => closeSession(channelId), why: busy ? busyWhy : "閉じています" } : null,
+          { icon: "rotate-ccw", label: "会話を新しくする", run: busy ? null : () => renew(channelId), why: busyWhy },
+          url ? { icon: "external-link", label: "ページを開く", href: url } : null,
+          discord ? { icon: "external-link", label: "Discord で開く", href: discord } : null,
+        ].filter(Boolean),
+        more,
+      ),
+    );
     ops.append(renewBtn, more);
     actions.append(ops);
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);

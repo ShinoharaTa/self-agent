@@ -236,6 +236,13 @@
     armToast(item);
   }
 
+  /** スマホ（≤639px）の見出しの左端の [‹]（一覧へ。押すと一覧を開く）。≥640px では CSS で出さない */
+  function backButton() {
+    const b = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-back", type: "button", "aria-label": "一覧へ", title: "一覧へ" }, [icon("chevron-left")]);
+    b.addEventListener("click", () => SA.app.openDrawer());
+    return b;
+  }
+
   // ===== ダイアログ（showModal が無い環境では open 属性で開く） =====
   function openDialog(dialog) {
     if (typeof dialog.showModal === "function") dialog.showModal();
@@ -279,5 +286,5 @@
     else ok.focus();
   }
 
-  SA.ui = { el, icon, count, elapsed, clock, hm, dateTime, dateOf, shortTime, linkify, toast, confirm, openDialog, closeDialog };
+  SA.ui = { el, icon, count, elapsed, clock, hm, dateTime, dateOf, shortTime, linkify, toast, confirm, openDialog, closeDialog, backButton };
 })();

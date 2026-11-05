@@ -655,7 +655,12 @@ kbd {
   display: none;
 }
 
-/* スマホのタイトルバーの右の接続の点と鈴は、ステータスバーを出さない幅だけ */
+/* スマホのタイトルバーの名前の右の接続の点・中央の今の画面の名前・右の鈴は、ステータスバーを出さない幅だけ */
+.wb-brand-status,
+.wb-title-current {
+  display: none;
+}
+
 .wb-title-status {
   display: none;
   align-items: center;
@@ -1071,8 +1076,9 @@ kbd {
   gap: var(--space-1);
 }
 
-/* 狭い画面で会話の見出しの操作をまとめる […]（≥640px では出さない） */
-.ed-ops-more {
+/* 狭い画面で会話の見出しの操作をまとめる […] と、一覧へ戻る [‹]（≥640px では出さない） */
+.ed-ops-more,
+.ed-back {
   display: none;
 }
 
@@ -2463,19 +2469,86 @@ dialog[open]::backdrop {
     grid-template-rows: calc(var(--titlebar-h) + env(safe-area-inset-top, 0px)) minmax(0, 1fr) 0 calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px));
   }
 
-  /* 名前を出さないので、切り替え・検索・右の操作の 3 列にする */
+  /*
+   * スマホの殻（UI-7）: タブの帯・パネル・サイドバーとパネルとテーマの切り替えは出さない。一覧 ⇄ 本文は見出しの [‹] と下タブで行き来する。
+   * タイトルバーは 名前 + 接続の点 | 今の画面の名前 | 探す（アイコン）・鈴
+   */
+  .tabbar,
+  #panel-toggle,
+  #theme-toggle,
+  #sidebar-toggle,
+  .wb-panel,
+  .wb-sash-panel {
+    display: none;
+  }
+
   .wb-titlebar {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    gap: 0;
+    padding-left: var(--space-4);
+  }
+
+  .wb-brand-status {
+    display: flex;
+    align-items: center;
+  }
+
+  .wb-title-current {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    font-weight: var(--weight-semibold);
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .cmd-center {
-    width: 100%;
+    justify-content: center;
+    width: var(--row);
+    padding: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    border-color: transparent;
+  }
+
+  .cmd-center .icon {
+    width: var(--icon-size);
+    height: var(--icon-size);
+  }
+
+  .cmd-center-text,
+  .palette-item kbd {
+    display: none;
   }
 
   .wb-statusbar,
-  .hide-sm,
-  .wb-brand {
+  .hide-sm {
     display: none;
+  }
+
+  /* 見出しの左端の [‹]（一覧へ）。会話の見出しは 1 行（題名は省略、操作は […] のシート） */
+  .ed-back {
+    display: inline-flex;
+    flex: none;
+    margin-left: calc(-1 * var(--space-2));
+  }
+
+  .ed-toolbar[data-channel] {
+    flex-wrap: nowrap;
+  }
+
+  .ed-toolbar[data-channel] .ed-title {
+    flex: 1 1 auto;
+  }
+
+  .ed-toolbar[data-channel] .ed-title > .badge {
+    flex: none;
+  }
+
+  .ed-toolbar[data-channel] .ed-actions {
+    flex: none;
+    flex-wrap: nowrap;
   }
 
   .show-sm {
@@ -2624,6 +2697,20 @@ dialog[open]::backdrop {
 
   .more-row:active {
     background: var(--muted);
+  }
+
+  /* 見出しの […] のシートのリンクの行と、今は押せない行（理由は右の sb-meta） */
+  a.more-row {
+    text-decoration: none;
+  }
+
+  .more-row:disabled {
+    color: var(--text-muted);
+    cursor: not-allowed;
+  }
+
+  .more-row:disabled:active {
+    background: transparent;
   }
 
   .more-row .icon {
