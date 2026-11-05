@@ -812,8 +812,13 @@
       { label: "新しいセッションを作る", keys: "/new", detail: "題名と人格を決めて作ります", run: newSession },
       // Claude Code の起動（会話の一覧の群「Claude Code」の [Claude Code を起動] と同じダイアログ）。連携が無効なら出さない
       ...(SA.store.ccEnabled() ? [{ label: "Claude Code を起動", detail: "この機械の tmux に新しいセッションを作ります", run: ccStart }] : []),
-      { label: "今のセッションを閉じる", keys: "/close", detail: "要約してから完了に移します", run: sessionOnly(() => SA.chat.closeSession(ch.id)), why: sessionWhy },
-      { label: "今のセッションを待ちにする", keys: "/wait", detail: "発言すると進行中に戻ります", run: sessionOnly(() => SA.chat.setWaiting(ch.id)), why: sessionWhy },
+      // Claude Code のチャンネルでは /close・/wait を出さず、その位置に「このチャンネルを閉じる」などを置く
+      ...(ch && ch.kind === "cc"
+        ? ccCommands(ch)
+        : [
+            { label: "今のセッションを閉じる", keys: "/close", detail: "要約してから完了に移します", run: sessionOnly(() => SA.chat.closeSession(ch.id)), why: sessionWhy },
+            { label: "今のセッションを待ちにする", keys: "/wait", detail: "発言すると進行中に戻ります", run: sessionOnly(() => SA.chat.setWaiting(ch.id)), why: sessionWhy },
+          ]),
       // Claude Code のチャンネルにはターンが無いので使えない（CC14）
       {
         label: "会話を新しくする",
@@ -822,8 +827,6 @@
         run: ch && ch.kind !== "cc" && !busy ? () => SA.chat.renew(ch.id) : null,
         why: busy ? SA.chat.BUSY_TEXT : ch && ch.kind === "cc" ? "Claude Code のチャンネルでは使えません" : "会話のタブで使えます",
       },
-      // Claude Code のチャンネルの [閉じる]・リンク（≤639px の見出しでは […] からここへ。Discord の /cc close と同じ）
-      ...(ch && ch.kind === "cc" ? ccCommands(ch) : []),
       { label: "タスクを開く", keys: "/tasks", detail: "", run: () => open("tasks") },
       { label: "リマインドを開く", keys: "/reminders", detail: "", run: () => open("reminders") },
       { label: "使用量を開く", keys: "/usage", detail: "", run: () => open("usage") },
@@ -837,16 +840,17 @@
     ].filter((it) => !(it.pcOnly && phone()));
   }
 
-  /** Claude Code のチャンネルのコマンド（閉じる・RC で開く・Discord で開く） */
+  /** Claude Code のチャンネルのコマンド（閉じる・RC で開く・Discord で開く。≤639px の見出しでは […] からここへ。閉じるは Discord の /cc close と同じ） */
   function ccCommands(ch) {
-    const rc = SA.chat.ccRcUrl(ch.id);
-    const discord = SA.chat.discordUrl(ch.link);
+    const state = SA.chat.ccCommandState(ch.id);
+    if (!state) return [];
+    const { rc, discord } = state;
     const items = [
       {
         label: "このチャンネルを閉じる",
         keys: "/cc close",
         detail: "Discord のチャンネルを完了に移します",
-        run: SA.chat.ccClosable(ch.id) ? () => SA.chat.closeCcChannel(ch.id) : null,
+        run: state.closable ? () => SA.chat.closeCcChannel(ch.id) : null,
         why: "閉じています",
       },
     ];
