@@ -6,11 +6,35 @@ export const CC_CHANNEL_KEEP_DAYS = 30;
 /** open = カテゴリ「Claude Code」、resuming = [起動して続ける] の間（CC13）、ended = セッションが終わった（完了カテゴリ）、deleted = 消えた */
 export type CcChannelState = "open" | "resuming" | "ended" | "deleted";
 
-/** 作ったきっかけ（docs/plan/claude-code-channels.md §3.1）。web・command は手動の口 */
-export type CcChannelOrigin = "web" | "command" | "web_send" | "web_start" | "permission" | "tool_send" | "tool_start" | "github";
+/**
+ * 作ったきっかけ（docs/plan/claude-code-channels.md §3.1）。web・command は手動の口。permission・question・waiting は許可の要求・質問・判断待ちの
+ * 知らせ（docs/plan/claude-code-questions.md §5。permission は許可に答えたときも）
+ */
+export type CcChannelOrigin =
+  | "web"
+  | "command"
+  | "web_send"
+  | "web_start"
+  | "permission"
+  | "tool_send"
+  | "tool_start"
+  | "github"
+  | "question"
+  | "waiting";
 
 const STATES: readonly CcChannelState[] = ["open", "resuming", "ended", "deleted"];
-const ORIGINS: readonly CcChannelOrigin[] = ["web", "command", "web_send", "web_start", "permission", "tool_send", "tool_start", "github"];
+const ORIGINS: readonly CcChannelOrigin[] = [
+  "web",
+  "command",
+  "web_send",
+  "web_start",
+  "permission",
+  "tool_send",
+  "tool_start",
+  "github",
+  "question",
+  "waiting",
+];
 
 /** cc_channels の 1 行（時刻は ISO） */
 export type CcChannelRow = {

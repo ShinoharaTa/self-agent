@@ -46,7 +46,7 @@ import { ClaudeDirs } from "./cc/claude-dirs.ts";
 import { CcChannels, ccEndedHandler, ccPermissionAnsweredHandler, routeCcChannelMessages } from "./cc/channels.ts";
 import { CcChannelPosts } from "./cc/channel-posts.ts";
 import { CcQuestionFlow } from "./cc/question-flow.ts";
-import { CcDiscordNotifier, CcWaitBudget } from "./cc/discord-notice.ts";
+import { CcWaitBudget } from "./cc/notice-text.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
 import { CcPermissionHold } from "./cc/permission-hold.ts";
@@ -632,14 +632,13 @@ const reminderScheduler = new ReminderScheduler({
 // Claude Code のセッション（docs/plan/claude-code-sessions.md。SELF_AGENT_CC=1 のときだけ）: claude agents --json を周期で読んで cc_sessions に書き、
 // hook の受け口（127.0.0.1:SELF_AGENT_CC_HOOK_PORT。Web UI とは別のサーバー）で事象を受ける。Web から送る本文は cc_sends に積み、
 // 入力待ちのときだけ tmux で貼る（cc/sender.ts。待ち行列は 30 秒ごと）。Web から新しいセッションを SELF_AGENT_WORKSPACE_DIR の直下に起動する（cc/starter.ts）。
-// 許可の要求は応答を保留し、Web と #system の [許可]・[このセッションでは常に許可]・[拒否] で返す（cc/permission-hold.ts）。
-// SELF_AGENT_CC_NOTIFY が 1 なら、許可の要求・判断待ち・self-agent が起動したセッションの終了を #system に出す（cc/discord-notice.ts）。
-// Claude Code のチャンネルが開いているセッションの許可の要求・判断待ちと端末・RC からの指示の写しは、SELF_AGENT_CC_NOTIFY によらずそのチャンネルに出す（cc/channel-posts.ts。CC12）
+// 許可の要求は応答を保留し、Web と Discord の [許可]・[このセッションでは常に許可]・[拒否] で返す（cc/permission-hold.ts）。
+// 許可の要求・質問・判断待ちと端末・RC からの指示の写しは、そのセッションの Claude Code のチャンネルに出す（cc/channel-posts.ts。#system には出さない）。
+// チャンネルが無ければ、SELF_AGENT_CC_NOTIFY が 1 のとき許可の要求・質問・判断待ちのために作る（docs/plan/claude-code-questions.md §5。Q4）
 let ccRegistry: CcRegistry | undefined;
-let ccNotifier: CcDiscordNotifier | undefined;
 let ccChannelPosts: CcChannelPosts | undefined;
 let ccPermissionButtons: CcPermissionButtons | undefined;
-// 再起動の前に保留していて expired にした許可の要求（#system の 1 通を「時間切れ」に書き換える）
+// 再起動の前に保留していて expired にした許可の要求（出した 1 通を「時間切れ」に書き換える）
 let ccRecoveredPermissions: CcPermissionRow[] = [];
 let ccSender: CcSender | undefined;
 let ccStarter: CcStarter | undefined;
@@ -685,9 +684,8 @@ if (
     // 許可の要求を保留している間は 5 秒ごとに読み、status で「他で答えられた」を見る
     permissions: permissionHold,
     // 一覧から消えたセッション: チャンネルがあれば、終わったことをそこに 1 行出して完了カテゴリへ移す。
-    // 返事を追いかけていれば、追いかけのチャンネルに「終わりました」を出して止める。どちらも無いときだけ、
-    // self-agent が起動したセッションの終了を #system に出す（cc/channels.ts の ccEndedHandler）
-    ended: ccEndedHandler({ channels: () => ccChannels, replier: () => ccReplier, notifier: () => ccNotifier }),
+    // 返事を追いかけていれば、追いかけのチャンネルに「終わりました」を出して止める（cc/channels.ts の ccEndedHandler。#system には出さない）
+    ended: ccEndedHandler({ channels: () => ccChannels, replier: () => ccReplier }),
     // 同じ session_id が一覧に戻ったら、終わったチャンネルを開き直してカテゴリ「Claude Code」へ戻す
     revived: (session) => {
       ccChannels?.revived(session);
@@ -703,20 +701,19 @@ if (
   });
   knownSessions = registry;
   ccRegistry = registry;
-  // 判断待ちの知らせの 1 時間の上限は #system とチャンネルで 1 つ
-  const waitBudget = new CcWaitBudget();
-  // チャンネルが開いているセッションの許可の要求は、#system より先にチャンネルが引き受ける（1 件は 1 か所）
+  // 許可の要求・質問・判断待ちはそのセッションのチャンネルに出し、無ければ作る（SELF_AGENT_CC_NOTIFY=0 なら作らない）
   const channelPosts = new CcChannelPosts({
     cfg: config,
     channels: ccChannelStore,
+    // ccChannels は下で作る
+    ensureChannel: () => ccChannels,
     gateway,
     permissions: ccPermissionStore,
     sessions: ccSessions,
     sends: ccSends,
     registry,
-    waitBudget,
-    // チャンネルに出せなかった許可の要求は #system（notifier）に回す
-    release: (id) => permissionHold.release(id),
+    // 判断待ちの知らせの 1 時間の上限
+    waitBudget: new CcWaitBudget(),
     home: homedir(),
     // Web UI が有効なら、許可の要求・判断待ち・端末の指示の写しを会話に書く（CC14）
     ...history,
@@ -725,27 +722,7 @@ if (
   });
   ccChannelPosts = channelPosts;
   permissionHold.listen(channelPosts);
-  if (config.ccNotify) {
-    const notifier = new CcDiscordNotifier({
-      cfg: config,
-      guildSettings,
-      notify,
-      // notify と同じ既定の人格の Bot で書き換える
-      gateway,
-      permissions: ccPermissionStore,
-      sessions: ccSessions,
-      registry,
-      // チャンネルのあるセッションの判断待ちは channelPosts が出す
-      hasChannel: (sessionId) => ccChannelStore.openFor(sessionId) !== undefined,
-      waitBudget,
-      home: homedir(),
-      now,
-      log,
-    });
-    ccNotifier = notifier;
-    permissionHold.listen(notifier);
-  }
-  // 許可の要求のボタン（#system とチャンネルのどちらの 1 通でも）。SELF_AGENT_CC_NOTIFY=0 でもチャンネルのボタンが効くよう、notifier によらず作る
+  // 許可の要求のボタン（チャンネルの 1 通。再起動の前に #system に出したものも）。SELF_AGENT_CC_NOTIFY によらず作る
   ccPermissionButtons = {
     answer: (id, decision) => permissionHold.answer(id, decision, "discord"),
     resolvedMessage: (id) => channelPosts.resolvedMessage(id),
@@ -759,7 +736,7 @@ if (
       stepMessage: (id, picks) => channelPosts.questionStepMessage(id, picks),
     },
   };
-  // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする（#system の 1 通は Discord につないだ後に書き換える）
+  // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする（出した 1 通は Discord につないだ後に書き換える）
   ccRecoveredPermissions = permissionHold.recover();
   const hookServer = createCcHookServer({
     host: "127.0.0.1",
@@ -876,7 +853,6 @@ if (
     gateway,
     queue: layoutQueue,
     channelOps,
-    notify,
     home: homedir(),
     // Web UI が有効なら、発言・写し・届かなかった・終わった・戻ったを会話に書く（CC14）
     ...history,
@@ -1171,9 +1147,7 @@ const lifecycle = createShutdown(
     ...(ccStarter === undefined ? {} : { ccStarter }),
     // 保留中の許可の要求には空の本文を返す（端末・RC のダイアログは残る）
     ...(ccPermissions === undefined ? {} : { ccPermissions }),
-    // #system への知らせ（停止の後は新しく出さず、保留をやめた 1 通の書き換えは待つ）
-    ...(ccNotifier === undefined ? {} : { ccNotifier }),
-    // Claude Code のチャンネルへの許可の要求・判断待ち・写し（同じく）
+    // Claude Code のチャンネルへの許可の要求・判断待ち・写し（停止の後は新しく出さず、保留をやめた 1 通の書き換えは待つ）
     ...(ccChannelPosts === undefined ? {} : { ccChannelPosts }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     ccConfirmExpirer,
@@ -1250,10 +1224,8 @@ githubPoller?.start();
 ccRegistry?.start();
 ccSender?.start();
 ccStarter?.start();
-// 再起動の前に保留していた要求の 1 通を「時間切れ」に書き換える（チャンネルに出したものと #system に出したものに分ける）
+// 再起動の前に保留していた要求の 1 通を「時間切れ」に書き換える
 ccChannelPosts?.rewriteRecovered(ccRecoveredPermissions);
-ccNotifier?.rewriteRecovered(ccRecoveredPermissions.filter((row) => ccChannelPosts?.owns(row) !== true));
-ccNotifier?.start();
 ccChannelPosts?.start();
 ccConfirmExpirer.start();
 ccReplier?.start();

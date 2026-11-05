@@ -2,7 +2,7 @@
 // 許可の要求の `cc:perm:allow|always|deny:<id>`（CC5c）と、SDK のツール cc_send・cc_start の確認の `cc:send:<id>`・`cc:start:<id>`・
 // `cc:keep:send|start:<id>`（CC7。処理は commands/cc-confirm.ts）、返事の投稿の [追いかけをやめる] の `cc:unfollow:<cc_replies の id>`（CC8。cc/replies.ts）。
 // 質問（AskUserQuestion）の `cc:q:pick|other|text|sel|ok|drop:…`（ボタン・セレクト・モーダル。docs/plan/claude-code-questions.md §3.2。Q2。処理は commands/cc-question.ts）。
-// 許可の要求は Web と同じ permission-hold.ts の answer を通す（先に押した方が勝つ）。決めたら #system か Claude Code のチャンネル（CC12）の 1 通を応答で書き換えてボタンを外し
+// 許可の要求は Web と同じ permission-hold.ts の answer を通す（先に押した方が勝つ）。決めたら Claude Code のチャンネル（CC12。Q4 より前は #system）の 1 通を応答で書き換えてボタンを外し
 // （応答に失敗したら、その 1 通を gateway で書き換えて代える）、古ければ（Web・端末・RC で先に答えられた・時間切れ・停止・SELF_AGENT_CC が無効）
 // 本人にだけ「この操作は古くなっています」。
 // /cc（SELF_AGENT_CC=1 のときだけ登録。docs/plan/claude-code-channels.md §3.8。CC10 は open だけ）は一覧を rankSessions の順に最大 25 件の
@@ -179,7 +179,7 @@ export function createCcCommand(deps: CcCommandDeps): CommandHandler {
 export type CcPermissionButtons = {
   /** Discord の操作として答える（permission-hold.ts の answer の via discord） */
   answer(id: number, decision: CcPermissionDecision): CcAnswerResult;
-  /** 終わった要求の 1 通とそれを出した場所（cc/channel-posts.ts の resolvedMessage。#system に出したものも同じ形）。行が無ければ undefined */
+  /** 終わった要求の 1 通とそれを出した場所（cc/channel-posts.ts の resolvedMessage。Q4 より前に #system に出したものも同じ形）。行が無ければ undefined */
   resolvedMessage(id: number): { message: OutgoingMessage; channelId: string | null; messageId: string | null } | undefined;
   /**
    * 答えた後（応答を返した直後）。そのセッションの Claude Code のチャンネルを押したサーバーに作る（docs/plan/claude-code-channels.md §3.1 の 3。CC11）。
@@ -209,7 +209,7 @@ export type CcComponentDeps = {
     /** 削除したチャンネルの未実行の移動を捨てる */
     channelOps: Pick<ChannelOpsQueue, "cancel">;
   };
-  /** 応答に失敗したときの書き換え（既定の人格の Bot。#system の 1 通を出した Bot） */
+  /** 応答に失敗したときの書き換え（既定の人格の Bot。1 通を出した Bot） */
   gateway: Pick<Gateway, "editMessage">;
   log: (message: string) => void;
 } & Partial<Omit<CcConfirmDeps, "log">>;

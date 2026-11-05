@@ -1,14 +1,14 @@
-// Claude Code のチャンネルへの許可の要求・判断待ち・端末の指示の写し（docs/plan/claude-code-channels.md §3.5。CC12）。
-// SELF_AGENT_CC=1 で連携が動くときは SELF_AGENT_CC_NOTIFY によらず main が作る（チャンネルはオーナーが関わって作ったもので、全部がその目的）。
-// - 許可の要求: permission-hold.ts の listen に discord-notice.ts より先に渡し、そのセッションに開いているチャンネル（cc_channels の open の行）が
-//   あれば引き受けて（claims）、#system の代わりにそのチャンネルへ CC5c と同じ 1 通（オーナーだけをメンション・[許可][このセッションでは常に許可][拒否]・
-//   [RC で開く]）を出し、cc_permissions.message_channel_id に残す。終わったら（Web で押された・他で答えられた・時間切れ・停止・再起動の前に残った）
-//   その 1 通を書き換えてボタンを外す。Discord で押されたものは app/commands/cc.ts が応答で書き換える。チャンネルの無いセッションは #system のまま。
-//   チャンネルに出せなかったら（投稿の失敗・チャンネルが見つからない）引き受けを戻し（permission-hold.ts の release）、#system に落とす。
-//   質問（AskUserQuestion。docs/plan/claude-code-questions.md §3。Q2）の行は選択肢のボタン・セレクトの 1 通（discord-notice.ts の questionNotice）で、
+// Claude Code のチャンネルへの許可の要求・質問・判断待ち・端末の指示の写し（docs/plan/claude-code-channels.md §3.5。CC12。
+// docs/plan/claude-code-questions.md §5。Q4 から #system には出さない）。SELF_AGENT_CC=1 で連携が動くときは main が作る。
+// - 許可の要求: permission-hold.ts の listen で受け、そのセッションの開いているチャンネル（cc_channels の open の行）に 1 通（オーナーだけをメンション・
+//   [許可][このセッションでは常に許可][拒否]・[RC で開く]）を出し、cc_permissions.message_channel_id に残す。チャンネルが無ければ（SELF_AGENT_CC_NOTIFY が
+//   1 のとき）cc/channels.ts の ensureFor（origin permission。質問は question）で作ってから出す（tmux の外のセッションにも作る）。作れない・出せないときは
+//   log だけ（保留は続き、Web と端末・RC で答える）。終わったら（Web で押された・他で答えられた・時間切れ・停止・再起動の前に残った）その 1 通を書き換えて
+//   ボタンを外す。Discord で押されたものは app/commands/cc.ts が応答で書き換える。
+//   質問（AskUserQuestion。docs/plan/claude-code-questions.md §3。Q2）の行は選択肢のボタン・セレクトの 1 通（notice-text.ts の questionNotice）で、
 //   押された操作（app/commands/cc-question.ts）が pendingQuestion・questionStepMessage で次の問に書き換え、終わったら答えの行にする。
-// - 判断待ち: discord-notice.ts と同じ条件（許可の要求以外が 60 秒）で、チャンネルのあるセッションだけをそのチャンネルに出す。1 時間の上限は
-//   discord-notice.ts と CcWaitBudget を共有して 1 つで数え、超えた分は出さずに、そのチャンネルに 1 時間に 1 回だけ短い 1 行（メンションなし）を出す。
+// - 判断待ち: 許可の要求以外が 60 秒続いたら、そのチャンネルに出す（チャンネルが無ければ SELF_AGENT_CC_NOTIFY が 1 のとき ensureFor（origin waiting）で
+//   作ってから）。1 時間の上限（CcWaitBudget）を超えた分は出さずに、チャンネルのあるセッションならそのチャンネルに 1 時間に 1 回だけ短い 1 行（メンションなし）。
 // - 端末・RC から打った指示の写し: UserPromptSubmit のうち self-agent が届けたものでないものを「（端末か RC から）」+ 本文の先頭
 //   CC_PROMPT_MIRROR_MAX_CHARS 字で出す（超えた分は「（ほか n 字）」）。self-agent が届けたもの = そのセッションの貼っている途中か直近
 //   CC_PROMPT_MIRROR_WINDOW_MS に届けた送信で、貼ったときの形（singleLine の後）と prompt の両方の空白を 1 つにして先頭 200 字が同じもの。
@@ -41,8 +41,9 @@ import {
   questionNotice,
   questionResultHistoryText,
   waitingNotice,
-} from "./discord-notice.ts";
+} from "./notice-text.ts";
 import { CC_PROMPT_MIRROR_MAX_CHARS, type CcHookEvent } from "./hook-server.ts";
+import type { CcChannels } from "./channels.ts";
 import type { CcPermissionListener } from "./permission-hold.ts";
 import { type CcQuestion, type CcQuestionPick, parseQuestionInput } from "./questions.ts";
 import type { CcRegistry, CcTimers } from "./registry.ts";
@@ -97,9 +98,12 @@ export function ccPromptMirrorTexts(prompt: string, total: number): string[] {
 }
 
 export type CcChannelPostsDeps = {
-  cfg: Pick<Config, "ownerUserId" | "workspaceDir" | "ccPermissionHoldSec" | "ccQuestionHoldSec">;
+  /** ccNotify（SELF_AGENT_CC_NOTIFY）が false なら、知らせのためにチャンネルを作らない（あるチャンネルには出す） */
+  cfg: Pick<Config, "ownerUserId" | "workspaceDir" | "ccPermissionHoldSec" | "ccQuestionHoldSec" | "ccNotify">;
   /** 開いているチャンネル（cc_channels） */
   channels: Pick<CcChannelStore, "openFor" | "get">;
+  /** チャンネルが無いセッションの知らせのために作る（cc/channels.ts の ensureFor。main では後で作るので関数で渡す。無ければ作らない） */
+  ensureChannel?: () => Pick<CcChannels, "ensureFor"> | undefined;
   /** 投稿・書き換え（既定の人格の Bot） */
   gateway: Pick<Gateway, "sendMessage" | "editMessage">;
   permissions: Pick<CcPermissionStore, "get" | "setMessage" | "sessionsAnsweredSince">;
@@ -107,10 +111,8 @@ export type CcChannelPostsDeps = {
   /** 写しで self-agent が届けたものを見分ける */
   sends: Pick<CcSendStore, "listRecentDelivered">;
   registry: Pick<CcRegistry, "snapshot">;
-  /** 判断待ちの知らせの 1 時間の上限（discord-notice.ts と共有する） */
+  /** 判断待ちの知らせの 1 時間の上限 */
   waitBudget: CcWaitBudget;
-  /** チャンネルに出せなかった許可の要求の引き受けを戻す（permission-hold.ts の release。次の受け手の #system に落とす）。main で後から渡す */
-  release?: (id: number) => void;
   /** ~ の場所（ディレクトリの表示） */
   home: string;
   /** Web UI の会話の記録（CC14。Web UI が有効なときだけ。無ければ書かない） */
@@ -182,12 +184,7 @@ export class CcChannelPosts implements CcPermissionListener {
     while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
   }
 
-  /** 保留を始めた許可の要求を引き受けるか（そのセッションに開いているチャンネルがあれば） */
-  claims(row: CcPermissionRow): boolean {
-    return !this.stopped && this.deps.channels.openFor(row.sessionId) !== undefined;
-  }
-
-  /** 引き受けた許可の要求: そのチャンネルに 1 通 */
+  /** 保留を始めた許可の要求: そのセッションのチャンネルに 1 通（無ければ作ってから） */
   held(row: CcPermissionRow): void {
     if (this.stopped) return;
     this.track(this.postPermission(row));
@@ -202,7 +199,7 @@ export class CcChannelPosts implements CcPermissionListener {
   }
 
   /**
-   * Discord のボタンで終えた要求の書き換え後の 1 通と、それを出した場所（app/commands/cc.ts の応答。#system に出したものも同じ形）。
+   * Discord のボタンで終えた要求の書き換え後の 1 通と、それを出した場所（app/commands/cc.ts の応答）。
    * 行が無ければ undefined
    */
   resolvedMessage(id: number): { message: OutgoingMessage; channelId: string | null; messageId: string | null } | undefined {
@@ -227,7 +224,7 @@ export class CcChannelPosts implements CcPermissionListener {
   }
 
   /**
-   * 質問の次の問の 1 通と、それを出した場所（app/commands/cc-question.ts の応答で書き換える。#system に出したものも同じ形）。
+   * 質問の次の問の 1 通と、それを出した場所（app/commands/cc-question.ts の応答で書き換える）。
    * picks は答えた問の答え。書き換えでは鳴らさないのでメンションは付けない。行が無い・質問でなければ undefined
    */
   questionStepMessage(
@@ -244,57 +241,61 @@ export class CcChannelPosts implements CcPermissionListener {
     return { message: { ...message, suppressEmbeds: true }, channelId: row.messageChannelId, messageId: row.messageId };
   }
 
-  /** その要求の 1 通を Claude Code のチャンネルに出したか（再起動の前の行の書き換えを振り分ける） */
-  owns(row: Pick<CcPermissionRow, "messageChannelId">): boolean {
-    return row.messageChannelId !== null && this.deps.channels.get(row.messageChannelId) !== undefined;
-  }
-
-  /** 再起動の前に保留していて expired にした行のうち、Claude Code のチャンネルに出した 1 通を「時間切れ」に書き換える。Discord につないだ後に呼ぶ */
+  /**
+   * 再起動の前に保留していて expired にした行の 1 通を「時間切れ」に書き換える（Q4 より前に #system に出したものも同じく）。Discord につないだ後に呼ぶ
+   */
   rewriteRecovered(rows: readonly CcPermissionRow[]): void {
     for (const row of rows) {
-      if (row.messageId === null || !this.owns(row)) continue;
-      // Web の会話にも結果（時間切れ）を書く
+      if (row.messageId === null || row.messageChannelId === null) continue;
+      // Web の会話にも結果（時間切れ）を書く（Claude Code のチャンネルのときだけ書かれる）
       this.recordResult(row);
       this.track(this.editResolved(row));
     }
   }
 
-  /** 判断待ちを 1 回確かめる（周期のほか、テストから呼ぶ）: チャンネルのあるセッションだけ、そのチャンネルに出す */
+  /**
+   * 判断待ちを 1 回確かめる（周期のほか、テストから呼ぶ）: そのセッションのチャンネルに出す。チャンネルが無ければ、SELF_AGENT_CC_NOTIFY が 1 のとき
+   * ensureFor（origin waiting）で作ってから出す（0 ならチャンネルのあるセッションだけ）
+   */
   checkWaiting(): void {
     if (this.stopped) return;
     const { channels, sessions, waitBudget, cfg, log } = this.deps;
     const now = this.deps.now().getTime();
+    const create = cfg.ccNotify && this.deps.ensureChannel !== undefined;
     /** セッション → 開いているチャンネル（判定のときに引いたもの） */
     const channelOf = new Map<string, string>();
     const due = dueWaitingViews(this.deps, now, (sessionId) => {
       const channel = channels.openFor(sessionId);
       if (channel !== undefined) channelOf.set(sessionId, channel.channelId);
-      return channel !== undefined;
+      return channel !== undefined || create;
     });
     let skipped = 0;
     for (const view of due) {
       const channelId = channelOf.get(view.sessionId);
-      if (channelId === undefined) continue;
       // 出せなくてもやり直さない（待ちごとに 1 回）
       sessions.setNotifiedAt(view.sessionId, new Date(now));
       if (!waitBudget.take(now)) {
         skipped++;
-        this.noticeOverflow(channelId, now);
+        // 上限の 1 行は、チャンネルのあるセッションだけ（そのためにチャンネルを作らない）
+        if (channelId !== undefined) this.noticeOverflow(channelId, now);
         continue;
       }
       const message = waitingNotice(view, { ...this.places(), ownerUserId: cfg.ownerUserId });
       const historyText = view.waitingFor === undefined || view.waitingFor === "" ? "判断を待っています" : `判断を待っています: ${view.waitingFor}`;
       this.track(
-        this.deps.gateway.sendMessage(channelId, { ...message, suppressEmbeds: true }).then(
-          () => {
-            log("Claude Code: 判断待ちをチャンネルに知らせました");
-            // Web の会話には出せたものだけ書く（許可の要求と同じ）
-            this.record(channelId, "notice", historyText);
-          },
-          (error: unknown) => {
+        (async () => {
+          const target = channelId ?? (await this.channelFor(view.sessionId, "waiting"));
+          if (target === undefined) return;
+          try {
+            await this.deps.gateway.sendMessage(target, { ...message, suppressEmbeds: true });
+          } catch (error) {
             log(`Claude Code: 判断待ちをチャンネルに知らせられませんでした（${errorKind(error)}）`);
-          },
-        ),
+            return;
+          }
+          log("Claude Code: 判断待ちをチャンネルに知らせました");
+          // Web の会話には出せたものだけ書く（許可の要求と同じ）
+          this.record(target, "notice", historyText);
+        })(),
       );
     }
     if (skipped > 0) log(`Claude Code: 判断待ちの知らせを上限のためチャンネルに出しませんでした（${skipped} 件）`);
@@ -372,15 +373,32 @@ export class CcChannelPosts implements CcPermissionListener {
     return noticeSessionOf(this.deps.sessions, this.deps.registry, sessionId);
   }
 
+  /**
+   * 知らせを出すチャンネル: 開いているチャンネルがあればそれ、無ければ SELF_AGENT_CC_NOTIFY が 1 のとき ensureFor で作って（閉じたチャンネルは
+   * セッションが一覧にあれば開き直して）その ID。作れなければ undefined（ensureFor が log に出す）
+   */
+  private async channelFor(sessionId: string, origin: "permission" | "question" | "waiting"): Promise<string | undefined> {
+    const open = this.deps.channels.openFor(sessionId);
+    if (open !== undefined) return open.channelId;
+    const maker = this.deps.cfg.ccNotify ? this.deps.ensureChannel?.() : undefined;
+    if (maker === undefined) return undefined;
+    try {
+      await maker.ensureFor(sessionId, origin);
+    } catch (error) {
+      this.deps.log(`Claude Code: 知らせのチャンネルを用意できませんでした（${errorKind(error)}）`);
+      return undefined;
+    }
+    return this.deps.channels.openFor(sessionId)?.channelId;
+  }
+
   private async postPermission(row: CcPermissionRow): Promise<void> {
-    const { channels, permissions, cfg, gateway, log } = this.deps;
-    const channel = channels.openFor(row.sessionId);
-    if (channel === undefined) {
-      // 引き受けた後にチャンネルが閉じた: #system に落とす
-      log(`Claude Code: 許可の要求（#${row.id}）を出すチャンネルが見つからないため #system に回します`);
-      this.deps.release?.(row.id);
+    const { permissions, cfg, gateway, log } = this.deps;
+    const channelId = await this.channelFor(row.sessionId, row.questionInput !== null ? "question" : "permission");
+    if (channelId === undefined) {
+      log(`Claude Code: 許可の要求（#${row.id}）を出すチャンネルがありません`);
       return;
     }
+    const channel = { channelId };
     const message = permissionNotice(row, this.sessionOf(row.sessionId), {
       ...this.places(),
       // 質問（question_input のある行）は質問の保留の長さ（permissionExpiresAt と同じ分岐）
@@ -391,8 +409,7 @@ export class CcChannelPosts implements CcPermissionListener {
     try {
       messageId = await gateway.sendMessage(channel.channelId, { ...message, suppressEmbeds: true });
     } catch (error) {
-      log(`Claude Code: 許可の要求（#${row.id}）をチャンネルに出せなかったため #system に回します（${errorKind(error)}）`);
-      this.deps.release?.(row.id);
+      log(`Claude Code: 許可の要求（#${row.id}）をチャンネルに出せませんでした（${errorKind(error)}）`);
       return;
     }
     permissions.setMessage(row.id, channel.channelId, messageId);

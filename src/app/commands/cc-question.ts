@@ -8,7 +8,7 @@
 // 行が pending でない・質問でない・問が次の問でない・添字が範囲外・SELF_AGENT_CC が無効なら本人にだけ「この操作は古くなっています」。
 // 応答の書き換えに失敗したら、記録した 1 通（cc_permissions.message_channel_id・message_id）を gateway で書き換えて代える。
 // log は失敗の種類だけ（答えの結果は permission-hold.ts の「Claude Code: 質問（#id）→ <状態>（discord）」。問・答え・名前は出さない）
-import { CC_QUESTION_TEXT_INPUT_ID, questionCustomId, questionModalTitle } from "../../cc/discord-notice.ts";
+import { CC_QUESTION_TEXT_INPUT_ID, questionCustomId, questionModalTitle } from "../../cc/notice-text.ts";
 import type { CcQuestionAnswerResult } from "../../cc/permission-hold.ts";
 import type { CcQuestionFlow } from "../../cc/question-flow.ts";
 import { CC_QUESTION_OTHER_MAX_CHARS, type CcQuestion, type CcQuestionPick, normalizeOther } from "../../cc/questions.ts";

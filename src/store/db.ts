@@ -720,6 +720,33 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE cc_permissions ADD COLUMN question_input TEXT;
   ALTER TABLE cc_permissions ADD COLUMN answers TEXT;
   `,
+  // v39: Claude Code のチャンネルの origin に question・waiting を足す（docs/plan/claude-code-questions.md §5・§9。Q4）。許可の要求（permission）・
+  // 質問（question）・判断待ち（waiting）の知らせのために作ったチャンネル。v37 の cc_sends と同じく表を作り直し、全列を写して索引 2 つを同じ定義で作り直す
+  `
+  CREATE TABLE cc_channels_new (
+    channel_id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    previous_session_id TEXT,
+    name TEXT NOT NULL,
+    cwd TEXT,
+    state TEXT NOT NULL CHECK (state IN ('open', 'resuming', 'ended', 'deleted')),
+    origin TEXT NOT NULL CHECK (origin IN ('web', 'command', 'web_send', 'web_start', 'permission', 'tool_send', 'tool_start', 'github', 'question', 'waiting')),
+    created_at TEXT NOT NULL,
+    ended_at TEXT,
+    delete_prompt_message_id TEXT,
+    deleted_at TEXT,
+    updated_at TEXT NOT NULL
+  );
+  INSERT INTO cc_channels_new (channel_id, guild_id, session_id, previous_session_id, name, cwd, state, origin, created_at, ended_at,
+      delete_prompt_message_id, deleted_at, updated_at)
+    SELECT channel_id, guild_id, session_id, previous_session_id, name, cwd, state, origin, created_at, ended_at,
+      delete_prompt_message_id, deleted_at, updated_at FROM cc_channels;
+  DROP TABLE cc_channels;
+  ALTER TABLE cc_channels_new RENAME TO cc_channels;
+  CREATE UNIQUE INDEX cc_channels_session ON cc_channels(session_id) WHERE state <> 'deleted';
+  CREATE INDEX cc_channels_guild ON cc_channels(guild_id, state);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

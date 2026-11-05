@@ -183,7 +183,10 @@ export type CcConfig = {
   workspaceDir: string;
   /** 生きている claude の上限（正の整数）。これ以上なら起動を断る */
   ccMaxSessions: number;
-  /** SELF_AGENT_CC_NOTIFY（既定 true）。false なら #system に許可の要求・判断待ち・終了を出さない（許可の保留は Web だけで、長さは同じ） */
+  /**
+   * SELF_AGENT_CC_NOTIFY（既定 true）。false なら許可の要求・質問・判断待ちのために Claude Code のチャンネルを作らない（あるチャンネルには出す。
+   * 無ければ Discord には出さず、Web と端末・RC で答える。保留の長さは同じ。docs/plan/claude-code-questions.md §5）
+   */
   ccNotify: boolean;
 };
 
