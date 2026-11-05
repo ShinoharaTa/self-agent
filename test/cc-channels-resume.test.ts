@@ -3,19 +3,21 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { CC_START_RETRY_NOTE, ccStartedTexts } from "../src/app/commands/cc-confirm.ts";
-import { closeReply, createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
+import { ccClosedCancelledText, closeReply, createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
 import { ALREADY_HANDLED_TEXT, STALE_TEXT } from "../src/app/commands/delete.ts";
 import { STALE_TURN_REPLY } from "../src/app/commands/turn-controls.ts";
 import {
   CC_ATTACHMENT_REPLY,
   CC_CHANNEL_CLOSED_TEXT,
   CC_CHANNEL_ENDED_TEXT,
+  CC_CHANNEL_REOPENED_TEXT,
   CC_CHANNEL_REVIVED_TEXT,
   CC_MARK_WAITING,
   CC_RESUME_BAD_PLACE_TEXT,
   CC_RESUME_GAVE_UP_TEXT,
   CC_RESUME_KEPT_TEXT,
   CC_RESUME_PROMPT_TEXT,
+  CC_RESUME_STALE_TEXT,
   CC_RESUMING_REPLY,
   CcChannels,
   type CcResumeResult,
@@ -59,18 +61,36 @@ function setup(t: TestContext) {
   guildSettings.setCcCategory("guild-1", "cat-cc");
   const gateway = new FakeGateway({
     allow: ["sendMessage", "editMessage", "channelExists", "countChannelsIn"],
-    record: ["createTextChannel", "addReaction", "setChannelTopic"],
+    record: ["createTextChannel", "addReaction", "removeOwnReaction", "setChannelTopic"],
     messageIdPrefix: "msg-",
   });
   const sessions: CcSessionView[] = [];
   const launches: CcStartInput[] = [];
+  // 偽の sender（積む・取り消す。印は channels の announce・settled で）
+  let channelsRef: CcChannels | undefined;
+  const submitted: string[] = [];
+  const sender = {
+    submit: async (input: { sessionId: string; text: string; origin: "discord"; channelId: string; messageId: string }) => {
+      submitted.push(input.text);
+      const send = sends.add({ sessionId: input.sessionId, text: input.text, origin: input.origin, state: "queued", channelId: input.channelId, messageId: input.messageId });
+      await channelsRef?.announce(send);
+      return { ok: true as const, send, duplicate: false };
+    },
+    cancel: (id: number) => {
+      if (!sends.transition(id, ["queued"], "cancelled")) return "stale" as const;
+      channelsRef?.settled(sends.get(id)!);
+      return "cancelled" as const;
+    },
+  };
   const starterState = {
     result: { ok: true, tmuxSession: "alpha", paneId: "%9", sendId: undefined } as CcStartResult,
     available: true,
+    throws: false,
   };
   const starter = {
     launch: async (input: CcStartInput): Promise<CcStartResult> => {
       launches.push(input);
+      if (starterState.throws) throw new Error("boom");
       const result = starterState.result;
       // 起動の最初の指示（starter が積む形）
       if (result.ok && typeof input.text === "string") {
@@ -86,7 +106,7 @@ function setup(t: TestContext) {
     cfg: { allowedGuildIds: ["guild-1"], workspaceDir: WORKSPACE, ownerUserId: OWNER },
     store,
     sends,
-    sender: () => undefined,
+    sender: () => sender,
     starter: () => (starterState.available ? starter : undefined),
     sessions: ccSessions,
     guildSettings,
@@ -100,6 +120,7 @@ function setup(t: TestContext) {
     now,
     log: (line) => logs.push(line),
   });
+  channelsRef = channels;
   // 終わったセッション（名前 alpha・~/workspace/alpha）のチャンネル
   // cwd は cc_sessions のものを使う（cc_channels の cwd は無くてよい）
   ccSessions.upsertSeen([{ sessionId: OLD, pid: 100, cwd: `${WORKSPACE}/alpha`, name: "alpha" }]);
@@ -117,12 +138,12 @@ function setup(t: TestContext) {
     createdAt: new Date(clock.now),
     ...overrides,
   });
-  return { db, clock, store, sends, ccSessions, gateway, sessions, launches, starterState, channelOps, logs, channels, message };
+  return { db, clock, store, sends, ccSessions, gateway, sessions, launches, starterState, channelOps, logs, channels, message, submitted };
 }
 
-/** 起動できなかった結果（stale と成功は undefined） */
+/** 起動できなかった結果（stale・expired と成功は undefined） */
 function failure(result: CcResumeResult): Extract<CcResumeResult, { message: unknown; ok: false }> | undefined {
-  return !result.ok && result.reason !== "stale" ? (result as Extract<CcResumeResult, { message: unknown; ok: false }>) : undefined;
+  return !result.ok && "message" in result ? result : undefined;
 }
 
 /** log にチャンネル ID・本文・名前・sessionId を出していない */
@@ -133,6 +154,9 @@ function assertQuietLogs(logs: readonly string[]): void {
 test("resumeProject: cwd の親が SELF_AGENT_WORKSPACE_DIR のときだけ最後の名前", () => {
   assert.equal(resumeProject(`${WORKSPACE}/alpha`, WORKSPACE), "alpha");
   assert.equal(resumeProject(`${WORKSPACE}/alpha`, `${WORKSPACE}/`), "alpha");
+  // cwd の末尾の / は落とす
+  assert.equal(resumeProject(`${WORKSPACE}/alpha/`, WORKSPACE), "alpha");
+  assert.equal(resumeProject(`${WORKSPACE}/`, WORKSPACE), undefined);
   assert.equal(resumeProject(`${WORKSPACE}/alpha/sub`, WORKSPACE), undefined);
   assert.equal(resumeProject("/tmp/alpha", WORKSPACE), undefined);
   assert.equal(resumeProject(null, WORKSPACE), undefined);
@@ -170,7 +194,7 @@ test("[起動して続ける]: resuming に compare-and-set し（2 回目は古
   const s = setup(t);
   const msg = s.message(SECRET_TEXT);
   await s.channels.handleMessage(msg);
-  const result = await s.channels.resume(CHANNEL, msg.id);
+  const result = await s.channels.resume(CHANNEL, msg.id, "guild-1");
   assert.deepEqual(result, { ok: true, message: { text: ccStartedTexts("alpha", false)[0], components: [] } });
   assert.equal(s.store.get(CHANNEL)?.state, "resuming");
   assert.equal(s.launches.length, 1);
@@ -185,14 +209,14 @@ test("[起動して続ける]: resuming に compare-and-set し（2 回目は古
   await s.channels.idle();
   assert.deepEqual(s.gateway.reactionsOn(CHANNEL, msg.id), [CC_MARK_WAITING]);
   // 2 回目の押下は古い（二重起動しない）
-  assert.deepEqual(await s.channels.resume(CHANNEL, msg.id), { ok: false, reason: "stale" });
+  assert.deepEqual(await s.channels.resume(CHANNEL, msg.id, "guild-1"), { ok: false, reason: "stale" });
   assert.equal(s.launches.length, 1);
   // resuming の間の発言は断る
   const during = s.message("まだ");
   await s.channels.handleMessage(during);
   assert.deepEqual([s.gateway.posts.at(-1)?.message.text, s.gateway.posts.at(-1)?.message.replyToId], [CC_RESUMING_REPLY, during.id]);
-  // 保留していない発言のボタンも古い
-  assert.deepEqual(await s.channels.resume(CHANNEL, "800000000000000099"), { ok: false, reason: "stale" });
+  // 保留していない発言のボタン（再起動で消えた）は expired
+  assert.deepEqual(await s.channels.resume(CHANNEL, "800000000000000099", "guild-1"), { ok: false, reason: "expired" });
   // trust の確認待ちは確認の投稿の書き換え
   input.onTrustPending?.();
   await s.channels.idle();
@@ -204,7 +228,7 @@ test("[起動して続ける]: 結びついたら session_id を付け替え（p
   const s = setup(t);
   const msg = s.message(SECRET_TEXT);
   await s.channels.handleMessage(msg);
-  await s.channels.resume(CHANNEL, msg.id);
+  await s.channels.resume(CHANNEL, msg.id, "guild-1");
   s.sessions.push({ sessionId: NEW, pid: 200, name: "alpha", cwd: `${WORKSPACE}/alpha`, tmux: undefined, state: "idle" } as CcSessionView);
   await s.channels.started({ sessionId: NEW, startedBy: "tool", channelId: CHANNEL, sendId: 1, guildId: "guild-1", resumeChannelId: CHANNEL });
   await s.channels.idle();
@@ -223,8 +247,8 @@ test("[起動して続ける]: 結びついたら session_id を付け替え（p
   assert.equal(s.gateway.posts.at(-1)?.message.text, ccResumedText("alpha"));
   // 前の id が一覧に戻っても開き直さない（付け替え済み）
   assert.equal(s.channels.revived({ sessionId: OLD }), false);
-  // 付け替えた後のボタンは古い
-  assert.deepEqual(await s.channels.resume(CHANNEL, msg.id), { ok: false, reason: "stale" });
+  // 付け替えた後のボタンは古い（保留を捨てている）
+  assert.deepEqual(await s.channels.resume(CHANNEL, msg.id, "guild-1"), { ok: false, reason: "expired" });
   assertQuietLogs(s.logs);
 });
 
@@ -235,7 +259,7 @@ test("[起動して続ける]: 直下でない cwd は断って ended に戻す�
   s.store.setState("900000000000000002", "ended");
   const deep = s.message("x", { channelId: "900000000000000002" });
   await s.channels.handleMessage(deep);
-  assert.deepEqual(await s.channels.resume("900000000000000002", deep.id), {
+  assert.deepEqual(await s.channels.resume("900000000000000002", deep.id, "guild-1"), {
     ok: false,
     reason: "bad_place",
     message: { text: CC_RESUME_BAD_PLACE_TEXT, components: [] },
@@ -247,14 +271,14 @@ test("[起動して続ける]: 直下でない cwd は断って ended に戻す�
   const msg = s.message(SECRET_TEXT);
   await s.channels.handleMessage(msg);
   s.starterState.result = { ok: false, reason: "too_soon" } as CcStartResult;
-  const failed = failure(await s.channels.resume(CHANNEL, msg.id));
+  const failed = failure(await s.channels.resume(CHANNEL, msg.id, "guild-1"));
   assert.equal(failed?.reason, "too_soon");
   assert.ok(failed?.message.text.endsWith(CC_START_RETRY_NOTE));
   assert.deepEqual(failed?.message.components, ccResumeButtons(CHANNEL, msg.id));
   assert.equal(s.store.get(CHANNEL)?.state, "ended");
   // もう一度押せる
   s.starterState.result = { ok: true, tmuxSession: "alpha", paneId: "%9", sendId: undefined };
-  assert.equal((await s.channels.resume(CHANNEL, msg.id)).ok, true);
+  assert.equal((await s.channels.resume(CHANNEL, msg.id, "guild-1")).ok, true);
   // 結びつけられなかった（starter の onGaveUp）→ ended に戻してボタン付きに書き換える
   s.launches.at(-1)?.onGaveUp?.();
   await s.channels.idle();
@@ -262,7 +286,7 @@ test("[起動して続ける]: 直下でない cwd は断って ended に戻す�
   assert.deepEqual(s.gateway.edits.at(-1)?.message, { text: `${CC_RESUME_GAVE_UP_TEXT}${CC_START_RETRY_NOTE}`, components: ccResumeButtons(CHANNEL, msg.id) });
   // 連携が止まっていれば停止中で ended のまま
   s.starterState.available = false;
-  assert.equal(failure(await s.channels.resume(CHANNEL, msg.id))?.reason, "stopped");
+  assert.equal(failure(await s.channels.resume(CHANNEL, msg.id, "guild-1"))?.reason, "stopped");
   assert.equal(s.store.get(CHANNEL)?.state, "ended");
   assertQuietLogs(s.logs);
 });
@@ -273,28 +297,107 @@ test("[やめる]: 保留を捨てる（2 回目・その後の [起動して続
   await s.channels.handleMessage(msg);
   assert.equal(s.channels.keepEnded(CHANNEL, msg.id), true);
   assert.equal(s.channels.keepEnded(CHANNEL, msg.id), false);
-  assert.deepEqual(await s.channels.resume(CHANNEL, msg.id), { ok: false, reason: "stale" });
+  assert.deepEqual(await s.channels.resume(CHANNEL, msg.id, "guild-1"), { ok: false, reason: "expired" });
   assert.equal(s.store.get(CHANNEL)?.state, "ended");
 });
 
-test("/cc close: open のチャンネルを ended にして完了へ移す（セッションが生きていても）。次に関われば開き直す", async (t) => {
+test("/cc close: open のチャンネルを ended にして完了へ移し、届け待ちを取り消す（⏳ を外す。セッションが生きていても）。次に関われば「開き直しました」", async (t) => {
   const s = setup(t);
+  const LIVE_CHANNEL = "900000000000000003";
   s.sessions.push({ sessionId: LIVE, pid: 300, name: "live", cwd: `${WORKSPACE}/live`, tmux: undefined, state: "idle" } as CcSessionView);
-  s.store.create({ channelId: "900000000000000003", guildId: "guild-1", sessionId: LIVE, name: "cc-live", cwd: `${WORKSPACE}/live`, origin: "web" });
-  assert.equal(s.channels.close("900000000000000003"), "closed");
-  assert.equal(s.store.get("900000000000000003")?.state, "ended");
-  assert.deepEqual(s.channelOps.moves.at(-1), { channelId: "900000000000000003", target: { kind: "state", guildId: "guild-1", state: "done" } });
-  assert.equal(s.channels.close("900000000000000003"), "ended");
-  assert.equal(s.channels.close("123"), "not_channel");
-  assert.deepEqual(closeReply("closed"), { text: CC_CHANNEL_CLOSED_TEXT, ephemeral: false });
-  assert.equal(closeReply("not_channel").ephemeral, true);
-  // 関わったら（ensureFor）開き直す
+  s.store.create({ channelId: LIVE_CHANNEL, guildId: "guild-1", sessionId: LIVE, name: "cc-live", cwd: `${WORKSPACE}/live`, origin: "web" });
+  const queued = s.message(SECRET_TEXT, { channelId: LIVE_CHANNEL });
+  await s.channels.handleMessage(queued);
+  await s.channels.idle();
+  assert.deepEqual(s.gateway.reactionsOn(LIVE_CHANNEL, queued.id), [CC_MARK_WAITING]);
+  const closed = s.channels.close(LIVE_CHANNEL);
+  assert.deepEqual(closed, { result: "closed", cancelled: 1 });
+  await s.channels.idle();
+  assert.equal(s.sends.get(1)?.state, "cancelled");
+  assert.deepEqual(s.gateway.reactionsOn(LIVE_CHANNEL, queued.id), []);
+  assert.equal(s.store.get(LIVE_CHANNEL)?.state, "ended");
+  assert.deepEqual(s.channelOps.moves.at(-1), { channelId: LIVE_CHANNEL, target: { kind: "state", guildId: "guild-1", state: "done" } });
+  assert.deepEqual(s.channels.close(LIVE_CHANNEL), { result: "ended" });
+  assert.deepEqual(s.channels.close("123"), { result: "not_channel" });
+  assert.deepEqual(closeReply({ result: "closed", cancelled: 0 }), { text: CC_CHANNEL_CLOSED_TEXT, ephemeral: false });
+  assert.deepEqual(closeReply(closed), { text: `${CC_CHANNEL_CLOSED_TEXT}\n${ccClosedCancelledText(1)}`, ephemeral: false });
+  assert.equal(closeReply({ result: "not_channel" }).ephemeral, true);
+  // 関わったら（ensureFor）開き直す（戻ったときとは別の文）
   const result = await s.channels.ensureFor(LIVE, "permission");
   assert.equal(result.ok, false);
   await s.channels.idle();
-  assert.equal(s.store.get("900000000000000003")?.state, "open");
+  assert.equal(s.store.get(LIVE_CHANNEL)?.state, "open");
+  assert.equal(s.gateway.posts.at(-1)?.message.text, CC_CHANNEL_REOPENED_TEXT);
+  // 一覧に戻った（registry の revived）ときは「セッションが戻りました。」
+  s.store.setState(LIVE_CHANNEL, "ended");
+  assert.equal(s.channels.revived({ sessionId: LIVE }), true);
+  await s.channels.idle();
   assert.equal(s.gateway.posts.at(-1)?.message.text, CC_CHANNEL_REVIVED_TEXT);
   assertQuietLogs(s.logs);
+});
+
+test("閉じただけのチャンネル: セッションが一覧にあれば、発言で開き直してそのまま積む（[起動して続ける] は出さない）。resume() でも起動せずに開き直して積む", async (t) => {
+  const s = setup(t);
+  const LIVE_CHANNEL = "900000000000000006";
+  s.store.create({ channelId: LIVE_CHANNEL, guildId: "guild-1", sessionId: LIVE, name: "cc-live", cwd: `${WORKSPACE}/live`, origin: "web" });
+  s.store.setState(LIVE_CHANNEL, "ended");
+  // 一覧に無い間の発言は [起動して続ける]
+  const before = s.message("前", { channelId: LIVE_CHANNEL });
+  await s.channels.handleMessage(before);
+  assert.equal(s.gateway.posts.at(-1)?.message.text, CC_RESUME_PROMPT_TEXT);
+  assert.deepEqual(s.submitted, []);
+  // 一覧に出た（/cc close で閉じただけ）
+  s.sessions.push({ sessionId: LIVE, pid: 300, name: "live", cwd: `${WORKSPACE}/live`, tmux: undefined, state: "idle" } as CcSessionView);
+  const posted = s.gateway.posts.length;
+  const msg = s.message(SECRET_TEXT, { channelId: LIVE_CHANNEL });
+  await s.channels.handleMessage(msg);
+  await s.channels.idle();
+  assert.equal(s.store.get(LIVE_CHANNEL)?.state, "open");
+  assert.deepEqual(s.submitted, [SECRET_TEXT]);
+  assert.deepEqual(s.gateway.posts.slice(posted).map((post) => post.message.text), [CC_CHANNEL_REOPENED_TEXT]);
+  // 前に出した [起動して続ける] を押しても起動せず、開き直してその発言を積む
+  s.store.setState(LIVE_CHANNEL, "ended");
+  const result = await s.channels.resume(LIVE_CHANNEL, before.id, "guild-1");
+  assert.deepEqual(result, { ok: true, message: { text: CC_CHANNEL_REOPENED_TEXT, components: [] } });
+  assert.equal(s.launches.length, 0);
+  assert.deepEqual(s.submitted, [SECRET_TEXT, "前"]);
+  assert.equal(s.store.get(LIVE_CHANNEL)?.state, "open");
+  assertQuietLogs(s.logs);
+});
+
+test("[起動して続ける]: launch が投げたら ended に戻して押し直せる結果。押したサーバーが違えば stale で起動しない", async (t) => {
+  const s = setup(t);
+  const msg = s.message(SECRET_TEXT);
+  await s.channels.handleMessage(msg);
+  assert.deepEqual(await s.channels.resume(CHANNEL, msg.id, "guild-2"), { ok: false, reason: "stale" });
+  assert.equal(s.launches.length, 0);
+  assert.equal(s.store.get(CHANNEL)?.state, "ended");
+  s.starterState.throws = true;
+  const thrown = failure(await s.channels.resume(CHANNEL, msg.id, "guild-1"));
+  assert.equal(thrown?.reason, "failed");
+  assert.deepEqual(thrown?.message.components, ccResumeButtons(CHANNEL, msg.id));
+  assert.equal(s.store.get(CHANNEL)?.state, "ended");
+  s.starterState.throws = false;
+  assert.equal((await s.channels.resume(CHANNEL, msg.id, "guild-1")).ok, true);
+  assertQuietLogs(s.logs);
+});
+
+test("CcChannelStore.setState: open に戻すと削除の確認を外し、また終わったら listDeleteDue に出る（rebind 経由も同じ）", (t) => {
+  const s = setup(t);
+  const cutoff = new Date(BASE + 1);
+  assert.equal(s.store.listDeleteDue("guild-1", cutoff, 5).length, 1);
+  s.store.setDeletePrompt(CHANNEL, "prompt-1");
+  assert.equal(s.store.listDeleteDue("guild-1", cutoff, 5).length, 0);
+  s.store.setState(CHANNEL, "open", ["ended"]);
+  assert.equal(s.store.get(CHANNEL)?.deletePromptMessageId, null);
+  s.store.setState(CHANNEL, "ended");
+  assert.deepEqual(s.store.listDeleteDue("guild-1", cutoff, 5).map((row) => row.channelId), [CHANNEL]);
+  // [起動して続ける] の付け替え（resuming → rebind → open）でも外れる
+  s.store.setDeletePrompt(CHANNEL, "prompt-2");
+  s.store.setState(CHANNEL, "resuming", ["ended"]);
+  s.store.rebind(CHANNEL, NEW);
+  s.store.setState(CHANNEL, "open", ["resuming"]);
+  assert.equal(s.store.get(CHANNEL)?.deletePromptMessageId, null);
 });
 
 test("再起動: resuming のまま残った行は ended に戻す", (t) => {
@@ -332,9 +435,19 @@ test("cc:resume: 保留してから resume し、結果で確認を書き換え�
   const keep = new FakeResponder();
   await component.handle(button(`cc:resume:keep:${CHANNEL}:${other.id}`), keep);
   assert.deepEqual(keep.calls, [{ method: "update", message: { text: CC_RESUME_KEPT_TEXT, components: [], suppressEmbeds: true } }]);
+  // 保留の無い（[やめる] の後・再起動で消えた）ボタンはボタンを外して古いと書き換える
   const keepAgain = new FakeResponder();
   await component.handle(button(`cc:resume:keep:${CHANNEL}:${other.id}`), keepAgain);
-  assert.deepEqual(keepAgain.replies, [{ text: STALE_TURN_REPLY, ephemeral: true }]);
+  assert.deepEqual(keepAgain.calls, [{ method: "update", message: { text: CC_RESUME_STALE_TEXT, components: [], suppressEmbeds: true } }]);
+  const restarted = new FakeResponder();
+  await component.handle(button(`cc:resume:${CHANNEL}:800000000000000099`), restarted);
+  assert.deepEqual(restarted.calls, [{ method: "deferUpdate" }, { method: "update", message: { text: CC_RESUME_STALE_TEXT, components: [], suppressEmbeds: true } }]);
+  // 押したサーバーが行と違えば本人にだけ古い
+  const otherMsg = s.message("z");
+  await s.channels.handleMessage(otherMsg);
+  const wrongGuild = new FakeResponder();
+  await component.handle(button(`cc:resume:${CHANNEL}:${otherMsg.id}`, "prompt-1", "guild-2"), wrongGuild);
+  assert.deepEqual(wrongGuild.replies, [{ text: STALE_TURN_REPLY, ephemeral: true }]);
   // 形の違う custom_id は例外
   await assert.rejects(component.handle(button("cc:resume:abc:def"), new FakeResponder()));
 });
