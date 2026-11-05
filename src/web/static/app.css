@@ -1238,6 +1238,52 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* 返事の最小限の Markdown（ui.js の renderText。UI-11）。ブロックの間は 8px、段落の中の改行は pre-wrap のまま */
+.msg-md {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.msg-md .md-p {
+  margin: 0;
+}
+
+.msg-md .md-list {
+  margin: 0;
+  padding-left: var(--space-6);
+}
+
+.msg-md .md-list .md-list {
+  margin-top: var(--space-1);
+}
+
+.msg-md .md-list > li + li {
+  margin-top: var(--space-1);
+}
+
+.msg-md strong {
+  font-weight: var(--weight-semibold);
+}
+
+.msg-md .md-code {
+  padding: 0 var(--space-1);
+  background: var(--muted);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* フェンスは砕かずに横スクロール（.code-pre の pre-wrap・anywhere を上書き） */
+.msg-md .md-pre {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  white-space: pre;
+  overflow-wrap: normal;
+  tab-size: 4;
+}
+
 .msg-owner .msg-text {
   align-self: flex-start;
   padding: var(--space-2) var(--space-3);
@@ -1305,6 +1351,8 @@ kbd {
   padding: var(--space-2) var(--space-3) var(--space-2) var(--space-8);
   color: var(--text-secondary);
   border-top: var(--border-width) solid var(--border);
+  /* 手順のラベルは相対パスを含むので、狭い幅でカードから溢れないように砕く（A7） */
+  overflow-wrap: anywhere;
 }
 
 .steps-list > li {
