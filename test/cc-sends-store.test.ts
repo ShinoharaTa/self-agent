@@ -45,9 +45,65 @@ test("openDb: v27 の DB を v28 に上げても cc_sessions・cc_state は残�
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM cc_sends").get()?.n, 0);
   const insert = (origin: string, state: string) =>
     db.prepare("INSERT INTO cc_sends (text, origin, state, created_at, updated_at) VALUES ('x', ?, ?, 'a', 'a')").run(origin, state);
-  assert.throws(() => insert("discord", "queued"));
+  assert.throws(() => insert("slack", "queued"));
   assert.throws(() => insert("web", "sent"));
   insert("start", "awaiting_confirm");
+  // v37 から discord（Claude Code のチャンネルの発言）も入る
+  insert("discord", "queued");
+});
+
+test("openDb: v36 の DB を v37 に上げると cc_sends を作り直して全列・番号・索引 5 つが残り、origin に discord が入る", (t) => {
+  const dir = tempDir(t);
+  const path = join(dir, "self-agent.db");
+  const v36 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 36)) v36.exec(migration);
+  v36.exec("PRAGMA user_version = 36");
+  v36
+    .prepare(
+      `INSERT INTO cc_sends (session_id, pane_id, text, origin, state, last_pane_state, attempts, delivered_at, created_at, updated_at,
+         start_dir, notification_id, channel_id, message_id, reply_state, reply_posted_at)
+       VALUES (?, '%1', '本文', 'tool', 'delivered', 'idle', 2, 'd', 'c', 'u', '/w/a', 7, 'ch', 'msg', 'posted', 'p')`,
+    )
+    .run(S1);
+  v36.exec("INSERT INTO cc_sends (text, origin, state, created_at, updated_at) VALUES ('2', 'web', 'queued', 'c', 'u')");
+  // 番号は消した行の分も進んだまま（AUTOINCREMENT）
+  v36.exec("DELETE FROM cc_sends WHERE id = 2");
+  v36.close();
+  const db = openDb(path);
+  t.after(() => db.close());
+  assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
+  const row = new CcSendStore(db, () => at(0)).get(1);
+  assert.deepEqual(
+    { ...row, createdAt: row?.createdAt },
+    {
+      id: 1,
+      sessionId: S1,
+      paneId: "%1",
+      startDir: "/w/a",
+      text: "本文",
+      origin: "tool",
+      state: "delivered",
+      lastPaneState: "idle",
+      attempts: 2,
+      deliveredAt: "d",
+      notificationId: 7,
+      channelId: "ch",
+      messageId: "msg",
+      replyState: "posted",
+      replyPostedAt: "p",
+      createdAt: "c",
+      updatedAt: "u",
+    },
+  );
+  const indexes = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'cc_sends' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .all()
+    .map((index) => String(index.name));
+  assert.deepEqual(indexes, ["cc_sends_created", "cc_sends_notification", "cc_sends_reply", "cc_sends_session", "cc_sends_state"]);
+  const added = new CcSendStore(db, () => at(0)).add({ sessionId: S1, text: "x", origin: "discord", state: "queued", channelId: "c", messageId: "m" });
+  assert.equal(added.id, 3);
+  assert.equal(added.origin, "discord");
+  assert.equal(added.messageId, "m");
 });
 
 test("CcSendStore: add・get・同じ本文の 5 秒・まだ終わっていない行・compare-and-set", (t) => {

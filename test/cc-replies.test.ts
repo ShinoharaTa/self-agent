@@ -8,6 +8,7 @@ import type { AgentEntry } from "../src/cc/agents.ts";
 import { parseHookEvent, type CcHookEvent } from "../src/cc/hook-server.ts";
 import { CcRegistry } from "../src/cc/registry.ts";
 import {
+  CC_CHANNEL_REPLY_DAILY_LIMIT,
   CC_FOLLOW_IDLE_DAYS,
   CC_REPLY_DAILY_LIMIT,
   CC_REPLY_DUPLICATE_MS,
@@ -71,8 +72,11 @@ function setup(t: TestContext) {
     },
   };
   const logs: string[] = [];
+  /** セッション → 開いている Claude Code のチャンネル（CC11） */
+  const ccChannels = new Map<string, string>();
   const replier = new CcReplier({
     cfg: { timeZone: "Asia/Tokyo" },
+    channelFor: (sessionId) => ccChannels.get(sessionId),
     sessions,
     sends,
     replies,
@@ -131,7 +135,7 @@ function setup(t: TestContext) {
     await component.handle(interaction, responder);
     return responder.calls;
   };
-  return { db, clock, now, sessions, sends, replies, history, bot, posted, logs, replier, deliver, stop, press };
+  return { db, clock, now, sessions, sends, replies, history, bot, posted, logs, replier, deliver, stop, press, ccChannels };
 }
 
 /** 本文・名前・チャンネル ID・sessionId が log に無い */
@@ -548,4 +552,61 @@ test("一覧から消えたセッションの返事待ちは、次の sweep で 
   assert.equal(sessions.markGone([S1]), 1);
   await replier.sweep();
   assert.equal(sends.get(sendId)?.replyState, "timed_out");
+});
+
+test("チャンネル（CC11）: 開いているチャンネルがあれば follow によらず常にそこへ。最初の 1 通はオーナーの発言への返信、名前は省き、[追いかけをやめる] は無い", async (t) => {
+  const { sends, sessions, posted, replier, stop, ccChannels, logs } = setup(t);
+  ccChannels.set(S1, "cc-chan");
+  const send = sends.add({ sessionId: S1, text: "発言", origin: "discord", state: "queued", channelId: "cc-chan", messageId: "owner-msg" });
+  sends.transition(send.id, ["queued"], "delivering");
+  sends.transition(send.id, ["delivering"], "delivered");
+  replier.onSendFinished(sends.get(send.id)!);
+  // チャンネルのあるセッションでは追いかけを立てない
+  assert.equal(sessions.get(S1)?.follow, false);
+  await stop(S1, SECRET_BODY);
+  await stop(S1, "2 つ目の返事");
+  assert.deepEqual(
+    posted.map((post) => [post.channelId, post.message.text, post.message.replyToId, post.message.components]),
+    [
+      ["cc-chan", `Claude Code の返事（hook）:\n${SECRET_BODY}`, "owner-msg", undefined],
+      ["cc-chan", "Claude Code の返事（hook）:\n2 つ目の返事", undefined, undefined],
+    ],
+  );
+  assert.ok(posted.every((post) => post.message.suppressEmbeds === true));
+  // 端末・RC から打ったターンの返事（返事待ちの送信が無い）も出す
+  await stop(S1, "端末のターン");
+  assert.equal(posted.length, 3);
+  assertQuietLogs(logs);
+});
+
+test("チャンネル（CC11）: #inbox から cc_send で頼んでも追いかけは立てず返事はチャンネルへ（確認の投稿への返信にはしない）。チャンネルが閉じたら CC8 のまま", async (t) => {
+  const { sessions, posted, deliver, stop, ccChannels } = setup(t);
+  ccChannels.set(S1, "cc-chan");
+  deliver(S1, INBOX);
+  assert.equal(sessions.get(S1)?.follow, false);
+  await stop(S1, "返事");
+  assert.deepEqual([posted[0]!.channelId, posted[0]!.message.replyToId], ["cc-chan", undefined]);
+  // チャンネルを閉じた（ended）後は、追いかけの規則（follow が無ければ出さない）
+  ccChannels.delete(S1);
+  await stop(S1, "閉じた後");
+  assert.equal(posted.length, 1);
+  deliver(S1, INBOX);
+  assert.equal(sessions.get(S1)?.follow, true);
+  await stop(S1, "追いかけ");
+  assert.equal(posted.at(-1)!.channelId, INBOX);
+  assert.equal(posted.at(-1)!.message.components?.[0]?.kind, "buttons");
+});
+
+test("チャンネル（CC11）: 1 日 200 通。201 通目は上限の 1 行（上限 200・ボタンなし）で 202 通目は出ない", async (t) => {
+  const { posted, stop, ccChannels } = setup(t);
+  ccChannels.set(S1, "cc-chan");
+  for (let i = 1; i <= CC_CHANNEL_REPLY_DAILY_LIMIT; i++) await stop(S1, `返事 ${i}`);
+  assert.equal(posted.length, CC_CHANNEL_REPLY_DAILY_LIMIT);
+  await stop(S1, "201 通目");
+  assert.equal(posted.length, CC_CHANNEL_REPLY_DAILY_LIMIT + 1);
+  assert.equal(posted.at(-1)!.message.text, replyLimitText(null, RC, CC_CHANNEL_REPLY_DAILY_LIMIT));
+  assert.match(posted.at(-1)!.message.text, /^Claude Code: 今日はここまで（上限 200）。RC で読む </);
+  assert.equal(posted.at(-1)!.message.components, undefined);
+  await stop(S1, "202 通目");
+  assert.equal(posted.length, CC_CHANNEL_REPLY_DAILY_LIMIT + 1);
 });

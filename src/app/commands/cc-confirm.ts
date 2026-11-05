@@ -226,6 +226,11 @@ export function ccStartResultText(row: Pick<CcStartRow, "project" | "title" | "p
   return texts[texts.length - 1]!;
 }
 
+/** 「返事は <#チャンネル> に出ます」（Claude Code のチャンネルがあるときの確認・[対応] の結果に添える。CC11） */
+export function ccRepliesIn(channelId: string): string {
+  return `返事は <#${channelId}> に出ます`;
+}
+
 /** 起動できたときの一言の候補（長い順。trust の確認待ちなら、その旨を添える） */
 export function ccStartedTexts(tmuxSession: string, trustPending: boolean): string[] {
   const started = `起動しました（tmux: ${inline(tmuxSession, 40)}）`;
@@ -236,7 +241,7 @@ export function ccStartedTexts(tmuxSession: string, trustPending: boolean): stri
 
 /** 起動の後の送信・起動（SELF_AGENT_CC が無効なら無い） */
 export type CcConfirmRuntime = {
-  sender: Pick<CcSender, "confirm" | "kick">;
+  sender: Pick<CcSender, "confirm" | "kick" | "announce">;
   starter: Pick<CcStarter, "launch">;
   registry: Pick<CcRegistry, "snapshot">;
   panes: Pick<CcPaneResolver, "lookup">;
@@ -316,6 +321,8 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       return;
     }
     if (row.sessionId !== null && row.channelId !== null) ccSessions.setChannel(row.sessionId, row.channelId);
+    // [送る] は関わったきっかけ: そのセッションの Claude Code のチャンネルを作って本文を写す（CC11。作れなければ今までどおり追いかけ）
+    const ccChannelId = await runtime.sender.announce(id);
     // 入力待ちならこの場で届く。待ちなら積んだまま（30 秒ごとに試す）
     await runtime.sender.kick();
     const after = ccSends.get(id);
@@ -337,6 +344,8 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       default:
         results = ["送れませんでした"];
     }
+    // 返事はチャンネルに出る（§3.4）
+    if (ccChannelId !== undefined) results = results.map((result) => `${result}（${ccRepliesIn(ccChannelId)}）`);
     await responder.update({ text: ccSendResultText(target, row.text, results), components: [] });
   };
 

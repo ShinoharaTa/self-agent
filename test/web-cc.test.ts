@@ -500,9 +500,19 @@ async function permissionSetup(t: TestContext) {
     log: () => undefined,
   });
   await registry.tick();
+  /** 答えた後の口（CC11。チャンネルを作る） */
+  const answered: number[] = [];
   const server = await serve(
     t,
-    ccRoutes({ registry, panes: undefined, tmux: undefined, workspaceDir: WORKSPACE, home: HOME, permissions: { hold, store, holdSec: 300 }, now }),
+    ccRoutes({
+      registry,
+      panes: undefined,
+      tmux: undefined,
+      workspaceDir: WORKSPACE,
+      home: HOME,
+      permissions: { hold, store, holdSec: 300, answered: (id) => void answered.push(id) },
+      now,
+    }),
   );
   const ask = (sessionId: string, command: string, suggestions: unknown[] = []) => {
     const event = parseHookEvent(
@@ -521,7 +531,7 @@ async function permissionSetup(t: TestContext) {
     registry.receive(event);
     return hold.request(event, new AbortController().signal);
   };
-  return { db, clock, store, hold, registry, server, ask, timers, sessions };
+  return { db, clock, store, hold, registry, server, ask, timers, sessions, answered };
 }
 
 test("GET /api/cc/permissions: 保留中の要求（id・sessionId・toolName・summary・alwaysRule: null・alwaysNote: null・requestHash・expiresAt）。一覧の permission と status", async (t) => {
@@ -584,12 +594,16 @@ test("POST /api/cc/permissions/<id>/allow|deny: 200 { state }・応答の本文�
   assert.equal(always.status, 409);
   assert.deepEqual(always.json, { error: "stale" });
   assert.equal(s.store.get(pending.id)?.state, "pending");
+  // 答えていない（断られた）うちはチャンネルを作る口を呼ばない（CC11）
+  assert.deepEqual(s.answered, []);
   const ok = await postJson(s.server, `/api/cc/permissions/${pending.id}/allow`, { requestHash: pending.requestHash });
   assert.equal(ok.status, 200);
+  assert.deepEqual(s.answered, [pending.id]);
   assert.deepEqual(ok.json, { state: "allowed" });
   assert.equal(JSON.parse((await reply)!).hookSpecificOutput.decision.behavior, "allow");
   const again = await postJson(s.server, `/api/cc/permissions/${pending.id}/deny`, { requestHash: pending.requestHash });
   assert.equal(again.status, 409);
+  assert.deepEqual(s.answered, [pending.id]);
   // 終わった要求は一覧の permission に残る（カードの「許可しました（Web）」）
   const detail = await getJson(s.server, `/api/cc/sessions/${S1}`);
   assert.deepEqual(
@@ -684,8 +698,10 @@ test("POST /api/cc/sessions/<id>/channel: 201 でチャンネルを作り一覧�
   guildSettings.setChannel("guild-1", "homeCategoryId", "home-1");
   const gateway = new FakeGateway({ allow: ["createTextChannel", "channelExists", "countChannelsIn", "sendMessage"], channelIdPrefix: "chan-" });
   const channels = new CcChannels({
-    cfg: { allowedGuildIds: ["guild-1", "guild-2"], workspaceDir: WORKSPACE },
+    cfg: { allowedGuildIds: ["guild-1", "guild-2"], workspaceDir: WORKSPACE, ownerUserId: "owner-1" },
     store: new CcChannelStore(db, now),
+    sends: new CcSendStore(db, now),
+    sender: () => undefined,
     guildSettings,
     registry,
     panes,

@@ -498,6 +498,7 @@ test("[送る]: 届いたら「送りました」とペインと RC のリンク
     ...s.runtime.value!,
     sender: {
       confirm: (id) => s.sender.confirm(id),
+      announce: async () => undefined,
       kick: async () => {
         s.sends.transition(1, ["queued"], "delivering");
         s.sends.transition(1, ["delivering"], "delivered");
@@ -506,6 +507,26 @@ test("[送る]: 届いたら「送りました」とペインと RC のリンク
   };
   const text = updated(await s.pressButton("cc:send:1")).text;
   assert.ok(text.includes("に送りました（work\\:0.1・RC: <https://claude.ai/code/session_abc>）"), text);
+});
+
+test("[送る]（CC11）: 送り先のセッションに Claude Code のチャンネルができたら、結果に「返事は <#…> に出ます」を足す（announce は kick の前）", async (t) => {
+  const s = setup(t);
+  await s.handlers().ccSend({ session_id: S1, text: "x" });
+  const order: string[] = [];
+  s.runtime.value = {
+    ...s.runtime.value!,
+    sender: {
+      confirm: (id) => s.sender.confirm(id),
+      announce: async () => {
+        order.push("announce");
+        return "cc-chan";
+      },
+      kick: async () => void order.push("kick"),
+    },
+  };
+  const text = updated(await s.pressButton("cc:send:1")).text;
+  assert.deepEqual(order, ["announce", "kick"]);
+  assert.ok(text.includes("に送ります。入力待ちになったら届けます（返事は <#cc-chan> に出ます）"), text);
 });
 
 test("[やめる]・10 分の放置: cancelled にしてボタンを外し「送りませんでした」。失効は押したときにも確かめる", async (t) => {

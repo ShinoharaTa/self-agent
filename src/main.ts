@@ -43,7 +43,7 @@ import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
-import { CcChannels, ccEndedHandler, dropCcChannelMessages } from "./cc/channels.ts";
+import { CcChannels, ccEndedHandler, routeCcChannelMessages } from "./cc/channels.ts";
 import { CcDiscordNotifier } from "./cc/discord-notice.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
@@ -213,6 +213,14 @@ const ccReplies = new CcReplyStore(db, now);
 const ccChannelStore = new CcChannelStore(db, now);
 // SELF_AGENT_CC=1 で連携が動くときだけ下で作る（/cc・cc:pick・再同期・Web は呼ぶときに読む）
 let ccChannels: CcChannels | undefined;
+/** 許可の要求に答えた後（Web・Discord）: そのセッションのチャンネルを作る（guildId を省けば最初の /setup 済みのサーバー。待たない・投げない） */
+const ccPermissionAnswered = (id: number, guildId: string | undefined): void => {
+  const row = ccPermissionStore.get(id);
+  if (row === undefined || ccChannels === undefined) return;
+  void ccChannels.ensureFor(row.sessionId, "permission", guildId).catch((error: unknown) => {
+    log(`Claude Code: 許可の応答の後にチャンネルを用意できませんでした（${error instanceof Error ? error.name : typeof error}）`);
+  });
+};
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -703,6 +711,8 @@ if (
     ccPermissionButtons = {
       answer: (id, decision) => permissionHold.answer(id, decision, "discord"),
       resolvedMessage: (id) => notifier.resolvedMessage(id),
+      // 答えた（関わった）ら、押したサーバーにそのセッションのチャンネルを作る（CC11）
+      answered: (id, guildId) => ccPermissionAnswered(id, guildId ?? undefined),
     };
   }
   // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする（#system の 1 通は Discord につないだ後に書き換える）
@@ -733,6 +743,12 @@ if (
     notify,
     // Discord から頼んだ送信が届いたら返事の追いかけを始め、貼っている途中に来た Stop を扱う
     onFinished: (row) => ccReplier?.onSendFinished(row),
+    // 積んだ直後にチャンネルを作って写し、届け待ち・終わりの印を付ける（CC11。ccChannels は下で作る）
+    channels: {
+      announce: async (row) => ccChannels?.announce(row),
+      settled: (row) => ccChannels?.settled(row),
+      dialog: (row) => ccChannels?.dialog(row),
+    },
     now,
     log,
   });
@@ -748,6 +764,8 @@ if (
       const bridge = registry.snapshot().sessions.find((session) => session.sessionId === sessionId)?.bridgeSessionId;
       return bridge === undefined ? undefined : ccRcUrl(bridge);
     },
+    // 開いている Claude Code のチャンネルがあれば、返事は常にそこへ（CC11）
+    channelFor: (sessionId) => ccChannelStore.openFor(sessionId)?.channelId,
     ...history,
     guildOf: (channelId) => channelOf(channelId)?.guildId,
     personaOf: (channelId) => personas.ownerOf(channelId),
@@ -770,6 +788,8 @@ if (
     sends: ccSends,
     sessions: ccSessions,
     sender: ccSender,
+    // 起動したセッションを一覧で見つけたら、そのチャンネルを作って最初の指示を写す（CC11）
+    onBound: (bound) => ccChannels?.started(bound),
     memAvailable: procMemAvailable(),
     now,
     log,
@@ -793,6 +813,10 @@ if (
   ccChannels = new CcChannels({
     cfg: config,
     store: ccChannelStore,
+    sends: ccSends,
+    sender: () => ccSender,
+    // Discord から頼んだ送信・起動は、頼んだチャンネルのサーバーに作る
+    guildOf: (channelId) => channelOf(channelId)?.guildId,
     guildSettings,
     registry,
     panes,
@@ -961,7 +985,15 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         // 許可の要求（/api/cc/permissions と一覧の permission）
         ...(ccPermissions === undefined
           ? {}
-          : { permissions: { hold: ccPermissions, store: ccPermissionStore, holdSec: config.ccPermissionHoldSec } }),
+          : {
+              permissions: {
+                hold: ccPermissions,
+                // Web で答えた（関わった）ら、最初の /setup 済みのサーバーにチャンネルを作る（CC11）
+                answered: (id: number) => ccPermissionAnswered(id, undefined),
+                store: ccPermissionStore,
+                holdSec: config.ccPermissionHoldSec,
+              },
+            }),
         // 返事の追いかけ（一覧の follow・/unfollow）
         ...(ccRegistry === undefined ? {} : { follows: ccSessions, log }),
         // セッションの Discord のチャンネル（一覧の channel・/channel）
@@ -1043,8 +1075,8 @@ const lifecycle = createShutdown(
     closeDb: () => db.close(),
     log,
   },
-  // Claude Code のチャンネル（削除されていない cc_channels の行）への発言は、ターンにせず黙って捨てる（CC10。届けるのは CC11）
-  { handleMessage: dropCcChannelMessages(ccChannelStore, handler.handleMessage), handleInteraction },
+  // Claude Code のチャンネル（削除されていない cc_channels の行）への発言は、ターンにせずそのセッションに届ける（CC11。連携が動いていなければ黙って捨てる）
+  { handleMessage: routeCcChannelMessages(ccChannelStore, () => ccChannels, handler.handleMessage), handleInteraction },
 );
 const onSignal = (): void => {
   if (lifecycle.stopping()) {

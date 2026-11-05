@@ -10,6 +10,8 @@ export type GatewayCall =
   | { method: "send"; channelId: string; text: string }
   | { method: "sendMessage"; channelId: string; message: OutgoingMessage }
   | { method: "pinMessage"; channelId: string; messageId: string }
+  | { method: "addReaction"; channelId: string; messageId: string; emoji: string }
+  | { method: "removeOwnReaction"; channelId: string; messageId: string; emoji: string }
   | { method: "messageExists"; channelId: string; messageId: string }
   | { method: "createCategory"; guildId: string; name: string }
   | { method: "createTextChannel"; guildId: string; options: TextChannelOptions }
@@ -51,6 +53,8 @@ export class FakeGateway implements Gateway {
   listed: string[] = [];
   /** deleteChannel を呼ばれたチャンネル（hook の前に残す） */
   deleted: string[] = [];
+  /** 今付いているこの Bot のリアクション（channelId:messageId → 絵文字）。addReaction・removeOwnReaction で変わる */
+  readonly reactions = new Map<string, Set<string>>();
 
   // Discord 上の状態
   /** Discord 上にあるチャンネル・カテゴリ（channelExists の答え）。作ったものは足し、消したものは除く */
@@ -71,6 +75,8 @@ export class FakeGateway implements Gateway {
   beforeSendMessage: Hook<[channelId: string]> = () => {};
   beforeEdit: Hook<[channelId: string]> = () => {};
   beforePin: Hook = () => {};
+  /** addReaction・removeOwnReaction の直前 */
+  beforeReaction: Hook<[emoji: string]> = () => {};
   beforeMessageExists: Hook = () => {};
   /** createCategory・createTextChannel の直前（名前を渡す） */
   beforeCreate: Hook<[name: string]> = () => {};
@@ -146,6 +152,27 @@ export class FakeGateway implements Gateway {
     this.record({ method: "pinMessage", channelId, messageId });
     const pending = this.beforePin();
     if (pending instanceof Promise) await pending;
+  }
+  async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    this.expect("addReaction");
+    this.record({ method: "addReaction", channelId, messageId, emoji });
+    const pending = this.beforeReaction(emoji);
+    if (pending instanceof Promise) await pending;
+    const key = `${channelId}:${messageId}`;
+    const set = this.reactions.get(key) ?? new Set<string>();
+    set.add(emoji);
+    this.reactions.set(key, set);
+  }
+  async removeOwnReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    this.expect("removeOwnReaction");
+    this.record({ method: "removeOwnReaction", channelId, messageId, emoji });
+    const pending = this.beforeReaction(emoji);
+    if (pending instanceof Promise) await pending;
+    this.reactions.get(`${channelId}:${messageId}`)?.delete(emoji);
+  }
+  /** そのメッセージに今付いているリアクション（付けた順） */
+  reactionsOn(channelId: string, messageId: string): string[] {
+    return [...(this.reactions.get(`${channelId}:${messageId}`) ?? [])];
   }
   async messageExists(channelId: string, messageId: string): Promise<boolean> {
     this.expect("messageExists");

@@ -8,7 +8,10 @@
 // 最初の返事（届けた後の最初の Stop）は確認の投稿への返信、以後は返信先なし。10 秒以内の同じ本文は skipped、1 日 CC_REPLY_DAILY_LIMIT 通を超えたら上限の 1 行を
 // 1 回出してその日は出さない。一覧から消えたら（registry.ts の ended。SessionEnd の hook は根拠にしない）「終わりました」を出して follow = 0、最後の Stop から CC_FOLLOW_IDLE_DAYS 日で黙って follow = 0。
 // 貼っている途中（delivering）に来た Stop は、その送信が終わるまで（最長 CC_REPLY_HOLD_MS）待ってから扱う（届けた送信の返事として結びつけるため）。
-// 本文はプロセスの中だけで使い、DB（cc_replies）には sha256 と長さだけを書く。log は番号と件数だけ（本文・名前・チャンネル ID・sessionId は出さない）
+// 本文はプロセスの中だけで使い、DB（cc_replies）には sha256 と長さだけを書く。log は番号と件数だけ（本文・名前・チャンネル ID・sessionId は出さない）。
+// Claude Code のチャンネル（docs/plan/claude-code-channels.md §3.4。CC11）: そのセッションに開いているチャンネルがあれば、follow によらず常にそこへ出す
+// （見出しの名前は省き、[追いかけをやめる] は付けず、1 日の上限は CC_CHANNEL_REPLY_DAILY_LIMIT。最初の返事はその送信の message_id（オーナーの発言か写し）への返信）。
+// チャンネルのあるセッションでは、Discord から頼んだ送信が届いても追いかけを始めない
 import { createHash } from "node:crypto";
 import { formatDate } from "../app/time.ts";
 import type { Config } from "../config.ts";
@@ -25,6 +28,8 @@ import type { CcTimers } from "./registry.ts";
 export const CC_FOLLOW_IDLE_DAYS = 3;
 /** 1 セッションが 1 日（SELF_AGENT_TZ の日付）に出す返事の数の上限（超えた最初の 1 回だけ上限の 1 行を出す） */
 export const CC_REPLY_DAILY_LIMIT = 50;
+/** Claude Code のチャンネルに出す返事の 1 日の上限（§3.4） */
+export const CC_CHANNEL_REPLY_DAILY_LIMIT = 200;
 /** 返事の 1 通の本文の字数（コードポイント） */
 export const CC_REPLY_PAGE_CHARS = 1800;
 /** 1 つの返事を出す通の数の上限（超えた分は「ほか n 字」） */
@@ -151,16 +156,20 @@ function rcRead(rcUrl: string | undefined): string {
   return rcUrl === undefined ? "RC で読んでください" : `RC で読む <${rcUrl}>`;
 }
 
+/** 見出しの「Claude Code（<名前>）」（label が null（Claude Code のチャンネル）なら名前を省き、後ろの語と空白で区切る） */
+function who(label: string | null): string {
+  return label === null ? "Claude Code " : `Claude Code（${label}）`;
+}
+
 /**
  * 返事の各通の本文（純関数）。1 通目は「Claude Code（<名前>）の返事（hook）:」、2 通目からは「…の返事の続き（i/n）:」の見出し + 本文。
+ * label が null（Claude Code のチャンネル）なら名前を省く。
  * 収まらなかった分は最後の通に「（ほか n 字。RC で読む <リンク>）」。本文が無ければ「終わりました（返事を読めませんでした）」の 1 通
  */
-export function replyTexts(label: string, body: string | undefined, rcUrl: string | undefined): string[] {
-  if (body === undefined) return [`Claude Code（${label}）が終わりました（返事を読めませんでした）`];
+export function replyTexts(label: string | null, body: string | undefined, rcUrl: string | undefined): string[] {
+  if (body === undefined) return [`${who(label)}が終わりました（返事を読めませんでした）`];
   const head = (i: number, total: number): string =>
-    i === 0
-      ? `Claude Code（${label}）の返事（hook）${total > 1 ? `（1/${total}）` : ""}:`
-      : `Claude Code（${label}）の返事の続き（${i + 1}/${total}）:`;
+    i === 0 ? `${who(label)}の返事（hook）${total > 1 ? `（1/${total}）` : ""}:` : `${who(label)}の返事の続き（${i + 1}/${total}）:`;
   const tail = (rest: number): string => (rest > 0 ? `\n（ほか ${rest.toLocaleString("en-US")} 字。${rcRead(rcUrl)}）` : "");
   const text = (i: number, total: number, page: string, rest: number): string => `${head(i, total)}\n${page}${tail(rest)}`;
   // 各通を Discord の 1 通（MESSAGE_MAX 字）に収める。溢れた分は次の通か「ほか n 字」に回す
@@ -171,9 +180,9 @@ export function replyTexts(label: string, body: string | undefined, rcUrl: strin
   return pages.map((page, i) => text(i, pages.length, page, i === pages.length - 1 ? rest : 0));
 }
 
-/** 1 日の上限に達したときの 1 行 */
-export function replyLimitText(label: string, rcUrl: string | undefined): string {
-  return `Claude Code（${label}）: 今日はここまで（上限 ${CC_REPLY_DAILY_LIMIT}）。${rcRead(rcUrl)}`;
+/** 1 日の上限に達したときの 1 行（label が null（Claude Code のチャンネル）なら名前を省く） */
+export function replyLimitText(label: string | null, rcUrl: string | undefined, limit: number = CC_REPLY_DAILY_LIMIT): string {
+  return `${who(label).trimEnd()}: 今日はここまで（上限 ${limit}）。${rcRead(rcUrl)}`;
 }
 
 /** セッションが終わったときの 1 行 */
@@ -218,6 +227,8 @@ export type CcReplierDeps = {
   posts: Pick<Gateway, "sendMessage">;
   /** RC のリンク（registry の bridgeSessionId から。分からなければ undefined） */
   rcUrl?: (sessionId: string) => string | undefined;
+  /** そのセッションの開いている Claude Code のチャンネル（CC11。あれば返事は常にそこへ）。無ければ CC8 の追いかけだけ */
+  channelFor?: (sessionId: string) => string | undefined;
   /** Web UI の会話の記録（Web UI が有効なときだけ）。チャンネルのサーバーと持ち主の人格が分かるときだけ notice を書く */
   history?: Pick<HistoryStore, "add">;
   guildOf?: (channelId: string) => string | undefined;
@@ -238,8 +249,16 @@ function errorKind(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
-/** 出せなかった返事の残り（次の tick に 1 回だけやり直す。プロセスの中だけ） */
-type Retry = { replyId: number; sessionId: string; channelId: string; messages: OutgoingMessage[]; total: number; markPosted: boolean };
+/** 出せなかった返事の残り（次の tick に 1 回だけやり直す。プロセスの中だけ）。toChannel は Claude Code のチャンネル宛て */
+type Retry = {
+  replyId: number;
+  sessionId: string;
+  channelId: string;
+  messages: OutgoingMessage[];
+  total: number;
+  markPosted: boolean;
+  toChannel: boolean;
+};
 
 export class CcReplier {
   private readonly deps: CcReplierDeps;
@@ -301,7 +320,9 @@ export class CcReplier {
   onSendFinished(row: CcSendRow): void {
     if (this.stopped) return;
     const { sessions, log } = this.deps;
-    if (row.state === "delivered" && row.sessionId !== null && row.channelId !== null) {
+    // チャンネルのあるセッションは返事がそこに出るので、追いかけは立てない（§3.4）
+    const inChannel = row.sessionId !== null && this.deps.channelFor?.(row.sessionId) !== undefined;
+    if (row.state === "delivered" && row.sessionId !== null && row.channelId !== null && !inChannel) {
       const before = sessions.get(row.sessionId);
       if (sessions.startFollow(row.sessionId, row.channelId)) {
         if (before?.follow !== true) log(`Claude Code: 返事を追いかけます（#${row.id}）`);
@@ -388,8 +409,13 @@ export class CcReplier {
     // 届けた送信の返事の印（追いかけ中かによらない）
     const send = sends.takeReplyWaiting(event.sessionId, message === undefined ? "unreadable" : "posted");
     const row = sessions.get(event.sessionId);
-    if (row === undefined || !row.follow || row.followChannelId === null) return;
-    const channelId = row.followChannelId;
+    if (row === undefined) return;
+    // 出す先: 開いている Claude Code のチャンネル（常に）→ 無ければ追いかけのチャンネル
+    const ccChannelId = this.deps.channelFor?.(event.sessionId);
+    const toChannel = ccChannelId !== undefined;
+    if (!toChannel && (!row.follow || row.followChannelId === null)) return;
+    const channelId = ccChannelId ?? row.followChannelId!;
+    const limit = toChannel ? CC_CHANNEL_REPLY_DAILY_LIMIT : CC_REPLY_DAILY_LIMIT;
     const digest = replyDigest(message);
     const base = { sessionId: event.sessionId, receivedAt: event.receivedAt, textHash: digest.hash, textLength: digest.length, sendId: send?.id ?? null, channelId };
     // 同じ Stop が二重に来た（10 秒以内の同じ本文）なら出さない
@@ -399,15 +425,22 @@ export class CcReplier {
       return;
     }
     const count = sessions.countReply(event.sessionId, formatDate(now(), this.deps.cfg.timeZone)) ?? 0;
-    const label = this.label(row);
+    // チャンネルでは名前を省く（チャンネルがそのセッションのもの）
+    const label = toChannel ? null : this.label(row);
     const rcUrl = this.deps.rcUrl?.(event.sessionId);
-    if (count > CC_REPLY_DAILY_LIMIT) {
+    if (count > limit) {
       const skipped = replies.add({ ...base, state: "skipped" });
       // 上限を超えた最初の 1 回だけ、上限の 1 行を出す（その日は以後出さない）
-      if (count === CC_REPLY_DAILY_LIMIT + 1) {
+      if (count === limit + 1) {
         log(`Claude Code: 返事の 1 日の上限に達しました（返事 #${skipped.id}）`);
-        const text = replyLimitText(label, rcUrl);
-        await this.post(skipped, channelId, [{ text, components: ccUnfollowButtons(skipped.id), suppressEmbeds: true }], false);
+        const text = replyLimitText(label, rcUrl, limit);
+        await this.post(
+          skipped,
+          channelId,
+          [{ text, ...(toChannel ? {} : { components: ccUnfollowButtons(skipped.id) }), suppressEmbeds: true }],
+          false,
+          toChannel,
+        );
         this.record(channelId, text);
       }
       return;
@@ -415,25 +448,26 @@ export class CcReplier {
     // 出せたら posted にする（落ちても posted のまま残らないよう、failed で作る）
     const reply = replies.add({ ...base, state: "failed" });
     const texts = replyTexts(label, message, rcUrl);
-    // 届けた後の最初の返事は、その送信の確認の投稿への返信にする（同じチャンネルのときだけ）
+    // 届けた後の最初の返事は、その送信の確認の投稿（チャンネルではオーナーの発言か写し）への返信にする（同じチャンネルのときだけ）
     const replyToId = send !== undefined && send.channelId === channelId && send.messageId !== null ? send.messageId : undefined;
     const messages: OutgoingMessage[] = texts.map((text, i) => ({
       text,
       suppressEmbeds: true,
       ...(i === 0 && replyToId !== undefined ? { replyToId } : {}),
-      ...(i === texts.length - 1 ? { components: ccUnfollowButtons(reply.id) } : {}),
+      // チャンネルでは [追いかけをやめる] を付けない（チャンネルの目的そのもの）
+      ...(i === texts.length - 1 && !toChannel ? { components: ccUnfollowButtons(reply.id) } : {}),
     }));
-    if (await this.post(reply, channelId, messages, true)) {
+    if (await this.post(reply, channelId, messages, true, toChannel)) {
       log(`Claude Code: 返事を戻しました（${send === undefined ? "" : `#${send.id}、`}返事 #${reply.id}、${messages.length} 通）`);
     }
-    this.record(channelId, message === undefined ? texts[0]! : `Claude Code（${label}）の返事（hook）:\n${message}`);
+    this.record(channelId, message === undefined ? texts[0]! : `${who(label)}の返事（hook）:\n${message}`);
   }
 
   /**
    * messages を順に出し、最後の 1 通の ID を cc_replies に書く。markPosted なら状態も posted に（行は failed で作ってある。上限の 1 行は skipped のまま）。
    * 途中で失敗したら出せなかった通から先を次の tick に 1 回だけやり直す（そのときまで追いかけ中なら）。全部出せたら true
    */
-  private async post(reply: CcReplyRow, channelId: string, messages: OutgoingMessage[], markPosted: boolean): Promise<boolean> {
+  private async post(reply: CcReplyRow, channelId: string, messages: OutgoingMessage[], markPosted: boolean, toChannel: boolean): Promise<boolean> {
     const { posts, replies, log } = this.deps;
     let last: string | undefined;
     for (const [i, message] of messages.entries()) {
@@ -447,7 +481,7 @@ export class CcReplier {
           const { replyToId: _replyToId, ...others } = page;
           return others;
         });
-        this.retries.push({ replyId: reply.id, sessionId: reply.sessionId, channelId, messages: rest, total: messages.length, markPosted });
+        this.retries.push({ replyId: reply.id, sessionId: reply.sessionId, channelId, messages: rest, total: messages.length, markPosted, toChannel });
         return false;
       }
     }
@@ -487,8 +521,11 @@ export class CcReplier {
       this.retries = [];
       for (const retry of retries) {
         if (this.stopped) return;
-        // [追いかけをやめる]・終わりなどで止めていれば出さない
-        if (sessions.get(retry.sessionId)?.follow !== true) {
+        // [追いかけをやめる]・終わりなどで止めていれば（チャンネル宛てならチャンネルが閉じていれば）出さない
+        const still = retry.toChannel
+          ? this.deps.channelFor?.(retry.sessionId) === retry.channelId
+          : sessions.get(retry.sessionId)?.follow === true;
+        if (!still) {
           log(`Claude Code: 追いかけをやめたため返事をやり直しません（返事 #${retry.replyId}）`);
           continue;
         }

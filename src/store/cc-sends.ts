@@ -3,8 +3,11 @@ import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 /** 送信の行を残す日数（scheduler の tick で、created_at がこれより前の終わった行を消す。docs/plan/claude-code-sessions.md §9） */
 export const CC_SEND_KEEP_DAYS = 30;
 
-/** 送信の出所（web = Web の composer、tool = SDK のツール cc_send（CC7）、github = #github・Web の GitHub の [対応]（CC6）、start = 起動の最初の指示（CC4）） */
-export type CcSendOrigin = "web" | "tool" | "github" | "start";
+/**
+ * 送信の出所（web = Web の composer、tool = SDK のツール cc_send（CC7）、github = #github・Web の GitHub の [対応]（CC6）、start = 起動の最初の指示（CC4）、
+ * discord = Claude Code のチャンネルへのオーナーの発言（v37。docs/plan/claude-code-channels.md §3.3。CC11））
+ */
+export type CcSendOrigin = "web" | "tool" | "github" | "start" | "discord";
 
 /**
  * 送信の状態（§3.2）。awaiting_confirm = Discord の確認待ち（CC7）、queued = 入力待ちを待っている、delivering = 貼っている途中、
@@ -25,7 +28,7 @@ export type CcReplyState = "waiting" | "posted" | "timed_out" | "unreadable";
 const REPLY_STATES: readonly CcReplyState[] = ["waiting", "posted", "timed_out", "unreadable"];
 
 const STATES: readonly CcSendState[] = ["awaiting_confirm", "queued", "delivering", "delivered", "unconfirmed", "failed", "gave_up", "cancelled"];
-const ORIGINS: readonly CcSendOrigin[] = ["web", "tool", "github", "start"];
+const ORIGINS: readonly CcSendOrigin[] = ["web", "tool", "github", "start", "discord"];
 
 /** cc_sends の 1 行（時刻は ISO） */
 export type CcSendRow = {
@@ -45,9 +48,12 @@ export type CcSendRow = {
   deliveredAt: string | null;
   /** [対応] を押した通知（github_notifications.id。origin github だけ。CC6） */
   notificationId: number | null;
-  /** 確認を投稿したチャンネル（Discord から頼んだ送信だけ。CC7） */
+  /**
+   * 確認を投稿したチャンネル（Discord から頼んだ送信。CC7）、オーナーが発言した Claude Code のチャンネル（origin discord）、
+   * 写しを投稿した Claude Code のチャンネル（CC11）
+   */
   channelId: string | null;
-  /** 確認のメッセージ（Discord から頼んだ送信だけ。CC7） */
+  /** 確認のメッセージ（CC7）・オーナーの発言（origin discord）・写しの投稿（CC11）。印と返事の返信先 */
   messageId: string | null;
   /** 返事が来たかの印（CC8）。届けていなければ null */
   replyState: CcReplyState | null;
@@ -103,7 +109,10 @@ export class CcSendStore {
     this.now = now;
   }
 
-  /** 行を作って返す。paneId・startDir はペイン宛て（起動の最初の指示。sessionId は null）のときだけ、notificationId は GitHub の [対応] のときだけ、channelId は Discord から頼んだ送信のときだけ */
+  /**
+   * 行を作って返す。paneId・startDir はペイン宛て（起動の最初の指示。sessionId は null）のときだけ、notificationId は GitHub の [対応] のときだけ、
+   * channelId は Discord から頼んだ送信のときだけ、messageId はオーナーの発言（origin discord）のときだけ
+   */
   add(input: {
     sessionId: string | null;
     paneId?: string;
@@ -113,11 +122,12 @@ export class CcSendStore {
     state: CcSendState;
     notificationId?: number;
     channelId?: string;
+    messageId?: string;
   }): CcSendRow {
     const at = this.now().toISOString();
     const result = this.db
       .prepare(
-        "INSERT INTO cc_sends (session_id, pane_id, start_dir, text, origin, state, notification_id, channel_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO cc_sends (session_id, pane_id, start_dir, text, origin, state, notification_id, channel_id, message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         input.sessionId,
@@ -128,6 +138,7 @@ export class CcSendStore {
         input.state,
         input.notificationId ?? null,
         input.channelId ?? null,
+        input.messageId ?? null,
         at,
         at,
       );
@@ -137,6 +148,35 @@ export class CcSendStore {
   /** 確認のメッセージを書く（CC7） */
   setMessageId(id: number, messageId: string): void {
     this.db.prepare("UPDATE cc_sends SET message_id = ?, updated_at = ? WHERE id = ?").run(messageId, this.now().toISOString(), id);
+  }
+
+  /**
+   * Claude Code のチャンネルへの写しの投稿を、印と返事の返信先にする（CC11）。まだ届けていない（queued・delivering）ときだけ書き、書いたら true
+   * （届けた後の写しは返信先に使わない）
+   */
+  setMirror(id: number, channelId: string, messageId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE cc_sends SET channel_id = ?, message_id = ?, updated_at = ? WHERE id = ? AND state IN ('queued', 'delivering')")
+      .run(channelId, messageId, this.now().toISOString(), id);
+    return Number(result.changes) > 0;
+  }
+
+  /** そのセッションのオーナーの発言（origin discord）の queued の数（チャンネルの列。CC_CHANNEL_QUEUE_MAX） */
+  countQueuedDiscord(sessionId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM cc_sends WHERE session_id = ? AND origin = 'discord' AND state = 'queued'")
+      .get(sessionId);
+    return Number(row?.n ?? 0);
+  }
+
+  /** そのセッションの queued の行を古い順に（/cc cancel） */
+  listQueuedFor(sessionId: string): CcSendRow[] {
+    return this.db.prepare("SELECT * FROM cc_sends WHERE session_id = ? AND state = 'queued' ORDER BY id").all(sessionId).map(toRow);
+  }
+
+  /** delivering の行（再起動の後に unconfirmed にする前に、印を付け直す行を覚える） */
+  listDelivering(): CcSendRow[] {
+    return this.db.prepare("SELECT * FROM cc_sends WHERE state = 'delivering' ORDER BY id").all().map(toRow);
   }
 
   /**

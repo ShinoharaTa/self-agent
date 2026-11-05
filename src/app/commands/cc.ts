@@ -5,7 +5,8 @@
 // （応答に失敗したら、その 1 通を gateway で書き換えて代える）、古ければ（Web・端末・RC で先に答えられた・時間切れ・停止・SELF_AGENT_CC が無効）
 // 本人にだけ「この操作は古くなっています」。
 // /cc（SELF_AGENT_CC=1 のときだけ登録。docs/plan/claude-code-channels.md §3.8。CC10 は open だけ）は一覧を rankSessions の順に最大 25 件の
-// セレクト `cc:pick` で本人にだけ出し、選ぶとそのセッションの Discord のチャンネルを作る（cc/channels.ts の openChannel。origin command）
+// セレクト `cc:pick` で本人にだけ出し、選ぶとそのセッションの Discord のチャンネルを作る（cc/channels.ts の openChannel。origin command）。
+// `/cc cancel`（CC11）は Claude Code のチャンネルの中で、そのセッションの届け待ち（queued）を全部取り消す（本人にだけ件数を返す）
 import type { CcChannelFailure, CcChannels, CcOpenResult } from "../../cc/channels.ts";
 import type { CcState } from "../../cc/registry.ts";
 import type { CcAnswerResult, CcPermissionDecision } from "../../cc/permission-hold.ts";
@@ -27,12 +28,20 @@ const PICK_SELECT_ID = `${NAMESPACE}:pick`;
 const OPTION_MAX_LENGTH = 100;
 
 /** /cc と cc:pick が使うチャンネルの操作（SELF_AGENT_CC=1 で動いているときだけ。main で後から作るので関数で渡す） */
-export type CcChannelsGetter = () => Pick<CcChannels, "openChannel" | "pickItems"> | undefined;
+export type CcChannelsGetter = () => Pick<CcChannels, "openChannel" | "pickItems" | "cancelQueued"> | undefined;
 
 /** Claude Code の連携が動いていないとき（hook の受け口の設定が無いなど） */
 export const CC_UNAVAILABLE_REPLY = "Claude Code の連携が動いていません";
 export const CC_NOT_SET_UP_REPLY = "カテゴリ「Claude Code」がありません。/setup を実行してください";
 export const CC_NO_SESSIONS_REPLY = "Claude Code のセッションがありません";
+export const CC_CANCEL_NOT_CHANNEL_REPLY = "Claude Code のチャンネルで実行してください";
+export const CC_CANCEL_NONE_REPLY = "届け待ちはありません";
+
+/** /cc cancel の応答（純関数） */
+export function cancelReply(count: number | undefined): string {
+  if (count === undefined) return CC_CANCEL_NOT_CHANNEL_REPLY;
+  return count === 0 ? CC_CANCEL_NONE_REPLY : `届け待ちを ${count} 件取り消しました`;
+}
 
 const STATE_LABEL: Readonly<Record<CcState, string>> = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
 
@@ -65,15 +74,25 @@ export function createCcCommand(deps: CcCommandDeps): CommandHandler {
     def: {
       name: "cc",
       description: "Claude Code のセッションの Discord のチャンネルを操作します",
-      subcommands: [{ name: "open", description: "Claude Code のセッションを選んで、そのチャンネルを作ります" }],
+      subcommands: [
+        { name: "open", description: "Claude Code のセッションを選んで、そのチャンネルを作ります" },
+        { name: "cancel", description: "このチャンネルのセッションへの届け待ちを取り消します" },
+      ],
     },
     async handle(interaction, responder) {
-      if (interaction.subcommand !== "open") throw new Error(`/cc の不明なサブコマンドです（${interaction.subcommand ?? ""}）`);
+      if (interaction.subcommand !== "open" && interaction.subcommand !== "cancel") {
+        throw new Error(`/cc の不明なサブコマンドです（${interaction.subcommand ?? ""}）`);
+      }
       const guildId = interaction.guildId;
       if (guildId === null) throw new Error("サーバー外で /cc が呼ばれました");
       const channels = deps.ccChannels();
       if (channels === undefined) {
         await responder.reply({ text: CC_UNAVAILABLE_REPLY, ephemeral: true });
+        return;
+      }
+      if (interaction.subcommand === "cancel") {
+        const count = interaction.channelId === null ? undefined : channels.cancelQueued(interaction.channelId);
+        await responder.reply({ text: cancelReply(count), ephemeral: true });
         return;
       }
       if (deps.guildSettings.ccCategoryId(guildId) === null) {
@@ -118,6 +137,11 @@ export type CcPermissionButtons = {
   answer(id: number, decision: CcPermissionDecision): CcAnswerResult;
   /** 終わった要求の 1 通とそれを出した場所（cc/discord-notice.ts の resolvedMessage）。行が無ければ undefined */
   resolvedMessage(id: number): { message: OutgoingMessage; channelId: string | null; messageId: string | null } | undefined;
+  /**
+   * 答えた後（応答を返した直後）。そのセッションの Claude Code のチャンネルを押したサーバーに作る（docs/plan/claude-code-channels.md §3.1 の 3。CC11）。
+   * 待たない・投げない
+   */
+  answered?(id: number, guildId: string | null): void;
 };
 
 /**
@@ -216,18 +240,23 @@ export function createCcComponent(deps: CcComponentDeps): ComponentHandler {
         return;
       }
       const resolved = buttons.resolvedMessage(id);
-      if (resolved === undefined) {
-        await responder.deferUpdate();
-        return;
-      }
       try {
-        await responder.update(resolved.message);
-      } catch (error) {
-        // 答えは決まっているので、ボタンが残らないよう 1 通を直接書き換える（これも失敗すれば投げて、振り分けが log に出す）
-        deps.log(`Claude Code: 許可の要求（#${id}）への応答に失敗したため、投稿を書き換えます（${errorKind(error)}）`);
-        if (resolved.channelId !== null && resolved.messageId !== null) {
-          await deps.gateway.editMessage(resolved.channelId, resolved.messageId, resolved.message);
+        if (resolved === undefined) {
+          await responder.deferUpdate();
+          return;
         }
+        try {
+          await responder.update(resolved.message);
+        } catch (error) {
+          // 答えは決まっているので、ボタンが残らないよう 1 通を直接書き換える（これも失敗すれば投げて、振り分けが log に出す）
+          deps.log(`Claude Code: 許可の要求（#${id}）への応答に失敗したため、投稿を書き換えます（${errorKind(error)}）`);
+          if (resolved.channelId !== null && resolved.messageId !== null) {
+            await deps.gateway.editMessage(resolved.channelId, resolved.messageId, resolved.message);
+          }
+        }
+      } finally {
+        // 答えた（関わった）ので、そのセッションのチャンネルをこのサーバーに作る（作れなくても応答は変わらない）
+        buttons.answered?.(id, interaction.guildId);
       }
     },
   };

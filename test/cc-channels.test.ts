@@ -10,7 +10,7 @@ import {
   ccChannelTopic,
   CcChannels,
   ccEndedHandler,
-  dropCcChannelMessages,
+  routeCcChannelMessages,
 } from "../src/cc/channels.ts";
 import { NotCategoryError } from "../src/discord/gateway.ts";
 import type { IncomingMessage } from "../src/discord/gateway.ts";
@@ -19,6 +19,7 @@ import type { PaneLookup } from "../src/cc/panes.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { OutgoingMessage } from "../src/discord/gateway.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
+import { CcSendStore } from "../src/store/cc-sends.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
@@ -78,8 +79,10 @@ function setup(t: TestContext, options: { setUp?: boolean } = {}) {
   const notices: Array<{ guildId: string; message: OutgoingMessage; level: string }> = [];
   const logs: string[] = [];
   const channels = new CcChannels({
-    cfg: { allowedGuildIds: ["guild-1", "guild-2"], workspaceDir: WORKSPACE },
+    cfg: { allowedGuildIds: ["guild-1", "guild-2"], workspaceDir: WORKSPACE, ownerUserId: "owner-1" },
     store,
+    sends: new CcSendStore(db, now),
+    sender: () => undefined,
     guildSettings,
     registry: { snapshot: () => ({ sessions, stale: false, unreadable: false, fetchedAt: BASE }) },
     panes: { lookup: async () => lookup },
@@ -400,7 +403,7 @@ test("ccEndedHandler: チャンネルがあれば #system の終了の知らせ�
   ccEndedHandler({ channels: () => undefined, replier: () => undefined, notifier: () => undefined })(session);
 });
 
-test("dropCcChannelMessages: 削除されていない cc のチャンネルへの発言は黙って捨て、それ以外（削除済み・ほかのチャンネル）は handler に渡す", async (t) => {
+test("routeCcChannelMessages: 削除されていない cc のチャンネルへの発言は channels に渡し（連携が無ければ捨てる）、それ以外（削除済み・ほかのチャンネル）は handler に渡す", async (t) => {
   const s = setup(t);
   s.store.create({ channelId: "cc-open", guildId: "guild-1", sessionId: S1, name: "cc-a", cwd: null, origin: "web" });
   s.store.create({ channelId: "cc-ended", guildId: "guild-1", sessionId: S2, name: "cc-b", cwd: null, origin: "web" });
@@ -408,8 +411,15 @@ test("dropCcChannelMessages: 削除されていない cc のチャンネルへ�
   s.store.create({ channelId: "cc-gone", guildId: "guild-1", sessionId: S3, name: "cc-c", cwd: null, origin: "web" });
   s.store.markDeleted("cc-gone");
   const handled: string[] = [];
-  const handle = dropCcChannelMessages(s.store, async (message) => void handled.push(message.channelId));
+  const delivered: string[] = [];
   const message = (channelId: string) => ({ id: "m", channelId, guildId: "guild-1", content: "x" }) as IncomingMessage;
+  const channels = { handleMessage: async (m: IncomingMessage) => (delivered.push(m.channelId), true) };
+  const handle = routeCcChannelMessages(s.store, () => channels, async (m: IncomingMessage) => void handled.push(m.channelId));
   for (const channelId of ["cc-open", "cc-ended", "cc-gone", "inbox-1"]) await handle(message(channelId));
+  assert.deepEqual(handled, ["cc-gone", "inbox-1"]);
+  assert.deepEqual(delivered, ["cc-open", "cc-ended"]);
+  // 連携が動いていなければ黙って捨てる
+  const dropped = routeCcChannelMessages(s.store, () => undefined, async (m: IncomingMessage) => void handled.push(m.channelId));
+  await dropped(message("cc-open"));
   assert.deepEqual(handled, ["cc-gone", "inbox-1"]);
 });
