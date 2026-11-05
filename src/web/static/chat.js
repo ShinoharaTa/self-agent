@@ -596,7 +596,8 @@
       icon(isSession ? "message-square" : "hash"),
       el("h1", { text: isSession ? ch.title || "" : ch.name || ch.kind }),
       isSession && STATE_LABEL[ch.state] ? el("span", { class: "badge state-" + ch.state, text: STATE_LABEL[ch.state] }) : null,
-      el("span", { class: "badge", text: p.name + (p.isDefault ? "" : "（人格）") }),
+      // 人格が 1 体だけなら毎回同じ語になるので出さない
+      store.channels && store.channels.personas.length > 1 ? el("span", { class: "badge", text: p.name + (p.isDefault ? "" : "（人格）") }) : null,
     ]);
     const actions = el("div", { class: "ed-actions" });
     // 狭い画面（≤639px）ではプロジェクト・リンクも隠し、[…] のシートに入れる（見出しを 1 行にする）

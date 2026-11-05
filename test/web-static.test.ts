@@ -968,3 +968,43 @@ test("web static: UI-8 のレビュー: キーボードは幅ごとの最大の�
   assert.match(phone, /\.wb\.is-keyboard \.wb-sidebar \{\n {4}bottom: var\(--kb, 0px\);/);
   assert.match(phone, /top: var\(--vvt, 0px\);/);
 });
+
+test("web static: 視認性（UI-9。#252）: 刻む数字は本文の色と tabular-nums、≤639px の一覧の題 16・群 14、バッジは無地、長押しのプレビューを出さない", () => {
+  const css = read("app.css");
+  // 実行中の行・許可の残り時間（PC も同じ）
+  assert.match(css, /\n\.steps > summary > \[data-run-progress\] \{\n {2}color: var\(--text\);\n {2}font-variant-numeric: tabular-nums;/);
+  assert.match(css, /\n\.cc-permission \[data-permission-left\] \{\n {2}color: var\(--text\);\n {2}font-variant-numeric: tabular-nums;/);
+  assert.match(css, /\[data-permission-left\]\.is-urgent \{\n {2}color: var\(--warning\);/);
+  // .badge は無地（塗りのピルは .act-count だけ）
+  assert.match(css, /\n\.badge \{\n {2}padding: 0;\n {2}background: transparent;/);
+  // 長押しのプレビュー
+  assert.match(css, /\n\.btn,\n\.act-btn,\n\.tab,\n\.sb-row,\n\.more-row \{\n {2}-webkit-touch-callout: none;/);
+  const phone = phoneCss();
+  assert.match(phone, /\n {2}\.sb-title \{\n {4}font-size: var\(--font-base\);/);
+  assert.match(phone, /\n {2}\.sb-group > summary,\n[^{]*\{\n {4}font-size: var\(--font-sm\);/);
+  assert.match(phone, /\n {2}\.sb-row \{\n {4}padding-left: var\(--space-4\);/);
+  assert.match(phone, /\n {2}\.segmented-sm > button \{\n {4}min-height: var\(--row\);\n {4}font-size: var\(--font-sm\);/);
+  assert.match(phone, /\n {2}\.msg-agent > \.avatar \{\n {4}display: none;/);
+  assert.match(phone, /:root\[data-theme="dark"\] \.composer \{\n {4}background: var\(--muted\);/);
+  assert.match(phone, /\n {2}\.cc-permission \.card-head h2 \{\n {4}font-size: var\(--font-base\);/);
+  assert.match(phone, /\n {2}\.cc-permission \.msg-actions \{\n {4}display: grid;\n {4}grid-template-columns: 1fr 1fr;/);
+  // 人格のバッジは人格が 2 体以上のときだけ。Claude Code の行は 2 行目に場所、スマホはバッジの代わりに点
+  assert.match(read("chat.js"), /store\.channels\.personas\.length > 1 \? el\("span", \{ class: "badge"/);
+  const sidebar = read("sidebar.js");
+  assert.match(sidebar, /sub: s\.cwdLabel \|\| null,/);
+  assert.match(sidebar, /class: "sb-sub show-sm"/);
+  assert.match(sidebar, /class: "badge hide-sm "/);
+});
+
+test("web static: 許可のカードの説明はスマホで常設、残り 60 秒を切ったら is-urgent（UI-9）", () => {
+  const { views } = loadViews();
+  const soon = { id: 1, state: "pending", toolName: "Bash", summary: "ls", expiresAt: new Date(Date.now() + 30000).toISOString(), requestHash: "h" };
+  const card = views.ccPermissionCard("s1", soon, null)!;
+  const left = descendants(card).find((n) => n.getAttribute("data-permission-left"))!;
+  assert.ok(left.classes.has("is-urgent"));
+  const note = descendants(card).find((n) => n.classes.has("cc-permission-note"))!;
+  assert.ok(note.classes.has("show-sm"));
+  assert.match(note.textContent, /端末や RC のダイアログでも答えられます/);
+  const later = views.ccPermissionCard("s1", { ...soon, id: 2, expiresAt: new Date(Date.now() + 120000).toISOString() }, null)!;
+  assert.equal(descendants(later).find((n) => n.getAttribute("data-permission-left"))!.classes.has("is-urgent"), false);
+});
