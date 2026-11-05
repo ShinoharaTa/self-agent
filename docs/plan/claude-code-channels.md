@@ -85,7 +85,7 @@
 | チャンネルの数 | ✗ tmux の二十数本に二十数チャンネル。使わないものが並ぶ | ◎ 要るものだけ | ○ 関わったものだけ。見ただけでは増えない |
 | 「そこで継続」の手間 | ◎ 無い | △ 毎回 1 回選ぶ | ◎ 関わった時点でできている |
 | #inbox で頼んで #inbox で読む（CC8） | ✗ 消える | ◎ 残る | △ 返事はチャンネルへ。頼んだチャンネルには「<#…> に出ます」の 1 行 |
-| 実装 | △ 一覧の差分で作る | ○ 2 つの口 | ○ きっかけ 5 つ + 手動 2 つ |
+| 実装 | △ 一覧の差分で作る | ○ 2 つの口 | ○ きっかけ 6 つ + 手動 2 つ |
 
 **C を採る（オーナーの決定）。** 「関わった」の定義（どれか 1 回で作る。既にあれば何もしない）:
 
@@ -93,7 +93,7 @@
 |---|---|---|---|
 | 1 | Web の入力欄から送った | `cc_sends` の行（`origin web`）を `queued` で作った直後（届く前） | `web_send` |
 | 2 | Web から起動した | 起動したペインが一覧のセッションと**結びついたとき**（`session_id` が分かる。trust の確認待ちの間は作らない） | `web_start` |
-| 3 | 許可に答えた（Web のカード、または #system のボタン。[許可][常に許可][拒否] のどれか。時間切れ・他で答えられた・停止は含めない） | 応答を返した直後 | `permission` |
+| 3 | 許可に答えた（Web のカード、または #system・チャンネルのボタン。[許可][常に許可][拒否] のどれか。時間切れ・他で答えられた・停止は含めない） | 応答を返した直後 | `permission` |
 | 4 | `cc_send` の確認で [送る] を押した | `queued` にした直後 | `tool_send` |
 | 5 | `cc_start` の確認で [起動する] を押した | 2 と同じ（結びついたとき） | `tool_start` |
 | 6 | GitHub の [対応] で送った（[起動して送る] を含む） | 送信を積んだ直後（起動なら結びついたとき） | `github` |
@@ -114,10 +114,10 @@
 - 持ち主は既定の人格。投稿・リアクションは既定の人格の Bot（`ownerPosts` は既定の人格を返す）。
 
 ### 3.3 チャンネルへの発言 → セッションへ送る（CC11）
-- 受付（`src/cc/channels.ts` の `handleMessage`。main が `gateway.start` の `handleMessage` を「cc のチャンネルなら channels、それ以外は handler」に包む。`access.ts`・`handler.ts` は変えない）: 許可サーバー・オーナー本人・Bot と Webhook でない・既定の人格の Bot で受けた・`cc_channels` に `state` が `open` か `ended` の行がある。それ以外は今までどおり handler へ。**SDK のターンは動かさない**（LLM を呼ばない）。
-- 本文: `normalizeSendText`（1〜4,000 字・LF 以外の制御文字なし。Discord は 2,000 字なので上限には当たらない）。通らなければ本人の発言への返信で理由（「改行のほかの制御文字は送れません」など）。添付だけの発言は「画像・ファイルは送れません」。
+- 受付（`src/cc/channels.ts` の `handleMessage`。main が `gateway.start` の `handleMessage` を「cc のチャンネルなら channels、それ以外は handler」に包む。`access.ts`・`handler.ts` は変えない）: 許可サーバー・オーナー本人・Bot と Webhook でない・既定の人格の Bot で受けた・`cc_channels` に `state` が `open`・`resuming`・`ended` の行がある（`resuming` は §3.6 で断り、`ended` は [起動して続ける] を出す）。それ以外は今までどおり handler へ。**SDK のターンは動かさない**（LLM を呼ばない）。
+- 本文: `normalizeSendText`（1〜4,000 字・LF 以外の制御文字なし。Discord は 2,000 字（Nitro は 4,000 字。それでも上限の内）なので普通は上限に当たらない）。通らなければ本人の発言への返信で理由（「改行のほかの制御文字は送れません」など）。添付だけの発言は「画像・ファイルは送れません」。
 - 送信: **確認を挟まない**（オーナーの直接の操作。§6）。`cc_sends` に `origin: 'discord'`・`channel_id`（このチャンネル）・`message_id`（オーナーの発言）で `queued`。届け方は CC3 のまま（idle を 2 回・貼る・確かめて Enter。作業中なら積む。`SELF_AGENT_CC_SEND_WAIT_MIN` で `gave_up`）。
-- 続けて書いたとき: **同じセッションに `origin: 'discord'` の `queued` を `CC_CHANNEL_QUEUE_MAX`（5）件まで積める**（古い順に 1 件ずつ届ける。1 件届けると `busy` になるので、次は次の idle で届く）。6 件目は返信で「届け待ちが 5 件あります。届いてから送ってください」。Web・ツールからの送信の「1 セッション 1 件」はそのまま（`activeFor` の判定を origin で分ける。チャンネルの列が空でないときの Web・ツールの送信は `already_queued`）。
+- 続けて書いたとき: **同じセッションに `origin: 'discord'` の `queued` を `CC_CHANNEL_QUEUE_MAX`（5）件まで積める**（古い順に 1 件ずつ届ける。**同じセッションで `delivered` にした直後は、その pass では次の `queued` を試さない**（次の `Stop` か 30 秒後の pass で試す。届けた直後の画面がまだ idle に見えても続けて貼らない）。1 件届けると `busy` になるので、次は次の idle で届く）。6 件目は返信で「届け待ちが 5 件あります。届いてから送ってください」。Web・ツールからの送信の「1 セッション 1 件」はそのまま（`activeFor` の判定を origin で分ける。チャンネルの列が空でないときの Web・ツールの送信は `already_queued`）。
 - **チャンネルの外から積んだ送信の写し**（チャンネルがあるセッションへの、Web の入力欄・`cc_send` の [送る]・GitHub の [対応]・起動の最初の指示）: 積んだ直後に、本文をチャンネルに「（Web から）」/「（<#頼んだチャンネル> から）」/「（#github の [対応]）」/「（起動の最初の指示）」+ 改行 + 本文で投稿し（2,000 字を超える分は 2 通目以降に。メンション無効・埋め込み無し）、**その投稿の ID を `cc_sends.message_id` にする**（印と返事の返信先）。`cc_send` の確認の投稿はそのまま残し、結果に「返事は <#チャンネル> に出ます」を足す。写しの投稿に失敗しても送信は止めない（印と返信先が無いだけ。log 1 行）。自動で作った直後の最初の送信も同じ（作る → 写す → 積む の順。作れなければ写さずに積む）。
 - 届け待ちの印（**リアクション**。Gateway に `addReaction(channelId, messageId, emoji)`・`removeOwnReaction` を足す）:
   | 状態 | 印 | 文 |
@@ -143,7 +143,7 @@
 - 判断待ちの知らせ（60 秒・1 時間 10 件）・終了の知らせ: 同じくチャンネルがあればチャンネルへ、無ければ今までどおり #system。上限の数え方は #system と合わせて 1 つ。
 - `SELF_AGENT_CC_NOTIFY=0` のとき: #system への知らせは止まるが、**チャンネルへの投稿は止めない**（チャンネルはオーナーが関わって作られたもの。返事・許可・判断待ち・終了の全部がチャンネルの目的）。README に書く。
 - Web の許可のカード・`/api/cc/permissions` は変わらない（Web でも Discord でも先に押した方が勝つ）。
-- **端末・RC から打った指示の写し**（決定 3）: `UserPromptSubmit` のうち self-agent が届けたものでないものを、チャンネルに「（端末か RC から）」+ 本文の先頭 `CC_CHANNEL_PROMPT_MIRROR_CHARS`（1,000）字で出す（`escapeDiscordText`・メンション無効・埋め込み無し。超えた分は「（ほか n 字）」）。受け口は `prompt` を 200 字でなく 1,000 字まで事象に乗せ、**DB に残すのは今までどおり 200 字**（確定版の決定 1 は変えない）。「self-agent が届けたもの」の判定: そのセッションの直近 30 秒に `delivered` になった送信（か `delivering` 中のもの）の本文の先頭 200 字と、包みを外した `prompt` の先頭 200 字が同じなら写さない。写した投稿に返事は返信にしない。写しだけではチャンネルを作らない。
+- **端末・RC から打った指示の写し**（決定 3）: `UserPromptSubmit` のうち self-agent が届けたものでないものを、チャンネルに「（端末か RC から）」+ 本文の先頭 `CC_CHANNEL_PROMPT_MIRROR_CHARS`（1,000）字で出す（`escapeDiscordText`・メンション無効・埋め込み無し。超えた分は「（ほか n 字）」）。受け口は `prompt` を 200 字でなく 1,000 字まで事象に乗せ、**DB に残すのは今までどおり 200 字**（確定版の決定 1 は変えない）。「self-agent が届けたもの」の判定: そのセッションの直近 30 秒に `delivered` になった送信（か `delivering` 中のもの）の本文の先頭 200 字と、包みを外した `prompt` の先頭 200 字が同じなら写さない。**比べる本文は貼ったときの形（改行を空白に置き換える `singleLine` を当てた後）で、両方の空白（改行・連続する空白・前後の空白）を 1 つの空白に正規化してから比べる**（`cc_sends.text` のままだと、改行を空白に置き換えて送ったときに一致しないため）。写した投稿に返事は返信にしない。写しだけではチャンネルを作らない。
 - 写すことでチャンネルは「オーナーの発言（Discord）・外からの送信の写し・端末からの指示の写し・返事・許可」の流れになり、RC で打った分の返事が唐突に見えなくなる。
 
 ### 3.6 終わったとき・戻ったとき・続けるとき（CC10・CC13。決定 2）
@@ -156,9 +156,10 @@
 
 **A を採る（オーナーの決定）。**
 - 終わった（`registry` の `ended`。一覧から消えたときだけ。`SessionEnd` の hook は根拠にしない）: `cc_channels.state = 'ended'`・`ended_at` → 「セッションが終わりました。ここに書くと、同じディレクトリで起動して続けられます」を 1 行 → 完了カテゴリへ移す。#system の終了の知らせは出さない（チャンネルに出した）。
-- 戻った（同じ `session_id` が再び一覧に現れた。`registry` に `revived(row)` を足す。`gone_at` が NULL でない行を `upsertSeen` する前に拾う）: `state = 'open'`・`ended_at = NULL` → 「セッションが戻りました」→ Claude Code カテゴリへ戻す。
-- 続ける（終わったチャンネルでの発言。CC13）: 発言は積まずに、返信で「このセッションは終わっています」+ [起動して続ける][やめる]（`cc:resume:<channel_id>:<message_id>`）。[起動して続ける] は `starter.launch` を**そのセッションの `cwd`**（`cc_sessions.cwd`。`SELF_AGENT_WORKSPACE_DIR` の直下でなければ「起動できる場所ではありません。Web か端末で起動してください」）・題名はセッション名・最初の指示はその発言の本文・`startedBy: 'tool'`（`cc_sessions.started_by` の CHECK に `discord` が無いので代える。v29 の CHECK を作り直さない）で起動し、一覧に現れて結びついたら `cc_channels.session_id` を新しい `session_id` に**付け替え**（`previous_session_id` に前の id を残す。新しいチャンネルは作らない）、`state = 'open'`、topic を書き換え、Claude Code カテゴリへ戻し、「<名前> として起動しました。続けます」を出す。trust の確認待ちは確認の投稿の書き換え（CC7 と同じ文）。起動の失敗（`limit`・`low_memory`・`too_soon`・`no_server`）はボタンを残して「少し待ってもう一度押してください」。
-- 削除の確認（CC13）: 完了（`ended_at`）から `SELF_AGENT_DELETE_AFTER_DAYS` 日経ったチャンネルは、セッションと同じく #system に [削除する][残す]（`scheduler` の `listDeleteDue` と同じ形を `cc_channels` にも。ボタンは `cc:del:<channel_id>` / `cc:keep:<channel_id>`。[残す] は `ended_at` を今にする）。[削除する] で `deleteChannel` → `state = 'deleted'`・`deleted_at`。戻った・続けたチャンネルは `open` になるので対象から外れる。
+- 戻った（同じ `session_id` が再び一覧に現れた。`registry` に `revived(row)` を足す。`gone_at` が NULL でない行を `upsertSeen` する前に拾う）。**開き直すのは `cc_channels` に `session_id` が一致する削除されていない行があるときだけ**（付け替え（rebind）の後の古い id は `previous_session_id` では開き直さない）: `state = 'open'`・`ended_at = NULL` → 「セッションが戻りました」→ Claude Code カテゴリへ戻す。
+- 続ける（終わったチャンネルでの発言。CC13）: 発言は積まずに、返信で「このセッションは終わっています」+ [起動して続ける][やめる]（`cc:resume:<channel_id>:<message_id>`）。[起動して続ける] は、まず `cc_channels.state` を `ended` → `resuming` に compare-and-set で移し（移せなければ「この操作は古くなっています」。二重起動を防ぐ）、 `starter.launch` を**そのセッションの `cwd`**（`cc_sessions.cwd`。`SELF_AGENT_WORKSPACE_DIR` の直下でなければ「起動できる場所ではありません。Web か端末で起動してください」）・題名はセッション名・最初の指示はその発言の本文・`startedBy: 'tool'`（`cc_sessions.started_by` の CHECK に `discord` が無いので代える。v29 の CHECK を作り直さない）で起動し、一覧に現れて結びついたら `cc_channels.session_id` を新しい `session_id` に**付け替え**（`previous_session_id` に前の id を残す。新しいチャンネルは作らない）、`state = 'open'`、topic を書き換え、Claude Code カテゴリへ戻し、「<名前> として起動しました。続けます」を出す。trust の確認待ちは確認の投稿の書き換え（CC7 と同じ文）。起動の失敗（`limit`・`low_memory`・`too_soon`・`no_server`・結びつく前の失敗）は `state` を `ended` に戻し、ボタンを残して「少し待ってもう一度押してください」。`resuming` の間のそのチャンネルの発言は積まずに返信で「起動中です。少し待ってから書いてください」と断る。再起動で `resuming` のまま残った行は起動時に `ended` に戻す。
+- 削除の確認（CC13）: 完了（`ended_at`）から `SELF_AGENT_DELETE_AFTER_DAYS` 日経ったチャンネルは、セッションと同じく #system に [削除する][残す]（`scheduler` の `listDeleteDue` と同じ形を `cc_channels` にも。ボタンは `cc:del:<channel_id>` / `cc:del:keep:<channel_id>`（CC7 の `cc:keep:send|start:<id>` と重ならないよう、`cc:del:` の下に置く）。[残す] は `ended_at` を今にする）。[削除する] で `deleteChannel` → `channelOps.cancel(channelId)`（未実行のカテゴリ移動を捨てる）→ `state = 'deleted'`・`deleted_at`。戻った・続けたチャンネルは `open` になるので対象から外れる。
+- セッションのチャンネルの規則（`SELF_AGENT_IDLE_HOURS` の待ちへの移動・`/wait`・`topic_sessions` の削除の確認）は cc のチャンネルには当たらない（`topic_sessions` に行が無い）。
 - 再同期（`scheduler`。CC10）: `cc_channels` の削除されていない行のうち Discord に無いものは `deleted` に、`open` で Claude Code カテゴリの外にあるものは戻し、`ended` で完了カテゴリの外にあるものは完了へ（1 サーバー 5 件までは既存の規則と同じ）。
 
 ### 3.7 `cc_send`・`cc_start`・[対応]・Web の起動との関係（CC11）
@@ -177,12 +178,12 @@
 
 | 版 | 段 | 変更 |
 |---|---|---|
-| v36 | CC10 | `cc_channels(channel_id TEXT PK, guild_id TEXT NOT NULL, session_id TEXT NOT NULL, previous_session_id TEXT, name TEXT NOT NULL, cwd TEXT, state TEXT NOT NULL CHECK (state IN ('open','ended','deleted')), origin TEXT NOT NULL CHECK (origin IN ('web','command','web_send','web_start','permission','tool_send','tool_start','github')), category_id TEXT, created_at TEXT NOT NULL, ended_at TEXT, delete_prompt_message_id TEXT, deleted_at TEXT, updated_at TEXT NOT NULL)`。部分索引 `cc_channels_session ON cc_channels(session_id) WHERE state <> 'deleted'` を**一意**に（1 セッションに削除されていないチャンネルは 1 つ。サーバーをまたいでも）。`guild_settings` に `cc_category_id TEXT`。`delete_prompt_message_id` は CC13 の削除の確認 |
-| v37 | CC11 | `cc_sends` の作り直し（`CREATE TABLE cc_sends_new … origin CHECK IN ('web','tool','github','start','discord') …` → `INSERT … SELECT` → `DROP` → `RENAME`。索引も作り直す。外部キーは無い） |
+| v36 | CC10 | `cc_channels(channel_id TEXT PK, guild_id TEXT NOT NULL, session_id TEXT NOT NULL, previous_session_id TEXT, name TEXT NOT NULL, cwd TEXT, state TEXT NOT NULL CHECK (state IN ('open','resuming','ended','deleted')), origin TEXT NOT NULL CHECK (origin IN ('web','command','web_send','web_start','permission','tool_send','tool_start','github')), created_at TEXT NOT NULL, ended_at TEXT, delete_prompt_message_id TEXT, deleted_at TEXT, updated_at TEXT NOT NULL)`。部分索引 `cc_channels_session ON cc_channels(session_id) WHERE state <> 'deleted'` を**一意**に（1 セッションに削除されていないチャンネルは 1 つ。サーバーをまたいでも）。`guild_settings` に `cc_category_id TEXT`。`delete_prompt_message_id` は CC13 の削除の確認。`resuming` は CC13 の [起動して続ける] の間（§3.6。二重起動を防ぐ）。チャンネルのカテゴリは持たない（再同期は Discord の親を見る） |
+| v37 | CC11 | `cc_sends` の作り直し（`CREATE TABLE cc_sends_new … origin CHECK IN ('web','tool','github','start','discord') …` → `INSERT … SELECT` → `DROP` → `RENAME`。索引 5 つ（`cc_sends_session`・`cc_sends_state`・`cc_sends_created`・`cc_sends_notification`・`cc_sends_reply`）を同じ定義で作り直す。外部キーは無い。`cc_sends.message_id` のコメントを「確認・オーナーの発言・写しの投稿」に直す） |
 | — | CC12・CC13・CC14 | 表の変更なし（`cc_permissions.message_channel_id` がチャンネルの ID になる。`history` に cc のチャンネルの行を書く。`persona` は `default`） |
 
 - `cc_channels` は `deleted_at` から 30 日で消す（tick）。`name`・`cwd` はローカルの DB だけ。
-- `CcChannelStore`（`src/store/cc-channels.ts`）: `create`・`get(channelId)`・`openFor(sessionId)`（`state = 'open'`）・`anyFor(sessionId)`（削除されていないもの）・`listUndeleted(guildId)`・`setState`・`rebind(channelId, sessionId)`（`previous_session_id` に前の id）・`setCategory`・`listDeleteDue(guildId, cutoff)`・`setDeletePrompt`・`touchEnded`（[残す]）・`markDeleted`・`prune`。
+- `CcChannelStore`（`src/store/cc-channels.ts`）: `create`・`get(channelId)`・`openFor(sessionId)`（`state = 'open'`）・`anyFor(sessionId)`（削除されていないもの）・`listUndeleted(guildId)`・`setState`（`resuming` への移動は compare-and-set）・`rebind(channelId, sessionId)`（`previous_session_id` に前の id）・`listDeleteDue(guildId, cutoff)`・`setDeletePrompt`・`touchEnded`（[残す]）・`markDeleted`・`prune`。
 - 版の番号は目安（`MIGRATIONS.length` で確かめる）。
 
 ## 5. Web（CC14。決定 4）
@@ -200,7 +201,7 @@
 
 ### 5.2 決定
 - `history` の行（Web UI が有効なときだけ。`guild_id` は `cc_channels.guild_id`、`persona` は `default`）: オーナーの発言 → `owner`（`source discord`・`message_id`）、外からの送信の写し → `owner`（`source web` / `system`・`message_id` は写しの投稿）、端末の指示の写し → `owner`（`source system`・text は「（端末か RC から）」+ 本文）、返事 → `agent`（`text` は本文（4,000 字で切る）、`outcome done`、steps・tool_calls・duration は NULL）、届かなかった・許可の結果・終了・戻った → `notice`、起動して続けた → `divider`。今 CC8 が書いている追いかけの `notice`（受け付けるチャンネルだけ）はそのまま。
-- `GET /api/channels`: `kind: "cc"` の行を足す（`{ id, guildId, kind: "cc", name: <セッション名>, title: null, persona: "default", state: null, cc: { sessionId, state: needs_input | running | idle | ended, cwdLabel, inTmux, permission: {…} | null, pending: {…} | null }, last, link }`）。`webChannelLookup` は `cc_channels` の削除されていない行も通す（`kind: "cc"`。`/turns`・`/messages` で使う。リマインドの表示名は「cc-<名前>」）。
+- `GET /api/channels`: `kind: "cc"` の行を足す（`{ id, guildId, kind: "cc", name: <セッション名>, title: null, persona: "default", state: null, cc: { sessionId, state: needs_input | running | idle | ended, cwdLabel, inTmux, permission: {…} | null, pending: {…} | null }, last, link }`）。`webChannelLookup` は `cc_channels` の削除されていない行も通す（`kind: "cc"`。`/turns`・`/messages` で使う。リマインドの表示名は「cc-<名前>」）。型は `routes/channels.ts` の側で `ChannelKind | "cc"` に広げ、`access.ts` の `ChannelKind` は変えない。cc のチャンネルへの `POST /api/channels/<id>/renew`・`/continue`・`/turns/<seq>/abort` は 404（SDK のターンが無い）。
 - `POST /api/channels/<id>/messages`（kind cc）: `submitText` ではなく `channels.submitWeb`（§3.3 の写し「（Web から）」を既定の Bot で投稿 → `history` の owner 行 → `cc_sends` に `origin: 'web'`・`channel_id`・`message_id`（写し）で積む）。202 `{ sendId, link }`。`already_queued` は 409。`cc:<sessionId>` のタブの入力欄（`/api/cc/sessions/<id>/send`）も、チャンネルがあれば同じ経路（CC11 から）。
 - 会話のタブ（chat.js）: kind cc なら 見出しに 状態のバッジ・[RC で開く]・[画面]（節の開閉）・[Discord で開く]・[閉じる]（`/cc close` と同じ `POST /api/cc/channels/<id>/close`）、会話の行、末尾に許可のカード（`cc.permission` が pending のとき。views.js の `ccPermissionCard` を共用）、送信の状態の行（`cc.pending`。[やめる]）、入力欄（1,900 字）。実行中のターンの行は出さない（cc の `running` は見出しのバッジとスピナー）。開いている間は `/api/cc/sessions/<id>` を 3 秒ごと（画面の節を開いているとき）か 10 秒ごとに読む。
 - サイドバーの Claude Code の群: チャンネルのある行は `ch:<channelId>` を開く。未読の点は history の最後の行で判定（セッションと同じ）。
@@ -212,7 +213,7 @@
 3. hook 由来の文字列（名前・cwd・`prompt`・`last_assistant_message`・ツールの要約）は Discord でも history でも**データ**: `escapeDiscordText`、メンション無効、埋め込み無し、masked link を崩す。写し（§3.3・§3.5）はこの経路の文字列を Discord に出す新しい場所なので、同じ処理を通す。ターンの prompt には入れない（SDK のエージェントは cc のチャンネルを読まない）。
 4. 偽の hook（確定版 §7 の 11）: 偽の `Stop` はチャンネルへの偽の返事に、偽の `UserPromptSubmit` は偽の写しになる。出所の表示（「（hook）」「（端末か RC から）」）で見分ける。写しの「self-agent が届けたものか」の判定は偽の `UserPromptSubmit` で狂いうるが、害は「自分の発言がもう 1 回写る」まで。偽の hook ではチャンネルは作られない（きっかけに hook の事象は無い）。
 5. チャンネルの作成は `/setup` 済みの許可サーバーだけ・1 セッション 1 つ（一意索引）・カテゴリの 50 の上限で止める。作れなくても元の処理は止めない。削除は確認の後だけ。
-6. log: 「Claude Code: チャンネルを作りました（guild=…、<origin>）」「Claude Code: チャンネルを作れませんでした（<理由>）」「Claude Code: チャンネルの発言を積みました（#send_id）」「Claude Code: チャンネルを閉じました」「Claude Code: チャンネルを付け替えました（#send_id）」「Claude Code: 写しを出しました」と失敗の種類だけ。チャンネル ID・名前・本文は出さない（作成の DB 失敗だけ例外）。
+6. log: 「Claude Code: チャンネルを作りました（guild=…、<origin>）」「Claude Code: チャンネルを作れませんでした（<理由>）」「Claude Code: チャンネルの発言を積みました（#send_id）」「Claude Code: チャンネルを閉じました」「Claude Code: チャンネルを付け替えました（#start_id）」「Claude Code: 写しを出しました」と失敗の種類だけ。チャンネル ID・名前・本文は出さない（作成の DB 失敗だけ例外）。
 7. リアクション・チャンネルの作成・移動は Discord の制限に当たりうる。失敗は log だけで送信・返事は止めない。
 
 ## 7. 段（PR 単位）と受け入れ
@@ -221,9 +222,9 @@
 |---|---|---|---|
 | **CC9** Web の群 | `sidebar.js`: 会話の一覧に群「Claude Code」（入口の次）。`renderCc` の中身を移し、アクティビティ `cc` を外す。行は `ccRow` + チャンネルの印（CC10 まで常に無し）。起動中の行・[Claude Code を起動]・読めないときの注記。`SA.poll.kickCc` を会話のサイドバーから。web-ui.md §3.2・§3.4・GUIDELINES の語彙 | JS は `node --check`。`index.html` に inline 無し。API の変更なし（`web-cc.test.ts` はそのまま） | スマホで会話のサイドバーに Claude Code の群が出て、判断待ちが上、実行中にスピナー。行を押すと今のタブ。アクティビティバーから Claude Code が消え、パレットの「Claude Code を起動」は動く |
 | **CC10** 表・カテゴリ・作る口・再同期・終了と戻り | v36・`CcChannelStore`・`/setup` のカテゴリ「Claude Code」（`cfg.cc`）・`src/cc/channels.ts`（`openChannel`・`ended`・`revived`・再同期の材料）・`POST /api/cc/sessions/<id>/channel`・Web のタブの [Discord のチャンネルを作る]・`/cc open`（セレクト）・`registry` の `revived`・scheduler の再同期・tick の prune。**自動では作らず、発言もまだ送らない**（cc のチャンネルの発言は main の振り分けで黙って捨てる。README に「CC11 まで発言は届かない」） | `/setup` が `cc` のときだけカテゴリを作り ID を保存。`openChannel` が `layoutQueueKey` のキューで作り、一意索引で 2 つ目は `exists`、tmux の外は `not_in_tmux`、カテゴリが無ければ `not_set_up`、50 で `full`、作れなくても投げない。`ended` で `state ended`・完了へ `enqueueMove`・1 行の投稿、#system の終了の知らせは出ない。`revived` で `open`・Claude Code カテゴリへ・1 行。再同期で Discord に無い行が `deleted`、外にある `open` が戻る。`prune` が `deleted_at` から 30 日。log にチャンネル ID が無い（DB 失敗を除く） | Web の cc のタブから作る → Discord のカテゴリ「Claude Code」に `cc-<名前>` ができ最初の投稿が出る。`/cc open` で同じ。そのセッションを `/exit` → 1 行出て完了カテゴリへ。`claude -r` で戻す（§1.3 の推測の確認）→ 戻る |
-| **CC11** 自動で作る・発言 → 送信・写し・印・返事 | v37（`cc_sends.origin` に `discord`）・main の `handleMessage` の振り分け・`channels.handleMessage`（検証・5 件の列・リアクション）・Gateway の `addReaction`/`removeOwnReaction`・`sender` の origin ごとの `activeFor`・**自動で作るきっかけ 1〜6**（§3.1。`sender.submit`/`confirm`（web・tool・github）、`starter` の結びつけ、`permission-hold.answer`）・作れなかったときの #system の 1 行（1 時間に 1 回）・外からの送信の写し（§3.3）・`replies.ts` の投稿先（チャンネル優先。[追いかけをやめる] 無し・返信先はオーナーの発言か写し・上限 200）・`cc_send`/[対応] の「返事は <#…> に出ます」・`/cc cancel` | オーナーの発言で `cc_sends` に `origin discord`・`channel_id`・`message_id` の `queued` ができ ⏳、偽 tmux が idle なら貼って Enter → `delivered` で ⏳ が外れ ✅。6 件目は返信で断る。Web からの同じセッションへの送信は `already_queued`。制御文字・添付だけは返信で断り積まない。**きっかけ**: チャンネルの無いセッションに Web から送る → `queued` の直後に `cc_channels`（`web_send`）ができ最初の投稿と「（Web から）」の写しが出て `message_id` が写し。Web の起動・`cc_start` の [起動する] は結びつく前は作らず、結びついたら `web_start` / `tool_start`。許可に [許可]/[拒否]（Web・Discord のどちらでも）→ `permission`。`cc_send` の [送る] → `tool_send` と「（<#inbox> から）」の写しと結果の「返事は <#…> に出ます」。[対応] → `github`。一覧を見た・タブを開いた・`cc_list`・写しだけでは作られない。既にあれば作らない。カテゴリが無い・満杯・`createTextChannel` の失敗では送信・起動・応答が止まらず、#system に 1 行（同じ理由の 2 回目は 1 時間出ない）、返事は CC8 の追いかけに落ちる。`Stop` がチャンネルに出て、最初の 1 通はオーナーの発言（か写し）への返信、[追いかけをやめる] が無い、201 通目は上限の 1 行。チャンネルの無いセッションは CC8 のまま（`cc-replies.test.ts` が通る）。足した人格の Bot の分は捨てる。Bot 自身の投稿は積まない | Web から 1 行送る → Discord にチャンネルができ、写しと返事が出る。チャンネルに 3 行の本文 → ⏳ → 届いて ✅ → 返事がその発言への返信で出る。作業中に 2 つ続けて書く → 順に届く。`/cc cancel` で ⏳ が外れる。#inbox で `cc_send` → [送る] → 新しいチャンネルに写しと返事、#inbox には「返事は <#…> に出ます」 |
+| **CC11** 自動で作る・発言 → 送信・写し・印・返事 | v37（`cc_sends.origin` に `discord`）・main の `handleMessage` の振り分け・`channels.handleMessage`（検証・5 件の列・リアクション）・Gateway の `addReaction`/`removeOwnReaction`・`sender` の origin ごとの `activeFor`・**自動で作るきっかけ 1〜6**（§3.1。`sender.submit`/`confirm`（web・tool・github）、`starter` の結びつけ、`permission-hold.answer`）・作れなかったときの #system の 1 行（1 時間に 1 回）・外からの送信の写し（§3.3）・`replies.ts` の投稿先（チャンネル優先。[追いかけをやめる] 無し・返信先はオーナーの発言か写し・上限 200）・`cc_send`/[対応] の「返事は <#…> に出ます」・`/cc cancel` | オーナーの発言で `cc_sends` に `origin discord`・`channel_id`・`message_id` の `queued` ができ ⏳、偽 tmux が idle なら貼って Enter → `delivered` で ⏳ が外れ ✅。6 件目は返信で断る。2 件続けて積んで偽 tmux が idle のままでも、1 pass で届けるのは 1 件だけ。Web からの同じセッションへの送信は `already_queued`。制御文字・添付だけは返信で断り積まない。**きっかけ**: チャンネルの無いセッションに Web から送る → `queued` の直後に `cc_channels`（`web_send`）ができ最初の投稿と「（Web から）」の写しが出て `message_id` が写し。Web の起動・`cc_start` の [起動する] は結びつく前は作らず、結びついたら `web_start` / `tool_start`。許可に [許可]/[拒否]（Web・Discord のどちらでも）→ `permission`。`cc_send` の [送る] → `tool_send` と「（<#inbox> から）」の写しと結果の「返事は <#…> に出ます」。[対応] → `github`。一覧を見た・タブを開いた・`cc_list`・写しだけでは作られない。既にあれば作らない。カテゴリが無い・満杯・`createTextChannel` の失敗では送信・起動・応答が止まらず、#system に 1 行（同じ理由の 2 回目は 1 時間出ない）、返事は CC8 の追いかけに落ちる。`Stop` がチャンネルに出て、最初の 1 通はオーナーの発言（か写し）への返信、[追いかけをやめる] が無い、201 通目は上限の 1 行。チャンネルの無いセッションは CC8 のまま（`cc-replies.test.ts` が通る）。足した人格の Bot の分は捨てる。Bot 自身の投稿は積まない | Web から 1 行送る → Discord にチャンネルができ、写しと返事が出る。チャンネルに 3 行の本文 → ⏳ → 届いて ✅ → 返事がその発言への返信で出る。作業中に 2 つ続けて書く → 順に届く。`/cc cancel` で ⏳ が外れる。#inbox で `cc_send` → [送る] → 新しいチャンネルに写しと返事、#inbox には「返事は <#…> に出ます」 |
 | **CC12** 許可・判断待ち・端末の指示の写し | `permission-hold.ts` の複数 listener・`cc/channel-posts.ts`（許可の 1 通・判断待ち・写し）・`discord-notice.ts` の「担当済みは飛ばす」・受け口の `prompt` を 1,000 字まで事象に（DB は 200 字のまま）・`NOTIFY=0` でもチャンネルには出す | チャンネルのあるセッションの `PermissionRequest` でチャンネルに 1 通・#system には出ない・`message_channel_id` がチャンネル。[許可] の応答・書き換え・他で答えられた・時間切れは CC5c のテストと同じ結果。チャンネルの無いセッションは #system（既存のテストが通る）で、答えた後の次の要求はチャンネル。写し: 端末からの `UserPromptSubmit` が「（端末か RC から）」で出て、self-agent が 30 秒以内に届けた本文と先頭 200 字が同じなら出ない。1,001 字は「（ほか n 字）」。`NOTIFY=0` でチャンネルの投稿が出る | 端末で `npm test` の許可 → チャンネルに 1 通 → スマホで [許可]。RC から指示 → チャンネルに写しと返事 |
-| **CC13** 起動して続ける・閉じる・削除の確認 | 終わったチャンネルでの発言 → [起動して続ける][やめる]・`rebind`・topic の書き換え・`/cc close`・削除の確認（`cc:del`/`cc:keep`。`listDeleteDue`） | 終わったチャンネルの発言は積まれず確認が出る。[起動して続ける] で `starter.launch` が `cwd`・題名・本文・`tool` で呼ばれ、結びついたら `session_id` が付け替わり `previous_session_id` に前の id、`open`、Claude Code カテゴリへ（新しいチャンネルは作られない）。直下でない `cwd` は断る。`/cc close` で `ended`・完了へ。完了から N 日で #system に確認、[削除する] で `deleteChannel`・`deleted`、[残す] で `ended_at` が今に | 終わったチャンネルに書く → [起動して続ける] → 新しい tmux のセッションが起動し、同じチャンネルに返事 |
+| **CC13** 起動して続ける・閉じる・削除の確認 | 終わったチャンネルでの発言 → [起動して続ける][やめる]・`rebind`・topic の書き換え・`/cc close`・削除の確認（`cc:del`/`cc:del:keep`。`listDeleteDue`） | 終わったチャンネルの発言は積まれず確認が出る。[起動して続ける] で `state` が `resuming` になり（その間の発言は「起動中です」で断られ、2 回目の押下は古い）、`starter.launch` が `cwd`・題名・本文・`tool` で呼ばれ、結びついたら `session_id` が付け替わり `previous_session_id` に前の id、`open`、Claude Code カテゴリへ（新しいチャンネルは作られない）。直下でない `cwd` は断る。起動の失敗で `ended` に戻る。`/cc close` で `ended`・完了へ。完了から N 日で #system に確認、[削除する] で `deleteChannel`・`channelOps.cancel`・`deleted`、[残す] で `ended_at` が今に | 終わったチャンネルに書く → [起動して続ける] → 新しい tmux のセッションが起動し、同じチャンネルに返事 |
 | **CC14** Web の会話のタブ | `history` の行（§5.2）・`/api/channels` の `kind cc`・`webChannelLookup`・`POST /messages` の cc の経路・`POST /api/cc/channels/<id>/close`・chat.js の cc の見出し・画面の節・許可のカード・送信の状態・サイドバーの `ch:` | `/api/channels` に cc の行、`/turns` に owner → agent の順、Web からの送信で写しと owner 行と `cc_sends`（`origin web`・`message_id` が写し）、受け付けない（`deleted`）チャンネルは 404。既存の web のテストが通る | Web の会話の Claude Code の群からチャンネルのある行を開く → Discord と同じ流れ → 送る → Discord に「（Web から）」と返事 |
 
 順序: CC9 → CC10 → CC11 → CC12 → CC13 → CC14。どの段もツール集合・システムプロンプトを変えない（**キャッシュは外れない**）。`/cc` のコマンドの登録は CC10（Discord のコマンドの一覧が変わるだけ）。
@@ -264,7 +265,7 @@
 |---|---|---|
 | `db.ts` | v36: `cc_channels` と一意の部分索引、`guild_settings.cc_category_id`。v37: `cc_sends` の作り直し（`origin` に `'discord'`。既存の索引を `db.ts` で確かめて同じものを作る。`INSERT … SELECT` で全列を写す） | CC10・CC11 |
 | `cc-channels.ts`（新規） | `CcChannelStore`（channels.md §4） | CC10 |
-| `cc-sends.ts` | `CcSendOrigin` に `"discord"`、`ORIGINS`。`countQueuedDiscord(sessionId)`（列の 5 件）。`listQueued` は今のまま古い順 | CC11 |
+| `cc-sends.ts` | `CcSendOrigin` に `"discord"`、`ORIGINS`。`countQueuedDiscord(sessionId)`（列の 5 件）。`listQueued` は今のまま古い順。v37 で `message_id` のコメントを「確認・オーナーの発言・写しの投稿」に | CC11 |
 | `cc-sessions.ts` | 変更なし（`channel_id`・`follow*` はそのまま） | — |
 | `guild-settings.ts` | `ccCategoryId(guildId)`・`setCcCategory(guildId, id)`（`routineCategoryId`・`setRoutineCategory` と同じ形。行が無ければ false） | CC10 |
 
@@ -272,13 +273,13 @@
 
 | ファイル | 変更 | 段 |
 |---|---|---|
-| `channels.ts`（新規） | `CcChannels`: `openChannel(guildId, sessionId, origin)`（`layoutQueueKey` のキュー・一意・tmux の中・カテゴリ・50・最初の投稿・作れなかったときの #system の 1 行（1 時間 1 回））、`ensureFor(sessionId, origin, guildId?)`（きっかけから呼ぶ。既にあれば何もしない・作れなくても投げない）、`mirror(sessionId, label, text) → messageId | undefined`（外からの送信の写し）、`handleMessage(event) → boolean`（CC11。受付・検証・5 件・リアクション・終わったチャンネルの [起動して続ける]（CC13））、`ended(row)`・`revived(row)`、`close(channelId)`、`reconcile(guildId, parents)`、`resume(channelId, messageId)`（CC13）、`submitWeb`（CC14） | CC10〜 |
+| `channels.ts`（新規） | `CcChannels`: `openChannel(guildId, sessionId, origin)`（`layoutQueueKey` のキュー・一意・tmux の中・カテゴリ・50・最初の投稿・作れなかったときの #system の 1 行（1 時間 1 回））、`ensureFor(sessionId, origin, guildId?)`（きっかけから呼ぶ。既にあれば何もしない・作れなくても投げない）、`mirror(sessionId, label, text) → messageId | undefined`（外からの送信の写し）、`handleMessage(event) → boolean`（CC11。受付・検証・5 件・リアクション・終わったチャンネルの [起動して続ける]（CC13））、`ended(row)`・`revived(row)`（`session_id` が一致する削除されていない行だけ）、`close(channelId)`、`reconcile(guildId, parents)`、`resume(channelId, messageId)`（CC13）、`submitWeb`（CC14） | CC10〜 |
 | `channel-posts.ts`（新規） | チャンネルへの投稿（純関数 + 投稿）: 許可の 1 通（`discord-notice.ts` の `permissionNotice` を再利用）・判断待ち・終了・戻った・写し（`escapeDiscordText`・メンション無効・`suppressEmbeds`）・送信の失敗の返信・印（リアクション） | CC11・CC12 |
 | `registry.ts` | deps に `revived?: (row: CcSessionRow) => void`（`upsertSeen` の前に「`gone_at` が NULL でない行のうち今回の一覧にあるもの」を引いて呼ぶ） | CC10 |
-| `sender.ts` | `submit`・`confirm` の後に `channels.ensureFor`（origin web → `web_send`、tool → `tool_send`、github → `github`）→ `mirror` → `message_id` の更新。`already_queued` の判定を origin で分ける（`discord` は `countQueuedDiscord < CC_CHANNEL_QUEUE_MAX`、それ以外はチャンネルの列が空でなければ `already_queued`）。`onFinished` の後に印の更新。`origin: "discord"` の受け入れ | CC11 |
+| `sender.ts` | `submit`・`confirm` の後に `channels.ensureFor`（origin web → `web_send`、tool → `tool_send`、github → `github`）→ `mirror` → `message_id` の更新。`already_queued` の判定を origin で分ける（`discord` は `countQueuedDiscord < CC_CHANNEL_QUEUE_MAX`、それ以外はチャンネルの列が空でなければ `already_queued`）。`onFinished` の後に印の更新。`origin: "discord"` の受け入れ。同じセッションで `delivered` にした pass では、そのセッションの次の `queued` を試さない（次の `Stop` か 30 秒後） | CC11 |
 | `starter.ts` | 結びつけの後に `onBound(sessionId, started)` の口（`startedBy` と頼んだチャンネルから `web_start` / `tool_start` / `github` で `ensureFor`。CC13 の `rebind` も同じ口）。`launch` の `startedBy` に `"tool"`（続ける） | CC11・CC13 |
 | `replies.ts` | 投稿先の決め方 `targetOf(sessionId)`（`channels.openFor` → `follow_channel_id`）。チャンネル宛ては [追いかけをやめる] を付けず・上限 `CC_CHANNEL_REPLY_DAILY_LIMIT`・返信先は `send.messageId`。`onSendFinished` の `startFollow` はチャンネルがあるときは呼ばない。`record` の `guildOf` は cc のチャンネルも引けるように（CC14 で `agent` 行） | CC11・CC14 |
-| `permission-hold.ts` | `answer` の後に `channels.ensureFor(sessionId, "permission", guildId)`（via web なら最初の /setup 済みサーバー、discord ならそのサーバー）。`listen` を複数に（配列）。listener が `claims(row) → boolean` を返せるようにし、先に claim したものだけが投稿する（channel-posts → discord-notice の順） | CC11・CC12 |
+| `permission-hold.ts` | `listen` を複数に（配列）。listener が `claims(row) → boolean` を返せるようにし、先に claim したものだけが投稿する（channel-posts → discord-notice の順） | CC11・CC12 |
 | `discord-notice.ts` | claim 済みの要求・チャンネルのあるセッションの判断待ち・終了は出さない。それ以外は変更なし | CC12 |
 | `hook-server.ts` | `UserPromptSubmit` の `prompt` を事象には `CC_PROMPT_MIRROR_MAX_CHARS`（1,000）まで乗せる。DB に残す 200 字は `cc-sessions.ts` の `applyEvent` がそのまま切る | CC12 |
 
@@ -286,9 +287,9 @@
 
 | ファイル | 変更 | 段 |
 |---|---|---|
-| `main.ts` | `CcChannels` を作り（SELF_AGENT_CC=1 のときだけ）、`gateway.start` の `handleMessage` を「`ccChannels?.handleMessage(event)` が true なら終わり、それ以外は `handler.handleMessage`」に包む。registry の `ended`/`revived`・sender・starter・replier・permission-hold・scheduler・`/cc`・Web のルートに渡す。`channelOf`（`webChannelLookup`）に `ccChannels` を足す（CC14） | CC10〜 |
+| `main.ts` | `CcChannels` を作り（SELF_AGENT_CC=1 のときだけ）、`gateway.start` の `handleMessage` を「`ccChannels?.handleMessage(event)` が true なら終わり、それ以外は `handler.handleMessage`」に包む。registry の `ended`/`revived`・sender・starter・replier・permission-hold・scheduler・`/cc`・Web のルートに渡す。`channelOf`（`webChannelLookup`）に `ccChannels` を足す（CC14）。`ccPermissionButtons` は notifier（`SELF_AGENT_CC_NOTIFY`）によらず、permission-hold と channel-posts の `resolvedMessage` から作る（notifier が無ければ channel-posts だけ。`NOTIFY=0` でもチャンネルの許可のボタンが効くように） | CC10〜 |
 | `access.ts`・`handler.ts` | 変更なし | — |
-| `commands/cc.ts` | `/cc`（`open`・`cancel`・`close`。SELF_AGENT_CC=1 のときだけ登録）と `cc:pick`（セレクト）・`cc:resume`・`cc:del`・`cc:keep`。`cc:perm:*` の応答の後に `ensureFor`（permission） | CC10・CC11・CC13 |
+| `commands/cc.ts` | `/cc`（`open`・`cancel`・`close`。SELF_AGENT_CC=1 のときだけ登録）と `cc:pick`（セレクト）・`cc:resume`・`cc:del:<channel_id>`・`cc:del:keep:<channel_id>`。`cc:perm:*` の応答の後に `ensureFor(sessionId, "permission", interaction.guildId)`（許可の応答からチャンネルを作るのはここだけ。Web のカードからの応答は `routes/cc.ts` が最初の /setup 済みサーバーで `ensureFor`） | CC10・CC11・CC13 |
 | `commands/cc-confirm.ts` | [送る]・[起動する] の結果の文に「返事は <#…> に出ます」（チャンネルができたとき） | CC11 |
 | `github-handoff.ts` | 積んだ後・結びついた後に `ensureFor`（github）と写し | CC11 |
 | `commands/setup.ts` | `cfg.cc` が true なら状態カテゴリの後にカテゴリ「Claude Code」（`ensure` の形。消えたものだけ） | CC10 |
@@ -304,8 +305,8 @@
 | `static/views.js` | cc のタブの見出しに [Discord のチャンネルを作る]（CC10）・[Discord で開く]（チャンネルがあれば）。`ccPermissionCard` を chat.js から使えるように export（CC14） | CC10・CC14 |
 | `static/chat.js` | kind cc の見出し・画面の節・許可のカード・送信の状態・入力欄（1,900 字）。`channelTitle` の cc | CC14 |
 | `static/workbench.js` | hash `#/cc/<id>` と `cc:` のタブはそのまま。アクティビティ `cc` の既定を外す | CC9 |
-| `routes/cc.ts` | `sessionJson` に `channel: { channelId, guildId, link, state } \| null`（CC10）。`POST /api/cc/sessions/<id>/channel { guildId }` → 201 `{ channelId, link }` / 404 / 409 `exists` / 409 `not_in_tmux` / 409 `full` / 503 `not_set_up`。`POST /api/cc/channels/<id>/close` → 200 / 404 / 409（CC14） | CC10・CC14 |
-| `routes/channels.ts` | `WebChannel.kind` に `"cc"`・`cc` の項目。`webChannelLookup`・`webChannelNamer` に `ccChannels`。一覧に cc の行 | CC14 |
+| `routes/cc.ts` | `sessionJson` に `channel: { channelId, guildId, link, state } \| null`（CC10）。`POST /api/cc/sessions/<id>/channel { guildId }` → 201 `{ channelId, link }` / 404 / 409 `exists` / 409 `not_in_tmux` / 409 `full` / 503 `not_set_up`。`POST /api/cc/channels/<id>/close` → 200 / 404 / 409（CC14）。Web の許可のカードの応答の後に `ensureFor(sessionId, "permission", <最初の /setup 済みサーバー>)`（CC11） | CC10・CC11・CC14 |
+| `routes/channels.ts` | `WebChannel.kind` を `ChannelKind | "cc"` に広げる（`access.ts` は変えない）・`cc` の項目。cc への `/renew`・`/continue`・`/turns/<seq>/abort` は 404。`webChannelLookup`・`webChannelNamer` に `ccChannels`。一覧に cc の行 | CC14 |
 | `routes/turns.ts` | kind cc の `POST /messages` → `channels.submitWeb` | CC14 |
 | `routes/status.ts` | 変更なし | — |
 
@@ -313,10 +314,10 @@
 
 | ファイル | 変更 | 段 |
 |---|---|---|
-| `cc-channels-store.test.ts`（新規） | 一意索引・`rebind`・`listDeleteDue`・`prune` | CC10 |
+| `cc-channels-store.test.ts`（新規） | 一意索引・`resuming` の compare-and-set・`rebind`・`listDeleteDue`・`prune` | CC10 |
 | `cc-channels.test.ts`（新規） | `openChannel`・`ensureFor`（きっかけ 6 つ・作らない条件・作れなかったときの #system 1 時間 1 回）・`mirror`・`ended`・`revived`・`handleMessage`（受付・5 件・リアクション・終わったチャンネル）・`resume`・`reconcile` | CC10〜CC13 |
 | `cc-replies.test.ts` | チャンネル優先・[追いかけをやめる] 無し・返信先・上限 200。既存は通る | CC11 |
-| `cc-sender.test.ts`・`cc-starter.test.ts` | `origin discord` の 5 件と Web の 1 件・`ensureFor` の呼び出し・結びつけの後の `onBound` | CC11 |
+| `cc-sender.test.ts`・`cc-starter.test.ts` | `origin discord` の 5 件と Web の 1 件・1 pass で同じセッションに 1 件だけ・`ensureFor` の呼び出し・結びつけの後の `onBound` | CC11 |
 | `cc-permissions.test.ts`・`cc-discord-notice.test.ts` | `answer` の後の `ensureFor`・複数 listener・claim・チャンネルのあるセッションは #system に出ない | CC11・CC12 |
 | `cc-hook-server.test.ts` | `prompt` が事象に 1,000 字、DB に 200 字 | CC12 |
 | `scheduler.test.ts`・`setup.test.ts` | カテゴリ「Claude Code」・再同期・削除の確認 | CC10・CC13 |
