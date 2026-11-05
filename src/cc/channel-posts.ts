@@ -4,8 +4,9 @@
 //   あれば引き受けて（claims）、#system の代わりにそのチャンネルへ CC5c と同じ 1 通（オーナーだけをメンション・[許可][このセッションでは常に許可][拒否]・
 //   [RC で開く]）を出し、cc_permissions.message_channel_id に残す。終わったら（Web で押された・他で答えられた・時間切れ・停止・再起動の前に残った）
 //   その 1 通を書き換えてボタンを外す。Discord で押されたものは app/commands/cc.ts が応答で書き換える。チャンネルの無いセッションは #system のまま。
+//   チャンネルに出せなかったら（投稿の失敗・チャンネルが見つからない）引き受けを戻し（permission-hold.ts の release）、#system に落とす。
 // - 判断待ち: discord-notice.ts と同じ条件（許可の要求以外が 60 秒）で、チャンネルのあるセッションだけをそのチャンネルに出す。1 時間の上限は
-//   discord-notice.ts と CcWaitBudget を共有して 1 つで数え、超えた分はチャンネルには出さない（log だけ）。
+//   discord-notice.ts と CcWaitBudget を共有して 1 つで数え、超えた分は出さずに、そのチャンネルに 1 時間に 1 回だけ短い 1 行（メンションなし）を出す。
 // - 端末・RC から打った指示の写し: UserPromptSubmit のうち self-agent が届けたものでないものを「（端末か RC から）」+ 本文の先頭
 //   CC_PROMPT_MIRROR_MAX_CHARS 字で出す（超えた分は「（ほか n 字）」）。self-agent が届けたもの = そのセッションの貼っている途中か直近
 //   CC_PROMPT_MIRROR_WINDOW_MS に届けた送信で、貼ったときの形（singleLine の後）と prompt の両方の空白を 1 つにして先頭 200 字が同じもの。
@@ -22,6 +23,8 @@ import type { CcSendStore } from "../store/cc-sends.ts";
 import { CC_PROMPT_MAX_CHARS, type CcSessionStore, headChars } from "../store/cc-sessions.ts";
 import {
   CC_WAIT_CHECK_MS,
+  CC_WAIT_NOTIFY_LIMIT,
+  CC_WAIT_NOTIFY_WINDOW_MS,
   type CcNoticeSession,
   type CcWaitBudget,
   dueWaitingViews,
@@ -41,6 +44,8 @@ export const CC_PROMPT_MIRROR_WINDOW_MS = 30_000;
 export const CC_PROMPT_MIRROR_LABEL = "（端末か RC から）";
 /** Discord の 1 メッセージの上限 */
 const MESSAGE_MAX = 2000;
+/** 判断待ちの知らせが上限に達したときの 1 行（メンションなし。チャンネルごとに CC_WAIT_NOTIFY_WINDOW_MS に 1 回） */
+export const CC_CHANNEL_WAIT_OVERFLOW_TEXT = `判断待ちの知らせが上限（1 時間に ${CC_WAIT_NOTIFY_LIMIT} 件）に達したので、しばらく出しません（Web で確かめてください）`;
 
 /** 比べるための形（空白（改行を含む）の連なりを 1 つの空白にして前後を除き、先頭 CC_PROMPT_MAX_CHARS 字） */
 export function promptKey(text: string): string {
@@ -56,21 +61,27 @@ export function ccPromptMirrorTexts(prompt: string, total: number): string[] {
   const rest = Math.max(0, total - shown.length);
   const texts: string[] = [];
   let current = `${CC_PROMPT_MIRROR_LABEL}\n`;
+  /** current の字数（コードポイント） */
+  let length = [...current].length;
   for (const char of shown) {
+    // 1 字のエスケープは 1〜2 字
     const piece = escapeDiscordText(char === "\n" ? char : char.replace(/[\u0000-\u001f\u007f]/, " "));
-    if ([...current].length + [...piece].length > MESSAGE_MAX) {
+    const pieceLength = piece.length === char.length ? 1 : 2;
+    if (length + pieceLength > MESSAGE_MAX) {
       texts.push(current);
       current = "";
+      length = 0;
     }
     current += piece;
+    length += pieceLength;
   }
   if (rest > 0) {
-    const note = `\n（ほか ${rest} 字）`;
-    if ([...current].length + [...note].length > MESSAGE_MAX) {
+    const note = `（ほか ${rest} 字）`;
+    if (length + 1 + [...note].length > MESSAGE_MAX) {
       texts.push(current);
-      current = note.slice(1);
+      current = note;
     } else {
-      current += note;
+      current += `\n${note}`;
     }
   }
   texts.push(current);
@@ -90,6 +101,8 @@ export type CcChannelPostsDeps = {
   registry: Pick<CcRegistry, "snapshot">;
   /** 判断待ちの知らせの 1 時間の上限（discord-notice.ts と共有する） */
   waitBudget: CcWaitBudget;
+  /** チャンネルに出せなかった許可の要求の引き受けを戻す（permission-hold.ts の release。次の受け手の #system に落とす）。main で後から渡す */
+  release?: (id: number) => void;
   /** ~ の場所（ディレクトリの表示） */
   home: string;
   now: () => Date;
@@ -115,6 +128,8 @@ export class CcChannelPosts implements CcPermissionListener {
   private started = false;
   private stopped = false;
   private readonly inFlight = new Set<Promise<void>>();
+  /** チャンネル → 判断待ちの上限の 1 行を最後に出した時刻（プロセスの中） */
+  private readonly overflowNoticedAt = new Map<string, number>();
 
   constructor(deps: CcChannelPostsDeps) {
     this.deps = deps;
@@ -186,20 +201,27 @@ export class CcChannelPosts implements CcPermissionListener {
     if (this.stopped) return;
     const { channels, sessions, waitBudget, cfg, log } = this.deps;
     const now = this.deps.now().getTime();
-    const due = dueWaitingViews(this.deps, now, (sessionId) => channels.openFor(sessionId) !== undefined);
+    /** セッション → 開いているチャンネル（判定のときに引いたもの） */
+    const channelOf = new Map<string, string>();
+    const due = dueWaitingViews(this.deps, now, (sessionId) => {
+      const channel = channels.openFor(sessionId);
+      if (channel !== undefined) channelOf.set(sessionId, channel.channelId);
+      return channel !== undefined;
+    });
     let skipped = 0;
     for (const view of due) {
-      const channel = channels.openFor(view.sessionId);
-      if (channel === undefined) continue;
+      const channelId = channelOf.get(view.sessionId);
+      if (channelId === undefined) continue;
       // 出せなくてもやり直さない（待ちごとに 1 回）
       sessions.setNotifiedAt(view.sessionId, new Date(now));
       if (!waitBudget.take(now)) {
         skipped++;
+        this.noticeOverflow(channelId, now);
         continue;
       }
       const message = waitingNotice(view, { ...this.places(), ownerUserId: cfg.ownerUserId });
       this.track(
-        this.deps.gateway.sendMessage(channel.channelId, { ...message, suppressEmbeds: true }).then(
+        this.deps.gateway.sendMessage(channelId, { ...message, suppressEmbeds: true }).then(
           () => {
             log("Claude Code: 判断待ちをチャンネルに知らせました");
           },
@@ -237,6 +259,21 @@ export class CcChannelPosts implements CcPermissionListener {
     );
   }
 
+  /** 判断待ちの上限に達した 1 行（メンションなし。チャンネルごとに CC_WAIT_NOTIFY_WINDOW_MS に 1 回。失敗は log だけ） */
+  private noticeOverflow(channelId: string, now: number): void {
+    const last = this.overflowNoticedAt.get(channelId);
+    if (last !== undefined && now - last < CC_WAIT_NOTIFY_WINDOW_MS) return;
+    this.overflowNoticedAt.set(channelId, now);
+    this.track(
+      this.deps.gateway.sendMessage(channelId, { text: CC_CHANNEL_WAIT_OVERFLOW_TEXT, suppressEmbeds: true }).then(
+        () => undefined,
+        (error: unknown) => {
+          this.deps.log(`Claude Code: 判断待ちの上限の知らせをチャンネルに出せませんでした（${errorKind(error)}）`);
+        },
+      ),
+    );
+  }
+
   private schedule(): void {
     if (this.stopped) return;
     this.cancelTimer = this.timers.after(() => {
@@ -269,7 +306,12 @@ export class CcChannelPosts implements CcPermissionListener {
   private async postPermission(row: CcPermissionRow): Promise<void> {
     const { channels, permissions, cfg, gateway, log } = this.deps;
     const channel = channels.openFor(row.sessionId);
-    if (channel === undefined) return;
+    if (channel === undefined) {
+      // 引き受けた後にチャンネルが閉じた: #system に落とす
+      log(`Claude Code: 許可の要求（#${row.id}）を出すチャンネルが見つからないため #system に回します`);
+      this.deps.release?.(row.id);
+      return;
+    }
     const message = permissionNotice(row, this.sessionOf(row.sessionId), {
       ...this.places(),
       holdSec: cfg.ccPermissionHoldSec,
@@ -279,7 +321,8 @@ export class CcChannelPosts implements CcPermissionListener {
     try {
       messageId = await gateway.sendMessage(channel.channelId, { ...message, suppressEmbeds: true });
     } catch (error) {
-      log(`Claude Code: 許可の要求（#${row.id}）をチャンネルに出せませんでした（${errorKind(error)}）`);
+      log(`Claude Code: 許可の要求（#${row.id}）をチャンネルに出せなかったため #system に回します（${errorKind(error)}）`);
+      this.deps.release?.(row.id);
       return;
     }
     permissions.setMessage(row.id, channel.channelId, messageId);

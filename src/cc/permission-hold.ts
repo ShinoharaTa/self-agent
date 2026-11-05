@@ -10,7 +10,8 @@
 // allow を返すのはオーナーが押したときだけ（自動で allow する経路は無い）。
 // 保留を始めた・終わった行は listen で渡した相手に知らせる（複数。CC12）。保留を始めた行は、渡した順に claims が true を返した最初の相手
 // （claims の無い相手は全部を引き受ける）だけに知らせ（cc/channel-posts.ts → discord-notice.ts の順。1 件は 1 か所に出す）、
-// 終わった行はその相手だけに知らせる（このプロセスで保留を始めたものでなければ全部に）。
+// 終わった行はその相手だけに知らせる（このプロセスで保留を始めたものでなければ全部に）。引き受けた相手が出せなかったときは release で
+// 引き受けを戻し、次の相手（discord-notice.ts）に渡す（どこにも出ないままにしない）。
 // log は「Claude Code: 許可の要求（#id）→ <状態>（<経路>）」と件数だけ（ツール名・要約・セッションの ID は出さない）
 import type { CcPermissionRow, CcPermissionState, CcPermissionStore, CcPermissionVia } from "../store/cc-permissions.ts";
 import type { CcHookEvent } from "./hook-server.ts";
@@ -99,8 +100,10 @@ export class CcPermissionHold {
   /** 一覧に無いセッションの要求を最後に log に出した時刻 */
   private unknownLoggedAt: number | undefined;
   private readonly listeners: CcPermissionListener[] = [];
-  /** 保留を始めた行を引き受けた相手（終わったときにその相手だけに知らせる） */
-  private readonly claimedBy = new Map<number, CcPermissionListener>();
+  /** 保留を始めた行を引き受けた相手（終わったときにその相手だけに知らせる。null はどの相手も引き受けなかった） */
+  private readonly claimedBy = new Map<number, CcPermissionListener | null>();
+  /** 引き受けを戻した行（戻すのは 1 件に 1 回だけ。2 回目以降は何もしない） */
+  private readonly released = new Set<number>();
 
   constructor(deps: CcPermissionHoldDeps) {
     this.deps = deps;
@@ -239,6 +242,21 @@ export class CcPermissionHold {
     return { ok: true, state: to };
   }
 
+  /**
+   * 引き受けを戻す（引き受けた相手が 1 通を出せなかったとき。cc/channel-posts.ts）: まだ保留中なら、足した順でその相手より後の受け手のうち
+   * claims が true を返した最初のもの（claims の無い受け手は引き受ける）に held を渡す。保留中でない・引き受けた相手が居ない・
+   * 既に 1 回戻した行なら何もしない
+   */
+  release(id: number): void {
+    const claimant = this.claimedBy.get(id);
+    if (claimant === undefined || claimant === null || !this.held.has(id) || this.released.has(id)) return;
+    this.released.add(id);
+    this.claimedBy.set(id, null);
+    const row = this.deps.store.get(id);
+    if (row === undefined || row.state !== "pending") return;
+    this.tellHeld(row, this.listeners.indexOf(claimant) + 1);
+  }
+
   /** 保留している要求があるか（registry.ts は保留中は一覧を 5 秒ごとに読む） */
   holding(): boolean {
     return this.held.size > 0;
@@ -271,16 +289,20 @@ export class CcPermissionHold {
       const row = this.deps.store.get(id);
       const claimant = this.claimedBy.get(id);
       this.claimedBy.delete(id);
-      if (row !== undefined) for (const listener of claimant === undefined ? this.listeners : [claimant]) this.tell(() => listener.resolved(row));
+      this.released.delete(id);
+      const targets = claimant === undefined ? this.listeners : claimant === null ? [] : [claimant];
+      if (row !== undefined) for (const listener of targets) this.tell(() => listener.resolved(row));
     } else {
       this.claimedBy.delete(id);
+      this.released.delete(id);
     }
     return moved;
   }
 
-  /** 保留を始めた行を、claims が true を返した最初の相手（claims の無い相手は引き受ける）だけに知らせる */
-  private tellHeld(row: CcPermissionRow): void {
-    for (const listener of this.listeners) {
+  /** 保留を始めた行を、from 番目から順に claims が true を返した最初の相手（claims の無い相手は引き受ける）だけに知らせる */
+  private tellHeld(row: CcPermissionRow, from = 0): void {
+    this.claimedBy.set(row.id, null);
+    for (const listener of this.listeners.slice(from)) {
       let claimed = true;
       try {
         claimed = listener.claims === undefined || listener.claims(row);
