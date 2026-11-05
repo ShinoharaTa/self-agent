@@ -549,7 +549,7 @@ export class CcConfirmExpirer {
       for (const row of ccSends.listAwaitingConfirmBefore(cutoff)) {
         if (!ccSends.transition(row.id, ["awaiting_confirm"], "cancelled", { lastPaneState: enabled ? "expired" : "disabled" })) continue;
         log(`Claude Code: ${why}ため送りませんでした（#${row.id}）`);
-        edit(row.channelId, row.messageId, ccSendResultText(sendTarget(this.deps, row), row.text, [`${CC_SEND_CANCELLED}${note}`]), `送信 #${row.id}`);
+        edit(row.channelId, row.messageId, ccSendResultText(sendTarget(this.deps, row), row.text, [`${CC_SEND_CANCELLED}${note}`]), `本文 #${row.id}`);
       }
       for (const row of ccStarts.listAwaitingConfirmBefore(cutoff)) {
         if (!ccStarts.transition(row.id, ["awaiting_confirm"], "cancelled")) continue;

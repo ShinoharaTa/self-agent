@@ -76,7 +76,7 @@ export function closeReply(closed: ReturnType<CcChannels["close"]>): { text: str
 /** /cc cancel の応答（純関数） */
 export function cancelReply(count: number | undefined): string {
   if (count === undefined) return CC_CANCEL_NOT_CHANNEL_REPLY;
-  return count === 0 ? CC_CANCEL_NONE_REPLY : `届け待ちを ${count} 件取り消しました`;
+  return count === 0 ? CC_CANCEL_NONE_REPLY : `届け待ちの ${count} 件を送るのをやめました`;
 }
 
 const STATE_LABEL: Readonly<Record<CcState, string>> = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
@@ -112,7 +112,7 @@ export function createCcCommand(deps: CcCommandDeps): CommandHandler {
       description: "Claude Code のセッションの Discord のチャンネルを操作します",
       subcommands: [
         { name: "open", description: "Claude Code のセッションを選んで、そのチャンネルを作ります" },
-        { name: "cancel", description: "このチャンネルのセッションへの届け待ちを取り消します" },
+        { name: "cancel", description: "このチャンネルのセッションへの届け待ちをやめます" },
         { name: "close", description: "このチャンネルを閉じて完了に移します（書くと起動して続けられます）" },
       ],
     },

@@ -288,12 +288,12 @@ test("act: 候補が 2 つ（一覧の cwd が同じリポジトリ）なら入�
   assert.equal(env.submits.length, 1);
 });
 
-test("[対応] のボタン: custom_id は整数の ID だけを読み、積んだら [取り消す] を付ける", async (t) => {
+test("[対応] のボタン: custom_id は整数の ID だけを読み、積んだら [やめる] を付ける", async (t) => {
   assert.deepEqual(parseGithubCustomId("gh:act:12"), { action: "act", id: 12 });
   assert.deepEqual(parseGithubCustomId("gh:cancel:3"), { action: "cancel", id: 3 });
   for (const bad of ["gh:act:0", "gh:act:x", "gh:act:1:2", "gh:send:1", "gh:act:"]) assert.equal(parseGithubCustomId(bad), undefined, bad);
   const queued = githubResultMessage(5, { kind: "queued", sendId: 9, state: "queued", session: "a_b" });
-  assert.deepEqual(queued.components, [{ kind: "buttons", buttons: [{ customId: "gh:cancel:9", label: "取り消す" }] }]);
+  assert.deepEqual(queued.components, [{ kind: "buttons", buttons: [{ customId: "gh:cancel:9", label: "やめる" }] }]);
   // セッション名は Discord の Markdown を無効にする
   assert.ok(queued.text.includes("a\\_b"));
   assert.deepEqual(githubResultMessage(5, { kind: "not_local", repo: "o/r" }).components, []);

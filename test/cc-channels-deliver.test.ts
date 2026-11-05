@@ -424,7 +424,7 @@ test("きっかけ（Web から送った）: queued の直後に web_send のチ
   assert.equal(result.ok && result.channelId, "chan-1");
   const channel = s.store.openFor(S2)!;
   assert.deepEqual([channel.channelId, channel.origin, channel.guildId], ["chan-1", "web_send", "guild-1"]);
-  assert.match(s.gateway.posts[0]!.message.text, /Web からの送信で作りました）。ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます/);
+  assert.match(s.gateway.posts[0]!.message.text, /Web から送った本文で作りました）。ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます/);
   assert.doesNotMatch(s.gateway.posts[0]!.message.text, /届きません/);
   assert.deepEqual([s.gateway.posts[1]!.channelId, s.gateway.posts[1]!.message.text], ["chan-1", `（Web から）\n${SECRET_TEXT}`]);
   assert.equal(s.gateway.posts[1]!.message.suppressEmbeds, true);
@@ -705,7 +705,7 @@ test("Web の会話（CC14）: submitWeb は閉じただけ（一覧にある）
   assert.equal(s.sends.get(2), undefined);
 });
 
-test("Web の会話（CC14）: 閉じたときの知らせは /cc close の応答と同じ文（取り消した届け待ちの件数の行を含む）", async (t) => {
+test("Web の会話（CC14）: 閉じたときの知らせは /cc close の応答と同じ文（やめた届け待ちの件数の行を含む）", async (t) => {
   const s = setup(t, { history: true });
   s.env.screens.before = BUSY;
   await s.channels.handleMessage(s.message("1"));
@@ -714,6 +714,6 @@ test("Web の会話（CC14）: 閉じたときの知らせは /cc close の応�
   assert.deepEqual(closed, { result: "closed", cancelled: 2 });
   const last = s.history.list("cc-1", { limit: 50 }).at(-1)!;
   assert.deepEqual([last.kind, last.text], ["notice", ccClosedText(2)]);
-  assert.match(ccClosedText(2), /\n閉じたので届け待ちを 2 件取り消しました$/);
+  assert.match(ccClosedText(2), /\n閉じたので、届け待ちの 2 件を送るのをやめました$/);
   assert.equal(ccClosedText(0), CC_CHANNEL_CLOSED_TEXT);
 });
