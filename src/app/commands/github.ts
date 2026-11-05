@@ -79,13 +79,14 @@ export function createGithubComponent(deps: GithubComponentDeps): ComponentHandl
       if (parsed.action === "act") {
         // 送り先を決めるのに入力待ちを 2 回撮るので 3 秒を超えうる。結果は本人にだけ
         await responder.defer(true);
-        const result = await handoff.act(parsed.id);
+        // そのセッションの Claude Code のチャンネルは押したサーバーに作る（CC11）
+        const result = await handoff.act(parsed.id, interaction.guildId ?? undefined);
         await responder.reply({ ...githubResultMessage(parsed.id, result), ephemeral: true });
         return;
       }
       // [起動して送る]: 確認の返信を書き換える。同じ通知を処理している途中（二重の押下）なら、返信は書き換えずに本人にだけ返す
       await responder.deferUpdate();
-      const result = await handoff.start(parsed.id);
+      const result = await handoff.start(parsed.id, interaction.guildId ?? undefined);
       if (result.kind === "busy") {
         await responder.reply({ ...githubResultMessage(parsed.id, result), ephemeral: true });
         return;

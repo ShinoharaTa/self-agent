@@ -80,9 +80,9 @@ export type CcSubmitResult =
 export type CcSenderChannels = {
   /**
    * 送信を queued にした直後（貼る前）。外から積んだ送信（web・tool・github）ならチャンネルを作り（作れなければそのまま）写しを出し、
-   * 届け待ちの印を付ける。送り先のセッションの開いているチャンネルの ID を返す
+   * 届け待ちの印を付ける。guildId は作るサーバー（Discord で押した [対応] のサーバー。DB には入れない）。送り先のセッションの開いているチャンネルの ID を返す
    */
-  announce(row: CcSendRow): Promise<string | undefined>;
+  announce(row: CcSendRow, guildId?: string): Promise<string | undefined>;
   /** 送信が終わった（delivered・unconfirmed・failed・gave_up・cancelled）。印を付け替える */
   settled(row: CcSendRow): void;
   /** 送り先のダイアログ（dialog）で待っている */
@@ -165,7 +165,7 @@ export class CcSender {
   private rerun = false;
   /** 複数行が 1 行目で送信されたように見えた送信が続いた数（複数行が貼れたら 0 に戻す） */
   private earlySubmits = 0;
-  /** 再起動の前に貼っていて unconfirmed にした送信（start で印を付け直す） */
+  /** 再起動の前に貼っていて unconfirmed にした送信と、待ちの上限を過ぎて gave_up にした送信（Discord につないだ後の start で印を付ける） */
   private recovered: number[] = [];
 
   constructor(deps: CcSenderDeps) {
@@ -179,7 +179,8 @@ export class CcSender {
     this.recovered = this.deps.sends.listDelivering().map((row) => row.id);
     const recovered = this.deps.sends.recoverDelivering();
     if (recovered > 0) this.deps.log(`Claude Code: 再起動の前に貼っていた送信 ${recovered} 件を確かめられないものにしました`);
-    this.expire();
+    // まだ Discord につないでいないので、諦めた送信の印は start で付ける
+    this.recovered.push(...this.expire(false));
   }
 
   /** 直後に 1 回試し、以後は CC_SEND_RETRY_MS ごと。stop の後・2 回目は何もしない */
@@ -218,6 +219,8 @@ export class CcSender {
     notificationId?: number;
     channelId?: string;
     messageId?: string;
+    /** Claude Code のチャンネルを作るサーバー（Discord の [対応] の押したサーバー。DB には入れず announce に渡すだけ） */
+    guildId?: string;
   }): Promise<CcSubmitResult> {
     const { sends, now, log } = this.deps;
     const checked = await this.checkTarget(input.sessionId);
@@ -240,7 +243,7 @@ export class CcSender {
       ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
     });
     log(`Claude Code: 送りました（#${send.id}、queued）`);
-    const channelId = await this.announce(send.id);
+    const channelId = await this.announce(send.id, input.guildId);
     void this.kick();
     return { ok: true, send: sends.get(send.id) ?? send, duplicate: false, ...(channelId === undefined ? {} : { channelId }) };
   }
@@ -249,12 +252,12 @@ export class CcSender {
    * 積んだ直後の送信を channels に渡す（チャンネルを作る・写す・届け待ちの印。submit と、[送る]（confirm）の後に cc-confirm.ts が呼ぶ）。
    * 送り先のセッションの開いている Claude Code のチャンネルの ID を返す。reject しない
    */
-  async announce(id: number): Promise<string | undefined> {
+  async announce(id: number, guildId?: string): Promise<string | undefined> {
     const { channels, sends, log } = this.deps;
     const row = sends.get(id);
     if (channels === undefined || row === undefined) return undefined;
     try {
-      return await channels.announce(row);
+      return await channels.announce(row, guildId);
     } catch (error) {
       log(`Claude Code: 送信をチャンネルに渡せませんでした（#${id}、${errorKind(error)}）`);
       return undefined;
@@ -362,13 +365,15 @@ export class CcSender {
     });
   }
 
-  /** 待ちの上限を過ぎた queued を gave_up にする */
-  private expire(): void {
+  /** 待ちの上限を過ぎた queued を gave_up にし、その id を返す。mark なら印も付ける（起動時の recover は Discord につなぐ前なので付けない） */
+  private expire(mark = true): number[] {
     const cutoff = new Date(this.deps.now().getTime() - this.deps.cfg.ccSendWaitMin * 60_000);
-    for (const id of this.deps.sends.giveUpOlderThan(cutoff)) {
+    const ids = this.deps.sends.giveUpOlderThan(cutoff);
+    for (const id of ids) {
       this.deps.log(`Claude Code: 送信待ちを諦めました（#${id}）`);
-      this.settled(id);
+      if (mark) this.settled(id);
     }
+    return ids;
   }
 
   private async pass(): Promise<void> {
@@ -384,7 +389,7 @@ export class CcSender {
         if (row.sessionId !== null && pasted.has(row.sessionId)) continue;
         await this.attempt(row.id);
         const after = this.deps.sends.get(row.id);
-        if (after?.sessionId != null && (after.state === "delivered" || after.state === "unconfirmed")) pasted.add(after.sessionId);
+        if (after !== undefined && after.sessionId !== null && (after.state === "delivered" || after.state === "unconfirmed")) pasted.add(after.sessionId);
       }
     } catch (error) {
       this.deps.log(`Claude Code: 送信の待ち行列を回せませんでした（${errorKind(error)}）`);

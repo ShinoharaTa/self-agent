@@ -646,7 +646,7 @@ test("起動（cc_start。CC7）: 頼んだチャンネルは最初の指示の�
 test("起動（CC11）: 一覧のセッションに結びつけたときだけ onBound を 1 回（起動したもの・頼んだチャンネル・最初の指示の送信）。trust の確認待ちで一覧に出ない間は呼ばない", async (t) => {
   const s = await setup(t);
   s.env.screens["%9"] = TRUST;
-  const result = await s.starter.launch({ project: "alpha", title: "a", text: "最初の指示", startedBy: "tool", channelId: "channel-1" });
+  const result = await s.starter.launch({ project: "alpha", title: "a", text: "最初の指示", startedBy: "tool", channelId: "channel-1", guildId: "guild-1" });
   assert.equal(result.ok, true);
   await s.fire(CC_TRUST_CHECK_DELAY_MS);
   await s.fire(CC_START_CHECK_MS);
@@ -654,7 +654,9 @@ test("起動（CC11）: 一覧のセッションに結びつけたときだけ o
   s.env.screens["%9"] = EMPTY;
   await s.showNew();
   await s.fire(CC_START_CHECK_MS);
-  assert.deepEqual(s.bound, [{ sessionId: NEW, startedBy: "tool", channelId: "channel-1", sendId: 1 }]);
+  assert.deepEqual(s.bound, [{ sessionId: NEW, startedBy: "tool", channelId: "channel-1", sendId: 1, guildId: "guild-1" }]);
+  // guildId（押したサーバー）は DB には入れない
+  assert.equal(s.store.get(NEW)?.channelId, "channel-1");
   await s.fire(CC_START_CHECK_MS);
   assert.equal(s.bound.length, 1);
   // Web からの最初の指示の無い起動は channelId・sendId を渡さない
