@@ -1017,12 +1017,20 @@
     return String(p.state);
   }
 
+  const PERMISSION_NOTE = "端末や RC のダイアログでも答えられます。先に答えた方が効きます";
+
   /** 保留の残り（m 分 s 秒）。過ぎていれば null */
   function remainingText(iso) {
     const ms = new Date(iso).getTime() - Date.now();
     if (!Number.isFinite(ms) || ms <= 0) return null;
     const sec = Math.ceil(ms / 1000);
     return (sec >= 60 ? Math.floor(sec / 60) + " 分 " : "") + (sec % 60) + " 秒";
+  }
+
+  /** 残りが 60 秒を切ったか（残り時間を warning にする） */
+  function permissionUrgent(iso) {
+    const ms = new Date(iso).getTime() - Date.now();
+    return Number.isFinite(ms) && ms < 60000;
   }
 
   /** 許可のカードの見出しの残り時間の文 */
@@ -1037,8 +1045,10 @@
     const nodes = document.querySelectorAll("[data-permission-left]");
     if (nodes.length === 0) return;
     for (const node of nodes) {
-      const text = permissionLeftText(node.getAttribute("data-permission-left"));
+      const iso = node.getAttribute("data-permission-left");
+      const text = permissionLeftText(iso);
       if (node.textContent !== text) node.textContent = text;
+      node.classList.toggle("is-urgent", permissionUrgent(iso));
     }
   }, 1000);
 
@@ -1071,7 +1081,7 @@
     const head = el("div", { class: "card-head" }, [
       el("h2", { text: pending ? "許可を待っています" : "許可の要求" }),
       el("span", {
-        class: "meta",
+        class: "meta" + (pending && typeof p.expiresAt === "string" && permissionUrgent(p.expiresAt) ? " is-urgent" : ""),
         "data-permission-left": pending && typeof p.expiresAt === "string" ? p.expiresAt : null,
         text: pending ? permissionLeftText(p.expiresAt) : ago(p.resolvedAt || p.createdAt),
       }),
@@ -1124,9 +1134,10 @@
       {
         class: "card card-sm cc-permission is-pending",
         "aria-label": "許可の要求",
-        title: "端末や RC のダイアログでも答えられます。先に答えた方が効きます",
+        title: PERMISSION_NOTE,
       },
-      [head, ...facts, el("div", { class: "msg-actions" }, [allow, deny])],
+      // title はタッチで出ないので、スマホでは同じ文を 12px で常設する（PC は title）
+      [head, ...facts, el("div", { class: "msg-actions" }, [allow, deny]), el("p", { class: "cc-permission-note show-sm", text: PERMISSION_NOTE })],
     );
   }
 
