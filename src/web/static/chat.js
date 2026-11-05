@@ -534,6 +534,11 @@
   /** 実行中の行に薄い文字で出す直近の手順の数 */
   const RECENT_STEPS = 3;
 
+  /** 「すべての手順」の見出し。手順は直近 30 件しか届かない（handler.ts）ので、ツールの回数より少なければ「直近の手順」 */
+  function allStepsLabel(run) {
+    return (run.toolCalls > run.steps.length ? "直近の手順（" : "すべての手順（") + run.steps.length + "）";
+  }
+
   /** 実行中のターンの行（is-running）。[中断] は中断できるターン（セッション）だけ */
   function renderRunning(ch, run, prev) {
     const p = persona(ch ? ch.persona : "default");
@@ -548,7 +553,7 @@
     // 直近に収まらないときだけ、押して開くすべての手順
     if (run.steps.length > RECENT_STEPS) {
       const details = el("details", { class: "steps-plain", open: stepsOpened.has(run.channelId) }, [
-        el("summary", {}, [icon("chevron-right", "steps-chevron"), el("span", { text: "すべての手順（" + run.steps.length + "）" })]),
+        el("summary", {}, [icon("chevron-right", "steps-chevron"), el("span", { text: allStepsLabel(run) })]),
         stepsList(run.steps),
       ]);
       details.addEventListener("toggle", () => {
@@ -923,6 +928,7 @@
       },
       onClose: () => {
         delete openSteps[channelId];
+        stepsOpened.delete(channelId);
         delete picked[channelId];
         ccScreenOpened.delete(channelId);
       },
