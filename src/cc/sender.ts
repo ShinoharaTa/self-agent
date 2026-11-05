@@ -14,12 +14,14 @@
 // CC_CHANNEL_QUEUE_MAX 件まで積める（Web・ツール・GitHub の送信は今までどおり、まだ終わっていない行があれば already_queued）。同じセッションに貼った pass では、
 // そのセッションの次の queued を試さない（次の Stop か CC_SEND_RETRY_MS 後の pass で試す）。積んだ直後・終わったとき・ダイアログで待っているときは channels に渡す
 // （チャンネルを作る・写す・印を付ける）
+// Enter の後の確かめで、許可などのダイアログが出ていても貼った文字が入力欄から消えていれば届いたとみなす。unconfirmed の送信は、貼り始めてから
+// （終わった後は CC_PROMPT_CONFIRM_WINDOW_MS 以内に）そのセッションの UserPromptSubmit の本文が同じ（promptKey）なら delivered に直す（§3.3）
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { SystemNotifier } from "../app/system-notice.ts";
 import type { Config } from "../config.ts";
 import type { CcSendOrigin, CcSendRow, CcSendStore } from "../store/cc-sends.ts";
-import type { CcSessionStore } from "../store/cc-sessions.ts";
-import { classifyScreen, pasteLanded, pasteSubmittedEarly, probePaneState } from "../tmux/pane-state.ts";
+import { CC_PROMPT_MAX_CHARS, type CcSessionStore, headChars } from "../store/cc-sessions.ts";
+import { classifyScreen, pasteCleared, pasteLanded, pasteSubmittedEarly, probePaneState } from "../tmux/pane-state.ts";
 import type { Tmux } from "../tmux/tmux.ts";
 import type { CcHookEvent } from "./hook-server.ts";
 import { sessionOnStartedPane, type CcPaneResolver } from "./panes.ts";
@@ -40,6 +42,9 @@ export const CC_START_BIND_GRACE_MS = 60_000;
 
 /** Claude Code のチャンネルから同じセッションに積める、オーナーの発言（origin discord）の queued の数（§3.3） */
 export const CC_CHANNEL_QUEUE_MAX = 5;
+
+/** unconfirmed にした送信を、この間に来た UserPromptSubmit（本文が同じ）で delivered に直す（docs/plan/claude-code-channels.md §3.3） */
+export const CC_PROMPT_CONFIRM_WINDOW_MS = 30_000;
 
 /** 複数行が 1 行目で送信されたように見えるのが、別の送信でこの回数続いたら複数行を止める（数えるのはプロセスの中だけ） */
 export const CC_MULTILINE_DETECT_LIMIT = 2;
@@ -65,6 +70,14 @@ export function normalizeSendText(raw: unknown): CcTextCheck {
 /** 複数行を止めているときの本文（改行を空白に置き換える。§3.2） */
 export function singleLine(text: string): string {
   return text.replace(/\n/g, " ");
+}
+
+/**
+ * UserPromptSubmit の prompt と送った本文を比べるための形（純関数。空白（改行を含む）の連なりを 1 つの空白にして前後を除き、先頭 CC_PROMPT_MAX_CHARS 字）。
+ * 送った本文は貼ったときの形（singleLine の後）を渡す
+ */
+export function promptKey(text: string): string {
+  return headChars(text.replace(/\s+/g, " ").trim(), CC_PROMPT_MAX_CHARS);
 }
 
 /** multiline_ok を false にしたときの #system の 1 行（名前・本文は入れない） */
@@ -120,6 +133,8 @@ export type CcSenderDeps = {
     | "confirm"
     | "countQueuedDiscord"
     | "listDelivering"
+    | "listUnconfirmedSince"
+    | "confirmUnconfirmed"
   >;
   sessions: Pick<CcSessionStore, "multilineOk" | "setMultilineOk">;
   /** #system への知らせ（無ければ log だけ） */
@@ -167,6 +182,10 @@ export class CcSender {
   private earlySubmits = 0;
   /** 再起動の前に貼っていて unconfirmed にした送信と、待ちの上限を過ぎて gave_up にした送信（Discord につないだ後の start で印を付ける） */
   private recovered: number[] = [];
+  /** 直近 CC_PROMPT_CONFIRM_WINDOW_MS に受けた UserPromptSubmit（セッションごとの promptKey と受けた時刻。プロセスの中だけ） */
+  private readonly prompts = new Map<string, Array<{ key: string; at: number }>>();
+  /** 貼っている途中の送信の、貼り始めた時刻（それより後の UserPromptSubmit だけを届いた証拠にする） */
+  private readonly deliveringSince = new Map<number, number>();
 
   constructor(deps: CcSenderDeps) {
     this.deps = deps;
@@ -329,10 +348,45 @@ export class CcSender {
   }
 
   /**
-   * 採った hook の事象（registry の onEvent）。Stop ならターンが終わったので、作業中に積んだ送信を CC_SEND_RETRY_MS の周期を待たずに試す
+   * 採った hook の事象（registry の onEvent）。Stop ならターンが終わったので、作業中に積んだ送信を CC_SEND_RETRY_MS の周期を待たずに試す。
+   * UserPromptSubmit なら覚えておき（貼っている途中の送信が unconfirmed で終わったときに比べる）、CC_PROMPT_CONFIRM_WINDOW_MS 以内に unconfirmed に
+   * したそのセッションの送信で本文が同じものがあれば delivered に直す
    */
-  onEvent(event: Pick<CcHookEvent, "event">): void {
+  onEvent(event: Pick<CcHookEvent, "event"> & Partial<Pick<CcHookEvent, "sessionId" | "prompt" | "receivedAt">>): void {
     if (event.event === "Stop") void this.kick();
+    if (event.event !== "UserPromptSubmit" || event.sessionId === undefined || event.prompt === undefined || event.prompt === "") return;
+    try {
+      const at = (event.receivedAt ?? this.deps.now()).getTime();
+      const key = promptKey(event.prompt);
+      const kept = (this.prompts.get(event.sessionId) ?? []).filter((prompt) => at - prompt.at < CC_PROMPT_CONFIRM_WINDOW_MS);
+      kept.push({ key, at });
+      this.prompts.set(event.sessionId, kept);
+      const since = new Date(at - CC_PROMPT_CONFIRM_WINDOW_MS);
+      const match = this.deps.sends.listUnconfirmedSince(event.sessionId, since).find((row) => this.sentKey(row) === key);
+      if (match !== undefined) this.confirmByPrompt(match.id);
+    } catch (error) {
+      this.deps.log(`Claude Code: 送信の指示の届きを確かめられませんでした（${errorKind(error)}）`);
+    }
+  }
+
+  /** 送った本文の promptKey（singleLine を当てる。promptKey が空白を 1 つにするので、複数行のまま貼ったものでも同じ形になる） */
+  private sentKey(row: CcSendRow): string {
+    return promptKey(singleLine(row.text));
+  }
+
+  /** since 以後に受けた、そのセッションの本文が同じ UserPromptSubmit があるか */
+  private promptSeen(row: CcSendRow, since: number): boolean {
+    if (row.sessionId === null) return false;
+    const key = this.sentKey(row);
+    return (this.prompts.get(row.sessionId) ?? []).some((prompt) => prompt.at >= since && prompt.key === key);
+  }
+
+  /** unconfirmed の送信を delivered に直し、印を付け替えて onFinished に渡す */
+  private confirmByPrompt(id: number): void {
+    if (!this.deps.sends.confirmUnconfirmed(id, "prompt_submit")) return;
+    this.deps.log(`Claude Code: 送りました（#${id}、delivered。指示を受けたことを確かめました）`);
+    this.settled(id);
+    this.finished(id);
   }
 
   /** 待ち行列を 1 回回す。回している途中なら、終わった後にもう 1 回回す。reject しない */
@@ -470,12 +524,28 @@ export class CcSender {
     await this.deliver(row, target.pane.paneId);
   }
 
-  /** delivering から終わりの状態に移して log */
+  /**
+   * delivering から終わりの状態に移して log。unconfirmed でも、貼り始めた後に本文が同じ UserPromptSubmit を受けていれば delivered（prompt_submit）にする
+   */
   private finish(id: number, state: "delivered" | "unconfirmed" | "failed", reason: string): void {
+    const since = this.deliveringSince.get(id);
+    this.deliveringSince.delete(id);
+    if (state === "unconfirmed" && since !== undefined) {
+      const row = this.deps.sends.get(id);
+      if (row !== undefined && this.promptSeen(row, since)) {
+        state = "delivered";
+        reason = "prompt_submit";
+      }
+    }
     if (!this.deps.sends.transition(id, ["delivering"], state, { lastPaneState: reason })) return;
     if (state === "failed") this.deps.log(`Claude Code: 送れませんでした（#${id}、${reason}）`);
     else this.deps.log(`Claude Code: 送りました（#${id}、${state}）`);
     this.settled(id);
+    this.finished(id);
+  }
+
+  /** 終わった送信を onFinished に渡す（投げても止めない） */
+  private finished(id: number): void {
     const { onFinished } = this.deps;
     if (onFinished === undefined) return;
     try {
@@ -488,13 +558,16 @@ export class CcSender {
 
   /** 貼る前に止まった（何も貼っていない）ので queued に戻す */
   private requeue(id: number, reason: string): void {
+    this.deliveringSince.delete(id);
     this.deps.sends.transition(id, ["delivering"], "queued", { lastPaneState: reason });
   }
 
   /** idle を確かめたペインに貼って Enter を押す（§3.2）。取り消されていれば何もしない */
   private async deliver(row: CcSendRow, paneId: string): Promise<void> {
     const { sends, sessions, tmux } = this.deps;
+    const startedAt = this.deps.now().getTime();
     if (!sends.transition(row.id, ["queued"], "delivering", { paneId })) return;
+    this.deliveringSince.set(row.id, startedAt);
     try {
       const multiline = sessions.multilineOk();
       const text = multiline ? row.text : singleLine(row.text);
@@ -553,8 +626,10 @@ export class CcSender {
       await this.sleep(CC_ENTER_CHECK_DELAY_MS);
       const check = await tmux.capturePane(paneId);
       const state = check.ok ? classifyScreen(check.value) : undefined;
-      // 入力欄が空（idle）か作業中なら届いた。貼った文字が残っていれば（draft など）確かめられない
+      // 入力欄が空（idle）か作業中なら届いた。Enter の直後に出たダイアログ（許可・案内）は、貼った文字が入力欄から消えていれば届いた。
+      // 貼った文字が残っていれば（draft など）確かめられない
       if (state === "busy" || state === "idle") this.finish(row.id, "delivered", state);
+      else if (state === "dialog" && check.ok && pasteCleared(check.value, text)) this.finish(row.id, "delivered", "dialog");
       else this.finish(row.id, "unconfirmed", "enter_unconfirmed");
     } catch (error) {
       this.deps.log(`Claude Code: 送信の途中で失敗しました（#${row.id}、${errorKind(error)}）`);

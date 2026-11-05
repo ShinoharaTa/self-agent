@@ -336,6 +336,26 @@ test("発言: resuming の間は「起動中です」で断り、ended のチャ
   );
 });
 
+test("印（CC e2e）: ⚠️ の発言も、30 秒以内に本文が同じ UserPromptSubmit を受けたら ✅ に付け替える（返信は足さない）", async (t) => {
+  const s = setup(t);
+  const unconfirmed = s.message("届いたか分からない");
+  await s.channels.handleMessage(unconfirmed);
+  await s.settle();
+  assert.equal(s.sends.get(1)!.state, "unconfirmed");
+  assert.deepEqual(s.gateway.reactionsOn("cc-1", unconfirmed.id), [CC_MARK_UNCONFIRMED]);
+  const posts = s.gateway.posts.length;
+  s.clock.now += 5000;
+  s.sender.onEvent({ event: "UserPromptSubmit", sessionId: S1, prompt: "届いたか分からない", receivedAt: new Date(s.clock.now) });
+  await s.settle();
+  assert.equal(s.sends.get(1)!.state, "delivered");
+  assert.deepEqual(s.gateway.reactionsOn("cc-1", unconfirmed.id), [CC_MARK_DELIVERED]);
+  assert.equal(s.gateway.posts.length, posts);
+  // 2 回目は何もしない
+  s.sender.onEvent({ event: "UserPromptSubmit", sessionId: S1, prompt: "届いたか分からない", receivedAt: new Date(s.clock.now) });
+  await s.settle();
+  assert.deepEqual(s.gateway.reactionsOn("cc-1", unconfirmed.id), [CC_MARK_DELIVERED]);
+});
+
 test("印: 確かめられなければ ⚠️ と返信、送り先が消えたら ❌ と理由、待ちの上限なら ❌ と諦めた返信、/cc cancel で ⏳ を外す、ダイアログで待つ間は 1 回だけ返信", async (t) => {
   const s = setup(t);
   // 貼っても入力欄に出ない → unconfirmed
@@ -404,7 +424,7 @@ test("きっかけ（Web から送った）: queued の直後に web_send のチ
   assert.equal(result.ok && result.channelId, "chan-1");
   const channel = s.store.openFor(S2)!;
   assert.deepEqual([channel.channelId, channel.origin, channel.guildId], ["chan-1", "web_send", "guild-1"]);
-  assert.match(s.gateway.posts[0]!.message.text, /Web からの送信 で作りました）。ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます/);
+  assert.match(s.gateway.posts[0]!.message.text, /Web からの送信で作りました）。ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます/);
   assert.doesNotMatch(s.gateway.posts[0]!.message.text, /届きません/);
   assert.deepEqual([s.gateway.posts[1]!.channelId, s.gateway.posts[1]!.message.text], ["chan-1", `（Web から）\n${SECRET_TEXT}`]);
   assert.equal(s.gateway.posts[1]!.message.suppressEmbeds, true);

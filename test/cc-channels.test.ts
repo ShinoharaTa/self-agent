@@ -273,12 +273,38 @@ test("ended: open のチャンネルを ended にして 1 行を出し、完了�
   assert.deepEqual(s.channelOps.moves, [{ channelId: "chan-1", target: { kind: "state", guildId: "guild-1", state: "done" } }]);
   assert.equal(s.gateway.posts.at(-1)?.channelId, "chan-1");
   assert.equal(s.gateway.posts.at(-1)?.message.text, CC_CHANNEL_ENDED_TEXT);
-  // 2 回目・チャンネルの無いセッション
-  assert.equal(s.channels.ended({ sessionId: S1 }), false);
+  // チャンネルの無いセッション
   assert.equal(s.channels.ended({ sessionId: S2 }), false);
   assert.equal(s.channelOps.moves.length, 1);
   // #system には出さない（notify を呼ばない）
   assert.equal(s.notices.length, 0);
+  assertQuietLogs(s.logs);
+});
+
+test("ended: 閉じた（ended の）チャンネルのセッションが後で終わったら、状態とカテゴリは変えずに 1 行だけ出して引き受け、#system には出さない", async (t) => {
+  const s = setup(t);
+  await s.channels.openChannel("guild-1", S1, "web");
+  // /cc close などで閉じた後も、セッションは動いている
+  assert.equal(s.store.setState("chan-1", "ended", ["open"]), true);
+  const endedAt = s.store.get("chan-1")?.endedAt;
+  const posts = s.gateway.posts.length;
+  s.clock.now = BASE + 5000;
+  const calls: string[] = [];
+  ccEndedHandler({
+    channels: () => s.channels,
+    replier: () => ({ ended: () => (calls.push("replier"), false) }),
+    notifier: () => ({ ended: () => void calls.push("notifier") }),
+  })({ sessionId: S1 } as CcSessionRow);
+  await s.channels.idle();
+  assert.deepEqual(calls, ["replier"]);
+  assert.deepEqual([s.store.get("chan-1")?.state, s.store.get("chan-1")?.endedAt], ["ended", endedAt]);
+  assert.deepEqual(s.channelOps.moves, []);
+  assert.equal(s.gateway.posts.length, posts + 1);
+  assert.deepEqual([s.gateway.posts.at(-1)?.channelId, s.gateway.posts.at(-1)?.message.text], ["chan-1", CC_CHANNEL_ENDED_TEXT]);
+  assert.equal(s.notices.length, 0);
+  // 削除済みのチャンネルは引き受けない（#system に回す）
+  s.store.markDeleted("chan-1");
+  assert.equal(s.channels.ended({ sessionId: S1 }), false);
   assertQuietLogs(s.logs);
 });
 
