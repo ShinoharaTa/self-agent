@@ -447,9 +447,19 @@
     return !!(ch && ch.kind === "cc") || !!(store.channels && store.channels.personas.length > 1);
   }
 
-  /** 吹き出しの 1 行（msg-owner は右・msg-agent は左）。name は吹き出しの上、time は吹き出しの下 */
-  function bubbleRow(side, name, bubbleChildren, time, attrs) {
-    return el("article", Object.assign({ class: "msg msg-" + side }, attrs || {}), [
+  /** 直前の行が同じ話者の Bot の返事か（続けて出す名前は省く。LINE の形）。persona は今の行の人格 */
+  function followsSameAgent(prev, ch, personaId) {
+    if (!prev || prev.kind !== "agent") return false;
+    if (ch && ch.kind === "cc") return true;
+    return (prev.persona || "default") === (personaId || "default");
+  }
+
+  /**
+   * 吹き出しの 1 行（msg-owner は右・msg-agent は左）。label は読み上げの話者（article の aria-label）、
+   * name は吹き出しの上に見せる名前（null なら出さない）、time は吹き出しの下
+   */
+  function bubbleRow(side, label, name, bubbleChildren, time, attrs) {
+    return el("article", Object.assign({ class: "msg msg-" + side, "aria-label": label }, attrs || {}), [
       name ? el("span", { class: "msg-name", text: name }) : null,
       el("div", { class: "msg-bubble" }, bubbleChildren),
       time,
@@ -479,7 +489,8 @@
     return list;
   }
 
-  function renderTurn(turn, channelId, ch) {
+  /** prev は直前の行（同じ話者の Bot が続くなら名前を出さない） */
+  function renderTurn(turn, channelId, ch, prev) {
     if (turn.kind === "divider") {
       return el("div", { class: "tl-divider", role: "separator" }, [el("span", { text: turn.text })]);
     }
@@ -487,11 +498,11 @@
       return el("div", { class: "tl-notice" }, [icon("info"), el("span", { text: turn.text }), timeOf(turn)]);
     }
     if (turn.kind === "owner") {
-      return bubbleRow("owner", null, [el("div", { class: "msg-text", text: turn.text })], timeOf(turn));
+      return bubbleRow("owner", "オーナー", null, [el("div", { class: "msg-text", text: turn.text })], timeOf(turn));
     }
     // agent。Claude Code のチャンネルの返事は名前を Claude Code にし、手順は出さない（記録が無い）
     if (ch && ch.kind === "cc") {
-      return bubbleRow("agent", "Claude Code", [el("div", { class: "msg-text msg-md" }, [renderText(turn.text)])], timeOf(turn));
+      return bubbleRow("agent", "Claude Code", followsSameAgent(prev, ch, turn.persona) ? null : "Claude Code", [el("div", { class: "msg-text msg-md" }, [renderText(turn.text)])], timeOf(turn));
     }
     const p = persona(turn.persona);
     const body = [];
@@ -513,14 +524,15 @@
     }
     // 返事の本文は最小限の Markdown（ui.js の renderText。リンクは http(s) の URL だけ）
     body.push(el("div", { class: "msg-text msg-md" }, [renderText(turn.text)]));
-    return bubbleRow("agent", showsAgentName(ch) ? p.name : null, body, timeOf(turn));
+    const name = showsAgentName(ch) && !followsSameAgent(prev, ch, turn.persona) ? p.name : null;
+    return bubbleRow("agent", p.name, name, body, timeOf(turn));
   }
 
   /** 実行中の行の手順を閉じたチャンネル（描き直しで開き直さない。既定は開く。このタブのメモリだけ） */
   const stepsClosed = new Set();
 
   /** 実行中のターンの行（is-running）。[中断] は中断できるターン（セッション）だけ */
-  function renderRunning(ch, run) {
+  function renderRunning(ch, run, prev) {
     const p = persona(ch ? ch.persona : "default");
     const steps = el("ol", { class: "steps-list" });
     run.steps.forEach((s, i) => steps.append(el("li", { class: i === run.steps.length - 1 ? "is-current" : null, text: s })));
@@ -540,7 +552,8 @@
       abort.addEventListener("click", () => abortTurn(run.channelId, run.turnSeq, abort));
       body.push(el("div", { class: "msg-actions" }, [abort]));
     }
-    return bubbleRow("agent", showsAgentName(ch) ? p.name : null, body, null, { class: "msg msg-agent is-running", "aria-busy": "true" });
+    const name = showsAgentName(ch) && !followsSameAgent(prev, ch, ch ? ch.persona : "default") ? p.name : null;
+    return bubbleRow("agent", "作業中", name, body, null, { class: "msg msg-agent is-running", "aria-busy": "true" });
   }
 
   /** [中断]。button は押したもの（[もう一度] からは null） */
@@ -810,8 +823,10 @@
     // Claude Code のチャンネルにはターンが無い（実行中の行・[続ける] は出さない）
     const run = isCc ? null : store.runningOf(channelId);
     const last = t.turns[t.turns.length - 1];
+    let prev = null;
     for (const turn of t.turns) {
-      const node = renderTurn(turn, channelId, ch);
+      const node = renderTurn(turn, channelId, ch, prev);
+      prev = turn;
       // 手順の上限で止まった最後の返事には [続ける]（セッションで、実行中のターンが無いとき）
       if (turn === last && turn.kind === "agent" && turn.outcome === "max_turns" && ch && ch.kind === "session" && !run && !continued.has(turn.id)) {
         // 吹き出しの下に左寄せ
@@ -819,7 +834,7 @@
       }
       timeline.append(node);
     }
-    if (run) timeline.append(renderRunning(ch, run));
+    if (run) timeline.append(renderRunning(ch, run, prev));
     const waiting = pendingOf(channelId, ch);
     if (waiting) {
       timeline.append(
