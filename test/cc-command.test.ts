@@ -140,7 +140,7 @@ test("openResultReply: 結果ごとの応答", () => {
   assert.match(openResultReply({ ok: false, reason: "failed" }), /作れませんでした/);
 });
 
-test("/cc cancel: Claude Code のチャンネルの中ならそのセッションの届け待ちを取り消して件数を本人にだけ返す。0 件・チャンネルの外は断る", async () => {
+test("/cc cancel: Claude Code のチャンネルの中ならそのセッションの届け待ちをやめて件数を本人にだけ返す。0 件・チャンネルの外は断る", async () => {
   const { channels } = fakeChannels(ITEMS, { ok: false, reason: "failed" }, { "cc-chan": 2, "cc-empty": 0 });
   const command = createCcCommand({ ccChannels: () => channels, guildSettings: { ccCategoryId: () => "cat-cc" }, log: () => {} });
   const replies: string[] = [];
@@ -151,7 +151,7 @@ test("/cc cancel: Claude Code のチャンネルの中ならそのセッショ�
     assert.equal(responder.replies[0]!.ephemeral, true);
     replies.push(responder.replies[0]!.text);
   }
-  assert.deepEqual(replies, ["届け待ちを 2 件取り消しました", CC_CANCEL_NONE_REPLY, CC_CANCEL_NOT_CHANNEL_REPLY]);
+  assert.deepEqual(replies, ["届け待ちの 2 件を送るのをやめました", CC_CANCEL_NONE_REPLY, CC_CANCEL_NOT_CHANNEL_REPLY]);
 });
 
 test("cc:perm（CC11）: 答えたら押したサーバーで answered を呼ぶ（チャンネルを作る）。古い押下では呼ばない", async () => {

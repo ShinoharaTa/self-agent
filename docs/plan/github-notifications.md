@@ -154,7 +154,7 @@
 > - 候補が 1 つならそのセッションに積む（入力待ちでなければ送信の待ち行列で待つ）。複数なら §5.2 の 5 の順（入力待ち → アクティブなペイン）で 1 つに決め、**入力待ちが無い・それでも複数なら送らずに候補（セッション名）を返す**（どれに積むかを決められないため）。
 > - 積むのは `cc_sends`（`origin: 'github'`・`notification_id`）で、§5.3〜§5.5 の判定・貼り方・待ち行列は Claude Code のセッションへの送信（claude-code-sessions.md §3.2）のものをそのまま使う（待ちの上限は `SELF_AGENT_CC_SEND_WAIT_MIN`、既定 120 分。諦めたときの #github の知らせと [もう一度] は作っていない。押し直せば積む）。
 > - 同じスレッドの送信が終わっていない・30 分以内に届けたなら、押しても新しく積まず本人にだけ返す。
-> - 結果は #github では本人にだけの返信、Web では GitHub のタブのトースト。積んだら [取り消す]。
+> - 結果は #github では本人にだけの返信、Web では GitHub のタブのトースト。積んだら [やめる]。
 
 ### 5.1 送れる対象
 - `SELF_AGENT_GITHUB=1` と `SELF_AGENT_CC=1` の両方で、`git` が見つかり、`SELF_AGENT_WORKSPACE_DIR` が workDir・dataDir と重ならないときだけ（`SELF_AGENT_GITHUB_HANDOFF` は作らない）。
@@ -207,9 +207,9 @@
 - テンプレートは**改行を含まない 1 行**（括弧付きの貼り付けが効かなくても途中で送信されない）。長さはリポジトリ名で変わり、最長 456 字（owner 39 字・repo 100 字・10 桁の番号のとき）。CC6 では Claude Code のセッションへの送信（4,000 字まで。claude-code-sessions.md §3.2）で貼るので、上限で断ることはない。
 
 ### 5.5 待ち行列（SQLite に永続）
-> 旧案（CC6 では `github_handoffs` ではなく `cc_sends` の待ち行列。30 秒ごと・待ちの上限は `SELF_AGENT_CC_SEND_WAIT_MIN`（既定 120 分）・再起動の後も続く・[取り消す] は同じ。諦めたときの #github の知らせと [もう一度] は作っていない。同じスレッドの送信待ち・30 分以内に貼ったもの（`delivered`・`unconfirmed`）があれば積まない。送り先は積んだときのセッションに固定で、地図は決め直さない）。下は元の案。
+> 旧案（CC6 では `github_handoffs` ではなく `cc_sends` の待ち行列。30 秒ごと・待ちの上限は `SELF_AGENT_CC_SEND_WAIT_MIN`（既定 120 分）・再起動の後も続く・[やめる] は同じ。諦めたときの #github の知らせと [もう一度] は作っていない。同じスレッドの送信待ち・30 分以内に貼ったもの（`delivered`・`unconfirmed`）があれば積まない。送り先は積んだときのセッションに固定で、地図は決め直さない）。下は元の案。
 
-- 押したときに idle でなければ（busy・dialog・draft・no_prompt・owner_active・copy_mode）、`github_handoffs` に `queued` で積み、メッセージを「→ <session> が入力待ちになったら届けます [取り消す]」に書き換える。
+- 押したときに idle でなければ（busy・dialog・draft・no_prompt・owner_active・copy_mode）、`github_handoffs` に `queued` で積み、メッセージを「→ <session> が入力待ちになったら届けます [やめる]」に書き換える。
 - 30 秒ごとに `queued` を古い順に試す。毎回、地図とペインを決め直す（セッションが作り直されていても追える）。
   - 送り先のセッションが無くなった・`claude` でなくなった → 段 3 に切り替える（Manager が無効なら諦める）。
 - 最大 2 時間（定数）。過ぎたら `gave_up` にし、#github に「<session> が 2 時間入力待ちにならなかったので届けていません [もう一度]」（メンションなし）。
@@ -222,7 +222,7 @@
 |---|---|
 | `gh:act:<notification_row_id>` | #github の投稿の [対応]。本人にだけ保留してから送り先を決め（2 回撮るので 3 秒を超えうる）、結果を本人にだけ返す |
 | `gh:start:<notification_row_id>` | その返信の [起動して送る]（段 3）。返信を結果に書き換える |
-| `gh:cancel:<send_id>` | その返信の [取り消す]。`origin: 'github'` の `queued` を `cancelled` に |
+| `gh:cancel:<send_id>` | その返信の [やめる]。`origin: 'github'` の `queued` を `cancelled` に |
 - `gh:retry` は作らない（諦めた後は [対応] を押し直せば積む）。Web の GitHub のタブは `POST /api/github/<id>/act`・`/start` と `POST /api/cc/sends/<id>/cancel`。
 - 行が無い・状態が合わない → 本人にだけ「この操作は古くなっています」（turn-controls と同じ）。
 - 何をするか（送り先・本文）は押した時点のサーバー側の DB と地図だけで決める。custom_id から読むのは整数の ID だけ（形が違えば古い扱い）。

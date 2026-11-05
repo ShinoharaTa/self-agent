@@ -188,7 +188,7 @@ export class GithubHandoff {
     return this.handle(notificationId, true, guildId);
   }
 
-  /** [取り消す]: GitHub の [対応] で積んだ送信だけを取り消す */
+  /** [やめる]: GitHub の [対応] で積んだ本文だけを取り下げる */
   cancel(sendId: number): "cancelled" | "stale" {
     const row = this.deps.sends.get(sendId);
     if (row === undefined || row.origin !== "github") return "stale";
@@ -345,12 +345,12 @@ const FAILURE_TEXT: Readonly<Record<HandoffFailure, string>> = {
   tmux_failed: "tmux を読めませんでした",
   stopped: "停止中です",
   not_found: "送り先のセッションが見つかりませんでした",
-  already_queued: "送り先のセッションに、ほかの送信待ちがあります",
+  already_queued: "送り先のセッションに、届け待ちの本文があります",
   not_in_tmux: "送り先のセッションが tmux の中にありません",
   not_claude: "送り先のペインが Claude Code ではありません",
 };
 
-/** 送信の状態の文 */
+/** 届け待ちの本文の状態の文 */
 const STATE_TEXT: Partial<Record<CcSendState, string>> = {
   queued: "入力待ちになったら届けます",
   delivering: "届けている途中です",
@@ -365,11 +365,11 @@ const STATE_TEXT: Partial<Record<CcSendState, string>> = {
 export function handoffResultText(result: GithubHandoffResult, escape: (text: string) => string = (text) => text): string {
   switch (result.kind) {
     case "queued":
-      return `Claude Code の ${escape(result.session)} に対応依頼を積みました（送信 #${result.sendId}）。${STATE_TEXT[result.state] ?? ""}`;
+      return `Claude Code の ${escape(result.session)} に対応依頼を積みました（#${result.sendId}）。${STATE_TEXT[result.state] ?? ""}`;
     case "already":
       return result.state === "delivered" || result.state === "unconfirmed"
-        ? `この通知の対応依頼は ${Math.round(GITHUB_HANDOFF_RECENT_MS / 60_000)} 分以内に貼っています（送信 #${result.sendId}${result.state === "unconfirmed" ? "。届いたかは確かめられていません" : ""}）`
-        : `この通知の対応依頼は送信待ちです（送信 #${result.sendId}）`;
+        ? `この通知の対応依頼は ${Math.round(GITHUB_HANDOFF_RECENT_MS / 60_000)} 分以内に貼っています（#${result.sendId}${result.state === "unconfirmed" ? "。届いたかは確かめられていません" : ""}）`
+        : `この通知の対応依頼は届け待ちです（#${result.sendId}）`;
     case "ambiguous":
       return `送り先が複数あり、どれも入力待ちでないか決められないため送っていません: ${result.sessions.map(escape).join("、")}。Web の Claude Code から選んで送ってください`;
     case "no_session":
@@ -379,7 +379,7 @@ export function handoffResultText(result: GithubHandoffResult, escape: (text: st
     case "not_local":
       return `${escape(result.repo)} は ~/workspace にありません（送り先を決められません）`;
     case "started":
-      return `~/workspace/${escape(result.dir)} で新しいセッション（${escape(result.tmuxSession)}）を起動しました。入力待ちになったら対応依頼を届けます${result.sendId === undefined ? "" : `（送信 #${result.sendId}）`}`;
+      return `~/workspace/${escape(result.dir)} で新しいセッション（${escape(result.tmuxSession)}）を起動しました。入力待ちになったら対応依頼を届けます${result.sendId === undefined ? "" : `（#${result.sendId}）`}`;
     case "start_failed":
       return START_FAILURE_TEXT[result.reason];
     case "failed":

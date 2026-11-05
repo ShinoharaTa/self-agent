@@ -68,7 +68,7 @@ export type CcOpenResult =
 const ORIGIN_LABEL: Readonly<Record<CcChannelOrigin, string>> = {
   web: "Web の [Discord のチャンネルを作る] ",
   command: "/cc open ",
-  web_send: "Web からの送信",
+  web_send: "Web から送った本文",
   web_start: "Web からの起動",
   permission: "許可の応答",
   tool_send: "cc_send の [送る] ",
@@ -107,7 +107,7 @@ const TEXT_REJECT_REPLY: Readonly<Record<"too_long" | "invalid_text", string>> =
 };
 const SUBMIT_REJECT_REPLY: Readonly<Record<Exclude<CcSubmitResult, { ok: true }>["reason"], string>> = {
   not_found: "このセッションは一覧にありません（終わったかもしれません）",
-  already_queued: "届け待ちの送信があります。届いてから送ってください",
+  already_queued: "届け待ちの本文があります。届くか、やめてから送ってください",
   queue_full: CC_QUEUE_FULL_REPLY,
   not_in_tmux: "tmux の外のセッションには送れません",
   not_claude: "送り先のペインが claude ではありません",
@@ -182,9 +182,9 @@ export const CC_CHANNEL_REOPENED_TEXT = "開き直しました";
 /** /cc close の応答（チャンネルに出す） */
 export const CC_CHANNEL_CLOSED_TEXT = "閉じました。ここに書くと起動して続けられます";
 
-/** /cc close で取り消した届け待ちの 1 行（純関数） */
+/** /cc close でやめた届け待ちの 1 行（純関数） */
 export function ccClosedCancelledText(count: number): string {
-  return `閉じたので届け待ちを ${count} 件取り消しました`;
+  return `閉じたので、届け待ちの ${count} 件を送るのをやめました`;
 }
 
 /** 閉じたときの文（純関数。/cc close の応答・Web から閉じたときの投稿・Web の会話の知らせで共通） */

@@ -301,7 +301,7 @@ test("[やめる]: 保留を捨てる（2 回目・その後の [起動して続
   assert.equal(s.store.get(CHANNEL)?.state, "ended");
 });
 
-test("/cc close: open のチャンネルを ended にして完了へ移し、届け待ちを取り消す（⏳ を外す。セッションが生きていても）。次に関われば「開き直しました」", async (t) => {
+test("/cc close: open のチャンネルを ended にして完了へ移し、届け待ちをやめる（⏳ を外す。セッションが生きていても）。次に関われば「開き直しました」", async (t) => {
   const s = setup(t);
   const LIVE_CHANNEL = "900000000000000003";
   s.sessions.push({ sessionId: LIVE, pid: 300, name: "live", cwd: `${WORKSPACE}/live`, tmux: undefined, state: "idle" } as CcSessionView);
