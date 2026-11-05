@@ -537,6 +537,26 @@ kbd {
   border-bottom: var(--border-width) solid var(--border);
 }
 
+/*
+ * ホーム画面から開いたとき（black-translucent）、ステータスバーの文字は白で、その裏はタイトルバーの上の safe-area。
+ * ライトでは白地に白文字にならないよう、その帯だけ暗い色（--primary）にする（docs/plan/web-ui.md §11.2。UI-12）
+ */
+@media (display-mode: standalone) {
+  :root[data-theme="light"] .wb-titlebar {
+    background:
+      linear-gradient(var(--primary), var(--primary)) top / 100% env(safe-area-inset-top, 0px) no-repeat,
+      var(--surface);
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme]) .wb-titlebar {
+      background:
+        linear-gradient(var(--primary), var(--primary)) top / 100% env(safe-area-inset-top, 0px) no-repeat,
+        var(--surface);
+    }
+  }
+}
+
 .wb-brand {
   font-weight: var(--weight-semibold);
   white-space: nowrap;

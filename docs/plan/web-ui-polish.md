@@ -411,6 +411,6 @@ WEB-UI-GUIDELINES.md §11 の 7 つ。オーナーに聞くことは無し。
 
 見出し・太字・箇条書き・番号・フェンス（`pre.code-pre` + 横スクロール）・インラインコード・リンク（今の linkify）。それ以外は文字のまま。`innerHTML` を使わない。受け入れ: inline なし・innerHTML なしの grep が通り、4,000 字のフェンス付きの返事が 375px で砕けない。
 
-#### UI-12 標準 PWA の細部（#112）
+#### UI-12 標準 PWA の細部（#112）（済。#255。`black-translucent` にし、ライトのときはホーム画面から開いたときだけステータスバーの裏の帯を `--primary` の暗い色に。docs/plan/web-ui.md §11.2）
 
 `index.html` の `apple-mobile-web-app-status-bar-style` を判断に合わせて変える（1 行）。
