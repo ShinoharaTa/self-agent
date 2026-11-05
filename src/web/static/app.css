@@ -292,9 +292,10 @@ dialog {
   scrollbar-color: var(--border) transparent;
 }
 
+/* --vvh はスマホでだけ workbench.js が visualViewport の高さを書く（キーボードの分を除く。UI-8） */
 .wb {
   display: grid;
-  height: 100dvh;
+  height: var(--vvh, 100dvh);
   grid-template-columns: var(--activity-w) var(--sidebar-w) var(--sash-w) minmax(0, 1fr);
   grid-template-rows: var(--titlebar-h) minmax(0, 1fr) var(--statusbar-h);
   grid-template-areas:
@@ -2125,6 +2126,17 @@ kbd {
   font-size: var(--font-base);
 }
 
+/* 確認の対象（題名など。見出しは動詞だけにし、対象はこの 1 行に。ui.js が 80 字で切る） */
+.dlg-target {
+  margin-bottom: var(--space-2);
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.dlg-target[hidden] {
+  display: none;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -2567,8 +2579,62 @@ dialog[open]::backdrop {
     display: none;
   }
 
+  /* トーストはタイトルバーの下に 1 つ（入力欄・送るボタン・キーボードに重ねない。UI-8）。出入りは上から */
   .toast-region {
-    bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px) + var(--space-3));
+    top: calc(var(--titlebar-h) + env(safe-area-inset-top, 0px) + var(--space-2));
+    bottom: auto;
+  }
+
+  @starting-style {
+    .toast-stack .toast {
+      transform: translateY(-8px);
+    }
+  }
+
+  .toast-stack .toast.is-leaving {
+    transform: translateY(-8px);
+  }
+
+  /*
+   * ダイアログは下からのシート（UI-8）: 全幅・上だけ角丸・ボタンは 2 等分。出入りは translateY（出 short・消 65%）。
+   * --kb は iOS でキーボードが layout viewport を縮めないときの、その高さ（workbench.js が書く。無ければ 0）
+   */
+  dialog {
+    width: 100%;
+    max-width: none;
+    max-height: calc(var(--vvh, 100dvh) - var(--space-8));
+    margin: auto 0 var(--kb, 0px);
+    padding-bottom: calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
+    border-width: var(--border-width) 0 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    opacity: 1;
+    transform: translateY(100%);
+  }
+
+  dialog[open] {
+    transform: none;
+  }
+
+  @starting-style {
+    dialog[open] {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+  }
+
+  .dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-3);
+  }
+
+  /* キーボードが出ている間は下タブを隠す（入力中に下タブは要らない） */
+  .wb.is-keyboard {
+    grid-template-rows: calc(var(--titlebar-h) + env(safe-area-inset-top, 0px)) minmax(0, 1fr) 0 0;
+  }
+
+  .wb.is-keyboard .wb-activity {
+    display: none;
   }
 
   /* ステータスバーの代わりに、タイトルバーの右に接続の点と鈴、下タブ「会話」に実行中のスピナー */
@@ -2714,7 +2780,26 @@ dialog[open]::backdrop {
   }
 
   .more-row .icon {
+    width: var(--icon-sm);
+    height: var(--icon-sm);
     color: var(--text-secondary);
+  }
+
+  /* シートの題と ×（閉じ方を見せる。UI-8） */
+  .sheet-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0 var(--space-2) 0 var(--space-4);
+  }
+
+  .sheet-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-weight: var(--weight-semibold);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .more-row .sb-meta {
