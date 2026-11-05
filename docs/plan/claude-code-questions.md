@@ -105,17 +105,18 @@
 **B を採る。** Claude Code は全部の `answers` を一度に受けるので、最後の問に答えた時点で返す。
 
 ### 3.2 決定
-- 1 通の本文（`questionNotice(row, step, session, options)`。純関数。`cc/questions.ts`）:
+- 1 通の本文（`questionNotice(row, questions, picks, session, options)`。純関数。Q4 までは `cc/discord-notice.ts`、Q4 で `notice-text.ts`。`picks` は答えた問の答え（問の順。`CcQuestionPick[]`）で、`picks.length` 番目の問を出す。`options.holdSec` は呼び出し側が行で選ぶ（質問は `SELF_AGENT_CC_QUESTION_HOLD_SEC`））:
   ```
-  @owner Claude Code が質問しています: <名前>（<ディレクトリ>・<mode>）
-  答え済み: 「<header 1>」<答え>（2 問目以降のときだけ。1 問 1 行）
+  @owner Claude Code が質問しています（<n> 問）: <名前>（<ディレクトリ>・<mode>）
+  答え済み:（2 問目以降のときだけ）
+  1. 「<header 1>」<答え（200 字）>（1 問 1 行。header が無ければ「」を省く）
   質問 <k>/<n>「<header>」
   <question の文（1,000 字まで。超えたら「…」）>
   1. <label（80 字）> — <description（100 字）>
   2. …
   端末や RC のダイアログでも答えられます（ボタンは <n> 分効きます）
   ```
-  名前・header・question・label・description は hook から来たデータなので `escapeDiscordText`（`plain`）・メンション無効・`suppressEmbeds`。2,000 字（メンションの分を引く）に収まるまで `description` → `question` の順に末尾を落とす。
+  名前・header・question・label・description は hook から来たデータなので `escapeDiscordText`（`plain`）・メンション無効・`suppressEmbeds`。2,000 字（メンションの分を引く）に収まるまで `description` を落とす → `question` を 40 字まで削る → 答えと選択肢の label を 40 字にする。次の問への書き換え・終わった 1 通はメンションを付けない。
 - 部品の行:
   | 問の形 | 1 行目 | 2 行目 | 3 行目 |
   |---|---|---|---|
@@ -123,18 +124,18 @@
   | 1 つ選ぶ・選択肢 5 つ以上 | セレクト（`cc:q:sel:<id>:<q>`。min 1・max 1。label 100 字・description 100 字） | [決める]（`cc:q:ok:<id>:<q>`）[その他][やめる] | 同上 |
   | 複数選択 | セレクト（min 1・max = 選択肢の数） | [決める][その他][やめる] | 同上 |
   `<q>`・`<o>` は 0 始まりの添字（整数だけ）。custom_id は 100 字に収まる。
-- 流れ（`CcQuestionFlow`。プロセスの中。`cc/question-flow.ts`）: 行 id → `{ answers: Record<question, value>, step }`。
-  - [選択肢] / [決める]（選んだものがある）/ モーダルの送信 → その問の答えを記録 → 次の問があれば `responder.update` で次の問の 1 通に → 最後の問なら `permissionHold.answerQuestion(id, answers, "discord")` → 通れば答えの行に書き換え（下）、`stale` なら「この操作は古くなっています」（本人にだけ）。
-  - セレクトの操作は `values` を記録して `deferUpdate`（[決める] で確定）。[決める] を選ばずに押したら本人にだけ「選んでください」。
+- 流れ（`CcQuestionFlow`。プロセスの中。`cc/question-flow.ts`。押した処理は `app/commands/cc-question.ts`）: 行 id → `{ picks: CcQuestionPick[], selected: Map<問, label[]> }`（答えられるのは次の問 = `picks.length` 番目だけ）。上限 100 行で、超えるときは空の行を古いものから忘れ、無ければ新しい行を受けない（進行中の行は消さない）。全部答えた・やめた・古いと分かった行は消す。
+  - [選択肢] / [決める]（選んだものがある）/ モーダルの送信 → その問の答えを記録 → 次の問があれば `responder.update` で次の問の 1 通に → 書き換えの間に行が終わっていれば（Web・端末・時間切れ）結果の 1 通で上書きする → 最後の問なら `permissionHold.answerQuestion(id, requestHash, picks, "discord")` → 通れば答えの行に書き換え（下）、`stale` なら「この操作は古くなっています」（本人にだけ）。
+  - セレクトの操作は `values` を記録して `deferUpdate`（[決める] で確定）。選ばずに [決める] を押したら本人にだけ「選んでから [決める] を押してください」。
   - [その他] → `showModal`（title「その他（<header の 40 字>）」、TextInput `text`・paragraph・1〜1,000 字・required。custom_id `cc:q:text:<id>:<q>`）。送信（`kind: "modal"`）は同じ経路で記録。
   - [やめる] → `answer(id, "deny", "discord")` → 「答えませんでした（Discord）」に書き換え、ボタンを外す（[RC で開く] は残す）。途中の答えは捨てる。
   - 1 問だけで 1 つ選ぶ形なら、[選択肢] を押した時点で `answerQuestion`（[送る] は無い）。
   - 行が `pending` でない・保留していない・`question_input` が無い・添字が範囲外 → 本人にだけ「この操作は古くなっています」。再起動の後は途中の答えが消えるので、同じく古い（再起動は `pending` を `expired` にするので矛盾しない）。
-- 答え終わった 1 通（`questionResolvedMessage`）: 見出しの後ろを「答えました（Discord | Web）: 「<header>」<値>、「<header>」<値>」に。`denied` は「答えませんでした（Discord | Web）」、`answered_elsewhere` は「端末か RC で答えられました」、`expired` は「時間切れ。端末か RC で答えてください <リンク>」、`released` は今の文。押すボタンは外し、[RC で開く] は残す。Web で答えられたものは `resolved` の listener が `editMessage`（今の許可と同じ）。Discord で答えたものは応答で書き換え（失敗したら `editMessage` で代える。今と同じ）。
+- 答え終わった 1 通（`questionResolvedMessage`）: 見出しの後ろを「答えました（Discord | Web）:」と、その下に答えた問の行（`1. 「<header>」<値>`）に。`denied` は「答えませんでした（Discord | Web）」、`answered_elsewhere` は「端末か RC で答えられました」、`expired` は「時間切れ。端末か RC で答えてください <リンク>」、`released` は今の文。押すボタンは外し、[RC で開く] は残す。Web で答えられたものは `resolved` の listener が `editMessage`（今の許可と同じ）。Discord で答えたものは応答で書き換え（失敗したら `editMessage` で代える。今と同じ）。
 - 1 通の置き場所: チャンネル（§5。Q4 まではチャンネルがあればチャンネル、無ければ #system。今の許可と同じ振り分け）。`cc_permissions.message_id`・`message_channel_id` に残す。
 - 答えた後のチャンネル: `answered`（`ensureFor`）は今までどおり呼ぶ（origin は Q4 までは `permission`、Q4 から `question`）。
 - 読めない形（`question_input` が NULL の AskUserQuestion）: 今までどおりの許可の 1 通（[許可][拒否]）に「質問の形を読めませんでした。端末か RC で答えてください」を足す（`allow` だけでは答えにならない見込み。§11 の 3）。
-- history（Web の会話。CC14）: 出したら `notice`「質問: 「<header>」<question の 200 字>…（n 問）」、終わったら `notice`「質問の答え: …」（`permissionResultHistoryText` と同じ場所）。
+- history（Web の会話。CC14）: 出したら `notice`「質問: 「<header>」<question の 200 字>…（n 問）」、終わったら `notice`「質問の答え: …」（答えた・答えなかった）か「質問の結果: …」（端末か RC で答えられた・時間切れ・停止。`permissionResultHistoryText` と同じ場所）。
 
 ## 4. Web の UI と API（論点 C）
 
@@ -270,8 +271,8 @@
 ### 12.2 Claude Code（`src/cc/`）
 | ファイル | 変更 | 段 |
 |---|---|---|
-| `questions.ts`（新規） | 純関数: `parseQuestions(toolInput) → CcQuestion[] \| undefined`、`CC_QUESTION_INPUT_MAX_BYTES`、`questionSummary(questions)`（要約の文）、`validateAnswers(questions, given) → Record<string, string> \| undefined`（`, ` の連結・`other` の検証）、`questionNotice(row, step, session, options)`・`questionResolvedMessage`・`questionResultLine`（Discord の文面。2,000 字に収める）、`questionHistoryText` / `questionResultHistoryText`、`questionCustomId(action, id, q?, o?)` | Q1・Q2 |
-| `question-flow.ts`（新規） | `CcQuestionFlow`: 行 id → 途中の答えと今の問（プロセスの中）。`pick(id, q, value)`・`select(id, q, values)`・`current(id)`・`complete(id) → answers \| undefined`・`drop(id)`。`permission-hold.ts` の `resolved` で消す | Q2 |
+| `questions.ts`（新規） | 純関数: `parseQuestions(toolInput) → CcQuestion[] \| undefined`、`CC_QUESTION_INPUT_MAX_BYTES`、`questionSummary(questions)`（要約の文）、`validateAnswers(questions, given) → Record<string, string> \| undefined`（`, ` の連結・`other` の検証）、（Discord の文面 `questionNotice(row, questions, picks, session, options)`・`questionResolvedMessage`・`questionResultLine`・`questionHistoryText` / `questionResultHistoryText`・`questionCustomId(action, id, q?, o?)`・`questionModalTitle` は Q4 まで `discord-notice.ts`） | Q1・Q2 |
+| `question-flow.ts`（新規） | `CcQuestionFlow`: 行 id → 答えた問の答え（`picks`）とセレクトで選んだもの（プロセスの中）。`step(id)`・`picks(id)`・`select(id, q, labels)`・`selected(id, q)`・`answer(id, q, pick) → picks \| undefined`・`drop(id)`。押されたときに古いと分かれば消す。上限 100（進行中の行は消さない） | Q2 |
 | `hook-server.ts` | `CcPermissionSummary` に `questionInput?: string`（AskUserQuestion で形が通ったときだけ）。要約は `questionSummary` | Q1 |
 | `permission-hold.ts` | `answerQuestion`・`CC_QUESTION_DENY_MESSAGE`（質問の行の deny）・`decisionBody("question", input, answers)`・`answer("allow")` は `question_input` のある行で `stale`・`permissionExpiresAt(row, holdSec, questionHoldSec)`。Q4 で `claims` / `release` / `claimedBy` / `released` を削除 | Q1・Q4 |
 | `channel-posts.ts` | 質問なら `questionNotice` / `questionResolvedMessage`（`resolvedMessage` も）。Q4 で `held` を `ensureFor` → 投稿に、`checkWaiting` でチャンネルの無いセッションも `ensureFor("waiting")` → 投稿、`release` の deps を削除、`ccNotify` の deps | Q2・Q4 |
