@@ -1,7 +1,8 @@
 // GET /api/cc/sessions・/api/cc/sessions/<id>（docs/plan/claude-code-sessions.md §5.1。CC2）、POST /api/cc/sessions/<id>/send・
 // /api/cc/sends/<id>/cancel（CC3。送信は cc/sender.ts）、GET /api/cc/projects・POST /api/cc/sessions（CC4。起動は cc/starter.ts）、
 // GET /api/cc/permissions・POST /api/cc/permissions/<id>/allow|always|deny（CC5a・CC5b。保留は cc/permission-hold.ts、常に許可の線引きは
-// cc/permissions.ts）、POST /api/cc/sessions/<id>/unfollow（CC8。返事の追いかけをやめる。Discord の [追いかけをやめる] と同じ）と /api/status の cc。
+// cc/permissions.ts）、POST /api/cc/sessions/<id>/unfollow（CC8。返事の追いかけをやめる。Discord の [追いかけをやめる] と同じ）、
+// POST /api/cc/sessions/<id>/channel（CC10。そのセッションの Discord のチャンネルを作る。cc/channels.ts。docs/plan/claude-code-channels.md §3.1）と /api/status の cc。
 // この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順。starting は cc/starter.ts の起動したがまだ一覧に出ていないもの）と、1 つのセッションの画面の写し
 // （tmux の capture-pane を stripAnsi して最後の CC_SCREEN_LINES 行。tmux の外は screen: null）。SELF_AGENT_CC が無効なら 404。
 // GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
@@ -9,6 +10,7 @@
 import { isUuid } from "../../cc/agents.ts";
 import { type CcPermissionHold, permissionExpiresAt } from "../../cc/permission-hold.ts";
 import { describeRule, formatRule } from "../../cc/permissions.ts";
+import type { CcChannelFailure, CcChannels } from "../../cc/channels.ts";
 import type { CcPaneResolver, PaneLookup } from "../../cc/panes.ts";
 import type { CcRegistry, CcSessionView } from "../../cc/registry.ts";
 import { normalizeSendText, type CcSender } from "../../cc/sender.ts";
@@ -54,6 +56,11 @@ export type CcRouteDeps = {
   };
   /** 返事の追いかけ（CC8）。無ければ一覧の follow は null で、/unfollow は 404 */
   follows?: Pick<CcSessionStore, "listFollowing" | "stopFollow">;
+  /**
+   * セッションの Discord のチャンネル（CC10）。無ければ一覧の channel は null で、/channel は 404。
+   * allowedGuildIds は /channel の guildId の許可（SELF_AGENT_ALLOWED_GUILD_IDS）
+   */
+  channels?: { store: Pick<CcChannels, "openChannel" | "channelOf" | "defaultGuild">; allowedGuildIds: readonly string[] };
   /** /unfollow の log（無ければ出さない） */
   log?: (message: string) => void;
   /** 既定は new Date */
@@ -61,6 +68,20 @@ export type CcRouteDeps = {
 };
 
 const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
+
+/** Discord のチャンネルのリンク */
+function discordLink(guildId: string, channelId: string): string {
+  return `https://discord.com/channels/${guildId}/${channelId}`;
+}
+
+/** チャンネルを作れなかった理由 → HTTP の状態（docs/plan/claude-code-channels.md §3.1） */
+const CHANNEL_STATUS: Readonly<Record<CcChannelFailure, number>> = {
+  not_found: 404,
+  not_in_tmux: 409,
+  full: 409,
+  not_set_up: 503,
+  failed: 502,
+};
 
 /** cwd の表示（`~/workspace/` からの相対。その外で ~ の中なら `~/…`、それ以外はそのまま）。無ければ null */
 export function cwdLabel(cwd: string | undefined, workspaceDir: string, home: string): string | null {
@@ -144,7 +165,7 @@ function alwaysNote(row: CcPermissionRow): string | null {
 const ANSWER_STATUS: Readonly<Record<string, number>> = { not_found: 404, stale: 409 };
 
 export function ccRoutes(deps: CcRouteDeps): Route[] {
-  const { registry, panes, tmux, workspaceDir, home, sender, sends, starter, permissions, follows } = deps;
+  const { registry, panes, tmux, workspaceDir, home, sender, sends, starter, permissions, follows, channels } = deps;
   const now = deps.now ?? (() => new Date());
 
   const latestSends = (): Map<string, CcSendRow> => {
@@ -209,7 +230,14 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     permission: permission === undefined ? null : permissionJson(permission),
     // 返事を Discord に戻しているか（CC8。追いかけ中なら始めた時刻）
     follow: follow.has(view.sessionId) ? { since: follow.get(view.sessionId) ?? null } : null,
+    // そのセッションの Discord のチャンネル（CC10。削除されていないもの）
+    channel: channelJson(view.sessionId),
   });
+
+  const channelJson = (sessionId: string): { channelId: string; guildId: string; link: string; state: string } | null => {
+    const row = channels?.store.channelOf(sessionId);
+    return row === undefined ? null : { channelId: row.channelId, guildId: row.guildId, link: discordLink(row.guildId, row.channelId), state: row.state };
+  };
 
   // 入れ子の claude を見分けるため、一覧のすべての pid を渡す
   const lookupPanes = async (views: readonly CcSessionView[]): Promise<PaneLookup | undefined> =>
@@ -298,6 +326,29 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         if (!follows.stopFollow(id)) return { status: 409, json: { error: "stale" } };
         deps.log?.("Claude Code: Web で追いかけをやめました");
         return { status: 200, json: { follow: null } };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cc\/sessions\/([^/]+)\/channel$/,
+      handle: async ({ params, body }) => {
+        if (registry === undefined || channels === undefined) return NOT_FOUND;
+        registry.touch();
+        const id = params[0] ?? "";
+        if (!isUuid(id)) return NOT_FOUND;
+        // guildId: /setup 済みのサーバーが複数なら画面が選ぶ。省けば最初のカテゴリ「Claude Code」のあるサーバー
+        const rawGuild = body?.guildId;
+        if (rawGuild !== undefined && (typeof rawGuild !== "string" || !channels.allowedGuildIds.includes(rawGuild))) {
+          return { status: 400, json: { error: "bad_request" } };
+        }
+        const guildId = rawGuild ?? channels.store.defaultGuild();
+        if (guildId === undefined) return { status: 503, json: { error: "not_set_up" } };
+        const result = await channels.store.openChannel(guildId, id, "web");
+        if (result.ok) return { status: 201, json: { channelId: result.channelId, link: discordLink(result.guildId, result.channelId) } };
+        if (result.reason === "exists") {
+          return { status: 409, json: { error: "exists", channelId: result.channelId, link: discordLink(result.guildId, result.channelId) } };
+        }
+        return { status: CHANNEL_STATUS[result.reason], json: { error: result.reason } };
       },
     },
     {

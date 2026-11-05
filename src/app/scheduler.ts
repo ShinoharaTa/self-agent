@@ -96,6 +96,11 @@ export type SchedulerDeps = {
   pruneHistory?: () => void;
   /** 残す日数より前の #system への知らせの記録（notices）を消す（Web UI が無効でも消す）。投げたら log に出して続ける。省略すれば消さない */
   pruneNotices?: () => void;
+  /**
+   * Claude Code のセッションのチャンネル（SELF_AGENT_CC=1 のときだけ。cc/channels.ts）。再同期で、Discord 上に無いものを削除済みに、
+   * カテゴリが状態と合わないものを戻す。無ければ見ない
+   */
+  ccChannels?: { reconcile(guildId: string, parents: ReadonlyMap<string, string | null>, listedAt: Date, limit: number): number };
   /** 一覧から消えて日数の経った Claude Code のセッションの行（cc_sessions）を消す。投げたら log に出して続ける。省略すれば消さない */
   pruneCcSessions?: () => void;
   /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。待ちに移したら知らせの行を書く。無ければ書かない */
@@ -192,6 +197,7 @@ export class Scheduler {
    * - セッションのチャンネルが Discord 上に無ければ、手で消されたので削除済みにする（要約は残し、SDK セッションと seed を消す）
    * - 親がその状態のカテゴリのどれでもなければ、その状態のカテゴリへの移動を入れる（1 サーバーで最大 5 件。残りは次の tick）
    * - #inbox / #tasks / #system / #github / #jobs の親が self-agent カテゴリでなければ、そこへ戻す移動を入れる
+   * - Claude Code のチャンネル（ccChannels があれば）は cc/channels.ts の reconcile（同じ一覧で）
    * self-agent カテゴリ・その状態のカテゴリが Discord 上に 1 つも無ければ、そこへは移さない（作り直すのは /setup）
    */
   private async reconcileChannels(): Promise<void> {
@@ -214,6 +220,7 @@ export class Scheduler {
     const { guildId } = settings;
     // 一覧を取る前に DB から読む（取っている間に /new で作られたセッションを、一覧に無いからと削除済みにしない）
     const candidates = topicSessions.listUndeleted(guildId);
+    const listedAt = this.deps.now();
     const parents = await gateway.listChannelParents(guildId);
 
     let moved = 0;
@@ -238,6 +245,8 @@ export class Scheduler {
       moved++;
     }
     if (moved > 0) log(`状態とカテゴリが合わないセッション ${moved} 件を移します（guild=${guildId}）`);
+    // Claude Code のチャンネル（Discord 上に無ければ削除済みに、open はカテゴリ「Claude Code」へ、ended は完了へ。1 サーバーで最大 5 件）
+    this.deps.ccChannels?.reconcile(guildId, parents, listedAt, RECONCILE_BATCH_LIMIT);
 
     const homeCategoryId = settings.homeCategoryId;
     if (homeCategoryId === null || !parents.has(homeCategoryId)) return;

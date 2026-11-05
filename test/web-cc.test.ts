@@ -15,6 +15,12 @@ import { createTmux, PANE_FORMAT, type RunCommand, type RunResult } from "../src
 import { CC_SCREEN_LINES, ccRoutes, ccStatus, cwdLabel, screenText } from "../src/web/routes/cc.ts";
 import { createWebServer, type Route, type WebServer } from "../src/web/server.ts";
 import { tempDb, tempDir } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingChannelOps } from "./helpers/recording.ts";
+import { CcChannels } from "../src/cc/channels.ts";
+import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { CcChannelStore } from "../src/store/cc-channels.ts";
+import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 
 const LOGIN = "owner@example.com";
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
@@ -172,9 +178,12 @@ async function setup(
   });
   const server = await serve(t, ccRoutes({ registry, panes, tmux, workspaceDir: WORKSPACE, home: HOME, sender, sends, follows: store, now }));
   return {
+    db,
     server,
     store,
     registry,
+    panes,
+    tmux,
     sender,
     sends,
     tmuxState,
@@ -279,6 +288,7 @@ test("/api/cc/sessions: 判断待ち → 実行中 → 待機の順で、ペイ�
     pending: null,
     permission: null,
     follow: null,
+    channel: null,
   });
   assert.equal(byId.get(S2)!.paneLabel, "work:0.2");
   assert.equal(byId.get(S2)!.cwdLabel, "beta/sub");
@@ -664,4 +674,58 @@ test("POST /api/cc/sessions/<id>/unfollow: 追いかけ中なら止めて 200、
 test("POST /api/cc/sessions/<id>/unfollow: 追いかけ（follows）を渡していなければ 404", async (t) => {
   const server = await serve(t, ccRoutes({ registry: undefined, panes: undefined, tmux: undefined, workspaceDir: WORKSPACE, home: HOME }));
   assert.equal((await postJson(server, `/api/cc/sessions/${S1}/unfollow`, {})).status, 404);
+});
+
+test("POST /api/cc/sessions/<id>/channel: 201 でチャンネルを作り一覧の channel に出る。2 回目は 409 exists、tmux の外は 409、50 は 409 full、カテゴリが無ければ 503、guildId が許可外は 400", async (t) => {
+  const { db, registry, panes, tmux, clock } = await setup(t);
+  const now = (): Date => new Date(clock.now);
+  const guildSettings = new GuildSettingsStore(db, now);
+  guildSettings.setChannel("guild-1", "homeCategoryId", "home-1");
+  const gateway = new FakeGateway({ allow: ["createTextChannel", "channelExists", "countChannelsIn", "sendMessage"], channelIdPrefix: "chan-" });
+  const channels = new CcChannels({
+    cfg: { allowedGuildIds: ["guild-1", "guild-2"], workspaceDir: WORKSPACE },
+    store: new CcChannelStore(db, now),
+    guildSettings,
+    registry,
+    panes,
+    gateway,
+    queue: new KeyedSerialQueue(1),
+    channelOps: new RecordingChannelOps(),
+    notify: async () => undefined,
+    home: HOME,
+    now,
+    log: () => undefined,
+  });
+  const server = await serve(
+    t,
+    ccRoutes({ registry, panes, tmux, workspaceDir: WORKSPACE, home: HOME, channels: { store: channels, allowedGuildIds: ["guild-1", "guild-2"] }, now }),
+  );
+  const open = (id: string, body: unknown = {}) => postJson(server, `/api/cc/sessions/${id}/channel`, body);
+  // カテゴリ「Claude Code」がまだ無い
+  assert.deepEqual(await open(S1), { status: 503, json: { error: "not_set_up" } });
+  guildSettings.setCcCategory("guild-1", "cat-cc");
+  gateway.alive.add("cat-cc");
+  assert.deepEqual(await open(S1, { guildId: "guild-9" }), { status: 400, json: { error: "bad_request" } });
+  assert.deepEqual(await open(S1, { guildId: 1 }), { status: 400, json: { error: "bad_request" } });
+  assert.deepEqual(await open(S1, { guildId: "guild-2" }), { status: 503, json: { error: "not_set_up" } });
+  assert.deepEqual(await open("55555555-5555-4555-8555-555555555555"), { status: 404, json: { error: "not_found" } });
+  assert.equal((await open("not-a-uuid")).status, 404);
+  assert.deepEqual(await open(S3), { status: 409, json: { error: "not_in_tmux" } });
+  gateway.manual.set("cat-cc", 50);
+  assert.deepEqual(await open(S1), { status: 409, json: { error: "full" } });
+  gateway.manual.delete("cat-cc");
+  const link = "https://discord.com/channels/guild-1/chan-1";
+  assert.deepEqual(await open(S1, { guildId: "guild-1" }), { status: 201, json: { channelId: "chan-1", link } });
+  assert.deepEqual(await open(S1), { status: 409, json: { error: "exists", channelId: "chan-1", link } });
+  const list = await getJson(server, "/api/cc/sessions");
+  const byId = new Map((list.json.sessions as Array<Record<string, unknown>>).map((s) => [s.sessionId, s]));
+  assert.deepEqual(byId.get(S1)!.channel, { channelId: "chan-1", guildId: "guild-1", link, state: "open" });
+  assert.equal(byId.get(S2)!.channel, null);
+  assert.deepEqual((await getJson(server, `/api/cc/sessions/${S1}`)).json.channel, { channelId: "chan-1", guildId: "guild-1", link, state: "open" });
+});
+
+test("POST /api/cc/sessions/<id>/channel: channels が無ければ 404", async (t) => {
+  const { registry, panes, tmux } = await setup(t);
+  const server = await serve(t, ccRoutes({ registry, panes, tmux, workspaceDir: WORKSPACE, home: HOME }));
+  assert.deepEqual(await postJson(server, `/api/cc/sessions/${S1}/channel`, {}), { status: 404, json: { error: "not_found" } });
 });

@@ -43,6 +43,7 @@ import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
+import { CcChannels } from "./cc/channels.ts";
 import { CcDiscordNotifier } from "./cc/discord-notice.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
 import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
@@ -70,6 +71,7 @@ import { GuestStore } from "./store/guest.ts";
 import { GuestGuildStore } from "./store/guest-guilds.ts";
 import { GuestInviteStore } from "./store/guest-invites.ts";
 import { acquireDataLock, type DataLock } from "./store/data-lock.ts";
+import { CC_CHANNEL_KEEP_DAYS, CcChannelStore } from "./store/cc-channels.ts";
 import { CC_PERMISSION_KEEP_DAYS, type CcPermissionRow, CcPermissionStore } from "./store/cc-permissions.ts";
 import { CC_REPLY_KEEP_DAYS, CcReplyStore } from "./store/cc-replies.ts";
 import { CC_SEND_KEEP_DAYS, CcSendStore } from "./store/cc-sends.ts";
@@ -207,6 +209,10 @@ const githubStore = new GithubStore(db, now);
 const ccStarts = new CcStartStore(db, now);
 // Claude Code の返事を Discord に戻した記録（CC8。本文は持たない）
 const ccReplies = new CcReplyStore(db, now);
+// Claude Code のセッションの Discord のチャンネル（CC10。docs/plan/claude-code-channels.md）。作る・終わった・戻ったは下の CcChannels
+const ccChannelStore = new CcChannelStore(db, now);
+// SELF_AGENT_CC=1 で連携が動くときだけ下で作る（/cc・cc:pick・再同期・Web は呼ぶときに読む）
+let ccChannels: CcChannels | undefined;
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
 const guestStore = new GuestStore(db, now);
 // ゲストのサーバーと許可の状態（guest_guilds）
@@ -438,6 +444,8 @@ const commands = createCommands({
   ...(guest === undefined ? {} : { guests: guest.admin }),
   // /close の確定と /renew の区切りの行（Web UI が有効なときだけ）
   ...history,
+  // /cc（SELF_AGENT_CC=1 のときだけ登録する。チャンネルの操作は下で作る）
+  ...(config.cc ? { ccChannels: () => ccChannels } : {}),
   log,
 });
 // GitHub の通知の [対応]（下の Claude Code の配線の後で作る。ボタンは押されたときに読む）
@@ -474,6 +482,8 @@ const handleInteraction = createInteractionHandler({
     ccFollow: { replies: ccReplies, sessions: ccSessions },
     ccRuntime: () => ccRuntime,
     ccPosts: ownerPosts,
+    // /cc open のセレクト（cc:pick）
+    ccChannels: () => ccChannels,
     // #jobs のボタンとモーダル（SELF_AGENT_JOBS=1 のときだけ）
     ...(jobs === undefined ? {} : { jobs }),
     // #system の許可の要求のボタン（SELF_AGENT_CC=1 で SELF_AGENT_CC_NOTIFY が 1 のときだけ。下で作る）
@@ -562,9 +572,15 @@ const scheduler = new Scheduler({
     if (deletedStarts > 0) log(`古い Claude Code の起動の確認の記録 ${deletedStarts} 件を消しました`);
     const deletedReplies = ccReplies.prune(new Date(now().getTime() - CC_REPLY_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deletedReplies > 0) log(`古い Claude Code の返事の記録 ${deletedReplies} 件を消しました`);
+    const deletedChannels = ccChannelStore.prune(new Date(now().getTime() - CC_CHANNEL_KEEP_DAYS * 24 * 60 * 60 * 1000));
+    if (deletedChannels > 0) log(`削除済みの Claude Code のチャンネルの記録 ${deletedChannels} 件を消しました`);
   },
   // 待ちに移した知らせの行（Web UI が有効なときだけ）
   ...history,
+  // Claude Code のチャンネルの再同期（SELF_AGENT_CC=1 のときだけ。連携が動いていなければ何もしない）
+  ...(config.cc
+    ? { ccChannels: { reconcile: (guildId, parents, listedAt, limit) => ccChannels?.reconcile(guildId, parents, listedAt, limit) ?? 0 } }
+    : {}),
   // ゲストの 1 日のターン数のうち、GUEST_TURNS_KEEP_DAYS 日より前の日の行を消す（ゲストのときだけ。Discord のゲストのサーバーには触らない）
   ...(config.guest
     ? {
@@ -653,9 +669,15 @@ if (
     permissions: permissionHold,
     // 一覧から消えたセッション: 返事を追いかけていれば、追いかけのチャンネルに「終わりました」を出して止める（#system の終了の知らせは出さない）。
     // 追いかけていなければ、self-agent が起動したセッションの終了を #system に出す
+    // チャンネルがあれば、終わったことをそこに 1 行出して完了カテゴリへ移す（#system の終了の知らせは今のまま。チャンネルへ移すのは CC12）
     ended: (session) => {
+      ccChannels?.ended(session);
       if (ccReplier?.ended(session) === true) return;
       ccNotifier?.ended(session);
+    },
+    // 同じ session_id が一覧に戻ったら、終わったチャンネルを開き直してカテゴリ「Claude Code」へ戻す
+    revived: (session) => {
+      ccChannels?.revived(session);
     },
     // 採った hook の事象（Stop）を返事の追いかけと送信に渡す（Stop で作業中に積んだ送信を周期を待たずに試す）
     onEvent: (event) => {
@@ -771,6 +793,21 @@ if (
     log,
   });
   ccRuntime = { sender: ccSender, starter: ccStarter, registry, panes };
+  // セッションの Discord のチャンネル（CC10）。作るのは手動の口（Web・/cc open）だけで、発言はまだ届けない（CC11）。投稿は既定の人格の Bot
+  ccChannels = new CcChannels({
+    cfg: config,
+    store: ccChannelStore,
+    guildSettings,
+    registry,
+    panes,
+    gateway,
+    queue: layoutQueue,
+    channelOps,
+    notify,
+    home: homedir(),
+    now,
+    log,
+  });
 }
 // cc_send・cc_start の確認の失効（10 分）。SELF_AGENT_CC が無効でも動かし、再起動の前に出した確認が残っていれば取り消して注記する
 const ccConfirmExpirer = new CcConfirmExpirer({
@@ -931,6 +968,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
           : { permissions: { hold: ccPermissions, store: ccPermissionStore, holdSec: config.ccPermissionHoldSec } }),
         // 返事の追いかけ（一覧の follow・/unfollow）
         ...(ccRegistry === undefined ? {} : { follows: ccSessions, log }),
+        // セッションの Discord のチャンネル（一覧の channel・/channel）
+        ...(ccChannels === undefined ? {} : { channels: { store: ccChannels, allowedGuildIds: config.allowedGuildIds } }),
         now,
       }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）
@@ -986,7 +1025,7 @@ const lifecycle = createShutdown(
         if (failed !== undefined) throw failed.reason;
       },
     },
-    queues: [turnQueue, layoutQueue, { idle: async () => guest?.idle() }],
+    queues: [turnQueue, layoutQueue, { idle: async () => guest?.idle() }, { idle: async () => ccChannels?.idle() }],
     scheduler,
     reminderScheduler,
     ...(githubPoller === undefined ? {} : { githubPoller }),
@@ -1008,7 +1047,15 @@ const lifecycle = createShutdown(
     closeDb: () => db.close(),
     log,
   },
-  { handleMessage: handler.handleMessage, handleInteraction },
+  // Claude Code のチャンネル（削除されていない cc_channels の行）への発言は、ターンにせず黙って捨てる（CC10。届けるのは CC11）
+  {
+    handleMessage: (message) => {
+      const ccChannel = ccChannelStore.get(message.channelId);
+      if (ccChannel !== undefined && ccChannel.state !== "deleted") return Promise.resolve();
+      return handler.handleMessage(message);
+    },
+    handleInteraction,
+  },
 );
 const onSignal = (): void => {
   if (lifecycle.stopping()) {

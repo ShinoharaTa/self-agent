@@ -138,7 +138,7 @@ export type CcRegistryDeps = {
   cfg: Pick<Config, "ccPollSec">;
   agents: Pick<AgentsClient, "list">;
   dirs: Pick<ClaudeDirs, "sessionFile" | "transcriptMtime">;
-  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive">;
+  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive" | "get">;
   now: () => Date;
   timers?: CcTimers;
   /** 送信の待ち行列が空でない（§2.2。CC3 から）・起動したセッションをまだ一覧で見つけていない（CC4）。true の間は見ていなくても設定の周期で読む */
@@ -158,6 +158,11 @@ export type CcRegistryDeps = {
    * SessionEnd の hook は根拠にしない（偽の hook と、再起動をまたいだ二重を防ぐため。§5.2）。投げても一覧の更新には響かない
    */
   ended?: (session: CcSessionRow) => void;
+  /**
+   * 一覧から消えていた（gone_at のある）セッションが、同じ session_id で一覧に戻ったとき（upsertSeen で gone_at を外す前の行）に呼ぶ
+   * （cc/channels.ts のチャンネルの開き直し。docs/plan/claude-code-channels.md §3.6）。投げても一覧の更新には響かない
+   */
+  revived?: (session: CcSessionRow) => void;
   /**
    * 採った（一覧にあるセッションの）hook の事象を、行に反映した後に渡す（返事を Discord に戻す cc/replies.ts。CC8）。一覧に無い session_id の事象は渡さない。
    * 投げても一覧の処理は止めない
@@ -423,6 +428,13 @@ export class CcRegistry implements CcHookReceiver {
       this.loggedFailure = undefined;
       this.fetchedAt = now;
       const ids = new Set(result.agents.map((agent) => agent.sessionId));
+      // 戻ったセッションは、gone_at を外す前の行から
+      const revivedRows =
+        this.deps.revived === undefined
+          ? []
+          : result.agents
+              .map((agent) => this.deps.store.get(agent.sessionId))
+              .filter((row): row is CcSessionRow => row !== undefined && row.goneAt !== null);
       this.deps.store.upsertSeen(
         result.agents.map((agent) => ({
           sessionId: agent.sessionId,
@@ -436,6 +448,7 @@ export class CcRegistry implements CcHookReceiver {
       const goneRows = this.deps.ended === undefined ? [] : this.deps.store.listAlive().filter((row) => !ids.has(row.sessionId));
       this.deps.store.markGone([...ids]);
       this.tellEnded(goneRows);
+      this.tellRevived(revivedRows);
       // 行を書いてから一覧を入れ替える（receive が一覧にあるとみなした session_id の行は必ずある）
       this.agents = result.agents;
       this.deps.permissions?.onListed(
@@ -480,6 +493,16 @@ export class CcRegistry implements CcHookReceiver {
         this.deps.ended?.(row);
       } catch (error) {
         this.deps.log(`Claude Code: 終了の知らせに失敗しました（${errorKind(error)}）`);
+      }
+    }
+  }
+
+  private tellRevived(rows: readonly CcSessionRow[]): void {
+    for (const row of rows) {
+      try {
+        this.deps.revived?.(row);
+      } catch (error) {
+        this.deps.log(`Claude Code: 戻ったセッションの処理に失敗しました（${errorKind(error)}）`);
       }
     }
   }

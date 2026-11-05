@@ -509,3 +509,40 @@ test("CcRegistry: 保留できる事象は CC_PENDING_MAX 件までで、超え�
   assert.equal(s.store.get(S1)?.lastEvent, "Stop");
   assert.equal(s.store.get(S1)?.lastPromptText, null);
 });
+
+test("CcRegistry: 一覧から消えたセッションは ended、同じ session_id が戻ったら gone_at を外す前の行で revived（1 回だけ。投げても一覧は進む）", async (t) => {
+  const db = tempDb(t);
+  const clock = { now: BASE };
+  const now = (): Date => new Date(clock.now);
+  const results: AgentEntry[][] = [[agent(S1), agent(S2)], [agent(S2)], [agent(S1), agent(S2)], [agent(S1), agent(S2)]];
+  const ended: string[] = [];
+  const revived: Array<{ sessionId: string; goneAt: string | null }> = [];
+  const logs: string[] = [];
+  const store = new CcSessionStore(db, now);
+  const registry = new CcRegistry({
+    cfg: { ccPollSec: 10 },
+    agents: { list: async () => ({ ok: true, agents: results.shift() ?? [], dropped: 0 }) },
+    dirs: { sessionFile: () => undefined, transcriptMtime: () => undefined },
+    store,
+    now,
+    ended: (row) => ended.push(row.sessionId),
+    revived: (row) => {
+      revived.push({ sessionId: row.sessionId, goneAt: row.goneAt });
+      throw new Error("boom");
+    },
+    log: (line) => logs.push(line),
+  });
+  await registry.tick();
+  assert.deepEqual(revived, []);
+  clock.now = BASE + 1000;
+  await registry.tick();
+  assert.deepEqual(ended, [S1]);
+  clock.now = BASE + 2000;
+  await registry.tick();
+  assert.deepEqual(revived, [{ sessionId: S1, goneAt: new Date(BASE + 1000).toISOString() }]);
+  assert.equal(store.get(S1)?.goneAt, null);
+  assert.ok(logs.includes("Claude Code: 戻ったセッションの処理に失敗しました（Error）"));
+  // 生きたままなら呼ばない
+  await registry.tick();
+  assert.equal(revived.length, 1);
+});
