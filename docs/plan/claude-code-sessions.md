@@ -249,7 +249,7 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
 - **判断待ちの知らせ（決定 2）**: 許可の要求以外の判断待ち（`status: "waiting"`・`Notification` の `elicitation_*`・`agent_needs_input`・時間切れ後のダイアログ）は **60 秒続いたら 1 回**（待ちごとに 1 回。1 時間 10 件、超えた分は「ほか n 件」）。**許可の要求で既に 1 通出しているもの（`cc_permissions` に `pending` か直近 60 秒に解決した行（保留せず 1 通も出していない `released` を除く）があるセッション）には出さない**（書き換えで済ませる。`permission_prompt` の `Notification` は保留中でも 6 秒で来るため。§1.4）。`SELF_AGENT_CC_NOTIFY=0` で止める（許可の要求の投稿も止まる = Web だけで答える）。
 - self-agent が起動したセッションの終了は、**`claude agents --json` の一覧から消えたときだけ**を根拠に info で 1 行（`SessionEnd` の hook は根拠にしない。偽の hook で出せてしまうのと、再起動をまたいで二重に出るのを防ぐため。一覧から消えたときに `gone_at` が入るので、再起動の後に同じセッションで出し直さない）。trust の確認待ち（§4.2）は起動の確認の投稿（`cc_start`）の書き換えで出す。
 - **`cc_send` / `cc_start` の確認**（§5.3）は #system ではなく **頼んだチャンネル**に出す。
-- `/cc` のコマンドは CC10 で持つ（`open`・`cancel`・`close`。claude-code-channels.md §3.8。作る・閉じる・取り消すは LLM を通さない操作で、Web だけだとスマホからの手が無いため）。それ以前は無い。
+- `/cc` のコマンドは CC10 で持つ（`open`・`cancel`・`close`。claude-code-channels.md §3.8。作る・閉じる・やめるは LLM を通さない操作で、Web だけだとスマホからの手が無いため）。それ以前は無い。
 
 ### 5.3 SDK のエージェントのツール（決定 10。CC7）
 **持たせる。ただし、送る・起動するのはオーナーが Discord のボタンで確認したときだけ**（`kb_delete` と同じ型。ツールは確認の投稿を出して終わる）。
