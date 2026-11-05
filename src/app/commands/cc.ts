@@ -6,8 +6,23 @@
 // 本人にだけ「この操作は古くなっています」。
 // /cc（SELF_AGENT_CC=1 のときだけ登録。docs/plan/claude-code-channels.md §3.8。CC10 は open だけ）は一覧を rankSessions の順に最大 25 件の
 // セレクト `cc:pick` で本人にだけ出し、選ぶとそのセッションの Discord のチャンネルを作る（cc/channels.ts の openChannel。origin command）。
-// `/cc cancel`（CC11）は Claude Code のチャンネルの中で、そのセッションの届け待ち（queued）を全部取り消す（本人にだけ件数を返す）
-import type { CcChannelFailure, CcChannels, CcOpenResult } from "../../cc/channels.ts";
+// `/cc cancel`（CC11）は Claude Code のチャンネルの中で、そのセッションの届け待ち（queued）を全部取り消す（本人にだけ件数を返す）。
+// `/cc close`（CC13）は Claude Code のチャンネルの中で、そのチャンネルを閉じて完了へ移す（結果はチャンネルに出す）。
+// 終わったチャンネルの [起動して続ける]（`cc:resume:<channel_id>:<message_id>`）・[やめる]（`cc:resume:keep:<channel_id>:<message_id>`）は
+// cc/channels.ts の resume・keepEnded（CC13）。削除の確認の [削除する]（`cc:del:<channel_id>`）・[残す]（`cc:del:keep:<channel_id>`）は
+// commands/delete.ts に倣い、記録した今の確認のボタンで、チャンネルが ended のときだけ動く（DB だけで動くので SELF_AGENT_CC が無効でも押せる）
+import {
+  type CcChannelFailure,
+  type CcChannels,
+  type CcOpenResult,
+  ccDeletedText,
+  ccKeptText,
+  CC_CHANNEL_CLOSED_TEXT,
+  CC_RESUME_KEPT_TEXT,
+} from "../../cc/channels.ts";
+import type { CcChannelStore } from "../../store/cc-channels.ts";
+import type { ChannelOpsQueue } from "../channel-ops.ts";
+import { ALREADY_HANDLED_TEXT, STALE_TEXT } from "./delete.ts";
 import type { CcState } from "../../cc/registry.ts";
 import type { CcAnswerResult, CcPermissionDecision } from "../../cc/permission-hold.ts";
 import { unfollowByReply, unfollowedText } from "../../cc/replies.ts";
@@ -28,7 +43,7 @@ const PICK_SELECT_ID = `${NAMESPACE}:pick`;
 const OPTION_MAX_LENGTH = 100;
 
 /** /cc と cc:pick が使うチャンネルの操作（SELF_AGENT_CC=1 で動いているときだけ。main で後から作るので関数で渡す） */
-export type CcChannelsGetter = () => Pick<CcChannels, "openChannel" | "pickItems" | "cancelQueued"> | undefined;
+export type CcChannelsGetter = () => Pick<CcChannels, "openChannel" | "pickItems" | "cancelQueued" | "close" | "resume" | "keepEnded"> | undefined;
 
 /** Claude Code の連携が動いていないとき（hook の受け口の設定が無いなど） */
 export const CC_UNAVAILABLE_REPLY = "Claude Code の連携が動いていません";
@@ -36,6 +51,20 @@ export const CC_NOT_SET_UP_REPLY = "カテゴリ「Claude Code」がありませ
 export const CC_NO_SESSIONS_REPLY = "Claude Code のセッションがありません";
 export const CC_CANCEL_NOT_CHANNEL_REPLY = "Claude Code のチャンネルで実行してください";
 export const CC_CANCEL_NONE_REPLY = "届け待ちはありません";
+
+/** /cc close の応答（純関数。closed はチャンネルに出す） */
+export function closeReply(result: ReturnType<CcChannels["close"]>): { text: string; ephemeral: boolean } {
+  switch (result) {
+    case "closed":
+      return { text: CC_CHANNEL_CLOSED_TEXT, ephemeral: false };
+    case "not_channel":
+      return { text: CC_CANCEL_NOT_CHANNEL_REPLY, ephemeral: true };
+    case "resuming":
+      return { text: "起動中です。少し待ってから実行してください", ephemeral: true };
+    case "ended":
+      return { text: "このチャンネルは既に閉じています", ephemeral: true };
+  }
+}
 
 /** /cc cancel の応答（純関数） */
 export function cancelReply(count: number | undefined): string {
@@ -77,10 +106,11 @@ export function createCcCommand(deps: CcCommandDeps): CommandHandler {
       subcommands: [
         { name: "open", description: "Claude Code のセッションを選んで、そのチャンネルを作ります" },
         { name: "cancel", description: "このチャンネルのセッションへの届け待ちを取り消します" },
+        { name: "close", description: "このチャンネルを閉じて完了に移します（書くと起動して続けられます）" },
       ],
     },
     async handle(interaction, responder) {
-      if (interaction.subcommand !== "open" && interaction.subcommand !== "cancel") {
+      if (interaction.subcommand !== "open" && interaction.subcommand !== "cancel" && interaction.subcommand !== "close") {
         throw new Error(`/cc の不明なサブコマンドです（${interaction.subcommand ?? ""}）`);
       }
       const guildId = interaction.guildId;
@@ -88,6 +118,11 @@ export function createCcCommand(deps: CcCommandDeps): CommandHandler {
       const channels = deps.ccChannels();
       if (channels === undefined) {
         await responder.reply({ text: CC_UNAVAILABLE_REPLY, ephemeral: true });
+        return;
+      }
+      if (interaction.subcommand === "close") {
+        const result = interaction.channelId === null ? "not_channel" : channels.close(interaction.channelId);
+        await responder.reply({ ...closeReply(result), suppressEmbeds: true });
         return;
       }
       if (interaction.subcommand === "cancel") {
@@ -153,14 +188,85 @@ export type CcComponentDeps = {
   ccPermissionButtons?: () => CcPermissionButtons | undefined;
   /** 返事の追いかけ（[追いかけをやめる]。CC8）。DB だけで動くので SELF_AGENT_CC が無効でも渡す。無ければ cc:unfollow は例外 */
   ccFollow?: { replies: Pick<CcReplyStore, "get">; sessions: Pick<CcSessionStore, "get" | "stopFollow"> };
-  /** /cc open のセレクト（cc:pick）。無ければ cc:pick は例外 */
+  /** /cc open のセレクト（cc:pick）と [起動して続ける]（cc:resume）。無ければ cc:pick・cc:resume は例外 */
   ccChannels?: CcChannelsGetter;
+  /** 削除の確認の [削除する][残す]（cc:del。CC13。DB だけで動くので SELF_AGENT_CC が無効でも渡す）。無ければ cc:del は例外 */
+  ccDelete?: {
+    deleteAfterDays: number;
+    store: Pick<CcChannelStore, "get" | "touchEnded" | "markDeleted">;
+    gateway: Pick<Gateway, "deleteChannel">;
+    /** 削除したチャンネルの未実行の移動を捨てる */
+    channelOps: Pick<ChannelOpsQueue, "cancel">;
+  };
   /** 応答に失敗したときの書き換え（既定の人格の Bot。#system の 1 通を出した Bot） */
   gateway: Pick<Gateway, "editMessage">;
   log: (message: string) => void;
 } & Partial<Omit<CcConfirmDeps, "log">>;
 
 const DECISIONS: Readonly<Record<string, CcPermissionDecision>> = { allow: "allow", always: "always", deny: "deny" };
+
+/** Discord の ID の形（数字だけ） */
+function isSnowflake(raw: string): boolean {
+  return /^\d{1,20}$/.test(raw);
+}
+
+type CcDeleteDeps = NonNullable<CcComponentDeps["ccDelete"]>;
+
+/**
+ * 削除の確認の [削除する]・[残す]（commands/delete.ts に倣う）。行が無い・削除済み・別のサーバーなら「すでに処理済み」、ended でない（戻った・続けた）・
+ * 押されたメッセージが記録した確認と違えば「古くなっています」にしてボタンを外し、DB は変えない。[削除する] は deleteChannel → channelOps.cancel → deleted
+ */
+async function handleDelete(
+  deps: CcDeleteDeps,
+  channelId: string,
+  keep: boolean,
+  interaction: { guildId: string | null; messageId?: string },
+  responder: Parameters<ComponentHandler["handle"]>[1],
+  log: (message: string) => void,
+): Promise<void> {
+  const check = (): "handled" | "stale" | NonNullable<ReturnType<CcDeleteDeps["store"]["get"]>> => {
+    const row = deps.store.get(channelId);
+    if (row === undefined || row.state === "deleted" || row.guildId !== interaction.guildId) return "handled";
+    if (row.state !== "ended" || interaction.messageId === undefined || row.deletePromptMessageId !== interaction.messageId) return "stale";
+    return row;
+  };
+  const dismiss = (result: "handled" | "stale"): Promise<void> =>
+    responder.update({ text: result === "handled" ? ALREADY_HANDLED_TEXT : STALE_TEXT, components: [] });
+  const show = async (text: string): Promise<void> => {
+    try {
+      await responder.update({ text, components: [] });
+    } catch (error) {
+      log(`Claude Code: 削除の確認の書き換えに失敗しました（${errorKind(error)}）`);
+    }
+  };
+  const first = check();
+  if (typeof first === "string") {
+    await dismiss(first);
+    return;
+  }
+  if (keep) {
+    if (!deps.store.touchEnded(channelId)) {
+      await dismiss("stale");
+      return;
+    }
+    log(`Claude Code: [残す] でチャンネルを残しました（guild=${first.guildId}）`);
+    await show(ccKeptText(first.name, deps.deleteAfterDays));
+    return;
+  }
+  // チャンネルの削除は Discord に問い合わせるので先に保留する
+  await responder.deferUpdate();
+  const second = check();
+  if (typeof second === "string") {
+    await dismiss(second);
+    return;
+  }
+  // 失敗したら何も変えずに投げる（ボタンは残るので押し直せる）
+  await deps.gateway.deleteChannel(channelId);
+  deps.channelOps.cancel(channelId);
+  deps.store.markDeleted(channelId);
+  log(`Claude Code: チャンネルを削除しました（guild=${second.guildId}）`);
+  await show(ccDeletedText(second.name));
+}
 
 /** custom_id の id（1 以上の整数）。それ以外なら undefined */
 function parseId(raw: string | undefined): number | undefined {
@@ -203,6 +309,46 @@ export function createCcComponent(deps: CcComponentDeps): ComponentHandler {
       }
       const parts = interaction.customId.split(":");
       const [, kind, action, rawId, ...rest] = parts;
+      // 終わったチャンネルの [起動して続ける][やめる]（CC13）: cc:resume:<channel_id>:<message_id>・cc:resume:keep:<channel_id>:<message_id>
+      if (kind === "resume") {
+        const keep = parts.length === 5 && parts[2] === "keep";
+        const [channelId, messageId] = keep ? [parts[3], parts[4]] : parts.length === 4 ? [parts[2], parts[3]] : [undefined, undefined];
+        if (interaction.kind !== "button" || channelId === undefined || messageId === undefined || !isSnowflake(channelId) || !isSnowflake(messageId)) {
+          throw new Error(`cc:resume の不明な操作です（${interaction.kind}）`);
+        }
+        const channels = deps.ccChannels?.();
+        if (keep) {
+          if (channels === undefined || !channels.keepEnded(channelId, messageId)) {
+            await responder.reply({ text: STALE_TURN_REPLY, ephemeral: true });
+            return;
+          }
+          await responder.update({ text: CC_RESUME_KEPT_TEXT, components: [], suppressEmbeds: true });
+          return;
+        }
+        if (channels === undefined) {
+          await responder.reply({ text: STALE_TURN_REPLY, ephemeral: true });
+          return;
+        }
+        // 起動は tmux に問い合わせるので先に保留する
+        await responder.deferUpdate();
+        const result = await channels.resume(channelId, messageId);
+        if (!result.ok && result.reason === "stale") {
+          await responder.reply({ text: STALE_TURN_REPLY, ephemeral: true });
+          return;
+        }
+        await responder.update({ ...result.message, suppressEmbeds: true });
+        return;
+      }
+      // 削除の確認（CC13）: cc:del:<channel_id>・cc:del:keep:<channel_id>
+      if (kind === "del") {
+        const keep = parts.length === 4 && parts[2] === "keep";
+        const channelId = keep ? parts[3] : parts.length === 3 ? parts[2] : undefined;
+        if (interaction.kind !== "button" || channelId === undefined || !isSnowflake(channelId) || deps.ccDelete === undefined) {
+          throw new Error(`cc:del の不明な操作です（${interaction.kind}）`);
+        }
+        await handleDelete(deps.ccDelete, channelId, keep, interaction, responder, deps.log);
+        return;
+      }
       // 確認（CC7）: cc:send:<id>・cc:start:<id>・cc:keep:send|start:<id>
       if (kind === "send" || kind === "start" || kind === "keep") {
         const id = kind === "keep" ? (parts.length === 4 ? parseId(parts[3]) : undefined) : parts.length === 3 ? parseId(parts[2]) : undefined;

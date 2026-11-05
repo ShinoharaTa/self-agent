@@ -134,6 +134,14 @@ export class CcChannelStore {
     return Number(result.changes) > 0;
   }
 
+  /** 再起動で resuming のまま残った行を ended に戻し（ended_at はそのまま）、戻した数を返す（起動時。CC13） */
+  resetResuming(): number {
+    const result = this.db
+      .prepare("UPDATE cc_channels SET state = 'ended', ended_at = COALESCE(ended_at, ?), updated_at = ? WHERE state = 'resuming'")
+      .run(this.now().toISOString(), this.now().toISOString());
+    return Number(result.changes);
+  }
+
   /** セッションを付け替える（CC13 の [起動して続ける]。前の id を previous_session_id に残す）。削除済み・行が無ければ false */
   rebind(channelId: string, sessionId: string): boolean {
     const result = this.db

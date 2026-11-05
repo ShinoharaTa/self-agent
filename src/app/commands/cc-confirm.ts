@@ -48,7 +48,7 @@ export const CC_START_RETRY_NOTE = "。少し待ってもう一度押してく�
 const START_RETRY_REASONS: readonly CcStartFailure[] = ["too_soon", "limit", "low_memory", "no_server"];
 
 /** 起動を断った理由の文（確認の書き換え） */
-const START_FAILURE_TEXT: Readonly<Record<CcStartFailure, string>> = {
+export const START_FAILURE_TEXT: Readonly<Record<CcStartFailure, string>> = {
   invalid_project: "ディレクトリがありません",
   invalid_title: "題名が正しくありません",
   invalid_mode: "権限モードが正しくありません",

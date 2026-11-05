@@ -212,6 +212,11 @@ const ccStarts = new CcStartStore(db, now);
 const ccReplies = new CcReplyStore(db, now);
 // Claude Code のセッションの Discord のチャンネル（CC10。docs/plan/claude-code-channels.md）。作る・終わった・戻ったは下の CcChannels
 const ccChannelStore = new CcChannelStore(db, now);
+// 再起動の前の [起動して続ける]（resuming）は起動を追えないので、終わったままに戻す（CC13）
+{
+  const reset = ccChannelStore.resetResuming();
+  if (reset > 0) log(`Claude Code: 起動中のまま残ったチャンネル ${reset} 件を終わったままに戻しました`);
+}
 // SELF_AGENT_CC=1 で連携が動くときだけ下で作る（/cc・cc:pick・再同期・Web は呼ぶときに読む）
 let ccChannels: CcChannels | undefined;
 /** 許可の要求に答えた後（Web・Discord）: そのセッションのチャンネルを作る（guildId を省けば最初の /setup 済みのサーバー。待たない・投げない） */
@@ -485,8 +490,10 @@ const handleInteraction = createInteractionHandler({
     ccFollow: { replies: ccReplies, sessions: ccSessions },
     ccRuntime: () => ccRuntime,
     ccPosts: ownerPosts,
-    // /cc open のセレクト（cc:pick）
+    // /cc open のセレクト（cc:pick）と終わったチャンネルの [起動して続ける]（cc:resume）
     ccChannels: () => ccChannels,
+    // Claude Code のチャンネルの削除の確認の [削除する][残す]（cc:del。DB だけで動く）
+    ccDelete: { deleteAfterDays: config.deleteAfterDays, store: ccChannelStore, gateway, channelOps },
     // #jobs のボタンとモーダル（SELF_AGENT_JOBS=1 のときだけ）
     ...(jobs === undefined ? {} : { jobs }),
     // #system の許可の要求のボタン（SELF_AGENT_CC=1 で SELF_AGENT_CC_NOTIFY が 1 のときだけ。下で作る）
@@ -582,7 +589,11 @@ const scheduler = new Scheduler({
   ...history,
   // Claude Code のチャンネルの再同期（SELF_AGENT_CC=1 のときだけ。連携が動いていなければ何もしない）
   ...(config.cc
-    ? { ccChannels: { reconcile: (guildId, parents, listedAt, limit) => ccChannels?.reconcile(guildId, parents, listedAt, limit) ?? 0 } }
+    ? {
+        ccChannels: { reconcile: (guildId, parents, listedAt, limit) => ccChannels?.reconcile(guildId, parents, listedAt, limit) ?? 0 },
+        // 終わってから SELF_AGENT_DELETE_AFTER_DAYS 日経った Claude Code のチャンネルの削除の確認（CC13）
+        ccDeletes: ccChannelStore,
+      }
     : {}),
   // ゲストの 1 日のターン数のうち、GUEST_TURNS_KEEP_DAYS 日より前の日の行を消す（ゲストのときだけ。Discord のゲストのサーバーには触らない）
   ...(config.guest
@@ -843,6 +854,9 @@ if (
     store: ccChannelStore,
     sends: ccSends,
     sender: () => ccSender,
+    // 終わったチャンネルの [起動して続ける]（CC13）
+    starter: () => ccStarter,
+    sessions: ccSessions,
     // Discord から頼んだ送信・起動は、頼んだチャンネルのサーバーに作る
     guildOf: (channelId) => channelOf(channelId)?.guildId,
     guildSettings,

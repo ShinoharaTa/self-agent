@@ -10,6 +10,7 @@
 // 上限: 生きている claude が SELF_AGENT_CC_MAX_SESSIONS 以上・MemAvailable が 1 GB 未満・前の起動から 1 分未満なら断る。
 // SDK のツール cc_start（CC7）は確認を出す前に check で検証と上限（1 分の間隔は除く）を確かめ、[起動する] で launch する。
 // 起動したペインを一覧のセッションに結びつけたら onBound を呼ぶ（Claude Code のチャンネルを作る・最初の指示を写す。docs/plan/claude-code-channels.md §3.1。CC11）。
+// 終わったチャンネルの [起動して続ける]（CC13）は resumeChannelId を onBound に渡し（付け替え）、結びつけられずに忘れたら onGaveUp を呼ぶ。
 // log は起動したもの（web など）・送信の番号・件数・失敗の種類だけ（プロジェクト名・題名・パス・tmux のセッション名・ペイン id・sessionId は出さない）
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -83,6 +84,10 @@ export type CcStartInput = {
   onTrustPending?: () => void;
   /** Claude Code のチャンネルを作るサーバー（Discord の [起動して送る] の押したサーバー。DB には入れず onBound に渡すだけ。CC11） */
   guildId?: string;
+  /** 終わった Claude Code のチャンネルの [起動して続ける]（CC13）なら、そのチャンネル（onBound に渡し、新しいチャンネルを作らずに付け替える） */
+  resumeChannelId?: string;
+  /** 起動から CC_START_BIND_MS の間に一覧のセッションと結びつけられなかったら 1 回呼ぶ（[起動して続ける] を ended に戻す。CC13） */
+  onGaveUp?: () => void;
 };
 
 /** 検証を通った起動の入力 */
@@ -246,6 +251,7 @@ export type CcStarterDeps = {
     channelId?: string;
     sendId?: number;
     guildId?: string;
+    resumeChannelId?: string;
   }) => void | Promise<void>;
   /** MemAvailable（バイト）。読めなければ undefined（そのときは確かめない） */
   memAvailable: () => number | undefined;
@@ -284,6 +290,9 @@ type Started = {
   onTrustPending: (() => void) | undefined;
   /** チャンネルを作るサーバー（onBound に渡す） */
   guildId: string | undefined;
+  /** [起動して続ける] のチャンネル（onBound に渡す。CC13） */
+  resumeChannelId: string | undefined;
+  onGaveUp: (() => void) | undefined;
 };
 
 const REAL_TIMERS: CcTimers = {
@@ -420,6 +429,8 @@ export class CcStarter {
       channelId: input.channelId,
       onTrustPending: input.onTrustPending,
       guildId: input.guildId,
+      resumeChannelId: input.resumeChannelId,
+      onGaveUp: input.onGaveUp,
     });
     this.inFlight = run;
     try {
@@ -441,6 +452,8 @@ export class CcStarter {
     channelId: string | undefined;
     onTrustPending: (() => void) | undefined;
     guildId: string | undefined;
+    resumeChannelId: string | undefined;
+    onGaveUp: (() => void) | undefined;
   }): Promise<CcStartResult> {
     const { tmux, sends, now, log } = this.deps;
     const at = now().getTime();
@@ -492,6 +505,8 @@ export class CcStarter {
       channelId: input.channelId,
       onTrustPending: input.onTrustPending,
       guildId: input.guildId,
+      resumeChannelId: input.resumeChannelId,
+      onGaveUp: input.onGaveUp,
     };
     this.started.push(entry);
     log(`Claude Code: 起動しました（${input.startedBy}${send === undefined ? "" : `、最初の指示 #${send.id}`}）`);
@@ -536,7 +551,14 @@ export class CcStarter {
     const now = this.deps.now().getTime();
     this.started = this.started.filter((entry) => {
       if (now - entry.startedAt < CC_START_BIND_MS) return true;
-      if (entry.sessionId === undefined) this.deps.log("Claude Code: 起動したセッションを一覧で見つけられませんでした");
+      if (entry.sessionId === undefined) {
+        this.deps.log("Claude Code: 起動したセッションを一覧で見つけられませんでした");
+        try {
+          entry.onGaveUp?.();
+        } catch (error) {
+          this.deps.log(`Claude Code: 結びつけられなかった後の処理に失敗しました（${errorKind(error)}）`);
+        }
+      }
       return false;
     });
   }
@@ -613,6 +635,7 @@ export class CcStarter {
         ...(entry.channelId === undefined ? {} : { channelId: entry.channelId }),
         ...(entry.sendId === undefined ? {} : { sendId: entry.sendId }),
         ...(entry.guildId === undefined ? {} : { guildId: entry.guildId }),
+        ...(entry.resumeChannelId === undefined ? {} : { resumeChannelId: entry.resumeChannelId }),
       });
       if (result instanceof Promise) void result.catch(fail);
     } catch (error) {

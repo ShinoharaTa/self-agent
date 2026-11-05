@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { setImmediate as flush } from "node:timers/promises";
 import type { MoveTarget } from "../src/app/channel-ops.ts";
 import { deletePrompt } from "../src/app/commands/delete.ts";
+import { ccDeletePrompt } from "../src/cc/channels.ts";
+import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { createSystemNotifier } from "../src/app/system-notice.ts";
 import {
   DELETE_PROMPT_BATCH_LIMIT,
@@ -60,7 +62,7 @@ function setup(
   deleteAfterDays: number = 30,
   allowedGuildIds: string[] = ["guild-1"],
   // history: true なら history（同じ DB）を渡す
-  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory" | "pruneCcSessions" | "ccChannels"> & { history?: boolean } = {},
+  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory" | "pruneCcSessions" | "ccChannels" | "ccDeletes"> & { history?: boolean } = {},
 ) {
   const db = tempDb(t);
   const clock = { now: NOW };
@@ -1046,4 +1048,27 @@ test("tick ごとに古いターンの記録を消す処理を呼ぶ（削除の
   assert.equal(calls, 2);
   assert.deepEqual(env.logs, ["古いターンの記録を消せませんでした"]);
   assert.equal(env.inboxRotator.calls.length, 2);
+});
+
+test("削除の確認（CC13）: 終わってからちょうど SELF_AGENT_DELETE_AFTER_DAYS 日の Claude Code のチャンネルは #system に cc:del の [削除する][残す] を出して記録し、出し直さない。戻ったものは対象外", async (t) => {
+  const db = tempDb(t);
+  let at = ago(30 * DAY_MS);
+  const store = new CcChannelStore(db, () => at);
+  const S = (n: number): string => `${n}${n}${n}${n}${n}${n}${n}${n}-1111-4111-8111-111111111111`;
+  for (const [channelId, n] of [["cc-old", 1], ["cc-open", 2], ["cc-young", 3]] as const) {
+    store.create({ channelId, guildId: "guild-1", sessionId: S(n), name: channelId, cwd: null, origin: "web" });
+  }
+  store.setState("cc-old", "ended");
+  at = ago(30 * DAY_MS - 1);
+  store.setState("cc-young", "ended");
+  const env = setup(t, 12, 30, ["guild-1"], { ccDeletes: store });
+  await env.scheduler.tick();
+  assert.deepEqual(env.sent(), [{ channelId: "system-1", message: ccDeletePrompt(store.get("cc-old")!, 30) }]);
+  const buttons = env.sent()[0]!.message.components?.[0];
+  assert.deepEqual(buttons?.kind === "buttons" ? buttons.buttons.map((button) => button.customId) : [], ["cc:del:cc-old", "cc:del:keep:cc-old"]);
+  assert.equal(store.get("cc-old")?.deletePromptMessageId, "message-1");
+  assert.equal(store.get("cc-young")?.deletePromptMessageId, null);
+  for (const line of env.logs) assert.doesNotMatch(line, /cc-old|cc-young/);
+  await env.scheduler.tick();
+  assert.equal(env.sent().length, 1);
 });

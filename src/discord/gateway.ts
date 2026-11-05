@@ -241,8 +241,10 @@ export interface Gateway {
   registerGuildCommands(guildId: string, defs: readonly CommandDef[]): Promise<void>;
   /** カテゴリを作り、その ID を返す。permission overwrite は書かない */
   createCategory(guildId: string, name: string): Promise<string>;
-  /** カテゴリの中にテキストチャンネルを作り、その ID を返す。name・topic は作成時にだけ設定し、以後変更しない */
+  /** カテゴリの中にテキストチャンネルを作り、その ID を返す。name は作成時にだけ設定し、以後変更しない（topic は setChannelTopic でだけ変える） */
   createTextChannel(guildId: string, options: TextChannelOptions): Promise<string>;
+  /** テキストチャンネルの topic を書き換える（Claude Code のチャンネルの付け替え。CC13）。チャンネルが無ければ UnknownChannelError */
+  setChannelTopic(channelId: string, topic: string): Promise<void>;
   /** チャンネル（カテゴリを含む）がまだ Discord 上にあるか。無い以外の失敗（権限・通信）は投げる */
   channelExists(channelId: string): Promise<boolean>;
   /** カテゴリの中にあるチャンネルの数（キャッシュではなく Discord 上の実数。手動で置かれた分も数える）。カテゴリでなければ NotCategoryError */

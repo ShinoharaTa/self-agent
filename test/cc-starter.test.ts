@@ -666,3 +666,22 @@ test("起動（CC11）: 一覧のセッションに結びつけたときだけ o
   await web.fire(CC_START_CHECK_MS);
   assert.deepEqual(web.bound, [{ sessionId: NEW, startedBy: "web" }]);
 });
+
+test("起動（CC13）: [起動して続ける] の resumeChannelId を onBound に渡し、CC_START_BIND_MS の間に結びつけられなければ onGaveUp を 1 回", async (t) => {
+  const s = await setup(t);
+  await s.starter.launch({ project: "alpha", title: "a", text: "続き", startedBy: "tool", channelId: "cc-1", guildId: "guild-1", resumeChannelId: "cc-1" });
+  await s.showNew();
+  await s.fire(CC_START_CHECK_MS);
+  assert.deepEqual(s.bound, [{ sessionId: NEW, startedBy: "tool", channelId: "cc-1", sendId: 1, guildId: "guild-1", resumeChannelId: "cc-1" }]);
+
+  const lost = await setup(t);
+  let gaveUp = 0;
+  await lost.starter.launch({ project: "alpha", title: "a", startedBy: "tool", resumeChannelId: "cc-1", onGaveUp: () => gaveUp++ });
+  await lost.fire(CC_START_CHECK_MS);
+  assert.equal(gaveUp, 0);
+  lost.clock.now += CC_START_BIND_MS;
+  await lost.fire(CC_START_CHECK_MS);
+  await lost.fire(CC_START_CHECK_MS);
+  assert.equal(gaveUp, 1);
+  assert.deepEqual(lost.bound, []);
+});
