@@ -147,7 +147,7 @@ self-agent は `~/.claude` を触らない。README（日・英）に次の形�
   - **入力欄の見える文字が全部 dim なら idle とみなす**（`classifyScreen` の変更。`Try "` の候補に限らない。ターンの後に出る dim の提案は貼れば置き換わり、提案の文字は入らない。オーナーが打った文字は dim にならない。§1.6）。これを変えないと、提案が出た後のセッションには積んだまま 120 分で `gave_up` になる。github-notifications の G4 の判定にも同じ変更が効く。
   - **ブラケット貼り付けが効いていない（1 行目で送信された）ことを検出したら、その送信は `unconfirmed` にして以後の送信を止め**（`cc_state.multiline_ok = false`。#system に 1 行）、オーナーが実機で確かめ直すまで `multiline: false`（改行を空白に）で送る。検出: Enter を押す前の確かめで入力欄に 1 行目だけがあり、画面に 2 行目以降の文字が「返答の側」に見える（`busy` に変わっている）とき。**実機では起きていない**（決定 3 の保険として残す。優先度は低い）。
 - idle でなければ `cc_sends` に `queued` で積み、30 秒ごとと、`Stop` の hook を受けたとき（ターンが終わった。周期を待たない）に古い順に試す。上限 `SELF_AGENT_CC_SEND_WAIT_MIN`（既定 120 分）で `gave_up`。[やめる] で `cancelled`。再起動の後も続ける。
-- 送れないとき: `no_server` / `not_in_tmux`（RC のリンクを出す）/ `gone` / `not_claude`（**絶対に送らない**）/ `unconfirmed`（Enter を押さず、画面の確認を頼む。やり直さない）。
+- 送れないとき: `no_server` / `not_in_tmux`（RC のリンクを出す）/ `gone` / `not_claude`（前面が claude でない。pid のたどりで claude が生きていれば作業中として待ち、貼るのは前面が claude で入力待ちのときだけ。シェルには**絶対に貼らない**。#284）/ `unconfirmed`（Enter を押さず、画面の確認を頼む。やり直さない）。
 - 二重送信: (1) 同じセッション・同じ本文が 5 秒以内なら前回の id で 202。(2) 同じセッションに `queued`・`delivering`・`awaiting_confirm`（§5.3）があれば 409 `already_queued`。(3) 送信の本体は mutex。(4) 再起動で `delivering` のまま残った行は `unconfirmed`。
 
 ### 3.3 RC と同時に使うときの衝突

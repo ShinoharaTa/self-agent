@@ -359,14 +359,14 @@ test("cc_send: 確認を投稿して cc_sends に awaiting_confirm で作るだ�
   assert.deepEqual(s.logs, ["Claude Code: cc_send の確認を出しました（#1）"]);
   // 確認待ちがある間は同じセッションに出さない
   assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S1, text: "別" })), { result: "already_queued" });
-  // 一覧に無い・UUID でない・シェルのペイン・tmux の外
+  // 一覧に無い・UUID でない・tmux の外。前面が bash のペイン（コマンド実行中）には確認を出す（#284）
   assert.deepEqual(parse(await s.handlers().ccSend({ session_id: "99999999-9999-4999-8999-999999999999", text: "x" })), { result: "not_found" });
   assert.deepEqual(parse(await s.handlers().ccSend({ session_id: "x", text: "x" })), { result: "not_found" });
-  assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S2, text: "x" })), { result: "not_in_tmux" });
+  assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S2, text: "x" })), { result: "confirmation_posted", send_id: 2 });
   assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S3, text: "x" })), { result: "not_in_tmux" });
   assert.equal(parse(await s.handlers().ccSend({ session_id: S1, text: "a\tb" })).result, "invalid_args");
   s.tmuxEnv.noServer = true;
-  assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S2, text: "x" })), { result: "not_available", message: "tmux のサーバーがありません" });
+  assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S3, text: "x" })), { result: "not_available", message: "tmux のサーバーがありません" });
   s.tmuxEnv.noServer = false;
   const logs = s.logs.join("\n");
   assert.ok(!logs.includes(SECRET_TEXT) && !logs.includes(SECRET_NAME) && !logs.includes(CHANNEL) && !logs.includes(S1));

@@ -136,10 +136,10 @@ test("findSendablePane: 主の経路（祖先が pane_pid）で当たる claude 
   const { parentOf } = parents({ 500: 400, 400: 300, 300: 200, 200: 150, 150: 1 });
   assert.deepEqual(findSendablePane({ pid: 500 }, [pane("%1", 400)], parentOf, NO_OTHERS), { ok: true, pane: pane("%1", 400) });
   assert.equal(findSendablePane({ pid: 500 }, [pane("%3", 150)], parentOf, NO_OTHERS).ok, true);
-  // 祖先のペインがシェル（claude でない）なら絶対に送らない
+  // 前面が claude でなくても（Bash のツールでコマンドを動かしている間）、pid のたどりで当たれば送り先（貼るかは probePaneState が決める。#284）
   assert.deepEqual(findSendablePane({ pid: 500 }, [pane("%1", 400, { currentCommand: "bash" })], parentOf, NO_OTHERS), {
-    ok: false,
-    reason: "not_claude",
+    ok: true,
+    pane: pane("%1", 400, { currentCommand: "bash" }),
   });
   // tmux 欄の補助でしか採れないペイン（祖先でない pane_pid）・死んだペインは tmux の外
   const hinted = pane("%5", 888);

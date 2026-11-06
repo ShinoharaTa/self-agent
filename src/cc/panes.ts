@@ -96,13 +96,14 @@ export function findSessionPane(
 /** list-panes の直近の結果（/api/status の cc.tmux） */
 export type TmuxState = "ok" | TmuxFailure;
 
-/** 送り先を引いた結果。not_in_tmux = 主の経路で当たるペインが無い、not_claude = 当たったペインの pane_current_command が claude でない（絶対に送らない） */
-export type SendablePane = { ok: true; pane: TmuxPane } | { ok: false; reason: "not_in_tmux" | "not_claude" };
+/** 送り先を引いた結果。not_in_tmux = 主の経路で当たるペインが無い */
+export type SendablePane = { ok: true; pane: TmuxPane } | { ok: false; reason: "not_in_tmux" };
 
 /**
- * 送ってよいペイン（§3.1・§7 の 2。純関数）: claude の pid そのものか CC_PANE_ANCESTOR_DEPTH 段までの祖先が pane_pid の、死んでいないペインで、
- * pane_current_command が claude のものだけ。sessions/<pid>.json の tmux 欄（補助）だけで採れるペインには送らない。
- * たどる途中で一覧のほかのセッションの pid に当たったら（入れ子）tmux の外とする
+ * 送ってよいペイン（§3.1・§7 の 2。純関数）: claude の pid そのものか CC_PANE_ANCESTOR_DEPTH 段までの祖先が pane_pid の、死んでいないペイン。
+ * sessions/<pid>.json の tmux 欄（補助）だけで採れるペインには送らない。たどる途中で一覧のほかのセッションの pid に当たったら（入れ子）tmux の外とする。
+ * pane_current_command は見ない: pid のたどりで当たれば claude は生きていて、Bash のツールでコマンドを動かしている間は前面がその子（bash など）になるだけ。
+ * 貼るかどうかは pane-state.ts の probePaneState が決める（前面が claude でなければ not_claude で、sender は作業中と同じく待つ。#284）
  */
 export function findSendablePane(
   target: Pick<PaneTarget, "pid">,
@@ -114,7 +115,7 @@ export function findSendablePane(
   for (const pid of [target.pid, ...ancestorPids(target.pid, parentOf, CC_PANE_ANCESTOR_DEPTH)]) {
     if (pid !== target.pid && sessionPids.has(pid)) return { ok: false, reason: "not_in_tmux" };
     const pane = alive.find((candidate) => candidate.panePid === pid);
-    if (pane !== undefined) return pane.currentCommand === CLAUDE_COMMAND ? { ok: true, pane } : { ok: false, reason: "not_claude" };
+    if (pane !== undefined) return { ok: true, pane };
   }
   return { ok: false, reason: "not_in_tmux" };
 }
