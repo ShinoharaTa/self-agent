@@ -28,7 +28,7 @@ It runs on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/over
 | Command | What it does |
 |---|---|
 | `/setup` | Creates the categories (`self-agent`, `進行中`, `待ち`, `完了`) and the `#inbox`, `#tasks` and `#system` channels (plus `#github` when GitHub notifications are enabled). Running it again recreates only what is missing. |
-| `/new <title>` | Creates a session channel. |
+| `/new <title>` | Creates a session channel. With `project`, the session works in a project under `~/workspace` with the same setup as Claude Code (see step 10). |
 | `/close` | Closes the session: saves a summary, lets you confirm suggested to-dos with buttons and adds them, then moves the channel to 完了. |
 | `/renew` | Summarizes the conversation and starts a fresh one (to reset a long conversation). Works in sessions, `#inbox` and `#tasks`. |
 | `/wait` | Moves the session to 待ち. Posting in that channel moves it back to 進行中. |
@@ -245,6 +245,22 @@ npm run cc-setup -- --print
 It prints an `env` entry and `hooks` for five events (`UserPromptSubmit`, `Stop`, `SessionEnd`, `Notification`, `PermissionRequest`; `SessionStart` is left out because it does not support http hooks), all `type: "http"` to `http://127.0.0.1:<port>/hook` with the header `X-Self-Agent-Hook: $SELF_AGENT_CC_HOOK_TOKEN`. Replace the placeholder in `env` with the same token as in `~/.config/self-agent/env`, and keep `~/.claude/settings.json` at mode 600. If the token is not picked up from `settings.json`'s `env`, export `SELF_AGENT_CC_HOOK_TOKEN` in the shell that starts your tmux server instead.
 
 4. Restart the bot. While the bot is stopped, prompts are not delayed, but the terminal (and probably RC) shows a hook error line (`hook error … ECONNREFUSED`) on every turn.
+
+### 10. (Optional) Project sessions (the same agent as Claude Code)
+
+Work in progress (`docs/plan/unify.md`, stage U1). A project session is a session channel whose conversation runs in a project directly under `SELF_AGENT_WORKSPACE_DIR` (default `~/workspace`), with the same setup as Claude Code in the terminal: Claude Code's system prompt, your `~/.claude/CLAUDE.md` and the project's `CLAUDE.md`, your skills and subagents, and Bash without the sandbox. `#inbox`, `#tasks` and ordinary sessions stay as they are.
+
+It needs step 9 (`SELF_AGENT_CC=1`), because permission requests use the same cards.
+
+1. Print the links the bot needs and run them yourself (the bot never writes to `~/.claude` or its own `CLAUDE_CONFIG_DIR`). They make the bot's `skills` and `agents` symlinks to `~/.claude/skills` and `~/.claude/agents`; links that are already in place show as `済`, and anything that is not a symlink is reported instead of replaced:
+
+```bash
+npm run unify-setup -- --print
+```
+
+2. Restart the bot. At startup it checks the two links; if they are missing it logs one line and refuses to create project sessions (existing project sessions keep working).
+3. Create a session with `/new title:<title> project:<name>` (the choices list the directories under `~/workspace`; with more than 25 you type the name), or pick a project in the Web UI's "新しいセッション" dialog. Project sessions run with the default persona only.
+4. When Claude wants to run a command or edit a file, the bot posts a permission card in that channel ([許可] / [このセッションでは常に許可] / [拒否]); you can also answer it on the session's tab in the Web UI. If nobody answers within `SELF_AGENT_CC_PERMISSION_HOLD_SEC` seconds it is denied. While a card is waiting, the turn's time limit does not run, and the progress message shows "許可を待っています: <tool>". [中断] denies the waiting request and stops the turn.
 
 ## Development
 

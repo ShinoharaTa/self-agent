@@ -31,9 +31,9 @@ ADHD のエンジニア（オーナー 1 人）のタスク管理と情報整理
 | 項目 | 決定 | 理由 |
 |---|---|---|
 | 実行基盤 | TypeScript + Claude Agent SDK。`query()` を `resume` で呼ぶ | 自分用プロジェクトなら Claude Max の利用枠で動かせる唯一の経路 |
-| 認証 | `claude setup-token` の長期トークン。Bot 専用の `CLAUDE_CONFIG_DIR` | 普段使う `~/.claude` と設定・履歴を分ける |
+| 認証 | `claude setup-token` の長期トークン。Bot 専用の `CLAUDE_CONFIG_DIR`。プロジェクトのセッション（`docs/plan/unify.md`）は例外で、Bot の `CLAUDE_CONFIG_DIR` の `skills`・`agents` を `~/.claude` への symlink にして共有する（`npm run unify-setup`。設定・認証は分けたまま） | 普段使う `~/.claude` と設定・履歴を分ける |
 | モデル | Opus 1 つに固定。effort は env で指定 | キャッシュはモデル・effort ごとに別 |
-| サブエージェント | 使わない。話題を分けたいときはセッション（チャンネル）を分ける | Pi の方針（中身の見えない処理を入れ子にしない） |
+| サブエージェント | 使わない。話題を分けたいときはセッション（チャンネル）を分ける。プロジェクトのセッション（`docs/plan/unify.md`）は例外で、Claude Code と同じく `~/.claude/agents` のサブエージェントを使える | Pi の方針（中身の見えない処理を入れ子にしない） |
 | セッション | 1 セッション = 1 テキストチャンネル。状態は置き場のカテゴリ（進行中 / 待ち / 完了）で表す | フォーラム投稿は流れて見えなくなる |
 | #tasks | タスク専用の会話チャンネル（登録・一覧・期限や題名の変更・完了・やめる・今日やることの相談）。タスク以外の話題は答えずに #inbox か /new のセッションへ 1 行で案内する。会話は #inbox と同じ規則（日次・入力の大きさ）で要約して引き継ぐ。パネルや常駐の一覧は置かない（一覧は /tasks とホームパネル）。タスクの操作は #inbox でもすべてできる | #inbox は思いつきを投げる入口、#tasks は溜まったタスクを見直して今日の 1 つを決める場所（`docs/plan/tasks-channel.md`） |
 | 公開範囲 | Bot は非公開。動くのは env `SELF_AGENT_ALLOWED_GUILD_IDS` のサーバーだけ。DM には反応しない | 利用枠と記憶をオーナー以外に使わせない |
@@ -44,7 +44,7 @@ ADHD のエンジニア（オーナー 1 人）のタスク管理と情報整理
 | タスクの時刻 | タスクに時刻の列は足さず、リマインド（`reminders`。1 回だけのものは task_id でタスクに紐づける）で代える | タスクでないリマインドも表せ、既存の task_* ツールの定義が変わらない（`docs/plan/reminders.md` §2.2） |
 | 不可逆操作 | チャンネル削除はボタンで確認してから。要約は DB に残す | 戻せない操作を自動で行わない |
 | 人格（2 体目の Bot） | 同じプロセス・同じ DB で Bot を人格ごとに動かす（`SELF_AGENT_PERSONAS`）。2 体目の入口は self-agent カテゴリの #<NAME> 1 つ（#inbox と同じ扱い。日時ヘッダも `#inbox`）、セッションは /new の `persona` か #<NAME> の session_open で作り、チャンネル名は `<NAME>-<題名>`。チャンネルの持ち主は 1 人格で、答えるのは持ち主の Bot だけ。管理の操作・コマンドは既定の Bot。タスク・記憶・ナレッジは共有 | 性格・役割の違う相手と同じサーバーで話し分ける。環境を増やさず、既定の人格のプロンプトキャッシュを変えない（`docs/plan/personas.md`） |
-| シェル | セッションのチャンネルのプロジェクトの中だけで Bash を使える。1 コマンドごとの承認はしない代わりに、SDK の sandbox（bwrap）でホーム・/tmp・/run を隠し、ネットは GitHub と npm だけ。sandbox が使えなければ止める（fail-closed）。非公開リポジトリと常駐プロセスは扱わない | Pi のように環境に安全を任せる。ただしトークンと他のプロジェクトが同じユーザーにあるので、隔離が確かなときだけ（`docs/plan/shell.md`） |
+| シェル | セッションのチャンネルのプロジェクトの中だけで Bash を使える。1 コマンドごとの承認はしない代わりに、SDK の sandbox（bwrap）でホーム・/tmp・/run を隠し、ネットは GitHub と npm だけ。sandbox が使えなければ止める（fail-closed）。非公開リポジトリと常駐プロセスは扱わない。プロジェクトのセッション（`docs/plan/unify.md`）は例外で、sandbox の無い Bash を使い、境界は 1 回ごとの許可のカード（default モード） | Pi のように環境に安全を任せる。ただしトークンと他のプロジェクトが同じユーザーにあるので、隔離が確かなときだけ（`docs/plan/shell.md`） |
 | 作業ジョブ | Discord（`/job`・#github の [任せる]）から頼むと、サーバーの今のログイン（Claude の OAuth と gh）だけでリポジトリを実装・テスト・コミットし、draft PR を返す（同時に 1 つ）。LLM は sandbox の中で commit まで、clone・push・PR はアプリが固定の引数で行い、push 先は `self-agent/*` の fast-forward だけ。報告は #jobs（1 ジョブ 1 メッセージ、終わりにメンション）。マージは人が決める | 鍵をアプリだけに持たせ、LLM が書いた `.git` を host 側の git に使わないことで、プロンプトインジェクションの被害を draft PR に留める（#129、`docs/plan/coding-jobs.md`。段階的に実装中） |
 
 ## フェーズ
