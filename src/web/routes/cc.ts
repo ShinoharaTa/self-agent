@@ -538,15 +538,26 @@ export type CcStatus = {
   tmux: "ok" | "no_server" | "failed" | null;
   multilineOk: boolean | null;
   pendingPermissions: number;
+  /** プロジェクトのセッションの共有の link（npm run unify-setup）が起動時の確認で済んでいたか（docs/plan/unify.md §6.1 の 8） */
+  unifyReady: boolean;
 };
 
-export const CC_STATUS_DISABLED: CcStatus = { enabled: false, hookPort: false, tmux: null, multilineOk: null, pendingPermissions: 0 };
+export const CC_STATUS_DISABLED: CcStatus = {
+  enabled: false,
+  hookPort: false,
+  tmux: null,
+  multilineOk: null,
+  pendingPermissions: 0,
+  unifyReady: false,
+};
 
 export type CcStatusDeps = {
   panes: Pick<CcPaneResolver, "lastTmux">;
   hookListening: () => boolean;
   store: Pick<CcSessionStore, "multilineOk">;
   permissions?: Pick<CcPermissionStore, "countPending">;
+  /** 起動時の共有の link の確認（agent/unify-setup-check.ts の checkSharedLinks）。省略は済んでいない */
+  unifyReady?: () => boolean;
 };
 
 /** SELF_AGENT_CC が有効なときの /api/status の cc。tmux は /api/cc/* が引いた直近の結果で、ここでは list-panes を起動しない */
@@ -559,5 +570,6 @@ export function ccStatus(deps: CcStatusDeps): CcStatus {
     multilineOk: deps.store.multilineOk(),
     // Claude Code の hook の要求だけ（origin sdk はプロジェクトのセッション）
     pendingPermissions: deps.permissions?.countPending("hook") ?? 0,
+    unifyReady: deps.unifyReady?.() ?? false,
   };
 }

@@ -96,6 +96,10 @@
     const persona = store.channels.personas.find((p) => p.id === ch.persona);
     const badges = [];
     if (ch.kind === "session" && persona && !persona.isDefault) badges.push(el("span", { class: "badge badge-persona", text: persona.name }));
+    // プロジェクトのセッション（docs/plan/unify.md）はプロジェクトの名前
+    if (ch.kind === "session" && ch.projectDir && typeof ch.projectDir.dir === "string") {
+      badges.push(el("span", { class: "badge badge-project", title: "プロジェクトのセッション", text: ch.projectDir.dir }));
+    }
     // 実行中のターンがあればスピナー（その間は未読の点を出さない）
     const running = !!store.runningOf(ch.id);
     if (running) badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));

@@ -697,7 +697,7 @@ test("許可の橋: run の signal が鳴れば保留をやめて拒否し、待
   const poster = { post: async () => undefined, resolved: async () => undefined };
   const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, workspaceDir, home, log: () => undefined });
   const run = new AbortController();
-  const canUse = bridge(context(), () => SESSION, run.signal);
+  const canUse = bridge(context(), () => SESSION, { signal: run.signal });
   // canUseTool の signal は鳴らない（SDK が鳴らさない場合）
   const asking = canUse("Bash", { command: "ls" }, { signal: new AbortController().signal } as never);
   await until(() => permissions.countPending() === 1, "保留");

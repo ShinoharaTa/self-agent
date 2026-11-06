@@ -451,14 +451,16 @@ test("ccStatus: hook の受け口・tmux（直近の lookup の ok / no_server /
   const panes = new CcPaneResolver({ tmux, parentOf: () => undefined });
   let listening = true;
   const deps = { panes, hookListening: () => listening, store };
-  assert.deepEqual(ccStatus(deps), { enabled: true, hookPort: true, tmux: null, multilineOk: true, pendingPermissions: 0 });
+  assert.deepEqual(ccStatus(deps), { enabled: true, hookPort: true, tmux: null, multilineOk: true, pendingPermissions: 0, unifyReady: false });
   assert.equal(runs, 0);
   await panes.lookup(new Set());
-  assert.deepEqual(ccStatus(deps), { enabled: true, hookPort: true, tmux: "ok", multilineOk: true, pendingPermissions: 0 });
+  assert.deepEqual(ccStatus(deps), { enabled: true, hookPort: true, tmux: "ok", multilineOk: true, pendingPermissions: 0, unifyReady: false });
   listening = false;
   db.exec("UPDATE cc_state SET multiline_ok = 0");
   await panes.lookup(new Set());
-  assert.deepEqual(ccStatus(deps), { enabled: true, hookPort: false, tmux: "no_server", multilineOk: false, pendingPermissions: 0 });
+  assert.deepEqual(ccStatus(deps), { enabled: true, hookPort: false, tmux: "no_server", multilineOk: false, pendingPermissions: 0, unifyReady: false });
+  // プロジェクトのセッションの共有の link（U1b）
+  assert.equal(ccStatus({ ...deps, unifyReady: () => true }).unifyReady, true);
   await panes.lookup(new Set());
   assert.equal(ccStatus(deps).tmux, "failed");
   ccStatus(deps);

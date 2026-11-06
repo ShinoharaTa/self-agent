@@ -1373,3 +1373,31 @@ test("web static: 実行中の行は 1 行 + 直近 3 つの手順の二次の�
   assert.match(css, /\n\.steps-plain \{\n {2}font-size: var\(--font-sm\);\n\}/);
   assert.doesNotMatch(css, /\.steps-plain \{[^}]*(border|background)/);
 });
+
+test("web static: 許可を待っている間は実行中の行に「許可を待っています: …」の 1 行（U1b）。変わったら描き直す", () => {
+  const chat = read("chat.js");
+  const api = read("api.js");
+  assert.match(chat, /const waiting = store\.runningWaitingText\(run\);\n {4}if \(waiting\) body\.push\(el\("div", \{ class: "run-waiting", text: waiting \}\)\);/);
+  assert.match(api, /"許可を待っています: " \+ \(typeof w\.displayName === "string" && w\.displayName !== "" \? w\.displayName : w\.toolName\)/);
+  assert.match(api, /waitingText\(prev\) !== waitingText\(turn\)/);
+  const css = read("app.css");
+  assert.match(css, /\n\.run-waiting \{[^}]*color: var\(--text\);/);
+});
+
+test("web static: 新しいセッションのダイアログのプロジェクト（U1b）は /api/projects/workspace から「（なし）」を先頭に、選んだら projectDir。サイドバーの行にプロジェクトの印", () => {
+  const html = read("index.html");
+  assert.match(html, /<div class="field" id="new-project-field" hidden>/);
+  const workbench = read("workbench.js");
+  assert.match(workbench, /SA\.api\.get\("\/api\/projects\/workspace", \{ quiet: true \}\)/);
+  assert.match(workbench, /el\("option", \{ value: "", text: "（なし）" \}\)/);
+  assert.match(workbench, /body\.projectDir = \$\("new-project"\)\.value;/);
+  assert.match(workbench, /err\.code === "not_set_up" && err\.status === 503/);
+  // 共有の link が済んでいなければセレクトを無効にし、説明に unify-setup の行の案内（textContent）
+  assert.match(workbench, /if \(status\.cc\.unifyReady === false\) \{\n {6}\$\("new-project"\)\.disabled = true;/);
+  assert.match(workbench, /\$\("new-project-hint"\)\.textContent = NEW_PROJECT_NOT_READY_HINT;/);
+  assert.match(workbench, /const NEW_PROJECT_NOT_READY_HINT = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行してから再起動してください";/);
+  // index.html の説明と同じ文
+  assert.ok(html.includes('<p class="meta" id="new-project-hint">選ぶと Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はボタンで答えます。人格は既定だけです</p>'));
+  const sidebar = read("sidebar.js");
+  assert.match(sidebar, /class: "badge badge-project", title: "プロジェクトのセッション", text: ch\.projectDir\.dir/);
+});

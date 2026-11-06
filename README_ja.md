@@ -26,7 +26,7 @@ Discord の専用サーバーに常駐する、1 人用の AI エージェント
 | コマンド | 内容 |
 |---|---|
 | `/setup` | self-agent 用のカテゴリ（`self-agent`・`進行中`・`待ち`・`完了`）と `#inbox` `#tasks` `#system`（GitHub の通知を有効にしていれば `#github` も）を作る。2 回目以降は消えたものだけ作り直す |
-| `/new 題名` | セッションのチャンネルを作る |
+| `/new 題名` | セッションのチャンネルを作る。`project` を付けると、`~/workspace` のプロジェクトで Claude Code と同じ装備で動く（手順 10） |
 | `/close` | セッションを閉じる。要約を残し、やることの候補をボタンで確認して登録してから「完了」へ移す |
 | `/renew` | 会話を要約して新しくする（長くなった会話の仕切り直し）。セッション・`#inbox`・`#tasks` で使える |
 | `/wait` | セッションを「待ち」へ移す。そのチャンネルで発言すると「進行中」に戻る |
@@ -242,6 +242,22 @@ npm run cc-setup -- --print
 `env` の 1 行と、5 つの事象（`UserPromptSubmit`・`Stop`・`SessionEnd`・`Notification`・`PermissionRequest`。`SessionStart` は http hook に対応していないので外している）の `hooks` が出る。どれも `http://127.0.0.1:<port>/hook` への `type: "http"` で、ヘッダは `X-Self-Agent-Hook: $SELF_AGENT_CC_HOOK_TOKEN`。`env` の置き場所の文は `~/.config/self-agent/env` と同じトークンに置き換え、`~/.claude/settings.json` は 600 のままにする。`settings.json` の `env` からトークンが読まれないときは、tmux のサーバーを起こすシェルで `SELF_AGENT_CC_HOOK_TOKEN` を `export` する。
 
 4. Bot を再起動する。Bot を止めている間も発言は遅れないが、毎ターン端末に hook のエラーの行（`hook error … ECONNREFUSED`）が出る（RC にも出るはず）。
+
+### 10.（任意）プロジェクトのセッション（Claude Code と同じエージェント）
+
+作りかけ（`docs/plan/unify.md` の段 U1）。プロジェクトのセッションは、`SELF_AGENT_WORKSPACE_DIR`（既定 `~/workspace`）の直下のプロジェクトで、端末の Claude Code と同じ装備（Claude Code のシステムプロンプト・`~/.claude/CLAUDE.md` とプロジェクトの `CLAUDE.md`・skills・サブエージェント・sandbox の無い Bash）で会話するセッションのチャンネル。`#inbox`・`#tasks` と今までのセッションは変わらない。
+
+許可の要求に同じカードを使うので、手順 9（`SELF_AGENT_CC=1`）が要る。
+
+1. Bot に要る link を出して、自分で実行する（Bot は `~/.claude` にも自分の `CLAUDE_CONFIG_DIR` にも書かない）。Bot の `skills`・`agents` を `~/.claude/skills`・`~/.claude/agents` への symlink にする行で、済んでいるものは「済」、symlink でないものは置き換えずに理由を出す。`~/.claude/skills`・`~/.claude/agents` がまだ無ければ、先にその `mkdir -p` の行が出る
+
+```bash
+npm run unify-setup -- --print
+```
+
+2. Bot を再起動する。起動時に 2 つの link を確かめ、無ければ log に 1 行出してプロジェクトのセッションを作らない（既にあるプロジェクトのセッションは動く）
+3. `/new title:<題名> project:<名前>` で作る（選択肢は `~/workspace` の直下のディレクトリ。25 件を超えれば名前を打つ）か、Web UI の「新しいセッション」のダイアログでプロジェクトを選ぶ。プロジェクトのセッションは既定の人格だけ
+4. Claude がコマンドの実行やファイルの編集をしようとすると、そのチャンネルに許可のカード（[許可]・[このセッションでは常に許可]・[拒否]）が出る。Web UI のそのセッションのタブでも答えられる。`SELF_AGENT_CC_PERMISSION_HOLD_SEC` 秒答えなければ拒否になる。カードを待っている間はターンの打ち切りの時間は進まず、途中経過に「許可を待っています: <ツール>」が出る。[中断] は待っている要求を拒否してターンを止める
 
 ## 開発
 

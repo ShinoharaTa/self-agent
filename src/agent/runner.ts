@@ -35,6 +35,12 @@ export function isProjectPermissionMode(value: unknown): value is ProjectPermiss
 /** prompt と一緒にモデルに渡す画像（base64）。形式は中身から確かめたもの */
 export type RunImage = { mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif"; data: string };
 
+/**
+ * 許可を待っている要求（プロジェクトのセッションの canUseTool。docs/plan/unify.md §5.1）。途中経過の表示用で、ツールの引数・パスは入れない。
+ * displayName は SDK の短い名前（「Read file」など。無ければ toolName を出す）、since は待ち始めた時刻
+ */
+export type PermissionWaiting = { toolName: string; displayName?: string; since: Date };
+
 /** 途中経過の 1 手順（assistant メッセージの tool_use 1 つ）。label は表示用の短い文で、ファイルの中身・コマンド・URL・検索語は入れない */
 export type ProgressStep = { label: string };
 
@@ -51,6 +57,11 @@ export type RunInput = {
   signal?: AbortSignal;
   /** メインループの assistant メッセージの tool_use ごとに 1 回呼ぶ（途中経過の表示に使う） */
   onProgress?: (step: ProgressStep) => void;
+  /**
+   * 許可を待ち始めた・待ち終えたときに呼ぶ（プロジェクトのセッションだけ）。待っている要求があればいちばん古いもの、無くなれば undefined。
+   * 待っている間はターンの打ち切りの時間を進めない
+   */
+  onPermissionWaiting?: (waiting: PermissionWaiting | undefined) => void;
 };
 
 /**
