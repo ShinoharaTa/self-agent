@@ -28,6 +28,8 @@ import type { RunContext } from "./runner.ts";
 export const PROJECT_PERMISSION_DENY_MESSAGE = "self-agent（Discord / Web）から拒否しました";
 /** session_id が分からず保留できなかったときの message */
 export const PROJECT_PERMISSION_NO_SESSION_MESSAGE = "self-agent で許可を確かめられませんでした";
+/** /close・/renew の要約のターン（purpose close・renew）でツールを拒否したときの message */
+export const PROJECT_PERMISSION_SUMMARY_TURN_MESSAGE = "要約のターンではツールを使えません";
 /** ターンの中断・停止で保留をやめたときの message */
 export const PROJECT_PERMISSION_ABORT_MESSAGE = "self-agent でターンが止まったため拒否しました";
 
@@ -125,6 +127,11 @@ export function createPermissionBridge(
   };
 
   return (context, sessionId) => async (toolName, input, options) => {
+    // 要約のターン（/close・/renew）はカードを出さず、行も作らずに全部拒否する
+    if (context.purpose === "close" || context.purpose === "renew") {
+      log(`プロジェクトのセッション: 要約のターンのツールを拒否しました（${context.purpose}）`);
+      return { behavior: "deny", message: PROJECT_PERMISSION_SUMMARY_TURN_MESSAGE };
+    }
     const id = sessionId();
     if (id === undefined) {
       log("プロジェクトのセッション: session_id が分からないため許可の要求を拒否しました");
@@ -197,7 +204,7 @@ export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPo
       await gateway.editMessage(
         row.messageChannelId,
         row.messageId,
-        permissionResolvedMessage(row, sessionOf(row.messageChannelId), places),
+        permissionResolvedMessage(row, sessionOf(row.messageChannelId), places, false),
       );
     } catch (error) {
       log(`プロジェクトのセッション: 許可の要求（#${row.id}）の知らせを書き換えられませんでした（${errorKind(error)}）`);
@@ -205,7 +212,13 @@ export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPo
   };
   return {
     async post(context, row) {
-      const message = permissionNotice(row, sessionOf(context.channelId), { ...places, holdSec, ownerUserId: cfg.ownerUserId });
+      const message = permissionNotice(row, sessionOf(context.channelId), {
+        ...places,
+        holdSec,
+        ownerUserId: cfg.ownerUserId,
+        // 端末・RC のダイアログは無い（時間切れは拒否）
+        terminal: false,
+      });
       record(context, permissionHistoryText(row));
       let messageId: string;
       try {
@@ -217,7 +230,7 @@ export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPo
       permissions.setMessage(row.id, context.channelId, messageId);
     },
     async resolved(context, row) {
-      const text = permissionResultHistoryText(row);
+      const text = permissionResultHistoryText(row, false);
       if (text !== undefined) record(context, text);
       // Discord で押したものは app/commands/cc.ts が応答で書き換える
       if (row.via === "discord") return;
@@ -228,7 +241,7 @@ export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPo
       if (row === undefined) return undefined;
       const session = row.messageChannelId === null ? undefined : sessionOf(row.messageChannelId);
       return {
-        message: { ...permissionResolvedMessage(row, session, places), suppressEmbeds: true },
+        message: { ...permissionResolvedMessage(row, session, places, false), suppressEmbeds: true },
         channelId: row.messageChannelId,
         messageId: row.messageId,
       };

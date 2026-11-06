@@ -16,6 +16,7 @@ import {
   createPermissionBridge,
   createPermissionPoster,
   PROJECT_PERMISSION_DENY_MESSAGE,
+  PROJECT_PERMISSION_SUMMARY_TURN_MESSAGE,
   projectPermissionTimeoutMessage,
 } from "../src/agent/permission-bridge.ts";
 import {
@@ -387,7 +388,7 @@ test("ツール: プロジェクトのセッションでは project_open・proje
   assert.equal(prompt.result, "not_available");
 });
 
-test("runChannelTurn: プロジェクトのセッションは projectRunner で context に projectDir・permissionMode。/close と予約した依頼は軽いモード", async (t) => {
+test("runChannelTurn: プロジェクトのセッションは発言も /close も projectRunner で context に projectDir・permissionMode。予約した依頼は軽いモード", async (t) => {
   const db = tempDb(t);
   const now = () => new Date(BASE);
   const stores = createStores(db, now);
@@ -402,8 +403,8 @@ test("runChannelTurn: プロジェクトのセッションは projectRunner で 
     toolCalls: 0,
     contextTokens: 0,
   });
-  const runner = new FakeRunner([ok("light-1"), ok("light-2")]);
-  const projectRunner = new FakeRunner([ok("project-1")]);
+  const runner = new FakeRunner([ok("light-1")]);
+  const projectRunner = new FakeRunner([ok("project-1"), ok("project-1")]);
   const deps = { ...stores, runner, projectRunner, log: () => undefined };
   const turn = { guildId: GUILD, channelId: CHANNEL, kind: "session" as const, prompt: "やって", allowedUrls: [] };
   await runChannelTurn(deps, turn);
@@ -411,8 +412,13 @@ test("runChannelTurn: プロジェクトのセッションは projectRunner で 
   assert.equal(projectRunner.inputs[0]!.context?.projectDir, "alpha");
   assert.equal(projectRunner.inputs[0]!.context?.permissionMode, "plan");
   await runChannelTurn(deps, { ...turn, purpose: "close" });
+  assert.equal(projectRunner.inputs.length, 2);
+  assert.equal(projectRunner.inputs[1]!.context?.purpose, "close");
+  assert.equal(projectRunner.inputs[1]!.context?.projectDir, "alpha");
+  // /close も会話の記録の場所を合わせるため同じ SDK セッションを resume する
+  assert.equal(projectRunner.inputs[1]!.sessionId, "project-1");
   await runChannelTurn(deps, { ...turn, scheduled: true });
-  assert.equal(runner.inputs.length, 2);
+  assert.equal(runner.inputs.length, 1);
   assert.ok(runner.inputs.every((input) => input.context?.projectDir === undefined));
   // projectRunner が無ければ（SELF_AGENT_CC が無効）始めない
   const none = await runChannelTurn({ ...stores, runner: new FakeRunner([]), log: () => undefined }, turn);
@@ -517,4 +523,114 @@ test("Claude Code のチャンネルを作る口は origin sdk の要求に答�
   handler(1, GUILD);
   handler(2, GUILD);
   assert.deepEqual(ensured, [SESSION]);
+});
+
+test("/renew: プロジェクトのセッションは projectRunner で context に purpose renew。軽いモードのセッションは今までどおり context なし", async (t) => {
+  const { renewSession } = await import("../src/app/session-renew.ts");
+  const { KeyedSerialQueue } = await import("../src/app/queue.ts");
+  const db = tempDb(t);
+  const now = () => new Date(BASE);
+  const stores = createStores(db, now);
+  stores.topicSessions.create({ channelId: CHANNEL, guildId: GUILD, title: "作業", categoryId: "c" });
+  stores.topicSessions.setProject(CHANNEL, "alpha", "default");
+  stores.topicSessions.create({ channelId: "light", guildId: GUILD, title: "軽い", categoryId: "c" });
+  stores.sessions.set(CHANNEL, "project-session");
+  stores.sessions.set("light", "light-session");
+  const done = {
+    ok: true as const,
+    text: "- 要約",
+    sessionId: "x",
+    usage: { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, cacheCreation1hInputTokens: 0, steps: [] },
+    durationMs: 1,
+    toolCalls: 0,
+    contextTokens: 0,
+  };
+  const runner = new FakeRunner([done]);
+  const projectRunner = new FakeRunner([done]);
+  const deps = {
+    topicSessions: stores.topicSessions,
+    turnQueue: new KeyedSerialQueue(2),
+    turn: { runner, projectRunner, sessions: stores.sessions, seeds: stores.seeds, usage: stores.usage, log: () => undefined },
+    log: () => undefined,
+  };
+  assert.equal((await renewSession(deps, GUILD, CHANNEL)).result, "renewed");
+  assert.equal(projectRunner.inputs.length, 1);
+  assert.equal(projectRunner.inputs[0]!.sessionId, "project-session");
+  assert.deepEqual(projectRunner.inputs[0]!.context, {
+    guildId: GUILD,
+    channelId: CHANNEL,
+    kind: "session",
+    purpose: "renew",
+    projectDir: "alpha",
+    permissionMode: "default",
+  });
+  assert.equal((await renewSession(deps, GUILD, "light")).result, "renewed");
+  assert.equal(runner.inputs.length, 1);
+  assert.equal(runner.inputs[0]!.context, undefined);
+});
+
+test("許可の橋: 要約のターン（purpose close・renew）はカードを出さず行も作らずに拒否する", async (t) => {
+  const { workspaceDir, home } = places(t);
+  const db = tempDb(t);
+  const now = () => new Date(BASE);
+  const permissions = new CcPermissionStore(db, now);
+  const logs: string[] = [];
+  const bridge = createPermissionBridge({
+    permissions,
+    hold: { holdExternal: () => assert.fail("保留しない") },
+    poster: { post: () => assert.fail("出さない"), resolved: () => assert.fail("出さない") },
+    holdSec: 300,
+    workspaceDir,
+    home,
+    log: (line) => logs.push(line),
+  });
+  for (const purpose of ["close", "renew"] as const) {
+    const canUse = bridge(context({ purpose }), () => SESSION);
+    const result = await canUse("Bash", { command: "ls" }, { signal: new AbortController().signal } as never);
+    assert.deepEqual(result, { behavior: "deny", message: PROJECT_PERMISSION_SUMMARY_TURN_MESSAGE });
+  }
+  assert.equal(permissions.countPending(), 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM cc_permissions").get()?.n, 0);
+  assert.equal(logs.length, 2);
+});
+
+test("文面: プロジェクトのセッション（terminal false）は端末・RC の文を出さず、時間切れは拒否。hook の文は変えない", async () => {
+  const { permissionNotice, permissionResolvedMessage, permissionResultLine } = await import("../src/cc/notice-text.ts");
+  const { permissionResultHistoryText } = await import("../src/cc/channel-posts.ts");
+  const row = {
+    id: 9,
+    sessionId: SESSION,
+    requestHash: "h",
+    toolName: "Bash",
+    summary: "npm test",
+    permissionMode: "default",
+    alwaysRules: null,
+    state: "pending" as const,
+    via: null,
+    createdAt: new Date(BASE).toISOString(),
+    resolvedAt: null,
+    messageId: null,
+    messageChannelId: null,
+    questionInput: null,
+    answers: null,
+    origin: "sdk" as const,
+  };
+  // RC の id があっても terminal false なら [RC で開く] は付けない
+  const session = { name: "作業", cwd: "/w/alpha", bridgeSessionId: "session_abc" };
+  const places = { workspaceDir: "/w", home: "/h" };
+  const notice = permissionNotice(row, session, { ...places, holdSec: 300, terminal: false });
+  assert.ok(notice.text.includes("ボタンは 5 分効きます。過ぎたら拒否になります"), notice.text);
+  assert.ok(!notice.text.includes("端末") && !notice.text.includes("RC"), notice.text);
+  assert.ok(notice.components?.every((c) => c.kind !== "links"));
+  const hookNotice = permissionNotice({ ...row, origin: "hook" }, session, { ...places, holdSec: 300 });
+  assert.ok(hookNotice.text.includes("端末や RC のダイアログでも答えられます（ボタンは 5 分効きます）"));
+  assert.ok(hookNotice.components?.some((c) => c.kind === "links"));
+  const expired = { ...row, state: "expired" as const };
+  assert.equal(permissionResultLine(expired, undefined, false), "時間切れ（拒否しました）");
+  assert.equal(permissionResultLine(expired, undefined), "時間切れ。端末か RC で答えてください");
+  const resolved = permissionResolvedMessage(expired, session, places, false);
+  assert.ok(resolved.text.endsWith("時間切れ（拒否しました）"), resolved.text);
+  assert.deepEqual(resolved.components, []);
+  assert.equal(permissionResultHistoryText(expired, false), "許可の要求（Bash）: 時間切れ（拒否しました）");
+  assert.equal(permissionResultHistoryText(expired), "許可の要求（Bash）: 時間切れ。端末か RC で答えてください");
 });

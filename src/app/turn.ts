@@ -192,17 +192,18 @@ export function recordTurnUsage(
  * - API が画像（か大きすぎるリクエスト）を受け付けなかった（result.imageRejected）ときは、その会話を残さない。resume で起きたらすぐに
  *   SDK セッションを捨てて seed を入れ、画像を外して（このターンに画像があれば IMAGE_DROPPED_NOTE を付けて）やり直す。新しいセッションで
  *   起きたら、このターンに画像があり、まだ外していなければ 1 回だけ画像を外してやり直す（画像を外すのは 1 ターンに 1 回だけ）
- * - プロジェクトのセッション（sessions.project_dir がある）の発言・[続ける] のターンは projectRunner で、context に projectDir・permissionMode を入れる。
- *   /close のターン・予約した依頼・#inbox・#tasks は今までどおり軽いモードの runner。projectRunner が無ければ run せずに PROJECT_NEEDS_CC_ERROR の失敗を返す
+ * - プロジェクトのセッション（sessions.project_dir がある）の発言・[続ける]・/close のターンは projectRunner で、context に projectDir・permissionMode を入れる
+ *   （/close は purpose close のまま。許可の橋がツールを全部拒否する）。予約した依頼・#inbox・#tasks は今までどおり軽いモードの runner。projectRunner が無ければ run せずに PROJECT_NEEDS_CC_ERROR の失敗を返す
  * 返す結果の失敗は呼び出し側で返信・log する
  */
 export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise<RunResult> {
   const { sessions, seeds, topicSessions, inboxSummaries, memories, log } = deps;
   const key = turn.channelId;
   const persona = turnPersonaOf(deps, turn.channelId);
-  // プロジェクトのセッションか（/close のターン・予約した依頼は軽いモードのまま）
+  // プロジェクトのセッションか（予約した依頼は軽いモードのまま。/close のターンも会話の記録の場所を合わせるためプロジェクトの runner で動かし、
+  // 許可の橋が要約のターンのツールを全部拒否する）
   const project =
-    turn.kind === "session" && turn.purpose === undefined && turn.scheduled === undefined
+    turn.kind === "session" && turn.scheduled === undefined
       ? topicSessions.projectDirOf?.(turn.channelId)
       : undefined;
   if (project !== undefined && deps.projectRunner === undefined) {
