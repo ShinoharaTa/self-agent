@@ -23,13 +23,16 @@ import { MCP_SERVER_NAME } from "./tools.ts";
 /** プロジェクトのセッションで外す CLI の組み込みツール（U1。質問は U2 で canUseTool → 質問カードにする） */
 export const PROJECT_DISALLOWED_TOOLS: readonly string[] = ["AskUserQuestion"];
 
+/** 要約のターン（/close・/renew）でさらに外すツール（書く・動かす・サブエージェント） */
+export const PROJECT_SUMMARY_DISALLOWED_TOOLS: readonly string[] = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Agent"];
+
 /** 秘密の場所の拒否の理由（モデルへ返す） */
 export const PROJECT_SECRET_DENIED_REASON = "self-agent の秘密の場所は読めません";
 /** 秘密の場所の判定が例外で終わったときの理由 */
 export const PROJECT_SECRET_GUARD_FAILED_REASON = "判定に失敗したため拒否しました";
 
 /** 秘密の場所の判定の対象のツール */
-const SECRET_GUARD_TOOLS: readonly string[] = ["Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit"];
+const SECRET_GUARD_TOOLS: readonly string[] = ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "NotebookEdit"];
 /** 下へ辿って探すツール（対象の場所が秘密の場所を含むときも拒否する） */
 const SEARCH_TOOLS: readonly string[] = ["Glob", "Grep"];
 /** パスを持つ入力の項目 */
@@ -83,9 +86,20 @@ function staticPrefix(pattern: string): string {
   return (index === -1 ? parts : parts.slice(0, index)).join("/");
 }
 
-/** 秘密の場所（docs/plan/unify.md §5.5 の 3）。dataDir・CLAUDE_CONFIG_DIR・~/.config/self-agent・~/.ssh・~/.config/gh */
+/**
+ * 秘密の場所（docs/plan/unify.md §5.5 の 3）。dataDir・CLAUDE_CONFIG_DIR・~/.config/self-agent・~/.ssh・~/.config/gh・~/.claude（オーナーの .credentials.json）・
+ * /proc（プロセスの environ など）
+ */
 export function projectSecretPlaces(cfg: Pick<Config, "dataDir" | "claudeConfigDir">, home: string): string[] {
-  return [cfg.dataDir, cfg.claudeConfigDir, join(home, ".config/self-agent"), join(home, ".ssh"), join(home, ".config/gh")];
+  return [
+    cfg.dataDir,
+    cfg.claudeConfigDir,
+    join(home, ".config/self-agent"),
+    join(home, ".ssh"),
+    join(home, ".config/gh"),
+    join(home, ".claude"),
+    "/proc",
+  ];
 }
 
 /**
@@ -131,7 +145,7 @@ export function touchesSecretPlace(
 }
 
 /**
- * 秘密の場所の Read・Edit・Write・Glob・Grep・NotebookEdit を拒否する PreToolUse の hook（docs/plan/unify.md §5.5 の 3）。
+ * 秘密の場所の Read・Edit・Write・MultiEdit・Glob・Grep・NotebookEdit を拒否する PreToolUse の hook（docs/plan/unify.md §5.5 の 3）。
  * Bash の字面は見ない（境界は許可のカード）。判定が例外なら拒否（fail-closed）。log はツール名だけ（パスは出さない）
  */
 export function createSecretPlaceGuard(
@@ -189,6 +203,7 @@ export function createProjectProfile(deps: ProjectProfileDeps): RunnerProfile {
       if (context === undefined || context.projectDir === undefined) throw new Error(PROJECT_DIR_INVALID_ERROR);
       const cwd = verifiedProjectDir(context.projectDir, places);
       if (cwd === undefined) throw new Error(PROJECT_DIR_INVALID_ERROR);
+      const summaryTurn = context.purpose === "close" || context.purpose === "renew";
       return {
         model: cfg.model,
         // Claude Code の preset に self-agent の文を足す。snapshot: true で会話ごとに記録して固定する（プロジェクトのセッションだけの例外。docs/plan/unify.md §5.4）
@@ -196,9 +211,10 @@ export function createProjectProfile(deps: ProjectProfileDeps): RunnerProfile {
         // ユーザー（Bot の CLAUDE_CONFIG_DIR）・プロジェクト・ローカルの設定・CLAUDE.md・skills・agents を読む
         settingSources: ["user", "project", "local"],
         cwd,
-        // tools は付けない（CLI の既定。Bash・Grep・Agent・Skill …）
-        disallowedTools: [...PROJECT_DISALLOWED_TOOLS],
-        permissionMode: permissionModeOf(context, log),
+        // tools は付けない（CLI の既定。Bash・Grep・Agent・Skill …）。要約のターン（/close・/renew）は書く・動かすツールも外し、
+        // モードを default に固定する（acceptEdits・設定の permissions.allow・常に許可は canUseTool を通らないため。橋の拒否は二重の守り）
+        disallowedTools: summaryTurn ? [...PROJECT_DISALLOWED_TOOLS, ...PROJECT_SUMMARY_DISALLOWED_TOOLS] : [...PROJECT_DISALLOWED_TOOLS],
+        permissionMode: summaryTurn ? "default" : permissionModeOf(context, log),
         // 自前のツールと Web の 2 つはカードを出さない（今の dontAsk と同じ扱い。WebFetch の URL は hook で絞る）
         allowedTools: [`mcp__${MCP_SERVER_NAME}__*`, "WebSearch", "WebFetch"],
         mcpServers: { [MCP_SERVER_NAME]: deps.createMcpServer(context) },

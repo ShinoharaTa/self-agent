@@ -87,10 +87,24 @@ function projectCwd(workspaceDir: string, context: RunContext): string | undefin
   return context.projectDir === undefined ? undefined : join(workspaceDir, context.projectDir);
 }
 
+/** SDK の title を要約の前に添えるときの上限（字） */
+const TITLE_MAX_CHARS = 200;
+
 /**
- * 許可の橋を作る。返す関数は run ごとに、その run の context と session_id（runner が init で受けたもの。resume なら元の id）から canUseTool を作る
- * （project-profile.ts の buildOptions が呼ぶ）。run（sdk-runner.ts の ProfileRunState）があれば、保留している間（前の要求を待つ間を含む）は
- * waitPermission で打ち切りを止めて途中経過に出し、run の signal（[中断]・打ち切り。query より先に abort される）でも保留をやめて拒否する
+ * カードの要約（純関数）。常に tool_input から作った要約（summarizePermission。request_hash・常に許可のルールと同じ入力から作るので、
+ * 見たものと許すものが合う）を出し、SDK の title があればその前の 1 行に添える（制御文字は空白、先頭 200 字）
+ */
+export function bridgeSummary(summary: string, title: string | undefined): string {
+  if (title === undefined || title.trim() === "") return summary;
+  const line = [...title.replace(/[\u0000-\u001f\u007f]/g, " ").trim()].slice(0, TITLE_MAX_CHARS).join("");
+  return `${line}\n${summary}`;
+}
+
+/**
+ * 許可の橋を作る。返す関数は run ごとに、その run の context と session_id（runner が init で受けたもの。resume なら元の id）と
+ * run（sdk-runner.ts の ProfileRunState）から canUseTool を作る（project-profile.ts の buildOptions が呼ぶ）。保留は canUseTool の signal と
+ * run の signal（[中断]・打ち切り。query の abortController より先に abort される）のどちらが鳴ってもやめる（SDK が query の abort で
+ * canUseTool の signal をすぐ鳴らさない場合に備える）。保留している間（前の要求を待つ間を含む）は run の waitPermission で打ち切りを止めて途中経過に出す
  */
 export function createPermissionBridge(
   deps: PermissionBridgeDeps,
@@ -109,23 +123,27 @@ export function createPermissionBridge(
     toolName: string,
     input: Record<string, unknown>,
     options: Parameters<CanUseTool>[2],
+    signal: AbortSignal,
   ): Promise<PermissionResult> => {
-    // 前の要求を待つ間にターンが止まっていれば、行もカードも作らずに拒否する
-    if (options.signal.aborted) return { behavior: "deny", message: PROJECT_PERMISSION_ABORT_MESSAGE };
+    // 前の要求を待っている間にターンが止まっていれば、行もカードも作らない
+    if (signal.aborted) {
+      log("プロジェクトのセッション: ターンが止まったため許可の要求を出さずに拒否しました");
+      return { behavior: "deny", message: PROJECT_PERMISSION_ABORT_MESSAGE };
+    }
     const cwd = projectCwd(workspaceDir, context);
     const summarized = summarizePermission(toolName, input, cwd);
     const row = permissions.add({
       sessionId,
       requestHash: summarized.requestHash,
       toolName,
-      summary: options.title ?? summarized.summary,
+      summary: bridgeSummary(summarized.summary, options.title),
       permissionMode: context.permissionMode ?? "default",
       alwaysRules: alwaysRulesOf(toolName, options.suggestions, { cwd, workspaceDir, home }),
       state: "pending",
       origin: "sdk",
     });
     // 先に保留に登録する（投稿の間に Web で押されても答えられるように）
-    const closing = hold.holdExternal(row, holdSec * 1000, options.signal);
+    const closing = hold.holdExternal(row, holdSec * 1000, signal);
     await poster.post(context, row).catch(() => undefined);
     const closed = await closing;
     const final = permissions.get(row.id) ?? closed;
@@ -134,7 +152,7 @@ export function createPermissionBridge(
     return permissionResultOf(final, holdSec);
   };
 
-  return (context, sessionId, run) => async (toolName, input, sdkOptions) => {
+  return (context, sessionId, run) => async (toolName, input, options) => {
     // 要約のターン（/close・/renew）はカードを出さず、行も作らずに全部拒否する
     if (context.purpose === "close" || context.purpose === "renew") {
       log(`プロジェクトのセッション: 要約のターンのツールを拒否しました（${context.purpose}）`);
@@ -145,17 +163,15 @@ export function createPermissionBridge(
       log("プロジェクトのセッション: session_id が分からないため許可の要求を拒否しました");
       return { behavior: "deny", message: PROJECT_PERMISSION_NO_SESSION_MESSAGE };
     }
-    // SDK の signal（query の後始末）と run の signal（[中断]・打ち切り）のどちらでも保留をやめる
-    const signal = run?.signal === undefined ? sdkOptions.signal : AbortSignal.any([sdkOptions.signal, run.signal]);
-    const options = { ...sdkOptions, signal };
+    const signal = run?.signal === undefined ? options.signal : AbortSignal.any([options.signal, run.signal]);
     const endWaiting = run?.waitPermission?.({
       toolName,
-      ...(sdkOptions.displayName === undefined ? {} : { displayName: sdkOptions.displayName }),
+      ...(options.displayName === undefined ? {} : { displayName: options.displayName }),
     });
     const previous = chains.get(id) ?? Promise.resolve();
     const current = previous.then(
-      () => handle(context, id, toolName, input, options),
-      () => handle(context, id, toolName, input, options),
+      () => handle(context, id, toolName, input, options, signal),
+      () => handle(context, id, toolName, input, options, signal),
     );
     chains.set(id, current);
     try {
@@ -169,6 +185,21 @@ export function createPermissionBridge(
       if (chains.get(id) === current) chains.delete(id);
     }
   };
+}
+
+/** Discord のボタン（app/commands/cc.ts の resolvedMessage）の書き換え後の 1 通とその場所 */
+export type ResolvedPermissionMessage = { message: OutgoingMessage; channelId: string | null; messageId: string | null };
+
+/**
+ * 終わった許可の要求の 1 通を、行の origin で作り分ける（main の cc:perm の resolvedMessage）。origin sdk（プロジェクトのセッション）は sdk
+ * （createPermissionPoster。題名・プロジェクト・端末なし）、それ以外は hook（cc/channel-posts.ts）。行が無ければ hook に任せる
+ */
+export function resolvedMessageByOrigin(deps: {
+  permissions: Pick<CcPermissionStore, "get">;
+  sdk: (id: number) => ResolvedPermissionMessage | undefined;
+  hook: (id: number) => ResolvedPermissionMessage | undefined;
+}): (id: number) => ResolvedPermissionMessage | undefined {
+  return (id) => (deps.permissions.get(id)?.origin === "sdk" ? deps.sdk(id) : deps.hook(id));
 }
 
 export type PermissionPosterDeps = {

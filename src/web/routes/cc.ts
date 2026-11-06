@@ -484,7 +484,8 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
       handle: async () => {
         if (registry === undefined || permissions === undefined) return NOT_FOUND;
         registry.touch();
-        return { status: 200, json: { permissions: permissions.store.listPending().map((row) => permissionJson(row, hold)) } };
+        // Claude Code の hook の要求だけ（プロジェクトのセッションの要求（origin sdk）は /api/channels のセッションの行に出す）
+        return { status: 200, json: { permissions: permissions.store.listPending("hook").map((row) => permissionJson(row, hold)) } };
       },
     },
     {
@@ -567,7 +568,8 @@ export function ccStatus(deps: CcStatusDeps): CcStatus {
     hookPort: deps.hookListening(),
     tmux: tmux === undefined ? null : tmux === "ok" || tmux === "no_server" ? tmux : "failed",
     multilineOk: deps.store.multilineOk(),
-    pendingPermissions: deps.permissions?.countPending() ?? 0,
+    // Claude Code の hook の要求だけ（origin sdk はプロジェクトのセッション）
+    pendingPermissions: deps.permissions?.countPending("hook") ?? 0,
     unifyReady: deps.unifyReady?.() ?? false,
   };
 }

@@ -16,7 +16,12 @@ import { checkSandbox, missingSandboxBinaries, shellPath } from "./agent/sandbox
 import { WEB_TEMPLATE_DIR } from "./agent/scaffold.ts";
 import type { AgentRunner, RunContext } from "./agent/runner.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
-import { createPermissionBridge, createPermissionPoster, denyAllPermissions } from "./agent/permission-bridge.ts";
+import {
+  createPermissionBridge,
+  createPermissionPoster,
+  denyAllPermissions,
+  resolvedMessageByOrigin,
+} from "./agent/permission-bridge.ts";
 import { createProjectProfile } from "./agent/project-profile.ts";
 import { checkSharedLinks } from "./agent/unify-setup-check.ts";
 import type { ProjectSessionGate } from "./app/session-ops.ts";
@@ -367,7 +372,7 @@ const kbMemory = {
 // 発言と /close・/renew のターンのキュー（key は channelId）。SELF_AGENT_SHELL=1 ならセッションのジョブは同時に 1 つだけ
 const turnQueue = createTurnQueue(config);
 // ターンはチャンネルの持ち主の人格の runner で動かす（personas）
-// プロジェクトのセッションの発言・[続ける] のターンは projectRunner（/close・予約した依頼は軽いモード。無ければ「SELF_AGENT_CC=1 が要ります」）
+// プロジェクトのセッションの発言・[続ける]・/close・/renew のターンは projectRunner（予約した依頼は軽いモード。無ければ「SELF_AGENT_CC=1 が要ります」）
 const turn = {
   runner,
   ...(projectRunner === undefined ? {} : { projectRunner }),
@@ -795,8 +800,11 @@ if (
   ccPermissionButtons = {
     answer: (id, decision) => permissionHold.answer(id, decision, "discord"),
     // プロジェクトのセッションの要求（origin sdk）はそのセッションの題名・プロジェクトで書き換える
-    resolvedMessage: (id) =>
-      ccPermissionStore.get(id)?.origin === "sdk" ? projectPoster.resolvedMessage(id) : channelPosts.resolvedMessage(id),
+    resolvedMessage: resolvedMessageByOrigin({
+      permissions: ccPermissionStore,
+      sdk: (id) => projectPoster.resolvedMessage(id),
+      hook: (id) => channelPosts.resolvedMessage(id),
+    }),
     // 答えた（関わった）ら、押したサーバーにそのセッションのチャンネルを作る（CC11）
     answered: (id, guildId) => ccPermissionAnswered(id, guildId ?? undefined),
     // 質問（AskUserQuestion）の選択肢のボタン・セレクト・モーダル（Q2）。途中の答えはプロセスの中
