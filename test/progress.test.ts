@@ -98,3 +98,35 @@ test("startProgress: messageId があれば、最初の表示の前に終わっ�
   });
   await none.finish("done");
 });
+
+test("startProgress: 許可を待ち始めたら間隔を待たずに「許可を待っています: …」を足して書き換え、待ち終えたら外す", async () => {
+  const timers = new ManualTimers();
+  const edits: string[] = [];
+  const progress = startProgress({
+    send: async () => "m-1",
+    edit: async (_messageId, message) => {
+      edits.push(message.text);
+    },
+    buttons: [],
+    delayMs: 20_000,
+    now: () => new Date(0),
+    timers,
+    log: () => {},
+  });
+  // 最初の 1 通の前は書き換えない
+  progress.onPermissionWaiting({ toolName: "Bash", since: new Date(0) });
+  await flush();
+  assert.deepEqual(edits, []);
+  timers.afters[0]!.fn();
+  await flush();
+  progress.onPermissionWaiting({ toolName: "Bash", displayName: "Run command", since: new Date(0) });
+  await flush();
+  progress.onPermissionWaiting(undefined);
+  await flush();
+  await progress.finish("done");
+  assert.deepEqual(edits, [
+    "作業中…（0 分 0 秒・ツール 0 回）\n許可を待っています: Run command",
+    "作業中…（0 分 0 秒・ツール 0 回）",
+    "完了（0 分 0 秒・ツール 0 回）",
+  ]);
+});

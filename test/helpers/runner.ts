@@ -17,8 +17,8 @@ export function turnUsage(input: number, read: number, creation: number, output?
 export type FakeRunStep = RunResult | Error | ((input: RunInput) => RunResult);
 
 export class FakeRunner implements AgentRunner {
-  /** 受け取った入力のうち、中断（signal）と途中経過（onProgress）を除いたもの */
-  inputs: Array<Omit<RunInput, "signal" | "onProgress">> = [];
+  /** 受け取った入力のうち、中断（signal）と途中経過（onProgress・onPermissionWaiting）を除いたもの */
+  inputs: Array<Omit<RunInput, "signal" | "onProgress" | "onPermissionWaiting">> = [];
   /** 受け取った入力そのもの（signal・onProgress を見る） */
   received: RunInput[] = [];
   /** gates[i] があれば、i 回目の呼び出しは結果を返す前にそれを待つ */
@@ -32,7 +32,7 @@ export class FakeRunner implements AgentRunner {
   }
 
   async run(input: RunInput): Promise<RunResult> {
-    const { signal: _signal, onProgress: _onProgress, ...rest } = input;
+    const { signal: _signal, onProgress: _onProgress, onPermissionWaiting: _onPermissionWaiting, ...rest } = input;
     const index = this.received.length;
     this.inputs.push(rest);
     this.received.push(input);

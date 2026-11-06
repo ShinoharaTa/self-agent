@@ -1805,3 +1805,24 @@ test("runningTurns: Web から送ったセッションのターンは source web
   assert.deepEqual(gateway.sent, [{ channelId: "topic-1", text: ABORTED_REPLY, replyToId: "posted-1" }]);
   assert.deepEqual(handler.runningTurns(), []);
 });
+
+test("runningTurns: 許可を待っている間（onPermissionWaiting）は waitingPermission（since は ISO）を出し、待ち終えたら外す", async (t) => {
+  const { runner, topicSessions, handler } = setup(t, [okResult("session-1", "済み")]);
+  topicSessions.create(TOPIC);
+  let release: () => void = () => undefined;
+  const seen: unknown[] = [];
+  runner.beforeResult = (input) =>
+    new Promise<void>((resolve) => {
+      input.onPermissionWaiting?.({ toolName: "Bash", displayName: "Run command", since: new Date(NOW.getTime() + 1000) });
+      seen.push(handler.runningTurns()[0]?.waitingPermission);
+      input.onPermissionWaiting?.(undefined);
+      seen.push(handler.runningTurns()[0]?.waitingPermission);
+      release = resolve;
+    });
+  await handler.submitText(webInput("topic-1", "実行して"));
+  await until(() => seen.length === 2);
+  assert.deepEqual(seen, [{ toolName: "Bash", displayName: "Run command", since: new Date(NOW.getTime() + 1000).toISOString() }, undefined]);
+  assert.equal("waitingPermission" in handler.runningTurns()[0]!, false);
+  release();
+  await until(() => handler.runningTurns().length === 0);
+});

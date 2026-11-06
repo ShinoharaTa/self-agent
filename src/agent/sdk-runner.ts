@@ -28,6 +28,7 @@ import { buildQueryOptions, ensureSandboxWriteDirs } from "./query-options.ts";
 import type {
   AgentRunner,
   Compaction,
+  PermissionWaiting,
   RunContext,
   RunImage,
   RunInput,
@@ -556,7 +557,50 @@ export function ownerApiKeySource(source: unknown): boolean {
 }
 
 /** profile の buildOptions に渡す、その run の様子。sessionId はその時点で受け取った session_id（init の前は resume 元の sessionId か undefined） */
-export type ProfileRunState = { sessionId: () => string | undefined };
+export type ProfileRunState = {
+  sessionId: () => string | undefined;
+  /**
+   * 許可を待ち始める（プロジェクトのセッションの canUseTool。docs/plan/unify.md §5.1）。待っている間は打ち切りの時間を進めず、
+   * RunInput.onPermissionWaiting に知らせる。返す関数で待ち終える（2 回目以降は何もしない）。重なれば数える
+   */
+  waitPermission?: (request: { toolName: string; displayName?: string }) => () => void;
+  /** [中断]・打ち切りで、query を止める（abortController）より先に abort される。保留中の許可の要求を先に拒否するため */
+  signal?: AbortSignal;
+};
+
+/**
+ * 止められる打ち切り（残り時間で持つ）。pause を重ねたら数え、すべて resume したら残りの時間から数え直す。
+ * 時計は setTimeout と Date.now（テストでは node:test の mock.timers）
+ */
+export function startTurnTimeout(ms: number, onFire: () => void): { pause: () => void; resume: () => void; clear: () => void } {
+  let remaining = ms;
+  let deadline = Date.now() + ms;
+  let paused = 0;
+  let cleared = false;
+  let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(onFire, ms);
+  return {
+    pause: () => {
+      if (cleared) return;
+      paused++;
+      if (paused > 1) return;
+      clearTimeout(timer);
+      timer = undefined;
+      remaining = Math.max(0, deadline - Date.now());
+    },
+    resume: () => {
+      if (cleared || paused === 0) return;
+      paused--;
+      if (paused > 0) return;
+      deadline = Date.now() + remaining;
+      timer = setTimeout(onFire, remaining);
+    },
+    clear: () => {
+      cleared = true;
+      clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
 
 /**
  * Options と hooks の組み立て方（docs/plan/guest-mode.md §3.3・docs/plan/unify.md §6.1）。渡せば buildQueryOptions・自前の MCP サーバー・WebFetch・ファイル・Bash の hook を使わない
@@ -630,10 +674,47 @@ export class SdkAgentRunner implements AgentRunner {
     // 手順の上限はチャンネルの種類で変える（セッションのチャンネルは cfg.sessionMaxTurns、それ以外は INBOX_MAX_TURNS）。
     // profile があればその Options の値。session_id は受け取るたびに更新し、profile（canUseTool）が読む
     const run = { sessionId: input.sessionId };
+    // 打ち切り（止められる）と中断。許可の要求の保留は permissionAbort で query より先に止める
+    const abortController = new AbortController();
+    const permissionAbort = new AbortController();
+    const stop = (): void => {
+      permissionAbort.abort();
+      abortController.abort();
+    };
+    const timeoutSec = input.context?.kind === "session" ? this.cfg.sessionTurnTimeoutSec : this.cfg.turnTimeoutSec;
+    const timeout = startTurnTimeout(timeoutSec * 1000, stop);
+    const waiting: PermissionWaiting[] = [];
+    const tellWaiting = (): void => {
+      try {
+        input.onPermissionWaiting?.(waiting[0]);
+      } catch {
+        // 表示の失敗はターンに響かせない
+      }
+    };
+    const waitPermission = (request: { toolName: string; displayName?: string }): (() => void) => {
+      const entry: PermissionWaiting = {
+        toolName: request.toolName,
+        ...(request.displayName === undefined ? {} : { displayName: request.displayName }),
+        since: new Date(),
+      };
+      waiting.push(entry);
+      timeout.pause();
+      tellWaiting();
+      let ended = false;
+      return () => {
+        if (ended) return;
+        ended = true;
+        const index = waiting.indexOf(entry);
+        if (index !== -1) waiting.splice(index, 1);
+        timeout.resume();
+        tellWaiting();
+      };
+    };
     let base: { options: Options; sandbox: boolean };
     try {
-      base = this.baseOptions(input, { sessionId: () => run.sessionId });
+      base = this.baseOptions(input, { sessionId: () => run.sessionId, waitPermission, signal: permissionAbort.signal });
     } catch (error) {
+      timeout.clear();
       // 例外の文は呼び出し側（プロジェクトの検証など）がパスを入れない
       const result: RunResult = {
         ok: false,
@@ -651,18 +732,20 @@ export class SdkAgentRunner implements AgentRunner {
         : input.context?.kind === "session"
           ? this.cfg.sessionMaxTurns
           : INBOX_MAX_TURNS;
-    const abortController = new AbortController();
-    const timeoutSec = input.context?.kind === "session" ? this.cfg.sessionTurnTimeoutSec : this.cfg.turnTimeoutSec;
-    const timer = setTimeout(() => abortController.abort(), timeoutSec * 1000);
-    const onAbort = (): void => abortController.abort();
+    const onAbort = (): void => stop();
     input.signal?.addEventListener("abort", onAbort);
-    if (input.signal?.aborted === true) abortController.abort();
+    if (input.signal?.aborted === true) stop();
     let result: RunResult;
     try {
       result = await this.runQuery(input, base, abortController, maxTurns, recording?.steps, run);
     } finally {
-      clearTimeout(timer);
+      timeout.clear();
       input.signal?.removeEventListener("abort", onAbort);
+      // 終わった後に残った保留（query の後で閉じるもの）は打ち切りに響かないが、表示は消す
+      if (waiting.length > 0) {
+        waiting.length = 0;
+        tellWaiting();
+      }
     }
     if (recording !== undefined) this.writeDevLog(recording, input, maxTurns, result);
     return result;

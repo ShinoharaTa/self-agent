@@ -23,6 +23,7 @@ import type { CcPermissionRow, CcPermissionStore } from "../store/cc-permissions
 import { type HistoryStore, recordHistory } from "../store/history.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 import type { RunContext } from "./runner.ts";
+import type { ProfileRunState } from "./sdk-runner.ts";
 
 /** [拒否] の message（モデルに渡る） */
 export const PROJECT_PERMISSION_DENY_MESSAGE = "self-agent（Discord / Web）から拒否しました";
@@ -88,11 +89,16 @@ function projectCwd(workspaceDir: string, context: RunContext): string | undefin
 
 /**
  * 許可の橋を作る。返す関数は run ごとに、その run の context と session_id（runner が init で受けたもの。resume なら元の id）から canUseTool を作る
- * （project-profile.ts の buildOptions が呼ぶ）
+ * （project-profile.ts の buildOptions が呼ぶ）。run（sdk-runner.ts の ProfileRunState）があれば、保留している間（前の要求を待つ間を含む）は
+ * waitPermission で打ち切りを止めて途中経過に出し、run の signal（[中断]・打ち切り。query より先に abort される）でも保留をやめて拒否する
  */
 export function createPermissionBridge(
   deps: PermissionBridgeDeps,
-): (context: RunContext, sessionId: () => string | undefined) => CanUseTool {
+): (
+  context: RunContext,
+  sessionId: () => string | undefined,
+  run?: Pick<ProfileRunState, "waitPermission" | "signal">,
+) => CanUseTool {
   const { permissions, hold, poster, holdSec, workspaceDir, home, log } = deps;
   /** セッション → 前の要求が閉じるまでの Promise（1 セッションに pending は 1 件のため、同じセッションの要求は順に） */
   const chains = new Map<string, Promise<unknown>>();
@@ -104,6 +110,8 @@ export function createPermissionBridge(
     input: Record<string, unknown>,
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> => {
+    // 前の要求を待つ間にターンが止まっていれば、行もカードも作らずに拒否する
+    if (options.signal.aborted) return { behavior: "deny", message: PROJECT_PERMISSION_ABORT_MESSAGE };
     const cwd = projectCwd(workspaceDir, context);
     const summarized = summarizePermission(toolName, input, cwd);
     const row = permissions.add({
@@ -126,7 +134,7 @@ export function createPermissionBridge(
     return permissionResultOf(final, holdSec);
   };
 
-  return (context, sessionId) => async (toolName, input, options) => {
+  return (context, sessionId, run) => async (toolName, input, sdkOptions) => {
     // 要約のターン（/close・/renew）はカードを出さず、行も作らずに全部拒否する
     if (context.purpose === "close" || context.purpose === "renew") {
       log(`プロジェクトのセッション: 要約のターンのツールを拒否しました（${context.purpose}）`);
@@ -137,6 +145,13 @@ export function createPermissionBridge(
       log("プロジェクトのセッション: session_id が分からないため許可の要求を拒否しました");
       return { behavior: "deny", message: PROJECT_PERMISSION_NO_SESSION_MESSAGE };
     }
+    // SDK の signal（query の後始末）と run の signal（[中断]・打ち切り）のどちらでも保留をやめる
+    const signal = run?.signal === undefined ? sdkOptions.signal : AbortSignal.any([sdkOptions.signal, run.signal]);
+    const options = { ...sdkOptions, signal };
+    const endWaiting = run?.waitPermission?.({
+      toolName,
+      ...(sdkOptions.displayName === undefined ? {} : { displayName: sdkOptions.displayName }),
+    });
     const previous = chains.get(id) ?? Promise.resolve();
     const current = previous.then(
       () => handle(context, id, toolName, input, options),
@@ -150,6 +165,7 @@ export function createPermissionBridge(
       log(`プロジェクトのセッション: 許可の要求を処理できなかったため拒否しました（${error instanceof Error ? error.name : typeof error}）`);
       return { behavior: "deny", message: PROJECT_PERMISSION_NO_SESSION_MESSAGE };
     } finally {
+      endWaiting?.();
       if (chains.get(id) === current) chains.delete(id);
     }
   };

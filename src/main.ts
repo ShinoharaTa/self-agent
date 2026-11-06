@@ -293,7 +293,7 @@ const projectRunner: AgentRunner | undefined = config.cc
         cfg: config,
         createMcpServer,
         // 橋がまだ無ければ（連携が動いていない）すべて拒否する
-        canUseTool: (context, sessionId) => projectPermissionBridge?.(context, sessionId) ?? denyAllPermissions,
+        canUseTool: (context, sessionId, run) => projectPermissionBridge?.(context, sessionId, run) ?? denyAllPermissions,
         log,
       }),
     )

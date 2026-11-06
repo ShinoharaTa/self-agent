@@ -358,6 +358,14 @@
   /** 経過時間（受け取った後の時間を足す） */
   store.runningElapsed = (turn) => turn.elapsedMs + (Date.now() - store.runningAt);
 
+  /** 許可を待っている要求の 1 行（src/app/progress.ts の permissionWaitingLine と同じ）。待っていなければ null */
+  function waitingText(run) {
+    const w = run && run.waitingPermission;
+    if (!w || typeof w.toolName !== "string") return null;
+    return "許可を待っています: " + (typeof w.displayName === "string" && w.displayName !== "" ? w.displayName : w.toolName);
+  }
+  store.runningWaitingText = waitingText;
+
   /**
    * 前回との差: 始まった・終わった・手順が進んだチャンネルの会話を読み直し、出力に手順を積む。
    * 終わったチャンネルは返事の行が書かれるのを待ってもう一度読む
@@ -377,7 +385,7 @@
       const known = sameTurn ? prev.toolCalls : 0;
       const added = Math.min(Math.max(turn.toolCalls - known, 0), turn.steps.length);
       for (const step of turn.steps.slice(turn.steps.length - added)) SA.app.addOutput(whereOf(channelId), step);
-      if (!sameTurn || prev.toolCalls !== turn.toolCalls || prev.label !== turn.label) changed.push(channelId);
+      if (!sameTurn || prev.toolCalls !== turn.toolCalls || prev.label !== turn.label || waitingText(prev) !== waitingText(turn)) changed.push(channelId);
       // 前のターンが終わって次が始まっていれば、前のターンの返事も待つ
       if (prev && !sameTurn) pendingEnds.add(channelId);
     }

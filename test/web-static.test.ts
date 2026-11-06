@@ -1373,3 +1373,13 @@ test("web static: 実行中の行は 1 行 + 直近 3 つの手順の二次の�
   assert.match(css, /\n\.steps-plain \{\n {2}font-size: var\(--font-sm\);\n\}/);
   assert.doesNotMatch(css, /\.steps-plain \{[^}]*(border|background)/);
 });
+
+test("web static: 許可を待っている間は実行中の行に「許可を待っています: …」の 1 行（U1b）。変わったら描き直す", () => {
+  const chat = read("chat.js");
+  const api = read("api.js");
+  assert.match(chat, /const waiting = store\.runningWaitingText\(run\);\n {4}if \(waiting\) body\.push\(el\("div", \{ class: "run-waiting", text: waiting \}\)\);/);
+  assert.match(api, /"許可を待っています: " \+ \(typeof w\.displayName === "string" && w\.displayName !== "" \? w\.displayName : w\.toolName\)/);
+  assert.match(api, /waitingText\(prev\) !== waitingText\(turn\)/);
+  const css = read("app.css");
+  assert.match(css, /\n\.run-waiting \{[^}]*color: var\(--text\);/);
+});
