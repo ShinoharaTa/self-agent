@@ -1,4 +1,5 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
+import { isProjectPermissionMode, type ProjectPermissionMode } from "../agent/runner.ts";
 import { DEFAULT_PERSONA_ID } from "../config.ts";
 
 /** セッションの状態。deleted はチャンネルを消した後も要約を残すための行 */
@@ -155,6 +156,25 @@ export class TopicSessionStore {
   personaOf(channelId: string): string | undefined {
     const row = this.db.prepare("SELECT persona FROM sessions WHERE channel_id = ?").get(channelId);
     return row === undefined ? undefined : String(row.persona);
+  }
+
+  /**
+   * プロジェクトのセッション（docs/plan/unify.md §5.2）なら、そのプロジェクト（SELF_AGENT_WORKSPACE_DIR の直下の名前）と許可のモード。
+   * 行が無い・project_dir が NULL（軽いモード）なら undefined。モードが決まった語でなければ default
+   */
+  projectDirOf(channelId: string): { projectDir: string; permissionMode: ProjectPermissionMode } | undefined {
+    const row = this.db.prepare("SELECT project_dir, permission_mode FROM sessions WHERE channel_id = ?").get(channelId);
+    if (row === undefined || row.project_dir === null || row.project_dir === undefined) return undefined;
+    const mode = String(row.permission_mode);
+    return { projectDir: String(row.project_dir), permissionMode: isProjectPermissionMode(mode) ? mode : "default" };
+  }
+
+  /** プロジェクトのセッションにする（U1b の /new が作った直後に呼ぶ）。行があれば true。名前の検証は呼び出し側（cc/starter.ts の projectDir） */
+  setProject(channelId: string, projectDir: string, permissionMode: ProjectPermissionMode): boolean {
+    const result = this.db
+      .prepare("UPDATE sessions SET project_dir = ?, permission_mode = ? WHERE channel_id = ?")
+      .run(projectDir, permissionMode, channelId);
+    return Number(result.changes) > 0;
   }
 
   /** 最終発言の時刻を今にする。行が無ければ undefined */

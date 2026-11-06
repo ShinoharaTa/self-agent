@@ -747,6 +747,43 @@ export const MIGRATIONS: readonly string[] = [
   CREATE UNIQUE INDEX cc_channels_session ON cc_channels(session_id) WHERE state <> 'deleted';
   CREATE INDEX cc_channels_guild ON cc_channels(guild_id, state);
   `,
+  // v40（docs/plan/unify.md §6.1。U1a）: プロジェクトのセッション。sessions.project_dir は SELF_AGENT_WORKSPACE_DIR の直下の名前（NULL = 軽いモード）、
+  // permission_mode はそのセッションの許可のモード（default / acceptEdits / plan）。cc_permissions に origin（hook = Claude Code の hook の受け口、
+  // sdk = プロジェクトのセッションの canUseTool）と via の abort（ターンの中断で保留をやめた）を足す。v37 と同じく表を作り直し、全列と
+  // AUTOINCREMENT の番号を写して索引 3 つを同じ定義で作り直す（外部キーは無い）
+  `
+  ALTER TABLE sessions ADD COLUMN project_dir TEXT;
+  ALTER TABLE sessions ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'default';
+  CREATE TABLE cc_permissions_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    permission_mode TEXT,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'allowed', 'allowed_always', 'denied', 'answered_elsewhere', 'expired', 'released')),
+    via TEXT CHECK (via IN ('web', 'discord', 'hook', 'status', 'shutdown', 'limit', 'abort')),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    always_rules TEXT,
+    message_id TEXT,
+    message_channel_id TEXT,
+    question_input TEXT,
+    answers TEXT,
+    origin TEXT NOT NULL DEFAULT 'hook' CHECK (origin IN ('hook', 'sdk'))
+  );
+  INSERT INTO cc_permissions_new (id, session_id, request_hash, tool_name, summary, permission_mode, state, via, created_at, resolved_at,
+      always_rules, message_id, message_channel_id, question_input, answers)
+    SELECT id, session_id, request_hash, tool_name, summary, permission_mode, state, via, created_at, resolved_at,
+      always_rules, message_id, message_channel_id, question_input, answers FROM cc_permissions;
+  DELETE FROM sqlite_sequence WHERE name = 'cc_permissions_new';
+  INSERT INTO sqlite_sequence (name, seq) SELECT 'cc_permissions_new', seq FROM sqlite_sequence WHERE name = 'cc_permissions';
+  DROP TABLE cc_permissions;
+  ALTER TABLE cc_permissions_new RENAME TO cc_permissions;
+  CREATE UNIQUE INDEX cc_permissions_pending ON cc_permissions(session_id) WHERE state = 'pending';
+  CREATE INDEX cc_permissions_session ON cc_permissions(session_id, id);
+  CREATE INDEX cc_permissions_created ON cc_permissions(created_at);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

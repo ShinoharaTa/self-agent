@@ -165,7 +165,7 @@ function alwaysNote(row: CcPermissionRow): string | null {
 }
 
 /** 保留の長さ（許可の要求と質問） */
-type HoldSeconds = { holdSec: number; questionHoldSec: number };
+export type HoldSeconds = { holdSec: number; questionHoldSec: number };
 
 /**
  * 質問の行の問と答え（question_input から作る。表示用に切らない。画面が切る）。質問でない・読めなければ null。
@@ -177,7 +177,7 @@ function questionJson(row: CcPermissionRow) {
 }
 
 /** 許可の要求の 1 件（Web は textContent で出す。要約・ツール名・質問は hook から来たデータ） */
-function permissionJson(row: CcPermissionRow, hold: HoldSeconds) {
+export function permissionJson(row: CcPermissionRow, hold: HoldSeconds) {
   return {
     id: row.id,
     sessionId: row.sessionId,

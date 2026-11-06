@@ -555,15 +555,24 @@ export function ownerApiKeySource(source: unknown): boolean {
   return source !== "ANTHROPIC_API_KEY";
 }
 
+/** profile の buildOptions に渡す、その run の様子。sessionId はその時点で受け取った session_id（init の前は resume 元の sessionId か undefined） */
+export type ProfileRunState = { sessionId: () => string | undefined };
+
 /**
- * Options と hooks の組み立て方（docs/plan/guest-mode.md §3.3）。渡せば buildQueryOptions・自前の MCP サーバー・WebFetch・ファイル・Bash の hook を使わない
+ * Options と hooks の組み立て方（docs/plan/guest-mode.md §3.3・docs/plan/unify.md §6.1）。渡せば buildQueryOptions・自前の MCP サーバー・WebFetch・ファイル・Bash の hook を使わない
  * （ツール呼び出しの記録の hook は共通で足す）。maxTurns は buildOptions の値（無ければ INBOX_MAX_TURNS）
  */
 export type RunnerProfile = {
-  /** run の Options の土台（全 run で同じ値。env もここで入れる）。maxTurns・abortController・hooks・stderr・resume は run が足す */
-  buildOptions: () => Options;
-  /** run ごとの PreToolUse の hook。log は runner の log */
-  preToolUse: (log: (message: string) => void) => HookCallbackMatcher[];
+  /**
+   * run の Options の土台（env もここで入れる）。maxTurns・abortController・hooks・stderr・resume は run が足す。
+   * input・run はプロジェクトのセッション（cwd・許可のモード・canUseTool）が使う（ゲストは使わない）。投げたらその run は失敗にする
+   */
+  buildOptions: (input: RunInput, run: ProfileRunState) => Options;
+  /** run ごとの PreToolUse・PostToolUse の hook。log は runner の log */
+  toolHooks: (
+    log: (message: string) => void,
+    input: RunInput,
+  ) => { preToolUse: HookCallbackMatcher[]; postToolUse: HookCallbackMatcher[] };
   /** init の apiKeySource を受け付けるか。受け付けなければその run を失敗にして query を止める */
   acceptsApiKeySource: (source: unknown) => boolean;
   /**
@@ -619,8 +628,23 @@ export class SdkAgentRunner implements AgentRunner {
     const recording =
       this.devLog === undefined ? undefined : { devLog: this.devLog, startedAt: this.devLog.now(), steps: [] as DevLogStep[] };
     // 手順の上限はチャンネルの種類で変える（セッションのチャンネルは cfg.sessionMaxTurns、それ以外は INBOX_MAX_TURNS）。
-    // profile があればその Options の値
-    const base = this.baseOptions(input.context);
+    // profile があればその Options の値。session_id は受け取るたびに更新し、profile（canUseTool）が読む
+    const run = { sessionId: input.sessionId };
+    let base: { options: Options; sandbox: boolean };
+    try {
+      base = this.baseOptions(input, { sessionId: () => run.sessionId });
+    } catch (error) {
+      // 例外の文は呼び出し側（プロジェクトの検証など）がパスを入れない
+      const result: RunResult = {
+        ok: false,
+        errorMessage: `exception: ${shorten(error instanceof Error ? `${error.name}: ${error.message}` : String(error))}`,
+        sessionRecorded: false,
+        toolCalls: 0,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      };
+      if (recording !== undefined) this.writeDevLog(recording, input, INBOX_MAX_TURNS, result);
+      return result;
+    }
     const maxTurns =
       this.profile !== undefined
         ? (base.options.maxTurns ?? INBOX_MAX_TURNS)
@@ -635,7 +659,7 @@ export class SdkAgentRunner implements AgentRunner {
     if (input.signal?.aborted === true) abortController.abort();
     let result: RunResult;
     try {
-      result = await this.runQuery(input, base, abortController, maxTurns, recording?.steps);
+      result = await this.runQuery(input, base, abortController, maxTurns, recording?.steps, run);
     } finally {
       clearTimeout(timer);
       input.signal?.removeEventListener("abort", onAbort);
@@ -701,10 +725,10 @@ export class SdkAgentRunner implements AgentRunner {
    * この run の Options の土台。profile があればその buildOptions、無ければ buildQueryOptions（自前の MCP サーバーを run ごとに作り、
    * sandbox は自己診断が通っていて bwrap・socat がある run だけに付ける。付けると failIfUnavailable で #inbox まで失敗しうるため）
    */
-  private baseOptions(context: RunContext | undefined): { options: Options; sandbox: boolean } {
-    if (this.profile !== undefined) return { options: this.profile.buildOptions(), sandbox: false };
+  private baseOptions(input: RunInput, run: ProfileRunState): { options: Options; sandbox: boolean } {
+    if (this.profile !== undefined) return { options: this.profile.buildOptions(input, run), sandbox: false };
     const sandbox = this.sandboxForRun();
-    return { options: buildQueryOptions(this.cfg, this.createMcpServer!(context), sandbox), sandbox };
+    return { options: buildQueryOptions(this.cfg, this.createMcpServer!(input.context), sandbox), sandbox };
   }
 
   /**
@@ -712,7 +736,7 @@ export class SdkAgentRunner implements AgentRunner {
    * 無ければ WebFetch・ファイル操作・Bash の hook（ファイル操作と Bash の hook はどの run にも必ず入れる）
    */
   private toolHooks(input: RunInput, sandbox: boolean): { preToolUse: HookCallbackMatcher[]; postToolUse: HookCallbackMatcher[] } {
-    if (this.profile !== undefined) return { preToolUse: this.profile.preToolUse(this.log), postToolUse: [] };
+    if (this.profile !== undefined) return this.profile.toolHooks(this.log, input);
     const files = this.files!;
     const webFetch = createWebFetchGuard(input.allowedUrls ?? [], this.log);
     return {
@@ -732,6 +756,7 @@ export class SdkAgentRunner implements AgentRunner {
     abortController: AbortController,
     maxTurns: number,
     steps: DevLogStep[] | undefined,
+    run: { sessionId: string | undefined },
   ): Promise<RunResult> {
     // シェルが有効か、profile が求めるなら、失敗の文に stderr の末尾・result の errors の文を入れない
     const summarizeErrors = this.cfg.shell === true || this.profile?.summarizeErrors === true;
@@ -795,6 +820,7 @@ export class SdkAgentRunner implements AgentRunner {
       for await (const message of this.queryFn({ prompt: queryPrompt(input), options })) {
         if ("session_id" in message && typeof message.session_id === "string") {
           sessionId = message.session_id;
+          run.sessionId = sessionId;
         }
         steps?.push(...devLogSteps(message));
         // 想定と違う認証で動いたら、それ以上進めずに止める（fail-closed。docs/plan/guest-mode.md §3.0）

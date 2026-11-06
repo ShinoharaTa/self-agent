@@ -1062,6 +1062,13 @@
       },
     ).then(() => {
       ccPermissionBusy.delete(p.id);
+      // プロジェクトのセッションの会話のタブ（kind session）のカードは /turns の channel から出す（docs/plan/unify.md §6.1 の 5）
+      const ch = tabId && tabId.startsWith("ch:") ? SA.chat.channelById(tabId.slice(3)) : null;
+      if (ch && ch.kind === "session") {
+        store.load.turns(ch.id, { quiet: true });
+        SA.app.refresh(tabId);
+        return;
+      }
       store.load.ccSession(sessionId);
       store.load.cc({ quiet: true });
     });

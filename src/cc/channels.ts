@@ -1223,7 +1223,8 @@ export function ccPermissionAnsweredHandler(deps: {
   return (id, guildId) => {
     const row = deps.permissions.get(id);
     const channels = deps.channels();
-    if (row === undefined || channels === undefined) return;
+    // プロジェクトのセッションの要求（origin sdk）はセッションのチャンネルで答えたもので、Claude Code のチャンネルは作らない
+    if (row === undefined || row.origin === "sdk" || channels === undefined) return;
     const origin = row.questionInput !== null ? "question" : "permission";
     void channels.ensureFor(row.sessionId, origin, guildId).catch((error: unknown) => {
       deps.log(`Claude Code: 許可の応答の後にチャンネルを用意できませんでした（${errorKind(error)}）`);

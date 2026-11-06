@@ -25,7 +25,7 @@ import {
 import type { KeyedSerialQueue } from "./queue.ts";
 import type { OwnerPosts, PersonaRouter } from "./personas.ts";
 import { applySessionEvent } from "./session-state.ts";
-import { ABORTED_ERROR, MAX_TURNS_ERROR_PREFIX, runChannelTurn, type TurnDeps } from "./turn.ts";
+import { ABORTED_ERROR, MAX_TURNS_ERROR_PREFIX, PROJECT_NEEDS_CC_ERROR, runChannelTurn, type TurnDeps } from "./turn.ts";
 import { extractUrls } from "./urls.ts";
 
 // 手順の上限で止まったときの返信は、その [続ける] と同じ turn-controls.ts に置く
@@ -70,6 +70,8 @@ export type HandlerDeps = {
   gateway: OwnerPosts;
   /** 既定の人格の runner */
   runner: AgentRunner;
+  /** プロジェクトのセッションの runner（SELF_AGENT_CC=1 のときだけ。turn.ts の TurnDeps.projectRunner） */
+  projectRunner?: AgentRunner;
   /**
    * チャンネルの持ち主の人格。発言は持ち主の Bot が受け取った分だけを受け付け、ターンは持ち主の人格の runner で動かす。
    * 無ければすべて既定の人格
@@ -78,8 +80,11 @@ export type HandlerDeps = {
   sessions: SdkSessionStore;
   /** 次のターンの prompt の先頭に付ける文（resume 失敗の復旧など） */
   seeds: ChannelSeedStore;
-  /** セッションの題名と最終発言の時刻、resume 失敗時の要約。待ち・完了のセッションは発言で進行中に戻す */
-  topicSessions: Pick<TopicSessionStore, "touch" | "get" | "setActive" | "setWaiting">;
+  /**
+   * セッションの題名と最終発言の時刻、resume 失敗時の要約。待ち・完了のセッションは発言で進行中に戻す。
+   * projectDirOf があればプロジェクトのセッションを見分ける（turn.ts）
+   */
+  topicSessions: Pick<TopicSessionStore, "touch" | "get" | "setActive" | "setWaiting"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
   /** #inbox・#tasks の resume 失敗時の seed（そのチャンネルの直近の要約） */
   inboxSummaries: Pick<InboxSummaryStore, "latest">;
   /** 新しい SDK セッションの最初の prompt に付ける記憶 */
@@ -234,6 +239,7 @@ export function createHandler(deps: HandlerDeps): Handler {
   const timers = deps.timers;
   const turnDeps: TurnDeps = {
     runner,
+    ...(deps.projectRunner === undefined ? {} : { projectRunner: deps.projectRunner }),
     ...(personas === undefined ? {} : { personas }),
     sessions,
     seeds,
@@ -414,6 +420,12 @@ export function createHandler(deps: HandlerDeps): Handler {
     }
 
     log(`ターンが失敗しました: ${result.errorMessage}`);
+    // プロジェクトのセッションを動かせない（SELF_AGENT_CC が無効）。理由をそのまま返す
+    if (result.errorMessage === PROJECT_NEEDS_CC_ERROR) {
+      await reply(request, PROJECT_NEEDS_CC_ERROR);
+      recordReply(PROJECT_NEEDS_CC_ERROR);
+      return;
+    }
     if (result.errorMessage === ABORTED_ERROR) {
       await reply(request, ABORTED_REPLY);
       recordReply(ABORTED_REPLY);

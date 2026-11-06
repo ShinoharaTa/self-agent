@@ -12,8 +12,10 @@
 // 質問（AskUserQuestion。question_input のある行。docs/plan/claude-code-questions.md §2。Q1）も同じ行・同じ保留で扱い、保留の長さだけ
 // SELF_AGENT_CC_QUESTION_HOLD_SEC にする。答えは answerQuestion（allow + updatedInput に answers）、[やめる] は deny（message は「断りました」）。
 // 質問の行に [許可]・[常に許可] は効かない（stale）。
+// プロジェクトのセッションの canUseTool（agent/permission-bridge.ts。docs/plan/unify.md §5.1）の要求（origin sdk の行）は holdExternal で
+// 同じ answer に答えさせる。registry（knows・一覧の status・hook の事象）とは関わらず、holding・pendingSessions には数えない。
 // log は「Claude Code: 許可の要求（#id）→ <状態>（<経路>）」「Claude Code: 質問（#id）→ <状態>（<経路>）」と件数だけ
-// （ツール名・要約・問の文・答え・セッションの ID は出さない）
+// （ツール名・要約・問の文・答え・セッションの ID は出さない。origin sdk の行は bridge が自分の文で出す）
 import type { CcPermissionRow, CcPermissionState, CcPermissionStore, CcPermissionVia } from "../store/cc-permissions.ts";
 import type { CcHookEvent } from "./hook-server.ts";
 import { type CcRule, sessionRulesUpdate } from "./permissions.ts";
@@ -97,6 +99,8 @@ type Held = {
   sessionId: string;
   /** 質問（question_input のある行）か */
   question: boolean;
+  /** origin sdk の行（holdExternal）。registry の一覧・hook の事象では閉じず、holding・pendingSessions に数えない */
+  external: boolean;
   receivedAt: number;
   /** 応答の本文で接続を閉じる（undefined は空の本文）。2 回目以降は何もしない */
   settle: (body: string | undefined) => void;
@@ -188,6 +192,7 @@ export class CcPermissionHold {
       const held: Held = {
         sessionId,
         question,
+        external: false,
         receivedAt: now,
         settle: (body) => {
           if (settled) return;
@@ -211,11 +216,46 @@ export class CcPermissionHold {
     });
   }
 
+  /**
+   * プロジェクトのセッションの要求（bridge が origin sdk・pending で作った行）を保留する（docs/plan/unify.md §5.1）。knows は通らない。
+   * answer（Web・Discord の [許可]・[常に許可]・[拒否]）・holdMs の時間切れ（expired）・signal の abort（released・abort）・停止（released・shutdown）の
+   * どれかで閉じ、閉じた後の行を返す（決定は行の state と always_rules から bridge が読む）。停止の後・既に abort されていればすぐ閉じる。reject しない
+   */
+  holdExternal(row: CcPermissionRow, holdMs: number, signal?: AbortSignal): Promise<CcPermissionRow> {
+    const final = (): CcPermissionRow => this.deps.store.get(row.id) ?? row;
+    return new Promise<CcPermissionRow>((resolve) => {
+      let settled = false;
+      const onAbort = (): void => {
+        this.close(row.id, "released", "abort");
+      };
+      const held: Held = {
+        sessionId: row.sessionId,
+        question: row.questionInput !== null,
+        external: true,
+        receivedAt: this.deps.now().getTime(),
+        settle: () => {
+          if (settled) return;
+          settled = true;
+          held.cancelTimer();
+          signal?.removeEventListener("abort", onAbort);
+          resolve(final());
+        },
+        cancelTimer: () => undefined,
+      };
+      this.held.set(row.id, held);
+      for (const listener of this.listeners) this.tell(() => listener.held(row));
+      held.cancelTimer = this.timers.after(() => this.close(row.id, "expired", null), holdMs);
+      if (this.stopped) this.close(row.id, "released", "shutdown");
+      else if (signal?.aborted === true) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
   /** hook の事象（PermissionRequest 以外）を見る。そのセッションの Stop・UserPromptSubmit が来たら、保留中の要求は他で答えられた */
   observe(event: CcHookEvent): void {
     if (event.event !== "Stop" && event.event !== "UserPromptSubmit") return;
     for (const [id, held] of [...this.held]) {
-      if (held.sessionId === event.sessionId) this.close(id, "answered_elsewhere", "hook");
+      if (!held.external && held.sessionId === event.sessionId) this.close(id, "answered_elsewhere", "hook");
     }
   }
 
@@ -227,7 +267,7 @@ export class CcPermissionHold {
   onListed(statuses: ReadonlyMap<string, string | undefined>, readStartedAt: Date): void {
     const at = readStartedAt.getTime();
     for (const [id, held] of [...this.held]) {
-      if (at - held.receivedAt < CC_PERMISSION_STATUS_GRACE_MS) continue;
+      if (held.external || at - held.receivedAt < CC_PERMISSION_STATUS_GRACE_MS) continue;
       if (!statuses.has(held.sessionId)) {
         this.close(id, "expired", null);
         continue;
@@ -283,14 +323,14 @@ export class CcPermissionHold {
     return { ok: true, state: "allowed" };
   }
 
-  /** 保留している要求があるか（registry.ts は保留中は一覧を 5 秒ごとに読む） */
+  /** 保留している hook の要求があるか（registry.ts は保留中は一覧を 5 秒ごとに読む。origin sdk の保留は数えない） */
   holding(): boolean {
-    return this.held.size > 0;
+    return [...this.held.values()].some((held) => !held.external);
   }
 
-  /** 保留している要求のあるセッション */
+  /** 保留している hook の要求のあるセッション（origin sdk の保留は数えない） */
   pendingSessions(): Set<string> {
-    return new Set([...this.held.values()].map((held) => held.sessionId));
+    return new Set([...this.held.values()].filter((held) => !held.external).map((held) => held.sessionId));
   }
 
   /** permission_prompt の Notification を判断待ちの元にしないセッション（pending か、直近 CC_PERMISSION_SUPPRESS_MS に解決した行がある） */
@@ -321,7 +361,7 @@ export class CcPermissionHold {
     held?.settle(moved ? body : undefined);
     if (moved) {
       const row = this.deps.store.get(id);
-      this.logResult(id, to, via, held?.question ?? (row !== undefined && row.questionInput !== null));
+      if (held?.external !== true) this.logResult(id, to, via, held?.question ?? (row !== undefined && row.questionInput !== null));
       if (row !== undefined) for (const listener of this.listeners) this.tell(() => listener.resolved(row));
     }
     return moved;

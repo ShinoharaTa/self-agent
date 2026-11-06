@@ -44,19 +44,33 @@ export function withImageDroppedNote(prompt: string): string {
   return `${prompt.slice(0, newline + 1)}${IMAGE_DROPPED_NOTE}${rest === "" ? "" : `\n${rest}`}`;
 }
 
+/**
+ * プロジェクトのセッションのターンを、プロジェクトの runner が無い（SELF_AGENT_CC が無効）ため始めなかった失敗の errorMessage。
+ * handler はこの文をそのまま返信する（docs/plan/unify.md §6.1。U1 では許可のカードが Claude Code の連携の配線に依る）
+ */
+export const PROJECT_NEEDS_CC_ERROR = "プロジェクトのセッションには SELF_AGENT_CC=1 が要ります";
+
 /** 新しい SDK セッションの最初の prompt の先頭に付ける、記憶のブロックの見出し（システムプロンプトでこの文を説明している） */
 export const MEMORY_BLOCK_HEADER = "オーナーについての記憶（アプリが保存したもの）:";
 
 export type TurnDeps = {
   /** 既定の人格の runner（personas が無いときはすべてのチャンネルでこれを使う） */
   runner: AgentRunner;
+  /**
+   * プロジェクトのセッション（sessions.project_dir のあるセッション。docs/plan/unify.md §4.1）の runner（agent/project-profile.ts）。
+   * SELF_AGENT_CC=1 のときだけ。無ければプロジェクトのセッションのターンは始めずに PROJECT_NEEDS_CC_ERROR で失敗にする
+   */
+  projectRunner?: AgentRunner;
   /** チャンネルの持ち主の人格の runner。無ければすべて既定の人格（runner） */
   personas?: Pick<PersonaRouter, "turnPersona">;
   /** channelId → SDK の session_id */
   sessions: SdkSessionStore;
   seeds: ChannelSeedStore;
-  /** 復旧の seed に要約（/renew の要約、無ければ /close の要約、どちらも無ければ題名）を入れるため */
-  topicSessions: Pick<TopicSessionStore, "get">;
+  /**
+   * 復旧の seed に要約（/renew の要約、無ければ /close の要約、どちらも無ければ題名）を入れるため。
+   * projectDirOf があれば、セッションのチャンネルのターンがプロジェクトのセッションか見る（無ければすべて軽いモード）
+   */
+  topicSessions: Pick<TopicSessionStore, "get"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
   /** #inbox・#tasks（セッションでないチャンネル）の復旧の seed に、そのサーバーの直近の同じチャンネルの要約を入れるため */
   inboxSummaries: Pick<InboxSummaryStore, "latest">;
   /** 新しい SDK セッションの最初の prompt の先頭に、有効な記憶を付けるため */
@@ -178,13 +192,23 @@ export function recordTurnUsage(
  * - API が画像（か大きすぎるリクエスト）を受け付けなかった（result.imageRejected）ときは、その会話を残さない。resume で起きたらすぐに
  *   SDK セッションを捨てて seed を入れ、画像を外して（このターンに画像があれば IMAGE_DROPPED_NOTE を付けて）やり直す。新しいセッションで
  *   起きたら、このターンに画像があり、まだ外していなければ 1 回だけ画像を外してやり直す（画像を外すのは 1 ターンに 1 回だけ）
+ * - プロジェクトのセッション（sessions.project_dir がある）の発言・[続ける] のターンは projectRunner で、context に projectDir・permissionMode を入れる。
+ *   /close のターン・予約した依頼・#inbox・#tasks は今までどおり軽いモードの runner。projectRunner が無ければ run せずに PROJECT_NEEDS_CC_ERROR の失敗を返す
  * 返す結果の失敗は呼び出し側で返信・log する
  */
 export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise<RunResult> {
   const { sessions, seeds, topicSessions, inboxSummaries, memories, log } = deps;
   const key = turn.channelId;
   const persona = turnPersonaOf(deps, turn.channelId);
-  const { runner } = persona;
+  // プロジェクトのセッションか（/close のターン・予約した依頼は軽いモードのまま）
+  const project =
+    turn.kind === "session" && turn.purpose === undefined && turn.scheduled === undefined
+      ? topicSessions.projectDirOf?.(turn.channelId)
+      : undefined;
+  if (project !== undefined && deps.projectRunner === undefined) {
+    return { ok: false, errorMessage: PROJECT_NEEDS_CC_ERROR, toolCalls: 0, sessionRecorded: false };
+  }
+  const runner = project !== undefined && deps.projectRunner !== undefined ? deps.projectRunner : persona.runner;
   // usage の記録とログのラベル。予約した依頼のターンは -scheduled を付ける
   const usageKind = turn.scheduled === true ? `${turn.kind}-scheduled` : turn.kind;
   const context: RunContext = {
@@ -194,6 +218,7 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     ...(turn.scheduled === undefined ? {} : { scheduled: turn.scheduled }),
     ...(turn.purpose === undefined ? {} : { purpose: turn.purpose }),
     ...(turn.attachmentIds === undefined || turn.attachmentIds.length === 0 ? {} : { attachmentIds: turn.attachmentIds }),
+    ...(project === undefined ? {} : { projectDir: project.projectDir, permissionMode: project.permissionMode }),
   };
 
   // 画像。API が受け付けなければ外す（prompt にはそのことを注記する）
