@@ -153,6 +153,11 @@ export type CcPermissionNoticeOptions = {
   /** ボタンが効く時間（呼び出し側が行で選ぶ: 質問の行は SELF_AGENT_CC_QUESTION_HOLD_SEC、それ以外は SELF_AGENT_CC_PERMISSION_HOLD_SEC） */
   holdSec: number;
   ownerUserId?: string | undefined;
+  /**
+   * 端末・RC のダイアログがあるか（省略は true）。false はプロジェクトのセッション（origin sdk。docs/plan/unify.md §5.1）で、
+   * 「端末や RC でも答えられます」の代わりに「過ぎたら拒否になります」を出し、[RC で開く] も付けない
+   */
+  terminal?: boolean;
 };
 
 /** 読めない形の AskUserQuestion（question_input が無い）の許可の 1 通に足す注記（docs/plan/claude-code-questions.md §3.2） */
@@ -178,7 +183,11 @@ export function permissionNotice(row: CcPermissionRow, session: CcNoticeSession 
   } else {
     lines.push("（[このセッションでは常に許可] は Claude Code が規則を提案したときだけ出ます）");
   }
-  lines.push(`端末や RC のダイアログでも答えられます（ボタンは ${duration(options.holdSec)}効きます）`);
+  lines.push(
+    options.terminal === false
+      ? `ボタンは ${duration(options.holdSec)}効きます。過ぎたら拒否になります`
+      : `端末や RC のダイアログでも答えられます（ボタンは ${duration(options.holdSec)}効きます）`,
+  );
   const buttons: ComponentRow = {
     kind: "buttons",
     buttons: [
@@ -187,7 +196,7 @@ export function permissionNotice(row: CcPermissionRow, session: CcNoticeSession 
       { customId: permissionCustomId("deny", row.id), label: "拒否", style: "danger" },
     ],
   };
-  const rcUrl = rcUrlOf(session);
+  const rcUrl = options.terminal === false ? undefined : rcUrlOf(session);
   const limit = MESSAGE_MAX_CHARS - (options.ownerUserId === undefined ? 0 : mentionPrefix(options.ownerUserId).length);
   return {
     text: fit(lines.join("\n"), limit),
@@ -202,8 +211,15 @@ function fit(text: string, max: number): string {
   return chars.length <= max ? text : `${chars.slice(0, max - 1).join("")}…`;
 }
 
-/** 終わった許可の要求の結果の行（§5.2。純関数）。pending なら undefined */
-export function permissionResultLine(row: Pick<CcPermissionRow, "state" | "via" | "alwaysRules">, rcUrl: string | undefined): string | undefined {
+/**
+ * 終わった許可の要求の結果の行（§5.2。純関数）。pending なら undefined。
+ * terminal が false（プロジェクトのセッション。端末・RC のダイアログが無く、時間切れ・中断は拒否になる）なら時間切れ・停止の文を変える
+ */
+export function permissionResultLine(
+  row: Pick<CcPermissionRow, "state" | "via" | "alwaysRules">,
+  rcUrl: string | undefined,
+  terminal = true,
+): string | undefined {
   const via = row.via === "discord" ? "Discord" : row.via === "web" ? "Web" : undefined;
   const link = rcUrl === undefined ? "" : ` <${rcUrl}>`;
   switch (row.state) {
@@ -221,8 +237,9 @@ export function permissionResultLine(row: Pick<CcPermissionRow, "state" | "via" 
     case "answered_elsewhere":
       return "端末か RC で答えられました";
     case "expired":
-      return `時間切れ。端末か RC で答えてください${link}`;
+      return terminal ? `時間切れ。端末か RC で答えてください${link}` : "時間切れ（拒否しました）";
     case "released":
+      if (!terminal) return "ターンが止まったため拒否しました";
       return `self-agent が止まるため受け付けをやめました。端末か RC で答えてください${link}`;
   }
 }
@@ -235,12 +252,14 @@ export function permissionResolvedMessage(
   row: CcPermissionRow,
   session: CcNoticeSession | undefined,
   places: { workspaceDir: string; home: string },
+  /** false はプロジェクトのセッション（端末・RC が無い。[RC で開く] を付けない） */
+  terminal = true,
 ): OutgoingMessage {
   const parsed = parseQuestionInput(row.questionInput);
   if (parsed !== undefined) return questionResolvedMessage(row, parsed.questions, session, places);
-  const rcUrl = rcUrlOf(session);
+  const rcUrl = terminal ? rcUrlOf(session) : undefined;
   return {
-    text: fit(`${permissionHead(row, session, places)}\n${permissionResultLine(row, rcUrl) ?? ""}`, MESSAGE_MAX_CHARS),
+    text: fit(`${permissionHead(row, session, places)}\n${permissionResultLine(row, rcUrl, terminal) ?? ""}`, MESSAGE_MAX_CHARS),
     components: rcUrl === undefined ? [] : [{ kind: "links", links: [{ label: "RC で開く", url: rcUrl }] }],
   };
 }

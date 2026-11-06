@@ -5,6 +5,8 @@
  * kind はチャンネルの種類（#inbox・#tasks かセッションか）。1 ターンの上限とファイル操作の可否を決める。
  * scheduled は予約した依頼（リマインドの prompt）のターンで立てる（session_open を not_available にする）。
  * purpose は /close のターン（要約とやることの候補を作らせる）で "close" を入れる（Bash を使わせない）。
+ * "renew" はプロジェクトのセッションの /renew の要約のターン（軽いモードの /renew は context を渡さない）。
+ * プロジェクトのセッションの close・renew では許可の橋がカードを出さずに全部拒否する。
  * attachmentIds はこのターンの発言の画像のうち保存した原本（attachments の id）。保存したものがあるときだけ入る（記録への結びつけに使う）
  */
 export type RunContext = {
@@ -12,7 +14,7 @@ export type RunContext = {
   channelId: string;
   kind: "inbox" | "tasks" | "session";
   scheduled?: true;
-  purpose?: "close";
+  purpose?: "close" | "renew";
   attachmentIds?: readonly number[];
   /**
    * プロジェクトのセッション（docs/plan/unify.md §5.2）のターンだけ入る。SELF_AGENT_WORKSPACE_DIR の直下のプロジェクトの名前と許可のモード。

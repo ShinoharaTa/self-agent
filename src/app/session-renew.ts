@@ -5,7 +5,15 @@ import { type HistoryStore, recordHistory } from "../store/history.ts";
 import { RENEW_SUMMARY_MAX_LENGTH, type TopicSessionStore } from "../store/topic-sessions.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import { clip, EMPTY_SUMMARY } from "./summary.ts";
-import { recordTurnUsage, RESUME_FAILURE_PATTERN, resumeSeed, type TurnDeps, turnPersonaOf } from "./turn.ts";
+import type { RunContext } from "../agent/runner.ts";
+import {
+  PROJECT_NEEDS_CC_ERROR,
+  recordTurnUsage,
+  RESUME_FAILURE_PATTERN,
+  resumeSeed,
+  type TurnDeps,
+  turnPersonaOf,
+} from "./turn.ts";
 
 export const RENEWED_FRESH_REPLY = "前の会話の記録が見つからないため、要約せずに新しくしました。次の発言から新しい会話で続けます";
 
@@ -22,11 +30,12 @@ export const RENEW_PROMPT =
 export const RENEWED_SEED_HEADER = "会話を新しくしました。前の会話の要約:";
 
 export type SessionRenewDeps = {
-  topicSessions: Pick<TopicSessionStore, "get" | "setRenewed">;
+  /** projectDirOf があれば、プロジェクトのセッションの要約のターンを projectRunner で動かす（会話の記録の場所を合わせる。docs/plan/unify.md） */
+  topicSessions: Pick<TopicSessionStore, "get" | "setRenewed"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
   /** 発言のターンと同じキュー（key は channelId）。要約のターンが発言のターンと重ならないようにする */
   turnQueue: Pick<KeyedSerialQueue, "run">;
   /** 要約のターンの runner（チャンネルの持ち主の人格のもの）と、SDK セッション・seed・usage */
-  turn: Pick<TurnDeps, "runner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
+  turn: Pick<TurnDeps, "runner" | "projectRunner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
   /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。新しくしたら区切りの行を書く。無ければ書かない */
   history?: Pick<HistoryStore, "add">;
   log: (message: string) => void;
@@ -53,6 +62,8 @@ export function renewedSeed(summary: string): string {
  * 発言のターンと同じキューの中で（セッションのジョブとして）行う。状態はキュー待ちの間に変わりうるので、キューの中で確かめる。
  * 要約のターンは resume だけで、resume 失敗からの復旧はしない（runChannelTurn は使わず、usage の記録と SDK が記録した session_id の保存だけ同じように行う）。
  * context は渡さない（session_report・session_open は not_available になる）。WebFetch に許す URL も渡さない。
+ * プロジェクトのセッションだけは projectRunner で、context（purpose renew・projectDir・permissionMode）を渡す（許可の橋がツールを全部拒否する）。
+ * projectRunner が無ければ run せずに failed（PROJECT_NEEDS_CC_ERROR）
  * - 成功: 要約（返答本文の前後の空白を除いた先頭 RENEW_SUMMARY_MAX_LENGTH 字）を保存 → SDK セッションを捨てる → seed を入れる。
  *   返答本文が空なら要約は保存せず（前の /renew の要約を残す）、seed は題名にし、返信には「（要約なし）」を出す
  * - 会話の記録が無い（RESUME_FAILURE_PATTERN）: 要約は作らずに SDK セッションを捨て、resume 失敗の復旧と同じ seed を入れる
@@ -73,7 +84,14 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
 
   // オーナーの発言ではないので、WebFetch で取得できる URL は無い。ターンはチャンネルの持ち主の人格で動かす
   const persona = turnPersonaOf(turn, channelId);
-  const result = await persona.runner.run({ prompt: RENEW_PROMPT, sessionId, context: undefined, allowedUrls: [] });
+  const project = topicSessions.projectDirOf?.(channelId);
+  if (project !== undefined && turn.projectRunner === undefined) return { result: "failed", errorMessage: PROJECT_NEEDS_CC_ERROR };
+  const context: RunContext | undefined =
+    project === undefined
+      ? undefined
+      : { guildId, channelId, kind: "session", purpose: "renew", projectDir: project.projectDir, permissionMode: project.permissionMode };
+  const runner = project !== undefined && turn.projectRunner !== undefined ? turn.projectRunner : persona.runner;
+  const result = await runner.run({ prompt: RENEW_PROMPT, sessionId, context, allowedUrls: [] });
   recordTurnUsage(turn, channelId, "session-renew", result, persona);
 
   if (result.ok) {

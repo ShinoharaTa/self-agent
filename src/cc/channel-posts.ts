@@ -134,10 +134,12 @@ export function permissionHistoryText(row: Pick<CcPermissionRow, "toolName" | "s
 /** 終わった許可の要求の Web の会話の 1 行（純関数）。pending なら undefined。質問の行は「質問の答え: …」 */
 export function permissionResultHistoryText(
   row: Pick<CcPermissionRow, "toolName" | "state" | "via" | "alwaysRules" | "questionInput" | "answers">,
+  /** false はプロジェクトのセッション（notice-text.ts の permissionResultLine と同じ） */
+  terminal = true,
 ): string | undefined {
   const parsed = parseQuestionInput(row.questionInput);
   if (parsed !== undefined) return questionResultHistoryText(row, parsed.questions);
-  const line = permissionResultLine(row, undefined);
+  const line = permissionResultLine(row, undefined, terminal);
   return line === undefined ? undefined : `許可の要求（${row.toolName}）: ${line}`;
 }
 

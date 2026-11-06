@@ -786,7 +786,7 @@ export function createReminderToolHandlers(
 export function createCcToolHandlers(cc: CcToolDeps | undefined, context: RunContext | undefined) {
   /** 使えなければその理由の結果、使えれば undefined */
   const unavailable = (): { result: "not_available"; message: string } | undefined => {
-    if (context === undefined || context.scheduled === true || context.purpose === "close") {
+    if (context === undefined || context.scheduled === true || context.purpose === "close" || context.purpose === "renew") {
       return { result: "not_available", message: CC_NOT_AVAILABLE_MESSAGE };
     }
     if (cc === undefined) return { result: "not_available", message: CC_DISABLED_MESSAGE };
