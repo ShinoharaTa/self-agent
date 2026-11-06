@@ -126,7 +126,7 @@
 | 許可 | `dontAsk` + hook | チャンネルの `permission_mode`（既定は未決 3）+ `canUseTool` → カード |
 | 記憶の先頭ブロック・seed・resume の復旧 | 今のまま | 同じ（turn.ts は共通） |
 | 人格 | 全人格 | 既定の人格だけ（U1） |
-| 予約した依頼・/close | 今のまま | /close は軽いモードの Options で要約（Bash を使わせない。今の `purpose: close` と同じ考え）。予約した依頼はプロジェクトのセッションでは作れない（`reminder_set` の prompt は not_available） |
+| 予約した依頼・/close・/renew | 今のまま | /close・/renew はプロジェクトの runner で同じ SDK セッションを resume して要約する（会話の記録の場所が runner ごとに違うため）。要約のターン（`purpose: close / renew`）は `disallowedTools` に Bash・Edit・Write・MultiEdit・NotebookEdit・Agent を足し、モードを default に固定し、橋もカードを出さずに全部拒否する。予約した依頼はプロジェクトのセッションでは作れない（`reminder_set` の prompt は not_available） |
 
 - 「全部 Claude Code にしない」理由は §0 の 2。将来、軽いモードを畳むかは U3 の後に測って決める（未決 4）。
 - 2 つのモードは **runner を 2 つ**（`SdkAgentRunner` に `RunnerProfile` を渡す）で作り、turn.ts が `kind` で選ぶ。ゲストが同じ仕組みで別の profile を持っているので、形は既にある。
@@ -182,7 +182,7 @@
 - 事実: Discord はオーナーだけ（許可サーバー・オーナー ID）。プロジェクトのセッションの Bash は、オーナーが端末で動かす Claude Code と**同じ権限**（同じ OS ユーザー・同じ秘密）。違いは (1) スマホから遠隔で、(2) Web のページを読んだ後に動く（プロンプトインジェクション）、(3) 常駐プロセスの中で動く。
 - 守り（上から順に境界 → 補助）:
   1. **許可カード**（`default` モードなら Bash は毎回。`acceptEdits` でも Bash は毎回）。これが境界。dontAsk・bypass は選べない。
-  2. **使える場面を絞る**: プロジェクトのセッションの、オーナーの発言と [続ける] のターンだけ。予約した依頼・/close・#inbox・#tasks は軽いモード（sandbox 無しの Bash は無い）。
+  2. **使える場面を絞る**: プロジェクトのセッションの、オーナーの発言と [続ける] のターンだけ。/close・/renew の要約のターンはプロジェクトの runner だがツール無し（§4.1）。予約した依頼・#inbox・#tasks は軽いモード（sandbox 無しの Bash は無い）。
   3. **秘密の場所の Read/Edit/Glob/Grep を PreToolUse で拒否**（file-access.ts の判定を流用: `<dataDir>`・`<claudeConfigDir>`（link の先を除く）・`~/.config/self-agent`・`~/.ssh`・`~/.config/gh`）。Bash のコマンドの字面は見ない（shell.md と同じ考え。境界はカード）。
   4. **トークン**: `CLAUDE_CODE_OAUTH_TOKEN` が Bash の子の env に残る（未確認 3）なら、Bot の `CLAUDE_CONFIG_DIR` で `claude login` した `.credentials.json` に切り替える（端末と同じ形。env には置かない）。`DISCORD_TOKEN` などは今の childEnv で渡していない。
   5. **常駐プロセス**: `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` は外す（Claude Code と同じ使い勝手のため）。dev サーバーを立てたままにする事故は、オーナーが端末で起こすのと同じ扱い（`ss -ltnp` の規則は CLAUDE.md が持つ）。
@@ -204,8 +204,8 @@
 - 人格: プロジェクトのセッションは既定の人格だけ（U1）。足した人格の文は preset の append に入れられるが、CLAUDE.md が人格を決めるのと二重になる。U5 で「人格ごとの CLAUDE.md」として考え直す。codex のエンジンは対象外。
 - #inbox/#tasks の切り替え（inbox-rotate）: 軽いモードのままで変わらない。
 - history / Web UI: handler → turn → runner の経路は同じなので、オーナーの発言・返事・手順（`onProgress` の label。Bash は「コマンドを実行しています」、Skill・Agent・Grep は「<名前> を使っています」）・[中断]・[続ける] はそのまま動く。足すのは許可カードの表示（§5.1）と、見出しのプロジェクト名・permission_mode。
-- session_report・/close の要約・候補の登録は同じ（/close は軽いモードの Options で要約）。
-- `/renew`: SDK セッションを捨てて seed で始め直す。プロジェクトのセッションでも同じ（記録は残るので端末からは古い会話を `--resume` できる）。
+- session_report・/close の要約・候補の登録は同じ（/close はプロジェクトの runner で、書く・動かすツールを外して要約。§4.1）。
+- `/renew`: SDK セッションを捨てて seed で始め直す。プロジェクトのセッションでも同じで、要約のターンはプロジェクトの runner でツール無し（`purpose: renew`）。記録は残るので端末からは古い会話を `--resume` できる。
 
 ---
 
@@ -244,10 +244,10 @@
 ### 6.1 U1 の分解（implementer に渡す粒度。設計判断を含まない）
 1. **DB v40**: `sessions` に `project_dir TEXT NULL`・`permission_mode TEXT NOT NULL DEFAULT 'default'`、`cc_permissions` に `origin TEXT NOT NULL DEFAULT 'hook'`（表の作り直し）。`TopicSessionStore` に `projectDir`・`permissionMode` の読み書き、`CcPermissionStore.add` に `origin`。移行の控えは今の仕組み（`backupBeforeMigration`）。
 2. **profile**: `agent/project-profile.ts` に `buildProjectOptions(cfg, projectDir, permissionMode, mcpServer)`（`systemPrompt: { type: 'preset', preset: 'claude_code', append: PROJECT_APPEND, snapshot: true }`・`settingSources: ['user', 'project', 'local']`・`cwd`・`permissionMode`・`tools` 省略・`disallowedTools: ['AskUserQuestion']`・`allowedTools: ['mcp__self-agent__*', 'WebSearch', 'WebFetch']`・`mcpServers`・`strictMcpConfig: true`・`env`（childEnv から `CLAUDE_CODE_PROJECT_DIR_NAME`・`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` を外し、`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` は U3 まで残す）・`canUseTool`）と `preToolUse`（WebFetch の guard・秘密の場所の Read/Edit/Glob/Grep の拒否）。`PROJECT_APPEND` は system-prompt.ts から日時ヘッダ・引き継ぎの文・タスク/リマインド/ナレッジ/記憶の行を抜いた 10〜15 行（既定の SYSTEM_PROMPT の文字列は変えない。テストで固定）。
-3. **runner**: main.ts で `SdkAgentRunner(runnerConfig, createMcpServer, files, log, undefined, devLog, projectProfile)` をもう 1 つ作り、`TurnDeps` に `projectRunner` を足す。`turnPersonaOf` は `sessions.projectDir !== null` ならそれを返す（`RunContext` に `projectDir`・`permissionMode` を足す）。`/close` のターンは軽いモードの runner（`purpose: 'close'` のとき）。
-4. **許可の橋**: `agent/permission-bridge.ts` の `createPermissionBridge({ permissions: CcPermissionStore, hold: CcPermissionHold, post: (channelId, notice) => messageId, log })` が `canUseTool` を返す。往復は §5.1 の 1〜5。hold に `holdExternal(row, timeoutMs): Promise<Answer>` を足し、`knows` を通らない。時間切れ・`signal` の abort は deny。`SELF_AGENT_CC` が無効でも動く（hold・store は常に作る。registry は要らない）。
+3. **runner**: main.ts で `SdkAgentRunner(runnerConfig, createMcpServer, files, log, undefined, devLog, projectProfile)` をもう 1 つ作り、`TurnDeps` に `projectRunner` を足す。`turnPersonaOf` は `sessions.projectDir !== null` ならそれを返す（`RunContext` に `projectDir`・`permissionMode` を足す）。`/close`・`/renew` のターンもプロジェクトの runner（会話の記録の場所を合わせる）で、`purpose: 'close' / 'renew'` のときは書く・動かすツールを外してモードを default に固定する（実装は `turnPersonaOf` ではなく `runChannelTurn`・session-renew.ts が `sessions.project_dir` を見て選ぶ）。
+4. **許可の橋**: `agent/permission-bridge.ts` の `createPermissionBridge({ permissions: CcPermissionStore, hold: CcPermissionHold, post: (channelId, notice) => messageId, log })` が `canUseTool` を返す。往復は §5.1 の 1〜5。hold に `holdExternal(row, timeoutMs): Promise<Answer>` を足し、`knows` を通らない。時間切れ・`signal` の abort は deny。U1 は `SELF_AGENT_CC=1` が必須（hold・Web の routes/cc.ts・Discord の `cc:perm` が CC の配線に依るため。無効ならプロジェクトのセッションのターンは「プロジェクトのセッションには SELF_AGENT_CC=1 が要ります」で始めない。外すのは後の段）。
 5. **Discord・Web の表示**: channel-posts.ts の `permissionNotice` をそのチャンネルに持ち主の Bot で投稿（`message_channel_id`・`message_id` を行に）。`cc:perm:*` のボタンは今の app/commands/cc.ts のまま（hold の answer を通るので変更なし）。Web: `/api/channels` の行に `permission`（routes/cc.ts の形）、chat.js は `ccPermissionCard` を会話の末尾に置く（cc のタブと同じ場所の決め方）。
-6. **打ち切りの一時停止**: sdk-runner.ts の timeout を `setTimeout` から「残り時間」の計算にし、bridge が `pause()`/`resume()` を呼ぶ。進行中の表示（progress.ts）に「許可を待っています: <displayName>」の行。[中断] は bridge の pending を deny してから abort。
+6. **打ち切りの一時停止**（U1b で）: sdk-runner.ts の timeout を `setTimeout` から「残り時間」の計算にし、bridge が `pause()`/`resume()` を呼ぶ。進行中の表示（progress.ts）に「許可を待っています: <displayName>」の行。[中断] は bridge の pending を deny してから abort。
 7. **作る口**: `/new` に任意の `project`（選択肢は `listProjects`。`SELF_AGENT_WORKSPACE_DIR` が無い・プロジェクトが 0 なら引数を出さない）。`openTopicSession` に `projectDir`。Web の「新しいセッション」ダイアログにセレクト（`GET /api/projects/workspace` を新設。`/api/cc/projects` と同じ中身で SELF_AGENT_CC によらない）。topic に `（<project_dir>）`。
 8. **unify-setup**: `npm run unify-setup -- --print` で `<claudeConfigDir>/{skills,agents,CLAUDE.md,rules}` への `ln -s` の行を出す（projects は U3）。main.ts の起動時に link の有無・向き（realpath が `~/.claude` の中）を確かめ、無ければ log 1 行と、プロジェクトのセッションの作成を「設定が済んでいません（unify-setup）」で断る。
 9. **文書**: CLAUDE.md（概要・agent/・環境変数・プロンプトキャッシュの規則の例外）・REQUIREMENTS の決定事項 3 行・本書を `docs/plan/unify.md` に写す。
@@ -256,9 +256,9 @@
 - 軽いモードの `buildQueryOptions` の出力と `SYSTEM_PROMPT` は、U1 の前後で 1 バイトも変わらない（既存のテストがそのまま通る）。
 - `buildProjectOptions` は `settingSources` が `['user','project','local']`、`cwd` がプロジェクトの実際の場所、`tools` キーが無い、`systemPrompt.type` が `preset`、`permissionMode` が行の値、`env` に `CLAUDE_CODE_PROJECT_DIR_NAME` が無い。
 - 偽 queryFn が `canUseTool('Bash', …)` を呼ぶと、`cc_permissions` に `origin 'sdk'`・pending の行ができ、偽 gateway にカードの 1 通が出て、`cc:perm:allow` で `{ behavior: 'allow' }`、`deny` で `{ behavior: 'deny' }`、時間切れで deny が返り、行は allowed / denied / expired になる。
-- 保留中はターンの打ち切りが進まない（偽の時計で 900 秒を超えても aborted にならず、答えた後に残りを数える）。
+- 保留中はターンの打ち切りが進まない（偽の時計で 900 秒を超えても aborted にならず、答えた後に残りを数える）。（U1b）
 - `/new project:x` で `project_dir` が入り、`x` が検証を通らなければ本人にだけ断る。`project_dir` のあるセッションの `project_open`・`reminder_set(prompt)` は not_available。
-- `/close` のターンは軽いモードの runner で動く（偽 runner の呼び出しの記録）。
+- プロジェクトのセッションの `/close`・`/renew` のターンはプロジェクトの runner で動き（偽 runner の呼び出しの記録）、Options の `disallowedTools` に Bash・Edit・Write・MultiEdit・NotebookEdit・Agent が入り `permissionMode` は default、canUseTool は行を作らずに deny。軽いモードの `/close`・`/renew` は今までどおり。
 - 予約した依頼（scheduled）は `project_dir` のあるチャンネルに結びつかない。
 - 実機: self-agent のリポジトリで (1) 「CLAUDE.md の コマンド の節を要約して」が CLAUDE.md を読んだ返事になる、(2) 「使える skills を挙げて」に `~/.claude/skills` の名前が出る、(3) 「npm run check を実行して」でカードが出て、[許可] で結果が返る、[拒否] で実行されない、(4) 同じ 3 つを端末の Claude Code で打って返事の中身が同程度、(5) `claude agents --json` にこのセッションが出ない（出るなら U0 の結果に従う）。
 

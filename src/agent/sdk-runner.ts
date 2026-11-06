@@ -555,8 +555,11 @@ export function ownerApiKeySource(source: unknown): boolean {
   return source !== "ANTHROPIC_API_KEY";
 }
 
-/** profile の buildOptions に渡す、その run の様子。sessionId はその時点で受け取った session_id（init の前は resume 元の sessionId か undefined） */
-export type ProfileRunState = { sessionId: () => string | undefined };
+/**
+ * profile の buildOptions に渡す、その run の様子。sessionId はその時点で受け取った session_id（init の前は resume 元の sessionId か undefined）。
+ * signal はその run の打ち切り・中断（abortController）で鳴る
+ */
+export type ProfileRunState = { sessionId: () => string | undefined; signal: AbortSignal };
 
 /**
  * Options と hooks の組み立て方（docs/plan/guest-mode.md §3.3・docs/plan/unify.md §6.1）。渡せば buildQueryOptions・自前の MCP サーバー・WebFetch・ファイル・Bash の hook を使わない
@@ -630,9 +633,11 @@ export class SdkAgentRunner implements AgentRunner {
     // 手順の上限はチャンネルの種類で変える（セッションのチャンネルは cfg.sessionMaxTurns、それ以外は INBOX_MAX_TURNS）。
     // profile があればその Options の値。session_id は受け取るたびに更新し、profile（canUseTool）が読む
     const run = { sessionId: input.sessionId };
+    // 打ち切り・中断で止める。profile（canUseTool の保留）にもこの signal を渡す
+    const abortController = new AbortController();
     let base: { options: Options; sandbox: boolean };
     try {
-      base = this.baseOptions(input, { sessionId: () => run.sessionId });
+      base = this.baseOptions(input, { sessionId: () => run.sessionId, signal: abortController.signal });
     } catch (error) {
       // 例外の文は呼び出し側（プロジェクトの検証など）がパスを入れない
       const result: RunResult = {
@@ -651,7 +656,6 @@ export class SdkAgentRunner implements AgentRunner {
         : input.context?.kind === "session"
           ? this.cfg.sessionMaxTurns
           : INBOX_MAX_TURNS;
-    const abortController = new AbortController();
     const timeoutSec = input.context?.kind === "session" ? this.cfg.sessionTurnTimeoutSec : this.cfg.turnTimeoutSec;
     const timer = setTimeout(() => abortController.abort(), timeoutSec * 1000);
     const onAbort = (): void => abortController.abort();

@@ -146,13 +146,19 @@ export class CcPermissionStore {
     return row === undefined ? undefined : toRow(row);
   }
 
-  /** pending の行を古い順に */
-  listPending(): CcPermissionRow[] {
-    return this.db.prepare("SELECT * FROM cc_permissions WHERE state = 'pending' ORDER BY id").all().map(toRow);
+  /** pending の行を古い順に。origin を渡せばその出どころの行だけ */
+  listPending(origin?: CcPermissionOrigin): CcPermissionRow[] {
+    return origin === undefined
+      ? this.db.prepare("SELECT * FROM cc_permissions WHERE state = 'pending' ORDER BY id").all().map(toRow)
+      : this.db.prepare("SELECT * FROM cc_permissions WHERE state = 'pending' AND origin = ? ORDER BY id").all(origin).map(toRow);
   }
 
-  countPending(): number {
-    const row = this.db.prepare("SELECT COUNT(*) AS n FROM cc_permissions WHERE state = 'pending'").get();
+  /** pending の行の数。origin を渡せばその出どころの行だけ */
+  countPending(origin?: CcPermissionOrigin): number {
+    const row =
+      origin === undefined
+        ? this.db.prepare("SELECT COUNT(*) AS n FROM cc_permissions WHERE state = 'pending'").get()
+        : this.db.prepare("SELECT COUNT(*) AS n FROM cc_permissions WHERE state = 'pending' AND origin = ?").get(origin);
     return Number(row?.n ?? 0);
   }
 

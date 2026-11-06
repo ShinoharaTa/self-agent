@@ -109,7 +109,7 @@ test("createProjectProfile: preset・settingSources・cwd（プロジェクト�
     env: { PATH: "/usr/bin", HOME: home, CLAUDE_CODE_OAUTH_TOKEN: "oauth", DISCORD_TOKEN: "discord" },
     log: (line) => logs.push(line),
   });
-  const options = profile.buildOptions({ prompt: "x", context: context() }, { sessionId: () => undefined });
+  const options = profile.buildOptions({ prompt: "x", context: context() }, { sessionId: () => undefined, signal: new AbortController().signal });
   assert.deepEqual(options.systemPrompt, { type: "preset", preset: "claude_code", append: PROJECT_APPEND, snapshot: true });
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
   assert.equal(options.cwd, join(workspaceDir, "alpha"));
@@ -134,14 +134,14 @@ test("createProjectProfile: preset・settingSources・cwd（プロジェクト�
   // 選べないモードは default にして log
   const bypass = profile.buildOptions(
     { prompt: "x", context: context({ permissionMode: "bypassPermissions" as never }) },
-    { sessionId: () => undefined },
+    { sessionId: () => undefined, signal: new AbortController().signal },
   );
   assert.equal(bypass.permissionMode, "default");
   assert.ok(logs.some((line) => line.includes("default にしました")));
   // 検証を通らないプロジェクト（無い・symlink・形の違う名前）は投げる
   symlinkSync(join(workspaceDir, "alpha"), join(workspaceDir, "link"));
   for (const projectDir of ["missing", "link", "../alpha", "a/b"]) {
-    assert.throws(() => profile.buildOptions({ prompt: "x", context: context({ projectDir }) }, { sessionId: () => undefined }), projectDir);
+    assert.throws(() => profile.buildOptions({ prompt: "x", context: context({ projectDir }) }, { sessionId: () => undefined, signal: new AbortController().signal }), projectDir);
   }
 });
 
@@ -633,4 +633,125 @@ test("文面: プロジェクトのセッション（terminal false）は端末�
   assert.deepEqual(resolved.components, []);
   assert.equal(permissionResultHistoryText(expired, false), "許可の要求（Bash）: 時間切れ（拒否しました）");
   assert.equal(permissionResultHistoryText(expired), "許可の要求（Bash）: 時間切れ。端末か RC で答えてください");
+});
+
+test("createProjectProfile: 要約のターン（purpose close・renew）は書く・動かすツールを外し、モードを default に固定する", (t) => {
+  const { home, cfg } = places(t);
+  const profile = createProjectProfile({
+    cfg,
+    createMcpServer: () => mcpServer(),
+    canUseTool: () => async () => ({ behavior: "deny", message: "x" }),
+    home,
+    env: {},
+    log: () => undefined,
+  });
+  for (const purpose of ["close", "renew"] as const) {
+    const options = profile.buildOptions(
+      { prompt: "x", context: context({ purpose, permissionMode: "acceptEdits" }) },
+      { sessionId: () => undefined, signal: new AbortController().signal },
+    );
+    assert.deepEqual(options.disallowedTools, ["AskUserQuestion", "Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Agent"], purpose);
+    assert.equal(options.permissionMode, "default", purpose);
+  }
+  const normal = profile.buildOptions(
+    { prompt: "x", context: context({ permissionMode: "acceptEdits" }) },
+    { sessionId: () => undefined, signal: new AbortController().signal },
+  );
+  assert.deepEqual(normal.disallowedTools, ["AskUserQuestion"]);
+  assert.equal(normal.permissionMode, "acceptEdits");
+});
+
+test("秘密の場所: ~/.claude（オーナーの認証）と /proc、MultiEdit も拒否する", async (t) => {
+  const { projectSecretPlaces } = await import("../src/agent/project-profile.ts");
+  const { workspaceDir, home, cfg } = places(t);
+  const secrets = projectSecretPlaces(cfg, home);
+  const cwd = join(workspaceDir, "alpha");
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude/.credentials.json" }, cwd, secrets, home), true);
+  assert.equal(touchesSecretPlace("Read", { file_path: "/proc/self/environ" }, cwd, secrets, home), true);
+  assert.equal(touchesSecretPlace("MultiEdit", { file_path: join(cfg.dataDir, "x") }, cwd, secrets, home), true);
+});
+
+test("projectSecretPlaces: ~/.claude と /proc を含み、hook は MultiEdit も見る", async (t) => {
+  const { projectSecretPlaces } = await import("../src/agent/project-profile.ts");
+  const { home, cfg } = places(t);
+  const secrets = projectSecretPlaces(cfg, home);
+  assert.ok(secrets.includes(join(home, ".claude")) && secrets.includes("/proc"));
+  const guard = createSecretPlaceGuard(secrets, home, () => undefined);
+  assert.ok(guard.matcher?.split("|").includes("MultiEdit"));
+});
+
+test("bridgeSummary: 要約は tool_input から作ったものを常に出し、title は前の 1 行に添える", async () => {
+  const { bridgeSummary } = await import("../src/agent/permission-bridge.ts");
+  assert.equal(bridgeSummary("npm test", undefined), "npm test");
+  assert.equal(bridgeSummary("npm test", "Claude wants to\nrun npm test"), "Claude wants to run npm test\nnpm test");
+  assert.equal(bridgeSummary("npm test", "x".repeat(300)), `${"x".repeat(200)}\nnpm test`);
+});
+
+test("許可の橋: run の signal が鳴れば保留をやめて拒否し、待っている間に鳴っていれば行を作らない", async (t) => {
+  const { workspaceDir, home } = places(t);
+  const db = tempDb(t);
+  const now = () => new Date(BASE);
+  const permissions = new CcPermissionStore(db, now);
+  const { timers } = fakeTimers();
+  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store: permissions, known: () => false, now, timers, log: () => undefined });
+  const poster = { post: async () => undefined, resolved: async () => undefined };
+  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, workspaceDir, home, log: () => undefined });
+  const run = new AbortController();
+  const canUse = bridge(context(), () => SESSION, run.signal);
+  // canUseTool の signal は鳴らない（SDK が鳴らさない場合）
+  const asking = canUse("Bash", { command: "ls" }, { signal: new AbortController().signal } as never);
+  await until(() => permissions.countPending() === 1, "保留");
+  run.abort();
+  const result = await asking;
+  assert.equal(result?.behavior, "deny");
+  assert.equal(permissions.countPending(), 0);
+  const rows = Number(db.prepare("SELECT COUNT(*) AS n FROM cc_permissions").get()?.n);
+  // 既に止まった run の要求は行を作らない
+  const after = await canUse("Bash", { command: "ls" }, { signal: new AbortController().signal } as never);
+  assert.equal(after?.behavior, "deny");
+  assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM cc_permissions").get()?.n), rows);
+});
+
+test("resolvedMessageByOrigin: cc:perm の書き換えは origin sdk ならプロジェクトのセッションの文、それ以外は Claude Code のチャンネルの文", async () => {
+  const { resolvedMessageByOrigin } = await import("../src/agent/permission-bridge.ts");
+  const message = (text: string) => ({ message: { text }, channelId: "c", messageId: "m" });
+  const pick = resolvedMessageByOrigin({
+    permissions: { get: (id) => (id === 3 ? undefined : ({ origin: id === 1 ? "sdk" : "hook" } as never)) },
+    sdk: () => message("sdk"),
+    hook: () => message("hook"),
+  });
+  assert.equal(pick(1)?.message.text, "sdk");
+  assert.equal(pick(2)?.message.text, "hook");
+  assert.equal(pick(3)?.message.text, "hook");
+});
+
+test("/api/cc/permissions/<id>/allow で sdk の行に答えると canUseTool は allow。/api/cc/permissions と pendingPermissions は hook の行だけ", async (t) => {
+  const { ccRoutes, ccStatus } = await import("../src/web/routes/cc.ts");
+  const s = setupBridge(t);
+  await until(() => s.gateway.posts.length === 1, "カード");
+  const row = s.permissions.listPending()[0]!;
+  const routes = ccRoutes({
+    registry: { snapshot: () => ({ sessions: [], stale: false, unreadable: false, fetchedAt: undefined }) as never, touch: () => undefined },
+    panes: undefined,
+    tmux: undefined,
+    workspaceDir: s.workspaceDir,
+    home: "/h",
+    permissions: { hold: s.hold, store: s.permissions, holdSec: 300, questionHoldSec: 900 },
+  });
+  const list = routes.find((route) => route.method === "GET" && route.pattern.source === "^\\/api\\/cc\\/permissions$")!;
+  assert.deepEqual((await list.handle({ params: [], query: new URLSearchParams() } as never)).json, { permissions: [] });
+  const status = ccStatus({
+    panes: { lastTmux: () => undefined },
+    hookListening: () => true,
+    store: { multilineOk: () => true },
+    permissions: s.permissions,
+  } as never);
+  assert.equal(status.pendingPermissions, 0);
+  assert.equal(s.permissions.countPending(), 1);
+  const answer = routes.find((route) => route.method === "POST" && route.pattern.source.includes("allow|always|deny"))!;
+  const reply = await answer.handle({ params: [String(row.id), "allow"], body: { requestHash: row.requestHash } } as never);
+  assert.deepEqual(reply, { status: 200, json: { state: "allowed" } });
+  const result = await s.run;
+  assert.ok(result.ok);
+  assert.deepEqual(s.results, [{ behavior: "allow" }]);
 });
