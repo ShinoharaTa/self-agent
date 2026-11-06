@@ -380,6 +380,7 @@ export class CcRegistry implements CcHookReceiver {
     const update: CcEventUpdate = { event: event.event };
     if (event.permissionMode !== undefined) update.permissionMode = event.permissionMode;
     if (event.prompt !== undefined) update.promptText = event.prompt;
+    if (event.harnessPrompt === true) update.keepPromptText = true;
     if (event.notificationType !== undefined && CC_WAITING_NOTIFICATIONS.includes(event.notificationType)) {
       update.waitingKind = event.notificationType;
     }

@@ -8,6 +8,7 @@ import {
   CC_PROMPT_MIRROR_MAX_CHARS,
   createCcHookServer,
   createHookRequestListener,
+  isHarnessPrompt,
   parseHookEvent,
   type CcHookEvent,
   type CcHookServer,
@@ -285,6 +286,37 @@ test("unwrapPastedContent: pasted_content の開きと閉じのタグ（属性�
   assert.equal(unwrapPastedContent('前 <pasted_content id="1" lines="2">a</pasted_content> 後 <pasted_content id="2">b</pasted_content>'), "前 a 後 b");
   assert.equal(unwrapPastedContent("<pasted_contents>そのまま</other>"), "<pasted_contents>そのまま</other>");
   assert.equal(unwrapPastedContent("タグなし"), "タグなし");
+});
+
+test("isHarnessPrompt: 全体が 1 つの XML 風の要素か SYSTEM NOTIFICATION などで始まるものは harness のプロンプト。人の指示は違う", () => {
+  assert.equal(isHarnessPrompt("<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n</task-notification>"), true);
+  assert.equal(isHarnessPrompt("<system-reminder>\n注意\n</system-reminder>"), true);
+  assert.equal(isHarnessPrompt('<cross-session-message from="x">本文</cross-session-message>'), true);
+  assert.equal(isHarnessPrompt("[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated event"), true);
+  assert.equal(isHarnessPrompt("[Subagent hand-back] The text below is the final report"), true);
+  assert.equal(isHarnessPrompt("Another Claude session sent a message:\n<agent-message>…</agent-message>"), true);
+  // 人の指示
+  assert.equal(isHarnessPrompt("次に進めて"), false);
+  assert.equal(isHarnessPrompt("<task-notification> の形で返して"), false);
+  assert.equal(isHarnessPrompt("この <b>太字</b> を直して"), false);
+  assert.equal(isHarnessPrompt("<a>x</a> と <b>y</b>"), false);
+  assert.equal(isHarnessPrompt(""), false);
+  assert.equal(isHarnessPrompt("   "), false);
+});
+
+test("parseHookEvent: harness のプロンプトは prompt・promptChars を付けず harnessPrompt を立てる（写さない・本文を残さない）", () => {
+  const at = new Date(0);
+  const event = parseHookEvent(
+    { hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "\n<task-notification>\n<task-id>abc</task-id>\n</task-notification>\n" },
+    at,
+  );
+  assert.equal(event?.event, "UserPromptSubmit");
+  assert.equal(event?.harnessPrompt, true);
+  assert.equal(event?.prompt, undefined);
+  assert.equal(event?.promptChars, undefined);
+  const human = parseHookEvent({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "次に進めて" }, at);
+  assert.equal(human?.harnessPrompt, undefined);
+  assert.equal(human?.prompt, "次に進めて");
 });
 
 test("parseHookEvent: まとめた貼り付けの prompt はタグを外して前後の改行・空白を除いてから先頭 1,000 字を事象に（全体の字数も）", () => {

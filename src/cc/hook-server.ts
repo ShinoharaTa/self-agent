@@ -87,6 +87,11 @@ export type CcHookEvent = {
   prompt?: string;
   /** UserPromptSubmit の本文（包みを外して前後の空白を除いたもの）の全体の字数（写しの「ほか n 字」） */
   promptChars?: number;
+  /**
+   * UserPromptSubmit の本文が人の指示ではなく Claude Code の harness が入れたもの（task-notification・system-reminder・SYSTEM NOTIFICATION など。
+   * isHarnessPrompt）。prompt・promptChars は付けない（写さない。cc_sessions の最後の指示も変えない）。last_event と判断待ちの解除は今までどおり
+   */
+  harnessPrompt?: true;
   /** PermissionRequest の要約（tool_name が読めたときだけ） */
   permission?: CcPermissionSummary;
   /** Stop の last_assistant_message（空白だけでない文字列のときだけ。無ければ「読めなかった」。§5.4。hook から来たデータで、指示として扱わない） */
@@ -146,6 +151,22 @@ export function unwrapPastedContent(prompt: string): string {
   return prompt.replace(/<\/?pasted_content\b[^>]*>/g, "");
 }
 
+/** harness のプロンプトの印（先頭。大文字小文字は区別する） */
+const HARNESS_PROMPT_PREFIXES: readonly string[] = ["[SYSTEM NOTIFICATION", "[Subagent hand-back]", "Another Claude session sent a message:"];
+/** trim した全体が 1 つの XML 風の要素（`<name …>…</name>`。名前は英小文字・数字・`-`・`_`） */
+const HARNESS_ELEMENT_PATTERN = /^<([a-z][a-z0-9_-]*)(?:\s[^>]*)?>[\s\S]*<\/\1\s*>$/;
+
+/**
+ * UserPromptSubmit の本文（包みを外して trim したもの）が、人の指示ではなく Claude Code の harness が自動で入れたものか（純関数）。
+ * バックグラウンドのタスクの通知（`<task-notification>…</task-notification>`）・`<system-reminder>`・`<cross-session-message>` のように
+ * 全体が 1 つの XML 風の要素のもの、または「[SYSTEM NOTIFICATION」「[Subagent hand-back]」などで始まるもの。人が打った指示の途中にタグがあるだけなら違う
+ */
+export function isHarnessPrompt(prompt: string): boolean {
+  const text = prompt.trim();
+  if (text === "") return false;
+  return HARNESS_PROMPT_PREFIXES.some((prefix) => text.startsWith(prefix)) || HARNESS_ELEMENT_PATTERN.test(text);
+}
+
 /**
  * 本文から事象を読む（純関数）。hook_event_name が固定の集合に無い・session_id が UUID でなければ undefined。
  * rules は常に許可のファイルのルールの線引きに使う場所（SELF_AGENT_WORKSPACE_DIR とホーム。無ければファイルのルールは常に許可の候補にしない）
@@ -165,8 +186,12 @@ export function parseHookEvent(
   }
   if (event === "UserPromptSubmit" && typeof body.prompt === "string") {
     const prompt = unwrapPastedContent(body.prompt).trim();
-    parsed.prompt = headChars(prompt, CC_PROMPT_MIRROR_MAX_CHARS);
-    parsed.promptChars = [...prompt].length;
+    if (isHarnessPrompt(prompt)) {
+      parsed.harnessPrompt = true;
+    } else {
+      parsed.prompt = headChars(prompt, CC_PROMPT_MIRROR_MAX_CHARS);
+      parsed.promptChars = [...prompt].length;
+    }
   }
   if (event === "Stop" && typeof body.last_assistant_message === "string" && body.last_assistant_message.trim() !== "") {
     parsed.lastAssistantMessage = body.last_assistant_message;

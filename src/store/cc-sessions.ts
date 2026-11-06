@@ -80,8 +80,10 @@ export type CcEventUpdate = {
   event: CcHookEventName;
   /** hook の入力の permission_mode。無ければ今の値のまま */
   permissionMode?: string;
-  /** UserPromptSubmit の本文（先頭 CC_PROMPT_MAX_CHARS 字に切って残す）。無ければ NULL */
+  /** UserPromptSubmit の本文（先頭 CC_PROMPT_MAX_CHARS 字に切って残す）。無ければ NULL（keepPromptText なら今の値のまま） */
   promptText?: string;
+  /** UserPromptSubmit で最後の指示（last_prompt_at・last_prompt_text）を今の値のままにする（harness が入れたプロンプト。hook-server.ts の isHarnessPrompt）。判断待ちは外す */
+  keepPromptText?: true;
   /** Notification で判断待ちにする種類（判断待ちにしないものは渡さない） */
   waitingKind?: string;
 };
@@ -208,13 +210,16 @@ export class CcSessionStore {
         result = this.db
           .prepare(
             `UPDATE cc_sessions SET last_event = ?, last_event_at = ?, permission_mode = COALESCE(?, permission_mode),
-               last_prompt_at = ?, last_prompt_text = ?, waiting_kind = NULL, waiting_since = NULL WHERE session_id = ?`,
+               last_prompt_at = CASE WHEN ? = 1 THEN last_prompt_at ELSE ? END, last_prompt_text = CASE WHEN ? = 1 THEN last_prompt_text ELSE ? END,
+               waiting_kind = NULL, waiting_since = NULL WHERE session_id = ?`,
           )
           .run(
             update.event,
             iso,
             mode,
+            update.keepPromptText === true ? 1 : 0,
             iso,
+            update.keepPromptText === true ? 1 : 0,
             update.promptText === undefined ? null : headChars(update.promptText, CC_PROMPT_MAX_CHARS),
             sessionId,
           );
