@@ -6,7 +6,7 @@ import { createCcComponent, type CcPermissionButtons } from "../src/app/commands
 import type { AgentEntry, AgentsResult } from "../src/cc/agents.ts";
 import {
   CC_CHANNEL_WAIT_OVERFLOW_TEXT,
-  CC_PROMPT_MIRROR_LABEL,
+  ccPromptMirrorLabel,
   CC_PROMPT_MIRROR_WINDOW_MS,
   CcChannelPosts,
   ccPromptMirrorTexts,
@@ -35,6 +35,8 @@ const SYSTEM = "system-1";
 const CHANNEL = "cc-channel-1";
 const OWNER = "owner-1";
 const S1 = "11111111-1111-4111-8111-111111111111";
+/** 写しの見出し（BASE は Asia/Tokyo の 09:00） */
+const MIRROR_LABEL = ccPromptMirrorLabel(new Date(BASE), "Asia/Tokyo");
 const S2 = "22222222-2222-4222-8222-222222222222";
 const HOME = "/home/owner";
 const WORKSPACE = "/home/owner/workspace";
@@ -136,7 +138,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
   /** 知らせのためのチャンネルの作成（cc/channels.ts の ensureFor の代わり） */
   const ensure = { calls: [] as Array<{ sessionId: string; origin: CcChannelOrigin }>, fails: false, made: 0 };
   posts = new CcChannelPosts({
-    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: 300, ccQuestionHoldSec: 900, ccNotify: opts.notify !== false },
+    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, timeZone: "Asia/Tokyo", ccPermissionHoldSec: 300, ccQuestionHoldSec: 900, ccNotify: opts.notify !== false },
     channels,
     ensureChannel: () => ({
       ensureFor: async (sessionId: string, origin: CcChannelOrigin): Promise<CcOpenResult> => {
@@ -417,7 +419,7 @@ test("CC12・Q4: SELF_AGENT_CC_NOTIFY=0 ではチャンネルを作らないが�
   // 判断待ち・写しもチャンネルには出る
   await s.hook(S1, "UserPromptSubmit", { prompt: "端末から", promptChars: 4 });
   assert.equal(s.gateway.posts.length, 2);
-  assert.equal(s.gateway.posts[1]!.message.text, `${CC_PROMPT_MIRROR_LABEL}\n端末から`);
+  assert.equal(s.gateway.posts[1]!.message.text, `${MIRROR_LABEL}\n端末から`);
 });
 
 test("Q4: permission-hold は足した受け手の全部に held・resolved を渡す。受け手が投げても保留は続く（log だけ）", async (t) => {
@@ -531,13 +533,14 @@ test("Q4: チャンネルへの許可の 1 通の投稿に失敗したら log �
   assertNoSecrets(s.logs);
 });
 
-test("CC12: 端末・RC からの UserPromptSubmit は「（端末か RC から）」で写す。Markdown・メンションは無効、DB は 200 字", async (t) => {
+test("CC12: 端末・RC からの UserPromptSubmit は「（端末か RC から HH:MM）」（SELF_AGENT_TZ の時刻）で写す。Markdown・メンションは無効、DB は 200 字", async (t) => {
   const s = await setup(t);
+  assert.equal(MIRROR_LABEL, "（端末か RC から 09:00）");
   await s.hookBody({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: `@everyone **${SECRET_PROMPT}** [x](https://e.example)\n2 行目` });
   assert.equal(s.gateway.posts.length, 1);
   const post = s.gateway.posts[0]!;
   assert.equal(post.channelId, CHANNEL);
-  assert.equal(post.message.text, `${CC_PROMPT_MIRROR_LABEL}\n\\@everyone \\*\\*secret\\-prompt\\*\\* \\[x\\]\\(https\\://e.example\\)\n2 行目`);
+  assert.equal(post.message.text, `${MIRROR_LABEL}\n\\@everyone \\*\\*secret\\-prompt\\*\\* \\[x\\]\\(https\\://e.example\\)\n2 行目`);
   assert.equal(post.message.mentionUserId, undefined);
   assert.equal(post.message.suppressEmbeds, true);
   assert.equal(post.message.replyToId, undefined);
@@ -547,7 +550,7 @@ test("CC12: 端末・RC からの UserPromptSubmit は「（端末か RC から�
   await s.hookBody({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "あ".repeat(1001) });
   const texts = s.gateway.posts.slice(1).map((p) => p.message.text);
   assert.equal(texts.length, 1);
-  assert.equal(texts[0], `${CC_PROMPT_MIRROR_LABEL}\n${"あ".repeat(1000)}\n（ほか 1 字）`);
+  assert.equal(texts[0], `${MIRROR_LABEL}\n${"あ".repeat(1000)}\n（ほか 1 字）`);
   assert.equal(s.sessions.get(S1)?.lastPromptText, "あ".repeat(200));
 });
 
@@ -570,7 +573,7 @@ test("CC12: self-agent が 30 秒以内に届けた本文（改行を空白に�
   s.clock.now += 1_000;
   await s.hookBody({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "1 行目 2 行目" });
   assert.equal(s.gateway.posts.length, 2);
-  assert.equal(s.gateway.posts[1]!.message.text, `${CC_PROMPT_MIRROR_LABEL}\n1 行目 2 行目`);
+  assert.equal(s.gateway.posts[1]!.message.text, `${MIRROR_LABEL}\n1 行目 2 行目`);
 });
 
 test("CC12: 先頭 200 字が同じなら届けたものとみなす（201 字目から違っても写さない）", async (t) => {
@@ -607,14 +610,14 @@ test("CC12: チャンネルの無いセッションの指示は写さない（�
 });
 
 test("ccPromptMirrorTexts: 2,000 字を超えたら字の境目で 2 通目に（エスケープを切らない）。「ほか n 字」が入らなければ次の通", () => {
-  const texts = ccPromptMirrorTexts("*".repeat(1000), 1005);
+  const texts = ccPromptMirrorTexts("*".repeat(1000), 1005, MIRROR_LABEL);
   assert.ok(texts.every((text) => [...text].length <= 2000));
   assert.equal(texts.length, 2);
   assert.ok(!texts[0]!.endsWith("\\") || texts[0]!.endsWith("\\*"));
-  assert.equal(texts.join("").replaceAll("\\*", "").replace(`${CC_PROMPT_MIRROR_LABEL}\n`, "").replace("\n（ほか 5 字）", ""), "");
+  assert.equal(texts.join("").replaceAll("\\*", "").replace(`${MIRROR_LABEL}\n`, "").replace("\n（ほか 5 字）", ""), "");
   assert.ok(texts.at(-1)!.endsWith("（ほか 5 字）"));
   // 改行以外の制御文字は空白
-  assert.equal(ccPromptMirrorTexts("a\u0007b\nc", 5)[0], `${CC_PROMPT_MIRROR_LABEL}\na b\nc`);
+  assert.equal(ccPromptMirrorTexts("a\u0007b\nc", 5, MIRROR_LABEL)[0], `${MIRROR_LABEL}\na b\nc`);
 });
 
 test("CC12・Q4: 再起動の前に保留していた要求の 1 通を書き換える（Q4 より前に #system に出したものも）。Web の会話はチャンネルのものだけ", async (t) => {
@@ -677,7 +680,7 @@ test("Web の会話（CC14）: チャンネルに出した許可の要求とそ�
       ["notice", "system", "許可の要求（Bash）: 拒否（Web）", GUILD, "default"],
       ["notice", "system", "許可を待っています: Bash\nls", GUILD, "default"],
       ["notice", "system", "許可の要求（Bash）: 許可（Discord）", GUILD, "default"],
-      ["owner", "system", `${CC_PROMPT_MIRROR_LABEL}\n**太字** のまま`, GUILD, "default"],
+      ["owner", "system", `${ccPromptMirrorLabel(new Date(s.clock.now), "Asia/Tokyo")}\n**太字** のまま`, GUILD, "default"],
     ],
   );
   // ほかのセッションの要求（作ったチャンネル）は、そのチャンネルの会話に書く

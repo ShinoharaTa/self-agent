@@ -125,7 +125,7 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
   const postsTimers = fakeTimers();
   const ensure = { calls: [] as Array<{ sessionId: string; origin: CcChannelOrigin }>, fails: false, made: 0 };
   const posts = new CcChannelPosts({
-    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, ccPermissionHoldSec: opts.holdSec ?? 300, ccQuestionHoldSec: 900, ccNotify: opts.notify !== false },
+    cfg: { ownerUserId: OWNER, workspaceDir: WORKSPACE, timeZone: "Asia/Tokyo", ccPermissionHoldSec: opts.holdSec ?? 300, ccQuestionHoldSec: 900, ccNotify: opts.notify !== false },
     channels,
     ensureChannel: () => ({
       ensureFor: async (sessionId: string, origin: CcChannelOrigin): Promise<CcOpenResult> => {
