@@ -262,10 +262,9 @@ test("Enter の後に入力欄に残っていれば unconfirmed（送信を確�
   assert.deepEqual([sends.get(result.send.id)?.state, sends.get(result.send.id)?.lastPaneState], ["unconfirmed", "enter_unconfirmed"]);
 });
 
-test("claude でないペイン（祖先のペインがシェル）・tmux の外・tmux のサーバーが無いなら積まず、絶対に送らない", async (t) => {
+test("tmux の外・tmux のサーバーが無いなら積まず、絶対に送らない", async (t) => {
   const { env, sender, sends, actions, snapshot } = setup(t);
   env.panes = [paneLine("%1", 400, "bash"), paneLine("%2", 410)].join("\n");
-  assert.deepEqual(await sender.submit({ sessionId: S1, text: "x", origin: "web" }), { ok: false, reason: "not_claude" });
   snapshot.sessions.push(view("33333333-3333-4333-8333-333333333333", 900));
   assert.deepEqual(await sender.submit({ sessionId: "33333333-3333-4333-8333-333333333333", text: "x", origin: "web" }), {
     ok: false,
@@ -281,7 +280,23 @@ test("claude でないペイン（祖先のペインがシェル）・tmux の�
   assert.deepEqual(actions(), []);
 });
 
-test("積んだ後に送り先が claude でなくなった・一覧から消えたら failed にして送らない", async (t) => {
+test("前面が claude でないペイン（コマンド実行中）には積んで待ち、前面が claude に戻って入力待ちになったら貼る（#284）", async (t) => {
+  const { env, sender, sends, actions } = setup(t);
+  env.panes = [paneLine("%1", 400, "bash"), paneLine("%2", 410)].join("\n");
+  const result = await sender.submit({ sessionId: S1, text: "後で", origin: "web" });
+  assert.ok(result.ok);
+  await sender.idle();
+  assert.deepEqual([sends.get(result.send.id)?.state, sends.get(result.send.id)?.lastPaneState], ["queued", "not_claude"]);
+  assert.deepEqual(actions(), []);
+  env.panes = [paneLine("%1", 400), paneLine("%2", 410)].join("\n");
+  env.screens.pasted = shown("後で");
+  await sender.kick();
+  await sender.idle();
+  assert.equal(sends.get(result.send.id)?.state, "delivered");
+  assert.ok(actions().length > 0);
+});
+
+test("積んだ後に送り先が一覧から消えたら failed にして送らない（前面が claude でないだけなら待つ）", async (t) => {
   const { env, sender, sends, actions, snapshot } = setup(t);
   env.screens.before = BUSY;
   const first = await sender.submit({ sessionId: S1, text: "a", origin: "web" });
@@ -292,7 +307,7 @@ test("積んだ後に送り先が claude でなくなった・一覧から消え
   env.panes = [paneLine("%1", 400, "bash"), paneLine("%2", 410)].join("\n");
   snapshot.sessions.splice(1, 1);
   await sender.kick();
-  assert.deepEqual([sends.get(first.send.id)?.state, sends.get(first.send.id)?.lastPaneState], ["failed", "not_claude"]);
+  assert.deepEqual([sends.get(first.send.id)?.state, sends.get(first.send.id)?.lastPaneState], ["queued", "not_claude"]);
   assert.deepEqual([sends.get(second.send.id)?.state, sends.get(second.send.id)?.lastPaneState], ["failed", "gone"]);
   assert.deepEqual(actions(), []);
 });

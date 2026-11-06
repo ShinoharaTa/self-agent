@@ -506,10 +506,12 @@ export class CcSender {
       sends.noteAttempt(id, probe.reason);
       return;
     }
-    if (probe.state === "gone" || probe.state === "not_claude") {
+    if (probe.state === "gone") {
       this.fail(id, probe.state);
       return;
     }
+    // not_claude（前面が claude でない）は、pid のたどりで claude が生きていると分かっているので作業中と同じく待つ（#284）。
+    // 貼るのは idle（前面が claude で入力待ち）のときだけ
     if (probe.state !== "idle") {
       sends.noteAttempt(id, probe.state);
       if (probe.state === "dialog" && this.deps.channels !== undefined) {
