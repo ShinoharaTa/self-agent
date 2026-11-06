@@ -23,6 +23,8 @@ import {
   resolvedMessageByOrigin,
 } from "./agent/permission-bridge.ts";
 import { createProjectProfile } from "./agent/project-profile.ts";
+import { checkSharedLinks } from "./agent/unify-setup-check.ts";
+import type { ProjectSessionGate } from "./app/session-ops.ts";
 import { personaSystemPrompts } from "./agent/system-prompt.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
@@ -298,11 +300,18 @@ const projectRunner: AgentRunner | undefined = config.cc
         cfg: config,
         createMcpServer,
         // 橋がまだ無ければ（連携が動いていない）すべて拒否する
-        canUseTool: (context, sessionId, runSignal) => projectPermissionBridge?.(context, sessionId, runSignal) ?? denyAllPermissions,
+        canUseTool: (context, sessionId, run) => projectPermissionBridge?.(context, sessionId, run) ?? denyAllPermissions,
         log,
       }),
     )
   : undefined;
+// プロジェクトのセッションの共有の link（docs/plan/unify.md §5.3・§6.1 の 8）。CLAUDE_CONFIG_DIR の skills・agents が ~/.claude への symlink かを起動時に 1 回確かめ、
+// 済んでいなければ log 1 行で、/new project:・POST /api/sessions の projectDir を断る（既にあるプロジェクトのセッションのターンは動かす）
+const unifyReady = config.cc ? checkSharedLinks(config.claudeConfigDir, homedir()).ok : false;
+if (config.cc && !unifyReady) log("プロジェクトのセッションの設定が済んでいません（npm run unify-setup -- --print）");
+// /new の project と POST /api/sessions の projectDir の検証（SELF_AGENT_CC=1 のときだけ。プロジェクトの runner と同じ条件）
+const projectSessions: ProjectSessionGate | undefined =
+  projectRunner === undefined ? undefined : { places: ccPlacesOf(config, homedir()), ready: () => unifyReady };
 // 足した人格の runner: システムプロンプトはその人格のもの、model・effort はその人格の設定（無ければ既定の人格と同じ）。
 // codex のエンジンはまだ無いので、codex の人格も既定の人格の Claude の model・effort で動かす（usage のエンジンは claude）
 if (config.personas.some((persona) => persona.engine === "codex")) {
@@ -495,6 +504,8 @@ const commands = createCommands({
   ...history,
   // /cc（SELF_AGENT_CC=1 のときだけ登録する。チャンネルの操作は下で作る）
   ...(config.cc ? { ccChannels: () => ccChannels } : {}),
+  // /new の project（SELF_AGENT_CC=1 のときだけ）
+  ...(projectSessions === undefined ? {} : { projectSessions }),
   log,
 });
 // GitHub の通知の [対応]（下の Claude Code の配線の後で作る。ボタンは押されたときに読む）
@@ -887,7 +898,13 @@ if (
     log,
   });
   ccStatusOf = () =>
-    ccStatus({ panes, hookListening: () => hookServer.address() !== undefined, store: ccSessions, permissions: ccPermissionStore });
+    ccStatus({
+      panes,
+      hookListening: () => hookServer.address() !== undefined,
+      store: ccSessions,
+      permissions: ccPermissionStore,
+      unifyReady: () => unifyReady,
+    });
   // 確認は頼んだチャンネルに、その持ち主の Bot で投稿する
   ccTools = createCcTools({
     cfg: config,
@@ -1163,6 +1180,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         projects,
         projectsDir,
         channelName: webChannelName,
+        // 新しいセッションのプロジェクトの選択肢（SELF_AGENT_CC によらない）
+        workspace: ccPlacesOf(config, homedir()),
       }),
       // セッションの操作は Discord のコマンドと同じ session-ops.ts を通す。チャンネルを作るのは既定の人格の Bot（/new と同じキュー）、
       // /close の確認と /renew の結果は持ち主の Bot で Discord にも投稿する
@@ -1184,6 +1203,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         projectsDir,
         inboxRotator,
         history: historyStore,
+        ...(projectSessions === undefined ? {} : { projectSessions }),
         log,
       }),
     ],

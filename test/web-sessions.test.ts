@@ -1,6 +1,8 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, realpathSync } from "node:fs";
 import { request } from "node:http";
+import { join } from "node:path";
 import type { AgentRunner, RunInput, RunResult } from "../src/agent/runner.ts";
 import { createSessionToolHandlers, type SessionReportArgs } from "../src/agent/tools.ts";
 import { createChannelResolver } from "../src/app/access.ts";
@@ -8,7 +10,14 @@ import { CLOSE_PROMPT, closedText, confirmButtons, confirmText, SUMMARY_FAILURE_
 import type { RotateNowResult } from "../src/app/inbox-rotate.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
-import { confirmClose, NO_CONVERSATION_REPLY, WAITED_REPLY, CONTINUED_TEXT, welcomeText } from "../src/app/session-ops.ts";
+import {
+  confirmClose,
+  NO_CONVERSATION_REPLY,
+  type ProjectSessionGate,
+  WAITED_REPLY,
+  CONTINUED_TEXT,
+  welcomeText,
+} from "../src/app/session-ops.ts";
 import { renewedText } from "../src/app/session-renew.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import type { PersonaConfig } from "../src/config.ts";
@@ -97,7 +106,11 @@ async function until(condition: () => boolean): Promise<void> {
  * /setup 済みのサーバー 111（#inbox 100・#tasks 101・mika の #<NAME> 102・進行中カテゴリ 500）と、許可しているが /setup 前の 222。
  * セッション 200（進行中）・201（完了）・202（削除済み）・203（許可していないサーバー）・204（mika の進行中）。会話のターンは steps の順
  */
-async function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Array<RunResult | Error | ((input: RunInput) => RunResult)> = () => []) {
+async function setup(
+  t: TestContext,
+  steps: (topicSessions: TopicSessionStore) => Array<RunResult | Error | ((input: RunInput) => RunResult)> = () => [],
+  options: { projectSessions?: ProjectSessionGate } = {},
+) {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
   const { guildSettings, topicSessions, sessions, seeds, inboxSummaries, memories, usage, projects, tasks, history } = stores;
@@ -166,6 +179,7 @@ async function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) =
         },
       },
       history,
+      ...(options.projectSessions === undefined ? {} : { projectSessions: options.projectSessions }),
       log,
     }),
   ];
@@ -239,6 +253,48 @@ test("POST /api/sessions: サーバー・人格・題名の形が違えば 400�
   // 100 字ちょうどは作る
   env.connected.value = true;
   assert.equal((await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "あ".repeat(100) })).status, 201);
+});
+
+test("POST /api/sessions: projectDir はプロジェクトのセッション（201・project_dir と default・topic と最初の投稿）。使えない名前は 400 invalid_project、人格と同時は 400 persona_with_project、連携が無効は 409 cc_disabled、共有の link が済んでいなければ 503 not_set_up", async (t) => {
+  const workspaceDir = realpathSync(tempDir(t));
+  mkdirSync(join(workspaceDir, "alpha"));
+  const ready = { value: true };
+  const env = await setup(t, () => [], { projectSessions: { places: { workspaceDir, protectedDirs: [] }, ready: () => ready.value } });
+  const res = await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "作業", projectDir: "alpha" });
+  assert.deepEqual(res, { status: 201, json: { channelId: "9001", link: `https://discord.com/channels/${GUILD}/9001` } });
+  assert.deepEqual(env.gateway.callsOf("createTextChannel"), [
+    { method: "createTextChannel", guildId: GUILD, options: { name: "作業", parentId: "500", topic: "作業（alpha）" } },
+  ]);
+  assert.deepEqual(env.gateway.sent, [{ channelId: "9001", text: welcomeText("作業", "alpha"), replyToId: undefined }]);
+  assert.ok(welcomeText("作業", "alpha").includes("プロジェクト: alpha。このチャンネルの発言は Claude Code と同じ装備"));
+  assert.deepEqual(env.topicSessions.projectDirOf("9001"), { projectDir: "alpha", permissionMode: "default" });
+  // log にプロジェクトの名前は出さない
+  assert.deepEqual(env.logs, [`Web からセッションを作りました（guild=${GUILD}、プロジェクトのセッション）`]);
+  // 既定の人格を明示するのは可
+  assert.equal((await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "b", persona: "default", projectDir: "alpha" })).status, 201);
+  const cases: Array<[unknown, Response]> = [
+    [{ guildId: GUILD, title: "a", projectDir: 1 }, { status: 400, json: { error: "bad_request" } }],
+    [{ guildId: GUILD, title: "a", projectDir: "nothing" }, { status: 400, json: { error: "invalid_project" } }],
+    [{ guildId: GUILD, title: "a", projectDir: "../alpha" }, { status: 400, json: { error: "invalid_project" } }],
+    [{ guildId: GUILD, title: "a", projectDir: "alpha", persona: "mika" }, { status: 400, json: { error: "persona_with_project" } }],
+  ];
+  for (const [body, expected] of cases) assert.deepEqual(await call(env.server, "POST", "/api/sessions", body), expected, JSON.stringify(body));
+  ready.value = false;
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "a", projectDir: "alpha" }), {
+    status: 503,
+    json: { error: "not_set_up" },
+  });
+  // 共有の link が無くても軽いモードのセッションは作れる
+  assert.equal((await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "c" })).status, 201);
+  assert.equal(env.topicSessions.projectDirOf("9003"), undefined);
+  assert.equal(env.gateway.callsOf("createTextChannel").length, 3);
+
+  const disabled = await setup(t);
+  assert.deepEqual(await call(disabled.server, "POST", "/api/sessions", { guildId: GUILD, title: "a", projectDir: "alpha" }), {
+    status: 409,
+    json: { error: "cc_disabled" },
+  });
+  assert.deepEqual(disabled.gateway.callsOf("createTextChannel"), []);
 });
 
 test("POST /wait・/continue: 待ち ⇄ 進行中に移して 200 { state } と知らせの行。既にその状態なら 200 で何もしない。無い・よそのサーバーは 404、閉じていれば 409", async (t) => {

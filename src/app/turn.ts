@@ -1,5 +1,5 @@
 // 1 チャンネルの 1 ターン（発言・/close 共通）。usage の記録とログ、SDK セッションの保存、記憶と seed の付与、resume 失敗からの復旧
-import type { AgentRunner, ProgressStep, RunContext, RunImage, RunResult } from "../agent/runner.ts";
+import type { AgentRunner, ProgressStep, RunContext, RunImage, RunInput, RunResult } from "../agent/runner.ts";
 import { DEFAULT_PERSONA_ID } from "../config.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { InboxSummary, InboxSummaryStore, SummaryChannelKind } from "../store/inbox-summaries.ts";
@@ -91,6 +91,8 @@ export type ChannelTurn = {
   signal?: AbortSignal;
   /** 途中経過（セッションのチャンネルの発言・[続ける] のターンだけ）。resume 失敗のやり直しにも渡す */
   onProgress?: (step: ProgressStep) => void;
+  /** 許可を待っている要求の表示（プロジェクトのセッションの発言・[続ける] のターンだけ）。resume 失敗のやり直しにも渡す */
+  onPermissionWaiting?: RunInput["onPermissionWaiting"];
   /** 予約した依頼（リマインドの prompt）のターン。run の context に入れる */
   scheduled?: true;
   /** /close のターン。run の context に入れる（Bash を使わせない） */
@@ -243,6 +245,7 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
       allowedUrls: turn.allowedUrls,
       ...(turn.signal === undefined ? {} : { signal: turn.signal }),
       ...(turn.onProgress === undefined ? {} : { onProgress: turn.onProgress }),
+      ...(turn.onPermissionWaiting === undefined ? {} : { onPermissionWaiting: turn.onPermissionWaiting }),
     });
     recordTurnUsage(deps, key, usageKind, result, persona);
     if (result.ok) {

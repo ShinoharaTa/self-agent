@@ -1,6 +1,6 @@
 // 途中経過のメッセージ（「作業中…（m 分 s 秒・ツール n 回）」+ 直近の手順と [中断]）。セッションのチャンネルのターン（handler.ts）と
 // 作業ジョブ（jobs/orchestrator.ts）で共通。送信先・ボタン・最初の 1 通を出すまでの遅れは呼び出し側が決める
-import type { ProgressStep } from "../agent/runner.ts";
+import type { PermissionWaiting, ProgressStep } from "../agent/runner.ts";
 import type { ButtonDef, OutgoingMessage } from "../discord/gateway.ts";
 
 /** 途中経過のメッセージを出した後、表示が変わっていれば書き換える間隔 */
@@ -12,10 +12,20 @@ export function formatElapsed(ms: number): string {
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }
 
-/** 途中経過のメッセージの本文。直近の手順がまだ無ければ 2 行目は付けない */
-export function progressText(elapsedMs: number, toolCalls: number, label: string | undefined): string {
+/** 許可を待っている間の 1 行（手順の label と同じく、ツールの引数・パスは出さない） */
+export function permissionWaitingLine(waiting: Pick<PermissionWaiting, "toolName" | "displayName">): string {
+  return `許可を待っています: ${waiting.displayName ?? waiting.toolName}`;
+}
+
+/** 途中経過のメッセージの本文。直近の手順がまだ無ければ 2 行目は付けない。許可を待っていればその 1 行を最後に足す */
+export function progressText(
+  elapsedMs: number,
+  toolCalls: number,
+  label: string | undefined,
+  waiting?: Pick<PermissionWaiting, "toolName" | "displayName">,
+): string {
   const head = `作業中…（${formatElapsed(elapsedMs)}・ツール ${toolCalls} 回）`;
-  return label === undefined ? head : `${head}\n${label}`;
+  return [head, ...(label === undefined ? [] : [label]), ...(waiting === undefined ? [] : [permissionWaitingLine(waiting)])].join("\n");
 }
 
 /** ターンの終わり方（途中経過の最後の書き換えに使う）。failed は timeout・例外など、それ以外の失敗 */
@@ -76,6 +86,8 @@ export type ProgressOptions = {
 export type Progress = {
   /** 手順（tool_use）ごとに呼ぶ */
   onProgress: (step: ProgressStep) => void;
+  /** 許可を待ち始めた・待ち終えた（RunInput.onPermissionWaiting）。出したメッセージがあれば間隔を待たずに書き換える */
+  onPermissionWaiting: (waiting: PermissionWaiting | undefined) => void;
   /** タイマーを止め、送っていれば終わり方（progressEndText）に書き換えてボタンを外す。送信・書き換えが終わるまで待つ */
   finish: (outcome: TurnOutcome) => Promise<void>;
 };
@@ -95,6 +107,7 @@ export function startProgress(options: ProgressOptions): Progress {
   const startedAt = now().getTime();
   let toolCalls = 0;
   let label: string | undefined;
+  let waiting: PermissionWaiting | undefined;
   let messageId: string | undefined = options.messageId;
   let shown: string | undefined;
   let finished = false;
@@ -107,7 +120,7 @@ export function startProgress(options: ProgressOptions): Progress {
   const update = (): void => {
     enqueue(async () => {
       if (finished || messageId === undefined) return;
-      const text = progressText(elapsed(), toolCalls, label);
+      const text = progressText(elapsed(), toolCalls, label, waiting);
       if (text === shown) return;
       try {
         await edit(messageId, { text });
@@ -120,7 +133,7 @@ export function startProgress(options: ProgressOptions): Progress {
   const cancelDelay = timers.after(() => {
     enqueue(async () => {
       if (finished) return;
-      const text = progressText(elapsed(), toolCalls, label);
+      const text = progressText(elapsed(), toolCalls, label, waiting);
       const message: OutgoingMessage = { text, components: [{ kind: "buttons", buttons: [...buttons] }] };
       try {
         if (messageId === undefined) messageId = await send(message);
@@ -137,6 +150,10 @@ export function startProgress(options: ProgressOptions): Progress {
     onProgress: (step) => {
       toolCalls++;
       label = step.label;
+    },
+    onPermissionWaiting: (next) => {
+      waiting = next;
+      update();
     },
     finish: async (outcome) => {
       finished = true;

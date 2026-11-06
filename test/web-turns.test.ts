@@ -214,7 +214,7 @@ test("POST /messages: CSRF の 3 条件を通らなければ 403 で送らない
   assert.equal(handler.submits.length, 0);
 });
 
-test("GET /api/running: runningTurns に経過時間（elapsedMs）を足して返す", async (t) => {
+test("GET /api/running: runningTurns に経過時間（elapsedMs）を足して返す（waitingPermission も）", async (t) => {
   const { server, handler } = await setup(t);
   assert.deepEqual(await call(server, "GET", "/api/running"), { status: 200, json: { turns: [] } });
   handler.running = [
@@ -228,6 +228,8 @@ test("GET /api/running: runningTurns に経過時間（elapsedMs）を足して�
       steps: ["書いています", "読んでいます"],
       source: "web",
       abortable: true,
+      // 許可を待っている要求（プロジェクトのセッション。U1b）もそのまま出す
+      waitingPermission: { toolName: "Bash", displayName: "Run command", since: NOW.toISOString() },
     },
   ];
   const { status, json } = await call(server, "GET", "/api/running");

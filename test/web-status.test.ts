@@ -175,9 +175,10 @@ test("/api/status: cc は SELF_AGENT_CC が無効なら無効の形、有効な�
     tmux: null,
     multilineOk: null,
     pendingPermissions: 0,
+    unifyReady: false,
   });
   const enabled = await statusSetup(t, {
-    cc: () => ({ enabled: true, hookPort: true, tmux: "no_server", multilineOk: true, pendingPermissions: 0 }),
+    cc: () => ({ enabled: true, hookPort: true, tmux: "no_server", multilineOk: true, pendingPermissions: 0, unifyReady: true }),
   });
   assert.deepEqual(((await getJson(enabled.server, "/api/status")).json as Record<string, unknown>).cc, {
     enabled: true,
@@ -185,6 +186,7 @@ test("/api/status: cc は SELF_AGENT_CC が無効なら無効の形、有効な�
     tmux: "no_server",
     multilineOk: true,
     pendingPermissions: 0,
+    unifyReady: true,
   });
 });
 

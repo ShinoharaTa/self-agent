@@ -882,7 +882,8 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
-.badge-persona {
+.badge-persona,
+.badge-project {
   flex: none;
 }
 
@@ -1348,6 +1349,15 @@ kbd {
 .run-line > [data-run-progress] {
   color: var(--text);
   font-variant-numeric: tabular-nums;
+}
+
+/* 許可を待っている間の 1 行（プロジェクトのセッション）。手順の頭に揃え、本文の色で */
+.run-waiting {
+  margin-top: var(--space-1);
+  padding-left: var(--space-6);
+  color: var(--text);
+  font-size: var(--font-sm);
+  overflow-wrap: anywhere;
 }
 
 /* 直近の手順は二次の文字で（最後の今の手順だけ本文の色）。--text-muted は Bot の吹き出しの上に置かない（GUIDELINES §2.2）。ラベルは相対パスを含むので狭い幅で砕く */

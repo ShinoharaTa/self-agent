@@ -1,8 +1,10 @@
 // セッションの操作（作る・待ちにする・進行中に戻す・閉じる・会話を新しくする）の本体。Discord のコマンド・ボタン（commands/）と Web UI が共有する。
 // 応答（interaction への返信・保留）は呼び出し側が行い、ここは結果の種類を返す。保留が要る操作は、受け付けた（断らない）と決まった時点で onAccepted を呼ぶ
 import { removeNodeModules } from "../agent/disk.ts";
+import { type CcPlaces, projectDir as verifiedProjectDir } from "../cc/starter.ts";
 import { DEFAULT_PERSONA_ID, type PersonaConfig } from "../config.ts";
 import { normalizeChannelName } from "../discord/channel-name.ts";
+import { escapeDiscordText } from "../discord/escape.ts";
 import { type HistoryStore, recordHistory } from "../store/history.ts";
 import type { SummaryChannelKind } from "../store/inbox-summaries.ts";
 import type { CloseDraft, TopicSession, TopicSessionOrigin } from "../store/topic-sessions.ts";
@@ -57,13 +59,37 @@ export function sessionChannelName(title: string, owner?: SessionOwner): string 
   return toChannelName(`${normalizeChannelName(owner.name)}-${toChannelName(title)}`);
 }
 
-/** セッションのチャンネルの topic。既定の人格は題名だけ（今のまま）、足した人格は題名に表示名を添える */
-export function sessionTopic(title: string, owner?: SessionOwner): string {
-  return owner === undefined ? title : `${title}（${owner.name}）`;
+/**
+ * セッションのチャンネルの topic。既定の人格は題名だけ（今のまま）、足した人格は題名に表示名を添える。
+ * プロジェクトのセッション（既定の人格だけ）は題名にプロジェクトの名前を添える
+ */
+export function sessionTopic(title: string, owner?: SessionOwner, projectDir?: string): string {
+  if (owner !== undefined) return `${title}（${owner.name}）`;
+  return projectDir === undefined ? title : `${title}（${projectDir}）`;
 }
 
-export function welcomeText(title: string): string {
-  return `セッション「${title}」を始めました。ここで話しかけてください。`;
+/** 最初の投稿。プロジェクトのセッションならその装備と許可の答え方の 1 行を足す（名前の `_` などの Markdown は無効にする） */
+export function welcomeText(title: string, projectDir?: string): string {
+  const head = `セッション「${title}」を始めました。ここで話しかけてください。`;
+  return projectDir === undefined
+    ? head
+    : `${head}\nプロジェクト: ${escapeDiscordText(projectDir)}。このチャンネルの発言は Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はここのボタンか Web で答えます`;
+}
+
+/**
+ * プロジェクトのセッションを作れるか（docs/plan/unify.md §5.2・§6.1 の 7・8。SELF_AGENT_CC=1 のときだけ main が作る）。
+ * places は cc/starter.ts の ccPlacesOf、ready は起動時の共有の link の確認（agent/unify-setup-check.ts）が通ったか
+ */
+export type ProjectSessionGate = { places: CcPlaces; ready: () => boolean };
+
+/** プロジェクトの名前を確かめた結果。not_set_up は共有の link が済んでいない、invalid_project は cc/starter.ts の projectDir を通らない */
+export type ProjectSessionCheck = { ok: true; projectDir: string } | { ok: false; reason: "not_set_up" | "invalid_project" };
+
+/** /new の project と POST /api/sessions の projectDir の検証（直下だけ。1 つ下（worktree）は U5） */
+export function checkSessionProject(name: string, gate: ProjectSessionGate): ProjectSessionCheck {
+  if (!gate.ready()) return { ok: false, reason: "not_set_up" };
+  if (verifiedProjectDir(name, gate.places) === undefined) return { ok: false, reason: "invalid_project" };
+  return { ok: true, projectDir: name };
 }
 
 export type NewSessionResult = { result: "not_set_up" } | { result: "created"; channelId: string };
@@ -79,6 +105,7 @@ export async function createTopicSession(
   deps: Pick<NewSessionDeps, "gateway" | "guildSettings" | "topicSessions" | "log">,
   origin: TopicSessionOrigin = "command",
   owner?: SessionOwner,
+  projectDir?: string,
 ): Promise<NewSessionResult> {
   const { gateway, guildSettings, topicSessions, log } = deps;
   if (
@@ -92,10 +119,19 @@ export async function createTopicSession(
   const channelId = await gateway.createTextChannel(guildId, {
     name: sessionChannelName(title, owner),
     parentId: categoryId,
-    topic: sessionTopic(title, owner),
+    topic: sessionTopic(title, owner, projectDir),
   });
   try {
-    topicSessions.create({ channelId, guildId, title, categoryId, origin, ...(owner === undefined ? {} : { persona: owner.id }) });
+    // プロジェクトのセッションの project_dir・permission_mode（default 固定。docs/plan/unify.md §5.1）も同じ INSERT で書く
+    topicSessions.create({
+      channelId,
+      guildId,
+      title,
+      categoryId,
+      origin,
+      ...(owner === undefined ? {} : { persona: owner.id }),
+      ...(projectDir === undefined ? {} : { projectDir, permissionMode: "default" as const }),
+    });
   } catch (error) {
     // チャンネルだけが Discord に残る。手で消せるよう、ログにチャンネル ID を出す（ログ方針の例外）
     log(
@@ -111,7 +147,8 @@ export type OpenTopicSessionResult = { result: "empty_title" } | NewSessionResul
 /**
  * 題名からセッションを作る（/new・ホームパネルの [新しいセッション]・Web で共通）。
  * 空白だけの題名は作らない（empty_title。onAccepted は呼ばない）→ onAccepted → /setup と同じキューで作成 → 最初の投稿（チャンネルの持ち主の Bot。失敗は log だけ）。
- * via は log の主語（「/new で」など）。owner は作る人格（省略は既定の人格）
+ * via は log の主語（「/new で」など）。owner は作る人格（省略は既定の人格）。projectDir はプロジェクトのセッションのプロジェクト
+ * （checkSessionProject を通った名前。owner とは同時に渡さない）
  */
 export async function openTopicSession(
   guildId: string,
@@ -120,6 +157,7 @@ export async function openTopicSession(
   deps: Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log">,
   via: string,
   onAccepted?: () => Promise<void>,
+  projectDir?: string,
 ): Promise<OpenTopicSessionResult> {
   const { gateway, personas, queue, log } = deps;
   // 空白だけの題名は Discord の min_length・必須の検証を通ってしまうので、ここで弾く
@@ -128,12 +166,17 @@ export async function openTopicSession(
   // Discord への作成が複数回ありうるので、呼び出し側はここで保留する
   await onAccepted?.();
   // 同時に走ると空きの数え方がずれるので、/setup と同じ key で 1 つずつ実行する
-  const result = await queue.run(layoutQueueKey(guildId), () => createTopicSession(guildId, title, deps, "command", owner));
+  const result = await queue.run(layoutQueueKey(guildId), () =>
+    createTopicSession(guildId, title, deps, "command", owner, projectDir),
+  );
   if (result.result === "not_set_up") return result;
-  log(`${via}セッションを作りました（guild=${guildId}${owner === undefined ? "" : `、人格 ${owner.id}`}）`);
+  // プロジェクトの名前は log に出さない
+  log(
+    `${via}セッションを作りました（guild=${guildId}${owner === undefined ? "" : `、人格 ${owner.id}`}${projectDir === undefined ? "" : "、プロジェクトのセッション"}）`,
+  );
   try {
     // 最初の投稿はチャンネルの持ち主の Bot が行う（足した人格のセッションはその人格の Bot）
-    await (personas?.gatewayFor(result.channelId) ?? gateway).send(result.channelId, welcomeText(title));
+    await (personas?.gatewayFor(result.channelId) ?? gateway).send(result.channelId, welcomeText(title, projectDir));
   } catch (error) {
     // チャンネルと DB の行はできているので、失敗の返信にはしない
     log(`セッションの最初の投稿に失敗しました: ${describeError(error)}`);

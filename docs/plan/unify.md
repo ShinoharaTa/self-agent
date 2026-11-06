@@ -13,7 +13,7 @@
 結論:
 1. **「使い慣れたエージェント」は Claude Code の方**なので、合わせる向きは **self-agent → Claude Code**（案 A）。self-agent の SDK セッションに Claude Code と同じ装備（ユーザー設定・skills・CLAUDE.md・サブエージェント・sandbox 無しの Bash・cwd = workspace のプロジェクト）を与える。
 2. ただし全チャンネルを変えない。**新しい種類のセッション「プロジェクトのセッション」**（cwd が `SELF_AGENT_WORKSPACE_DIR` の直下のプロジェクト）だけを Claude Code の装備で動かし、#inbox・#tasks と今までのセッション（「軽いモード」）は今のまま残す（§4.2）。理由: #inbox は短く速く答える場所で、CLAUDE.md・skills の context の分だけ重くなる。予約した依頼（オーナー不在）に sandbox 無しの Bash を持たせない。プロンプトキャッシュの規則は軽いモードでそのまま守る。
-3. `CLAUDE_CONFIG_DIR` は `~/.claude` と**共有しない**。Bot 専用のディレクトリに、`skills`・`agents`・`CLAUDE.md`・`rules`・`projects`（記録と自動メモリ）だけを symlink で**選択的に共有**し、`settings.json`（hooks・permissions）と `.credentials.json`・`sessions` は分ける（§5.3）。
+3. `CLAUDE_CONFIG_DIR` は `~/.claude` と**共有しない**。Bot 専用のディレクトリに、`skills`・`agents`・`CLAUDE.md`・`rules`・`projects`（記録と自動メモリ）だけを symlink で**選択的に共有**し（U1 では skills・agents だけ。CLAUDE.md・rules は link しない（§1.5）。projects は U3）、`settings.json`（hooks・permissions）と `.credentials.json`・`sessions` は分ける（§5.3）。
 4. 許可（Bash など）と質問（AskUserQuestion）は SDK の `canUseTool` で受け、**既存の Discord / Web の許可カード・質問カード（cc_permissions・channel-posts.ts・views.js）に流す**。新しい UI は作らない（§5.1）。
 5. 端末の Claude Code から self-agent の持ち物（タスク・リマインド・記憶・ナレッジ）を使う口（案 B）は、A の後に **127.0.0.1 の MCP（Streamable HTTP）** として足す（personas.md PR-E の設計を流用。§6 の U4）。順番は A → B（案 D）。
 6. リモコン（CC1〜CC14）は**残す**。端末・RC で起動したセッションを Discord から見る・送る用途は変わらない。プロジェクトのセッションは tmux の外で動く SDK セッションなので、リモコンの一覧には出ない（未確認。U0 で確かめる）。
@@ -161,7 +161,7 @@
 ### 5.3 CLAUDE_CONFIG_DIR を共有するか
 | | (i) `~/.claude` を共有 | (ii) 選択的共有（symlink）**推薦** | (iii) plugins |
 |---|---|---|---|
-| skills・agents・CLAUDE.md・rules | ◎ | ◎（`skills`・`agents`・`CLAUDE.md`・`rules` を link） | ○ skills・agents だけ（CLAUDE.md は別に要る） |
+| skills・agents・CLAUDE.md・rules | ◎ | ◎（U1 では `skills`・`agents` だけを link。CLAUDE.md・rules は link しない（`~/.claude/CLAUDE.md` は CONFIG_DIR によらず読まれる。§1.5）。projects は U3） | ○ skills・agents だけ（CLAUDE.md は別に要る） |
 | 自動メモリ・記録・端末からの `--resume` | ◎ | ◎（`projects` を link） | ✗ |
 | hooks（settings.json） | ✗ self-agent が自分の受け口に自分の事象を送る。PermissionRequest の http hook（timeout 905 秒）と `canUseTool` が二重に待つ | ◎ Bot の settings.json は別（hooks 無し） | ◎ |
 | permissions.allow・model・autoMode | △ 端末の設定がそのまま効く（model は Options が勝つ。未確認） | ○ 要るものだけ Bot の settings.json に写す | ○ |
@@ -230,7 +230,7 @@
 | 段 | 中身 | 届くもの | 主なリスク | 確かめ方 |
 |---|---|---|---|---|
 | **U0 確かめ** | `npm run unify-probe`（measure と同じ入口。Discord 無し）: Bot 専用の一時 `CLAUDE_CONFIG_DIR` に §5.3 の link を作り、self-agent のリポジトリを cwd に 2 ターン動かす。`InstructionsLoaded` hook で CLAUDE.md・skills が読まれたか、`canUseTool` が Bash と AskUserQuestion で呼ばれるか、記録の場所、`claude agents --json` に出るか、Bash の env のトークン、トークン数を表で出す | §1.4 の 6 つの答え（済。§1.5） | 無し（コードは probe だけ） | 実機の表。OAuth のトークンが要り、利用枠を使う |
-| **U1 プロジェクトのセッション（最小）** | `sessions.project_dir`・`permission_mode`（v40。`cc_permissions.origin` も）・profile（preset + append・settingSources・`tools` 省略・`disallowedTools: ['AskUserQuestion']`（質問は U2）・`canUseTool` → 許可カード（既存）・時間切れ deny・打ち切りの一時停止）・`/new project:`・Web のダイアログのセレクト・秘密の場所の拒否・unify-setup の `--print` と起動時の link の確認 | **「Discord から self-agent のリポジトリで skills 付きの Claude Code と同じ返事」** | 許可カードが多すぎて使えない（→ 未決 3 の既定）。turn の打ち切りと保留の相互作用。`always` が resume に効かない | 単体: 偽 queryFn で Options の形（settingSources・cwd・tools・systemPrompt）を固定、偽 gateway で canUseTool → カード → ボタン → PermissionResult を往復、時間切れ deny、軽いモードの Options が 1 バイトも変わらない（既存のテスト）。実機: self-agent のリポジトリで「CLAUDE.md の コマンド の節を要約して」「npm run check を実行して」（カードで許可）、端末の Claude Code の返事と比べる |
+| **U1 プロジェクトのセッション（最小）**（済（PR）。U1a・U1b） | `sessions.project_dir`・`permission_mode`（v40。`cc_permissions.origin` も）・profile（preset + append・settingSources・`tools` 省略・`disallowedTools: ['AskUserQuestion']`（質問は U2）・`canUseTool` → 許可カード（既存）・時間切れ deny・打ち切りの一時停止）・`/new project:`・Web のダイアログのセレクト・秘密の場所の拒否・unify-setup の `--print` と起動時の link の確認 | **「Discord から self-agent のリポジトリで skills 付きの Claude Code と同じ返事」** | 許可カードが多すぎて使えない（→ 未決 3 の既定）。turn の打ち切りと保留の相互作用。`always` が resume に効かない | 単体: 偽 queryFn で Options の形（settingSources・cwd・tools・systemPrompt）を固定、偽 gateway で canUseTool → カード → ボタン → PermissionResult を往復、時間切れ deny、軽いモードの Options が 1 バイトも変わらない（既存のテスト）。実機: self-agent のリポジトリで「CLAUDE.md の コマンド の節を要約して」「npm run check を実行して」（カードで許可）、端末の Claude Code の返事と比べる |
 | **U2 質問・モード** | AskUserQuestion を `canUseTool` → 質問カード（Q1〜Q5 の流用）・`/mode`・Web の見出しのセレクト・サブエージェントの途中経過（未決 2 の結果で `disallowedTools`） | 質問に Discord の選択肢で答える。モードの切り替え | headless の空答えの不具合（未確認 4） | 単体: `updatedInput` の形。実機: 「どちらにするか私に訊いて」で選択肢が出て答えが通る |
 | **U3 記憶と続き** | `projects` の link（自動メモリ有効・`CLAUDE_CODE_DISABLE_AUTO_MEMORY` を外す・`CLAUDE_CODE_PROJECT_DIR_NAME` をプロジェクトのセッションでは付けない）・端末からの `--resume` の案内（/sessions にセッション ID の末尾は出さず「端末で続ける: `claude --resume` の案内」を Web にだけ）・I2 の緩和（プロジェクト同士 2 まで）・トークンの計測で軽いモードを残すか決める材料 | 同じ記憶・同じ会話の続き | 同時 resume で記録が混ざる（案内に「Discord 側が動いている間は端末で開かない」） | 実機: Discord で 2 ターン → 端末で `--resume` → 続きを読める |
 | **U4 案 B（端末に self-agent の持ち物）** | 自前 MCP（task/kb/memory/reminder）を 127.0.0.1 の Streamable HTTP で出す（personas.md PR-E の設計。run ごとのトークンでなく、`~/.config/self-agent/env` の固定トークンを `bearer_token_env_var` で）。`~/.claude.json` への登録はオーナー（`unify-setup -- --print`） | 端末の Claude Code から「タスクに入れて」「来週の火曜に知らせて」 | MCP のトークンの置き場。self-agent が止まっていると端末のツールが失敗する（Claude Code は失敗を返事にするだけ） | 単体: HTTP の認証・形。実機: 端末で `task_list` |
@@ -249,7 +249,7 @@
 5. **Discord・Web の表示**: channel-posts.ts の `permissionNotice` をそのチャンネルに持ち主の Bot で投稿（`message_channel_id`・`message_id` を行に）。`cc:perm:*` のボタンは今の app/commands/cc.ts のまま（hold の answer を通るので変更なし）。Web: `/api/channels` の行に `permission`（routes/cc.ts の形）、chat.js は `ccPermissionCard` を会話の末尾に置く（cc のタブと同じ場所の決め方）。
 6. **打ち切りの一時停止**（U1b で）: sdk-runner.ts の timeout を `setTimeout` から「残り時間」の計算にし、bridge が `pause()`/`resume()` を呼ぶ。進行中の表示（progress.ts）に「許可を待っています: <displayName>」の行。[中断] は bridge の pending を deny してから abort。
 7. **作る口**: `/new` に任意の `project`（選択肢は `listProjects`。`SELF_AGENT_WORKSPACE_DIR` が無い・プロジェクトが 0 なら引数を出さない）。`openTopicSession` に `projectDir`。Web の「新しいセッション」ダイアログにセレクト（`GET /api/projects/workspace` を新設。`/api/cc/projects` と同じ中身で SELF_AGENT_CC によらない）。topic に `（<project_dir>）`。
-8. **unify-setup**: `npm run unify-setup -- --print` で `<claudeConfigDir>/{skills,agents,CLAUDE.md,rules}` への `ln -s` の行を出す（projects は U3）。main.ts の起動時に link の有無・向き（realpath が `~/.claude` の中）を確かめ、無ければ log 1 行と、プロジェクトのセッションの作成を「設定が済んでいません（unify-setup）」で断る。
+8. **unify-setup**: `npm run unify-setup -- --print` で `<claudeConfigDir>/{skills,agents,CLAUDE.md,rules}` への `ln -s` の行を出す（projects は U3。U1b では §1.5 のとおり `skills`・`agents` だけにした）。main.ts の起動時に link の有無・向き（realpath が `~/.claude` の中）を確かめ、無ければ log 1 行と、プロジェクトのセッションの作成を「設定が済んでいません（unify-setup）」で断る。
 9. **文書**: CLAUDE.md（概要・agent/・環境変数・プロンプトキャッシュの規則の例外）・REQUIREMENTS の決定事項 3 行・本書を `docs/plan/unify.md` に写す。
 
 ### 6.2 U1 の受け入れ条件（テストできる形）

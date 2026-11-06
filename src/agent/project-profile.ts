@@ -48,8 +48,12 @@ export type ProjectProfileDeps = {
   >;
   /** 自前の MCP サーバー（軽いモードと同じ tools.ts の createTaskMcpServer。run ごとに作る） */
   createMcpServer: (context?: RunContext) => McpSdkServerConfigWithInstance;
-  /** 許可の橋（permission-bridge.ts の createPermissionBridge）。run の context と session_id と打ち切り・中断の signal から canUseTool を作る */
-  canUseTool: (context: RunContext, sessionId: () => string | undefined, runSignal: AbortSignal) => CanUseTool;
+  /** 許可の橋（permission-bridge.ts の createPermissionBridge）。run の context と session_id から canUseTool を作る */
+  canUseTool: (
+    context: RunContext,
+    sessionId: () => string | undefined,
+    run: Pick<ProfileRunState, "waitPermission" | "signal">,
+  ) => CanUseTool;
   /** ~ の場所（既定は homedir()） */
   home?: string;
   /** 子プロセスに写す元の env（既定は process.env） */
@@ -218,7 +222,7 @@ export function createProjectProfile(deps: ProjectProfileDeps): RunnerProfile {
         ...(cfg.effort === undefined ? {} : { effort: cfg.effort }),
         maxTurns: cfg.sessionMaxTurns,
         env: projectChildEnv(cfg, source),
-        canUseTool: deps.canUseTool(context, run.sessionId, run.signal),
+        canUseTool: deps.canUseTool(context, run.sessionId, run),
       };
     },
     toolHooks: (hookLog, input) => {

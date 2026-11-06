@@ -17,6 +17,7 @@ import { type NewSessionDeps, sessionOwnerOf, TITLE_MAX_LENGTH } from "../../app
 import type { RenewDeps } from "../../app/commands/renew.ts";
 import type { OwnerPosts, PersonaRouter } from "../../app/personas.ts";
 import {
+  checkSessionProject,
   closable,
   closeSession,
   confirmClose,
@@ -24,6 +25,7 @@ import {
   NO_CONVERSATION_REPLY,
   NOT_RENEWABLE_REPLY,
   openTopicSession,
+  type ProjectSessionGate,
   RENEW_FAILURE_REPLY,
   RENEW_NOT_SET_UP_REPLY,
   removeClosedNodeModules,
@@ -62,6 +64,8 @@ export type SessionRouteDeps = Pick<ChannelRouteDeps, "cfg" | "resolveChannel"> 
     /** 持ち主の Bot での投稿（/close の確認と閉じた結果・/renew の結果） */
     ownerPosts: Pick<OwnerPosts, "send" | "sendMessage" | "editMessage">;
     history: Pick<HistoryStore, "add">;
+    /** プロジェクトのセッション（docs/plan/unify.md §5.2。SELF_AGENT_CC=1 のときだけ）。無ければ projectDir は 409 cc_disabled */
+    projectSessions?: ProjectSessionGate;
     log: (message: string) => void;
   };
 
@@ -168,12 +172,27 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
         if (personaId !== undefined && personaId !== DEFAULT_PERSONA_ID && owner === undefined) return BAD_REQUEST;
         const title = body?.title;
         if (typeof title !== "string") return BAD_REQUEST;
+        // プロジェクトのセッション（任意）。足した人格とは同時に作らない（既定の人格の default は可）
+        const projectName = body?.projectDir;
+        if (projectName !== undefined && typeof projectName !== "string") return BAD_REQUEST;
+        let projectDir: string | undefined;
+        if (projectName !== undefined) {
+          if (owner !== undefined) return { status: 400, json: { error: "persona_with_project" } };
+          if (deps.projectSessions === undefined) return { status: 409, json: { error: "cc_disabled" } };
+          const checked = checkSessionProject(projectName, deps.projectSessions);
+          if (!checked.ok) {
+            return checked.reason === "not_set_up"
+              ? { status: 503, json: { error: "not_set_up" } }
+              : { status: 400, json: { error: "invalid_project" } };
+          }
+          projectDir = checked.projectDir;
+        }
         // 制御文字（改行・タブ）は空白にしてから、Discord の /new と同じ字数（前後の空白を除いて数える）
         const normalized = normalizeTitle(title);
         if (normalized.length > TITLE_MAX_LENGTH) return { status: 400, json: { error: "too_long" } };
         // チャンネルを作るのは既定の人格の Bot
         if (!deps.defaultConnected()) return { status: 503, json: { error: "bot_disconnected" } };
-        const result = await openTopicSession(guildId, normalized, owner, deps, "Web から");
+        const result = await openTopicSession(guildId, normalized, owner, deps, "Web から", undefined, projectDir);
         switch (result.result) {
           case "empty_title":
             return { status: 400, json: { error: "empty_title" } };

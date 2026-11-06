@@ -1,4 +1,4 @@
-import type { AgentRunner, RunResult } from "../agent/runner.ts";
+import type { AgentRunner, PermissionWaiting, RunResult } from "../agent/runner.ts";
 import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { IncomingImage, IncomingMessage, OutgoingMessage } from "../discord/gateway.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
@@ -127,6 +127,8 @@ export type RunningTurn = {
   source: "discord" | "web";
   /** 中断できるか（セッションのチャンネルのターンだけ） */
   abortable: boolean;
+  /** 許可を待っている要求（プロジェクトのセッション。docs/plan/unify.md §5.1）。待っていなければ入らない。since は ISO */
+  waitingPermission?: { toolName: string; displayName?: string; since: string };
 };
 
 /** Web からの発言の結果 */
@@ -197,6 +199,8 @@ type RunningEntry = {
   steps: string[];
   source: "discord" | "web";
   kind: ChannelKind;
+  /** 許可を待っている要求（RunInput.onPermissionWaiting） */
+  waitingPermission?: PermissionWaiting;
 };
 
 /** owner の行の text（本文。画像があれば「（画像 n 枚）」を、本文が空ならそれだけ、あれば末尾に改行して足す） */
@@ -366,6 +370,12 @@ export function createHandler(deps: HandlerDeps): Handler {
             if (turn.steps.length > RUNNING_STEPS_MAX) turn.steps.shift();
             progress?.onProgress(step);
           };
+    // 許可を待っている要求（プロジェクトのセッション）は実行中のターンと途中経過に出す
+    const onPermissionWaiting = (waiting: PermissionWaiting | undefined): void => {
+      if (waiting === undefined) delete turn.waitingPermission;
+      else turn.waitingPermission = waiting;
+      progress?.onPermissionWaiting(waiting);
+    };
     const startedAt = now().getTime();
     let result: RunResult | undefined;
     try {
@@ -382,6 +392,8 @@ export function createHandler(deps: HandlerDeps): Handler {
         allowedUrls: extractUrls(request.content),
         ...(turn.controller === undefined ? {} : { signal: turn.controller.signal }),
         ...(onProgress === undefined ? {} : { onProgress }),
+        // 許可を待つのはプロジェクトのセッション（セッションのチャンネル）だけ
+        ...(turn.controller === undefined ? {} : { onPermissionWaiting }),
       });
     } finally {
       stopTyping();
@@ -595,6 +607,15 @@ export function createHandler(deps: HandlerDeps): Handler {
         steps: [...turn.steps],
         source: turn.source,
         abortable: turn.kind === "session",
+        ...(turn.waitingPermission === undefined
+          ? {}
+          : {
+              waitingPermission: {
+                toolName: turn.waitingPermission.toolName,
+                ...(turn.waitingPermission.displayName === undefined ? {} : { displayName: turn.waitingPermission.displayName }),
+                since: turn.waitingPermission.since.toISOString(),
+              },
+            }),
       })),
   };
 }

@@ -1,4 +1,5 @@
-// GET /api/projects・/api/projects/<slug>/files・/api/projects/<slug>/file?path=（docs/plan/web-ui.md §7.4）。作ったプロジェクトの一覧と、
+// GET /api/projects・/api/projects/<slug>/files・/api/projects/<slug>/file?path=（docs/plan/web-ui.md §7.4）と、
+// GET /api/projects/workspace（SELF_AGENT_WORKSPACE_DIR の直下のプロジェクト。プロジェクトのセッションの選択肢。docs/plan/unify.md §6.1 の 7）。作ったプロジェクトの一覧と、
 // ファイルの一覧・中身を読むだけ（agent/project-listing.ts）。slug は削除されていないプロジェクトのものだけ。配信が無効でも一覧は出す（url は null）。
 // ページは別のオリジン（静的サーバー）なので画面は埋め込まずリンクにする。log にパス・slug・中身は出さない
 import {
@@ -8,6 +9,7 @@ import {
   type ProjectListingHooks,
   type ReadProjectFileResult,
 } from "../../agent/project-listing.ts";
+import { type CcPlaces, listProjects } from "../../cc/starter.ts";
 import type { Config } from "../../config.ts";
 import type { Project, ProjectStore } from "../../store/projects.ts";
 import type { Route, RouteResult } from "../server.ts";
@@ -21,6 +23,11 @@ export type ProjectRouteDeps = {
   channelName: (channelId: string) => string | null;
   /** テスト用（project-listing.ts の beforeOpen） */
   hooks?: ProjectListingHooks;
+  /**
+   * SELF_AGENT_WORKSPACE_DIR の直下のプロジェクト（GET /api/projects/workspace。新しいセッションのプロジェクトの選択肢。docs/plan/unify.md §6.1 の 7）。
+   * cc/starter.ts の ccPlacesOf。SELF_AGENT_CC によらず出す
+   */
+  workspace: CcPlaces;
 };
 
 const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
@@ -54,6 +61,11 @@ export function projectRoutes(deps: ProjectRouteDeps): Route[] {
       method: "GET",
       pattern: /^\/api\/projects$/,
       handle: async () => ({ status: 200, json: { projects: projects.list().map(projectOf) } }),
+    },
+    {
+      method: "GET",
+      pattern: /^\/api\/projects\/workspace$/,
+      handle: async () => ({ status: 200, json: { projects: listProjects(deps.workspace).map((name) => ({ name })) } }),
     },
     {
       method: "GET",

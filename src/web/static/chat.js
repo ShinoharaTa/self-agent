@@ -549,7 +549,11 @@
     const last = run.steps.slice(-RECENT_STEPS);
     last.forEach((s, i) => recent.append(el("li", { class: i === last.length - 1 ? "is-current" : null, text: s })));
     if (run.steps.length === 0) recent.append(el("li", { text: "まだ手順はありません" }));
-    const body = [line, recent];
+    const body = [line];
+    // 許可を待っている間は、その 1 行（プロジェクトのセッション。答えは会話の許可のカードで）
+    const waiting = store.runningWaitingText(run);
+    if (waiting) body.push(el("div", { class: "run-waiting", text: waiting }));
+    body.push(recent);
     // 直近に収まらないときだけ、押して開くすべての手順
     if (run.steps.length > RECENT_STEPS) {
       const details = el("details", { class: "steps-plain", open: stepsOpened.has(run.channelId) }, [
