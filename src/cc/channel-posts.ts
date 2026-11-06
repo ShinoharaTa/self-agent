@@ -9,15 +9,16 @@
 //   押された操作（app/commands/cc-question.ts）が pendingQuestion・questionStepMessage で次の問に書き換え、終わったら答えの行にする。
 // - 判断待ち: 許可の要求以外が 60 秒続いたら、そのチャンネルに出す（チャンネルが無ければ SELF_AGENT_CC_NOTIFY が 1 のとき ensureFor（origin waiting）で
 //   作ってから）。1 時間の上限（CcWaitBudget）を超えた分は出さずに、チャンネルのあるセッションならそのチャンネルに 1 時間に 1 回だけ短い 1 行（メンションなし）。
-// - 端末・RC から打った指示の写し: UserPromptSubmit のうち self-agent が届けたものでないものを「（端末か RC から）」+ 本文の先頭
-//   CC_PROMPT_MIRROR_MAX_CHARS 字で出す（超えた分は「（ほか n 字）」）。self-agent が届けたもの = そのセッションの貼っている途中か直近
+// - 端末・RC から打った指示の写し: UserPromptSubmit のうち self-agent が届けたものでないものを「（端末か RC から HH:MM）」（時刻は timeZone の
+//   壁時計。hook を受けた時刻。#286）+ 本文の先頭 CC_PROMPT_MIRROR_MAX_CHARS 字で出す（超えた分は「（ほか n 字）」）。self-agent が届けたもの = そのセッションの貼っている途中か直近
 //   CC_PROMPT_MIRROR_WINDOW_MS に届けた送信で、貼ったときの形（singleLine の後）と prompt の両方の空白を 1 つにして先頭 200 字が同じもの。
 //   写しだけではチャンネルを作らず、写した投稿を返事の返信先にもしない。
 // Web の会話（CC14。§5.2。history を渡したときだけ）: 許可の要求とその結果・判断待ちを notice、端末・RC からの指示の写しを owner（source system・
-// 「（端末か RC から）」+ 本文）で書く（guild_id は cc_channels の行、persona は既定。本文は Discord のエスケープをしない文字のまま）。
+// 「（端末か RC から HH:MM）」+ 本文）で書く（guild_id は cc_channels の行、persona は既定。本文は Discord のエスケープをしない文字のまま）。
 // 終了の 1 行は cc/channels.ts の ended（ccEndedHandler）が出す。投稿は既定の人格の Bot。本文・名前・ディレクトリ・要約は hook から来たデータなので、
 // Markdown とメンションを無効にし（allowedMentions の parse: [] は Gateway の既定）、埋め込みを出さない。
 // log は id と種類だけ（チャンネル ID・名前・cwd・本文・セッションの ID は出さない）
+import { formatWallClock } from "../app/recurrence.ts";
 import { DEFAULT_PERSONA_ID, type Config } from "../config.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
 import type { Gateway, OutgoingMessage } from "../discord/gateway.ts";
@@ -54,8 +55,10 @@ export { promptKey };
 
 /** self-agent が届けたものとみなす窓（届けてからこの間の UserPromptSubmit は、本文が同じなら写さない） */
 export const CC_PROMPT_MIRROR_WINDOW_MS = 30_000;
-/** 端末・RC からの指示の写しの見出し */
-export const CC_PROMPT_MIRROR_LABEL = "（端末か RC から）";
+/** 端末・RC からの指示の写しの見出し。時刻は timeZone の壁時計の HH:MM（hook を受けた時刻。#286） */
+export function ccPromptMirrorLabel(at: Date, timeZone: string): string {
+  return `（端末か RC から ${formatWallClock(at, timeZone).slice(11)}）`;
+}
 /** Discord の 1 メッセージの上限 */
 const MESSAGE_MAX = 2000;
 /** SELF_AGENT_CC_NOTIFY=0 でチャンネルの無いセッションの知らせを出さなかった log の間隔 */
@@ -64,14 +67,14 @@ const NOTIFY_OFF_LOG_MS = 60 * 60_000;
 export const CC_CHANNEL_WAIT_OVERFLOW_TEXT = `判断待ちの知らせが上限（1 時間に ${CC_WAIT_NOTIFY_LIMIT} 件）に達したので、しばらく出しません（Web で確かめてください）`;
 
 /**
- * 端末・RC からの指示の写しの各通（純関数）。1 通目は見出し + 改行 + 本文。本文は改行以外の制御文字を空白にして 1 字ずつ Markdown とメンションを
+ * 端末・RC からの指示の写しの各通（純関数）。1 通目は見出し（label。ccPromptMirrorLabel）+ 改行 + 本文。本文は改行以外の制御文字を空白にして 1 字ずつ Markdown とメンションを
  * 無効にし、1 通 MESSAGE_MAX 字に収まるよう字の境目で分ける。total（全体の字数）が本文より長ければ末尾に「（ほか n 字）」
  */
-export function ccPromptMirrorTexts(prompt: string, total: number): string[] {
+export function ccPromptMirrorTexts(prompt: string, total: number, label: string): string[] {
   const shown = [...headChars(prompt, CC_PROMPT_MIRROR_MAX_CHARS)];
   const rest = Math.max(0, total - shown.length);
   const texts: string[] = [];
-  let current = `${CC_PROMPT_MIRROR_LABEL}\n`;
+  let current = `${label}\n`;
   /** current の字数（コードポイント） */
   let length = [...current].length;
   for (const char of shown) {
@@ -101,7 +104,7 @@ export function ccPromptMirrorTexts(prompt: string, total: number): string[] {
 
 export type CcChannelPostsDeps = {
   /** ccNotify（SELF_AGENT_CC_NOTIFY）が false なら、知らせのためにチャンネルを作らない（あるチャンネルには出す） */
-  cfg: Pick<Config, "ownerUserId" | "workspaceDir" | "ccPermissionHoldSec" | "ccQuestionHoldSec" | "ccNotify">;
+  cfg: Pick<Config, "ownerUserId" | "workspaceDir" | "timeZone" | "ccPermissionHoldSec" | "ccQuestionHoldSec" | "ccNotify">;
   /** 開いているチャンネル（cc_channels） */
   channels: Pick<CcChannelStore, "openFor" | "get">;
   /** チャンネルが無いセッションの知らせのために作る（cc/channels.ts の ensureFor。main では後で作るので関数で渡す。無ければ作らない） */
@@ -328,11 +331,12 @@ export class CcChannelPosts implements CcPermissionListener {
     const key = promptKey(event.prompt);
     const since = new Date(event.receivedAt.getTime() - CC_PROMPT_MIRROR_WINDOW_MS);
     if (this.deps.sends.listRecentDelivered(event.sessionId, since).some((send) => promptKey(singleLine(send.text)) === key)) return;
-    const texts = ccPromptMirrorTexts(event.prompt, event.promptChars ?? [...event.prompt].length);
+    const label = ccPromptMirrorLabel(event.receivedAt, this.deps.cfg.timeZone);
+    const texts = ccPromptMirrorTexts(event.prompt, event.promptChars ?? [...event.prompt].length, label);
     const channelId = channel.channelId;
     const total = event.promptChars ?? [...event.prompt].length;
     const rest = total - [...event.prompt].length;
-    this.record(channelId, "owner", `${CC_PROMPT_MIRROR_LABEL}\n${event.prompt}${rest > 0 ? `\n（ほか ${rest} 字）` : ""}`);
+    this.record(channelId, "owner", `${label}\n${event.prompt}${rest > 0 ? `\n（ほか ${rest} 字）` : ""}`);
     this.track(
       (async () => {
         try {
