@@ -88,6 +88,16 @@ test("CcSessionStore.applyEvent: UserPromptSubmit は最後の指示（本文は
   row = store.get(S1)!;
   assert.equal(row.waitingKind, "agent_needs_input");
   assert.equal(row.waitingSince, at(8).toISOString());
+  // harness のプロンプト（keepPromptText）は最後の指示（本文・時刻）を変えずに判断待ちだけ外す
+  assert.equal(store.applyEvent(S1, { event: "UserPromptSubmit", keepPromptText: true }, at(9.5)), true);
+  row = store.get(S1)!;
+  assert.equal(row.lastPromptText, "あ".repeat(CC_PROMPT_MAX_CHARS));
+  assert.equal(row.lastPromptAt, at(5).toISOString());
+  assert.equal(row.lastEvent, "UserPromptSubmit");
+  assert.equal(row.waitingKind, null);
+  store.applyEvent(S1, { event: "Notification", waitingKind: "agent_needs_input" }, at(9.6));
+  row = store.get(S1)!;
+  assert.equal(row.waitingSince, at(9.6).toISOString());
   // 判断待ちにしない Notification は last_event だけ
   store.applyEvent(S1, { event: "Notification" }, at(10));
   assert.equal(store.get(S1)?.waitingKind, "agent_needs_input");
