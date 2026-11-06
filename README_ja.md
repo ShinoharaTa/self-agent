@@ -249,7 +249,7 @@ npm run cc-setup -- --print
 
 許可の要求に同じカードを使うので、手順 9（`SELF_AGENT_CC=1`）が要る。
 
-1. Bot に要る link を出して、自分で実行する（Bot は `~/.claude` にも自分の `CLAUDE_CONFIG_DIR` にも書かない）。Bot の `skills`・`agents` を `~/.claude/skills`・`~/.claude/agents` への symlink にする行で、済んでいるものは「済」、symlink でないものは置き換えずに理由を出す
+1. Bot に要る link を出して、自分で実行する（Bot は `~/.claude` にも自分の `CLAUDE_CONFIG_DIR` にも書かない）。Bot の `skills`・`agents` を `~/.claude/skills`・`~/.claude/agents` への symlink にする行で、済んでいるものは「済」、symlink でないものは置き換えずに理由を出す。`~/.claude/skills`・`~/.claude/agents` がまだ無ければ、先にその `mkdir -p` の行が出る
 
 ```bash
 npm run unify-setup -- --print

@@ -312,7 +312,7 @@ function timeOfDay(name: string, value: string | undefined, fallback: TimeOfDay)
 }
 
 /** 既定のディレクトリの基準。既定のディレクトリが要るときだけ読む */
-function homeDir(env: NodeJS.ProcessEnv): string {
+export function homeDir(env: NodeJS.ProcessEnv): string {
   const value = nonEmpty(env.HOME);
   if (value === undefined) {
     throw new Error("HOME が設定されていないため既定のディレクトリを決められません");

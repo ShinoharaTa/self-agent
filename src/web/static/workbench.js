@@ -994,6 +994,9 @@
     persona_with_project: "プロジェクトのセッションは既定の人格だけです",
     cc_disabled: "プロジェクトのセッションには Claude Code の連携が要ります",
   };
+  /** プロジェクトの欄の説明（index.html と同じ）と、共有の link が済んでいないときの説明 */
+  const NEW_PROJECT_HINT = "選ぶと Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はボタンで答えます。人格は既定だけです";
+  const NEW_PROJECT_NOT_READY_HINT = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行してから再起動してください";
   const NEW_PROJECT_NOT_SET_UP = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行して再起動してください";
   let creating = false;
 
@@ -1025,6 +1028,9 @@
   async function newProjects() {
     $("new-project-field").hidden = true;
     $("new-project").replaceChildren();
+    $("new-project").disabled = false;
+    $("new-project").removeAttribute("title");
+    $("new-project-hint").textContent = NEW_PROJECT_HINT;
     const status = SA.store.status;
     if (!status || !status.cc || status.cc.enabled !== true) return;
     let data;
@@ -1039,6 +1045,12 @@
       el("option", { value: "", text: "（なし）" }),
       ...projects.map((p) => el("option", { value: p.name, text: p.name })),
     );
+    // 共有の link が起動時に済んでいなければ、選べなくして理由を出す（サーバーも 503 で断る）
+    if (status.cc.unifyReady === false) {
+      $("new-project").disabled = true;
+      $("new-project").title = NEW_PROJECT_NOT_READY_HINT;
+      $("new-project-hint").textContent = NEW_PROJECT_NOT_READY_HINT;
+    }
     $("new-project-field").hidden = false;
   }
 
@@ -1066,7 +1078,7 @@
       const body = { guildId: $("new-guild").value, title };
       if (!$("new-persona-field").hidden) body.persona = $("new-persona").value;
       // プロジェクトを選んだら projectDir（人格は既定だけ。足した人格を選んでいればサーバーが断る）
-      if (!$("new-project-field").hidden && $("new-project").value !== "") body.projectDir = $("new-project").value;
+      if (!$("new-project-field").hidden && !$("new-project").disabled && $("new-project").value !== "") body.projectDir = $("new-project").value;
       creating = true;
       $("dlg-new-ok").disabled = true;
       try {

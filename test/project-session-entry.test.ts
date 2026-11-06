@@ -191,6 +191,8 @@ test("打ち切りの一時停止: [中断]（input.signal）は保留中の要�
   const result = await run;
   assert.equal(result.ok === false ? result.errorMessage : "", "aborted");
   assert.equal(s.results[0]?.behavior, "deny");
+  // チャンネルの許可の 1 通は「ターンが止まったため拒否しました」に書き換わる
+  assert.ok(s.gateway.edits.some((edit) => edit.message.text.includes("ターンが止まったため拒否しました")), JSON.stringify(s.gateway.edits));
 });
 
 test("startTurnTimeout: pause を重ねたら数え、すべて resume してから残りを数える。clear の後は呼ばない", (t) => {
@@ -374,9 +376,31 @@ test("checkSharedLinks・unify-setup --print: 無い（ln -s の行）・済・s
   check = checkSharedLinks(configDir, home);
   assert.equal(check.ok, true);
   assert.deepEqual(unifySetupLines(configDir, home), ["# skills: 済", "# agents: 済"]);
-  // ~/.claude の側が無い
+  // ~/.claude の側が無い（起動時の確認は未了のまま）。link が symlink で残っていれば、mkdir の後にもう一度実行する案内
   rmSync(join(home, ".claude", "agents"), { recursive: true });
-  assert.deepEqual(checkSharedLinks(configDir, home).links.map((link) => link.state), ["ok", "no_source"]);
+  check = checkSharedLinks(configDir, home);
+  assert.equal(check.ok, false);
+  assert.deepEqual(check.links.map((link) => link.state), ["ok", "no_source"]);
+  assert.deepEqual(unifySetupLines(configDir, home), [
+    "# skills: 済",
+    `mkdir -p '${join(home, ".claude", "agents")}'`,
+    "# agents: ~/.claude/agents を作った後に、もう一度実行してください",
+  ]);
+  // link も無ければ、~/.claude/<名前> の mkdir -p の後に ln -s を続ける
+  rmSync(join(configDir, "agents"));
+  assert.deepEqual(unifySetupLines(configDir, home), [
+    "# skills: 済",
+    `mkdir -p '${join(home, ".claude", "agents")}'`,
+    `ln -s '${join(home, ".claude", "agents")}' '${join(configDir, "agents")}'`,
+  ]);
+  // CONFIG_DIR も無ければ、それも先に作る
+  const fresh = join(root, "fresh-config");
+  assert.deepEqual(unifySetupLines(fresh, home), [
+    `mkdir -p '${fresh}'`,
+    `ln -s '${join(home, ".claude", "skills")}' '${join(fresh, "skills")}'`,
+    `mkdir -p '${join(home, ".claude", "agents")}'`,
+    `ln -s '${join(home, ".claude", "agents")}' '${join(fresh, "agents")}'`,
+  ]);
 });
 
 test("unify-setup: --print が無ければ使い方で 2、あれば行を標準出力に出して 0（ファイルは書かない）", async (t) => {
@@ -387,12 +411,12 @@ test("unify-setup: --print が無ければ使い方で 2、あれば行を標準
   const err: string[] = [];
   t.mock.method(console, "log", (text: string) => out.push(text));
   t.mock.method(console, "error", (text: string) => err.push(text));
-  assert.equal(await unifySetupMain([], { HOME: home, CLAUDE_CONFIG_DIR: configDir }, home), 2);
-  assert.equal(await unifySetupMain(["--print", "x"], { HOME: home, CLAUDE_CONFIG_DIR: configDir }, home), 2);
+  assert.equal(await unifySetupMain([], { HOME: home, CLAUDE_CONFIG_DIR: configDir }), 2);
+  assert.equal(await unifySetupMain(["--print", "x"], { HOME: home, CLAUDE_CONFIG_DIR: configDir }), 2);
   assert.equal(out.length, 0);
   mkdirSync(join(home, ".claude", "skills"), { recursive: true });
   mkdirSync(join(home, ".claude", "agents"), { recursive: true });
-  assert.equal(await unifySetupMain(["--print"], { HOME: home, CLAUDE_CONFIG_DIR: configDir }, home), 0);
+  assert.equal(await unifySetupMain(["--print"], { HOME: home, CLAUDE_CONFIG_DIR: configDir }), 0);
   assert.deepEqual(out, [unifySetupLines(configDir, home).join("\n")]);
   assert.match(out[0]!, /^mkdir -p /);
   assert.equal(existsSync(configDir), false);

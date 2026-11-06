@@ -47,18 +47,30 @@ export function checkSharedLinks(claudeConfigDir: string, home: string): SharedL
   return { ok: links.every((link) => link.state === "ok"), links };
 }
 
+/** その場所に何かあるか（symlink はたどらない） */
+function lexists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** シェルの単引用符で囲む */
 function quote(path: string): string {
   return `'${path.replaceAll("'", "'\\''")}'`;
 }
 
 /**
- * npm run unify-setup -- --print の行（純関数に近い。CONFIG_DIR があるかだけ見る）。無いものは `ln -s` の行（CONFIG_DIR が無ければ先に mkdir -p）、
+ * npm run unify-setup -- --print の行（純関数に近い。CONFIG_DIR と link の場所に何かあるかだけ見る）。無いものは `ln -s` の行（CONFIG_DIR が無ければ先に mkdir -p）、
+ * ~/.claude/<名前> が無ければ（no_source）先にそれを mkdir -p してから続ける（link の場所に既に何かあれば、作った後にもう一度実行する案内）。
  * 済んだものは「済」、それ以外は理由の文（コメントの行。消す・退けるコマンドは出さない）
  */
 export function unifySetupLines(claudeConfigDir: string, home: string, check: SharedLinksCheck = checkSharedLinks(claudeConfigDir, home)): string[] {
   const lines: string[] = [];
-  if (check.links.some((link) => link.state === "missing") && !existsSync(claudeConfigDir)) {
+  const linkAbsent = (link: SharedLink): boolean => !lexists(link.link);
+  if (check.links.some((link) => (link.state === "missing" || link.state === "no_source") && linkAbsent(link)) && !existsSync(claudeConfigDir)) {
     lines.push(`mkdir -p ${quote(claudeConfigDir)}`);
   }
   for (const link of check.links) {
@@ -76,7 +88,9 @@ export function unifySetupLines(claudeConfigDir: string, home: string, check: Sh
         lines.push(`# ${link.name} の symlink の向きが ~/.claude/${link.name} ではありません。消してから作ってください`);
         break;
       case "no_source":
-        lines.push(`# ~/.claude/${link.name} がありません（Claude Code の側に作ってから、もう一度実行してください）`);
+        lines.push(`mkdir -p ${quote(link.target)}`);
+        if (linkAbsent(link)) lines.push(`ln -s ${quote(link.target)} ${quote(link.link)}`);
+        else lines.push(`# ${link.name}: ~/.claude/${link.name} を作った後に、もう一度実行してください`);
         break;
     }
   }

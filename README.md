@@ -252,7 +252,7 @@ Work in progress (`docs/plan/unify.md`, stage U1). A project session is a sessio
 
 It needs step 9 (`SELF_AGENT_CC=1`), because permission requests use the same cards.
 
-1. Print the links the bot needs and run them yourself (the bot never writes to `~/.claude` or its own `CLAUDE_CONFIG_DIR`). They make the bot's `skills` and `agents` symlinks to `~/.claude/skills` and `~/.claude/agents`; links that are already in place show as `済`, and anything that is not a symlink is reported instead of replaced:
+1. Print the links the bot needs and run them yourself (the bot never writes to `~/.claude` or its own `CLAUDE_CONFIG_DIR`). They make the bot's `skills` and `agents` symlinks to `~/.claude/skills` and `~/.claude/agents`; links that are already in place show as `済`, and anything that is not a symlink is reported instead of replaced. If `~/.claude/skills` or `~/.claude/agents` does not exist yet, a `mkdir -p` line for it comes first:
 
 ```bash
 npm run unify-setup -- --print

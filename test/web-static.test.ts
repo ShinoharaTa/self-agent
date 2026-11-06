@@ -1392,6 +1392,12 @@ test("web static: 新しいセッションのダイアログのプロジェク�
   assert.match(workbench, /el\("option", \{ value: "", text: "（なし）" \}\)/);
   assert.match(workbench, /body\.projectDir = \$\("new-project"\)\.value;/);
   assert.match(workbench, /err\.code === "not_set_up" && err\.status === 503/);
+  // 共有の link が済んでいなければセレクトを無効にし、説明に unify-setup の行の案内（textContent）
+  assert.match(workbench, /if \(status\.cc\.unifyReady === false\) \{\n {6}\$\("new-project"\)\.disabled = true;/);
+  assert.match(workbench, /\$\("new-project-hint"\)\.textContent = NEW_PROJECT_NOT_READY_HINT;/);
+  assert.match(workbench, /const NEW_PROJECT_NOT_READY_HINT = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行してから再起動してください";/);
+  // index.html の説明と同じ文
+  assert.ok(html.includes('<p class="meta" id="new-project-hint">選ぶと Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はボタンで答えます。人格は既定だけです</p>'));
   const sidebar = read("sidebar.js");
   assert.match(sidebar, /class: "badge badge-project", title: "プロジェクトのセッション", text: ch\.projectDir\.dir/);
 });

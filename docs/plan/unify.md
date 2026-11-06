@@ -13,7 +13,7 @@
 結論:
 1. **「使い慣れたエージェント」は Claude Code の方**なので、合わせる向きは **self-agent → Claude Code**（案 A）。self-agent の SDK セッションに Claude Code と同じ装備（ユーザー設定・skills・CLAUDE.md・サブエージェント・sandbox 無しの Bash・cwd = workspace のプロジェクト）を与える。
 2. ただし全チャンネルを変えない。**新しい種類のセッション「プロジェクトのセッション」**（cwd が `SELF_AGENT_WORKSPACE_DIR` の直下のプロジェクト）だけを Claude Code の装備で動かし、#inbox・#tasks と今までのセッション（「軽いモード」）は今のまま残す（§4.2）。理由: #inbox は短く速く答える場所で、CLAUDE.md・skills の context の分だけ重くなる。予約した依頼（オーナー不在）に sandbox 無しの Bash を持たせない。プロンプトキャッシュの規則は軽いモードでそのまま守る。
-3. `CLAUDE_CONFIG_DIR` は `~/.claude` と**共有しない**。Bot 専用のディレクトリに、`skills`・`agents`・`CLAUDE.md`・`rules`・`projects`（記録と自動メモリ）だけを symlink で**選択的に共有**し、`settings.json`（hooks・permissions）と `.credentials.json`・`sessions` は分ける（§5.3）。
+3. `CLAUDE_CONFIG_DIR` は `~/.claude` と**共有しない**。Bot 専用のディレクトリに、`skills`・`agents`・`CLAUDE.md`・`rules`・`projects`（記録と自動メモリ）だけを symlink で**選択的に共有**し（U1 では skills・agents だけ。CLAUDE.md・rules は link しない（§1.5）。projects は U3）、`settings.json`（hooks・permissions）と `.credentials.json`・`sessions` は分ける（§5.3）。
 4. 許可（Bash など）と質問（AskUserQuestion）は SDK の `canUseTool` で受け、**既存の Discord / Web の許可カード・質問カード（cc_permissions・channel-posts.ts・views.js）に流す**。新しい UI は作らない（§5.1）。
 5. 端末の Claude Code から self-agent の持ち物（タスク・リマインド・記憶・ナレッジ）を使う口（案 B）は、A の後に **127.0.0.1 の MCP（Streamable HTTP）** として足す（personas.md PR-E の設計を流用。§6 の U4）。順番は A → B（案 D）。
 6. リモコン（CC1〜CC14）は**残す**。端末・RC で起動したセッションを Discord から見る・送る用途は変わらない。プロジェクトのセッションは tmux の外で動く SDK セッションなので、リモコンの一覧には出ない（未確認。U0 で確かめる）。
@@ -161,7 +161,7 @@
 ### 5.3 CLAUDE_CONFIG_DIR を共有するか
 | | (i) `~/.claude` を共有 | (ii) 選択的共有（symlink）**推薦** | (iii) plugins |
 |---|---|---|---|
-| skills・agents・CLAUDE.md・rules | ◎ | ◎（`skills`・`agents`・`CLAUDE.md`・`rules` を link） | ○ skills・agents だけ（CLAUDE.md は別に要る） |
+| skills・agents・CLAUDE.md・rules | ◎ | ◎（U1 では `skills`・`agents` だけを link。CLAUDE.md・rules は link しない（`~/.claude/CLAUDE.md` は CONFIG_DIR によらず読まれる。§1.5）。projects は U3） | ○ skills・agents だけ（CLAUDE.md は別に要る） |
 | 自動メモリ・記録・端末からの `--resume` | ◎ | ◎（`projects` を link） | ✗ |
 | hooks（settings.json） | ✗ self-agent が自分の受け口に自分の事象を送る。PermissionRequest の http hook（timeout 905 秒）と `canUseTool` が二重に待つ | ◎ Bot の settings.json は別（hooks 無し） | ◎ |
 | permissions.allow・model・autoMode | △ 端末の設定がそのまま効く（model は Options が勝つ。未確認） | ○ 要るものだけ Bot の settings.json に写す | ○ |
