@@ -1,6 +1,7 @@
 import type { Config, PersonaConfig } from "../../config.ts";
 import type { SessionState } from "../../store/guild-settings.ts";
 import type { TopicSession, TopicSessionStore } from "../../store/topic-sessions.ts";
+import { escapeDiscordText } from "../../discord/escape.ts";
 import type { CommandHandler } from "../interactions.ts";
 import { stateCategoryName } from "./setup.ts";
 
@@ -57,7 +58,8 @@ export function formatElapsed(fromIso: string, now: Date): string {
  */
 export function sessionLine(session: TopicSession, now: Date, personaName?: string, projectDir?: string): string {
   const persona = personaName === undefined ? "" : `${personaName}・`;
-  const project = projectDir === undefined ? "" : `プロジェクト ${projectDir}・`;
+  // プロジェクトの名前の `_` などの Markdown は無効にする
+  const project = projectDir === undefined ? "" : `プロジェクト ${escapeDiscordText(projectDir)}・`;
   return `<#${session.channelId}> ${session.title}（${persona}${project}最終 ${formatElapsed(session.lastActivityAt, now)}）`;
 }
 

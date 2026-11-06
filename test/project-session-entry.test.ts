@@ -17,7 +17,8 @@ import {
   PROJECT_OPTION,
   PROJECT_PERSONA_REPLY,
 } from "../src/app/commands/new.ts";
-import { sessionListText } from "../src/app/commands/sessions.ts";
+import { sessionLine, sessionListText } from "../src/app/commands/sessions.ts";
+import { welcomeText } from "../src/app/session-ops.ts";
 import { ensureGuildLayout } from "../src/app/commands/setup.ts";
 import { progressText } from "../src/app/progress.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
@@ -338,6 +339,9 @@ test("/sessions の一覧: プロジェクトのセッションの行にプロ�
   await s.runNew({ title: "作業", project: "alpha" });
   const text = sessionListText(s.topicSessions, GUILD, ["active"], new Date(BASE));
   assert.match(text, /作業（プロジェクト alpha・最終 1 時間以内）/);
+  // 名前の `_` は斜体にならないよう無効にする
+  assert.ok(welcomeText("作業", "my_app").includes("プロジェクト: my\\_app。"));
+  assert.match(sessionLine({ ...s.topicSessions.listByState(GUILD, "active", 1)[0]! }, new Date(BASE), undefined, "my_app"), /プロジェクト my\\_app・/);
 });
 
 // ---- unify-setup ----

@@ -4,6 +4,7 @@ import { removeNodeModules } from "../agent/disk.ts";
 import { type CcPlaces, projectDir as verifiedProjectDir } from "../cc/starter.ts";
 import { DEFAULT_PERSONA_ID, type PersonaConfig } from "../config.ts";
 import { normalizeChannelName } from "../discord/channel-name.ts";
+import { escapeDiscordText } from "../discord/escape.ts";
 import { type HistoryStore, recordHistory } from "../store/history.ts";
 import type { SummaryChannelKind } from "../store/inbox-summaries.ts";
 import type { CloseDraft, TopicSession, TopicSessionOrigin } from "../store/topic-sessions.ts";
@@ -67,12 +68,12 @@ export function sessionTopic(title: string, owner?: SessionOwner, projectDir?: s
   return projectDir === undefined ? title : `${title}（${projectDir}）`;
 }
 
-/** 最初の投稿。プロジェクトのセッションならその装備と許可の答え方の 1 行を足す */
+/** 最初の投稿。プロジェクトのセッションならその装備と許可の答え方の 1 行を足す（名前の `_` などの Markdown は無効にする） */
 export function welcomeText(title: string, projectDir?: string): string {
   const head = `セッション「${title}」を始めました。ここで話しかけてください。`;
   return projectDir === undefined
     ? head
-    : `${head}\nプロジェクト: ${projectDir}。このチャンネルの発言は Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はここのボタンか Web で答えます`;
+    : `${head}\nプロジェクト: ${escapeDiscordText(projectDir)}。このチャンネルの発言は Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はここのボタンか Web で答えます`;
 }
 
 /**
