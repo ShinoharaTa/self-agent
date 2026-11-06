@@ -2,19 +2,33 @@
 // POST /api/sessions の projectDir・GET /api/projects/workspace）、unify-setup と共有の link の確認
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createSdkMcpServer, type PermissionResult, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createPermissionBridge, createPermissionPoster } from "../src/agent/permission-bridge.ts";
 import { createProjectProfile } from "../src/agent/project-profile.ts";
 import type { PermissionWaiting, RunContext } from "../src/agent/runner.ts";
 import { type QueryFn, SdkAgentRunner, startTurnTimeout } from "../src/agent/sdk-runner.ts";
+import {
+  createNewSessionCommand,
+  newCommandDef,
+  PROJECT_INVALID_REPLY,
+  PROJECT_NOT_SET_UP_REPLY,
+  PROJECT_OPTION,
+  PROJECT_PERSONA_REPLY,
+} from "../src/app/commands/new.ts";
+import { sessionListText } from "../src/app/commands/sessions.ts";
+import { ensureGuildLayout } from "../src/app/commands/setup.ts";
 import { progressText } from "../src/app/progress.ts";
+import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { checkSharedLinks, unifySetupLines } from "../src/agent/unify-setup-check.ts";
+import { main as unifySetupMain } from "../src/cli/unify-setup.ts";
 import { CcPermissionHold } from "../src/cc/permission-hold.ts";
 import type { CcTimers } from "../src/cc/registry.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
+import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 
 const BASE = Date.parse("2026-11-06T00:00:00.000Z");
 const GUILD = "guild-1";
@@ -208,4 +222,174 @@ test("途中経過: 許可を待っている間は「許可を待っています
   );
   assert.equal(progressText(0, 0, undefined, { toolName: "Bash" }), "作業中…（0 分 0 秒・ツール 0 回）\n許可を待っています: Bash");
   assert.equal(progressText(0, 0, undefined), "作業中…（0 分 0 秒・ツール 0 回）");
+});
+
+// ---- 作る口（/new project:）----
+
+/** /setup 済みのサーバーと /new。ワークスペースに alpha（使える）と、使えない symlink を置く */
+async function setupNew(t: TestContext, options: { ready?: boolean; gate?: boolean; personas?: boolean; extraProjects?: number } = {}) {
+  const { workspaceDir } = places(t);
+  symlinkSync(join(workspaceDir, "alpha"), join(workspaceDir, "linked"));
+  for (let i = 0; i < (options.extraProjects ?? 0); i++) mkdirSync(join(workspaceDir, `p${String(i).padStart(2, "0")}`));
+  const db = tempDb(t);
+  const gateway = new FakeGateway({
+    allow: ["getParentId", "sendMessage", "pinMessage", "messageExists"],
+    record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn", "moveChannel", "send"],
+  });
+  const { guildSettings, topicSessions } = createStores(db, () => new Date(BASE));
+  const logs: string[] = [];
+  const ready = { value: options.ready ?? true };
+  const deps = {
+    gateway,
+    guildSettings,
+    topicSessions,
+    queue: new KeyedSerialQueue(1),
+    channelOps: { enqueueMove: () => assert.fail("想定外の移動") },
+    ...(options.personas === true
+      ? {
+          cfg: {
+            personas: [
+              {
+                id: "mika",
+                name: "ミカ",
+                discordTokenEnv: "SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN",
+                promptFile: "/dev/null",
+                model: undefined,
+                engine: "claude" as const,
+                effort: undefined,
+              },
+            ],
+          },
+        }
+      : {}),
+    ...(options.gate === false ? {} : { projectSessions: { places: { workspaceDir, protectedDirs: [] }, ready: () => ready.value } }),
+    log: (line: string) => logs.push(line),
+  };
+  const result = await ensureGuildLayout(GUILD, deps);
+  assert.equal(result.failure, null);
+  gateway.reset();
+  const command = createNewSessionCommand(deps);
+  const runNew = async (options: Record<string, string>): Promise<ResponderCall[]> => {
+    const responder = new FakeResponder();
+    await command.handle({ guildId: GUILD, channelId: "c", userId: "owner-1", createdAt: new Date(BASE), kind: "command", name: "new", options }, responder);
+    return responder.calls;
+  };
+  return { gateway, topicSessions, logs, command, runNew, ready, db };
+}
+
+test("/new project:alpha: project_dir と permission_mode default を書き、topic に（alpha）、最初の投稿にプロジェクトの 1 行", async (t) => {
+  const s = await setupNew(t);
+  const calls = await s.runNew({ title: "作業", project: "alpha" });
+  const created = s.gateway.calls.find((call) => call.method === "createTextChannel") as { options: { topic: string; name: string } } | undefined;
+  assert.equal(created?.options.topic, "作業（alpha）");
+  assert.equal(created?.options.name, "作業");
+  const channelId = (calls.at(-1) as { message: { text: string } }).message.text.match(/<#(.+)>/)?.[1] ?? "";
+  assert.deepEqual(s.topicSessions.projectDirOf(channelId), { projectDir: "alpha", permissionMode: "default" });
+  const sent = s.gateway.calls.find((call) => call.method === "send") as { text: string } | undefined;
+  assert.equal(
+    sent?.text,
+    "セッション「作業」を始めました。ここで話しかけてください。\nプロジェクト: alpha。このチャンネルの発言は Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はここのボタンか Web で答えます",
+  );
+  assert.deepEqual(calls[0], { method: "defer", ephemeral: true });
+  assert.ok(s.logs.every((line) => !line.includes("alpha")));
+  // project が無ければ今までどおり（軽いモード）
+  const light = await s.runNew({ title: "雑談" });
+  const lightId = (light.at(-1) as { message: { text: string } }).message.text.match(/<#(.+)>/)?.[1] ?? "";
+  assert.equal(s.topicSessions.projectDirOf(lightId), undefined);
+});
+
+test("/new project: 使えない名前・人格と同時・共有の link が済んでいない・連携が無効は本人にだけ断り、作らない", async (t) => {
+  const s = await setupNew(t, { personas: true });
+  const refused = async (options: Record<string, string>, text: string) => {
+    assert.deepEqual(await s.runNew(options), [{ method: "reply", message: { text, ephemeral: true } }], JSON.stringify(options));
+  };
+  await refused({ title: "a", project: "linked" }, PROJECT_INVALID_REPLY);
+  await refused({ title: "a", project: "nothing" }, PROJECT_INVALID_REPLY);
+  await refused({ title: "a", project: "../alpha" }, PROJECT_INVALID_REPLY);
+  await refused({ title: "a", project: "alpha", persona: "mika" }, PROJECT_PERSONA_REPLY);
+  s.ready.value = false;
+  await refused({ title: "a", project: "alpha" }, PROJECT_NOT_SET_UP_REPLY);
+  assert.equal(s.gateway.calls.filter((call) => call.method === "createTextChannel").length, 0);
+  // 連携が無効（gate なし）は引数が無いので、古い選択肢で来ても使えないとして断る
+  const off = await setupNew(t, { gate: false });
+  assert.deepEqual(await off.runNew({ title: "a", project: "alpha" }), [{ method: "reply", message: { text: PROJECT_INVALID_REPLY, ephemeral: true } }]);
+});
+
+test("/new のコマンド定義: project は SELF_AGENT_CC=1 で直下に使えるものがあるときだけ。25 件までは選択肢、超えれば文字列", async (t) => {
+  const withGate = await setupNew(t);
+  const option = withGate.command.def.options?.find((o) => o.name === PROJECT_OPTION);
+  assert.deepEqual(option?.choices, [{ name: "alpha", value: "alpha" }]);
+  assert.equal(option?.required, undefined);
+  const off = await setupNew(t, { gate: false });
+  assert.equal(off.command.def.options?.some((o) => o.name === PROJECT_OPTION), false);
+  assert.equal(newCommandDef([], []).options?.some((o) => o.name === PROJECT_OPTION), false);
+  const many = await setupNew(t, { extraProjects: 25 });
+  const manyOption = many.command.def.options?.find((o) => o.name === PROJECT_OPTION);
+  assert.equal(manyOption?.choices, undefined);
+  assert.equal(manyOption?.type, "string");
+  // 文字列で受けても検証する
+  assert.deepEqual(await many.runNew({ title: "a", project: "linked" }), [
+    { method: "reply", message: { text: PROJECT_INVALID_REPLY, ephemeral: true } },
+  ]);
+});
+
+test("/sessions の一覧: プロジェクトのセッションの行にプロジェクトの名前を添える", async (t) => {
+  const s = await setupNew(t);
+  await s.runNew({ title: "作業", project: "alpha" });
+  const text = sessionListText(s.topicSessions, GUILD, ["active"], new Date(BASE));
+  assert.match(text, /作業（プロジェクト alpha・最終 1 時間以内）/);
+});
+
+// ---- unify-setup ----
+
+test("checkSharedLinks・unify-setup --print: 無い（ln -s の行）・済・symlink でない・向きが違う・~/.claude に無い", async (t) => {
+  const root = realpathSync(tempDir(t));
+  const home = join(root, "home");
+  const configDir = join(root, "claude-config");
+  mkdirSync(join(home, ".claude", "skills"), { recursive: true });
+  mkdirSync(join(home, ".claude", "agents"), { recursive: true });
+  // CONFIG_DIR が無い → mkdir -p と ln -s 2 行
+  assert.deepEqual(checkSharedLinks(configDir, home).links.map((link) => link.state), ["missing", "missing"]);
+  assert.deepEqual(unifySetupLines(configDir, home), [
+    `mkdir -p '${configDir}'`,
+    `ln -s '${join(home, ".claude", "skills")}' '${join(configDir, "skills")}'`,
+    `ln -s '${join(home, ".claude", "agents")}' '${join(configDir, "agents")}'`,
+  ]);
+  mkdirSync(configDir);
+  symlinkSync(join(home, ".claude", "skills"), join(configDir, "skills"));
+  mkdirSync(join(configDir, "agents"));
+  let check = checkSharedLinks(configDir, home);
+  assert.equal(check.ok, false);
+  assert.deepEqual(check.links.map((link) => link.state), ["ok", "not_symlink"]);
+  assert.deepEqual(unifySetupLines(configDir, home), ["# skills: 済", "# agents が symlink ではありません。退けてから作ってください"]);
+  rmSync(join(configDir, "agents"), { recursive: true });
+  symlinkSync(join(home, ".claude", "skills"), join(configDir, "agents"));
+  assert.deepEqual(checkSharedLinks(configDir, home).links.map((link) => link.state), ["ok", "wrong_target"]);
+  rmSync(join(configDir, "agents"));
+  symlinkSync(join(home, ".claude", "agents"), join(configDir, "agents"));
+  check = checkSharedLinks(configDir, home);
+  assert.equal(check.ok, true);
+  assert.deepEqual(unifySetupLines(configDir, home), ["# skills: 済", "# agents: 済"]);
+  // ~/.claude の側が無い
+  rmSync(join(home, ".claude", "agents"), { recursive: true });
+  assert.deepEqual(checkSharedLinks(configDir, home).links.map((link) => link.state), ["ok", "no_source"]);
+});
+
+test("unify-setup: --print が無ければ使い方で 2、あれば行を標準出力に出して 0（ファイルは書かない）", async (t) => {
+  const root = realpathSync(tempDir(t));
+  const home = join(root, "home");
+  const configDir = join(root, "cfg");
+  const out: string[] = [];
+  const err: string[] = [];
+  t.mock.method(console, "log", (text: string) => out.push(text));
+  t.mock.method(console, "error", (text: string) => err.push(text));
+  assert.equal(await unifySetupMain([], { HOME: home, CLAUDE_CONFIG_DIR: configDir }, home), 2);
+  assert.equal(await unifySetupMain(["--print", "x"], { HOME: home, CLAUDE_CONFIG_DIR: configDir }, home), 2);
+  assert.equal(out.length, 0);
+  mkdirSync(join(home, ".claude", "skills"), { recursive: true });
+  mkdirSync(join(home, ".claude", "agents"), { recursive: true });
+  assert.equal(await unifySetupMain(["--print"], { HOME: home, CLAUDE_CONFIG_DIR: configDir }, home), 0);
+  assert.deepEqual(out, [unifySetupLines(configDir, home).join("\n")]);
+  assert.match(out[0]!, /^mkdir -p /);
+  assert.equal(existsSync(configDir), false);
 });

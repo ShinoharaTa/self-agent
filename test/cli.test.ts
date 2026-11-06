@@ -16,6 +16,7 @@ const SUBCOMMANDS: SubcommandName[] = [
   "job-dry-run",
   "cc-dry-run",
   "cc-setup",
+  "unify-setup",
   "measure",
 ];
 

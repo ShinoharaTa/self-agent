@@ -665,6 +665,11 @@ export function loadJobDryRunConfig(env: NodeJS.ProcessEnv = process.env): Pick<
   };
 }
 
+/** SDK の設定・セッションの保存先（CLAUDE_CONFIG_DIR。既定 ~/.local/share/self-agent/claude）。npm run unify-setup も読む */
+export function loadClaudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  return nonEmpty(env.CLAUDE_CONFIG_DIR) ?? join(homeDir(env), ".local/share/self-agent/claude");
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const home = (): string => homeDir(env);
   const personas = personaList(env, home);
@@ -674,8 +679,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     oauthTokenPresent: nonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) !== undefined,
     discordTokenPresent: nonEmpty(env.DISCORD_TOKEN) !== undefined,
-    claudeConfigDir:
-      nonEmpty(env.CLAUDE_CONFIG_DIR) ?? join(home(), ".local/share/self-agent/claude"),
+    claudeConfigDir: loadClaudeConfigDir(env),
     workDir: nonEmpty(env.SELF_AGENT_WORKDIR) ?? join(home(), ".local/share/self-agent/work"),
     model: nonEmpty(env.SELF_AGENT_MODEL) ?? DEFAULT_MODEL,
     ownerUserId: nonEmpty(env.SELF_AGENT_OWNER_ID),

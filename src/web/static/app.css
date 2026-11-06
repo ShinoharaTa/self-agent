@@ -882,7 +882,8 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
-.badge-persona {
+.badge-persona,
+.badge-project {
   flex: none;
 }
 

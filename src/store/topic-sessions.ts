@@ -57,6 +57,12 @@ export type NewTopicSession = {
   origin?: TopicSessionOrigin;
   /** 作った人格の id（チャンネルの持ち主。後から変えない）。省略すれば既定の人格 */
   persona?: string;
+  /**
+   * プロジェクトのセッション（docs/plan/unify.md §5.2）のプロジェクト（SELF_AGENT_WORKSPACE_DIR の直下の名前。検証は呼び出し側）と許可のモード。
+   * 省略すれば軽いモード（project_dir は NULL・モードは default）
+   */
+  projectDir?: string;
+  permissionMode?: ProjectPermissionMode;
 };
 
 const STATES: readonly TopicSessionState[] = ["active", "waiting", "done", "deleted"];
@@ -136,8 +142,8 @@ export class TopicSessionStore {
     const at = this.now().toISOString();
     const row = this.db
       .prepare(
-        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, origin, persona) " +
-          "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?) RETURNING *",
+        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, origin, persona, project_dir, permission_mode) " +
+          "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?) RETURNING *",
       )
       .get(
         session.channelId,
@@ -148,6 +154,8 @@ export class TopicSessionStore {
         at,
         session.origin ?? "command",
         session.persona ?? DEFAULT_PERSONA_ID,
+        session.projectDir ?? null,
+        session.permissionMode ?? "default",
       );
     return toSession(row!);
   }

@@ -1383,3 +1383,15 @@ test("web static: 許可を待っている間は実行中の行に「許可を�
   const css = read("app.css");
   assert.match(css, /\n\.run-waiting \{[^}]*color: var\(--text\);/);
 });
+
+test("web static: 新しいセッションのダイアログのプロジェクト（U1b）は /api/projects/workspace から「（なし）」を先頭に、選んだら projectDir。サイドバーの行にプロジェクトの印", () => {
+  const html = read("index.html");
+  assert.match(html, /<div class="field" id="new-project-field" hidden>/);
+  const workbench = read("workbench.js");
+  assert.match(workbench, /SA\.api\.get\("\/api\/projects\/workspace", \{ quiet: true \}\)/);
+  assert.match(workbench, /el\("option", \{ value: "", text: "（なし）" \}\)/);
+  assert.match(workbench, /body\.projectDir = \$\("new-project"\)\.value;/);
+  assert.match(workbench, /err\.code === "not_set_up" && err\.status === 503/);
+  const sidebar = read("sidebar.js");
+  assert.match(sidebar, /class: "badge badge-project", title: "プロジェクトのセッション", text: ch\.projectDir\.dir/);
+});

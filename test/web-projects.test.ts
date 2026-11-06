@@ -72,7 +72,15 @@ async function setup(t: TestContext, cfg: { publicBaseUrl: string | undefined } 
   symlinkSync(join(base, "secret.txt"), join(dir, "site", "link.txt"));
   write(join(projectsDir, old.slug, "index.html"), "old");
   const channelName = (channelId: string): string | null => (channelId === "100" ? "家計簿のセッション" : null);
-  const server = await serve(t, projectRoutes({ cfg, projects, projectsDir, channelName }));
+  // SELF_AGENT_WORKSPACE_DIR の直下（alpha・beta と、使えない symlink・ファイル・形の違う名前）
+  const workspaceDir = join(base, "workspace");
+  mkdirSync(join(workspaceDir, "beta"), { recursive: true });
+  mkdirSync(join(workspaceDir, "alpha"), { recursive: true });
+  mkdirSync(join(workspaceDir, "has space"), { recursive: true });
+  write(join(workspaceDir, "file.txt"), "x");
+  symlinkSync(join(workspaceDir, "alpha"), join(workspaceDir, "link"));
+  const workspace = { workspaceDir, protectedDirs: [] };
+  const server = await serve(t, projectRoutes({ cfg, projects, projectsDir, channelName, workspace }));
   return { server, projects, projectsDir, dir, base, nodir };
 }
 
@@ -165,4 +173,11 @@ test("GET /api/projects/<slug>/file: プロジェクトのディレクトリが�
   rmSync(dir, { recursive: true });
   assert.deepEqual(await get(server, "/api/projects/kakeibo/file?path=DESIGN.md"), { status: 404, json: { error: "not_found" } });
   assert.deepEqual(await get(server, "/api/projects/kakeibo/files"), { status: 404, json: { error: "not_found" } });
+});
+
+test("GET /api/projects/workspace: SELF_AGENT_WORKSPACE_DIR の直下の使えるプロジェクトを名前の順に（symlink・ファイル・形の違う名前は出さない）", async (t) => {
+  const { server } = await setup(t);
+  const res = await get(server, "/api/projects/workspace");
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json, { projects: [{ name: "alpha" }, { name: "beta" }] });
 });

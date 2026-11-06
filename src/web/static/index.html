@@ -97,6 +97,11 @@
         <label for="new-persona">人格</label>
         <select class="select" id="new-persona"></select>
       </div>
+      <div class="field" id="new-project-field" hidden>
+        <label for="new-project">プロジェクト</label>
+        <select class="select" id="new-project" aria-describedby="new-project-hint"></select>
+        <p class="meta" id="new-project-hint">選ぶと Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はボタンで答えます。人格は既定だけです</p>
+      </div>
       <div class="alert-slot"><p class="alert" id="new-error" role="alert" hidden></p></div>
       <p class="meta">Discord にチャンネルができます。</p>
       <div class="dialog-actions">

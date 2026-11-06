@@ -989,7 +989,12 @@
     not_set_up: "作れませんでした。Discord で /setup を実行してください",
     bot_disconnected: "作れませんでした。Bot が Discord につながっていません",
     too_long: "題名は 100 字までです",
+    // プロジェクトのセッション（docs/plan/unify.md §6.1 の 7）。not_set_up は 503 のとき（共有の link が済んでいない）だけ下の文
+    invalid_project: "そのプロジェクトは使えません",
+    persona_with_project: "プロジェクトのセッションは既定の人格だけです",
+    cc_disabled: "プロジェクトのセッションには Claude Code の連携が要ります",
   };
+  const NEW_PROJECT_NOT_SET_UP = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行して再起動してください";
   let creating = false;
 
   /** ダイアログを開く。サーバーは /setup 済みのもの（1 つなら隠す）、人格は足した人格があるときだけ選ぶ */
@@ -1007,10 +1012,34 @@
     const personas = channels.personas;
     $("new-persona").replaceChildren(...personas.map((p) => el("option", { value: p.id, text: p.name + (p.isDefault ? "（既定）" : "") })));
     $("new-persona-field").hidden = personas.length < 2;
+    await newProjects();
     $("new-title").value = "";
     newError(false);
     openDialog($("dlg-new"));
     $("new-title").focus();
+  }
+
+  /**
+   * プロジェクトの選択肢（GET /api/projects/workspace。先頭は「（なし）」）。Claude Code の連携（/api/status の cc.enabled）が無い・0 件・読めなければ出さない
+   */
+  async function newProjects() {
+    $("new-project-field").hidden = true;
+    $("new-project").replaceChildren();
+    const status = SA.store.status;
+    if (!status || !status.cc || status.cc.enabled !== true) return;
+    let data;
+    try {
+      data = await SA.api.get("/api/projects/workspace", { quiet: true });
+    } catch {
+      return;
+    }
+    const projects = Array.isArray(data && data.projects) ? data.projects.filter((p) => p && typeof p.name === "string") : [];
+    if (projects.length === 0) return;
+    $("new-project").replaceChildren(
+      el("option", { value: "", text: "（なし）" }),
+      ...projects.map((p) => el("option", { value: p.name, text: p.name })),
+    );
+    $("new-project-field").hidden = false;
   }
 
   /** 題名のエラーの表示（欄のすぐ下の role=alert と、欄の aria-invalid。GUIDELINES §5 入力欄） */
@@ -1036,6 +1065,8 @@
       newError(false);
       const body = { guildId: $("new-guild").value, title };
       if (!$("new-persona-field").hidden) body.persona = $("new-persona").value;
+      // プロジェクトを選んだら projectDir（人格は既定だけ。足した人格を選んでいればサーバーが断る）
+      if (!$("new-project-field").hidden && $("new-project").value !== "") body.projectDir = $("new-project").value;
       creating = true;
       $("dlg-new-ok").disabled = true;
       try {
@@ -1051,6 +1082,8 @@
         if (err && err.code === "empty_title") {
           newError(true);
           $("new-title").focus();
+        } else if (err && err.code === "not_set_up" && err.status === 503) {
+          toast(NEW_PROJECT_NOT_SET_UP, null, { level: "error" });
         } else if (err && err.toast) toast((err.code && NEW_ERRORS[err.code]) || err.toast, null, { level: "error" });
       } finally {
         creating = false;

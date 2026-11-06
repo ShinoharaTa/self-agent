@@ -15,7 +15,8 @@ export const SESSION_LIST_LIMITS: Readonly<Record<SessionState, number>> = { act
 const HOUR_MS = 60 * 60 * 1000;
 
 export type SessionsDeps = {
-  topicSessions: Pick<TopicSessionStore, "listByState" | "personaOf">;
+  /** projectDirOf があれば、プロジェクトのセッション（docs/plan/unify.md）の行にプロジェクトの名前を添える */
+  topicSessions: Pick<TopicSessionStore, "listByState" | "personaOf"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
   /** personas は足した人格（あれば、その人格のセッションに表示名を添える）。無ければ今と同じ */
   cfg?: Partial<Pick<Config, "personas">>;
 };
@@ -50,16 +51,21 @@ export function formatElapsed(fromIso: string, now: Date): string {
   return `${Math.floor(hours / 24)} 日前`;
 }
 
-/** 一覧の 1 行: `<#id> 題名（最終 n 時間前）`。personaName（足した人格のセッション）があれば `<#id> 題名（<表示名>・最終 n 時間前）` */
-export function sessionLine(session: TopicSession, now: Date, personaName?: string): string {
+/**
+ * 一覧の 1 行: `<#id> 題名（最終 n 時間前）`。personaName（足した人格のセッション）があれば `<#id> 題名（<表示名>・最終 n 時間前）`、
+ * projectDir（プロジェクトのセッション）があれば `<#id> 題名（プロジェクト <名前>・最終 n 時間前）`
+ */
+export function sessionLine(session: TopicSession, now: Date, personaName?: string, projectDir?: string): string {
   const persona = personaName === undefined ? "" : `${personaName}・`;
-  return `<#${session.channelId}> ${session.title}（${persona}最終 ${formatElapsed(session.lastActivityAt, now)}）`;
+  const project = projectDir === undefined ? "" : `プロジェクト ${projectDir}・`;
+  return `<#${session.channelId}> ${session.title}（${persona}${project}最終 ${formatElapsed(session.lastActivityAt, now)}）`;
 }
 
 /**
  * 状態ごとの見出しの下にセッションを並べた本文（/sessions、ホームパネルの [待ちのセッション]）。0 件の見出しには「なし」。
  * 2000 字を超えるなら末尾から削って「ほか n 件」を足す（削って空になった見出しは出さない）。
- * 足した人格（personas）があれば、その人格のセッションの行に表示名を添える（既定の人格のセッションは今のまま）
+ * 足した人格（personas）があれば、その人格のセッションの行に表示名を添える（既定の人格のセッションは今のまま）。
+ * プロジェクトのセッションの行にはプロジェクトの名前を添える
  */
 export function sessionListText(
   topicSessions: SessionsDeps["topicSessions"],
@@ -84,7 +90,9 @@ export function sessionListText(
     for (const { state, sessions } of lists) {
       const lines = shown
         .filter((item) => item.state === state)
-        .map((item) => sessionLine(item.session, now, personaName(item.session)));
+        .map((item) =>
+          sessionLine(item.session, now, personaName(item.session), topicSessions.projectDirOf?.(item.session.channelId)?.projectDir),
+        );
       // 削って空になった見出しは出さない（元から 0 件なら「なし」）
       if (lines.length === 0 && sessions.length > 0) continue;
       blocks.push([`**${stateCategoryName(state)}**`, ...(lines.length === 0 ? [EMPTY_SECTION_TEXT] : lines)].join("\n"));
