@@ -625,6 +625,15 @@
       store.channels && store.channels.personas.length > 1 ? el("span", { class: "badge", text: p.name + (p.isDefault ? "" : "（人格）") }) : null,
     ]);
     const actions = el("div", { class: "ed-actions" });
+    // プロジェクトのセッション（docs/plan/unify.md）: プロジェクトと許可のモード（モードの切り替えは後の段）
+    if (isSession && ch.projectDir) {
+      actions.append(
+        el("span", { class: "badge hide-sm", title: "プロジェクトのセッション（許可のモード: " + ch.projectDir.permissionMode + "）" }, [
+          icon("terminal"),
+          ch.projectDir.dir,
+        ]),
+      );
+    }
     // 狭い画面（≤639px）ではプロジェクト・リンクも隠し、[…] のシートに入れる（見出しを 1 行にする）
     const url = ch.project ? pageUrl(ch.project.url) : null;
     if (ch.project) {
@@ -888,6 +897,15 @@
         timeline.append(el("p", { class: "tl-hint", text: "このセッションは終わっています。Discord のチャンネルに書くと、同じディレクトリで起動して続けられます。" }));
       }
       ccPending = live.sessionId ? SA.views.ccPendingBar(live.sessionId, live.pending) : null;
+    } else if (ch && ch.kind === "session" && ch.permission && typeof ch.permission.id === "number") {
+      // プロジェクトのセッション（docs/plan/unify.md §6.1 の 5）の許可の要求。Claude Code のチャンネルと同じカード・同じ /api/cc/permissions/<id>/*
+      const p = ch.permission;
+      if (p.state === "pending") {
+        card = SA.views.ccPermissionCard(p.sessionId, p, null, "ch:" + channelId);
+        if (card) timeline.append(card);
+      } else {
+        SA.views.ccQuestionForget(p.id);
+      }
     }
     if (t.turns.length === 0 && !run) {
       timeline.append(
@@ -978,6 +996,7 @@
     endText,
     STATE_LABEL,
     current,
+    channelById,
     setWaiting,
     closeSession,
     renew,

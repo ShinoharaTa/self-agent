@@ -11,6 +11,9 @@ import type { GuildSettingsStore } from "../../store/guild-settings.ts";
 import type { HistoryKind, HistoryRow, HistoryStore } from "../../store/history.ts";
 import { HISTORY_LIST_MAX } from "../../store/history.ts";
 import type { ProjectStore } from "../../store/projects.ts";
+import type { CcPermissionStore } from "../../store/cc-permissions.ts";
+import type { SdkSessionStore } from "../../store/sdk-sessions.ts";
+import { CC_PERMISSION_RECENT_MS, type HoldSeconds, permissionJson } from "./cc.ts";
 import type { TopicSession, TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { Route, RouteResult } from "../server.ts";
 
@@ -44,7 +47,7 @@ const LISTED_STATES = ["active", "waiting", "done"] as const;
 export type ChannelRouteDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "personas" | "publicBaseUrl">;
   guildSettings: Pick<GuildSettingsStore, "get" | "entryChannel" | "personaInbox">;
-  topicSessions: Pick<TopicSessionStore, "get" | "listByState" | "getCloseDraft">;
+  topicSessions: Pick<TopicSessionStore, "get" | "listByState" | "getCloseDraft"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
   projects: Pick<ProjectStore, "getByChannel">;
   history: Pick<HistoryStore, "list" | "latestByChannel">;
   /** PersonaRouter（all は設定の順で、最初が既定の人格） */
@@ -52,6 +55,15 @@ export type ChannelRouteDeps = {
   resolveChannel: ResolveChannel;
   /** Claude Code のチャンネル（SELF_AGENT_CC が動くときだけ。無ければ出さない） */
   cc?: WebCcChannelDeps;
+  /**
+   * プロジェクトのセッションの許可の要求（docs/plan/unify.md §6.1 の 5。SELF_AGENT_CC が動くときだけ）。セッションの行の permission に、
+   * そのチャンネルの最新の origin sdk の要求（終わったものは CC_PERMISSION_RECENT_MS の間）を /api/cc/sessions と同じ形で出す。無ければ null
+   */
+  projectPermissions?: {
+    store: Pick<CcPermissionStore, "latestSdkFor">;
+    sessions: Pick<SdkSessionStore, "get">;
+    now?: () => Date;
+  } & HoldSeconds;
 };
 
 /** 一覧と /turns の 1 チャンネル */
@@ -71,6 +83,10 @@ export type WebChannel = {
   link: string;
   /** Claude Code のチャンネルのセッションの今（kind cc だけ） */
   cc?: WebCcInfo;
+  /** プロジェクトのセッション（sessions.project_dir）のプロジェクトと許可のモード（kind session だけ。軽いモードは null） */
+  projectDir?: { dir: string; permissionMode: string } | null;
+  /** プロジェクトのセッションの最新の許可の要求（routes/cc.ts の permissionJson。kind session だけ。無ければ null） */
+  permission?: ReturnType<typeof permissionJson> | null;
 };
 
 type Last = WebChannel["last"];
@@ -169,7 +185,19 @@ export function webChannelNamer(
 }
 
 export function channelRoutes(deps: ChannelRouteDeps): Route[] {
-  const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel, cc } = deps;
+  const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel, cc, projectPermissions } = deps;
+
+  /** プロジェクトのセッションの最新の許可の要求（無ければ null） */
+  const sessionPermission = (channelId: string): WebChannel["permission"] => {
+    if (projectPermissions === undefined) return null;
+    const now = projectPermissions.now?.() ?? new Date();
+    const row = projectPermissions.store.latestSdkFor(
+      channelId,
+      projectPermissions.sessions.get(channelId),
+      new Date(now.getTime() - CC_PERMISSION_RECENT_MS),
+    );
+    return row === undefined ? null : permissionJson(row, projectPermissions);
+  };
 
   const project = (channelId: string): WebChannel["project"] => {
     const found = projects.getByChannel(channelId);
@@ -196,6 +224,11 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
     link: channelLink(guildId, channelId),
   });
 
+  const projectDirOf = (channelId: string): WebChannel["projectDir"] => {
+    const found = topicSessions.projectDirOf?.(channelId);
+    return found === undefined ? null : { dir: found.projectDir, permissionMode: found.permissionMode };
+  };
+
   const session = (item: TopicSession, last: Last): WebChannel | undefined => {
     if (item.state === "deleted") return undefined;
     return {
@@ -209,6 +242,8 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
       project: project(item.channelId),
       last,
       link: channelLink(item.guildId, item.channelId),
+      projectDir: projectDirOf(item.channelId),
+      permission: sessionPermission(item.channelId),
     };
   };
 

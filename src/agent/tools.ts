@@ -244,6 +244,9 @@ export const REMINDER_PROMPT_LIMIT_MESSAGE =
 /** project_open をセッション以外（#inbox・#tasks）・context の無いターンで呼んだときの message */
 export const PROJECT_OPEN_NOT_AVAILABLE_MESSAGE =
   "セッションのチャンネルで使います。#inbox では session_open で専用のチャンネルを作ってください";
+/** プロジェクトのセッション（docs/plan/unify.md §5.9）で project_open・project_files を呼んだときの message */
+export const PROJECT_TOOLS_IN_PROJECT_SESSION_MESSAGE =
+  "プロジェクトのセッションでは使いません。このプロジェクトのファイルは Read・Edit・Write・Bash で直接扱ってください";
 /** ページの配信が無効なときの message */
 export const PROJECT_OPEN_NOT_CONFIGURED_MESSAGE = "ページの配信が設定されていません";
 /** プロジェクトのディレクトリが projects の直下の実際のディレクトリだと確かめられないとき（symlink にすり替えられたなど）の message。パスは入れない */
@@ -572,6 +575,10 @@ export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunCon
       if (context === undefined || context.kind !== "session") {
         return textResult({ status: "not_available", message: PROJECT_OPEN_NOT_AVAILABLE_MESSAGE });
       }
+      // プロジェクトのセッションではページを作らない（ファイルの世界を 2 つにしない）
+      if (context.projectDir !== undefined) {
+        return textResult({ status: "not_available", message: PROJECT_TOOLS_IN_PROJECT_SESSION_MESSAGE });
+      }
       if (publicBaseUrl === undefined || !serving()) {
         return textResult({ status: "not_configured", message: PROJECT_OPEN_NOT_CONFIGURED_MESSAGE });
       }
@@ -609,6 +616,9 @@ export function createProjectToolHandlers(deps: ProjectToolDeps, context: RunCon
       });
     },
     async projectFiles(args: ProjectFilesArgs): Promise<TextToolResult> {
+      if (context?.projectDir !== undefined) {
+        return textResult({ result: "not_available", message: PROJECT_TOOLS_IN_PROJECT_SESSION_MESSAGE });
+      }
       const project =
         context === undefined || context.kind !== "session" ? undefined : projects.getByChannel(context.channelId);
       if (project === undefined) return textResult({ result: "not_available", message: FILE_WRITE_DENIED_REASON });

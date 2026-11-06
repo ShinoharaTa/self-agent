@@ -188,12 +188,14 @@ export class CcChannelPosts implements CcPermissionListener {
 
   /** 保留を始めた許可の要求: そのセッションのチャンネルに 1 通（無ければ作ってから） */
   held(row: CcPermissionRow): void {
-    if (this.stopped) return;
+    // プロジェクトのセッションの要求（origin sdk）は agent/permission-bridge.ts がそのセッションのチャンネルに出す
+    if (this.stopped || row.origin === "sdk") return;
     this.track(this.postPermission(row));
   }
 
   /** 終わった許可の要求: 1 通を書き換えてボタンを外す。Discord で押したものは応答で書き換える。投稿の途中なら投稿の後に書き換える */
   resolved(row: CcPermissionRow): void {
+    if (row.origin === "sdk") return;
     // 結果を Web の会話に（チャンネルに出した要求だけ。投稿の前に終わったものは postPermission が書く）
     if (row.messageChannelId !== null) this.recordResult(row);
     if (row.via === "discord" || row.messageId === null || row.messageChannelId === null) return;
@@ -248,7 +250,8 @@ export class CcChannelPosts implements CcPermissionListener {
    */
   rewriteRecovered(rows: readonly CcPermissionRow[]): void {
     for (const row of rows) {
-      if (row.messageId === null || row.messageChannelId === null) continue;
+      // プロジェクトのセッションの要求（origin sdk）は agent/permission-bridge.ts が書き換える
+      if (row.origin === "sdk" || row.messageId === null || row.messageChannelId === null) continue;
       // Web の会話にも結果（時間切れ）を書く（Claude Code のチャンネルのときだけ書かれる）
       this.recordResult(row);
       this.track(this.editResolved(row));

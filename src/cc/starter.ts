@@ -166,6 +166,17 @@ export type CcPlaces = {
 };
 
 /**
+ * self-agent の設定から作る起動の場所（重なってはいけない場所は workDir・dataDir・CLAUDE_CONFIG_DIR・~/.config/self-agent・~/.claude）。
+ * Claude Code の起動（CcStarter）とプロジェクトのセッション（agent/project-profile.ts。docs/plan/unify.md §5.2）で同じ線引きにする
+ */
+export function ccPlacesOf(cfg: Pick<Config, "workspaceDir" | "workDir" | "dataDir" | "claudeConfigDir">, home: string): CcPlaces {
+  return {
+    workspaceDir: cfg.workspaceDir,
+    protectedDirs: [cfg.workDir, cfg.dataDir, cfg.claudeConfigDir, join(home, ".config/self-agent"), join(home, ".claude")],
+  };
+}
+
+/**
  * 起動してよいディレクトリ（§4.2）。名前が CC_PROJECT_PATTERN で、`<realpath(workspace)>/<name>` が symlink でない実際のディレクトリで、
  * その realpath がそれそのもので、重なってはいけない場所と重ならず、tmux の書式の `#` を含まないときだけ、その絶対パス。それ以外は undefined。
  * nested なら `<直下>/<名前>`（どちらの要素も CC_PROJECT_PATTERN で、どちらの段も symlink でない実際のディレクトリ）も許す（GitHub の [対応]。CC6）

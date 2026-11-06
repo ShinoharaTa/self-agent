@@ -309,7 +309,15 @@
             if (data && data.channel) {
               const before = t.channel;
               t.channel = data.channel;
-              if (!before || before.state !== data.channel.state || before.title !== data.channel.title) changed = true;
+              // プロジェクトのセッションの許可の要求（docs/plan/unify.md §6.1 の 5）が変わったらカードを描き直す
+              if (
+                !before ||
+                before.state !== data.channel.state ||
+                before.title !== data.channel.title ||
+                JSON.stringify(before.permission || null) !== JSON.stringify(data.channel.permission || null)
+              ) {
+                changed = true;
+              }
             }
             if (turns.length > 0) {
               reportEnds(channelId, turns, true);
@@ -778,6 +786,14 @@
   // 失敗のトーストは続けて失敗している間は最初の 1 回だけで、その間は間隔を倍にして POLL_BACKOFF_MAX_MS まで伸ばす。成功したら元に戻す
   const poll = { started: false, stopped: false };
 
+  /** 前に出ている会話のタブがプロジェクトのセッションで、許可の要求を保留している */
+  function activePermissionPending() {
+    const channelId = SA.chat.activeChannelId();
+    const t = channelId ? store.turns[channelId] : undefined;
+    const p = t && t.channel ? t.channel.permission : null;
+    return !!(p && p.state === "pending");
+  }
+
   function activeTurns(opts) {
     const channelId = SA.chat.activeChannelId();
     return channelId ? store.load.turns(channelId, opts) : Promise.resolve(null);
@@ -789,7 +805,8 @@
     channels: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.channels(opts), fails: 0, timer: null },
     notices: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.notices(opts), fails: 0, timer: null },
     lists: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.lists(opts), fails: 0, timer: null },
-    turns: { base: () => TURNS_INTERVAL_MS, run: activeTurns, fails: 0, timer: null },
+    // プロジェクトのセッションで許可の要求を保留していれば 3 秒ごと（Claude Code の一覧と同じ）
+    turns: { base: () => (activePermissionPending() ? CC_PERMISSION_INTERVAL_MS : TURNS_INTERVAL_MS), run: activeTurns, fails: 0, timer: null },
     // Claude Code: 一覧は見ている間（会話の一覧を出している・セッションのタブが前に出ている）だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと。見ていなければ次を予約せず、
     // 見始めたとき（会話の一覧を出した・タブを前に出した。SA.poll.kickCc）と、隠れていた画面が戻ったとき（schedule）に始め直す
     // 許可の要求を保留しているセッションがあれば一覧も 3 秒ごと

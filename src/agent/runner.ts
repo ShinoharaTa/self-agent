@@ -14,7 +14,21 @@ export type RunContext = {
   scheduled?: true;
   purpose?: "close";
   attachmentIds?: readonly number[];
+  /**
+   * プロジェクトのセッション（docs/plan/unify.md §5.2）のターンだけ入る。SELF_AGENT_WORKSPACE_DIR の直下のプロジェクトの名前と許可のモード。
+   * このときは project-profile.ts の runner で動き、project_open・project_files は not_available
+   */
+  projectDir?: string;
+  permissionMode?: ProjectPermissionMode;
 };
+
+/** プロジェクトのセッションで選べる許可のモード（docs/plan/unify.md §5.1。bypassPermissions・dontAsk・auto は選べない） */
+export type ProjectPermissionMode = "default" | "acceptEdits" | "plan";
+export const PROJECT_PERMISSION_MODES: readonly ProjectPermissionMode[] = ["default", "acceptEdits", "plan"];
+
+export function isProjectPermissionMode(value: unknown): value is ProjectPermissionMode {
+  return PROJECT_PERMISSION_MODES.some((mode) => mode === value);
+}
 
 /** prompt と一緒にモデルに渡す画像（base64）。形式は中身から確かめたもの */
 export type RunImage = { mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif"; data: string };

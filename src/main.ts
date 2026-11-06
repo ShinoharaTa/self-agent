@@ -16,6 +16,8 @@ import { checkSandbox, missingSandboxBinaries, shellPath } from "./agent/sandbox
 import { WEB_TEMPLATE_DIR } from "./agent/scaffold.ts";
 import type { AgentRunner, RunContext } from "./agent/runner.ts";
 import { SdkAgentRunner } from "./agent/sdk-runner.ts";
+import { createPermissionBridge, createPermissionPoster, denyAllPermissions } from "./agent/permission-bridge.ts";
+import { createProjectProfile } from "./agent/project-profile.ts";
 import { personaSystemPrompts } from "./agent/system-prompt.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
@@ -53,7 +55,7 @@ import { CcPermissionHold } from "./cc/permission-hold.ts";
 import { CcRegistry } from "./cc/registry.ts";
 import { CcReplier } from "./cc/replies.ts";
 import { CcSender } from "./cc/sender.ts";
-import { CcStarter, procMemAvailable } from "./cc/starter.ts";
+import { ccPlacesOf, CcStarter, procMemAvailable } from "./cc/starter.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -275,6 +277,27 @@ const runnerFiles = { projects, projectsDir, disk: diskQuota };
 const runnerDevLog = devLogSink === undefined ? undefined : { sink: devLogSink, now };
 const runnerConfig = { ...config, shellAvailable: () => shellState.enabledForRun() };
 const runner = new SdkAgentRunner(runnerConfig, createMcpServer, runnerFiles, log, undefined, runnerDevLog);
+// プロジェクトのセッション（docs/plan/unify.md §4.1。sessions.project_dir のあるセッションの発言・[続ける] のターン）の runner。cwd は
+// SELF_AGENT_WORKSPACE_DIR の直下のプロジェクトで、Claude Code の preset・設定・既定のツールに自前のツールを足す。許可は canUseTool → 許可のカード
+// （permission-bridge.ts。Claude Code の連携の保留と Web・Discord のボタンを使うので SELF_AGENT_CC=1 のときだけ作る。橋は下の CC の配線で作る）
+let projectPermissionBridge: ReturnType<typeof createPermissionBridge> | undefined;
+const projectRunner: AgentRunner | undefined = config.cc
+  ? new SdkAgentRunner(
+      runnerConfig,
+      undefined,
+      undefined,
+      log,
+      undefined,
+      runnerDevLog,
+      createProjectProfile({
+        cfg: config,
+        createMcpServer,
+        // 橋がまだ無ければ（連携が動いていない）すべて拒否する
+        canUseTool: (context, sessionId) => projectPermissionBridge?.(context, sessionId) ?? denyAllPermissions,
+        log,
+      }),
+    )
+  : undefined;
 // 足した人格の runner: システムプロンプトはその人格のもの、model・effort はその人格の設定（無ければ既定の人格と同じ）。
 // codex のエンジンはまだ無いので、codex の人格も既定の人格の Claude の model・effort で動かす（usage のエンジンは claude）
 if (config.personas.some((persona) => persona.engine === "codex")) {
@@ -335,7 +358,19 @@ const kbMemory = {
 // 発言と /close・/renew のターンのキュー（key は channelId）。SELF_AGENT_SHELL=1 ならセッションのジョブは同時に 1 つだけ
 const turnQueue = createTurnQueue(config);
 // ターンはチャンネルの持ち主の人格の runner で動かす（personas）
-const turn = { runner, personas, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log };
+// プロジェクトのセッションの発言・[続ける] のターンは projectRunner（/close・予約した依頼は軽いモード。無ければ「SELF_AGENT_CC=1 が要ります」）
+const turn = {
+  runner,
+  ...(projectRunner === undefined ? {} : { projectRunner }),
+  personas,
+  sessions,
+  seeds,
+  topicSessions,
+  inboxSummaries,
+  memories,
+  usage,
+  log,
+};
 const channelOps = new ChannelOpsQueue({
   gateway,
   guildSettings,
@@ -638,6 +673,8 @@ const reminderScheduler = new ReminderScheduler({
 let ccRegistry: CcRegistry | undefined;
 let ccChannelPosts: CcChannelPosts | undefined;
 let ccPermissionButtons: CcPermissionButtons | undefined;
+// プロジェクトのセッションの許可の要求の 1 通（origin sdk の行。そのセッションのチャンネルに持ち主の Bot で出す）
+let projectPermissionPoster: ReturnType<typeof createPermissionPoster> | undefined;
 // 再起動の前に保留していて expired にした許可の要求（出した 1 通を「時間切れ」に書き換える）
 let ccRecoveredPermissions: CcPermissionRow[] = [];
 let ccSender: CcSender | undefined;
@@ -673,6 +710,27 @@ if (
     log,
   });
   ccPermissions = permissionHold;
+  // プロジェクトのセッションの canUseTool（origin sdk の行）。registry に訊かずに同じ保留・同じボタンで答える
+  const projectPoster = createPermissionPoster({
+    gateway: ownerPosts,
+    permissions: ccPermissionStore,
+    topicSessions,
+    cfg: config,
+    home: homedir(),
+    holdSec: config.ccPermissionHoldSec,
+    ...history,
+    log,
+  });
+  projectPermissionPoster = projectPoster;
+  projectPermissionBridge = createPermissionBridge({
+    permissions: ccPermissionStore,
+    hold: permissionHold,
+    poster: projectPoster,
+    holdSec: config.ccPermissionHoldSec,
+    workspaceDir: config.workspaceDir,
+    home: homedir(),
+    log,
+  });
   const registry = new CcRegistry({
     cfg: config,
     agents: new AgentsClient({ claudePath: ccClaudePath }),
@@ -725,7 +783,9 @@ if (
   // 許可の要求のボタン（チャンネルの 1 通。再起動の前に #system に出したものも）。SELF_AGENT_CC_NOTIFY によらず作る
   ccPermissionButtons = {
     answer: (id, decision) => permissionHold.answer(id, decision, "discord"),
-    resolvedMessage: (id) => channelPosts.resolvedMessage(id),
+    // プロジェクトのセッションの要求（origin sdk）はそのセッションの題名・プロジェクトで書き換える
+    resolvedMessage: (id) =>
+      ccPermissionStore.get(id)?.origin === "sdk" ? projectPoster.resolvedMessage(id) : channelPosts.resolvedMessage(id),
     // 答えた（関わった）ら、押したサーバーにそのセッションのチャンネルを作る（CC11）
     answered: (id, guildId) => ccPermissionAnswered(id, guildId ?? undefined),
     // 質問（AskUserQuestion）の選択肢のボタン・セレクト・モーダル（Q2）。途中の答えはプロセスの中
@@ -804,10 +864,7 @@ if (
   ccStarter = new CcStarter({
     cfg: config,
     // 直下のディレクトリのうち、self-agent の場所と Claude Code の設定の場所に重なるものは起動しない
-    places: {
-      workspaceDir: config.workspaceDir,
-      protectedDirs: [config.workDir, config.dataDir, config.claudeConfigDir, join(homedir(), ".config/self-agent"), join(homedir(), ".claude")],
-    },
+    places: ccPlacesOf(config, homedir()),
     claudePath: ccClaudePath,
     registry,
     panes,
@@ -1020,6 +1077,18 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         personas,
         resolveChannel,
         ...(webCc === undefined ? {} : { cc: webCc }),
+        // プロジェクトのセッションの許可の要求（origin sdk）を会話のタブのカードに出す
+        ...(projectPermissionBridge === undefined
+          ? {}
+          : {
+              projectPermissions: {
+                store: ccPermissionStore,
+                sessions,
+                now,
+                holdSec: config.ccPermissionHoldSec,
+                questionHoldSec: config.ccQuestionHoldSec,
+              },
+            }),
       }),
       ...devlogRoutes({ cfg: config, now }),
       ...turnRoutes({
@@ -1226,6 +1295,7 @@ ccSender?.start();
 ccStarter?.start();
 // 再起動の前に保留していた要求の 1 通を「時間切れ」に書き換える
 ccChannelPosts?.rewriteRecovered(ccRecoveredPermissions);
+projectPermissionPoster?.rewriteRecovered(ccRecoveredPermissions);
 ccChannelPosts?.start();
 ccConfirmExpirer.start();
 ccReplier?.start();

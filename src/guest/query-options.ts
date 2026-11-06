@@ -74,7 +74,7 @@ export function guestRunnerProfile(
         workDir: cfg.workDir,
         env: guestChildEnv(guestClaudeConfigDir(cfg.claudeConfigDir), cfg.workDir, source),
       }),
-    preToolUse: (log) => [createGuestToolDenyHook(log)],
+    toolHooks: (log) => ({ preToolUse: [createGuestToolDenyHook(log)], postToolUse: [] }),
     acceptsApiKeySource: guestApiKeySource,
     // 失敗の文（handler が log に出す）に API・CLI のエラー文を入れない
     summarizeErrors: true,

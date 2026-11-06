@@ -12,11 +12,18 @@ export const CC_PERMISSION_KEEP_DAYS = 30;
  */
 export type CcPermissionState = "pending" | "allowed" | "allowed_always" | "denied" | "answered_elsewhere" | "expired" | "released";
 
-/** 決まった経路（web・discord = 押した、hook・status = 他で答えられたと判断した元、shutdown・limit = released の理由）。expired は null */
-export type CcPermissionVia = "web" | "discord" | "hook" | "status" | "shutdown" | "limit";
+/**
+ * 決まった経路（web・discord = 押した、hook・status = 他で答えられたと判断した元、shutdown・limit = released の理由、
+ * abort = プロジェクトのセッションのターンが止まって保留をやめた（released。docs/plan/unify.md §5.1））。expired は null
+ */
+export type CcPermissionVia = "web" | "discord" | "hook" | "status" | "shutdown" | "limit" | "abort";
+
+/** 要求の出どころ（v40）。hook = Claude Code の hook の受け口（cc/hook-server.ts）、sdk = プロジェクトのセッションの canUseTool（agent/permission-bridge.ts） */
+export type CcPermissionOrigin = "hook" | "sdk";
 
 const STATES: readonly CcPermissionState[] = ["pending", "allowed", "allowed_always", "denied", "answered_elsewhere", "expired", "released"];
-const VIAS: readonly CcPermissionVia[] = ["web", "discord", "hook", "status", "shutdown", "limit"];
+const VIAS: readonly CcPermissionVia[] = ["web", "discord", "hook", "status", "shutdown", "limit", "abort"];
+const ORIGINS: readonly CcPermissionOrigin[] = ["hook", "sdk"];
 
 /** cc_permissions の 1 行（時刻は ISO） */
 export type CcPermissionRow = {
@@ -43,6 +50,7 @@ export type CcPermissionRow = {
   questionInput: string | null;
   /** 質問に答えたときに返した answers（question の文 → 値）。無ければ・形が違えば null */
   answers: Record<string, string> | null;
+  origin: CcPermissionOrigin;
 };
 
 function nullableString(value: SQLOutputValue | undefined): string | null {
@@ -52,7 +60,8 @@ function nullableString(value: SQLOutputValue | undefined): string | null {
 function toRow(row: Record<string, SQLOutputValue>): CcPermissionRow {
   const state = STATES.find((value) => value === row.state);
   const via = row.via === null || row.via === undefined ? null : VIAS.find((value) => value === row.via);
-  if (state === undefined || via === undefined) throw new Error("cc_permissions の行の形が違います");
+  const origin = ORIGINS.find((value) => value === row.origin);
+  if (state === undefined || via === undefined || origin === undefined) throw new Error("cc_permissions の行の形が違います");
   return {
     id: Number(row.id),
     sessionId: String(row.session_id),
@@ -69,6 +78,7 @@ function toRow(row: Record<string, SQLOutputValue>): CcPermissionRow {
     messageChannelId: nullableString(row.message_channel_id),
     questionInput: nullableString(row.question_input),
     answers: parseStoredAnswers(nullableString(row.answers)),
+    origin,
   };
 }
 
@@ -97,12 +107,14 @@ export class CcPermissionStore {
     questionInput?: string | null;
     state: "pending" | "released";
     via?: CcPermissionVia;
+    /** 省略は hook */
+    origin?: CcPermissionOrigin;
   }): CcPermissionRow {
     const at = this.now().toISOString();
     const result = this.db
       .prepare(
-        `INSERT INTO cc_permissions (session_id, request_hash, tool_name, summary, permission_mode, always_rules, question_input, state, via, created_at, resolved_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO cc_permissions (session_id, request_hash, tool_name, summary, permission_mode, always_rules, question_input, state, via, created_at, resolved_at, origin)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.sessionId,
@@ -118,6 +130,7 @@ export class CcPermissionStore {
         input.via ?? null,
         at,
         input.state === "pending" ? null : at,
+        input.origin ?? "hook",
       );
     return this.get(Number(result.lastInsertRowid))!;
   }
@@ -155,12 +168,27 @@ export class CcPermissionStore {
   }
 
   /**
-   * pending の行があるか、resolved_at が since 以後の行があるセッション。
+   * プロジェクトのセッションのチャンネルの最新の要求（origin sdk。docs/plan/unify.md §6.1 の 5）。1 通をそのチャンネルに出した行か、
+   * session_id がそのチャンネルの SDK セッション（sessionId。まだ無ければ省く）の行のうち最新のもので、pending か resolved_at が since 以後のものだけ
+   */
+  latestSdkFor(channelId: string, sessionId: string | undefined, since: Date): CcPermissionRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM cc_permissions WHERE origin = 'sdk' AND (message_channel_id = ? OR session_id = ?) ORDER BY id DESC LIMIT 1`,
+      )
+      .get(channelId, sessionId ?? null);
+    if (row === undefined) return undefined;
+    const found = toRow(row);
+    return found.state === "pending" || (found.resolvedAt !== null && found.resolvedAt >= since.toISOString()) ? found : undefined;
+  }
+
+  /**
+   * pending の行があるか、resolved_at が since 以後の行があるセッション（origin hook の行だけ。sdk はプロジェクトのセッションで、registry の一覧に居ない）。
    * released（limit）を含む（判断待ちの元の抑え。判断待ちの知らせの抑えは released を除いた sessionsAnsweredSince）
    */
   sessionsActiveSince(since: Date): Set<string> {
     const rows = this.db
-      .prepare("SELECT DISTINCT session_id FROM cc_permissions WHERE state = 'pending' OR resolved_at >= ?")
+      .prepare("SELECT DISTINCT session_id FROM cc_permissions WHERE origin = 'hook' AND (state = 'pending' OR resolved_at >= ?)")
       .all(since.toISOString());
     return new Set(rows.map((row) => String(row.session_id)));
   }
