@@ -148,6 +148,14 @@ test("CcRegistry: UserPromptSubmit で最後の指示が進み、本文は先頭
   assert.equal(view.lastPromptText, "x".repeat(200));
   assert.equal(view.permissionMode, "auto");
   assert.equal(s.store.get(S1)?.lastPromptText, "x".repeat(200));
+  // 最後の活動（#288）: Stop で進み、その約 60 秒後の Notification（idle_prompt）では進まない（last_event も Stop のまま）
+  s.clock.now = BASE + 8000;
+  s.hook({ hook_event_name: "Stop", session_id: S1 });
+  assert.equal(s.registry.snapshot().sessions[0]!.lastActivityAt, BASE + 8000);
+  s.clock.now = BASE + 70_000;
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "idle_prompt" });
+  assert.equal(s.store.get(S1)?.lastEvent, "Stop");
+  assert.equal(s.registry.snapshot().sessions[0]!.lastActivityAt, BASE + 8000);
 });
 
 test("CcRegistry: 長い貼り付けの prompt は pasted_content のタグを外した中身の先頭 200 字", async (t) => {
@@ -253,7 +261,6 @@ test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中 → 
     { ...base, sessionId: "idle-none" },
     { ...base, sessionId: "running-old", status: "busy", lastPromptAt: 200 },
     { ...base, sessionId: "running-new", status: "busy", lastPromptAt: 300 },
-    { ...base, sessionId: "running-stop", status: "busy", lastPromptAt: 200, lastEventAt: 350 },
     { ...base, sessionId: "wait-new", status: "waiting", waitingSince: 50 },
     { ...base, sessionId: "wait-old", waitingKind: "permission_prompt", waitingSince: 10 },
     { ...base, sessionId: "wait-busy", status: "busy", waitingKind: "permission_prompt", waitingSince: 1, lastPromptAt: 250 },
@@ -266,7 +273,6 @@ test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中 → 
       ["wait-old", "needs_input"],
       ["wait-held", "needs_input"],
       ["wait-new", "needs_input"],
-      ["running-stop", "running"],
       ["running-new", "running"],
       ["wait-busy", "running"],
       ["running-old", "running"],

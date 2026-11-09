@@ -199,7 +199,8 @@ export class CcSessionStore {
   /**
    * hook の事象を行に反映する（at は受けた時刻）。last_event・last_event_at と、あれば permission_mode を書き、
    * UserPromptSubmit は last_prompt_at・last_prompt_text を進めて判断待ちを外し、Stop は判断待ちを外し、
-   * 判断待ちの種類のある Notification は判断待ちにする（既に判断待ちなら始まりの時刻は進めない）。行が無ければ false
+   * 判断待ちの種類のある Notification は判断待ちにする（既に判断待ちなら始まりの時刻は進めない）。
+   * 判断待ちにしない Notification（idle_prompt など）は permission_mode だけで last_event・last_event_at は進めない（#288）。行が無ければ false
    */
   applyEvent(sessionId: string, update: CcEventUpdate, at: Date): boolean {
     const iso = at.toISOString();
@@ -240,6 +241,12 @@ export class CcSessionStore {
                  waiting_kind = ?, waiting_since = COALESCE(waiting_since, ?) WHERE session_id = ?`,
             )
             .run(update.event, iso, mode, update.waitingKind, iso, sessionId);
+        } else if (update.event === "Notification") {
+          // 判断待ちにしない Notification（idle_prompt など）は活動ではないので last_event・last_event_at を進めない
+          //（Stop の約 60 秒後の idle_prompt で「最後の活動」が後ろにずれないため。#288）。permission_mode だけ書く
+          result = this.db
+            .prepare("UPDATE cc_sessions SET permission_mode = COALESCE(?, permission_mode) WHERE session_id = ?")
+            .run(mode, sessionId);
         } else {
           result = this.db
             .prepare(
