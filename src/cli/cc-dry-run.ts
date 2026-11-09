@@ -40,6 +40,7 @@ export function ccDryRunLines(items: readonly DryRunItem[], dropped: number, tim
       waitingKind: null,
       waitingSince: undefined,
       lastPromptAt: undefined,
+      lastEventAt: undefined,
       transcriptMtime: item.transcriptMtime,
       startedAt: item.agent.startedAt,
       item,

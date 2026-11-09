@@ -40,6 +40,8 @@ export type RankInput = {
   waitingSince: number | undefined;
   /** 最後の UserPromptSubmit を受けた時刻 */
   lastPromptAt: number | undefined;
+  /** 最後の hook の事象（Stop など）を受けた時刻 */
+  lastEventAt: number | undefined;
   /** 記録（jsonl）の mtime */
   transcriptMtime: number | undefined;
   startedAt: number | undefined;
@@ -54,9 +56,15 @@ export function sessionState(input: RankInput): CcState {
   return "idle";
 }
 
-/** 最後の活動（最後の指示 → 記録の mtime → 起動の時刻） */
-export function lastActivity(input: Pick<RankInput, "lastPromptAt" | "transcriptMtime" | "startedAt">): number | undefined {
-  return input.lastPromptAt ?? input.transcriptMtime ?? input.startedAt;
+/**
+ * 最後の活動: 最後の指示・最後の hook の事象（Stop など）・記録（jsonl）の mtime のうちいちばん新しいもの（どれも無ければ起動の時刻）。
+ * 最後の指示だけだと、Claude が働いている間も指示を打った時刻のまま進まない（#288）
+ */
+export function lastActivity(
+  input: Pick<RankInput, "lastPromptAt" | "lastEventAt" | "transcriptMtime" | "startedAt">,
+): number | undefined {
+  const known = [input.lastPromptAt, input.lastEventAt, input.transcriptMtime].filter((at): at is number => at !== undefined);
+  return known.length > 0 ? Math.max(...known) : input.startedAt;
 }
 
 const STATE_ORDER: Readonly<Record<CcState, number>> = { needs_input: 0, running: 1, idle: 2 };
@@ -290,6 +298,7 @@ export class CcRegistry implements CcHookReceiver {
         waitingKind,
         waitingSince,
         lastPromptAt: parseTime(row?.lastPromptAt ?? null),
+        lastEventAt: parseTime(row?.lastEventAt ?? null),
         transcriptMtime: extra?.transcriptMtime,
         startedAt: agent.startedAt,
         pid: agent.pid,
