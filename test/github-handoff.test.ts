@@ -48,6 +48,7 @@ function view(sessionId: string, pid: number, cwd: string, name: string): CcSess
     waitingKind: null,
     waitingSince: undefined,
     lastPromptAt: undefined,
+    lastEventAt: undefined,
     transcriptMtime: undefined,
     startedAt: BASE,
     state: "idle",

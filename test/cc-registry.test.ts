@@ -11,6 +11,7 @@ import {
   CC_STALE_LIMIT,
   CcRegistry,
   type CcTimers,
+  lastActivity,
   rankSessions,
   type RankInput,
 } from "../src/cc/registry.ts";
@@ -225,7 +226,15 @@ test("CcRegistry: status: waiting は hook が無くても判断待ち（待ち�
   assert.equal(s.store.get(S1)!.waitingFor, null);
 });
 
-test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中（最後の指示の新しい順）→ 待機（最後の指示 → 記録の mtime → 起動の新しい順）", () => {
+test("lastActivity: 最後の指示・最後の事象・記録の mtime のいちばん新しいもの。どれも無ければ起動の時刻（#288）", () => {
+  assert.equal(lastActivity({ lastPromptAt: 100, lastEventAt: undefined, transcriptMtime: 900, startedAt: 1 }), 900);
+  assert.equal(lastActivity({ lastPromptAt: 100, lastEventAt: 350, transcriptMtime: 200, startedAt: 1 }), 350);
+  assert.equal(lastActivity({ lastPromptAt: 700, lastEventAt: 350, transcriptMtime: undefined, startedAt: 1 }), 700);
+  assert.equal(lastActivity({ lastPromptAt: undefined, lastEventAt: undefined, transcriptMtime: undefined, startedAt: 500 }), 500);
+  assert.equal(lastActivity({ lastPromptAt: undefined, lastEventAt: undefined, transcriptMtime: undefined, startedAt: undefined }), undefined);
+});
+
+test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中 → 待機（どちらも最後の活動（最後の指示・最後の事象・記録の mtime のいちばん新しいもの → 起動）の新しい順）", () => {
   const base: RankInput = {
     sessionId: "",
     status: "idle",
@@ -233,6 +242,7 @@ test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中（�
     waitingKind: null,
     waitingSince: undefined,
     lastPromptAt: undefined,
+    lastEventAt: undefined,
     transcriptMtime: undefined,
     startedAt: undefined,
   };
@@ -243,6 +253,7 @@ test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中（�
     { ...base, sessionId: "idle-none" },
     { ...base, sessionId: "running-old", status: "busy", lastPromptAt: 200 },
     { ...base, sessionId: "running-new", status: "busy", lastPromptAt: 300 },
+    { ...base, sessionId: "running-stop", status: "busy", lastPromptAt: 200, lastEventAt: 350 },
     { ...base, sessionId: "wait-new", status: "waiting", waitingSince: 50 },
     { ...base, sessionId: "wait-old", waitingKind: "permission_prompt", waitingSince: 10 },
     { ...base, sessionId: "wait-busy", status: "busy", waitingKind: "permission_prompt", waitingSince: 1, lastPromptAt: 250 },
@@ -255,13 +266,14 @@ test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中（�
       ["wait-old", "needs_input"],
       ["wait-held", "needs_input"],
       ["wait-new", "needs_input"],
+      ["running-stop", "running"],
       ["running-new", "running"],
       ["wait-busy", "running"],
       ["running-old", "running"],
+      ["idle-old-prompt", "idle"],
       ["idle-prompt", "idle"],
       ["idle-mtime", "idle"],
       ["idle-started", "idle"],
-      ["idle-old-prompt", "idle"],
       ["idle-none", "idle"],
     ],
   );

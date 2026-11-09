@@ -98,7 +98,7 @@
   1. **判断待ち（needs_input）**: 保留中の `PermissionRequest` がある、`status === "waiting"`（`waitingFor` を添える）、または `Notification`（`permission_prompt` / `elicitation_dialog` / `elicitation_url_dialog` / `agent_needs_input`。どれも出てから約 6 秒後に来る）が **その後の `UserPromptSubmit`・`Stop`・`PermissionRequest` の解決より新しく、かつその後に読んだ `status` が `busy` でも 2 回続けて `idle` でもない**（Esc の中断では `Stop` が来ないので、`status` で解く）。`idle_prompt` は判断待ちにしない。そのセッションに `pending` の `cc_permissions` の行があるか、直近 60 秒に解決した行があれば、`permission_prompt` の `Notification` は判断待ちの元にしない（保留中でも 6 秒で来るため。§5.2）。
   2. **実行中（running）**: `status === "busy"`。
   3. **待機（idle）**: それ以外。
-  並び: needs_input は待ち始めの古い順 → running は最後の指示の新しい順 → idle は最後の指示の新しい順（無ければ jsonl の mtime → `startedAt`）。
+  並び: needs_input は待ち始めの古い順 → running・idle は最後の活動（最後の指示・最後の hook の事象（Stop など）・jsonl の mtime のいちばん新しいもの。無ければ `startedAt`。#288）の新しい順。
 - 「最後の指示」= `UserPromptSubmit` を受けた時刻（self-agent から送ったものも RC・端末から打ったものも同じ）。本文は **先頭 200 字を DB に残す（30 日）**（決定 1）。**保存の前に、まとめた貼り付けの包み（先頭の `\n\n<pasted_content id="[0-9a-f]+">\n` と末尾の閉じタグ。途中に複数あれば中身だけ残す）を外し、前後の改行・空白を除いてから 200 字に切る**（§1.4）。log には出さない。`permission_mode` も行に残して一覧に印を出す（`auto` / `default` / …）。**`permission_mode` を更新するのは `UserPromptSubmit`・`Stop`・`PermissionRequest` だけ**（`Notification` には無い。`COALESCE` で消さない）。
 - 内部形式（C）は `src/cc/claude-dirs.ts` に閉じ込め、形の検証に通らなければ `undefined`（例外にしない。log は件数だけ、変わったとき 1 回）。`tmux` 欄は `<session>:@<window_id>.%<pane>` の形（`/:@?\d{1,9}\.%\d{1,9}$/`。`@` の無い古い形も通す）。
 - Bot 自身の SDK の run は受け口に来ない（§1.7）。**`claude agents --json` に無い `session_id` の事象は採らない**（CC1 から。§7 の 11: 偽の hook への対策の (a)）。起動直後で一覧にまだ無いことがあるので 30 秒だけ保留し、次の一覧に現れれば採り、現れなければ捨てる（`PermissionRequest` は保留せず、一覧に無ければ即「空の本文」）。

@@ -45,6 +45,7 @@ function view(sessionId: string, pid: number): CcSessionView {
     waitingKind: null,
     waitingSince: undefined,
     lastPromptAt: undefined,
+    lastEventAt: undefined,
     transcriptMtime: undefined,
     startedAt: BASE,
     state: "idle",
