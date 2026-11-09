@@ -40,7 +40,7 @@ export type RankInput = {
   waitingSince: number | undefined;
   /** 最後の UserPromptSubmit を受けた時刻 */
   lastPromptAt: number | undefined;
-  /** 最後の hook の事象（Stop など）を受けた時刻 */
+  /** 最後の hook の事象（Stop など）を受けた時刻（cc_sessions.last_event_at。idle_prompt の Notification では進まない） */
   lastEventAt: number | undefined;
   /** 記録（jsonl）の mtime */
   transcriptMtime: number | undefined;
@@ -57,7 +57,9 @@ export function sessionState(input: RankInput): CcState {
 }
 
 /**
- * 最後の活動: 最後の指示・最後の hook の事象（Stop など）・記録（jsonl）の mtime のうちいちばん新しいもの（どれも無ければ起動の時刻）。
+ * 最後の活動（§2.2。この定義が唯一で、rankSessions・since・cc_list はこれを使う）: 最後の指示・最後の hook の事象（Stop など。
+ * 活動でない idle_prompt の Notification は cc-sessions.ts の applyEvent が進めない）・記録（jsonl）の mtime のうちいちばん新しいもの。
+ * どれも無ければ起動の時刻。主は mtime（Claude が書くたびに進む）で、hook の時刻は mtime を読めないときの補助。
  * 最後の指示だけだと、Claude が働いている間も指示を打った時刻のまま進まない（#288）
  */
 export function lastActivity(
@@ -76,8 +78,8 @@ function ascending(a: number | undefined, b: number | undefined): number {
 }
 
 /**
- * 状態を付けて並べる（純関数。§2.2）: 判断待ち（待ち始めの古い順）→ 実行中 → 待機（どちらも最後の指示の新しい順。
- * 無ければ記録の mtime → 起動の時刻）。同じなら sessionId の順
+ * 状態を付けて並べる（純関数。§2.2）: 判断待ち（待ち始めの古い順）→ 実行中 → 待機（どちらも lastActivity の新しい順）。
+ * 同じなら sessionId の順
  */
 export function rankSessions<T extends RankInput>(items: readonly T[]): Array<T & { state: CcState }> {
   return items

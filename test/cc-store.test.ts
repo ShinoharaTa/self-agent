@@ -98,10 +98,12 @@ test("CcSessionStore.applyEvent: UserPromptSubmit は最後の指示（本文は
   store.applyEvent(S1, { event: "Notification", waitingKind: "agent_needs_input" }, at(9.6));
   row = store.get(S1)!;
   assert.equal(row.waitingSince, at(9.6).toISOString());
-  // 判断待ちにしない Notification は last_event だけ
-  store.applyEvent(S1, { event: "Notification" }, at(10));
+  // 判断待ちにしない Notification（idle_prompt など）は permission_mode だけで、last_event・last_event_at は進めない（#288）
+  assert.equal(store.applyEvent(S1, { event: "Notification", permissionMode: "plan" }, at(10)), true);
   assert.equal(store.get(S1)?.waitingKind, "agent_needs_input");
-  assert.equal(store.get(S1)?.permissionMode, "auto");
+  assert.equal(store.get(S1)?.permissionMode, "plan");
+  assert.equal(store.get(S1)?.lastEvent, "Notification");
+  assert.equal(store.get(S1)?.lastEventAt, at(9.6).toISOString());
 
   store.applyEvent(S1, { event: "Stop" }, at(12));
   row = store.get(S1)!;
