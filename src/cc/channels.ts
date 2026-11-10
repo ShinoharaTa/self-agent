@@ -1116,7 +1116,10 @@ export class CcChannels {
     const channelName = ccChannelName(name, cwd, taken);
     // 上の await の間に別のサーバー（キューは別）で同じセッションのチャンネルが作られていれば作らない
     const raced = store.anyFor(sessionId);
-    if (raced !== undefined) return { ok: false, reason: "exists", channelId: raced.channelId, guildId: raced.guildId };
+    if (raced !== undefined) {
+      this.reopenIfListed(raced);
+      return { ok: false, reason: "exists", channelId: raced.channelId, guildId: raced.guildId };
+    }
     const channelId = await gateway.createTextChannel(guildId, { name: channelName, parentId: categoryId, topic: ccChannelTopic(name, dir) });
     try {
       store.create({ channelId, guildId, sessionId, name: channelName, cwd, origin });
