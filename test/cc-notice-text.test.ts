@@ -112,7 +112,7 @@ async function setup(t: TestContext, opts: { holdSec?: number; agents?: AgentEnt
     agents: { list: async () => next },
     dirs: {
       sessionFile: (_pid, sessionId) => (sessionId === S1 ? { bridgeSessionId: BRIDGE, tmux: undefined } : undefined),
-      transcriptMtime: () => undefined,
+      transcriptLastAt: () => undefined,
     },
     store: sessions,
     now,

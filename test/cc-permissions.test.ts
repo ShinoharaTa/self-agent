@@ -123,7 +123,7 @@ async function setup(t: TestContext, opts: { holdSec?: number; questionHoldSec?:
   registry = new CcRegistry({
     cfg: { ccPollSec: 10 },
     agents: { list: async () => next },
-    dirs: { sessionFile: () => undefined, transcriptMtime: () => undefined },
+    dirs: { sessionFile: () => undefined, transcriptLastAt: () => undefined },
     store: sessions,
     now,
     timers: {

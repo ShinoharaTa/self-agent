@@ -488,7 +488,7 @@ test("CcRegistry: 一覧に居るセッションの hook の事象だけを onEv
   const registry = new CcRegistry({
     cfg: { ccPollSec: 10 },
     agents: { list: async () => ({ ok: true, agents: [entry], dropped: 0 }) },
-    dirs: { sessionFile: () => undefined, transcriptMtime: () => undefined },
+    dirs: { sessionFile: () => undefined, transcriptLastAt: () => undefined },
     store,
     now,
     timers: { after: () => () => undefined },

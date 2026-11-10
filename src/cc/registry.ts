@@ -44,8 +44,8 @@ export type RankInput = {
   lastPromptAt: number | undefined;
   /** 最後の hook の事象（Stop など）を受けた時刻（cc_sessions.last_event_at。idle_prompt の Notification では進まない） */
   lastEventAt: number | undefined;
-  /** 記録（jsonl）の mtime */
-  transcriptMtime: number | undefined;
+  /** 記録（jsonl）の最後の会話の行の時刻（#310） */
+  transcriptLastAt: number | undefined;
   startedAt: number | undefined;
 };
 
@@ -60,14 +60,15 @@ export function sessionState(input: RankInput): CcState {
 
 /**
  * 最後の活動（§2.2。この定義が唯一で、rankSessions・since・cc_list はこれを使う）: 最後の指示・最後の hook の事象（Stop など。
- * 活動でない idle_prompt の Notification は cc-sessions.ts の applyEvent が進めない）・記録（jsonl）の mtime のうちいちばん新しいもの。
- * どれも無ければ起動の時刻。主は mtime（Claude が書くたびに進む）で、hook の時刻は mtime を読めないときの補助。
+ * 活動でない idle_prompt の Notification は cc-sessions.ts の applyEvent が進めない）・記録（jsonl）の最後の会話の行（user・assistant）の
+ * timestamp のうちいちばん新しいもの。どれも無ければ起動の時刻。記録の mtime は会話が無くても進む（RC の連携のメタデータなどを書き換える）
+ * ので使わない（#310）。
  * 最後の指示だけだと、Claude が働いている間も指示を打った時刻のまま進まない（#288）
  */
 export function lastActivity(
-  input: Pick<RankInput, "lastPromptAt" | "lastEventAt" | "transcriptMtime" | "startedAt">,
+  input: Pick<RankInput, "lastPromptAt" | "lastEventAt" | "transcriptLastAt" | "startedAt">,
 ): number | undefined {
-  const known = [input.lastPromptAt, input.lastEventAt, input.transcriptMtime].filter((at): at is number => at !== undefined);
+  const known = [input.lastPromptAt, input.lastEventAt, input.transcriptLastAt].filter((at): at is number => at !== undefined);
   return known.length > 0 ? Math.max(...known) : input.startedAt;
 }
 
@@ -149,7 +150,7 @@ const REAL_TIMERS: CcTimers = {
 export type CcRegistryDeps = {
   cfg: Pick<Config, "ccPollSec">;
   agents: Pick<AgentsClient, "list">;
-  dirs: Pick<ClaudeDirs, "sessionFile" | "transcriptMtime">;
+  dirs: Pick<ClaudeDirs, "sessionFile" | "transcriptLastAt">;
   store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "clearWaiting" | "listAlive" | "listGone">;
   now: () => Date;
   timers?: CcTimers;
@@ -184,7 +185,7 @@ export type CcRegistryDeps = {
 };
 
 /** sessions/<pid>.json と記録から読んだ補助 */
-type Extra = { bridgeSessionId: string | undefined; tmux: string | undefined; transcriptMtime: number | undefined };
+type Extra = { bridgeSessionId: string | undefined; tmux: string | undefined; transcriptLastAt: number | undefined };
 
 function errorKind(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
@@ -307,7 +308,7 @@ export class CcRegistry implements CcHookReceiver {
         waitingSince,
         lastPromptAt: parseTime(row?.lastPromptAt ?? null),
         lastEventAt: parseTime(row?.lastEventAt ?? null),
-        transcriptMtime: extra?.transcriptMtime,
+        transcriptLastAt: extra?.transcriptLastAt,
         startedAt: agent.startedAt,
         pid: agent.pid,
         name: agent.name,
@@ -482,7 +483,7 @@ export class CcRegistry implements CcHookReceiver {
         extras.set(agent.sessionId, {
           bridgeSessionId: file?.bridgeSessionId,
           tmux: file?.tmux,
-          transcriptMtime: agent.cwd === undefined ? undefined : this.deps.dirs.transcriptMtime(agent.cwd, agent.sessionId),
+          transcriptLastAt: agent.cwd === undefined ? undefined : this.deps.dirs.transcriptLastAt(agent.cwd, agent.sessionId),
         });
         if (agent.status === "waiting") {
           if (!this.observedWaiting.has(agent.sessionId)) this.observedWaiting.set(agent.sessionId, now);

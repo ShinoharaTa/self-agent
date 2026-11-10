@@ -198,7 +198,7 @@ async function setup(t: TestContext, opts: { sessions?: number; mem?: number } =
   const registry = new CcRegistry({
     cfg: { ccPollSec: 10 },
     agents: { list: async () => listResult ?? { ok: true, agents: [...agents], dropped: 0 } },
-    dirs: { sessionFile: () => undefined, transcriptMtime: () => undefined },
+    dirs: { sessionFile: () => undefined, transcriptLastAt: () => undefined },
     store,
     now,
     timers: { after: () => () => undefined },

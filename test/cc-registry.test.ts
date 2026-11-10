@@ -62,7 +62,7 @@ function setup(t: TestContext, pollSec = 10, busy?: () => boolean) {
   const mtimes = new Map<string, number>();
   const dirs = {
     sessionFile: (_pid: number, sessionId: string) => files.get(sessionId),
-    transcriptMtime: (_cwd: string, sessionId: string) => mtimes.get(sessionId),
+    transcriptLastAt: (_cwd: string, sessionId: string) => mtimes.get(sessionId),
   };
   const delays: number[] = [];
   const scheduled: Array<() => void> = [];
@@ -319,11 +319,11 @@ test("CcRegistry: status: waiting は hook が無くても判断待ち（待ち�
 });
 
 test("lastActivity: 最後の指示・最後の事象・記録の mtime のいちばん新しいもの。どれも無ければ起動の時刻（#288）", () => {
-  assert.equal(lastActivity({ lastPromptAt: 100, lastEventAt: undefined, transcriptMtime: 900, startedAt: 1 }), 900);
-  assert.equal(lastActivity({ lastPromptAt: 100, lastEventAt: 350, transcriptMtime: 200, startedAt: 1 }), 350);
-  assert.equal(lastActivity({ lastPromptAt: 700, lastEventAt: 350, transcriptMtime: undefined, startedAt: 1 }), 700);
-  assert.equal(lastActivity({ lastPromptAt: undefined, lastEventAt: undefined, transcriptMtime: undefined, startedAt: 500 }), 500);
-  assert.equal(lastActivity({ lastPromptAt: undefined, lastEventAt: undefined, transcriptMtime: undefined, startedAt: undefined }), undefined);
+  assert.equal(lastActivity({ lastPromptAt: 100, lastEventAt: undefined, transcriptLastAt: 900, startedAt: 1 }), 900);
+  assert.equal(lastActivity({ lastPromptAt: 100, lastEventAt: 350, transcriptLastAt: 200, startedAt: 1 }), 350);
+  assert.equal(lastActivity({ lastPromptAt: 700, lastEventAt: 350, transcriptLastAt: undefined, startedAt: 1 }), 700);
+  assert.equal(lastActivity({ lastPromptAt: undefined, lastEventAt: undefined, transcriptLastAt: undefined, startedAt: 500 }), 500);
+  assert.equal(lastActivity({ lastPromptAt: undefined, lastEventAt: undefined, transcriptLastAt: undefined, startedAt: undefined }), undefined);
 });
 
 test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中 → 待機（どちらも最後の活動（最後の指示・最後の事象・記録の mtime のいちばん新しいもの → 起動）の新しい順）", () => {
@@ -335,13 +335,13 @@ test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中 → 
     waitingSince: undefined,
     lastPromptAt: undefined,
     lastEventAt: undefined,
-    transcriptMtime: undefined,
+    transcriptLastAt: undefined,
     startedAt: undefined,
   };
   const items: RankInput[] = [
     { ...base, sessionId: "idle-started", startedAt: 500 },
-    { ...base, sessionId: "idle-old-prompt", lastPromptAt: 100, transcriptMtime: 900 },
-    { ...base, sessionId: "idle-mtime", transcriptMtime: 600 },
+    { ...base, sessionId: "idle-old-prompt", lastPromptAt: 100, transcriptLastAt: 900 },
+    { ...base, sessionId: "idle-mtime", transcriptLastAt: 600 },
     { ...base, sessionId: "idle-none" },
     { ...base, sessionId: "running-old", status: "busy", lastPromptAt: 200 },
     { ...base, sessionId: "running-new", status: "busy", lastPromptAt: 300 },
@@ -527,7 +527,7 @@ test("CcRegistry: 読んでいる途中の touch は予約を変えない", asyn
           release = () => resolve({ ok: true, agents: [agent(S1)], dropped: 0 });
         }),
     },
-    dirs: { sessionFile: () => undefined, transcriptMtime: () => undefined },
+    dirs: { sessionFile: () => undefined, transcriptLastAt: () => undefined },
     store: new CcSessionStore(db, now),
     now,
     timers: {
@@ -624,7 +624,7 @@ test("CcRegistry: 一覧から消えたセッションは ended、同じ session
   const registry = new CcRegistry({
     cfg: { ccPollSec: 10 },
     agents: { list: async () => ({ ok: true, agents: results.shift() ?? [], dropped: 0 }) },
-    dirs: { sessionFile: () => undefined, transcriptMtime: () => undefined },
+    dirs: { sessionFile: () => undefined, transcriptLastAt: () => undefined },
     store,
     now,
     ended: (row) => ended.push(row.sessionId),
