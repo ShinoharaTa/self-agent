@@ -441,6 +441,24 @@ test("ensureSandboxWriteDirs: projects・.cache・.tmp と jobs、cwd を作る�
   assert.throws(() => ensureSandboxWriteDirs(workDir), /実際のディレクトリ/);
 });
 
+test("ensureSandboxWriteDirs: projects・.cache・.tmp が symlink・ファイルなら投げる（#299）。実際のディレクトリ・無いときは通る", (t) => {
+  const { root, workDir } = shellSetup(t);
+  for (const name of ["projects", ".cache", ".tmp"]) {
+    ensureSandboxWriteDirs(workDir);
+    rmSync(join(workDir, name), { recursive: true });
+    symlinkSync(root, join(workDir, name));
+    assert.throws(() => ensureSandboxWriteDirs(workDir), /実際のディレクトリ/, `${name} が symlink`);
+    assert.ok(lstatSync(join(workDir, name)).isSymbolicLink(), `${name} はそのまま`);
+    rmSync(join(workDir, name));
+    writeFileSync(join(workDir, name), "");
+    assert.throws(() => ensureSandboxWriteDirs(workDir), /実際のディレクトリ/, `${name} がファイル`);
+    rmSync(join(workDir, name));
+    // 無ければ作る
+    ensureSandboxWriteDirs(workDir);
+    assert.ok(lstatSync(join(workDir, name)).isDirectory(), name);
+  }
+});
+
 test("projectDirName: workDir のパスの英数字以外を - にした名前（CLI が cwd から作る記録のディレクトリ名と同じ）。1〜64 字でなければ undefined", () => {
   assert.equal(projectDirName("/home/u/.local/share/self-agent/work"), "-home-u--local-share-self-agent-work");
   assert.equal(projectDirName(`/${"w".repeat(63)}`), `-${"w".repeat(63)}`);

@@ -202,20 +202,24 @@ export function sandboxSettings(places: SandboxPlaces): SandboxSettings {
 
 /**
  * sandbox の書き込み先（projects・.cache・.tmp）と、denyRead に入れる作業ジョブの場所（jobs）、CLI の cwd（ensureCwdDir）を作る（.cache は掃除で丸ごと消えることがある）。
- * jobs が実際のディレクトリでない（symlink・ファイル）なら作らずに投げる（denyRead が symlink の先に向かないように）。失敗したら投げる
+ * どれかが既にあって実際のディレクトリでない（symlink・ファイル）なら作らずに投げる（allowWrite・denyRead が symlink の先に向かないように。#299）。失敗したら投げる
  */
 export function ensureSandboxWriteDirs(workDir: string): void {
   const real = realPath(workDir);
-  for (const name of SANDBOX_WRITE_DIR_NAMES) mkdirSync(join(real, name), { recursive: true });
-  const jobs = join(real, JOBS_DIR_NAME);
+  for (const name of SANDBOX_WRITE_DIR_NAMES) ensureRealDir(join(real, name), "sandbox の書き込み先が実際のディレクトリではありません");
+  ensureRealDir(join(real, JOBS_DIR_NAME), "作業ジョブの場所が実際のディレクトリではありません");
+  ensureCwdDir(workDir);
+}
+
+/** path が無ければ作り、あって実際のディレクトリでない（symlink・ファイル）なら message で投げる（message にパスは入れない） */
+function ensureRealDir(path: string, message: string): void {
   try {
-    const stats = lstatSync(jobs);
-    if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error("作業ジョブの場所が実際のディレクトリではありません");
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error(message);
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    mkdirSync(jobs);
+    mkdirSync(path);
   }
-  ensureCwdDir(workDir);
 }
 
 /**
