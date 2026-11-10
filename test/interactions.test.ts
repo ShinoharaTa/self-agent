@@ -101,9 +101,14 @@ test("HELP_TEXT は登録コマンドを全部説明している", (t) => {
     turn: { ...stores, runner: { run: async () => assert.fail("想定外の呼び出し") }, log },
     inboxRotator: { rotateNow: async () => assert.fail("想定外の呼び出し") },
     reminders: stores.reminders,
+    // 登録が条件付きのコマンド（ゲストの /guests・SELF_AGENT_CC の /cc）も説明しているか見るため、どちらも渡す
+    guests: {} as GuestAdmin,
+    ccChannels: () => undefined,
     log,
   });
 
+  const names = commands.map(({ def }) => def.name);
+  assert.ok(names.includes("guests") && names.includes("cc"), names.join(","));
   const lines = HELP_TEXT.split("\n");
   for (const { def } of commands) {
     assert.ok(lines.some((line) => line.startsWith(`\`/${def.name}\``) || line.startsWith(`\`/${def.name} `)), def.name);
