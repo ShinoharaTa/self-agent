@@ -3,7 +3,7 @@
 // CLI の既定のツール）に自前の MCP ツールを足す。許可は canUseTool（permission-bridge.ts）で Discord・Web のカードに流す。
 // 軽いモード（query-options.ts の buildQueryOptions）は変えない。キャッシュの規則の例外（preset・snapshot: true・settingSources）はこの profile だけ
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type {
   CanUseTool,
   HookCallback,
@@ -36,6 +36,8 @@ export const PROJECT_SECRET_GUARD_FAILED_REASON = "判定に失敗したため�
 const SECRET_GUARD_TOOLS: readonly string[] = ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "NotebookEdit"];
 /** 下へ辿って探すツール（対象の場所が秘密の場所を含むときも拒否する） */
 const SEARCH_TOOLS: readonly string[] = ["Glob", "Grep"];
+/** 共有の場所（skills・agents）の例外を効かせる読むだけのツール（書く側は秘密のまま。#291） */
+const SHARED_READ_TOOLS: readonly string[] = ["Read", "Glob", "Grep"];
 /** パスを持つ入力の項目 */
 const PATH_KEYS: readonly string[] = ["file_path", "path", "notebook_path"];
 
@@ -104,9 +106,11 @@ export function projectSecretPlaces(cfg: Pick<Config, "dataDir" | "claudeConfigD
 }
 
 /**
- * 秘密の場所の中にあるが共有してよい場所（docs/plan/unify.md §5.5 の 3 の「link の先を除く」。#291）: CONFIG_DIR と ~/.claude の
+ * 秘密の場所の中にあるが読んでよい場所（docs/plan/unify.md §5.5 の 3 の「link の先を除く」。#291）: CONFIG_DIR と ~/.claude の
  * skills・agents（UNIFY_SHARED_LINKS。unify-setup で CONFIG_DIR のものは ~/.claude への symlink）。skill の補助ファイル（REFERENCE.md など）を
- * Read で読めるようにするため。字面と realpath の両方がこの中のときだけ秘密の場所の判定を飛ばす（中の symlink が秘密を指せば拒否のまま）
+ * Read で読めるようにするため。Read・Glob・Grep で、字面と realpath の両方がこの中のときだけ秘密の場所の判定を飛ばす
+ * （中の symlink が秘密を指せば拒否のまま。書く側のツールは秘密のまま）。字面のパスで返し、touchesSecretPlace が「親の realpath + 名前」と比べる
+ * （この場所そのものが symlink でも、その先は広げない）
  */
 export function projectSharedPlaces(cfg: Pick<Config, "claudeConfigDir">, home: string): string[] {
   return [
@@ -119,7 +123,8 @@ export function projectSharedPlaces(cfg: Pick<Config, "claudeConfigDir">, home: 
  * ツールの入力が秘密の場所を指すか（純関数に近い。realpath だけ読む）。対象は file_path・path・notebook_path（無ければ cwd）と、
  * Glob の pattern の探し始める場所。パスの字面（resolve したもの）と realpath のどちらかが秘密の場所（字面と realpath の両方）の中なら true。
  * Glob・Grep は対象の場所が秘密の場所を含む（祖先）ときも true（下へ辿って読めるため）。解決できなければ true（fail-closed）。
- * shared（projectSharedPlaces）を渡せば、字面と realpath の両方がその中の対象は秘密の場所とみなさない（#291）
+ * shared（projectSharedPlaces）を渡せば、Read・Glob・Grep で字面と realpath の両方がその中の対象は秘密の場所とみなさない（#291）。
+ * 共有の場所は字面と「親の realpath + 名前」だけで、その場所そのものの symlink の先には広げない（広げると許可が増える側なので）
  */
 export function touchesSecretPlace(
   toolName: string,
@@ -145,13 +150,15 @@ export function touchesSecretPlace(
     else raws.push(join(expandHome(base, home), prefix));
   }
   const places = secrets.flatMap((place) => [resolve(place), realOrResolved(place)]);
-  const sharedPlaces = shared.flatMap((place) => [resolve(place), realOrResolved(place)]);
+  const sharedPlaces = SHARED_READ_TOOLS.includes(toolName)
+    ? shared.flatMap((place) => [resolve(place), join(realOrResolved(dirname(place)), basename(place))])
+    : [];
   for (const raw of raws) {
     const literal = resolve(cwd, expandHome(raw, home));
     const real = resolveRealPath(literal);
     if (real === undefined) return true;
     // 共有の場所（skills・agents）は字面と realpath の両方が中のときだけ飛ばす（中の symlink が秘密を指せば real が外に出て拒否になる）
-    if ([literal, real].every((target) => sharedPlaces.some((place) => isSameOrInside(target, place)))) continue;
+    if (sharedPlaces.length > 0 && [literal, real].every((target) => sharedPlaces.some((place) => isSameOrInside(target, place)))) continue;
     for (const target of [literal, real]) {
       for (const place of places) {
         if (isSameOrInside(target, place)) return true;
