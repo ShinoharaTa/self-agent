@@ -39,6 +39,8 @@ const DIR_MAX = 40;
 /** [やめる]・失効で取り消したときの一言 */
 export const CC_SEND_CANCELLED = "送りませんでした";
 export const CC_START_CANCELLED = "起動しませんでした";
+/** [起動する] で launch が投げたとき（理由の種類は log だけ。#292） */
+export const CC_START_THREW = "起動できませんでした（起動の処理に失敗しました）";
 /** SELF_AGENT_CC が無効なときに押された・残っていたら添える */
 export const CC_DISABLED_NOTE = "（Claude Code の連携が無効です）";
 /** [起動する] が一時的な理由で失敗したときに添える（確認待ちに戻してボタンを残す） */
@@ -373,20 +375,29 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       return;
     }
     let tmuxSession: string | undefined;
-    const result = await runtime.starter.launch({
-      project: row.project,
-      title: row.title,
-      ...(row.text === null ? {} : { text: row.text }),
-      ...(row.permissionMode === null ? {} : { permissionMode: row.permissionMode }),
-      startedBy: "tool",
-      channelId: row.channelId,
-      onTrustPending: () => {
-        if (tmuxSession === undefined || row.messageId === null) return;
-        void ccPosts
-          .editMessage(row.channelId, row.messageId, { text: ccStartResultText(row, ccStartedTexts(tmuxSession, true)), components: [] })
-          .catch((error: unknown) => log(`Claude Code: 起動の確認を書き換えられませんでした（#${id}、${errorKind(error)}）`));
-      },
-    });
+    let result: Awaited<ReturnType<CcStarter["launch"]>>;
+    try {
+      result = await runtime.starter.launch({
+        project: row.project,
+        title: row.title,
+        ...(row.text === null ? {} : { text: row.text }),
+        ...(row.permissionMode === null ? {} : { permissionMode: row.permissionMode }),
+        startedBy: "tool",
+        channelId: row.channelId,
+        onTrustPending: () => {
+          if (tmuxSession === undefined || row.messageId === null) return;
+          void ccPosts
+            .editMessage(row.channelId, row.messageId, { text: ccStartResultText(row, ccStartedTexts(tmuxSession, true)), components: [] })
+            .catch((error: unknown) => log(`Claude Code: 起動の確認を書き換えられませんでした（#${id}、${errorKind(error)}）`));
+        },
+      });
+    } catch (error) {
+      // launch が投げた（戻り値の失敗でない）ときも started のまま残さない（Expirer は awaiting_confirm しか見ない。#292）
+      ccStarts.transition(id, ["started"], "failed");
+      log(`Claude Code: 起動できませんでした（#${id}、${errorKind(error)}）`);
+      await responder.update({ text: ccStartResultText(row, [CC_START_THREW]), components: [] });
+      return;
+    }
     if (!result.ok) {
       const failed = `起動できませんでした（${START_FAILURE_TEXT[result.reason]}）`;
       // 時間が経てば通りうる理由なら確認待ちに戻してボタンを残す（10 分の失効は作った時刻から数えたまま）
