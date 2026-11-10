@@ -685,3 +685,20 @@ test("起動（CC13）: [起動して続ける] の resumeChannelId を onBound 
   assert.equal(gaveUp, 1);
   assert.deepEqual(lost.bound, []);
 });
+
+test("起動（#315）: new-session の後に最初の指示を積めなくても ok（sendFailed）で返し、ペインは結びつけの対象に入る（送信は無し）", async (t) => {
+  const s = await setup(t);
+  s.sends.add = () => {
+    throw new Error("SQLITE_FULL");
+  };
+  const result = await s.starter.launch({ project: "alpha", title: "a", text: "最初の指示", startedBy: "tool", channelId: "channel-1", guildId: "guild-1" });
+  assert.deepEqual(result, { ok: true, tmuxSession: "alpha", paneId: "%9", sendId: undefined, sendFailed: true });
+  assert.equal(s.starter.pendingStarts().length, 1);
+  assert.ok(s.logs.some((line) => line.startsWith("Claude Code: 最初の指示を積めませんでした")));
+  assert.ok(s.logs.every((line) => !line.includes("最初の指示 #")));
+  await s.showNew();
+  await s.fire(CC_START_CHECK_MS);
+  assert.deepEqual(s.bound, [{ sessionId: NEW, startedBy: "tool", channelId: "channel-1", guildId: "guild-1" }]);
+  assert.equal(s.store.get(NEW)?.startedBy, "tool");
+  assert.equal(s.starter.pendingStarts().length, 0);
+});

@@ -61,7 +61,7 @@ export type CcStartFailure =
   | "stopped";
 
 export type CcStartResult =
-  | { ok: true; tmuxSession: string; paneId: string; sendId: number | undefined }
+  | { ok: true; tmuxSession: string; paneId: string; sendId: number | undefined; sendFailed?: true }
   | { ok: false; reason: CcStartFailure };
 
 /** 起動の入力（Web の本文のまま。検証は start がする） */
@@ -489,18 +489,25 @@ export class CcStarter {
     }
     this.lastStartAt = now().getTime();
     const { sessionId: tmuxSessionId, paneId } = created.value;
-    const send =
-      input.text === undefined
-        ? undefined
-        : sends.add({
-            sessionId: null,
-            paneId,
-            startDir: input.dir,
-            text: input.text,
-            state: "queued",
-            ...(input.notificationId === undefined ? { origin: "start" } : { origin: "github", notificationId: input.notificationId }),
-            ...(input.channelId === undefined ? {} : { channelId: input.channelId }),
-          });
+    // 起動はもう済んでいるので、最初の指示を積めなくても ok で返し、ペインは結びつけの対象に入れる（#315）
+    let send: { id: number } | undefined;
+    let sendFailed = false;
+    if (input.text !== undefined) {
+      try {
+        send = sends.add({
+          sessionId: null,
+          paneId,
+          startDir: input.dir,
+          text: input.text,
+          state: "queued",
+          ...(input.notificationId === undefined ? { origin: "start" } : { origin: "github", notificationId: input.notificationId }),
+          ...(input.channelId === undefined ? {} : { channelId: input.channelId }),
+        });
+      } catch (error) {
+        sendFailed = true;
+        log(`Claude Code: 最初の指示を積めませんでした（${errorKind(error)}）`);
+      }
+    }
     const entry: Started = {
       startedBy: input.startedBy,
       project: input.project,
@@ -530,7 +537,7 @@ export class CcStarter {
       this.trustTimers.add(cancel);
     }
     if (send !== undefined) void this.deps.sender?.kick();
-    return { ok: true, tmuxSession: name, paneId, sendId: send?.id };
+    return { ok: true, tmuxSession: name, paneId, sendId: send?.id, ...(sendFailed ? { sendFailed: true as const } : {}) };
   }
 
   /**

@@ -45,6 +45,8 @@ export const CC_START_THREW = "起動できませんでした（起動の処理�
 export const CC_DISABLED_NOTE = "（Claude Code の連携が無効です）";
 /** [起動する] が一時的な理由で失敗したときに添える（確認待ちに戻してボタンを残す） */
 export const CC_START_RETRY_NOTE = "。少し待ってもう一度押してください";
+/** 起動はできたが最初の指示を積めなかった（launch の sendFailed。#315）ときに添える */
+export const CC_START_SEND_FAILED_NOTE = "。最初の指示は送れませんでした。端末か RC で送ってください";
 
 /** [起動する] が失敗しても確認待ちに戻す（時間が経てば通りうる）理由 */
 const START_RETRY_REASONS: readonly CcStartFailure[] = ["too_soon", "limit", "low_memory", "no_server"];
@@ -375,6 +377,9 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       return;
     }
     let tmuxSession: string | undefined;
+    let sendFailed = false;
+    const startedTexts = (trustPending: boolean): string[] =>
+      ccStartedTexts(tmuxSession ?? "", trustPending).map((text) => (sendFailed ? `${text}${CC_START_SEND_FAILED_NOTE}` : text));
     let result: Awaited<ReturnType<CcStarter["launch"]>>;
     try {
       result = await runtime.starter.launch({
@@ -387,7 +392,7 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
         onTrustPending: () => {
           if (tmuxSession === undefined || row.messageId === null) return;
           void ccPosts
-            .editMessage(row.channelId, row.messageId, { text: ccStartResultText(row, ccStartedTexts(tmuxSession, true)), components: [] })
+            .editMessage(row.channelId, row.messageId, { text: ccStartResultText(row, startedTexts(true)), components: [] })
             .catch((error: unknown) => log(`Claude Code: 起動の確認を書き換えられませんでした（#${id}、${errorKind(error)}）`));
         },
       });
@@ -412,6 +417,7 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       return;
     }
     tmuxSession = result.tmuxSession;
+    sendFailed = result.sendFailed === true;
     // 最初の指示の返事（CC8）は、この確認の投稿への返信にする
     if (result.sendId !== undefined && row.messageId !== null) ccSends.setMessageId(result.sendId, row.messageId);
     ccStarts.transition(id, ["started"], "started", {
@@ -419,7 +425,7 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       paneId: result.paneId,
       ...(result.sendId === undefined ? {} : { sendId: result.sendId }),
     });
-    await responder.update({ text: ccStartResultText(row, ccStartedTexts(result.tmuxSession, false)), components: [] });
+    await responder.update({ text: ccStartResultText(row, startedTexts(false)), components: [] });
   };
 
   const onKeep = async (kind: "send" | "start", id: number, responder: Responder): Promise<void> => {

@@ -27,7 +27,7 @@
 // log はサーバー ID と種類・件数・送信の番号だけ（チャンネル ID・名前・cwd・sessionId・本文は出さない。作った後の DB の失敗だけ例外）
 import { basename, dirname } from "node:path";
 import { realpathSync } from "node:fs";
-import { CC_START_RETRY_NOTE, ccStartedTexts, START_FAILURE_TEXT } from "../app/commands/cc-confirm.ts";
+import { CC_START_RETRY_NOTE, CC_START_SEND_FAILED_NOTE, ccStartedTexts, START_FAILURE_TEXT } from "../app/commands/cc-confirm.ts";
 import { layoutQueueKey } from "../app/commands/setup.ts";
 import type { ChannelOpsQueue } from "../app/channel-ops.ts";
 import type { KeyedSerialQueue } from "../app/queue.ts";
@@ -702,6 +702,7 @@ export class CcChannels {
     if (starter === undefined) return back("stopped", SUBMIT_REJECT_REPLY.stopped, true);
     const title = normalizeTitle(session?.name ?? "") ?? normalizeTitle(project) ?? "claude";
     let tmuxSession: string | undefined;
+    let sendFailed = false;
     let result: CcStartResult;
     try {
       result = await starter.launch({
@@ -716,7 +717,7 @@ export class CcChannels {
       resumeChannelId: channelId,
       onTrustPending: () => {
         if (tmuxSession === undefined) return;
-        this.editPrompt(channelId, pending.promptMessageId, { text: ccStartedTexts(tmuxSession, true)[0]!, components: [] });
+        this.editPrompt(channelId, pending.promptMessageId, { text: `${ccStartedTexts(tmuxSession, true)[0]!}${sendFailed ? CC_START_SEND_FAILED_NOTE : ""}`, components: [] });
       },
       onGaveUp: () => {
         if (!store.setState(channelId, "ended", ["resuming"])) return;
@@ -733,6 +734,8 @@ export class CcChannels {
     }
     if (!result.ok) return back(result.reason, `起動できませんでした（${START_FAILURE_TEXT[result.reason]}）${CC_START_RETRY_NOTE}`, true);
     tmuxSession = result.tmuxSession;
+    // 最初の指示（この発言の本文）を積めなかった（#315）: ⏳ は付けず、その旨を返す
+    sendFailed = result.sendFailed === true;
     log(`Claude Code: [起動して続ける] で起動しました（guild=${row.guildId}${result.sendId === undefined ? "" : `、最初の指示 #${result.sendId}`}）`);
     // 最初の指示の印と返事は、その発言に付ける
     if (result.sendId !== undefined) {
@@ -740,7 +743,7 @@ export class CcChannels {
       const send = this.deps.sends.get(result.sendId);
       if (send !== undefined) this.mark(send);
     }
-    return { ok: true, message: { text: ccStartedTexts(result.tmuxSession, false)[0]!, components: [] } };
+    return { ok: true, message: { text: `${ccStartedTexts(result.tmuxSession, false)[0]!}${sendFailed ? CC_START_SEND_FAILED_NOTE : ""}`, components: [] } };
   }
 
   /** [やめる]（cc:resume:keep）: その発言の保留を捨てる。保留が無ければ false（古い） */
