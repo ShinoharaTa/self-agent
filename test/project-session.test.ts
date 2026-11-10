@@ -2,7 +2,7 @@
 // 秘密の場所の拒否、ツールの not_available、ターンの runner の選び方、DB の v40
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -678,6 +678,57 @@ test("projectSecretPlaces: ~/.claude と /proc を含み、hook は MultiEdit �
   assert.ok(secrets.includes(join(home, ".claude")) && secrets.includes("/proc"));
   const guard = createSecretPlaceGuard(secrets, home, () => undefined);
   assert.ok(guard.matcher?.split("|").includes("MultiEdit"));
+});
+
+test("秘密の場所: 共有の link の skills・agents（CONFIG_DIR と ~/.claude）は読め、その中の symlink が秘密を指せば拒否（#291）", async (t) => {
+  const { projectSecretPlaces, projectSharedPlaces } = await import("../src/agent/project-profile.ts");
+  const { workspaceDir, home, cfg } = places(t);
+  const cwd = join(workspaceDir, "alpha");
+  // ~/.claude/skills/x/REFERENCE.md と、CONFIG_DIR/skills → ~/.claude/skills の symlink（unify-setup の形）
+  mkdirSync(join(home, ".claude/skills/x"), { recursive: true });
+  writeFileSync(join(home, ".claude/skills/x/REFERENCE.md"), "ref");
+  writeFileSync(join(home, ".claude/.credentials.json"), "{}");
+  mkdirSync(cfg.claudeConfigDir, { recursive: true });
+  symlinkSync(join(home, ".claude/skills"), join(cfg.claudeConfigDir, "skills"));
+  const secrets = projectSecretPlaces(cfg, home);
+  const shared = projectSharedPlaces(cfg, home);
+  assert.deepEqual(shared, [
+    join(cfg.claudeConfigDir, "skills"),
+    join(cfg.claudeConfigDir, "agents"),
+    join(home, ".claude/skills"),
+    join(home, ".claude/agents"),
+  ]);
+  for (const input of [{ file_path: join(cfg.claudeConfigDir, "skills/x/REFERENCE.md") }, { file_path: "~/.claude/skills/x/REFERENCE.md" }]) {
+    assert.equal(touchesSecretPlace("Read", input, cwd, secrets, home), true, "shared を渡さなければ今までどおり拒否");
+    assert.equal(touchesSecretPlace("Read", input, cwd, secrets, home, shared), false, JSON.stringify(input));
+  }
+  assert.equal(touchesSecretPlace("Grep", { pattern: "x", path: join(cfg.claudeConfigDir, "skills") }, cwd, secrets, home, shared), false);
+  assert.equal(touchesSecretPlace("Glob", { pattern: "~/.claude/skills/**/*.md" }, cwd, secrets, home, shared), false);
+  // skills の中の symlink が秘密を指せば拒否（realpath も共有の場所の中でなければ飛ばさない）
+  symlinkSync(join(home, ".claude/.credentials.json"), join(home, ".claude/skills/x/leak"));
+  assert.equal(touchesSecretPlace("Read", { file_path: join(cfg.claudeConfigDir, "skills/x/leak") }, cwd, secrets, home, shared), true);
+  // 共有の場所の外は今までどおり
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude/.credentials.json" }, cwd, secrets, home, shared), true);
+  assert.equal(touchesSecretPlace("Read", { file_path: join(cfg.claudeConfigDir, "settings.json") }, cwd, secrets, home, shared), true);
+  assert.equal(touchesSecretPlace("Grep", { pattern: "x", path: join(home, ".claude") }, cwd, secrets, home, shared), true);
+  // profile の hook も共有の場所を通す
+  const profile = createProjectProfile({
+    cfg,
+    createMcpServer: () => mcpServer(),
+    canUseTool: () => async () => ({ behavior: "deny", message: "x" }),
+    home,
+    env: {},
+    log: () => undefined,
+  });
+  const guard = profile.toolHooks(() => undefined, { prompt: "x", context: context() }).preToolUse[1]!.hooks[0]!;
+  const call = (file_path: string) =>
+    guard({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path }, cwd } as unknown as HookInput, undefined, {
+      signal: new AbortController().signal,
+    });
+  assert.deepEqual(await call(join(cfg.claudeConfigDir, "skills/x/REFERENCE.md")), {});
+  assert.deepEqual(await call(join(cfg.claudeConfigDir, "skills/x/leak")), {
+    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: PROJECT_SECRET_DENIED_REASON },
+  });
 });
 
 test("bridgeSummary: 要約は tool_input から作ったものを常に出し、title は前の 1 行に添える", async () => {
