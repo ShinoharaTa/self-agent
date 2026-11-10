@@ -202,11 +202,11 @@ export class CcPermissionStore {
 
   /**
    * pending の行があるか、resolved_at が since 以後の行があるセッションのうち、released（保留しなかった・やめた。#system に 1 通を出していない）を除いたもの。
-   * 判断待ちの知らせ（CC5c）はこのセッションには出さない（許可の要求の 1 通で済ませる。§5.2）
+   * origin hook の行だけ（sessionsActiveSince と同じ）。判断待ちの知らせ（CC5c）はこのセッションには出さない（許可の要求の 1 通で済ませる。§5.2）
    */
   sessionsAnsweredSince(since: Date): Set<string> {
     const rows = this.db
-      .prepare("SELECT DISTINCT session_id FROM cc_permissions WHERE state = 'pending' OR (resolved_at >= ? AND state <> 'released')")
+      .prepare("SELECT DISTINCT session_id FROM cc_permissions WHERE origin = 'hook' AND (state = 'pending' OR (resolved_at >= ? AND state <> 'released'))")
       .all(since.toISOString());
     return new Set(rows.map((row) => String(row.session_id)));
   }

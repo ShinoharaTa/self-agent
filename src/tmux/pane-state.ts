@@ -45,10 +45,12 @@ export const PASTED_TEXT_MARKER = "[Pasted text";
 /** 入力欄に貼り付け・画像がまとめて入っている印（dim でも書きかけとみなす） */
 export const INPUT_MARKERS: readonly string[] = [PASTED_TEXT_MARKER, "[Image #"];
 
+// 探すのは dialog の印と同じ範囲（入力欄の上 SPINNER_SEARCH_LINES 行から末尾）だけ。それより上に残る `esc to interrupt` は見ないが、
+// 作業中なら入力欄のすぐ上のスピナーの行で busy になり、idle は 1.5 秒後の撮り直しでも idle のときだけなので、その間の変化で拾う前提
 const BUSY_TEXT = /esc to interrupt/i;
 // スピナーの記号 + 文 + 「…」か経過秒数（「(12s」「(1m 3s」）。終わった後の「✻ Worked for 9s」は当たらない
 const SPINNER_LINE = /^[·✢✳✶✻✽*]\s+\S.*(…|\((\d+m )?\d+s\b)/;
-// vim のノーマル・ビジュアルモード（貼った文字が入力にならないかもしれない）
+// vim のノーマル・ビジュアルモード（貼った文字が入力にならないかもしれない）。dialog・busy の印と同じ範囲だけを探す（返答の本文に残る語で誤らない）
 const VIM_NOT_INSERT = /-- (NORMAL|VISUAL)/;
 // 入力欄の上下の罫線。Claude Code 2.1.317 は `-n` の名前を上の罫線の中か末尾に `─── <名前> ─` の形で入れる（名前は罫線の文字を含まない 1〜60 字で、
 // 前後に空白）。名前の前の `─` が 2 本以上・後ろが 1 本以上で、`─` が合わせて 20 本以上のときだけ罫線とみなす（本文の行を取り違えない）
@@ -172,7 +174,7 @@ function findPromptLine(lines: string[]): number | undefined {
  * - busy: `esc to interrupt`、または入力欄の上の SPINNER_SEARCH_LINES 行にスピナーの行（TODO の一覧・Tip が間にあってもよい）
  * - dialog・busy の印を探すのは、入力欄があればその上 SPINNER_SEARCH_LINES 行から画面の末尾まで（返答の本文に「Press Enter」などの語が
  *   残っていても dialog・busy にしないため。#294）。入力欄が無ければ（ダイアログが入力欄を置き換えている）画面全体
- * - no_prompt: vim のノーマル・ビジュアルモード、または入力欄の形（§5.3）が下から PROMPT_SEARCH_LINES 行以内に無い
+ * - no_prompt: vim のノーマル・ビジュアルモード（dialog・busy と同じ範囲で探す）、または入力欄の形（§5.3）が下から PROMPT_SEARCH_LINES 行以内に無い
  * - draft: 入力行に `[Pasted text`・`[Image #` がある、dim でない見える文字がある。見える文字が全部 dim なら候補（`Try "`・ターンの後の
  *   提案の文）とみなして idle（貼ると候補は置き換わる。Claude Code 2.1.316 の実機で確かめた。docs/plan/claude-code-sessions.md の CC3）
  */
@@ -190,7 +192,7 @@ export function classifyScreen(raw: string): ScreenState {
       if (SPINNER_LINE.test(lines[i]!.trim())) return "busy";
     }
   }
-  if (VIM_NOT_INSERT.test(plain)) return "no_prompt";
+  if (VIM_NOT_INSERT.test(near)) return "no_prompt";
   if (prompt === undefined) return "no_prompt";
   if (INPUT_MARKERS.some((marker) => lines[prompt]!.includes(marker))) return "draft";
   // 入力行の ❯+U+00A0 の後に dim でない見える文字があれば書きかけ。dim の文字（候補の語の間の空白は dim でないことがある）は候補とみなして空とする
@@ -267,7 +269,8 @@ export function expectedMarkerLines(text: string): number {
 /**
  * 貼り付けが入力欄に届いたか（§5.4 の 4。G4 が Enter を押す前に使う）。before は貼る前に撮った画面、after は貼った後に撮った画面、text は貼った文字。
  * before の入力欄が見つかり、その dim でない文字（inputBoxSolidText。dim の候補は貼ると置き換わるので比べない）に `[Pasted text` も
- * text の先頭 PASTE_CHECK_CHARS 字も無く（前からあった印・文字を貼れた証拠と取り違えない）、after の入力欄に text の先頭 PASTE_CHECK_CHARS 字
+ * text の先頭 PASTE_CHECK_CHARS 字も無く（前からあった印・文字を貼れた証拠と取り違えない）、after の入力欄の dim でない文字（これも
+ * inputBoxSolidText。短い本文が dim の候補文に含まれているだけのものを貼れたとみなさない）に text の先頭 PASTE_CHECK_CHARS 字
  * （空白を除いて比べる）か、N が expectedMarkerLines(text) と同じ `[Pasted text` の印があるときだけ true（別の貼り付けの印を取り違えない）。
  * false なら Enter を押さない
  */
@@ -277,7 +280,7 @@ export function pasteLanded(beforeRaw: string, afterRaw: string, text: string): 
   if (head === "") return false;
   const before = inputBoxSolidText(beforeRaw);
   if (before === undefined || before.includes(marker) || before.includes(head)) return false;
-  const after = inputBoxText(afterRaw);
+  const after = inputBoxSolidText(afterRaw);
   if (after === undefined) return false;
   if (after.includes(head)) return true;
   const expected = expectedMarkerLines(text);

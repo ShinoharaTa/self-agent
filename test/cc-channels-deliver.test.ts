@@ -440,6 +440,19 @@ test("きっかけ（Web から送った）: queued の直後に web_send のチ
   assertQuietLogs(s.logs);
 });
 
+test("写し: 本文のコードブロックの外の masked link は `](` を `]\\(` に崩す（返事と同じ。コードブロックの中は崩さない）", async (t) => {
+  const s = setup(t);
+  const text = "[見て](https://example.invalid/a)\n```\n[x](y)\n```";
+  s.env.screens.pasted = shown(text);
+  const result = await s.sender.submit({ sessionId: S1, text, origin: "web" });
+  assert.equal(result.ok, true);
+  const mirror = s.gateway.posts.find((post) => post.channelId === "cc-1")!;
+  assert.equal(mirror.message.text, "（Web から）\n[見て]\\(https://example.invalid/a)\n```\n[x](y)\n```");
+  // 貼る本文は変えない
+  assert.equal(s.sends.get(1)!.text, text);
+  await s.settle();
+});
+
 test("きっかけ: カテゴリが無ければ作らず写さないが送信は積んで届け、log に 1 行（同じ理由は 1 時間に 1 回。#system には出さない）", async (t) => {
   const s = setup(t, { setUp: false });
   s.env.screens.pasted = shown("x");
