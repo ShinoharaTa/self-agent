@@ -702,3 +702,13 @@ test("起動（#315）: new-session の後に最初の指示を積めなくて�
   assert.equal(s.store.get(NEW)?.startedBy, "tool");
   assert.equal(s.starter.pendingStarts().length, 0);
 });
+
+test("POST /api/cc/sessions: 最初の指示を積めなくても 201 で sendFailed: true（#315）", async (t) => {
+  const s = await setup(t);
+  s.sends.add = () => {
+    throw new Error("SQLITE_FULL");
+  };
+  const res = await call(s.server, "POST", "/api/cc/sessions", { project: "alpha", title: "fix login", text: "最初の指示" });
+  assert.equal(res.status, 201);
+  assert.deepEqual(res.json, { tmuxSession: "alpha", paneId: "%9", sendFailed: true });
+});
