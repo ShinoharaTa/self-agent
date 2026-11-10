@@ -11,8 +11,7 @@ import type { ComponentRow, OutgoingMessage } from "../discord/gateway.ts";
 import type { CcPermissionRow, CcPermissionStore } from "../store/cc-permissions.ts";
 import type { CcSessionStore } from "../store/cc-sessions.ts";
 import { headChars } from "../store/cc-sessions.ts";
-import { CC_RC_URL_PREFIX } from "../web/routes/cc.ts";
-import { cwdLabel } from "./labels.ts";
+import { ccRcUrl, cwdLabel } from "./labels.ts";
 import { CC_PERMISSION_SUPPRESS_MS } from "./permission-hold.ts";
 import { describeRule, formatRule } from "./permissions.ts";
 import { CC_QUESTION_MULTI_SEPARATOR, CC_QUESTION_TOOL, type CcQuestion, type CcQuestionPick, parseQuestionInput } from "./questions.ts";
@@ -128,7 +127,7 @@ function sessionLabel(session: CcNoticeSession | undefined, mode: string | null,
 
 /** RC のリンク（RC の id が分かるときだけ） */
 function rcUrlOf(session: CcNoticeSession | undefined): string | undefined {
-  return session?.bridgeSessionId === undefined ? undefined : `${CC_RC_URL_PREFIX}${session.bridgeSessionId}`;
+  return session?.bridgeSessionId === undefined ? undefined : ccRcUrl(session.bridgeSessionId);
 }
 
 /** 常に許可のルールの表示（`Bash(npm test *)` を改行でつなぐ）。無ければ undefined、長すぎれば null */

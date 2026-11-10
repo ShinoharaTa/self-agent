@@ -15,8 +15,7 @@ import type { CcSendRow, CcSendStore } from "../../store/cc-sends.ts";
 import type { CcSessionStore } from "../../store/cc-sessions.ts";
 import type { CcStartRow, CcStartStore } from "../../store/cc-starts.ts";
 import { paneLabel } from "../../tmux/workspace-map.ts";
-import { cwdLabel } from "../../cc/labels.ts";
-import { CC_RC_URL_PREFIX } from "../../web/routes/cc.ts";
+import { ccRcUrl, cwdLabel } from "../../cc/labels.ts";
 import type { ComponentHandler } from "../interactions.ts";
 import { STALE_TEXT } from "./delete.ts";
 
@@ -79,11 +78,6 @@ function inline(text: string, max: number): string {
   const flat = chars(text.replace(/\s+/g, " ").trim());
   const cut = flat.length <= max ? flat.join("") : `${flat.slice(0, max - 1).join("")}…`;
   return escapeDiscordText(cut);
-}
-
-/** RC のリンク（一覧の rc_url と確認の書き換えで共通） */
-export function ccRcUrl(bridgeSessionId: string): string {
-  return `${CC_RC_URL_PREFIX}${encodeURIComponent(bridgeSessionId)}`;
 }
 
 /**

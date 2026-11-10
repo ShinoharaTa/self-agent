@@ -10,13 +10,13 @@
 // 名前・cwd・最後の指示は hook から来たデータで、画面は textContent で出す。log は /unfollow の 1 行だけ（名前・パス・sessionId・ペイン id を出さない）
 import { closeReply } from "../../app/commands/cc.ts";
 import { isUuid } from "../../cc/agents.ts";
-import { cwdLabel } from "../../cc/labels.ts";
+import { ccRcUrl, cwdLabel } from "../../cc/labels.ts";
 import { type CcPermissionHold, permissionExpiresAt } from "../../cc/permission-hold.ts";
 import { describeRule, formatRule } from "../../cc/permissions.ts";
 import { parsePicks, parseQuestionInput } from "../../cc/questions.ts";
 import type { CcChannelFailure, CcChannels } from "../../cc/channels.ts";
 import type { CcPaneResolver, PaneLookup } from "../../cc/panes.ts";
-import type { CcRegistry, CcSessionView } from "../../cc/registry.ts";
+import { sinceOf, type CcRegistry, type CcSessionView } from "../../cc/registry.ts";
 import { normalizeSendText, type CcSender } from "../../cc/sender.ts";
 import type { CcStartFailure, CcStarter } from "../../cc/starter.ts";
 import type { CcChannelRow } from "../../store/cc-channels.ts";
@@ -31,8 +31,6 @@ import type { WebCcInfo } from "./channels.ts";
 
 /** 画面の写しの行数（capture-pane -S で撮る履歴の行数も同じ） */
 export const CC_SCREEN_LINES = 200;
-/** RC のリンクの前半（`<これ><bridgeSessionId>`） */
-export const CC_RC_URL_PREFIX = "https://claude.ai/code/";
 /** 一覧の送信の印に、終わった送信を出す長さ（終わってからこの間だけ「届けました」などを出す） */
 export const CC_SEND_RECENT_MS = 10 * 60_000;
 /** 一覧の許可のカードに、終わった要求を出す長さ（終わってからこの間だけ「端末か RC で答えられました」などを出す） */
@@ -110,11 +108,6 @@ export function screenText(raw: string): string {
 
 function iso(ms: number | undefined): string | null {
   return ms === undefined ? null : new Date(ms).toISOString();
-}
-
-/** 状態の始まり（判断待ちは待ち始め、それ以外は最後の活動） */
-function sinceOf(view: CcSessionView): number | undefined {
-  return view.state === "needs_input" ? (view.waitingSince ?? view.lastActivityAt) : view.lastActivityAt;
 }
 
 /** 送れなかった理由 → HTTP の状態（§5.1。routes/turns.ts の Claude Code のチャンネルの送信も同じ） */
@@ -290,7 +283,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
     lastPromptText: view.lastPromptText,
     inTmux: pane !== undefined,
     paneLabel: pane === undefined ? null : paneLabel(pane),
-    rcUrl: view.bridgeSessionId === undefined ? null : `${CC_RC_URL_PREFIX}${view.bridgeSessionId}`,
+    rcUrl: view.bridgeSessionId === undefined ? null : ccRcUrl(view.bridgeSessionId),
     // 起動したもの（owner = self-agent の外。web / tool / github は self-agent が起動したもの）
     startedBy: view.startedBy,
     // trust のダイアログの確認待ち（self-agent が起動したものだけ。§4.2）
