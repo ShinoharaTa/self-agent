@@ -297,6 +297,15 @@ function buttonIds(message: { components?: Array<{ kind: string; buttons?: Array
   return (message.components ?? []).flatMap((row) => (row.kind === "buttons" ? (row.buttons ?? []).map((button) => button.customId) : []));
 }
 
+/** 条件が満たされるまで 5 ms ごとに待つ。500 回で満たされなければ落とす */
+async function waitUntil(condition: () => boolean, limit = 500): Promise<void> {
+  for (let i = 0; i < limit; i += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("待っていた状態になりませんでした");
+}
+
 test("成功: 準備 → run → 取り込み → 検査 → push → draft PR → #jobs の報告（オーナーだけをメンション・[続きを頼む]）。作業場所は消す", async (t) => {
   const env = setup(t, { scripts: [commitAndDone()] });
   const { job, run, runId } = await runJob(env, { issueNumber: 3 });
@@ -498,7 +507,7 @@ test("[中断]: 実行中の run だけを止める。コミットが無けれ�
 
   const first = await env.orchestrator.accept({ kind: "run", guildId: GUILD, repo: REPO, instruction: "a" });
   assert.ok(first.ok);
-  while (env.runner.inputs.length < 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  await waitUntil(() => env.runner.inputs.length >= 1);
   assert.equal(env.orchestrator.abort(first.runId + 1), false);
   assert.equal(env.orchestrator.abort(first.runId), true);
   await env.orchestrator.idle();
@@ -509,7 +518,7 @@ test("[中断]: 実行中の run だけを止める。コミットが無けれ�
 
   const second = await env.orchestrator.accept({ kind: "run", guildId: GUILD, repo: REPO, instruction: "b" });
   assert.ok(second.ok);
-  while (env.runner.inputs.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+  await waitUntil(() => env.runner.inputs.length >= 2);
   assert.equal(env.orchestrator.abort(second.runId), true);
   await env.orchestrator.idle();
   assert.equal(env.store.getRun(second.runId)!.state, "held");
@@ -726,7 +735,7 @@ test("停止: 実行中の run は待たずに中断して failed / interrupted�
   const first = await env.orchestrator.accept({ kind: "run", guildId: GUILD, repo: REPO, instruction: "a" });
   const second = await env.orchestrator.accept({ kind: "run", guildId: GUILD, repo: REPO, instruction: "b" });
   assert.ok(first.ok && second.ok);
-  while (env.runner.inputs.length < 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  await waitUntil(() => env.runner.inputs.length >= 1);
   env.orchestrator.stop();
   await env.orchestrator.idle();
   const stopped = env.store.getRun(first.runId)!;
@@ -755,7 +764,7 @@ test("キュー: ジョブは key job のセッションのジョブ。実行中
   });
   const accepted = await env.orchestrator.accept({ kind: "run", guildId: GUILD, repo: REPO, instruction: "a" });
   assert.ok(accepted.ok);
-  while (env.runner.inputs.length < 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  await waitUntil(() => env.runner.inputs.length >= 1);
   assert.equal(env.queue.runningSessionJobs(), 1);
   let sessionStarted = false;
   const session = env.queue.run("topic-1", async () => {
@@ -798,6 +807,11 @@ test("prompt・本文: 囲みの印は中身から取り除き、Issue の本文
   assert.ok(reference.body.includes(`user24: ${"x".repeat(1999)}…`));
 
   assert.equal(neutralizeForGithub("@user closes #3 Fixes: owner/repo#4 resolved #5 issue #6"), "@​user closes #​3 Fixes: owner/repo#​4 resolved #​5 issue #6");
+  assert.equal(
+    neutralizeForGithub("Closes https://github.com/o/r/issues/5 and FIXES: http://www.github.com/o/r.js/pull/6, resolve https://github.com/o/r/issues/7"),
+    "Closes https://github.com/o/r/issues/\u200b5 and FIXES: http://www.github.com/o/r.js/pull/\u200b6, resolve https://github.com/o/r/issues/\u200b7",
+  );
+  assert.equal(neutralizeForGithub("see https://github.com/o/r/issues/5"), "see https://github.com/o/r/issues/5");
   const job = { id: 1, issueNumber: 3, stackedOnPr: null } as Parameters<typeof pullBody>[0];
   const run = { kind: "initial", tests: "failed", outcome: "cannot", summary: "" } as Parameters<typeof pullBody>[1];
   const body = pullBody(job, run);
