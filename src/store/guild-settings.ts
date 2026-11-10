@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { DEFAULT_PERSONA_ID } from "../config.ts";
+import { rollbackIfOpen } from "./db.ts";
 
 /** 状態カテゴリの種類（進行中 / 待ち / 完了） */
 export type SessionState = "active" | "waiting" | "done";
@@ -204,7 +205,7 @@ export class GuildSettingsStore {
         .run(guildId, persona, kind, ...Object.values(values), at, at);
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      rollbackIfOpen(this.db);
       throw error;
     }
   }

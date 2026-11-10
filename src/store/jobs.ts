@@ -16,6 +16,7 @@ import {
   type JobRunState,
   type JobTests,
 } from "../jobs/state.ts";
+import { rollbackIfOpen } from "./db.ts";
 
 /** open の jobs の上限（bare リポジトリの数。docs/plan/coding-jobs.md §12）。呼び出し側が countOpen で確かめる */
 export const JOB_MAX_OPEN = 20;
@@ -253,7 +254,7 @@ export class JobStore {
       this.db.exec("COMMIT");
       return { job: toJob(row!), run: created };
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      rollbackIfOpen(this.db);
       throw error;
     }
   }
@@ -332,7 +333,7 @@ export class JobStore {
       this.db.exec("COMMIT");
       return created;
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      rollbackIfOpen(this.db);
       throw error;
     }
   }

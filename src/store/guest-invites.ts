@@ -2,6 +2,7 @@ import { randomBytes as cryptoRandomBytes } from "node:crypto";
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { GUEST_INVITE_TTL_HOURS } from "../guest/constants.ts";
 import { generateInviteCode, hashInviteCode } from "../guest/invite-code.ts";
+import { rollbackIfOpen } from "./db.ts";
 import type { GuestEnableResult, GuestStore } from "./guest.ts";
 import type { GuestGuildStore } from "./guest-guilds.ts";
 
@@ -87,7 +88,7 @@ export class GuestInviteStore {
       this.db.exec("COMMIT");
       return { code, expiresAt, replaced };
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      rollbackIfOpen(this.db);
       throw error;
     }
   }
@@ -121,7 +122,7 @@ export class GuestInviteStore {
       this.db.exec("COMMIT");
       return result;
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      rollbackIfOpen(this.db);
       throw error;
     }
   }
