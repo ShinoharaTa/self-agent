@@ -85,13 +85,13 @@
 | 一覧（生きているセッション・cwd・名前） | ◎ | ✗ 事象だけ（`SessionStart` は http に来ない） | ○（pid の生死は /proc で確かめる） | △ |
 | 実行中か | ◎ `status`（中断でも戻る） | △ UserPromptSubmit → Stop の間（Esc の中断では Stop が来ない） | ○ `status` | △ |
 | 判断待ち | ◎ `waiting` + `waitingFor`（実機で確認） | ◎ `PermissionRequest`（ダイアログと同時）・`Notification`（約 6 秒後） | △ | ✗ |
-| 最近指示した時刻 | ✗ 無い | ◎ UserPromptSubmit の受信時刻 | ✗ | △ mtime |
+| 最近指示した時刻 | ✗ 無い | ◎ UserPromptSubmit の受信時刻 | ✗ | △ 最後の会話の行の timestamp |
 | RC のリンク | ✗ | ✗ | ◎ `bridgeSessionId` | △ |
 | 壊れたときの影響 | 一覧ごと出なくなる | 事象が来ないだけ | リンクが付かないだけ | 時刻が付かないだけ |
 | コスト | 0.24 秒・140 MB を周期ごと | loopback の受け口 1 つ | セッションの数だけファイルを読む | セッションの数だけ末尾を読む |
 
 ### 2.2 決定
-- **A を土台、B で時刻・判断待ち・許可、C は RC のリンクと `tmux` 欄の補助、D は mtime だけ**（中身は読まない）。
+- **A を土台、B で時刻・判断待ち・許可、C は RC のリンクと `tmux` 欄の補助、D は最後の会話の行（type が user・assistant）の timestamp だけ**（type・timestamp 以外は持たない。mtime は会話が無くても進むので使わない。#310）。
 - 一覧の 1 行 = `claude agents --json` の 1 要素（`sessionId` が主キー）。`pid` が無い・`sessionId` が UUID でない要素は捨てる。配列でない・JSON でない出力は「その回を捨てて前回の一覧を出す」（`stale: true`。5 回続けば空にして「読めません」）。未知の欄は無視する。`waitingFor` は文字列ならそのまま表示に使う（固定の集合に限らない）。
 - 周期: `SELF_AGENT_CC_POLL_SEC`（既定 10。最小 5）。**Web の一覧を誰かが開いている（直近 30 秒に `/api/cc/*` の GET があった）か、送信の待ち行列が空でないときだけ回す（返事待ち（§5.4）は含めない。返事は hook で届くので速く読む必要が無い）**。それ以外は 60 秒。**保留中の許可（§3.4）があるときは 5 秒**（「他で答えられた」の検知のため）。hook の事象が来たら次の周期を待たずに 1 回読む（連続は 2 秒にまとめる）。
 - 状態の決め方（上から順）:
@@ -128,7 +128,7 @@ self-agent は `~/.claude` を触らない。README（日・英）に次の形�
 - トークンの値は `env` の 1 行に書く。**`headers` の `$SELF_AGENT_CC_HOOK_TOKEN` は settings の `env` の値で解決される**（`--settings` で確認。`~/.claude/settings.json` の `env` も同じ仕組み。§12 の 5）。`settings.json` は `~/.claude` の下（600 を確かめる）。
 - `timeout: 3` が要（http は同期で既定 600 秒）。`PermissionRequest` だけ `SELF_AGENT_CC_PERMISSION_HOLD_SEC + 5`（既定 305。**305 が効くことは確認**。600 超は未確認）。**self-agent が落ちていれば connection refused で即 continue し発言は遅れないが、毎ターン端末と RC に hook error の行が出る**（§2.3）。`onFailure` は既定のまま。
 - `Notification`・`PermissionRequest` に matcher は付けない（受け口で絞る）。`PreToolUse`・`PostToolUse` は付けない。
-- 効き方: `~/.claude/settings.json` は Claude Code が見張っていて、同じ仕組みの `.claude/settings.local.json` では動いているセッションに効いた（§1.4）。**書き足せば既存のセッションにも効く見込み**（そのものは §12 の 5）。効かなければ、既存のセッションは `status` と mtime だけで並び、許可の応答も再起動したものから効く。**効いているかは `/hooks` では分からない**（http hook を出さないことがある）ので、`cc-dry-run` か Web の一覧の「最後の指示」で見る（README）。
+- 効き方: `~/.claude/settings.json` は Claude Code が見張っていて、同じ仕組みの `.claude/settings.local.json` では動いているセッションに効いた（§1.4）。**書き足せば既存のセッションにも効く見込み**（そのものは §12 の 5）。効かなければ、既存のセッションは `status` と記録の時刻だけで並び、許可の応答も再起動したものから効く。**効いているかは `/hooks` では分からない**（http hook を出さないことがある）ので、`cc-dry-run` か Web の一覧の「最後の指示」で見る（README）。
 
 ## 3. 既存のセッションへの送信（論点 2）
 
@@ -232,7 +232,7 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
 - アクティビティ「Claude Code」（CC9 から会話のサイドバーの群「Claude Code」に移す。claude-code-channels.md §2）（`SELF_AGENT_CC=1` のときだけ。`/api/status` に `cc: { enabled, hookPort: boolean, tmux: "ok" | "no_server", multilineOk, pendingPermissions }`）。
 - サイドバー: 3 つの群（判断待ち / 実行中 / 待機）を §2.2 の順で。その前に、起動したがまだ一覧に出ていないもの（`starting`）があれば「起動中」の群（題名・経過。trust の確認待ちなら印と「端末か RC で trust に答えてください」。sessionId が無いのでタブは開かない）。行は 名前・ディレクトリ名（`~/workspace/` からの相対）・`permission_mode`・経過・印（tmux の外・self-agent が起動・届け待ち・**許可待ち**・trust の確認待ち）。判断待ちの行には `waitingFor` の文（`permission prompt` など）を添える。
 - タブ（1 セッション）: 見出し（名前・ディレクトリ・状態・`<session>:@<w>.<p>`・[RC で開く]）、**許可のカード**（保留中なら最上部に §3.4 の内容と [許可][このセッションでは常に許可（<ルール>）][拒否]・残り分秒・「端末や RC のダイアログでも答えられます」。閉じた後は「端末か RC で答えられました」/「時間切れ。端末か RC で答えてください」）、**画面の写し**（`capture-pane -p -S -200` を `stripAnsi`。3 秒ごと）、最後の指示（200 字）、composer（複数行。Shift+Enter で改行。2,000 字。届け待ちがあれば [やめる]）。
-- 会話の表示は画面の写しを採り、jsonl は読まない（v1 のまま）。
+- 会話の表示は画面の写しを採り、jsonl は読まない（v1 のまま。§2.2 の時刻を除く）。
 - 起動ダイアログ: プロジェクト・題名・最初の指示（任意。複数行）・権限モード。説明に「新しいディレクトリでは trust の確認が端末・RC に出ます」。
 - API（認証 + POST は CSRF の 3 条件。無効なら 404）:
   - `GET /api/cc/sessions` → `{ stale, sessions: [{ sessionId, name, cwdLabel, permissionMode, state, waitingFor, since, lastPromptAt, lastPromptText, inTmux, paneLabel, rcUrl, startedBy, trustPending, pending: { id, state } | null, permission: { id, toolName, summary, expiresAt } | null }], starting: [{ project, title, trustPending, startedAt }] }`（`starting` は starter が起動して一覧のセッションとまだ結びつけていないもの（起動から 10 分まで・プロセスの中だけ）。sessionId はまだ無い）
