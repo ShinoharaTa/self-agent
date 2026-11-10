@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { GUEST_MAX_CHANNELS_PER_GUILD } from "../guest/constants.ts";
+import { rollbackIfOpen } from "./db.ts";
 
 /** command は /guest off、left はゲスト Bot がサーバーから外された、startup は起動時にゲスト Bot がそのサーバーに参加していなかった */
 export type GuestDisabledReason = "command" | "left" | "startup";
@@ -88,7 +89,7 @@ export class GuestStore {
       if (own) this.db.exec("COMMIT");
       return result;
     } catch (error) {
-      if (own) this.db.exec("ROLLBACK");
+      if (own) rollbackIfOpen(this.db);
       throw error;
     }
   }

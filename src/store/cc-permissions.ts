@@ -1,6 +1,7 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { type CcRule, parseStoredRules } from "../cc/permissions.ts";
 import { parseStoredAnswers } from "../cc/questions.ts";
+import { rollbackIfOpen } from "./db.ts";
 
 /** 許可の要求の行を残す日数（scheduler の tick で、created_at がこれより前の終わった行を消す。docs/plan/claude-code-sessions.md §9） */
 export const CC_PERMISSION_KEEP_DAYS = 30;
@@ -256,7 +257,7 @@ export class CcPermissionStore {
       for (const id of ids) statement.run(at, id);
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      rollbackIfOpen(this.db);
       throw error;
     }
     return ids.map((id) => this.get(id)).filter((row): row is CcPermissionRow => row !== undefined);
