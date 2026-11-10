@@ -2,7 +2,7 @@
 // 本物の CcChannels と CcChannelStore・偽の starter・偽 Gateway・一時 SQLite
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { CC_START_RETRY_NOTE, ccStartedTexts } from "../src/app/commands/cc-confirm.ts";
+import { CC_START_RETRY_NOTE, CC_START_SEND_FAILED_NOTE, ccStartedTexts } from "../src/app/commands/cc-confirm.ts";
 import { ccClosedCancelledText, closeReply, createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
 import { ALREADY_HANDLED_TEXT, STALE_TEXT } from "../src/app/commands/delete.ts";
 import { STALE_TURN_REPLY } from "../src/app/commands/turn-controls.ts";
@@ -93,7 +93,7 @@ function setup(t: TestContext) {
       if (starterState.throws) throw new Error("boom");
       const result = starterState.result;
       // 起動の最初の指示（starter が積む形）
-      if (result.ok && typeof input.text === "string") {
+      if (result.ok && result.sendFailed !== true && typeof input.text === "string") {
         const send = sends.add({ sessionId: null, paneId: "%9", startDir: `${WORKSPACE}/alpha`, text: input.text, state: "queued", origin: "start", channelId: input.channelId });
         return { ...result, sendId: send.id };
       }
@@ -378,6 +378,20 @@ test("[起動して続ける]: launch が投げたら ended に戻して押し�
   assert.equal(s.store.get(CHANNEL)?.state, "ended");
   s.starterState.throws = false;
   assert.equal((await s.channels.resume(CHANNEL, msg.id, "guild-1")).ok, true);
+  assertQuietLogs(s.logs);
+});
+
+test("[起動して続ける]: 起動はできたが最初の指示を積めなければ（sendFailed。#315）⏳ を付けず、その旨を返す", async (t) => {
+  const s = setup(t);
+  const msg = s.message(SECRET_TEXT);
+  await s.channels.handleMessage(msg);
+  s.starterState.result = { ok: true, tmuxSession: "alpha", paneId: "%9", sendId: undefined, sendFailed: true };
+  const result = await s.channels.resume(CHANNEL, msg.id, "guild-1");
+  assert.deepEqual(result, { ok: true, message: { text: `${ccStartedTexts("alpha", false)[0]}${CC_START_SEND_FAILED_NOTE}`, components: [] } });
+  assert.equal(s.store.get(CHANNEL)?.state, "resuming");
+  await s.channels.idle();
+  assert.deepEqual(s.gateway.reactionsOn(CHANNEL, msg.id), []);
+  assert.equal(s.sends.get(1), undefined);
   assertQuietLogs(s.logs);
 });
 

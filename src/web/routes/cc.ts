@@ -455,7 +455,12 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         if (!result.ok) return { status: START_STATUS[result.reason], json: { error: result.reason === "stopped" ? "stopping" : result.reason } };
         return {
           status: 201,
-          json: { tmuxSession: result.tmuxSession, paneId: result.paneId, ...(result.sendId === undefined ? {} : { sendId: result.sendId }) },
+          json: {
+            tmuxSession: result.tmuxSession,
+            paneId: result.paneId,
+            ...(result.sendId === undefined ? {} : { sendId: result.sendId }),
+            ...(result.sendFailed ? { sendFailed: true } : {}),
+          },
         };
       },
     },

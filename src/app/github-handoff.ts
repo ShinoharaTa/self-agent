@@ -21,6 +21,7 @@ import type { GithubNotificationRow, GithubStore } from "../store/github.ts";
 import { probePaneState } from "../tmux/pane-state.ts";
 import type { RunCommand, Tmux, TmuxPane } from "../tmux/tmux.ts";
 import { buildWorkspaceMap, choosePane, findRepoPanes, paneLabel } from "../tmux/workspace-map.ts";
+import { CC_START_SEND_FAILED_NOTE } from "./commands/cc-confirm.ts";
 
 /** 同じスレッドの送信をこの間に届けていれば（貼ったが確かめられなかったものも）、押しても新しく積まない（§5.5） */
 export const GITHUB_HANDOFF_RECENT_MS = 30 * 60_000;
@@ -107,7 +108,7 @@ export type GithubHandoffResult =
   /** 地図（~/workspace の remote）にそのリポジトリが無い */
   | { kind: "not_local"; repo: string }
   /** 新しいセッションを起動し、テンプレートを最初の指示として積んだ */
-  | { kind: "started"; tmuxSession: string; sendId: number | undefined; dir: string }
+  | { kind: "started"; tmuxSession: string; sendId: number | undefined; dir: string; sendFailed?: true }
   | { kind: "start_failed"; reason: CcStartFailure | "no_dir" }
   | { kind: "failed"; reason: HandoffFailure }
   /** 同じスレッドを処理している途中 */
@@ -276,7 +277,7 @@ export class GithubHandoff {
         ...(guildId === undefined ? {} : { guildId }),
       });
       if (!started.ok) return { kind: "start_failed", reason: started.reason };
-      return { kind: "started", tmuxSession: started.tmuxSession, sendId: started.sendId, dir };
+      return { kind: "started", tmuxSession: started.tmuxSession, sendId: started.sendId, dir, ...(started.sendFailed ? { sendFailed: true as const } : {}) };
     }
 
     let chosen: Candidate | undefined;
@@ -379,6 +380,8 @@ export function handoffResultText(result: GithubHandoffResult, escape: (text: st
     case "not_local":
       return `${escape(result.repo)} は ~/workspace にありません（送り先を決められません）`;
     case "started":
+      // 最初の指示（対応依頼）を積めなかった（#315）
+      if (result.sendFailed) return `~/workspace/${escape(result.dir)} で新しいセッション（${escape(result.tmuxSession)}）を起動しました${CC_START_SEND_FAILED_NOTE}`;
       return `~/workspace/${escape(result.dir)} で新しいセッション（${escape(result.tmuxSession)}）を起動しました。入力待ちになったら対応依頼を届けます${result.sendId === undefined ? "" : `（本文 #${result.sendId}）`}`;
     case "start_failed":
       return START_FAILURE_TEXT[result.reason];
