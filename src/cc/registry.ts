@@ -21,6 +21,8 @@ export const CC_PENDING_MS = 30_000;
 export const CC_PENDING_MAX = 100;
 /** 続けて読めなかったらこの回数で一覧を空にする */
 export const CC_STALE_LIMIT = 5;
+/** 判断待ちの Notification の後、status が idle をこの回数続けて読んだら判断待ちを外す（Esc の中断では Stop が来ない。#290） */
+export const CC_WAITING_IDLE_READS = 2;
 /** 保留中の許可の要求があるときの周期（「他で答えられた」の検知。§2.2） */
 export const CC_PERMISSION_POLL_MS = 5_000;
 
@@ -148,7 +150,7 @@ export type CcRegistryDeps = {
   cfg: Pick<Config, "ccPollSec">;
   agents: Pick<AgentsClient, "list">;
   dirs: Pick<ClaudeDirs, "sessionFile" | "transcriptMtime">;
-  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "listAlive" | "listGone">;
+  store: Pick<CcSessionStore, "upsertSeen" | "markGone" | "applyEvent" | "clearWaiting" | "listAlive" | "listGone">;
   now: () => Date;
   timers?: CcTimers;
   /** 送信の待ち行列が空でない（§2.2。CC3 から）・起動したセッションをまだ一覧で見つけていない（CC4）。true の間は見ていなくても設定の周期で読む */
@@ -212,6 +214,8 @@ export class CcRegistry implements CcHookReceiver {
   private fetchedAt: number | undefined;
   /** status が waiting なのを最初に見た時刻（hook が無くても待ち始めで並べる） */
   private observedWaiting = new Map<string, number>();
+  /** 判断待ちの Notification の後に status が idle だった読み取りの続いた回数（CC_WAITING_IDLE_READS で判断待ちを外す。#290） */
+  private idleReads = new Map<string, number>();
   private permissions = new Map<string, CcPermissionSummary & { at: number }>();
   /** 一覧に無い session_id の事象（受けた順） */
   private pending: CcHookEvent[] = [];
@@ -394,6 +398,8 @@ export class CcRegistry implements CcHookReceiver {
     if (event.harnessPrompt === true) update.keepPromptText = true;
     if (event.notificationType !== undefined && CC_WAITING_NOTIFICATIONS.includes(event.notificationType)) {
       update.waitingKind = event.notificationType;
+      // 数えるのはこの事象より後に読んだ status だけ（#290）
+      this.idleReads.delete(event.sessionId);
     }
     this.deps.store.applyEvent(event.sessionId, update, event.receivedAt);
     if (event.event === "PermissionRequest" && event.permission !== undefined) {
@@ -452,10 +458,12 @@ export class CcRegistry implements CcHookReceiver {
         })),
       );
       // 一覧から消えたセッション（終了の知らせ）は、gone_at を入れる前の生きている行から
-      const goneRows = this.deps.ended === undefined ? [] : this.deps.store.listAlive().filter((row) => !ids.has(row.sessionId));
+      const aliveRows = this.deps.store.listAlive();
+      const goneRows = this.deps.ended === undefined ? [] : aliveRows.filter((row) => !ids.has(row.sessionId));
       this.deps.store.markGone([...ids]);
       this.tellEnded(goneRows);
       this.tellRevived(revivedRows);
+      this.resolveWaitingByStatus(result.agents, aliveRows);
       // 行を書いてから一覧を入れ替える（receive が一覧にあるとみなした session_id の行は必ずある）
       this.agents = result.agents;
       this.deps.permissions?.onListed(
@@ -492,6 +500,38 @@ export class CcRegistry implements CcHookReceiver {
     } catch (error) {
       log(`Claude Code: 一覧の更新に失敗しました（${errorKind(error)}）`);
     }
+  }
+
+  /**
+   * 判断待ちの Notification（hook）を status（claude agents --json）で解く（§2.2。#290）: 端末の Esc でダイアログを閉じると Stop が来ないので、
+   * waiting_kind のある行は、その後に読んだ status が busy なら（答えて働いている）すぐ、idle なら CC_WAITING_IDLE_READS 回続けて読んだら
+   * 判断待ちを外す。waiting・読めない status は数えない。新しい判断待ちの Notification が来れば数え直す（apply）
+   */
+  private resolveWaitingByStatus(agents: readonly AgentEntry[], aliveRows: readonly CcSessionRow[]): void {
+    const waiting = new Set(aliveRows.filter((row) => row.waitingKind !== null).map((row) => row.sessionId));
+    const listed = new Set<string>();
+    for (const agent of agents) {
+      listed.add(agent.sessionId);
+      if (!waiting.has(agent.sessionId)) {
+        this.idleReads.delete(agent.sessionId);
+        continue;
+      }
+      if (agent.status === "busy") {
+        this.deps.store.clearWaiting(agent.sessionId);
+        this.idleReads.delete(agent.sessionId);
+      } else if (agent.status === "idle") {
+        const reads = (this.idleReads.get(agent.sessionId) ?? 0) + 1;
+        if (reads >= CC_WAITING_IDLE_READS) {
+          this.deps.store.clearWaiting(agent.sessionId);
+          this.idleReads.delete(agent.sessionId);
+        } else {
+          this.idleReads.set(agent.sessionId, reads);
+        }
+      } else {
+        this.idleReads.delete(agent.sessionId);
+      }
+    }
+    for (const id of [...this.idleReads.keys()]) if (!listed.has(id)) this.idleReads.delete(id);
   }
 
   private tellEnded(rows: readonly CcSessionRow[]): void {

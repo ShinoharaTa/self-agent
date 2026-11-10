@@ -197,6 +197,17 @@ export class CcSessionStore {
   }
 
   /**
+   * 判断待ち（waiting_kind・waiting_since）を外す。端末の Esc でダイアログを閉じると Stop が来ないので、
+   * registry.ts が claude agents --json の status（busy か 2 回続けて idle）から外すのに使う（#290）。判断待ちでなければ false
+   */
+  clearWaiting(sessionId: string): boolean {
+    const result = this.db
+      .prepare("UPDATE cc_sessions SET waiting_kind = NULL, waiting_since = NULL WHERE session_id = ? AND waiting_kind IS NOT NULL")
+      .run(sessionId);
+    return Number(result.changes) > 0;
+  }
+
+  /**
    * hook の事象を行に反映する（at は受けた時刻）。last_event・last_event_at と、あれば permission_mode を書き、
    * UserPromptSubmit は last_prompt_at・last_prompt_text を進めて判断待ちを外し、Stop は判断待ちを外し、
    * 判断待ちの種類のある Notification は判断待ちにする（既に判断待ちなら始まりの時刻は進めない）。

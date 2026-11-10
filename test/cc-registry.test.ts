@@ -182,7 +182,7 @@ test("CcRegistry: permission_mode の無い事象（Notification）は行の per
   assert.equal(s.store.get(S1)?.permissionMode, "auto");
 });
 
-test("CcRegistry: permission_prompt で判断待ち、Stop で解消。idle_prompt は判断待ちにしない。busy の間は実行中", async (t) => {
+test("CcRegistry: permission_prompt で判断待ち、Stop で解消。idle_prompt は判断待ちにしない。その後の status が busy か 2 回続けて idle でも解消（#290）", async (t) => {
   const s = setup(t);
   s.willList(agent(S1));
   await s.registry.tick();
@@ -190,12 +190,31 @@ test("CcRegistry: permission_prompt で判断待ち、Stop で解消。idle_prom
   assert.deepEqual(states(s.registry), [[S1, "idle"]]);
   s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "permission_prompt" });
   assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
-  // 実行中（busy）なら判断待ちにしない
+  // その後に読んだ status が busy なら解消（ダイアログに答えて Claude が働いている。#290）
   s.willList(agent(S1, { status: "busy" }));
   await s.registry.tick();
   assert.deepEqual(states(s.registry), [[S1, "running"]]);
+  assert.equal(s.store.get(S1)?.waitingKind, null);
   s.willList(agent(S1, { status: "idle" }));
   await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "idle"]]);
+  // Esc の中断では Stop が来ない: idle を 1 回読んだだけでは判断待ちのまま、2 回続けて idle で解消（#290）
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "permission_prompt" });
+  assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
+  // 間に新しい判断待ちの Notification が来れば数え直す
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "agent_needs_input" });
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "idle"]]);
+  assert.equal(s.store.get(S1)?.waitingKind, null);
+  // Stop でも解消（今までどおり）
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "permission_prompt" });
   assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
   s.hook({ hook_event_name: "Stop", session_id: S1 });
   assert.deepEqual(states(s.registry), [[S1, "idle"]]);
