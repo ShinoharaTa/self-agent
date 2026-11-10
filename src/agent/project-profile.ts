@@ -25,7 +25,18 @@ import { UNIFY_SHARED_LINKS } from "./unify-setup-check.ts";
 export const PROJECT_DISALLOWED_TOOLS: readonly string[] = ["AskUserQuestion"];
 
 /** 要約のターン（/close・/renew）でさらに外すツール（書く・動かす・サブエージェント） */
-export const PROJECT_SUMMARY_DISALLOWED_TOOLS: readonly string[] = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Agent"];
+export const PROJECT_SUMMARY_DISALLOWED_TOOLS: readonly string[] = [
+  "Bash",
+  "Edit",
+  "Write",
+  "MultiEdit",
+  "NotebookEdit",
+  "Agent",
+  // 自前の MCP（サーバー単位の指定で全部）と Web の 2 つ。allowedTools で canUseTool を通らずに動くため、要約のターンは allowedTools からも外す（#298）
+  `mcp__${MCP_SERVER_NAME}__*`,
+  "WebSearch",
+  "WebFetch",
+];
 
 /** 秘密の場所の拒否の理由（モデルへ返す） */
 export const PROJECT_SECRET_DENIED_REASON = "self-agent の秘密の場所は読めません";
@@ -91,7 +102,7 @@ function staticPrefix(pattern: string): string {
 
 /**
  * 秘密の場所（docs/plan/unify.md §5.5 の 3）。dataDir・CLAUDE_CONFIG_DIR・~/.config/self-agent・~/.ssh・~/.config/gh・~/.claude（オーナーの .credentials.json）・
- * /proc（プロセスの environ など）
+ * ~/.claude.json（オーナーの CLI の設定。ファイル）・/proc（プロセスの environ など）
  */
 export function projectSecretPlaces(cfg: Pick<Config, "dataDir" | "claudeConfigDir">, home: string): string[] {
   return [
@@ -101,6 +112,7 @@ export function projectSecretPlaces(cfg: Pick<Config, "dataDir" | "claudeConfigD
     join(home, ".ssh"),
     join(home, ".config/gh"),
     join(home, ".claude"),
+    join(home, ".claude.json"),
     "/proc",
   ];
 }
@@ -123,6 +135,7 @@ export function projectSharedPlaces(cfg: Pick<Config, "claudeConfigDir">, home: 
  * ツールの入力が秘密の場所を指すか（純関数に近い。realpath だけ読む）。対象は file_path・path・notebook_path（無ければ cwd）と、
  * Glob の pattern の探し始める場所。パスの字面（resolve したもの）と realpath のどちらかが秘密の場所（字面と realpath の両方）の中なら true。
  * Glob・Grep は対象の場所が秘密の場所を含む（祖先）ときも true（下へ辿って読めるため）。解決できなければ true（fail-closed）。
+ * パスの `/` で分けた要素に `..` があれば、resolve で字面を畳む前に true（file-access.ts と同じ。Glob の pattern は下の patternEscapes が扱う）。
  * shared（projectSharedPlaces）を渡せば、Read・Glob・Grep で字面と realpath の両方がその中の対象は秘密の場所とみなさない（#291）。
  * 共有の場所は字面と「親の realpath + 名前」だけで、その場所そのものの symlink の先には広げない（広げると許可が増える側なので）
  */
@@ -140,6 +153,8 @@ export function touchesSecretPlace(
     const value = input[key];
     if (typeof value === "string" && value !== "") raws.push(value);
   }
+  // `..` を字面で畳むと、畳んだ先の途中が symlink のときに realpath と違う場所を見るので、先に拒否する
+  if (raws.some((raw) => raw.split("/").includes(".."))) return true;
   const search = SEARCH_TOOLS.includes(toolName);
   if (raws.length === 0) raws.push(cwd);
   if (toolName === "Glob" && typeof input.pattern === "string") {
@@ -244,8 +259,9 @@ export function createProjectProfile(deps: ProjectProfileDeps): RunnerProfile {
         // モードを default に固定する（acceptEdits・設定の permissions.allow・常に許可は canUseTool を通らないため。橋の拒否は二重の守り）
         disallowedTools: summaryTurn ? [...PROJECT_DISALLOWED_TOOLS, ...PROJECT_SUMMARY_DISALLOWED_TOOLS] : [...PROJECT_DISALLOWED_TOOLS],
         permissionMode: summaryTurn ? "default" : permissionModeOf(context, log),
-        // 自前のツールと Web の 2 つはカードを出さない（今の dontAsk と同じ扱い。WebFetch の URL は hook で絞る）
-        allowedTools: [`mcp__${MCP_SERVER_NAME}__*`, "WebSearch", "WebFetch"],
+        // 自前のツールと Web の 2 つはカードを出さない（今の dontAsk と同じ扱い。WebFetch の URL は hook で絞る）。
+        // 要約のターンは付けない（canUseTool を通らずに動くため。disallowedTools でも外す。#298）
+        allowedTools: summaryTurn ? [] : [`mcp__${MCP_SERVER_NAME}__*`, "WebSearch", "WebFetch"],
         mcpServers: { [MCP_SERVER_NAME]: deps.createMcpServer(context) },
         strictMcpConfig: true,
         ...(cfg.effort === undefined ? {} : { effort: cfg.effort }),

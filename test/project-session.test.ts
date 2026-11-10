@@ -650,14 +650,21 @@ test("createProjectProfile: 要約のターン（purpose close・renew）は書�
       { prompt: "x", context: context({ purpose, permissionMode: "acceptEdits" }) },
       { sessionId: () => undefined, signal: new AbortController().signal },
     );
-    assert.deepEqual(options.disallowedTools, ["AskUserQuestion", "Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Agent"], purpose);
+    assert.deepEqual(
+      options.disallowedTools,
+      ["AskUserQuestion", "Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Agent", "mcp__selfagent__*", "WebSearch", "WebFetch"],
+      purpose,
+    );
     assert.equal(options.permissionMode, "default", purpose);
+    // 自前の MCP・Web のツールは canUseTool を通らずに動くので、要約のターンは allowedTools に入れない（#298）
+    assert.deepEqual(options.allowedTools, [], purpose);
   }
   const normal = profile.buildOptions(
     { prompt: "x", context: context({ permissionMode: "acceptEdits" }) },
     { sessionId: () => undefined, signal: new AbortController().signal },
   );
   assert.deepEqual(normal.disallowedTools, ["AskUserQuestion"]);
+  assert.deepEqual(normal.allowedTools, ["mcp__selfagent__*", "WebSearch", "WebFetch"]);
   assert.equal(normal.permissionMode, "acceptEdits");
 });
 
@@ -669,6 +676,53 @@ test("秘密の場所: ~/.claude（オーナーの認証）と /proc、MultiEdit
   assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude/.credentials.json" }, cwd, secrets, home), true);
   assert.equal(touchesSecretPlace("Read", { file_path: "/proc/self/environ" }, cwd, secrets, home), true);
   assert.equal(touchesSecretPlace("MultiEdit", { file_path: join(cfg.dataDir, "x") }, cwd, secrets, home), true);
+});
+
+test("秘密の場所: ~/.claude.json（ファイル）を拒否し、似た名前は通す", async (t) => {
+  const { projectSecretPlaces } = await import("../src/agent/project-profile.ts");
+  const { workspaceDir, home, cfg } = places(t);
+  writeFileSync(join(home, ".claude.json"), "{}");
+  writeFileSync(join(home, ".claude.json.backup"), "{}");
+  const secrets = projectSecretPlaces(cfg, home);
+  const cwd = join(workspaceDir, "alpha");
+  assert.ok(secrets.includes(join(home, ".claude.json")));
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude.json" }, cwd, secrets, home), true);
+  assert.equal(touchesSecretPlace("Edit", { file_path: join(home, ".claude.json") }, cwd, secrets, home), true);
+  // ホームを探す Grep・Glob は秘密の場所を含むので拒否
+  assert.equal(touchesSecretPlace("Grep", { pattern: "x", path: home }, cwd, secrets, home), true);
+  // 名前の接頭辞が同じだけのものは秘密の場所ではない（この hook の判定では）
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude.json.backup" }, cwd, secrets, home), false);
+});
+
+test("秘密の場所: パスの要素に `..` があれば畳む前に拒否する（プロジェクトの中に戻るものも）", async (t) => {
+  const { projectSecretPlaces } = await import("../src/agent/project-profile.ts");
+  const { workspaceDir, home, cfg } = places(t);
+  const cwd = join(workspaceDir, "alpha");
+  mkdirSync(join(cwd, "src"), { recursive: true });
+  writeFileSync(join(cwd, "a.ts"), "");
+  const secrets = projectSecretPlaces(cfg, home);
+  for (const [tool, input] of [
+    ["Read", { file_path: "src/../a.ts" }],
+    ["Read", { file_path: `${cwd}/src/../a.ts` }],
+    ["Edit", { file_path: "../alpha/a.ts" }],
+    ["Grep", { pattern: "x", path: ".." }],
+    ["Glob", { pattern: "*.ts", path: "src/.." }],
+    ["NotebookEdit", { notebook_path: "x/../n.ipynb" }],
+  ] as const) {
+    assert.equal(touchesSecretPlace(tool, input, cwd, secrets, home), true, `${tool} ${JSON.stringify(input)}`);
+  }
+  // `..` を含むだけの名前（要素そのものではない）は通す
+  writeFileSync(join(cwd, "a..b"), "");
+  assert.equal(touchesSecretPlace("Read", { file_path: "a..b" }, cwd, secrets, home), false);
+  assert.equal(touchesSecretPlace("Read", { file_path: "src/a.ts" }, cwd, secrets, home), false);
+  // hook も拒否を返す
+  const guard = createSecretPlaceGuard(secrets, home, () => undefined);
+  const output = await guard.hooks[0]!(
+    { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "src/../a.ts" }, cwd } as unknown as HookInput,
+    undefined,
+    { signal: new AbortController().signal },
+  );
+  assert.equal((output as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision, "deny");
 });
 
 test("projectSecretPlaces: ~/.claude と /proc を含み、hook は MultiEdit も見る", async (t) => {
@@ -804,6 +858,52 @@ test("許可の橋: run の signal が鳴れば保留をやめて拒否し、待
   const after = await canUse("Bash", { command: "ls" }, { signal: new AbortController().signal } as never);
   assert.equal(after?.behavior, "deny");
   assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM cc_permissions").get()?.n), rows);
+});
+
+test("許可の橋: 同じセッションの要求は順に（前が終わるまで次の行を作らない）、別のセッションは待たない", async (t) => {
+  const { workspaceDir, home } = places(t);
+  const db = tempDb(t);
+  const now = () => new Date(BASE);
+  const permissions = new CcPermissionStore(db, now);
+  const { timers } = fakeTimers();
+  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store: permissions, known: () => false, now, timers, log: () => undefined });
+  const poster = { post: async () => undefined, resolved: async () => undefined };
+  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, workspaceDir, home, log: () => undefined });
+  const run = new AbortController();
+  t.after(() => run.abort());
+  const OTHER = "44444444-4444-4444-8444-444444444444";
+  const canUse = bridge(context(), () => SESSION, { signal: run.signal });
+  const canUseOther = bridge(context({ channelId: "channel-2" }), () => OTHER, { signal: run.signal });
+  const signal = () => ({ signal: new AbortController().signal }) as never;
+  const rows = () => db.prepare("SELECT id, session_id AS sessionId, tool_name AS toolName, state FROM cc_permissions ORDER BY id").all() as Array<{
+    id: number;
+    sessionId: string;
+    toolName: string;
+    state: string;
+  }>;
+  const first = canUse("Bash", { command: "ls" }, signal());
+  const second = canUse("Edit", { file_path: "a.ts", old_string: "a", new_string: "b" }, signal());
+  await until(() => permissions.countPending() === 1, "1 件目の保留");
+  // 少し待っても 2 件目の行はできない
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(rows().map((row) => row.toolName), ["Bash"]);
+  // 別のセッションは前の要求を待たずに保留する
+  const other = canUseOther("Bash", { command: "pwd" }, signal());
+  await until(() => rows().length === 2, "別のセッションの保留");
+  assert.equal(rows()[1]!.sessionId, OTHER);
+  const firstRow = permissions.get(rows()[0]!.id)!;
+  assert.deepEqual(hold.answer(firstRow.id, "allow", "web", firstRow.requestHash), { ok: true, state: "allowed" });
+  assert.deepEqual(await first, { behavior: "allow" });
+  // 前が終わってから 2 件目の行ができる
+  await until(() => rows().length === 3, "2 件目の保留");
+  const secondRow = permissions.get(rows()[2]!.id)!;
+  assert.equal(secondRow.sessionId, SESSION);
+  assert.equal(secondRow.toolName, "Edit");
+  assert.deepEqual(hold.answer(secondRow.id, "deny", "web", secondRow.requestHash), { ok: true, state: "denied" });
+  assert.deepEqual(await second, { behavior: "deny", message: PROJECT_PERMISSION_DENY_MESSAGE });
+  const otherRow = permissions.get(rows()[1]!.id)!;
+  assert.deepEqual(hold.answer(otherRow.id, "allow", "web", otherRow.requestHash), { ok: true, state: "allowed" });
+  assert.deepEqual(await other, { behavior: "allow" });
 });
 
 test("resolvedMessageByOrigin: cc:perm の書き換えは origin sdk ならプロジェクトのセッションの文、それ以外は Claude Code のチャンネルの文", async () => {
