@@ -136,7 +136,7 @@ async function setup(
   const registry = new CcRegistry({
     cfg: { ccPollSec: 10 },
     agents: { list: async () => next },
-    dirs: { sessionFile: (_pid, sessionId) => files.get(sessionId), transcriptMtime: () => undefined },
+    dirs: { sessionFile: (_pid, sessionId) => files.get(sessionId), transcriptLastAt: () => undefined },
     store,
     now,
     timers: { after: () => () => undefined },
@@ -494,7 +494,7 @@ async function permissionSetup(t: TestContext) {
   registry = new CcRegistry({
     cfg: { ccPollSec: 10 },
     agents: { list: async () => ({ ok: true, agents: [agent(S1, { pid: 700, status: "waiting" }), agent(S2, { pid: 800 })], dropped: 0 }) },
-    dirs: { sessionFile: () => undefined, transcriptMtime: () => undefined },
+    dirs: { sessionFile: () => undefined, transcriptLastAt: () => undefined },
     store: sessions,
     now,
     timers: { after: () => () => undefined },

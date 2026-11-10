@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AGENTS_ARGS, AgentsClient, agentsChildEnv, parseAgentsOutput, resolveClaudePath, resolveTmuxPath } from "../src/cc/agents.ts";
-import { ClaudeDirs, projectDirName } from "../src/cc/claude-dirs.ts";
+import { ClaudeDirs, lastConversationAt, projectDirName } from "../src/cc/claude-dirs.ts";
 import { resolveCommandPath } from "../src/github/gh.ts";
 import { CHILD_MAX_BUFFER, CHILD_PATH, CHILD_TIMEOUT_MS, type RunCommand } from "../src/tmux/tmux.ts";
 import { tempDir } from "./helpers/db.ts";
@@ -106,20 +106,43 @@ test("ClaudeDirs.sessionFile: bridgeSessionId・tmux を読む。形が合わな
   assert.equal(new ClaudeDirs(join(home, "nothing")).sessionFile(10, S1), undefined);
 });
 
-test("ClaudeDirs.transcriptMtime: projects/<cwd を - に>/<sessionId>.jsonl の mtime。無ければ undefined", (t) => {
+test("ClaudeDirs.transcriptLastAt: 記録の末尾の会話の行（user・assistant）の timestamp。mtime・メタデータの行は使わない。無ければ undefined（#310）", (t) => {
   const home = tempDir(t);
   assert.equal(projectDirName("/home/o/workspace/self-agent"), "-home-o-workspace-self-agent");
   const dir = join(home, ".claude", "projects", projectDirName("/w/my.app"));
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${S1}.jsonl`);
-  writeFileSync(file, '{"type":"user"}\n');
-  const mtime = new Date("2026-10-31T12:00:00.000Z");
-  utimesSync(file, mtime, mtime);
+  const lines = [
+    { type: "user", timestamp: "2026-11-05T08:21:04.744Z" },
+    { type: "assistant", timestamp: "2026-11-05T08:21:22.232Z" },
+    { type: "system", subtype: "turn_duration", timestamp: "2026-11-05T08:21:22.352Z" },
+    { type: "frame-link", timestamp: "2026-11-09T23:08:04.725Z" },
+    { type: "bridge-session", lastSequenceNum: 9 },
+    { type: "custom-title", customTitle: "x" },
+  ];
+  writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  // mtime は会話が無くても進む（RC の連携のメタデータの書き換え）。今の時刻でも最後の会話の時刻を返す
+  const now = new Date();
+  utimesSync(file, now, now);
   const dirs = new ClaudeDirs(home);
-  assert.equal(dirs.transcriptMtime("/w/my.app", S1), mtime.getTime());
-  assert.equal(dirs.transcriptMtime("/w/my.app", S2), undefined);
-  assert.equal(dirs.transcriptMtime("/w/other", S1), undefined);
-  assert.equal(dirs.transcriptMtime("/w/my.app", "../x"), undefined);
+  assert.equal(dirs.transcriptLastAt("/w/my.app", S1), Date.parse("2026-11-05T08:21:22.232Z"));
+  // 追記されれば読み直す
+  appendFileSync(file, JSON.stringify({ type: "user", timestamp: "2026-11-10T01:00:00.000Z" }) + "\n");
+  assert.equal(dirs.transcriptLastAt("/w/my.app", S1), Date.parse("2026-11-10T01:00:00.000Z"));
+  // 会話の行が無い・壊れた行だけ・無いファイル・形の違う id は undefined
+  const file2 = join(dir, `${S2}.jsonl`);
+  writeFileSync(file2, '{"type":"bridge-session"}\nnot json\n');
+  assert.equal(dirs.transcriptLastAt("/w/my.app", S2), undefined);
+  assert.equal(dirs.transcriptLastAt("/w/other", S1), undefined);
+  assert.equal(dirs.transcriptLastAt("/w/my.app", "../x"), undefined);
+});
+
+test("lastConversationAt: 末尾の chunk の最初の行は途中かもしれないので捨てる（whole のときは使う）", () => {
+  const chunk = '"timestamp":"2026-11-01T00:00:00.000Z","type":"user"}\n{"type":"mode"}\n';
+  assert.equal(lastConversationAt(chunk, false), undefined);
+  const whole = '{"type":"user","timestamp":"2026-11-01T00:00:00.000Z"}\n{"type":"mode"}\n';
+  assert.equal(lastConversationAt(whole, true), Date.parse("2026-11-01T00:00:00.000Z"));
+  assert.equal(lastConversationAt('{"type":"assistant","timestamp":"bad"}', true), undefined);
 });
 
 test("resolveClaudePath・resolveTmuxPath: 子と同じ固定の PATH（claude は ~/.local/bin が先）で探し、無ければ PATH。どちらにも無ければ undefined", (t) => {

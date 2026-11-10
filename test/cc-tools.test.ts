@@ -62,7 +62,7 @@ function view(sessionId: string, pid: number, overrides: Partial<CcSessionView> 
     waitingSince: undefined,
     lastPromptAt: undefined,
     lastEventAt: undefined,
-    transcriptMtime: undefined,
+    transcriptLastAt: undefined,
     startedAt: BASE,
     state: "idle",
     pid,
