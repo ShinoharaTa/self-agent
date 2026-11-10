@@ -1,4 +1,4 @@
-import type { ButtonDef, ComponentRow, InteractionResponder } from "../../discord/gateway.ts";
+import type { ButtonDef, ComponentRow, InteractionResponder, OutgoingMessage } from "../../discord/gateway.ts";
 import type { HistoryStore } from "../../store/history.ts";
 import type { ProjectStore } from "../../store/projects.ts";
 import type { TaskStore } from "../../store/tasks.ts";
@@ -76,6 +76,33 @@ function pickSelect(channelId: string, draft: CloseDraft): ComponentRow {
 type CloseResponse = CommandResponse;
 
 /**
+ * ターンの結果を応答に出す。応答に失敗したら（interaction の token は 15 分で失効し、キュー待ちと要約のターンはそれを超えうる。#295）、
+ * 同じ本文（確認のボタンを含む）を持ち主の Bot でそのチャンネルに投稿する。それも失敗したら（振り分けが無いときも）log だけで投げない
+ */
+async function showOrPost(
+  deps: Pick<CloseDeps, "personas" | "log">,
+  channelId: string,
+  response: CloseResponse,
+  message: OutgoingMessage,
+): Promise<void> {
+  try {
+    await response.show(message);
+    return;
+  } catch (error) {
+    deps.log(`/close の結果を応答に出せなかったため、チャンネルに投稿します: ${describeError(error)}`);
+  }
+  if (deps.personas === undefined) {
+    deps.log("/close の結果を投稿できませんでした（振り分けがありません）");
+    return;
+  }
+  try {
+    await deps.personas.gatewayFor(channelId).sendMessage(channelId, message);
+  } catch (error) {
+    deps.log(`/close の結果をチャンネルに投稿できませんでした: ${describeError(error)}`);
+  }
+}
+
+/**
  * /close の流れ: 閉じられるか確かめる（だめなら ephemeral で断る）→ 保留 → そのセッションの会話で要約とやることの候補を作らせ →
  * 候補があれば確認のボタンを、無ければ閉じた旨を出す（閉じたらプロジェクトの node_modules を消す）。/close と [閉じる] ボタンで共通
  */
@@ -104,20 +131,23 @@ async function runClose(
   switch (outcome.result) {
     case "not_session":
     case "closed":
-      await response.show({ text: ALREADY_CLOSED_REPLY });
+      await showOrPost(deps, channelId, response, { text: ALREADY_CLOSED_REPLY });
       return;
     case "failed":
-      await response.show({ text: SUMMARY_FAILURE_REPLY });
+      await showOrPost(deps, channelId, response, { text: SUMMARY_FAILURE_REPLY });
       return;
     case "finalized":
       try {
-        await response.show({ text: closedText(outcome.summary, 0) });
+        await showOrPost(deps, channelId, response, { text: closedText(outcome.summary, 0) });
       } finally {
         await removeClosedNodeModules(deps, channelId);
       }
       return;
     case "confirm":
-      await response.show({ text: confirmText(outcome.draft), components: [confirmButtons(channelId)] });
+      await showOrPost(deps, channelId, response, {
+        text: confirmText(outcome.draft),
+        components: [confirmButtons(channelId)],
+      });
       return;
   }
 }
