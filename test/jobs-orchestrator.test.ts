@@ -297,9 +297,10 @@ function buttonIds(message: { components?: Array<{ kind: string; buttons?: Array
   return (message.components ?? []).flatMap((row) => (row.kind === "buttons" ? (row.buttons ?? []).map((button) => button.customId) : []));
 }
 
-/** 条件が満たされるまで 5 ms ごとに待つ。500 回で満たされなければ落とす */
-async function waitUntil(condition: () => boolean, limit = 500): Promise<void> {
-  for (let i = 0; i < limit; i += 1) {
+/** 条件が満たされるまで 5 ms ごとに待つ。10 秒で満たされなければ落とす（本物の git の clone を挟むので回数ではなく時刻で） */
+async function waitUntil(condition: () => boolean, limitMs = 10_000): Promise<void> {
+  const until = Date.now() + limitMs;
+  while (Date.now() < until) {
     if (condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
@@ -809,9 +810,12 @@ test("prompt・本文: 囲みの印は中身から取り除き、Issue の本文
   assert.equal(neutralizeForGithub("@user closes #3 Fixes: owner/repo#4 resolved #5 issue #6"), "@​user closes #​3 Fixes: owner/repo#​4 resolved #​5 issue #6");
   assert.equal(
     neutralizeForGithub("Closes https://github.com/o/r/issues/5 and FIXES: http://www.github.com/o/r.js/pull/6, resolve https://github.com/o/r/issues/7"),
-    "Closes https://github.com/o/r/issues/\u200b5 and FIXES: http://www.github.com/o/r.js/pull/\u200b6, resolve https://github.com/o/r/issues/\u200b7",
+    "C\u200bloses https://github.com/o/r/issues/5 and F\u200bIXES: http://www.github.com/o/r.js/pull/6, r\u200besolve https://github.com/o/r/issues/7",
   );
   assert.equal(neutralizeForGithub("see https://github.com/o/r/issues/5"), "see https://github.com/o/r/issues/5");
+  assert.equal(neutralizeForGithub("Closes <https://github.com/o/r/issues/5>"), "C\u200bloses <https://github.com/o/r/issues/5>");
+  assert.equal(neutralizeForGithub("Fixes [x](https://github.com/o/r/issues/5)"), "F\u200bixes [x](https://github.com/o/r/issues/5)");
+  assert.equal(neutralizeForGithub("prefixes https://github.com/o/r/issues/5"), "prefixes https://github.com/o/r/issues/5");
   const job = { id: 1, issueNumber: 3, stackedOnPr: null } as Parameters<typeof pullBody>[0];
   const run = { kind: "initial", tests: "failed", outcome: "cannot", summary: "" } as Parameters<typeof pullBody>[1];
   const body = pullBody(job, run);

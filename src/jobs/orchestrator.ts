@@ -173,7 +173,7 @@ const ZWSP = "​";
 /**
  * GitHub に書く文（PR の本文の summary）のメンションと closing keyword を無効にする（§6.3）。`@` の直後にゼロ幅の文字を入れ、
  * close / fix / resolve 系の語に続く `#番号`・`owner/repo#番号` の `#` の直後と、
- * `http(s)://(www.)github.com/<o>/<r>/(issues|pull)/<番号>` の番号の直前にも入れる
+ * `http(s)://(www.)github.com/<o>/<r>/(issues|pull)/<番号>`（`<…>`・`[…](…)` で囲んだものも）が続くときは語の 1 字目の後に入れる（URL のリンクは壊さない）
  */
 export function neutralizeForGithub(text: string): string {
   return text
@@ -183,8 +183,8 @@ export function neutralizeForGithub(text: string): string {
       (_match, keyword: string, gap: string, repo: string, digit: string) => `${keyword}${gap}${repo}#${ZWSP}${digit}`,
     )
     .replace(
-      /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s*)(https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+\/(?:issues|pull)\/)(\d)/gi,
-      (_match, keyword: string, gap: string, url: string, digit: string) => `${keyword}${gap}${url}${ZWSP}${digit}`,
+      /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?=\s*:?\s*(?:<|\[[^\]\n]*\]\()?https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+\/(?:issues|pull)\/\d)/gi,
+      (keyword: string) => `${keyword.slice(0, 1)}${ZWSP}${keyword.slice(1)}`,
     );
 }
 
