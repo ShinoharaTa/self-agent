@@ -170,19 +170,23 @@ function findPromptLine(lines: string[]): number | undefined {
  * 画面（capture-pane -e の出力）だけで判定する。
  * - dialog: DIALOG_MARKERS のどれか（大文字小文字を問わない）
  * - busy: `esc to interrupt`、または入力欄の上の SPINNER_SEARCH_LINES 行にスピナーの行（TODO の一覧・Tip が間にあってもよい）
+ * - dialog・busy の印を探すのは、入力欄があればその上 SPINNER_SEARCH_LINES 行から画面の末尾まで（返答の本文に「Press Enter」などの語が
+ *   残っていても dialog・busy にしないため。#294）。入力欄が無ければ（ダイアログが入力欄を置き換えている）画面全体
  * - no_prompt: vim のノーマル・ビジュアルモード、または入力欄の形（§5.3）が下から PROMPT_SEARCH_LINES 行以内に無い
  * - draft: 入力行に `[Pasted text`・`[Image #` がある、dim でない見える文字がある。見える文字が全部 dim なら候補（`Try "`・ターンの後の
  *   提案の文）とみなして idle（貼ると候補は置き換わる。Claude Code 2.1.316 の実機で確かめた。docs/plan/claude-code-sessions.md の CC3）
  */
 export function classifyScreen(raw: string): ScreenState {
   const plain = stripAnsi(raw);
-  const lower = plain.toLowerCase();
-  if (DIALOG_MARKERS.some((marker) => lower.includes(marker.toLowerCase()))) return "dialog";
-  if (BUSY_TEXT.test(plain)) return "busy";
   const lines = plain.split("\n");
   const prompt = findPromptLine(lines);
+  const windowTop = prompt === undefined ? 0 : Math.max(0, prompt - 1 - SPINNER_SEARCH_LINES);
+  const near = lines.slice(windowTop).join("\n");
+  const lower = near.toLowerCase();
+  if (DIALOG_MARKERS.some((marker) => lower.includes(marker.toLowerCase()))) return "dialog";
+  if (BUSY_TEXT.test(near)) return "busy";
   if (prompt !== undefined) {
-    for (let i = prompt - 2; i >= Math.max(0, prompt - 1 - SPINNER_SEARCH_LINES); i -= 1) {
+    for (let i = prompt - 2; i >= windowTop; i -= 1) {
       if (SPINNER_LINE.test(lines[i]!.trim())) return "busy";
     }
   }

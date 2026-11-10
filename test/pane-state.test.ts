@@ -171,6 +171,21 @@ test("classifyScreen: 作業中（TODO・Tip の上のスピナー、狭い幅�
   assert.equal(classifyScreen(far), "idle");
 });
 
+test("classifyScreen: ダイアログ・作業中の印は入力欄の上 10 行から末尾までで探す（返答の本文に残る語で誤らない。#294）", () => {
+  const filler = Array(11).fill("  本文の続き（置き換え）");
+  // 返答の本文（入力欄の上 10 行より上）に印の語があっても idle
+  for (const line of ["● Press Enter to continue と書いてあります", "● Use arrows to navigate の説明", "● 止めるなら esc to interrupt です"]) {
+    assert.equal(classifyScreen(screen([PROMPT], { above: [line, ...filler] })), "idle", line);
+  }
+  // 入力欄の近く（上 10 行の中）・下（フッター）にあれば今までどおり
+  assert.equal(classifyScreen(screen([PROMPT], { above: [...HISTORY, "Press Enter to continue"] })), "dialog");
+  assert.equal(classifyScreen(screen([PROMPT], { footer: [...FOOTER, "  ? for bash mode"] })), "dialog");
+  assert.equal(classifyScreen(BUSY), "busy");
+  // 入力欄が無ければ（ダイアログが入力欄を置き換えている）画面全体で探す
+  assert.equal(classifyScreen([...Array(30).fill("  diff の行（置き換え）"), DIALOG].join("\n")), "dialog");
+  assert.equal(classifyScreen(["Do you want to proceed?", ...Array(30).fill("  diff の行（置き換え）"), "", ""].join("\n")), "dialog");
+});
+
 test("classifyScreen: ダイアログの文言は大文字小文字を問わない。? の一覧・vim のノーマルモードは idle にしない", () => {
   for (const marker of DIALOG_MARKERS) {
     assert.equal(classifyScreen(screen([PROMPT], { above: [...HISTORY, ` ${marker.toUpperCase()} …`] })), "dialog", marker);
