@@ -716,6 +716,8 @@ test("秘密の場所: 共有の link の skills・agents（CONFIG_DIR と ~/.cl
   writeFileSync(join(home, ".claude/skills-x/a"), "a");
   assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude/skills-x/a" }, cwd, secrets, home, shared), true);
   assert.equal(touchesSecretPlace("Glob", { path: "~/.claude/skills", pattern: "../*.json" }, cwd, secrets, home, shared), true);
+  // ワイルドカードの後ろの `..` も外に出うるので、共有の場所の例外にしない
+  assert.equal(touchesSecretPlace("Glob", { path: "~/.claude/skills", pattern: "*/../../.credentials.json" }, cwd, secrets, home, shared), true);
   // 書く側（Write・Edit・MultiEdit・NotebookEdit）は共有の場所でも秘密のまま（skills は全部の Claude Code のセッションが読む指示の置き場）
   for (const tool of ["Write", "Edit", "MultiEdit", "NotebookEdit"]) {
     const key = tool === "NotebookEdit" ? "notebook_path" : "file_path";
