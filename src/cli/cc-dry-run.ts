@@ -1,5 +1,5 @@
 // この機械の Claude Code のセッションの一覧を 1 回だけ試す（docs/plan/claude-code-sessions.md §8 CC1。npm run cc-dry-run）。
-// claude agents --json と ~/.claude の補助（RC のリンク・tmux の欄・記録の mtime）を 1 回読み、本体と同じ rankSessions で 3 群に分けて、
+// claude agents --json と ~/.claude の補助（RC のリンク・tmux の欄・記録の最後の会話の時刻）を 1 回読み、本体と同じ rankSessions で 3 群に分けて、
 // 件数と各行の状態・名前・最後の活動の時刻を端末に出す（オーナーが見るものなので名前は出す。sessionId・cwd は出さない）。
 // hook の事象は使わない（受け口を立てない）。投稿せず、DB も読み書きしない。読む設定は SELF_AGENT_DATA_DIR と SELF_AGENT_TZ（loadDataConfig）。
 // `--reset-multiline` のときだけ、一覧は読まずに DB の cc_state.multiline_ok を 1 に戻す（複数行の送信を止めた後、実機で確かめ直したとき。
@@ -22,7 +22,7 @@ const CC_STATE_USER_VERSION = 27;
 const STATE_LABELS: Readonly<Record<CcState, string>> = { needs_input: "判断待ち", running: "実行中", idle: "待機" };
 
 /** 1 セッションの材料（hook の事象なし） */
-export type DryRunItem = { agent: AgentEntry; file: SessionFileInfo | undefined; transcriptMtime: number | undefined };
+export type DryRunItem = { agent: AgentEntry; file: SessionFileInfo | undefined; transcriptLastAt: number | undefined };
 
 /** 端末に出す名前（制御文字は空白に。無ければ「（名前なし）」） */
 function displayName(name: string | undefined): string {
@@ -41,7 +41,7 @@ export function ccDryRunLines(items: readonly DryRunItem[], dropped: number, tim
       waitingSince: undefined,
       lastPromptAt: undefined,
       lastEventAt: undefined,
-      transcriptMtime: item.transcriptMtime,
+      transcriptLastAt: item.transcriptLastAt,
       startedAt: item.agent.startedAt,
       item,
     })),
@@ -131,7 +131,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const items = result.agents.map((agent) => ({
     agent,
     file: dirs.sessionFile(agent.pid, agent.sessionId),
-    transcriptMtime: agent.cwd === undefined ? undefined : dirs.transcriptMtime(agent.cwd, agent.sessionId),
+    transcriptLastAt: agent.cwd === undefined ? undefined : dirs.transcriptLastAt(agent.cwd, agent.sessionId),
   }));
   for (const line of ccDryRunLines(items, result.dropped, timeZone)) console.log(line);
   return 0;
