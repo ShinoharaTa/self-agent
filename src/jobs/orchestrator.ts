@@ -172,7 +172,8 @@ const ZWSP = "​";
 
 /**
  * GitHub に書く文（PR の本文の summary）のメンションと closing keyword を無効にする（§6.3）。`@` の直後にゼロ幅の文字を入れ、
- * close / fix / resolve 系の語に続く `#番号`・`owner/repo#番号` の `#` の直後にも入れる
+ * close / fix / resolve 系の語に続く `#番号`・`owner/repo#番号` の `#` の直後と、
+ * `http(s)://(www.)github.com/<o>/<r>/(issues|pull)/<番号>` の番号の直前にも入れる
  */
 export function neutralizeForGithub(text: string): string {
   return text
@@ -180,6 +181,10 @@ export function neutralizeForGithub(text: string): string {
     .replace(
       /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s*)((?:[A-Za-z0-9-]+\/[A-Za-z0-9._-]+)?)#(\d)/gi,
       (_match, keyword: string, gap: string, repo: string, digit: string) => `${keyword}${gap}${repo}#${ZWSP}${digit}`,
+    )
+    .replace(
+      /\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s*)(https?:\/\/(?:www\.)?github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+\/(?:issues|pull)\/)(\d)/gi,
+      (_match, keyword: string, gap: string, url: string, digit: string) => `${keyword}${gap}${url}${ZWSP}${digit}`,
     );
 }
 
@@ -940,8 +945,7 @@ export class JobOrchestrator {
       if (run.stagedSha === null) return { to: "failed", failure: "push_failed" };
       const pushed = await git.push({ owner: target.owner, repo: target.repo, bareDir: target.bareDir, sha: run.stagedSha, branch: job.branch });
       if (!pushed.ok) {
-        const failure: JobFailure =
-          pushed.failure === "push_rejected" || pushed.failure === "push_auth" || pushed.failure === "not_fast_forward" ? pushed.failure : "push_failed";
+        const failure: JobFailure = pushed.failure === "push_rejected" || pushed.failure === "push_auth" ? pushed.failure : "push_failed";
         return { to: "failed", failure };
       }
       jobs.setPushed(job.id, run.stagedSha);

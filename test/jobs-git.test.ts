@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test as nodeTest } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, closeSync, existsSync, linkSync, openSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -30,6 +30,8 @@ import { execFileRun, type RunCommand, type RunOptions, type RunResult } from ".
 
 const GIT = "/usr/bin/git";
 const GH = "/usr/bin/gh";
+/** git・gh の固定のパスが無い機械では、このファイルのテストを全部飛ばす */
+const test = existsSync(GIT) && existsSync(GH) ? nodeTest : nodeTest.skip;
 const AUTHOR = { name: "example", email: "1234+example@users.noreply.github.com" };
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const TARGET = { owner: "example-org", repo: "example-repo" };
