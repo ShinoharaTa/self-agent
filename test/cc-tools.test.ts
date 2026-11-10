@@ -26,6 +26,7 @@ import {
   type CcConfirmRuntime,
 } from "../src/app/commands/cc-confirm.ts";
 import { createCcComponent } from "../src/app/commands/cc.ts";
+import { CC_START_THREW } from "../src/app/commands/cc-confirm.ts";
 import { STALE_TEXT } from "../src/app/commands/delete.ts";
 import { CcPaneResolver } from "../src/cc/panes.ts";
 import type { CcSessionView, CcSnapshot } from "../src/cc/registry.ts";
@@ -165,6 +166,8 @@ function setup(t: TestContext) {
   const starter = {
     checkResult: undefined as CcStartCheck | undefined,
     launchResult: { ok: true, tmuxSession: "alpha", paneId: "%9", sendId: undefined } as LaunchResult,
+    /** 設定すると launch が投げる（#292） */
+    launchError: undefined as Error | undefined,
     async check(input: unknown): Promise<CcStartCheck> {
       checks.push(input);
       const i = input as { project: string; title: string; text?: string; permissionMode?: string };
@@ -172,6 +175,7 @@ function setup(t: TestContext) {
     },
     async launch(input: CcStartInput): Promise<LaunchResult> {
       launches.push(input);
+      if (this.launchError !== undefined) throw this.launchError;
       return this.launchResult;
     },
   };
@@ -648,6 +652,19 @@ test("cc_start: 確かめられなければ確認を出さない。[起動する
   assert.ok(message.text.startsWith("`alpha` で起動できませんでした（tmux を使えませんでした）"), message.text);
   assert.deepEqual(message.components, []);
   assert.equal(s.starts.get(1)!.state, "failed");
+});
+
+test("[起動する]: launch が投げても started のまま残さず failed にして確認を書き換える（#292）", async (t) => {
+  const s = setup(t);
+  await s.handlers().ccStart({ project: "alpha", title: "a" });
+  s.starter.launchError = new Error("boom");
+  const message = updated(await s.pressButton("cc:start:1"));
+  assert.ok(message.text.includes(CC_START_THREW), message.text);
+  assert.deepEqual(message.components, []);
+  assert.equal(s.starts.get(1)!.state, "failed");
+  // もう一度押しても古い（二度起動しない）
+  assert.deepEqual(await s.pressButton("cc:start:1"), [{ method: "reply", message: { text: STALE_TEXT, ephemeral: true } }]);
+  assert.ok(s.logs.some((line) => line.includes("起動できませんでした（#1、Error）")), s.logs.join("\n"));
 });
 
 test("[起動する]: 一時的な理由（too_soon・limit・low_memory・no_server）で起動できなければ確認待ちに戻してボタンを残し、もう一度押せる", async (t) => {
