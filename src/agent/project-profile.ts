@@ -19,6 +19,7 @@ import { isProjectPermissionMode, type ProjectPermissionMode, type RunContext, t
 import { createWebFetchGuard, type ProfileRunState, type RunnerProfile, ownerApiKeySource } from "./sdk-runner.ts";
 import { PROJECT_APPEND } from "./system-prompt.ts";
 import { MCP_SERVER_NAME } from "./tools.ts";
+import { UNIFY_SHARED_LINKS } from "./unify-setup-check.ts";
 
 /** プロジェクトのセッションで外す CLI の組み込みツール（U1。質問は U2 で canUseTool → 質問カードにする） */
 export const PROJECT_DISALLOWED_TOOLS: readonly string[] = ["AskUserQuestion"];
@@ -103,9 +104,22 @@ export function projectSecretPlaces(cfg: Pick<Config, "dataDir" | "claudeConfigD
 }
 
 /**
+ * 秘密の場所の中にあるが共有してよい場所（docs/plan/unify.md §5.5 の 3 の「link の先を除く」。#291）: CONFIG_DIR と ~/.claude の
+ * skills・agents（UNIFY_SHARED_LINKS。unify-setup で CONFIG_DIR のものは ~/.claude への symlink）。skill の補助ファイル（REFERENCE.md など）を
+ * Read で読めるようにするため。字面と realpath の両方がこの中のときだけ秘密の場所の判定を飛ばす（中の symlink が秘密を指せば拒否のまま）
+ */
+export function projectSharedPlaces(cfg: Pick<Config, "claudeConfigDir">, home: string): string[] {
+  return [
+    ...UNIFY_SHARED_LINKS.map((name) => join(cfg.claudeConfigDir, name)),
+    ...UNIFY_SHARED_LINKS.map((name) => join(home, ".claude", name)),
+  ];
+}
+
+/**
  * ツールの入力が秘密の場所を指すか（純関数に近い。realpath だけ読む）。対象は file_path・path・notebook_path（無ければ cwd）と、
  * Glob の pattern の探し始める場所。パスの字面（resolve したもの）と realpath のどちらかが秘密の場所（字面と realpath の両方）の中なら true。
- * Glob・Grep は対象の場所が秘密の場所を含む（祖先）ときも true（下へ辿って読めるため）。解決できなければ true（fail-closed）
+ * Glob・Grep は対象の場所が秘密の場所を含む（祖先）ときも true（下へ辿って読めるため）。解決できなければ true（fail-closed）。
+ * shared（projectSharedPlaces）を渡せば、字面と realpath の両方がその中の対象は秘密の場所とみなさない（#291）
  */
 export function touchesSecretPlace(
   toolName: string,
@@ -113,6 +127,7 @@ export function touchesSecretPlace(
   cwd: string,
   secrets: readonly string[],
   home: string,
+  shared: readonly string[] = [],
 ): boolean {
   const input = typeof toolInput === "object" && toolInput !== null ? (toolInput as Record<string, unknown>) : {};
   const raws: string[] = [];
@@ -130,10 +145,13 @@ export function touchesSecretPlace(
     else raws.push(join(expandHome(base, home), prefix));
   }
   const places = secrets.flatMap((place) => [resolve(place), realOrResolved(place)]);
+  const sharedPlaces = shared.flatMap((place) => [resolve(place), realOrResolved(place)]);
   for (const raw of raws) {
     const literal = resolve(cwd, expandHome(raw, home));
     const real = resolveRealPath(literal);
     if (real === undefined) return true;
+    // 共有の場所（skills・agents）は字面と realpath の両方が中のときだけ飛ばす（中の symlink が秘密を指せば real が外に出て拒否になる）
+    if ([literal, real].every((target) => sharedPlaces.some((place) => isSameOrInside(target, place)))) continue;
     for (const target of [literal, real]) {
       for (const place of places) {
         if (isSameOrInside(target, place)) return true;
@@ -152,6 +170,7 @@ export function createSecretPlaceGuard(
   secrets: readonly string[],
   home: string,
   log: (message: string) => void,
+  shared: readonly string[] = [],
 ): HookCallbackMatcher {
   const deny = (reason: string) => ({
     hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: reason },
@@ -159,7 +178,7 @@ export function createSecretPlaceGuard(
   const guard: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse" || !SECRET_GUARD_TOOLS.includes(input.tool_name)) return {};
     try {
-      if (!touchesSecretPlace(input.tool_name, input.tool_input, input.cwd, secrets, home)) return {};
+      if (!touchesSecretPlace(input.tool_name, input.tool_input, input.cwd, secrets, home, shared)) return {};
       log(`プロジェクトのセッション: 秘密の場所の操作を拒否しました（${input.tool_name}）`);
       return deny(PROJECT_SECRET_DENIED_REASON);
     } catch {
@@ -197,6 +216,7 @@ export function createProjectProfile(deps: ProjectProfileDeps): RunnerProfile {
   const source = deps.env ?? process.env;
   const places = ccPlacesOf(cfg, home);
   const secrets = projectSecretPlaces(cfg, home);
+  const shared = projectSharedPlaces(cfg, home);
   return {
     buildOptions: (input: RunInput, run: ProfileRunState): Options => {
       const context = input.context;
@@ -228,7 +248,7 @@ export function createProjectProfile(deps: ProjectProfileDeps): RunnerProfile {
     toolHooks: (hookLog, input) => {
       const webFetch = createWebFetchGuard(input.allowedUrls ?? [], hookLog);
       return {
-        preToolUse: [webFetch.preToolUse, createSecretPlaceGuard(secrets, home, hookLog)],
+        preToolUse: [webFetch.preToolUse, createSecretPlaceGuard(secrets, home, hookLog, shared)],
         postToolUse: [webFetch.postToolUse],
       };
     },
