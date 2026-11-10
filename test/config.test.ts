@@ -80,9 +80,9 @@ test("環境変数で上書きできる", () => {
     CLAUDE_CONFIG_DIR: "/srv/claude",
     SELF_AGENT_WORKDIR: "/srv/work",
     SELF_AGENT_MODEL: "claude-sonnet-5",
-    SELF_AGENT_OWNER_ID: "100",
+    SELF_AGENT_OWNER_ID: "100000000000000001",
     SELF_AGENT_ALLOWED_GUILD_IDS: "200, 201,,200",
-    SELF_AGENT_INBOX_CHANNEL_ID: "300",
+    SELF_AGENT_INBOX_CHANNEL_ID: "300000000000000001",
     SELF_AGENT_DATA_DIR: "/srv/data",
     SELF_AGENT_TZ: "UTC",
     SELF_AGENT_MAX_CONCURRENT: "4",
@@ -106,9 +106,9 @@ test("環境変数で上書きできる", () => {
   assert.equal(config.claudeConfigDir, "/srv/claude");
   assert.equal(config.workDir, "/srv/work");
   assert.equal(config.model, "claude-sonnet-5");
-  assert.equal(config.ownerUserId, "100");
+  assert.equal(config.ownerUserId, "100000000000000001");
   assert.deepEqual(config.allowedGuildIds, ["200", "201"]);
-  assert.equal(config.inboxChannelId, "300");
+  assert.equal(config.inboxChannelId, "300000000000000001");
   assert.equal(config.dataDir, "/srv/data");
   assert.equal(config.timeZone, "UTC");
   assert.equal(config.maxConcurrentTurns, 4);
@@ -425,6 +425,18 @@ test("HOME が無く既定のディレクトリが必要ならエラー。ディ
   assert.equal(config.dataDir, "/srv/data");
 });
 
+test("SELF_AGENT_OWNER_ID・SELF_AGENT_INBOX_CHANNEL_ID は数字 17〜20 桁（前後の空白は除く）でなければ変数名を出して設定エラー。空白だけの DISCORD_TOKEN は無いものとする", () => {
+  const base = { HOME: "/home/tester" };
+  assert.equal(loadConfig({ ...base, SELF_AGENT_OWNER_ID: " 12345678901234567 " }).ownerUserId, "12345678901234567");
+  assert.equal(loadConfig({ ...base, SELF_AGENT_INBOX_CHANNEL_ID: "12345678901234567890" }).inboxChannelId, "12345678901234567890");
+  for (const value of ["100", "1234567890123456", "123456789012345678901", "12345678901234567a", "<@12345678901234567>"]) {
+    assert.throws(() => loadConfig({ ...base, SELF_AGENT_OWNER_ID: value }), /SELF_AGENT_OWNER_ID は数字 17〜20 桁/, value);
+    assert.throws(() => loadConfig({ ...base, SELF_AGENT_INBOX_CHANNEL_ID: value }), /SELF_AGENT_INBOX_CHANNEL_ID は数字 17〜20 桁/, value);
+  }
+  assert.equal(loadConfig({ ...base, DISCORD_TOKEN: "   " }).discordTokenPresent, false);
+  assert.equal(loadConfig({ ...base, DISCORD_TOKEN: " dummy " }).discordTokenPresent, true);
+});
+
 test("missingForStart は欠けている必須変数の名前だけを返す", () => {
   assert.deepEqual(missingForStart(loadConfig({ HOME: "/home/tester" })), [
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -438,7 +450,7 @@ test("missingForStart は欠けている必須変数の名前だけを返す", (
     HOME: "/home/tester",
     CLAUDE_CODE_OAUTH_TOKEN: "dummy",
     DISCORD_TOKEN: "dummy",
-    SELF_AGENT_OWNER_ID: "100",
+    SELF_AGENT_OWNER_ID: "100000000000000001",
     SELF_AGENT_ALLOWED_GUILD_IDS: "200",
   });
   assert.equal(full.inboxChannelId, undefined);

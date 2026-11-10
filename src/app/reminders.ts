@@ -281,7 +281,9 @@ export class ReminderScheduler {
     if (reminder.taskId !== null) {
       const task = tasks.get(reminder.taskId);
       if (task === undefined || task.status !== "open") {
-        reminders.complete(id);
+        // 繰り返しは complete（rule IS NULL だけ）が効かないので止める
+        if (reminder.rule === null) reminders.complete(id);
+        else reminders.cancel(id);
         log(`紐づけたタスクが閉じているため知らせませんでした（#${id}）`);
         return;
       }

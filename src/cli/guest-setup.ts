@@ -38,16 +38,25 @@ const DISCORD_USER_AGENT = "DiscordBot (https://github.com/ShinoharaTa/self-agen
 const ANTHROPIC_API = "https://api.anthropic.com/v1";
 const [TOKEN_KEY, API_KEY_KEY] = GUEST_ENV_KEYS;
 
+/** 途中で止めるときに投げ、main がその exit コードを返す（process.exit は呼ばない） */
+class CliExit extends Error {
+  readonly code: number;
+  constructor(code: number) {
+    super(`exit ${code}`);
+    this.code = code;
+  }
+}
+
 function fail(message: string): never {
   console.error(message);
-  process.exit(1);
+  throw new CliExit(1);
 }
 
 /** 端末を戻して中止する（Ctrl-C は 130、それ以外は 1）。何も書かない */
 function abort(code: 1 | 130): never {
   restoreTerminal();
   console.error("中止しました");
-  process.exit(code);
+  throw new CliExit(code);
 }
 
 function restoreTerminal(): void {
@@ -55,6 +64,17 @@ function restoreTerminal(): void {
 }
 
 export async function main(argv: readonly string[]): Promise<number> {
+  try {
+    return await run(argv);
+  } catch (error) {
+    if (error instanceof CliExit) return error.code;
+    throw error;
+  } finally {
+    restoreTerminal();
+  }
+}
+
+async function run(argv: readonly string[]): Promise<number> {
   let values: { "skip-check"?: boolean; help?: boolean };
   try {
     ({ values } = parseArgs({ args: [...argv], options: { "skip-check": { type: "boolean" }, help: { type: "boolean" } } }));
@@ -99,7 +119,7 @@ export async function main(argv: readonly string[]): Promise<number> {
    */
   function readHidden(prompt: string): Promise<string | null> {
     const stdin = process.stdin;
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const decoder = new StringDecoder("utf8");
       let buffer = "";
       // 0: 通常、1: ESC の直後、2: CSI / SS3 の中（終わりの文字まで読み飛ばす）
@@ -152,7 +172,14 @@ export async function main(argv: readonly string[]): Promise<number> {
           if (char === "\x03") {
             stdin.removeListener("data", onData);
             process.stdout.write("\n");
-            abort(130);
+            stdin.pause();
+            // listener の中で投げても main に届かないので、Promise を reject して ask から投げ直す
+            try {
+              abort(130);
+            } catch (error) {
+              reject(error);
+            }
+            return;
           }
           if (char === "\x04") {
             if (buffer === "") {
@@ -232,6 +259,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     originalMode = stat.mode & 0o777;
     original = await readFile(envPath, "utf8");
   } catch (error) {
+    if (error instanceof CliExit) throw error;
     // ディレクトリが無いときも ENOENT（無い）として扱う。作るのは書き込みの確認の後
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") fail(`${envPath} を読めませんでした`);
   }
@@ -401,6 +429,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       const stat = await lstat(backupPath);
       if (!stat.isFile()) fail(`${backupPath} が通常のファイルではないため、控えを取れません。何も書きませんでした`);
     } catch (error) {
+      if (error instanceof CliExit) throw error;
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") fail(`${backupPath} を確かめられませんでした。何も書きませんでした`);
     }
     // 読んである元の中身を書く（既存の控えの inode には書かない）

@@ -803,6 +803,10 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX cc_permissions_session ON cc_permissions(session_id, id);
   CREATE INDEX cc_permissions_created ON cc_permissions(created_at);
   `,
+  // v41（#303）: usage_log の時刻の索引（/usage・/api/usage の日ごとの集計と prune が at で絞るため）
+  `
+  CREATE INDEX IF NOT EXISTS usage_log_at ON usage_log(at);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
@@ -846,7 +850,7 @@ export async function backupBeforeMigration(path: string, log: (message: string)
     if (version === 0 || version >= MIGRATIONS.length) return;
     const target = backupPath(path, version);
     if (existsSync(target)) {
-      log(`DB を移行する前の控え（v${version}）は既にあるので、取り直しません`);
+      log(`DB を移行する前の控え（v${version}）は既にあるので、取り直しません。既にある控えを使います（古い可能性があります）`);
       return;
     }
     // 書きかけの控えを target の名前で残さないよう、一時ファイル（先に 600 で作る）に取ってから名前を変える

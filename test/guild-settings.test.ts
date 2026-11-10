@@ -525,7 +525,7 @@ test("backupBeforeMigration: v17 から移行する前に v17 の控え（権限
   const before = readFileSync(target);
   await backupBeforeMigration(path, (message) => logs.push(message));
   assert.deepEqual(readFileSync(target), before);
-  assert.equal(logs[1], "DB を移行する前の控え（v17）は既にあるので、取り直しません");
+  assert.equal(logs[1], "DB を移行する前の控え（v17）は既にあるので、取り直しません。既にある控えを使います（古い可能性があります）");
   assert.ok(logs.every((message) => !message.includes(dir)));
 });
 

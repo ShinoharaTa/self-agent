@@ -69,7 +69,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   try {
     db = new DatabaseSync(path, { readOnly: true, timeout: DB_BUSY_TIMEOUT_MS });
   } catch (error) {
-    console.error(`DB を開けませんでした（${path}）: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`DB を開けませんでした: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }
   const userVersion = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);

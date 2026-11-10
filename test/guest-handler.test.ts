@@ -356,6 +356,14 @@ test("上限: メンションを除いた本文が 2,000 字を超えたら断�
   assert.equal(env.runner.inputs.length, 1);
 });
 
+test("上限: 2,000 字はコードポイントで数える（絵文字 2,000 個は受け付け、2,001 個は断る）", async (t) => {
+  const env = setup(t, [ok("はい", "s1")]);
+  await env.send({ content: `<@${BOT}> ${"😀".repeat(2000)}`, authorId: "u-emoji" });
+  await env.send({ content: `<@${BOT}> ${"😀".repeat(2001)}`, authorId: "u-emoji-long" });
+  assert.deepEqual(env.gateway.sent.map((sent) => sent.text), ["はい", GUEST_TOO_LONG_REPLY]);
+  assert.equal(env.runner.inputs.length, 1);
+});
+
 test("上限: キューの待ちが 5 件のとき、6 件目は「混み合っています」。待っていたものは順に答える", async (t) => {
   const steps = Array.from({ length: 6 }, (_, i) => ok(`答え${i}`, "s1"));
   const env = setup(t, steps);

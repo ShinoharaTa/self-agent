@@ -140,7 +140,9 @@ export function acquireDataLock(dataDir: string, options: DataLockOptions = {}):
     if (holder.bootId !== undefined && bootId !== undefined && holder.bootId !== bootId) return false;
     if (!isAlive(holder.pid)) return false;
     const cmdline = readCmdline(holder.pid);
-    return cmdline === undefined || oneLine(cmdline).includes(holder.command ?? LEGACY_BOT_COMMAND);
+    // 読めなかったのが、生きているのを見た直後に相手が終わったためなら古いものとして取り直す
+    if (cmdline === undefined) return isAlive(holder.pid);
+    return oneLine(cmdline).includes(holder.command ?? LEGACY_BOT_COMMAND);
   };
 
   const content = `${pid}\n${bootId ?? ""}\n${command}\n`;

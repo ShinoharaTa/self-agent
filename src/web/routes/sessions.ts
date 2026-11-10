@@ -33,7 +33,7 @@ import {
   waitSession,
 } from "../../app/session-ops.ts";
 import { type HistoryStore, recordHistory } from "../../store/history.ts";
-import type { Route, RouteResult } from "../server.ts";
+import { describeErrorKind, type Route, type RouteResult } from "../server.ts";
 import { type ChannelRouteDeps, CLOSE_CONFIRM_NOTICE, webChannelLookup } from "./channels.ts";
 
 export { CLOSE_CONFIRM_NOTICE };
@@ -73,9 +73,8 @@ const BAD_REQUEST: RouteResult = { status: 400, json: { error: "bad_request" } }
 const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
 const CLOSED: RouteResult = { status: 409, json: { error: "closed" } };
 
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+/** log に出す例外の種類（server.ts と同じく errno の code か例外の名前。message はパスなどを含みうるので出さない） */
+const describeError = describeErrorKind;
 
 function channelLink(guildId: string, channelId: string): string {
   return `https://discord.com/channels/${guildId}/${channelId}`;
@@ -99,6 +98,8 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
   const lookup = webChannelLookup(deps);
   /** Web から始めた /close の確認を Discord に投稿したメッセージ（channelId → messageId。プロセス内）。Web で確定したらボタン無しの結果に書き換える */
   const confirmMessages = new Map<string, string>();
+  /** Web から始めた /close の要約を待っているチャンネル（プロセス内）。その間の同じチャンネルの /close は 409 closing（要約を 2 回走らせない） */
+  const closing = new Set<string>();
 
   /** セッションのチャンネルのサーバー（許可したサーバーのもの）。無ければ undefined。状態の判定は session-ops.ts が行う */
   const sessionGuild = (channelId: string): string | undefined => {
@@ -249,11 +250,14 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
         const check = closable(topicSessions.get(channelId), guildId);
         if (check === "not_session") return NOT_FOUND;
         if (check === "closed") return CLOSED;
+        if (closing.has(channelId)) return { status: 409, json: { error: "closing" } };
+        closing.add(channelId);
         log(`Web から /close を始めました（guild=${guildId}）`);
         // 要約のターンは最長 SELF_AGENT_SESSION_TURN_TIMEOUT_SEC かかるので待たない（実行中のターンがあればキューで順番を待つ）
         void closeSession(guildId, channelId, deps)
           .then((outcome) => afterClose(guildId, channelId, outcome))
-          .catch((error: unknown) => log(`Web からの /close に失敗しました: ${describeError(error)}`));
+          .catch((error: unknown) => log(`Web からの /close に失敗しました: ${describeError(error)}`))
+          .finally(() => closing.delete(channelId));
         return { status: 202, json: { accepted: true } };
       },
     },
