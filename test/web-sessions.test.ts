@@ -11,6 +11,7 @@ import type { RotateNowResult } from "../src/app/inbox-rotate.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
+  closeSession,
   confirmClose,
   NO_CONVERSATION_REPLY,
   type ProjectSessionGate,
@@ -199,7 +200,7 @@ async function setup(
   /** そのチャンネルの履歴の行（種類と本文） */
   const rows = (channelId: string) => history.list(channelId, { limit: 50 }).map((row) => ({ kind: row.kind, text: row.text, persona: row.persona }));
   const openTasks = () => tasks.list({ status: "open", limit: 50 }).map((task) => ({ title: task.title, due: task.due }));
-  return { db, server, gateway, mikaGateway, connected, runner, turnQueue, channelOps, rotations, rotator, logs, rows, openTasks, ...stores };
+  return { db, server, gateway, mikaGateway, connected, runner, turnQueue, channelOps, rotations, rotator, logs, rows, openTasks, turn, ...stores };
 }
 
 test("POST /api/sessions: 既定の人格の Bot で進行中カテゴリにチャンネルを作り、最初の投稿をして 201 と channelId・link。log は Web から", async (t) => {
@@ -380,6 +381,30 @@ test("POST /close: Web から始めた要約を待っている間の同じチャ
   env.runner.beforeResult = undefined;
   assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close"), { status: 202, json: { accepted: true } });
   await until(() => env.gateway.posts.length === 2);
+  assert.equal(env.runner.inputs.length, 2);
+});
+
+test("POST /close: 印は Discord の /close と共通。Discord の要約が走っている間の Web の /close は 409 closing、Web の要約が走っている間の closeSession は closing", async (t) => {
+  const env = await setup(t, (topicSessions) => [reports(DRAFT, topicSessions), reports(DRAFT, topicSessions)]);
+  let release: () => void = () => undefined;
+  env.runner.beforeResult = () =>
+    new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  const deps = { ...env, channelOps: env.channelOps, projectsDir: tempDir(t), log: () => 0 };
+  // Discord の /close・[閉じる] と同じ関数で始める
+  const discord = closeSession(GUILD, "200", deps);
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close"), { status: 409, json: { error: "closing" } });
+  await until(() => env.runner.inputs.length === 1);
+  release();
+  assert.equal((await discord).result, "confirm");
+
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close"), { status: 202, json: { accepted: true } });
+  assert.deepEqual(await closeSession(GUILD, "200", deps), { result: "closing" });
+  await until(() => env.runner.inputs.length === 2);
+  release();
+  await until(() => env.gateway.posts.length === 1);
+  await env.turnQueue.idle();
   assert.equal(env.runner.inputs.length, 2);
 });
 

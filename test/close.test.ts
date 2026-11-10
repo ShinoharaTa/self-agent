@@ -8,6 +8,7 @@ import {
   ALREADY_CLOSED_REPLY,
   CLOSE_PROMPT,
   closedText,
+  CLOSING_REPLY,
   closeStartButton,
   confirmText,
   createCloseCommand,
@@ -424,6 +425,24 @@ test("/close のターンは同じチャンネルの発言のターンが終わ�
     { method: "reply", message: { text: ALREADY_CLOSED_REPLY } },
   ]);
   assert.equal(env.runner.inputs.length, 0);
+});
+
+test("/close の要約が走っている間の /close・[閉じる] は要約を始めずに本人にだけ「要約しています。終わるまで待ってください」", async (t) => {
+  const env = setup(t, () => [() => ok("閉じました")]);
+  let release = (): void => {};
+  const running = env.turnQueue.run("topic-1", () => new Promise<void>((resolve) => (release = resolve)));
+
+  const closing = env.runClose();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await env.runClose(), [{ method: "reply", message: { text: CLOSING_REPLY, ephemeral: true } }]);
+  assert.deepEqual(await env.press({ ...BASE, kind: "button", customId: closeStartButton("topic-1").customId }), [
+    { method: "reply", message: { text: CLOSING_REPLY, ephemeral: true } },
+  ]);
+  release();
+  await running;
+  const calls = await closing;
+  assert.equal(calls[0]?.method, "defer");
+  assert.equal(env.runner.inputs.length, 1);
 });
 
 test("確認メッセージは候補の題名を 100 字で切り、最大の候補でも 2000 字に収まる", async (t) => {

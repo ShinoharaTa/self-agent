@@ -27,7 +27,7 @@
 // log はサーバー ID と種類・件数・送信の番号だけ（チャンネル ID・名前・cwd・sessionId・本文は出さない。作った後の DB の失敗だけ例外）
 import { basename, dirname } from "node:path";
 import { realpathSync } from "node:fs";
-import { CC_START_RETRY_NOTE, CC_START_SEND_FAILED_NOTE, ccStartedTexts, START_FAILURE_TEXT } from "../app/commands/cc-confirm.ts";
+import { CC_START_RETRY_NOTE, CC_START_THREW, CC_START_SEND_FAILED_NOTE, ccStartedTexts, START_FAILURE_TEXT } from "../app/commands/cc-confirm.ts";
 import { layoutQueueKey } from "../app/commands/setup.ts";
 import type { ChannelOpsQueue } from "../app/channel-ops.ts";
 import type { KeyedSerialQueue } from "../app/queue.ts";
@@ -739,7 +739,7 @@ export class CcChannels {
       });
     } catch (error) {
       log(`Claude Code: [起動して続ける] の起動が例外で終わりました（${errorKind(error)}）`);
-      return back("failed", `起動できませんでした（起動の処理に失敗しました）${CC_START_RETRY_NOTE}`, true);
+      return back("failed", `${CC_START_THREW}${CC_START_RETRY_NOTE}`, true);
     }
     if (!result.ok) return back(result.reason, `起動できませんでした（${START_FAILURE_TEXT[result.reason]}）${CC_START_RETRY_NOTE}`, true);
     tmuxSession = result.tmuxSession;
