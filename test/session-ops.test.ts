@@ -7,6 +7,7 @@ import { ensureGuildLayout } from "../src/app/commands/setup.ts";
 import type { RotateNowResult } from "../src/app/inbox-rotate.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
+  closeInProgress,
   closeSession,
   confirmClose,
   CONTINUED_TEXT,
@@ -147,6 +148,32 @@ test("closeSession: セッションでない・閉じているなら受け付け
 
   assert.deepEqual(await closeSession("guild-1", "topic-1", env.deps, env.onAccepted), { result: "closed" });
   assert.equal(env.accepted.count, 2);
+});
+
+test("closeSession: 同じチャンネルの要約が走っている間（キューで待っている間を含む）は要約を始めずに closing（onAccepted は呼ばない）。終われば・投げても印を外す", async (t) => {
+  const env = setup(t, [ok("閉じました")]);
+  // 同じチャンネルの発言のターンが走っていて、/close はキューで待つ
+  let release = (): void => {};
+  const running = env.deps.turnQueue.run("topic-1", () => new Promise<void>((resolve) => (release = resolve)), { session: true });
+
+  const first = closeSession("guild-1", "topic-1", env.deps, env.onAccepted);
+  assert.equal(closeInProgress("topic-1"), true);
+  assert.deepEqual(await closeSession("guild-1", "topic-1", env.deps, env.onAccepted), { result: "closing" });
+  assert.equal(env.accepted.count, 1);
+  release();
+  await running;
+  assert.deepEqual(await first, { result: "finalized", summary: "閉じました" });
+  assert.equal(env.runner.inputs.length, 1);
+  assert.equal(closeInProgress("topic-1"), false);
+
+  // onAccepted が投げても印は外れる
+  const env2 = setup(t, []);
+  await assert.rejects(
+    closeSession("guild-1", "topic-1", env2.deps, async () => {
+      throw new Error("保留に失敗しました");
+    }),
+  );
+  assert.equal(closeInProgress("topic-1"), false);
 });
 
 test("closeSession → confirmClose: 候補があれば confirm、確定で closed と登録数、2 回目は no_draft", async (t) => {

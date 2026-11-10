@@ -31,6 +31,9 @@ export const IMAGE_FETCH_FAILED_REPLY = "画像を取得できませんでした
 /** fetch の形。テストでは偽物に差し替える。転送はたどらない（redirect: "error"） */
 export type FetchFn = (url: string, init: { signal: AbortSignal; redirect: "error" }) => Promise<Response>;
 
+/** ms 経ったら abort する signal を作る。テストでは偽物に差し替える */
+export type TimeoutSignalFn = (ms: number) => AbortSignal;
+
 /** `<dataDir>/attachments`。attachments.path はここからの相対パス */
 export function attachmentsDir(dataDir: string): string {
   return join(dataDir, "attachments");
@@ -168,10 +171,10 @@ type Fetched = { kind: "ok"; bytes: Uint8Array } | { kind: "tooLarge" } | { kind
  * url の中身を maxBytes まで取る（全体で ATTACHMENT_FETCH_TIMEOUT_MS まで）。許した場所以外・転送・2xx 以外は失敗。
  * Content-Length が maxBytes を超えていれば読まずに、読んでいる途中で超えたらそこで止めて tooLarge
  */
-async function fetchBytes(fetchFn: FetchFn, url: string, maxBytes: number): Promise<Fetched> {
+async function fetchBytes(fetchFn: FetchFn, timeoutSignal: TimeoutSignalFn, url: string, maxBytes: number): Promise<Fetched> {
   if (!isAllowedAttachmentUrl(url)) return { kind: "failed" };
   const controller = new AbortController();
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS)]);
+  const signal = AbortSignal.any([controller.signal, timeoutSignal(ATTACHMENT_FETCH_TIMEOUT_MS)]);
   try {
     const response = await fetchFn(url, { signal, redirect: "error" });
     if (!response.ok) {
@@ -231,6 +234,8 @@ export type AttachmentDeps = {
   attachments: Pick<AttachmentStore, "add">;
   /** 省略すれば globalThis.fetch */
   fetch?: FetchFn;
+  /** 取得の打ち切りの signal の作り方（ms は ATTACHMENT_FETCH_TIMEOUT_MS）。省略すれば AbortSignal.timeout */
+  timeoutSignal?: TimeoutSignalFn;
   log: (message: string) => void;
 };
 
@@ -294,12 +299,12 @@ function passable(bytes: Uint8Array): Passable {
 
 async function prepareImage(
   deps: AttachmentDeps,
-  fetchFn: FetchFn,
+  get: (url: string, maxBytes: number) => Promise<Fetched>,
   source: AttachmentSource,
   image: IncomingImage,
   index: number,
 ): Promise<PreparedImage> {
-  const original = await fetchBytes(fetchFn, image.url, MAX_IMAGE_BYTES);
+  const original = await get(image.url, MAX_IMAGE_BYTES);
   if (original.kind !== "ok") return original;
   const originalType = sniffImageType(original.bytes);
   const originalSize = originalType === undefined ? undefined : imageSize(original.bytes, originalType);
@@ -312,7 +317,7 @@ async function prepareImage(
     passed = { kind: "failed" };
     for (const webp of [true, false]) {
       const url = resizedProxyUrl(image.proxyUrl, originalSize, webp);
-      const resized = url === undefined ? ({ kind: "failed" } as const) : await fetchBytes(fetchFn, url, MAX_PASSED_IMAGE_BYTES);
+      const resized = url === undefined ? ({ kind: "failed" } as const) : await get(url, MAX_PASSED_IMAGE_BYTES);
       const candidate = resized.kind === "ok" ? passable(resized.bytes) : resized;
       if (candidate.kind === "ok") {
         passed = candidate;
@@ -348,9 +353,11 @@ export async function prepareImages(
   images: readonly IncomingImage[],
 ): Promise<PreparedImages> {
   const fetchFn: FetchFn = deps.fetch ?? ((url, init) => fetch(url, init));
+  const timeoutSignal: TimeoutSignalFn = deps.timeoutSignal ?? ((ms) => AbortSignal.timeout(ms));
+  const get = (url: string, maxBytes: number): Promise<Fetched> => fetchBytes(fetchFn, timeoutSignal, url, maxBytes);
   const results = await Promise.all(
     images.map((image, index) =>
-      prepareImage(deps, fetchFn, source, image, index).catch((): PreparedImage => ({ kind: "failed" })),
+      prepareImage(deps, get, source, image, index).catch((): PreparedImage => ({ kind: "failed" })),
     ),
   );
   const prepared: PreparedImages = { images: [], attachmentIds: [], tooLarge: 0, failed: 0 };

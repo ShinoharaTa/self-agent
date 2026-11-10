@@ -19,6 +19,7 @@ import type { OwnerPosts, PersonaRouter } from "../../app/personas.ts";
 import {
   checkSessionProject,
   closable,
+  closeInProgress,
   closeSession,
   confirmClose,
   continueSession,
@@ -98,8 +99,6 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
   const lookup = webChannelLookup(deps);
   /** Web から始めた /close の確認を Discord に投稿したメッセージ（channelId → messageId。プロセス内）。Web で確定したらボタン無しの結果に書き換える */
   const confirmMessages = new Map<string, string>();
-  /** Web から始めた /close の要約を待っているチャンネル（プロセス内）。その間の同じチャンネルの /close は 409 closing（要約を 2 回走らせない） */
-  const closing = new Set<string>();
 
   /** セッションのチャンネルのサーバー（許可したサーバーのもの）。無ければ undefined。状態の判定は session-ops.ts が行う */
   const sessionGuild = (channelId: string): string | undefined => {
@@ -154,6 +153,7 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
         await removeClosedNodeModules(deps, channelId);
         return;
       case "closed":
+      case "closing":
       case "not_session":
         return;
     }
@@ -250,14 +250,13 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
         const check = closable(topicSessions.get(channelId), guildId);
         if (check === "not_session") return NOT_FOUND;
         if (check === "closed") return CLOSED;
-        if (closing.has(channelId)) return { status: 409, json: { error: "closing" } };
-        closing.add(channelId);
+        // 同じチャンネルの /close の要約が走っている間（Discord から始めたものを含む）は 409 closing（要約を 2 回走らせない）
+        if (closeInProgress(channelId)) return { status: 409, json: { error: "closing" } };
         log(`Web から /close を始めました（guild=${guildId}）`);
         // 要約のターンは最長 SELF_AGENT_SESSION_TURN_TIMEOUT_SEC かかるので待たない（実行中のターンがあればキューで順番を待つ）
         void closeSession(guildId, channelId, deps)
           .then((outcome) => afterClose(guildId, channelId, outcome))
-          .catch((error: unknown) => log(`Web からの /close に失敗しました: ${describeError(error)}`))
-          .finally(() => closing.delete(channelId));
+          .catch((error: unknown) => log(`Web からの /close に失敗しました: ${describeError(error)}`));
         return { status: 202, json: { accepted: true } };
       },
     },

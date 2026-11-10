@@ -27,6 +27,8 @@ export { ALREADY_CLOSED_REPLY, CLOSE_PROMPT, closedText, confirmButtons, confirm
 export const NOT_SESSION_REPLY = "セッションのチャンネルで実行してください";
 export const SUMMARY_FAILURE_REPLY = "要約に失敗しました。もう一度 /close を実行してください";
 export const NO_DRAFT_REPLY = "/close をもう一度実行してください";
+/** 同じチャンネルの /close の要約が走っている間の /close・[閉じる]（本人にだけ） */
+export const CLOSING_REPLY = "要約しています。終わるまで待ってください";
 
 export type CloseDeps = {
   topicSessions: TopicSessionStore;
@@ -139,12 +141,14 @@ async function runClose(
   });
   // 受け付ける前に断ったもの（保留していない）
   if (!accepted) {
-    const text = outcome.result === "not_session" ? NOT_SESSION_REPLY : ALREADY_CLOSED_REPLY;
+    const text =
+      outcome.result === "not_session" ? NOT_SESSION_REPLY : outcome.result === "closing" ? CLOSING_REPLY : ALREADY_CLOSED_REPLY;
     await responder.reply({ text, ephemeral: true });
     return;
   }
   switch (outcome.result) {
     case "not_session":
+    case "closing":
     case "closed":
       await showOrPost(deps, channelId, response, { text: ALREADY_CLOSED_REPLY });
       return;

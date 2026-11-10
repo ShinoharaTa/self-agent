@@ -346,25 +346,41 @@ async function closeTurn(deps: CloseDeps, guildId: string, channelId: string): P
   return { result: "finalized", summary: draft.summary };
 }
 
+/** /close の要約が走っている（キューで待っている間を含む）チャンネル（プロセス内）。Discord の /close・[閉じる] と Web の /close で共通 */
+const closingChannels = new Set<string>();
+
+/** そのチャンネルの /close の要約が走っているか（キューで待っている間を含む） */
+export function closeInProgress(channelId: string): boolean {
+  return closingChannels.has(channelId);
+}
+
 /**
- * /close の流れ: 閉じられるか確かめる（not_session・closed なら onAccepted を呼ばずに返す）→ onAccepted →
+ * /close の流れ: 閉じられるか確かめる（not_session・closed なら onAccepted を呼ばずに返す）→
+ * 同じチャンネルの /close の要約が走っていれば（キューで待っている間を含む）要約を始めずに closing（onAccepted を呼ばない）→ onAccepted →
  * 発言のターンと同じキュー（セッションのジョブ）でそのセッションの会話に要約とやることの候補を作らせる →
- * 候補があれば confirm（下書きは DB に残る）、無ければ閉じて finalized。キューを待つ間に閉じられていれば closed、ターンの失敗は failed（log に出す）
+ * 候補があれば confirm（下書きは DB に残る）、無ければ閉じて finalized。キューを待つ間に閉じられていれば closed、ターンの失敗は failed（log に出す）。
+ * closing の印は最初の await の前に付ける（呼び出し側が待たずに呼んでも、戻った時点で closeInProgress が true）
  */
 export async function closeSession(
   guildId: string,
   channelId: string,
   deps: CloseDeps,
   onAccepted?: () => Promise<void>,
-): Promise<{ result: "not_session" } | CloseTurnOutcome> {
+): Promise<{ result: "not_session" } | { result: "closing" } | CloseTurnOutcome> {
   const check = closable(deps.topicSessions.get(channelId), guildId);
   if (check === "not_session") return { result: "not_session" };
   if (check === "closed") return { result: "closed" };
-  await onAccepted?.();
-  // セッションのターンなので、発言のターンと同じく同時実行の枠を 1 つ #inbox 用に残す
-  const outcome = await deps.turnQueue.run(channelId, () => closeTurn(deps, guildId, channelId), { session: true });
-  if (outcome.result === "failed") deps.log(`/close のターンが失敗しました: ${outcome.errorMessage}`);
-  return outcome;
+  if (closingChannels.has(channelId)) return { result: "closing" };
+  closingChannels.add(channelId);
+  try {
+    await onAccepted?.();
+    // セッションのターンなので、発言のターンと同じく同時実行の枠を 1 つ #inbox 用に残す
+    const outcome = await deps.turnQueue.run(channelId, () => closeTurn(deps, guildId, channelId), { session: true });
+    if (outcome.result === "failed") deps.log(`/close のターンが失敗しました: ${outcome.errorMessage}`);
+    return outcome;
+  } finally {
+    closingChannels.delete(channelId);
+  }
 }
 
 /**

@@ -446,6 +446,33 @@ test("prepareImages: Content-Length が上限を超えていれば読まずに�
   assert.ok(pulled <= Math.ceil(MAX_IMAGE_BYTES / chunk.length) + 2, `pulled=${pulled}`);
 });
 
+test("prepareImages: 取得は 15 秒（注入した timeoutSignal に 15,000 ms）で打ち切り、時間切れの signal が abort したら取得の失敗にする", async (t) => {
+  const { attachments, dataDir } = setupStore(t);
+  const requested: number[] = [];
+  const timeouts: AbortController[] = [];
+  const timeoutSignal = (ms: number): AbortSignal => {
+    requested.push(ms);
+    const controller = new AbortController();
+    timeouts.push(controller);
+    return controller.signal;
+  };
+  let called!: () => void;
+  const fetchCalled = new Promise<void>((resolve) => (called = resolve));
+  // 答えを返さず、signal が abort されたら reject する（実時間では待たない）
+  const fetch: FetchFn = (_url, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      called();
+    });
+
+  const pending = prepareImages({ dataDir, attachments, fetch, timeoutSignal, log: () => {} }, SOURCE, [image()]);
+  await fetchCalled;
+  assert.deepEqual(requested, [15_000]);
+  timeouts[0]!.abort(new DOMException("timed out", "TimeoutError"));
+
+  assert.deepEqual(await pending, { images: [], attachmentIds: [], tooLarge: 0, failed: 1 });
+});
+
 test("prepareImages: 1 枚ずつ判定し、渡せたものだけを（発言の添付の順の番号で）保存する", async (t) => {
   const { attachments, dataDir } = setupStore(t);
   const { fetch } = fakeFetch({
