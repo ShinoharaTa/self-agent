@@ -707,10 +707,20 @@ test("秘密の場所: 共有の link の skills・agents（CONFIG_DIR と ~/.cl
   // skills の中の symlink が秘密を指せば拒否（realpath も共有の場所の中でなければ飛ばさない）
   symlinkSync(join(home, ".claude/.credentials.json"), join(home, ".claude/skills/x/leak"));
   assert.equal(touchesSecretPlace("Read", { file_path: join(cfg.claudeConfigDir, "skills/x/leak") }, cwd, secrets, home, shared), true);
-  // 共有の場所の外は今までどおり
+  // 共有の場所の外は今までどおり（`..` で外へ・接頭辞が同じだけ・Glob の pattern で外へ、も）
   assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude/.credentials.json" }, cwd, secrets, home, shared), true);
   assert.equal(touchesSecretPlace("Read", { file_path: join(cfg.claudeConfigDir, "settings.json") }, cwd, secrets, home, shared), true);
   assert.equal(touchesSecretPlace("Grep", { pattern: "x", path: join(home, ".claude") }, cwd, secrets, home, shared), true);
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude/skills/../.credentials.json" }, cwd, secrets, home, shared), true);
+  mkdirSync(join(home, ".claude/skills-x"), { recursive: true });
+  writeFileSync(join(home, ".claude/skills-x/a"), "a");
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude/skills-x/a" }, cwd, secrets, home, shared), true);
+  assert.equal(touchesSecretPlace("Glob", { path: "~/.claude/skills", pattern: "../*.json" }, cwd, secrets, home, shared), true);
+  // 書く側（Write・Edit・MultiEdit・NotebookEdit）は共有の場所でも秘密のまま（skills は全部の Claude Code のセッションが読む指示の置き場）
+  for (const tool of ["Write", "Edit", "MultiEdit", "NotebookEdit"]) {
+    const key = tool === "NotebookEdit" ? "notebook_path" : "file_path";
+    assert.equal(touchesSecretPlace(tool, { [key]: join(cfg.claudeConfigDir, "skills/x/REFERENCE.md") }, cwd, secrets, home, shared), true, tool);
+  }
   // profile の hook も共有の場所を通す
   const profile = createProjectProfile({
     cfg,
@@ -729,6 +739,37 @@ test("秘密の場所: 共有の link の skills・agents（CONFIG_DIR と ~/.cl
   assert.deepEqual(await call(join(cfg.claudeConfigDir, "skills/x/leak")), {
     hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: PROJECT_SECRET_DENIED_REASON },
   });
+});
+
+test("秘密の場所: 共有の場所そのものが symlink でもその先には広げない。~/.claude 自体が symlink なら skills は読める（#291）", async (t) => {
+  const { projectSecretPlaces, projectSharedPlaces } = await import("../src/agent/project-profile.ts");
+  const { root, workspaceDir, home, cfg } = places(t);
+  const cwd = join(workspaceDir, "alpha");
+  const secrets = projectSecretPlaces(cfg, home);
+  const shared = projectSharedPlaces(cfg, home);
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(join(home, ".claude/.credentials.json"), "{}");
+  writeFileSync(join(home, ".ssh/id_ed25519"), "key");
+  // ~/.claude/agents → ~/.ssh、CONFIG_DIR/skills → ~/.claude（誤設定）のどちらも、その先は読めない
+  symlinkSync(join(home, ".ssh"), join(home, ".claude/agents"));
+  mkdirSync(cfg.claudeConfigDir, { recursive: true });
+  symlinkSync(join(home, ".claude"), join(cfg.claudeConfigDir, "skills"));
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.ssh/id_ed25519" }, cwd, secrets, home, shared), true);
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude/agents/id_ed25519" }, cwd, secrets, home, shared), true);
+  assert.equal(touchesSecretPlace("Grep", { pattern: "x", path: "~/.claude/agents" }, cwd, secrets, home, shared), true);
+  assert.equal(touchesSecretPlace("Read", { file_path: join(cfg.claudeConfigDir, "skills/.credentials.json") }, cwd, secrets, home, shared), true);
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude/.credentials.json" }, cwd, secrets, home, shared), true);
+  // ~/.claude 自体が別の場所への symlink（ホームを別のディスクに置いた形）でも、その中の skills は読める
+  const realHome = join(root, "disk/claude");
+  mkdirSync(join(realHome, "skills/y"), { recursive: true });
+  writeFileSync(join(realHome, "skills/y/REFERENCE.md"), "ref");
+  const home2 = join(root, "home2");
+  mkdirSync(home2, { recursive: true });
+  symlinkSync(realHome, join(home2, ".claude"));
+  const secrets2 = projectSecretPlaces(cfg, home2);
+  const shared2 = projectSharedPlaces(cfg, home2);
+  assert.equal(touchesSecretPlace("Read", { file_path: join(home2, ".claude/skills/y/REFERENCE.md") }, cwd, secrets2, home2, shared2), false);
+  assert.equal(touchesSecretPlace("Read", { file_path: join(realHome, "skills/y/REFERENCE.md") }, cwd, secrets2, home2, shared2), false);
 });
 
 test("bridgeSummary: 要約は tool_input から作ったものを常に出し、title は前の 1 行に添える", async () => {
