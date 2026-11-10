@@ -234,7 +234,7 @@ test("CcRegistry: status: waiting は hook が無くても判断待ち（待ち�
   assert.equal(s.store.get(S1)!.waitingFor, null);
 });
 
-test("lastActivity: 最後の指示・最後の事象・記録の mtime のいちばん新しいもの。どれも無ければ起動の時刻（#288）", () => {
+test("lastActivity: 最後の指示・最後の事象・記録の最後の会話の時刻のいちばん新しいもの。どれも無ければ起動の時刻（#288）", () => {
   assert.equal(lastActivity({ lastPromptAt: 100, lastEventAt: undefined, transcriptLastAt: 900, startedAt: 1 }), 900);
   assert.equal(lastActivity({ lastPromptAt: 100, lastEventAt: 350, transcriptLastAt: 200, startedAt: 1 }), 350);
   assert.equal(lastActivity({ lastPromptAt: 700, lastEventAt: 350, transcriptLastAt: undefined, startedAt: 1 }), 700);
@@ -242,7 +242,7 @@ test("lastActivity: 最後の指示・最後の事象・記録の mtime のい�
   assert.equal(lastActivity({ lastPromptAt: undefined, lastEventAt: undefined, transcriptLastAt: undefined, startedAt: undefined }), undefined);
 });
 
-test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中 → 待機（どちらも最後の活動（最後の指示・最後の事象・記録の mtime のいちばん新しいもの → 起動）の新しい順）", () => {
+test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中 → 待機（どちらも最後の活動（最後の指示・最後の事象・記録の最後の会話の時刻のいちばん新しいもの → 起動）の新しい順）", () => {
   const base: RankInput = {
     sessionId: "",
     status: "idle",
@@ -257,7 +257,7 @@ test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中 → 
   const items: RankInput[] = [
     { ...base, sessionId: "idle-started", startedAt: 500 },
     { ...base, sessionId: "idle-old-prompt", lastPromptAt: 100, transcriptLastAt: 900 },
-    { ...base, sessionId: "idle-mtime", transcriptLastAt: 600 },
+    { ...base, sessionId: "idle-transcript", transcriptLastAt: 600 },
     { ...base, sessionId: "idle-none" },
     { ...base, sessionId: "running-old", status: "busy", lastPromptAt: 200 },
     { ...base, sessionId: "running-new", status: "busy", lastPromptAt: 300 },
@@ -278,7 +278,7 @@ test("rankSessions: 判断待ち（待ち始めの古い順）→ 実行中 → 
       ["running-old", "running"],
       ["idle-old-prompt", "idle"],
       ["idle-prompt", "idle"],
-      ["idle-mtime", "idle"],
+      ["idle-transcript", "idle"],
       ["idle-started", "idle"],
       ["idle-none", "idle"],
     ],

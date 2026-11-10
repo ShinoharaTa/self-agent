@@ -17,7 +17,8 @@ const CONVERSATION_TYPES = new Set(["user", "assistant"]);
 
 /**
  * jsonl の末尾の chunk から、最後の会話の行（type が user・assistant で timestamp が読める）の時刻（ミリ秒）。無ければ undefined。
- * whole が false なら chunk の先頭は行の途中かもしれないので最初の行を捨てる
+ * whole が false なら chunk の先頭は行の途中かもしれないので最初の行を捨てる。
+ * 記録は追記の順なので、末尾から最初に見つかった行を最後とみなす（最大値は取らない）。1 行が読む範囲より長ければその行は読めず、前の行か undefined になる
  */
 export function lastConversationAt(chunk: string, whole: boolean): number | undefined {
   const lines = chunk.split("\n");
