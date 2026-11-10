@@ -308,14 +308,14 @@ test("pasteLanded: 貼る前の入力行が全部 dim（候補）なら、本文
   assert.equal(pasteLanded(screen([`${PROMPT}${text}`]), screen([`${PROMPT}${text}`]), text), false);
 });
 
-test("pasteLanded: 貼った後の入力欄も dim を除いて比べる（短い本文が dim の候補文に含まれているだけなら貼れたとみなさない）", () => {
+test("pasteLanded: 貼った後の入力欄の先頭 24 字は dim を除いて比べる（短い本文が dim の候補文に含まれているだけなら貼れたとみなさない）", () => {
   const text = "yes";
   const suggestion = screen([`${PROMPT}${sgr("2")}yes, run the tests${sgr("0")}`]);
   assert.equal(pasteLanded(EMPTY, suggestion, text), false);
   // dim でない文字として入っていれば貼れた
   assert.equal(pasteLanded(EMPTY, screen([`${PROMPT}yes`]), text), true);
-  // dim の [Pasted text の印は印とみなさない
-  assert.equal(pasteLanded(EMPTY, screen([`${PROMPT}${sgr("2")}[Pasted text #1]${sgr("0")}`]), "1 行だけの長い本文"), false);
+  // [Pasted text の印は dim で描かれていても貼れたとみなす
+  assert.equal(pasteLanded(EMPTY, screen([`${PROMPT}${sgr("2")}[Pasted text #1]${sgr("0")}`]), "1 行だけの長い本文"), true);
 });
 
 test("inputBoxText: 入力欄は INPUT_BOX_MAX_LINES（20）行まで探す", () => {

@@ -271,7 +271,7 @@ export function expectedMarkerLines(text: string): number {
  * before の入力欄が見つかり、その dim でない文字（inputBoxSolidText。dim の候補は貼ると置き換わるので比べない）に `[Pasted text` も
  * text の先頭 PASTE_CHECK_CHARS 字も無く（前からあった印・文字を貼れた証拠と取り違えない）、after の入力欄の dim でない文字（これも
  * inputBoxSolidText。短い本文が dim の候補文に含まれているだけのものを貼れたとみなさない）に text の先頭 PASTE_CHECK_CHARS 字
- * （空白を除いて比べる）か、N が expectedMarkerLines(text) と同じ `[Pasted text` の印があるときだけ true（別の貼り付けの印を取り違えない）。
+ * （空白を除いて比べる）か、after の入力欄（dim も含む）に N が expectedMarkerLines(text) と同じ `[Pasted text` の印があるときだけ true（別の貼り付けの印を取り違えない）。
  * false なら Enter を押さない
  */
 export function pasteLanded(beforeRaw: string, afterRaw: string, text: string): boolean {
@@ -280,9 +280,10 @@ export function pasteLanded(beforeRaw: string, afterRaw: string, text: string): 
   if (head === "") return false;
   const before = inputBoxSolidText(beforeRaw);
   if (before === undefined || before.includes(marker) || before.includes(head)) return false;
-  const after = inputBoxSolidText(afterRaw);
+  const after = inputBoxText(afterRaw);
   if (after === undefined) return false;
-  if (after.includes(head)) return true;
+  if (inputBoxSolidText(afterRaw)?.includes(head) === true) return true;
+  // 印は dim で描かれることがあるので dim も含めて見る（#n と N の比べで別の貼り付けの印とは取り違えない）
   const expected = expectedMarkerLines(text);
   return pastedMarkerLines(after).some((lines) => lines === expected);
 }
