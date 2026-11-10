@@ -18,6 +18,7 @@ import {
   SUMMARY_FAILURE_REPLY,
 } from "../src/app/commands/close.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { closeInProgress } from "../src/app/session-ops.ts";
 import { EMPTY_SUMMARY } from "../src/app/summary.ts";
 import type { Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
 import { type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -434,6 +435,7 @@ test("/close の要約が走っている間の /close・[閉じる] は要約を
 
   const closing = env.runClose();
   await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closeInProgress("topic-1"), true);
   assert.deepEqual(await env.runClose(), [{ method: "reply", message: { text: CLOSING_REPLY, ephemeral: true } }]);
   assert.deepEqual(await env.press({ ...BASE, kind: "button", customId: closeStartButton("topic-1").customId }), [
     { method: "reply", message: { text: CLOSING_REPLY, ephemeral: true } },

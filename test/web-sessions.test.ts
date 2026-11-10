@@ -11,6 +11,7 @@ import type { RotateNowResult } from "../src/app/inbox-rotate.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
+  closeInProgress,
   closeSession,
   confirmClose,
   NO_CONVERSATION_REPLY,
@@ -406,6 +407,28 @@ test("POST /close: 印は Discord の /close と共通。Discord の要約が走
   await until(() => env.gateway.posts.length === 1);
   await env.turnQueue.idle();
   assert.equal(env.runner.inputs.length, 2);
+});
+
+test("POST /close: 印は Web の後始末（確認の投稿）が終わるまで残り、その間の closeSession は closing。終われば外れる", async (t) => {
+  const env = await setup(t, (topicSessions) => [reports(DRAFT, topicSessions)]);
+  let release: () => void = () => undefined;
+  let posting = false;
+  const original = env.gateway.sendMessage.bind(env.gateway);
+  env.gateway.sendMessage = async (channelId, message) => {
+    posting = true;
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return original(channelId, message);
+  };
+  const deps = { ...env, channelOps: env.channelOps, projectsDir: tempDir(t), log: () => 0 };
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close"), { status: 202, json: { accepted: true } });
+  await until(() => posting);
+  assert.equal(closeInProgress("200"), true);
+  assert.deepEqual(await closeSession(GUILD, "200", deps), { result: "closing" });
+  release();
+  await until(() => !closeInProgress("200"));
+  assert.equal(env.runner.inputs.length, 1);
 });
 
 test("POST /close/confirm: Discord で先に確定していれば 409 no_draft で何も変えない。selected の形が違えば 400、セッションでなければ 404", async (t) => {

@@ -359,13 +359,15 @@ export function closeInProgress(channelId: string): boolean {
  * 同じチャンネルの /close の要約が走っていれば（キューで待っている間を含む）要約を始めずに closing（onAccepted を呼ばない）→ onAccepted →
  * 発言のターンと同じキュー（セッションのジョブ）でそのセッションの会話に要約とやることの候補を作らせる →
  * 候補があれば confirm（下書きは DB に残る）、無ければ閉じて finalized。キューを待つ間に閉じられていれば closed、ターンの失敗は failed（log に出す）。
- * closing の印は最初の await の前に付ける（呼び出し側が待たずに呼んでも、戻った時点で closeInProgress が true）
+ * closing の印は最初の await の前に付ける（呼び出し側が待たずに呼んでも、戻った時点で closeInProgress が true）。
+ * after（Web の確認・結果の投稿などの後始末）を渡せば、印を外す前に outcome で待つ（投げれば closeSession も投げる。印は外す）
  */
 export async function closeSession(
   guildId: string,
   channelId: string,
   deps: CloseDeps,
   onAccepted?: () => Promise<void>,
+  after?: (outcome: CloseTurnOutcome) => Promise<void>,
 ): Promise<{ result: "not_session" } | { result: "closing" } | CloseTurnOutcome> {
   const check = closable(deps.topicSessions.get(channelId), guildId);
   if (check === "not_session") return { result: "not_session" };
@@ -377,6 +379,7 @@ export async function closeSession(
     // セッションのターンなので、発言のターンと同じく同時実行の枠を 1 つ #inbox 用に残す
     const outcome = await deps.turnQueue.run(channelId, () => closeTurn(deps, guildId, channelId), { session: true });
     if (outcome.result === "failed") deps.log(`/close のターンが失敗しました: ${outcome.errorMessage}`);
+    await after?.(outcome);
     return outcome;
   } finally {
     closingChannels.delete(channelId);
