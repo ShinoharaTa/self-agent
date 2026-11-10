@@ -103,7 +103,7 @@ import { RoutineStore } from "./store/routines.ts";
 import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
-import { UsageStore } from "./store/usage.ts";
+import { USAGE_KEEP_DAYS, UsageStore } from "./store/usage.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
 import { ccChannelDescriber, ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
 import { channelRoutes, webChannelLookup, webChannelNamer } from "./web/routes/channels.ts";
@@ -620,6 +620,11 @@ const scheduler = new Scheduler({
   pruneNotices: () => {
     const deleted = noticeStore.prune(new Date(now().getTime() - NOTICE_KEEP_DAYS * 24 * 60 * 60 * 1000));
     if (deleted > 0) log(`古い知らせの記録 ${deleted} 件を消しました`);
+  },
+  // USAGE_KEEP_DAYS 日より前のターンのトークンの記録（usage_log）を消す
+  pruneUsage: () => {
+    const deleted = usage.prune(new Date(now().getTime() - USAGE_KEEP_DAYS * 24 * 60 * 60 * 1000));
+    if (deleted > 0) log(`古いトークンの記録 ${deleted} 件を消しました`);
   },
   // 一覧から消えて CC_SESSION_KEEP_DAYS 日経った Claude Code のセッションの行と、CC_SEND_KEEP_DAYS 日より前の終わった送信の行、
   // CC_PERMISSION_KEEP_DAYS 日より前の終わった許可の要求の行を消す（SELF_AGENT_CC が無効でも消す）

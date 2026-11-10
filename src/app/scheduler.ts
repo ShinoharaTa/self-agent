@@ -98,6 +98,8 @@ export type SchedulerDeps = {
   pruneHistory?: () => void;
   /** 残す日数より前の #system への知らせの記録（notices）を消す（Web UI が無効でも消す）。投げたら log に出して続ける。省略すれば消さない */
   pruneNotices?: () => void;
+  /** 残す日数より前のターンのトークンの記録（usage_log）を消す（消した数の log は渡す側）。投げたら log に出して続ける。省略すれば消さない */
+  pruneUsage?: () => void;
   /**
    * Claude Code のセッションのチャンネル（SELF_AGENT_CC=1 のときだけ。cc/channels.ts）。再同期で、Discord 上に無いものを削除済みに、
    * カテゴリが状態と合わないものを戻す。無ければ見ない
@@ -193,6 +195,7 @@ export class Scheduler {
     this.pruneGuestTurns();
     this.pruneHistory();
     this.pruneNotices();
+    this.pruneUsage();
     this.pruneCcSessions();
     await this.pruneSandboxAreas();
     // 停止を始めたら、まだ始めていない切り替えは行わない（始めたものは idle と shutdown のキューの待ち合わせで待つ）
@@ -330,6 +333,16 @@ export class Scheduler {
       this.deps.pruneNotices();
     } catch {
       this.deps.log("古い知らせの記録を消せませんでした");
+    }
+  }
+
+  /** 古いターンのトークンの記録を消す。失敗は log に出すだけ */
+  private pruneUsage(): void {
+    if (this.deps.pruneUsage === undefined) return;
+    try {
+      this.deps.pruneUsage();
+    } catch {
+      this.deps.log("古いトークンの記録を消せませんでした");
     }
   }
 

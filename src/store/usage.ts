@@ -3,6 +3,9 @@ import type { StepUsage } from "../agent/runner.ts";
 import { formatDate } from "../app/time.ts";
 import { DEFAULT_PERSONA_ID, type Engine } from "../config.ts";
 
+/** 記録を残す日数（scheduler の tick で、これより前のターンの行を消す。Web の /api/usage/days の最大 366 日を覆う） */
+export const USAGE_KEEP_DAYS = 400;
+
 export type UsageRecord = {
   key: string;
   sessionId?: string;
@@ -291,5 +294,11 @@ export class UsageStore {
       days.set(date, day);
     }
     return [...days.values()];
+  }
+
+  /** cutoff より前に記録したターンの行を消し、消した数を返す */
+  prune(cutoff: Date): number {
+    const result = this.db.prepare("DELETE FROM usage_log WHERE at < ?").run(cutoff.toISOString());
+    return Number(result.changes);
   }
 }
