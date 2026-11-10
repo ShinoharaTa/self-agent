@@ -74,7 +74,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - 設定の画面: テーマ、キーボードの一覧、環境変数の**有無**（`/api/status` の `env`。値は返さない）。
 
 ### 3.3 配り方
-- `GET /` → `index.html`、`GET /static/<name>` → `src/web/static/<name>`（`base.css`・`icons.svg` だけ `templates/web/site/`）。`name` は `/^[A-Za-z0-9_-]+\.(html|css|js|svg)$/` に合うものだけ（`..`・ドットで始まる名前・拡張子なしは 404）。**`/static/*` は認証なしで配る**（中身は公開リポジトリにあるもので秘密は無く、ログイン画面が `base.css` を読むため）。`/`・`/api/*` は認証が要る。Content-Type は html / css / js / svg の小さな表（static-server.ts の表とは別。`charset=utf-8`）。`Cache-Control: no-cache` と `ETag`（ファイルの mtime + size）。`GET /login` はトークンがあるときだけのフォーム（`src/web/server.ts` の中で組み立てる。誤り・回数の超過の固定の文を出すため。`/static/base.css` を読み、殻と同じ部品で組む。認証なしで返す唯一の HTML）。401 のとき画面（api.js）は `/` へ移る（トークンがあれば `/` が `/login` へ 302、無ければ「Tailscale でつないでください」。`/login` はトークンが無いと 404 のため）。
+- `GET /` → `index.html`、`GET /static/<name>` → `src/web/static/<name>`（`base.css`・`icons.svg` だけ `templates/web/site/`）。`name` は `/^[A-Za-z0-9_-]+\.(html|css|js|svg|png|webmanifest)$/` に合うものだけ（png・webmanifest はホーム画面のアイコンと manifest。§11）（`..`・ドットで始まる名前・拡張子なしは 404）。**`/static/*` は認証なしで配る**（中身は公開リポジトリにあるもので秘密は無く、ログイン画面が `base.css` を読むため）。`/`・`/api/*` は認証が要る。Content-Type は html / css / js / svg / png（image/png）/ webmanifest（application/manifest+json）の小さな表（static-server.ts の表とは別。`charset=utf-8`）。`Cache-Control: no-cache` と `ETag`（ファイルの mtime + size）。`GET /login` はトークンがあるときだけのフォーム（`src/web/server.ts` の中で組み立てる。誤り・回数の超過の固定の文を出すため。`/static/base.css` を読み、殻と同じ部品で組む。認証なしで返す唯一の HTML）。401 のとき画面（api.js）は `/` へ移る（トークンがあれば `/` が `/login` へ 302、無ければ「Tailscale でつないでください」。`/login` はトークンが無いと 404 のため）。
 - 認証を通らない `GET /` は `/login` へ 302（トークンが無ければ 401 の本文「Tailscale でつないでください」）。ルートの処理が投げたときの 500 の log は例外の message だけ（`describeError` 相当。パス・クエリは出さない）。
 
 ### 3.4 画面と API の対応（段付き。GET は読む・POST は変える（CSRF の 3 条件））
@@ -207,7 +207,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 
 ### 7.2 GitHub（W6-b）
 - `GithubStore.listPosted(limit)`（`posted_at IS NOT NULL` を `updated_at` の新しい順）を足す。`GithubPoller.status() → { lastFetchAt, failure, pausedUntil }`（取得できた時刻は `github_poll_state` の `last_modified` でなく tick の成功時刻をプロセス内で持つ）。
-- `GET /api/github?last=50` → `[{ id, level, label, title, url, actorLogin, actorKnown, updatedAt, repo }]`（`repo` は `url` から取らず `thread` の情報を store に足さない。`url` のパスから `owner/repo` を切り出すのは **client**（表示だけ））。[対応] は disabled のまま（段 2）。
+- `GET /api/github?last=50` → `[{ id, level, label, title, url, actorLogin, actorKnown, updatedAt, repo }]`（`repo` は `url` から取らず `thread` の情報を store に足さない。`url` のパスから `owner/repo` を切り出すのは **client**（表示だけ））。[対応] は CC6 で実装済み（送り込みがあれば `handoff: true` と行ごとの handoff、`POST /api/github/<id>/act`・`/start`。claude-code-sessions.md §6）。
 
 ### 7.3 ナレッジ・記憶
 - `KnowledgeStore.listRecent(limit)`（`updated_at` の新しい順。`body` を除く）を足す。`GET /api/knowledge?q=&last=30` は `q` が空なら `listRecent`、あれば `search(q, 10)`。`GET /api/knowledge/<id>` は `get`（本文あり）。削除は置かない（Discord の確認から）。

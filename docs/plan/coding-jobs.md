@@ -6,6 +6,8 @@
 
 > **保留（2026-11-01）。** PR-J4（ジョブ用の runner）は作らず、`SELF_AGENT_JOBS=1` は設定エラーのままにする。置き換え候補は `docs/plan/claude-code-sessions.md`（この機械の Claude Code のセッションを起動して指示を送る。「Issue を直して」はそこで作業セッションを起動して渡す。#github の [対応] も同じ送信・起動の上に載せた（CC6））。J1〜J3 のコード（設定・DB の表・状態の遷移・git と gh の包み・`/job` と #jobs・偽 Runner の dry-run）は残し、消すか残すかは後で決める（claude-code-sessions.md §6・§10 の 6）。#github の [任せる] は作らない。
 
+> **PR-J4 は畳む（2026-11-06。オーナーの決定。`docs/plan/unify.md` §8 の 5）。** 「Discord から頼むとリポジトリで実装して PR を出す」はプロジェクトのセッション（unify.md。`SELF_AGENT_WORKSPACE_DIR` の直下のプロジェクトで Claude Code と同じ装備で動き、ツールの許可はチャンネルと Web のカードで答える）が満たす。J4 の「sandbox の中で commit まで・push はアプリが固定の引数で」の守りは許可のカードに置き換わる。`SELF_AGENT_JOBS=1` の設定エラーはそのまま。以下の本文は保留した時点の設計として残す。
+
 ## 0. 目的と結論
 
 目的: Discord から「〇〇のサンプルアプリを作って」「この Issue を直して」と頼むと、このサーバーの今のログイン（Claude の OAuth と `gh`）だけで、Claude が実装・テスト・コミットし、**draft PR とそのリンク**が返ってくる。リポジトリごとの設定・新しいトークンは要らない。続けて何件でも頼める（同時には 1 つ）。マージは人が決める。

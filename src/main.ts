@@ -199,7 +199,7 @@ const knowledge = new KnowledgeStore(db, now);
 const memories = new MemoryStore(db, now);
 const projects = new ProjectStore(db, now);
 const reminders = new ReminderStore(db, now);
-// 定型チャンネル（docs/plan/routines.md）。使うのは R2 以降
+// 定型チャンネル（docs/plan/routines.md）。使うのは R3 以降（R2 の画像の受け取りは下の attachments だけを使う）
 const routines = new RoutineStore(db, now);
 const routineRecords = new RoutineRecordStore(db, now);
 // オーナーの発言の画像の原本（<dataDir>/attachments/ に置く）
