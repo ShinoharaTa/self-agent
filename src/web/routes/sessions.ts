@@ -253,9 +253,9 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
         // 同じチャンネルの /close の要約が走っている間（Discord から始めたものを含む）は 409 closing（要約を 2 回走らせない）
         if (closeInProgress(channelId)) return { status: 409, json: { error: "closing" } };
         log(`Web から /close を始めました（guild=${guildId}）`);
-        // 要約のターンは最長 SELF_AGENT_SESSION_TURN_TIMEOUT_SEC かかるので待たない（実行中のターンがあればキューで順番を待つ）
-        void closeSession(guildId, channelId, deps)
-          .then((outcome) => afterClose(guildId, channelId, outcome))
+        // 要約のターンは最長 SELF_AGENT_SESSION_TURN_TIMEOUT_SEC かかるので待たない（実行中のターンがあればキューで順番を待つ）。
+        // 後始末（確認・結果の投稿）は closeSession の after で行い、終わるまで closing の印を残す
+        void closeSession(guildId, channelId, deps, undefined, (outcome) => afterClose(guildId, channelId, outcome))
           .catch((error: unknown) => log(`Web からの /close に失敗しました: ${describeError(error)}`));
         return { status: 202, json: { accepted: true } };
       },
