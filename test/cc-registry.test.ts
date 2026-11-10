@@ -48,9 +48,12 @@ function setup(t: TestContext, pollSec = 10, busy?: () => boolean) {
   const results: AgentsResult[] = [];
   let lastResult: AgentsResult = { ok: true, agents: [], dropped: 0 };
   let listCalls = 0;
+  /** 一覧の読み取りを止めておく（wait が終わるまで list が返らない） */
+  const listGate: { wait: Promise<void> | undefined } = { wait: undefined };
   const agents = {
     list: async (): Promise<AgentsResult> => {
       listCalls++;
+      if (listGate.wait !== undefined) await listGate.wait;
       lastResult = results.shift() ?? lastResult;
       return lastResult;
     },
@@ -102,7 +105,7 @@ function setup(t: TestContext, pollSec = 10, busy?: () => boolean) {
     registry.receive(event);
     return event;
   };
-  return { db, clock, store, registry, willList, willFail, fire, hook, files, mtimes, delays, scheduled, logs, calls: () => listCalls };
+  return { db, clock, store, registry, willList, willFail, fire, hook, files, mtimes, delays, scheduled, logs, listGate, calls: () => listCalls };
 }
 
 function states(registry: CcRegistry): Array<[string, string]> {
@@ -218,6 +221,27 @@ test("CcRegistry: permission_prompt で判断待ち、Stop で解消。idle_prom
   assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
   s.hook({ hook_event_name: "Stop", session_id: S1 });
   assert.deepEqual(states(s.registry), [[S1, "idle"]]);
+  // idle 1 回 → 読めない回（数は残る）→ idle で解消。idle 1 回 → waiting → idle は数え直し
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "permission_prompt" });
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  s.willFail();
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "idle"]]);
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "permission_prompt" });
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  s.willList(agent(S1, { status: "waiting" }));
+  await s.registry.tick();
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "idle"]]);
   // 知らない notification_type は other で、判断待ちにしない
   s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "something_new" });
   assert.deepEqual(states(s.registry), [[S1, "idle"]]);
@@ -227,6 +251,47 @@ test("CcRegistry: permission_prompt で判断待ち、Stop で解消。idle_prom
     s.hook({ hook_event_name: "UserPromptSubmit", session_id: S1, prompt: "続けて" });
     assert.deepEqual(states(s.registry), [[S1, "idle"]], type);
   }
+});
+
+test("CcRegistry: 判断待ちの Notification より前に読み始めた一覧の status は数えない。一覧に無いセッションの保留した事象は、現れた読み取りでは数えない（#290）", async (t) => {
+  const s = setup(t);
+  s.willList(agent(S1));
+  await s.registry.tick();
+  // 読み始めてから（ダイアログの前の busy）、読み終わる前に Notification が来る → その busy では外さない
+  let release = (): void => undefined;
+  s.listGate.wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  s.willList(agent(S1, { status: "busy" }));
+  const reading = s.registry.tick();
+  s.clock.now = BASE + 1000;
+  s.hook({ hook_event_name: "Notification", session_id: S1, notification_type: "permission_prompt" });
+  release();
+  await reading;
+  s.listGate.wait = undefined;
+  assert.equal(s.store.get(S1)?.waitingKind, "permission_prompt");
+  // busy の間は実行中に見えるが、idle に戻れば判断待ちのまま（1 回目）
+  s.willList(agent(S1, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "needs_input"]]);
+  // その後に読み始めた busy で外す
+  s.clock.now = BASE + 2000;
+  s.willList(agent(S1, { status: "busy" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S1, "running"]]);
+  assert.equal(s.store.get(S1)?.waitingKind, null);
+  // 一覧に無い S2 の Notification は保留され、現れた読み取りで反映される（その読み取りの idle は数えず、次の 2 回で解消）
+  s.hook({ hook_event_name: "Notification", session_id: S2, notification_type: "agent_needs_input" });
+  s.willList(agent(S1), agent(S2, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S2, "needs_input"], [S1, "idle"]]);
+  s.willList(agent(S1), agent(S2, { status: "idle" }));
+  await s.registry.tick();
+  assert.deepEqual(states(s.registry), [[S2, "needs_input"], [S1, "idle"]]);
+  s.willList(agent(S1), agent(S2, { status: "idle" }));
+  await s.registry.tick();
+  // どちらも待機（最後の事象が新しい S2 が先）
+  assert.deepEqual(states(s.registry), [[S2, "idle"], [S1, "idle"]]);
 });
 
 test("CcRegistry: status: waiting は hook が無くても判断待ち（待ち始めは最初に見た時刻）", async (t) => {

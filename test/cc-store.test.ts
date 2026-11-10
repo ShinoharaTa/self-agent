@@ -113,6 +113,13 @@ test("CcSessionStore.applyEvent: UserPromptSubmit は最後の指示（本文は
   assert.equal(row.lastEventAt, at(12).toISOString());
   // 最後の指示は Stop では変わらない
   assert.equal(row.lastPromptAt, at(5).toISOString());
+  // clearWaiting は判断待ちを外し（waiting_since も）、判断待ちでなければ false（#290）
+  assert.equal(store.clearWaiting(S1), false);
+  store.applyEvent(S1, { event: "Notification", waitingKind: "permission_prompt" }, at(13));
+  assert.equal(store.clearWaiting(S1), true);
+  assert.equal(store.get(S1)?.waitingKind, null);
+  assert.equal(store.get(S1)?.waitingSince, null);
+  assert.equal(store.get(S1)?.lastEvent, "Notification");
 });
 
 test("CcSessionStore.prune: gone_at が cutoff より前の行だけ消す（生きている行は消さない）", (t) => {

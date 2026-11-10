@@ -216,6 +216,8 @@ export class CcRegistry implements CcHookReceiver {
   private observedWaiting = new Map<string, number>();
   /** 判断待ちの Notification の後に status が idle だった読み取りの続いた回数（CC_WAITING_IDLE_READS で判断待ちを外す。#290） */
   private idleReads = new Map<string, number>();
+  /** 判断待ちの Notification を受けた時刻（それより前に読み始めた一覧の status は数えない。#290） */
+  private waitingEventAt = new Map<string, number>();
   private permissions = new Map<string, CcPermissionSummary & { at: number }>();
   /** 一覧に無い session_id の事象（受けた順） */
   private pending: CcHookEvent[] = [];
@@ -398,8 +400,9 @@ export class CcRegistry implements CcHookReceiver {
     if (event.harnessPrompt === true) update.keepPromptText = true;
     if (event.notificationType !== undefined && CC_WAITING_NOTIFICATIONS.includes(event.notificationType)) {
       update.waitingKind = event.notificationType;
-      // 数えるのはこの事象より後に読んだ status だけ（#290）
+      // 数えるのはこの事象より後に読み始めた一覧の status だけ（#290）
       this.idleReads.delete(event.sessionId);
+      this.waitingEventAt.set(event.sessionId, event.receivedAt.getTime());
     }
     this.deps.store.applyEvent(event.sessionId, update, event.receivedAt);
     if (event.event === "PermissionRequest" && event.permission !== undefined) {
@@ -463,7 +466,7 @@ export class CcRegistry implements CcHookReceiver {
       this.deps.store.markGone([...ids]);
       this.tellEnded(goneRows);
       this.tellRevived(revivedRows);
-      this.resolveWaitingByStatus(result.agents, aliveRows);
+      this.resolveWaitingByStatus(result.agents, aliveRows, startedAt);
       // 行を書いてから一覧を入れ替える（receive が一覧にあるとみなした session_id の行は必ずある）
       this.agents = result.agents;
       this.deps.permissions?.onListed(
@@ -505,25 +508,32 @@ export class CcRegistry implements CcHookReceiver {
   /**
    * 判断待ちの Notification（hook）を status（claude agents --json）で解く（§2.2。#290）: 端末の Esc でダイアログを閉じると Stop が来ないので、
    * waiting_kind のある行は、その後に読んだ status が busy なら（答えて働いている）すぐ、idle なら CC_WAITING_IDLE_READS 回続けて読んだら
-   * 判断待ちを外す。waiting・読めない status は数えない。新しい判断待ちの Notification が来れば数え直す（apply）
+   * 判断待ちを外す。waiting・読めない status は数え直す（0 に戻す）。新しい判断待ちの Notification が来れば数え直す（apply）。
+   * 事象を受けるより前に読み始めた一覧（startedAt が受けた時刻より前）はダイアログの前の status なので数えない
    */
-  private resolveWaitingByStatus(agents: readonly AgentEntry[], aliveRows: readonly CcSessionRow[]): void {
+  private resolveWaitingByStatus(agents: readonly AgentEntry[], aliveRows: readonly CcSessionRow[], startedAt: number): void {
     const waiting = new Set(aliveRows.filter((row) => row.waitingKind !== null).map((row) => row.sessionId));
     const listed = new Set<string>();
+    const forget = (id: string) => {
+      this.idleReads.delete(id);
+      this.waitingEventAt.delete(id);
+    };
     for (const agent of agents) {
       listed.add(agent.sessionId);
       if (!waiting.has(agent.sessionId)) {
-        this.idleReads.delete(agent.sessionId);
+        forget(agent.sessionId);
         continue;
       }
+      const eventAt = this.waitingEventAt.get(agent.sessionId);
+      if (eventAt !== undefined && startedAt < eventAt) continue;
       if (agent.status === "busy") {
         this.deps.store.clearWaiting(agent.sessionId);
-        this.idleReads.delete(agent.sessionId);
+        forget(agent.sessionId);
       } else if (agent.status === "idle") {
         const reads = (this.idleReads.get(agent.sessionId) ?? 0) + 1;
         if (reads >= CC_WAITING_IDLE_READS) {
           this.deps.store.clearWaiting(agent.sessionId);
-          this.idleReads.delete(agent.sessionId);
+          forget(agent.sessionId);
         } else {
           this.idleReads.set(agent.sessionId, reads);
         }
@@ -532,6 +542,7 @@ export class CcRegistry implements CcHookReceiver {
       }
     }
     for (const id of [...this.idleReads.keys()]) if (!listed.has(id)) this.idleReads.delete(id);
+    for (const id of [...this.waitingEventAt.keys()]) if (!listed.has(id)) this.waitingEventAt.delete(id);
   }
 
   private tellEnded(rows: readonly CcSessionRow[]): void {
