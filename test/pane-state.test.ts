@@ -205,6 +205,9 @@ test("classifyScreen: ダイアログの文言は大文字小文字を問わな�
   assert.equal(classifyScreen(SHORTCUTS), "dialog");
   assert.equal(classifyScreen(screen([PROMPT], { footer: [`  ${sgr("2")}-- NORMAL --${sgr("0")}`, ...FOOTER] })), "no_prompt");
   assert.equal(classifyScreen(screen([PROMPT], { footer: [`  ${sgr("2")}-- INSERT --${sgr("0")}`, ...FOOTER] })), "idle");
+  // 返答の本文の上の方（入力欄の上 10 行より上）に残る -- NORMAL -- では no_prompt にしない
+  const above = ["  -- NORMAL --", ...Array(12).fill("  本文の行（置き換え）"), ""];
+  assert.equal(classifyScreen(screen([PROMPT], { above })), "idle");
 });
 
 test("classifyScreen: 貼り付け・画像の印、候補の形でない dim の文字は書きかけ", () => {
@@ -303,6 +306,16 @@ test("pasteLanded: 貼る前の入力行が全部 dim（候補）なら、本文
   assert.equal(pasteLanded(suggested, screen([`${PROMPT}${text}`]), text), true);
   // dim でない同じ文字（書きかけ）が前からあれば貼れた証拠にしない
   assert.equal(pasteLanded(screen([`${PROMPT}${text}`]), screen([`${PROMPT}${text}`]), text), false);
+});
+
+test("pasteLanded: 貼った後の入力欄も dim を除いて比べる（短い本文が dim の候補文に含まれているだけなら貼れたとみなさない）", () => {
+  const text = "yes";
+  const suggestion = screen([`${PROMPT}${sgr("2")}yes, run the tests${sgr("0")}`]);
+  assert.equal(pasteLanded(EMPTY, suggestion, text), false);
+  // dim でない文字として入っていれば貼れた
+  assert.equal(pasteLanded(EMPTY, screen([`${PROMPT}yes`]), text), true);
+  // dim の [Pasted text の印は印とみなさない
+  assert.equal(pasteLanded(EMPTY, screen([`${PROMPT}${sgr("2")}[Pasted text #1]${sgr("0")}`]), "1 行だけの長い本文"), false);
 });
 
 test("inputBoxText: 入力欄は INPUT_BOX_MAX_LINES（20）行まで探す", () => {

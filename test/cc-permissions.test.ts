@@ -817,3 +817,18 @@ test("openDb: v37 の DB を v38 に上げると cc_permissions に question_inp
   db.exec("UPDATE cc_permissions SET answers = '[1]' WHERE id = 1");
   assert.equal(store.get(1)!.answers, null);
 });
+
+test("CcPermissionStore.sessionsActiveSince・sessionsAnsweredSince: どちらも origin hook の行だけ（sdk はプロジェクトのセッション）。answered は released を除く", (t) => {
+  const db = tempDb(t);
+  const clock = { now: Date.parse("2026-11-05T00:00:00.000Z") };
+  const store = new CcPermissionStore(db, () => new Date(clock.now));
+  const base = { requestHash: "h", toolName: "Bash", summary: "s", permissionMode: null };
+  store.add({ ...base, sessionId: "hook-pending", state: "pending" });
+  store.add({ ...base, sessionId: "hook-released", state: "released", via: "limit" });
+  store.add({ ...base, sessionId: "sdk-pending", state: "pending", origin: "sdk" });
+  const sdkResolved = store.add({ ...base, sessionId: "sdk-resolved", state: "pending", origin: "sdk" });
+  store.resolve(sdkResolved.id, "allowed", "web");
+  const since = new Date(clock.now - 60_000);
+  assert.deepEqual([...store.sessionsActiveSince(since)].sort(), ["hook-pending", "hook-released"]);
+  assert.deepEqual([...store.sessionsAnsweredSince(since)].sort(), ["hook-pending"]);
+});
