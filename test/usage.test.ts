@@ -200,6 +200,17 @@ test("UsageStore.listRecent: since（含む）〜until（含まない）・種�
   for (const [label, options, expected] of cases) assert.deepEqual(ids(usage.listRecent(options)), expected, label);
 });
 
+test("UsageStore.prune: cutoff より前の行だけを消して消した数を返し、ちょうど・後の行は残す", (t) => {
+  const { usage, recordAt } = setup(t);
+  recordAt("2026-10-01T14:59:59.999Z", { ok: true, kind: "inbox" });
+  recordAt("2026-10-01T15:00:00.000Z", { ok: true, kind: "inbox" });
+  recordAt("2026-10-01T15:00:00.001Z", { ok: false, kind: "session" });
+  const cutoff = new Date("2026-10-01T15:00:00.000Z");
+  assert.equal(usage.prune(cutoff), 1);
+  assert.deepEqual(usage.listRecent({ limit: 10 }).map((entry) => entry.id), [2, 3]);
+  assert.equal(usage.prune(cutoff), 0);
+});
+
 test("UsageStore.summarize: since ちょうどを含み、その前は含めない。成功・失敗・トークン・compaction・ツール呼び出しを合計する", (t) => {
   const { usage, recordAt } = setup(t);
   recordSamples(recordAt);
