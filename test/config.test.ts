@@ -688,3 +688,43 @@ test("Claude Code: SELF_AGENT_WORKSPACE_DIR（絶対パス。末尾の / を除�
   assert.equal(defaults.workspaceDir, "/home/tester/workspace");
   assert.equal(defaults.ccMaxSessions, 30);
 });
+
+test("SERVE・WEB・CC_HOOK のポートが重なれば変数名 2 つを出して設定エラー（#293）", () => {
+  const cases: Array<[string, string]> = [
+    ["SELF_AGENT_SERVE_PORT", "SELF_AGENT_WEB_PORT"],
+    ["SELF_AGENT_SERVE_PORT", "SELF_AGENT_CC_HOOK_PORT"],
+    ["SELF_AGENT_WEB_PORT", "SELF_AGENT_CC_HOOK_PORT"],
+  ];
+  for (const [a, b] of cases) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", [a]: "8790", [b]: "8790" }),
+      (error: Error) => error.message === `${a} と ${b} に同じポートが設定されています`,
+      `${a}=${b}`,
+    );
+  }
+  // 3 つとも同じでも設定エラー
+  assert.throws(
+    () =>
+      loadConfig({
+        HOME: "/home/tester",
+        SELF_AGENT_SERVE_PORT: "8790",
+        SELF_AGENT_WEB_PORT: "8790",
+        SELF_AGENT_CC_HOOK_PORT: "8790",
+      }),
+    /同じポート/,
+  );
+});
+
+test("SERVE・WEB・CC_HOOK のポートが重ならない・片方だけ・未設定なら通る", () => {
+  const all = loadConfig({
+    HOME: "/home/tester",
+    SELF_AGENT_SERVE_PORT: "8790",
+    SELF_AGENT_WEB_PORT: "8791",
+    SELF_AGENT_CC_HOOK_PORT: "8792",
+  });
+  assert.deepEqual([all.servePort, all.webPort, all.ccHookPort], [8790, 8791, 8792]);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_WEB_PORT: "8790" }).webPort, 8790);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SERVE_PORT: "8790", SELF_AGENT_WEB_PORT: "" }).servePort, 8790);
+  const none = loadConfig({ HOME: "/home/tester" });
+  assert.deepEqual([none.servePort, none.webPort, none.ccHookPort], [undefined, undefined, undefined]);
+});
