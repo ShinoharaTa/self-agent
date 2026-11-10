@@ -26,7 +26,7 @@ import {
   type CcConfirmRuntime,
 } from "../src/app/commands/cc-confirm.ts";
 import { createCcComponent } from "../src/app/commands/cc.ts";
-import { CC_START_THREW } from "../src/app/commands/cc-confirm.ts";
+import { CC_START_SEND_FAILED_NOTE, CC_START_THREW } from "../src/app/commands/cc-confirm.ts";
 import { STALE_TEXT } from "../src/app/commands/delete.ts";
 import { CcPaneResolver } from "../src/cc/panes.ts";
 import type { CcSessionView, CcSnapshot } from "../src/cc/registry.ts";
@@ -739,4 +739,29 @@ test("[起動する]: 最初の指示の送信があれば、その確認の投�
   await s.pressButton("cc:start:1");
   assert.equal(s.sends.get(send.id)?.messageId, s.starts.get(1)?.messageId);
   assert.equal(s.starts.get(1)?.sendId, send.id);
+});
+
+test("[起動する]: 起動はできたが最初の指示を積めなければ（sendFailed。#315）、起動した旨に「最初の指示は送れませんでした」を添える", async (t) => {
+  const s = setup(t);
+  await s.handlers().ccStart({ project: "alpha", title: "fix login", text: SECRET_TEXT });
+  s.starter.launchResult = { ok: true, tmuxSession: "alpha", paneId: "%9", sendId: undefined, sendFailed: true };
+  const message = updated(await s.pressButton("cc:start:1"));
+  assert.ok(message.text.includes(`起動しました（tmux: alpha）${CC_START_SEND_FAILED_NOTE}`), message.text);
+  assert.deepEqual(message.components, []);
+  assert.equal(s.starts.get(1)!.state, "started");
+});
+
+test("[起動する]: 起動の後の記録（cc_starts の書き込み）が投げても、確認を起動した旨に書き換える（deferUpdate のまま残さない。#315）", async (t) => {
+  const s = setup(t);
+  await s.handlers().ccStart({ project: "alpha", title: "fix login" });
+  s.starter.launchResult = { ok: true, tmuxSession: "alpha", paneId: "%9", sendId: undefined };
+  const transition = s.starts.transition.bind(s.starts);
+  s.starts.transition = (id, from, to, extra) => {
+    if (from.includes("started") && to === "started") throw new Error("SQLITE_BUSY");
+    return transition(id, from, to, extra);
+  };
+  const message = updated(await s.pressButton("cc:start:1"));
+  assert.ok(message.text.includes("起動しました"), message.text);
+  assert.deepEqual(message.components, []);
+  assert.ok(s.logs.some((line) => line.includes("起動の記録を書けませんでした（#1、Error）")), s.logs.join("\n"));
 });

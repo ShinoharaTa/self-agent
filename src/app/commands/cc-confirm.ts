@@ -412,13 +412,18 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
     }
     tmuxSession = result.tmuxSession;
     sendFailed = result.sendFailed === true;
-    // 最初の指示の返事（CC8）は、この確認の投稿への返信にする
-    if (result.sendId !== undefined && row.messageId !== null) ccSends.setMessageId(result.sendId, row.messageId);
-    ccStarts.transition(id, ["started"], "started", {
-      tmuxSession: result.tmuxSession,
-      paneId: result.paneId,
-      ...(result.sendId === undefined ? {} : { sendId: result.sendId }),
-    });
+    // 起動はもう済んでいるので、記録に失敗しても確認は起動できた旨に書き換える（deferUpdate のまま残さない。行は started のままでよい）
+    try {
+      // 最初の指示の返事（CC8）は、この確認の投稿への返信にする
+      if (result.sendId !== undefined && row.messageId !== null) ccSends.setMessageId(result.sendId, row.messageId);
+      ccStarts.transition(id, ["started"], "started", {
+        tmuxSession: result.tmuxSession,
+        paneId: result.paneId,
+        ...(result.sendId === undefined ? {} : { sendId: result.sendId }),
+      });
+    } catch (error) {
+      log(`Claude Code: 起動の記録を書けませんでした（#${id}、${errorKind(error)}）`);
+    }
     await responder.update({ text: ccStartResultText(row, startedTexts(false)), components: [] });
   };
 

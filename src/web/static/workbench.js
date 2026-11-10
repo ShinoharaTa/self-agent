@@ -1186,10 +1186,11 @@
       $("dlg-cc-start-ok").disabled = true;
       ccStartError(null);
       try {
-        await SA.api.post("/api/cc/sessions", body, { quiet: true });
+        const data = await SA.api.post("/api/cc/sessions", body, { quiet: true });
         closeDialog(dialog);
-        // trust の答え方はサイドバーの起動中の行に出す
-        toast("「" + title + "」を起動しました" + (body.text ? "。最初の指示は入力待ちになったら届けます" : ""));
+        // trust の答え方はサイドバーの起動中の行に出す。最初の指示を積めなかった（sendFailed。#315）ならその旨
+        const note = data && data.sendFailed ? "。最初の指示は送れませんでした。端末か RC で送ってください" : body.text ? "。最初の指示は入力待ちになったら届けます" : "";
+        toast("「" + title + "」を起動しました" + note);
         SA.store.load.cc({ quiet: true });
       } catch (err) {
         const known = err && err.code && CC_START_ERRORS[err.code];
