@@ -150,7 +150,9 @@ export function touchesSecretPlace(
     else raws.push(join(expandHome(base, home), prefix));
   }
   const places = secrets.flatMap((place) => [resolve(place), realOrResolved(place)]);
-  const sharedPlaces = SHARED_READ_TOOLS.includes(toolName)
+  // Glob の pattern の要素に `..` があれば、探し始める場所が共有の場所でも外に出うるので例外にしない
+  const patternEscapes = typeof input.pattern === "string" && input.pattern.split("/").includes("..");
+  const sharedPlaces = SHARED_READ_TOOLS.includes(toolName) && !patternEscapes
     ? shared.flatMap((place) => [resolve(place), join(realOrResolved(dirname(place)), basename(place))])
     : [];
   for (const raw of raws) {
