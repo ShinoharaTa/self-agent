@@ -1,9 +1,10 @@
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { createServer, request } from "node:http";
 import { authenticate, issueCookie, LoginWindow, safeEqual, setCookieHeader } from "../src/web/auth.ts";
 import { csrfOk, sameOrigin } from "../src/web/csrf.ts";
-import { isLoopback } from "../src/web/http-body.ts";
+import { isLoopback, readBody } from "../src/web/http-body.ts";
 import { staticFileFor } from "../src/web/static.ts";
 
 const NOW = new Date("2026-10-29T00:00:00Z");
@@ -99,6 +100,44 @@ test("isLoopback: 127.0.0.1・::1・::ffff:127.0.0.1 だけ", () => {
   for (const address of ["100.64.0.1", "127.0.0.2", "::ffff:100.64.0.1", "", undefined]) {
     assert.equal(isLoopback(address), false, String(address));
   }
+});
+
+/** readBody(limit) を通した結果を返すサーバーに、Content-Length を付けずに（chunked で）chunks を送る */
+async function readChunked(t: TestContext, limit: number, chunks: readonly string[]): Promise<{ result: string; headers: Record<string, unknown> }> {
+  let seen: Record<string, unknown> = {};
+  const server = createServer((req, res) => {
+    seen = { ...req.headers };
+    readBody(req, limit).then(
+      (result) => res.end(result.kind === "ok" ? `ok:${result.body.toString("utf8")}` : result.kind),
+      () => res.end("error"),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  const result = await new Promise<string>((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path: "/", method: "POST" }, (res) => {
+      const body: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => body.push(chunk));
+      res.on("end", () => resolve(Buffer.concat(body).toString("utf8")));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    for (const chunk of chunks) req.write(chunk);
+    req.end();
+  });
+  return { result, headers: seen };
+}
+
+test("readBody: Content-Length の無い（chunked の）本文は、読んだ量が上限を超えたら too_large。上限ちょうどまでは ok", async (t) => {
+  const over = await readChunked(t, 10, ["12345", "67890", "x"]);
+  assert.equal(over.headers["content-length"], undefined);
+  assert.equal(over.headers["transfer-encoding"], "chunked");
+  assert.equal(over.result, "too_large");
+  assert.equal((await readChunked(t, 10, ["12345", "67890"])).result, "ok:1234567890");
+  // 1 つのチャンクで超えても同じ
+  assert.equal((await readChunked(t, 10, ["12345678901"])).result, "too_large");
 });
 
 test("staticFileFor: / は index.html、/static/<name> は 1 要素の html・css・js・svg・png・webmanifest だけ。base.css・icons.svg は templates から", () => {

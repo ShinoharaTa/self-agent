@@ -216,11 +216,12 @@ test("hook の受け口: PermissionRequest は保留せず即 200・空。要約
   const s = await setup(t);
   const content = "FULL-".repeat(1000);
   const toolInput = { file_path: "/w/app/a.txt", content };
-  const started = Date.now();
   const response = await s.post({ hook_event_name: "PermissionRequest", session_id: S1, cwd: "/w/app", tool_name: "Write", tool_input: toolInput });
-  assert.ok(Date.now() - started < 2000);
   assert.equal(response.status, 200);
   assert.equal(response.body, "");
+  // 保留の口（permissions）が無ければ、応答の前に受け手へ 1 回だけ渡している（壁時計は見ない）
+  assert.equal(s.received.length, 1);
+  assert.equal(s.received[0]!.event, "PermissionRequest");
   const event = s.received[0]!;
   assert.deepEqual(event.permission, {
     toolName: "Write",
