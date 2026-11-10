@@ -362,6 +362,27 @@ test("POST /close: 202 の後に要約のターン → 候補があれば closeD
   assert.deepEqual(env.gateway.sent, []);
 });
 
+test("POST /close: Web から始めた要約を待っている間の同じチャンネルの /close は 409 closing で、要約は 1 回だけ。終われば印は外れる", async (t) => {
+  const env = await setup(t, (topicSessions) => [reports(DRAFT, topicSessions), reports(DRAFT, topicSessions)]);
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  env.runner.beforeResult = () => gate;
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close"), { status: 202, json: { accepted: true } });
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close"), { status: 409, json: { error: "closing" } });
+  release();
+  await until(() => env.gateway.posts.length === 1);
+  await env.turnQueue.idle();
+  assert.equal(env.runner.inputs.length, 1);
+
+  // 確認待ち（閉じていない）なら、もう一度 /close できる
+  env.runner.beforeResult = undefined;
+  assert.deepEqual(await call(env.server, "POST", "/api/sessions/200/close"), { status: 202, json: { accepted: true } });
+  await until(() => env.gateway.posts.length === 2);
+  assert.equal(env.runner.inputs.length, 2);
+});
+
 test("POST /close/confirm: Discord で先に確定していれば 409 no_draft で何も変えない。selected の形が違えば 400、セッションでなければ 404", async (t) => {
   const env = await setup(t);
   env.topicSessions.saveCloseDraft("200", DRAFT);
@@ -476,6 +497,9 @@ test("POST /close/confirm: 確認のメッセージの書き換えに失敗し�
   assert.deepEqual(env.gateway.sent, [{ channelId: "200", text: closedText(DRAFT.summary, 0), replyToId: undefined }]);
   assert.deepEqual(env.gateway.edits, []);
   assert.ok(env.logs.some((line) => line.startsWith("/close の確認メッセージの更新に失敗したため投稿します")));
+  // 例外の message は出さず、種類（名前）だけ
+  assert.ok(env.logs.includes("/close の確認メッセージの更新に失敗したため投稿します: Error"), env.logs.join("\n"));
+  for (const line of env.logs) assert.doesNotMatch(line, /Unknown Message/);
   await env.turnQueue.idle();
 
   // Discord で始めた /close の下書き（Web からは投稿していない）を Web で確定したら、結果の文を投稿する

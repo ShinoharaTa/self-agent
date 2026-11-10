@@ -50,6 +50,8 @@ const HISTORY_STEPS_COLLECT_MAX = 60;
 export const RUNNING_STEPS_MAX = 30;
 /** Web から送った発言を Discord に投稿するときの 1 行目（2 行目からが本文） */
 export const WEB_ECHO_PREFIX = "（Web から）";
+/** echo の後に停止を始めてターンにしなかったときの Web の会話の知らせ */
+export const WEB_STOPPING_NOTICE = "停止中のためターンにしませんでした";
 // 途中経過の表示は progress.ts（ジョブと共通）。これまでどおり handler からも使えるようにする
 export { formatElapsed, PROGRESS_INTERVAL_MS, progressEndText, progressText, type ProgressTimers, type TurnOutcome };
 
@@ -588,6 +590,12 @@ export function createHandler(deps: HandlerDeps): Handler {
       // echo の間に停止を始めていれば、ターンにしない（停止の待ちに入らないため）
       if (deps.stopping?.() === true) {
         log("停止中のため Web の投稿をターンにしませんでした");
+        // owner の行が返事の無いまま残らないように知らせを足す
+        recordHistory(
+          history,
+          { guildId, channelId, kind: "notice", source, persona: personaOf(channelId), text: WEB_STOPPING_NOTICE },
+          log,
+        );
         return { result: "stopping" };
       }
       // 返信までは待たない（最終発言の記録・進行中に戻すのは submit の最初で同期に済む）。owner の行は書いたので submit では書かない

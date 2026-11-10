@@ -317,7 +317,7 @@ function restore(dir: string, id: string, log: (message: string) => void): Proje
 
 /**
  * dir（`<projectsDir>/<slug>`）のファイルを操作する。パスは dir からの相対で、どれか 1 つでもだめなら何もせずに invalid_path。
- * trash・move は dir が無い・解決できなければ not_available。trash・clear・restore は `<dir>/.trash` が実際のディレクトリでない
+ * trash・move・clear は dir が無い・解決できなければ not_available。trash・clear・restore は `<dir>/.trash` が実際のディレクトリでない
  * （symlink・ファイル）なら何もせず trash_unavailable（無いのはよい）。
  * - trash: paths を `.trash/<trash_id>/<同じ相対パス>` に移す。無いものは missing。1 つも移さなければ .trash/<trash_id> を作らず trash_id は null
  * - move: paths[0] を to に移す（上書きしない。to の末尾が / なら invalid_path）
@@ -357,6 +357,8 @@ export async function runProjectFiles(
     case "clear": {
       const extra = extraArgs(args, []);
       if (extra !== undefined) return invalidArgs(extra);
+      // dir が無ければ土台だけの dir を作らない
+      if (dirMissing) return notAvailable;
       if (trashUnavailable) return unavailable;
       return clear(dir, options);
     }

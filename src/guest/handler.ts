@@ -217,7 +217,8 @@ export function createGuestHandler(deps: GuestHandlerDeps): GuestHandler {
     // 連投は返事も log も無し
     if (tooSoon(seenKey, at)) return;
     const content = stripBotMention(message.content, botUserId);
-    if (content.length > GUEST_MAX_CONTENT_CHARS) {
+    // 案内の「2,000 字」に合わせてコードポイントで数える（絵文字などのサロゲートペアを 2 字にしない）
+    if ([...content].length > GUEST_MAX_CONTENT_CHARS) {
       lastSeen.set(seenKey, at);
       await reply(message, GUEST_TOO_LONG_REPLY);
       return;

@@ -251,6 +251,20 @@ test("紐づけたタスクが open でなければ投稿せずに done にす�
   assert.ok(env.logs.some((line) => line.includes("タスクが閉じている")), env.logs.join("\n"));
 });
 
+test("紐づけたタスクが open でない繰り返しは投稿せずに cancelled にする", async (t) => {
+  const env = setup(t);
+  const task = env.tasks.add({ title: "買い物" });
+  env.tasks.complete(task.id);
+  const linked = env.add({ taskId: task.id, rule: "daily@09:00" });
+
+  await env.scheduler.tick();
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.posted(), []);
+  assert.equal(env.reminders.get(linked.id)?.status, "cancelled");
+  assert.equal(env.logs.filter((line) => line.includes("タスクが閉じている")).length, 1, env.logs.join("\n"));
+});
+
 test("投稿に失敗したら DB を変えずに次の tick でやり直し、同じ回で 30 回失敗したら諦めて進める", async (t) => {
   const env = setup(t);
   const added = env.add();

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { main as guestSetupMain } from "../src/cli/guest-setup.ts";
 import assert from "node:assert/strict";
 import {
   extractDiscordBotId,
@@ -254,4 +255,17 @@ test("extractDiscordBotId: 数字でない・空・壊れたものは undefined 
   assert.equal(extractDiscordBotId(".bbb.ccc"), undefined);
   assert.equal(extractDiscordBotId(`${Buffer.from("abc").toString("base64")}.bbb.ccc`), undefined);
   assert.equal(extractDiscordBotId("!!!@@@.bbb.ccc"), undefined);
+});
+
+test("guest-setup の main: 止めるときも process.exit を呼ばず exit コードを返す（引数の誤り・端末でない）", async (t) => {
+  const errors: string[] = [];
+  t.mock.method(console, "error", (line: unknown) => void errors.push(String(line)));
+  const exit = t.mock.method(process, "exit", () => {
+    throw new Error("process.exit を呼びました");
+  });
+  assert.equal(await guestSetupMain(["--nope"]), 1);
+  // node --test の標準入力は端末でない
+  assert.equal(await guestSetupMain([]), 1);
+  assert.equal(exit.mock.callCount(), 0);
+  assert.deepEqual(errors, ["使い方: npm run guest-setup [-- --skip-check]", "端末で実行してください"]);
 });

@@ -45,7 +45,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 |---|---|
 | 入口 | 別ポート `SELF_AGENT_WEB_PORT`（1〜65535。`127.0.0.1` だけ）。`tailscale serve --bg --https=9444 http://127.0.0.1:<port>`。静的サーバー（`/p/`。9443）とは別サーバー・別オリジン |
 | 有効の条件 | `SELF_AGENT_WEB_PORT` と `SELF_AGENT_WEB_ALLOWED_LOGIN` の両方。どちらかが無ければ Web UI は起動しない（設定エラーではなく無効。log 1 行）。ポートの範囲外・空のログイン・32 字未満のトークンは設定エラー |
-| 認証 1 | `Tailscale-User-Login` が `SELF_AGENT_WEB_ALLOWED_LOGIN` と完全一致 |
+| 認証 1 | `Tailscale-User-Login` が `SELF_AGENT_WEB_ALLOWED_LOGIN` と完全一致。待ち受けは loopback だけで、ヘッダを付けるのは tailscale serve だが、同じ機械の loopback から接続するプロセスはこのヘッダを付けるだけで通る（同じ機械のプロセスは信頼する前提。#303） |
 | 認証 2 | `SELF_AGENT_WEB_TOKEN`（任意。32 字以上・空白なし）。`GET /login` のフォームに貼ると `POST /login` が `timingSafeEqual` で比べ（長さが違えば比較せず不一致）、Cookie `self_agent_web`（`<exp>.<HMAC-SHA256(token, "v1:" + exp)>` の hex。exp は UNIX 秒で 30 日。`HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000`）。失敗の窓は全体で 1 つ: 1 分に 5 回、超えたら 429。失効はトークンの差し替え |
 | 両方無いとき | 401（API）/ `/login` へ 302（画面）。トークンが無ければ `/login` は 404。**`/static/*` だけは認証なしで配る**（秘密は無い。ログイン画面の CSS のため。§3.3） |
 | CSRF | POST は (1) `Sec-Fetch-Site` があれば `same-origin`、無ければ `Origin` が `Host` と一致（どちらも無ければ 403）、(2) `X-Self-Agent: 1`、(3) `Content-Type: application/json` で本文が JSON オブジェクト（`{}` でよい）の 3 つ全部。`/login` だけ `application/x-www-form-urlencoded` + (1) |

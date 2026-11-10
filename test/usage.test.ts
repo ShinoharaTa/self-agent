@@ -6,6 +6,7 @@ import { cacheReadRate, createUsageCommand, usageText } from "../src/app/command
 import { startOfLocalDay } from "../src/app/time.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
+import { main as usageMain } from "../src/cli/usage.ts";
 import type { StepUsage } from "../src/agent/runner.ts";
 import { type UsageEntry, type UsageListOptions, type UsageRecord, UsageStore } from "../src/store/usage.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
@@ -54,6 +55,23 @@ function recordSamples(recordAt: (at: string, record: Omit<UsageRecord, "key">) 
   recordAt("2026-09-25T15:00:00.000Z", ok(1, 0, 9, 0));
   recordAt("2026-09-25T14:59:59.999Z", ok(1000, 1000, 1000, 9, true));
 }
+
+test("openDb: v40 の DB を v41 に上げると usage_log に at の索引ができ、行は残る", (t) => {
+  const path = join(tempDir(t), "self-agent.db");
+  const v40 = new DatabaseSync(path);
+  for (const migration of MIGRATIONS.slice(0, 40)) v40.exec(migration);
+  v40.exec("PRAGMA user_version = 40");
+  v40.exec("INSERT INTO usage_log (at, key, ok, input_tokens) VALUES ('2026-10-01T00:00:00.000Z', 'inbox-1', 1, 2)");
+  v40.close();
+
+  const db = openDb(path);
+  t.after(() => db.close());
+  assert.equal(Number(db.prepare("PRAGMA user_version").get()?.user_version), MIGRATIONS.length);
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'usage_log_at'").get());
+  assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM usage_log").get()?.n), 1);
+  const plan = db.prepare("EXPLAIN QUERY PLAN SELECT * FROM usage_log WHERE at >= ?").all("2026-10-01");
+  assert.ok(plan.some((row) => String(row.detail).includes("usage_log_at")), JSON.stringify(plan));
+});
 
 test("openDb: v6 の DB を v7 に上げても usage_log の行は残り、tool_calls は 0。以後はツール呼び出しの回数を記録できる", (t) => {
   const path = join(tempDir(t), "self-agent.db");
@@ -415,4 +433,20 @@ test("/usage: ゲストのときだけ人格の後に「ゲスト（API キー�
     responder,
   );
   assert.equal(responder.replies[0]?.text, `${withGuest}\n\n保存している添付 0 件（0.0 MB）`);
+});
+
+test("npm run usage: DB を開けなければ 1 で、文に DB のパスを出さない", async (t) => {
+  const dataDir = join(tempDir(t), "no-such-dir");
+  const saved = process.env.SELF_AGENT_DATA_DIR;
+  process.env.SELF_AGENT_DATA_DIR = dataDir;
+  t.after(() => {
+    if (saved === undefined) delete process.env.SELF_AGENT_DATA_DIR;
+    else process.env.SELF_AGENT_DATA_DIR = saved;
+  });
+  const errors: string[] = [];
+  t.mock.method(console, "error", (line: unknown) => void errors.push(String(line)));
+  assert.equal(await usageMain([]), 1);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!, /^DB を開けませんでした/);
+  assert.ok(!errors[0]!.includes(dataDir), errors[0]);
 });

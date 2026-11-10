@@ -17,6 +17,7 @@ import {
   REVIVED_NOTE,
   RUNNING_STEPS_MAX,
   WEB_ECHO_PREFIX,
+  WEB_STOPPING_NOTICE,
 } from "../src/app/handler.ts";
 import { ALLOWED_MENTIONS, toPayload } from "../src/discord/convert.ts";
 import { rotatedSeed } from "../src/app/summary.ts";
@@ -1737,6 +1738,13 @@ test("Web: echo の間に停止を始めたら、キューに入れずに stoppi
   assert.equal(runner.inputs.length, 0);
   assert.deepEqual(gateway.sent, []);
   assert.deepEqual(logs, ["停止中のため Web の投稿をターンにしませんでした"]);
+  assert.deepEqual(
+    historyRows(history, "inbox-1").map((row) => [row.kind, row.text]),
+    [
+      ["owner", "こんにちは"],
+      ["notice", WEB_STOPPING_NOTICE],
+    ],
+  );
 });
 
 test("runningTurns: #inbox のターンも番号・始めた時刻・ツール回数・直近の手順（31 手順目で先頭が落ちる）付きで出し、中断はできない。終わったら消える", async (t) => {
