@@ -2,6 +2,25 @@ import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:f
 import { dirname } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 
+/**
+ * DB を開くときの busy timeout（ミリ秒）。WAL でも書き手どうしは排他なので、Bot と npm run cc-dry-run などの書き込みが
+ * 重なったら、すぐに SQLITE_BUSY を投げずにこの間だけ待つ（#297）
+ */
+export const DB_BUSY_TIMEOUT_MS = 5000;
+
+/**
+ * 失敗したトランザクションの後始末。トランザクションが開いているときだけ ROLLBACK し、ROLLBACK 自体の失敗は握りつぶす。
+ * SQLite が自動で rollback した後に ROLLBACK すると「no transaction is active」で投げ、元の例外を上書きするため（#297）
+ */
+export function rollbackIfOpen(db: DatabaseSync): void {
+  if (!db.isTransaction) return;
+  try {
+    db.exec("ROLLBACK");
+  } catch {
+    // 元の例外を投げ直すので、ここでは何もしない
+  }
+}
+
 // MIGRATIONS[i] で user_version を i から i + 1 に上げる。既存の要素は書き換えず、末尾に追加する
 export const MIGRATIONS: readonly string[] = [
   `
@@ -803,7 +822,7 @@ function migrate(db: DatabaseSync): void {
       db.exec(`PRAGMA user_version = ${version + 1}`);
       db.exec("COMMIT");
     } catch (error) {
-      db.exec("ROLLBACK");
+      rollbackIfOpen(db);
       throw error;
     }
   }
@@ -821,7 +840,7 @@ export function backupPath(path: string, version: number): string {
  */
 export async function backupBeforeMigration(path: string, log: (message: string) => void): Promise<void> {
   if (!existsSync(path)) return;
-  const db = new DatabaseSync(path);
+  const db = new DatabaseSync(path, { timeout: DB_BUSY_TIMEOUT_MS });
   try {
     const version = userVersion(db);
     if (version === 0 || version >= MIGRATIONS.length) return;
@@ -844,7 +863,7 @@ export async function backupBeforeMigration(path: string, log: (message: string)
 
 export function openDb(path: string): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true });
-  const db = new DatabaseSync(path);
+  const db = new DatabaseSync(path, { timeout: DB_BUSY_TIMEOUT_MS });
   db.exec("PRAGMA journal_mode=WAL");
   migrate(db);
   return db;

@@ -8,6 +8,7 @@ import { parseArgs } from "node:util";
 import { formatDate, offsetMs, startOfLocalDay } from "../app/time.ts";
 import { formatUsageEntry, formatUsageSteps, formatUsageTotals } from "../app/usage-report.ts";
 import { loadDataConfig } from "../config.ts";
+import { DB_BUSY_TIMEOUT_MS } from "../store/db.ts";
 import { UsageStore } from "../store/usage.ts";
 
 /** usage_log に種類・steps の列ができた user_version */
@@ -66,7 +67,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const path = join(dataDir, "self-agent.db");
   let db: DatabaseSync;
   try {
-    db = new DatabaseSync(path, { readOnly: true });
+    db = new DatabaseSync(path, { readOnly: true, timeout: DB_BUSY_TIMEOUT_MS });
   } catch (error) {
     console.error(`DB を開けませんでした（${path}）: ${error instanceof Error ? error.message : String(error)}`);
     return 1;

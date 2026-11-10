@@ -1,4 +1,5 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
+import { rollbackIfOpen } from "./db.ts";
 
 /** last_prompt_text に残す本文の長さ（先頭の文字数。docs/plan/claude-code-sessions.md §2.2） */
 export const CC_PROMPT_MAX_CHARS = 200;
@@ -172,7 +173,7 @@ export class CcSessionStore {
       }
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      rollbackIfOpen(this.db);
       throw error;
     }
   }
@@ -190,7 +191,7 @@ export class CcSessionStore {
       for (const id of gone) statement.run(at, id);
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      rollbackIfOpen(this.db);
       throw error;
     }
     return gone.length;

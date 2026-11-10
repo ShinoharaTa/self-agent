@@ -14,6 +14,7 @@ import { ClaudeDirs, type SessionFileInfo } from "../cc/claude-dirs.ts";
 import { type CcState, lastActivity, rankSessions, type RankInput } from "../cc/registry.ts";
 import { loadDataConfig } from "../config.ts";
 import { CcSessionStore } from "../store/cc-sessions.ts";
+import { DB_BUSY_TIMEOUT_MS } from "../store/db.ts";
 
 const USAGE = "使い方: npm run cc-dry-run -- [--reset-multiline] [--help]";
 /** cc_state ができた user_version */
@@ -84,7 +85,7 @@ export function resetMultiline(dbPath: string, out: (line: string) => void = con
   }
   let db: DatabaseSync;
   try {
-    db = new DatabaseSync(dbPath);
+    db = new DatabaseSync(dbPath, { timeout: DB_BUSY_TIMEOUT_MS });
   } catch (error) {
     err(`DB を開けませんでした: ${error instanceof Error ? error.message : String(error)}`);
     return 1;

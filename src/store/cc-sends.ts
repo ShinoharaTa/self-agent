@@ -1,4 +1,5 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
+import { rollbackIfOpen } from "./db.ts";
 
 /** 送信の行を残す日数（scheduler の tick で、created_at がこれより前の終わった行を消す。docs/plan/claude-code-sessions.md §9） */
 export const CC_SEND_KEEP_DAYS = 30;
@@ -357,7 +358,7 @@ export class CcSendStore {
         .run(at, sessionId, found.id);
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      rollbackIfOpen(this.db);
       throw error;
     }
     return found;
