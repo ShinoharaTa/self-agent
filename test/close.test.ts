@@ -18,7 +18,7 @@ import {
 } from "../src/app/commands/close.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { EMPTY_SUMMARY } from "../src/app/summary.ts";
-import type { Interaction } from "../src/discord/gateway.ts";
+import type { Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
 import { type CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
@@ -99,6 +99,19 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
   // ターンのトークンの行（recordTurnUsage）は tokenLogs に分ける
   const tokenLogs: string[] = [];
   const log = (line: string): number => (line.startsWith("トークン（") ? tokenLogs : logs).push(line);
+  // 持ち主の Bot の投稿（応答が失効したときの代わり。#295）。failPost で投稿を失敗させる
+  const posts: Array<{ channelId: string; message: OutgoingMessage }> = [];
+  const posting = { fail: false };
+  const personas = {
+    ownerOf: () => "default",
+    gatewayFor: () => ({
+      async sendMessage(channelId: string, message: OutgoingMessage): Promise<string> {
+        if (posting.fail) throw new Error("投稿に失敗しました");
+        posts.push({ channelId, message });
+        return "posted-1";
+      },
+    }),
+  } as unknown as NonNullable<Parameters<typeof createCloseCommand>[0]["personas"]>;
   const deps = {
     topicSessions,
     tasks,
@@ -108,6 +121,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
     projects,
     projectsDir,
     history,
+    personas,
     log,
   };
   const command = createCloseCommand(deps);
@@ -115,21 +129,29 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
   topicSessions.create(TOPIC);
   sessions.set("topic-1", "session-1");
 
-  const runClose = async (interaction: Interaction = CLOSE): Promise<ResponderCall[]> => {
+  const runClose = async (
+    interaction: Interaction = CLOSE,
+    configure: (responder: FakeResponder) => void = () => {},
+  ): Promise<ResponderCall[]> => {
     assert.equal(interaction.kind, "command");
     const responder = new FakeResponder();
+    configure(responder);
     if (interaction.kind === "command") await command.handle(interaction, responder);
     return responder.calls;
   };
-  const press = async (interaction: Interaction): Promise<ResponderCall[]> => {
+  const press = async (
+    interaction: Interaction,
+    configure: (responder: FakeResponder) => void = () => {},
+  ): Promise<ResponderCall[]> => {
     assert.notEqual(interaction.kind, "command");
     const responder = new FakeResponder();
+    configure(responder);
     if (interaction.kind !== "command") await component.handle(interaction, responder);
     return responder.calls;
   };
   const openTasks = (): Array<{ title: string; due: string | null }> =>
     tasks.list({ status: "open", limit: 50 }).map((task) => ({ title: task.title, due: task.due }));
-  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, projects, projectsDir, channelOps, turnQueue, logs, tokenLogs, runClose, press, openTasks, history };
+  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, projects, projectsDir, channelOps, turnQueue, logs, tokenLogs, runClose, press, openTasks, history, posts, posting };
 }
 
 /** 閉じたあとの sessions の行と、完了カテゴリへの移動 */
@@ -605,4 +627,70 @@ test("history: /close の確定（候補 0 件で即時・確認のボタン）�
   const failed = setup(t, () => [() => ({ ok: false, errorMessage: "timeout", sessionRecorded: false, toolCalls: 0 })]);
   await failed.runClose();
   assert.deepEqual(rows(failed), []);
+});
+
+/** 応答の失効（interaction の token は 15 分）を真似る: 保留の後の応答・書き換えが投げる */
+function expired(responder: FakeResponder): void {
+  responder.beforeReply = () => {
+    throw new Error("Unknown Webhook");
+  };
+  responder.beforeUpdate = () => {
+    throw new Error("Unknown Webhook");
+  };
+}
+
+test("/close: 応答が失効していれば（15 分）、同じ本文と確認のボタンを持ち主の Bot でチャンネルに 1 回投稿する。下書きは残り、まだ閉じない（#295）", async (t) => {
+  const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
+
+  const calls = await env.runClose(CLOSE, expired);
+
+  assert.deepEqual(calls, [{ method: "defer", ephemeral: false }]);
+  assert.equal(env.posts.length, 1);
+  const post = env.posts[0];
+  assert.equal(post?.channelId, "topic-1");
+  assert.equal(post?.message.text, confirmText(REPORT));
+  assert.deepEqual(labelsOf({ method: "reply", message: post!.message }), ["全部登録", "選ぶ", "登録しない"]);
+  assert.deepEqual(env.topicSessions.getCloseDraft("topic-1"), REPORT);
+  assertOpen(env);
+  // 投稿したボタンでも閉じられる
+  env.clock.now = CLOSED_AT;
+  await env.press(pressLabel({ method: "reply", message: post!.message }, "全部登録"));
+  assertClosed(env, REPORT.summary);
+});
+
+test("/close・[閉じる]: 候補 0 件で閉じた後に応答が失効していれば、「閉じました」を持ち主の Bot で投稿する。閉じた状態は変わらない（#295）", async (t) => {
+  const env = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
+  env.clock.now = CLOSED_AT;
+
+  const calls = await env.runClose(CLOSE, expired);
+
+  assert.deepEqual(calls, [{ method: "defer", ephemeral: false }]);
+  assert.deepEqual(env.posts, [{ channelId: "topic-1", message: { text: closedText("話しただけで終わった", 0) } }]);
+  assertClosed(env, "話しただけで終わった");
+
+  const env2 = setup(t, (topicSessions) => [reports({ summary: "話しただけで終わった" }, topicSessions)]);
+  env2.topicSessions.setWaiting("topic-1");
+  env2.clock.now = CLOSED_AT;
+
+  const pressed = await env2.press(button("start"), expired);
+
+  assert.deepEqual(pressed, [{ method: "deferUpdate" }]);
+  assert.deepEqual(env2.posts, [{ channelId: "topic-1", message: { text: closedText("話しただけで終わった", 0) } }]);
+  assertClosed(env2, "話しただけで終わった");
+});
+
+test("/close: 応答も持ち主の Bot の投稿も失敗したら log だけで投げない。DB の状態は変わらない（#295）", async (t) => {
+  const env = setup(t, (topicSessions) => [reports(REPORT, topicSessions)]);
+  env.posting.fail = true;
+
+  const calls = await env.runClose(CLOSE, expired);
+
+  assert.deepEqual(calls, [{ method: "defer", ephemeral: false }]);
+  assert.deepEqual(env.posts, []);
+  assert.deepEqual(env.topicSessions.getCloseDraft("topic-1"), REPORT);
+  assertOpen(env);
+  assert.deepEqual(env.logs, [
+    "/close の結果を応答に出せなかったため、チャンネルに投稿します: Unknown Webhook",
+    "/close の結果をチャンネルに投稿できませんでした: 投稿に失敗しました",
+  ]);
 });
