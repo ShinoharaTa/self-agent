@@ -22,6 +22,7 @@ import {
 import {
   createProjectProfile,
   createSecretPlaceGuard,
+  PROJECT_DOTDOT_DENIED_REASON,
   PROJECT_SECRET_DENIED_REASON,
   touchesSecretPlace,
 } from "../src/agent/project-profile.ts";
@@ -678,7 +679,7 @@ test("秘密の場所: ~/.claude（オーナーの認証）と /proc、MultiEdit
   assert.equal(touchesSecretPlace("MultiEdit", { file_path: join(cfg.dataDir, "x") }, cwd, secrets, home), true);
 });
 
-test("秘密の場所: ~/.claude.json（ファイル）を拒否し、似た名前は通す", async (t) => {
+test("秘密の場所: ~/.claude.json と、~ の直下で名前が .claude.json で始まるもの（控え）を拒否する", async (t) => {
   const { projectSecretPlaces } = await import("../src/agent/project-profile.ts");
   const { workspaceDir, home, cfg } = places(t);
   writeFileSync(join(home, ".claude.json"), "{}");
@@ -690,8 +691,14 @@ test("秘密の場所: ~/.claude.json（ファイル）を拒否し、似た名�
   assert.equal(touchesSecretPlace("Edit", { file_path: join(home, ".claude.json") }, cwd, secrets, home), true);
   // ホームを探す Grep・Glob は秘密の場所を含むので拒否
   assert.equal(touchesSecretPlace("Grep", { pattern: "x", path: home }, cwd, secrets, home), true);
-  // 名前の接頭辞が同じだけのものは秘密の場所ではない（この hook の判定では）
-  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude.json.backup" }, cwd, secrets, home), false);
+  // 控え（~/.claude.json.backup など）も秘密の場所。まだ無いものも
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude.json.backup" }, cwd, secrets, home), true);
+  assert.equal(touchesSecretPlace("Write", { file_path: join(home, ".claude.json.1730000000") }, cwd, secrets, home), true);
+  // ~ の直下でないもの・名前が違うものは通す
+  writeFileSync(join(cwd, ".claude.json"), "{}");
+  assert.equal(touchesSecretPlace("Read", { file_path: ".claude.json" }, cwd, secrets, home), false);
+  writeFileSync(join(home, ".claude-json"), "{}");
+  assert.equal(touchesSecretPlace("Read", { file_path: "~/.claude-json" }, cwd, secrets, home), false);
 });
 
 test("秘密の場所: パスの要素に `..` があれば畳む前に拒否する（プロジェクトの中に戻るものも）", async (t) => {
@@ -708,6 +715,10 @@ test("秘密の場所: パスの要素に `..` があれば畳む前に拒否す
     ["Grep", { pattern: "x", path: ".." }],
     ["Glob", { pattern: "*.ts", path: "src/.." }],
     ["NotebookEdit", { notebook_path: "x/../n.ipynb" }],
+    // Glob の pattern と Grep の glob は部分文字列 `..` で（file-access.ts と同じ）
+    ["Glob", { pattern: "lnk/../gh/*" }],
+    ["Glob", { pattern: "{..,x}/*" }],
+    ["Grep", { pattern: "x", glob: "../*.json" }],
   ] as const) {
     assert.equal(touchesSecretPlace(tool, input, cwd, secrets, home), true, `${tool} ${JSON.stringify(input)}`);
   }
@@ -715,14 +726,25 @@ test("秘密の場所: パスの要素に `..` があれば畳む前に拒否す
   writeFileSync(join(cwd, "a..b"), "");
   assert.equal(touchesSecretPlace("Read", { file_path: "a..b" }, cwd, secrets, home), false);
   assert.equal(touchesSecretPlace("Read", { file_path: "src/a.ts" }, cwd, secrets, home), false);
-  // hook も拒否を返す
-  const guard = createSecretPlaceGuard(secrets, home, () => undefined);
-  const output = await guard.hooks[0]!(
-    { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "src/../a.ts" }, cwd } as unknown as HookInput,
-    undefined,
-    { signal: new AbortController().signal },
-  );
-  assert.equal((output as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision, "deny");
+  // Grep の pattern（正規表現）の `..` は対象の場所ではないので見ない
+  assert.equal(touchesSecretPlace("Grep", { pattern: "a..b", path: "src" }, cwd, secrets, home), false);
+  // hook は専用の理由で拒否する
+  const logs: string[] = [];
+  const guard = createSecretPlaceGuard(secrets, home, (line) => logs.push(line));
+  for (const [tool, input] of [
+    ["Read", { file_path: "src/../a.ts" }],
+    ["Glob", { pattern: "lnk/../gh/*" }],
+  ] as const) {
+    const output = await guard.hooks[0]!(
+      { hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, cwd } as unknown as HookInput,
+      undefined,
+      { signal: new AbortController().signal },
+    );
+    assert.deepEqual(output, {
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: PROJECT_DOTDOT_DENIED_REASON },
+    });
+  }
+  assert.ok(logs.every((line) => !line.includes(cwd)));
 });
 
 test("projectSecretPlaces: ~/.claude と /proc を含み、hook は MultiEdit も見る", async (t) => {
