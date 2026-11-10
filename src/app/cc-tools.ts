@@ -8,7 +8,7 @@ import type { CcListEntry, CcListResult, CcSendResult, CcStartResult, CcToolDeps
 import { formatWallClock } from "./recurrence.ts";
 import { isUuid } from "../cc/agents.ts";
 import type { CcPaneResolver } from "../cc/panes.ts";
-import type { CcRegistry, CcSessionView } from "../cc/registry.ts";
+import { sinceOf, type CcRegistry } from "../cc/registry.ts";
 import { normalizeSendText, type CcSender } from "../cc/sender.ts";
 import type { CcStartFailure, CcStarter } from "../cc/starter.ts";
 import type { Config } from "../config.ts";
@@ -16,8 +16,8 @@ import type { Gateway } from "../discord/gateway.ts";
 import type { CcSendStore } from "../store/cc-sends.ts";
 import type { CcStartStore } from "../store/cc-starts.ts";
 import type { OutgoingMessage } from "../discord/gateway.ts";
-import { cwdLabel } from "../cc/labels.ts";
-import { ccRcUrl, ccSendPrompt, ccStartPrompt, fitsConfirm } from "./commands/cc-confirm.ts";
+import { ccRcUrl, cwdLabel } from "../cc/labels.ts";
+import { ccSendPrompt, ccStartPrompt, fitsConfirm } from "./commands/cc-confirm.ts";
 
 /** cc_list が返す件数の上限 */
 export const CC_LIST_MAX = 30;
@@ -38,11 +38,6 @@ export type CcToolsDeps = {
   home?: string;
   log: (message: string) => void;
 };
-
-/** 状態の始まり（判断待ちは待ち始め、それ以外は最後の活動。web/routes/cc.ts と同じ） */
-function sinceOf(view: CcSessionView): number | undefined {
-  return view.state === "needs_input" ? (view.waitingSince ?? view.lastActivityAt) : view.lastActivityAt;
-}
 
 /** cc_start の確認を出せなかった理由 → ツールの結果 */
 function startFailure(reason: CcStartFailure): CcStartResult {

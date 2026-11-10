@@ -124,6 +124,11 @@ export type CcSessionView = RankInput & {
   permission: (CcPermissionSummary & { at: number }) | undefined;
 };
 
+/** 状態の始まり（判断待ちは待ち始め、それ以外は最後の活動。Web の一覧の since と cc_list の since で共通） */
+export function sinceOf(view: Pick<CcSessionView, "state" | "waitingSince" | "lastActivityAt">): number | undefined {
+  return view.state === "needs_input" ? (view.waitingSince ?? view.lastActivityAt) : view.lastActivityAt;
+}
+
 export type CcSnapshot = {
   sessions: CcSessionView[];
   /** 直近の読み取りに失敗した（CC_STALE_LIMIT 回までは前回の一覧を出している） */
