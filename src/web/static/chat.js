@@ -153,10 +153,10 @@
     setTimeout(() => store.load.turns(channelId), OP_RECHECK_MS);
   }
 
-  /** 操作の失敗のトースト（404 は古い、409 は閉じている。それ以外は応答の文を失敗のトーストで。retry があれば [もう一度]） */
+  /** 操作の失敗のトースト（404 は古い、409 は閉じている（closing は要約中）。それ以外は応答の文を失敗のトーストで。retry があれば [もう一度]） */
   function opFailed(err, retry) {
     if (err && err.status === 404) toast(STALE_TEXT);
-    else if (err && err.status === 409) toast(err.code === "no_draft" ? STALE_TEXT : CLOSED_TEXT);
+    else if (err && err.status === 409) toast(err.code === "no_draft" ? STALE_TEXT : err.code === "closing" ? BUSY_TEXT : CLOSED_TEXT);
     else if (err && err.toast) toast(err.toast, null, { level: "error", retry });
   }
 

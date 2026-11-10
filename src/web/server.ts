@@ -79,7 +79,7 @@ function describeError(error: unknown): string {
 }
 
 /** 要求の処理の例外の種類（errno の code か例外の名前）。message はパスなどを含みうるので出さない */
-function describeErrorKind(error: unknown): string {
+export function describeErrorKind(error: unknown): string {
   if (!(error instanceof Error)) return typeof error;
   const code = (error as NodeJS.ErrnoException).code;
   return typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code) ? code : error.name;

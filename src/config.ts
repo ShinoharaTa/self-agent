@@ -241,6 +241,14 @@ function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
 }
 
+/** 1 つの Discord の ID（数字 17〜20 桁。前後の空白は除く）。無ければ undefined、形が違えば変数名を出してエラー */
+function discordId(name: string, value: string | undefined): string | undefined {
+  const id = nonEmpty(value?.trim());
+  if (id === undefined) return undefined;
+  if (!/^\d{17,20}$/.test(id)) throw new Error(`${name} は数字 17〜20 桁の ID を指定してください`);
+  return id;
+}
+
 /** カンマ区切りの Discord ID の一覧。数字以外を含む要素があればエラー */
 function idList(name: string, value: string | undefined): string[] {
   if (value === undefined) return [];
@@ -333,15 +341,15 @@ export function loadDataConfig(env: NodeJS.ProcessEnv = process.env): Pick<Confi
 
 const PERSONA_ID = /^[a-z0-9]{1,12}$/;
 const PERSONA_NAME_MAX_LENGTH = 20;
-/** /setup が self-agent カテゴリに作るチャンネルの名前（github は SELF_AGENT_GITHUB=1 のときだけ作る）。足した人格の #<NAME> はこれと同じ名前にできない */
-const RESERVED_CHANNEL_NAMES: readonly string[] = ["inbox", "tasks", "system", "github"];
+/** /setup が self-agent カテゴリに作るチャンネルの名前（github は SELF_AGENT_GITHUB=1、jobs は SELF_AGENT_JOBS=1 のときだけ作る）。足した人格の #<NAME> はこれと同じ名前にできない */
+const RESERVED_CHANNEL_NAMES: readonly string[] = ["inbox", "tasks", "system", "github", "jobs"];
 /** 足せる人格の数の上限（/new の persona の選択肢を Discord の 25 個以内に、/usage を 1 メッセージの 2,000 字以内に収める） */
 export const MAX_PERSONAS = 10;
 
 /**
  * SELF_AGENT_PERSONAS と人格ごとの変数を読む（docs/plan/personas.md §1）。エラーには変数名だけを出し、値（トークンを含む）は出さない。
  * 確かめること: id の形・重複・予約語（default）・数（MAX_PERSONAS まで）、トークンの欠け、同じトークンを 2 人格に（既定の人格の DISCORD_TOKEN を含む）、表示名の長さ、
- * 表示名から作るチャンネル名（#<NAME>）が空にならない・inbox・tasks・system と重ならない・人格どうしで重ならない、エンジン、effort
+ * 表示名から作るチャンネル名（#<NAME>）が空にならない・inbox・tasks・system・github・jobs と重ならない・人格どうしで重ならない、エンジン、effort
  */
 function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[] {
   const list = nonEmpty(env.SELF_AGENT_PERSONAS);
@@ -678,13 +686,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const cfg: Config = {
     oauthTokenPresent: nonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) !== undefined,
-    discordTokenPresent: nonEmpty(env.DISCORD_TOKEN) !== undefined,
+    discordTokenPresent: nonEmpty(env.DISCORD_TOKEN?.trim()) !== undefined,
     claudeConfigDir: loadClaudeConfigDir(env),
     workDir: nonEmpty(env.SELF_AGENT_WORKDIR) ?? join(home(), ".local/share/self-agent/work"),
     model: nonEmpty(env.SELF_AGENT_MODEL) ?? DEFAULT_MODEL,
-    ownerUserId: nonEmpty(env.SELF_AGENT_OWNER_ID),
+    ownerUserId: discordId("SELF_AGENT_OWNER_ID", env.SELF_AGENT_OWNER_ID),
     allowedGuildIds,
-    inboxChannelId: nonEmpty(env.SELF_AGENT_INBOX_CHANNEL_ID),
+    inboxChannelId: discordId("SELF_AGENT_INBOX_CHANNEL_ID", env.SELF_AGENT_INBOX_CHANNEL_ID),
     ...loadDataConfig(env),
     maxConcurrentTurns: positiveInteger(
       "SELF_AGENT_MAX_CONCURRENT",

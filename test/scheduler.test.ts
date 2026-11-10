@@ -62,7 +62,7 @@ function setup(
   deleteAfterDays: number = 30,
   allowedGuildIds: string[] = ["guild-1"],
   // history: true なら history（同じ DB）を渡す
-  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory" | "pruneUsage" | "pruneCcSessions" | "ccChannels" | "ccDeletes"> & { history?: boolean } = {},
+  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory" | "pruneUsage" | "pruneCcSessions" | "ccChannels" | "ccDeletes"> & Partial<Pick<SchedulerDeps, "notify">> & { history?: boolean } = {},
 ) {
   const db = tempDb(t);
   const clock = { now: NOW };
@@ -425,6 +425,32 @@ test("削除の確認: 投稿に失敗したら記録せずに log に出して�
 
   assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-2");
   assert.equal(env.sent().length, 2);
+});
+
+test("削除の確認: 時間切れなしで待たず（notify の既定の時間切れ）、時間切れは失敗と同じく次の tick でやり直す", async (t) => {
+  const calls: Array<{ timeoutMs?: number | null }> = [];
+  let inner: SchedulerDeps["notify"] | undefined;
+  let timeouts = 1;
+  const env = setup(t, 12, 30, ["guild-1"], {
+    notify: async (guildId, message, options) => {
+      calls.push(options);
+      if (timeouts-- > 0) throw new Error("時間切れ");
+      return inner!(guildId, message, options);
+    },
+  });
+  inner = createSystemNotifier({ guildSettings: env.guildSettings, gateway: env.gateway, log: (line) => env.logs.push(line) });
+  env.closeAt("topic-1", ago(40 * DAY_MS));
+
+  await env.scheduler.tick();
+
+  assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, null);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.timeoutMs, undefined);
+
+  await env.scheduler.tick();
+
+  assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-1");
+  assert.equal(env.sent().length, 1);
 });
 
 test("tick: 待ちへの移動で DB が失敗しても reject せず log に出し、削除の確認は行う", async (t) => {

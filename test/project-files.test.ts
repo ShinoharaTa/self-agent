@@ -307,7 +307,7 @@ test(".trash が実際のディレクトリでない（中・外への symlink�
   }
 });
 
-test("trash・move: プロジェクトの dir が無い・ファイル・解決できないなら not_available で、何も作らない。clear・restore は今どおり", async (t) => {
+test("trash・move・clear: プロジェクトの dir が無い・ファイル・解決できないなら not_available で、何も作らない（土台だけの dir も作らない）。restore は今どおり", async (t) => {
   const { root, projectsDir } = setup(t);
   const notAvailable = { result: "not_available", message: PROJECT_DIR_MISSING_MESSAGE };
   writeFileSync(join(projectsDir, "file"), "ファイル");
@@ -318,6 +318,7 @@ test("trash・move: プロジェクトの dir が無い・ファイル・解決�
   for (const name of ["missing", "file", "broken"]) {
     assert.deepEqual(await runIn(name, { action: "trash", paths: ["SPEC.md"] }), notAvailable, name);
     assert.deepEqual(await runIn(name, { action: "move", paths: ["SPEC.md"], to: "x.md" }), notAvailable, name);
+    assert.deepEqual(await runIn(name, { action: "clear" }), notAvailable, name);
   }
   assert.equal(existsSync(join(projectsDir, "missing")), false);
   assert.equal(existsSync(join(root, "no-such")), false);
@@ -326,7 +327,7 @@ test("trash・move: プロジェクトの dir が無い・ファイル・解決�
 
   assert.deepEqual(await runIn("missing", { action: "restore" }), { result: "list", trashes: [] });
   assert.deepEqual(await runIn("missing", { action: "restore", trash_id: ID }), { result: "not_found", trash_id: ID });
-  assert.deepEqual(await runIn("missing", { action: "clear" }), { result: "cleared", trash_id: null, scaffold: CREATED_SCAFFOLD });
+  assert.equal(existsSync(join(projectsDir, "missing")), false);
 });
 
 test("clear: .trash 以外をすべて .trash/<trash_id>/ に移し、UI の土台を置き直す。中身が無ければ trash_id は null", async (t) => {
@@ -344,8 +345,9 @@ test("clear: .trash 以外をすべて .trash/<trash_id>/ に移し、UI の土�
   // 前の .trash はそのまま
   assert.deepEqual(tree(join(dir, TRASH_DIR_NAME, ID)), files);
 
-  // 中身が無い（dir も無い）
+  // 中身が無い（空の dir）
   const empty = join(dir, "..", "empty");
+  mkdirSync(empty);
   assert.deepEqual(await runProjectFiles(empty, { action: "clear" }, { now: NOW, log: () => assert.fail("想定外の log") }), {
     result: "cleared",
     trash_id: null,

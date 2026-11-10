@@ -74,6 +74,13 @@ test("acquireDataLock: 古いロック（再起動の前・持ち主が無い・
     { label: "4 行ある", content: `100\n${BOOT}\nsrc/cli.ts start\nx\n`, overrides: {} },
     { label: "自分の PID（前のプロセスと同じ PID）", content: `200\n${BOOT}\n`, overrides: {} },
   ];
+  // 生きているのを見た直後に終わって、コマンドラインが読めなかった（2 回目の isAlive で死んでいる）
+  let checks = 0;
+  cases.push({
+    label: "isAlive の直後に終わってコマンドラインが読めない",
+    content: `100\n${BOOT}\n`,
+    overrides: { isAlive: () => checks++ === 0, readCmdline: () => undefined },
+  });
   for (const { label, content, overrides } of cases) {
     const dataDir = tempDir(t);
     writeFileSync(lockPath(dataDir), content);

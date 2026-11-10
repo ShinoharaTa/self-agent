@@ -458,8 +458,8 @@ export class Scheduler {
       for (const session of due) {
         let messageId: string | undefined;
         try {
-          // 時間切れを付けない（遅れて届いた確認と、次の tick のやり直しの確認が二重に出ないように。前と同じ）
-          messageId = await notify(session.guildId, deletePrompt(session, cfg.deleteAfterDays), { level: "info", timeoutMs: null });
+          // 普通の時間切れ（notify の既定）で待つ（返らない投稿で tick 全体を止めない）。時間切れも失敗と同じく次の tick でやり直す
+          messageId = await notify(session.guildId, deletePrompt(session, cfg.deleteAfterDays), { level: "info" });
         } catch (error) {
           // 記録しないので、次の tick でやり直す
           log(`削除の確認の投稿に失敗しました（guild=${session.guildId}）: ${describeError(error)}`);
@@ -482,7 +482,7 @@ export class Scheduler {
 
   /**
    * Claude Code のチャンネル（ccDeletes があれば）について、終わってから deleteAfterDays 日経ち、まだ確認していないものをそのサーバーの #system に
-   * [削除する][残す] で知らせる（1 tick で DELETE_PROMPT_BATCH_LIMIT 件まで。セッションと同じく時間切れなし・失敗は次の tick でやり直す）
+   * [削除する][残す] で知らせる（1 tick で DELETE_PROMPT_BATCH_LIMIT 件まで。セッションと同じく時間切れ・失敗は次の tick でやり直す）
    */
   private async promptCcDeletes(): Promise<void> {
     const { cfg, ccDeletes, notify, now, log } = this.deps;
@@ -496,7 +496,7 @@ export class Scheduler {
           remaining--;
           let messageId: string | undefined;
           try {
-            messageId = await notify(guildId, ccDeletePrompt(row, cfg.deleteAfterDays), { level: "info", timeoutMs: null });
+            messageId = await notify(guildId, ccDeletePrompt(row, cfg.deleteAfterDays), { level: "info" });
           } catch (error) {
             log(`Claude Code のチャンネルの削除の確認の投稿に失敗しました（guild=${guildId}）: ${describeError(error)}`);
             continue;
