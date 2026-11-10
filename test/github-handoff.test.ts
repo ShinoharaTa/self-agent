@@ -435,3 +435,9 @@ test("act（CC11）: Discord で押したサーバーを submit に渡し（チ�
   await web.handoff.act(web.notify());
   assert.equal("guildId" in web.submits[0]!, false);
 });
+
+test("handoffResultText: 起動はできたが最初の指示（対応依頼）を積めなければ（sendFailed。#315）その旨。入力待ちで届ける文は出さない", () => {
+  const text = handoffResultText({ kind: "started", tmuxSession: "beta", sendId: undefined, dir: "group/beta", sendFailed: true });
+  assert.equal(text, "~/workspace/group/beta で新しいセッション（beta）を起動しました。最初の指示は送れませんでした。端末か RC で送ってください");
+  assert.doesNotMatch(handoffResultText({ kind: "started", tmuxSession: "beta", sendId: 3, dir: "group/beta" }), /送れませんでした/);
+});
