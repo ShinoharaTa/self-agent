@@ -243,7 +243,7 @@ self-agent/
 | チームリーダー | Leader | 完了 | Whiteboard統合、ロードマップ |
 | 要件ファシリテーター | Agent-1 | 完了 | `docs/design/REQUIREMENTS_V2.md` |
 | LLMアーキテクト | Agent-2 | 完了 | `docs/design/LLM_MULTI_PROVIDER.md` |
-| インテグレーション設計 | Agent-3 | 完了 | `docs/design/INTEGRATIONS.md` |
+| インテグレーション設計 | Agent-3 | 完了 | `docs/archive/INTEGRATIONS.md` |
 
 ### 9.2 セッション目標と達成状況
 
@@ -388,7 +388,7 @@ self-agent/
 | `docs/REQUIREMENTS.md` | 要件定義書 V1 | セッション #1 |
 | `docs/design/REQUIREMENTS_V2.md` | 優先度付き要件一覧 (30要件) | セッション #2 |
 | `docs/design/LLM_MULTI_PROVIDER.md` | マルチLLMプロバイダー設計書 | セッション #2 |
-| `docs/design/INTEGRATIONS.md` | 外部連携設計書 (Calendar, Slack, Reminder, Skill) | セッション #2 |
+| `docs/archive/INTEGRATIONS.md` | 外部連携設計書 (Calendar, Slack, Reminder, Skill) | セッション #2 |
 | `docs/architecture/ARCHITECTURE.md` | A2Aアーキテクチャ詳細設計 | セッション #1 |
 | `docs/architecture/CRATE_STRUCTURE.md` | クレート構成設計 | セッション #1 |
 | `docs/architecture/TECH_DECISIONS.md` | 技術選定根拠 | セッション #1 |

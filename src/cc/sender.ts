@@ -1,7 +1,7 @@
 // Claude Code のセッションへの送信（docs/plan/claude-code-sessions.md §3.2・§7 の 2〜4・6。CC3）。Web の composer（routes/cc.ts）が submit で
 // cc_sends に queued で積み、待ち行列（起動後は CC_SEND_RETRY_MS ごと。積んだときはすぐ）が古い順に 1 件ずつ試す（アプリ全体で同時に 1 つ）。
 // SDK のツール cc_send（CC7）は propose で Discord の確認待ち（awaiting_confirm）の行を作り、[送る]（confirm）で queued にする。
-// 試すたびに一覧（registry）の pid から送り先のペインを引き直し（祖先の関係で当たり pane_current_command が claude のものだけ。panes.ts の
+// 試すたびに一覧（registry）の pid から送り先のペインを引き直し（祖先の関係で当たったものだけ。前面が claude かは見ず、not_claude は待つ（#284）。panes.ts の
 // findSendablePane）、probePaneState が idle（2 回）のときだけ load-buffer → paste-buffer -p -d → 0.5 秒後に pasteLanded → Enter → 2 秒後に確かめる。
 // 貼れたか確かめられなければ Enter を押さず unconfirmed（やり直さない）。複数行が 1 行目で送信されたように見えるのが別の送信で
 // CC_MULTILINE_DETECT_LIMIT 回続いたら cc_state.multiline_ok を false にして #system に 1 行、以後は改行を空白に置き換えて送る

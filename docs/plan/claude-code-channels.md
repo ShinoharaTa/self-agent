@@ -108,7 +108,7 @@
 
 作るときの流れ（`src/cc/channels.ts` の `openChannel(guildId, sessionId, origin)`）: `/setup` と同じ `layoutQueueKey(guildId)` のキューで → 既にそのセッションの削除されていない行があれば `exists`（終わっていれば開き直す。§3.6）→ 対象が `claude agents --json` に居て tmux の中（`findSendablePane` が当たる）でなければ `not_in_tmux` → カテゴリ「Claude Code」（`guild_settings.cc_category_id`）が無い・消えていれば `not_set_up` → 中のチャンネルが 50 なら `full` → `createTextChannel` → `cc_channels` に行 → 最初の投稿「Claude Code のセッション「<名前>」（<ディレクトリ>）のチャンネルです（<きっかけ>で作りました。きっかけがボタン・コマンドの名前で終わるときだけ空白を挟む）。ここに書くとこのセッションに届きます。返事と許可の要求はここに出ます」（名前・ディレクトリは `escapeDiscordText`）→ 結果。DB の保存に失敗したら、セッションのチャンネルと同じくチャンネル ID を log に出す（log 方針の例外）。
 
-作れなかったとき（`not_set_up`・`full`・Discord の失敗・tmux の外）: **きっかけの処理は止めない**（送信は積まれ、起動は進み、許可の応答は返る）。返事は CC8 の追いかけの規則（頼んだチャンネルへ。Web だけのものは出ない）、許可の要求は #system、のまま。log に 1 行（理由だけ）と、`not_set_up`・`full`・Discord の失敗は #system に 1 行（同じ理由は 1 時間に 1 回。`/setup` の案内を添える）。自動の再試行はせず、**次に関わったときにまた試す**。手動の口は理由を応答に出す（Web は 404 `not_found`（一覧に無い）/ 409 `exists` / 409 `not_in_tmux` / 409 `full` / 503 `not_set_up` / 502 `failed`（Discord の失敗）、`/cc open` は本人にだけ）。
+作れなかったとき（`not_set_up`・`full`・Discord の失敗・tmux の外）: **きっかけの処理は止めない**（送信は積まれ、起動は進み、許可の応答は返る）。返事は CC8 の追いかけの規則（頼んだチャンネルへ。Web だけのものは出ない）、許可の要求はチャンネルが無ければ log だけ（保留は続き、Web と端末・RC で答える）。log に 1 行（理由だけ。同じ理由は 1 時間に 1 回）。**Q4（docs/plan/claude-code-questions.md §5）からは #system には出さない**（Q4 より前は許可の要求を #system に出し、`not_set_up`・`full`・Discord の失敗も #system に 1 行出していた）。自動の再試行はせず、**次に関わったときにまた試す**。手動の口は理由を応答に出す（Web は 404 `not_found`（一覧に無い）/ 409 `exists` / 409 `not_in_tmux` / 409 `full` / 503 `not_set_up` / 502 `failed`（Discord の失敗）、`/cc open` は本人にだけ）。
 
 ### 3.2 カテゴリ・名前・topic
 - カテゴリ「Claude Code」は `/setup` が状態カテゴリの後に作る（`cfg.cc` が true のときだけ。消えたものだけ作り直す。ID は `guild_settings.cc_category_id`）。再同期は開いているチャンネルをここへ戻す。満杯（50）なら作らずに断る（`Claude Code 2` は作らない。開いているチャンネルは生きているセッションの数（`SELF_AGENT_CC_MAX_SESSIONS` 既定 30）以下で、終わったものは完了へ移すため）。
@@ -238,7 +238,7 @@
 
 ## 8. 本書で決めたこと・実装者が決めてよいこと
 
-本書で決めたこと（§9 の決定の下で）: 群の位置（入口の次）、「関わった」の 6 つのきっかけと作る時点（送信は積んだ直後・起動は結びついたとき・許可は答えた直後）、許可の応答は Web でも #system のボタンでも同じきっかけ、作るサーバーの選び方、作れなかったときは元の処理を止めず #system に 1 時間 1 回、自動の再試行はしない、手動の口は 2 つ、カテゴリ「Claude Code」は 1 つで 50 で断る、名前は `cc-<名前>` で追いかけない、発言は確認なし・`origin discord`・5 件の列、外からの送信の写し、印はリアクション、返事はチャンネル優先で [追いかけをやめる] 無し・上限 200、許可の要求はチャンネルだけ（#system に出さない）、`NOTIFY=0` でもチャンネルには出す、戻ったら開き直す、続けるは [起動して続ける]（新しいチャンネルは作らない）、`/cc open|cancel|close` を持つ、`cc_sessions.started_by` は `tool` で代える、history の行の種類、段の切り方。
+本書で決めたこと（§9 の決定の下で）: 群の位置（入口の次）、「関わった」の 6 つのきっかけと作る時点（送信は積んだ直後・起動は結びついたとき・許可は答えた直後）、許可の応答は Web でも #system のボタンでも同じきっかけ、作るサーバーの選び方、作れなかったときは元の処理を止めず log に 1 時間 1 回（Q4 より前は #system にも）、自動の再試行はしない、手動の口は 2 つ、カテゴリ「Claude Code」は 1 つで 50 で断る、名前は `cc-<名前>` で追いかけない、発言は確認なし・`origin discord`・5 件の列、外からの送信の写し、印はリアクション、返事はチャンネル優先で [追いかけをやめる] 無し・上限 200、許可の要求はチャンネルだけ（#system に出さない）、`NOTIFY=0` でもチャンネルには出す、戻ったら開き直す、続けるは [起動して続ける]（新しいチャンネルは作らない）、`/cc open|cancel|close` を持つ、`cc_sessions.started_by` は `tool` で代える、history の行の種類、段の切り方。
 
 実装者が決めてよいこと: 表・列・関数の名前、リアクションの絵文字（上の 3 つは目安）、最初の投稿・写し・返信の文言、`CC_CHANNEL_QUEUE_MAX`・`CC_CHANNEL_REPLY_DAILY_LIMIT`・`CC_PROMPT_MIRROR_MAX_CHARS` の置き場所、`/cc open` のセレクトの行の形、`cc_sends` の作り直しの手順の細部、chat.js の cc の節の見た目、写しの判定の窓（30 秒）、作れなかったときの #system の 1 行の窓（1 時間）の持ち方（プロセスの中）。
 

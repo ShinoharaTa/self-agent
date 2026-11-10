@@ -312,7 +312,7 @@ export class CcReplier {
 
   /**
    * セッションが一覧から消えた（registry.ts の ended。gone_at を入れる前の行）。追いかけ中なら「終わりました」を出して follow = 0 にし、true を返す
-   * （そのときは #system の終了の知らせを出さない）。追いかけていなければ false
+   * （#system の終了の知らせは Q4 で無くなり、呼び出し側（channels.ts の ccEndedHandler）は戻り値を使わない）。追いかけていなければ false
    */
   ended(row: CcSessionRow): boolean {
     if (this.stopped) return false;

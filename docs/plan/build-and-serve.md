@@ -33,7 +33,7 @@
 - 任意: `SELF_AGENT_SERVE_ALLOWED_LOGIN` を設定すると、`Tailscale-User-Login` ヘッダが一致しない要求を 403 にする（tailnet を他人と共有しているときだけ使う）。
 
 ## 3. 作業場所とプロジェクト
-- ソースは `<workDir>/projects/<slug>/`、配るのは `<workDir>/projects/<slug>/site/` だけ。cwd は全チャンネルで workDir のまま。
+- ソースは `<workDir>/projects/<slug>/`、配るのは `<workDir>/projects/<slug>/site/` だけ。cwd は全チャンネルで `<workDir>/cwd`（空の専用ディレクトリ。中身は scheduler の掃除で消す）。
 - DB（user_version 13）: `projects(id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT)`（時刻は既存のテーブルと同じ ISO 文字列）と、`channel_id` の部分 UNIQUE インデックス（`WHERE deleted_at IS NULL`）。
   - `title` は前後の空白を除いて 100 字まで。空なら slug。
   - セッションのチャンネル 1 つに、削除されていないプロジェクトは 0〜1 個（`/projects` で消した後は、同じチャンネルで新しく作れる）。#inbox には作らない。
