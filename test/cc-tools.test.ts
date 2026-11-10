@@ -209,8 +209,9 @@ function setup(t: TestContext) {
     home: "/home/owner",
     log,
   });
-  const pressButton = async (customId: string): Promise<ResponderCall[]> => {
+  const pressButton = async (customId: string, prepare?: (responder: FakeResponder) => void): Promise<ResponderCall[]> => {
     const responder = new FakeResponder();
+    prepare?.(responder);
     await component.handle(press(customId), responder);
     return responder.calls;
   };
@@ -665,6 +666,24 @@ test("[起動する]: launch が投げても started のまま残さず failed �
   // もう一度押しても古い（二度起動しない）
   assert.deepEqual(await s.pressButton("cc:start:1"), [{ method: "reply", message: { text: STALE_TEXT, ephemeral: true } }]);
   assert.ok(s.logs.some((line) => line.includes("起動できませんでした（#1、Error）")), s.logs.join("\n"));
+});
+
+test("[起動する]: launch が投げた後の応答の書き換えに失敗したら、確認の投稿を editMessage でボタン無しに書き換える", async (t) => {
+  const s = setup(t);
+  await s.handlers().ccStart({ project: "alpha", title: "a" });
+  s.starter.launchError = new Error("boom");
+  const calls = await s.pressButton("cc:start:1", (responder) => {
+    responder.beforeUpdate = () => {
+      throw new Error("Unknown interaction");
+    };
+  });
+  assert.deepEqual(calls.filter((call) => call.method === "update"), []);
+  assert.equal(s.starts.get(1)!.state, "failed");
+  assert.equal(s.edited.length, 1);
+  const edit = s.edited[0]!;
+  assert.deepEqual([edit.channelId, edit.messageId], [s.starts.get(1)!.channelId, s.starts.get(1)!.messageId]);
+  assert.ok(edit.message.text.includes(CC_START_THREW), edit.message.text);
+  assert.deepEqual(edit.message.components, []);
 });
 
 test("[起動する]: 一時的な理由（too_soon・limit・low_memory・no_server）で起動できなければ確認待ちに戻してボタンを残し、もう一度押せる", async (t) => {

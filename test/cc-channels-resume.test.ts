@@ -251,6 +251,33 @@ test("[起動して続ける]: 結びついたら session_id を付け替え（p
   assertQuietLogs(s.logs);
 });
 
+test("[起動して続ける]: 新しいセッションに別のチャンネルが既にあれば付け替えず ended に戻す。最初の指示の message_id は終わったチャンネルの発言を指したまま（今の振る舞い）", async (t) => {
+  const s = setup(t);
+  const msg = s.message(SECRET_TEXT);
+  await s.channels.handleMessage(msg);
+  await s.channels.resume(CHANNEL, msg.id, "guild-1");
+  assert.equal(s.store.get(CHANNEL)?.state, "resuming");
+  // 結びつける前に、新しいセッションのチャンネルが別に作られていた
+  s.store.create({ channelId: "900000000000000002", guildId: "guild-1", sessionId: NEW, name: "cc-alpha-2", cwd: null, origin: "web" });
+  s.sessions.push({ sessionId: NEW, pid: 200, name: "alpha", cwd: `${WORKSPACE}/alpha`, tmux: undefined, state: "idle" } as CcSessionView);
+  await s.channels.started({ sessionId: NEW, startedBy: "tool", channelId: CHANNEL, sendId: 1, guildId: "guild-1", resumeChannelId: CHANNEL });
+  await s.channels.idle();
+  const row = s.store.get(CHANNEL)!;
+  assert.deepEqual([row.state, row.sessionId, row.previousSessionId], ["ended", OLD, null]);
+  assert.equal(s.store.anyFor(NEW)?.channelId, "900000000000000002");
+  assert.ok(s.logs.some((line) => /付け替えられませんでした（guild=guild-1）/.test(line)), s.logs.join("\n"));
+  // 付け替えの topic・1 行は出さない
+  assert.deepEqual(
+    s.gateway.calls.filter((call) => call.method === "setChannelTopic"),
+    [],
+  );
+  assert.equal(s.gateway.posts.some((post) => post.message.text === ccResumedText("alpha")), false);
+  // 最初の指示の送信は、終わったチャンネルとその発言を指したまま
+  const send = s.sends.get(1)!;
+  assert.deepEqual([send.channelId, send.messageId], [CHANNEL, msg.id]);
+  assertQuietLogs(s.logs);
+});
+
 test("[起動して続ける]: 直下でない cwd は断って ended に戻す。起動の失敗も ended に戻してボタンを残し、もう一度押せる。結びつけられなければ ended に戻す", async (t) => {
   const s = setup(t);
   // 直下でない

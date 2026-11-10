@@ -45,6 +45,7 @@ import { cwdLabel } from "./labels.ts";
 import type { CcPaneResolver } from "./panes.ts";
 import type { CcRegistry, CcSessionView, CcState } from "./registry.ts";
 import { CC_CHANNEL_QUEUE_MAX, normalizeSendText, type CcSender, type CcSubmitResult } from "./sender.ts";
+import { breakMaskedLinks } from "./replies.ts";
 import { normalizeTitle, type CcStartFailure, type CcStarter, type CcStartResult } from "./starter.ts";
 
 /** Discord で 1 つのカテゴリに入れられるチャンネル数（カテゴリ「Claude Code」は 1 つだけで、満杯なら作らずに断る） */
@@ -364,7 +365,15 @@ export type CcChannelsDeps = {
   /** 作成・最初の投稿・終わった / 戻ったの 1 行・写し・印（既定の人格の Bot） */
   gateway: Pick<
     Gateway,
-    "createTextChannel" | "channelExists" | "countChannelsIn" | "sendMessage" | "editMessage" | "addReaction" | "removeOwnReaction" | "setChannelTopic"
+    | "createTextChannel"
+    | "deleteChannel"
+    | "channelExists"
+    | "countChannelsIn"
+    | "sendMessage"
+    | "editMessage"
+    | "addReaction"
+    | "removeOwnReaction"
+    | "setChannelTopic"
   >;
   /** /setup・/new と同じキュー（key は layoutQueueKey） */
   queue: Pick<KeyedSerialQueue, "run">;
@@ -849,7 +858,8 @@ export class CcChannels {
     if (row.channelId === channel.channelId) return channel.channelId;
     let messageId: string | undefined;
     try {
-      for (const text of ccMirrorTexts(ccMirrorLabel(row.origin, row.channelId), row.text)) {
+      // 本文の masked link は崩す（返事と同じ。写しの本文でリンクを偽らせない）
+      for (const text of ccMirrorTexts(ccMirrorLabel(row.origin, row.channelId), breakMaskedLinks(row.text))) {
         const id = await this.deps.gateway.sendMessage(channel.channelId, { text, suppressEmbeds: true });
         messageId ??= id;
       }
@@ -1104,12 +1114,22 @@ export class CcChannels {
     const dir = cwdLabel(view.cwd, this.deps.cfg.workspaceDir, this.deps.home);
     const taken = new Set(store.listUndeleted(guildId).map((row) => row.name));
     const channelName = ccChannelName(name, cwd, taken);
+    // 上の await の間に別のサーバー（キューは別）で同じセッションのチャンネルが作られていれば作らない
+    const raced = store.anyFor(sessionId);
+    if (raced !== undefined) return { ok: false, reason: "exists", channelId: raced.channelId, guildId: raced.guildId };
     const channelId = await gateway.createTextChannel(guildId, { name: channelName, parentId: categoryId, topic: ccChannelTopic(name, dir) });
     try {
       store.create({ channelId, guildId, sessionId, name: channelName, cwd, origin });
     } catch (error) {
-      // 手で消せるよう、作ったチャンネルの ID を出す（log 方針の例外。セッションのチャンネルと同じ）
-      log(`Claude Code: チャンネルを作りましたが記録に失敗しました（guild=${guildId}、channel=${channelId}）: ${errorKind(error)}`);
+      // 記録できなかった（一意の索引など）チャンネルは孤児にしないよう消す。消せなければ手で消せるよう ID を出す（log 方針の例外。セッションのチャンネルと同じ）
+      try {
+        await gateway.deleteChannel(channelId);
+        log(`Claude Code: チャンネルを作りましたが記録に失敗したため消しました（guild=${guildId}）: ${errorKind(error)}`);
+      } catch (deleteError) {
+        log(
+          `Claude Code: チャンネルを作りましたが記録に失敗しました（guild=${guildId}、channel=${channelId}）: ${errorKind(error)}（消せませんでした: ${errorKind(deleteError)}）`,
+        );
+      }
       return { ok: false, reason: "failed" };
     }
     log(`Claude Code: チャンネルを作りました（guild=${guildId}、${origin}）`);

@@ -395,7 +395,18 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       // launch が投げた（戻り値の失敗でない）ときも started のまま残さない（Expirer は awaiting_confirm しか見ない。#292）
       ccStarts.transition(id, ["started"], "failed");
       log(`Claude Code: 起動できませんでした（#${id}、${errorKind(error)}）`);
-      await responder.update({ text: ccStartResultText(row, [CC_START_THREW]), components: [] });
+      const message = { text: ccStartResultText(row, [CC_START_THREW]), components: [] };
+      try {
+        await responder.update(message);
+      } catch (updateError) {
+        // 応答で書き換えられなければ（interaction の失効など）確認の投稿を直接書き換えてボタンを外す
+        log(`Claude Code: 起動の確認の応答に失敗したため投稿を書き換えます（#${id}、${errorKind(updateError)}）`);
+        if (row.messageId !== null) {
+          await ccPosts
+            .editMessage(row.channelId, row.messageId, message)
+            .catch((editError: unknown) => log(`Claude Code: 起動の確認を書き換えられませんでした（#${id}、${errorKind(editError)}）`));
+        }
+      }
       return;
     }
     if (!result.ok) {

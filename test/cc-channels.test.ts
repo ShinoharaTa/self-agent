@@ -54,7 +54,7 @@ function setup(t: TestContext, options: { setUp?: boolean } = {}) {
   const store = new CcChannelStore(db, now);
   const guildSettings = new GuildSettingsStore(db, now);
   const gateway = new FakeGateway({
-    allow: ["sendMessage", "channelExists", "countChannelsIn"],
+    allow: ["sendMessage", "channelExists", "countChannelsIn", "deleteChannel"],
     record: ["createTextChannel"],
     channelIdPrefix: "chan-",
     messageIdPrefix: "msg-",
@@ -191,13 +191,46 @@ test("openChannel: Discord の作成に失敗しても投げずに failed。記�
   const before = s.logs.length;
   // 記録の失敗を、次に作られるチャンネルの ID（chan-1）と同じ channel_id の行を先に置いて起こす
   s.store.create({ channelId: "chan-1", guildId: "guild-1", sessionId: S3, name: "cc-y", cwd: null, origin: "web" });
+  // 記録できなかったチャンネルは消す。消せなければ作ったチャンネルの ID だけ log に出す
+  s.gateway.beforeDelete = () => {
+    throw new Error("delete failed");
+  };
   assert.deepEqual(await s.channels.openChannel("guild-1", S1, "web"), { ok: false, reason: "failed" });
+  assert.deepEqual(s.gateway.deleted, ["chan-1"]);
   const added = s.logs.slice(before);
   assert.ok(added.some((line) => /記録に失敗しました（guild=guild-1、channel=chan-1）/.test(line)), added.join("\n"));
   // 最初の投稿の失敗
   const ok = await s.channels.openChannel("guild-1", S1, "web");
   assert.equal(ok.ok, true);
   assert.ok(s.logs.includes("Claude Code: チャンネルの最初の投稿に失敗しました（Error）"));
+});
+
+test("openChannel: 作る直前に別のサーバーで同じセッションのチャンネルができていれば作らず exists。作った後の記録が一意の索引で失敗したら消して failed（ID は出さない）", async (t) => {
+  const s = setup(t);
+  s.guildSettings.setChannel("guild-2", "homeCategoryId", "home-2");
+  s.guildSettings.setCcCategory("guild-2", "cat-cc-2");
+  s.gateway.alive.add("cat-cc-2");
+  // countChannelsIn の await の間に guild-2 の側で作られた
+  s.gateway.beforeCount = (categoryId) => {
+    if (categoryId === "cat-cc") s.store.create({ channelId: "other-1", guildId: "guild-2", sessionId: S1, name: "cc-z", cwd: null, origin: "web" });
+  };
+  assert.deepEqual(await s.channels.openChannel("guild-1", S1, "web"), { ok: false, reason: "exists", channelId: "other-1", guildId: "guild-2" });
+  assert.equal(s.gateway.callsOf("createTextChannel").length, 0);
+
+  // createTextChannel の await の間に作られた（記録が一意の索引で失敗する）
+  s.gateway.beforeCount = () => {};
+  s.gateway.beforeCreate = () => {
+    s.store.create({ channelId: "other-2", guildId: "guild-2", sessionId: S2, name: "cc-w", cwd: null, origin: "web" });
+  };
+  const before = s.logs.length;
+  assert.deepEqual(await s.channels.openChannel("guild-1", S2, "web"), { ok: false, reason: "failed" });
+  assert.deepEqual(s.gateway.deleted, ["chan-1"]);
+  assert.equal(s.gateway.alive.has("chan-1"), false);
+  assert.equal(s.store.anyFor(S2)?.channelId, "other-2");
+  const added = s.logs.slice(before);
+  assert.ok(added.some((line) => /記録に失敗したため消しました（guild=guild-1）/.test(line)), added.join("\n"));
+  assertQuietLogs(added);
+  assert.equal(s.gateway.posts.length, 0);
 });
 
 test("ensureFor: 既にあれば何もしない。作れなければ投げず、log だけ（同じ理由は 1 時間に 1 回。#system には出さない）", async (t) => {
