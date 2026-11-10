@@ -212,7 +212,7 @@ test("hook の受け口: 処理（receiver）が投げても 200・空で返す"
   assert.deepEqual(logs, ["Claude Code: hook の事象の処理に失敗しました（Error）"]);
 });
 
-test("hook の受け口: PermissionRequest は保留せず即 200・空。要約は §3.4 の形で、tool_input の全体は渡さない", async (t) => {
+test("hook の受け口: PermissionRequest は保留の口が無ければ保留せず 200・空。要約は §3.4 の形で、tool_input の全体は渡さない", async (t) => {
   const s = await setup(t);
   const content = "FULL-".repeat(1000);
   const toolInput = { file_path: "/w/app/a.txt", content };
