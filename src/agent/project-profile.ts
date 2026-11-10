@@ -13,7 +13,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { ccPlacesOf, projectDir as verifiedProjectDir } from "../cc/starter.ts";
 import type { Config } from "../config.ts";
-import { resolveRealPath } from "./file-access.ts";
+import { hasParentSegment, resolveRealPath } from "./file-access.ts";
 import { childEnv } from "./query-options.ts";
 import { isProjectPermissionMode, type ProjectPermissionMode, type RunContext, type RunInput } from "./runner.ts";
 import { createWebFetchGuard, type ProfileRunState, type RunnerProfile, ownerApiKeySource } from "./sdk-runner.ts";
@@ -40,11 +40,15 @@ export const PROJECT_SUMMARY_DISALLOWED_TOOLS: readonly string[] = [
 
 /** 秘密の場所の拒否の理由（モデルへ返す） */
 export const PROJECT_SECRET_DENIED_REASON = "self-agent の秘密の場所は読めません";
+/** パスに `..` があるときの拒否の理由（モデルへ返す） */
+export const PROJECT_DOTDOT_DENIED_REASON = "`..` を含むパスは使えません。絶対パスで指定してください";
 /** 秘密の場所の判定が例外で終わったときの理由 */
 export const PROJECT_SECRET_GUARD_FAILED_REASON = "判定に失敗したため拒否しました";
 
 /** 秘密の場所の判定の対象のツール */
 const SECRET_GUARD_TOOLS: readonly string[] = ["Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "NotebookEdit"];
+/** ~ の直下で、名前がこれで始まるもの（~/.claude.json と、その控えの ~/.claude.json.backup など）は秘密の場所 */
+const HOME_SECRET_PREFIX = ".claude.json";
 /** 下へ辿って探すツール（対象の場所が秘密の場所を含むときも拒否する） */
 const SEARCH_TOOLS: readonly string[] = ["Glob", "Grep"];
 /** 共有の場所（skills・agents）の例外を効かせる読むだけのツール（書く側は秘密のまま。#291） */
@@ -102,7 +106,7 @@ function staticPrefix(pattern: string): string {
 
 /**
  * 秘密の場所（docs/plan/unify.md §5.5 の 3）。dataDir・CLAUDE_CONFIG_DIR・~/.config/self-agent・~/.ssh・~/.config/gh・~/.claude（オーナーの .credentials.json）・
- * ~/.claude.json（オーナーの CLI の設定。ファイル）・/proc（プロセスの environ など）
+ * ~/.claude.json（オーナーの CLI の設定。ファイル。~ の直下で名前が .claude.json で始まるものは touchesSecretPlace がまとめて扱う）・/proc（プロセスの environ など）
  */
 export function projectSecretPlaces(cfg: Pick<Config, "dataDir" | "claudeConfigDir">, home: string): string[] {
   return [
@@ -132,10 +136,31 @@ export function projectSharedPlaces(cfg: Pick<Config, "claudeConfigDir">, home: 
 }
 
 /**
+ * ツールの入力に `..` があるか（file-access.ts と同じ）。file_path・path・notebook_path は `/` で分けた要素に `..`、
+ * Glob の pattern と Grep の glob は部分文字列 `..`（`{..,x}` のような書き方も外に出られるので要素に分けない）。
+ * resolve は symlink の後ろの `..` も字面で畳み、realpath と違う場所を見るので、秘密の場所の判定の前に拒否する
+ */
+export function hasDotDot(toolName: string, toolInput: unknown): boolean {
+  const input = typeof toolInput === "object" && toolInput !== null ? (toolInput as Record<string, unknown>) : {};
+  for (const key of PATH_KEYS) {
+    const value = input[key];
+    if (typeof value === "string" && hasParentSegment(value)) return true;
+  }
+  if (toolName === "Glob" && typeof input.pattern === "string" && input.pattern.includes("..")) return true;
+  if (toolName === "Grep" && typeof input.glob === "string" && input.glob.includes("..")) return true;
+  return false;
+}
+
+/** target が ~ の直下で、名前が HOME_SECRET_PREFIX で始まるか */
+function isHomeSecretFile(target: string, homes: readonly string[]): boolean {
+  return homes.includes(dirname(target)) && basename(target).startsWith(HOME_SECRET_PREFIX);
+}
+
+/**
  * ツールの入力が秘密の場所を指すか（純関数に近い。realpath だけ読む）。対象は file_path・path・notebook_path（無ければ cwd）と、
  * Glob の pattern の探し始める場所。パスの字面（resolve したもの）と realpath のどちらかが秘密の場所（字面と realpath の両方）の中なら true。
  * Glob・Grep は対象の場所が秘密の場所を含む（祖先）ときも true（下へ辿って読めるため）。解決できなければ true（fail-closed）。
- * パスの `/` で分けた要素に `..` があれば、resolve で字面を畳む前に true（file-access.ts と同じ。Glob の pattern は下の patternEscapes が扱う）。
+ * hasDotDot に当たれば、resolve で字面を畳む前に true（hook は先に hasDotDot で専用の理由を返す）。~ の直下で名前が .claude.json で始まるものも true。
  * shared（projectSharedPlaces）を渡せば、Read・Glob・Grep で字面と realpath の両方がその中の対象は秘密の場所とみなさない（#291）。
  * 共有の場所は字面と「親の realpath + 名前」だけで、その場所そのものの symlink の先には広げない（広げると許可が増える側なので）
  */
@@ -154,7 +179,7 @@ export function touchesSecretPlace(
     if (typeof value === "string" && value !== "") raws.push(value);
   }
   // `..` を字面で畳むと、畳んだ先の途中が symlink のときに realpath と違う場所を見るので、先に拒否する
-  if (raws.some((raw) => raw.split("/").includes(".."))) return true;
+  if (hasDotDot(toolName, input)) return true;
   const search = SEARCH_TOOLS.includes(toolName);
   if (raws.length === 0) raws.push(cwd);
   if (toolName === "Glob" && typeof input.pattern === "string") {
@@ -165,9 +190,8 @@ export function touchesSecretPlace(
     else raws.push(join(expandHome(base, home), prefix));
   }
   const places = secrets.flatMap((place) => [resolve(place), realOrResolved(place)]);
-  // Glob の pattern の要素に `..` があれば、探し始める場所が共有の場所でも外に出うるので例外にしない
-  const patternEscapes = typeof input.pattern === "string" && input.pattern.split("/").includes("..");
-  const sharedPlaces = SHARED_READ_TOOLS.includes(toolName) && !patternEscapes
+  const homes = [resolve(home), realOrResolved(home)];
+  const sharedPlaces = SHARED_READ_TOOLS.includes(toolName)
     ? shared.flatMap((place) => [resolve(place), join(realOrResolved(dirname(place)), basename(place))])
     : [];
   for (const raw of raws) {
@@ -177,6 +201,7 @@ export function touchesSecretPlace(
     // 共有の場所（skills・agents）は字面と realpath の両方が中のときだけ飛ばす（中の symlink が秘密を指せば real が外に出て拒否になる）
     if (sharedPlaces.length > 0 && [literal, real].every((target) => sharedPlaces.some((place) => isSameOrInside(target, place)))) continue;
     for (const target of [literal, real]) {
+      if (isHomeSecretFile(target, homes)) return true;
       for (const place of places) {
         if (isSameOrInside(target, place)) return true;
         if (search && isSameOrInside(place, target)) return true;
@@ -202,6 +227,10 @@ export function createSecretPlaceGuard(
   const guard: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse" || !SECRET_GUARD_TOOLS.includes(input.tool_name)) return {};
     try {
+      if (hasDotDot(input.tool_name, input.tool_input)) {
+        log(`プロジェクトのセッション: \`..\` を含むパスの操作を拒否しました（${input.tool_name}）`);
+        return deny(PROJECT_DOTDOT_DENIED_REASON);
+      }
       if (!touchesSecretPlace(input.tool_name, input.tool_input, input.cwd, secrets, home, shared)) return {};
       log(`プロジェクトのセッション: 秘密の場所の操作を拒否しました（${input.tool_name}）`);
       return deny(PROJECT_SECRET_DENIED_REASON);

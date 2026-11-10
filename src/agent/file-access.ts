@@ -102,7 +102,7 @@ function startsWithTilde(path: string): boolean {
  * パスの文字列が、`/` で分けた要素に `..` を持つか。resolve は symlink の後ろの `..` も字面で畳んでしまい、
  * 実際には外を指すパスを中と判定しうるので、resolve・realpath の前に拒否する
  */
-function hasParentSegment(path: string): boolean {
+export function hasParentSegment(path: string): boolean {
   return path.split("/").includes("..");
 }
 
