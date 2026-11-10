@@ -62,7 +62,7 @@ function setup(
   deleteAfterDays: number = 30,
   allowedGuildIds: string[] = ["guild-1"],
   // history: true なら history（同じ DB）を渡す
-  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory" | "pruneCcSessions" | "ccChannels" | "ccDeletes"> & { history?: boolean } = {},
+  extra: Pick<SchedulerDeps, "pruneGuestTurns" | "pruneHistory" | "pruneUsage" | "pruneCcSessions" | "ccChannels" | "ccDeletes"> & { history?: boolean } = {},
 ) {
   const db = tempDb(t);
   const clock = { now: NOW };
@@ -1047,6 +1047,30 @@ test("tick ごとに古いターンの記録を消す処理を呼ぶ（削除の
   await env.scheduler.tick();
   assert.equal(calls, 2);
   assert.deepEqual(env.logs, ["古いターンの記録を消せませんでした"]);
+  assert.equal(env.inboxRotator.calls.length, 2);
+});
+
+test("tick ごとに古いトークンの記録を消す処理を呼ぶ（削除のジョブより前）。失敗は log だけで続ける", async (t) => {
+  let calls = 0;
+  let fail = false;
+  const order: string[] = [];
+  const env = setup(t, 12, 30, ["guild-1"], {
+    pruneUsage: () => {
+      calls++;
+      order.push("usage");
+      if (fail) throw new Error("SQLITE_BUSY");
+    },
+  });
+  env.workDir.prune = () => void order.push("maintenance");
+  await env.scheduler.tick();
+  assert.equal(calls, 1);
+  assert.deepEqual(order, ["usage", "maintenance"]);
+  assert.deepEqual(env.logs, []);
+
+  fail = true;
+  await env.scheduler.tick();
+  assert.equal(calls, 2);
+  assert.deepEqual(env.logs, ["古いトークンの記録を消せませんでした"]);
   assert.equal(env.inboxRotator.calls.length, 2);
 });
 
