@@ -676,7 +676,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const shell = flag("SELF_AGENT_SHELL", nonEmpty(env.SELF_AGENT_SHELL));
   const allowedGuildIds = idList("SELF_AGENT_ALLOWED_GUILD_IDS", nonEmpty(env.SELF_AGENT_ALLOWED_GUILD_IDS));
 
-  return {
+  const cfg: Config = {
     oauthTokenPresent: nonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) !== undefined,
     discordTokenPresent: nonEmpty(env.DISCORD_TOKEN) !== undefined,
     claudeConfigDir: loadClaudeConfigDir(env),
@@ -754,6 +754,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...loadWebConfig(env),
     ...loadCcConfig(env),
   };
+  checkPortOverlap(cfg);
+  return cfg;
+}
+
+/**
+ * 待ち受けるポート（SERVE・WEB・CC_HOOK）が重なれば変数名 2 つを出して設定エラー（#293）。
+ * main は各サーバーの start の失敗を log だけで続けるので、重なると後から待ち受ける方が黙って動かない。未設定のものは比べない
+ */
+function checkPortOverlap(cfg: Config): void {
+  const ports: [string, number | undefined][] = [
+    ["SELF_AGENT_SERVE_PORT", cfg.servePort],
+    ["SELF_AGENT_WEB_PORT", cfg.webPort],
+    ["SELF_AGENT_CC_HOOK_PORT", cfg.ccHookPort],
+  ];
+  for (let i = 0; i < ports.length; i++) {
+    for (let j = i + 1; j < ports.length; j++) {
+      const [a, pa] = ports[i]!;
+      const [b, pb] = ports[j]!;
+      if (pa !== undefined && pa === pb) throw new Error(`${a} と ${b} に同じポートが設定されています`);
+    }
+  }
 }
 
 /** 起動に必須で欠けている環境変数の名前（値は含めない） */
