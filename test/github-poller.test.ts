@@ -9,6 +9,7 @@ import {
   GITHUB_AUTH_NOTICE,
   GITHUB_AUTH_RETRY_MS,
   GITHUB_FORBIDDEN_NOTICE,
+  GITHUB_MAX_PAGES,
   GITHUB_MAX_WAIT_MS,
   GITHUB_NETWORK_NOTICE,
   GITHUB_NETWORK_NOTICE_AFTER,
@@ -318,6 +319,48 @@ test("白（自分の操作だけ・捨てる reason）は投稿しないが行�
   assert.ok(env.logs.includes("GitHub の通知: 新しい 2 件（赤 0・黄 0・白 2）"));
   // ci_activity は調べに行かない（タイムラインは t-1 の 1 回だけ）
   assert.equal(env.gh.lookupCount(), 1);
+});
+
+test("通知は最大 4 ページまで取る: どのページも満杯（50 件）でも 5 ページ目は取りに行かず、取れた 4 ページ分を使う", async (t) => {
+  const env = setup(t);
+  let served = 0;
+  env.gh.notifications = () => {
+    const page = served++;
+    return ok(Array.from({ length: 50 }, (_, index) => raw(`t-${page}-${index}`, { number: page * 50 + index + 1 })));
+  };
+
+  await env.poller.tick();
+
+  const paths = env.gh.requests.filter((request) => request.path.startsWith("/notifications")).map((request) => request.path);
+  assert.equal(GITHUB_MAX_PAGES, 4);
+  assert.equal(paths.length, GITHUB_MAX_PAGES);
+  assert.deepEqual(
+    paths.map((path) => new URLSearchParams(path.split("?")[1]).get("page")),
+    ["1", "2", "3", "4"],
+  );
+  // 4 ページ目まで（200 件）を最初の回の記録に使う
+  assert.deepEqual(
+    env.githubPosts().map((post) => post.message),
+    [{ text: githubStartNotice(200) }],
+  );
+  assert.ok(env.store.getThread("t-3-49") !== undefined);
+});
+
+test("通知のページは 50 件に満たないページで止める（4 ページより前でも）", async (t) => {
+  const env = setup(t);
+  let served = 0;
+  env.gh.notifications = () => {
+    const page = served++;
+    return ok(Array.from({ length: page < 2 ? 50 : 49 }, (_, index) => raw(`t-${page}-${index}`, { number: page * 50 + index + 1 })));
+  };
+
+  await env.poller.tick();
+
+  assert.equal(env.gh.requests.filter((request) => request.path.startsWith("/notifications")).length, 3);
+  assert.deepEqual(
+    env.githubPosts().map((post) => post.message),
+    [{ text: githubStartNotice(149) }],
+  );
 });
 
 test("1 回に投稿するのは 10 件まで。11 件目以降は「ほか n 件」の 1 通にまとめ、次の回に出し直さない", async (t) => {
