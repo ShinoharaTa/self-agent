@@ -101,6 +101,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
   const log = (line: string): number => (line.startsWith("トークン（") ? tokenLogs : logs).push(line);
   // 持ち主の Bot の投稿（応答が失効したときの代わり。#295）。failPost で投稿を失敗させる
   const posts: Array<{ channelId: string; message: OutgoingMessage }> = [];
+  const edits: Array<{ channelId: string; messageId: string; message: OutgoingMessage }> = [];
   const posting = { fail: false };
   const personas = {
     ownerOf: () => "default",
@@ -109,6 +110,9 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
         if (posting.fail) throw new Error("投稿に失敗しました");
         posts.push({ channelId, message });
         return "posted-1";
+      },
+      async editMessage(channelId: string, messageId: string, message: OutgoingMessage): Promise<void> {
+        edits.push({ channelId, messageId, message });
       },
     }),
   } as unknown as NonNullable<Parameters<typeof createCloseCommand>[0]["personas"]>;
@@ -151,7 +155,7 @@ function setup(t: TestContext, steps: (topicSessions: TopicSessionStore) => Step
   };
   const openTasks = (): Array<{ title: string; due: string | null }> =>
     tasks.list({ status: "open", limit: 50 }).map((task) => ({ title: task.title, due: task.due }));
-  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, projects, projectsDir, channelOps, turnQueue, logs, tokenLogs, runClose, press, openTasks, history, posts, posting };
+  return { db, clock, runner, topicSessions, tasks, sessions, seeds, usage, projects, projectsDir, channelOps, turnQueue, logs, tokenLogs, runClose, press, openTasks, history, posts, posting, edits };
 }
 
 /** 閉じたあとの sessions の行と、完了カテゴリへの移動 */
@@ -672,11 +676,15 @@ test("/close・[閉じる]: 候補 0 件で閉じた後に応答が失効して�
   env2.topicSessions.setWaiting("topic-1");
   env2.clock.now = CLOSED_AT;
 
-  const pressed = await env2.press(button("start"), expired);
+  const pressed = await env2.press({ ...button("start"), messageId: "notice-1", messageText: "待ちに移しました" } as Interaction, expired);
 
   assert.deepEqual(pressed, [{ method: "deferUpdate" }]);
   assert.deepEqual(env2.posts, [{ channelId: "topic-1", message: { text: closedText("話しただけで終わった", 0) } }]);
+  // 残った [続ける][閉じる] は外す（押せば閉じたセッションが進行中に戻るため）
+  assert.deepEqual(env2.edits, [{ channelId: "topic-1", messageId: "notice-1", message: { text: "待ちに移しました", components: [] } }]);
   assertClosed(env2, "話しただけで終わった");
+  // /close（ボタンでない）では書き換えるメッセージが無い
+  assert.deepEqual(env.edits, []);
 });
 
 test("/close: 応答も持ち主の Bot の投稿も失敗したら log だけで投げない。DB の状態は変わらない（#295）", async (t) => {

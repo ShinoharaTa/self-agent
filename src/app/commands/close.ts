@@ -73,7 +73,13 @@ function pickSelect(channelId: string, draft: CloseDraft): ComponentRow {
 }
 
 /** /close の流れの応答のしかた（/close と [閉じる] ボタンで違う）。show はターンの結果（要約と確認のボタン、閉じた旨、失敗）を出す */
-type CloseResponse = CommandResponse;
+type CloseResponse = CommandResponse & {
+  /** [閉じる] を押したメッセージ（待ちの知らせ）。応答の代わりに投稿したときは、残った [続ける][閉じる] を外す（#295） */
+  pressed?: { messageId: string; text: string };
+};
+
+/** 押したメッセージの本文が分からないときに、ボタンを外した後に置く文 */
+export const CLOSE_PRESSED_FALLBACK_TEXT = "（/close の結果は下に投稿しました）";
 
 /**
  * ターンの結果を応答に出す。応答に失敗したら（interaction の token は 15 分で失効し、キュー待ちと要約のターンはそれを超えうる。#295）、
@@ -95,10 +101,19 @@ async function showOrPost(
     deps.log("/close の結果を投稿できませんでした（振り分けがありません）");
     return;
   }
+  const gateway = deps.personas.gatewayFor(channelId);
   try {
-    await deps.personas.gatewayFor(channelId).sendMessage(channelId, message);
+    await gateway.sendMessage(channelId, message);
   } catch (error) {
     deps.log(`/close の結果をチャンネルに投稿できませんでした: ${describeError(error)}`);
+    return;
+  }
+  // 押したメッセージの [続ける][閉じる] が残ると、閉じたセッションを進行中に戻せてしまうので外す
+  if (response.pressed === undefined) return;
+  try {
+    await gateway.editMessage(channelId, response.pressed.messageId, { text: response.pressed.text, components: [] });
+  } catch (error) {
+    deps.log(`[閉じる] のボタンを外せませんでした: ${describeError(error)}`);
   }
 }
 
@@ -191,6 +206,9 @@ export function createCloseComponent(deps: CloseDeps): ComponentHandler {
         await runClose(deps, guildId, channelId, responder, {
           defer: () => responder.deferUpdate(),
           show: (message) => responder.update({ ...message, components: message.components ?? [] }),
+          ...(interaction.messageId === undefined
+            ? {}
+            : { pressed: { messageId: interaction.messageId, text: interaction.messageText ?? CLOSE_PRESSED_FALLBACK_TEXT } }),
         });
         return;
       }
