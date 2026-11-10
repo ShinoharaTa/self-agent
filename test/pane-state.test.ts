@@ -177,6 +177,17 @@ test("classifyScreen: ダイアログ・作業中の印は入力欄の上 10 行
   for (const line of ["● Press Enter to continue と書いてあります", "● Use arrows to navigate の説明", "● 止めるなら esc to interrupt です"]) {
     assert.equal(classifyScreen(screen([PROMPT], { above: [line, ...filler] })), "idle", line);
   }
+  // 範囲の端: 上の罫線のすぐ上から数えて 10 行目までは見る、11 行目は見ない（1 行のずれを止める）
+  const edge = (fillers: number): string => screen([PROMPT], { above: ["Press Enter to continue", ...Array(fillers).fill("  本文の続き（置き換え）")] });
+  assert.equal(classifyScreen(edge(9)), "dialog");
+  assert.equal(classifyScreen(edge(10)), "idle");
+  // 入力欄が下に残ったまま、その上の本文にダイアログの選択肢と印がある画面は、範囲の外なら idle（危険側に広げないための固定）
+  const choicesAbove = screen([PROMPT], {
+    above: ["Do you want to proceed?", "❯ 1. Yes", "  2. No", "Esc to cancel", ...filler],
+  });
+  assert.equal(classifyScreen(choicesAbove), "idle");
+  // 同じ選択肢と印が入力欄の上 10 行の中にあれば dialog（貼らない）
+  assert.equal(classifyScreen(screen([PROMPT], { above: [...HISTORY, "Do you want to proceed?", "❯ 1. Yes", "  2. No", "Esc to cancel"] })), "dialog");
   // 入力欄の近く（上 10 行の中）・下（フッター）にあれば今までどおり
   assert.equal(classifyScreen(screen([PROMPT], { above: [...HISTORY, "Press Enter to continue"] })), "dialog");
   assert.equal(classifyScreen(screen([PROMPT], { footer: [...FOOTER, "  ? for bash mode"] })), "dialog");
