@@ -44,7 +44,7 @@ export type CcPermissionRow = {
   createdAt: string;
   /** pending でなくなった時刻 */
   resolvedAt: string | null;
-  /** #system に出した 1 通のメッセージの ID とそのチャンネル（CC5c。出していなければ null） */
+  /** 出した 1 通のメッセージの ID とそのチャンネル（CC5c。Q4 からは Claude Code のチャンネル、それより前は #system。出していなければ null） */
   messageId: string | null;
   messageChannelId: string | null;
   /** AskUserQuestion の tool_input の JSON そのまま（質問の形が読めたときだけ。Q1）。無ければ null = 今までどおりの許可の要求 */
@@ -201,7 +201,7 @@ export class CcPermissionStore {
   }
 
   /**
-   * pending の行があるか、resolved_at が since 以後の行があるセッションのうち、released（保留しなかった・やめた。#system に 1 通を出していない）を除いたもの。
+   * pending の行があるか、resolved_at が since 以後の行があるセッションのうち、released（保留しなかった・やめた。1 通を出していない）を除いたもの。
    * origin hook の行だけ（sessionsActiveSince と同じ）。判断待ちの知らせ（CC5c）はこのセッションには出さない（許可の要求の 1 通で済ませる。§5.2）
    */
   sessionsAnsweredSince(since: Date): Set<string> {
@@ -211,7 +211,7 @@ export class CcPermissionStore {
     return new Set(rows.map((row) => String(row.session_id)));
   }
 
-  /** #system に出した 1 通を記録する（CC5c。書き換えてボタンを外すため）。行があれば true */
+  /** 出した 1 通を記録する（CC5c。Q4 からは Claude Code のチャンネル。書き換えてボタンを外すため）。行があれば true */
   setMessage(id: number, channelId: string, messageId: string): boolean {
     const result = this.db
       .prepare("UPDATE cc_permissions SET message_id = ?, message_channel_id = ? WHERE id = ?")
@@ -242,7 +242,7 @@ export class CcPermissionStore {
 
   /**
    * 再起動の後: pending のまま残った行（応答を返す前に落ちた）を expired にし、移した後の行を返す
-   * （#system に出した 1 通を「時間切れ」に書き換えるため。CC5c）
+   * （出した 1 通（Q4 より前は #system、それ以後は Claude Code のチャンネル）を「時間切れ」に書き換えるため。CC5c）
    */
   expirePending(): CcPermissionRow[] {
     const ids = this.db

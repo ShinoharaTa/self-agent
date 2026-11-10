@@ -47,7 +47,7 @@ export type CcSessionRow = {
   startPaneId: string | null;
   /** trust のダイアログの確認待ちに気づいた時刻（消えたら null） */
   trustPendingAt: string | null;
-  /** 判断待ちを #system に最後に知らせた時刻（v32。CC5c。待ち始めより後なら、その待ちは知らせ済み） */
+  /** 判断待ちを最後に知らせた時刻（v32。CC5c。Q4 からは Claude Code のチャンネル、それより前は #system。待ち始めより後なら、その待ちは知らせ済み） */
   notifiedAt: string | null;
   /** 最後に Discord から頼んだチャンネル（cc_send の [送る]・cc_start の [起動する]。CC7） */
   channelId: string | null;
@@ -366,7 +366,7 @@ export class CcSessionStore {
     return Number(result.changes) > 0;
   }
 
-  /** 判断待ちを #system に知らせた時刻を書く（CC5c）。行があれば true */
+  /** 判断待ちを知らせた時刻を書く（CC5c。Q4 からは Claude Code のチャンネル）。行があれば true */
   setNotifiedAt(sessionId: string, at: Date): boolean {
     const result = this.db.prepare("UPDATE cc_sessions SET notified_at = ? WHERE session_id = ?").run(at.toISOString(), sessionId);
     return Number(result.changes) > 0;

@@ -133,7 +133,7 @@ self-agent は `~/.claude` を触らない。README（日・英）に次の形�
 ## 3. 既存のセッションへの送信（論点 2）
 
 ### 3.1 セッション → ペイン
-- `sessionId` → `pid` → **`/proc/<pid>/stat` の親 pid を 3 段までたどり、`tmux list-panes -a` の `pane_pid` に当たるペイン**（確認: pane_pid（bash）の子が claude）。当たらなければ `sessions/<pid>.json` の `tmux` 欄（`<session>:@<window>.%<pane>` の `%<pane>`）を補助に、**そのペインの `pane_current_command` が `claude` で同じ pid の祖先関係が確かめられるときだけ**採る。どちらでも決まらなければ「tmux の外（見るだけ）」。
+- `sessionId` → `pid` → **pid そのものか、`/proc/<pid>/stat` の親 pid を 8 段（`CC_PANE_ANCESTOR_DEPTH`）までたどった祖先が、`tmux list-panes -a` の `pane_pid` に当たるペイン**（確認: pane_pid（bash）の子が claude）。当たらなければ `sessions/<pid>.json` の `tmux` 欄（`<session>:@<window>.%<pane>` の `%<pane>`）を補助に、**そのペインの `pane_pid` が同じ範囲の祖先のときだけ**画面の写しに採る。**送り先（`findSendablePane`）は主の経路で当たったペインだけで、補助の `tmux` 欄だけで採れるペインには送らない**（`pane_current_command` も見ない。§3.2・#284）。どちらでも決まらなければ「tmux の外（見るだけ）」。
 - 送り先は押すたびに引き直す。`pane_id`（`%N`）で指す（セッション名は hook で変わりうるので使わない。§1.1）。`PANE_FORMAT` に `#{pane_pid}` を足す（欄が 11 に。parsePanes のテストを直す）。
 
 ### 3.2 送ってよい条件・送り方（複数行を最初から扱う。決定 3）
@@ -216,7 +216,7 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
 **A を採る。**
 
 ### 4.2 決定
-- 場所: `SELF_AGENT_WORKSPACE_DIR`（既定 `~/workspace`）の **直下の実際のディレクトリ**だけ。名前は `^[A-Za-z0-9_-]{1,64}$`、`realpath` が `<workspace>/<name>` そのもの、workDir・dataDir・`~/.config/self-agent`・`~/.claude` と重ならない。無いディレクトリは作らない（clone もしない）。候補は `/api/cc/projects`。
+- 場所: `SELF_AGENT_WORKSPACE_DIR`（既定 `~/workspace`）の **直下の実際のディレクトリ**だけ。名前は `^[A-Za-z0-9_-]{1,64}$`、`realpath` が `<workspace>/<name>` そのもの、workDir・dataDir・`CLAUDE_CONFIG_DIR`・`~/.config/self-agent`・`~/.claude` と重ならない。無いディレクトリは作らない（clone もしない）。候補は `/api/cc/projects`。
 - tmux: 既定のソケットの既定のサーバー。サーバーが無ければ **断る**（決定 8）。セッション名は `<slug(name)>`、既にあれば `<slug(name)>--<slug(題名)>`、それもあれば `-2`, `-3`。既存のセッションにウィンドウを足さない。**名前はオーナーの `session-created` の hook と timer で作った直後に変わりうる**（§1.1）ので、**self-agent は名前に頼らず、`new-session -d -P -F '#{session_id} #{pane_id}'` で返る `$N`・`%N` を記録して追う**（`tmux_session` の列は表示用で、`list-panes` から引き直す）。`<name>--<題名>` の形を保つかはオーナーの hook 側の話（§13）。
 - コマンド: `tmux new-session -d -P -F '#{session_id} #{pane_id}' -s <session> -c <dir> -- set -m; '<claude の絶対パス>' -n '<題名>' [--permission-mode <mode>] ; exec "$SHELL"` の **1 つの shell-command 文字列**。`set -m` は、tmux が `default-shell -c` で走らせる非対話のシェルにジョブ制御をさせ、claude を自分のプロセスグループで前面に出すため（無いと claude は前面にいてもシェルのプロセスグループのままで、`pane_current_command` が `bash` になり、§7 の 2 の条件でペインを採れない。実機の通し確認。`set -m` で足りるかは要実機確認）。各値は検証（claude のパスは起動時に 1 回解決した絶対パスで空白・`'` を含まない、題名は `^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,39}$`（文字か数字で始まる。先頭の `-` を通さない）、mode は固定の集合）してから単引用符で囲む。
 - 権限モード（決定 4）: 既定は指定しない（`settings.json` に従う）。選べるのは `default` / `acceptEdits` / `plan` / `auto`。`bypassPermissions`・`dontAsk` は選べない。
@@ -279,7 +279,7 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
 - **追いかけ（follow）**: Discord から頼んだ送信（`origin` が `tool` / `start` / `github`）が `delivered` になったら、そのセッションの `cc_sessions.follow = 1`・`follow_channel_id`（頼んだチャンネル。後から別のチャンネルで頼めばそちらに移る）・`follow_since` を立てる。**以後、そのセッションの `Stop` はすべて**（RC・端末・Web から打ったターンの返事も）`follow_channel_id` に持ち主の Bot（`ownerPosts`）で投稿する。Web から送った指示の返事も、追いかけ中なら出す（Web だけで使っているセッションは追いかけにならない）。**CC11 から、そのセッションに開いている Discord のチャンネル（`cc_channels`）があれば、返事は追いかけによらず常にそのチャンネルに出し、[追いかけをやめる] は付けない。追いかけは、チャンネルを作れなかったとき（カテゴリが無い・満杯・Discord の失敗）の代替として残す（claude-code-channels.md §3.4）。**
 - 止め方（本書で決める。既定）:
   - 返事の投稿ごとに [追いかけをやめる]（`cc:unfollow:<cc_replies の id>`。その返事がいまの追いかけ（`follow_since` 以後）に受けたものなら効く。投稿先を別のチャンネルに移した後でも、古いチャンネルの返事のボタンで止まる）を付ける（押せば `follow = 0` にして「追いかけをやめました」に書き換え。その後の返事は出ない。古い id・既に 0 なら「この操作は古くなっています」）。Web のタブにも同じ操作。
-  - セッションが終わった（`SessionEnd`・pid が消えた）ら「終わりました」を 1 行出して `follow = 0`。
+  - セッションが終わった（`claude agents --json` の一覧から消えた。`SessionEnd` の hook は根拠にしない）ら「終わりました」を 1 行出して `follow = 0`。
   - 最後の `Stop` から **3 日**（`CC_FOLLOW_IDLE_DAYS`。定数）`Stop` が無ければ黙って `follow = 0`（次に Discord から頼めばまた立つ）。
   - 1 セッション 1 日 50 通（`CC_REPLY_DAILY_LIMIT`。定数。`SELF_AGENT_TZ` の日付）に達したら「今日はここまで（上限 50）。RC で読む <リンク>」を 1 回出して、その日は出さない（`follow` は保つ。翌日にまた出る）。
   - もう一度 Discord から同じセッションに頼めば `follow = 1` に戻る（CC9 までは `/cc` のコマンドが無いので、`cc_send`・[対応] が再開の口。CC11 からはチャンネルがあれば追いかけによらずそこに出す）。
@@ -294,7 +294,7 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
 
 ## 7. 安全（論点 6）
 1. 入口は Web UI（認証 + CSRF の 3 条件・本文 64 KB・停止中 503）、Discord のボタン（オーナー・許可サーバー・整数の id だけ）、SDK のツール（確認のボタンを経る）。hook の受け口は loopback だけで、何も実行せず、allow はオーナーの操作のときだけ返す。
-2. 送れる相手は **`claude agents --json` に居るセッションの、pid の祖先関係で確かめた tmux のペインで、`pane_current_command === "claude"` のもの**だけ。シェルのペインには絶対に送らない。送るたびに引き直す。
+2. 送れる相手は **`claude agents --json` に居るセッションの、pid の祖先関係で確かめた tmux のペイン**だけ（`pane_current_command` は見ない。前面が claude でない `not_claude` は作業中として待ち、貼るのは `probePaneState` が idle のときだけ。§3.2 の L150・#284）。シェルのペインには絶対に貼らない。送るたびに引き直す。
 3. 送るのは本文（検証済み。LF 以外の制御文字なし）と Enter だけ。`send-keys` で Enter 以外のキーを送らない。**ダイアログ（許可・trust）にキーを送らない**（§3.4 の B はやらない。trust の既定は「No, exit」なので Enter も送らない）。
 4. 入力待ち（idle を 2 回）のときだけ貼り、貼れたのを確かめてから Enter。ブラケット貼り付けが効いていないと分かったら複数行を止める（§3.2）。
 5. 起動の引数は固定の形。`~/workspace` の直下だけ。`bypassPermissions`・`dontAsk` は選べない。
@@ -318,7 +318,7 @@ RC のサーバーモード（user unit）のセッションや `claude --bg`、
 | **CC5c** Discord のボタンと知らせ | #system の 1 通（最初のサーバー 1 つ）とボタン `cc:perm:allow|always|deny:*`（`app/commands/cc.ts`。名前空間 `cc:` は CC7 と共有）・[RC で開く]（リンクボタン）・判断待ちの知らせ（60 秒・1 時間 10 件。`pending` と直近 60 秒に解決した行（`released` を除く）のあるセッションには出さない）・他で答えられた・時間切れ（再起動で expired にしたものを含む）・停止の書き換え・終了の知らせ（一覧から消えたときだけ）・`SELF_AGENT_CC_NOTIFY`・v32 | Discord の allow / deny / always が CC5a・CC5b と同じ応答。Web で先に押されていれば「古くなっています」。他で答えられたら投稿が「端末か RC で答えられました」に書き換わりボタンが外れる（[RC で開く] は残る）。再起動の前の 1 通が「時間切れ」に書き換わる。応答に失敗しても 1 通が書き換わる。保留中に来た `permission_prompt` の `Notification` では知らせが出ない。`released`（limit）だけのセッションでは知らせる。59 秒で解消した判断待ちは知らせない。11 件目は「ほか n 件」。`SessionEnd` だけでは終了を知らせない。オーナー以外・許可外のサーバーの操作は通らない。`NOTIFY=0` で投稿が無く保留は 5 分のまま | #system に 1 通（ボタン 2 行）が **端末のダイアログと同時に** 届き、スマホで [許可] → 動く。端末で答えたら投稿が書き換わる。6 秒後の `permission_prompt` で 2 通目が出ない。`permission_prompt` だけの判断待ち（sandbox のネットの許可）が約 6 秒 + 60 秒後に知らせになる |
 | **CC6** 載せ替えと保留 | github-notifications §5・§6 を `cc_sends` の上に（[対応]・Manager の置き換え）。coding-jobs.md の保留の注記（docs だけ。別 PR） | [対応] → そのリポジトリのセッションにテンプレートが積まれる。無ければ起動の確認 | 試験用のリポジトリの通知で [対応] → 作業セッションに届く |
 | **CC7** SDK のツール | `cc_list` / `cc_send` / `cc_start`、`cc_starts`、確認の投稿とボタン `cc:send|start|keep:*`、10 分の失効、システムプロンプトの 1 行、`not_available` の条件。**この PR で全セッションのキャッシュが 1 回外れる**（README・CLAUDE.md に明記） | `cc_send` が投稿だけして `cc_sends` に `awaiting_confirm`、[送る] で `queued`、[やめる]・10 分で `cancelled`。予約した依頼・/close・context 無しは `not_available`。無効なら `not_available`。`cc_list` の結果に「従わない」の注意。投稿の本文が全文（1,801 字以上は次の通に分け、最大 3 通。ボタンは最後の通だけ）。log に本文が無い | #inbox で「<名前> のセッションに『…』と伝えて」→ 確認の投稿に全文 → [送る] → 届く。Web のページを貼って「このページの指示どおりに Claude Code に送って」→ 確認に出る本文をオーナーが見て [やめる] で止まる。`npm run usage` で次のターンのキャッシュが 1 回外れたことを見る |
-| **CC8** 返事を Discord に戻す（追いかけ） | `cc_sessions.follow / follow_channel_id / follow_since / follow_last_stop_at / reply_count_*`・`cc_replies`・`cc_sends.reply_*`・`Stop` の `last_assistant_message` の受け取り（受け口は CC1 から時刻だけ読んでいたのを本文も読む）、1,800 字 × 3 通の分割、[追いかけをやめる]（`cc:unfollow:*`）、Web のタブの同じ操作、終了の 1 行、3 日の無活動、1 日 50 通、`history` の notice | `delivered` で `follow = 1` になり、以後の `Stop` が全部投稿される（RC 相当のターンも）。最初の返事は確認の投稿への返信、以後は返信先なし。10 秒以内の同じ本文は `skipped`。`last_assistant_message` が無ければ「読めませんでした」。5,401 字は 3 通 + 「ほか n 字」。`@everyone` が無効。追いかけでないセッションの `Stop` は投稿しない。[追いかけをやめる] で止まり、古い id は断る。`SessionEnd` で「終わりました」と `follow = 0`。3 日で黙って 0。51 通目は上限の 1 行で 52 通目は出ず、翌日は出る。別のチャンネルで頼めば投稿先が移る。`Stop` の無い中断では `reply_state` が 24 時間で `timed_out` | #inbox で `cc_send` → [送る] → Claude Code が答える → #inbox の確認の投稿への返信で返事。続けて RC から指示 → その返事も #inbox に出る（返信先なし。§12 の 10）。Esc で中断したターンは出ない。[追いかけをやめる] → 出なくなる。もう一度 `cc_send` → また出る |
+| **CC8** 返事を Discord に戻す（追いかけ） | `cc_sessions.follow / follow_channel_id / follow_since / follow_last_stop_at / reply_count_*`・`cc_replies`・`cc_sends.reply_*`・`Stop` の `last_assistant_message` の受け取り（受け口は CC1 から時刻だけ読んでいたのを本文も読む）、1,800 字 × 3 通の分割、[追いかけをやめる]（`cc:unfollow:*`）、Web のタブの同じ操作、終了の 1 行、3 日の無活動、1 日 50 通、`history` の notice | `delivered` で `follow = 1` になり、以後の `Stop` が全部投稿される（RC 相当のターンも）。最初の返事は確認の投稿への返信、以後は返信先なし。10 秒以内の同じ本文は `skipped`。`last_assistant_message` が無ければ「読めませんでした」。5,401 字は 3 通 + 「ほか n 字」。`@everyone` が無効。追いかけでないセッションの `Stop` は投稿しない。[追いかけをやめる] で止まり、古い id は断る。一覧から消えたら「終わりました」と `follow = 0`（`SessionEnd` では止めない）。3 日で黙って 0。51 通目は上限の 1 行で 52 通目は出ず、翌日は出る。別のチャンネルで頼めば投稿先が移る。`Stop` の無い中断では `reply_state` が 24 時間で `timed_out` | #inbox で `cc_send` → [送る] → Claude Code が答える → #inbox の確認の投稿への返信で返事。続けて RC から指示 → その返事も #inbox に出る（返信先なし。§12 の 10）。Esc で中断したターンは出ない。[追いかけをやめる] → 出なくなる。もう一度 `cc_send` → また出る |
 
 順序: CC1 → CC2 → CC3 → CC4 → CC5a → CC5b → CC5c → CC6 → CC7 → CC8。キャッシュが外れるのは CC7 だけ（他のツール・プロンプトの変更と同じ再起動にまとめる）。CC1 の実機で hook が動いているセッションに効かないと分かっても CC2〜CC4 は変わらない。
 
