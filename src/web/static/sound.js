@@ -11,7 +11,15 @@
   const MASTER_GAIN = 0.3;
   const VOLUMES = { low: 0.35, mid: 0.6, high: 1.0 };
   const SCOPES = ["front", "all"];
-  const DEFAULTS = { enabled: false, volume: "mid", theme: "relay", ticks: true, scope: "all", askAlways: true };
+  const DEFAULTS = {
+    enabled: false,
+    volume: "mid",
+    // 事象ごとの音の種類（オーナーの選んだ組み合わせが来たら差し替える）
+    combo: { start: "relay", tick: "relay", ask: "relay", reply: "relay", fail: "relay" },
+    ticks: true,
+    scope: "all",
+    askAlways: true,
+  };
   /** 手順の label がこれならコマンド（低いこっ。src/agent/sdk-runner.ts の固定の語） */
   const COMMAND_LABEL = "コマンドを実行しています";
   /** §4 の規則 */
@@ -30,57 +38,71 @@
   const ASKED_MAX = 500;
   /** visible に戻ったときの resume がこれで settle しなければ作り直す */
   const RESUME_SETTLE_MS = 1000;
-  /** 1 音の長さの上限（秒）。ask は 0.4、reply の最後の音だけ 300 秒超で 0.35（§4 の 6・§5） */
-  const VOICE_MAX_S = 0.25;
-  const ASK_VOICE_MAX_S = 0.4;
-  const LONG_DECAY_MAX_S = 0.35;
+  /** 1 音（立ち上がり + 減衰）の長さの上限（秒）。試聴ページの音（硝子の 0.28 秒・返事の余韻の 0.3 秒）に合わせて 0.4 秒 */
+  const VOICE_MAX_S = 0.4;
+  /** 事象（docs/plan/web-ui-sound.md §3）。組み合わせ（combo）はこの事象ごとに音の種類を選ぶ */
+  const EVENT_IDS = ["start", "tick", "ask", "reply", "fail"];
 
-  // ===== 音の種類（テーマ）。値は §6.2。表に足せば増やせる =====
-  // Voice = { t: 開始（秒）, kind: "tone", f0, f1?（t+a までに滑る先）, a: 立ち上がり, d: 長さ（立ち上がりを含む）, g: 0〜1, wave? }
-  //       | { t, kind: "tick", f, d, g, noise?: { fc, q, d, g } }
-  // tick・tickDouble は normal（ふつうの手順）と command（コマンドの手順）。reply は notes の先頭から深さの数（2〜4）を使い、
-  // 最後の音の長さを lastDecay（300 秒超は longDecay）に、60 秒超なら tail を最後の音の gap 秒後に足す
-  const RELAY_TICK = { t: 0, kind: "tick", f: 1800, d: 0.018, g: 0.9, noise: { fc: 2500, q: 4, d: 0.012, g: 0.4 } };
-  const RELAY_TICK_COMMAND = Object.assign({}, RELAY_TICK, { f: 1200 });
-  const RELAY_PO = { t: 0, kind: "tone", f0: 740, f1: 880, a: 0.008, d: 0.12, g: 0.8 };
-  const RELAY_PIN = { t: 0, kind: "tone", f0: 1175, f1: 1109, a: 0.005, d: 0.22, g: 0.7 };
+  // ===== 音の種類（テーマ）。値と組み立て（pattern）は、オーナーに渡した試聴ページ（sound-audition.html）と同じ音になるようにしている =====
+  // base は基準の高さ（Hz）、gain はテーマの強さ、tone は 1 音の作り方（wave・a 立ち上がり・d 減衰・partials [倍率, 強さ, 長さ]・
+  // drop（半音上から dropT 秒で落ちる）・lp（low-pass の Hz））、tick は手順の音（f・d・g・partials・drop・noise（f の音に足す雑音）・
+  // noiseOnly（雑音だけ））。表に足せば増やせる
   const THEMES = {
     relay: {
       label: "接点",
-      events: {
-        start: [RELAY_PO],
-        tick: { normal: [RELAY_TICK], command: [RELAY_TICK_COMMAND] },
-        tickDouble: {
-          normal: [RELAY_TICK, Object.assign({}, RELAY_TICK, { t: 0.07 })],
-          command: [RELAY_TICK_COMMAND, Object.assign({}, RELAY_TICK_COMMAND, { t: 0.07 })],
-        },
-        // ぽ（t 0）+ ぴん（t 0.11。上がって止まる）
-        ask: [RELAY_PO, Object.assign({}, RELAY_PIN, { t: 0.11, f1: 1245, d: 0.3 })],
-        reply: {
-          notes: [
-            RELAY_PIN,
-            { t: 0.1, kind: "tone", f0: 880, f1: 740, a: 0.008, d: 0.12, g: 0.8 },
-            { t: 0.2, kind: "tone", f0: 659, a: 0.008, d: 0.12, g: 0.8 },
-            { t: 0.3, kind: "tone", f0: 554, a: 0.008, d: 0.12, g: 0.8 },
-          ],
-          lastDecay: 0.25,
-          longDecay: 0.35,
-          tail: { gap: 0.1, voice: { t: 0, kind: "tone", f0: 370, a: 0.008, d: 0.25, g: 0.6 } },
-        },
-        fail: [{ t: 0, kind: "tone", f0: 220, a: 0.01, d: 0.2, g: 0.6, wave: "triangle" }],
-      },
+      base: 880,
+      gain: 0.8,
+      tone: { wave: "sine", a: 0.006, d: 0.13 },
+      tick: { f: 1800, d: 0.018, g: 0.55, noise: { fc: 2500, q: 4, d: 0.012, g: 0.35 } },
+    },
+    wood: {
+      label: "木",
+      base: 620,
+      gain: 0.85,
+      tone: { wave: "sine", a: 0.002, d: 0.16, partials: [[3.93, 0.22, 0.25], [9.2, 0.05, 0.12]] },
+      tick: { f: 950, d: 0.03, g: 0.5, partials: [[3.93, 0.2, 0.3]] },
+    },
+    drop: {
+      label: "水滴",
+      base: 700,
+      gain: 0.8,
+      tone: { wave: "sine", a: 0.003, d: 0.11, drop: 12, dropT: 0.035 },
+      tick: { f: 1500, d: 0.022, g: 0.45, drop: 7, dropT: 0.012 },
+    },
+    glass: {
+      label: "硝子",
+      base: 1046,
+      gain: 0.5,
+      tone: { wave: "sine", a: 0.004, d: 0.28, partials: [[2.76, 0.18, 0.35], [5.4, 0.06, 0.2]] },
+      tick: { f: 2600, d: 0.012, g: 0.3 },
+    },
+    felt: {
+      label: "フェルト",
+      base: 392,
+      gain: 1.0,
+      tone: { wave: "triangle", a: 0.018, d: 0.22, lp: 1300 },
+      tick: { f: 700, d: 0.03, g: 0.55, noiseOnly: { fc: 900, q: 1.2, d: 0.03, g: 0.6 } },
     },
   };
   const THEME_IDS = Object.keys(THEMES);
+  const DEFAULT_THEME = "relay";
 
   // ===== 純関数 =====
+  /** 事象ごとの音の種類。形の違う値・無い id は既定 */
+  function normalizeCombo(raw) {
+    const c = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const out = {};
+    for (const id of EVENT_IDS) out[id] = Object.prototype.hasOwnProperty.call(THEMES, c[id]) ? c[id] : DEFAULTS.combo[id];
+    return out;
+  }
+
   /** 設定の形を整える。形の違うもの（オブジェクトでない・値が違う）は既定 */
   function normalizeSettings(raw) {
     const s = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     return {
       enabled: typeof s.enabled === "boolean" ? s.enabled : DEFAULTS.enabled,
       volume: Object.prototype.hasOwnProperty.call(VOLUMES, s.volume) ? s.volume : DEFAULTS.volume,
-      theme: Object.prototype.hasOwnProperty.call(THEMES, s.theme) ? s.theme : DEFAULTS.theme,
+      combo: normalizeCombo(s.combo),
       ticks: typeof s.ticks === "boolean" ? s.ticks : DEFAULTS.ticks,
       scope: SCOPES.includes(s.scope) ? s.scope : DEFAULTS.scope,
       askAlways: typeof s.askAlways === "boolean" ? s.askAlways : DEFAULTS.askAlways,
@@ -118,48 +140,88 @@
     return 2;
   }
 
-  /** 全部の周波数に 2^(semitones/12) を掛ける */
-  function transpose(voices, semitones) {
-    const k = Math.pow(2, (semitones || 0) / 12);
-    return voices.map((v) => {
-      const out = Object.assign({}, v);
-      if (typeof v.f0 === "number") out.f0 = v.f0 * k;
-      if (typeof v.f1 === "number") out.f1 = v.f1 * k;
-      if (typeof v.f === "number") out.f = v.f * k;
-      if (v.noise) out.noise = Object.assign({}, v.noise, { fc: v.noise.fc * k });
-      return out;
-    });
-  }
+  const semi = (f, s) => f * Math.pow(2, s / 12);
 
   function themeOf(themeId) {
-    return THEMES[themeId] || THEMES[DEFAULTS.theme];
+    return THEMES[themeId] || THEMES[DEFAULT_THEME];
+  }
+
+  // 再生の単位（play がそのまま組む）:
+  //   { t, kind: "osc", f, wave, a, d, g, drop?（半音）, dropT?, glideTo?（Hz）, glideT?, lp? }  包絡は t から a で g、t+a+d で消える
+  //   { t, kind: "noise", fc, q, d, g }  0.1 秒の白色雑音を band-pass に通す（立ち上がり 0.001）
+  /** テーマの 1 音（tone と倍音） */
+  function toneVoices(th, t, f, g, d, opts) {
+    const T = th.tone;
+    const dd = d === undefined ? T.d : d;
+    const peak = g * th.gain;
+    const main = { t, kind: "osc", f, wave: T.wave, a: T.a, d: dd, g: peak };
+    if (T.lp) main.lp = T.lp;
+    if (T.drop) {
+      main.drop = T.drop;
+      main.dropT = T.dropT;
+    }
+    Object.assign(main, opts || {});
+    const out = [main];
+    for (const [ratio, pg, pd] of T.partials || []) out.push({ t, kind: "osc", f: f * ratio, wave: "sine", a: T.a, d: Math.min(dd, pd), g: peak * pg });
+    return out;
+  }
+
+  function tickVoices(th, t, shift, command) {
+    const k = th.tick;
+    if (k.noiseOnly) return [{ t, kind: "noise", fc: semi(k.noiseOnly.fc, shift), q: k.noiseOnly.q, d: k.noiseOnly.d, g: k.noiseOnly.g }];
+    const f = semi(k.f * (command ? 0.67 : 1), shift);
+    const main = { t, kind: "osc", f, wave: "sine", a: 0.001, d: k.d, g: k.g * th.gain };
+    if (k.drop) {
+      main.drop = k.drop;
+      main.dropT = k.dropT;
+    }
+    const out = [main];
+    for (const [ratio, pg, pd] of k.partials || []) out.push({ t, kind: "osc", f: f * ratio, wave: "sine", a: 0.001, d: Math.min(k.d, pd), g: k.g * th.gain * pg });
+    if (k.noise) out.push({ t, kind: "noise", fc: k.noise.fc, q: k.noise.q, d: k.noise.d, g: k.noise.g });
+    return out;
   }
 
   /**
-   * 事象の音のデータ。depth は { toolCalls?, elapsedMs?, count?（tick の増分）, command?（コマンドの手順）, cc?（Claude Code。reply は常に 2 音） }
+   * 事象の音のデータ。depth は { toolCalls?, elapsedMs?, count?（tick の増分。2 以上で「ここっ」）, command?（コマンドの手順）, cc?（Claude Code。移調なし・reply は 2 音・余韻なし） }
    */
   function pattern(event, depth, themeId) {
     const d = depth || {};
-    const ev = themeOf(themeId).events;
+    const th = themeOf(themeId);
+    const sh = d.cc ? 0 : semitonesOf(d.toolCalls);
+    const B = semi(th.base, sh);
+    const glide = (to, gt) => (th.tone.drop ? {} : { glideTo: to, glideT: gt });
     let voices;
-    if (event === "tick") {
-      const set = (d.count || 1) >= 2 ? ev.tickDouble : ev.tick;
-      voices = (d.command ? set.command : set.normal).map((v) => Object.assign({}, v));
-    } else if (event === "reply") {
-      const r = ev.reply;
-      const n = d.cc ? 2 : replyNotesOf(d.toolCalls);
-      voices = r.notes.slice(0, Math.min(n, r.notes.length)).map((v) => Object.assign({}, v));
-      voices[voices.length - 1].d = r.lastDecay;
-      const elapsed = typeof d.elapsedMs === "number" ? d.elapsedMs : 0;
-      if (!d.cc && elapsed > 60000 && r.tail) {
-        const last = voices[voices.length - 1];
-        voices.push(Object.assign({}, r.tail.voice, { t: last.t + r.tail.gap, d: r.lastDecay }));
+    switch (event) {
+      case "start":
+        voices = toneVoices(th, 0, B, 0.8, undefined, glide(semi(B, 3), 0.012));
+        break;
+      case "tick":
+        voices = tickVoices(th, 0, sh, !!d.command);
+        if ((d.count || 1) >= 2) voices = voices.concat(tickVoices(th, 0.07, sh, !!d.command));
+        break;
+      case "ask":
+        voices = toneVoices(th, 0, B, 0.8).concat(toneVoices(th, 0.11, semi(B, 7), 0.75, 0.3, glide(semi(B, 9), 0.06)));
+        break;
+      case "reply": {
+        const lenSec = d.cc ? 0 : (typeof d.elapsedMs === "number" ? d.elapsedMs : 0) / 1000;
+        const steps = [7, 0, -3, -7].slice(0, d.cc ? 2 : replyNotesOf(d.toolCalls));
+        voices = [];
+        let t = 0;
+        steps.forEach((s, i) => {
+          const last = i === steps.length - 1;
+          voices = voices.concat(toneVoices(th, t, semi(B, s), i === 0 ? 0.75 : 0.65, last ? (lenSec > 300 ? 0.35 : 0.25) : undefined));
+          t += 0.1;
+        });
+        if (lenSec > 60) voices = voices.concat(toneVoices(th, t + 0.04, semi(B, -12), 0.4, 0.3));
+        break;
       }
-      if (!d.cc && elapsed > 300000) voices[voices.length - 1].d = r.longDecay;
-    } else if (ev[event]) {
-      voices = ev[event].map((v) => Object.assign({}, v));
-    } else return null;
-    return { name: event, voices: transpose(voices, d.cc ? 0 : semitonesOf(d.toolCalls)) };
+      case "fail":
+        voices = [{ t: 0, kind: "osc", f: semi(th.base, -14), wave: "triangle", a: 0.01, d: 0.2, g: 0.6 * th.gain, lp: th.tone.lp || 1800 }];
+        break;
+      default:
+        return null;
+    }
+    return { name: event, voices };
   }
 
   /** 判断待ちを id で 1 回だけにするためのメモリ（このタブ）と、送った時刻・Claude Code の返事の時刻 */
@@ -286,7 +348,9 @@
       const startedRunning = s.state === "running" && (p.state === "idle" || p.state === "needs_input");
       const delivered =
         !!s.pending && s.pending.state === "delivered" && !(p.pending && p.pending.id === s.pending.id && p.pending.state === "delivered");
-      if ((startedRunning || delivered) && !sentRecently(mem, channelId, now)) out.push(Object.assign({ event: "start" }, base));
+      // Web から送った（会話のタブはチャンネル、cc のタブは "cc:" + sessionId の key）なら 10 秒は鳴らさない
+      const sent = sentRecently(mem, channelId, now) || sentRecently(mem, "cc:" + s.sessionId, now);
+      if ((startedRunning || delivered) && !sent) out.push(Object.assign({ event: "start" }, base));
       if (p.state === "running" && s.state === "idle" && ccReplyOnce(mem, s.sessionId, now)) out.push(Object.assign({ event: "reply", depth: { cc: true } }, base));
       const failed = !!s.pending && (s.pending.state === "failed" || s.pending.state === "gave_up");
       if (failed && !(p.pending && p.pending.id === s.pending.id && p.pending.state === s.pending.state)) out.push(Object.assign({ event: "fail" }, base));
@@ -341,14 +405,13 @@
     VOLUMES,
     MASTER_GAIN,
     VOICE_MAX_S,
-    ASK_VOICE_MAX_S,
-    LONG_DECAY_MAX_S,
+    EVENT_IDS,
     normalizeSettings,
     parseSettings,
     serializeSettings,
     semitonesOf,
     replyNotesOf,
-    transpose,
+    normalizeCombo,
     pattern,
     createMemory,
     decideRunning,
@@ -478,13 +541,11 @@
     return buf;
   }
 
-  const FLOOR = 0.0001;
-
-  /** gain の包絡（立ち上がり a で g に、t+d で消える） */
-  function envelope(gain, t, a, d, g) {
-    gain.gain.setValueAtTime(FLOOR, t);
-    gain.gain.exponentialRampToValueAtTime(Math.max(g, FLOOR), t + a);
-    gain.gain.exponentialRampToValueAtTime(FLOOR, t + d);
+  /** gain の包絡（試聴ページと同じ: t から a で peak、t+a+d で消える） */
+  function envelope(gain, t, a, d, peak) {
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), t + a);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
   }
 
   /** 同時に鳴るのは 1 つ: 前の音を止める */
@@ -499,49 +560,59 @@
     audio.playing = [];
   }
 
+  function playOsc(ctx, t, v) {
+    const o = ctx.createOscillator();
+    o.type = v.wave || "sine";
+    if (v.drop) {
+      o.frequency.setValueAtTime(semi(v.f, v.drop), t);
+      o.frequency.exponentialRampToValueAtTime(v.f, t + v.dropT);
+    } else if (v.glideTo) {
+      o.frequency.setValueAtTime(v.f, t);
+      o.frequency.exponentialRampToValueAtTime(v.glideTo, t + (v.glideT || 0.04));
+    } else o.frequency.setValueAtTime(v.f, t);
+    const g = ctx.createGain();
+    envelope(g, t, v.a, v.d, v.g);
+    let node = o;
+    if (v.lp) {
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.setValueAtTime(v.lp, t);
+      o.connect(lp);
+      node = lp;
+    }
+    node.connect(g);
+    g.connect(audio.master);
+    o.start(t);
+    o.stop(t + v.a + v.d + 0.05);
+    audio.playing.push(o);
+  }
+
+  function playNoise(ctx, t, v) {
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuffer(ctx);
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(v.fc, t);
+    bp.Q.setValueAtTime(v.q, t);
+    const g = ctx.createGain();
+    envelope(g, t, 0.001, v.d, v.g);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(audio.master);
+    src.start(t);
+    src.stop(t + v.d + 0.05);
+    audio.playing.push(src);
+  }
+
   function play(pat, volume) {
     if (!pat || !ready()) return false;
     const ctx = audio.ctx;
     stopPlaying();
     audio.master.gain.setValueAtTime(MASTER_GAIN * (VOLUMES[volume] || VOLUMES[DEFAULTS.volume]), ctx.currentTime);
-    const t0 = ctx.currentTime + 0.02;
+    const t0 = ctx.currentTime + 0.03;
     for (const v of pat.voices) {
-      const t = t0 + v.t;
-      if (v.kind === "tone") {
-        const osc = ctx.createOscillator();
-        osc.type = v.wave || "sine";
-        osc.frequency.setValueAtTime(v.f0, t);
-        if (typeof v.f1 === "number") osc.frequency.exponentialRampToValueAtTime(v.f1, t + v.a);
-        const gain = ctx.createGain();
-        envelope(gain, t, v.a, v.d, v.g);
-        osc.connect(gain).connect(audio.master);
-        osc.start(t);
-        osc.stop(t + v.d + 0.02);
-        audio.playing.push(osc);
-      } else if (v.kind === "tick") {
-        const osc = ctx.createOscillator();
-        osc.frequency.setValueAtTime(v.f, t);
-        const gain = ctx.createGain();
-        envelope(gain, t, 0.001, v.d, v.g);
-        osc.connect(gain).connect(audio.master);
-        osc.start(t);
-        osc.stop(t + v.d + 0.02);
-        audio.playing.push(osc);
-        if (v.noise) {
-          const src = ctx.createBufferSource();
-          src.buffer = noiseBuffer(ctx);
-          const filter = ctx.createBiquadFilter();
-          filter.type = "bandpass";
-          filter.frequency.setValueAtTime(v.noise.fc, t);
-          filter.Q.setValueAtTime(v.noise.q, t);
-          const ng = ctx.createGain();
-          envelope(ng, t, 0.001, v.noise.d, v.noise.g);
-          src.connect(filter).connect(ng).connect(audio.master);
-          src.start(t);
-          src.stop(t + v.noise.d + 0.02);
-          audio.playing.push(src);
-        }
-      }
+      if (v.kind === "osc") playOsc(ctx, t0 + v.t, v);
+      else if (v.kind === "noise") playNoise(ctx, t0 + v.t, v);
     }
     return true;
   }
@@ -568,7 +639,7 @@
     const now = Date.now();
     const chosen = coalesce(filterEvents(events, settings, view()), pacer, now);
     if (!chosen) return;
-    if (play(pattern(chosen.event, chosen.depth, settings.theme), settings.volume)) notePlayed(pacer, chosen, now);
+    if (play(pattern(chosen.event, chosen.depth, settings.combo[chosen.event]), settings.volume)) notePlayed(pacer, chosen, now);
   }
 
   function listen(name, decide) {
@@ -587,7 +658,8 @@
       const channelId = detail && detail.channelId;
       if (typeof channelId !== "string") return;
       mem.sentAt.set(channelId, Date.now());
-      handle([{ event: "start", channelId }]);
+      // cc のタブ（views.js）は "cc:" + sessionId で届く
+      handle([channelId.startsWith("cc:") ? { event: "start", sessionId: channelId.slice(3) } : { event: "start", channelId }]);
     });
   }
 
@@ -602,9 +674,11 @@
       stopPlaying();
       return;
     }
+    // 見えている間も Claude Code の一覧を読み始める（api.js の polling。音がオンなら会話の一覧を出していなくても読む）
+    if (SA.poll && typeof SA.poll.kickCc === "function") SA.poll.kickCc();
     const ctx = ensureContext();
     if (!ctx) return;
-    whenRunning(ctx, () => play(pattern("ask", {}, settings.theme), settings.volume));
+    whenRunning(ctx, () => play(pattern("ask", {}, settings.combo.ask), settings.volume));
   }
 
   /** resume が済んだら fn（済まなければ鳴らさない） */
@@ -621,11 +695,11 @@
     }
   }
 
-  /** [試す]（クリックの中）: 設定がオフでも、今の音の種類で鳴らす */
+  /** [試す]（クリックの中）: 設定がオフでも、今の組み合わせ（その事象の音の種類）で鳴らす */
   function test(event, depth) {
     const ctx = ensureContext();
     if (!ctx) return;
-    whenRunning(ctx, () => play(pattern(event, depth || {}, settings.theme), settings.volume));
+    whenRunning(ctx, () => play(pattern(event, depth || {}, settings.combo[event]), settings.volume));
   }
 
   SA.sound = {
@@ -639,6 +713,10 @@
     },
     setEnabled,
     toggle: () => setEnabled(!settings.enabled),
+    /** 事象（start・tick・ask・reply・fail）の音の種類を変える */
+    setCombo(event, themeId) {
+      writeSettings(Object.assign({}, settings, { combo: Object.assign({}, settings.combo, { [event]: themeId }) }));
+    },
     test,
     /** オンなのに、まだ鳴らせない（次の画面の操作を待っている） */
     waitingGesture: () => settings.enabled && !ready(),

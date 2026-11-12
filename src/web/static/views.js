@@ -957,6 +957,8 @@
       update();
       try {
         const data = await SA.api.post("/api/cc/sessions/" + encodeURIComponent(sessionId) + "/send", { text }, { quiet: true });
+        // 受け付けた（202）: 音（sound.js）はここで「受け付けた」を鳴らし、このセッションの次の start を抑える
+        SA.events.emit("sent", { channelId: "cc:" + sessionId });
         if (ta.value === text) ta.value = "";
         if (ta.value) ccDrafts[sessionId] = ta.value;
         else delete ccDrafts[sessionId];
@@ -1738,6 +1740,15 @@
     return seg;
   }
 
+  /** 音の種類を選ぶ事象（docs/plan/web-ui-sound.md §3） */
+  const SOUND_EVENTS = [
+    ["start", "受け付け"],
+    ["tick", "手順"],
+    ["ask", "判断待ち"],
+    ["reply", "返事"],
+    ["fail", "失敗"],
+  ];
+
   /** [試す] の事象（docs/plan/web-ui-sound.md §3。返事は浅い・深いの 2 つ） */
   const SOUND_TESTS = [
     ["受け付け", "start", {}],
@@ -1753,6 +1764,7 @@
     const sound = SA.sound;
     const s = sound.settings();
     const onOff = [["on", "オン"], ["off", "オフ"]];
+    const themes = sound.themes().map((t) => [t.id, t.label]);
     const tests = el(
       "div",
       { class: "ed-actions" },
@@ -1770,7 +1782,10 @@
       el("ul", { class: "kv-list" }, [
         kv("音を鳴らす", settingSegmented("音を鳴らす", onOff, s.enabled ? "on" : "off", (key) => sound.setEnabled(key === "on"))),
         kv("音量", settingSegmented("音量", [["low", "小"], ["mid", "中"], ["high", "大"]], s.volume, (key) => sound.set({ volume: key }))),
-        kv("音の種類", settingSegmented("音の種類", sound.themes().map((t) => [t.id, t.label]), s.theme, (key) => sound.set({ theme: key }))),
+        // 音の種類は事象ごと（組み合わせ）
+        ...SOUND_EVENTS.map(([event, label]) =>
+          kv("音の種類（" + label + "）", settingSegmented("音の種類（" + label + "）", themes, s.combo[event], (key) => sound.setCombo(event, key))),
+        ),
         kv("手順の音", settingSegmented("手順の音", onOff, s.ticks ? "on" : "off", (key) => sound.set({ ticks: key === "on" }))),
         kv("鳴らす会話", settingSegmented("鳴らす会話", [["front", "前に出ている会話"], ["all", "すべての会話"]], s.scope, (key) => sound.set({ scope: key }))),
         kv("判断待ちはいつも鳴らす", settingSegmented("判断待ちはいつも鳴らす", onOff, s.askAlways ? "on" : "off", (key) => sound.set({ askAlways: key === "on" }))),
