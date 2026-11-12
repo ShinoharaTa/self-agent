@@ -779,6 +779,9 @@
     SA.events.on("aborted", (detail) => {
       if (detail && typeof detail.channelId === "string") noteAborted(mem, detail.channelId, Date.now());
     });
+    SA.events.on("abortFailed", (detail) => {
+      if (detail && typeof detail.channelId === "string") mem.abortedAt.delete(detail.channelId);
+    });
     listen("turns", decideTurns);
     listen("cc", decideCc);
     SA.events.on("sent", (detail) => {
