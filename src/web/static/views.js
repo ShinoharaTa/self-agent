@@ -1754,8 +1754,8 @@
     ["受け付け", "start", {}],
     ["手順", "tick", { count: 1 }],
     ["判断待ち", "ask", {}],
-    ["返事（浅い）", "reply", { toolCalls: 0, elapsedMs: 0 }],
-    ["返事（深い）", "reply", { toolCalls: 16, elapsedMs: 400000 }],
+    ["返事（浅い）", "reply", { toolCalls: 0 }],
+    ["返事（深い）", "reply", { toolCalls: 16 }],
     ["失敗", "fail", {}],
   ];
 

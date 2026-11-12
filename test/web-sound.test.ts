@@ -18,7 +18,6 @@ type Pure = {
   parseSettings: (text: unknown) => Record<string, unknown>;
   serializeSettings: (s: unknown) => string;
   semitonesOf: (n: number) => number;
-  replyNotesOf: (n: number) => number;
   normalizeCombo: (raw: unknown) => Record<string, string>;
   pattern: (event: string, depth: Record<string, unknown>, themeId?: string) => Pattern;
   createMemory: () => Mem;
@@ -78,8 +77,7 @@ test("sound: 全テーマが形を持ち、全事象の 1 音の長さと gain �
     {},
     { toolCalls: 3, count: 1 },
     { toolCalls: 8, count: 3, command: true },
-    { toolCalls: 20, elapsedMs: 70000 },
-    { toolCalls: 20, elapsedMs: 400000 },
+    { toolCalls: 20 },
     { cc: true },
   ];
   for (const themeId of Object.keys(pure.THEMES)) {
@@ -105,15 +103,12 @@ test("sound: 全テーマが形を持ち、全事象の 1 音の長さと gain �
   }
 });
 
-test("sound: pattern は試聴ページと同じ組み立て（深さで音域・音数、長いターンの余韻）", () => {
+test("sound: pattern は試聴ページと同じ組み立て（深さは移調だけ）", () => {
   assert.equal(pure.semitonesOf(0), 0);
   assert.equal(pure.semitonesOf(1), 0);
   assert.equal(pure.semitonesOf(2), -2);
   assert.equal(pure.semitonesOf(6), -5);
   assert.equal(pure.semitonesOf(16), -7);
-  assert.equal(pure.replyNotesOf(1), 2);
-  assert.equal(pure.replyNotesOf(5), 3);
-  assert.equal(pure.replyNotesOf(6), 4);
   const pat = (event: string, depth: Record<string, unknown>, theme = "relay") => plain(pure.pattern(event, depth, theme))!;
   const mains = (p: { voices: Voice[] }) => p.voices.filter((v) => v.kind === "osc");
   // 接点の start: 880 Hz から 3 半音上へ滑る 1 音
@@ -126,20 +121,30 @@ test("sound: pattern は試聴ページと同じ組み立て（深さで音域�
   assert.equal(pat("start", {}, "drop").voices[0]!.glideTo, undefined);
   // 木は倍音を足す
   assert.equal(pat("start", {}, "wood").voices.length, 3);
-  // reply: 音数は深さで、Claude Code は常に 2 音
-  assert.equal(mains(pat("reply", { toolCalls: 0 })).length, 2);
-  assert.equal(mains(pat("reply", { toolCalls: 3 })).length, 3);
-  assert.equal(mains(pat("reply", { toolCalls: 10 })).length, 4);
-  assert.equal(mains(pat("reply", { cc: true, toolCalls: 30, elapsedMs: 999999 })).length, 2);
-  // 60 秒超で 1 オクターブ下の余韻、300 秒超で最後の音の減衰が 0.35 秒
-  const long = pat("reply", { toolCalls: 0, elapsedMs: 61000 }).voices;
-  assert.equal(long.length, 3);
-  assert.ok(Math.abs(long[2]!.f! - 880 * 2 ** (-12 / 12)) < 1e-9);
-  assert.equal(long[1]!.d, 0.25);
-  assert.equal(pat("reply", { toolCalls: 0, elapsedMs: 301000 }).voices[1]!.d, 0.35);
-  // 移調: 16 手順なら 7 半音下（返事の最初の音は基準の 7 半音上）
-  const deep = pat("reply", { toolCalls: 16 }).voices[0]!.f!;
-  assert.ok(Math.abs(deep - 880 * 2 ** ((7 - 7) / 12)) < 1e-9);
+  // ask「ぽぴぽぴん」: 基準・+7・基準・+7 を 0.09 秒おき、最後だけ 0.3 秒で +9 へ滑る
+  const ask = mains(pat("ask", {}));
+  assert.equal(ask.length, 4);
+  assert.deepEqual(ask.map((v) => v.t), [0, 0.09, 0.18, 0.27]);
+  assert.deepEqual(ask.map((v) => v.d), [0.07, 0.07, 0.07, 0.3]);
+  assert.ok(Math.abs(ask[1]!.f! - 880 * 2 ** (7 / 12)) < 1e-9);
+  assert.equal(ask[2]!.f, 880);
+  assert.ok(Math.abs(ask[3]!.glideTo! - 880 * 2 ** (9 / 12)) < 1e-9);
+  assert.equal(mains(pat("ask", {}, "drop"))[3]!.glideTo, undefined);
+  // reply「ピポパッ」: 基準・+4・+7 の 3 音を 0.085 秒おき。深さ・Claude Code・長いターンでも 3 音で余韻は無い
+  for (const depth of [{ toolCalls: 0 }, { toolCalls: 10 }, { cc: true }, { toolCalls: 0, elapsedMs: 400000 }]) {
+    const r = mains(pat("reply", depth));
+    assert.equal(r.length, 3);
+    assert.deepEqual(r.map((v) => v.t), [0, 0.085, 0.17]);
+    assert.deepEqual(r.map((v) => v.d), [0.07, 0.07, 0.06]);
+  }
+  const reply = mains(pat("reply", { toolCalls: 0 }));
+  assert.ok(Math.abs(reply[1]!.f! - 880 * 2 ** (4 / 12)) < 1e-9);
+  assert.ok(Math.abs(reply[2]!.f! - 880 * 2 ** (7 / 12)) < 1e-9);
+  assert.ok(Math.abs(reply[2]!.g - 0.8 * 0.8) < 1e-9);
+  assert.ok(Math.abs(reply[0]!.g - 0.65 * 0.8) < 1e-9);
+  // 移調: 16 手順なら 7 半音下
+  const deep = mains(pat("reply", { toolCalls: 16 }))[0]!.f!;
+  assert.ok(Math.abs(deep - 880 * 2 ** (-7 / 12)) < 1e-9);
   // tick: 増分 2 以上は「ここっ」、コマンドは 0.67 倍、フェルトは雑音だけ
   assert.equal(pat("tick", { count: 1 }).voices.length, 2);
   assert.equal(pat("tick", { count: 3 }).voices.length, 4);
@@ -162,7 +167,7 @@ test("sound: decideRunning は始まり・手順・判断待ち・終わりを�
   assert.equal(tick[0]!.depth!.count, 2);
   assert.equal(tick[0]!.depth!.command, true);
   const reply = plain(pure.decideRunning({ prev: [run("a", 1, 7, { elapsedMs: 90000 })], next: [], catchUp: false }, mem, 2000));
-  assert.deepEqual(reply, [{ event: "reply", channelId: "a", depth: { toolCalls: 7, elapsedMs: 90000 } }]);
+  assert.deepEqual(reply, [{ event: "reply", channelId: "a", depth: { toolCalls: 7 } }]);
   // 同じチャンネルで次のターン: 前の返事と次の始まり
   assert.deepEqual(events(pure.decideRunning({ prev: [run("a", 1)], next: [run("a", 2)], catchUp: false }, mem, 3000)), ["reply", "start"]);
   // 判断待ち（waitingPermission）は無 → 有で 1 回だけ。描き直し（同じ結果）では鳴り直さない
