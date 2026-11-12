@@ -12,6 +12,7 @@ type Mem = unknown;
 type Pure = {
   THEMES: Record<string, { label: string; base: number; gain: number; tone: Record<string, unknown>; tick: Record<string, unknown> }>;
   DEFAULTS: Record<string, unknown>;
+  PRESETS: { id: string; label: string; combo: Record<string, string> }[];
   VOICE_MAX_S: number;
   EVENT_IDS: string[];
   normalizeSettings: (raw: unknown) => Record<string, unknown>;
@@ -56,14 +57,14 @@ const run = (channelId: string, turnSeq: number, toolCalls = 0, extra: Record<st
 
 const RELAY = { start: "relay", tick: "relay", ask: "relay", reply: "relay", fail: "relay" };
 
-test("sound: 既定はオフ・音量 中・手順の音オン・すべての会話・判断待ちはいつも・組み合わせは全部 接点", () => {
-  assert.deepEqual(plain(pure.normalizeSettings(null)), { enabled: false, volume: "mid", combo: RELAY, ticks: true, scope: "all", askAlways: true });
+test("sound: 既定はオフ・音量 中・プリセット 夜勤（全部 接点）・手順の音オン・すべての会話・判断待ちはいつも", () => {
+  assert.deepEqual(plain(pure.normalizeSettings(null)), { enabled: false, volume: "mid", preset: "yakin", combo: RELAY, ticks: true, scope: "all", askAlways: true });
   assert.equal(pure.THEMES.relay?.label, "接点");
   assert.deepEqual(Object.keys(pure.THEMES), ["relay", "wood", "drop", "glass", "felt"]);
 });
 
 test("sound: 設定の読み書き。形の違う JSON・値・無い id は既定に戻す", () => {
-  const s = { enabled: true, volume: "high", combo: { start: "wood", tick: "felt", ask: "glass", reply: "drop", fail: "relay" }, ticks: false, scope: "front", askAlways: false };
+  const s = { enabled: true, volume: "high", preset: "custom", combo: { start: "wood", tick: "felt", ask: "glass", reply: "drop", fail: "relay" }, ticks: false, scope: "front", askAlways: false };
   assert.deepEqual(plain(pure.parseSettings(pure.serializeSettings(s))), s);
   const def = plain(pure.normalizeSettings(null));
   for (const text of [null, "", "{", "[]", "1", '"x"', "null"]) assert.deepEqual(plain(pure.parseSettings(text)), def, String(text));
@@ -72,6 +73,37 @@ test("sound: 設定の読み書き。形の違う JSON・値・無い id は既�
   // 組み合わせは事象ごと: 無い id・形の違う値はその事象だけ既定
   assert.deepEqual(plain(pure.normalizeCombo({ start: "wood", tick: "nope", ask: 3, reply: "__proto__", extra: "felt" })), { ...RELAY, start: "wood" });
   assert.deepEqual(plain(pure.normalizeCombo([])), RELAY);
+});
+
+test("sound: プリセットは全事象に有効なテーマを持ち、先頭が既定の 夜勤", () => {
+  assert.deepEqual(plain(pure.PRESETS).map((p) => [p.id, p.label]), [["yakin", "夜勤"], ["wood", "木"], ["drop", "水滴"], ["glass", "硝子"], ["felt", "フェルト"]]);
+  assert.equal(pure.DEFAULTS.preset, "yakin");
+  const ids = new Set(pure.PRESETS.map((p) => p.id));
+  assert.equal(ids.size, pure.PRESETS.length);
+  assert.equal(ids.has("custom"), false);
+  for (const p of pure.PRESETS) {
+    assert.deepEqual(Object.keys(p.combo).sort(), [...pure.EVENT_IDS].sort(), p.id);
+    for (const id of pure.EVENT_IDS) assert.ok(Object.prototype.hasOwnProperty.call(pure.THEMES, p.combo[id]), `${p.id}.${id}`);
+  }
+  assert.deepEqual(plain(pure.PRESETS[0]!.combo), RELAY);
+});
+
+test("sound: プリセットの読み書き（プリセットは組み合わせをその値に・カスタムは引き継ぐ・古い形・無い id）", () => {
+  const WOOD = { start: "wood", tick: "wood", ask: "wood", reply: "wood", fail: "wood" };
+  const mixed = { ...RELAY, ask: "glass" };
+  const read = (raw: unknown) => plain(pure.normalizeSettings(raw));
+  // プリセットを選べば組み合わせはその値（保存した combo が違っていても）
+  assert.deepEqual(read({ preset: "wood", combo: mixed }).combo, WOOD);
+  assert.equal(read({ preset: "wood", combo: mixed }).preset, "wood");
+  // カスタムは combo のまま
+  assert.deepEqual(read({ preset: "custom", combo: mixed }), { ...read(null), preset: "custom", combo: mixed });
+  // 形の違う値・無い id は既定（夜勤）
+  for (const preset of ["nope", 3, null, "__proto__", ""]) assert.deepEqual(read({ preset, combo: mixed }), read(null), String(preset));
+  // preset の無い古い形: どれかのプリセットと同じならそのプリセット、違えばカスタム、combo も無ければ 夜勤
+  assert.deepEqual(read({ combo: WOOD }), { ...read(null), preset: "wood", combo: WOOD });
+  assert.deepEqual(read({ combo: mixed }), { ...read(null), preset: "custom", combo: mixed });
+  assert.deepEqual(read({ enabled: true }), { ...read(null), enabled: true });
+  assert.deepEqual(plain(pure.parseSettings(JSON.stringify({ enabled: true, volume: "low", combo: RELAY }))).preset, "yakin");
 });
 
 test("sound: 全テーマが形を持ち、全事象の 1 音の長さと gain が上限の中", () => {
