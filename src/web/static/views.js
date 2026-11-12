@@ -1780,8 +1780,12 @@
       el("ul", { class: "kv-list" }, [
         kv("音を鳴らす", settingSegmented("音を鳴らす", onOff, s.enabled ? "on" : "off", (key) => sound.setEnabled(key === "on"))),
         kv("音量", settingSegmented("音量", [["low", "小"], ["mid", "中"], ["high", "大"]], s.volume, (key) => sound.set({ volume: key }))),
-        // 音の種類は事象ごと（組み合わせ）
-        ...SOUND_EVENTS.map(([event, label]) =>
+        // プリセット（名前付きの組み合わせ）。カスタムのときだけ事象ごとの音の種類を出す（切り替えたら今の組み合わせを引き継ぐ）
+        kv(
+          "プリセット",
+          settingSegmented("プリセット", sound.presets().map((p) => [p.id, p.label]).concat([["custom", "カスタム"]]), s.preset, (key) => sound.setPreset(key)),
+        ),
+        ...(s.preset !== "custom" ? [] : SOUND_EVENTS).map(([event, label]) =>
           kv("音の種類（" + label + "）", settingSegmented("音の種類（" + label + "）", themes, s.combo[event], (key) => sound.setCombo(event, key))),
         ),
         kv("手順の音", settingSegmented("手順の音", onOff, s.ticks ? "on" : "off", (key) => sound.set({ ticks: key === "on" }))),

@@ -14,7 +14,8 @@
   const DEFAULTS = {
     enabled: false,
     volume: "mid",
-    // 事象ごとの音の種類（オーナーの選んだ組み合わせが来たら差し替える）
+    // 名前付きの組み合わせ（PRESETS の id か "custom"）と、事象ごとの音の種類。既定は「夜勤」（全事象 接点）
+    preset: "yakin",
     combo: { start: "relay", tick: "relay", ask: "relay", reply: "relay", fail: "relay" },
     ticks: true,
     scope: "all",
@@ -93,6 +94,18 @@
   const THEME_IDS = Object.keys(THEMES);
   const DEFAULT_THEME = "relay";
 
+  /** 全事象を同じ音の種類にした組み合わせ */
+  const allOf = (themeId) => ({ start: themeId, tick: themeId, ask: themeId, reply: themeId, fail: themeId });
+  /** 名前付きの組み合わせ（プリセット）。表に足せば増やせる。先頭が既定 */
+  const PRESETS = [
+    { id: "yakin", label: "夜勤", combo: allOf("relay") },
+    { id: "wood", label: "木", combo: allOf("wood") },
+    { id: "drop", label: "水滴", combo: allOf("drop") },
+    { id: "glass", label: "硝子", combo: allOf("glass") },
+    { id: "felt", label: "フェルト", combo: allOf("felt") },
+  ];
+  const CUSTOM_PRESET = "custom";
+
   // ===== 純関数 =====
   /** 事象ごとの音の種類。形の違う値・無い id は既定 */
   function normalizeCombo(raw) {
@@ -102,13 +115,38 @@
     return out;
   }
 
+  function presetOf(id) {
+    return PRESETS.find((p) => p.id === id) || null;
+  }
+
+  function sameCombo(a, b) {
+    return EVENT_IDS.every((id) => a[id] === b[id]);
+  }
+
+  /**
+   * プリセットと組み合わせ。プリセットの id ならその組み合わせ、"custom" なら combo のまま、形の違う値・無い id は既定（夜勤）。
+   * preset の無い古い形は、combo がどれかのプリセットと同じならそのプリセット、違えばカスタム
+   */
+  function normalizePreset(s) {
+    const combo = normalizeCombo(s.combo);
+    if (!Object.prototype.hasOwnProperty.call(s, "preset")) {
+      const match = PRESETS.find((p) => sameCombo(p.combo, combo));
+      return match ? { preset: match.id, combo: Object.assign({}, match.combo) } : { preset: CUSTOM_PRESET, combo };
+    }
+    if (s.preset === CUSTOM_PRESET) return { preset: CUSTOM_PRESET, combo };
+    const preset = presetOf(s.preset) || presetOf(DEFAULTS.preset);
+    return { preset: preset.id, combo: Object.assign({}, preset.combo) };
+  }
+
   /** 設定の形を整える。形の違うもの（オブジェクトでない・値が違う）は既定 */
   function normalizeSettings(raw) {
     const s = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const { preset, combo } = normalizePreset(s);
     return {
       enabled: typeof s.enabled === "boolean" ? s.enabled : DEFAULTS.enabled,
       volume: Object.prototype.hasOwnProperty.call(VOLUMES, s.volume) ? s.volume : DEFAULTS.volume,
-      combo: normalizeCombo(s.combo),
+      preset,
+      combo,
       ticks: typeof s.ticks === "boolean" ? s.ticks : DEFAULTS.ticks,
       scope: SCOPES.includes(s.scope) ? s.scope : DEFAULTS.scope,
       askAlways: typeof s.askAlways === "boolean" ? s.askAlways : DEFAULTS.askAlways,
@@ -486,6 +524,7 @@
   const pure = {
     THEMES,
     DEFAULTS,
+    PRESETS,
     VOLUMES,
     MASTER_GAIN,
     VOICE_MAX_S,
@@ -843,10 +882,15 @@
     },
     setEnabled,
     toggle: () => setEnabled(!settings.enabled),
-    /** 事象（start・tick・ask・reply・fail）の音の種類を変える */
-    setCombo(event, themeId) {
-      writeSettings(Object.assign({}, settings, { combo: Object.assign({}, settings.combo, { [event]: themeId }) }));
+    /** プリセットを選ぶ（組み合わせをその値に）。"custom" なら今の組み合わせを引き継ぐ */
+    setPreset(id) {
+      writeSettings(Object.assign({}, settings, { preset: id }));
     },
+    /** 事象（start・tick・ask・reply・fail）の音の種類を変える（カスタムになる） */
+    setCombo(event, themeId) {
+      writeSettings(Object.assign({}, settings, { preset: CUSTOM_PRESET, combo: Object.assign({}, settings.combo, { [event]: themeId }) }));
+    },
+    presets: () => PRESETS.map((p) => ({ id: p.id, label: p.label })),
     test,
     /** オンなのに、まだ鳴らせない（次の画面の操作を待っている） */
     waitingGesture: () => settings.enabled && !ready(),
