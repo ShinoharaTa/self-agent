@@ -843,10 +843,11 @@
     // Claude Code: 一覧は見ている間（会話の一覧を出している・セッションのタブが前に出ている）だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと。見ていなければ次を予約せず、
     // 見始めたとき（会話の一覧を出した・タブを前に出した。SA.poll.kickCc）と、隠れていた画面が戻ったとき（schedule）に始め直す
     // 許可の要求を保留しているセッションがあれば一覧も 3 秒ごと
-    // 隠れている間（音がオン）は見ていなくても、連携が有効なら読む（hiddenWhen）
+    // 隠れている間（音がオン）は見ていなくても、連携が有効なら読む（hiddenWhen）。間隔は見ているときと同じ 10 秒（保留中は 3 秒）
     cc: {
       base: () => (ccAsking() ? CC_PERMISSION_INTERVAL_MS : CC_LIST_INTERVAL_MS),
-      when: ccWatching,
+      // 音がオンなら、見えている間も会話の一覧・cc のタブを出していなくても読む（隠れている間と同じ。docs/plan/web-ui-sound.md §3）
+      when: () => ccWatching() || (soundOn() && store.ccEnabled()),
       hiddenWhen: () => store.ccEnabled(),
       run: (opts) => store.load.cc(opts),
       fails: 0,
