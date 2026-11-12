@@ -34,6 +34,12 @@
   const CC_REPLY_DEDUPE_MS = 15000;
   /** 同じ会話（セッション）の判断待ちを、別の経路（/api/running と /turns、一覧の判断待ちと許可の要求）で続けて鳴らさない時間 */
   const ASK_SAME_TARGET_MS = 15000;
+  /** 前に出ている会話の消えたターンの終わり方（/turns の agent の行）を待つ時間。来なければ返事として鳴らす */
+  const END_WAIT_MS = 3000;
+  /** Web の [中断] の後、そのチャンネルの次の終わりを鳴らさない（この時間を過ぎた印は使わない） */
+  const ABORT_SUPPRESS_MS = 60000;
+  /** Claude Code の受け付けを同じセッションで鳴らす間隔 */
+  const CC_START_GAP_MS = 10000;
   /** 覚えておく判断待ちの数（このタブのメモリ。超えたら古いものから忘れる） */
   const ASKED_MAX = 500;
   /** visible に戻ったときの resume がこれで settle しなければ作り直す */
@@ -215,12 +221,27 @@
     return { name: event, voices };
   }
 
-  /** 判断待ちを id で 1 回だけにするためのメモリ（このタブ）と、送った時刻・Claude Code の返事の時刻 */
+  /**
+   * このタブのメモリ（純関数の判定が読み書きする）。asked は鳴らした（か、同じ要求を別の経路で鳴らした）判断待ちの key、
+   * askAt は会話（target）ごとに今出ている判断待ちを鳴らした時刻と経路、sentAt は Web から送った時刻、ccReplyAt・ccStartAt は
+   * Claude Code の返事・受け付けを鳴らした時刻、pendingEnds は前に出ている会話の終わり方を待っているターン、abortedAt は Web の [中断]、
+   * wpChannels・permChannels は同じ許可の要求を /api/running と /turns のどちらで鳴らしたか（もう一方では鳴らさない）
+   */
   function createMemory() {
-    return { asked: new Set(), sentAt: new Map(), ccReplyAt: new Map(), askAt: new Map() };
+    return {
+      asked: new Set(),
+      askAt: new Map(),
+      sentAt: new Map(),
+      ccReplyAt: new Map(),
+      ccStartAt: new Map(),
+      pendingEnds: new Map(),
+      abortedAt: new Map(),
+      wpChannels: new Set(),
+      permChannels: new Set(),
+    };
   }
 
-  /** 初めての判断待ちなら覚えて true */
+  /** 初めての key なら覚えて true */
   function firstAsk(mem, key) {
     if (mem.asked.has(key)) return false;
     mem.asked.add(key);
@@ -229,14 +250,21 @@
   }
 
   /**
-   * 初めての判断待ち（key）で、同じ会話（target）に 15 秒以内に別の判断待ちを鳴らしていなければ true。
-   * key はどちらでも覚える（許可の要求は /api/running の waitingPermission と /turns の permission の両方から届くため）
+   * 初めての判断待ち（key）を鳴らすか。同じ会話（target）の判断待ちを別の経路（path）で 15 秒以内に鳴らしていれば鳴らさない
+   * （同じ要求を別の経路から見たとき。抑えたときは askAt を進めない）。key はどちらでも覚える
    */
-  function newAsk(mem, key, target, now) {
+  function newAsk(mem, key, target, path, now) {
     if (!firstAsk(mem, key)) return false;
     const at = mem.askAt.get(target);
-    mem.askAt.set(target, now);
-    return at === undefined || now - at >= ASK_SAME_TARGET_MS;
+    if (at && at.path !== path && now - at.at < ASK_SAME_TARGET_MS) return false;
+    mem.askAt.set(target, { at: now, path });
+    return true;
+  }
+
+  /** 答えた・消えた判断待ち: その会話のその経路の askAt を消す */
+  function clearAsk(mem, target, path) {
+    const at = mem.askAt.get(target);
+    if (at && at.path === path) mem.askAt.delete(target);
   }
 
   function sentRecently(mem, channelId, now) {
@@ -252,8 +280,35 @@
     return true;
   }
 
-  /** /api/running の差（api.js の applyRunning の前と後）→ 事象 */
-  function decideRunning(detail, mem, now) {
+  /** Claude Code の受け付けを同じセッションで 10 秒に 1 回 */
+  function ccStartOnce(mem, sessionId, now) {
+    const at = mem.ccStartAt.get(sessionId);
+    if (at !== undefined && now - at < CC_START_GAP_MS) return false;
+    mem.ccStartAt.set(sessionId, now);
+    return true;
+  }
+
+  /** 終わり方を待つ時間を過ぎたターンは返事として鳴らす */
+  function expireEnds(mem, now) {
+    const out = [];
+    for (const [channelId, p] of mem.pendingEnds) {
+      if (now - p.at < END_WAIT_MS) continue;
+      mem.pendingEnds.delete(channelId);
+      out.push({ event: "reply", channelId, depth: p.depth });
+    }
+    return out;
+  }
+
+  /** Web の [中断] を押した: そのチャンネルの次の終わりでは鳴らさない */
+  function noteAborted(mem, channelId, now) {
+    mem.abortedAt.set(channelId, now);
+  }
+
+  /**
+   * /api/running の差（api.js の applyRunning の前と後）→ 事象。front は前に出ている会話（/turns を読んでいるチャンネル。隠れていれば null）。
+   * 消えたターンは、Web で中断したなら鳴らさず、前に出ている会話なら次の /turns の agent の行を最大 3 秒待ち（pendingEnds）、それ以外はすぐ返事
+   */
+  function decideRunning(detail, mem, now, front) {
     const out = [];
     const prevList = (detail && detail.prev) || [];
     const nextList = (detail && detail.next) || [];
@@ -263,7 +318,12 @@
     for (const [channelId, prev] of before) {
       const next = after.get(channelId);
       if (next && next.turnSeq === prev.turnSeq) continue;
-      if (!catchUp) out.push({ event: "reply", channelId, depth: { toolCalls: prev.toolCalls } });
+      const aborted = mem.abortedAt.get(channelId);
+      mem.abortedAt.delete(channelId);
+      if (catchUp || (aborted !== undefined && now - aborted < ABORT_SUPPRESS_MS)) continue;
+      const depth = { toolCalls: prev.toolCalls };
+      if (front && channelId === front) mem.pendingEnds.set(channelId, { at: now, depth });
+      else out.push({ event: "reply", channelId, depth });
     }
     for (const [channelId, next] of after) {
       const prev = before.get(channelId);
@@ -273,17 +333,28 @@
       } else if (!catchUp && next.toolCalls > prev.toolCalls) {
         out.push({ event: "tick", channelId, depth: { toolCalls: next.toolCalls, count: next.toolCalls - prev.toolCalls, command: next.label === COMMAND_LABEL } });
       }
-      const w = next.waitingPermission;
-      if (w && newAsk(mem, "wp:" + channelId + ":" + next.turnSeq + ":" + (w.since || ""), "ch:" + channelId, now)) {
+    }
+    // 許可を待っている（プロジェクトのセッション）。同じ要求を /turns の permission で鳴らしていれば鳴らさない
+    for (const channelId of new Set([...before.keys(), ...after.keys()])) {
+      const next = after.get(channelId);
+      const w = next && next.waitingPermission;
+      const target = "ch:" + channelId;
+      if (!w) {
+        mem.wpChannels.delete(channelId);
+        clearAsk(mem, target, "wp");
+        continue;
+      }
+      const key = "wp:" + channelId + ":" + next.turnSeq + ":" + (w.since || "");
+      if (mem.permChannels.has(channelId)) {
+        firstAsk(mem, key);
+        continue;
+      }
+      if (newAsk(mem, key, target, "wp", now)) {
+        mem.wpChannels.add(channelId);
         out.push({ event: "ask", channelId, depth: { toolCalls: next.toolCalls } });
       }
     }
     return out;
-  }
-
-  /** 許可の要求（プロジェクトのセッションの channel.permission・Claude Code のチャンネルの cc.permission）が保留中なら id で 1 回 */
-  function permissionAsk(mem, p, target, now) {
-    return !!(p && p.state === "pending" && p.id !== undefined && newAsk(mem, "perm:" + p.id, target, now));
   }
 
   /** /turns の増分 → 事象。after は読んだ後のチャンネル（closeDraft・permission・kind・cc） */
@@ -298,23 +369,40 @@
     const base = { channelId };
     if (sessionId) base.sessionId = sessionId;
     const target = sessionId ? "s:" + sessionId : "ch:" + channelId;
-    if (ch && (permissionAsk(mem, ch.permission, target, now) || permissionAsk(mem, ch.cc && ch.cc.permission, target, now))) {
-      out.push(Object.assign({ event: "ask" }, base));
+    // 許可の要求: プロジェクトのセッションは channel.permission（/api/running の waitingPermission と同じ要求）、Claude Code のチャンネルは cc.permission
+    const p = ch ? (isCc ? ch.cc && ch.cc.permission : ch.permission) : null;
+    if (p && p.state === "pending" && p.id !== undefined) {
+      const key = "perm:" + p.id;
+      if (!isCc && mem.wpChannels.has(channelId)) firstAsk(mem, key);
+      else if (newAsk(mem, key, target, "perm", now)) {
+        if (!isCc) mem.permChannels.add(channelId);
+        out.push(Object.assign({ event: "ask" }, base));
+      }
+    } else if (ch) {
+      if (!isCc) mem.permChannels.delete(channelId);
+      clearAsk(mem, target, "perm");
     }
     const closeKey = "close:" + channelId;
     if (ch && ch.closeDraft) {
-      if (newAsk(mem, closeKey, target, now)) out.push(Object.assign({ event: "ask" }, base));
-    } else mem.asked.delete(closeKey);
+      if (newAsk(mem, closeKey, target, "close", now)) out.push(Object.assign({ event: "ask" }, base));
+    } else if (ch) {
+      mem.asked.delete(closeKey);
+      clearAsk(mem, target, "close");
+    }
     const agents = (rows || []).filter((row) => row && row.kind === "agent");
     const last = agents[agents.length - 1];
-    if (last) {
-      if (isCc) {
-        if (!catchUp && sessionId && ccReplyOnce(mem, sessionId, now)) out.push(Object.assign({ event: "reply", depth: { cc: true } }, base));
-      } else if (last.outcome === "max_turns") {
-        if (newAsk(mem, "row:" + last.id, target, now)) out.push(Object.assign({ event: "ask" }, base));
-      } else if (last.outcome === "failed" && !catchUp) {
-        if (firstAsk(mem, "fail:" + last.id)) out.push(Object.assign({ event: "fail" }, base));
-      }
+    if (isCc) {
+      if (last && !catchUp && sessionId && ccReplyOnce(mem, sessionId, now)) out.push(Object.assign({ event: "reply", depth: { cc: true } }, base));
+      return out;
+    }
+    // 前に出ている会話の終わり方（decideRunning が待っているもの）だけを行の outcome で決める。待っていなければ鳴らさない（2 回鳴らさない）
+    const pending = mem.pendingEnds.get(channelId);
+    if (pending && last) {
+      mem.pendingEnds.delete(channelId);
+      if (last.outcome === "max_turns") {
+        if (newAsk(mem, "row:" + last.id, target, "row", now)) out.push(Object.assign({ event: "ask" }, base));
+      } else if (last.outcome === "failed") out.push(Object.assign({ event: "fail" }, base));
+      else if (last.outcome !== "aborted") out.push(Object.assign({ event: "reply", depth: pending.depth }, base));
     }
     return out;
   }
@@ -331,8 +419,13 @@
       if (channelId) base.channelId = channelId;
       const target = "s:" + s.sessionId;
       // 同じ結果の 2 つ（判断待ちと許可の要求）は coalesce で 1 つになるので、両方を見る
-      const waiting = s.state === "needs_input" && newAsk(mem, "ccwait:" + s.sessionId + ":" + (s.since || ""), target, now);
-      const permission = permissionAsk(mem, s.permission, target, now);
+      let waiting = false;
+      if (s.state === "needs_input") waiting = newAsk(mem, "ccwait:" + s.sessionId + ":" + (s.since || ""), target, "ccwait", now);
+      else clearAsk(mem, target, "ccwait");
+      let permission = false;
+      if (s.permission && s.permission.state === "pending" && s.permission.id !== undefined) {
+        permission = newAsk(mem, "perm:" + s.permission.id, target, "perm", now);
+      } else clearAsk(mem, target, "perm");
       if (waiting || permission) out.push(Object.assign({ event: "ask" }, base));
       const p = prevById.get(s.sessionId);
       if (catchUp || !p) continue;
@@ -341,7 +434,7 @@
         !!s.pending && s.pending.state === "delivered" && !(p.pending && p.pending.id === s.pending.id && p.pending.state === "delivered");
       // Web から送った（会話のタブはチャンネル、cc のタブは "cc:" + sessionId の key）なら 10 秒は鳴らさない
       const sent = sentRecently(mem, channelId, now) || sentRecently(mem, "cc:" + s.sessionId, now);
-      if ((startedRunning || delivered) && !sent) out.push(Object.assign({ event: "start" }, base));
+      if ((startedRunning || delivered) && !sent && ccStartOnce(mem, s.sessionId, now)) out.push(Object.assign({ event: "start" }, base));
       if (p.state === "running" && s.state === "idle" && ccReplyOnce(mem, s.sessionId, now)) out.push(Object.assign({ event: "reply", depth: { cc: true } }, base));
       const failed = !!s.pending && (s.pending.state === "failed" || s.pending.state === "gave_up");
       if (failed && !(p.pending && p.pending.id === s.pending.id && p.pending.state === s.pending.state)) out.push(Object.assign({ event: "fail" }, base));
@@ -404,6 +497,8 @@
     normalizeCombo,
     pattern,
     createMemory,
+    expireEnds,
+    noteAborted,
     decideRunning,
     decideTurns,
     decideCc,
@@ -436,7 +531,12 @@
   // ===== 再生（Web Audio） =====
   const audio = { ctx: null, master: null, noise: null, playing: [], armed: false };
 
+  /** 設定の節の注記（「次に画面を操作したときから鳴ります。」）が変わったときだけ描き直す（[試す] の焦点を保つ） */
+  let shownWaiting = null;
   function refreshSettingsView() {
+    const waiting = settings.enabled && !ready();
+    if (waiting === shownWaiting) return;
+    shownWaiting = waiting;
     if (SA.app && typeof SA.app.refresh === "function") SA.app.refresh("settings");
   }
 
@@ -470,24 +570,43 @@
     return !!audio.ctx && audio.ctx.state === "running";
   }
 
+  /** 解除に使う画面の操作（ブラウザによって resume を許す事象が違うので、どれでも試す） */
+  const GESTURE_EVENTS = ["pointerdown", "pointerup", "touchend", "click", "keydown"];
+
+  /** 画面の操作の中で resume し、動いたら（ctx.state が running）待つのをやめる */
   function onGesture() {
-    disarm();
-    if (settings.enabled) ensureContext();
+    if (!settings.enabled) {
+      disarm();
+      return;
+    }
+    const ctx = ensureContext();
+    if (!ctx) {
+      disarm();
+      return;
+    }
+    if (ctx.state === "running") {
+      disarm();
+      return;
+    }
+    try {
+      const p = ctx.resume();
+      if (p && typeof p.then === "function") p.then(() => ctx.state === "running" && disarm(), () => {});
+    } catch {
+      // 次の操作で
+    }
   }
 
-  /** 次の画面の操作を 1 回だけ捕まえる */
+  /** 動くまで画面の操作を捕まえる */
   function arm() {
     if (audio.armed) return;
     audio.armed = true;
-    document.addEventListener("pointerdown", onGesture, true);
-    document.addEventListener("keydown", onGesture, true);
+    for (const type of GESTURE_EVENTS) document.addEventListener(type, onGesture, true);
   }
 
   function disarm() {
     if (!audio.armed) return;
     audio.armed = false;
-    document.removeEventListener("pointerdown", onGesture, true);
-    document.removeEventListener("keydown", onGesture, true);
+    for (const type of GESTURE_EVENTS) document.removeEventListener(type, onGesture, true);
   }
 
   /** 戻ったとき: interrupted / suspended なら resume を試し、1 秒で動かなければ捨てて次の操作で作り直す */
@@ -632,16 +751,34 @@
     if (play(pattern(chosen.event, chosen.depth, settings.combo[chosen.event]), settings.volume)) notePlayed(pacer, chosen, now);
   }
 
+  /** 終わり方を待っているターンがあれば、待つ時間の後に一度だけ確かめる */
+  let endTimer = null;
+  function scheduleEnds() {
+    if (endTimer !== null || mem.pendingEnds.size === 0) return;
+    endTimer = setTimeout(() => {
+      endTimer = null;
+      handle(expireEnds(mem, Date.now()));
+      scheduleEnds();
+    }, END_WAIT_MS + 50);
+  }
+
   function listen(name, decide) {
     SA.events.on(name, (detail) => {
       // オフの間も判断待ちは覚える（オンにした後に古いものを鳴らさない）
-      const events = decide(detail, mem, Date.now());
+      const now = Date.now();
+      const v = view();
+      const events = expireEnds(mem, now).concat(decide(detail, mem, now, v.hidden ? null : v.frontChannelId));
       handle(events);
+      scheduleEnds();
     });
   }
 
   if (SA.events) {
     listen("running", decideRunning);
+    // Web の [中断]（chat.js）: そのチャンネルの次の終わりでは鳴らさない
+    SA.events.on("aborted", (detail) => {
+      if (detail && typeof detail.channelId === "string") noteAborted(mem, detail.channelId, Date.now());
+    });
     listen("turns", decideTurns);
     listen("cc", decideCc);
     SA.events.on("sent", (detail) => {

@@ -286,7 +286,9 @@
 
   // ===== 追いつき（catch-up。docs/plan/web-ui-sound.md §3）: 最初の読み取りか、画面が見えるようになってから最初の結果 =====
   // SA.events の running・cc・turns に付け、sound.js は追いつきでは判断待ちだけを鳴らす
-  const catchUp = { running: true, cc: true, turns: true };
+  const catchUp = { running: true, cc: true };
+  /** 会話（/turns）の追いつきはチャンネルごと: 見えるようになってから読んだチャンネル（最初の読み取りでも入れる） */
+  const turnsCaughtUp = new Set();
 
   function takeCatchUp(key) {
     const v = catchUp[key];
@@ -304,6 +306,7 @@
       const t = turnsOf(channelId);
       if (t.missing) return;
       let changed = false;
+      const caught = !turnsCaughtUp.has(channelId);
       try {
         if (!t.loaded || realTurns(t).length === 0) {
           const data = await SA.api.get(turnsPath(channelId, "limit=" + TURNS_PAGE), opts);
@@ -346,8 +349,9 @@
             if (turns.length < TURNS_PAGE) break;
           }
           // 音（sound.js）: 増えた行と、読む前・後のチャンネル（許可の要求・/close の確認）
-          emit("turns", { channelId, rows: added, before: channelBefore, after: t.channel, catchUp: takeCatchUp("turns") });
+          emit("turns", { channelId, rows: added, before: channelBefore, after: t.channel, catchUp: caught });
         }
+        turnsCaughtUp.add(channelId);
       } catch (err) {
         if (err && err.status === 404) {
           t.missing = true;
@@ -942,7 +946,7 @@
     // 見えるようになってから最初の結果は追いつき（音は判断待ちだけ）
     catchUp.running = true;
     catchUp.cc = true;
-    catchUp.turns = true;
+    turnsCaughtUp.clear();
     for (const p of Object.values(polls)) runPoll(p);
     // 隠れている間に返事が来ていれば、戻ったときに既読にする
     SA.chat.markSeenActive();
