@@ -21,7 +21,9 @@ type Pure = {
   normalizeCombo: (raw: unknown) => Record<string, string>;
   pattern: (event: string, depth: Record<string, unknown>, themeId?: string) => Pattern;
   createMemory: () => Mem;
-  decideRunning: (detail: unknown, mem: Mem, now: number) => Ev[];
+  decideRunning: (detail: unknown, mem: Mem, now: number, front?: string | null) => Ev[];
+  expireEnds: (mem: Mem, now: number) => Ev[];
+  noteAborted: (mem: Mem, channelId: string, now: number) => void;
   decideTurns: (detail: unknown, mem: Mem, now: number) => Ev[];
   decideCc: (detail: unknown, mem: Mem, now: number) => Ev[];
   filterEvents: (events: Ev[], settings: unknown, view: unknown) => Ev[];
@@ -186,15 +188,12 @@ test("sound: Web から送ったチャンネルの次の start は 10 秒抑え�
   assert.deepEqual(events(pure.decideRunning({ prev: [], next: [run("a", 2)], catchUp: false }, mem, 11000)), ["start"]);
 });
 
-test("sound: decideTurns は失敗・手順の上限・許可の要求・/close の確認を出す", () => {
+test("sound: decideTurns は許可の要求・/close の確認を出し、待っていない終わり方の行では鳴らさない", () => {
   const mem = pure.createMemory();
   const ch = { id: "a", kind: "session", permission: null, closeDraft: null };
-  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [{ id: 1, kind: "agent", outcome: "failed" }], before: ch, after: ch, catchUp: false }, mem, 0)), ["fail"]);
-  // 中断は鳴らさない・追いつきの失敗は鳴らさない
-  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [{ id: 2, kind: "agent", outcome: "aborted" }], before: ch, after: ch, catchUp: false }, mem, 1000)), []);
-  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [{ id: 3, kind: "agent", outcome: "failed" }], before: ch, after: ch, catchUp: true }, mem, 2000)), []);
-  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [{ id: 4, kind: "agent", outcome: "max_turns" }], before: ch, after: ch, catchUp: false }, mem, 3000)), ["ask"]);
-  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [{ id: 4, kind: "agent", outcome: "max_turns" }], before: ch, after: ch, catchUp: false }, mem, 40000)), []);
+  // 前に出ていない会話はすぐ返事にしているので、後から来た行の失敗・手順の上限では鳴らさない（2 回鳴らさない）
+  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [{ id: 1, kind: "agent", outcome: "failed" }], before: ch, after: ch, catchUp: false }, mem, 0)), []);
+  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [{ id: 4, kind: "agent", outcome: "max_turns" }], before: ch, after: ch, catchUp: false }, mem, 3000)), []);
   // 許可の要求は id で 1 回（追いつきでも保留中なら鳴らす）
   const asking = { ...ch, permission: { id: 9, state: "pending" } };
   assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [], before: ch, after: asking, catchUp: true }, mem, 60000)), ["ask"]);
@@ -207,12 +206,104 @@ test("sound: decideTurns は失敗・手順の上限・許可の要求・/close 
   assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [], before: ch, after: drafting, catchUp: false }, mem, 200000)), ["ask"]);
 });
 
-test("sound: 同じ許可の要求を /api/running と /turns の両方から続けて鳴らさない", () => {
+test("sound: 前に出ている会話の終わりは /turns の行の outcome で決め、3 秒で来なければ返事", () => {
+  const ch = { id: "a", kind: "session", permission: null, closeDraft: null };
+  const ended = (mem: Mem, now: number) => events(pure.decideRunning({ prev: [run("a", 1, 3)], next: [], catchUp: false }, mem, now, "a"));
+  const rowOf = (mem: Mem, outcome: string, now: number, id = 1) =>
+    plain(pure.decideTurns({ channelId: "a", rows: [{ id, kind: "agent", outcome }], before: ch, after: ch, catchUp: false }, mem, now));
+  for (const [outcome, want] of [["done", ["reply"]], ["max_turns", ["ask"]], ["aborted", []], ["failed", ["fail"]]] as const) {
+    const mem = pure.createMemory();
+    assert.deepEqual(ended(mem, 0), [], outcome);
+    const got = rowOf(mem, outcome, 1000);
+    assert.deepEqual(got.map((e) => e.event), [...want], outcome);
+    if (outcome === "done") assert.deepEqual(got[0]!.depth, { toolCalls: 3 });
+    // 決めた後は待たない
+    assert.deepEqual(events(pure.expireEnds(mem, 10000)), [], outcome);
+  }
+  // 3 秒で行が来なければ返事。来た後の行では鳴らさない
   const mem = pure.createMemory();
-  const waiting = run("a", 1, 0, { waitingPermission: { toolName: "Bash", since: "s" } });
+  ended(mem, 0);
+  assert.deepEqual(events(pure.expireEnds(mem, 2999)), []);
+  assert.deepEqual(plain(pure.expireEnds(mem, 3000)), [{ event: "reply", channelId: "a", depth: { toolCalls: 3 } }]);
+  assert.deepEqual(rowOf(mem, "failed", 3500), []);
+  // 前に出ていない会話はすぐ返事
+  assert.deepEqual(events(pure.decideRunning({ prev: [run("b", 1)], next: [], catchUp: false }, pure.createMemory(), 0, "a")), ["reply"]);
+});
+
+test("sound: Web で中断したチャンネルの次の終わりは鳴らさない（その次は鳴らす）", () => {
+  const mem = pure.createMemory();
+  pure.noteAborted(mem, "b", 0);
+  assert.deepEqual(events(pure.decideRunning({ prev: [run("b", 1)], next: [], catchUp: false }, mem, 2000)), []);
+  assert.deepEqual(events(pure.decideRunning({ prev: [run("b", 2)], next: [], catchUp: false }, mem, 9000)), ["reply"]);
+  // 前に出ている会話でも待たない
+  pure.noteAborted(mem, "a", 10000);
+  assert.deepEqual(events(pure.decideRunning({ prev: [run("a", 3)], next: [], catchUp: false }, mem, 11000, "a")), []);
+  assert.deepEqual(events(pure.expireEnds(mem, 20000)), []);
+});
+
+test("sound: 同じ許可の要求を /api/running と /turns の両方から鳴らさない（どちらが先でも）", () => {
+  const ch = (permission: unknown) => ({ id: "a", kind: "session", permission, closeDraft: null });
+  const waiting = run("a", 1, 0, { waitingPermission: { toolName: "Bash", since: "s1" } });
+  const turns = (mem: Mem, permission: unknown, now: number) => events(pure.decideTurns({ channelId: "a", rows: [], before: null, after: ch(permission), catchUp: false }, mem, now));
+  // running が先: waitingPermission が消えるまで /turns の pending では鳴らさない（15 秒を過ぎても）
+  const mem = pure.createMemory();
   assert.deepEqual(events(pure.decideRunning({ prev: [run("a", 1)], next: [waiting], catchUp: false }, mem, 0)), ["ask"]);
-  const asking = { id: "a", kind: "session", permission: { id: 3, state: "pending" } };
-  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [], before: asking, after: asking, catchUp: false }, mem, 3000)), []);
+  assert.deepEqual(turns(mem, { id: 3, state: "pending" }, 30000), []);
+  // 答えて消えた後の次の要求は鳴る
+  pure.decideRunning({ prev: [waiting], next: [run("a", 1)], catchUp: false }, mem, 40000);
+  turns(mem, { id: 3, state: "allowed" }, 41000);
+  const waiting2 = run("a", 1, 0, { waitingPermission: { toolName: "Bash", since: "s2" } });
+  assert.deepEqual(events(pure.decideRunning({ prev: [run("a", 1)], next: [waiting2], catchUp: false }, mem, 42000)), ["ask"]);
+  // /turns が先: running 側では鳴らさない
+  const mem2 = pure.createMemory();
+  assert.deepEqual(turns(mem2, { id: 5, state: "pending" }, 0), ["ask"]);
+  assert.deepEqual(events(pure.decideRunning({ prev: [run("a", 1)], next: [waiting], catchUp: false }, mem2, 30000)), []);
+});
+
+test("sound: 15 秒の抑えは別の経路だけ。答えた判断待ちは抑えを消し、抑えたときは時刻を進めない", () => {
+  const s = (state: string, extra: Record<string, unknown> = {}) => ({ sessionId: "s1", state, since: "t0", permission: null, pending: null, channel: null, ...extra });
+  const list = (...sessions: unknown[]) => ({ sessions, starting: [], stale: false, unreadable: false });
+  // 一覧の判断待ち（ccwait）を鳴らした直後の許可の要求（別の経路）は 15 秒の中なら鳴らさない
+  const mem = pure.createMemory();
+  assert.deepEqual(events(pure.decideCc({ prev: list(s("running")), next: list(s("needs_input", { since: "t1" })), catchUp: false }, mem, 0)), ["ask"]);
+  assert.deepEqual(
+    events(pure.decideCc({ prev: list(s("needs_input", { since: "t1" })), next: list(s("needs_input", { since: "t1", permission: { id: 1, state: "pending" } })), catchUp: false }, mem, 5000)),
+    [],
+  );
+  // 抑えたときは時刻を進めないので、最初の 15 秒が過ぎれば別の新しい要求は鳴る
+  assert.deepEqual(
+    events(pure.decideCc({ prev: list(s("needs_input", { since: "t1" })), next: list(s("needs_input", { since: "t1", permission: { id: 2, state: "pending" } })), catchUp: false }, mem, 16000)),
+    ["ask"],
+  );
+  // 答えた（判断待ちが消えた）ら抑えを消すので、すぐの次の判断待ちも鳴る
+  const mem2 = pure.createMemory();
+  pure.decideCc({ prev: list(s("running")), next: list(s("needs_input", { since: "t1" })), catchUp: false }, mem2, 0);
+  pure.decideCc({ prev: list(s("needs_input", { since: "t1" })), next: list(s("running")), catchUp: false }, mem2, 2000);
+  assert.deepEqual(events(pure.decideCc({ prev: list(s("running")), next: list(s("running", { permission: { id: 3, state: "pending" } })), catchUp: false }, mem2, 4000)), ["ask"]);
+  // 同じ経路の別の判断待ちは抑えない
+  const ch = { id: "a", kind: "session", permission: null, closeDraft: null };
+  const mem3 = pure.createMemory();
+  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [], before: null, after: { ...ch, permission: { id: 7, state: "pending" } }, catchUp: false }, mem3, 0)), ["ask"]);
+  assert.deepEqual(events(pure.decideTurns({ channelId: "a", rows: [], before: null, after: { ...ch, permission: { id: 8, state: "pending" } }, catchUp: false }, mem3, 1000)), ["ask"]);
+});
+
+test("sound: Claude Code の受け付けは同じセッションで 10 秒に 1 回", () => {
+  const mem = pure.createMemory();
+  const s = (state: string, pending: unknown = null) => ({ sessionId: "s1", state, since: "t0", permission: null, pending, channel: null });
+  const list = (...sessions: unknown[]) => ({ sessions, starting: [], stale: false, unreadable: false });
+  assert.deepEqual(events(pure.decideCc({ prev: list(s("idle", { id: 1, state: "queued" })), next: list(s("idle", { id: 1, state: "delivered" })), catchUp: false }, mem, 0)), ["start"]);
+  assert.deepEqual(events(pure.decideCc({ prev: list(s("idle")), next: list(s("running")), catchUp: false }, mem, 3000)), []);
+  assert.deepEqual(events(pure.decideCc({ prev: list(s("idle")), next: list(s("running")), catchUp: false }, mem, 11000)), ["start"]);
+});
+
+test("sound: api.js の会話の追いつきはチャンネルごとで、最初の読み取りでも印を消す", () => {
+  const js = readFileSync(fileURLToPath(new URL("../src/web/static/api.js", import.meta.url)), "utf8");
+  const body = /store\.load\.turns = \(channelId, opts\) =>[\s\S]*?\n {4}\}\);/.exec(js)?.[0] ?? "";
+  assert.match(body, /const caught = !turnsCaughtUp\.has\(channelId\);/);
+  assert.match(body, /catchUp: caught/);
+  // 最初の読み取り（if）と増分（else）の後、try の中で印を消す
+  assert.match(body, /\n {8}\}\n {8}turnsCaughtUp\.add\(channelId\);/);
+  assert.match(js, /turnsCaughtUp\.clear\(\);/);
 });
 
 test("sound: decideTurns の Claude Code のチャンネルは agent の行で返事（同じセッションで 15 秒に 1 回）", () => {

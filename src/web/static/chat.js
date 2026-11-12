@@ -581,6 +581,8 @@
     if (button) button.disabled = true;
     try {
       await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/turns/" + turnSeq + "/abort", {}, { quiet: true });
+      // 中断できた: 音（sound.js）はこのチャンネルの次の終わりで鳴らさない
+      SA.events.emit("aborted", { channelId });
     } catch (err) {
       if (err && err.status === 409) toast(STALE_TEXT);
       else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => abortTurn(channelId, turnSeq, null) });

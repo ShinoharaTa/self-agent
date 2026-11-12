@@ -37,11 +37,11 @@
 | `start` | 受け付けて考え始めた | ぽ | `/api/running` に新しい turnSeq が現れた。Web から送ったときは 202 の時点で鳴らし、そのチャンネルの次の `start` は 10 秒抑える | 一覧の `state` が `idle/needs_input → running`、または `pending.state` が `delivered` になった |
 | `tick` | 手順（ツール）を始めた | こっ / ここっ | 同じ turnSeq で `toolCalls` が増えた。増分 1 → こっ、2 以上 → ここっ。label が「コマンドを実行しています」なら低いこっ | 拾わない（手順の数が無い） |
 | `ask` | オーナーの判断を待っている | ぽぴぽぴん（低い・高いを 2 回。最後だけ上がって残る） | (a) `waitingPermission` が無 → 有。(b) `/turns` の `channel.permission.state` が `pending`（id で 1 回）。(c) 最後の agent の行が `max_turns`。(d) `channel.closeDraft` が現れた | 一覧の `state` が `needs_input` になった（`sessionId + since` で 1 回）。`permission.state === "pending"`（id で 1 回。質問も同じ） |
-| `reply` | 返事を返した | ピポパッ（上がる 3 音。最後は短く切る） | running から turnSeq が消えた（outcome は待たない）。後から `failed` と分かれば `fail` を 1 回 | 一覧の `state` が `running → idle`、または前に出ている cc のチャンネルの `/turns` に新しい agent の行（同じセッションで 15 秒は 1 回） |
+| `reply` | 返事を返した | ピポパッ（上がる 3 音。最後は短く切る） | running から turnSeq が消えた。前に出ている会話（/turns を読んでいるチャンネル）は次の /turns の agent の行を最大 3 秒待って outcome で決める（done → reply、max_turns → ask、aborted → 鳴らさない、failed → fail だけ。3 秒で来なければ reply）。前に出ていない会話はすぐ reply（後から fail が分かっても鳴らさない。2 回鳴らさない）。Web の [中断] の後のそのチャンネルの次の消滅は鳴らさない（chat.js が `aborted` を emit） | 一覧の `state` が `running → idle`、または前に出ている cc のチャンネルの `/turns` に新しい agent の行（同じセッションで 15 秒は 1 回） |
 | `fail` | 止まった | ぼ（低く短く） | agent の行の `outcome === "failed"`。`aborted` は鳴らさない | 一覧の `pending.state` が `failed / gave_up` |
 
 - 検知の置き場所: `ui.js` に `SA.events = { on, emit }`（例外は握って log）。`api.js` が `running(prev, next, meta)`（applyRunning の先頭）・`turns(channelId, rows, before, after)`（load.turns の増分）・`cc(prev, next, meta)`（load.cc で sameCcList が false のとき）を、`chat.js` が `sent(channelId)`（202 の後）を emit する。音の判定と再生は `sound.js` に閉じる。
-- **catch-up**: `meta.catchUp`（最初の読み取りか、visible に戻ってから最初の結果）では `start/tick/reply/fail` を鳴らさない。`ask` だけは、その時点で pending のものを 1 回ずつ鳴らす。
+- **catch-up**: `meta.catchUp`（最初の読み取りか、visible に戻ってから最初の結果。`/turns` はチャンネルごとで、そのチャンネルの最初の読み取り（増分でないものも）で印を消す）では `start/tick/reply/fail` を鳴らさない。`ask` だけは、その時点で pending のものを 1 回ずつ鳴らす。
 - **隠れたタブ（決定: 鳴らす）**: 音がオンで隠れている間も、`/api/running` と `/api/cc/sessions`（Claude Code が有効なときだけ）を 10 秒ごとに読み続け、同じ判定で鳴らす。ただし `tick` は鳴らさない（前に出ている会話だけなので）。音がオフなら今までどおり止める。隠れている間の結果は catch-up ではない（読み続けているので差は小さい）。visible に戻った直後の 1 回だけ catch-up。
 
 ## 4. うるさくしない規則（純関数で持つ）
@@ -49,9 +49,9 @@
 1. **優先と合流**: 同じ結果から複数の事象が出たら 1 つにまとめる。優先は `ask > fail > reply > start > tick`。`start` と `reply` が 1 秒以内に続くなら `reply` だけ。
 2. **tick の間引き**: チャンネルごとに 1 回の結果で 1 回まで。増分 2 以上はまとめて「ここっ」。tick は前に出ている会話だけ（設定によらず）。
 3. **全体の上限**: 音と音の間は 250 ms 以上。10 秒に 6 回を超えたら tick から落とす。待ち行列は持たない（捨てる）。
-4. **同じ ask は 1 回**: 許可は id、cc の判断待ちは `sessionId + since`、max_turns は行の id、closeDraft はチャンネル + 出た時刻で覚える（このタブのメモリ）。
+4. **同じ ask は 1 回**: 許可は id、cc の判断待ちは `sessionId + since`、max_turns は行の id、closeDraft はチャンネル + 出た時刻で覚える（このタブのメモリ）。プロジェクトのセッションの許可は `/api/running` の waitingPermission と `/turns` の permission が同じ要求なので、先に鳴らした側があれば、もう一方はその判断待ちが消えるまで鳴らさない。それ以外に同じ会話の判断待ちを別の経路（一覧の判断待ちと許可の要求など）で 15 秒以内に見たときだけ抑える（抑えたときは時刻を進めず、答えた・消えた判断待ちはその会話の時刻を消す）。Claude Code の受け付けは同じセッションで 10 秒に 1 回。
 5. **音量の天井**: マスターの gain は 0.3 × 音量の段（小 0.35・中 0.6・大 1.0）。同時に鳴るのは 1 つ。
-6. **長さ**: 1 音は 250 ms 以内、`ask` だけ 400 ms 以内。ConvolverNode・ディレイ・パン・ビブラートは使わない。（§6.3 の試聴ページの音に合わせたので、実装は 1 音（立ち上がり + 減衰）400 ms 以内で確かめている。硝子の 1 音 0.28 秒・判断待ちの最後の 0.3 秒が 250 ms を超える）
+6. **長さ**: 1 音（立ち上がり + 減衰）は 400 ms 以内（§6.3 の試聴ページの音に合わせた。硝子の 1 音 0.28 秒・判断待ちの最後の 0.3 秒）。ConvolverNode・ディレイ・パン・ビブラートは使わない。
 7. **自分の操作に音を付けない**: ボタンの押下・送信の UI 音は作らない。
 
 ## 5. 考えの深さ（今の API で取れるもの）
@@ -111,7 +111,7 @@ Voice   = { t: 秒（開始）, kind: "tone", f0: Hz, f1?: Hz（t+a までに滑
 | 判断待ちはいつも鳴らす | オン / オフ | オン（「前に出ている会話」のときも ask は全部） |
 
 - 置き場所: 設定のタブの「この画面の表示」の次に節「音」（kv-list と [試す]）。[試す] は事象ごと（受け付け・手順・判断待ち・返事（浅い）・返事（深い）・失敗）に今の組み合わせで鳴らし、音を鳴らすがオフでも鳴る（押す操作で AudioContext を作る）。保存は localStorage の `self-agent-web:sound`（このブラウザだけ。形は `{ enabled, volume, combo: { start, tick, ask, reply, fail }, ticks, scope, askAlways }`。形の違う JSON・値・無い id は既定に戻す。combo は事象ごと）。meta の文は「表示と音の設定はこのブラウザにだけ残ります。」に。パレットに「音を切り替える」。
-- 画面の操作の前（AudioContext が無い・suspended）: 事象は捨てる。節の下に「次に画面を操作したときから鳴ります。」をその状態のときだけ出す。解除は `pointerdown`・`keydown` を document で 1 回だけ捕まえて resume。
+- 画面の操作の前（AudioContext が無い・suspended）: 事象は捨てる。節の下に「次に画面を操作したときから鳴ります。」をその状態のときだけ出す。解除は `pointerdown`・`pointerup`・`touchend`・`click`・`keydown` を document で捕まえて resume し、`ctx.state` が running になったら捕まえるのをやめる。
 - visible に戻ったとき `ctx.state` が interrupted / suspended なら次の操作で resume、1 秒で settle しなければ作り直す。
 - iOS のサイレントスイッチ: 従う（`audioSession.type` は触らない）。節に 1 文「iPhone ではサイレントスイッチがオンのときは鳴りません。」。
 - `prefers-reduced-motion` とは連動しない。
@@ -139,7 +139,7 @@ Voice   = { t: 秒（開始）, kind: "tone", f0: Hz, f1?: Hz（t+a までに滑
 - 再生は自動テストしない。受け入れは実機（iPhone の Safari と PWA・PC の Chrome / Firefox）:
   - [ ] 既定で鳴らない。オンにした瞬間に 1 回鳴る
   - [ ] 再読み込み後、最初の操作まで鳴らず、操作の後に鳴る
-  - [ ] Discord から発言 → ぽ、手順でこっ、終わってピポパッ。失敗はぼ。中断は無音
+  - [ ] Discord から発言 → ぽ、手順でこっ、終わってピポパッ。前に出ている会話では、失敗はぼだけ・手順の上限はぽぴぽぴんだけ・中断は無音（終わり方の行を最大 3 秒待つ）。前に出ていない会話は終わり方によらずピポパッ 1 回。Web の [中断] の後は無音
   - [ ] 許可の要求・質問・[続ける]・/close の確認でぽぴぽぴんが 1 回だけ。描き直しで鳴り直さない
   - [ ] PC で別のタブを見ている間も、ターンの始まり・返事・判断待ちで鳴る（手順の音は鳴らない）
   - [ ] 手順が続いても 2 秒に 1 回、10 秒に 6 回まで

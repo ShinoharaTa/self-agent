@@ -1771,10 +1771,8 @@
       SOUND_TESTS.map(([label, event, depth]) => {
         const b = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: label });
         // 押す操作の中で鳴らす（設定がオフでも鳴る）
-        b.addEventListener("click", () => {
-          sound.test(event, depth);
-          SA.app.refresh("settings");
-        });
+        // 描き直さない（押したボタンの焦点を保つ。注記は sound.js が変わったときだけ描き直す）
+        b.addEventListener("click", () => sound.test(event, depth));
         return b;
       }),
     );
