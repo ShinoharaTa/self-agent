@@ -38,7 +38,7 @@
   const ASKED_MAX = 500;
   /** visible に戻ったときの resume がこれで settle しなければ作り直す */
   const RESUME_SETTLE_MS = 1000;
-  /** 1 音（立ち上がり + 減衰）の長さの上限（秒）。試聴ページの音（硝子の 0.28 秒・返事の余韻の 0.3 秒）に合わせて 0.4 秒 */
+  /** 1 音（立ち上がり + 減衰）の長さの上限（秒）。試聴ページの音（硝子の 0.28 秒・判断待ちの最後の 0.3 秒）に合わせて 0.4 秒 */
   const VOICE_MAX_S = 0.4;
   /** 事象（docs/plan/web-ui-sound.md §3）。組み合わせ（combo）はこの事象ごとに音の種類を選ぶ */
   const EVENT_IDS = ["start", "tick", "ask", "reply", "fail"];
@@ -132,14 +132,6 @@
     return 0;
   }
 
-  /** 手順の数 → reply の音数（§5） */
-  function replyNotesOf(toolCalls) {
-    const n = typeof toolCalls === "number" && toolCalls > 0 ? toolCalls : 0;
-    if (n >= 6) return 4;
-    if (n >= 2) return 3;
-    return 2;
-  }
-
   const semi = (f, s) => f * Math.pow(2, s / 12);
 
   function themeOf(themeId) {
@@ -182,7 +174,7 @@
   }
 
   /**
-   * 事象の音のデータ。depth は { toolCalls?, elapsedMs?, count?（tick の増分。2 以上で「ここっ」）, command?（コマンドの手順）, cc?（Claude Code。移調なし・reply は 2 音・余韻なし） }
+   * 事象の音のデータ。depth は { toolCalls?（移調）, count?（tick の増分。2 以上で「ここっ」）, command?（コマンドの手順）, cc?（Claude Code。移調なし） }
    */
   function pattern(event, depth, themeId) {
     const d = depth || {};
@@ -200,21 +192,20 @@
         if ((d.count || 1) >= 2) voices = voices.concat(tickVoices(th, 0.07, sh, !!d.command));
         break;
       case "ask":
-        voices = toneVoices(th, 0, B, 0.8).concat(toneVoices(th, 0.11, semi(B, 7), 0.75, 0.3, glide(semi(B, 9), 0.06)));
+        // ぽ・ぴ・ぽ・ぴん: 低い・高いを 2 回。最後の「ぴん」だけ少し上がって残る
+        voices = toneVoices(th, 0, B, 0.75, 0.07)
+          .concat(toneVoices(th, 0.09, semi(B, 7), 0.7, 0.07))
+          .concat(toneVoices(th, 0.18, B, 0.75, 0.07))
+          .concat(toneVoices(th, 0.27, semi(B, 7), 0.75, 0.3, glide(semi(B, 9), 0.06)));
         break;
-      case "reply": {
-        const lenSec = d.cc ? 0 : (typeof d.elapsedMs === "number" ? d.elapsedMs : 0) / 1000;
-        const steps = [7, 0, -3, -7].slice(0, d.cc ? 2 : replyNotesOf(d.toolCalls));
+      case "reply":
+        // ピ・ポ・パッ: 3 音で上がり、最後は短く切る。深さは高さ（移調）だけで表す
         voices = [];
-        let t = 0;
-        steps.forEach((s, i) => {
-          const last = i === steps.length - 1;
-          voices = voices.concat(toneVoices(th, t, semi(B, s), i === 0 ? 0.75 : 0.65, last ? (lenSec > 300 ? 0.35 : 0.25) : undefined));
-          t += 0.1;
+        [0, 4, 7].forEach((st, i) => {
+          const last = i === 2;
+          voices = voices.concat(toneVoices(th, i * 0.085, semi(B, st), last ? 0.8 : 0.65, last ? 0.06 : 0.07));
         });
-        if (lenSec > 60) voices = voices.concat(toneVoices(th, t + 0.04, semi(B, -12), 0.4, 0.3));
         break;
-      }
       case "fail":
         voices = [{ t: 0, kind: "osc", f: semi(th.base, -14), wave: "triangle", a: 0.01, d: 0.2, g: 0.6 * th.gain, lp: th.tone.lp || 1800 }];
         break;
@@ -272,7 +263,7 @@
     for (const [channelId, prev] of before) {
       const next = after.get(channelId);
       if (next && next.turnSeq === prev.turnSeq) continue;
-      if (!catchUp) out.push({ event: "reply", channelId, depth: { toolCalls: prev.toolCalls, elapsedMs: prev.elapsedMs } });
+      if (!catchUp) out.push({ event: "reply", channelId, depth: { toolCalls: prev.toolCalls } });
     }
     for (const [channelId, next] of after) {
       const prev = before.get(channelId);
@@ -410,7 +401,6 @@
     parseSettings,
     serializeSettings,
     semitonesOf,
-    replyNotesOf,
     normalizeCombo,
     pattern,
     createMemory,
@@ -666,7 +656,7 @@
   if (settings.enabled) arm();
   document.addEventListener("visibilitychange", onVisible);
 
-  /** オンにする操作（クリックの中）: AudioContext を作り、動いたらぽぴんを 1 回 */
+  /** オンにする操作（クリックの中）: AudioContext を作り、動いたら判断待ちの音を 1 回 */
   function setEnabled(on) {
     writeSettings(Object.assign({}, settings, { enabled: !!on }));
     if (!settings.enabled) {

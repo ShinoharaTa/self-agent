@@ -36,8 +36,8 @@
 |---|---|---|---|---|
 | `start` | 受け付けて考え始めた | ぽ | `/api/running` に新しい turnSeq が現れた。Web から送ったときは 202 の時点で鳴らし、そのチャンネルの次の `start` は 10 秒抑える | 一覧の `state` が `idle/needs_input → running`、または `pending.state` が `delivered` になった |
 | `tick` | 手順（ツール）を始めた | こっ / ここっ | 同じ turnSeq で `toolCalls` が増えた。増分 1 → こっ、2 以上 → ここっ。label が「コマンドを実行しています」なら低いこっ | 拾わない（手順の数が無い） |
-| `ask` | オーナーの判断を待っている | ぽぴん（上がって止まる） | (a) `waitingPermission` が無 → 有。(b) `/turns` の `channel.permission.state` が `pending`（id で 1 回）。(c) 最後の agent の行が `max_turns`。(d) `channel.closeDraft` が現れた | 一覧の `state` が `needs_input` になった（`sessionId + since` で 1 回）。`permission.state === "pending"`（id で 1 回。質問も同じ） |
-| `reply` | 返事を返した | ぴぽん（下がって落ち着く。深さで長さが変わる） | running から turnSeq が消えた（outcome は待たない）。後から `failed` と分かれば `fail` を 1 回 | 一覧の `state` が `running → idle`、または前に出ている cc のチャンネルの `/turns` に新しい agent の行（同じセッションで 15 秒は 1 回） |
+| `ask` | オーナーの判断を待っている | ぽぴぽぴん（低い・高いを 2 回。最後だけ上がって残る） | (a) `waitingPermission` が無 → 有。(b) `/turns` の `channel.permission.state` が `pending`（id で 1 回）。(c) 最後の agent の行が `max_turns`。(d) `channel.closeDraft` が現れた | 一覧の `state` が `needs_input` になった（`sessionId + since` で 1 回）。`permission.state === "pending"`（id で 1 回。質問も同じ） |
+| `reply` | 返事を返した | ピポパッ（上がる 3 音。最後は短く切る） | running から turnSeq が消えた（outcome は待たない）。後から `failed` と分かれば `fail` を 1 回 | 一覧の `state` が `running → idle`、または前に出ている cc のチャンネルの `/turns` に新しい agent の行（同じセッションで 15 秒は 1 回） |
 | `fail` | 止まった | ぼ（低く短く） | agent の行の `outcome === "failed"`。`aborted` は鳴らさない | 一覧の `pending.state` が `failed / gave_up` |
 
 - 検知の置き場所: `ui.js` に `SA.events = { on, emit }`（例外は握って log）。`api.js` が `running(prev, next, meta)`（applyRunning の先頭）・`turns(channelId, rows, before, after)`（load.turns の増分）・`cc(prev, next, meta)`（load.cc で sameCcList が false のとき）を、`chat.js` が `sent(channelId)`（202 の後）を emit する。音の判定と再生は `sound.js` に閉じる。
@@ -51,18 +51,18 @@
 3. **全体の上限**: 音と音の間は 250 ms 以上。10 秒に 6 回を超えたら tick から落とす。待ち行列は持たない（捨てる）。
 4. **同じ ask は 1 回**: 許可は id、cc の判断待ちは `sessionId + since`、max_turns は行の id、closeDraft はチャンネル + 出た時刻で覚える（このタブのメモリ）。
 5. **音量の天井**: マスターの gain は 0.3 × 音量の段（小 0.35・中 0.6・大 1.0）。同時に鳴るのは 1 つ。
-6. **長さ**: 1 音は 250 ms 以内、`ask` だけ 400 ms 以内。ConvolverNode・ディレイ・パン・ビブラートは使わない。（§6.3 の試聴ページの音に合わせたので、実装は 1 音（立ち上がり + 減衰）400 ms 以内で確かめている。硝子の 1 音 0.28 秒・返事の余韻 0.3 秒が 250 ms を超える）
+6. **長さ**: 1 音は 250 ms 以内、`ask` だけ 400 ms 以内。ConvolverNode・ディレイ・パン・ビブラートは使わない。（§6.3 の試聴ページの音に合わせたので、実装は 1 音（立ち上がり + 減衰）400 ms 以内で確かめている。硝子の 1 音 0.28 秒・判断待ちの最後の 0.3 秒が 250 ms を超える）
 7. **自分の操作に音を付けない**: ボタンの押下・送信の UI 音は作らない。
 
 ## 5. 考えの深さ（今の API で取れるもの）
 
 | 指標 | 取り方 | 音への反映 |
 |---|---|---|
-| 手順の数 `toolCalls` | `/api/running`（tick の時点の値。reply は消える直前の値） | 音域: 0〜1 → 基準、2〜5 → −2 半音、6〜15 → −5、16 以上 → −7。reply の音数: 0〜1 → 2 音、2〜5 → 3 音、6 以上 → 4 音 |
-| 経過時間 `elapsedMs` | 同上 | reply: 60 秒超なら末尾に低い 1 音、300 秒超なら最後の音の減衰を 0.35 秒に |
+| 手順の数 `toolCalls` | `/api/running`（tick の時点の値。reply は消える直前の値） | 音域: 0〜1 → 基準、2〜5 → −2 半音、6〜15 → −5、16 以上 → −7（移調だけ。reply の音は深さによらず 3 音） |
 | コマンドか | label が「コマンドを実行しています」 | tick の基音 1800 Hz → 1200 Hz |
 
-- cc のセッションは手順の数が無いので、cc の reply は常に 2 音。
+- cc のセッションは手順の数が無いので、cc の reply は移調しない（同じ 3 音）。
+- 経過時間は音に出さない（2026-11-12 のオーナーの指示で、返事の音数と長いターンの余韻をやめた）。
 - effort（人格ごとの基準の音域）は後の段（§9 の S4）。`/api/status` に足す必要がある。
 
 ## 6. 音の作り方（Web Audio API で合成。音源ファイルは置かない）
@@ -83,10 +83,10 @@ Voice   = { t: 秒（開始）, kind: "tone", f0: Hz, f1?: Hz（t+a までに滑
 |---|---|---|
 | ぽ | start | tone: 740 → 880 Hz（a 0.008）、d 0.12、g 0.8 |
 | ぴん | （部品） | tone: 1175 → 1109 Hz、a 0.005、d 0.22、g 0.7 |
-| ぽぴん | ask | ぽ（t 0）+ ぴん（t 0.11。f1 を 1245 に上げて上がって止まる）。d 0.3。1 回だけ |
+| ぽぴぽぴん | ask | 基準・+7・基準・+7 半音を 0.09 秒おき。最初の 3 音は長さ 0.07、最後の音は 0.3 で +9 へ滑る（水滴は滑らない）。強さ 0.75 / 0.7 / 0.75 / 0.75。1 回だけ |
 | こっ | tick | tick: f 1800、d 0.018、g 0.9 + noise { fc 2500, q 4, d 0.012, g 0.4 }。コマンドなら f 1200 |
 | ここっ | tick（増分 2 以上） | こっ（t 0）+ こっ（t 0.07） |
-| ぴぽん | reply | ぴん（t 0、1175）→ ぽ（t 0.10、880 → 740 に下げる）→ 深さで 3 音目（t 0.20、659）・4 音目（t 0.30、554）。最後の音の d を 0.25 に |
+| ピポパッ | reply | 基準・+4・+7 半音の上がる 3 音を 0.085 秒おき。長さ 0.07 / 0.07 / 0.06、強さは最後だけ 0.8（ほか 0.65）。深さは移調だけ |
 | ぼ | fail | tone: triangle 220 Hz、a 0.01、d 0.2、g 0.6 |
 
 音域の移調（§5）は基準の高さに `2^(semitone/12)` を掛ける（§6.3 の組み立てで。純関数 `transpose` は作らず `pattern` の中で行う）。
@@ -95,7 +95,7 @@ Voice   = { t: 秒（開始）, kind: "tone", f0: Hz, f1?: Hz（t+a までに滑
 
 - オーナーに渡した試聴ページ（sound-audition.html）の音を sound.js の `THEMES` にそのまま移した。ページと Web 画面で同じ音になることを優先し、§6.1・§6.2 の表はこの組み立てに置き換わる。
 - 種類: `relay`（接点。正弦波とカチッという短い雑音）・`wood`（木。倍音が先に消える丸い打音）・`drop`（水滴。半音上から落ちて止まる）・`glass`（硝子。小さく澄んだ鈴）・`felt`（フェルト。低い三角波を low-pass に通す。手順は雑音だけ）。
-- テーマは `base`（基準の高さ）・`gain`・`tone`（wave・a・d・partials・drop・lp）・`tick`（f・d・g・partials・drop・noise・noiseOnly）。組み立て（`pattern`）: start は基準の 1 音（3 半音上へ滑る。drop は滑らない）、ask は基準 + 7 半音上（9 半音へ滑る・0.3 秒）、reply は基準からの [7, 0, −3, −7] の先頭から音数（§5）を 0.1 秒おきに（最後の音は 0.25 秒・300 秒超は 0.35 秒）、60 秒超なら 1 オクターブ下の余韻（0.3 秒）、fail は基準の 14 半音下の三角波（移調しない）、tick のコマンドは 0.67 倍。移調は §5 のとおり基準に掛ける。
+- テーマは `base`（基準の高さ）・`gain`・`tone`（wave・a・d・partials・drop・lp）・`tick`（f・d・g・partials・drop・noise・noiseOnly）。組み立て（`pattern`）: start は基準の 1 音（3 半音上へ滑る。drop は滑らない）、ask は §6.2 の「ぽぴぽぴん」、reply は §6.2 の「ピポパッ」（どちらも 1 音はテーマの tone で鳴らす）、fail は基準の 14 半音下の三角波（移調しない）、tick のコマンドは 0.67 倍。移調は §5 のとおり基準に掛ける。
 - 再生の単位は `{ kind: "osc", f, wave, a, d, g, drop?, glideTo?, lp? }` と `{ kind: "noise", fc, q, d, g }`。包絡は t から a で g、t + a + d で消える。マスターは 0.3 × 音量。
 - テーマは表に足せば増やせる。
 
@@ -103,7 +103,7 @@ Voice   = { t: 秒（開始）, kind: "tone", f0: Hz, f1?: Hz（t+a までに滑
 
 | 項目 | 値 | 既定 |
 |---|---|---|
-| 音を鳴らす | オン / オフ | オフ（自動再生の制限があるので、オンにする操作を最初の解除にする。オンにした瞬間に AudioContext を作って resume し、ぽぴんを 1 回鳴らす） |
+| 音を鳴らす | オン / オフ | オフ（自動再生の制限があるので、オンにする操作を最初の解除にする。オンにした瞬間に AudioContext を作って resume し、ぽぴぽぴんを 1 回鳴らす） |
 | 音の種類（事象ごと） | 受け付け・手順・判断待ち・返事・失敗のそれぞれに §6.3 の 5 つから（組み合わせ） | 全部 接点（オーナーの選んだ組み合わせが来たら差し替える） |
 | 音量 | 小 / 中 / 大 | 中 |
 | 手順の音（こっ） | オン / オフ | オン |
@@ -122,7 +122,7 @@ Voice   = { t: 秒（開始）, kind: "tone", f0: Hz, f1?: Hz（t+a までに滑
 
 - 音は「生きている点」の聴覚の側で、事象の合図に限る。装飾・BGM・操作音・成功のファンファーレを作らない。
 - 1 つの音色の家族（正弦波の単音 + 短い接点音）だけ。メロディ・和音・残響・パン・声・既製のチャイムは使わない。1 音は 250 ms 以内（問いかけは 400 ms）。
-- 深さは音域と音数で表し、音量や速さで表さない。急かす音を作らない。
+- 深さは音域で表し、音量や速さで表さない。急かす音を作らない。
 - 既定はオフ。設定のタブ以外に音の UI を置かない。音だけで伝える情報を作らない。
 - `prefers-reduced-motion` と連動しない。iOS のサイレントスイッチに従う。
 - 語彙: 「音 / 音を鳴らす」（通知音・サウンド・効果音と言わない）、「試す」（テスト・プレビューと言わない）、「判断待ち」（許可・質問・[続ける]・/close の確認を合わせた呼び方）。
@@ -135,12 +135,12 @@ Voice   = { t: 秒（開始）, kind: "tone", f0: Hz, f1?: Hz（t+a までに滑
 | S2 | Claude Code（`cc` の emit・`decideCc`・cc のチャンネルの agent の行・15 秒の重複の抑え） |
 | S4（任意） | `/api/status` の effort → 人格ごとの音域 |
 
-- テスト: `test/web-sound.test.ts` で `sound.js` を `vm.runInNewContext` で読み（AudioContext は置かない）、純関数（`window.SA.sound.pure`）を確かめる: decideRunning・decideTurns・decideCc・coalesce（時計は引数）・pattern（音数・周波数・長さの上限・gain ≤ 1。全テーマが全事象を持つ）・設定の読み書き（組み合わせを含む）。
+- テスト: `test/web-sound.test.ts` で `sound.js` を `vm.runInNewContext` で読み（AudioContext は置かない）、純関数（`window.SA.sound.pure`）を確かめる: decideRunning・decideTurns・decideCc・coalesce（時計は引数）・pattern（音の並び・周波数・長さの上限・gain ≤ 1。全テーマが全事象を持つ）・設定の読み書き（組み合わせを含む）。
 - 再生は自動テストしない。受け入れは実機（iPhone の Safari と PWA・PC の Chrome / Firefox）:
   - [ ] 既定で鳴らない。オンにした瞬間に 1 回鳴る
   - [ ] 再読み込み後、最初の操作まで鳴らず、操作の後に鳴る
-  - [ ] Discord から発言 → ぽ、手順でこっ、終わってぴぽん。失敗はぼ。中断は無音
-  - [ ] 許可の要求・質問・[続ける]・/close の確認でぽぴんが 1 回だけ。描き直しで鳴り直さない
+  - [ ] Discord から発言 → ぽ、手順でこっ、終わってピポパッ。失敗はぼ。中断は無音
+  - [ ] 許可の要求・質問・[続ける]・/close の確認でぽぴぽぴんが 1 回だけ。描き直しで鳴り直さない
   - [ ] PC で別のタブを見ている間も、ターンの始まり・返事・判断待ちで鳴る（手順の音は鳴らない）
   - [ ] 手順が続いても 2 秒に 1 回、10 秒に 6 回まで
   - [ ] iPhone でサイレントスイッチがオンなら鳴らない。ホームから戻った後も次の操作で鳴る
@@ -148,7 +148,7 @@ Voice   = { t: 秒（開始）, kind: "tone", f0: Hz, f1?: Hz（t+a までに滑
 ## 10. 決定（2026-11-12 オーナー）
 
 - 対象は self-agent のチャンネルと Claude Code の両方。サーバーは変えない（effort は S4）。
-- 合成（Web Audio）。事象は 5 つ（start / tick / ask / reply / fail）。深さは手順の数と経過時間で、音域と音数に出す。
+- 合成（Web Audio）。事象は 5 つ（start / tick / ask / reply / fail）。深さは手順の数で、音域に出す（2026-11-12 に音数と長いターンの余韻をやめた）。
 - 既定オフ・音量 3 段・手順の音は既定オン・すべての会話・判断待ちはいつも。
 - **隠れたタブでも鳴らす**（音がオンのときだけ 10 秒ごとに読み続ける。tick は除く）。
 - **iPhone のサイレントスイッチに従う**。
