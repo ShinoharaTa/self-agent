@@ -770,6 +770,8 @@
       update();
       try {
         const data = await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/messages", { text }, { quiet: true });
+        // 受け付けた（202）: 音（sound.js）はここで「受け付けた」を鳴らす
+        SA.events.emit("sent", { channelId });
         // 送れたら書きかけを消し、本物の行が来るまで仮の行を出す
         if (ta.value.trim() === text) ta.value = "";
         SA.app.setDraft(channelId, ta.value);

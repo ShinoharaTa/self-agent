@@ -851,6 +851,8 @@
       { label: "使用量を開く", keys: "/usage", detail: "", run: () => open("usage") },
       { label: "状態を開く", detail: "", run: () => open("status") },
       { label: "設定を開く", detail: "", run: () => open("settings") },
+      // 音（docs/plan/web-ui-sound.md §7）。押す操作の中でオンにする
+      ...(SA.sound ? [{ label: "音を切り替える", detail: SA.sound.enabled() ? "今はオン" : "今はオフ", run: () => { SA.sound.toggle(); refresh("settings"); } }] : []),
       // PC の画面の部品（スマホにはサイドバー・パネル・タブの帯が無く、テーマは設定で変える）
       { label: "サイドバーを切り替える", keys: "Ctrl+B", run: toggleSidebar, pcOnly: true },
       { label: "パネルを切り替える", keys: "Ctrl+J", run: () => togglePanel(), pcOnly: true },

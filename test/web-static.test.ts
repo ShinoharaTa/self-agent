@@ -22,6 +22,7 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
     "app.css",
     "ui.js",
     "api.js",
+    "sound.js",
     "chat.js",
     "views.js",
     "sidebar.js",
@@ -85,6 +86,7 @@ test("web static: index.html の読み込みの順と既定のテーマ", () => 
   assert.deepEqual(scripts, [
     "/static/ui.js",
     "/static/api.js",
+    "/static/sound.js",
     "/static/chat.js",
     "/static/views.js",
     "/static/sidebar.js",

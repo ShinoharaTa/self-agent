@@ -1696,14 +1696,16 @@
       seg.append(b);
     }
     const env = store.status && Array.isArray(store.status.env) ? store.status.env : null;
+    const soundSection = SA.sound ? renderSoundSettings() : null;
     container.replaceChildren(
       toolbar("settings", "設定"),
       scroll([
         el("div", { class: "two-col" }, [
           section("この画面の表示", [
             el("ul", { class: "kv-list" }, [kv("テーマ", seg)]),
-            el("p", { class: "meta", text: "表示の設定はこのブラウザにだけ残ります。" }),
+            el("p", { class: "meta", text: "表示と音の設定はこのブラウザにだけ残ります。" }),
           ]),
+          soundSection,
           // キーボードは ≤639px で隠し、代わりにスマホの操作（Enter の扱いは chat.js の指の端末の判定によるので、条件に触れる文にする）
           el("div", { class: "hide-sm" }, [section("キーボード", [el("ul", { class: "kv-list" }, KEYS.map(([k, v]) => kv(el("kbd", { text: k }), v)))])]),
           el("div", { class: "show-sm" }, [
@@ -1720,6 +1722,63 @@
         ]),
       ]),
     );
+  }
+
+  /** 2 つ以上の選択肢の segmented（テーマと同じ形）。選ぶと onPick(key) してから設定を描き直す */
+  function settingSegmented(label, options, current, onPick) {
+    const seg = el("div", { class: "segmented segmented-sm", role: "group", "aria-label": label });
+    for (const [key, text] of options) {
+      const b = el("button", { type: "button", "aria-pressed": String(current === key), text });
+      b.addEventListener("click", () => {
+        onPick(key);
+        SA.app.refresh("settings");
+      });
+      seg.append(b);
+    }
+    return seg;
+  }
+
+  /** [試す] の事象（docs/plan/web-ui-sound.md §3。返事は浅い・深いの 2 つ） */
+  const SOUND_TESTS = [
+    ["受け付け", "start", {}],
+    ["手順", "tick", { count: 1 }],
+    ["判断待ち", "ask", {}],
+    ["返事（浅い）", "reply", { toolCalls: 0, elapsedMs: 0 }],
+    ["返事（深い）", "reply", { toolCalls: 16, elapsedMs: 400000 }],
+    ["失敗", "fail", {}],
+  ];
+
+  // ===== 設定の節「音」（docs/plan/web-ui-sound.md §7。sound.js） =====
+  function renderSoundSettings() {
+    const sound = SA.sound;
+    const s = sound.settings();
+    const onOff = [["on", "オン"], ["off", "オフ"]];
+    const tests = el(
+      "div",
+      { class: "ed-actions" },
+      SOUND_TESTS.map(([label, event, depth]) => {
+        const b = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: label });
+        // 押す操作の中で鳴らす（設定がオフでも鳴る）
+        b.addEventListener("click", () => {
+          sound.test(event, depth);
+          SA.app.refresh("settings");
+        });
+        return b;
+      }),
+    );
+    return section("音", [
+      el("ul", { class: "kv-list" }, [
+        kv("音を鳴らす", settingSegmented("音を鳴らす", onOff, s.enabled ? "on" : "off", (key) => sound.setEnabled(key === "on"))),
+        kv("音量", settingSegmented("音量", [["low", "小"], ["mid", "中"], ["high", "大"]], s.volume, (key) => sound.set({ volume: key }))),
+        kv("音の種類", settingSegmented("音の種類", sound.themes().map((t) => [t.id, t.label]), s.theme, (key) => sound.set({ theme: key }))),
+        kv("手順の音", settingSegmented("手順の音", onOff, s.ticks ? "on" : "off", (key) => sound.set({ ticks: key === "on" }))),
+        kv("鳴らす会話", settingSegmented("鳴らす会話", [["front", "前に出ている会話"], ["all", "すべての会話"]], s.scope, (key) => sound.set({ scope: key }))),
+        kv("判断待ちはいつも鳴らす", settingSegmented("判断待ちはいつも鳴らす", onOff, s.askAlways ? "on" : "off", (key) => sound.set({ askAlways: key === "on" }))),
+        kv("試す", tests),
+      ]),
+      sound.waitingGesture() ? el("p", { class: "meta", text: "次に画面を操作したときから鳴ります。" }) : null,
+      el("p", { class: "meta", text: "iPhone ではサイレントスイッチがオンのときは鳴りません。" }),
+    ]);
   }
 
   // ===== 知らせ（スマホの鈴で開くタブ。PC はパネルの「知らせ」。行は workbench.js の noticeLine を共用） =====
