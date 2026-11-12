@@ -413,6 +413,9 @@ kbd {
 
 .segmented-sm {
   padding: var(--space-1);
+  /* 選択肢が多い（音のプリセットなど）ときは、はみ出さずに折り返す */
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 .segmented-sm > button {
