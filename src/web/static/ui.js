@@ -1,4 +1,4 @@
-// 共通の部品: DOM の組み立て・アイコン・数と時刻の表示・トースト・確認ダイアログ
+// 共通の部品: DOM の組み立て・アイコン・数と時刻の表示・トースト・確認ダイアログ・画面の中の出来事（SA.events）
 "use strict";
 
 (function () {
@@ -452,6 +452,26 @@
     if (opts.danger) cancel.focus();
     else ok.focus();
   }
+
+  /**
+   * 画面の中の出来事（api.js・chat.js が emit し、sound.js が on で受ける）。listener の例外は握って console.warn に出し、ほかの listener と呼び出し側は止めない
+   */
+  const listeners = new Map();
+  SA.events = {
+    on(name, fn) {
+      if (!listeners.has(name)) listeners.set(name, []);
+      listeners.get(name).push(fn);
+    },
+    emit(name, detail) {
+      for (const fn of listeners.get(name) || []) {
+        try {
+          fn(detail);
+        } catch (err) {
+          console.warn("SA.events: " + name + " の listener が失敗しました", err && err.name);
+        }
+      }
+    },
+  };
 
   SA.ui = { el, icon, count, elapsed, clock, hm, dateTime, dateOf, shortTime, linkify, parseBlocks, parseInline, renderText, toast, confirm, openDialog, closeDialog, backButton };
 })();

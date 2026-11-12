@@ -29,6 +29,8 @@
   /** 許可の要求を保留しているセッションがあるときの一覧の間隔 */
   const CC_PERMISSION_INTERVAL_MS = 3000;
   const SEEN_KEY = "self-agent-web:seen";
+  /** 音がオンで画面が隠れている間、/api/running と /api/cc/sessions を読み続ける間隔（docs/plan/web-ui-sound.md §3） */
+  const HIDDEN_SOUND_MS = 10000;
 
   /**
    * 失敗は 401 なら /login へ、それ以外は「操作に失敗しました。もう一度試してください」のトーストを出して reject する（error.status に HTTP の status（つながらなければ 0）、
@@ -282,6 +284,20 @@
     if (last && last.kind === "agent" && last.outcome) pendingEnds.delete(channelId);
   }
 
+  // ===== 追いつき（catch-up。docs/plan/web-ui-sound.md §3）: 最初の読み取りか、画面が見えるようになってから最初の結果 =====
+  // SA.events の running・cc・turns に付け、sound.js は追いつきでは判断待ちだけを鳴らす
+  const catchUp = { running: true, cc: true, turns: true };
+
+  function takeCatchUp(key) {
+    const v = catchUp[key];
+    catchUp[key] = false;
+    return v;
+  }
+
+  function emit(name, detail) {
+    if (SA.events) SA.events.emit(name, detail);
+  }
+
   /** 開いたときは最新の 50 件、その後は最後の行より後（after）を読む */
   store.load.turns = (channelId, opts) =>
     once("turns:" + channelId, async () => {
@@ -300,6 +316,8 @@
           t.channel = data && data.channel ? data.channel : t.channel;
           t.loaded = true;
         } else {
+          const channelBefore = t.channel;
+          const added = [];
           // 5 秒の間に 50 件を超えて増えることはまず無いが、超えたら続けて読む
           for (let i = 0; i < 4; i++) {
             const real = realTurns(t);
@@ -322,10 +340,13 @@
             if (turns.length > 0) {
               reportEnds(channelId, turns, true);
               t.turns = mergeTurns(t.turns, turns);
+              added.push(...turns);
               changed = true;
             }
             if (turns.length < TURNS_PAGE) break;
           }
+          // 音（sound.js）: 増えた行と、読む前・後のチャンネル（許可の要求・/close の確認）
+          emit("turns", { channelId, rows: added, before: channelBefore, after: t.channel, catchUp: takeCatchUp("turns") });
         }
       } catch (err) {
         if (err && err.status === 404) {
@@ -371,6 +392,7 @@
    * 終わったチャンネルは返事の行が書かれるのを待ってもう一度読む
    */
   function applyRunning(next) {
+    emit("running", { prev: store.running || [], next, catchUp: takeCatchUp("running") });
     const before = new Map((store.running || []).map((r) => [r.channelId, r]));
     const after = new Map(next.map((r) => [r.channelId, r]));
     const changed = [];
@@ -731,6 +753,7 @@
       const wasFailed = store.ccFailed;
       store.ccFailed = false;
       const before = store.cc;
+      const caught = takeCatchUp("cc");
       store.cc = {
         stale: !!(data && data.stale),
         unreadable: !!(data && data.unreadable),
@@ -738,6 +761,8 @@
         sessions: Array.isArray(data && data.sessions) ? data.sessions.filter((s) => s && typeof s.sessionId === "string") : [],
         starting: Array.isArray(data && data.starting) ? data.starting.filter((s) => s && typeof s.title === "string") : [],
       };
+      // 音（sound.js）: 中身が変わったときだけ
+      if (!sameCcList(before, store.cc)) emit("cc", { prev: before, next: store.cc, catchUp: caught });
       // 中身（sessions・starting・stale・unreadable）が前と同じなら描き直さない（10 秒ごとの polling で会話の一覧を作り直さない）
       if (!wasFailed && sameCcList(before, store.cc)) return;
       SA.app.refreshSidebar();
@@ -787,7 +812,7 @@
 
   SA.store = store;
 
-  // ===== polling（見えているときだけ。隠れたら止め、戻ったら即 1 回） =====
+  // ===== polling（見えているときだけ。隠れたら止め、戻ったら即 1 回。音がオンなら隠れている間も /api/running と Claude Code の一覧だけ 10 秒ごと） =====
   // /api/status は 10 秒、/api/channels・/api/notices と一度読んだタスク・リマインド・記憶・GitHub・プロジェクト・ナレッジは 60 秒、前に出ている会話のタブの /turns（after）は 5 秒ごと、
   // /api/running は実行中のターンがあれば 2 秒・無ければ 10 秒ごと、Claude Code の一覧は見ている間 10 秒（許可の要求を保留していれば 3 秒）・前に出ているセッションのタブの画面は 3 秒ごと
   // （どれも応答が来てから次を予約する）。
@@ -818,7 +843,15 @@
     // Claude Code: 一覧は見ている間（会話の一覧を出している・セッションのタブが前に出ている）だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと。見ていなければ次を予約せず、
     // 見始めたとき（会話の一覧を出した・タブを前に出した。SA.poll.kickCc）と、隠れていた画面が戻ったとき（schedule）に始め直す
     // 許可の要求を保留しているセッションがあれば一覧も 3 秒ごと
-    cc: { base: () => (ccAsking() ? CC_PERMISSION_INTERVAL_MS : CC_LIST_INTERVAL_MS), when: ccWatching, run: (opts) => store.load.cc(opts), fails: 0, timer: null },
+    // 隠れている間（音がオン）は見ていなくても、連携が有効なら読む（hiddenWhen）
+    cc: {
+      base: () => (ccAsking() ? CC_PERMISSION_INTERVAL_MS : CC_LIST_INTERVAL_MS),
+      when: ccWatching,
+      hiddenWhen: () => store.ccEnabled(),
+      run: (opts) => store.load.cc(opts),
+      fails: 0,
+      timer: null,
+    },
     // Claude Code のチャンネルの会話のタブは、画面の節を開いている間だけ 3 秒、閉じていれば 10 秒（CC14）
     ccScreen: {
       base: () => (ccScreenIdle() ? CC_LIST_INTERVAL_MS : CC_SCREEN_INTERVAL_MS),
@@ -830,6 +863,7 @@
     running: {
       base: () => (store.running && store.running.length > 0 ? RUNNING_BUSY_MS : RUNNING_IDLE_MS),
       run: (opts) => store.load.running(opts),
+      hiddenWhen: () => true,
       fails: 0,
       timer: null,
     },
@@ -837,6 +871,27 @@
 
   function active() {
     return !poll.stopped && document.visibilityState === "visible";
+  }
+
+  /** 音がオン（sound.js は api.js の後に読むので、呼ぶときに引く） */
+  function soundOn() {
+    return !!(SA.sound && SA.sound.enabled());
+  }
+
+  /** 隠れている間に読み続けるか（音がオンで、hiddenWhen のあるものだけ） */
+  function hiddenRuns(p) {
+    return !poll.stopped && document.visibilityState !== "visible" && !!p.hiddenWhen && soundOn() && p.hiddenWhen();
+  }
+
+  /** 今読んでよいか。見えていれば when、隠れていれば hiddenRuns */
+  function runnable(p) {
+    if (active()) return !(p.when && !p.when());
+    return hiddenRuns(p);
+  }
+
+  /** 次までの間隔。隠れている間は HIDDEN_SOUND_MS */
+  function intervalOf(p) {
+    return active() ? p.base() : HIDDEN_SOUND_MS;
   }
 
   /** 続けて fails 回失敗した後の間隔 */
@@ -858,14 +913,14 @@
   function runPoll(p) {
     clearTimeout(p.timer);
     p.timer = null;
-    if (!active() || (p.when && !p.when())) return;
+    if (!runnable(p)) return;
     p.inFlight = true;
     p.run({ quiet: true }).then((err) => {
       p.inFlight = false;
       countFailure(p, err);
-      if (!active() || (p.when && !p.when())) return;
+      if (!runnable(p)) return;
       clearTimeout(p.timer);
-      p.timer = setTimeout(() => runPoll(p), backoff(p.base(), p.fails));
+      p.timer = setTimeout(() => runPoll(p), backoff(intervalOf(p), p.fails));
     });
   }
 
@@ -878,7 +933,15 @@
 
   function schedule() {
     clearTimers();
-    if (!active()) return;
+    if (!active()) {
+      // 隠れた: 音がオンなら /api/running と Claude Code の一覧だけ読み続ける（runPoll が runnable で選ぶ）
+      for (const p of Object.values(polls)) if (hiddenRuns(p)) runPoll(p);
+      return;
+    }
+    // 見えるようになってから最初の結果は追いつき（音は判断待ちだけ）
+    catchUp.running = true;
+    catchUp.cc = true;
+    catchUp.turns = true;
     for (const p of Object.values(polls)) runPoll(p);
     // 隠れている間に返事が来ていれば、戻ったときに既読にする
     SA.chat.markSeenActive();
