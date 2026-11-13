@@ -8,7 +8,7 @@ import type { Route } from "../server.ts";
 import { CC_STATUS_DISABLED, type CcStatus } from "./cc.ts";
 
 /**
- * 設定の画面に有無を出す環境変数（CLAUDE.md の環境変数の表の名前。廃止した SELF_AGENT_GUEST_GUILD_IDS は除く）。
+ * 設定の画面に有無を出す環境変数（docs/environment.md の環境変数の表の名前。廃止した SELF_AGENT_GUEST_GUILD_IDS は除く）。
  * 人格ごとの変数（SELF_AGENT_PERSONA_<ID>_*）は名前が決まらないので含めない
  */
 export const WEB_ENV_NAMES: readonly string[] = [

@@ -190,9 +190,8 @@ test("/api/status: cc は SELF_AGENT_CC が無効なら無効の形、有効な�
   });
 });
 
-test("WEB_ENV_NAMES: CLAUDE.md の環境変数の表の名前（廃止したものを除く）と同じ", () => {
-  const claudeMd = readFileSync(new URL("../CLAUDE.md", import.meta.url), "utf8");
-  const table = claudeMd.slice(claudeMd.indexOf("## 環境変数"), claudeMd.indexOf("## コーディング規約"));
+test("WEB_ENV_NAMES: docs/environment.md の環境変数の表の名前（廃止したものを除く）と同じ", () => {
+  const table = readFileSync(new URL("../docs/environment.md", import.meta.url), "utf8");
   const names: string[] = [];
   for (const line of table.split("\n")) {
     const cell = /^\| ([^|]+) \|/.exec(line)?.[1];
