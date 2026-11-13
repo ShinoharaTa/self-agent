@@ -785,6 +785,7 @@
     invalid_text: "改行のほかの制御文字（タブなど）は送れません",
     empty: "本文がありません",
     stopping: "再起動中です。終わったら送ってください",
+    taking_over: "取り込みの途中です。終わってから送ってください",
   };
   /** 送った本文の状態の文（一覧の pending.state） */
   const CC_SEND_STATES = {

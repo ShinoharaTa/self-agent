@@ -14,6 +14,7 @@ import type { CcPaneResolver } from "../cc/panes.ts";
 import type { CcRegistry, CcSessionView } from "../cc/registry.ts";
 import type { CcSender } from "../cc/sender.ts";
 import { CC_PROJECT_PATTERN, type CcStartFailure, type CcStarter } from "../cc/starter.ts";
+import { TAKEOVER_SEND_REJECT_TEXT } from "../cc/takeover-rules.ts";
 import { GITHUB_LABELS } from "../github/classify.ts";
 import { HTML_URL_PATTERN } from "../github/poller.ts";
 import type { CcSendRow, CcSendState, CcSendStore } from "../store/cc-sends.ts";
@@ -92,7 +93,8 @@ export type HandoffFailure =
   | "not_found"
   | "already_queued"
   | "not_in_tmux"
-  | "not_claude";
+  | "not_claude"
+  | "taking_over";
 
 /** [対応]・[起動して送る] の結果 */
 export type GithubHandoffResult =
@@ -349,6 +351,7 @@ const FAILURE_TEXT: Readonly<Record<HandoffFailure, string>> = {
   already_queued: "送り先のセッションに、届け待ちの本文があります",
   not_in_tmux: "送り先のセッションが tmux の中にありません",
   not_claude: "送り先のペインが Claude Code ではありません",
+  taking_over: TAKEOVER_SEND_REJECT_TEXT,
 };
 
 /** 届け待ちの本文の状態の文 */

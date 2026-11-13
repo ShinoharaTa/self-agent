@@ -6,6 +6,7 @@ import { CC_START_RETRY_NOTE, CC_START_SEND_FAILED_NOTE, ccStartedTexts } from "
 import { ccClosedCancelledText, closeReply, createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
 import { ALREADY_HANDLED_TEXT, STALE_TEXT } from "../src/app/commands/delete.ts";
 import { STALE_TURN_REPLY } from "../src/app/commands/turn-controls.ts";
+import { TAKEOVER_BUSY_TEXT } from "../src/cc/takeover-rules.ts";
 import {
   CC_ATTACHMENT_REPLY,
   CC_CHANNEL_CLOSED_TEXT,
@@ -102,6 +103,8 @@ function setup(t: TestContext) {
   };
   const channelOps = new RecordingChannelOps();
   const logs: string[] = [];
+  /** 取り込みの途中のセッション・チャンネル（docs/plan/takeover.md §3.2） */
+  const held = { sessions: new Set<string>(), channels: new Set<string>() };
   const channels = new CcChannels({
     cfg: { allowedGuildIds: ["guild-1"], workspaceDir: WORKSPACE, ownerUserId: OWNER },
     store,
@@ -116,6 +119,7 @@ function setup(t: TestContext) {
     queue: new RecordingQueue(1),
     channelOps,
     home: "/home/owner",
+    takeover: () => ({ holds: (id) => held.sessions.has(id), holdsChannel: (id) => held.channels.has(id) }),
     now,
     log: (line) => logs.push(line),
   });
@@ -137,7 +141,7 @@ function setup(t: TestContext) {
     createdAt: new Date(clock.now),
     ...overrides,
   });
-  return { db, clock, store, sends, ccSessions, gateway, sessions, launches, starterState, channelOps, logs, channels, message, submitted };
+  return { db, clock, store, sends, ccSessions, gateway, sessions, launches, starterState, channelOps, logs, channels, message, submitted, held };
 }
 
 /** 起動できなかった結果（stale・expired と成功は undefined） */
@@ -556,4 +560,48 @@ test("cc:del: 記録した今の確認で ended のときだけ。[削除する]
   assert.deepEqual(open.calls, [{ method: "update", message: { text: STALE_TEXT, components: [] } }]);
   assert.equal(s.store.get("900000000000000005")?.state, "open");
   assertQuietLogs(logs);
+});
+
+test("取り込みの途中: [起動して続ける]・/cc close・開き直し・[削除する] は行を変えない", async (t) => {
+  const s = setup(t);
+  const msg = s.message(SECRET_TEXT);
+  await s.channels.handleMessage(msg);
+  s.held.channels.add(CHANNEL);
+  s.held.sessions.add(OLD);
+  // [起動して続ける]: ボタンは残して断る（保留も残る）
+  assert.deepEqual(await s.channels.resume(CHANNEL, msg.id, "guild-1"), {
+    ok: false,
+    reason: "taking_over",
+    message: { text: TAKEOVER_BUSY_TEXT, components: ccResumeButtons(CHANNEL, msg.id) },
+  });
+  assert.equal(s.store.get(CHANNEL)?.state, "ended");
+  assert.equal(s.launches.length, 0);
+  // 開き直し（一覧に戻った・関わった）もしない
+  s.sessions.push({ sessionId: OLD, pid: 100, cwd: `${WORKSPACE}/alpha`, name: "alpha" } as CcSessionView);
+  assert.equal(s.channels.revived({ sessionId: OLD }), false);
+  assert.equal(s.channels.revived({ sessionId: OLD }, "reopened"), false);
+  assert.deepEqual(await s.channels.submitWeb(CHANNEL, "Web から"), { ok: false, reason: "ended" });
+  assert.equal(s.store.get(CHANNEL)?.state, "ended");
+  // [削除する]: 押した人にだけ断る
+  const gateway = new FakeGateway({ allow: ["deleteChannel"] });
+  const component = createCcComponent({
+    ccDelete: { deleteAfterDays: 30, store: s.store, gateway, channelOps: new RecordingChannelOps(), takingOver: (id) => s.held.channels.has(id) },
+    gateway: s.gateway,
+    log: () => {},
+  });
+  s.store.setDeletePrompt(CHANNEL, "prompt-1");
+  const del = new FakeResponder();
+  await component.handle(button(`cc:del:${CHANNEL}`, "prompt-1"), del);
+  assert.deepEqual(del.calls, [{ method: "reply", message: { text: TAKEOVER_BUSY_TEXT, ephemeral: true } }]);
+  assert.deepEqual(gateway.deleted, []);
+  assert.equal(s.store.get(CHANNEL)?.state, "ended");
+  // /cc close（open のチャンネル）
+  s.held.sessions.clear();
+  assert.equal(s.channels.revived({ sessionId: OLD }), true);
+  assert.deepEqual(s.channels.close(CHANNEL), { result: "taking_over" });
+  assert.deepEqual(closeReply({ result: "taking_over" }), { text: TAKEOVER_BUSY_TEXT, ephemeral: true });
+  assert.equal(s.store.get(CHANNEL)?.state, "open");
+  // 終われば今までどおり
+  s.held.channels.clear();
+  assert.equal(s.channels.close(CHANNEL).result, "closed");
 });

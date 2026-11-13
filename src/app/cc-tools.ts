@@ -10,6 +10,7 @@ import { isUuid } from "../cc/agents.ts";
 import type { CcPaneResolver } from "../cc/panes.ts";
 import { sinceOf, type CcRegistry } from "../cc/registry.ts";
 import { normalizeSendText, type CcSender } from "../cc/sender.ts";
+import { TAKEOVER_SEND_REJECT_TEXT } from "../cc/takeover-rules.ts";
 import type { CcStartFailure, CcStarter } from "../cc/starter.ts";
 import type { Config } from "../config.ts";
 import type { Gateway } from "../discord/gateway.ts";
@@ -132,6 +133,8 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
             return { result: "not_available", message: "tmux を使えませんでした" };
           case "stopped":
             return { result: "not_available", message: "停止中です" };
+          case "taking_over":
+            return { result: "not_available", message: TAKEOVER_SEND_REJECT_TEXT };
         }
       }
       const { send } = proposed;

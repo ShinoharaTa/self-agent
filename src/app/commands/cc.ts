@@ -38,6 +38,7 @@ import { clip } from "./tasks.ts";
 import { type CcConfirmButtons, type CcConfirmDeps, createCcConfirmButtons } from "./cc-confirm.ts";
 import { type CcQuestionButtons, handleQuestion } from "./cc-question.ts";
 import { STALE_TURN_REPLY } from "./turn-controls.ts";
+import { TAKEOVER_BUSY_TEXT } from "../../cc/takeover-rules.ts";
 
 const NAMESPACE = "cc";
 /** /cc open のセレクト */
@@ -72,6 +73,8 @@ export function closeReply(closed: ReturnType<CcChannels["close"]>): { text: str
       return { text: "起動中です。少し待ってから実行してください", ephemeral: true };
     case "ended":
       return { text: "このチャンネルは既に閉じています", ephemeral: true };
+    case "taking_over":
+      return { text: TAKEOVER_BUSY_TEXT, ephemeral: true };
   }
 }
 
@@ -208,6 +211,8 @@ export type CcComponentDeps = {
     gateway: Pick<Gateway, "deleteChannel">;
     /** 削除したチャンネルの未実行の移動を捨てる */
     channelOps: Pick<ChannelOpsQueue, "cancel">;
+    /** そのチャンネルに running の取り込みがあるか（docs/plan/takeover.md §3.2。CcTakeover の holdsChannel）。true なら [削除する] は何も変えない */
+    takingOver?: (channelId: string) => boolean;
   };
   /** 応答に失敗したときの書き換え（既定の人格の Bot。1 通を出した Bot） */
   gateway: Pick<Gateway, "editMessage">;
@@ -264,11 +269,21 @@ async function handleDelete(
     await show(ccKeptText(first.name, deps.deleteAfterDays));
     return;
   }
+  // 取り込みの途中は何も変えず、押した人にだけ断る（ボタンは残す）
+  const takingOver = (): boolean => deps.takingOver?.(channelId) === true;
+  if (takingOver()) {
+    await responder.reply({ text: TAKEOVER_BUSY_TEXT, ephemeral: true });
+    return;
+  }
   // チャンネルの削除は Discord に問い合わせるので先に保留する
   await responder.deferUpdate();
   const second = check();
   if (typeof second === "string") {
     await dismiss(second);
+    return;
+  }
+  if (takingOver()) {
+    await responder.reply({ text: TAKEOVER_BUSY_TEXT, ephemeral: true });
     return;
   }
   // 失敗したら何も変えずに投げる（ボタンは残るので押し直せる）

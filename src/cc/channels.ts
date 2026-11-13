@@ -47,6 +47,7 @@ import type { CcRegistry, CcSessionView, CcState } from "./registry.ts";
 import { CC_CHANNEL_QUEUE_MAX, normalizeSendText, type CcSender, type CcSubmitResult } from "./sender.ts";
 import { breakMaskedLinks } from "./replies.ts";
 import { normalizeTitle, type CcStartFailure, type CcStarter, type CcStartResult } from "./starter.ts";
+import { TAKEOVER_BUSY_TEXT, TAKEOVER_SEND_REJECT_TEXT } from "./takeover-rules.ts";
 
 /** Discord で 1 つのカテゴリに入れられるチャンネル数（カテゴリ「Claude Code」は 1 つだけで、満杯なら作らずに断る） */
 export const CC_CATEGORY_CHANNEL_LIMIT = 50;
@@ -117,6 +118,7 @@ const SUBMIT_REJECT_REPLY: Readonly<Record<Exclude<CcSubmitResult, { ok: true }>
   no_server: "tmux のサーバーがありません",
   tmux_failed: "tmux を使えませんでした",
   stopped: "停止中です",
+  taking_over: TAKEOVER_SEND_REJECT_TEXT,
 };
 
 /** 送れなかった理由（cc_sends.last_pane_state）の表示 */
@@ -237,7 +239,8 @@ export type CcResumeResult =
   | { ok: true; message: OutgoingMessage }
   /** expired = 保留が無い（再起動・[やめる]・付け替えの後。確認のボタンを外す）、stale = 状態・サーバーが合わない */
   | { ok: false; reason: "stale" | "expired" }
-  | { ok: false; reason: CcResumeFailure; message: OutgoingMessage };
+  /** taking_over = 取り込みの途中（docs/plan/takeover.md §3.2。何も変えず、ボタンは残す） */
+  | { ok: false; reason: CcResumeFailure | "taking_over"; message: OutgoingMessage };
 
 /** [起動して続ける] で起動できなかった理由（bad_place = cwd が SELF_AGENT_WORKSPACE_DIR の直下でない、failed = launch が投げた） */
 export type CcResumeFailure = "bad_place" | "failed" | CcStartFailure;
@@ -287,7 +290,7 @@ export function resumeProject(cwd: string | null, workspaceDir: string): string 
 }
 
 /** /cc close の結果。closed は取り消した届け待ちの数を添える */
-export type CcCloseResult = { result: "closed"; cancelled: number } | { result: "not_channel" | "resuming" | "ended" };
+export type CcCloseResult = { result: "closed"; cancelled: number } | { result: "not_channel" | "resuming" | "ended" | "taking_over" };
 
 /** 開き直す理由（back = 同じ session_id が一覧に戻った、reopened = 閉じたチャンネルのセッションが一覧にあるうちに関わった） */
 export type CcReviveReason = "back" | "reopened";
@@ -381,11 +384,19 @@ export type CcChannelsDeps = {
   channelOps: Pick<ChannelOpsQueue, "enqueueMove" | "cancel">;
   /** Web UI の会話の記録（CC14。Web UI が有効なときだけ。無ければ書かない） */
   history?: Pick<HistoryStore, "add">;
+  /**
+   * 取り込み（docs/plan/takeover.md §3.2。cc/takeover.ts の CcTakeover）。running の取り込みがあるセッション・チャンネルの [起動して続ける]・
+   * close・開き直しは何も変えない。無ければ見ない
+   */
+  takeover?: () => CcTakeoverGuard | undefined;
   /** ~ の場所（ディレクトリの表示） */
   home: string;
   now: () => Date;
   log: (message: string) => void;
 };
+
+/** 取り込みの途中かを見る口（cc/takeover.ts の CcTakeover の holds・holdsChannel） */
+export type CcTakeoverGuard = { holds(sessionId: string): boolean; holdsChannel(channelId: string): boolean };
 
 /** /cc open のセレクトの 1 件 */
 export type CcPickItem = { sessionId: string; label: string; state: CcState; dir: string | null; hasChannel: boolean };
@@ -638,6 +649,7 @@ export class CcChannels {
   close(channelId: string, options: { fromWeb?: boolean } = {}): CcCloseResult {
     const row = this.deps.store.get(channelId);
     if (row === undefined || row.state === "deleted") return { result: "not_channel" };
+    if (this.deps.takeover?.()?.holdsChannel(channelId) === true) return { result: "taking_over" };
     if (row.state !== "open") return { result: row.state };
     if (!this.deps.store.setState(channelId, "ended", ["open"])) {
       return { result: this.deps.store.get(channelId)?.state === "resuming" ? "resuming" : "ended" };
@@ -687,6 +699,10 @@ export class CcChannels {
    */
   async resume(channelId: string, messageId: string, guildId: string | null): Promise<CcResumeResult> {
     const { store, cfg, log } = this.deps;
+    // 取り込みの途中は何も変えない（保留とボタンは残す）
+    if (this.deps.takeover?.()?.holdsChannel(channelId) === true) {
+      return { ok: false, reason: "taking_over", message: { text: TAKEOVER_BUSY_TEXT, components: ccResumeButtons(channelId, messageId) } };
+    }
     const key = `${channelId}:${messageId}`;
     const pending = this.resumePending.get(key);
     if (pending === undefined) return { ok: false, reason: "expired" };
@@ -1035,6 +1051,8 @@ export class CcChannels {
    * カテゴリ「Claude Code」へ戻す（付け替えの前の id（previous_session_id）では開き直さない）。開き直さなければ false
    */
   revived(session: Pick<CcSessionRow, "sessionId">, reason: CcReviveReason = "back"): boolean {
+    // 取り込みの途中は開き直さない（reopenIfListed も通る）
+    if (this.deps.takeover?.()?.holds(session.sessionId) === true) return false;
     const row = this.deps.store.anyFor(session.sessionId);
     if (row === undefined || row.state !== "ended" || !this.deps.store.setState(row.channelId, "open", ["ended"])) return false;
     this.deps.log(
@@ -1207,17 +1225,34 @@ export class CcChannels {
   }
 }
 
-/**
- * registry の ended に渡す関数（main の配線。§3.6）: チャンネルがあれば ended にして終わったことを 1 行出し完了へ移し、返事の追いかけ（replier）は
- * 今までどおり止める。チャンネルが無ければ終了は知らせない（#system には出さない。docs/plan/claude-code-questions.md §5.1）
- */
-export function ccEndedHandler(deps: {
+/** ccEndedHandler・ccReplayEnded が呼ぶ 2 つ */
+type CcEndedTargets = {
   channels: () => Pick<CcChannels, "ended"> | undefined;
   replier: () => { ended(session: CcSessionRow): boolean } | undefined;
-}): (session: CcSessionRow) => void {
+};
+
+/**
+ * 終わったことを流す（channels.ended と replier.ended）。取り込みが差し止めた ended を流し直す口（docs/plan/takeover.md §3.2。CcTakeover の replayEnded）
+ */
+export function ccReplayEnded(deps: CcEndedTargets): (session: CcSessionRow) => void {
   return (session) => {
     deps.channels()?.ended(session);
     deps.replier()?.ended(session);
+  };
+}
+
+/**
+ * registry の ended に渡す関数（main の配線。§3.6）: チャンネルがあれば ended にして終わったことを 1 行出し完了へ移し、返事の追いかけ（replier）は
+ * 今までどおり止める。チャンネルが無ければ終了は知らせない（#system には出さない。docs/plan/claude-code-questions.md §5.1）。
+ * takeover を渡したとき、そのセッションに running の取り込みがあれば（intercept が true）どちらも呼ばない（差し止め。docs/plan/takeover.md §3.2）
+ */
+export function ccEndedHandler(
+  deps: CcEndedTargets & { takeover?: () => { intercept(session: CcSessionRow): boolean } | undefined },
+): (session: CcSessionRow) => void {
+  const replay = ccReplayEnded(deps);
+  return (session) => {
+    if (deps.takeover?.()?.intercept(session) === true) return;
+    replay(session);
   };
 }
 

@@ -255,6 +255,11 @@ const FAILURE_TEXTS: Readonly<Record<TakeoverFailure, string>> = {
   restart: "self-agent が再起動しました",
 };
 
+/** 取り込みの途中（running）に送信を断るときの文（§3.2 の taking_over。sender の submit・propose・[送る]） */
+export const TAKEOVER_SEND_REJECT_TEXT = "取り込みの途中です。終わってから送ってください";
+/** 取り込みの途中（running）にチャンネルの操作（[起動して続ける]・/cc close・[削除する]）を断るときの文（§3.2） */
+export const TAKEOVER_BUSY_TEXT = "取り込みの途中です。終わってからもう一度。";
+
 /** SIGTERM を送った後の失敗に足す文（§4。not_exited には足さない） */
 export const TAKEOVER_AFTER_TERM_TEXT =
   "端末の Claude Code は終了しています。このチャンネルで /cc take をもう一度実行すると、終わった会話から取り込めます。";
