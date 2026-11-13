@@ -2,8 +2,7 @@
 // CLAUDE_CONFIG_DIR の同じ場所へ写す。書くのは CLAUDE_CONFIG_DIR の中だけで、~/.claude には書かない。本文は解釈しない（写すのと、増えた行を返すだけ）。
 // log は出さない（パス・session_id は呼び出し側も出さない）
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { formatTrashId } from "../agent/project-files.ts";
+import { dirname, join, sep } from "node:path";
 import { isUuid } from "./agents.ts";
 import { projectDirName } from "./claude-dirs.ts";
 import { TAKEOVER_MAX_BYTES } from "./takeover-rules.ts";
@@ -47,14 +46,31 @@ export function inspectSource(path: string): SourceInspection {
   return { ok: true, size: stat.size, mtimeMs: stat.mtimeMs };
 }
 
-/** 写し先のディレクトリを作る（mkdir -p。作るものは mode 700）。作れた・あれば true、作れなければ false */
-export function prepareTarget(dir: string): boolean {
+function realOrUndefined(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 写し先のディレクトリを作る（mkdir -p。作るものは mode 700。§5.1）。作った後の実体が元のディレクトリ（srcDir）と同じなら shared、
+ * CLAUDE_CONFIG_DIR の projects（projectsRoot）の下なら ready、ほか（mkdir の失敗・projects の外を指す symlink を含む）は invalid
+ */
+export function prepareTarget(dir: string, projectsRoot: string, srcDir: string): "ready" | "shared" | "invalid" {
+  let real: string;
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    return lstatSync(dir).isDirectory();
+    real = realpathSync(dir);
+    if (!lstatSync(real).isDirectory()) return "invalid";
   } catch {
-    return false;
+    return "invalid";
   }
+  if (real === realOrUndefined(srcDir)) return "shared";
+  const root = realOrUndefined(projectsRoot);
+  if (root === undefined) return "invalid";
+  return real.startsWith(root.endsWith(sep) ? root : root + sep) ? "ready" : "invalid";
 }
 
 function exists(path: string): boolean {
@@ -68,9 +84,9 @@ function exists(path: string): boolean {
 
 /**
  * 記録を写す（§3.3）。copied = 写した、shared = 元と写し先のディレクトリの実体が同じ（写さない）、already_taken = 写し先に同じ名前があり
- * channel_sessions にその session_id の行がある（hasMapping。写さない）。行が無ければ古い方を `<名前>.old-<時刻>` に退けてから写す。
+ * channel_sessions にその session_id の行がある（hasMapping。写さない）。行が無ければ古い方を `<名前>.old` に退けてから写す（あれば上書き）。
  * 元が通常ファイルでない（symlink を含む）・TAKEOVER_MAX_BYTES を超える・読み書きに失敗したときは例外（copy_failed）。
- * 一時名（排他・mode 600）に写してから rename する
+ * 一時名（排他・mode 600）に写してから rename する。now は一時名にだけ使う。根拠の確かめは O_NOFOLLOW で開いた元の fstat（inspectSource は事前の検査）
  */
 export function copyTranscript(input: { src: string; dst: string; hasMapping: boolean; now?: () => Date }): "copied" | "shared" | "already_taken" {
   const now = input.now ?? (() => new Date());
@@ -82,7 +98,7 @@ export function copyTranscript(input: { src: string; dst: string; hasMapping: bo
     if (stat.size > TAKEOVER_MAX_BYTES) throw new Error("取り込みの元の記録が大きすぎます");
     if (exists(input.dst)) {
       if (input.hasMapping) return "already_taken";
-      renameSync(input.dst, `${input.dst}.old-${formatTrashId(now())}`);
+      renameSync(input.dst, `${input.dst}.old`);
     }
     const temp = `${input.dst}.tmp-${process.pid}-${now().getTime()}`;
     const target = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);

@@ -808,7 +808,8 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX IF NOT EXISTS usage_log_at ON usage_log(at);
   `,
   // v42（docs/plan/takeover.md §3.9・§5 の T1。#341）: 取り込み（端末の Claude Code の会話をプロジェクトのセッションが引き継ぐ）。
-  // 同じ session_id で確認待ち・実行中の行は 1 つだけ（cc_takeovers_active）。sessions・cc_channels・cc_sessions の定義は変えない
+  // 同じ session_id で確認待ち・実行中の行は 1 つだけ（cc_takeovers_active）。ended_held は差し止めた ended の知らせ（§3.2。流し直しの印）。
+  // 本文は置かない。sessions・cc_channels・cc_sessions の定義は変えない
   `
   CREATE TABLE cc_takeovers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -825,7 +826,7 @@ export const MIGRATIONS: readonly string[] = [
     terminal_mode TEXT,
     interrupted INTEGER NOT NULL DEFAULT 0,
     note_pending INTEGER NOT NULL DEFAULT 0,
-    pending_text TEXT,
+    ended_held INTEGER NOT NULL DEFAULT 0,
     confirm_message_id TEXT,
     effects_at TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT

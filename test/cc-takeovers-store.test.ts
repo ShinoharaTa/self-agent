@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { CcTakeoverStore, type CcTakeoverPropose } from "../src/store/cc-takeovers.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
+import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { tempDb, tempDir } from "./helpers/db.ts";
 
 const BASE = Date.parse("2026-11-13T00:00:00.000Z");
@@ -71,7 +72,7 @@ test("openDb: 1 つ前の版の DB を上げると最新の版になり、cc_tak
 
 test("propose: 確認待ちの行を作る。同じ session_id に確認待ち・実行中があれば undefined、done の後は作れる", (t) => {
   const { store, propose } = setup(t);
-  const row = propose({ pendingText: "続きをお願い" });
+  const row = propose();
   assert.ok(row);
   assert.equal(row.state, "awaiting_confirm");
   assert.equal(row.step, null);
@@ -81,7 +82,7 @@ test("propose: 確認待ちの行を作る。同じ session_id に確認待ち�
   assert.equal(row.entry, "discord");
   assert.equal(row.permissionMode, "default");
   assert.equal(row.terminalMode, "auto");
-  assert.equal(row.pendingText, "続きをお願い");
+  assert.equal(row.endedHeld, false);
   assert.equal(row.notePending, false);
   assert.equal(row.interrupted, false);
   assert.equal(row.createdAt, new Date(BASE).toISOString());
@@ -228,4 +229,65 @@ test("setConfirmMessage・markEffects・listEffectsPending", (t) => {
   assert.equal(store.markEffects(a.id), true);
   assert.ok(store.get(a.id)?.effectsAt);
   assert.deepEqual(store.listEffectsPending().map((row) => row.id), [b.id]);
+});
+
+test("runningForChannel: そのチャンネルの実行中の行だけ", (t) => {
+  const { store, propose } = setup(t);
+  const row = propose()!;
+  assert.equal(store.runningForChannel("ch-1"), undefined);
+  store.start(row.id);
+  assert.equal(store.runningForChannel("ch-1")?.id, row.id);
+  assert.equal(store.runningForChannel("ch-2"), undefined);
+  store.finish(row.id);
+  assert.equal(store.runningForChannel("ch-1"), undefined);
+});
+
+test("hold・releaseHeld・listHeld: running だけ差し止められ、流し直しは 1 回だけ", (t) => {
+  const { store, propose } = setup(t);
+  const row = propose()!;
+  assert.equal(store.hold(row.id), false);
+  store.start(row.id);
+  assert.equal(store.hold(row.id), true);
+  assert.equal(store.get(row.id)?.endedHeld, true);
+  // running のうちは listHeld に出ない
+  assert.deepEqual(store.listHeld(), []);
+  assert.equal(store.fail(row.id, "copy_failed"), true);
+  assert.equal(store.get(row.id)?.endedHeld, true);
+  assert.equal(store.hold(row.id), false);
+  assert.deepEqual(store.listHeld().map((held) => held.id), [row.id]);
+  assert.equal(store.releaseHeld(row.id), true);
+  assert.equal(store.releaseHeld(row.id), false);
+  assert.deepEqual(store.listHeld(), []);
+});
+
+test("finish: ended_held を 0 にするので listHeld に出ない", (t) => {
+  const { store, propose } = setup(t);
+  const row = propose()!;
+  store.start(row.id);
+  store.hold(row.id);
+  assert.equal(store.finish(row.id), true);
+  assert.equal(store.get(row.id)?.endedHeld, false);
+  assert.deepEqual(store.listHeld(), []);
+  assert.equal(store.releaseHeld(row.id), false);
+});
+
+test("resetRunning: ended_held を変えないので、差し止めた行は listHeld に出る", (t) => {
+  const { store, propose } = setup(t);
+  const row = propose()!;
+  store.start(row.id);
+  store.hold(row.id);
+  const reset = store.resetRunning();
+  assert.equal(reset[0]?.endedHeld, true);
+  assert.deepEqual(store.listHeld().map((held) => held.id), [row.id]);
+});
+
+test("SdkSessionStore.hasSessionId: どれかの key に同じ session_id があれば true", (t) => {
+  const { db } = setup(t);
+  const sessions = new SdkSessionStore(db, () => new Date(BASE));
+  assert.equal(sessions.hasSessionId(S1), false);
+  sessions.set("other-channel", S1);
+  assert.equal(sessions.hasSessionId(S1), true);
+  assert.equal(sessions.hasSessionId(S2), false);
+  sessions.delete("other-channel");
+  assert.equal(sessions.hasSessionId(S1), false);
 });

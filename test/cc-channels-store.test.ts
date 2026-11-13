@@ -189,3 +189,22 @@ test("GuildSettingsStore.ccCategoryId・setCcCategory: /setup 前（行が無い
   assert.equal(guildSettings.setCcCategory("guild-1", "cat-2"), true);
   assert.equal(guildSettings.ccCategoryId("guild-1"), "cat-2");
 });
+
+test("markTaken: その session_id の open・ended の行だけ削除済みにする。resuming・別の session_id は false", (t) => {
+  const { store, create } = setup(t);
+  create("ch-1", S1);
+  assert.equal(store.markTaken("ch-1", S2), false);
+  assert.equal(store.get("ch-1")?.state, "open");
+  assert.equal(store.markTaken("ch-1", S1), true);
+  assert.equal(store.get("ch-1")?.state, "deleted");
+  assert.ok(store.get("ch-1")?.deletedAt);
+  assert.equal(store.markTaken("ch-1", S1), false);
+  create("ch-2", S2);
+  store.setState("ch-2", "ended");
+  assert.equal(store.markTaken("ch-2", S2), true);
+  create("ch-3", "33333333-3333-4333-8333-333333333333");
+  store.setState("ch-3", "resuming");
+  assert.equal(store.markTaken("ch-3", "33333333-3333-4333-8333-333333333333"), false);
+  assert.equal(store.get("ch-3")?.state, "resuming");
+  assert.equal(store.markTaken("missing", S1), false);
+});

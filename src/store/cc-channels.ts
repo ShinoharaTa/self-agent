@@ -218,6 +218,20 @@ export class CcChannelStore {
     return Number(result.changes) > 0;
   }
 
+  /**
+   * 取り込んだ（docs/plan/takeover.md §4 の commit）: その session_id の open・ended の行だけを削除済みにする。1 行変わったら true。
+   * 内側に BEGIN を置かない（呼び出し側のトランザクションの中で呼ぶ）
+   */
+  markTaken(channelId: string, sessionId: string): boolean {
+    const at = this.now().toISOString();
+    const result = this.db
+      .prepare(
+        "UPDATE cc_channels SET state = 'deleted', deleted_at = ?, updated_at = ? WHERE channel_id = ? AND session_id = ? AND state IN ('open','ended')",
+      )
+      .run(at, at, channelId, sessionId);
+    return Number(result.changes) === 1;
+  }
+
   /** deleted_at が cutoff より前の行を消し、消した数を返す */
   prune(cutoff: Date): number {
     const result = this.db

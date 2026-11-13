@@ -45,8 +45,8 @@ export type CcTakeoverRow = {
   interrupted: boolean;
   /** 最初のターンの前置き（TAKEOVER_NOTE）をまだ付けていない */
   notePending: boolean;
-  /** 取り込んだ後に最初のターンとして流す発言（T4） */
-  pendingText: string | null;
+  /** 取り込みの間に ended の知らせを差し止めた（§3.2。失敗したら流し直す印） */
+  endedHeld: boolean;
   confirmMessageId: string | null;
   /** 後始末（進行中へ移す・topic など）を済ませた時刻 */
   effectsAt: string | null;
@@ -64,7 +64,6 @@ export type CcTakeoverPropose = {
   entry: CcTakeoverEntry;
   permissionMode: CcTakeoverMode;
   terminalMode?: string | null;
-  pendingText?: string | null;
 };
 
 function nullableString(value: SQLOutputValue | undefined): string | null {
@@ -95,7 +94,7 @@ function toRow(row: Record<string, SQLOutputValue>): CcTakeoverRow {
     terminalMode: nullableString(row.terminal_mode),
     interrupted: Number(row.interrupted) === 1,
     notePending: Number(row.note_pending) === 1,
-    pendingText: nullableString(row.pending_text),
+    endedHeld: Number(row.ended_held) === 1,
     confirmMessageId: nullableString(row.confirm_message_id),
     effectsAt: nullableString(row.effects_at),
     createdAt: String(row.created_at),
@@ -120,8 +119,8 @@ export class CcTakeoverStore {
     const row = this.db
       .prepare(
         `INSERT INTO cc_takeovers (session_id, source, project, guild_id, channel_id, entry, state, permission_mode, terminal_mode,
-           pending_text, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'awaiting_confirm', ?, ?, ?, ?, ?)
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'awaiting_confirm', ?, ?, ?, ?)
          ON CONFLICT (session_id) WHERE state IN ('awaiting_confirm','running') DO NOTHING
          RETURNING *`,
       )
@@ -134,7 +133,6 @@ export class CcTakeoverStore {
         input.entry,
         input.permissionMode,
         input.terminalMode ?? null,
-        input.pendingText ?? null,
         at,
         at,
       );
@@ -160,6 +158,12 @@ export class CcTakeoverStore {
     return row === undefined ? undefined : toRow(row);
   }
 
+  /** そのチャンネルの実行中の行 */
+  runningForChannel(channelId: string): CcTakeoverRow | undefined {
+    const row = this.db.prepare("SELECT * FROM cc_takeovers WHERE channel_id = ? AND state = 'running' ORDER BY id DESC LIMIT 1").get(channelId);
+    return row === undefined ? undefined : toRow(row);
+  }
+
   /** 確認待ち → 実行中（[取り込む]）。移したら true */
   start(id: number): boolean {
     return this.move(id, "awaiting_confirm", "running", false);
@@ -181,16 +185,37 @@ export class CcTakeoverStore {
     return Number(result.changes) > 0;
   }
 
-  /** 実行中 → done（note_pending = 1）。移したら true。トランザクションは開かない（呼び出し側の commit の中で呼ぶ） */
+  /** 実行中の行の ended の知らせを差し止めた印を立てる（§3.2）。変わったら true */
+  hold(id: number): boolean {
+    const result = this.db
+      .prepare("UPDATE cc_takeovers SET ended_held = 1, updated_at = ? WHERE id = ? AND state = 'running' AND ended_held = 0")
+      .run(this.now().toISOString(), id);
+    return Number(result.changes) > 0;
+  }
+
+  /** 差し止めた印を外す。1 行変わったときだけ true（流し直しの compare-and-set。2 回目は false） */
+  releaseHeld(id: number): boolean {
+    const result = this.db
+      .prepare("UPDATE cc_takeovers SET ended_held = 0, updated_at = ? WHERE id = ? AND ended_held = 1")
+      .run(this.now().toISOString(), id);
+    return Number(result.changes) === 1;
+  }
+
+  /** 失敗して ended の知らせを差し止めたままの行を古い順に（流し直す。§3.2） */
+  listHeld(): CcTakeoverRow[] {
+    return this.db.prepare("SELECT * FROM cc_takeovers WHERE state = 'failed' AND ended_held = 1 ORDER BY id").all().map(toRow);
+  }
+
+  /** 実行中 → done（note_pending = 1・ended_held = 0）。移したら true。トランザクションは開かない（呼び出し側の commit の中で呼ぶ） */
   finish(id: number): boolean {
     const at = this.now().toISOString();
     const result = this.db
-      .prepare("UPDATE cc_takeovers SET state = 'done', note_pending = 1, finished_at = ?, updated_at = ? WHERE id = ? AND state = 'running'")
+      .prepare("UPDATE cc_takeovers SET state = 'done', note_pending = 1, ended_held = 0, finished_at = ?, updated_at = ? WHERE id = ? AND state = 'running'")
       .run(at, at, id);
     return Number(result.changes) > 0;
   }
 
-  /** 実行中 → failed（failure に符号）。移したら true */
+  /** 実行中 → failed（failure に符号）。移したら true。ended_held は変えない */
   fail(id: number, failure: string): boolean {
     const at = this.now().toISOString();
     const result = this.db
@@ -217,7 +242,7 @@ export class CcTakeoverStore {
       .sort((a, b) => a.id - b.id);
   }
 
-  /** 起動時に、実行中の行をすべて failed（restart）にし、移した行を古い順に返す（§3.4） */
+  /** 起動時に、実行中の行をすべて failed（restart）にし、移した行を古い順に返す（§3.4）。ended_held は変えない */
   resetRunning(): CcTakeoverRow[] {
     const at = this.now().toISOString();
     return this.db

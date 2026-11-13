@@ -1,7 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { copyTranscript, inspectSource, prepareTarget, readAppended, takeoverPaths } from "../src/cc/takeover-files.ts";
 import { TAKEOVER_MAX_BYTES } from "../src/cc/takeover-rules.ts";
 import { tempDir } from "./helpers/db.ts";
@@ -15,7 +15,10 @@ function setup(t: TestContext) {
   const configDir = join(root, "config");
   const paths = takeoverPaths(home, configDir, CWD, S1)!;
   mkdirSync(join(home, ".claude", "projects", "-home-u-workspace-alpha"), { recursive: true });
-  return { root, home, configDir, paths };
+  const projectsRoot = join(configDir, "projects");
+  const srcDir = dirname(paths.src);
+  const prepare = () => prepareTarget(paths.dstDir, projectsRoot, srcDir);
+  return { root, home, configDir, paths, projectsRoot, srcDir, prepare };
 }
 
 test("takeoverPaths: ~/.claude と CLAUDE_CONFIG_DIR の projects/<cwd を - に>/<id>.jsonl。UUID でなければ undefined", () => {
@@ -49,20 +52,36 @@ test("inspectSource: 通常ファイルは大きさと mtime。無い・symlink�
   assert.equal(inspectSource(big).ok, true);
 });
 
-test("prepareTarget: mkdir -p で mode 700。あれば true、作れなければ false", (t) => {
-  const { root, paths } = setup(t);
-  assert.equal(prepareTarget(paths.dstDir), true);
+test("prepareTarget: mkdir -p で mode 700 の ready。あれば ready、作れなければ invalid", (t) => {
+  const { root, paths, projectsRoot, srcDir, prepare } = setup(t);
+  assert.equal(prepare(), "ready");
   assert.equal(statSync(paths.dstDir).mode & 0o777, 0o700);
-  assert.equal(prepareTarget(paths.dstDir), true);
+  assert.equal(prepare(), "ready");
   const file = join(root, "file");
   writeFileSync(file, "");
-  assert.equal(prepareTarget(join(file, "sub")), false);
+  assert.equal(prepareTarget(join(file, "sub"), projectsRoot, srcDir), "invalid");
+});
+
+test("prepareTarget: projects の下の symlink が外を指せば invalid", (t) => {
+  const { root, paths, projectsRoot } = setup(t);
+  const outside = join(root, "outside");
+  mkdirSync(outside);
+  mkdirSync(projectsRoot, { recursive: true });
+  symlinkSync(outside, paths.dstDir);
+  assert.equal(prepareTarget(paths.dstDir, projectsRoot, join(root, "elsewhere")), "invalid");
+});
+
+test("prepareTarget: 元と同じ実体なら shared", (t) => {
+  const { paths, projectsRoot, srcDir, prepare } = setup(t);
+  mkdirSync(projectsRoot, { recursive: true });
+  symlinkSync(srcDir, paths.dstDir);
+  assert.equal(prepare(), "shared");
 });
 
 test("copyTranscript: 写した先は同じ中身で mode 600。一時ファイルは残らない", (t) => {
-  const { paths } = setup(t);
+  const { paths, prepare } = setup(t);
   writeFileSync(paths.src, '{"type":"user"}\n{"type":"assistant"}\n', { mode: 0o644 });
-  prepareTarget(paths.dstDir);
+  prepare();
   assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false }), "copied");
   assert.equal(readFileSync(paths.dst, "utf8"), readFileSync(paths.src, "utf8"));
   assert.equal(statSync(paths.dst).mode & 0o777, 0o600);
@@ -70,8 +89,8 @@ test("copyTranscript: 写した先は同じ中身で mode 600。一時ファイ�
 });
 
 test("copyTranscript: 元が symlink なら例外で写さない", (t) => {
-  const { root, paths } = setup(t);
-  prepareTarget(paths.dstDir);
+  const { root, paths, prepare } = setup(t);
+  prepare();
   const real = join(root, "real.jsonl");
   writeFileSync(real, "{}\n");
   symlinkSync(real, paths.src);
@@ -80,8 +99,8 @@ test("copyTranscript: 元が symlink なら例外で写さない", (t) => {
 });
 
 test("copyTranscript: 元が上限を超えれば例外で写さない", (t) => {
-  const { paths } = setup(t);
-  prepareTarget(paths.dstDir);
+  const { paths, prepare } = setup(t);
+  prepare();
   writeFileSync(paths.src, "");
   truncateSync(paths.src, TAKEOVER_MAX_BYTES + 1);
   assert.throws(() => copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false }));
@@ -89,24 +108,28 @@ test("copyTranscript: 元が上限を超えれば例外で写さない", (t) => 
 });
 
 test("copyTranscript: 写し先に同じ名前があり channel_sessions に行があれば already_taken で触らない", (t) => {
-  const { paths } = setup(t);
+  const { paths, prepare } = setup(t);
   writeFileSync(paths.src, "new\n");
-  prepareTarget(paths.dstDir);
+  prepare();
   writeFileSync(paths.dst, "old\n");
   assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: true }), "already_taken");
   assert.equal(readFileSync(paths.dst, "utf8"), "old\n");
   assert.deepEqual(readdirSync(paths.dstDir), [`${S1}.jsonl`]);
 });
 
-test("copyTranscript: 写し先に同じ名前があり行が無ければ、古い方を .old-<時刻> に退けてから写す", (t) => {
-  const { paths } = setup(t);
+test("copyTranscript: 写し先に同じ名前があり行が無ければ、古い方を .old に退けてから写す。.old は 2 回目で増えない", (t) => {
+  const { paths, prepare } = setup(t);
   writeFileSync(paths.src, "new\n");
-  prepareTarget(paths.dstDir);
+  prepare();
   writeFileSync(paths.dst, "old\n");
-  const now = () => new Date("2026-11-13T01:02:03.456Z");
-  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false, now }), "copied");
+  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false }), "copied");
   assert.equal(readFileSync(paths.dst, "utf8"), "new\n");
-  assert.equal(readFileSync(`${paths.dst}.old-20261113T010203Z`, "utf8"), "old\n");
+  assert.equal(readFileSync(`${paths.dst}.old`, "utf8"), "old\n");
+  writeFileSync(paths.src, "newer\n");
+  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false }), "copied");
+  assert.equal(readFileSync(paths.dst, "utf8"), "newer\n");
+  assert.equal(readFileSync(`${paths.dst}.old`, "utf8"), "new\n");
+  assert.deepEqual(readdirSync(paths.dstDir).sort(), [`${S1}.jsonl`, `${S1}.jsonl.old`]);
 });
 
 test("copyTranscript: 元と写し先のディレクトリの実体が同じなら shared で写さない", (t) => {
