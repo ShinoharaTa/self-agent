@@ -120,6 +120,7 @@ export const SUBMIT_STATUS: Readonly<Record<string, number>> = {
   no_server: 503,
   tmux_failed: 503,
   stopped: 503,
+  taking_over: 409,
 };
 
 /** 起動を断った理由 → HTTP の状態（§5.1） */
@@ -232,10 +233,11 @@ export function ccChannelDescriber(
 }
 
 /** /api/cc/channels/<id>/close の結果 → HTTP の状態（closed は 200） */
-const CLOSE_STATUS: Readonly<Record<"not_channel" | "resuming" | "ended", RouteResult>> = {
+const CLOSE_STATUS: Readonly<Record<"not_channel" | "resuming" | "ended" | "taking_over", RouteResult>> = {
   not_channel: NOT_FOUND,
   resuming: { status: 409, json: { error: "resuming" } },
   ended: { status: 409, json: { error: "ended" } },
+  taking_over: { status: 409, json: { error: "taking_over" } },
 };
 
 /** 押した操作の結果 → HTTP の状態 */

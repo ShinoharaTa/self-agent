@@ -11,6 +11,8 @@ export const TAKEOVER_SETTLE_MS = 2000;
 export const TAKEOVER_EXIT_TIMEOUT_MS = 10000;
 /** /proc/<pid> を見る間隔（§3.4） */
 export const TAKEOVER_EXIT_POLL_MS = 250;
+/** 終わらせる前の進行中のカテゴリの解決を待つ上限（過ぎたら no_category。§3.4） */
+export const TAKEOVER_CATEGORY_TIMEOUT_MS = 15000;
 /** 写せる記録の大きさの上限（§3.3） */
 export const TAKEOVER_MAX_BYTES = 128 * 1024 * 1024;
 /** SIGTERM の相手の /proc/<pid>/stat の comm（§3.4 の 3） */
@@ -47,6 +49,7 @@ export type TakeoverFailure =
   | "identity"
   | "not_exited"
   | "copy_failed"
+  | "internal"
   | "restart";
 
 /** ペインの状態。tmux の外は not_in_tmux、撮れなかった（tmux の失敗）は failed（tmux_failed で断る） */
@@ -252,12 +255,25 @@ const FAILURE_TEXTS: Readonly<Record<TakeoverFailure, string>> = {
   identity: "セッションを確かめられませんでした。端末の Claude Code はそのままです",
   not_exited: "10 秒待っても端末の Claude Code が終わりませんでした。取り込みはやめました。後から終わったら、もう一度 /cc take してください",
   copy_failed: "記録を写せませんでした",
+  internal: "内部のエラーが起きました（端末の Claude Code はそのままです）",
   restart: "self-agent が再起動しました",
 };
+
+/** 取り込みの途中（running）に送信を断るときの文（§3.2 の taking_over。sender の submit・propose・[送る]） */
+export const TAKEOVER_SEND_REJECT_TEXT = "取り込みの途中です。終わってから送ってください";
+/** 取り込みの途中（running）にチャンネルの操作（[起動して続ける]・/cc close・[削除する]）を断るときの文（§3.2） */
+export const TAKEOVER_BUSY_TEXT = "取り込みの途中です。終わってからもう一度。";
 
 /** SIGTERM を送った後の失敗に足す文（§4。not_exited には足さない） */
 export const TAKEOVER_AFTER_TERM_TEXT =
   "端末の Claude Code は終了しています。このチャンネルで /cc take をもう一度実行すると、終わった会話から取り込めます。";
+
+/**
+ * 再起動で restart にした取り込みが SIGTERM を送ったか分からない段（term・copy・commit）だったときに足す文（docs/plan/takeover.md §9.1。
+ * 送ったと言い切らない）
+ */
+export const TAKEOVER_MAYBE_TERM_TEXT =
+  "端末の Claude Code は終了しているかもしれません。終了していれば、このチャンネルで /cc take をもう一度実行すると、終わった会話から取り込めます。";
 
 /**
  * 確認の文を書き換える失敗の文（§4）。afterTerm（SIGTERM を送った後の失敗）なら TAKEOVER_AFTER_TERM_TEXT を次の行に足す。

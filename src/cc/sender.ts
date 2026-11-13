@@ -87,7 +87,10 @@ export const CC_MULTILINE_OFF_NOTICE =
 /** submit の結果。channelId は送り先のセッションの開いている Claude Code のチャンネル（あれば。返事はそこに出る） */
 export type CcSubmitResult =
   | { ok: true; send: CcSendRow; duplicate: boolean; channelId?: string }
-  | { ok: false; reason: "not_found" | "already_queued" | "queue_full" | "not_in_tmux" | "not_claude" | "no_server" | "tmux_failed" | "stopped" };
+  | {
+      ok: false;
+      reason: "not_found" | "already_queued" | "queue_full" | "not_in_tmux" | "not_claude" | "no_server" | "tmux_failed" | "stopped" | "taking_over";
+    };
 
 /** Claude Code のチャンネル（cc/channels.ts。CC11）に渡すもの。どれも投げても送信の処理は止めない */
 export type CcSenderChannels = {
@@ -108,10 +111,10 @@ export type CcCancelResult = "cancelled" | "not_found" | "stale";
 export type CcTargetFailure = "not_found" | "not_in_tmux" | "not_claude" | "no_server" | "tmux_failed" | "stopped";
 
 /** Discord の確認待ちの送信を作った結果（cc_send。CC7） */
-export type CcProposeResult = { ok: true; send: CcSendRow } | { ok: false; reason: CcTargetFailure | "already_queued" };
+export type CcProposeResult = { ok: true; send: CcSendRow } | { ok: false; reason: CcTargetFailure | "already_queued" | "taking_over" };
 
-/** [送る] の結果（queued にした・行が無い・確認待ちでない） */
-export type CcConfirmResult = "queued" | "not_found" | "stale";
+/** [送る] の結果（queued にした・行が無い・確認待ちでない・取り込みの途中（docs/plan/takeover.md §3.2。確認待ちのまま）） */
+export type CcConfirmResult = "queued" | "not_found" | "stale" | "taking_over";
 
 export type CcSenderDeps = {
   cfg: Pick<Config, "ccSendWaitMin" | "allowedGuildIds">;
@@ -146,6 +149,11 @@ export type CcSenderDeps = {
   onFinished?: (row: CcSendRow) => void;
   /** Claude Code のチャンネル（CC11。SELF_AGENT_CC=1 のときだけ）。無ければチャンネルには何もしない */
   channels?: CcSenderChannels;
+  /**
+   * そのセッションに running の取り込みがあるか（docs/plan/takeover.md §3.2。cc/takeover.ts の holds）。true なら submit・propose・confirm は
+   * taking_over で断り、待ち行列は届けずに queued のまま残す。無ければ見ない
+   */
+  holds?: (sessionId: string) => boolean;
   now: () => Date;
   /** 既定は timers/promises の setTimeout */
   sleep?: (ms: number) => Promise<void>;
@@ -245,6 +253,7 @@ export class CcSender {
     const checked = await this.checkTarget(input.sessionId);
     if (checked !== undefined) return { ok: false, reason: checked };
     // ここから行を作るまで await しない（同時に来た 2 つの要求でも二重に積まない）
+    if (this.deps.holds?.(input.sessionId) === true) return { ok: false, reason: "taking_over" };
     const same = sends.findRecentSame(input.sessionId, input.text, new Date(now().getTime() - CC_SEND_DUPLICATE_MS));
     if (same !== undefined) return { ok: true, send: same, duplicate: true };
     if (input.origin === "discord") {
@@ -303,6 +312,7 @@ export class CcSender {
     const checked = await this.checkTarget(input.sessionId);
     if (checked !== undefined) return { ok: false, reason: checked };
     // ここから行を作るまで await しない
+    if (this.deps.holds?.(input.sessionId) === true) return { ok: false, reason: "taking_over" };
     if (this.deps.sends.activeFor(input.sessionId) !== undefined) return { ok: false, reason: "already_queued" };
     const send = this.deps.sends.add({
       sessionId: input.sessionId,
@@ -314,9 +324,11 @@ export class CcSender {
     return { ok: true, send };
   }
 
-  /** [送る]: 確認待ちの送信を queued にする（待ち行列を回すのは呼び出し側の kick）。確認待ちでなければ stale */
+  /** [送る]: 確認待ちの送信を queued にする（待ち行列を回すのは呼び出し側の kick）。確認待ちでなければ stale、取り込みの途中なら taking_over（変えない） */
   confirm(id: number): CcConfirmResult {
-    if (this.deps.sends.get(id) === undefined) return "not_found";
+    const row = this.deps.sends.get(id);
+    if (row === undefined) return "not_found";
+    if (row.sessionId !== null && this.deps.holds?.(row.sessionId) === true) return "taking_over";
     if (!this.deps.sends.confirm(id)) return "stale";
     this.deps.log(`Claude Code: 送りました（#${id}、queued）`);
     return "queued";
@@ -462,6 +474,8 @@ export class CcSender {
     const { registry, panes, sends, tmux, now } = this.deps;
     const row = sends.get(id);
     if (row === undefined || row.state !== "queued") return;
+    // 取り込みの途中は届けない（queued のまま。docs/plan/takeover.md §3.2）
+    if (row.sessionId !== null && this.deps.holds?.(row.sessionId) === true) return;
     if (row.sessionId === null && row.paneId === null) {
       this.fail(id, "gone");
       return;
@@ -495,6 +509,8 @@ export class CcSender {
         return;
       }
       sends.bindSession(id, view.sessionId);
+      // 結びついたセッションが取り込みの途中なら届けない（queued のまま）
+      if (this.deps.holds?.(view.sessionId) === true) return;
     }
     const target = lookup.sendable({ pid: view.pid, tmux: view.tmux });
     if (!target.ok) {
