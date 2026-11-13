@@ -123,7 +123,7 @@ running の間（`start(id)` の直後から done / failed まで。DB の `runn
 - **相手の確かめ**（signal の直前に全部。1 つでも欠ければ `identity`。signal は送らない）:
   1. 今読んだ一覧にその session_id があり、pid が最初の確かめと同じで、interactive・idle。
   2. `sessionFile(pid, sessionId)` が返る。
-  3. `/proc/<pid>/stat` の comm が `claude`・state が Z でない・starttime が最初の確かめと同じ。
+  3. `/proc/<pid>/stat` の comm が `claude`・state が R・S・D のどれか（Z のほか、止まっている T・t も落とす。SIGTERM が保留され、後で fg した瞬間に死ぬ）・starttime が最初の確かめと同じ。`sessions/<pid>.json` に `procStart` があれば、starttime と文字列で一致すること（実機の 2.1.288・2.1.321 で一致を確認。無い版は 4 だけ）。
   4. プロセスの開始（`/proc/stat` の btime × 1000 + starttime × 10 ミリ秒）が、一覧の `startedAt` + 2 秒以下。使い回された pid のプロセスは `startedAt` より後に始まっているので落ちる。`startedAt`・btime が読めなければ落とす。
   5. pid が 1 より大きく、自分でなく、**自分の祖先でも子孫でもない**。祖先は pid 1 に着くまでたどる（8 段で打ち切らない。1,024 段を超える・途中で読めないなら落とす）。
 - **直前の競合**: 最初の確かめで記録の大きさを覚える → 2 秒おく → 一覧を読み直し、ペインを撮り直し、**記録の増えた分に `user`・`assistant` の行が無い**ことを見る（あれば `changed`。大きさ・mtime は比べない。§1.1 の 7）→ 相手の確かめ → すぐ SIGTERM。終了の後にもう一度増えた分を見て、あれば `interrupted` を立て、完了の文に 1 行足す。
@@ -370,3 +370,7 @@ T4・T5
 ## 9. レビュー（PR #342）の指摘の扱い
 
 20 件すべて採った。直した所: 1・2 → §3.6.1・§3.6.3・§5.3 / 3・6 → §3.2・`ended_held`・`recover()` / 4・5・9 → §3.4・`takeoverIdentity`・`listFresh` / 7・8 → §3.2・`markTaken` / 10 → §3.3・§3.4・`prepareTarget` / 11 → `hasSessionId` / 12 → §3.4・`no_category` / 13 → §3.6・未決 6 / 14 → R6・§7 の 7・8 / 15 → §5 の表 / 16〜19 → §1.1 の 10・8・3、§3.1 の題名 / 20 → §5.1（`pending_text`・`.old`）・§5.2 の `db`・§5.6 のボタン・§3.6.1（/close の要約）。写しの O_NOFOLLOW + fstat は T1 で済んでいた。
+
+### 9.1 PR #343（T1・T1b）のレビューで足した締め
+
+重大は無し。採ったもの: 相手の確かめの state を R・S・D に限る／`procStart` と starttime の一致（§3.4 の 3）／`copyTranscript` が写す直前に「写し先が projects の下」を確かめ直す（`prepareTarget` から写しまで数秒空く）／元を開くときの O_NONBLOCK（FIFO で止まらない）／`lineage` は親が 0 以上の整数でなければ undefined／読めない行が増えていたら `changed` の側（`appendedInterrupted` が true）／rename の前の fsync／`releaseHeld` は failed の行だけ・`markEffects` は 1 回だけ true。採らなかったもの: `prepareTarget` の mkdir の順（`takeoverPaths` の名前に `/` が入らないので届かない）。T2 への申し送り: fs の例外の message（パスが入る）を log に出さない／check の段で cc の行の session_id が取り込みの行と同じことを見る／再起動で step が `term` の行は SIGTERM を送ったか分からないので、失敗の文は「終了しているかもしれません」の側にする。
