@@ -1,17 +1,17 @@
 // 進行状況に登録したプロジェクト（board_projects。v42。docs/plan/project-board.md §4 PS1）。物理削除はしない（外すのは removed_at）
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
-import { BOARD_STATES, type BoardCi, type BoardItem, type BoardLocal, type BoardState } from "../board/classify.ts";
+import { BOARD_STATES, type BoardCapped, type BoardCi, type BoardItem, type BoardLocal, type BoardState, NOT_CAPPED } from "../board/classify.ts";
 
 /** 生きている（外していない）プロジェクトの上限 */
 export const BOARD_MAX_PROJECTS = 30;
-/** items に残す件数の上限 */
-export const BOARD_MAX_ITEMS = 30;
+/** items に残す件数の上限（PR 30 件と issue 50 件をすべて残す） */
+export const BOARD_MAX_ITEMS = 80;
 
 /** 収集の失敗の種類 */
 export type BoardError = "no_remote" | "git_failed" | "github_failed" | "rate_limited" | "not_found";
 
 const BOARD_ERRORS: readonly BoardError[] = ["no_remote", "git_failed", "github_failed", "rate_limited", "not_found"];
-const CI_VALUES: readonly BoardCi[] = ["success", "failure", "pending", "none"];
+const CI_VALUES: readonly BoardCi[] = ["success", "failure", "pending", "none", "unchecked"];
 
 export type BoardProjectRow = {
   /** SELF_AGENT_WORKSPACE_DIR の直下の名前 */
@@ -23,6 +23,8 @@ export type BoardProjectRow = {
   state: BoardState | null;
   reasons: string[] | null;
   items: BoardItem[] | null;
+  /** items が 1 ページの上限に当たったか（無ければ当たっていない） */
+  capped: BoardCapped;
   local: BoardLocal | null;
   checkedAt: string | null;
   error: BoardError | null;
@@ -36,6 +38,8 @@ export type BoardResult = {
   state: BoardState;
   reasons: readonly string[];
   items?: readonly BoardItem[] | null;
+  /** items と一緒に書く（items を書かないときは前のまま） */
+  capped?: BoardCapped;
   local?: BoardLocal | null;
   error: BoardError | null;
   checkedAt: string;
@@ -84,6 +88,12 @@ function parseLocal(value: SQLOutputValue | undefined): BoardLocal | null {
   return { branch, dirty, ahead, behind, lastCommitAt };
 }
 
+function parseCapped(value: SQLOutputValue | undefined): BoardCapped {
+  const parsed = parseJson(value);
+  if (!isObject(parsed)) return NOT_CAPPED;
+  return { pulls: parsed.pulls === true, issues: parsed.issues === true };
+}
+
 function parseReasons(value: SQLOutputValue | undefined): string[] | null {
   const parsed = parseJson(value);
   return Array.isArray(parsed) ? parsed.filter((line): line is string => typeof line === "string") : null;
@@ -98,6 +108,7 @@ function toRow(row: Record<string, SQLOutputValue>): BoardProjectRow {
     state: BOARD_STATES.find((state) => state === row.state) ?? null,
     reasons: parseReasons(row.reasons),
     items: parseItems(row.items),
+    capped: parseCapped(row.capped),
     local: parseLocal(row.local),
     checkedAt: nullableString(row.checked_at),
     error: BOARD_ERRORS.find((error) => error === row.error) ?? null,
@@ -156,6 +167,8 @@ export class BoardStore {
     if (result.items !== undefined) {
       sets.push("items = ?");
       values.push(result.items === null ? null : JSON.stringify(result.items.slice(0, BOARD_MAX_ITEMS)));
+      sets.push("capped = ?");
+      values.push(JSON.stringify(result.items === null ? NOT_CAPPED : (result.capped ?? NOT_CAPPED)));
     }
     if (result.local !== undefined) {
       sets.push("local = ?");

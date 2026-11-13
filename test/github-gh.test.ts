@@ -113,14 +113,17 @@ test("isAllowedGhPath: 進行状況の open な PR・issue の一覧と check-ru
     openPullsPath("example-org", "example-repo"),
     openIssuesPath("example-org", "example.repo_2"),
     checkRunsPath("example-org", "example-repo", sha),
-    "/repos/example-org/example-repo/pulls",
-    "/repos/example-org/example-repo/issues?per_page=10",
-    `/repos/example-org/example-repo/commits/${sha}/check-runs`,
+    "/repos/example-org/example-repo/issues?per_page=10&state=open",
   ]) {
     assert.equal(isAllowedGhPath(path), true, path);
   }
   for (const path of [
     "/repos/example-org/example-repo/pulls?state=closed&per_page=30",
+    // state=open と per_page は必須、check-runs は per_page が必須
+    "/repos/example-org/example-repo/pulls",
+    "/repos/example-org/example-repo/pulls?state=open",
+    "/repos/example-org/example-repo/issues?per_page=10",
+    `/repos/example-org/example-repo/commits/${sha}/check-runs`,
     "/repos/example-org/example-repo/pulls?state=all",
     "/repos/example-org/example-repo/issues?state=open&per_page=50&page=2",
     "/repos/example-org/example-repo/issues?state=open&state=open",

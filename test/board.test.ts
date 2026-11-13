@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { BoardCollector, type BoardTimers, boardCcSessions, BOARD_FIRST_DELAY_MS, BOARD_POLL_MS, NO_LIVE } from "../src/board/collect.ts";
+import { BoardCollector, type BoardTimers, boardCcSessions, classifyRow, BOARD_FIRST_DELAY_MS, BOARD_POLL_MS, NO_LIVE } from "../src/board/collect.ts";
 import { BOARD_GIT_TIMEOUT_MS, createBoardGit, parseCommitTime, parsePorcelainStatus } from "../src/board/git.ts";
 import { ciOfCheckRuns, cleanTitle, fetchBoardItems, parseIssueItem, parsePull } from "../src/board/github.ts";
 import type { GhRequest, GhResponse } from "../src/github/gh.ts";
@@ -39,7 +39,7 @@ test("BoardStore: add・開き直し・上限・remove・listActive・saveResult
       repo: "o/beta",
       state: "owner",
       reasons: Array.from({ length: 10 }, (_, i) => `r${i}`),
-      items: Array.from({ length: 40 }, () => item),
+      items: Array.from({ length: 90 }, () => item).slice(0, 40),
       local: { branch: "main", dirty: 1, ahead: 0, behind: 0, lastCommitAt: null },
       error: null,
       checkedAt: clock.toISOString(),
@@ -49,13 +49,27 @@ test("BoardStore: add・開き直し・上限・remove・listActive・saveResult
   let row = store.get("beta")!;
   assert.equal(row.state, "owner");
   assert.equal(row.reasons?.length, 8);
-  assert.equal(row.items?.length, 30);
+  assert.equal(row.items?.length, 40);
+  assert.deepEqual(row.capped, { pulls: false, issues: false });
   assert.deepEqual(row.local, { branch: "main", dirty: 1, ahead: 0, behind: 0, lastCommitAt: null });
   // items・local を省けば前のまま
   store.saveResult("beta", { repo: "o/beta", state: "unknown", reasons: [], error: "rate_limited", checkedAt: clock.toISOString() });
   row = store.get("beta")!;
-  assert.equal(row.items?.length, 30);
+  assert.equal(row.items?.length, 40);
   assert.equal(row.error, "rate_limited");
+  // 80 件まで残し、上限の印も items と一緒に書く
+  store.saveResult("beta", {
+    repo: "o/beta",
+    state: "agent",
+    reasons: [],
+    items: Array.from({ length: 90 }, () => item),
+    capped: { pulls: true, issues: true },
+    error: null,
+    checkedAt: clock.toISOString(),
+  });
+  row = store.get("beta")!;
+  assert.equal(row.items?.length, 80);
+  assert.deepEqual(row.capped, { pulls: true, issues: true });
   // 外したものには書かない
   store.remove("beta");
   assert.equal(store.saveResult("beta", { repo: null, state: "done", reasons: [], error: null, checkedAt: clock.toISOString() }), false);
@@ -90,15 +104,16 @@ test("createBoardGit: 固定の引数・env・10 秒。origin が無い・GitHub
   };
   const run: RunCommand = async (_file, args, options) => {
     calls.push({ args, env: options.env, timeoutMs: options.timeoutMs });
-    const reply = replies[args[2]!]!;
+    const reply = replies[args.find((arg) => arg in replies)!]!;
     return { ...reply, stderr: "" };
   };
   const git = createBoardGit({ gitPath: "/usr/bin/git", run });
   assert.deepEqual(await git.remote("/w/p"), { kind: "ok", repo: "owner/repo" });
   assert.deepEqual(await git.local("/w/p"), { branch: "main", dirty: 0, ahead: 0, behind: 0, lastCommitAt: null });
   assert.deepEqual(calls[0]!.args, ["-C", "/w/p", "config", "--local", "--get", "remote.origin.url"]);
-  assert.deepEqual(calls[1]!.args, ["-C", "/w/p", "status", "--porcelain=v2", "--branch"]);
-  assert.deepEqual(calls[2]!.args, ["-C", "/w/p", "log", "-1", "--format=%ct"]);
+  const readOnly = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"];
+  assert.deepEqual(calls[1]!.args, ["-C", "/w/p", ...readOnly, "status", "--porcelain=v2", "--branch"]);
+  assert.deepEqual(calls[2]!.args, ["-C", "/w/p", ...readOnly, "log", "-1", "--format=%ct"]);
   assert.equal(calls[0]!.env.GIT_OPTIONAL_LOCKS, "0");
   assert.deepEqual(Object.keys(calls[0]!.env).sort(), ["GIT_OPTIONAL_LOCKS", "HOME", "LANG", "PATH"]);
   assert.equal(calls[0]!.timeoutMs, BOARD_GIT_TIMEOUT_MS);
@@ -121,7 +136,7 @@ test("parsePull・parseIssueItem: 形を確かめ、URL は組み立て、題名
     "me",
   );
   assert.deepEqual(pull, {
-    item: { kind: "pr", number: 12, title: "a b", url: "https://github.com/o/r/pull/12", mine: true, draft: true, ci: "none" },
+    item: { kind: "pr", number: 12, title: "a b", url: "https://github.com/o/r/pull/12", mine: true, draft: true, ci: "unchecked" },
     sha: SHA,
   });
   assert.equal(parsePull({ number: "12", title: "x", user: { login: "me" } }, "o", "r", "me"), undefined);
@@ -163,8 +178,10 @@ function fakeGh(routes: Record<string, unknown | GhResponse>, headers: Record<st
   };
 }
 
-test("fetchBoardItems: PR → issue、自分の PR の check-runs は 5 件まで、失敗の種類", async () => {
-  const pulls = Array.from({ length: 7 }, (_, i) => ({ number: i + 1, title: `p${i}`, user: { login: "me" }, head: { sha: SHA } }));
+test("fetchBoardItems: PR → issue、check-runs は自分の draft でない PR を 5 件まで（残りは unchecked）、失敗の種類", async () => {
+  const pulls: Array<Record<string, unknown>> = Array.from({ length: 7 }, (_, i) => ({ number: i + 1, title: `p${i}`, user: { login: "me" }, head: { sha: SHA } }));
+  pulls.unshift({ number: 40, title: "draft", user: { login: "me" }, draft: true, head: { sha: SHA } });
+  pulls.push({ number: 41, title: "no sha", user: { login: "me" } });
   pulls.push({ number: 50, title: "other", user: { login: "other" }, head: { sha: SHA } });
   const gh = fakeGh({
     "/repos/o/r/pulls": pulls,
@@ -176,9 +193,34 @@ test("fetchBoardItems: PR → issue、自分の PR の check-runs は 5 件ま�
   if (result.kind !== "ok") return;
   assert.deepEqual(
     result.items.map((item) => `${item.kind}#${item.number}:${item.ci}`),
-    ["pr#1:failure", "pr#2:failure", "pr#3:failure", "pr#4:failure", "pr#5:failure", "pr#6:none", "pr#7:none", "pr#50:none", "issue#9:none"],
+    [
+      "pr#40:unchecked",
+      "pr#1:failure",
+      "pr#2:failure",
+      "pr#3:failure",
+      "pr#4:failure",
+      "pr#5:failure",
+      "pr#6:unchecked",
+      "pr#7:unchecked",
+      "pr#41:unchecked",
+      "pr#50:none",
+      "issue#9:none",
+    ],
   );
   assert.equal(gh.calls.filter((path) => path.includes("check-runs")).length, 5);
+  assert.deepEqual(result.capped, { pulls: false, issues: false });
+  // 1 ページの上限まで取れたら capped
+  const full = await fetchBoardItems(
+    fakeGh({
+      "/repos/o/r/pulls": Array.from({ length: 30 }, (_, i) => ({ number: i + 1, title: "p", user: { login: "x" } })),
+      "/repos/o/r/issues": Array.from({ length: 50 }, (_, i) => ({ number: i + 100, title: "i", user: { login: "x" } })),
+    }),
+    "o/r",
+    "me",
+    () => {},
+  );
+  assert.equal(full.kind, "ok");
+  if (full.kind === "ok") assert.deepEqual(full.capped, { pulls: true, issues: true });
   assert.deepEqual(await fetchBoardItems(fakeGh({}), "o/r", "me", () => {}), { kind: "not_found" });
   assert.deepEqual(
     await fetchBoardItems(fakeGh({ "/repos/o/r/pulls": { kind: "rate_limited", status: 403, headers: {} } }), "o/r", "me", () => {}),
@@ -227,7 +269,8 @@ function setupCollector(t: Parameters<typeof tempDb>[0], ghRoutes: Record<string
     },
     local: async () => ({ branch: "main", dirty: 0, ahead: 0, behind: 0, lastCommitAt: null }),
   };
-  const gh = fakeGh({ "/user": { login: "me" }, ...ghRoutes }, headers);
+  // 同じ物を渡す（テストが後から道を消せるように）
+  const gh = fakeGh(Object.assign(ghRoutes, { "/user": { login: "me" } }), headers);
   const logs: string[] = [];
   const timers = fakeTimers();
   const collector = new BoardCollector({
@@ -300,4 +343,35 @@ test("BoardCollector: start は 30 秒後、以後 15 分ごと。refresh は回
   assert.equal(timers.pending.length, 0);
   await collector.refresh();
   assert.equal(gh.calls.length - before, 4);
+});
+
+test("BoardCollector: issue が上限なら「n 件以上」で、書いた行から決め直しても同じ根拠の行", async (t) => {
+  const { store, collector } = setupCollector(t, {
+    "/repos/o/alpha/pulls": [],
+    "/repos/o/alpha/issues": Array.from({ length: 50 }, (_, i) => ({ number: i + 1, title: "i", user: { login: "x" } })),
+  });
+  store.add("alpha", "o/alpha");
+  await collector.tick();
+  const row = store.get("alpha")!;
+  assert.deepEqual(row.reasons, ["手つかずの issue 50 件以上"]);
+  assert.equal(row.items?.length, 50);
+  assert.deepEqual(classifyRow(row, NO_LIVE).reasons, row.reasons);
+});
+
+test("BoardCollector: リポジトリが見つからなければ前回の items を捨てる", async (t) => {
+  const routes: Record<string, unknown> = {
+    "/repos/o/alpha/pulls": [{ number: 4, title: "x", user: { login: "someone" } }],
+    "/repos/o/alpha/issues": [],
+  };
+  const { store, collector } = setupCollector(t, routes);
+  store.add("alpha", "o/alpha");
+  await collector.tick();
+  assert.equal(store.get("alpha")?.items?.length, 1);
+  delete routes["/repos/o/alpha/pulls"];
+  delete routes["/repos/o/alpha/issues"];
+  await collector.tick();
+  const row = store.get("alpha")!;
+  assert.equal(row.error, "not_found");
+  assert.equal(row.items, null);
+  assert.equal(row.state, "unknown");
 });

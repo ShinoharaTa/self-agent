@@ -10,18 +10,21 @@ import {
   openIssuesPath,
   openPullsPath,
 } from "../github/gh.ts";
-import type { BoardCi, BoardItem } from "./classify.ts";
+import type { BoardCapped, BoardCi, BoardItem } from "./classify.ts";
 
 /** 題名の上限（字） */
 export const BOARD_TITLE_MAX = 200;
-/** 1 プロジェクトで check-runs を引く自分の PR の上限 */
+/** 1 プロジェクトで check-runs を引く自分の PR（draft でないもの）の上限 */
 export const BOARD_MAX_CHECK_RUNS = 5;
+/** 1 回に取る open な PR・issue の数（gh.ts の openPullsPath・openIssuesPath の per_page）。これだけ取れたら上限に当たったとみなす */
+export const BOARD_PULLS_PAGE = 30;
+export const BOARD_ISSUES_PAGE = 50;
 
 export type GhGet = Pick<GhClient, "get">;
 
 /** 取得の結果 */
 export type FetchItemsResult =
-  | { kind: "ok"; items: BoardItem[] }
+  | { kind: "ok"; items: BoardItem[]; capped: BoardCapped }
   | { kind: "not_found" }
   | { kind: "rate_limited" }
   | { kind: "failed" };
@@ -82,7 +85,8 @@ export function parsePull(value: unknown, owner: string, repo: string, me: strin
       url: itemUrl(owner, repo, "pr", value.number),
       mine: author.toLowerCase() === me.toLowerCase(),
       draft,
-      ci: "none",
+      // 自分の PR は check-runs を引いたら書き換える。引かなければ unchecked のまま（他人の PR は見ない）
+      ci: author.toLowerCase() === me.toLowerCase() ? "unchecked" : "none",
     },
     sha,
   };
@@ -146,7 +150,8 @@ async function getJson(gh: GhGet, path: string, observe: RateObserver): Promise<
 }
 
 /**
- * open な PR（30 件）と issue（50 件。PR を除く）を取り、自分の PR の head の CI を BOARD_MAX_CHECK_RUNS 件まで引く（超えた分は none のまま）。
+ * open な PR（30 件）と issue（50 件。PR を除く）を取り、自分の PR のうち draft でないものの head の CI を BOARD_MAX_CHECK_RUNS 件まで引く
+ * （引かなかったもの（draft・上限の後・sha が無い）は unchecked のまま）。1 ページの上限まで取れたら capped に印を付ける。
  * どれかの取得に失敗したらその種類を返す（呼び出し側は前回の items を残す）。並びは PR → issue（それぞれ GitHub の順）
  */
 export async function fetchBoardItems(gh: GhGet, repoFull: string, me: string, observe: RateObserver): Promise<FetchItemsResult> {
@@ -162,7 +167,7 @@ export async function fetchBoardItems(gh: GhGet, repoFull: string, me: string, o
   const parsedPulls = pulls.body.map((value) => parsePull(value, owner, repo, me)).filter((value) => value !== undefined);
   let checked = 0;
   for (const pull of parsedPulls) {
-    if (!pull.item.mine || pull.sha === undefined || checked >= BOARD_MAX_CHECK_RUNS) continue;
+    if (!pull.item.mine || pull.item.draft || pull.sha === undefined || checked >= BOARD_MAX_CHECK_RUNS) continue;
     checked++;
     const runs = await getJson(gh, checkRunsPath(owner, repo, pull.sha), observe);
     if (runs.kind !== "ok") return runs.kind === "not_found" ? { kind: "failed" } : runs;
@@ -171,6 +176,10 @@ export async function fetchBoardItems(gh: GhGet, repoFull: string, me: string, o
     pull.item.ci = ci;
   }
   const issueItems = issues.body.map((value) => parseIssueItem(value, owner, repo, me)).filter((value) => value !== undefined);
-  return { kind: "ok", items: [...parsedPulls.map((pull) => pull.item), ...issueItems] };
+  return {
+    kind: "ok",
+    items: [...parsedPulls.map((pull) => pull.item), ...issueItems],
+    capped: { pulls: pulls.body.length >= BOARD_PULLS_PAGE, issues: issues.body.length >= BOARD_ISSUES_PAGE },
+  };
 }
 

@@ -10,8 +10,10 @@ export const BOARD_GIT_TIMEOUT_MS = 10_000;
 
 /** origin の URL（リポジトリの設定だけ。worktree では元のリポジトリの設定） */
 export const GIT_ORIGIN_URL_ARGS: readonly string[] = ["config", "--local", "--get", "remote.origin.url"];
-export const GIT_STATUS_ARGS: readonly string[] = ["status", "--porcelain=v2", "--branch"];
-export const GIT_LAST_COMMIT_ARGS: readonly string[] = ["log", "-1", "--format=%ct"];
+/** リポジトリの設定の fsmonitor（コマンドを起動しうる）と untracked cache（書き込みうる）を、読むときだけ切る */
+export const GIT_READ_ONLY_CONFIG: readonly string[] = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"];
+export const GIT_STATUS_ARGS: readonly string[] = [...GIT_READ_ONLY_CONFIG, "status", "--porcelain=v2", "--branch"];
+export const GIT_LAST_COMMIT_ARGS: readonly string[] = [...GIT_READ_ONLY_CONFIG, "log", "-1", "--format=%ct"];
 
 /** git の子の env（tmux.ts の childEnv に GIT_OPTIONAL_LOCKS=0） */
 export function boardGitEnv(): Record<string, string> {

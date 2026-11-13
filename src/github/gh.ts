@@ -148,8 +148,9 @@ export function isRepo(value: string): boolean {
   return REPO_PATTERN.test(value) && value !== "." && value !== "..";
 }
 
-function queryAllowed(query: string | undefined, allowed: Readonly<Record<string, RegExp>>): boolean {
-  if (query === undefined) return true;
+/** required の名前はどれも 1 回ずつ要る */
+function queryAllowed(query: string | undefined, allowed: Readonly<Record<string, RegExp>>, required: readonly string[] = []): boolean {
+  if (query === undefined) return required.length === 0;
   if (query === "") return false;
   const seen = new Set<string>();
   for (const part of query.split("&")) {
@@ -161,7 +162,7 @@ function queryAllowed(query: string | undefined, allowed: Readonly<Record<string
     if (pattern === undefined || seen.has(name) || !pattern.test(value)) return false;
     seen.add(name);
   }
-  return true;
+  return required.every((name) => seen.has(name));
 }
 
 /**
@@ -178,10 +179,10 @@ export function isAllowedGhPath(path: string): boolean {
   const parts = base.split("/");
   if (parts.length < 5 || parts[0] !== "" || parts[1] !== "repos" || !isOwner(parts[2]!) || !isRepo(parts[3]!)) return false;
   // ["", "repos", o, r, "pulls" | "issues"]（進行状況の open な一覧）
-  if (parts.length === 5) return (parts[4] === "pulls" || parts[4] === "issues") && queryAllowed(query, OPEN_LIST_QUERY);
+  if (parts.length === 5) return (parts[4] === "pulls" || parts[4] === "issues") && queryAllowed(query, OPEN_LIST_QUERY, ["state", "per_page"]);
   // ["", "repos", o, r, "commits", sha, "check-runs"]
   if (parts[4] === "commits") {
-    return parts.length === 7 && SHA_PATTERN.test(parts[5]!) && parts[6] === "check-runs" && queryAllowed(query, PER_PAGE_QUERY);
+    return parts.length === 7 && SHA_PATTERN.test(parts[5]!) && parts[6] === "check-runs" && queryAllowed(query, PER_PAGE_QUERY, ["per_page"]);
   }
   // ["", "repos", o, r, "issues", n] か […, "timeline"]
   if (parts.length < 6 || parts.length > 7 || parts[0] !== "" || parts[1] !== "repos" || parts[4] !== "issues") return false;

@@ -6,8 +6,13 @@ export type BoardState = "working" | "owner" | "agent" | "done" | "unknown";
 
 export const BOARD_STATES: readonly BoardState[] = ["working", "owner", "agent", "done", "unknown"];
 
-/** 自分の PR の CI（check-runs）。none は 0 件 */
-export type BoardCi = "success" | "failure" | "pending" | "none";
+/** 自分の PR の CI（check-runs）。none は 0 件、unchecked は引いていない（draft・上限の後・sha が無い） */
+export type BoardCi = "success" | "failure" | "pending" | "none" | "unchecked";
+
+/** GitHub の一覧が 1 ページの上限に当たったか（PR 30 件・issue 50 件。それより先は読んでいない） */
+export type BoardCapped = { pulls: boolean; issues: boolean };
+
+export const NOT_CAPPED: BoardCapped = { pulls: false, issues: false };
 
 /** PR・issue の 1 件。url は検証した owner・repo・番号から組み立てたもの、title は先頭 200 字で改行を空白にしたもの（信頼しないデータ） */
 export type BoardItem = {
@@ -51,6 +56,8 @@ export type ClassifyInput = {
   local: BoardLocal | null;
   /** PR・issue（open なもの）。GitHub を一度も取れていなければ null */
   items: readonly BoardItem[] | null;
+  /** items が上限に当たったか（省略は当たっていない） */
+  capped?: BoardCapped;
   ccSessions: readonly BoardCcSession[];
   /** そのプロジェクトのセッション（sessions.project_dir）のターンが実行中 */
   sessionTurnRunning: boolean;
@@ -87,19 +94,35 @@ export function classifyProject(input: ClassifyInput): Classification {
     ...prs.filter((pr) => !pr.mine).map((pr) => `レビュー待ちの PR #${pr.number}`),
   ]);
 
-  // 3. agent（未コミット・未 push は生きている Claude Code のセッションが無いときだけ）
+  // 未コミット・未 push は、生きている（running・needs_input・許可の要求を保留している）Claude Code のセッションが無いときだけ数える。
+  // 待機（idle）のセッションがあれば、その変更はセッションが持っていて次の指示を待っているので owner、1 つも無ければ agent
   const local = input.local;
-  const idleLocal = local !== null && input.ccSessions.length === 0;
+  const live = input.ccSessions.some((session) => session.state !== "idle" || session.pendingPermission);
+  const idle = input.ccSessions.filter((session) => session.state === "idle" && !session.pendingPermission).length;
+  const localLines =
+    local === null || live
+      ? []
+      : [
+          ...(local.dirty > 0 ? [`未コミットの変更 ${local.dirty} ファイル`] : []),
+          ...(local.ahead > 0 ? [`push していないコミット ${local.ahead} 件`] : []),
+        ];
+  if (localLines.length > 0 && idle > 0) hit("owner", [`Claude Code が次の指示を待っています（${idle}）`, ...localLines]);
+
+  // 3. agent
+  const issuesCapped = input.capped?.issues === true;
   hit("agent", [
     ...prs.filter((pr) => pr.mine && pr.ci === "failure").map((pr) => `CI が落ちている PR #${pr.number}`),
     ...prs.filter((pr) => pr.mine && pr.draft && pr.ci !== "failure").map((pr) => `作業途中の draft PR #${pr.number}`),
-    ...(issues.length > 0 ? [`手つかずの issue ${issues.length} 件`] : []),
-    ...(idleLocal && local.dirty > 0 ? [`未コミットの変更 ${local.dirty} ファイル`] : []),
-    ...(idleLocal && local.ahead > 0 ? [`push していないコミット ${local.ahead} 件`] : []),
+    ...(issues.length > 0 ? [`手つかずの issue ${issues.length} 件${issuesCapped ? "以上" : ""}`] : []),
+    ...(idle === 0 ? localLines : []),
   ]);
 
-  // CI が実行中の自分の PR（draft でないもの）は根拠の行だけ足し、状態は決めない
-  reasons.push(...prs.filter((pr) => pr.mine && !pr.draft && pr.ci === "pending").map((pr) => `CI 実行中の PR #${pr.number}`));
+  // CI が実行中・確かめていない自分の PR（draft でないもの）は根拠の行だけ足し、状態は決めない
+  reasons.push(
+    ...prs
+      .filter((pr) => pr.mine && !pr.draft && (pr.ci === "pending" || pr.ci === "unchecked"))
+      .map((pr) => (pr.ci === "pending" ? `CI 実行中の PR #${pr.number}` : `CI を確かめていない PR #${pr.number}`)),
+  );
 
   // 5. unknown の理由（ほかの状態に当たっても、当たった根拠として並べる）
   const unknownLines = input.unchecked

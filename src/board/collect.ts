@@ -8,7 +8,7 @@ import { type CcPlaces, projectDir } from "../cc/starter.ts";
 import { type GhHeaders, rateLimitFromHeaders } from "../github/gh.ts";
 import { fetchLogin } from "../github/poller.ts";
 import type { BoardError, BoardProjectRow, BoardStore } from "../store/board.ts";
-import { type BoardCcSession, type BoardItem, type BoardLocal, BOARD_STATES, type BoardState, type Classification, classifyProject } from "./classify.ts";
+import { type BoardCapped, type BoardCcSession, type BoardItem, NOT_CAPPED, type BoardLocal, BOARD_STATES, type BoardState, type Classification, classifyProject } from "./classify.ts";
 import type { BoardGit } from "./git.ts";
 import { fetchBoardItems, type GhGet } from "./github.ts";
 
@@ -55,12 +55,13 @@ export function boardCcSessions(
 }
 
 /** 書いた行とその場の材料から判定する（収集と GET /api/board で同じ判定にする） */
-export function classifyRow(row: Pick<BoardProjectRow, "checkedAt" | "error" | "local" | "items">, live: BoardLive): Classification {
+export function classifyRow(row: Pick<BoardProjectRow, "checkedAt" | "error" | "local" | "items" | "capped">, live: BoardLive): Classification {
   return classifyProject({
     unchecked: row.checkedAt === null,
     noRemote: row.error === "no_remote",
     local: row.error === "git_failed" ? null : row.local,
     items: row.items,
+    capped: row.capped,
     ccSessions: live.ccSessions,
     sessionTurnRunning: live.turnRunning,
   });
@@ -236,6 +237,7 @@ export class BoardCollector {
     let error: BoardError | null = null;
     // undefined は前回のまま
     let items: BoardItem[] | null | undefined;
+    let capped: BoardCapped = NOT_CAPPED;
     let local: BoardLocal | undefined;
     let remoteOk = false;
     if (path === undefined) {
@@ -263,8 +265,14 @@ export class BoardCollector {
       else if (this.rateLow()) error ??= "rate_limited";
       else {
         const fetched = await fetchBoardItems(gh, repo, this.me, (headers) => this.observe(headers));
-        if (fetched.kind === "ok") items = fetched.items;
-        else error ??= fetched.kind === "failed" ? "github_failed" : fetched.kind;
+        if (fetched.kind === "ok") {
+          items = fetched.items;
+          capped = fetched.capped;
+        } else {
+          error ??= fetched.kind === "failed" ? "github_failed" : fetched.kind;
+          // リポジトリが見つからなければ、前に読んだ一覧は使わない
+          if (fetched.kind === "not_found") items = null;
+        }
       }
     }
     const checkedAt = this.deps.now().toISOString();
@@ -273,13 +281,14 @@ export class BoardCollector {
       error,
       local: local ?? row.local,
       items: items === undefined ? row.items : items,
+      capped: items === undefined ? row.capped : capped,
     };
     const { state, reasons } = classifyRow(merged, this.deps.live(row.dir, path));
     store.saveResult(row.dir, {
       repo,
       state,
       reasons,
-      ...(items === undefined ? {} : { items }),
+      ...(items === undefined ? {} : { items, capped }),
       ...(local === undefined ? {} : { local }),
       error,
       checkedAt,

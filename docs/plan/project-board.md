@@ -68,7 +68,8 @@
 | `removed_at` | TEXT NULL | 外したら入れる。登録し直したら NULL に戻す |
 | `state` | TEXT NULL | `working` / `owner` / `agent` / `done` / `unknown` |
 | `reasons` | TEXT NULL | 根拠の行の JSON（文字列の配列。8 件まで） |
-| `items` | TEXT NULL | 項目の JSON（30 件まで）。形は `{ kind: "pr" \| "issue", number, title, url, mine, draft, ci: "success" \| "failure" \| "pending" \| "none" }` |
+| `items` | TEXT NULL | 項目の JSON（80 件まで。PR 30 件・issue 50 件をすべて残す）。形は `{ kind: "pr" \| "issue", number, title, url, mine, draft, ci: "success" \| "failure" \| "pending" \| "none" \| "unchecked" }` |
+| `capped` | TEXT NULL | `{ pulls, issues }` の JSON。その一覧が 1 ページの上限（PR 30 件・issue 50 件）まで取れたか。items と一緒に書く |
 | `local` | TEXT NULL | `{ branch, dirty, ahead, behind, lastCommitAt }` の JSON |
 | `checked_at` | TEXT NULL | |
 | `error` | TEXT NULL | `no_remote` / `git_failed` / `github_failed` / `rate_limited` / `not_found` |
@@ -89,20 +90,22 @@
   - env は HOME・PATH（固定）・LANG・`GIT_OPTIONAL_LOCKS=0` だけにする。
   - 時間切れは 10 秒。
 - 次の 2 つを実行して読む。
-  - `git -C <dir> status --porcelain=v2 --branch`
+  - `git -C <dir> -c core.fsmonitor=false -c core.untrackedCache=false status --porcelain=v2 --branch`
     - `# branch.head` からブランチ。
     - `# branch.ab +A -B` から ahead・behind。
     - `#` で始まらない行の数を dirty の数にする。
-  - `git -C <dir> log -1 --format=%ct`
+  - `git -C <dir> -c core.fsmonitor=false -c core.untrackedCache=false log -1 --format=%ct`
 - remote の owner/repo は tmux/workspace-map.ts と同じ読み方（`config --local --get remote.origin.url` の解釈）にする。関数を export して共用する。
 
 *GitHub*（gh.ts の許可パスに 3 つを足す。どれも GET だけ）
 - `/repos/<o>/<r>/pulls?state=open&per_page=30`
 - `/repos/<o>/<r>/issues?state=open&per_page=50`
   - `pull_request` を持つ要素は除く。
+  - どちらも `state=open` と `per_page` は必須。上限の件数まで取れたら capped に印を付ける。
 - `/repos/<o>/<r>/commits/<sha>/check-runs?per_page=50`
-  - sha は 40 桁の 16 進数だけ。
-  - 呼ぶのは自分の PR（作成者が gh のログイン）の head の sha だけで、1 プロジェクト 5 件まで。
+  - sha は 40 桁の 16 進数だけ。`per_page` は必須。
+  - 呼ぶのは自分の PR（作成者が gh のログイン）のうち draft でないものの head の sha だけで、1 プロジェクト 5 件まで。
+  - 引かなかった自分の PR（draft・6 件目以降・sha が無い）の ci は `unchecked`。
   - 判定
     - failure: conclusion が failure・timed_out・cancelled・action_required のどれかを含む。
     - pending: status が completed でないものがある。
@@ -111,6 +114,7 @@
 - gh のログインは github/ と同じ `/user` で、起動後に 1 回だけ読む。
 - 直近の X-RateLimit-Remaining が 1,000 未満なら、その回は GitHub を取らない。
   - そのプロジェクトは `rate_limited` にし、前回の items を残す。
+- リポジトリが見つからなければ（404）`not_found` にし、前回の items を捨てる。
 - 応答の形はすべて確かめてから使う。
   - URL は検証した owner・repo・番号から組み立てる。
   - 題名は先頭 200 字に切り、改行は空白にする。
@@ -134,8 +138,10 @@
 2. **owner**（オーナーの対応待ち）。次のどれか。
    - Claude Code のセッションが needs_input か、許可の要求が pending。
      - 根拠の行: 「Claude Code が判断を待っています（n）」
-   - 自分の PR で、draft でなく CI が success か none のもの。
+   - 自分の PR で、draft でなく CI が success か none のもの（unchecked は数えない）。
      - 根拠の行: 「マージの判断待ちの PR #n」
+   - dirty か ahead があり、running・needs_input のセッションが無く、idle のセッションがある。
+     - 根拠の行: 「Claude Code が次の指示を待っています（n）」と、未コミット・push していないの行
    - 他人の PR が open。
      - 根拠の行: 「レビュー待ちの PR #n」
 3. **agent**（やること待ち）。次のどれか。
@@ -144,8 +150,9 @@
    - 自分の PR が draft。
      - 根拠の行: 「作業途中の draft PR #n」
    - open な issue がある。
-     - 根拠の行: 「手つかずの issue n 件」
-   - dirty が 1 以上か ahead が 1 以上で、生きている Claude Code のセッションが無い。
+     - 根拠の行: 「手つかずの issue n 件」（issue の一覧が上限に当たっていれば「n 件以上」）
+   - dirty が 1 以上か ahead が 1 以上で、Claude Code のセッションが 1 つも無い。
+     - 生きている（running・needs_input・許可の要求を保留している）セッションがあれば、未コミット・未 push は数えない。idle だけなら owner の側に当てる。
      - 根拠の行: 「未コミットの変更 n ファイル」「push していないコミット n 件」
 4. **done**（一通り完了）。上のどれにも当たらず、open な PR と issue が 0 件、dirty・ahead が 0。
    - 根拠の行: 「open な issue・PR はありません」
@@ -155,7 +162,9 @@
    - git が失敗した。
    - 根拠の行はその理由。
 
-- CI が pending の自分の PR は「CI 実行中の PR #n」の根拠の行だけ足し、状態は決めない。
+- CI が pending の自分の PR は「CI 実行中の PR #n」、unchecked の自分の PR（draft でないもの）は「CI を確かめていない PR #n」の根拠の行だけ足し、状態は決めない。
+- どれにも当たらなければ unknown で、根拠の行は「状態を決められません」。
+- 収集のときと GET /api/board のときは、書いた行（items・capped・local・error）とその場の材料から同じ関数で判定する。
 - 根拠の行には番号と件数だけを入れる。題名は入れない。
 
 **Web**

@@ -83,16 +83,56 @@ test("classifyProject: agent は CI の失敗・draft・issue・未コミット�
   });
 });
 
-test("classifyProject: 未コミット・未 push は生きている Claude Code のセッションがあれば数えない（決められなければ unknown）", () => {
-  assert.deepEqual(classifyProject(input({ local: { ...CLEAN, dirty: 1 }, ccSessions: [cc("idle")] })), {
-    state: "unknown",
-    reasons: ["状態を決められません"],
+test("classifyProject: 未コミット・未 push があり待機のセッションだけなら owner（次の指示を待っている）、セッションが無ければ agent", () => {
+  assert.deepEqual(classifyProject(input({ local: { ...CLEAN, dirty: 1, ahead: 2 }, ccSessions: [cc("idle", false, "a"), cc("idle", false, "b")] })), {
+    state: "owner",
+    reasons: ["Claude Code が次の指示を待っています（2）", "未コミットの変更 1 ファイル", "push していないコミット 2 件"],
   });
-  // ほかの材料があればそちらで決まる
+  // owner が agent より先。issue の行も並べる
   assert.deepEqual(classifyProject(input({ local: { ...CLEAN, dirty: 1 }, ccSessions: [cc("idle")], items: [issue(1)] })), {
-    state: "agent",
-    reasons: ["手つかずの issue 1 件"],
+    state: "owner",
+    reasons: ["Claude Code が次の指示を待っています（1）", "未コミットの変更 1 ファイル", "手つかずの issue 1 件"],
   });
+  // 変更が無ければ待機のセッションは何も決めない
+  assert.deepEqual(classifyProject(input({ ccSessions: [cc("idle")] })), { state: "done", reasons: ["open な issue・PR はありません"] });
+});
+
+test("classifyProject: 未コミット・未 push は running・needs_input のセッションがあれば数えない", () => {
+  assert.deepEqual(classifyProject(input({ local: { ...CLEAN, dirty: 1 }, ccSessions: [cc("running"), cc("idle", false, "b")] })), {
+    state: "working",
+    reasons: ["Claude Code が作業中（1）"],
+  });
+  assert.deepEqual(classifyProject(input({ local: { ...CLEAN, ahead: 1 }, ccSessions: [cc("needs_input")] })), {
+    state: "owner",
+    reasons: ["Claude Code が判断を待っています（1）"],
+  });
+  // 許可の要求を保留している idle は生きているとみなす
+  assert.deepEqual(classifyProject(input({ local: { ...CLEAN, dirty: 1 }, ccSessions: [cc("idle", true)] })), {
+    state: "owner",
+    reasons: ["Claude Code が判断を待っています（1）"],
+  });
+});
+
+test("classifyProject: CI を確かめていない自分の PR は根拠の行だけで owner に数えない", () => {
+  assert.deepEqual(classifyProject(input({ items: [pr(9, { ci: "unchecked" })] })), {
+    state: "unknown",
+    reasons: ["CI を確かめていない PR #9", "状態を決められません"],
+  });
+  assert.deepEqual(classifyProject(input({ items: [pr(9, { ci: "unchecked" }), pr(10)] })), {
+    state: "owner",
+    reasons: ["マージの判断待ちの PR #10", "CI を確かめていない PR #9"],
+  });
+  // draft は draft の行だけ
+  assert.deepEqual(classifyProject(input({ items: [pr(9, { ci: "unchecked", draft: true })] })), {
+    state: "agent",
+    reasons: ["作業途中の draft PR #9"],
+  });
+});
+
+test("classifyProject: issue の一覧が上限に当たっていれば「n 件以上」", () => {
+  const issues = Array.from({ length: 50 }, (_, i) => issue(i + 1));
+  assert.deepEqual(classifyProject(input({ items: issues, capped: { pulls: false, issues: true } })).reasons, ["手つかずの issue 50 件以上"]);
+  assert.deepEqual(classifyProject(input({ items: issues })).reasons, ["手つかずの issue 50 件"]);
 });
 
 test("classifyProject: CI 実行中の自分の PR は根拠の行だけで状態は決めない", () => {

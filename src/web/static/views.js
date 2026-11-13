@@ -670,7 +670,7 @@
     invalid_project: "このプロジェクトは足せません。ワークスペースの直下のディレクトリだけです",
     limit: "足せるのは 30 件までです。使っていないものを外してください",
   };
-  const CI_TEXT = { failure: "CI が落ちています", pending: "CI 実行中", success: "CI 通過" };
+  const CI_TEXT = { failure: "CI が落ちています", pending: "CI 実行中", success: "CI 通過", unchecked: "CI を確かめていません" };
   let boardAddBound = false;
   let boardAdding = false;
 
