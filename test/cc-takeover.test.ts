@@ -19,8 +19,8 @@ import {
   takeoverConfirmText,
   takeoverDoneText,
 } from "../src/cc/takeover.ts";
-import { copyTranscript } from "../src/cc/takeover-files.ts";
-import { TAKEOVER_AFTER_TERM_TEXT, TAKEOVER_MAYBE_TERM_TEXT, takeoverFailureText } from "../src/cc/takeover-rules.ts";
+import { copyTranscript, prepareTarget } from "../src/cc/takeover-files.ts";
+import { TAKEOVER_AFTER_TERM_TEXT, TAKEOVER_CATEGORY_TIMEOUT_MS, TAKEOVER_MAYBE_TERM_TEXT, takeoverFailureText } from "../src/cc/takeover-rules.ts";
 import type { PaneState } from "../src/tmux/pane-state.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
@@ -131,6 +131,10 @@ function setup(t: TestContext, options: Options = {}) {
     /** sleep の度に呼ぶ（2 秒おく間の変化） */
     onSleep: (_ms: number): void => {},
     categoryFails: false,
+    /** 進行中のカテゴリの解決が返らない（期限の sleep だけが終わる） */
+    categoryHangs: false,
+    /** ended の流し直しの先（channels・replier）がもうあるか */
+    targetsReady: true,
   };
   const kills: Array<{ pid: number; signal: string }> = [];
   let exited = false;
@@ -169,18 +173,24 @@ function setup(t: TestContext, options: Options = {}) {
   });
   const calls = { channels: 0, replier: 0 };
   const endedTargets = {
-    channels: () => ({
-      ended: (session: Pick<CcSessionRow, "sessionId">) => {
-        calls.channels++;
-        return channels.ended(session);
-      },
-    }),
-    replier: () => ({
-      ended: () => {
-        calls.replier++;
-        return false;
-      },
-    }),
+    channels: () =>
+      !env.targetsReady
+        ? undefined
+        : {
+            ended: (session: Pick<CcSessionRow, "sessionId">) => {
+              calls.channels++;
+              return channels.ended(session);
+            },
+          },
+    replier: () =>
+      !env.targetsReady
+        ? undefined
+        : {
+            ended: () => {
+              calls.replier++;
+              return false;
+            },
+          },
   };
   let takeover: CcTakeover;
   const endedHandler = ccEndedHandler({ ...endedTargets, takeover: () => takeover });
@@ -220,6 +230,7 @@ function setup(t: TestContext, options: Options = {}) {
     verifiedProjectDir: (name) => join(workspace, name),
     findStateCategory: async () => {
       if (env.categoryFails) throw new Error("作れない");
+      if (env.categoryHangs) return new Promise<string>(() => {});
       return "cat-active";
     },
     queue,
@@ -238,9 +249,12 @@ function setup(t: TestContext, options: Options = {}) {
       return proc === undefined ? undefined : statLine(pid, proc);
     },
     readBtime: () => BTIME,
-    sleep: async (ms) => {
+    sleep: (ms) => {
+      // カテゴリの期限の待ちは、期限切れを試すときだけ終わる（ほかは解決の方が先）
+      if (ms === TAKEOVER_CATEGORY_TIMEOUT_MS) return env.categoryHangs ? Promise.resolve() : new Promise<void>(() => {});
       clock.now += ms;
       env.onSleep(ms);
+      return Promise.resolve();
     },
     now,
     ownPid: OWN_PID,
@@ -775,4 +789,183 @@ test("recover: 確認の文の書き換えに失敗しても投げず、log だ�
   assert.equal(s.takeovers.get(row.id)?.failure, "restart");
   assert.ok(s.logs.some((line) => line.includes("確認の文を書き換えられませんでした")));
   assertQuietLogs(s);
+});
+
+test("commit の途中の例外（sessions の INSERT が投げる）: 全部巻き戻り、差し止めた ended が 1 回だけ流れる", async (t) => {
+  const s = setup(t);
+  const takeover = s.make({
+    topicSessions: {
+      create: () => {
+        throw new Error("/secret/path");
+      },
+    },
+  });
+  const { id, result } = await s.proposeAndConfirm(takeover);
+  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true) });
+  assert.equal(s.kills.length, 1);
+  assert.equal(s.takeovers.get(id)?.state, "failed");
+  assert.equal(s.takeovers.get(id)?.notePending, false);
+  assert.equal(s.sdkSessions.get("chan-1"), undefined);
+  assert.equal(s.topicSessions.get("chan-1"), undefined);
+  // markTaken も巻き戻り、流し直した ended で普通の ended のチャンネルになる
+  assert.equal(s.ccChannels.get("chan-1")?.state, "ended");
+  assert.deepEqual(s.calls, { channels: 1, replier: 1 });
+  assert.equal(s.db.isTransaction, false);
+  assertQuietLogs(s);
+});
+
+test("failed() の中の fail が投げても confirm は reject せず、確認の文の書き換えを試みる", async (t) => {
+  const s = setup(t);
+  s.env.categoryFails = true;
+  const store = Object.create(s.takeovers) as typeof s.takeovers;
+  store.fail = () => {
+    throw new Error("/secret/path");
+  };
+  const takeover = s.make({ takeovers: store });
+  const { id, result } = await s.proposeAndConfirm(takeover);
+  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false) });
+  assert.deepEqual(s.gateway.edits, [{ channelId: "chan-1", messageId: "msg-confirm", message: { text: takeoverFailureText("no_category", false), components: [] } }]);
+  // running のまま残り、次の recover が restart にする
+  assert.equal(s.takeovers.get(id)?.state, "running");
+  await s.make().recover();
+  assert.equal(s.takeovers.get(id)?.failure, "restart");
+  assertQuietLogs(s);
+});
+
+test("intercept: DB を読めなければ false（ended はそのまま流れる）で投げない", (t) => {
+  const s = setup(t);
+  const store = Object.create(s.takeovers) as typeof s.takeovers;
+  store.runningFor = () => {
+    throw new Error("/secret/path");
+  };
+  const takeover = s.make({ takeovers: store });
+  assert.equal(takeover.intercept({ sessionId: S1 }), false);
+  s.endedHandler(s.ccSessions.get(S1)!);
+  assert.deepEqual(s.calls, { channels: 1, replier: 1 });
+  assertQuietLogs(s);
+});
+
+test("SIGTERM より前（check の段）に端末が自分で終わった: ended は差し止めてから changed で 1 回だけ流し直す", async (t) => {
+  const s = setup(t);
+  s.env.onSleep = (ms) => {
+    if (ms !== 2000) return;
+    s.list.sessions = [];
+    s.ccSessions.markGone([]);
+    s.endedHandler(s.ccSessions.get(S1)!);
+    assert.deepEqual(s.calls, { channels: 0, replier: 0 });
+  };
+  const { result } = await s.proposeAndConfirm();
+  assert.equal(!result.ok && result.reason, "changed");
+  assert.deepEqual(s.kills, []);
+  assert.deepEqual(s.calls, { channels: 1, replier: 1 });
+  assert.equal(s.ccChannels.get("chan-1")?.state, "ended");
+});
+
+test("流し直しの先がまだ無い: 印を残し、次の recover で 1 回だけ流す", async (t) => {
+  const s = setup(t);
+  s.env.targetsReady = false;
+  const takeover = s.make({
+    files: {
+      copyTranscript: () => {
+        throw new Error("写せない");
+      },
+    },
+  });
+  const { id, result } = await s.proposeAndConfirm(takeover);
+  assert.equal(!result.ok && result.reason, "copy_failed");
+  assert.equal(s.takeovers.get(id)?.endedHeld, true);
+  assert.deepEqual(s.calls, { channels: 0, replier: 0 });
+  // まだ届け先が無い recover でも印は残る
+  await s.make().recover();
+  assert.equal(s.takeovers.get(id)?.endedHeld, true);
+  s.env.targetsReady = true;
+  await s.make().recover();
+  assert.deepEqual(s.calls, { channels: 1, replier: 1 });
+  assert.equal(s.takeovers.get(id)?.endedHeld, false);
+  await s.make().recover();
+  assert.deepEqual(s.calls, { channels: 1, replier: 1 });
+  assertQuietLogs(s);
+});
+
+test("ccReplayEnded: channels・replier のどちらかが無ければどちらも呼ばずに false", () => {
+  const calls: string[] = [];
+  const channels = () => ({ ended: () => (calls.push("channels"), true) });
+  const replier = () => ({ ended: () => (calls.push("replier"), true) });
+  const session = { sessionId: S1 } as CcSessionRow;
+  assert.equal(ccReplayEnded({ channels, replier: () => undefined })(session), false);
+  assert.equal(ccReplayEnded({ channels: () => undefined, replier })(session), false);
+  assert.deepEqual(calls, []);
+  assert.equal(ccReplayEnded({ channels, replier })(session), true);
+  assert.deepEqual(calls, ["channels", "replier"]);
+});
+
+test("終わったセッションの取り込み: 写す直前に一覧へ戻っていたら changed（kill は無い）", async (t) => {
+  const s = setup(t, { ended: true });
+  const takeover = s.make({
+    files: {
+      prepareTarget: (dir, root, srcDir) => {
+        s.list.sessions = [s.view];
+        return prepareTarget(dir, root, srcDir);
+      },
+    },
+  });
+  const { result } = await s.proposeAndConfirm(takeover);
+  assert.equal(!result.ok && result.reason, "changed");
+  assert.deepEqual(s.kills, []);
+  assertUntouched(s, "ended");
+});
+
+test("kill が ESRCH（直前に自分で終わった）なら changed、ほかの例外は identity", async (t) => {
+  for (const [code, expected] of [
+    ["ESRCH", "changed"],
+    ["EPERM", "identity"],
+  ] as const) {
+    await t.test(code, async (t2) => {
+      const s = setup(t2);
+      const takeover = s.make({
+        kill: () => {
+          throw Object.assign(new Error("kill"), { code });
+        },
+      });
+      const { result } = await s.proposeAndConfirm(takeover);
+      assert.deepEqual(result, { ok: false, reason: expected, text: takeoverFailureText(expected, false) });
+      assertUntouched(s);
+    });
+  }
+});
+
+test("SIGTERM より前の例外は internal（端末はそのまま）", async (t) => {
+  const s = setup(t);
+  const takeover = s.make({
+    files: {
+      inspectSource: () => {
+        throw new Error("/secret/path");
+      },
+    },
+  });
+  const { id, result } = await s.proposeAndConfirm(takeover);
+  assert.deepEqual(result, { ok: false, reason: "internal", text: takeoverFailureText("internal", false) });
+  assert.equal(s.takeovers.get(id)?.failure, "internal");
+  assert.deepEqual(s.kills, []);
+  assertQuietLogs(s);
+});
+
+test("進行中のカテゴリの解決が期限（15 秒）を過ぎた: no_category で kill しない", async (t) => {
+  const s = setup(t);
+  s.env.categoryHangs = true;
+  const { result } = await s.proposeAndConfirm();
+  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false) });
+  assert.deepEqual(s.kills, []);
+  assertUntouched(s);
+});
+
+test("recover: 終わったセッション（source ended）の行には「終了しているかもしれません」を足さない", async (t) => {
+  const s = setup(t);
+  const row = s.takeovers.propose({ sessionId: S1, source: "ended", project: "alpha", guildId: "guild-1", channelId: "chan-1", entry: "discord", permissionMode: "default" })!;
+  s.takeovers.start(row.id);
+  s.takeovers.setStep(row.id, "copy");
+  s.takeovers.setConfirmMessage(row.id, "msg-a");
+  await s.takeover.recover();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(s.gateway.edits, [{ channelId: "chan-1", messageId: "msg-a", message: { text: takeoverFailureText("restart", false), components: [] } }]);
 });

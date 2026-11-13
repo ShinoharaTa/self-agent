@@ -6,7 +6,7 @@ import { CC_START_RETRY_NOTE, CC_START_SEND_FAILED_NOTE, ccStartedTexts } from "
 import { ccClosedCancelledText, closeReply, createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
 import { ALREADY_HANDLED_TEXT, STALE_TEXT } from "../src/app/commands/delete.ts";
 import { STALE_TURN_REPLY } from "../src/app/commands/turn-controls.ts";
-import { TAKEOVER_BUSY_TEXT } from "../src/cc/takeover-rules.ts";
+import { TAKEOVER_BUSY_TEXT, TAKEOVER_SEND_REJECT_TEXT } from "../src/cc/takeover-rules.ts";
 import {
   CC_ATTACHMENT_REPLY,
   CC_CHANNEL_CLOSED_TEXT,
@@ -580,7 +580,7 @@ test("取り込みの途中: [起動して続ける]・/cc close・開き直し�
   s.sessions.push({ sessionId: OLD, pid: 100, cwd: `${WORKSPACE}/alpha`, name: "alpha" } as CcSessionView);
   assert.equal(s.channels.revived({ sessionId: OLD }), false);
   assert.equal(s.channels.revived({ sessionId: OLD }, "reopened"), false);
-  assert.deepEqual(await s.channels.submitWeb(CHANNEL, "Web から"), { ok: false, reason: "ended" });
+  assert.deepEqual(await s.channels.submitWeb(CHANNEL, "Web から"), { ok: false, reason: "taking_over" });
   assert.equal(s.store.get(CHANNEL)?.state, "ended");
   // [削除する]: 押した人にだけ断る
   const gateway = new FakeGateway({ allow: ["deleteChannel"] });
@@ -604,4 +604,18 @@ test("取り込みの途中: [起動して続ける]・/cc close・開き直し�
   // 終われば今までどおり
   s.held.channels.clear();
   assert.equal(s.channels.close(CHANNEL).result, "closed");
+});
+
+test("取り込みの途中の発言（閉じたチャンネル）: 積まず、[起動して続ける] も出さずに断る", async (t) => {
+  const s = setup(t);
+  s.held.channels.add(CHANNEL);
+  const msg = s.message(SECRET_TEXT);
+  assert.equal(await s.channels.handleMessage(msg), true);
+  await s.channels.idle();
+  assert.deepEqual(s.gateway.posts.map((post) => [post.message.text, post.message.replyToId]), [[TAKEOVER_SEND_REJECT_TEXT, msg.id]]);
+  assert.equal(s.sends.get(1), undefined);
+  // 保留していないので [起動して続ける] は使えない
+  s.held.channels.clear();
+  assert.deepEqual(await s.channels.resume(CHANNEL, msg.id, "guild-1"), { ok: false, reason: "expired" });
+  assertQuietLogs(s.logs);
 });

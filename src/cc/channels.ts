@@ -585,6 +585,11 @@ export class CcChannels {
     }
     // 終わったチャンネルの発言: セッションが一覧にある（/cc close で閉じただけ）なら関わったとして開き直して積み、
     // 無ければ積まずに [起動して続ける] を出す（起動はボタンでだけ。§3.6）
+    // 取り込みの途中は積まず、[起動して続ける] も出さない（docs/plan/takeover.md §3.2）
+    if (this.deps.takeover?.()?.holdsChannel(row.channelId) === true) {
+      await this.reply(message, TAKEOVER_SEND_REJECT_TEXT);
+      return true;
+    }
     if (row.state === "ended" && !this.reopenIfListed(row)) {
       this.record(row, "owner", "discord", checked.text, message.id);
       await this.promptResume(message, checked.text);
@@ -679,6 +684,7 @@ export class CcChannels {
     if (row === undefined || row.state === "deleted") return { ok: false, reason: "not_channel" };
     const checked = normalizeSendText(text);
     if (!checked.ok) return { ok: false, reason: checked.reason };
+    if (this.deps.takeover?.()?.holdsChannel(channelId) === true) return { ok: false, reason: "taking_over" };
     // 閉じただけ（セッションが一覧にある）なら Discord の発言と同じく開き直して届ける。一覧に無ければ ended（Discord で [起動して続ける]）
     if (row.state === "ended") this.reopenIfListed(row);
     const state = this.deps.store.get(channelId)?.state ?? "deleted";
@@ -1232,12 +1238,17 @@ type CcEndedTargets = {
 };
 
 /**
- * 終わったことを流す（channels.ended と replier.ended）。取り込みが差し止めた ended を流し直す口（docs/plan/takeover.md §3.2。CcTakeover の replayEnded）
+ * 終わったことを流す（channels.ended と replier.ended）。取り込みが差し止めた ended を流し直す口（docs/plan/takeover.md §3.2。CcTakeover の replayEnded）。
+ * 届けたら true。channels・replier のどちらかがまだ無ければ、どちらも呼ばずに false（差し止めの印を残して後で流す）
  */
-export function ccReplayEnded(deps: CcEndedTargets): (session: CcSessionRow) => void {
+export function ccReplayEnded(deps: CcEndedTargets): (session: CcSessionRow) => boolean {
   return (session) => {
-    deps.channels()?.ended(session);
-    deps.replier()?.ended(session);
+    const channels = deps.channels();
+    const replier = deps.replier();
+    if (channels === undefined || replier === undefined) return false;
+    channels.ended(session);
+    replier.ended(session);
+    return true;
   };
 }
 
@@ -1249,10 +1260,11 @@ export function ccReplayEnded(deps: CcEndedTargets): (session: CcSessionRow) => 
 export function ccEndedHandler(
   deps: CcEndedTargets & { takeover?: () => { intercept(session: CcSessionRow): boolean } | undefined },
 ): (session: CcSessionRow) => void {
-  const replay = ccReplayEnded(deps);
   return (session) => {
     if (deps.takeover?.()?.intercept(session) === true) return;
-    replay(session);
+    // 普段の ended は今までどおり、あるものに渡す
+    deps.channels()?.ended(session);
+    deps.replier()?.ended(session);
   };
 }
 
