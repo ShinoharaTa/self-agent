@@ -3,8 +3,23 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import type { RunResult } from "../src/agent/runner.ts";
 import { PROJECT_APPEND, TAKEOVER_NOTE, TAKEOVER_NOTE_HEAD } from "../src/agent/system-prompt.ts";
-import { ABORTED_ERROR, type ChannelTurn, RESUME_FAILURE_LIMIT, runChannelTurn, type TurnDeps } from "../src/app/turn.ts";
+import {
+  ABORTED_ERROR,
+  type ChannelTurn,
+  RESUME_FAILURE_LIMIT,
+  runChannelTurn,
+  TIMEOUT_ERROR,
+  type TurnDeps,
+} from "../src/app/turn.ts";
+import { CcTakeover, TAKEOVER_DROPPED_TEXT } from "../src/cc/takeover.ts";
+import { CcChannelStore } from "../src/store/cc-channels.ts";
+import { CcPermissionStore } from "../src/store/cc-permissions.ts";
+import { CcSendStore } from "../src/store/cc-sends.ts";
+import { CcSessionStore } from "../src/store/cc-sessions.ts";
+import { CcTakeoverStore } from "../src/store/cc-takeovers.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
 import { FakeRunner, type FakeRunStep, turnUsage } from "./helpers/runner.ts";
 
 const NOW = new Date("2026-11-13T00:00:00.000Z");
@@ -27,7 +42,10 @@ function failed(errorMessage: string, sessionRecorded: boolean, sessionId?: stri
 }
 
 /** 偽の takeover。本体（cc/takeover.ts の noteFor）と同じく、purpose・予約・session_id の違い・消した後は返さない */
-function fakeTakeover(takenSessionId: string, options: { throws?: boolean } = {}) {
+type TakeoverStep = "noteFor" | "noteDone" | "resumeDropped";
+
+function fakeTakeover(takenSessionId: string, options: { throws?: readonly TakeoverStep[] } = {}) {
+  const throws = (step: TakeoverStep): boolean => options.throws?.includes(step) === true;
   const calls = {
     noteFor: [] as Array<[string, string, { purpose?: string; scheduled?: boolean }]>,
     noteDone: [] as string[],
@@ -37,18 +55,18 @@ function fakeTakeover(takenSessionId: string, options: { throws?: boolean } = {}
   const takeover: NonNullable<TurnDeps["takeover"]> = {
     noteFor(key, sessionId, turn) {
       calls.noteFor.push([key, sessionId, turn]);
-      if (options.throws === true) throw new Error("noteFor");
+      if (throws("noteFor")) throw new TypeError("noteFor");
       if (!pending || turn.purpose !== undefined || turn.scheduled === true || sessionId !== takenSessionId) return undefined;
       return NOTE;
     },
     noteDone(key) {
       calls.noteDone.push(key);
-      if (options.throws === true) throw new Error("noteDone");
+      if (throws("noteDone")) throw new TypeError("noteDone");
       pending = false;
     },
     resumeDropped(key, sessionId) {
       calls.resumeDropped.push([key, sessionId]);
-      if (options.throws === true) throw new Error("resumeDropped");
+      if (throws("resumeDropped")) throw new TypeError("resumeDropped");
       if (sessionId === takenSessionId) pending = false;
     },
   };
@@ -113,7 +131,7 @@ test("result の届いた失敗（手順数の上限など）: 記録済みな�
 });
 
 test("中断・タイムアウト・result の届かない失敗: 前置きを残し、次の resume にも付ける", async (t) => {
-  for (const step of [failed(ABORTED_ERROR, false), failed("timeout", false), failed("boom", false)]) {
+  for (const step of [failed(ABORTED_ERROR, false), failed(TIMEOUT_ERROR, false), failed("boom", false)]) {
     const fake = fakeTakeover("session-taken");
     const { runner, sessions, run } = setup(t, [step, ok("session-taken")], fake.takeover);
     sessions.set("topic-1", "session-taken");
@@ -234,8 +252,32 @@ test("takeover を渡さないときは、resume・捨ててやり直しの prom
   assert.equal(runner.inputs[2]!.prompt, `前の会話の記録が切れたため、要約から再開します。\n題名: 作業\n\n${PROMPT}`);
 });
 
-test("takeover の 3 つが投げてもターンは壊れない（前置きは付かず、log は段の名前だけ）", async (t) => {
-  const fake = fakeTakeover("session-taken", { throws: true });
+test("noteFor が投げてもターンは壊れない（前置きは付かず、log は段の名前と例外の種類だけ）", async (t) => {
+  const fake = fakeTakeover("session-taken", { throws: ["noteFor"] });
+  const { runner, sessions, logs, run } = setup(t, [ok("session-taken")], fake.takeover);
+  sessions.set("topic-1", "session-taken");
+
+  assert.ok((await run()).ok);
+  assert.equal(runner.inputs[0]!.prompt, PROMPT);
+  assert.deepEqual(fake.calls.noteDone, []);
+  assert.deepEqual(logs, ["取り込みの noteFor で例外（TypeError）が出たため、飛ばしてターンを続けます"]);
+});
+
+test("noteDone が投げても、成功した resume の結果は ok のまま", async (t) => {
+  const fake = fakeTakeover("session-taken", { throws: ["noteDone"] });
+  const { runner, sessions, logs, run } = setup(t, [ok("session-taken")], fake.takeover);
+  sessions.set("topic-1", "session-taken");
+
+  const result = await run();
+  assert.ok(result.ok);
+  assert.equal(runner.inputs[0]!.prompt, `${NOTE}\n\n${PROMPT}`);
+  assert.deepEqual(fake.calls.noteDone, ["topic-1"]);
+  assert.equal(sessions.get("topic-1"), "session-taken");
+  assert.deepEqual(logs, ["取り込みの noteDone で例外（TypeError）が出たため、飛ばしてターンを続けます"]);
+});
+
+test("resumeDropped が投げても、捨てて新規でやり直す", async (t) => {
+  const fake = fakeTakeover("session-taken", { throws: ["resumeDropped"] });
   const { runner, sessions, logs, run } = setup(
     t,
     [failed("No conversation found with session ID: x", false), ok("session-new")],
@@ -244,9 +286,141 @@ test("takeover の 3 つが投げてもターンは壊れない（前置きは�
   sessions.set("topic-1", "session-taken");
 
   assert.ok((await run()).ok);
-  assert.equal(runner.inputs[0]!.prompt, PROMPT);
+  assert.equal(runner.inputs.length, 2);
+  assert.ok(!runner.inputs[1]!.prompt.includes(NOTE));
   assert.deepEqual(fake.calls.resumeDropped, [["topic-1", "session-taken"]]);
-  assert.ok(logs.includes("取り込みの noteFor で例外が出たため、飛ばしてターンを続けます"));
-  assert.ok(logs.includes("取り込みの resumeDropped で例外が出たため、飛ばしてターンを続けます"));
+  assert.ok(logs.includes("取り込みの resumeDropped で例外（TypeError）が出たため、飛ばしてターンを続けます"));
   assert.equal(sessions.get("topic-1"), "session-new");
+});
+
+test("runner.run が投げたら noteDone は呼ばない（前置きは残る）", async (t) => {
+  const fake = fakeTakeover("session-taken");
+  const { runner, sessions, run } = setup(t, [new Error("落ちた")], fake.takeover);
+  sessions.set("topic-1", "session-taken");
+
+  await assert.rejects(run());
+  assert.equal(runner.inputs[0]!.prompt, `${NOTE}\n\n${PROMPT}`);
+  assert.deepEqual(fake.calls.noteDone, []);
+  assert.equal(fake.pending(), true);
+});
+
+test("前置きを消した後のターンで捨てても、resumeDropped は呼ぶ", async (t) => {
+  const fake = fakeTakeover("session-taken");
+  const { runner, sessions, run } = setup(
+    t,
+    [ok("session-taken"), failed("No conversation found with session ID: x", false), ok("session-new")],
+    fake.takeover,
+  );
+  sessions.set("topic-1", "session-taken");
+
+  assert.ok((await run()).ok);
+  assert.deepEqual(fake.calls.noteDone, ["topic-1"]);
+  assert.ok((await run()).ok);
+  assert.equal(runner.inputs[1]!.prompt, PROMPT);
+  assert.deepEqual(fake.calls.resumeDropped, [["topic-1", "session-taken"]]);
+});
+
+test("画像の拒否で sessionRecorded が false: noteDone は呼ばず、resumeDropped が 1 回", async (t) => {
+  const fake = fakeTakeover("session-taken");
+  const rejected: RunResult = { ...failed("Could not process image", false), imageRejected: true } as RunResult;
+  const { runner, sessions, run } = setup(t, [rejected, ok("session-new")], fake.takeover);
+  sessions.set("topic-1", "session-taken");
+
+  assert.ok((await run()).ok);
+  assert.equal(runner.inputs[0]!.prompt, `${NOTE}\n\n${PROMPT}`);
+  assert.ok(!runner.inputs[1]!.prompt.includes(NOTE));
+  assert.deepEqual(fake.calls.noteDone, []);
+  assert.deepEqual(fake.calls.resumeDropped, [["topic-1", "session-taken"]]);
+});
+
+/** 本物の CcTakeover（cc/takeover.ts）。noteFor・noteDone・resumeDropped が使わない部品は、呼ばれたら投げる */
+function realSetup(t: TestContext, steps: FakeRunStep[]) {
+  const db = tempDb(t);
+  const now = (): Date => NOW;
+  const runner = new FakeRunner(steps);
+  const stores = createStores(db, now);
+  const { sessions, seeds, topicSessions, memories, inboxSummaries, usage, guildSettings } = stores;
+  const takeovers = new CcTakeoverStore(db, now);
+  const gateway = new FakeGateway({ allow: ["sendMessage"], messageIdPrefix: "msg-" });
+  const unused = (name: string) => (): never => {
+    throw new Error(`想定外の呼び出し: ${name}`);
+  };
+  const takeover = new CcTakeover({
+    db,
+    cfg: { workspaceDir: "/nonexistent" },
+    home: "/nonexistent",
+    claudeConfigDir: "/nonexistent",
+    registry: { tick: unused("tick"), snapshot: unused("snapshot") },
+    panes: { lookup: unused("lookup") },
+    probePane: unused("probePane"),
+    dirs: { sessionFile: unused("sessionFile") },
+    takeovers,
+    ccChannels: new CcChannelStore(db, now),
+    ccSessions: new CcSessionStore(db, now),
+    ccSends: new CcSendStore(db, now),
+    ccPermissions: new CcPermissionStore(db, now),
+    topicSessions,
+    sdkSessions: sessions,
+    guildSettings,
+    ready: () => true,
+    checkSessionProject: unused("checkSessionProject"),
+    verifiedProjectDir: unused("verifiedProjectDir"),
+    findStateCategory: unused("findStateCategory"),
+    queue: new RecordingQueue(1),
+    channelOps: new RecordingChannelOps(),
+    gateway,
+    kill: unused("kill"),
+    readProc: unused("readProc"),
+    readBtime: unused("readBtime"),
+    sleep: unused("sleep"),
+    now,
+    ownPid: 1,
+    replayEnded: unused("replayEnded"),
+    note: TAKEOVER_NOTE,
+    log: () => {},
+  });
+  // 取り込みは通さず、ストアに done・note_pending = 1 の行を直接作る
+  const row = takeovers.propose({
+    sessionId: "session-taken",
+    source: "ended",
+    project: "alpha",
+    guildId: "guild-1",
+    channelId: "topic-1",
+    entry: "discord",
+    permissionMode: "default",
+  })!;
+  assert.ok(takeovers.start(row.id));
+  assert.ok(takeovers.finish(row.id));
+  topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "作業", categoryId: "active-1" });
+  sessions.set("topic-1", "session-taken");
+  const deps: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log: () => {}, takeover };
+  return { runner, takeovers, gateway, run: () => runChannelTurn(deps, TURN) };
+}
+
+test("本物の CcTakeover: done・note_pending = 1 の行 → 最初の resume に前置き → 消えて次のターンは付かない", async (t) => {
+  const { runner, takeovers, run } = realSetup(t, [ok("session-taken"), ok("session-taken")]);
+  assert.equal(takeovers.takenFor("topic-1")?.notePending, true);
+
+  assert.ok((await run()).ok);
+  assert.equal(runner.inputs[0]!.prompt, `${TAKEOVER_NOTE}\n\n${PROMPT}`);
+  assert.equal(takeovers.takenFor("topic-1")?.notePending, false);
+
+  assert.ok((await run()).ok);
+  assert.equal(runner.inputs[1]!.prompt, PROMPT);
+});
+
+test("本物の CcTakeover: SDK セッションを捨てたら resumeDropped で知らせが 1 通", async (t) => {
+  const { runner, takeovers, gateway, run } = realSetup(t, [
+    failed("No conversation found with session ID: x", false),
+    ok("session-new"),
+  ]);
+
+  assert.ok((await run()).ok);
+  assert.ok(!runner.inputs[1]!.prompt.includes(TAKEOVER_NOTE_HEAD));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    gateway.posts.map((post) => [post.channelId, post.message.text]),
+    [["topic-1", TAKEOVER_DROPPED_TEXT]],
+  );
+  assert.equal(takeovers.takenFor("topic-1")?.notePending, false);
 });

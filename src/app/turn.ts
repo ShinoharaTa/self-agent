@@ -81,6 +81,7 @@ export type TurnDeps = {
    * 端末の Claude Code から取り込んだ会話（cc/takeover.ts。docs/plan/takeover.md §3.6.1・§3.6.3）。key は channelId。
    * noteFor が返せば resume のターンの prompt の頭に付け、resume の結果で noteDone を呼び、SDK セッションを捨てる直前に resumeDropped を呼ぶ。
    * 無ければ何もしない。例外を投げてもターンは止めない
+   * 3 つとも同期で呼ぶ（Promise を返す実装の reject は拾えない）
    */
   takeover?: {
     noteFor(key: string, sessionId: string, turn: { purpose?: string; scheduled?: boolean }): string | undefined;
@@ -279,12 +280,12 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     return result;
   };
 
-  // 取り込みの 3 つの呼び出しは、投げてもターンを壊さない（log は段の名前だけ）
+  // 取り込みの 3 つの呼び出しは、投げてもターンを壊さない（log は段の名前と例外の種類だけ）
   const takeoverCall = <T>(step: string, call: () => T): T | undefined => {
     try {
       return call();
-    } catch {
-      log(`取り込みの ${step} で例外が出たため、飛ばしてターンを続けます`);
+    } catch (error) {
+      log(`取り込みの ${step} で例外（${error instanceof Error ? error.name : "unknown"}）が出たため、飛ばしてターンを続けます`);
       return undefined;
     }
   };
