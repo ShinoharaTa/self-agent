@@ -646,3 +646,16 @@ test("取り込みの途中（holds）: submit・propose・[送る] は taking_o
   assert.notEqual(sends.get(proposed.send.id)?.state, "queued");
   assert.ok(actions().length > before);
 });
+
+test("ペイン宛ての送信（起動の最初の指示）: 結びついたセッションが取り込みの途中なら届けずに queued のまま", async (t) => {
+  const { sender, sends, held, actions } = setup(t);
+  const row = sends.add({ sessionId: null, paneId: "%1", startDir: "/w/a", text: "最初の指示", origin: "start", state: "queued" });
+  held.add(S1);
+  await sender.kick();
+  const after = sends.get(row.id)!;
+  assert.deepEqual([after.state, after.sessionId], ["queued", S1]);
+  assert.deepEqual(actions(), []);
+  held.delete(S1);
+  await sender.kick();
+  assert.notEqual(sends.get(row.id)?.state, "queued");
+});

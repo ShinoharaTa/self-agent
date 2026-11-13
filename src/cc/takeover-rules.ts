@@ -11,6 +11,8 @@ export const TAKEOVER_SETTLE_MS = 2000;
 export const TAKEOVER_EXIT_TIMEOUT_MS = 10000;
 /** /proc/<pid> を見る間隔（§3.4） */
 export const TAKEOVER_EXIT_POLL_MS = 250;
+/** 終わらせる前の進行中のカテゴリの解決を待つ上限（過ぎたら no_category。§3.4） */
+export const TAKEOVER_CATEGORY_TIMEOUT_MS = 15000;
 /** 写せる記録の大きさの上限（§3.3） */
 export const TAKEOVER_MAX_BYTES = 128 * 1024 * 1024;
 /** SIGTERM の相手の /proc/<pid>/stat の comm（§3.4 の 3） */
@@ -47,6 +49,7 @@ export type TakeoverFailure =
   | "identity"
   | "not_exited"
   | "copy_failed"
+  | "internal"
   | "restart";
 
 /** ペインの状態。tmux の外は not_in_tmux、撮れなかった（tmux の失敗）は failed（tmux_failed で断る） */
@@ -252,6 +255,7 @@ const FAILURE_TEXTS: Readonly<Record<TakeoverFailure, string>> = {
   identity: "セッションを確かめられませんでした。端末の Claude Code はそのままです",
   not_exited: "10 秒待っても端末の Claude Code が終わりませんでした。取り込みはやめました。後から終わったら、もう一度 /cc take してください",
   copy_failed: "記録を写せませんでした",
+  internal: "内部のエラーが起きました（端末の Claude Code はそのままです）",
   restart: "self-agent が再起動しました",
 };
 

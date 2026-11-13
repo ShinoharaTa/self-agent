@@ -40,6 +40,7 @@ import {
   parseBtime,
   parseStat,
   type ProcStat,
+  TAKEOVER_CATEGORY_TIMEOUT_MS,
   TAKEOVER_EXIT_POLL_MS,
   TAKEOVER_EXIT_TIMEOUT_MS,
   TAKEOVER_SETTLE_MS,
@@ -196,8 +197,8 @@ export type CcTakeoverDeps = {
   now: () => Date;
   /** 自分の pid（process.pid） */
   ownPid: number;
-  /** 差し止めた ended を流し直す（channels.ts の ccReplayEnded） */
-  replayEnded: (session: CcSessionRow) => void;
+  /** 差し止めた ended を流し直す（channels.ts の ccReplayEnded）。届け先がまだ無く流さなかったら false（印を残して次の recover で流す） */
+  replayEnded: (session: CcSessionRow) => boolean;
   /** 最初のターンの前置き（TAKEOVER_NOTE。T3a）。無ければ noteFor は何も返さない */
   note?: string;
   files?: Partial<TakeoverFiles>;
@@ -297,9 +298,10 @@ export class CcTakeover {
       outcome = await this.run(row, progress);
     } catch (error) {
       log(`Claude Code: 取り込みの途中で例外が起きました（#${id}、${errorKind(error)}）`);
-      outcome = "copy_failed";
+      // SIGTERM より前なら端末はそのまま（internal）、後なら写し・切り替えの失敗と同じ
+      outcome = progress.afterTerm ? "copy_failed" : "internal";
     }
-    if (typeof outcome === "string") return this.failed(id, outcome, progress.afterTerm);
+    if (typeof outcome === "string") return this.failed(row, outcome, progress.afterTerm);
     log(`Claude Code: 取り込みました（#${id}、guild=${row.guildId}）`);
     const text = await this.effects(id, outcome);
     return { ok: true, text };
@@ -350,7 +352,7 @@ export class CcTakeover {
 
   /**
    * 起動時（registry を始める前）に 1 回（§3.4）: running の行を failed（restart）にし（確認の文があれば失敗の文に書き換える。待たない。§9.1）、
-   * 差し止めた ended を流し直し（releaseHeld が通った行だけ）、後始末の済んでいない done の行の移動と topic をやり直す。DB と流し直しは最初の await の前に済む
+   * 差し止めた ended を流し直し（届け先があって流せた行だけ印を外す）、後始末の済んでいない done の行の移動と topic をやり直す（topic は待たない）
    */
   async recover(): Promise<void> {
     const { takeovers, ccSessions, channelOps, gateway, log } = this.deps;
@@ -359,7 +361,7 @@ export class CcTakeover {
     for (const row of reset) {
       if (row.confirmMessageId === null) continue;
       // SIGTERM を送ったか分からない段なら、言い切らずに続け方を足す
-      const maybeTerm = row.step === "term" || row.step === "copy" || row.step === "commit";
+      const maybeTerm = row.source === "alive" && (row.step === "term" || row.step === "copy" || row.step === "commit");
       const text = `${takeoverFailureText("restart", false)}${maybeTerm ? `\n${TAKEOVER_MAYBE_TERM_TEXT}` : ""}`;
       void Promise.resolve()
         .then(() => gateway.editMessage(row.channelId, row.confirmMessageId!, { text, components: [] }))
@@ -367,15 +369,16 @@ export class CcTakeover {
           log(`Claude Code: 再起動の前の取り込みの確認の文を書き換えられませんでした（#${row.id}、${errorKind(error)}）`);
         });
     }
-    for (const row of takeovers.listHeld()) this.replayIfHeld(row);
+    for (const row of takeovers.listHeld()) this.replayHeld(row);
     for (const row of takeovers.listEffectsPending()) {
       channelOps.enqueueMove(row.channelId, { kind: "state", guildId: row.guildId, state: "active" });
       const title = this.titleOf(ccSessions.get(row.sessionId), row.project);
-      try {
-        await gateway.setChannelTopic(row.channelId, sessionTopic(title, undefined, row.project));
-      } catch (error) {
-        log(`Claude Code: 取り込んだチャンネルの topic を書き換えられませんでした（#${row.id}、${errorKind(error)}）`);
-      }
+      // 起動を遅らせない（失敗は log だけ）
+      void Promise.resolve()
+        .then(() => gateway.setChannelTopic(row.channelId, sessionTopic(title, undefined, row.project)))
+        .catch((error: unknown) => {
+          log(`Claude Code: 取り込んだチャンネルの topic を書き換えられませんでした（#${row.id}、${errorKind(error)}）`);
+        });
       takeovers.markEffects(row.id);
       log(`Claude Code: 取り込みの後始末をやり直しました（#${row.id}、guild=${row.guildId}）`);
     }
@@ -440,7 +443,16 @@ export class CcTakeover {
     // 終わらせる前に済ませる（§3.4）: 進行中のカテゴリ（無ければここで作られ、失敗しても残る）と写し先
     let categoryId: string;
     try {
-      categoryId = await queue.run(layoutQueueKey(row.guildId), () => this.deps.findStateCategory(row.guildId, "active"));
+      // 期限は注入の sleep との競争（過ぎたら no_category。kill の前なので端末はそのまま）
+      const found = await Promise.race([
+        queue.run(layoutQueueKey(row.guildId), () => this.deps.findStateCategory(row.guildId, "active")),
+        this.deps.sleep(TAKEOVER_CATEGORY_TIMEOUT_MS).then(() => undefined),
+      ]);
+      if (found === undefined) {
+        log(`Claude Code: 取り込みの進行中のカテゴリを期限までに用意できませんでした（#${id}）`);
+        return "no_category";
+      }
+      categoryId = found;
     } catch (error) {
       log(`Claude Code: 取り込みの進行中のカテゴリを用意できませんでした（#${id}、${errorKind(error)}）`);
       return "no_category";
@@ -475,7 +487,8 @@ export class CcTakeover {
         this.deps.kill(first.pid, "SIGTERM");
       } catch (error) {
         log(`Claude Code: 取り込みの SIGTERM を送れませんでした（#${id}、${errorKind(error)}）`);
-        return "identity";
+        // ESRCH は直前に自分で終わった（送っていない）
+        return (error as { code?: unknown } | null)?.code === "ESRCH" ? "changed" : "identity";
       }
       progress.afterTerm = true;
       log(`Claude Code: 取り込みのため端末の Claude Code に SIGTERM を送りました（#${id}）`);
@@ -489,6 +502,8 @@ export class CcTakeover {
       const later = this.files.readAppended(paths.src, inspected.size);
       if (later !== undefined && appendedInterrupted(later)) takeovers.setInterrupted(id);
     }
+    // 終わったセッションが一覧に戻っていたら（端末で resume した）写さない（同期で見る）
+    if (row.source === "ended" && this.deps.registry.snapshot().sessions.some((candidate) => candidate.sessionId === sessionId)) return "changed";
     takeovers.setStep(id, "copy");
     let copied: ReturnType<typeof copyTranscript>;
     try {
@@ -547,13 +562,12 @@ export class CcTakeover {
     }
   }
 
-  /** 後始末（§4。失敗しても done のまま）: 進行中へ移す・topic・完了の文・履歴の区切り・削除の確認・追いかけ先への 1 行 → effects_at。完了の文を返す */
+  /** 後始末（§4。失敗しても done のまま）: 進行中へ移す・完了の文・履歴の区切り・削除の確認・追いかけ先への 1 行・topic → effects_at。完了の文を返す */
   private async effects(id: number, done: Committed): Promise<string> {
     const { takeovers, channelOps, gateway, guildSettings, log } = this.deps;
     const row = takeovers.get(id)!;
     channelOps.enqueueMove(row.channelId, { kind: "state", guildId: row.guildId, state: "active" });
     const failed = (what: string) => (error: unknown) => log(`Claude Code: 取り込みの後に${what}できませんでした（#${id}、${errorKind(error)}）`);
-    await gateway.setChannelTopic(row.channelId, sessionTopic(done.title, undefined, done.project)).catch(failed("topic を書き換え"));
     const text = takeoverDoneText(done.project, row.interrupted);
     if (row.confirmMessageId !== null) {
       await gateway.editMessage(row.channelId, row.confirmMessageId, { text, components: [] }).catch(failed("確認の文を書き換え"));
@@ -572,37 +586,67 @@ export class CcTakeover {
     if (done.followChannelId !== null) {
       await gateway.sendMessage(done.followChannelId, { text: TAKEOVER_FOLLOW_STOPPED_TEXT }).then(() => undefined, failed("追いかけ先に知らせ"));
     }
+    // topic は最後（確認の文の「取り込みました」を先に出す）
+    await gateway.setChannelTopic(row.channelId, sessionTopic(done.title, undefined, done.project)).catch(failed("topic を書き換え"));
     takeovers.markEffects(id);
     return text;
   }
 
-  /** 失敗（§4）: failed にし、差し止めた ended があれば流し直し、確認の文を失敗の文に書き換える */
-  private async failed(id: number, code: TakeoverFailure, afterTerm: boolean): Promise<CcTakeoverConfirmResult> {
-    const { takeovers, log } = this.deps;
-    const before = takeovers.get(id);
-    takeovers.fail(id, code);
-    log(`Claude Code: 取り込めませんでした（#${id}、${code}、step=${before?.step ?? "-"}${before === undefined ? "" : `、guild=${before.guildId}`}）`);
-    if (before !== undefined) this.replayIfHeld(before);
+  /**
+   * 失敗（§4）: failed にし、差し止めた ended があれば流し直し、確認の文を失敗の文に書き換える。投げない（DB の例外でも失敗の結果を返す）。
+   * 例外で行が running のまま残ったら、次の recover（再起動）が restart にして直す
+   */
+  private async failed(row: CcTakeoverRow, code: TakeoverFailure, afterTerm: boolean): Promise<CcTakeoverConfirmResult> {
+    const { takeovers, gateway, log } = this.deps;
+    const id = row.id;
     const text = takeoverFailureText(code, afterTerm);
-    await this.editConfirm(id, { text, components: [] });
+    const message: OutgoingMessage = { text, components: [] };
+    try {
+      const before = takeovers.get(id);
+      takeovers.fail(id, code);
+      log(`Claude Code: 取り込めませんでした（#${id}、${code}、step=${before?.step ?? "-"}、guild=${row.guildId}）`);
+      this.replayHeld(row);
+      await this.editConfirm(id, message);
+    } catch (error) {
+      log(`Claude Code: 取り込めなかった後の処理で例外が起きました（#${id}、${code}、${errorKind(error)}）`);
+      // 確認の文の書き換えだけは試す（DB を読まずに confirm の時の行で）
+      if (row.confirmMessageId !== null) {
+        await gateway.editMessage(row.channelId, row.confirmMessageId, message).catch((editError: unknown) => {
+          log(`Claude Code: 取り込みの確認の文を書き換えられませんでした（#${id}、${errorKind(editError)}）`);
+        });
+      }
+    }
     return { ok: false, reason: code, text };
   }
 
-  /** 差し止めた ended を流し直す（releaseHeld が 1 → 0 にできた行だけ。§3.2） */
-  private replayIfHeld(row: Pick<CcTakeoverRow, "id" | "sessionId">): void {
+  /**
+   * 差し止めた ended を流し直す（§3.2）: 行が ended_held なら replayEnded → 流せたときだけ releaseHeld（failed の行で 1 → 0）。
+   * 届け先がまだ無ければ印を残す（次の recover で流す）。流している途中で投げたら二重に出さないよう印を外す。await を挟まない
+   */
+  private replayHeld(row: Pick<CcTakeoverRow, "id" | "sessionId">): void {
     const { takeovers, ccSessions, replayEnded, log } = this.deps;
-    if (!takeovers.releaseHeld(row.id)) return;
+    const current = takeovers.get(row.id);
+    if (current === undefined || !current.endedHeld) return;
     const session = ccSessions.get(row.sessionId);
     if (session === undefined) {
+      takeovers.releaseHeld(row.id);
       log(`Claude Code: 差し止めた終わった知らせのセッションの行がありません（#${row.id}）`);
       return;
     }
+    let delivered: boolean;
     try {
-      replayEnded(session);
-      log(`Claude Code: 差し止めた終わった知らせを流し直しました（#${row.id}）`);
+      delivered = replayEnded(session);
     } catch (error) {
+      takeovers.releaseHeld(row.id);
       log(`Claude Code: 差し止めた終わった知らせを流し直せませんでした（#${row.id}、${errorKind(error)}）`);
+      return;
     }
+    if (!delivered) {
+      log(`Claude Code: 差し止めた終わった知らせを流し直せませんでした（届け先がまだありません。#${row.id}）`);
+      return;
+    }
+    takeovers.releaseHeld(row.id);
+    log(`Claude Code: 差し止めた終わった知らせを流し直しました（#${row.id}）`);
   }
 
   /** 確認の文を書き換える（確認のメッセージがあるときだけ。失敗は log だけ） */

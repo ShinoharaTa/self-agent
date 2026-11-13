@@ -509,6 +509,8 @@ export class CcSender {
         return;
       }
       sends.bindSession(id, view.sessionId);
+      // 結びついたセッションが取り込みの途中なら届けない（queued のまま）
+      if (this.deps.holds?.(view.sessionId) === true) return;
     }
     const target = lookup.sendable({ pid: view.pid, tmux: view.tmux });
     if (!target.ok) {
