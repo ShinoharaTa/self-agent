@@ -120,7 +120,7 @@ async function setup(t: TestContext, opts: { agents?: AgentEntry[]; notify?: boo
     cfg: { ccPollSec: 10 },
     agents: { list: async () => next },
     dirs: {
-      sessionFile: (_pid, sessionId) => (sessionId === S1 ? { bridgeSessionId: BRIDGE, tmux: undefined } : undefined),
+      sessionFile: (_pid, sessionId) => (sessionId === S1 ? { bridgeSessionId: BRIDGE, tmux: undefined, procStart: undefined } : undefined),
       transcriptLastAt: () => undefined,
     },
     store: sessions,

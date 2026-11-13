@@ -807,6 +807,33 @@ export const MIGRATIONS: readonly string[] = [
   `
   CREATE INDEX IF NOT EXISTS usage_log_at ON usage_log(at);
   `,
+  // v42（docs/plan/takeover.md §3.9・§5 の T1。#341）: 取り込み（端末の Claude Code の会話をプロジェクトのセッションが引き継ぐ）。
+  // 同じ session_id で確認待ち・実行中の行は 1 つだけ（cc_takeovers_active）。ended_held は差し止めた ended の知らせ（§3.2。流し直しの印）。
+  // 本文は置かない。sessions・cc_channels・cc_sessions の定義は変えない
+  `
+  CREATE TABLE cc_takeovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('alive','ended')),
+    project TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    entry TEXT NOT NULL CHECK (entry IN ('discord','web')),
+    state TEXT NOT NULL CHECK (state IN ('awaiting_confirm','running','done','failed','cancelled')),
+    step TEXT CHECK (step IN ('check','term','copy','commit')),
+    failure TEXT,
+    permission_mode TEXT NOT NULL CHECK (permission_mode IN ('default','acceptEdits','plan')),
+    terminal_mode TEXT,
+    interrupted INTEGER NOT NULL DEFAULT 0,
+    note_pending INTEGER NOT NULL DEFAULT 0,
+    ended_held INTEGER NOT NULL DEFAULT 0,
+    confirm_message_id TEXT,
+    effects_at TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT
+  );
+  CREATE UNIQUE INDEX cc_takeovers_active ON cc_takeovers(session_id) WHERE state IN ('awaiting_confirm','running');
+  CREATE INDEX cc_takeovers_channel ON cc_takeovers(channel_id, state);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
