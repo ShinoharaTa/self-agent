@@ -19,6 +19,7 @@
     "guest-setup": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/guest-setup.ts",
     "cc-dry-run": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/cc-dry-run.ts",
     "cc-setup": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/cc-setup.ts",
+    "board-dry-run": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/board-dry-run.ts",
     "unify-setup": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/unify-setup.ts",
     "make-icons": "node scripts/make-icons.ts"
   },

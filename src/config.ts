@@ -82,6 +82,11 @@ export type Config = {
   devLogDays: number;
   /** シェル（Bash）を使う設定。true なら起動時と tick ごとに sandbox の自己診断を行う（agent/sandbox-check.ts・docs/plan/shell.md） */
   shell: boolean;
+  /**
+   * 進行中のプロジェクトの管理（docs/plan/project-board.md。SELF_AGENT_BOARD）。true なら登録したプロジェクトの git と GitHub の状態を周期で集めて判定する。
+   * SELF_AGENT_GITHUB によらない
+   */
+  board: boolean;
   /** SELF_AGENT_PERSONAS で足した人格（設定の順）。未設定なら空で、今と同じ 1 体だけ */
   personas: PersonaConfig[];
   /** codex の認証と会話の記録の場所。未設定で codex の人格も無ければ undefined */
@@ -752,6 +757,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     devMode: flag("SELF_AGENT_DEV_MODE", nonEmpty(env.SELF_AGENT_DEV_MODE)),
     devLogDays: positiveInteger("SELF_AGENT_DEV_LOG_DAYS", nonEmpty(env.SELF_AGENT_DEV_LOG_DAYS), DEFAULT_DEV_LOG_DAYS),
     shell,
+    board: flag("SELF_AGENT_BOARD", nonEmpty(env.SELF_AGENT_BOARD)),
     personas,
     codexHome:
       nonEmpty(env.SELF_AGENT_CODEX_HOME) ??

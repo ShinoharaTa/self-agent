@@ -1,5 +1,6 @@
-// 停止処理: 新しい発言・操作の受付と定期処理を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバー・Web UI・
+// 停止処理: 新しい発言・操作の受付と定期処理（進行状況の収集を含む）を止め、進行中の処理（実行中のチャンネルの移動を含む）を上限付きで待ってから gateway を止め、静的サーバー・Web UI・
 // Claude Code の hook の受け口と DB を閉じる
+import type { BoardCollector } from "../board/collect.ts";
 import type { CcChannelPosts } from "../cc/channel-posts.ts";
 import type { CcHookServer } from "../cc/hook-server.ts";
 import type { CcPermissionHold } from "../cc/permission-hold.ts";
@@ -39,6 +40,8 @@ export type ShutdownDeps = {
   reminderScheduler: Pick<ReminderScheduler, "stop" | "idle">;
   /** GitHub の通知のポーリング（SELF_AGENT_GITHUB=1 のときだけ）。scheduler と同じ時点で止め、実行中の取得・投稿が終わるのを待つ */
   githubPoller?: Pick<GithubPoller, "stop" | "idle">;
+  /** 進行状況の収集（SELF_AGENT_BOARD=1 で gh と git があるときだけ）。scheduler と同じ時点で止め、実行中の回が終わるのを待つ */
+  boardCollector?: Pick<BoardCollector, "stop" | "idle">;
   /**
    * 作業ジョブ（SELF_AGENT_JOBS が有効のときだけ）。停止を始めたら、実行中の run を待たずに中断し（failed / interrupted・作業場所は kept に）、
    * まだ始めていない run は始めない（queued のまま次の起動で入れ直す）。中断した run の後始末と報告が終わるのを待つ
@@ -125,6 +128,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     scheduler,
     reminderScheduler,
     githubPoller,
+    boardCollector,
     jobs,
     channelOps,
     staticServer,
@@ -161,6 +165,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       scheduler.idle(),
       reminderScheduler.idle(),
       githubPoller?.idle(),
+      boardCollector?.idle(),
       jobs?.idle(),
       ccRegistry?.idle(),
       ccSender?.idle(),
@@ -199,6 +204,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     scheduler.stop();
     reminderScheduler.stop();
     githubPoller?.stop();
+    boardCollector?.stop();
     jobs?.stop();
     ccRegistry?.stop();
     ccSender?.stop();

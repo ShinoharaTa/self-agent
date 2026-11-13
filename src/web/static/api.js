@@ -28,6 +28,8 @@
   const CC_SCREEN_INTERVAL_MS = 3000;
   /** 許可の要求を保留しているセッションがあるときの一覧の間隔 */
   const CC_PERMISSION_INTERVAL_MS = 3000;
+  /** 進行状況のタブを前に出している間に /api/board を読む間隔 */
+  const BOARD_INTERVAL_MS = 60000;
   const SEEN_KEY = "self-agent-web:seen";
   /** 音がオンで画面が隠れている間、/api/running と /api/cc/sessions を読み続ける間隔（docs/plan/web-ui-sound.md §3） */
   const HIDDEN_SOUND_MS = 10000;
@@ -101,6 +103,7 @@
   // projectFile[slug]: 選んだファイルの中身（{ path, text, error, maxBytes }。読んでいる間は text も error も null。maxBytes は 413 の応答の上限（無ければ null））
   // cc: /api/cc/sessions（{ stale, unreadable, fetchedAt, sessions, starting }。starting は起動したがまだ一覧に出ていないもの。まだ読んでいなければ null）。ccAt: 最後に読み終えた時刻（読めなくても進める）。
   // ccFailed: 最後の読み取りに失敗した。
+  // board: /api/board（{ enabled, projects, candidates }。まだ読んでいなければ null）。boardFailed: 最後の読み取りに失敗した。
   // ccSessions[sessionId]: /api/cc/sessions/<id> の結果（{ session, missing }。session は 1 件 + screen。missing は 404）
   const store = {
     status: null,
@@ -123,6 +126,8 @@
     memories: null,
     notices: null,
     github: null,
+    board: null,
+    boardFailed: false,
     knowledge: null,
     kbEntries: {}, kbRetryFailed: {},
     projects: null,
@@ -599,6 +604,25 @@
       SA.app.refreshSidebar();
     });
 
+  // ===== 進行状況（docs/plan/project-board.md PS1） =====
+  store.load.board = (opts) =>
+    once("board", async () => {
+      try {
+        const data = await SA.api.get("/api/board", opts);
+        store.board = {
+          enabled: !!(data && data.enabled),
+          projects: Array.isArray(data && data.projects) ? data.projects : [],
+          candidates: Array.isArray(data && data.candidates) ? data.candidates.filter((c) => c && typeof c.name === "string") : [],
+        };
+        store.boardFailed = false;
+      } catch (err) {
+        store.boardFailed = true;
+        throw err;
+      } finally {
+        SA.app.refresh("board");
+      }
+    });
+
   /**
    * q は検索する語（前後の空白を除いたもの。空なら新しい順）。省略は今出している語。同じ語を読んでいる途中ならそれを待つ。
    * 語を続けて変えたときは最後に頼んだものだけを使う。opts.quiet は polling から
@@ -865,6 +889,14 @@
       fails: 0,
       timer: null,
     },
+    // 進行状況はタブを前に出している間だけ 60 秒ごと（前に出したときに SA.poll.kickBoard で始め直す）
+    board: {
+      base: () => BOARD_INTERVAL_MS,
+      when: () => SA.app.activeTabId() === "board",
+      run: (opts) => store.load.board(opts),
+      fails: 0,
+      timer: null,
+    },
     running: {
       base: () => (store.running && store.running.length > 0 ? RUNNING_BUSY_MS : RUNNING_IDLE_MS),
       run: (opts) => store.load.running(opts),
@@ -965,6 +997,10 @@
     /** Claude Code を見始めた（会話の一覧・セッションのタブ）: 止まっている（予約も読み取りも無い）一覧・画面の polling を始め直す */
     kickCc: () => {
       for (const p of [polls.cc, polls.ccScreen]) if (p.timer === null && !p.inFlight) runPoll(p);
+    },
+    /** 進行状況のタブを前に出した: 止まっている polling を始め直す */
+    kickBoard: () => {
+      if (polls.board.timer === null && !polls.board.inFlight) runPoll(polls.board);
     },
     stop() {
       poll.stopped = true;

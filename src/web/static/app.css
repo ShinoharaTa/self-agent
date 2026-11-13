@@ -2032,6 +2032,30 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* 進行状況の 1 行（根拠の行・PR と issue の一覧を中に積む。カードにしない。GUIDELINES §5） */
+.board-row {
+  align-items: flex-start;
+}
+
+.board-row .item-main {
+  gap: var(--space-1);
+}
+
+.board-reason {
+  font-size: var(--font-sm);
+}
+
+.board-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--font-sm);
+}
+
+.board-item {
+  overflow-wrap: anywhere;
+}
+
 .link-btn {
   padding: 0;
   background: none;

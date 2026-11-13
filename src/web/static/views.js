@@ -1,5 +1,5 @@
 // タブの中身: 状態・使用量・設定・ようこそ（W1）・会話ログ（W2。会話のタブは chat.js）・タスク・リマインド・記憶（W4）・GitHub・ナレッジ（W6）・
-// プロジェクト（W7。読むだけ）・Claude Code のセッション（CC2 の画面の写しと CC3 の送信と CC5a の許可のカード）。ジョブは後の段で足す
+// プロジェクト（W7。読むだけ）・進行状況（docs/plan/project-board.md PS1）・Claude Code のセッション（CC2 の画面の写しと CC3 の送信と CC5a の許可のカード）。ジョブは後の段で足す
 "use strict";
 
 (function () {
@@ -648,6 +648,180 @@
         group("red", "自分宛て"),
         group("yellow", "自分のリポジトリの新しい Issue / PR"),
       ]),
+    );
+  }
+
+  // ===== 進行状況（docs/plan/project-board.md PS1: 登録したプロジェクトの状態と根拠。状態はサーバーが LLM なしで決める） =====
+  /** 状態ごとの節（GET /api/board の並びと同じ順）。cls はバッジの色 */
+  const BOARD_STATES = [
+    { id: "owner", label: "オーナーの対応待ち", cls: "badge-accent" },
+    { id: "agent", label: "やること待ち", cls: "state-waiting" },
+    { id: "working", label: "作業中", cls: "job-running" },
+    { id: "done", label: "一通り完了", cls: "state-done" },
+    { id: "unknown", label: "分からない", cls: "" },
+  ];
+  /** 根拠の行に出ない失敗（前回の一覧を出しているもの） */
+  const BOARD_ERRORS = {
+    github_failed: "GitHub から読めませんでした。前に読んだ一覧を出しています。",
+    rate_limited: "GitHub のレート制限のため読んでいません。前に読んだ一覧を出しています。",
+    not_found: "GitHub にリポジトリが見つかりません。",
+  };
+  const BOARD_ADD_ERRORS = {
+    invalid_project: "このプロジェクトは足せません。ワークスペースの直下のディレクトリだけです",
+    limit: "足せるのは 30 件までです。使っていないものを外してください",
+  };
+  const CI_TEXT = { failure: "CI が落ちています", pending: "CI 実行中", success: "CI 通過", unchecked: "CI を確かめていません" };
+  let boardAddBound = false;
+  let boardAdding = false;
+
+  function boardItem(item) {
+    const parts = githubParts(item.url);
+    const head = (item.kind === "pr" ? "PR #" : "issue #") + item.number;
+    const notes = [item.mine ? "自分" : null, item.draft ? "draft" : null].filter((v) => v).join("・");
+    const ci = item.kind === "pr" && item.mine && CI_TEXT[item.ci] ? CI_TEXT[item.ci] : null;
+    return el("li", { class: "board-item" }, [
+      parts ? el("a", { href: item.url, target: "_blank", rel: "noreferrer noopener", text: head }) : el("span", { text: head }),
+      " ",
+      el("span", { text: item.title || "（題名なし）" }),
+      notes ? el("span", { class: "meta", text: " " + notes }) : null,
+      ci ? el("span", { class: "meta", text: " " + ci }) : null,
+    ]);
+  }
+
+  function boardRow(p, state) {
+    const local = p.local && typeof p.local === "object" ? p.local : null;
+    const where = local
+      ? [local.branch ? "ブランチ " + local.branch : "ブランチなし", "変更 " + local.dirty + " ファイル"].join("・")
+      : null;
+    const localTitle = local ? "push していないコミット " + local.ahead + " 件、取り込んでいないコミット " + local.behind + " 件" : null;
+    const checked = p.checkedAt ? "最後に見た " + SA.ui.shortTime(p.checkedAt) : "まだ確かめていません";
+    const items = Array.isArray(p.items) ? p.items : [];
+    const sessions = store.ccEnabled() && Array.isArray(p.ccSessions) ? p.ccSessions : [];
+    const remove = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "外す", title: "進行状況に出さなくなります" });
+    remove.addEventListener("click", () =>
+      confirm({
+        title: "外しますか",
+        target: p.dir,
+        body: "進行状況に出さなくなります。プロジェクトのファイルは変わりません。",
+        ok: "外す",
+        run: () => act(remove, "/api/board/projects/" + encodeURIComponent(p.dir) + "/remove", "board"),
+      }),
+    );
+    return el("li", { class: "row-list-item board-row" }, [
+      el("div", { class: "item-main" }, [
+        el("span", { class: "item-title" }, [el("span", { text: p.dir }), " ", el("span", { class: "badge " + state.cls, text: state.label })]),
+        p.repo ? el("span", { class: "meta", text: p.repo }) : null,
+        ...(Array.isArray(p.reasons) ? p.reasons : []).map((line) => el("span", { class: "board-reason", text: line })),
+        p.error && BOARD_ERRORS[p.error] ? el("span", { class: "meta", text: BOARD_ERRORS[p.error] }) : null,
+        items.length ? el("ul", { class: "board-items" }, items.map(boardItem)) : null,
+        el("span", { class: "meta", title: localTitle }, [where ? where + "・" + checked : checked]),
+        sessions.length
+          ? el(
+              "div",
+              { class: "row row-tight" },
+              sessions.map((cs) => {
+                const b = el("button", { class: "btn btn-ghost btn-sm", type: "button" }, [icon("terminal"), "Claude Code（" + (CC_STATES[cs.state] || cs.state) + "）"]);
+                b.addEventListener("click", () => SA.app.open("cc:" + cs.sessionId));
+                return b;
+              }),
+            )
+          : null,
+      ]),
+      remove,
+    ]);
+  }
+
+  function boardAddError(text) {
+    const box = document.getElementById("board-add-error");
+    box.textContent = text || "";
+    box.hidden = !text;
+  }
+
+  /** [プロジェクトを足す] のダイアログ（最初に開くときに 1 回だけ結びつける） */
+  function openBoardAdd() {
+    const data = store.board;
+    const dialog = document.getElementById("dlg-board-add");
+    const select = document.getElementById("board-add-dir");
+    if (!data || !dialog || !select) return;
+    if (!boardAddBound) {
+      boardAddBound = true;
+      document.getElementById("dlg-board-add-cancel").addEventListener("click", () => SA.ui.closeDialog(dialog));
+      document.getElementById("board-add-form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        if (boardAdding || select.value === "") return;
+        boardAdding = true;
+        const ok = document.getElementById("dlg-board-add-ok");
+        ok.disabled = true;
+        SA.api.post("/api/board/projects", { dir: select.value }, { quiet: true }).then(
+          () => {
+            boardAdding = false;
+            ok.disabled = false;
+            SA.ui.closeDialog(dialog);
+            // 登録した直後にサーバーが 1 回確かめる。少し待って読み直す
+            store.reload("board");
+            setTimeout(() => store.load.board(), 5000);
+          },
+          (err) => {
+            boardAdding = false;
+            ok.disabled = false;
+            boardAddError((err && err.code && BOARD_ADD_ERRORS[err.code]) || (err && err.toast) || "足せませんでした。もう一度試してください");
+          },
+        );
+      });
+    }
+    select.replaceChildren(...data.candidates.map((c) => el("option", { value: c.name, text: c.name })));
+    boardAddError(null);
+    SA.ui.openDialog(dialog);
+    select.focus();
+  }
+
+  function boardRefresh(button) {
+    button.disabled = true;
+    SA.api.post("/api/board/refresh", {}, { quiet: true }).then(
+      () => {
+        toast("確かめています。終わると表示が変わります");
+        // 15 分ごとの回と同じ収集なので、少し待って読み直す
+        setTimeout(() => {
+          button.disabled = false;
+          store.load.board();
+        }, 5000);
+      },
+      (err) => {
+        button.disabled = false;
+        failed(err, "board", () => boardRefresh(button));
+      },
+    );
+  }
+
+  function renderBoard(container) {
+    const data = store.board;
+    if (!data) {
+      container.replaceChildren(
+        toolbar("columns", "進行状況"),
+        scroll([store.boardFailed ? empty("columns", "進行状況を読めませんでした。", () => store.load.board()) : loading()]),
+      );
+      return;
+    }
+    const add = el("button", { class: "btn btn-secondary btn-sm", type: "button", text: "プロジェクトを足す" });
+    if (data.candidates.length === 0) {
+      add.disabled = true;
+      add.title = "足せるプロジェクトがありません。ワークスペースの直下のディレクトリが候補です";
+    } else add.addEventListener("click", openBoardAdd);
+    const again = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "今すぐ読む" });
+    again.addEventListener("click", () => boardRefresh(again));
+    if (data.projects.length === 0) again.disabled = true;
+    const sections = BOARD_STATES.map((state) => {
+      const rows = data.projects.filter((p) => p.state === state.id);
+      if (rows.length === 0) return null;
+      return section(state.label, [el("ul", { class: "row-list" }, rows.map((p) => boardRow(p, state)))], [el("span", { class: "meta", text: rows.length + " 件" })]);
+    }).filter((v) => v);
+    container.replaceChildren(
+      toolbar("columns", "進行状況", [], [add, again]),
+      scroll(
+        sections.length
+          ? sections
+          : [empty("columns", "登録したプロジェクトはありません。[プロジェクトを足す] でワークスペースのプロジェクトを選ぶと増えます。")],
+      ),
     );
   }
 
@@ -1847,6 +2021,16 @@
     reminders: { title: "リマインド", icon: "bell", render: renderReminders, onOpen: () => store.load.reminders() },
     memories: { title: "記憶", icon: "book", render: renderMemories, onOpen: () => store.load.memories() },
     github: { title: "GitHub", icon: "git-pull-request", render: renderGithub, onOpen: () => store.load.github() },
+    // 前に出している間だけ 60 秒ごとに読み直す（api.js の polls.board）
+    board: {
+      title: "進行状況",
+      icon: "columns",
+      render: renderBoard,
+      onOpen: () => {
+        store.load.board();
+        SA.poll.kickBoard();
+      },
+    },
     knowledge: {
       title: "ナレッジ",
       icon: "book",
@@ -1930,12 +2114,13 @@
     }
     if (tabId === "devlog" && !(store.status && store.status.devMode)) return null;
     if (tabId === "github" && !(store.status && store.status.github && store.status.github.enabled)) return null;
+    if (tabId === "board" && !(store.status && store.status.board && store.status.board.enabled)) return null;
     return Object.prototype.hasOwnProperty.call(STATIC, tabId) ? STATIC[tabId] : null;
   }
 
   /** /api/status を読むまで開けるか分からないタブ（読んだ後に開き直す） */
   function waitsForStatus(tabId) {
-    return (tabId === "devlog" || tabId === "github" || tabId.startsWith("cc:")) && store.status === null;
+    return (tabId === "devlog" || tabId === "github" || tabId === "board" || tabId.startsWith("cc:")) && store.status === null;
   }
 
   SA.views = {

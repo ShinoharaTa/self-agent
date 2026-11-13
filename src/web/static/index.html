@@ -112,6 +112,22 @@
     </form>
   </dialog>
 
+  <dialog id="dlg-board-add" aria-labelledby="dlg-board-add-title">
+    <form id="board-add-form" class="stack" novalidate>
+      <h2 id="dlg-board-add-title" class="dlg-title">プロジェクトを足す</h2>
+      <div class="field">
+        <label for="board-add-dir">プロジェクト</label>
+        <select class="select" id="board-add-dir" aria-describedby="board-add-error"></select>
+      </div>
+      <div class="alert-slot"><p class="alert" id="board-add-error" role="alert" hidden></p></div>
+      <p class="meta">ワークスペースの直下のプロジェクトを、進行状況に出します。</p>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary btn-sm" id="dlg-board-add-cancel" type="button">やめる</button>
+        <button class="btn btn-primary btn-sm" id="dlg-board-add-ok" type="submit">足す</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="dlg-cc-start" aria-labelledby="dlg-cc-start-title">
     <form id="cc-start-form" class="stack" novalidate>
       <h2 id="dlg-cc-start-title" class="dlg-title">Claude Code を起動</h2>

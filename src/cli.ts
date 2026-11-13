@@ -16,6 +16,7 @@ const SUBCOMMANDS = {
   "job-dry-run": "作業ジョブのアプリ側を LLM なしで 1 回試す",
   "cc-dry-run": "この機械の Claude Code のセッションを 1 回だけ読み、3 群の件数と各行を表示する（投稿しない。--reset-multiline は複数行の送信を戻すだけ）",
   "cc-setup": "Claude Code の hooks の設定を表示する（--print。ファイルは書かない）",
+  "board-dry-run": "進行状況を 1 回だけ集めて判定し、名前・状態・根拠の行を表示する（DB は読むだけ・投稿しない）",
   "unify-setup": "プロジェクトのセッションの skills・agents の link を作る行を表示する（--print。ファイルは書かない）",
   measure: "ターン時間・RSS・トークン使用量の実測（利用枠を消費する）",
 } as const;
@@ -78,6 +79,8 @@ async function runSubcommand(name: SubcommandName, argv: readonly string[]): Pro
       return (await import("./cli/cc-dry-run.ts")).main(argv);
     case "cc-setup":
       return (await import("./cli/cc-setup.ts")).main(argv);
+    case "board-dry-run":
+      return (await import("./cli/board-dry-run.ts")).main(argv);
     case "unify-setup":
       return (await import("./cli/unify-setup.ts")).main(argv);
     case "measure":

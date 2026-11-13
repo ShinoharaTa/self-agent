@@ -78,6 +78,7 @@ export const WEB_ENV_NAMES: readonly string[] = [
   "SELF_AGENT_CC_MAX_SESSIONS",
   "SELF_AGENT_CC_SEND_WAIT_MIN",
   "SELF_AGENT_CC_NOTIFY",
+  "SELF_AGENT_BOARD",
 ];
 
 /** GitHub の通知のポーリングの状態（有効なら GithubPoller.status()。pausedUntil はレート制限で止めている間の再開の時刻） */
@@ -105,6 +106,8 @@ export type StatusDeps = {
   env: NodeJS.ProcessEnv;
   /** Claude Code のセッションの状態（SELF_AGENT_CC が有効なときだけ。cc.ts の ccStatus）。無ければ無効の形 */
   cc?: () => CcStatus;
+  /** 進行状況が動いているか（SELF_AGENT_BOARD=1 で gh と git があるとき true）。無ければ false */
+  board?: () => boolean;
 };
 
 type BotStatus = { persona: string; name: string; isDefault?: boolean; guest?: true; connected: boolean };
@@ -141,6 +144,7 @@ export function statusBody(deps: StatusDeps): Record<string, unknown> {
     devMode: cfg.devMode,
     github: deps.githubStatus?.() ?? { enabled: cfg.github, lastFetchAt: null, failure: null },
     jobs: { enabled: cfg.jobs },
+    board: { enabled: deps.board?.() ?? false },
     guest: cfg.guest,
     guilds: cfg.allowedGuildIds.map((id) => ({ id, setUp: deps.guildSettings.get(id) !== undefined })),
     env: WEB_ENV_NAMES.map((name) => {
