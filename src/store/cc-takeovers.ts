@@ -1,4 +1,5 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
+import type { TakeoverFailure } from "../cc/takeover-rules.ts";
 
 /**
  * 取り込みの状態（docs/plan/takeover.md §4）。awaiting_confirm = 確認待ち、running = [取り込む] を受けた（step が今の位置）、
@@ -36,7 +37,7 @@ export type CcTakeoverRow = {
   entry: CcTakeoverEntry;
   state: CcTakeoverState;
   step: CcTakeoverStep | null;
-  /** failed の符号（takeover-rules.ts の TakeoverFailure） */
+  /** failed の符号（takeover-rules.ts の TakeoverFailure。読むときは文字列のまま） */
   failure: string | null;
   permissionMode: CcTakeoverMode;
   /** 端末のときの許可のモード（cc_sessions.permission_mode。確認の文に出す） */
@@ -193,10 +194,10 @@ export class CcTakeoverStore {
     return Number(result.changes) > 0;
   }
 
-  /** 差し止めた印を外す。1 行変わったときだけ true（流し直しの compare-and-set。2 回目は false） */
+  /** failed の行の差し止めた印を外す。1 行変わったときだけ true（流し直しの compare-and-set。running の行・2 回目は false） */
   releaseHeld(id: number): boolean {
     const result = this.db
-      .prepare("UPDATE cc_takeovers SET ended_held = 0, updated_at = ? WHERE id = ? AND ended_held = 1")
+      .prepare("UPDATE cc_takeovers SET ended_held = 0, updated_at = ? WHERE id = ? AND state = 'failed' AND ended_held = 1")
       .run(this.now().toISOString(), id);
     return Number(result.changes) === 1;
   }
@@ -215,8 +216,8 @@ export class CcTakeoverStore {
     return Number(result.changes) > 0;
   }
 
-  /** 実行中 → failed（failure に符号）。移したら true。ended_held は変えない */
-  fail(id: number, failure: string): boolean {
+  /** 実行中 → failed（failure に TakeoverFailure の符号）。移したら true。ended_held は変えない */
+  fail(id: number, failure: TakeoverFailure): boolean {
     const at = this.now().toISOString();
     const result = this.db
       .prepare("UPDATE cc_takeovers SET state = 'failed', failure = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state = 'running'")
@@ -278,11 +279,11 @@ export class CcTakeoverStore {
       .run(messageId, this.now().toISOString(), id);
   }
 
-  /** 後始末を済ませた（done の行だけ） */
+  /** 後始末を済ませた（done で effects_at が空の行だけ。2 回目は false） */
   markEffects(id: number): boolean {
     const at = this.now().toISOString();
     const result = this.db
-      .prepare("UPDATE cc_takeovers SET effects_at = ?, updated_at = ? WHERE id = ? AND state = 'done'")
+      .prepare("UPDATE cc_takeovers SET effects_at = ?, updated_at = ? WHERE id = ? AND state = 'done' AND effects_at IS NULL")
       .run(at, at, id);
     return Number(result.changes) > 0;
   }

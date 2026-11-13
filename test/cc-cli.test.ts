@@ -99,9 +99,9 @@ test("cc-setup: --print は JSON を標準出力に出す（トークンの値�
 test("cc-dry-run: 3 群の件数と、各行の状態・名前・最後の活動の時刻。sessionId・cwd は出さない", () => {
   const lines = ccDryRunLines(
     [
-      { agent: agent(S1, { name: "idle-one" }), file: { bridgeSessionId: "session_a", tmux: "s:0.%1" }, transcriptLastAt: Date.parse("2026-11-01T03:04:00Z") },
+      { agent: agent(S1, { name: "idle-one" }), file: { bridgeSessionId: "session_a", tmux: "s:0.%1", procStart: undefined }, transcriptLastAt: Date.parse("2026-11-01T03:04:00Z") },
       { agent: agent(S2, { name: "busy\none", status: "busy" }), file: undefined, transcriptLastAt: undefined },
-      { agent: agent(S3, { name: undefined, status: "waiting" }), file: { bridgeSessionId: undefined, tmux: undefined }, transcriptLastAt: undefined },
+      { agent: agent(S3, { name: undefined, status: "waiting" }), file: { bridgeSessionId: undefined, tmux: undefined, procStart: undefined }, transcriptLastAt: undefined },
     ],
     2,
     "Asia/Tokyo",

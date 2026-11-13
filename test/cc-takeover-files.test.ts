@@ -1,6 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { copyTranscript, inspectSource, prepareTarget, readAppended, takeoverPaths } from "../src/cc/takeover-files.ts";
 import { TAKEOVER_MAX_BYTES } from "../src/cc/takeover-rules.ts";
@@ -82,7 +83,7 @@ test("copyTranscript: 写した先は同じ中身で mode 600。一時ファイ�
   const { paths, prepare } = setup(t);
   writeFileSync(paths.src, '{"type":"user"}\n{"type":"assistant"}\n', { mode: 0o644 });
   prepare();
-  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false }), "copied");
+  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot: dirname(paths.dstDir), hasMapping: false }), "copied");
   assert.equal(readFileSync(paths.dst, "utf8"), readFileSync(paths.src, "utf8"));
   assert.equal(statSync(paths.dst).mode & 0o777, 0o600);
   assert.deepEqual(readdirSync(paths.dstDir), [`${S1}.jsonl`]);
@@ -94,7 +95,7 @@ test("copyTranscript: 元が symlink なら例外で写さない", (t) => {
   const real = join(root, "real.jsonl");
   writeFileSync(real, "{}\n");
   symlinkSync(real, paths.src);
-  assert.throws(() => copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false }));
+  assert.throws(() => copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot: dirname(paths.dstDir), hasMapping: false }));
   assert.deepEqual(readdirSync(paths.dstDir), []);
 });
 
@@ -103,7 +104,7 @@ test("copyTranscript: 元が上限を超えれば例外で写さない", (t) => 
   prepare();
   writeFileSync(paths.src, "");
   truncateSync(paths.src, TAKEOVER_MAX_BYTES + 1);
-  assert.throws(() => copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false }));
+  assert.throws(() => copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot: dirname(paths.dstDir), hasMapping: false }));
   assert.deepEqual(readdirSync(paths.dstDir), []);
 });
 
@@ -112,7 +113,7 @@ test("copyTranscript: 写し先に同じ名前があり channel_sessions に行�
   writeFileSync(paths.src, "new\n");
   prepare();
   writeFileSync(paths.dst, "old\n");
-  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: true }), "already_taken");
+  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot: dirname(paths.dstDir), hasMapping: true }), "already_taken");
   assert.equal(readFileSync(paths.dst, "utf8"), "old\n");
   assert.deepEqual(readdirSync(paths.dstDir), [`${S1}.jsonl`]);
 });
@@ -122,11 +123,11 @@ test("copyTranscript: 写し先に同じ名前があり行が無ければ、古�
   writeFileSync(paths.src, "new\n");
   prepare();
   writeFileSync(paths.dst, "old\n");
-  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false }), "copied");
+  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot: dirname(paths.dstDir), hasMapping: false }), "copied");
   assert.equal(readFileSync(paths.dst, "utf8"), "new\n");
   assert.equal(readFileSync(`${paths.dst}.old`, "utf8"), "old\n");
   writeFileSync(paths.src, "newer\n");
-  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: false }), "copied");
+  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot: dirname(paths.dstDir), hasMapping: false }), "copied");
   assert.equal(readFileSync(paths.dst, "utf8"), "newer\n");
   assert.equal(readFileSync(`${paths.dst}.old`, "utf8"), "new\n");
   assert.deepEqual(readdirSync(paths.dstDir).sort(), [`${S1}.jsonl`, `${S1}.jsonl.old`]);
@@ -137,8 +138,43 @@ test("copyTranscript: 元と写し先のディレクトリの実体が同じな�
   writeFileSync(paths.src, "same\n");
   mkdirSync(join(configDir, "projects"), { recursive: true });
   symlinkSync(join(home, ".claude", "projects", "-home-u-workspace-alpha"), paths.dstDir);
-  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: true }), "shared");
+  assert.equal(copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot: dirname(paths.dstDir), hasMapping: true }), "shared");
   assert.equal(readFileSync(paths.src, "utf8"), "same\n");
+});
+
+test("copyTranscript: 写し先のディレクトリが projects の外を指す symlink なら例外で写さない", (t) => {
+  const { root, paths, projectsRoot } = setup(t);
+  writeFileSync(paths.src, "x\n");
+  const outside = join(root, "outside");
+  mkdirSync(outside);
+  mkdirSync(projectsRoot, { recursive: true });
+  symlinkSync(outside, paths.dstDir);
+  assert.throws(() => copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot, hasMapping: false }), /projects の外/);
+  assert.deepEqual(readdirSync(outside), []);
+});
+
+test("copyTranscript: 元が FIFO でも止まらずに例外", (t) => {
+  const { root, paths, projectsRoot, prepare } = setup(t);
+  prepare();
+  const fifo = join(root, "fifo");
+  execFileSync("mkfifo", [fifo]);
+  renameSync(fifo, paths.src);
+  assert.throws(() => copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot, hasMapping: false }), /通常ファイル/);
+  assert.deepEqual(readdirSync(paths.dstDir), []);
+});
+
+test("copyTranscript: 写した後の rename に失敗しても一時ファイルは残らない", (t) => {
+  const { paths, projectsRoot, prepare } = setup(t);
+  writeFileSync(paths.src, "new\n");
+  prepare();
+  // 一時名を決める時（古い方を退けた後）に、写し先の名前に中身のあるディレクトリを置いて最後の rename を失敗させる
+  const now = () => {
+    mkdirSync(join(paths.dst, "busy"), { recursive: true });
+    return new Date("2026-11-13T00:00:00.000Z");
+  };
+  assert.throws(() => copyTranscript({ src: paths.src, dst: paths.dst, projectsRoot, hasMapping: false, now }));
+  assert.deepEqual(readdirSync(paths.dstDir), [`${S1}.jsonl`]);
+  assert.equal(statSync(paths.dst).isDirectory(), true);
 });
 
 test("readAppended: fromSize から後ろの空でない行。小さくなった・無い・symlink は undefined", (t) => {
@@ -154,4 +190,7 @@ test("readAppended: fromSize から後ろの空でない行。小さくなった
   const link = join(root, "link.jsonl");
   symlinkSync(paths.src, link);
   assert.equal(readAppended(link, 0), undefined);
+  const fifo = join(root, "fifo");
+  execFileSync("mkfifo", [fifo]);
+  assert.equal(readAppended(fifo, 0), undefined);
 });

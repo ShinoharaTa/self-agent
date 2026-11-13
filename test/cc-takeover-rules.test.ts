@@ -126,6 +126,10 @@ test("parseStat: comm は最初の ( と最後の ) の間。後ろの 1・2・2
   assert.equal(parseStat("4242 (claude) S 1 2 3"), undefined);
   assert.equal(parseStat(statLine("claude", "S", 100, -1)), undefined);
   assert.equal(parseStat(""), undefined);
+  // state が英字 1 文字でなければ undefined
+  assert.equal(parseStat(statLine("claude", "1")), undefined);
+  assert.equal(parseStat(statLine("claude", "?")), undefined);
+  assert.equal(parseStat(statLine("claude", "SS")), undefined);
 });
 
 test("parseBtime・procStartMs", () => {
@@ -142,6 +146,11 @@ test("lineage: pid ≤ 1 までの親の列。読めない・長すぎるなら 
   assert.equal(lineage(60, parentOf), undefined);
   // 自分を親に持つ（ループ）・とても深い列は上限で打ち切る
   assert.equal(lineage(5, () => 5), undefined);
+  // 親が 0 以上の安全な整数でなければ undefined
+  assert.equal(lineage(50, () => Number.NaN), undefined);
+  assert.equal(lineage(50, () => -1), undefined);
+  assert.equal(lineage(50, () => 1.5), undefined);
+  assert.equal(lineage(50, () => Number.MAX_SAFE_INTEGER + 2), undefined);
   assert.equal(lineage(TAKEOVER_LINEAGE_MAX + 10, (pid) => pid - 1), undefined);
   assert.equal(lineage(TAKEOVER_LINEAGE_MAX + 1, (pid) => pid - 1)?.length, TAKEOVER_LINEAGE_MAX);
 });
@@ -155,6 +164,7 @@ function identity(overrides: Partial<TakeoverIdentityInput> = {}): TakeoverIdent
     view: { pid: 4242, kind: "interactive", status: "idle", startedAt: STARTED_AT },
     first: { pid: 4242, startTime: START_TICKS },
     sessionFile: true,
+    procStart: undefined,
     stat: { comm: "claude", state: "S", ppid: 300, startTime: START_TICKS },
     btimeSec: BTIME,
     ownPid: 900,
@@ -166,6 +176,10 @@ function identity(overrides: Partial<TakeoverIdentityInput> = {}): TakeoverIdent
 
 test("takeoverIdentity: §3.4 の 1〜5 がそろえば true", () => {
   assert.equal(takeoverIdentity(identity()), true);
+  // state は R・S・D なら通る
+  for (const state of ["R", "S", "D"]) assert.equal(takeoverIdentity(identity({ stat: { ...identity().stat!, state } })), true, state);
+  // procStart があれば starttime と同じなら通る（無ければ今までどおり）
+  assert.equal(takeoverIdentity(identity({ procStart: String(START_TICKS) })), true);
   // 開始が startedAt + 2 秒ちょうどまでは通る
   assert.equal(takeoverIdentity(identity({ view: { pid: 4242, kind: "interactive", status: "idle", startedAt: STARTED_AT - TAKEOVER_START_SLACK_MS } })), true);
 });
@@ -183,6 +197,10 @@ test("takeoverIdentity: 1 つでも欠ければ false", () => {
     ["comm が claude でない", { stat: { ...stat, comm: "node" } }],
     ["comm に空白・括弧", { stat: { ...stat, comm: "claude (x)" } }],
     ["state Z", { stat: { ...stat, state: "Z" } }],
+    ["state T（止まっている）", { stat: { ...stat, state: "T" } }],
+    ["state t（トレースで止まっている）", { stat: { ...stat, state: "t" } }],
+    ["state X（死んでいる）", { stat: { ...stat, state: "X" } }],
+    ["procStart が starttime と違う", { procStart: String(START_TICKS + 1) }],
     ["starttime が違う", { stat: { ...stat, startTime: START_TICKS + 1 } }],
     ["開始が startedAt + 2 秒を超える", { view: { ...view, startedAt: STARTED_AT - TAKEOVER_START_SLACK_MS - 1 } }],
     ["startedAt が無い", { view: { ...view, startedAt: undefined } }],
@@ -199,12 +217,16 @@ test("takeoverIdentity: 1 つでも欠ければ false", () => {
   }
 });
 
-test("appendedInterrupted: type が user・assistant の行があれば true。読めない行は無視", () => {
+test("appendedInterrupted: type が user・assistant の行か、読めない（書きかけの）行があれば true", () => {
   assert.equal(appendedInterrupted([]), false);
   assert.equal(appendedInterrupted(['{"type":"summary"}', '{"type":"system"}']), false);
   assert.equal(appendedInterrupted(["not json", '{"type":"user","message":{}}']), true);
   assert.equal(appendedInterrupted(['{"type":"assistant"}']), true);
-  assert.equal(appendedInterrupted(["[1,2]", "null", '"user"', '{"type":"user"']), false);
+  assert.equal(appendedInterrupted(["[1,2]", "null", '"user"']), false);
+  // 空白だけの行は無視し、読めない行（書きかけ）は動きありとみなす
+  assert.equal(appendedInterrupted(["   ", "\t"]), false);
+  assert.equal(appendedInterrupted(['{"type":"summary"}', '{"type":"user"']), true);
+  assert.equal(appendedInterrupted(["not json"]), true);
 });
 
 test("takeoverFailureText: §4 の文。終了の後なら次の行に足す", () => {

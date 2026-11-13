@@ -228,6 +228,7 @@ test("setConfirmMessage・markEffects・listEffectsPending", (t) => {
   assert.deepEqual(store.listEffectsPending().map((row) => row.id), [a.id, b.id]);
   assert.equal(store.markEffects(a.id), true);
   assert.ok(store.get(a.id)?.effectsAt);
+  assert.equal(store.markEffects(a.id), false);
   assert.deepEqual(store.listEffectsPending().map((row) => row.id), [b.id]);
 });
 
@@ -249,8 +250,10 @@ test("hold・releaseHeld・listHeld: running だけ差し止められ、流し�
   store.start(row.id);
   assert.equal(store.hold(row.id), true);
   assert.equal(store.get(row.id)?.endedHeld, true);
-  // running のうちは listHeld に出ない
+  // running のうちは listHeld に出ず、releaseHeld も false
   assert.deepEqual(store.listHeld(), []);
+  assert.equal(store.releaseHeld(row.id), false);
+  assert.equal(store.get(row.id)?.endedHeld, true);
   assert.equal(store.fail(row.id, "copy_failed"), true);
   assert.equal(store.get(row.id)?.endedHeld, true);
   assert.equal(store.hold(row.id), false);
@@ -258,6 +261,21 @@ test("hold・releaseHeld・listHeld: running だけ差し止められ、流し�
   assert.equal(store.releaseHeld(row.id), true);
   assert.equal(store.releaseHeld(row.id), false);
   assert.deepEqual(store.listHeld(), []);
+  // release の後の hold は（failed なので）false
+  assert.equal(store.hold(row.id), false);
+});
+
+test("hold: release の後、新しい取り込みの running の行では hold できる", (t) => {
+  const { store, propose } = setup(t);
+  const first = propose()!;
+  store.start(first.id);
+  store.hold(first.id);
+  store.fail(first.id, "copy_failed");
+  assert.equal(store.releaseHeld(first.id), true);
+  const second = propose()!;
+  store.start(second.id);
+  assert.equal(store.hold(second.id), true);
+  assert.equal(store.get(first.id)?.endedHeld, false);
 });
 
 test("finish: ended_held を 0 にするので listHeld に出ない", (t) => {

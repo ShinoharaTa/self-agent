@@ -15,6 +15,8 @@ export const TAKEOVER_EXIT_POLL_MS = 250;
 export const TAKEOVER_MAX_BYTES = 128 * 1024 * 1024;
 /** SIGTERM の相手の /proc/<pid>/stat の comm（§3.4 の 3） */
 export const TAKEOVER_COMM = "claude";
+/** SIGTERM を送ってよい /proc/<pid>/stat の state（走っている・眠っている）。止まっている（T・t）・死んでいる（X・x・Z）ものは保留されて後で死ぬので落とす */
+export const TAKEOVER_LIVE_STATES: readonly string[] = ["R", "S", "D"];
 /** プロセスの開始が一覧の startedAt からこれ以上遅ければ、使い回された pid とみなす（§3.4 の 4） */
 export const TAKEOVER_START_SLACK_MS = 2000;
 /** 祖先をたどる段数の上限（§3.4 の 5。超えたら確かめられない） */
@@ -148,14 +150,15 @@ export function procStartMs(startTime: number, btimeSec: number): number {
 }
 
 /**
- * pid の祖先の列（親から順に、pid ≤ 1 に着くまで。自分は含めない）。途中で親を読めない・TAKEOVER_LINEAGE_MAX 段を超えるなら undefined
+ * pid の祖先の列（親から順に、pid ≤ 1 に着くまで。自分は含めない）。途中で親を読めない・親が 0 以上の安全な整数でない・
+ * TAKEOVER_LINEAGE_MAX 段を超えるなら undefined
  */
 export function lineage(pid: number, parentOf: (pid: number) => number | undefined): number[] | undefined {
   const result: number[] = [];
   let current = pid;
   while (current > 1) {
     const parent = parentOf(current);
-    if (parent === undefined) return undefined;
+    if (parent === undefined || !Number.isSafeInteger(parent) || parent < 0) return undefined;
     result.push(parent);
     if (result.length > TAKEOVER_LINEAGE_MAX) return undefined;
     current = parent;
@@ -176,6 +179,8 @@ export type TakeoverIdentityInput = {
   /** /proc/stat の btime（読めなければ undefined） */
   btimeSec: number | undefined;
   ownPid: number;
+  /** sessions/<pid>.json の procStart（ClaudeDirs.sessionFile。あれば /proc/<pid>/stat の starttime と同じでなければならない） */
+  procStart: string | undefined;
   /** 自分の祖先（lineage(ownPid)） */
   ownAncestors: number[] | undefined;
   /** 相手の祖先（lineage(pid)） */
@@ -190,8 +195,11 @@ export function takeoverIdentity(input: TakeoverIdentityInput): boolean {
   if (view === undefined || view.pid !== pid || view.kind !== "interactive" || view.status !== "idle") return false;
   // 2. sessions/<pid>.json がその session_id
   if (!input.sessionFile) return false;
-  // 3. comm が claude・ゾンビでない・starttime が最初と同じ
-  if (stat === undefined || stat.comm !== TAKEOVER_COMM || stat.state === "Z" || stat.startTime !== first.startTime) return false;
+  // 3. comm が claude・state が R・S・D・starttime が最初と同じ（sessions/<pid>.json に procStart があればそれとも同じ。pid の使い回しを時計に頼らず落とす）
+  if (stat === undefined || stat.comm !== TAKEOVER_COMM || !TAKEOVER_LIVE_STATES.includes(stat.state) || stat.startTime !== first.startTime) {
+    return false;
+  }
+  if (input.procStart !== undefined && String(stat.startTime) !== input.procStart) return false;
   // 4. プロセスの開始が一覧の startedAt + TAKEOVER_START_SLACK_MS 以下（使い回された pid を落とす）
   if (view.startedAt === undefined || input.btimeSec === undefined) return false;
   if (procStartMs(stat.startTime, input.btimeSec) > view.startedAt + TAKEOVER_START_SLACK_MS) return false;
@@ -202,13 +210,17 @@ export function takeoverIdentity(input: TakeoverIdentityInput): boolean {
   return true;
 }
 
-/** 記録に増えた行のうち、JSON の type が user・assistant の行があれば true（終わらせる直前にターンが始まった。§3.4）。読めない行は無視する */
+/**
+ * 記録に増えた行のうち、JSON の type が user・assistant の行があれば true（終わらせる直前にターンが始まった。§3.4）。
+ * 空白だけでない行が JSON として読めなければ（書きかけの行）も true（「動きなし」と読まない）
+ */
 export function appendedInterrupted(lines: readonly string[]): boolean {
   for (const line of lines) {
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch {
+      if (line.trim() !== "") return true;
       continue;
     }
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;

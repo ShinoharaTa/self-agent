@@ -1,7 +1,7 @@
 // 取り込み（docs/plan/takeover.md §3.3・§3.4。#341）の記録のファイル。元（~/.claude/projects/<cwd を - に>/<session_id>.jsonl）を
 // CLAUDE_CONFIG_DIR の同じ場所へ写す。書くのは CLAUDE_CONFIG_DIR の中だけで、~/.claude には書かない。本文は解釈しない（写すのと、増えた行を返すだけ）。
 // log は出さない（パス・session_id は呼び出し側も出さない）
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmSync, writeSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { isUuid } from "./agents.ts";
 import { projectDirName } from "./claude-dirs.ts";
@@ -68,9 +68,14 @@ export function prepareTarget(dir: string, projectsRoot: string, srcDir: string)
     return "invalid";
   }
   if (real === realOrUndefined(srcDir)) return "shared";
+  return insideProjects(real, projectsRoot) ? "ready" : "invalid";
+}
+
+/** 実体のパス real が CLAUDE_CONFIG_DIR の projects（projectsRoot の実体）の下か（prepareTarget の ready と copyTranscript の確かめ直しで共通） */
+function insideProjects(real: string, projectsRoot: string): boolean {
   const root = realOrUndefined(projectsRoot);
-  if (root === undefined) return "invalid";
-  return real.startsWith(root.endsWith(sep) ? root : root + sep) ? "ready" : "invalid";
+  if (root === undefined) return false;
+  return real.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 
 function exists(path: string): boolean {
@@ -85,13 +90,23 @@ function exists(path: string): boolean {
 /**
  * 記録を写す（§3.3）。copied = 写した、shared = 元と写し先のディレクトリの実体が同じ（写さない）、already_taken = 写し先に同じ名前があり
  * channel_sessions にその session_id の行がある（hasMapping。写さない）。行が無ければ古い方を `<名前>.old` に退けてから写す（あれば上書き）。
- * 元が通常ファイルでない（symlink を含む）・TAKEOVER_MAX_BYTES を超える・読み書きに失敗したときは例外（copy_failed）。
- * 一時名（排他・mode 600）に写してから rename する。now は一時名にだけ使う。根拠の確かめは O_NOFOLLOW で開いた元の fstat（inspectSource は事前の検査）
+ * 元を開く前に、写し先のディレクトリの実体が projectsRoot の下かを確かめ直す（prepareTarget の ready と同じ条件）。
+ * 写し先のディレクトリが projects の外・元が通常ファイルでない（symlink・FIFO を含む）・TAKEOVER_MAX_BYTES を超える・読み書きに失敗したときは例外（copy_failed）。
+ * 一時名（排他・mode 600）に写して fsync してから rename する。失敗したら一時ファイルは消す。now は一時名にだけ使う。
+ * 根拠の確かめは O_NOFOLLOW・O_NONBLOCK で開いた元の fstat（inspectSource は事前の検査）
  */
-export function copyTranscript(input: { src: string; dst: string; hasMapping: boolean; now?: () => Date }): "copied" | "shared" | "already_taken" {
+export function copyTranscript(input: {
+  src: string;
+  dst: string;
+  projectsRoot: string;
+  hasMapping: boolean;
+  now?: () => Date;
+}): "copied" | "shared" | "already_taken" {
   const now = input.now ?? (() => new Date());
-  if (realpathSync(dirname(input.src)) === realpathSync(dirname(input.dst))) return "shared";
-  const source = openSync(input.src, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const dstDir = realpathSync(dirname(input.dst));
+  if (realpathSync(dirname(input.src)) === dstDir) return "shared";
+  if (!insideProjects(dstDir, input.projectsRoot)) throw new Error("取り込みの記録の写し先が projects の外です");
+  const source = openSync(input.src, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(source);
     if (!stat.isFile()) throw new Error("取り込みの元の記録が通常ファイルではありません");
@@ -101,8 +116,9 @@ export function copyTranscript(input: { src: string; dst: string; hasMapping: bo
       renameSync(input.dst, `${input.dst}.old`);
     }
     const temp = `${input.dst}.tmp-${process.pid}-${now().getTime()}`;
+    // O_EXCL で作れなければ（同じ名前が既にある）、その他人のファイルは消さずに例外にする
     const target = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    let done = false;
+    let closed = false;
     try {
       fchmodSync(target, 0o600);
       const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
@@ -115,12 +131,25 @@ export function copyTranscript(input: { src: string; dst: string; hasMapping: bo
         let written = 0;
         while (written < read) written += writeSync(target, buffer, written, read - written);
       }
+      fsyncSync(target);
+      // close が投げても二度は閉じない
+      closed = true;
       closeSync(target);
-      done = true;
       renameSync(temp, input.dst);
     } catch (error) {
-      if (!done) closeSync(target);
-      rmSync(temp, { force: true });
+      if (!closed) {
+        closed = true;
+        try {
+          closeSync(target);
+        } catch {
+          // 元の例外を投げ直すので、ここでは何もしない
+        }
+      }
+      try {
+        rmSync(temp, { force: true });
+      } catch {
+        // 元の例外を投げ直すので、ここでは何もしない
+      }
       throw error;
     }
     return "copied";
@@ -130,14 +159,14 @@ export function copyTranscript(input: { src: string; dst: string; hasMapping: bo
 }
 
 /**
- * fromSize（バイト）から後ろに増えた行（空の行は除く）。読めない・通常ファイルでない・fromSize より小さくなった・増えた分が
+ * fromSize（バイト）から後ろに増えた行（空の行は除く）。読めない・通常ファイルでない・fromSize より小さくなった（FIFO などに替えられても O_NONBLOCK で待たない）・増えた分が
  * TAKEOVER_MAX_BYTES を超えるときは undefined（増えた行の type を見る §3.4 のため。中身は呼び出し側が appendedInterrupted に渡すだけ）
  */
 export function readAppended(path: string, fromSize: number): string[] | undefined {
   if (!Number.isSafeInteger(fromSize) || fromSize < 0) return undefined;
   let fd: number;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
     return undefined;
   }
