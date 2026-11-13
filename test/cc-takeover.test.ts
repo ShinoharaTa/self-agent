@@ -20,7 +20,7 @@ import {
   takeoverDoneText,
 } from "../src/cc/takeover.ts";
 import { copyTranscript } from "../src/cc/takeover-files.ts";
-import { TAKEOVER_AFTER_TERM_TEXT, takeoverFailureText } from "../src/cc/takeover-rules.ts";
+import { TAKEOVER_AFTER_TERM_TEXT, TAKEOVER_MAYBE_TERM_TEXT, takeoverFailureText } from "../src/cc/takeover-rules.ts";
 import type { PaneState } from "../src/tmux/pane-state.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
@@ -206,7 +206,7 @@ function setup(t: TestContext, options: Options = {}) {
     registry,
     panes: { lookup: async () => lookup },
     probePane: async () => ({ ok: true, state: env.probes.shift() ?? "idle" }),
-    dirs: { sessionFile: (pid, sessionId) => (env.sessionFile && pid === PID && sessionId === S1 ? { bridgeSessionId: undefined, tmux: undefined } : undefined) },
+    dirs: { sessionFile: (pid, sessionId) => (env.sessionFile && pid === PID && sessionId === S1 ? { bridgeSessionId: undefined, tmux: undefined, procStart: String(START_TICKS) } : undefined) },
     takeovers,
     ccChannels,
     ccSessions,
@@ -722,5 +722,57 @@ test("noteFor・noteDone・resumeDropped（§3.6.1・§3.6.3）", async (t) => {
   await new Promise((resolve) => setImmediate(resolve));
   const dropped = s.gateway.posts.slice(before);
   assert.deepEqual(dropped.map((post) => post.message.text), [TAKEOVER_DROPPED_TEXT]);
+  assertQuietLogs(s);
+});
+
+test("確認の後にチャンネルが別のセッションに付け替わった: check で channel_changed、SIGTERM は送らない", async (t) => {
+  const s = setup(t);
+  const proposed = await s.takeover.propose({ channelId: "chan-1", entry: "discord" });
+  assert.ok(proposed.ok);
+  s.ccChannels.rebind("chan-1", S2);
+  const result = await s.takeover.confirm(proposed.id);
+  assert.equal(!result.ok && result.reason, "channel_changed");
+  assert.equal(s.takeovers.get(proposed.id)?.step, "check");
+  assert.deepEqual(s.kills, []);
+  assert.equal(s.topicSessions.get("chan-1"), undefined);
+  assertQuietLogs(s);
+});
+
+test("recover: restart にした行の確認の文を書き換える（check は 1 行、term・copy・commit は 2 行、確認の文が無ければ何もしない、失敗しても投げない）", async (t) => {
+  const s = setup(t);
+  const add = (sessionId: string, channelId: string, step: "check" | "term" | "copy" | "commit" | undefined, messageId?: string) => {
+    const row = s.takeovers.propose({ sessionId, source: "alive", project: "alpha", guildId: "guild-1", channelId, entry: "discord", permissionMode: "default" })!;
+    s.takeovers.start(row.id);
+    if (step !== undefined) s.takeovers.setStep(row.id, step);
+    if (messageId !== undefined) s.takeovers.setConfirmMessage(row.id, messageId);
+    return row;
+  };
+  add(S1, "chan-1", "check", "msg-a");
+  add(S2, "chan-2", "term", "msg-b");
+  add(S3, "chan-3", "commit", undefined);
+  await s.takeover.recover();
+  await new Promise((resolve) => setImmediate(resolve));
+  const restart = takeoverFailureText("restart", false);
+  assert.deepEqual(s.gateway.edits, [
+    { channelId: "chan-1", messageId: "msg-a", message: { text: restart, components: [] } },
+    { channelId: "chan-2", messageId: "msg-b", message: { text: `${restart}\n${TAKEOVER_MAYBE_TERM_TEXT}`, components: [] } },
+  ]);
+  assert.doesNotMatch(s.gateway.edits[1]!.message.text, new RegExp(TAKEOVER_AFTER_TERM_TEXT));
+  assertQuietLogs(s);
+});
+
+test("recover: 確認の文の書き換えに失敗しても投げず、log だけ", async (t) => {
+  const s = setup(t);
+  const row = s.takeovers.propose({ sessionId: S1, source: "alive", project: "alpha", guildId: "guild-1", channelId: "chan-1", entry: "discord", permissionMode: "default" })!;
+  s.takeovers.start(row.id);
+  s.takeovers.setStep(row.id, "copy");
+  s.takeovers.setConfirmMessage(row.id, "msg-a");
+  s.gateway.beforeEdit = () => {
+    throw new Error("/secret/path/11111111");
+  };
+  await s.takeover.recover();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(s.takeovers.get(row.id)?.failure, "restart");
+  assert.ok(s.logs.some((line) => line.includes("確認の文を書き換えられませんでした")));
   assertQuietLogs(s);
 });

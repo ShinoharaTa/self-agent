@@ -265,6 +265,13 @@ export const TAKEOVER_AFTER_TERM_TEXT =
   "端末の Claude Code は終了しています。このチャンネルで /cc take をもう一度実行すると、終わった会話から取り込めます。";
 
 /**
+ * 再起動で restart にした取り込みが SIGTERM を送ったか分からない段（term・copy・commit）だったときに足す文（docs/plan/takeover.md §9.1。
+ * 送ったと言い切らない）
+ */
+export const TAKEOVER_MAYBE_TERM_TEXT =
+  "端末の Claude Code は終了しているかもしれません。終了していれば、このチャンネルで /cc take をもう一度実行すると、終わった会話から取り込めます。";
+
+/**
  * 確認の文を書き換える失敗の文（§4）。afterTerm（SIGTERM を送った後の失敗）なら TAKEOVER_AFTER_TERM_TEXT を次の行に足す。
  * not_exited は文の中に続け方があるので足さない
  */

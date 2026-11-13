@@ -48,6 +48,7 @@ import {
   takeoverIdentity,
   type TakeoverPane,
   takeoverRefusal,
+  TAKEOVER_MAYBE_TERM_TEXT,
 } from "./takeover-rules.ts";
 
 /** 確認の有効な長さ（cc_send の確認と同じ 10 分。§3.5） */
@@ -348,13 +349,24 @@ export class CcTakeover {
   }
 
   /**
-   * 起動時（registry を始める前）に 1 回（§3.4）: running の行を failed（restart）にし、差し止めた ended を流し直し（releaseHeld が通った行だけ）、
-   * 後始末の済んでいない done の行の移動と topic をやり直す。DB と流し直しは最初の await の前に済む
+   * 起動時（registry を始める前）に 1 回（§3.4）: running の行を failed（restart）にし（確認の文があれば失敗の文に書き換える。待たない。§9.1）、
+   * 差し止めた ended を流し直し（releaseHeld が通った行だけ）、後始末の済んでいない done の行の移動と topic をやり直す。DB と流し直しは最初の await の前に済む
    */
   async recover(): Promise<void> {
     const { takeovers, ccSessions, channelOps, gateway, log } = this.deps;
     const reset = takeovers.resetRunning();
     if (reset.length > 0) log(`Claude Code: 再起動の前の取り込み ${reset.length} 件を失敗にしました（restart）`);
+    for (const row of reset) {
+      if (row.confirmMessageId === null) continue;
+      // SIGTERM を送ったか分からない段なら、言い切らずに続け方を足す
+      const maybeTerm = row.step === "term" || row.step === "copy" || row.step === "commit";
+      const text = `${takeoverFailureText("restart", false)}${maybeTerm ? `\n${TAKEOVER_MAYBE_TERM_TEXT}` : ""}`;
+      void Promise.resolve()
+        .then(() => gateway.editMessage(row.channelId, row.confirmMessageId!, { text, components: [] }))
+        .catch((error: unknown) => {
+          log(`Claude Code: 再起動の前の取り込みの確認の文を書き換えられませんでした（#${row.id}、${errorKind(error)}）`);
+        });
+    }
     for (const row of takeovers.listHeld()) this.replayIfHeld(row);
     for (const row of takeovers.listEffectsPending()) {
       channelOps.enqueueMove(row.channelId, { kind: "state", guildId: row.guildId, state: "active" });
@@ -433,7 +445,8 @@ export class CcTakeover {
       log(`Claude Code: 取り込みの進行中のカテゴリを用意できませんでした（#${id}、${errorKind(error)}）`);
       return "no_category";
     }
-    const target = this.files.prepareTarget(paths.dstDir, join(this.deps.claudeConfigDir, "projects"), dirname(paths.src));
+    const projectsRoot = join(this.deps.claudeConfigDir, "projects");
+    const target = this.files.prepareTarget(paths.dstDir, projectsRoot, dirname(paths.src));
     if (target === "invalid") return "target_invalid";
     if (first !== undefined) {
       // 直前の競合（§3.4）: 2 秒おいて、一覧・ペイン・記録の増えた分を確かめ直す
@@ -445,10 +458,12 @@ export class CcTakeover {
       if (appended === undefined || appendedInterrupted(appended)) return "changed";
       takeovers.setStep(id, "term");
       const parentOf = (pid: number): number | undefined => this.stat(pid)?.ppid;
+      const file = dirs.sessionFile(first.pid, sessionId);
       const identity = takeoverIdentity({
         view: again.view,
         first,
-        sessionFile: dirs.sessionFile(first.pid, sessionId) !== undefined,
+        sessionFile: file !== undefined,
+        procStart: file?.procStart,
         stat: this.stat(first.pid),
         btimeSec: this.deps.readBtime(),
         ownPid: this.deps.ownPid,
@@ -477,7 +492,13 @@ export class CcTakeover {
     takeovers.setStep(id, "copy");
     let copied: ReturnType<typeof copyTranscript>;
     try {
-      copied = this.files.copyTranscript({ src: paths.src, dst: paths.dst, hasMapping: sdkSessions.hasSessionId(sessionId), now: this.deps.now });
+      copied = this.files.copyTranscript({
+        src: paths.src,
+        dst: paths.dst,
+        projectsRoot,
+        hasMapping: sdkSessions.hasSessionId(sessionId),
+        now: this.deps.now,
+      });
     } catch (error) {
       log(`Claude Code: 取り込みの記録を写せませんでした（#${id}、${errorKind(error)}）`);
       return "copy_failed";
