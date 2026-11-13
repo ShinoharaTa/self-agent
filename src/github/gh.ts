@@ -133,6 +133,11 @@ const NOTIFICATIONS_QUERY: Readonly<Record<string, RegExp>> = {
 };
 const TIMELINE_QUERY: Readonly<Record<string, RegExp>> = { per_page: NUMBER_PATTERN, page: NUMBER_PATTERN };
 const NO_QUERY: Readonly<Record<string, RegExp>> = {};
+/** 進行状況（docs/plan/project-board.md §4 PS1）の open な PR・issue の一覧と、check-runs */
+const OPEN_LIST_QUERY: Readonly<Record<string, RegExp>> = { state: /^open$/, per_page: NUMBER_PATTERN };
+const PER_PAGE_QUERY: Readonly<Record<string, RegExp>> = { per_page: NUMBER_PATTERN };
+/** コミットの sha（40 桁の 16 進数だけ） */
+const SHA_PATTERN = /^[0-9a-f]{40}$/;
 
 export function isOwner(value: string): boolean {
   return OWNER_PATTERN.test(value);
@@ -161,7 +166,8 @@ function queryAllowed(query: string | undefined, allowed: Readonly<Record<string
 
 /**
  * 許可した API のパスか（§7.1）: `/notifications?…`・`/repos/<o>/<r>/issues/<n>`・`/repos/<o>/<r>/issues/<n>/timeline?…`・`/user`。
- * クエリは決まった名前と値の形だけ（同じ名前は 1 回）
+ * 進行状況（docs/plan/project-board.md §4 PS1）の `/repos/<o>/<r>/pulls?state=open&per_page=…`・`/repos/<o>/<r>/issues?state=open&per_page=…`・
+ * `/repos/<o>/<r>/commits/<40 桁の 16 進数>/check-runs?per_page=…` も。クエリは決まった名前と値の形だけ（同じ名前は 1 回）
  */
 export function isAllowedGhPath(path: string): boolean {
   const question = path.indexOf("?");
@@ -170,6 +176,13 @@ export function isAllowedGhPath(path: string): boolean {
   if (base === "/user") return queryAllowed(query, NO_QUERY);
   if (base === "/notifications") return queryAllowed(query, NOTIFICATIONS_QUERY);
   const parts = base.split("/");
+  if (parts.length < 5 || parts[0] !== "" || parts[1] !== "repos" || !isOwner(parts[2]!) || !isRepo(parts[3]!)) return false;
+  // ["", "repos", o, r, "pulls" | "issues"]（進行状況の open な一覧）
+  if (parts.length === 5) return (parts[4] === "pulls" || parts[4] === "issues") && queryAllowed(query, OPEN_LIST_QUERY);
+  // ["", "repos", o, r, "commits", sha, "check-runs"]
+  if (parts[4] === "commits") {
+    return parts.length === 7 && SHA_PATTERN.test(parts[5]!) && parts[6] === "check-runs" && queryAllowed(query, PER_PAGE_QUERY);
+  }
   // ["", "repos", o, r, "issues", n] か […, "timeline"]
   if (parts.length < 6 || parts.length > 7 || parts[0] !== "" || parts[1] !== "repos" || parts[4] !== "issues") return false;
   if (!isOwner(parts[2]!) || !isRepo(parts[3]!) || !NUMBER_PATTERN.test(parts[5]!)) return false;
@@ -348,6 +361,21 @@ export function issuePath(owner: string, repo: string, number: number): string {
 /** Issue・PR のタイムラインのパス（1 ページ 100 件） */
 export function timelinePath(owner: string, repo: string, number: number, page = 1): string {
   return `/repos/${owner}/${repo}/issues/${number}/timeline?per_page=100&page=${page}`;
+}
+
+/** open な PR の一覧のパス（進行状況。1 ページ 30 件） */
+export function openPullsPath(owner: string, repo: string): string {
+  return `/repos/${owner}/${repo}/pulls?state=open&per_page=30`;
+}
+
+/** open な issue の一覧のパス（進行状況。1 ページ 50 件。PR も含まれるので呼び出し側が除く） */
+export function openIssuesPath(owner: string, repo: string): string {
+  return `/repos/${owner}/${repo}/issues?state=open&per_page=50`;
+}
+
+/** コミットの check-runs のパス（進行状況。1 ページ 50 件） */
+export function checkRunsPath(owner: string, repo: string, sha: string): string {
+  return `/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=50`;
 }
 
 /** PATH から gh の絶対パスを解決する（§10。起動時に 1 回）。PATH の絶対パスの要素だけを見て、実行できるファイルが無ければ undefined */

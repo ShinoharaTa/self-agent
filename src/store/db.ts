@@ -807,6 +807,22 @@ export const MIGRATIONS: readonly string[] = [
   `
   CREATE INDEX IF NOT EXISTS usage_log_at ON usage_log(at);
   `,
+  // v42（docs/plan/project-board.md §4 PS1）: 進行状況に登録したプロジェクト（SELF_AGENT_WORKSPACE_DIR の直下の名前）と、最後に集めた結果。
+  // removed_at で外し（物理削除しない）、登録し直したら NULL に戻す。reasons・items・local は JSON、state・error は決まった語
+  `
+  CREATE TABLE board_projects (
+    dir TEXT PRIMARY KEY,
+    repo TEXT,
+    added_at TEXT NOT NULL,
+    removed_at TEXT,
+    state TEXT,
+    reasons TEXT,
+    items TEXT,
+    local TEXT,
+    checked_at TEXT,
+    error TEXT
+  );
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

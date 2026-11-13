@@ -22,6 +22,7 @@
     { id: "projects", label: "プロジェクト", phone: "more", icon: "folder", enabled: always },
     { id: "jobs", label: "ジョブ", phone: "more", icon: "briefcase", enabled: (status) => !!(status.jobs && status.jobs.enabled), stage: "w8" },
     { id: "github", label: "GitHub", phone: "more", icon: "git-pull-request", enabled: (status) => !!(status.github && status.github.enabled) },
+    { id: "board", label: "進行状況", phone: "more", icon: "columns", tab: "board", enabled: (status) => !!(status.board && status.board.enabled) },
     { id: "usage", label: "使用量", phone: "more", icon: "bar-chart", enabled: always },
     { id: "devlog", label: "会話ログ", phone: "more", icon: "file-text", enabled: (status) => !!status.devMode },
     { id: "status", label: "状態", phone: "more", icon: "activity", tab: "status", bottom: true, enabled: always },

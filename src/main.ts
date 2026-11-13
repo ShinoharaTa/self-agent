@@ -48,6 +48,8 @@ import { PersonaStatus, startPersonaGateways } from "./app/persona-status.ts";
 import { PersonaRouter, type PersonaRuntime } from "./app/personas.ts";
 import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
+import { BoardCollector, type BoardLiveSource, boardCcSessions, NO_LIVE } from "./board/collect.ts";
+import { createBoardGit } from "./board/git.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
@@ -76,6 +78,7 @@ import { GitClient } from "./jobs/git.ts";
 import { JobGithubApi } from "./jobs/github-api.ts";
 import { JobOrchestrator, jobPaths, removeVerifiedChild } from "./jobs/orchestrator.ts";
 import { createStaticServer, type StaticServer } from "./serve/static-server.ts";
+import { BoardStore } from "./store/board.ts";
 import { AttachmentStore } from "./store/attachments.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { GithubStore } from "./store/github.ts";
@@ -110,6 +113,7 @@ import { ccChannelDescriber, ccRoutes, ccStatus, type CcStatus } from "./web/rou
 import { channelRoutes, webChannelLookup, webChannelNamer } from "./web/routes/channels.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
 import { githubRoutes } from "./web/routes/github.ts";
+import { boardRoutes } from "./web/routes/board.ts";
 import { knowledgeRoutes } from "./web/routes/knowledge.ts";
 import { memoryRoutes } from "./web/routes/memories.ts";
 import { noticeRoutes } from "./web/routes/notices.ts";
@@ -1016,6 +1020,36 @@ const githubPoller = createGithubPoller({
   log,
 });
 
+// 進行中のプロジェクトの管理（docs/plan/project-board.md。SELF_AGENT_BOARD=1 のときだけ）: 登録したプロジェクトの git と GitHub を 15 分ごとに集めて判定する。
+// gh と git は起動時に PATH から 1 回解決し、無ければ board だけ無効にする（Bot は動かし続ける）。Claude Code の材料は SELF_AGENT_CC=1 で registry があるときだけ
+const boardStore = new BoardStore(db, now);
+let boardCollector: BoardCollector | undefined;
+const boardPlaces = ccPlacesOf(config, homedir());
+const boardLive: BoardLiveSource = (dir, path) => {
+  if (path === undefined) return NO_LIVE;
+  return {
+    ccSessions: ccRegistry === undefined ? [] : boardCcSessions(ccRegistry.snapshot().sessions, path),
+    turnRunning: handler.runningTurns().some((turn) => topicSessions.projectDirOf(turn.channelId)?.projectDir === dir),
+  };
+};
+if (config.board) {
+  const boardGhPath = resolveGhPath();
+  const boardGitPath = resolveCommandPath("git");
+  if (boardGhPath === undefined || boardGitPath === undefined) {
+    log("進行状況は無効です（SELF_AGENT_BOARD=1 には gh と git が要ります。PATH を確かめてください）");
+  } else {
+    boardCollector = new BoardCollector({
+      store: boardStore,
+      places: boardPlaces,
+      git: createBoardGit({ gitPath: boardGitPath }),
+      gh: new GhClient({ ghPath: boardGhPath }),
+      live: boardLive,
+      now,
+      log,
+    });
+  }
+}
+
 // 作ったプロジェクトの配信: ポートと公開 URL の両方があるときだけ、127.0.0.1 で待ち受ける（tailnet には tailscale serve で出す）
 let staticServer: StaticServer | undefined;
 if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
@@ -1097,6 +1131,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         guildSettings,
         env: process.env,
         ...(ccStatusOf === undefined ? {} : { cc: ccStatusOf }),
+        board: () => boardCollector !== undefined,
       }),
       ...usageRoutes({ cfg: config, usage, attachments, now }),
       ...channelRoutes({
@@ -1150,6 +1185,13 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         ...(githubHandoff === undefined ? {} : { handoff: githubHandoff }),
       }),
       ...knowledgeRoutes({ knowledge }),
+      // 進行状況（SELF_AGENT_BOARD が無効・gh か git が無ければ GET は enabled: false、POST は 404）
+      ...boardRoutes({
+        ...(boardCollector === undefined
+          ? {}
+          : { board: { store: boardStore, collector: boardCollector, places: boardPlaces, live: boardLive } }),
+        log,
+      }),
       // この機械の Claude Code のセッションの一覧と画面の写し（SELF_AGENT_CC が無効なら 404）
       // 送信（/send・/cancel）は SELF_AGENT_CC が有効なときだけ
       ...ccRoutes({
@@ -1240,6 +1282,7 @@ const lifecycle = createShutdown(
     scheduler,
     reminderScheduler,
     ...(githubPoller === undefined ? {} : { githubPoller }),
+    ...(boardCollector === undefined ? {} : { boardCollector }),
     // 実行中のジョブは待たずに中断し（failed / interrupted）、始めていないものは次の起動で入れ直す
     ...(jobs === undefined ? {} : { jobs }),
     channelOps,
@@ -1324,6 +1367,7 @@ await jobs?.announceRecovered();
 scheduler.start(TICK_INTERVAL_MS);
 reminderScheduler.start();
 githubPoller?.start();
+boardCollector?.start();
 ccRegistry?.start();
 ccSender?.start();
 ccStarter?.start();

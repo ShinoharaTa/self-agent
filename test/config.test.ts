@@ -33,6 +33,7 @@ test("未設定ならデフォルト値を使う", () => {
     devMode: false,
     devLogDays: 30,
     shell: false,
+    board: false,
     personas: [],
     codexHome: undefined,
     github: false,
@@ -301,6 +302,17 @@ test("SELF_AGENT_DEV_MODE は 1 で有効、未設定・空・0 で無効。そ�
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: "" }).devMode, false);
   for (const value of ["true", "yes", "2", " 1", "on"]) {
     assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_DEV_MODE: value }), /SELF_AGENT_DEV_MODE/, value);
+  }
+});
+
+test("SELF_AGENT_BOARD は 1 で有効、未設定・空・0 で無効。それ以外の値はエラー。SELF_AGENT_GITHUB によらない", () => {
+  assert.equal(loadConfig({ HOME: "/home/tester" }).board, false);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_BOARD: "1" }).board, true);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_BOARD: "1", SELF_AGENT_GITHUB: "0" }).board, true);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_BOARD: "0" }).board, false);
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_BOARD: "" }).board, false);
+  for (const value of ["true", "yes", "2", " 1"]) {
+    assert.throws(() => loadConfig({ HOME: "/home/tester", SELF_AGENT_BOARD: value }), /SELF_AGENT_BOARD/, value);
   }
 });
 

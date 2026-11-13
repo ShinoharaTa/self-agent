@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  checkRunsPath,
   effectivePollIntervalSec,
   execFileRun,
   GH_MAX_BUFFER,
@@ -17,6 +18,8 @@ import {
   lastModifiedFromHeaders,
   lastPageFromLink,
   notificationsPath,
+  openIssuesPath,
+  openPullsPath,
   parseIncludeOutput,
   pollIntervalFromHeaders,
   rateLimitFromHeaders,
@@ -102,6 +105,42 @@ test("isAllowedGhPath: 許可した 4 つの形と決まったクエリだけを
   ]) {
     assert.equal(isAllowedGhPath(path), false, path);
   }
+});
+
+test("isAllowedGhPath: 進行状況の open な PR・issue の一覧と check-runs（GET だけ・決まったクエリ）", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  for (const path of [
+    openPullsPath("example-org", "example-repo"),
+    openIssuesPath("example-org", "example.repo_2"),
+    checkRunsPath("example-org", "example-repo", sha),
+    "/repos/example-org/example-repo/pulls",
+    "/repos/example-org/example-repo/issues?per_page=10",
+    `/repos/example-org/example-repo/commits/${sha}/check-runs`,
+  ]) {
+    assert.equal(isAllowedGhPath(path), true, path);
+  }
+  for (const path of [
+    "/repos/example-org/example-repo/pulls?state=closed&per_page=30",
+    "/repos/example-org/example-repo/pulls?state=all",
+    "/repos/example-org/example-repo/issues?state=open&per_page=50&page=2",
+    "/repos/example-org/example-repo/issues?state=open&state=open",
+    "/repos/example-org/example-repo/issues?state=open\n",
+    "/repos/example-org/example-repo/pulls?state=open&per_page=0",
+    "/repos/example-org/example-repo/commits",
+    "/repos/example-org/example-repo/commits/main/check-runs",
+    "/repos/example-org/example-repo/commits/0123456789ABCDEF0123456789ABCDEF01234567/check-runs",
+    "/repos/example-org/example-repo/commits/0123456789abcdef/check-runs",
+    `/repos/example-org/example-repo/commits/${sha}`,
+    `/repos/example-org/example-repo/commits/${sha}/statuses`,
+    `/repos/example-org/example-repo/commits/${sha}/check-runs?per_page=50&filter=latest`,
+    `/repos/example-org/example-repo/commits/${sha}/check-runs/extra`,
+    "/repos/example-org/../pulls",
+    "/repos/example-org/example-repo/branches",
+    "/repos/example-org/example-repo/pulls#x",
+  ]) {
+    assert.equal(isAllowedGhPath(path), false, path);
+  }
+  assert.throws(() => ghApiArgs({ method: "POST" as "GET", path: openPullsPath("example-org", "example-repo") }));
 });
 
 test("ghApiArgs: GET・--include・固定のヘッダ・パスは最後。許可していないパス・GET 以外のメソッド・形の違う If-Modified-Since は投げる", () => {
