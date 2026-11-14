@@ -704,7 +704,7 @@ kbd {
   text-align: center;
 }
 
-/* 実行中のスピナーはスマホ（ステータスバーを出さない幅）だけ数の位置に出す */
+/* 実行中のスピナーはスマホ（ステータスバーを出さない幅）だけ出す。数は隠さず、スピナーを添える */
 .act-spin {
   display: none;
 }
@@ -1456,6 +1456,10 @@ kbd {
 .tl-notice .icon {
   width: var(--icon-sm);
   height: var(--icon-sm);
+}
+
+.cc-status .btn {
+  margin-left: var(--space-2);
 }
 
 .tl-hint {
@@ -2858,13 +2862,9 @@ dialog[open]::backdrop {
     top: var(--vvt, 0px);
   }
 
-  /* ステータスバーの代わりに、タイトルバーの右に接続の点と鈴、下タブ「会話」に実行中のスピナー */
+  /* ステータスバーの代わりに、タイトルバーの右に接続の点と鈴、下タブ「会話」に実行中のスピナー（数は隠さず、スピナーを添える） */
   .wb-title-status {
     display: flex;
-  }
-
-  .act-btn.is-running .act-count {
-    display: none;
   }
 
   .act-btn.is-running .act-spin {
@@ -3130,7 +3130,7 @@ dialog[open]::backdrop {
     white-space: nowrap;
   }
 
-  /* 下タブ: 選んでいるものはアイコンと文字を accent。数・スピナーはアイコンの右上 */
+  /* 下タブ: 選んでいるものはアイコンと文字を accent。数・スピナーはアイコンの右上（数は隠さず、スピナーを添える） */
   .act-btn[aria-pressed="true"],
   .act-more.is-current {
     color: var(--accent);
@@ -3141,6 +3141,12 @@ dialog[open]::backdrop {
   .act-more .dot {
     right: auto;
     left: calc(50% + var(--space-1));
+  }
+
+  /* 数があるときのスピナーはアイコンの左上（数は隠さない） */
+  .act-btn.is-running.has-count .act-spin {
+    left: auto;
+    right: calc(50% + var(--space-1));
   }
 
   /* ===== 表の積み（views.js の table の stack。UI-10）。th は隠し、tr を grid にして各 td の置き場所を grid-area で決める。

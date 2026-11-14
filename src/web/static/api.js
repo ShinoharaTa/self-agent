@@ -720,6 +720,14 @@
     return !!(ch && ch.kind === "cc" && !SA.chat.ccScreenOpen(ch.id));
   }
 
+  /** 前に出ている Claude Code のセッションに、届け待ち・届けている送信がある（仮のものを含む） */
+  function ccSendBusy() {
+    const id = activeCcSession();
+    const loaded = id ? store.ccSessions[id] : null;
+    const p = id ? store.ccPendingOf(id, loaded && loaded.session ? loaded.session.pending : null) : null;
+    return !!(p && (p.state === "queued" || p.state === "delivering"));
+  }
+
   /** 一覧に許可の要求を保留しているセッションがある */
   function ccAsking() {
     return !!(store.cc && store.cc.sessions.some((s) => s.permission && s.permission.state === "pending"));
@@ -727,6 +735,43 @@
 
   /** 判断待ちのセッションの数（会話のアクティビティの数に足す） */
   store.ccNeedsInputCount = () => (store.ccEnabled() && store.cc ? store.cc.sessions.filter((s) => s.state === "needs_input").length : 0);
+
+  /** プロジェクトのセッションが許可・質問の答えを待っている。実行中のターンを読んでいればその waitingPermission（新しい方）を、まだ読んでいなければ channel の permission を見る */
+  store.sessionAsking = (ch) => {
+    if (!ch || ch.kind !== "session") return false;
+    if (store.running !== null) {
+      const run = store.runningOf(ch.id);
+      return !!(run && run.waitingPermission);
+    }
+    return !!(ch.permission && ch.permission.state === "pending");
+  };
+
+  /** 許可・質問の答えを待っているプロジェクトのセッションの数（会話のアクティビティの数に足す） */
+  store.sessionAskingCount = () => (store.channels ? store.channels.channels.filter(store.sessionAsking).length : 0);
+
+  // ===== Claude Code のチャンネルで送った直後の仮の「届け待ち」（サーバーの pending が追いつくまで。CC_OPTIMISTIC_MS で捨てる） =====
+  const CC_OPTIMISTIC_MS = 30000;
+  /** sessionId → 仮の pending */
+  store.ccOptimistic = {};
+
+  store.setCcOptimisticSend = (sessionId, sendId) => {
+    store.ccOptimistic[sessionId] = { id: sendId, state: "queued", lastPaneState: null, replyState: null, updatedAt: new Date().toISOString() };
+  };
+
+  /** そのセッションの今の pending。仮のものがあり、サーバーの pending がそれより前の送信なら仮のもの */
+  store.ccPendingOf = (sessionId, serverPending) => {
+    const optimistic = store.ccOptimistic[sessionId];
+    if (!optimistic) return serverPending;
+    if (Date.now() - Date.parse(optimistic.updatedAt) > CC_OPTIMISTIC_MS) {
+      delete store.ccOptimistic[sessionId];
+      return serverPending;
+    }
+    if (serverPending && serverPending.id >= optimistic.id) {
+      delete store.ccOptimistic[sessionId];
+      return serverPending;
+    }
+    return optimistic;
+  };
 
   /** 一覧を見ている（会話の一覧（群「Claude Code」）を出している・セッションのタブが前に出ている） */
   function ccWatching() {
@@ -783,8 +828,10 @@
         const data = await SA.api.get("/api/cc/sessions/" + encodeURIComponent(sessionId), Object.assign({}, opts, { quiet: true }));
         store.ccSessions[sessionId] = { session: data && typeof data === "object" ? data : null, missing: false };
       } catch (err) {
-        if (err && err.status === 404) store.ccSessions[sessionId] = { session: null, missing: true };
-        else {
+        if (err && err.status === 404) {
+          store.ccSessions[sessionId] = { session: null, missing: true };
+          delete store.ccOptimistic[sessionId];
+        } else {
           if (!(opts && opts.quiet)) SA.ui.toast(err && typeof err.toast === "string" ? err.toast : "サーバーにつながりません");
           throw err;
         }
@@ -857,9 +904,9 @@
       fails: 0,
       timer: null,
     },
-    // Claude Code のチャンネルの会話のタブは、画面の節を開いている間だけ 3 秒、閉じていれば 10 秒（CC14）
+    // Claude Code のチャンネルの会話のタブは、画面の節を開いている間だけ 3 秒、閉じていれば 10 秒（CC14）。届け待ち・届けている間は 3 秒
     ccScreen: {
-      base: () => (ccScreenIdle() ? CC_LIST_INTERVAL_MS : CC_SCREEN_INTERVAL_MS),
+      base: () => (ccSendBusy() ? CC_PERMISSION_INTERVAL_MS : ccScreenIdle() ? CC_LIST_INTERVAL_MS : CC_SCREEN_INTERVAL_MS),
       when: () => store.ccEnabled() && activeCcSession() !== null,
       run: (opts) => store.load.ccSession(activeCcSession(), opts),
       fails: 0,
