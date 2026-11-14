@@ -390,5 +390,9 @@ T4・T5
 - 失効は `CcTakeoverExpirer`（1 分ごとに `expire()`。`CcConfirmExpirer` と同じ形。終了時に止める）。
 - `/cc take` は先に本人にだけ見える形で保留し、確認の文はチャンネルに出す。出せなければ `cancel` して「取り込みの確認を出せませんでした」。
 - ボタンは、オーナー・同じチャンネル・`awaiting_confirm` でなければ「この確認はもう使えません。」。10 分を過ぎた [取り込む] は `confirm` が expired にして確認の文を書き換えるだけ（kill しない）。
-- 起動時の `recover()` は `gateway.start` の直後（間に await を挟まない）・`ccRegistry.start()` の前。例外は log だけで起動を続ける。`gateway.start` が終わる前に古い [取り込む] が押されて `confirm` が始まると、後の `recover()` がその行を restart で失敗にしうる（端末は終わっているかもしれない、の文になる。記録は残る）。
+- 起動時の片付けは 2 段（#346 のレビューで分けた。§9.5）: 前段 `recoverRunning()`（DB だけ。running の行を restart で failed にする）は `CcTakeover` を組み立てた直後で、最初の `ccRegistry.tick()` と `gateway.start` より前。後段 `recoverEffects()`（確認の文の書き換え・差し止めた ended の流し直し・後始末の残り）は `gateway.start` の直後・`ccRegistry.start()` の前。どちらの例外も log だけで起動を続ける。
 - 発言のターンに前置きを届けるため `HandlerDeps` に `takeover?` を足した（handler が turnDeps を 1 つずつ写しているため）。
+
+### 9.5 PR #346（T3b）のレビューで足した締め
+
+重大は無し。採ったもの: 起動時の片付けを 2 段に分ける（最初の `ccRegistry.tick()` が `recover()` より先に走り、running の行が残っていると holds が効いて revived を捨てていた。`gateway.start` の途中に押された古い [取り込む] と片付けの競合も、前段が操作を受け付ける前に済むので無くなる）／`confirm` の戻り値に `edited`（確認の文を書き換えられたか）を足し、書き換えられなければ押された 1 通を応答の側から書き換える（それも駄目なら log だけ）／取り込んだセッションの /renew で resume を捨てる経路も `resumeDropped` を通す／テスト（同時の二度押しは kill 1 回・2 つ目は「この確認はもう使えません。」、形の違う custom_id は throw）。採らなかったもの: [やめる] の書き換えの失敗でボタンが残る（次に押せば「使えません」。害が無い）／main.ts の配線のテスト（組み立てのテストの土台が無い。型と目視）／`CcTakeoverExpirer` と `CcConfirmExpirer` の共通化（別の PR）。
