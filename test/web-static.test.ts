@@ -5243,3 +5243,74 @@ test("web static: v3 の場所の CSS: 文字だけを 1 行で省略し、押�
   const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
   assert.match(block(phone, "  .v3-place"), /min-height: var\(--tap\);/);
 });
+
+const closeListeners = (h: PlaceShell) => (h.confirm.listeners.get("close") ?? []).length;
+
+test("web static: v3 の場所: 確認の間に場所のボタンが押せなくなった・隠れたら、閉じても焦点を戻さない", async () => {
+  // 押せなくなった（一覧の読み直しで movable が理由に変わった）
+  const h = await loadPlace();
+  h.app.open("ch:3");
+  placeBtn(h).focus();
+  placeBtn(h).dispatch("click");
+  pickPlace(h, "beta");
+  h.topicList = h.topicList.map((t) => (t.id === "ch:3" ? { ...t, movable: { reason: "場所を変えています" } } : t));
+  await h.topics.load();
+  assert.equal(placeBtn(h).disabled, true);
+  assert.notEqual(h.document.activeElement, placeBtn(h));
+  h.document.getElementById("dlg-confirm-cancel")!.dispatch("click");
+  assert.equal(h.confirm.getAttribute("open"), null);
+  assert.notEqual(h.document.activeElement, placeBtn(h));
+  assert.equal(closeListeners(h), 0);
+  // 隠れた（話題でない画面に移った）
+  const g = await loadPlace();
+  g.app.open("ch:3");
+  placeBtn(g).focus();
+  placeBtn(g).dispatch("click");
+  pickPlace(g, "beta");
+  g.app.open("tasks");
+  assert.equal(placeBtn(g).hidden, true);
+  assert.notEqual(g.document.activeElement, placeBtn(g));
+  g.document.getElementById("dlg-confirm-cancel")!.dispatch("click");
+  assert.equal(g.confirm.getAttribute("open"), null);
+  assert.notEqual(g.document.activeElement, placeBtn(g));
+  assert.equal(closeListeners(g), 0);
+});
+
+test("web static: v3 の場所: シートを開いた後に話題が一覧から消えたら、行を押しても確認を開かない", async () => {
+  const h = await loadPlace();
+  h.api.postReply = () => Promise.resolve({ accepted: true });
+  h.app.open("ch:3");
+  placeBtn(h).dispatch("click");
+  h.topicList = h.topicList.filter((t) => t.id !== "ch:3");
+  await h.topics.load();
+  pickPlace(h, "beta");
+  await h.flush();
+  assert.equal(h.confirm.getAttribute("open"), null);
+  assert.equal(h.api.posts.length, 0);
+  assert.equal(closeListeners(h), 0);
+});
+
+test("web static: v3 の場所: close が後から届いても（本物の <dialog> の順）、[変える] は送り、届いたら焦点を戻して listener を外す", async () => {
+  const h = await loadPlace();
+  h.api.postReply = () => Promise.resolve({ accepted: true });
+  // このテストだけ: close() は open を外し、close の event は積むだけ（後で流す）
+  const later: Array<() => void> = [];
+  h.confirm.close = () => {
+    if (h.confirm.getAttribute("open") === null) return;
+    h.confirm.removeAttribute("open");
+    later.push(() => h.confirm.dispatch("close"));
+  };
+  h.app.open("ch:3");
+  placeBtn(h).dispatch("click");
+  pickPlace(h, "beta");
+  h.document.getElementById("dlg-confirm-ok")!.dispatch("click");
+  assert.equal(h.confirm.getAttribute("open"), null);
+  assert.equal(h.api.posts.length, 1, "close の event を待たずに送る");
+  assert.equal(closeListeners(h), 1, "焦点を戻す listener は event まで残る");
+  assert.equal(later.length, 1);
+  for (const fn of later.splice(0)) fn();
+  assert.equal(h.document.activeElement, placeBtn(h));
+  assert.equal(closeListeners(h), 0);
+  await h.flush();
+  assert.deepEqual(h.toasts, ["場所を beta に変えています。要点をまとめるので少しかかります"]);
+});
