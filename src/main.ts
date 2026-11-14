@@ -239,6 +239,8 @@ let ccChannels: CcChannels | undefined;
 // 取り込み（docs/plan/takeover.md。SELF_AGENT_CC=1 で連携が動くときだけ下で作る）。/cc take・cc:take・ターン・ended・送信・チャンネルの操作は呼ぶときに読む
 let ccTakeover: CcTakeover | undefined;
 let ccTakeoverEntry: ReturnType<CcTakeoverGetter>;
+/** 取り込みの行（Web の POST /api/cc/sessions/<id>/takeover が確認待ちの残りを探す） */
+let ccTakeoverStore: CcTakeoverStore | undefined;
 let ccTakeoverExpirer: CcTakeoverExpirer | undefined;
 /** 許可の要求に答えた後（Web・Discord）: そのセッションのチャンネルを作る（guildId を省けば最初の /setup 済みのサーバー。待たない・投げない） */
 const ccPermissionAnswered = ccPermissionAnsweredHandler({ permissions: ccPermissionStore, channels: () => ccChannels, log });
@@ -982,6 +984,7 @@ if (
   // 取り込み（docs/plan/takeover.md。T3b）: /cc take の確認 → [取り込む] で、待機中か終わった Claude Code の会話をその cc のチャンネルの
   // プロジェクトのセッションに変える。端末の claude には SIGTERM だけを送る。確認の文・完了の文・topic は既定の人格の Bot
   const takeovers = new CcTakeoverStore(db, now);
+  ccTakeoverStore = takeovers;
   const takeover = new CcTakeover({
     db,
     cfg: config,
@@ -1271,9 +1274,9 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         // セッションの Discord のチャンネル（一覧の channel・/channel）
         ...(ccChannels === undefined ? {} : { channels: { store: ccChannels, allowedGuildIds: config.allowedGuildIds, lookup: webChannelOf } }),
         // 取り込み（/takeover・/api/cc/takeovers/<id>/confirm|cancel。Discord の /cc take と同じ行を見る）
-        ...(ccTakeoverEntry === undefined || ccChannels === undefined
+        ...(ccTakeoverEntry === undefined || ccTakeoverStore === undefined || ccChannels === undefined
           ? {}
-          : { takeover: { takeover: ccTakeoverEntry.takeover, takeovers: ccTakeoverEntry.takeovers, gateway, channels: ccChannels } }),
+          : { takeover: { takeover: ccTakeoverEntry.takeover, takeovers: ccTakeoverStore, gateway, channels: ccChannels } }),
         now,
       }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）

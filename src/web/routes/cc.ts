@@ -87,7 +87,7 @@ export type CcRouteDeps = {
    */
   takeover?: {
     takeover: Pick<CcTakeover, "propose" | "confirm" | "cancel">;
-    takeovers: Pick<CcTakeoverStore, "get" | "setConfirmMessage">;
+    takeovers: Pick<CcTakeoverStore, "get" | "setConfirmMessage" | "activeFor">;
     gateway: Pick<Gateway, "sendMessage" | "editMessage">;
     /** そのセッションのチャンネルを用意する（cc/channels.ts の ensureFor） */
     channels: Pick<CcChannels, "ensureFor">;
@@ -470,16 +470,26 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         registry.touch();
         const id = params[0] ?? "";
         if (!isUuid(id)) return NOT_FOUND;
-        // Web から送ったときと同じきっかけでチャンネルを用意する（既にあればそれ）
-        const opened = await takeover.channels.ensureFor(id, "web_send");
-        if (!opened.ok && opened.reason !== "exists") return { status: 409, json: { error: opened.reason, text: openResultReply(opened) } };
+        // そのセッションの cc のチャンネル（open・ended。閉じただけのものも）があれば開き直さずにそれ。無ければ Web から送ったときと同じきっかけで作る
+        let channelId = channels.store.channelOf(id)?.channelId;
+        if (channelId === undefined) {
+          const opened = await takeover.channels.ensureFor(id, "web_send");
+          if (!opened.ok && opened.reason !== "exists") return { status: 409, json: { error: opened.reason, text: openResultReply(opened) } };
+          channelId = opened.channelId;
+        }
         // /messages・/close と同じく、Web で開ける Claude Code のチャンネルだけ（許可した /setup 済みのサーバー）
-        if (channels.lookup?.(opened.channelId)?.kind !== "cc") return NOT_FOUND;
-        const proposed = await takeover.takeover.propose({ channelId: opened.channelId, entry: "web" });
+        if (channels.lookup?.(channelId)?.kind !== "cc") return NOT_FOUND;
+        // 同じチャンネルの確認待ちが残っていれば（再読み込み・応答が届かなかった後）やめて作り直す。running は propose が断る
+        const waiting = takeover.takeovers.activeFor(id);
+        if (waiting !== undefined && waiting.state === "awaiting_confirm" && waiting.channelId === channelId && takeover.takeover.cancel(waiting.id)) {
+          await editTakeCancelled(takeover, waiting.id, log);
+        }
+        const proposed = await takeover.takeover.propose({ channelId, entry: "web" });
         if (!proposed.ok) return { status: 409, json: { error: proposed.reason, text: proposed.text } };
         // Discord のそのチャンネルにも同じ確認を出す。出せなくても確認は残す（Web のダイアログで答えられる。log は postTakeConfirm）
-        await postTakeConfirm(takeover, opened.channelId, proposed, log, { keepOnFailure: true });
-        return { status: 201, json: { id: proposed.id, channelId: opened.channelId, text: proposed.message.text } };
+        await postTakeConfirm(takeover, channelId, proposed, log, { keepOnFailure: true });
+        // Web にはエスケープ前の文（Discord に出す文は Markdown を無効にしてある）
+        return { status: 201, json: { id: proposed.id, channelId, text: proposed.plainText } };
       },
     },
     {
@@ -496,9 +506,10 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         const result = await takeover.takeover.confirm(id);
         // 確認待ちでない（Discord で先に答えた・二度押し）: Discord の [取り込む] と同じ文
         if (!result.ok && result.reason === "stale") return { status: 409, json: { error: "stale", text: CC_TAKE_STALE_REPLY } };
-        if (!result.edited) log(`Claude Code: 取り込みの結果を Discord の確認の文に出せませんでした（#${id}、Web）`);
-        if (result.ok) return { status: 200, json: { ok: true, channelId: row.channelId, text: result.text } };
-        return { status: 409, json: { error: result.reason, text: result.text } };
+        // 確認の投稿が元から無い（Discord に出せなかった）ときは書き換えられなくて当然なので書かない
+        if (!result.edited && row.confirmMessageId !== null) log(`Claude Code: 取り込みの結果を Discord の確認の文に出せませんでした（#${id}、Web）`);
+        if (result.ok) return { status: 200, json: { ok: true, channelId: row.channelId, text: result.plainText } };
+        return { status: 409, json: { error: result.reason, text: result.plainText } };
       },
     },
     {

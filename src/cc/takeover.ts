@@ -76,24 +76,28 @@ export const TAKEOVER_DROPPED_TEXT =
 /** 名前・題名の表示の上限 */
 const LABEL_MAX_CHARS = 100;
 
-/** 1 行の表示（制御文字を空白にし、Markdown とメンションを無効にする） */
-function label(text: string): string {
-  return escapeDiscordText(headChars(text.replace(/[\u0000-\u001f\u007f]/g, " "), LABEL_MAX_CHARS));
+/** 1 行の表示（制御文字を空白にし、Discord 向け（escape）なら Markdown とメンションを無効にする。Web は文字のまま出すので escape しない） */
+function label(text: string, escape: boolean): string {
+  const line = headChars(text.replace(/[\u0000-\u001f\u007f]/g, " "), LABEL_MAX_CHARS);
+  return escape ? escapeDiscordText(line) : line;
 }
 
-/** 確認の文（§4。純関数） */
-export function takeoverConfirmText(input: { title: string; project: string; source: CcTakeoverSource; terminalMode: string | null }): string {
+/** 確認の文（§4。純関数）。escape が false なら Web 向け（エスケープ前） */
+export function takeoverConfirmText(
+  input: { title: string; project: string; source: CcTakeoverSource; terminalMode: string | null },
+  escape = true,
+): string {
   const ending = input.source === "alive" ? "端末の Claude Code は終了し、" : "端末の Claude Code はすでに終わっています。";
   return (
-    `「${label(input.title)}」（${label(input.project)}）を取り込みます。${ending}続きはこのチャンネルで self-agent が引き継ぎます。` +
-    `許可のモードは default になります（端末: ${label(input.terminalMode ?? "不明")}）。モデルは self-agent の設定のものになります。`
+    `「${label(input.title, escape)}」（${label(input.project, escape)}）を取り込みます。${ending}続きはこのチャンネルで self-agent が引き継ぎます。` +
+    `許可のモードは default になります（端末: ${label(input.terminalMode ?? "不明", escape)}）。モデルは self-agent の設定のものになります。`
   );
 }
 
-/** 完了の文（§4。純関数） */
-export function takeoverDoneText(project: string, interrupted: boolean): string {
+/** 完了の文（§4。純関数）。escape が false なら Web 向け（エスケープ前。履歴の notice の行と Web の応答） */
+export function takeoverDoneText(project: string, interrupted: boolean, escape = true): string {
   const text =
-    `取り込みました。ここから先は self-agent がこの会話を続けます（${label(project)}・許可のモード default）。` +
+    `取り込みました。ここから先は self-agent がこの会話を続けます（${label(project, escape)}・許可のモード default）。` +
     "端末で claude --resume すると取り込む前までの会話が別に開きます（ここでの続きは入りません）。";
   return interrupted ? `${text}\n${TAKEOVER_INTERRUPTED_TEXT}` : text;
 }
@@ -206,9 +210,12 @@ export type CcTakeoverDeps = {
   log: (message: string) => void;
 };
 
-/** propose の結果。message は確認の文とボタン（投稿して setConfirmMessage するのは呼び出し側）。not_channel の text は channel_changed の文（T4） */
+/**
+ * propose の結果。message は確認の文とボタン（投稿して setConfirmMessage するのは呼び出し側）。plainText は同じ文のエスケープ前（Web のダイアログ。T5）。
+ * not_channel の text は channel_changed の文（T4）
+ */
 export type CcTakeoverProposeResult =
-  | { ok: true; id: number; message: OutgoingMessage }
+  | { ok: true; id: number; message: OutgoingMessage; plainText: string }
   | { ok: false; reason: TakeoverFailure | "not_channel"; text: string };
 
 /** 断る判定（refusal・evaluate）の結果。undefined なら取り込める */
@@ -219,13 +226,14 @@ type TakeoverTarget = Pick<CcChannelRow, "sessionId" | "cwd" | "state">;
 
 /**
  * confirm の結果。stale = 確認待ちでない、expired = 10 分を過ぎた（取り消した）。
- * edited は確認の文を text に書き換えられたか（false なら呼び出し側が押された 1 通を text に書き換えてボタンを外す）
+ * edited は確認の文を text に書き換えられたか（false なら呼び出し側が押された 1 通を text に書き換えてボタンを外す）。
+ * plainText は text のエスケープ前（Web の応答。T5）
  */
 export type CcTakeoverConfirmResult =
-  | { ok: true; text: string; edited: boolean }
+  | { ok: true; text: string; plainText: string; edited: boolean }
   | { ok: false; reason: "stale" }
-  | { ok: false; reason: "expired"; text: string; edited: boolean }
-  | { ok: false; reason: TakeoverFailure; text: string; edited: boolean };
+  | { ok: false; reason: "expired"; text: string; plainText: string; edited: boolean }
+  | { ok: false; reason: TakeoverFailure; text: string; plainText: string; edited: boolean };
 
 /** 条件を見た結果（§3.2・§3.4） */
 type Assessed =
@@ -284,10 +292,12 @@ export class CcTakeover {
     if (row === undefined) return refuse("in_progress");
     log(`Claude Code: 取り込みの確認を作りました（#${row.id}、${row.source}、guild=${row.guildId}）`);
     const title = this.titleOf(assessed.session, assessed.project);
+    const confirmInput = { title, project: assessed.project, source: assessed.source, terminalMode };
     return {
       ok: true,
       id: row.id,
-      message: { text: takeoverConfirmText({ title, project: assessed.project, source: assessed.source, terminalMode }), components: takeoverButtons(row.id) },
+      message: { text: takeoverConfirmText(confirmInput), components: takeoverButtons(row.id) },
+      plainText: takeoverConfirmText(confirmInput, false),
     };
   }
 
@@ -348,7 +358,7 @@ export class CcTakeover {
       if (!takeovers.cancel(id)) return { ok: false, reason: "stale" };
       log(`Claude Code: 取り込みの確認の期限が過ぎていました（#${id}、guild=${row.guildId}）`);
       const edited = await this.editConfirm(id, { text: TAKEOVER_EXPIRED_TEXT, components: [] });
-      return { ok: false, reason: "expired", text: TAKEOVER_EXPIRED_TEXT, edited };
+      return { ok: false, reason: "expired", text: TAKEOVER_EXPIRED_TEXT, plainText: TAKEOVER_EXPIRED_TEXT, edited };
     }
     if (!takeovers.start(id)) return { ok: false, reason: "stale" };
     log(`Claude Code: 取り込みを始めます（#${id}、${row.source}、guild=${row.guildId}）`);
@@ -363,8 +373,8 @@ export class CcTakeover {
     }
     if (typeof outcome === "string") return this.failed(row, outcome, progress.afterTerm);
     log(`Claude Code: 取り込みました（#${id}、guild=${row.guildId}）`);
-    const { text, edited } = await this.effects(id, outcome);
-    return { ok: true, text, edited };
+    const { text, plainText, edited } = await this.effects(id, outcome);
+    return { ok: true, text, plainText, edited };
   }
 
   /** [やめる]: 確認待ちを cancelled にする。移したら true（確認の文の書き換えは呼び出し側） */
@@ -641,12 +651,13 @@ export class CcTakeover {
    * 後始末（§4。失敗しても done のまま）: 進行中へ移す・完了の文・履歴の区切り・削除の確認・追いかけ先への 1 行・topic → effects_at。
    * 完了の文と、確認の文を書き換えられたかを返す
    */
-  private async effects(id: number, done: Committed): Promise<{ text: string; edited: boolean }> {
+  private async effects(id: number, done: Committed): Promise<{ text: string; plainText: string; edited: boolean }> {
     const { takeovers, channelOps, gateway, guildSettings, log } = this.deps;
     const row = takeovers.get(id)!;
     channelOps.enqueueMove(row.channelId, { kind: "state", guildId: row.guildId, state: "active" });
     const failed = (what: string) => (error: unknown) => log(`Claude Code: 取り込みの後に${what}できませんでした（#${id}、${errorKind(error)}）`);
     const text = takeoverDoneText(done.project, row.interrupted);
+    const plainText = takeoverDoneText(done.project, row.interrupted, false);
     let edited = false;
     if (row.confirmMessageId !== null) {
       edited = await gateway.editMessage(row.channelId, row.confirmMessageId, { text, components: [] }).then(
@@ -660,6 +671,8 @@ export class CcTakeover {
       await gateway.sendMessage(row.channelId, { text }).then(() => undefined, failed("完了の文を出"));
     }
     this.record(row, "divider", takeoverDivider(done.project));
+    // 完了の文（注意を含む）も Web の会話に残す（history は文字のまま出すのでエスケープ前。T5）
+    this.record(row, "notice", plainText);
     if (done.deletePromptMessageId !== null) {
       const systemChannelId = guildSettings.get(row.guildId)?.systemChannelId ?? null;
       if (systemChannelId !== null) {
@@ -678,7 +691,7 @@ export class CcTakeover {
       failed("topic を書き換え")(error);
     }
     takeovers.markEffects(id);
-    return { text, edited };
+    return { text, plainText, edited };
   }
 
   /**
@@ -710,7 +723,8 @@ export class CcTakeover {
         );
       }
     }
-    return { ok: false, reason: code, text, edited };
+    // 失敗の文には名前が入らない（エスケープ前と同じ）
+    return { ok: false, reason: code, text, plainText: text, edited };
   }
 
   /**

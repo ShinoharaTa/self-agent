@@ -868,16 +868,18 @@ test("web static: ≤639px でも Claude Code のチャンネルを閉じられ�
   assert.match(ccCommands, /label: "このチャンネルを閉じる"[\s\S]{0,200}run: state\.closable \? \(\) => SA\.chat\.closeCcChannel\(ch\.id\) : null,\n {8}why: "閉じています"/);
   assert.match(ccCommands, /if \(rc\) items\.push\(\{ label: "RC で開く"/);
   assert.match(ccCommands, /if \(discord\) items\.push\(\{ label: "Discord で開く"/);
-  assert.match(chat, /\n {4}closeCcChannel,\n {4}takeoverCc,\n {4}ccCommandState,\n/);
+  assert.match(chat, /\n {4}closeCcChannel,\n {4}ccCommandState,\n/);
   assert.match(chat, /return \{ closable: live\.state !== "ended", rc: live\.rc, discord: discordUrl\(ch\.link\) \};/);
 });
 
-test("web static: Claude Code のチャンネルの見出しの [取り込む]（T5。docs/plan/takeover.md §5.7）は ghost で .ed-ops と […] のシートにあり、確認のダイアログはサーバーの文を textContent で出す", () => {
+test("web static: Claude Code のチャンネルの見出しの [取り込む]（T5。docs/plan/takeover.md §5.7）は ghost で .ed-ops と […] のシートにあり（用意・取り込みの間は無効）、確認のダイアログはサーバーの文を textContent で出し、[取り込む] は danger で最初の焦点は [やめる]", () => {
   const chat = read("chat.js");
   const ccHeader = /function ccHeader\(ch, channelId\) \{([\s\S]*?)\n  \}\n/.exec(chat)?.[1] ?? "";
   // 主のボタンにしない（secondary は [閉じる] だけ）。≤639px は .ed-ops の規則で隠れ、シートの行から押せる
-  assert.match(ccHeader, /const take = el\("button", \{ class: "btn btn-ghost btn-sm", type: "button", "data-op": "take"/);
-  assert.match(ccHeader, /\{ icon: "message-square", label: "取り込む", run: \(\) => takeoverCc\(channelId\) \}/);
+  assert.match(ccHeader, /\{ class: "btn btn-ghost btn-sm", type: "button", "data-op": "take", disabled: !!takeWhy, title: takeWhy \|\| /);
+  assert.match(ccHeader, /\{ icon: "message-square", label: "取り込む", run: takeWhy \? null : \(\) => takeoverCc\(channelId\), why: takeWhy \}/);
+  assert.match(chat, /SA\.ui\.openDialog\(dialog\);\n[^\n]*\n {4}cancel\.focus\(\);/);
+  assert.match(chat, /const TAKE_UNKNOWN_RECHECK_MS = \[1500, 5000, 15000\];/);
   assert.match(chat, /"\/api\/cc\/sessions\/" \+ encodeURIComponent\(live\.sessionId\) \+ "\/takeover"/);
   assert.match(chat, /"\/api\/cc\/takeovers\/" \+ encodeURIComponent\(String\(id\)\) \+ "\/confirm"/);
   assert.match(chat, /"\/api\/cc\/takeovers\/" \+ encodeURIComponent\(String\(id\)\) \+ "\/cancel"/);
@@ -886,7 +888,7 @@ test("web static: Claude Code のチャンネルの見出しの [取り込む]�
   assert.match(html, /<dialog id="dlg-cc-take" aria-labelledby="dlg-cc-take-title" aria-describedby="dlg-cc-take-body">/);
   assert.match(html, /<p id="dlg-cc-take-body" class="meta dlg-text"><\/p>/);
   assert.match(html, /id="dlg-cc-take-status" role="status" hidden/);
-  assert.match(html, /<button class="btn btn-secondary btn-sm" id="dlg-cc-take-cancel" type="button">やめる<\/button>\s*<button class="btn btn-primary btn-sm" id="dlg-cc-take-ok" type="button">取り込む<\/button>/);
+  assert.match(html, /<button class="btn btn-secondary btn-sm" id="dlg-cc-take-cancel" type="button">やめる<\/button>\s*<button class="btn btn-danger btn-sm" id="dlg-cc-take-ok" type="button">取り込む<\/button>/);
   assert.match(read("app.css"), /\.dlg-text \{\n {2}white-space: pre-wrap;/);
 });
 

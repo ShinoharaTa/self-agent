@@ -85,6 +85,8 @@ type Options = {
   channelState?: "open" | "ended";
   /** cc のチャンネルの ID（既定 chan-1。custom_id に入れる試験は数字にする） */
   channelId?: string;
+  /** プロジェクト（cwd のディレクトリ名。既定 alpha） */
+  project?: string;
 };
 
 function setup(t: TestContext, options: Options = {}) {
@@ -93,7 +95,7 @@ function setup(t: TestContext, options: Options = {}) {
   const home = join(root, "home");
   const configDir = join(root, "config");
   const workspace = join(root, "workspace");
-  const cwd = join(workspace, "alpha");
+  const cwd = join(workspace, options.project ?? "alpha");
   mkdirSync(cwd, { recursive: true });
   mkdirSync(join(configDir, "projects"), { recursive: true });
   const srcDir = join(home, ".claude", "projects", projectDirName(cwd));
@@ -369,7 +371,7 @@ test("待機のセッション: SIGTERM をその pid に 1 回だけ送り、�
   );
   s.takeovers.setConfirmMessage(proposed.id, "msg-confirm");
   const result = await s.takeover.confirm(proposed.id);
-  assert.deepEqual(result, { ok: true, text: takeoverDoneText("alpha", false), edited: true });
+  assert.deepEqual(result, { ok: true, text: takeoverDoneText("alpha", false), plainText: takeoverDoneText("alpha", false, false), edited: true });
   assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
   const session = s.topicSessions.get("chan-1");
   assert.deepEqual(s.topicSessions.projectDirOf("chan-1"), { projectDir: "alpha", permissionMode: "default" });
@@ -391,7 +393,10 @@ test("待機のセッション: SIGTERM をその pid に 1 回だけ送り、�
   assert.deepEqual(s.gateway.edits, [{ channelId: "chan-1", messageId: "msg-confirm", message: { text: takeoverDoneText("alpha", false), components: [] } }]);
   assert.deepEqual(
     s.history.list("chan-1", { limit: 10 }).map((row) => [row.kind, row.text]),
-    [["divider", "端末の Claude Code から取り込みました（alpha）"]],
+    [
+      ["divider", "端末の Claude Code から取り込みました（alpha）"],
+      ["notice", takeoverDoneText("alpha", false, false)],
+    ],
   );
   assertQuietLogs(s);
 });
@@ -443,7 +448,7 @@ test("確認の後に一覧が読めなくなった: [取り込む] は list_fai
   s.takeovers.setConfirmMessage(proposed.id, "msg-confirm");
   s.list.stale = true;
   const result = await s.takeover.confirm(proposed.id);
-  assert.deepEqual(result, { ok: false, reason: "list_failed", text: takeoverFailureText("list_failed", false), edited: true });
+  assert.deepEqual(result, { ok: false, reason: "list_failed", text: takeoverFailureText("list_failed", false), plainText: takeoverFailureText("list_failed", false), edited: true });
   assert.equal(s.takeovers.get(proposed.id)?.state, "failed");
   assert.equal(s.takeovers.get(proposed.id)?.failure, "list_failed");
   assert.deepEqual(s.gateway.edits, [{ channelId: "chan-1", messageId: "msg-confirm", message: { text: takeoverFailureText("list_failed", false), components: [] } }]);
@@ -508,7 +513,7 @@ for (const [name, breakIt] of [
       if (ms === 2000) breakIt(s);
     };
     const { id, result } = await s.proposeAndConfirm();
-    assert.deepEqual(result, { ok: false, reason: "identity", text: takeoverFailureText("identity", false), edited: true });
+    assert.deepEqual(result, { ok: false, reason: "identity", text: takeoverFailureText("identity", false), plainText: takeoverFailureText("identity", false), edited: true });
     assert.equal(s.takeovers.get(id)?.failure, "identity");
     assert.deepEqual(s.kills, []);
     assertUntouched(s);
@@ -529,7 +534,7 @@ test("進行中のカテゴリを用意できない: no_category で kill しな
   const s = setup(t);
   s.env.categoryFails = true;
   const { result } = await s.proposeAndConfirm();
-  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false), edited: true });
+  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false), plainText: takeoverFailureText("no_category", false), edited: true });
   assert.deepEqual(s.queue.keys.length, 1);
   assert.deepEqual(s.kills, []);
   // ended が来る前の失敗では流し直さない
@@ -541,7 +546,7 @@ test("kill の後に pid が消えない: not_exited（後ろの文は足さな�
   const s = setup(t);
   s.env.exits = false;
   const { id, result } = await s.proposeAndConfirm();
-  assert.deepEqual(result, { ok: false, reason: "not_exited", text: takeoverFailureText("not_exited", true), edited: true });
+  assert.deepEqual(result, { ok: false, reason: "not_exited", text: takeoverFailureText("not_exited", true), plainText: takeoverFailureText("not_exited", true), edited: true });
   assert.doesNotMatch(!result.ok && "text" in result ? result.text : "", new RegExp(TAKEOVER_AFTER_TERM_TEXT));
   assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
   assert.equal(s.takeovers.get(id)?.state, "failed");
@@ -568,7 +573,7 @@ test("running の間の ended は差し止め（ended_held = 1）、写しに失
   assert.deepEqual(callsAtCopy, { channels: 0, replier: 0 });
   assert.equal(!result.ok && result.reason, "copy_failed");
   // SIGTERM を送った後の失敗なので、終わった会話から取り込める旨を足す
-  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true), edited: true });
+  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true), plainText: takeoverFailureText("copy_failed", true), edited: true });
   assert.deepEqual(s.calls, { channels: 1, replier: 1 });
   assert.equal(s.takeovers.get(id)?.endedHeld, false);
   // 普通の ended のチャンネルになる
@@ -743,7 +748,7 @@ test("confirm: 10 分を過ぎた確認は expired（取り消して書き換え
   assert.ok(proposed.ok);
   s.takeovers.setConfirmMessage(proposed.id, "msg-confirm");
   s.clock.now += TAKEOVER_CONFIRM_TTL_MS;
-  assert.deepEqual(await s.takeover.confirm(proposed.id), { ok: false, reason: "expired", text: TAKEOVER_EXPIRED_TEXT, edited: true });
+  assert.deepEqual(await s.takeover.confirm(proposed.id), { ok: false, reason: "expired", text: TAKEOVER_EXPIRED_TEXT, plainText: TAKEOVER_EXPIRED_TEXT, edited: true });
   assert.equal(s.takeovers.get(proposed.id)?.state, "cancelled");
   assert.deepEqual(s.gateway.edits.at(-1), { channelId: "chan-1", messageId: "msg-confirm", message: { text: TAKEOVER_EXPIRED_TEXT, components: [] } });
   assert.deepEqual(await s.takeover.confirm(proposed.id), { ok: false, reason: "stale" });
@@ -1029,7 +1034,7 @@ test("commit の途中の例外（sessions の INSERT が投げる）: 全部巻
     },
   });
   const { id, result } = await s.proposeAndConfirm(takeover);
-  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true), edited: true });
+  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true), plainText: takeoverFailureText("copy_failed", true), edited: true });
   assert.equal(s.kills.length, 1);
   assert.equal(s.takeovers.get(id)?.state, "failed");
   assert.equal(s.takeovers.get(id)?.notePending, false);
@@ -1051,7 +1056,7 @@ test("failed() の中の fail が投げても confirm は reject せず、確認
   };
   const takeover = s.make({ takeovers: store });
   const { id, result } = await s.proposeAndConfirm(takeover);
-  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false), edited: true });
+  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false), plainText: takeoverFailureText("no_category", false), edited: true });
   assert.deepEqual(s.gateway.edits, [{ channelId: "chan-1", messageId: "msg-confirm", message: { text: takeoverFailureText("no_category", false), components: [] } }]);
   // running のまま残り、次の recover が restart にする
   assert.equal(s.takeovers.get(id)?.state, "running");
@@ -1156,7 +1161,7 @@ test("kill が ESRCH（直前に自分で終わった）なら changed、ほか�
         },
       });
       const { result } = await s.proposeAndConfirm(takeover);
-      assert.deepEqual(result, { ok: false, reason: expected, text: takeoverFailureText(expected, false), edited: true });
+      assert.deepEqual(result, { ok: false, reason: expected, text: takeoverFailureText(expected, false), plainText: takeoverFailureText(expected, false), edited: true });
       assertUntouched(s);
     });
   }
@@ -1172,7 +1177,7 @@ test("SIGTERM より前の例外は internal（端末はそのまま）", async 
     },
   });
   const { id, result } = await s.proposeAndConfirm(takeover);
-  assert.deepEqual(result, { ok: false, reason: "internal", text: takeoverFailureText("internal", false), edited: true });
+  assert.deepEqual(result, { ok: false, reason: "internal", text: takeoverFailureText("internal", false), plainText: takeoverFailureText("internal", false), edited: true });
   assert.equal(s.takeovers.get(id)?.failure, "internal");
   assert.deepEqual(s.kills, []);
   assertQuietLogs(s);
@@ -1182,7 +1187,7 @@ test("進行中のカテゴリの解決が期限（15 秒）を過ぎた: no_cat
   const s = setup(t);
   s.env.categoryHangs = true;
   const { result } = await s.proposeAndConfirm();
-  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false), edited: true });
+  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false), plainText: takeoverFailureText("no_category", false), edited: true });
   assert.deepEqual(s.kills, []);
   assertUntouched(s);
 });
@@ -1515,7 +1520,8 @@ async function webSetup(t: TestContext, options: Options & { wired?: boolean } =
     channels: {
       store: {
         openChannel: async () => ({ ok: false, reason: "not_found" }),
-        channelOf: () => undefined,
+        // 本物と同じく、そのセッションの削除されていないチャンネル
+        channelOf: (sessionId) => s.ccChannels.anyFor(sessionId),
         defaultGuild: () => "guild-1",
         close: () => ({ result: "not_channel" }),
         postClosed: () => {},
@@ -1567,9 +1573,11 @@ test("Web の取り込み（T5）: /takeover は ensureFor（web_send）→ prop
   const proposed = await w.post(`/api/cc/sessions/${S1}/takeover`);
   assert.equal(proposed.status, 201);
   const row = w.s.takeovers.activeFor(S1)!;
+  // Web にはエスケープ前の文、Discord には今までの文
   const text = takeoverConfirmText({ title: SECRET_NAME, project: "alpha", source: "alive", terminalMode: "plan" });
-  assert.deepEqual(proposed.json, { id: row.id, channelId: "chan-1", text });
-  assert.deepEqual(w.ensures, [{ sessionId: S1, origin: "web_send" }]);
+  assert.deepEqual(proposed.json, { id: row.id, channelId: "chan-1", text: takeoverConfirmText({ title: SECRET_NAME, project: "alpha", source: "alive", terminalMode: "plan" }, false) });
+  // チャンネルが既にあるので ensureFor は通さない
+  assert.deepEqual(w.ensures, []);
   assert.equal(row.entry, "web");
   // Discord の確認の投稿（ボタン付き）を同じ行に記録する
   const posted = w.s.gateway.posts.at(-1)!;
@@ -1582,7 +1590,7 @@ test("Web の取り込み（T5）: /takeover は ensureFor（web_send）→ prop
   );
 
   const confirmed = await w.post(`/api/cc/takeovers/${row.id}/confirm`);
-  assert.deepEqual(confirmed, { status: 200, json: { ok: true, channelId: "chan-1", text: takeoverDoneText("alpha", false) } });
+  assert.deepEqual(confirmed, { status: 200, json: { ok: true, channelId: "chan-1", text: takeoverDoneText("alpha", false, false) } });
   assert.equal(w.s.takeovers.get(row.id)?.state, "done");
   assert.deepEqual(w.s.kills, [{ pid: PID, signal: "SIGTERM" }]);
   // Discord の確認の投稿は CcTakeover が完了の文に書き換える
@@ -1611,9 +1619,10 @@ test("Web の取り込み（T5）: Discord で答えた後の Web の /confirm�
 
 test("Web の取り込み（T5）: 断られたら 409 と符号・断りの文。チャンネルを作れなければ 409 と /channel の失敗の符号。形の違う session_id は 404", async (t) => {
   const w = await webSetup(t);
-  // 確認待ちが既にある（Discord の /cc take）→ in_progress
+  // 取り込みの途中（running）がある → in_progress（確認待ちと違い、やめて作り直さない）
   const first = await w.s.takeover.propose({ channelId: "chan-1", entry: "discord" });
-  assert.equal(first.ok, true);
+  assert.ok(first.ok);
+  assert.equal(w.s.takeovers.start(first.id), true);
   const posts = w.s.gateway.posts.length;
   assert.deepEqual(await w.post(`/api/cc/sessions/${S1}/takeover`), {
     status: 409,
@@ -1633,6 +1642,12 @@ test("Web の取り込み（T5）: 断られたら 409 と符号・断りの文�
   w.nextEnsure.push({ ok: false, reason: "exists", channelId: "chan-gone", guildId: "guild-1" });
   assert.deepEqual(await w.post(`/api/cc/sessions/${S3}/takeover`), { status: 404, json: { error: "not_found" } });
   assert.equal(w.s.gateway.posts.length, posts);
+  assert.equal(w.s.takeovers.get(first.id)?.state, "running");
+  assert.deepEqual(w.ensures, [
+    { sessionId: S2, origin: "web_send" },
+    { sessionId: S2, origin: "web_send" },
+    { sessionId: S3, origin: "web_send" },
+  ]);
   assert.deepEqual(w.s.kills, []);
   assertQuietLogs(w.s);
 });
@@ -1651,8 +1666,8 @@ test("Web の取り込み（T5）: Discord に確認を出せなくても取り�
   const confirmed = await w.post(`/api/cc/takeovers/${id}/confirm`);
   assert.equal(confirmed.status, 200);
   assert.equal(w.s.takeovers.get(id)?.state, "done");
-  // Discord の文を書き換えられなかった（edited false）ことは log だけ
-  assert.ok(w.s.logs.some((line) => line.includes(`取り込みの結果を Discord の確認の文に出せませんでした（#${id}、Web）`)));
+  // 確認の投稿が元から無いので「Discord の確認の文に出せませんでした」は書かない
+  assert.ok(!w.s.logs.some((line) => line.includes("取り込みの結果を Discord の確認の文に出せませんでした")));
   assertQuietLogs(w.s);
 });
 
@@ -1731,6 +1746,87 @@ test("Web の取り込み（T5）: 配線が無い・SELF_AGENT_CC が無効な�
   assert.equal((await webCall(noCc.server, paths[0]!, withoutMarker)).status, 403);
   assert.equal(noCc.ensures.length, 0);
   assert.equal(noCc.s.takeovers.activeFor(S1), undefined);
+
+  // confirm・cancel も同じ（別のログイン 401、独自ヘッダなし・cross-site は 403）。行は確認待ちのまま・kill しない
+  const id = Number((await noCc.post(paths[0]!)).json.id);
+  for (const action of ["confirm", "cancel"]) {
+    const path = `/api/cc/takeovers/${id}/${action}`;
+    assert.equal((await webCall(noCc.server, path, { ...WEB_POST_HEADERS, "tailscale-user-login": "other@example.com" })).status, 401, action);
+    assert.equal((await webCall(noCc.server, path, withoutMarker)).status, 403, action);
+    assert.equal((await webCall(noCc.server, path, { ...WEB_POST_HEADERS, "sec-fetch-site": "cross-site" })).status, 403, action);
+  }
+  assert.equal(noCc.s.takeovers.get(id)?.state, "awaiting_confirm");
+  assert.deepEqual(noCc.s.kills, []);
+});
+
+test("Web の取り込み（T5）: Web で開けないチャンネル（lookup が無い）の確認待ちの行への /confirm・/cancel は 404 で、kill せず行もそのまま", async (t) => {
+  const w = await webSetup(t);
+  const id = Number((await w.post(`/api/cc/sessions/${S1}/takeover`)).json.id);
+  w.s.ccChannels.markDeleted("chan-1");
+  for (const action of ["confirm", "cancel"]) {
+    assert.deepEqual(await w.post(`/api/cc/takeovers/${id}/${action}`), { status: 404, json: { error: "not_found" } }, action);
+  }
+  assert.equal(w.s.takeovers.get(id)?.state, "awaiting_confirm");
+  assert.deepEqual(w.s.kills, []);
+});
+
+test("Web の取り込み（T5）: 同時の 2 つの /confirm は kill 1 回で、片方は 409 stale", async (t) => {
+  const w = await webSetup(t);
+  const id = Number((await w.post(`/api/cc/sessions/${S1}/takeover`)).json.id);
+  const results = await Promise.all([w.post(`/api/cc/takeovers/${id}/confirm`), w.post(`/api/cc/takeovers/${id}/confirm`)]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+  assert.deepEqual(results.find((r) => r.status === 409)?.json, { error: "stale", text: CC_TAKE_STALE_REPLY });
+  assert.deepEqual(w.s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  assert.equal(w.s.takeovers.get(id)?.state, "done");
+});
+
+test("Web の取り込み（T5）: 同じチャンネルの確認待ちが残っていれば /takeover はそれをやめ（Discord の古い投稿は「取り込みをやめました。」）、新しい確認を作る", async (t) => {
+  const w = await webSetup(t);
+  const old = Number((await w.post(`/api/cc/sessions/${S1}/takeover`)).json.id);
+  const oldMessage = w.s.takeovers.get(old)!.confirmMessageId!;
+  const again = await w.post(`/api/cc/sessions/${S1}/takeover`);
+  assert.equal(again.status, 201);
+  const fresh = Number(again.json.id);
+  assert.notEqual(fresh, old);
+  assert.equal(w.s.takeovers.get(old)?.state, "cancelled");
+  assert.equal(w.s.takeovers.get(fresh)?.state, "awaiting_confirm");
+  assert.ok(w.s.gateway.edits.some((edit) => edit.messageId === oldMessage && edit.message.text === CC_TAKE_CANCELLED_TEXT));
+  // 古い確認の [取り込む] はもう使えない
+  const { press } = entry(w.s);
+  assert.deepEqual((await press("go", old)).replies, [{ text: CC_TAKE_STALE_REPLY, ephemeral: true }]);
+  assert.deepEqual(w.s.kills, []);
+  assertQuietLogs(w.s);
+});
+
+test("Web の取り込み（T5）: 閉じた（ended）チャンネルがあれば ensureFor を通さず、開き直さずにそのまま確認を作る", async (t) => {
+  const w = await webSetup(t, { channelState: "ended" });
+  const proposed = await w.post(`/api/cc/sessions/${S1}/takeover`);
+  assert.equal(proposed.status, 201);
+  assert.equal(proposed.json.channelId, "chan-1");
+  assert.deepEqual(w.ensures, []);
+  assert.equal(w.s.ccChannels.get("chan-1")?.state, "ended");
+});
+
+test("Web の取り込み（T5）: 記号入りの名前でも Web の応答と履歴の完了の notice はエスケープ前（Discord には今までのエスケープした文）", async (t) => {
+  // 題名（セッションの名前）は secret-name、プロジェクトは記号の多い名前（題名は起動の題名の形に限られるので記号はプロジェクトで試す）
+  const project = "fix: web_ui (T5) #341";
+  const w = await webSetup(t, { project });
+  const title = SECRET_NAME;
+  const proposed = await w.post(`/api/cc/sessions/${S1}/takeover`);
+  assert.equal(proposed.status, 201);
+  assert.equal(proposed.json.text, takeoverConfirmText({ title, project, source: "alive", terminalMode: "plan" }, false));
+  assert.doesNotMatch(String(proposed.json.text), /\\/);
+  assert.match(w.s.gateway.posts.at(-1)!.message.text, /secret\\-name/);
+  const confirmed = await w.post(`/api/cc/takeovers/${proposed.json.id}/confirm`);
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.json.text, takeoverDoneText(project, false, false));
+  assert.doesNotMatch(String(confirmed.json.text), /\\/);
+  const rows = w.s.history.list("chan-1", { limit: 10 }).map((row) => [row.kind, row.text]);
+  assert.deepEqual(rows, [
+    ["divider", `端末の Claude Code から取り込みました（${project}）`],
+    ["notice", takeoverDoneText(project, false, false)],
+  ]);
+  for (const [, text] of rows) assert.doesNotMatch(String(text), /\\/);
 });
 
 // ---- T4 のレビュー（#347）の締め ----
