@@ -28,6 +28,10 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
     "views.js",
     "sidebar.js",
     "workbench.js",
+    "v3.html",
+    "shell.css",
+    "shell.js",
+    "topics.js",
     "icons-app.svg",
     "manifest.webmanifest",
     ...ICON_FILES,
@@ -912,7 +916,7 @@ test("web static: 画面の言葉に「！」・ツール名・HTTP の番号が
     // 応答の status をそのままトーストの文にしない
     assert.doesNotMatch(js, /toast\s*=\s*res\.status|toast\([^;]*\.status\s*\+/, name);
   }
-  texts.push(["index.html", read("index.html").replace(/<!doctype[^>]*>/i, "")]);
+  for (const name of ["index.html", "v3.html"]) texts.push([name, read(name).replace(/<!doctype[^>]*>/i, "")]);
   for (const [name, text] of texts) {
     assert.doesNotMatch(text, /[！!]/, `${name}: ${text}`);
     assert.doesNotMatch(text, TOOL_NAME, `${name}: ${text}`);
