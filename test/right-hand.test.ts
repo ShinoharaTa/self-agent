@@ -1,7 +1,7 @@
 // 右腕の始める・一覧（app/right-hand.ts。docs/plan/web-ui-v3.md §4 の M6b）。偽 Gateway・一時 SQLite・偽の submitText で確かめる
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunContext } from "../src/agent/runner.ts";
 import type { TopicOpenArgs } from "../src/agent/tools.ts";
@@ -47,6 +47,12 @@ type Options = {
   setUp?: boolean;
   perDay?: number;
   collect?: (at: number, done: string | null) => TopicsInput;
+  /** ワークスペースを作った直後に呼ぶ（ファイル・ディレクトリを足す） */
+  prepare?: (workspace: string) => void;
+  /** places の generalDir（既定 "General"） */
+  generalDir?: string;
+  /** places の protectedDirs（既定は空） */
+  protectedDirs?: (workspace: string) => string[];
 };
 
 function setup(t: TestContext, options: Options = {}) {
@@ -62,8 +68,13 @@ function setup(t: TestContext, options: Options = {}) {
   }
   const workspace = realpathSync(tempDir(t));
   for (const name of ["alpha", "Beta", "beta"]) mkdirSync(join(workspace, name));
-  const ready = { value: true };
-  const gate: ProjectSessionGate = { places: { workspaceDir: workspace, protectedDirs: [], generalDir: "General" }, ready: () => ready.value };
+  options.prepare?.(workspace);
+  /** queue が残っていれば ready() はその先頭を 1 つずつ返し、尽きたら value */
+  const ready: { value: boolean; queue: boolean[] } = { value: true, queue: [] };
+  const gate: ProjectSessionGate = {
+    places: { workspaceDir: workspace, protectedDirs: options.protectedDirs?.(workspace) ?? [], generalDir: options.generalDir ?? "General" },
+    ready: () => ready.queue.shift() ?? ready.value,
+  };
   const logs: string[] = [];
   const log = (line: string): void => void logs.push(line);
   const submits: Array<Parameters<Handler["submitText"]>[0]> = [];
@@ -80,7 +91,6 @@ function setup(t: TestContext, options: Options = {}) {
     personas: { ownerOf: (channelId) => (channelId === "luna-inbox" ? "luna" : "default") },
     topicSessions,
     start: { gateway, guildSettings, topicSessions, queue, log, history, submitText, seeds, ...projectSessions },
-    ...projectSessions,
     ...(options.collect === undefined ? {} : { collect: options.collect }),
     now,
     log,
@@ -281,6 +291,114 @@ test("right hand open: log に題名・場所の名前・チャンネルの ID�
   assert.ok(s.logs.some((line) => line.includes("右腕から話題を始めました（guild=guild-1、場所あり、最初の依頼あり）")));
   for (const line of s.logs) {
     for (const secret of ["秘密", "alpha", "gamma", "ch-1", "ch-2", "inbox-1"]) assert.equal(line.includes(secret), false, line);
+  }
+});
+
+test("right hand open: General がファイルで使えないとき、一覧に無い project・General の名指しは場所なしで note はプロジェクトのセッションを使えない旨", async (t) => {
+  const s = setup(t, { prepare: (workspace) => writeFileSync(join(workspace, "General"), "x") });
+  const result = await s.rightHand.open({ ...ARGS, project: "gamma" }, INBOX);
+  assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "なし", turn: "none", note: NO_PROJECT_SESSIONS_NOTE });
+  assert.equal(s.topicSessions.projectDirOf("ch-1"), undefined);
+  const named = await s.rightHand.open({ ...ARGS, title: "b", project: "General" }, INBOX);
+  assert.deepEqual(named, { result: "created", channelId: "ch-2", place: "なし", turn: "none", note: NO_PROJECT_SESSIONS_NOTE });
+  for (const sent of [result, named]) assert.ok(sent.result === "created" && !(sent.note ?? "").includes(PLACE_FALLBACK_NOTE));
+});
+
+test("right hand open: project に General（大文字小文字を問わない）を渡すと General で始まり note なし。General のディレクトリがまだ無い初回も", async (t) => {
+  const s = setup(t);
+  const results = [];
+  for (const [i, project] of ["General", "general", "GENERAL"].entries()) {
+    results.push(await s.rightHand.open({ ...ARGS, title: `t${i}`, project }, INBOX));
+  }
+  assert.deepEqual(results, [
+    { result: "created", channelId: "ch-1", place: "General", turn: "none" },
+    { result: "created", channelId: "ch-2", place: "General", turn: "none" },
+    { result: "created", channelId: "ch-3", place: "General", turn: "none" },
+  ]);
+  for (const channelId of ["ch-1", "ch-2", "ch-3"]) {
+    assert.equal(s.topicSessions.projectDirOf(channelId)?.projectDir, "General");
+    assert.deepEqual(s.history.list(channelId, { limit: 10 }).map((row) => row.text), ["右腕が General で始めました"]);
+  }
+});
+
+test("right hand open: generalDir が _general のとき project の _general は General で、仕切り・place に実名が出ない", async (t) => {
+  const s = setup(t, { generalDir: "_general" });
+  for (const [i, project] of ["_general", "_GENERAL"].entries()) {
+    const channelId = `ch-${i + 1}`;
+    assert.deepEqual(await s.rightHand.open({ ...ARGS, title: `t${i}`, project }, INBOX), { result: "created", channelId, place: "General", turn: "none" });
+    assert.equal(s.topicSessions.projectDirOf(channelId)?.projectDir, "_general");
+    const texts = s.history.list(channelId, { limit: 10 }).map((row) => row.text);
+    assert.deepEqual(texts, ["右腕が General で始めました"]);
+  }
+});
+
+test("right hand open: startTopic が場所の断りを返したら General で 1 回だけやり直し、話題は 1 つで note が付く", async (t) => {
+  // resolvePlace の中の 2 回（門と checkSessionProject）だけ true、startTopic の中では false（unify_not_ready → General も使えず場所なし）
+  const s = setup(t);
+  s.ready.value = false;
+  s.ready.queue.push(true, true);
+  const result = await s.rightHand.open({ ...ARGS, project: "alpha" }, INBOX);
+  assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "なし", turn: "none", note: NO_PROJECT_SESSIONS_NOTE });
+  assert.equal(s.sessionCount(), 1);
+  assert.equal(s.gateway.calls.filter((call) => call.method === "createTextChannel").length, 1);
+
+  // やり直しで General を使えたときは、最後の結果の場所で General に落とした note
+  const general = setup(t);
+  general.ready.queue.push(true, true, false);
+  const fell = await general.rightHand.open({ ...ARGS, project: "alpha" }, INBOX);
+  assert.deepEqual(fell, { result: "created", channelId: "ch-1", place: "General", turn: "none", note: PLACE_FALLBACK_NOTE });
+  assert.equal(general.sessionCount(), 1);
+});
+
+test("right hand open: startTopic が投げた後は始めている途中の数が戻り、上限 1 でももう 1 度始められる", async (t) => {
+  const s = setup(t, { perDay: 1 });
+  const original = s.gateway.createTextChannel.bind(s.gateway);
+  let fail = true;
+  s.gateway.createTextChannel = async (...args: Parameters<typeof original>) => {
+    if (fail) {
+      fail = false;
+      throw new Error("boom");
+    }
+    return original(...args);
+  };
+  await assert.rejects(s.rightHand.open(ARGS, INBOX));
+  assert.equal(s.sessionCount(), 0);
+  assert.equal((await s.rightHand.open(ARGS, INBOX)).result, "created");
+});
+
+test("right hand open: 上限 2 で並べて呼んでも 3 件目は作られない（行ができた後は DB と途中の数の両方で数えるので、2 件目が limit になることもある）", async (t) => {
+  const s = setup(t, { perDay: 2 });
+  const results = await Promise.all(["a", "b", "c"].map((title) => s.rightHand.open({ ...ARGS, title }, INBOX)));
+  const created = results.filter((result) => result.result === "created").length;
+  assert.ok(created >= 1 && created <= 2, String(created));
+  assert.equal(s.sessionCount(), created);
+  // 後から足しても 2 件を超えない
+  for (const title of ["d", "e"]) await s.rightHand.open({ ...ARGS, title }, INBOX);
+  assert.equal(s.sessionCount(), 2);
+});
+
+test("right hand open: 大文字小文字の照合で守る場所・symlink・.. を通さず、General で note", async (t) => {
+  const s = setup(t, {
+    perDay: 10,
+    prepare: (workspace) => {
+      mkdirSync(join(workspace, "prot"));
+      symlinkSync(join(workspace, "alpha"), join(workspace, "link"));
+    },
+    protectedDirs: (workspace) => [join(workspace, "prot")],
+  });
+  for (const [i, project] of ["PROT", "LINK", "../alpha", "alpha/.."].entries()) {
+    const channelId = `ch-${i + 1}`;
+    const result = await s.rightHand.open({ ...ARGS, title: `t${i}`, project }, INBOX);
+    assert.deepEqual(result, { result: "created", channelId, place: "General", turn: "none", note: PLACE_FALLBACK_NOTE }, project);
+    assert.equal(s.topicSessions.projectDirOf(channelId)?.projectDir, "General", project);
+  }
+});
+
+test("right hand open: 前後に空白のある名前・空の名前は General で note（今の動き。ツールの zod が先に止める前提）", async (t) => {
+  const s = setup(t);
+  for (const [i, project] of [" alpha ", ""].entries()) {
+    const result = await s.rightHand.open({ ...ARGS, title: `t${i}`, project }, INBOX);
+    assert.deepEqual(result, { result: "created", channelId: `ch-${i + 1}`, place: "General", turn: "none", note: PLACE_FALLBACK_NOTE }, JSON.stringify(project));
   }
 });
 
