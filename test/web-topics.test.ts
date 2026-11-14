@@ -10,7 +10,7 @@ import { createHandler, type RunningTurn, type SubmitTextResult, WEB_ECHO_PREFIX
 import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { welcomeText } from "../src/app/session-ops.ts";
-import { MOVE_FAILED_TEXT, movedPostText } from "../src/app/topic-move.ts";
+import { MOVE_FAILED_TEXT, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
 import type { Topic, TopicsResult } from "../src/app/topics.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { PersonaConfig } from "../src/config.ts";
@@ -86,7 +86,8 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * Claude Code（cc を渡すとき）: チャンネル 300（S1・open・alpha・実行中）・301（S2・ended）。チャンネルの無い S3（ワークスペースの外・判断待ち）・
  * S4（alpha・判断待ちで hook の許可も pending）。/setup 前のサーバーのチャンネル 303 は S7。
  * allowed で cfg.allowedGuildIds を、at でルートの今の時刻を差し替える。registry.unreadable と snapshotSessions は後から変えられる。
- * move で場所の付け替えの配線を渡す（"cc" は連携あり、"noCc" は連携なし）。要点のターンは moveSteps の順に偽の runner が返し、結果の投稿は posts に入る
+ * move で場所の付け替えの配線を渡す（"cc" は連携あり、"noCc" は連携なし）。要点のターンは moveSteps の順に偽の runner が返し、結果の投稿は posts に入る。
+ * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる
  */
 async function setup(
   t: TestContext,
@@ -199,15 +200,24 @@ async function setup(
   const posts: Array<{ channelId: string; text: string }> = [];
   const postWaiters: Array<{ count: number; resolve: () => void }> = [];
   const logs: string[] = [];
+  const logWaiters: Array<{ match: (line: string) => boolean; resolve: () => void }> = [];
   const topicCalls: Array<{ channelId: string; topic: string }> = [];
-  const log = (line: string): void => void logs.push(line);
+  const log = (line: string): void => {
+    logs.push(line);
+    for (const waiter of logWaiters.filter((w) => w.match(line))) {
+      logWaiters.splice(logWaiters.indexOf(waiter), 1);
+      waiter.resolve();
+    }
+  };
+  const postFails = { value: false };
+  const turnQueue = new KeyedSerialQueue(2);
   const move =
     options.move === undefined
       ? undefined
       : {
           topicSessions,
           moves,
-          turnQueue: new KeyedSerialQueue(2),
+          turnQueue,
           turn: { runner: moveRunner, projectRunner: moveRunner, sessions, seeds: stores.seeds, usage: stores.usage, log },
           runningTurns: () => handler.runningTurns(),
           ...(options.move === "cc" ? { projectSessions: { places, ready: () => ready.value } } : {}),
@@ -215,6 +225,7 @@ async function setup(
           setChannelTopic: async (channelId: string, topic: string) => void topicCalls.push({ channelId, topic }),
           ownerPosts: {
             send: async (channelId: string, text: string) => {
+              if (postFails.value) throw new TypeError("post failed");
               posts.push({ channelId, text });
               for (const waiter of postWaiters.filter((w) => posts.length >= w.count)) {
                 postWaiters.splice(postWaiters.indexOf(waiter), 1);
@@ -227,6 +238,9 @@ async function setup(
   /** 結果の投稿が count 通になるまで待つ */
   const waitPosts = (count: number): Promise<void> =>
     posts.length >= count ? Promise.resolve() : new Promise((resolve) => postWaiters.push({ count, resolve }));
+  /** match に合う log の行が出るまで待つ（もう出ていればすぐ） */
+  const waitLog = (match: (line: string) => boolean): Promise<void> =>
+    logs.some(match) ? Promise.resolve() : new Promise((resolve) => logWaiters.push({ match, resolve }));
   const routes = topicRoutes({
     cfg: { allowedGuildIds: options.allowed ?? [GUILD, GUILD_NOT_SET_UP], personas: [MIKA], workspaceDir: workspace },
     guildSettings,
@@ -271,9 +285,12 @@ async function setup(
     moveRunner,
     ready,
     posts,
+    postFails,
     waitPosts,
+    waitLog,
     logs,
     topicCalls,
+    turnQueue,
   };
 }
 
@@ -974,6 +991,69 @@ test("POST /api/topics/ch:<id>/place: 要点のターンが失敗したら、202
   assert.equal(s.moves.runningChannels().size, 0);
 });
 
+test("POST /api/topics/ch:<id>/place: 結果の投稿が投げても 202 のまま。log だけ（種類だけ）で、場所は変わる", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  s.postFails.value = true;
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/place", { place: "general" }), { status: 202, json: { accepted: true } });
+  await s.waitLog((line) => line.includes("投稿できませんでした"));
+  assert.ok(s.logs.includes("場所の付け替えの結果を Discord に投稿できませんでした（TypeError）"), s.logs.join("\n"));
+  assert.deepEqual(s.topicSessions.projectDirOf("200"), { projectDir: "General", permissionMode: "default" });
+  assert.deepEqual(s.posts, []);
+});
+
+test("POST /api/topics/ch:<id>/place: 受け付けた後に moveTopic が投げたら、202 の後でチャンネルに失敗の文・履歴に知らせ。running の行は残らない", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  s.sessions.get = () => {
+    throw new TypeError("boom");
+  };
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/place", { place: "p:beta" }), { status: 202, json: { accepted: true } });
+  await s.waitPosts(1);
+  assert.deepEqual(s.posts, [{ channelId: "201", text: MOVE_FAILED_TEXT }]);
+  assert.ok(s.history.list("201", { limit: 10 }).some((row) => row.kind === "notice" && row.text === MOVE_FAILED_TEXT));
+  assert.equal(s.moves.runningChannels().size, 0);
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "alpha", permissionMode: "default" });
+  assert.ok(s.logs.includes("Web からの場所の付け替えに失敗しました（TypeError）"), s.logs.join("\n"));
+});
+
+test("POST /api/topics/ch:<id>/place: 受け付けた後（枠待ちの間）に閉じられたら、チャンネルに「場所を変えられませんでした: …」1 通と履歴の知らせ", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  // セッションの枠（1）を別のジョブでふさぐ
+  let started!: () => void;
+  const running = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const blocker = s.turnQueue.run(
+    "other",
+    () => {
+      started();
+      return gate;
+    },
+    { session: true },
+  );
+  await running;
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/place", { place: "p:beta" }), { status: 202, json: { accepted: true } });
+  s.topicSessions.close("200", "要約");
+  release();
+  await blocker;
+  await s.waitPosts(1);
+  const refused = "場所を変えられませんでした: 完了した話題は場所を変えられません";
+  assert.deepEqual(s.posts, [{ channelId: "200", text: refused }]);
+  assert.equal(s.history.list("200", { limit: 10 }).filter((row) => row.kind === "notice" && row.text === refused).length, 1);
+  assert.equal(s.topicSessions.projectDirOf("200"), undefined);
+  assert.equal(s.moves.runningChannels().size, 0);
+});
+
+test("POST /api/topics/ch:<id>/place: パスの ch%3A<id> は当たらず 404", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  assert.equal((await postJson(s.server, "/api/topics/ch%3A200/place", { place: "p:beta" })).status, 404);
+  assert.equal(s.topicSessions.projectDirOf("200"), undefined);
+  assert.equal(s.moves.runningChannels().size, 0);
+});
+
 test("POST /api/topics/ch:<id>/place: p:<General の名前> は general と同じ", async (t) => {
   const s = await setup(t, { move: "cc", general: true });
   // 会話の無い話題（200）はターンを使わずに場所だけ変える
@@ -1014,6 +1094,17 @@ test("GET /api/topics: move があるとき、足した人格の話題・完了�
   assert.deepEqual(byId(without, "ch:200")!.movable, { reason: "場所を変えるには Claude Code の連携が要ります" });
   // 人格の理由が先
   assert.deepEqual(byId(without, "ch:203")!.movable, { reason: "足した人格の話題は場所を変えられません" });
+});
+
+test("GET /api/topics: movable の理由の順は POST と同じ（完了 → 足した人格）。連携の設定が済んでいなければ unify_not_ready の文", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  // 完了 + 足した人格は「完了」
+  s.topicSessions.close("203", "要約");
+  s.ready.value = false;
+  const result = await topics(s.server, "/api/topics?done=general");
+  assert.deepEqual(byId(result, "ch:203")!.movable, { reason: "完了した話題は場所を変えられません" });
+  for (const id of ["ch:200", "ch:201"]) assert.deepEqual(byId(result, id)!.movable, { reason: moveRefusalText("unify_not_ready") }, id);
+  assert.deepEqual(byId(result, "ch:202")!.movable, { reason: "完了した話題は場所を変えられません" });
 });
 
 test("GET /api/topics: move を渡さなければ movable は今までどおり", async (t) => {

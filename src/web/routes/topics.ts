@@ -39,9 +39,8 @@ import type { CcPermissionRow, CcPermissionStore } from "../../store/cc-permissi
 import type { CcSendStore } from "../../store/cc-sends.ts";
 import type { CcStartStore } from "../../store/cc-starts.ts";
 import type { GuildSettingsStore } from "../../store/guild-settings.ts";
-import type { HistoryStore } from "../../store/history.ts";
+import { type HistoryStore, recordHistory } from "../../store/history.ts";
 import type { SdkSessionStore } from "../../store/sdk-sessions.ts";
-import type { TopicMoveStore } from "../../store/topic-moves.ts";
 import type { TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { Route, RouteResult } from "../server.ts";
 import { CC_PERMISSION_RECENT_MS, type HoldSeconds, questionJson } from "./cc.ts";
@@ -75,10 +74,7 @@ export type TopicRouteDeps = {
    * POST /api/topics/ch:<id>/place の配線（/move と同じ実体）。無ければそのルートを足さず、movable も今のまま。
    * moves.runningChannels は movable の「場所を変えています」に使う。ownerPosts は結果の投稿（sessionRoutes に渡している物）
    */
-  move?: MoveDeps & {
-    moves: Pick<TopicMoveStore, "start" | "finish" | "fail" | "runningChannels">;
-    ownerPosts: Pick<OwnerPosts, "send">;
-  };
+  move?: MoveDeps & { ownerPosts: Pick<OwnerPosts, "send"> };
   now?: () => Date;
 };
 
@@ -104,7 +100,8 @@ const CC_UNMOVABLE = { reason: "端末のセッションは場所を変えられ
 const PERSONA_UNMOVABLE = { reason: "足した人格の話題は場所を変えられません" };
 const DONE_UNMOVABLE = { reason: "完了した話題は場所を変えられません" };
 const MOVING_UNMOVABLE = { reason: "場所を変えています" };
-const CC_DISABLED_UNMOVABLE = { reason: "場所を変えるには Claude Code の連携が要ります" };
+const CC_DISABLED_UNMOVABLE = { reason: moveRefusalText("cc_disabled") };
+const UNIFY_NOT_READY_UNMOVABLE = { reason: moveRefusalText("unify_not_ready") };
 
 /** moveTopic の断り → 応答（not_session は 404） */
 function moveRefusalResult(result: Exclude<MoveOutcome["result"], "moved" | "failed">): RouteResult {
@@ -165,13 +162,19 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
     const runningIds = new Set(handler.runningTurns().map((turn) => turn.channelId));
     // 付け替えの途中のチャンネル（move の配線があるときだけ。1 回だけ引く）
     const movingIds = move?.moves.runningChannels();
-    /** セッションの話題の movable（move の配線が無ければ今までどおり true。実行中・許可待ち・/close の途中は出さず、押したときに断る） */
+    // 連携の設定が済んでいるか（連携があるときだけ。1 回だけ引く）
+    const unifyReady = move?.projectSessions?.ready();
+    /**
+     * セッションの話題の movable（move の配線が無ければ今までどおり true。実行中・許可待ち・/close の途中は出さず、押したときに断る）。
+     * 理由の順は moveTopic の検査と同じ（完了 → 足した人格 → 場所を変えています → 連携 → 連携の設定）
+     */
     const sessionMovable = (channelId: string, state: string, persona: string | null): TopicSeed["movable"] => {
       if (movingIds === undefined) return true;
-      if (persona !== null) return PERSONA_UNMOVABLE;
       if (state === "done") return DONE_UNMOVABLE;
+      if (persona !== null) return PERSONA_UNMOVABLE;
       if (movingIds.has(channelId)) return MOVING_UNMOVABLE;
-      if (move?.projectSessions === undefined) return CC_DISABLED_UNMOVABLE;
+      if (unifyReady === undefined) return CC_DISABLED_UNMOVABLE;
+      if (!unifyReady) return UNIFY_NOT_READY_UNMOVABLE;
       return true;
     };
     let projects: string[];
@@ -451,7 +454,16 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
               move.log(`場所の付け替えの結果を Discord に投稿できませんでした（${errorName(error)}）`);
             }
           })
-          .catch((error: unknown) => move.log(`Web からの場所の付け替えに失敗しました（${errorName(error)}）`));
+          .catch(async (error: unknown) => {
+            // 受け付けた後の例外。失敗の文をチャンネルと履歴に残す。どちらの失敗も log だけ
+            move.log(`Web からの場所の付け替えに失敗しました（${errorName(error)}）`);
+            recordHistory(move.history, { guildId, channelId, kind: "notice", source: "system", text: MOVE_FAILED_TEXT }, move.log);
+            try {
+              await move.ownerPosts.send(channelId, MOVE_FAILED_TEXT);
+            } catch (postError) {
+              move.log(`場所の付け替えの結果を Discord に投稿できませんでした（${errorName(postError)}）`);
+            }
+          });
         return { status: 202, json: { accepted: true } };
       },
     });

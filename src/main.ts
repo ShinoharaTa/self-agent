@@ -532,7 +532,7 @@ const commands = createCommands({
   // /new の project（SELF_AGENT_CC=1 のときだけ）
   ...(projectSessions === undefined ? {} : { projectSessions }),
   // /move（結果は /renew と同じく持ち主の人格の形で出す）
-  move: { ...moveDeps, personas },
+  move: { ...moveDeps, personas, ownerPosts },
   log,
 });
 // GitHub の通知の [対応]（下の Claude Code の配線の後で作る。ボタンは押されたときに読む）
@@ -1202,7 +1202,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
           log,
         },
         // POST /api/topics/ch:<id>/place（M5。/move と同じ実体。結果は持ち主の Bot でチャンネルに投稿する）
-        move: { ...moveDeps, moves: topicMoves, ownerPosts },
+        move: { ...moveDeps, ownerPosts },
         now,
       }),
       ...devlogRoutes({ cfg: config, now }),

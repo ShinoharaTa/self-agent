@@ -39,7 +39,8 @@ function command(place: string | undefined, channelId: string | null = "topic-1"
 
 /**
  * 話題 topic-1（軽い・会話あり）と完了した topic-done。ワークスペースは projects の名前のディレクトリと General。
- * cc を false にすると連携（projectSessions）を渡さない。running に足すとそのチャンネルは実行中
+ * cc を false にすると連携（projectSessions）を渡さない。running に足すとそのチャンネルは実行中。
+ * チャンネルへの投稿（ownerPosts）は posts に入る。postFails を true にすると投稿は投げる
  */
 function setup(t: TestContext, options: { steps?: RunResult[]; projects?: string[]; cc?: boolean; conversation?: boolean } = {}) {
   const db = tempDb(t);
@@ -52,6 +53,8 @@ function setup(t: TestContext, options: { steps?: RunResult[]; projects?: string
   const running: Array<{ channelId: string }> = [];
   const logs: string[] = [];
   const log = (line: string): void => void logs.push(line);
+  const posts: Array<{ channelId: string; text: string }> = [];
+  const postFails = { value: false };
   const deps: MoveCommandDeps = {
     topicSessions,
     moves: new TopicMoveStore(db, () => NOW),
@@ -60,6 +63,12 @@ function setup(t: TestContext, options: { steps?: RunResult[]; projects?: string
     runningTurns: () => running,
     ...(options.cc === false ? {} : { projectSessions: gate }),
     history: stores.history,
+    ownerPosts: {
+      send: async (channelId: string, text: string) => {
+        if (postFails.value) throw new TypeError("post failed");
+        posts.push({ channelId, text });
+      },
+    },
     log,
   };
   topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "旅行の計画", categoryId: "active-1" });
@@ -72,7 +81,23 @@ function setup(t: TestContext, options: { steps?: RunResult[]; projects?: string
     await handler.handle(interaction, responder);
     return responder;
   };
-  return { deps, handler, run, runner, running, logs, topicSessions, sessions };
+  return { deps, handler, run, runner, running, logs, posts, postFails, topicSessions, sessions, history: stores.history };
+}
+
+/** defer が投げる responder（応答の期限が切れた形）。onDefer は保留の前に呼ぶ（キューの中の検査より先に走る） */
+class DeferResponder extends FakeResponder {
+  private readonly onDefer: () => void;
+  private readonly fails: boolean;
+  constructor(onDefer: () => void, fails: boolean) {
+    super();
+    this.onDefer = onDefer;
+    this.fails = fails;
+  }
+  override async defer(ephemeral: boolean): Promise<void> {
+    this.onDefer();
+    if (this.fails) throw new Error("Unknown interaction");
+    await super.defer(ephemeral);
+  }
 }
 
 const placeOption = (env: { handler: { def: { options?: CommandOptionDef[] } } }): CommandOptionDef => env.handler.def.options![0]!;
@@ -175,6 +200,77 @@ test("/move: 要点のターンが失敗したら、保留した応答に失敗�
   ]);
   assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
   assert.equal(env.sessions.get("topic-1"), "session-1");
+});
+
+test("/move: 保留（defer）が投げても付け替えは済み、応答にも出せなければ結果をチャンネルに投稿する。handler は投げない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const responder = new DeferResponder(() => {}, true);
+  responder.beforeReply = () => {
+    throw new Error("Unknown interaction");
+  };
+  await env.handler.handle(command("p:alpha"), responder);
+  assert.deepEqual(env.topicSessions.projectDirOf("topic-1"), { projectDir: "alpha", permissionMode: "default" });
+  assert.deepEqual(env.posts, [{ channelId: "topic-1", text: movedPostText({ from: null, to: "alpha", note: NOTE }, GENERAL) }]);
+  assert.ok(env.logs.some((line) => line.includes("受け付けの知らせに失敗しました（Error）")), env.logs.join("\n"));
+});
+
+test("/move: 結果の応答だけ投げたら、場所は変わり、チャンネルに成功の文が 1 通。handler は投げない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const responder = new FakeResponder();
+  responder.beforeReply = () => {
+    throw new Error("Invalid Webhook Token");
+  };
+  await env.handler.handle(command("p:alpha"), responder);
+  assert.deepEqual(responder.calls, [{ method: "defer", ephemeral: false }]);
+  assert.deepEqual(env.topicSessions.projectDirOf("topic-1"), { projectDir: "alpha", permissionMode: "default" });
+  assert.deepEqual(env.posts, [{ channelId: "topic-1", text: movedPostText({ from: null, to: "alpha", note: NOTE }, GENERAL) }]);
+});
+
+test("/move: 受け付けた後（キューの中）で断ったら、保留した応答に「場所を変えられませんでした: …」", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  // 保留の前に閉じる（キューの中の検査は onAccepted の後に走る）
+  const responder = new DeferResponder(() => env.topicSessions.close("topic-1", "要約"), false);
+  await env.handler.handle(command("p:alpha"), responder);
+  const refused = `場所を変えられませんでした: ${moveRefusalText("closed")}`;
+  assert.deepEqual(responder.calls, [
+    { method: "defer", ephemeral: false },
+    { method: "reply", message: { text: refused } },
+  ]);
+  assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
+  assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(env.posts, []);
+  assert.ok(env.history.list("topic-1", { limit: 10 }).some((row) => row.kind === "notice" && row.text === refused));
+});
+
+test("/move: 受け付けた後に moveTopic が投げたら、保留した応答に失敗の文。handler は投げない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  env.sessions.get = () => {
+    throw new TypeError("boom");
+  };
+  const responder = await env.run(command("p:alpha"));
+  assert.deepEqual(responder.calls, [
+    { method: "defer", ephemeral: false },
+    { method: "reply", message: { text: MOVE_FAILED_TEXT } },
+  ]);
+  assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
+  assert.equal((env.deps.moves as TopicMoveStore).runningChannels().size, 0);
+  assert.ok(env.logs.some((line) => line.includes("/move の場所の付け替えに失敗しました（TypeError）")), env.logs.join("\n"));
+});
+
+test("/move: 応答もチャンネルへの投稿も投げたら log だけ（種類だけ）。handler は投げない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  env.postFails.value = true;
+  const responder = new FakeResponder();
+  responder.beforeReply = () => {
+    throw new Error("Invalid Webhook Token");
+  };
+  await env.handler.handle(command("p:alpha"), responder);
+  assert.deepEqual(env.topicSessions.projectDirOf("topic-1"), { projectDir: "alpha", permissionMode: "default" });
+  assert.deepEqual(env.posts, []);
+  assert.ok(env.logs.includes("/move の結果をチャンネルに投稿できませんでした（TypeError）"), env.logs.join("\n"));
+  for (const line of env.logs) {
+    for (const secret of ["topic-1", "alpha", "旅行", "目的", "notes.md"]) assert.ok(!line.includes(secret), `${secret}: ${line}`);
+  }
 });
 
 test("createCommands: move を渡したときだけ /move がある", (t) => {

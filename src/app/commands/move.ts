@@ -1,13 +1,15 @@
 import { listProjects } from "../../cc/starter.ts";
 import type { CommandDef } from "../../discord/gateway.ts";
 import type { CommandHandler } from "../interactions.ts";
-import { type CommandResponse, commandResponse, type PersonaRouter } from "../personas.ts";
-import { MOVE_FAILED_TEXT, type MoveDeps, moveRefusalText, movedPostText, moveTopic, parsePlace } from "../topic-move.ts";
+import { type CommandResponse, commandResponse, type OwnerPosts, type PersonaRouter } from "../personas.ts";
+import { MOVE_FAILED_TEXT, type MoveDeps, type MoveOutcome, moveRefusalText, movedPostText, moveTopic, parsePlace } from "../topic-move.ts";
 import { PROJECT_CHOICES_MAX } from "./new.ts";
 
 export type MoveCommandDeps = MoveDeps & {
   /** チャンネルの持ち主の人格（/renew と同じ。足した人格の話題は moveTopic が断るので、保留の形を揃えるためだけに使う） */
   personas?: Pick<PersonaRouter, "ownerOf" | "gatewayFor">;
+  /** 受け付けた後の結果を応答に出せなかったときに、同じ文をチャンネルへ投稿する口（Web のルートと同じ） */
+  ownerPosts: Pick<OwnerPosts, "send">;
 };
 
 export const MOVE_NOT_SESSION_REPLY = "/move は話題のチャンネルで使ってください";
@@ -63,18 +65,27 @@ export function createMoveCommand(deps: MoveCommandDeps): CommandHandler {
         return;
       }
       let response: CommandResponse | undefined;
-      const outcome = await moveTopic({ guildId, channelId, place, by: "discord" }, deps, () => {
-        response = commandResponse(deps.personas, channelId, responder, deps.log);
-        return response.defer();
-      });
+      let outcome: MoveOutcome;
+      try {
+        outcome = await moveTopic({ guildId, channelId, place, by: "discord" }, deps, () => {
+          response = commandResponse(deps.personas, channelId, responder, deps.log);
+          return response.defer();
+        });
+      } catch (error) {
+        // 受け付ける前の例外は今までどおり外へ。受け付けた後なら失敗の文を出して終える
+        if (response === undefined) throw error;
+        deps.log(`/move の場所の付け替えに失敗しました（${errorName(error)}）`);
+        await showResult(deps, response, channelId, MOVE_FAILED_TEXT);
+        return;
+      }
       if (outcome.result === "moved" || outcome.result === "failed") {
         if (response === undefined) throw new Error("/move の結果を保留せずに受け取りました");
-        await response.show({ text: outcome.result === "moved" ? movedPostText(outcome, generalDir) : MOVE_FAILED_TEXT });
+        await showResult(deps, response, channelId, outcome.result === "moved" ? movedPostText(outcome, generalDir) : MOVE_FAILED_TEXT);
         return;
       }
       if (response !== undefined) {
         // 受け付けた後（キューの中）で断った
-        await response.show({ text: `場所を変えられませんでした: ${moveRefusalText(outcome.result)}` });
+        await showResult(deps, response, channelId, `場所を変えられませんでした: ${moveRefusalText(outcome.result)}`);
         return;
       }
       await responder.reply({
@@ -83,4 +94,26 @@ export function createMoveCommand(deps: MoveCommandDeps): CommandHandler {
       });
     },
   };
+}
+
+/**
+ * 受け付けた後の結果を保留した応答に出す。出せなければ（保留の失敗・応答の期限切れなど）同じ文をチャンネルへ投稿し、
+ * それも失敗したら log だけ（投げない。場所はもう変わっていることがある）
+ */
+async function showResult(deps: MoveCommandDeps, response: CommandResponse, channelId: string, text: string): Promise<void> {
+  try {
+    await response.show({ text });
+    return;
+  } catch (error) {
+    deps.log(`/move の結果を応答に出せなかったため、チャンネルに投稿します（${errorName(error)}）`);
+  }
+  try {
+    await deps.ownerPosts.send(channelId, text);
+  } catch (error) {
+    deps.log(`/move の結果をチャンネルに投稿できませんでした（${errorName(error)}）`);
+  }
+}
+
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
 }
