@@ -666,7 +666,8 @@ test("POST /api/topics: general は 201 で id・channelId・link・title・plac
   const topic = byId(listed, `ch:${channelId}`)!;
   assert.deepEqual([topic.group, topic.state, topic.place.dir], ["general", "active", "General"]);
   // 返事のターンが済むまで待つ（後片付けの前に）
-  for (let i = 0; i < 200 && s.gateway.sent.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  for (let i = 0; i < 2000 && s.gateway.sent.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(s.gateway.sent.length >= 2);
   assert.equal(s.runner.inputs.length, 1);
 });
 
@@ -768,12 +769,18 @@ test("POST /api/topics: 同じ内容を 5 秒以内に 2 回送っても作る�
   assert.equal(third.status, 201);
   assert.notEqual(third.json.channelId, first.json.channelId);
   assert.equal(createdCount(s.gateway), 2);
-  // 201 でなかった応答は覚えない（すぐやり直せる）
+  // Bot が切れているときは 503（二重の判定より前で返る）
   s.connected.value = false;
   const other = { place: "general", title: "別" };
   assert.equal((await postJson(s.server, "/api/topics", other)).status, 503);
   s.connected.value = true;
   assert.equal((await postJson(s.server, "/api/topics", other)).status, 201);
+  // 201 でなかった応答は覚えない（すぐやり直せる）
+  s.ready.value = false;
+  const retry = { place: "p:alpha", title: "x" };
+  assert.deepEqual(await postJson(s.server, "/api/topics", retry), { status: 503, json: { error: "unify_not_ready" } });
+  s.ready.value = true;
+  assert.equal((await postJson(s.server, "/api/topics", retry)).status, 201);
 });
 
 test("POST /api/topics: 最初の一言が受け付けられなければ 201 で turn failed", async (t) => {
