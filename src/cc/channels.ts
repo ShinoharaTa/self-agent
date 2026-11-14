@@ -17,6 +17,8 @@
 //   無ければ積まずに「このセッションは終わっています」+ [起動して続ける][やめる] を返信する。[起動して続ける]（resume）は ended → resuming の compare-and-set の後、そのセッションの cwd
 //   （SELF_AGENT_WORKSPACE_DIR の直下だけ）で starter.launch（startedBy tool・最初の指示はその発言）し、結びついたら（started の resumeChannelId）
 //   session_id を付け替えて open に戻し、topic を書き換えてカテゴリ「Claude Code」へ戻す。起動の失敗・結びつけられなかったら ended に戻す。
+//   取り込み（docs/plan/takeover.md §5.6。T4）が配線されていて、そのチャンネルを取り込めるときは間に [取り込んで続ける] も出す（処理は app/commands/cc.ts。
+//   保留は takePending で引く）。
 // - 閉じる（/cc close。close）: open を ended にして完了へ移し、届け待ちを取り消す（セッションが生きていても。次に関われば開き直す）。
 // - 削除の確認（CC13）: scheduler.ts が ccDeletePrompt を #system に出し、app/commands/cc.ts の cc:del・cc:del:keep が処理する。
 // - 印（§3.3）: 届け待ちは ⏳、届けたら ✅、確かめられなければ ⚠️ と返信、送れなければ ❌ と返信、取り消したら ⏳ を外す（リアクション。失敗は log だけ）。
@@ -205,14 +207,17 @@ export const CC_RESUME_GAVE_UP_TEXT = "起動したセッションを一覧で�
 export const CC_RESUME_STALE_TEXT = "この操作は古くなっています";
 /** [起動して続ける] の custom_id の頭（`cc:resume:<channel_id>:<message_id>`・`cc:resume:keep:<channel_id>:<message_id>`） */
 export const CC_RESUME_PREFIX = "cc:resume";
+/** [取り込んで続ける] の custom_id の頭（`cc:take:resume:<channel_id>:<message_id>`。docs/plan/takeover.md §5.6。T4） */
+export const CC_TAKE_RESUME_PREFIX = "cc:take:resume";
 
-/** 終わったチャンネルの [起動して続ける][やめる]（純関数） */
-export function ccResumeButtons(channelId: string, messageId: string): NonNullable<OutgoingMessage["components"]> {
+/** 終わったチャンネルの [起動して続ける][やめる]（純関数）。take なら間に [取り込んで続ける]（T4） */
+export function ccResumeButtons(channelId: string, messageId: string, take = false): NonNullable<OutgoingMessage["components"]> {
   return [
     {
       kind: "buttons",
       buttons: [
         { customId: `${CC_RESUME_PREFIX}:${channelId}:${messageId}`, label: "起動して続ける", style: "primary" },
+        ...(take ? [{ customId: `${CC_TAKE_RESUME_PREFIX}:${channelId}:${messageId}`, label: "取り込んで続ける" }] : []),
         { customId: `${CC_RESUME_PREFIX}:keep:${channelId}:${messageId}`, label: "やめる" },
       ],
     },
@@ -395,8 +400,15 @@ export type CcChannelsDeps = {
   log: (message: string) => void;
 };
 
-/** 取り込みの途中かを見る口（cc/takeover.ts の CcTakeover の holds・holdsChannel） */
-export type CcTakeoverGuard = { holds(sessionId: string): boolean; holdsChannel(channelId: string): boolean };
+/**
+ * 取り込みの途中かを見る口（cc/takeover.ts の CcTakeover の holds・holdsChannel）。refusal は [取り込んで続ける] を出すかの判定（T4。
+ * undefined を返せば取り込める。無ければ出さない）
+ */
+export type CcTakeoverGuard = {
+  holds(sessionId: string): boolean;
+  holdsChannel(channelId: string): boolean;
+  refusal?(channelId: string): Promise<string | undefined>;
+};
 
 /** /cc open のセレクトの 1 件 */
 export type CcPickItem = { sessionId: string; label: string; state: CcState; dir: string | null; hasChannel: boolean };
@@ -782,19 +794,44 @@ export class CcChannels {
     return this.resumePending.delete(`${channelId}:${messageId}`);
   }
 
+  /**
+   * [取り込んで続ける]（cc:take:resume。T4）: その発言の保留（[起動して続ける] と同じ鍵）を引いて消す。無ければ undefined。
+   * チャンネルが ended でない（[起動して続ける] の起動の途中・開き直した後）なら引かずに undefined（起動の失敗のやり直しに保留を残す）
+   */
+  takePending(channelId: string, messageId: string): { text: string; promptMessageId: string } | undefined {
+    if (this.deps.store.get(channelId)?.state !== "ended") return undefined;
+    const key = `${channelId}:${messageId}`;
+    const pending = this.resumePending.get(key);
+    if (pending !== undefined) this.resumePending.delete(key);
+    return pending;
+  }
+
+  /** そのチャンネルの取り込みが配線されていて、断られないか（[取り込んで続ける] を出すか。判定が投げたら出さない） */
+  private async takeable(channelId: string): Promise<boolean> {
+    const guard = this.deps.takeover?.();
+    if (guard?.refusal === undefined) return false;
+    try {
+      return (await guard.refusal(channelId)) === undefined;
+    } catch (error) {
+      this.deps.log(`Claude Code: 取り込めるかを確かめられませんでした（${errorKind(error)}）`);
+      return false;
+    }
+  }
+
   /** そのセッションが今の一覧にあるか */
   private listed(sessionId: string): boolean {
     return this.deps.registry.snapshot().sessions.some((view) => view.sessionId === sessionId);
   }
 
-  /** 終わったチャンネルの発言に [起動して続ける][やめる] を返信し、本文を保留する（積まない） */
+  /** 終わったチャンネルの発言に [起動して続ける][やめる]（取り込めれば [取り込んで続ける] も）を返信し、本文を保留する（積まない） */
   private async promptResume(message: IncomingMessage, text: string): Promise<void> {
+    const take = await this.takeable(message.channelId);
     try {
       const promptMessageId = await this.deps.gateway.sendMessage(message.channelId, {
         text: CC_RESUME_PROMPT_TEXT,
         replyToId: message.id,
         suppressEmbeds: true,
-        components: ccResumeButtons(message.channelId, message.id),
+        components: ccResumeButtons(message.channelId, message.id, take),
       });
       this.resumePending.set(`${message.channelId}:${message.id}`, { text, promptMessageId });
       // 古いものから捨てる（Map は足した順）

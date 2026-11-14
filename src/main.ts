@@ -1022,7 +1022,14 @@ if (
     log,
   });
   ccTakeover = takeover;
-  ccTakeoverEntry = { takeover, takeovers, gateway, ownerUserId: config.ownerUserId };
+  ccTakeoverEntry = {
+    takeover,
+    takeovers,
+    gateway,
+    ownerUserId: config.ownerUserId,
+    // [取り込んで続ける]（T4）の保留した発言は、Web の会話の入力欄と同じ経路で最初のターンにする
+    submitTurn: ({ guildId, channelId, content }) => handler.submitText({ guildId, channelId, content, at: now(), source: "web" }),
+  };
   // 確認の失効（10 分）を 1 分ごとに確かめる
   ccTakeoverExpirer = new CcTakeoverExpirer({ takeover, log });
 }

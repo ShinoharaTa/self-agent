@@ -4,8 +4,18 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CC_TAKE_POSTED_REPLY, CC_TAKE_STALE_REPLY, createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
-import { CC_CHANNEL_ENDED_TEXT, CcChannels, ccEndedHandler, ccReplayEnded } from "../src/cc/channels.ts";
+import {
+  CC_TAKE_ALIVE_REPLY,
+  CC_TAKE_PENDING_GONE_REPLY,
+  CC_TAKE_POSTED_REPLY,
+  CC_TAKE_STALE_REPLY,
+  CC_TAKE_TURN_FAILED_TEXT,
+  createCcCommand,
+  createCcComponent,
+  takeResumeRefusedReply,
+} from "../src/app/commands/cc.ts";
+import type { SubmitTextResult } from "../src/app/handler.ts";
+import { CC_CHANNEL_ENDED_TEXT, CC_RESUME_PROMPT_TEXT, CC_RESUME_STALE_TEXT, CcChannels, ccEndedHandler, ccReplayEnded, ccResumeButtons } from "../src/cc/channels.ts";
 import { projectDirName } from "../src/cc/claude-dirs.ts";
 import type { PaneLookup } from "../src/cc/panes.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
@@ -18,7 +28,6 @@ import {
   TAKEOVER_DELETE_PROMPT_TEXT,
   TAKEOVER_DROPPED_TEXT,
   TAKEOVER_EXPIRED_TEXT,
-  TAKEOVER_NOT_CHANNEL_TEXT,
   takeoverConfirmText,
   takeoverDoneText,
 } from "../src/cc/takeover.ts";
@@ -67,6 +76,8 @@ type Options = {
   ended?: boolean;
   /** cc のチャンネルの状態（既定 open。ended のセッションは ended） */
   channelState?: "open" | "ended";
+  /** cc のチャンネルの ID（既定 chan-1。custom_id に入れる試験は数字にする） */
+  channelId?: string;
 };
 
 function setup(t: TestContext, options: Options = {}) {
@@ -115,9 +126,10 @@ function setup(t: TestContext, options: Options = {}) {
   } as CcSessionView;
   const list = { sessions: options.ended === true ? [] : [view], stale: false, unreadable: false, fetchedAt: undefined as number | undefined };
   if (options.ended === true) ccSessions.markGone([]);
-  ccChannels.create({ channelId: "chan-1", guildId: "guild-1", sessionId: S1, name: `cc-${SECRET_NAME}`, cwd, origin: "web" });
+  const channelId = options.channelId ?? "chan-1";
+  ccChannels.create({ channelId, guildId: "guild-1", sessionId: S1, name: `cc-${SECRET_NAME}`, cwd, origin: "web" });
   const channelState = options.channelState ?? (options.ended === true ? "ended" : "open");
-  if (channelState === "ended") ccChannels.setState("chan-1", "ended", ["open"]);
+  if (channelState === "ended") ccChannels.setState(channelId, "ended", ["open"]);
 
   const procs = new Map<number, Proc>([
     [PID, { comm: "claude", state: "S", ppid: SHELL_PID, startTime: START_TICKS }],
@@ -274,7 +286,7 @@ function setup(t: TestContext, options: Options = {}) {
   takeover = make();
   /** 確認を作り、確認のメッセージを記録して [取り込む] を押す */
   const proposeAndConfirm = async (t2: CcTakeover = takeover) => {
-    const proposed = await t2.propose({ channelId: "chan-1", entry: "discord" });
+    const proposed = await t2.propose({ channelId, entry: "discord" });
     assert.equal(proposed.ok, true, proposed.ok ? "" : proposed.reason);
     if (!proposed.ok) throw new Error("propose");
     takeovers.setConfirmMessage(proposed.id, "msg-confirm");
@@ -295,6 +307,7 @@ function setup(t: TestContext, options: Options = {}) {
     ccPermissions,
     topicSessions,
     sdkSessions,
+    guildSettings,
     history,
     list,
     view,
@@ -656,7 +669,7 @@ test("propose: cc のチャンネルでなければ not_channel、確認待ち�
   assert.deepEqual(await s.takeover.propose({ channelId: "other", entry: "discord" }), {
     ok: false,
     reason: "not_channel",
-    text: TAKEOVER_NOT_CHANNEL_TEXT,
+    text: takeoverFailureText("channel_changed", false),
   });
   const first = await s.takeover.propose({ channelId: "chan-1", entry: "discord" });
   assert.ok(first.ok);
@@ -1083,4 +1096,245 @@ test("recover: 終わったセッション（source ended）の行には「終�
   await s.takeover.recover();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(s.gateway.edits, [{ channelId: "chan-1", messageId: "msg-a", message: { text: takeoverFailureText("restart", false), components: [] } }]);
+});
+
+// ---- T4: 終わったチャンネルの [取り込んで続ける]（docs/plan/takeover.md §5.6） ----
+
+const CHAN = "700";
+const OWNER_MESSAGE = "900";
+
+/** 終わったセッションの ended のチャンネル（数字の ID）と、取り込みを配線した本物の CcChannels・component */
+function takeResumeSetup(t: TestContext, options: { wired?: boolean; refusal?: () => Promise<string | undefined> } = {}) {
+  const s = setup(t, { ended: true, channelId: CHAN });
+  const wired = options.wired ?? true;
+  const channels = new CcChannels({
+    cfg: { allowedGuildIds: ["guild-1"], workspaceDir: s.workspace, ownerUserId: "owner-1" },
+    store: s.ccChannels,
+    sends: s.ccSends,
+    sender: () => undefined,
+    guildSettings: s.guildSettings,
+    registry: s.registry,
+    panes: { lookup: async () => ({ ok: false }) as never },
+    gateway: s.gateway,
+    queue: s.queue,
+    channelOps: s.channelOps,
+    home: s.home,
+    ...(wired
+      ? {
+          takeover: () => ({
+            holds: (id: string) => s.takeover.holds(id),
+            holdsChannel: (id: string) => s.takeover.holdsChannel(id),
+            refusal: options.refusal ?? ((id: string) => s.takeover.refusal(id)),
+          }),
+        }
+      : {}),
+    now: () => new Date(s.clock.now),
+    log: (line) => void s.logs.push(line),
+  });
+  const turns: Array<{ guildId: string; channelId: string; content: string }> = [];
+  const turn = { result: { result: "accepted", turnId: 1, messageId: "m" } as SubmitTextResult, throws: false };
+  const getter = () => ({
+    takeover: s.takeover,
+    takeovers: s.takeovers,
+    gateway: s.gateway,
+    ownerUserId: "owner-1",
+    submitTurn: async (input: { guildId: string; channelId: string; content: string }) => {
+      turns.push(input);
+      if (turn.throws) throw new TypeError("流せない");
+      return turn.result;
+    },
+  });
+  const component = createCcComponent({ ccChannels: () => channels, ccTakeover: getter, gateway: s.gateway, log: (line) => void s.logs.push(line) });
+  /** オーナーが終わったチャンネルに書く */
+  const write = async (id = OWNER_MESSAGE, content = "続きをお願いします") => {
+    await channels.handleMessage({
+      id,
+      channelId: CHAN,
+      guildId: "guild-1",
+      authorId: "owner-1",
+      authorIsBot: false,
+      isWebhook: false,
+      content,
+      createdAt: new Date(s.clock.now),
+    });
+    return s.gateway.posts.at(-1)!;
+  };
+  const press = async (customId: string, over: Partial<Extract<Interaction, { kind: "button" }>> = {}): Promise<FakeResponder> => {
+    const responder = new FakeResponder();
+    await component.handle({ kind: "button", customId, guildId: "guild-1", channelId: CHAN, userId: "owner-1", createdAt: new Date(s.clock.now), ...over }, responder);
+    return responder;
+  };
+  const ids = (id = OWNER_MESSAGE) => ({
+    take: `cc:take:resume:${CHAN}:${id}`,
+    resume: `cc:resume:${CHAN}:${id}`,
+    keep: `cc:resume:keep:${CHAN}:${id}`,
+  });
+  return { s, channels, turns, turn, write, press, ids };
+}
+
+function assertNoChannelIdInLogs(s: Setup): void {
+  assertQuietLogs(s);
+  for (const line of s.logs) assert.doesNotMatch(line, new RegExp(`${CHAN}|${OWNER_MESSAGE}`), line);
+}
+
+test("[取り込んで続ける]（T4）: 取り込めるときだけ [起動して続ける][取り込んで続ける][やめる] の順に出す。配線なし・断られる・判定が投げると出さない", async (t) => {
+  const on = takeResumeSetup(t);
+  const posted = await on.write();
+  assert.equal(posted.message.text, CC_RESUME_PROMPT_TEXT);
+  assert.deepEqual(posted.message.components, ccResumeButtons(CHAN, OWNER_MESSAGE, true));
+  const row = posted.message.components?.[0];
+  assert.ok(row?.kind === "buttons");
+  assert.deepEqual(row.buttons.map((button) => button.label), ["起動して続ける", "取り込んで続ける", "やめる"]);
+  assert.equal(row.buttons[1]!.customId, `cc:take:resume:${CHAN}:${OWNER_MESSAGE}`);
+  // 判定は行を作らない
+  assert.equal(on.s.takeovers.activeFor(S1), undefined);
+
+  const off = takeResumeSetup(t, { wired: false });
+  assert.deepEqual((await off.write()).message.components, ccResumeButtons(CHAN, OWNER_MESSAGE));
+
+  // 断られる（取り込み済み）
+  const refused = takeResumeSetup(t);
+  refused.s.sdkSessions.set("other-channel", S1);
+  assert.equal(await refused.s.takeover.refusal(CHAN), "already_taken");
+  assert.deepEqual((await refused.write()).message.components, ccResumeButtons(CHAN, OWNER_MESSAGE));
+
+  const throws = takeResumeSetup(t, {
+    refusal: async () => {
+      throw new Error("読めない");
+    },
+  });
+  assert.deepEqual((await throws.write()).message.components, ccResumeButtons(CHAN, OWNER_MESSAGE));
+  assertNoChannelIdInLogs(throws.s);
+});
+
+test("[取り込んで続ける]（T4）: 押すと propose → confirm で取り込み、案内を完了の文に書き換え、その発言を最初のターンとして 1 回だけ流す。残りのボタンは古い", async (t) => {
+  const r = takeResumeSetup(t);
+  const posted = await r.write();
+  const pressed = await r.press(r.ids().take);
+  assert.deepEqual(pressed.calls, [{ method: "deferUpdate" }]);
+  assert.equal(r.s.topicSessions.get(CHAN)?.channelId, CHAN);
+  assert.equal(r.s.sdkSessions.get(CHAN), S1);
+  assert.deepEqual(r.s.kills, []);
+  // 案内の投稿が確認の投稿になり、完了の文に書き換わる（ボタンは外れる）
+  assert.deepEqual(r.s.gateway.edits.find((edit) => edit.messageId === posted.messageId)?.message, { text: takeoverDoneText("alpha", false), components: [] });
+  assert.deepEqual(r.turns, [{ guildId: "guild-1", channelId: CHAN, content: "続きをお願いします" }]);
+
+  // 押し直し・[起動して続ける]・[やめる] は古い（同じ保留を引いた後）
+  const again = await r.press(r.ids().take);
+  assert.deepEqual(again.replies, [{ text: CC_TAKE_PENDING_GONE_REPLY, ephemeral: true }]);
+  const resume = await r.press(r.ids().resume);
+  assert.deepEqual(resume.calls.at(-1), { method: "update", message: { text: CC_RESUME_STALE_TEXT, components: [], suppressEmbeds: true } });
+  const keep = await r.press(r.ids().keep);
+  assert.deepEqual(keep.calls, [{ method: "update", message: { text: CC_RESUME_STALE_TEXT, components: [], suppressEmbeds: true } }]);
+  assert.equal(r.turns.length, 1);
+  assertNoChannelIdInLogs(r.s);
+});
+
+test("[取り込んで続ける]（T4）: [やめる] の後は保留が無い。オーナー以外・別のチャンネルは何も変えない", async (t) => {
+  const r = takeResumeSetup(t);
+  await r.write();
+  for (const over of [{ userId: "someone" }, { channelId: "701" }]) {
+    const responder = await r.press(r.ids().take, over);
+    assert.deepEqual(responder.calls, [{ method: "reply", message: { text: CC_TAKE_STALE_REPLY, ephemeral: true } }]);
+  }
+  assert.equal(r.s.takeovers.activeFor(S1), undefined);
+  // 保留は残っている（[やめる] が効く）
+  const keep = await r.press(r.ids().keep);
+  assert.equal(keep.calls[0]?.method, "update");
+  assert.notEqual((keep.calls[0] as { message: { text: string } }).message.text, CC_RESUME_STALE_TEXT);
+  const late = await r.press(r.ids().take);
+  assert.deepEqual(late.replies, [{ text: CC_TAKE_PENDING_GONE_REPLY, ephemeral: true }]);
+  assert.equal(r.s.takeovers.activeFor(S1), undefined);
+  assert.deepEqual(r.turns, []);
+});
+
+test("[取り込んで続ける]（T4）: 断られたらその文に「もう一度送ってください。」を足して返し、保留は消える", async (t) => {
+  const r = takeResumeSetup(t);
+  await r.write();
+  // 一覧が古いまま（読み直しても fetchedAt が進まない）
+  r.s.env.advance = false;
+  r.s.clock.now += 1000;
+  const responder = await r.press(r.ids().take);
+  assert.deepEqual(responder.calls, [
+    { method: "deferUpdate" },
+    { method: "reply", message: { text: takeResumeRefusedReply(takeoverFailureText("list_failed", false)), ephemeral: true } },
+  ]);
+  assert.equal(takeResumeRefusedReply("取り込めませんでした: X"), "取り込めませんでした: X。もう一度送ってください。");
+  assert.equal(r.s.takeovers.activeFor(S1), undefined);
+  const again = await r.press(r.ids().take);
+  assert.deepEqual(again.replies, [{ text: CC_TAKE_PENDING_GONE_REPLY, ephemeral: true }]);
+  assert.deepEqual(r.turns, []);
+  assert.equal(r.s.ccChannels.get(CHAN)?.state, "ended");
+  assert.equal(r.s.topicSessions.get(CHAN), undefined);
+});
+
+test("[取り込んで続ける]（T4）: 元が生きていれば cancel して断り、kill は呼ばない", async (t) => {
+  const r = takeResumeSetup(t);
+  await r.write();
+  // 案内を出した後に一覧へ戻った（生きている）
+  r.s.list.sessions = [r.s.view];
+  const responder = await r.press(r.ids().take);
+  assert.deepEqual(responder.replies, [{ text: CC_TAKE_ALIVE_REPLY, ephemeral: true }]);
+  assert.deepEqual(r.s.kills, []);
+  assert.equal(r.s.takeovers.activeFor(S1), undefined);
+  assert.deepEqual(r.turns, []);
+  assert.equal(r.s.topicSessions.get(CHAN), undefined);
+});
+
+test("[取り込んで続ける]（T4）: 取り込みが失敗したら流さない。流す関数が投げた・受け付けなかったらチャンネルに知らせる", async (t) => {
+  const failed = takeResumeSetup(t);
+  const posted = await failed.write();
+  failed.s.env.categoryFails = true;
+  await failed.press(failed.ids().take);
+  assert.deepEqual(failed.turns, []);
+  assert.deepEqual(failed.s.gateway.edits.find((edit) => edit.messageId === posted.messageId)?.message, {
+    text: takeoverFailureText("no_category", false),
+    components: [],
+  });
+
+  const throws = takeResumeSetup(t);
+  await throws.write();
+  throws.turn.throws = true;
+  await throws.press(throws.ids().take);
+  assert.equal(throws.turns.length, 1);
+  assert.deepEqual(throws.s.gateway.posts.at(-1), { channelId: CHAN, messageId: throws.s.gateway.posts.at(-1)!.messageId, message: { text: CC_TAKE_TURN_FAILED_TEXT } });
+  assert.ok(throws.s.logs.some((line) => line.includes("TypeError")));
+  assertNoChannelIdInLogs(throws.s);
+
+  const rejected = takeResumeSetup(t);
+  await rejected.write();
+  rejected.turn.result = { result: "bot_disconnected" };
+  await rejected.press(rejected.ids().take);
+  assert.equal(rejected.s.gateway.posts.at(-1)?.message.text, CC_TAKE_TURN_FAILED_TEXT);
+});
+
+test("[取り込んで続ける]（T4）: [起動して続ける] の起動の途中（resuming）は保留を引かず、何も変えない", async (t) => {
+  const r = takeResumeSetup(t);
+  await r.write();
+  r.s.ccChannels.setState(CHAN, "resuming", ["ended"]);
+  const during = await r.press(r.ids().take);
+  assert.deepEqual(during.replies, [{ text: CC_TAKE_PENDING_GONE_REPLY, ephemeral: true }]);
+  assert.equal(r.s.takeovers.activeFor(S1), undefined);
+  // 起動に失敗して ended に戻れば、保留は残っている（[起動して続ける] のやり直しに使える）
+  r.s.ccChannels.setState(CHAN, "ended", ["resuming"]);
+  assert.notEqual(r.channels.takePending(CHAN, OWNER_MESSAGE), undefined);
+  assert.equal(r.channels.takePending(CHAN, OWNER_MESSAGE), undefined);
+});
+
+test("takeableSessions（T4）: 一覧を 1 回だけ読み、propose と同じ判定で取り込めるものだけ返す（チャンネルの無いセッションも見る）", async (t) => {
+  const s = setup(t);
+  // S2: チャンネルの無い、待機中のセッション
+  const v2 = { ...s.view, sessionId: S2 } as CcSessionView;
+  s.list.sessions = [s.view, v2];
+  s.ccSessions.upsertSeen([{ sessionId: S2, cwd: s.cwd, name: "two", pid: PID }]);
+  const ticks = s.registry.ticks;
+  assert.deepEqual(await s.takeover.takeableSessions([S1, S2, S3]), [S1, S2]);
+  assert.equal(s.registry.ticks, ticks + 1);
+  // 確認待ち・取り込み済みは外す
+  const proposed = await s.takeover.propose({ channelId: "chan-1", entry: "discord" });
+  assert.ok(proposed.ok);
+  s.sdkSessions.set("other-channel", S2);
+  assert.deepEqual(await s.takeover.takeableSessions([S1, S2]), []);
+  assert.equal(s.takeovers.activeFor(S2), undefined);
+  assertQuietLogs(s);
 });
