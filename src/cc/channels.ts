@@ -303,6 +303,12 @@ export type CcReviveReason = "back" | "reopened";
 /** 終わったチャンネルの発言の保留（[起動して続ける] を押すまで。プロセスの中だけで、再起動の後のボタンは古い） */
 const RESUME_PENDING_MAX = 50;
 
+/**
+ * 保留した発言（[起動して続ける]・[取り込んで続ける] の最初の指示）。historyId は保留のときに書いた owner の行の id
+ * （書いていない（Web UI が無効）なら無し、書けなければ 0）
+ */
+export type HeldMessage = { text: string; promptMessageId: string; historyId?: number };
+
 /** 1 行の表示（制御文字を空白にし、Markdown とメンションを無効にする） */
 function plain(text: string): string {
   return escapeDiscordText(headChars(text.replace(/[\u0000-\u001f\u007f]/g, " "), LABEL_MAX_CHARS));
@@ -439,7 +445,7 @@ export class CcChannels {
   /** ダイアログで待っていると返信した送信 */
   private readonly dialogNoticed = new Set<number>();
   /** 終わったチャンネルの発言（`<channel_id>:<message_id>` → 本文と確認の投稿）。[起動して続ける] の最初の指示（CC13） */
-  private readonly resumePending = new Map<string, { text: string; promptMessageId: string }>();
+  private readonly resumePending = new Map<string, HeldMessage>();
 
   constructor(deps: CcChannelsDeps) {
     this.deps = deps;
@@ -603,8 +609,9 @@ export class CcChannels {
       return true;
     }
     if (row.state === "ended" && !this.reopenIfListed(row)) {
-      this.record(row, "owner", "discord", checked.text, message.id);
-      await this.promptResume(message, checked.text);
+      // owner の行を書いたら（Web UI が有効）その id を保留に持つ（[取り込んで続ける] のターンで二重に書かない。書けなければ 0）
+      const ownerRow = this.record(row, "owner", "discord", checked.text, message.id);
+      await this.promptResume(message, checked.text, this.deps.history === undefined ? undefined : (ownerRow ?? 0));
       this.record(row, "notice", "system", CC_RESUME_PROMPT_TEXT);
       return true;
     }
@@ -798,7 +805,7 @@ export class CcChannels {
    * [取り込んで続ける]（cc:take:resume。T4）: その発言の保留（[起動して続ける] と同じ鍵）を引いて消す。無ければ undefined。
    * チャンネルが ended でない（[起動して続ける] の起動の途中・開き直した後）なら引かずに undefined（起動の失敗のやり直しに保留を残す）
    */
-  takePending(channelId: string, messageId: string): { text: string; promptMessageId: string } | undefined {
+  takePending(channelId: string, messageId: string): HeldMessage | undefined {
     if (this.deps.store.get(channelId)?.state !== "ended") return undefined;
     const key = `${channelId}:${messageId}`;
     const pending = this.resumePending.get(key);
@@ -824,7 +831,7 @@ export class CcChannels {
   }
 
   /** 終わったチャンネルの発言に [起動して続ける][やめる]（取り込めれば [取り込んで続ける] も）を返信し、本文を保留する（積まない） */
-  private async promptResume(message: IncomingMessage, text: string): Promise<void> {
+  private async promptResume(message: IncomingMessage, text: string, historyId: number | undefined): Promise<void> {
     const take = await this.takeable(message.channelId);
     try {
       const promptMessageId = await this.deps.gateway.sendMessage(message.channelId, {
@@ -833,7 +840,7 @@ export class CcChannels {
         suppressEmbeds: true,
         components: ccResumeButtons(message.channelId, message.id, take),
       });
-      this.resumePending.set(`${message.channelId}:${message.id}`, { text, promptMessageId });
+      this.resumePending.set(`${message.channelId}:${message.id}`, { text, promptMessageId, ...(historyId === undefined ? {} : { historyId }) });
       // 古いものから捨てる（Map は足した順）
       while (this.resumePending.size > RESUME_PENDING_MAX) {
         const oldest = this.resumePending.keys().next().value;
@@ -1228,8 +1235,8 @@ export class CcChannels {
     source: HistorySource,
     text: string,
     messageId: string | null = null,
-  ): void {
-    recordHistory(
+  ): number | undefined {
+    return recordHistory(
       this.deps.history,
       { guildId: row.guildId, channelId: row.channelId, kind, source, persona: DEFAULT_PERSONA_ID, text, messageId },
       this.deps.log,

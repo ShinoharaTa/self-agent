@@ -143,6 +143,9 @@ export type SubmitTextResult =
   | { result: "echo_failed" }
   | { result: "stopping" };
 
+/** 保留した発言（submitHeld。docs/plan/takeover.md §5.6 の [取り込んで続ける]）の結果 */
+export type SubmitHeldResult = { result: "accepted" } | { result: "not_accepted" } | { result: "bot_disconnected" } | { result: "stopping" };
+
 export type Handler = {
   /** 受け付けた発言を 1 ターンとして処理する。reject しない（失敗は log に出す） */
   handleMessage(event: IncomingMessage): Promise<void>;
@@ -164,6 +167,12 @@ export type Handler = {
    * サーバーの許可と /setup 済みの判定は呼び出し側（web/routes/channels.ts の webChannelLookup）が行う
    */
   submitText(input: { guildId: string; channelId: string; content: string; at: Date; source: "web" }): Promise<SubmitTextResult>;
+  /**
+   * 前に Discord で受けて保留していたオーナーの発言（messageId）を、そのセッションのチャンネルの 1 ターンとして入れる（[取り込んで続ける]。T4）。
+   * submitText と同じ確かめ（セッションのチャンネルでなければ not_accepted・持ち主の Bot・停止）をし、echo は投稿せず、その発言への返信として
+   * source discord でターンを始める（返信までは待たない）。historyId を渡せば owner の行は書かない（保留のときに書いた行）、渡さなければ submit が書く
+   */
+  submitHeld(input: { guildId: string; channelId: string; content: string; at: Date; messageId: string; historyId?: number }): Promise<SubmitHeldResult>;
   /** 実行中のターン（発言・[続ける]。全部の種類のチャンネル） */
   runningTurns(): RunningTurn[];
 };
@@ -606,6 +615,22 @@ export function createHandler(deps: HandlerDeps): Handler {
         log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`),
       );
       return { result: "accepted", turnId, messageId };
+    },
+    submitHeld: async ({ guildId, channelId, content, at, messageId, historyId }) => {
+      if (resolveChannel(guildId, channelId) !== "session") return { result: "not_accepted" };
+      if (deps.ownerConnected !== undefined && !deps.ownerConnected(channelId)) return { result: "bot_disconnected" };
+      if (deps.stopping?.() === true) return { result: "stopping" };
+      void submit({
+        guildId,
+        channelId,
+        kind: "session",
+        content,
+        at,
+        replyToId: messageId,
+        source: "discord",
+        ...(historyId === undefined ? {} : { historyId }),
+      }).catch((error: unknown) => log(`保留した発言のターンの処理中にエラーが発生しました（${error instanceof Error ? error.name : typeof error}）`));
+      return { result: "accepted" };
     },
     runningTurns: () =>
       [...running.entries()].map(([channelId, turn]) => ({

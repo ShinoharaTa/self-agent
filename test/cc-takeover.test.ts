@@ -14,7 +14,7 @@ import {
   createCcComponent,
   takeResumeRefusedReply,
 } from "../src/app/commands/cc.ts";
-import type { SubmitTextResult } from "../src/app/handler.ts";
+import type { SubmitHeldResult } from "../src/app/handler.ts";
 import { CC_CHANNEL_ENDED_TEXT, CC_RESUME_PROMPT_TEXT, CC_RESUME_STALE_TEXT, CcChannels, ccEndedHandler, ccReplayEnded, ccResumeButtons } from "../src/cc/channels.ts";
 import { projectDirName } from "../src/cc/claude-dirs.ts";
 import type { PaneLookup } from "../src/cc/panes.ts";
@@ -1212,6 +1212,7 @@ function takeResumeSetup(t: TestContext, options: { wired?: boolean; refusal?: (
     queue: s.queue,
     channelOps: s.channelOps,
     home: s.home,
+    history: s.history,
     ...(wired
       ? {
           takeover: () => ({
@@ -1224,14 +1225,14 @@ function takeResumeSetup(t: TestContext, options: { wired?: boolean; refusal?: (
     now: () => new Date(s.clock.now),
     log: (line) => void s.logs.push(line),
   });
-  const turns: Array<{ guildId: string; channelId: string; content: string }> = [];
-  const turn = { result: { result: "accepted", turnId: 1, messageId: "m" } as SubmitTextResult, throws: false };
+  const turns: Array<{ guildId: string; channelId: string; content: string; messageId: string; historyId?: number }> = [];
+  const turn = { result: { result: "accepted" } as SubmitHeldResult, throws: false };
   const getter = () => ({
     takeover: s.takeover,
     takeovers: s.takeovers,
     gateway: s.gateway,
     ownerUserId: "owner-1",
-    submitTurn: async (input: { guildId: string; channelId: string; content: string }) => {
+    submitTurn: async (input: { guildId: string; channelId: string; content: string; messageId: string; historyId?: number }) => {
       turns.push(input);
       if (turn.throws) throw new TypeError("流せない");
       return turn.result;
@@ -1310,7 +1311,10 @@ test("[取り込んで続ける]（T4）: 押すと propose → confirm で取�
   assert.deepEqual(r.s.kills, []);
   // 案内の投稿が確認の投稿になり、完了の文に書き換わる（ボタンは外れる）
   assert.deepEqual(r.s.gateway.edits.find((edit) => edit.messageId === posted.messageId)?.message, { text: takeoverDoneText("alpha", false), components: [] });
-  assert.deepEqual(r.turns, [{ guildId: "guild-1", channelId: CHAN, content: "続きをお願いします" }]);
+  // 保留のときに書いた owner の行の id を渡す（submitHeld が二重に書かない）。返信先は元の発言
+  const ownerRows = r.s.history.list(CHAN, { limit: 50 }).filter((entry) => entry.kind === "owner");
+  assert.equal(ownerRows.length, 1);
+  assert.deepEqual(r.turns, [{ guildId: "guild-1", channelId: CHAN, content: "続きをお願いします", messageId: OWNER_MESSAGE, historyId: ownerRows[0]!.id }]);
 
   // 押し直し・[起動して続ける]・[やめる] は古い（同じ保留を引いた後）
   const again = await r.press(r.ids().take);
@@ -1430,4 +1434,26 @@ test("takeableSessions（T4）: 一覧を 1 回だけ読み、propose と同じ�
   assert.deepEqual(await s.takeover.takeableSessions([S1, S2]), []);
   assert.equal(s.takeovers.activeFor(S2), undefined);
   assertQuietLogs(s);
+});
+
+test("[取り込んで続ける]（T4）: 案内の投稿を書き換えられなかったら、押された 1 通を同じ文にしてボタンを外す（done でも失敗でも）", async (t) => {
+  const done = takeResumeSetup(t);
+  await done.write();
+  done.s.gateway.beforeEdit = () => {
+    throw new Error("編集できない");
+  };
+  const pressed = await done.press(done.ids().take);
+  assert.deepEqual(pressed.calls.at(-1), { method: "update", message: { text: takeoverDoneText("alpha", false), components: [] } });
+  assert.equal(done.turns.length, 1);
+
+  const failed = takeResumeSetup(t);
+  await failed.write();
+  failed.s.env.categoryFails = true;
+  failed.s.gateway.beforeEdit = () => {
+    throw new Error("編集できない");
+  };
+  const failedPress = await failed.press(failed.ids().take);
+  assert.deepEqual(failedPress.calls.at(-1), { method: "update", message: { text: takeoverFailureText("no_category", false), components: [] } });
+  assert.deepEqual(failed.turns, []);
+  for (const line of [...done.s.logs, ...failed.s.logs]) assert.doesNotMatch(line, /編集できない/, line);
 });

@@ -1834,3 +1834,58 @@ test("runningTurns: 許可を待っている間（onPermissionWaiting）は wait
   release();
   await until(() => handler.runningTurns().length === 0);
 });
+
+// ===== 保留した発言（submitHeld。docs/plan/takeover.md §5.6 の [取り込んで続ける]） =====
+
+test("submitHeld: echo を投稿せず、元の発言への返信として source discord で 1 ターン入れる。historyId を渡せば owner の行は書かない", async (t) => {
+  const { gateway, runner, topicSessions, history, handler } = setup(t, [okResult("session-1", "続けます")], { history: true, ownerConnected: () => true });
+  topicSessions.create(TOPIC);
+  // 保留のときに書いた owner の行
+  const held = history.add({ guildId: "guild-1", channelId: "topic-1", kind: "owner", source: "discord", persona: "default", text: "続きを", messageId: "held-1" });
+  const result = await handler.submitHeld({ guildId: "guild-1", channelId: "topic-1", content: "続きを", at: WEB_AT, messageId: "held-1", historyId: held });
+  assert.deepEqual(result, { result: "accepted" });
+  await until(() => gateway.sent.length === 1);
+  assert.deepEqual(gateway.posts, []);
+  assert.deepEqual(gateway.sent, [{ channelId: "topic-1", text: "続けます", replyToId: "held-1" }]);
+  assert.equal(runner.inputs.length, 1);
+  assert.deepEqual(
+    historyRows(history, "topic-1").map((row) => [row.kind, row.source, row.messageId]),
+    [
+      ["owner", "discord", "held-1"],
+      ["agent", "discord", null],
+    ],
+  );
+});
+
+test("submitHeld: historyId を渡さなければ submit が owner の行を 1 行書く", async (t) => {
+  const { gateway, topicSessions, history, handler } = setup(t, [okResult("session-1", "はい")], { history: true });
+  topicSessions.create(TOPIC);
+  assert.deepEqual(await handler.submitHeld({ guildId: "guild-1", channelId: "topic-1", content: "続きを", at: WEB_AT, messageId: "held-1" }), { result: "accepted" });
+  await until(() => gateway.sent.length === 1);
+  assert.deepEqual(
+    historyRows(history, "topic-1").map((row) => [row.kind, row.source, row.messageId]),
+    [
+      ["owner", "discord", "held-1"],
+      ["agent", "discord", null],
+    ],
+  );
+});
+
+test("submitHeld: セッションのチャンネルでなければ not_accepted、Bot が切れていれば bot_disconnected、停止中は stopping で、投稿もターンも無い", async (t) => {
+  const connected = { value: true };
+  const stopping = { value: false };
+  const { gateway, runner, topicSessions, handler } = setup(t, [], { ownerConnected: () => connected.value, stopping: () => stopping.value });
+  topicSessions.create(TOPIC);
+  const input = (channelId: string) => ({ guildId: "guild-1", channelId, content: "続きを", at: WEB_AT, messageId: "held-1" });
+  assert.deepEqual(await handler.submitHeld(input("inbox-1")), { result: "not_accepted" });
+  assert.deepEqual(await handler.submitHeld(input("other-1")), { result: "not_accepted" });
+  connected.value = false;
+  assert.deepEqual(await handler.submitHeld(input("topic-1")), { result: "bot_disconnected" });
+  connected.value = true;
+  stopping.value = true;
+  assert.deepEqual(await handler.submitHeld(input("topic-1")), { result: "stopping" });
+  await settle();
+  assert.deepEqual(gateway.posts, []);
+  assert.deepEqual(gateway.sent, []);
+  assert.equal(runner.inputs.length, 0);
+});

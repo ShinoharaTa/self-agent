@@ -1027,8 +1027,8 @@ if (
     takeovers,
     gateway,
     ownerUserId: config.ownerUserId,
-    // [取り込んで続ける]（T4）の保留した発言は、Web の会話の入力欄と同じ経路で最初のターンにする
-    submitTurn: ({ guildId, channelId, content }) => handler.submitText({ guildId, channelId, content, at: now(), source: "web" }),
+    // [取り込んで続ける]（T4）の保留した発言は、その発言への返信として最初のターンにする（echo は出さない）
+    submitTurn: (input) => handler.submitHeld({ ...input, at: now() }),
   };
   // 確認の失効（10 分）を 1 分ごとに確かめる
   ccTakeoverExpirer = new CcTakeoverExpirer({ takeover, log });

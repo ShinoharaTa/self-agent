@@ -17,7 +17,7 @@
 // 確認待ちのときだけ動く（確認の文の書き換えと完了の文は CcTakeover が出す）。
 // T4（§5.6）: cc のチャンネルの外の `/cc take` は取り込めるセッションだけのセレクト `cc:takepick` を本人にだけ出し、選ぶとそのチャンネルを作って
 // （既にあればそれ）そこに同じ確認を出す。終わったチャンネルの [取り込んで続ける]（`cc:take:resume:<channel_id>:<message_id>`）は、保留した発言を引いて
-// propose → そのまま confirm し、done ならその発言をプロジェクトのセッションの最初のターンとして流す（Web の会話の入力欄と同じ handler の submitText）
+// propose → そのまま confirm し、done ならその発言をプロジェクトのセッションの最初のターンとして流す（handler の submitHeld。その発言への返信）
 import {
   CC_TAKE_RESUME_PREFIX,
   type CcChannelFailure,
@@ -47,7 +47,7 @@ import { type CcQuestionButtons, handleQuestion } from "./cc-question.ts";
 import { STALE_TURN_REPLY } from "./turn-controls.ts";
 import { TAKEOVER_BUSY_TEXT } from "../../cc/takeover-rules.ts";
 import { type CcTakeover, type CcTakeoverProposeResult, TAKEOVER_GO_PREFIX, TAKEOVER_NO_PREFIX } from "../../cc/takeover.ts";
-import type { SubmitTextResult } from "../handler.ts";
+import type { SubmitHeldResult } from "../handler.ts";
 import type { CcTakeoverStore } from "../../store/cc-takeovers.ts";
 
 const NAMESPACE = "cc";
@@ -74,10 +74,10 @@ export type CcTakeoverGetter = () =>
       gateway: Pick<Gateway, "sendMessage">;
       ownerUserId: string | undefined;
       /**
-       * [取り込んで続ける] の後、保留した発言をプロジェクトのセッションの最初のターンとして流す（T4。Web の会話の入力欄と同じ handler の submitText）。
-       * 無ければ流さずに CC_TAKE_TURN_FAILED_TEXT を出す
+       * [取り込んで続ける] の後、保留した発言（messageId）をプロジェクトのセッションの最初のターンとして流す（T4。handler の submitHeld。echo は出さず、
+       * 返事はその発言への返信）。historyId は保留のときに書いた owner の行。無ければ流さずに CC_TAKE_TURN_FAILED_TEXT を出す
        */
-      submitTurn?: (input: { guildId: string; channelId: string; content: string }) => Promise<SubmitTextResult>;
+      submitTurn?: (input: { guildId: string; channelId: string; content: string; messageId: string; historyId?: number }) => Promise<SubmitHeldResult>;
     }
   | undefined;
 
@@ -555,7 +555,16 @@ async function handleTakeResume(
   }
   runtime.takeovers.setConfirmMessage(proposed.id, pending.promptMessageId);
   const result = await runtime.takeover.confirm(proposed.id);
-  // 失敗の文は CcTakeover が確認の投稿に出している
+  if (!result.ok && result.reason === "stale") return;
+  // 結果の文は CcTakeover が確認の投稿（ボタンの付いていた案内）に出す。書き換えられなかったときだけ、押された 1 通を同じ文にしてボタンを外す
+  if (!result.edited) {
+    try {
+      await responder.update({ text: result.text, components: [] });
+    } catch (error) {
+      deps.log(`Claude Code: 取り込みの結果を確認の文に出せませんでした（#${proposed.id}、${errorKind(error)}）`);
+    }
+  }
+  // 失敗なら流さない
   if (!result.ok) return;
   const failed = async (kind: string): Promise<void> => {
     deps.log(`Claude Code: 取り込んだ後に発言を流せませんでした（#${proposed.id}、${kind}）`);
@@ -569,9 +578,15 @@ async function handleTakeResume(
     await failed("unwired");
     return;
   }
-  let submitted: SubmitTextResult;
+  let submitted: SubmitHeldResult;
   try {
-    submitted = await runtime.submitTurn({ guildId: row.guildId, channelId, content: pending.text });
+    submitted = await runtime.submitTurn({
+      guildId: row.guildId,
+      channelId,
+      content: pending.text,
+      messageId,
+      ...(pending.historyId === undefined ? {} : { historyId: pending.historyId }),
+    });
   } catch (error) {
     await failed(errorKind(error));
     return;
