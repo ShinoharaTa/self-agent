@@ -608,15 +608,27 @@ export class CcChannels {
       await this.reply(message, TAKEOVER_SEND_REJECT_TEXT);
       return true;
     }
+    let target = row;
     if (row.state === "ended" && !this.reopenIfListed(row)) {
-      // owner の行を書いたら（Web UI が有効）その id を保留に持つ（[取り込んで続ける] のターンで二重に書かない。書けなければ 0）
-      const ownerRow = this.record(row, "owner", "discord", checked.text, message.id);
-      await this.promptResume(message, checked.text, this.deps.history === undefined ? undefined : (ownerRow ?? 0));
-      this.record(row, "notice", "system", CC_RESUME_PROMPT_TEXT);
-      return true;
+      // 取り込めるかの判定は一覧を読むので、その間に戻って（revived）open になりうる。読み直して、ended のままのときだけ案内を出す
+      const take = await this.takeable(row.channelId);
+      const current = store.get(row.channelId);
+      if (current?.state === "ended") {
+        // owner の行を書いたら（Web UI が有効）その id を保留に持つ（[取り込んで続ける] のターンで二重に書かない。書けなければ 0）
+        const ownerRow = this.record(current, "owner", "discord", checked.text, message.id);
+        await this.promptResume(message, checked.text, this.deps.history === undefined ? undefined : (ownerRow ?? 0), take);
+        this.record(current, "notice", "system", CC_RESUME_PROMPT_TEXT);
+        return true;
+      }
+      if (current?.state === "resuming") {
+        await this.reply(message, CC_RESUMING_REPLY);
+        return true;
+      }
+      if (current === undefined) return true;
+      target = current;
     }
-    if (store.get(row.channelId)?.state !== "open") return true;
-    await this.submitOwner(row, checked.text, message.channelId, message.id);
+    if (store.get(target.channelId)?.state !== "open") return true;
+    await this.submitOwner(target, checked.text, message.channelId, message.id);
     return true;
   }
 
@@ -802,15 +814,19 @@ export class CcChannels {
   }
 
   /**
-   * [取り込んで続ける]（cc:take:resume。T4）: その発言の保留（[起動して続ける] と同じ鍵）を引いて消す。無ければ undefined。
-   * チャンネルが ended でない（[起動して続ける] の起動の途中・開き直した後）なら引かずに undefined（起動の失敗のやり直しに保留を残す）
+   * [取り込んで続ける]（cc:take:resume。T4）: その発言の保留（[起動して続ける] と同じ鍵）を引いて消す。無ければ gone。
+   * [起動して続ける] の起動の途中（resuming）は引かずに resuming（その発言は起動の最初の指示に使っている。失敗のやり直しにも残す）、
+   * ほかの ended でない状態（開き直した後など）は引かずに gone
    */
-  takePending(channelId: string, messageId: string): HeldMessage | undefined {
-    if (this.deps.store.get(channelId)?.state !== "ended") return undefined;
+  takePending(channelId: string, messageId: string): { ok: true; held: HeldMessage } | { ok: false; reason: "resuming" | "gone" } {
+    const state = this.deps.store.get(channelId)?.state;
+    if (state === "resuming") return { ok: false, reason: "resuming" };
+    if (state !== "ended") return { ok: false, reason: "gone" };
     const key = `${channelId}:${messageId}`;
     const pending = this.resumePending.get(key);
-    if (pending !== undefined) this.resumePending.delete(key);
-    return pending;
+    if (pending === undefined) return { ok: false, reason: "gone" };
+    this.resumePending.delete(key);
+    return { ok: true, held: pending };
   }
 
   /** そのチャンネルの取り込みが配線されていて、断られないか（[取り込んで続ける] を出すか。判定が投げたら出さない） */
@@ -831,8 +847,7 @@ export class CcChannels {
   }
 
   /** 終わったチャンネルの発言に [起動して続ける][やめる]（取り込めれば [取り込んで続ける] も）を返信し、本文を保留する（積まない） */
-  private async promptResume(message: IncomingMessage, text: string, historyId: number | undefined): Promise<void> {
-    const take = await this.takeable(message.channelId);
+  private async promptResume(message: IncomingMessage, text: string, historyId: number | undefined, take: boolean): Promise<void> {
     try {
       const promptMessageId = await this.deps.gateway.sendMessage(message.channelId, {
         text: CC_RESUME_PROMPT_TEXT,
