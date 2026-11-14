@@ -1,9 +1,11 @@
 // #inbox のエージェント（右腕）のツールの処理（docs/plan/web-ui-v3.md §4 の M6）。始める（session_open に project・text を足した形）と一覧（topic_list）。
 // 始めるは歯止め（#inbox・#<NAME> だけ・同じ題名・1 日の上限）→ 場所の解決（一覧に無ければ General に落とす）→ startTopic（by right_hand）。
 // 前回からの間隔（cooldown）は見ない。1 ターンに 1 件はツールの側（createTaskTools）で数える。
-// 一覧は GET /api/topics と同じ元（web/routes/topics.ts の createTopicCollector）から短い行だけを返す。log に題名・場所の名前・ID・本文を出さない
+// 一覧は GET /api/topics と同じ元（web/routes/topics.ts の createTopicCollector）から短い行だけを返す。
+// 場所を変える（topic_move。M6e）は話題と場所を解決して確認を出す（app/topic-proposals.ts の propose）だけで、場所は変えない（変えるのはオーナーが [変える] を押したとき）。
+// log に題名・場所の名前・ID・本文を出さない
 import type { RunContext } from "../agent/runner.ts";
-import type { OpenTopic, TopicListResult, TopicOpenResult, TopicToolDeps } from "../agent/tools.ts";
+import type { OpenTopic, TopicListResult, TopicMoveToolResult, TopicOpenResult, TopicToolDeps } from "../agent/tools.ts";
 import { listProjects } from "../cc/starter.ts";
 import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
@@ -21,7 +23,8 @@ import {
 } from "./session-ops.ts";
 import { AUTO_SESSION_LIMIT_MESSAGE, inboxSeed } from "./session-open.ts";
 import { startOfLocalDay } from "./time.ts";
-import { placeLabel } from "./topic-move.ts";
+import { type MovePlace, moveRefusalText, placeLabel } from "./topic-move.ts";
+import type { TopicProposals } from "./topic-proposals.ts";
 import { buildTopics, topicListRows, type TopicsInput } from "./topics.ts";
 
 export const SESSION_OPEN_EXISTING_MESSAGE = "同じ題名の話題が既にあります。新しくは作っていません（text も送っていません）";
@@ -35,6 +38,17 @@ export const TOPIC_LIST_DISABLED_MESSAGE = "Web UI が無効なので、話題�
 export const RIGHT_HAND_UNAVAILABLE_MESSAGE = "今は話題を始められません";
 /** 題名・依頼が空か長すぎた（zod が先に止めるので起きない想定） */
 export const RIGHT_HAND_TOO_LONG_MESSAGE = "題名か依頼が長すぎます";
+export const TOPIC_MOVE_NOT_AVAILABLE = "このチャンネルでは使えません（#inbox か、その話題のチャンネルで使えます）";
+export const TOPIC_MOVE_OWN_ONLY = "このチャンネルからは、この話題の場所だけ変えられます。ほかの話題は #inbox で頼んでもらってください";
+export const TOPIC_MOVE_NEEDS_TOPIC = "topic（topic_list の channel_id）を渡してください";
+export const TOPIC_MOVE_BAD_TOPIC = "topic は topic_list の channel_id で渡してください";
+export const TOPIC_MOVE_BAD_PLACE = "その名前の場所はありません。General か、topic_list の places にある名前で渡してください";
+export const TOPIC_MOVE_PROPOSED = "確認を出しました。オーナーがそのチャンネルで [変える] を押すと変わります（10 分で失効）";
+export const TOPIC_MOVE_ALREADY = "その話題には、まだ答えていない確認があります";
+export const TOPIC_MOVE_POST_FAILED = "確認を出せませんでした";
+
+/** topic_move の topic（数字・<#数字>・ch:数字） */
+const TOPIC_REF_PATTERN = /^(?:<#|ch:)?(\d{1,25})>?$/;
 
 export type RightHandDeps = {
   /** timeZone は 1 日の区切りと一覧の時刻、autoSessionPerDay は 1 日に始められる数（全人格で合算）、personas は足した人格 */
@@ -48,9 +62,15 @@ export type RightHandDeps = {
   start: StartTopicDeps;
   /** 一覧の元（Web が無効なら undefined） */
   collect?: (at: number, done: string | null) => TopicsInput;
+  /** 場所を変える確認（M6e。無ければ topic_move は not_available） */
+  proposals?: Pick<TopicProposals, "propose">;
   now: () => Date;
   log: (message: string) => void;
 };
+
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
 
 /** startTopic が何も作る前に断る結果（場所を General に落とせば通りうるもの） */
 function isPlaceRefusal(result: StartTopicResult): result is { result: "cc_disabled" | "unify_not_ready" | "invalid_project" } {
@@ -62,7 +82,7 @@ function isPlaceRefusal(result: StartTopicResult): result is { result: "cc_disab
  * （作らず text も送らない）、今日 #inbox から始めた数と始めている途中の数の和が上限 → limit。通れば場所を決めて startTopic（by right_hand・seed は #inbox の文脈）。
  * startTopic を layoutQueueKey のキューで包まない（startTopic が中で同じキューを取る）
  */
-export function createRightHand(deps: RightHandDeps): { open: OpenTopic; list: TopicToolDeps["list"] } {
+export function createRightHand(deps: RightHandDeps): { open: OpenTopic; list: TopicToolDeps["list"]; move: TopicToolDeps["move"] } {
   const { cfg, resolveChannel, personas, topicSessions, now, log } = deps;
   /** 始めている途中（上限を確かめた後、startTopic が終わるまで）の数。全サーバー・全人格で 1 つ。
    * 行ができてから終わるまでは DB の件数と両方で数えるので、並べて呼ばれると上限より手前で limit になりうる（超える方には倒れない） */
@@ -179,5 +199,62 @@ export function createRightHand(deps: RightHandDeps): { open: OpenTopic; list: T
     return { result: "ok", 注意: TOPIC_LIST_NOTICE, ...rows, places };
   };
 
-  return { open, list };
+  /**
+   * 場所を変える確認を出す。#inbox・#<NAME> からは topic の話題、セッションのチャンネルからは自分の話題だけ（topic は省略か自分の ID）、ほかは not_available。
+   * 場所は General（大文字小文字を見ない）か場所の一覧にある名前（ちょうど同じ → 小文字で 1 つに決まる）で、どちらでもなければ断る（General に落とさない）
+   */
+  const move: TopicToolDeps["move"] = async (args, context) => {
+    const proposals = deps.proposals;
+    if (proposals === undefined) return { result: "not_available", message: TOPIC_MOVE_NOT_AVAILABLE };
+    const { guildId, channelId } = context;
+    const parsed = args.topic === undefined ? undefined : TOPIC_REF_PATTERN.exec(args.topic.trim())?.[1];
+    let target: string;
+    if (resolveChannel(guildId, channelId) === "inbox") {
+      if (args.topic === undefined) return { result: "invalid_topic", message: TOPIC_MOVE_NEEDS_TOPIC };
+      if (parsed === undefined) return { result: "invalid_topic", message: TOPIC_MOVE_BAD_TOPIC };
+      target = parsed;
+    } else if (topicSessions.get(channelId) !== undefined) {
+      if (args.topic !== undefined && parsed === undefined) return { result: "invalid_topic", message: TOPIC_MOVE_BAD_TOPIC };
+      if (parsed !== undefined && parsed !== channelId) return { result: "not_available", message: TOPIC_MOVE_OWN_ONLY };
+      target = channelId;
+    } else {
+      return { result: "not_available", message: TOPIC_MOVE_NOT_AVAILABLE };
+    }
+    const topic = topicSessions.get(target);
+    if (topic === undefined || topic.guildId !== guildId) {
+      return { result: "refused", reason: "not_session", message: moveRefusalText("not_session") };
+    }
+
+    let place: MovePlace;
+    const name = args.place.trim();
+    if (/^general$/i.test(name)) {
+      place = { kind: "general" };
+    } else {
+      const gate = deps.start.projectSessions;
+      if (gate === undefined || !gate.ready()) return { result: "invalid_place", message: TOPIC_MOVE_BAD_PLACE };
+      const names = listProjects(gate.places);
+      const lower = name.toLowerCase();
+      const matches = names.filter((candidate) => candidate.toLowerCase() === lower);
+      const found = names.includes(name) ? name : matches.length === 1 ? matches[0] : undefined;
+      if (found === undefined) return { result: "invalid_place", message: TOPIC_MOVE_BAD_PLACE };
+      place = { kind: "project", name: found };
+    }
+
+    let proposed: Awaited<ReturnType<TopicProposals["propose"]>>;
+    try {
+      proposed = await proposals.propose({ guildId, channelId: target, place });
+    } catch (error) {
+      log(`場所を変える確認を出せませんでした（${errorName(error)}）`);
+      return { result: "not_available", message: TOPIC_MOVE_POST_FAILED };
+    }
+    const result: TopicMoveToolResult =
+      proposed.result === "proposed"
+        ? { result: "proposed", channelId: proposed.channelId, from: proposed.from, to: proposed.to, message: TOPIC_MOVE_PROPOSED }
+        : proposed.result === "already_proposed"
+          ? { result: "already_proposed", channelId: proposed.channelId, message: TOPIC_MOVE_ALREADY }
+          : { result: "refused", reason: proposed.reason, message: moveRefusalText(proposed.reason) };
+    return result;
+  };
+
+  return { open, list, move };
 }

@@ -17,9 +17,19 @@ import {
   SESSION_OPEN_EXISTING_MESSAGE,
   TOPIC_LIST_DISABLED_MESSAGE,
   TOPIC_LIST_NOTICE,
+  TOPIC_MOVE_ALREADY,
+  TOPIC_MOVE_BAD_PLACE,
+  TOPIC_MOVE_BAD_TOPIC,
+  TOPIC_MOVE_NEEDS_TOPIC,
+  TOPIC_MOVE_NOT_AVAILABLE,
+  TOPIC_MOVE_OWN_ONLY,
+  TOPIC_MOVE_POST_FAILED,
+  TOPIC_MOVE_PROPOSED,
 } from "../src/app/right-hand.ts";
 import { AUTO_SESSION_LIMIT_MESSAGE } from "../src/app/session-open.ts";
 import type { ProjectSessionGate } from "../src/app/session-ops.ts";
+import { moveRefusalText } from "../src/app/topic-move.ts";
+import type { ProposeResult, TopicProposals } from "../src/app/topic-proposals.ts";
 import { buildTopics, type TopicsInput, type TopicSeed } from "../src/app/topics.ts";
 import type { PersonaConfig } from "../src/config.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
@@ -53,6 +63,8 @@ type Options = {
   generalDir?: string;
   /** places の protectedDirs（既定は空） */
   protectedDirs?: (workspace: string) => string[];
+  /** 場所を変える確認（topic_move）。false なら渡さない（既定は偽の propose。結果は proposeNext、無ければ proposed） */
+  proposals?: boolean;
 };
 
 function setup(t: TestContext, options: Options = {}) {
@@ -85,6 +97,16 @@ function setup(t: TestContext, options: Options = {}) {
   };
   const projectSessions = options.cc === false ? {} : { projectSessions: gate };
   const queue = new KeyedSerialQueue(2);
+  const proposeCalls: Array<Parameters<TopicProposals["propose"]>[0]> = [];
+  const proposeNext: Array<ProposeResult | Error> = [];
+  const proposals: Pick<TopicProposals, "propose"> = {
+    propose: async (input) => {
+      proposeCalls.push(input);
+      const next = proposeNext.shift();
+      if (next instanceof Error) throw next;
+      return next ?? { result: "proposed", id: 1, channelId: input.channelId, from: "なし", to: input.place.kind === "general" ? "General" : input.place.name };
+    },
+  };
   const rightHand = createRightHand({
     cfg: { timeZone: "Asia/Tokyo", autoSessionPerDay: options.perDay ?? 3, personas: [LUNA] },
     resolveChannel: (_guildId, channelId) => (channelId === "inbox-1" || channelId === "luna-inbox" ? "inbox" : channelId === "tasks-1" ? "tasks" : "session"),
@@ -92,6 +114,7 @@ function setup(t: TestContext, options: Options = {}) {
     topicSessions,
     start: { gateway, guildSettings, topicSessions, queue, log, history, submitText, seeds, ...projectSessions },
     ...(options.collect === undefined ? {} : { collect: options.collect }),
+    ...(options.proposals === false ? {} : { proposals }),
     now,
     log,
   });
@@ -109,6 +132,8 @@ function setup(t: TestContext, options: Options = {}) {
     log,
     submits,
     next,
+    proposeCalls,
+    proposeNext,
     sessionCount,
     setNow: (at: string) => {
       current = new Date(at);
@@ -473,4 +498,148 @@ test("right hand list: counts が buildTopics の「あなたの番」「作業�
   const notReadyResult = notReady.rightHand.list(INBOX);
   assert.ok(notReadyResult.result === "ok");
   assert.deepEqual(notReadyResult.places, []);
+});
+
+// ---- 場所を変える確認（topic_move。M6e） ----
+
+/** 既定の人格の話題を 1 つ作る（channelId の進行中のセッション） */
+function addTopic(s: ReturnType<typeof setup>, channelId: string, guildId = GUILD): void {
+  s.topicSessions.create({ channelId, guildId, title: "旅行の計画", categoryId: "active-1" });
+}
+const SESSION: RunContext = { guildId: GUILD, channelId: "700", kind: "session" };
+
+test("right hand move: #inbox から topic を渡すと、その話題に propose し、proposed と確認を出した旨を返す", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  const result = await s.rightHand.move({ topic: "700", place: "alpha" }, INBOX);
+  assert.deepEqual(result, { result: "proposed", channelId: "700", from: "なし", to: "alpha", message: TOPIC_MOVE_PROPOSED });
+  assert.deepEqual(s.proposeCalls, [{ guildId: GUILD, channelId: "700", place: { kind: "project", name: "alpha" } }]);
+  // 人格の入口からも同じ
+  const persona = await s.rightHand.move({ topic: "700", place: "alpha" }, LUNA_INBOX);
+  assert.equal(persona.result, "proposed");
+});
+
+test("right hand move: #inbox から topic を省くと invalid_topic で、propose しない", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  assert.deepEqual(await s.rightHand.move({ place: "alpha" }, INBOX), { result: "invalid_topic", message: TOPIC_MOVE_NEEDS_TOPIC });
+  // 読めない形も invalid_topic
+  for (const topic of ["abc", "#700", "ch-700", "<@700>", ""]) {
+    assert.deepEqual(await s.rightHand.move({ topic, place: "alpha" }, INBOX), { result: "invalid_topic", message: TOPIC_MOVE_BAD_TOPIC }, topic);
+  }
+  assert.equal(s.proposeCalls.length, 0);
+});
+
+test("right hand move: topic は数字・<#数字>・ch:数字 のどれでも同じ話題になる", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  for (const topic of ["700", "<#700>", "ch:700"]) {
+    assert.equal((await s.rightHand.move({ topic, place: "General" }, INBOX)).result, "proposed", topic);
+  }
+  assert.deepEqual(
+    s.proposeCalls.map((call) => call.channelId),
+    ["700", "700", "700"],
+  );
+});
+
+test("right hand move: セッションのチャンネルから topic を省く（自分の ID を渡す）と、自分の話題に propose する", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  assert.equal((await s.rightHand.move({ place: "alpha" }, SESSION)).result, "proposed");
+  assert.equal((await s.rightHand.move({ topic: "<#700>", place: "alpha" }, SESSION)).result, "proposed");
+  assert.deepEqual(
+    s.proposeCalls.map((call) => call.channelId),
+    ["700", "700"],
+  );
+});
+
+test("right hand move: セッションのチャンネルからほかの話題を指すと not_available で、propose しない", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  addTopic(s, "701");
+  assert.deepEqual(await s.rightHand.move({ topic: "701", place: "alpha" }, SESSION), { result: "not_available", message: TOPIC_MOVE_OWN_ONLY });
+  assert.equal(s.proposeCalls.length, 0);
+});
+
+test("right hand move: #tasks・話題でないチャンネルから呼ぶと not_available。proposals が無ければどこからでも not_available", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  const tasks: RunContext = { guildId: GUILD, channelId: "tasks-1", kind: "tasks" };
+  assert.deepEqual(await s.rightHand.move({ topic: "700", place: "alpha" }, tasks), { result: "not_available", message: TOPIC_MOVE_NOT_AVAILABLE });
+  const other: RunContext = { guildId: GUILD, channelId: "999", kind: "session" };
+  assert.deepEqual(await s.rightHand.move({ place: "alpha" }, other), { result: "not_available", message: TOPIC_MOVE_NOT_AVAILABLE });
+  assert.equal(s.proposeCalls.length, 0);
+
+  const off = setup(t, { proposals: false });
+  addTopic(off, "700");
+  assert.deepEqual(await off.rightHand.move({ topic: "700", place: "alpha" }, INBOX), { result: "not_available", message: TOPIC_MOVE_NOT_AVAILABLE });
+});
+
+test("right hand move: place が General（大文字小文字を問わない）なら general。プロジェクトの名前は大文字小文字が違っても 1 つに決まればその名前", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  for (const place of ["General", "general", "GENERAL"]) await s.rightHand.move({ topic: "700", place }, INBOX);
+  await s.rightHand.move({ topic: "700", place: "ALPHA" }, INBOX);
+  await s.rightHand.move({ topic: "700", place: "Beta" }, INBOX);
+  assert.deepEqual(
+    s.proposeCalls.map((call) => call.place),
+    [{ kind: "general" }, { kind: "general" }, { kind: "general" }, { kind: "project", name: "alpha" }, { kind: "project", name: "Beta" }],
+  );
+});
+
+test("right hand move: place が一覧に無い名前・2 つに当たる名前・プロジェクトのセッションを使えないときは invalid_place で、General に落とさない", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  for (const place of ["gamma", "BETA", "../alpha", "General の外"]) {
+    assert.deepEqual(await s.rightHand.move({ topic: "700", place }, INBOX), { result: "invalid_place", message: TOPIC_MOVE_BAD_PLACE }, place);
+  }
+  s.ready.value = false;
+  assert.deepEqual(await s.rightHand.move({ topic: "700", place: "alpha" }, INBOX), { result: "invalid_place", message: TOPIC_MOVE_BAD_PLACE });
+  const off = setup(t, { cc: false });
+  addTopic(off, "700");
+  assert.deepEqual(await off.rightHand.move({ topic: "700", place: "alpha" }, INBOX), { result: "invalid_place", message: TOPIC_MOVE_BAD_PLACE });
+  assert.equal(s.proposeCalls.length, 0);
+  assert.equal(off.proposeCalls.length, 0);
+});
+
+test("right hand move: 別のサーバーの話題・無い ID は refused（not_session）で、propose しない", async (t) => {
+  const s = setup(t);
+  addTopic(s, "800", "guild-2");
+  for (const topic of ["800", "12345"]) {
+    assert.deepEqual(
+      await s.rightHand.move({ topic, place: "alpha" }, INBOX),
+      { result: "refused", reason: "not_session", message: moveRefusalText("not_session") },
+      topic,
+    );
+  }
+  assert.equal(s.proposeCalls.length, 0);
+});
+
+test("right hand move: propose の already_proposed・refused はそのまま文を付けて返す", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  s.proposeNext.push({ result: "already_proposed", channelId: "700" }, { result: "refused", reason: "same_place" });
+  assert.deepEqual(await s.rightHand.move({ topic: "700", place: "alpha" }, INBOX), {
+    result: "already_proposed",
+    channelId: "700",
+    message: TOPIC_MOVE_ALREADY,
+  });
+  assert.deepEqual(await s.rightHand.move({ topic: "700", place: "alpha" }, INBOX), {
+    result: "refused",
+    reason: "same_place",
+    message: moveRefusalText("same_place"),
+  });
+});
+
+test("right hand move: propose が例外を出すと not_available で、log に ID・場所の名前が出ない", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  s.proposeNext.push(new TypeError("sendMessage failed 700 alpha"));
+  assert.deepEqual(await s.rightHand.move({ topic: "700", place: "alpha" }, INBOX), { result: "not_available", message: TOPIC_MOVE_POST_FAILED });
+  assert.ok(s.logs.length > 0);
+  for (const line of s.logs) {
+    assert.equal(line.includes("700"), false, line);
+    assert.equal(line.includes("alpha"), false, line);
+    assert.equal(line.includes("inbox-1"), false, line);
+  }
 });

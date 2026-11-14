@@ -10,7 +10,8 @@ import { createHandler, type RunningTurn, type SubmitTextResult, WEB_ECHO_PREFIX
 import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { welcomeText } from "../src/app/session-ops.ts";
-import { MOVE_FAILED_TEXT, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
+import { MOVE_FAILED_TEXT, type MoveDeps, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
+import { createTopicProposals } from "../src/app/topic-proposals.ts";
 import type { Topic, TopicsResult } from "../src/app/topics.ts";
 import { buildTopics } from "../src/app/topics.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
@@ -89,7 +90,8 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * S4（alpha・判断待ちで hook の許可も pending）。/setup 前のサーバーのチャンネル 303 は S7。
  * allowed で cfg.allowedGuildIds を、at でルートの今の時刻を差し替える。registry.unreadable と snapshotSessions は後から変えられる。
  * move で場所の付け替えの配線を渡す（"cc" は連携あり、"noCc" は連携なし）。要点のターンは moveSteps の順に偽の runner が返し、結果の投稿は posts に入る。
- * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる
+ * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる。
+ * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose で足し、期限の判定は proposalClock の時刻
  */
 async function setup(
   t: TestContext,
@@ -101,6 +103,7 @@ async function setup(
     general?: boolean;
     move?: "cc" | "noCc";
     moveSteps?: FakeRunStep[];
+    proposals?: boolean;
   } = {},
 ) {
   const db = tempDb(t);
@@ -237,6 +240,32 @@ async function setup(
           },
           log,
         };
+  // 右腕の場所を変える確認（proposals のときだけ。投稿はしないので ownerPosts は使われない）
+  const proposalClock = { at: NOW };
+  const proposalMove: MoveDeps = {
+    topicSessions,
+    moves,
+    turnQueue,
+    turn: { runner: moveRunner, projectRunner: moveRunner, sessions, seeds: stores.seeds, usage: stores.usage, log },
+    runningTurns: () => handler.runningTurns(),
+    projectSessions: { places, ready: () => true },
+    history,
+    log,
+  };
+  const proposals =
+    options.proposals === true
+      ? createTopicProposals({
+          move: proposalMove,
+          moves,
+          ownerPosts: {
+            send: async () => undefined,
+            sendMessage: async () => "card-1",
+            editMessage: async () => undefined,
+          },
+          now: () => proposalClock.at,
+          log,
+        })
+      : undefined;
   /** 結果の投稿が count 通になるまで待つ */
   const waitPosts = (count: number): Promise<void> =>
     posts.length >= count ? Promise.resolve() : new Promise((resolve) => postWaiters.push({ count, resolve }));
@@ -254,6 +283,7 @@ async function setup(
     home: "/home/owner",
     projectPermissions: { store: sdkStore, sessions, holdSec: 300, questionHoldSec: 900 },
     ...(move === undefined ? {} : { move }),
+    ...(proposals === undefined ? {} : { proposals }),
     ...(options.cc === true
       ? { cc: { registry, channels: ccStore, permissions, sends, starts, holdSec: 300, questionHoldSec: 900 } }
       : {}),
@@ -293,6 +323,7 @@ async function setup(
     logs,
     topicCalls,
     turnQueue,
+    proposalClock,
   };
 }
 
@@ -1176,4 +1207,50 @@ test("createTopicCollector: 同じ依存で集めて buildTopics した物が GE
   const fromCollector = JSON.parse(JSON.stringify(buildTopics(createTopicCollector(deps)(NOW.getTime(), null)))) as TopicsResult;
   assert.deepEqual(fromCollector, fromRoute);
   assert.ok(fromRoute.topics.length >= 4);
+});
+
+// ---- 右腕の場所を変える確認（M6e） ----
+
+test("GET /api/topics: 右腕の確認のある話題に kind が confirm のあなたの番が付き、summary に行き先の名前、expiresAt に 10 分後が入る", async (t) => {
+  const s = await setup(t, { cc: true, proposals: true });
+  s.moves.propose({ channelId: "204", fromDir: null, toDir: "alpha", by: "right_hand" });
+  const result = await topics(s.server);
+  assert.deepEqual(byId(result, "ch:204")!.turn, {
+    kind: "confirm",
+    summary: "場所を alpha に変える確認",
+    since: NOW.toISOString(),
+    expiresAt: new Date(NOW.getTime() + 10 * 60_000).toISOString(),
+  });
+  assert.ok(result.turnIds.includes("ch:204"));
+  // cc の確認待ち（7）に 1 つ足される
+  assert.equal(result.turns, 8);
+});
+
+test("GET /api/topics: 右腕の確認は cc が無くても付く", async (t) => {
+  const s = await setup(t, { proposals: true });
+  s.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  const result = await topics(s.server);
+  assert.equal(result.cc.enabled, false);
+  assert.equal(byId(result, "ch:200")!.turn?.kind, "confirm");
+  assert.equal(byId(result, "ch:200")!.turn?.summary, "場所を beta に変える確認");
+  // 右腕（#inbox）には付かない
+  assert.equal(result.rightHands[0]!.turn, null);
+});
+
+test("GET /api/topics: 期限の切れた右腕の確認は付かない", async (t) => {
+  const s = await setup(t, { proposals: true, at: new Date(NOW.getTime() + 10 * 60_000) });
+  s.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  s.proposalClock.at = new Date(NOW.getTime() + 10 * 60_000);
+  const result = await topics(s.server);
+  assert.equal(byId(result, "ch:200")!.turn, null);
+  assert.equal(result.turnIds.includes("ch:200"), false);
+});
+
+test("GET /api/topics: proposals を渡さなければ、確認の行があっても今までと同じ結果", async (t) => {
+  const plain = await setup(t);
+  const before = await topics(plain.server);
+  plain.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  const after = await topics(plain.server);
+  assert.deepEqual(after, before);
+  assert.equal(byId(after, "ch:200")!.turn, null);
 });
