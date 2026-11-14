@@ -4,6 +4,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CC_TAKE_POSTED_REPLY, CC_TAKE_STALE_REPLY, createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
 import { CC_CHANNEL_ENDED_TEXT, CcChannels, ccEndedHandler, ccReplayEnded } from "../src/cc/channels.ts";
 import { projectDirName } from "../src/cc/claude-dirs.ts";
 import type { PaneLookup } from "../src/cc/panes.ts";
@@ -11,6 +12,8 @@ import type { CcSessionView } from "../src/cc/registry.ts";
 import {
   CcTakeover,
   type CcTakeoverDeps,
+  CcTakeoverExpirer,
+  TAKEOVER_EXPIRE_SWEEP_MS,
   TAKEOVER_CONFIRM_TTL_MS,
   TAKEOVER_DELETE_PROMPT_TEXT,
   TAKEOVER_DROPPED_TEXT,
@@ -31,7 +34,9 @@ import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { HistoryStore } from "../src/store/history.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
 import { tempDb, tempDir } from "./helpers/db.ts";
+import { FakeResponder } from "./helpers/responder.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
 
@@ -344,7 +349,7 @@ test("待機のセッション: SIGTERM をその pid に 1 回だけ送り、�
   );
   s.takeovers.setConfirmMessage(proposed.id, "msg-confirm");
   const result = await s.takeover.confirm(proposed.id);
-  assert.deepEqual(result, { ok: true, text: takeoverDoneText("alpha", false) });
+  assert.deepEqual(result, { ok: true, text: takeoverDoneText("alpha", false), edited: true });
   assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
   const session = s.topicSessions.get("chan-1");
   assert.deepEqual(s.topicSessions.projectDirOf("chan-1"), { projectDir: "alpha", permissionMode: "default" });
@@ -418,7 +423,7 @@ test("確認の後に一覧が読めなくなった: [取り込む] は list_fai
   s.takeovers.setConfirmMessage(proposed.id, "msg-confirm");
   s.list.stale = true;
   const result = await s.takeover.confirm(proposed.id);
-  assert.deepEqual(result, { ok: false, reason: "list_failed", text: takeoverFailureText("list_failed", false) });
+  assert.deepEqual(result, { ok: false, reason: "list_failed", text: takeoverFailureText("list_failed", false), edited: true });
   assert.equal(s.takeovers.get(proposed.id)?.state, "failed");
   assert.equal(s.takeovers.get(proposed.id)?.failure, "list_failed");
   assert.deepEqual(s.gateway.edits, [{ channelId: "chan-1", messageId: "msg-confirm", message: { text: takeoverFailureText("list_failed", false), components: [] } }]);
@@ -483,7 +488,7 @@ for (const [name, breakIt] of [
       if (ms === 2000) breakIt(s);
     };
     const { id, result } = await s.proposeAndConfirm();
-    assert.deepEqual(result, { ok: false, reason: "identity", text: takeoverFailureText("identity", false) });
+    assert.deepEqual(result, { ok: false, reason: "identity", text: takeoverFailureText("identity", false), edited: true });
     assert.equal(s.takeovers.get(id)?.failure, "identity");
     assert.deepEqual(s.kills, []);
     assertUntouched(s);
@@ -504,7 +509,7 @@ test("進行中のカテゴリを用意できない: no_category で kill しな
   const s = setup(t);
   s.env.categoryFails = true;
   const { result } = await s.proposeAndConfirm();
-  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false) });
+  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false), edited: true });
   assert.deepEqual(s.queue.keys.length, 1);
   assert.deepEqual(s.kills, []);
   // ended が来る前の失敗では流し直さない
@@ -516,7 +521,7 @@ test("kill の後に pid が消えない: not_exited（後ろの文は足さな�
   const s = setup(t);
   s.env.exits = false;
   const { id, result } = await s.proposeAndConfirm();
-  assert.deepEqual(result, { ok: false, reason: "not_exited", text: takeoverFailureText("not_exited", true) });
+  assert.deepEqual(result, { ok: false, reason: "not_exited", text: takeoverFailureText("not_exited", true), edited: true });
   assert.doesNotMatch(!result.ok && "text" in result ? result.text : "", new RegExp(TAKEOVER_AFTER_TERM_TEXT));
   assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
   assert.equal(s.takeovers.get(id)?.state, "failed");
@@ -543,7 +548,7 @@ test("running の間の ended は差し止め（ended_held = 1）、写しに失
   assert.deepEqual(callsAtCopy, { channels: 0, replier: 0 });
   assert.equal(!result.ok && result.reason, "copy_failed");
   // SIGTERM を送った後の失敗なので、終わった会話から取り込める旨を足す
-  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true) });
+  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true), edited: true });
   assert.deepEqual(s.calls, { channels: 1, replier: 1 });
   assert.equal(s.takeovers.get(id)?.endedHeld, false);
   // 普通の ended のチャンネルになる
@@ -632,6 +637,33 @@ test("recover: running・ended_held = 1 は failed（restart）で 2 つを 1 �
   assertQuietLogs(s);
 });
 
+test("recoverRunning（前段）だけで running は failed（restart）になり holds は false。確認の文の書き換えと ended の流し直しは recoverEffects（後段）で 1 回", async (t) => {
+  const s = setup(t);
+  const proposed = await s.takeover.propose({ channelId: "chan-1", entry: "discord" });
+  assert.ok(proposed.ok);
+  s.takeovers.setConfirmMessage(proposed.id, "msg-confirm");
+  s.takeovers.start(proposed.id);
+  s.takeovers.hold(proposed.id);
+  assert.equal(s.takeover.holds(S1), true);
+  const edits = s.gateway.edits.length;
+  s.takeover.recoverRunning();
+  assert.equal(s.takeover.holds(S1), false);
+  assert.equal(s.takeover.holdsChannel("chan-1"), false);
+  assert.equal(s.takeovers.get(proposed.id)?.failure, "restart");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(s.gateway.edits.length, edits);
+  assert.deepEqual(s.calls, { channels: 0, replier: 0 });
+  await s.takeover.recoverEffects();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(s.gateway.edits.slice(edits).map((edit) => edit.messageId), ["msg-confirm"]);
+  assert.deepEqual(s.calls, { channels: 1, replier: 1 });
+  await s.takeover.recoverEffects();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(s.gateway.edits.length, edits + 1);
+  assert.deepEqual(s.calls, { channels: 1, replier: 1 });
+  assertQuietLogs(s);
+});
+
 test("holds・holdsChannel は running の行だけを見る", async (t) => {
   const s = setup(t);
   const proposed = await s.takeover.propose({ channelId: "chan-1", entry: "discord" });
@@ -691,7 +723,7 @@ test("confirm: 10 分を過ぎた確認は expired（取り消して書き換え
   assert.ok(proposed.ok);
   s.takeovers.setConfirmMessage(proposed.id, "msg-confirm");
   s.clock.now += TAKEOVER_CONFIRM_TTL_MS;
-  assert.deepEqual(await s.takeover.confirm(proposed.id), { ok: false, reason: "expired" });
+  assert.deepEqual(await s.takeover.confirm(proposed.id), { ok: false, reason: "expired", text: TAKEOVER_EXPIRED_TEXT, edited: true });
   assert.equal(s.takeovers.get(proposed.id)?.state, "cancelled");
   assert.deepEqual(s.gateway.edits.at(-1), { channelId: "chan-1", messageId: "msg-confirm", message: { text: TAKEOVER_EXPIRED_TEXT, components: [] } });
   assert.deepEqual(await s.takeover.confirm(proposed.id), { ok: false, reason: "stale" });
@@ -710,6 +742,182 @@ test("confirm: 10 分を過ぎた確認は expired（取り消して書き換え
   assert.equal(s.takeover.cancel(third.id), true);
   assert.equal(s.takeover.cancel(third.id), false);
   assert.deepEqual(await s.takeover.confirm(third.id), { ok: false, reason: "stale" });
+});
+
+/** /cc take と [取り込む][やめる]（commands/cc.ts）を本物の CcTakeover につなぐ（T3b） */
+function entry(s: Setup) {
+  const getter = () => ({ takeover: s.takeover, takeovers: s.takeovers, gateway: s.gateway, ownerUserId: "owner-1" });
+  const command = createCcCommand({ ccChannels: () => undefined, guildSettings: { ccCategoryId: () => "cat-cc" }, ccTakeover: getter, log: () => {} });
+  const component = createCcComponent({ ccTakeover: getter, gateway: s.gateway, log: () => {} });
+  const base = { guildId: "guild-1", channelId: "chan-1", userId: "owner-1", createdAt: new Date(BASE) };
+  const take = async (): Promise<FakeResponder> => {
+    const responder = new FakeResponder();
+    await command.handle({ ...base, kind: "command", name: "cc", subcommand: "take", options: {} }, responder);
+    return responder;
+  };
+  const press = async (action: "go" | "no", id: number): Promise<FakeResponder> => {
+    const responder = new FakeResponder();
+    const interaction: Interaction = { ...base, kind: "button", customId: `cc:take:${action}:${id}` };
+    await component.handle(interaction, responder);
+    return responder;
+  };
+  return { take, press };
+}
+
+test("/cc take → [取り込む]（T3b）: 確認の文をチャンネルに出して記録し、押すと取り込んで確認の文を完了の文に書き換える", async (t) => {
+  const s = setup(t);
+  const { take, press } = entry(s);
+  const taken = await take();
+  assert.deepEqual(taken.replies, [{ text: CC_TAKE_POSTED_REPLY, ephemeral: true }]);
+  const posted = s.gateway.posts.at(-1)!;
+  assert.equal(posted.channelId, "chan-1");
+  const row = s.takeovers.activeFor(S1)!;
+  assert.equal(row.confirmMessageId, posted.messageId);
+  assert.equal(row.entry, "discord");
+  const go = await press("go", row.id);
+  assert.deepEqual(go.calls, [{ method: "deferUpdate" }]);
+  assert.equal(s.takeovers.get(row.id)?.state, "done");
+  assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  assert.deepEqual(s.gateway.edits.find((edit) => edit.messageId === posted.messageId)?.message, { text: takeoverDoneText("alpha", false), components: [] });
+  // 押し直しは何も起こさない
+  const again = await press("go", row.id);
+  assert.deepEqual(again.replies, [{ text: CC_TAKE_STALE_REPLY, ephemeral: true }]);
+  assert.equal(s.kills.length, 1);
+  assertQuietLogs(s);
+});
+
+test("10 分後の [取り込む] は使えない（T3b）: 押せば期限切れに書き換えて kill しない。失効の後・[やめる] の後は本人にだけ断る", async (t) => {
+  const s = setup(t);
+  const { take, press } = entry(s);
+  await take();
+  const first = s.takeovers.activeFor(S1)!;
+  s.clock.now += TAKEOVER_CONFIRM_TTL_MS;
+  const late = await press("go", first.id);
+  assert.deepEqual(late.calls, [{ method: "deferUpdate" }]);
+  assert.equal(s.takeovers.get(first.id)?.state, "cancelled");
+  assert.deepEqual(s.gateway.edits.at(-1), { channelId: "chan-1", messageId: first.confirmMessageId, message: { text: TAKEOVER_EXPIRED_TEXT, components: [] } });
+  assert.deepEqual(s.kills, []);
+
+  // 1 分ごとの失効で取り消された後の [取り込む]・[やめる]
+  await take();
+  const second = s.takeovers.activeFor(S1)!;
+  s.clock.now += TAKEOVER_CONFIRM_TTL_MS;
+  let scheduled: Array<{ fn: () => void; ms: number }> = [];
+  const expirer = new CcTakeoverExpirer({
+    takeover: s.takeover,
+    log: () => {},
+    timers: {
+      after: (fn, ms) => {
+        scheduled.push({ fn, ms });
+        return () => {
+          scheduled = scheduled.filter((entry) => entry.fn !== fn);
+        };
+      },
+    },
+  });
+  expirer.start();
+  await expirer.idle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(s.takeovers.get(second.id)?.state, "cancelled");
+  assert.deepEqual(scheduled.map((entry) => entry.ms), [TAKEOVER_EXPIRE_SWEEP_MS]);
+  expirer.stop();
+  assert.deepEqual(scheduled, []);
+  for (const action of ["go", "no"] as const) {
+    const responder = await press(action, second.id);
+    assert.deepEqual(responder.calls, [{ method: "reply", message: { text: CC_TAKE_STALE_REPLY, ephemeral: true } }], action);
+  }
+  assert.deepEqual(s.kills, []);
+});
+
+test("[取り込む] の確認の文を書き換えられなかった: 押された 1 通を完了の文に書き換えてボタンを外す（それも失敗したら log だけ）", async (t) => {
+  const s = setup(t);
+  const { take, press } = entry(s);
+  await take();
+  const row = s.takeovers.activeFor(S1)!;
+  s.gateway.beforeEdit = () => {
+    throw new Error("書き換えられない");
+  };
+  const go = await press("go", row.id);
+  assert.equal(s.takeovers.get(row.id)?.state, "done");
+  assert.deepEqual(go.calls, [{ method: "deferUpdate" }, { method: "update", message: { text: takeoverDoneText("alpha", false), components: [] } }]);
+
+  // 失敗（no_category）で、応答の側の書き換えも失敗する
+  const s2 = setup(t);
+  const e2 = entry(s2);
+  await e2.take();
+  const row2 = s2.takeovers.activeFor(S1)!;
+  s2.env.categoryFails = true;
+  s2.gateway.beforeEdit = () => {
+    throw new Error("書き換えられない");
+  };
+  const responder = new FakeResponder();
+  responder.beforeUpdate = () => {
+    throw new Error("応答できない");
+  };
+  const component = createCcComponent({
+    ccTakeover: () => ({ takeover: s2.takeover, takeovers: s2.takeovers, gateway: s2.gateway, ownerUserId: "owner-1" }),
+    gateway: s2.gateway,
+    log: (line) => void s2.logs.push(line),
+  });
+  await component.handle({ kind: "button", customId: `cc:take:go:${row2.id}`, guildId: "guild-1", channelId: "chan-1", userId: "owner-1", createdAt: new Date(BASE) }, responder);
+  assert.equal(s2.takeovers.get(row2.id)?.state, "failed");
+  assert.deepEqual(responder.calls, [{ method: "deferUpdate" }]);
+  assert.ok(s2.logs.some((line) => line.includes(`取り込みの結果を確認の文に出せませんでした（#${row2.id}、Error）`)));
+  assert.deepEqual(s2.kills, []);
+  assertQuietLogs(s2);
+});
+
+test("[取り込む] の同時の二度押し: kill は 1 回、2 つ目は本人にだけ「この確認はもう使えません。」", async (t) => {
+  const s = setup(t);
+  const { take, press } = entry(s);
+  await take();
+  const row = s.takeovers.activeFor(S1)!;
+  const [first, second] = await Promise.all([press("go", row.id), press("go", row.id)]);
+  assert.equal(s.takeovers.get(row.id)?.state, "done");
+  assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  assert.deepEqual(first.calls, [{ method: "deferUpdate" }]);
+  assert.deepEqual(second.calls, [{ method: "deferUpdate" }, { method: "reply", message: { text: CC_TAKE_STALE_REPLY, ephemeral: true } }]);
+});
+
+test("cc:take の形の違う custom_id（id が数でない・部品が多い）は投げる", async (t) => {
+  const s = setup(t);
+  const component = createCcComponent({
+    ccTakeover: () => ({ takeover: s.takeover, takeovers: s.takeovers, gateway: s.gateway, ownerUserId: "owner-1" }),
+    gateway: s.gateway,
+    log: () => {},
+  });
+  for (const customId of ["cc:take:go:abc", "cc:take:go:1:2"]) {
+    await assert.rejects(
+      component.handle({ kind: "button", customId, guildId: "guild-1", channelId: "chan-1", userId: "owner-1", createdAt: new Date(BASE) }, new FakeResponder()),
+      customId,
+    );
+  }
+  assert.deepEqual(s.kills, []);
+});
+
+test("CcTakeoverExpirer: expire が投げても sweep は reject せず log だけ。stop の後は start しない", async () => {
+  const logs: string[] = [];
+  const expirer = new CcTakeoverExpirer({
+    takeover: { expire: async () => Promise.reject(new TypeError("chan-1 の行を読めない")) },
+    log: (line) => void logs.push(line),
+    timers: { after: () => () => {} },
+  });
+  await expirer.sweep();
+  assert.deepEqual(logs, ["Claude Code: 取り込みの確認の失効を確かめられませんでした（TypeError）"]);
+  let calls = 0;
+  const stopped = new CcTakeoverExpirer({
+    takeover: {
+      expire: async () => {
+        calls++;
+        return 0;
+      },
+    },
+    log: () => {},
+  });
+  stopped.stop();
+  stopped.start();
+  await stopped.idle();
+  assert.equal(calls, 0);
 });
 
 test("noteFor・noteDone・resumeDropped（§3.6.1・§3.6.3）", async (t) => {
@@ -801,7 +1009,7 @@ test("commit の途中の例外（sessions の INSERT が投げる）: 全部巻
     },
   });
   const { id, result } = await s.proposeAndConfirm(takeover);
-  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true) });
+  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true), edited: true });
   assert.equal(s.kills.length, 1);
   assert.equal(s.takeovers.get(id)?.state, "failed");
   assert.equal(s.takeovers.get(id)?.notePending, false);
@@ -823,7 +1031,7 @@ test("failed() の中の fail が投げても confirm は reject せず、確認
   };
   const takeover = s.make({ takeovers: store });
   const { id, result } = await s.proposeAndConfirm(takeover);
-  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false) });
+  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false), edited: true });
   assert.deepEqual(s.gateway.edits, [{ channelId: "chan-1", messageId: "msg-confirm", message: { text: takeoverFailureText("no_category", false), components: [] } }]);
   // running のまま残り、次の recover が restart にする
   assert.equal(s.takeovers.get(id)?.state, "running");
@@ -928,7 +1136,7 @@ test("kill が ESRCH（直前に自分で終わった）なら changed、ほか�
         },
       });
       const { result } = await s.proposeAndConfirm(takeover);
-      assert.deepEqual(result, { ok: false, reason: expected, text: takeoverFailureText(expected, false) });
+      assert.deepEqual(result, { ok: false, reason: expected, text: takeoverFailureText(expected, false), edited: true });
       assertUntouched(s);
     });
   }
@@ -944,7 +1152,7 @@ test("SIGTERM より前の例外は internal（端末はそのまま）", async 
     },
   });
   const { id, result } = await s.proposeAndConfirm(takeover);
-  assert.deepEqual(result, { ok: false, reason: "internal", text: takeoverFailureText("internal", false) });
+  assert.deepEqual(result, { ok: false, reason: "internal", text: takeoverFailureText("internal", false), edited: true });
   assert.equal(s.takeovers.get(id)?.failure, "internal");
   assert.deepEqual(s.kills, []);
   assertQuietLogs(s);
@@ -954,7 +1162,7 @@ test("進行中のカテゴリの解決が期限（15 秒）を過ぎた: no_cat
   const s = setup(t);
   s.env.categoryHangs = true;
   const { result } = await s.proposeAndConfirm();
-  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false) });
+  assert.deepEqual(result, { ok: false, reason: "no_category", text: takeoverFailureText("no_category", false), edited: true });
   assert.deepEqual(s.kills, []);
   assertUntouched(s);
 });

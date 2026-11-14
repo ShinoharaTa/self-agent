@@ -4,13 +4,13 @@
 // → 後始末（進行中へ移す・topic・完了の文など。失敗しても done）。
 // running の間は ended の知らせを差し止め（intercept。§3.2）、失敗したら流し直す。送信とチャンネルの操作は holds・holdsChannel で断る（sender.ts・channels.ts）。
 // 再起動の後は recover（running を failed（restart）にし、差し止めた ended を流し直し、後始末の残りの移動と topic をやり直す）。
-// 部品はすべて注入（kill・/proc の読み取り・sleep も）。T2 では main に配線しない。
+// 部品はすべて注入（kill・/proc の読み取り・sleep も）。main は SELF_AGENT_CC=1 のときだけ組み立てる（T3b。入口は commands/cc.ts の /cc take）。
 // log は理由の符号・段・取り込みの番号・サーバー ID だけ（session_id・pid・cwd・名前・パス・本文は出さない）
 import type { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ChannelOpsQueue } from "../app/channel-ops.ts";
-import { CC_CONFIRM_TTL_MS } from "../app/commands/cc-confirm.ts";
+import { CC_CONFIRM_SWEEP_MS, CC_CONFIRM_TTL_MS } from "../app/commands/cc-confirm.ts";
 import { layoutQueueKey } from "../app/commands/setup.ts";
 import type { KeyedSerialQueue } from "../app/queue.ts";
 import { sessionTopic, type ProjectSessionCheck } from "../app/session-ops.ts";
@@ -31,7 +31,7 @@ import type { ProbeResult } from "../tmux/pane-state.ts";
 import { resumeProject } from "./channels.ts";
 import type { ClaudeDirs } from "./claude-dirs.ts";
 import type { CcPaneResolver } from "./panes.ts";
-import type { CcRegistry, CcSessionView } from "./registry.ts";
+import type { CcRegistry, CcSessionView, CcTimers } from "./registry.ts";
 import { normalizeTitle } from "./starter.ts";
 import { copyTranscript, inspectSource, prepareTarget, readAppended, takeoverPaths } from "./takeover-files.ts";
 import {
@@ -54,6 +54,8 @@ import {
 
 /** 確認の有効な長さ（cc_send の確認と同じ 10 分。§3.5） */
 export const TAKEOVER_CONFIRM_TTL_MS = CC_CONFIRM_TTL_MS;
+/** 確認の失効を確かめる間隔（1 分。cc_send の確認と同じ） */
+export const TAKEOVER_EXPIRE_SWEEP_MS = CC_CONFIRM_SWEEP_MS;
 /** [取り込む]（`cc:take:go:<id>`）・[やめる]（`cc:take:no:<id>`）の custom_id の頭（§3.5） */
 export const TAKEOVER_GO_PREFIX = "cc:take:go";
 export const TAKEOVER_NO_PREFIX = "cc:take:no";
@@ -210,11 +212,15 @@ export type CcTakeoverProposeResult =
   | { ok: true; id: number; message: OutgoingMessage }
   | { ok: false; reason: TakeoverFailure | "not_channel"; text: string };
 
-/** confirm の結果。stale = 確認待ちでない、expired = 10 分を過ぎた（取り消した） */
+/**
+ * confirm の結果。stale = 確認待ちでない、expired = 10 分を過ぎた（取り消した）。
+ * edited は確認の文を text に書き換えられたか（false なら呼び出し側が押された 1 通を text に書き換えてボタンを外す）
+ */
 export type CcTakeoverConfirmResult =
-  | { ok: true; text: string }
-  | { ok: false; reason: "stale" | "expired" }
-  | { ok: false; reason: TakeoverFailure; text: string };
+  | { ok: true; text: string; edited: boolean }
+  | { ok: false; reason: "stale" }
+  | { ok: false; reason: "expired"; text: string; edited: boolean }
+  | { ok: false; reason: TakeoverFailure; text: string; edited: boolean };
 
 /** 条件を見た結果（§3.2・§3.4） */
 type Assessed =
@@ -233,6 +239,8 @@ export class CcTakeover {
   private readonly files: TakeoverFiles;
   /** resumeDropped を知らせた取り込み（1 回だけ。プロセスの中だけ） */
   private readonly droppedNoticed = new Set<number>();
+  /** 起動時の前段（recoverRunning）が失敗にし、後段（recoverEffects）で確認の文を書き換える行 */
+  private readonly resetPending: CcTakeoverRow[] = [];
 
   constructor(deps: CcTakeoverDeps) {
     this.deps = deps;
@@ -287,8 +295,8 @@ export class CcTakeover {
     if (now().getTime() - Date.parse(row.createdAt) >= TAKEOVER_CONFIRM_TTL_MS) {
       if (!takeovers.cancel(id)) return { ok: false, reason: "stale" };
       log(`Claude Code: 取り込みの確認の期限が過ぎていました（#${id}、guild=${row.guildId}）`);
-      await this.editConfirm(id, { text: TAKEOVER_EXPIRED_TEXT, components: [] });
-      return { ok: false, reason: "expired" };
+      const edited = await this.editConfirm(id, { text: TAKEOVER_EXPIRED_TEXT, components: [] });
+      return { ok: false, reason: "expired", text: TAKEOVER_EXPIRED_TEXT, edited };
     }
     if (!takeovers.start(id)) return { ok: false, reason: "stale" };
     log(`Claude Code: 取り込みを始めます（#${id}、${row.source}、guild=${row.guildId}）`);
@@ -303,8 +311,8 @@ export class CcTakeover {
     }
     if (typeof outcome === "string") return this.failed(row, outcome, progress.afterTerm);
     log(`Claude Code: 取り込みました（#${id}、guild=${row.guildId}）`);
-    const text = await this.effects(id, outcome);
-    return { ok: true, text };
+    const { text, edited } = await this.effects(id, outcome);
+    return { ok: true, text, edited };
   }
 
   /** [やめる]: 確認待ちを cancelled にする。移したら true（確認の文の書き換えは呼び出し側） */
@@ -350,14 +358,29 @@ export class CcTakeover {
     }
   }
 
+  /** 起動時の前段と後段を続けて呼ぶ（テスト・一度に済ませてよいとき） */
+  async recover(): Promise<void> {
+    this.recoverRunning();
+    await this.recoverEffects();
+  }
+
   /**
-   * 起動時（registry を始める前）に 1 回（§3.4）: running の行を failed（restart）にし（確認の文があれば失敗の文に書き換える。待たない。§9.1）、
+   * 起動時の前段（§3.4。DB だけで Discord を使わない）: running の行を failed（restart）にする。registry の最初の読み取りと、操作を受け付ける
+   * （gateway.start）より前に 1 回呼ぶ。失敗にした行は後段（recoverEffects）が確認の文を書き換えるまで覚えておく
+   */
+  recoverRunning(): void {
+    const reset = this.deps.takeovers.resetRunning();
+    if (reset.length > 0) this.deps.log(`Claude Code: 再起動の前の取り込み ${reset.length} 件を失敗にしました（restart）`);
+    this.resetPending.push(...reset);
+  }
+
+  /**
+   * 起動時の後段（gateway.start の後・registry の start の前に 1 回）: 前段が失敗にした行の確認の文を書き換え（待たない。§9.1）、
    * 差し止めた ended を流し直し（届け先があって流せた行だけ印を外す）、後始末の済んでいない done の行の移動と topic をやり直す（topic は待たない）
    */
-  async recover(): Promise<void> {
+  async recoverEffects(): Promise<void> {
     const { takeovers, ccSessions, channelOps, gateway, log } = this.deps;
-    const reset = takeovers.resetRunning();
-    if (reset.length > 0) log(`Claude Code: 再起動の前の取り込み ${reset.length} 件を失敗にしました（restart）`);
+    const reset = this.resetPending.splice(0);
     for (const row of reset) {
       if (row.confirmMessageId === null) continue;
       // SIGTERM を送ったか分からない段なら、言い切らずに続け方を足す
@@ -562,15 +585,25 @@ export class CcTakeover {
     }
   }
 
-  /** 後始末（§4。失敗しても done のまま）: 進行中へ移す・完了の文・履歴の区切り・削除の確認・追いかけ先への 1 行・topic → effects_at。完了の文を返す */
-  private async effects(id: number, done: Committed): Promise<string> {
+  /**
+   * 後始末（§4。失敗しても done のまま）: 進行中へ移す・完了の文・履歴の区切り・削除の確認・追いかけ先への 1 行・topic → effects_at。
+   * 完了の文と、確認の文を書き換えられたかを返す
+   */
+  private async effects(id: number, done: Committed): Promise<{ text: string; edited: boolean }> {
     const { takeovers, channelOps, gateway, guildSettings, log } = this.deps;
     const row = takeovers.get(id)!;
     channelOps.enqueueMove(row.channelId, { kind: "state", guildId: row.guildId, state: "active" });
     const failed = (what: string) => (error: unknown) => log(`Claude Code: 取り込みの後に${what}できませんでした（#${id}、${errorKind(error)}）`);
     const text = takeoverDoneText(done.project, row.interrupted);
+    let edited = false;
     if (row.confirmMessageId !== null) {
-      await gateway.editMessage(row.channelId, row.confirmMessageId, { text, components: [] }).catch(failed("確認の文を書き換え"));
+      edited = await gateway.editMessage(row.channelId, row.confirmMessageId, { text, components: [] }).then(
+        () => true,
+        (error: unknown) => {
+          failed("確認の文を書き換え")(error);
+          return false;
+        },
+      );
     } else {
       await gateway.sendMessage(row.channelId, { text }).then(() => undefined, failed("完了の文を出"));
     }
@@ -589,7 +622,7 @@ export class CcTakeover {
     // topic は最後（確認の文の「取り込みました」を先に出す）
     await gateway.setChannelTopic(row.channelId, sessionTopic(done.title, undefined, done.project)).catch(failed("topic を書き換え"));
     takeovers.markEffects(id);
-    return text;
+    return { text, edited };
   }
 
   /**
@@ -601,22 +634,27 @@ export class CcTakeover {
     const id = row.id;
     const text = takeoverFailureText(code, afterTerm);
     const message: OutgoingMessage = { text, components: [] };
+    let edited = false;
     try {
       const before = takeovers.get(id);
       takeovers.fail(id, code);
       log(`Claude Code: 取り込めませんでした（#${id}、${code}、step=${before?.step ?? "-"}、guild=${row.guildId}）`);
       this.replayHeld(row);
-      await this.editConfirm(id, message);
+      edited = await this.editConfirm(id, message);
     } catch (error) {
       log(`Claude Code: 取り込めなかった後の処理で例外が起きました（#${id}、${code}、${errorKind(error)}）`);
       // 確認の文の書き換えだけは試す（DB を読まずに confirm の時の行で）
       if (row.confirmMessageId !== null) {
-        await gateway.editMessage(row.channelId, row.confirmMessageId, message).catch((editError: unknown) => {
-          log(`Claude Code: 取り込みの確認の文を書き換えられませんでした（#${id}、${errorKind(editError)}）`);
-        });
+        edited = await gateway.editMessage(row.channelId, row.confirmMessageId, message).then(
+          () => true,
+          (editError: unknown) => {
+            log(`Claude Code: 取り込みの確認の文を書き換えられませんでした（#${id}、${errorKind(editError)}）`);
+            return false;
+          },
+        );
       }
     }
-    return { ok: false, reason: code, text };
+    return { ok: false, reason: code, text, edited };
   }
 
   /**
@@ -649,14 +687,16 @@ export class CcTakeover {
     log(`Claude Code: 差し止めた終わった知らせを流し直しました（#${row.id}）`);
   }
 
-  /** 確認の文を書き換える（確認のメッセージがあるときだけ。失敗は log だけ） */
-  private async editConfirm(id: number, message: OutgoingMessage): Promise<void> {
+  /** 確認の文を書き換える（確認のメッセージがあるときだけ。失敗は log だけ）。書き換えたら true */
+  private async editConfirm(id: number, message: OutgoingMessage): Promise<boolean> {
     const row = this.deps.takeovers.get(id);
-    if (row === undefined || row.confirmMessageId === null) return;
+    if (row === undefined || row.confirmMessageId === null) return false;
     try {
       await this.deps.gateway.editMessage(row.channelId, row.confirmMessageId, message);
+      return true;
     } catch (error) {
       this.deps.log(`Claude Code: 取り込みの確認の文を書き換えられませんでした（#${id}、${errorKind(error)}）`);
+      return false;
     }
   }
 
@@ -766,5 +806,78 @@ export class CcTakeover {
       { guildId: row.guildId, channelId: row.channelId, kind, source: "system", persona: DEFAULT_PERSONA_ID, text },
       this.deps.log,
     );
+  }
+}
+
+const REAL_TIMERS: CcTimers = {
+  after: (fn, ms) => {
+    const timer = setTimeout(fn, ms);
+    return () => clearTimeout(timer);
+  },
+};
+
+/**
+ * 確認の失効（CcTakeover の expire）を TAKEOVER_EXPIRE_SWEEP_MS ごとに呼ぶ（app/commands/cc-confirm.ts の CcConfirmExpirer と同じ形）。
+ * main が SELF_AGENT_CC=1 のときだけ作り、停止で止める
+ */
+export class CcTakeoverExpirer {
+  private readonly takeover: Pick<CcTakeover, "expire">;
+  private readonly log: (message: string) => void;
+  private readonly timers: CcTimers;
+  private cancelTimer: (() => void) | undefined;
+  private started = false;
+  private stopped = false;
+  private running: Promise<void> | undefined;
+
+  constructor(deps: { takeover: Pick<CcTakeover, "expire">; log: (message: string) => void; timers?: CcTimers }) {
+    this.takeover = deps.takeover;
+    this.log = deps.log;
+    this.timers = deps.timers ?? REAL_TIMERS;
+  }
+
+  /** 直後に 1 回確かめ、以後は TAKEOVER_EXPIRE_SWEEP_MS ごと。stop の後・2 回目は何もしない */
+  start(): void {
+    if (this.started || this.stopped) return;
+    this.started = true;
+    this.loop();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.cancelTimer?.();
+    this.cancelTimer = undefined;
+  }
+
+  async idle(): Promise<void> {
+    await this.running;
+  }
+
+  private loop(): void {
+    if (this.stopped) return;
+    void this.sweep().then(() => {
+      if (this.stopped) return;
+      this.cancelTimer = this.timers.after(() => {
+        this.cancelTimer = undefined;
+        this.loop();
+      }, TAKEOVER_EXPIRE_SWEEP_MS);
+    });
+  }
+
+  /** 1 回確かめる（テストから直接呼ぶ）。reject しない */
+  sweep(): Promise<void> {
+    if (this.running !== undefined) return this.running;
+    const running = this.takeover
+      .expire()
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          this.log(`Claude Code: 取り込みの確認の失効を確かめられませんでした（${errorKind(error)}）`);
+        },
+      )
+      .finally(() => {
+        this.running = undefined;
+      });
+    this.running = running;
+    return running;
   }
 }

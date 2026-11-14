@@ -465,3 +465,29 @@ test("history: /renew（セッション）で新しくしたら divider（返信
   assert.deepEqual(rows(failed), []);
   assert.deepEqual(rows(none), []);
 });
+
+test("/renew（セッション）: 会話の記録が無くて捨てるときは、捨てる前に takeover.resumeDropped を呼ぶ（投げても続ける）。成功・ほかの失敗では呼ばない", async (t) => {
+  for (const throws of [false, true]) {
+    const env = setup(t, [RESUME_FAILURE]);
+    const dropped: Array<[string, string, string | undefined]> = [];
+    env.turn.takeover = {
+      noteFor: () => undefined,
+      noteDone: () => {},
+      resumeDropped: (key, sessionId) => {
+        dropped.push([key, sessionId, env.sessions.get(key)]);
+        if (throws) throw new TypeError("topic-1 を読めない");
+      },
+    };
+    await env.runRenew();
+    assert.deepEqual(dropped, [["topic-1", "session-1", "session-1"]]);
+    assert.equal(env.state().sdkSession, undefined);
+    if (throws) assert.ok(env.logs.some((line) => line === "取り込みの resumeDropped で例外（TypeError）が出たため、飛ばして続けます"));
+  }
+  for (const result of [ok(SUMMARY), FAILED]) {
+    const env = setup(t, [result]);
+    let calls = 0;
+    env.turn.takeover = { noteFor: () => undefined, noteDone: () => {}, resumeDropped: () => void calls++ };
+    await env.runRenew();
+    assert.equal(calls, 0);
+  }
+});
