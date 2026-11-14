@@ -389,7 +389,7 @@
     renderActivity();
     renderSidebar();
     const first = mqCoarse.matches ? refs.sidebar.querySelector("button") || refs.sidebar : refs.sidebar.querySelector("input, button");
-    if (first) first.focus();
+    if (first) first.focus({ preventScroll: true });
   }
 
   /** 一覧を閉じるだけ（履歴は触らない。「進む」で本文の entry に来たとき） */

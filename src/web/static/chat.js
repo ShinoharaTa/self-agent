@@ -356,20 +356,38 @@
     return null;
   }
 
-  /** ccStatusOf の行。届け待ちなら [やめる] */
-  function ccStatusRow(live) {
+  /** チャンネルごとの、前に描いた状態の行（種類・pending の id・[やめる] の有無が同じなら使い回す） */
+  const ccStatusNodes = new Map();
+
+  /**
+   * ccStatusOf の行。届け待ちなら [やめる]。
+   * 前の描画と状態の種類・pending の id が同じなら同じ要素を返す（文だけ書き換える。描き直しで焦点と押した直後の disabled を保つ。親は placeChildren でこの要素を動かさない）
+   */
+  function ccStatusRow(channelId, live) {
     const s = ccStatusOf(live);
-    if (!s) return null;
+    if (!s) {
+      ccStatusNodes.delete(channelId);
+      return null;
+    }
+    const id = live.pending && typeof live.pending.id === "number" ? live.pending.id : null;
+    const cached = ccStatusNodes.get(channelId);
+    if (cached && cached.kind === s.kind && cached.id === id && cached.cancel === s.cancel) {
+      if (cached.text.textContent !== s.text) cached.text.textContent = s.text;
+      return cached.node;
+    }
     let cancel = null;
     if (s.cancel) {
       cancel = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "やめる" });
-      cancel.addEventListener("click", () => SA.views.cancelCcSend(live.pending.id, live.sessionId, cancel));
+      cancel.addEventListener("click", () => SA.views.cancelCcSend(id, live.sessionId, cancel));
     }
-    return el("div", { class: "tl-notice cc-status", role: "status", "aria-busy": "true", "data-cc-status": s.kind }, [
+    const text = el("span", { text: s.text });
+    const node = el("div", { class: "tl-notice cc-status", role: "status", "aria-busy": "true", "data-cc-status": s.kind }, [
       el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }),
-      el("span", { text: s.text }),
+      text,
       cancel,
     ]);
+    ccStatusNodes.set(channelId, { kind: s.kind, id, cancel: s.cancel, text, node });
+    return node;
   }
 
   /** [閉じる]（Discord の /cc close と同じ。確認の後） */
@@ -935,7 +953,7 @@
       // 一覧から開いた直後（チャンネルがまだ分からなかった）でも、セッションの今の polling を始める
       SA.poll.kickCc();
       // 会話の行のすぐ下に、送信と作業の状態
-      const status = ccStatusRow(live);
+      const status = ccStatusRow(channelId, live);
       if (status) timeline.append(status);
       const p = live.permission;
       if (p && p.state === "pending") {
@@ -971,9 +989,10 @@
     if (ch && ch.kind === "session" && ch.state === "done") {
       timeline.append(el("p", { class: "tl-hint", text: "完了したセッションです。発言すると進行中に戻ります。" }));
     }
-    // 前に描いたカード（質問の書きかけ）が前の .tl にあれば、その .ed-scroll と .tl を残して中身だけを並べ直す（外すと焦点・IME の変換が切れる）
-    const oldScroll = card ? [...container.children].find((child) => child.classList.contains("ed-scroll") && child.getAttribute("data-channel") === channelId) : null;
-    const oldTimeline = oldScroll && card.parentNode && card.parentNode.parentNode === oldScroll ? card.parentNode : null;
+    // 前に描いたカード（質問の書きかけ）か状態の行（[やめる]）が前の .tl にあれば、その .ed-scroll と .tl を残して中身だけを並べ直す（外すと焦点・IME の変換が切れる）
+    const reused = [card, ccStatusNodes.has(channelId) ? ccStatusNodes.get(channelId).node : null].filter((n) => n && parts.includes(n));
+    const oldScroll = reused.length > 0 ? [...container.children].find((child) => child.classList.contains("ed-scroll") && child.getAttribute("data-channel") === channelId) : null;
+    const oldTimeline = (oldScroll && reused.map((n) => n.parentNode).find((p) => p && p.parentNode === oldScroll)) || null;
     let scroll;
     if (oldTimeline) {
       SA.views.placeChildren(oldTimeline, parts);
