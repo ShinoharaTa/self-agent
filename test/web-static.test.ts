@@ -4412,7 +4412,7 @@ const submitStart = (h: StartShell) => {
   startEl(h, "form").dispatch("submit", e);
   return e;
 };
-const created = (o: Record<string, unknown> = {}) => ({ id: "ch:77", channelId: "77", link: "https://discord.com/channels/1/77", title: "始めた", place: { dir: "General" }, mode: "project", turn: "sent", ...o });
+const created = (o: Record<string, unknown> = {}) => ({ id: "ch:77", channelId: "77", link: "https://discord.com/channels/1/77", title: "始めた", place: { dir: "General" }, mode: "project", turn: "started", ...o });
 const apiError = (status: number, code: string | null, data: Record<string, unknown> | null = null) =>
   Object.assign(new Error(status + ": " + code), { status, code, data: data ?? (code ? { error: code } : null) });
 
@@ -4726,3 +4726,142 @@ test("web static: v3 の始める口の CSS: [+] は右端（名前が伸びる�
   const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
   assert.match(block(phone, "  .v3-add"), /min-width: var\(--tap\);\s*min-height: var\(--tap\);/);
 });
+
+// 送っている間に閉じた・開き直した後の応答（#367 のレビュー）: 送った開きのままでなければダイアログに触らず、toast で知らせる。話題へは移らない
+type StartPending = { res: (v: unknown) => void; rej: (e: unknown) => void };
+async function loadStartPending(): Promise<{ h: StartShell; pending: StartPending[]; hash: string }> {
+  const h = await loadStart();
+  h.app.open("ch:1");
+  const pending: StartPending[] = [];
+  h.api.postReply = () => new Promise((res, rej) => void pending.push({ res, rej }));
+  return { h, pending, hash: h.location.hash };
+}
+const topicReads = (h: StartShell, from: number) => h.api.paths.slice(from).filter((p) => p === "/api/topics").length;
+
+test("web static: v3 の始める口: 送っている間に閉じて開き直し、前の応答が成功で返っても、今のダイアログ・欄・[始める] に触らず、話題へ移らず、toast と一覧の読み直し", async () => {
+  const { h, pending, hash } = await loadStartPending();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "A";
+  submitStart(h);
+  h.start.close();
+  addOf(h, "general")!.dispatch("click");
+  assert.equal(startEl(h, "ok").disabled, false, "開き直したら [始める] は押せる");
+  startEl(h, "text").value = "B";
+  const reads = h.api.paths.length;
+  pending[0]!.res(created({ title: "A の話" }));
+  await h.flush();
+  assert.equal(h.start.getAttribute("open"), "", "開いたまま");
+  assert.equal(startEl(h, "text").value, "B");
+  assert.equal(startEl(h, "ok").disabled, false);
+  assert.equal(startEl(h, "error").hidden, true);
+  assert.equal(h.app.activeTabId(), "ch:1");
+  assert.equal(h.location.hash, hash);
+  assert.deepEqual(h.toasts, ["話題「A の話」を始めました"]);
+  assert.equal(topicReads(h, reads), 1);
+});
+
+test("web static: v3 の始める口: 開き直した後に前の応答が失敗で返ったら、今の欄にエラーも aria-invalid も付けず、失敗の文を toast に出す", async () => {
+  const { h, pending } = await loadStartPending();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "A";
+  submitStart(h);
+  h.start.close();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "B";
+  pending[0]!.rej(apiError(400, "too_long", { error: "too_long", field: "text" }));
+  await h.flush();
+  assert.equal(h.start.getAttribute("open"), "");
+  assert.equal(startEl(h, "text").value, "B");
+  assert.equal(startEl(h, "error").hidden, true);
+  assert.equal(textOf(startEl(h, "error")), "");
+  assert.equal(startEl(h, "text").getAttribute("aria-invalid"), null);
+  assert.equal(startEl(h, "name").getAttribute("aria-invalid"), null);
+  assert.equal(startEl(h, "ok").disabled, false);
+  assert.deepEqual(h.toasts, ["最初の一言は 1,900 字までです"]);
+});
+
+test("web static: v3 の始める口: 閉じたまま失敗したら toast に失敗の文。次に開くと欄は空・エラーなし", async () => {
+  const { h, pending } = await loadStartPending();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "A";
+  submitStart(h);
+  h.start.close();
+  pending[0]!.rej(apiError(503, "bot_disconnected"));
+  await h.flush();
+  assert.deepEqual(h.toasts, ["Discord につながっていません。少し待ってからもう一度試してください"]);
+  addOf(h, "general")!.dispatch("click");
+  assert.equal(startEl(h, "text").value, "");
+  assert.equal(startEl(h, "error").hidden, true);
+  assert.equal(startEl(h, "text").getAttribute("aria-invalid"), null);
+  assert.equal(startEl(h, "ok").disabled, false);
+});
+
+test("web static: v3 の始める口: 閉じたまま成功したら話題へ移らず、toast と一覧の読み直し。turn が failed なら書きかけに戻し、toast は失敗の 1 つだけ", async () => {
+  const { h, pending, hash } = await loadStartPending();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "A";
+  submitStart(h);
+  h.start.close();
+  let reads = h.api.paths.length;
+  pending[0]!.res(created());
+  await h.flush();
+  assert.equal(h.start.getAttribute("open"), null);
+  assert.equal(h.app.activeTabId(), "ch:1");
+  assert.equal(h.location.hash, hash);
+  assert.deepEqual(h.toasts, ["話題「始めた」を始めました"]);
+  assert.equal(topicReads(h, reads), 1);
+  // turn が failed
+  h.toasts = [];
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "送れなかった一言";
+  submitStart(h);
+  h.start.close();
+  reads = h.api.paths.length;
+  pending[1]!.res(created({ id: "ch:78", channelId: "78", title: "題", turn: "failed" }));
+  await h.flush();
+  assert.equal(h.app.draft("78"), "送れなかった一言");
+  assert.equal(h.app.activeTabId(), "ch:1");
+  assert.deepEqual(h.toasts, ["話題「題」を始めました。最初の一言は送れなかったので、入力欄に戻しました"]);
+  assert.equal(topicReads(h, reads), 1);
+});
+
+for (const order of ["A が先に返る", "B が先に返る"] as const) {
+  test(`web static: v3 の始める口: 開き直して B を送れ、B の応答はダイアログを閉じて話題を開く。先に送った A の応答は B の結果を壊さない（${order}）`, async () => {
+    const { h, pending } = await loadStartPending();
+    addOf(h, "general")!.dispatch("click");
+    startEl(h, "text").value = "A";
+    submitStart(h);
+    h.start.close();
+    addOf(h, "general")!.dispatch("click");
+    startEl(h, "text").value = "B";
+    submitStart(h);
+    assert.equal(h.api.posts.length, 2, "2 回目の POST");
+    assert.deepEqual(h.api.posts[1]!.body, { place: "general", text: "B" });
+    assert.equal(startEl(h, "ok").disabled, true);
+    // 同じ開きの中の 2 回目は送らない
+    submitStart(h);
+    assert.equal(h.api.posts.length, 2);
+    const a = () => pending[0]!.res(created({ id: "ch:77", channelId: "77", title: "A の話" }));
+    const b = () => pending[1]!.res(created({ id: "ch:78", channelId: "78", title: "B の話" }));
+    if (order === "A が先に返る") {
+      a();
+      await h.flush();
+      assert.equal(h.start.getAttribute("open"), "", "B を送っている間は開いたまま");
+      assert.equal(startEl(h, "ok").disabled, true, "B を送っている間は無効のまま");
+      assert.equal(h.app.activeTabId(), "ch:1");
+      b();
+      await h.flush();
+      assert.deepEqual(h.toasts, ["話題「A の話」を始めました", "話題「B の話」を始めました"]);
+    } else {
+      b();
+      await h.flush();
+      assert.equal(h.app.activeTabId(), "ch:78");
+      a();
+      await h.flush();
+      assert.deepEqual(h.toasts, ["話題「B の話」を始めました", "話題「A の話」を始めました"]);
+    }
+    assert.equal(h.start.getAttribute("open"), null);
+    assert.equal(h.app.activeTabId(), "ch:78");
+    assert.equal(h.location.hash, "#/ch/78");
+  });
+}

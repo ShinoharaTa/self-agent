@@ -910,8 +910,12 @@
     not_set_up: "先に Discord で /setup を実行してください",
     bot_disconnected: "Discord につながっていません。少し待ってからもう一度試してください",
   };
-  // 送っている最中か・閉じた後に焦点を戻す [+]・話題を開くために閉じたか（そのときは焦点を戻さない）
-  let starting = false;
+  // 開くたびに 1 増える番号・送っている開きの番号（0 は送っていない）・開いているか。
+  // 応答が返ったとき、送った開きのままでなければダイアログに触らない（閉じた・開き直した後の応答は toast で知らせる）
+  let startSeq = 0;
+  let startBusy = 0;
+  let startShown = false;
+  // 閉じた後に焦点を戻す [+]・話題を開くために閉じたか（そのときは焦点を戻さない）
   let startOpener = null;
   let startOpened = false;
 
@@ -965,12 +969,14 @@
     $("v3-start-text").value = "";
     $("v3-start-name").value = "";
     startError(null, null);
-    // 前に送った分がまだ返っていなければ（送っている間に閉じた）、[始める] は無効のまま
-    $("v3-start-ok").disabled = starting;
+    // 新しい開き。前の開きの送信がまだ返っていなくても [始める] は押せる
+    startSeq++;
+    $("v3-start-ok").disabled = false;
     showStartHint();
     startOpener = opener || null;
     startOpened = false;
     openDialog(dialog);
+    startShown = true;
     $("v3-start-text").focus();
   }
 
@@ -987,9 +993,10 @@
     return { text: "始められませんでした。もう一度試してください", field: null };
   }
 
-  /** 送る（送っている最中は何もしない。空の題名・一言は欄ごと送らない） */
+  /** 送る（同じ開きで送っている最中は何もしない。空の題名・一言は欄ごと送らない） */
   async function submitStart() {
-    if (starting) return;
+    const seq = startSeq;
+    if (startBusy === seq) return;
     const place = $("v3-start-place").value || "general";
     const rawText = $("v3-start-text").value;
     const title = $("v3-start-name").value.trim();
@@ -1003,29 +1010,41 @@
     const body = { place };
     if (title !== "") body.title = title;
     if (text !== "") body.text = text;
-    starting = true;
+    startBusy = seq;
     $("v3-start-ok").disabled = true;
     let data;
+    let failed = null;
     try {
       data = await SA.api.post("/api/topics", body, { quiet: true });
     } catch (err) {
-      starting = false;
+      failed = err || {};
+    }
+    // 送った開きのままか（閉じた・開き直したなら、ダイアログ・欄・[始める]・エラーの欄に触らない）
+    const current = seq === startSeq && startShown;
+    if (startBusy === seq) startBusy = 0;
+    if (failed) {
+      const failure = startFailure(failed);
+      if (!current) {
+        SA.ui.toast(failure.text, null, { level: "error" });
+        return;
+      }
       $("v3-start-ok").disabled = false;
-      const failure = startFailure(err);
       startError(failure.text, failure.field);
       return;
     }
-    starting = false;
-    $("v3-start-ok").disabled = false;
-    startOpened = true;
-    closeDialog($("v3-start"));
+    if (current) {
+      $("v3-start-ok").disabled = false;
+      startOpened = true;
+      closeDialog($("v3-start"));
+    }
     const name = data && typeof data.title === "string" ? data.title : title;
     if (data && data.turn === "failed" && typeof data.channelId === "string") {
       setDraft(data.channelId, rawText);
       SA.ui.toast("話題「" + name + "」を始めました。最初の一言は送れなかったので、入力欄に戻しました");
     } else SA.ui.toast("話題「" + name + "」を始めました");
     SA.topics.load();
-    if (data && typeof data.id === "string") open(data.id);
+    // 閉じた・開き直した後なら話題へは移らない（オーナーはもう別の事をしている）
+    if (current && data && typeof data.id === "string") open(data.id);
   }
 
   function bindStart() {
@@ -1046,6 +1065,7 @@
       }
     });
     dialog.addEventListener("close", () => {
+      startShown = false;
       const opener = startOpener;
       const opened = startOpened;
       startOpener = null;
