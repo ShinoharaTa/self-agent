@@ -4,7 +4,8 @@
 // → 後始末（進行中へ移す・topic・完了の文など。失敗しても done）。
 // running の間は ended の知らせを差し止め（intercept。§3.2）、失敗したら流し直す。送信とチャンネルの操作は holds・holdsChannel で断る（sender.ts・channels.ts）。
 // 再起動の後は recover（running を failed（restart）にし、差し止めた ended を流し直し、後始末の残りの移動と topic をやり直す）。
-// 部品はすべて注入（kill・/proc の読み取り・sleep も）。main は SELF_AGENT_CC=1 のときだけ組み立てる（T3b。入口は commands/cc.ts の /cc take）。
+// 部品はすべて注入（kill・/proc の読み取り・sleep も）。main は SELF_AGENT_CC=1 のときだけ組み立てる（T3b。入口は commands/cc.ts の /cc take と、T4 の cc:takepick・[取り込んで続ける]。
+// 後者のボタンを出すかは refusal、候補の絞り込みは takeableSessions で、どちらも propose と同じ判定）。
 // log は理由の符号・段・取り込みの番号・サーバー ID だけ（session_id・pid・cwd・名前・パス・本文は出さない）
 import type { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
@@ -62,8 +63,6 @@ export const TAKEOVER_NO_PREFIX = "cc:take:no";
 
 /** 確認が期限切れになったときの確認の文（§5.2） */
 export const TAKEOVER_EXPIRED_TEXT = "取り込みの確認は期限切れです（10 分）。";
-/** cc のチャンネルの外で取り込もうとしたとき（§5.5） */
-export const TAKEOVER_NOT_CHANNEL_TEXT = "Claude Code のチャンネルの中で使ってください（無ければ /cc open）。";
 /** 終わらせる直前に端末で動きがあったときに完了の文に足す 1 行（§4） */
 export const TAKEOVER_INTERRUPTED_TEXT = "取り込みの直前に端末で動きがありました。最後の指示は途中で止まっているかもしれません。";
 /** ended のチャンネルの削除の確認（#system の cc:del）の書き換え（§3.1） */
@@ -166,7 +165,7 @@ export type CcTakeoverDeps = {
   probePane: (paneId: string) => Promise<ProbeResult>;
   dirs: Pick<ClaudeDirs, "sessionFile">;
   takeovers: CcTakeoverStore;
-  ccChannels: Pick<CcChannelStore, "get" | "markTaken">;
+  ccChannels: Pick<CcChannelStore, "get" | "anyFor" | "markTaken">;
   ccSessions: Pick<CcSessionStore, "get" | "stopFollow">;
   ccSends: Pick<CcSendStore, "activeFor">;
   ccPermissions: Pick<CcPermissionStore, "pendingFor">;
@@ -207,10 +206,16 @@ export type CcTakeoverDeps = {
   log: (message: string) => void;
 };
 
-/** propose の結果。message は確認の文とボタン（投稿して setConfirmMessage するのは呼び出し側） */
+/** propose の結果。message は確認の文とボタン（投稿して setConfirmMessage するのは呼び出し側）。not_channel の text は channel_changed の文（T4） */
 export type CcTakeoverProposeResult =
   | { ok: true; id: number; message: OutgoingMessage }
   | { ok: false; reason: TakeoverFailure | "not_channel"; text: string };
+
+/** 断る判定（refusal・evaluate）の結果。undefined なら取り込める */
+export type CcTakeoverRefusal = TakeoverFailure | "not_channel" | undefined;
+
+/** 断る判定の対象（cc のチャンネルの行か、チャンネルのまだ無いセッション（state は open として見る）） */
+type TakeoverTarget = Pick<CcChannelRow, "sessionId" | "cwd" | "state">;
 
 /**
  * confirm の結果。stale = 確認待ちでない、expired = 10 分を過ぎた（取り消した）。
@@ -252,19 +257,18 @@ export class CcTakeover {
    * 断るときは符号と文
    */
   async propose(input: { channelId: string; entry: CcTakeoverEntry }): Promise<CcTakeoverProposeResult> {
-    const { ccChannels, takeovers, log } = this.deps;
-    const channel = ccChannels.get(input.channelId);
-    if (channel === undefined || channel.state === "deleted") return { ok: false, reason: "not_channel", text: TAKEOVER_NOT_CHANNEL_TEXT };
+    const { takeovers, log } = this.deps;
+    const evaluated = await this.evaluate(input.channelId);
+    if (!evaluated.ok) {
+      if (evaluated.code === "not_channel") return { ok: false, reason: "not_channel", text: takeoverFailureText("channel_changed", false) };
+      log(`Claude Code: 取り込みを断りました（${evaluated.code}、guild=${evaluated.guildId}）`);
+      return { ok: false, reason: evaluated.code, text: takeoverFailureText(evaluated.code, false) };
+    }
+    const { channel, assessed } = evaluated;
     const refuse = (code: TakeoverFailure): CcTakeoverProposeResult => {
       log(`Claude Code: 取り込みを断りました（${code}、guild=${channel.guildId}）`);
       return { ok: false, reason: code, text: takeoverFailureText(code, false) };
     };
-    if (takeovers.activeFor(channel.sessionId) !== undefined) return refuse("in_progress");
-    const fresh = await this.readList();
-    const assessed = await this.assess(channel, fresh);
-    if (!assessed.ok) return refuse(assessed.code);
-    const current = ccChannels.get(input.channelId);
-    if (current === undefined || current.state === "deleted" || current.sessionId !== channel.sessionId) return refuse("channel_changed");
     const terminalMode = assessed.session?.permissionMode ?? assessed.view?.permissionMode ?? null;
     const row = takeovers.propose({
       sessionId: channel.sessionId,
@@ -285,6 +289,54 @@ export class CcTakeover {
       id: row.id,
       message: { text: takeoverConfirmText({ title, project: assessed.project, source: assessed.source, terminalMode }), components: takeoverButtons(row.id) },
     };
+  }
+
+  /**
+   * 行を作らずに propose と同じ断る判定だけをする（T4。ended のチャンネルの [取り込んで続ける] を出すか）。一覧は読む（tick）。
+   * cc のチャンネルでなければ not_channel、取り込めれば undefined。log は出さない
+   */
+  async refusal(channelId: string): Promise<CcTakeoverRefusal> {
+    const evaluated = await this.evaluate(channelId);
+    return evaluated.ok ? undefined : evaluated.code;
+  }
+
+  /**
+   * 候補のうち取り込めるもの（T4。チャンネルの外の /cc take の候補）。一覧を 1 回だけ読んでから candidates で候補を取り（読み直した一覧から選べるように）、
+   * 各セッションを propose と同じ判定（チャンネルがあればその行、無ければ open として）で見る。ペインを撮る前に、ペインが待機だったとしても断られるものを
+   * 外す（結果は変わらない）。順は候補の順。log は出さない
+   */
+  async takeableSessions(candidates: () => readonly string[]): Promise<string[]> {
+    const fresh = this.deps.ready() ? await this.readList() : false;
+    const takeable: string[] = [];
+    for (const sessionId of candidates()) {
+      const channel = this.deps.ccChannels.anyFor(sessionId);
+      const target: TakeoverTarget = channel ?? { sessionId, cwd: null, state: "open" };
+      if (!(await this.judge(target, fresh, "idle")).ok) continue;
+      if ((await this.judge(target, fresh)).ok) takeable.push(sessionId);
+    }
+    return takeable;
+  }
+
+  /** propose・refusal の断る判定: cc のチャンネル（削除されていない行）→ 一覧を読む → 条件 → 判定の間にチャンネルが変わっていないか */
+  private async evaluate(
+    channelId: string,
+  ): Promise<{ ok: false; code: TakeoverFailure | "not_channel"; guildId?: string } | { ok: true; channel: CcChannelRow; assessed: Extract<Assessed, { ok: true }> }> {
+    const { ccChannels } = this.deps;
+    const channel = ccChannels.get(channelId);
+    if (channel === undefined || channel.state === "deleted") return { ok: false, code: "not_channel" };
+    const refuse = (code: TakeoverFailure) => ({ ok: false as const, code, guildId: channel.guildId });
+    // 準備ができていなければ一覧を読まない（どのみち not_ready。ended のチャンネルの発言のたびに tick しない）
+    const assessed = await this.judge(channel, this.deps.ready() ? await this.readList() : false);
+    if (!assessed.ok) return refuse(assessed.code);
+    const current = ccChannels.get(channelId);
+    if (current === undefined || current.state === "deleted" || current.sessionId !== channel.sessionId) return refuse("channel_changed");
+    return { ok: true, channel, assessed };
+  }
+
+  /** evaluate・takeableSessions の 1 件の判定（一覧は読んだ後）: 確認待ちか running の取り込みがあれば in_progress、ほかは assess */
+  private async judge(target: TakeoverTarget, fresh: boolean, assumePane?: TakeoverPane): Promise<Assessed> {
+    if (this.deps.takeovers.activeFor(target.sessionId) !== undefined) return { ok: false, code: "in_progress" };
+    return this.assess(target, fresh, assumePane);
   }
 
   /** [取り込む]（§4）: 確認待ちを running にして step を順に進める。結果の文で確認の文を書き換える */
@@ -619,8 +671,12 @@ export class CcTakeover {
     if (done.followChannelId !== null) {
       await gateway.sendMessage(done.followChannelId, { text: TAKEOVER_FOLLOW_STOPPED_TEXT }).then(() => undefined, failed("追いかけ先に知らせ"));
     }
-    // topic は最後（確認の文の「取り込みました」を先に出す）
-    await gateway.setChannelTopic(row.channelId, sessionTopic(done.title, undefined, done.project)).catch(failed("topic を書き換え"));
+    // topic は最後（確認の文の「取り込みました」を先に出す）。レート制限で待たされうるので待たない（最初のターンを遅らせない。recoverEffects と同じ）
+    try {
+      void gateway.setChannelTopic(row.channelId, sessionTopic(done.title, undefined, done.project)).catch(failed("topic を書き換え"));
+    } catch (error) {
+      failed("topic を書き換え")(error);
+    }
     takeovers.markEffects(id);
     return { text, edited };
   }
@@ -722,9 +778,9 @@ export class CcTakeover {
 
   /**
    * 取り込めるか（§3.2・§3.4）。今の一覧にあれば生きているセッション（ペインを撮る）、無ければ終わったセッション（cc_sessions が gone のときだけ）。
-   * cwd の形は projectOf
+   * cwd の形は projectOf。assumePane を渡せばペインを撮らずにその状態として見る（takeableSessions の前もっての絞り込み）
    */
-  private async assess(channel: CcChannelRow, listFresh: boolean): Promise<Assessed> {
+  private async assess(channel: TakeoverTarget, listFresh: boolean, assumePane?: TakeoverPane): Promise<Assessed> {
     const { registry, ccSessions, ccSends, ccPermissions, sdkSessions } = this.deps;
     const sessionId = channel.sessionId;
     const snapshot = registry.snapshot();
@@ -732,7 +788,8 @@ export class CcTakeover {
     const session = ccSessions.get(sessionId);
     const cwd = view !== undefined ? (view.cwd ?? null) : (session?.cwd ?? channel.cwd);
     const project = this.projectOf(cwd);
-    const pane: TakeoverPane | undefined = view !== undefined && listFresh ? await this.paneOf(view, snapshot.sessions) : undefined;
+    const pane: TakeoverPane | undefined =
+      view !== undefined && listFresh ? (assumePane ?? (await this.paneOf(view, snapshot.sessions))) : undefined;
     const code = takeoverRefusal({
       ready: this.deps.ready(),
       listFresh,

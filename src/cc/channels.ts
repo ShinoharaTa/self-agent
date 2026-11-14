@@ -17,6 +17,8 @@
 //   無ければ積まずに「このセッションは終わっています」+ [起動して続ける][やめる] を返信する。[起動して続ける]（resume）は ended → resuming の compare-and-set の後、そのセッションの cwd
 //   （SELF_AGENT_WORKSPACE_DIR の直下だけ）で starter.launch（startedBy tool・最初の指示はその発言）し、結びついたら（started の resumeChannelId）
 //   session_id を付け替えて open に戻し、topic を書き換えてカテゴリ「Claude Code」へ戻す。起動の失敗・結びつけられなかったら ended に戻す。
+//   取り込み（docs/plan/takeover.md §5.6。T4）が配線されていて、そのチャンネルを取り込めるときは間に [取り込んで続ける] も出す（処理は app/commands/cc.ts。
+//   保留は takePending で引く）。
 // - 閉じる（/cc close。close）: open を ended にして完了へ移し、届け待ちを取り消す（セッションが生きていても。次に関われば開き直す）。
 // - 削除の確認（CC13）: scheduler.ts が ccDeletePrompt を #system に出し、app/commands/cc.ts の cc:del・cc:del:keep が処理する。
 // - 印（§3.3）: 届け待ちは ⏳、届けたら ✅、確かめられなければ ⚠️ と返信、送れなければ ❌ と返信、取り消したら ⏳ を外す（リアクション。失敗は log だけ）。
@@ -205,14 +207,17 @@ export const CC_RESUME_GAVE_UP_TEXT = "起動したセッションを一覧で�
 export const CC_RESUME_STALE_TEXT = "この操作は古くなっています";
 /** [起動して続ける] の custom_id の頭（`cc:resume:<channel_id>:<message_id>`・`cc:resume:keep:<channel_id>:<message_id>`） */
 export const CC_RESUME_PREFIX = "cc:resume";
+/** [取り込んで続ける] の custom_id の頭（`cc:take:resume:<channel_id>:<message_id>`。docs/plan/takeover.md §5.6。T4） */
+export const CC_TAKE_RESUME_PREFIX = "cc:take:resume";
 
-/** 終わったチャンネルの [起動して続ける][やめる]（純関数） */
-export function ccResumeButtons(channelId: string, messageId: string): NonNullable<OutgoingMessage["components"]> {
+/** 終わったチャンネルの [起動して続ける][やめる]（純関数）。take なら間に [取り込んで続ける]（T4） */
+export function ccResumeButtons(channelId: string, messageId: string, take = false): NonNullable<OutgoingMessage["components"]> {
   return [
     {
       kind: "buttons",
       buttons: [
         { customId: `${CC_RESUME_PREFIX}:${channelId}:${messageId}`, label: "起動して続ける", style: "primary" },
+        ...(take ? [{ customId: `${CC_TAKE_RESUME_PREFIX}:${channelId}:${messageId}`, label: "取り込んで続ける" }] : []),
         { customId: `${CC_RESUME_PREFIX}:keep:${channelId}:${messageId}`, label: "やめる" },
       ],
     },
@@ -297,6 +302,12 @@ export type CcReviveReason = "back" | "reopened";
 
 /** 終わったチャンネルの発言の保留（[起動して続ける] を押すまで。プロセスの中だけで、再起動の後のボタンは古い） */
 const RESUME_PENDING_MAX = 50;
+
+/**
+ * 保留した発言（[起動して続ける]・[取り込んで続ける] の最初の指示）。historyId は保留のときに書いた owner の行の id
+ * （書いていない（Web UI が無効）なら無し、書けなければ 0）
+ */
+export type HeldMessage = { text: string; promptMessageId: string; historyId?: number };
 
 /** 1 行の表示（制御文字を空白にし、Markdown とメンションを無効にする） */
 function plain(text: string): string {
@@ -395,8 +406,15 @@ export type CcChannelsDeps = {
   log: (message: string) => void;
 };
 
-/** 取り込みの途中かを見る口（cc/takeover.ts の CcTakeover の holds・holdsChannel） */
-export type CcTakeoverGuard = { holds(sessionId: string): boolean; holdsChannel(channelId: string): boolean };
+/**
+ * 取り込みの途中かを見る口（cc/takeover.ts の CcTakeover の holds・holdsChannel）。refusal は [取り込んで続ける] を出すかの判定（T4。
+ * undefined を返せば取り込める。無ければ出さない）
+ */
+export type CcTakeoverGuard = {
+  holds(sessionId: string): boolean;
+  holdsChannel(channelId: string): boolean;
+  refusal?(channelId: string): Promise<string | undefined>;
+};
 
 /** /cc open のセレクトの 1 件 */
 export type CcPickItem = { sessionId: string; label: string; state: CcState; dir: string | null; hasChannel: boolean };
@@ -427,7 +445,7 @@ export class CcChannels {
   /** ダイアログで待っていると返信した送信 */
   private readonly dialogNoticed = new Set<number>();
   /** 終わったチャンネルの発言（`<channel_id>:<message_id>` → 本文と確認の投稿）。[起動して続ける] の最初の指示（CC13） */
-  private readonly resumePending = new Map<string, { text: string; promptMessageId: string }>();
+  private readonly resumePending = new Map<string, HeldMessage>();
 
   constructor(deps: CcChannelsDeps) {
     this.deps = deps;
@@ -590,14 +608,27 @@ export class CcChannels {
       await this.reply(message, TAKEOVER_SEND_REJECT_TEXT);
       return true;
     }
+    let target = row;
     if (row.state === "ended" && !this.reopenIfListed(row)) {
-      this.record(row, "owner", "discord", checked.text, message.id);
-      await this.promptResume(message, checked.text);
-      this.record(row, "notice", "system", CC_RESUME_PROMPT_TEXT);
-      return true;
+      // 取り込めるかの判定は一覧を読むので、その間に戻って（revived）open になりうる。読み直して、ended のままのときだけ案内を出す
+      const take = await this.takeable(row.channelId);
+      const current = store.get(row.channelId);
+      if (current?.state === "ended") {
+        // owner の行を書いたら（Web UI が有効）その id を保留に持つ（[取り込んで続ける] のターンで二重に書かない。書けなければ 0）
+        const ownerRow = this.record(current, "owner", "discord", checked.text, message.id);
+        await this.promptResume(message, checked.text, this.deps.history === undefined ? undefined : (ownerRow ?? 0), take);
+        this.record(current, "notice", "system", CC_RESUME_PROMPT_TEXT);
+        return true;
+      }
+      if (current?.state === "resuming") {
+        await this.reply(message, CC_RESUMING_REPLY);
+        return true;
+      }
+      if (current === undefined) return true;
+      target = current;
     }
-    if (store.get(row.channelId)?.state !== "open") return true;
-    await this.submitOwner(row, checked.text, message.channelId, message.id);
+    if (store.get(target.channelId)?.state !== "open") return true;
+    await this.submitOwner(target, checked.text, message.channelId, message.id);
     return true;
   }
 
@@ -782,21 +813,49 @@ export class CcChannels {
     return this.resumePending.delete(`${channelId}:${messageId}`);
   }
 
+  /**
+   * [取り込んで続ける]（cc:take:resume。T4）: その発言の保留（[起動して続ける] と同じ鍵）を引いて消す。無ければ gone。
+   * [起動して続ける] の起動の途中（resuming）は引かずに resuming（その発言は起動の最初の指示に使っている。失敗のやり直しにも残す）、
+   * ほかの ended でない状態（開き直した後など）は引かずに gone
+   */
+  takePending(channelId: string, messageId: string): { ok: true; held: HeldMessage } | { ok: false; reason: "resuming" | "gone" } {
+    const state = this.deps.store.get(channelId)?.state;
+    if (state === "resuming") return { ok: false, reason: "resuming" };
+    if (state !== "ended") return { ok: false, reason: "gone" };
+    const key = `${channelId}:${messageId}`;
+    const pending = this.resumePending.get(key);
+    if (pending === undefined) return { ok: false, reason: "gone" };
+    this.resumePending.delete(key);
+    return { ok: true, held: pending };
+  }
+
+  /** そのチャンネルの取り込みが配線されていて、断られないか（[取り込んで続ける] を出すか。判定が投げたら出さない） */
+  private async takeable(channelId: string): Promise<boolean> {
+    const guard = this.deps.takeover?.();
+    if (guard?.refusal === undefined) return false;
+    try {
+      return (await guard.refusal(channelId)) === undefined;
+    } catch (error) {
+      this.deps.log(`Claude Code: 取り込めるかを確かめられませんでした（${errorKind(error)}）`);
+      return false;
+    }
+  }
+
   /** そのセッションが今の一覧にあるか */
   private listed(sessionId: string): boolean {
     return this.deps.registry.snapshot().sessions.some((view) => view.sessionId === sessionId);
   }
 
-  /** 終わったチャンネルの発言に [起動して続ける][やめる] を返信し、本文を保留する（積まない） */
-  private async promptResume(message: IncomingMessage, text: string): Promise<void> {
+  /** 終わったチャンネルの発言に [起動して続ける][やめる]（取り込めれば [取り込んで続ける] も）を返信し、本文を保留する（積まない） */
+  private async promptResume(message: IncomingMessage, text: string, historyId: number | undefined, take: boolean): Promise<void> {
     try {
       const promptMessageId = await this.deps.gateway.sendMessage(message.channelId, {
         text: CC_RESUME_PROMPT_TEXT,
         replyToId: message.id,
         suppressEmbeds: true,
-        components: ccResumeButtons(message.channelId, message.id),
+        components: ccResumeButtons(message.channelId, message.id, take),
       });
-      this.resumePending.set(`${message.channelId}:${message.id}`, { text, promptMessageId });
+      this.resumePending.set(`${message.channelId}:${message.id}`, { text, promptMessageId, ...(historyId === undefined ? {} : { historyId }) });
       // 古いものから捨てる（Map は足した順）
       while (this.resumePending.size > RESUME_PENDING_MAX) {
         const oldest = this.resumePending.keys().next().value;
@@ -1191,8 +1250,8 @@ export class CcChannels {
     source: HistorySource,
     text: string,
     messageId: string | null = null,
-  ): void {
-    recordHistory(
+  ): number | undefined {
+    return recordHistory(
       this.deps.history,
       { guildId: row.guildId, channelId: row.channelId, kind, source, persona: DEFAULT_PERSONA_ID, text, messageId },
       this.deps.log,

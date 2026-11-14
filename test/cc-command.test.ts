@@ -4,6 +4,7 @@ import type { CcCloseResult, CcOpenResult, CcPickItem, CcResumeResult } from "..
 import type { CcChannelOrigin } from "../src/store/cc-channels.ts";
 import {
   CC_TAKE_CANCELLED_TEXT,
+  CC_TAKE_NONE_REPLY,
   CC_TAKE_POST_FAILED_REPLY,
   CC_TAKE_POSTED_REPLY,
   CC_TAKE_STALE_REPLY,
@@ -19,7 +20,7 @@ import {
 } from "../src/app/commands/cc.ts";
 import { type CommandDeps, createCommands, createInteractionHandler, OWNER_ONLY_REPLY } from "../src/app/interactions.ts";
 import type { CcTakeoverConfirmResult, CcTakeoverProposeResult } from "../src/cc/takeover.ts";
-import { TAKEOVER_NOT_CHANNEL_TEXT, takeoverButtons } from "../src/cc/takeover.ts";
+import { takeoverButtons } from "../src/cc/takeover.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import { CcTakeoverStore } from "../src/store/cc-takeovers.ts";
 import { tempDb } from "./helpers/db.ts";
@@ -60,6 +61,7 @@ function fakeChannels(items: CcPickItem[], result: CcOpenResult, cancelled: Reco
       close: (): CcCloseResult => ({ result: "not_channel" }),
       resume: async (): Promise<CcResumeResult> => ({ ok: false, reason: "stale" }),
       keepEnded: (): boolean => false,
+      takePending: () => ({ ok: false as const, reason: "gone" as const }),
     },
   };
 }
@@ -214,7 +216,8 @@ function fakeTakeover(t: TestContext) {
   const takeovers = new CcTakeoverStore(tempDb(t), () => NOW);
   const gateway = new FakeGateway({ allow: ["sendMessage"], messageIdPrefix: "msg-" });
   const calls: string[] = [];
-  let proposeResult: CcTakeoverProposeResult = { ok: false, reason: "not_channel", text: TAKEOVER_NOT_CHANNEL_TEXT };
+  let proposeResult: CcTakeoverProposeResult = { ok: false, reason: "not_channel", text: "チャンネルでない" };
+  let takeable: string[] = [];
   let confirmResult: CcTakeoverConfirmResult = { ok: true, text: "取り込みました", edited: true };
   const runtime = {
     takeover: {
@@ -229,6 +232,12 @@ function fakeTakeover(t: TestContext) {
       cancel: (id: number): boolean => {
         calls.push(`cancel:${id}`);
         return takeovers.cancel(id);
+      },
+      takeableSessions: async (candidates: () => readonly string[]): Promise<string[]> => {
+        calls.push("tick");
+        const sessionIds = candidates();
+        calls.push(`takeable:${sessionIds.length}`);
+        return sessionIds.filter((id) => takeable.includes(id));
       },
     },
     takeovers,
@@ -259,6 +268,9 @@ function fakeTakeover(t: TestContext) {
     setConfirm: (result: CcTakeoverConfirmResult) => {
       confirmResult = result;
     },
+    setTakeable: (ids: string[]) => {
+      takeable = ids;
+    },
   };
 }
 
@@ -268,7 +280,7 @@ function takeButton(action: "go" | "no", id: number, over: Partial<Extract<Inter
   return { kind: "button", customId: `cc:take:${action}:${id}`, guildId: "guild-1", channelId: "cc-chan", userId: "owner-1", createdAt: NOW, ...over };
 }
 
-test("/cc take: 連携が無ければ他のサブコマンドと同じ文。cc のチャンネルの外・断られたら propose の文を本人にだけ返し、何も出さない", async (t) => {
+test("/cc take: 連携が無ければ他のサブコマンドと同じ文。断られたら propose の文を本人にだけ返し、何も出さない", async (t) => {
   const f = fakeTakeover(t);
   const { channels } = fakeChannels(ITEMS, { ok: false, reason: "failed" });
   const off = createCcCommand({ ccChannels: () => channels, guildSettings: { ccCategoryId: () => "cat-cc" }, ccTakeover: () => undefined, log: () => {} });
@@ -277,18 +289,111 @@ test("/cc take: 連携が無ければ他のサブコマンドと同じ文。cc �
   assert.deepEqual(offResponder.calls, [{ method: "reply", message: { text: CC_UNAVAILABLE_REPLY, ephemeral: true } }]);
 
   const command = createCcCommand({ ccChannels: () => channels, guildSettings: { ccCategoryId: () => "cat-cc" }, ccTakeover: f.getter, log: () => {} });
-  const outside = new FakeResponder();
-  await command.handle({ ...TAKE, channelId: "channel-1" }, outside);
-  assert.deepEqual(outside.calls, [
-    { method: "defer", ephemeral: true },
-    { method: "reply", message: { text: TAKEOVER_NOT_CHANNEL_TEXT, ephemeral: true } },
-  ]);
   f.setPropose({ ok: false, reason: "in_progress", text: "断りの文" });
   const refused = new FakeResponder();
   await command.handle(TAKE, refused);
   assert.deepEqual(refused.replies, [{ text: "断りの文", ephemeral: true }]);
-  assert.deepEqual(f.calls, ["propose:channel-1:discord", "propose:cc-chan:discord"]);
+  assert.deepEqual(f.calls, ["propose:cc-chan:discord"]);
   assert.equal(f.gateway.posts.length, 0);
+});
+
+test("/cc take（チャンネルの外。T4）: 取り込めるセッションだけの cc:takepick を本人にだけ出す。候補なし・/setup 前・連携なしは断る", async (t) => {
+  const f = fakeTakeover(t);
+  const { channels } = fakeChannels(ITEMS, { ok: false, reason: "failed" });
+  let categoryId: string | null = "cat-cc";
+  let current: typeof channels | undefined = channels;
+  const command = createCcCommand({ ccChannels: () => current, guildSettings: { ccCategoryId: () => categoryId }, ccTakeover: f.getter, log: () => {} });
+  const outside = { ...TAKE, channelId: "channel-1" };
+  f.setTakeable([S2]);
+  const responder = new FakeResponder();
+  await command.handle(outside, responder);
+  assert.equal(responder.calls[0]?.method, "defer");
+  const reply = responder.replies[0]!;
+  assert.equal(reply.ephemeral, true);
+  const row = reply.components?.[0];
+  assert.ok(row?.kind === "select");
+  assert.equal(row.select.customId, "cc:takepick");
+  assert.deepEqual(row.select.options.map((option) => [option.value, option.description]), [[S2, "待機・チャンネルあり"]]);
+  // 一覧を読み直して（tick）から候補を取る
+  assert.deepEqual(f.calls, ["propose:channel-1:discord", "tick", "takeable:2"]);
+
+  f.setTakeable([]);
+  const none = new FakeResponder();
+  await command.handle(outside, none);
+  assert.deepEqual(none.replies, [{ text: CC_TAKE_NONE_REPLY, ephemeral: true }]);
+
+  categoryId = null;
+  const notSetUp = new FakeResponder();
+  await command.handle(outside, notSetUp);
+  assert.deepEqual(notSetUp.replies, [{ text: CC_NOT_SET_UP_REPLY, ephemeral: true }]);
+
+  categoryId = "cat-cc";
+  current = undefined;
+  const unavailable = new FakeResponder();
+  await command.handle(outside, unavailable);
+  assert.deepEqual(unavailable.replies, [{ text: CC_UNAVAILABLE_REPLY, ephemeral: true }]);
+  assert.equal(f.gateway.posts.length, 0);
+});
+
+function takePick(sessionId: string): Extract<Interaction, { kind: "select" }> {
+  return { ...pick([sessionId]), customId: "cc:takepick" };
+}
+
+test("cc:takepick（T4）: 選んだセッションのチャンネルを作り（既にあればそれ）、そこに確認を出す。作れない・断られた・投稿の失敗（cancel）はその文", async (t) => {
+  const f = fakeTakeover(t);
+  let result: CcOpenResult = { ok: true, channelId: "cc-chan", guildId: "guild-1" };
+  const { channels, opened } = fakeChannels(ITEMS, result);
+  const current = { ...channels, openChannel: async (guildId: string, sessionId: string, origin: CcChannelOrigin) => (opened.push({ guildId, sessionId, origin }), result) };
+  const logs: string[] = [];
+  const component = createCcComponent({ ccChannels: () => current, ccTakeover: f.getter, gateway: f.gateway, log: (line) => void logs.push(line) });
+  const first = f.row();
+  const message = { text: "確認の文", components: takeoverButtons(first.id) };
+  f.setPropose({ ok: true, id: first.id, message });
+  const responder = new FakeResponder();
+  await component.handle(takePick(S1), responder);
+  assert.deepEqual(opened, [{ guildId: "guild-1", sessionId: S1, origin: "command" }]);
+  assert.deepEqual(f.gateway.posts, [{ channelId: "cc-chan", messageId: "msg-1", message }]);
+  assert.equal(f.takeovers.get(first.id)?.confirmMessageId, "msg-1");
+  assert.deepEqual(responder.calls, [
+    { method: "defer", ephemeral: true },
+    { method: "reply", message: { text: "<#cc-chan> に取り込みの確認を出しました。", ephemeral: true } },
+  ]);
+
+  // 既にあればそのチャンネル
+  result = { ok: false, reason: "exists", channelId: "cc-old", guildId: "guild-1" };
+  f.setPropose({ ok: false, reason: "busy", text: "断りの文" });
+  const refused = new FakeResponder();
+  await component.handle(takePick(S1), refused);
+  assert.deepEqual(refused.replies, [{ text: "断りの文", ephemeral: true }]);
+  assert.equal(f.calls.at(-1), "propose:cc-old:discord");
+
+  // 作れない
+  result = { ok: false, reason: "not_in_tmux" };
+  const failedOpen = new FakeResponder();
+  const before = f.calls.length;
+  await component.handle(takePick(S1), failedOpen);
+  assert.deepEqual(failedOpen.replies, [{ text: openResultReply(result), ephemeral: true }]);
+  assert.equal(f.calls.length, before);
+
+  // 投稿に失敗: cancel
+  result = { ok: true, channelId: "cc-chan", guildId: "guild-1" };
+  const second = f.row(S2);
+  f.setPropose({ ok: true, id: second.id, message: { text: "確認の文", components: takeoverButtons(second.id) } });
+  f.gateway.beforeSendMessage = () => {
+    throw new Error("cc-chan に投稿できない");
+  };
+  const failedPost = new FakeResponder();
+  await component.handle(takePick(S2), failedPost);
+  assert.deepEqual(failedPost.replies, [{ text: CC_TAKE_POST_FAILED_REPLY, ephemeral: true }]);
+  assert.equal(f.takeovers.get(second.id)?.state, "cancelled");
+  for (const line of logs) assert.doesNotMatch(line, /cc-chan|投稿できない/, line);
+
+  // UUID でない値は例外、連携が無ければ断る
+  await assert.rejects(component.handle(takePick("../x"), new FakeResponder()));
+  const off = createCcComponent({ ccChannels: () => current, ccTakeover: () => undefined, gateway: f.gateway, log: () => {} });
+  const offResponder = new FakeResponder();
+  await off.handle(takePick(S1), offResponder);
+  assert.deepEqual(offResponder.replies, [{ text: CC_UNAVAILABLE_REPLY, ephemeral: true }]);
 });
 
 test("/cc take: 通ったら確認の文とボタンをそのチャンネルに出して setConfirmMessage。投稿に失敗したら cancel して本人にだけ断る", async (t) => {

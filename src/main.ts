@@ -1022,7 +1022,14 @@ if (
     log,
   });
   ccTakeover = takeover;
-  ccTakeoverEntry = { takeover, takeovers, gateway, ownerUserId: config.ownerUserId };
+  ccTakeoverEntry = {
+    takeover,
+    takeovers,
+    gateway,
+    ownerUserId: config.ownerUserId,
+    // [取り込んで続ける]（T4）の保留した発言は、その発言への返信として最初のターンにする（echo は出さない）
+    submitTurn: (input) => handler.submitHeld({ ...input, at: now() }),
+  };
   // 確認の失効（10 分）を 1 分ごとに確かめる
   ccTakeoverExpirer = new CcTakeoverExpirer({ takeover, log });
   // 起動時の前段: 再起動の前に running だった行を failed（restart）にする（DB だけ）。registry の最初の読み取りと操作の受け付けより前に済ませ、
