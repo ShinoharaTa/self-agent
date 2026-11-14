@@ -47,16 +47,23 @@
     inflight = (async () => {
       try {
         const next = await SA.api.get("/api/topics" + (doneGroup ? "?done=" + encodeURIComponent(doneGroup) : ""), { quiet: true });
-        if (next && Array.isArray(next.groups) && Array.isArray(next.topics)) {
+        if (next && Array.isArray(next.groups) && Array.isArray(next.topics) && Array.isArray(next.turnIds) && Array.isArray(next.rightHands)) {
           data = next;
           failed = false;
         } else failed = true;
       } catch {
         failed = true;
       }
-      render();
+      try {
+        render();
+      } catch {
+        // 描けなかったものは失敗として出す（次の予約は必ず掛ける）
+        failed = true;
+        setNote(failedNote());
+      } finally {
+        arm();
+      }
       SA.app.refreshTabs();
-      arm();
     })();
     return inflight.finally(() => {
       inflight = null;
@@ -266,23 +273,42 @@
     if (note.textContent !== text) note.textContent = text;
   }
 
+  function failedNote() {
+    return data === null ? "読み込めませんでした" : "更新できませんでした。前の一覧を出しています";
+  }
+
+  /** 描き直す。焦点のある行が並びの中で動いて焦点が外れたら戻し、一覧のスクロール位置も前と同じにする */
   function render() {
     const groups = $("v3-groups");
     if (!groups) return;
+    const body = $("v3-list-body");
+    const focused = document.activeElement;
+    const top = body ? body.scrollTop : 0;
+    draw(groups);
+    if (body && body.scrollTop !== top) body.scrollTop = top;
+    if (focused && document.activeElement !== focused && document.contains(focused)) focused.focus({ preventScroll: true });
+  }
+
+  function draw(groups) {
     if (data === null) {
-      setNote(failed ? "読み込めませんでした" : "読み込み中…");
+      setNote(failed ? failedNote() : "読み込み中…");
       return;
     }
-    setNote(failed ? "更新できませんでした。前の一覧を出しています" : null);
+    setNote(failed ? failedNote() : null);
 
     const turns = $("v3-turns");
+    const turnKey = (p) => "turn:" + p.id;
     if (data.turns > 0) {
       turns.hidden = false;
       const n = String(data.turns);
       if ($("v3-turns-count").textContent !== n) $("v3-turns-count").textContent = n;
       const parts = data.turnIds.map(turnParts).filter((p) => p !== null);
-      reconcile($("v3-turns-rows"), parts, (p) => "turn:" + p.id, createRow(true), updateRow);
-    } else turns.hidden = true;
+      reconcile($("v3-turns-rows"), parts, turnKey, createRow(true), updateRow);
+    } else {
+      // 番が 0 に戻ったら行も外す（隠れた節の行に焦点・検索が当たらない）
+      reconcile($("v3-turns-rows"), [], turnKey, createRow(true), updateRow);
+      turns.hidden = true;
+    }
 
     reconcile(groups, data.groups, (g) => g.key, createGroup, updateGroup);
     document.title = (data.turns > 0 ? "(" + data.turns + ") " : "") + "self-agent";

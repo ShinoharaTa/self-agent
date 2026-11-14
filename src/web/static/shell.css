@@ -13,6 +13,10 @@
   height: var(--vvh, 100dvh);
   grid-template-columns: var(--v3-list-w) minmax(0, 1fr);
   background: var(--bg);
+  font-size: var(--font-sm);
+  /* 細いスクロールバー（app.css の .wb・.palette・dialog と同じ） */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 /* ===== 列 1: 話題の一覧 ===== */

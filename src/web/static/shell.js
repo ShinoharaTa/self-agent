@@ -122,10 +122,25 @@
   }
 
   // ===== 列 2 =====
-  /** タブの中身を描く。スクロール位置は保つ */
-  function renderEd(ed, tabId) {
-    const oldScroll = ed.querySelector(".ed-scroll");
-    const wasBottom = !oldScroll || oldScroll.scrollHeight - oldScroll.scrollTop - oldScroll.clientHeight < 48;
+  /** 下端から 48px 以内なら下端に居るとみなす */
+  function atBottom(scroll) {
+    return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
+  }
+
+  /** スマホで一覧を出している間は列 2 が display: none で、スクロールの読み書きが効かない */
+  function mainHidden() {
+    return phone() && S.view === "list";
+  }
+
+  // 列 2 が隠れる直前のスクロール（{ top, bottom }）と、隠れている間に描き直して「表示されたら下端に寄せる」印
+  let hiddenScroll = null;
+  let stickOnShow = false;
+
+  /** タブの中身を描く。同じタブならスクロール位置は保ち、別のタブに切り替えたとき（switched）は下端（data-stick="bottom"）か先頭から */
+  function renderEd(ed, tabId, switched) {
+    const hidden = mainHidden();
+    const oldScroll = switched || hidden ? null : ed.querySelector(".ed-scroll");
+    const wasBottom = !oldScroll || atBottom(oldScroll);
     const oldTop = oldScroll ? oldScroll.scrollTop : 0;
     const info = tabId ? SA.views.info(tabId) : null;
     if (!info) {
@@ -134,10 +149,13 @@
     }
     info.render(ed);
     const scroll = ed.querySelector(".ed-scroll");
-    if (scroll) {
-      if (scroll.dataset.stick === "bottom" && wasBottom) scroll.scrollTop = scroll.scrollHeight;
-      else if (oldScroll) scroll.scrollTop = oldTop;
-    }
+    if (!scroll) return;
+    const stick = scroll.dataset.stick === "bottom";
+    if (hidden) {
+      // 隠れている間は位置を書けないので、表示したとき（setView）に当てる
+      if (stick && hiddenScroll && hiddenScroll.bottom) stickOnShow = true;
+    } else if (stick && wasBottom) scroll.scrollTop = scroll.scrollHeight;
+    else scroll.scrollTop = oldTop;
   }
 
   /** 列 2 の上の帯（「場所」はただの文字。押せない。付け替えは M5） */
@@ -158,9 +176,9 @@
     if (place.textContent !== text) place.textContent = text;
   }
 
-  function renderMain() {
+  function renderMain(switched) {
     renderBar();
-    renderEd($("ed"), S.active);
+    renderEd($("ed"), S.active, switched);
     writeHash();
   }
 
@@ -173,18 +191,30 @@
     if (!tabId) return;
     const info = SA.views.info(tabId);
     if (!info) return;
-    if (S.active !== null && S.active !== tabId) {
+    const switched = S.active !== tabId;
+    // 会話（ch:）は閉じない（開いた手順・選びかけの選択肢を、ほかの話題を見て戻っても保つ）
+    if (S.active !== null && switched && !S.active.startsWith("ch:")) {
       const prev = SA.views.info(S.active);
       if (prev && prev.onClose) prev.onClose();
     }
     S.active = tabId;
     deferred = null;
-    renderMain();
+    if (switched) {
+      hiddenScroll = null;
+      stickOnShow = false;
+    }
+    // スマホは先に会話の列を出してから描く（隠れたままではスクロールを書けない）
+    if (phone()) showBody();
+    renderMain(switched);
     SA.topics.render();
     if (info.onOpen) info.onOpen();
     // 一覧（/api/channels）にまだ無いチャンネル（/api/topics で先に知った話題）は、見出しのために 1 回読む
     if (tabId.startsWith("ch:") && !SA.chat.channelById(tabId.slice(3))) SA.store.load.channels({ quiet: true });
-    if (phone()) showBody();
+    // スマホは一覧が隠れるので、見出しの [‹] に焦点
+    if (phone()) {
+      const back = $("ed").querySelector(".ed-back");
+      if (back) back.focus({ preventScroll: true });
+    }
   }
 
   /** tabId が列 2 に出ていれば中身だけ描き直す */
@@ -207,6 +237,8 @@
   }
 
   function writeHash() {
+    // 起動の hash の話題を待っている間は消さない
+    if (S.active === null && deferred !== null) return;
     try {
       // 履歴の印（v3Body）は残す
       if (S.active) history.replaceState(history.state, "", hashOf(S.active));
@@ -229,13 +261,33 @@
       open(deferred);
       return;
     }
-    if (SA.store.status !== null && topicsLoaded) deferred = null;
+    if (SA.store.status !== null && topicsLoaded) {
+      deferred = null;
+      writeHash();
+    }
   }
 
   // ===== スマホの一覧 ⇄ 会話（履歴: 会話は v3Body の entry。戻ると一覧） =====
   function setView(view) {
+    const wasHidden = mainHidden();
+    const scroll = $("ed").querySelector(".ed-scroll");
+    // 隠す前に読む（隠した後は読めない）
+    const before = !wasHidden && scroll ? { top: scroll.scrollTop, bottom: atBottom(scroll) } : null;
     S.view = view;
     refs.v3.setAttribute("data-view", view);
+    const hidden = mainHidden();
+    if (wasHidden === hidden) return;
+    if (hidden) {
+      hiddenScroll = before;
+      stickOnShow = false;
+      return;
+    }
+    if (scroll && hiddenScroll) {
+      if (stickOnShow) scroll.scrollTop = scroll.scrollHeight;
+      else if (!hiddenScroll.bottom) scroll.scrollTop = hiddenScroll.top;
+    }
+    hiddenScroll = null;
+    stickOnShow = false;
   }
 
   function showBody() {
@@ -252,7 +304,11 @@
   /** 一覧に戻ったら、開いていた話題の行に焦点（一覧の位置は動かさない） */
   function focusCurrentRow() {
     if (!S.active) return;
-    const row = refs.list.querySelector('button.v3-row[data-topic="' + CSS.escape(S.active) + '"]');
+    const selector = 'button.v3-row[data-topic="' + CSS.escape(S.active) + '"]';
+    // 群の中の行を先に。無ければ「あなたの番」の行（節が出ているときだけ）
+    let row = $("v3-groups").querySelector(selector);
+    const turns = $("v3-turns");
+    if (!row && !turns.hidden) row = turns.querySelector(selector);
     if (row) row.focus({ preventScroll: true });
   }
 
@@ -402,6 +458,11 @@
         setView("list");
         if (phone()) focusCurrentRow();
       }
+    });
+    // 手で書き換えた hash・リンク（自分で書いた hash は replaceState・pushState なので来ない）
+    window.addEventListener("hashchange", () => {
+      const tabId = tabFromHash(location.hash);
+      if (tabId && tabId !== S.active && SA.views.info(tabId)) open(tabId);
     });
     document.addEventListener("keydown", onKey);
     $("v3-sheet").addEventListener("close", () => {
