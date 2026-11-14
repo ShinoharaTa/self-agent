@@ -1,4 +1,5 @@
 // Claude Code のセッションの表示の部品（Web・Discord・ツールで共通。純関数）
+import { CC_PROJECT_PATTERN } from "./starter.ts";
 
 /** RC のリンクの前半（`<これ><bridgeSessionId>`） */
 export const CC_RC_URL_PREFIX = "https://claude.ai/code/";
@@ -25,4 +26,16 @@ export function cwdLabel(cwd: string | undefined, workspaceDir: string, home: st
   const inHome = within(home);
   if (inHome !== undefined) return inHome === "" ? "~" : `~/${inHome}`;
   return cwd;
+}
+
+/**
+ * cwd のワークスペースの直下のプロジェクト（その下も先頭の 1 要素。名前は CC_PROJECT_PATTERN）。ワークスペースそのもの・外・無い・名前が形に合わなければ null。
+ * fs は見ない（realpath を取らない）
+ */
+export function projectOf(cwd: string | undefined, workspaceDir: string): { dir: string } | null {
+  if (cwd === undefined || cwd === "") return null;
+  const root = workspaceDir.replace(/\/+$/, "");
+  if (root === "" || !cwd.startsWith(`${root}/`)) return null;
+  const dir = cwd.slice(root.length + 1).split("/")[0] ?? "";
+  return CC_PROJECT_PATTERN.test(dir) ? { dir } : null;
 }

@@ -94,7 +94,7 @@ type Last = WebChannel["last"];
 const BAD_REQUEST: RouteResult = { status: 400, json: { error: "bad_request" } };
 const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
 
-function channelLink(guildId: string, channelId: string): string {
+export function channelLink(guildId: string, channelId: string): string {
   return `https://discord.com/channels/${guildId}/${channelId}`;
 }
 

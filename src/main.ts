@@ -108,6 +108,7 @@ import { USAGE_KEEP_DAYS, UsageStore } from "./store/usage.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
 import { ccChannelDescriber, ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
 import { channelRoutes, webChannelLookup, webChannelNamer } from "./web/routes/channels.ts";
+import { topicRoutes } from "./web/routes/topics.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
 import { githubRoutes } from "./web/routes/github.ts";
 import { knowledgeRoutes } from "./web/routes/knowledge.ts";
@@ -1120,6 +1121,41 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
                 questionHoldSec: config.ccQuestionHoldSec,
               },
             }),
+      }),
+      // 話題の一覧（セッション・プロジェクトのセッション・Claude Code のセッションを 1 つの形に。docs/plan/web-ui-v3.md §11 の M1）
+      ...topicRoutes({
+        cfg: config,
+        guildSettings,
+        topicSessions,
+        history: historyStore,
+        personas,
+        handler,
+        places: ccPlacesOf(config, homedir()),
+        home: homedir(),
+        ...(projectPermissionBridge === undefined
+          ? {}
+          : {
+              projectPermissions: {
+                store: ccPermissionStore,
+                sessions,
+                holdSec: config.ccPermissionHoldSec,
+                questionHoldSec: config.ccQuestionHoldSec,
+              },
+            }),
+        ...(ccRegistry === undefined
+          ? {}
+          : {
+              cc: {
+                registry: ccRegistry,
+                channels: ccChannelStore,
+                permissions: ccPermissionStore,
+                sends: ccSends,
+                starts: ccStarts,
+                holdSec: config.ccPermissionHoldSec,
+                questionHoldSec: config.ccQuestionHoldSec,
+              },
+            }),
+        now,
       }),
       ...devlogRoutes({ cfg: config, now }),
       ...turnRoutes({
