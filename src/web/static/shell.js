@@ -258,7 +258,10 @@
     return shownTabId();
   }
 
-  /** 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い） */
+  /**
+   * 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い）。
+   * スマホで一覧を出している間（会話の列が隠れている間）も、最後に開いた会話を返す（M2a からの動き。変えるなら polling・音・既読が一緒に変わる）
+   */
   function shownChannelIds() {
     const tabId = shownTabId();
     return tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];

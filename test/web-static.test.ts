@@ -3447,6 +3447,76 @@ test("web static: /turns の polling は見えている会話を全部読み、�
   assert.equal(pending(), false);
 });
 
+/** api.js をまるごと偽の window・document で読む。SA.api.get は get（呼ばれた path を渡す）、timer は動かさない */
+function loadApi(get: (path: string) => Promise<unknown>) {
+  const calls = { refreshes: [] as string[], markSeenShown: 0 };
+  const listeners: Record<string, () => void> = {};
+  const state = { visibility: "visible" };
+  const SA: Record<string, unknown> = {
+    app: {
+      shownChannelIds: () => ["1", "2"],
+      activeTabId: () => "ch:1",
+      refresh: (tab: string) => calls.refreshes.push(tab),
+      refreshStatus: () => undefined,
+      refreshSidebar: () => undefined,
+      refreshActivity: () => undefined,
+    },
+    chat: {
+      markSeenShown: () => {
+        calls.markSeenShown++;
+      },
+    },
+    ui: { toast: () => undefined },
+  };
+  const ctx: Record<string, unknown> = {
+    window: { SA, localStorage: { getItem: () => null, setItem: () => undefined }, addEventListener: () => undefined },
+    document: {
+      get visibilityState() {
+        return state.visibility;
+      },
+      addEventListener: (type: string, fn: () => void) => {
+        listeners[type] = fn;
+      },
+    },
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    Promise,
+  };
+  vm.runInNewContext(read("api.js"), ctx);
+  (SA.api as { get: (path: string) => Promise<unknown> }).get = get;
+  return { SA, calls, state, listeners };
+}
+
+test("web static: /api/status でタイムゾーンが変わったら、前に出ているタブでない見えている会話も描き直す（変わらなければ描き直さない）", async () => {
+  const zone = { value: "Asia/Tokyo" };
+  const h = loadApi(() => Promise.resolve({ timeZone: zone.value }));
+  const load = (h.SA.store as { load: { status: () => Promise<unknown> } }).load;
+  const convs = () => h.calls.refreshes.filter((t) => t.startsWith("ch:"));
+  // 1 回目（まだ読んでいない → 来た）
+  assert.equal(await load.status(), null);
+  assert.deepEqual(convs(), ["ch:1", "ch:2"]);
+  // 同じ zone なら会話は描き直さない
+  h.calls.refreshes.length = 0;
+  assert.equal(await load.status(), null);
+  assert.deepEqual(convs(), []);
+  // 変わったら ch:1（前のタブ）と ch:2（見えている会話）に 1 回ずつ
+  zone.value = "UTC";
+  assert.equal(await load.status(), null);
+  assert.deepEqual(convs(), ["ch:1", "ch:2"]);
+});
+
+test("web static: schedule（polling の始め・見えるようになったとき）は見えている会話を既読にし、隠れたときはしない", () => {
+  const h = loadApi(() => new Promise(() => undefined));
+  (h.SA.poll as { start: () => void }).start();
+  assert.equal(h.calls.markSeenShown, 1);
+  h.state.visibility = "hidden";
+  h.listeners.visibilitychange!();
+  assert.equal(h.calls.markSeenShown, 1);
+  h.state.visibility = "visible";
+  h.listeners.visibilitychange!();
+  assert.equal(h.calls.markSeenShown, 2);
+});
+
 // ===== M2b のレビューの直し =====
 test("web static: v3 のシートを開くと、最初の押せる行に焦点がある（× でも押せない行でもない）", async () => {
   const h = loadShell();
