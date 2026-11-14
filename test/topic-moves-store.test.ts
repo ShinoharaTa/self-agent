@@ -235,23 +235,46 @@ test("TopicMoveStore.propose・start: proposed があっても running は作れ
 test("TopicMoveStore.accept: proposed を running にし、from_dir を渡した値に直す。2 回目は false", (t) => {
   const { moves } = setup(t);
   const id = moves.propose(PROPOSAL)!;
-  assert.equal(moves.accept(id, "beta"), true);
+  assert.equal(moves.accept(id, { channelId: "topic-1", fromDir: "beta", toDir: PROPOSAL.toDir }), true);
   const row = moves.get(id)!;
   assert.equal(row.state, "running");
   assert.equal(row.fromDir, "beta");
   assert.equal(row.by, "right_hand");
   assert.equal(moves.running("topic-1")?.id, id);
   assert.equal(moves.proposedFor("topic-1"), undefined);
-  assert.equal(moves.accept(id, null), false);
+  assert.equal(moves.accept(id, { channelId: "topic-1", fromDir: null, toDir: PROPOSAL.toDir }), false);
   assert.equal(moves.get(id)?.fromDir, "beta");
-  assert.equal(moves.accept(999, null), false);
+  assert.equal(moves.accept(999, { channelId: "topic-1", fromDir: null, toDir: PROPOSAL.toDir }), false);
+});
+
+test("TopicMoveStore.accept: ほかの話題の id を渡すと false で、どちらの行も変わらない", (t) => {
+  const { moves } = setup(t);
+  const id1 = moves.propose(PROPOSAL)!;
+  const id2 = moves.propose({ ...PROPOSAL, channelId: "topic-2" })!;
+  const before1 = moves.get(id1);
+  const before2 = moves.get(id2);
+  assert.equal(moves.accept(id2, { channelId: "topic-1", fromDir: "beta", toDir: "gamma" }), false);
+  assert.deepEqual(moves.get(id1), before1);
+  assert.deepEqual(moves.get(id2), before2);
+  assert.equal(moves.running("topic-1"), undefined);
+  assert.equal(moves.running("topic-2"), undefined);
+});
+
+test("TopicMoveStore.accept: to_dir が違うと、running になった行の to_dir が渡した値になる", (t) => {
+  const { moves } = setup(t);
+  const id = moves.propose(PROPOSAL)!;
+  assert.notEqual(PROPOSAL.toDir, "gamma");
+  assert.equal(moves.accept(id, { channelId: "topic-1", fromDir: null, toDir: "gamma" }), true);
+  const row = moves.get(id)!;
+  assert.equal(row.state, "running");
+  assert.equal(row.toDir, "gamma");
 });
 
 test("TopicMoveStore.accept: その話題に running があるときは false で、行は proposed のまま", (t) => {
   const { moves } = setup(t);
   const id = moves.propose(PROPOSAL)!;
   const running = moves.start(MOVE)!;
-  assert.equal(moves.accept(id, "beta"), false);
+  assert.equal(moves.accept(id, { channelId: "topic-1", fromDir: "beta", toDir: PROPOSAL.toDir }), false);
   assert.equal(moves.get(id)?.state, "proposed");
   assert.equal(moves.get(id)?.fromDir, null);
   assert.equal(moves.running("topic-1")?.id, running);

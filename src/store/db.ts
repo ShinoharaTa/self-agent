@@ -824,7 +824,7 @@ export const MIGRATIONS: readonly string[] = [
   CREATE UNIQUE INDEX topic_moves_running ON topic_moves(channel_id) WHERE state = 'running';
   CREATE INDEX topic_moves_channel ON topic_moves(channel_id, id);
   `,
-  // v43（この issue。docs/plan/web-ui-v3.md §4・§6.3）: 右腕の確認（proposed）の投稿の ID と、1 チャンネルに 1 行の索引
+  // v43（#369。docs/plan/web-ui-v3.md §4・§6.3）: 右腕の確認（proposed）の投稿の ID と、1 チャンネルに 1 行の索引
   `
   ALTER TABLE topic_moves ADD COLUMN message_id TEXT;
   CREATE UNIQUE INDEX topic_moves_proposed ON topic_moves(channel_id) WHERE state = 'proposed';

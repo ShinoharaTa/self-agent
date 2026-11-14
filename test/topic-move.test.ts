@@ -387,7 +387,7 @@ test("moveTopic: moves.fail が投げても結果は変わらず、log だけ", 
     const moves = env.moves;
     env.deps.moves = {
       start: (input) => moves.start(input),
-      accept: (id, fromDir) => moves.accept(id, fromDir),
+      accept: (id, input) => moves.accept(id, input),
       finish: (id, note, apply) => moves.finish(id, note, apply),
       runningChannels: () => moves.runningChannels(),
       fail: () => {
@@ -755,6 +755,32 @@ test("moveTopic: proposalId の行が proposed でないときは moving で、�
   assert.equal(env.turnQueue.keys.length, 0);
   assert.deepEqual(env.rows().map((row) => row.state), ["cancelled"]);
   assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
+});
+
+test("moveTopic: 話題 A に話題 B の proposed の行の proposalId を渡すと moving で、A の場所も B の行も変わらず、要点のターンを始めない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const other = env.moves.propose({ channelId: "topic-2", fromDir: null, toDir: "beta", by: "right_hand" })!;
+  const before = env.moves.get(other);
+  const outcome = await moveTopic({ ...env.input(), by: "right_hand", proposalId: other }, env.deps, env.onAccepted);
+  assert.deepEqual(outcome, { result: "moving" });
+  assert.deepEqual(env.moves.get(other), before);
+  assert.equal(env.moves.running("topic-1"), undefined);
+  assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
+  assert.deepEqual(env.accepted, []);
+  assert.equal(env.runner.inputs.length, 0);
+  assert.equal(env.turnQueue.keys.length, 0);
+});
+
+test("moveTopic: proposalId の行の to_dir と違う場所を渡すと、その場所に変わり、行の to_dir もその場所になる", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const proposalId = env.moves.propose({ channelId: "topic-1", fromDir: null, toDir: "alpha", by: "right_hand" })!;
+  const input: MoveInput = { ...env.input({ kind: "project", name: "beta" }), by: "right_hand", proposalId };
+  const outcome = await moveTopic(input, env.deps, env.onAccepted);
+  assert.deepEqual(outcome, { result: "moved", from: null, to: "beta", note: NOTE });
+  assert.deepEqual(env.topicSessions.projectDirOf("topic-1"), { projectDir: "beta", permissionMode: "default" });
+  const row = env.moves.get(proposalId)!;
+  assert.equal(row.state, "done");
+  assert.equal(row.toDir, "beta");
 });
 
 test("moveTopic: proposalId を渡しても検査は今と同じ順で断り、断ったとき行は proposed のまま", async (t) => {

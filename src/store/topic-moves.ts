@@ -93,12 +93,17 @@ export class TopicMoveStore {
     this.db.prepare("UPDATE topic_moves SET message_id = ? WHERE id = ?").run(messageId, id);
   }
 
-  /** proposed → running（from_dir を今の場所に直す）。proposed でない・その話題に running があるときは false（compare-and-set） */
-  accept(id: number, fromDir: string | null): boolean {
+  /**
+   * その話題の proposed → running（from_dir・to_dir をその場で解いた場所に直す）。ほかの話題の行・proposed でない・
+   * その話題に running があるときは false で、何も変えない（compare-and-set）
+   */
+  accept(id: number, input: { channelId: string; fromDir: string | null; toDir: string }): boolean {
     try {
       const result = this.db
-        .prepare("UPDATE topic_moves SET state = 'running', from_dir = ? WHERE id = ? AND state = 'proposed'")
-        .run(fromDir, id);
+        .prepare(
+          "UPDATE topic_moves SET state = 'running', from_dir = ?, to_dir = ? WHERE id = ? AND channel_id = ? AND state = 'proposed'",
+        )
+        .run(input.fromDir, input.toDir, id, input.channelId);
       return Number(result.changes) === 1;
     } catch (error) {
       if (isUniqueViolation(error)) return false;
