@@ -145,6 +145,10 @@
   .v3-row:hover {
     background: var(--muted);
   }
+
+  .v3-sheet .more-row:not(:disabled):hover {
+    background: var(--muted);
+  }
 }
 
 .v3-row:active {
@@ -222,7 +226,9 @@
 /* 完了（n）と「ほかのプロジェクト（n）」の開閉（見出しは .v3-group-head・.sb-group > summary と同じ字。開閉の印はブラウザの既定の三角のまま） */
 .v3-done > summary,
 .v3-others > summary {
-  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1);
+  min-height: var(--row);
+  padding: 0 var(--space-3) 0 var(--space-1);
+  line-height: var(--row);
   color: var(--text);
   font-size: var(--font-xs);
   font-weight: var(--weight-semibold);
@@ -256,6 +262,8 @@
 /* ===== シート（「ほか」・見出しの […]）: 幅によらず app.css の ≤639px の .more-list・.more-row・.sheet-head と同じ見た目。PC は中央 ===== */
 .v3-sheet {
   width: min(360px, 100vw - 32px);
+  /* base.css の dialog の余白でなく、今の殻の .more-sheet と同じ */
+  padding: var(--space-2) 0;
 }
 
 .v3-sheet .more-list {
@@ -384,6 +392,8 @@
   /* シートは今までどおり下から（app.css の dialog の全幅） */
   .v3-sheet {
     width: 100%;
+    /* app.css の ≤639px の dialog の padding-bottom の代わり（下の安全域は足す） */
+    padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom, 0px));
   }
 
   /* キーボードが出ている間は見えている範囲（visualViewport）に合わせて置く（.wb.is-keyboard と同じ扱い） */

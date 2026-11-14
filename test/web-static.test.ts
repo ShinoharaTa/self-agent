@@ -1924,12 +1924,16 @@ class DomNode extends FakeNode {
     super.remove();
   }
   querySelectorAll(selector: string): DomNode[] {
-    const m = /^([a-z0-9]+)?((?:\.[\w-]+)*)(?:\[([\w-]+)="([^"]*)"\])?$/.exec(selector);
+    const m = /^([a-z0-9]+)?((?:\.[\w-]+)*)(?:\[([\w-]+)="([^"]*)"\])?(?::not\(\[([\w-]+)\]\))?$/.exec(selector);
     assert.ok(m, selector);
     const classes = (m[2] ?? "").split(".").filter(Boolean);
     return descendants(this).filter(
       (n): n is DomNode =>
-        n instanceof DomNode && (!m[1] || n.tagName === m[1]) && classes.every((c) => n.classes.has(c)) && (!m[3] || n.getAttribute(m[3]) === m[4]),
+        n instanceof DomNode &&
+        (!m[1] || n.tagName === m[1]) &&
+        classes.every((c) => n.classes.has(c)) &&
+        (!m[3] || n.getAttribute(m[3]) === m[4]) &&
+        (!m[5] || n.getAttribute(m[5]) === null),
     );
   }
   querySelector(selector: string): DomNode | null {
@@ -2963,4 +2967,98 @@ test("web static: v3 のシートは幅によらず .more-row の見た目を .v
   // 下の口はスマホでも一覧の列の末尾（固定しない）
   assert.doesNotMatch(css, /position: fixed;[^}]*\}[^{]*v3-list-foot/);
   assert.match(block(phoneCss, "  .v3-list-foot"), /env\(safe-area-inset-bottom, 0px\)/);
+});
+
+// ===== M2b のレビューの直し =====
+test("web static: v3 のシートを開くと、最初の押せる行に焦点がある（× でも押せない行でもない）", async () => {
+  const h = loadShell();
+  await h.flush();
+  const sheet = (h.app as unknown as { sheet: (label: string, items: unknown[], opener?: unknown) => void }).sheet;
+  sheet("操作", [{ label: "押せない", why: "理由" }, { label: "押せる", run: () => {} }, { label: "次", run: () => {} }]);
+  const rows = h.nodes.sheet.querySelectorAll("button.more-row");
+  assert.equal(rows[0]!.getAttribute("disabled"), "");
+  assert.equal(h.document.activeElement, rows[1]);
+  // 先頭が押せれば先頭
+  sheet("操作", [{ label: "一", run: () => {} }, { label: "二", run: () => {} }]);
+  assert.equal(h.document.activeElement, h.nodes.sheet.querySelectorAll("button.more-row")[0]);
+});
+
+test("web static: 絞り込み欄で IME の変換中の Escape は絞り込みを閉じない（変換中でなければ閉じる）", async () => {
+  const h = loadShell();
+  await h.flush();
+  kids(h.nodes.headOps)[0]!.dispatch("click");
+  const input = h.document.getElementById("v3-search")!;
+  (input as unknown as { value: string }).value = "かい";
+  input.dispatch("input");
+  for (const o of [{ isComposing: true }, { keyCode: 229 }]) {
+    h.fireDoc("keydown", keyEvent("Escape", input, o));
+    assert.equal(h.nodes.searchBox.hidden, false, JSON.stringify(o));
+    assert.equal((input as unknown as { value: string }).value, "かい");
+    assert.equal(h.document.activeElement, input);
+  }
+  h.fireDoc("keydown", keyEvent("Escape", input));
+  assert.equal(h.nodes.searchBox.hidden, true);
+  assert.equal((input as unknown as { value: string }).value, "");
+});
+
+test("web static: [端末] → [会話] に戻すと会話の onOpen（turns の読み直し）を 1 回呼ぶ。押し直しでは呼ばない", async () => {
+  const h = loadShell();
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { origin: "cc", sessionId: "s1" })]));
+  await h.flush();
+  await h.topics.load();
+  h.app.open("ch:a");
+  const [talk, pane] = kids(h.nodes.views);
+  const count = (tab: string) => h.opens.filter((t) => t === tab).length;
+  talk!.dispatch("click");
+  assert.equal(count("ch:a"), 1, "同じ view の押し直しでは呼ばない");
+  pane!.dispatch("click");
+  assert.equal(count("cc:s1"), 1);
+  assert.equal(count("ch:a"), 1);
+  talk!.dispatch("click");
+  assert.equal(count("ch:a"), 2);
+  assert.equal(count("cc:s1"), 1);
+  assert.deepEqual(h.closes, []);
+});
+
+test("web static: スマホで一覧に戻っている間に [端末] が出せなくなったら、次に会話の列を出したとき下端", async () => {
+  const h = loadShell({ phone: true });
+  const topics = [v3Topic("ch:a", { origin: "cc", sessionId: "s1" })];
+  h.api.reply = () => Promise.resolve(v3Result(topics));
+  await h.flush();
+  await h.topics.load();
+  h.app.open("ch:a");
+  kids(h.nodes.views)[1]!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "cc:s1");
+  h.scroll().scrollTop = 100;
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  topics[0] = v3Topic("ch:a", { origin: "cc", sessionId: null });
+  await h.topics.load();
+  assert.equal(h.app.activeTabId(), "ch:a");
+  h.history.forward();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.scroll().scrollTop, 800);
+});
+
+test("web static: v3 のシートの余白は .more-sheet と同じで、スマホは下の安全域を足す。完了・ほかの summary は --row の高さ。PC は行に hover", () => {
+  const css = read("shell.css");
+  const app = read("app.css");
+  const block = (src: string, sel: string) => {
+    const at = src.indexOf(sel + " {");
+    assert.ok(at >= 0, sel);
+    return src.slice(src.indexOf("{", at) + 1, src.indexOf("}", at));
+  };
+  const padding = (b: string) => /\n\s*padding: ([^;]+);/.exec(b)?.[1];
+  assert.equal(padding(block(css, "\n.v3-sheet")), padding(block(app, "\n  .more-sheet")));
+  assert.equal(padding(block(css, "\n.v3-sheet")), "var(--space-2) 0");
+  const phoneCss = css.slice(css.indexOf("@media (max-width: 639px)"));
+  assert.match(block(phoneCss, "  .v3-sheet"), /padding-bottom: calc\(var\(--space-2\) \+ env\(safe-area-inset-bottom, 0px\)\);/);
+  const summary = block(css, "\n.v3-done > summary,\n.v3-others > summary");
+  assert.match(summary, /min-height: var\(--row\);/);
+  assert.match(summary, /line-height: var\(--row\);/);
+  assert.match(summary, /padding: 0 var\(--space-3\) 0 var\(--space-1\);/);
+  assert.doesNotMatch(summary, /display:/, "三角を残す");
+  const hover = css.slice(css.indexOf("@media (hover: hover) and (pointer: fine)"));
+  assert.match(block(hover, "  .v3-sheet .more-row:not(:disabled):hover"), /background: var\(--muted\);/);
+  assert.ok(hover.indexOf(".v3-sheet .more-row:not(:disabled):hover") < hover.indexOf("\n}"), "hover の media の中");
 });
