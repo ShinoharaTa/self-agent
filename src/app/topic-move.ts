@@ -3,7 +3,7 @@
 // チャンネル・履歴・題名はそのまま残し、次の発言から新しい場所の新しい会話で続ける。ファイルは動かさない。
 // SDK の Options・システムプロンプト・ツールは変えない（seed の見出しは /renew と同じ RENEWED_SEED_HEADER）
 import type { RunContext, RunResult } from "../agent/runner.ts";
-import { ensureGeneralDir } from "../cc/starter.ts";
+import { ensureGeneralDir, projectDir } from "../cc/starter.ts";
 import { DEFAULT_PERSONA_ID } from "../config.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
 import { type HistoryStore, recordHistory } from "../store/history.ts";
@@ -36,9 +36,9 @@ export type MoveOutcome =
 
 export type MoveDeps = {
   topicSessions: Pick<TopicSessionStore, "get" | "personaOf" | "projectDirOf" | "setProject" | "setRenewed" | "getCloseDraft">;
-  moves: Pick<TopicMoveStore, "start" | "finish" | "fail">;
-  /** 発言のターンと同じキュー（key は channelId） */
-  turnQueue: Pick<KeyedSerialQueue, "run">;
+  moves: Pick<TopicMoveStore, "start" | "finish" | "fail" | "runningChannels">;
+  /** 発言のターンと同じキュー（key は channelId。has は枠待ち・前のジョブ待ちの発言を busy にするため） */
+  turnQueue: Pick<KeyedSerialQueue, "run" | "has">;
   turn: Pick<TurnDeps, "runner" | "projectRunner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
   /** 実行中のターン（handler.runningTurns） */
   runningTurns: () => ReadonlyArray<{ channelId: string }>;
@@ -151,6 +151,9 @@ function checkDestination(
 ): { from: string | null; to: string } | { refusal: MoveRefusal } {
   let to: string;
   if (input.place.kind === "general") {
+    // もう General なら作らずに断る
+    const current = deps.topicSessions.projectDirOf(input.channelId)?.projectDir;
+    if (gate.places.generalDir !== undefined && current === gate.places.generalDir) return { refusal: "same_place" };
     const general = ensureGeneralDir(gate.places);
     if (general === "unavailable" || gate.places.generalDir === undefined) return { refusal: "invalid_project" };
     if (general === "created") deps.log("General のディレクトリを作りました");
@@ -166,8 +169,9 @@ function checkDestination(
 }
 
 /**
- * 話題の場所を変える。検査（同期）で断れば onAccepted を呼ばず DB にも書かない。受け付けたら topic_moves に running の行を足して
- * onAccepted を待ち、発言と同じキュー（セッションのジョブ）の中で検査をやり直してから、会話があれば要点のターンを 1 つ走らせ、
+ * 話題の場所を変える。検査（同期）で断れば onAccepted を呼ばず DB にも書かない。受け付けたら topic_moves に running の行を足し、
+ * 最初の await の前に発言と同じキュー（セッションのジョブ）に積んでから onAccepted を待つ（その間に来た発言は付け替えの後に走る。
+ * onAccepted が投げても log だけで続ける）。キューの中で検査をやり直してから、会話があれば要点のターンを 1 つ走らせ、
  * 場所・SDK セッション・seed・要約・記録を 1 つのトランザクションで書き換える。要点のターンが失敗したら何も変えない。
  * 抜けるときに running の行を残さない。log に題名・本文・要点・チャンネル ID・プロジェクトの名前・パスを出さない
  */
@@ -179,7 +183,12 @@ export async function moveTopic(
   // (1) 検査（最初の await の前に受け付けまで済ませる）
   const topic = checkTopic(input, deps);
   if ("refusal" in topic) return { result: topic.refusal };
-  if (deps.runningTurns().some((running) => running.channelId === input.channelId)) return { result: "busy" };
+  // 付け替えがもうキューにいる（2 つ目の要求）。busy より先に見る
+  if (deps.moves.runningChannels().has(input.channelId)) return { result: "moving" };
+  // 実行中のターンと、枠待ち・前のジョブ待ちの発言
+  if (deps.runningTurns().some((running) => running.channelId === input.channelId) || deps.turnQueue.has(input.channelId)) {
+    return { result: "busy" };
+  }
   const gate = deps.projectSessions;
   if (gate === undefined) return { result: "cc_disabled" };
   if (!gate.ready()) return { result: "unify_not_ready" };
@@ -190,9 +199,16 @@ export async function moveTopic(
   const id = deps.moves.start({ channelId: input.channelId, fromDir: destination.from, toDir: destination.to, by: input.by });
   if (id === undefined) return { result: "moving" };
   try {
-    await onAccepted?.();
-    // (3) キュー
-    const outcome = await deps.turnQueue.run(input.channelId, () => moveTurn(input, deps, gate, id), { session: true });
+    // (3) キュー（onAccepted より先に積む。待つ間に reject しても unhandled にしない。最後の await でそのまま外へ出す）
+    const queued = deps.turnQueue.run(input.channelId, () => moveTurn(input, deps, gate, id), { session: true });
+    queued.catch(() => {});
+    try {
+      await onAccepted?.();
+    } catch (error) {
+      // もう積んであり取り消せないので続ける
+      deps.log(`場所の付け替えの受け付けの知らせに失敗しました（${errorName(error)}）`);
+    }
+    const outcome = await queued;
     // (4) topic の書き換えは待たない（回数の制限で待たされることがある）。失敗は log だけ
     if (outcome.result === "moved" && deps.setChannelTopic !== undefined) {
       const title = deps.topicSessions.get(input.channelId)?.title;
@@ -236,6 +252,11 @@ async function moveTurn(input: MoveInput, deps: MoveDeps, gate: ProjectSessionGa
   // 要点のターン（/renew の要約のターンと同じ組み立て。オーナーの発言ではないので WebFetch に許す URL は無い）
   const persona = turnPersonaOf(turn, channelId);
   const project = topicSessions.projectDirOf(channelId);
+  if (project !== undefined && projectDir(project.projectDir, gate.places) === undefined) {
+    // 今の場所が使えない（消えた・改名された・直下でなくなった）と要点のターンは必ず失敗する。記録が無いときと同じく要点なしで進める
+    deps.log(`今の場所が使えないので要点なしで付け替えます（guild=${guildId}）`);
+    return finishWithoutNote(input, deps, id, session, from, to, generalDir);
+  }
   let result: RunResult | undefined;
   if (project === undefined || turn.projectRunner !== undefined) {
     const context: RunContext | undefined =
@@ -249,7 +270,13 @@ async function moveTurn(input: MoveInput, deps: MoveDeps, gate: ProjectSessionGa
       deps.log(`場所の付け替えの要点のターンが投げました（guild=${guildId}、${errorName(error)}）`);
     }
   }
-  if (result !== undefined) recordTurnUsage(turn, channelId, "topic-move", result, persona);
+  if (result !== undefined) {
+    try {
+      recordTurnUsage(turn, channelId, "topic-move", result, persona);
+    } catch (error) {
+      deps.log(`場所の付け替えの要点のターンの usage を記録できませんでした（guild=${guildId}、${errorName(error)}）`);
+    }
+  }
 
   if (result?.ok === true) {
     const text = result.text.trim();
@@ -263,13 +290,8 @@ async function moveTurn(input: MoveInput, deps: MoveDeps, gate: ProjectSessionGa
   }
 
   if (result !== undefined && !result.ok && RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
-    // 会話の記録がもう無いので要点は取れない。resume の復旧と同じ seed（前の /renew の要約 → /close の要約 → 題名）に場所の 2 行を足す
-    const seed = resumeSeed(session, undefined, "inbox");
-    return finish(input, deps, id, from, to, null, generalDir, () => {
-      topicSessions.setProject(channelId, to, "default");
-      turn.sessions.delete(channelId);
-      turn.seeds.set(channelId, seed === undefined ? lines : `${seed}\n\n${lines}`);
-    });
+    // 会話の記録がもう無いので要点は取れない
+    return finishWithoutNote(input, deps, id, session, from, to, generalDir);
   }
 
   // ほかの失敗: 何も変えない。途中まで記録された会話は次の発言で続ける（同じ SDK セッションなら置き換えない）
@@ -284,6 +306,26 @@ async function moveTurn(input: MoveInput, deps: MoveDeps, gate: ProjectSessionGa
   failQuietly(deps, id);
   notice(deps, guildId, channelId, MOVE_FAILED_TEXT);
   return { result: "failed" };
+}
+
+/** 要点なしで付け替える。resume の復旧と同じ seed（前の /renew の要約 → /close の要約 → 題名）に場所の 2 行を足す */
+function finishWithoutNote(
+  input: MoveInput,
+  deps: MoveDeps,
+  id: number,
+  session: TopicSession,
+  from: string | null,
+  to: string,
+  generalDir: string | undefined,
+): MoveOutcome {
+  const { channelId } = input;
+  const lines = placeLines(from, to, generalDir);
+  const seed = resumeSeed(session, undefined, "inbox");
+  return finish(input, deps, id, from, to, null, generalDir, () => {
+    deps.topicSessions.setProject(channelId, to, "default");
+    deps.turn.sessions.delete(channelId);
+    deps.turn.seeds.set(channelId, seed === undefined ? lines : `${seed}\n\n${lines}`);
+  });
 }
 
 /** 受け付けた後（キューの中）で断る: 行を failed にし、履歴に知らせ */

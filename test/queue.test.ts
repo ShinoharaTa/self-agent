@@ -295,6 +295,31 @@ test("runningSessionJobs: 実行中のセッションのジョブだけを数え
   assert.equal(queue.runningSessionJobs(), 0);
 });
 
+test("has: その key に終わっていないジョブ（実行中・枠待ち・同じ key の前のジョブ待ち）があるか。別の key は見ない", async () => {
+  const queue = new KeyedSerialQueue(2);
+  assert.equal(queue.has("a"), false);
+  const first = deferred();
+  const second = deferred();
+  const other = deferred();
+  // b がセッションの枠（1）を使い、a のセッションのジョブは枠待ち
+  const runs = [queue.run("b", () => other.promise, { session: true }), queue.run("a", () => first.promise, { session: true })];
+  await flush();
+  assert.equal(queue.has("a"), true, "枠待ち");
+  other.resolve();
+  await flush();
+  assert.equal(queue.has("a"), true, "実行中");
+  runs.push(queue.run("a", () => second.promise));
+  first.resolve();
+  await flush();
+  assert.equal(queue.has("a"), true, "同じ key の待ち・実行中");
+  assert.equal(queue.has("c"), false);
+  second.resolve();
+  await Promise.all(runs);
+  await queue.idle();
+  assert.equal(queue.has("a"), false);
+  assert.equal(queue.has("b"), false);
+});
+
 /** key ごとに 1 つずつジョブを入れ、同時に動いたセッション・それ以外のジョブの最大数を返す */
 async function peakConcurrency(
   queue: KeyedSerialQueue,
