@@ -186,11 +186,9 @@
     S.view2 = view;
     renderBar();
     renderEd($("ed"), shownTabId(), true);
-    // 端末の画面の写しは前に出たときに読み直す（その後は api.js の polling）。会話へ戻るときは閉じない
-    if (view === "pane") {
-      const info = SA.views.info(shownTabId());
-      if (info && info.onOpen) info.onOpen();
-    }
+    // 前に出た方を読み直す（端末は画面の写し、会話は turns など。その後は api.js の polling）。切り替えでは閉じない
+    const info = SA.views.info(shownTabId());
+    if (info && info.onOpen) info.onOpen();
   }
 
   /** [会話][端末] の切り替え（ボタンは 1 度だけ作り、押した状態だけ合わせる） */
@@ -248,7 +246,11 @@
     renderBar();
     const shown = shownTabId();
     const ed = $("ed");
-    if (ed && shown !== edTab) renderEd(ed, shown, true);
+    if (ed && shown !== edTab) {
+      // 一覧を出している間に会話に戻したら、次に会話の列を出したとき下端にする（[端末] の位置を当てない）
+      if (mainHidden()) hiddenScroll = { top: 0, bottom: true };
+      renderEd(ed, shown, true);
+    }
   }
 
   /** api.js の polling・SA.app.refresh が当たるのは列 2 に出している物（[端末] の間は cc:<sessionId>） */
@@ -461,6 +463,9 @@
     close.addEventListener("click", () => closeDialog(dialog));
     dialog.replaceChildren(el("div", { class: "sheet-head" }, [el("span", { class: "sheet-title", text: label }), close]), el("ul", { class: "more-list" }, rows));
     openDialog(dialog);
+    // 最初の焦点は押せる最初の行（× ではなく）
+    const first = dialog.querySelector(".more-row:not([disabled])");
+    if (first) first.focus();
   }
 
   // ===== 下の口（タスク・リマインド・ほか） =====
@@ -689,6 +694,8 @@
       return;
     }
     if (e.key !== "Escape") return;
+    // IME の変換中の Escape は変換を取り消すだけ（殻は取らない）
+    if (e.isComposing || e.keyCode === 229) return;
     if (document.querySelector("dialog[open]")) return;
     const input = $("v3-search");
     if (input && document.activeElement === input) {
