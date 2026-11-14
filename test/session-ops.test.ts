@@ -5,8 +5,9 @@ import { join } from "node:path";
 import type { RunResult } from "../src/agent/runner.ts";
 import { createSessionToolHandlers } from "../src/agent/tools.ts";
 import { TITLE_MAX_LENGTH } from "../src/app/commands/new.ts";
+import { createChannelResolver } from "../src/app/access.ts";
 import { ensureGuildLayout } from "../src/app/commands/setup.ts";
-import type { Handler, SubmitTextResult } from "../src/app/handler.ts";
+import { createHandler, type Handler, type SubmitTextResult } from "../src/app/handler.ts";
 import type { RotateNowResult } from "../src/app/inbox-rotate.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
@@ -505,4 +506,133 @@ test("startTopic（web）: 新しい引数が無ければ origin は command・�
   assert.deepEqual(s.history.list(result.channelId, { limit: 10 }).map((row) => row.text), ["General で始めました"]);
   assert.equal(s.submits.length, 1);
   assert.equal("via" in (s.submits[0] ?? {}), false);
+});
+
+test("startTopic: seeds.set が投げても created で、最初の投稿・仕切り・最初の一言は進み、log は 1 行だけ（中身・題名は出さない）", async (t) => {
+  const s = await startSetup(t, {
+    seeds: {
+      set: () => {
+        throw new Error("SQLITE_BUSY");
+      },
+    },
+  });
+  const result = await s.start({ title: "秘密の題名", text: "一言", by: "right_hand", seed: "秘密の seed" });
+  assert.ok(result.result === "created");
+  assert.equal(result.turn, "started");
+  assert.deepEqual(s.gateway.sent.map((sent) => sent.text), [rightHandWelcomeText("秘密の題名", "inbox", "General")]);
+  assert.deepEqual(s.history.list(result.channelId, { limit: 10 }).map((row) => row.text), ["右腕が General で始めました"]);
+  assert.equal(s.submits.length, 1);
+  assert.deepEqual(
+    s.logs.filter((line) => line.startsWith("seed")),
+    ["seed を入れられませんでした: SQLITE_BUSY"],
+  );
+  const joined = s.logs.join("\n");
+  for (const word of ["秘密", result.channelId]) assert.equal(joined.includes(word), false, word);
+});
+
+test("startTopic: seed を渡したのに seeds が無ければ、作って log に 1 行", async (t) => {
+  const s = await startSetup(t);
+  const result = await s.start({ title: "続き", by: "right_hand", seed: "秘密の seed" });
+  assert.equal(result.result, "created");
+  assert.deepEqual(
+    s.logs.filter((line) => line.startsWith("seed")),
+    ["seed の置き場が無いので入れませんでした"],
+  );
+  assert.equal(s.logs.join("\n").includes("秘密"), false);
+});
+
+test("startTopic: owner があれば仕切りの history の行はその人格で書く。無ければ persona を渡さない（今までと同じ行）", async (t) => {
+  const s = await startSetup(t);
+  const rows: Array<Parameters<typeof s.history.add>[0]> = [];
+  const add = s.history.add.bind(s.history);
+  s.history.add = (row) => {
+    rows.push(row);
+    return add(row);
+  };
+  const owned = await s.start({ title: "相談", by: "right_hand", owner: { id: "luna", name: "LUNA" } });
+  const plain = await s.start({ title: "雑談", by: "right_hand" });
+  assert.ok(owned.result === "created" && plain.result === "created");
+  assert.deepEqual(s.history.list(owned.channelId, { limit: 10 }).map((row) => [row.kind, row.persona]), [["divider", "luna"]]);
+  assert.deepEqual(s.history.list(plain.channelId, { limit: 10 }).map((row) => [row.kind, row.persona]), [["divider", "default"]]);
+  assert.deepEqual(rows[1], {
+    guildId: "guild-1",
+    channelId: plain.channelId,
+    kind: "divider",
+    source: "system",
+    text: "右腕が General で始めました",
+  });
+});
+
+test("startTopic（right_hand）: log に題名・本文・チャンネル ID・プロジェクトの名前・from・seed の中身が出ない", async (t) => {
+  const s = await startSetup(t, { general: "Freeform", seeds: { set: () => undefined } });
+  s.next.push({ result: "accepted", turnId: 1, messageId: "m" }, { result: "echo_failed" });
+  const a = await s.start({ title: "秘密の題名", text: "秘密の本文", by: "right_hand", from: "ひみつ部屋", seed: "隠した seed", owner: { id: "luna", name: "LUNA" } });
+  const b = await s.start({ title: "別の題名", text: "別の本文", by: "right_hand", from: "ひみつ部屋", seed: "隠した seed", place: { kind: "project", name: "alpha" } });
+  assert.ok(a.result === "created" && b.result === "created");
+  const joined = s.logs.join("\n");
+  for (const word of ["秘密", "別の", "ひみつ部屋", "隠した", "alpha", "Freeform", s.workspace, a.channelId, b.channelId]) {
+    assert.equal(joined.includes(word), false, word);
+  }
+  assert.ok(s.logs.length > 0);
+});
+
+test("startTopic（right_hand）: 本物の handler と seeds で、1 ターン目のプロンプトは seed → 一言の順。seed・一言の URL は allowedUrls に入らない", async (t) => {
+  const db = tempDb(t);
+  const gateway = new FakeGateway({
+    allow: ["getParentId", "sendMessage", "pinMessage", "messageExists", "send", "editMessage", "startTyping"],
+    record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn", "moveChannel", "send"],
+  });
+  const stores = createStores(db, () => NOW);
+  const logs: string[] = [];
+  const log = (line: string): void => void logs.push(line);
+  const layoutQueue = new KeyedSerialQueue(1);
+  const layout = { gateway, guildSettings: stores.guildSettings, topicSessions: stores.topicSessions, queue: layoutQueue, channelOps: { enqueueMove: () => undefined }, log };
+  assert.equal((await ensureGuildLayout("guild-1", layout)).failure, null);
+  gateway.reset();
+  const workspace = realpathSync(tempDir(t));
+  const gate: ProjectSessionGate = { places: { workspaceDir: workspace, protectedDirs: [], generalDir: "General" }, ready: () => true };
+  const runner = new FakeRunner([ok("はい")]);
+  const cfg = { allowedGuildIds: ["guild-1"], inboxChannelId: "env-inbox", ownerUserId: "owner-1", timeZone: "Asia/Tokyo" };
+  const handler = createHandler({
+    cfg,
+    resolveChannel: createChannelResolver(cfg, stores.guildSettings, stores.topicSessions),
+    gateway,
+    runner,
+    projectRunner: runner,
+    sessions: stores.sessions,
+    seeds: stores.seeds,
+    topicSessions: stores.topicSessions,
+    inboxSummaries: stores.inboxSummaries,
+    memories: stores.memories,
+    channelOps: new RecordingChannelOps(),
+    usage: stores.usage,
+    queue: new KeyedSerialQueue(2),
+    now: () => NOW,
+    history: stores.history,
+    log,
+  });
+  const seed = "#inbox からの続き:\n文脈 https://seed.example/x";
+  const text = "これを読んで https://example.com/a";
+  const result = await startTopic(
+    { guildId: "guild-1", place: { kind: "general" }, by: "right_hand", at: NOW, title: "調べ物", text, seed },
+    {
+      gateway,
+      guildSettings: stores.guildSettings,
+      topicSessions: stores.topicSessions,
+      queue: layoutQueue,
+      history: stores.history,
+      log,
+      submitText: handler.submitText,
+      projectSessions: gate,
+      seeds: stores.seeds,
+    },
+  );
+  assert.ok(result.result === "created");
+  assert.equal(result.turn, "started");
+  for (let i = 0; i < 100 && runner.inputs.length === 0; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(runner.inputs.length, 1);
+  const first = runner.inputs[0]!;
+  const seedAt = first.prompt.indexOf(seed);
+  assert.ok(seedAt >= 0 && seedAt < first.prompt.indexOf(text), first.prompt);
+  assert.deepEqual(first.allowedUrls, []);
 });

@@ -590,7 +590,7 @@ export function createHandler(deps: HandlerDeps): Handler {
       try {
         messageId = await gateway.sendMessage(channelId, { text: `${via === "right_hand" ? RIGHT_HAND_ECHO_PREFIX : WEB_ECHO_PREFIX}\n${content}` });
       } catch (error) {
-        log(`Web の発言の投稿に失敗しました: ${describeError(error)}`);
+        log(`${via === "right_hand" ? "右腕の" : "Web の"}発言の投稿に失敗しました: ${describeError(error)}`);
         return { result: "echo_failed" };
       }
       const turnId =
@@ -601,7 +601,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         ) ?? 0;
       // echo の間に停止を始めていれば、ターンにしない（停止の待ちに入らないため）
       if (deps.stopping?.() === true) {
-        log("停止中のため Web の投稿をターンにしませんでした");
+        log(`停止中のため ${via === "right_hand" ? "右腕の" : "Web の"}投稿をターンにしませんでした`);
         // owner の行が返事の無いまま残らないように知らせを足す
         recordHistory(
           history,

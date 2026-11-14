@@ -1688,6 +1688,18 @@ test("Web: via が無ければ写しは「（Web から）」で、本文の URL
   assert.deepEqual(runner.inputs.map((input) => input.allowedUrls), [["https://example.com/a"]]);
 });
 
+test("Web: via right_hand で写しの投稿に失敗したら、log は「右腕の発言の投稿に失敗しました」", async (t) => {
+  const { gateway, topicSessions, handler, logs } = setup(t, [], { history: true });
+  topicSessions.create(TOPIC);
+  gateway.beforeSendMessage = () => {
+    throw new Error("Missing Access");
+  };
+
+  assert.deepEqual(await handler.submitText({ ...webInput("topic-1", "送れない本文"), via: "right_hand" }), { result: "echo_failed" });
+
+  assert.deepEqual(logs, ["右腕の発言の投稿に失敗しました: Missing Access"]);
+});
+
 test("Web: 待ちのセッションに送ると、返す前に進行中に戻して最終発言の時刻を記録し、返事の先頭に REVIVED_NOTE を付ける", async (t) => {
   const { gateway, topicSessions, channelOps, clock, handler } = setup(t, [okResult("session-1", "了解です")], { history: true });
   topicSessions.create(TOPIC);
