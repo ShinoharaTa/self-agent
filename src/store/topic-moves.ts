@@ -18,6 +18,8 @@ export type TopicMove = {
   note: string | null;
   createdAt: string;
   doneAt: string | null;
+  /** 右腕の確認（proposed）の投稿の ID。投稿していない・確認でない行は null（v43） */
+  messageId: string | null;
 };
 
 function nullableString(value: unknown): string | null {
@@ -35,16 +37,17 @@ function toMove(row: Record<string, unknown>): TopicMove {
     note: nullableString(row.note),
     createdAt: String(row.created_at),
     doneAt: nullableString(row.done_at),
+    messageId: nullableString(row.message_id),
   };
 }
 
-/** 一意索引（topic_moves_running）の違反か */
+/** 一意索引（topic_moves_running・topic_moves_proposed）の違反か */
 function isUniqueViolation(error: unknown): boolean {
   return error instanceof Error && /UNIQUE constraint failed/i.test(error.message);
 }
 
 /**
- * 話題の場所の付け替えの記録（topic_moves。docs/plan/web-ui-v3.md §6.3）。running は 1 チャンネルに 1 行。
+ * 話題の場所の付け替えの記録（topic_moves。docs/plan/web-ui-v3.md §6.3）。running と proposed（右腕の確認）はそれぞれ 1 チャンネルに 1 行。
  * finish は場所を変える書き込み（apply）と done を 1 つのトランザクションにする
  */
 export class TopicMoveStore {
@@ -69,6 +72,65 @@ export class TopicMoveStore {
       if (isUniqueViolation(error)) return undefined;
       throw error;
     }
+  }
+
+  /** proposed の行を足して id を返す。同じチャンネルに proposed の行がもうあれば足さずに undefined（一意の索引）。ほかのエラーは投げる */
+  propose(input: { channelId: string; fromDir: string | null; toDir: string; by: TopicMoveBy }): number | undefined {
+    try {
+      const row = this.db
+        .prepare(
+          "INSERT INTO topic_moves (channel_id, from_dir, to_dir, state, by, created_at) VALUES (?, ?, ?, 'proposed', ?, ?) RETURNING id",
+        )
+        .get(input.channelId, input.fromDir, input.toDir, input.by, this.now().toISOString());
+      return Number(row!.id);
+    } catch (error) {
+      if (isUniqueViolation(error)) return undefined;
+      throw error;
+    }
+  }
+
+  setMessageId(id: number, messageId: string): void {
+    this.db.prepare("UPDATE topic_moves SET message_id = ? WHERE id = ?").run(messageId, id);
+  }
+
+  /** proposed → running（from_dir を今の場所に直す）。proposed でない・その話題に running があるときは false（compare-and-set） */
+  accept(id: number, fromDir: string | null): boolean {
+    try {
+      const result = this.db
+        .prepare("UPDATE topic_moves SET state = 'running', from_dir = ? WHERE id = ? AND state = 'proposed'")
+        .run(fromDir, id);
+      return Number(result.changes) === 1;
+    } catch (error) {
+      if (isUniqueViolation(error)) return false;
+      throw error;
+    }
+  }
+
+  /** proposed → cancelled（done_at を入れる）。proposed でなければ false（compare-and-set） */
+  cancel(id: number): boolean {
+    const result = this.db
+      .prepare("UPDATE topic_moves SET state = 'cancelled', done_at = ? WHERE id = ? AND state = 'proposed'")
+      .run(this.now().toISOString(), id);
+    return Number(result.changes) === 1;
+  }
+
+  /** その話題の proposed の行 */
+  proposedFor(channelId: string): TopicMove | undefined {
+    const row = this.db.prepare("SELECT * FROM topic_moves WHERE channel_id = ? AND state = 'proposed'").get(channelId);
+    return row === undefined ? undefined : toMove(row);
+  }
+
+  /** proposed の行すべて（id の順。/api/topics の「あなたの番」に使う） */
+  listProposed(): TopicMove[] {
+    return this.db.prepare("SELECT * FROM topic_moves WHERE state = 'proposed' ORDER BY id").all().map(toMove);
+  }
+
+  /** created_at が cutoff より前の proposed の行（id の順） */
+  listProposedBefore(cutoff: Date): TopicMove[] {
+    return this.db
+      .prepare("SELECT * FROM topic_moves WHERE state = 'proposed' AND created_at < ? ORDER BY id")
+      .all(cutoff.toISOString())
+      .map(toMove);
   }
 
   /**
