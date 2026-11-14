@@ -2187,6 +2187,8 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
   // 右腕の描画（chat.js の render の代わり）: 見出しに題と frame.ops()、下端に寄せる .ed-scroll（高さは heights.hand）、入力欄は作り直さない
   const handRenders: Array<{ id: string; frame: HandFrame }> = [];
   const chatChannels: Record<string, unknown> = {};
+  // 右腕の Bot の返事の本文（描くたびに replyText・replyExtras を通して .ed-scroll に入れる）
+  const handReplies: string[] = [];
   SA.chat = {
     channelById: (id: string) => chatChannels[id] ?? {},
     channelTitle: (ch: { title?: string }) => ch.title ?? "セッション",
@@ -2197,6 +2199,9 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
       const scroll = ui.el("div", { class: "ed-scroll", "data-stick": "bottom" });
       scroll.scrollHeight = heights.hand ?? 1000;
       scroll.clientHeight = 200;
+      for (const text of handReplies) {
+        scroll.append(ui.el("div", { class: "msg" }, [ui.el("p", { class: "msg-text", text: frame.replyText ? frame.replyText(text) : text }), ...(frame.replyExtras ? frame.replyExtras(text) : [])]));
+      }
       const head = ui.el("header", { class: "ed-toolbar" }, [ui.el("h1", { text: frame.title }), ...(frame.ops ? frame.ops() : [])]);
       container.replaceChildren(head, scroll, kept ?? ui.el("div", { class: "composer-wrap" }, [ui.el("textarea", { class: "composer-input" })]));
     },
@@ -2232,6 +2237,7 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
     nodes: { v3, ed, groups, turns, turnsRows, note, listBody, headOps, searchBox, foot, views, sheet: ids.get("v3-sheet")!, list, main, bar, hand, handEd, handShow, handAsk, handOpen, backdrop },
     handRenders,
     chatChannels,
+    handReplies,
     state,
     api,
     heights,
@@ -4007,4 +4013,65 @@ test("web static: v3.html に右腕の枠と 3 つの口があり、右腕のた
   const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
   assert.match(phone, /\.v3\[data-hand-mode="over"\]\[data-hand="open"\] \.v3-hand \{[^}]*top: var\(--space-8\);[^}]*padding-bottom: env\(safe-area-inset-bottom, 0px\);/);
   assert.match(phone, /\.v3-hand-ask \{[^}]*min-height: var\(--tap\);/);
+});
+
+test("web static: 札は返事の <#ID> を話題の行で引いて 題名・場所・状態・[開く] を出す（5 つまで・同じ ID は 1 つ・引けない ID は出さず本文もそのまま）", async () => {
+  const topics = [
+    v3Topic("ch:11", { title: "領収書", mark: "running", place: { dir: "~/w/x" } }),
+    v3Topic("ch:12", { title: "B", group: "other", cwdLabel: "~/a", state: "waiting" }),
+    v3Topic("ch:14", { title: "D" }),
+    v3Topic("ch:15", { title: "E" }),
+  ];
+  const h = await loadHand({}, topics);
+  // 一覧から外れた（完了した）セッションは /api/channels の値で
+  h.chatChannels["13"] = { kind: "session", title: "C", state: "done" };
+  h.chatChannels["98"] = { kind: "inbox", name: "inbox" };
+  h.handReplies.push("<#11> と <#12>、また <#11>。<#13> <#99> <#98> <#14> <#15>");
+  h.app.refresh("ch:900");
+  const cards = h.nodes.handEd.querySelectorAll("div.v3-card");
+  assert.deepEqual(
+    cards.map((c) => [c.getAttribute("data-topic"), c.querySelector("span.v3-card-title")!.textContent, c.querySelector("span.v3-card-meta")!.textContent]),
+    [
+      ["ch:11", "領収書", "~/w/x・作業中"],
+      ["ch:12", "B", "ほかの場所（~/a）・待ち"],
+      ["ch:13", "C", "完了"],
+    ],
+    "11・12・13・99・98 の 5 つまで。引けない 99・98（セッションでない）は出さない",
+  );
+  const open = cards[0]!.buttons()[0]!;
+  assert.equal(open.textContent, "開く");
+  assert.equal(open.getAttribute("aria-label"), "領収書 を開く");
+  assert.equal(
+    h.nodes.handEd.querySelector("p.msg-text")!.textContent,
+    "「領収書」 と 「B」、また 「領収書」。「C」 <#99> <#98> 「D」 「E」",
+    "本文は引けたものを「題名」に、引けないものはそのまま（5 つの上限は札だけ）",
+  );
+  // [開く] で列 2 にその話題が開く
+  open.dispatch("click");
+  assert.equal(h.app.activeTabId(), "ch:11");
+  // 一覧を読んで札の中身が変わったら描き直し、変わらなければ描き直さない
+  let renders = h.handRenders.length;
+  await h.topics.load();
+  assert.equal(h.handRenders.length, renders);
+  topics[0] = v3Topic("ch:11", { title: "領収書", mark: "turn", place: { dir: "~/w/x" } });
+  await h.topics.load();
+  assert.equal(h.handRenders.length, renders + 1);
+  assert.equal(h.nodes.handEd.querySelector("span.v3-card-meta")!.textContent, "~/w/x・あなたの番");
+  // 引けなかった ID が引けるようになっても描き直す
+  renders = h.handRenders.length;
+  topics.push(v3Topic("ch:99", { title: "新しい話題" }));
+  await h.topics.load();
+  assert.equal(h.handRenders.length, renders + 1);
+  assert.match(h.nodes.handEd.querySelector("p.msg-text")!.textContent, /「新しい話題」/);
+  // 純関数: 出た順・同じものは 1 つ・先頭 5 つ
+  const ctx: Record<string, unknown> = {};
+  vm.runInNewContext(fnSource(read("shell.js"), "cardIds") + "\nf = cardIds;", ctx);
+  const ids = (t: string) => JSON.parse(JSON.stringify((ctx.f as (t: string) => string[])(t))) as string[];
+  assert.deepEqual(ids("<#3><#1><#3><#2><#4><#5><#6>"), ["3", "1", "2", "4", "5"]);
+  assert.deepEqual(ids("<#a> #1 <@2>"), []);
+  // 札の CSS は地を付けない
+  const css = read("shell.css");
+  const card = css.slice(css.indexOf("\n.v3-card {"), css.indexOf("}", css.indexOf("\n.v3-card {")));
+  assert.doesNotMatch(card, /background/);
+  assert.match(card, /border: var\(--border-width\) solid var\(--border\);/);
 });
