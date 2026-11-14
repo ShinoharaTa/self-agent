@@ -1765,7 +1765,8 @@ test("web static: 一覧の差し替えは同じ key の要素を使い回し、
   reset();
   run(["c", "x", "a"]);
   assert.deepEqual(parent.children, [c, x, a]);
-  assert.deepEqual([FakeNode.calls.remove, created], [0, 0]);
+  // [a, x, c] → c を先頭へ（1）、x を a の前へ（2）。a は動かさない
+  assert.deepEqual([FakeNode.calls.insertBefore, FakeNode.calls.remove, created], [2, 0, 0]);
 });
 
 test("web static: topics.js は一覧の入れ物を作り直さない", () => {
@@ -1780,7 +1781,8 @@ test("web static: topics.js は一覧の入れ物を作り直さない", () => {
   // 群・行・「あなたの番」の行は同じ reconcile で
   assert.match(js, /reconcile\(groups, data\.groups,/);
   assert.match(js, /reconcile\(list, members\.map\(rowParts\),/);
-  assert.match(js, /reconcile\(\$\("v3-turns-rows"\), parts, \(p\) => "turn:" \+ p\.id,/);
+  assert.match(js, /const turnKey = \(p\) => "turn:" \+ p\.id;/);
+  assert.match(js, /reconcile\(\$\("v3-turns-rows"\), parts, turnKey,/);
 });
 
 test("web static: 行の印は あなたの番 > 作業中 > 未読 で 1 つだけ、作業中の輪は回さない", () => {
@@ -1880,4 +1882,515 @@ test("web static: 話題の polling は あなたの番か作業中があれば 
   // schedule は 2 秒に 1 回まで
   assert.match(js, /const MIN_GAP_MS = 2000;/);
   assert.match(fnSource(js, "schedule"), /if \(pending !== null\) return;/);
+});
+
+// ===== 新しい殻を偽の DOM で動かす（shell.js・topics.js。M2a のレビュー） =====
+/** FakeNode にスクロール・焦点・querySelector を足したもの。hides が true を返す祖先の下では display: none（スクロールの読み書きが効かない） */
+class DomNode extends FakeNode {
+  static hides: (n: DomNode) => boolean = () => false;
+  static focused: DomNode | null = null;
+  scrollHeight = 0;
+  clientHeight = 0;
+  private top = 0;
+  get rendered(): boolean {
+    for (let n: FakeNode | null = this; n; n = n.parent) if (n instanceof DomNode && DomNode.hides(n)) return false;
+    return true;
+  }
+  get scrollTop(): number {
+    return this.rendered ? this.top : 0;
+  }
+  set scrollTop(v: number) {
+    if (this.rendered) this.top = Math.max(0, Math.min(v, Math.max(0, this.scrollHeight - this.clientHeight)));
+  }
+  get dataset(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of this.attrs) if (k.startsWith("data-")) out[k.slice(5).replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase())] = v;
+    return out;
+  }
+  override get classList() {
+    return {
+      add: (c: string) => this.classes.add(c),
+      contains: (c: string) => this.classes.has(c),
+      remove: (c: string) => this.classes.delete(c),
+      toggle: (c: string, on?: boolean) => ((on ?? !this.classes.has(c)) ? this.classes.add(c) : this.classes.delete(c)),
+    };
+  }
+  focus(): void {
+    DomNode.focused = this;
+  }
+  /** 焦点のある要素を外すと（動かすための外しも）焦点が外れる */
+  override remove(): void {
+    if (DomNode.focused && this.contains(DomNode.focused)) DomNode.focused = null;
+    super.remove();
+  }
+  querySelectorAll(selector: string): DomNode[] {
+    const m = /^([a-z0-9]+)?((?:\.[\w-]+)*)(?:\[([\w-]+)="([^"]*)"\])?$/.exec(selector);
+    assert.ok(m, selector);
+    const classes = (m[2] ?? "").split(".").filter(Boolean);
+    return descendants(this).filter(
+      (n): n is DomNode =>
+        n instanceof DomNode && (!m[1] || n.tagName === m[1]) && classes.every((c) => n.classes.has(c)) && (!m[3] || n.getAttribute(m[3]) === m[4]),
+    );
+  }
+  querySelector(selector: string): DomNode | null {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+  closest(): null {
+    return null;
+  }
+  replaceWith(other: DomNode): void {
+    const parent = this.parent!;
+    parent.insertBefore(other, this);
+    this.remove();
+  }
+}
+
+type ShellApp = {
+  open: (tab: string) => void;
+  refresh: (tab: string) => void;
+  activeTabId: () => string | null;
+  closeDrawer: () => void;
+  refreshStatus: () => void;
+};
+type Topics = { load: () => Promise<void>; schedule: () => void; render: () => void };
+
+const v3Topic = (id: string, o: Record<string, unknown> = {}) => ({ id, title: id, origin: "session", persona: null, activityAt: null, state: "active", last: null, mark: null, turn: null, group: "g", place: null, ...o });
+const v3Result = (topics: unknown[], o: Record<string, unknown> = {}) => ({ groups: [{ key: "g", name: "General", turns: 0, running: 0 }], topics, turns: 0, turnIds: [], rightHands: [], ...o });
+
+/**
+ * v3.html の骨組みを DomNode で組み、ui.js・topics.js・shell.js を読み込む。views.info は known のタブだけを返し、
+ * ch: のタブは data-stick="bottom" の .ed-scroll（高さは heights。既定 1,000・見える高さ 200）と見出しの [‹] を描く
+ */
+function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string) => boolean; status?: unknown } = {}) {
+  const state = { phone: opts.phone ?? false, now: 1_000_000 };
+  let seq = 0;
+  const timers = new Map<number, { at: number; ms: number; fn: () => void }>();
+  const node = (tag: string, id?: string, cls?: string) => {
+    const n = new DomNode(tag);
+    if (id) n.setAttribute("id", id);
+    if (cls) n.setAttribute("class", cls);
+    return n;
+  };
+  const v3 = node("div", "v3", "v3");
+  v3.setAttribute("data-view", "list");
+  const listBody = node("div", "v3-list-body", "v3-list-body");
+  listBody.scrollHeight = 2000;
+  listBody.clientHeight = 400;
+  const note = node("p", "v3-list-note");
+  const turns = node("section", "v3-turns");
+  turns.hidden = true;
+  const turnsHead = node("h2");
+  turnsHead.append(node("span", "v3-turns-count"));
+  const turnsRows = node("ul", "v3-turns-rows", "v3-rows");
+  turns.append(turnsHead, turnsRows);
+  const groups = node("div", "v3-groups");
+  listBody.append(note, turns, groups);
+  const list = node("nav", "v3-list", "v3-list");
+  list.append(listBody);
+  const main = node("main", "v3-main", "v3-main");
+  const bar = node("div", "v3-bar");
+  bar.append(node("span", "v3-place"));
+  const ed = node("div", "ed", "ed");
+  main.append(bar, ed);
+  v3.append(list, main);
+  const body = node("body");
+  body.append(v3, node("dialog", "v3-sheet"));
+  const ids = new Map<string, DomNode>();
+  for (const n of descendants(body)) if (n instanceof DomNode && n.getAttribute("id")) ids.set(n.getAttribute("id")!, n);
+  // ≤639px の一覧の間は .v3-main が display: none（shell.css）。hidden の要素も出ない
+  DomNode.hides = (n) => n.hidden || (n === main && state.phone && v3.getAttribute("data-view") === "list");
+  DomNode.focused = null;
+
+  const docListeners = new Map<string, Array<(e: unknown) => void>>();
+  const winListeners = new Map<string, Array<(e: unknown) => void>>();
+  const on = (map: typeof docListeners) => (type: string, fn: (e: unknown) => void) => map.set(type, [...(map.get(type) ?? []), fn]);
+  const fire = (type: string, e: unknown = {}) => {
+    for (const fn of winListeners.get(type) ?? []) fn(e);
+  };
+  const document = {
+    readyState: "complete",
+    visibilityState: "visible",
+    title: "",
+    documentElement: { dataset: {} as Record<string, string>, style: { setProperty() {}, removeProperty() {} } },
+    get activeElement() {
+      return DomNode.focused && body.contains(DomNode.focused) ? DomNode.focused : body;
+    },
+    contains: (n: unknown) => body.contains(n),
+    getElementById: (id: string) => ids.get(id) ?? null,
+    createElement: (tag: string) => new DomNode(tag),
+    createElementNS: (_ns: string, tag: string) => new DomNode(tag),
+    createTextNode: (text: string) => Object.assign(new DomNode("#text"), { text }),
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: on(docListeners),
+  };
+  const location = { hash: opts.hash ?? "", pathname: "/static/v3.html", search: "" };
+  const hashOfUrl = (url: string) => (url.includes("#") ? url.slice(url.indexOf("#")) : "");
+  const entries: Array<{ state: unknown; hash: string }> = [{ state: null, hash: location.hash }];
+  let index = 0;
+  const calls = { push: 0 };
+  const history = {
+    get state() {
+      return entries[index]!.state;
+    },
+    pushState(st: unknown, _t: string, url: string) {
+      calls.push++;
+      entries.splice(index + 1);
+      location.hash = hashOfUrl(url);
+      entries.push({ state: st, hash: location.hash });
+      index++;
+    },
+    replaceState(st: unknown, _t: string, url: string) {
+      location.hash = hashOfUrl(url);
+      entries[index] = { state: st, hash: location.hash };
+    },
+    back() {
+      if (index === 0) return;
+      index--;
+      location.hash = entries[index]!.hash;
+      fire("popstate", { state: entries[index]!.state });
+    },
+    forward() {
+      if (index === entries.length - 1) return;
+      index++;
+      location.hash = entries[index]!.hash;
+      fire("popstate", { state: entries[index]!.state });
+    },
+  };
+  const mq = {
+    get matches() {
+      return state.phone;
+    },
+    addEventListener() {},
+  };
+  const window = { matchMedia: () => mq, addEventListener: on(winListeners), innerHeight: 800, scrollY: 0 } as Record<string, unknown>;
+  class FakeDate extends Date {
+    static override now(): number {
+      return state.now;
+    }
+  }
+  const context = {
+    window,
+    document,
+    history,
+    location,
+    CSS: { escape: (v: string) => v },
+    setTimeout: (fn: () => void, ms: number) => {
+      timers.set(++seq, { at: state.now + ms, ms, fn });
+      return seq;
+    },
+    clearTimeout: (id: number) => timers.delete(id),
+    setInterval: () => 0,
+    Intl,
+    Date: FakeDate,
+    Number,
+  };
+  vm.runInNewContext(read("ui.js"), context);
+  const SA = (window as { SA: Record<string, unknown> }).SA;
+  const ui = SA.ui as { el: (tag: string, props?: Record<string, unknown>, children?: unknown[]) => DomNode; backButton: () => DomNode };
+  const heights: Record<string, number> = {};
+  const rendered: Array<{ tab: string; view: string | null }> = [];
+  const closes: string[] = [];
+  const known = opts.known ?? ((tab: string) => tab.startsWith("ch:") || tab.startsWith("cc:") || tab === "tasks");
+  SA.views = {
+    info: (tab: string) =>
+      known(tab)
+        ? {
+            render: (container: DomNode) => {
+              rendered.push({ tab, view: v3.getAttribute("data-view") });
+              const scroll = ui.el("div", { class: "ed-scroll", "data-stick": tab.startsWith("ch:") ? "bottom" : undefined });
+              scroll.scrollHeight = heights[tab] ?? 1000;
+              scroll.clientHeight = 200;
+              container.replaceChildren(ui.el("header", { class: "ed-toolbar" }, [ui.backButton()]), scroll);
+            },
+            onClose: () => closes.push(tab),
+          }
+        : null,
+    ago: () => "1 分前",
+  };
+  SA.store = { status: opts.status === undefined ? {} : opts.status, isUnread: () => false, load: { channels() {}, usageDays() {}, usage() {} } };
+  SA.chat = { channelById: () => ({}) };
+  SA.poll = { start() {}, stopped: () => false };
+  const api = { calls: 0, reply: (): Promise<unknown> => Promise.resolve(v3Result([])) };
+  SA.api = {
+    get: () => {
+      api.calls++;
+      return api.reply();
+    },
+  };
+  vm.runInNewContext(read("topics.js"), context);
+  vm.runInNewContext(read("shell.js"), context);
+  const advance = (ms: number) => {
+    state.now += ms;
+    for (const [id, t] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+      if (t.at <= state.now && timers.has(id)) {
+        timers.delete(id);
+        t.fn();
+      }
+    }
+  };
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+  const scroll = () => ed.querySelector(".ed-scroll")!;
+  const row = (container: DomNode, id: string) => container.querySelector(`button.v3-row[data-topic="${id}"]`);
+  return {
+    app: SA.app as ShellApp,
+    topics: SA.topics as Topics,
+    nodes: { v3, ed, groups, turns, turnsRows, note, listBody },
+    state,
+    api,
+    heights,
+    rendered,
+    closes,
+    history,
+    location,
+    calls,
+    timers,
+    advance,
+    flush,
+    fire,
+    scroll,
+    row,
+    store: SA.store as { status: unknown },
+    document,
+  };
+}
+
+test("web static: v3 の会話のスクロール: 別の話題に切り替えると下端、同じ話題の refresh は位置を保つ（下端に居れば下端）", async () => {
+  const h = loadShell();
+  await h.flush();
+  h.app.open("ch:a");
+  assert.equal(h.scroll().scrollTop, 800);
+  // 同じ話題の描き直しは位置を保つ
+  h.scroll().scrollTop = 100;
+  h.app.refresh("ch:a");
+  assert.equal(h.scroll().scrollTop, 100);
+  // 下端に居れば伸びても下端
+  h.scroll().scrollTop = 800;
+  h.heights["ch:a"] = 1500;
+  h.app.refresh("ch:a");
+  assert.equal(h.scroll().scrollTop, 1300);
+  // 前の話題の位置（100）を引き継がない
+  h.scroll().scrollTop = 100;
+  h.app.open("ch:b");
+  assert.equal(h.scroll().scrollTop, 800);
+  // 下端に寄せない画面は先頭から
+  h.heights.tasks = 1000;
+  h.app.open("tasks");
+  assert.equal(h.scroll().scrollTop, 0);
+  // 出ていないタブの refresh は何もしない
+  const before = h.rendered.length;
+  h.app.refresh("ch:a");
+  assert.equal(h.rendered.length, before);
+});
+
+test("web static: v3 のスマホ: 会話の列が隠れている間の refresh は、表示したときに下端（下端に居なかったら元の位置）", async () => {
+  const h = loadShell({ phone: true });
+  await h.flush();
+  h.app.open("ch:a");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.scroll().scrollTop, 800);
+  // 下端に居たまま一覧へ戻り、隠れている間に伸びる → [会話] で出したら下端（showBody）
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  h.heights["ch:a"] = 1500;
+  h.app.refresh("ch:a");
+  assert.equal(h.scroll().scrollTop, 0, "隠れている間は読めない");
+  h.app.closeDrawer();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.scroll().scrollTop, 1300);
+  // 途中に居たまま一覧へ戻り、隠れている間に描き直す → 進むで戻ったら元の位置（popstate）
+  h.scroll().scrollTop = 300;
+  h.history.back();
+  h.heights["ch:a"] = 1800;
+  h.app.refresh("ch:a");
+  h.history.forward();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.scroll().scrollTop, 300);
+});
+
+test("web static: v3 のスマホの open は描く前に会話の列を出し、pushState は 1 回、焦点は [‹]。popstate で一覧 ⇄ 会話", async () => {
+  const h = loadShell({ phone: true });
+  await h.flush();
+  h.app.open("ch:a");
+  assert.deepEqual(h.rendered.at(-1), { tab: "ch:a", view: "body" });
+  assert.equal(h.calls.push, 1);
+  assert.equal(h.location.hash, "#/ch/a");
+  assert.ok((h.document.activeElement as DomNode).classes.has("ed-back"));
+  // 会話を出したまま別の話題: 積み増さない
+  h.app.open("ch:b");
+  assert.equal(h.calls.push, 1);
+  assert.equal(h.location.hash, "#/ch/b");
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  h.history.forward();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  // PC では [‹] に焦点を移さない
+  const pc = loadShell();
+  await pc.flush();
+  pc.app.open("ch:a");
+  assert.equal(pc.calls.push, 0);
+  assert.equal(pc.document.activeElement.tagName, "body");
+});
+
+test("web static: v3 の open: ch: から切り替えても onClose を呼ばず、cc: からは呼ぶ。同じ話題・引けないタブでは何もしない", async () => {
+  const h = loadShell();
+  await h.flush();
+  h.app.open("ch:a");
+  h.app.open("cc:x");
+  assert.deepEqual(h.closes, []);
+  h.app.open("ch:b");
+  assert.deepEqual(h.closes, ["cc:x"]);
+  h.app.open("ch:b");
+  assert.deepEqual(h.closes, ["cc:x"]);
+  const before = h.rendered.length;
+  h.app.open("nope");
+  assert.equal(h.app.activeTabId(), "ch:b");
+  assert.equal(h.rendered.length, before);
+  assert.deepEqual(h.closes, ["cc:x"]);
+});
+
+test("web static: v3 の load・schedule: 読み込み中に頼まれた分は並行にせず後で 1 回、形の合わない応答・描けない応答は失敗の表示で次の予約が掛かる", async () => {
+  const h = loadShell();
+  let resolve: (v: unknown) => void = () => undefined;
+  h.api.reply = () => new Promise((r) => (resolve = r));
+  await h.topics.load();
+  // 起動の 1 回で返った既定の一覧の後
+  assert.equal(h.api.calls, 1);
+  const pending = h.topics.load();
+  void h.topics.load();
+  h.topics.schedule();
+  assert.equal(h.api.calls, 2);
+  resolve(v3Result([v3Topic("ch:a")]));
+  await pending;
+  await h.flush();
+  assert.equal(h.api.calls, 2, "すぐには読まない（2 秒に 1 回まで）");
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
+  h.advance(2000);
+  await h.flush();
+  assert.equal(h.api.calls, 3);
+  h.advance(2000);
+  await h.flush();
+  assert.equal(h.api.calls, 3, "後の 1 回だけ");
+  const polls = () => [...h.timers.values()].filter((t) => t.ms === 60000).length;
+  assert.equal(polls(), 1);
+  // turnIds が配列でない
+  h.api.reply = () => Promise.resolve({ ...v3Result([]), turnIds: null });
+  await h.topics.load();
+  assert.equal(h.nodes.note.hidden, false);
+  assert.equal(h.nodes.note.text, "更新できませんでした。前の一覧を出しています");
+  assert.equal(polls(), 1);
+  // 描けない（id の無い話題）: 投げても失敗の表示と次の予約
+  h.api.reply = () => Promise.resolve(v3Result([{ group: "g", state: "active" }]));
+  await h.topics.load();
+  assert.equal(h.nodes.note.text, "更新できませんでした。前の一覧を出しています");
+  assert.equal(polls(), 1);
+  // 直ればもとに戻る
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
+  await h.topics.load();
+  assert.equal(h.nodes.note.hidden, true);
+});
+
+test("web static: v3 の一覧: 焦点のある行が先頭へ動いても焦点と一覧の位置が残る", async () => {
+  const h = loadShell();
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a"), v3Topic("ch:b")]));
+  await h.flush();
+  await h.topics.load();
+  const b = h.row(h.nodes.groups, "ch:b")!;
+  b.focus();
+  h.nodes.listBody.scrollTop = 150;
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:b"), v3Topic("ch:a")]));
+  await h.topics.load();
+  assert.equal(h.nodes.groups.querySelectorAll("button.v3-row")[0], b, "使い回して先頭へ");
+  assert.equal(h.document.activeElement, b);
+  assert.equal(h.nodes.listBody.scrollTop, 150);
+});
+
+test("web static: v3 の「あなたの番」が 0 に戻ると行が空になり、一覧へ戻った焦点は群の中の行に当たる", async () => {
+  const h = loadShell({ phone: true });
+  const turn = { kind: "permission", since: "2026-11-14T00:00:00Z", summary: null };
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { mark: "turn", turn })], { turns: 1, turnIds: ["ch:a"] }));
+  await h.flush();
+  await h.topics.load();
+  assert.equal(h.nodes.turns.hidden, false);
+  assert.equal(h.nodes.turnsRows.children.length, 1);
+  h.app.open("ch:a");
+  // 番があっても群の中の行を先に
+  h.history.back();
+  assert.equal(h.document.activeElement, h.row(h.nodes.groups, "ch:a"));
+  h.app.open("ch:a");
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
+  await h.topics.load();
+  assert.equal(h.nodes.turns.hidden, true);
+  assert.equal(h.nodes.turnsRows.children.length, 0);
+  h.history.back();
+  assert.equal(h.document.activeElement, h.row(h.nodes.groups, "ch:a"));
+});
+
+test("web static: v3 の群は「話題はありません」⇄ 行の一覧を入れ替える", async () => {
+  const h = loadShell();
+  await h.flush();
+  const section = () => h.nodes.groups.children[0]!;
+  assert.equal(section().children.length, 2);
+  assert.ok(section().children[1]!.classes.has("v3-group-empty"));
+  assert.equal(section().children[1]!.text, "話題はありません");
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
+  await h.topics.load();
+  assert.equal(section().children.length, 2);
+  assert.ok(section().children[1]!.classes.has("v3-rows"));
+  assert.ok(h.row(h.nodes.groups, "ch:a"));
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { state: "done" })]));
+  await h.topics.load();
+  assert.equal(section().children.length, 2);
+  assert.ok(section().children[1]!.classes.has("v3-group-empty"));
+});
+
+test("web static: v3 の hash: tabFromHash と hashOf は往復し、hashchange で開き、起動の hash を待っている間は消さない", async () => {
+  const ctx: Record<string, unknown> = {};
+  const js = read("shell.js");
+  vm.runInNewContext(fnSource(js, "hashOf") + fnSource(js, "tabFromHash"), ctx);
+  const hashOf = ctx.hashOf as (tab: string) => string;
+  const tabFromHash = ctx.tabFromHash as (hash: string) => string | null;
+  for (const tab of ["ch:123", "cc:abc-def", "tasks"]) assert.equal(tabFromHash(hashOf(tab)), tab);
+  assert.equal(hashOf("ch:1"), "#/ch/1");
+  assert.equal(tabFromHash(""), null);
+  assert.equal(tabFromHash("#/"), null);
+
+  const h = loadShell();
+  await h.flush();
+  h.location.hash = "#/ch/b";
+  h.fire("hashchange");
+  assert.equal(h.app.activeTabId(), "ch:b");
+  const before = h.rendered.length;
+  h.fire("hashchange");
+  assert.equal(h.rendered.length, before, "今の話題なら開き直さない");
+
+  // 状態がまだ届いていない間は cc: を開けず、hash を残して待つ → 開けるようになったら開く
+  let ready = false;
+  const w = loadShell({ hash: "#/cc/x", status: null, known: (tab) => tab !== "cc:x" || ready });
+  await w.flush();
+  assert.equal(w.app.activeTabId(), null);
+  assert.equal(w.location.hash, "#/cc/x");
+  ready = true;
+  w.store.status = {};
+  w.app.refreshStatus();
+  assert.equal(w.app.activeTabId(), "cc:x");
+  assert.equal(w.location.hash, "#/cc/x");
+  // 状態と最初の一覧の両方が届いても開けなければ、待つのをやめて hash を消す
+  const g = loadShell({ hash: "#/cc/x", status: null, known: (tab) => tab !== "cc:x" });
+  await g.flush();
+  assert.equal(g.location.hash, "#/cc/x");
+  g.store.status = {};
+  g.app.refreshStatus();
+  assert.equal(g.app.activeTabId(), null);
+  assert.equal(g.location.hash, "");
+});
+
+test("web static: .v3 の文字は --font-sm で、スクロールバーは app.css の .wb と同じ細いもの", () => {
+  const css = read("shell.css");
+  const block = css.slice(css.indexOf("\n.v3 {"), css.indexOf("}", css.indexOf("\n.v3 {")));
+  assert.match(block, /font-size: var\(--font-sm\);/);
+  assert.match(block, /scrollbar-width: thin;/);
+  assert.match(block, /scrollbar-color: var\(--border\) transparent;/);
 });
