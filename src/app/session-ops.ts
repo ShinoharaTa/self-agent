@@ -1,7 +1,7 @@
 // セッションの操作（作る・待ちにする・進行中に戻す・閉じる・会話を新しくする）の本体。Discord のコマンド・ボタン（commands/）と Web UI が共有する。
 // 応答（interaction への返信・保留）は呼び出し側が行い、ここは結果の種類を返す。保留が要る操作は、受け付けた（断らない）と決まった時点で onAccepted を呼ぶ
 import { removeNodeModules } from "../agent/disk.ts";
-import { type CcPlaces, projectDir as verifiedProjectDir } from "../cc/starter.ts";
+import { type CcPlaces, ensureGeneralDir, projectDir as verifiedProjectDir } from "../cc/starter.ts";
 import { DEFAULT_PERSONA_ID, type PersonaConfig } from "../config.ts";
 import { normalizeChannelName } from "../discord/channel-name.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
@@ -15,6 +15,7 @@ import type { NewSessionDeps } from "./commands/new.ts";
 import type { RenewDeps } from "./commands/renew.ts";
 import { layoutQueueKey } from "./commands/setup.ts";
 import type { WaitDeps } from "./commands/wait.ts";
+import type { Handler } from "./handler.ts";
 import { ROTATED_NOTICE, ROTATED_NOTICE_FRESH, type RotateNowResult } from "./inbox-rotate.ts";
 import { RENEWED_FRESH_REPLY, type RenewOutcome, renewedText, renewSession } from "./session-renew.ts";
 import { applySessionEvent } from "./session-state.ts";
@@ -182,6 +183,114 @@ export async function openTopicSession(
     log(`セッションの最初の投稿に失敗しました: ${describeError(error)}`);
   }
   return result;
+}
+
+// ---- 話題を始める（POST /api/topics。docs/plan/web-ui-v3.md §5・§11 の M4） ----
+
+/** 題名の制御文字（改行・タブを含む）を空白にし、連続する空白を 1 つにして、前後の空白を除く（Web の題名で共通） */
+export function normalizeTopicTitle(title: string): string {
+  return title.replace(/\p{Cc}/gu, " ").replace(/ {2,}/g, " ").trim();
+}
+
+/** 最初の一言から作る題名の長さ（コードポイント） */
+export const TOPIC_TITLE_FROM_TEXT_MAX = 30;
+export const UNTITLED_TOPIC = "無題";
+/** 題名の長さ（commands/new.ts の TITLE_MAX_LENGTH と同じ値。循環 import を避けてここにも置き、テストで同じことを確かめる） */
+export const TOPIC_TITLE_MAX_LENGTH = 100;
+/** 最初の一言の長さ（web/routes/turns.ts の WEB_MESSAGE_MAX_LENGTH と同じ値。テストで同じことを確かめる） */
+export const TOPIC_TEXT_MAX_LENGTH = 1900;
+
+/** 最初の一言から題名を作る（純関数）: 最初の空でない行 → normalizeTopicTitle → 先頭 30 字（コードポイント）→ 末尾の空白を除く。空なら 無題 */
+export function titleFromText(text: string): string {
+  const line = text.split(/\r\n|\r|\n/).find((part) => normalizeTopicTitle(part) !== "") ?? "";
+  const title = [...normalizeTopicTitle(line)].slice(0, TOPIC_TITLE_FROM_TEXT_MAX).join("").trimEnd();
+  return title === "" ? UNTITLED_TOPIC : title;
+}
+
+export type StartTopicPlace = { kind: "general" } | { kind: "project"; name: string };
+export type StartTopicInput = {
+  guildId: string;
+  title?: string;
+  text?: string;
+  place: StartTopicPlace;
+  /** 誰が始めたか（log の主語と仕切り）。M6 で "right_hand" を足す */
+  by: "web";
+  at: Date;
+};
+export type StartTopicResult =
+  | { result: "empty" }
+  | { result: "too_long"; field: "title" | "text" }
+  | { result: "cc_disabled" }
+  | { result: "unify_not_ready" }
+  | { result: "invalid_project" }
+  | { result: "not_set_up" }
+  | {
+      result: "created";
+      channelId: string;
+      title: string;
+      /** 作ったセッションの project_dir（軽いセッションなら null） */
+      projectDir: string | null;
+      /** started: 最初のターンを受け付けた・none: 一言が無い・failed: 受け付けられなかった（話題は作ってある） */
+      turn: "started" | "none" | "failed";
+    };
+export type StartTopicDeps = Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log"> & {
+  history: Pick<HistoryStore, "add"> | undefined;
+  submitText: Handler["submitText"];
+  /** SELF_AGENT_CC=1 のときだけ。places には generalDir が入っている */
+  projectSessions?: ProjectSessionGate;
+};
+
+/** 話題を始めたときの仕切りの文（純関数）。projectDir が undefined なら場所なし（軽いセッション） */
+export function startedDividerText(place: StartTopicPlace, projectDir: string | undefined): string {
+  if (projectDir === undefined) return "場所なしで始めました";
+  return place.kind === "project" ? `${place.name} で始めました` : "General で始めました";
+}
+
+/**
+ * 話題を始める（場所・題名・最初の一言。種類は選ばせない）。既定の人格・origin command。応答はせず結果の種類を返す。
+ * General は使えれば（連携・共有の link・ディレクトリ）プロジェクトのセッション、使えなければ軽いセッション。プロジェクトは使えなければ断る。
+ * 作った後に仕切りを 1 行書き、一言があれば submitText で最初のターンを入れる（受け付けられなくても話題は残す）。
+ * 投げた例外は握らない。log に題名・本文・チャンネル ID・プロジェクトの名前・パスを出さない
+ */
+export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): Promise<StartTopicResult> {
+  let title = normalizeTopicTitle(input.title ?? "");
+  const text = (input.text ?? "").trim();
+  if (title === "" && text === "") return { result: "empty" };
+  if (title.length > TOPIC_TITLE_MAX_LENGTH) return { result: "too_long", field: "title" };
+  if (text.length > TOPIC_TEXT_MAX_LENGTH) return { result: "too_long", field: "text" };
+  if (title === "") title = titleFromText(text);
+
+  let projectDir: string | undefined;
+  const gate = deps.projectSessions;
+  if (input.place.kind === "project") {
+    if (gate === undefined) return { result: "cc_disabled" };
+    const checked = checkSessionProject(input.place.name, gate);
+    if (!checked.ok) return { result: checked.reason === "not_set_up" ? "unify_not_ready" : "invalid_project" };
+    projectDir = checked.projectDir;
+  } else if (gate !== undefined && gate.ready()) {
+    const general = ensureGeneralDir(gate.places);
+    if (general !== "unavailable") projectDir = gate.places.generalDir;
+    if (general === "created") deps.log("General のディレクトリを作りました");
+  }
+
+  const opened = await openTopicSession(input.guildId, title, undefined, deps, "Web から", undefined, projectDir);
+  if (opened.result === "empty_title") return { result: "empty" };
+  if (opened.result === "not_set_up") return { result: "not_set_up" };
+  const { channelId } = opened;
+
+  recordHistory(
+    deps.history,
+    { guildId: input.guildId, channelId, kind: "divider", source: "system", text: startedDividerText(input.place, projectDir) },
+    deps.log,
+  );
+
+  let turn: "started" | "none" | "failed" = "none";
+  if (text !== "") {
+    const submitted = await deps.submitText({ guildId: input.guildId, channelId, content: text, at: input.at, source: "web" });
+    turn = submitted.result === "accepted" ? "started" : "failed";
+    if (turn === "failed") deps.log(`話題は作りましたが、最初の一言を送れませんでした（${submitted.result}）`);
+  }
+  return { result: "created", channelId, title, projectDir: projectDir ?? null, turn };
 }
 
 // ---- 待ちにする・進行中に戻す（/wait・[続ける]） ----
