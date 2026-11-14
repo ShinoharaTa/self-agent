@@ -1132,6 +1132,14 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         handler,
         places: ccPlacesOf(config, homedir()),
         home: homedir(),
+        // 群の判定（projectOf）は実際の場所で比べる（読めなければ設定のまま）
+        workspaceRoot: (() => {
+          try {
+            return realpathSync(config.workspaceDir);
+          } catch {
+            return config.workspaceDir;
+          }
+        })(),
         ...(projectPermissionBridge === undefined
           ? {}
           : {

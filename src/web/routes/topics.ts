@@ -35,12 +35,14 @@ import { channelLink, CLOSE_CONFIRM_NOTICE } from "./channels.ts";
 export type TopicRouteDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "personas" | "workspaceDir">;
   guildSettings: Pick<GuildSettingsStore, "get" | "personaInbox">;
-  topicSessions: Pick<TopicSessionStore, "listByState"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
+  topicSessions: Pick<TopicSessionStore, "listByState" | "getCloseDraft"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
   history: Pick<HistoryStore, "list" | "latestByChannel">;
   personas: Pick<PersonaRouter, "ownerOf"> & { all: readonly Pick<PersonaRuntime, "id" | "name">[] };
   handler: Pick<Handler, "runningTurns">;
   places: CcPlaces;
   home: string;
+  /** projectOf に渡すワークスペースの root（配線で realpath したもの）。無ければ cfg.workspaceDir */
+  workspaceRoot?: string;
   /** プロジェクトのセッションの許可（channels.ts の projectPermissions と同じ物） */
   projectPermissions?: { store: Pick<CcPermissionStore, "latestSdkFor">; sessions: Pick<SdkSessionStore, "get"> } & HoldSeconds;
   /** SELF_AGENT_CC=1 のときだけ */
@@ -79,6 +81,7 @@ function permissionTurn(row: CcPermissionRow, hold: HoldSeconds): TopicTurn {
 export function topicRoutes(deps: TopicRouteDeps): Route[] {
   const { cfg, guildSettings, topicSessions, history, personas, handler, places, home, projectPermissions, cc } = deps;
   const now = deps.now ?? (() => new Date());
+  const workspaceRoot = deps.workspaceRoot ?? cfg.workspaceDir;
 
   /** 既定でない人格の名前（既定なら null） */
   const personaOf = (channelId: string): string | null => {
@@ -87,10 +90,15 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
     return personas.all.find((persona) => persona.id === id)?.name ?? id;
   };
 
-  /** /close の確認（Web から始めたもの。最後の行がその知らせ）。無ければ undefined */
-  const closeConfirm = (channelId: string): TopicTurn | undefined => {
+  /**
+   * /close の確認（Web から始めたもの。最後の行がその知らせで、下書きもある。channels.ts の /turns の closeDraft と同じ条件）。無ければ undefined。
+   * latest（latestByChannel の行）が notice のときだけ history.list を読む
+   */
+  const closeConfirm = (channelId: string, latest: TopicLast): TopicTurn | undefined => {
+    if (latest === null || latest.kind !== "notice") return undefined;
     const last = history.list(channelId, { limit: 1 })[0];
     if (last === undefined || last.kind !== "notice" || last.source !== "system" || last.text !== CLOSE_CONFIRM_NOTICE) return undefined;
+    if ((topicSessions.getCloseDraft(channelId) ?? null) === null) return undefined;
     return { kind: "confirm", summary: "閉じる前の確認", since: last.at, expiresAt: null };
   };
 
@@ -120,7 +128,64 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
     const ccRows = new Map<string, CcChannelRow[]>(cc === undefined ? [] : guilds.map((guildId) => [guildId, cc.channels.listUndeleted(guildId)]));
     const withChannel = new Set([...ccRows.values()].flat().map((row) => row.sessionId));
 
-    for (const [index, guildId] of guilds.entries()) {
+    // Claude Code のセッションの 1 行
+    const ccSeed = (input: {
+      id: string;
+      view: CcSessionView | undefined;
+      row: CcChannelRow | undefined;
+      active: boolean;
+      last: TopicLast;
+      link: string | null;
+    }): TopicSeed => {
+      const { view, row, active, last } = input;
+      const cwd = (active ? view?.cwd : undefined) ?? row?.cwd ?? undefined;
+      const project = projectOf(cwd, workspaceRoot);
+      const label = cwdLabel(cwd, cfg.workspaceDir, home);
+      const viewName = view?.name;
+      const title = viewName !== undefined && viewName !== "" ? viewName : (row?.name ?? label ?? "Claude Code");
+      const activityAt =
+        last?.at ??
+        (view?.lastActivityAt !== undefined ? new Date(view.lastActivityAt).toISOString() : undefined) ??
+        (row === undefined ? undefined : (row.endedAt ?? row.updatedAt)) ??
+        nowIso;
+      const turns: TopicTurn[] = [];
+      if (active && view !== undefined) {
+        if (cc !== undefined) {
+          for (const permission of hookPermissions) {
+            if (permission.sessionId === view.sessionId) turns.push(permissionTurn(permission, cc));
+          }
+        }
+        if (turns.length === 0 && view.state === "needs_input") {
+          const since = sinceOf(view);
+          turns.push({
+            kind: "waiting",
+            summary: summarize(view.waitingFor || "判断待ち"),
+            since: since === undefined ? activityAt : new Date(since).toISOString(),
+            expiresAt: null,
+          });
+        }
+      }
+      return {
+        id: input.id,
+        title,
+        origin: "cc",
+        dir: project?.dir ?? null,
+        outside: project === null,
+        pinned: false,
+        persona: null,
+        sessionId: active && view !== undefined ? view.sessionId : null,
+        cwdLabel: label,
+        state: active ? "active" : "done",
+        activityAt,
+        last,
+        link: input.link,
+        running: active && view?.state === "running",
+        turns,
+        movable: CC_UNMOVABLE,
+      };
+    };
+
+    for (const guildId of guilds) {
       const settings = guildSettings.get(guildId)!;
       const latest = history.latestByChannel(guildId);
       const lastOf = (channelId: string): TopicLast => latest.get(channelId) ?? null;
@@ -132,20 +197,21 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
           if (item.state === "deleted") continue;
           const channelId = item.channelId;
           const found = topicSessions.projectDirOf?.(channelId);
+          const last = lastOf(channelId);
           const turns: TopicTurn[] = [];
-          if (projectPermissions !== undefined) {
-            const row = projectPermissions.store.latestSdkFor(
-              channelId,
-              projectPermissions.sessions.get(channelId),
-              new Date(at - CC_PERMISSION_RECENT_MS),
-            );
-            if (row !== undefined && row.state === "pending") turns.push(permissionTurn(row, projectPermissions));
-          }
+          // done は turn を持たないので、待っているものを探さない
           if (item.state !== "done") {
-            const confirm = closeConfirm(channelId);
+            if (projectPermissions !== undefined) {
+              const row = projectPermissions.store.latestSdkFor(
+                channelId,
+                projectPermissions.sessions.get(channelId),
+                new Date(at - CC_PERMISSION_RECENT_MS),
+              );
+              if (row !== undefined && row.state === "pending") turns.push(permissionTurn(row, projectPermissions));
+            }
+            const confirm = closeConfirm(channelId, last);
             if (confirm !== undefined) turns.push(confirm);
           }
-          const last = lastOf(channelId);
           seeds.push({
             id: `ch:${channelId}`,
             title: item.title,
@@ -183,7 +249,7 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
           sessionId: null,
           cwdLabel: null,
           state: "active",
-          activityAt: last?.at ?? new Date(0).toISOString(),
+          activityAt: last?.at ?? null,
           last,
           link: channelLink(guildId, channelId),
           running: runningIds.has(channelId),
@@ -210,64 +276,12 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
         track(settings.inboxChannelId, turns);
       }
 
-      // (3) Claude Code のセッション
+      // (3) Claude Code のセッション（チャンネルのあるもの）
       if (cc !== undefined && snapshot !== undefined) {
-        const ccSeed = (input: {
-          id: string;
-          view: CcSessionView | undefined;
-          row: CcChannelRow | undefined;
-          active: boolean;
-          last: TopicLast;
-          link: string | null;
-        }): TopicSeed => {
-          const { view, row, active, last } = input;
-          const cwd = (active ? view?.cwd : undefined) ?? row?.cwd ?? undefined;
-          const project = projectOf(cwd, cfg.workspaceDir);
-          const label = cwdLabel(cwd, cfg.workspaceDir, home);
-          const viewName = view?.name;
-          const title = viewName !== undefined && viewName !== "" ? viewName : (row?.name ?? label ?? "Claude Code");
-          const activityAt =
-            last?.at ??
-            (view?.lastActivityAt !== undefined ? new Date(view.lastActivityAt).toISOString() : undefined) ??
-            (row === undefined ? undefined : (row.endedAt ?? row.updatedAt)) ??
-            nowIso;
-          const turns: TopicTurn[] = [];
-          if (active && view !== undefined) {
-            for (const permission of hookPermissions) {
-              if (permission.sessionId === view.sessionId) turns.push(permissionTurn(permission, cc));
-            }
-            if (turns.length === 0 && view.state === "needs_input") {
-              const since = sinceOf(view);
-              turns.push({
-                kind: "waiting",
-                summary: summarize(view.waitingFor ?? "判断待ち"),
-                since: since === undefined ? activityAt : new Date(since).toISOString(),
-                expiresAt: null,
-              });
-            }
-          }
-          return {
-            id: input.id,
-            title,
-            origin: "cc",
-            dir: project?.dir ?? null,
-            outside: project === null,
-            pinned: false,
-            persona: null,
-            sessionId: active && view !== undefined ? view.sessionId : null,
-            cwdLabel: label,
-            state: active ? "active" : "done",
-            activityAt,
-            last,
-            link: input.link,
-            running: active && view?.state === "running",
-            turns,
-            movable: CC_UNMOVABLE,
-          };
-        };
         for (const row of ccRows.get(guildId) ?? []) {
           const listed = snapshot.sessions.find((session) => session.sessionId === row.sessionId);
-          const active = (row.state === "open" || row.state === "resuming") && listed !== undefined;
+          // 一覧に居れば active（/cc close で閉じただけのものも）。一覧が読めないときは open の行を active にする（全部を完了に見せない）
+          const active = snapshot.unreadable ? row.state === "open" : listed !== undefined;
           const seed = ccSeed({
             id: `ch:${row.channelId}`,
             // 終わったチャンネルの cwd は行のもの（名前と時刻は一覧に居れば一覧のもの）
@@ -280,13 +294,14 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
           seeds.push(seed);
           if (active) track(row.channelId, seed.turns);
         }
-        // チャンネルの無いセッションは最初のサーバーにだけ足す（サーバーをまたいで重ねない）
-        if (index === 0) {
-          for (const view of snapshot.sessions) {
-            if (withChannel.has(view.sessionId)) continue;
-            seeds.push(ccSeed({ id: `cc:${view.sessionId}`, view, row: undefined, active: true, last: null, link: null }));
-          }
-        }
+      }
+    }
+
+    // (3') チャンネルの無い Claude Code のセッション（サーバーによらず 1 回だけ足す）
+    if (cc !== undefined && snapshot !== undefined) {
+      for (const view of snapshot.sessions) {
+        if (withChannel.has(view.sessionId)) continue;
+        seeds.push(ccSeed({ id: `cc:${view.sessionId}`, view, row: undefined, active: true, last: null, link: null }));
       }
     }
 
@@ -308,10 +323,12 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
       }
     }
 
+    // 時間切れの待ちは数えない（expiresAt が今より前のもの）
+    const live = (turns: TopicTurn[]): TopicTurn[] => turns.filter((turn) => turn.expiresAt === null || Date.parse(turn.expiresAt) >= at);
     return {
-      seeds,
+      seeds: seeds.map((seed) => ({ ...seed, turns: live(seed.turns) })),
       projects,
-      rightHands,
+      rightHands: rightHands.map((hand) => ({ ...hand, turns: live(hand.turns) })),
       done,
       cc: snapshot === undefined ? { enabled: false, stale: false, unreadable: false } : { enabled: true, stale: snapshot.stale, unreadable: snapshot.unreadable },
     };
