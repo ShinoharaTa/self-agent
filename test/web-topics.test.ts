@@ -12,6 +12,7 @@ import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { welcomeText } from "../src/app/session-ops.ts";
 import { MOVE_FAILED_TEXT, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
 import type { Topic, TopicsResult } from "../src/app/topics.ts";
+import { buildTopics } from "../src/app/topics.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { PersonaConfig } from "../src/config.ts";
 import type { Gateway } from "../src/discord/gateway.ts";
@@ -22,6 +23,7 @@ import { CcStartStore } from "../src/store/cc-starts.ts";
 import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { CLOSE_CONFIRM_NOTICE } from "../src/web/routes/channels.ts";
 import { TOPIC_START_DUPLICATE_MS, topicRoutes } from "../src/web/routes/topics.ts";
+import { createTopicCollector, type TopicRouteDeps } from "../src/web/routes/topics.ts";
 import { WEB_DUPLICATE_WINDOW_MS } from "../src/web/routes/turns.ts";
 import { createWebServer, type WebServer } from "../src/web/server.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
@@ -1114,4 +1116,64 @@ test("GET /api/topics: move を渡さなければ movable は今までどおり"
   for (const id of ["ch:200", "ch:201", "ch:202", "ch:203"]) assert.equal(byId(result, id)!.movable, true, id);
   // 付け替えのルートも無い
   assert.equal((await postJson(s.server, "/api/topics/ch:200/place", { place: "p:beta" })).status, 404);
+});
+
+// ---- createTopicCollector（M6b。右腕の topic_list と同じ元） ----
+
+test("createTopicCollector: 同じ依存で集めて buildTopics した物が GET /api/topics の中身と同じ", async (t) => {
+  const db = tempDb(t);
+  const { guildSettings, topicSessions, history } = createStores(db, () => NOW);
+  const workspace = realpathSync(tempDir(t));
+  mkdirSync(join(workspace, "alpha"));
+  guildSettings.setChannel(GUILD, "inboxChannelId", "100");
+  guildSettings.setChannel(GUILD, "tasksChannelId", "101");
+  topicSessions.create({ channelId: "200", guildId: GUILD, title: "家計簿", categoryId: "c" });
+  topicSessions.create({ channelId: "201", guildId: GUILD, title: "alpha の作業", categoryId: "c" });
+  topicSessions.setProject("201", "alpha", "default");
+  history.add({ guildId: GUILD, channelId: "200", kind: "owner", source: "web", text: "一言" });
+  const ccStore = new CcChannelStore(db, () => EARLIER);
+  ccStore.create({ channelId: "300", guildId: GUILD, sessionId: S1, name: "cc-alpha", cwd: join(workspace, "alpha"), origin: "web" });
+  const snapshotSessions = [view(S1, join(workspace, "alpha"), { state: "running" }), view(S3, "/somewhere/else", { state: "needs_input" })];
+  const personas = new PersonaRouter({
+    personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway: {} as Gateway, connected: () => true }],
+    guildSettings,
+    topicSessions,
+  });
+  const deps: TopicRouteDeps = {
+    cfg: { allowedGuildIds: [GUILD], personas: [], workspaceDir: workspace },
+    guildSettings,
+    topicSessions,
+    history,
+    personas,
+    handler: { runningTurns: (): RunningTurn[] => [{ guildId: GUILD, channelId: "200" } as RunningTurn] },
+    places: { workspaceDir: workspace, protectedDirs: [] },
+    home: "/home/owner",
+    cc: {
+      registry: { snapshot: () => ({ sessions: snapshotSessions, stale: false, unreadable: false, fetchedAt: NOW.getTime() }), touch: () => undefined },
+      channels: ccStore,
+      permissions: new CcPermissionStore(db, () => EARLIER),
+      sends: new CcSendStore(db, () => EARLIER),
+      starts: new CcStartStore(db, () => EARLIER),
+      holdSec: 300,
+      questionHoldSec: 900,
+    },
+    now: () => NOW,
+  };
+  const server = createWebServer({
+    host: "127.0.0.1",
+    port: 0,
+    allowedLogin: LOGIN,
+    staticDir: tempDir(t),
+    templateSiteDir: tempDir(t),
+    routes: topicRoutes(deps),
+    stopping: () => false,
+    now: () => NOW,
+    log: () => undefined,
+  });
+  await server.start();
+  t.after(() => server.close());
+  const fromRoute = await topics(server);
+  const fromCollector = JSON.parse(JSON.stringify(buildTopics(createTopicCollector(deps)(NOW.getTime(), null)))) as TopicsResult;
+  assert.deepEqual(fromCollector, fromRoute);
+  assert.ok(fromRoute.topics.length >= 4);
 });

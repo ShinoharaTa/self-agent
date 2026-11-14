@@ -132,9 +132,12 @@ function permissionTurn(row: CcPermissionRow, hold: HoldSeconds): TopicTurn {
   return { kind, summary, since: row.createdAt, expiresAt: permissionExpiresAt(row, hold.holdSec, hold.questionHoldSec) };
 }
 
-export function topicRoutes(deps: TopicRouteDeps): Route[] {
+/**
+ * GET /api/topics の元（TopicsInput）を集める関数を作る（状態を持たない。右腕の topic_list も同じ物を使う）。
+ * at は今の時刻（ms）、done は ?done= の群の key（無ければ null）
+ */
+export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: string | null) => TopicsInput {
   const { cfg, guildSettings, topicSessions, history, personas, handler, places, home, projectPermissions, cc, move } = deps;
-  const now = deps.now ?? (() => new Date());
   const workspaceRoot = deps.workspaceRoot ?? cfg.workspaceDir;
 
   /** 既定でない人格の名前（既定なら null） */
@@ -406,6 +409,13 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
       cc: snapshot === undefined ? { enabled: false, stale: false, unreadable: false } : { enabled: true, stale: snapshot.stale, unreadable: snapshot.unreadable },
     };
   };
+  return collect;
+}
+
+export function topicRoutes(deps: TopicRouteDeps): Route[] {
+  const { cfg, guildSettings, places, move } = deps;
+  const now = deps.now ?? (() => new Date());
+  const collect = createTopicCollector(deps);
 
   const routes: Route[] = [
     {

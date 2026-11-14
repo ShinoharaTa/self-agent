@@ -107,6 +107,57 @@ export type SessionOpenResult =
  */
 export type OpenSession = (args: SessionOpenArgs, context: RunContext | undefined) => Promise<SessionOpenResult>;
 
+// ---- 右腕のツール（docs/plan/web-ui-v3.md §4 の M6。処理は src/app/right-hand.ts。ツールの定義はまだ無い） ----
+
+/** session_open（project・text を足した形）の引数 */
+export type TopicOpenArgs = { title: string; context: string; project?: string; text?: string };
+/** session_open（project・text を足した形）の結果（そのまま JSON にしてモデルに返す） */
+export type TopicOpenResult =
+  | { result: "not_available"; message?: string }
+  | { result: "not_set_up" }
+  | { result: "existing"; channelId: string; message: string }
+  | { result: "limit"; message: string }
+  | { result: "created"; channelId: string; place: string; turn: "started" | "none" | "failed"; note?: string };
+export type OpenTopic = (args: TopicOpenArgs, context: RunContext | undefined) => Promise<TopicOpenResult>;
+
+/** topic_list の 1 行（最後の発言の本文・sessionId・cwd は入れない） */
+export type TopicListRow = {
+  /** セッションのチャンネルの ID。Claude Code のセッションだけの行（チャンネルが無い）には付けない */
+  channel_id?: string;
+  kind: "session" | "claude_code";
+  title: string;
+  /** "General"・プロジェクトの名前・"なし" */
+  place: string;
+  state: "your_turn" | "running" | "waiting" | "idle";
+  /** your_turn のときの要約（1 行） */
+  turn?: string;
+  /** 最後の活動の時刻（cfg.timeZone の壁時計） */
+  at: string;
+};
+export type TopicListResult =
+  | {
+      result: "ok";
+      注意: string;
+      /** 切る前の数（/api/topics と同じ） */
+      counts: { your_turn: number; running: number; total: number };
+      topics: TopicListRow[];
+      more: number;
+      places: string[];
+    }
+  | { result: "disabled"; message: string };
+
+export type TopicMoveArgs = { topic?: string; place: string };
+export type TopicMoveToolResult =
+  | { result: "proposed"; channelId: string; from: string; to: string; message: string }
+  | { result: "already_proposed"; channelId: string; message: string }
+  | { result: "refused"; reason: string; message: string }
+  | { result: "invalid_topic" | "invalid_place" | "limit" | "not_available"; message: string };
+
+export type TopicToolDeps = {
+  list: (context: RunContext) => TopicListResult;
+  move: (args: TopicMoveArgs, context: RunContext) => Promise<TopicMoveToolResult>;
+};
+
 /**
  * kb_delete の確認の投稿。Discord に [削除する][やめる] を投稿するので app 側（src/app/commands/kb-delete.ts）で実装して渡す。
  * 投稿に失敗したら投げる（ツールの呼び出しが失敗になる）
@@ -285,6 +336,12 @@ export const PROJECT_NAME_MAX_LENGTH = 40;
 export const SESSION_OPEN_TITLE_MAX_LENGTH = 100;
 /** session_open の context の文字数の上限 */
 export const SESSION_OPEN_CONTEXT_MAX_LENGTH = 400;
+/** session_open の text の文字数の上限（app/session-ops.ts の TOPIC_TEXT_MAX_LENGTH と同じ値。テストで同じことを確かめる） */
+export const SESSION_OPEN_TEXT_MAX_LENGTH = 1900;
+/** topic_move の place の文字数の上限 */
+export const TOPIC_PLACE_MAX_LENGTH = 64;
+/** topic_move の topic の文字数の上限 */
+export const TOPIC_REF_MAX_LENGTH = 40;
 
 function textResult(value: unknown): TextToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
