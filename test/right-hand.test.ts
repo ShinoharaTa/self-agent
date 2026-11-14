@@ -542,6 +542,13 @@ test("right hand move: topic は数字・<#数字>・ch:数字 のどれでも�
   );
 });
 
+test("right hand move: topic の前後の空白は除いて読む（#inbox から \" 700 \" は 700 と同じ話題）", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  assert.equal((await s.rightHand.move({ topic: " 700 ", place: "alpha" }, INBOX)).result, "proposed");
+  assert.deepEqual(s.proposeCalls, [{ guildId: GUILD, channelId: "700", place: { kind: "project", name: "alpha" } }]);
+});
+
 test("right hand move: セッションのチャンネルから topic を省く（自分の ID を渡す）と、自分の話題に propose する", async (t) => {
   const s = setup(t);
   addTopic(s, "700");
@@ -551,6 +558,13 @@ test("right hand move: セッションのチャンネルから topic を省く�
     s.proposeCalls.map((call) => call.channelId),
     ["700", "700"],
   );
+});
+
+test("right hand move: セッションのチャンネルから読めない形の topic を渡すと invalid_topic で、propose しない", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  assert.deepEqual(await s.rightHand.move({ topic: "abc", place: "alpha" }, SESSION), { result: "invalid_topic", message: TOPIC_MOVE_BAD_TOPIC });
+  assert.equal(s.proposeCalls.length, 0);
 });
 
 test("right hand move: セッションのチャンネルからほかの話題を指すと not_available で、propose しない", async (t) => {
@@ -585,6 +599,13 @@ test("right hand move: place が General（大文字小文字を問わない）�
     s.proposeCalls.map((call) => call.place),
     [{ kind: "general" }, { kind: "general" }, { kind: "general" }, { kind: "project", name: "alpha" }, { kind: "project", name: "Beta" }],
   );
+});
+
+test("right hand move: place の前後の空白は除いて読む（\" alpha \" は alpha と同じ場所）", async (t) => {
+  const s = setup(t);
+  addTopic(s, "700");
+  assert.equal((await s.rightHand.move({ topic: "700", place: " alpha " }, INBOX)).result, "proposed");
+  assert.deepEqual(s.proposeCalls, [{ guildId: GUILD, channelId: "700", place: { kind: "project", name: "alpha" } }]);
 });
 
 test("right hand move: place が一覧に無い名前・2 つに当たる名前・プロジェクトのセッションを使えないときは invalid_place で、General に落とさない", async (t) => {

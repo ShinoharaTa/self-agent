@@ -11,7 +11,7 @@ import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { welcomeText } from "../src/app/session-ops.ts";
 import { MOVE_FAILED_TEXT, type MoveDeps, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
-import { createTopicProposals } from "../src/app/topic-proposals.ts";
+import { createTopicProposals, type TopicProposals } from "../src/app/topic-proposals.ts";
 import type { Topic, TopicsResult } from "../src/app/topics.ts";
 import { buildTopics } from "../src/app/topics.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
@@ -91,7 +91,8 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * allowed で cfg.allowedGuildIds を、at でルートの今の時刻を差し替える。registry.unreadable と snapshotSessions は後から変えられる。
  * move で場所の付け替えの配線を渡す（"cc" は連携あり、"noCc" は連携なし）。要点のターンは moveSteps の順に偽の runner が返し、結果の投稿は posts に入る。
  * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる。
- * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose と setMessageId（札が出た印）で足し、期限の判定は proposalClock の時刻
+ * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose と setMessageId（札が出た印）で足し、期限の判定は proposalClock の時刻。
+ * fakeProposals を渡すと、本物の代わりにそれを渡す（proposals より優先）
  */
 async function setup(
   t: TestContext,
@@ -104,6 +105,7 @@ async function setup(
     move?: "cc" | "noCc";
     moveSteps?: FakeRunStep[];
     proposals?: boolean;
+    fakeProposals?: Pick<TopicProposals, "pendingAll">;
   } = {},
 ) {
   const db = tempDb(t);
@@ -253,7 +255,8 @@ async function setup(
     log,
   };
   const proposals =
-    options.proposals === true
+    options.fakeProposals ??
+    (options.proposals === true
       ? createTopicProposals({
           move: proposalMove,
           moves,
@@ -265,7 +268,7 @@ async function setup(
           now: () => proposalClock.at,
           log,
         })
-      : undefined;
+      : undefined);
   /** 結果の投稿が count 通になるまで待つ */
   const waitPosts = (count: number): Promise<void> =>
     posts.length >= count ? Promise.resolve() : new Promise((resolve) => postWaiters.push({ count, resolve }));
@@ -1245,6 +1248,16 @@ test("GET /api/topics: 右腕の確認は cc が無くても付く", async (t) =
   assert.equal(result.rightHands[0]!.turn, null);
 });
 
+test("GET /api/topics: 右腕の確認の expiresAt は本体（pendingAll）の値がそのまま出る（cc の確認の 10 分ではない）", async (t) => {
+  const createdAt = NOW.toISOString();
+  const expiresAt = new Date(NOW.getTime() + 3 * 60_000).toISOString();
+  const s = await setup(t, {
+    fakeProposals: { pendingAll: () => [{ id: 1, channelId: "200", from: "なし", to: "beta", createdAt, expiresAt }] },
+  });
+  const result = await topics(s.server);
+  assert.deepEqual(byId(result, "ch:200")!.turn, { kind: "confirm", summary: "場所を beta に変える確認", since: createdAt, expiresAt });
+});
+
 test("GET /api/topics: 期限の切れた右腕の確認は付かない", async (t) => {
   const s = await setup(t, { proposals: true, at: new Date(NOW.getTime() + 10 * 60_000) });
   propose(s, "200", "beta");
@@ -1271,7 +1284,7 @@ test("GET /api/topics: 札がまだ出ていない右腕の確認は付かない
 test("GET /api/topics: proposals を渡さなければ、確認の行があっても今までと同じ結果", async (t) => {
   const plain = await setup(t);
   const before = await topics(plain.server);
-  plain.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  propose(plain, "200", "beta");
   const after = await topics(plain.server);
   assert.deepEqual(after, before);
   assert.equal(byId(after, "ch:200")!.turn, null);

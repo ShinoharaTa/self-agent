@@ -14,10 +14,12 @@ function press(customId: string): Extract<Interaction, { kind: "button" }> {
   return { kind: "button", customId, guildId: "guild-1", channelId: "topic-1", userId: "owner-1", createdAt: NOW, messageId: "card-1" };
 }
 
-function setup(results: { accept?: AcceptResult | Error; keep?: KeepResult | Error } = {}) {
+function setup(results: { accept?: AcceptResult | Error; keep?: KeepResult | Error; channelOf?: (id: number) => string | undefined } = {}) {
   const calls: Array<["accept" | "keep", number]> = [];
   const logs: string[] = [];
-  const proposals: Pick<TopicProposals, "accept" | "keep"> = {
+  const proposals: Pick<TopicProposals, "accept" | "keep" | "channelOf"> = {
+    // 既定は押されたチャンネル（press の channelId）と同じ話題
+    channelOf: (id) => (results.channelOf === undefined ? "topic-1" : results.channelOf(id)),
     accept: async (id) => {
       calls.push(["accept", id]);
       const result = results.accept ?? { result: "accepted" };
@@ -66,12 +68,45 @@ test("move proposal: move:keep:<id> で keep が呼ばれ、kept なら応答は
   assert.deepEqual(responder.calls, [{ method: "deferUpdate" }]);
 });
 
-test("move proposal: stale のとき、押した投稿が STALE_TEXT になりボタンが消える（[変える]・[このまま] とも）", async () => {
+test("move proposal: stale のとき、札は書き換えず（update なし）押した人にだけ STALE_TEXT（[変える]・[このまま] とも）", async () => {
   const s = setup({ accept: { result: "stale" }, keep: { result: "stale" } });
   for (const customId of ["move:ok:7", "move:keep:7"]) {
     const responder = await s.run(customId);
-    assert.deepEqual(responder.calls, [{ method: "deferUpdate" }, { method: "update", message: { text: STALE_TEXT, components: [] } }], customId);
+    assert.deepEqual(responder.calls, [{ method: "deferUpdate" }, { method: "reply", message: { text: STALE_TEXT, ephemeral: true } }], customId);
   }
+  assert.deepEqual(s.calls, [
+    ["accept", 7],
+    ["keep", 7],
+  ]);
+});
+
+test("move proposal: 押されたチャンネルが確認の話題と違うとき、accept・keep を呼ばず押した人にだけ STALE_TEXT", async () => {
+  const s = setup({ channelOf: () => "topic-2" });
+  for (const customId of ["move:ok:7", "move:keep:7"]) {
+    const responder = await s.run(customId);
+    assert.deepEqual(responder.calls, [{ method: "deferUpdate" }, { method: "reply", message: { text: STALE_TEXT, ephemeral: true } }], customId);
+  }
+  assert.deepEqual(s.calls, []);
+});
+
+test("move proposal: 確認の行が無い（channelOf が undefined）とき、accept・keep を呼ばず押した人にだけ STALE_TEXT", async () => {
+  const s = setup({ channelOf: () => undefined });
+  for (const customId of ["move:ok:7", "move:keep:7"]) {
+    const responder = await s.run(customId);
+    assert.deepEqual(responder.calls, [{ method: "deferUpdate" }, { method: "reply", message: { text: STALE_TEXT, ephemeral: true } }], customId);
+  }
+  assert.deepEqual(s.calls, []);
+});
+
+test("move proposal: ボタンでない（select）とき、本体を呼ばず STALE_TEXT にする", async () => {
+  const s = setup();
+  for (const customId of ["move:ok:7", "move:keep:7"]) {
+    const responder = new FakeResponder();
+    const interaction: Extract<Interaction, { kind: "select" }> = { kind: "select", customId, values: ["x"], guildId: "guild-1", channelId: "topic-1", userId: "owner-1", createdAt: NOW, messageId: "card-1" };
+    await s.component.handle(interaction, responder);
+    assert.deepEqual(responder.calls, [{ method: "update", message: { text: STALE_TEXT, components: [] } }], customId);
+  }
+  assert.deepEqual(s.calls, []);
 });
 
 test("move proposal: 実行中で断られたとき（kept が true）、その人だけに断りの文が出て、札は書き換えない", async () => {

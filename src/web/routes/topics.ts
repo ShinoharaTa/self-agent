@@ -395,16 +395,16 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
       };
       for (const turns of byChannel.get(channelId) ?? []) turns.push(turn);
     };
-    // 右腕の場所を変える確認（場所が変わる話題へ。cc が無くても付ける）
-    for (const proposal of proposals?.pendingAll() ?? []) {
-      attach(proposal.channelId, summarize(`場所を ${proposal.to} に変える確認`), proposal.createdAt, proposal.expiresAt);
-    }
     if (cc !== undefined) {
       const cutoff = new Date(at);
       for (const row of cc.starts.listAwaitingConfirmBefore(cutoff)) attach(row.channelId, "Claude Code を起動する確認", row.createdAt);
       for (const row of cc.sends.listAwaitingConfirmBefore(cutoff)) {
         if (row.origin === "tool" && row.channelId !== null) attach(row.channelId, "Claude Code に送る確認", row.createdAt);
       }
+    }
+    // 右腕の場所を変える確認（場所が変わる話題へ。cc が無くても付ける。cc の確認の後ろに置き、cc の確認の順を変えない）
+    for (const proposal of proposals?.pendingAll() ?? []) {
+      attach(proposal.channelId, summarize(`場所を ${proposal.to} に変える確認`), proposal.createdAt, proposal.expiresAt);
     }
 
     // 時間切れの待ちは数えない（expiresAt が今より前のもの）

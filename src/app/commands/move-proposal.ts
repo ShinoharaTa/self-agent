@@ -12,7 +12,7 @@ export const MOVE_PROPOSAL_FAILED_REPLY = "場所を変えられませんでし�
 const CUSTOM_ID = new RegExp(`^${MOVE_NAMESPACE}:(ok|keep):(\\d{1,10})$`);
 
 export type MoveProposalButtonsDeps = {
-  proposals: Pick<TopicProposals, "accept" | "keep">;
+  proposals: Pick<TopicProposals, "accept" | "keep" | "channelOf">;
   log: (message: string) => void;
 };
 
@@ -22,7 +22,8 @@ function errorName(error: unknown): string {
 
 /**
  * [変える]・[このまま]。accepted・kept と、断られて札が断りの文になった（kept が false）ときは deferUpdate だけ。
- * 古い（stale）・custom_id の形が違うときは押した投稿を STALE_TEXT にしてボタンを外す。待てば通る断り（kept が true）は札を残し、押した人にだけ断りの文
+ * custom_id の形が違うときは押した投稿を STALE_TEXT にしてボタンを外す。古い（stale）・押されたチャンネルが確認の話題と違うときは
+ * 札を書き換えず（本体が書いた「変えています」「期限が切れました」を残す）、押した人にだけ STALE_TEXT。待てば通る断り（kept が true）は札を残し、押した人にだけ断りの文
  */
 export function createMoveProposalButtons(deps: MoveProposalButtonsDeps): ComponentHandler {
   const { proposals, log } = deps;
@@ -37,14 +38,19 @@ export function createMoveProposalButtons(deps: MoveProposalButtonsDeps): Compon
       const id = Number(match[2]);
       try {
         await responder.deferUpdate();
+        // 別のチャンネルの札（行が無い id も）は古い確認として扱い、本体を呼ばない
+        if (proposals.channelOf(id) !== interaction.channelId) {
+          await responder.reply({ text: STALE_TEXT, ephemeral: true });
+          return;
+        }
         if (match[1] === "keep") {
           const kept = await proposals.keep(id);
-          if (kept.result === "stale") await responder.update({ text: STALE_TEXT, components: [] });
+          if (kept.result === "stale") await responder.reply({ text: STALE_TEXT, ephemeral: true });
           return;
         }
         const accepted = await proposals.accept(id);
         if (accepted.result === "stale") {
-          await responder.update({ text: STALE_TEXT, components: [] });
+          await responder.reply({ text: STALE_TEXT, ephemeral: true });
         } else if (accepted.result === "refused" && accepted.kept) {
           await responder.reply({ text: moveRefusalText(accepted.reason), ephemeral: true });
         }
