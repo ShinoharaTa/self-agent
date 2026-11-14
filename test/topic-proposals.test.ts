@@ -4,7 +4,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { RunResult } from "../src/agent/runner.ts";
 import type { ProjectSessionGate } from "../src/app/session-ops.ts";
-import { MOVE_FAILED_TEXT, type MoveDeps, movedPostText, moveRefusalText } from "../src/app/topic-move.ts";
+import { MOVE_FAILED_TEXT, type MoveDeps, movedPostText, moveRefusalText, moveTopic } from "../src/app/topic-move.ts";
 import {
   createTopicProposals,
   MOVE_PROPOSAL_SWEEP_MS,
@@ -21,6 +21,7 @@ import {
   TopicProposalExpirer,
 } from "../src/app/topic-proposals.ts";
 import type { CcTimers } from "../src/cc/registry.ts";
+import { escapeDiscordText } from "../src/discord/escape.ts";
 import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
@@ -206,7 +207,7 @@ test("accept: 2 回続けて呼ぶと 2 回目は stale で、付け替えは 1 
   if (proposed.result !== "proposed") return assert.fail("proposed でない");
   const [first, second] = await Promise.all([env.proposals.accept(proposed.id), env.proposals.accept(proposed.id)]);
   assert.deepEqual(first, { result: "accepted" });
-  assert.ok(second.result === "stale" || (second.result === "refused" && second.reason === "moving"));
+  assert.deepEqual(second, { result: "stale" });
   await waitFor(() => env.gateway.sent.length === 1);
   assert.equal(env.runner.inputs.length, 1);
   assert.equal(env.rows().length, 1);
@@ -236,6 +237,7 @@ test("accept: 同じ場所になっていた話題は refused（same_place・kep
   assert.deepEqual(env.gateway.edits, [
     { channelId: "topic-1", messageId: "message-1", message: { text: PROPOSAL_REFUSED(moveRefusalText("same_place")), components: [] } },
   ]);
+  assert.deepEqual(env.historyRows().at(-1), { kind: "notice", text: PROPOSAL_REFUSED(moveRefusalText("same_place")) });
   assert.equal(env.runner.inputs.length, 0);
 });
 
@@ -374,15 +376,32 @@ test("log に話題の ID・場所の名前・題名が出ない", async (t) => 
   }
 });
 
-test("期限切れの片付け: 同じ行を 2 回片付けても（sweep を並べる・sweep と propose が同じ行に当たる）、札の書き換えと履歴の知らせは 1 回", async (t) => {
+test("期限切れの片付け: sweep が 1 行目の札の書き換えを待つ間に 2 行目が accept で片付いても、2 行目の札の書き換えと履歴の知らせは 1 回で、付け替えは走らない", async (t) => {
   const env = setup(t);
+  env.createTopic("topic-2");
   await env.proposals.propose(env.alpha());
+  const second = await env.proposals.propose(env.alpha("topic-2"));
+  if (second.result !== "proposed") return assert.fail("proposed でない");
   env.advance(MOVE_PROPOSAL_TTL_MS + 1000);
-  await Promise.all([env.proposals.sweep(), env.proposals.sweep(), env.proposals.propose({ ...env.alpha(), place: { kind: "general" } })]);
-  await env.proposals.sweep();
-  assert.deepEqual(env.gateway.edits.map((edit) => edit.message.text), [PROPOSAL_EXPIRED]);
-  assert.equal(env.historyRows().filter((row) => row.text === PROPOSAL_EXPIRED_NOTICE).length, 1);
-  assert.equal(env.logs.filter((line) => line.includes("片付けました")).length, 1);
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let editStarted = false;
+  env.gateway.beforeEdit = (channelId) => {
+    if (channelId !== "topic-1") return;
+    editStarted = true;
+    return held;
+  };
+  const sweeping = env.proposals.sweep();
+  await waitFor(() => editStarted);
+  assert.deepEqual(await env.proposals.accept(second.id), { result: "stale" });
+  release();
+  await sweeping;
+  assert.equal(env.gateway.edits.filter((edit) => edit.channelId === "topic-2").length, 1);
+  assert.equal(env.historyRows("topic-2").filter((row) => row.text === PROPOSAL_EXPIRED_NOTICE).length, 1);
+  assert.equal(env.runner.inputs.length, 0);
+  assert.deepEqual(env.rows().map((row) => row.state), ["cancelled", "cancelled"]);
 });
 
 test("期限の境目: ちょうど TTL の確認は pending でなく、accept は stale で行を取り消し、sweep でも片付けの対象になる", async (t) => {
@@ -403,4 +422,197 @@ test("期限の境目: ちょうど TTL の確認は pending でなく、accept 
   other.advance(MOVE_PROPOSAL_TTL_MS);
   await other.proposals.sweep();
   assert.equal(other.rows()[0]?.state, "cancelled");
+});
+
+/** 外から開けるまで待つ Promise */
+function hold(): { promise: Promise<void>; release: () => void } {
+  let release = (): void => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+test("札がまだ出ていない（sendMessage を待っている）確認は pending・pendingAll に出ず、accept・keep は stale で行は proposed のまま。出た後は accept できる", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const sending = hold();
+  env.gateway.beforeSendMessage = () => sending.promise;
+  const proposing = env.proposals.propose(env.alpha());
+  await waitFor(() => env.rows().length === 1);
+  const id = Number(env.rows()[0]?.id);
+  assert.equal(env.proposals.pending("topic-1"), undefined);
+  assert.deepEqual(env.proposals.pendingAll(), []);
+  assert.deepEqual(await env.proposals.accept(id), { result: "stale" });
+  assert.deepEqual(await env.proposals.keep(id), { result: "stale" });
+  assert.equal(env.rows()[0]?.state, "proposed");
+  assert.equal(env.gateway.edits.length, 0);
+  sending.release();
+  const proposed = await proposing;
+  assert.equal(proposed.result, "proposed");
+  assert.equal(env.proposals.pending("topic-1")?.id, id);
+  assert.deepEqual(await env.proposals.accept(id), { result: "accepted" });
+  await waitFor(() => env.gateway.sent.length === 1);
+  assert.equal(env.rows()[0]?.state, "done");
+});
+
+test("pending・pendingAll: 閉じた話題・話題の無い確認は出さない（行は proposed のまま）", async (t) => {
+  const env = setup(t);
+  const proposed = await env.proposals.propose(env.alpha());
+  if (proposed.result !== "proposed") return assert.fail("proposed でない");
+  const ghost = env.moves.propose({ channelId: "ghost-1", fromDir: null, toDir: "alpha", by: "right_hand" });
+  if (ghost === undefined) return assert.fail("行が作れない");
+  env.moves.setMessageId(ghost, "message-9");
+  assert.deepEqual(env.proposals.pendingAll().map((row) => row.id), [proposed.id]);
+  assert.equal(env.proposals.pending("ghost-1"), undefined);
+  env.topicSessions.close("topic-1", "要約");
+  assert.equal(env.proposals.pending("topic-1"), undefined);
+  assert.deepEqual(env.proposals.pendingAll(), []);
+  assert.deepEqual(env.rows().map((row) => row.state), ["proposed", "proposed"]);
+});
+
+test("accept: 待てば通る断りの間に keep が片付けた行は stale（kept の refused にしない）", async (t) => {
+  const env = setup(t);
+  const proposed = await env.proposals.propose(env.alpha());
+  if (proposed.result !== "proposed") return assert.fail("proposed でない");
+  env.running.push({ channelId: "topic-1" });
+  const [accepted, kept] = await Promise.all([env.proposals.accept(proposed.id), env.proposals.keep(proposed.id)]);
+  assert.deepEqual(accepted, { result: "stale" });
+  assert.deepEqual(kept, { result: "kept" });
+  assert.equal(env.rows()[0]?.state, "cancelled");
+});
+
+test("accept: 札の書き換えが済むまで結果の投稿は出ない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const proposed = await env.proposals.propose(env.alpha());
+  if (proposed.result !== "proposed") return assert.fail("proposed でない");
+  const editing = hold();
+  env.gateway.beforeEdit = () => editing.promise;
+  const accepting = env.proposals.accept(proposed.id);
+  await waitFor(() => env.rows()[0]?.state === "done");
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(env.gateway.sent.length, 0);
+  editing.release();
+  assert.deepEqual(await accepting, { result: "accepted" });
+  await waitFor(() => env.gateway.sent.length === 1);
+  assert.equal(env.gateway.edits.length, 1);
+});
+
+test("accept: 別の付け替えが走っている間は refused（moving・kept true）で、行は proposed のまま", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const proposed = await env.proposals.propose({ ...env.alpha(), place: { kind: "general" } });
+  if (proposed.result !== "proposed") return assert.fail("proposed でない");
+  const turn = hold();
+  env.runner.gates[0] = turn.promise;
+  const other = moveTopic({ ...env.alpha(), by: "web" }, env.move);
+  await waitFor(() => env.runner.inputs.length === 1);
+  assert.deepEqual(await env.proposals.accept(proposed.id), { result: "refused", reason: "moving", kept: true });
+  assert.deepEqual(env.rows().map((row) => row.state), ["proposed", "running"]);
+  assert.equal(env.gateway.edits.length, 0);
+  turn.release();
+  assert.equal((await other).result, "moved");
+  assert.equal(env.rows()[0]?.state, "proposed");
+});
+
+test("accept: 閉じる途中・連携が無い・設定が済んでいないは refused（kept true）で、行は proposed のまま", async (t) => {
+  type Env = ReturnType<typeof setup>;
+  const cases: Array<{ expected: string; arrange: (env: Env) => MoveDeps }> = [
+    {
+      expected: "closing",
+      arrange: (env) => {
+        env.topicSessions.saveCloseDraft("topic-1", { summary: "要約", tasks: [] });
+        return env.move;
+      },
+    },
+    { expected: "cc_disabled", arrange: (env) => ({ ...env.move, projectSessions: undefined }) },
+    { expected: "unify_not_ready", arrange: (env) => ({ ...env.move, projectSessions: { ...env.move.projectSessions!, ready: () => false } }) },
+  ];
+  for (const item of cases) {
+    const env = setup(t);
+    const proposed = await env.proposals.propose(env.alpha());
+    if (proposed.result !== "proposed") return assert.fail("proposed でない");
+    const move = item.arrange(env);
+    const proposals = createTopicProposals({ move, moves: env.moves, ownerPosts: env.gateway, now: () => env.clock.at, log: () => {} });
+    assert.deepEqual(await proposals.accept(proposed.id), { result: "refused", reason: item.expected, kept: true }, item.expected);
+    assert.equal(env.rows()[0]?.state, "proposed", item.expected);
+    assert.equal(env.gateway.edits.length, 0, item.expected);
+  }
+});
+
+test("accept: 受け付けた後のキューの中の例外は log・履歴・チャンネルの失敗の文になり、reject を外に出さない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const proposed = await env.proposals.propose(env.alpha());
+  if (proposed.result !== "proposed") return assert.fail("proposed でない");
+  const sessions = Object.create(env.sessions) as typeof env.sessions;
+  sessions.get = () => {
+    throw new TypeError("boom");
+  };
+  const move: MoveDeps = { ...env.move, turn: { ...env.move.turn, sessions } };
+  const proposals = createTopicProposals({ move, moves: env.moves, ownerPosts: env.gateway, now: () => env.clock.at, log: (line) => env.logs.push(line) });
+  assert.deepEqual(await proposals.accept(proposed.id), { result: "accepted" });
+  await waitFor(() => env.gateway.sent.length === 1);
+  assert.equal(env.gateway.sent[0]?.text, MOVE_FAILED_TEXT);
+  assert.ok(env.logs.includes("確認からの場所の付け替えに失敗しました（TypeError）"));
+  assert.deepEqual(env.historyRows().at(-1), { kind: "notice", text: MOVE_FAILED_TEXT });
+  assert.equal(env.rows()[0]?.state, "failed");
+});
+
+test("accept: 話題の行が無い確認は、行を cancelled にして stale", async (t) => {
+  const env = setup(t);
+  const id = env.moves.propose({ channelId: "ghost-1", fromDir: null, toDir: "alpha", by: "right_hand" });
+  if (id === undefined) return assert.fail("行が作れない");
+  env.moves.setMessageId(id, "message-9");
+  assert.deepEqual(await env.proposals.accept(id), { result: "stale" });
+  assert.equal(env.rows()[0]?.state, "cancelled");
+  assert.equal(env.runner.inputs.length, 0);
+});
+
+test("escape: 札の文は場所の名前を escape し、履歴の知らせは生の名前", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const name = "my_proj-1";
+  mkdirSync(join(env.move.projectSessions!.places.workspaceDir, name));
+  const escaped = escapeDiscordText(name);
+  assert.notEqual(escaped, name);
+  const proposed = await env.proposals.propose({ ...env.alpha(), place: { kind: "project", name } });
+  if (proposed.result !== "proposed") return assert.fail("proposed でない");
+  assert.equal(env.gateway.posts[0]?.message.text, proposalText("なし", escaped));
+  assert.deepEqual(env.historyRows(), [{ kind: "notice", text: proposedNoticeText("なし", name) }]);
+  assert.deepEqual(await env.proposals.accept(proposed.id), { result: "accepted" });
+  assert.equal(env.gateway.edits[0]?.message.text, PROPOSAL_ACCEPTED(escaped));
+  await waitFor(() => env.gateway.sent.length === 1);
+});
+
+test("TopicProposalExpirer: stop は予約済みのタイマーを取り消し、sweep を並べて呼ぶと proposals.sweep は 1 回", async () => {
+  let sweeps = 0;
+  const gate = hold();
+  let cancelled = 0;
+  const scheduled: Array<() => void> = [];
+  const timers: CcTimers = {
+    after: (fn) => {
+      scheduled.push(fn);
+      return () => {
+        cancelled += 1;
+      };
+    },
+  };
+  const expirer = new TopicProposalExpirer({
+    proposals: {
+      sweep: async () => {
+        sweeps += 1;
+        if (sweeps === 2) await gate.promise;
+      },
+    },
+    log: () => {},
+    timers,
+  });
+  expirer.start();
+  await waitFor(() => scheduled.length === 1);
+  const both = Promise.all([expirer.sweep(), expirer.sweep()]);
+  gate.release();
+  await both;
+  assert.equal(sweeps, 2);
+  expirer.stop();
+  assert.equal(cancelled, 1);
+  scheduled[0]?.();
+  await expirer.idle();
+  assert.equal(sweeps, 2);
 });

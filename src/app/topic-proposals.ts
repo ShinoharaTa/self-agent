@@ -1,7 +1,7 @@
 // 右腕の場所を変える確認（docs/plan/web-ui-v3.md §4・§6.3。#369 の M6d）。場所が変わる話題のチャンネルに [変える][このまま] の 1 通を出し、
 // topic_moves に proposed の行（1 つの話題に 1 つ）を残す。場所を変えるのはオーナーが [変える] を押したとき（accept → moveTopic の proposalId）だけ。
 // 確認は MOVE_PROPOSAL_TTL_MS で失効し、TopicProposalExpirer が MOVE_PROPOSAL_SWEEP_MS ごとに札を「期限が切れました」に書き換える。
-// proposed の行は再起動で消さない（期限の中なら再起動の後も押せる）。log に話題の ID・チャンネル ID・場所の名前・題名を出さない
+// proposed の行は再起動で消さない（期限の中なら再起動の後も押せる）。札がまだ出ていない（message_id の無い）行は答えられず、一覧にも出さない。log に話題の ID・チャンネル ID・場所の名前・題名を出さない
 import type { CcTimers } from "../cc/registry.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
 import type { OutgoingMessage } from "../discord/gateway.ts";
@@ -76,13 +76,15 @@ export type PendingProposal = { id: number; channelId: string; from: string; to:
 
 export type TopicProposals = {
   propose(input: { guildId: string; channelId: string; place: MovePlace }): Promise<ProposeResult>;
+  /** 札がまだ出ていない行は、取り消さずに stale */
   accept(id: number): Promise<AcceptResult>;
+  /** 札がまだ出ていない行は、取り消さずに stale */
   keep(id: number): Promise<KeepResult>;
   /** 期限の切れた確認を片付ける */
   sweep(): Promise<void>;
-  /** その話題の、期限の中の確認 */
+  /** その話題の、期限の中の確認（札がまだ出ていない・話題が無い・閉じた話題の物は出さない） */
   pending(channelId: string): PendingProposal | undefined;
-  /** 期限の中の確認すべて */
+  /** 期限の中の確認すべて（pending と同じく、札がまだ出ていない・話題が無い・閉じた話題の物は出さない） */
   pendingAll(): PendingProposal[];
   /** id の確認がどの話題の物か（期限・状態は見ない。口がサーバーを確かめるのに使う） */
   channelOf(id: number): string | undefined;
@@ -111,6 +113,12 @@ export function createTopicProposals(deps: TopicProposalDeps): TopicProposals {
   const expiresAt = (row: TopicMove): number => new Date(row.createdAt).getTime() + MOVE_PROPOSAL_TTL_MS;
   const live = (row: TopicMove): boolean => expiresAt(row) > now().getTime();
   const label = (dir: string | null): string => placeLabel(dir, generalDir());
+  /** 一覧に出す行か（期限の中・札が出ている・話題があり閉じていない。閉じたの判定は topic-move.ts の checkTopic の closed と同じ） */
+  const listable = (row: TopicMove): boolean => {
+    if (!live(row) || row.messageId === null) return false;
+    const topic = move.topicSessions.get(row.channelId);
+    return topic !== undefined && topic.state !== "deleted" && topic.state !== "done";
+  };
 
   /** 札を書き換える（ボタンは外す）。message_id が無い・失敗は log だけ */
   const editCard = async (row: TopicMove, text: string): Promise<void> => {
@@ -190,6 +198,8 @@ export function createTopicProposals(deps: TopicProposalDeps): TopicProposals {
         await expireRows([row]);
         return { result: "stale" };
       }
+      // 札がまだ出ていない（propose が sendMessage を待っている）。取り消さない
+      if (row.messageId === null) return { result: "stale" };
       // ここから moveTopic を呼ぶまで await を入れない（間に取り消された行で moveTopic が moving を返し、札を残す方に入らないため）
       const { channelId } = row;
       const topic = move.topicSessions.get(channelId);
@@ -207,8 +217,16 @@ export function createTopicProposals(deps: TopicProposalDeps): TopicProposals {
       if (!accepted) {
         const outcome = await running;
         if (outcome.result === "moved" || outcome.result === "failed") throw new Error("場所の付け替えが受け付けずに終わりました");
-        if (RETRYABLE.has(outcome.result)) return { result: "refused", reason: outcome.result, kept: true };
-        if (moves.cancel(id)) await editCard(row, PROPOSAL_REFUSED(moveRefusalText(outcome.result)));
+        if (RETRYABLE.has(outcome.result)) {
+          // 待つ間に別の口（keep・期限）が片付けた
+          if (moves.get(id)?.state !== "proposed") return { result: "stale" };
+          return { result: "refused", reason: outcome.result, kept: true };
+        }
+        if (moves.cancel(id)) {
+          const text = moveRefusalText(outcome.result);
+          await editCard(row, PROPOSAL_REFUSED(text));
+          notice(channelId, PROPOSAL_REFUSED(text));
+        }
         return { result: "refused", reason: outcome.result, kept: false };
       }
       const edited = editCard(row, PROPOSAL_ACCEPTED(escapeDiscordText(label(row.toDir))));
@@ -249,6 +267,8 @@ export function createTopicProposals(deps: TopicProposalDeps): TopicProposals {
         await expireRows([row]);
         return { result: "stale" };
       }
+      // 札がまだ出ていない（propose が sendMessage を待っている）。取り消さない
+      if (row.messageId === null) return { result: "stale" };
       if (!moves.cancel(id)) return { result: "stale" };
       await editCard(row, PROPOSAL_KEPT(escapeDiscordText(label(row.fromDir))));
       notice(row.channelId, PROPOSAL_KEPT_NOTICE);
@@ -259,11 +279,11 @@ export function createTopicProposals(deps: TopicProposalDeps): TopicProposals {
 
     pending(channelId) {
       const row = moves.proposedFor(channelId);
-      return row !== undefined && live(row) ? toPending(row) : undefined;
+      return row !== undefined && listable(row) ? toPending(row) : undefined;
     },
 
     pendingAll() {
-      return moves.listProposed().filter(live).map(toPending);
+      return moves.listProposed().filter(listable).map(toPending);
     },
 
     channelOf(id) {
