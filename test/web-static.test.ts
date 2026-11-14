@@ -1699,11 +1699,11 @@ test("web static: v3.html に inline の script・style・style 属性が無く�
   assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
 });
 
-test("web static: v3.html に [+]・「場所」のボタン・右腕の口が無い", () => {
+test("web static: v3.html に [+]・「場所」のボタンが無い", () => {
   const html = read("v3.html");
-  for (const word of ["v3-add", "v3-right", "dlg-new", "dlg-cc-start", "palette"]) assert.equal(html.includes(word), false, word);
+  for (const word of ["v3-add", "dlg-new", "dlg-cc-start", "palette"]) assert.equal(html.includes(word), false, word);
   const shell = read("shell.js");
-  for (const word of ["v3-add", "v3-right"]) assert.equal(shell.includes(word), false, word);
+  for (const word of ["v3-add"]) assert.equal(shell.includes(word), false, word);
   const bar = fnSource(shell, "renderBar");
   assert.doesNotMatch(bar, /"button"/);
   assert.match(bar, /place\.textContent = text/);
@@ -1853,13 +1853,13 @@ test("web static: 新しい殻の幅の段は 639 だけ", () => {
   for (const m of medias) assert.ok(["(max-width: 639px)", "(pointer: coarse)", "(prefers-reduced-motion: reduce)", "(hover: hover) and (pointer: fine)"].includes(m), m);
   assert.doesNotMatch(css, /767|1023|1024|768/);
   assert.match(read("shell.js"), /window\.matchMedia\("\(max-width: 639px\)"\)/);
-  // セレクタは .v3 で始まるものだけ（:root の変数 1 つを除く）
+  // セレクタは .v3 で始まるものだけ（:root の変数 2 つ（一覧と右腕の幅）を除く）
   const selectors = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/^\s*([^@\s{}][^{}]*)\{/gm)].map((m) => m[1]!.trim());
   for (const sel of selectors) {
     if (sel === ":root") continue;
     for (const part of sel.split(",")) assert.match(part.trim(), /^\.v3/, sel);
   }
-  assert.equal(css.match(/^\s*--[a-z0-9-]+:/gm)?.length, 1);
+  assert.equal(css.match(/^\s*--[a-z0-9-]+:/gm)?.length, 2);
 });
 
 test("web static: shell.css に色の値が無い", () => {
@@ -3147,7 +3147,7 @@ test("web static: SA.app.shownChannelIds は 2 つの殻にあり、前に出て
   app.open("tasks");
   assert.deepEqual(ids(), []);
   const sh = read("shell.js");
-  const ctx: Record<string, unknown> = { S: { view2: "pane", active: "ch:333" }, paneSession: () => "s1" };
+  const ctx: Record<string, unknown> = { S: { view2: "pane", active: "ch:333" }, paneSession: () => "s1", handVisible: () => false, handChannelId: () => null };
   vm.runInNewContext(fnSource(sh, "shownTabId") + fnSource(sh, "shownChannelIds") + "\nresult = shownChannelIds();", ctx);
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.result)), []);
   (ctx.S as { view2: string }).view2 = "talk";

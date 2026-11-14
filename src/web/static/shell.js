@@ -1,6 +1,6 @@
 // 新しい殻（v3.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
 // SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
-// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]
+// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行）
 "use strict";
 
 (function () {
@@ -54,6 +54,10 @@
     view: "list",
     // Claude Code のチャンネルのある話題で見ている物（"talk" 会話 | "pane" 端末の画面の写し）。話題を開くたびに talk
     view2: "talk",
+    // 右腕: 列のとき開いているか（localStorage の v3-hand）・重ねる形で開いているか（保存しない）・形（"column" | "over"）
+    handWant: true,
+    handOver: false,
+    handMode: "over",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -223,7 +227,10 @@
     const t = S.active ? SA.topics.find(S.active) : null;
     renderViews();
     if (!t) {
-      bar.hidden = true;
+      // スマホは [右腕] を出すため、話題でない画面でも帯を残す（「場所」は空）
+      bar.hidden = !(phone() && S.active !== null);
+      const place = $("v3-place");
+      if (place.textContent !== "") place.textContent = "";
       return;
     }
     bar.hidden = false;
@@ -251,6 +258,7 @@
       if (mainHidden()) hiddenScroll = { top: 0, bottom: true };
       renderEd(ed, shown, true);
     }
+    syncHand();
   }
 
   /** api.js の polling・SA.app.refresh が当たるのは列 2 に出している物（[端末] の間は cc:<sessionId>） */
@@ -259,12 +267,15 @@
   }
 
   /**
-   * 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い）。
+   * 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い）と、見えている右腕。
    * スマホで一覧を出している間（会話の列が隠れている間）も、最後に開いた会話を返す（M2a からの動き。変えるなら polling・音・既読が一緒に変わる）
    */
   function shownChannelIds() {
     const tabId = shownTabId();
-    return tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
+    const ids = tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
+    const hand = handVisible() ? handChannelId() : null;
+    if (hand && !ids.includes(hand)) ids.push(hand);
+    return ids;
   }
 
   /** 話題か画面を列 2 に開く（知らない・無効な機能のタブは開かない） */
@@ -274,6 +285,11 @@
     if (!info) {
       // /api/status が届く前の Claude Code の話題は、届いたら開く（起動の hash と同じ道）
       if (tabId.startsWith("cc:") && SA.store.status === null) deferred = tabId;
+      return;
+    }
+    // 右腕のチャンネルは列 2 に描かない（同じチャンネルを 2 つの入れ物に描かない）。右腕を開く
+    if (tabId === handTab()) {
+      openHand(document.activeElement, false);
       return;
     }
     const switched = S.active !== tabId;
@@ -291,8 +307,14 @@
       hiddenScroll = null;
       stickOnShow = false;
     }
-    // スマホは先に会話の列を出してから描く（隠れたままではスクロールを書けない）
-    if (phone()) showBody();
+    // スマホは先に会話の列を出してから描く（隠れたままではスクロールを書けない）。重ねた右腕は畳む（履歴の entry は showBody が話題に置き換える）
+    if (phone()) {
+      if (S.handOver) {
+        S.handOver = false;
+        applyHand();
+      }
+      showBody();
+    }
     // 同じ話題でも [端末] から会話に戻ったときは別のタブとして描く
     renderMain(switched || shownBefore !== shownTabId());
     SA.topics.render();
@@ -308,9 +330,290 @@
 
   /** tabId が列 2 に出ていれば中身だけ描き直す */
   function refresh(tabId) {
+    if (tabId !== null && tabId === handTab()) {
+      renderHand();
+      return;
+    }
     if (shownTabId() !== tabId) return;
     const ed = $("ed");
     if (ed) renderEd(ed, tabId);
+  }
+
+  // ===== 右腕（列 3。中身は既定の人格の #inbox を chat.js で描く。docs/plan/web-ui-v3.md §4） =====
+  /** 列 2 が残す最小の幅（px）。これを切るなら右腕を列にせず重ねる */
+  const HAND_MAIN_MIN = 360;
+  const HAND_NONE_TEXT = "右腕はまだありません。Discord で /setup を実行すると、ここで頼めます。";
+  const HAND_MARK_TEXT = { turn: "あなたの番", unread: "未読" };
+
+  // 閉じた後に焦点を戻すボタン・最初の読み込みを済ませた右腕のチャンネル・最後に描いた物（チャンネル ID か "none"・"loading"）・次に描くとき下端に寄せるか
+  let handOpener = null;
+  let handLoadedId = null;
+  let handShown = null;
+  let handStick = true;
+
+  /** 右腕のタブ（/api/topics の rightHands の先頭。サーバーが複数でも選ぶ口は作らない）。無ければ null */
+  function handTab() {
+    const data = SA.topics.data();
+    const hand = data && data.rightHands[0];
+    return hand ? hand.id : null;
+  }
+
+  function handChannelId() {
+    const tab = handTab();
+    return tab && tab.startsWith("ch:") ? tab.slice(3) : null;
+  }
+
+  function handVisible() {
+    return S.handMode === "column" ? S.handWant : S.handOver;
+  }
+
+  /** 列 3 が入るか（スマホか、列 2 が HAND_MAIN_MIN を切るなら重ねる形） */
+  function handModeOf(isPhone, total, list, hand) {
+    return isPhone || total - list - hand < HAND_MAIN_MIN ? "over" : "column";
+  }
+
+  /** shell.css の --v3-hand-w（読めなければ 360） */
+  function handWidth() {
+    try {
+      const v = parseFloat(getComputedStyle(root).getPropertyValue("--v3-hand-w"));
+      return Number.isFinite(v) ? v : 360;
+    } catch {
+      return 360;
+    }
+  }
+
+  /** 幅を測って形を決める。形が変わったら重ねて開いていた状態を閉じる（列は保存した開閉に従う） */
+  function fitHand() {
+    if (!refs.v3) return;
+    const list = $("v3-list");
+    const mode = handModeOf(phone(), refs.v3.clientWidth, list ? list.offsetWidth : 0, handWidth());
+    if (mode === S.handMode) return;
+    S.handMode = mode;
+    S.handOver = false;
+    applyHand();
+  }
+
+  /** 開閉と形を属性に書き、見えていれば描く（見えていない間は高さが測れないので、属性を書いた後で描く） */
+  function applyHand() {
+    const v3 = refs.v3;
+    if (!v3) return;
+    const visible = handVisible();
+    const over = S.handMode === "over" && S.handOver;
+    v3.setAttribute("data-hand-mode", S.handMode);
+    v3.setAttribute("data-hand", visible ? "open" : "closed");
+    const backdrop = $("v3-hand-backdrop");
+    if (backdrop) backdrop.hidden = !over;
+    // 重ねている間は後ろ（一覧・列 2）を押せず、Tab でも入らない
+    for (const id of ["v3-list", "v3-main"]) {
+      const n = $(id);
+      if (n) n.inert = over;
+    }
+    const hand = $("v3-hand");
+    if (hand) {
+      if (over) hand.setAttribute("role", "dialog");
+      else hand.removeAttribute("role");
+    }
+    const show = $("v3-hand-show");
+    if (show) show.setAttribute("aria-expanded", String(visible));
+    // 隠れていた間の位置は当てにならないので、次に描くときは下端から
+    if (!visible) handStick = true;
+    renderHand();
+    renderHandEntries();
+  }
+
+  /** 右腕の入れ物を描く。描く前の位置を覚え、下に付いていたら（か bottom なら）下へ、でなければ前の位置（renderEd と同じ考え方） */
+  function keepScroll(ed, draw, bottom) {
+    const old = ed.querySelector(".ed-scroll");
+    const wasBottom = bottom || !old || atBottom(old);
+    const oldTop = old ? old.scrollTop : 0;
+    draw();
+    const scroll = ed.querySelector(".ed-scroll");
+    if (!scroll) return;
+    if (scroll.dataset.stick === "bottom" && wasBottom) scroll.scrollTop = scroll.scrollHeight;
+    else scroll.scrollTop = oldTop;
+  }
+
+  /** chat.js に渡す枠の指定（毎回同じ物） */
+  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing };
+
+  /** 何を描くか（右腕のチャンネル ID か、無ければ "none"、一覧をまだ読んでいなければ "loading"） */
+  function handKey() {
+    return handChannelId() || (SA.topics.data() === null ? "loading" : "none");
+  }
+
+  /** 見えている右腕を描く（[畳む] に焦点があれば、描き直した後の [畳む] に戻す。入力欄は chat.js が残す） */
+  function renderHand() {
+    if (!handVisible()) return;
+    const ed = $("v3-hand-ed");
+    if (!ed) return;
+    const closeBefore = $("v3-hand-close");
+    const refocus = !!closeBefore && document.activeElement === closeBefore;
+    const id = handChannelId();
+    const key = handKey();
+    if (id) {
+      const first = handLoadedId !== id;
+      keepScroll(ed, () => SA.chat.render(ed, id, HAND_FRAME), handStick || handShown !== key);
+      if (first) {
+        handLoadedId = id;
+        SA.store.load.turns(id);
+      }
+    } else {
+      ed.replaceChildren(
+        el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [el("h1", { text: "右腕" })]), el("div", { class: "ed-actions" }, handOps())]),
+        key === "loading" ? SA.views.loading() : el("div", { class: "v3-empty" }, [el("p", { class: "meta", text: HAND_NONE_TEXT })]),
+      );
+    }
+    handShown = key;
+    handStick = false;
+    if (refocus) {
+      const close = $("v3-hand-close");
+      if (close) close.focus();
+    }
+  }
+
+  /** 右腕の見出しの右端（[畳む]） */
+  function handOps() {
+    const b = el("button", { class: "btn btn-ghost btn-sm", id: "v3-hand-close", type: "button", "aria-label": "右腕を畳む", text: "畳む" });
+    b.addEventListener("click", () => closeHand());
+    return [b];
+  }
+
+  /** 右腕を開く。focusInput なら入力欄に、でなければ [畳む] に焦点 */
+  function openHand(opener, focusInput) {
+    handOpener = opener || null;
+    if (S.handMode === "column") {
+      if (!S.handWant) {
+        S.handWant = true;
+        save("v3-hand", "1");
+      }
+    } else if (!S.handOver) {
+      S.handOver = true;
+      // スマホは戻る（端のスワイプ）で閉じられるよう entry を 1 つ積む
+      if (phone()) {
+        try {
+          history.pushState({ v3Body: S.view === "body", v3Hand: true }, "", location.href);
+        } catch {
+          // 積めなくても [畳む]・backdrop で閉じられる
+        }
+      }
+    }
+    applyHand();
+    const ed = $("v3-hand-ed");
+    const input = focusInput && ed ? ed.querySelector(".composer-input") : null;
+    const target = input || $("v3-hand-close");
+    if (target) target.focus();
+  }
+
+  /** 右腕を畳む（列は保存して帯のボタンに焦点。重ねる形は履歴の entry があれば戻る = popstate で閉じる） */
+  function closeHand() {
+    if (S.handMode === "column") {
+      S.handWant = false;
+      save("v3-hand", "0");
+      applyHand();
+      const show = $("v3-hand-show");
+      if (show) show.focus();
+      return;
+    }
+    if (history.state && history.state.v3Hand) {
+      try {
+        history.back();
+        return;
+      } catch {
+        // 戻れなければその場で閉じる
+      }
+    }
+    S.handOver = false;
+    applyHand();
+    restoreHandFocus();
+  }
+
+  /** 閉じた後の焦点: 開いたボタンがあればそこ、無ければ見えている口 */
+  function restoreHandFocus() {
+    const opener = handOpener;
+    handOpener = null;
+    let target = opener && document.contains(opener) ? opener : null;
+    if (!target) target = $(!phone() ? "v3-hand-show" : S.view === "body" ? "v3-hand-open" : "v3-hand-ask");
+    if (target) target.focus();
+  }
+
+  /** 口の印（あなたの番 > 未読 で 1 つ。見えている右腕には未読を出さない） */
+  function handMark() {
+    const data = SA.topics.data();
+    const hand = data && data.rightHands[0];
+    if (!hand) return null;
+    if (hand.turn) return "turn";
+    if (!handVisible() && SA.store.isUnread({ id: handChannelId(), last: hand.last })) return "unread";
+    return null;
+  }
+
+  function handDot(mark, labelled) {
+    if (!mark) return null;
+    return el("span", {
+      class: "dot " + (mark === "turn" ? "dot-warn" : "dot-unread"),
+      role: labelled ? "img" : undefined,
+      "aria-label": labelled ? HAND_MARK_TEXT[mark] : undefined,
+      "aria-hidden": labelled ? undefined : "true",
+    });
+  }
+
+  /** 3 つの口（畳んだ帯・一覧の下・上の帯）の中身。印が前と同じなら触らない */
+  function renderHandEntries() {
+    const mark = handMark();
+    const sig = String(mark);
+    const fill = (id, build) => {
+      const b = $(id);
+      if (!b || b.getAttribute("data-sig") === sig) return;
+      b.setAttribute("data-sig", sig);
+      build(b);
+    };
+    fill("v3-hand-show", (b) => {
+      const label = "右腕を開く" + (mark ? "（" + HAND_MARK_TEXT[mark] + "）" : "");
+      b.setAttribute("aria-label", label);
+      b.setAttribute("title", label);
+      b.replaceChildren(...[icon("bot"), handDot(mark, false)].filter(Boolean));
+    });
+    fill("v3-hand-ask", (b) => b.replaceChildren(...[icon("bot"), el("span", { text: "右腕に頼む・訊く" }), handDot(mark, true)].filter(Boolean)));
+    fill("v3-hand-open", (b) => b.replaceChildren(...[el("span", { text: "右腕" }), handDot(mark, true)].filter(Boolean)));
+  }
+
+  /** 話題の一覧を読むたびに: 列 2 に右腕のチャンネルが出ていたら右腕へ移し、右腕が変わっていたら描き直し、口を描く */
+  function syncHand() {
+    const tab = handTab();
+    if (tab !== null && S.active === tab) {
+      const prev = SA.views.info(S.active);
+      if (prev && prev.onClose) prev.onClose();
+      S.active = null;
+      S.view2 = "talk";
+      SA.topics.setCurrent(null);
+      if (phone()) {
+        setView("list");
+        try {
+          if (history.state && history.state.v3Body) history.replaceState({}, "", location.pathname + location.search);
+        } catch {
+          // 書けなくても一覧は出ている
+        }
+      }
+      renderMain();
+      SA.topics.render();
+      openHand(null, false);
+    }
+    if (handVisible() && handShown !== handKey()) renderHand();
+    renderHandEntries();
+  }
+
+  /** 列 2 に話題が出ていれば、その題名（空白を詰めて 80 字まで）。スマホは会話の上に右腕を出したときだけ */
+  function viewingTitle() {
+    if (phone() && S.view !== "body") return null;
+    const t = S.active ? SA.topics.find(S.active) : null;
+    if (!t) return null;
+    const title = String(t.title).replace(/\s+/g, " ");
+    return title.length > 80 ? title.slice(0, 80) + "…" : title;
+  }
+
+  /** 右腕へ送る本文の先頭に「（いま見ている話題: <題名>）」を毎回 1 行添える（モデルがどの話題の話かを取り違えないため） */
+  function withViewing(text) {
+    const title = viewingTitle();
+    return title === null ? text : "（いま見ている話題: " + title + "）\n" + text;
   }
 
   // ===== hash（#/ch/<id>・#/cc/<id>・#/tasks。今の殻と同じ形） =====
@@ -381,7 +684,9 @@
     setView("body");
     const hash = S.active ? hashOf(S.active) : location.pathname + location.search;
     try {
-      if (history.state && history.state.v3Body) history.replaceState(history.state, "", hash);
+      // 右腕を開いたまま話題を開いたら、右腕の entry を話題の entry に置き換える
+      if (history.state && history.state.v3Hand) history.replaceState({ v3Body: true }, "", hash);
+      else if (history.state && history.state.v3Body) history.replaceState(history.state, "", hash);
       else history.pushState({ v3Body: true }, "", hash);
     } catch {
       // 積めなくても [‹] で一覧に戻れる
@@ -700,6 +1005,11 @@
     // IME の変換中の Escape は変換を取り消すだけ（殻は取らない）
     if (e.isComposing || e.keyCode === 229) return;
     if (document.querySelector("dialog[open]")) return;
+    // 重ねた右腕は入力欄に焦点があっても畳む（列の右腕は畳まない）
+    if (S.handMode === "over" && S.handOver) {
+      closeHand();
+      return;
+    }
     const input = $("v3-search");
     if (input && document.activeElement === input) {
       closeSearch();
@@ -722,18 +1032,35 @@
       for (const [id, v] of Object.entries(drafts)) if (typeof v === "string" && v !== "") S.drafts[id] = v;
     }
 
+    S.handWant = load("v3-hand", "1") !== "0";
+
     bindViewport();
     mqPhone.addEventListener("change", () => {
       setView(S.active ? "body" : "list");
       fitViewport();
+      fitHand();
+      renderBar();
     });
     window.addEventListener("popstate", (e) => {
-      if (e.state && e.state.v3Body && S.active) setView("body");
+      const st = e.state || {};
+      // 重ねた右腕の開閉は履歴の v3Hand に合わせる（スマホで開いたときだけ entry を積む）
+      let handClosed = false;
+      let handChanged = false;
+      if (S.handMode === "over" && S.handOver !== !!st.v3Hand) {
+        S.handOver = !!st.v3Hand;
+        handChanged = true;
+        handClosed = !S.handOver;
+        applyHand();
+      }
+      if (st.v3Body && S.active) setView("body");
       else {
         setView("list");
-        if (phone()) focusCurrentRow();
+        // 一覧の行への焦点は右腕が関わらなかったときだけ（閉じたなら開いた口へ戻す）
+        if (phone() && !handChanged && !S.handOver) focusCurrentRow();
       }
+      if (handClosed) restoreHandFocus();
     });
+    window.addEventListener("resize", fitHand);
     // 手で書き換えた hash・リンク（自分で書いた hash は replaceState・pushState なので来ない）
     window.addEventListener("hashchange", () => {
       const tabId = tabFromHash(location.hash);
@@ -741,6 +1068,17 @@
     });
     document.addEventListener("keydown", onKey);
     refs.list.addEventListener("keydown", onListKey);
+    // 右腕の 3 つの口と backdrop
+    for (const [id, focusInput] of [
+      ["v3-hand-show", false],
+      ["v3-hand-ask", true],
+      ["v3-hand-open", false],
+    ]) {
+      const b = $(id);
+      if (b) b.addEventListener("click", () => openHand(b, focusInput));
+    }
+    const backdrop = $("v3-hand-backdrop");
+    if (backdrop) backdrop.addEventListener("click", () => closeHand());
     renderHeadOps();
     renderConn();
     renderFoot();
@@ -749,6 +1087,10 @@
       sheetOpener = null;
       if (opener && document.contains(opener)) opener.focus();
     });
+
+    // 最初の 1 枚の前に右腕の形を決める（v3.html の初期値は畳んだ重ねる形）
+    fitHand();
+    applyHand();
 
     const fromHash = tabFromHash(location.hash);
     if (fromHash && SA.views.info(fromHash)) open(fromHash);
@@ -775,6 +1117,7 @@
     refreshSidebar: () => {
       SA.topics.render();
       SA.topics.schedule();
+      renderHandEntries();
     },
     refreshActivity: () => SA.topics.render(),
     refreshTabs,
