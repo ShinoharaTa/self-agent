@@ -15,6 +15,7 @@ import {
   PROGRESS_INTERVAL_MS,
   type ProgressTimers,
   REVIVED_NOTE,
+  RIGHT_HAND_ECHO_PREFIX,
   RUNNING_STEPS_MAX,
   WEB_ECHO_PREFIX,
   WEB_STOPPING_NOTICE,
@@ -1656,6 +1657,35 @@ test("Web: Bot 自身の「（Web から）」の投稿は受け付けず（Bot 
   assert.equal(runner.inputs.length, 1);
   assert.equal(gateway.posts.length, 1);
   assert.deepEqual(historyRows(history, "inbox-1").map((row) => row.kind), ["owner", "agent"]);
+});
+
+test("Web: via right_hand なら写しは「（右腕から）」で始まり、本文に URL があってもターンの allowedUrls は空。履歴の owner の行は source web で本文だけ", async (t) => {
+  const { gateway, runner, topicSessions, history, handler } = setup(t, [okResult("session-1", "見ます")], { history: true });
+  topicSessions.create(TOPIC);
+  const content = "この記事を読んで https://example.com/a";
+
+  const result = await handler.submitText({ ...webInput("topic-1", content), via: "right_hand" });
+
+  assert.equal(result.result, "accepted");
+  assert.deepEqual(gateway.posts, [{ channelId: "topic-1", messageId: "posted-1", message: { text: `${RIGHT_HAND_ECHO_PREFIX}\n${content}` } }]);
+  await until(() => gateway.sent.length === 1);
+  assert.deepEqual(runner.inputs.map((input) => input.allowedUrls), [[]]);
+  assert.deepEqual(
+    historyRows(history, "topic-1").filter((row) => row.kind === "owner").map((row) => [row.source, row.text, row.messageId]),
+    [["web", content, "posted-1"]],
+  );
+});
+
+test("Web: via が無ければ写しは「（Web から）」で、本文の URL が allowedUrls に入る（今のまま）", async (t) => {
+  const { gateway, runner, topicSessions, handler } = setup(t, [okResult("session-1", "見ます")], { history: true });
+  topicSessions.create(TOPIC);
+  const content = "この記事を読んで https://example.com/a";
+
+  assert.equal((await handler.submitText(webInput("topic-1", content))).result, "accepted");
+
+  assert.equal(toPayload(gateway.posts[0]!.message).content, `${WEB_ECHO_PREFIX}\n${content}`);
+  await until(() => gateway.sent.length === 1);
+  assert.deepEqual(runner.inputs.map((input) => input.allowedUrls), [["https://example.com/a"]]);
 });
 
 test("Web: 待ちのセッションに送ると、返す前に進行中に戻して最終発言の時刻を記録し、返事の先頭に REVIVED_NOTE を付ける", async (t) => {
