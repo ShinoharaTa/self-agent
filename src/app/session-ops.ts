@@ -272,7 +272,7 @@ export function rightHandWelcomeText(title: string, from: string, projectDir?: s
  * 話題を始める（場所・題名・最初の一言。種類は選ばせない）。既定の人格・origin command。応答はせず結果の種類を返す。
  * General は使えれば（連携・共有の link・ディレクトリ）プロジェクトのセッション、使えなければ軽いセッション。プロジェクトは使えなければ断る。
  * owner があれば場所を見ずにその人格の軽いセッション。by が right_hand なら origin inbox・最初の投稿に頼んだチャンネル・最初の一言は via right_hand。
- * seed があれば作った直後（最初の投稿より前）に seeds へ入れる。
+ * seed があれば作った直後（最初の投稿より前）に seeds へ入れる（seeds が無い・入れられないときは log だけで話題は作る）。
  * 作った後に仕切りを 1 行書き、一言があれば submitText で最初のターンを入れる（受け付けられなくても話題は残す）。
  * 投げた例外は握らない。log に題名・本文・チャンネル ID・プロジェクトの名前・パスを出さない
  */
@@ -301,6 +301,18 @@ export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): 
 
   const rightHand = input.by === "right_hand";
   const seed = input.seed;
+  // seed を入れられなくても話題は作れたことにする（中身・ID は log に出さない）
+  const putSeed = (created: string, text: string): void => {
+    if (deps.seeds === undefined) {
+      deps.log("seed の置き場が無いので入れませんでした");
+      return;
+    }
+    try {
+      deps.seeds.set(created, text);
+    } catch (error) {
+      deps.log(`seed を入れられませんでした: ${describeError(error)}`);
+    }
+  };
   const opened = await openTopicSession(
     input.guildId,
     title,
@@ -311,7 +323,7 @@ export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): 
     projectDir,
     {
       ...(rightHand ? { origin: "inbox" as const, welcome: rightHandWelcomeText(title, input.from ?? "inbox", projectDir) } : {}),
-      ...(seed === undefined ? {} : { onCreated: (created: string) => deps.seeds?.set(created, seed) }),
+      ...(seed === undefined ? {} : { onCreated: (created: string) => putSeed(created, seed) }),
     },
   );
   if (opened.result === "empty_title") return { result: "empty" };
@@ -320,7 +332,15 @@ export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): 
 
   recordHistory(
     deps.history,
-    { guildId: input.guildId, channelId, kind: "divider", source: "system", text: startedDividerText(input.place, projectDir, input.by) },
+    {
+      guildId: input.guildId,
+      channelId,
+      kind: "divider",
+      source: "system",
+      // 足した人格の話題は持ち主の人格で書く（無ければ既定の人格）
+      ...(input.owner === undefined ? {} : { persona: input.owner.id }),
+      text: startedDividerText(input.place, projectDir, input.by),
+    },
     deps.log,
   );
 
