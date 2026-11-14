@@ -175,7 +175,7 @@ function checkDestination(
   return { from, to };
 }
 
-/** 出す前の検査（話題・連携・行き先）。実行中・付け替え中は見ない。順は moveTopic の検査と同じ */
+/** 出す前の検査（話題・連携・行き先）。実行中・付け替え中は見ない。順は moveTopic の検査と同じ。行き先が General でディレクトリが無ければ作る（moveTopic の検査と同じ） */
 export function checkMovable(
   input: Pick<MoveInput, "guildId" | "channelId" | "place">,
   deps: MoveDeps,
@@ -191,7 +191,8 @@ export function checkMovable(
 }
 
 /**
- * 話題の場所を変える。検査（同期）で断れば onAccepted を呼ばず DB にも書かない。受け付けたら topic_moves に running の行を足し、
+ * 話題の場所を変える。検査（同期）で断れば onAccepted を呼ばず DB にも書かない。受け付けたら topic_moves に running の行を足し
+ * （proposalId があればその proposed の行を running にする。by は行のまま）、
  * 最初の await の前に発言と同じキュー（セッションのジョブ）に積んでから onAccepted を待つ（その間に来た発言は付け替えの後に走る。
  * onAccepted が投げても log だけで続ける）。キューの中で検査をやり直してから、会話があれば要点のターンを 1 つ走らせ、
  * 場所・SDK セッション・seed・要約・記録を 1 つのトランザクションで書き換える。要点のターンが失敗したら何も変えない。
@@ -220,7 +221,8 @@ export async function moveTopic(
   // (2) 受け付け（二重の要求は一意索引で止まる。右腕の確認を押したときは、その proposed の行を running にする）
   let id: number | undefined;
   if (input.proposalId !== undefined) {
-    id = deps.moves.accept(input.proposalId, destination.from) ? input.proposalId : undefined;
+    const accepted = deps.moves.accept(input.proposalId, { channelId: input.channelId, fromDir: destination.from, toDir: destination.to });
+    id = accepted ? input.proposalId : undefined;
   } else {
     id = deps.moves.start({ channelId: input.channelId, fromDir: destination.from, toDir: destination.to, by: input.by });
   }
