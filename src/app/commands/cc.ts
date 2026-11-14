@@ -28,6 +28,7 @@ import {
   ccClosedText,
   CC_RESUME_KEPT_TEXT,
   CC_RESUME_STALE_TEXT,
+  CC_RESUMING_REPLY,
 } from "../../cc/channels.ts";
 import type { CcChannelStore } from "../../store/cc-channels.ts";
 import type { ChannelOpsQueue } from "../channel-ops.ts";
@@ -288,8 +289,14 @@ async function handleTake(
     await responder.reply({ text: CC_NOT_SET_UP_REPLY, ephemeral: true });
     return;
   }
-  const items = channels.pickItems();
-  const takeable = new Set(items.length === 0 ? [] : await runtime.takeover.takeableSessions(items.map((item) => item.sessionId)));
+  // 候補は一覧を読み直してから取る（takeableSessions が先に tick する）
+  let items: ReturnType<typeof channels.pickItems> = [];
+  const takeable = new Set(
+    await runtime.takeover.takeableSessions(() => {
+      items = channels.pickItems();
+      return items.map((item) => item.sessionId);
+    }),
+  );
   const candidates = items.filter((item) => takeable.has(item.sessionId));
   if (candidates.length === 0) {
     await responder.reply({ text: CC_TAKE_NONE_REPLY, ephemeral: true });
@@ -534,11 +541,19 @@ async function handleTakeResume(
     await responder.reply({ text: CC_TAKE_STALE_REPLY, ephemeral: true });
     return;
   }
-  const pending = channels?.takePending(channelId, messageId);
-  if (pending === undefined) {
+  const taken = channels?.takePending(channelId, messageId) ?? { ok: false as const, reason: "gone" as const };
+  if (!taken.ok) {
+    // 起動の途中（[起動して続ける] の後）は、その発言を起動の最初の指示に使っている
+    if (taken.reason === "resuming") {
+      await responder.reply({ text: CC_RESUMING_REPLY, ephemeral: true });
+      return;
+    }
+    // 保留が無い（再起動・ほかのボタンの後）: [起動して続ける]・[やめる] と同じく案内を古いと書き換えてボタンを外す
+    await expireResumePrompt(responder);
     await responder.reply({ text: CC_TAKE_PENDING_GONE_REPLY, ephemeral: true });
     return;
   }
+  const pending = taken.held;
   // propose は一覧を読み、confirm は 10 秒以上かかりうるので先に保留する（[取り込む] と同じ）
   await responder.deferUpdate();
   const proposed = await runtime.takeover.propose({ channelId, entry: "discord" });
@@ -550,12 +565,16 @@ async function handleTakeResume(
   if (row === undefined || row.source !== "ended") {
     // 端末の claude を確認の文なしに終わらせない
     runtime.takeover.cancel(proposed.id);
-    await responder.reply({ text: CC_TAKE_ALIVE_REPLY, ephemeral: true });
+    await responder.reply({ text: takeResumeRefusedReply(CC_TAKE_ALIVE_REPLY), ephemeral: true });
     return;
   }
   runtime.takeovers.setConfirmMessage(proposed.id, pending.promptMessageId);
   const result = await runtime.takeover.confirm(proposed.id);
-  if (!result.ok && result.reason === "stale") return;
+  // 押す間に確認待ちでなくなった（保留はもう引いたので、もう一度送ってもらう）
+  if (!result.ok && result.reason === "stale") {
+    await responder.reply({ text: takeResumeRefusedReply(CC_TAKE_STALE_REPLY), ephemeral: true });
+    return;
+  }
   // 結果の文は CcTakeover が確認の投稿（ボタンの付いていた案内）に出す。書き換えられなかったときだけ、押された 1 通を同じ文にしてボタンを外す
   if (!result.edited) {
     try {
@@ -564,8 +583,11 @@ async function handleTakeResume(
       deps.log(`Claude Code: 取り込みの結果を確認の文に出せませんでした（#${proposed.id}、${errorKind(error)}）`);
     }
   }
-  // 失敗なら流さない
-  if (!result.ok) return;
+  // 失敗なら流さず、保留を引いた後なのでもう一度送ってもらう
+  if (!result.ok) {
+    await responder.reply({ text: takeResumeRefusedReply(result.text), ephemeral: true });
+    return;
+  }
   const failed = async (kind: string): Promise<void> => {
     deps.log(`Claude Code: 取り込んだ後に発言を流せませんでした（#${proposed.id}、${kind}）`);
     try {
@@ -592,6 +614,11 @@ async function handleTakeResume(
     return;
   }
   if (submitted.result !== "accepted") await failed(submitted.result);
+}
+
+/** 終わったチャンネルの案内（[起動して続ける][取り込んで続ける][やめる]）を古いと書き換えてボタンを外す（保留が無いとき。cc:resume・cc:take:resume で共有） */
+function expireResumePrompt(responder: Parameters<ComponentHandler["handle"]>[1]): Promise<void> {
+  return responder.update({ text: CC_RESUME_STALE_TEXT, components: [], suppressEmbeds: true });
 }
 
 /** custom_id の id（1 以上の整数）。それ以外なら undefined */
@@ -653,7 +680,7 @@ export function createCcComponent(deps: CcComponentDeps): ComponentHandler {
         }
         const channels = deps.ccChannels?.();
         // 保留が無い（再起動・[やめる]・付け替えの後・連携が止まった）ボタンは、確認のボタンを外して古いと書き換える
-        const expire = (): Promise<void> => responder.update({ text: CC_RESUME_STALE_TEXT, components: [], suppressEmbeds: true });
+        const expire = (): Promise<void> => expireResumePrompt(responder);
         if (keep) {
           if (channels === undefined || !channels.keepEnded(channelId, messageId)) {
             await expire();

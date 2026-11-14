@@ -301,15 +301,17 @@ export class CcTakeover {
   }
 
   /**
-   * 渡したセッションのうち取り込めるもの（T4。チャンネルの外の /cc take の候補）。一覧は 1 回だけ読み、各セッションを propose と同じ判定
-   * （チャンネルがあればその行、無ければ open として）で見る。順は渡した順。log は出さない
+   * 候補のうち取り込めるもの（T4。チャンネルの外の /cc take の候補）。一覧を 1 回だけ読んでから candidates で候補を取り（読み直した一覧から選べるように）、
+   * 各セッションを propose と同じ判定（チャンネルがあればその行、無ければ open として）で見る。ペインを撮る前に、ペインが待機だったとしても断られるものを
+   * 外す（結果は変わらない）。順は候補の順。log は出さない
    */
-  async takeableSessions(sessionIds: readonly string[]): Promise<string[]> {
-    const fresh = await this.readList();
+  async takeableSessions(candidates: () => readonly string[]): Promise<string[]> {
+    const fresh = this.deps.ready() ? await this.readList() : false;
     const takeable: string[] = [];
-    for (const sessionId of sessionIds) {
+    for (const sessionId of candidates()) {
       const channel = this.deps.ccChannels.anyFor(sessionId);
       const target: TakeoverTarget = channel ?? { sessionId, cwd: null, state: "open" };
+      if (!(await this.judge(target, fresh, "idle")).ok) continue;
       if ((await this.judge(target, fresh)).ok) takeable.push(sessionId);
     }
     return takeable;
@@ -323,7 +325,8 @@ export class CcTakeover {
     const channel = ccChannels.get(channelId);
     if (channel === undefined || channel.state === "deleted") return { ok: false, code: "not_channel" };
     const refuse = (code: TakeoverFailure) => ({ ok: false as const, code, guildId: channel.guildId });
-    const assessed = await this.judge(channel, await this.readList());
+    // 準備ができていなければ一覧を読まない（どのみち not_ready。ended のチャンネルの発言のたびに tick しない）
+    const assessed = await this.judge(channel, this.deps.ready() ? await this.readList() : false);
     if (!assessed.ok) return refuse(assessed.code);
     const current = ccChannels.get(channelId);
     if (current === undefined || current.state === "deleted" || current.sessionId !== channel.sessionId) return refuse("channel_changed");
@@ -331,9 +334,9 @@ export class CcTakeover {
   }
 
   /** evaluate・takeableSessions の 1 件の判定（一覧は読んだ後）: 確認待ちか running の取り込みがあれば in_progress、ほかは assess */
-  private async judge(target: TakeoverTarget, fresh: boolean): Promise<Assessed> {
+  private async judge(target: TakeoverTarget, fresh: boolean, assumePane?: TakeoverPane): Promise<Assessed> {
     if (this.deps.takeovers.activeFor(target.sessionId) !== undefined) return { ok: false, code: "in_progress" };
-    return this.assess(target, fresh);
+    return this.assess(target, fresh, assumePane);
   }
 
   /** [取り込む]（§4）: 確認待ちを running にして step を順に進める。結果の文で確認の文を書き換える */
@@ -668,8 +671,12 @@ export class CcTakeover {
     if (done.followChannelId !== null) {
       await gateway.sendMessage(done.followChannelId, { text: TAKEOVER_FOLLOW_STOPPED_TEXT }).then(() => undefined, failed("追いかけ先に知らせ"));
     }
-    // topic は最後（確認の文の「取り込みました」を先に出す）
-    await gateway.setChannelTopic(row.channelId, sessionTopic(done.title, undefined, done.project)).catch(failed("topic を書き換え"));
+    // topic は最後（確認の文の「取り込みました」を先に出す）。レート制限で待たされうるので待たない（最初のターンを遅らせない。recoverEffects と同じ）
+    try {
+      void gateway.setChannelTopic(row.channelId, sessionTopic(done.title, undefined, done.project)).catch(failed("topic を書き換え"));
+    } catch (error) {
+      failed("topic を書き換え")(error);
+    }
     takeovers.markEffects(id);
     return { text, edited };
   }
@@ -771,9 +778,9 @@ export class CcTakeover {
 
   /**
    * 取り込めるか（§3.2・§3.4）。今の一覧にあれば生きているセッション（ペインを撮る）、無ければ終わったセッション（cc_sessions が gone のときだけ）。
-   * cwd の形は projectOf
+   * cwd の形は projectOf。assumePane を渡せばペインを撮らずにその状態として見る（takeableSessions の前もっての絞り込み）
    */
-  private async assess(channel: TakeoverTarget, listFresh: boolean): Promise<Assessed> {
+  private async assess(channel: TakeoverTarget, listFresh: boolean, assumePane?: TakeoverPane): Promise<Assessed> {
     const { registry, ccSessions, ccSends, ccPermissions, sdkSessions } = this.deps;
     const sessionId = channel.sessionId;
     const snapshot = registry.snapshot();
@@ -781,7 +788,8 @@ export class CcTakeover {
     const session = ccSessions.get(sessionId);
     const cwd = view !== undefined ? (view.cwd ?? null) : (session?.cwd ?? channel.cwd);
     const project = this.projectOf(cwd);
-    const pane: TakeoverPane | undefined = view !== undefined && listFresh ? await this.paneOf(view, snapshot.sessions) : undefined;
+    const pane: TakeoverPane | undefined =
+      view !== undefined && listFresh ? (assumePane ?? (await this.paneOf(view, snapshot.sessions))) : undefined;
     const code = takeoverRefusal({
       ready: this.deps.ready(),
       listFresh,

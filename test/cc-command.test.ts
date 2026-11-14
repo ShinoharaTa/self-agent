@@ -61,7 +61,7 @@ function fakeChannels(items: CcPickItem[], result: CcOpenResult, cancelled: Reco
       close: (): CcCloseResult => ({ result: "not_channel" }),
       resume: async (): Promise<CcResumeResult> => ({ ok: false, reason: "stale" }),
       keepEnded: (): boolean => false,
-      takePending: (): { text: string; promptMessageId: string } | undefined => undefined,
+      takePending: () => ({ ok: false as const, reason: "gone" as const }),
     },
   };
 }
@@ -233,7 +233,9 @@ function fakeTakeover(t: TestContext) {
         calls.push(`cancel:${id}`);
         return takeovers.cancel(id);
       },
-      takeableSessions: async (sessionIds: readonly string[]): Promise<string[]> => {
+      takeableSessions: async (candidates: () => readonly string[]): Promise<string[]> => {
+        calls.push("tick");
+        const sessionIds = candidates();
         calls.push(`takeable:${sessionIds.length}`);
         return sessionIds.filter((id) => takeable.includes(id));
       },
@@ -312,7 +314,8 @@ test("/cc take（チャンネルの外。T4）: 取り込めるセッション�
   assert.ok(row?.kind === "select");
   assert.equal(row.select.customId, "cc:takepick");
   assert.deepEqual(row.select.options.map((option) => [option.value, option.description]), [[S2, "待機・チャンネルあり"]]);
-  assert.deepEqual(f.calls, ["propose:channel-1:discord", "takeable:2"]);
+  // 一覧を読み直して（tick）から候補を取る
+  assert.deepEqual(f.calls, ["propose:channel-1:discord", "tick", "takeable:2"]);
 
   f.setTakeable([]);
   const none = new FakeResponder();
