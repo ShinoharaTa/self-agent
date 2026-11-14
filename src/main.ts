@@ -51,6 +51,7 @@ import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
+import { type MoveDeps, recoverMoves } from "./app/topic-move.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
 import { CcChannels, ccEndedHandler, ccPermissionAnsweredHandler, routeCcChannelMessages } from "./cc/channels.ts";
@@ -103,6 +104,7 @@ import { RoutineRecordStore } from "./store/routine-records.ts";
 import { RoutineStore } from "./store/routines.ts";
 import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
+import { TopicMoveStore } from "./store/topic-moves.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { USAGE_KEEP_DAYS, UsageStore } from "./store/usage.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
@@ -212,6 +214,9 @@ const history = config.web ? { history: historyStore } : {};
 // #system への知らせの記録（docs/plan/web-ui.md §7.1）。書くのは Web UI が有効なときだけで、古いものは有効・無効を問わず tick で消す
 const noticeStore = new NoticeStore(db, now);
 const notices = config.web ? noticeStore : undefined;
+// 話題の場所の付け替えの記録（#364。app/topic-move.ts）。途中で止まった（running のまま残った）付け替えは、ターンを受け付け始める前に失敗にする
+const topicMoves = new TopicMoveStore(db, now);
+recoverMoves({ moves: topicMoves, topicSessions, ...history, log });
 // この機械の Claude Code のセッション（docs/plan/claude-code-sessions.md §9）。書くのは SELF_AGENT_CC=1 のときだけで、古い行は有効・無効を問わず tick で消す
 const ccSessions = new CcSessionStore(db, now);
 const ccSends = new CcSendStore(db, now);
@@ -486,6 +491,18 @@ const guest = config.guest
       log,
     })
   : undefined;
+// 話題の場所の付け替え（/move と POST /api/topics/ch:<id>/place。/renew と同じキュー・turn。実行中のターンは呼ばれたときに引く）
+const moveDeps: MoveDeps = {
+  topicSessions,
+  moves: topicMoves,
+  turnQueue,
+  turn,
+  runningTurns: () => handler.runningTurns(),
+  ...history,
+  setChannelTopic: (channelId, topic) => gateway.setChannelTopic(channelId, topic),
+  ...(projectSessions === undefined ? {} : { projectSessions }),
+  log,
+};
 // コマンドは既定の人格のアプリだけが登録して受ける。/close・/renew のターンはチャンネルの持ち主の人格で動かし、結果は持ち主の Bot が投稿する
 const commands = createCommands({
   cfg: config,
@@ -514,6 +531,8 @@ const commands = createCommands({
   ...(config.cc ? { ccChannels: () => ccChannels } : {}),
   // /new の project（SELF_AGENT_CC=1 のときだけ）
   ...(projectSessions === undefined ? {} : { projectSessions }),
+  // /move（結果は /renew と同じく持ち主の人格の形で出す）
+  move: { ...moveDeps, personas, ownerPosts },
   log,
 });
 // GitHub の通知の [対応]（下の Claude Code の配線の後で作る。ボタンは押されたときに読む）
@@ -1182,6 +1201,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
           ...(projectSessions === undefined ? {} : { projectSessions }),
           log,
         },
+        // POST /api/topics/ch:<id>/place（M5。/move と同じ実体。結果は持ち主の Bot でチャンネルに投稿する）
+        move: { ...moveDeps, ownerPosts },
         now,
       }),
       ...devlogRoutes({ cfg: config, now }),

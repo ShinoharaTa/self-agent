@@ -116,7 +116,7 @@ export async function createTopicSession(
     return { result: "not_set_up" };
   }
   const categoryId = await findStateCategory(guildId, "active", deps);
-  // name・topic は作成時にだけ設定し、以後変更しない
+  // name は作成時にだけ設定する。topic は場所の付け替え（topic-move.ts）で書き換える
   const channelId = await gateway.createTextChannel(guildId, {
     name: sessionChannelName(title, owner),
     parentId: categoryId,

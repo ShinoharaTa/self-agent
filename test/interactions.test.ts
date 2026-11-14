@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HELP_TEXT, helpCommand } from "../src/app/commands/help.ts";
+import type { MoveCommandDeps } from "../src/app/commands/move.ts";
 import {
   createCommands,
   createInteractionHandler,
@@ -101,14 +102,15 @@ test("HELP_TEXT は登録コマンドを全部説明している", (t) => {
     turn: { ...stores, runner: { run: async () => assert.fail("想定外の呼び出し") }, log },
     inboxRotator: { rotateNow: async () => assert.fail("想定外の呼び出し") },
     reminders: stores.reminders,
-    // 登録が条件付きのコマンド（ゲストの /guests・SELF_AGENT_CC の /cc）も説明しているか見るため、どちらも渡す
+    // 登録が条件付きのコマンド（ゲストの /guests・SELF_AGENT_CC の /cc・場所の付け替えの /move）も説明しているか見るため、どれも渡す
     guests: {} as GuestAdmin,
     ccChannels: () => undefined,
+    move: {} as MoveCommandDeps,
     log,
   });
 
   const names = commands.map(({ def }) => def.name);
-  assert.ok(names.includes("guests") && names.includes("cc"), names.join(","));
+  assert.ok(names.includes("guests") && names.includes("cc") && names.includes("move"), names.join(","));
   const lines = HELP_TEXT.split("\n");
   for (const { def } of commands) {
     assert.ok(lines.some((line) => line.startsWith(`\`/${def.name}\``) || line.startsWith(`\`/${def.name} `)), def.name);
