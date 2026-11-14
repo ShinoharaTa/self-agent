@@ -56,13 +56,13 @@ v2（2026-11-13。レビュー反映。指摘ごとの扱いは §9）。前提:
 
 | # | 項目 | いつ | 駄目だったときの倒し方 |
 |---|---|---|---|
-| R1 | Bot の unit から端末の claude の `/proc` を読めて SIGTERM が届く（隔離の設定は無い。実際の kill は未確認） | M1（§5.4） | 終わったセッションの取り込み（端末で /exit してから）だけにする |
+| R1 | **確認済み（M1。2026-11-13）**。Bot の unit と同じ設定の一時 unit から端末の claude の `/proc` を読めて SIGTERM が届く（1.26 秒で終了） | M1（§5.4） | 終わったセッションの取り込み（端末で /exit してから）だけにする |
 | R2 | 圧縮の後に PROJECT_APPEND が入るか・前置きが残るか | T3b の後に 1 回 | 圧縮の次のターンにも前置きを付ける（T4） |
 | R3 | 数十 MB の記録の resume（時間・メモリ）と、同期のコピーで止まる時間 | T3b の実機確認 | `TAKEOVER_MAX_BYTES` を下げる |
 | R4 | サブエージェントを使った会話を、脇のディレクトリなしで resume | T3b の実機確認 | 脇のディレクトリも写す |
 | R5 | ターンの途中で SIGTERM を受けた記録の resume | 手で 1 回 | §3.6.3 の知らせで新しい会話になる |
 | R6 | 待機中の claude が抱える背景のシェル・MCP の子プロセスが、SIGTERM の後に残るか | M1（§5.4 の 5） | 結果を確認の文に 1 行足す（「背景のタスクは止まります／残ります」） |
-| R7 | `claude agents --json` が終わった pid を載せ続けることがあるか | M1 | §3.4 の確かめで落ちる（取り込めないだけ） |
+| R7 | **確認済み（M1）**。SIGTERM で終わった pid は次の `claude agents --json` に無かった（1 回見ただけ） | M1 | §3.4 の確かめで落ちる（取り込めないだけ） |
 
 ## 3. 案の比較と決定
 
@@ -231,7 +231,7 @@ running の間（`start(id)` の直後から done / failed まで。DB の `runn
 | T1b | （T1 の追補） | §5.1。T1 の PR に積む | なし |
 | T2 | T2 | 本体 `CcTakeover`・ended の差し止め・送信とチャンネルのゲート・再起動の復旧 | なし |
 | T3a | T3 の一部 | ターン側（前置き・resume を捨てたときの知らせ）。main からは渡さない | なし |
-| M1 | T3 の実機確認の一部 | 手での確認（PR なし）。T2 の後・T3b の前 | R1・R6・R7 が決まる |
+| M1（済。手順 5 は未） | T3 の実機確認の一部 | 手での確認（PR なし）。T2 の後・T3b の前 | R1・R7 が決まった。R6 は未確認 |
 | T3b | T3 の残り | `/cc take`・確認のボタン・main の配線・文書 | cc のチャンネルの中から取り込める |
 | T4 | T4 | Discord の入口を広げる | [取り込んで続ける]・チャンネルの外から選ぶ |
 | T5 | T5 | Web | セッションのタブから取り込める |
@@ -301,6 +301,8 @@ running の間（`start(id)` の直後から done / failed まで。DB の `runn
 5. （任意。1 ターン使う）背景のシェルを 1 つ動かしたまま待機にして同じことを行い、子プロセスが残るかを見る（R6）。
 6. 結果を #341 に書く。3・4 が通らなければ R1 の倒し方（終わったセッションだけ）で T3b を作る。
 
+**結果（2026-11-13。#341 のコメント）**: 手順 1〜4 は通った。一時 unit の中から本物の確かめ（`takeoverIdentity`・`parseStat`・`lineage`・`ClaudeDirs.sessionFile`）を通して SIGTERM を送り、1.26 秒で `/proc/<pid>` が消え、`sessions/<pid>.json` が消え、次の一覧に無く、Bot は動いたままだった。`procStart` と starttime は一致し、`startedAt` を 60 秒ずらす・`procStart` を変えると確かめは false になった。見ていないもの: 記録に増える行（指示を打っていないので記録が無い。会話のある記録では probe で確認済み）／ペインがシェルに戻る（claude をペインのコマンドとして起動したのでペインごと閉じた。シェルの上では probe で確認済み）／**手順 5（R6）は行っていない**。T3b は「生きているセッションも取り込む」形で作った。
+
 ### 5.5 T3b 入口（Discord）と配線
 - `src/app/commands/cc.ts`: サブコマンド `take`（引数なし）。cc のチャンネル（open・ended）の中なら `propose`、外なら「Claude Code のチャンネルの中で使ってください（無ければ /cc open）。」。ボタン `cc:take:go:<id>`・`cc:take:no:<id>`（押した人がオーナー・行の channel_id が同じ・state が awaiting_confirm でなければ「この確認はもう使えません。」）。
 - `src/main.ts`: `SELF_AGENT_CC=1` のときだけ組み立てる。Gateway・`CcChannels`・replier の後に **`recover()` → `registry.start()`** の順。`ccEndedHandler`・`CcSender`・`CcChannels`・turn の deps に渡す。失効のタイマー。
@@ -365,7 +367,7 @@ T4・T5
 | 5 | `TAKEOVER_MAX_BYTES` の値 | 128 MB で始め、R3 で直す | 実装の担当 |
 | 6 | U2（/mode）の後、端末の plan・acceptEdits を引き継ぐか | 引き継ぐ（`mapTakeoverMode`）。U2 の段で決める | オーナー（U2 のとき） |
 | 7 | 端末の cwd の形が違う（作業場所が symlink 越しなど）セッションも取り込むか | 今は断る。要るなら、その形の resume を 1 回確かめてから緩める | オーナー |
-| 8 | M1（§5.4）を誰が行うか。手順 5（端末で 1 ターン使う）も行うか | オーナーが端末で（10 分ほど）。5 も 1 回行う | オーナー |
+| 8 | M1（§5.4）を誰が行うか。手順 5（端末で 1 ターン使う）も行うか | 手順 1〜4 は済み（捨てのセッションで行った。§5.4 の結果）。残りは手順 5（R6）を 1 回 | オーナー |
 
 ## 9. レビュー（PR #342）の指摘の扱い
 
@@ -374,3 +376,19 @@ T4・T5
 ### 9.1 PR #343（T1・T1b）のレビューで足した締め
 
 重大は無し。採ったもの: 相手の確かめの state を R・S・D に限る／`procStart` と starttime の一致（§3.4 の 3）／`copyTranscript` が写す直前に「写し先が projects の下」を確かめ直す（`prepareTarget` から写しまで数秒空く）／元を開くときの O_NONBLOCK（FIFO で止まらない）／`lineage` は親が 0 以上の整数でなければ undefined／読めない行が増えていたら `changed` の側（`appendedInterrupted` が true）／rename の前の fsync／`releaseHeld` は failed の行だけ・`markEffects` は 1 回だけ true。採らなかったもの: `prepareTarget` の mkdir の順（`takeoverPaths` の名前に `/` が入らないので届かない）。T2 への申し送り: fs の例外の message（パスが入る）を log に出さない／check の段で cc の行の session_id が取り込みの行と同じことを見る／再起動で step が `term` の行は SIGTERM を送ったか分からないので、失敗の文は「終了しているかもしれません」の側にする。
+
+### 9.2 PR #344（T2）のレビューで足した締め
+
+重大は無し。採ったもの: `failed()` は投げない（DB が失敗しても確認の文は書き換え、行は次の `recover()` に残す。`confirm` は reject しない）／SIGTERM の前のカテゴリの解決に 15 秒の期限（`TAKEOVER_CATEGORY_TIMEOUT_MS`。過ぎたら `no_category`）／`ccReplayEnded` は届いたか（boolean）を返し、届いたときだけ `releaseHeld`（届かなければ次の `recover()` が流し直す）／取り込み中の ended のチャンネルの発言は [起動して続ける] を出さずに断る（`submitWeb` は `taking_over`）／ended の取り込みは写しの直前に一覧に戻っていないことを見る（戻っていたら `changed`）／sender は `bindSession` の後に holds を見直す／kill の ESRCH は `changed`、SIGTERM より前の例外は符号 `internal`（端末はそのまま）／後始末は確認の文が先・topic が最後（`recover()` は topic を待たない）／「終わっているかもしれません」の 1 行は生きていた行だけ。残したもの: カテゴリの期限の `sleep` は取り消せず 15 秒のタイマーが残る／期限の後にカテゴリが作られることがある（次の取り込みで使われる）。
+
+### 9.3 PR #345（T3a）のレビューで足した締め
+
+重大は無し。採ったもの: 前置きの 3 つの呼び出し（`noteFor`・`noteDone`・`resumeDropped`）の例外はターンを止めない（`takeoverCall`。log は例外の種類の名前だけ）／本物の `CcTakeover` をつないだテスト（取り込んだ最初のターンにだけ前置きが付く・resume を捨てたら知らせる）。
+
+### 9.4 T3b で決めたこと（設計に無かった細部）
+
+- 失効は `CcTakeoverExpirer`（1 分ごとに `expire()`。`CcConfirmExpirer` と同じ形。終了時に止める）。
+- `/cc take` は先に本人にだけ見える形で保留し、確認の文はチャンネルに出す。出せなければ `cancel` して「取り込みの確認を出せませんでした」。
+- ボタンは、オーナー・同じチャンネル・`awaiting_confirm` でなければ「この確認はもう使えません。」。10 分を過ぎた [取り込む] は `confirm` が expired にして確認の文を書き換えるだけ（kill しない）。
+- 起動時の `recover()` は `gateway.start` の直後（間に await を挟まない）・`ccRegistry.start()` の前。例外は log だけで起動を続ける。`gateway.start` が終わる前に古い [取り込む] が押されて `confirm` が始まると、後の `recover()` がその行を restart で失敗にしうる（端末は終わっているかもしれない、の文になる。記録は残る）。
+- 発言のターンに前置きを届けるため `HandlerDeps` に `takeover?` を足した（handler が turnDeps を 1 つずつ写しているため）。
