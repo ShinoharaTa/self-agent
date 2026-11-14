@@ -1270,6 +1270,10 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         ...(ccRegistry === undefined ? {} : { follows: ccSessions, log }),
         // セッションの Discord のチャンネル（一覧の channel・/channel）
         ...(ccChannels === undefined ? {} : { channels: { store: ccChannels, allowedGuildIds: config.allowedGuildIds, lookup: webChannelOf } }),
+        // 取り込み（/takeover・/api/cc/takeovers/<id>/confirm|cancel。Discord の /cc take と同じ行を見る）
+        ...(ccTakeoverEntry === undefined || ccChannels === undefined
+          ? {}
+          : { takeover: { takeover: ccTakeoverEntry.takeover, takeovers: ccTakeoverEntry.takeovers, gateway, channels: ccChannels } }),
         now,
       }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）

@@ -854,7 +854,7 @@ test("web static: ≤639px でも Claude Code のチャンネルを閉じられ�
   assert.ok(ccHeader.length > 0);
   // [閉じる] と同じ .ed-ops に […] がある（≤639px で [閉じる] を隠しても口が残る）
   assert.match(ccHeader, /ed-ops-more/);
-  assert.match(ccHeader, /el\("div", \{ class: "ed-ops" \}, \[close, more\]\)/);
+  assert.match(ccHeader, /el\("div", \{ class: "ed-ops" \}, \[take, close, more\]\)/);
   // [画面] 以外のリンクは ≤639px で隠す
   assert.equal((ccHeader.match(/btn btn-ghost btn-sm hide-sm/g) ?? []).length, 2);
   // […] はこのチャンネルの操作だけのシートを開く（UI-7。fix の段ではパレットのコマンドだった）
@@ -868,8 +868,26 @@ test("web static: ≤639px でも Claude Code のチャンネルを閉じられ�
   assert.match(ccCommands, /label: "このチャンネルを閉じる"[\s\S]{0,200}run: state\.closable \? \(\) => SA\.chat\.closeCcChannel\(ch\.id\) : null,\n {8}why: "閉じています"/);
   assert.match(ccCommands, /if \(rc\) items\.push\(\{ label: "RC で開く"/);
   assert.match(ccCommands, /if \(discord\) items\.push\(\{ label: "Discord で開く"/);
-  assert.match(chat, /\n {4}closeCcChannel,\n {4}ccCommandState,\n/);
+  assert.match(chat, /\n {4}closeCcChannel,\n {4}takeoverCc,\n {4}ccCommandState,\n/);
   assert.match(chat, /return \{ closable: live\.state !== "ended", rc: live\.rc, discord: discordUrl\(ch\.link\) \};/);
+});
+
+test("web static: Claude Code のチャンネルの見出しの [取り込む]（T5。docs/plan/takeover.md §5.7）は ghost で .ed-ops と […] のシートにあり、確認のダイアログはサーバーの文を textContent で出す", () => {
+  const chat = read("chat.js");
+  const ccHeader = /function ccHeader\(ch, channelId\) \{([\s\S]*?)\n  \}\n/.exec(chat)?.[1] ?? "";
+  // 主のボタンにしない（secondary は [閉じる] だけ）。≤639px は .ed-ops の規則で隠れ、シートの行から押せる
+  assert.match(ccHeader, /const take = el\("button", \{ class: "btn btn-ghost btn-sm", type: "button", "data-op": "take"/);
+  assert.match(ccHeader, /\{ icon: "message-square", label: "取り込む", run: \(\) => takeoverCc\(channelId\) \}/);
+  assert.match(chat, /"\/api\/cc\/sessions\/" \+ encodeURIComponent\(live\.sessionId\) \+ "\/takeover"/);
+  assert.match(chat, /"\/api\/cc\/takeovers\/" \+ encodeURIComponent\(String\(id\)\) \+ "\/confirm"/);
+  assert.match(chat, /"\/api\/cc\/takeovers\/" \+ encodeURIComponent\(String\(id\)\) \+ "\/cancel"/);
+  assert.match(chat, /document\.getElementById\("dlg-cc-take-body"\)\.textContent = text;/);
+  const html = read("index.html");
+  assert.match(html, /<dialog id="dlg-cc-take" aria-labelledby="dlg-cc-take-title" aria-describedby="dlg-cc-take-body">/);
+  assert.match(html, /<p id="dlg-cc-take-body" class="meta dlg-text"><\/p>/);
+  assert.match(html, /id="dlg-cc-take-status" role="status" hidden/);
+  assert.match(html, /<button class="btn btn-secondary btn-sm" id="dlg-cc-take-cancel" type="button">やめる<\/button>\s*<button class="btn btn-primary btn-sm" id="dlg-cc-take-ok" type="button">取り込む<\/button>/);
+  assert.match(read("app.css"), /\.dlg-text \{\n {2}white-space: pre-wrap;/);
 });
 
 /** app.css の ≤639px のブロック（ファイルの最後の @media (max-width: 639px)） */

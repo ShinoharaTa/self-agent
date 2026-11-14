@@ -3,12 +3,13 @@
 // GET /api/cc/permissions・POST /api/cc/permissions/<id>/allow|always|deny（CC5a・CC5b。保留は cc/permission-hold.ts、常に許可の線引きは
 // cc/permissions.ts）、POST /api/cc/permissions/<id>/answer（質問（AskUserQuestion）に答える。docs/plan/claude-code-questions.md §4。Q1）、POST /api/cc/sessions/<id>/unfollow（CC8。返事の追いかけをやめる。Discord の [追いかけをやめる] と同じ）、
 // POST /api/cc/sessions/<id>/channel（CC10。そのセッションの Discord のチャンネルを作る。cc/channels.ts。docs/plan/claude-code-channels.md §3.1）、
-// POST /api/cc/channels/<id>/close（CC14。/cc close と同じ）と /api/status の cc。ccChannelDescriber は /api/channels の kind cc の行の今（CC14）。
+// POST /api/cc/channels/<id>/close（CC14。/cc close と同じ）、POST /api/cc/sessions/<id>/takeover・/api/cc/takeovers/<id>/confirm|cancel（取り込み。
+// docs/plan/takeover.md §5.7。T5。Discord の /cc take と同じ CcTakeover の行を見る）と /api/status の cc。ccChannelDescriber は /api/channels の kind cc の行の今（CC14）。
 // この機械の Claude Code のセッションの一覧（registry.ts の snapshot。判断待ち → 実行中 → 待機の順。starting は cc/starter.ts の起動したがまだ一覧に出ていないもの）と、1 つのセッションの画面の写し
 // （tmux の capture-pane を stripAnsi して最後の CC_SCREEN_LINES 行。tmux の外は screen: null）。SELF_AGENT_CC が無効なら 404。
 // GET・POST のたびに registry の touch() を呼ぶ（見ている間は一覧を設定の周期で読む。§2.2）。
-// 名前・cwd・最後の指示は hook から来たデータで、画面は textContent で出す。log は /unfollow の 1 行だけ（名前・パス・sessionId・ペイン id を出さない）
-import { closeReply } from "../../app/commands/cc.ts";
+// 名前・cwd・最後の指示は hook から来たデータで、画面は textContent で出す。log は /unfollow と取り込みの行だけ（名前・パス・sessionId・ペイン id を出さない）
+import { CC_TAKE_STALE_REPLY, closeReply, editTakeCancelled, openResultReply, postTakeConfirm } from "../../app/commands/cc.ts";
 import { isUuid } from "../../cc/agents.ts";
 import { ccRcUrl, cwdLabel } from "../../cc/labels.ts";
 import { type CcPermissionHold, permissionExpiresAt } from "../../cc/permission-hold.ts";
@@ -19,10 +20,13 @@ import type { CcPaneResolver, PaneLookup } from "../../cc/panes.ts";
 import { sinceOf, type CcRegistry, type CcSessionView } from "../../cc/registry.ts";
 import { normalizeSendText, type CcSender } from "../../cc/sender.ts";
 import type { CcStartFailure, CcStarter } from "../../cc/starter.ts";
+import type { CcTakeover } from "../../cc/takeover.ts";
+import type { Gateway } from "../../discord/gateway.ts";
 import type { CcChannelRow } from "../../store/cc-channels.ts";
 import type { CcPermissionRow, CcPermissionStore } from "../../store/cc-permissions.ts";
 import type { CcSendRow, CcSendStore } from "../../store/cc-sends.ts";
 import type { CcSessionStore } from "../../store/cc-sessions.ts";
+import type { CcTakeoverStore } from "../../store/cc-takeovers.ts";
 import { stripAnsi } from "../../tmux/pane-state.ts";
 import type { Tmux, TmuxPane } from "../../tmux/tmux.ts";
 import { paneLabel } from "../../tmux/workspace-map.ts";
@@ -77,13 +81,30 @@ export type CcRouteDeps = {
      */
     lookup?: (channelId: string) => { guildId: string; kind: string } | undefined;
   };
-  /** /unfollow の log（無ければ出さない） */
+  /**
+   * 取り込み（docs/plan/takeover.md §5.7。T5）。無ければ /takeover・/api/cc/takeovers/* は 404。確認の文は Discord のそのチャンネルにも gateway
+   * （既定の人格の Bot。CcTakeover が書き換えるのと同じ）で出し、どちらからでも答えられる。channels（lookup）も要る
+   */
+  takeover?: {
+    takeover: Pick<CcTakeover, "propose" | "confirm" | "cancel">;
+    takeovers: Pick<CcTakeoverStore, "get" | "setConfirmMessage">;
+    gateway: Pick<Gateway, "sendMessage" | "editMessage">;
+    /** そのセッションのチャンネルを用意する（cc/channels.ts の ensureFor） */
+    channels: Pick<CcChannels, "ensureFor">;
+  };
+  /** /unfollow と取り込みの log（無ければ出さない） */
   log?: (message: string) => void;
   /** 既定は new Date */
   now?: () => Date;
 };
 
 const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
+const BAD_REQUEST: RouteResult = { status: 400, json: { error: "bad_request" } };
+
+/** /api/cc/takeovers/<id>/* の id（数字だけ。ほかは undefined で 400） */
+function takeoverId(raw: string | undefined): number | undefined {
+  return raw !== undefined && /^\d{1,16}$/.test(raw) ? Number(raw) : undefined;
+}
 
 /** Discord のチャンネルのリンク */
 function discordLink(guildId: string, channelId: string): string {
@@ -247,8 +268,16 @@ const ANSWER_STATUS: Readonly<Record<string, number>> = { not_found: 404, stale:
 const NO_HOLD: HoldSeconds = { holdSec: 0, questionHoldSec: 0 };
 
 export function ccRoutes(deps: CcRouteDeps): Route[] {
-  const { registry, panes, tmux, workspaceDir, home, sender, sends, starter, permissions, follows, channels } = deps;
+  const { registry, panes, tmux, workspaceDir, home, sender, sends, starter, permissions, follows, channels, takeover } = deps;
   const now = deps.now ?? (() => new Date());
+  const log = deps.log ?? (() => undefined);
+
+  // /api/cc/takeovers/<id>/* の行: 無い id と、チャンネルを Web で開けない（許可した /setup 済みのサーバーでない）行は 404。
+  // 取り込んだ後はセッションのチャンネルになるので種類は見ない（押し直しは 409 の stale）
+  const takeoverRow = (id: number) => {
+    const row = takeover?.takeovers.get(id);
+    return row === undefined || channels?.lookup?.(row.channelId) === undefined ? undefined : row;
+  };
 
   const latestSends = (): Map<string, CcSendRow> => {
     const rows = sends === undefined ? [] : sends.latestPerSession(new Date(now().getTime() - CC_SEND_RECENT_MS));
@@ -390,7 +419,7 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         if (!isUuid(id)) return NOT_FOUND;
         // 追いかけ中でなければ（既にやめた・始めていない）古い操作
         if (!follows.stopFollow(id)) return { status: 409, json: { error: "stale" } };
-        deps.log?.("Claude Code: Web で追いかけをやめました");
+        log("Claude Code: Web で追いかけをやめました");
         return { status: 200, json: { follow: null } };
       },
     },
@@ -431,6 +460,59 @@ export function ccRoutes(deps: CcRouteDeps): Route[] {
         if (closed.result !== "closed") return CLOSE_STATUS[closed.result];
         channels.store.postClosed(channelId, closeReply(closed).text);
         return { status: 200, json: { state: "ended", cancelled: closed.cancelled } };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cc\/sessions\/([^/]+)\/takeover$/,
+      handle: async ({ params }) => {
+        if (registry === undefined || takeover === undefined || channels === undefined) return NOT_FOUND;
+        registry.touch();
+        const id = params[0] ?? "";
+        if (!isUuid(id)) return NOT_FOUND;
+        // Web から送ったときと同じきっかけでチャンネルを用意する（既にあればそれ）
+        const opened = await takeover.channels.ensureFor(id, "web_send");
+        if (!opened.ok && opened.reason !== "exists") return { status: 409, json: { error: opened.reason, text: openResultReply(opened) } };
+        // /messages・/close と同じく、Web で開ける Claude Code のチャンネルだけ（許可した /setup 済みのサーバー）
+        if (channels.lookup?.(opened.channelId)?.kind !== "cc") return NOT_FOUND;
+        const proposed = await takeover.takeover.propose({ channelId: opened.channelId, entry: "web" });
+        if (!proposed.ok) return { status: 409, json: { error: proposed.reason, text: proposed.text } };
+        // Discord のそのチャンネルにも同じ確認を出す。出せなくても確認は残す（Web のダイアログで答えられる。log は postTakeConfirm）
+        await postTakeConfirm(takeover, opened.channelId, proposed, log, { keepOnFailure: true });
+        return { status: 201, json: { id: proposed.id, channelId: opened.channelId, text: proposed.message.text } };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cc\/takeovers\/([^/]+)\/confirm$/,
+      handle: async ({ params }) => {
+        if (registry === undefined || takeover === undefined) return NOT_FOUND;
+        registry.touch();
+        const id = takeoverId(params[0]);
+        if (id === undefined) return BAD_REQUEST;
+        const row = takeoverRow(id);
+        if (row === undefined) return NOT_FOUND;
+        // 10 秒以上かかりうる（SIGTERM の後に終わるのを待つ）。結果の文は CcTakeover が Discord の確認の文にも出す
+        const result = await takeover.takeover.confirm(id);
+        // 確認待ちでない（Discord で先に答えた・二度押し）: Discord の [取り込む] と同じ文
+        if (!result.ok && result.reason === "stale") return { status: 409, json: { error: "stale", text: CC_TAKE_STALE_REPLY } };
+        if (!result.edited) log(`Claude Code: 取り込みの結果を Discord の確認の文に出せませんでした（#${id}、Web）`);
+        if (result.ok) return { status: 200, json: { ok: true, channelId: row.channelId, text: result.text } };
+        return { status: 409, json: { error: result.reason, text: result.text } };
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/cc\/takeovers\/([^/]+)\/cancel$/,
+      handle: async ({ params }) => {
+        if (registry === undefined || takeover === undefined) return NOT_FOUND;
+        registry.touch();
+        const id = takeoverId(params[0]);
+        if (id === undefined) return BAD_REQUEST;
+        if (takeoverRow(id) === undefined) return NOT_FOUND;
+        if (!takeover.takeover.cancel(id)) return { status: 409, json: { error: "stale" } };
+        await editTakeCancelled(takeover, id, log);
+        return { status: 200, json: { ok: true } };
       },
     },
     {

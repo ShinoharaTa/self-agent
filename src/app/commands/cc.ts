@@ -298,27 +298,53 @@ async function handleTake(
   await responder.reply({ text: "取り込むセッションを選んでください", ephemeral: true, components: pickSelect(TAKE_PICK_SELECT_ID, candidates) });
 }
 
+/** postTakeConfirm が使うもの（Discord の入口と Web の POST /api/cc/sessions/<id>/takeover（T5）で共有） */
+export type TakeConfirmPoster = {
+  takeover: Pick<CcTakeover, "cancel">;
+  takeovers: Pick<CcTakeoverStore, "setConfirmMessage">;
+  gateway: Pick<Gateway, "sendMessage">;
+};
+
 /**
- * propose の結果の確認の文とボタンをそのチャンネルに出して記録する（/cc take と cc:takepick で共有）。出せなければ確認をやめる。
- * 出せたら undefined、断られた・出せなければ本人に返す文
+ * propose の結果の確認の文とボタンをそのチャンネルに出して記録する（/cc take と cc:takepick と Web の取り込み（T5）で共有）。出せなければ確認をやめる
+ * （keepOnFailure（Web）なら log だけで確認は残す。Web のダイアログで答えられるため）。出せたら undefined、断られた・出せなければ本人に返す文
  */
-async function postTakeConfirm(
-  runtime: TakeRuntime,
+export async function postTakeConfirm(
+  runtime: TakeConfirmPoster,
   channelId: string,
   proposed: CcTakeoverProposeResult,
   log: (message: string) => void,
+  options: { keepOnFailure?: boolean } = {},
 ): Promise<string | undefined> {
   if (!proposed.ok) return proposed.text;
   try {
     const messageId = await runtime.gateway.sendMessage(channelId, proposed.message);
     runtime.takeovers.setConfirmMessage(proposed.id, messageId);
   } catch (error) {
-    // 残すと 10 分のあいだ確認待ちのまま（ほかの取り込みを断る）になるのでやめる
     log(`Claude Code: 取り込みの確認を出せませんでした（#${proposed.id}、${errorKind(error)}）`);
-    runtime.takeover.cancel(proposed.id);
+    // 残すと 10 分のあいだ確認待ちのまま（ほかの取り込みを断る）になるのでやめる
+    if (options.keepOnFailure !== true) runtime.takeover.cancel(proposed.id);
     return CC_TAKE_POST_FAILED_REPLY;
   }
   return undefined;
+}
+
+/**
+ * 取り消した（cancel が true の後）取り込みの Discord の確認の投稿を CC_TAKE_CANCELLED_TEXT にしてボタンを外す（Web の [やめる]（T5）。
+ * Discord の [やめる] は押された 1 通を応答の側で同じ文にする）。投稿が無い・書き換えられなければ log だけ
+ */
+export async function editTakeCancelled(
+  runtime: { takeovers: Pick<CcTakeoverStore, "get">; gateway: Pick<Gateway, "editMessage"> },
+  id: number,
+  log: (message: string) => void,
+): Promise<void> {
+  const row = runtime.takeovers.get(id);
+  if (row === undefined || row.confirmMessageId === null) return;
+  try {
+    await runtime.gateway.editMessage(row.channelId, row.confirmMessageId, { text: CC_TAKE_CANCELLED_TEXT, components: [] });
+  } catch (error) {
+    log(`Claude Code: 取り込みの確認の文を書き換えられませんでした（#${id}、${errorKind(error)}）`);
+  }
 }
 
 /** 許可の要求のボタンが使うもの（main が permission-hold.ts と cc/channel-posts.ts から作る。SELF_AGENT_CC_NOTIFY によらない） */
