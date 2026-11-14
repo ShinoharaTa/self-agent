@@ -6,6 +6,7 @@ import { DEFAULT_PERSONA_ID, type PersonaConfig } from "../config.ts";
 import { normalizeChannelName } from "../discord/channel-name.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
 import { type HistoryStore, recordHistory } from "../store/history.ts";
+import type { ChannelSeedStore } from "../store/channel-seeds.ts";
 import type { SummaryChannelKind } from "../store/inbox-summaries.ts";
 import type { CloseDraft, TopicSession, TopicSessionOrigin } from "../store/topic-sessions.ts";
 import { findStateCategory } from "./categories.ts";
@@ -149,7 +150,8 @@ export type OpenTopicSessionResult = { result: "empty_title" } | NewSessionResul
  * 題名からセッションを作る（/new・ホームパネルの [新しいセッション]・Web で共通）。
  * 空白だけの題名は作らない（empty_title。onAccepted は呼ばない）→ onAccepted → /setup と同じキューで作成 → 最初の投稿（チャンネルの持ち主の Bot。失敗は log だけ）。
  * via は log の主語（「/new で」など）。owner は作る人格（省略は既定の人格）。projectDir はプロジェクトのセッションのプロジェクト
- * （checkSessionProject を通った名前。owner とは同時に渡さない）
+ * （checkSessionProject を通った名前。owner とは同時に渡さない）。
+ * options の origin は作られ方（省略は command）、welcome は最初の投稿（省略は welcomeText）、onCreated は作った直後（キューの中・最初の投稿より前）に呼ぶ
  */
 export async function openTopicSession(
   guildId: string,
@@ -159,6 +161,7 @@ export async function openTopicSession(
   via: string,
   onAccepted?: () => Promise<void>,
   projectDir?: string,
+  options?: { origin?: TopicSessionOrigin; welcome?: string; onCreated?: (channelId: string) => void },
 ): Promise<OpenTopicSessionResult> {
   const { gateway, personas, queue, log } = deps;
   // 空白だけの題名は Discord の min_length・必須の検証を通ってしまうので、ここで弾く
@@ -167,9 +170,11 @@ export async function openTopicSession(
   // Discord への作成が複数回ありうるので、呼び出し側はここで保留する
   await onAccepted?.();
   // 同時に走ると空きの数え方がずれるので、/setup と同じ key で 1 つずつ実行する
-  const result = await queue.run(layoutQueueKey(guildId), () =>
-    createTopicSession(guildId, title, deps, "command", owner, projectDir),
-  );
+  const result = await queue.run(layoutQueueKey(guildId), async () => {
+    const created = await createTopicSession(guildId, title, deps, options?.origin ?? "command", owner, projectDir);
+    if (created.result === "created") options?.onCreated?.(created.channelId);
+    return created;
+  });
   if (result.result === "not_set_up") return result;
   // プロジェクトの名前は log に出さない
   log(
@@ -177,7 +182,7 @@ export async function openTopicSession(
   );
   try {
     // 最初の投稿はチャンネルの持ち主の Bot が行う（足した人格のセッションはその人格の Bot）
-    await (personas?.gatewayFor(result.channelId) ?? gateway).send(result.channelId, welcomeText(title, projectDir));
+    await (personas?.gatewayFor(result.channelId) ?? gateway).send(result.channelId, options?.welcome ?? welcomeText(title, projectDir));
   } catch (error) {
     // チャンネルと DB の行はできているので、失敗の返信にはしない
     log(`セッションの最初の投稿に失敗しました: ${describeError(error)}`);
@@ -213,9 +218,15 @@ export type StartTopicInput = {
   title?: string;
   text?: string;
   place: StartTopicPlace;
-  /** 誰が始めたか（log の主語と仕切り）。M6 で "right_hand" を足す */
-  by: "web";
+  /** 誰が始めたか（log の主語・仕切り・最初の投稿・origin）。right_hand は #inbox のエージェント（docs/plan/web-ui-v3.md §4） */
+  by: "web" | "right_hand";
   at: Date;
+  /** 持ち主の人格（足した人格の入口から）。あるときは place を見ず、その人格の軽いセッションを作る */
+  owner?: SessionOwner;
+  /** 作った直後に入れる seed（最初のターンのプロンプトの先頭に付く） */
+  seed?: string;
+  /** 頼んだチャンネルの名前（# なし）。by が right_hand のときの最初の投稿に使う。省略は "inbox" */
+  from?: string;
 };
 export type StartTopicResult =
   | { result: "empty" }
@@ -238,17 +249,30 @@ export type StartTopicDeps = Pick<NewSessionDeps, "gateway" | "personas" | "guil
   submitText: Handler["submitText"];
   /** SELF_AGENT_CC=1 のときだけ。places には generalDir が入っている */
   projectSessions?: ProjectSessionGate;
+  /** seed を入れる先（無ければ seed は入れない） */
+  seeds?: Pick<ChannelSeedStore, "set">;
 };
 
-/** 話題を始めたときの仕切りの文（純関数）。projectDir が undefined なら場所なし（軽いセッション） */
-export function startedDividerText(place: StartTopicPlace, projectDir: string | undefined): string {
+/** 話題を始めたときの仕切りの文（純関数）。projectDir が undefined なら場所なし（軽いセッション）。by が right_hand なら頭に「右腕が」を付ける */
+export function startedDividerText(place: StartTopicPlace, projectDir: string | undefined, by: "web" | "right_hand" = "web"): string {
+  if (by === "right_hand") {
+    if (projectDir === undefined) return "右腕が場所なしで始めました";
+    return place.kind === "project" ? `右腕が ${place.name} で始めました` : "右腕が General で始めました";
+  }
   if (projectDir === undefined) return "場所なしで始めました";
   return place.kind === "project" ? `${place.name} で始めました` : "General で始めました";
+}
+
+/** by が right_hand のときの最初の投稿（welcomeText の後ろに 1 行足す） */
+export function rightHandWelcomeText(title: string, from: string, projectDir?: string): string {
+  return `${welcomeText(title, projectDir)}\n#${from} の話の続きです。`;
 }
 
 /**
  * 話題を始める（場所・題名・最初の一言。種類は選ばせない）。既定の人格・origin command。応答はせず結果の種類を返す。
  * General は使えれば（連携・共有の link・ディレクトリ）プロジェクトのセッション、使えなければ軽いセッション。プロジェクトは使えなければ断る。
+ * owner があれば場所を見ずにその人格の軽いセッション。by が right_hand なら origin inbox・最初の投稿に頼んだチャンネル・最初の一言は via right_hand。
+ * seed があれば作った直後（最初の投稿より前）に seeds へ入れる。
  * 作った後に仕切りを 1 行書き、一言があれば submitText で最初のターンを入れる（受け付けられなくても話題は残す）。
  * 投げた例外は握らない。log に題名・本文・チャンネル ID・プロジェクトの名前・パスを出さない
  */
@@ -262,7 +286,9 @@ export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): 
 
   let projectDir: string | undefined;
   const gate = deps.projectSessions;
-  if (input.place.kind === "project") {
+  if (input.owner !== undefined) {
+    // 足した人格の話題は軽いセッションだけ（プロジェクトのセッションは既定の人格だけ）
+  } else if (input.place.kind === "project") {
     if (gate === undefined) return { result: "cc_disabled" };
     const checked = checkSessionProject(input.place.name, gate);
     if (!checked.ok) return { result: checked.reason === "not_set_up" ? "unify_not_ready" : "invalid_project" };
@@ -273,20 +299,41 @@ export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): 
     if (general === "created") deps.log("General のディレクトリを作りました");
   }
 
-  const opened = await openTopicSession(input.guildId, title, undefined, deps, "Web から", undefined, projectDir);
+  const rightHand = input.by === "right_hand";
+  const seed = input.seed;
+  const opened = await openTopicSession(
+    input.guildId,
+    title,
+    input.owner,
+    deps,
+    rightHand ? "右腕から" : "Web から",
+    undefined,
+    projectDir,
+    {
+      ...(rightHand ? { origin: "inbox" as const, welcome: rightHandWelcomeText(title, input.from ?? "inbox", projectDir) } : {}),
+      ...(seed === undefined ? {} : { onCreated: (created: string) => deps.seeds?.set(created, seed) }),
+    },
+  );
   if (opened.result === "empty_title") return { result: "empty" };
   if (opened.result === "not_set_up") return { result: "not_set_up" };
   const { channelId } = opened;
 
   recordHistory(
     deps.history,
-    { guildId: input.guildId, channelId, kind: "divider", source: "system", text: startedDividerText(input.place, projectDir) },
+    { guildId: input.guildId, channelId, kind: "divider", source: "system", text: startedDividerText(input.place, projectDir, input.by) },
     deps.log,
   );
 
   let turn: "started" | "none" | "failed" = "none";
   if (text !== "") {
-    const submitted = await deps.submitText({ guildId: input.guildId, channelId, content: text, at: input.at, source: "web" });
+    const submitted = await deps.submitText({
+      guildId: input.guildId,
+      channelId,
+      content: text,
+      at: input.at,
+      source: "web",
+      ...(rightHand ? { via: "right_hand" as const } : {}),
+    });
     turn = submitted.result === "accepted" ? "started" : "failed";
     if (turn === "failed") deps.log(`話題は作りましたが、最初の一言を送れませんでした（${submitted.result}）`);
   }

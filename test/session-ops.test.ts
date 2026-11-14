@@ -6,7 +6,7 @@ import type { RunResult } from "../src/agent/runner.ts";
 import { createSessionToolHandlers } from "../src/agent/tools.ts";
 import { TITLE_MAX_LENGTH } from "../src/app/commands/new.ts";
 import { ensureGuildLayout } from "../src/app/commands/setup.ts";
-import type { SubmitTextResult } from "../src/app/handler.ts";
+import type { Handler, SubmitTextResult } from "../src/app/handler.ts";
 import type { RotateNowResult } from "../src/app/inbox-rotate.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
@@ -18,6 +18,7 @@ import {
   openTopicSession,
   type ProjectSessionGate,
   renewChannel,
+  rightHandWelcomeText,
   startTopic,
   type StartTopicInput,
   titleFromText,
@@ -244,9 +245,12 @@ test("titleFromText: 最初の空でない行・制御文字は空白・30 字�
 
 /**
  * /setup 済みのサーバー guild-1 と、ワークスペース（alpha・link（alpha への symlink））。連携（gate）は cc で付け、link の済みは ready で変える。
- * submitText は next の順の結果（無ければ accepted）
+ * submitText は next の順の結果（無ければ accepted）。seeds を渡すと deps に入れる
  */
-async function startSetup(t: TestContext, options: { cc?: boolean; general?: string } = {}) {
+async function startSetup(
+  t: TestContext,
+  options: { cc?: boolean; general?: string; seeds?: { set(channelId: string, text: string): void } } = {},
+) {
   const db = tempDb(t);
   const gateway = new FakeGateway({
     allow: ["getParentId", "sendMessage", "pinMessage", "messageExists"],
@@ -266,7 +270,7 @@ async function startSetup(t: TestContext, options: { cc?: boolean; general?: str
     places: { workspaceDir: workspace, protectedDirs: [], generalDir: options.general ?? "General" },
     ready: () => ready.value,
   };
-  const submits: Array<{ guildId: string; channelId: string; content: string; at: Date; source: "web" }> = [];
+  const submits: Array<Parameters<Handler["submitText"]>[0]> = [];
   const next: SubmitTextResult[] = [];
   const deps = {
     gateway,
@@ -275,11 +279,12 @@ async function startSetup(t: TestContext, options: { cc?: boolean; general?: str
     queue: layout.queue,
     history,
     log,
-    submitText: async (input: { guildId: string; channelId: string; content: string; at: Date; source: "web" }): Promise<SubmitTextResult> => {
+    submitText: async (input: Parameters<Handler["submitText"]>[0]): Promise<SubmitTextResult> => {
       submits.push(input);
       return next.shift() ?? { result: "accepted", turnId: 1, messageId: "m-1" };
     },
     ...(options.cc === false ? {} : { projectSessions: gate }),
+    ...(options.seeds === undefined ? {} : { seeds: options.seeds }),
   };
   const start = (input: Partial<StartTopicInput>) => startTopic({ guildId: "guild-1", place: { kind: "general" }, by: "web", at: NOW, ...input }, deps);
   return { deps, start, gateway, topicSessions, history, workspace, ready, submits, next, logs };
@@ -415,4 +420,89 @@ test("startTopic: log に題名・本文・プロジェクトの名前が出な�
     assert.equal(joined.includes(word), false, word);
   }
   assert.ok(s.logs.length > 0);
+});
+
+// ---- 右腕から始める（docs/plan/web-ui-v3.md §4・§11 の M6a） ----
+
+test("startTopic（right_hand）: origin は inbox、最初の投稿に「#inbox の話の続きです。」（from を渡すとその名前）、submitText に via right_hand", async (t) => {
+  const s = await startSetup(t);
+  const result = await s.start({ title: "旅行", text: "京都に行きたい", by: "right_hand" });
+  assert.ok(result.result === "created");
+  assert.equal(result.projectDir, "General");
+  assert.equal(s.topicSessions.get(result.channelId)?.origin, "inbox");
+  assert.deepEqual(
+    s.gateway.sent.map((sent) => sent.text),
+    [rightHandWelcomeText("旅行", "inbox", "General")],
+  );
+  assert.ok(s.gateway.sent[0]?.text.endsWith("\n#inbox の話の続きです。"));
+  assert.deepEqual(s.submits, [
+    { guildId: "guild-1", channelId: result.channelId, content: "京都に行きたい", at: NOW, source: "web", via: "right_hand" },
+  ]);
+
+  const from = await s.start({ title: "別件", by: "right_hand", from: "luna" });
+  assert.ok(from.result === "created");
+  assert.equal(s.gateway.sent.at(-1)?.text, `${welcomeText("別件", "General")}\n#luna の話の続きです。`);
+  assert.equal(from.turn, "none");
+});
+
+test("startTopic（right_hand）: 仕切りは「右腕が General で始めました」「右腕が <名前> で始めました」「右腕が場所なしで始めました」", async (t) => {
+  const s = await startSetup(t);
+  const general = await s.start({ title: "a", by: "right_hand" });
+  const project = await s.start({ title: "b", by: "right_hand", place: { kind: "project", name: "alpha" } });
+  assert.ok(general.result === "created" && project.result === "created");
+  assert.deepEqual(s.history.list(general.channelId, { limit: 10 }).map((row) => row.text), ["右腕が General で始めました"]);
+  assert.deepEqual(s.history.list(project.channelId, { limit: 10 }).map((row) => row.text), ["右腕が alpha で始めました"]);
+
+  const off = await startSetup(t, { cc: false });
+  const light = await off.start({ title: "c", by: "right_hand" });
+  assert.ok(light.result === "created");
+  assert.equal(light.projectDir, null);
+  assert.deepEqual(off.history.list(light.channelId, { limit: 10 }).map((row) => row.text), ["右腕が場所なしで始めました"]);
+});
+
+test("startTopic: seed を渡すと最初の投稿より前に seeds.set が呼ばれる。seeds が無ければ何もせずに作れる", async (t) => {
+  const order: string[] = [];
+  const seeded: Array<[string, string]> = [];
+  const s = await startSetup(t, {
+    seeds: {
+      set: (channelId, text) => {
+        order.push(`seed:${s.gateway.sent.length}`);
+        seeded.push([channelId, text]);
+      },
+    },
+  });
+  const result = await s.start({ title: "続き", text: "一言", by: "right_hand", seed: "#inbox からの続き:\n文脈" });
+  assert.ok(result.result === "created");
+  order.push(`sent:${s.gateway.sent.length}`);
+  // set の時点ではまだ最初の投稿をしていない
+  assert.deepEqual(order, ["seed:0", "sent:1"]);
+  assert.deepEqual(seeded, [[result.channelId, "#inbox からの続き:\n文脈"]]);
+
+  const none = await startSetup(t);
+  const plain = await none.start({ title: "続き", by: "right_hand", seed: "x" });
+  assert.equal(plain.result, "created");
+});
+
+test("startTopic: owner を渡すと place が project でも軽いセッション（projectDir null・仕切りは場所なし）で、持ち主はその人格", async (t) => {
+  const s = await startSetup(t);
+  const result = await s.start({ title: "相談", by: "right_hand", place: { kind: "project", name: "alpha" }, owner: { id: "luna", name: "LUNA" } });
+  assert.ok(result.result === "created");
+  assert.equal(result.projectDir, null);
+  assert.equal(s.topicSessions.projectDirOf(result.channelId), undefined);
+  assert.equal(s.topicSessions.personaOf(result.channelId), "luna");
+  const created = s.gateway.calls.find((call) => call.method === "createTextChannel");
+  assert.ok(created !== undefined && created.method === "createTextChannel");
+  assert.equal(created.options.topic, "相談（LUNA）");
+  assert.deepEqual(s.history.list(result.channelId, { limit: 10 }).map((row) => row.text), ["右腕が場所なしで始めました"]);
+});
+
+test("startTopic（web）: 新しい引数が無ければ origin は command・最初の投稿と仕切りは今の文・submitText に via は無い", async (t) => {
+  const s = await startSetup(t);
+  const result = await s.start({ title: "旅行", text: "一言" });
+  assert.ok(result.result === "created");
+  assert.equal(s.topicSessions.get(result.channelId)?.origin, "command");
+  assert.deepEqual(s.gateway.sent.map((sent) => sent.text), [welcomeText("旅行", "General")]);
+  assert.deepEqual(s.history.list(result.channelId, { limit: 10 }).map((row) => row.text), ["General で始めました"]);
+  assert.equal(s.submits.length, 1);
+  assert.equal("via" in (s.submits[0] ?? {}), false);
 });
