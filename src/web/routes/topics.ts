@@ -1,12 +1,16 @@
 // GET /api/topics（docs/plan/web-ui-v3.md §3〜§5・§11 の M1）。セッション・プロジェクトのセッション・Claude Code のセッションを 1 つの形（app/topics.ts の Topic）にし、
 // 群とあなたの番を数えて返す（読むだけ。DB は書かない）。対象は /setup 済みのサーバーだけ。?done=<群> のときだけ、その群の完了を TOPICS_DONE_MAX 件まで足す。
-// Claude Code のセッション（cc）は SELF_AGENT_CC のときだけ（無ければ enabled: false で、その行と other の群は出ない）。log は出さない
+// Claude Code のセッション（cc）は SELF_AGENT_CC のときだけ（無ければ enabled: false で、その行と other の群は出ない）。GET は log を出さない。
+// POST /api/topics（M4）は場所・題名・最初の一言で話題を始める（app/session-ops.ts の startTopic。start の配線があるときだけ）
 import { CC_CONFIRM_TTL_MS } from "../../app/commands/cc-confirm.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import type { Handler } from "../../app/handler.ts";
 import type { PersonaRouter, PersonaRuntime } from "../../app/personas.ts";
+import { normalizeTopicTitle, type StartTopicDeps, type StartTopicPlace, startTopic } from "../../app/session-ops.ts";
 import {
   buildTopics,
+  GENERAL_GROUP,
+  OTHER_GROUP,
   summarize,
   TOPIC_GROUP_PATTERN,
   TOPICS_DONE_SCAN,
@@ -31,6 +35,7 @@ import type { TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { Route, RouteResult } from "../server.ts";
 import { CC_PERMISSION_RECENT_MS, type HoldSeconds, questionJson } from "./cc.ts";
 import { channelLink, CLOSE_CONFIRM_NOTICE } from "./channels.ts";
+import { WEB_DUPLICATE_WINDOW_MS } from "./turns.ts";
 
 export type TopicRouteDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "personas" | "workspaceDir">;
@@ -53,10 +58,23 @@ export type TopicRouteDeps = {
     sends: Pick<CcSendStore, "listAwaitingConfirmBefore">;
     starts: Pick<CcStartStore, "listAwaitingConfirmBefore">;
   } & HoldSeconds;
+  /** POST /api/topics の配線（sessionRoutes と同じ実体）。無ければ POST のルートを足さない */
+  start?: StartTopicDeps & { defaultConnected: () => boolean };
   now?: () => Date;
 };
 
 const BAD_REQUEST: RouteResult = { status: 400, json: { error: "bad_request" } };
+
+/** 同じ内容の POST /api/topics をまとめる長さ（web/routes/turns.ts の二重送信と同じ） */
+export const TOPIC_START_DUPLICATE_MS = WEB_DUPLICATE_WINDOW_MS;
+
+/** 要求の place（群の key と同じ形。other は受けない）→ 始める場所。p:<General の名前> は general と同じ。合わなければ undefined */
+function parsePlace(value: unknown, generalDir: string | undefined): StartTopicPlace | undefined {
+  if (typeof value !== "string" || !TOPIC_GROUP_PATTERN.test(value) || value === OTHER_GROUP) return undefined;
+  if (value === GENERAL_GROUP) return { kind: "general" };
+  const name = value.slice("p:".length);
+  return name === generalDir ? { kind: "general" } : { kind: "project", name };
+}
 
 /** 入口は場所を変えられない */
 const ENTRY_UNMOVABLE = { reason: "入口は場所を変えられません" };
@@ -328,13 +346,14 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
     return {
       seeds: seeds.map((seed) => ({ ...seed, turns: live(seed.turns) })),
       projects,
+      generalDir: places.generalDir ?? null,
       rightHands: rightHands.map((hand) => ({ ...hand, turns: live(hand.turns) })),
       done,
       cc: snapshot === undefined ? { enabled: false, stale: false, unreadable: false } : { enabled: true, stale: snapshot.stale, unreadable: snapshot.unreadable },
     };
   };
 
-  return [
+  const routes: Route[] = [
     {
       method: "GET",
       pattern: /^\/api\/topics$/,
@@ -345,4 +364,82 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
       },
     },
   ];
+  const start = deps.start;
+  if (start === undefined) return routes;
+
+  /**
+   * 直近の POST /api/topics（二重の判定。最後の 1 件だけ）。結果は Promise で持ち、同時に来た 2 回目も 1 回目の結果を待って同じものを返す。
+   * 201 でなかったものは消して、すぐやり直せるようにする
+   */
+  let recent: { key: string; at: number; response: Promise<RouteResult> } | undefined;
+
+  const begin = async (guildId: string, place: StartTopicPlace, title: string | undefined, text: string | undefined): Promise<RouteResult> => {
+    const result = await startTopic(
+      { guildId, place, by: "web", at: now(), ...(title === undefined ? {} : { title }), ...(text === undefined ? {} : { text }) },
+      start,
+    );
+    switch (result.result) {
+      case "empty":
+        return { status: 400, json: { error: "empty" } };
+      case "too_long":
+        return { status: 400, json: { error: "too_long", field: result.field } };
+      case "invalid_project":
+        return { status: 400, json: { error: "invalid_project" } };
+      case "cc_disabled":
+        return { status: 409, json: { error: "cc_disabled" } };
+      case "unify_not_ready":
+        return { status: 503, json: { error: "unify_not_ready" } };
+      case "not_set_up":
+        return { status: 409, json: { error: "not_set_up" } };
+      case "created": {
+        const mode = result.projectDir === null ? "light" : "project";
+        start.log(`Web から話題を始めました（guild=${guildId}、${mode === "project" ? "プロジェクトのセッション" : "軽いセッション"}）`);
+        return {
+          status: 201,
+          json: {
+            id: `ch:${result.channelId}`,
+            channelId: result.channelId,
+            link: channelLink(guildId, result.channelId),
+            title: result.title,
+            place: { dir: result.projectDir },
+            mode,
+            turn: result.turn,
+          },
+        };
+      }
+    }
+  };
+
+  routes.push({
+    method: "POST",
+    pattern: /^\/api\/topics$/,
+    handle: async ({ body }) => {
+      const place = parsePlace(body?.place, places.generalDir);
+      if (place === undefined) return BAD_REQUEST;
+      const title = body?.title;
+      const text = body?.text;
+      const requested = body?.guildId;
+      if (title !== undefined && typeof title !== "string") return BAD_REQUEST;
+      if (text !== undefined && typeof text !== "string") return BAD_REQUEST;
+      if (requested !== undefined && (typeof requested !== "string" || !cfg.allowedGuildIds.includes(requested))) return BAD_REQUEST;
+      // 要求に無ければ、許可したサーバーのうち /setup 済みの最初の 1 つ
+      const guildId = requested ?? cfg.allowedGuildIds.find((id) => guildSettings.get(id) !== undefined);
+      if (guildId === undefined) return { status: 409, json: { error: "not_set_up" } };
+      // チャンネルを作るのは既定の人格の Bot
+      if (!start.defaultConnected()) return { status: 503, json: { error: "bot_disconnected" } };
+      const placeKey = place.kind === "general" ? GENERAL_GROUP : `p:${place.name}`;
+      const key = JSON.stringify([guildId, placeKey, normalizeTopicTitle(title ?? ""), (text ?? "").trim()]);
+      const at = now().getTime();
+      if (recent !== undefined && recent.key === key && at - recent.at < TOPIC_START_DUPLICATE_MS) return recent.response;
+      const entry = { key, at, response: begin(guildId, place, title, text) };
+      recent = entry;
+      const done = await entry.response.catch((error: unknown) => {
+        if (recent === entry) recent = undefined;
+        throw error;
+      });
+      if (done.status !== 201 && recent === entry) recent = undefined;
+      return done;
+    },
+  });
+  return routes;
 }

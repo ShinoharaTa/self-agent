@@ -1,12 +1,15 @@
 // GET /api/topics（docs/plan/web-ui-v3.md §11 の M1）。一時 SQLite と偽の registry・handler で、話題・群・あなたの番・右腕を確かめる
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import type { AgentRunner } from "../src/agent/runner.ts";
-import type { RunningTurn } from "../src/app/handler.ts";
+import { createChannelResolver } from "../src/app/access.ts";
+import { createHandler, type RunningTurn, type SubmitTextResult, WEB_ECHO_PREFIX } from "../src/app/handler.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
+import { KeyedSerialQueue } from "../src/app/queue.ts";
+import { welcomeText } from "../src/app/session-ops.ts";
 import type { Topic, TopicsResult } from "../src/app/topics.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { PersonaConfig } from "../src/config.ts";
@@ -16,9 +19,13 @@ import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcStartStore } from "../src/store/cc-starts.ts";
 import { CLOSE_CONFIRM_NOTICE } from "../src/web/routes/channels.ts";
-import { topicRoutes } from "../src/web/routes/topics.ts";
+import { TOPIC_START_DUPLICATE_MS, topicRoutes } from "../src/web/routes/topics.ts";
+import { WEB_DUPLICATE_WINDOW_MS } from "../src/web/routes/turns.ts";
 import { createWebServer, type WebServer } from "../src/web/server.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingChannelOps } from "./helpers/recording.ts";
+import { FakeRunner, turnUsage } from "./helpers/runner.ts";
 
 const LOGIN = "owner@example.com";
 // 許可（300 秒）・確認（10 分）が時間切れにならない時刻
@@ -78,12 +85,14 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * S4（alpha・判断待ちで hook の許可も pending）。/setup 前のサーバーのチャンネル 303 は S7。
  * allowed で cfg.allowedGuildIds を、at でルートの今の時刻を差し替える。registry.unreadable と snapshotSessions は後から変えられる
  */
-async function setup(t: TestContext, options: { cc?: boolean; running?: string[]; allowed?: string[]; at?: Date } = {}) {
+async function setup(t: TestContext, options: { cc?: boolean; running?: string[]; allowed?: string[]; at?: Date; general?: boolean } = {}) {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
   const { guildSettings, topicSessions, history, sessions } = stores;
   const workspace = realpathSync(tempDir(t));
   for (const name of ["alpha", "beta", "empty"]) mkdirSync(join(workspace, name));
+  // general なら General のディレクトリを作り、places に入れる
+  if (options.general === true) mkdirSync(join(workspace, "General"));
 
   guildSettings.setChannel(GUILD, "inboxChannelId", "100");
   guildSettings.setChannel(GUILD, "tasksChannelId", "101");
@@ -175,7 +184,7 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
     history,
     personas,
     handler,
-    places: { workspaceDir: workspace, protectedDirs: [] },
+    places: { workspaceDir: workspace, protectedDirs: [], ...(options.general === true ? { generalDir: "General" } : {}) },
     home: "/home/owner",
     projectPermissions: { store: sdkStore, sessions, holdSec: 300, questionHoldSec: 900 },
     ...(options.cc === true
@@ -454,4 +463,330 @@ test("web topics: /close の確認は下書きが無ければ数えない", asyn
   const result = await topics(server);
   assert.equal(byId(result, "ch:203")!.turn, null);
   assert.equal(result.turnIds.includes("ch:203"), false);
+});
+
+test("web topics: General のセッションは群 general（place.dir は General の名前）、軽いセッションは place.dir が null。General は群 p: に出ない", async (t) => {
+  const { server, topicSessions } = await setup(t, { general: true });
+  topicSessions.create({ channelId: "206", guildId: GUILD, title: "場所を決めない用事", categoryId: "c" });
+  topicSessions.setProject("206", "General", "default");
+  const result = await topics(server);
+  const general = byId(result, "ch:206")!;
+  assert.deepEqual([general.origin, general.group, general.place.dir], ["project", "general", "General"]);
+  assert.deepEqual([byId(result, "ch:200")!.group, byId(result, "ch:200")!.place.dir], ["general", null]);
+  assert.deepEqual(
+    result.groups.map((group) => [group.key, group.open]),
+    [
+      ["p:alpha", 1],
+      ["p:beta", 1],
+      ["p:empty", 0],
+      ["general", 6],
+    ],
+  );
+});
+
+test("web topics: 端末で General を cwd に動いている Claude Code は群 general", async (t) => {
+  const { server, snapshotSessions, workspace } = await setup(t, { cc: true, general: true });
+  const S8 = "88888888-8888-4888-8888-888888888888";
+  snapshotSessions.push(view(S8, join(workspace, "General")));
+  const result = await topics(server);
+  const terminal = byId(result, `cc:${S8}`)!;
+  assert.deepEqual([terminal.group, terminal.place.dir], ["general", "General"]);
+  assert.equal(
+    result.groups.some((group) => group.key === "p:General"),
+    false,
+  );
+});
+
+// ---- POST /api/topics（M4a） ----
+
+const POST_HEADERS = {
+  "tailscale-user-login": LOGIN,
+  "sec-fetch-site": "same-origin",
+  "x-self-agent": "1",
+  "content-type": "application/json",
+};
+
+function postJson(server: WebServer, path: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port: server.address()!.port, method: "POST", path, headers: POST_HEADERS }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode!, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
+/**
+ * POST /api/topics の配線: /setup 済みのサーバー 111（進行中カテゴリ 500）と許可しているが /setup 前の 222。ワークスペースは alpha・link（symlink）。
+ * cc（既定 true）で連携を付け、ready で共有の link の済みを変える。real なら本物の handler（FakeRunner）の submitText、ほかは偽物（next の順の結果）。
+ * start を false にすると POST の配線を渡さない。clock でルートの今の時刻を進める
+ */
+async function startServer(
+  t: TestContext,
+  options: { cc?: boolean; real?: boolean; start?: boolean; allowed?: string[]; setUp?: boolean } = {},
+) {
+  const db = tempDb(t);
+  const stores = createStores(db, () => NOW);
+  const { guildSettings, topicSessions, history } = stores;
+  if (options.setUp !== false) {
+    guildSettings.setChannel(GUILD, "inboxChannelId", "100");
+    guildSettings.setChannel(GUILD, "tasksChannelId", "101");
+    guildSettings.setStateCategory(GUILD, "active", 1, "500");
+  }
+  const workspace = realpathSync(tempDir(t));
+  mkdirSync(join(workspace, "alpha"));
+  symlinkSync(join(workspace, "alpha"), join(workspace, "link"));
+  const places = { workspaceDir: workspace, protectedDirs: [], generalDir: "General" };
+  const ready = { value: true };
+  const gateway = new FakeGateway({
+    allow: ["send", "sendMessage", "editMessage", "channelExists", "countChannelsIn", "startTyping"],
+    record: ["createTextChannel"],
+    channelIdPrefix: "900",
+    messageIdPrefix: "5000",
+  });
+  gateway.alive.add("500");
+  const connected = { value: true };
+  const personas = new PersonaRouter({
+    personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway, connected: () => connected.value }],
+    guildSettings,
+    topicSessions,
+  });
+  const allowed = options.allowed ?? [GUILD, GUILD_NOT_SET_UP];
+  const logs: string[] = [];
+  const log = (line: string): void => void logs.push(line);
+  const submits: Array<{ channelId: string; content: string }> = [];
+  const next: SubmitTextResult[] = [];
+  const runner = new FakeRunner([
+    { ok: true, text: "はい", sessionId: "session-1", usage: turnUsage(10, 0, 0), durationMs: 1000, toolCalls: 0, contextTokens: 10 },
+  ]);
+  const cfg = { allowedGuildIds: allowed, personas: [], publicBaseUrl: undefined, inboxChannelId: undefined };
+  const real = createHandler({
+    cfg: { ...cfg, ownerUserId: "owner-1", timeZone: "Asia/Tokyo" },
+    resolveChannel: createChannelResolver(cfg, guildSettings, topicSessions),
+    gateway: personas.ownerPosts(),
+    runner,
+    projectRunner: runner,
+    ...stores,
+    channelOps: new RecordingChannelOps(),
+    queue: new KeyedSerialQueue(2),
+    now: () => NOW,
+    history,
+    ownerConnected: () => true,
+    log: () => undefined,
+  });
+  const clock = { now: NOW.getTime() };
+  const routes = topicRoutes({
+    cfg: { allowedGuildIds: allowed, personas: [], workspaceDir: workspace },
+    guildSettings,
+    topicSessions,
+    history,
+    personas,
+    handler: { runningTurns: () => [] },
+    places,
+    home: "/home/owner",
+    ...(options.start === false
+      ? {}
+      : {
+          start: {
+            gateway,
+            personas,
+            guildSettings,
+            topicSessions,
+            queue: new KeyedSerialQueue(1),
+            history,
+            submitText:
+              options.real === true
+                ? (input) => real.submitText(input)
+                : async (input) => {
+                    submits.push({ channelId: input.channelId, content: input.content });
+                    return next.shift() ?? { result: "accepted", turnId: 1, messageId: "m-1" };
+                  },
+            defaultConnected: () => connected.value,
+            ...(options.cc === false ? {} : { projectSessions: { places, ready: () => ready.value } }),
+            log,
+          },
+        }),
+    now: () => new Date(clock.now),
+  });
+  const server = createWebServer({
+    host: "127.0.0.1",
+    port: 0,
+    allowedLogin: LOGIN,
+    staticDir: tempDir(t),
+    templateSiteDir: tempDir(t),
+    routes,
+    stopping: () => false,
+    now: () => NOW,
+    log: () => undefined,
+  });
+  await server.start();
+  t.after(() => server.close());
+  return { server, gateway, topicSessions, history, ready, connected, submits, next, logs, clock, runner };
+}
+
+/** 作ったチャンネル（createTextChannel の呼び出し）の数 */
+const createdCount = (gateway: FakeGateway): number => gateway.calls.filter((call) => call.method === "createTextChannel").length;
+
+test("POST /api/topics: general は 201 で id・channelId・link・title・place・mode project・turn started。Discord にチャンネル・最初の投稿・（Web から）の写し", async (t) => {
+  const s = await startServer(t, { real: true });
+  const res = await postJson(s.server, "/api/topics", { place: "general", text: "京都の宿を探して" });
+  assert.equal(res.status, 201);
+  const channelId = res.json.channelId as string;
+  assert.deepEqual(res.json, {
+    id: `ch:${channelId}`,
+    channelId,
+    link: `https://discord.com/channels/${GUILD}/${channelId}`,
+    title: "京都の宿を探して",
+    place: { dir: "General" },
+    mode: "project",
+    turn: "started",
+  });
+  assert.equal(s.topicSessions.projectDirOf(channelId)?.projectDir, "General");
+  assert.equal(createdCount(s.gateway), 1);
+  assert.deepEqual(
+    s.gateway.posts.map((post) => [post.channelId, post.message]),
+    [[channelId, { text: `${WEB_ECHO_PREFIX}\n京都の宿を探して` }]],
+  );
+  assert.equal(s.gateway.sent[0]?.text, welcomeText("京都の宿を探して", "General"));
+  // 履歴は仕切り → owner の行（その後に返事が続きうる）
+  const rows = s.history.list(channelId, { limit: 10 });
+  assert.deepEqual(
+    rows.slice(0, 2).map((row) => [row.kind, row.source]),
+    [
+      ["divider", "system"],
+      ["owner", "web"],
+    ],
+  );
+  assert.ok(s.logs.includes(`Web から話題を始めました（guild=${GUILD}、プロジェクトのセッション）`));
+  // 次の GET /api/topics で群 general の open の話題として出る
+  const listed = await topics(s.server);
+  const topic = byId(listed, `ch:${channelId}`)!;
+  assert.deepEqual([topic.group, topic.state, topic.place.dir], ["general", "active", "General"]);
+  // 返事のターンが済むまで待つ（後片付けの前に）
+  for (let i = 0; i < 200 && s.gateway.sent.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(s.runner.inputs.length, 1);
+});
+
+test("POST /api/topics: p:<名前> はそのプロジェクトのセッション。p:<General の名前> は general と同じ", async (t) => {
+  const s = await startServer(t);
+  const project = await postJson(s.server, "/api/topics", { place: "p:alpha", title: "直す", text: "テストを直す" });
+  assert.equal(project.status, 201);
+  assert.deepEqual([project.json.mode, project.json.place, project.json.turn], ["project", { dir: "alpha" }, "started"]);
+  assert.equal(s.topicSessions.projectDirOf(project.json.channelId as string)?.projectDir, "alpha");
+  const listed = await topics(s.server);
+  assert.equal(byId(listed, project.json.id as string)?.group, "p:alpha");
+
+  const general = await postJson(s.server, "/api/topics", { place: "p:General", title: "雑用" });
+  assert.equal(general.status, 201);
+  assert.deepEqual([general.json.mode, general.json.place, general.json.turn], ["project", { dir: "General" }, "none"]);
+  assert.deepEqual(
+    s.history.list(general.json.channelId as string, { limit: 10 }).map((row) => row.text),
+    ["General で始めました"],
+  );
+});
+
+test("POST /api/topics: 連携が無ければ general は 201 で mode light・place.dir null、p: は 409 cc_disabled", async (t) => {
+  const s = await startServer(t, { cc: false });
+  const light = await postJson(s.server, "/api/topics", { place: "general", title: "雑談" });
+  assert.equal(light.status, 201);
+  assert.deepEqual([light.json.mode, light.json.place], ["light", { dir: null }]);
+  assert.ok(s.logs.includes(`Web から話題を始めました（guild=${GUILD}、軽いセッション）`));
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "p:alpha", title: "x" }), { status: 409, json: { error: "cc_disabled" } });
+  // 共有の link が無ければ p: は 503、general は軽いセッション
+  const t2 = await startServer(t);
+  t2.ready.value = false;
+  assert.deepEqual(await postJson(t2.server, "/api/topics", { place: "p:alpha", title: "x" }), { status: 503, json: { error: "unify_not_ready" } });
+  const fallback = await postJson(t2.server, "/api/topics", { place: "general", title: "x" });
+  assert.deepEqual([fallback.status, fallback.json.mode], [201, "light"]);
+});
+
+test("POST /api/topics: place の形が違う・other・型が違う・許可していない guildId は 400 bad_request。空は 400 empty、長すぎは 400 too_long と field", async (t) => {
+  const s = await startServer(t);
+  const bad = [
+    {},
+    { place: "other", title: "x" },
+    { place: "p:../x", title: "x" },
+    { place: "p:a/b", title: "x" },
+    { place: "/", title: "x" },
+    { place: "alpha", title: "x" },
+    { place: 1, title: "x" },
+    { place: "general", title: 1 },
+    { place: "general", text: ["x"] },
+    { place: "general", title: "x", guildId: 111 },
+    { place: "general", title: "x", guildId: "999" },
+  ];
+  for (const body of bad) {
+    assert.deepEqual(await postJson(s.server, "/api/topics", body), { status: 400, json: { error: "bad_request" } }, JSON.stringify(body));
+  }
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "general", title: " ", text: "\n" }), { status: 400, json: { error: "empty" } });
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "general", title: "a".repeat(101) }), {
+    status: 400,
+    json: { error: "too_long", field: "title" },
+  });
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "general", text: "a".repeat(1901) }), {
+    status: 400,
+    json: { error: "too_long", field: "text" },
+  });
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "p:link", title: "x" }), { status: 400, json: { error: "invalid_project" } });
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "p:missing", title: "x" }), { status: 400, json: { error: "invalid_project" } });
+  assert.equal(createdCount(s.gateway), 0);
+  assert.equal(s.submits.length, 0);
+});
+
+test("POST /api/topics: Bot が未接続は 503 bot_disconnected、/setup 済みのサーバーが無ければ 409 not_set_up で、どちらも作らない", async (t) => {
+  const s = await startServer(t);
+  s.connected.value = false;
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "general", title: "x" }), { status: 503, json: { error: "bot_disconnected" } });
+  s.connected.value = true;
+  // /setup 前のサーバーを名指し
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "general", title: "x", guildId: GUILD_NOT_SET_UP }), {
+    status: 409,
+    json: { error: "not_set_up" },
+  });
+  const none = await startServer(t, { setUp: false });
+  assert.deepEqual(await postJson(none.server, "/api/topics", { place: "general", title: "x" }), { status: 409, json: { error: "not_set_up" } });
+  assert.equal(createdCount(s.gateway) + createdCount(none.gateway), 0);
+});
+
+test("POST /api/topics: 同じ内容を 5 秒以内に 2 回送っても作るのは 1 つで、同じ応答。5 秒を過ぎれば 2 つ目を作る", async (t) => {
+  assert.equal(TOPIC_START_DUPLICATE_MS, WEB_DUPLICATE_WINDOW_MS);
+  const s = await startServer(t);
+  const body = { place: "general", title: "旅行", text: "宿を探す" };
+  const [first, second] = await Promise.all([postJson(s.server, "/api/topics", body), postJson(s.server, "/api/topics", body)]);
+  assert.equal(first.status, 201);
+  assert.deepEqual(second, first);
+  // 正規化して同じなら同じ内容
+  s.clock.now += TOPIC_START_DUPLICATE_MS - 1;
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "p:General", title: " 旅行 ", text: "宿を探す\n" }), first);
+  assert.equal(createdCount(s.gateway), 1);
+  assert.equal(s.submits.length, 1);
+  s.clock.now += 1;
+  const third = await postJson(s.server, "/api/topics", body);
+  assert.equal(third.status, 201);
+  assert.notEqual(third.json.channelId, first.json.channelId);
+  assert.equal(createdCount(s.gateway), 2);
+  // 201 でなかった応答は覚えない（すぐやり直せる）
+  s.connected.value = false;
+  const other = { place: "general", title: "別" };
+  assert.equal((await postJson(s.server, "/api/topics", other)).status, 503);
+  s.connected.value = true;
+  assert.equal((await postJson(s.server, "/api/topics", other)).status, 201);
+});
+
+test("POST /api/topics: 最初の一言が受け付けられなければ 201 で turn failed", async (t) => {
+  const s = await startServer(t);
+  s.next.push({ result: "echo_failed" });
+  const res = await postJson(s.server, "/api/topics", { place: "general", text: "本文" });
+  assert.deepEqual([res.status, res.json.turn], [201, "failed"]);
+  assert.equal(s.topicSessions.get(res.json.channelId as string)?.state, "active");
+});
+
+test("POST /api/topics: start の配線が無ければ受けない（405 で、何も作らない）", async (t) => {
+  const s = await startServer(t, { start: false });
+  const res = await postJson(s.server, "/api/topics", { place: "general", title: "x" });
+  assert.deepEqual(res, { status: 405, json: { error: "method_not_allowed" } });
+  assert.equal(createdCount(s.gateway), 0);
 });

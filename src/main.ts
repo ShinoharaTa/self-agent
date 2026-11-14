@@ -63,7 +63,7 @@ import { CcPermissionHold } from "./cc/permission-hold.ts";
 import { CcRegistry } from "./cc/registry.ts";
 import { CcReplier } from "./cc/replies.ts";
 import { CcSender } from "./cc/sender.ts";
-import { ccPlacesOf, CcStarter, procMemAvailable } from "./cc/starter.ts";
+import { ccPlacesOf, CcStarter, ensureGeneralDir, procMemAvailable } from "./cc/starter.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -311,6 +311,12 @@ const projectRunner: AgentRunner | undefined = config.cc
 // 済んでいなければ log 1 行で、/new project:・POST /api/sessions の projectDir を断る（既にあるプロジェクトのセッションのターンは動かす）
 const unifyReady = config.cc ? checkSharedLinks(config.claudeConfigDir, homedir()).ok : false;
 if (config.cc && !unifyReady) log("プロジェクトのセッションの設定が済んでいません（npm run unify-setup -- --print）");
+// 場所を決めない話題の作業場（General。docs/plan/web-ui-v3.md §5）。連携が有効で共有の link が済んでいるときだけ、無ければ作る（名前・パスは log に出さない。起動は止めない）
+if (config.cc && unifyReady) {
+  const general = ensureGeneralDir(ccPlacesOf(config, homedir()));
+  if (general === "created") log("General のディレクトリを作りました");
+  else if (general === "unavailable") log("General のディレクトリを使えません（場所を決めない話題は軽いセッションで始めます）");
+}
 // /new の project と POST /api/sessions の projectDir の検証（SELF_AGENT_CC=1 のときだけ。プロジェクトの runner と同じ条件）
 const projectSessions: ProjectSessionGate | undefined =
   projectRunner === undefined ? undefined : { places: ccPlacesOf(config, homedir()), ready: () => unifyReady };
@@ -1163,6 +1169,19 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
                 questionHoldSec: config.ccQuestionHoldSec,
               },
             }),
+        // POST /api/topics（M4。sessionRoutes に渡している物と同じ実体）
+        start: {
+          gateway,
+          personas,
+          guildSettings,
+          topicSessions,
+          queue: layoutQueue,
+          history: historyStore,
+          submitText: (input) => handler.submitText(input),
+          defaultConnected: () => gateway.connected(),
+          ...(projectSessions === undefined ? {} : { projectSessions }),
+          log,
+        },
         now,
       }),
       ...devlogRoutes({ cfg: config, now }),
