@@ -441,7 +441,7 @@ async function handleDelete(
 
 /**
  * [取り込む]（go）・[やめる]（no）。押した人がオーナー・押したチャンネルが行の channel_id・確認待ちでなければ本人にだけ CC_TAKE_STALE_REPLY で、何も変えない。
- * go は confirm が 10 秒以上かかりうるので先に保留する（確認の文の書き換え・完了の文は CcTakeover が出す）。no は cancel して確認の文を書き換え、ボタンを外す
+ * go は confirm が 10 秒以上かかりうるので先に保留する（確認の文の書き換え・完了の文は CcTakeover が出し、書き換えられなかったときだけ応答の側で書き換える）。no は cancel して確認の文を書き換え、ボタンを外す
  */
 async function handleTakeButton(
   getter: CcTakeoverGetter | undefined,
@@ -449,6 +449,7 @@ async function handleTakeButton(
   id: number,
   interaction: { channelId: string | null; userId: string },
   responder: Parameters<ComponentHandler["handle"]>[1],
+  log: (message: string) => void,
 ): Promise<void> {
   const runtime = getter?.();
   const stale = (): Promise<void> => responder.reply({ text: CC_TAKE_STALE_REPLY, ephemeral: true });
@@ -474,8 +475,18 @@ async function handleTakeButton(
   }
   await responder.deferUpdate();
   const result = await runtime.takeover.confirm(id);
-  // 押す間に確認待ちでなくなった（二度押し・失効の取り消し）。期限切れ（expired）と結果の文は CcTakeover が確認の文に出している
-  if (!result.ok && result.reason === "stale") await stale();
+  // 押す間に確認待ちでなくなった（二度押し・失効の取り消し）
+  if (!result.ok && result.reason === "stale") {
+    await stale();
+    return;
+  }
+  // 結果の文は CcTakeover が確認の文に出す。書き換えられなかったときだけ、押された 1 通を同じ文にしてボタンを外す
+  if (result.edited) return;
+  try {
+    await responder.update({ text: result.text, components: [] });
+  } catch (error) {
+    log(`Claude Code: 取り込みの結果を確認の文に出せませんでした（#${id}、${errorKind(error)}）`);
+  }
 }
 
 /**
@@ -675,7 +686,7 @@ export function createCcComponent(deps: CcComponentDeps): ComponentHandler {
         if (interaction.kind !== "button" || id === undefined || (prefix !== TAKEOVER_GO_PREFIX && prefix !== TAKEOVER_NO_PREFIX)) {
           throw new Error(`cc:take の不明な操作です（${interaction.kind}）`);
         }
-        await handleTakeButton(deps.ccTakeover, prefix === TAKEOVER_GO_PREFIX, id, interaction, responder);
+        await handleTakeButton(deps.ccTakeover, prefix === TAKEOVER_GO_PREFIX, id, interaction, responder, deps.log);
         return;
       }
       // 削除の確認（CC13）: cc:del:<channel_id>・cc:del:keep:<channel_id>

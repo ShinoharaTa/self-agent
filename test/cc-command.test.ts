@@ -218,7 +218,7 @@ function fakeTakeover(t: TestContext) {
   const calls: string[] = [];
   let proposeResult: CcTakeoverProposeResult = { ok: false, reason: "not_channel", text: "チャンネルでない" };
   let takeable: string[] = [];
-  let confirmResult: CcTakeoverConfirmResult = { ok: true, text: "取り込みました" };
+  let confirmResult: CcTakeoverConfirmResult = { ok: true, text: "取り込みました", edited: true };
   const runtime = {
     takeover: {
       propose: async (input: { channelId: string; entry: string }): Promise<CcTakeoverProposeResult> => {

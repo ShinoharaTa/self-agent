@@ -1032,6 +1032,13 @@ if (
   };
   // 確認の失効（10 分）を 1 分ごとに確かめる
   ccTakeoverExpirer = new CcTakeoverExpirer({ takeover, log });
+  // 起動時の前段: 再起動の前に running だった行を failed（restart）にする（DB だけ）。registry の最初の読み取りと操作の受け付けより前に済ませ、
+  // 取り込みの途中の扱い（holds）で一覧に戻ったセッション・送信を捨てない。確認の文の書き換えは gateway の後の後段
+  try {
+    takeover.recoverRunning();
+  } catch (error) {
+    log(`Claude Code: 取り込みの起動時の片付けに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
+  }
 }
 // cc_send・cc_start の確認の失効（10 分）。SELF_AGENT_CC が無効でも動かし、再起動の前に出した確認が残っていれば取り消して注記する
 const ccConfirmExpirer = new CcConfirmExpirer({
@@ -1392,11 +1399,11 @@ if (config.shell) await shellState.check();
 // （知らせは gateway の起動の後。それまで run は始めない）
 await jobs?.recoverState();
 await gateway.start(lifecycle.handlers);
-// 取り込み: 再起動の前に running だった行を failed（restart）にし、差し止めた ended を流し直し、後始末の残りをやり直す（確認の文の書き換えに Discord が要るので
-// gateway の後。受け付けた操作の confirm より先に running を片付けるよう、間に await を挟まない。registry の周期の読み取り（start）より前）
+// 取り込みの起動時の後段: 前段が失敗にした行の確認の文の書き換え・差し止めた ended の流し直し・後始末の残り（Discord が要るので gateway の後。
+// registry の周期の読み取り（start）より前）
 if (ccTakeover !== undefined) {
   try {
-    await ccTakeover.recover();
+    await ccTakeover.recoverEffects();
   } catch (error) {
     log(`Claude Code: 取り込みの起動時の片付けに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
   }
