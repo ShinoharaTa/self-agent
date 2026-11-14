@@ -283,3 +283,41 @@ test("buildTopics: 500 件の seed でも 50ms 以内に返り、入力の配列
   assert.ok(elapsed < 1000, `${elapsed}ms`);
   assert.equal(JSON.stringify(data), before);
 });
+
+test("buildTopics: dir が generalDir の話題は群 general で place.dir はその名前。p:<General> の群は作らない。projects に General があっても群にしない", () => {
+  const result = buildTopics(
+    input(
+      [
+        seed("ch:1", { origin: "project", dir: "General" }),
+        seed("ch:2"),
+        seed("cc:3", { origin: "cc", dir: "General" }),
+        seed("ch:4", { origin: "project", dir: "alpha" }),
+      ],
+      { projects: ["General", "alpha"], generalDir: "General" },
+    ),
+  );
+  assert.deepEqual(
+    result.groups.map((group) => group.key),
+    ["p:alpha", "general"],
+  );
+  const general = result.groups.find((group) => group.key === "general")!;
+  assert.equal(general.open, 3);
+  assert.equal(general.name, "General");
+  const byId = new Map(result.topics.map((item) => [item.id, item]));
+  assert.deepEqual([byId.get("ch:1")?.group, byId.get("ch:1")?.place.dir], ["general", "General"]);
+  assert.deepEqual([byId.get("ch:2")?.group, byId.get("ch:2")?.place.dir], ["general", null]);
+  assert.deepEqual([byId.get("cc:3")?.group, byId.get("cc:3")?.place.dir], ["general", "General"]);
+  assert.equal(byId.get("ch:4")?.group, "p:alpha");
+  assert.equal(groupKeyOf({ dir: "General", outside: false }, "General"), "general");
+  assert.equal(groupKeyOf({ dir: "General", outside: true }, "General"), "other");
+});
+
+test("buildTopics: generalDir を渡さなければ今までどおり（dir があれば p:）", () => {
+  const result = buildTopics(input([seed("ch:1", { origin: "project", dir: "General" })], { projects: ["General"] }));
+  assert.deepEqual(
+    result.groups.map((group) => group.key),
+    ["p:General", "general"],
+  );
+  assert.equal(result.topics[0]?.group, "p:General");
+  assert.equal(groupKeyOf({ dir: "General", outside: false }), "p:General");
+});
