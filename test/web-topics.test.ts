@@ -21,7 +21,8 @@ import { createWebServer, type WebServer } from "../src/web/server.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 
 const LOGIN = "owner@example.com";
-const NOW = new Date("2026-11-14T00:30:00Z");
+// 許可（300 秒）・確認（10 分）が時間切れにならない時刻
+const NOW = new Date("2026-11-14T00:22:00Z");
 const EARLIER = new Date("2026-11-14T00:20:00Z");
 const GUILD = "111";
 const GUILD_NOT_SET_UP = "222";
@@ -31,6 +32,7 @@ const S3 = "33333333-3333-4333-8333-333333333333";
 const S4 = "44444444-4444-4444-8444-444444444444";
 const SP = "55555555-5555-4555-8555-555555555555";
 const SQ = "66666666-6666-4666-8666-666666666666";
+const S7 = "77777777-7777-4777-8777-777777777777";
 
 const MIKA: PersonaConfig = {
   id: "mika",
@@ -70,12 +72,13 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
 
 /**
  * /setup 済みのサーバー: #inbox 100・#tasks 101・ミカの #<NAME> 102。セッション: 200（進行中）・201（プロジェクト alpha・許可待ち）・
- * 202（完了）・203（待ち・ミカ・/close の確認が最後の行）・204（/close の確認の後に発言）・205（プロジェクト beta・質問）。
+ * 202（完了）・203（待ち・ミカ・/close の確認が最後の行で下書きあり）・204（/close の確認の後に発言）・205（プロジェクト beta・質問）。
  * /setup 前のサーバーのセッション 400 とチャンネル 303。
  * Claude Code（cc を渡すとき）: チャンネル 300（S1・open・alpha・実行中）・301（S2・ended）。チャンネルの無い S3（ワークスペースの外・判断待ち）・
- * S4（alpha・判断待ちで hook の許可も pending）
+ * S4（alpha・判断待ちで hook の許可も pending）。/setup 前のサーバーのチャンネル 303 は S7。
+ * allowed で cfg.allowedGuildIds を、at でルートの今の時刻を差し替える。registry.unreadable と snapshotSessions は後から変えられる
  */
-async function setup(t: TestContext, options: { cc?: boolean; running?: string[] } = {}) {
+async function setup(t: TestContext, options: { cc?: boolean; running?: string[]; allowed?: string[]; at?: Date } = {}) {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
   const { guildSettings, topicSessions, history, sessions } = stores;
@@ -94,6 +97,7 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
   topicSessions.create({ channelId: "203", guildId: GUILD, title: "ミカの相談", categoryId: "c", persona: "mika" });
   topicSessions.setWaiting("203");
   history.add({ guildId: GUILD, channelId: "203", kind: "notice", source: "system", text: CLOSE_CONFIRM_NOTICE });
+  topicSessions.saveCloseDraft("203", { summary: "要約", tasks: [] });
   topicSessions.create({ channelId: "204", guildId: GUILD, title: "確認の後に発言", categoryId: "c" });
   history.add({ guildId: GUILD, channelId: "204", kind: "notice", source: "system", text: CLOSE_CONFIRM_NOTICE });
   history.add({ guildId: GUILD, channelId: "204", kind: "owner", source: "discord", text: "やっぱり続ける" });
@@ -121,7 +125,7 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
   ccStore.create({ channelId: "300", guildId: GUILD, sessionId: S1, name: "cc-alpha", cwd: join(workspace, "alpha"), origin: "web" });
   ccStore.create({ channelId: "301", guildId: GUILD, sessionId: S2, name: "cc-beta", cwd: join(workspace, "beta", "sub"), origin: "web" });
   ccStore.setState("301", "ended");
-  ccStore.create({ channelId: "303", guildId: GUILD_NOT_SET_UP, sessionId: "77777777-7777-4777-8777-777777777777", name: "cc-x", cwd: null, origin: "web" });
+  ccStore.create({ channelId: "303", guildId: GUILD_NOT_SET_UP, sessionId: S7, name: "cc-x", cwd: null, origin: "web" });
   permissions.add({ sessionId: S4, requestHash: "h3", toolName: "Edit", summary: "src/a.ts", permissionMode: "default", state: "pending" });
   // 確認待ち: #inbox からの起動・200 からの送信・合わないチャンネル・ツール以外の送信
   starts.add({ project: "alpha", title: "t", channelId: "100" });
@@ -136,7 +140,10 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
   ];
   const registry = {
     touches: 0,
-    snapshot: () => ({ sessions: snapshotSessions, stale: true, unreadable: false, fetchedAt: NOW.getTime() }),
+    unreadable: false,
+    snapshot() {
+      return { sessions: snapshotSessions, stale: true, unreadable: this.unreadable, fetchedAt: NOW.getTime() };
+    },
     touch() {
       this.touches++;
     },
@@ -153,8 +160,16 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
   const handler = {
     runningTurns: (): RunningTurn[] => running.map((channelId) => ({ guildId: GUILD, channelId }) as RunningTurn),
   };
+  // プロジェクトのセッションの許可を探したチャンネル
+  const sdkLookups: string[] = [];
+  const sdkStore = {
+    latestSdkFor: (...args: Parameters<CcPermissionStore["latestSdkFor"]>) => {
+      sdkLookups.push(args[0]);
+      return permissions.latestSdkFor(...args);
+    },
+  };
   const routes = topicRoutes({
-    cfg: { allowedGuildIds: [GUILD, GUILD_NOT_SET_UP], personas: [MIKA], workspaceDir: workspace },
+    cfg: { allowedGuildIds: options.allowed ?? [GUILD, GUILD_NOT_SET_UP], personas: [MIKA], workspaceDir: workspace },
     guildSettings,
     topicSessions,
     history,
@@ -162,11 +177,11 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
     handler,
     places: { workspaceDir: workspace, protectedDirs: [] },
     home: "/home/owner",
-    projectPermissions: { store: permissions, sessions, holdSec: 300, questionHoldSec: 900 },
+    projectPermissions: { store: sdkStore, sessions, holdSec: 300, questionHoldSec: 900 },
     ...(options.cc === true
       ? { cc: { registry, channels: ccStore, permissions, sends, starts, holdSec: 300, questionHoldSec: 900 } }
       : {}),
-    now: () => NOW,
+    now: () => options.at ?? NOW,
   });
   const server = createWebServer({
     host: "127.0.0.1",
@@ -181,7 +196,7 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
   });
   await server.start();
   t.after(() => server.close());
-  return { server, registry, workspace };
+  return { server, registry, workspace, snapshotSessions, permissions, guildSettings, topicSessions, sdkLookups };
 }
 
 const byId = (result: TopicsResult, id: string): Topic | undefined => result.topics.find((topic) => topic.id === id);
@@ -204,7 +219,8 @@ test("web topics: セッション・プロジェクトのセッション・#task
   const tasks = byId(result, "ch:101")!;
   assert.equal(tasks.title, "#tasks");
   assert.deepEqual(tasks.movable, { reason: "入口は場所を変えられません" });
-  assert.equal(tasks.activityAt, new Date(0).toISOString());
+  // 履歴の無い入口は null
+  assert.equal(tasks.activityAt, null);
   assert.equal(byId(result, "ch:102")!.title, "#ミカ");
   const session = byId(result, "ch:200")!;
   assert.equal(session.movable, true);
@@ -362,4 +378,80 @@ test("web topics: setUp していないサーバーの行は出ない", async (t
   assert.equal(byId(result, "ch:400"), undefined);
   assert.equal(byId(result, "ch:303"), undefined);
   assert.equal(result.rightHands.every((hand) => hand.guildId === GUILD), true);
+});
+
+test("web topics: ended の行でもセッションが一覧に居れば active で、pending の許可が turn になる", async (t) => {
+  const { server, snapshotSessions, permissions, workspace } = await setup(t, { cc: true });
+  const before = await topics(server);
+  snapshotSessions.push(view(S2, join(workspace, "beta", "sub")));
+  permissions.add({ sessionId: S2, requestHash: "h4", toolName: "Bash", summary: "ls", permissionMode: "default", state: "pending" });
+  const result = await topics(server);
+  const reopened = byId(result, "ch:301")!;
+  assert.deepEqual([reopened.state, reopened.sessionId, reopened.mark, reopened.turn?.kind], ["active", S2, "turn", "permission"]);
+  assert.equal(result.turns, before.turns + 1);
+  assert.ok(result.turnIds.includes("ch:301"));
+  // チャンネルのあるセッションは cc: にしない
+  assert.equal(byId(result, `cc:${S2}`), undefined);
+});
+
+test("web topics: open の行でもセッションが一覧に無ければ done。一覧が読めないときは open の行が active", async (t) => {
+  const { server, snapshotSessions, registry } = await setup(t, { cc: true });
+  snapshotSessions.splice(0, 1); // S1 を一覧から外す
+  const gone = await topics(server, "/api/topics?done=p:alpha");
+  assert.equal(byId(gone, "ch:300")!.state, "done");
+  snapshotSessions.splice(0, snapshotSessions.length);
+  registry.unreadable = true;
+  const unreadable = await topics(server, "/api/topics?done=p:beta");
+  assert.equal(byId(unreadable, "ch:300")!.state, "active");
+  // ended の行は done のまま
+  assert.equal(byId(unreadable, "ch:301")!.state, "done");
+  assert.equal(unreadable.cc.unreadable, true);
+});
+
+test("web topics: setUp 済みのサーバーが 0 でも、チャンネルの無い Claude Code のセッションが出る", async (t) => {
+  const { server, snapshotSessions } = await setup(t, { cc: true, allowed: [GUILD_NOT_SET_UP] });
+  snapshotSessions.splice(0, snapshotSessions.length, view(S3, "/somewhere/else", { state: "needs_input" }));
+  const result = await topics(server);
+  assert.deepEqual(
+    result.topics.map((topic) => topic.id),
+    [`cc:${S3}`],
+  );
+  assert.equal(result.turns, 1);
+  assert.equal(byId(result, `cc:${S3}`)!.turn?.summary, "判断待ち");
+});
+
+test("web topics: setUp 済みのサーバーが 2 つなら、2 つ目のサーバーのチャンネルのあるセッションは ch: の 1 行だけ", async (t) => {
+  const { server, snapshotSessions, guildSettings } = await setup(t, { cc: true });
+  guildSettings.setChannel(GUILD_NOT_SET_UP, "inboxChannelId", "500");
+  snapshotSessions.push(view(S7, undefined));
+  const result = await topics(server);
+  assert.equal(result.topics.filter((topic) => topic.id === "ch:303" || topic.id === `cc:${S7}`).length, 1);
+  assert.equal(byId(result, "ch:303")!.state, "active");
+  assert.equal(byId(result, "ch:303")!.link, `https://discord.com/channels/${GUILD_NOT_SET_UP}/303`);
+});
+
+test("web topics: 完了のセッションではプロジェクトの許可を探さない", async (t) => {
+  const { server, sdkLookups } = await setup(t);
+  await topics(server, "/api/topics?done=general");
+  assert.ok(sdkLookups.includes("200"));
+  assert.equal(sdkLookups.includes("202"), false);
+});
+
+test("web topics: 時間切れの turn は数えない", async (t) => {
+  // 201 の許可（00:20 + 300 秒）は切れ、205 の質問（00:20 + 900 秒）は残る
+  const { server } = await setup(t, { at: new Date("2026-11-14T00:26:00Z") });
+  const result = await topics(server);
+  const expired = byId(result, "ch:201")!;
+  assert.deepEqual([expired.turn, expired.mark], [null, null]);
+  assert.equal(result.turnIds.includes("ch:201"), false);
+  assert.equal(byId(result, "ch:205")!.turn?.kind, "question");
+  assert.deepEqual(result.turnIds, ["ch:205", "ch:203"]);
+});
+
+test("web topics: /close の確認は下書きが無ければ数えない", async (t) => {
+  const { server, topicSessions } = await setup(t);
+  topicSessions.clearCloseDraft("203");
+  const result = await topics(server);
+  assert.equal(byId(result, "ch:203")!.turn, null);
+  assert.equal(result.turnIds.includes("ch:203"), false);
 });

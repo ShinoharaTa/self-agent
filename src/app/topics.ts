@@ -35,8 +35,8 @@ export type Topic = {
   mark: TopicMark;
   turn: TopicTurn | null;
   state: "active" | "waiting" | "done";
-  /** 並びに使う時刻（ISO） */
-  activityAt: string;
+  /** 並びに使う時刻（ISO）。履歴の無い入口は null（並びでは一番古い） */
+  activityAt: string | null;
   last: TopicLast;
   movable: true | { reason: string };
   /** Discord のチャンネルの URL。無ければ null */
@@ -82,7 +82,7 @@ export type TopicSeed = {
   sessionId: string | null;
   cwdLabel: string | null;
   state: Topic["state"];
-  activityAt: string;
+  activityAt: string | null;
   last: TopicLast;
   link: string | null;
   running: boolean;
@@ -128,8 +128,9 @@ export function groupKeyOf(seed: Pick<TopicSeed, "dir" | "outside">): string {
   return seed.dir !== null ? `${PROJECT_PREFIX}${seed.dir}` : GENERAL_GROUP;
 }
 
-/** ISO の時刻 → ms（読めなければ 0） */
-function time(iso: string): number {
+/** ISO の時刻 → ms（null・読めなければ 0） */
+function time(iso: string | null): number {
+  if (iso === null) return 0;
   const ms = Date.parse(iso);
   return Number.isNaN(ms) ? 0 : ms;
 }
@@ -139,7 +140,7 @@ function compareIds(a: string, b: string): number {
 }
 
 /** 新しい順 */
-function newerFirst(a: { activityAt: string }, b: { activityAt: string }): number {
+function newerFirst(a: { activityAt: string | null }, b: { activityAt: string | null }): number {
   return time(b.activityAt) - time(a.activityAt);
 }
 
