@@ -19,6 +19,7 @@ const ICON_FILES = ["app-icon.svg", "apple-touch-icon.png", "icon-192.png", "ico
 test("web static: 決めたファイルがそろっていて、base.css・icons.svg は置かない（templates/web/site のものを配る）", () => {
   for (const name of [
     "index.html",
+    "tokens.css",
     "app.css",
     "ui.js",
     "api.js",
@@ -81,7 +82,7 @@ test("web static: index.html の読み込みの順と既定のテーマ", () => 
   const html = read("index.html");
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
-  assert.deepEqual(links, ["/static/base.css", "/static/app.css"]);
+  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css"]);
   const scripts = [...html.matchAll(/<script src="([^"]+)" defer><\/script>/g)].map((m) => m[1]);
   assert.deepEqual(scripts, [
     "/static/ui.js",
@@ -1538,9 +1539,11 @@ test("web static: 会話の行は吹き出し（#263）: オーナーは右・Bo
     /\n:root:not\(\[data-theme\]\) \{[^}]*--bubble-owner: #[0-9a-f]{6};[^}]*\}/,
     /@media \(prefers-color-scheme: dark\) \{\n {2}:root:not\(\[data-theme\]\) \{[^}]*--bubble-owner: #[0-9a-f]{6};[^}]*\}/,
   ];
-  for (const re of blocks) assert.match(css, re);
-  assert.equal(css.match(/--bubble-owner: #/g)?.length, 4);
-  assert.equal(css.match(/--bubble-agent: #/g)?.length, 4);
+  // 変数の定義は tokens.css、使う規則は app.css
+  const tokens = read("tokens.css");
+  for (const re of blocks) assert.match(tokens, re);
+  assert.equal(tokens.match(/--bubble-owner: #/g)?.length, 4);
+  assert.equal(tokens.match(/--bubble-agent: #/g)?.length, 4);
   assert.doesNotMatch(css, /avatar/);
   const chat = read("chat.js");
   assert.doesNotMatch(chat, /avatar/);
@@ -1552,8 +1555,8 @@ test("web static: 会話の行は吹き出し（#263）: オーナーは右・Bo
   assert.match(chat, /renderTurn\(turn, channelId, ch, prev\)/);
   assert.match(chat, /renderRunning\(ch, run, prev\)/);
   // ライトの Bot の吹き出しは地より一段暗く、中のコードは白
-  assert.equal(css.match(/--bubble-agent: #e4e8ef;/g)?.length, 2);
-  assert.equal(css.match(/--bubble-inset: #ffffff;/g)?.length, 2);
+  assert.equal(tokens.match(/--bubble-agent: #e4e8ef;/g)?.length, 2);
+  assert.equal(tokens.match(/--bubble-inset: #ffffff;/g)?.length, 2);
   // 指の端末では時刻のリンクの当たりを広げる
   assert.match(css, /@media \(pointer: coarse\) \{\n {2}a\.tl-time \{\n {4}position: relative;\n {2}\}\n\n {2}a\.tl-time::before \{\n {4}content: "";\n {4}position: absolute;\n {4}inset: -8px;/);
   // Bot の名前は人格が 2 体以上か Claude Code のチャンネルのときだけ
@@ -1621,4 +1624,22 @@ test("web static: 新しいセッションのダイアログのプロジェク�
   assert.ok(html.includes('<p class="meta" id="new-project-hint">選ぶと Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はボタンで答えます。人格は既定だけです</p>'));
   const sidebar = read("sidebar.js");
   assert.match(sidebar, /class: "badge badge-project", title: "プロジェクトのセッション", text: ch\.projectDir\.dir/);
+});
+
+// ===== 色・寸法・動き・重なりの変数（tokens.css） =====
+test("web static: tokens.css は変数だけで、app.css に :root の色のブロックが残っていない", () => {
+  const tokens = read("tokens.css");
+  for (const open of [':root[data-theme="dark"] {', ':root[data-theme="light"] {', "\n:root:not([data-theme]) {", "@media (prefers-color-scheme: dark) {"]) {
+    assert.ok(tokens.includes(open), open);
+  }
+  // 一番外の規則のセレクタは :root・:root[data-theme=…]・:root:not([data-theme])・@media … だけ
+  const outer = [...tokens.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/^([^\s}][^{}]*)\{/gm)].map((m) => m[1]!.trim());
+  assert.ok(outer.length >= 6);
+  for (const sel of outer) assert.match(sel, /^(:root|:root\[data-theme="(dark|light)"\]|:root:not\(\[data-theme\]\)|@media .+)$/, sel);
+  // @media の中も :root の規則だけ
+  for (const m of tokens.matchAll(/^ {2}([^\s}][^{}]*)\{/gm)) assert.match(m[1]!.trim(), /^:root/, m[1]);
+  const app = read("app.css");
+  assert.doesNotMatch(app, /:root\[data-theme="dark"\] \{/);
+  assert.doesNotMatch(app, /^:root \{/m);
+  assert.match(app, /^ \*\/\n\n::selection \{/m);
 });

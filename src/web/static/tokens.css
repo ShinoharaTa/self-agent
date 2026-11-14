@@ -1,0 +1,150 @@
+/* 色・寸法・動き・重なりの変数だけ。部品の規則は書かない（app.css・shell.css） */
+
+/* ===== 変数（画面の骨組みの寸法） ===== */
+:root {
+  --activity-w: 48px;
+  --sidebar-w: 280px;
+  --sash-w: 4px;
+  --titlebar-h: 40px;
+  --statusbar-h: 24px;
+  --tabbar-h: 36px;
+  --row: 28px;
+  --panel-h: 220px;
+  --bottomnav-h: 56px;
+  --icon-sm: 16px;
+  --dot: 8px;
+  --tab-max: 200px;
+  --cmd-max: 520px;
+  --timeline-max: 840px;
+  --page-max: 1120px;
+  --palette-max: 640px;
+  --drawer-max: 340px;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+/*
+ * 動きの長さと曲線（docs/design/WEB-UI-GUIDELINES.md §6）。押下は micro、ダイアログ・トーストの出は short、ドロワーの開きは long。
+ * 消えるときは出るときの 65%（ダイアログ・トースト）か short（ドロワー）。prefers-reduced-motion では base.css が transition を全部止める
+ */
+:root {
+  --dur-micro: 120ms;
+  --dur-short: 200ms;
+  --dur-long: 300ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* 重なりの段（docs/design/WEB-UI-GUIDELINES.md §4。数字を直接書かない。<dialog> は top layer なので要らない） */
+:root {
+  --z-sash: 10;
+  --z-drawer-backdrop: 40;
+  --z-drawer: 41;
+  --z-palette: 50;
+  --z-toast: 60;
+}
+
+/* 指で触る端末では、行とタブを 44px にする */
+@media (pointer: coarse) {
+  :root {
+    --row: var(--tap);
+    --tabbar-h: var(--tap);
+    --statusbar-h: 32px;
+  }
+}
+
+/*
+ * テーマの切り替え。既定は data-theme="dark"。設定で「OS に合わせる」を選ぶと data-theme を外し、prefers-color-scheme で選ぶ。
+ * 値は docs/design/WEB-UI-GUIDELINES.md §2.1 の決まり（夜勤の計器盤）で、base.css の同名の変数を上書きする（base.css は変えない）。
+ * --text-secondary（二次の文字）は app.css だけの変数。data-theme が無いときも base.css の既定に落ちないよう、同じ値を 4 か所に書く。
+ * --bubble-*（会話の吹き出し。#263）も app.css だけの変数: owner はオーナーの地（ダーク 20%・ライト 15% の --accent を --bg に混ぜた色）、
+ * agent は Bot の地（ライトは --bg より一段暗い #e4e8ef、ダークは --surface が --bg と見分けにくいので --muted）、
+ * inset は Bot の吹き出しの中のコードの地（ライトは白、ダークは --surface）
+ */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0d14;
+  --surface: #11141c;
+  --muted: #1a1e28;
+  --border: #2a3040;
+  --text: #eef0f5;
+  --text-secondary: #aab1c1;
+  --text-muted: #8a93a6;
+  --primary: #eef0f5;
+  --primary-text: #11141c;
+  --accent: #6b9aff;
+  --danger: #f0616a;
+  --success: #4cc38a;
+  --warning: #f2b544;
+  --backdrop: rgb(0 0 0 / 0.7);
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --bubble-owner: #1e2943;
+  --bubble-agent: #1a1e28;
+  --bubble-inset: #11141c;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --muted: #eceff4;
+  --border: #d7dce6;
+  --text: #111827;
+  --text-secondary: #4b5565;
+  --text-muted: #5f6b80;
+  --primary: #111827;
+  --primary-text: #f5f7fa;
+  --accent: #2a5bd7;
+  --danger: #c92a2a;
+  --success: #1b7a3e;
+  --warning: #a05a07;
+  --backdrop: rgb(17 24 39 / 0.5);
+  --shadow-sm: 0 1px 2px 0 rgb(17 24 39 / 0.06);
+  --bubble-owner: #d7e0f5;
+  --bubble-agent: #e4e8ef;
+  --bubble-inset: #ffffff;
+}
+
+:root:not([data-theme]) {
+  color-scheme: light;
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --muted: #eceff4;
+  --border: #d7dce6;
+  --text: #111827;
+  --text-secondary: #4b5565;
+  --text-muted: #5f6b80;
+  --primary: #111827;
+  --primary-text: #f5f7fa;
+  --accent: #2a5bd7;
+  --danger: #c92a2a;
+  --success: #1b7a3e;
+  --warning: #a05a07;
+  --backdrop: rgb(17 24 39 / 0.5);
+  --shadow-sm: 0 1px 2px 0 rgb(17 24 39 / 0.06);
+  --bubble-owner: #d7e0f5;
+  --bubble-agent: #e4e8ef;
+  --bubble-inset: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #0b0d14;
+    --surface: #11141c;
+    --muted: #1a1e28;
+    --border: #2a3040;
+    --text: #eef0f5;
+    --text-secondary: #aab1c1;
+    --text-muted: #8a93a6;
+    --primary: #eef0f5;
+    --primary-text: #11141c;
+    --accent: #6b9aff;
+    --danger: #f0616a;
+    --success: #4cc38a;
+    --warning: #f2b544;
+    --backdrop: rgb(0 0 0 / 0.7);
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --bubble-owner: #1e2943;
+    --bubble-agent: #1a1e28;
+    --bubble-inset: #11141c;
+  }
+}
