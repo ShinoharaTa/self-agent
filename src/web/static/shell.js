@@ -1,5 +1,6 @@
 // 新しい殻（v3.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
-// SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ
+// SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
+// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]
 "use strict";
 
 (function () {
@@ -51,6 +52,8 @@
     drafts: {},
     // スマホで見えている側（"list" | "body"）
     view: "list",
+    // Claude Code のチャンネルのある話題で見ている物（"talk" 会話 | "pane" 端末の画面の写し）。話題を開くたびに talk
+    view2: "talk",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -136,8 +139,12 @@
   let hiddenScroll = null;
   let stickOnShow = false;
 
+  // 列 2 に最後に描いたタブ（[端末] の間は cc:<sessionId>）
+  let edTab = null;
+
   /** タブの中身を描く。同じタブならスクロール位置は保ち、別のタブに切り替えたとき（switched）は下端（data-stick="bottom"）か先頭から */
   function renderEd(ed, tabId, switched) {
+    edTab = tabId || null;
     const hidden = mainHidden();
     const oldScroll = switched || hidden ? null : ed.querySelector(".ed-scroll");
     const wasBottom = !oldScroll || atBottom(oldScroll);
@@ -158,11 +165,65 @@
     else scroll.scrollTop = oldTop;
   }
 
-  /** 列 2 の上の帯（「場所」はただの文字。押せない。付け替えは M5） */
+  /** [会話][端末] を出せる話題（Discord のチャンネルがあり、今も一覧に居る Claude Code のセッション）なら、そのセッションの ID */
+  function paneSession() {
+    const t = S.active ? SA.topics.find(S.active) : null;
+    return t && t.origin === "cc" && t.id.startsWith("ch:") && t.sessionId !== null ? t.sessionId : null;
+  }
+
+  /** 列 2 に出しているタブ（[端末] の間は cc:<sessionId>。一覧の aria-current と hash は S.active のまま） */
+  function shownTabId() {
+    if (S.view2 === "pane") {
+      const sessionId = paneSession();
+      if (sessionId) return "cc:" + sessionId;
+    }
+    return S.active;
+  }
+
+  /** [会話] ⇄ [端末]（切り替えは別のタブとして下端に寄せる） */
+  function setView2(view) {
+    if (S.view2 === view) return;
+    S.view2 = view;
+    renderBar();
+    renderEd($("ed"), shownTabId(), true);
+    // 端末の画面の写しは前に出たときに読み直す（その後は api.js の polling）。会話へ戻るときは閉じない
+    if (view === "pane") {
+      const info = SA.views.info(shownTabId());
+      if (info && info.onOpen) info.onOpen();
+    }
+  }
+
+  /** [会話][端末] の切り替え（ボタンは 1 度だけ作り、押した状態だけ合わせる） */
+  function renderViews() {
+    const box = $("v3-views");
+    if (!box) return;
+    const sessionId = paneSession();
+    // 出せなくなったら会話に戻す
+    if (!sessionId && S.view2 === "pane") S.view2 = "talk";
+    box.hidden = !sessionId;
+    if (!sessionId) return;
+    if (box.children.length === 0) {
+      for (const [view, label] of [
+        ["talk", "会話"],
+        ["pane", "端末"],
+      ]) {
+        const b = el("button", { type: "button", "data-view": view, text: label });
+        b.addEventListener("click", () => setView2(view));
+        box.append(b);
+      }
+    }
+    for (const b of Array.from(box.children)) {
+      const pressed = String(b.getAttribute("data-view") === S.view2);
+      if (b.getAttribute("aria-pressed") !== pressed) b.setAttribute("aria-pressed", pressed);
+    }
+  }
+
+  /** 列 2 の上の帯（「場所」はただの文字。押せない。付け替えは M5）と [会話][端末] */
   function renderBar() {
     const bar = $("v3-bar");
     if (!bar) return;
     const t = S.active ? SA.topics.find(S.active) : null;
+    renderViews();
     if (!t) {
       bar.hidden = true;
       return;
@@ -178,26 +239,42 @@
 
   function renderMain(switched) {
     renderBar();
-    renderEd($("ed"), S.active, switched);
+    renderEd($("ed"), shownTabId(), switched);
     writeHash();
   }
 
+  /** 一覧を読み直した後: 帯を描き、[端末] を出せなくなって出す物が変わったら描き直す */
+  function refreshTabs() {
+    renderBar();
+    const shown = shownTabId();
+    const ed = $("ed");
+    if (ed && shown !== edTab) renderEd(ed, shown, true);
+  }
+
+  /** api.js の polling・SA.app.refresh が当たるのは列 2 に出している物（[端末] の間は cc:<sessionId>） */
   function activeTabId() {
-    return S.active;
+    return shownTabId();
   }
 
   /** 話題か画面を列 2 に開く（知らない・無効な機能のタブは開かない） */
   function open(tabId) {
     if (!tabId) return;
     const info = SA.views.info(tabId);
-    if (!info) return;
+    if (!info) {
+      // /api/status が届く前の Claude Code の話題は、届いたら開く（起動の hash と同じ道）
+      if (tabId.startsWith("cc:") && SA.store.status === null) deferred = tabId;
+      return;
+    }
     const switched = S.active !== tabId;
+    const shownBefore = edTab;
     // 会話（ch:）は閉じない（開いた手順・選びかけの選択肢を、ほかの話題を見て戻っても保つ）
     if (S.active !== null && switched && !S.active.startsWith("ch:")) {
       const prev = SA.views.info(S.active);
       if (prev && prev.onClose) prev.onClose();
     }
     S.active = tabId;
+    S.view2 = "talk";
+    SA.topics.setCurrent(tabId);
     deferred = null;
     if (switched) {
       hiddenScroll = null;
@@ -205,7 +282,8 @@
     }
     // スマホは先に会話の列を出してから描く（隠れたままではスクロールを書けない）
     if (phone()) showBody();
-    renderMain(switched);
+    // 同じ話題でも [端末] から会話に戻ったときは別のタブとして描く
+    renderMain(switched || shownBefore !== shownTabId());
     SA.topics.render();
     if (info.onOpen) info.onOpen();
     // 一覧（/api/channels）にまだ無いチャンネル（/api/topics で先に知った話題）は、見出しのために 1 回読む
@@ -219,7 +297,7 @@
 
   /** tabId が列 2 に出ていれば中身だけ描き直す */
   function refresh(tabId) {
-    if (S.active !== tabId) return;
+    if (shownTabId() !== tabId) return;
     const ed = $("ed");
     if (ed) renderEd(ed, tabId);
   }
@@ -252,11 +330,9 @@
   let deferred = null;
   let topicsLoaded = false;
 
+  // 押した行（cc:）も待つので、ほかの話題が開いていても試す（その後に何かを開けば open が deferred を消す）
   function reopenDeferred() {
-    if (deferred === null || S.active !== null) {
-      deferred = null;
-      return;
-    }
+    if (deferred === null) return;
     if (SA.views.info(deferred)) {
       open(deferred);
       return;
@@ -374,8 +450,177 @@
     });
     sheetOpener = opener || null;
     dialog.setAttribute("aria-label", label);
-    dialog.replaceChildren(el("h2", { class: "dlg-title", text: label }), el("ul", { class: "more-list" }, rows));
+    // 題と ×（閉じ方を見せる。今の殻の sheetHead と同じ）
+    const close = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm sheet-close", type: "button", "aria-label": "閉じる" }, [icon("x")]);
+    close.addEventListener("click", () => closeDialog(dialog));
+    dialog.replaceChildren(el("div", { class: "sheet-head" }, [el("span", { class: "sheet-title", text: label }), close]), el("ul", { class: "more-list" }, rows));
     openDialog(dialog);
+  }
+
+  // ===== 下の口（タスク・リマインド・ほか） =====
+  /** 「ほか」に並べる画面の順（引けるものだけ。GitHub は有効のとき・会話ログは dev のとき） */
+  const MORE_TABS = ["knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"];
+
+  function openMore(opener) {
+    const items = [];
+    for (const id of MORE_TABS) {
+      const info = SA.views.info(id);
+      if (info) items.push({ label: info.title, icon: info.icon, run: () => open(id) });
+    }
+    openSheet("ほか", items, opener);
+  }
+
+  function renderFoot() {
+    const foot = $("v3-list-foot");
+    if (!foot) return;
+    const buttons = [];
+    for (const id of ["tasks", "reminders"]) {
+      const info = SA.views.info(id);
+      if (!info) continue;
+      const b = el("button", { class: "btn btn-ghost btn-sm v3-foot-btn", type: "button" }, [icon(info.icon), el("span", { text: info.title })]);
+      b.addEventListener("click", () => open(id));
+      buttons.push(b);
+    }
+    const more = el("button", { class: "btn btn-ghost btn-sm v3-foot-btn", type: "button" }, [icon("ellipsis"), el("span", { text: "ほか" })]);
+    more.addEventListener("click", () => openMore(more));
+    buttons.push(more);
+    foot.replaceChildren(...buttons);
+  }
+
+  // ===== 接続の点と鈴（今の殻の renderTitleStatus と同じ中身。幅によらず画面を開く） =====
+  let connSig = null;
+
+  function renderConn() {
+    const box = refs.conn;
+    if (!box) return;
+    const status = SA.store.status;
+    const bot = status && status.bots ? status.bots[0] : null;
+    const notices = SA.store.notices;
+    const botLabel = bot ? bot.name + " の Bot: " + (bot.connected ? "接続中" : "接続できません") : null;
+    const bellCount = notices ? notices.recent24h : null;
+    // 変わらなければ作り直さない（焦点を外さない）
+    const sig = JSON.stringify([botLabel, bot ? !!bot.connected : null, bellCount]);
+    if (sig === connSig) return;
+    connSig = sig;
+    const items = [];
+    if (bot) {
+      const b = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm", type: "button", "aria-label": botLabel, title: botLabel }, [
+        el("span", { class: "dot " + (bot.connected ? "dot-ok" : "dot-bad"), "aria-hidden": "true" }),
+      ]);
+      b.addEventListener("click", () => open("status"));
+      items.push(b);
+    }
+    if (notices) {
+      const label = "知らせ（直近 24 時間 " + notices.recent24h + " 件）";
+      const b = el("button", { class: "btn btn-ghost btn-sm title-bell", type: "button", "aria-label": label, title: label }, [
+        icon("bell"),
+        notices.recent24h > 0 ? el("span", { class: "title-bell-count", text: String(notices.recent24h), "aria-hidden": "true" }) : null,
+      ]);
+      b.addEventListener("click", () => open("notices"));
+      items.push(b);
+    }
+    box.replaceChildren(...items);
+  }
+
+  // ===== 絞り込み（読めている話題だけ。サーバーには訊かない） =====
+  // 絞り込んでいるか・始める前の一覧の位置（消したら戻す）
+  let filterOn = false;
+  let filterTop = null;
+
+  function searchInput() {
+    let input = $("v3-search");
+    if (!input) {
+      input = el("input", {
+        class: "input",
+        id: "v3-search",
+        type: "search",
+        placeholder: "題名で絞り込む",
+        "aria-label": "話題を絞り込む",
+        autocomplete: "off",
+        enterkeyhint: "search",
+      });
+      input.addEventListener("input", () => applyFilter(input.value));
+      refs.searchBox.append(input);
+    }
+    return input;
+  }
+
+  function applyFilter(value) {
+    const was = filterOn;
+    filterOn = String(value || "").trim() !== "";
+    if (!was && filterOn) filterTop = refs.list.scrollTop;
+    SA.topics.setFilter(value);
+    SA.topics.render();
+    if (was && !filterOn && filterTop !== null) {
+      refs.list.scrollTop = filterTop;
+      filterTop = null;
+    }
+  }
+
+  function openSearch() {
+    if (!refs.searchBox) return;
+    refs.searchBox.hidden = false;
+    if (refs.searchToggle) refs.searchToggle.setAttribute("aria-expanded", "true");
+    searchInput().focus();
+  }
+
+  function closeSearch() {
+    if (!refs.searchBox) return;
+    const input = $("v3-search");
+    if (input && input.value !== "") {
+      input.value = "";
+      applyFilter("");
+    }
+    refs.searchBox.hidden = true;
+    if (refs.searchToggle) {
+      refs.searchToggle.setAttribute("aria-expanded", "false");
+      refs.searchToggle.focus();
+    }
+  }
+
+  function renderHeadOps() {
+    const ops = $("v3-head-ops");
+    if (!ops) return;
+    const toggle = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm", id: "v3-search-toggle", type: "button", "aria-label": "話題を絞り込む", title: "話題を絞り込む", "aria-expanded": "false" }, [
+      icon("search"),
+    ]);
+    toggle.addEventListener("click", () => {
+      if (refs.searchBox && refs.searchBox.hidden) openSearch();
+      else closeSearch();
+    });
+    // 点と鈴は status・知らせのたびに描き直すので、入れ物を分ける（絞り込みのボタンの焦点を外さない）
+    const conn = el("span", { class: "v3-conn" });
+    ops.replaceChildren(toggle, conn);
+    refs.searchToggle = toggle;
+    refs.conn = conn;
+  }
+
+  /** 見えている（hidden の祖先・閉じた details の中に無い）一覧の行 */
+  function visibleRows() {
+    return Array.from(refs.list.querySelectorAll("button.v3-row")).filter((row) => {
+      for (let n = row; n && n !== refs.list; n = n.parentElement) {
+        if (n.hidden) return false;
+        const parent = n.parentElement;
+        // 閉じた details の中（summary を除く）は出ていない
+        if (parent && String(parent.tagName).toLowerCase() === "details" && !parent.open && String(n.tagName).toLowerCase() !== "summary") return false;
+      }
+      return true;
+    });
+  }
+
+  /** 一覧の中の ↑↓・Home・End（行に焦点があるときだけ。端では動かない） */
+  function onListKey(e) {
+    const target = e.target;
+    if (!target || !target.classList || !target.classList.contains("v3-row")) return;
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const rows = visibleRows();
+    const at = rows.indexOf(target);
+    let next = null;
+    if (e.key === "Home") next = rows[0];
+    else if (e.key === "End") next = rows[rows.length - 1];
+    else if (at >= 0) next = rows[at + (e.key === "ArrowDown" ? 1 : -1)];
+    e.preventDefault();
+    if (next) next.focus();
   }
 
   // ===== スマホのキーボード（visualViewport。今の殻と同じ） =====
@@ -430,8 +675,21 @@
   }
 
   function onKey(e) {
+    // Ctrl+K（mac は Meta+K）: 絞り込み欄。入力欄に焦点があっても効かせる
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "k" || e.key === "K")) {
+      if (document.querySelector("dialog[open]")) return;
+      e.preventDefault();
+      openSearch();
+      return;
+    }
     if (e.key !== "Escape") return;
-    if (document.querySelector("dialog[open]") || typing(document.activeElement)) return;
+    if (document.querySelector("dialog[open]")) return;
+    const input = $("v3-search");
+    if (input && document.activeElement === input) {
+      closeSearch();
+      return;
+    }
+    if (typing(document.activeElement)) return;
     if (phone() && S.view === "body") showList();
   }
 
@@ -439,6 +697,7 @@
   function init() {
     refs.v3 = $("v3");
     refs.list = $("v3-list-body");
+    refs.searchBox = $("v3-search-box");
 
     S.theme = THEMES.includes(load("theme", "dark")) ? load("theme", "dark") : "dark";
     applyTheme();
@@ -465,6 +724,10 @@
       if (tabId && tabId !== S.active && SA.views.info(tabId)) open(tabId);
     });
     document.addEventListener("keydown", onKey);
+    refs.list.addEventListener("keydown", onListKey);
+    renderHeadOps();
+    renderConn();
+    renderFoot();
     $("v3-sheet").addEventListener("close", () => {
       const opener = sheetOpener;
       sheetOpener = null;
@@ -498,14 +761,14 @@
       SA.topics.schedule();
     },
     refreshActivity: () => SA.topics.render(),
-    refreshTabs: renderBar,
+    refreshTabs,
     // タブの見出しの実行中の印は無い
     refreshTabMarks: () => undefined,
     refreshStatus: () => {
+      renderConn();
       reopenDeferred();
     },
-    // 接続の点と鈴は M2b
-    refreshNotices: () => undefined,
+    refreshNotices: renderConn,
     // 出力のパネルは持たない
     addOutput: () => undefined,
     activeTabId,
@@ -517,8 +780,8 @@
     // サイドバー・パネルは無い
     toggleSidebar: () => undefined,
     togglePanel: () => undefined,
-    // 絞り込み欄は M2b
-    palette: () => undefined,
+    // パレットは無い。絞り込み欄を出して焦点（prefix は捨てる）
+    palette: () => openSearch(),
     // 話題を始める口は M4
     newSession: () => undefined,
     ccStart: () => undefined,

@@ -12,10 +12,16 @@
   let data = null;
   /** 最後の読み取りが失敗した（data は前のまま） */
   let failed = false;
-  /** 完了を開いている群の key（M2b。今は null のまま） */
+  /** 完了を開いている群の key（?done=。開いておけるのは 1 つ） */
   let doneGroup = null;
-  /** 絞り込みの語（M2b） */
+  /** 今の data を読んだときの ?done= の群（違えば、開いた完了はまだ読み込み中） */
+  let dataDone = null;
+  /** 絞り込みの文字（題名・群・人格の名前。サーバーには訊かない） */
   let filter = "";
+  /** 一覧で選んでいる話題（列 2 の話題の ID。[端末] の間も ch: のまま。shell.js が setCurrent で渡す） */
+  let current = null;
+  /** 絞り込みのとき、描いた群で当たった話題の数（draw の中だけ） */
+  let hitCount = 0;
   let lastLoadAt = 0;
   /** schedule の残りの時間の後の 1 回 */
   let pending = null;
@@ -32,6 +38,11 @@
   const IDLE_MS = 60000;
 
   const TURN_LABEL = { permission: "許可", question: "質問", waiting: "判断待ち", confirm: "確認" };
+  /** ?done= で出す完了の数（src/app/topics.ts の TOPICS_DONE_MAX） */
+  const DONE_MAX = 50;
+  /** 「ほかのプロジェクト」の開閉（値 "1" で開。既定は閉じる） */
+  const OTHERS_KEY = "self-agent-web:v3-others";
+  const CC_UNREADABLE_NOTE = "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります";
 
   const $ = (id) => document.getElementById(id);
 
@@ -46,9 +57,11 @@
     lastLoadAt = Date.now();
     inflight = (async () => {
       try {
-        const next = await SA.api.get("/api/topics" + (doneGroup ? "?done=" + encodeURIComponent(doneGroup) : ""), { quiet: true });
+        const asked = doneGroup;
+        const next = await SA.api.get("/api/topics" + (asked ? "?done=" + encodeURIComponent(asked) : ""), { quiet: true });
         if (next && Array.isArray(next.groups) && Array.isArray(next.topics) && Array.isArray(next.turnIds) && Array.isArray(next.rightHands)) {
           data = next;
+          dataDone = asked;
           failed = false;
         } else failed = true;
       } catch {
@@ -129,7 +142,7 @@
       // 履歴の無い行（activityAt が null）は時刻を出さない
       time: t.activityAt === null ? null : SA.ui.shortTime(t.activityAt),
       done: t.state === "done",
-      current: SA.app.activeTabId() === t.id,
+      current: current === t.id,
     };
   }
 
@@ -153,7 +166,7 @@
       persona: null,
       time: SA.ui.shortTime(hand.turn.since),
       done: false,
-      current: SA.app.activeTabId() === hand.id,
+      current: current === hand.id,
       sub: turnSub(hand.turn),
     };
   }
@@ -173,14 +186,36 @@
     const parts = [el("span", { class: "v3-row-mark" }, [mark]), el("span", { class: "v3-row-title", text: p.title }), el("span", { class: "v3-row-meta" }, meta)];
     if (p.sub !== undefined) parts.push(el("span", { class: "v3-row-sub", text: p.sub }));
     button.replaceChildren(...parts);
+    if (p.done) button.classList.add("is-done");
+    else button.classList.remove("is-done");
   }
 
   function createRow(turn) {
     return () => {
       const button = el("button", { class: turn ? "v3-row v3-row-turn" : "v3-row", type: "button" });
-      button.addEventListener("click", () => SA.app.open(button.getAttribute("data-topic")));
+      button.addEventListener("click", () => openRow(button.getAttribute("data-topic"), button.classList.contains("is-done")));
       return el("li", {}, [button]);
     };
+  }
+
+  /**
+   * 行を開く。完了の行は /api/channels の一覧に無いことがある（あちらの完了は新しい 10 件だけ）ので、
+   * 引けなければ一覧を 1 回読んでからもう一度引き、それでも引けなければ知らせる（黙らない）
+   */
+  async function openRow(id, done) {
+    const waitsStatus = id.startsWith("cc:") && SA.store.status === null;
+    if (!done || waitsStatus || SA.views.info(id)) {
+      SA.app.open(id);
+      return;
+    }
+    try {
+      await SA.store.load.channels({ quiet: true });
+    } catch {
+      // 読めなくても下で引き直して知らせる
+    }
+    if (SA.views.info(id)) SA.app.open(id);
+    else if (SA.ui.toast) SA.ui.toast("この話題はここからは開けません");
+    else setNote("この話題はここからは開けません");
   }
 
   /** 署名が前と同じなら何もしない（焦点・hover・スクロールが動かない） */
@@ -235,7 +270,34 @@
     return el("section", { class: "v3-group" }, [el("h2", { class: "v3-group-head" })]);
   }
 
-  function updateGroup(section, g) {
+  /** 群の中の部分（data-part が rows・empty・done の子）。無ければ null */
+  function partOf(parent, name) {
+    for (const child of Array.from(parent.children)) if (child.getAttribute("data-part") === name) return child;
+    return null;
+  }
+
+  /** 絞り込みの語（小文字・空白で区切る）。空なら絞り込まない */
+  function filterWords() {
+    return filter.toLowerCase().split(/\s+/).filter((w) => w !== "");
+  }
+
+  /** 題名・群の名前・人格の名前に、語を全部含むか */
+  function hits(t, g, words) {
+    const text = [t.title, g.name, t.persona || ""].join(" ").toLowerCase();
+    return words.every((w) => text.includes(w));
+  }
+
+  /** 行の差し替え（当たらない行は hidden。要素は消さない） */
+  function updateHit(shown) {
+    return (li, p) => {
+      updateRow(li, p);
+      const off = !shown.has(p.id);
+      if (li.hidden !== off) li.hidden = off;
+    };
+  }
+
+  /** folded は「ほかのプロジェクト」の中の群（見出しと完了だけ。「話題はありません」は出さない） */
+  function updateGroup(section, g, folded) {
     section.setAttribute("data-turns", String(g.turns));
     const head = section.firstElementChild;
     const headSig = JSON.stringify([g.name, groupNote(g)]);
@@ -243,22 +305,137 @@
       head.setAttribute("data-sig", headSig);
       head.replaceChildren(el("span", { class: "v3-group-name", text: g.name }), el("span", { class: "v3-group-note", text: groupNote(g) }));
     }
+    const words = filterWords();
+    const shown = new Set();
     const members = data.topics.filter((t) => t.group === g.key && t.state !== "done");
-    const current = head.nextElementSibling;
-    if (members.length === 0) {
-      if (current && current.classList.contains("v3-group-empty")) return;
-      const empty = el("p", { class: "v3-group-empty meta", text: "話題はありません" });
-      if (current) current.replaceWith(empty);
-      else section.append(empty);
-      return;
+    for (const t of members) if (hits(t, g, words)) shown.add(t.id);
+    const rowsPart = partOf(section, "rows");
+    const emptyPart = partOf(section, "empty");
+    if (folded === true) {
+      if (rowsPart) rowsPart.remove();
+      if (emptyPart) emptyPart.remove();
+    } else if (members.length === 0) {
+      if (rowsPart) rowsPart.remove();
+      if (!emptyPart) section.insertBefore(el("p", { class: "v3-group-empty meta", "data-part": "empty", text: "話題はありません" }), head.nextElementSibling);
+    } else {
+      if (emptyPart) emptyPart.remove();
+      let list = rowsPart;
+      if (!list) {
+        list = el("ul", { class: "v3-rows", "data-list": g.key, "data-part": "rows" });
+        section.insertBefore(list, head.nextElementSibling);
+      }
+      reconcile(list, members.map(rowParts), (p) => p.id, createRow(false), updateHit(shown));
     }
-    let list = current && current.classList.contains("v3-rows") ? current : null;
-    if (!list) {
-      list = el("ul", { class: "v3-rows", "data-list": g.key });
-      if (current) current.replaceWith(list);
-      else section.append(list);
+    let n = shown.size;
+    let done = partOf(section, "done");
+    if (g.done > 0) {
+      if (!done) {
+        done = createDone(g.key);
+        section.append(done);
+      }
+      n += updateDone(done, g, words);
+    } else if (done) done.remove();
+    hitCount += n;
+    const off = words.length > 0 && n === 0;
+    if (section.hidden !== off) section.hidden = off;
+  }
+
+  // ===== 完了（?done=。開いておけるのは 1 つ） =====
+  function createDone(key) {
+    const more = el("p", { class: "meta", "data-part": "more", text: "新しい " + DONE_MAX + " 件を出しています" });
+    more.hidden = true;
+    const details = el("details", { class: "v3-done", "data-part": "done", "data-key": "done:" + key }, [
+      el("summary", { class: "v3-done-head" }),
+      el("ul", { class: "v3-rows", "data-list": "done:" + key }),
+      more,
+    ]);
+    // 群が「ほかのプロジェクト」へ移って作り直したときも、開いていた完了は開いたまま
+    if (doneGroup === key) details.open = true;
+    details.addEventListener("toggle", () => doneToggled(details, key));
+    return details;
+  }
+
+  function doneToggled(details, key) {
+    if (details.open) {
+      if (doneGroup === key) return;
+      doneGroup = key;
+      // サーバーの ?done= は 1 つの群だけなので、ほかの完了は閉じる
+      const groups = $("v3-groups");
+      if (groups) for (const other of groups.querySelectorAll("details.v3-done")) if (other !== details && other.open) other.open = false;
+      render();
+      load();
+    } else if (doneGroup === key) {
+      // 読み直さない（行を外すのは次の render）
+      doneGroup = null;
     }
-    reconcile(list, members.map(rowParts), (p) => p.id, createRow(false), updateRow);
+  }
+
+  /** 完了の見出しと行（開いていて、その群の完了を読めているときだけ行を出す）。当たった行の数を返す */
+  function updateDone(details, g, words) {
+    const summary = details.children[0];
+    const loading = doneGroup === g.key && dataDone !== g.key;
+    const text = "完了（" + g.done + "）" + (loading ? "読み込み中…" : "");
+    if (summary.textContent !== text) summary.textContent = text;
+    const showing = details.open && doneGroup === g.key && dataDone === g.key;
+    const members = showing ? data.topics.filter((t) => t.group === g.key && t.state === "done") : [];
+    const shown = new Set();
+    for (const t of members) if (hits(t, g, words)) shown.add(t.id);
+    reconcile(details.children[1], members.map(rowParts), (p) => p.id, createRow(false), updateHit(shown));
+    const more = partOf(details, "more");
+    const many = showing && g.done > DONE_MAX;
+    if (more.hidden === many) more.hidden = !many;
+    return shown.size;
+  }
+
+  // ===== 「ほかのプロジェクト」（話題の無いプロジェクトの群を畳む） =====
+  function othersSaved() {
+    try {
+      return window.localStorage.getItem(OTHERS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function saveOthers(open) {
+    try {
+      window.localStorage.setItem(OTHERS_KEY, open ? "1" : "0");
+    } catch {
+      // 保存できない環境では覚えないだけ
+    }
+  }
+
+  /** 絞り込みで開いた形にしている（保存した開閉は変えない） */
+  let othersForced = false;
+
+  function createOthers() {
+    const details = el("details", { class: "v3-others", id: "v3-others" }, [
+      el("summary", { class: "v3-others-head" }),
+      el("div", { class: "v3-others-groups", "data-part": "others" }),
+    ]);
+    othersForced = false;
+    if (othersSaved()) details.open = true;
+    details.addEventListener("toggle", () => {
+      if (!othersForced) saveOthers(details.open);
+    });
+    return details;
+  }
+
+  function updateOthers(details, folded) {
+    const filtering = filterWords().length > 0;
+    if (filtering && !othersForced) {
+      othersForced = true;
+      details.open = true;
+    } else if (!filtering && othersForced) {
+      othersForced = false;
+      details.open = othersSaved();
+    }
+    const summary = details.children[0];
+    const text = "ほかのプロジェクト（" + folded.length + "）";
+    if (summary.textContent !== text) summary.textContent = text;
+    const before = hitCount;
+    reconcile(partOf(details, "others"), folded, (g) => g.key, createGroup, (section, g) => updateGroup(section, g, true));
+    const off = filtering && hitCount === before;
+    if (details.hidden !== off) details.hidden = off;
   }
 
   // ===== 描く =====
@@ -294,7 +471,6 @@
       setNote(failed ? failedNote() : "読み込み中…");
       return;
     }
-    setNote(failed ? failedNote() : null);
 
     const turns = $("v3-turns");
     const turnKey = (p) => "turn:" + p.id;
@@ -310,9 +486,41 @@
       turns.hidden = true;
     }
 
-    reconcile(groups, data.groups, (g) => g.key, createGroup, updateGroup);
+    // 話題の無いプロジェクトの群は「ほかのプロジェクト」（key others）に畳む。置く位置は畳んだ最初の群の所（サーバーの群の順のまま）
+    const outer = [];
+    const folded = [];
+    for (const g of data.groups) {
+      if (g.kind === "project" && g.open === 0) {
+        if (folded.length === 0) outer.push({ key: "others" });
+        folded.push(g);
+      } else outer.push(g);
+    }
+    hitCount = 0;
+    reconcile(
+      groups,
+      outer,
+      (g) => g.key,
+      (g) => (g.key === "others" ? createOthers() : createGroup()),
+      (node, g) => (g.key === "others" ? updateOthers(node, folded) : updateGroup(node, g, false)),
+    );
+
+    // 注意は 1 つだけ: 更新の失敗 ＞ Claude Code の一覧が読めない ＞ 絞り込みで当たらない
+    if (failed) setNote(failedNote());
+    else if (data.cc && data.cc.enabled && data.cc.unreadable) setNote(CC_UNREADABLE_NOTE);
+    else if (filterWords().length > 0 && hitCount === 0) setNote("当たる話題がありません");
+    else setNote(null);
     document.title = (data.turns > 0 ? "(" + data.turns + ") " : "") + "self-agent";
   }
 
-  SA.topics = { load, schedule, render, find, data: () => data, counts, TURN_LABEL };
+  /** 絞り込みの文字を変える（描き直しは呼んだ側の render） */
+  function setFilter(value) {
+    filter = String(value || "");
+  }
+
+  /** 一覧で選んでいる話題（aria-current）を変える（描き直しは呼んだ側の render） */
+  function setCurrent(id) {
+    current = id || null;
+  }
+
+  SA.topics = { load, schedule, render, find, data: () => data, counts, setFilter, setCurrent, TURN_LABEL };
 })();
