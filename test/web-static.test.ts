@@ -1152,7 +1152,8 @@ test("web static: スマホの殻（UI-7。#250）: ≤639px はタブの帯・�
 test("web static: 会話・Claude Code の見出しの […] はそのチャンネルの操作だけのシートで、パレットを開かない（UI-7 の K1）", () => {
   const chat = read("chat.js");
   assert.doesNotMatch(chat, /SA\.app\.palette\(/);
-  assert.equal((chat.match(/SA\.app\.sheet\(/g) ?? []).length, 2);
+  // 会話の見出し・Claude Code の見出し・枠の見出し（frameHeader。#357）
+  assert.equal((chat.match(/SA\.app\.sheet\(/g) ?? []).length, 3);
   for (const label of ["待ちにする", "閉じる", "会話を新しくする", "ページを開く", "Discord で開く", "RC で開く"]) assert.match(chat, new RegExp(`label: "${label}"`), label);
   const wb = read("workbench.js");
   assert.match(wb, /function openSheet\(label, items, opener\)/);
@@ -2963,4 +2964,481 @@ test("web static: v3 のシートは幅によらず .more-row の見た目を .v
   // 下の口はスマホでも一覧の列の末尾（固定しない）
   assert.doesNotMatch(css, /position: fixed;[^}]*\}[^{]*v3-list-foot/);
   assert.match(block(phoneCss, "  .v3-list-foot"), /env\(safe-area-inset-bottom, 0px\)/);
+});
+
+// ===== 会話を 1 画面に 2 つ描く（chat.js・api.js の「見えている会話」。#357 の M3a） =====
+type Frame = {
+  title: string;
+  placeholder: string;
+  ops?: () => DomNode[];
+  outgoing?: (text: string) => string;
+  replyText?: (text: string) => string;
+  replyExtras?: (text: string) => DomNode[];
+};
+type ChatApi = {
+  render: (container: DomNode, channelId: string, frame?: Frame) => void;
+  markSeenShown: () => void;
+};
+
+const chatTurn = (id: number, kind: string, text: string, o: Record<string, unknown> = {}) => ({ id, kind, text, at: "2026-11-14T00:00:00.000Z", ...o });
+const chatChannel = (id: string, o: Record<string, unknown> = {}) => ({ id, kind: "inbox", name: "inbox-" + id, persona: "default", link: null, ...o });
+
+/**
+ * ui.js → chat.js → views.js を DomNode の偽の document で読む。会話は store.turns に置き、見えている会話は shown（SA.app.shownChannelIds）。
+ * 入れ物は body の下に足す（document.querySelector が body から引く）
+ */
+function loadChat() {
+  const body = new DomNode("body");
+  const state = { visibility: "visible", shown: [] as string[], active: null as string | null };
+  const document = {
+    get visibilityState() {
+      return state.visibility;
+    },
+    getElementById: (id: string) => (descendants(body).find((n) => n.getAttribute("id") === id) as DomNode | undefined) ?? null,
+    createElement: (tag: string) => new DomNode(tag),
+    createElementNS: (_ns: string, tag: string) => new DomNode(tag),
+    createTextNode: (text: string) => Object.assign(new DomNode("#text"), { text }),
+    createDocumentFragment: () => new DomNode("#fragment"),
+    querySelector: (sel: string) => body.querySelector(sel),
+    querySelectorAll: (sel: string) => body.querySelectorAll(sel),
+    addEventListener: () => undefined,
+  };
+  const touchListeners: Array<() => void> = [];
+  const touch = { matches: false, addEventListener: (_t: string, fn: () => void) => touchListeners.push(fn) };
+  const context = {
+    window: { matchMedia: () => touch } as Record<string, unknown>,
+    document,
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    setInterval: () => 0,
+    Intl,
+    Date,
+    Number,
+  };
+  vm.runInNewContext(read("ui.js"), context);
+  const SA = (context.window as { SA: Record<string, unknown> }).SA;
+  const toasts: string[] = [];
+  (SA.ui as { toast: unknown }).toast = (text: string) => toasts.push(text);
+  const seen: Array<[string, number]> = [];
+  const optimistic: Array<[string, unknown, string]> = [];
+  const loads: string[] = [];
+  const posts: Array<{ path: string; body: unknown }> = [];
+  const refreshes: string[] = [];
+  const sheets: Array<{ title: string; items: Array<{ label: string }> }> = [];
+  const drafts: Record<string, string> = {};
+  const turns: Record<string, { loaded: boolean; missing?: boolean; hasMore: boolean; turns: unknown[]; channel: unknown }> = {};
+  const loadResult: Record<string, unknown> = {};
+  const store = {
+    turns,
+    channels: { channels: [] as unknown[], personas: [{ id: "default", name: "既定", isDefault: true }] },
+    status: {},
+    running: [],
+    runningOf: () => null,
+    markSeen: (id: string, last: number) => {
+      seen.push([id, last]);
+      return true;
+    },
+    addOptimisticTurn: (id: string, turnId: unknown, text: string) => optimistic.push([id, turnId, text]),
+    load: {
+      turns: (id: string) => {
+        loads.push(id);
+        return Promise.resolve(loadResult[id] ?? null);
+      },
+      olderTurns: (id: string) => {
+        loads.push("older:" + id);
+        return Promise.resolve(null);
+      },
+      ccSession: () => Promise.resolve(null),
+      running: () => Promise.resolve(null),
+    },
+  };
+  SA.store = store;
+  SA.app = {
+    shownChannelIds: () => state.shown,
+    activeTabId: () => state.active,
+    refresh: (tab: string) => refreshes.push(tab),
+    refreshSidebar: () => undefined,
+    refreshStatus: () => undefined,
+    draft: (id: string) => drafts[id] ?? "",
+    setDraft: (id: string, text: string) => {
+      drafts[id] = text;
+    },
+    sheet: (title: string, items: Array<{ label: string }>) => sheets.push({ title, items }),
+  };
+  SA.api = {
+    post: (path: string, b: unknown) => {
+      posts.push({ path, body: b });
+      return Promise.resolve({ turnId: 9 });
+    },
+  };
+  SA.events = { emit: () => undefined, on: () => undefined };
+  SA.poll = { running: () => undefined, kickCc: () => undefined };
+  vm.runInNewContext(read("chat.js"), context);
+  vm.runInNewContext(read("views.js"), context);
+  const box = () => {
+    const n = new DomNode("div");
+    n.setAttribute("class", "ed");
+    body.append(n);
+    return n;
+  };
+  const put = (id: string, list: unknown[], ch: Record<string, unknown> = {}) => {
+    turns[id] = { loaded: true, hasMore: false, turns: list, channel: chatChannel(id, ch) };
+  };
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+  return {
+    chat: SA.chat as ChatApi,
+    ui: SA.ui as { el: (tag: string, props?: Record<string, unknown>, children?: unknown[]) => DomNode },
+    context,
+    store,
+    state,
+    seen,
+    optimistic,
+    loads,
+    loadResult,
+    posts,
+    refreshes,
+    sheets,
+    drafts,
+    toasts,
+    touch,
+    touchListeners,
+    box,
+    put,
+    flush,
+  };
+}
+
+const inputOf = (box: DomNode) => box.querySelector("textarea.composer-input") as DomNode & { value: string; placeholder?: string };
+const formOf = (box: DomNode) => box.querySelector("form.composer")!;
+const counterOf = (box: DomNode) => box.querySelector("span.counter")!;
+const sendOf = (box: DomNode) => formOf(box).buttons().find((b) => b.textContent === "送る") as DomNode & { disabled: boolean };
+const typeIn = (box: DomNode, text: string) => {
+  const ta = inputOf(box);
+  ta.value = text;
+  ta.dispatch("input");
+};
+
+test("web static: SA.app.shownChannelIds は 2 つの殻にあり、前に出ている会話のタブのチャンネルだけを返す（会話でないタブ・[端末] の間は空）", () => {
+  // 今の殻（workbench.js）: S.active で決まる
+  const wb = read("workbench.js");
+  const run = (active: string | null) => {
+    const ctx: Record<string, unknown> = { S: { active } };
+    vm.runInNewContext(fnSource(wb, "shownChannelIds") + "\nresult = shownChannelIds();", ctx);
+    return JSON.parse(JSON.stringify(ctx.result)) as string[];
+  };
+  assert.deepEqual(run("ch:111"), ["111"]);
+  assert.deepEqual(run("tasks"), []);
+  assert.deepEqual(run("cc:s1"), []);
+  assert.deepEqual(run(null), []);
+  assert.ok(appKeys(wb).includes("shownChannelIds"));
+  // 新しい殻（shell.js）: 列 2 に出しているタブ。[端末] の間は cc: なので空
+  const w = loadShell();
+  const app = w.app as ShellApp & { shownChannelIds: () => string[] };
+  const ids = () => JSON.parse(JSON.stringify(app.shownChannelIds())) as string[];
+  assert.deepEqual(ids(), []);
+  app.open("ch:222");
+  assert.deepEqual(ids(), ["222"]);
+  app.open("tasks");
+  assert.deepEqual(ids(), []);
+  const sh = read("shell.js");
+  const ctx: Record<string, unknown> = { S: { view2: "pane", active: "ch:333" }, paneSession: () => "s1" };
+  vm.runInNewContext(fnSource(sh, "shownTabId") + fnSource(sh, "shownChannelIds") + "\nresult = shownChannelIds();", ctx);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.result)), []);
+  (ctx.S as { view2: string }).view2 = "talk";
+  vm.runInNewContext("result = shownChannelIds();", ctx);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.result)), ["333"]);
+});
+
+test("web static: 既読は見えている会話の全部に付け、見えていない会話・隠れた画面では付けない", () => {
+  const c = loadChat();
+  c.put("1", [chatTurn(10, "owner", "a"), chatTurn(11, "agent", "b")]);
+  c.put("2", [chatTurn(20, "agent", "c")]);
+  c.put("3", [chatTurn(30, "agent", "d")]);
+  c.state.shown = ["1", "2"];
+  c.chat.markSeenShown();
+  assert.deepEqual(c.seen, [["1", 11], ["2", 20]]);
+  // 描いた会話でも、見えていなければ付けない
+  c.seen.length = 0;
+  c.chat.render(c.box(), "3");
+  assert.deepEqual(c.seen, []);
+  c.chat.render(c.box(), "2");
+  assert.deepEqual(c.seen, [["2", 20]]);
+  // 画面が隠れていれば、見えている会話にも付けない
+  c.seen.length = 0;
+  c.state.visibility = "hidden";
+  c.chat.markSeenShown();
+  c.chat.render(c.box(), "1");
+  assert.deepEqual(c.seen, []);
+  assert.equal("markSeenActive" in c.chat, false);
+});
+
+test("web static: 会話を 2 つの入れ物に描いても混ざらない", async () => {
+  const c = loadChat();
+  c.put("1", [chatTurn(10, "agent", "一つ目の返事")]);
+  c.put("2", [chatTurn(20, "agent", "二つ目の返事")]);
+  c.state.shown = ["1", "2"];
+  const a = c.box();
+  const b = c.box();
+  c.chat.render(a, "1");
+  c.chat.render(b, "2", { title: "右腕", placeholder: "右腕に頼む・訊く" });
+  assert.match(a.textContent, /一つ目の返事/);
+  assert.doesNotMatch(a.textContent, /二つ目/);
+  assert.match(b.textContent, /二つ目の返事/);
+  assert.doesNotMatch(b.textContent, /一つ目/);
+  // 書きかけはチャンネルごと
+  typeIn(a, "Aへ");
+  typeIn(b, "Bへ");
+  assert.deepEqual({ ...c.drafts }, { "1": "Aへ", "2": "Bへ" });
+  // 片方を描き直しても、もう片方の入力欄は同じ要素のまま（自分の入力欄も作り直さない）
+  const taA = inputOf(a);
+  const taB = inputOf(b);
+  c.store.turns["2"]!.turns.push(chatTurn(21, "agent", "続き"));
+  c.chat.render(b, "2", { title: "右腕", placeholder: "右腕に頼む・訊く" });
+  assert.equal(inputOf(a), taA);
+  assert.equal(inputOf(b), taB);
+  assert.equal(taA.value, "Aへ");
+  // それぞれの入力欄は自分のチャンネルに送る
+  formOf(a).dispatch("submit", { preventDefault() {} });
+  formOf(b).dispatch("submit", { preventDefault() {} });
+  await c.flush();
+  assert.deepEqual(
+    c.posts.map((p) => [p.path, (p.body as { text: string }).text]),
+    [
+      ["/api/channels/1/messages", "Aへ"],
+      ["/api/channels/2/messages", "Bへ"],
+    ],
+  );
+  assert.deepEqual(c.optimistic.map((o) => [o[0], o[2]]), [
+    ["1", "Aへ"],
+    ["2", "Bへ"],
+  ]);
+  assert.deepEqual({ ...c.drafts }, { "1": "", "2": "" });
+});
+
+test("web static: frame の無い描画は今と同じ見出しと入力欄で、frame のある描画は題・placeholder・足したボタンを使い [‹] を出さない", () => {
+  const c = loadChat();
+  c.put("1", [chatTurn(10, "agent", "x")], { link: "https://discord.com/channels/1/1" });
+  const plain = c.box();
+  c.chat.render(plain, "1");
+  const head = plain.querySelector("header.ed-toolbar")!;
+  assert.ok(head.querySelector("button.ed-back"), "frame が無ければ [‹]");
+  assert.equal(head.querySelector("h1")!.textContent, "inbox-1");
+  assert.ok(head.querySelector("a.btn"), "Discord のリンクのボタン");
+  const ta = inputOf(plain);
+  assert.equal(ta.getAttribute("placeholder"), "#inbox-1 に送る");
+  assert.equal(ta.getAttribute("aria-label"), "#inbox-1 に送る");
+  assert.equal(ta.getAttribute("data-placeholder"), null);
+  // frame のある描画
+  let opsCalls = 0;
+  const frame: Frame = {
+    title: "右腕",
+    placeholder: "右腕に頼む・訊く",
+    ops: () => {
+      opsCalls++;
+      return [c.ui.el("button", { class: "btn btn-ghost btn-sm", id: "fold", type: "button", text: "畳む" })];
+    },
+  };
+  const framed = c.box();
+  c.chat.render(framed, "1", frame);
+  const fh = framed.querySelector("header.ed-toolbar")!;
+  assert.equal(fh.getAttribute("data-channel"), "1");
+  assert.equal(fh.querySelector("button.ed-back"), null, "[‹] を出さない");
+  assert.equal(fh.querySelector("a"), null, "リンクのボタンを出さない");
+  assert.equal(fh.querySelector("span.badge"), null, "バッジを出さない");
+  assert.equal(fh.querySelector("div.ed-title")!.children.length, 1, "題の欄は h1 だけ（アイコンを置かない）");
+  assert.equal(fh.querySelector("h1")!.textContent, "右腕");
+  const ops = fh.querySelector("div.ed-ops")!;
+  const more = ops.querySelector("button.ed-ops-more")!;
+  assert.equal(more.getAttribute("aria-label"), "ほかの操作");
+  // 足したボタンは .ed-ops の外
+  const fold = fh.buttons().find((b) => b.getAttribute("id") === "fold");
+  assert.ok(fold);
+  assert.equal(ops.contains(fold), false);
+  assert.equal(opsCalls, 1);
+  more.dispatch("click");
+  assert.equal(c.sheets.length, 1);
+  assert.equal(c.sheets[0]!.title, "右腕 の操作");
+  assert.deepEqual(JSON.parse(JSON.stringify(c.sheets[0]!.items.map((i) => i.label))), ["会話を新しくする", "Discord で開く"]);
+  const fta = inputOf(framed);
+  assert.equal(fta.getAttribute("placeholder"), "右腕に頼む・訊く");
+  assert.equal(fta.getAttribute("aria-label"), "右腕に頼む・訊く");
+  assert.equal(fta.getAttribute("data-placeholder"), "右腕に頼む・訊く");
+  // 外付けのキーボードの付け外し: frame の placeholder は保ち、frame の無い入力欄は「<題名> に送る」
+  fta.placeholder = "x";
+  ta.placeholder = "x";
+  for (const fn of c.touchListeners) fn();
+  assert.equal(fta.placeholder, "右腕に頼む・訊く");
+  assert.equal(ta.placeholder, "#inbox-1 に送る");
+  // Discord のリンクが無ければシートは「会話を新しくする」だけ
+  c.put("2", [chatTurn(20, "agent", "y")]);
+  const nolink = c.box();
+  c.chat.render(nolink, "2", frame);
+  nolink.querySelector("button.ed-ops-more")!.dispatch("click");
+  assert.deepEqual(JSON.parse(JSON.stringify(c.sheets[1]!.items.map((i) => i.label))), ["会話を新しくする"]);
+  // 一覧がまだ（読み込み中でチャンネルが引けない）なら h1 と足したボタンだけ
+  const loading = c.box();
+  c.chat.render(loading, "3", frame);
+  const lh = loading.querySelector("header.ed-toolbar")!;
+  assert.equal(lh.querySelector("h1")!.textContent, "右腕");
+  assert.equal(lh.querySelector("button.ed-ops-more"), null);
+  assert.deepEqual(lh.buttons().map((b) => b.getAttribute("id")), ["fold"]);
+  assert.equal(lh.querySelector("button.ed-back"), null);
+});
+
+test("web static: frame の outgoing は送る本文・字数・仮の行に効き、入力欄が空なら 0 字のまま", async () => {
+  const c = loadChat();
+  c.put("1", []);
+  const prefix = "（いま見ている話題: 話）\n";
+  const frame: Frame = { title: "右腕", placeholder: "右腕に頼む・訊く", outgoing: (t) => prefix + t };
+  const b = c.box();
+  c.chat.render(b, "1", frame);
+  assert.equal(counterOf(b).textContent, "0 / 1,900");
+  assert.equal(sendOf(b).disabled, true);
+  typeIn(b, "  ");
+  assert.equal(counterOf(b).textContent, "0 / 1,900", "空白だけなら 0 字");
+  assert.equal(sendOf(b).disabled, true);
+  typeIn(b, " 頼む ");
+  assert.equal(counterOf(b).textContent, (prefix.length + 2).toLocaleString("en-US") + " / 1,900");
+  assert.equal(sendOf(b).disabled, false);
+  formOf(b).dispatch("submit", { preventDefault() {} });
+  await c.flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(c.posts.map((p) => p.body))), [{ text: prefix + "頼む" }]);
+  assert.deepEqual(c.optimistic.map((o) => o[2]), [prefix + "頼む"]);
+  assert.equal(inputOf(b).value, "", "送れたら入力欄を空にする（比べるのは差し替える前の本文）");
+  // 差し替えた後で 1,900 字を超えれば送らない
+  typeIn(b, "あ".repeat(1900 - prefix.length + 1));
+  assert.ok(counterOf(b).classes.has("is-over"));
+  formOf(b).dispatch("submit", { preventDefault() {} });
+  await c.flush();
+  assert.equal(c.posts.length, 1);
+  assert.deepEqual(c.toasts, ["1,900 字までです"]);
+  // frame が無ければ入力欄のまま
+  const p = c.box();
+  c.put("2", []);
+  c.chat.render(p, "2");
+  typeIn(p, " そのまま ");
+  assert.equal(counterOf(p).textContent, "4 / 1,900");
+  formOf(p).dispatch("submit", { preventDefault() {} });
+  await c.flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(c.posts[1]!.body)), { text: "そのまま" });
+});
+
+test("web static: frame の replyText・replyExtras は Bot の返事だけに効く（オーナーの行・知らせ・区切りには効かない）", () => {
+  const c = loadChat();
+  const rows = [
+    chatTurn(1, "owner", "オーナーの<#1>"),
+    chatTurn(2, "notice", "知らせの<#1>"),
+    chatTurn(3, "divider", "区切りの<#1>"),
+    chatTurn(4, "agent", "返事の<#1>", { persona: "default", outcome: "done", durationMs: 1000, toolCalls: 0, steps: [] }),
+  ];
+  c.put("1", rows);
+  const seenTexts: string[] = [];
+  const frame: Frame = {
+    title: "右腕",
+    placeholder: "右腕に頼む・訊く",
+    replyText: (t) => t.replace("<#1>", "「題」"),
+    replyExtras: (t) => {
+      seenTexts.push(t);
+      return [c.ui.el("div", { class: "v3-card", text: "札" })];
+    },
+  };
+  const b = c.box();
+  c.chat.render(b, "1", frame);
+  const owner = b.querySelector("article.msg-owner")!;
+  const agent = b.querySelector("article.msg-agent")!;
+  assert.match(owner.textContent, /オーナーの<#1>/);
+  assert.match(b.querySelector("div.tl-notice")!.textContent, /知らせの<#1>/);
+  assert.match(b.querySelector("div.tl-divider")!.textContent, /区切りの<#1>/);
+  assert.match(agent.textContent, /返事の「題」/);
+  assert.doesNotMatch(agent.textContent, /<#1>/);
+  // 足す要素は返事の吹き出しの下（元の本文を渡す）。ほかの行には付かない
+  assert.deepEqual(seenTexts, ["返事の<#1>"]);
+  assert.equal(b.querySelectorAll("div.v3-card").length, 1);
+  assert.equal(agent.children[agent.children.length - 1]!.classes.has("v3-card"), true);
+  // 元の行は書き換えない
+  assert.equal((c.store.turns["1"]!.turns[3] as { text: string }).text, "返事の<#1>");
+  // frame が無ければ本文のまま・足す要素も無い
+  const p = c.box();
+  c.chat.render(p, "1");
+  assert.match(p.querySelector("article.msg-agent")!.textContent, /返事の<#1>/);
+  assert.equal(p.querySelectorAll("div.v3-card").length, 0);
+});
+
+test("web static: 前の会話を読んだ後の位置は data-channel で引いた入れ物で保つ（#ed に寄らない）", async () => {
+  const c = loadChat();
+  c.put("1", [chatTurn(10, "agent", "a")]);
+  c.put("2", [chatTurn(20, "agent", "b")]);
+  c.store.turns["2"]!.hasMore = true;
+  c.state.shown = ["1", "2"];
+  // 前に出ているタブ（#ed）は 1 の会話。2 の会話は id の無い別の入れ物
+  const ed = c.box();
+  ed.setAttribute("id", "ed");
+  c.state.active = "ch:1";
+  c.chat.render(ed, "1");
+  const other = c.box();
+  c.chat.render(other, "2");
+  const s1 = ed.querySelector(".ed-scroll")!;
+  const s2 = other.querySelector(".ed-scroll")!;
+  s1.scrollHeight = 1000;
+  s1.clientHeight = 200;
+  s1.scrollTop = 500;
+  s2.scrollHeight = 1000;
+  s2.clientHeight = 200;
+  s2.scrollTop = 10;
+  // 読んだ後に前の行の分だけ高くなる（描き直しは SA.app.refresh の担当なので、ここでは高さだけ変える）
+  (c.store.load as { olderTurns: (id: string) => Promise<null> }).olderTurns = (id: string) => {
+    c.loads.push("older:" + id);
+    s2.scrollHeight = 1600;
+    return Promise.resolve(null);
+  };
+  s2.dispatch("scroll");
+  await c.flush();
+  assert.deepEqual(c.loads, ["older:2"]);
+  assert.deepEqual(c.refreshes, ["ch:2"]);
+  assert.equal(s2.scrollTop, 610, "2 の会話の位置を前の行の分だけ下げる");
+  assert.equal(s1.scrollTop, 500, "#ed の会話は動かさない");
+});
+
+test("web static: /turns の polling は見えている会話を全部読み、どれかが許可を保留していれば 3 秒", async () => {
+  const js = read("api.js");
+  assert.doesNotMatch(js, /markSeenActive|activeTurns/);
+  assert.match(js, /turns: \{ base: \(\) => \(activePermissionPending\(\) \? CC_PERMISSION_INTERVAL_MS : TURNS_INTERVAL_MS\), run: shownTurns,/);
+  const shown = { ids: [] as string[] };
+  const loads: string[] = [];
+  const results: Record<string, unknown> = {};
+  const store = {
+    turns: {} as Record<string, unknown>,
+    load: {
+      turns: (id: string, opts: unknown) => {
+        loads.push(id + ":" + JSON.stringify(opts));
+        return Promise.resolve(results[id] ?? null);
+      },
+    },
+  };
+  const ctx: Record<string, unknown> = { SA: { app: { shownChannelIds: () => shown.ids } }, store, Promise };
+  vm.runInNewContext(fnSource(js, "activePermissionPending") + fnSource(js, "shownTurns") + "\nthis.pending = activePermissionPending; this.turns = shownTurns;", ctx);
+  const pending = ctx.pending as () => boolean;
+  const turns = ctx.turns as (opts: unknown) => Promise<unknown>;
+  // 見えている会話が無ければ読まない
+  assert.equal(await turns({ quiet: true }), null);
+  assert.deepEqual(loads, []);
+  assert.equal(pending(), false);
+  // 見えている全部を読み、全部成功なら null・どれかが失敗ならその最初の error
+  shown.ids = ["1", "2", "3"];
+  assert.equal(await turns({ quiet: true }), null);
+  assert.deepEqual(loads, ['1:{"quiet":true}', '2:{"quiet":true}', '3:{"quiet":true}']);
+  const e2 = { toast: "2" };
+  results["2"] = e2;
+  results["3"] = { toast: "3" };
+  assert.equal(await turns({ quiet: true }), e2);
+  // 許可の保留は見えているどれか
+  store.turns["1"] = { channel: { permission: null } };
+  store.turns["3"] = { channel: { permission: { state: "pending" } } };
+  assert.equal(pending(), true);
+  shown.ids = ["1", "2"];
+  assert.equal(pending(), false);
+  store.turns["2"] = { channel: { permission: { state: "allowed" } } };
+  assert.equal(pending(), false);
 });
