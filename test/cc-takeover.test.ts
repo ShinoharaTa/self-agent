@@ -4,6 +4,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CC_TAKE_POSTED_REPLY, CC_TAKE_STALE_REPLY, createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
 import { CC_CHANNEL_ENDED_TEXT, CcChannels, ccEndedHandler, ccReplayEnded } from "../src/cc/channels.ts";
 import { projectDirName } from "../src/cc/claude-dirs.ts";
 import type { PaneLookup } from "../src/cc/panes.ts";
@@ -11,6 +12,8 @@ import type { CcSessionView } from "../src/cc/registry.ts";
 import {
   CcTakeover,
   type CcTakeoverDeps,
+  CcTakeoverExpirer,
+  TAKEOVER_EXPIRE_SWEEP_MS,
   TAKEOVER_CONFIRM_TTL_MS,
   TAKEOVER_DELETE_PROMPT_TEXT,
   TAKEOVER_DROPPED_TEXT,
@@ -31,7 +34,9 @@ import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { HistoryStore } from "../src/store/history.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
 import { tempDb, tempDir } from "./helpers/db.ts";
+import { FakeResponder } from "./helpers/responder.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
 
@@ -710,6 +715,116 @@ test("confirm: 10 分を過ぎた確認は expired（取り消して書き換え
   assert.equal(s.takeover.cancel(third.id), true);
   assert.equal(s.takeover.cancel(third.id), false);
   assert.deepEqual(await s.takeover.confirm(third.id), { ok: false, reason: "stale" });
+});
+
+/** /cc take と [取り込む][やめる]（commands/cc.ts）を本物の CcTakeover につなぐ（T3b） */
+function entry(s: Setup) {
+  const getter = () => ({ takeover: s.takeover, takeovers: s.takeovers, gateway: s.gateway, ownerUserId: "owner-1" });
+  const command = createCcCommand({ ccChannels: () => undefined, guildSettings: { ccCategoryId: () => "cat-cc" }, ccTakeover: getter, log: () => {} });
+  const component = createCcComponent({ ccTakeover: getter, gateway: s.gateway, log: () => {} });
+  const base = { guildId: "guild-1", channelId: "chan-1", userId: "owner-1", createdAt: new Date(BASE) };
+  const take = async (): Promise<FakeResponder> => {
+    const responder = new FakeResponder();
+    await command.handle({ ...base, kind: "command", name: "cc", subcommand: "take", options: {} }, responder);
+    return responder;
+  };
+  const press = async (action: "go" | "no", id: number): Promise<FakeResponder> => {
+    const responder = new FakeResponder();
+    const interaction: Interaction = { ...base, kind: "button", customId: `cc:take:${action}:${id}` };
+    await component.handle(interaction, responder);
+    return responder;
+  };
+  return { take, press };
+}
+
+test("/cc take → [取り込む]（T3b）: 確認の文をチャンネルに出して記録し、押すと取り込んで確認の文を完了の文に書き換える", async (t) => {
+  const s = setup(t);
+  const { take, press } = entry(s);
+  const taken = await take();
+  assert.deepEqual(taken.replies, [{ text: CC_TAKE_POSTED_REPLY, ephemeral: true }]);
+  const posted = s.gateway.posts.at(-1)!;
+  assert.equal(posted.channelId, "chan-1");
+  const row = s.takeovers.activeFor(S1)!;
+  assert.equal(row.confirmMessageId, posted.messageId);
+  assert.equal(row.entry, "discord");
+  const go = await press("go", row.id);
+  assert.deepEqual(go.calls, [{ method: "deferUpdate" }]);
+  assert.equal(s.takeovers.get(row.id)?.state, "done");
+  assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  assert.deepEqual(s.gateway.edits.find((edit) => edit.messageId === posted.messageId)?.message, { text: takeoverDoneText("alpha", false), components: [] });
+  // 押し直しは何も起こさない
+  const again = await press("go", row.id);
+  assert.deepEqual(again.replies, [{ text: CC_TAKE_STALE_REPLY, ephemeral: true }]);
+  assert.equal(s.kills.length, 1);
+  assertQuietLogs(s);
+});
+
+test("10 分後の [取り込む] は使えない（T3b）: 押せば期限切れに書き換えて kill しない。失効の後・[やめる] の後は本人にだけ断る", async (t) => {
+  const s = setup(t);
+  const { take, press } = entry(s);
+  await take();
+  const first = s.takeovers.activeFor(S1)!;
+  s.clock.now += TAKEOVER_CONFIRM_TTL_MS;
+  const late = await press("go", first.id);
+  assert.deepEqual(late.calls, [{ method: "deferUpdate" }]);
+  assert.equal(s.takeovers.get(first.id)?.state, "cancelled");
+  assert.deepEqual(s.gateway.edits.at(-1), { channelId: "chan-1", messageId: first.confirmMessageId, message: { text: TAKEOVER_EXPIRED_TEXT, components: [] } });
+  assert.deepEqual(s.kills, []);
+
+  // 1 分ごとの失効で取り消された後の [取り込む]・[やめる]
+  await take();
+  const second = s.takeovers.activeFor(S1)!;
+  s.clock.now += TAKEOVER_CONFIRM_TTL_MS;
+  let scheduled: Array<{ fn: () => void; ms: number }> = [];
+  const expirer = new CcTakeoverExpirer({
+    takeover: s.takeover,
+    log: () => {},
+    timers: {
+      after: (fn, ms) => {
+        scheduled.push({ fn, ms });
+        return () => {
+          scheduled = scheduled.filter((entry) => entry.fn !== fn);
+        };
+      },
+    },
+  });
+  expirer.start();
+  await expirer.idle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(s.takeovers.get(second.id)?.state, "cancelled");
+  assert.deepEqual(scheduled.map((entry) => entry.ms), [TAKEOVER_EXPIRE_SWEEP_MS]);
+  expirer.stop();
+  assert.deepEqual(scheduled, []);
+  for (const action of ["go", "no"] as const) {
+    const responder = await press(action, second.id);
+    assert.deepEqual(responder.calls, [{ method: "reply", message: { text: CC_TAKE_STALE_REPLY, ephemeral: true } }], action);
+  }
+  assert.deepEqual(s.kills, []);
+});
+
+test("CcTakeoverExpirer: expire が投げても sweep は reject せず log だけ。stop の後は start しない", async () => {
+  const logs: string[] = [];
+  const expirer = new CcTakeoverExpirer({
+    takeover: { expire: async () => Promise.reject(new TypeError("chan-1 の行を読めない")) },
+    log: (line) => void logs.push(line),
+    timers: { after: () => () => {} },
+  });
+  await expirer.sweep();
+  assert.deepEqual(logs, ["Claude Code: 取り込みの確認の失効を確かめられませんでした（TypeError）"]);
+  let calls = 0;
+  const stopped = new CcTakeoverExpirer({
+    takeover: {
+      expire: async () => {
+        calls++;
+        return 0;
+      },
+    },
+    log: () => {},
+  });
+  stopped.stop();
+  stopped.start();
+  await stopped.idle();
+  assert.equal(calls, 0);
 });
 
 test("noteFor・noteDone・resumeDropped（§3.6.1・§3.6.3）", async (t) => {

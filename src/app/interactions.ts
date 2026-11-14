@@ -2,7 +2,7 @@
 import type { Config } from "../config.ts";
 import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../discord/gateway.ts";
 import { createGuestsCommand, type GuestsCommandDeps } from "../guest/commands/admin.ts";
-import { type CcChannelsGetter, type CcComponentDeps, createCcCommand, createCcComponent } from "./commands/cc.ts";
+import { type CcChannelsGetter, type CcComponentDeps, type CcTakeoverGetter, createCcCommand, createCcComponent } from "./commands/cc.ts";
 import type { CcConfirmDeps } from "./commands/cc-confirm.ts";
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
@@ -47,10 +47,11 @@ export type ComponentHandler = {
  * /renew は #inbox・#tasks では切り替え（inboxRotator）を使う。
  * jobs は作業ジョブ（SELF_AGENT_JOBS が有効のときだけ渡す）。あれば /job を登録する。
  * guests はゲストの層の操作（ゲストが有効のときだけ渡す。guest/index.ts の createGuestLayer の admin）。あれば /guests を登録する。
- * ccChannels は Claude Code のセッションのチャンネル（SELF_AGENT_CC=1 のときだけ渡す。cc/channels.ts）。あれば /cc を登録する
+ * ccChannels は Claude Code のセッションのチャンネル（SELF_AGENT_CC=1 のときだけ渡す。cc/channels.ts）。あれば /cc を登録する。
+ * ccTakeover は /cc take の取り込み（SELF_AGENT_CC=1 のときだけ渡す。cc/takeover.ts）
  */
 export type CommandDeps = SetupDeps &
-  Partial<{ ccChannels: CcChannelsGetter }> &
+  Partial<{ ccChannels: CcChannelsGetter; ccTakeover: CcTakeoverGetter }> &
   Partial<Pick<JobCommandDeps, "jobs">> &
   Partial<Pick<GuestsCommandDeps, "guests">> &
   NewSessionDeps &
@@ -81,7 +82,14 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
     ...(deps.guests === undefined ? [] : [createGuestsCommand({ guests: deps.guests, log: deps.log })]),
     ...(deps.ccChannels === undefined
       ? []
-      : [createCcCommand({ ccChannels: deps.ccChannels, guildSettings: deps.guildSettings, log: deps.log })]),
+      : [
+          createCcCommand({
+            ccChannels: deps.ccChannels,
+            guildSettings: deps.guildSettings,
+            ...(deps.ccTakeover === undefined ? {} : { ccTakeover: deps.ccTakeover }),
+            log: deps.log,
+          }),
+        ]),
   ];
 }
 

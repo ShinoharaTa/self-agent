@@ -4,13 +4,13 @@
 // → 後始末（進行中へ移す・topic・完了の文など。失敗しても done）。
 // running の間は ended の知らせを差し止め（intercept。§3.2）、失敗したら流し直す。送信とチャンネルの操作は holds・holdsChannel で断る（sender.ts・channels.ts）。
 // 再起動の後は recover（running を failed（restart）にし、差し止めた ended を流し直し、後始末の残りの移動と topic をやり直す）。
-// 部品はすべて注入（kill・/proc の読み取り・sleep も）。T2 では main に配線しない。
+// 部品はすべて注入（kill・/proc の読み取り・sleep も）。main は SELF_AGENT_CC=1 のときだけ組み立てる（T3b。入口は commands/cc.ts の /cc take）。
 // log は理由の符号・段・取り込みの番号・サーバー ID だけ（session_id・pid・cwd・名前・パス・本文は出さない）
 import type { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ChannelOpsQueue } from "../app/channel-ops.ts";
-import { CC_CONFIRM_TTL_MS } from "../app/commands/cc-confirm.ts";
+import { CC_CONFIRM_SWEEP_MS, CC_CONFIRM_TTL_MS } from "../app/commands/cc-confirm.ts";
 import { layoutQueueKey } from "../app/commands/setup.ts";
 import type { KeyedSerialQueue } from "../app/queue.ts";
 import { sessionTopic, type ProjectSessionCheck } from "../app/session-ops.ts";
@@ -31,7 +31,7 @@ import type { ProbeResult } from "../tmux/pane-state.ts";
 import { resumeProject } from "./channels.ts";
 import type { ClaudeDirs } from "./claude-dirs.ts";
 import type { CcPaneResolver } from "./panes.ts";
-import type { CcRegistry, CcSessionView } from "./registry.ts";
+import type { CcRegistry, CcSessionView, CcTimers } from "./registry.ts";
 import { normalizeTitle } from "./starter.ts";
 import { copyTranscript, inspectSource, prepareTarget, readAppended, takeoverPaths } from "./takeover-files.ts";
 import {
@@ -54,6 +54,8 @@ import {
 
 /** 確認の有効な長さ（cc_send の確認と同じ 10 分。§3.5） */
 export const TAKEOVER_CONFIRM_TTL_MS = CC_CONFIRM_TTL_MS;
+/** 確認の失効を確かめる間隔（1 分。cc_send の確認と同じ） */
+export const TAKEOVER_EXPIRE_SWEEP_MS = CC_CONFIRM_SWEEP_MS;
 /** [取り込む]（`cc:take:go:<id>`）・[やめる]（`cc:take:no:<id>`）の custom_id の頭（§3.5） */
 export const TAKEOVER_GO_PREFIX = "cc:take:go";
 export const TAKEOVER_NO_PREFIX = "cc:take:no";
@@ -766,5 +768,78 @@ export class CcTakeover {
       { guildId: row.guildId, channelId: row.channelId, kind, source: "system", persona: DEFAULT_PERSONA_ID, text },
       this.deps.log,
     );
+  }
+}
+
+const REAL_TIMERS: CcTimers = {
+  after: (fn, ms) => {
+    const timer = setTimeout(fn, ms);
+    return () => clearTimeout(timer);
+  },
+};
+
+/**
+ * 確認の失効（CcTakeover の expire）を TAKEOVER_EXPIRE_SWEEP_MS ごとに呼ぶ（app/commands/cc-confirm.ts の CcConfirmExpirer と同じ形）。
+ * main が SELF_AGENT_CC=1 のときだけ作り、停止で止める
+ */
+export class CcTakeoverExpirer {
+  private readonly takeover: Pick<CcTakeover, "expire">;
+  private readonly log: (message: string) => void;
+  private readonly timers: CcTimers;
+  private cancelTimer: (() => void) | undefined;
+  private started = false;
+  private stopped = false;
+  private running: Promise<void> | undefined;
+
+  constructor(deps: { takeover: Pick<CcTakeover, "expire">; log: (message: string) => void; timers?: CcTimers }) {
+    this.takeover = deps.takeover;
+    this.log = deps.log;
+    this.timers = deps.timers ?? REAL_TIMERS;
+  }
+
+  /** 直後に 1 回確かめ、以後は TAKEOVER_EXPIRE_SWEEP_MS ごと。stop の後・2 回目は何もしない */
+  start(): void {
+    if (this.started || this.stopped) return;
+    this.started = true;
+    this.loop();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.cancelTimer?.();
+    this.cancelTimer = undefined;
+  }
+
+  async idle(): Promise<void> {
+    await this.running;
+  }
+
+  private loop(): void {
+    if (this.stopped) return;
+    void this.sweep().then(() => {
+      if (this.stopped) return;
+      this.cancelTimer = this.timers.after(() => {
+        this.cancelTimer = undefined;
+        this.loop();
+      }, TAKEOVER_EXPIRE_SWEEP_MS);
+    });
+  }
+
+  /** 1 回確かめる（テストから直接呼ぶ）。reject しない */
+  sweep(): Promise<void> {
+    if (this.running !== undefined) return this.running;
+    const running = this.takeover
+      .expire()
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          this.log(`Claude Code: 取り込みの確認の失効を確かめられませんでした（${errorKind(error)}）`);
+        },
+      )
+      .finally(() => {
+        this.running = undefined;
+      });
+    this.running = running;
+    return running;
   }
 }

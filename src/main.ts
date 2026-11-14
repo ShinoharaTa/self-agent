@@ -1,5 +1,6 @@
 // 配線だけ: config → store → runner → gateway → handler
 import { mkdirSync, realpathSync } from "node:fs";
+import { setTimeout as sleepMs } from "node:timers/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,15 +25,17 @@ import {
 } from "./agent/permission-bridge.ts";
 import { createProjectProfile } from "./agent/project-profile.ts";
 import { checkSharedLinks } from "./agent/unify-setup-check.ts";
-import type { ProjectSessionGate } from "./app/session-ops.ts";
-import { personaSystemPrompts } from "./agent/system-prompt.ts";
+import { checkSessionProject, type ProjectSessionGate } from "./app/session-ops.ts";
+import { personaSystemPrompts, TAKEOVER_NOTE } from "./agent/system-prompt.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
 import { prepareImages, pruneAttachments } from "./app/attachments.ts";
 import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
 import { InboxRotator } from "./app/inbox-rotate.ts";
-import type { CcPermissionButtons } from "./app/commands/cc.ts";
+import type { CcPermissionButtons, CcTakeoverGetter } from "./app/commands/cc.ts";
+import { findStateCategory } from "./app/categories.ts";
+import type { TurnDeps } from "./app/turn.ts";
 import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
 import { CcConfirmExpirer, type CcConfirmRuntime } from "./app/commands/cc-confirm.ts";
 import { ccRcUrl } from "./cc/labels.ts";
@@ -53,7 +56,7 @@ import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
-import { CcChannels, ccEndedHandler, ccPermissionAnsweredHandler, routeCcChannelMessages } from "./cc/channels.ts";
+import { CcChannels, ccEndedHandler, ccPermissionAnsweredHandler, ccReplayEnded, routeCcChannelMessages } from "./cc/channels.ts";
 import { CcChannelPosts } from "./cc/channel-posts.ts";
 import { CcQuestionFlow } from "./cc/question-flow.ts";
 import { CcWaitBudget } from "./cc/notice-text.ts";
@@ -63,7 +66,8 @@ import { CcPermissionHold } from "./cc/permission-hold.ts";
 import { CcRegistry } from "./cc/registry.ts";
 import { CcReplier } from "./cc/replies.ts";
 import { CcSender } from "./cc/sender.ts";
-import { ccPlacesOf, CcStarter, procMemAvailable } from "./cc/starter.ts";
+import { ccPlacesOf, CcStarter, procMemAvailable, projectDir as verifiedProjectDir } from "./cc/starter.ts";
+import { CcTakeover, CcTakeoverExpirer, readProcBtime, readProcStat } from "./cc/takeover.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -89,6 +93,7 @@ import { CC_REPLY_KEEP_DAYS, CcReplyStore } from "./store/cc-replies.ts";
 import { CC_SEND_KEEP_DAYS, CcSendStore } from "./store/cc-sends.ts";
 import { CC_SESSION_KEEP_DAYS, CcSessionStore } from "./store/cc-sessions.ts";
 import { CC_START_KEEP_DAYS, CcStartStore } from "./store/cc-starts.ts";
+import { CcTakeoverStore } from "./store/cc-takeovers.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { HistoryStore } from "./store/history.ts";
@@ -105,6 +110,7 @@ import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { USAGE_KEEP_DAYS, UsageStore } from "./store/usage.ts";
+import { probePaneState } from "./tmux/pane-state.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
 import { ccChannelDescriber, ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
 import { channelRoutes, webChannelLookup, webChannelNamer } from "./web/routes/channels.ts";
@@ -230,6 +236,10 @@ const ccChannelStore = new CcChannelStore(db, now);
 }
 // SELF_AGENT_CC=1 で連携が動くときだけ下で作る（/cc・cc:pick・再同期・Web は呼ぶときに読む）
 let ccChannels: CcChannels | undefined;
+// 取り込み（docs/plan/takeover.md。SELF_AGENT_CC=1 で連携が動くときだけ下で作る）。/cc take・cc:take・ターン・ended・送信・チャンネルの操作は呼ぶときに読む
+let ccTakeover: CcTakeover | undefined;
+let ccTakeoverEntry: ReturnType<CcTakeoverGetter>;
+let ccTakeoverExpirer: CcTakeoverExpirer | undefined;
 /** 許可の要求に答えた後（Web・Discord）: そのセッションのチャンネルを作る（guildId を省けば最初の /setup 済みのサーバー。待たない・投げない） */
 const ccPermissionAnswered = ccPermissionAnsweredHandler({ permissions: ccPermissionStore, channels: () => ccChannels, log });
 // ゲストのチャンネルと 1 日のターン数（SELF_AGENT_GUEST_* が揃ったときだけ使う）
@@ -372,11 +382,20 @@ const kbMemory = {
 };
 // 発言と /close・/renew のターンのキュー（key は channelId）。SELF_AGENT_SHELL=1 ならセッションのジョブは同時に 1 つだけ
 const turnQueue = createTurnQueue(config);
+// 取り込んだ会話の最初のターンの前置きと、resume できずに捨てたときの知らせ（SELF_AGENT_CC=1 のときだけ。ccTakeover は下で作る）
+const turnTakeover: TurnDeps["takeover"] = config.cc
+  ? {
+      noteFor: (key, sessionId, current) => ccTakeover?.noteFor(key, sessionId, current),
+      noteDone: (key) => ccTakeover?.noteDone(key),
+      resumeDropped: (key, sessionId) => ccTakeover?.resumeDropped(key, sessionId),
+    }
+  : undefined;
 // ターンはチャンネルの持ち主の人格の runner で動かす（personas）
 // プロジェクトのセッションの発言・[続ける]・/close・/renew のターンは projectRunner（予約した依頼は軽いモード。無ければ「SELF_AGENT_CC=1 が要ります」）
 const turn = {
   runner,
   ...(projectRunner === undefined ? {} : { projectRunner }),
+  ...(turnTakeover === undefined ? {} : { takeover: turnTakeover }),
   personas,
   sessions,
   seeds,
@@ -503,8 +522,8 @@ const commands = createCommands({
   ...(guest === undefined ? {} : { guests: guest.admin }),
   // /close の確定と /renew の区切りの行（Web UI が有効なときだけ）
   ...history,
-  // /cc（SELF_AGENT_CC=1 のときだけ登録する。チャンネルの操作は下で作る）
-  ...(config.cc ? { ccChannels: () => ccChannels } : {}),
+  // /cc（SELF_AGENT_CC=1 のときだけ登録する。チャンネルの操作と /cc take の取り込みは下で作る）
+  ...(config.cc ? { ccChannels: () => ccChannels, ccTakeover: () => ccTakeoverEntry } : {}),
   // /new の project（SELF_AGENT_CC=1 のときだけ）
   ...(projectSessions === undefined ? {} : { projectSessions }),
   log,
@@ -545,8 +564,16 @@ const handleInteraction = createInteractionHandler({
     ccPosts: ownerPosts,
     // /cc open のセレクト（cc:pick）と終わったチャンネルの [起動して続ける]（cc:resume）
     ccChannels: () => ccChannels,
-    // Claude Code のチャンネルの削除の確認の [削除する][残す]（cc:del。DB だけで動く）
-    ccDelete: { deleteAfterDays: config.deleteAfterDays, store: ccChannelStore, gateway, channelOps },
+    // Claude Code のチャンネルの削除の確認の [削除する][残す]（cc:del。DB だけで動く）。取り込みの途中のチャンネルは消さない
+    ccDelete: {
+      deleteAfterDays: config.deleteAfterDays,
+      store: ccChannelStore,
+      gateway,
+      channelOps,
+      takingOver: (channelId) => ccTakeover?.holdsChannel(channelId) === true,
+    },
+    // 取り込みの確認の [取り込む][やめる]（cc:take。SELF_AGENT_CC=1 のときだけ下で作る。無ければ使えない扱い）
+    ccTakeover: () => ccTakeoverEntry,
     // #jobs のボタンとモーダル（SELF_AGENT_JOBS=1 のときだけ）
     ...(jobs === undefined ? {} : { jobs }),
     // #system の許可の要求のボタン（SELF_AGENT_CC=1 で SELF_AGENT_CC_NOTIFY が 1 のときだけ。下で作る）
@@ -765,7 +792,8 @@ if (
     permissions: permissionHold,
     // 一覧から消えたセッション: チャンネルがあれば、終わったことをそこに 1 行出して完了カテゴリへ移す。
     // 返事を追いかけていれば、追いかけのチャンネルに「終わりました」を出して止める（cc/channels.ts の ccEndedHandler。#system には出さない）
-    ended: ccEndedHandler({ channels: () => ccChannels, replier: () => ccReplier }),
+    // 取り込みの途中のセッションの ended は差し止める（docs/plan/takeover.md §3.2。ccTakeover は下で作る）
+    ended: ccEndedHandler({ channels: () => ccChannels, replier: () => ccReplier, takeover: () => ccTakeover }),
     // 同じ session_id が一覧に戻ったら、終わったチャンネルを開き直してカテゴリ「Claude Code」へ戻す
     revived: (session) => {
       ccChannels?.revived(session);
@@ -855,6 +883,8 @@ if (
       settled: (row) => ccChannels?.settled(row),
       dialog: (row) => ccChannels?.dialog(row),
     },
+    // 取り込みの途中のセッションには積まない・届けない（docs/plan/takeover.md §3.2。ccTakeover は下で作る）
+    holds: (sessionId) => ccTakeover?.holds(sessionId) === true,
     now,
     log,
   });
@@ -942,11 +972,59 @@ if (
     queue: layoutQueue,
     channelOps,
     home: homedir(),
+    // 取り込みの途中のチャンネルの [起動して続ける]・閉じる・開き直しは行を変えない（docs/plan/takeover.md §3.2）
+    takeover: () => ccTakeover,
     // Web UI が有効なら、発言・写し・届かなかった・終わった・戻ったを会話に書く（CC14）
     ...history,
     now,
     log,
   });
+  // 取り込み（docs/plan/takeover.md。T3b）: /cc take の確認 → [取り込む] で、待機中か終わった Claude Code の会話をその cc のチャンネルの
+  // プロジェクトのセッションに変える。端末の claude には SIGTERM だけを送る。確認の文・完了の文・topic は既定の人格の Bot
+  const takeovers = new CcTakeoverStore(db, now);
+  const takeover = new CcTakeover({
+    db,
+    cfg: config,
+    home: homedir(),
+    claudeConfigDir: config.claudeConfigDir,
+    registry,
+    panes,
+    probePane: (paneId) => probePaneState({ tmux, paneId, now: () => now().getTime() }),
+    dirs: new ClaudeDirs(),
+    takeovers,
+    ccChannels: ccChannelStore,
+    ccSessions,
+    ccSends,
+    ccPermissions: ccPermissionStore,
+    topicSessions,
+    sdkSessions: sessions,
+    guildSettings,
+    ready: () => projectSessions?.ready() === true,
+    checkSessionProject: (name) =>
+      projectSessions === undefined ? { ok: false, reason: "not_set_up" } : checkSessionProject(name, projectSessions),
+    verifiedProjectDir: (name) => verifiedProjectDir(name, ccPlacesOf(config, homedir())),
+    findStateCategory: (guildId, state) => findStateCategory(guildId, state, { gateway, guildSettings, log }),
+    queue: layoutQueue,
+    channelOps,
+    gateway,
+    // Web UI が有効なら、取り込んだ区切り・続けられなかった知らせを会話に書く
+    ...history,
+    kill: (pid) => {
+      process.kill(pid, "SIGTERM");
+    },
+    readProc: readProcStat,
+    readBtime: readProcBtime,
+    sleep: (ms) => sleepMs(ms).then(() => undefined),
+    now,
+    ownPid: process.pid,
+    replayEnded: ccReplayEnded({ channels: () => ccChannels, replier: () => ccReplier }),
+    note: TAKEOVER_NOTE,
+    log,
+  });
+  ccTakeover = takeover;
+  ccTakeoverEntry = { takeover, takeovers, gateway, ownerUserId: config.ownerUserId };
+  // 確認の失効（10 分）を 1 分ごとに確かめる
+  ccTakeoverExpirer = new CcTakeoverExpirer({ takeover, log });
 }
 // cc_send・cc_start の確認の失効（10 分）。SELF_AGENT_CC が無効でも動かし、再起動の前に出した確認が残っていれば取り消して注記する
 const ccConfirmExpirer = new CcConfirmExpirer({
@@ -1254,6 +1332,7 @@ const lifecycle = createShutdown(
     ...(ccChannelPosts === undefined ? {} : { ccChannelPosts }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     ccConfirmExpirer,
+    ...(ccTakeoverExpirer === undefined ? {} : { ccTakeoverExpirer }),
     ...(ccReplier === undefined ? {} : { ccReplier }),
     closeDb: () => db.close(),
     log,
@@ -1306,6 +1385,15 @@ if (config.shell) await shellState.check();
 // （知らせは gateway の起動の後。それまで run は始めない）
 await jobs?.recoverState();
 await gateway.start(lifecycle.handlers);
+// 取り込み: 再起動の前に running だった行を failed（restart）にし、差し止めた ended を流し直し、後始末の残りをやり直す（確認の文の書き換えに Discord が要るので
+// gateway の後。受け付けた操作の confirm より先に running を片付けるよう、間に await を挟まない。registry の周期の読み取り（start）より前）
+if (ccTakeover !== undefined) {
+  try {
+    await ccTakeover.recover();
+  } catch (error) {
+    log(`Claude Code: 取り込みの起動時の片付けに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
+  }
+}
 await registerCommands({ cfg: config, gateway, commands, log });
 // 足した人格の Bot（同じハンドラ。発言は持ち主の Bot の分だけ、操作はどの Bot で受けても処理する）。ログインは待たずに並べて行い、
 // できなくても既定の人格は動かし続ける（定期処理・リマインドは先に始める）
@@ -1332,5 +1420,6 @@ ccChannelPosts?.rewriteRecovered(ccRecoveredPermissions);
 projectPermissionPoster?.rewriteRecovered(ccRecoveredPermissions);
 ccChannelPosts?.start();
 ccConfirmExpirer.start();
+ccTakeoverExpirer?.start();
 ccReplier?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

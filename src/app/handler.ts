@@ -74,6 +74,8 @@ export type HandlerDeps = {
   runner: AgentRunner;
   /** プロジェクトのセッションの runner（SELF_AGENT_CC=1 のときだけ。turn.ts の TurnDeps.projectRunner） */
   projectRunner?: AgentRunner;
+  /** 取り込んだ会話の最初のターンの前置きなど（SELF_AGENT_CC=1 のときだけ。turn.ts の TurnDeps.takeover） */
+  takeover?: TurnDeps["takeover"];
   /**
    * チャンネルの持ち主の人格。発言は持ち主の Bot が受け取った分だけを受け付け、ターンは持ち主の人格の runner で動かす。
    * 無ければすべて既定の人格
@@ -246,6 +248,7 @@ export function createHandler(deps: HandlerDeps): Handler {
   const turnDeps: TurnDeps = {
     runner,
     ...(deps.projectRunner === undefined ? {} : { projectRunner: deps.projectRunner }),
+    ...(deps.takeover === undefined ? {} : { takeover: deps.takeover }),
     ...(personas === undefined ? {} : { personas }),
     sessions,
     seeds,
