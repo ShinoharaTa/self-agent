@@ -1981,8 +1981,11 @@ const v3Result = (topics: unknown[], o: Record<string, unknown> = {}) => ({ grou
  * v3.html の骨組みを DomNode で組み、ui.js・topics.js・shell.js を読み込む。views.info は known のタブだけを返し、
  * ch: のタブは data-stick="bottom" の .ed-scroll（高さは heights。既定 1,000・見える高さ 200）と見出しの [‹] を描く
  */
-function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string) => boolean; status?: unknown; width?: number; storage?: Record<string, string> } = {}) {
+function loadShell(
+  opts: { phone?: boolean; hash?: string; known?: (tab: string) => boolean; status?: unknown; width?: number; storage?: Record<string, string>; initState?: unknown; asyncBack?: boolean } = {},
+) {
   // width は .v3 の幅（右腕の形を決める。既定 1,400 = 列。一覧は 280px）
+  // initState は最初の entry の state（再読み込みで残った物）。asyncBack なら back() の移動と popstate は runHistory() まで待つ（ブラウザと同じく非同期）
   const state = { phone: opts.phone ?? false, now: 1_000_000, width: opts.width ?? 1400 };
   let seq = 0;
   const timers = new Map<number, { at: number; ms: number; fn: () => void }>();
@@ -2055,6 +2058,7 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
     visibilityState: "visible",
     title: "",
     documentElement: { dataset: {} as Record<string, string>, style: { setProperty() {}, removeProperty() {} } },
+    body,
     get activeElement() {
       return DomNode.focused && body.contains(DomNode.focused) ? DomNode.focused : body;
     },
@@ -2077,9 +2081,19 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
     },
   };
   const hashOfUrl = (url: string) => (url.includes("#") ? url.slice(url.indexOf("#")) : "");
-  const entries: Array<{ state: unknown; hash: string }> = [{ state: null, hash: location.hash }];
+  const entries: Array<{ state: unknown; hash: string }> = [{ state: opts.initState ?? null, hash: location.hash }];
   let index = 0;
-  const calls = { push: 0 };
+  const calls = { push: 0, back: 0 };
+  const pendingHistory: Array<() => void> = [];
+  const runHistory = () => {
+    for (const fn of pendingHistory.splice(0)) fn();
+  };
+  const traverse = (to: number) => {
+    if (to < 0 || to > entries.length - 1 || to === index) return;
+    index = to;
+    location.hash = entries[index]!.hash;
+    fire("popstate", { state: entries[index]!.state });
+  };
   const history = {
     get state() {
       return entries[index]!.state;
@@ -2096,10 +2110,12 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
       entries[index] = { state: st, hash: location.hash };
     },
     back() {
-      if (index === 0) return;
-      index--;
-      location.hash = entries[index]!.hash;
-      fire("popstate", { state: entries[index]!.state });
+      calls.back++;
+      if (opts.asyncBack) pendingHistory.push(() => traverse(index - 1));
+      else traverse(index - 1);
+    },
+    go(n: number) {
+      traverse(index + n);
     },
     forward() {
       if (index === entries.length - 1) return;
@@ -2108,11 +2124,21 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
       fire("popstate", { state: entries[index]!.state });
     },
   };
+  const mqListeners: Array<() => void> = [];
   const mq = {
     get matches() {
       return state.phone;
     },
-    addEventListener() {},
+    addEventListener: (_type: string, fn: () => void) => void mqListeners.push(fn),
+  };
+  /** 幅を変えて (max-width: 639px) の change と resize を出す */
+  const setPhone = (phone: boolean, width: number) => {
+    state.width = width;
+    if (state.phone !== phone) {
+      state.phone = phone;
+      for (const fn of mqListeners) fn();
+    }
+    fire("resize");
   };
   const storage = new Map<string, string>(Object.entries(opts.storage ?? {}));
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, String(v)) };
@@ -2251,6 +2277,8 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
     history,
     location,
     calls,
+    runHistory,
+    setPhone,
     timers,
     advance,
     flush,
@@ -4013,6 +4041,155 @@ test("web static: v3.html に右腕の枠と 3 つの口があり、右腕のた
   const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
   assert.match(phone, /\.v3\[data-hand-mode="over"\]\[data-hand="open"\] \.v3-hand \{[^}]*top: var\(--space-8\);[^}]*padding-bottom: env\(safe-area-inset-bottom, 0px\);/);
   assert.match(phone, /\.v3-hand-ask \{[^}]*min-height: var\(--tap\);/);
+});
+
+// ===== 右腕の枠のレビューの直し（M3b。#357） =====
+test("web static: 再読み込みで残った右腕の印（v3Hand）は起動で外し、次に開いた右腕は [畳む] 1 回で閉じる", async () => {
+  const h = await loadHand({ phone: true, initState: { v3Body: false, v3Hand: true } });
+  const stateOf = () => JSON.parse(JSON.stringify(h.history.state)) as unknown;
+  assert.equal(handOf(h), "closed");
+  assert.deepEqual(stateOf(), { v3Body: false });
+  h.nodes.handAsk.dispatch("click");
+  assert.equal(handOf(h), "open");
+  handClose(h).dispatch("click");
+  assert.equal(handOf(h), "closed", "1 回目で閉じる");
+  assert.deepEqual(stateOf(), { v3Body: false });
+  assert.equal(h.document.activeElement, h.nodes.handAsk);
+});
+
+test("web static: スマホ ⇄ PC の切り替え（(max-width: 639px) の change）で右腕の形・帯を直し、印を外すので戻った後の右腕も [畳む] 1 回で閉じる", async () => {
+  const h = await loadHand({ phone: true });
+  const stateOf = () => JSON.parse(JSON.stringify(h.history.state)) as unknown;
+  h.app.open("tasks");
+  assert.equal(h.nodes.bar.hidden, false, "スマホは話題でない画面でも帯を出す");
+  h.nodes.handOpen.dispatch("click");
+  assert.deepEqual(stateOf(), { v3Body: true, v3Hand: true });
+  // 広げると列の右腕（保存した既定は開く）。entry の印は外す
+  h.setPhone(false, 1400);
+  assert.equal(h.nodes.v3.getAttribute("data-hand-mode"), "column");
+  assert.equal(handOf(h), "open");
+  assert.deepEqual(stateOf(), { v3Body: true });
+  assert.equal(h.nodes.bar.hidden, true, "PC は話題でない画面の帯を隠す");
+  // 狭めると重ねる形で閉じ、右腕の中にあった焦点は帯の [右腕] へ
+  h.setPhone(true, 390);
+  assert.equal(h.nodes.v3.getAttribute("data-hand-mode"), "over");
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.nodes.bar.hidden, false);
+  assert.equal(h.document.activeElement, h.nodes.handOpen);
+  h.nodes.handOpen.dispatch("click");
+  handClose(h).dispatch("click");
+  assert.equal(handOf(h), "closed", "1 回目で閉じる");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.deepEqual(stateOf(), { v3Body: true });
+});
+
+test("web static: 畳んだ右腕を開き直すと /turns を 1 回読み直し、開いている間の開き直しでは読まない", async () => {
+  const h = await loadHand();
+  assert.deepEqual(h.loads.turns, ["900"]);
+  handClose(h).dispatch("click");
+  h.nodes.handShow.dispatch("click");
+  assert.deepEqual(h.loads.turns, ["900", "900"]);
+  h.app.open("ch:900");
+  assert.deepEqual(h.loads.turns, ["900", "900"], "見えたままなら読まない");
+  const o = await loadHand({ width: 900 });
+  o.nodes.handShow.dispatch("click");
+  assert.deepEqual(o.loads.turns, ["900"], "初めて描くときは renderHand の 1 回だけ");
+  o.nodes.backdrop.dispatch("click");
+  o.nodes.handShow.dispatch("click");
+  assert.deepEqual(o.loads.turns, ["900", "900"]);
+});
+
+test("web static: 右腕を閉じた後の焦点は、開いた物が body なら既定の口へ。進むで開いたら [畳む] へ", async () => {
+  // 焦点の無いまま右腕のチャンネルを開いた（開いた物は body）
+  const h = await loadHand({ width: 900 });
+  assert.equal(h.document.activeElement, h.document.body);
+  h.app.open("ch:900");
+  assert.equal(handOf(h), "open");
+  h.nodes.backdrop.dispatch("click");
+  assert.equal(h.document.activeElement, h.nodes.handShow);
+  // スマホ: 戻るで閉じ、進むで開くと [畳む]
+  const p = await loadHand({ phone: true });
+  p.nodes.handAsk.dispatch("click");
+  p.history.back();
+  assert.equal(handOf(p), "closed");
+  p.history.forward();
+  assert.equal(handOf(p), "open");
+  assert.equal(p.document.activeElement, handClose(p));
+});
+
+test("web static: 重ねた右腕の [畳む]・backdrop を popstate の前に続けて押しても、戻るのは 1 回", async () => {
+  const h = await loadHand({ phone: true, asyncBack: true });
+  h.nodes.handAsk.dispatch("click");
+  handClose(h).dispatch("click");
+  handClose(h).dispatch("click");
+  h.nodes.backdrop.dispatch("click");
+  h.fireDoc("keydown", keyEvent("Escape", handClose(h)));
+  assert.equal(h.calls.back, 1);
+  h.runHistory();
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  // 次に開いた右腕はまた [畳む] で戻れる
+  h.nodes.handAsk.dispatch("click");
+  handClose(h).dispatch("click");
+  assert.equal(h.calls.back, 2);
+  h.runHistory();
+  assert.equal(handOf(h), "closed");
+});
+
+test("web static: 重ねた右腕が開いている間の Ctrl+K は取らない（絞り込み欄は inert の中）", async () => {
+  const h = await loadHand({ width: 900 });
+  h.nodes.handShow.dispatch("click");
+  const e = keyEvent("k", handClose(h), { ctrlKey: true });
+  h.fireDoc("keydown", e);
+  assert.equal(e.prevented, false);
+  assert.equal(h.nodes.searchBox.hidden, true);
+  assert.equal(h.document.activeElement, handClose(h));
+  // 列の右腕なら効く
+  const c = await loadHand();
+  const f = keyEvent("k", handClose(c), { metaKey: true });
+  c.fireDoc("keydown", f);
+  assert.equal(f.prevented, true);
+  assert.equal(c.nodes.searchBox.hidden, false);
+});
+
+test("web static: 「いま見ている話題」の題名は前後の空白を落とし、80 字は code point で数える（絵文字を割らない）", async () => {
+  const title = "  " + "a".repeat(79) + "😀b  ";
+  const h = await loadHand({}, [v3Topic("ch:1", { title }), v3Topic("ch:2", { title: " \n 短い題 \t" })]);
+  const out = () => h.handRenders.at(-1)!.frame.outgoing!("頼みごと");
+  h.app.open("ch:1");
+  assert.equal(out(), "（いま見ている話題: " + "a".repeat(79) + "😀…）\n頼みごと");
+  h.app.open("ch:2");
+  assert.equal(out(), "（いま見ている話題: 短い題）\n頼みごと");
+});
+
+test("web static: 640〜999px の重ねた右腕を開いたまま話題が開かれたら右腕を畳み、焦点は列 2 の側（開いた行）", async () => {
+  const h = await loadHand({ width: 800 }, [v3Topic("ch:1")]);
+  const inert = () => [(h.nodes.list as unknown as { inert?: boolean }).inert, (h.nodes.main as unknown as { inert?: boolean }).inert];
+  h.nodes.handShow.dispatch("click");
+  assert.equal(h.document.activeElement, handClose(h));
+  h.app.open("ch:1");
+  assert.equal(h.app.activeTabId(), "ch:1");
+  assert.equal(handOf(h), "closed");
+  assert.deepEqual(inert(), [false, false]);
+  assert.equal(h.nodes.backdrop.hidden, true);
+  assert.equal(h.calls.push, 0, "entry は積まない");
+  assert.equal(h.document.activeElement, h.row(h.nodes.groups, "ch:1"));
+});
+
+test("web static: 右腕の枠（shell.js が渡す frame）を本物の chat.js に通すと、送る本文に「（いま見ている話題: …）」が付き、見出しに [畳む]", async () => {
+  const h = await loadHand({}, [v3Topic("ch:1", { title: "話の題" })]);
+  h.app.open("ch:1");
+  const frame = h.handRenders.at(-1)!.frame;
+  const c = loadChat();
+  c.put("900", []);
+  const b = c.box();
+  c.chat.render(b, "900", frame as Frame);
+  assert.equal(inputOf(b).getAttribute("placeholder"), "右腕に頼む・訊く");
+  assert.ok(b.buttons().some((x) => x.getAttribute("id") === "v3-hand-close"));
+  typeIn(b, " 頼む ");
+  formOf(b).dispatch("submit", { preventDefault() {} });
+  await c.flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(c.posts.map((p) => p.body))), [{ text: "（いま見ている話題: 話の題）\n頼む" }]);
 });
 
 test("web static: 札は返事の <#ID> を話題の行で引いて 題名・場所・状態・[開く] を出す（5 つまで・同じ ID は 1 つ・引けない ID は出さず本文もそのまま）", async () => {

@@ -312,12 +312,18 @@
       stickOnShow = false;
     }
     // スマホは先に会話の列を出してから描く（隠れたままではスクロールを書けない）。重ねた右腕は畳む（履歴の entry は showBody が話題に置き換える）
+    const handWasOver = S.handMode === "over" && S.handOver;
+    const focusInHand = handWasOver && handHasFocus();
     if (phone()) {
       if (S.handOver) {
         S.handOver = false;
         applyHand();
       }
       showBody();
+    } else if (handWasOver) {
+      // 640px 以上の重ねる形は entry を積んでいないので、その場で畳む
+      S.handOver = false;
+      applyHand();
     }
     // 同じ話題でも [端末] から会話に戻ったときは別のタブとして描く
     renderMain(switched || shownBefore !== shownTabId());
@@ -329,6 +335,11 @@
     if (phone()) {
       const back = $("ed").querySelector(".ed-back");
       if (back) back.focus({ preventScroll: true });
+    } else if (focusInHand) {
+      // 畳んだ右腕の中にあった焦点は列 2 の側へ（入力欄が無ければ一覧の開いた行）
+      const input = $("ed").querySelector("textarea.composer-input");
+      if (input) input.focus({ preventScroll: true });
+      else focusCurrentRow();
     }
   }
 
@@ -357,6 +368,8 @@
   let handLoadedId = null;
   let handShown = null;
   let handStick = true;
+  // 重ねた右腕の [畳む] で history.back() を呼んでから popstate が来るまで（連打で 2 つ戻らない）
+  let handClosing = false;
 
   /** 右腕のタブ（/api/topics の rightHands の先頭。サーバーが複数でも選ぶ口は作らない）。無ければ null */
   function handTab() {
@@ -395,9 +408,27 @@
     const list = $("v3-list");
     const mode = handModeOf(phone(), refs.v3.clientWidth, list ? list.offsetWidth : 0, handWidth());
     if (mode === S.handMode) return;
+    const focusInHand = handHasFocus();
     S.handMode = mode;
     S.handOver = false;
+    dropHandMark();
     applyHand();
+    if (focusInHand && !handVisible()) restoreHandFocus();
+  }
+
+  /** 焦点が右腕の中にあるか */
+  function handHasFocus() {
+    const hand = $("v3-hand");
+    return !!hand && hand.contains(document.activeElement);
+  }
+
+  /** 履歴を戻らずに右腕を閉じた状態にするとき、今の entry の右腕の印（v3Hand）を外す（残すと次の [畳む] がその entry へ戻るだけになる） */
+  function dropHandMark() {
+    try {
+      if (history.state && history.state.v3Hand) history.replaceState({ v3Body: !!history.state.v3Body }, "", location.href);
+    } catch {
+      // 書けなくても右腕は閉じている
+    }
   }
 
   /** 開閉と形を属性に書き、見えていれば描く（見えていない間は高さが測れないので、属性を書いた後で描く） */
@@ -490,6 +521,8 @@
   /** 右腕を開く。focusInput なら入力欄に、でなければ [畳む] に焦点 */
   function openHand(opener, focusInput) {
     handOpener = opener || null;
+    handClosing = false;
+    const wasVisible = handVisible();
     if (S.handMode === "column") {
       if (!S.handWant) {
         S.handWant = true;
@@ -506,7 +539,11 @@
         }
       }
     }
+    // 畳んでいた間の返事を読む（初めて描くチャンネルは renderHand が読む）
+    const id = handChannelId();
+    const reload = !wasVisible && id !== null && handLoadedId === id;
     applyHand();
+    if (reload && handVisible()) SA.store.load.turns(id);
     const ed = $("v3-hand-ed");
     const input = focusInput && ed ? ed.querySelector(".composer-input") : null;
     const target = input || $("v3-hand-close");
@@ -523,12 +560,15 @@
       if (show) show.focus();
       return;
     }
+    if (handClosing) return;
     if (history.state && history.state.v3Hand) {
       try {
+        handClosing = true;
         history.back();
         return;
       } catch {
         // 戻れなければその場で閉じる
+        handClosing = false;
       }
     }
     S.handOver = false;
@@ -536,13 +576,20 @@
     restoreHandFocus();
   }
 
-  /** 閉じた後の焦点: 開いたボタンがあればそこ、無ければ見えている口 */
+  /** 閉じた後の焦点: 開いたボタンが見えていればそこ、無ければ見えている口 */
   function restoreHandFocus() {
     const opener = handOpener;
     handOpener = null;
-    let target = opener && document.contains(opener) ? opener : null;
+    let target = shownNode(opener) ? opener : null;
     if (!target) target = $(!phone() ? "v3-hand-show" : S.view === "body" ? "v3-hand-open" : "v3-hand-ask");
     if (target) target.focus();
+  }
+
+  /** document の中にあり、自分も祖先も hidden・inert でない要素か（body は焦点の戻り先にしない） */
+  function shownNode(n) {
+    if (!n || n === document.body || !document.contains(n)) return false;
+    for (let p = n; p; p = p.parentElement) if (p.hidden || p.inert) return false;
+    return true;
   }
 
   /** 口の印（あなたの番 > 未読 で 1 つ。見えている右腕には未読を出さない） */
@@ -661,13 +708,15 @@
     });
   }
 
-  /** 列 2 に話題が出ていれば、その題名（空白を詰めて 80 字まで）。スマホは会話の上に右腕を出したときだけ */
+  /** 列 2 に話題が出ていれば、その題名（空白を詰めて前後を落とし、80 字まで）。スマホは会話の上に右腕を出したときだけ */
   function viewingTitle() {
     if (phone() && S.view !== "body") return null;
     const t = S.active ? SA.topics.find(S.active) : null;
     if (!t) return null;
-    const title = String(t.title).replace(/\s+/g, " ");
-    return title.length > 80 ? title.slice(0, 80) + "…" : title;
+    const title = String(t.title).replace(/\s+/g, " ").trim();
+    // サロゲートペアを割らないよう code point で数える
+    const chars = Array.from(title);
+    return chars.length > 80 ? chars.slice(0, 80).join("") + "…" : title;
   }
 
   /** 右腕へ送る本文の先頭に「（いま見ている話題: <題名>）」を毎回 1 行添える（モデルがどの話題の話かを取り違えないため） */
@@ -1057,6 +1106,8 @@
     // Ctrl+K（mac は Meta+K）: 絞り込み欄。入力欄に焦点があっても効かせる
     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "k" || e.key === "K")) {
       if (document.querySelector("dialog[open]")) return;
+      // 重ねた右腕が開いている間は絞り込み欄が inert の中なので取らない
+      if (S.handMode === "over" && S.handOver) return;
       e.preventDefault();
       openSearch();
       return;
@@ -1098,11 +1149,13 @@
     mqPhone.addEventListener("change", () => {
       setView(S.active ? "body" : "list");
       fitViewport();
-      fitHand();
+      // 帯を先に（右腕が閉じて焦点を戻す先の [右腕] が帯の中にある）
       renderBar();
+      fitHand();
     });
     window.addEventListener("popstate", (e) => {
       const st = e.state || {};
+      handClosing = false;
       // 重ねた右腕の開閉は履歴の v3Hand に合わせる（スマホで開いたときだけ entry を積む）
       let handClosed = false;
       let handChanged = false;
@@ -1119,6 +1172,11 @@
         if (phone() && !handChanged && !S.handOver) focusCurrentRow();
       }
       if (handClosed) restoreHandFocus();
+      // 進むで開いたら [畳む] に焦点
+      else if (handChanged) {
+        const close = $("v3-hand-close");
+        if (close) close.focus();
+      }
     });
     window.addEventListener("resize", fitHand);
     // 手で書き換えた hash・リンク（自分で書いた hash は replaceState・pushState なので来ない）
@@ -1148,7 +1206,8 @@
       if (opener && document.contains(opener)) opener.focus();
     });
 
-    // 最初の 1 枚の前に右腕の形を決める（v3.html の初期値は畳んだ重ねる形）
+    // 最初の 1 枚の前に右腕の形を決める（v3.html の初期値は畳んだ重ねる形）。再読み込みで残った右腕の印は外す
+    dropHandMark();
     fitHand();
     applyHand();
 
