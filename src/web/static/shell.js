@@ -256,6 +256,12 @@
     return shownTabId();
   }
 
+  /** 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い） */
+  function shownChannelIds() {
+    const tabId = shownTabId();
+    return tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
+  }
+
   /** 話題か画面を列 2 に開く（知らない・無効な機能のタブは開かない） */
   function open(tabId) {
     if (!tabId) return;
@@ -772,6 +778,7 @@
     // 出力のパネルは持たない
     addOutput: () => undefined,
     activeTabId,
+    shownChannelIds,
     sidebarShows,
     openDrawer,
     closeDrawer,
