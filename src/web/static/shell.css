@@ -363,11 +363,33 @@
   border-bottom: var(--border-width) solid var(--border);
 }
 
+/* 「場所 ∨」: 帯の中で縮み、文字だけを 1 行で省略する。色は .meta と同じ */
 .v3-place {
+  justify-content: flex-start;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-weight: var(--weight-normal);
+}
+
+.v3-place .icon {
+  flex: none;
+}
+
+.v3-place-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 押せないときは今までどおりただの文字に見せる（薄くしない・矢印を出さない。理由は title） */
+.v3-place:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.v3-place:disabled .icon {
+  display: none;
 }
 
 .v3-empty {
@@ -535,6 +557,11 @@
   .v3-hand-open {
     display: inline-flex;
     margin-left: auto;
+  }
+
+  /* 帯の「場所 ∨」は指で押せる高さ */
+  .v3-place {
+    min-height: var(--tap);
   }
 
   /* 群の見出しの [+] は指で押せる大きさ */

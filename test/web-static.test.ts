@@ -151,6 +151,9 @@ class FakeNode {
   addEventListener(type: string, fn: (event: unknown) => void): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
   }
+  removeEventListener(type: string, fn: (event: unknown) => void): void {
+    this.listeners.set(type, (this.listeners.get(type) ?? []).filter((f) => f !== fn));
+  }
   dispatch(type: string, event: unknown = {}): void {
     for (const fn of this.listeners.get(type) ?? []) fn(event);
   }
@@ -1699,13 +1702,9 @@ test("web static: v3.html に inline の script・style・style 属性が無く�
   assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
 });
 
-test("web static: v3.html に今の画面の作る口が無く、場所はボタンでない", () => {
+test("web static: v3.html に今の画面の作る口が無い", () => {
   const html = read("v3.html");
   for (const word of ["dlg-new", "dlg-cc-start", "palette"]) assert.equal(html.includes(word), false, word);
-  const shell = read("shell.js");
-  const bar = fnSource(shell, "renderBar");
-  assert.doesNotMatch(bar, /"button"/);
-  assert.match(bar, /place\.textContent = text/);
 });
 
 test("web static: 新しい殻の SA.app は今の殻と同じ名前を全部持つ", () => {
@@ -2026,7 +2025,9 @@ function loadShell(
   const main = node("main", "v3-main", "v3-main");
   const bar = node("div", "v3-bar");
   const handOpen = node("button", "v3-hand-open", "btn btn-ghost btn-sm v3-hand-open");
-  bar.append(node("span", "v3-place"), views, handOpen);
+  const place = node("button", "v3-place", "btn btn-ghost btn-sm v3-place");
+  place.hidden = true;
+  bar.append(place, views, handOpen);
   const ed = node("div", "ed", "ed");
   main.append(bar, ed);
   const hand = node("aside", "v3-hand", "v3-hand");
@@ -2060,6 +2061,26 @@ function loadShell(
   );
   start.append(startForm);
   body.append(start);
+  // 確認（ui.js の SA.ui.confirm が引く。M5c）: close は開いていれば "close" を出す
+  const confirm = node("dialog", "dlg-confirm");
+  Object.assign(confirm, {
+    showModal: () => confirm.setAttribute("open", ""),
+    close: () => {
+      if (confirm.getAttribute("open") === null) return;
+      confirm.removeAttribute("open");
+      confirm.dispatch("close");
+    },
+  });
+  const confirmTarget = node("p", "dlg-confirm-target", "dlg-target");
+  confirmTarget.hidden = true;
+  confirm.append(
+    node("h2", "dlg-confirm-title", "dlg-title"),
+    confirmTarget,
+    node("p", "dlg-confirm-body", "meta"),
+    node("button", "dlg-confirm-cancel", "btn btn-secondary btn-sm"),
+    node("button", "dlg-confirm-ok", "btn btn-primary btn-sm"),
+  );
+  body.append(confirm);
   const ids = new Map<string, DomNode>();
   for (const n of descendants(body)) if (n instanceof DomNode && n.getAttribute("id")) ids.set(n.getAttribute("id")!, n);
   // ≤639px の一覧の間は .v3-main が display: none（shell.css）。hidden の要素も出ない
@@ -4698,7 +4719,7 @@ test("web static: v3 の始める口: やめる・Escape で閉じたら押し�
 
 test("web static: v3 の始める口: 場所の表示は、General の話題は「場所: General」、place.dir が null の話題は「場所: なし」、プロジェクトは名前", async () => {
   const h = await loadStart();
-  const place = () => textOf(h.document.getElementById("v3-place") as DomNode);
+  const place = () => textOf((h.document.getElementById("v3-place") as DomNode).querySelector("span.v3-place-text")!);
   h.app.open("ch:1");
   assert.equal(place(), "場所: General");
   h.app.open("ch:2");
@@ -4865,3 +4886,360 @@ for (const order of ["A が先に返る", "B が先に返る"] as const) {
     assert.equal(h.location.hash, "#/ch/78");
   });
 }
+
+// ===== 場所を変える（M5c。#364）: 列 2 の帯の「場所 ∨」・シート「場所を変える」・確認・POST /api/topics/ch:<id>/place =====
+const placeTopics = () => [
+  ...startTopics().map((t) => ({ ...t, movable: t.group === "other" ? { reason: "端末のセッションは場所を変えられません" } : true })),
+  v3Topic("ch:5", { group: "general", title: "済んだ", place: { dir: null }, state: "done", movable: { reason: "完了した話題は場所を変えられません" } }),
+];
+type PlaceShell = StartShell & { errors: string[]; topicList: Array<Record<string, unknown>>; confirm: DomNode & { close: () => void } };
+
+async function loadPlace(opts: Parameters<typeof loadShell>[0] = {}): Promise<PlaceShell> {
+  const h = loadShell(opts) as PlaceShell;
+  await h.flush();
+  h.topicList = placeTopics();
+  h.api.reply = () => Promise.resolve(v3Result(h.topicList, { groups: startGroups() }));
+  await h.topics.load();
+  h.toasts = [];
+  h.errors = [];
+  h.ui.toast = (text: string, _action: unknown, o?: { level?: string }) => void (o && o.level === "error" ? h.errors : h.toasts).push(text);
+  h.confirm = h.document.getElementById("dlg-confirm") as PlaceShell["confirm"];
+  return h;
+}
+const placeBtn = (h: PlaceShell) => h.document.getElementById("v3-place") as DomNode & { disabled: boolean };
+const placeLabel = (h: PlaceShell) => placeBtn(h).querySelector("span.v3-place-text")!;
+const sheetRows = (h: PlaceShell) =>
+  h.nodes.sheet.querySelectorAll("button.more-row").map((r) => ({
+    label: textOf(r.querySelector("span.sb-label")!),
+    why: r.querySelector("span.sb-meta") ? textOf(r.querySelector("span.sb-meta")!) : null,
+    disabled: r.getAttribute("disabled") !== null,
+    icon: r.querySelector("svg.icon")!.querySelector("use")!.getAttribute("href")!.replace(/^.*#/, ""),
+  }));
+const pickPlace = (h: PlaceShell, label: string) =>
+  h.nodes.sheet
+    .querySelectorAll("button.more-row")
+    .find((r) => textOf(r.querySelector("span.sb-label")!) === label)!
+    .dispatch("click");
+const confirmText = (h: PlaceShell, part: string) => textOf(h.document.getElementById("dlg-confirm-" + part)!);
+/** 話題を開いて、場所のボタン → 候補 → [変える] まで */
+const movePlace = (h: PlaceShell, id: string, label: string) => {
+  h.app.open(id);
+  placeBtn(h).dispatch("click");
+  pickPlace(h, label);
+  h.document.getElementById("dlg-confirm-ok")!.dispatch("click");
+};
+
+test("web static: v3.html の場所は button で、type=button・aria-haspopup=dialog。dialog の数は M4b の後と同じ", () => {
+  const html = read("v3.html");
+  assert.match(html, /<div class="v3-bar" id="v3-bar" hidden>\s*<button class="btn btn-ghost btn-sm v3-place" id="v3-place" type="button" aria-haspopup="dialog" hidden><\/button>/);
+  assert.equal(html.includes('<span class="v3-place'), false);
+  assert.doesNotMatch(html.slice(html.indexOf('id="v3-place"') - 80, html.indexOf('id="v3-place"') + 80), /aria-label/);
+  assert.equal(html.match(/<dialog\b/g)?.length, 3);
+  for (const id of ["v3-sheet", "v3-start", "dlg-confirm"]) assert.match(html, new RegExp(`<dialog id="${id}"`), id);
+});
+
+test("web static: v3 の場所: movable が true の話題では押せる。理由があれば disabled で、title がその理由", async () => {
+  const h = await loadPlace();
+  h.app.open("ch:3");
+  assert.equal(placeBtn(h).hidden, false);
+  assert.equal(placeBtn(h).disabled, false);
+  assert.equal(placeBtn(h).getAttribute("title"), null);
+  assert.equal(textOf(placeLabel(h)), "場所: alpha");
+  // 中は文字と矢印（飾り）。名前は見えている文字で、aria-label は付けない
+  const [text, arrow] = kids(placeBtn(h));
+  assert.equal(text, placeLabel(h));
+  assert.equal(arrow!.getAttribute("aria-hidden"), "true");
+  assert.match(arrow!.querySelector("use")!.getAttribute("href")!, /#chevron-down$/);
+  assert.equal(placeBtn(h).getAttribute("aria-label"), null);
+  for (const [id, reason] of [
+    ["ch:4", "端末のセッションは場所を変えられません"],
+    ["ch:5", "完了した話題は場所を変えられません"],
+  ] as const) {
+    h.app.open(id);
+    assert.equal(placeBtn(h).disabled, true, id);
+    assert.equal(placeBtn(h).getAttribute("title"), reason);
+    // 押しても（ブラウザは disabled の click を出さないが）シートは開かない
+    placeBtn(h).dispatch("click");
+    assert.equal(h.nodes.sheet.getAttribute("open"), null);
+  }
+  // サーバーの理由をそのまま出す（画面に理由の文を持たない）
+  h.topicList = h.topicList.map((t) => (t.id === "ch:5" ? { ...t, movable: { reason: "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行して再起動してください" } } : t));
+  await h.topics.load();
+  assert.equal(placeBtn(h).getAttribute("title"), "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行して再起動してください");
+  // 押せる話題に戻ると title を外す
+  h.app.open("ch:1");
+  assert.equal(placeBtn(h).disabled, false);
+  assert.equal(placeBtn(h).getAttribute("title"), null);
+});
+
+test("web static: v3 の場所: 一覧を読み直しても、ボタンと中の要素は同じ要素のまま。文字が同じなら書き換えない", async () => {
+  const h = await loadPlace();
+  h.app.open("ch:2");
+  const button = placeBtn(h);
+  const label = placeLabel(h);
+  const arrow = kids(button)[1];
+  let writes = 0;
+  Object.defineProperty(label, "textContent", {
+    get: () => label.text,
+    set: (v: string) => {
+      writes++;
+      label.text = v;
+    },
+  });
+  await h.topics.load();
+  assert.equal(writes, 0);
+  assert.equal(placeBtn(h), button);
+  assert.deepEqual(kids(button), [label, arrow]);
+  // 付け替えの途中: movable が理由つきになり押せない
+  h.topicList = h.topicList.map((t) => (t.id === "ch:2" ? { ...t, movable: { reason: "場所を変えています" } } : t));
+  await h.topics.load();
+  assert.equal(writes, 0);
+  assert.equal(button.disabled, true);
+  assert.equal(button.getAttribute("title"), "場所を変えています");
+  // 終わって place が変わったら帯の文字が新しい場所に変わる
+  h.topicList = h.topicList.map((t) => (t.id === "ch:2" ? { ...t, group: "p:alpha", place: { dir: "alpha" }, movable: true } : t));
+  await h.topics.load();
+  assert.equal(writes, 1);
+  assert.equal(textOf(label), "場所: alpha");
+  assert.equal(button.disabled, false);
+  assert.equal(button.getAttribute("title"), null);
+  assert.deepEqual(kids(button), [label, arrow]);
+});
+
+test("web static: v3 の場所: 話題でない画面ではボタンを隠す", async () => {
+  const h = await loadPlace();
+  assert.equal(placeBtn(h).hidden, true, "起動の直後（何も開いていない）");
+  h.app.open("ch:1");
+  assert.equal(placeBtn(h).hidden, false);
+  h.app.open("tasks");
+  assert.equal(placeBtn(h).hidden, true);
+  // スマホは話題でない画面でも帯を残す（[右腕] のため）が、場所は隠す
+  const p = await loadPlace({ phone: true });
+  p.app.open("tasks");
+  assert.equal(p.nodes.bar.hidden, false);
+  assert.equal(placeBtn(p).hidden, true);
+  p.app.open("ch:3");
+  assert.equal(placeBtn(p).hidden, false);
+});
+
+test("web static: v3 の場所: 押すとシート「場所を変える」が開き、候補は General が先頭でプロジェクトが続く。今の場所は押せない行で右に「今の場所」", async () => {
+  const h = await loadPlace();
+  h.app.open("ch:3");
+  placeBtn(h).dispatch("click");
+  assert.equal(h.nodes.sheet.getAttribute("open"), "");
+  assert.equal(h.nodes.sheet.getAttribute("aria-label"), "場所を変える");
+  assert.equal(textOf(h.nodes.sheet.querySelector("span.sheet-title")!), "場所を変える");
+  assert.deepEqual(sheetRows(h), [
+    { label: "General", why: null, disabled: false, icon: "circle" },
+    { label: "alpha", why: "今の場所", disabled: true, icon: "check" },
+    { label: "beta", why: null, disabled: false, icon: "circle" },
+  ]);
+  // 焦点は押せる最初の行
+  assert.equal(h.document.activeElement, h.nodes.sheet.querySelectorAll("button.more-row")[0]);
+  // General の話題は General が今の場所
+  h.nodes.sheet.removeAttribute("open");
+  h.app.open("ch:1");
+  placeBtn(h).dispatch("click");
+  assert.deepEqual(
+    sheetRows(h).map((r) => [r.label, r.disabled, r.why]),
+    [
+      ["General", true, "今の場所"],
+      ["alpha", false, null],
+      ["beta", false, null],
+    ],
+  );
+});
+
+test("web static: v3 の場所: 場所なしの話題では、押せない行が無く General も選べる", async () => {
+  const h = await loadPlace();
+  h.app.open("ch:2");
+  placeBtn(h).dispatch("click");
+  assert.deepEqual(
+    sheetRows(h).map((r) => [r.label, r.disabled, r.why]),
+    [
+      ["General", false, null],
+      ["alpha", false, null],
+      ["beta", false, null],
+    ],
+  );
+});
+
+test("web static: v3 の場所: 候補を選ぶと確認が出る。題は「場所を変えますか」・対象は題名・ボタンは「変える」・本文に前と新しい場所の名前", async () => {
+  const h = await loadPlace();
+  h.app.open("ch:3");
+  placeBtn(h).dispatch("click");
+  pickPlace(h, "beta");
+  assert.equal(h.nodes.sheet.getAttribute("open"), null, "シートは閉じる");
+  assert.equal(h.confirm.getAttribute("open"), "");
+  assert.equal(confirmText(h, "title"), "場所を変えますか");
+  assert.equal(confirmText(h, "target"), "「作業」");
+  assert.equal(confirmText(h, "ok"), "変える");
+  assert.match(confirmText(h, "body"), /^場所を alpha から beta に変えます。/);
+  assert.equal(h.document.activeElement, h.document.getElementById("dlg-confirm-ok"));
+  assert.equal(h.api.posts.length, 0, "確認の前には送らない");
+});
+
+test("web static: v3 の場所: 場所なしの話題の確認は「場所なしには戻せません」、ほかは「あとで戻せます」", async () => {
+  const h = await loadPlace();
+  h.app.open("ch:2");
+  placeBtn(h).dispatch("click");
+  pickPlace(h, "General");
+  assert.equal(confirmText(h, "body"), "場所を なし から General に変えます。会話の記録はこのまま残り、担当には要点を引き継ぎます。場所なしには戻せません");
+  h.document.getElementById("dlg-confirm-cancel")!.dispatch("click");
+  h.app.open("ch:1");
+  placeBtn(h).dispatch("click");
+  pickPlace(h, "alpha");
+  assert.equal(confirmText(h, "body"), "場所を General から alpha に変えます。ファイルは動かしません。会話の記録はこのまま残り、担当には要点を引き継ぎます。あとで戻せます");
+  h.document.getElementById("dlg-confirm-cancel")!.dispatch("click");
+  assert.equal(h.api.posts.length, 0, "[やめる] は送らない");
+});
+
+test("web static: v3 の場所: [変える] は POST /api/topics/ch:<id>/place に { place } を 1 回だけ送る。パスの : を % にしない", async () => {
+  const h = await loadPlace();
+  h.api.postReply = () => Promise.resolve({ accepted: true });
+  movePlace(h, "ch:3", "General");
+  assert.deepEqual(h.api.posts, [{ path: "/api/topics/ch:3/place", body: { place: "general" }, opts: { quiet: true } }]);
+  assert.equal(h.api.posts[0]!.path.includes("%"), false);
+  assert.equal(h.confirm.getAttribute("open"), null);
+  await h.flush();
+  movePlace(h, "ch:2", "beta");
+  assert.deepEqual(h.api.posts[1], { path: "/api/topics/ch:2/place", body: { place: "p:beta" }, opts: { quiet: true } });
+  assert.equal(h.api.posts.length, 2);
+});
+
+test("web static: v3 の場所: 受け付けたら toast を出し、一覧を読み直す", async () => {
+  const h = await loadPlace();
+  h.api.postReply = () => Promise.resolve({ accepted: true });
+  const reads = h.api.paths.length;
+  movePlace(h, "ch:2", "alpha");
+  await h.flush();
+  assert.deepEqual(h.toasts, ["場所を alpha に変えています。要点をまとめるので少しかかります"]);
+  assert.deepEqual(h.errors, []);
+  assert.equal(topicReads(h, reads), 1);
+});
+
+test("web static: v3 の場所: 失敗は error の値ごとの文を toast に出す。HTTP の番号・error の値は画面に出ない", async () => {
+  const cases: Array<[Error, string]> = [
+    [apiError(409, "busy"), "担当が作業中です。終わってから変えてください"],
+    [apiError(409, "closing"), "閉じる途中です。終わってから変えてください"],
+    [apiError(409, "moving"), "場所を変えています。終わるまで待ってください"],
+    [apiError(409, "closed"), "完了した話題は場所を変えられません"],
+    [apiError(409, "persona"), "足した人格の話題は場所を変えられません"],
+    [apiError(409, "cc_disabled"), "場所を変えるには Claude Code の連携が要ります"],
+    [apiError(503, "unify_not_ready"), "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行して再起動してください"],
+    [apiError(400, "invalid_project"), "その場所は使えません"],
+    [apiError(400, "bad_request"), "その場所は使えません"],
+    [apiError(409, "same_place"), "もうその場所です"],
+    [apiError(404, "not_found"), "この話題は場所を変えられません"],
+    [apiError(0, null), "サーバーにつながりません"],
+    [apiError(500, "internal"), "場所を変えられませんでした。もう一度試してください"],
+  ];
+  const h = await loadPlace();
+  for (const [err, text] of cases) {
+    h.errors = [];
+    h.api.postReply = () => Promise.reject(err);
+    const reads = h.api.paths.length;
+    movePlace(h, "ch:3", "beta");
+    await h.flush();
+    assert.deepEqual(h.errors, [text]);
+    const { status, code } = err as Error & { status: number; code: string | null };
+    if (status !== 0) assert.equal(text.includes(String(status)), false, "HTTP の番号");
+    if (code) assert.equal(text.includes(code), false, "error の値");
+    assert.equal(topicReads(h, reads), 0, "失敗では読み直さない");
+  }
+  assert.deepEqual(h.toasts, []);
+  assert.equal(h.api.posts.length, cases.length, "失敗の後はまた送れる");
+});
+
+test("web static: v3 の場所: 送っている間は 2 回送らない", async () => {
+  const h = await loadPlace();
+  const pending: Array<(v: unknown) => void> = [];
+  h.api.postReply = () => new Promise((r) => void pending.push(r));
+  movePlace(h, "ch:3", "beta");
+  movePlace(h, "ch:3", "General");
+  assert.equal(h.api.posts.length, 1, "同じ話題の 2 回目は送らない");
+  // 別の話題は送れる
+  movePlace(h, "ch:1", "alpha");
+  assert.deepEqual(
+    h.api.posts.map((p) => p.path),
+    ["/api/topics/ch:3/place", "/api/topics/ch:1/place"],
+  );
+  pending[0]!({ accepted: true });
+  await h.flush();
+  // 返った後は同じ話題にまた送れる
+  movePlace(h, "ch:3", "General");
+  assert.equal(h.api.posts.length, 3);
+  pending[1]!({ accepted: true });
+  pending[2]!({ accepted: true });
+  await h.flush();
+  assert.equal(h.toasts.length, 3);
+});
+
+test("web static: v3 の場所: 送っている間に別の話題を開いてから応答が返っても、今の話題の帯・シート・確認に触らない", async () => {
+  const h = await loadPlace();
+  const pending: Array<{ res: (v: unknown) => void; rej: (e: unknown) => void }> = [];
+  h.api.postReply = () => new Promise((res, rej) => void pending.push({ res, rej }));
+  movePlace(h, "ch:3", "beta");
+  movePlace(h, "ch:2", "alpha");
+  // 別の話題を開いて、シートを開いておく
+  h.app.open("ch:1");
+  placeBtn(h).dispatch("click");
+  const rows = sheetRows(h);
+  pending[0]!.res({ accepted: true });
+  pending[1]!.rej(apiError(409, "busy"));
+  await h.flush();
+  assert.equal(h.app.activeTabId(), "ch:1");
+  assert.equal(textOf(placeLabel(h)), "場所: General");
+  assert.equal(placeBtn(h).disabled, false);
+  assert.equal(h.nodes.sheet.getAttribute("open"), "", "シートは開いたまま");
+  assert.deepEqual(sheetRows(h), rows);
+  assert.equal(h.confirm.getAttribute("open"), null);
+  assert.deepEqual(h.toasts, ["場所を beta に変えています。要点をまとめるので少しかかります"]);
+  assert.deepEqual(h.errors, ["担当が作業中です。終わってから変えてください"]);
+});
+
+test("web static: v3 の場所: 確認が閉じたら場所のボタンに焦点が戻る", async () => {
+  const h = await loadPlace();
+  h.api.postReply = () => Promise.resolve({ accepted: true });
+  h.app.open("ch:3");
+  const open = () => {
+    placeBtn(h).dispatch("click");
+    pickPlace(h, "beta");
+    assert.equal(h.confirm.getAttribute("open"), "");
+    assert.notEqual(h.document.activeElement, placeBtn(h));
+  };
+  // [やめる]
+  open();
+  h.document.getElementById("dlg-confirm-cancel")!.dispatch("click");
+  assert.equal(h.confirm.getAttribute("open"), null);
+  assert.equal(h.document.activeElement, placeBtn(h));
+  // Escape（<dialog> の素の動きで close）
+  open();
+  h.confirm.close();
+  assert.equal(h.document.activeElement, placeBtn(h));
+  // [変える]
+  open();
+  h.document.getElementById("dlg-confirm-ok")!.dispatch("click");
+  assert.equal(h.document.activeElement, placeBtn(h));
+  await h.flush();
+  // 1 回の確認ごとに付けた listener は閉じたら外す（後の close で焦点を動かさない）
+  assert.equal((h.confirm.listeners.get("close") ?? []).length, 0);
+  const other = h.nodes.handOpen;
+  other.focus();
+  h.confirm.setAttribute("open", "");
+  h.confirm.close();
+  assert.equal(h.document.activeElement, other);
+});
+
+test("web static: v3 の場所の CSS: 文字だけを 1 行で省略し、押せないときは薄くせず矢印を出さない。スマホは --tap の高さ", () => {
+  const css = read("shell.css");
+  const block = (src: string, sel: string) => src.slice(src.indexOf(sel + " {"), src.indexOf("}", src.indexOf(sel + " {")));
+  assert.match(block(css, "\n.v3-place"), /min-width: 0;/);
+  assert.match(block(css, "\n.v3-place"), /color: var\(--text-secondary\);/);
+  assert.doesNotMatch(block(css, "\n.v3-place"), /overflow|ellipsis/);
+  assert.match(block(css, "\n.v3-place-text"), /overflow: hidden;\s*text-overflow: ellipsis;\s*white-space: nowrap;/);
+  assert.match(block(css, "\n.v3-place:disabled"), /opacity: 1;\s*cursor: default;/);
+  assert.match(block(css, "\n.v3-place:disabled .icon"), /display: none;/);
+  const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
+  assert.match(block(phone, "  .v3-place"), /min-height: var\(--tap\);/);
+});
