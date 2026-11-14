@@ -166,7 +166,10 @@ class FakeNode {
     this.children = [];
     this.append(...nodes);
   }
+  /** remove・insertBefore を呼んだ数（一覧の差し替えのテストが 0 に戻して数える） */
+  static calls = { remove: 0, insertBefore: 0 };
   remove(): void {
+    FakeNode.calls.remove++;
     if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
     this.parent = null;
   }
@@ -178,7 +181,10 @@ class FakeNode {
     return this.parent.children[this.parent.children.indexOf(this) + 1] ?? null;
   }
   insertBefore(node: FakeNode, ref: FakeNode | null): void {
+    FakeNode.calls.insertBefore++;
     node.remove();
+    // 動かすために外したのは remove の数に入れない
+    FakeNode.calls.remove--;
     node.parent = this;
     const at = ref ? this.children.indexOf(ref) : -1;
     if (at < 0) this.children.push(node);
@@ -1646,4 +1652,232 @@ test("web static: tokens.css は変数だけで、app.css に :root の色のブ
   assert.doesNotMatch(app, /:root\[data-theme="dark"\] \{/);
   assert.doesNotMatch(app, /^:root \{/m);
   assert.match(app, /^ \*\/\n\n::selection \{/m);
+});
+
+// ===== 新しい殻（v3.html・shell.js・topics.js・shell.css・tokens.css。docs/plan/web-ui-v3.md の M2a） =====
+/** IIFE の直下（2 字下げ）の function の本体を切り出す */
+function fnSource(js: string, name: string): string {
+  const start = js.indexOf(`\n  function ${name}(`);
+  assert.ok(start >= 0, name);
+  const end = js.indexOf("\n  }\n", start);
+  assert.ok(end > start, name);
+  return js.slice(start, end + 4);
+}
+
+/** `SA.app = { … }` の鍵（4 字下げの行の頭の名前） */
+function appKeys(js: string): string[] {
+  const start = js.indexOf("\n  SA.app = {\n");
+  assert.ok(start >= 0);
+  const end = js.indexOf("\n  };\n", start);
+  return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
+}
+
+test("web static: v3.html の読み込みの順（base → tokens → app → shell、ui → api → sound → chat → views → topics → shell）と、sidebar.js・workbench.js を読まないこと", () => {
+  const html = read("v3.html");
+  assert.match(html, /<html lang="ja" data-theme="dark">/);
+  const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
+  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css"]);
+  const scripts = [...html.matchAll(/<script src="([^"]+)" defer><\/script>/g)].map((m) => m[1]);
+  assert.deepEqual(scripts, ["/static/ui.js", "/static/api.js", "/static/sound.js", "/static/chat.js", "/static/views.js", "/static/topics.js", "/static/shell.js"]);
+  assert.doesNotMatch(html, /sidebar\.js|workbench\.js/);
+  // head の meta・title・manifest・icon は index.html と同じ
+  const headOf = (h: string) => h.slice(0, h.indexOf('<link rel="stylesheet"'));
+  assert.equal(headOf(html), headOf(read("index.html")));
+});
+
+test("web static: v3.html に inline の script・style・style 属性が無く、ui.js が引く id（dlg-confirm と中の 5 つ・toast・toast-alert・ed）がある", () => {
+  const html = read("v3.html");
+  assert.doesNotMatch(html, /<style\b/i);
+  assert.doesNotMatch(html, /\sstyle=/i);
+  assert.doesNotMatch(html, /\son[a-z]+=/i);
+  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) assert.equal((m[2] ?? "").trim(), "");
+  for (const id of ["dlg-confirm", "dlg-confirm-title", "dlg-confirm-target", "dlg-confirm-body", "dlg-confirm-cancel", "dlg-confirm-ok", "toast", "toast-alert", "ed"]) {
+    assert.match(html, new RegExp(`\\sid="${id}"`), id);
+  }
+  assert.match(html, /<body>\s*<a class="skip-link" href="#ed">本文へ<\/a>/);
+  assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
+});
+
+test("web static: v3.html に [+]・「場所」のボタン・右腕の口が無い", () => {
+  const html = read("v3.html");
+  for (const word of ["v3-add", "v3-right", "dlg-new", "dlg-cc-start", "palette"]) assert.equal(html.includes(word), false, word);
+  const shell = read("shell.js");
+  for (const word of ["v3-add", "v3-right"]) assert.equal(shell.includes(word), false, word);
+  const bar = fnSource(shell, "renderBar");
+  assert.doesNotMatch(bar, /"button"/);
+  assert.match(bar, /place\.textContent = text/);
+});
+
+test("web static: 新しい殻の SA.app は今の殻と同じ名前を全部持つ", () => {
+  const now = appKeys(read("workbench.js"));
+  assert.ok(now.length >= 20);
+  assert.deepEqual(appKeys(read("shell.js")), now);
+});
+
+test("web static: 一覧の差し替えは同じ key の要素を使い回し、順が同じなら insertBefore・remove を呼ばない", () => {
+  const ctx: Record<string, unknown> = {};
+  vm.runInNewContext(fnSource(read("topics.js"), "reconcile"), ctx);
+  const reconcile = ctx.reconcile as (parent: FakeNode, items: string[], keyOf: (x: string) => string, create: (x: string) => FakeNode, update: (n: FakeNode, x: string) => void) => void;
+  const parent = new FakeNode("ul");
+  let created = 0;
+  const run = (items: string[]) =>
+    reconcile(
+      parent,
+      items,
+      (x) => x,
+      () => {
+        created++;
+        return new FakeNode("li");
+      },
+      (node, x) => {
+        node.text = x;
+      },
+    );
+  const reset = () => {
+    FakeNode.calls.remove = 0;
+    FakeNode.calls.insertBefore = 0;
+    created = 0;
+  };
+  const texts = () => parent.children.map((c) => c.text);
+  run(["a", "b", "c"]);
+  const [a, b, c] = parent.children;
+  assert.deepEqual(texts(), ["a", "b", "c"]);
+  // 同じ並びをもう一度: 挿入 0・削除 0・要素は同じ
+  reset();
+  run(["a", "b", "c"]);
+  assert.deepEqual([FakeNode.calls.insertBefore, FakeNode.calls.remove, created], [0, 0, 0]);
+  assert.deepEqual(parent.children, [a, b, c]);
+  // 1 つ増える: 挿入 1
+  reset();
+  run(["a", "b", "x", "c"]);
+  assert.deepEqual([FakeNode.calls.insertBefore, FakeNode.calls.remove, created], [1, 0, 1]);
+  assert.deepEqual(texts(), ["a", "b", "x", "c"]);
+  assert.equal(parent.children[0], a);
+  assert.equal(parent.children[3], c);
+  // 1 つ消える: 削除 1（ほかは動かさない）
+  reset();
+  run(["a", "x", "c"]);
+  assert.deepEqual([FakeNode.calls.insertBefore, FakeNode.calls.remove, created], [0, 1, 0]);
+  assert.equal(b!.parent, null);
+  assert.deepEqual(texts(), ["a", "x", "c"]);
+  // 順が入れ替わる: 要素は同じまま
+  const x = parent.children[1];
+  reset();
+  run(["c", "x", "a"]);
+  assert.deepEqual(parent.children, [c, x, a]);
+  assert.deepEqual([FakeNode.calls.remove, created], [0, 0]);
+});
+
+test("web static: topics.js は一覧の入れ物を作り直さない", () => {
+  const js = read("topics.js");
+  const receivers = [...js.matchAll(/(\w+)\.replaceChildren\(/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(receivers)].sort(), ["button", "head"]);
+  assert.match(fnSource(js, "fillRow"), /button\.replaceChildren\(/);
+  assert.match(fnSource(js, "updateGroup"), /head\.replaceChildren\(/);
+  for (const name of ["body", "groups", "list"]) {
+    assert.doesNotMatch(js, new RegExp(`\\b${name}\\.(replaceChildren\\(|innerHTML|textContent = "")`), name);
+  }
+  // 群・行・「あなたの番」の行は同じ reconcile で
+  assert.match(js, /reconcile\(groups, data\.groups,/);
+  assert.match(js, /reconcile\(list, members\.map\(rowParts\),/);
+  assert.match(js, /reconcile\(\$\("v3-turns-rows"\), parts, \(p\) => "turn:" \+ p\.id,/);
+});
+
+test("web static: 行の印は あなたの番 > 作業中 > 未読 で 1 つだけ、作業中の輪は回さない", () => {
+  const ctx: Record<string, unknown> = {
+    store: { isUnread: (ch: { id: string; last: unknown }) => ch.id === "1" && ch.last !== null },
+    SA: {
+      ui: {
+        shortTime: (v: unknown) => {
+          assert.equal(typeof v, "string", "activityAt が null なら shortTime を呼ばない");
+          return "12:00";
+        },
+      },
+      app: { activeTabId: () => "ch:2" },
+    },
+  };
+  vm.runInNewContext(fnSource(read("topics.js"), "rowParts"), ctx);
+  const rowParts = ctx.rowParts as (t: unknown) => { mark: string; kind: string | null; current: boolean; done: boolean; turnKind: string | null; time: string | null };
+  const topic = (o: Record<string, unknown>) => ({ id: "ch:1", title: "t", origin: "session", persona: null, activityAt: "2026-11-14T00:00:00Z", state: "active", last: { id: 2, at: "", kind: "agent" }, mark: null, turn: null, ...o });
+  assert.equal(rowParts(topic({ mark: "turn", turn: { kind: "permission" } })).mark, "turn");
+  assert.equal(rowParts(topic({ mark: "turn", turn: { kind: "permission" } })).turnKind, "permission");
+  assert.equal(rowParts(topic({ mark: "running" })).mark, "running");
+  assert.equal(rowParts(topic({})).mark, "unread");
+  assert.equal(rowParts(topic({ id: "ch:2" })).mark, "none");
+  assert.equal(rowParts(topic({ id: "ch:2" })).current, true);
+  // チャンネルの無い Claude Code の話題に未読の点は出さない・「端末」を添える
+  const cc = rowParts(topic({ id: "cc:1", origin: "cc" }));
+  assert.equal(cc.mark, "none");
+  assert.equal(cc.kind, "端末");
+  assert.equal(rowParts(topic({ state: "done" })).done, true);
+  // 履歴の無い行（activityAt が null）は時刻を出さない
+  assert.equal(rowParts(topic({})).time, "12:00");
+  assert.equal(rowParts(topic({ activityAt: null })).time, null);
+  assert.match(fnSource(read("topics.js"), "fillRow"), /if \(p\.time !== null\) meta\.push\(el\("span", \{ class: "v3-row-time", text: p\.time \}\)\);/);
+  const css = read("shell.css");
+  const ring = css.slice(css.indexOf("\n.v3-ring {"), css.indexOf("}", css.indexOf("\n.v3-ring {")));
+  assert.match(ring, /border: 2px solid var\(--accent\);/);
+  assert.doesNotMatch(ring, /animation/);
+  assert.doesNotMatch(css, /@keyframes|animation|transition/);
+  // 作業中の印は spinner でなく輪
+  assert.doesNotMatch(read("topics.js"), /spinner/);
+});
+
+test("web static: 行の署名が同じなら中身を書き換えない", () => {
+  let fills = 0;
+  const ctx: Record<string, unknown> = { fillRow: () => fills++ };
+  vm.runInNewContext(fnSource(read("topics.js"), "updateRow"), ctx);
+  const updateRow = ctx.updateRow as (li: FakeNode, p: Record<string, unknown>) => void;
+  const li = new FakeNode("li");
+  const button = new FakeNode("button");
+  li.append(button);
+  const p = { id: "ch:1", title: "t", mark: "none", current: true };
+  updateRow(li, p);
+  updateRow(li, { ...p });
+  assert.equal(fills, 1);
+  assert.equal(button.getAttribute("aria-current"), "true");
+  assert.equal(button.getAttribute("data-topic"), "ch:1");
+  updateRow(li, { ...p, current: false });
+  assert.equal(fills, 2);
+  assert.equal(button.getAttribute("aria-current"), null);
+});
+
+test("web static: 新しい殻の幅の段は 639 だけ", () => {
+  const css = read("shell.css");
+  const medias = [...css.matchAll(/@media ([^{]+)\{/g)].map((m) => m[1]!.trim());
+  assert.ok(medias.includes("(max-width: 639px)"));
+  // 幅の段のほかは、指・hover・動きを減らすの条件だけ
+  for (const m of medias) assert.ok(["(max-width: 639px)", "(pointer: coarse)", "(prefers-reduced-motion: reduce)", "(hover: hover) and (pointer: fine)"].includes(m), m);
+  assert.doesNotMatch(css, /767|1023|1024|768/);
+  assert.match(read("shell.js"), /window\.matchMedia\("\(max-width: 639px\)"\)/);
+  // セレクタは .v3 で始まるものだけ（:root の変数 1 つを除く）
+  const selectors = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/^\s*([^@\s{}][^{}]*)\{/gm)].map((m) => m[1]!.trim());
+  for (const sel of selectors) {
+    if (sel === ":root") continue;
+    for (const part of sel.split(",")) assert.match(part.trim(), /^\.v3/, sel);
+  }
+  assert.equal(css.match(/^\s*--[a-z0-9-]+:/gm)?.length, 1);
+});
+
+test("web static: shell.css に色の値が無い", () => {
+  const css = read("shell.css");
+  assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b/);
+  assert.doesNotMatch(css, /rgba?\(|hsla?\(/);
+});
+
+test("web static: 話題の polling は あなたの番か作業中があれば 10 秒、無ければ 60 秒、隠れている間は予約しない", () => {
+  const js = read("topics.js");
+  assert.match(js, /const BUSY_MS = 10000;/);
+  assert.match(js, /const IDLE_MS = 60000;/);
+  const arm = fnSource(js, "arm");
+  assert.match(arm, /clearTimeout\(timer\);/);
+  assert.match(arm, /if \(document\.visibilityState === "visible" && !SA\.poll\.stopped\(\)\) \{\n\s*timer = setTimeout\(load, counts\(\)\.turns > 0 \|\| counts\(\)\.running > 0 \? BUSY_MS : IDLE_MS\);/);
+  assert.match(fnSource(js, "load"), /arm\(\);/);
+  // 見えたら読み直し、隠れたら予約を消す
+  assert.match(js, /document\.addEventListener\("visibilitychange", \(\) => \{\n\s*if \(document\.visibilityState === "visible"\) schedule\(\);\n\s*else \{\n\s*clearTimeout\(timer\);/);
+  // api.js の polls には足さない
+  assert.doesNotMatch(read("api.js"), /\/api\/topics/);
+  // schedule は 2 秒に 1 回まで
+  assert.match(js, /const MIN_GAP_MS = 2000;/);
+  assert.match(fnSource(js, "schedule"), /if \(pending !== null\) return;/);
 });
