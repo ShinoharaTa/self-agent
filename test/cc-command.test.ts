@@ -215,7 +215,7 @@ function fakeTakeover(t: TestContext) {
   const gateway = new FakeGateway({ allow: ["sendMessage"], messageIdPrefix: "msg-" });
   const calls: string[] = [];
   let proposeResult: CcTakeoverProposeResult = { ok: false, reason: "not_channel", text: TAKEOVER_NOT_CHANNEL_TEXT };
-  let confirmResult: CcTakeoverConfirmResult = { ok: true, text: "取り込みました" };
+  let confirmResult: CcTakeoverConfirmResult = { ok: true, text: "取り込みました", edited: true };
   const runtime = {
     takeover: {
       propose: async (input: { channelId: string; entry: string }): Promise<CcTakeoverProposeResult> => {
