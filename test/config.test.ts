@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadCcConfig, loadConfig, loadDataConfig, loadGithubConfig, loadWebConfig, missingForStart } from "../src/config.ts";
+import { CC_PROJECT_PATTERN } from "../src/cc/starter.ts";
+import { GENERAL_DIR_PATTERN, loadCcConfig, loadConfig, loadDataConfig, loadGithubConfig, loadWebConfig, missingForStart } from "../src/config.ts";
 
 test("未設定ならデフォルト値を使う", () => {
   const config = loadConfig({ HOME: "/home/tester" });
@@ -69,6 +70,7 @@ test("未設定ならデフォルト値を使う", () => {
     ccQuestionHoldSec: 900,
     ccSendWaitMin: 120,
     workspaceDir: "/home/tester/workspace",
+    generalDir: "General",
     ccMaxSessions: 30,
     ccNotify: true,
   });
@@ -642,6 +644,7 @@ test("Claude Code: SELF_AGENT_CC=1 ならポートとトークンが要る。ト
     ccQuestionHoldSec: 1800,
     ccSendWaitMin: 30,
     workspaceDir: "/home/tester/workspace",
+    generalDir: "General",
     ccMaxSessions: 30,
     ccNotify: true,
   });
@@ -739,4 +742,23 @@ test("SERVE・WEB・CC_HOOK のポートが重ならない・片方だけ・未�
   assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_SERVE_PORT: "8790", SELF_AGENT_WEB_PORT: "" }).servePort, 8790);
   const none = loadConfig({ HOME: "/home/tester" });
   assert.deepEqual([none.servePort, none.webPort, none.ccHookPort], [undefined, undefined, undefined]);
+});
+
+test("config: SELF_AGENT_GENERAL_DIR の既定は General。形の違う名前（/・.・空白・65 字）は設定エラー。SELF_AGENT_CC が無効でも検査する", () => {
+  assert.equal(loadConfig({ HOME: "/home/tester" }).generalDir, "General");
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_GENERAL_DIR: "" }).generalDir, "General");
+  assert.equal(loadConfig({ HOME: "/home/tester", SELF_AGENT_GENERAL_DIR: "Free_work-1" }).generalDir, "Free_work-1");
+  assert.equal(loadCcConfig({ HOME: "/home/tester", SELF_AGENT_GENERAL_DIR: "x".repeat(64) }).generalDir, "x".repeat(64));
+  for (const value of ["a/b", "../x", ".", "..", "has space", " ", "x".repeat(65), "ジェネラル"]) {
+    assert.throws(
+      () => loadConfig({ HOME: "/home/tester", SELF_AGENT_GENERAL_DIR: value }),
+      (error: Error) => error.message === "SELF_AGENT_GENERAL_DIR は英数字・_・- の 1〜64 字で指定してください",
+      value,
+    );
+  }
+});
+
+test("config: General の名前の形は CC_PROJECT_PATTERN と同じ", () => {
+  assert.equal(GENERAL_DIR_PATTERN.source, CC_PROJECT_PATTERN.source);
+  assert.equal(GENERAL_DIR_PATTERN.flags, CC_PROJECT_PATTERN.flags);
 });

@@ -99,6 +99,8 @@ export type TopicsInput = {
   /** ?done= の群の key。無ければ null */
   done: string | null;
   cc: TopicsResult["cc"];
+  /** General のディレクトリの名前（その dir の話題は群 general。projects にあっても群にしない）。省略は null */
+  generalDir?: string | null;
 };
 
 /** 待っているものの要約の長さ */
@@ -122,10 +124,10 @@ export function summarize(text: string): string {
   return flat.length > TOPIC_SUMMARY_MAX ? `${flat.slice(0, TOPIC_SUMMARY_MAX - 1)}…` : flat;
 }
 
-/** 群の key（外は other、プロジェクトは p:<名前>、ほかは general） */
-export function groupKeyOf(seed: Pick<TopicSeed, "dir" | "outside">): string {
+/** 群の key（外は other、プロジェクトは p:<名前>、ほかと General のディレクトリは general） */
+export function groupKeyOf(seed: Pick<TopicSeed, "dir" | "outside">, generalDir: string | null = null): string {
   if (seed.outside) return OTHER_GROUP;
-  return seed.dir !== null ? `${PROJECT_PREFIX}${seed.dir}` : GENERAL_GROUP;
+  return seed.dir !== null && seed.dir !== generalDir ? `${PROJECT_PREFIX}${seed.dir}` : GENERAL_GROUP;
 }
 
 /** ISO の時刻 → ms（null・読めなければ 0） */
@@ -195,13 +197,13 @@ export function compareTopics(a: Topic, b: Topic): number {
   return compareIds(a.id, b.id);
 }
 
-function topicOf(seed: TopicSeed): Topic {
+function topicOf(seed: TopicSeed, generalDir: string | null): Topic {
   const done = seed.state === "done";
   const turn = done ? null : pickTurn(seed.turns);
   return {
     id: seed.id,
     title: seed.title,
-    group: groupKeyOf(seed),
+    group: groupKeyOf(seed, generalDir),
     place: { dir: seed.outside ? null : seed.dir },
     origin: seed.origin,
     pinned: seed.pinned,
@@ -224,11 +226,15 @@ function emptyGroup(key: string, kind: TopicGroup["kind"], name: string): TopicG
 
 /** 話題の一覧・群・あなたの番（入力は書き換えない） */
 export function buildTopics(input: TopicsInput): TopicsResult {
-  const all = input.seeds.map(topicOf);
+  const generalDir = input.generalDir ?? null;
+  const all = input.seeds.map((seed) => topicOf(seed, generalDir));
 
-  // 群（プロジェクトは input.projects と話題の p: の名前の和）
+  // 群（プロジェクトは input.projects と話題の p: の名前の和。General のディレクトリは群にしない）
   const groups = new Map<string, TopicGroup>();
-  for (const name of input.projects) groups.set(`${PROJECT_PREFIX}${name}`, emptyGroup(`${PROJECT_PREFIX}${name}`, "project", name));
+  for (const name of input.projects) {
+    if (name === generalDir) continue;
+    groups.set(`${PROJECT_PREFIX}${name}`, emptyGroup(`${PROJECT_PREFIX}${name}`, "project", name));
+  }
   groups.set(GENERAL_GROUP, emptyGroup(GENERAL_GROUP, "general", GENERAL_NAME));
   for (const topic of all) {
     if (!groups.has(topic.group)) {
