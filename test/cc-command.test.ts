@@ -218,7 +218,7 @@ function fakeTakeover(t: TestContext) {
   const calls: string[] = [];
   let proposeResult: CcTakeoverProposeResult = { ok: false, reason: "not_channel", text: "チャンネルでない" };
   let takeable: string[] = [];
-  let confirmResult: CcTakeoverConfirmResult = { ok: true, text: "取り込みました", edited: true };
+  let confirmResult: CcTakeoverConfirmResult = { ok: true, text: "取り込みました", plainText: "取り込みました", edited: true };
   const runtime = {
     takeover: {
       propose: async (input: { channelId: string; entry: string }): Promise<CcTakeoverProposeResult> => {
@@ -348,7 +348,7 @@ test("cc:takepick（T4）: 選んだセッションのチャンネルを作り�
   const component = createCcComponent({ ccChannels: () => current, ccTakeover: f.getter, gateway: f.gateway, log: (line) => void logs.push(line) });
   const first = f.row();
   const message = { text: "確認の文", components: takeoverButtons(first.id) };
-  f.setPropose({ ok: true, id: first.id, message });
+  f.setPropose({ ok: true, id: first.id, message, plainText: message.text });
   const responder = new FakeResponder();
   await component.handle(takePick(S1), responder);
   assert.deepEqual(opened, [{ guildId: "guild-1", sessionId: S1, origin: "command" }]);
@@ -378,7 +378,7 @@ test("cc:takepick（T4）: 選んだセッションのチャンネルを作り�
   // 投稿に失敗: cancel
   result = { ok: true, channelId: "cc-chan", guildId: "guild-1" };
   const second = f.row(S2);
-  f.setPropose({ ok: true, id: second.id, message: { text: "確認の文", components: takeoverButtons(second.id) } });
+  f.setPropose({ ok: true, id: second.id, message: { text: "確認の文", components: takeoverButtons(second.id) }, plainText: "確認の文" });
   f.gateway.beforeSendMessage = () => {
     throw new Error("cc-chan に投稿できない");
   };
@@ -402,7 +402,7 @@ test("/cc take: 通ったら確認の文とボタンをそのチャンネルに�
   const command = createCcCommand({ ccChannels: () => undefined, guildSettings: { ccCategoryId: () => "cat-cc" }, ccTakeover: f.getter, log: (line) => void logs.push(line) });
   const first = f.row();
   const message = { text: "確認の文", components: takeoverButtons(first.id) };
-  f.setPropose({ ok: true, id: first.id, message });
+  f.setPropose({ ok: true, id: first.id, message, plainText: message.text });
   const responder = new FakeResponder();
   await command.handle(TAKE, responder);
   assert.deepEqual(f.gateway.posts, [{ channelId: "cc-chan", messageId: "msg-1", message }]);
@@ -418,7 +418,7 @@ test("/cc take: 通ったら確認の文とボタンをそのチャンネルに�
 
   // 投稿に失敗: 確認待ちのまま残さない
   const second = f.row(S2);
-  f.setPropose({ ok: true, id: second.id, message: { text: "確認の文", components: takeoverButtons(second.id) } });
+  f.setPropose({ ok: true, id: second.id, message: { text: "確認の文", components: takeoverButtons(second.id) }, plainText: "確認の文" });
   f.gateway.beforeSendMessage = () => {
     throw new Error("cc-chan に投稿できない");
   };
@@ -493,7 +493,7 @@ test("cc:take:go は先に保留してから confirm（結果の文は CcTakeove
 test("cc:take・/cc take（T3b の受け入れ）: オーナー以外の操作は振り分けの前に断られ、propose・confirm・cancel も投稿も起こさない", async (t) => {
   const f = fakeTakeover(t);
   const row = f.row();
-  f.setPropose({ ok: true, id: row.id, message: { text: "確認の文", components: takeoverButtons(row.id) } });
+  f.setPropose({ ok: true, id: row.id, message: { text: "確認の文", components: takeoverButtons(row.id) }, plainText: "確認の文" });
   const handle = createInteractionHandler({
     cfg: { allowedGuildIds: ["guild-1"], ownerUserId: "owner-1" },
     commands: [createCcCommand({ ccChannels: () => undefined, guildSettings: { ccCategoryId: () => "cat-cc" }, ccTakeover: f.getter, log: () => {} })],

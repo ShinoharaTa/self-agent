@@ -2334,6 +2334,26 @@ kbd {
   display: none;
 }
 
+/* サーバーの文をそのまま出す本文（取り込みの確認。改行を保つ） */
+.dlg-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ダイアログの中の長い処理の表示（取り込みの [取り込む] の後。ボタンは無効にして文で示す） */
+.dlg-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
+
+.dlg-status[hidden] {
+  display: none;
+}
+
 /* ダイアログの「詳しい設定」（Claude Code の起動の権限モード。既定で閉じる） */
 .dlg-more > summary {
   display: flex;

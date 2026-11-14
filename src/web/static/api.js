@@ -300,6 +300,12 @@
     if (SA.events) SA.events.emit(name, detail);
   }
 
+  /** 会話のタブの状態を捨てる（取り込みでチャンネルの種類が変わった後。次の load.turns で最新の 50 件から読み直す） */
+  store.resetTurns = (channelId) => {
+    delete store.turns[channelId];
+    turnsCaughtUp.delete(channelId);
+  };
+
   /** 開いたときは最新の 50 件、その後は最後の行より後（after）を読む */
   store.load.turns = (channelId, opts) =>
     once("turns:" + channelId, async () => {

@@ -2,7 +2,7 @@
 // 入力欄から送ると Discord の発言と同じ経路で 1 ターン動く（POST /messages）。[中断]・[続ける] は Discord のボタンと同じ handler の関数。
 // 見出しの [待ちにする][閉じる][会話を新しくする] と /close の確認のカードは Discord の /wait・/close・/renew と同じ処理（src/app/session-ops.ts）。
 // Claude Code のチャンネル（kind cc。docs/plan/claude-code-channels.md §5.2。CC14）は同じタブで Discord と同じ流れ（発言・写し・返事・許可・終わり）を出し、
-// 見出しに状態・[RC で開く]・[画面]・[Discord で開く]・[閉じる]、末尾に許可のカード（保留中だけ）と送った本文の状態、入力欄から送るとそのセッションに届ける
+// 見出しに状態・[RC で開く]・[画面]・[Discord で開く]・[取り込む]（docs/plan/takeover.md §5.7。T5）・[閉じる]、末尾に許可のカード（保留中だけ）と送った本文の状態、入力欄から送るとそのセッションに届ける
 // （ターンは動かないので実行中の行・[中断]・[続ける]・[会話を新しくする] は無い）。セッションの今は /api/cc/sessions/<id>（api.js の polling）
 "use strict";
 
@@ -363,6 +363,168 @@
     });
   }
 
+  // ===== 取り込み（docs/plan/takeover.md §5.7。T5。Discord の /cc take と同じ行で、Discord の確認の投稿からも答えられる） =====
+  /** 断られた・失敗した文がサーバーから来なかったとき */
+  const TAKE_FAILED_TEXT = "取り込めませんでした。もう一度試してください";
+  /** confirm の結果が分からない（つながらない・5xx）とき。取り込みは続いているかもしれない */
+  const TAKE_UNKNOWN_TEXT = "結果を確かめられませんでした。取り込みは続いているかもしれません。";
+  /** 結果が分からないときに読み直す時刻（ms。分かったときは OP_RECHECK_MS の 1 回） */
+  const TAKE_UNKNOWN_RECHECK_MS = [1500, 5000, 15000];
+  /** POST …/takeover の途中（[取り込む] の二度押しで確認を 2 つ作らない） */
+  let takeRequesting = false;
+  /** 開いている取り込みの確認（{ id, channelId, busy, done }。背景で閉じても取り込みの途中は残す。無ければ null） */
+  let taking = null;
+
+  /** 見出しの [取り込む] を止めている理由（確認を作っている間・確認を開いている間・取り込みの途中）。押せるなら null */
+  function takeBusyWhy() {
+    if (takeRequesting) return "取り込みの確認を用意しています";
+    if (taking) return taking.busy ? "取り込んでいます" : "取り込みの確認を開いています";
+    return null;
+  }
+
+  /** 前に出ている cc のタブの見出しを描き直す（[取り込む] の無効を切り替える） */
+  function refreshTake(channelId) {
+    SA.app.refresh("ch:" + channelId);
+  }
+
+  /**
+   * 断られた・失敗した（409）ならサーバーの文、ほかは応答の文（つながらないなど）。断られた（確認の前）は知らせのトースト、
+   * 取り込みの失敗（alert）は失敗のトースト（端末が終わったかもしれないことを消さずに残す）
+   */
+  function takeFailed(err, alert) {
+    const text = err && err.data && typeof err.data.text === "string" && err.data.text !== "" ? err.data.text : null;
+    // 確認待ちでない（Discord で先に答えた）は知らせ
+    if (err && err.status === 409) toast(text || TAKE_FAILED_TEXT, null, alert && err.code !== "stale" ? { level: "error" } : undefined);
+    else if (err && err.status === 404) toast(STALE_TEXT);
+    else toast(err && err.toast ? err.toast : TAKE_FAILED_TEXT, null, { level: "error" });
+  }
+
+  /**
+   * タブの中身を作り直す（取り込んだ後はセッションの種類で開き直す。終わった端末の状態も読み直す）。rechecks の時刻にも読み直す。
+   * focusComposer なら読み直した後に入力欄へ焦点（done の後）
+   */
+  function reloadTaken(channelId, rechecks, focusComposer) {
+    store.resetTurns(channelId);
+    ccScreenOpened.delete(channelId);
+    // 入力欄も作り直す（説明の title が種類ごと。書きかけは SA.app.draft に残っている）
+    for (const node of document.querySelectorAll(".composer-wrap")) if (node.getAttribute("data-channel") === channelId) node.remove();
+    SA.app.refresh("ch:" + channelId);
+    const reload = () => Promise.all([store.load.channels(), store.load.turns(channelId)]).then(() => SA.app.refreshTabs());
+    reload().then(() => {
+      if (!focusComposer) return;
+      const wrap = [...document.querySelectorAll(".composer-wrap")].find((node) => node.getAttribute("data-channel") === channelId);
+      const input = wrap && wrap.querySelector("textarea");
+      if (input && input.offsetParent !== null) input.focus();
+    });
+    for (const ms of rechecks) setTimeout(reload, ms);
+  }
+
+  /** 見出しの [取り込む] に焦点を戻す（ダイアログを開いたボタン。描き直していれば今のもの。無ければ何もしない） */
+  function focusTakeButton(channelId) {
+    const header = [...document.querySelectorAll(".ed-toolbar")].find((node) => node.getAttribute("data-channel") === channelId);
+    const button = header && header.querySelector('[data-op="take"]');
+    if (button && !button.disabled && button.offsetParent !== null) button.focus();
+  }
+
+  /** [取り込む]: 確認を作り（POST …/takeover）、サーバーの確認の文をダイアログに出す。断られたらその文 */
+  function takeoverCc(channelId) {
+    const ch = channelById(channelId);
+    if (!ch || ch.kind !== "cc" || takeBusyWhy()) return;
+    const live = ccLive(ch);
+    if (typeof live.sessionId !== "string") return;
+    takeRequesting = true;
+    refreshTake(channelId);
+    SA.api
+      .post("/api/cc/sessions/" + encodeURIComponent(live.sessionId) + "/takeover", {}, { quiet: true })
+      .then(
+        (data) => {
+          if (data && typeof data.id === "number" && typeof data.text === "string") openTakeDialog(channelId, data.id, data.text);
+          else toast(TAKE_FAILED_TEXT, null, { level: "error" });
+        },
+        (err) => takeFailed(err, false),
+      )
+      .finally(() => {
+        takeRequesting = false;
+        refreshTake(channelId);
+      });
+  }
+
+  /** 確認のダイアログ: [取り込む] → POST …/confirm（待つ間はボタンを止める）、[やめる]・閉じた → POST …/cancel（失敗は出さない） */
+  function openTakeDialog(channelId, id, text) {
+    const dialog = document.getElementById("dlg-cc-take");
+    const ok = document.getElementById("dlg-cc-take-ok");
+    const cancel = document.getElementById("dlg-cc-take-cancel");
+    const status = document.getElementById("dlg-cc-take-status");
+    // 文はサーバーのものをそのまま（改行は .dlg-text で保つ）
+    document.getElementById("dlg-cc-take-body").textContent = text;
+    const state = { id, channelId, busy: false, done: false };
+    taking = state;
+    const setBusy = (busy) => {
+      state.busy = busy;
+      ok.disabled = busy;
+      cancel.disabled = busy;
+      status.hidden = !busy;
+      if (busy) dialog.setAttribute("aria-busy", "true");
+      else dialog.removeAttribute("aria-busy");
+    };
+    // taken: 取り込めた（焦点は描き直した後の入力欄へ。[取り込む] には戻さない）
+    const finish = (taken) => {
+      if (state.done) return;
+      state.done = true;
+      ok.removeEventListener("click", onOk);
+      cancel.removeEventListener("click", onCancel);
+      dialog.removeEventListener("close", onClose);
+      dialog.removeEventListener("cancel", onEsc);
+      setBusy(false);
+      taking = null;
+      SA.ui.closeDialog(dialog);
+      refreshTake(channelId);
+      if (!taken) focusTakeButton(channelId);
+    };
+    const onOk = () => {
+      if (state.busy || state.done) return;
+      setBusy(true);
+      SA.api
+        .post("/api/cc/takeovers/" + encodeURIComponent(String(id)) + "/confirm", {}, { quiet: true })
+        .then(
+          () => {
+            // 完了の文は会話の行（notice）に残るので、トーストは出さない
+            finish(true);
+            reloadTaken(channelId, [OP_RECHECK_MS], true);
+          },
+          (err) => {
+            finish(false);
+            // つながらない・5xx: 結果が分からない。取り込みが続いているかもしれないので何度か読み直す
+            if (!err || !err.status || err.status >= 500) {
+              toast(TAKE_UNKNOWN_TEXT, null, { level: "error" });
+              reloadTaken(channelId, TAKE_UNKNOWN_RECHECK_MS, false);
+              return;
+            }
+            takeFailed(err, true);
+            reloadTaken(channelId, [OP_RECHECK_MS], false);
+          },
+        );
+    };
+    // [やめる]・Esc・backdrop: 確認をやめる（取り込みの途中は閉じても続き、結果は戻ってから出す）
+    const onCancel = () => SA.ui.closeDialog(dialog);
+    const onEsc = (event) => {
+      if (state.busy) event.preventDefault();
+    };
+    const onClose = () => {
+      if (state.busy || state.done) return;
+      finish(false);
+      SA.api.post("/api/cc/takeovers/" + encodeURIComponent(String(id)) + "/cancel", {}, { quiet: true }).catch(() => undefined);
+    };
+    ok.addEventListener("click", onOk);
+    cancel.addEventListener("click", onCancel);
+    dialog.addEventListener("close", onClose);
+    dialog.addEventListener("cancel", onEsc);
+    setBusy(false);
+    SA.ui.openDialog(dialog);
+    // 端末の Claude Code を終わらせる（戻せない）ので、最初の焦点は [やめる]（GUIDELINES §5）
+    cancel.focus();
+  }
+
   /**
    * パレットの Claude Code のチャンネルのコマンドの材料: 閉じられるか（終わっていない）・RC のリンク（読んだ 1 件にあるときだけ）・Discord のリンク。
    * cc のチャンネルでなければ null
@@ -374,7 +536,7 @@
     return { closable: live.state !== "ended", rc: live.rc, discord: discordUrl(ch.link) };
   }
 
-  /** 見出し（状態・[RC で開く]・[画面]・[Discord で開く]・[閉じる]） */
+  /** 見出し（状態・[RC で開く]・[画面]・[Discord で開く]・[取り込む]・[閉じる]） */
   function ccHeader(ch, channelId) {
     const live = ccLive(ch);
     const titleRow = el("div", { class: "ed-title" }, [
@@ -412,6 +574,14 @@
     const closeOff = live.state === "ended";
     const close = el("button", { class: "btn btn-secondary btn-sm", type: "button", disabled: closeOff, title: closeOff ? "閉じています" : null }, [icon("check"), "閉じる"]);
     close.addEventListener("click", () => closeCcChannel(channelId));
+    // [取り込む]（開いていても終わっていても。取り込めるかはサーバーが確かめ、断られたらその文を出す）
+    const takeWhy = takeBusyWhy();
+    const take = el(
+      "button",
+      { class: "btn btn-ghost btn-sm", type: "button", "data-op": "take", disabled: !!takeWhy, title: takeWhy || "この会話を self-agent のセッションとして続けます" },
+      [icon("message-square"), "取り込む"],
+    );
+    take.addEventListener("click", () => takeoverCc(channelId));
     const more = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-ops-more", type: "button", "aria-label": "ほかの操作", title: "ほかの操作" }, [icon("ellipsis")]);
     // このチャンネルの操作だけのシート（パレットは移動用）
     more.addEventListener("click", () =>
@@ -420,12 +590,13 @@
         [
           live.rc ? { icon: "external-link", label: "RC で開く", href: live.rc } : null,
           discord ? { icon: "external-link", label: "Discord で開く", href: discord } : null,
+          { icon: "message-square", label: "取り込む", run: takeWhy ? null : () => takeoverCc(channelId), why: takeWhy },
           { icon: "check", label: "閉じる", run: closeOff ? null : () => closeCcChannel(channelId), why: "閉じています" },
         ].filter(Boolean),
         more,
       ),
     );
-    actions.append(el("div", { class: "ed-ops" }, [close, more]));
+    actions.append(el("div", { class: "ed-ops" }, [take, close, more]));
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
   }
 

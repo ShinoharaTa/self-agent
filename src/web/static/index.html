@@ -83,6 +83,16 @@
     </div>
   </dialog>
 
+  <dialog id="dlg-cc-take" aria-labelledby="dlg-cc-take-title" aria-describedby="dlg-cc-take-body">
+    <h2 id="dlg-cc-take-title" class="dlg-title">取り込みますか</h2>
+    <p id="dlg-cc-take-body" class="meta dlg-text"></p>
+    <p class="dlg-status" id="dlg-cc-take-status" role="status" hidden><span class="spinner spinner-sm" aria-hidden="true"></span><span>取り込んでいます…</span></p>
+    <div class="dialog-actions">
+      <button class="btn btn-secondary btn-sm" id="dlg-cc-take-cancel" type="button">やめる</button>
+      <button class="btn btn-danger btn-sm" id="dlg-cc-take-ok" type="button">取り込む</button>
+    </div>
+  </dialog>
+
   <dialog id="dlg-new" aria-labelledby="dlg-new-title">
     <form id="new-form" class="stack" novalidate>
       <h2 id="dlg-new-title" class="dlg-title">新しいセッション</h2>
