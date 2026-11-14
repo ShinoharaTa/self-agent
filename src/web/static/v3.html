@@ -66,6 +66,29 @@
     <div class="v3-hand-backdrop" id="v3-hand-backdrop" hidden></div>
   </div>
   <dialog id="v3-sheet" class="v3-sheet"></dialog>
+  <dialog id="v3-start" class="v3-start" aria-labelledby="v3-start-title">
+    <form class="stack" id="v3-start-form" novalidate>
+      <h2 id="v3-start-title" class="dlg-title">話題を始める</h2>
+      <div class="field">
+        <label for="v3-start-place">場所</label>
+        <select class="select" id="v3-start-place" aria-describedby="v3-start-hint"></select>
+      </div>
+      <div class="field">
+        <label for="v3-start-text">最初の一言</label>
+        <textarea class="textarea" id="v3-start-text" rows="4" maxlength="1900" enterkeyhint="enter" aria-describedby="v3-start-error"></textarea>
+      </div>
+      <div class="field">
+        <label for="v3-start-name">題名（省くと最初の一言から付けます）</label>
+        <input class="input" id="v3-start-name" type="text" maxlength="100" autocomplete="off" enterkeyhint="go" aria-describedby="v3-start-error">
+      </div>
+      <div class="alert-slot"><p class="alert" id="v3-start-error" role="alert" hidden></p></div>
+      <p class="meta" id="v3-start-hint"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary btn-sm" id="v3-start-cancel" type="button">やめる</button>
+        <button class="btn btn-primary btn-sm" id="v3-start-ok" type="submit">始める</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title" aria-describedby="dlg-confirm-target dlg-confirm-body">
     <h2 id="dlg-confirm-title" class="dlg-title"></h2>

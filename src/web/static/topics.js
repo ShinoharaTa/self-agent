@@ -4,7 +4,7 @@
 
 (function () {
   const SA = (window.SA = window.SA || {});
-  const { el } = SA.ui;
+  const { el, icon } = SA.ui;
   const store = SA.store;
 
   // ===== 状態 =====
@@ -270,6 +270,31 @@
     return el("section", { class: "v3-group" }, [el("h2", { class: "v3-group-head" })]);
   }
 
+  /**
+   * 群の見出し（名前・補足・General とプロジェクトの群は [+]）。子は最初の 1 回だけ作り、以後は文字と [+] の名前だけを差し替える
+   * （作り直すと [+] の焦点が外れる）
+   */
+  function fillHead(head, g) {
+    if (head.children.length === 0) {
+      const parts = [el("span", { class: "v3-group-name" }), el("span", { class: "v3-group-note" })];
+      if (g.kind === "general" || g.kind === "project") {
+        const add = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm v3-add", type: "button", "data-place": g.key }, [icon("plus")]);
+        add.addEventListener("click", () => SA.app.newSession(add.getAttribute("data-place"), add));
+        parts.push(add);
+      }
+      head.replaceChildren(...parts);
+    }
+    const [name, note, add] = Array.from(head.children);
+    if (name.textContent !== g.name) name.textContent = g.name;
+    const text = groupNote(g);
+    if (note.textContent !== text) note.textContent = text;
+    if (add) {
+      const label = g.name + " で話題を始める";
+      add.setAttribute("aria-label", label);
+      add.setAttribute("title", label);
+    }
+  }
+
   /** 群の中の部分（data-part が rows・empty・done の子）。無ければ null */
   function partOf(parent, name) {
     for (const child of Array.from(parent.children)) if (child.getAttribute("data-part") === name) return child;
@@ -303,7 +328,7 @@
     const headSig = JSON.stringify([g.name, groupNote(g)]);
     if (head.getAttribute("data-sig") !== headSig) {
       head.setAttribute("data-sig", headSig);
-      head.replaceChildren(el("span", { class: "v3-group-name", text: g.name }), el("span", { class: "v3-group-note", text: groupNote(g) }));
+      fillHead(head, g);
     }
     const words = filterWords();
     const shown = new Set();
