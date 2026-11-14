@@ -91,7 +91,7 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * allowed で cfg.allowedGuildIds を、at でルートの今の時刻を差し替える。registry.unreadable と snapshotSessions は後から変えられる。
  * move で場所の付け替えの配線を渡す（"cc" は連携あり、"noCc" は連携なし）。要点のターンは moveSteps の順に偽の runner が返し、結果の投稿は posts に入る。
  * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる。
- * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose で足し、期限の判定は proposalClock の時刻
+ * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose と setMessageId（札が出た印）で足し、期限の判定は proposalClock の時刻
  */
 async function setup(
   t: TestContext,
@@ -1211,9 +1211,17 @@ test("createTopicCollector: 同じ依存で集めて buildTopics した物が GE
 
 // ---- 右腕の場所を変える確認（M6e） ----
 
+/** 札の出ている確認の行を足す（札がまだ出ていない行は「あなたの番」に出ない） */
+function propose(s: Awaited<ReturnType<typeof setup>>, channelId: string, toDir: string): number {
+  const id = s.moves.propose({ channelId, fromDir: null, toDir, by: "right_hand" });
+  assert.ok(id !== undefined);
+  s.moves.setMessageId(id, "card-1");
+  return id;
+}
+
 test("GET /api/topics: 右腕の確認のある話題に kind が confirm のあなたの番が付き、summary に行き先の名前、expiresAt に 10 分後が入る", async (t) => {
   const s = await setup(t, { cc: true, proposals: true });
-  s.moves.propose({ channelId: "204", fromDir: null, toDir: "alpha", by: "right_hand" });
+  propose(s, "204", "alpha");
   const result = await topics(s.server);
   assert.deepEqual(byId(result, "ch:204")!.turn, {
     kind: "confirm",
@@ -1228,7 +1236,7 @@ test("GET /api/topics: 右腕の確認のある話題に kind が confirm のあ
 
 test("GET /api/topics: 右腕の確認は cc が無くても付く", async (t) => {
   const s = await setup(t, { proposals: true });
-  s.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  propose(s, "200", "beta");
   const result = await topics(s.server);
   assert.equal(result.cc.enabled, false);
   assert.equal(byId(result, "ch:200")!.turn?.kind, "confirm");
@@ -1239,11 +1247,25 @@ test("GET /api/topics: 右腕の確認は cc が無くても付く", async (t) =
 
 test("GET /api/topics: 期限の切れた右腕の確認は付かない", async (t) => {
   const s = await setup(t, { proposals: true, at: new Date(NOW.getTime() + 10 * 60_000) });
-  s.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  propose(s, "200", "beta");
   s.proposalClock.at = new Date(NOW.getTime() + 10 * 60_000);
   const result = await topics(s.server);
   assert.equal(byId(result, "ch:200")!.turn, null);
   assert.equal(result.turnIds.includes("ch:200"), false);
+});
+
+test("GET /api/topics: 札がまだ出ていない右腕の確認は付かない", async (t) => {
+  const s = await setup(t, { proposals: true });
+  // 行だけあって message_id が無い（確認の投稿を待っている間・投稿の途中で落ちた行）
+  const id = s.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  assert.ok(id !== undefined);
+  const before = await topics(s.server);
+  assert.equal(byId(before, "ch:200")!.turn, null);
+  assert.equal(before.turnIds.includes("ch:200"), false);
+  // 札が出たら付く
+  s.moves.setMessageId(id, "card-1");
+  const after = await topics(s.server);
+  assert.equal(byId(after, "ch:200")!.turn?.kind, "confirm");
 });
 
 test("GET /api/topics: proposals を渡さなければ、確認の行があっても今までと同じ結果", async (t) => {
