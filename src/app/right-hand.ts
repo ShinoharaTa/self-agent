@@ -13,7 +13,6 @@ import { personaInboxName } from "./commands/setup.ts";
 import type { PersonaRouter } from "./personas.ts";
 import {
   checkSessionProject,
-  type ProjectSessionGate,
   type StartTopicDeps,
   type StartTopicPlace,
   type StartTopicResult,
@@ -45,10 +44,8 @@ export type RightHandDeps = {
   /** 呼ばれたチャンネルの持ち主（始める話題の持ち主）。無ければすべて既定の人格 */
   personas?: Pick<PersonaRouter, "ownerOf">;
   topicSessions: Pick<TopicSessionStore, "listOpen" | "personaOf" | "countCreatedSince" | "get">;
-  /** startTopic の依存（seeds を入れた物） */
+  /** startTopic の依存（seeds を入れた物）。場所の一覧もここの projectSessions を使う */
   start: StartTopicDeps;
-  /** 場所の一覧（プロジェクトのセッションを使えるときだけ。startTopic の projectSessions と同じ物） */
-  projectSessions?: ProjectSessionGate;
   /** 一覧の元（Web が無効なら undefined） */
   collect?: (at: number, done: string | null) => TopicsInput;
   now: () => Date;
@@ -67,21 +64,33 @@ function isPlaceRefusal(result: StartTopicResult): result is { result: "cc_disab
  */
 export function createRightHand(deps: RightHandDeps): { open: OpenTopic; list: TopicToolDeps["list"] } {
   const { cfg, resolveChannel, personas, topicSessions, now, log } = deps;
-  /** 始めている途中（上限を確かめた後、startTopic が終わるまで）の数。全サーバー・全人格で 1 つ */
+  /** 始めている途中（上限を確かめた後、startTopic が終わるまで）の数。全サーバー・全人格で 1 つ。
+   * 行ができてから終わるまでは DB の件数と両方で数えるので、並べて呼ばれると上限より手前で limit になりうる（超える方には倒れない） */
   let pending = 0;
 
-  /** 場所を決める（owner があれば見ない）。note は落とした理由など */
-  const resolvePlace = (project: string | undefined, hasOwner: boolean): { place: StartTopicPlace; notes: string[] } => {
+  /**
+   * 場所を決める（owner があれば見ない）。note は落とした理由など。
+   * asked は project を頼まれたのに General で始めることにした（general は General を名指しされた・fallback は一覧に無かった）。
+   * その note は startTopic の最後の結果を見て決める
+   */
+  const resolvePlace = (
+    project: string | undefined,
+    hasOwner: boolean,
+  ): { place: StartTopicPlace; notes: string[]; asked?: "general" | "fallback" } => {
     const general: StartTopicPlace = { kind: "general" };
     if (hasOwner) return { place: general, notes: project === undefined ? [] : [PERSONA_PLACE_NOTE] };
     if (project === undefined) return { place: general, notes: [] };
-    const gate = deps.projectSessions;
+    const gate = deps.start.projectSessions;
     if (gate === undefined || !gate.ready()) return { place: general, notes: [NO_PROJECT_SESSIONS_NOTE] };
-    if (checkSessionProject(project, gate).ok) return { place: { kind: "project", name: project }, notes: [] };
     const lower = project.toLowerCase();
+    // General を名指しされた（実際のディレクトリの名前でも）。仕切りに実名を出さない
+    if (lower === "general" || (gate.places.generalDir !== undefined && lower === gate.places.generalDir.toLowerCase())) {
+      return { place: general, notes: [], asked: "general" };
+    }
+    if (checkSessionProject(project, gate).ok) return { place: { kind: "project", name: project }, notes: [] };
     const matches = listProjects(gate.places).filter((name) => name.toLowerCase() === lower);
     if (matches.length === 1) return { place: { kind: "project", name: matches[0]! }, notes: [] };
-    return { place: general, notes: [PLACE_FALLBACK_NOTE] };
+    return { place: general, notes: [], asked: "fallback" };
   };
 
   const open: OpenTopic = async (args, context) => {
@@ -110,7 +119,8 @@ export function createRightHand(deps: RightHandDeps): { open: OpenTopic; list: T
     // 最初の await より前に数える（並べて呼ばれても上限を超えない）
     pending++;
     try {
-      const { place, notes } = resolvePlace(args.project, owner !== undefined);
+      const { place, notes, asked } = resolvePlace(args.project, owner !== undefined);
+      let fellBack = asked === "fallback";
       const begin = (where: StartTopicPlace) =>
         startTopic(
           {
@@ -129,7 +139,7 @@ export function createRightHand(deps: RightHandDeps): { open: OpenTopic; list: T
       let result = await begin(place);
       if (isPlaceRefusal(result) && place.kind === "project") {
         // 何も作る前の断りなので、General でもう 1 回だけ始める（2 つはできない）
-        notes.push(result.result === "invalid_project" ? PLACE_FALLBACK_NOTE : NO_PROJECT_SESSIONS_NOTE);
+        fellBack = true;
         result = await begin({ kind: "general" });
       }
       if (isPlaceRefusal(result)) return { result: "not_available", message: RIGHT_HAND_UNAVAILABLE_MESSAGE };
@@ -137,14 +147,20 @@ export function createRightHand(deps: RightHandDeps): { open: OpenTopic; list: T
       if (result.result === "empty" || result.result === "too_long") {
         return { result: "not_available", message: RIGHT_HAND_TOO_LONG_MESSAGE };
       }
-      if (result.turn === "failed") notes.push(FIRST_TURN_FAILED_NOTE);
+      const addNote = (note: string): void => {
+        if (!notes.includes(note)) notes.push(note);
+      };
+      // 頼まれた project で始まらなかった・General を使えなかった理由は、最後の結果の場所で決める
+      if (fellBack) addNote(result.projectDir === null ? NO_PROJECT_SESSIONS_NOTE : PLACE_FALLBACK_NOTE);
+      else if (asked === "general" && result.projectDir === null) addNote(NO_PROJECT_SESSIONS_NOTE);
+      if (result.turn === "failed") addNote(FIRST_TURN_FAILED_NOTE);
       log(
         `右腕から話題を始めました（guild=${guildId}、場所${result.projectDir === null ? "なし" : "あり"}、最初の依頼${result.turn === "none" ? "なし" : "あり"}）`,
       );
       const created: TopicOpenResult = {
         result: "created",
         channelId: result.channelId,
-        place: placeLabel(result.projectDir, deps.projectSessions?.places.generalDir),
+        place: placeLabel(result.projectDir, deps.start.projectSessions?.places.generalDir),
         turn: result.turn,
         ...(notes.length === 0 ? {} : { note: notes.join(" ") }),
       };
@@ -158,7 +174,7 @@ export function createRightHand(deps: RightHandDeps): { open: OpenTopic; list: T
     if (deps.collect === undefined) return { result: "disabled", message: TOPIC_LIST_DISABLED_MESSAGE };
     const input = deps.collect(now().getTime(), null);
     const rows = topicListRows(buildTopics(input), { timeZone: cfg.timeZone, generalDir: input.generalDir ?? undefined });
-    const gate = deps.projectSessions;
+    const gate = deps.start.projectSessions;
     const places = gate !== undefined && gate.ready() ? ["General", ...listProjects(gate.places)] : [];
     return { result: "ok", 注意: TOPIC_LIST_NOTICE, ...rows, places };
   };
