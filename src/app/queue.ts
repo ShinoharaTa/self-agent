@@ -74,6 +74,14 @@ export class KeyedSerialQueue {
     return this.runningSessions;
   }
 
+  /**
+   * その key に終わっていないジョブ（実行中・枠待ち・同じ key の前のジョブ待ち）があるか。
+   * 終わった直後は、後片付けの数 microtask の間だけ true のまま
+   */
+  has(key: string): boolean {
+    return this.tails.has(key);
+  }
+
   /** 実行中・待機中のジョブが無くなったら resolve する（停止時に使う。待つ上限は呼び出し側で決める） */
   idle(): Promise<void> {
     if (this.pending === 0) return Promise.resolve();

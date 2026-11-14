@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { RunResult } from "../src/agent/runner.ts";
 import type { ProjectSessionGate } from "../src/app/session-ops.ts";
@@ -47,6 +47,15 @@ const RESUME_FAILURE: RunResult = {
   sessionRecorded: false,
   toolCalls: 0,
 };
+
+/** 外から resolve できる promise（順を Promise.resolve() の回数でなく合図で待つ） */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 const FAILED: RunResult = { ok: false, errorMessage: "error_during_execution: boom", sessionId: "session-1", sessionRecorded: true, toolCalls: 0 };
 
@@ -118,8 +127,14 @@ function setup(t: TestContext, options: SetupOptions = {}) {
     by: "web",
   });
   const rows = () => db.prepare("SELECT * FROM topic_moves ORDER BY id").all();
+  /** 別の話題のジョブでセッションの枠（maxConcurrent 2 → 1）を塞ぐ。release で空ける */
+  const holdSessionSlot = () => {
+    const gate = deferred();
+    const done = turnQueue.run("topic-other", () => gate.promise, { session: true });
+    return { release: gate.resolve, done };
+  };
   const historyRows = () => history.list("topic-1", { limit: 50 }).map((row) => ({ kind: row.kind, source: row.source, text: row.text }));
-  return { db, ws, gate, gateState, deps, runner, projectRunner, turnQueue, moves, running, topicCalls, logs, accepted, onAccepted, input, rows, historyRows, ...stores };
+  return { db, ws, gate, gateState, deps, runner, projectRunner, turnQueue, moves, running, topicCalls, logs, accepted, onAccepted, input, rows, historyRows, holdSessionSlot, ...stores };
 }
 
 // ---- 純関数 ----
@@ -241,6 +256,17 @@ test("moveTopic: usage に kind topic-move の行が 1 つ", async (t) => {
   assert.deepEqual(rows.map((row) => ({ ...row })), [{ key: "topic-1", kind: "topic-move", ok: 1 }]);
 });
 
+test("moveTopic: usage の記録が投げても、要点のターンが通っていれば moved。log に 1 行", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  env.usage.record = () => {
+    throw new TypeError("disk full");
+  };
+  assert.deepEqual(await moveTopic(env.input(), env.deps), { result: "moved", from: null, to: "alpha", note: NOTE });
+  assert.equal(env.rows()[0]?.state, "done");
+  assert.equal(env.topicSessions.projectDirOf("topic-1")?.projectDir, "alpha");
+  assert.ok(env.logs.includes("場所の付け替えの要点のターンの usage を記録できませんでした（guild=guild-1、TypeError）"));
+});
+
 test("moveTopic: 要点の返答が空なら seed は題名、renewed_summary は触らない、note は null", async (t) => {
   const env = setup(t, { steps: [ok("  \n")] });
   env.topicSessions.setRenewed("topic-1", "前の要約");
@@ -281,6 +307,49 @@ test("moveTopic: No conversation found なら要点なしで進める。SDK セ�
   assert.equal(env.rows()[0]?.note, null);
 });
 
+test("moveTopic: プロジェクトの話題で要点のターンが No conversation found なら、要点なしで moved", async (t) => {
+  const env = setup(t, { projectSteps: [RESUME_FAILURE], projectDir: "alpha" });
+  assert.deepEqual(await moveTopic(env.input({ kind: "project", name: "beta" }), env.deps), { result: "moved", from: "alpha", to: "beta", note: null });
+  assert.equal(env.projectRunner.inputs.length, 1);
+  assert.equal(env.sessions.get("topic-1"), undefined);
+  assert.equal(env.seeds.get("topic-1"), `${RESUME_SEED_HEADER}\n題名: ${TITLE}\n\n${placeLines("alpha", "beta", GENERAL)}`);
+  assert.equal(env.rows()[0]?.note, null);
+});
+
+test("moveTopic: 今の場所のディレクトリが無くなった（消えた・改名された）話題は、要点のターンを走らせずに要点なしで付け替える。もう一度別の場所へも動かせる", async (t) => {
+  for (const broken of ["removed", "renamed"] as const) {
+    const env = setup(t, { projectDir: "beta" });
+    if (broken === "removed") rmSync(join(env.ws, "beta"), { recursive: true });
+    else renameSync(join(env.ws, "beta"), join(env.ws, "beta-old"));
+    const outcome = await moveTopic(env.input(), env.deps, env.onAccepted);
+    assert.deepEqual(outcome, { result: "moved", from: "beta", to: "alpha", note: null }, broken);
+    assert.equal(env.projectRunner.inputs.length, 0, broken);
+    assert.equal(env.runner.inputs.length, 0, broken);
+    assert.equal(env.sessions.get("topic-1"), undefined, broken);
+    assert.equal(env.seeds.get("topic-1"), `${RESUME_SEED_HEADER}\n題名: ${TITLE}\n\n${placeLines("beta", "alpha", GENERAL)}`, broken);
+    assert.deepEqual(env.topicSessions.projectDirOf("topic-1"), { projectDir: "alpha", permissionMode: "default" }, broken);
+    assert.equal(env.rows()[0]?.state, "done", broken);
+    assert.ok(env.logs.includes("今の場所が使えないので要点なしで付け替えます（guild=guild-1）"), broken);
+    // 会話が無くなったので、次はターンなしで動く
+    assert.equal((await moveTopic(env.input({ kind: "general" }), env.deps)).result, "moved", broken);
+    assert.equal(env.topicSessions.projectDirOf("topic-1")?.projectDir, GENERAL, broken);
+  }
+});
+
+test("moveTopic: projectRunner の無い環境でプロジェクトの話題は failed で、何も変えない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)], projectDir: "alpha" });
+  const { projectRunner: _projectRunner, ...turn } = env.deps.turn;
+  env.deps.turn = turn;
+  assert.deepEqual(await moveTopic(env.input({ kind: "project", name: "beta" }), env.deps), { result: "failed" });
+  assert.equal(env.runner.inputs.length, 0);
+  assert.equal(env.projectRunner.inputs.length, 0);
+  assert.equal(env.topicSessions.projectDirOf("topic-1")?.projectDir, "alpha");
+  assert.equal(env.sessions.get("topic-1"), "session-1");
+  assert.equal(env.rows()[0]?.state, "failed");
+  assert.deepEqual(env.historyRows(), [{ kind: "notice", source: "system", text: MOVE_FAILED_TEXT }]);
+  assert.ok(env.logs.includes("場所の付け替えの要点のターンを始めませんでした（guild=guild-1、プロジェクトの runner が無い）"));
+});
+
 test("moveTopic: 要点のターンが失敗したら何も変えない（project_dir・SDK セッション・seed・renewed_summary）。topic_moves は failed、履歴に知らせ 1 行、結果は failed", async (t) => {
   const env = setup(t, { steps: [FAILED] });
   env.seeds.set("topic-1", "前の seed");
@@ -309,6 +378,24 @@ test("moveTopic: runner が投げても running の行を残さない", async (t
   assert.equal(env.rows()[0]?.state, "failed");
   assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
   assert.equal(env.sessions.get("topic-1"), "session-1");
+});
+
+test("moveTopic: moves.fail が投げても結果は変わらず、log だけ", async (t) => {
+  for (const step of [ok(NOTE), FAILED]) {
+    const env = setup(t, { steps: [step] });
+    const moves = env.moves;
+    env.deps.moves = {
+      start: (input) => moves.start(input),
+      finish: (id, note, apply) => moves.finish(id, note, apply),
+      runningChannels: () => moves.runningChannels(),
+      fail: () => {
+        throw new TypeError("locked");
+      },
+    };
+    const outcome = await moveTopic(env.input(), env.deps);
+    assert.equal(outcome.result, step.ok ? "moved" : "failed");
+    assert.ok(env.logs.includes("場所の付け替えの行を失敗にできませんでした（TypeError）"));
+  }
 });
 
 test("moveTopic: 場所を変える書き込みの途中で投げたら、どれも元のまま（seed の書き込みを投げる store に差し替えて確かめる）", async (t) => {
@@ -378,6 +465,29 @@ test("moveTopic: 許可を待っているターンがある話題は busy", asyn
   assert.equal((await moveTopic(env.input(), env.deps)).result, "moved");
 });
 
+test("moveTopic: 同じチャンネルの発言が枠待ち・前のジョブ待ち（runningTurns には居ない）の間は busy。終われば受け付ける", async (t) => {
+  // 枠待ち: 別の話題がセッションの枠を塞ぎ、topic-1 の発言が待っている
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const slot = env.holdSessionSlot();
+  const message = env.turnQueue.run("topic-1", async () => {}, { session: true });
+  assert.deepEqual(await moveTopic(env.input(), env.deps, env.onAccepted), { result: "busy" });
+  assert.deepEqual(env.accepted, []);
+  assert.equal(env.rows().length, 0);
+  slot.release();
+  await Promise.all([slot.done, message, env.turnQueue.idle()]);
+  assert.equal((await moveTopic(env.input(), env.deps)).result, "moved");
+
+  // 前のジョブ待ち: topic-1 のジョブが動いていて、次の発言が待っている
+  const queued = setup(t, { steps: [ok(NOTE)] });
+  const held = deferred();
+  const first = queued.turnQueue.run("topic-1", () => held.promise, { session: true });
+  const next = queued.turnQueue.run("topic-1", async () => {}, { session: true });
+  assert.deepEqual(await moveTopic(queued.input(), queued.deps), { result: "busy" });
+  held.resolve();
+  await Promise.all([first, next, queued.turnQueue.idle()]);
+  assert.equal((await moveTopic(queued.input(), queued.deps)).result, "moved");
+});
+
 test("moveTopic: /close の確認待ち（close_draft がある）は closing", async (t) => {
   const env = setup(t, { steps: [ok(NOTE)] });
   env.topicSessions.saveCloseDraft("topic-1", { summary: "要約", tasks: [{ title: "宿を決める" }] });
@@ -396,6 +506,18 @@ test("moveTopic: 2 つ続けて頼むと 2 つ目は moving で、要点のタ�
   assert.equal(env.rows().length, 1);
 });
 
+test("moveTopic: 1 つ目が枠待ちでキューにいる間の 2 つ目も moving（busy ではない）", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const slot = env.holdSessionSlot();
+  const accepted = deferred();
+  const first = moveTopic(env.input(), env.deps, accepted.resolve);
+  await accepted.promise;
+  assert.deepEqual(await moveTopic(env.input({ kind: "project", name: "beta" }), env.deps), { result: "moving" });
+  slot.release();
+  assert.equal((await first).result, "moved");
+  assert.equal(env.rows().length, 1);
+});
+
 test("moveTopic: onAccepted は受け付けた後・要点のターンの前に 1 回", async (t) => {
   const env = setup(t, { steps: [ok(NOTE)] });
   const states: unknown[] = [];
@@ -408,23 +530,111 @@ test("moveTopic: onAccepted は受け付けた後・要点のターンの前に 
   assert.equal(env.runner.inputs.length, 1);
 });
 
+test("moveTopic: onAccepted を待っている間に同じチャンネルへ積んだジョブは、付け替えの後に走る", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const order: string[] = [];
+  const entered = deferred();
+  const release = deferred();
+  let message!: Promise<void>;
+  const moving = moveTopic(env.input(), env.deps, () => {
+    message = env.turnQueue.run(
+      "topic-1",
+      async () => {
+        // 要点のターンが済み、場所が変わった後に走る
+        order.push(`message(${env.topicSessions.projectDirOf("topic-1")?.projectDir ?? "なし"}、要点のターン ${env.runner.inputs.length} 回)`);
+      },
+      { session: true },
+    );
+    entered.resolve();
+    return release.promise;
+  });
+  await entered.promise;
+  release.resolve();
+  assert.equal((await moving).result, "moved");
+  await message;
+  assert.deepEqual(order, ["message(alpha、要点のターン 1 回)"]);
+});
+
+test("moveTopic: onAccepted が投げても付け替えは moved で終わり、running の行は残らない。待つ間にキューのジョブが reject しても unhandled rejection にならない", async (t) => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => {
+    process.off("unhandledRejection", onUnhandled);
+  });
+
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const outcome = await moveTopic(env.input(), env.deps, () => {
+    throw new TypeError("defer failed");
+  });
+  assert.equal(outcome.result, "moved");
+  assert.equal(env.moves.running("topic-1"), undefined);
+  assert.equal(env.rows()[0]?.state, "done");
+  assert.ok(env.logs.includes("場所の付け替えの受け付けの知らせに失敗しました（TypeError）"));
+
+  // キューの中の検査（2 回目の get）で投げる → onAccepted を待つ間に reject し、最後にそのまま外へ出る
+  const rejecting = setup(t, { steps: [] });
+  const topicSessions = rejecting.topicSessions;
+  let calls = 0;
+  rejecting.deps.topicSessions = {
+    get: (channelId) => {
+      calls++;
+      if (calls > 1) throw new RangeError("db closed");
+      return topicSessions.get(channelId);
+    },
+    personaOf: (channelId) => topicSessions.personaOf(channelId),
+    projectDirOf: (channelId) => topicSessions.projectDirOf(channelId),
+    setProject: (...args) => topicSessions.setProject(...args),
+    setRenewed: (...args) => topicSessions.setRenewed(...args),
+    getCloseDraft: (channelId) => topicSessions.getCloseDraft(channelId),
+  };
+  const release = deferred();
+  const result = moveTopic(rejecting.input(), rejecting.deps, () => release.promise);
+  await rejecting.turnQueue.idle();
+  // キューのジョブは reject 済み（onAccepted はまだ）。unhandled の検出を 1 周待つ
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  release.resolve();
+  await assert.rejects(result, /db closed/);
+  assert.equal(rejecting.moves.running("topic-1"), undefined);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(unhandled, []);
+});
+
 test("moveTopic: キューで待つ間に閉じられたら、ターンを走らせずに closed。行は failed、履歴に知らせ", async (t) => {
   const env = setup(t, { steps: [ok(NOTE)] });
-  let release!: () => void;
-  const held = env.turnQueue.run("topic-1", () => new Promise<void>((resolve) => (release = resolve)), { session: true });
-  let accepted!: () => void;
-  const acceptedPromise = new Promise<void>((resolve) => (accepted = resolve));
-  const moving = moveTopic(env.input(), env.deps, () => accepted());
-  await acceptedPromise;
+  const slot = env.holdSessionSlot();
+  const accepted = deferred();
+  const moving = moveTopic(env.input(), env.deps, accepted.resolve);
+  await accepted.promise;
   env.topicSessions.close("topic-1", "要約");
-  release();
-  await held;
+  slot.release();
+  await slot.done;
   assert.deepEqual(await moving, { result: "closed" });
   assert.equal(env.runner.inputs.length, 0);
   assert.equal(env.rows()[0]?.state, "failed");
   assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
   assert.deepEqual(env.historyRows(), [
     { kind: "notice", source: "system", text: `場所を変えられませんでした: ${moveRefusalText("closed")}` },
+  ]);
+});
+
+test("moveTopic: キューで待つ間に行き先のディレクトリが消えたら invalid_project。履歴に知らせ、running の行は残らない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const slot = env.holdSessionSlot();
+  const accepted = deferred();
+  const moving = moveTopic(env.input({ kind: "project", name: "beta" }), env.deps, accepted.resolve);
+  await accepted.promise;
+  rmSync(join(env.ws, "beta"), { recursive: true });
+  slot.release();
+  assert.deepEqual(await moving, { result: "invalid_project" });
+  assert.equal(env.runner.inputs.length, 0);
+  assert.equal(env.moves.running("topic-1"), undefined);
+  assert.equal(env.rows()[0]?.state, "failed");
+  assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
+  assert.deepEqual(env.historyRows(), [
+    { kind: "notice", source: "system", text: `場所を変えられませんでした: ${moveRefusalText("invalid_project")}` },
   ]);
 });
 
@@ -438,6 +648,15 @@ test("moveTopic: General が使えない（symlink）なら invalid_project で�
   assert.equal(env.runner.inputs.length, 0);
 });
 
+test("moveTopic: General の話題を General へは same_place で、General のディレクトリが無くても作らない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)], projectDir: GENERAL });
+  assert.equal(existsSync(join(env.ws, GENERAL)), false);
+  assert.deepEqual(await moveTopic(env.input({ kind: "general" }), env.deps, env.onAccepted), { result: "same_place" });
+  assert.equal(existsSync(join(env.ws, GENERAL)), false);
+  assert.ok(!env.logs.includes("General のディレクトリを作りました"));
+  assert.equal(env.rows().length, 0);
+});
+
 test("moveTopic: 終わったら topic を「題名（<新>）」に書き換える。書き換えが失敗・終わらなくても結果は moved（待たない）", async (t) => {
   const env = setup(t, { steps: [ok(NOTE)] });
   await moveTopic(env.input(), env.deps);
@@ -448,14 +667,14 @@ test("moveTopic: 終わったら topic を「題名（<新>）」に書き換え
   assert.equal((await moveTopic(pending.input(), pending.deps)).result, "moved");
 
   const failing = setup(t, { steps: [ok(NOTE)] });
-  let rejected!: Promise<void>;
-  failing.deps.setChannelTopic = () => {
-    rejected = Promise.reject(new TypeError("rate limited"));
-    return rejected;
+  failing.deps.setChannelTopic = () => Promise.reject(new TypeError("rate limited"));
+  const logged = deferred();
+  failing.deps.log = (line) => {
+    failing.logs.push(line);
+    if (line.startsWith("topic の書き換えに失敗しました")) logged.resolve();
   };
   assert.equal((await moveTopic(failing.input(), failing.deps)).result, "moved");
-  await rejected.catch(() => {});
-  await Promise.resolve();
+  await logged.promise;
   assert.ok(failing.logs.includes("topic の書き換えに失敗しました（TypeError）"));
 });
 
@@ -493,4 +712,13 @@ test("recoverMoves: running の行を failed にし、その話題の履歴に�
   assert.equal(env.history.list("gone-1", { limit: 10 }).length, 0);
   assert.deepEqual(env.logs, ["途中で止まった場所の付け替えを 2 件、失敗にしました"]);
   assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
+});
+
+test("recoverMoves: running の行が残った話題が完了（done）になっていても、failed にして知らせを書く", (t) => {
+  const env = setup(t);
+  const id = env.moves.start({ channelId: "topic-1", fromDir: null, toDir: "alpha", by: "web" })!;
+  env.topicSessions.close("topic-1", "要約");
+  recoverMoves({ moves: env.moves, topicSessions: env.topicSessions, history: env.history, log: env.deps.log });
+  assert.equal(env.moves.get(id)?.state, "failed");
+  assert.deepEqual(env.historyRows(), [{ kind: "notice", source: "system", text: MOVE_INTERRUPTED_TEXT }]);
 });
