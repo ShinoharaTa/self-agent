@@ -6195,27 +6195,29 @@ function settingsKeys(v3: boolean): Array<[string, string]> {
 }
 
 test("web static: 古い殻の設定のキーの表は今までどおりの 9 行（M8-0）", () => {
-  const keys = settingsKeys(false);
-  assert.deepEqual(
-    keys.map(([k]) => k),
-    ["Enter / Shift+Enter", "Ctrl+Enter / ⌘+Enter", "Ctrl+K / Ctrl+P", "Ctrl+Shift+P", "Ctrl+B", "Ctrl+J", "Alt+W", "Alt+数字", "Esc"],
-  );
-  const text = keys.map(([k, v]) => k + " " + v).join("\n");
-  for (const v of ["送る / 改行（タッチの端末では Enter で改行）", "移動（画面）", "コマンド", "サイドバーの表示", "パネルの表示", "タブを閉じる", "その番号のタブ（1 から 9）", "パレット・ドロワーを閉じる"]) {
-    assert.ok(text.includes(v), v);
-  }
+  // 並び・キー・説明の組の全文一致（main 09387b6 の KEYS と同じ文）
+  assert.deepEqual(settingsKeys(false), [
+    ["Enter / Shift+Enter", "送る / 改行（タッチの端末では Enter で改行）"],
+    ["Ctrl+Enter / ⌘+Enter", "送る"],
+    ["Ctrl+K / Ctrl+P", "移動（画面）"],
+    ["Ctrl+Shift+P", "コマンド"],
+    ["Ctrl+B", "サイドバーの表示"],
+    ["Ctrl+J", "パネルの表示"],
+    ["Alt+W", "タブを閉じる"],
+    ["Alt+数字", "その番号のタブ（1 から 9）"],
+    ["Esc", "パレット・ドロワーを閉じる"],
+  ]);
 });
 
 test("web static: 新しい殻の設定のキーの表は共通の 2 行と新しい殻の 3 行で、古い殻だけのキーを載せない（M8-0）", () => {
-  const keys = settingsKeys(true);
-  assert.equal(keys.length, 5);
-  assert.deepEqual(
-    keys.map(([k]) => k),
-    ["Enter / Shift+Enter", "Ctrl+Enter / ⌘+Enter", "Ctrl+K / ⌘+K", "↑ / ↓ / Home / End", "Esc"],
-  );
-  const text = keys.map(([k, v]) => k + " " + v).join("\n");
-  for (const v of ["話題を絞り込む", "一覧の行を移る", "絞り込み・重ねた右腕を閉じる"]) assert.ok(text.includes(v), v);
-  for (const k of ["Ctrl+B", "Ctrl+J", "Alt+W", "Alt+数字", "Ctrl+Shift+P", "Ctrl+P"]) assert.ok(!text.includes(k), k);
+  // 並び・キー・説明の組の全文一致（古い殻だけのキー Ctrl+B・Ctrl+J・Alt+W・Alt+数字・Ctrl+Shift+P・Ctrl+P は載らない）
+  assert.deepEqual(settingsKeys(true), [
+    ["Enter / Shift+Enter", "送る / 改行（タッチの端末では Enter で改行）"],
+    ["Ctrl+Enter / ⌘+Enter", "送る"],
+    ["Ctrl+K / ⌘+K", "話題を絞り込む"],
+    ["↑ / ↓ / Home / End", "一覧の行を移る"],
+    ["Esc", "絞り込み・重ねた右腕を閉じる"],
+  ]);
   // 殻は描くときに見分ける（読み込みのときに 1 度だけ決めない）
   const views = read("views.js");
   assert.match(fnSource(views, "isV3Shell"), /return document\.getElementById\("v3"\) !== null;/);
