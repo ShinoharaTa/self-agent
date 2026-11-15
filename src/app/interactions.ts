@@ -12,6 +12,7 @@ import { createJobCommand, createJobComponent, type JobCommandDeps } from "./com
 import { createHomeComponent, type HomeDeps } from "./commands/home.ts";
 import { createKbDeleteComponent, type KbDeleteDeps } from "./commands/kb-delete.ts";
 import { createMemoryUndoComponent, type MemoryUndoDeps } from "./commands/memory-undo.ts";
+import { createMoveCommand, type MoveCommandDeps } from "./commands/move.ts";
 import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
 import { createProjectsCommand, createProjectsComponent, type ProjectsDeps } from "./commands/projects.ts";
 import { createRemindersCommand, createRemindersComponent, type RemindersDeps } from "./commands/reminders.ts";
@@ -47,10 +48,12 @@ export type ComponentHandler = {
  * /renew は #inbox・#tasks では切り替え（inboxRotator）を使う。
  * jobs は作業ジョブ（SELF_AGENT_JOBS が有効のときだけ渡す）。あれば /job を登録する。
  * guests はゲストの層の操作（ゲストが有効のときだけ渡す。guest/index.ts の createGuestLayer の admin）。あれば /guests を登録する。
- * ccChannels は Claude Code のセッションのチャンネル（SELF_AGENT_CC=1 のときだけ渡す。cc/channels.ts）。あれば /cc を登録する
+ * ccChannels は Claude Code のセッションのチャンネル（SELF_AGENT_CC=1 のときだけ渡す。cc/channels.ts）。あれば /cc を登録する。
+ * move は話題の場所の付け替え（app/topic-move.ts）。あれば /move を登録する
  */
 export type CommandDeps = SetupDeps &
   Partial<{ ccChannels: CcChannelsGetter }> &
+  Partial<{ move: MoveCommandDeps }> &
   Partial<Pick<JobCommandDeps, "jobs">> &
   Partial<Pick<GuestsCommandDeps, "guests">> &
   NewSessionDeps &
@@ -82,6 +85,7 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
     ...(deps.ccChannels === undefined
       ? []
       : [createCcCommand({ ccChannels: deps.ccChannels, guildSettings: deps.guildSettings, log: deps.log })]),
+    ...(deps.move === undefined ? [] : [createMoveCommand(deps.move)]),
   ];
 }
 

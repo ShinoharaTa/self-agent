@@ -807,6 +807,23 @@ export const MIGRATIONS: readonly string[] = [
   `
   CREATE INDEX IF NOT EXISTS usage_log_at ON usage_log(at);
   `,
+  // v42（#364。docs/plan/web-ui-v3.md §6.3）: 話題の場所の付け替えの記録（1 回 1 行）。running は 1 チャンネルに 1 行（二重の要求を止める）。
+  // from_dir は前の project_dir（NULL = 場所なし）、note は引き継いだ要点の全文。proposed・cancelled と by の right_hand は M6 が使う
+  `
+  CREATE TABLE topic_moves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL,
+    from_dir TEXT,
+    to_dir TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('proposed', 'running', 'done', 'cancelled', 'failed')),
+    by TEXT NOT NULL CHECK (by IN ('web', 'discord', 'right_hand')),
+    note TEXT,
+    created_at TEXT NOT NULL,
+    done_at TEXT
+  );
+  CREATE UNIQUE INDEX topic_moves_running ON topic_moves(channel_id) WHERE state = 'running';
+  CREATE INDEX topic_moves_channel ON topic_moves(channel_id, id);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

@@ -10,6 +10,7 @@ import { createHandler, type RunningTurn, type SubmitTextResult, WEB_ECHO_PREFIX
 import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { welcomeText } from "../src/app/session-ops.ts";
+import { MOVE_FAILED_TEXT, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
 import type { Topic, TopicsResult } from "../src/app/topics.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { PersonaConfig } from "../src/config.ts";
@@ -18,6 +19,7 @@ import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcStartStore } from "../src/store/cc-starts.ts";
+import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { CLOSE_CONFIRM_NOTICE } from "../src/web/routes/channels.ts";
 import { TOPIC_START_DUPLICATE_MS, topicRoutes } from "../src/web/routes/topics.ts";
 import { WEB_DUPLICATE_WINDOW_MS } from "../src/web/routes/turns.ts";
@@ -25,7 +27,7 @@ import { createWebServer, type WebServer } from "../src/web/server.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps } from "./helpers/recording.ts";
-import { FakeRunner, turnUsage } from "./helpers/runner.ts";
+import { FakeRunner, type FakeRunStep, turnUsage } from "./helpers/runner.ts";
 
 const LOGIN = "owner@example.com";
 // 許可（300 秒）・確認（10 分）が時間切れにならない時刻
@@ -83,9 +85,22 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * /setup 前のサーバーのセッション 400 とチャンネル 303。
  * Claude Code（cc を渡すとき）: チャンネル 300（S1・open・alpha・実行中）・301（S2・ended）。チャンネルの無い S3（ワークスペースの外・判断待ち）・
  * S4（alpha・判断待ちで hook の許可も pending）。/setup 前のサーバーのチャンネル 303 は S7。
- * allowed で cfg.allowedGuildIds を、at でルートの今の時刻を差し替える。registry.unreadable と snapshotSessions は後から変えられる
+ * allowed で cfg.allowedGuildIds を、at でルートの今の時刻を差し替える。registry.unreadable と snapshotSessions は後から変えられる。
+ * move で場所の付け替えの配線を渡す（"cc" は連携あり、"noCc" は連携なし）。要点のターンは moveSteps の順に偽の runner が返し、結果の投稿は posts に入る。
+ * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる
  */
-async function setup(t: TestContext, options: { cc?: boolean; running?: string[]; allowed?: string[]; at?: Date; general?: boolean } = {}) {
+async function setup(
+  t: TestContext,
+  options: {
+    cc?: boolean;
+    running?: string[];
+    allowed?: string[];
+    at?: Date;
+    general?: boolean;
+    move?: "cc" | "noCc";
+    moveSteps?: FakeRunStep[];
+  } = {},
+) {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
   const { guildSettings, topicSessions, history, sessions } = stores;
@@ -177,6 +192,55 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
       return permissions.latestSdkFor(...args);
     },
   };
+  const places = { workspaceDir: workspace, protectedDirs: [], ...(options.general === true ? { generalDir: "General" } : {}) };
+  // 場所の付け替えの配線（move のときだけ）
+  const moves = new TopicMoveStore(db, () => NOW);
+  const moveRunner = new FakeRunner(options.moveSteps ?? []);
+  const ready = { value: true };
+  const posts: Array<{ channelId: string; text: string }> = [];
+  const postWaiters: Array<{ count: number; resolve: () => void }> = [];
+  const logs: string[] = [];
+  const logWaiters: Array<{ match: (line: string) => boolean; resolve: () => void }> = [];
+  const topicCalls: Array<{ channelId: string; topic: string }> = [];
+  const log = (line: string): void => {
+    logs.push(line);
+    for (const waiter of logWaiters.filter((w) => w.match(line))) {
+      logWaiters.splice(logWaiters.indexOf(waiter), 1);
+      waiter.resolve();
+    }
+  };
+  const postFails = { value: false };
+  const turnQueue = new KeyedSerialQueue(2);
+  const move =
+    options.move === undefined
+      ? undefined
+      : {
+          topicSessions,
+          moves,
+          turnQueue,
+          turn: { runner: moveRunner, projectRunner: moveRunner, sessions, seeds: stores.seeds, usage: stores.usage, log },
+          runningTurns: () => handler.runningTurns(),
+          ...(options.move === "cc" ? { projectSessions: { places, ready: () => ready.value } } : {}),
+          history,
+          setChannelTopic: async (channelId: string, topic: string) => void topicCalls.push({ channelId, topic }),
+          ownerPosts: {
+            send: async (channelId: string, text: string) => {
+              if (postFails.value) throw new TypeError("post failed");
+              posts.push({ channelId, text });
+              for (const waiter of postWaiters.filter((w) => posts.length >= w.count)) {
+                postWaiters.splice(postWaiters.indexOf(waiter), 1);
+                waiter.resolve();
+              }
+            },
+          },
+          log,
+        };
+  /** 結果の投稿が count 通になるまで待つ */
+  const waitPosts = (count: number): Promise<void> =>
+    posts.length >= count ? Promise.resolve() : new Promise((resolve) => postWaiters.push({ count, resolve }));
+  /** match に合う log の行が出るまで待つ（もう出ていればすぐ） */
+  const waitLog = (match: (line: string) => boolean): Promise<void> =>
+    logs.some(match) ? Promise.resolve() : new Promise((resolve) => logWaiters.push({ match, resolve }));
   const routes = topicRoutes({
     cfg: { allowedGuildIds: options.allowed ?? [GUILD, GUILD_NOT_SET_UP], personas: [MIKA], workspaceDir: workspace },
     guildSettings,
@@ -184,9 +248,10 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
     history,
     personas,
     handler,
-    places: { workspaceDir: workspace, protectedDirs: [], ...(options.general === true ? { generalDir: "General" } : {}) },
+    places,
     home: "/home/owner",
     projectPermissions: { store: sdkStore, sessions, holdSec: 300, questionHoldSec: 900 },
+    ...(move === undefined ? {} : { move }),
     ...(options.cc === true
       ? { cc: { registry, channels: ccStore, permissions, sends, starts, holdSec: 300, questionHoldSec: 900 } }
       : {}),
@@ -205,7 +270,28 @@ async function setup(t: TestContext, options: { cc?: boolean; running?: string[]
   });
   await server.start();
   t.after(() => server.close());
-  return { server, registry, workspace, snapshotSessions, permissions, guildSettings, topicSessions, sdkLookups };
+  return {
+    server,
+    registry,
+    workspace,
+    snapshotSessions,
+    permissions,
+    guildSettings,
+    topicSessions,
+    sdkLookups,
+    sessions,
+    history,
+    moves,
+    moveRunner,
+    ready,
+    posts,
+    postFails,
+    waitPosts,
+    waitLog,
+    logs,
+    topicCalls,
+    turnQueue,
+  };
 }
 
 const byId = (result: TopicsResult, id: string): Topic | undefined => result.topics.find((topic) => topic.id === id);
@@ -796,4 +882,236 @@ test("POST /api/topics: start の配線が無ければ受けない（405 で、�
   const res = await postJson(s.server, "/api/topics", { place: "general", title: "x" });
   assert.deepEqual(res, { status: 405, json: { error: "method_not_allowed" } });
   assert.equal(createdCount(s.gateway), 0);
+});
+
+// ---- 場所の付け替え（M5b） ----
+
+const MOVE_NOTE = "- 目的: alpha の作業の続き\n- 触ったファイル: notes.md";
+
+function moveOk(text: string): FakeRunStep {
+  return { ok: true, text, sessionId: SP, usage: turnUsage(10, 0, 0), durationMs: 1000, toolCalls: 0, contextTokens: 10 };
+}
+
+/** 付け替えの途中（running の行）なら ["running"] */
+const moveStates = (env: { moves: TopicMoveStore }, channelId: string): string[] => (env.moves.runningChannels().has(channelId) ? ["running"] : []);
+
+test("POST /api/topics/ch:<id>/place: 受け付けると 202 { accepted: true }。終わると場所が変わり、チャンネルに結果を 1 通投稿する", async (t) => {
+  const s = await setup(t, { move: "cc", general: true, moveSteps: [moveOk(MOVE_NOTE)] });
+  const res = await postJson(s.server, "/api/topics/ch:201/place", { place: "general" });
+  assert.deepEqual(res, { status: 202, json: { accepted: true } });
+  await s.waitPosts(1);
+  assert.deepEqual(s.posts, [{ channelId: "201", text: movedPostText({ from: "alpha", to: "General", note: MOVE_NOTE }, "General") }]);
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "General", permissionMode: "default" });
+  assert.equal(s.sessions.get("201"), undefined);
+  assert.equal(s.moveRunner.inputs.length, 1);
+  assert.deepEqual(moveStates(s, "201"), []);
+  // 履歴の仕切りと知らせは moveTopic が書く
+  const rows = s.history.list("201", { limit: 10 });
+  assert.ok(rows.some((row) => row.kind === "divider" && row.text === "場所を alpha から General に変えました"));
+  // 一覧の place も新しい場所になる
+  assert.equal(byId(await topics(s.server), "ch:201")!.place.dir, "General");
+});
+
+test("POST /api/topics/ch:<id>/place: place が無い・文字列でない・other・形が違えば 400 bad_request で、何も変えない", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  for (const body of [{}, { place: 1 }, { place: "other" }, { place: "p:../x" }, { place: "p:" }, { place: "alpha" }, { place: null }]) {
+    assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/place", body), { status: 400, json: { error: "bad_request" } }, JSON.stringify(body));
+  }
+  assert.equal(s.topicSessions.projectDirOf("200"), undefined);
+  assert.equal(s.moves.runningChannels().size, 0);
+  assert.deepEqual(s.posts, []);
+});
+
+test("POST /api/topics/ch:<id>/place: 知らないチャンネル・許可していないサーバーの話題は 404 not_found", async (t) => {
+  const s = await setup(t, { move: "cc", general: true, allowed: [GUILD] });
+  for (const id of ["999", "400"]) {
+    assert.deepEqual(await postJson(s.server, `/api/topics/ch:${id}/place`, { place: "p:beta" }), { status: 404, json: { error: "not_found" } }, id);
+  }
+  assert.equal(s.topicSessions.projectDirOf("400"), undefined);
+  // cc:<sessionId> の話題はパスが当たらない
+  assert.equal((await postJson(s.server, `/api/topics/cc:${S3}/place`, { place: "p:beta" })).status, 404);
+});
+
+test("POST /api/topics/ch:<id>/place: 断りの status と error（closed・persona・closing・busy・same_place・cc_disabled は 409、unify_not_ready は 503、invalid_project は 400）。どれも投稿しない・場所を変えない", async (t) => {
+  const s = await setup(t, { move: "cc", general: true, running: ["205"] });
+  s.topicSessions.saveCloseDraft("204", { summary: "要約", tasks: [] });
+  const cases: Array<[string, string, number, string]> = [
+    ["202", "p:beta", 409, "closed"],
+    ["203", "p:beta", 409, "persona"],
+    ["204", "p:beta", 409, "closing"],
+    ["205", "p:alpha", 409, "busy"],
+    ["201", "p:alpha", 409, "same_place"],
+    ["200", "p:nope", 400, "invalid_project"],
+  ];
+  for (const [id, place, status, error] of cases) {
+    assert.deepEqual(await postJson(s.server, `/api/topics/ch:${id}/place`, { place }), { status, json: { error } }, id);
+  }
+  s.ready.value = false;
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/place", { place: "p:beta" }), { status: 503, json: { error: "unify_not_ready" } });
+  const noCc = await setup(t, { move: "noCc", general: true });
+  assert.deepEqual(await postJson(noCc.server, "/api/topics/ch:200/place", { place: "p:beta" }), { status: 409, json: { error: "cc_disabled" } });
+
+  for (const env of [s, noCc]) {
+    assert.deepEqual(env.posts, []);
+    assert.equal(env.moveRunner.inputs.length, 0);
+    assert.equal(env.topicSessions.projectDirOf("200"), undefined);
+    assert.deepEqual(env.topicSessions.projectDirOf("201"), { projectDir: "alpha", permissionMode: "default" });
+    assert.equal(env.moves.runningChannels().size, 0);
+  }
+});
+
+test("POST /api/topics/ch:<id>/place: 続けて 2 回送ると 2 つ目は 409 moving で、要点のターンは 1 回", async (t) => {
+  const s = await setup(t, { move: "cc", general: true, moveSteps: [moveOk(MOVE_NOTE)] });
+  let release!: () => void;
+  s.moveRunner.gates[0] = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/place", { place: "p:beta" }), { status: 202, json: { accepted: true } });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/place", { place: "general" }), { status: 409, json: { error: "moving" } });
+  // 途中は一覧で「場所を変えています」
+  assert.deepEqual(byId(await topics(s.server), "ch:201")!.movable, { reason: "場所を変えています" });
+  release();
+  await s.waitPosts(1);
+  assert.equal(s.moveRunner.inputs.length, 1);
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "beta", permissionMode: "default" });
+  assert.equal(s.posts.length, 1);
+});
+
+test("POST /api/topics/ch:<id>/place: 要点のターンが失敗したら、202 の後でチャンネルに失敗の文を投稿し、場所は変わらない", async (t) => {
+  const s = await setup(t, {
+    move: "cc",
+    general: true,
+    moveSteps: [{ ok: false, errorMessage: "error_during_execution: boom", sessionId: SP, sessionRecorded: true, toolCalls: 0 }],
+  });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/place", { place: "p:beta" }), { status: 202, json: { accepted: true } });
+  await s.waitPosts(1);
+  assert.deepEqual(s.posts, [{ channelId: "201", text: MOVE_FAILED_TEXT }]);
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "alpha", permissionMode: "default" });
+  assert.equal(s.sessions.get("201"), SP);
+  assert.equal(s.moves.runningChannels().size, 0);
+});
+
+test("POST /api/topics/ch:<id>/place: 結果の投稿が投げても 202 のまま。log だけ（種類だけ）で、場所は変わる", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  s.postFails.value = true;
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/place", { place: "general" }), { status: 202, json: { accepted: true } });
+  await s.waitLog((line) => line.includes("投稿できませんでした"));
+  assert.ok(s.logs.includes("場所の付け替えの結果を Discord に投稿できませんでした（TypeError）"), s.logs.join("\n"));
+  assert.deepEqual(s.topicSessions.projectDirOf("200"), { projectDir: "General", permissionMode: "default" });
+  assert.deepEqual(s.posts, []);
+});
+
+test("POST /api/topics/ch:<id>/place: 受け付けた後に moveTopic が投げたら、202 の後でチャンネルに失敗の文・履歴に知らせ。running の行は残らない", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  s.sessions.get = () => {
+    throw new TypeError("boom");
+  };
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/place", { place: "p:beta" }), { status: 202, json: { accepted: true } });
+  await s.waitPosts(1);
+  assert.deepEqual(s.posts, [{ channelId: "201", text: MOVE_FAILED_TEXT }]);
+  assert.ok(s.history.list("201", { limit: 10 }).some((row) => row.kind === "notice" && row.text === MOVE_FAILED_TEXT));
+  assert.equal(s.moves.runningChannels().size, 0);
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "alpha", permissionMode: "default" });
+  assert.ok(s.logs.includes("Web からの場所の付け替えに失敗しました（TypeError）"), s.logs.join("\n"));
+});
+
+test("POST /api/topics/ch:<id>/place: 受け付けた後（枠待ちの間）に閉じられたら、チャンネルに「場所を変えられませんでした: …」1 通と履歴の知らせ", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  // セッションの枠（1）を別のジョブでふさぐ
+  let started!: () => void;
+  const running = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const blocker = s.turnQueue.run(
+    "other",
+    () => {
+      started();
+      return gate;
+    },
+    { session: true },
+  );
+  await running;
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/place", { place: "p:beta" }), { status: 202, json: { accepted: true } });
+  s.topicSessions.close("200", "要約");
+  release();
+  await blocker;
+  await s.waitPosts(1);
+  const refused = "場所を変えられませんでした: 完了した話題は場所を変えられません";
+  assert.deepEqual(s.posts, [{ channelId: "200", text: refused }]);
+  assert.equal(s.history.list("200", { limit: 10 }).filter((row) => row.kind === "notice" && row.text === refused).length, 1);
+  assert.equal(s.topicSessions.projectDirOf("200"), undefined);
+  assert.equal(s.moves.runningChannels().size, 0);
+});
+
+test("POST /api/topics/ch:<id>/place: パスの ch%3A<id> は当たらず 404", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  assert.equal((await postJson(s.server, "/api/topics/ch%3A200/place", { place: "p:beta" })).status, 404);
+  assert.equal(s.topicSessions.projectDirOf("200"), undefined);
+  assert.equal(s.moves.runningChannels().size, 0);
+});
+
+test("POST /api/topics/ch:<id>/place: p:<General の名前> は general と同じ", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  // 会話の無い話題（200）はターンを使わずに場所だけ変える
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/place", { place: "p:General" }), { status: 202, json: { accepted: true } });
+  await s.waitPosts(1);
+  assert.deepEqual(s.topicSessions.projectDirOf("200"), { projectDir: "General", permissionMode: "default" });
+  assert.deepEqual(s.posts, [{ channelId: "200", text: movedPostText({ from: null, to: "General", note: null }, "General") }]);
+  assert.equal(s.moveRunner.inputs.length, 0);
+  assert.deepEqual(s.topicCalls, [{ channelId: "200", topic: "家計簿（General）" }]);
+});
+
+test("POST /api/topics/ch:<id>/place: log に題名・チャンネル ID・プロジェクトの名前・要点が出ない", async (t) => {
+  const s = await setup(t, { move: "cc", general: true, moveSteps: [moveOk(MOVE_NOTE)] });
+  assert.equal((await postJson(s.server, "/api/topics/ch:201/place", { place: "general" })).status, 202);
+  assert.equal((await postJson(s.server, "/api/topics/ch:200/place", { place: "p:beta" })).status, 202);
+  await s.waitPosts(2);
+  assert.ok(s.logs.some((line) => line.includes("Web から場所の付け替えを受け付けました（guild=111）")), s.logs.join("\n"));
+  for (const line of s.logs) {
+    for (const secret of ["alpha", "beta", "General", "家計簿", "200", "201", "notes.md", "目的"]) assert.ok(!line.includes(secret), `${secret}: ${line}`);
+  }
+});
+
+test("GET /api/topics: move があるとき、足した人格の話題・完了した話題・付け替えの途中の話題・連携が無いときの話題は movable に理由。既定の人格の進行中・待ちの話題は true。入口と Claude Code のセッションは今までどおり", async (t) => {
+  const s = await setup(t, { move: "cc", general: true, cc: true });
+  s.topicSessions.create({ channelId: "206", guildId: GUILD, title: "待ちの話", categoryId: "c" });
+  s.topicSessions.setWaiting("206");
+  s.moves.start({ channelId: "205", fromDir: "beta", toDir: "alpha", by: "discord" });
+  const result = await topics(s.server, "/api/topics?done=general");
+  assert.deepEqual(byId(result, "ch:203")!.movable, { reason: "足した人格の話題は場所を変えられません" });
+  assert.deepEqual(byId(result, "ch:202")!.movable, { reason: "完了した話題は場所を変えられません" });
+  assert.deepEqual(byId(result, "ch:205")!.movable, { reason: "場所を変えています" });
+  for (const id of ["ch:200", "ch:201", "ch:204", "ch:206"]) assert.equal(byId(result, id)!.movable, true, id);
+  assert.deepEqual(byId(result, "ch:101")!.movable, { reason: "入口は場所を変えられません" });
+  assert.deepEqual(byId(result, "ch:300")!.movable, { reason: "端末のセッションは場所を変えられません" });
+
+  const noCc = await setup(t, { move: "noCc", general: true });
+  const without = await topics(noCc.server);
+  assert.deepEqual(byId(without, "ch:200")!.movable, { reason: "場所を変えるには Claude Code の連携が要ります" });
+  // 人格の理由が先
+  assert.deepEqual(byId(without, "ch:203")!.movable, { reason: "足した人格の話題は場所を変えられません" });
+});
+
+test("GET /api/topics: movable の理由の順は POST と同じ（完了 → 足した人格）。連携の設定が済んでいなければ unify_not_ready の文", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  // 完了 + 足した人格は「完了」
+  s.topicSessions.close("203", "要約");
+  s.ready.value = false;
+  const result = await topics(s.server, "/api/topics?done=general");
+  assert.deepEqual(byId(result, "ch:203")!.movable, { reason: "完了した話題は場所を変えられません" });
+  for (const id of ["ch:200", "ch:201"]) assert.deepEqual(byId(result, id)!.movable, { reason: moveRefusalText("unify_not_ready") }, id);
+  assert.deepEqual(byId(result, "ch:202")!.movable, { reason: "完了した話題は場所を変えられません" });
+});
+
+test("GET /api/topics: move を渡さなければ movable は今までどおり", async (t) => {
+  const s = await setup(t);
+  s.moves.start({ channelId: "200", fromDir: null, toDir: "alpha", by: "web" });
+  const result = await topics(s.server, "/api/topics?done=general");
+  for (const id of ["ch:200", "ch:201", "ch:202", "ch:203"]) assert.equal(byId(result, id)!.movable, true, id);
+  // 付け替えのルートも無い
+  assert.equal((await postJson(s.server, "/api/topics/ch:200/place", { place: "p:beta" })).status, 404);
 });
