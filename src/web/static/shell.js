@@ -1,6 +1,6 @@
 // 新しい殻（v3.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
 // SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
-// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行）
+// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行・札）
 "use strict";
 
 (function () {
@@ -234,12 +234,16 @@
       return;
     }
     bar.hidden = false;
-    let text;
-    if (t.group === "other") text = "場所: ほかの場所" + (t.cwdLabel ? "（" + t.cwdLabel + "）" : "");
-    else if (t.place && t.place.dir) text = "場所: " + t.place.dir;
-    else text = "場所: General";
+    const text = "場所: " + placeText(t);
     const place = $("v3-place");
     if (place.textContent !== text) place.textContent = text;
+  }
+
+  /** 話題の「場所」の文字（帯と札で同じ決め方） */
+  function placeText(t) {
+    if (t.group === "other") return "ほかの場所" + (t.cwdLabel ? "（" + t.cwdLabel + "）" : "");
+    if (t.place && t.place.dir) return t.place.dir;
+    return "General";
   }
 
   function renderMain(switched) {
@@ -357,6 +361,9 @@
   const HAND_MARK_TEXT = { turn: "あなたの番", unread: "未読" };
 
   // 閉じた後に焦点を戻すボタン・最初の読み込みを済ませた右腕のチャンネル・最後に描いた物（チャンネル ID か "none"・"loading"）・次に描くとき下端に寄せるか
+  // 札: 最後に描いた返事の <#ID> と、その札の中身の署名（一覧を読んで変わったら描き直す）
+  let handCardIds = [];
+  let handCardSig = null;
   let handOpener = null;
   let handLoadedId = null;
   let handShown = null;
@@ -418,7 +425,11 @@
   /** 履歴を戻らずに右腕を閉じた状態にするとき、今の entry の右腕の印（v3Hand）を外す（残すと次の [畳む] がその entry へ戻るだけになる） */
   function dropHandMark() {
     try {
-      if (history.state && history.state.v3Hand) history.replaceState({ v3Body: !!history.state.v3Body }, "", location.href);
+      if (history.state && history.state.v3Hand) {
+        // 一覧までの段数を持つ。右腕の entry の v3Depth は下の entry の段数なので、会話の上に積んだものはその 1 つ上（印の無い古い entry は下を 1 と見る）
+        const st = history.state.v3Body ? { v3Body: true, v3Depth: depthOf(history.state) + 1 } : { v3Body: false };
+        history.replaceState(st, "", location.href);
+      }
     } catch {
       // 書けなくても右腕は閉じている
     }
@@ -465,7 +476,7 @@
   }
 
   /** chat.js に渡す枠の指定（毎回同じ物） */
-  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing };
+  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing, replyText: namedText, replyExtras: handCards };
 
   /** 何を描くか（右腕のチャンネル ID か、無ければ "none"、一覧をまだ読んでいなければ "loading"） */
   function handKey() {
@@ -481,6 +492,7 @@
     const refocus = !!closeBefore && document.activeElement === closeBefore;
     const id = handChannelId();
     const key = handKey();
+    handCardIds = [];
     if (id) {
       const first = handLoadedId !== id;
       keepScroll(ed, () => SA.chat.render(ed, id, HAND_FRAME), handStick || handShown !== key);
@@ -496,6 +508,7 @@
     }
     handShown = key;
     handStick = false;
+    handCardSig = cardSig();
     if (refocus) {
       const close = $("v3-hand-close");
       if (close) close.focus();
@@ -524,7 +537,7 @@
       // スマホは戻る（端のスワイプ）で閉じられるよう entry を 1 つ積む
       if (phone()) {
         try {
-          history.pushState({ v3Body: S.view === "body", v3Hand: true }, "", location.href);
+          history.pushState({ v3Body: S.view === "body", v3Hand: true, v3Depth: depthOf(history.state) }, "", location.href);
         } catch {
           // 積めなくても [畳む]・backdrop で閉じられる
         }
@@ -644,8 +657,61 @@
       SA.topics.render();
       openHand(null, false);
     }
-    if (handVisible() && handShown !== handKey()) renderHand();
+    if (handVisible() && (handShown !== handKey() || handCardSig !== cardSig())) renderHand();
     renderHandEntries();
+  }
+
+  // ===== 札（右腕の返事の <#ID> を話題の行で引いて、吹き出しの下に 1 行ずつ。右腕の会話にだけ出す） =====
+  /** 返事の <#ID> を出た順に、同じものは 1 つ、先頭 5 つ（先頭が 0 の数字は ID として扱わない。namedText と同じ形） */
+  function cardIds(text) {
+    const ids = [];
+    for (const m of String(text || "").matchAll(/<#([1-9]\d*)>/g)) {
+      if (!ids.includes(m[1])) ids.push(m[1]);
+      if (ids.length === 5) break;
+    }
+    return ids;
+  }
+
+  /** 札の中身（一覧の話題か、一覧から外れた（完了した）セッション）。引けなければ null */
+  function cardParts(id) {
+    const t = SA.topics.find("ch:" + id);
+    if (t) {
+      const state = t.mark === "turn" ? "あなたの番" : t.mark === "running" ? "作業中" : SA.chat.STATE_LABEL[t.state] || null;
+      return { id: t.id, title: t.title, place: placeText(t), state };
+    }
+    const ch = SA.chat.channelById(id);
+    if (ch && ch.kind === "session") return { id: "ch:" + id, title: SA.chat.channelTitle(ch), place: null, state: SA.chat.STATE_LABEL[ch.state] || null };
+    return null;
+  }
+
+  function cardSig() {
+    return JSON.stringify(handCardIds.map(cardParts));
+  }
+
+  /** 返事の吹き出しの下に足す札（題名・場所・状態・[開く]） */
+  function handCards(text) {
+    const cards = [];
+    for (const id of cardIds(text)) {
+      if (!handCardIds.includes(id)) handCardIds.push(id);
+      const p = cardParts(id);
+      if (!p) continue;
+      const open = el("button", { class: "btn btn-ghost btn-sm", type: "button", "aria-label": p.title + " を開く", text: "開く" });
+      open.addEventListener("click", () => SA.app.open(p.id));
+      const meta = [p.place, p.state].filter(Boolean).join("・");
+      // 場所も状態も引けなければ meta の span を作らない
+      const parts = [el("span", { class: "v3-card-title", text: p.title }), meta ? el("span", { class: "v3-card-meta", text: meta }) : null, open].filter(Boolean);
+      cards.push(el("div", { class: "v3-card", "data-topic": p.id }, parts));
+    }
+    return cards;
+  }
+
+  /** 返事の本文の <#ID> のうち引けたものを「<題名>」に（引けないもの・先頭が 0 の数字はそのまま） */
+  function namedText(text) {
+    if (typeof text !== "string") return text;
+    return text.replace(/<#([1-9]\d*)>/g, (all, id) => {
+      const p = cardParts(id);
+      return p ? "「" + p.title + "」" : all;
+    });
   }
 
   /** 列 2 に話題が出ていれば、その題名（空白を詰めて前後を落とし、80 字まで）。スマホは会話の上に右腕を出したときだけ */
@@ -733,8 +799,8 @@
     setView("body");
     const hash = S.active ? hashOf(S.active) : location.pathname + location.search;
     try {
-      // 右腕を開いたまま話題を開いたら、右腕の entry を話題の entry に置き換える
-      if (history.state && history.state.v3Hand) history.replaceState({ v3Body: true }, "", hash);
+      // 右腕を開いたまま話題を開いたら、右腕の entry を話題の entry に置き換える（一覧までの段数は下の entry の 1 つ上）
+      if (history.state && history.state.v3Hand) history.replaceState({ v3Body: true, v3Depth: (history.state.v3Depth || 0) + 1 }, "", hash);
       else if (history.state && history.state.v3Body) history.replaceState(history.state, "", hash);
       else history.pushState({ v3Body: true }, "", hash);
     } catch {
@@ -753,11 +819,18 @@
     if (row) row.focus({ preventScroll: true });
   }
 
+  /** 履歴の entry から一覧までの段数（会話の entry は v3Depth、無ければ 1。一覧は 0） */
+  function depthOf(state) {
+    return state && state.v3Body ? state.v3Depth || 1 : 0;
+  }
+
   function showList() {
     if (history.state && history.state.v3Body) {
       try {
-        // popstate で一覧にする
-        history.back();
+        // popstate で一覧にする（札で開いた話題は、その下の話題の entry も越えて一覧まで戻る）
+        const depth = depthOf(history.state);
+        if (depth > 1) history.go(-depth);
+        else history.back();
         return;
       } catch {
         // 戻れなければその場で一覧にする
