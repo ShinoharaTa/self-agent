@@ -1494,3 +1494,30 @@ test("POST /api/topics/ch:<id>/read: 右腕（#inbox）・#tasks・Claude Code �
     assert.equal(s.topicReads.get(channelId), id);
   }
 });
+
+test("POST /api/topics/ch:<id>/read: 人格の入口と終わった（ended）Claude Code のチャンネルは 200", async (t) => {
+  const s = await setup(t, { reads: true, cc: true });
+  for (const channelId of ["102", "301"]) {
+    const id = reply(s, channelId);
+    assert.deepEqual(await postJson(s.server, `/api/topics/ch:${channelId}/read`, { lastId: id }), { status: 200, json: { lastReadId: id } }, channelId);
+  }
+});
+
+test("POST /api/topics/ch:<id>/read: cc を配線しないと Claude Code のチャンネルは 404、許可の外のサーバーのセッションは 404", async (t) => {
+  const s = await setup(t, { reads: true });
+  reply(s, "300");
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:300/read", { lastId: 1 }), { status: 404, json: { error: "not_found" } });
+  const outside = await setup(t, { reads: true, allowed: [GUILD] });
+  reply(outside, "400", GUILD_NOT_SET_UP);
+  assert.deepEqual(await postJson(outside.server, "/api/topics/ch:400/read", { lastId: 1 }), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(s.topicReads.all(), new Map());
+  assert.deepEqual(outside.topicReads.all(), new Map());
+});
+
+test("POST /api/topics/ch:<id>/read: 知らない ID でも lastId が 0 なら 400（400 を 404 より先に見る）、lastId が 2 ** 53 も 400", async (t) => {
+  const s = await setup(t, { reads: true });
+  reply(s, "200");
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:999/read", { lastId: 0 }), { status: 400, json: { error: "bad_request" } });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/read", { lastId: 2 ** 53 }), { status: 400, json: { error: "bad_request" } });
+  assert.deepEqual(s.topicReads.all(), new Map());
+});
