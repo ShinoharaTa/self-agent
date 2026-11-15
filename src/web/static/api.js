@@ -166,6 +166,8 @@
       if (zoneChanged) {
         const tabId = SA.app.activeTabId();
         if (tabId && tabId !== "status" && tabId !== "settings") SA.app.refresh(tabId);
+        // 前に出ているタブのほかに見えている会話（M3b の右腕）も描き直す
+        for (const id of SA.app.shownChannelIds()) if ("ch:" + id !== tabId) SA.app.refresh("ch:" + id);
         SA.app.refreshSidebar();
       }
       if (data && data.stopping === true && !SA.poll.stopped()) {
@@ -870,17 +872,20 @@
   // 失敗のトーストは続けて失敗している間は最初の 1 回だけで、その間は間隔を倍にして POLL_BACKOFF_MAX_MS まで伸ばす。成功したら元に戻す
   const poll = { started: false, stopped: false };
 
-  /** 前に出ている会話のタブがプロジェクトのセッションで、許可の要求を保留している */
+  /** 見えている会話のどれかがプロジェクトのセッションで、許可の要求を保留している */
   function activePermissionPending() {
-    const channelId = SA.chat.activeChannelId();
-    const t = channelId ? store.turns[channelId] : undefined;
-    const p = t && t.channel ? t.channel.permission : null;
-    return !!(p && p.state === "pending");
+    return SA.app.shownChannelIds().some((channelId) => {
+      const t = store.turns[channelId];
+      const p = t && t.channel ? t.channel.permission : null;
+      return !!(p && p.state === "pending");
+    });
   }
 
-  function activeTurns(opts) {
-    const channelId = SA.chat.activeChannelId();
-    return channelId ? store.load.turns(channelId, opts) : Promise.resolve(null);
+  /** 見えている会話の /turns を全部読む。どれかが失敗したらその最初の error、全部成功（無いときも）なら null で resolve する */
+  function shownTurns(opts) {
+    const ids = SA.app.shownChannelIds();
+    if (ids.length === 0) return Promise.resolve(null);
+    return Promise.all(ids.map((id) => store.load.turns(id, opts))).then((errors) => errors.find((err) => err) || null);
   }
 
   /** run は opts（quiet）を受け、成功なら null・失敗ならその error で resolve する。base は成功しているときの間隔。fails は続けて失敗した回数 */
@@ -890,7 +895,7 @@
     notices: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.notices(opts), fails: 0, timer: null },
     lists: { base: () => CHANNELS_INTERVAL_MS, run: (opts) => store.load.lists(opts), fails: 0, timer: null },
     // プロジェクトのセッションで許可の要求を保留していれば 3 秒ごと（Claude Code の一覧と同じ）
-    turns: { base: () => (activePermissionPending() ? CC_PERMISSION_INTERVAL_MS : TURNS_INTERVAL_MS), run: activeTurns, fails: 0, timer: null },
+    turns: { base: () => (activePermissionPending() ? CC_PERMISSION_INTERVAL_MS : TURNS_INTERVAL_MS), run: shownTurns, fails: 0, timer: null },
     // Claude Code: 一覧は見ている間（会話の一覧を出している・セッションのタブが前に出ている）だけ 10 秒ごと、画面の写しはセッションのタブが前に出ている間だけ 3 秒ごと。見ていなければ次を予約せず、
     // 見始めたとき（会話の一覧を出した・タブを前に出した。SA.poll.kickCc）と、隠れていた画面が戻ったとき（schedule）に始め直す
     // 許可の要求を保留しているセッションがあれば一覧も 3 秒ごと
@@ -996,7 +1001,7 @@
     turnsCaughtUp.clear();
     for (const p of Object.values(polls)) runPoll(p);
     // 隠れている間に返事が来ていれば、戻ったときに既読にする
-    SA.chat.markSeenActive();
+    SA.chat.markSeenShown();
   }
 
   SA.poll = {

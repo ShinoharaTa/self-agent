@@ -343,11 +343,12 @@
   }
 
   /**
-   * /api/running の差（api.js の applyRunning の前と後）→ 事象。front は前に出ている会話（/turns を読んでいるチャンネル。隠れていれば null）。
+   * /api/running の差（api.js の applyRunning の前と後）→ 事象。front は前に出ている会話（/turns を読んでいるチャンネル。1 つの文字列か配列。隠れていれば null）。
    * 消えたターンは、Web で中断したなら鳴らさず、前に出ている会話なら次の /turns の agent の行を最大 3 秒待ち（pendingEnds）、それ以外はすぐ返事
    */
   function decideRunning(detail, mem, now, front) {
     const out = [];
+    const fronts = Array.isArray(front) ? front : front ? [front] : [];
     const prevList = (detail && detail.prev) || [];
     const nextList = (detail && detail.next) || [];
     const catchUp = !!(detail && detail.catchUp);
@@ -360,7 +361,7 @@
       mem.abortedAt.delete(channelId);
       if (catchUp || (aborted !== undefined && now - aborted < ABORT_SUPPRESS_MS)) continue;
       const depth = { toolCalls: prev.toolCalls };
-      if (front && channelId === front) mem.pendingEnds.set(channelId, { at: now, depth });
+      if (fronts.includes(channelId)) mem.pendingEnds.set(channelId, { at: now, depth });
       else out.push({ event: "reply", channelId, depth });
     }
     for (const [channelId, next] of after) {
@@ -480,12 +481,15 @@
     return out;
   }
 
-  /** 前に出ている会話か（channelId か、Claude Code の sessionId で） */
+  /** 前に出ている会話か（channelId が前に出ているか見えている会話か、Claude Code の sessionId で） */
   function isFront(ev, view) {
-    return (!!ev.channelId && ev.channelId === view.frontChannelId) || (!!ev.sessionId && ev.sessionId === view.frontSessionId);
+    return (
+      (!!ev.channelId && (ev.channelId === view.frontChannelId || (view.shownChannelIds || []).includes(ev.channelId))) ||
+      (!!ev.sessionId && ev.sessionId === view.frontSessionId)
+    );
   }
 
-  /** 設定と今の画面で絞る。view は { frontChannelId, frontSessionId, hidden } */
+  /** 設定と今の画面で絞る。view は { frontChannelId, shownChannelIds, frontSessionId, hidden }（shownChannelIds は省略できる） */
   function filterEvents(events, settings, view) {
     const s = normalizeSettings(settings);
     return events.filter((ev) => {
@@ -778,7 +782,10 @@
       const ch = SA.chat && typeof SA.chat.current === "function" ? SA.chat.current() : null;
       if (ch && ch.kind === "cc" && ch.cc && typeof ch.cc.sessionId === "string") frontSessionId = ch.cc.sessionId;
     }
-    return { frontChannelId, frontSessionId, hidden: document.visibilityState !== "visible" };
+    // 見えている会話（M3b の右腕を含む）。殻が答えなければ前に出ている会話だけ
+    const shownChannelIds =
+      SA.app && typeof SA.app.shownChannelIds === "function" ? SA.app.shownChannelIds() : frontChannelId ? [frontChannelId] : [];
+    return { frontChannelId, shownChannelIds, frontSessionId, hidden: document.visibilityState !== "visible" };
   }
 
   /** 画面の操作の前（AudioContext が無い・suspended）は捨てる */
@@ -806,7 +813,7 @@
       // オフの間も判断待ちは覚える（オンにした後に古いものを鳴らさない）
       const now = Date.now();
       const v = view();
-      const events = expireEnds(mem, now).concat(decide(detail, mem, now, v.hidden ? null : v.frontChannelId));
+      const events = expireEnds(mem, now).concat(decide(detail, mem, now, v.hidden ? null : v.shownChannelIds));
       handle(events);
       scheduleEnds();
     });
