@@ -1528,6 +1528,8 @@
     addOutput,
     activeTabId,
     shownChannelIds,
+    // 既読を付ける会話は見えている会話と同じ（ドロワーの下のずれは M8b で殻ごと消す）
+    readingChannelIds: shownChannelIds,
     sidebarShows,
     openDrawer,
     closeDrawer,
