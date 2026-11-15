@@ -181,6 +181,8 @@ export type CcConfig = {
   ccSendWaitMin: number;
   /** 新しいセッションを起動できる場所（SELF_AGENT_WORKSPACE_DIR。既定 ~/workspace。絶対パス）。直下のディレクトリだけが候補 */
   workspaceDir: string;
+  /** 場所を決めていない話題の作業場（SELF_AGENT_GENERAL_DIR。既定 General）。SELF_AGENT_WORKSPACE_DIR の直下のディレクトリの名前 */
+  generalDir: string;
   /** 生きている claude の上限（正の整数）。これ以上なら起動を断る */
   ccMaxSessions: number;
   /**
@@ -236,6 +238,9 @@ const DEFAULT_CC_SEND_WAIT_MIN = 120;
 const DEFAULT_CC_MAX_SESSIONS = 30;
 /** SELF_AGENT_CC_HOOK_TOKEN の最短の長さ */
 const MIN_CC_HOOK_TOKEN_LENGTH = 32;
+const DEFAULT_GENERAL_DIR = "General";
+/** General の名前の形（cc/starter.ts の CC_PROJECT_PATTERN と同じ。config.ts は cc/ を import しない） */
+export const GENERAL_DIR_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
@@ -641,6 +646,10 @@ export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
   if (!isAbsolute(workspaceDir) || workspaceDir.includes("#")) {
     throw new Error("SELF_AGENT_WORKSPACE_DIR は # を含まない絶対パスで指定してください");
   }
+  const generalDir = nonEmpty(env.SELF_AGENT_GENERAL_DIR) ?? DEFAULT_GENERAL_DIR;
+  if (!GENERAL_DIR_PATTERN.test(generalDir)) {
+    throw new Error("SELF_AGENT_GENERAL_DIR は英数字・_・- の 1〜64 字で指定してください");
+  }
   const ccMaxSessions = positiveInteger("SELF_AGENT_CC_MAX_SESSIONS", nonEmpty(env.SELF_AGENT_CC_MAX_SESSIONS), DEFAULT_CC_MAX_SESSIONS);
   // 既定は知らせる（0 で止める）
   const notifyValue = nonEmpty(env.SELF_AGENT_CC_NOTIFY);
@@ -656,6 +665,7 @@ export function loadCcConfig(env: NodeJS.ProcessEnv = process.env): CcConfig {
     ccQuestionHoldSec,
     ccSendWaitMin,
     workspaceDir: workspaceDir.replace(/(.)\/+$/, "$1"),
+    generalDir,
     ccMaxSessions,
     ccNotify,
   };

@@ -1699,11 +1699,10 @@ test("web static: v3.html に inline の script・style・style 属性が無く�
   assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
 });
 
-test("web static: v3.html に [+]・「場所」のボタンが無い", () => {
+test("web static: v3.html に今の画面の作る口が無く、場所はボタンでない", () => {
   const html = read("v3.html");
-  for (const word of ["v3-add", "dlg-new", "dlg-cc-start", "palette"]) assert.equal(html.includes(word), false, word);
+  for (const word of ["dlg-new", "dlg-cc-start", "palette"]) assert.equal(html.includes(word), false, word);
   const shell = read("shell.js");
-  for (const word of ["v3-add"]) assert.equal(shell.includes(word), false, word);
   const bar = fnSource(shell, "renderBar");
   assert.doesNotMatch(bar, /"button"/);
   assert.match(bar, /place\.textContent = text/);
@@ -1775,7 +1774,9 @@ test("web static: topics.js は一覧の入れ物を作り直さない", () => {
   const receivers = [...js.matchAll(/(\w+)\.replaceChildren\(/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(receivers)].sort(), ["button", "head"]);
   assert.match(fnSource(js, "fillRow"), /button\.replaceChildren\(/);
-  assert.match(fnSource(js, "updateGroup"), /head\.replaceChildren\(/);
+  // 群の見出しの子は最初の 1 回だけ作る（M4b。[+] の焦点を外さない）
+  assert.match(fnSource(js, "updateGroup"), /fillHead\(head, g\);/);
+  assert.match(fnSource(js, "fillHead"), /if \(head\.children\.length === 0\) \{[\s\S]*head\.replaceChildren\(/);
   for (const name of ["body", "groups", "list"]) {
     assert.doesNotMatch(js, new RegExp(`\\b${name}\\.(replaceChildren\\(|innerHTML|textContent = "")`), name);
   }
@@ -2037,6 +2038,28 @@ function loadShell(
   v3.append(list, main, hand, backdrop);
   const body = node("body");
   body.append(v3, node("dialog", "v3-sheet"));
+  // 始めるダイアログ（M4b）: showModal・close は open の属性を書き、close は "close" を出す（ブラウザの <dialog> と同じく、開いていなければ出さない）
+  const start = node("dialog", "v3-start", "v3-start");
+  Object.assign(start, {
+    showModal: () => start.setAttribute("open", ""),
+    close: () => {
+      if (start.getAttribute("open") === null) return;
+      start.removeAttribute("open");
+      start.dispatch("close");
+    },
+  });
+  const startForm = node("form", "v3-start-form", "stack");
+  startForm.append(
+    node("select", "v3-start-place", "select"),
+    node("textarea", "v3-start-text", "textarea"),
+    node("input", "v3-start-name", "input"),
+    Object.assign(node("p", "v3-start-error", "alert"), { hidden: true }),
+    node("p", "v3-start-hint", "meta"),
+    node("button", "v3-start-cancel", "btn btn-secondary btn-sm"),
+    node("button", "v3-start-ok", "btn btn-primary btn-sm"),
+  );
+  start.append(startForm);
+  body.append(start);
   const ids = new Map<string, DomNode>();
   for (const n of descendants(body)) if (n instanceof DomNode && n.getAttribute("id")) ids.set(n.getAttribute("id")!, n);
   // ≤639px の一覧の間は .v3-main が display: none（shell.css）。hidden の要素も出ない
@@ -2233,12 +2256,23 @@ function loadShell(
     },
   };
   SA.poll = { start() {}, stopped: () => false };
-  const api = { calls: 0, paths: [] as string[], reply: (): Promise<unknown> => Promise.resolve(v3Result([])) };
+  const api = {
+    calls: 0,
+    paths: [] as string[],
+    reply: (): Promise<unknown> => Promise.resolve(v3Result([])),
+    // POST（M4b）: 呼ばれた引数を覚え、postReply の結果で resolve・reject する
+    posts: [] as Array<{ path: string; body: unknown; opts: unknown }>,
+    postReply: (): Promise<unknown> => Promise.resolve({}),
+  };
   SA.api = {
     get: (path: string) => {
       api.calls++;
       api.paths.push(path);
       return api.reply();
+    },
+    post: (path: string, body: unknown, opts: unknown) => {
+      api.posts.push({ path, body: JSON.parse(JSON.stringify(body)), opts: JSON.parse(JSON.stringify(opts ?? null)) });
+      return api.postReply();
     },
   };
   vm.runInNewContext(read("topics.js"), context);
@@ -4031,7 +4065,8 @@ test("web static: v3.html に右腕の枠と 3 つの口があり、右腕のた
   assert.match(html, /id="v3-list-body"[\s\S]*<div class="v3-hand-entry">\s*<button class="v3-hand-ask" id="v3-hand-ask" type="button" aria-controls="v3-hand"><\/button>\s*<\/div>\s*<footer class="v3-list-foot"/);
   assert.match(html, /id="v3-views"[^>]*><\/div>\s*<button class="btn btn-ghost btn-sm v3-hand-open" id="v3-hand-open" type="button" aria-controls="v3-hand"><\/button>\s*<\/div>/);
   const dialogs = [...html.matchAll(/<dialog id="([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(dialogs, ["v3-sheet", "dlg-confirm"]);
+  // 始めるダイアログ（M4b）は右腕のためでない
+  assert.deepEqual(dialogs, ["v3-sheet", "v3-start", "dlg-confirm"]);
   // CSS: 列 3 の変数・重ねる形・スマホの口（動きは付けない）
   const css = read("shell.css");
   assert.match(css, /--v3-hand-w: 360px;/);
@@ -4343,3 +4378,490 @@ test("web static: 幅の往復・再読み込みで右腕の印を外した会�
   const r = await loadHand({ phone: true, hash: "#/ch/1", initState: { v3Body: true, v3Hand: true } }, [v3Topic("ch:1")]);
   assert.deepEqual(JSON.parse(JSON.stringify(r.history.state)), { v3Body: true, v3Depth: 2 });
 });
+
+// ===== 話題を始める口（M4b。#360）: 群の見出しの [+]・始めるダイアログ #v3-start・「場所: なし」 =====
+const startGroups = () => [
+  v3Group("p:alpha", { kind: "project", name: "alpha" }),
+  v3Group("general", { name: "General" }),
+  v3Group("p:beta", { kind: "project", name: "beta", open: 0 }),
+  v3Group("other", { kind: "other", name: "ほかの場所" }),
+];
+const startTopics = () => [
+  v3Topic("ch:1", { group: "general", title: "一般", place: { dir: "General" } }),
+  v3Topic("ch:2", { group: "general", title: "軽い", place: { dir: null } }),
+  v3Topic("ch:3", { group: "p:alpha", title: "作業", place: { dir: "alpha" } }),
+  v3Topic("ch:4", { group: "other", title: "外", cwdLabel: "~/x" }),
+];
+type StartShell = ReturnType<typeof loadShell> & { toasts: string[]; start: DomNode & { close: () => void }; app: ShellApp & { newSession: (place?: string, opener?: unknown) => void; draft: (id: string) => string } };
+
+async function loadStart(opts: Parameters<typeof loadShell>[0] = {}, o: Record<string, unknown> = {}): Promise<StartShell> {
+  const h = loadShell(opts) as StartShell;
+  await h.flush();
+  h.api.reply = () => Promise.resolve(v3Result(startTopics(), { groups: startGroups(), ...o }));
+  await h.topics.load();
+  h.toasts = [];
+  h.ui.toast = (text: string) => void h.toasts.push(text);
+  h.start = h.document.getElementById("v3-start") as StartShell["start"];
+  return h;
+}
+const startEl = (h: StartShell, id: string) => h.document.getElementById("v3-start-" + id) as DomNode & { value: string; disabled: boolean };
+const groupOf = (h: StartShell, key: string) => descendants(h.nodes.groups).find((n) => n instanceof DomNode && n.getAttribute("data-key") === key) as DomNode;
+const addOf = (h: StartShell, key: string) => groupOf(h, key).querySelector("button.v3-add");
+const submitStart = (h: StartShell) => {
+  const e = { prevented: false, preventDefault: () => (e.prevented = true) };
+  startEl(h, "form").dispatch("submit", e);
+  return e;
+};
+const created = (o: Record<string, unknown> = {}) => ({ id: "ch:77", channelId: "77", link: "https://discord.com/channels/1/77", title: "始めた", place: { dir: "General" }, mode: "project", turn: "started", ...o });
+const apiError = (status: number, code: string | null, data: Record<string, unknown> | null = null) =>
+  Object.assign(new Error(status + ": " + code), { status, code, data: data ?? (code ? { error: code } : null) });
+
+test("web static: v3.html の始めるダイアログは aria-labelledby・label の for・role=alert を持ち、inline の script・style が無い", () => {
+  const html = read("v3.html");
+  const at = html.indexOf('<dialog id="v3-start"');
+  assert.ok(at > html.indexOf('<dialog id="v3-sheet"'), "#v3-sheet の後ろ");
+  const dialog = html.slice(at, html.indexOf("</dialog>", at));
+  assert.match(dialog, /^<dialog id="v3-start" class="v3-start" aria-labelledby="v3-start-title">/);
+  assert.match(dialog, /<h2 id="v3-start-title" class="dlg-title">話題を始める<\/h2>/);
+  // 欄の順は 場所 → 最初の一言 → 題名 → やめる → 始める
+  const fields = [...dialog.matchAll(/<label for="([^"]+)">/g)].map((m) => m[1]);
+  assert.deepEqual(fields, ["v3-start-place", "v3-start-text", "v3-start-name"]);
+  for (const id of fields) assert.match(dialog, new RegExp(`<(select|textarea|input) [^>]*id="${id}"`), id);
+  assert.ok(dialog.indexOf('id="v3-start-cancel"') < dialog.indexOf('id="v3-start-ok"'));
+  assert.match(dialog, /<p class="alert" id="v3-start-error" role="alert" hidden><\/p>/);
+  assert.match(dialog, /<textarea [^>]*maxlength="1900"/);
+  assert.match(dialog, /<input [^>]*maxlength="100"/);
+  assert.match(dialog, /<button class="btn btn-primary btn-sm" id="v3-start-ok" type="submit">始める<\/button>/);
+  assert.doesNotMatch(dialog, /\sstyle=|\son[a-z]+=|<script|<style/i);
+  // [+] は topics.js が作る（v3.html の「あなたの番」の見出しには無い）
+  assert.equal(html.includes("v3-add"), false);
+});
+
+test("web static: v3 の始める口: General とプロジェクトの群の見出しに [+] があり、aria-label は「<群の名前> で話題を始める」。ほかの場所・あなたの番には無い。畳んだプロジェクトの見出しにもある", async () => {
+  const h = await loadStart({}, { turns: 1, turnIds: ["ch:1"] });
+  for (const [key, name] of [
+    ["general", "General"],
+    ["p:alpha", "alpha"],
+    ["p:beta", "beta"],
+  ]) {
+    const add = addOf(h, key!);
+    assert.ok(add, key);
+    assert.equal(add.getAttribute("aria-label"), name + " で話題を始める");
+    assert.equal(add.getAttribute("title"), name + " で話題を始める");
+    assert.equal(add.getAttribute("data-place"), key);
+    assert.equal(add.getAttribute("type"), "button");
+    assert.ok(add.classes.has("btn-icon-sm"));
+    // 見出しの 3 番目の子
+    assert.equal(kids(kids(groupOf(h, key!))[0]!)[2], add);
+  }
+  assert.ok(descendants(groupOf(h, "p:beta")).length > 0 && h.document.getElementById("v3-others")!.contains(addOf(h, "p:beta")), "畳んだ群");
+  assert.equal(addOf(h, "other"), null);
+  assert.equal(h.nodes.turns.querySelector("button.v3-add"), null);
+});
+
+test("web static: v3 の始める口: 見出しの補足が変わっても [+] は同じ要素のまま（作り直さない）", async () => {
+  const h = await loadStart();
+  const add = addOf(h, "general")!;
+  const name = kids(kids(groupOf(h, "general"))[0]!)[0]!;
+  add.focus();
+  h.api.reply = () => Promise.resolve(v3Result(startTopics(), { groups: startGroups().map((g) => (g.key === "general" ? { ...g, running: 1, name: "General2" } : g)) }));
+  await h.topics.load();
+  const head = kids(groupOf(h, "general"))[0]!;
+  assert.equal(textOf(kids(head)[1]!), "作業中 1");
+  assert.equal(kids(head)[0], name, "名前の span も同じ要素");
+  assert.equal(textOf(name), "General2");
+  assert.equal(addOf(h, "general"), add);
+  assert.equal(add.getAttribute("aria-label"), "General2 で話題を始める");
+  assert.equal(h.document.activeElement, add, "焦点が残る");
+});
+
+test("web static: v3 の始める口: [+] を押すと始めるダイアログが開き、場所は押した群・候補は General が先頭でプロジェクトが続く・フォーカスは最初の一言", async () => {
+  const h = await loadStart();
+  addOf(h, "p:alpha")!.dispatch("click");
+  assert.equal(h.start.getAttribute("open"), "");
+  const select = startEl(h, "place");
+  assert.deepEqual(
+    kids(select).map((o) => [o.getAttribute("value"), textOf(o)]),
+    [
+      ["general", "General"],
+      ["p:alpha", "alpha"],
+      ["p:beta", "beta"],
+    ],
+  );
+  assert.equal(select.value, "p:alpha");
+  assert.equal(h.document.activeElement, startEl(h, "text"));
+  assert.equal(startEl(h, "error").hidden, true);
+  // 開き直すと欄は空・場所は押した群（知らない場所は General）
+  startEl(h, "text").value = "前の";
+  startEl(h, "name").value = "前の題";
+  h.start.close();
+  h.app.newSession("p:nope");
+  assert.equal(select.value, "general");
+  assert.equal(startEl(h, "text").value, "");
+  assert.equal(startEl(h, "name").value, "");
+  h.start.close();
+  // 一覧をまだ読めていなければ General だけ
+  const fresh = loadShell() as StartShell;
+  fresh.app.newSession();
+  assert.deepEqual(kids(fresh.document.getElementById("v3-start-place") as DomNode).map((o) => o.getAttribute("value")), ["general"]);
+});
+
+test("web static: v3 の始める口: 題名も一言も空なら送らずに「最初の一言か題名を入れてください」", async () => {
+  const h = await loadStart();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "  \n ";
+  startEl(h, "name").value = " ";
+  const e = submitStart(h);
+  assert.equal(e.prevented, true);
+  assert.equal(h.api.posts.length, 0);
+  assert.equal(startEl(h, "error").hidden, false);
+  assert.equal(textOf(startEl(h, "error")), "最初の一言か題名を入れてください");
+  assert.equal(startEl(h, "text").getAttribute("aria-invalid"), "true");
+  assert.equal(h.start.getAttribute("open"), "");
+});
+
+test("web static: v3 の始める口: 始めるは POST /api/topics に place・text・title（空の欄は送らない）を 1 回だけ送り、送っている間は [始める] が無効", async () => {
+  const h = await loadStart();
+  let resolve: (v: unknown) => void = () => undefined;
+  h.api.postReply = () => new Promise((r) => (resolve = r));
+  addOf(h, "p:alpha")!.dispatch("click");
+  startEl(h, "text").value = "  最初の一言  ";
+  submitStart(h);
+  assert.deepEqual(h.api.posts, [{ path: "/api/topics", body: { place: "p:alpha", text: "最初の一言" }, opts: { quiet: true } }]);
+  assert.equal(startEl(h, "ok").disabled, true);
+  // 送っている間の 2 回目（[始める]・Ctrl+Enter）は送らない
+  submitStart(h);
+  startEl(h, "text").dispatch("keydown", keyEvent("Enter", startEl(h, "text"), { ctrlKey: true }));
+  assert.equal(h.api.posts.length, 1);
+  resolve(created());
+  await h.flush();
+  assert.equal(startEl(h, "ok").disabled, false);
+  // 題名だけ（一言は送らない）
+  h.app.newSession("general");
+  startEl(h, "name").value = " 題だけ ";
+  submitStart(h);
+  assert.deepEqual(h.api.posts[1]!.body, { place: "general", title: "題だけ" });
+});
+
+test("web static: v3 の始める口: 始めたらダイアログを閉じ、一覧を読み直し、その話題を開く（スマホは会話の画面）", async () => {
+  const h = await loadStart();
+  h.api.postReply = () => Promise.resolve(created({ title: "旅行の計画" }));
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "旅行の計画を立てたい";
+  const reads = h.api.paths.length;
+  submitStart(h);
+  await h.flush();
+  assert.equal(h.start.getAttribute("open"), null);
+  assert.equal(h.api.paths.slice(reads).filter((p) => p === "/api/topics").length, 1, "一覧を読み直す");
+  assert.equal(h.app.activeTabId(), "ch:77");
+  assert.deepEqual(h.toasts, ["話題「旅行の計画」を始めました"]);
+  // スマホ: 会話の画面になり、開いていた右腕も閉じる
+  const p = await loadStart({ phone: true, width: 390 }, { rightHands: [v3Hand()] });
+  p.api.postReply = () => Promise.resolve(created());
+  p.nodes.handAsk.dispatch("click");
+  assert.equal(p.nodes.v3.getAttribute("data-hand"), "open");
+  p.app.newSession("general");
+  startEl(p, "text").value = "やあ";
+  submitStart(p);
+  await p.flush();
+  assert.equal(p.nodes.v3.getAttribute("data-hand"), "closed");
+  assert.equal(p.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(p.app.activeTabId(), "ch:77");
+  assert.equal(p.location.hash, "#/ch/77");
+});
+
+test("web static: v3 の始める口: turn が failed なら一言を書きかけに戻して開く", async () => {
+  const h = await loadStart();
+  h.api.postReply = () => Promise.resolve(created({ turn: "failed", title: "題" }));
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "送れなかった一言\n2 行目";
+  submitStart(h);
+  await h.flush();
+  assert.equal(h.app.draft("77"), "送れなかった一言\n2 行目");
+  assert.equal(h.app.activeTabId(), "ch:77");
+  assert.deepEqual(h.toasts, ["話題「題」を始めました。最初の一言は送れなかったので、入力欄に戻しました"]);
+});
+
+test("web static: v3 の始める口: 失敗はダイアログを開いたまま、error の値ごとの文を role=alert の欄に出し、[始める] を有効に戻す。HTTP の番号・error の値は画面に出ない", async () => {
+  const cases: Array<[Error, string]> = [
+    [apiError(400, "too_long", { error: "too_long", field: "title" }), "題名は 100 字までです"],
+    [apiError(400, "too_long", { error: "too_long", field: "text" }), "最初の一言は 1,900 字までです"],
+    [apiError(400, "empty"), "最初の一言か題名を入れてください"],
+    [apiError(400, "invalid_project"), "そのプロジェクトは使えません"],
+    [apiError(409, "cc_disabled"), "プロジェクトで始めるには Claude Code の連携が要ります"],
+    [apiError(503, "unify_not_ready"), "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行して再起動してください"],
+    [apiError(409, "not_set_up"), "先に Discord で /setup を実行してください"],
+    [apiError(503, "bot_disconnected"), "Discord につながっていません。少し待ってからもう一度試してください"],
+    [apiError(0, null), "サーバーにつながりません"],
+    [apiError(500, "internal"), "始められませんでした。もう一度試してください"],
+    [apiError(400, "bad_request"), "始められませんでした。もう一度試してください"],
+  ];
+  const h = await loadStart();
+  addOf(h, "p:alpha")!.dispatch("click");
+  for (const [err, text] of cases) {
+    h.api.postReply = () => Promise.reject(err);
+    startEl(h, "text").value = "一言";
+    startEl(h, "name").value = "題";
+    submitStart(h);
+    await h.flush();
+    const box = startEl(h, "error");
+    assert.equal(box.hidden, false, text);
+    assert.equal(textOf(box), text);
+    const { status, code } = err as Error & { status: number; code: string | null };
+    if (status !== 0) assert.equal(textOf(box).includes(String(status)), false, "HTTP の番号");
+    if (code) assert.equal(textOf(box).includes(code), false, "error の値");
+    assert.equal(h.start.getAttribute("open"), "", "開いたまま");
+    assert.equal(startEl(h, "ok").disabled, false);
+    assert.equal(startEl(h, "text").value, "一言", "入力は残す");
+  }
+  assert.deepEqual(h.toasts, []);
+  assert.equal(startEl(h, "name").getAttribute("aria-invalid"), null);
+  // 次に送るとエラーの欄を隠す
+  let resolve: (v: unknown) => void = () => undefined;
+  h.api.postReply = () => new Promise((r) => (resolve = r));
+  submitStart(h);
+  assert.equal(startEl(h, "error").hidden, true);
+  resolve(created());
+  await h.flush();
+});
+
+test("web static: v3 の始める口: 連携が無効・link が無いときのヒントの文（General は場所なしで始める・プロジェクトは連携が要る）。場所を変えるとヒントも変わる", async () => {
+  const hint = (h: StartShell, place: string) => {
+    startEl(h, "place").value = place;
+    startEl(h, "place").dispatch("change");
+    return textOf(startEl(h, "hint"));
+  };
+  const h = await loadStart({ status: {} });
+  h.app.newSession("general");
+  assert.equal(textOf(startEl(h, "hint")), "Discord にチャンネルができます。");
+  assert.equal(hint(h, "p:alpha"), "Discord にチャンネルができます。alpha の中で作業します。", "状態が分からなければ有効と同じ");
+  h.store.status = { cc: { enabled: true, unifyReady: true } };
+  assert.equal(hint(h, "general"), "Discord にチャンネルができます。");
+  assert.equal(hint(h, "p:beta"), "Discord にチャンネルができます。beta の中で作業します。");
+  h.store.status = { cc: { enabled: false, unifyReady: false } };
+  assert.equal(hint(h, "general"), "Discord にチャンネルができます。Claude Code の連携が使えないので、場所なしの話題として始めます。");
+  assert.equal(hint(h, "p:alpha"), "プロジェクトで始めるには Claude Code の連携が要ります。");
+  h.store.status = { cc: { enabled: true, unifyReady: false } };
+  assert.equal(hint(h, "general"), "Discord にチャンネルができます。Claude Code の連携が使えないので、場所なしの話題として始めます。");
+  assert.equal(hint(h, "p:alpha"), "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行して再起動してください");
+  // ヒントが何でも [始める] は押せる（判定はサーバー）
+  assert.equal(startEl(h, "ok").disabled, false);
+});
+
+test("web static: v3 の始める口: 最初の一言の Ctrl+Enter・⌘+Enter で送る。変換中は送らない。ただの Enter では送らない", async () => {
+  const h = await loadStart();
+  h.api.postReply = () => Promise.reject(apiError(500, "internal"));
+  addOf(h, "general")!.dispatch("click");
+  const text = startEl(h, "text");
+  text.value = "一言";
+  const plain = keyEvent("Enter", text);
+  text.dispatch("keydown", plain);
+  assert.equal(plain.prevented, false, "ただの Enter は改行");
+  const composing = keyEvent("Enter", text, { ctrlKey: true, isComposing: true });
+  text.dispatch("keydown", composing);
+  assert.equal(composing.prevented, false);
+  assert.equal(h.api.posts.length, 0);
+  const ctrl = keyEvent("Enter", text, { ctrlKey: true });
+  text.dispatch("keydown", ctrl);
+  assert.equal(ctrl.prevented, true);
+  assert.equal(h.api.posts.length, 1);
+  await h.flush();
+  text.dispatch("keydown", keyEvent("Enter", text, { metaKey: true }));
+  assert.equal(h.api.posts.length, 2);
+  await h.flush();
+  // ほかのキーとの組み合わせは送らない
+  text.dispatch("keydown", keyEvent("k", text, { ctrlKey: true }));
+  assert.equal(h.api.posts.length, 2);
+});
+
+test("web static: v3 の始める口: やめる・Escape で閉じたら押した [+] にフォーカスが戻る。話題を開いたときは戻さない", async () => {
+  const h = await loadStart();
+  const add = addOf(h, "p:alpha")!;
+  add.dispatch("click");
+  startEl(h, "cancel").dispatch("click");
+  assert.equal(h.start.getAttribute("open"), null);
+  assert.equal(h.document.activeElement, add);
+  // Escape（<dialog> の素の動きで close）
+  add.dispatch("click");
+  assert.equal(h.document.activeElement, startEl(h, "text"));
+  h.start.close();
+  assert.equal(h.document.activeElement, add);
+  // 始めて話題を開いたときは戻さない
+  h.api.postReply = () => Promise.resolve(created());
+  add.dispatch("click");
+  startEl(h, "text").value = "一言";
+  submitStart(h);
+  await h.flush();
+  assert.equal(h.app.activeTabId(), "ch:77");
+  assert.notEqual(h.document.activeElement, add);
+});
+
+test("web static: v3 の始める口: 場所の表示は、General の話題は「場所: General」、place.dir が null の話題は「場所: なし」、プロジェクトは名前", async () => {
+  const h = await loadStart();
+  const place = () => textOf(h.document.getElementById("v3-place") as DomNode);
+  h.app.open("ch:1");
+  assert.equal(place(), "場所: General");
+  h.app.open("ch:2");
+  assert.equal(place(), "場所: なし");
+  h.app.open("ch:3");
+  assert.equal(place(), "場所: alpha");
+  h.app.open("ch:4");
+  assert.equal(place(), "場所: ほかの場所（~/x）");
+  // 札も同じ決め方
+  const ctx: Record<string, unknown> = {};
+  vm.runInNewContext(fnSource(read("shell.js"), "placeText") + "\nf = placeText;", ctx);
+  const f = ctx.f as (t: unknown) => string;
+  assert.equal(f({ group: "general", place: { dir: null } }), "なし");
+  assert.equal(f({ group: "general", place: null }), "なし");
+  assert.equal(f({ group: "general", place: { dir: "Gen" } }), "General", "ディレクトリの名前を変えていても General");
+  assert.equal(f({ group: "p:x", place: { dir: "x" } }), "x");
+});
+
+test("web static: v3 の始める口の CSS: [+] は右端（名前が伸びる）・スマホは --tap の大きさ・一言の欄は縦にだけ伸ばせる", () => {
+  const css = read("shell.css");
+  const block = (src: string, sel: string) => src.slice(src.indexOf(sel + " {"), src.indexOf("}", src.indexOf(sel + " {")));
+  assert.match(block(css, "\n.v3-group-name"), /flex: 1 1 auto;/);
+  assert.match(block(css, "\n.v3-add"), /flex: none;/);
+  assert.match(block(css, "\n.v3-start .textarea"), /resize: vertical;/);
+  const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
+  assert.match(block(phone, "  .v3-add"), /min-width: var\(--tap\);\s*min-height: var\(--tap\);/);
+});
+
+// 送っている間に閉じた・開き直した後の応答（#367 のレビュー）: 送った開きのままでなければダイアログに触らず、toast で知らせる。話題へは移らない
+type StartPending = { res: (v: unknown) => void; rej: (e: unknown) => void };
+async function loadStartPending(): Promise<{ h: StartShell; pending: StartPending[]; hash: string }> {
+  const h = await loadStart();
+  h.app.open("ch:1");
+  const pending: StartPending[] = [];
+  h.api.postReply = () => new Promise((res, rej) => void pending.push({ res, rej }));
+  return { h, pending, hash: h.location.hash };
+}
+const topicReads = (h: StartShell, from: number) => h.api.paths.slice(from).filter((p) => p === "/api/topics").length;
+
+test("web static: v3 の始める口: 送っている間に閉じて開き直し、前の応答が成功で返っても、今のダイアログ・欄・[始める] に触らず、話題へ移らず、toast と一覧の読み直し", async () => {
+  const { h, pending, hash } = await loadStartPending();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "A";
+  submitStart(h);
+  h.start.close();
+  addOf(h, "general")!.dispatch("click");
+  assert.equal(startEl(h, "ok").disabled, false, "開き直したら [始める] は押せる");
+  startEl(h, "text").value = "B";
+  const reads = h.api.paths.length;
+  pending[0]!.res(created({ title: "A の話" }));
+  await h.flush();
+  assert.equal(h.start.getAttribute("open"), "", "開いたまま");
+  assert.equal(startEl(h, "text").value, "B");
+  assert.equal(startEl(h, "ok").disabled, false);
+  assert.equal(startEl(h, "error").hidden, true);
+  assert.equal(h.app.activeTabId(), "ch:1");
+  assert.equal(h.location.hash, hash);
+  assert.deepEqual(h.toasts, ["話題「A の話」を始めました"]);
+  assert.equal(topicReads(h, reads), 1);
+});
+
+test("web static: v3 の始める口: 開き直した後に前の応答が失敗で返ったら、今の欄にエラーも aria-invalid も付けず、失敗の文を toast に出す", async () => {
+  const { h, pending } = await loadStartPending();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "A";
+  submitStart(h);
+  h.start.close();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "B";
+  pending[0]!.rej(apiError(400, "too_long", { error: "too_long", field: "text" }));
+  await h.flush();
+  assert.equal(h.start.getAttribute("open"), "");
+  assert.equal(startEl(h, "text").value, "B");
+  assert.equal(startEl(h, "error").hidden, true);
+  assert.equal(textOf(startEl(h, "error")), "");
+  assert.equal(startEl(h, "text").getAttribute("aria-invalid"), null);
+  assert.equal(startEl(h, "name").getAttribute("aria-invalid"), null);
+  assert.equal(startEl(h, "ok").disabled, false);
+  assert.deepEqual(h.toasts, ["最初の一言は 1,900 字までです"]);
+});
+
+test("web static: v3 の始める口: 閉じたまま失敗したら toast に失敗の文。次に開くと欄は空・エラーなし", async () => {
+  const { h, pending } = await loadStartPending();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "A";
+  submitStart(h);
+  h.start.close();
+  pending[0]!.rej(apiError(503, "bot_disconnected"));
+  await h.flush();
+  assert.deepEqual(h.toasts, ["Discord につながっていません。少し待ってからもう一度試してください"]);
+  addOf(h, "general")!.dispatch("click");
+  assert.equal(startEl(h, "text").value, "");
+  assert.equal(startEl(h, "error").hidden, true);
+  assert.equal(startEl(h, "text").getAttribute("aria-invalid"), null);
+  assert.equal(startEl(h, "ok").disabled, false);
+});
+
+test("web static: v3 の始める口: 閉じたまま成功したら話題へ移らず、toast と一覧の読み直し。turn が failed なら書きかけに戻し、toast は失敗の 1 つだけ", async () => {
+  const { h, pending, hash } = await loadStartPending();
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "A";
+  submitStart(h);
+  h.start.close();
+  let reads = h.api.paths.length;
+  pending[0]!.res(created());
+  await h.flush();
+  assert.equal(h.start.getAttribute("open"), null);
+  assert.equal(h.app.activeTabId(), "ch:1");
+  assert.equal(h.location.hash, hash);
+  assert.deepEqual(h.toasts, ["話題「始めた」を始めました"]);
+  assert.equal(topicReads(h, reads), 1);
+  // turn が failed
+  h.toasts = [];
+  addOf(h, "general")!.dispatch("click");
+  startEl(h, "text").value = "送れなかった一言";
+  submitStart(h);
+  h.start.close();
+  reads = h.api.paths.length;
+  pending[1]!.res(created({ id: "ch:78", channelId: "78", title: "題", turn: "failed" }));
+  await h.flush();
+  assert.equal(h.app.draft("78"), "送れなかった一言");
+  assert.equal(h.app.activeTabId(), "ch:1");
+  assert.deepEqual(h.toasts, ["話題「題」を始めました。最初の一言は送れなかったので、入力欄に戻しました"]);
+  assert.equal(topicReads(h, reads), 1);
+});
+
+for (const order of ["A が先に返る", "B が先に返る"] as const) {
+  test(`web static: v3 の始める口: 開き直して B を送れ、B の応答はダイアログを閉じて話題を開く。先に送った A の応答は B の結果を壊さない（${order}）`, async () => {
+    const { h, pending } = await loadStartPending();
+    addOf(h, "general")!.dispatch("click");
+    startEl(h, "text").value = "A";
+    submitStart(h);
+    h.start.close();
+    addOf(h, "general")!.dispatch("click");
+    startEl(h, "text").value = "B";
+    submitStart(h);
+    assert.equal(h.api.posts.length, 2, "2 回目の POST");
+    assert.deepEqual(h.api.posts[1]!.body, { place: "general", text: "B" });
+    assert.equal(startEl(h, "ok").disabled, true);
+    // 同じ開きの中の 2 回目は送らない
+    submitStart(h);
+    assert.equal(h.api.posts.length, 2);
+    const a = () => pending[0]!.res(created({ id: "ch:77", channelId: "77", title: "A の話" }));
+    const b = () => pending[1]!.res(created({ id: "ch:78", channelId: "78", title: "B の話" }));
+    if (order === "A が先に返る") {
+      a();
+      await h.flush();
+      assert.equal(h.start.getAttribute("open"), "", "B を送っている間は開いたまま");
+      assert.equal(startEl(h, "ok").disabled, true, "B を送っている間は無効のまま");
+      assert.equal(h.app.activeTabId(), "ch:1");
+      b();
+      await h.flush();
+      assert.deepEqual(h.toasts, ["話題「A の話」を始めました", "話題「B の話」を始めました"]);
+    } else {
+      b();
+      await h.flush();
+      assert.equal(h.app.activeTabId(), "ch:78");
+      a();
+      await h.flush();
+      assert.deepEqual(h.toasts, ["話題「B の話」を始めました", "話題「A の話」を始めました"]);
+    }
+    assert.equal(h.start.getAttribute("open"), null);
+    assert.equal(h.app.activeTabId(), "ch:78");
+    assert.equal(h.location.hash, "#/ch/78");
+  });
+}

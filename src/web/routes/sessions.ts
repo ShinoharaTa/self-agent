@@ -24,6 +24,7 @@ import {
   confirmClose,
   continueSession,
   NO_CONVERSATION_REPLY,
+  normalizeTopicTitle,
   NOT_RENEWABLE_REPLY,
   openTopicSession,
   type ProjectSessionGate,
@@ -79,11 +80,6 @@ const describeError = describeErrorKind;
 
 function channelLink(guildId: string, channelId: string): string {
   return `https://discord.com/channels/${guildId}/${channelId}`;
-}
-
-/** 題名の制御文字（改行・タブを含む）を空白にし、連続する空白を 1 つにして、前後の空白を除く */
-function normalizeTitle(title: string): string {
-  return title.replace(/\p{Cc}/gu, " ").replace(/ {2,}/g, " ").trim();
 }
 
 /** 確定で選んだもの: "all"・"none" か、重ならない 0 以上の整数の配列（空は不可）。それ以外は undefined */
@@ -189,7 +185,7 @@ export function sessionRoutes(deps: SessionRouteDeps): Route[] {
           projectDir = checked.projectDir;
         }
         // 制御文字（改行・タブ）は空白にしてから、Discord の /new と同じ字数（前後の空白を除いて数える）
-        const normalized = normalizeTitle(title);
+        const normalized = normalizeTopicTitle(title);
         if (normalized.length > TITLE_MAX_LENGTH) return { status: 400, json: { error: "too_long" } };
         // チャンネルを作るのは既定の人格の Bot
         if (!deps.defaultConnected()) return { status: 503, json: { error: "bot_disconnected" } };

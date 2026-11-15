@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import type { AgentEntry, AgentsResult } from "../src/cc/agents.ts";
@@ -16,6 +16,7 @@ import {
   CC_TRUST_CHECK_DELAY_MS,
   CcStarter,
   chooseSessionName,
+  ensureGeneralDir,
   isTrustDialog,
   listProjects,
   normalizeTitle,
@@ -118,6 +119,50 @@ test("projectDir・listProjects: 直下の実際のディレクトリだけ。sy
   assert.deepEqual(listProjects({ workspaceDir: join(ws, "nope"), protectedDirs: [] }), []);
 });
 
+test("listProjects: generalDir と同じ名前を外す。generalDir が無ければ今までどおり", (t) => {
+  const { ws, places } = workspace(t);
+  mkdirSync(join(ws, "General"));
+  assert.deepEqual(listProjects(places), ["General", "alpha", "beta"]);
+  assert.deepEqual(listProjects({ ...places, generalDir: "General" }), ["alpha", "beta"]);
+  // 名前を変えた General も外す（General という名前のプロジェクトはそのまま出る）
+  assert.deepEqual(listProjects({ ...places, generalDir: "beta" }), ["General", "alpha"]);
+});
+
+test("ensureGeneralDir: 無ければ作って created、あれば ready（中のファイルはそのまま）", (t) => {
+  const { ws, places } = workspace(t);
+  const general = { ...places, generalDir: "General" };
+  assert.equal(ensureGeneralDir(general), "created");
+  assert.ok(lstatSync(join(ws, "General")).isDirectory());
+  assert.deepEqual(readdirSync(join(ws, "General")), []);
+  writeFileSync(join(ws, "General", "note.txt"), "keep");
+  assert.equal(ensureGeneralDir(general), "ready");
+  assert.equal(readFileSync(join(ws, "General", "note.txt"), "utf8"), "keep");
+  // 元からある別の名前のディレクトリもそのまま使う
+  assert.equal(ensureGeneralDir({ ...places, generalDir: "alpha" }), "ready");
+  assert.ok(existsSync(join(ws, "alpha", "sub")));
+});
+
+test("ensureGeneralDir: symlink・ファイル・守る場所と重なる・形の違う名前・generalDir なしは unavailable で、何も作らない・消さない", (t) => {
+  const { ws, places } = workspace(t);
+  const before = readdirSync(ws).sort();
+  for (const name of ["link", "file.txt", "selfdata", "bad name", "../outside", "a/b", ".", "..", "", "x".repeat(65)]) {
+    assert.equal(ensureGeneralDir({ ...places, generalDir: name }), "unavailable", name);
+  }
+  // 守る場所の中にある（まだ無い）名前も作らない
+  assert.equal(ensureGeneralDir({ workspaceDir: ws, protectedDirs: [join(ws, "General")], generalDir: "General" }), "unavailable");
+  assert.equal(ensureGeneralDir(places), "unavailable");
+  assert.deepEqual(readdirSync(ws).sort(), before);
+  assert.ok(lstatSync(join(ws, "link")).isSymbolicLink());
+  assert.equal(readFileSync(join(ws, "file.txt"), "utf8"), "x");
+});
+
+test("ensureGeneralDir: ワークスペースが無ければ unavailable で、ワークスペースを作らない", (t) => {
+  const { ws } = workspace(t);
+  const missing = join(ws, "nope");
+  assert.equal(ensureGeneralDir({ workspaceDir: missing, protectedDirs: [], generalDir: "General" }), "unavailable");
+  assert.equal(existsSync(missing), false);
+});
+
 test("projectDir（nested）: GitHub の [対応] の起動だけ 1 つ下も許す。symlink の段・2 つ下・形の違う名前は通さない", (t) => {
   const { ws, places } = workspace(t);
   mkdirSync(join(ws, "alpha", "sub", "deeper"));
@@ -183,8 +228,12 @@ function call(server: WebServer, method: "GET" | "POST", path: string, body?: un
  * 既存のセッション S1（pid 500 → pane_pid 400 の %1）。new-session は `$7 %9` を返し、%9（pane_pid 900）をセッション名 created で足す。
  * 起動した claude（pid 950 → 親 900）は agents の newAgent で一覧に出す
  */
-async function setup(t: TestContext, opts: { sessions?: number; mem?: number } = {}) {
-  const { ws, places } = workspace(t);
+async function setup(t: TestContext, opts: { sessions?: number; mem?: number; general?: string } = {}) {
+  const made = workspace(t);
+  const ws = made.ws;
+  // general を渡せば、その名前の General のディレクトリを作って places に入れる
+  if (opts.general !== undefined) mkdirSync(join(ws, opts.general));
+  const places = opts.general === undefined ? made.places : { ...made.places, generalDir: opts.general };
   const db = tempDb(t);
   const clock = { now: BASE };
   const now = (): Date => new Date(clock.now);
@@ -404,6 +453,11 @@ test("GET /api/cc/projects: 直下の実際のディレクトリの名前。起�
   const off = await serve(t, ccRoutes({ registry: undefined, panes: undefined, tmux: undefined, workspaceDir: "/w", home: "/h" }));
   assert.deepEqual(await call(off, "GET", "/api/cc/projects"), { status: 404, json: { error: "not_found" } });
   assert.deepEqual(await call(off, "POST", "/api/cc/sessions", { project: "alpha", title: "a" }), { status: 404, json: { error: "not_found" } });
+});
+
+test("GET /api/cc/projects: General は候補に出ない", async (t) => {
+  const { server } = await setup(t, { general: "General" });
+  assert.deepEqual(await call(server, "GET", "/api/cc/projects"), { status: 200, json: { projects: [{ name: "alpha" }, { name: "beta" }] } });
 });
 
 test("起動: 最初の指示はペイン宛てに積まれ、sessionId が現れたら行に結びつく。セッション名が変わっても %N で追える", async (t) => {
