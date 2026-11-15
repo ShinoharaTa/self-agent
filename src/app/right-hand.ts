@@ -1,7 +1,7 @@
 // #inbox のエージェント（右腕）のツールの処理（docs/plan/web-ui-v3.md §4 の M6）。始める（session_open に project・text を足した形）と一覧（topic_list）。
 // 始めるは歯止め（#inbox・#<NAME> だけ・同じ題名・1 日の上限）→ 場所の解決（一覧に無ければ General に落とす）→ startTopic（by right_hand）。
-// 前回からの間隔（cooldown）は見ない。1 ターンに 1 件はツールの側（createTaskTools）で数える。
-// 一覧は GET /api/topics と同じ元（web/routes/topics.ts の createTopicCollector）から短い行だけを返す。
+// 前回から間を空ける決まりは無い。1 ターンに 1 件はツールの側（createTaskTools）で数える。
+// 一覧は GET /api/topics と同じ元（web/routes/topics.ts の createTopicCollector）から短い行だけを返す（あなたの番の数は /api/topics の turns と同じ）。
 // 場所を変える（topic_move。M6e）は話題と場所を解決して確認を出す（app/topic-proposals.ts の propose）だけで、場所は変えない（変えるのはオーナーが [変える] を押したとき）。
 // log に題名・場所の名前・ID・本文を出さない
 import type { RunContext } from "../agent/runner.ts";

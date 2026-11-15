@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSystemPrompt, personaSystemPrompts, SHELL_SYSTEM_PROMPT, SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
+import { buildSystemPrompt, personaSystemPrompts, PROJECT_APPEND, SHELL_SYSTEM_PROMPT, SYSTEM_PROMPT } from "../src/agent/system-prompt.ts";
 
 /** SYSTEM_PROMPT の最初の段落（1 行目）の後ろ */
 const COMMON = SYSTEM_PROMPT.slice(SYSTEM_PROMPT.indexOf("\n"));
@@ -81,4 +81,22 @@ test("シェル（Bash）が有効なときだけ、project_files の行の後�
   // 足した人格も同じ本文
   const persona = buildSystemPrompt("あなたはアオイ。", true);
   assert.equal(persona, `あなたはアオイ。${SHELL_SYSTEM_PROMPT.slice(SHELL_SYSTEM_PROMPT.indexOf("\n"))}`);
+});
+
+test("右腕（M6）: SYSTEM_PROMPT に topic_list・topic_move・「General で始め」・「/move（話題の場所を変える）」があり、「cooldown」が無い", () => {
+  for (const prompt of [SYSTEM_PROMPT, SHELL_SYSTEM_PROMPT]) {
+    for (const text of ["topic_list", "topic_move", "General で始め", "/move（話題の場所を変える）"]) assert.ok(prompt.includes(text), text);
+    assert.ok(!prompt.includes("cooldown"));
+  }
+});
+
+test("右腕（M6）: PROJECT_APPEND に「#inbox からの続き:」と topic_move の行がある", () => {
+  assert.ok(PROJECT_APPEND.includes("「#inbox からの続き:」"));
+  assert.ok(PROJECT_APPEND.split("\n").some((line) => line.startsWith("- この話題の場所（プロジェクト）を変えてと頼まれたら topic_move")));
+});
+
+test("SYSTEM_PROMPT・SHELL_SYSTEM_PROMPT・PROJECT_APPEND に数字の ID・日付が無い", () => {
+  for (const prompt of [SYSTEM_PROMPT, SHELL_SYSTEM_PROMPT, PROJECT_APPEND]) {
+    assert.doesNotMatch(prompt, /\d{4}|\d{1,2}\s*[/\-月]\s*\d{1,2}/);
+  }
 });

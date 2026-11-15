@@ -361,13 +361,14 @@ test("topicListRows: あなたの番 → 作業中 → 残り（待ち・進行�
   assert.equal(rows.more, 0);
 });
 
-test("topicListRows: ピン留めの入口と完了した話題は出ない（数にも入らない）", () => {
+test("topicListRows: あなたの番・作業中でない入口と、完了した話題は出ない（数にも入らない）", () => {
   const result = buildTopics(
     input(
       [
         seed("ch:1"),
-        seed("ch:2", { pinned: true, turns: [turn("confirm", 0)] }),
+        seed("ch:2", { pinned: true }),
         seed("ch:3", { state: "done" }),
+        seed("ch:4", { pinned: true, state: "waiting" }),
       ],
       { done: "general" },
     ),
@@ -378,6 +379,77 @@ test("topicListRows: ピン留めの入口と完了した話題は出ない（�
     ["1"],
   );
   assert.deepEqual(rows.counts, { your_turn: 0, running: 0, total: 1 });
+});
+
+test("topicListRows: 入口に「あなたの番」があると行に出て、counts.your_turn が result.turns と同じ", () => {
+  const result = buildTopics(input([seed("ch:1"), seed("ch:2", { title: "#tasks", pinned: true, turns: [turn("confirm", 0)], activityAt: at(3) })]));
+  const rows = topicListRows(result, LIST_OPTIONS);
+  assert.deepEqual(rows.topics[0], { channel_id: "2", kind: "session", title: "#tasks", place: "なし", state: "your_turn", turn: "confirm", at: "2026-11-14 09:03" });
+  assert.equal(rows.counts.your_turn, result.turns);
+  assert.equal(rows.counts.your_turn, 1);
+  assert.equal(rows.counts.total, 2);
+});
+
+test("topicListRows: 入口が作業中だと行に出て、counts.running が群の running の和と同じ", () => {
+  const result = buildTopics(
+    input([seed("ch:1", { running: true, dir: "alpha", origin: "project" }), seed("ch:2", { title: "#Mika", pinned: true, running: true, persona: "Mika" })]),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  assert.deepEqual(
+    rows.topics.map((row) => [row.channel_id, row.title, row.state]),
+    [
+      ["1", "ch:1", "running"],
+      ["2", "#Mika", "running"],
+    ],
+  );
+  assert.equal(rows.counts.running, result.groups.reduce((sum, group) => sum + group.running, 0));
+  assert.equal(rows.counts.running, 2);
+});
+
+test("topicListRows: 右腕に「あなたの番」があると #inbox の行が出て、counts.your_turn が result.turns と同じ。番の無い右腕は出ない", () => {
+  const result = buildTopics(
+    input([seed("ch:1")], {
+      rightHands: [
+        { id: "ch:10", guildId: "guild-1", title: "右腕", last: { id: 1, at: at(4), kind: "agent" }, link: "https://x", turns: [turn("confirm", 0)] },
+        { id: "ch:20", guildId: "guild-2", title: "右腕", last: { id: 2, at: at(5), kind: "agent" }, link: "https://y", turns: [] },
+      ],
+    }),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  assert.deepEqual(rows.topics, [
+    { channel_id: "10", kind: "session", title: "#inbox", place: "なし", state: "your_turn", turn: "confirm", at: "2026-11-14 09:04" },
+    { channel_id: "1", kind: "session", title: "ch:1", place: "なし", state: "idle", at: "2026-11-14 09:00" },
+  ]);
+  assert.equal(rows.counts.your_turn, result.turns);
+  assert.deepEqual(rows.counts, { your_turn: 1, running: 0, total: 2 });
+});
+
+test("topicListRows: 右腕の最後の発言が無ければ at は空で、あなたの番の中で一番古い扱い", () => {
+  const result = buildTopics(
+    input([seed("ch:1", { turns: [turn("question", 0)], activityAt: at(1) })], {
+      rightHands: [{ id: "ch:10", guildId: "guild-1", title: "右腕", last: null, link: "https://x", turns: [turn("confirm", 0)] }],
+    }),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  assert.deepEqual(
+    rows.topics.map((row) => [row.channel_id, row.at]),
+    [
+      ["1", "2026-11-14 09:01"],
+      ["10", ""],
+    ],
+  );
+});
+
+test("topicListRows: 話題・入口・右腕に 1 つずつ番があると counts.your_turn === result.turns === 3", () => {
+  const result = buildTopics(
+    input([seed("ch:1", { turns: [turn("permission", 0)] }), seed("ch:2", { title: "#tasks", pinned: true, turns: [turn("confirm", 1)] })], {
+      rightHands: [{ id: "ch:10", guildId: "guild-1", title: "右腕", last: null, link: "https://x", turns: [turn("confirm", 2)] }],
+    }),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  assert.equal(result.turns, 3);
+  assert.equal(rows.counts.your_turn, 3);
+  assert.equal(rows.counts.your_turn, result.turns);
 });
 
 test("topicListRows: 31 件あると topics は 30 件で more が 1、counts は 31 件分", () => {

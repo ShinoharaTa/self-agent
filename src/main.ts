@@ -45,10 +45,10 @@ import { createMoveProposalButtons } from "./app/commands/move-proposal.ts";
 import { createTopicProposals, TopicProposalExpirer } from "./app/topic-proposals.ts";
 import { createTurnQueue, KeyedSerialQueue } from "./app/queue.ts";
 import { ReminderScheduler } from "./app/reminders.ts";
+import { createRightHand } from "./app/right-hand.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { PersonaStatus, startPersonaGateways } from "./app/persona-status.ts";
 import { PersonaRouter, type PersonaRuntime } from "./app/personas.ts";
-import { createOpenSession } from "./app/session-open.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
@@ -112,7 +112,7 @@ import { USAGE_KEEP_DAYS, UsageStore } from "./store/usage.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
 import { ccChannelDescriber, ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
 import { channelRoutes, webChannelLookup, webChannelNamer } from "./web/routes/channels.ts";
-import { topicRoutes } from "./web/routes/topics.ts";
+import { createTopicCollector, topicRoutes } from "./web/routes/topics.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
 import { githubRoutes } from "./web/routes/github.ts";
 import { knowledgeRoutes } from "./web/routes/knowledge.ts";
@@ -285,10 +285,21 @@ if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${c
 // ツールのハンドラには run ごとのチャンネル（context）を渡す。ツール定義は毎回同じ（全人格で共通）。
 // ファイル操作は run ごとの hook で <workDir>/projects の中（書き込みはそのチャンネルのプロジェクトの中で、容量の上限まで）に絞る。
 // SELF_AGENT_SHELL=1 なら Bash もツールに入れ、run ごとの hook でセッションのチャンネルのプロジェクトがあるときだけ通す（sandbox は自己診断が通っていて
-// bwrap・socat がある run だけに付ける。shellAvailable は run の前に呼ぶ）。openSession・kbMemory・shellState・ccTools は下で作る（run のときに読む）。
-// Claude Code のツール（cc_list・cc_send・cc_start）は SELF_AGENT_CC が無効でも定義し、ccTools が無ければ not_available を返す
+// bwrap・socat がある run だけに付ける。shellAvailable は run の前に呼ぶ）。rightHand・kbMemory・shellState・ccTools は下で作る（run のときに読む）。
+// Claude Code のツール（cc_list・cc_send・cc_start）と右腕のツール（session_open・topic_list・topic_move）は無効でも定義し、
+// ccTools・rightHand が無ければ not_available を返す
 const createMcpServer = (context?: RunContext) =>
-  createTaskMcpServer(tasks, topicSessions, openSession, kbMemory, projectTools, reminderTools, context, ccTools);
+  createTaskMcpServer(
+    tasks,
+    topicSessions,
+    (args, context) => rightHand?.open(args, context) ?? Promise.resolve({ result: "not_available" }),
+    kbMemory,
+    projectTools,
+    reminderTools,
+    context,
+    ccTools,
+    rightHand === undefined ? undefined : { list: rightHand.list, move: rightHand.move },
+  );
 const runnerFiles = { projects, projectsDir, disk: diskQuota };
 const runnerDevLog = devLogSink === undefined ? undefined : { sink: devLogSink, now };
 const runnerConfig = { ...config, shellAvailable: () => shellState.enabledForRun() };
@@ -363,19 +374,6 @@ const personaRuntimes: PersonaRuntime[] = [
 // チャンネルの持ち主の人格（persona_channels・sessions.persona）への振り分け。返事などは持ち主の Bot（ownerPosts）、管理の操作は既定の人格の Bot（gateway）
 const personas = new PersonaRouter({ personas: personaRuntimes, guildSettings, topicSessions });
 const ownerPosts = personas.ownerPosts();
-// #inbox・#<NAME> の session_open: /new と同じキュー（layoutQueue）で作る。作るセッションの持ち主は呼ばれたチャンネルの持ち主の人格で、最初の投稿はその人格の Bot
-const openSession = createOpenSession({
-  cfg: config,
-  resolveChannel,
-  gateway,
-  personas,
-  guildSettings,
-  topicSessions,
-  seeds,
-  queue: layoutQueue,
-  now,
-  log,
-});
 // ナレッジベースと記憶のツール: kb_delete の確認と記憶の変更の知らせは run のチャンネルに、その持ち主の Bot で投稿する
 const kbMemory = {
   knowledge,
@@ -745,6 +743,8 @@ let ccPanes: CcPaneResolver | undefined;
 let ccStatusOf: (() => CcStatus) | undefined;
 // SDK のツール cc_list・cc_send・cc_start（CC7）と、その確認のボタンが使う送信・起動。確認の失効（10 分）は下の ccConfirmExpirer
 let ccTools: CcToolDeps | undefined;
+// 右腕（#inbox・#<NAME>）のツール session_open・topic_list・topic_move の処理（M6）。Web の枝の後で 1 回だけ作る（中の数が 1 日の上限の歯止め）
+let rightHand: ReturnType<typeof createRightHand> | undefined;
 let ccRuntime: CcConfirmRuntime | undefined;
 const ccHookToken = process.env.SELF_AGENT_CC_HOOK_TOKEN;
 if (
@@ -1070,6 +1070,22 @@ if (config.servePort !== undefined && config.publicBaseUrl !== undefined) {
 // lifecycle（停止中か）は下で作る（要求のときに読む）
 const startedAt = now();
 let webServer: WebServer | undefined;
+// 話題を始める口（POST /api/topics と右腕の session_open で同じ実体。seed は右腕だけが渡す）
+const topicStart = {
+  gateway,
+  personas,
+  guildSettings,
+  topicSessions,
+  queue: layoutQueue,
+  history: config.web ? historyStore : undefined,
+  submitText: (input: Parameters<typeof handler.submitText>[0]) => handler.submitText(input),
+  defaultConnected: () => gateway.connected(),
+  seeds,
+  ...(projectSessions === undefined ? {} : { projectSessions }),
+  log,
+};
+// GET /api/topics の元（右腕の topic_list と共有する。Web が無効なら undefined）
+let topicCollect: ReturnType<typeof createTopicCollector> | undefined;
 if (config.web && config.webPort !== undefined && config.webAllowedLogin !== undefined) {
   // リマインドとプロジェクトの一覧のチャンネルの表示名（同じものを渡す）
   const webChannelName = webChannelNamer({
@@ -1103,6 +1119,57 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
     topicSessions,
     ...(ccChannels === undefined ? {} : { ccChannels: ccChannelStore }),
   });
+  // 話題の一覧の配線。collect は右腕の topic_list と同じ関数（proposals も入れた deps から 1 度だけ作る）
+  const webTopicDeps: Parameters<typeof topicRoutes>[0] = {
+      cfg: config,
+      guildSettings,
+      topicSessions,
+      history: historyStore,
+      personas,
+      handler,
+      places: ccPlacesOf(config, homedir()),
+      home: homedir(),
+      // 群の判定（projectOf）は実際の場所で比べる（読めなければ設定のまま）
+      workspaceRoot: (() => {
+        try {
+          return realpathSync(config.workspaceDir);
+        } catch {
+          return config.workspaceDir;
+        }
+      })(),
+      ...(projectPermissionBridge === undefined
+        ? {}
+        : {
+            projectPermissions: {
+              store: ccPermissionStore,
+              sessions,
+              holdSec: config.ccPermissionHoldSec,
+              questionHoldSec: config.ccQuestionHoldSec,
+            },
+          }),
+      ...(ccRegistry === undefined
+        ? {}
+        : {
+            cc: {
+              registry: ccRegistry,
+              channels: ccChannelStore,
+              permissions: ccPermissionStore,
+              sends: ccSends,
+              starts: ccStarts,
+              holdSec: config.ccPermissionHoldSec,
+              questionHoldSec: config.ccQuestionHoldSec,
+            },
+          }),
+      // POST /api/topics（M4。sessionRoutes に渡している物と同じ実体）
+      start: topicStart,
+      // POST /api/topics/ch:<id>/place（M5。/move と同じ実体。結果は持ち主の Bot でチャンネルに投稿する）
+      move: { ...moveDeps, ownerPosts },
+      // 右腕の場所を変える確認を「あなたの番」に付ける（M6e）
+      proposals: topicProposals,
+      now,
+  };
+  const webTopicCollect = createTopicCollector(webTopicDeps);
+  topicCollect = webTopicCollect;
   webServer = createWebServer({
     host: "127.0.0.1",
     port: config.webPort,
@@ -1157,65 +1224,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
             }),
       }),
       // 話題の一覧（セッション・プロジェクトのセッション・Claude Code のセッションを 1 つの形に。docs/plan/web-ui-v3.md §11 の M1）
-      ...topicRoutes({
-        cfg: config,
-        guildSettings,
-        topicSessions,
-        history: historyStore,
-        personas,
-        handler,
-        places: ccPlacesOf(config, homedir()),
-        home: homedir(),
-        // 群の判定（projectOf）は実際の場所で比べる（読めなければ設定のまま）
-        workspaceRoot: (() => {
-          try {
-            return realpathSync(config.workspaceDir);
-          } catch {
-            return config.workspaceDir;
-          }
-        })(),
-        ...(projectPermissionBridge === undefined
-          ? {}
-          : {
-              projectPermissions: {
-                store: ccPermissionStore,
-                sessions,
-                holdSec: config.ccPermissionHoldSec,
-                questionHoldSec: config.ccQuestionHoldSec,
-              },
-            }),
-        ...(ccRegistry === undefined
-          ? {}
-          : {
-              cc: {
-                registry: ccRegistry,
-                channels: ccChannelStore,
-                permissions: ccPermissionStore,
-                sends: ccSends,
-                starts: ccStarts,
-                holdSec: config.ccPermissionHoldSec,
-                questionHoldSec: config.ccQuestionHoldSec,
-              },
-            }),
-        // POST /api/topics（M4。sessionRoutes に渡している物と同じ実体）
-        start: {
-          gateway,
-          personas,
-          guildSettings,
-          topicSessions,
-          queue: layoutQueue,
-          history: historyStore,
-          submitText: (input) => handler.submitText(input),
-          defaultConnected: () => gateway.connected(),
-          ...(projectSessions === undefined ? {} : { projectSessions }),
-          log,
-        },
-        // POST /api/topics/ch:<id>/place（M5。/move と同じ実体。結果は持ち主の Bot でチャンネルに投稿する）
-        move: { ...moveDeps, ownerPosts },
-        // 右腕の場所を変える確認を「あなたの番」に付ける（M6e）
-        proposals: topicProposals,
-        now,
-      }),
+      ...topicRoutes({ ...webTopicDeps, collect: webTopicCollect }),
       ...devlogRoutes({ cfg: config, now }),
       ...turnRoutes({
         cfg: config,
@@ -1315,6 +1324,18 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
 } else if (config.webPort !== undefined || config.webAllowedLogin !== undefined) {
   log("Web UI は無効です（SELF_AGENT_WEB_PORT と SELF_AGENT_WEB_ALLOWED_LOGIN の両方が要ります）");
 }
+// 右腕のツールの処理（M6）。Web・SELF_AGENT_CC が無効でも作る（一覧は disabled、General は軽いセッションになる）
+rightHand = createRightHand({
+  cfg: config,
+  resolveChannel,
+  personas,
+  topicSessions,
+  start: topicStart,
+  ...(topicCollect === undefined ? {} : { collect: topicCollect }),
+  proposals: topicProposals,
+  now,
+  log,
+});
 
 // 停止: シグナルで新しい受付と定期処理（リマインドの発火・GitHub の通知のポーリングを含む）を止め、進行中の処理（返信まで）と実行中のチャンネルの移動を最大 shutdownGraceSec 秒待ってから gateway・静的サーバー・Web UI・DB を閉じる
 const lifecycle = createShutdown(

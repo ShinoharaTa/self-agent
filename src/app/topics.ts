@@ -317,7 +317,8 @@ function listPlaceOf(dir: string | null, generalDir: string | undefined): string
 }
 
 /**
- * buildTopics の結果 → topic_list の短い行（純関数）。対象は入口（pinned）でなく完了でない話題。
+ * buildTopics の結果 → topic_list の短い行（純関数）。対象は入口（pinned）でなく完了でない話題と、入口のうち あなたの番・作業中 の物と、
+ * あなたの番のある右腕（#inbox）。だから counts.your_turn は result.turns と、counts.running は群の running の和と同じになる。
  * あなたの番 → 作業中 → 残りの順、同じ中では新しい順に先頭 TOPIC_LIST_MAX 件。counts は切る前の数、more は切った残りの数。
  * 最後の発言の本文・sessionId・cwd・link は出さない
  */
@@ -325,32 +326,53 @@ export function topicListRows(
   result: TopicsResult,
   options: { timeZone: string; generalDir: string | undefined },
 ): { counts: { your_turn: number; running: number; total: number }; topics: TopicListRow[]; more: number } {
-  const items = result.topics
-    .filter((topic) => !topic.pinned && topic.state !== "done")
-    .map((topic) => {
-      const state: TopicListRow["state"] =
-        topic.mark === "turn" ? "your_turn" : topic.mark === "running" ? "running" : topic.state === "waiting" ? "waiting" : "idle";
-      return { topic, state };
-    });
-  items.sort(
-    (a, b) => LIST_STATE_RANK[a.state] - LIST_STATE_RANK[b.state] || newerFirst(a.topic, b.topic) || compareIds(a.topic.id, b.topic.id),
-  );
-  const rows = items.slice(0, TOPIC_LIST_MAX).map(({ topic, state }): TopicListRow => {
+  const wallClock = (iso: string | null): string => (iso === null ? "" : formatWallClock(new Date(time(iso)), options.timeZone));
+  // 並べるための共通の形（id・activityAt は並びにだけ使う）
+  const items: Array<{ id: string; activityAt: string | null; row: TopicListRow }> = [];
+  for (const topic of result.topics) {
+    if (topic.state === "done") continue;
+    if (topic.pinned && topic.mark !== "turn" && topic.mark !== "running") continue;
+    const state: TopicListRow["state"] =
+      topic.mark === "turn" ? "your_turn" : topic.mark === "running" ? "running" : topic.state === "waiting" ? "waiting" : "idle";
     const channel = /^ch:(\d+)$/.exec(topic.id)?.[1];
-    return {
-      ...(channel === undefined ? {} : { channel_id: channel }),
-      kind: topic.id.startsWith("cc:") ? "claude_code" : "session",
-      title: topic.title,
-      place: listPlaceOf(topic.place.dir, options.generalDir),
-      state,
-      ...(state === "your_turn" && topic.turn !== null ? { turn: topic.turn.summary } : {}),
-      at: topic.activityAt === null ? "" : formatWallClock(new Date(time(topic.activityAt)), options.timeZone),
-    };
-  });
+    items.push({
+      id: topic.id,
+      activityAt: topic.activityAt,
+      row: {
+        ...(channel === undefined ? {} : { channel_id: channel }),
+        kind: topic.id.startsWith("cc:") ? "claude_code" : "session",
+        title: topic.title,
+        place: listPlaceOf(topic.place.dir, options.generalDir),
+        state,
+        ...(state === "your_turn" && topic.turn !== null ? { turn: topic.turn.summary } : {}),
+        at: wallClock(topic.activityAt),
+      },
+    });
+  }
+  // 右腕（#inbox）は あなたの番 があるときだけ（buildTopics の「あなたの番」と同じ条件）
+  for (const hand of result.rightHands) {
+    if (hand.turn === null) continue;
+    const activityAt = hand.last?.at ?? null;
+    items.push({
+      id: hand.id,
+      activityAt,
+      row: {
+        channel_id: hand.id.replace(/^ch:/, ""),
+        kind: "session",
+        title: "#inbox",
+        place: "なし",
+        state: "your_turn",
+        turn: hand.turn.summary,
+        at: wallClock(activityAt),
+      },
+    });
+  }
+  items.sort((a, b) => LIST_STATE_RANK[a.row.state] - LIST_STATE_RANK[b.row.state] || newerFirst(a, b) || compareIds(a.id, b.id));
+  const rows = items.slice(0, TOPIC_LIST_MAX).map((item) => item.row);
   return {
     counts: {
-      your_turn: items.filter((item) => item.state === "your_turn").length,
-      running: items.filter((item) => item.state === "running").length,
+      your_turn: items.filter((item) => item.row.state === "your_turn").length,
+      running: items.filter((item) => item.row.state === "running").length,
       total: items.length,
     },
     topics: rows,

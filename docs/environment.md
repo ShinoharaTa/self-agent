@@ -19,7 +19,7 @@
 | `SELF_AGENT_CHANNEL_OP_GAP_MS` | チャンネルのカテゴリ移動の間隔（ミリ秒、全サーバー共通で直列）。既定 2000 |
 | `SELF_AGENT_SHUTDOWN_GRACE_SEC` | 停止時（SIGINT / SIGTERM）に進行中のターンを返信まで待つ上限の秒数。既定 30。待つ間は新しい発言・操作を受け付けない。2 回目のシグナルでは待たずに終了する |
 | `SELF_AGENT_IDLE_HOURS` | 進行中のセッションを、最後の発言からこの時間（正の整数、時間単位）経ったら待ちに移す。既定 12 |
-| `SELF_AGENT_AUTO_SESSION_PER_DAY` | #inbox から session_open で自動で作れるセッションの 1 日（`SELF_AGENT_TZ` の日付）あたりの数（正の整数）。既定 3。/new で作ったものは数えない |
+| `SELF_AGENT_AUTO_SESSION_PER_DAY` | #inbox（右腕）が session_open で始められる話題の 1 日（`SELF_AGENT_TZ` の日付）あたりの数（正の整数）。既定 3。前回からの間隔は無い（1 回の発言に 1 つ）。/new で作ったものは数えない |
 | `SELF_AGENT_DELETE_AFTER_DAYS` | 完了からこの日数（正の整数）経ったセッションについて、チャンネルを削除するか #system で確認する。既定 30。[残す] を押すとその時点からまたこの日数後に確認する |
 | `SELF_AGENT_INBOX_ROTATE_AT` | 毎日この時刻（`HH:MM`、`SELF_AGENT_TZ`）を過ぎたら #inbox と #tasks の会話をそれぞれ要約して新しいセッションに切り替える（/setup 済みのサーバーだけ）。既定 `04:00` |
 | `SELF_AGENT_INBOX_MAX_INPUT_TOKENS` | #inbox・#tasks それぞれの直近の成功したターンの最後のステップの入力（input + cache read + cache creation。各ステップの合算ではない）がこれ（正の整数）を超えたら、次の tick でそのチャンネルに同じ切り替えを行う。既定 150000 |

@@ -238,6 +238,7 @@
 
 - U1 の切り方の根拠: DB の列 2 つ・profile 1 つ・許可の橋 1 つ・コマンドの引数 1 つで済む。許可カード・ボタン・Web のカード・DB の表は CC5a〜c と Q1〜Q5 で**既にある**ので、作るのは `canUseTool` → `cc_permissions` → `PermissionResult` の往復だけ。
 - U0 を飛ばさない: §1.4 の 1・2・3 は設計の分岐（§5.3・§5.5・§5.7）に直結する。probe は半日で書ける。
+- U5 の session_open の project は、Web UI の M6 が先に入れた（docs/plan/web-ui-v3.md §4。#369 の M6f）。
 
 ---
 
