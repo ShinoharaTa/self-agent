@@ -86,9 +86,9 @@
     return id && id.startsWith("ch:") ? id.slice(3) : null;
   }
 
-  /** 画面に描かれて見えている会話（SA.app.shownChannelIds）で、画面が見えているときだけ、読んだ最後の行まで既読にする */
+  /** 読んでいる会話（SA.app.readingChannelIds。隠れた列・重ねた右腕の下は入らない）で、画面が見えているときだけ、読んだ最後の行まで既読にする */
   function markSeen(channelId) {
-    if (!SA.app.shownChannelIds().includes(channelId) || document.visibilityState !== "visible") return;
+    if (!SA.app.readingChannelIds().includes(channelId) || document.visibilityState !== "visible") return;
     const t = store.turns[channelId];
     if (!t || t.turns.length === 0) return;
     if (store.markSeen(channelId, t.turns[t.turns.length - 1].id)) {
@@ -98,7 +98,7 @@
   }
 
   function markSeenShown() {
-    for (const id of SA.app.shownChannelIds()) markSeen(id);
+    for (const id of SA.app.readingChannelIds()) markSeen(id);
   }
 
   // ===== セッションの操作（/wait・/close・/renew。src/web/routes/sessions.ts） =====

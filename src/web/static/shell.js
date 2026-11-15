@@ -278,11 +278,24 @@
 
   /**
    * 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い）と、見えている右腕。
-   * スマホで一覧を出している間（会話の列が隠れている間）も、最後に開いた会話を返す（M2a からの動き。変えるなら polling・音・既読が一緒に変わる）
+   * スマホで一覧を出している間（会話の列が隠れている間）も、最後に開いた会話を返す（M2a からの動き。変えるなら polling・音が一緒に変わる（既読は readingChannelIds））
    */
   function shownChannelIds() {
     const tabId = shownTabId();
     const ids = tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
+    const hand = handVisible() ? handChannelId() : null;
+    if (hand && !ids.includes(hand)) ids.push(hand);
+    return ids;
+  }
+
+  /**
+   * 既読を付ける会話（chat.js の markSeen。M7）。shownChannelIds から、スマホで一覧を出している間の列 2 の会話と、
+   * 重ねた右腕の下の会話を除いたもの（見えている右腕は入れる）
+   */
+  function readingChannelIds() {
+    const tabId = shownTabId();
+    const covered = mainHidden() || (S.handMode === "over" && S.handOver);
+    const ids = !covered && tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
     const hand = handVisible() ? handChannelId() : null;
     if (hand && !ids.includes(hand)) ids.push(hand);
     return ids;
@@ -467,6 +480,8 @@
     if (!visible) handStick = true;
     renderHand();
     renderHandEntries();
+    // 右腕を開いた・重ねた右腕を畳んで下の会話が出た（readingChannelIds が変わる）
+    SA.chat.markSeenShown();
   }
 
   /** 右腕の入れ物を描く。描く前の位置を覚え、下に付いていたら（か bottom なら）下へ、でなければ前の位置（renderEd と同じ考え方） */
@@ -799,6 +814,8 @@
     }
     hiddenScroll = null;
     stickOnShow = false;
+    // 隠れていた間に来た行を既読にする（readingChannelIds に入った）
+    SA.chat.markSeenShown();
   }
 
   function showBody() {
@@ -1533,6 +1550,7 @@
     addOutput: () => undefined,
     activeTabId,
     shownChannelIds,
+    readingChannelIds,
     sidebarShows,
     openDrawer,
     closeDrawer,
