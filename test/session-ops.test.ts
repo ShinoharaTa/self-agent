@@ -1,9 +1,12 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { RunResult } from "../src/agent/runner.ts";
 import { createSessionToolHandlers } from "../src/agent/tools.ts";
+import { TITLE_MAX_LENGTH } from "../src/app/commands/new.ts";
 import { ensureGuildLayout } from "../src/app/commands/setup.ts";
+import type { SubmitTextResult } from "../src/app/handler.ts";
 import type { RotateNowResult } from "../src/app/inbox-rotate.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
@@ -13,12 +16,21 @@ import {
   CONTINUED_TEXT,
   continueSession,
   openTopicSession,
+  type ProjectSessionGate,
   renewChannel,
+  startTopic,
+  type StartTopicInput,
+  titleFromText,
+  TOPIC_TEXT_MAX_LENGTH,
+  TOPIC_TITLE_FROM_TEXT_MAX,
+  TOPIC_TITLE_MAX_LENGTH,
+  UNTITLED_TOPIC,
   WAITED_REPLY,
   waitSession,
   welcomeText,
 } from "../src/app/session-ops.ts";
 import type { SummaryChannelKind } from "../src/store/inbox-summaries.ts";
+import { WEB_MESSAGE_MAX_LENGTH } from "../src/web/routes/turns.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
@@ -213,4 +225,194 @@ test("renewChannel: 受け付けないチャンネルは not_renewable、閉じ�
   env.deps.topicSessions.close("topic-1", "要約");
   assert.deepEqual(await renewChannel("guild-1", "topic-1", env.deps, env.onAccepted), { result: "closed" });
   assert.equal(env.accepted.count, 2);
+});
+
+// ---- 話題を始める（startTopic。docs/plan/web-ui-v3.md §11 の M4） ----
+
+test("titleFromText: 最初の空でない行・制御文字は空白・30 字で切る（絵文字などは 1 字と数える）・空なら 無題", () => {
+  assert.equal(titleFromText("\n  \n  旅行の\t計画  \n2 行目"), "旅行の 計画");
+  assert.equal(titleFromText("a".repeat(40)), "a".repeat(TOPIC_TITLE_FROM_TEXT_MAX));
+  assert.equal(titleFromText("😀".repeat(31)), "😀".repeat(30));
+  // 切った末尾の空白は除く（「…」は付けない）
+  assert.equal(titleFromText(`${"a".repeat(29)} bcd`), "a".repeat(29));
+  assert.equal(titleFromText("\u0007\u0007"), UNTITLED_TOPIC);
+  assert.equal(titleFromText(""), UNTITLED_TOPIC);
+  // 長さの定数は今の Web の数と同じ
+  assert.equal(TOPIC_TEXT_MAX_LENGTH, WEB_MESSAGE_MAX_LENGTH);
+  assert.equal(TOPIC_TITLE_MAX_LENGTH, TITLE_MAX_LENGTH);
+});
+
+/**
+ * /setup 済みのサーバー guild-1 と、ワークスペース（alpha・link（alpha への symlink））。連携（gate）は cc で付け、link の済みは ready で変える。
+ * submitText は next の順の結果（無ければ accepted）
+ */
+async function startSetup(t: TestContext, options: { cc?: boolean; general?: string } = {}) {
+  const db = tempDb(t);
+  const gateway = new FakeGateway({
+    allow: ["getParentId", "sendMessage", "pinMessage", "messageExists"],
+    record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn", "moveChannel", "send"],
+  });
+  const { guildSettings, topicSessions, history } = createStores(db, () => NOW);
+  const logs: string[] = [];
+  const log = (line: string): void => void logs.push(line);
+  const layout = { gateway, guildSettings, topicSessions, queue: new KeyedSerialQueue(1), channelOps: { enqueueMove: () => undefined }, log };
+  assert.equal((await ensureGuildLayout("guild-1", layout)).failure, null);
+  gateway.reset();
+  const workspace = realpathSync(tempDir(t));
+  mkdirSync(join(workspace, "alpha"));
+  symlinkSync(join(workspace, "alpha"), join(workspace, "link"));
+  const ready = { value: true };
+  const gate: ProjectSessionGate = {
+    places: { workspaceDir: workspace, protectedDirs: [], generalDir: options.general ?? "General" },
+    ready: () => ready.value,
+  };
+  const submits: Array<{ guildId: string; channelId: string; content: string; at: Date; source: "web" }> = [];
+  const next: SubmitTextResult[] = [];
+  const deps = {
+    gateway,
+    guildSettings,
+    topicSessions,
+    queue: layout.queue,
+    history,
+    log,
+    submitText: async (input: { guildId: string; channelId: string; content: string; at: Date; source: "web" }): Promise<SubmitTextResult> => {
+      submits.push(input);
+      return next.shift() ?? { result: "accepted", turnId: 1, messageId: "m-1" };
+    },
+    ...(options.cc === false ? {} : { projectSessions: gate }),
+  };
+  const start = (input: Partial<StartTopicInput>) => startTopic({ guildId: "guild-1", place: { kind: "general" }, by: "web", at: NOW, ...input }, deps);
+  return { deps, start, gateway, topicSessions, history, workspace, ready, submits, next, logs };
+}
+
+test("startTopic: 題名も一言も空は empty、長すぎる題名・一言は too_long で、どれも作らない", async (t) => {
+  const s = await startSetup(t);
+  assert.deepEqual(await s.start({}), { result: "empty" });
+  assert.deepEqual(await s.start({ title: " \n\t ", text: "   " }), { result: "empty" });
+  assert.deepEqual(await s.start({ title: "a".repeat(101) }), { result: "too_long", field: "title" });
+  assert.deepEqual(await s.start({ text: "a".repeat(1901) }), { result: "too_long", field: "text" });
+  assert.equal(s.gateway.calls.length, 0);
+  assert.equal(s.submits.length, 0);
+  assert.equal(existsSync(join(s.workspace, "General")), false);
+});
+
+test("startTopic（general）: 連携があり link が済んでいれば General を作って project_dir 付きで作り、仕切り「General で始めました」と最初のターン（submitText に channelId・本文・source web）", async (t) => {
+  const s = await startSetup(t);
+  const result = await s.start({ title: "旅行", text: "  京都に行きたい  " });
+  assert.ok(result.result === "created");
+  assert.deepEqual(result, { result: "created", channelId: result.channelId, title: "旅行", projectDir: "General", turn: "started" });
+  assert.deepEqual(readdirSync(join(s.workspace, "General")), []);
+  assert.equal(s.topicSessions.projectDirOf(result.channelId)?.projectDir, "General");
+  const created = s.gateway.calls.find((call) => call.method === "createTextChannel");
+  assert.ok(created !== undefined && created.method === "createTextChannel");
+  assert.equal(created.options.topic, "旅行（General）");
+  assert.deepEqual(
+    s.gateway.sent.map((sent) => sent.text),
+    [welcomeText("旅行", "General")],
+  );
+  const rows = s.history.list(result.channelId, { limit: 10 });
+  assert.deepEqual(
+    rows.map((row) => [row.kind, row.source, row.text]),
+    [["divider", "system", "General で始めました"]],
+  );
+  assert.deepEqual(s.submits, [{ guildId: "guild-1", channelId: result.channelId, content: "京都に行きたい", at: NOW, source: "web" }]);
+  assert.ok(s.logs.includes("General のディレクトリを作りました"));
+  // 2 回目はあるものを使う（作ったの log は出ない）
+  s.logs.length = 0;
+  assert.equal((await s.start({ title: "もう 1 つ" })).result, "created");
+  assert.equal(s.logs.includes("General のディレクトリを作りました"), false);
+});
+
+test("startTopic（general）: 連携が無い・link が無い・General が symlink のときは軽いセッション（project_dir なし）で作り、仕切りは「場所なしで始めました」", async (t) => {
+  const check = async (s: Awaited<ReturnType<typeof startSetup>>, label: string) => {
+    const result = await s.start({ title: "雑談" });
+    assert.ok(result.result === "created", label);
+    assert.equal(result.projectDir, null, label);
+    assert.equal(result.turn, "none", label);
+    assert.equal(s.topicSessions.projectDirOf(result.channelId), undefined, label);
+    assert.deepEqual(
+      s.history.list(result.channelId, { limit: 10 }).map((row) => row.text),
+      ["場所なしで始めました"],
+      label,
+    );
+  };
+  const off = await startSetup(t, { cc: false });
+  await check(off, "連携なし");
+  assert.equal(existsSync(join(off.workspace, "General")), false);
+
+  const notReady = await startSetup(t);
+  notReady.ready.value = false;
+  await check(notReady, "link なし");
+  assert.equal(existsSync(join(notReady.workspace, "General")), false);
+
+  const linked = await startSetup(t, { general: "link" });
+  await check(linked, "symlink");
+});
+
+test("startTopic（project）: 連携が無ければ cc_disabled、link が無ければ unify_not_ready、無い名前・symlink は invalid_project で、どれも作らない", async (t) => {
+  const off = await startSetup(t, { cc: false });
+  assert.deepEqual(await off.start({ title: "x", place: { kind: "project", name: "alpha" } }), { result: "cc_disabled" });
+  assert.equal(off.gateway.calls.length, 0);
+
+  const s = await startSetup(t);
+  s.ready.value = false;
+  assert.deepEqual(await s.start({ title: "x", place: { kind: "project", name: "alpha" } }), { result: "unify_not_ready" });
+  s.ready.value = true;
+  for (const name of ["missing", "link", "../alpha", "a/b"]) {
+    assert.deepEqual(await s.start({ title: "x", place: { kind: "project", name } }), { result: "invalid_project" }, name);
+  }
+  assert.equal(s.gateway.calls.length, 0);
+
+  const result = await s.start({ title: "直す", place: { kind: "project", name: "alpha" } });
+  assert.ok(result.result === "created");
+  assert.equal(result.projectDir, "alpha");
+  assert.deepEqual(
+    s.history.list(result.channelId, { limit: 10 }).map((row) => row.text),
+    ["alpha で始めました"],
+  );
+});
+
+test("startTopic: 題名を省くと一言の先頭から作る。一言を省くとターンを始めない（turn none）", async (t) => {
+  const s = await startSetup(t);
+  const fromText = await s.start({ text: "\n請求書の整理をしたい。\n先月の分から" });
+  assert.ok(fromText.result === "created");
+  assert.equal(fromText.title, "請求書の整理をしたい。");
+  assert.equal(s.topicSessions.get(fromText.channelId)?.title, "請求書の整理をしたい。");
+  assert.equal(fromText.turn, "started");
+
+  const titleOnly = await s.start({ title: " 題名\tだけ " });
+  assert.ok(titleOnly.result === "created");
+  assert.equal(titleOnly.title, "題名 だけ");
+  assert.equal(titleOnly.turn, "none");
+  assert.equal(s.submits.length, 1);
+});
+
+test("startTopic: 最初の一言が受け付けられなくても created で turn failed（チャンネルと仕切りは残る）", async (t) => {
+  const s = await startSetup(t);
+  s.next.push({ result: "bot_disconnected" });
+  const result = await s.start({ title: "t", text: "本文" });
+  assert.ok(result.result === "created");
+  assert.equal(result.turn, "failed");
+  assert.equal(s.topicSessions.get(result.channelId)?.state, "active");
+  assert.equal(s.history.list(result.channelId, { limit: 10 }).length, 1);
+  assert.ok(s.logs.some((line) => line.startsWith("話題は作りましたが、最初の一言を送れませんでした")));
+});
+
+test("startTopic: /setup 前は not_set_up", async (t) => {
+  const s = await startSetup(t);
+  assert.deepEqual(await s.start({ guildId: "guild-2", title: "x" }), { result: "not_set_up" });
+  assert.equal(s.submits.length, 0);
+});
+
+test("startTopic: log に題名・本文・プロジェクトの名前が出ない", async (t) => {
+  const s = await startSetup(t, { general: "Freeform" });
+  s.next.push({ result: "accepted", turnId: 1, messageId: "m" }, { result: "echo_failed" });
+  const a = await s.start({ title: "秘密の題名", text: "秘密の本文" });
+  const b = await s.start({ title: "別の題名", text: "別の本文", place: { kind: "project", name: "alpha" } });
+  assert.ok(a.result === "created" && b.result === "created");
+  const joined = s.logs.join("\n");
+  for (const word of ["秘密", "別の", "alpha", "Freeform", s.workspace, a.channelId, b.channelId]) {
+    assert.equal(joined.includes(word), false, word);
+  }
+  assert.ok(s.logs.length > 0);
 });

@@ -97,6 +97,7 @@
 }
 
 .v3-group-name {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -259,6 +260,16 @@
 
 .v3-foot-btn {
   gap: var(--space-1);
+}
+
+/* 群の見出しの [+]（話題を始める。色・大きさは .btn-ghost・.btn-icon-sm のまま、右端） */
+.v3-add {
+  flex: none;
+}
+
+/* ===== 始めるダイアログ（#v3-start。幅は dialog の既定のまま。≤639px は app.css の下からのシート） ===== */
+.v3-start .textarea {
+  resize: vertical;
 }
 
 /* ===== シート（「ほか」・見出しの […]）: 幅によらず app.css の ≤639px の .more-list・.more-row・.sheet-head と同じ見た目。PC は中央 ===== */
@@ -524,6 +535,12 @@
   .v3-hand-open {
     display: inline-flex;
     margin-left: auto;
+  }
+
+  /* 群の見出しの [+] は指で押せる大きさ */
+  .v3-add {
+    min-width: var(--tap);
+    min-height: var(--tap);
   }
 
   /* シートは今までどおり下から（app.css の dialog の全幅） */

@@ -12,7 +12,7 @@
 // 起動したペインを一覧のセッションに結びつけたら onBound を呼ぶ（Claude Code のチャンネルを作る・最初の指示を写す。docs/plan/claude-code-channels.md §3.1。CC11）。
 // 終わったチャンネルの [起動して続ける]（CC13）は resumeChannelId を onBound に渡し（付け替え）、結びつけられずに忘れたら onGaveUp を呼ぶ。
 // log は起動したもの（web など）・送信の番号・件数・失敗の種類だけ（プロジェクト名・題名・パス・tmux のセッション名・ペイン id・sessionId は出さない）
-import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { CcSendStore } from "../store/cc-sends.ts";
@@ -163,16 +163,22 @@ export type CcPlaces = {
   workspaceDir: string;
   /** 重なってはいけない場所（workDir・dataDir・~/.config/self-agent・~/.claude・CLAUDE_CONFIG_DIR） */
   protectedDirs: readonly string[];
+  /** General の名前。あれば listProjects の一覧から外す */
+  generalDir?: string;
 };
 
 /**
  * self-agent の設定から作る起動の場所（重なってはいけない場所は workDir・dataDir・CLAUDE_CONFIG_DIR・~/.config/self-agent・~/.claude）。
  * Claude Code の起動（CcStarter）とプロジェクトのセッション（agent/project-profile.ts。docs/plan/unify.md §5.2）で同じ線引きにする
  */
-export function ccPlacesOf(cfg: Pick<Config, "workspaceDir" | "workDir" | "dataDir" | "claudeConfigDir">, home: string): CcPlaces {
+export function ccPlacesOf(
+  cfg: Pick<Config, "workspaceDir" | "workDir" | "dataDir" | "claudeConfigDir"> & Partial<Pick<Config, "generalDir">>,
+  home: string,
+): CcPlaces {
   return {
     workspaceDir: cfg.workspaceDir,
     protectedDirs: [cfg.workDir, cfg.dataDir, cfg.claudeConfigDir, join(home, ".config/self-agent"), join(home, ".claude")],
+    ...(cfg.generalDir === undefined ? {} : { generalDir: cfg.generalDir }),
   };
 }
 
@@ -206,7 +212,7 @@ export function projectDir(name: unknown, places: CcPlaces, options: { nested?: 
   return dir;
 }
 
-/** 起動できるディレクトリの名前（名前の順に CC_PROJECTS_MAX まで）。workspace が読めなければ空 */
+/** 起動できるディレクトリの名前（名前の順に CC_PROJECTS_MAX まで。General は外す）。workspace が読めなければ空 */
 export function listProjects(places: CcPlaces): string[] {
   let names: string[];
   try {
@@ -217,9 +223,42 @@ export function listProjects(places: CcPlaces): string[] {
     return [];
   }
   return names
-    .filter((name) => projectDir(name, places) !== undefined)
+    .filter((name) => name !== places.generalDir && projectDir(name, places) !== undefined)
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, CC_PROJECTS_MAX);
+}
+
+/**
+ * General のディレクトリを確かめ、無ければ作る。ready: 元からある・created: 作った・unavailable: 使えない。
+ * 作るのは realpath(workspace) の直下に 1 つだけ（recursive なし。ワークスペース自体は作らない）。ある物を消さない・置き換えない・たどらない。
+ * 最後に projectDir と同じ検査（symlink・ファイル・守る場所との重なり）を通す。投げない・log を出さない（呼び出し側が出す）
+ */
+export function ensureGeneralDir(places: CcPlaces): "ready" | "created" | "unavailable" {
+  const name = places.generalDir;
+  if (name === undefined || !CC_PROJECT_PATTERN.test(name)) return "unavailable";
+  let root: string;
+  try {
+    root = realpathSync(places.workspaceDir);
+  } catch {
+    return "unavailable";
+  }
+  const dir = join(root, name);
+  // 守る場所と重なる・tmux の書式の # を含む場所には作らない（projectDir でも落ちるが、作ってから断らない）
+  if (dir.includes("#") || places.protectedDirs.some((place) => overlaps(dir, realOrResolved(place)))) return "unavailable";
+  let created = false;
+  try {
+    lstatSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "unavailable";
+    try {
+      mkdirSync(dir);
+      created = true;
+    } catch {
+      return "unavailable";
+    }
+  }
+  if (projectDir(name, places) === undefined) return "unavailable";
+  return created ? "created" : "ready";
 }
 
 /** /proc/meminfo の MemAvailable（バイト）。読めなければ undefined（procFile はテスト用） */

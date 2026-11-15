@@ -1,6 +1,6 @@
 // 新しい殻（v3.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
 // SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
-// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行・札）
+// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）
 "use strict";
 
 (function () {
@@ -239,11 +239,11 @@
     if (place.textContent !== text) place.textContent = text;
   }
 
-  /** 話題の「場所」の文字（帯と札で同じ決め方） */
+  /** 話題の「場所」の文字（帯と札で同じ決め方）。群 general は General のセッションなら「General」、場所の無い軽いセッションは「なし」 */
   function placeText(t) {
     if (t.group === "other") return "ほかの場所" + (t.cwdLabel ? "（" + t.cwdLabel + "）" : "");
-    if (t.place && t.place.dir) return t.place.dir;
-    return "General";
+    if (t.group === "general") return t.place && t.place.dir ? "General" : "なし";
+    return t.place && t.place.dir ? t.place.dir : "なし";
   }
 
   function renderMain(switched) {
@@ -898,6 +898,182 @@
     if (first) first.focus();
   }
 
+  // ===== 話題を始める（群の見出しの [+] → #v3-start → POST /api/topics。docs/plan/web-ui-v3.md §2・§5） =====
+  const START_SET_UP = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行して再起動してください";
+  const START_EMPTY = "最初の一言か題名を入れてください";
+  /** 始められなかったときの文（応答の error ごと。too_long は field で分ける） */
+  const START_ERRORS = {
+    empty: START_EMPTY,
+    invalid_project: "そのプロジェクトは使えません",
+    cc_disabled: "プロジェクトで始めるには Claude Code の連携が要ります",
+    unify_not_ready: START_SET_UP,
+    not_set_up: "先に Discord で /setup を実行してください",
+    bot_disconnected: "Discord につながっていません。少し待ってからもう一度試してください",
+  };
+  // 開くたびに 1 増える番号・送っている開きの番号（0 は送っていない）・開いているか。
+  // 応答が返ったとき、送った開きのままでなければダイアログに触らない（閉じた・開き直した後の応答は toast で知らせる）
+  let startSeq = 0;
+  let startBusy = 0;
+  let startShown = false;
+  // 閉じた後に焦点を戻す [+]・話題を開くために閉じたか（そのときは焦点を戻さない）
+  let startOpener = null;
+  let startOpened = false;
+
+  /** 場所の候補（General を先頭に、プロジェクトをサーバーの順のまま）。一覧をまだ読めていなければ General だけ */
+  function startPlaces() {
+    const data = SA.topics.data();
+    if (!data) return [{ key: "general", name: "General" }];
+    const general = data.groups.filter((g) => g.kind === "general").slice(0, 1);
+    const projects = data.groups.filter((g) => g.kind === "project");
+    const places = general.concat(projects).map((g) => ({ key: g.key, name: g.name }));
+    return general.length > 0 ? places : [{ key: "general", name: "General" }].concat(places);
+  }
+
+  /** 場所ごとの 1 行。状態（/api/status の cc）がまだ無ければ連携が有効なときと同じ文 */
+  function startHint(place) {
+    const status = SA.store.status;
+    const cc = status && status.cc ? status.cc : null;
+    if (place === "general") {
+      if (cc && (cc.enabled !== true || cc.unifyReady === false)) return "Discord にチャンネルができます。Claude Code の連携が使えないので、場所なしの話題として始めます。";
+      return "Discord にチャンネルができます。";
+    }
+    if (cc && cc.enabled !== true) return "プロジェクトで始めるには Claude Code の連携が要ります。";
+    if (cc && cc.unifyReady === false) return START_SET_UP;
+    const hit = startPlaces().find((p) => p.key === place);
+    return "Discord にチャンネルができます。" + (hit ? hit.name : place.replace(/^p:/, "")) + " の中で作業します。";
+  }
+
+  function showStartHint() {
+    $("v3-start-hint").textContent = startHint($("v3-start-place").value || "general");
+  }
+
+  /** エラーの欄（role=alert）。text が null なら隠す。field はその欄に aria-invalid を付ける入力欄の id */
+  function startError(text, field) {
+    const box = $("v3-start-error");
+    box.textContent = text === null ? "" : text;
+    box.hidden = text === null;
+    for (const id of ["v3-start-text", "v3-start-name"]) {
+      if (id === field) $(id).setAttribute("aria-invalid", "true");
+      else $(id).removeAttribute("aria-invalid");
+    }
+  }
+
+  /** ダイアログを開く（場所は place が候補にあればそれ、無ければ General）。焦点は最初の一言 */
+  function openStart(place, opener) {
+    const dialog = $("v3-start");
+    if (!dialog) return;
+    const places = startPlaces();
+    const select = $("v3-start-place");
+    select.replaceChildren(...places.map((p) => el("option", { value: p.key, text: p.name })));
+    select.value = places.some((p) => p.key === place) ? place : "general";
+    $("v3-start-text").value = "";
+    $("v3-start-name").value = "";
+    startError(null, null);
+    // 新しい開き。前の開きの送信がまだ返っていなくても [始める] は押せる
+    startSeq++;
+    $("v3-start-ok").disabled = false;
+    showStartHint();
+    startOpener = opener || null;
+    startOpened = false;
+    openDialog(dialog);
+    startShown = true;
+    $("v3-start-text").focus();
+  }
+
+  function startFailure(err) {
+    const code = err && err.code;
+    if (code === "too_long") {
+      const field = err.data && err.data.field;
+      if (field === "title") return { text: "題名は 100 字までです", field: "v3-start-name" };
+      return { text: "最初の一言は 1,900 字までです", field: "v3-start-text" };
+    }
+    if (code === "empty") return { text: START_EMPTY, field: "v3-start-text" };
+    if (typeof code === "string" && Object.prototype.hasOwnProperty.call(START_ERRORS, code)) return { text: START_ERRORS[code], field: null };
+    if (err && err.status === 0) return { text: "サーバーにつながりません", field: null };
+    return { text: "始められませんでした。もう一度試してください", field: null };
+  }
+
+  /** 送る（同じ開きで送っている最中は何もしない。空の題名・一言は欄ごと送らない） */
+  async function submitStart() {
+    const seq = startSeq;
+    if (startBusy === seq) return;
+    const place = $("v3-start-place").value || "general";
+    const rawText = $("v3-start-text").value;
+    const title = $("v3-start-name").value.trim();
+    const text = rawText.trim();
+    if (title === "" && text === "") {
+      startError(START_EMPTY, "v3-start-text");
+      $("v3-start-text").focus();
+      return;
+    }
+    startError(null, null);
+    const body = { place };
+    if (title !== "") body.title = title;
+    if (text !== "") body.text = text;
+    startBusy = seq;
+    $("v3-start-ok").disabled = true;
+    let data;
+    let failed = null;
+    try {
+      data = await SA.api.post("/api/topics", body, { quiet: true });
+    } catch (err) {
+      failed = err || {};
+    }
+    // 送った開きのままか（閉じた・開き直したなら、ダイアログ・欄・[始める]・エラーの欄に触らない）
+    const current = seq === startSeq && startShown;
+    if (startBusy === seq) startBusy = 0;
+    if (failed) {
+      const failure = startFailure(failed);
+      if (!current) {
+        SA.ui.toast(failure.text, null, { level: "error" });
+        return;
+      }
+      $("v3-start-ok").disabled = false;
+      startError(failure.text, failure.field);
+      return;
+    }
+    if (current) {
+      $("v3-start-ok").disabled = false;
+      startOpened = true;
+      closeDialog($("v3-start"));
+    }
+    const name = data && typeof data.title === "string" ? data.title : title;
+    if (data && data.turn === "failed" && typeof data.channelId === "string") {
+      setDraft(data.channelId, rawText);
+      SA.ui.toast("話題「" + name + "」を始めました。最初の一言は送れなかったので、入力欄に戻しました");
+    } else SA.ui.toast("話題「" + name + "」を始めました");
+    SA.topics.load();
+    // 閉じた・開き直した後なら話題へは移らない（オーナーはもう別の事をしている）
+    if (current && data && typeof data.id === "string") open(data.id);
+  }
+
+  function bindStart() {
+    const dialog = $("v3-start");
+    if (!dialog) return;
+    $("v3-start-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      submitStart();
+    });
+    $("v3-start-cancel").addEventListener("click", () => closeDialog(dialog));
+    $("v3-start-place").addEventListener("change", showStartHint);
+    // 最初の一言の中の Ctrl+Enter・⌘+Enter で送る（ただの Enter は改行。変換の確定中は何もしない）
+    $("v3-start-text").addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        submitStart();
+      }
+    });
+    dialog.addEventListener("close", () => {
+      startShown = false;
+      const opener = startOpener;
+      const opened = startOpened;
+      startOpener = null;
+      startOpened = false;
+      if (!opened && opener && document.contains(opener)) opener.focus();
+    });
+  }
+
   // ===== 下の口（タスク・リマインド・ほか） =====
   /** 「ほか」に並べる画面の順（引けるものだけ。GitHub は有効のとき・会話ログは dev のとき） */
   const MORE_TABS = ["knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"];
@@ -1213,6 +1389,7 @@
     renderHeadOps();
     renderConn();
     renderFoot();
+    bindStart();
     $("v3-sheet").addEventListener("close", () => {
       const opener = sheetOpener;
       sheetOpener = null;
@@ -1274,8 +1451,8 @@
     togglePanel: () => undefined,
     // パレットは無い。絞り込み欄を出して焦点（prefix は捨てる）
     palette: () => openSearch(),
-    // 話題を始める口は M4
-    newSession: () => undefined,
+    // 話題を始める（群の見出しの [+]）。tmux の Claude Code を起動する口は新しい殻に無い
+    newSession: (place, opener) => openStart(place || "general", opener || null),
     ccStart: () => undefined,
     theme: () => S.theme,
     setTheme,
