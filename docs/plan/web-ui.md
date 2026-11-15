@@ -83,7 +83,8 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 | 状態 | `/api/status`（§3.5） | — | W1 |
 | 使用量 | `/api/usage?date=YYYY-MM-DD&last=N&kind=`・`/api/usage/days?n=30` | — | W1 |
 | 設定 | （`/api/status` の `env`） | — | W1 |
-| 会話（サイドバー） | `/api/channels`（§4.3）。CC9 から `/api/cc/sessions`（群「Claude Code」。`docs/plan/claude-code-channels.md` §2） | — | W2 / CC9 |
+| 会話（サイドバー） | `/api/channels`（§4.3）。CC9 から `/api/cc/sessions`（群「Claude Code」。`docs/plan/claude-code-channels.md` §2）。M7 から応答に `reads`（`{ [channelId]: lastReadId }`。web-ui-v3.md §3.3） | — | W2 / CC9 / M7 |
+| 既読（M7。web-ui-v3.md §3.3） | `/api/topics` と `/api/channels` の応答の `reads` | `/api/topics/ch:<id>/read`（`{ lastId }`。大きい方だけ・最新の行で頭打ち） | M7 |
 | 会話のタブ | `/api/channels/<id>/turns?before=&after=&limit=`（§4.3） | `/api/channels/<id>/messages`・`/turns/<seq>/abort`・`/continue`（§5）。CC14 から `kind: "cc"`（Claude Code のチャンネル。claude-code-channels.md §5） | W2 / W3 |
 | 実行中 | `/api/running`（§5.2） | — | W3 |
 | 会話ログ | `/api/devlog/days`・`/api/devlog?date=&kind=&channel=&persona=&last=`（dev モードでなければ 404） | — | W2 |
@@ -153,6 +154,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 
 ### 4.4 既読（未読の位置）
 - サーバーは持たない。ブラウザの localStorage `seen[channelId] = <見た最後の history.id>`。会話のタブを表示している間（visible かつ active）は最新の id を `seen` に書き、サイドバーの未読の点は `channel.last.kind === "agent" && last.id > seen[id]`。アクティビティバーの数字は未読のチャンネル数。1 人用なので端末ごとで十分（別の端末で読んだかは合わせない）。
+- M7 から既読はサーバー（web-ui-v3.md §3.3）。画面は localStorage に書かない。
 
 ## 5. Web から送る・途中経過（W3）
 
