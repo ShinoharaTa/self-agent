@@ -4,10 +4,14 @@ import { request } from "node:http";
 import type { AgentRunner } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
+import { KeyedSerialQueue } from "../src/app/queue.ts";
+import type { MoveDeps } from "../src/app/topic-move.ts";
+import { createTopicProposals } from "../src/app/topic-proposals.ts";
 import type { PersonaConfig } from "../src/config.ts";
 import type { Gateway } from "../src/discord/gateway.ts";
 import { channelRoutes } from "../src/web/routes/channels.ts";
 import { createWebServer, type WebServer } from "../src/web/server.ts";
+import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 
 const LOGIN = "owner@example.com";
@@ -41,7 +45,11 @@ function getJson(server: WebServer, path: string): Promise<{ status: number; jso
   });
 }
 
-async function setup(t: TestContext, options: { publicBaseUrl?: string } = {}) {
+/**
+ * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose と setMessageId（札が出た印）で足し、
+ * 期限の判定は proposalClock の時刻
+ */
+async function setup(t: TestContext, options: { publicBaseUrl?: string; proposals?: boolean } = {}) {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
   const { guildSettings, topicSessions, projects, history } = stores;
@@ -75,6 +83,27 @@ async function setup(t: TestContext, options: { publicBaseUrl?: string } = {}) {
     guildSettings,
     topicSessions,
   });
+  // 右腕の場所を変える確認（proposals のときだけ。/turns は pending を読むだけなので、付け替えと投稿の配線は使われない）
+  const moves = new TopicMoveStore(db, () => NOW);
+  const proposalClock = { at: NOW };
+  const proposals =
+    options.proposals === true
+      ? createTopicProposals({
+          move: {
+            topicSessions,
+            moves,
+            turnQueue: new KeyedSerialQueue(1),
+            turn: {} as MoveDeps["turn"],
+            runningTurns: () => [],
+            history,
+            log: () => undefined,
+          },
+          moves,
+          ownerPosts: { send: async () => undefined, sendMessage: async () => "card-1", editMessage: async () => undefined },
+          now: () => proposalClock.at,
+          log: () => undefined,
+        })
+      : undefined;
   const routes = channelRoutes({
     cfg,
     guildSettings,
@@ -83,6 +112,7 @@ async function setup(t: TestContext, options: { publicBaseUrl?: string } = {}) {
     history,
     personas,
     resolveChannel: createChannelResolver(cfg, guildSettings, topicSessions),
+    ...(proposals === undefined ? {} : { proposals }),
   });
   const server = createWebServer({
     host: "127.0.0.1",
@@ -97,7 +127,7 @@ async function setup(t: TestContext, options: { publicBaseUrl?: string } = {}) {
   });
   await server.start();
   t.after(() => server.close());
-  return { server, ...stores };
+  return { server, moves, proposalClock, ...stores };
 }
 
 test("/api/channels: /setup 済みのサーバーの入口（設定にある人格の #<NAME> を含む）とセッション。削除済み・外した人格・/setup 前のサーバーは無い", async (t) => {
@@ -299,4 +329,41 @@ test("/api/channels/<id>/turns: 入口・完了・人格の #<NAME> は 200、�
   assert.equal((await getJson(server, "/api/channels/300/turns")).status, 404);
   // 数字でない ID はルートに当たらない
   assert.equal((await getJson(server, "/api/channels/abc/turns")).status, 404);
+});
+
+// ---- 右腕の場所を変える確認（M6g） ----
+
+const moveProposalOf = async (server: WebServer, channelId: string) =>
+  ((await getJson(server, `/api/channels/${channelId}/turns`)).json.channel as Record<string, unknown>).moveProposal;
+
+test("/api/channels/<id>/turns: 確認のある話題の channel に moveProposal（id・from・to・expiresAt）がある。ほかの話題は null", async (t) => {
+  const env = await setup(t, { proposals: true });
+  const id = env.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  assert.ok(id !== undefined);
+  env.moves.setMessageId(id, "card-1");
+  assert.deepEqual(await moveProposalOf(env.server, "200"), {
+    id,
+    from: "なし",
+    to: "beta",
+    expiresAt: new Date(NOW.getTime() + 10 * 60_000).toISOString(),
+  });
+  // 確認の無い話題・入口
+  assert.equal(await moveProposalOf(env.server, "201"), null);
+  assert.equal(await moveProposalOf(env.server, "100"), null);
+});
+
+test("/api/channels/<id>/turns: 確認が無い・期限切れ・proposals を渡さないときは moveProposal が null", async (t) => {
+  const env = await setup(t, { proposals: true });
+  assert.equal(await moveProposalOf(env.server, "200"), null);
+  const id = env.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  assert.ok(id !== undefined);
+  env.moves.setMessageId(id, "card-1");
+  env.proposalClock.at = new Date(NOW.getTime() + 10 * 60_000);
+  assert.equal(await moveProposalOf(env.server, "200"), null);
+
+  const plain = await setup(t);
+  const other = plain.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  assert.ok(other !== undefined);
+  plain.moves.setMessageId(other, "card-1");
+  assert.equal(await moveProposalOf(plain.server, "200"), null);
 });

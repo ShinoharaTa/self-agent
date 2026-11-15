@@ -237,13 +237,13 @@
     return "/api/channels/" + encodeURIComponent(channelId) + "/turns?" + query;
   }
 
-  /** /turns の channel で一覧の 1 件も新しくする（状態・最後の行が変わる）。closeDraft は一覧に入れない */
+  /** /turns の channel で一覧の 1 件も新しくする（状態・最後の行が変わる）。closeDraft・moveProposal は一覧に入れない */
   function updateChannel(channel) {
     if (!channel || !store.channels) return false;
     const list = store.channels.channels;
     const i = list.findIndex((c) => c.id === channel.id);
     if (i < 0) return false;
-    const { closeDraft: _closeDraft, ...rest } = channel;
+    const { closeDraft: _closeDraft, moveProposal: _moveProposal, ...rest } = channel;
     const before = list[i];
     list[i] = rest;
     return before.state !== rest.state || (before.last && before.last.id) !== (rest.last && rest.last.id);

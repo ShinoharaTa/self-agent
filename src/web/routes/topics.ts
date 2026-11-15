@@ -4,6 +4,7 @@
 // POST /api/topics（M4）は場所・題名・最初の一言で話題を始める（app/session-ops.ts の startTopic。start の配線があるときだけ）。
 // POST /api/topics/ch:<id>/place（M5）は話題の場所を変える（app/topic-move.ts の moveTopic。move の配線があるときだけ。202 ですぐ返し、結果はチャンネルに投稿する）
 // 右腕の場所を変える確認（M6e。app/topic-proposals.ts）は、proposals の配線があるとき、その話題の「あなたの番」（confirm）に付ける
+// POST /api/topics/moves/<id>/accept・/keep（M6g）は、その確認に Web から答える（Discord の [変える][このまま] と同じ accept・keep。proposals の配線があるときだけ）
 import { CC_CONFIRM_TTL_MS } from "../../app/commands/cc-confirm.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import type { Handler } from "../../app/handler.ts";
@@ -52,7 +53,7 @@ import { WEB_DUPLICATE_WINDOW_MS } from "./turns.ts";
 export type TopicRouteDeps = {
   cfg: Pick<Config, "allowedGuildIds" | "personas" | "workspaceDir">;
   guildSettings: Pick<GuildSettingsStore, "get" | "personaInbox">;
-  topicSessions: Pick<TopicSessionStore, "listByState" | "getCloseDraft"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
+  topicSessions: Pick<TopicSessionStore, "get" | "listByState" | "getCloseDraft"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
   history: Pick<HistoryStore, "list" | "latestByChannel">;
   personas: Pick<PersonaRouter, "ownerOf"> & { all: readonly Pick<PersonaRuntime, "id" | "name">[] };
   handler: Pick<Handler, "runningTurns">;
@@ -77,8 +78,11 @@ export type TopicRouteDeps = {
    * moves.runningChannels は movable の「場所を変えています」に使う。ownerPosts は結果の投稿（sessionRoutes に渡している物）
    */
   move?: MoveDeps & { ownerPosts: Pick<OwnerPosts, "send"> };
-  /** 右腕の場所を変える確認（app/topic-proposals.ts）。期限の中の確認を、その話題の「あなたの番」（confirm）に付ける */
-  proposals?: Pick<TopicProposals, "pendingAll">;
+  /**
+   * 右腕の場所を変える確認（app/topic-proposals.ts）。期限の中の確認を、その話題の「あなたの番」（confirm）に付ける。
+   * POST /api/topics/moves/<id>/accept・/keep の配線（Discord のボタンと同じ実体）。無ければその 2 つのルートを足さない
+   */
+  proposals?: Pick<TopicProposals, "pendingAll" | "accept" | "keep" | "channelOf">;
   /** GET /api/topics の元。右腕の topic_list と共有するとき、同じ deps で createTopicCollector から作った物を渡す。無ければここで作る */
   collect?: (at: number, done: string | null) => TopicsInput;
   now?: () => Date;
@@ -86,6 +90,8 @@ export type TopicRouteDeps = {
 
 const BAD_REQUEST: RouteResult = { status: 400, json: { error: "bad_request" } };
 const NOT_FOUND: RouteResult = { status: 404, json: { error: "not_found" } };
+/** 答えた後・期限切れの確認（POST /api/topics/moves/<id>/accept・/keep） */
+const STALE: RouteResult = { status: 409, json: { error: "stale" } };
 
 /** 同じ内容の POST /api/topics をまとめる長さ（web/routes/turns.ts の二重送信と同じ） */
 export const TOPIC_START_DUPLICATE_MS = WEB_DUPLICATE_WINDOW_MS;
@@ -424,7 +430,7 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
 }
 
 export function topicRoutes(deps: TopicRouteDeps): Route[] {
-  const { cfg, guildSettings, places, move } = deps;
+  const { cfg, guildSettings, places, move, proposals } = deps;
   const now = deps.now ?? (() => new Date());
   const collect = deps.collect ?? createTopicCollector(deps);
 
@@ -488,6 +494,46 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
         return { status: 202, json: { accepted: true } };
       },
     });
+  }
+  if (proposals !== undefined) {
+    /** 確認の行があり、その話題が許可したサーバーの物か（行が無い・話題が無い・許可の外は 404） */
+    const known = (id: number): boolean => {
+      const channelId = proposals.channelOf(id);
+      if (channelId === undefined) return false;
+      const session = deps.topicSessions.get(channelId);
+      return session !== undefined && cfg.allowedGuildIds.includes(session.guildId);
+    };
+    routes.push(
+      {
+        method: "POST",
+        pattern: /^\/api\/topics\/moves\/(\d{1,10})\/accept$/,
+        handle: async ({ params }) => {
+          const id = Number(params[0]);
+          if (!known(id)) return NOT_FOUND;
+          const result = await proposals.accept(id);
+          switch (result.result) {
+            case "accepted":
+              return { status: 202, json: { accepted: true } };
+            case "stale":
+              return STALE;
+            case "refused": {
+              const refused = moveRefusalResult(result.reason);
+              return { status: refused.status, json: { error: result.reason, message: moveRefusalText(result.reason) } };
+            }
+          }
+        },
+      },
+      {
+        method: "POST",
+        pattern: /^\/api\/topics\/moves\/(\d{1,10})\/keep$/,
+        handle: async ({ params }) => {
+          const id = Number(params[0]);
+          if (!known(id)) return NOT_FOUND;
+          const result = await proposals.keep(id);
+          return result.result === "kept" ? { status: 200, json: { ok: true } } : STALE;
+        },
+      },
+    );
   }
   const start = deps.start;
   if (start === undefined) return routes;
