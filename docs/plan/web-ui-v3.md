@@ -110,6 +110,7 @@ PC（1,280px〜。列 3 は畳める。幅が足りなければ列 3 → 列 1 �
 - **場所の決め方**: セッションは `project_dir`（General の名前なら群 general）／軽いセッション（`project_dir` なし）は `place.dir = null` で群 general／Claude Code は cwd が workspace の直下の名前かその下ならそのプロジェクト（新しい純関数 `projectOf(cwd, workspace)` を `cc/labels.ts` に足す）、外なら群 other「ほかの場所」。#tasks と人格の入口は群 general の末尾に固定（`movable` は理由つきの不可）。右腕（#inbox）は一覧に出さない。
 - **並び**: 群はプロジェクト（話題のあるものを上、名前順）→ General → ほかの場所。話題の無いプロジェクトは「ほかのプロジェクト（n）」に畳む。群の中は あなたの番 → 作業中 → 最後の活動の新しい順。完了は群ごとに「完了（n）」に畳み、開くまで返さない（`?done=<group>`）。
 - 足した人格のセッションも同じ群に出し、行に人格の名前を添える（今の一覧のバッジと同じ。行に `persona` を持たせる）。
+- **mark の unread**: `"unread"` は型にだけあり、返さない（M7）。未読は画面が応答の `reads`（§3.3）と `last` から決める。
 
 ### 3.2 「あなたの番」の数え方
 
@@ -126,7 +127,15 @@ PC（1,280px〜。列 3 は畳める。幅が足りなければ列 3 → 列 1 �
 
 ### 3.3 既読
 
-**サーバーに持つ**（今は端末ごとの localStorage で、スマホで読んでも PC で未読のまま）。表 `topic_reads(topic_id, last_read_id, updated_at)`、`POST /api/topics/<id>/read {lastId}`（大きい方だけを採る）。未読 = `last.id > last_read_id` かつ最後の行がオーナーの発言でない。Discord で読んだことは分からない（Discord に送った発言の行で既読を進めるだけ）。移行は、初回に localStorage の値を 1 度だけ送る。
+**サーバーに持つ**（M7 まではブラウザの localStorage で、スマホで読んでも PC で未読のままだった）。M7（#378）の実装の形:
+
+- 表 `topic_reads(channel_id, last_read_id, updated_at)`（v44）。鍵は話題の id から `ch:` を外したチャンネルの ID（`topic_moves` と同じ）。`cc:` の話題は履歴が無いので既読も無い。
+- 口は `POST /api/topics/ch:<channelId>/read {lastId}`。大きい方だけを採り、その会話の最新の `history.id` で頭打ちにする（断らない）。履歴が 1 行も無い会話には書かない。対象は Web で開ける会話（`webChannelLookup`）で、ほかは 404。`lastId` が 1 以上の整数でなければ 400。下げる口は無い。
+- 画面へは `GET /api/topics` と `GET /api/channels` の応答の先頭の階層に `reads: { [channelId]: lastReadId }`（その応答に出ている会話のうち、行のある物だけ）。ほかの端末の既読は polling で届く（SSE は足さない）。
+- 未読 = 最後の行が**返事（agent）**で `last.id > reads[channelId]`（画面の `store.isUnread`。知らせ・区切り・オーナーの発言では付かない）。点は画面が決める（`mark` に unread は出さない）。
+- 既読を付けるのは、読んでいる会話（殻の `SA.app.readingChannelIds()`）が描かれたとき・画面が見えるようになったとき・隠れていた列が見えたとき。新しい殻では、スマホで一覧を出している間の列 2 の会話と、重ねた右腕の下の会話は入れない（`shownChannelIds`（polling・音）はそのまま）。
+- Discord で読んだことは分からない。Discord に送った発言の行でもサーバーは既読を進めない（未読は最後の行だけで決まるので、結果は同じ）。
+- 移行: 画面は、旗 `self-agent-web:seen-sent` が無い間だけ古い鍵 `self-agent-web:seen` を始めの値として読み、サーバーより大きい分を送る。`/api/channels` の一覧に出ている会話の分が全部サーバーに入ったら旗 `"1"` を書き、以後は古い鍵を読まない。古い鍵は消さない（M7b を revert すると移した時点の既読に戻る。消すのは M8b）。M7 の後、画面は localStorage に既読を書かない。
 
 ### 3.4 描き方（不具合 1 の根）
 
@@ -285,9 +294,9 @@ M0 は今の画面のまま直す 1 PR（同じ「待ちの見え方」の論点
 | M4（済） | General と始める口（§5。`startTopic`・`POST /api/topics`・[+]） | M | 場所を決めずに始められる | revert（作った話題は残る） |
 | M5（済） | 付け替え（§6。本体・`topic_moves`・API・「場所 ∨」・`/move`） | M | 場所を変えられる | revert（表は残してよい） |
 | M6（済。M6a〜M6g） | 右腕のツール（§4。3 つ + システムプロンプト。定義とシステムプロンプトは 1 PR（M6f）。**キャッシュが 1 回外れる**）と確認の札（Discord のボタン・Web のカード） | M | 右腕が渡す・一覧に答える・付け替えを持ちかける | revert（もう 1 回外れる） |
-| M7 | 既読をサーバーに（§3.3） | S | スマホと PC で未読が揃う | revert |
+| M7（済。M7a・M7b） | 既読をサーバーに（§3.3） | S | スマホと PC で未読が揃う | M7b は revert。M7a は戻さない（DB が v44） |
 | M8 | 切り替え（`/` を新しい殻に。古い殻は `/static/classic.html` に 1 段残す）と文書（§10） | S | 新しい画面が既定 | html の入れ替えを戻す |
-| M8b | 古い殻を消す（`sidebar.js`・`workbench.js`・使わなくなった CSS） | M | なし | revert |
+| M8b | 古い殻を消す（`sidebar.js`・`workbench.js`・使わなくなった CSS・localStorage の `self-agent-web:seen`・`seen-sent`） | M | なし | revert |
 | M9 | 見る物「変更」（§8） | L | 会話の横で変更を読める | revert |
 
 **切り替え方の推薦**: env の旗（サーバーで出し分け）ではなく、**入口の html を並べて置く**（F10。`/static/v3.html`）。再起動も設定も要らず、オーナーがスマホと PC で両方を見比べられ、各段を単独で戻せる。一気に替えるのは、M2〜M7 が 1 つの大きい PR になりレビューできないので採らない。
@@ -370,3 +379,22 @@ M0 は今の画面のまま直す 1 PR（同じ「待ちの見え方」の論点
 - 補: 押したときの断りのうち、待てば通るものは札を残してその人だけに文を出し、待っても通らないものは確認を取り消して札を断りの文に書き換える。
 - 補: `topic_moves.by` は、ツールから出した確認はすべて `right_hand`（担当が自分の話題について出したものも）。
 - 補: Web の確認のカードは `/api/channels/<id>/turns` の `channel.moveProposal` だけを見て出す（M6g）。
+
+**M7 の実装で決めたこと（#378。「違」は設計と違える所、「補」は設計が決めていない所）**:
+
+- 違: 未読の条件は今のまま「最後の行が返事（agent）」。設計の文（オーナーの発言でない）にすると、#inbox の毎日の切り替えの区切りで右腕が毎日未読になり、オーナーが自分で行った /close・付け替えの区切りや知らせでも点が付く。「オーナーの発言で未読にならない」は満たす。
+- 違: `/api/topics` の `mark` に `"unread"` は出さない。サーバーは `reads` を返し、画面が決める（読んだ瞬間に点が消え、2 つの殻の 5 か所の点がそのまま動く）。
+- 違（小）: 「Discord に送った発言の行で既読を進める」は、サーバーで書かない。未読は最後の行だけで決まり、結果が同じ。
+- 補: 表の鍵は `channel_id`（`ch:` を外す）。表の名前は `topic_reads`。
+- 補: 口は `POST /api/topics/ch:<channelId>/read`（`cc:` は口が無く 404）。対象は `webChannelLookup` が通す会話。
+- 補: `lastId` はその会話の最新の `history.id` で頭打ち（断らない）。履歴の無い会話には書かない。
+- 補: 画面への届け方は `GET /api/topics`・`GET /api/channels` の応答の `reads`。`Topic`・`WebChannel` の型は変えない。
+- 補: Discord で読んだことは分からない。Discord で読んだ返事は、Web で開くまで未読の点が残る。
+- 補: 移行は古い鍵を起動時の値として読み、サーバーより大きい分だけを送る。一覧の分が全部入ったら旗 `self-agent-web:seen-sent` を書く。古い鍵は消さない（消すのは M8b）。一覧に出ない古い完了の話題の分は送らない。
+- 補: M7b の後、画面は localStorage に既読を書かず、`storage` イベントも受けない。同じブラウザの別のタブへは次の polling（60 秒以内）で届く。
+- 補: 送れなかった既読は、次に一覧を読んだとき（`syncReads`）に送り直す。400・404 はそのページでは送り直さない。トーストは出さない。
+- 補: ほかの端末の既読は polling で届く（`/api/topics` 10〜60 秒・`/api/channels` 60 秒・タブに戻った直後はすぐ）。SSE は足さない。
+- 補: 既読を付ける会話は `SA.app.readingChannelIds()` で決める。新しい殻では、スマホで一覧を出している間の列 2 の会話と重ねた右腕の下の会話を除く（M2a からのずれの直し）。今の画面では `shownChannelIds` と同じ。`shownChannelIds`（polling・音）は変えない。
+- 補: 列が見えるようになったとき（一覧 → 会話、重ねた右腕を畳んだとき）に既読を付け直す。
+- 補: 既読を戻す（未読にする）口は作らない。`topic_reads` の掃除はしない。
+- 補: `docs/plan/web-ui.md` §4.4 に M7 で 1 行足す（今の画面の決まりが M7 で実際に変わるため）。節の書き換えは M8 のまま。
