@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#11141c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="self-agent">
+  <title>self-agent</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="stylesheet" href="/static/base.css">
+  <link rel="stylesheet" href="/static/tokens.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/shell.css">
+  <script src="/static/ui.js" defer></script>
+  <script src="/static/api.js" defer></script>
+  <script src="/static/sound.js" defer></script>
+  <script src="/static/chat.js" defer></script>
+  <script src="/static/views.js" defer></script>
+  <script src="/static/topics.js" defer></script>
+  <script src="/static/shell.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#ed">本文へ</a>
+  <div class="v3" id="v3" data-view="list">
+    <nav class="v3-list" id="v3-list" aria-label="話題">
+      <header class="v3-list-head">
+        <span class="v3-brand">self-agent</span>
+        <span class="v3-head-ops" id="v3-head-ops"></span>
+      </header>
+      <div class="v3-search" id="v3-search-box" hidden></div>
+      <div class="v3-list-body" id="v3-list-body" tabindex="-1">
+        <p class="v3-list-note meta" id="v3-list-note" role="status">読み込み中…</p>
+        <section class="v3-turns" id="v3-turns" aria-labelledby="v3-turns-h" hidden>
+          <h2 class="v3-group-head" id="v3-turns-h">
+            <span class="v3-group-name">あなたの番</span>
+            <span class="v3-group-note" id="v3-turns-count"></span>
+          </h2>
+          <ul class="v3-rows" id="v3-turns-rows" data-list="turns"></ul>
+        </section>
+        <div class="v3-groups" id="v3-groups"></div>
+      </div>
+      <footer class="v3-list-foot" id="v3-list-foot"></footer>
+    </nav>
+    <main class="v3-main" id="v3-main">
+      <div class="v3-bar" id="v3-bar" hidden>
+        <span class="v3-place meta" id="v3-place"></span>
+        <div class="segmented segmented-sm v3-views" id="v3-views" role="group" aria-label="見る物" hidden></div>
+      </div>
+      <div class="ed" id="ed"></div>
+    </main>
+  </div>
+  <dialog id="v3-sheet" class="v3-sheet"></dialog>
+
+  <dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title" aria-describedby="dlg-confirm-target dlg-confirm-body">
+    <h2 id="dlg-confirm-title" class="dlg-title"></h2>
+    <p id="dlg-confirm-target" class="dlg-target" hidden></p>
+    <p id="dlg-confirm-body" class="meta"></p>
+    <div class="dialog-actions">
+      <button class="btn btn-secondary btn-sm" id="dlg-confirm-cancel" type="button">やめる</button>
+      <button class="btn btn-primary btn-sm" id="dlg-confirm-ok" type="button">実行する</button>
+    </div>
+  </dialog>
+
+  <div class="toast-region">
+    <div class="toast-stack" id="toast" role="status" aria-atomic="false" hidden></div>
+    <div class="toast-stack" id="toast-alert" role="alert" aria-atomic="false" hidden></div>
+  </div>
+</body>
+</html>
