@@ -332,12 +332,13 @@
             if (data && data.channel) {
               const before = t.channel;
               t.channel = data.channel;
-              // プロジェクトのセッションの許可の要求（docs/plan/unify.md §6.1 の 5）が変わったらカードを描き直す
+              // プロジェクトのセッションの許可の要求（docs/plan/unify.md §6.1 の 5）・右腕の場所を変える確認（M6g）が変わったらカードを描き直す
               if (
                 !before ||
                 before.state !== data.channel.state ||
                 before.title !== data.channel.title ||
-                JSON.stringify(before.permission || null) !== JSON.stringify(data.channel.permission || null)
+                JSON.stringify(before.permission || null) !== JSON.stringify(data.channel.permission || null) ||
+                JSON.stringify(before.moveProposal || null) !== JSON.stringify(data.channel.moveProposal || null)
               ) {
                 changed = true;
               }

@@ -5682,3 +5682,60 @@ test("web static: api.js の updateChannel は moveProposal を一覧に持ち�
   assert.equal("moveProposal" in store.channels.channels[0]!, false);
   assert.equal("closeDraft" in store.channels.channels[0]!, false);
 });
+
+// ===== 周期の読み直しで場所を変える確認が変わったら描き直す（M6g。api.js の store.load.turns） =====
+
+/** loadApiM0 と同じ作りで、/turns の channel の moveProposal を差し替えられ、SA.app.refresh の呼び出しを数える（行は増やさない） */
+function loadApiMove() {
+  const context = {
+    window: { addEventListener: () => undefined, localStorage: { getItem: () => null, setItem: () => undefined } } as Record<string, unknown>,
+    document: { visibilityState: "visible", addEventListener: () => undefined },
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    Intl,
+    Date,
+    Number,
+    JSON,
+  };
+  vm.runInNewContext(read("api.js"), context);
+  const SA = (context.window as { SA: Record<string, unknown> }).SA;
+  const refreshes: string[] = [];
+  SA.app = { refresh: (tab: string) => refreshes.push(tab), refreshSidebar: () => undefined, refreshTabs: () => undefined, addOutput: () => undefined, activeTabId: () => null };
+  SA.chat = { channelsChanged: () => undefined, current: () => null, channelTitle: () => "会話", endText: () => "" };
+  let moveProposal: unknown = null;
+  (SA.api as { get: unknown }).get = (path: string) => {
+    const turns = path.includes("after=") ? [] : [{ id: 1, kind: "owner", text: "やって", outcome: null }];
+    // 毎回新しい channel の物（サーバーの応答と同じ）
+    return Promise.resolve({ turns, channel: { id: "200", kind: "session", state: "active", title: "家計簿", permission: null, closeDraft: null, moveProposal: JSON.parse(JSON.stringify(moveProposal)) } });
+  };
+  const store = SA.store as { load: { turns: (channelId: string) => Promise<unknown> } };
+  return { store, refreshes, setMove: (value: unknown) => (moveProposal = value) };
+}
+
+test("web static: 行が増えずに moveProposal が あり → null になったら会話を描き直す", async () => {
+  const h = loadApiMove();
+  h.setMove(MOVE_PROPOSAL);
+  await h.store.load.turns("200");
+  h.refreshes.length = 0;
+  h.setMove(null);
+  await h.store.load.turns("200");
+  assert.deepEqual(h.refreshes, ["ch:200"]);
+});
+
+test("web static: 行が増えずに moveProposal が null → あり になっても会話を描き直す", async () => {
+  const h = loadApiMove();
+  await h.store.load.turns("200");
+  h.refreshes.length = 0;
+  h.setMove(MOVE_PROPOSAL);
+  await h.store.load.turns("200");
+  assert.deepEqual(h.refreshes, ["ch:200"]);
+});
+
+test("web static: moveProposal が同じ中身のままなら、それだけでは描き直さない", async () => {
+  const h = loadApiMove();
+  h.setMove(MOVE_PROPOSAL);
+  await h.store.load.turns("200");
+  h.refreshes.length = 0;
+  await h.store.load.turns("200");
+  assert.deepEqual(h.refreshes, []);
+});
