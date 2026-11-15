@@ -1114,7 +1114,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
             now,
           }),
         };
-  // /messages と /api/cc/channels/<id>/close で同じ引き方（Claude Code のチャンネルも通す）
+  // /messages・/api/cc/channels/<id>/close・既読の POST /api/topics/ch:<id>/read で同じ引き方（Claude Code のチャンネルも通す）
   const webChannelOf = webChannelLookup({
     cfg: config,
     resolveChannel,
