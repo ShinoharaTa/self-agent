@@ -6133,6 +6133,28 @@ test("web static: スマホで会話を開いて一覧に戻した後に幅が�
   assert.deepEqual(readingIds(h), ["1"]);
 });
 
+test("web static: スマホで [一覧]・[会話]・[右腕] から 2 つ一度に戻っても、隠れる会話を読んでいる扱いにしない（M8-0）", async () => {
+  const h = await loadHand({ phone: true });
+  h.app.open("ch:1");
+  h.nodes.handOpen.dispatch("click");
+  assert.equal(handOf(h), "open");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  const readsA = (from: number) => h.marks.reading.slice(from).filter((ids) => ids !== null && ids.includes("1"));
+  let n = h.marks.reading.length;
+  h.history.go(-2);
+  assert.ok(h.marks.reading.length > n, "markSeenShown を呼ぶ");
+  assert.deepEqual(readsA(n), [], "戻る間に 1 を読んでいる扱いにしない");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(handOf(h), "closed");
+  // 進むで [右腕] へ: 右腕が下の会話を覆うので、1 は読んでいない
+  n = h.marks.reading.length;
+  h.history.go(2);
+  assert.ok(h.marks.reading.length > n, "markSeenShown を呼ぶ");
+  assert.deepEqual(readsA(n), [], "進む間も 1 を読んでいる扱いにしない");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(handOf(h), "open");
+});
+
 test("web static: 今の殻の readingChannelIds は shownChannelIds と同じ関数", () => {
   assert.match(read("workbench.js"), /\n {4}readingChannelIds: shownChannelIds,\n/);
   assert.ok(appKeys(read("shell.js")).includes("readingChannelIds"));

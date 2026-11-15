@@ -1457,13 +1457,13 @@
       const st = e.state || {};
       handClosing = false;
       // 重ねた右腕の開閉は履歴の v3Hand に合わせる（スマホで開いたときだけ entry を積む）
+      // 先に変数だけ変え、面を変えてから当てる（2 つ一度に戻ったとき、隠れる会話を既読にしない）
       let handClosed = false;
       let handChanged = false;
       if (S.handMode === "over" && S.handOver !== !!st.v3Hand) {
         S.handOver = !!st.v3Hand;
         handChanged = true;
         handClosed = !S.handOver;
-        applyHand();
       }
       if (st.v3Body && S.active) setView("body");
       else {
@@ -1471,6 +1471,7 @@
         // 一覧の行への焦点は右腕が関わらなかったときだけ（閉じたなら開いた口へ戻す）
         if (phone() && !handChanged && !S.handOver) focusCurrentRow();
       }
+      if (handChanged) applyHand();
       if (handClosed) restoreHandFocus();
       // 進むで開いたら [畳む] に焦点
       else if (handChanged) {
