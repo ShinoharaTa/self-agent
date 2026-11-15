@@ -282,7 +282,7 @@ export const REMINDER_PROMPT_LIMIT_MESSAGE =
 
 /** project_open をセッション以外（#inbox・#tasks）・context の無いターンで呼んだときの message */
 export const PROJECT_OPEN_NOT_AVAILABLE_MESSAGE =
-  "セッションのチャンネルで使います。#inbox では session_open で専用のチャンネルを作ってください";
+  "セッションのチャンネルで使います。#inbox では /new でセッションを作って、そこで頼むよう案内してください";
 /** プロジェクトのセッション（docs/plan/unify.md §5.9）で project_open・project_files を呼んだときの message */
 export const PROJECT_TOOLS_IN_PROJECT_SESSION_MESSAGE =
   "プロジェクトのセッションでは使いません。このプロジェクトのファイルは Read・Edit・Write・Bash で直接扱ってください";
