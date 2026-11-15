@@ -73,7 +73,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - 殻は docs/plan/web-ui-v3.md §2 の新しい殻（`index.html`・`shell.js`・`topics.js`・`shell.css`）。PC は 3 列: 一覧（280px）・会話（開いた話題か画面。最小 360px）・右腕（#inbox の会話。360px）。右腕は「一覧 + 右腕 + 360px」が入れば列に並べ、足りなければ会話の上に重ねる（畳むと細い帯）。幅の段は 639px の 1 つで、639 以下は一覧 ⇄ 会話（全幅）、右腕は下からの枠。
 - 一覧: 先頭に「あなたの番」の節、その下に場所ごとの群（`GET /api/topics`。§3.4）。見出しに接続の点・鈴・絞り込み。一覧の下に「右腕に頼む・訊く」と口 タスク・リマインド・ほか（シート「ほか」: ナレッジ・記憶・GitHub・使用量・会話ログ・知らせ・状態・設定。無効な機能は出さない）。会話の上の帯に「場所」のボタンと [会話][端末] の切り替え（Claude Code の話題）。
 - キー: Ctrl+K / ⌘+K（題名の絞り込みを開く）・Esc（重ねた右腕・絞り込み・スマホの会話 → 一覧）・一覧の行の ↑ / ↓ / Home / End。**探すのは題名の絞り込みだけで、コマンドパレットは無い**（web-ui-v3.md §15 の M8 の 違）。
-- 履歴: スマホで開いた会話は `{ v3Body: true }` の entry に積み、戻ると一覧。右腕を重ねて開いたときは `v3Hand` の entry を積む。`v3Depth` は一覧までの段数。古い殻の印（`saList`・`saBody`）は読まない。
+- 履歴: スマホで開いた会話は `{ v3Body: true }` の entry に積み、戻ると一覧。スマホで右腕を開いたときだけ `v3Hand` の entry を積む（戻るで閉じる）。640px 以上の重ねる形は entry を積まず、[畳む]・Esc・外側（backdrop）を押す・一覧から話題を開く、で閉じる。`v3Depth` は一覧までの段数。古い殻の印（`saList`・`saBody`）は読まない。
 - 会話・ナレッジ・タスクなどの画面の中身（`chat.js`・`views.js`）と確認ダイアログ・トーストは両方の殻で同じ。
 - テーマ: 既定 **dark**（`<html data-theme="dark">`。モックと同じ）。`system` を選ぶと `data-theme` を外して base.css の `prefers-color-scheme` に任せる。色の値は app.css の `:root[data-theme]` に base.css の写し（確認。base.css は編集しない）。
 - 密度: app.css の `--row`（PC 28px、`pointer: coarse` で `--tap` = 44px）、`.btn-sm`・`.input-sm`・`.chip-sm`・`.segmented-sm`。**`templates/web/DESIGN.md` の「押せるものは 44×44px 以上」「.container 640px」は LLM が作るページの決まりで、Web UI には当てはめない**（Web UI 専用の app.css で上書きする。DESIGN.md・base.css は変えない。両者の関係は app.css の先頭のコメントと本文書に書く）。
@@ -165,7 +165,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 
 ### 4.4 既読（未読の位置）
 - 既読はサーバーが持つ（M7。表 `topic_reads`。web-ui-v3.md §3.3）。`GET /api/topics`・`GET /api/channels` の応答の `reads`（`{ [channelId]: lastReadId }`）を読み、未読の点は「最後の行が返事（agent）で、その id が `reads` より大きい」。読んでいる会話（`SA.app.readingChannelIds()`）が見えている間は `POST /api/topics/ch:<id>/read` で進める（大きい方だけ・最新の行で頭打ち）。スマホと PC で揃い、ほかの端末の既読は polling で届く。画面は localStorage に書かない。
-- localStorage の `seen`（チャンネルごとの見た最後の `history.id`）・`seen-sent`（移行が済んだ旗）は古い殻のときの値で、M7 の移行の元として読むだけ（古い殻だけ。M8b で消す）。
+- localStorage の `seen`（M7 より前の既読。チャンネルごとの見た最後の `history.id`）と `seen-sent`（移行が済んだ旗）は、共有の `api.js` が両方の殻で M7 の移行に使う（`seen` は旗が無い間だけ読み、書かない。`seen-sent` は移行が済んだら書く）。どちらの鍵も M8b で消す（web-ui-v3.md §11・§15）。
 
 ## 5. Web から送る・途中経過（W3）
 

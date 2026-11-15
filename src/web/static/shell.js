@@ -1,5 +1,5 @@
 // 新しい殻（index.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
-// SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
+// SA.app（古い殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
 // 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、帯の「場所 ∨」（シートと確認。§6.3 の M5）
 "use strict";
 
@@ -8,7 +8,7 @@
   const { el, icon, openDialog, closeDialog } = SA.ui;
   const root = document.documentElement;
 
-  // ===== 保存（このブラウザだけ。読めなくても動く。鍵は今の殻と同じなので、テーマと書きかけは 2 つの画面で共有する） =====
+  // ===== 保存（このブラウザだけ。読めなくても動く。鍵は古い殻と同じなので、テーマと書きかけは 2 つの画面で共有する） =====
   const STORAGE_PREFIX = "self-agent-web:";
 
   function load(key, fallback) {
@@ -752,7 +752,7 @@
     return title === null ? text : "（いま見ている話題: " + title + "）\n" + text;
   }
 
-  // ===== hash（#/ch/<id>・#/cc/<id>・#/tasks。今の殻と同じ形） =====
+  // ===== hash（#/ch/<id>・#/cc/<id>・#/tasks。古い殻と同じ形） =====
   function hashOf(tabId) {
     return "#/" + tabId.replace(":", "/");
   }
@@ -911,7 +911,7 @@
     });
     sheetOpener = opener || null;
     dialog.setAttribute("aria-label", label);
-    // 題と ×（閉じ方を見せる。今の殻の sheetHead と同じ）
+    // 題と ×（閉じ方を見せる。古い殻の sheetHead と同じ）
     const close = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm sheet-close", type: "button", "aria-label": "閉じる" }, [icon("x")]);
     close.addEventListener("click", () => closeDialog(dialog));
     dialog.replaceChildren(el("div", { class: "sheet-head" }, [el("span", { class: "sheet-title", text: label }), close]), el("ul", { class: "more-list" }, rows));
@@ -1208,7 +1208,7 @@
     foot.replaceChildren(...buttons);
   }
 
-  // ===== 接続の点と鈴（今の殻の renderTitleStatus と同じ中身。幅によらず画面を開く） =====
+  // ===== 接続の点と鈴（古い殻の renderTitleStatus と同じ中身。幅によらず画面を開く） =====
   let connSig = null;
 
   function renderConn() {
@@ -1344,7 +1344,7 @@
     if (next) next.focus();
   }
 
-  // ===== スマホのキーボード（visualViewport。今の殻と同じ） =====
+  // ===== スマホのキーボード（visualViewport。古い殻と同じ） =====
   // iOS はキーボードで layout viewport を縮めないので、見えている高さを --vvh に書いて .v3 をそれに合わせ、ずらされたページを戻す。
   // キーボードが出ている間は .is-keyboard。--kb はキーボードの高さ（シートのダイアログを上に出す）。PC では書かない
   // キーボードの判定は幅ごとの最大の見えている高さとの差で見る。--vvt は visualViewport の上のずれ
@@ -1520,7 +1520,7 @@
       renderMain();
     }
 
-    // 設定・使用量の画面が使う（今の殻と同じ）
+    // 設定・使用量の画面が使う（古い殻と同じ）
     SA.store.load.usageDays();
     SA.store.load.usage(null);
     // api.js の polling は今のまま全部動かす（chat.js が store.channels・store.running・store.cc を使う）

@@ -297,7 +297,7 @@ M0 は今の画面のまま直す 1 PR（同じ「待ちの見え方」の論点
 | M7（済。M7a・M7b） | 既読をサーバーに（§3.3） | S | スマホと PC で未読が揃う | M7b は revert。M7a は戻さない（DB が v44） |
 | M8-0（済） | 新しい殻の直し 3 つ（popstate の順・スマホのナレッジ・設定のキーの表。#381） | S | 切り替えの前に新しい殻のスマホで困らない | revert |
 | M8（済） | 切り替え（`/` を新しい殻に。古い殻は `/static/classic.html` に 1 段残す）と文書（§10） | S | 新しい画面が既定 | html の入れ替えを戻す |
-| M8b | 古い殻を消す（`sidebar.js`・`workbench.js`・使わなくなった CSS・localStorage の `self-agent-web:seen`・`seen-sent`） | M | なし | revert |
+| M8b | 古い殻を消す（`classic.html`・`sidebar.js`・`workbench.js`・使わなくなった CSS・localStorage の `self-agent-web:seen`・`seen-sent`、`views.js` の `isV3Shell` の分岐と設定の `shellLink`。§15 の M8 の「M8b の前に決める物」を先に片付ける） | M | なし | revert |
 | M9 | 見る物「変更」（§8） | L | 会話の横で変更を読める | revert |
 
 **切り替え方の推薦**: env の旗（サーバーで出し分け）ではなく、**入口の html を並べて置く**（F10。`/static/v3.html`）。再起動も設定も要らず、オーナーがスマホと PC で両方を見比べられ、各段を単独で戻せる。一気に替えるのは、M2〜M7 が 1 つの大きい PR になりレビューできないので採らない。
@@ -337,7 +337,7 @@ M0 は今の画面のまま直す 1 PR（同じ「待ちの見え方」の論点
 | 音（sound.js） | `SA.app` を呼ぶ | 新しい殻が同じ名前の関数を持つので変えない |
 | 終わった Claude Code を Web から続ける | 取り込み T5 と同じ場所 | この設計の範囲外（#341 の後） |
 
-M8 の後（#381）: #348 の `<dialog id="dlg-cc-take">`・#338 の `<dialog id="dlg-board-add">` は、積み直すと古い殻（`classic.html`）に当たる。新しい `index.html` にも同じ `<dialog>` を足さないと既定の画面で動かない（[取り込む] は `chat.js` にあるので殻を替えても残るが、html の枠は殻ごとに要る）。#338 の画面の口は `shell.js` の `MORE_TABS` に足す。
+M8 の後（#381）: #348 の `<dialog id="dlg-cc-take">`・#338 の `<dialog id="dlg-board-add">` は、積み直すと古い殻（`classic.html`）に当たる。新しい `index.html` にも同じ `<dialog>` を足さないと既定の画面で動かない（[取り込む] は `chat.js` にあるので殻を替えても残るが、html の枠は殻ごとに要る）。#338 の画面の口は `shell.js` の `MORE_TABS` に足す。#348・#338 の html についてのテストも、両方の html（`index.html` と `classic.html`）を見る形にする。
 
 ## 14. リスク
 
@@ -417,5 +417,5 @@ M8 の後（#381）: #348 の `<dialog id="dlg-cc-take">`・#338 の `<dialog id
 - 違: §10 の「探す（今のパレット）は残す」はやらない。新しい殻の「探す」は題名の絞り込み（Ctrl+K）だけ。足りなければ M9 で。
 - 補: 古い殻（`/static/classic.html`）は M8b まで直さない。新しい決まり（語彙・配置）に合わせる変更はせず、壊れたときだけ直す。
 - 補: 文書は新しい殻の決まりを本文にし、古い殻だけの決まりは各節の末尾の小節「古い殻（`/static/classic.html`）だけの決まり（M8b で消す）」に寄せる。
-- 補: ホーム画面のバッジ（`setAppBadge`）は実装していない（§3.2 との差）。未読の数は `document.title` の `(n) self-agent` だけ。
+- 補: ホーム画面のバッジ（`setAppBadge`）は実装していない（§3.2 との差）。数を出すのは `document.title` の `(n) self-agent` だけで、新しい殻では「あなたの番」の数（`topics.js` の `data.turns`）。
 - 補: M8b の前に決める物: 会話ログの過去の日付・プロジェクト（ページ）のファイルの一覧（W7）への入口・Claude Code の群の細かい行（trust の確認待ち・届け待ち・tmux の外）。どれも古い殻（`/static/classic.html`）と CLI では見られる。
