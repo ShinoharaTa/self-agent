@@ -1602,7 +1602,7 @@
       const note = data.q ? (data.more ? "「" + data.q + "」の上位 " + data.entries.length + " 件" : "「" + data.q + "」 " + data.entries.length + " 件") : null;
       container.replaceChildren(
         toolbar("book", "ナレッジ", note ? [el("span", { class: "meta", text: note })] : [], [input], "ed-toolbar-kb"),
-        // ≤639px は中身だけ（一覧と検索はサイドバー。.master-detail-phone）
+        // 古い殻の ≤639px は中身だけ（一覧と検索はサイドバー。.master-detail-phone）。新しい殻は shell.css が打ち消して一覧と検索を出す
         el("div", { class: "master-detail master-detail-phone" }, [el("div", { class: "master" }, [list]), el("div", { class: "detail" }, [kbDetail(current)])]),
       );
     });
@@ -1674,9 +1674,12 @@
   }
 
   // ===== 設定（読むだけ + この画面の表示） =====
-  const KEYS = [
+  const KEYS_COMMON = [
     ["Enter / Shift+Enter", "送る / 改行（タッチの端末では Enter で改行）"],
     ["Ctrl+Enter / ⌘+Enter", "送る"],
+  ];
+  // 古い殻（workbench.js）のキー（M8b で消す）
+  const KEYS_CLASSIC = [
     ["Ctrl+K / Ctrl+P", "移動（画面）"],
     ["Ctrl+Shift+P", "コマンド"],
     ["Ctrl+B", "サイドバーの表示"],
@@ -1685,6 +1688,17 @@
     ["Alt+数字", "その番号のタブ（1 から 9）"],
     ["Esc", "パレット・ドロワーを閉じる"],
   ];
+  // 新しい殻（shell.js の onKey・onListKey）のキー
+  const KEYS_V3 = [
+    ["Ctrl+K / ⌘+K", "話題を絞り込む"],
+    ["↑ / ↓ / Home / End", "一覧の行を移る"],
+    ["Esc", "絞り込み・重ねた右腕を閉じる"],
+  ];
+
+  /** 新しい殻（v3.html の根 #v3）で描いているか。描くときに呼ぶ（M8b で分岐ごと消す） */
+  function isV3Shell() {
+    return document.getElementById("v3") !== null;
+  }
 
   function renderSettings(container) {
     const theme = SA.app.theme();
@@ -1709,7 +1723,7 @@
           ]),
           soundSection,
           // キーボードは ≤639px で隠し、代わりにスマホの操作（Enter の扱いは chat.js の指の端末の判定によるので、条件に触れる文にする）
-          el("div", { class: "hide-sm" }, [section("キーボード", [el("ul", { class: "kv-list" }, KEYS.map(([k, v]) => kv(el("kbd", { text: k }), v)))])]),
+          el("div", { class: "hide-sm" }, [section("キーボード", [el("ul", { class: "kv-list" }, KEYS_COMMON.concat(isV3Shell() ? KEYS_V3 : KEYS_CLASSIC).map(([k, v]) => kv(el("kbd", { text: k }), v)))])]),
           el("div", { class: "show-sm" }, [
             section("スマホの操作", [
               el("p", { class: "meta", text: "送るのは入力欄の [送る] です。タッチの端末では Enter は改行で、Ctrl+Enter（⌘+Enter）でも送れます。" }),
