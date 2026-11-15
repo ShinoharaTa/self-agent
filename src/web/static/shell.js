@@ -1,6 +1,6 @@
 // 新しい殻（v3.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
 // SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
-// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）
+// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、帯の「場所 ∨」（シートと確認。§6.3 の M5）
 "use strict";
 
 (function () {
@@ -220,23 +220,29 @@
     }
   }
 
-  /** 列 2 の上の帯（「場所」はただの文字。押せない。付け替えは M5）と [会話][端末] */
+  /** 列 2 の上の帯（「場所 ∨」のボタン。movable が true でなければ押せず、理由を title に）と [会話][端末]。ボタンと中の要素は作り直さない */
   function renderBar() {
     const bar = $("v3-bar");
     if (!bar) return;
     const t = S.active ? SA.topics.find(S.active) : null;
     renderViews();
+    const place = $("v3-place");
     if (!t) {
-      // スマホは [右腕] を出すため、話題でない画面でも帯を残す（「場所」は空）
+      // スマホは [右腕] を出すため、話題でない画面でも帯を残す（「場所」は隠す）
       bar.hidden = !(phone() && S.active !== null);
-      const place = $("v3-place");
-      if (place.textContent !== "") place.textContent = "";
+      place.hidden = true;
       return;
     }
     bar.hidden = false;
+    place.hidden = false;
     const text = "場所: " + placeText(t);
-    const place = $("v3-place");
-    if (place.textContent !== text) place.textContent = text;
+    if (refs.placeText.textContent !== text) refs.placeText.textContent = text;
+    const movable = t.movable === true;
+    if (place.disabled !== !movable) place.disabled = !movable;
+    const reason = !movable && t.movable && typeof t.movable.reason === "string" ? t.movable.reason : null;
+    if (reason !== null) {
+      if (place.getAttribute("title") !== reason) place.setAttribute("title", reason);
+    } else if (place.getAttribute("title") !== null) place.removeAttribute("title");
   }
 
   /** 話題の「場所」の文字（帯と札で同じ決め方）。群 general は General のセッションなら「General」、場所の無い軽いセッションは「なし」 */
@@ -1074,6 +1080,87 @@
     });
   }
 
+  // ===== 場所を変える（列 2 の帯の「場所 ∨」→ シート → 確認 → POST /api/topics/ch:<id>/place。docs/plan/web-ui-v3.md §6.3 の M5） =====
+  // 断りの文（応答の error ごと）。サーバーの moveRefusalText（src/app/topic-move.ts の REFUSAL_TEXT）と同じ文。片方を直したらもう片方も直す
+  const PLACE_ERRORS = {
+    busy: "担当が作業中です。終わってから変えてください",
+    closing: "閉じる途中です。終わってから変えてください",
+    moving: "場所を変えています。終わるまで待ってください",
+    closed: "完了した話題は場所を変えられません",
+    persona: "足した人格の話題は場所を変えられません",
+    cc_disabled: "場所を変えるには Claude Code の連携が要ります",
+    unify_not_ready: START_SET_UP,
+    invalid_project: "その場所は使えません",
+    bad_request: "その場所は使えません",
+    same_place: "もうその場所です",
+    not_found: "この話題は場所を変えられません",
+  };
+  // 送っている話題の id。応答は toast と一覧の読み直しだけで、帯・シート・確認には触らない（返る前に別の話題を開いても壊さない）
+  const placeBusy = new Set();
+
+  /** 今の場所の key（startPlaces の key と比べる）。場所なし・ほかの場所は null */
+  function placeKey(t) {
+    if (t.group === "other") return null;
+    if (t.group === "general") return t.place && t.place.dir ? "general" : null;
+    return t.group;
+  }
+
+  /** シートに場所の候補を並べる（今の場所は押せない行）。今の話題が無い・変えられない話題なら何もしない */
+  function openPlace(opener) {
+    const t = S.active ? SA.topics.find(S.active) : null;
+    if (!t || t.movable !== true) return;
+    const now = placeKey(t);
+    const items = startPlaces().map((p) =>
+      p.key === now ? { icon: "check", label: p.name, why: "今の場所" } : { icon: "circle", label: p.name, run: () => confirmPlace(t.id, p) },
+    );
+    openSheet("場所を変える", items, opener);
+  }
+
+  /** 確認。閉じたら（[変える]・[やめる]・Escape）場所のボタンに焦点を戻す */
+  function confirmPlace(id, place) {
+    const t = SA.topics.find(id);
+    if (!t) return;
+    const body =
+      t.place && t.place.dir
+        ? "場所を " + placeText(t) + " から " + place.name + " に変えます。ファイルは動かしません。会話の記録はこのまま残り、担当には要点を引き継ぎます。あとで戻せます"
+        : "場所を なし から " + place.name + " に変えます。会話の記録はこのまま残り、担当には要点を引き継ぎます。場所なしには戻せません";
+    SA.ui.confirm({ title: "場所を変えますか", target: t.title, body, ok: "変える", run: () => submitPlace(id, place) });
+    const dialog = $("dlg-confirm");
+    const back = () => {
+      dialog.removeEventListener("close", back);
+      const button = $("v3-place");
+      if (button && document.contains(button) && !button.disabled && !button.hidden) button.focus();
+    };
+    dialog.addEventListener("close", back);
+  }
+
+  function placeFailure(err) {
+    const code = err && err.code;
+    if (typeof code === "string" && Object.prototype.hasOwnProperty.call(PLACE_ERRORS, code)) return PLACE_ERRORS[code];
+    if (err && err.status === 0) return "サーバーにつながりません";
+    return "場所を変えられませんでした。もう一度試してください";
+  }
+
+  /** 送る（同じ話題に送っている最中は何もしない）。id（ch:<channelId>）は encode しない（%3A ではルートに当たらない） */
+  async function submitPlace(id, place) {
+    if (placeBusy.has(id)) return;
+    placeBusy.add(id);
+    let failed = null;
+    try {
+      await SA.api.post("/api/topics/" + id + "/place", { place: place.key }, { quiet: true });
+    } catch (err) {
+      failed = err || {};
+    }
+    placeBusy.delete(id);
+    if (failed) {
+      SA.ui.toast(placeFailure(failed), null, { level: "error" });
+      return;
+    }
+    // 受け付けただけ。結果は一覧の place・movable と履歴の仕切りで見せる
+    SA.ui.toast("場所を " + place.name + " に変えています。要点をまとめるので少しかかります");
+    SA.topics.load();
+  }
+
   // ===== 下の口（タスク・リマインド・ほか） =====
   /** 「ほか」に並べる画面の順（引けるものだけ。GitHub は有効のとき・会話ログは dev のとき） */
   const MORE_TABS = ["knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"];
@@ -1324,6 +1411,11 @@
     refs.v3 = $("v3");
     refs.list = $("v3-list-body");
     refs.searchBox = $("v3-search-box");
+    // 帯の「場所 ∨」（中身は 1 回だけ作る。renderBar は文字・無効・title・hidden だけを書く）
+    const place = $("v3-place");
+    refs.placeText = el("span", { class: "v3-place-text" });
+    place.replaceChildren(refs.placeText, icon("chevron-down"));
+    place.addEventListener("click", () => openPlace(place));
 
     S.theme = THEMES.includes(load("theme", "dark")) ? load("theme", "dark") : "dark";
     applyTheme();
