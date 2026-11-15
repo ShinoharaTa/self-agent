@@ -1,6 +1,8 @@
 // 話題の一覧（docs/plan/web-ui-v3.md §3〜§5・§11 の M1）。セッション・プロジェクトのセッション・Claude Code のセッションを 1 つの形（Topic）にし、
 // 群（プロジェクト・General・ほかの場所）と「あなたの番」を数える純関数（DB・時計・fs を触らない）。集めるのは web/routes/topics.ts
+import type { TopicListRow } from "../agent/tools.ts";
 import type { HistoryKind } from "../store/history.ts";
+import { formatWallClock } from "./recurrence.ts";
 
 export type TopicTurnKind = "permission" | "question" | "waiting" | "confirm";
 export type TopicTurn = {
@@ -298,5 +300,60 @@ export function buildTopics(input: TopicsInput): TopicsResult {
     topics,
     rightHands,
     cc: input.cc,
+  };
+}
+
+// ---- 右腕の topic_list の行（docs/plan/web-ui-v3.md §4 の M6） ----
+
+/** topic_list に出す話題の数 */
+export const TOPIC_LIST_MAX = 30;
+
+const LIST_STATE_RANK: Readonly<Record<TopicListRow["state"], number>> = { your_turn: 0, running: 1, waiting: 2, idle: 2 };
+
+/** 話題の場所の表示（topic-move.ts の placeLabel と同じ決まり。topic-move.ts がこのファイルを import するのでここにも置く） */
+function listPlaceOf(dir: string | null, generalDir: string | undefined): string {
+  if (dir === null) return "なし";
+  return dir === generalDir ? GENERAL_NAME : dir;
+}
+
+/**
+ * buildTopics の結果 → topic_list の短い行（純関数）。対象は入口（pinned）でなく完了でない話題。
+ * あなたの番 → 作業中 → 残りの順、同じ中では新しい順に先頭 TOPIC_LIST_MAX 件。counts は切る前の数、more は切った残りの数。
+ * 最後の発言の本文・sessionId・cwd・link は出さない
+ */
+export function topicListRows(
+  result: TopicsResult,
+  options: { timeZone: string; generalDir: string | undefined },
+): { counts: { your_turn: number; running: number; total: number }; topics: TopicListRow[]; more: number } {
+  const items = result.topics
+    .filter((topic) => !topic.pinned && topic.state !== "done")
+    .map((topic) => {
+      const state: TopicListRow["state"] =
+        topic.mark === "turn" ? "your_turn" : topic.mark === "running" ? "running" : topic.state === "waiting" ? "waiting" : "idle";
+      return { topic, state };
+    });
+  items.sort(
+    (a, b) => LIST_STATE_RANK[a.state] - LIST_STATE_RANK[b.state] || newerFirst(a.topic, b.topic) || compareIds(a.topic.id, b.topic.id),
+  );
+  const rows = items.slice(0, TOPIC_LIST_MAX).map(({ topic, state }): TopicListRow => {
+    const channel = /^ch:(\d+)$/.exec(topic.id)?.[1];
+    return {
+      ...(channel === undefined ? {} : { channel_id: channel }),
+      kind: topic.id.startsWith("cc:") ? "claude_code" : "session",
+      title: topic.title,
+      place: listPlaceOf(topic.place.dir, options.generalDir),
+      state,
+      ...(state === "your_turn" && topic.turn !== null ? { turn: topic.turn.summary } : {}),
+      at: topic.activityAt === null ? "" : formatWallClock(new Date(time(topic.activityAt)), options.timeZone),
+    };
+  });
+  return {
+    counts: {
+      your_turn: items.filter((item) => item.state === "your_turn").length,
+      running: items.filter((item) => item.state === "running").length,
+      total: items.length,
+    },
+    topics: rows,
+    more: items.length - rows.length,
   };
 }

@@ -41,6 +41,8 @@ import type { CcToolDeps } from "./agent/tools.ts";
 import { createNotifyMemoryChange } from "./app/commands/memory-undo.ts";
 import { GithubHandoff } from "./app/github-handoff.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
+import { createMoveProposalButtons } from "./app/commands/move-proposal.ts";
+import { createTopicProposals, TopicProposalExpirer } from "./app/topic-proposals.ts";
 import { createTurnQueue, KeyedSerialQueue } from "./app/queue.ts";
 import { ReminderScheduler } from "./app/reminders.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
@@ -503,6 +505,8 @@ const moveDeps: MoveDeps = {
   ...(projectSessions === undefined ? {} : { projectSessions }),
   log,
 };
+// 右腕の場所を変える確認（move: のボタンと Web の「あなたの番」。期限の判定は topicMoves と同じ時計）
+const topicProposals = createTopicProposals({ move: moveDeps, moves: topicMoves, ownerPosts, now, log });
 // コマンドは既定の人格のアプリだけが登録して受ける。/close・/renew のターンはチャンネルの持ち主の人格で動かし、結果は持ち主の Bot が投稿する
 const commands = createCommands({
   cfg: config,
@@ -582,7 +586,10 @@ const handleInteraction = createInteractionHandler({
     // /close の確定の区切りの行（Web UI が有効なときだけ）
     ...history,
     log,
-  }),
+  }).concat(
+    // 右腕の場所を変える確認の [変える][このまま]（move:。DB だけで動くので SELF_AGENT_CC が無効でも登録する）
+    createMoveProposalButtons({ proposals: topicProposals, log }),
+  ),
   log,
 });
 // シェル（Bash）を使えるか（docs/plan/shell.md §4）。SELF_AGENT_SHELL=1 のときだけ起動時と tick ごとに自己診断し、結果が変わったら log に、通る・通らないが変わったら #system に出す。
@@ -985,6 +992,8 @@ const ccConfirmExpirer = new CcConfirmExpirer({
   now,
   log,
 });
+// 右腕の場所を変える確認の失効（10 分）。SELF_AGENT_CC が無効でも動かす（確認の行が無ければ何もしない。再起動の前に出した確認も期限が来れば書き換える）
+const topicProposalExpirer = new TopicProposalExpirer({ proposals: topicProposals, log });
 
 // GitHub の通知の [対応]（docs/plan/github-notifications.md §5・§6、docs/plan/claude-code-sessions.md §6。SELF_AGENT_GITHUB と SELF_AGENT_CC の両方のときだけ）:
 // そのリポジトリの Claude Code のセッションに固定のテンプレートを cc_sends（origin github）で積み、無ければそのディレクトリで起動して積む。
@@ -1203,6 +1212,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         },
         // POST /api/topics/ch:<id>/place（M5。/move と同じ実体。結果は持ち主の Bot でチャンネルに投稿する）
         move: { ...moveDeps, ownerPosts },
+        // 右腕の場所を変える確認を「あなたの番」に付ける（M6e）
+        proposals: topicProposals,
         now,
       }),
       ...devlogRoutes({ cfg: config, now }),
@@ -1338,6 +1349,7 @@ const lifecycle = createShutdown(
     ...(ccChannelPosts === undefined ? {} : { ccChannelPosts }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     ccConfirmExpirer,
+    topicProposalExpirer,
     ...(ccReplier === undefined ? {} : { ccReplier }),
     closeDb: () => db.close(),
     log,
@@ -1416,5 +1428,6 @@ ccChannelPosts?.rewriteRecovered(ccRecoveredPermissions);
 projectPermissionPoster?.rewriteRecovered(ccRecoveredPermissions);
 ccChannelPosts?.start();
 ccConfirmExpirer.start();
+topicProposalExpirer.start();
 ccReplier?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);

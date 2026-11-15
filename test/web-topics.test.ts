@@ -10,8 +10,10 @@ import { createHandler, type RunningTurn, type SubmitTextResult, WEB_ECHO_PREFIX
 import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { welcomeText } from "../src/app/session-ops.ts";
-import { MOVE_FAILED_TEXT, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
+import { MOVE_FAILED_TEXT, type MoveDeps, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
+import { createTopicProposals, type TopicProposals } from "../src/app/topic-proposals.ts";
 import type { Topic, TopicsResult } from "../src/app/topics.ts";
+import { buildTopics } from "../src/app/topics.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { PersonaConfig } from "../src/config.ts";
 import type { Gateway } from "../src/discord/gateway.ts";
@@ -22,6 +24,7 @@ import { CcStartStore } from "../src/store/cc-starts.ts";
 import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { CLOSE_CONFIRM_NOTICE } from "../src/web/routes/channels.ts";
 import { TOPIC_START_DUPLICATE_MS, topicRoutes } from "../src/web/routes/topics.ts";
+import { createTopicCollector, type TopicRouteDeps } from "../src/web/routes/topics.ts";
 import { WEB_DUPLICATE_WINDOW_MS } from "../src/web/routes/turns.ts";
 import { createWebServer, type WebServer } from "../src/web/server.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
@@ -87,7 +90,9 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * S4（alpha・判断待ちで hook の許可も pending）。/setup 前のサーバーのチャンネル 303 は S7。
  * allowed で cfg.allowedGuildIds を、at でルートの今の時刻を差し替える。registry.unreadable と snapshotSessions は後から変えられる。
  * move で場所の付け替えの配線を渡す（"cc" は連携あり、"noCc" は連携なし）。要点のターンは moveSteps の順に偽の runner が返し、結果の投稿は posts に入る。
- * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる
+ * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる。
+ * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose と setMessageId（札が出た印）で足し、期限の判定は proposalClock の時刻。
+ * fakeProposals を渡すと、本物の代わりにそれを渡す（proposals より優先）
  */
 async function setup(
   t: TestContext,
@@ -99,6 +104,8 @@ async function setup(
     general?: boolean;
     move?: "cc" | "noCc";
     moveSteps?: FakeRunStep[];
+    proposals?: boolean;
+    fakeProposals?: Pick<TopicProposals, "pendingAll">;
   } = {},
 ) {
   const db = tempDb(t);
@@ -235,6 +242,33 @@ async function setup(
           },
           log,
         };
+  // 右腕の場所を変える確認（proposals のときだけ。投稿はしないので ownerPosts は使われない）
+  const proposalClock = { at: NOW };
+  const proposalMove: MoveDeps = {
+    topicSessions,
+    moves,
+    turnQueue,
+    turn: { runner: moveRunner, projectRunner: moveRunner, sessions, seeds: stores.seeds, usage: stores.usage, log },
+    runningTurns: () => handler.runningTurns(),
+    projectSessions: { places, ready: () => true },
+    history,
+    log,
+  };
+  const proposals =
+    options.fakeProposals ??
+    (options.proposals === true
+      ? createTopicProposals({
+          move: proposalMove,
+          moves,
+          ownerPosts: {
+            send: async () => undefined,
+            sendMessage: async () => "card-1",
+            editMessage: async () => undefined,
+          },
+          now: () => proposalClock.at,
+          log,
+        })
+      : undefined);
   /** 結果の投稿が count 通になるまで待つ */
   const waitPosts = (count: number): Promise<void> =>
     posts.length >= count ? Promise.resolve() : new Promise((resolve) => postWaiters.push({ count, resolve }));
@@ -252,6 +286,7 @@ async function setup(
     home: "/home/owner",
     projectPermissions: { store: sdkStore, sessions, holdSec: 300, questionHoldSec: 900 },
     ...(move === undefined ? {} : { move }),
+    ...(proposals === undefined ? {} : { proposals }),
     ...(options.cc === true
       ? { cc: { registry, channels: ccStore, permissions, sends, starts, holdSec: 300, questionHoldSec: 900 } }
       : {}),
@@ -291,6 +326,7 @@ async function setup(
     logs,
     topicCalls,
     turnQueue,
+    proposalClock,
   };
 }
 
@@ -1114,4 +1150,142 @@ test("GET /api/topics: move を渡さなければ movable は今までどおり"
   for (const id of ["ch:200", "ch:201", "ch:202", "ch:203"]) assert.equal(byId(result, id)!.movable, true, id);
   // 付け替えのルートも無い
   assert.equal((await postJson(s.server, "/api/topics/ch:200/place", { place: "p:beta" })).status, 404);
+});
+
+// ---- createTopicCollector（M6b。右腕の topic_list と同じ元） ----
+
+test("createTopicCollector: 同じ依存で集めて buildTopics した物が GET /api/topics の中身と同じ", async (t) => {
+  const db = tempDb(t);
+  const { guildSettings, topicSessions, history } = createStores(db, () => NOW);
+  const workspace = realpathSync(tempDir(t));
+  mkdirSync(join(workspace, "alpha"));
+  guildSettings.setChannel(GUILD, "inboxChannelId", "100");
+  guildSettings.setChannel(GUILD, "tasksChannelId", "101");
+  topicSessions.create({ channelId: "200", guildId: GUILD, title: "家計簿", categoryId: "c" });
+  topicSessions.create({ channelId: "201", guildId: GUILD, title: "alpha の作業", categoryId: "c" });
+  topicSessions.setProject("201", "alpha", "default");
+  history.add({ guildId: GUILD, channelId: "200", kind: "owner", source: "web", text: "一言" });
+  const ccStore = new CcChannelStore(db, () => EARLIER);
+  ccStore.create({ channelId: "300", guildId: GUILD, sessionId: S1, name: "cc-alpha", cwd: join(workspace, "alpha"), origin: "web" });
+  const snapshotSessions = [view(S1, join(workspace, "alpha"), { state: "running" }), view(S3, "/somewhere/else", { state: "needs_input" })];
+  const personas = new PersonaRouter({
+    personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway: {} as Gateway, connected: () => true }],
+    guildSettings,
+    topicSessions,
+  });
+  const deps: TopicRouteDeps = {
+    cfg: { allowedGuildIds: [GUILD], personas: [], workspaceDir: workspace },
+    guildSettings,
+    topicSessions,
+    history,
+    personas,
+    handler: { runningTurns: (): RunningTurn[] => [{ guildId: GUILD, channelId: "200" } as RunningTurn] },
+    places: { workspaceDir: workspace, protectedDirs: [] },
+    home: "/home/owner",
+    cc: {
+      registry: { snapshot: () => ({ sessions: snapshotSessions, stale: false, unreadable: false, fetchedAt: NOW.getTime() }), touch: () => undefined },
+      channels: ccStore,
+      permissions: new CcPermissionStore(db, () => EARLIER),
+      sends: new CcSendStore(db, () => EARLIER),
+      starts: new CcStartStore(db, () => EARLIER),
+      holdSec: 300,
+      questionHoldSec: 900,
+    },
+    now: () => NOW,
+  };
+  const server = createWebServer({
+    host: "127.0.0.1",
+    port: 0,
+    allowedLogin: LOGIN,
+    staticDir: tempDir(t),
+    templateSiteDir: tempDir(t),
+    routes: topicRoutes(deps),
+    stopping: () => false,
+    now: () => NOW,
+    log: () => undefined,
+  });
+  await server.start();
+  t.after(() => server.close());
+  const fromRoute = await topics(server);
+  const fromCollector = JSON.parse(JSON.stringify(buildTopics(createTopicCollector(deps)(NOW.getTime(), null)))) as TopicsResult;
+  assert.deepEqual(fromCollector, fromRoute);
+  assert.ok(fromRoute.topics.length >= 4);
+});
+
+// ---- 右腕の場所を変える確認（M6e） ----
+
+/** 札の出ている確認の行を足す（札がまだ出ていない行は「あなたの番」に出ない） */
+function propose(s: Awaited<ReturnType<typeof setup>>, channelId: string, toDir: string): number {
+  const id = s.moves.propose({ channelId, fromDir: null, toDir, by: "right_hand" });
+  assert.ok(id !== undefined);
+  s.moves.setMessageId(id, "card-1");
+  return id;
+}
+
+test("GET /api/topics: 右腕の確認のある話題に kind が confirm のあなたの番が付き、summary に行き先の名前、expiresAt に 10 分後が入る", async (t) => {
+  const s = await setup(t, { cc: true, proposals: true });
+  propose(s, "204", "alpha");
+  const result = await topics(s.server);
+  assert.deepEqual(byId(result, "ch:204")!.turn, {
+    kind: "confirm",
+    summary: "場所を alpha に変える確認",
+    since: NOW.toISOString(),
+    expiresAt: new Date(NOW.getTime() + 10 * 60_000).toISOString(),
+  });
+  assert.ok(result.turnIds.includes("ch:204"));
+  // cc の確認待ち（7）に 1 つ足される
+  assert.equal(result.turns, 8);
+});
+
+test("GET /api/topics: 右腕の確認は cc が無くても付く", async (t) => {
+  const s = await setup(t, { proposals: true });
+  propose(s, "200", "beta");
+  const result = await topics(s.server);
+  assert.equal(result.cc.enabled, false);
+  assert.equal(byId(result, "ch:200")!.turn?.kind, "confirm");
+  assert.equal(byId(result, "ch:200")!.turn?.summary, "場所を beta に変える確認");
+  // 右腕（#inbox）には付かない
+  assert.equal(result.rightHands[0]!.turn, null);
+});
+
+test("GET /api/topics: 右腕の確認の expiresAt は本体（pendingAll）の値がそのまま出る（cc の確認の 10 分ではない）", async (t) => {
+  const createdAt = NOW.toISOString();
+  const expiresAt = new Date(NOW.getTime() + 3 * 60_000).toISOString();
+  const s = await setup(t, {
+    fakeProposals: { pendingAll: () => [{ id: 1, channelId: "200", from: "なし", to: "beta", createdAt, expiresAt }] },
+  });
+  const result = await topics(s.server);
+  assert.deepEqual(byId(result, "ch:200")!.turn, { kind: "confirm", summary: "場所を beta に変える確認", since: createdAt, expiresAt });
+});
+
+test("GET /api/topics: 期限の切れた右腕の確認は付かない", async (t) => {
+  const s = await setup(t, { proposals: true, at: new Date(NOW.getTime() + 10 * 60_000) });
+  propose(s, "200", "beta");
+  s.proposalClock.at = new Date(NOW.getTime() + 10 * 60_000);
+  const result = await topics(s.server);
+  assert.equal(byId(result, "ch:200")!.turn, null);
+  assert.equal(result.turnIds.includes("ch:200"), false);
+});
+
+test("GET /api/topics: 札がまだ出ていない右腕の確認は付かない", async (t) => {
+  const s = await setup(t, { proposals: true });
+  // 行だけあって message_id が無い（確認の投稿を待っている間・投稿の途中で落ちた行）
+  const id = s.moves.propose({ channelId: "200", fromDir: null, toDir: "beta", by: "right_hand" });
+  assert.ok(id !== undefined);
+  const before = await topics(s.server);
+  assert.equal(byId(before, "ch:200")!.turn, null);
+  assert.equal(before.turnIds.includes("ch:200"), false);
+  // 札が出たら付く
+  s.moves.setMessageId(id, "card-1");
+  const after = await topics(s.server);
+  assert.equal(byId(after, "ch:200")!.turn?.kind, "confirm");
+});
+
+test("GET /api/topics: proposals を渡さなければ、確認の行があっても今までと同じ結果", async (t) => {
+  const plain = await setup(t);
+  const before = await topics(plain.server);
+  propose(plain, "200", "beta");
+  const after = await topics(plain.server);
+  assert.deepEqual(after, before);
+  assert.equal(byId(after, "ch:200")!.turn, null);
 });

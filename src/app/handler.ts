@@ -50,6 +50,8 @@ const HISTORY_STEPS_COLLECT_MAX = 60;
 export const RUNNING_STEPS_MAX = 30;
 /** Web から送った発言を Discord に投稿するときの 1 行目（2 行目からが本文） */
 export const WEB_ECHO_PREFIX = "（Web から）";
+/** 右腕（#inbox のエージェント）が始めた話題の最初の依頼を Discord に投稿するときの 1 行目（docs/plan/web-ui-v3.md §4） */
+export const RIGHT_HAND_ECHO_PREFIX = "（右腕から）";
 /** echo の後に停止を始めてターンにしなかったときの Web の会話の知らせ */
 export const WEB_STOPPING_NOTICE = "停止中のためターンにしませんでした";
 // 途中経過の表示は progress.ts（ジョブと共通）。これまでどおり handler からも使えるようにする
@@ -159,9 +161,17 @@ export type Handler = {
    * 持ち主の Bot が接続していなければ bot_disconnected。キューに入れる前に持ち主の Bot で「（Web から）\n本文」を投稿し（失敗は echo_failed でターンは入れない）、
    * その ID 付きで history の owner の行を書いてから、その投稿への返信としてターンを始める（返信までは待たない）。turnId は owner の行の id（history が無い・書けなければ 0）。
    * 停止を始めていれば、echo の前なら投稿せずに、echo の後ならキューに入れずに stopping。
-   * サーバーの許可と /setup 済みの判定は呼び出し側（web/routes/channels.ts の webChannelLookup）が行う
+   * サーバーの許可と /setup 済みの判定は呼び出し側（web/routes/channels.ts の webChannelLookup）が行う。
+   * via が right_hand（右腕が書いた最初の依頼）なら、投稿の 1 行目は「（右腕から）」で、本文の URL は WebFetch の許可に入れない
    */
-  submitText(input: { guildId: string; channelId: string; content: string; at: Date; source: "web" }): Promise<SubmitTextResult>;
+  submitText(input: {
+    guildId: string;
+    channelId: string;
+    content: string;
+    at: Date;
+    source: "web";
+    via?: "right_hand";
+  }): Promise<SubmitTextResult>;
   /** 実行中のターン（発言・[続ける]。全部の種類のチャンネル） */
   runningTurns(): RunningTurn[];
 };
@@ -183,6 +193,8 @@ type TurnRequest = {
   source: "discord" | "web";
   /** 呼び出し側が先に書いた owner の行の id。あれば submit は owner の行を書かない */
   historyId?: number;
+  /** WebFetch で取得できる URL。無ければ content に書かれた URL */
+  allowedUrls?: readonly string[];
 };
 
 function describeError(error: unknown): string {
@@ -390,8 +402,8 @@ export function createHandler(deps: HandlerDeps): Handler {
         prompt: buildTurnPrompt(body, request.at, cfg.timeZone, channelName),
         ...(images.length === 0 ? {} : { images }),
         ...(prepared === undefined || prepared.attachmentIds.length === 0 ? {} : { attachmentIds: prepared.attachmentIds }),
-        // WebFetch で取得できるのは、この発言に貼られた URL だけ
-        allowedUrls: extractUrls(request.content),
+        // WebFetch で取得できるのは、この発言に貼られた URL だけ（右腕が書いた依頼は空）
+        allowedUrls: request.allowedUrls ?? extractUrls(request.content),
         ...(turn.controller === undefined ? {} : { signal: turn.controller.signal }),
         ...(onProgress === undefined ? {} : { onProgress }),
         // 許可を待つのはプロジェクトのセッション（セッションのチャンネル）だけ
@@ -568,7 +580,7 @@ export function createHandler(deps: HandlerDeps): Handler {
       turn.controller.abort();
       return true;
     },
-    submitText: async ({ guildId, channelId, content, at, source }) => {
+    submitText: async ({ guildId, channelId, content, at, source, via }) => {
       const kind = resolveChannel(guildId, channelId);
       if (kind === null) return { result: "not_accepted" };
       if (deps.ownerConnected !== undefined && !deps.ownerConnected(channelId)) return { result: "bot_disconnected" };
@@ -576,9 +588,9 @@ export function createHandler(deps: HandlerDeps): Handler {
       // Discord の時系列に Web の発言を残す（返事はこの投稿への返信になる）。メンションは鳴らさない（sendMessage の既定）
       let messageId: string;
       try {
-        messageId = await gateway.sendMessage(channelId, { text: `${WEB_ECHO_PREFIX}\n${content}` });
+        messageId = await gateway.sendMessage(channelId, { text: `${via === "right_hand" ? RIGHT_HAND_ECHO_PREFIX : WEB_ECHO_PREFIX}\n${content}` });
       } catch (error) {
-        log(`Web の発言の投稿に失敗しました: ${describeError(error)}`);
+        log(`${via === "right_hand" ? "右腕の" : "Web の"}発言の投稿に失敗しました: ${describeError(error)}`);
         return { result: "echo_failed" };
       }
       const turnId =
@@ -589,7 +601,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         ) ?? 0;
       // echo の間に停止を始めていれば、ターンにしない（停止の待ちに入らないため）
       if (deps.stopping?.() === true) {
-        log("停止中のため Web の投稿をターンにしませんでした");
+        log(`停止中のため ${via === "right_hand" ? "右腕の" : "Web の"}投稿をターンにしませんでした`);
         // owner の行が返事の無いまま残らないように知らせを足す
         recordHistory(
           history,
@@ -599,7 +611,17 @@ export function createHandler(deps: HandlerDeps): Handler {
         return { result: "stopping" };
       }
       // 返信までは待たない（最終発言の記録・進行中に戻すのは submit の最初で同期に済む）。owner の行は書いたので submit では書かない
-      void submit({ guildId, channelId, kind, content, at, replyToId: messageId, source, historyId: turnId }).catch((error: unknown) =>
+      void submit({
+        guildId,
+        channelId,
+        kind,
+        content,
+        at,
+        replyToId: messageId,
+        source,
+        historyId: turnId,
+        ...(via === "right_hand" ? { allowedUrls: [] } : {}),
+      }).catch((error: unknown) =>
         log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`),
       );
       return { result: "accepted", turnId, messageId };

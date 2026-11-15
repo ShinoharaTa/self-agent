@@ -3,6 +3,7 @@
 // Claude Code のセッション（cc）は SELF_AGENT_CC のときだけ（無ければ enabled: false で、その行と other の群は出ない）。GET は log を出さない。
 // POST /api/topics（M4）は場所・題名・最初の一言で話題を始める（app/session-ops.ts の startTopic。start の配線があるときだけ）。
 // POST /api/topics/ch:<id>/place（M5）は話題の場所を変える（app/topic-move.ts の moveTopic。move の配線があるときだけ。202 ですぐ返し、結果はチャンネルに投稿する）
+// 右腕の場所を変える確認（M6e。app/topic-proposals.ts）は、proposals の配線があるとき、その話題の「あなたの番」（confirm）に付ける
 import { CC_CONFIRM_TTL_MS } from "../../app/commands/cc-confirm.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import type { Handler } from "../../app/handler.ts";
@@ -29,6 +30,7 @@ import {
   moveTopic,
   parsePlace as parseMovePlace,
 } from "../../app/topic-move.ts";
+import type { TopicProposals } from "../../app/topic-proposals.ts";
 import { cwdLabel, projectOf } from "../../cc/labels.ts";
 import { permissionExpiresAt } from "../../cc/permission-hold.ts";
 import { sinceOf, type CcRegistry, type CcSessionView } from "../../cc/registry.ts";
@@ -75,6 +77,8 @@ export type TopicRouteDeps = {
    * moves.runningChannels は movable の「場所を変えています」に使う。ownerPosts は結果の投稿（sessionRoutes に渡している物）
    */
   move?: MoveDeps & { ownerPosts: Pick<OwnerPosts, "send"> };
+  /** 右腕の場所を変える確認（app/topic-proposals.ts）。期限の中の確認を、その話題の「あなたの番」（confirm）に付ける */
+  proposals?: Pick<TopicProposals, "pendingAll">;
   now?: () => Date;
 };
 
@@ -132,9 +136,12 @@ function permissionTurn(row: CcPermissionRow, hold: HoldSeconds): TopicTurn {
   return { kind, summary, since: row.createdAt, expiresAt: permissionExpiresAt(row, hold.holdSec, hold.questionHoldSec) };
 }
 
-export function topicRoutes(deps: TopicRouteDeps): Route[] {
-  const { cfg, guildSettings, topicSessions, history, personas, handler, places, home, projectPermissions, cc, move } = deps;
-  const now = deps.now ?? (() => new Date());
+/**
+ * GET /api/topics の元（TopicsInput）を集める関数を作る（状態を持たない。右腕の topic_list も同じ物を使う）。
+ * at は今の時刻（ms）、done は ?done= の群の key（無ければ null）
+ */
+export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: string | null) => TopicsInput {
+  const { cfg, guildSettings, topicSessions, history, personas, handler, places, home, projectPermissions, cc, move, proposals } = deps;
   const workspaceRoot = deps.workspaceRoot ?? cfg.workspaceDir;
 
   /** 既定でない人格の名前（既定なら null） */
@@ -378,21 +385,26 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
     }
 
     // (4) 確認の札（頼んだチャンネルの話題か右腕へ。合わないものは捨てる）
+    // expiresAt を渡さなければ CC7 の確認の期限（作った時刻 + 10 分）
+    const attach = (channelId: string, summary: string, createdAt: string, expiresAt?: string) => {
+      const turn: TopicTurn = {
+        kind: "confirm",
+        summary,
+        since: createdAt,
+        expiresAt: expiresAt ?? new Date(Date.parse(createdAt) + CC_CONFIRM_TTL_MS).toISOString(),
+      };
+      for (const turns of byChannel.get(channelId) ?? []) turns.push(turn);
+    };
     if (cc !== undefined) {
       const cutoff = new Date(at);
-      const attach = (channelId: string, summary: string, createdAt: string) => {
-        const turn: TopicTurn = {
-          kind: "confirm",
-          summary,
-          since: createdAt,
-          expiresAt: new Date(Date.parse(createdAt) + CC_CONFIRM_TTL_MS).toISOString(),
-        };
-        for (const turns of byChannel.get(channelId) ?? []) turns.push(turn);
-      };
       for (const row of cc.starts.listAwaitingConfirmBefore(cutoff)) attach(row.channelId, "Claude Code を起動する確認", row.createdAt);
       for (const row of cc.sends.listAwaitingConfirmBefore(cutoff)) {
         if (row.origin === "tool" && row.channelId !== null) attach(row.channelId, "Claude Code に送る確認", row.createdAt);
       }
+    }
+    // 右腕の場所を変える確認（場所が変わる話題へ。cc が無くても付ける。cc の確認の後ろに置き、cc の確認の順を変えない）
+    for (const proposal of proposals?.pendingAll() ?? []) {
+      attach(proposal.channelId, summarize(`場所を ${proposal.to} に変える確認`), proposal.createdAt, proposal.expiresAt);
     }
 
     // 時間切れの待ちは数えない（expiresAt が今より前のもの）
@@ -406,6 +418,13 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
       cc: snapshot === undefined ? { enabled: false, stale: false, unreadable: false } : { enabled: true, stale: snapshot.stale, unreadable: snapshot.unreadable },
     };
   };
+  return collect;
+}
+
+export function topicRoutes(deps: TopicRouteDeps): Route[] {
+  const { cfg, guildSettings, places, move } = deps;
+  const now = deps.now ?? (() => new Date());
+  const collect = createTopicCollector(deps);
 
   const routes: Route[] = [
     {
