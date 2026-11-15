@@ -352,6 +352,9 @@
           }
           // 音（sound.js）: 増えた行と、読む前・後のチャンネル（許可の要求・/close の確認）
           emit("turns", { channelId, rows: added, before: channelBefore, after: t.channel, catchUp: caught });
+          // Claude Code のチャンネルで行が増えたら、そのセッションの今も 1 回読み直す（返事が出た後に「作業中…」が次の周期まで残らないように）
+          const cc = t.channel && t.channel.kind === "cc" ? t.channel.cc : null;
+          if (added.length > 0 && cc && typeof cc.sessionId === "string") store.load.ccSession(cc.sessionId, { quiet: true });
         }
         turnsCaughtUp.add(channelId);
       } catch (err) {

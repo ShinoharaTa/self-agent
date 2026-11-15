@@ -140,7 +140,16 @@ class FakeNode {
     this.attrs.delete(name);
   }
   get classList() {
-    return { add: (c: string) => this.classes.add(c), contains: (c: string) => this.classes.has(c) };
+    return {
+      add: (c: string) => this.classes.add(c),
+      contains: (c: string) => this.classes.has(c),
+      toggle: (c: string, on?: boolean) => {
+        const want = on ?? !this.classes.has(c);
+        if (want) this.classes.add(c);
+        else this.classes.delete(c);
+        return want;
+      },
+    };
   }
   set textContent(value: string) {
     this.text = value;
@@ -176,6 +185,9 @@ class FakeNode {
     if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
     this.parent = null;
   }
+  get parentNode(): FakeNode | null {
+    return this.parent;
+  }
   get firstElementChild(): FakeNode | null {
     return this.children[0] ?? null;
   }
@@ -201,6 +213,19 @@ class FakeNode {
   }
   buttons(): FakeNode[] {
     return this.children.flatMap((c) => (c.tagName === "button" ? [c] : c.buttons()));
+  }
+  /** 「tag」「tag.class」「.class」だけを見る（tag は大文字・小文字を区別しない） */
+  querySelectorAll(selector: string): FakeNode[] {
+    const [tag, ...classes] = selector.split(".");
+    return descendants(this).filter((n) => (!tag || n.tagName.toLowerCase() === tag.toLowerCase()) && classes.every((c) => n.classes.has(c)));
+  }
+  querySelector(selector: string): FakeNode | null {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+  /** focus() を呼んだ要素と引数（全部の偽の DOM で共通。確かめる前に空にする） */
+  static focusLog: Array<{ node: FakeNode; opts: unknown }> = [];
+  focus(opts?: unknown): void {
+    FakeNode.focusLog.push({ node: this, opts });
   }
 }
 
@@ -489,7 +514,7 @@ function loadSidebar(opts: {
   running?: Array<Record<string, unknown>>;
 }) {
   const document = {
-    activeElement: null,
+    activeElement: null as FakeNode | null,
     getElementById: () => null,
     createElement: (tag: string) => new FakeNode(tag),
     createElementNS: (_ns: string, tag: string) => new FakeNode(tag),
@@ -556,7 +581,7 @@ function loadSidebar(opts: {
   const titleOf = (g: FakeNode) => g.children[0]!.children[1]!.text;
   const countOf = (g: FakeNode) => g.children[0]!.children[2]!.text;
   const ccGroup = groups.find((g) => titleOf(g) === "Claude Code");
-  return { sidebar, container, groups, titleOf, countOf, ccGroup, calls, store: SA.store as Record<string, unknown> };
+  return { sidebar, container, groups, titleOf, countOf, ccGroup, calls, store: SA.store as Record<string, unknown>, document: document as { activeElement: FakeNode | null } };
 }
 
 /** api.js の store.sessionAsking と store.sessionAskingCount */
@@ -564,7 +589,8 @@ function sessionAskingSource(): string {
   const js = read("api.js");
   const asking = /store\.sessionAsking = \(ch\) => \{[\s\S]*?\n {2}\};/.exec(js)?.[0];
   const count = /store\.sessionAskingCount = [^\n]*;/.exec(js)?.[0];
-  assert.ok(asking && count);
+  assert.ok(asking, "api.js から store.sessionAsking = (ch) => { … }; を抜き出せない（書き方が変わった）");
+  assert.ok(count, "api.js から store.sessionAskingCount = …; の 1 行を抜き出せない（書き方が変わった）");
   return asking + "\n" + count;
 }
 
@@ -627,9 +653,31 @@ test("web static: 一覧を描き直しても .sb-body のスクロール位置�
   sidebar.render(container, "chat");
   const rowBtn = descendants(container).find((n) => n.tagName === "button" && n.classes.has("sb-row"))!;
   assert.equal(rowBtn.getAttribute("data-tab"), "ch:c1");
-  const js = read("sidebar.js");
-  assert.match(js, /btn\.focus\(\{ preventScroll: true \}\)/);
-  assert.match(js, /focusedTab\.startsWith\("ch:"\) \|\| focusedTab\.startsWith\("cc:"\)/);
+});
+
+test("web static: 会話・Claude Code の行に焦点があれば、一覧を描き直した後に同じ data-tab の新しい行へ焦点を戻す（スクロールさせない）", () => {
+  const { sidebar, container, document } = loadSidebar({ ccEnabled: false, cc: null, sessions: [{ id: "p1", title: "調べもの 2" }] });
+  const rowOf = (tab: string) => container.querySelectorAll("button.sb-row").find((n) => n.getAttribute("data-tab") === tab);
+  const before = rowOf("ch:p1")!;
+  assert.ok(before);
+  // 本物の DOM の tagName は大文字
+  before.tagName = "BUTTON";
+  document.activeElement = before;
+  FakeNode.focusLog = [];
+  sidebar.render(container, "chat");
+  const after = rowOf("ch:p1")!;
+  assert.notEqual(after, before, "行は作り直している");
+  assert.equal(FakeNode.focusLog.length, 1);
+  assert.equal(FakeNode.focusLog[0]!.node, after);
+  // opts は vm の中で作ったもの（別の realm）なので値だけを見る
+  assert.equal((FakeNode.focusLog[0]!.opts as { preventScroll?: boolean }).preventScroll, true);
+  // 行のボタンでなければ（見出しの操作など）戻さない
+  const other = new FakeNode("BUTTON");
+  container.append(other);
+  document.activeElement = other;
+  FakeNode.focusLog = [];
+  sidebar.render(container, "chat");
+  assert.deepEqual(FakeNode.focusLog, []);
 });
 
 test("web static: store.sessionAsking（api.js）は実行中のターンの waitingPermission を優先し、まだ読んでいなければ channel の permission", () => {
@@ -708,7 +756,7 @@ test("web static: 下タブの数は実行中も隠さず、数があるとき�
   const css = read("app.css");
   assert.doesNotMatch(css, /\.act-btn\.is-running \.act-count \{\s*display: none;/);
   assert.match(css, /\.act-btn\.is-running\.has-count \.act-spin \{\s*left: auto;\s*right: calc\(50% \+ var\(--space-1\)\);\s*\}/);
-  // 数の位置の規則より後ろ（同じ詳細度なので後ろが勝つ）
+  // 数の位置の規則（.act-btn.is-running .act-spin）より後ろにも置く。勝つのは has-count の分だけ詳細度が高いからで、順には頼らない
   assert.ok(css.indexOf(".act-btn.is-running.has-count .act-spin") > css.indexOf("left: calc(50% + var(--space-1));"));
   const workbench = read("workbench.js");
   assert.match(workbench, /btn\.classList\.add\("has-count"\)/);
@@ -748,10 +796,7 @@ test("web static: Claude Code のチャンネルは送った直後に仮の届�
   assert.match(chat, /if \(data && typeof data\.sendId === "number"\) store\.setCcOptimisticSend\(live\.sessionId, data\.sendId\);/);
   assert.match(chat, /const CC_SEND_RECHECK_MS = \[1000, 3000, 6000\];/);
   assert.match(chat, /for \(const ms of CC_SEND_RECHECK_MS\) setTimeout\(\(\) => store\.load\.ccSession\(live\.sessionId, \{ quiet: true \}\), ms\);/);
-  assert.match(chat, /const status = ccStatusRow\(live\);\n {6}if \(status\) timeline\.append\(status\);/);
-  assert.match(chat, /ccPending = live\.sessionId && !\(statusKind === "queued" \|\| statusKind === "delivered"\) \? SA\.views\.ccPendingBar\(live\.sessionId, live\.pending\) : null;/);
   assert.match(chat, /store\.ccPendingOf\(info\.sessionId, session \? session\.pending : info\.pending\)/);
-  assert.match(chat, /SA\.views\.cancelCcSend\(live\.pending\.id, live\.sessionId, cancel\)/);
   assert.match(read("app.css"), /\n\.cc-status \.btn \{\s*margin-left: var\(--space-2\);\s*\}/);
   // views.js の export
   assert.match(/SA\.views = \{[\s\S]*?\n {2}\};/.exec(read("views.js"))?.[0] ?? "", /\n {4}cancelCcSend,\n/);
@@ -793,6 +838,205 @@ test("web static: Claude Code のチャンネルは送った直後に仮の届�
   const old = { id: 4, state: "delivered" };
   assert.equal(d.ccPendingOf("s", old), old);
   assert.equal(d.ccOptimistic.s, undefined);
+});
+
+// ===== Claude Code のチャンネルの会話のタブ（chat.js。CC14）を偽の DOM で描く =====
+function loadChatM0() {
+  const document = {
+    activeElement: null as FakeNode | null,
+    visibilityState: "visible",
+    getElementById: () => null,
+    createElement: (tag: string) => new FakeNode(tag),
+    createElementNS: (_ns: string, tag: string) => new FakeNode(tag),
+    createTextNode: (text: string) => Object.assign(new FakeNode("#text"), { text }),
+    querySelectorAll: () => [],
+  };
+  const context = {
+    window: {} as Record<string, unknown>,
+    document,
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    setInterval: () => 0,
+    Intl,
+    Date,
+    Number,
+  };
+  vm.runInNewContext(read("ui.js"), context);
+  const SA = (context.window as { SA: Record<string, unknown> }).SA;
+  const posts: string[] = [];
+  const store = {
+    turns: {} as Record<string, unknown>,
+    channels: { guilds: [], personas: [{ id: "default", name: "既定の人格", isDefault: true }], channels: [] as Array<Record<string, unknown>> },
+    ccSessions: {} as Record<string, unknown>,
+    running: [],
+    runningOf: () => null,
+    markSeen: () => false,
+    ccPendingOf: (_id: string, server: unknown) => server,
+    load: { turns: () => undefined, ccSession: () => undefined, cc: () => undefined },
+  };
+  SA.store = store;
+  SA.app = {
+    shownChannelIds: () => ["k1"],
+    activeTabId: () => "ch:k1",
+    draft: () => "",
+    setDraft: () => undefined,
+    refresh: () => undefined,
+    refreshSidebar: () => undefined,
+    refreshStatus: () => undefined,
+    refreshTabs: () => undefined,
+  };
+  SA.poll = { kickCc: () => undefined, running: () => undefined };
+  SA.api = {
+    post: (path: string) => {
+      posts.push(path);
+      return new Promise(() => undefined);
+    },
+  };
+  vm.runInNewContext(read("views.js"), context);
+  vm.runInNewContext(read("chat.js"), context);
+  const chat = SA.chat as { info: (channelId: string) => { render: (container: FakeNode) => void } };
+  const container = new FakeNode("div");
+  /** チャンネル k1（kind cc・セッション s1）の今を pending と state にして描く */
+  const draw = (state: string, pending: Record<string, unknown> | null) => {
+    store.turns.k1 = {
+      channel: { id: "k1", kind: "cc", name: "cc-web", title: "cc-web", persona: "default", cc: { sessionId: "s1", state }, link: null },
+      turns: [{ id: 1, at: new Date().toISOString(), kind: "owner", source: "web", text: "やって", outcome: null }],
+      hasMore: false,
+      loaded: true,
+      missing: false,
+    };
+    store.ccSessions.s1 = { session: { sessionId: "s1", state, pending, permission: null, inTmux: true, rcUrl: null }, missing: false };
+    chat.info("k1").render(container);
+  };
+  const statusRow = () => descendants(container).find((n) => n.classes.has("cc-status")) ?? null;
+  const pendingBar = () => descendants(container).find((n) => n.classes.has("cc-send-state")) ?? null;
+  return { draw, statusRow, pendingBar, posts };
+}
+
+test("web static: Claude Code のチャンネルは届け待ち・届けた後は状態の行だけを出し、入力欄の上の帯を出さない（ほかの状態では帯）", () => {
+  const { draw, statusRow, pendingBar } = loadChatM0();
+  const p = (state: string, extra: Record<string, unknown> = {}) => ({ id: 3, state, lastPaneState: null, replyState: null, ...extra });
+  draw("idle", p("queued"));
+  assert.equal(statusRow()!.getAttribute("data-cc-status"), "queued");
+  assert.equal(pendingBar(), null);
+  draw("idle", p("delivered", { replyState: "waiting" }));
+  assert.equal(statusRow()!.getAttribute("data-cc-status"), "delivered");
+  assert.equal(pendingBar(), null);
+  // 作業中の行（届けた後の作業中）は送信の状態ではないので、帯を出す
+  draw("running", p("delivered", { replyState: "waiting" }));
+  assert.equal(statusRow()!.getAttribute("data-cc-status"), "running");
+  assert.ok(pendingBar());
+  // 行が無い（返事を戻した後）なら帯
+  draw("idle", p("delivered", { replyState: "sent" }));
+  assert.equal(statusRow(), null);
+  assert.ok(pendingBar());
+});
+
+test("web static: 状態の行は種類と pending の id が同じなら同じ要素を使い回し（押した直後の disabled も残る）、変われば作り直す", () => {
+  const { draw, statusRow, posts } = loadChatM0();
+  const p = (id: number, state: string, extra: Record<string, unknown> = {}) => ({ id, state, lastPaneState: null, replyState: null, ...extra });
+  draw("idle", p(3, "queued"));
+  const first = statusRow()!;
+  const cancel = first.buttons().find((b) => b.textContent === "やめる")! as FakeNode & { disabled?: boolean };
+  cancel.dispatch("click");
+  assert.deepEqual(posts, ["/api/cc/sends/3/cancel"]);
+  assert.equal(cancel.disabled, true);
+  // 同じ種類・同じ id（文だけ変わる）: 同じ要素で、文は今のもの
+  draw("running", p(3, "queued"));
+  assert.equal(statusRow(), first);
+  assert.equal(cancel.disabled, true, "押した直後の disabled が消えない");
+  assert.match(first.textContent, /作業中です。終わったら届けます/);
+  // 種類が変わる（届けた → 作業中）・id が変わると別の要素
+  draw("running", p(3, "delivered", { replyState: "waiting" }));
+  const running = statusRow()!;
+  assert.notEqual(running, first);
+  assert.equal(running.getAttribute("data-cc-status"), "running");
+  draw("idle", p(4, "queued"));
+  const next = statusRow()!;
+  assert.notEqual(next, running);
+  draw("idle", p(5, "queued"));
+  assert.notEqual(statusRow(), next, "id が変われば作り直す");
+  // 行が消えた後に同じ状態に戻っても、前の要素は使わない
+  const before = statusRow();
+  draw("idle", null);
+  assert.equal(statusRow(), null);
+  draw("idle", p(5, "queued"));
+  assert.notEqual(statusRow(), before);
+});
+
+test("web static: 状態の行を使い回すときは前の会話の .tl を残し、その中で行を動かさない（焦点が外れない）", () => {
+  const { draw, statusRow } = loadChatM0();
+  const p = { id: 3, state: "queued", lastPaneState: null, replyState: null };
+  draw("idle", p);
+  const row = statusRow()!;
+  const tl = row.parent!;
+  let removed = 0;
+  const remove = row.remove.bind(row);
+  row.remove = () => {
+    removed++;
+    remove();
+  };
+  draw("idle", p);
+  assert.equal(statusRow(), row);
+  assert.equal(row.parent, tl, "同じ .tl のまま");
+  assert.equal(removed, 0, "一度も外さない");
+});
+
+// ===== 会話の行の読み込み（api.js の store.load.turns）を偽の fetch で動かす =====
+function loadApiM0() {
+  const context = {
+    window: { addEventListener: () => undefined, localStorage: { getItem: () => null, setItem: () => undefined } } as Record<string, unknown>,
+    document: { visibilityState: "visible", addEventListener: () => undefined },
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    Intl,
+    Date,
+    Number,
+    JSON,
+  };
+  vm.runInNewContext(read("api.js"), context);
+  const SA = (context.window as { SA: Record<string, unknown> }).SA;
+  SA.app = { refresh: () => undefined, refreshSidebar: () => undefined, refreshTabs: () => undefined, addOutput: () => undefined, activeTabId: () => null };
+  SA.chat = { channelsChanged: () => undefined, current: () => null, channelTitle: () => "会話", endText: () => "" };
+  const gets: string[] = [];
+  /** /turns の応答の行（after のとき）。ccSession は空の 1 件 */
+  let next: Array<Record<string, unknown>> = [];
+  const channels: Record<string, Record<string, unknown>> = {
+    k1: { id: "k1", kind: "cc", cc: { sessionId: "s1", state: "running" } },
+    c2: { id: "c2", kind: "session", state: "active" },
+  };
+  (SA.api as { get: unknown }).get = (path: string) => {
+    gets.push(path);
+    if (path.startsWith("/api/cc/sessions/")) return Promise.resolve({ sessionId: "s1", state: "idle" });
+    const channelId = /\/api\/channels\/([^/]+)\/turns/.exec(path)![1]!;
+    const turns = path.includes("after=") ? next : [{ id: 1, kind: "owner", text: "やって", outcome: null }];
+    return Promise.resolve({ turns, channel: channels[channelId] });
+  };
+  const store = SA.store as { load: { turns: (channelId: string) => Promise<unknown> } };
+  const ccReads = () => gets.filter((g) => g.startsWith("/api/cc/sessions/")).length;
+  return { store, gets, ccReads, setNext: (rows: Array<Record<string, unknown>>) => (next = rows) };
+}
+
+test("web static: Claude Code のチャンネルで会話の行が増えたら、そのセッションの今を 1 回読み直す（増えなければ読まない・cc でなければ読まない）", async () => {
+  const { store, gets, ccReads, setNext } = loadApiM0();
+  // 開いたとき（最初の 50 件）は読み直さない（開くときに chat.js が読む）
+  await store.load.turns("k1");
+  assert.equal(ccReads(), 0);
+  // 増えない
+  setNext([]);
+  await store.load.turns("k1");
+  assert.equal(ccReads(), 0);
+  // 増えた: 1 回
+  setNext([{ id: 2, kind: "agent", text: "できました", outcome: null }]);
+  await store.load.turns("k1");
+  assert.equal(ccReads(), 1);
+  assert.ok(gets.includes("/api/cc/sessions/s1"));
+  // cc でないチャンネルは行が増えても読まない
+  setNext([]);
+  await store.load.turns("c2");
+  setNext([{ id: 3, kind: "agent", text: "x", outcome: null }]);
+  await store.load.turns("c2");
+  assert.equal(ccReads(), 1);
 });
 
 test("web static: 届け待ちの間は前面の Claude Code のセッションを 3 秒ごとに読む", () => {
@@ -1913,7 +2157,12 @@ class DomNode extends FakeNode {
       add: (c: string) => this.classes.add(c),
       contains: (c: string) => this.classes.has(c),
       remove: (c: string) => this.classes.delete(c),
-      toggle: (c: string, on?: boolean) => ((on ?? !this.classes.has(c)) ? this.classes.add(c) : this.classes.delete(c)),
+      toggle: (c: string, on?: boolean) => {
+        const want = on ?? !this.classes.has(c);
+        if (want) this.classes.add(c);
+        else this.classes.delete(c);
+        return want;
+      },
     };
   }
   focus(): void {
