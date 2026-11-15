@@ -1,6 +1,8 @@
 // 話題の一覧の純関数（app/topics.ts。docs/plan/web-ui-v3.md §11 の M1）
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { SESSION_OPEN_TEXT_MAX_LENGTH } from "../src/agent/tools.ts";
+import { TOPIC_TEXT_MAX_LENGTH } from "../src/app/session-ops.ts";
 import {
   buildTopics,
   compareTopics,
@@ -8,6 +10,8 @@ import {
   groupKeyOf,
   pickTurn,
   summarize,
+  TOPIC_LIST_MAX,
+  topicListRows,
   TOPICS_DONE_MAX,
   type Topic,
   type TopicsInput,
@@ -320,4 +324,112 @@ test("buildTopics: generalDir を渡さなければ今までどおり（dir が�
   );
   assert.equal(result.topics[0]?.group, "p:General");
   assert.equal(groupKeyOf({ dir: "General", outside: false }), "p:General");
+});
+
+// ---- 右腕の topic_list の行（topicListRows。M6b） ----
+
+const LIST_OPTIONS = { timeZone: "Asia/Tokyo", generalDir: "General" };
+
+test("topicListRows: あなたの番 → 作業中 → 残り（待ち・進行中）の順で、同じ中では新しい順。state・turn・place・at が入る", () => {
+  const result = buildTopics(
+    input([
+      seed("ch:1", { activityAt: at(5) }),
+      seed("ch:2", { activityAt: at(1), running: true, dir: "alpha", origin: "project" }),
+      seed("ch:3", { activityAt: at(2), turns: [turn("permission", 0)], dir: "General", origin: "project" }),
+      seed("ch:4", { activityAt: at(9), state: "waiting" }),
+      seed("ch:5", { activityAt: at(3), running: true }),
+    ]),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  assert.deepEqual(
+    rows.topics.map((row) => [row.channel_id, row.state]),
+    [
+      ["3", "your_turn"],
+      ["5", "running"],
+      ["2", "running"],
+      ["4", "waiting"],
+      ["1", "idle"],
+    ],
+  );
+  assert.deepEqual(rows.topics[0], { channel_id: "3", kind: "session", title: "ch:3", place: "General", state: "your_turn", turn: "permission", at: "2026-11-14 09:02" });
+  assert.deepEqual(
+    rows.topics.map((row) => row.place),
+    ["General", "なし", "alpha", "なし", "なし"],
+  );
+  assert.equal(rows.topics.filter((row) => row.turn !== undefined).length, 1);
+  assert.deepEqual(rows.counts, { your_turn: 1, running: 2, total: 5 });
+  assert.equal(rows.more, 0);
+});
+
+test("topicListRows: ピン留めの入口と完了した話題は出ない（数にも入らない）", () => {
+  const result = buildTopics(
+    input(
+      [
+        seed("ch:1"),
+        seed("ch:2", { pinned: true, turns: [turn("confirm", 0)] }),
+        seed("ch:3", { state: "done" }),
+      ],
+      { done: "general" },
+    ),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  assert.deepEqual(
+    rows.topics.map((row) => row.channel_id),
+    ["1"],
+  );
+  assert.deepEqual(rows.counts, { your_turn: 0, running: 0, total: 1 });
+});
+
+test("topicListRows: 31 件あると topics は 30 件で more が 1、counts は 31 件分", () => {
+  const seeds = Array.from({ length: TOPIC_LIST_MAX + 1 }, (_, i) => seed(`ch:${i + 1}`, { activityAt: at(i), running: i === 0 }));
+  const rows = topicListRows(buildTopics(input(seeds)), LIST_OPTIONS);
+  assert.equal(TOPIC_LIST_MAX, 30);
+  assert.equal(rows.topics.length, 30);
+  assert.equal(rows.more, 1);
+  assert.deepEqual(rows.counts, { your_turn: 0, running: 1, total: 31 });
+  // 作業中が先、残りは新しい順なので、いちばん古い（ch:2）が切られる
+  assert.equal(rows.topics[0]?.channel_id, "1");
+  assert.equal(rows.topics.some((row) => row.channel_id === "2"), false);
+});
+
+test("topicListRows: Claude Code だけの行には channel_id が無く、kind が claude_code。チャンネルのある行は kind session", () => {
+  const rows = topicListRows(
+    buildTopics(
+      input([
+        seed("cc:abc", { origin: "cc", sessionId: "abc", cwdLabel: "~/x", dir: "alpha" }),
+        seed("ch:9", { origin: "cc", activityAt: at(1) }),
+      ]),
+    ),
+    LIST_OPTIONS,
+  );
+  const cc = rows.topics.find((row) => row.kind === "claude_code");
+  assert.ok(cc !== undefined);
+  assert.equal("channel_id" in cc, false);
+  assert.equal(cc.place, "alpha");
+  assert.deepEqual(rows.topics.find((row) => row.channel_id === "9")?.kind, "session");
+});
+
+test("topicListRows: 行に最後の発言の本文・sessionId・cwd・link が入らない（キーの一覧）", () => {
+  const rows = topicListRows(
+    buildTopics(
+      input([
+        seed("cc:abc", { origin: "cc", sessionId: "abc", cwdLabel: "~/secret", last: { id: 1, at: at(0), kind: "owner" }, link: "https://x" }),
+        seed("ch:1", { turns: [turn("question", 0)], last: { id: 2, at: at(0), kind: "agent" }, link: "https://y" }),
+      ]),
+    ),
+    LIST_OPTIONS,
+  );
+  assert.deepEqual(
+    rows.topics.map((row) => Object.keys(row).sort()),
+    [
+      ["at", "channel_id", "kind", "place", "state", "title", "turn"],
+      ["at", "kind", "place", "state", "title"],
+    ],
+  );
+  assert.equal(JSON.stringify(rows).includes("secret"), false);
+  assert.equal(JSON.stringify(rows).includes("https://"), false);
+});
+
+test("SESSION_OPEN_TEXT_MAX_LENGTH は startTopic の TOPIC_TEXT_MAX_LENGTH と同じ", () => {
+  assert.equal(SESSION_OPEN_TEXT_MAX_LENGTH, TOPIC_TEXT_MAX_LENGTH);
 });

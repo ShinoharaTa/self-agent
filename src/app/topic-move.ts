@@ -17,7 +17,14 @@ import { GENERAL_GROUP, OTHER_GROUP, TOPIC_GROUP_PATTERN } from "./topics.ts";
 import { recordTurnUsage, RESUME_FAILURE_PATTERN, resumeSeed, type TurnDeps, turnPersonaOf } from "./turn.ts";
 
 export type MovePlace = StartTopicPlace;
-export type MoveInput = { guildId: string; channelId: string; place: MovePlace; by: "web" | "discord" };
+export type MoveInput = {
+  guildId: string;
+  channelId: string;
+  place: MovePlace;
+  by: "web" | "discord" | "right_hand";
+  /** 右腕の確認（proposed の行）を押したとき。あるときは新しい行を作らず、その行を running にする */
+  proposalId?: number;
+};
 export type MoveRefusal =
   | "not_session"
   | "closed"
@@ -36,7 +43,7 @@ export type MoveOutcome =
 
 export type MoveDeps = {
   topicSessions: Pick<TopicSessionStore, "get" | "personaOf" | "projectDirOf" | "setProject" | "setRenewed" | "getCloseDraft">;
-  moves: Pick<TopicMoveStore, "start" | "finish" | "fail" | "runningChannels">;
+  moves: Pick<TopicMoveStore, "start" | "accept" | "finish" | "fail" | "runningChannels">;
   /** 発言のターンと同じキュー（key は channelId。has は枠待ち・前のジョブ待ちの発言を busy にするため） */
   turnQueue: Pick<KeyedSerialQueue, "run" | "has">;
   turn: Pick<TurnDeps, "runner" | "projectRunner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
@@ -134,7 +141,7 @@ export function parsePlace(value: unknown, generalDir: string | undefined): Move
 }
 
 /** 検査の 1〜4（話題・完了・人格・閉じる途中）。通れば話題 */
-function checkTopic(input: MoveInput, deps: MoveDeps): { session: TopicSession } | { refusal: MoveRefusal } {
+function checkTopic(input: Pick<MoveInput, "guildId" | "channelId">, deps: MoveDeps): { session: TopicSession } | { refusal: MoveRefusal } {
   const session = deps.topicSessions.get(input.channelId);
   if (session === undefined || session.guildId !== input.guildId || session.state === "deleted") return { refusal: "not_session" };
   if (session.state === "done") return { refusal: "closed" };
@@ -145,7 +152,7 @@ function checkTopic(input: MoveInput, deps: MoveDeps): { session: TopicSession }
 
 /** 検査の 8・9（行き先を決める・今の場所と同じか）。通れば前と後の project_dir */
 function checkDestination(
-  input: MoveInput,
+  input: Pick<MoveInput, "channelId" | "place">,
   deps: MoveDeps,
   gate: ProjectSessionGate,
 ): { from: string | null; to: string } | { refusal: MoveRefusal } {
@@ -168,8 +175,24 @@ function checkDestination(
   return { from, to };
 }
 
+/** 出す前の検査（話題・連携・行き先）。実行中・付け替え中は見ない。順は moveTopic の検査と同じ。行き先が General でディレクトリが無ければ作る（moveTopic の検査と同じ） */
+export function checkMovable(
+  input: Pick<MoveInput, "guildId" | "channelId" | "place">,
+  deps: MoveDeps,
+): { ok: true; fromDir: string | null; toDir: string } | { ok: false; result: MoveRefusal } {
+  const topic = checkTopic(input, deps);
+  if ("refusal" in topic) return { ok: false, result: topic.refusal };
+  const gate = deps.projectSessions;
+  if (gate === undefined) return { ok: false, result: "cc_disabled" };
+  if (!gate.ready()) return { ok: false, result: "unify_not_ready" };
+  const destination = checkDestination(input, deps, gate);
+  if ("refusal" in destination) return { ok: false, result: destination.refusal };
+  return { ok: true, fromDir: destination.from, toDir: destination.to };
+}
+
 /**
- * 話題の場所を変える。検査（同期）で断れば onAccepted を呼ばず DB にも書かない。受け付けたら topic_moves に running の行を足し、
+ * 話題の場所を変える。検査（同期）で断れば onAccepted を呼ばず DB にも書かない。受け付けたら topic_moves に running の行を足し
+ * （proposalId があればその proposed の行を running にする。by は行のまま）、
  * 最初の await の前に発言と同じキュー（セッションのジョブ）に積んでから onAccepted を待つ（その間に来た発言は付け替えの後に走る。
  * onAccepted が投げても log だけで続ける）。キューの中で検査をやり直してから、会話があれば要点のターンを 1 つ走らせ、
  * 場所・SDK セッション・seed・要約・記録を 1 つのトランザクションで書き換える。要点のターンが失敗したら何も変えない。
@@ -195,8 +218,14 @@ export async function moveTopic(
   const destination = checkDestination(input, deps, gate);
   if ("refusal" in destination) return { result: destination.refusal };
 
-  // (2) 受け付け（二重の要求は一意索引で止まる）
-  const id = deps.moves.start({ channelId: input.channelId, fromDir: destination.from, toDir: destination.to, by: input.by });
+  // (2) 受け付け（二重の要求は一意索引で止まる。右腕の確認を押したときは、その proposed の行を running にする）
+  let id: number | undefined;
+  if (input.proposalId !== undefined) {
+    const accepted = deps.moves.accept(input.proposalId, { channelId: input.channelId, fromDir: destination.from, toDir: destination.to });
+    id = accepted ? input.proposalId : undefined;
+  } else {
+    id = deps.moves.start({ channelId: input.channelId, fromDir: destination.from, toDir: destination.to, by: input.by });
+  }
   if (id === undefined) return { result: "moving" };
   try {
     // (3) キュー（onAccepted より先に積む。待つ間に reject しても unhandled にしない。最後の await でそのまま外へ出す）

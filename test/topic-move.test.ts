@@ -6,6 +6,7 @@ import type { RunResult } from "../src/agent/runner.ts";
 import type { ProjectSessionGate } from "../src/app/session-ops.ts";
 import { RENEWED_SEED_HEADER } from "../src/app/session-renew.ts";
 import {
+  checkMovable,
   MOVE_FAILED_TEXT,
   MOVE_INTERRUPTED_TEXT,
   MOVE_NOTE_MAX_LENGTH,
@@ -386,6 +387,7 @@ test("moveTopic: moves.fail が投げても結果は変わらず、log だけ", 
     const moves = env.moves;
     env.deps.moves = {
       start: (input) => moves.start(input),
+      accept: (id, input) => moves.accept(id, input),
       finish: (id, note, apply) => moves.finish(id, note, apply),
       runningChannels: () => moves.runningChannels(),
       fail: () => {
@@ -721,4 +723,136 @@ test("recoverMoves: running の行が残った話題が完了（done）になっ
   recoverMoves({ moves: env.moves, topicSessions: env.topicSessions, history: env.history, log: env.deps.log });
   assert.equal(env.moves.get(id)?.state, "failed");
   assert.deepEqual(env.historyRows(), [{ kind: "notice", source: "system", text: MOVE_INTERRUPTED_TEXT }]);
+});
+
+// ---- 右腕の確認（proposalId・checkMovable） ----
+
+test("moveTopic: proposalId を渡すと新しい行を作らず、その行が running → done になる。by は right_hand のまま、from_dir は今の場所", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const proposalId = env.moves.propose({ channelId: "topic-1", fromDir: "stale", toDir: "alpha", by: "right_hand" })!;
+  const outcome = await moveTopic({ ...env.input(), by: "right_hand", proposalId }, env.deps, env.onAccepted);
+  assert.deepEqual(outcome, { result: "moved", from: null, to: "alpha", note: NOTE });
+  assert.deepEqual(env.accepted, [0]);
+  const rows = env.rows();
+  assert.equal(rows.length, 1);
+  assert.equal(Number(rows[0]?.id), proposalId);
+  assert.equal(rows[0]?.state, "done");
+  assert.equal(rows[0]?.by, "right_hand");
+  assert.equal(rows[0]?.from_dir, null);
+  assert.equal(rows[0]?.note, NOTE);
+  assert.deepEqual(env.topicSessions.projectDirOf("topic-1"), { projectDir: "alpha", permissionMode: "default" });
+});
+
+test("moveTopic: proposalId の行が proposed でないときは moving で、要点のターンを始めず onAccepted も呼ばない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const cancelled = env.moves.propose({ channelId: "topic-1", fromDir: null, toDir: "alpha", by: "right_hand" })!;
+  env.moves.cancel(cancelled);
+  for (const proposalId of [cancelled, 999]) {
+    assert.deepEqual(await moveTopic({ ...env.input(), by: "right_hand", proposalId }, env.deps, env.onAccepted), { result: "moving" });
+  }
+  assert.deepEqual(env.accepted, []);
+  assert.equal(env.runner.inputs.length, 0);
+  assert.equal(env.turnQueue.keys.length, 0);
+  assert.deepEqual(env.rows().map((row) => row.state), ["cancelled"]);
+  assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
+});
+
+test("moveTopic: 話題 A に話題 B の proposed の行の proposalId を渡すと moving で、A の場所も B の行も変わらず、要点のターンを始めない", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const other = env.moves.propose({ channelId: "topic-2", fromDir: null, toDir: "beta", by: "right_hand" })!;
+  const before = env.moves.get(other);
+  const outcome = await moveTopic({ ...env.input(), by: "right_hand", proposalId: other }, env.deps, env.onAccepted);
+  assert.deepEqual(outcome, { result: "moving" });
+  assert.deepEqual(env.moves.get(other), before);
+  assert.equal(env.moves.running("topic-1"), undefined);
+  assert.equal(env.topicSessions.projectDirOf("topic-1"), undefined);
+  assert.deepEqual(env.accepted, []);
+  assert.equal(env.runner.inputs.length, 0);
+  assert.equal(env.turnQueue.keys.length, 0);
+});
+
+test("moveTopic: proposalId の行の to_dir と違う場所を渡すと、その場所に変わり、行の to_dir もその場所になる", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const proposalId = env.moves.propose({ channelId: "topic-1", fromDir: null, toDir: "alpha", by: "right_hand" })!;
+  const input: MoveInput = { ...env.input({ kind: "project", name: "beta" }), by: "right_hand", proposalId };
+  const outcome = await moveTopic(input, env.deps, env.onAccepted);
+  assert.deepEqual(outcome, { result: "moved", from: null, to: "beta", note: NOTE });
+  assert.deepEqual(env.topicSessions.projectDirOf("topic-1"), { projectDir: "beta", permissionMode: "default" });
+  const row = env.moves.get(proposalId)!;
+  assert.equal(row.state, "done");
+  assert.equal(row.toDir, "beta");
+});
+
+test("moveTopic: proposalId を渡しても検査は今と同じ順で断り、断ったとき行は proposed のまま", async (t) => {
+  type Env = ReturnType<typeof setup>;
+  const cases: Array<{ label: string; expected: string; options?: SetupOptions; arrange?: (env: Env) => void; place?: MoveInput["place"] }> = [
+    { label: "完了", expected: "closed", arrange: (env) => void env.topicSessions.close("topic-1", "要約") },
+    { label: "足した人格", expected: "persona", options: { persona: "beta-persona" } },
+    { label: "作業中", expected: "busy", arrange: (env) => env.running.push({ channelId: "topic-1" }) },
+    {
+      label: "作業中で連携なし（作業中が先）",
+      expected: "busy",
+      arrange: (env) => {
+        env.running.push({ channelId: "topic-1" });
+        env.deps.projectSessions = undefined;
+      },
+    },
+    {
+      label: "付け替え中（busy より先）",
+      expected: "moving",
+      arrange: (env) => {
+        env.moves.start({ channelId: "topic-1", fromDir: null, toDir: "beta", by: "web" });
+        env.running.push({ channelId: "topic-1" });
+      },
+    },
+    { label: "連携なし", expected: "cc_disabled", arrange: (env) => (env.deps.projectSessions = undefined) },
+    { label: "共有の link が済んでいない", expected: "unify_not_ready", arrange: (env) => (env.gateState.ready = false) },
+    { label: "無いプロジェクト", expected: "invalid_project", place: { kind: "project", name: "missing" } },
+    { label: "今と同じプロジェクト", expected: "same_place", options: { projectDir: "alpha" } },
+  ];
+  for (const item of cases) {
+    const env = setup(t, { steps: [ok(NOTE)], ...item.options });
+    const proposalId = env.moves.propose({ channelId: "topic-1", fromDir: null, toDir: "alpha", by: "right_hand" })!;
+    item.arrange?.(env);
+    const input: MoveInput = { ...env.input(item.place), by: "right_hand", proposalId };
+    assert.deepEqual(await moveTopic(input, env.deps, env.onAccepted), { result: item.expected }, item.label);
+    assert.deepEqual(env.accepted, [], item.label);
+    assert.equal(env.moves.get(proposalId)?.state, "proposed", item.label);
+    assert.equal(env.runner.inputs.length, 0, item.label);
+    assert.equal(env.turnQueue.keys.length, 0, item.label);
+  }
+});
+
+test("checkMovable: 実行中・付け替え中の話題でも ok で、前と後の場所を返す。DB に書かない", (t) => {
+  const env = setup(t, { projectDir: "alpha" });
+  env.running.push({ channelId: "topic-1" });
+  env.moves.start({ channelId: "topic-1", fromDir: "alpha", toDir: GENERAL, by: "web" });
+  const place = { kind: "project", name: "beta" } as const;
+  assert.deepEqual(checkMovable({ guildId: "guild-1", channelId: "topic-1", place }, env.deps), { ok: true, fromDir: "alpha", toDir: "beta" });
+  assert.equal(env.rows().length, 1);
+  assert.equal(env.runner.inputs.length, 0);
+});
+
+test("checkMovable: 閉じた話題・人格の話題・同じ場所・知らないプロジェクトなどを moveTopic と同じ理由で断る", async (t) => {
+  type Env = ReturnType<typeof setup>;
+  const cases: Array<{ label: string; expected: string; options?: SetupOptions; arrange?: (env: Env) => void; input?: (env: Env) => MoveInput }> = [
+    { label: "知らないチャンネル", expected: "not_session", input: (env) => ({ ...env.input(), channelId: "unknown-1" }) },
+    { label: "完了", expected: "closed", arrange: (env) => void env.topicSessions.close("topic-1", "要約") },
+    { label: "足した人格", expected: "persona", options: { persona: "beta-persona" } },
+    { label: "/close の確認待ち", expected: "closing", arrange: (env) => void env.topicSessions.saveCloseDraft("topic-1", { summary: "s", tasks: [] }) },
+    { label: "連携なし", expected: "cc_disabled", arrange: (env) => (env.deps.projectSessions = undefined) },
+    { label: "共有の link が済んでいない", expected: "unify_not_ready", arrange: (env) => (env.gateState.ready = false) },
+    { label: "無いプロジェクト", expected: "invalid_project", input: (env) => env.input({ kind: "project", name: "missing" }) },
+    { label: "今と同じプロジェクト", expected: "same_place", options: { projectDir: "alpha" } },
+    { label: "今と同じ General", expected: "same_place", options: { projectDir: GENERAL }, input: (env) => env.input({ kind: "general" }) },
+  ];
+  for (const item of cases) {
+    const checked = setup(t, item.options);
+    item.arrange?.(checked);
+    const result = checkMovable(item.input?.(checked) ?? checked.input(), checked.deps);
+    assert.deepEqual(result, { ok: false, result: item.expected }, item.label);
+    const moved = setup(t, { steps: [ok(NOTE)], ...item.options });
+    item.arrange?.(moved);
+    assert.deepEqual(await moveTopic(item.input?.(moved) ?? moved.input(), moved.deps), { result: item.expected }, item.label);
+  }
 });
