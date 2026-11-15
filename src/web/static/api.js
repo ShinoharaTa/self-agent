@@ -226,7 +226,9 @@
       // 一覧に無いチャンネル（削除した・開けなくなった）の書きかけを捨てる。形の違う応答では捨てない
       if (Array.isArray(data && data.channels)) SA.app.pruneDrafts(store.channels.channels.map((c) => c && c.id));
       // サーバーの既読を取り込み、こちらの方が進んでいる会話を送る。一覧の分が全部サーバーに入ったら、古い鍵を以後読まない
-      if (store.syncReads(data && data.reads, store.channels.channels.map((c) => c && c.id).filter((id) => typeof id === "string"))) markSeenSent();
+      // 空の一覧では書かない（古い既読を 1 件も送らないまま旗が立つ）
+      const readIds = store.channels.channels.map((c) => c && c.id).filter((id) => typeof id === "string");
+      if (store.syncReads(data && data.reads, readIds) && readIds.length > 0) markSeenSent();
       SA.app.refreshSidebar();
       SA.app.refreshStatus();
       SA.chat.channelsChanged();

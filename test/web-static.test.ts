@@ -2495,9 +2495,9 @@ function loadShell(
     loading: () => ui.el("p", { class: "loading", text: "読み込み中…" }),
   };
   const loads = { channels: 0, turns: [] as string[] };
-  // 既読（M7）: topics.js の syncReads の引数と、shell.js の markSeenShown の回数
+  // 既読（M7）: topics.js の syncReads の引数と、shell.js の markSeenShown の回数・呼ばれた時点の readingChannelIds の写し（SA.app がまだ無ければ null）
   const syncs: Array<{ reads: unknown; ids: string[] }> = [];
-  const marks = { seenShown: 0 };
+  const marks = { seenShown: 0, reading: [] as Array<string[] | null> };
   SA.store = {
     status: opts.status === undefined ? {} : opts.status,
     notices: null,
@@ -2527,6 +2527,14 @@ function loadShell(
   SA.chat = {
     markSeenShown: () => {
       marks.seenShown++;
+      let ids: string[] | null = null;
+      try {
+        const app = SA.app as { readingChannelIds?: () => string[] } | undefined;
+        if (app && typeof app.readingChannelIds === "function") ids = JSON.parse(JSON.stringify(app.readingChannelIds())) as string[];
+      } catch {
+        ids = null;
+      }
+      marks.reading.push(ids);
     },
     channelById: (id: string) => chatChannels[id] ?? {},
     channelTitle: (ch: { title?: string }) => ch.title ?? "セッション",
@@ -5805,7 +5813,8 @@ function loadApiReads(opts: { storage?: Record<string, string> } = {}) {
     },
   };
   const winListeners: string[] = [];
-  const calls = { sidebar: 0, status: 0 };
+  // sidebarSeen: refreshSidebar が呼ばれた時点の store.seen の写し
+  const calls = { sidebar: 0, status: 0, sidebarSeen: [] as Array<Record<string, number>> };
   const SA: Record<string, unknown> = {
     app: {
       shownChannelIds: () => [],
@@ -5817,6 +5826,8 @@ function loadApiReads(opts: { storage?: Record<string, string> } = {}) {
       },
       refreshSidebar: () => {
         calls.sidebar++;
+        const st = SA.store as { seen?: Record<string, number> } | undefined;
+        calls.sidebarSeen.push(JSON.parse(JSON.stringify((st && st.seen) ?? {})));
       },
       refreshActivity: () => undefined,
       pruneDrafts: () => undefined,
@@ -6005,6 +6016,25 @@ test("web static: load.channels は reads を取り込み、残りが無くな�
   assert.equal(fresh.posts.length, 0);
 });
 
+test("web static: load.channels は refreshSidebar より前に reads を store.seen に取り込む", async () => {
+  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }), [SEEN_SENT]: "1" } });
+  assert.deepEqual(h.seen(), {});
+  h.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }, { id: "2" }], reads: { "1": 12, "2": 4 } });
+  await h.store.load.channels();
+  assert.ok(h.calls.sidebarSeen.length >= 1);
+  assert.deepEqual(h.calls.sidebarSeen[0], { "1": 12, "2": 4 });
+});
+
+test("web static: 空の一覧（channels: []・reads: {}）では旗を書かない", async () => {
+  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }) } });
+  h.setChannels({ guilds: [], personas: [], channels: [], reads: {} });
+  await h.store.load.channels();
+  assert.equal(h.storage.has(SEEN_SENT), false);
+  assert.equal(h.writes.includes(SEEN_SENT), false);
+  assert.equal(h.posts.length, 0);
+  assert.equal(h.seen()["1"], 10, "古い既読はメモリに残る");
+});
+
 test("web static: isUnread は最後の行が返事（agent）で store.seen より新しいときだけ（notice・divider・owner は未読にしない）", () => {
   const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }) } });
   const ch = (kind: string, id: number) => ({ id: "1", last: { kind, id } });
@@ -6067,22 +6097,40 @@ test("web static: 重ねた右腕を開いている間、readingChannelIds は�
 
 test("web static: 一覧 → 会話（open と popstate の両方）と、重ねた右腕を畳んだときに markSeenShown を呼ぶ", async () => {
   const h = await loadHand({ phone: true });
+  // 呼ばれた時点で見えた会話が readingChannelIds に入っている（状態が切り替わってから呼ぶ）
+  const readAt = (from: number) => h.marks.reading.slice(from).some((ids) => ids !== null && ids.includes("1"));
   let n = h.marks.seenShown;
   h.app.open("ch:1");
   assert.ok(h.marks.seenShown > n, "open");
+  assert.ok(readAt(n), "open の時点で 1 を読んでいる");
   h.history.back();
   n = h.marks.seenShown;
   h.history.forward();
   assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
   assert.ok(h.marks.seenShown > n, "popstate");
+  assert.ok(readAt(n), "popstate の時点で 1 を読んでいる");
   h.nodes.handOpen.dispatch("click");
   n = h.marks.seenShown;
   h.nodes.backdrop.dispatch("click");
   assert.equal(handOf(h), "closed");
   assert.ok(h.marks.seenShown > n, "重ねた右腕を畳む");
+  assert.ok(readAt(n), "畳んだ時点で下の 1 を読んでいる");
   const sh = read("shell.js");
   assert.match(fnSource(sh, "setView"), /stickOnShow = false;\n\s*\/\/[^\n]*\n\s*SA\.chat\.markSeenShown\(\);\n {2}\}$/);
   assert.match(fnSource(sh, "applyHand"), /SA\.chat\.markSeenShown\(\);\n {2}\}$/);
+});
+
+test("web static: スマホで会話を開いて一覧に戻した後に幅が広くなると、markSeenShown を呼び、その時点でその会話を読んでいる", async () => {
+  const h = await loadHand({ phone: true });
+  h.app.open("ch:1");
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.deepEqual(readingIds(h), []);
+  const n = h.marks.seenShown;
+  h.setPhone(false, 900);
+  assert.ok(h.marks.seenShown > n, "幅の切り替えで呼ぶ");
+  assert.deepEqual(h.marks.reading.at(-1), ["1"]);
+  assert.deepEqual(readingIds(h), ["1"]);
 });
 
 test("web static: 今の殻の readingChannelIds は shownChannelIds と同じ関数", () => {

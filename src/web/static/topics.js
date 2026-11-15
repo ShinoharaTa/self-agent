@@ -67,9 +67,9 @@
             .map((t) => t && t.id)
             .filter((id) => typeof id === "string" && id.startsWith("ch:"))
             .map((id) => id.slice(3));
-          store.syncReads(next.reads, ids);
           dataDone = asked;
           failed = false;
+          store.syncReads(next.reads, ids);
         } else failed = true;
       } catch {
         failed = true;

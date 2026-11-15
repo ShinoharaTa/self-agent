@@ -1450,6 +1450,8 @@
       // 帯を先に（右腕が閉じて焦点を戻す先の [右腕] が帯の中にある）
       renderBar();
       fitHand();
+      // 列 2 が見えるようになったときの既読（setView は切り替わった後の phone() で測るので、ここで付け直す。隠れた会話は readingChannelIds が外す）
+      SA.chat.markSeenShown();
     });
     window.addEventListener("popstate", (e) => {
       const st = e.state || {};
