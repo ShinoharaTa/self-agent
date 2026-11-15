@@ -28,7 +28,7 @@
 </head>
 <body>
   <a class="skip-link" href="#ed">本文へ</a>
-  <div class="v3" id="v3" data-view="list">
+  <div class="v3" id="v3" data-view="list" data-hand="closed" data-hand-mode="over">
     <nav class="v3-list" id="v3-list" aria-label="話題">
       <header class="v3-list-head">
         <span class="v3-brand">self-agent</span>
@@ -46,15 +46,24 @@
         </section>
         <div class="v3-groups" id="v3-groups"></div>
       </div>
+      <div class="v3-hand-entry">
+        <button class="v3-hand-ask" id="v3-hand-ask" type="button" aria-controls="v3-hand"></button>
+      </div>
       <footer class="v3-list-foot" id="v3-list-foot"></footer>
     </nav>
     <main class="v3-main" id="v3-main">
       <div class="v3-bar" id="v3-bar" hidden>
         <span class="v3-place meta" id="v3-place"></span>
         <div class="segmented segmented-sm v3-views" id="v3-views" role="group" aria-label="見る物" hidden></div>
+        <button class="btn btn-ghost btn-sm v3-hand-open" id="v3-hand-open" type="button" aria-controls="v3-hand"></button>
       </div>
       <div class="ed" id="ed"></div>
     </main>
+    <aside class="v3-hand" id="v3-hand" aria-label="右腕">
+      <button class="btn btn-ghost btn-sm btn-icon-sm v3-hand-show" id="v3-hand-show" type="button" aria-controls="v3-hand-ed" aria-expanded="false"></button>
+      <div class="ed v3-hand-ed" id="v3-hand-ed"></div>
+    </aside>
+    <div class="v3-hand-backdrop" id="v3-hand-backdrop" hidden></div>
   </div>
   <dialog id="v3-sheet" class="v3-sheet"></dialog>
 

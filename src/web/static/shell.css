@@ -5,13 +5,15 @@
 
 :root {
   --v3-list-w: 280px;
+  --v3-hand-w: 360px;
 }
 
 /* --vvh はスマホでだけ shell.js が visualViewport の高さを書く（キーボードの分を除く） */
 .v3 {
+  position: relative;
   display: grid;
   height: var(--vvh, 100dvh);
-  grid-template-columns: var(--v3-list-w) minmax(0, 1fr);
+  grid-template-columns: var(--v3-list-w) minmax(0, 1fr) auto;
   background: var(--bg);
   font-size: var(--font-sm);
   /* 細いスクロールバー（app.css の .wb・.palette・dialog と同じ） */
@@ -367,6 +369,68 @@
   text-align: center;
 }
 
+/* ===== 列 3: 右腕（列か、列 2 が 360px を切る幅とスマホでは重ねる形。どちらに置くかは shell.js が測って data-hand-mode に書く） ===== */
+.v3-hand {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  width: var(--v3-hand-w);
+  border-left: var(--border-width) solid var(--border);
+  background: var(--bg);
+}
+
+/* 畳んだ列は細い帯にボタン 1 つ（場所が動かない） */
+.v3[data-hand="closed"] .v3-hand {
+  width: auto;
+}
+
+.v3[data-hand="closed"] .v3-hand-ed {
+  display: none;
+}
+
+.v3[data-hand="open"] .v3-hand-show {
+  display: none;
+}
+
+.v3-hand-show {
+  margin: var(--space-2);
+}
+
+/* 重ねる形（640px 以上は右から。開いた瞬間に列 2 が帯の幅だけ広がるのは backdrop の下） */
+.v3[data-hand-mode="over"][data-hand="open"] .v3-hand {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-drawer);
+  width: min(var(--v3-hand-w), 100%);
+}
+
+.v3-hand-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-drawer-backdrop);
+  background: var(--backdrop);
+}
+
+/* 右腕の見出し（列が 360px なので […] を幅によらず出し、区切りの線を付けない） */
+.v3-hand .ed-ops-more {
+  display: inline-flex;
+}
+
+.v3-hand .ed-ops {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
+}
+
+/* スマホの 2 つの口（一覧の下・上の帯の [右腕]）は既定では出さない */
+.v3-hand-entry,
+.v3-hand-open {
+  display: none;
+}
+
 /* ===== スマホ（639px 以下）: 1 列で 一覧 ⇄ 会話 ===== */
 @media (max-width: 639px) {
   .v3 {
@@ -387,6 +451,52 @@
 
   .v3-list-foot {
     padding-bottom: calc(var(--space-1) + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* 右腕は畳んだ帯を持たず、口から下からの枠で出す（上に 48px、後ろの画面を残す。.composer-wrap は下の安全域を持たない） */
+  .v3-hand-show {
+    display: none;
+  }
+
+  .v3[data-hand="closed"] .v3-hand {
+    display: none;
+  }
+
+  .v3[data-hand-mode="over"][data-hand="open"] .v3-hand {
+    top: var(--space-8);
+    left: 0;
+    width: auto;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    overflow: hidden;
+    border-left: 0;
+    border-top: var(--border-width) solid var(--border);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+
+  .v3-hand-entry {
+    display: block;
+    padding: var(--space-2) var(--space-3) 0;
+  }
+
+  /* 入力欄に見える形（押すと開いて入力欄に焦点） */
+  .v3-hand-ask {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    min-height: var(--tap);
+    padding: 0 var(--space-3);
+    background: var(--surface);
+    color: var(--text-secondary);
+    border: var(--border-width) solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: var(--font-sm);
+    text-align: left;
+  }
+
+  .v3-hand-open {
+    display: inline-flex;
+    margin-left: auto;
   }
 
   /* シートは今までどおり下から（app.css の dialog の全幅） */
