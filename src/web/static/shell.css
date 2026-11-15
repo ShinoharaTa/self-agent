@@ -425,6 +425,33 @@
   border-left: 0;
 }
 
+/* 札（右腕の返事の <#ID>。吹き出しの下に 1 行。地は付けない） */
+.v3-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row);
+  margin-top: var(--space-1);
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.v3-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-card-meta {
+  flex: none;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  font-variant-numeric: tabular-nums;
+}
+
 /* スマホの 2 つの口（一覧の下・上の帯の [右腕]）は既定では出さない */
 .v3-hand-entry,
 .v3-hand-open {
