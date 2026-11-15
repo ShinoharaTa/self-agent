@@ -877,6 +877,7 @@ function loadChatM0() {
   SA.store = store;
   SA.app = {
     shownChannelIds: () => ["k1"],
+    readingChannelIds: () => ["k1"],
     activeTabId: () => "ch:k1",
     draft: () => "",
     setDraft: () => undefined,
@@ -2122,8 +2123,16 @@ test("web static: 話題の polling は あなたの番か作業中があれば 
   assert.match(fnSource(js, "load"), /arm\(\);/);
   // 見えたら読み直し、隠れたら予約を消す
   assert.match(js, /document\.addEventListener\("visibilitychange", \(\) => \{\n\s*if \(document\.visibilityState === "visible"\) schedule\(\);\n\s*else \{\n\s*clearTimeout\(timer\);/);
-  // api.js の polls には足さない
-  assert.doesNotMatch(read("api.js"), /\/api\/topics/);
+  // api.js の polls には足さない（M7b から api.js に出る /api/topics は、既読の POST のパス（/read で終わる物）だけ）
+  const api = read("api.js");
+  const topicLines = api.split("\n").filter((line) => line.includes("/api/topics"));
+  assert.ok(topicLines.length >= 1);
+  for (const line of topicLines) assert.match(line, /SA\.api\.post\("\/api\/topics\/ch:" \+ channelId \+ "\/read", /, line);
+  const pollsStart = api.indexOf("\n  const polls = {\n");
+  assert.ok(pollsStart >= 0);
+  const pollsBody = api.slice(pollsStart, api.indexOf("\n  };\n", pollsStart));
+  assert.doesNotMatch(pollsBody, /^ {4}topics:/m);
+  assert.doesNotMatch(pollsBody, /\/api\/topics|SA\.topics/);
   // schedule は 2 秒に 1 回まで
   assert.match(js, /const MIN_GAP_MS = 2000;/);
   assert.match(fnSource(js, "schedule"), /if \(pending !== null\) return;/);
@@ -2486,10 +2495,17 @@ function loadShell(
     loading: () => ui.el("p", { class: "loading", text: "読み込み中…" }),
   };
   const loads = { channels: 0, turns: [] as string[] };
+  // 既読（M7）: topics.js の syncReads の引数と、shell.js の markSeenShown の回数
+  const syncs: Array<{ reads: unknown; ids: string[] }> = [];
+  const marks = { seenShown: 0 };
   SA.store = {
     status: opts.status === undefined ? {} : opts.status,
     notices: null,
     isUnread: (_c: { id: string; last: unknown }) => false,
+    syncReads: (reads: unknown, ids: string[]) => {
+      syncs.push({ reads: JSON.parse(JSON.stringify(reads ?? null)), ids: JSON.parse(JSON.stringify(ids)) });
+      return true;
+    },
     load: {
       channels() {
         loads.channels++;
@@ -2509,6 +2525,9 @@ function loadShell(
   // 右腕の Bot の返事の本文（描くたびに replyText・replyExtras を通して .ed-scroll に入れる）
   const handReplies: string[] = [];
   SA.chat = {
+    markSeenShown: () => {
+      marks.seenShown++;
+    },
     channelById: (id: string) => chatChannels[id] ?? {},
     channelTitle: (ch: { title?: string }) => ch.title ?? "セッション",
     STATE_LABEL: { active: "進行中", waiting: "待ち", done: "完了" },
@@ -2575,6 +2594,8 @@ function loadShell(
     closes,
     opens,
     loads,
+    syncs,
+    marks,
     storage,
     fireDoc,
     ui: SA.ui as Record<string, unknown>,
@@ -3376,7 +3397,8 @@ const chatChannel = (id: string, o: Record<string, unknown> = {}) => ({ id, kind
  */
 function loadChat() {
   const body = new DomNode("body");
-  const state = { visibility: "visible", shown: [] as string[], active: null as string | null };
+  // reading は SA.app.readingChannelIds（null なら shown と同じ）
+  const state = { visibility: "visible", shown: [] as string[], reading: null as string[] | null, active: null as string | null };
   const document = {
     get visibilityState() {
       return state.visibility;
@@ -3447,6 +3469,7 @@ function loadChat() {
   SA.store = store;
   SA.app = {
     shownChannelIds: () => state.shown,
+    readingChannelIds: () => state.reading ?? state.shown,
     activeTabId: () => state.active,
     refresh: (tab: string) => refreshes.push(tab),
     refreshSidebar: () => undefined,
@@ -3543,12 +3566,13 @@ test("web static: SA.app.shownChannelIds は 2 つの殻にあり、前に出て
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.result)), ["333"]);
 });
 
-test("web static: 既読は見えている会話の全部に付け、見えていない会話・隠れた画面では付けない", () => {
+test("web static: 既読は読んでいる会話（readingChannelIds）の全部に付け、入っていない会話・隠れた画面では付けない", () => {
   const c = loadChat();
   c.put("1", [chatTurn(10, "owner", "a"), chatTurn(11, "agent", "b")]);
   c.put("2", [chatTurn(20, "agent", "c")]);
   c.put("3", [chatTurn(30, "agent", "d")]);
-  c.state.shown = ["1", "2"];
+  c.state.shown = ["1", "2", "3"];
+  c.state.reading = ["1", "2"];
   c.chat.markSeenShown();
   assert.deepEqual(c.seen, [["1", 11], ["2", 20]]);
   // 描いた会話でも、見えていなければ付けない
@@ -3564,6 +3588,26 @@ test("web static: 既読は見えている会話の全部に付け、見えて�
   c.chat.render(c.box(), "1");
   assert.deepEqual(c.seen, []);
   assert.equal("markSeenActive" in c.chat, false);
+});
+
+test("web static: shownChannelIds に入っていても readingChannelIds に無い会話には、render でも markSeenShown でも既読を付けない（M7b）", () => {
+  const c = loadChat();
+  c.put("1", [chatTurn(10, "agent", "a")]);
+  c.put("900", [chatTurn(90, "agent", "b")]);
+  // スマホで一覧を出している間・重ねた右腕の下: 列 2 の会話は見えている扱い（polling・音）だが、読んでいない
+  c.state.shown = ["1", "900"];
+  c.state.reading = ["900"];
+  c.chat.render(c.box(), "1");
+  c.chat.markSeenShown();
+  assert.deepEqual(c.seen, [["900", 90]]);
+  // 読む側に入ったら付く
+  c.seen.length = 0;
+  c.state.reading = ["1", "900"];
+  c.chat.markSeenShown();
+  assert.deepEqual(c.seen, [["1", 10], ["900", 90]]);
+  const chat = read("chat.js");
+  assert.match(fnSource(chat, "markSeen"), /SA\.app\.readingChannelIds\(\)\.includes\(channelId\)/);
+  assert.doesNotMatch(fnSource(chat, "markSeen") + fnSource(chat, "markSeenShown"), /shownChannelIds/);
 });
 
 test("web static: 会話を 2 つの入れ物に描いても混ざらない", async () => {
@@ -5738,4 +5782,334 @@ test("web static: moveProposal が同じ中身のままなら、それだけで�
   h.refreshes.length = 0;
   await h.store.load.turns("200");
   assert.deepEqual(h.refreshes, []);
+});
+
+// ===== 既読をサーバーに（M7b。#378。api.js の store.seen・markSeen・syncReads、shell.js の readingChannelIds、topics.js の syncReads） =====
+
+type ReadPost = { path: string; body: { lastId: number }; opts: unknown; resolve: (v: unknown) => void; reject: (e: unknown) => void };
+
+/** api.js をまるごと読む。localStorage は Map（setItem・removeItem の鍵を覚える）、SA.api.post は呼ばれた順に覚えて手で返す、GET /api/channels は channels の値を返す */
+function loadApiReads(opts: { storage?: Record<string, string> } = {}) {
+  const storage = new Map<string, string>(Object.entries(opts.storage ?? {}));
+  const writes: string[] = [];
+  const removes: string[] = [];
+  const localStorage = {
+    getItem: (k: string) => storage.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      writes.push(k);
+      storage.set(k, String(v));
+    },
+    removeItem: (k: string) => {
+      removes.push(k);
+      storage.delete(k);
+    },
+  };
+  const winListeners: string[] = [];
+  const calls = { sidebar: 0, status: 0 };
+  const SA: Record<string, unknown> = {
+    app: {
+      shownChannelIds: () => [],
+      readingChannelIds: () => [],
+      activeTabId: () => null,
+      refresh: () => undefined,
+      refreshStatus: () => {
+        calls.status++;
+      },
+      refreshSidebar: () => {
+        calls.sidebar++;
+      },
+      refreshActivity: () => undefined,
+      pruneDrafts: () => undefined,
+    },
+    chat: { markSeenShown: () => undefined, channelsChanged: () => undefined },
+    ui: { toast: () => undefined },
+  };
+  const ctx: Record<string, unknown> = {
+    window: { SA, localStorage, addEventListener: (type: string) => winListeners.push(type) },
+    document: { visibilityState: "visible", addEventListener: () => undefined },
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    Promise,
+    JSON,
+  };
+  vm.runInNewContext(read("api.js"), ctx);
+  const posts: ReadPost[] = [];
+  let channels: unknown = { guilds: [], personas: [], channels: [] };
+  const api = SA.api as { get: unknown; post: unknown };
+  api.get = () => Promise.resolve(JSON.parse(JSON.stringify(channels)));
+  api.post = (path: string, body: { lastId: number }, o: unknown) =>
+    new Promise((resolve, reject) => posts.push({ path, body: JSON.parse(JSON.stringify(body)), opts: JSON.parse(JSON.stringify(o ?? null)), resolve, reject }));
+  const store = SA.store as {
+    seen: Record<string, number>;
+    markSeen: (id: string, last: number) => boolean;
+    syncReads: (reads: unknown, ids: string[]) => boolean;
+    isUnread: (c: unknown) => boolean;
+    load: { channels: (o?: unknown) => Promise<unknown> };
+  };
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+  const seen = () => JSON.parse(JSON.stringify(store.seen)) as Record<string, number>;
+  const sent = () => posts.map((p) => [p.path, p.body.lastId]);
+  const fail = (status: number) => Object.assign(new Error(String(status)), { status });
+  return { store, posts, sent, seen, storage, writes, removes, winListeners, calls, flush, fail, setChannels: (v: unknown) => (channels = v) };
+}
+
+const OLD_SEEN = "self-agent-web:seen";
+const SEEN_SENT = "self-agent-web:seen-sent";
+const readPath = (id: string) => "/api/topics/ch:" + id + "/read";
+
+test("web static: 既読の始めは、旗が無ければ古い鍵の値（数でない値は落とす）、旗が \"1\" なら古い鍵があっても空", () => {
+  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10, "2": "x", "3": 0 }) } });
+  assert.deepEqual(h.seen(), { "1": 10 });
+  const sent = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }), [SEEN_SENT]: "1" } });
+  assert.deepEqual(sent.seen(), {});
+  assert.deepEqual(loadApiReads({ storage: { [OLD_SEEN]: "{壊れた" } }).seen(), {});
+  assert.deepEqual(loadApiReads().seen(), {});
+});
+
+test("web static: markSeen は進めば POST /api/topics/ch:<id>/read に { lastId } を quiet で送って true、進まなければ送らず false、数字でない ID は送らない", () => {
+  const h = loadApiReads();
+  assert.equal(h.store.markSeen("100", 5), true);
+  assert.deepEqual(
+    h.posts.map((p) => ({ path: p.path, body: p.body, opts: p.opts })),
+    [{ path: "/api/topics/ch:100/read", body: { lastId: 5 }, opts: { quiet: true } }],
+  );
+  assert.equal(h.store.markSeen("100", 5), false);
+  assert.equal(h.store.markSeen("100", 4), false);
+  assert.equal(h.posts.length, 1);
+  // 数字でない ID はメモリだけ進め、送らない（: を % にしないこともパスで見ている）
+  assert.equal(h.store.markSeen("abc", 3), true);
+  assert.equal(h.store.markSeen("1/../x", 3), true);
+  assert.equal(h.posts.length, 1);
+  assert.equal(h.seen().abc, 3);
+});
+
+test("web static: 送っている間にもう 1 度進んでも同時には送らず、返った後に新しい値で 1 回送る", async () => {
+  const h = loadApiReads();
+  h.store.markSeen("100", 5);
+  h.store.markSeen("100", 7);
+  h.store.markSeen("100", 8);
+  assert.deepEqual(h.sent(), [[readPath("100"), 5]]);
+  h.posts[0]!.resolve({ lastReadId: 5 });
+  await h.flush();
+  assert.deepEqual(h.sent(), [[readPath("100"), 5], [readPath("100"), 8]]);
+  h.posts[1]!.resolve({ lastReadId: 8 });
+  await h.flush();
+  assert.equal(h.posts.length, 2, "追いついたら送らない");
+  // ほかの会話は別に送る
+  h.store.markSeen("200", 1);
+  assert.equal(h.posts.length, 3);
+});
+
+test("web static: 送れなかった既読は次の syncReads で送り直し、400・404 の後は同じページでは送らない", async () => {
+  const h = loadApiReads();
+  h.store.markSeen("100", 5);
+  h.posts[0]!.reject(h.fail(0));
+  await h.flush();
+  assert.equal(h.posts.length, 1, "すぐには送り直さない");
+  assert.equal(h.seen()["100"], 5, "メモリには残る");
+  assert.equal(h.store.syncReads({}, ["100"]), false);
+  assert.deepEqual(h.sent().at(-1), [readPath("100"), 5]);
+  h.posts[1]!.resolve({ lastReadId: 5 });
+  await h.flush();
+  // 200 が返った値は、サーバーの reads にまだ無くても送り直さない
+  assert.equal(h.store.syncReads({}, ["100"]), true);
+  assert.equal(h.posts.length, 2);
+  // 404 の後は、進めても syncReads でも送らない
+  h.store.markSeen("300", 2);
+  h.posts[2]!.reject(h.fail(404));
+  await h.flush();
+  assert.equal(h.store.markSeen("300", 3), true);
+  h.store.syncReads({}, ["300"]);
+  assert.equal(h.posts.length, 3);
+  // 400 も同じ
+  h.store.markSeen("400", 2);
+  h.posts[3]!.reject(h.fail(400));
+  await h.flush();
+  h.store.markSeen("400", 3);
+  assert.equal(h.posts.length, 4);
+});
+
+test("web static: 応答の lastReadId がこちらより大きければ store.seen を上げて描き直す（小さければ下げない）", async () => {
+  const h = loadApiReads();
+  h.store.markSeen("100", 5);
+  const before = h.calls.sidebar;
+  h.posts[0]!.resolve({ lastReadId: 9 });
+  await h.flush();
+  assert.equal(h.seen()["100"], 9);
+  assert.equal(h.calls.sidebar, before + 1);
+  assert.equal(h.posts.length, 1, "サーバーの方が進んでいれば送らない");
+  h.store.markSeen("200", 5);
+  h.posts[1]!.resolve({ lastReadId: 3 });
+  await h.flush();
+  assert.equal(h.seen()["200"], 5);
+  assert.equal(h.posts.length, 2);
+});
+
+test("web static: syncReads は reads の大きい値を取り込み（下げない）、自分の方が大きい ids の会話だけを送り、残りの有無を返す", () => {
+  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10, "2": 20, "3": 30, "9": 90 }) } });
+  // reads が無い（古いサーバー）・形が違う: 何もせず false
+  assert.equal(h.store.syncReads(undefined, ["1"]), false);
+  assert.equal(h.store.syncReads(null, ["1"]), false);
+  assert.equal(h.store.syncReads([1], ["1"]), false);
+  assert.equal(h.posts.length, 0);
+  assert.deepEqual(h.seen(), { "1": 10, "2": 20, "3": 30, "9": 90 });
+  // 1 は上がる・2 は下げない（送る）・3 はサーバーに無い（送る）・4 は新しく入る・9 は ids に無いので送らない
+  assert.equal(h.store.syncReads({ "1": 15, "2": 5, "4": 40 }, ["1", "2", "3", "4"]), false);
+  assert.deepEqual(h.seen(), { "1": 15, "2": 20, "3": 30, "4": 40, "9": 90 });
+  assert.deepEqual(h.sent(), [[readPath("2"), 20], [readPath("3"), 30]]);
+  // 残りが無ければ true（送らない）
+  const done = loadApiReads();
+  assert.equal(done.store.syncReads({ "1": 3 }, ["1", "2"]), true);
+  assert.equal(done.posts.length, 0);
+  assert.equal(done.seen()["1"], 3);
+});
+
+test("web static: load.channels は reads を取り込み、残りが無くなった回に旗を書く。reads の無い応答では書かない。古い鍵には書かない・消さない", async () => {
+  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10, "2": 20, "77": 70 }) } });
+  // reads の無い応答（M7a の前のサーバー）
+  h.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }, { id: "2" }] });
+  await h.store.load.channels();
+  assert.equal(h.storage.has(SEEN_SENT), false);
+  assert.equal(h.posts.length, 0);
+  // 2 だけサーバーより進んでいる: 送るが、まだ旗は書かない（一覧に無い 77 は送らない）
+  h.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }, { id: "2" }], reads: { "1": 12, "2": 5 } });
+  await h.store.load.channels();
+  assert.deepEqual(h.sent(), [[readPath("2"), 20]]);
+  assert.equal(h.storage.has(SEEN_SENT), false);
+  assert.equal(h.seen()["1"], 12);
+  // 返らないうちは残りのまま（送っている最中は送り直さない）
+  await h.store.load.channels();
+  assert.equal(h.posts.length, 1);
+  assert.equal(h.storage.has(SEEN_SENT), false);
+  h.posts[0]!.resolve({ lastReadId: 20 });
+  await h.flush();
+  await h.store.load.channels();
+  assert.equal(h.storage.get(SEEN_SENT), "1");
+  // 次の回は書き直さない
+  const writes = h.writes.length;
+  h.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }, { id: "2" }], reads: { "1": 12, "2": 20 } });
+  await h.store.load.channels();
+  assert.equal(h.writes.length, writes);
+  // 既読を進めても localStorage には書かない
+  h.store.markSeen("1", 99);
+  assert.equal(h.writes.includes(OLD_SEEN), false);
+  assert.equal(h.removes.includes(OLD_SEEN), false);
+  assert.equal(h.storage.get(OLD_SEEN), JSON.stringify({ "1": 10, "2": 20, "77": 70 }));
+  // 一覧の応答が reads 込みで最初から揃っていれば、1 回目で旗
+  const fresh = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }) } });
+  fresh.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }], reads: { "1": 10 } });
+  await fresh.store.load.channels();
+  assert.equal(fresh.storage.get(SEEN_SENT), "1");
+  assert.equal(fresh.posts.length, 0);
+});
+
+test("web static: isUnread は最後の行が返事（agent）で store.seen より新しいときだけ（notice・divider・owner は未読にしない）", () => {
+  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }) } });
+  const ch = (kind: string, id: number) => ({ id: "1", last: { kind, id } });
+  assert.equal(h.store.isUnread(ch("agent", 11)), true);
+  assert.equal(h.store.isUnread(ch("agent", 10)), false);
+  for (const kind of ["notice", "divider", "owner"]) assert.equal(h.store.isUnread(ch(kind, 11)), false, kind);
+  assert.equal(h.store.isUnread({ id: "2", last: null }), false);
+  h.store.syncReads({ "1": 11 }, []);
+  assert.equal(h.store.isUnread(ch("agent", 11)), false, "サーバーの既読で消える");
+});
+
+test("web static: api.js は storage イベントを受けず、古い鍵に書かない", () => {
+  const js = read("api.js");
+  assert.doesNotMatch(js, /addEventListener\("storage"/);
+  assert.doesNotMatch(js, /setItem\(SEEN_KEY|removeItem\(/);
+  assert.equal(loadApiReads().winListeners.includes("storage"), false);
+});
+
+// ----- shell.js の readingChannelIds と、列が見えたときの付け直し -----
+const readingIds = (h: HandShell) => JSON.parse(JSON.stringify((h.app as unknown as { readingChannelIds: () => string[] }).readingChannelIds())) as string[];
+
+test("web static: 広い幅の readingChannelIds は列 2 の会話と見えている右腕（shownChannelIds と同じ）", async () => {
+  const h = await loadHand();
+  h.app.open("ch:1");
+  assert.deepEqual(readingIds(h), ["1", "900"]);
+  assert.deepEqual(readingIds(h), shownIds(h));
+  handClose(h).dispatch("click");
+  assert.deepEqual(readingIds(h), ["1"]);
+  h.app.open("tasks");
+  assert.deepEqual(readingIds(h), []);
+});
+
+test("web static: スマホで一覧を出している間、shownChannelIds は会話を返し（今のまま）、readingChannelIds は返さない", async () => {
+  const h = await loadHand({ phone: true });
+  h.app.open("ch:1");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.deepEqual(readingIds(h), ["1"]);
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.deepEqual(shownIds(h), ["1"]);
+  assert.deepEqual(readingIds(h), []);
+});
+
+test("web static: 重ねた右腕を開いている間、readingChannelIds は右腕だけ（下の会話は入れない）", async () => {
+  const h = await loadHand({ width: 900 });
+  h.app.open("ch:1");
+  h.nodes.handShow.dispatch("click");
+  assert.equal(handOf(h), "open");
+  assert.deepEqual(shownIds(h), ["1", "900"]);
+  assert.deepEqual(readingIds(h), ["900"]);
+  h.nodes.backdrop.dispatch("click");
+  assert.deepEqual(readingIds(h), ["1"]);
+  // スマホでも同じ
+  const p = await loadHand({ phone: true });
+  p.app.open("ch:1");
+  p.nodes.handOpen.dispatch("click");
+  assert.equal(handOf(p), "open");
+  assert.deepEqual(readingIds(p), ["900"]);
+});
+
+test("web static: 一覧 → 会話（open と popstate の両方）と、重ねた右腕を畳んだときに markSeenShown を呼ぶ", async () => {
+  const h = await loadHand({ phone: true });
+  let n = h.marks.seenShown;
+  h.app.open("ch:1");
+  assert.ok(h.marks.seenShown > n, "open");
+  h.history.back();
+  n = h.marks.seenShown;
+  h.history.forward();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.ok(h.marks.seenShown > n, "popstate");
+  h.nodes.handOpen.dispatch("click");
+  n = h.marks.seenShown;
+  h.nodes.backdrop.dispatch("click");
+  assert.equal(handOf(h), "closed");
+  assert.ok(h.marks.seenShown > n, "重ねた右腕を畳む");
+  const sh = read("shell.js");
+  assert.match(fnSource(sh, "setView"), /stickOnShow = false;\n\s*\/\/[^\n]*\n\s*SA\.chat\.markSeenShown\(\);\n {2}\}$/);
+  assert.match(fnSource(sh, "applyHand"), /SA\.chat\.markSeenShown\(\);\n {2}\}$/);
+});
+
+test("web static: 今の殻の readingChannelIds は shownChannelIds と同じ関数", () => {
+  assert.match(read("workbench.js"), /\n {4}readingChannelIds: shownChannelIds,\n/);
+  assert.ok(appKeys(read("shell.js")).includes("readingChannelIds"));
+});
+
+// ----- topics.js の syncReads -----
+test("web static: topics.js の load は render の前に syncReads(reads, ids) を呼び、ids は ch: を外した話題と右腕", async () => {
+  const h = loadShell();
+  await h.flush();
+  h.syncs.length = 0;
+  h.api.reply = () =>
+    Promise.resolve(v3Result([v3Topic("ch:5"), v3Topic("cc:abc", { origin: "cc" }), v3Topic("ch:6")], { rightHands: [v3Hand()], reads: { "5": 3, "900": 7 } }));
+  await h.topics.load();
+  assert.deepEqual(h.syncs, [{ reads: { "5": 3, "900": 7 }, ids: ["5", "6", "900"] }]);
+  assert.ok(h.row(h.nodes.groups, "ch:5"), "一覧を描く");
+  const load = fnSource(read("topics.js"), "load");
+  assert.ok(load.indexOf("store.syncReads(next.reads, ids);") < load.indexOf("render();"));
+});
+
+test("web static: reads の無い応答でも topics.js は一覧を描く", async () => {
+  const h = loadShell();
+  await h.flush();
+  h.syncs.length = 0;
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:5")]));
+  await h.topics.load();
+  assert.deepEqual(h.syncs, [{ reads: null, ids: ["5"] }]);
+  assert.ok(h.row(h.nodes.groups, "ch:5"));
 });
