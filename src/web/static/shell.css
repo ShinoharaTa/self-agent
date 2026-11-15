@@ -13,12 +13,34 @@
   position: relative;
   display: grid;
   height: var(--vvh, 100dvh);
+  /* ホーム画面から開いたとき（black-translucent）のステータスバーの裏。列・見出しはこの下から始まる（高さは border-box のままで変わらない） */
+  padding-top: env(safe-area-inset-top, 0px);
   grid-template-columns: var(--v3-list-w) minmax(0, 1fr) auto;
   background: var(--bg);
   font-size: var(--font-sm);
   /* 細いスクロールバー（app.css の .wb・.palette・dialog と同じ） */
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
+}
+
+/*
+ * ホーム画面から開いたとき（black-translucent）、ステータスバーの文字は白で、その裏は .v3 の上の余白。
+ * ライトでは白地に白文字にならないよう、その帯だけ暗い色（--primary）にする（app.css の .wb-titlebar と同じ決定。docs/plan/web-ui.md §11.2）。ダークは地（--bg）のまま
+ */
+@media (display-mode: standalone) {
+  .v3:is(:root[data-theme="light"] *) {
+    background:
+      linear-gradient(var(--primary), var(--primary)) top / 100% env(safe-area-inset-top, 0px) no-repeat,
+      var(--bg);
+  }
+
+  @media (prefers-color-scheme: light) {
+    .v3:is(:root:not([data-theme]) *) {
+      background:
+        linear-gradient(var(--primary), var(--primary)) top / 100% env(safe-area-inset-top, 0px) no-repeat,
+        var(--bg);
+    }
+  }
 }
 
 /* ===== 列 1: 話題の一覧 ===== */
@@ -433,7 +455,7 @@
 /* 重ねる形（640px 以上は右から。開いた瞬間に列 2 が帯の幅だけ広がるのは backdrop の下） */
 .v3[data-hand-mode="over"][data-hand="open"] .v3-hand {
   position: absolute;
-  top: 0;
+  top: env(safe-area-inset-top, 0px);
   right: 0;
   bottom: 0;
   z-index: var(--z-drawer);
@@ -513,7 +535,12 @@
     padding-bottom: calc(var(--space-1) + env(safe-area-inset-bottom, 0px));
   }
 
-  /* 右腕は畳んだ帯を持たず、口から下からの枠で出す（上に 48px、後ろの画面を残す。.composer-wrap は下の安全域を持たない） */
+  /* 会話の列の下端。app.css の .composer-wrap は下の安全域を持たない（古い殻は下タブが持つ）。キーボードの間は足さない */
+  .v3-main {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* 右腕は畳んだ帯を持たず、口から下からの枠で出す（上の安全域の下に 48px、後ろの画面を残す。.composer-wrap は下の安全域を持たない） */
   .v3-hand-show {
     display: none;
   }
@@ -523,7 +550,7 @@
   }
 
   .v3[data-hand-mode="over"][data-hand="open"] .v3-hand {
-    top: var(--space-8);
+    top: calc(var(--space-8) + env(safe-area-inset-top, 0px));
     left: 0;
     width: auto;
     padding-bottom: env(safe-area-inset-bottom, 0px);
@@ -583,6 +610,10 @@
     top: var(--vvt, 0px);
     left: 0;
     right: 0;
+  }
+
+  .v3.is-keyboard .v3-main {
+    padding-bottom: 0;
   }
 
   /* ナレッジは一覧（上）と中身（下）を縦に並べ、見出しの検索も出す（app.css は古い殻のサイドバーの前提で隠すので打ち消す。値は app.css の元の値） */

@@ -318,6 +318,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - 値はタイトルバーの地（`--surface`。GUIDELINES §2.1: ライト `#ffffff` / ダーク `#11141c`）に合わせる。`--bg` ではない（画面の上端の色が基準）。色を変えたら manifest・meta・JS の 3 箇所を同時に直す。
 - 画面のテーマは OS でなく `data-theme` で切り替わる（事実: workbench.js の `applyTheme`）。**切り替え時に JS で 2 つの `theme-color` の `content` を今のテーマの色に書き換える**（media 付きのままだと OS の設定に従ってしまう）。`system` のときは元の 2 値に戻す。ライト・ダークを残すと決めたので、この JS は必須。
 - **ステータスバーは `black-translucent`**（決定。#255・docs/plan/web-ui-polish.md の UI-12）。`default` は iOS 13 以降 OS の外観に従うので、既定のダークのアプリを OS がライトの端末で開くと上に白い帯が出る。`black-translucent` はステータスバーを透かして白い文字で描き、裏はタイトルバーの `padding-top: env(safe-area-inset-top)` の帯になる。**ライトのときの上端の帯は暗い色（`--primary`）で妥協する**（白地に白い文字を避ける。meta は起動時に固定でテーマに合わせて変えられないため。`app.css` の `@media (display-mode: standalone)`）。実機（iOS の版）での見え方は未確認。
+- 補（#384）: 新しい殻（`shell.css`）にはタイトルバーが無いので、ステータスバーの裏は `.v3` の `padding-top: env(safe-area-inset-top)` の帯になる。ライトのときの決定は同じ（帯だけ `--primary`。`shell.css` の `@media (display-mode: standalone)`）。詳しくは `docs/plan/web-ui-v3.md` §15。
 - iOS 17 以降は manifest の `display` も読むが、古い iOS のために `apple-mobile-web-app-capable` も残す。Chrome は `apple-mobile-web-app-capable` だけだと非推奨の警告を出すので、`mobile-web-app-capable` も並べる。
 
 ### 11.3 service worker
