@@ -829,6 +829,15 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE topic_moves ADD COLUMN message_id TEXT;
   CREATE UNIQUE INDEX topic_moves_proposed ON topic_moves(channel_id) WHERE state = 'proposed';
   `,
+  // v44（#378。docs/plan/web-ui-v3.md §3.3）: 既読。会話（チャンネル）ごとに、読んだ最後の history.id。
+  // 大きい方だけを採る（TopicReadStore.advance）。行が無ければ 0（何も読んでいない）
+  `
+  CREATE TABLE topic_reads (
+    channel_id TEXT PRIMARY KEY,
+    last_read_id INTEGER NOT NULL CHECK (last_read_id >= 1),
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
