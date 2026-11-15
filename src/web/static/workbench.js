@@ -134,7 +134,12 @@
     // 数（会話は未読のチャンネルの数）
     const n = a.count ? a.count() : 0;
     const countLabel = typeof a.countLabel === "function" ? a.countLabel() : a.countLabel || "";
-    const label = a.label + (n > 0 ? "（" + countLabel + n + "）" : "");
+    const running = !!(a.running && a.running() > 0);
+    // ラベルは数と実行中を「・」でつなぐ（例: 会話（判断待ち 1・実行中））
+    const parts = [];
+    if (n > 0) parts.push(countLabel + n);
+    if (running) parts.push("実行中");
+    const label = a.label + (parts.length > 0 ? "（" + parts.join("・") + "）" : "");
     const btn = el(
       "button",
       {
@@ -146,10 +151,11 @@
       },
       [icon(a.icon), el("span", { class: "act-label", text: a.label }), n > 0 ? el("span", { class: "act-count", text: count(n), "aria-hidden": "true" }) : null],
     );
-    // 実行中のターンがあれば、スマホでは会話の数の位置にスピナーを出す（CSS で 639px 以下だけ）
-    if (a.running && a.running() > 0) {
+    if (n > 0) btn.classList.add("has-count");
+    // 実行中のターンがあれば、スマホでは数を隠さずスピナーを添える（CSS で 639px 以下だけ。数があればアイコンの左上、無ければ数の位置）
+    if (running) {
       btn.classList.add("is-running");
-      btn.append(el("span", { class: "spinner spinner-sm act-spin", role: "img", "aria-label": "実行中" }));
+      btn.append(el("span", { class: "spinner spinner-sm act-spin", "aria-hidden": "true" }));
     }
     btn.addEventListener("click", () => {
       // スマホで「その他」のシートが開いていれば閉じてから

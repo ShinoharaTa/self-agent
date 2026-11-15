@@ -13,9 +13,9 @@
   // stage の付いたものはその段で中身を足すまで出さない（足した段で stage を外す）
   // phone はスマホ（639px 以下）の置き場: primary は下タブ、more は「その他」のシート（docs/plan/web-ui-polish.md の NAV）。
   // phoneTab はスマホで一覧を開かずにタブ（表）を直接開くもの（UI-7）
-  // Claude Code は会話の一覧の群（docs/plan/claude-code-channels.md §2）で、アクティビティには置かない。会話の数は未読 + 判断待ち
+  // Claude Code は会話の一覧の群（docs/plan/claude-code-channels.md §2）で、アクティビティには置かない。会話の数は未読 + 判断待ち（Claude Code の判断待ちとプロジェクトのセッションの許可待ち）
   const ACTIVITIES = [
-    { id: "chat", label: "会話", phone: "primary", icon: "message-square", enabled: always, count: () => store.unreadCount() + store.ccNeedsInputCount(), countLabel: chatCountLabel, running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
+    { id: "chat", label: "会話", phone: "primary", icon: "message-square", enabled: always, count: () => store.unreadCount() + store.ccNeedsInputCount() + store.sessionAskingCount(), countLabel: chatCountLabel, running: () => (store.running ? store.running.length : store.status ? store.status.running || 0 : 0) },
     { id: "tasks", label: "タスク", phone: "primary", phoneTab: true, icon: "square-check", enabled: always },
     { id: "reminders", label: "リマインド", phone: "primary", phoneTab: true, icon: "bell", enabled: always },
     { id: "knowledge", label: "ナレッジ・記憶", phone: "more", icon: "book", enabled: always },
@@ -31,7 +31,7 @@
   /** 会話の数の語（未読だけ・判断待ちだけ・両方） */
   function chatCountLabel() {
     const unread = store.unreadCount() > 0;
-    const needs = store.ccNeedsInputCount() > 0;
+    const needs = store.ccNeedsInputCount() + store.sessionAskingCount() > 0;
     return unread && needs ? "未読・判断待ち " : needs ? "判断待ち " : "未読 ";
   }
 
@@ -53,7 +53,7 @@
   /** 一覧の 1 行。tabId を開く。opts.sub は 2 行目（スマホだけ出す。PC は title） */
   function row(opts) {
     const current = opts.current !== undefined ? opts.current : SA.app.activeTabId() === opts.tab;
-    const btn = el("button", { class: "sb-row" + (opts.cls ? " " + opts.cls : ""), type: "button", "aria-current": current ? "true" : null, title: opts.title || null }, [
+    const btn = el("button", { class: "sb-row" + (opts.cls ? " " + opts.cls : ""), type: "button", "data-tab": opts.tab, "aria-current": current ? "true" : null, title: opts.title || null }, [
       // アイコンの無い行も 16px の空の箱でラベルの開始位置を揃える（GUIDELINES §4）
       opts.icon ? icon(opts.icon) : el("span", { class: "icon icon-blank", "aria-hidden": "true" }),
       opts.sub
@@ -100,18 +100,28 @@
     if (ch.kind === "session" && ch.projectDir && typeof ch.projectDir.dir === "string") {
       badges.push(el("span", { class: "badge badge-project", title: "プロジェクトのセッション", text: ch.projectDir.dir }));
     }
+    // プロジェクトのセッションが許可・質問の答えを待っていれば「許可待ち」（質問なら「質問」）と warning の点。待っているのはオーナーなのでスピナーは出さない
+    const asking = store.sessionAsking(ch);
+    const pending = !!(ch.permission && ch.permission.state === "pending");
+    const questions = asking && pending && ch.permission.question && Array.isArray(ch.permission.question.questions) && ch.permission.question.questions.length > 0;
+    if (asking) badges.push(el("span", { class: "badge hide-sm badge-accent", text: questions ? "質問" : "許可待ち" }));
     // 実行中のターンがあればスピナー（その間は未読の点を出さない）
-    const running = !!store.runningOf(ch.id);
+    const running = !asking && !!store.runningOf(ch.id);
     if (running) badges.push(el("span", { class: "spinner", role: "img", "aria-label": "実行中" }));
-    const unread = !running && store.isUnread(ch);
+    const unread = !asking && !running && store.isUnread(ch);
     return row({
       tab: "ch:" + ch.id,
       icon: ch.kind === "session" ? null : "hash",
       label: ch.kind === "session" ? ch.title : ch.name,
       badges,
-      dot: unread ? "dot-unread" : null,
-      dotLabel: unread ? "未読" : null,
+      dot: asking ? "dot-warn" : unread ? "dot-unread" : null,
+      dotLabel: asking ? (questions ? "質問" : "許可待ち") : unread ? "未読" : null,
       meta: ch.last ? SA.ui.shortTime(ch.last.at) : "",
+      title: !asking
+        ? null
+        : pending
+          ? ch.permission.toolName + ": " + SA.views.oneLine(String(ch.permission.summary || ""))
+          : store.runningWaitingText(store.runningOf(ch.id)),
     });
   }
 
@@ -436,8 +446,12 @@
     const act = ACTIVITIES.find((a) => a.id === id);
     if (!act || !RENDER[id]) {
       container.replaceChildren();
+      container.removeAttribute("data-activity");
       return;
     }
+    // 一覧のスクロールの位置は同じアクティビティを描き直すときだけ保つ（別のアクティビティへ切り替えたら先頭から）
+    const oldBody = [...container.children].find((c) => c.classList && c.classList.contains("sb-body"));
+    const keepTop = oldBody && container.getAttribute("data-activity") === id ? oldBody.scrollTop : 0;
     // 描き直しても同じ要素を使うもの（ナレッジの検索欄）にフォーカスがあれば、描き直した後に戻す。
     // 作り直す入力欄（会話の絞り込み）は同じ aria-label の新しい欄に焦点と選択範囲を戻す
     const focused = document.activeElement;
@@ -445,12 +459,18 @@
       focused && focused.tagName === "INPUT" && container.contains(focused) && focused.getAttribute("aria-label")
         ? { label: focused.getAttribute("aria-label"), start: focused.selectionStart, end: focused.selectionEnd }
         : null;
+    // 会話・Claude Code の行にフォーカスがあれば、描き直した後に同じ行（data-tab）へ戻す
+    const focusedTab =
+      focused && focused.tagName === "BUTTON" && focused.classList.contains("sb-row") && container.contains(focused) ? focused.getAttribute("data-tab") : null;
+    const rowTab = focusedTab && (focusedTab.startsWith("ch:") || focusedTab.startsWith("cc:")) ? focusedTab : null;
     const body = el("div", { class: "sb-body" });
     RENDER[id](body);
     container.replaceChildren(
       el("div", { class: "sb-header" }, [el("h2", { class: "sb-title", text: act.label }), el("span", { class: "sb-spacer" }), ...headerActions(id)]),
       body,
     );
+    container.setAttribute("data-activity", id);
+    if (keepTop > 0) body.scrollTop = keepTop;
     if (focused && focused !== document.activeElement && container.contains(focused)) focused.focus();
     else if (rebuilt) {
       const input = [...container.querySelectorAll("input")].find((n) => n.getAttribute("aria-label") === rebuilt.label);
@@ -462,6 +482,9 @@
           // 選択範囲を持たない種類の欄なら焦点だけ
         }
       }
+    } else if (rowTab) {
+      const btn = [...container.querySelectorAll("button.sb-row")].find((n) => n.getAttribute("data-tab") === rowTab);
+      if (btn) btn.focus({ preventScroll: true });
     }
   }
 

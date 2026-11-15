@@ -470,6 +470,9 @@ function loadSidebar(opts: {
   /** 会話の一覧に足す Claude Code のチャンネル（kind cc。CC14）と、未読にするチャンネル */
   ccChannels?: string[];
   unreadIds?: string[];
+  /** 会話の一覧に足すプロジェクトのセッション（kind session）と、実行中のターン（/api/running の行） */
+  sessions?: Array<Record<string, unknown>>;
+  running?: Array<Record<string, unknown>>;
 }) {
   const document = {
     activeElement: null,
@@ -488,16 +491,22 @@ function loadSidebar(opts: {
     channels: opts.channels === false ? null : {
       guilds: [{ id: "g", setUp: opts.setUp !== false }],
       personas: [{ id: "default", name: "既定の人格", isDefault: true }],
-      channels: [channel("c1", "inbox", "inbox"), channel("c2", "session", "調べもの", "active"), ...(opts.ccChannels ?? []).map((id) => channel(id, "cc", "cc-" + id))],
+      channels: [
+        channel("c1", "inbox", "inbox"),
+        channel("c2", "session", "調べもの", "active"),
+        ...(opts.ccChannels ?? []).map((id) => channel(id, "cc", "cc-" + id)),
+        ...(opts.sessions ?? []).map((extra) => ({ ...channel(String(extra.id), "session", String(extra.title), "active"), ...extra })),
+      ],
     },
     cc: opts.cc,
     ccAt: opts.cc ? Date.now() : 0,
     ccFailed: false,
-    running: [],
+    running: opts.running ?? [],
     ccEnabled: () => opts.ccEnabled,
     ccNeedsInputCount: () => (opts.cc ? opts.cc.sessions.filter((s) => s.state === "needs_input").length : 0),
     unreadCount: () => opts.unread ?? 1,
-    runningOf: () => null,
+    runningOf: (id: string) => (opts.running ?? []).find((r) => r.channelId === id) ?? null,
+    runningWaitingText: (run: { waitingPermission?: { toolName: string } } | null) => (run && run.waitingPermission ? "許可を待っています: " + run.waitingPermission.toolName : null),
     isUnread: (ch: { id: string }) => (opts.unreadIds ?? []).includes(ch.id),
     load: {
       cc: () => {
@@ -517,7 +526,10 @@ function loadSidebar(opts: {
       calls.kickCc++;
     },
   };
+  // 許可待ちの判定と数は api.js のものをそのまま使う
+  vm.runInNewContext(sessionAskingSource(), { store: SA.store });
   SA.views = {
+    oneLine: (text: string) => text.replace(/\s+/g, " "),
     ccName: (s: { name?: string; cwdLabel?: string }) => s.name || s.cwdLabel || "（名前なし）",
     ago: () => "1 分前",
     secondsAgo: () => "3 秒前",
@@ -530,7 +542,16 @@ function loadSidebar(opts: {
   const titleOf = (g: FakeNode) => g.children[0]!.children[1]!.text;
   const countOf = (g: FakeNode) => g.children[0]!.children[2]!.text;
   const ccGroup = groups.find((g) => titleOf(g) === "Claude Code");
-  return { sidebar, container, groups, titleOf, countOf, ccGroup, calls };
+  return { sidebar, container, groups, titleOf, countOf, ccGroup, calls, store: SA.store as Record<string, unknown> };
+}
+
+/** api.js の store.sessionAsking と store.sessionAskingCount */
+function sessionAskingSource(): string {
+  const js = read("api.js");
+  const asking = /store\.sessionAsking = \(ch\) => \{[\s\S]*?\n {2}\};/.exec(js)?.[0];
+  const count = /store\.sessionAskingCount = [^\n]*;/.exec(js)?.[0];
+  assert.ok(asking && count);
+  return asking + "\n" + count;
 }
 
 const ccSession = (sessionId: string, name: string, state: string, extra: Record<string, unknown> = {}) => ({ sessionId, name, state, inTmux: true, cwdLabel: "~/w/" + name, ...extra });
@@ -566,6 +587,204 @@ test("web static: store.ccNeedsInputCount（api.js）は連携が有効で一覧
   assert.equal(run({ ccEnabled: () => true, cc: { sessions } }), 2);
   assert.equal(run({ ccEnabled: () => false, cc: { sessions } }), 0);
   assert.equal(run({ ccEnabled: () => true, cc: null }), 0);
+});
+
+test("web static: 一覧を描き直しても .sb-body のスクロール位置を保つ（同じアクティビティのときだけ）", () => {
+  const { sidebar, container, store } = loadSidebar({ ccEnabled: false, cc: null });
+  const bodyOf = () => container.children.find((c) => c.classes.has("sb-body")) as (FakeNode & { scrollTop?: number }) | undefined;
+  assert.equal(container.getAttribute("data-activity"), "chat");
+  bodyOf()!.scrollTop = 120;
+  sidebar.render(container, "chat");
+  assert.equal(bodyOf()!.scrollTop, 120);
+  assert.equal(container.getAttribute("data-activity"), "chat");
+  // 別のアクティビティへ切り替えたら先頭から（戻ってきても先頭から）
+  store.openTasks = [];
+  bodyOf()!.scrollTop = 80;
+  sidebar.render(container, "tasks");
+  assert.equal(bodyOf()!.scrollTop ?? 0, 0);
+  assert.equal(container.getAttribute("data-activity"), "tasks");
+  sidebar.render(container, "chat");
+  assert.equal(bodyOf()!.scrollTop ?? 0, 0);
+  // 出さないアクティビティは空にして印を外す
+  sidebar.render(container, "status");
+  assert.equal(container.children.length, 0);
+  assert.equal(container.getAttribute("data-activity"), null);
+  // 行のボタンは開くタブを data-tab に持つ（描き直した後のフォーカスの戻し先）
+  sidebar.render(container, "chat");
+  const rowBtn = descendants(container).find((n) => n.tagName === "button" && n.classes.has("sb-row"))!;
+  assert.equal(rowBtn.getAttribute("data-tab"), "ch:c1");
+  const js = read("sidebar.js");
+  assert.match(js, /btn\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(js, /focusedTab\.startsWith\("ch:"\) \|\| focusedTab\.startsWith\("cc:"\)/);
+});
+
+test("web static: store.sessionAsking（api.js）は実行中のターンの waitingPermission を優先し、まだ読んでいなければ channel の permission", () => {
+  const make = (running: Array<Record<string, unknown>> | null, channels: Array<Record<string, unknown>> | null) => {
+    const store: Record<string, unknown> = {
+      running,
+      channels: channels === null ? null : { channels },
+      runningOf: (id: string) => (running ? running.find((r) => r.channelId === id) ?? null : null),
+    };
+    vm.runInNewContext(sessionAskingSource(), { store });
+    return store as { sessionAsking: (ch: unknown) => boolean; sessionAskingCount: () => number };
+  };
+  const pendingCh = { id: "s1", kind: "session", permission: { id: 1, state: "pending", toolName: "Bash" } };
+  const plainCh = { id: "s2", kind: "session", permission: null };
+  // まだ読んでいない（null）: channel の permission
+  assert.equal(make(null, null).sessionAsking(pendingCh), true);
+  assert.equal(make(null, null).sessionAsking(plainCh), false);
+  // 読んでいて空: 許可待ちではない（新しい方を信じる）
+  assert.equal(make([], null).sessionAsking(pendingCh), false);
+  // waitingPermission のある行・無い行
+  const waiting = [{ channelId: "s2", waitingPermission: { toolName: "Bash", since: "t" } }];
+  assert.equal(make(waiting, null).sessionAsking(plainCh), true);
+  assert.equal(make([{ channelId: "s1" }], null).sessionAsking(pendingCh), false);
+  // session でない行・無い行
+  assert.equal(make(null, null).sessionAsking({ id: "c1", kind: "inbox", permission: { state: "pending" } }), false);
+  assert.equal(make(waiting, null).sessionAsking({ id: "s2", kind: "cc" }), false);
+  assert.equal(make(null, null).sessionAsking(null), false);
+  // 数は一覧が無ければ 0
+  assert.equal(make(null, null).sessionAskingCount(), 0);
+  assert.equal(make(null, [pendingCh, plainCh]).sessionAskingCount(), 1);
+  assert.equal(make(waiting, [pendingCh, plainCh]).sessionAskingCount(), 1);
+});
+
+test("web static: プロジェクトのセッションの許可待ちの行はバッジ「許可待ち」（質問なら「質問」）と dot-warn で、スピナーを出さない。会話の数に入る", () => {
+  const permission = (extra: Record<string, unknown> = {}) => ({ id: 7, sessionId: "x", state: "pending", toolName: "Bash", summary: "npm  test", ...extra });
+  const { sidebar, groups, titleOf } = loadSidebar({
+    ccEnabled: false,
+    cc: null,
+    unread: 0,
+    sessions: [
+      { id: "p1", title: "許可のセッション", permission: permission() },
+      { id: "p2", title: "質問のセッション", permission: permission({ question: { questions: [{ question: "どれ" }] } }) },
+      { id: "p3", title: "動いているセッション" },
+    ],
+    running: [
+      { channelId: "p1", waitingPermission: { toolName: "Bash", since: "t" } },
+      { channelId: "p2", waitingPermission: { toolName: "AskUserQuestion", since: "t" } },
+      { channelId: "p3" },
+    ],
+  });
+  const active = groups.find((g) => titleOf(g) === "進行中")!;
+  const list = active.children.find((c) => c.tagName === "ul")!;
+  const rowNamed = (title: string) => list.children.find((li) => descendants(li).some((n) => n.classes.has("sb-label") && n.text === title))!;
+  const ask = rowNamed("許可のセッション");
+  const badgeText = (li: FakeNode) => descendants(li).filter((n) => n.classes.has("badge-accent")).map((n) => n.text);
+  assert.deepEqual(badgeText(ask), ["許可待ち"]);
+  assert.ok(descendants(ask).some((n) => n.classes.has("badge-accent") && n.classes.has("hide-sm")));
+  const dot = descendants(ask).find((n) => n.classes.has("dot-warn"))!;
+  assert.equal(dot.getAttribute("aria-label"), "許可待ち");
+  assert.equal(descendants(ask).some((n) => n.classes.has("spinner")), false);
+  assert.equal(ask.children[0]!.getAttribute("title"), "Bash: npm test");
+  const question = rowNamed("質問のセッション");
+  assert.deepEqual(badgeText(question), ["質問"]);
+  assert.equal(descendants(question).find((n) => n.classes.has("dot-warn"))!.getAttribute("aria-label"), "質問");
+  // 許可を待っていない実行中の行は今のまま（スピナー）
+  const run = rowNamed("動いているセッション");
+  assert.ok(descendants(run).some((n) => n.classes.has("spinner")));
+  assert.deepEqual(badgeText(run), []);
+  // 会話の数（未読 0 + 判断待ち 0 + 許可待ち 2）と語
+  const chat = sidebar.ACTIVITIES.find((a) => a.id === "chat")!;
+  assert.equal(chat.count!(), 2);
+  assert.equal(chat.countLabel!(), "判断待ち ");
+});
+
+test("web static: 下タブの数は実行中も隠さず、数があるときのスピナーはアイコンの左（has-count）", () => {
+  const css = read("app.css");
+  assert.doesNotMatch(css, /\.act-btn\.is-running \.act-count \{\s*display: none;/);
+  assert.match(css, /\.act-btn\.is-running\.has-count \.act-spin \{\s*left: auto;\s*right: calc\(50% \+ var\(--space-1\)\);\s*\}/);
+  // 数の位置の規則より後ろ（同じ詳細度なので後ろが勝つ）
+  assert.ok(css.indexOf(".act-btn.is-running.has-count .act-spin") > css.indexOf("left: calc(50% + var(--space-1));"));
+  const workbench = read("workbench.js");
+  assert.match(workbench, /btn\.classList\.add\("has-count"\)/);
+  assert.match(workbench, /parts\.join\("・"\)/);
+  assert.match(workbench, /el\("span", \{ class: "spinner spinner-sm act-spin", "aria-hidden": "true" \}\)/);
+});
+
+test("web static: ccStatusOf（chat.js）は 届け待ち > 作業中 > 届けた の順で 1 つだけ返す", () => {
+  const src = /function ccStatusOf\(live\) \{[\s\S]*?\n  \}/.exec(read("chat.js"))?.[0];
+  assert.ok(src);
+  const context: Record<string, unknown> = {};
+  vm.runInNewContext(src + "\nresult = ccStatusOf;", context);
+  const ccStatusOf = context.result as (live: unknown) => { kind: string; text: string; cancel: boolean } | null;
+  const p = (state: string, extra: Record<string, unknown> = {}) => ({ id: 3, state, lastPaneState: null, replyState: null, ...extra });
+  const plain = (v: unknown) => (v === null ? null : JSON.parse(JSON.stringify(v)));
+  const cases: Array<[unknown, unknown]> = [
+    [{ state: "ended", pending: p("queued") }, null],
+    [{ state: "idle", pending: p("delivering") }, { kind: "queued", text: "届けています…", cancel: false }],
+    [{ state: "running", pending: p("queued", { lastPaneState: "dialog" }) }, { kind: "queued", text: "ダイアログが出ているため待っています（端末か RC で答えてください）", cancel: true }],
+    [{ state: "running", pending: p("queued") }, { kind: "queued", text: "作業中です。終わったら届けます", cancel: true }],
+    [{ state: "idle", pending: p("queued") }, { kind: "queued", text: "届け待ちです。入力待ちになったら届けます", cancel: true }],
+    [{ state: "running", pending: p("delivered", { replyState: "waiting" }) }, { kind: "running", text: "作業中…", cancel: false }],
+    [{ state: "idle", pending: p("delivered", { replyState: "waiting" }) }, { kind: "delivered", text: "届けました。返事を待っています", cancel: false }],
+    [{ state: "needs_input", pending: p("delivered", { replyState: "waiting" }) }, null],
+    [{ state: "idle", pending: p("delivered", { replyState: "sent" }) }, null],
+    [{ state: "idle", pending: p("cancelled") }, null],
+    [{ state: "idle", pending: null }, null],
+    // id が数でない pending は無いものとして、作業中だけを見る
+    [{ state: "running", pending: { id: "x", state: "queued" } }, { kind: "running", text: "作業中…", cancel: false }],
+    [{ state: "idle", pending: { id: "x", state: "queued" } }, null],
+  ];
+  for (const [live, want] of cases) assert.deepEqual(plain(ccStatusOf(live)), want, JSON.stringify(live));
+});
+
+test("web static: Claude Code のチャンネルは送った直後に仮の届け待ちを出し、行が同じ送信を出している間は帯を出さない", () => {
+  const chat = read("chat.js");
+  assert.match(chat, /if \(data && typeof data\.sendId === "number"\) store\.setCcOptimisticSend\(live\.sessionId, data\.sendId\);/);
+  assert.match(chat, /const CC_SEND_RECHECK_MS = \[1000, 3000, 6000\];/);
+  assert.match(chat, /for \(const ms of CC_SEND_RECHECK_MS\) setTimeout\(\(\) => store\.load\.ccSession\(live\.sessionId, \{ quiet: true \}\), ms\);/);
+  assert.match(chat, /const status = ccStatusRow\(live\);\n {6}if \(status\) timeline\.append\(status\);/);
+  assert.match(chat, /ccPending = live\.sessionId && !\(statusKind === "queued" \|\| statusKind === "delivered"\) \? SA\.views\.ccPendingBar\(live\.sessionId, live\.pending\) : null;/);
+  assert.match(chat, /store\.ccPendingOf\(info\.sessionId, session \? session\.pending : info\.pending\)/);
+  assert.match(chat, /SA\.views\.cancelCcSend\(live\.pending\.id, live\.sessionId, cancel\)/);
+  assert.match(read("app.css"), /\n\.cc-status \.btn \{\s*margin-left: var\(--space-2\);\s*\}/);
+  // views.js の export
+  assert.match(/SA\.views = \{[\s\S]*?\n {2}\};/.exec(read("views.js"))?.[0] ?? "", /\n {4}cancelCcSend,\n/);
+  // api.js の store.ccPendingOf
+  const api = read("api.js");
+  const src = /const CC_OPTIMISTIC_MS = [\s\S]*?store\.ccPendingOf = [\s\S]*?\n {2}\};/.exec(api)?.[0];
+  assert.ok(src);
+  assert.match(api, /if \(err && err\.status === 404\) \{\n {10}store\.ccSessions\[sessionId\] = \{ session: null, missing: true \};\n {10}delete store\.ccOptimistic\[sessionId\];/);
+  const run = () => {
+    const store: Record<string, unknown> = {};
+    vm.runInNewContext(src, { store, Date });
+    return store as {
+      ccOptimistic: Record<string, { id: number; state: string; updatedAt: string }>;
+      setCcOptimisticSend: (sessionId: string, sendId: number) => void;
+      ccPendingOf: (sessionId: string, server: unknown) => unknown;
+    };
+  };
+  // 仮だけ
+  const a = run();
+  assert.equal(a.ccPendingOf("s", null), null);
+  a.setCcOptimisticSend("s", 5);
+  assert.equal((a.ccPendingOf("s", null) as { id: number; state: string }).state, "queued");
+  // サーバーの id が同じ・大きい: サーバーのもので、仮は消す
+  for (const id of [5, 6]) {
+    const b = run();
+    b.setCcOptimisticSend("s", 5);
+    const server = { id, state: "delivered" };
+    assert.equal(b.ccPendingOf("s", server), server);
+    assert.equal(b.ccOptimistic.s, undefined);
+  }
+  // サーバーの id が小さい（前の送信）: 仮のもの
+  const c = run();
+  c.setCcOptimisticSend("s", 5);
+  assert.equal((c.ccPendingOf("s", { id: 4, state: "delivered" }) as { id: number }).id, 5);
+  // 30 秒より古い: サーバーのもので、仮は消す
+  const d = run();
+  d.setCcOptimisticSend("s", 5);
+  d.ccOptimistic.s!.updatedAt = new Date(Date.now() - 31000).toISOString();
+  const old = { id: 4, state: "delivered" };
+  assert.equal(d.ccPendingOf("s", old), old);
+  assert.equal(d.ccOptimistic.s, undefined);
+});
+
+test("web static: 届け待ちの間は前面の Claude Code のセッションを 3 秒ごとに読む", () => {
+  const api = read("api.js");
+  assert.match(api, /ccSendBusy\(\) \? CC_PERMISSION_INTERVAL_MS : ccScreenIdle\(\) \? CC_LIST_INTERVAL_MS : CC_SCREEN_INTERVAL_MS/);
+  assert.match(api, /return !!\(p && \(p\.state === "queued" \|\| p\.state === "delivering"\)\);/);
 });
 
 test("web static: 会話の一覧は 入口 → Claude Code → 進行中 → 待ち → 完了 で、Claude Code の群は起動中 → 一覧の順（サーバーの並び）・見出しの数は判断待ち・行は cc:<id> を開く", () => {
