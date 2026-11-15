@@ -105,7 +105,7 @@ async function setup(
     move?: "cc" | "noCc";
     moveSteps?: FakeRunStep[];
     proposals?: boolean;
-    fakeProposals?: Pick<TopicProposals, "pendingAll">;
+    fakeProposals?: Pick<TopicProposals, "pendingAll" | "accept" | "keep" | "channelOf">;
   } = {},
 ) {
   const db = tempDb(t);
@@ -217,6 +217,15 @@ async function setup(
     }
   };
   const postFails = { value: false };
+  /** 結果の投稿（場所の付け替えの配線と、確認の本体の send で共通） */
+  const post = async (channelId: string, text: string): Promise<void> => {
+    if (postFails.value) throw new TypeError("post failed");
+    posts.push({ channelId, text });
+    for (const waiter of postWaiters.filter((w) => posts.length >= w.count)) {
+      postWaiters.splice(postWaiters.indexOf(waiter), 1);
+      waiter.resolve();
+    }
+  };
   const turnQueue = new KeyedSerialQueue(2);
   const move =
     options.move === undefined
@@ -230,20 +239,12 @@ async function setup(
           ...(options.move === "cc" ? { projectSessions: { places, ready: () => ready.value } } : {}),
           history,
           setChannelTopic: async (channelId: string, topic: string) => void topicCalls.push({ channelId, topic }),
-          ownerPosts: {
-            send: async (channelId: string, text: string) => {
-              if (postFails.value) throw new TypeError("post failed");
-              posts.push({ channelId, text });
-              for (const waiter of postWaiters.filter((w) => posts.length >= w.count)) {
-                postWaiters.splice(postWaiters.indexOf(waiter), 1);
-                waiter.resolve();
-              }
-            },
-          },
+          ownerPosts: { send: post },
           log,
         };
-  // 右腕の場所を変える確認（proposals のときだけ。投稿はしないので ownerPosts は使われない）
+  // 右腕の場所を変える確認（proposals のときだけ）。付け替えの結果の投稿は posts に、札の書き換えは cardEdits に入る
   const proposalClock = { at: NOW };
+  const cardEdits: Array<{ channelId: string; messageId: string; text: string }> = [];
   const proposalMove: MoveDeps = {
     topicSessions,
     moves,
@@ -261,9 +262,9 @@ async function setup(
           move: proposalMove,
           moves,
           ownerPosts: {
-            send: async () => undefined,
+            send: post,
             sendMessage: async () => "card-1",
-            editMessage: async () => undefined,
+            editMessage: async (channelId: string, messageId: string, message: { text: string }) => void cardEdits.push({ channelId, messageId, text: message.text }),
           },
           now: () => proposalClock.at,
           log,
@@ -327,6 +328,7 @@ async function setup(
     topicCalls,
     turnQueue,
     proposalClock,
+    cardEdits,
   };
 }
 
@@ -1252,7 +1254,12 @@ test("GET /api/topics: 右腕の確認の expiresAt は本体（pendingAll）の
   const createdAt = NOW.toISOString();
   const expiresAt = new Date(NOW.getTime() + 3 * 60_000).toISOString();
   const s = await setup(t, {
-    fakeProposals: { pendingAll: () => [{ id: 1, channelId: "200", from: "なし", to: "beta", createdAt, expiresAt }] },
+    fakeProposals: {
+      pendingAll: () => [{ id: 1, channelId: "200", from: "なし", to: "beta", createdAt, expiresAt }],
+      accept: async () => assert.fail("accept"),
+      keep: async () => assert.fail("keep"),
+      channelOf: () => "200",
+    },
   });
   const result = await topics(s.server);
   assert.deepEqual(byId(result, "ch:200")!.turn, { kind: "confirm", summary: "場所を beta に変える確認", since: createdAt, expiresAt });
@@ -1288,4 +1295,90 @@ test("GET /api/topics: proposals を渡さなければ、確認の行があっ�
   const after = await topics(plain.server);
   assert.deepEqual(after, before);
   assert.equal(byId(after, "ch:200")!.turn, null);
+});
+
+// ---- 右腕の場所を変える確認に Web から答える（M6g） ----
+
+/** 札の出ている確認の行を足す（from を指定する） */
+function proposeFrom(s: Awaited<ReturnType<typeof setup>>, channelId: string, fromDir: string | null, toDir: string): number {
+  const id = s.moves.propose({ channelId, fromDir, toDir, by: "right_hand" });
+  assert.ok(id !== undefined);
+  s.moves.setMessageId(id, "card-1");
+  return id;
+}
+
+test("POST /api/topics/moves/<id>/accept: 202 { accepted: true }。付け替えが 1 回走り、結果がチャンネルに投稿される", async (t) => {
+  const s = await setup(t, { proposals: true, moveSteps: [moveOk(MOVE_NOTE)] });
+  const id = proposeFrom(s, "201", "alpha", "beta");
+  assert.deepEqual(await postJson(s.server, `/api/topics/moves/${id}/accept`, {}), { status: 202, json: { accepted: true } });
+  await s.waitPosts(1);
+  assert.deepEqual(s.posts, [{ channelId: "201", text: movedPostText({ from: "alpha", to: "beta", note: MOVE_NOTE }, undefined) }]);
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "beta", permissionMode: "default" });
+  assert.equal(s.moveRunner.inputs.length, 1);
+  assert.equal(s.moves.get(id)?.state, "done");
+  // 札は「変えています」に書き換わる（Discord のボタンと同じ本体）
+  assert.deepEqual(s.cardEdits.map((e) => e.text), ["場所を **beta** に変えています"]);
+});
+
+test("POST /api/topics/moves/<id>/keep: 200 { ok: true }。場所は変わらない", async (t) => {
+  const s = await setup(t, { proposals: true });
+  const id = proposeFrom(s, "201", "alpha", "beta");
+  assert.deepEqual(await postJson(s.server, `/api/topics/moves/${id}/keep`, {}), { status: 200, json: { ok: true } });
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "alpha", permissionMode: "default" });
+  assert.equal(s.moveRunner.inputs.length, 0);
+  assert.equal(s.moves.get(id)?.state, "cancelled");
+  assert.deepEqual(s.posts, []);
+});
+
+test("POST /api/topics/moves/<id>/accept・/keep: 無い id と許可の外のサーバーの話題の確認は 404", async (t) => {
+  const s = await setup(t, { proposals: true, allowed: [GUILD] });
+  const outside = proposeFrom(s, "400", null, "beta");
+  for (const action of ["accept", "keep"]) {
+    for (const id of [9999, outside]) {
+      assert.deepEqual(await postJson(s.server, `/api/topics/moves/${id}/${action}`, {}), { status: 404, json: { error: "not_found" } }, `${action} ${id}`);
+    }
+  }
+  // 確認は残る
+  assert.equal(s.moves.get(outside)?.state, "proposed");
+  assert.equal(s.topicSessions.projectDirOf("400"), undefined);
+});
+
+test("POST /api/topics/moves/<id>/accept・/keep: 期限切れ・答えた後の確認は 409 stale", async (t) => {
+  const s = await setup(t, { proposals: true });
+  // 答えた後
+  const answered = proposeFrom(s, "201", "alpha", "beta");
+  assert.equal((await postJson(s.server, `/api/topics/moves/${answered}/keep`, {})).status, 200);
+  for (const action of ["accept", "keep"]) {
+    assert.deepEqual(await postJson(s.server, `/api/topics/moves/${answered}/${action}`, {}), { status: 409, json: { error: "stale" } }, action);
+  }
+  // 期限切れ
+  for (const action of ["accept", "keep"]) {
+    s.proposalClock.at = NOW;
+    const expired = proposeFrom(s, "200", null, "beta");
+    s.proposalClock.at = new Date(NOW.getTime() + 10 * 60_000);
+    assert.deepEqual(await postJson(s.server, `/api/topics/moves/${expired}/${action}`, {}), { status: 409, json: { error: "stale" } }, action);
+  }
+  assert.equal(s.moveRunner.inputs.length, 0);
+  assert.equal(s.topicSessions.projectDirOf("200"), undefined);
+});
+
+test("POST /api/topics/moves/<id>/accept: 実行中の話題は 409 で body に error と message。確認は残る", async (t) => {
+  const s = await setup(t, { proposals: true, running: ["201"] });
+  const id = proposeFrom(s, "201", "alpha", "beta");
+  assert.deepEqual(await postJson(s.server, `/api/topics/moves/${id}/accept`, {}), {
+    status: 409,
+    json: { error: "busy", message: moveRefusalText("busy") },
+  });
+  assert.equal(s.moves.get(id)?.state, "proposed");
+  assert.deepEqual(s.cardEdits, []);
+  assert.equal(s.moveRunner.inputs.length, 0);
+});
+
+test("POST /api/topics/moves/<id>/accept・/keep: proposals を渡さなければ 2 つの口は無い（404）", async (t) => {
+  const s = await setup(t);
+  const id = proposeFrom(s, "201", "alpha", "beta");
+  for (const action of ["accept", "keep"]) {
+    assert.deepEqual(await postJson(s.server, `/api/topics/moves/${id}/${action}`, {}), { status: 404, json: { error: "not_found" } }, action);
+  }
+  assert.equal(s.moves.get(id)?.state, "proposed");
 });

@@ -1164,7 +1164,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       start: topicStart,
       // POST /api/topics/ch:<id>/place（M5。/move と同じ実体。結果は持ち主の Bot でチャンネルに投稿する）
       move: { ...moveDeps, ownerPosts },
-      // 右腕の場所を変える確認を「あなたの番」に付ける（M6e）
+      // 右腕の場所を変える確認を「あなたの番」に付ける（M6e）。POST /api/topics/moves/<id>/accept・/keep（M6g）も同じ実体
       proposals: topicProposals,
       now,
   };
@@ -1210,6 +1210,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         personas,
         resolveChannel,
         ...(webCc === undefined ? {} : { cc: webCc }),
+        // 右腕の場所を変える確認を会話のタブのカードに出す（M6g。topicRoutes の proposals と同じ実体）
+        proposals: topicProposals,
         // プロジェクトのセッションの許可の要求（origin sdk）を会話のタブのカードに出す
         ...(projectPermissionBridge === undefined
           ? {}

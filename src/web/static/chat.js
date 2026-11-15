@@ -1,6 +1,7 @@
 // 会話（#inbox・#tasks・#<NAME>・セッション）のタブ。SA.store.turns[channelId] の行と実行中のターン（SA.store.running）を描き、見ている間は既読にする。
 // 入力欄から送ると Discord の発言と同じ経路で 1 ターン動く（POST /messages）。[中断]・[続ける] は Discord のボタンと同じ handler の関数。
 // 見出しの [待ちにする][閉じる][会話を新しくする] と /close の確認のカードは Discord の /wait・/close・/renew と同じ処理（src/app/session-ops.ts）。
+// 右腕の場所を変える確認のカード（/turns の channel.moveProposal）は Discord の [変える][このまま] と同じ処理（POST /api/topics/moves/<id>/accept・/keep）。
 // Claude Code のチャンネル（kind cc。docs/plan/claude-code-channels.md §5.2。CC14）は同じタブで Discord と同じ流れ（発言・写し・返事・許可・終わり）を出し、
 // 見出しに状態・[RC で開く]・[画面]・[Discord で開く]・[閉じる]、末尾に許可のカード（保留中だけ）と送った本文の状態、入力欄から送るとそのセッションに届ける
 // （ターンは動かないので実行中の行・[中断]・[続ける]・[会話を新しくする] は無い）。セッションの今は /api/cc/sessions/<id>（api.js の polling）
@@ -303,6 +304,44 @@
         el("dd", {}, [list]),
       ]),
       el("div", { class: "msg-actions" }, tasks.length === 0 ? [none] : buttons),
+    ]);
+  }
+
+  // ===== 右腕の場所を変える確認（M6g。Discord の [変える][このまま] と同じ処理） =====
+  const MOVE_STALE_TEXT = "この確認はもう使えません";
+
+  /** 場所を変える確認に答える（action は accept・keep。[もう一度] はボタン無しでここから） */
+  async function answerMove(channelId, id, action, buttons) {
+    for (const b of buttons) b.disabled = true;
+    try {
+      await SA.api.post("/api/topics/moves/" + encodeURIComponent(id) + "/" + action, {}, { quiet: true });
+      toast(action === "accept" ? "場所を変えています" : "場所はこのままにしました");
+    } catch (err) {
+      if (err && err.status === 409 && err.code === "stale") toast(MOVE_STALE_TEXT);
+      else if (err && err.data && typeof err.data.message === "string") toast(err.data.message);
+      else opFailed(err, () => answerMove(channelId, id, action, []));
+      for (const b of buttons) b.disabled = false;
+    }
+    reloadAfterOp(channelId);
+  }
+
+  /** 場所を変える確認のカード（今の場所・変える先・[変える][このまま]） */
+  function moveCard(channelId, pending) {
+    const ok = el("button", { class: "btn btn-primary btn-sm", type: "button", text: "変える" });
+    const keep = el("button", { class: "btn btn-secondary btn-sm", type: "button", text: "このまま" });
+    const buttons = [ok, keep];
+    ok.addEventListener("click", () => answerMove(channelId, pending.id, "accept", buttons));
+    keep.addEventListener("click", () => answerMove(channelId, pending.id, "keep", buttons));
+    return el("section", { class: "card card-sm", "aria-label": "場所を変える確認" }, [
+      el("div", { class: "card-head" }, [el("h2", { text: "場所を変える確認" }), el("span", { class: "meta", text: "Discord でも選べます" })]),
+      el("dl", { class: "card-facts" }, [
+        el("dt", { text: "今の場所" }),
+        el("dd", { text: String(pending.from || "") }),
+        el("dt", { text: "変える先" }),
+        el("dd", { text: String(pending.to || "") }),
+      ]),
+      el("p", { text: "会話は新しくなり、担当には要点を引き継ぎます。記録はこのまま残ります。ファイルは動かしません。" }),
+      el("div", { class: "msg-actions" }, buttons),
     ]);
   }
 
@@ -984,6 +1023,8 @@
     if (ch && ch.kind === "session" && ch.state !== "done" && ch.closeDraft && !(waiting && waiting.kind === "close")) {
       timeline.append(closeCard(channelId, ch.closeDraft));
     }
+    // 右腕の場所を変える確認（期限の中の物があるときだけ）
+    if (ch && ch.moveProposal) timeline.append(moveCard(channelId, ch.moveProposal));
     let ccPending = null;
     let card = null;
     if (isCc) {

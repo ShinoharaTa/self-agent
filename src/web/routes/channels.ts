@@ -2,6 +2,7 @@
 // 対象は /setup 済みのサーバーだけ（env の SELF_AGENT_INBOX_CHANNEL_ID は使わない）。ID は Discord のリンクを作るために返す（log には出さない）。
 // Claude Code のチャンネル（docs/plan/claude-code-channels.md §5.2。CC14）: cc を渡したときだけ、削除されていない cc_channels の行を kind "cc" で一覧と /turns に出す
 // （種類は ChannelKind | "cc"。access.ts の ChannelKind は変えない。SDK のターンが無いので /renew・/continue・/abort は呼び出し側で 404）
+// /turns の channel.moveProposal（M6g）は、その話題の期限の中の右腕の場所を変える確認（app/topic-proposals.ts の pending。proposals を渡したときだけ。無ければ null）
 import { type Config, DEFAULT_PERSONA_ID } from "../../config.ts";
 import type { ChannelKind, ResolveChannel } from "../../app/access.ts";
 import type { CcChannelRow, CcChannelStore } from "../../store/cc-channels.ts";
@@ -15,6 +16,7 @@ import type { CcPermissionStore } from "../../store/cc-permissions.ts";
 import type { SdkSessionStore } from "../../store/sdk-sessions.ts";
 import { CC_PERMISSION_RECENT_MS, type HoldSeconds, permissionJson } from "./cc.ts";
 import type { TopicSession, TopicSessionStore } from "../../store/topic-sessions.ts";
+import type { TopicProposals } from "../../app/topic-proposals.ts";
 import type { Route, RouteResult } from "../server.ts";
 
 /** /turns の limit の既定 */
@@ -64,6 +66,8 @@ export type ChannelRouteDeps = {
     sessions: Pick<SdkSessionStore, "get">;
     now?: () => Date;
   } & HoldSeconds;
+  /** 右腕の場所を変える確認（app/topic-proposals.ts。topicRoutes に渡している物と同じ実体）。/turns の channel.moveProposal に使う */
+  proposals?: Pick<TopicProposals, "pending">;
 };
 
 /** 一覧と /turns の 1 チャンネル */
@@ -185,7 +189,7 @@ export function webChannelNamer(
 }
 
 export function channelRoutes(deps: ChannelRouteDeps): Route[] {
-  const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel, cc, projectPermissions } = deps;
+  const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel, cc, projectPermissions, proposals } = deps;
 
   /** プロジェクトのセッションの最新の許可の要求（無ければ null） */
   const sessionPermission = (channelId: string): WebChannel["permission"] => {
@@ -381,10 +385,13 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
         const last = channel.kind === "session" && channel.state !== "done" ? history.list(channelId, { limit: 1 })[0] : undefined;
         const awaitingConfirm = last !== undefined && last.kind === "notice" && last.source === "system" && last.text === CLOSE_CONFIRM_NOTICE;
         const closeDraft = awaitingConfirm ? (topicSessions.getCloseDraft(channelId) ?? null) : null;
+        // 右腕の場所を変える確認（期限の中の物だけ）。会話の末尾に [変える][このまま] のカードを出す
+        const pending = proposals?.pending(channelId);
+        const moveProposal = pending === undefined ? null : { id: pending.id, from: pending.from, to: pending.to, expiresAt: pending.expiresAt };
         return {
           status: 200,
           json: {
-            channel: { ...channel, closeDraft },
+            channel: { ...channel, closeDraft, moveProposal },
             turns: rows.map((row) => turnOf(row, channel.link)),
             // before で limit 件取れたら、まだ前があるかもしれない（最新の limit 件のときは画面が件数で判断する）
             hasMore: before !== undefined && rows.length === limit,

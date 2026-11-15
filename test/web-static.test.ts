@@ -3437,6 +3437,11 @@ function loadChat() {
       },
       ccSession: () => Promise.resolve(null),
       running: () => Promise.resolve(null),
+      // 操作の後の読み直し（reloadAfterOp）
+      channels: () => {
+        loads.push("channels");
+        return Promise.resolve(null);
+      },
     },
   };
   SA.store = store;
@@ -5562,4 +5567,118 @@ test("web static: v3 の場所: close が後から届いても（本物の <dial
   assert.equal(closeListeners(h), 0);
   await h.flush();
   assert.deepEqual(h.toasts, ["場所を beta に変えています。要点をまとめるので少しかかります"]);
+});
+
+// ===== 右腕の場所を変える確認のカード（M6g。chat.js の moveCard） =====
+
+const MOVE_PROPOSAL = { id: 7, from: "なし", to: "beta", expiresAt: "2026-11-14T00:10:00.000Z" };
+
+/** 確認のある話題（200）を描き、カードを返す（会話のタブは 2 つの殻とも views.info("ch:<id>") の render で描く） */
+function renderMoveCard(proposal: unknown = MOVE_PROPOSAL) {
+  const c = loadChat();
+  c.put("200", [chatTurn(10, "notice", "場所を なし から beta に変える確認を出しました")], { kind: "session", state: "active", title: "家計簿", moveProposal: proposal });
+  const box = c.box();
+  const views = (c.context.window as { SA: { views: { info: (tab: string) => { render: (container: DomNode) => void } | null } } }).SA.views;
+  views.info("ch:200")!.render(box);
+  const card = box.querySelector('section[aria-label="場所を変える確認"]');
+  const button = (label: string) => card!.buttons().find((b) => b.textContent === label) as (DomNode & { disabled?: boolean }) | undefined;
+  return { c, box, card, button };
+}
+
+test("web static: 場所を変える確認のカードは、今の画面（index.html）と新しい殻（v3.html）の両方が読む chat.js・views.js にある", () => {
+  for (const html of ["index.html", "v3.html"]) {
+    const text = read(html);
+    for (const js of ["chat.js", "views.js"]) assert.match(text, new RegExp(`<script src="/static/${js.replace(".", "\\.")}" defer></script>`), `${html}: ${js}`);
+  }
+  // 2 つの殻はどちらも会話のタブを views.info の render で描き、views.info("ch:<id>") は chat.js の info
+  assert.match(read("workbench.js"), /SA\.views\.info\(/);
+  assert.match(read("shell.js"), /SA\.views\.info\(/);
+  assert.match(read("views.js"), /SA\.chat\.info\(channelId\)/);
+});
+
+test("web static: moveProposal があると確認のカードが出て、今の場所・変える先・[変える][このまま] がある", () => {
+  const { card, button } = renderMoveCard();
+  assert.ok(card, "カードが出る");
+  assert.ok(card.classes.has("card") && card.classes.has("card-sm"));
+  assert.equal(card.querySelector("h2")!.textContent, "場所を変える確認");
+  assert.equal(card.querySelector("span.meta")!.textContent, "Discord でも選べます");
+  const facts = card.querySelector("dl.card-facts")!;
+  assert.deepEqual(facts.querySelectorAll("dt").map((n) => n.textContent), ["今の場所", "変える先"]);
+  assert.deepEqual(facts.querySelectorAll("dd").map((n) => n.textContent), ["なし", "beta"]);
+  assert.match(card.textContent, /会話は新しくなり、担当には要点を引き継ぎます。記録はこのまま残ります。ファイルは動かしません。/);
+  assert.ok(card.querySelector("div.msg-actions"));
+  assert.ok(button("変える")!.classes.has("btn-primary"));
+  assert.ok(button("このまま")!.classes.has("btn-secondary"));
+});
+
+test("web static: moveProposal が null ならカードは出ない", () => {
+  const { card } = renderMoveCard(null);
+  assert.equal(card, null);
+});
+
+test("web static: [変える] を押すと /api/topics/moves/<id>/accept に POST し、ボタンが disabled になる。成功のトーストと読み直し", async () => {
+  const { c, button } = renderMoveCard();
+  const ok = button("変える")!;
+  const keep = button("このまま")!;
+  ok.dispatch("click");
+  assert.equal(ok.disabled, true);
+  assert.equal(keep.disabled, true);
+  await c.flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(c.posts)), [{ path: "/api/topics/moves/7/accept", body: {} }]);
+  assert.deepEqual(c.toasts, ["場所を変えています"]);
+  assert.deepEqual(c.loads, ["200", "channels"]);
+});
+
+test("web static: [このまま] を押すと /api/topics/moves/<id>/keep に POST する", async () => {
+  const { c, button } = renderMoveCard();
+  button("このまま")!.dispatch("click");
+  await c.flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(c.posts)), [{ path: "/api/topics/moves/7/keep", body: {} }]);
+  assert.deepEqual(c.toasts, ["場所はこのままにしました"]);
+  assert.deepEqual(c.loads, ["200", "channels"]);
+});
+
+test("web static: 409（stale）のとき「この確認はもう使えません」を出し、読み直す。ほかの断りは応答の message", async () => {
+  const { c, button } = renderMoveCard();
+  const api = (c.context.window as { SA: { api: { post: unknown } } }).SA.api;
+  api.post = () => Promise.reject(Object.assign(new Error("409: stale"), { status: 409, code: "stale", data: { error: "stale" }, toast: "操作に失敗しました。もう一度試してください" }));
+  button("変える")!.dispatch("click");
+  await c.flush();
+  assert.deepEqual(c.toasts, ["この確認はもう使えません"]);
+  assert.deepEqual(c.loads, ["200", "channels"]);
+
+  const other = renderMoveCard();
+  const otherApi = (other.c.context.window as { SA: { api: { post: unknown } } }).SA.api;
+  otherApi.post = () =>
+    Promise.reject(Object.assign(new Error("409: busy"), { status: 409, code: "busy", data: { error: "busy", message: "作業中です" }, toast: "操作に失敗しました。もう一度試してください" }));
+  other.button("変える")!.dispatch("click");
+  await other.c.flush();
+  assert.deepEqual(other.c.toasts, ["作業中です"]);
+  assert.deepEqual(other.c.loads, ["200", "channels"]);
+});
+
+test("web static: 確認のカードの文は文字のまま出す（from・to にタグの形の文字を入れても要素にならない）", () => {
+  const { card } = renderMoveCard({ id: 7, from: "<b>x</b>", to: "<img src=x onerror=alert(1)>", expiresAt: "2026-11-14T00:10:00.000Z" });
+  const dd = card!.querySelectorAll("dd");
+  assert.deepEqual(dd.map((n) => n.textContent), ["<b>x</b>", "<img src=x onerror=alert(1)>"]);
+  assert.equal(card!.querySelectorAll("b").length, 0);
+  assert.equal(card!.querySelectorAll("img").length, 0);
+  assert.doesNotMatch(fnSource(read("chat.js"), "moveCard"), /innerHTML|insertAdjacentHTML/);
+});
+
+test("web static: api.js の updateChannel は moveProposal を一覧に持ち続けない", async () => {
+  const h = loadApi(() =>
+    Promise.resolve({
+      channel: { id: "1", kind: "session", state: "active", last: null, closeDraft: null, moveProposal: MOVE_PROPOSAL },
+      turns: [],
+    }),
+  );
+  (h.SA.chat as Record<string, unknown>).channelsChanged = () => undefined;
+  const store = h.SA.store as { channels: { channels: Array<Record<string, unknown>> }; turns: Record<string, { channel: Record<string, unknown> }>; load: { turns: (id: string) => Promise<unknown> } };
+  store.channels = { channels: [{ id: "1", kind: "session", state: "active", last: null }] };
+  assert.equal(await store.load.turns("1"), null);
+  // 会話の channel には残り（カードを描く）、一覧の 1 件には入れない
+  assert.deepEqual(store.turns["1"]!.channel.moveProposal, MOVE_PROPOSAL);
+  assert.equal("moveProposal" in store.channels.channels[0]!, false);
+  assert.equal("closeDraft" in store.channels.channels[0]!, false);
 });
