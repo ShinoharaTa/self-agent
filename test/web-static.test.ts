@@ -1779,7 +1779,7 @@ test("web static: topics.js は一覧の入れ物を作り直さない", () => {
     assert.doesNotMatch(js, new RegExp(`\\b${name}\\.(replaceChildren\\(|innerHTML|textContent = "")`), name);
   }
   // 群・行・「あなたの番」の行は同じ reconcile で
-  assert.match(js, /reconcile\(groups, data\.groups,/);
+  assert.match(js, /reconcile\(\n?\s*groups,\n?\s*outer,/);
   assert.match(js, /reconcile\(list, members\.map\(rowParts\),/);
   assert.match(js, /const turnKey = \(p\) => "turn:" \+ p\.id;/);
   assert.match(js, /reconcile\(\$\("v3-turns-rows"\), parts, turnKey,/);
@@ -1795,8 +1795,8 @@ test("web static: 行の印は あなたの番 > 作業中 > 未読 で 1 つだ
           return "12:00";
         },
       },
-      app: { activeTabId: () => "ch:2" },
     },
+    current: "ch:2",
   };
   vm.runInNewContext(fnSource(read("topics.js"), "rowParts"), ctx);
   const rowParts = ctx.rowParts as (t: unknown) => { mark: string; kind: string | null; current: boolean; done: boolean; turnKind: string | null; time: string | null };
@@ -1924,12 +1924,16 @@ class DomNode extends FakeNode {
     super.remove();
   }
   querySelectorAll(selector: string): DomNode[] {
-    const m = /^([a-z0-9]+)?((?:\.[\w-]+)*)(?:\[([\w-]+)="([^"]*)"\])?$/.exec(selector);
+    const m = /^([a-z0-9]+)?((?:\.[\w-]+)*)(?:\[([\w-]+)="([^"]*)"\])?(?::not\(\[([\w-]+)\]\))?$/.exec(selector);
     assert.ok(m, selector);
     const classes = (m[2] ?? "").split(".").filter(Boolean);
     return descendants(this).filter(
       (n): n is DomNode =>
-        n instanceof DomNode && (!m[1] || n.tagName === m[1]) && classes.every((c) => n.classes.has(c)) && (!m[3] || n.getAttribute(m[3]) === m[4]),
+        n instanceof DomNode &&
+        (!m[1] || n.tagName === m[1]) &&
+        classes.every((c) => n.classes.has(c)) &&
+        (!m[3] || n.getAttribute(m[3]) === m[4]) &&
+        (!m[5] || n.getAttribute(m[5]) === null),
     );
   }
   querySelector(selector: string): DomNode | null {
@@ -1937,6 +1941,17 @@ class DomNode extends FakeNode {
   }
   closest(): null {
     return null;
+  }
+  get parentElement(): DomNode | null {
+    return this.parent instanceof DomNode ? this.parent : null;
+  }
+  /** details の開閉（toggle は自分で dispatch する） */
+  get open(): boolean {
+    return this.attrs.has("open");
+  }
+  set open(v: boolean) {
+    if (v) this.attrs.set("open", "");
+    else this.attrs.delete("open");
   }
   replaceWith(other: DomNode): void {
     const parent = this.parent!;
@@ -1947,6 +1962,9 @@ class DomNode extends FakeNode {
 
 type ShellApp = {
   open: (tab: string) => void;
+  palette: (prefix?: string) => void;
+  refreshNotices: () => void;
+  refreshTabs: () => void;
   refresh: (tab: string) => void;
   activeTabId: () => string | null;
   closeDrawer: () => void;
@@ -1973,6 +1991,12 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
   };
   const v3 = node("div", "v3", "v3");
   v3.setAttribute("data-view", "list");
+  const headOps = node("span", "v3-head-ops");
+  const searchBox = node("div", "v3-search-box");
+  searchBox.hidden = true;
+  const foot = node("footer", "v3-list-foot");
+  const views = node("div", "v3-views");
+  views.hidden = true;
   const listBody = node("div", "v3-list-body", "v3-list-body");
   listBody.scrollHeight = 2000;
   listBody.clientHeight = 400;
@@ -1986,10 +2010,10 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
   const groups = node("div", "v3-groups");
   listBody.append(note, turns, groups);
   const list = node("nav", "v3-list", "v3-list");
-  list.append(listBody);
+  list.append(headOps, searchBox, listBody, foot);
   const main = node("main", "v3-main", "v3-main");
   const bar = node("div", "v3-bar");
-  bar.append(node("span", "v3-place"));
+  bar.append(node("span", "v3-place"), views);
   const ed = node("div", "ed", "ed");
   main.append(bar, ed);
   v3.append(list, main);
@@ -2007,6 +2031,9 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
   const fire = (type: string, e: unknown = {}) => {
     for (const fn of winListeners.get(type) ?? []) fn(e);
   };
+  const fireDoc = (type: string, e: unknown = {}) => {
+    for (const fn of docListeners.get(type) ?? []) fn(e);
+  };
   const document = {
     readyState: "complete",
     visibilityState: "visible",
@@ -2016,7 +2043,8 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
       return DomNode.focused && body.contains(DomNode.focused) ? DomNode.focused : body;
     },
     contains: (n: unknown) => body.contains(n),
-    getElementById: (id: string) => ids.get(id) ?? null,
+    // 後から作った要素（絞り込み欄など）も id で引ける
+    getElementById: (id: string) => ids.get(id) ?? (descendants(body).find((n) => n.getAttribute("id") === id) as DomNode | undefined) ?? null,
     createElement: (tag: string) => new DomNode(tag),
     createElementNS: (_ns: string, tag: string) => new DomNode(tag),
     createTextNode: (text: string) => Object.assign(new DomNode("#text"), { text }),
@@ -2063,7 +2091,9 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
     },
     addEventListener() {},
   };
-  const window = { matchMedia: () => mq, addEventListener: on(winListeners), innerHeight: 800, scrollY: 0 } as Record<string, unknown>;
+  const storage = new Map<string, string>();
+  const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, String(v)) };
+  const window = { matchMedia: () => mq, addEventListener: on(winListeners), innerHeight: 800, scrollY: 0, localStorage } as Record<string, unknown>;
   class FakeDate extends Date {
     static override now(): number {
       return state.now;
@@ -2091,11 +2121,14 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
   const heights: Record<string, number> = {};
   const rendered: Array<{ tab: string; view: string | null }> = [];
   const closes: string[] = [];
+  const opens: string[] = [];
   const known = opts.known ?? ((tab: string) => tab.startsWith("ch:") || tab.startsWith("cc:") || tab === "tasks");
   SA.views = {
     info: (tab: string) =>
       known(tab)
         ? {
+            title: "題:" + tab,
+            icon: "i-" + tab,
             render: (container: DomNode) => {
               rendered.push({ tab, view: v3.getAttribute("data-view") });
               const scroll = ui.el("div", { class: "ed-scroll", "data-stick": tab.startsWith("ch:") ? "bottom" : undefined });
@@ -2104,17 +2137,32 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
               container.replaceChildren(ui.el("header", { class: "ed-toolbar" }, [ui.backButton()]), scroll);
             },
             onClose: () => closes.push(tab),
+            onOpen: () => opens.push(tab),
           }
         : null,
     ago: () => "1 分前",
   };
-  SA.store = { status: opts.status === undefined ? {} : opts.status, isUnread: () => false, load: { channels() {}, usageDays() {}, usage() {} } };
+  const loads = { channels: 0 };
+  SA.store = {
+    status: opts.status === undefined ? {} : opts.status,
+    notices: null,
+    isUnread: () => false,
+    load: {
+      channels() {
+        loads.channels++;
+        return Promise.resolve(null);
+      },
+      usageDays() {},
+      usage() {},
+    },
+  };
   SA.chat = { channelById: () => ({}) };
   SA.poll = { start() {}, stopped: () => false };
-  const api = { calls: 0, reply: (): Promise<unknown> => Promise.resolve(v3Result([])) };
+  const api = { calls: 0, paths: [] as string[], reply: (): Promise<unknown> => Promise.resolve(v3Result([])) };
   SA.api = {
-    get: () => {
+    get: (path: string) => {
       api.calls++;
+      api.paths.push(path);
       return api.reply();
     },
   };
@@ -2137,12 +2185,17 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
   return {
     app: SA.app as ShellApp,
     topics: SA.topics as Topics,
-    nodes: { v3, ed, groups, turns, turnsRows, note, listBody },
+    nodes: { v3, ed, groups, turns, turnsRows, note, listBody, headOps, searchBox, foot, views, sheet: ids.get("v3-sheet")! },
     state,
     api,
     heights,
     rendered,
     closes,
+    opens,
+    loads,
+    storage,
+    fireDoc,
+    ui: SA.ui as Record<string, unknown>,
     history,
     location,
     calls,
@@ -2152,7 +2205,7 @@ function loadShell(opts: { phone?: boolean; hash?: string; known?: (tab: string)
     fire,
     scroll,
     row,
-    store: SA.store as { status: unknown },
+    store: SA.store as { status: unknown; notices: unknown; load: Record<string, unknown> },
     document,
   };
 }
@@ -2393,4 +2446,619 @@ test("web static: .v3 の文字は --font-sm で、スクロールバーは app.
   assert.match(block, /font-size: var\(--font-sm\);/);
   assert.match(block, /scrollbar-width: thin;/);
   assert.match(block, /scrollbar-color: var\(--border\) transparent;/);
+});
+
+// ===== 新しい殻の残りの口（M2b） =====
+const v3Group = (key: string, o: Record<string, unknown> = {}) => ({ key, kind: "general", name: key, turns: 0, running: 0, open: 1, done: 0, ...o });
+const textOf = (n: FakeNode) => n.textContent;
+const keyEvent = (key: string, target: unknown, o: Record<string, unknown> = {}) => {
+  const e = { key, target, prevented: false, preventDefault: () => (e.prevented = true), ...o };
+  return e;
+};
+const kids = (n: FakeNode) => n.children as DomNode[];
+
+test("web static: 新しい殻の下の口は タスク・リマインド・ほか の 3 つで、「ほか」は引ける画面だけを決めた順で出す", async () => {
+  const all = ["tasks", "reminders", "knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"];
+  const h = loadShell({ known: (tab) => tab.startsWith("ch:") || (all.includes(tab) && tab !== "github" && tab !== "devlog") });
+  await h.flush();
+  const buttons = kids(h.nodes.foot);
+  assert.deepEqual(buttons.map(textOf), ["題:tasks", "題:reminders", "ほか"]);
+  for (const b of buttons) assert.ok(b.classes.has("v3-foot-btn") && b.classes.has("btn-ghost"));
+  buttons[0]!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "tasks");
+  buttons[1]!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "reminders");
+  // 「ほか」: GitHub・会話ログは引けないので出さない。見出しに ×
+  buttons[2]!.dispatch("click");
+  const sheet = h.nodes.sheet;
+  assert.equal(sheet.getAttribute("open"), "");
+  assert.equal(sheet.getAttribute("aria-label"), "ほか");
+  const rows = sheet.querySelectorAll("button.more-row");
+  assert.deepEqual(rows.map(textOf), ["題:knowledge", "題:memories", "題:usage", "題:notices", "題:status", "題:settings"]);
+  const close = sheet.querySelector("button.sheet-close")!;
+  assert.equal(close.getAttribute("aria-label"), "閉じる");
+  assert.equal(textOf(sheet.querySelector("span.sheet-title")!), "ほか");
+  close.dispatch("click");
+  assert.equal(sheet.getAttribute("open"), null);
+  buttons[2]!.dispatch("click");
+  sheet.querySelectorAll("button.more-row").at(-1)!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "settings");
+  assert.equal(sheet.getAttribute("open"), null);
+  // 話題でない画面の間は帯を出さない
+  assert.equal(h.document.getElementById("v3-bar")!.hidden, true);
+
+  // GitHub が有効・dev のときは決めた順の中に入る
+  const w = loadShell({ known: (tab) => all.includes(tab) });
+  await w.flush();
+  kids(w.nodes.foot)[2]!.dispatch("click");
+  assert.deepEqual(w.nodes.sheet.querySelectorAll("button.more-row").map(textOf), ["knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"].map((id) => "題:" + id));
+});
+
+test("web static: 絞り込みは題名・群・人格の語を全部含むものだけを残し、当たらない群は hidden にする（要素は消さない）。「あなたの番」は絞り込まない", async () => {
+  const h = loadShell();
+  const turn = { kind: "permission", since: "2026-11-14T00:00:00Z", summary: null };
+  h.api.reply = () =>
+    Promise.resolve(
+      v3Result(
+        [
+          v3Topic("ch:a", { title: "買い物 リスト", group: "g1" }),
+          v3Topic("ch:b", { title: "Trip 計画", group: "g1", persona: "Bob" }),
+          v3Topic("ch:c", { title: "設計", group: "g2", mark: "turn", turn }),
+        ],
+        { groups: [v3Group("g1", { name: "General" }), v3Group("g2", { name: "Proj" })], turns: 1, turnIds: ["ch:c"] },
+      ),
+    );
+  await h.flush();
+  await h.topics.load();
+  const [g1, g2] = kids(h.nodes.groups);
+  const li = (id: string) => h.row(h.nodes.groups, id)!.parent as DomNode;
+  const [la, lb, lc] = [li("ch:a"), li("ch:b"), li("ch:c")];
+  h.nodes.listBody.scrollTop = 120;
+  // 絞り込みのボタンは見出しの先頭
+  const toggle = kids(h.nodes.headOps)[0]!;
+  assert.equal(toggle.getAttribute("id"), "v3-search-toggle");
+  assert.equal(toggle.getAttribute("aria-label"), "話題を絞り込む");
+  toggle.dispatch("click");
+  assert.equal(h.nodes.searchBox.hidden, false);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  const input = h.document.getElementById("v3-search")!;
+  assert.equal(h.document.activeElement, input);
+  for (const [k, v] of [["type", "search"], ["placeholder", "題名で絞り込む"], ["aria-label", "話題を絞り込む"], ["autocomplete", "off"], ["enterkeyhint", "search"]]) assert.equal(input.getAttribute(k!), v, k);
+  const type = (v: string) => {
+    (input as unknown as { value: string }).value = v;
+    input.dispatch("input");
+  };
+  const shown = () => ["ch:a", "ch:b", "ch:c"].filter((id) => !li(id).hidden);
+  // 群の名前と題名の語を両方（大文字・小文字を問わない）
+  type("general 買い");
+  assert.deepEqual(shown(), ["ch:a"]);
+  assert.equal(g2!.hidden, true);
+  assert.equal(g1!.hidden, false);
+  // 人格の名前
+  type("bob");
+  assert.deepEqual(shown(), ["ch:b"]);
+  // 「あなたの番」は絞り込まない
+  assert.equal(h.nodes.turns.hidden, false);
+  assert.equal(h.nodes.turnsRows.children.length, 1);
+  assert.equal((h.nodes.turnsRows.children[0] as DomNode).hidden, false);
+  type("proj");
+  assert.deepEqual(shown(), ["ch:c"]);
+  assert.equal(g1!.hidden, true);
+  assert.equal(h.nodes.note.hidden, true);
+  type("zzz");
+  assert.equal(h.nodes.note.hidden, false);
+  assert.equal(h.nodes.note.text, "当たる話題がありません");
+  // 読み直しても絞り込んだまま
+  await h.topics.load();
+  assert.equal(h.nodes.note.text, "当たる話題がありません");
+  // 要素は消さず、同じものを使い回す
+  assert.deepEqual(kids(h.nodes.groups), [g1, g2]);
+  assert.deepEqual([li("ch:a"), li("ch:b"), li("ch:c")], [la, lb, lc]);
+  // Escape で閉じると値を空にして全部戻り、位置も戻る・焦点はボタンへ
+  h.fireDoc("keydown", keyEvent("Escape", input));
+  assert.equal((input as unknown as { value: string }).value, "");
+  assert.equal(h.nodes.searchBox.hidden, true);
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(h.document.activeElement, toggle);
+  assert.deepEqual(shown(), ["ch:a", "ch:b", "ch:c"]);
+  assert.equal(g1!.hidden || g2!.hidden, false);
+  assert.equal(h.nodes.note.hidden, true);
+  assert.equal(h.nodes.listBody.scrollTop, 120);
+  // もう一度押すと開き、もう一度押すと閉じる（入力欄は 1 度だけ作る）
+  toggle.dispatch("click");
+  toggle.dispatch("click");
+  assert.equal(h.nodes.searchBox.hidden, true);
+  assert.equal(h.nodes.searchBox.children.length, 1);
+});
+
+test("web static: 一覧の中の ↑↓・Home・End は見えている行だけを動く", async () => {
+  const h = loadShell();
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1", { title: "x1" }), v3Topic("ch:2", { title: "y" }), v3Topic("ch:3", { title: "x2" }), v3Topic("ch:4", { title: "x3" })]));
+  await h.flush();
+  await h.topics.load();
+  kids(h.nodes.headOps)[0]!.dispatch("click");
+  const input = h.document.getElementById("v3-search")!;
+  (input as unknown as { value: string }).value = "x";
+  input.dispatch("input");
+  const r = (id: string) => h.row(h.nodes.groups, id)!;
+  const press = (key: string) => {
+    const e = keyEvent(key, h.document.activeElement);
+    h.nodes.listBody.dispatch("keydown", e);
+    return e;
+  };
+  r("ch:1").focus();
+  const e = press("ArrowDown");
+  assert.equal(e.prevented, true);
+  assert.equal(h.document.activeElement, r("ch:3"), "隠れた行は飛ばす");
+  press("ArrowDown");
+  assert.equal(h.document.activeElement, r("ch:4"));
+  press("ArrowDown");
+  assert.equal(h.document.activeElement, r("ch:4"), "端では動かない");
+  press("Home");
+  assert.equal(h.document.activeElement, r("ch:1"));
+  press("ArrowUp");
+  assert.equal(h.document.activeElement, r("ch:1"));
+  press("End");
+  assert.equal(h.document.activeElement, r("ch:4"));
+  press("ArrowUp");
+  assert.equal(h.document.activeElement, r("ch:3"));
+  // 行でない所・ほかのキーは触らない
+  const other = press("Enter");
+  assert.equal(other.prevented, false);
+  const off = keyEvent("ArrowDown", h.nodes.listBody);
+  h.nodes.listBody.dispatch("keydown", off);
+  assert.equal(off.prevented, false);
+});
+
+test("web static: Ctrl+K と SA.app.palette は絞り込み欄に焦点を置く", async () => {
+  for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+    const h = loadShell();
+    await h.flush();
+    const e = keyEvent("k", h.document.activeElement, mod);
+    h.fireDoc("keydown", e);
+    assert.equal(e.prevented, true);
+    assert.equal(h.nodes.searchBox.hidden, false);
+    assert.equal(h.document.activeElement, h.document.getElementById("v3-search"));
+    // 入力欄に焦点があっても効く（閉じない）
+    h.fireDoc("keydown", keyEvent("k", h.document.activeElement, mod));
+    assert.equal(h.nodes.searchBox.hidden, false);
+  }
+  const h = loadShell();
+  await h.flush();
+  h.app.palette(">");
+  assert.equal(h.nodes.searchBox.hidden, false);
+  assert.equal(h.document.activeElement, h.document.getElementById("v3-search"));
+  assert.equal((h.document.getElementById("v3-search") as unknown as { value: string }).value ?? "", "", "prefix は捨てる");
+  // 修飾なしの k は何もしない
+  const p = loadShell();
+  await p.flush();
+  p.fireDoc("keydown", keyEvent("k", p.document.activeElement));
+  assert.equal(p.nodes.searchBox.hidden, true);
+});
+
+test("web static: 完了は開いたときだけ ?done=<群> で読み、開いておけるのは 1 つ", async () => {
+  const h = loadShell();
+  const groups = [v3Group("g1", { name: "A", done: 60 }), v3Group("g2", { name: "B", done: 2 }), v3Group("g3", { name: "C", done: 0 })];
+  const doneOf = (key: string) => (key === "g1" ? [v3Topic("ch:d1", { group: "g1", state: "done" })] : [v3Topic("ch:d2", { group: "g2", state: "done" })]);
+  h.api.reply = () => {
+    const path = h.api.paths.at(-1)!;
+    const m = /\?done=(\w+)/.exec(path);
+    return Promise.resolve(v3Result([v3Topic("ch:a", { group: "g1" }), ...(m ? doneOf(m[1]!) : [])], { groups }));
+  };
+  await h.flush();
+  await h.topics.load();
+  assert.equal(h.api.paths.at(-1), "/api/topics");
+  const [s1, s2, s3] = kids(h.nodes.groups);
+  const d1 = s1!.querySelector('details[data-key="done:g1"]')!;
+  const d2 = s2!.querySelector('details[data-key="done:g2"]')!;
+  assert.ok(d1.classes.has("v3-done"));
+  assert.equal(s3!.querySelector("details.v3-done"), null, "完了の無い群には出さない");
+  // 一覧の後ろ（群の見出し → 一覧か「話題はありません」 → 完了）
+  assert.equal(kids(s1!).indexOf(d1), 2);
+  assert.equal(kids(s2!).indexOf(d2), 2);
+  const summary = (d: DomNode) => textOf(kids(d)[0]!);
+  const doneRows = (d: DomNode) => kids(kids(d)[1]!);
+  assert.equal(summary(d1), "完了（60）");
+  assert.equal(kids(d1)[1]!.getAttribute("data-list"), "done:g1");
+  assert.equal(doneRows(d1).length, 0);
+  // 開く: 読み込み中の文字 → ?done=g1 → 行（is-done）と「新しい 50 件」
+  d1.open = true;
+  d1.dispatch("toggle");
+  assert.equal(summary(d1), "完了（60）読み込み中…");
+  await h.flush();
+  assert.equal(h.api.paths.at(-1), "/api/topics?done=g1");
+  assert.equal(summary(d1), "完了（60）");
+  assert.equal(doneRows(d1).length, 1);
+  const doneButton = h.row(d1, "ch:d1")!;
+  assert.ok(doneButton.classes.has("is-done"));
+  assert.ok(!h.row(s1!, "ch:a")!.classes.has("is-done"));
+  assert.equal(d1.querySelector("p.meta")!.hidden, false);
+  assert.equal(textOf(d1.querySelector("p.meta")!), "新しい 50 件を出しています");
+  // もう 1 つを開くと前のは閉じ、?done= は後の群
+  d2.open = true;
+  d2.dispatch("toggle");
+  assert.equal(d1.open, false);
+  d1.dispatch("toggle");
+  await h.flush();
+  h.advance(2000);
+  await h.flush();
+  assert.equal(h.api.paths.at(-1), "/api/topics?done=g2");
+  assert.equal(doneRows(d1).length, 0, "閉じた完了の行は外す");
+  assert.equal(doneRows(d2).length, 1);
+  assert.equal(d2.querySelector("p.meta")!.hidden, true, "50 件以下");
+  // 閉じたら読み直さない。次の読み取りは ?done= なし
+  const calls = h.api.calls;
+  d2.open = false;
+  d2.dispatch("toggle");
+  await h.flush();
+  assert.equal(h.api.calls, calls);
+  await h.topics.load();
+  assert.equal(h.api.paths.at(-1), "/api/topics");
+  assert.equal(doneRows(d2).length, 0);
+  // 群の要素は作り直さない
+  assert.deepEqual(kids(h.nodes.groups), [s1, s2, s3]);
+});
+
+test("web static: 完了の行が /api/channels に無くて引けなければ、一覧を 1 回読んでから引き直し、それでも無ければ知らせる", async () => {
+  let ready = false;
+  const h = loadShell({ known: (tab) => tab !== "ch:d1" || ready });
+  const toasts: string[] = [];
+  h.ui.toast = (text: string) => toasts.push(text);
+  const groups = [v3Group("g1", { done: 1 })];
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:d1", { group: "g1", state: "done" })], { groups }));
+  await h.flush();
+  await h.topics.load();
+  const d = h.nodes.groups.querySelector("details.v3-done")!;
+  d.open = true;
+  d.dispatch("toggle");
+  await h.flush();
+  h.row(d, "ch:d1")!.dispatch("click");
+  await h.flush();
+  assert.equal(h.loads.channels, 1);
+  assert.deepEqual(toasts, ["この話題はここからは開けません"]);
+  assert.equal(h.app.activeTabId(), null);
+  // 読んだ後に引ければ開く
+  h.store.load = { ...h.store.load, channels: () => ((ready = true), Promise.resolve(null)) };
+  h.row(d, "ch:d1")!.dispatch("click");
+  await h.flush();
+  assert.equal(h.app.activeTabId(), "ch:d1");
+  assert.equal(toasts.length, 1);
+});
+
+test("web static: 話題の無いプロジェクトは「ほかのプロジェクト（n）」に畳み、開閉を localStorage に持つ", async () => {
+  const h = loadShell();
+  const groups = [
+    v3Group("p:a", { kind: "project", name: "a", open: 1 }),
+    v3Group("p:b", { kind: "project", name: "b", open: 0 }),
+    v3Group("p:c", { kind: "project", name: "c", open: 0, done: 2 }),
+    v3Group("general", { name: "General", open: 0 }),
+  ];
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { group: "p:a", title: "aaa" })], { groups }));
+  await h.flush();
+  await h.topics.load();
+  assert.deepEqual(kids(h.nodes.groups).map((n) => n.getAttribute("data-key")), ["p:a", "others", "general"]);
+  const others = kids(h.nodes.groups)[1]!;
+  assert.equal(others.tagName, "details");
+  assert.equal(others.getAttribute("id"), "v3-others");
+  assert.ok(others.classes.has("v3-others"));
+  assert.equal(textOf(kids(others)[0]!), "ほかのプロジェクト（2）");
+  assert.equal(others.open, false, "既定は閉じる");
+  const inner = kids(kids(others)[1]!);
+  assert.deepEqual(inner.map((n) => n.getAttribute("data-key")), ["p:b", "p:c"]);
+  // 中の群は見出しと完了だけ（「話題はありません」は出さない）
+  assert.equal(inner[0]!.children.length, 1);
+  assert.equal(inner[1]!.children.length, 2);
+  assert.ok(kids(inner[1]!)[1]!.classes.has("v3-done"));
+  // General は話題が無くても畳まない
+  assert.equal(textOf(kids(kids(h.nodes.groups)[2]!)[1]!), "話題はありません");
+  // 開閉を保存
+  others.open = true;
+  others.dispatch("toggle");
+  assert.equal(h.storage.get("self-agent-web:v3-others"), "1");
+  others.open = false;
+  others.dispatch("toggle");
+  assert.equal(h.storage.get("self-agent-web:v3-others"), "0");
+  // 読み直しても同じ要素
+  await h.topics.load();
+  assert.equal(kids(h.nodes.groups)[1], others);
+  assert.deepEqual(kids(kids(others)[1]!), inner);
+  // 絞り込み中は開いた形（保存は変えない）、当たる群が無ければ隠す
+  kids(h.nodes.headOps)[0]!.dispatch("click");
+  const input = h.document.getElementById("v3-search")!;
+  (input as unknown as { value: string }).value = "aaa";
+  input.dispatch("input");
+  assert.equal(others.open, true);
+  others.dispatch("toggle");
+  assert.equal(h.storage.get("self-agent-web:v3-others"), "0");
+  assert.equal(others.hidden, true);
+  (input as unknown as { value: string }).value = "";
+  input.dispatch("input");
+  assert.equal(others.open, false, "保存した開閉に戻す");
+  assert.equal(others.hidden, false);
+  // 保存が開なら、次の殻は開いて出す
+  const w = loadShell();
+  w.storage.set("self-agent-web:v3-others", "1");
+  w.api.reply = h.api.reply;
+  await w.flush();
+  await w.topics.load();
+  assert.equal(kids(w.nodes.groups)[1]!.open, true);
+  // 畳む群が無ければ出さない
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { group: "p:a" })], { groups: [groups[0], groups[3]] }));
+  await h.topics.load();
+  assert.deepEqual(kids(h.nodes.groups).map((n) => n.getAttribute("data-key")), ["p:a", "general"]);
+});
+
+test("web static: [会話][端末] はチャンネルのある生きた Claude Code の話題だけに出て、「端末」の間 activeTabId は cc:<sessionId>", async () => {
+  const h = loadShell();
+  const topics = [
+    v3Topic("ch:a", { origin: "cc", sessionId: "s1" }),
+    v3Topic("ch:b", { origin: "cc", sessionId: null }),
+    v3Topic("cc:x", { origin: "cc", sessionId: "x" }),
+    v3Topic("ch:c", { origin: "session", sessionId: null }),
+  ];
+  h.api.reply = () => Promise.resolve(v3Result(topics));
+  await h.flush();
+  await h.topics.load();
+  h.app.open("ch:a");
+  assert.equal(h.nodes.views.hidden, false);
+  const [talk, pane] = kids(h.nodes.views);
+  assert.deepEqual([textOf(talk!), textOf(pane!)], ["会話", "端末"]);
+  assert.equal(talk!.getAttribute("type"), "button");
+  assert.deepEqual([talk!.getAttribute("aria-pressed"), pane!.getAttribute("aria-pressed")], ["true", "false"]);
+  h.scroll().scrollTop = 100;
+  pane!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "cc:s1");
+  assert.deepEqual(h.rendered.at(-1)!.tab, "cc:s1");
+  assert.ok(h.opens.includes("cc:s1"), "画面の写しを読み直す");
+  assert.deepEqual([talk!.getAttribute("aria-pressed"), pane!.getAttribute("aria-pressed")], ["false", "true"]);
+  // hash と一覧の選んでいる行は話題のまま
+  assert.equal(h.location.hash, "#/ch/a");
+  assert.equal(h.row(h.nodes.groups, "ch:a")!.getAttribute("aria-current"), "true");
+  // refresh は出している物にだけ当たる
+  let before = h.rendered.length;
+  h.app.refresh("ch:a");
+  assert.equal(h.rendered.length, before);
+  h.app.refresh("cc:s1");
+  assert.equal(h.rendered.length, before + 1);
+  // 会話に戻すと別のタブとして下端
+  talk!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "ch:a");
+  assert.equal(h.scroll().scrollTop, 800);
+  assert.deepEqual(h.closes, [], "切り替えでは閉じない");
+  // 話題を開き直すと会話に戻る
+  pane!.dispatch("click");
+  h.app.open("ch:a");
+  assert.equal(h.app.activeTabId(), "ch:a");
+  assert.equal(h.rendered.at(-1)!.tab, "ch:a");
+  // セッションが一覧から外れたら端末をやめて会話を描く
+  pane!.dispatch("click");
+  topics[0] = v3Topic("ch:a", { origin: "cc", sessionId: null });
+  await h.topics.load();
+  assert.equal(h.nodes.views.hidden, true);
+  assert.equal(h.app.activeTabId(), "ch:a");
+  assert.equal(h.rendered.at(-1)!.tab, "ch:a");
+  // チャンネルの無い・Claude Code でない・一覧に居ない話題には出さない
+  for (const id of ["ch:b", "cc:x", "ch:c"]) {
+    h.app.open(id);
+    assert.equal(h.nodes.views.hidden, true, id);
+    assert.equal(h.app.activeTabId(), id);
+  }
+});
+
+test("web static: スマホで会話の列が隠れている間の [端末] の refresh も、出している物で見る", async () => {
+  const h = loadShell({ phone: true });
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { origin: "cc", sessionId: "s1" })]));
+  await h.flush();
+  await h.topics.load();
+  h.app.open("ch:a");
+  kids(h.nodes.views)[1]!.dispatch("click");
+  h.history.back();
+  const before = h.rendered.length;
+  h.app.refresh("ch:a");
+  assert.equal(h.rendered.length, before);
+  h.app.refresh("cc:s1");
+  assert.equal(h.rendered.length, before + 1);
+});
+
+test("web static: 接続の点と鈴は今の殻と同じラベルで、押すと状態・知らせを開く", async () => {
+  const h = loadShell({ known: (tab) => tab === "status" || tab === "notices" });
+  await h.flush();
+  const conn = () => kids(kids(h.nodes.headOps)[1]!);
+  assert.deepEqual(conn(), [], "届く前は出さない");
+  h.store.status = { bots: [{ name: "A", connected: true }] };
+  h.store.notices = { recent24h: 3 };
+  h.app.refreshStatus();
+  h.app.refreshNotices();
+  const [dot, bell] = conn();
+  assert.equal(kids(h.nodes.headOps)[0]!.getAttribute("id"), "v3-search-toggle", "絞り込みのボタンが先頭");
+  assert.equal(dot!.getAttribute("aria-label"), "A の Bot: 接続中");
+  assert.equal(dot!.getAttribute("title"), "A の Bot: 接続中");
+  assert.ok(dot!.classes.has("btn-icon-sm"));
+  assert.ok(dot!.querySelector("span.dot.dot-ok"));
+  assert.equal(bell!.getAttribute("aria-label"), "知らせ（直近 24 時間 3 件）");
+  assert.ok(bell!.classes.has("title-bell"));
+  assert.equal(textOf(bell!.querySelector("span.title-bell-count")!), "3");
+  dot!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "status");
+  bell!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "notices");
+  // 変わらなければ作り直さない
+  h.app.refreshStatus();
+  assert.equal(conn()[0], dot);
+  h.store.status = { bots: [{ name: "A", connected: false }] };
+  h.store.notices = { recent24h: 0 };
+  h.app.refreshStatus();
+  const [dot2, bell2] = conn();
+  assert.equal(dot2!.getAttribute("aria-label"), "A の Bot: 接続できません");
+  assert.ok(dot2!.querySelector("span.dot.dot-bad"));
+  assert.equal(bell2!.getAttribute("aria-label"), "知らせ（直近 24 時間 0 件）");
+  assert.equal(bell2!.querySelector("span.title-bell-count"), null);
+});
+
+test("web static: v3 の一覧の注意は 更新の失敗 > Claude Code の一覧が読めない > 当たらない の 1 つだけ", async () => {
+  const h = loadShell();
+  const cc = { enabled: true, stale: false, unreadable: true };
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")], { cc }));
+  await h.flush();
+  await h.topics.load();
+  assert.equal(h.nodes.note.hidden, false);
+  assert.equal(h.nodes.note.text, "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります");
+  h.app.palette();
+  const input = h.document.getElementById("v3-search")!;
+  (input as unknown as { value: string }).value = "zzz";
+  input.dispatch("input");
+  assert.equal(h.nodes.note.text, "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります");
+  h.api.reply = () => Promise.resolve(null);
+  await h.topics.load();
+  assert.equal(h.nodes.note.text, "更新できませんでした。前の一覧を出しています");
+  // 無効・古いだけなら出さない
+  for (const c of [{ enabled: false, stale: false, unreadable: true }, { enabled: true, stale: true, unreadable: false }]) {
+    const w = loadShell();
+    w.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")], { cc: c }));
+    await w.flush();
+    await w.topics.load();
+    assert.equal(w.nodes.note.hidden, true);
+  }
+});
+
+test("web static: /api/status が届く前に押した cc: の行は、届いたら開く", async () => {
+  let ready = false;
+  const h = loadShell({ status: null, known: (tab) => tab.startsWith("ch:") || (tab === "cc:x" && ready) });
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a"), v3Topic("cc:x", { origin: "cc", sessionId: "x" })]));
+  await h.flush();
+  await h.topics.load();
+  h.app.open("ch:a");
+  h.row(h.nodes.groups, "cc:x")!.dispatch("click");
+  await h.flush();
+  assert.equal(h.app.activeTabId(), "ch:a");
+  ready = true;
+  h.store.status = {};
+  h.app.refreshStatus();
+  assert.equal(h.app.activeTabId(), "cc:x");
+  // 待っている間にほかを開いたら、待つのをやめる
+  let ready2 = false;
+  const w = loadShell({ status: null, known: (tab) => tab.startsWith("ch:") || (tab === "cc:x" && ready2) });
+  w.api.reply = h.api.reply;
+  await w.flush();
+  await w.topics.load();
+  w.row(w.nodes.groups, "cc:x")!.dispatch("click");
+  await w.flush();
+  w.app.open("ch:a");
+  ready2 = true;
+  w.store.status = {};
+  w.app.refreshStatus();
+  assert.equal(w.app.activeTabId(), "ch:a");
+});
+
+test("web static: v3 のシートは幅によらず .more-row の見た目を .v3-sheet の下に持ち、PC は 360px まで・スマホは全幅", () => {
+  const css = read("shell.css");
+  const app = read("app.css");
+  const block = (src: string, sel: string) => {
+    const at = src.indexOf(sel + " {");
+    assert.ok(at >= 0, sel);
+    return src.slice(src.indexOf("{", at) + 1, src.indexOf("}", at)).trim();
+  };
+  for (const sel of [".more-list", ".more-row", ".more-row:active", "a.more-row", ".more-row:disabled", ".more-row .icon", ".more-row .sb-meta", ".sheet-head", ".sheet-title"]) {
+    assert.equal(block(css, "\n.v3-sheet " + sel).replace(/\s+/g, " "), block(app, "\n  " + sel).replace(/\s+/g, " "), sel);
+  }
+  assert.match(block(css, "\n.v3-sheet"), /width: min\(360px, 100vw - 32px\);/);
+  const phoneCss = css.slice(css.indexOf("@media (max-width: 639px)"));
+  assert.match(block(phoneCss, "  .v3-sheet"), /width: 100%;/);
+  // 下の口はスマホでも一覧の列の末尾（固定しない）
+  assert.doesNotMatch(css, /position: fixed;[^}]*\}[^{]*v3-list-foot/);
+  assert.match(block(phoneCss, "  .v3-list-foot"), /env\(safe-area-inset-bottom, 0px\)/);
+});
+
+// ===== M2b のレビューの直し =====
+test("web static: v3 のシートを開くと、最初の押せる行に焦点がある（× でも押せない行でもない）", async () => {
+  const h = loadShell();
+  await h.flush();
+  const sheet = (h.app as unknown as { sheet: (label: string, items: unknown[], opener?: unknown) => void }).sheet;
+  sheet("操作", [{ label: "押せない", why: "理由" }, { label: "押せる", run: () => {} }, { label: "次", run: () => {} }]);
+  const rows = h.nodes.sheet.querySelectorAll("button.more-row");
+  assert.equal(rows[0]!.getAttribute("disabled"), "");
+  assert.equal(h.document.activeElement, rows[1]);
+  // 先頭が押せれば先頭
+  sheet("操作", [{ label: "一", run: () => {} }, { label: "二", run: () => {} }]);
+  assert.equal(h.document.activeElement, h.nodes.sheet.querySelectorAll("button.more-row")[0]);
+});
+
+test("web static: 絞り込み欄で IME の変換中の Escape は絞り込みを閉じない（変換中でなければ閉じる）", async () => {
+  const h = loadShell();
+  await h.flush();
+  kids(h.nodes.headOps)[0]!.dispatch("click");
+  const input = h.document.getElementById("v3-search")!;
+  (input as unknown as { value: string }).value = "かい";
+  input.dispatch("input");
+  for (const o of [{ isComposing: true }, { keyCode: 229 }]) {
+    h.fireDoc("keydown", keyEvent("Escape", input, o));
+    assert.equal(h.nodes.searchBox.hidden, false, JSON.stringify(o));
+    assert.equal((input as unknown as { value: string }).value, "かい");
+    assert.equal(h.document.activeElement, input);
+  }
+  h.fireDoc("keydown", keyEvent("Escape", input));
+  assert.equal(h.nodes.searchBox.hidden, true);
+  assert.equal((input as unknown as { value: string }).value, "");
+});
+
+test("web static: [端末] → [会話] に戻すと会話の onOpen（turns の読み直し）を 1 回呼ぶ。押し直しでは呼ばない", async () => {
+  const h = loadShell();
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { origin: "cc", sessionId: "s1" })]));
+  await h.flush();
+  await h.topics.load();
+  h.app.open("ch:a");
+  const [talk, pane] = kids(h.nodes.views);
+  const count = (tab: string) => h.opens.filter((t) => t === tab).length;
+  talk!.dispatch("click");
+  assert.equal(count("ch:a"), 1, "同じ view の押し直しでは呼ばない");
+  pane!.dispatch("click");
+  assert.equal(count("cc:s1"), 1);
+  assert.equal(count("ch:a"), 1);
+  talk!.dispatch("click");
+  assert.equal(count("ch:a"), 2);
+  assert.equal(count("cc:s1"), 1);
+  assert.deepEqual(h.closes, []);
+});
+
+test("web static: スマホで一覧に戻っている間に [端末] が出せなくなったら、次に会話の列を出したとき下端", async () => {
+  const h = loadShell({ phone: true });
+  const topics = [v3Topic("ch:a", { origin: "cc", sessionId: "s1" })];
+  h.api.reply = () => Promise.resolve(v3Result(topics));
+  await h.flush();
+  await h.topics.load();
+  h.app.open("ch:a");
+  kids(h.nodes.views)[1]!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "cc:s1");
+  h.scroll().scrollTop = 100;
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  topics[0] = v3Topic("ch:a", { origin: "cc", sessionId: null });
+  await h.topics.load();
+  assert.equal(h.app.activeTabId(), "ch:a");
+  h.history.forward();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.scroll().scrollTop, 800);
+});
+
+test("web static: v3 のシートの余白は .more-sheet と同じで、スマホは下の安全域を足す。完了・ほかの summary は --row の高さ。PC は行に hover", () => {
+  const css = read("shell.css");
+  const app = read("app.css");
+  const block = (src: string, sel: string) => {
+    const at = src.indexOf(sel + " {");
+    assert.ok(at >= 0, sel);
+    return src.slice(src.indexOf("{", at) + 1, src.indexOf("}", at));
+  };
+  const padding = (b: string) => /\n\s*padding: ([^;]+);/.exec(b)?.[1];
+  assert.equal(padding(block(css, "\n.v3-sheet")), padding(block(app, "\n  .more-sheet")));
+  assert.equal(padding(block(css, "\n.v3-sheet")), "var(--space-2) 0");
+  const phoneCss = css.slice(css.indexOf("@media (max-width: 639px)"));
+  assert.match(block(phoneCss, "  .v3-sheet"), /padding-bottom: calc\(var\(--space-2\) \+ env\(safe-area-inset-bottom, 0px\)\);/);
+  const summary = block(css, "\n.v3-done > summary,\n.v3-others > summary");
+  assert.match(summary, /min-height: var\(--row\);/);
+  assert.match(summary, /line-height: var\(--row\);/);
+  assert.match(summary, /padding: 0 var\(--space-3\) 0 var\(--space-1\);/);
+  assert.doesNotMatch(summary, /display:/, "三角を残す");
+  const hover = css.slice(css.indexOf("@media (hover: hover) and (pointer: fine)"));
+  assert.match(block(hover, "  .v3-sheet .more-row:not(:disabled):hover"), /background: var\(--muted\);/);
+  assert.ok(hover.indexOf(".v3-sheet .more-row:not(:disabled):hover") < hover.indexOf("\n}"), "hover の media の中");
 });

@@ -51,6 +51,19 @@
   margin-left: auto;
 }
 
+/* 接続の点と鈴（絞り込みのボタンの後ろ） */
+.v3-conn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* 絞り込み欄（一覧の上。開いている間だけ） */
+.v3-search {
+  flex: none;
+  padding: 0 var(--space-3) var(--space-2);
+}
+
 /* 一覧の中でスクロールするのはここだけ（行の差し替えで位置が動かない） */
 .v3-list-body {
   flex: 1;
@@ -132,6 +145,10 @@
   .v3-row:hover {
     background: var(--muted);
   }
+
+  .v3-sheet .more-row:not(:disabled):hover {
+    background: var(--muted);
+  }
 }
 
 .v3-row:active {
@@ -160,6 +177,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.v3-row.is-done .v3-row-title {
+  color: var(--text-muted);
 }
 
 .v3-row-meta {
@@ -202,8 +223,113 @@
   background: transparent;
 }
 
+/* 完了（n）と「ほかのプロジェクト（n）」の開閉（見出しは .v3-group-head・.sb-group > summary と同じ字。開閉の印はブラウザの既定の三角のまま） */
+.v3-done > summary,
+.v3-others > summary {
+  min-height: var(--row);
+  padding: 0 var(--space-3) 0 var(--space-1);
+  line-height: var(--row);
+  color: var(--text);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  user-select: none;
+}
+
+.v3-done > summary {
+  color: var(--text-muted);
+  font-weight: var(--weight-normal);
+}
+
+.v3-done > .meta {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-2);
+}
+
+/* 下の口（タスク・リマインド・ほか）。スマホでも一覧の列の末尾（.v3-list-body だけがスクロールする） */
 .v3-list-foot {
+  display: flex;
   flex: none;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-top: var(--border-width) solid var(--border);
+}
+
+.v3-foot-btn {
+  gap: var(--space-1);
+}
+
+/* ===== シート（「ほか」・見出しの […]）: 幅によらず app.css の ≤639px の .more-list・.more-row・.sheet-head と同じ見た目。PC は中央 ===== */
+.v3-sheet {
+  width: min(360px, 100vw - 32px);
+  /* base.css の dialog の余白でなく、今の殻の .more-sheet と同じ */
+  padding: var(--space-2) 0;
+}
+
+.v3-sheet .more-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v3-sheet .more-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--row);
+  padding: 0 var(--space-4);
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  font-size: var(--font-sm);
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.v3-sheet .more-row:active {
+  background: var(--muted);
+}
+
+.v3-sheet a.more-row {
+  text-decoration: none;
+}
+
+.v3-sheet .more-row:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.v3-sheet .more-row:disabled:active {
+  background: transparent;
+}
+
+.v3-sheet .more-row .icon {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+  color: var(--text-secondary);
+}
+
+.v3-sheet .more-row .sb-meta {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.v3-sheet .sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2) 0 var(--space-4);
+}
+
+.v3-sheet .sheet-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ===== 列 2: 開いた話題 ===== */
@@ -257,6 +383,17 @@
 
   .v3-list {
     border-right: 0;
+  }
+
+  .v3-list-foot {
+    padding-bottom: calc(var(--space-1) + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* シートは今までどおり下から（app.css の dialog の全幅） */
+  .v3-sheet {
+    width: 100%;
+    /* app.css の ≤639px の dialog の padding-bottom の代わり（下の安全域は足す） */
+    padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom, 0px));
   }
 
   /* キーボードが出ている間は見えている範囲（visualViewport）に合わせて置く（.wb.is-keyboard と同じ扱い） */
