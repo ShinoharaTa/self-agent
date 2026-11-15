@@ -79,6 +79,8 @@ export type TopicRouteDeps = {
   move?: MoveDeps & { ownerPosts: Pick<OwnerPosts, "send"> };
   /** 右腕の場所を変える確認（app/topic-proposals.ts）。期限の中の確認を、その話題の「あなたの番」（confirm）に付ける */
   proposals?: Pick<TopicProposals, "pendingAll">;
+  /** GET /api/topics の元。右腕の topic_list と共有するとき、同じ deps で createTopicCollector から作った物を渡す。無ければここで作る */
+  collect?: (at: number, done: string | null) => TopicsInput;
   now?: () => Date;
 };
 
@@ -424,7 +426,7 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
 export function topicRoutes(deps: TopicRouteDeps): Route[] {
   const { cfg, guildSettings, places, move } = deps;
   const now = deps.now ?? (() => new Date());
-  const collect = createTopicCollector(deps);
+  const collect = deps.collect ?? createTopicCollector(deps);
 
   const routes: Route[] = [
     {

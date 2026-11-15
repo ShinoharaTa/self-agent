@@ -14,7 +14,9 @@ import { InboxRotator, ROTATE_PROMPT, ROTATED_NOTICE } from "../src/app/inbox-ro
 import { PersonaRouter, POSTED_BY_OWNER_REPLY } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { idleNotice, Scheduler } from "../src/app/scheduler.ts";
-import { createOpenSession, inboxSeed, inboxWelcomeText } from "../src/app/session-open.ts";
+import { createRightHand, SESSION_OPEN_EXISTING_MESSAGE } from "../src/app/right-hand.ts";
+import { AUTO_SESSION_LIMIT_MESSAGE, inboxSeed } from "../src/app/session-open.ts";
+import { rightHandWelcomeText } from "../src/app/session-ops.ts";
 import { rotatedSeed } from "../src/app/summary.ts";
 import { createSystemNotifier } from "../src/app/system-notice.ts";
 import { loadConfig, type PersonaConfig } from "../src/config.ts";
@@ -274,17 +276,24 @@ test("/new persona: その人格のセッションを `<NAME>-<題名>` で作�
   assert.deepEqual(responder.replies.at(-1), { text: "<#ch-1> を作りました", ephemeral: true });
 });
 
-test("session_open: #<NAME> から呼ばれたらその人格のセッションを作り、最初の投稿はその人格の Bot。1 日の上限と間隔は全人格で合算、同じ題名は人格ごと", async (t) => {
+test("session_open: #<NAME> から呼ばれたらその人格のセッションを作り、最初の投稿はその人格の Bot。1 日の上限は全人格で合算、同じ題名は人格ごと", async (t) => {
   const env = setup(t);
-  const openSession = createOpenSession({
+  const rightHand = createRightHand({
     cfg: { ...cfg, autoSessionPerDay: 2 },
     resolveChannel: createChannelResolver(cfg, env.guildSettings, env.topicSessions),
-    gateway: env.admin,
     personas: env.personas,
-    guildSettings: env.guildSettings,
     topicSessions: env.topicSessions,
-    seeds: env.seeds,
-    queue: new KeyedSerialQueue(1),
+    start: {
+      gateway: env.admin,
+      personas: env.personas,
+      guildSettings: env.guildSettings,
+      topicSessions: env.topicSessions,
+      queue: new KeyedSerialQueue(1),
+      history: undefined,
+      submitText: async () => assert.fail("想定外の呼び出し: submitText"),
+      seeds: env.seeds,
+      log: env.log,
+    },
     now: env.now,
     log: env.log,
   });
@@ -292,7 +301,7 @@ test("session_open: #<NAME> から呼ばれたらその人格のセッション�
   const inboxContext: RunContext = { guildId: "guild-1", channelId: "inbox-1", kind: "inbox" };
   const args = { title: "旅行の計画", context: "京都に 2 泊したい" };
 
-  assert.deepEqual(await openSession(args, mikaContext), { result: "created", channelId: "ch-1" });
+  assert.deepEqual(await rightHand.open(args, mikaContext), { result: "created", channelId: "ch-1", place: "なし", turn: "none" });
   assert.equal(env.topicSessions.personaOf("ch-1"), "mika");
   assert.equal(env.seeds.get("ch-1"), inboxSeed(args.context));
   assert.deepEqual(
@@ -301,22 +310,21 @@ test("session_open: #<NAME> から呼ばれたらその人格のセッション�
   );
   assert.deepEqual(
     env.mika.sent.map(({ channelId, text }) => [channelId, text]),
-    [["ch-1", inboxWelcomeText("旅行の計画", "mika")]],
+    [["ch-1", rightHandWelcomeText("旅行の計画", "mika")]],
   );
   assert.deepEqual(env.admin.sent, []);
 
-  // 間隔は全人格で合算（#inbox から 15 分以内）
-  env.clock.now = new Date(NOW.getTime() + 5 * 60 * 1000);
-  assert.equal((await openSession(args, inboxContext)).result, "cooldown");
-  // 同じ題名でも、既定の人格には mika のセッションは「既にある」ではない
-  env.clock.now = new Date(NOW.getTime() + 20 * 60 * 1000);
-  assert.deepEqual(await openSession(args, inboxContext), { result: "created", channelId: "ch-2" });
+  // 続けて呼んでも（間を空けなくても）上限の中なら 2 つ目が作れる。同じ題名でも、既定の人格には mika のセッションは「既にある」ではない
+  assert.deepEqual(await rightHand.open(args, inboxContext), { result: "created", channelId: "ch-2", place: "なし", turn: "none" });
   assert.equal(env.topicSessions.personaOf("ch-2"), "default");
   // mika の同じ題名は既にある
-  env.clock.now = new Date(NOW.getTime() + 40 * 60 * 1000);
-  assert.deepEqual(await openSession(args, mikaContext), { result: "existing", channelId: "ch-1" });
-  // 1 日の上限は全人格で合算（mika 1 + 既定 1 = 2）
-  assert.equal((await openSession({ ...args, title: "別の話" }, mikaContext)).result, "limit");
+  assert.deepEqual(await rightHand.open(args, mikaContext), {
+    result: "existing",
+    channelId: "ch-1",
+    message: SESSION_OPEN_EXISTING_MESSAGE,
+  });
+  // 1 日の上限は全人格で合算（mika 1 + 既定 1 = 2）。上限に達すると limit
+  assert.deepEqual(await rightHand.open({ ...args, title: "別の話" }, mikaContext), { result: "limit", message: AUTO_SESSION_LIMIT_MESSAGE });
 });
 
 /** 前日の 05:00 JST に切り替えた記録を 3 つのチャンネルに入れ、mika の #mika にだけその後の会話（SDK セッション s-m とターン 1 つ）を作る */

@@ -270,7 +270,7 @@ test("CcStartStore: add・message_id・compare-and-set・確認待ちの失効�
   assert.notEqual(starts.get(other.id), undefined);
 });
 
-test("ツール定義: cc_list・cc_send・cc_start は末尾にあり、Claude Code の連携の有無・context で定義が変わらない", (t) => {
+test("ツール定義: cc_list・cc_send・cc_start がこの順で並び、その後ろは topic_list・topic_move だけ。Claude Code の連携の有無・context で定義が変わらない", (t) => {
   const s = setup(t);
   const definitions = (cc: CcToolDeps | undefined, context: RunContext | undefined) =>
     createTaskTools({} as never, {} as never, {} as never, {} as never, {} as never, {} as never, context, cc).map((definition) => ({
@@ -279,7 +279,7 @@ test("ツール定義: cc_list・cc_send・cc_start は末尾にあり、Claude 
       inputSchema: z.toJSONSchema(z.object(definition.inputSchema)),
     }));
   const base = definitions(undefined, undefined);
-  assert.deepEqual(base.slice(-3).map((definition) => definition.name), ["cc_list", "cc_send", "cc_start"]);
+  assert.deepEqual(base.slice(-5).map((definition) => definition.name), ["cc_list", "cc_send", "cc_start", "topic_list", "topic_move"]);
   assert.deepEqual(definitions(s.cc, CONTEXT), base);
   const send = createTaskTools({} as never, {} as never, {} as never, {} as never, {} as never, {} as never).find((d) => d.name === "cc_send")!;
   const schema = z.object(send.inputSchema);
