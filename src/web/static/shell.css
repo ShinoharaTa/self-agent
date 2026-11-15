@@ -584,4 +584,17 @@
     left: 0;
     right: 0;
   }
+
+  /* ナレッジは一覧（上）と中身（下）を縦に並べ、見出しの検索も出す（app.css は古い殻のサイドバーの前提で隠すので打ち消す。値は app.css の元の値） */
+  .v3 .master-detail-phone {
+    grid-template-rows: minmax(0, 2fr) minmax(0, 3fr);
+  }
+
+  .v3 .master-detail-phone > .master {
+    display: block;
+  }
+
+  .v3 .ed-toolbar-kb .ed-actions {
+    display: flex;
+  }
 }
