@@ -14,7 +14,7 @@
 |---|---|---|
 | F1 | `/api/running` は実行中のターンの配列（`channelId・turnSeq・startedAt・toolCalls・label・steps・source・abortable・waitingPermission?・elapsedMs`）。画面は実行中があれば 2 秒・無ければ 10 秒ごとに読み、`applyRunning` で前回との差を計算している | handler.ts の RunningTurn、web/routes/turns.ts、static/api.js |
 | F2 | polling は `document.visibilityState === "visible"` のときだけ。戻ったら `schedule()` で全部を 1 回読む | api.js の `active()`・`schedule()` |
-| F3 | history の agent の行の `outcome` は `done / max_turns / aborted / failed`。前に出ている会話の `/turns` は 5 秒（許可の保留中は 3 秒）ごと。`channel.permission`・`channel.closeDraft` もここで届く | store/history.ts、api.js の load.turns |
+| F3 | history の agent の行の `outcome` は `done / max_turns / aborted / failed`。前に出ている会話の `/turns` は 5 秒（許可の保留中は 3 秒）ごと（新しい殻では、列 2 の会話と、見えている右腕の両方）。`channel.permission`・`channel.closeDraft` もここで届く | store/history.ts、api.js の load.turns |
 | F4 | `/api/cc/sessions` は見ている間だけ 10 秒（許可の保留中は 3 秒）ごと。`state（needs_input / running / idle）・since・permission・pending` を持つ。`sameCcList` で差を見ている | api.js の load.cc、web/routes/cc.ts |
 | F5 | Web から送ると 202 `{ turnId, link }`。turnId は history の owner の行の id で turnSeq ではない | handler.ts の submitText |
 | F6 | 手順の label は固定の語（「コマンドを実行しています」など） | agent/sdk-runner.ts |
