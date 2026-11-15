@@ -47,8 +47,8 @@ test("システムプロンプトに日付や年を含めない", () => {
   assert.doesNotMatch(String(systemPrompt), /\d{4}|\d{1,2}\s*[/\-月]\s*\d{1,2}/);
 });
 
-/** プロンプトの中でコマンド名・ツール名の形をしているが、名前ではない語（引数名・ツールの返り値・固有名詞・ディレクトリ名） */
-const NOT_A_NAME = new Set(["due_by", "task_id", "not_set_up", "Discord", "Web", "node_modules", "Claude", "Code"]);
+/** プロンプトの中でコマンド名・ツール名の形をしているが、名前ではない語（引数名・ツールの返り値・固有名詞・ディレクトリ名・場所の名前） */
+const NOT_A_NAME = new Set(["due_by", "task_id", "not_set_up", "Discord", "Web", "node_modules", "Claude", "Code", "General"]);
 
 /** プロンプトから re に当たる語（グループがあればその中身）を重複なしで取り出す */
 function namesIn(prompt: string, re: RegExp): string[] {
@@ -56,7 +56,8 @@ function namesIn(prompt: string, re: RegExp): string[] {
 }
 
 test("SYSTEM_PROMPT（シェルが有効なら SHELL_SYSTEM_PROMPT）に出てくるコマンド名・ツール名・組み込みツール名はすべて実在する", () => {
-  const commands = new Set(createCommands({} as CommandDeps).map((command) => command.def.name));
+  // /move は main.ts がいつも渡す move があるときだけ登録される（本番と同じ集合で確かめる）
+  const commands = new Set(createCommands({ move: {} } as unknown as CommandDeps).map((command) => command.def.name));
   const tools = new Set(createTaskTools({} as never, {} as never, {} as never, {} as never, {} as never, {} as never).map((tool) => tool.name));
   for (const shell of [false, true]) {
     const options = buildQueryOptions({ ...cfg, shell }, mcpServer);
