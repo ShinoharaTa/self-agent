@@ -2097,7 +2097,7 @@ test("web static: 新しい殻の幅の段は 639 だけ", () => {
   const medias = [...css.matchAll(/@media ([^{]+)\{/g)].map((m) => m[1]!.trim());
   assert.ok(medias.includes("(max-width: 639px)"));
   // 幅の段のほかは、指・hover・動きを減らすの条件だけ
-  for (const m of medias) assert.ok(["(max-width: 639px)", "(pointer: coarse)", "(prefers-reduced-motion: reduce)", "(hover: hover) and (pointer: fine)"].includes(m), m);
+  for (const m of medias) assert.ok(["(max-width: 639px)", "(pointer: coarse)", "(prefers-reduced-motion: reduce)", "(hover: hover) and (pointer: fine)", "(display-mode: standalone)", "(prefers-color-scheme: light)"].includes(m), m);
   assert.doesNotMatch(css, /767|1023|1024|768/);
   assert.match(read("shell.js"), /window\.matchMedia\("\(max-width: 639px\)"\)/);
   // セレクタは .v3 で始まるものだけ（:root の変数 2 つ（一覧と右腕の幅）を除く）
@@ -2131,6 +2131,60 @@ test("web static: 新しい殻の ≤639px のナレッジは一覧と中身を�
   const views = read("views.js");
   assert.match(views, /class: "master-detail master-detail-phone"/);
   assert.match(views, /"ed-toolbar-kb"\)/);
+});
+
+test("web static: 新しい殻は上の安全域を .v3 の 1 か所で持ち、重ねた右腕はその下から始める", () => {
+  const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const phoneAt = css.indexOf("@media (max-width: 639px)");
+  const phoneCss = css.slice(phoneAt);
+  const phoneEnd = phoneCss.indexOf("\n}");
+  const topRule = (sel: string) => {
+    const at = css.indexOf("\n" + sel + " {");
+    assert.ok(at >= 0 && at < phoneAt, sel + " は media の外");
+    return css.slice(css.indexOf("{", at) + 1, css.indexOf("}", at));
+  };
+  const phoneRule = (sel: string) => {
+    const at = phoneCss.indexOf("\n  " + sel + " {");
+    assert.ok(at >= 0 && at < phoneEnd, sel + " は ≤639px の中");
+    return phoneCss.slice(phoneCss.indexOf("{", at) + 1, phoneCss.indexOf("}", at));
+  };
+  const v3 = topRule(".v3");
+  assert.ok(v3.includes("padding-top: env(safe-area-inset-top, 0px);"));
+  assert.ok(v3.includes("height: var(--vvh, 100dvh);"));
+  const hand = '.v3[data-hand-mode="over"][data-hand="open"] .v3-hand';
+  const over = topRule(hand);
+  assert.ok(over.includes("top: env(safe-area-inset-top, 0px);"));
+  assert.ok(!over.includes("top: 0;"));
+  assert.ok(phoneRule(hand).includes("top: calc(var(--space-8) + env(safe-area-inset-top, 0px));"));
+  assert.equal(css.match(/safe-area-inset-top/g)?.length, 5);
+});
+
+test("web static: 新しい殻のライトのステータスバーの帯は古い殻と同じ決定（standalone のときだけ --primary）", () => {
+  const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const band = "linear-gradient(var(--primary), var(--primary)) top / 100% env(safe-area-inset-top, 0px) no-repeat,";
+  const at = css.indexOf("@media (display-mode: standalone)");
+  assert.ok(at >= 0);
+  const block = css.slice(at, css.indexOf("\n}", at) + 2);
+  const flat = block.replace(/\s+/g, " ");
+  assert.ok(flat.includes(`.v3:is(:root[data-theme="light"] *) { background: ${band} var(--bg); }`), flat);
+  assert.ok(flat.includes(`@media (prefers-color-scheme: light) { .v3:is(:root:not([data-theme]) *) { background: ${band} var(--bg); } }`), flat);
+  assert.ok(at < css.indexOf("@media (max-width: 639px)"));
+  assert.ok(!block.includes("dark"));
+  // 古い殻（app.css の .wb-titlebar）と同じ値
+  assert.equal(read("app.css").split(band).length - 1, 2);
+});
+
+test("web static: 新しい殻のスマホの会話の列は下の安全域を持ち、キーボードの間は足さない", () => {
+  const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const phoneCss = css.slice(css.indexOf("@media (max-width: 639px)"));
+  const phoneEnd = phoneCss.indexOf("\n}");
+  const rule = (sel: string) => {
+    const at = phoneCss.indexOf("\n  " + sel + " {");
+    assert.ok(at >= 0 && at < phoneEnd, sel + " は ≤639px の中");
+    return phoneCss.slice(phoneCss.indexOf("{", at) + 1, phoneCss.indexOf("}", at)).trim();
+  };
+  assert.equal(rule(".v3-main"), "padding-bottom: env(safe-area-inset-bottom, 0px);");
+  assert.equal(rule(".v3.is-keyboard .v3-main"), "padding-bottom: 0;");
 });
 
 test("web static: shell.css に色の値が無い", () => {
@@ -4427,7 +4481,7 @@ test("web static: v3.html に右腕の枠と 3 つの口があり、右腕のた
   assert.match(css, /\.v3\[data-hand-mode="over"\]\[data-hand="open"\] \.v3-hand \{[^}]*position: absolute;[^}]*z-index: var\(--z-drawer\);/);
   assert.match(css, /\.v3-hand-backdrop \{[^}]*z-index: var\(--z-drawer-backdrop\);[^}]*background: var\(--backdrop\);/);
   const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
-  assert.match(phone, /\.v3\[data-hand-mode="over"\]\[data-hand="open"\] \.v3-hand \{[^}]*top: var\(--space-8\);[^}]*padding-bottom: env\(safe-area-inset-bottom, 0px\);/);
+  assert.match(phone, /\.v3\[data-hand-mode="over"\]\[data-hand="open"\] \.v3-hand \{[^}]*top: calc\(var\(--space-8\) \+ env\(safe-area-inset-top, 0px\)\);[^}]*padding-bottom: env\(safe-area-inset-bottom, 0px\);/);
   assert.match(phone, /\.v3-hand-ask \{[^}]*min-height: var\(--tap\);/);
 });
 
