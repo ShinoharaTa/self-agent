@@ -1,5 +1,5 @@
 /*
- * 新しい殻（v3.html。docs/plan/web-ui-v3.md §2）の配置だけ。セレクタは .v3 で始まるものだけで、色は tokens.css の変数だけを使う。
+ * 新しい殻（index.html。docs/plan/web-ui-v3.md §2）の配置だけ。セレクタは .v3 で始まるものだけで、色は tokens.css の変数だけを使う。
  * 部品（.btn・.dot・.ed* など）は app.css のものをそのまま使う。幅の段は 639px の 1 つ（GUIDELINES §4）
  */
 

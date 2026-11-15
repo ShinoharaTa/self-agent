@@ -1,4 +1,4 @@
-// 新しい殻（v3.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
+// 新しい殻（index.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
 // SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
 // 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、帯の「場所 ∨」（シートと確認。§6.3 の M5）
 "use strict";
@@ -64,7 +64,7 @@
   const refs = {};
 
   // ===== テーマ =====
-  // ブラウザの上の帯の色（--surface。v3.html の theme-color の 2 つと同じ値）
+  // ブラウザの上の帯の色（--surface。index.html の theme-color の 2 つと同じ値）
   const THEME_COLORS = { light: "#ffffff", dark: "#11141c" };
 
   function applyTheme() {
@@ -1508,7 +1508,7 @@
       if (opener && document.contains(opener)) opener.focus();
     });
 
-    // 最初の 1 枚の前に右腕の形を決める（v3.html の初期値は畳んだ重ねる形）。再読み込みで残った右腕の印は外す
+    // 最初の 1 枚の前に右腕の形を決める（index.html の初期値は畳んだ重ねる形）。再読み込みで残った右腕の印は外す
     dropHandMark();
     fitHand();
     applyHand();

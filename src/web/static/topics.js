@@ -1,4 +1,4 @@
-// 新しい殻（v3.html）の話題の一覧（列 1）: GET /api/topics を読んで持ち、「あなたの番」の節と群・行を key で差し替える
+// 新しい殻（index.html）の話題の一覧（列 1）: GET /api/topics を読んで持ち、「あなたの番」の節と群・行を key で差し替える
 // （入れ物を作り直さない。スクロール位置・焦点・hover を保つ。docs/plan/web-ui-v3.md §3.4）
 "use strict";
 

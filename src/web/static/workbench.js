@@ -81,7 +81,7 @@
   }
 
   // ===== テーマ =====
-  // ブラウザの上の帯の色（--surface。index.html の theme-color の 2 つと同じ値）
+  // ブラウザの上の帯の色（--surface。classic.html の theme-color の 2 つと同じ値）
   const THEME_COLORS = { light: "#ffffff", dark: "#11141c" };
 
   function applyTheme() {
@@ -1007,7 +1007,7 @@
     persona_with_project: "プロジェクトのセッションは既定の人格だけです",
     cc_disabled: "プロジェクトのセッションには Claude Code の連携が要ります",
   };
-  /** プロジェクトの欄の説明（index.html と同じ）と、共有の link が済んでいないときの説明 */
+  /** プロジェクトの欄の説明（classic.html と同じ）と、共有の link が済んでいないときの説明 */
   const NEW_PROJECT_HINT = "選ぶと Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はボタンで答えます。人格は既定だけです";
   const NEW_PROJECT_NOT_READY_HINT = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行してから再起動してください";
   const NEW_PROJECT_NOT_SET_UP = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行して再起動してください";
