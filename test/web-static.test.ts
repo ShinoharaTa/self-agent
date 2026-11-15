@@ -363,9 +363,11 @@ function descendants(node: FakeNode): FakeNode[] {
   return node.children.flatMap((c) => [c, ...descendants(c)]);
 }
 
-function loadViews() {
+function loadViews(opts: { v3?: boolean } = {}) {
+  // v3 なら新しい殻の根（#v3）があるとして描く（views.js の isV3Shell）
+  const v3Root = opts.v3 ? new FakeNode("div") : null;
   const document = {
-    getElementById: () => null,
+    getElementById: (id: string) => (id === "v3" ? v3Root : null),
     createElement: (tag: string) => new FakeNode(tag),
     createElementNS: (_ns: string, tag: string) => new FakeNode(tag),
     createTextNode: (text: string) => Object.assign(new FakeNode("#text"), { text }),
@@ -405,7 +407,7 @@ function loadViews() {
     ccQuestionForget: (id: number) => void;
     placeChildren: (container: FakeNode, nodes: Array<FakeNode | null>) => void;
   };
-  return { views, posts, bodies, toasts, setReply: (fn: (path: string) => Promise<unknown>) => (reply = fn) };
+  return { SA, views, posts, bodies, toasts, setReply: (fn: (path: string) => Promise<unknown>) => (reply = fn) };
 }
 
 test("web static: 許可のカードは [許可][拒否] の 2 つ（許可 secondary・拒否 ghost）と常に許可のチェックで、チェックで [許可] の送り先が always に変わる", async () => {
@@ -2105,6 +2107,30 @@ test("web static: 新しい殻の幅の段は 639 だけ", () => {
     for (const part of sel.split(",")) assert.match(part.trim(), /^\.v3/, sel);
   }
   assert.equal(css.match(/^\s*--[a-z0-9-]+:/gm)?.length, 2);
+});
+
+test("web static: 新しい殻の ≤639px のナレッジは一覧と中身を縦に並べ、見出しの検索も出す（app.css の古い殻の規則は残す。M8-0）", () => {
+  const css = read("shell.css");
+  const phoneCss = css.slice(css.indexOf("@media (max-width: 639px)"));
+  const phoneEnd = phoneCss.indexOf("\n}");
+  const rule = (sel: string) => {
+    const at = phoneCss.indexOf("\n  " + sel + " {");
+    assert.ok(at >= 0 && at < phoneEnd, sel + " は ≤639px の中");
+    return phoneCss.slice(phoneCss.indexOf("{", at) + 1, phoneCss.indexOf("}", at)).trim();
+  };
+  assert.equal(rule(".v3 .master-detail-phone"), "grid-template-rows: minmax(0, 2fr) minmax(0, 3fr);");
+  assert.equal(rule(".v3 .master-detail-phone > .master"), "display: block;");
+  assert.equal(rule(".v3 .ed-toolbar-kb .ed-actions"), "display: flex;");
+  // 値は app.css の元の値と同じ
+  const app = read("app.css");
+  assert.match(app, /\n {2}\.master-detail \{\n {4}grid-template-columns: minmax\(0, 1fr\);\n {4}grid-template-rows: minmax\(0, 2fr\) minmax\(0, 3fr\);\n/);
+  assert.match(app, /\n\.ed-actions \{\n {2}display: flex;\n/);
+  // 古い殻の規則（一覧と検索を隠す）は残っている
+  assert.match(app, /\n {2}\.master-detail-phone > \.master,\n {2}\.ed-toolbar-kb \.ed-actions \{\n {4}display: none;\n {2}\}/);
+  // DOM は変えない（同じ class のまま）
+  const views = read("views.js");
+  assert.match(views, /class: "master-detail master-detail-phone"/);
+  assert.match(views, /"ed-toolbar-kb"\)/);
 });
 
 test("web static: shell.css に色の値が無い", () => {
@@ -6153,6 +6179,56 @@ test("web static: スマホで [一覧]・[会話]・[右腕] から 2 つ一度
   assert.deepEqual(readsA(n), [], "進む間も 1 を読んでいる扱いにしない");
   assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
   assert.equal(handOf(h), "open");
+});
+
+// ----- 設定のキーの表（M8-0。views.js の KEYS_COMMON・KEYS_CLASSIC・KEYS_V3） -----
+function settingsKeys(v3: boolean): Array<[string, string]> {
+  const { SA, views } = loadViews({ v3 });
+  (SA.app as Record<string, unknown>).theme = () => "system";
+  const container = new FakeNode("div");
+  (views as unknown as { info: (id: string) => { render: (c: FakeNode) => void } }).info("settings").render(container);
+  const keyboard = descendants(container).find((n) => n.classes.has("hide-sm"))!;
+  assert.match(keyboard.textContent, /キーボード/);
+  return descendants(keyboard)
+    .filter((n) => n.tagName === "kbd")
+    .map((k) => [k.textContent, k.parent!.parent!.textContent.slice(k.textContent.length)] as [string, string]);
+}
+
+test("web static: 古い殻の設定のキーの表は今までどおりの 9 行（M8-0）", () => {
+  const keys = settingsKeys(false);
+  assert.deepEqual(
+    keys.map(([k]) => k),
+    ["Enter / Shift+Enter", "Ctrl+Enter / ⌘+Enter", "Ctrl+K / Ctrl+P", "Ctrl+Shift+P", "Ctrl+B", "Ctrl+J", "Alt+W", "Alt+数字", "Esc"],
+  );
+  const text = keys.map(([k, v]) => k + " " + v).join("\n");
+  for (const v of ["送る / 改行（タッチの端末では Enter で改行）", "移動（画面）", "コマンド", "サイドバーの表示", "パネルの表示", "タブを閉じる", "その番号のタブ（1 から 9）", "パレット・ドロワーを閉じる"]) {
+    assert.ok(text.includes(v), v);
+  }
+});
+
+test("web static: 新しい殻の設定のキーの表は共通の 2 行と新しい殻の 3 行で、古い殻だけのキーを載せない（M8-0）", () => {
+  const keys = settingsKeys(true);
+  assert.equal(keys.length, 5);
+  assert.deepEqual(
+    keys.map(([k]) => k),
+    ["Enter / Shift+Enter", "Ctrl+Enter / ⌘+Enter", "Ctrl+K / ⌘+K", "↑ / ↓ / Home / End", "Esc"],
+  );
+  const text = keys.map(([k, v]) => k + " " + v).join("\n");
+  for (const v of ["話題を絞り込む", "一覧の行を移る", "絞り込み・重ねた右腕を閉じる"]) assert.ok(text.includes(v), v);
+  for (const k of ["Ctrl+B", "Ctrl+J", "Alt+W", "Alt+数字", "Ctrl+Shift+P", "Ctrl+P"]) assert.ok(!text.includes(k), k);
+  // 殻は描くときに見分ける（読み込みのときに 1 度だけ決めない）
+  const views = read("views.js");
+  assert.match(fnSource(views, "isV3Shell"), /return document\.getElementById\("v3"\) !== null;/);
+  assert.match(fnSource(views, "renderSettings"), /KEYS_COMMON\.concat\(isV3Shell\(\) \? KEYS_V3 : KEYS_CLASSIC\)/);
+});
+
+test("web static: 新しい殻のキーの表は shell.js の処理と合っている（M8-0）", () => {
+  const sh = read("shell.js");
+  assert.match(sh, /\(e\.ctrlKey \|\| e\.metaKey\) && !e\.altKey && !e\.shiftKey && \(e\.key === "k" \|\| e\.key === "K"\)/);
+  assert.match(sh, /\["ArrowDown", "ArrowUp", "Home", "End"\]\.includes\(e\.key\)/);
+  assert.match(sh, /e\.key === "Home"/);
+  assert.match(sh, /e\.key === "End"/);
+  assert.match(sh, /e\.key !== "Escape"/);
 });
 
 test("web static: 今の殻の readingChannelIds は shownChannelIds と同じ関数", () => {
