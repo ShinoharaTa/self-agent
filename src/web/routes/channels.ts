@@ -3,6 +3,7 @@
 // Claude Code のチャンネル（docs/plan/claude-code-channels.md §5.2。CC14）: cc を渡したときだけ、削除されていない cc_channels の行を kind "cc" で一覧と /turns に出す
 // （種類は ChannelKind | "cc"。access.ts の ChannelKind は変えない。SDK のターンが無いので /renew・/continue・/abort は呼び出し側で 404）
 // /turns の channel.moveProposal（M6g）は、その話題の期限の中の右腕の場所を変える確認（app/topic-proposals.ts の pending。proposals を渡したときだけ。無ければ null）
+// GET /api/channels の reads（M7）は、一覧に出ている会話のうち既読の行のある物の { [channelId]: lastReadId }（reads を渡したときだけ。無ければ {}）
 import { type Config, DEFAULT_PERSONA_ID } from "../../config.ts";
 import type { ChannelKind, ResolveChannel } from "../../app/access.ts";
 import type { CcChannelRow, CcChannelStore } from "../../store/cc-channels.ts";
@@ -15,6 +16,7 @@ import type { ProjectStore } from "../../store/projects.ts";
 import type { CcPermissionStore } from "../../store/cc-permissions.ts";
 import type { SdkSessionStore } from "../../store/sdk-sessions.ts";
 import { CC_PERMISSION_RECENT_MS, type HoldSeconds, permissionJson } from "./cc.ts";
+import type { TopicReadStore } from "../../store/topic-reads.ts";
 import type { TopicSession, TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { TopicProposals } from "../../app/topic-proposals.ts";
 import type { Route, RouteResult } from "../server.ts";
@@ -68,6 +70,8 @@ export type ChannelRouteDeps = {
   } & HoldSeconds;
   /** 右腕の場所を変える確認（app/topic-proposals.ts。topicRoutes に渡している物と同じ実体）。/turns の channel.moveProposal に使う */
   proposals?: Pick<TopicProposals, "pending">;
+  /** 既読（M7。topic_reads。topicRoutes の reads.store と同じ実体）。GET /api/channels の reads に使う */
+  reads?: Pick<TopicReadStore, "all">;
 };
 
 /** 一覧と /turns の 1 チャンネル */
@@ -189,7 +193,7 @@ export function webChannelNamer(
 }
 
 export function channelRoutes(deps: ChannelRouteDeps): Route[] {
-  const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel, cc, projectPermissions, proposals } = deps;
+  const { cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel, cc, projectPermissions, proposals, reads } = deps;
 
   /** プロジェクトのセッションの最新の許可の要求（無ければ null） */
   const sessionPermission = (channelId: string): WebChannel["permission"] => {
@@ -359,7 +363,15 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
           isDefault: persona.id === DEFAULT_PERSONA_ID,
           connected: persona.connected(),
         }));
-        return { status: 200, json: { guilds, personas: personaList, channels } };
+        const readMap: Record<string, number> = {};
+        const all = reads?.all();
+        if (all !== undefined) {
+          for (const channel of channels) {
+            const value = all.get(channel.id);
+            if (value !== undefined) readMap[channel.id] = value;
+          }
+        }
+        return { status: 200, json: { guilds, personas: personaList, channels, reads: readMap } };
       },
     },
     {

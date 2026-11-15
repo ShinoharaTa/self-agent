@@ -14,7 +14,7 @@ export type TopicTurn = {
   /** 時間切れの時刻（ISO）。無ければ null */
   expiresAt: string | null;
 };
-/** "unread" は M7 で使う。M1 は出さない（型にだけ置く） */
+/** "unread" は出さない（型にだけ置く）。未読は画面が reads と last から決める（M7） */
 export type TopicMark = "turn" | "running" | "unread" | null;
 export type TopicLast = { id: number; at: string; kind: HistoryKind } | null;
 
@@ -175,7 +175,7 @@ export function pickTurn(turns: TopicTurn[]): TopicTurn | null {
   return best;
 }
 
-/** 印（あなたの番 → 作業中。M1 は "unread" を返さない） */
+/** 印（あなたの番 → 作業中。"unread" は出さない。未読は画面が reads と last から決める（M7）） */
 export function markOf(turn: TopicTurn | null, running: boolean): TopicMark {
   if (turn !== null) return "turn";
   return running ? "running" : null;
