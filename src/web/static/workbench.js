@@ -473,6 +473,11 @@
     return S.active;
   }
 
+  /** 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。前に出ている会話のタブの 1 つ */
+  function shownChannelIds() {
+    return S.active && S.active.startsWith("ch:") ? [S.active.slice(3)] : [];
+  }
+
   function renderEditors() {
     renderTitle();
     const box = refs.editors;
@@ -1522,6 +1527,7 @@
     refreshNotices,
     addOutput,
     activeTabId,
+    shownChannelIds,
     sidebarShows,
     openDrawer,
     closeDrawer,

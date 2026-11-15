@@ -22,7 +22,7 @@ type Pure = {
   normalizeCombo: (raw: unknown) => Record<string, string>;
   pattern: (event: string, depth: Record<string, unknown>, themeId?: string) => Pattern;
   createMemory: () => Mem;
-  decideRunning: (detail: unknown, mem: Mem, now: number, front?: string | null) => Ev[];
+  decideRunning: (detail: unknown, mem: Mem, now: number, front?: string | string[] | null) => Ev[];
   expireEnds: (mem: Mem, now: number) => Ev[];
   noteAborted: (mem: Mem, channelId: string, now: number) => void;
   decideTurns: (detail: unknown, mem: Mem, now: number) => Ev[];
@@ -428,4 +428,51 @@ test("sound: coalesce は優先の高い 1 つを選び、250 ms の間隔・10 
   assert.equal(pick([{ event: "tick" }], q, 6000), null);
   assert.equal(pick([{ event: "reply" }], q, 6000), "reply");
   assert.equal(pick([{ event: "tick" }], q, 16500), "tick");
+});
+
+/** sound.js の IIFE の直下（2 字下げ）の function の本体を切り出す */
+function soundFn(name: string): string {
+  const js = readFileSync(fileURLToPath(new URL("../src/web/static/sound.js", import.meta.url)), "utf8");
+  const start = js.indexOf(`\n  function ${name}(`);
+  assert.ok(start >= 0, name);
+  const end = js.indexOf("\n  }\n", start);
+  return js.slice(start, end + 4);
+}
+
+test("sound: 見えている会話（配列）は前に出ている会話として扱う（終わりは /turns を待つ・手順の音・設定「前に出ている会話」）", () => {
+  // 終わり: 見えている会話は /turns の行を待ち、見えていない会話はすぐ返事
+  const ch = { id: "h", kind: "inbox", permission: null, closeDraft: null };
+  const mem = pure.createMemory();
+  assert.deepEqual(events(pure.decideRunning({ prev: [run("a", 1), run("h", 1, 2), run("x", 1)], next: [], catchUp: false }, mem, 0, ["a", "h"])), ["reply"]);
+  assert.deepEqual(plain(pure.decideTurns({ channelId: "h", rows: [{ id: 1, kind: "agent", outcome: "failed" }], before: ch, after: ch, catchUp: false }, mem, 500)).map((e) => e.event), ["fail"]);
+  assert.deepEqual(plain(pure.expireEnds(mem, 3000)), [{ event: "reply", channelId: "a", depth: { toolCalls: 0 } }]);
+  // 空の配列・null は前に出ている会話が無い
+  for (const front of [[], null]) assert.deepEqual(events(pure.decideRunning({ prev: [run("a", 1)], next: [], catchUp: false }, pure.createMemory(), 0, front)), ["reply"]);
+  // 手順の音・設定「前に出ている会話」: shownChannelIds に入っている会話も前に出ている
+  const evs: Ev[] = [
+    { event: "tick", channelId: "a" },
+    { event: "tick", channelId: "h" },
+    { event: "tick", channelId: "b" },
+    { event: "reply", channelId: "h" },
+    { event: "reply", channelId: "b" },
+  ];
+  const all = pure.normalizeSettings(null);
+  const view = { frontChannelId: "a", shownChannelIds: ["a", "h"], frontSessionId: null, hidden: false };
+  assert.deepEqual(plain(pure.filterEvents(evs, all, view)).map((e) => e.event + e.channelId), ["ticka", "tickh", "replyh", "replyb"]);
+  assert.deepEqual(plain(pure.filterEvents(evs, { ...all, scope: "front" }, view)).map((e) => e.event + e.channelId), ["ticka", "tickh", "replyh"]);
+  assert.deepEqual(events(pure.filterEvents(evs, all, { ...view, hidden: true })), ["reply", "reply"]);
+  // view: 殻の shownChannelIds を使い、無ければ前に出ている会話の 1 つ
+  const viewOf = (app: Record<string, unknown>, active: string | null) => {
+    const ctx: Record<string, unknown> = {
+      SA: { app: { activeTabId: () => (active ? "ch:" + active : null), ...app }, chat: { activeChannelId: () => active, current: () => null } },
+      document: { visibilityState: "visible" },
+    };
+    vm.runInNewContext(soundFn("view") + "\nresult = view();", ctx);
+    return plain(ctx.result) as Record<string, unknown>;
+  };
+  assert.deepEqual(viewOf({ shownChannelIds: () => ["a", "h"] }, "a"), { frontChannelId: "a", shownChannelIds: ["a", "h"], frontSessionId: null, hidden: false });
+  assert.deepEqual(viewOf({}, "a").shownChannelIds, ["a"]);
+  assert.deepEqual(viewOf({}, null).shownChannelIds, []);
+  // listen は隠れていなければ見えている会話の配列を decide に渡す
+  assert.match(soundFn("listen"), /decide\(detail, mem, now, v\.hidden \? null : v\.shownChannelIds\)/);
 });

@@ -85,9 +85,9 @@
     return id && id.startsWith("ch:") ? id.slice(3) : null;
   }
 
-  /** 前に出ていて、画面が見えているときだけ、読んだ最後の行まで既読にする */
+  /** 画面に描かれて見えている会話（SA.app.shownChannelIds）で、画面が見えているときだけ、読んだ最後の行まで既読にする */
   function markSeen(channelId) {
-    if (activeChannelId() !== channelId || document.visibilityState !== "visible") return;
+    if (!SA.app.shownChannelIds().includes(channelId) || document.visibilityState !== "visible") return;
     const t = store.turns[channelId];
     if (!t || t.turns.length === 0) return;
     if (store.markSeen(channelId, t.turns[t.turns.length - 1].id)) {
@@ -96,9 +96,8 @@
     }
   }
 
-  function markSeenActive() {
-    const channelId = activeChannelId();
-    if (channelId) markSeen(channelId);
+  function markSeenShown() {
+    for (const id of SA.app.shownChannelIds()) markSeen(id);
   }
 
   // ===== セッションの操作（/wait・/close・/renew。src/web/routes/sessions.ts） =====
@@ -652,7 +651,8 @@
     }
   }
 
-  function header(ch, channelId) {
+  function header(ch, channelId, frame) {
+    if (frame) return frameHeader(ch, channelId, frame);
     if (ch && ch.kind === "cc") return ccHeader(ch, channelId);
     if (!ch) {
       return el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [SA.ui.backButton(), icon("hash"), el("h1", { text: "会話" })]), el("div", { class: "ed-actions" })]);
@@ -727,6 +727,39 @@
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
   }
 
+  /**
+   * 枠の指定（render の第 3 引数。省略できる。省略したときの描画は今と同じ）
+   *   title: string                 見出しの h1・[…] のシートの題（title + " の操作"）
+   *   placeholder: string           入力欄の placeholder と aria-label
+   *   ops: () => Node[]             見出しの右端に足すボタン（省略可）
+   *   outgoing: (text) => string    送る直前の本文の差し替え（省略可）
+   *   replyText: (text) => string   Bot の返事の本文を描く前の差し替え（省略可）
+   *   replyExtras: (text) => Node[] Bot の返事の吹き出しの下に足す要素（省略可）
+   */
+  /** 枠の見出し: 題と […]（会話を新しくする・Discord で開く）と枠のボタン。[‹]・アイコン・バッジ・リンクのボタンは出さない */
+  function frameHeader(ch, channelId, frame) {
+    const actions = el("div", { class: "ed-actions" });
+    if (ch) {
+      const busy = !!pendingOf(channelId, ch);
+      const discord = discordUrl(ch.link);
+      const more = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-ops-more", type: "button", "aria-label": "ほかの操作", title: "ほかの操作" }, [icon("ellipsis")]);
+      more.addEventListener("click", () =>
+        SA.app.sheet(
+          frame.title + " の操作",
+          [
+            { icon: "rotate-ccw", label: "会話を新しくする", run: busy ? null : () => renew(channelId), why: BUSY_TEXT },
+            discord ? { icon: "external-link", label: "Discord で開く", href: discord } : null,
+          ].filter(Boolean),
+          more,
+        ),
+      );
+      actions.append(el("div", { class: "ed-ops" }, [more]));
+    }
+    // .ed-ops の外（≤639px で .ed-ops の中のボタンは隠れるため）
+    if (frame.ops) actions.append(...frame.ops());
+    return el("header", { class: "ed-toolbar", "data-channel": channelId }, [el("div", { class: "ed-title" }, [el("h1", { text: frame.title })]), actions]);
+  }
+
   // ===== 入力欄（Enter で送る・Shift+Enter で改行。タッチが主の端末では Enter は改行で、送るのはボタン。
   // どちらでも Ctrl+Enter・⌘+Enter で送る。IME の変換中の Enter は送らない） =====
   const touchQuery = window.matchMedia ? window.matchMedia("(pointer: coarse) and (hover: none)") : null;
@@ -740,7 +773,7 @@
   if (touchQuery && touchQuery.addEventListener) {
     touchQuery.addEventListener("change", () => {
       for (const ta of document.querySelectorAll(".composer-input")) {
-        ta.placeholder = placeholderOf(ta.dataset.title || "会話");
+        ta.placeholder = ta.dataset.placeholder || placeholderOf(ta.dataset.title || "会話");
         ta.setAttribute("enterkeyhint", enterHint());
       }
     });
@@ -757,16 +790,17 @@
     });
   }
 
-  function composer(ch, channelId) {
-    const title = ch ? channelTitle(ch) : "会話";
+  function composer(ch, channelId, frame) {
+    const title = frame ? frame.title : ch ? channelTitle(ch) : "会話";
     const ta = el("textarea", {
       class: "textarea composer-input",
       rows: "2",
       maxlength: "4000",
-      "aria-label": title + " に送る",
+      "aria-label": frame ? frame.placeholder : title + " に送る",
       enterkeyhint: enterHint(),
       "data-title": title,
-      placeholder: placeholderOf(title),
+      "data-placeholder": frame ? frame.placeholder : undefined,
+      placeholder: frame ? frame.placeholder : placeholderOf(title),
       title:
         ch && ch.kind === "cc"
           ? "このセッションに届けます（入力待ちのときに貼ります）。返事はここと Discord の両方に出ます"
@@ -776,12 +810,15 @@
     const counter = el("span", { class: "counter", "aria-live": "polite" });
     const sendBtn = el("button", { class: "btn btn-primary btn-sm", type: "submit" }, [icon("send"), "送る"]);
     let sending = false;
+    // 送る直前の本文（枠の指定があれば差し替える）。字数もこれで数える
+    const outgoing = (text) => (frame && frame.outgoing ? frame.outgoing(text) : text);
     const update = () => {
-      const n = ta.value.trim().length;
+      const raw = ta.value.trim();
+      const n = raw === "" ? 0 : outgoing(raw).length;
       counter.textContent = n.toLocaleString("en-US") + " / 1,900";
       counter.classList.toggle("is-over", n > MESSAGE_MAX);
       // 上限を超えても押せる（押したらトーストで知らせる）
-      sendBtn.disabled = sending || n === 0;
+      sendBtn.disabled = sending || raw === "";
       if (sendBtn.disabled) sendBtn.title = sending ? "送っています" : "本文を入れると送れます";
       else sendBtn.removeAttribute("title");
     };
@@ -799,8 +836,9 @@
       ]),
     ]);
     const submit = async () => {
-      const text = ta.value.trim();
-      if (sending || text === "") return;
+      const raw = ta.value.trim();
+      if (sending || raw === "") return;
+      const text = outgoing(raw);
       if (text.length > MESSAGE_MAX) {
         toast(TOO_LONG_TEXT);
         return;
@@ -812,7 +850,7 @@
         // 受け付けた（202）: 音（sound.js）はここで「受け付けた」を鳴らす
         SA.events.emit("sent", { channelId });
         // 送れたら書きかけを消し、本物の行が来るまで仮の行を出す
-        if (ta.value.trim() === text) ta.value = "";
+        if (ta.value.trim() === raw) ta.value = "";
         SA.app.setDraft(channelId, ta.value);
         const current = channelById(channelId);
         if (current && current.kind === "cc") {
@@ -849,11 +887,10 @@
     return el("div", { class: "composer-wrap", "data-channel": channelId }, [form]);
   }
 
-  /** 前に出ている会話のタブのスクロール */
+  /** その会話を描いている入れ物のスクロール（data-channel で引く。描いていなければ null） */
   function scrollOf(channelId) {
-    if (activeChannelId() !== channelId) return null;
-    const ed = document.getElementById("ed");
-    return ed ? ed.querySelector(".ed-scroll") : null;
+    if (!/^\d+$/.test(channelId)) return null;
+    return document.querySelector('.ed-scroll[data-channel="' + channelId + '"]');
   }
 
   /** 前の 50 件を読み、見ていた行の位置を保つ */
@@ -875,16 +912,16 @@
     if (after && before) after.scrollTop = top + (after.scrollHeight - height);
   }
 
-  function render(container, channelId) {
+  function render(container, channelId, frame) {
     const t = store.turns[channelId];
     const ch = channelById(channelId);
     if (!t || !t.loaded) {
-      container.replaceChildren(header(ch, channelId), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [SA.views.loading()])]));
+      container.replaceChildren(header(ch, channelId, frame), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [SA.views.loading()])]));
       return;
     }
     if (t.missing) {
       container.replaceChildren(
-        header(null, channelId),
+        header(null, channelId, frame),
         el("div", { class: "ed-scroll" }, [el("div", { class: "empty" }, [icon("info"), el("p", { text: "このチャンネルは開けません。削除されたか、受け付けないチャンネルです。" })])]),
       );
       return;
@@ -903,13 +940,16 @@
     const last = t.turns[t.turns.length - 1];
     let prev = null;
     for (const turn of t.turns) {
-      const node = renderTurn(turn, channelId, ch, prev);
+      // 枠の指定があれば Bot の返事の本文だけを差し替えて描く（prev・last との比べは元の行のまま）
+      const reply = !!frame && turn.kind === "agent";
+      const node = renderTurn(reply && frame.replyText ? Object.assign({}, turn, { text: frame.replyText(turn.text) }) : turn, channelId, ch, prev);
       prev = turn;
       // 手順の上限で止まった最後の返事には [続ける]（セッションで、実行中のターンが無いとき）
       if (turn === last && turn.kind === "agent" && turn.outcome === "max_turns" && ch && ch.kind === "session" && !run && !continued.has(turn.id)) {
         // 吹き出しの下に左寄せ
         node.append(continueButton(channelId, turn));
       }
+      if (reply && frame.replyExtras) node.append(...frame.replyExtras(turn.text));
       timeline.append(node);
     }
     if (run) timeline.append(renderRunning(ch, run, prev));
@@ -987,7 +1027,7 @@
     // 入力欄は作り直さない（書きかけ・フォーカス・IME の変換を保つ）。見出しと会話だけを入れ替える
     const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-channel") === channelId);
     // 送った本文の状態（Claude Code のチャンネル。[やめる]）は入力欄の上
-    SA.views.placeChildren(container, [header(ch, channelId), scroll, ccPending, kept || composer(ch, channelId)]);
+    SA.views.placeChildren(container, [header(ch, channelId, frame), scroll, ccPending, kept || composer(ch, channelId, frame)]);
     markSeen(channelId);
   }
 
@@ -1047,7 +1087,8 @@
     info,
     channelTitle,
     activeChannelId,
-    markSeenActive,
+    markSeenShown,
+    render,
     channelsChanged,
     endText,
     STATE_LABEL,
