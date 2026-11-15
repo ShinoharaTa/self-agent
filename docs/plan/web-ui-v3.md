@@ -150,8 +150,8 @@ PC（1,280px〜。列 3 は畳める。幅が足りなければ列 3 → 列 1 �
 - **確認のボタン（推薦）**: 新しい話題を始めるのは**確認なし**（戻せる。中の危ない作業は担当の許可のカードが止める）。`cc_send`・`cc_start` は**確認を残す**（端末のペインに貼るので取り消せない）。付け替えは確認の札。既にある話題への代筆（右腕が別の話題に送る）は作らない: 右腕は札で案内し、オーナーがそこに打つ。
 - **Web の右腕の枠**: 列 3 は #inbox の会話そのもの（今の `chat.js`）。見ている話題があるとき、右腕への発言の先頭に「（いま見ている話題: <題名>）」を 1 行添える（Web だけ。履歴にもその形で残る）。
 - **実装で足した所（#369 の M6）**:
-  - `topic_move` の確認の札 [変える][このまま] は、**場所が変わる話題のチャンネル**に出す（右腕の #inbox ではない）。Web では、その話題の会話のタブの末尾に同じ確認のカードを出す（`/api/channels/<id>/turns` の `channel.moveProposal` だけを見る。`/api/topics` の `turn` は同じ話題に別の確認があると古い方 1 つだけなので使わない）。答えは `POST /api/topics/moves/<id>/accept`・`/keep`（Discord のボタンと同じ処理。M6g）。
-  - `topic_list` の行の中身（`app/topics.ts` の `topicListRows`）: 対象は、入口でなく完了でない話題 + 入口（#tasks・#<NAME>）のうち あなたの番・作業中 の物 + あなたの番のある #inbox。行は題名・場所・状態・あなたの番の要約・時刻・`channel_id` だけ（最後の発言の本文・sessionId・cwd・link は入れない）。並びは あなたの番 → 作業中 → 残り、同じ中は新しい順で 30 件まで。`counts.your_turn` は `/api/topics` の `turns`、`counts.running` は群の running の和と同じ。`counts.total` は対象の数（30 件に切る前）。Web UI が無効なら `disabled`。
+  - `topic_move` の確認の札 [変える][このまま] は、**場所が変わる話題のチャンネル**に出す（右腕の #inbox ではない）。Web では、その話題の会話のタブの末尾に同じ確認のカードを出す（`/api/channels/<id>/turns` の `channel.moveProposal` だけを見る。`/api/topics` の `turn` は同じ話題に別の確認があると古い方 1 つだけなので使わない。周期の読み直しで `moveProposal` が変われば、行が増えなくても描き直す）。答えは `POST /api/topics/moves/<id>/accept`・`/keep`（Discord のボタンと同じ処理。M6g）。
+  - `topic_list` の行の中身（`app/topics.ts` の `topicListRows`）: 対象は、入口でなく完了でない話題 + 入口（#tasks・#<NAME>）のうち あなたの番・作業中 の物 + あなたの番のある #inbox。行は `kind`（`session`・`claude_code`）・題名・場所・状態・あなたの番の要約・時刻・`channel_id` だけ（最後の発言の本文・sessionId・cwd・link は入れない）。並びは あなたの番 → 作業中 → 残り、同じ中は新しい順で 30 件まで（切った残りの数は `more`）。`counts.your_turn` は `/api/topics` の `turns`、`counts.running` は群の running の和と同じ。`counts.total` は対象の数（30 件に切る前）。Web UI が無効なら `disabled`。
   - 人格の入口（#<NAME>）から始める話題は、今までどおりその人格の**軽いセッション**（プロジェクトのセッションは既定の人格だけ。`project` は見ない）。
   - #inbox で「ページを作って」と頼まれたら、右腕は **`/new` を案内する**（右腕は軽いセッションを作らない。オーナーが決めた）。
   - 1 日の上限（`SELF_AGENT_AUTO_SESSION_PER_DAY`）の既定は 3 のまま（オーナーが決めた）。
