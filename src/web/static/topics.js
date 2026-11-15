@@ -61,6 +61,13 @@
         const next = await SA.api.get("/api/topics" + (asked ? "?done=" + encodeURIComponent(asked) : ""), { quiet: true });
         if (next && Array.isArray(next.groups) && Array.isArray(next.topics) && Array.isArray(next.turnIds) && Array.isArray(next.rightHands)) {
           data = next;
+          // 既読（M7）: 応答の reads を取り込み、こちらの方が進んでいる話題（ch:）と右腕を送る（描くのはこの後の render）
+          const ids = next.topics
+            .concat(next.rightHands)
+            .map((t) => t && t.id)
+            .filter((id) => typeof id === "string" && id.startsWith("ch:"))
+            .map((id) => id.slice(3));
+          store.syncReads(next.reads, ids);
           dataDone = asked;
           failed = false;
         } else failed = true;

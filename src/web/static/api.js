@@ -1,4 +1,4 @@
-// サーバーとのやりとり: fetch の包み（SA.api）・/api/* の結果を持つメモリの状態（SA.store）・既読（localStorage の seen）・polling（SA.poll）・
+// サーバーとのやりとり: fetch の包み（SA.api）・/api/* の結果を持つメモリの状態（SA.store）・既読（サーバーの topic_reads。M7）・polling（SA.poll）・
 // 実行中のターン（/api/running）とパネルの「出力」への手順・終わり方
 "use strict";
 
@@ -28,7 +28,10 @@
   const CC_SCREEN_INTERVAL_MS = 3000;
   /** 許可の要求を保留しているセッションがあるときの一覧の間隔 */
   const CC_PERMISSION_INTERVAL_MS = 3000;
+  /** M7 より前の既読（localStorage）。旗（SEEN_SENT_KEY）が無い間だけ始めの値として読む。書かない・消さない（消すのは M8b） */
   const SEEN_KEY = "self-agent-web:seen";
+  /** 古い既読を一覧の会話の分だけサーバーへ移し終えた旗（"1"） */
+  const SEEN_SENT_KEY = "self-agent-web:seen-sent";
   /** 音がオンで画面が隠れている間、/api/running と /api/cc/sessions を読み続ける間隔（docs/plan/web-ui-sound.md §3） */
   const HIDDEN_SOUND_MS = 10000;
 
@@ -222,6 +225,8 @@
       };
       // 一覧に無いチャンネル（削除した・開けなくなった）の書きかけを捨てる。形の違う応答では捨てない
       if (Array.isArray(data && data.channels)) SA.app.pruneDrafts(store.channels.channels.map((c) => c && c.id));
+      // サーバーの既読を取り込み、こちらの方が進んでいる会話を送る。一覧の分が全部サーバーに入ったら、古い鍵を以後読まない
+      if (store.syncReads(data && data.reads, store.channels.channels.map((c) => c && c.id).filter((id) => typeof id === "string"))) markSeenSent();
       SA.app.refreshSidebar();
       SA.app.refreshStatus();
       SA.chat.channelsChanged();
@@ -467,10 +472,12 @@
       t.hasMore = data && data.hasMore === true;
     });
 
-  // ===== 既読（このブラウザだけ。{ [channelId]: 見た最後の history.id }。読めなくても動く） =====
-  // 同じブラウザのほかのタブも書くので、書く前に読み直してチャンネルごとに大きい方を残し、storage イベントで読み直す
-  function readSeen() {
+  // ===== 既読（サーバーの topic_reads。docs/plan/web-ui-v3.md §3.3。{ [channelId]: 見た最後の history.id }） =====
+  // 進めたら sendRead（POST …/ch:<id>/read）で送り、ほかの端末の分は会話の一覧と話題の一覧（topics.js）の応答の reads で取り込む（どちらも大きい方だけ）。
+  // localStorage には書かない（同じブラウザの別のタブへも次の polling で届く）。送れなくてもこのタブのメモリには残る
+  function readOldSeen() {
     try {
+      if (window.localStorage.getItem(SEEN_SENT_KEY) === "1") return {};
       const v = JSON.parse(window.localStorage.getItem(SEEN_KEY) || "null");
       return v !== null && typeof v === "object" && !Array.isArray(v) ? v : {};
     } catch {
@@ -490,28 +497,76 @@
     return merged;
   }
 
-  store.seen = mergeSeen(readSeen(), {});
+  store.seen = mergeSeen(readOldSeen(), {});
 
-  /** id まで見たことにする。進んだら true */
+  function markSeenSent() {
+    try {
+      if (window.localStorage.getItem(SEEN_SENT_KEY) !== "1") window.localStorage.setItem(SEEN_SENT_KEY, "1");
+    } catch {
+      // 書けなくても動く（次に開いたときも古い鍵を読み、サーバーより大きい分だけを送る）
+    }
+  }
+
+  // このタブのメモリだけ: 200 が返った送った値・断られた会話（400・404。このページでは送り直さない）・送っている最中の会話
+  const readAcked = {};
+  const readRefused = new Set();
+  const readSending = new Set();
+
+  /** store.seen の値を送る（1 会話に同時に 1 つ）。ほかの失敗は次の syncReads が送り直す */
+  function sendRead(channelId) {
+    if (!/^\d{1,25}$/.test(channelId) || readSending.has(channelId) || readRefused.has(channelId)) return;
+    const lastId = Number(store.seen[channelId]) || 0;
+    if (!(lastId >= 1)) return;
+    readSending.add(channelId);
+    // : は % にしない（サーバーはデコード前のパスに当てる。shell.js の /place と同じ）
+    SA.api.post("/api/topics/ch:" + channelId + "/read", { lastId }, { quiet: true }).then(
+      (data) => {
+        readSending.delete(channelId);
+        if (lastId > (readAcked[channelId] || 0)) readAcked[channelId] = lastId;
+        const back = data && typeof data.lastReadId === "number" && Number.isFinite(data.lastReadId) ? data.lastReadId : 0;
+        if (back > (Number(store.seen[channelId]) || 0)) {
+          store.seen[channelId] = back;
+          SA.app.refreshSidebar();
+          SA.app.refreshStatus();
+        }
+        // 送っている間に進んだら、もう 1 度
+        if ((Number(store.seen[channelId]) || 0) > Math.max(lastId, back)) sendRead(channelId);
+      },
+      (err) => {
+        readSending.delete(channelId);
+        if (err && (err.status === 400 || err.status === 404)) readRefused.add(channelId);
+      },
+    );
+  }
+
+  /** id まで見たことにする。進んだら送って true */
   store.markSeen = (channelId, id) => {
     if (typeof id !== "number" || !(id > (Number(store.seen[channelId]) || 0))) return false;
     store.seen[channelId] = id;
-    store.seen = mergeSeen(readSeen(), store.seen);
-    try {
-      window.localStorage.setItem(SEEN_KEY, JSON.stringify(store.seen));
-    } catch {
-      // 保存できない環境では、このタブのメモリだけで覚える
-    }
+    sendRead(channelId);
     return true;
   };
 
-  // ほかのタブが既読を書いたら読み直す
-  window.addEventListener("storage", (e) => {
-    if (e.key !== SEEN_KEY) return;
-    store.seen = mergeSeen(readSeen(), store.seen);
-    SA.app.refreshSidebar();
-    SA.app.refreshStatus();
-  });
+  /**
+   * サーバーの既読（応答の reads）を取り込み（下げない）、ids の会話のうちこちらの方が進んでいる物を送る。
+   * reads が無い（古いサーバー・形の違う応答）なら何もせず false。送る物が残っていれば false、無ければ true。描き直しは呼ぶ側
+   */
+  store.syncReads = (reads, ids) => {
+    if (reads === null || typeof reads !== "object" || Array.isArray(reads)) return false;
+    for (const [channelId, value] of Object.entries(reads)) {
+      if (typeof value === "number" && Number.isFinite(value) && value > (Number(store.seen[channelId]) || 0)) store.seen[channelId] = value;
+    }
+    let rest = 0;
+    for (const channelId of ids) {
+      const mine = Number(store.seen[channelId]) || 0;
+      const server = typeof reads[channelId] === "number" ? reads[channelId] : 0;
+      if (mine > server && mine > (readAcked[channelId] || 0)) {
+        rest++;
+        sendRead(channelId);
+      }
+    }
+    return rest === 0;
+  };
 
   /** 最後の行が返事で、まだ見ていない */
   store.isUnread = (channel) => !!(channel && channel.last && channel.last.kind === "agent" && channel.last.id > (Number(store.seen[channel.id]) || 0));
