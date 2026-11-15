@@ -3228,7 +3228,7 @@ dialog[open]::backdrop {
     text-align: right;
   }
 
-  /* 一覧と中身（ナレッジ）は中身だけ。一覧と検索はサイドバーから選ぶ */
+  /* 一覧と中身（ナレッジ）は中身だけ。一覧と検索はサイドバーから選ぶ（新しい殻は shell.css で打ち消す） */
   .master-detail-phone {
     grid-template-rows: minmax(0, 1fr);
   }
