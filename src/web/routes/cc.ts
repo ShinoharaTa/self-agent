@@ -164,7 +164,7 @@ export type HoldSeconds = { holdSec: number; questionHoldSec: number };
  * 質問の行の問と答え（question_input から作る。表示用に切らない。画面が切る）。質問でない・読めなければ null。
  * answers は答えたときに返したもの（question の文 → 値）で、答えていなければ null
  */
-function questionJson(row: CcPermissionRow) {
+export function questionJson(row: CcPermissionRow) {
   const parsed = parseQuestionInput(row.questionInput);
   return parsed === undefined ? null : { questions: parsed.questions, answers: row.answers };
 }
