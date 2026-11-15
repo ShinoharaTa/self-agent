@@ -19,6 +19,7 @@ import { RoutineRecordStore } from "../../src/store/routine-records.ts";
 import { RoutineStore } from "../../src/store/routines.ts";
 import { SdkSessionStore } from "../../src/store/sdk-sessions.ts";
 import { TaskStore } from "../../src/store/tasks.ts";
+import { TopicReadStore } from "../../src/store/topic-reads.ts";
 import { TopicSessionStore } from "../../src/store/topic-sessions.ts";
 import { UsageStore } from "../../src/store/usage.ts";
 
@@ -58,5 +59,6 @@ export function createStores(db: DatabaseSync, now: () => Date) {
     routineRecords: new RoutineRecordStore(db, now),
     attachments: new AttachmentStore(db, now),
     history: new HistoryStore(db, now),
+    topicReads: new TopicReadStore(db, now),
   };
 }
