@@ -1700,6 +1700,12 @@
     return document.getElementById("v3") !== null;
   }
 
+  /** 新しい殻と古い殻（/static/classic.html）を行き来するリンク。同じ窓で素の URL を開く（M8。M8b で消す） */
+  function shellLink() {
+    const v3 = isV3Shell();
+    return el("a", { class: "btn btn-ghost btn-sm", href: v3 ? "/static/classic.html" : "/", text: v3 ? "前の画面を開く" : "新しい画面を開く" });
+  }
+
   function renderSettings(container) {
     const theme = SA.app.theme();
     const seg = el("div", { class: "segmented segmented-sm", role: "group", "aria-label": "テーマ" });
@@ -1718,7 +1724,7 @@
       scroll([
         el("div", { class: "two-col" }, [
           section("この画面の表示", [
-            el("ul", { class: "kv-list" }, [kv("テーマ", seg)]),
+            el("ul", { class: "kv-list" }, [kv("テーマ", seg), kv("画面", shellLink())]),
             el("p", { class: "meta", text: "表示と音の設定はこのブラウザにだけ残ります。" }),
           ]),
           soundSection,

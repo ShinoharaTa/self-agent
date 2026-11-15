@@ -6240,6 +6240,35 @@ test("web static: 新しい殻のキーの表は shell.js の処理と合って�
   assert.match(sh, /e\.key !== "Escape"/);
 });
 
+// ----- 設定の殻を行き来するリンク（M8。views.js の shellLink） -----
+function settingsShellLink(v3: boolean): FakeNode {
+  const { SA, views } = loadViews({ v3 });
+  (SA.app as Record<string, unknown>).theme = () => "system";
+  const container = new FakeNode("div");
+  (views as unknown as { info: (id: string) => { render: (c: FakeNode) => void } }).info("settings").render(container);
+  const links = descendants(container).filter((n) => n.tagName === "a");
+  assert.equal(links.length, 1);
+  // 「この画面の表示」のテーマの次の行（kv("画面", …)）
+  assert.match(links[0]!.parent!.parent!.textContent, /^画面/);
+  return links[0]!;
+}
+
+test("web static: 新しい殻の設定に「前の画面を開く」（/static/classic.html）があり、同じ窓で開く（M8）", () => {
+  const a = settingsShellLink(true);
+  assert.equal(a.textContent, "前の画面を開く");
+  assert.equal(a.getAttribute("href"), "/static/classic.html");
+  assert.equal(a.getAttribute("target"), null);
+  assert.equal(a.getAttribute("class"), "btn btn-ghost btn-sm");
+});
+
+test("web static: 古い殻の設定に「新しい画面を開く」（/）があり、同じ窓で開く（M8）", () => {
+  const a = settingsShellLink(false);
+  assert.equal(a.textContent, "新しい画面を開く");
+  assert.equal(a.getAttribute("href"), "/");
+  assert.equal(a.getAttribute("target"), null);
+  assert.equal(a.getAttribute("class"), "btn btn-ghost btn-sm");
+});
+
 test("web static: 古い殻の readingChannelIds は shownChannelIds と同じ関数", () => {
   assert.match(read("workbench.js"), /\n {4}readingChannelIds: shownChannelIds,\n/);
   assert.ok(appKeys(read("shell.js")).includes("readingChannelIds"));
