@@ -22,7 +22,7 @@ import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcStartStore } from "../src/store/cc-starts.ts";
 import { TopicMoveStore } from "../src/store/topic-moves.ts";
-import { CLOSE_CONFIRM_NOTICE } from "../src/web/routes/channels.ts";
+import { CLOSE_CONFIRM_NOTICE, webChannelLookup } from "../src/web/routes/channels.ts";
 import { TOPIC_START_DUPLICATE_MS, topicRoutes } from "../src/web/routes/topics.ts";
 import { createTopicCollector, type TopicRouteDeps } from "../src/web/routes/topics.ts";
 import { WEB_DUPLICATE_WINDOW_MS } from "../src/web/routes/turns.ts";
@@ -93,6 +93,7 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる。
  * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose と setMessageId（札が出た印）で足し、期限の判定は proposalClock の時刻。
  * fakeProposals を渡すと、本物の代わりにそれを渡す（proposals より優先）
+ * reads を true にすると既読（topic_reads）を渡す。会話の判定は main と同じ webChannelLookup（cc のときだけ Claude Code のチャンネルも通す）
  */
 async function setup(
   t: TestContext,
@@ -106,6 +107,7 @@ async function setup(
     moveSteps?: FakeRunStep[];
     proposals?: boolean;
     fakeProposals?: Pick<TopicProposals, "pendingAll" | "accept" | "keep" | "channelOf">;
+    reads?: boolean;
   } = {},
 ) {
   const db = tempDb(t);
@@ -276,8 +278,22 @@ async function setup(
   /** match に合う log の行が出るまで待つ（もう出ていればすぐ） */
   const waitLog = (match: (line: string) => boolean): Promise<void> =>
     logs.some(match) ? Promise.resolve() : new Promise((resolve) => logWaiters.push({ match, resolve }));
+  const allowedGuildIds = options.allowed ?? [GUILD, GUILD_NOT_SET_UP];
+  const reads =
+    options.reads === true
+      ? {
+          store: stores.topicReads,
+          lookup: webChannelLookup({
+            cfg: { allowedGuildIds, personas: [MIKA], publicBaseUrl: undefined },
+            resolveChannel: createChannelResolver({ inboxChannelId: undefined, personas: [MIKA] }, guildSettings, topicSessions),
+            guildSettings,
+            topicSessions,
+            ...(options.cc === true ? { ccChannels: ccStore } : {}),
+          }),
+        }
+      : undefined;
   const routes = topicRoutes({
-    cfg: { allowedGuildIds: options.allowed ?? [GUILD, GUILD_NOT_SET_UP], personas: [MIKA], workspaceDir: workspace },
+    cfg: { allowedGuildIds, personas: [MIKA], workspaceDir: workspace },
     guildSettings,
     topicSessions,
     history,
@@ -291,6 +307,7 @@ async function setup(
     ...(options.cc === true
       ? { cc: { registry, channels: ccStore, permissions, sends, starts, holdSec: 300, questionHoldSec: 900 } }
       : {}),
+    ...(reads === undefined ? {} : { reads }),
     now: () => options.at ?? NOW,
   });
   const server = createWebServer({
@@ -329,6 +346,7 @@ async function setup(
     turnQueue,
     proposalClock,
     cardEdits,
+    topicReads: stores.topicReads,
   };
 }
 
@@ -1209,7 +1227,9 @@ test("createTopicCollector: 同じ依存で集めて buildTopics した物が GE
   await server.start();
   t.after(() => server.close());
   const fromRoute = await topics(server);
-  const fromCollector = JSON.parse(JSON.stringify(buildTopics(createTopicCollector(deps)(NOW.getTime(), null)))) as TopicsResult;
+  const fromCollector = JSON.parse(
+    JSON.stringify({ ...buildTopics(createTopicCollector(deps)(NOW.getTime(), null)), reads: {} }),
+  ) as TopicsResult;
   assert.deepEqual(fromCollector, fromRoute);
   assert.ok(fromRoute.topics.length >= 4);
 });
@@ -1381,4 +1401,96 @@ test("POST /api/topics/moves/<id>/accept・/keep: proposals を渡さなけれ�
     assert.deepEqual(await postJson(s.server, `/api/topics/moves/${id}/${action}`, {}), { status: 404, json: { error: "not_found" } }, action);
   }
   assert.equal(s.moves.get(id)?.state, "proposed");
+});
+
+// ---- 既読（M7a） ----
+
+/** 会話に返事の行を足して id を返す */
+function reply(s: Awaited<ReturnType<typeof setup>>, channelId: string, guildId = GUILD): number {
+  return s.history.add({ guildId, channelId, kind: "agent", source: "system", text: "返事" });
+}
+
+async function readsOf(server: WebServer): Promise<Record<string, number>> {
+  const { status, json } = await getJson(server, "/api/topics");
+  assert.equal(status, 200);
+  return json.reads as Record<string, number>;
+}
+
+test("GET /api/topics: reads に既読のある話題と右腕の分が ch: の無い ID で入り、既読の無い話題・応答に出ない会話の分は無い", async (t) => {
+  const s = await setup(t, { reads: true });
+  s.topicReads.advance("100", 4);
+  s.topicReads.advance("201", 2);
+  s.topicReads.advance("101", 9);
+  // /setup 前のサーバーのセッション（応答に出ない）
+  s.topicReads.advance("400", 5);
+  assert.deepEqual(await readsOf(s.server), { "100": 4, "101": 9, "201": 2 });
+});
+
+test("GET /api/topics: 既読が最後の行より小さくても、topics の mark に unread は出ない", async (t) => {
+  const s = await setup(t, { reads: true });
+  const first = reply(s, "200");
+  reply(s, "200");
+  s.topicReads.advance("200", first);
+  const result = await topics(s.server);
+  assert.equal(byId(result, "ch:200")?.last?.kind, "agent");
+  assert.ok(result.topics.every((topic) => topic.mark !== "unread"));
+  assert.ok(result.rightHands.length > 0);
+});
+
+test("web topics: reads を渡さないと GET の reads は {} で、POST /api/topics/ch:<id>/read は 404", async (t) => {
+  const s = await setup(t);
+  s.topicReads.advance("200", 1);
+  assert.deepEqual(await readsOf(s.server), {});
+  const id = reply(s, "200");
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/read", { lastId: id }), { status: 404, json: { error: "not_found" } });
+  assert.equal(s.topicReads.get("200"), 1);
+});
+
+test("POST /api/topics/ch:<id>/read: 進み、小さい値では変わらず、最新の id を超える値は最新で頭打ち", async (t) => {
+  const s = await setup(t, { reads: true });
+  const first = reply(s, "200");
+  const second = reply(s, "200");
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/read", { lastId: first }), { status: 200, json: { lastReadId: first } });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/read", { lastId: second }), { status: 200, json: { lastReadId: second } });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/read", { lastId: first }), { status: 200, json: { lastReadId: second } });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/read", { lastId: second + 100 }), { status: 200, json: { lastReadId: second } });
+  assert.equal(s.topicReads.get("200"), second);
+  // 後から来た行までは、送り直せば進む
+  const third = reply(s, "200");
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/read", { lastId: second + 100 }), { status: 200, json: { lastReadId: third } });
+});
+
+test("POST /api/topics/ch:<id>/read: 履歴の無い会話は 200 で 0 を返し、行を作らない", async (t) => {
+  const s = await setup(t, { reads: true });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/read", { lastId: 5 }), { status: 200, json: { lastReadId: 0 } });
+  assert.deepEqual(s.topicReads.all(), new Map());
+});
+
+test("POST /api/topics/ch:<id>/read: lastId が 0・-1・1.5・文字列・無いと 400", async (t) => {
+  const s = await setup(t, { reads: true });
+  reply(s, "200");
+  for (const body of [{ lastId: 0 }, { lastId: -1 }, { lastId: 1.5 }, { lastId: "1" }, {}]) {
+    assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/read", body), { status: 400, json: { error: "bad_request" } }, JSON.stringify(body));
+  }
+  assert.deepEqual(s.topicReads.all(), new Map());
+});
+
+test("POST /api/topics/ch:<id>/read: 知らない ID・/setup 前のサーバーのセッション・削除済みのセッション・cc:<uuid> は 404", async (t) => {
+  const s = await setup(t, { reads: true, cc: true });
+  s.topicSessions.create({ channelId: "206", guildId: GUILD, title: "消した話", categoryId: "c" });
+  for (const channelId of ["999", "400", "206"]) reply(s, channelId, channelId === "400" ? GUILD_NOT_SET_UP : GUILD);
+  s.topicSessions.markDeleted("206");
+  for (const path of ["/api/topics/ch:999/read", "/api/topics/ch:400/read", "/api/topics/ch:206/read", `/api/topics/cc:${S1}/read`]) {
+    assert.deepEqual(await postJson(s.server, path, { lastId: 1 }), { status: 404, json: { error: "not_found" } }, path);
+  }
+  assert.deepEqual(s.topicReads.all(), new Map());
+});
+
+test("POST /api/topics/ch:<id>/read: 右腕（#inbox）・#tasks・Claude Code のチャンネルは 200", async (t) => {
+  const s = await setup(t, { reads: true, cc: true });
+  for (const channelId of ["100", "101", "300"]) {
+    const id = reply(s, channelId);
+    assert.deepEqual(await postJson(s.server, `/api/topics/ch:${channelId}/read`, { lastId: id }), { status: 200, json: { lastReadId: id } }, channelId);
+    assert.equal(s.topicReads.get(channelId), id);
+  }
 });

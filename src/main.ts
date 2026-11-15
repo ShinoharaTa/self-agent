@@ -107,6 +107,7 @@ import { RoutineStore } from "./store/routines.ts";
 import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicMoveStore } from "./store/topic-moves.ts";
+import { TopicReadStore } from "./store/topic-reads.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { USAGE_KEEP_DAYS, UsageStore } from "./store/usage.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
@@ -219,6 +220,8 @@ const notices = config.web ? noticeStore : undefined;
 // 話題の場所の付け替えの記録（#364。app/topic-move.ts）。途中で止まった（running のまま残った）付け替えは、ターンを受け付け始める前に失敗にする
 const topicMoves = new TopicMoveStore(db, now);
 recoverMoves({ moves: topicMoves, topicSessions, ...history, log });
+// 既読（#378。docs/plan/web-ui-v3.md §3.3）。書くのは Web の POST /api/topics/ch:<id>/read だけ
+const topicReads = new TopicReadStore(db, now);
 // この機械の Claude Code のセッション（docs/plan/claude-code-sessions.md §9）。書くのは SELF_AGENT_CC=1 のときだけで、古い行は有効・無効を問わず tick で消す
 const ccSessions = new CcSessionStore(db, now);
 const ccSends = new CcSendStore(db, now);
@@ -1166,6 +1169,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       move: { ...moveDeps, ownerPosts },
       // 右腕の場所を変える確認を「あなたの番」に付ける（M6e）。POST /api/topics/moves/<id>/accept・/keep（M6g）も同じ実体
       proposals: topicProposals,
+      // 既読（M7）。GET /api/topics の reads と POST /api/topics/ch:<id>/read（会話の判定は /messages と同じ webChannelOf）
+      reads: { store: topicReads, lookup: webChannelOf },
       now,
   };
   const webTopicCollect = createTopicCollector(webTopicDeps);
@@ -1212,6 +1217,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         ...(webCc === undefined ? {} : { cc: webCc }),
         // 右腕の場所を変える確認を会話のタブのカードに出す（M6g。topicRoutes の proposals と同じ実体）
         proposals: topicProposals,
+        // 既読（M7）を一覧の reads に出す（topicRoutes の reads と同じ実体）
+        reads: topicReads,
         // プロジェクトのセッションの許可の要求（origin sdk）を会話のタブのカードに出す
         ...(projectPermissionBridge === undefined
           ? {}

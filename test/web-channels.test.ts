@@ -47,9 +47,9 @@ function getJson(server: WebServer, path: string): Promise<{ status: number; jso
 
 /**
  * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose と setMessageId（札が出た印）で足し、
- * 期限の判定は proposalClock の時刻
+ * 期限の判定は proposalClock の時刻。reads を true にすると既読（topic_reads）を渡す
  */
-async function setup(t: TestContext, options: { publicBaseUrl?: string; proposals?: boolean } = {}) {
+async function setup(t: TestContext, options: { publicBaseUrl?: string; proposals?: boolean; reads?: boolean } = {}) {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
   const { guildSettings, topicSessions, projects, history } = stores;
@@ -113,6 +113,7 @@ async function setup(t: TestContext, options: { publicBaseUrl?: string; proposal
     personas,
     resolveChannel: createChannelResolver(cfg, guildSettings, topicSessions),
     ...(proposals === undefined ? {} : { proposals }),
+    ...(options.reads === true ? { reads: stores.topicReads } : {}),
   });
   const server = createWebServer({
     host: "127.0.0.1",
@@ -215,6 +216,7 @@ test("/api/channels: /setup 前のサーバー（env の #inbox だけ）はチ�
     guilds: [{ id: GUILD_NOT_SET_UP, setUp: false }],
     personas: [{ id: "default", name: "既定の人格", isDefault: true, connected: true }],
     channels: [],
+    reads: {},
   });
   // env の #inbox の会話も読めない
   assert.equal((await getJson(server, "/api/channels/900/turns")).status, 404);
@@ -366,4 +368,20 @@ test("/api/channels/<id>/turns: 確認が無い・期限切れ・proposals を�
   assert.ok(other !== undefined);
   plain.moves.setMessageId(other, "card-1");
   assert.equal(await moveProposalOf(plain.server, "200"), null);
+});
+
+test("/api/channels: reads に一覧に出ている会話のうち既読のある物の分だけがあり、reads を渡さなければ {}", async (t) => {
+  const { server, topicReads } = await setup(t, { reads: true });
+  topicReads.advance("100", 3);
+  topicReads.advance("201", 7);
+  // 削除済みのセッション・知らない会話（一覧に出ない）
+  topicReads.advance("203", 5);
+  topicReads.advance("999", 9);
+  const { status, json } = await getJson(server, "/api/channels");
+  assert.equal(status, 200);
+  assert.deepEqual(json.reads, { "100": 3, "201": 7 });
+
+  const plain = await setup(t);
+  plain.topicReads.advance("100", 3);
+  assert.deepEqual((await getJson(plain.server, "/api/channels")).json.reads, {});
 });

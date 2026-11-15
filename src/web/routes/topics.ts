@@ -5,6 +5,7 @@
 // POST /api/topics/ch:<id>/place（M5）は話題の場所を変える（app/topic-move.ts の moveTopic。move の配線があるときだけ。202 ですぐ返し、結果はチャンネルに投稿する）
 // 右腕の場所を変える確認（M6e。app/topic-proposals.ts）は、proposals の配線があるとき、その話題の「あなたの番」（confirm）に付ける
 // POST /api/topics/moves/<id>/accept・/keep（M6g）は、その確認に Web から答える（Discord の [変える][このまま] と同じ accept・keep。proposals の配線があるときだけ）
+// 既読（M7。docs/plan/web-ui-v3.md §3.3）: GET の応答に reads（{ [channelId]: lastReadId }）を足し、POST /api/topics/ch:<id>/read で進める（reads の配線があるときだけ。log は出さない）
 import { CC_CONFIRM_TTL_MS } from "../../app/commands/cc-confirm.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import type { Handler } from "../../app/handler.ts";
@@ -19,6 +20,7 @@ import {
   TOPICS_DONE_SCAN,
   type TopicLast,
   type TopicsInput,
+  type TopicsResult,
   type TopicSeed,
   type TopicTurn,
 } from "../../app/topics.ts";
@@ -44,10 +46,11 @@ import type { CcStartStore } from "../../store/cc-starts.ts";
 import type { GuildSettingsStore } from "../../store/guild-settings.ts";
 import { type HistoryStore, recordHistory } from "../../store/history.ts";
 import type { SdkSessionStore } from "../../store/sdk-sessions.ts";
+import type { TopicReadStore } from "../../store/topic-reads.ts";
 import type { TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { Route, RouteResult } from "../server.ts";
 import { CC_PERMISSION_RECENT_MS, type HoldSeconds, questionJson } from "./cc.ts";
-import { channelLink, CLOSE_CONFIRM_NOTICE } from "./channels.ts";
+import { channelLink, CLOSE_CONFIRM_NOTICE, type webChannelLookup } from "./channels.ts";
 import { WEB_DUPLICATE_WINDOW_MS } from "./turns.ts";
 
 export type TopicRouteDeps = {
@@ -85,6 +88,11 @@ export type TopicRouteDeps = {
   proposals?: Pick<TopicProposals, "pendingAll" | "accept" | "keep" | "channelOf">;
   /** GET /api/topics の元。右腕の topic_list と共有するとき、同じ deps で createTopicCollector から作った物を渡す。無ければここで作る */
   collect?: (at: number, done: string | null) => TopicsInput;
+  /**
+   * 既読（M7。topic_reads）。渡したときだけ GET /api/topics の reads に値を入れ、POST /api/topics/ch:<id>/read を足す。
+   * lookup は Web で開ける会話かの判定（main の webChannelOf。/turns・/messages と同じ引き方）
+   */
+  reads?: { store: Pick<TopicReadStore, "all" | "get" | "advance">; lookup: ReturnType<typeof webChannelLookup> };
   now?: () => Date;
 };
 
@@ -429,10 +437,25 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
   return collect;
 }
 
+/** 応答の話題（ch: の物）と右腕のうち、既読の行のある会話の { [channelId]: lastReadId }。reads の配線が無ければ {} */
+function readsOfResult(result: TopicsResult, store: Pick<TopicReadStore, "all"> | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (store === undefined) return out;
+  const all = store.all();
+  for (const { id } of [...result.topics, ...result.rightHands]) {
+    if (!id.startsWith("ch:")) continue;
+    const channelId = id.slice("ch:".length);
+    const value = all.get(channelId);
+    if (value !== undefined) out[channelId] = value;
+  }
+  return out;
+}
+
 export function topicRoutes(deps: TopicRouteDeps): Route[] {
-  const { cfg, guildSettings, places, move, proposals } = deps;
+  const { cfg, guildSettings, places, move, proposals, reads } = deps;
   const now = deps.now ?? (() => new Date());
   const collect = deps.collect ?? createTopicCollector(deps);
+  const readsOf = (result: TopicsResult): Record<string, number> => readsOfResult(result, reads?.store);
 
   const routes: Route[] = [
     {
@@ -441,10 +464,27 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
       handle: async ({ query }) => {
         const done = query.get("done");
         if (done !== null && !TOPIC_GROUP_PATTERN.test(done)) return BAD_REQUEST;
-        return { status: 200, json: buildTopics(collect(now().getTime(), done)) };
+        const result = buildTopics(collect(now().getTime(), done));
+        return { status: 200, json: { ...result, reads: readsOf(result) } };
       },
     },
   ];
+  if (reads !== undefined) {
+    routes.push({
+      method: "POST",
+      pattern: /^\/api\/topics\/ch:(\d{1,25})\/read$/,
+      handle: async ({ params, body }) => {
+        const channelId = params[0] ?? "";
+        const lastId: unknown = body?.lastId;
+        if (typeof lastId !== "number" || !Number.isSafeInteger(lastId) || lastId < 1) return BAD_REQUEST;
+        if (reads.lookup(channelId) === undefined) return NOT_FOUND;
+        // まだ無い行まで既読にさせない（最新の history.id で頭打ち）。履歴の無い会話には書かない
+        const latest = deps.history.list(channelId, { limit: 1 })[0];
+        if (latest === undefined) return { status: 200, json: { lastReadId: reads.store.get(channelId) } };
+        return { status: 200, json: { lastReadId: reads.store.advance(channelId, Math.min(lastId, latest.id)) } };
+      },
+    });
+  }
   if (move !== undefined) {
     routes.push({
       method: "POST",
