@@ -24,6 +24,8 @@
   const TOO_LONG_TEXT = "1,900 字までです";
   /** 送れた（202）後に実行中のターンを読み直すまでの時間（ms）。進行中の読み込みに吸われても次で拾う */
   const RUNNING_RECHECK_MS = [500, 1500];
+  /** Claude Code のチャンネルで送れた（202）後に、セッションの今を読み直すまでの時間（ms）。届け待ち → 届けた → 作業中を早く拾う */
+  const CC_SEND_RECHECK_MS = [1000, 3000, 6000];
   /** 送れなかったときのトースト（応答の error ごと）。無ければ api.js の「操作に失敗しました。…」 */
   const SEND_ERRORS = {
     bot_disconnected: "送れませんでした。Bot が Discord につながっていません",
@@ -330,10 +332,44 @@
       loaded: !!loaded,
       state: ended ? "ended" : session ? session.state : info.state,
       permission: session ? session.permission : info.permission,
-      pending: session ? session.pending : info.pending,
+      pending: typeof info.sessionId === "string" ? store.ccPendingOf(info.sessionId, session ? session.pending : info.pending) : session ? session.pending : info.pending,
       inTmux: session ? !!session.inTmux : !!info.inTmux,
       rc: session ? SA.views.rcUrl(session.rcUrl) : null,
     };
+  }
+
+  /**
+   * 会話の末尾に出す送信と作業の状態（届け待ち > 作業中 > 届けた の順で 1 つだけ）。出さなければ null。
+   * 状態は持たず、描くたびに live から決め直す（条件が外れた描き直しで消える）
+   */
+  function ccStatusOf(live) {
+    if (live.state === "ended") return null;
+    const p = live.pending && typeof live.pending.id === "number" ? live.pending : null;
+    if (p && p.state === "delivering") return { kind: "queued", text: "届けています…", cancel: false };
+    if (p && p.state === "queued") {
+      if (p.lastPaneState === "dialog") return { kind: "queued", text: "ダイアログが出ているため待っています（端末か RC で答えてください）", cancel: true };
+      if (live.state === "running") return { kind: "queued", text: "作業中です。終わったら届けます", cancel: true };
+      return { kind: "queued", text: "届け待ちです。入力待ちになったら届けます", cancel: true };
+    }
+    if (live.state === "running") return { kind: "running", text: "作業中…", cancel: false };
+    if (p && p.state === "delivered" && p.replyState === "waiting" && live.state !== "needs_input") return { kind: "delivered", text: "届けました。返事を待っています", cancel: false };
+    return null;
+  }
+
+  /** ccStatusOf の行。届け待ちなら [やめる] */
+  function ccStatusRow(live) {
+    const s = ccStatusOf(live);
+    if (!s) return null;
+    let cancel = null;
+    if (s.cancel) {
+      cancel = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "やめる" });
+      cancel.addEventListener("click", () => SA.views.cancelCcSend(live.pending.id, live.sessionId, cancel));
+    }
+    return el("div", { class: "tl-notice cc-status", role: "status", "aria-busy": "true", "data-cc-status": s.kind }, [
+      el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }),
+      el("span", { text: s.text }),
+      cancel,
+    ]);
   }
 
   /** [閉じる]（Discord の /cc close と同じ。確認の後） */
@@ -783,7 +819,13 @@
           // Claude Code のチャンネル: 行（写し）はサーバーが書いている。届くまでの状態はセッションの今で出す
           store.load.turns(channelId);
           const live = ccLive(current);
-          if (live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
+          if (live.sessionId) {
+            // サーバーのセッションの今が追いつくまで、仮の「届け待ち」をすぐ描く
+            if (data && typeof data.sendId === "number") store.setCcOptimisticSend(live.sessionId, data.sendId);
+            SA.app.refresh("ch:" + channelId);
+            store.load.ccSession(live.sessionId, { quiet: true });
+            for (const ms of CC_SEND_RECHECK_MS) setTimeout(() => store.load.ccSession(live.sessionId, { quiet: true }), ms);
+          }
           return;
         }
         store.addOptimisticTurn(channelId, data && data.turnId, text);
@@ -892,6 +934,9 @@
       if (!live.loaded && live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
       // 一覧から開いた直後（チャンネルがまだ分からなかった）でも、セッションの今の polling を始める
       SA.poll.kickCc();
+      // 会話の行のすぐ下に、送信と作業の状態
+      const status = ccStatusRow(live);
+      if (status) timeline.append(status);
       const p = live.permission;
       if (p && p.state === "pending") {
         card = SA.views.ccPermissionCard(live.sessionId, p, live.rc, "ch:" + channelId);
@@ -905,7 +950,9 @@
       if (live.state === "ended") {
         timeline.append(el("p", { class: "tl-hint", text: "このセッションは終わっています。Discord のチャンネルに書くと、同じディレクトリで起動して続けられます。" }));
       }
-      ccPending = live.sessionId ? SA.views.ccPendingBar(live.sessionId, live.pending) : null;
+      // 行が同じ送信の状態（届け待ち・届けた）を出している間は、入力欄の上の帯を出さない
+      const statusKind = status ? status.getAttribute("data-cc-status") : null;
+      ccPending = live.sessionId && !(statusKind === "queued" || statusKind === "delivered") ? SA.views.ccPendingBar(live.sessionId, live.pending) : null;
     } else if (ch && ch.kind === "session" && ch.permission && typeof ch.permission.id === "number") {
       // プロジェクトのセッション（docs/plan/unify.md §6.1 の 5）の許可の要求。Claude Code のチャンネルと同じカード・同じ /api/cc/permissions/<id>/*
       const p = ch.permission;

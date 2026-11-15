@@ -1964,6 +1964,7 @@
     placeChildren,
     // Claude Code のチャンネルの会話のタブ（chat.js。CC14）と共用する
     ccPendingBar,
+    cancelCcSend,
     ccSessionOf,
     rcUrl,
     CC_STATES,
