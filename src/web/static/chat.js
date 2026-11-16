@@ -1459,6 +1459,18 @@
     }
   }
 
+  /** 残り時間: pending の許可・質問が出ているチャンネルのカードだけを描き直す（実行中のターンが無くても進める。隠れたタブでは描かない） */
+  function tickCards() {
+    if (!SA.cards || cardsBroken || document.visibilityState !== "visible") return;
+    for (const root of document.querySelectorAll("[data-cards]")) {
+      const id = root.getAttribute("data-cards");
+      const ch = channelById(id);
+      const p = ch && ch.kind === "session" ? ch.permission : null;
+      if (!p || p.state !== "pending") continue;
+      if (!drawCards(id)) return;
+    }
+  }
+
   function render(container, channelId, frame) {
     const t = store.turns[channelId];
     const ch = channelById(channelId);
@@ -1681,8 +1693,9 @@
     }
   }
 
-  /** 実行中の行の経過時間を 1 秒ごとに進める（描き直さずに文だけ） */
+  /** 実行中の行の経過時間を 1 秒ごとに進める（描き直さずに文だけ）。新しい殻のカードの残り時間も（実行中のターンが無くても） */
   setInterval(() => {
+    tickCards();
     if (!store.running || store.running.length === 0 || document.visibilityState !== "visible") return;
     for (const node of document.querySelectorAll("[data-run-progress]")) {
       const run = store.runningOf(node.getAttribute("data-run-progress"));
