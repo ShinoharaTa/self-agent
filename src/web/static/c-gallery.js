@@ -397,7 +397,7 @@ function FixedPane({ demo, box, children }) {
   </div>`;
 }
 
-/** 押した物を結果の欄に書く（opener・value は語にしない） */
+/** 押した物を結果の欄に書く（切り替えは選んだ value も書く。opener は書かない） */
 function Tops() {
   const [result, setResult] = useState("まだ押していません");
   const on = {
