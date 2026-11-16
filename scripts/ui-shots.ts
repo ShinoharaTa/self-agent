@@ -17,7 +17,7 @@ const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 type Viewport = "phone" | "pc" | "tablet";
 /** /api/topics の応答のうち、検査で書き換える所 */
-type TopicsJson = { topics: Array<{ id?: unknown; state?: unknown; mark?: unknown; turn?: unknown; title?: unknown }>; turns: number; turnIds: unknown[]; rightHands: Array<{ turn?: unknown }> };
+type TopicsJson = { topics: Array<{ id?: unknown; state?: unknown; mark?: unknown; turn?: unknown; title?: unknown; movable?: unknown }>; turns: number; turnIds: unknown[]; rightHands: Array<{ turn?: unknown }> };
 type Theme = "dark" | "light";
 
 const VIEWPORTS: Record<Viewport, { viewport: { width: number; height: number }; deviceScaleFactor: number; isMobile?: boolean; hasTouch?: boolean }> = {
@@ -86,6 +86,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     "b-chat-top",
     "b-chat-middle",
     "b-chat-bottom",
+    // 本番の見出し（段 t。ダークの 3 組。PC は幅 1100 で右腕を列で開いた所も）
+    ...(theme === "dark" ? ["b-top-long", "b-top-menu", "b-top-place", ...(vp === "pc" ? ["b-top-hand-col"] : [])] : []),
     ...(full
       ? ["b-chat-permission", "b-chat-question", "d-composer-3lines", vp === "phone" ? "c-hand-over" : "c-hand-column", ...(vp === "phone" ? [] : ["c-hand-with-chat"]), "e-start-dialog", "f-settings", "f-knowledge-list", "f-knowledge-detail"]
       : []),
@@ -244,6 +246,56 @@ function topProblems({ height, titleMin, placeMin, boxes, demos, label }: { heig
   }
   return lines;
 }
+
+/**
+ * 本番の見出し（#c-top-root）の測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。
+ * 1 つだけ・#ed に古い見出し（h1・[‹]）が無い・高さ・1 段（直下の子が上下の中で左から右へ重ならずに並ぶ・はみ出さない・語が 1 行）・ページが横に動かない・
+ * ページの h1 は見出しの題の 1 つ。ed なら #ed（と .ed-scroll）の上端が見出しの下端で、それが画面の上から height。足りない物の文を返す
+ */
+function liveTopProblems({ height, label, ed }: { height: number; label: string; ed: boolean }): string[] {
+  const lines: string[] = [];
+  const root = document.querySelector("#c-top-root");
+  const top = root !== null && root.children.length === 1 && root.children[0]!.matches(".c-top") ? root.children[0]! : null;
+  if (top === null) return [`本番の見出し: #c-top-root の子が .c-top 1 つでない（子 ${root === null ? -1 : root.children.length}。${label}）`];
+  for (const h of document.querySelectorAll("#ed header.ed-toolbar:not([hidden]) h1")) lines.push(`本番の見出し: #ed に古い見出しの h1「${(h.textContent ?? "").slice(0, 20)}」が在る（${label}）`);
+  if (document.querySelector("#ed .ed-back") !== null) lines.push(`本番の見出し: #ed に古い見出しの [‹] が在る（${label}）`);
+  const r = top.getBoundingClientRect();
+  if (Math.abs(r.height - height) > 0.5) lines.push(`本番の見出し: 高さ ${r.height.toFixed(1)}。${height} のはず（${label}）`);
+  let prevRight = -Infinity;
+  for (const child of top.children) {
+    const c = child.getBoundingClientRect();
+    if (c.width === 0 && c.height === 0) continue;
+    if (c.top < r.top - 0.5 || c.bottom > r.bottom + 0.5) lines.push(`本番の見出し: ${child.classList[0] ?? child.tagName} が上下にはみ出している（${label}）`);
+    if (c.left < prevRight - 0.5) lines.push(`本番の見出し: ${child.classList[0] ?? child.tagName} が前の子に重なっている（${label}）`);
+    prevRight = Math.max(prevRight, c.right);
+  }
+  for (const el of top.querySelectorAll(".c-top-title, .c-top-sub, .c-top > .c-top-status, .c-top > .c-top-rest, .c-top-place-text, .c-top-hand-label")) {
+    const lh = parseFloat(getComputedStyle(el).lineHeight);
+    const h = el.getBoundingClientRect().height;
+    if (!(lh > 0) || h > lh * 1.5) lines.push(`本番の見出し: ${el.classList[0] ?? el.tagName} が 1 行でない（高さ ${h.toFixed(1)}。${label}）`);
+  }
+  if (top.scrollWidth > top.clientWidth) lines.push(`本番の見出し: 横にはみ出している（${top.scrollWidth} > ${top.clientWidth}。${label}）`);
+  const doc = document.documentElement;
+  if (doc.scrollWidth > doc.clientWidth) lines.push(`本番の見出し: ページが横に動く（${doc.scrollWidth} > ${doc.clientWidth}。${label}）`);
+  const h1s = [...document.querySelectorAll("h1")];
+  if (h1s.length !== 1 || !h1s[0]!.matches("#c-top-root .c-top-title")) lines.push(`本番の見出し: ページの h1 が ${h1s.length} 個（見出しの題の 1 つのはず。${label}）`);
+  if (ed) {
+    const box = document.querySelector("#ed");
+    const e = box === null ? null : box.getBoundingClientRect();
+    if (e === null || Math.abs(e.top - r.bottom) > 0.5) lines.push(`本番の見出し: #ed の上端 ${e === null ? "（無い）" : e.top.toFixed(1)} が見出しの下端 ${r.bottom.toFixed(1)} でない（${label}）`);
+    if (Math.abs(r.bottom - height) > 0.5) lines.push(`本番の見出し: 見出しの下端 ${r.bottom.toFixed(1)} が画面の上から ${height} でない（${label}）`);
+    const scroll = document.querySelector("#ed .ed-scroll");
+    if (scroll !== null && Math.abs(scroll.getBoundingClientRect().top - r.bottom) > 0.5) lines.push(`本番の見出し: .ed-scroll の上端 ${scroll.getBoundingClientRect().top.toFixed(1)} が見出しの下端でない（${label}）`);
+  }
+  return lines;
+}
+
+/** 本番の見出しで古い CSS の漏れを比べる要素（見本の同じ形の物と。スマホ・PC は会話の形、タブレットは compact） */
+const LEAK_TOP: Record<Viewport, { demo: string; sels: string[] }> = {
+  phone: { demo: "top-phone-talk", sels: [".c-top", ".c-top-title", ".c-top-sub", ".c-top-hand", ".c-top-act > .c-iconbtn"] },
+  pc: { demo: "top-wide-talk", sels: [".c-top", ".c-top-title", ".c-top-place", ".c-top-act > .c-iconbtn"] },
+  tablet: { demo: "top-compact-cc", sels: [".c-top", ".c-top-title", ".c-top-rest"] },
+};
 
 /** 古い CSS が一覧に漏れていないかを比べる要素と性質 */
 // 題は同じ状態（印の無い行）の物で比べる（未読の行の題は太い）
@@ -927,6 +979,472 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /** 本番の見出しの検査（liveTopProblems と、hits なら当たり）。足りない物の文 */
+  async function checkTop(page: Page, vp: Viewport, label: string, { hits = true, ed = false }: { hits?: boolean; ed?: boolean } = {}): Promise<string[]> {
+    const lines = await page.evaluate(liveTopProblems, { height: TOP_H[vp], label, ed });
+    if (hits) lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#c-top-root", targets: "button", toast: false })).map((line) => `本番の見出し: ${line}（${label}）`));
+    return lines;
+  }
+
+  /** ページの h1 が 1 つで、見出しの題か（右腕・板を開いた所でも） */
+  async function checkH1(page: Page, label: string): Promise<string[]> {
+    const h1 = await page.evaluate(() => {
+      const all = [...document.querySelectorAll("h1")];
+      return { count: all.length, top: all.length === 1 && all[0]!.matches("#c-top-root .c-top-title") };
+    });
+    return h1.count === 1 && h1.top ? [] : [`本番の見出し: ページの h1 が ${h1.count} 個（見出しの題の 1 つのはず。${label}）`];
+  }
+
+  /** 見出しの形と列 2 の幅（しきい値はページの中で --c-top-full-min を読む） */
+  const topForm = (page: Page): Promise<{ width: number; min: number; compact: boolean; place: boolean; views: boolean; menu: boolean; rest: string | null; mode: string | null; hand: string | null; dialog: boolean }> =>
+    page.evaluate(() => {
+      const top = document.querySelector("#c-top-root > .c-top");
+      const v3 = document.querySelector("#v3");
+      return {
+        width: document.querySelector("#v3-main")?.clientWidth ?? -1,
+        min: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--c-top-full-min")),
+        compact: top !== null && top.getAttribute("data-compact") === "true",
+        place: top !== null && top.querySelector(".c-top-place") !== null,
+        views: top !== null && top.querySelector(".c-top-views") !== null,
+        menu: top !== null && top.querySelector('[data-act="menu"] button') !== null,
+        rest: top === null ? null : (top.querySelector(".c-top-rest")?.textContent ?? null),
+        mode: v3 === null ? null : v3.getAttribute("data-hand-mode"),
+        hand: v3 === null ? null : v3.getAttribute("data-hand"),
+        dialog: document.querySelector("dialog[open]") !== null,
+      };
+    });
+
+  /** 決まり: 重ねた右腕も板も開いていない所で、compact ⇔ 列 2 の幅 < しきい値。測った幅を記録に出す */
+  async function checkRule(page: Page, tag: string, label: string): Promise<string[]> {
+    const f = await topForm(page);
+    logLines.push(`[${tag}] 列 2 の幅 ${f.width}・しきい値 ${f.min}・compact ${f.compact}（${label}）`);
+    if (!(f.min > 0)) return [`本番の見出し: --c-top-full-min を読めない（${label}）`];
+    if (f.dialog || (f.mode === "over" && f.hand === "open")) return [`本番の見出し: 決まりを見る所で板か重ねた右腕が開いている（${label}）`];
+    return f.compact === f.width < f.min ? [] : [`本番の見出し: compact ${f.compact} なのに列 2 の幅 ${f.width}（しきい値 ${f.min}。${label}）`];
+  }
+
+  /** 見出しの題・「…」・場所のボタンの寸法（長い題の検査） */
+  const topSizes = (page: Page): Promise<{ cut: boolean; title: number; menuIn: boolean | null; placeIn: boolean | null; placeW: number | null }> =>
+    page.evaluate(() => {
+      const top = document.querySelector("#c-top-root > .c-top");
+      const t = top === null ? null : top.querySelector(".c-top-title");
+      if (top === null || t === null) return { cut: false, title: -1, menuIn: null, placeIn: null, placeW: null };
+      const r = top.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(t);
+      const inside = (el: Element | null): boolean | null => {
+        if (el === null) return null;
+        const b = el.getBoundingClientRect();
+        return b.left >= r.left - 0.5 && b.right <= r.right + 0.5 && b.top >= r.top - 0.5 && b.bottom <= r.bottom + 0.5;
+      };
+      const place = top.querySelector(".c-top-place");
+      return {
+        cut: range.getBoundingClientRect().width > t.getBoundingClientRect().width + 0.05,
+        title: t.clientWidth,
+        menuIn: inside(top.querySelector('[data-act="menu"] button')),
+        placeIn: inside(place),
+        placeW: place === null ? null : place.getBoundingClientRect().width,
+      };
+    });
+
+  /** 仮名が全角の等幅の字を当てて fn を呼ぶ（終わったら外す）。当たらなければ fn を呼ばずに 1 行 */
+  async function withMono(page: Page, fn: () => Promise<string[]>): Promise<string[]> {
+    await page.evaluate((css: string) => {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      (window as unknown as { __liveMono: CSSStyleSheet }).__liveMono = sheet;
+    }, MONO_CSS);
+    try {
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      await wait(300);
+      const kana = await page.evaluate(() => {
+        const span = document.createElement("span");
+        span.style.position = "absolute";
+        span.style.whiteSpace = "nowrap";
+        span.style.fontSize = "100px";
+        span.textContent = "あ";
+        document.body.append(span);
+        const w = span.getBoundingClientRect().width;
+        span.remove();
+        return w;
+      });
+      if (!(kana >= 99 && kana <= 101)) return [`本番の見出し: 仮名が全角の等幅の字が当たっていない（「あ」${kana.toFixed(1)}）。IPAGothic を入れる`];
+      return await fn();
+    } finally {
+      await page.evaluate(() => {
+        const sheet = (window as unknown as { __liveMono?: CSSStyleSheet }).__liveMono;
+        document.adoptedStyleSheets = document.adoptedStyleSheets.filter((x) => x !== sheet);
+      });
+      await wait(300);
+    }
+  }
+
+  /** 長い題の寸法の決まり（スマホは題が省かれて 80 残る。タブレット・PC は「…」が箱の中・題が 80 残る・PC は場所のボタンが箱の中で 96 以上） */
+  async function longTitleLines(page: Page, vp: Viewport, label: string): Promise<string[]> {
+    const z = await topSizes(page);
+    const lines: string[] = [];
+    if (vp === "phone" && !z.cut) lines.push(`本番の見出し: 長い題が省かれていない（${label}）`);
+    if (z.title < TOP_TITLE_MIN) lines.push(`本番の見出し: 長い題の幅 ${z.title}。${TOP_TITLE_MIN} 以上のはず（${label}）`);
+    if (vp !== "phone" && z.menuIn !== true) lines.push(`本番の見出し: 「…」が見出しの箱の中に無い（${label}）`);
+    if (vp === "pc") {
+      if (z.placeIn !== true) lines.push(`本番の見出し: 場所のボタンが見出しの箱の中に無い（${label}）`);
+      if (z.placeW === null || z.placeW < TOP_PLACE_MIN - 0.5) lines.push(`本番の見出し: 場所のボタンの幅 ${String(z.placeW)}。${TOP_PLACE_MIN} 以上のはず（${label}）`);
+    }
+    return lines;
+  }
+
+  /** 古い CSS の漏れ: 本番の見出しと見本の同じ形（LEAK_TOP）。見本を開くので、後で path を読み直す */
+  async function checkTopLeaks(page: Page, vp: Viewport, path: string): Promise<string[]> {
+    const { demo, sels } = LEAK_TOP[vp];
+    const styles = ({ root, sels, props }: { root: string; sels: string[]; props: string[] }): Record<string, Record<string, string> | null> => {
+      const out: Record<string, Record<string, string> | null> = {};
+      const scope = document.querySelector(root);
+      for (const sel of sels) {
+        const el = scope === null ? null : scope.querySelector(sel);
+        if (el === null) {
+          out[sel] = null;
+          continue;
+        }
+        const cs = getComputedStyle(el);
+        out[sel] = Object.fromEntries(props.map((prop) => [prop, cs.getPropertyValue(prop)]));
+      }
+      return out;
+    };
+    const real = await page.evaluate(styles, { root: "#c-top-root", sels, props: LEAK_PROPS });
+    await page.goto("about:blank");
+    await page.goto(base + "/static/gallery.html", { waitUntil: "load" });
+    await page.waitForSelector(`[data-demo="${demo}"] .c-top`, { timeout: 5000 });
+    const shown = await page.evaluate(styles, { root: `[data-demo="${demo}"]`, sels, props: LEAK_PROPS });
+    const lines: string[] = [];
+    for (const sel of sels) {
+      const a = real[sel];
+      const b = shown[sel];
+      if (!a || !b) {
+        lines.push(`見出しの漏れ: ${sel} が${!a ? "本番" : "見本"}に無い`);
+        continue;
+      }
+      for (const prop of LEAK_PROPS) if (a[prop] !== b[prop]) lines.push(`見出しの漏れ: ${sel} の ${prop} が 本番 ${a[prop]} / 見本 ${b[prop]}`);
+    }
+    await load(page, path);
+    return lines;
+  }
+
+  /** キーボードで入った形にして（focus → Shift+Tab → Tab）、見出しのどのボタンの輪も帯で切れない */
+  async function checkRings(page: Page, label: string): Promise<string[]> {
+    const lines: string[] = [];
+    const count = await page.evaluate(() => document.querySelectorAll("#c-top-root button").length);
+    if (count === 0) return [`輪: 見出しにボタンが無い（${label}）`];
+    for (let i = 0; i < count; i++) {
+      await page.evaluate((n: number) => (document.querySelectorAll("#c-top-root button")[n] as HTMLElement | undefined)?.focus(), i);
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Tab");
+      await wait(50);
+      const ring = await page.evaluate((n: number) => {
+        const b = document.querySelectorAll("#c-top-root button")[n];
+        const top = b === undefined ? null : b.closest(".c-top");
+        if (b === undefined || top === null) return null;
+        const cs = getComputedStyle(b);
+        const e = (parseFloat(cs.outlineWidth) || 0) + Math.max(0, parseFloat(cs.outlineOffset) || 0);
+        const r = b.getBoundingClientRect();
+        const t = top.getBoundingClientRect();
+        return {
+          name: b.getAttribute("aria-label") ?? (b.textContent ?? "").trim().slice(0, 12),
+          active: document.activeElement === b,
+          visible: b.matches(":focus-visible"),
+          inside: r.left - e >= t.left - 0.5 && r.right + e <= t.right + 0.5 && r.top - e >= t.top - 0.5 && r.bottom + e <= t.bottom + 0.5,
+          e,
+        };
+      }, i);
+      if (ring === null) lines.push(`輪: ${i} 番目のボタンが無い（${label}）`);
+      else if (!ring.active || !ring.visible) lines.push(`輪: 前提が崩れた。「${ring.name}」にキーボードで入れない（焦点 ${ring.active}・:focus-visible ${ring.visible}。${label}）`);
+      else if (!ring.inside) lines.push(`輪: 「${ring.name}」の輪（${ring.e}px）が帯で切れる（${label}）`);
+    }
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    return lines;
+  }
+
+  /** 焦点が見出しの data-act のボタンか */
+  const activeIs = (page: Page, selector: string): Promise<boolean> => page.evaluate((sel: string) => document.activeElement !== null && document.activeElement.matches(sel), selector);
+  const TOP_MENU = '#c-top-root [data-act="menu"] button';
+  const TOP_BACK = '#c-top-root [data-act="back"] button';
+  const TOP_HAND = '#c-top-root button[data-act="hand"]';
+  const TOP_PLACE = "#c-top-root button.c-top-place";
+
+  /** 板を Esc で閉じ、閉じるまで待つ */
+  async function escSheet(page: Page): Promise<void> {
+    await page.keyboard.press("Escape");
+    await page.waitForSelector("#v3-sheet:not([open])", { state: "attached", timeout: 5000 });
+    await wait(200);
+  }
+
+  /** 板の行の字 */
+  const sheetRows = (page: Page): Promise<string[]> => page.evaluate(() => [...document.querySelectorAll("#v3-sheet .more-row .sb-label")].map((el) => (el.textContent ?? "").trim()));
+
+  /** 右腕の見出しは h2「右腕」で、#v3-hand-ed に h1 が無い。字の大きさは --font-base・1 行 */
+  async function checkHandHeading(page: Page, label: string): Promise<string[]> {
+    const h = await page.evaluate(() => {
+      const h2 = document.querySelector("#v3-hand-ed .ed-title h2");
+      const probe = document.createElement("span");
+      probe.style.fontSize = "var(--font-base)";
+      document.body.append(probe);
+      const base = getComputedStyle(probe).fontSize;
+      probe.remove();
+      return {
+        text: h2 === null ? null : (h2.textContent ?? "").trim(),
+        h1: document.querySelectorAll("#v3-hand-ed h1").length,
+        size: h2 === null ? null : getComputedStyle(h2).fontSize,
+        base,
+        space: h2 === null ? null : getComputedStyle(h2).whiteSpace,
+      };
+    });
+    const lines: string[] = [];
+    if (h.text !== "右腕") lines.push(`右腕の見出し: h2 が「${String(h.text)}」（${label}）`);
+    if (h.h1 !== 0) lines.push(`右腕の見出し: #v3-hand-ed に h1 が ${h.h1} 個（${label}）`);
+    if (h.size !== h.base) lines.push(`右腕の見出し: 字の大きさ ${String(h.size)}。--font-base の ${h.base} のはず（${label}）`);
+    if (h.space !== "nowrap") lines.push(`右腕の見出し: white-space が ${String(h.space)}（${label}）`);
+    return lines;
+  }
+
+  /**
+   * 段 t（本番の見出し。ダークの 3 組）: 会話 → 長い題の話題 → 「…」の板 → 場所 → 右腕 → 設定・状態。PC は幅を 1100・800 に変えて戻す。
+   * 足りない物の文（全部を測ってから、1 つでもあれば段を失敗にする）
+   */
+  async function topStage(page: Page, vp: Viewport, p: string): Promise<string[]> {
+    const tag = `v3-${p}`;
+    const lines: string[] = [];
+    const chat = `/static/v3.html#/ch/${open}`;
+    const phone = vp === "phone";
+    // 会話を開く（スマホは一覧の行から。焦点は「一覧へ」・押すと一覧へ）
+    if (phone) {
+      await load(page, "/static/v3.html");
+      await page.locator(`#c-list-root button[data-topic="ch:${open}"]`).last().click();
+      await page.waitForSelector("#ed textarea", { timeout: 5000 });
+      await wait(500);
+      if (!(await activeIs(page, TOP_BACK))) lines.push("本番の見出し: 一覧から話題を開いた後の焦点が「一覧へ」に無い");
+      lines.push(...(await checkTop(page, vp, "会話", { ed: true })));
+      await page.click(TOP_BACK);
+      await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+    }
+    await load(page, chat);
+    await page.waitForSelector("#ed textarea", { timeout: 5000 });
+    await wait(500);
+    if (!phone) lines.push(...(await checkTop(page, vp, "会話")), ...(await checkRule(page, tag, "会話")));
+    const form = await topForm(page);
+    if (vp === "tablet") {
+      if (!form.compact || form.place || form.views || !form.menu || !(form.rest ?? "").startsWith("場所: ")) {
+        lines.push(`本番の見出し: タブレットが compact の形でない（compact ${form.compact}・場所 ${form.place}・切り替え ${form.views}・「…」${form.menu}・補足 ${String(form.rest)}）`);
+      }
+      if (!(form.width < form.min)) lines.push(`本番の見出し: タブレットの列 2 の幅 ${form.width} がしきい値 ${form.min} 未満でない`);
+    }
+    if (vp === "pc") lines.push(...(await pcPlaceLines(page, tag, "右腕を列で開いた形")));
+    lines.push(...(await checkTopLeaks(page, vp, chat)));
+    await page.waitForSelector("#ed textarea", { timeout: 5000 });
+    // 輪（キーボードで入った形）
+    lines.push(...(await checkRings(page, "会話")));
+    // 「…」の板: 先頭（スマホ・タブレットは「場所を変える」、PC は無い）・チャンネルの操作・Esc で「…」へ
+    await page.click(TOP_MENU);
+    await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+    const rows = await sheetRows(page);
+    for (const want of ["待ちにする", "閉じる", "会話を新しくする"]) if (!rows.includes(want)) lines.push(`本番の見出し: 「…」の板に「${want}」が無い（${rows.join("・")}）`);
+    if (vp === "pc" ? rows.includes("場所を変える") : rows[0] !== "場所を変える") lines.push(`本番の見出し: 「…」の板の「場所を変える」の在り方が違う（${rows.join("・")}）`);
+    lines.push(...(await checkH1(page, "「…」の板")));
+    await shot(page, `${p}-b-top-menu`);
+    await escSheet(page);
+    if (!(await activeIs(page, TOP_MENU))) lines.push("本番の見出し: 「…」の板を閉じた後の焦点が「…」に無い");
+    // 場所の板: スマホ・タブレットは「…」から（閉じたら「…」へ）、PC は場所のボタンから（閉じたら場所のボタンへ）
+    if (vp === "pc") {
+      await page.click(TOP_PLACE);
+    } else {
+      await page.click(TOP_MENU);
+      await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+      await page.locator("#v3-sheet .more-row").first().click();
+    }
+    await page.waitForSelector('#v3-sheet[open][aria-label="場所を変える"]', { timeout: 5000 });
+    lines.push(...(await checkH1(page, "場所の板")));
+    await shot(page, `${p}-b-top-place`);
+    await escSheet(page);
+    if (!(await activeIs(page, vp === "pc" ? TOP_PLACE : TOP_MENU))) lines.push(`本番の見出し: 場所の板を閉じた後の焦点が${vp === "pc" ? "場所のボタン" : "「…」"}に無い`);
+    // 右腕（aria-controls の先・見出しの h2・閉じた後の焦点。タブレットは重ねて開いている間も compact のまま）
+    if (phone) {
+      const controls = await page.evaluate(() => {
+        const top = document.querySelector('#c-top-root button[data-act="hand"]');
+        const bottom = document.querySelector('#c-bottom-root button[data-act="hand"]');
+        const a = top === null ? null : top.getAttribute("aria-controls");
+        const b = bottom === null ? null : bottom.getAttribute("aria-controls");
+        return { a, b, exists: a !== null && document.getElementById(a) !== null };
+      });
+      if (controls.a === null || controls.a !== controls.b || !controls.exists) lines.push(`本番の見出し: 右腕のボタンの aria-controls が合わない（見出し ${String(controls.a)}・下のバー ${String(controls.b)}・先 ${controls.exists}）`);
+      await page.click(TOP_HAND);
+      await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+      await wait(500);
+      const width = await page.evaluate((id: string | null) => (id === null ? 0 : (document.getElementById(id)?.getBoundingClientRect().width ?? 0)), controls.a);
+      if (!(width > 0)) lines.push("本番の見出し: aria-controls の先が開いた右腕の入れ物でない（幅 0）");
+      lines.push(...(await checkHandHeading(page, "右腕")), ...(await checkH1(page, "右腕")));
+      await page.click("#v3-hand-close");
+      await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+      await wait(300);
+      if (!(await activeIs(page, TOP_HAND))) lines.push("本番の見出し: 右腕を畳んだ後の焦点が見出しの [右腕] に無い");
+    } else {
+      const show = await page.evaluate(() => {
+        const id = document.querySelector("#v3-hand-show")?.getAttribute("aria-controls") ?? null;
+        return id !== null && document.getElementById(id) !== null;
+      });
+      if (!show) lines.push("本番の見出し: #v3-hand-show の aria-controls の先が無い");
+      if (vp === "tablet") {
+        await page.click("#v3-hand-show");
+        await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+        await wait(500);
+        const over = await topForm(page);
+        if (over.mode !== "over") lines.push(`本番の見出し: タブレットの右腕が重ねる形でない（${String(over.mode)}）`);
+        if (!(over.width >= over.min)) lines.push(`本番の見出し: 前提が崩れた。重ねて開いた間の列 2 の幅 ${over.width} がしきい値 ${over.min} 以上でない`);
+        if (!over.compact) lines.push("本番の見出し: 重ねた右腕の後ろで見出しが compact でなくなった");
+        lines.push(...(await checkHandHeading(page, "右腕")), ...(await checkH1(page, "右腕")));
+        await page.click("#v3-hand-close");
+        await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+        await wait(300);
+        if (!(await topForm(page)).compact) lines.push("本番の見出し: 重ねた右腕を畳んだ後に compact でない");
+        lines.push(...(await checkRule(page, tag, "右腕を畳んだ後")));
+      } else {
+        lines.push(...(await checkHandHeading(page, "右腕")), ...(await checkH1(page, "右腕")));
+        lines.push(...(await pcWidthLines(page, tag)));
+      }
+    }
+    // 長い題の話題
+    const long = await page.evaluate(() => {
+      const data = (window as unknown as { SA: { topics: { data: () => { topics: Array<{ id: string; title: string }> } | null } } }).SA.topics.data();
+      return data?.topics.find((t) => t.title.startsWith("ファームウェア"))?.id ?? null;
+    });
+    if (long === null) lines.push("本番の見出し: 作り物のデータに長い題の話題が無い");
+    else {
+      await load(page, "/static/v3.html#/" + long.replace(":", "/"));
+      await page.waitForSelector("#ed textarea", { timeout: 5000 });
+      await wait(500);
+      lines.push(...(await checkTop(page, vp, "長い題", { ed: phone })), ...(await longTitleLines(page, vp, "長い題")));
+      if (vp !== "phone") lines.push(...(await checkRule(page, tag, "長い題")));
+      lines.push(...(await withMono(page, () => longTitleLines(page, vp, "長い題・等幅の字"))));
+      if (phone) {
+        await page.setViewportSize({ width: 375, height: 812 });
+        await wait(300);
+        lines.push(...(await checkTop(page, vp, "長い題・幅 375", { hits: false })));
+        lines.push(...(await withMono(page, () => longTitleLines(page, vp, "長い題・幅 375・等幅の字"))));
+        await page.setViewportSize(VIEWPORTS.phone.viewport);
+        await wait(300);
+      }
+      await shot(page, `${p}-b-top-long`);
+    }
+    // ほかの画面: 設定（題・#ed に h1 が無い）と状態（例外が出ない）
+    await load(page, "/static/v3.html#/settings");
+    await page.waitForSelector("#ed .ed-section", { timeout: 5000 });
+    const settings = await page.evaluate(() => ({ title: document.querySelector("#c-top-root .c-top-title")?.textContent ?? null, h1: document.querySelectorAll("#ed h1").length }));
+    if (settings.title !== "設定" || settings.h1 !== 0) lines.push(`本番の見出し: 設定の題が「${String(settings.title)}」・#ed の h1 が ${settings.h1} 個`);
+    lines.push(...(await checkTop(page, vp, "設定", { hits: false })));
+    const errorsBefore = logLines.filter((line) => line.includes("pageerror")).length;
+    await page.evaluate(() => (window as unknown as { SA: { app: { open: (id: string) => void } } }).SA.app.open("status"));
+    await wait(800);
+    const status = await page.evaluate(() => document.querySelector("#c-top-root .c-top-title")?.textContent ?? null);
+    if (status !== "状態") lines.push(`本番の見出し: 状態の題が「${String(status)}」`);
+    if (logLines.filter((line) => line.includes("pageerror")).length !== errorsBefore) lines.push("本番の見出し: 状態を開くと pageerror が出る");
+    lines.push(...(await checkTop(page, vp, "状態", { hits: false })));
+    return lines;
+  }
+
+  /** PC の場所のボタン（右腕を畳んだ形と列で開いた形）: compact でない・字は名前だけ・読み上げは「場所: 」付き・動かせない話題は aria-disabled（native の disabled なし） */
+  async function pcPlaceLines(page: Page, tag: string, label: string): Promise<string[]> {
+    const lines: string[] = [];
+    const check = async (at: string): Promise<void> => {
+      const f = await topForm(page);
+      if (f.compact || !f.place) lines.push(`本番の見出し: PC が compact の形（compact ${f.compact}・場所 ${f.place}。${at}）`);
+      if (!(f.width >= f.min)) lines.push(`本番の見出し: PC の列 2 の幅 ${f.width} がしきい値 ${f.min} 以上でない（${at}）`);
+      lines.push(...(await checkRule(page, tag, at)));
+      const b = await page.evaluate(() => {
+        const el = document.querySelector("#c-top-root button.c-top-place");
+        return el === null ? null : { text: (el.textContent ?? "").trim(), label: el.getAttribute("aria-label") };
+      });
+      if (b === null) return;
+      if (b.text.startsWith("場所: ") || b.label !== "場所: " + b.text) lines.push(`本番の見出し: 場所のボタンの字「${b.text}」・名前「${String(b.label)}」（${at}）`);
+    };
+    await check(label);
+    // 右腕を畳んだ形
+    await page.click("#v3-hand-close");
+    await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+    await wait(300);
+    await check("右腕を畳んだ形");
+    // 動かせない話題
+    await loadEdited(page, (json) => {
+      for (const t of json.topics) if (t.id === `ch:${open}`) t.movable = { reason: "場所を変えています" };
+    });
+    const locked = await page.evaluate(() => {
+      const el = document.querySelector("#c-top-root button.c-top-place");
+      return el === null ? null : { aria: el.getAttribute("aria-disabled"), native: el.hasAttribute("disabled") };
+    });
+    if (locked === null || locked.aria !== "true" || locked.native) lines.push(`本番の見出し: 動かせない話題の場所のボタンが aria-disabled でない（${JSON.stringify(locked)}）`);
+    await page.evaluate(() => (window as unknown as { SA: { topics: { load: () => Promise<void> } } }).SA.topics.load());
+    await wait(300);
+    await page.click("#v3-hand-show");
+    await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+    await wait(300);
+    return lines;
+  }
+
+  /** PC の幅を変える検査（右腕の列で替わる・幅をまたいで戻る・またいだときの焦点）。終わったら幅を戻す */
+  async function pcWidthLines(page: Page, tag: string): Promise<string[]> {
+    const lines: string[] = [];
+    const size = async (width: number): Promise<void> => {
+      await page.setViewportSize({ width, height: VIEWPORTS.pc.viewport.height });
+      await wait(400);
+    };
+    const at = async (label: string, want: boolean): Promise<void> => {
+      const f = await topForm(page);
+      if (f.compact !== want) lines.push(`本番の見出し: ${label} で compact ${f.compact}（${want} のはず）`);
+      lines.push(...(await checkTop(page, "pc", label, { hits: false })), ...(await checkRule(page, tag, label)));
+    };
+    try {
+      // 右腕の列で替わる（幅 1100）
+      await size(1100);
+      if ((await topForm(page)).hand === "open") {
+        await page.click("#v3-hand-close");
+        await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+        await wait(300);
+      }
+      await at("幅 1100・右腕を畳んだ形", false);
+      await page.click("#v3-hand-show");
+      await page.waitForSelector('#v3[data-hand="open"][data-hand-mode="column"]', { timeout: 5000 });
+      await wait(300);
+      await at("幅 1100・右腕を列で開いた形", true);
+      await shot(page, "pc-dark-b-top-hand-col");
+      await page.click("#v3-hand-close");
+      await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+      await wait(300);
+      await at("幅 1100・畳み直した形", false);
+      // 幅をまたいで戻る（1440 → 800 → 1440）
+      await size(1440);
+      await at("幅 1440", false);
+      await size(800);
+      const narrow = await topForm(page);
+      if (narrow.mode !== "over") lines.push(`本番の見出し: 幅 800 の右腕が重ねる形でない（${String(narrow.mode)}）`);
+      await at("幅 800", true);
+      await size(1440);
+      await at("幅 1440 に戻した所", false);
+      if (!(await topForm(page)).place) lines.push("本番の見出し: 幅 1440 に戻しても場所のボタンが無い");
+      // またいだときの焦点: 場所のボタン → 800 で「…」、戻しても「…」。「…」は往復しても「…」
+      await page.focus(TOP_PLACE);
+      await size(800);
+      if (!(await activeIs(page, TOP_MENU))) lines.push("本番の見出し: 場所のボタンに焦点があるまま compact に替わった後の焦点が「…」に無い");
+      await size(1440);
+      if (!(await activeIs(page, TOP_MENU))) lines.push("本番の見出し: compact から戻った後の焦点が「…」に無い");
+      await page.focus(TOP_MENU);
+      for (const width of [800, 1440]) {
+        await size(width);
+        if (!(await activeIs(page, TOP_MENU))) lines.push(`本番の見出し: 「…」に焦点があるまま幅 ${width} にした後の焦点が「…」に無い`);
+      }
+    } finally {
+      await page.setViewportSize(VIEWPORTS.pc.viewport);
+      await wait(300);
+    }
+    return lines;
+  }
+
   async function newShell(vp: Viewport, theme: Theme, full: boolean): Promise<void> {
     const p = `${vp}-${theme}`;
     if (!newShellNames(vp, theme, full).some(wanted)) return;
@@ -942,6 +1460,19 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const problems = [...(await checkParts(page, vp, [".c-list", ".c-bottom"])), ...(await checkList(page, vp)), ...(await checkBar(page, vp, p))];
         if (vp !== "tablet") problems.push(...(await checkLeaks(page, vp)));
         problems.push(...(await checkWidths(page, vp, mono)));
+        // 絞り込み欄の箱の左端は一覧の列の左から 16（スマホ・PC）
+        if (vp !== "tablet") {
+          await page.click("#v3-search-toggle");
+          await page.waitForSelector("#v3-search", { timeout: 5000 });
+          const left = await page.evaluate(() => {
+            const input = document.querySelector("#v3-search");
+            const list = document.querySelector("#v3-list");
+            return input === null || list === null ? null : input.getBoundingClientRect().left - list.getBoundingClientRect().left;
+          });
+          if (left === null || Math.abs(left - 16) > 0.5) problems.push(`絞り込み欄の左端が ${String(left)}（16 のはず）`);
+          await page.click("#v3-search-toggle");
+          await wait(200);
+        }
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
         if (problems.length > 0) throw new Error(`一覧の列の検査で ${problems.length} 件`);
       });
@@ -995,6 +1526,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           for (const el of document.querySelectorAll("#ed *")) if (el.scrollHeight > el.clientHeight + 4) el.scrollTop = 0;
         });
         await shot(page, `${p}-b-chat-top`);
+        // 本番の見出し（軽い分。ライトはここで見る）
+        const problems = await checkTop(page, vp, "会話");
+        for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+        if (problems.length > 0) throw new Error(`見出しの検査で ${problems.length} 件`);
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("#ed *")) {
             if (el.scrollHeight > el.clientHeight + 4 && getComputedStyle(el).overflowY !== "visible") el.scrollTop = Math.round((el.scrollHeight - el.clientHeight) * 0.45);
@@ -1004,6 +1539,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-bottom`);
       });
+      // 本番の見出しの段（ダークの 3 組）
+      if (theme === "dark") {
+        const tops = [`${p}-b-top-long`, `${p}-b-top-menu`, `${p}-b-top-place`, ...(vp === "pc" ? [`${p}-b-top-hand-col`] : [])];
+        await step(`${p} t`, tops, async () => {
+          const problems = await topStage(page, vp, p);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`見出しの段の検査で ${problems.length} 件`);
+        });
+      }
       if (!full) return;
       await step(`${p} b2`, [`${p}-b-chat-permission`, `${p}-b-chat-question`], async () => {
         await load(page, `/static/v3.html#/ch/${perm}`);
@@ -1054,6 +1598,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await page.waitForSelector("#ed .ed-section", { timeout: 5000 });
         await wait(800);
         await shot(page, `${p}-f-settings`);
+        const problems = await checkTop(page, vp, "設定", { hits: false });
+        for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+        if (problems.length > 0) throw new Error(`見出しの検査で ${problems.length} 件`);
         await load(page, "/static/v3.html#/knowledge");
         await page.waitForSelector("#ed .master-item", { timeout: 5000 });
         await wait(800);
@@ -1086,6 +1633,19 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await page.waitForSelector("#ed .msg-agent", { timeout: 8000 });
         await wait(2000);
         await shot(page, `${label}-chat`);
+        // 古い殻に部品（c-*）と見出しの入口は無く、今の見出しが在る
+        const old = await page.evaluate(() => ({
+          parts: document.querySelectorAll('[class^="c-"], [class*=" c-"]').length,
+          toolbar: document.querySelector("#ed .ed-toolbar") !== null,
+          top: (window as unknown as { SA?: { top?: unknown } }).SA?.top === undefined,
+        }));
+        const problems = [
+          ...(old.parts !== 0 ? [`古い殻に c- のクラスの要素が ${old.parts} 個`] : []),
+          ...(!old.toolbar ? ["古い殻の #ed に .ed-toolbar が無い"] : []),
+          ...(!old.top ? ["古い殻に window.SA.top が在る"] : []),
+        ];
+        for (const line of problems) logLines.push(`[${label}] ${line}`);
+        if (problems.length > 0) throw new Error(`古い殻の検査で ${problems.length} 件`);
       });
     } finally {
       await ctx.close();
