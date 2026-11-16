@@ -47,6 +47,8 @@
   margin: 0;
   background: var(--surface);
   color: var(--text);
+  /* 入力の位置の線は accent（古い CSS の textarea に頼らず自分で持つ） */
+  caret-color: var(--accent);
   resize: none;
   overflow-y: auto;
 }
