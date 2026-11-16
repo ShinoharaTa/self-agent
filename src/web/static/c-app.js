@@ -1,9 +1,9 @@
 // 新しい殻（v3.html）の部品の入口（docs/plan/web-ui-components.md §9 の K3）。状態は topics.js が持ち、SA.list.draw(state) で押し込む。
 // 部品の c-*.js のうち document・window・SA に触るのはここだけ（見本の c-gallery.js は別）。文は部品とモデルが持ち、ここには書かない
-// 下のバーは shell.js が SA.list.drawBar(bar) で押し込む
+// 下のバーは shell.js が SA.list.drawBar(bar) で押し込む。会話の見出し（K4）は SA.top.draw(state) で、compact にするかは shell.js が SA.top.compact() で測らせて決める
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
-import { BottomBar } from "./c-shell.js";
+import { BottomBar, TopBar } from "./c-shell.js";
 
 const listRoot = document.getElementById("c-list-root");
 
@@ -18,6 +18,12 @@ if (listRoot) {
   const barRoot = document.getElementById("c-bottom-root");
   /** 最後に渡された bar（幅が変わったら描き直す） */
   let lastBar = null;
+  /** 会話の見出しの入れ物。無ければ null */
+  const topRoot = document.getElementById("c-top-root");
+  /** 最後に渡された見出しの state（幅が変わったら描き直す） */
+  let lastTop = null;
+  /** compact にする列の幅（トークン --c-top-full-min が読めないときの値。tokens.css と同じ数） */
+  const TOP_FULL_MIN = 520;
 
   /** 一覧の根（.c-list。tabindex="-1"）。まだ描いていなければ null */
   const rootEl = () => listRoot.firstElementChild;
@@ -80,13 +86,16 @@ if (listRoot) {
     if (root) root.scrollTop = n;
   }
 
-  /** 下のバーを描く。bar は { turns, hand, tabs, on }。形（スマホか広い幅か）はここで決める。フォーカスと一覧の位置には触らない */
+  /** 下のバーを描く。bar は { turns, hand, tabs, controls, on }。形（スマホか広い幅か）はここで決める。フォーカスと一覧の位置には触らない */
   function drawBar(bar) {
     lastBar = bar;
     // 描く所が無いのは失敗ではない
     if (!barRoot) return true;
     try {
-      render(html`<${BottomBar} variant=${env.phone.matches ? "phone" : "wide"} turns=${bar.turns} hand=${bar.hand} tabs=${bar.tabs} on=${bar.on} />`, barRoot);
+      render(
+        html`<${BottomBar} variant=${env.phone.matches ? "phone" : "wide"} turns=${bar.turns} hand=${bar.hand} tabs=${bar.tabs} controls=${bar.controls} on=${bar.on} />`,
+        barRoot,
+      );
     } catch (error) {
       // draw と同じく名前だけ
       console.error("[web] bar draw failed", error instanceof Error ? error.name : "");
@@ -100,6 +109,81 @@ if (listRoot) {
     const b = barRoot ? barRoot.querySelector('button[data-act="hand"]') : null;
     if (!b) return false;
     b.focus();
+    return true;
+  }
+
+  /** --c-top-full-min の px（呼ばれるたびに読む。読めなければ TOP_FULL_MIN） */
+  function topFullMin() {
+    try {
+      const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--c-top-full-min"));
+      return Number.isFinite(v) && v > 0 ? v : TOP_FULL_MIN;
+    } catch {
+      return TOP_FULL_MIN;
+    }
+  }
+
+  /**
+   * 今の列の幅なら見出しを compact にするか（測るだけ。覚えない・描かない）。スマホは false、測れなければ null。
+   * 根（.v3-slot）は display: contents で箱が無いので、根の親（列）の幅を測る
+   */
+  function topCompact() {
+    if (env.phone.matches) return false;
+    const box = topRoot ? topRoot.parentElement : null;
+    if (!box) return null;
+    const w = box.clientWidth;
+    if (!Number.isFinite(w) || w <= 0) return null;
+    return w < topFullMin();
+  }
+
+  /** その要素が button ならそれ、違えば中の最初の button（無ければ null） */
+  function buttonIn(node) {
+    if (!node) return null;
+    return node.matches("button") ? node : node.querySelector("button");
+  }
+
+  /** 見出しを描く。state は { view, title, status, note, place, views, hand, compact, menu, controls, on }。形（スマホか広い幅か）はここで、compact は state のまま */
+  function drawTop(state) {
+    lastTop = state;
+    if (!topRoot) return true;
+    const before = document.activeElement;
+    const inside = !!before && topRoot.contains(before);
+    try {
+      render(
+        html`<${TopBar}
+          variant=${env.phone.matches ? "phone" : "wide"}
+          view=${state.view}
+          title=${state.title}
+          status=${state.status}
+          note=${state.note}
+          place=${state.place}
+          views=${state.views}
+          hand=${state.hand}
+          menu=${state.menu}
+          compact=${state.compact === true}
+          controls=${state.controls}
+          on=${state.on}
+        />`,
+        topRoot,
+      );
+    } catch (error) {
+      // draw と同じく名前だけ
+      console.error("[web] top draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    // 焦点のあったボタンが消えた（compact に替わった・スマホの境をまたいだ）: 「…」→「一覧へ」→ 最初のボタン（body に落とさない）
+    if (inside && !document.contains(before)) {
+      const next = buttonIn(topRoot.querySelector('[data-act="menu"]')) || buttonIn(topRoot.querySelector('[data-act="back"]')) || topRoot.querySelector("button");
+      if (next) next.focus({ preventScroll: true });
+    }
+    return true;
+  }
+
+  /** 見出しのボタン（back・place・menu・hand）にフォーカス。無い・押せなければ false */
+  function focusTop(act) {
+    if (!topRoot || !["back", "place", "menu", "hand"].includes(act)) return false;
+    const b = buttonIn(topRoot.querySelector('[data-act="' + act + '"]'));
+    if (!b || b.disabled) return false;
+    b.focus({ preventScroll: true });
     return true;
   }
 
@@ -121,8 +205,10 @@ if (listRoot) {
 
   env.phone.addEventListener("change", () => {
     if (lastBar) drawBar(lastBar);
+    if (lastTop) drawTop(lastTop);
   });
 
   window.SA = window.SA || {};
   window.SA.list = { draw, focusRow, focusList, scrollTop, setScrollTop, drawBar, focusHand };
+  if (topRoot) window.SA.top = { draw: drawTop, focus: focusTop, compact: topCompact };
 }

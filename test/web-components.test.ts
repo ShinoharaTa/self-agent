@@ -239,6 +239,19 @@ test("web components: 入口（c-app.js）は document・window・SA・matchMedi
   for (const name of JS_FILES.filter((n) => n !== "c-app.js")) assert.ok(!importsOf(read(name)).from.some((f) => /c-app\.js$/.test(f)), name);
 });
 
+test("web components: 入口の TOP_FULL_MIN は tokens.css の --c-top-full-min と同じ数で、トークンは <数>px の形（入口が parseFloat で読む）", () => {
+  const app = read("c-app.js");
+  const fromApp = /\bconst TOP_FULL_MIN = (\d+);/.exec(app)?.[1];
+  assert.ok(fromApp, "c-app.js に TOP_FULL_MIN が無い");
+  const fromTokens = /--c-top-full-min:\s*([^;]+);/.exec(read("tokens.css"))?.[1]?.trim();
+  assert.ok(fromTokens, "tokens.css に --c-top-full-min が無い");
+  assert.match(fromTokens, /^\d+px$/);
+  assert.equal(fromTokens, fromApp + "px");
+  // 測るのは根の親（根は display: contents）。殻の id を書かない
+  assert.match(app, /topRoot \? topRoot\.parentElement : null/);
+  assert.doesNotMatch(app, /v3-main/);
+});
+
 test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell だけ。c-atoms・c-list・c-shell・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
