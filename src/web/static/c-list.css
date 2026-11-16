@@ -163,10 +163,11 @@
   padding-right: var(--c-gutter);
 }
 
+/* 右の余白を auto にして、補足の無い群でも文と [+] を右の端へ寄せる（補足が在ればそれが伸びて埋める） */
 .c-group-name {
   flex: 0 1 auto;
   min-width: 0;
-  margin: 0;
+  margin: 0 auto 0 0;
   overflow: hidden;
   font-size: inherit;
   font-weight: var(--weight-semibold);
@@ -187,7 +188,6 @@
 
 .c-group-note {
   flex: none;
-  margin-left: auto;
   font-size: var(--font-xs);
   white-space: nowrap;
 }

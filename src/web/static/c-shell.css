@@ -35,7 +35,8 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  min-width: 0;
+  /* 「一覧」と件数（99+ まで）は省かない。足りない分は右腕の文が省かれる */
+  min-width: max-content;
   min-height: var(--c-tap);
   padding: 0 var(--space-2);
   border: 0;

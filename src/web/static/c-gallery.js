@@ -1,8 +1,10 @@
-// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1・K2）。部品の状態を並べ、ui-shots が撮る。
+// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1〜K3）。部品の状態を並べ、ui-shots が撮る。
 // 認証の前に配られるので、個人の情報と API の呼び出しを入れない。data-section・data-demo は ui-shots が要素を探す印（CSS では使わない）
 import { html, render, useRef, useState } from "./c-lib.js";
 import { Badge, Button, Empty, Field, IconButton, Loading, Mark, Segmented } from "./c-atoms.js";
 import { Confirm, Sheet, Toast } from "./c-sheet.js";
+import { TopicList, YourTurn, listModel } from "./c-list.js";
+import { BottomBar } from "./c-shell.js";
 
 // テーマ: shell.js と同じ（localStorage の self-agent-web:theme。dark・light は data-theme、system は外して OS に合わせる。読めなければ dark）
 const THEMES = ["dark", "light", "system"];
@@ -226,6 +228,125 @@ function Sheets({ push }) {
   <//>`;
 }
 
+// ===== 一覧と下のバー（K3）。データは作り物 =====
+
+/** 一覧の形（行の高さ・[+] の大きさ・あなたの番の形）は、読み込みのときに 1 回だけ tokens.css の PC の上書きと同じ式で決める */
+const COMPACT = window.matchMedia("(min-width: 640px) and (hover: hover) and (pointer: fine)").matches;
+
+const LONG_TOPIC = "月末の領収書を写真から読み取って店と金額と日付の表にまとめ、去年の同じ月と比べて増えた所を短く書き出して残しておく話題。";
+const LONG_SUMMARY = "見本の作業で使うコマンドを実行してよいか確かめています。対象は見本のプロジェクトの中のファイルだけで、外には全く出ません";
+const AT = "2026-01-01T03:00:00Z";
+
+const gTopic = (o) => ({ group: "p:a", origin: "session", persona: null, mark: null, turn: null, state: "active", activityAt: AT, last: null, ...o });
+const gGroup = (o) => ({ kind: "project", turns: 0, running: 0, open: 0, done: 0, hasTopics: true, ...o });
+const gTurn = (kind, summary) => ({ kind, summary, since: AT, expiresAt: null });
+
+const FULL_DATA = {
+  turns: 2,
+  turnIds: ["ch:1", "ch:20"],
+  groups: [
+    gGroup({ key: "p:a", name: "見本のプロジェクト A", turns: 1, running: 1, open: 8, done: 3 }),
+    gGroup({ key: "p:b", name: "見本のプロジェクト B", open: 1, done: 60 }),
+    gGroup({ key: "p:c", name: "見本のプロジェクト C", done: 1 }),
+    gGroup({ key: "p:d", name: "見本のプロジェクト D", hasTopics: false }),
+    gGroup({ key: "general", kind: "general", name: "General" }),
+  ],
+  topics: [
+    gTopic({ id: "ch:1", title: "見本の家計の話題", mark: "turn", turn: gTurn("permission", LONG_SUMMARY) }),
+    gTopic({ id: "cc:2", title: "見本の作業中の話題", mark: "running", origin: "cc" }),
+    gTopic({ id: "ch:3", title: "見本の未読の話題" }),
+    gTopic({ id: "ch:4", title: "見本の読んだ話題" }),
+    gTopic({ id: "ch:5", title: LONG_TOPIC }),
+    gTopic({ id: "ch:6", title: "見本の選んでいる話題" }),
+    gTopic({ id: "ch:7", title: "見本の人格の話題", persona: "見本の人格" }),
+    gTopic({ id: "cc:8", title: "見本の端末の話題", origin: "cc" }),
+    gTopic({ id: "ch:9", title: "見本の終わった話題 1", state: "done" }),
+    gTopic({ id: "ch:10", title: "見本の終わった話題 2", state: "done" }),
+    gTopic({ id: "ch:11", title: "見本の終わった話題 3", state: "done" }),
+    gTopic({ id: "ch:12", group: "p:b", title: "見本の B の話題" }),
+    gTopic({ id: "ch:13", group: "p:b", title: "見本の B の終わった話題 1", state: "done" }),
+    gTopic({ id: "ch:14", group: "p:b", title: "見本の B の終わった話題 2", state: "done" }),
+  ],
+  rightHands: [{ id: "ch:20", guildId: "g1", title: "右腕", turn: gTurn("question", "見本の質問"), last: null, link: "" }],
+  cc: { enabled: true, stale: false, unreadable: false },
+};
+
+const QUIET_DATA = {
+  turns: 0,
+  turnIds: [],
+  groups: [gGroup({ key: "p:a", name: "見本のプロジェクト A", open: 2, done: 4 }), gGroup({ key: "p:b", name: "見本のプロジェクト B" }), gGroup({ key: "general", kind: "general", name: "General", open: 1 })],
+  topics: [
+    gTopic({ id: "ch:1", title: "見本の読んだ話題 1" }),
+    gTopic({ id: "ch:2", title: "見本の読んだ話題 2" }),
+    gTopic({ id: "ch:3", group: "general", title: "見本の場所を決めていない話題" }),
+  ],
+  rightHands: [],
+  cc: { enabled: true, stale: false, unreadable: false },
+};
+
+const listState = (data, o = {}) => ({
+  data,
+  failed: false,
+  filter: "",
+  current: null,
+  doneGroup: null,
+  dataDone: null,
+  othersOpen: false,
+  isUnread: () => false,
+  time: () => "12:34",
+  ago: () => "1 分前",
+  ...o,
+});
+
+const noop = () => undefined;
+const LIST_ON = { open: noop, add: noop, toggleDone: noop, toggleOthers: noop, retry: noop };
+
+/** 完了を開いておけるのは 1 つなので、B の群だけ B の完了を開いたモデルから取る（見本で 2 つの開いた形を並べるため） */
+function fullModel() {
+  const base = { current: "ch:6", othersOpen: true, isUnread: (channel) => channel === "3" };
+  const a = listModel(listState(FULL_DATA, { ...base, doneGroup: "p:a", dataDone: "p:a" }));
+  const b = listModel(listState(FULL_DATA, { ...base, doneGroup: "p:b", dataDone: "p:b" }));
+  return { ...a, blocks: a.blocks.map((block) => (block.key === "p:b" ? b.blocks.find((x) => x.key === "p:b") : block)) };
+}
+
+function Pane({ demo, children }) {
+  return html`<div data-demo=${demo}><div class="c-gallery-pane">${children}</div></div>`;
+}
+
+function ListDemo({ demo, model, on = LIST_ON }) {
+  return html`<${Pane} demo=${demo}><${TopicList} model=${model} compact=${COMPACT} on=${on} /><//>`;
+}
+
+function Lists() {
+  const [result, setResult] = useState("まだ押していません");
+  return html`<${Section} name="list" title="一覧">
+    <${ListDemo} demo="list-full" model=${fullModel()} />
+    <${ListDemo} demo="list-quiet" model=${listModel(listState(QUIET_DATA))} />
+    <${Pane} demo="turns-other"><${YourTurn} turns=${listModel(listState(FULL_DATA)).turns} compact=${!COMPACT} onOpen=${noop} /><//>
+    <${ListDemo} demo="list-loading" model=${listModel(listState(null))} />
+    <${ListDemo} demo="list-failed" model=${listModel(listState(null, { failed: true }))} on=${{ ...LIST_ON, retry: () => setResult("押した") }} />
+    <p class="c-gallery-result">${result}</p>
+    <${ListDemo} demo="list-stale" model=${listModel(listState(QUIET_DATA, { failed: true }))} />
+    <${ListDemo} demo="list-nohit" model=${listModel(listState(QUIET_DATA, { filter: "当たらない語" }))} />
+    <${ListDemo} demo="list-done-loading" model=${listModel(listState(QUIET_DATA, { doneGroup: "p:a" }))} />
+  <//>`;
+}
+
+const BOTTOM_ON = { list: noop, hand: noop, tab: noop, more: noop };
+const WIDE_TABS = [
+  { id: "tasks", title: "タスク" },
+  { id: "reminders", title: "リマインド" },
+];
+
+function Bottoms() {
+  return html`<${Section} name="bottom" title="下のバー">
+    <${Pane} demo="bottom-phone"><${BottomBar} variant="phone" turns=${2} hand="turn" on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-phone-quiet"><${BottomBar} variant="phone" turns=${0} hand=${null} on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-phone-unread"><${BottomBar} variant="phone" turns=${120} hand="unread" on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-wide"><${BottomBar} variant="wide" tabs=${WIDE_TABS} on=${BOTTOM_ON} /><//>
+  <//>`;
+}
+
 /** 知らせの入れ物は見本の根の直下に 1 つ（自動では消さない。× で消す） */
 function Gallery() {
   const [toasts, setToasts] = useState([]);
@@ -248,6 +369,8 @@ function Gallery() {
     <${Fields} />
     <${Empties} />
     <${Sheets} push=${push} />
+    <${Lists} />
+    <${Bottoms} />
     <${Toast} items=${toasts} onDismiss=${dismiss} />
   `;
 }
