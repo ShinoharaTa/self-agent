@@ -187,6 +187,9 @@
 - ボタン: primary・**accent**（送る・右腕。スマホは丸、PC は角 8）・secondary・ghost・danger の 5 種。md 44・sm 36（sm は当たりを上下に広げて 44）。押せないときは **`aria-disabled="true"`**（フォーカスが残り、理由の `title` を読める）。実行中は `aria-busy` も付けてスピナーと文。古い `.btn` は `disabled` のまま。
 - 切り替え（Segmented）: `role="radiogroup"` と `role="radio"`、Tab で入るのは選択中の 1 つ、←→・Home・End で移って選ぶ。**折り返さず、入りきらなければ横に送る**（上の「使わないもの」の横スクロールのタブバーとは別。下タブと画面の移動には使わない）。
 - 当たりの下限: **指の端末 44px・PC（hover と fine）36px**（`npm run ui-shots` の見本の絵で測る）。
+- sm のボタン・絵のボタンは当たりが見た目より上下（絵のボタンは四方）に 4px 広い。隣とは 8px 以上あけ、`overflow` で切る入れ物の端に付けない。
+- Sheet・Confirm は、呼ぶ側が `onClose`（`onCancel`）で必ず `open` を false にする。
+- 絵のボタンの件数の札は 9 を超えたら 9+（読み上げの名前は 99 まで）。
 
 ## 6. 動き
 
