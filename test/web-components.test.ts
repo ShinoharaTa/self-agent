@@ -282,6 +282,15 @@ test("web components: 一覧と下のバー（c-list・c-shell）は id を出�
   }
 });
 
+test("web components: 下のバーの自前のボタンは当たりの下限を持つ", () => {
+  const rules = parseCss(read("c-shell.css"));
+  for (const selector of [".c-bottom-btn", ".c-bottom-hand"]) {
+    const own = rules.filter((r) => r.at.length === 0 && r.selectors.includes(selector));
+    assert.ok(own.length > 0, selector);
+    assert.ok(own.some((r) => /(?:^|;)\s*min-height:\s*var\(--c-tap\)\s*(?:;|$)/.test(r.body)), selector);
+  }
+});
+
 test("web components: c-*.css のセレクタのクラスと、c-*.js（と gallery.html）が書くクラスが同じ集まり", () => {
   const inCss = new Set(CSS_FILES.flatMap((name) => parseCss(read(name)).filter((r) => !r.keyframe).flatMap((r) => r.selectors.flatMap(classesInSelector))));
   // 見本の根（c-gallery）は gallery.html に在る

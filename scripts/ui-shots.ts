@@ -604,7 +604,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await step(`${p} c`, vp === "phone" ? [handName] : [handName, `${p}-c-hand-with-chat`], async () => {
         await load(page, "/static/v3.html");
         if (vp === "phone") {
-          await page.click("#v3-hand-ask");
+          await page.click('#c-bottom-root [data-act="hand"]');
         } else {
           const expanded = await page.getAttribute("#v3-hand-show", "aria-expanded");
           if (expanded !== "true") await page.click("#v3-hand-show");

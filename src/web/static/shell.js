@@ -1,6 +1,6 @@
 // 新しい殻（v3.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
 // SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
-// 下の口（タスク・リマインド・ほか）・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、帯の「場所 ∨」（シートと確認。§6.3 の M5）
+// 下のバー（描くのは入口 c-app.js）と「ほか」の板・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの 2 つの口・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、帯の「場所 ∨」（シートと確認。§6.3 の M5）
 "use strict";
 
 (function () {
@@ -601,12 +601,21 @@
     restoreHandFocus();
   }
 
-  /** 閉じた後の焦点: 開いたボタンが見えていればそこ、無ければ見えている口 */
+  /** 閉じた後の焦点: 開いたボタンが見えていればそこ、無ければ見えている口（スマホの一覧では下のバーの右腕のボタン） */
   function restoreHandFocus() {
     const opener = handOpener;
     handOpener = null;
     let target = shownNode(opener) ? opener : null;
-    if (!target) target = $(!phone() ? "v3-hand-show" : S.view === "body" ? "v3-hand-open" : "v3-hand-ask");
+    if (target) {
+      target.focus();
+      return;
+    }
+    // スマホの一覧: 下のバーの右腕のボタン（無ければ何もしない）
+    if (phone() && S.view !== "body") {
+      if (SA.list) SA.list.focusHand();
+      return;
+    }
+    target = $(!phone() ? "v3-hand-show" : "v3-hand-open");
     if (target) target.focus();
   }
 
@@ -637,7 +646,7 @@
     });
   }
 
-  /** 3 つの口（畳んだ帯・一覧の下・上の帯）の中身。印が前と同じなら触らない */
+  /** 2 つの口（畳んだ帯・上の帯）の中身。印が前と同じなら触らない。一覧の下は下のバー */
   function renderHandEntries() {
     const mark = handMark();
     const sig = String(mark);
@@ -653,7 +662,6 @@
       b.setAttribute("title", label);
       b.replaceChildren(...[icon("bot"), handDot(mark, false)].filter(Boolean));
     });
-    fill("v3-hand-ask", (b) => b.replaceChildren(...[icon("bot"), el("span", { text: "右腕に頼む・訊く" }), handDot(mark, true)].filter(Boolean)));
     fill("v3-hand-open", (b) => b.replaceChildren(...[el("span", { text: "右腕" }), handDot(mark, true)].filter(Boolean)));
     // 下のバーは毎回（件数は印と別に変わる）
     renderBottom(mark);
@@ -1175,13 +1183,13 @@
     SA.topics.load();
   }
 
-  // ===== 下の口（タスク・リマインド・ほか） =====
-  /** 「ほか」に並べる画面の順（引けるものだけ。GitHub は有効のとき・会話ログは dev のとき） */
+  // ===== 下のバー（描くのは入口 c-app.js）と「ほか」の板 =====
+  /** 「ほか」に並べる画面の順（引けるものだけ。GitHub は有効のとき・会話ログは dev のとき。スマホはタスク・リマインドを先頭に） */
   const MORE_TABS = ["knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"];
 
   function openMore(opener) {
     const items = [];
-    for (const id of MORE_TABS) {
+    for (const id of phone() ? ["tasks", "reminders", ...MORE_TABS] : MORE_TABS) {
       const info = SA.views.info(id);
       if (info) items.push({ label: info.title, icon: info.icon, run: () => open(id) });
     }
@@ -1213,23 +1221,6 @@
     if (!SA.list) return;
     const ok = SA.list.drawBar({ turns: SA.topics.counts().turns, hand: mark, tabs: barTabs(), on: BAR_ON });
     if (!ok) SA.list.drawBar({ turns: 0, hand: null, tabs: [], on: BAR_ON });
-  }
-
-  function renderFoot() {
-    const foot = $("v3-list-foot");
-    if (!foot) return;
-    const buttons = [];
-    for (const id of ["tasks", "reminders"]) {
-      const info = SA.views.info(id);
-      if (!info) continue;
-      const b = el("button", { class: "btn btn-ghost btn-sm v3-foot-btn", type: "button" }, [icon(info.icon), el("span", { text: info.title })]);
-      b.addEventListener("click", () => open(id));
-      buttons.push(b);
-    }
-    const more = el("button", { class: "btn btn-ghost btn-sm v3-foot-btn", type: "button" }, [icon("ellipsis"), el("span", { text: "ほか" })]);
-    more.addEventListener("click", () => openMore(more));
-    buttons.push(more);
-    foot.replaceChildren(...buttons);
   }
 
   // ===== 接続の点と鈴（今の殻の renderTitleStatus と同じ中身。幅によらず画面を開く） =====
@@ -1422,10 +1413,14 @@
   // ===== 起動 =====
   function init() {
     refs.v3 = $("v3");
-    // 一覧を描く入口（c-app.js の module）が読めなかったら、一覧の場所に 1 文だけ出す（ほかは続ける）
+    // 一覧を描く入口（c-app.js の module）が読めなかったら、一覧の場所に 1 文と [ページを読み直す] だけを出す（下のバーの代わりは作らない。ほかは続ける）
     if (!SA.list) {
       const root = $("c-list-root");
-      if (root) root.replaceChildren(el("p", { text: "一覧を表示できませんでした。ページを読み直してください" }));
+      if (root) {
+        const again = el("button", { class: "btn btn-secondary", type: "button", text: "ページを読み直す" });
+        again.addEventListener("click", () => location.reload());
+        root.replaceChildren(el("div", { class: "v3-empty v3-entry-missing" }, [el("p", { class: "meta", text: "一覧を表示できませんでした" }), again]));
+      }
       console.error("[web] list entry missing");
     } else {
       // 最初の応答が返るまでは読み込み中を出す（data がまだ無い）
@@ -1490,10 +1485,9 @@
       if (tabId && tabId !== S.active && SA.views.info(tabId)) open(tabId);
     });
     document.addEventListener("keydown", onKey);
-    // 右腕の 3 つの口と backdrop
+    // 右腕の 2 つの口と backdrop（下のバーの右腕のボタンは BAR_ON.hand）
     for (const [id, focusInput] of [
       ["v3-hand-show", false],
-      ["v3-hand-ask", true],
       ["v3-hand-open", false],
     ]) {
       const b = $(id);
@@ -1503,7 +1497,6 @@
     if (backdrop) backdrop.addEventListener("click", () => closeHand());
     renderHeadOps();
     renderConn();
-    renderFoot();
     renderBottom(handMark());
     bindStart();
     $("v3-sheet").addEventListener("close", () => {
