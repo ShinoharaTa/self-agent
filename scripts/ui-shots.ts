@@ -17,7 +17,7 @@ const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 type Viewport = "phone" | "pc" | "tablet";
 /** /api/topics の応答のうち、検査で書き換える所 */
-type TopicsJson = { topics: Array<{ id?: unknown; state?: unknown; mark?: unknown; turn?: unknown; title?: unknown }>; turns: number; turnIds: unknown[] };
+type TopicsJson = { topics: Array<{ id?: unknown; state?: unknown; mark?: unknown; turn?: unknown; title?: unknown }>; turns: number; turnIds: unknown[]; rightHands: Array<{ turn?: unknown }> };
 type Theme = "dark" | "light";
 
 const VIEWPORTS: Record<Viewport, { viewport: { width: number; height: number }; deviceScaleFactor: number; isMobile?: boolean; hasTouch?: boolean }> = {
@@ -80,6 +80,9 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     "a-list",
     // 幅の検査で等幅の字を当てたままの一覧（ダークのスマホ・タブレット）
     ...(theme === "dark" && vp !== "pc" ? ["a-list-mono"] : []),
+    // 一覧を末尾まで送った所（ダークのスマホ・タブレット）と、入口が読めないとき（ダークのスマホ）
+    ...(theme === "dark" && vp !== "pc" ? ["a-list-end"] : []),
+    ...(theme === "dark" && vp === "phone" ? ["a-entry-missing"] : []),
     "b-chat-top",
     "b-chat-middle",
     "b-chat-bottom",
@@ -144,6 +147,9 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
 const LEAK_SELECTORS = ['.c-row[data-mark="none"]', '.c-row[data-mark="none"] .c-row-title', ".c-group-name", ".c-group-head", ".c-group-head > .c-iconbtn", ".c-list-label", ".c-fold-head"];
 const LEAK_SELECTORS_PHONE = [".c-turn", ".c-turn-title", ".c-turn-sub"];
 const LEAK_SELECTORS_PC = [".c-turns-jump"];
+/** 下のバーで比べる要素（スマホの形・広い幅の形） */
+const LEAK_BOTTOM_PHONE = [".c-bottom", ".c-bottom-btn", ".c-bottom-btn-label", ".c-bottom-hand", ".c-bottom-hand-label", ".c-bottom > .c-btn"];
+const LEAK_BOTTOM_WIDE = [".c-bottom", ".c-bottom > .c-btn", ".c-bottom > .c-btn .c-btn-label"];
 const LEAK_PROPS = [
   "font-size", "font-weight", "line-height", "letter-spacing", "color", "background-color", "text-align",
   "padding-top", "padding-right", "padding-bottom", "padding-left", "margin-top", "margin-right", "margin-bottom", "margin-left",
@@ -217,6 +223,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       failed++;
       logLines.push(`[shoot] ${label} に失敗: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
     }
+  }
+
+  /**
+   * わざと起こした失敗の行を console.log に残さない: logLines の from 番目から後ろで、needles のどれかを含む行を外して返す。
+   * 使うのは描けない bar と入口が読めないときの 2 か所だけ（外す語を増やさない）
+   */
+  function dropExpected(from: number, needles: string[]): string[] {
+    const removed: string[] = [];
+    const kept = logLines.slice(0, from);
+    for (const line of logLines.slice(from)) (needles.some((n) => line.includes(n)) ? removed : kept).push(line);
+    logLines.splice(0, logLines.length, ...kept);
+    return removed;
   }
 
   async function load(page: Page, path: string): Promise<void> {
@@ -427,9 +445,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
-  /** 古い CSS の漏れ: 本番の一覧と見本（[data-demo="list-full"]）で、決めた要素の computed style が同じ。見本を開くので、後で読み直す */
+  /**
+   * 古い CSS の漏れ: 本番の一覧と見本（[data-demo="list-full"]）、本番の下のバーと見本（スマホは bottom-phone、PC は bottom-wide）で、
+   * 決めた要素の computed style が同じ。見本を開くので、後で読み直す
+   */
   async function checkLeaks(page: Page, vp: Viewport): Promise<string[]> {
-    const selectors = [...LEAK_SELECTORS, ...(vp === "phone" ? LEAK_SELECTORS_PHONE : LEAK_SELECTORS_PC)];
+    const pairs = [
+      { real: "#c-list-root", demo: '[data-demo="list-full"]', sels: [...LEAK_SELECTORS, ...(vp === "phone" ? LEAK_SELECTORS_PHONE : LEAK_SELECTORS_PC)] },
+      { real: "#c-bottom-root", demo: vp === "phone" ? '[data-demo="bottom-phone"]' : '[data-demo="bottom-wide"]', sels: vp === "phone" ? LEAK_BOTTOM_PHONE : LEAK_BOTTOM_WIDE },
+    ];
     const styles = ({ root, sels, props }: { root: string; sels: string[]; props: string[] }): Record<string, Record<string, string> | null> => {
       const out: Record<string, Record<string, string> | null> = {};
       const scope = document.querySelector(root);
@@ -444,40 +468,59 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }
       return out;
     };
-    const real = await page.evaluate(styles, { root: "#c-list-root", sels: selectors, props: LEAK_PROPS });
+    const real = [];
+    for (const pair of pairs) real.push(await page.evaluate(styles, { root: pair.real, sels: pair.sels, props: LEAK_PROPS }));
     await page.goto("about:blank");
     await page.goto(base + "/static/gallery.html", { waitUntil: "load" });
     await page.waitForSelector('[data-demo="list-full"] .c-list', { timeout: 5000 });
-    const demo = await page.evaluate(styles, { root: '[data-demo="list-full"]', sels: selectors, props: LEAK_PROPS });
+    await page.waitForSelector(`${pairs[1]!.demo} .c-bottom`, { timeout: 5000 });
     const lines: string[] = [];
-    for (const sel of selectors) {
-      const a = real[sel];
-      const b = demo[sel];
-      if (!a || !b) {
-        lines.push(`漏れ: ${sel} が${!a ? "本番" : "見本"}に無い`);
-        continue;
+    for (const [i, pair] of pairs.entries()) {
+      const demo = await page.evaluate(styles, { root: pair.demo, sels: pair.sels, props: LEAK_PROPS });
+      for (const sel of pair.sels) {
+        const a = real[i]![sel];
+        const b = demo[sel];
+        if (!a || !b) {
+          lines.push(`漏れ: ${sel} が${!a ? "本番" : "見本"}に無い`);
+          continue;
+        }
+        // 群の名前の右の余白は auto（右の物を右端へ押す）で、幅によって値が違う
+        for (const prop of LEAK_PROPS) if (!(sel === ".c-group-name" && prop === "margin-right") && a[prop] !== b[prop]) lines.push(`漏れ: ${sel} の ${prop} が 本番 ${a[prop]} / 見本 ${b[prop]}`);
       }
-      // 群の名前の右の余白は auto（右の物を右端へ押す）で、幅によって値が違う
-      for (const prop of LEAK_PROPS) if (!(sel === ".c-group-name" && prop === "margin-right") && a[prop] !== b[prop]) lines.push(`漏れ: ${sel} の ${prop} が 本番 ${a[prop]} / 見本 ${b[prop]}`);
     }
     await load(page, "/static/v3.html");
     return lines;
   }
 
-  /** 幅の決まり（R1 はみ出ない・R2 右の語と時刻が省かれない・R3 題が全角 5 字残る。等幅の字を当てた後に測る）。足りない物の文 */
+  /**
+   * 幅の決まり（R1 はみ出ない・R2 右の語と時刻が省かれない・R3 題が全角 5 字残る。等幅の字を当てた後に測る）。足りない物の文。
+   * 下のバーは一番きつい形（件数「99+」・右腕に印・タブ 2 つ）を、測る evaluate の先頭で描く（描くのは同期なので周期の読み直しが間に入らない）
+   */
   const measureWidths = (page: Page, at: string): Promise<string[]> =>
     page.evaluate((label: string) => {
       const out: string[] = [];
-      const shown = (sel: string): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(`#c-list-root ${sel}`)].filter((el) => el.getClientRects().length > 0);
+      const list = (window as unknown as { SA: { list: { drawBar: (bar: unknown) => boolean } } }).SA.list;
+      const noop = (): void => undefined;
+      const drawn = list.drawBar({
+        turns: 120,
+        hand: "turn",
+        tabs: [
+          { id: "tasks", title: "タスク" },
+          { id: "reminders", title: "リマインド" },
+        ],
+        on: { list: noop, hand: noop, tab: noop, more: noop },
+      });
+      if (!drawn) out.push(`${label}: バーを一番きつい形に描けない`);
+      const shown = (sel: string): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(`:is(#c-list-root, #c-bottom-root) ${sel}`)].filter((el) => el.getClientRects().length > 0);
       const name = (el: HTMLElement): string => (el.textContent ?? "").trim().slice(0, 20);
       // R1 はみ出ない
-      for (const sel of [".c-list", ".c-row", ".c-turn", ".c-group-head"]) {
+      for (const sel of [".c-list", ".c-bottom", ".c-row", ".c-turn", ".c-group-head"]) {
         for (const el of [...document.querySelectorAll<HTMLElement>(sel)].filter((e) => e.getClientRects().length > 0)) {
           if (el.scrollWidth > el.clientWidth) out.push(`${label} R1: ${sel}「${name(el)}」がはみ出る 幅 ${el.clientWidth} 要る幅 ${el.scrollWidth}`);
         }
       }
       // R2 省かれない字（右端は親の button か見出しの中）
-      for (const sel of [".c-row-state", ".c-row-time", ".c-turn-meta", ".c-group-note", ".c-turns-jump-label"]) {
+      for (const sel of [".c-row-state", ".c-row-time", ".c-turn-meta", ".c-group-note", ".c-turns-jump-label", ".c-bottom-btn-label", ".c-bottom-hand-label", ".c-bottom .c-btn-label"]) {
         for (const el of shown(sel)) {
           if (el.scrollWidth > el.clientWidth) out.push(`${label} R2: ${sel}「${name(el)}」が省かれる 幅 ${el.clientWidth} 要る幅 ${el.scrollWidth}`);
           const box = el.closest("button, .c-group-head");
@@ -535,7 +578,22 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await page.setViewportSize(VIEWPORTS.phone.viewport);
         await wait(300);
       }
-      if (mono !== null) await shot(page, mono);
+      if (mono !== null) {
+        // 幅を戻すと右腕の口が描き直され、バーも今の状態に戻るので、絵の前にもう 1 回一番きつい形を描く
+        await page.evaluate(() => {
+          const noop = (): void => undefined;
+          (window as unknown as { SA: { list: { drawBar: (bar: unknown) => boolean } } }).SA.list.drawBar({
+            turns: 120,
+            hand: "turn",
+            tabs: [
+              { id: "tasks", title: "タスク" },
+              { id: "reminders", title: "リマインド" },
+            ],
+            on: { list: noop, hand: noop, tab: noop, more: noop },
+          });
+        });
+        await shot(page, mono);
+      }
       return lines;
     } finally {
       await page.evaluate(() => {
@@ -545,23 +603,248 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
   }
 
+  /**
+   * 新しい殻の下のバーの検査（ダークの組だけ）: 形・末尾・「一覧」・同じ要素・フォーカスの戻り・「ほか」の板・描けなかったとき・最初の 1 回。
+   * 応答を書き換える・わざと失敗させるので、最後は最初の 1 回の検査の読み直しで終える。足りない物の文（頭は「バー: 」）
+   */
+  async function checkBar(page: Page, vp: Viewport, p: string): Promise<string[]> {
+    const lines: string[] = [];
+    const phone = vp === "phone";
+    // 形
+    const form = await page.evaluate(() => {
+      const root = document.querySelector("#c-bottom-root");
+      const bar = root === null ? null : root.firstElementChild;
+      const buttons = bar === null ? [] : [...bar.querySelectorAll("button")];
+      return {
+        kids: root === null ? -1 : root.children.length,
+        isBar: bar !== null && bar.matches(".c-bottom"),
+        variant: bar === null ? null : bar.getAttribute("data-variant"),
+        ids: root === null ? 0 : root.querySelectorAll("[id]").length,
+        acts: buttons.map((b) => b.getAttribute("data-act")),
+        texts: buttons.map((b) => (b.textContent ?? "").trim()),
+      };
+    });
+    if (form.kids !== 1 || !form.isBar) lines.push(`バー: #c-bottom-root の子が .c-bottom 1 つでない（子 ${form.kids}）`);
+    if (form.variant !== (phone ? "phone" : "wide")) lines.push(`バー: data-variant が ${String(form.variant)}`);
+    if (form.ids !== 0) lines.push(`バー: 中に id の付いた要素が ${form.ids} 個`);
+    if (phone) {
+      if (form.acts.length !== 3 || form.acts[0] !== "list" || form.acts[1] !== "hand" || form.texts[2] !== "ほか") lines.push(`バー: スマホのボタンが 一覧・右腕・ほか でない（${form.texts.join("・")}）`);
+    } else if (JSON.stringify(form.texts) !== JSON.stringify(["タスク", "リマインド", "ほか"])) {
+      lines.push(`バー: 広い幅のボタンが タスク・リマインド・ほか でない（${form.texts.join("・")}）`);
+    }
+    // 末尾: 最後の行がバーに隠れない・バーが画面の下端まで・高さ
+    if (vp !== "pc") {
+      await page.evaluate(() => {
+        const list = document.querySelector(".c-list");
+        if (list !== null) list.scrollTop = list.scrollHeight;
+      });
+      await wait(300);
+      const end = await page.evaluate(() => {
+        const bar = document.querySelector(".c-bottom");
+        const buttons = [...document.querySelectorAll("#c-list-root button")].filter((b) => b.getClientRects().length > 0);
+        const last = buttons[buttons.length - 1];
+        const r = bar === null ? null : bar.getBoundingClientRect();
+        return { lastBottom: last === undefined ? null : last.getBoundingClientRect().bottom, top: r === null ? null : r.top, bottom: r === null ? null : r.bottom, height: r === null ? null : r.height, inner: window.innerHeight };
+      });
+      const want = phone ? 64 : 44;
+      if (end.top === null || end.bottom === null || end.height === null) lines.push("バー: .c-bottom が無い");
+      else {
+        if (end.lastBottom === null || end.lastBottom > end.top + 0.5) lines.push(`バー: 最後の行の下端 ${String(end.lastBottom)} がバーの上端 ${end.top} より下`);
+        if (Math.abs(end.bottom - end.inner) > 0.5) lines.push(`バー: 下端 ${end.bottom} が画面の下端 ${end.inner} と合わない`);
+        if (Math.abs(end.height - want) > 0.5) lines.push(`バー: 高さ ${end.height}（${want} のはず）`);
+      }
+      await shot(page, `${p}-a-list-end`);
+      await page.evaluate(() => {
+        const list = document.querySelector(".c-list");
+        if (list !== null) list.scrollTop = 0;
+      });
+    }
+    if (phone) {
+      // 「一覧」: 一覧の先頭へ
+      await page.evaluate(() => {
+        const list = document.querySelector(".c-list");
+        if (list !== null) list.scrollTop = 100;
+      });
+      await page.click('#c-bottom-root [data-act="list"]');
+      await wait(200);
+      const top = await page.evaluate(() => document.querySelector(".c-list")?.scrollTop ?? -1);
+      if (top !== 0) lines.push(`バー: 「一覧」を押しても先頭に戻らない（${top}）`);
+      // 同じ要素: 右腕のボタンと「ほか」に印を付け、右腕を「あなたの番」にして描き直させる
+      await page.evaluate(() => {
+        const hand = document.querySelector('#c-bottom-root [data-act="hand"]');
+        const buttons = document.querySelectorAll(".c-bottom button");
+        if (hand !== null) (hand as unknown as { __k: number }).__k = 1;
+        const more = buttons[buttons.length - 1];
+        if (more !== undefined) (more as unknown as { __k: number }).__k = 2;
+      });
+      let hands = true;
+      await loadEdited(page, (json) => {
+        const hand = json.rightHands[0];
+        if (hand === undefined) hands = false;
+        else hand.turn = { kind: "confirm", since: "2026-01-01T00:00:00.000Z", summary: null };
+      });
+      if (!hands) lines.push("バー: 作り物のデータに右腕が無い");
+      else {
+        const same = await page.evaluate(() => {
+          const hand = document.querySelector('#c-bottom-root [data-act="hand"]');
+          const buttons = document.querySelectorAll(".c-bottom button");
+          const more = buttons[buttons.length - 1];
+          return {
+            hand: hand !== null && (hand as unknown as { __k?: number }).__k === 1,
+            turn: hand !== null && hand.querySelector('[data-state="turn"]') !== null,
+            label: hand === null ? null : hand.getAttribute("aria-label"),
+            more: more !== undefined && (more as unknown as { __k?: number }).__k === 2,
+          };
+        });
+        if (!same.hand) lines.push("バー: 描き直した後の右腕のボタンが同じ要素でない");
+        if (!same.turn) lines.push("バー: 右腕のボタンに「あなたの番」の印が無い");
+        if (same.label !== "右腕に頼む・訊く（あなたの番）") lines.push(`バー: 右腕のボタンの名前が ${String(same.label)}`);
+        if (!same.more) lines.push("バー: 描き直した後の「ほか」が同じ要素でない");
+        // フォーカスの戻り: 開いている間に描き直されても、閉じたら右腕のボタンへ
+        await page.click('#c-bottom-root [data-act="hand"]');
+        await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+        await loadEdited(page, () => undefined);
+        await page.evaluate(() => history.back());
+        await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+        await wait(200);
+        const back = await page.evaluate(() => (document.activeElement as unknown as { __k?: number } | null)?.__k === 1);
+        if (!back) lines.push("バー: 右腕を閉じた後の焦点が右腕のボタンに戻らない");
+      }
+    }
+    // 「ほか」の板: スマホは先頭にタスク・リマインド、広い幅は無い。閉じたら「ほか」へ
+    await page.locator(".c-bottom button").last().click();
+    await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+    const rows = await page.evaluate(() => [...document.querySelectorAll("#v3-sheet button.more-row")].map((b) => (b.textContent ?? "").trim()));
+    if (phone) {
+      if (!(rows[0] ?? "").includes("タスク") || !(rows[1] ?? "").includes("リマインド")) lines.push(`バー: スマホの「ほか」の板の先頭が タスク・リマインド でない（${rows.slice(0, 2).join("・")}）`);
+    } else if ((rows[0] ?? "").includes("タスク")) lines.push("バー: 広い幅の「ほか」の板にタスクが在る");
+    await page.click("#v3-sheet button.sheet-close");
+    await page.waitForSelector("#v3-sheet:not([open])", { state: "attached", timeout: 5000 });
+    await wait(200);
+    const moreFocus = await page.evaluate((isPhone: boolean) => {
+      const buttons = document.querySelectorAll(".c-bottom button");
+      const more = buttons[buttons.length - 1];
+      const a = document.activeElement;
+      return a !== null && a === more && (!isPhone || (a as unknown as { __k?: number }).__k === 2);
+    }, phone);
+    if (!moreFocus) lines.push("バー: 「ほか」の板を閉じた後の焦点が「ほか」に戻らない");
+    if (phone) {
+      // 描けなかったとき: 入口は false を返し、次の静かな形は描ける
+      const from = logLines.length;
+      const drawn = await page.evaluate(() => {
+        const list = (window as unknown as { SA: { list: { drawBar: (bar: unknown) => boolean } } }).SA.list;
+        const noop = (): void => undefined;
+        const on = { list: noop, hand: noop, tab: noop, more: noop };
+        const first = list.drawBar({
+          turns: 1,
+          hand: null,
+          get tabs(): unknown {
+            throw new Error("x");
+          },
+          on,
+        });
+        const second = list.drawBar({ turns: 0, hand: null, tabs: [], on });
+        return { first, second, hand: document.querySelector('#c-bottom-root [data-act="hand"]') !== null };
+      });
+      await wait(300);
+      if (drawn.first !== false || drawn.second !== true || !drawn.hand) lines.push(`バー: 描けなかったときの形が違う（1 回目 ${drawn.first}・2 回目 ${drawn.second}・右腕 ${drawn.hand}）`);
+      const removed = dropExpected(from, ["[web] bar draw failed"]);
+      if (removed.length !== 1) lines.push(removed.length === 0 ? "バー: 失敗が console に出ていない" : `バー: 失敗の行が ${removed.length} 行`);
+    }
+    // 最初の 1 回: 最初の応答の前から、件数・印の無いバーが出ている（これが次の検査のための読み直しも兼ねる）
+    const pattern = "**/api/topics*";
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    await page.route(pattern, async (route) => {
+      await gate;
+      // 外した後に届いた物は Playwright が先へ流している
+      await route.continue().catch(() => undefined);
+    });
+    try {
+      await page.goto("about:blank");
+      await page.goto(base + "/static/v3.html", { waitUntil: "load" });
+      await page.waitForSelector("#c-bottom-root .c-bottom", { timeout: 5000 });
+      const first = await page.evaluate(() => ({
+        loading: document.querySelector('.c-list[data-phase="loading"]') !== null,
+        buttons: document.querySelectorAll("#c-bottom-root button").length,
+        listText: document.querySelector('#c-bottom-root [data-act="list"]')?.textContent ?? "",
+        states: document.querySelectorAll("#c-bottom-root [data-state]").length,
+      }));
+      if (!first.loading) lines.push("バー: 最初の応答の前に一覧が読み込み中でない");
+      if (first.buttons !== 3) lines.push(`バー: 最初の応答の前のボタンが ${first.buttons} 個`);
+      if (phone && (/\d/.test(first.listText) || first.states !== 0)) lines.push("バー: 最初の応答の前に件数か印が出ている");
+    } finally {
+      release();
+      await wait(100);
+      await page.unroute(pattern);
+    }
+    await page.waitForSelector("#c-list-root section[data-kind]", { state: "attached", timeout: 8000 });
+    await wait(1200);
+    return lines;
+  }
+
   async function newShell(vp: Viewport, theme: Theme, full: boolean): Promise<void> {
     const p = `${vp}-${theme}`;
     if (!newShellNames(vp, theme, full).some(wanted)) return;
     const { ctx, page } = await contextFor(vp, theme, `v3-${p}`);
     try {
       const mono = theme === "dark" && vp !== "pc" ? `${p}-a-list-mono` : null;
-      await step(`${p} a`, [`${p}-a-list`, ...(mono ? [mono] : [])], async () => {
+      const end = theme === "dark" && vp !== "pc" ? `${p}-a-list-end` : null;
+      await step(`${p} a`, [`${p}-a-list`, ...(mono ? [mono] : []), ...(end ? [end] : [])], async () => {
         await load(page, "/static/v3.html");
         await shot(page, `${p}-a-list`);
-        // 一覧の検査（ダークの組だけ）。全部を測ってから、1 つでもあれば段を失敗にする
+        // 一覧の列の検査（ダークの組だけ）。全部を測ってから、1 つでもあれば段を失敗にする
         if (theme !== "dark") return;
-        const problems = [...(await checkParts(page, vp, [".c-list"])), ...(await checkList(page, vp))];
+        const problems = [...(await checkParts(page, vp, [".c-list", ".c-bottom"])), ...(await checkList(page, vp)), ...(await checkBar(page, vp, p))];
         if (vp !== "tablet") problems.push(...(await checkLeaks(page, vp)));
         problems.push(...(await checkWidths(page, vp, mono)));
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
-        if (problems.length > 0) throw new Error(`一覧の検査で ${problems.length} 件`);
+        if (problems.length > 0) throw new Error(`一覧の列の検査で ${problems.length} 件`);
       });
+      // 入口（c-app.js）が読めないとき（ダークのスマホだけ）: 1 文と [ページを読み直す]。下のバーは出ない
+      if (theme === "dark" && vp === "phone") {
+        await step(`${p} a2`, [`${p}-a-entry-missing`], async () => {
+          const problems: string[] = [];
+          const from = logLines.length;
+          const entry = "**/static/c-app.js";
+          await page.route(entry, (route) => route.abort());
+          try {
+            await page.goto("about:blank");
+            await page.goto(base + "/static/v3.html", { waitUntil: "load" });
+            await page.waitForSelector("#c-list-root .v3-entry-missing", { timeout: 5000 });
+            await shot(page, `${p}-a-entry-missing`);
+            const box = await page.evaluate(() => {
+              const el = document.querySelector("#c-list-root .v3-entry-missing");
+              const kids = el === null ? [] : [...el.children].map((c) => c.tagName.toLowerCase());
+              return {
+                kids,
+                padding: el === null ? 0 : parseFloat(getComputedStyle(el).paddingLeft),
+                bottom: document.querySelector("#c-bottom-root")?.children.length ?? -1,
+              };
+            });
+            if (JSON.stringify(box.kids) !== JSON.stringify(["p", "button"])) problems.push(`入口: 中が p と button でない（${box.kids.join(",")}）`);
+            problems.push(...(await page.evaluate(hitProblems, { min: 44, scopes: "#c-list-root", targets: "button", toast: false })).map((line) => `入口: ${line}`));
+            if (box.padding < 16) problems.push(`入口: 左の余白が ${box.padding}px`);
+            if (box.bottom !== 0) problems.push(`入口: #c-bottom-root の子が ${box.bottom} 個`);
+            // 読み直す
+            await page.evaluate(() => {
+              (window as unknown as { __before?: number }).__before = 1;
+            });
+            await page.click("#c-list-root .v3-entry-missing button");
+            await page.waitForFunction(() => (window as unknown as { __before?: number }).__before === undefined, undefined, { timeout: 5000 });
+            await page.waitForSelector("#c-list-root .v3-entry-missing", { timeout: 5000 });
+            await wait(300);
+          } finally {
+            await page.unroute(entry);
+          }
+          const removed = dropExpected(from, ["c-app.js", "[web] list entry missing", "Failed to load resource"]);
+          if (!removed.some((line) => line.includes("[web] list entry missing"))) problems.push("入口: 「[web] list entry missing」が console に出ていない");
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`入口の検査で ${problems.length} 件`);
+        });
+      }
       await step(`${p} b`, [`${p}-b-chat-top`, `${p}-b-chat-middle`, `${p}-b-chat-bottom`], async () => {
         await load(page, `/static/v3.html#/ch/${open}`);
         await page.waitForSelector("#ed textarea", { timeout: 5000 });
