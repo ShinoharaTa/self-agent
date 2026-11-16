@@ -131,3 +131,74 @@ test("renderText: URL の中の ** や ` で URL は切れない。太字の中�
   ]);
   assert.deepEqual(inline("**https://a.example/x**"), [{ type: "strong", text: "https://a.example/x" }]);
 });
+
+// ===== c-talk.js の写し（docs/plan/web-ui-components.md §6 の K4）。ui.js と同じ結果である事を留める（ui.js の側を変えたらこちらも直す） =====
+type TalkParse = { parseBlocks: (text: string) => unknown[]; parseInline: (text: string) => Inline[] };
+// 素の JS で型が無いので、URL を変数にして型の解決を避ける（test/web-components.test.ts と同じ）
+const talkUrl = new URL("../src/web/static/c-talk.js", import.meta.url).href;
+const talk = (await import(talkUrl)) as TalkParse;
+const json = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+
+/** parseBlocks が返した全部の text（一覧の項目と入れ子も） */
+function textsOf(list: unknown): string[] {
+  const out: string[] = [];
+  for (const block of list as { text?: string; items?: { text: string; children: { items: { text: string }[] } | null }[] }[]) {
+    if (typeof block.text === "string") out.push(block.text);
+    for (const item of block.items ?? []) {
+      out.push(item.text);
+      for (const child of item.children?.items ?? []) out.push(child.text);
+    }
+  }
+  return out;
+}
+
+const FENCE = "```";
+/** 見本の talk-md と同じ文（src/web/static/c-gallery.js） */
+const TALK_MD = [
+  "# 見出し",
+  "**太字** と `code` と https://example.com/a の段落。",
+  "",
+  "- 箇条書き 1",
+  "  - 入れ子 1",
+  "  - 入れ子 2",
+  "- 箇条書き 2",
+  "",
+  "3. 番号 3",
+  "4. 番号 4",
+  "",
+  FENCE,
+  "x".repeat(200),
+  FENCE,
+  "",
+  "https://example.com/" + "a".repeat(380),
+  "",
+  "| 表 | の行 |",
+  "> 引用の行",
+].join("\n");
+
+test("renderText: c-talk.js の parseBlocks・parseInline は ui.js と同じ結果", () => {
+  const samples = [
+    "",
+    "1 行",
+    "一つ目の段落\n続き\n\n二つ目の段落",
+    "# 大\n## 中\n### 小",
+    "#### 見出しにならない",
+    "前\n" + FENCE + "ts\nconst a = 1;\n" + FENCE + "\n後",
+    "前\n" + FENCE + "\nconst a = 1;\n- item\n# comment",
+    "- a\n* b\n- c",
+    "3. x\n4. y",
+    "- a\n  - a1\n  - a2\n- b",
+    "前 **太** 後",
+    "**https://a.example/x と https://b.example/y**",
+    "`**a**` と **b**",
+    "見て https://a.example/x。、) 終",
+    "| a | b |\n|---|---|",
+    "> 引用の行",
+    TALK_MD,
+  ];
+  for (const text of samples) {
+    const ours = json(talk.parseBlocks(text));
+    assert.deepEqual(ours, blocks(text), text);
+    for (const t of textsOf(ours)) assert.deepEqual(json(talk.parseInline(t)), inline(t), t);
+  }
+});

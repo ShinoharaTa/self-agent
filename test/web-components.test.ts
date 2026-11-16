@@ -177,7 +177,7 @@ const entryProblems = (name: string, text: string): string[] => forbidden(name, 
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
   for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -252,12 +252,13 @@ test("web components: 入口の TOP_FULL_MIN は tokens.css の --c-top-full-min
   assert.doesNotMatch(app, /v3-main/);
 });
 
-test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell だけ。c-atoms・c-list・c-shell・c-app は hook なし）・動的な import と createPortal が無い", () => {
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell だけ。c-atoms・c-list・c-shell・c-talk・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
     "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
     "c-list.js": ["./c-lib.js", "./c-atoms.js"],
     "c-shell.js": ["./c-lib.js", "./c-atoms.js"],
+    "c-talk.js": ["./c-lib.js", "./c-atoms.js"],
     "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js"],
   };
   for (const [name, targets] of Object.entries(allowed)) {
@@ -266,7 +267,7 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
     assert.equal(dynamic, false, `${name}: 動的な import`);
   }
-  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
+  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
@@ -1616,4 +1617,29 @@ test("web components: TopBar は view が none・知らない値で null。c-she
   // 描いた木にも id が無い
   const ids = (t: Tree): string[] => (typeof t === "string" ? [] : [...(t.props.id === undefined ? [] : [String(t.props.id)]), ...t.children.flatMap(ids)]);
   for (const props of [topProps({ controls: "v3-hand" }), topProps({ variant: "wide", views: { value: "pane" } })]) assert.deepEqual(ids(one(html`<${shell.TopBar} ...${props} on=${on} />`)), []);
+});
+
+// ===== 会話の行（c-talk.js。docs/plan/web-ui-components.md §6 の K4） =====
+const talkUrl = new URL("../src/web/static/c-talk.js", import.meta.url).href;
+const talk = (await import(talkUrl)) as Record<string, Fn> & {
+  splitLinks: (text: string) => { type: string; text: string }[];
+};
+
+test("web components: splitLinks は太字の中の URL を分け、空の文字の項を作らない", () => {
+  assert.deepEqual(talk.splitLinks("URL なし"), [{ type: "text", text: "URL なし" }]);
+  assert.deepEqual(talk.splitLinks("https://a.example/x 後"), [
+    { type: "link", text: "https://a.example/x" },
+    { type: "text", text: " 後" },
+  ]);
+  assert.deepEqual(talk.splitLinks("前 http://a.example/y"), [
+    { type: "text", text: "前 " },
+    { type: "link", text: "http://a.example/y" },
+  ]);
+  assert.deepEqual(talk.splitLinks("https://a.example/1 と https://a.example/2"), [
+    { type: "link", text: "https://a.example/1" },
+    { type: "text", text: " と " },
+    { type: "link", text: "https://a.example/2" },
+  ]);
+  assert.deepEqual(talk.splitLinks("https://a.example/1https://b"), [{ type: "link", text: "https://a.example/1https://b" }]);
+  assert.deepEqual(talk.splitLinks(""), []);
 });
