@@ -1,9 +1,11 @@
 // 新しい殻（v3.html）の部品の入口（docs/plan/web-ui-components.md §9 の K3）。状態は topics.js が持ち、SA.list.draw(state) で押し込む。
 // 部品の c-*.js のうち document・window・SA に触るのはここだけ（見本の c-gallery.js は別）。文は部品とモデルが持ち、ここには書かない
 // 下のバーは shell.js が SA.list.drawBar(bar) で押し込む。会話の見出し（K4）は SA.top.draw(state) で、compact にするかは shell.js が SA.top.compact() で測らせて決める
+// 会話の行（K4）は chat.js が根と state を SA.talk.draw(root, state)・1 秒ごとは SA.talk.tick(root, state) で押し込む（覚えと刻みは c-talk.js の talkMouth）
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
+import { talkMouth } from "./c-talk.js";
 
 const listRoot = document.getElementById("c-list-root");
 
@@ -187,6 +189,41 @@ if (listRoot) {
     return true;
   }
 
+  /** 会話の口（行の vnode と解析の覚えを持つ） */
+  const talk = talkMouth(render);
+
+  /** 会話の行を全部描く。描けなければ false（chat.js が古い描き方に戻す） */
+  function drawTalk(root, state) {
+    try {
+      talk.draw(root, state);
+    } catch (error) {
+      // draw と同じく名前だけ
+      console.error("[web] talk draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    return true;
+  }
+
+  /** 1 秒ごとの描き（覚えた行はそのまま、実行中の行だけ）。描けなければ false */
+  function tickTalk(root, state) {
+    try {
+      talk.tick(root, state);
+    } catch (error) {
+      console.error("[web] talk draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    return true;
+  }
+
+  /** 根を空にして覚えを消す */
+  function dropTalk(root) {
+    try {
+      talk.drop(root);
+    } catch {
+      // 外すだけなので握る
+    }
+  }
+
   // ↑↓・Home・End で行を動かす（修飾キー付きは素通し。完了の見出し・[+]・件数のボタンでは動かさない）
   listRoot.addEventListener("keydown", (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -211,4 +248,5 @@ if (listRoot) {
   window.SA = window.SA || {};
   window.SA.list = { draw, focusRow, focusList, scrollTop, setScrollTop, drawBar, focusHand };
   if (topRoot) window.SA.top = { draw: drawTop, focus: focusTop, compact: topCompact };
+  window.SA.talk = { draw: drawTalk, tick: tickTalk, drop: dropTalk };
 }
