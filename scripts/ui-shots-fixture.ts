@@ -50,9 +50,13 @@ export type FixtureServer = {
   /** http://127.0.0.1:<port> */
   url: string;
   login: string;
+  /** 一時ディレクトリ（DB・ワークスペース。close で消える） */
+  dir: string;
+  /** 作り物の時計の今の値（進めない。入れ終わった後は今の時刻） */
+  clockNow: () => Date;
   /** 撮る画面の話題のチャンネル ID（open: 長い返事・perm: 許可の要求・q: 質問） */
   topics: { open: string; perm: string; q: string };
-  /** サーバーを閉じ、DB を閉じて一時ディレクトリを消す（2 回目以降は何もしない） */
+  /** サーバーを閉じ、DB を閉じて一時ディレクトリを消す（2 回目以降は同じ Promise を返す） */
   close: () => Promise<void>;
 };
 
@@ -104,29 +108,32 @@ export async function startFixtureServer(options: { log?: (line: string) => void
   const tmp = mkdtempSync(join(tmpdir(), "self-agent-ui-shots-"));
   let db: ReturnType<typeof openDb> | undefined;
   let closeServer: (() => Promise<void>) | undefined;
-  let closed = false;
-  const close = async (): Promise<void> => {
-    if (closed) return;
-    closed = true;
-    try {
-      await closeServer?.();
-    } finally {
-      db?.close();
-      rmSync(tmp, { recursive: true, force: true });
-    }
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> =>
+    (closing ??= (async () => {
+      try {
+        await closeServer?.();
+      } finally {
+        try {
+          db?.close();
+        } finally {
+          rmSync(tmp, { recursive: true, force: true });
+        }
+      }
+    })());
+  // 入れるときの時計: 2 時間前から 1 件ごとに 30 秒進める（240 件まで今より前に収まる）。入れ終わったら今の時刻
+  let seeding: number | null = Date.now() - 2 * 3600_000;
+  const now = (): Date => {
+    if (seeding === null) return new Date();
+    seeding += 30_000;
+    return new Date(seeding);
   };
+  const clockNow = (): Date => (seeding === null ? new Date() : new Date(seeding));
   try {
     const workspace = join(tmp, "workspace");
     for (const name of ["kakeibo-app", "garden-sensor", "blog-site", "General"]) mkdirSync(join(workspace, name), { recursive: true });
     mkdirSync(join(tmp, "projects"), { recursive: true });
 
-    // 入れるときの時計: 2 時間前から 1 件ごとに 2 分進める。入れ終わったら今の時刻
-    let seeding: number | null = Date.now() - 2 * 3600_000;
-    const now = (): Date => {
-      if (seeding === null) return new Date();
-      seeding += 120_000;
-      return new Date(seeding);
-    };
     db = openDb(join(tmp, "self-agent.db"));
     const guildSettings = new GuildSettingsStore(db, now);
     const topicSessions = new TopicSessionStore(db, now);
@@ -233,6 +240,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     notices.add({ guildId: GUILD, level: "info", text: "再起動しました" });
 
     // 許可の要求（tPerm）と質問（tQ）は今の時刻で入れる（保留の秒数の中に入るように）
+    if (seeding > Date.now()) throw new Error("作り物の時計が今を越えた（入れる件数に対して刻みが大きい）");
     seeding = null;
     permissions.add({ sessionId: sessionIdOf(tPerm), requestHash: "h1", toolName: "Bash", summary: "npm install tesseract.js@5.1.1", permissionMode: "default", state: "pending", origin: "sdk" });
     permissions.add({
@@ -347,7 +355,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     closeServer = () => server.close();
     const port = server.address()?.port;
     if (port === undefined) throw new Error("Web サーバーが待ち受けていない");
-    return { url: `http://127.0.0.1:${port}`, login: FIXTURE_LOGIN, topics: { open: tOpen, perm: tPerm, q: tQ }, close };
+    return { url: `http://127.0.0.1:${port}`, login: FIXTURE_LOGIN, dir: tmp, clockNow, topics: { open: tOpen, perm: tPerm, q: tQ }, close };
   } catch (error) {
     await close();
     throw error;
