@@ -103,8 +103,8 @@ const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom はその節の要素の絵（K3・K4）、ほかは押して開いた所） */
-const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-sheet", "g-confirm", "g-toast"] as const;
+/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk はその節の要素の絵（K3・K4）、ほかは押して開いた所） */
+const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-sheet", "g-confirm", "g-toast"] as const;
 type GalleryKind = (typeof GALLERY_KINDS)[number];
 const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
 
@@ -243,6 +243,122 @@ function topProblems({ height, titleMin, placeMin, boxes, demos, label }: { heig
         if (title.clientWidth < titleMin) lines.push(`見出し: ${demo} の題の幅 ${title.clientWidth}。${titleMin} 以上のはず（${label}）`);
       }
     }
+  }
+  return lines;
+}
+
+/** 見本の会話の data-demo（ページの順） */
+const TALK_DEMOS = ["talk-basic", "talk-steps", "talk-md", "talk-run", "talk-run-empty", "talk-edge"];
+/** 会話の行の幅の上限（.c-talk の中の幅に対する割合。agent と実行中の行・owner） */
+const TALK_MAX: Record<Viewport, { agent: number; owner: number }> = { phone: { agent: 0.86, owner: 0.8 }, tablet: { agent: 0.78, owner: 0.72 }, pc: { agent: 0.78, owner: 0.72 } };
+/** 会話の根の字の大きさ（px。--c-font-body） */
+const TALK_FONT: Record<Viewport, number> = { phone: 16, tablet: 16, pc: 14 };
+
+/**
+ * 見本の会話の測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。
+ * 見本の名前・吹き出しの中に結果の文が無い・1 行の吹き出しの高さ・幅の上限・角・はみ出し・長いコードを横に送れる・手順の行・実行中の行の読み上げ・根の字。
+ * 足りない物の文を返す
+ */
+function talkProblems({ demos, max, fontSize, label }: { demos: string[]; max: { agent: number; owner: number }; fontSize: number; label: string }): string[] {
+  const lines: string[] = [];
+  const say = (text: string): void => void lines.push(`会話（${label}）: ${text}`);
+  const near = (a: number, b: number, d: number): boolean => Math.abs(a - b) <= d;
+  const nameOf = (el: Element): string => el.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
+  // 0. 見本の名前
+  const names = [...document.querySelectorAll('[data-section="talk"] [data-demo]')].map((el) => el.getAttribute("data-demo") ?? "?");
+  for (const name of demos) if (!names.includes(name)) say(`見本が無い: ${name}`);
+  for (const name of names) if (!demos.includes(name)) say(`知らない見本: ${name}`);
+  // 1. 結果の文は吹き出しの外
+  for (const bubble of document.querySelectorAll(".c-bubble")) {
+    const text = bubble.textContent ?? "";
+    for (const word of ["完了（", "止まりました", "中断しました"]) if (text.includes(word)) say(`${nameOf(bubble)} の吹き出しの中に「${word}」が在る`);
+  }
+  // 2. 1 行の返事の吹き出しの高さ
+  const basic = document.querySelector('[data-demo="talk-basic"] .c-msg[data-who="agent"]');
+  const basicP = basic?.querySelector(".c-bubble p") ?? null;
+  const basicB = basic?.querySelector(".c-bubble") ?? null;
+  if (basicP === null || basicB === null) say("talk-basic に agent の吹き出しが無い");
+  else {
+    const ph = basicP.getBoundingClientRect().height;
+    const bh = basicB.getBoundingClientRect().height;
+    if (!near(ph, fontSize * 1.5, 1)) say(`talk-basic の本文の高さ ${ph.toFixed(1)}。${fontSize * 1.5} のはず（1 行）`);
+    if (!near(bh, ph + 20, 1)) say(`talk-basic の吹き出しの高さ ${bh.toFixed(1)}。本文 + 20 = ${(ph + 20).toFixed(1)} のはず`);
+  }
+  // 3. 幅の上限
+  for (const row of document.querySelectorAll(".c-talk > .c-msg, .c-talk > .c-run")) {
+    const talk = row.closest(".c-talk");
+    if (talk === null) continue;
+    const ts = getComputedStyle(talk);
+    const inner = talk.clientWidth - parseFloat(ts.paddingLeft) - parseFloat(ts.paddingRight);
+    const owner = row.getAttribute("data-who") === "owner";
+    const limit = owner ? max.owner : max.agent;
+    const ratio = row.getBoundingClientRect().width / inner;
+    if (ratio > limit + 0.001) say(`${nameOf(row)} の ${owner ? "owner" : row.classList[0]} の幅 ${ratio.toFixed(3)}。${limit} 以下のはず`);
+  }
+  const edge = [...document.querySelectorAll('[data-demo="talk-edge"] .c-msg[data-who="owner"]')].at(-1);
+  const edgeTalk = edge?.closest(".c-talk") ?? null;
+  if (edge === undefined || edgeTalk === null) say("talk-edge に owner の吹き出しが無い");
+  else {
+    const ts = getComputedStyle(edgeTalk);
+    const ratio = edge.getBoundingClientRect().width / (edgeTalk.clientWidth - parseFloat(ts.paddingLeft) - parseFloat(ts.paddingRight));
+    if (ratio < max.owner - 0.01) say(`talk-edge の長い発言の幅 ${ratio.toFixed(3)}。上限 ${max.owner} に届いていない`);
+  }
+  // 4. 角（左上・右上・右下・左下）
+  for (const bubble of document.querySelectorAll(".c-msg > .c-bubble")) {
+    const cs = getComputedStyle(bubble);
+    const got = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius].map((v) => parseFloat(v));
+    const owner = bubble.parentElement?.getAttribute("data-who") === "owner";
+    const want = owner ? [14, 14, 4, 14] : [14, 14, 14, 4];
+    if (got.some((v, i) => !near(v, want[i] ?? 0, 0.5))) say(`${nameOf(bubble)} の ${owner ? "owner" : "agent"} の角 ${got.join("・")}。${want.join("・")} のはず`);
+  }
+  // 5. はみ出し
+  for (const el of document.querySelectorAll(".c-talk, .c-bubble")) {
+    if (el.scrollWidth > el.clientWidth) say(`${nameOf(el)} の ${el.classList[0] ?? ""} が横にはみ出している（${el.scrollWidth} > ${el.clientWidth}）`);
+  }
+  // 6. 長いコードは吹き出しの中で横に送れる
+  const pre = document.querySelector('[data-demo="talk-md"] .c-md-pre');
+  if (pre === null) say("talk-md にコードの段が無い");
+  else {
+    if (!(pre.scrollWidth > pre.clientWidth)) say(`talk-md のコードの段が横に長くない（${pre.scrollWidth} ≦ ${pre.clientWidth}）`);
+    pre.scrollLeft = 50;
+    const moved = pre.scrollLeft;
+    pre.scrollLeft = 0;
+    if (!(moved > 0)) say("talk-md のコードの段を横に送れない");
+    const msg = pre.closest(".c-msg");
+    const bubble = pre.closest(".c-bubble");
+    if (msg !== null && bubble !== null && bubble.getBoundingClientRect().right > msg.getBoundingClientRect().right + 0.5) say("talk-md の吹き出しの右端が行の右端を超えている");
+  }
+  // 7. 手順の行
+  for (const foot of document.querySelectorAll(".c-msg-foot")) {
+    const msg = foot.closest(".c-msg");
+    const r = foot.getBoundingClientRect();
+    if (!near(r.height, 24, 0.5)) say(`${nameOf(foot)} の手順の行の高さ ${r.height.toFixed(1)}。24 のはず`);
+    if (msg !== null) {
+      const m = msg.getBoundingClientRect();
+      if (r.left < m.left - 0.5 || r.right > m.right + 0.5) say(`${nameOf(foot)} の手順の行が行の外に出ている`);
+    }
+  }
+  for (const time of document.querySelectorAll(".c-msg-time")) {
+    if (time.scrollWidth > time.clientWidth) say(`${nameOf(time)} の時刻が切れている（${time.scrollWidth} > ${time.clientWidth}）`);
+  }
+  for (const el of document.querySelectorAll(".c-steps-label, .c-steps-text")) {
+    if (!(el.scrollWidth > el.clientWidth)) continue;
+    const cs = getComputedStyle(el);
+    if (cs.textOverflow !== "ellipsis" || cs.overflowX !== "hidden") say(`${nameOf(el)} の結果の文が入りきらないのに省かれていない（text-overflow ${cs.textOverflow}・overflow-x ${cs.overflowX}）`);
+    if (el.clientWidth < 96) say(`${nameOf(el)} の省いた結果の文の幅 ${el.clientWidth}。96 以上のはず`);
+  }
+  for (const li of document.querySelectorAll(".c-run-recent > li")) {
+    const h = li.getBoundingClientRect().height;
+    if (h > 19) say(`${nameOf(li)} の実行中の手順が 1 行でない（高さ ${h.toFixed(1)}）`);
+  }
+  // 8. 実行中の行は読み上げ続けない
+  for (const run of document.querySelectorAll(".c-run")) {
+    if (run.matches("[aria-live], [role=\"status\"]") || run.querySelector("[aria-live], [role=\"status\"]") !== null) say(`${nameOf(run)} の実行中の行に aria-live か role=status が在る`);
+  }
+  // 9. 根の字
+  for (const talk of document.querySelectorAll(".c-talk")) {
+    const size = getComputedStyle(talk).fontSize;
+    if (size !== `${fontSize}px`) say(`${nameOf(talk)} の根の字 ${size}。${fontSize}px のはず`);
   }
   return lines;
 }
@@ -1047,8 +1163,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       };
     });
 
-  /** 仮名が全角の等幅の字を当てて fn を呼ぶ（終わったら外す）。当たらなければ fn を呼ばずに 1 行 */
-  async function withMono(page: Page, fn: () => Promise<string[]>): Promise<string[]> {
+  /** 仮名が全角の等幅の字を当てて fn を呼ぶ（終わったら外す）。当たらなければ fn を呼ばずに 1 行（頭は who） */
+  async function withMono(page: Page, fn: () => Promise<string[]>, who = "本番の見出し"): Promise<string[]> {
     await page.evaluate((css: string) => {
       const sheet = new CSSStyleSheet();
       sheet.replaceSync(css);
@@ -1069,7 +1185,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         span.remove();
         return w;
       });
-      if (!(kana >= 99 && kana <= 101)) return [`本番の見出し: 仮名が全角の等幅の字が当たっていない（「あ」${kana.toFixed(1)}）。IPAGothic を入れる`];
+      if (!(kana >= 99 && kana <= 101)) return [`${who}: 仮名が全角の等幅の字が当たっていない（「あ」${kana.toFixed(1)}）。IPAGothic を入れる`];
       return await fn();
     } finally {
       await page.evaluate(() => {
@@ -1662,7 +1778,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     const hits = await page.evaluate(hitProblems, {
       min: HIT_MIN[vp],
       scopes: dialogOpen ? "dialog[open]" : ".c-gallery, .c-toast",
-      targets: 'button, a[href], input, select, textarea, [role="radio"]',
+      targets: 'button, a[href]:not(.c-md-link), input, select, textarea, [role="radio"]',
       toast: true,
     });
     const rest = await page.evaluate(
@@ -1725,6 +1841,28 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /**
+   * 見本の会話（talkProblems）を、今の字・等幅の字・（スマホは）幅 375 の等幅の字で測る。
+   * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
+   */
+  async function checkTalks(page: Page, vp: Viewport, label: string): Promise<void> {
+    const args = { demos: TALK_DEMOS, max: TALK_MAX[vp], fontSize: TALK_FONT[vp] };
+    const lines = await page.evaluate(talkProblems, { ...args, label: "今の字" });
+    lines.push(...(await withMono(page, () => page.evaluate(talkProblems, { ...args, label: "等幅の字" }), "見本の会話")));
+    if (vp === "phone") {
+      try {
+        await page.setViewportSize({ width: 375, height: 812 });
+        await wait(300);
+        lines.push(...(await withMono(page, () => page.evaluate(talkProblems, { ...args, label: "幅 375・等幅の字" }), "見本の会話")));
+      } finally {
+        await page.setViewportSize(VIEWPORTS.phone.viewport);
+        await wait(300);
+      }
+    }
+    for (const line of lines) logLines.push(`[${label}] ${line}`);
+    if (lines.length > 0) throw new Error(`会話の見本の検査で ${lines.length} 件`);
+  }
+
   /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない）。絵ごとに読み直す */
   async function gallery(vp: Viewport, theme: Theme): Promise<void> {
     const names = GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind));
@@ -1738,15 +1876,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     };
     try {
       const full = galleryName(vp, theme, "g-gallery");
-      // 一覧・見出し・下のバーの節の絵は、ページ全体と同じ読み込みで検査と位置の戻しの後に撮る
+      // 一覧・見出し・下のバー・会話の節の絵は、ページ全体と同じ読み込みで検査と位置の戻しの後に撮る
       const parts = [
         { name: galleryName(vp, theme, "g-list"), selector: '[data-section="list"]' },
         { name: galleryName(vp, theme, "g-top"), selector: '[data-section="top"]' },
         { name: galleryName(vp, theme, "g-bottom"), selector: '[data-section="bottom"]' },
+        { name: galleryName(vp, theme, "g-talk"), selector: '[data-section="talk"]' },
       ];
       await step(full, [full, ...parts.map((part) => part.name)], async () => {
         await loadGallery();
         await checkGallery(page, vp, label);
+        await checkTalks(page, vp, label);
         // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("*")) if (el.scrollLeft !== 0) el.scrollLeft = 0;

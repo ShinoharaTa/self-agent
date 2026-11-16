@@ -5,6 +5,7 @@ import { Badge, Button, Empty, Field, IconButton, Loading, Mark, Segmented } fro
 import { Confirm, Sheet, Toast } from "./c-sheet.js";
 import { TopicList, YourTurn, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
+import { TalkTimeline, parseBlocks, talkModel } from "./c-talk.js";
 
 // テーマ: shell.js と同じ（localStorage の self-agent-web:theme。dark・light は data-theme、system は外して OS に合わせる。読めなければ dark）
 const THEMES = ["dark", "light", "system"];
@@ -432,6 +433,117 @@ function Bottoms() {
   <//>`;
 }
 
+// ===== 会話の行（K4）。データは作り物（手順は Read src/app.ts のような形） =====
+
+const FENCE = "```";
+const TALK_MD = [
+  "# 見出し",
+  "**太字** と `code` と https://example.com/a の段落。",
+  "",
+  "- 箇条書き 1",
+  "  - 入れ子 1",
+  "  - 入れ子 2",
+  "- 箇条書き 2",
+  "",
+  "3. 番号 3",
+  "4. 番号 4",
+  "",
+  FENCE,
+  "x".repeat(200),
+  FENCE,
+  "",
+  "https://example.com/" + "a".repeat(380),
+  "",
+  "| 表 | の行 |",
+  "> 引用の行",
+].join("\n");
+
+const STEPS_4 = ["Read src/app.ts", "Grep handleTurn", "Read src/web/chat.ts", "Bash npm test"];
+const STEPS_5 = ["Read src/app.ts", "Edit src/app.ts", "Bash npm run check", "Bash npm test", "Read test/app.test.ts"];
+
+/** 見本の行。time・name・end は fmt がそのまま返す欄 */
+const TALK_DEMOS = [
+  {
+    demo: "talk-basic",
+    turns: [
+      { id: "b1", kind: "notice", text: "セッションを開きました", time: "12:30" },
+      { id: "b2", kind: "owner", text: "おはよう", time: "12:30" },
+      { id: "b3", kind: "agent", text: "おはようございます。", time: "12:31", outcome: "done", steps: [] },
+      { id: "b4", kind: "agent", name: "Claude Code", text: "1 つ目の返事です。", time: "12:32" },
+      { id: "b5", kind: "agent", name: "Claude Code", text: "2 つ目の返事です。", time: "12:33" },
+    ],
+  },
+  {
+    demo: "talk-steps",
+    turns: [
+      { id: "s1", kind: "agent", text: "調べました。", time: "12:30", outcome: "done", steps: STEPS_4, end: "完了（1 分 23 秒・ツール 4 回）" },
+      { id: "s2", kind: "agent", text: "直しました。", time: "12:32", outcome: "done", steps: ["Edit src/app.ts", "Bash npm test"], end: "完了（12 秒・ツール 2 回）" },
+      { id: "s3", kind: "agent", text: "ここまで進めました。", time: "12:45", outcome: "max_turns", steps: STEPS_4.slice(0, 3), end: "手順の上限で止まりました（12 分 34 秒・ツール 128 回）" },
+      { id: "s4", kind: "agent", text: "途中で失敗しました。", time: "12:46", outcome: "failed", steps: [], end: "止まりました（3 秒・ツール 0 回）" },
+      { id: "s5", kind: "agent", text: "ここで止めます。", time: "12:47", outcome: "aborted", steps: [], end: "中断しました（5 秒・ツール 1 回）" },
+    ],
+  },
+  { demo: "talk-md", turns: [{ id: "m1", kind: "agent", text: TALK_MD, time: "12:30" }] },
+  {
+    demo: "talk-run",
+    turns: [{ id: "r1", kind: "owner", text: "テストを回して", time: "12:30" }],
+    running: { steps: STEPS_5, abortable: true, text: "作業中…（1 分 5 秒・ツール 5 回）", waiting: "許可を待っています" },
+  },
+  { demo: "talk-run-empty", turns: [], running: { steps: [], abortable: false, text: "作業中…（2 秒・ツール 0 回）" }, runName: () => "Claude Code" },
+  {
+    demo: "talk-edge",
+    hasMore: true,
+    turns: [
+      { id: "e1", kind: "divider", text: "ここから新しい会話" },
+      { id: "e2", kind: "owner", text: "送っている発言", time: "12:30", optimistic: true },
+      { id: "e3", kind: "owner", text: "長い発言。".repeat(120), time: "12:31" },
+    ],
+  },
+];
+
+const TALK_FMT = {
+  time: (turn) => turn.time || "",
+  label: (turn) => (turn.kind === "owner" ? "オーナー" : turn.name || "エージェント"),
+  name: (turn, prev) => (turn.name && !(prev && prev.name === turn.name) ? turn.name : null),
+  end: (turn) => turn.end || "",
+  progress: (run) => run.text,
+  waiting: (run) => run.waiting || null,
+  allLabel: (run) => "すべての手順（" + run.steps.length + "）",
+  runName: () => null,
+};
+
+/** 押した物を結果の欄に書く（手順の開閉は見本の中で覚える。見本もモデルを通して描く） */
+function Talks() {
+  const [openSteps, setOpenSteps] = useState(() => new Set(["s2"]));
+  const [runStepsOpen, setRunStepsOpen] = useState(false);
+  const [result, setResult] = useState("");
+  const on = {
+    older: () => setResult("older"),
+    toggleSteps: (id) => {
+      setOpenSteps((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      setResult(`steps ${id}`);
+    },
+    toggleRunSteps: () => {
+      setRunStepsOpen((v) => !v);
+      setResult("run-steps");
+    },
+    stop: () => setResult("stop"),
+  };
+  return html`<${Section} name="talk" title="会話（TalkTimeline・Bubble・Steps・RunLine）">
+    ${TALK_DEMOS.map(({ demo, turns, hasMore = false, running = null, runName }) => {
+      const fmt = runName ? { ...TALK_FMT, runName } : TALK_FMT;
+      const model = talkModel({ channelId: "g", turns, hasMore, running, stopping: false, openSteps, runStepsOpen, fmt, on }, parseBlocks);
+      return html`<div data-demo=${demo} key=${demo}><div class="c-gallery-talk"><${TalkTimeline} model=${model} on=${on} /></div></div>`;
+    })}
+    <p class="c-gallery-result">${result}</p>
+  <//>`;
+}
+
 /** 知らせの入れ物は見本の根の直下に 1 つ（自動では消さない。× で消す） */
 function Gallery() {
   const [toasts, setToasts] = useState([]);
@@ -457,6 +569,7 @@ function Gallery() {
     <${Lists} />
     <${Tops} />
     <${Bottoms} />
+    <${Talks} />
     <${Toast} items=${toasts} onDismiss=${dismiss} />
   `;
 }
