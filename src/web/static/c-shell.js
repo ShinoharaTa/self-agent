@@ -5,6 +5,8 @@ import { Badge, Button, Icon, IconButton, Segmented, badgeText } from "./c-atoms
 
 const HAND = "右腕に頼む・訊く";
 
+const filled = (v) => typeof v === "string" && v !== "";
+
 /** 右腕のボタンの名前（印があれば語で足す） */
 export function handLabel(mark) {
   if (mark === "turn") return HAND + "（あなたの番）";
@@ -39,8 +41,8 @@ export function bottomModel({ variant, turns, hand, tabs }) {
   };
 }
 
-/** 下のバー（一覧の列の中。スクロールの入れ物の下の兄弟に置く）。on: { list(), hand(opener), tab(id), more(opener) } */
-export function BottomBar({ variant, turns, hand, tabs, on }) {
+/** 下のバー（一覧の列の中。スクロールの入れ物の下の兄弟に置く）。controls は右腕のボタンの aria-controls。on: { list(), hand(opener), tab(id), more(opener) } */
+export function BottomBar({ variant, turns, hand, tabs, controls, on }) {
   const model = bottomModel({ variant, turns, hand, tabs });
   return html`<div class="c-bottom" role="group" aria-label="移動" data-variant=${model.variant}>
     ${model.items.map((item) => {
@@ -51,7 +53,7 @@ export function BottomBar({ variant, turns, hand, tabs, on }) {
         </button>`;
       }
       if (item.act === "hand") {
-        return html`<button class="c-bottom-hand" key="hand" type="button" data-act="hand" aria-label=${item.name} onClick=${(event) => on.hand(event.currentTarget)}>
+        return html`<button class="c-bottom-hand" key="hand" type="button" data-act="hand" aria-label=${item.name} aria-controls=${filled(controls) ? controls : undefined} onClick=${(event) => on.hand(event.currentTarget)}>
           <${Icon} name="bot" />
           <span class="c-bottom-hand-label">${item.label}</span>
           ${item.mark ? html`<span class="c-bottom-hand-mark" data-state=${item.mark} aria-hidden="true"></span>` : null}
@@ -71,7 +73,6 @@ const TOP_VIEWS = [
   { value: "pane", label: "端末" },
 ];
 
-const filled = (v) => typeof v === "string" && v !== "";
 
 /** 見出しの中身。view が talk・other でなければ null（何も描かない）。スマホは場所・切り替えを出さず（「…」の板から）、広い幅は右腕を出さない（右の列の物） */
 export function topModel({ variant, view, title, status, note, place, views, hand, menu }) {
