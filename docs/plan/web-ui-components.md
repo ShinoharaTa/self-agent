@@ -202,7 +202,7 @@
 | Sheet（下から出る板） | `c-sheet.js` / `.css` | open、title、onClose、children | 開閉の反映だけ（フォーカスの戻りはブラウザ） | `<dialog>`。スマホは下、PC は中央。safe-area の下 |
 | Confirm | 同 | title、target、body、okLabel、danger、onOk、onCancel | なし | 危ない側を primary にしない |
 | Toast | 同 | items | なし | `aria-live`。今の `SA.ui.toast` はここへ渡す橋にする |
-| TopBar | `c-shell.js` / `.css` | variant（phone・wide。入口が幅で決める）、view（talk・other。none は描かない）、title、status（text と tone: warning・accent・muted）、note（人格の名前）、place（text・movable・reason）、views（value: talk・pane。［会話］［端末］を出すときだけ）、hand（turn・unread・null）、menu、compact、controls（右腕のボタンの aria-controls）、on（back・place(opener)・view(value)・menu(opener)・hand(opener)）。モデルは `topModel` | なし | **1 段**。スマホ 56・PC 52（上の safe-area は殻の側）。スマホは 戻る・題（下に状態・場所・人格の 1 行）・「…」・右腕で、場所と［会話］［端末］は「…」の板から。広い幅は 題・状態・人格・場所・［会話］［端末］・「…」で、右腕は出さない（右の列の物。K6）。広い幅の見出しは、根の幅が `--c-top-full-min` を切ると compact（場所・［会話］［端末］は帯に出さず「…」の板から。スマホと同じ）。幅を測るのは入口（K4） |
+| TopBar | `c-shell.js` / `.css` | variant（phone・wide。入口が幅で決める）、view（talk・other。none は描かない）、title、status（text と tone: warning・accent・muted）、note（人格の名前）、place（text・movable・reason。text が空でない文字列のときだけ場所として扱う）、views（value: talk・pane。［会話］［端末］を出すときだけ）、hand（turn・unread・null）、menu、compact、controls（右腕のボタンの aria-controls）、on（back・place(opener)・view(value)・menu(opener)・hand(opener)）。モデルは `topModel` | なし | **1 段**。スマホ 56・PC 52（上の safe-area は殻の側）。スマホは 戻る・題（下に状態・場所・人格の 1 行）・「…」・右腕で、場所と［会話］［端末］は「…」の板から。広い幅は 題・状態・人格・場所・［会話］［端末］・「…」で、右腕は出さない（右の列の物。K6）。場所のボタンは名前だけを見せ（読み上げは「場所: 名前」）、動かせないときは `aria-disabled` と理由の title（native の disabled にしない）。狭いときは 人格 → 場所（下限 `--c-top-place-min`）→ 題 の順に縮み、題に下限は持たせない（縮む割合の差で順を作る）。広い幅の見出しは、根の幅が `--c-top-full-min` を切ると compact（場所・［会話］［端末］は帯に出さず「…」の板から。スマホと同じ）。幅を測るのは入口（K4） |
 | BottomBar | 同 | variant（phone・wide。入口が幅で決める）、turns、hand（turn・unread・null）、tabs（広い幅の文字のボタン）、on（list・hand(opener)・tab(id)・more(opener)） | なし | スマホは 64px + safe-area の下、広い幅は 44px + safe-area で「タスク」「リマインド」「ほか」。中央の右腕は accent（D7）。スマホは「一覧」「ほか」が中身の幅（下限 `--c-bottom-h`）で、右腕が残りを全部取る（K3a） |
 | TopicList | `c-list.js` / `.css` | turns、groups、currentId、filter、onOpen、onNew（その場で答える onAnswer は持たない。許可・拒否は K5） | 群の開閉（localStorage は入口が持つ） | 左端 16px で揃える（D6） |
 | YourTurn（あなたの番） | 同 | items（題・種類・何を訊かれているか・時刻） | なし | モック D のとおり、スマホは warning の見出し「あなたの番 n」と枠なしの 2 行の行、PC は件数のボタン 1 つ（押すと次の待ちの話題）。0 件のときは出さない。その場の許可・拒否は持たない（項目を押して会話で答える。K5）（D5） |
@@ -263,7 +263,6 @@
 | `--c-font-body` | `--font-base`（16） | `--font-sm`（14） | 本文・md のボタン・入力欄の字（新しい字の大きさではなく別名） |
 | `--c-row-indent` | 28 | — | 群の中の行・完了の見出しの左（K3） |
 | `--c-list-gap` | 10 | — | 行の印と題の間・「あなたの番」の項目の上下・PC の件数のボタンの外の余白（K3） |
-| `--c-top-title-min` | 80 | — | 広い幅の見出しで題に残す幅（16px の字で 5 字。K4） |
 | `--c-top-full-min` | 520 | — | 広い幅の見出しが場所と［会話］［端末］を帯に出せる根の幅の下限。切ると compact（K4） |
 | `--c-top-place-min` | 96 | — | 見出しの場所のボタンの幅の下限（K4） |
 
@@ -390,7 +389,7 @@
 **K4 会話の見出し + 吹き出し**
 - やること: TopBar（1 段）、`c-talk.js/.css`。`chat.js` の `render` の先頭に、部品が登録されていればそちらへ渡す分岐を 1 つ足す。`chat.js` の `header`・`frameHeader`・`bubbleRow`・`renderTurn`・`renderRunning`・`stepsList` に当たる物を部品で作る（古い関数は古い殻のために残す）。
 - 受け入れ: (1) スマホの会話で、画面の上から本文の始まりまでが 56px + safe-area（今は約 113px）。(2) 戻る・題・状態・場所・「…」・右腕が 1 段に入り、題は 1 行で省かれる。(3) 吹き出しの中に「完了」の行が無い。手順は吹き出しの外の 1 行で、0 件なら出ない。(4) 1 文の返事の吹き出しの高さが 1 行ぶん + 余白。(5) 400 字の URL が吹き出しからはみ出さない。(6) 下に付いているときだけ新着で下へ送り、上を読んでいるときは動かさない。(7) 820 幅と PC で見出しが 1 段のまま折り返さない。待ちにする・閉じる・会話を新しくする・Discord は「…」の板の中。(8) コードの長い行は吹き出しの中で横に送れる。(9) 入力欄・カードはこの段では古いまま（混ざって見えることを PR に書く）。(10) `/` は変わらない。
-- 進み: 見出しの部品（`c-shell.js` の TopBar・`topModel`、BottomBar の `controls`）と見本の節「見出し（TopBar）」（スマホ 3・広い幅 4・compact 2。`npm run ui-shots` が高さ・1 段・はみ出し・省き・場所のボタンの幅・入れ物の幅を見る）は済み。本番（`v3.html`）はまだ。入口が根の幅を測って compact を渡すのは本番に載せる PR で
+- 進み: 見出しの部品（`c-shell.js` の TopBar・`topModel`、BottomBar の `controls`）と見本の節「見出し（TopBar）」（スマホ 3・広い幅 5・compact 2。`npm run ui-shots` が見本の名前・高さ・1 段・はみ出し・省き・縮む順・題と状態の間・場所のボタンの幅・入れ物の幅を見る）は済み。本番（`v3.html`）はまだ。入口が根の幅を測って compact を渡すのは本番に載せる PR で
 
 **K5 入力欄 + カード**
 - やること: `c-composer.js/.css`、`c-cards.js/.css`。`chat.js` の `composer`・`closeCard`・`moveCard`・`continueButton` と、`views.js` の許可・質問のカードに当たる物を部品で作る。送信・許可の処理は今の関数を呼ぶ。
