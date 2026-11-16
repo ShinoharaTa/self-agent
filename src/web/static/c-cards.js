@@ -75,7 +75,8 @@ export function CloseCard({ item, on }) {
   const tasks = Array.isArray(item.tasks) ? item.tasks : [];
   const picked = Array.isArray(item.picked) ? item.picked : [];
   const reason = busy ? SENDING : undefined;
-  const none = html`<${Button} kind="secondary" size="md" label="登録しない" disabled=${busy} reason=${reason} onPress=${() => on.close(item.id, "none")} />`;
+  // ボタンは key で見分ける（候補が無い形から在る形へ替わっても、［登録しない］の要素が別のボタンにならない）
+  const none = html`<${Button} key="none" kind="secondary" size="md" label="登録しない" disabled=${busy} reason=${reason} onPress=${() => on.close(item.id, "none")} />`;
   return html`<${Card} kind="close" label="閉じる前の確認" title="あなたの番: 閉じる前の確認" meta=${BOTH_PLACES}>
     <dl class="c-card-dl" key="dl">
       <dt class="c-card-dt">要約</dt>
@@ -94,8 +95,8 @@ export function CloseCard({ item, on }) {
       ${tasks.length === 0
         ? none
         : [
-            html`<${Button} kind="primary" size="md" label="全部登録" disabled=${busy} reason=${reason} onPress=${() => on.close(item.id, "all")} />`,
-            html`<${Button} kind="secondary" size="md" label="選んだものを登録" disabled=${busy || picked.length === 0}
+            html`<${Button} key="all" kind="primary" size="md" label="全部登録" disabled=${busy} reason=${reason} onPress=${() => on.close(item.id, "all")} />`,
+            html`<${Button} key="picked" kind="secondary" size="md" label="選んだものを登録" disabled=${busy || picked.length === 0}
               reason=${busy ? SENDING : picked.length === 0 ? "候補を選ぶと押せます" : undefined} onPress=${() => on.close(item.id, "picked")} />`,
             none,
           ]}

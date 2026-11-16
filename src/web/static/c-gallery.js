@@ -606,6 +606,10 @@ const CARD_LONG = Array.from({ length: 14 }, (_, i) => "echo 見本の行 " + (i
 const CARD_SUMMARY = "見本の会話で決めた事をまとめた 1 段落目です。\n\n残っている事をまとめた 2 段落目です。";
 const CARD_TASKS = ["1. 見本の候補 A", "2. 見本の候補 B（期限 11/20）", "3. 見本の候補 C"];
 const cardClose = (o) => ({ kind: "close", id: "c1", summary: CARD_SUMMARY, tasks: CARD_TASKS, picked: [], busy: false, ...o });
+// 切れ目の無い長い字（折り返しの決まりが外れると枠からはみ出す）
+const CARD_UNBROKEN_URL = "https://example.com/" + "sample-path-without-a-break/".repeat(5) + "0123456789";
+const CARD_UNBROKEN_PLACE = "sample_project_name_without_any_break_point_".repeat(3) + "0123456789";
+const CARD_UNBROKEN_TOOL = "mcp__sample_server__" + "tool_name_without_break_".repeat(3) + "0123456789";
 const CARD_LONG_TASK = "見本の長い題の候補をここに置いて、折り返しと幅を見るための行";
 const CARD_DEMOS = [
   { demo: "card-perm", items: [cardPerm({})] },
@@ -630,9 +634,10 @@ const CARD_DEMOS = [
     narrow: true,
     items: [
       { kind: "note", id: "wait", text: "会話を新しくしています…", busy: true },
-      cardClose({ tasks: [1, 2, 3].map((n) => n + ". " + CARD_LONG_TASK + (n === 2 ? "（期限 11/20）" : "")) }),
+      cardClose({ summary: CARD_SUMMARY + "\n" + CARD_UNBROKEN_URL, tasks: [1, 2, 3].map((n) => n + ". " + CARD_LONG_TASK + (n === 2 ? "（期限 11/20）" : "")) }),
       { kind: "move", id: "m1", from: "self-agent", to: LONG_PLACE, busy: false },
-      cardPerm({ rule: "Bash(npm run test:integration -- --only 見本の長い名前のルールをここに置いて幅を見る:*)", ruleNote: "見本の添え書き" }),
+      { kind: "move", id: "m2", from: "self-agent", to: CARD_UNBROKEN_PLACE, busy: false },
+      cardPerm({ tool: CARD_UNBROKEN_TOOL, rule: "Bash(npm run test:integration -- --only 見本の長い名前のルールをここに置いて幅を見る:*)", ruleNote: "見本の添え書き" }),
     ],
   },
 ];
