@@ -113,6 +113,16 @@
   overflow-wrap: anywhere;
 }
 
+/* 選択肢の名前と説明（質問のカード） */
+.c-card-check-label {
+  font-weight: var(--weight-semibold);
+}
+
+.c-card-check-desc {
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
 /* 常に許可のルール（チェックの字の頭にそろえる）。スマホは 1 行で横に送る */
 .c-card-rule {
   margin: 0;
@@ -162,6 +172,61 @@
   margin: 0;
   color: var(--text-secondary);
   font-size: var(--font-sm);
+}
+
+/* 質問の 1 問。fieldset・legend の既定の枠と余白を外す（子は上から積むだけ） */
+.c-card-q {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.c-card-q + .c-card-q {
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--border);
+}
+
+.c-card-q-legend {
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.c-card-q-text {
+  margin: var(--space-1) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.c-card-q-hint {
+  margin: var(--space-1) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+/* 「その他」の欄（チェックの字の頭にそろえる）。入力の位置の線の色を自分で持つ。隠すのは hidden（base.css の [hidden]） */
+.c-card-other {
+  display: block;
+  box-sizing: border-box;
+  width: calc(100% - var(--c-check) - var(--space-3));
+  margin: 0 0 0 calc(var(--c-check) + var(--space-3));
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--c-font-body);
+  line-height: var(--leading-normal);
+  caret-color: var(--accent);
+  resize: vertical;
+}
+
+.c-card-other:disabled {
+  background: var(--muted);
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
 /* ボタンの並び。スマホは 1 つ・3 つなら縦、2 つなら 2 等分 */
