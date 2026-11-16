@@ -213,12 +213,13 @@
 | Steps（手順） | 同 | text、tone（muted・warning・danger）、toggles、open、onToggle | なし（開閉は外が持つ。押したら描き直す） | 吹き出しの**外**の下に小さく 1 行（`.c-msg-foot` の時刻の隣）。完了で手順 0 は出さない。手順 0 の止まった・失敗は押せない文。`details` を使わず、ボタン（`aria-expanded`）の後ろに一覧（StepList）。見た目 24px・当たりは `::after` で指 44・PC 36。**狭い幅で入りきらない結果の文は末尾を省いて 1 行に保つ**（時刻は省かない） |
 | RunLine（作業中の 1 行） | 同 | run（name・text・waiting・recent・all・stop）、on | なし | 吹き出しにしない。回る輪・経過の文・待ちの文・最後の 3 手順・4 件からの「すべての手順」・abortable のときの［中断］。文が 1 秒ごとに変わるので `aria-live`・`role="status"` を付けない（`aria-busy`） |
 | Divider / Notice | 同 | text（Notice は time も） | なし | 文は要素で包まない。Notice の時刻だけ `span.c-notice-time` |
-| Cards（カードの並び） | `c-cards.js` / `.css` | items（kind ごとの項目。文は全部呼ぶ側が作る）、on | なし | `div.c-cards`。key は `kind:id`。並びでない・空なら出さない。知らない kind は出さない。左右の余白は持たない |
+| Cards（カードの並び） | `c-cards.js` / `.css` | items（kind ごとの項目。文は全部呼ぶ側が作る）、on、otherRef（質問のカードへ渡す） | なし | `div.c-cards`。key は `kind:id`。並びでない・空なら出さない。知らない kind は出さない。左右の余白は持たない |
 | Card（枠） | 同 | kind、label（`aria-label`）、title、meta、urgent、note、children | なし | `section.c-card`。どの幅でも `--warning` の線・角 `--c-card-r`・地 `--surface`・最大幅 `--c-card-max`。見出しは「あなたの番: …」（12px・semibold・`--warning`）。右の文は urgent で `--warning` |
 | PermissionCard | 同 | item（id・tool・mode・summary・rule・ruleNote・always・left・urgent・busy）、on（permit(id, allow・always・deny)・always(id, checked)） | なし（残り時間の文は入口から） | 許可は secondary・拒否は ghost（md・絵なし）。rule が在るときだけ「このセッションでは常に許可」のチェックとルール。説明の文 `PERMISSION_NOTE` はいつもカードの下。要約はスマホは切らず、PC は 8 行で中を送る |
 | CloseCard / MoveCard | 同 | item（閉じる: id・summary・tasks（行の文）・picked（選んだ番号。0 から）・busy。移す: id・from・to・busy）、on（close(id, all・picked・none)・task(id, 番号, checked)・move(id, accept・keep)） | なし | 右の文は「Discord でも選べます」。閉じるは［全部登録］primary・［選んだものを登録］・［登録しない］（候補が無ければ［登録しない］だけ）、移すは［変える］primary・［このまま］ |
 | Note（待ちの行と文） | 同 | text、busy | なし | `p.c-note`。busy は `role="status"`・`aria-busy`・左寄せで、回る輪は無い（文は「…」で終わる） |
-| QuestionCard と口 cardsMouth | 同 | （次の PR） | 選んだ物と「その他」の本文は呼ぶ側 | 同じ枠 |
+| QuestionCard | 同 | item（id・who・left・urgent・busy・ready（全部の問に答えたか。呼ぶ側が決める）・questions（legend・text・multi・options（label・description）・picked（ラベルの並び）・other・otherText））、on（pick(id, 問の番号, ラベル, checked)・pickOther(id, 問の番号, checked, byPointer)・other(id, 問の番号, 値)・answer(id)・dismiss(id)）、otherRef | なし（選び方の決まりと「その他」の本文は呼ぶ側） | 問ごとに `fieldset`（2 問目から上に線）。ラジオか（multi なら）チェックの行と「その他」の行。name は `ccq-<id>-<問の番号>`。「その他」の欄（`textarea`。maxlength `OTHER_MAX` = 1000）は**いつも木に在り** `hidden` で隠す（描き直しで作り直さない）。value を渡さない。［答える］primary（ready でない間は「すべての問に答えると押せます」）・［やめる］ghost。`byPointer` は「その他」の行の pointerdown で立ち、キーと change の後で下りる |
+| 口 cardsMouth | 同 | render | なし | `{ draw(root, { items, on }), focus(root, id, 問の番号), drop(root) }`。「その他」の欄の ref は根と（id・問の番号）ごとに同じ関数で、**新しい要素にだけ**その時の `otherText` を入れる（同じ要素には書かない）。項目が消えた鍵は覚えを捨てる。focus は要素が無い・hidden なら false。例外は握らない |
 | Composer | `c-composer.js` / `.css` | model（`composerModel(state)` の結果。state は text・count・max・sending・touch・label・placeholder（決まった短い文）・note）、on（input(今の値)・send）、inputRef（textarea を受ける callback の ref。口 `composerMouth` が渡す）。**textarea に値を渡さない**（`value`・`defaultValue` を書かない。最初の本文と送った後の空は口が要素に直に入れる） | なし（下書きは入口と `SA.app.draft`、行数は CSS の写し、IME 中かは `sendKey` が事象から見る） | 1 行 44px・角 full・伸びて最大 6 行。字数は残りが少ないときだけ。送るは accent（D2・D3） |
 | HandPanel（右腕） | `c-hand.js` / `.css` | open、mode（over・side）、turns、running、cards（札）、onClose、onSend | なし | スマホは全面の板、PC は右の列。中身は TalkTimeline + Composer の使い回し |
 | HandCard（札） | 同 | title、sub、mark、onOpen | なし | モック D の札 |
@@ -442,12 +443,13 @@
 **K5 入力欄 + カード**
 - 今の所: 入力欄は本番まで（#406）。部品と見本（`c-composer.js/.css`・見本の節「会話の入力欄（Composer）」・`npm run ui-shots` の `g-composer` と寸法の検査）と、新しい殻の列 2 の入力欄を部品で描く口 `SA.composer`。カードは部品と見本まで（`c-cards.js/.css`・見本の節「カード」・`npm run ui-shots` の `g-cards`）。本番はまだ古い描き方。［続ける］は部品の行の一番下（K5b）
 - カードの部品（#406。本番の画面は変わらない）:
-  - 枠: `Card` 1 つの上に許可・閉じる前の確認・場所を変える確認と、待ちの行と文（`Note`）。並びは `Cards`。部品は文を組まず（時刻・モード・番号は呼ぶ側）、選び方の決まりを持たず、起きた事を `on` に伝えるだけ。`id` 属性・`style`・動き（回る輪も）を持たない
-  - 言葉: 見出しだけ新しく「あなたの番: 許可」「あなたの番: 閉じる前の確認」「あなたの番: 場所を変える確認」（`aria-label` は今の「許可の要求」「閉じる前の確認」「場所を変える確認」）。ほかの文は今の画面の言葉のまま。送っている間は、閉じる・移すも押せない理由「答えを送っています」
+  - 枠: `Card` 1 つの上に許可・質問・閉じる前の確認・場所を変える確認と、待ちの行と文（`Note`）。並びは `Cards`、本番につなぐ口は `cardsMouth`。部品は文を組まず（時刻・モード・番号は呼ぶ側）、選び方の決まりを持たず、起きた事を `on` に伝えるだけ。`id` 属性・`style`・動き（回る輪も）を持たない
+  - 言葉: 見出しだけ新しく「あなたの番: 許可」「あなたの番: 質問」「あなたの番: 閉じる前の確認」「あなたの番: 場所を変える確認」（`aria-label` は今の「許可の要求」「質問」「閉じる前の確認」「場所を変える確認」）。ほかの文は今の画面の言葉のまま。送っている間は、閉じる・移すも押せない理由「答えを送っています」
   - ボタンの並び: `Button` は md（当たり 44）・絵なし。スマホは 2 つなら 2 等分、1 つ・3 つなら縦。PC は左から 1 行（狭いと折り返す）。スマホの ghost（［拒否］）は枠なし（枠が要るかは実機の絵を見て決める）
-  - チェックの行: `label.c-card-check` が `input`（24px。`accent-color`）と文を包み、行の高さは 44 以上
+  - チェックの行: `label.c-card-check` が `input`（24px。`accent-color`）と文を包み、行の高さは 44 以上。質問の選択肢は名前（`strong.c-card-check-label`）と説明（`span.c-card-check-desc`）
+  - 「その他」の欄: 入力欄と同じ決まり（value を渡さず、口が新しい要素にだけ本文を入れる。入力の位置の線の色 `caret-color: var(--accent)` を `c-cards.css` が持つ。`app.css` の裸の `input, textarea` が当たるので、裸のタグの見張りには入れない）
   - 当たりの測り方: `scripts/ui-shots.ts` の `hitProblems` は、`label` が包むチェック・ラジオを `label` の箱で測る（押せる所が `label` の箱のため）
-  - 確かめ: `test/web-components.test.ts` の節「カード」（木・言葉・呼び出し・押せない理由・CSS）と、`npm run ui-shots` の `g-cards`（スマホ・PC × ダーク・ライト。`cardProblems`: 枠の線と角と地と幅・見出しの字・ボタンの高さと並び・チェックの行と印・要約の高さ（PC は 8 行）・残り時間の色・待ちの行の `role`・動きなし・narrow の幅 320・横にはみ出さない。当たりは見本の検査と、カードの節は PC でも 44）
+  - 確かめ: `test/web-components.test.ts` の節「カード」（木・言葉・呼び出し・押せない理由・CSS）と、`npm run ui-shots` の `g-cards`（スマホ・PC × ダーク・ライト。`cardProblems`: 枠の線と角と地と幅・見出しの字・ボタンの高さと並び・チェックの行と印・要約の高さ（PC は 8 行）・残り時間の色・待ちの行の `role`・動きなし・narrow の幅 320・横にはみ出さない・「その他」の欄（card-q-other だけ見え、値が入り、スマホは 16px 以上）・2 問目の上の線・［答える］の押せない印。当たりは見本の検査と、カードの節は PC でも 44）
 - カードを本番へつなぐ段への申し送り（#406）:
   - 本番へは口 `SA.cards`（`cardsMouth` を包む）。根は容器の直下の `div[data-cards=<channelId>]`。`v3.html` に `c-cards.css` を足す。`.c-cards` は余白を持たないので、列の左右の余白は根の側で決める
   - 項目の順: 待ちの行 → 閉じる → 移す → 許可か質問 → 空の文 → 完了の文
@@ -462,6 +464,8 @@
   - `app.css`・`shell.css` の子孫のセレクタ（`.ed`・`.tl` の下の `p`・`h2`・`section` など）がカードに当たらないかを、根を置く所で確かめる
   - `docs/design/WEB-UI-GUIDELINES.md` の「許可のカード」「質問のカード」の行（見出しの文・スマホの左 2px・`title`）を本番に合わせて直す
   - 一覧の中で許可・拒否に答える（受け入れの 0）は、サーバーの変更が要るので別 issue
+  - 質問のラジオの name は `ccq-<id>-<問の番号>` なので、同じページに同じ id の質問を 2 つ置かない（見本は見本ごとに別の id）
+  - 2 問目の上の線は `fieldset` の上の枠なので、`legend` の高さの真ん中を通り、`legend` の字の右に線が見える（字の上ではない）。実機の絵で見て、要れば直し方を決める
 - 入力欄の本番（#406）:
   - 入口 `c-app.js` が口 `SA.composer = { draw, set, focus, drop }` を置く（中身は `c-composer.js` の `composerMouth`。失敗は `false` と名前だけの log）
   - `chat.js` は右腕でない列 2 で口が在るときだけ、容器の直下の `div[data-composer=<channelId>]`（クラスなし。チャンネルごとに 1 つ。同じチャンネルの描き直しは同じ要素、別のチャンネル・読み込み中・開けないときは `drop` して外す）に `composerState` を渡す。本文の持ち主は今と同じ `SA.app.draft`。placeholder は決まった 3 つの文（話題「この話題に送る」・Claude Code「このセッションに送る」・ほか「ここに送る」）、読み上げの名前は「<題名> に送る」のまま
