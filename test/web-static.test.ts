@@ -3968,6 +3968,70 @@ test("web static: frame の無い描画は今と同じ見出しと入力欄で�
   assert.equal(lh.querySelector("button.ed-back"), null);
 });
 
+type ChatHead = { title: string; status: { text: string; tone: string } | null; note: string | null; menu: Array<{ label: string; run?: (() => void) | null; why?: string; href?: string }> };
+const chatHead = (c: ReturnType<typeof loadChat>, id: string) => (c.chat as unknown as { head: (id: string) => ChatHead | null }).head(id);
+const plainHead = (h: ChatHead | null) => JSON.parse(JSON.stringify(h && { title: h.title, status: h.status, note: h.note })) as unknown;
+
+test("web static: SA.chat.head は見出しの題・状態・札の文を返す（セッションは待ち・完了だけ、Claude Code は 4 つの状態、引けなければ null）", () => {
+  const c = loadChat();
+  c.put("1", [], { kind: "session", title: "調べ物", state: "active" });
+  assert.deepEqual(plainHead(chatHead(c, "1")), { title: "調べ物", status: null, note: null });
+  c.put("2", [], { kind: "session", title: "待つ物", state: "waiting" });
+  assert.deepEqual(plainHead(chatHead(c, "2")), { title: "待つ物", status: { text: "待ち", tone: "muted" }, note: null });
+  c.put("3", [], { kind: "session", title: "", state: "done" });
+  assert.deepEqual(plainHead(chatHead(c, "3")), { title: "セッション", status: { text: "完了", tone: "muted" }, note: null });
+  const tones: Array<[string, string, string]> = [
+    ["needs_input", "判断待ち", "warning"],
+    ["running", "実行中", "accent"],
+    ["idle", "待機", "muted"],
+    ["ended", "終わりました", "muted"],
+  ];
+  for (const [state, text, tone] of tones) {
+    c.put("cc-" + state, [], { kind: "cc", name: "work", cc: { state } });
+    assert.deepEqual(plainHead(chatHead(c, "cc-" + state)), { title: "work", status: { text, tone }, note: null }, state);
+  }
+  c.put("cc-none", [], { kind: "cc", name: "", cc: {} });
+  assert.deepEqual(plainHead(chatHead(c, "cc-none")), { title: "Claude Code", status: null, note: null });
+  c.put("4", []);
+  assert.deepEqual(plainHead(chatHead(c, "4")), { title: "#inbox-4", status: null, note: null });
+  // 人格が 2 つ以上のときだけ札の文（Claude Code のチャンネルには出さない）
+  c.store.channels.personas.push({ id: "p2", name: "二号", isDefault: false });
+  assert.equal(chatHead(c, "4")!.note, "既定");
+  c.put("5", [], { persona: "p2" });
+  assert.equal(chatHead(c, "5")!.note, "二号（人格）");
+  assert.equal(chatHead(c, "cc-idle")!.note, null);
+  assert.equal(chatHead(c, "nothing"), null);
+});
+
+test("web static: SA.chat.head の menu は見出しの […] の板と同じ行で、Claude Code は「画面を見る」⇄「画面を閉じる」が Discord の前に入る", () => {
+  const c = loadChat();
+  c.put("1", [chatTurn(10, "agent", "x")], { kind: "session", title: "調べ物", state: "active", link: "https://discord.com/channels/1/1", project: { slug: "p", url: "https://example.com/p" } });
+  const box = c.box();
+  c.chat.render(box, "1");
+  box.querySelector("button.ed-ops-more")!.dispatch("click");
+  const items = (list: unknown) => JSON.parse(JSON.stringify(list)) as unknown;
+  assert.deepEqual(items(chatHead(c, "1")!.menu), items(c.sheets[0]!.items));
+  assert.deepEqual(items(chatHead(c, "1")!.menu.map((i) => i.label)), ["待ちにする", "閉じる", "会話を新しくする", "ページを開く", "Discord で開く"]);
+  // Claude Code: 見出しの […] は画面の行を入れない。head の menu は入れる
+  c.put("9", [], { kind: "cc", name: "work", cc: { state: "idle" }, link: "https://discord.com/channels/1/9" });
+  const cc = c.box();
+  c.chat.render(cc, "9");
+  cc.querySelector("button.ed-ops-more")!.dispatch("click");
+  assert.deepEqual(items(c.sheets[1]!.items.map((i) => i.label)), ["Discord で開く", "閉じる"]);
+  const menu = chatHead(c, "9")!.menu;
+  assert.deepEqual(items(menu.map((i) => i.label)), ["画面を見る", "Discord で開く", "閉じる"]);
+  menu[0]!.run!();
+  assert.deepEqual(items(c.refreshes), ["ch:9"]);
+  assert.deepEqual(items(chatHead(c, "9")!.menu.map((i) => i.label)), ["画面を閉じる", "Discord で開く", "閉じる"]);
+  chatHead(c, "9")!.menu[0]!.run!();
+  assert.equal(chatHead(c, "9")!.menu[0]!.label, "画面を見る");
+  // 終わったチャンネルの「閉じる」は押せない
+  c.put("8", [], { kind: "cc", name: "old", cc: { state: "ended" } });
+  const close = chatHead(c, "8")!.menu.find((i) => i.label === "閉じる")!;
+  assert.equal(close.run, null);
+  assert.equal(close.why, "閉じています");
+});
+
 test("web static: frame の outgoing は送る本文・字数・仮の行に効き、入力欄が空なら 0 字のまま", async () => {
   const c = loadChat();
   c.put("1", []);
