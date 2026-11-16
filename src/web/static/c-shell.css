@@ -202,9 +202,12 @@
   white-space: nowrap;
 }
 
-/* 一番先に縮む（0 まで縮んでよい） */
+/*
+ * 一番先に縮む（0 まで縮んでよい）。割合の差が小さいと、題が足りない分のごく一部を負って 1px 未満だけ切れ、省く印が出る
+ * （題の負う分が配置の最小の単位より小さくなるまで差を広げる）
+ */
 .c-top > .c-top-rest {
-  flex: 0 10000 auto;
+  flex: 0 100000000 auto;
   min-width: 0;
   font-size: var(--font-sm);
   color: var(--text-muted);
@@ -215,7 +218,7 @@
 
 /* 補足の次に縮み、当たりと語の頭が残る幅は残す（入らない幅では入口が compact にして、場所を帯に出さない） */
 .c-top-place {
-  flex: 0 100 auto;
+  flex: 0 10000 auto;
   min-width: var(--c-top-place-min);
   max-width: 40%;
   box-sizing: border-box;

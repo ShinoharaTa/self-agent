@@ -159,6 +159,12 @@ function topProblems({ height, titleMin, placeMin, boxes, label }: { height: num
   const lines: string[] = [];
   const doc = document.documentElement;
   if (doc.scrollWidth > doc.clientWidth) lines.push(`見出し: ページが横に動く（${doc.scrollWidth} > ${doc.clientWidth}。${label}）`);
+  // 題が省かれているか（小数で。中身の幅が箱の幅より 0.05 を超えて大きい。整数の scrollWidth では 1px 未満の切れが見えない）
+  const cut = (el: Element): boolean => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getBoundingClientRect().width > el.getBoundingClientRect().width + 0.05;
+  };
   const tops = [...document.querySelectorAll(".c-top")];
   if (tops.length !== 9) lines.push(`見出し: .c-top が ${tops.length} 個。見本は 9 つのはず（${label}）`);
   for (const top of tops) {
@@ -196,17 +202,23 @@ function topProblems({ height, titleMin, placeMin, boxes, label }: { height: num
     }
     // 広い幅は 補足 → 場所 → 題 の順に縮む: 題が省かれているなら、補足は残っておらず、場所は下限の幅
     const wideTitle = top.getAttribute("data-variant") === "wide" ? top.querySelector(".c-top-title") : null;
-    if (wideTitle !== null && wideTitle.scrollWidth > wideTitle.clientWidth) {
+    if (wideTitle !== null && cut(wideTitle)) {
       const rest = top.querySelector(":scope > .c-top-rest");
       if (rest !== null && rest.getBoundingClientRect().width >= 14) lines.push(`見出し: ${demo} の題が省かれているのに補足が ${rest.getBoundingClientRect().width.toFixed(1)} 残っている（${label}）`);
       const place = top.querySelector(".c-top-place");
       if (place !== null && Math.abs(place.getBoundingClientRect().width - placeMin) > 1) lines.push(`見出し: ${demo} の題が省かれているのに場所のボタンが ${place.getBoundingClientRect().width.toFixed(1)}。${placeMin} まで縮むはず（${label}）`);
     }
+    // 520px の Claude Code の形は、場所が縮めば題が全部入る
+    if (demo === "top-wide-cc" && wideTitle !== null && cut(wideTitle)) {
+      const range = document.createRange();
+      range.selectNodeContents(wideTitle);
+      lines.push(`見出し: ${demo} の題が省かれている（中身 ${range.getBoundingClientRect().width.toFixed(2)}・箱 ${wideTitle.getBoundingClientRect().width.toFixed(2)}。${label}）`);
+    }
     if (/-long$/.test(demo)) {
       const title = top.querySelector(".c-top-title");
       if (title === null) lines.push(`見出し: ${demo} に題が無い（${label}）`);
       else {
-        if (!(title.scrollWidth > title.clientWidth)) lines.push(`見出し: ${demo} の長い題が省かれていない（${label}）`);
+        if (!cut(title)) lines.push(`見出し: ${demo} の長い題が省かれていない（${label}）`);
         if (title.clientWidth < titleMin) lines.push(`見出し: ${demo} の題の幅 ${title.clientWidth}。${titleMin} 以上のはず（${label}）`);
       }
     }
