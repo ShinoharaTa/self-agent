@@ -4510,6 +4510,123 @@ test("web static: SA.top があると chat.js の render は列 2 の見出し�
   assert.ok(plain.querySelector("header.ed-toolbar")!.querySelector("button.ed-back"));
 });
 
+// ===== 古い描き方の [続ける]（古い殻と右腕。SA.talk が無い・frame のとき） =====
+/** 文が「続ける」の button を全部 */
+const continueButtons = (n: DomNode): DomNode[] => descendants(n).filter((d): d is DomNode => d instanceof DomNode && d.tagName === "button" && d.textContent === "続ける");
+/** 最後の article.msg の末尾の子 */
+const lastMsgTail = (box: DomNode): DomNode | undefined => {
+  const msgs = box.querySelectorAll("article.msg");
+  return msgs[msgs.length - 1]?.children.at(-1) as DomNode | undefined;
+};
+const stoppedTurns = () => [chatTurn(10, "owner", "a"), chatTurn(11, "agent", "x", { outcome: "max_turns", steps: ["a"] })];
+const sessionOf = { kind: "session", title: "t", state: "active" };
+
+test("web static: 古い描き方（SA.talk が無い）の [続ける] は最後の返事の .msg の末尾。セッションでない・実行中・最後の行でない・手順の上限でないなら出さない", () => {
+  const c = loadChat();
+  c.put("1", stoppedTurns(), sessionOf);
+  const box = c.box();
+  c.chat.render(box, "1");
+  const tail = lastMsgTail(box)!;
+  assert.ok(tail.classes.has("msg-actions"));
+  assert.deepEqual(
+    tail.buttons().map((b) => b.textContent),
+    ["続ける"],
+  );
+  assert.equal(continueButtons(box).length, 1);
+  const tl = box.querySelector("div.tl")!;
+  assert.equal((tl.children as DomNode[]).filter((n) => n.classes.has("msg-actions")).length, 0);
+  // 入口のチャンネル
+  c.put("2", stoppedTurns());
+  const inbox = c.box();
+  c.chat.render(inbox, "2");
+  assert.equal(continueButtons(inbox).length, 0);
+  // 後ろにオーナーの行
+  c.put("3", [...stoppedTurns(), chatTurn(12, "owner", "b")], sessionOf);
+  const after = c.box();
+  c.chat.render(after, "3");
+  assert.equal(continueButtons(after).length, 0);
+  // 手順の上限でない
+  c.put("4", [chatTurn(10, "owner", "a"), chatTurn(11, "agent", "x", { outcome: "done", steps: ["a"] })], sessionOf);
+  const done = c.box();
+  c.chat.render(done, "4");
+  assert.equal(continueButtons(done).length, 0);
+  // 実行中
+  setRunning(c, [{ channelId: "1", turnSeq: 1, toolCalls: 1, steps: [], abortable: true }]);
+  c.chat.render(box, "1");
+  assert.equal(continueButtons(box).length, 0);
+});
+
+test("web static: 右腕（frame）の [続ける] は SA.talk が在っても古い描き方で .msg の末尾", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  c.put("1", stoppedTurns(), sessionOf);
+  const box = c.box();
+  c.chat.render(box, "1", { title: "右腕", placeholder: "右腕に頼む・訊く" });
+  const tail = lastMsgTail(box)!;
+  assert.ok(tail.classes.has("msg-actions"));
+  assert.deepEqual(
+    tail.buttons().map((b) => b.textContent),
+    ["続ける"],
+  );
+  assert.equal(talk.draws.length, 0);
+});
+
+test("web static: 古い [続ける] を押すと /continue を 1 回送り、待つ間は disabled。受け付けたら refresh して次の描きで消え、409・404・ほかの失敗は文を出して押せる形に戻す", async () => {
+  const c = loadChat();
+  const SA = (c.context.window as { SA: Record<string, unknown> }).SA;
+  const posts: Array<{ path: string; body: unknown }> = [];
+  let settle: { res: (v: unknown) => void; rej: (e: unknown) => void } | null = null;
+  SA.api = {
+    post: (path: string, b: unknown) => {
+      posts.push({ path, body: b });
+      return new Promise((res, rej) => (settle = { res, rej }));
+    },
+  };
+  const press = () => {
+    const b = continueButtons(box)[0]!;
+    b.dispatch("click");
+    return b as DomNode & { disabled?: boolean };
+  };
+  // 失敗の 4 つ: 文を出し、押せる形に戻り、描き直してもボタンは在る
+  const failures: Array<[unknown, string]> = [
+    [{ status: 409, code: "running" }, "実行中のターンがあります"],
+    [{ status: 409 }, "この操作は古くなっています"],
+    [{ status: 404 }, "この操作は古くなっています"],
+    [{ status: 500, toast: "x" }, "x"],
+  ];
+  c.put("1", stoppedTurns(), sessionOf);
+  const box = c.box();
+  c.chat.render(box, "1");
+  for (const [err, text] of failures) {
+    const b = press();
+    assert.equal(b.disabled, true);
+    settle!.rej(err);
+    await c.flush();
+    assert.equal(c.toasts.at(-1), text);
+    assert.equal(b.disabled, false);
+    c.chat.render(box, "1");
+    assert.equal(continueButtons(box).length, 1);
+  }
+  assert.equal(posts.length, 4);
+  assert.ok(posts.every((p) => p.path === "/api/channels/1/continue" && JSON.stringify(p.body) === "{}"));
+  assert.deepEqual(c.refreshes, []);
+  // ほかの失敗の [もう一度] はもう 1 回送る
+  const retry = (c.toastOpts.at(-1) as { retry: () => void }).retry;
+  retry();
+  assert.equal(posts.length, 5);
+  settle!.rej({ status: 404 });
+  await c.flush();
+  // 受け付けた
+  const b = press();
+  assert.equal(b.disabled, true);
+  assert.equal(posts.length, 6);
+  settle!.res({ accepted: true });
+  await c.flush();
+  assert.deepEqual(c.refreshes, ["ch:1"]);
+  c.chat.render(box, "1");
+  assert.equal(continueButtons(box).length, 0);
+});
+
 // ===== 新しい殻の会話の行（chat.js が SA.talk に根と state を渡す。K4） =====
 type TalkFn = (...a: unknown[]) => unknown;
 type TalkState = {
