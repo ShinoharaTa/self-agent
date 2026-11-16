@@ -149,13 +149,19 @@ const TOP_TITLE_MIN = 80;
 const TOP_PLACE_MIN = 96;
 /** 見本の見出しの入れ物の幅（px。広い幅で全部を出せる下限 --c-top-full-min と、一覧の列 --c-list-w） */
 const TOP_BOX: Record<string, number> = { "c-gallery-top-full": 520, "c-gallery-top-list": 280 };
+/** 見本の見出しの data-demo（ページの順） */
+const TOP_DEMOS = [
+  "top-phone-talk", "top-phone-long", "top-phone-other",
+  "top-wide-talk", "top-wide-cc", "top-wide-long", "top-wide-short", "top-wide-other",
+  "top-compact-cc", "top-compact-long",
+];
 
 /**
  * 見本の見出しの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。
  * 高さ（--c-bar-h の値と箱の高さ）・1 段（直下の子が上下の中で左から右へ重ならずに並ぶ）・はみ出し・長い題の省き・場所のボタンの幅・
  * 幅を決めた入れ物の幅（広すぎて検査が空振りしない）・ページが横に動かない・広い幅の縮む順（補足 → 場所 → 題）・広い幅の題と状態の間。足りない物の文を返す
  */
-function topProblems({ height, titleMin, placeMin, boxes, label }: { height: number; titleMin: number; placeMin: number; boxes: Record<string, number>; label: string }): string[] {
+function topProblems({ height, titleMin, placeMin, boxes, demos, label }: { height: number; titleMin: number; placeMin: number; boxes: Record<string, number>; demos: string[]; label: string }): string[] {
   const lines: string[] = [];
   const doc = document.documentElement;
   if (doc.scrollWidth > doc.clientWidth) lines.push(`見出し: ページが横に動く（${doc.scrollWidth} > ${doc.clientWidth}。${label}）`);
@@ -166,7 +172,11 @@ function topProblems({ height, titleMin, placeMin, boxes, label }: { height: num
     return range.getBoundingClientRect().width > el.getBoundingClientRect().width + 0.05;
   };
   const tops = [...document.querySelectorAll(".c-top")];
-  if (tops.length !== 10) lines.push(`見出し: .c-top が ${tops.length} 個。見本は 10 のはず（${label}）`);
+  const names = tops.map((top) => top.closest("[data-demo]")?.getAttribute("data-demo") ?? "?");
+  const missing = demos.filter((name) => !names.includes(name));
+  const extra = names.filter((name) => !demos.includes(name));
+  if (missing.length > 0) lines.push(`見出し: 見本が無い: ${missing.join("・")}（${label}）`);
+  if (extra.length > 0) lines.push(`見出し: 知らない見本: ${extra.join("・")}（${label}）`);
   for (const top of tops) {
     const demo = top.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
     const r = top.getBoundingClientRect();
@@ -1121,7 +1131,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /** 見本の見出し（topProblems）を、今の字と、仮名が全角の等幅の字（MONO_CSS。終わったら外す）の 2 回測る */
   async function checkTops(page: Page, vp: Viewport): Promise<string[]> {
-    const args = { height: TOP_H[vp], titleMin: TOP_TITLE_MIN, placeMin: TOP_PLACE_MIN, boxes: TOP_BOX };
+    const args = { height: TOP_H[vp], titleMin: TOP_TITLE_MIN, placeMin: TOP_PLACE_MIN, boxes: TOP_BOX, demos: TOP_DEMOS };
     const lines = await page.evaluate(topProblems, { ...args, label: "今の字" });
     await page.evaluate((css: string) => {
       const sheet = new CSSStyleSheet();
