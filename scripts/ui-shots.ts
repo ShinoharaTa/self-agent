@@ -192,7 +192,12 @@ function composerProblems({ demos, phone, label }: { demos: string[]; phone: boo
     if (demo !== "eight" && demo !== "long-line" && ta.scrollHeight > ta.clientHeight + 1) say(`${demo} の欄が中で送れる（${ta.scrollHeight} > ${ta.clientHeight}）`);
     // 4. 写し
     const m = mirror.getBoundingClientRect();
-    if (getComputedStyle(mirror).visibility !== "hidden") say(`${demo} の写しが見えている`);
+    const ms = getComputedStyle(mirror);
+    if (ms.visibility !== "hidden") say(`${demo} の写しが見えている`);
+    // 箱は升に引き伸ばされて同じになるので、中の字の置き場（余白・枠の太さ・字・折り返し）も比べる
+    for (const prop of ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "fontFamily", "fontSize", "lineHeight", "whiteSpace", "overflowWrap", "boxSizing"] as const) {
+      if (ms[prop] !== cs[prop]) say(`${demo} の写しの ${prop} ${ms[prop]} が欄の ${cs[prop]} と違う`);
+    }
     if (![["left", m.left, r.left], ["top", m.top, r.top], ["width", m.width, r.width], ["height", m.height, r.height]].every(([, a, b]) => near(Number(a), Number(b), 0.5))) {
       say(`${demo} の写しの箱 ${m.left.toFixed(1)},${m.top.toFixed(1)} ${m.width.toFixed(1)}x${m.height.toFixed(1)} が欄 ${r.left.toFixed(1)},${r.top.toFixed(1)} ${r.width.toFixed(1)}x${r.height.toFixed(1)} と違う`);
     }
