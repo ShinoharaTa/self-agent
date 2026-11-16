@@ -1056,32 +1056,35 @@
     }
   }, 1000);
 
-  /** tabId は描き直すタブ（Claude Code のチャンネルの会話のタブから押したときは ch:<id>。CC14） */
+  /** tabId は描き直すタブ（Claude Code のチャンネルの会話のタブから押したときは ch:<id>。CC14）。通ったかに resolve する（既に送っている間は false） */
   function answerCcPermission(sessionId, p, decision, tabId) {
-    if (ccPermissionBusy.has(p.id)) return;
+    if (ccPermissionBusy.has(p.id)) return Promise.resolve(false);
     ccPermissionBusy.add(p.id);
     SA.app.refresh(tabId || "cc:" + sessionId);
-    SA.api.post("/api/cc/permissions/" + p.id + "/" + decision, { requestHash: p.requestHash }, { quiet: true }).then(
+    return SA.api.post("/api/cc/permissions/" + p.id + "/" + decision, { requestHash: p.requestHash }, { quiet: true }).then(
       () => {
         ccPermissionAlways.delete(p.id);
         toast(decision === "allow" ? "許可しました" : decision === "always" ? "このセッションでは常に許可しました" : "拒否しました");
+        return true;
       },
       (err) => {
         if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
         else if (err && err.status === 404) toast("この要求はもうありません");
         else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => answerCcPermission(sessionId, p, decision, tabId) });
+        return false;
       },
-    ).then(() => {
+    ).then((ok) => {
       ccPermissionBusy.delete(p.id);
       // プロジェクトのセッションの会話のタブ（kind session）のカードは /turns の channel から出す（docs/plan/unify.md §6.1 の 5）
       const ch = tabId && tabId.startsWith("ch:") ? SA.chat.channelById(tabId.slice(3)) : null;
       if (ch && ch.kind === "session") {
         store.load.turns(ch.id, { quiet: true });
         SA.app.refresh(tabId);
-        return;
+        return ok;
       }
       store.load.ccSession(sessionId);
       store.load.cc({ quiet: true });
+      return ok;
     });
   }
 
@@ -1162,15 +1165,16 @@
     return [ccPermissionEndText(p)];
   }
 
-  /** 質問の答えを送る（path は answer か deny） */
+  /** 質問の答えを送る（path は answer か deny）。通ったかに resolve する（既に送っている間は false） */
   function postCcQuestion(sessionId, p, path, body, tabId) {
-    if (ccPermissionBusy.has(p.id)) return;
+    if (ccPermissionBusy.has(p.id)) return Promise.resolve(false);
     ccPermissionBusy.add(p.id);
     SA.app.refresh(tabId || "cc:" + sessionId);
-    SA.api.post("/api/cc/permissions/" + p.id + "/" + path, body, { quiet: true }).then(
+    return SA.api.post("/api/cc/permissions/" + p.id + "/" + path, body, { quiet: true }).then(
       () => {
         ccQuestionDrafts.delete(p.id);
         toast(path === "answer" ? "答えました" : "答えませんでした");
+        return true;
       },
       (err) => {
         if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
@@ -1179,11 +1183,13 @@
         // 古い・無い要求の選んだ状態は使わない
         if (err && (err.status === 404 || err.status === 409)) ccQuestionForget(p.id);
         else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => postCcQuestion(sessionId, p, path, body, tabId) });
+        return false;
       },
-    ).then(() => {
+    ).then((ok) => {
       ccPermissionBusy.delete(p.id);
       store.load.ccSession(sessionId);
       store.load.cc({ quiet: true });
+      return ok;
     });
   }
 
