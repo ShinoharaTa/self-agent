@@ -6498,6 +6498,40 @@ test("web static: 会話の口が無い・Claude Code のチャンネル・右�
   assert.ok(boxB.querySelector("section.cc-permission"), "Claude Code のチャンネルの許可は古いカードのまま");
 });
 
+test("web static: 1 秒の刻みは pending の許可・質問が出ている話題のカードだけを描き、実行中のターンが無くても描く。隠れている間・許可の無い話題・SA.cards が無ければ描かない", () => {
+  const { c, SA, cards, talk } = cardsChat({ permission: permissionRequest(60, { sessionId: "sx" }) });
+  c.put("2", [chatTurn(10, "owner", "a")], { kind: "session", title: "u", state: "active" });
+  const other = c.box();
+  c.chat.render(other, "2");
+  c.put("3", [chatTurn(10, "owner", "a")], { kind: "session", title: "v", state: "active", permission: questionPermission(61, { sessionId: "sx" }) });
+  const third = c.box();
+  c.chat.render(third, "3");
+  // setInterval は chat.js（先に読む）と views.js の古い刻みの 2 つだけ（カードのために増やさない）
+  assert.equal(c.intervals.length, 2);
+  const tick = c.intervals[0]!;
+  const talks = talk.draws.length;
+  let n = cards.draws.length;
+  tick();
+  const drawn = cards.draws.slice(n).map((d) => d.root.getAttribute("data-cards"));
+  assert.deepEqual(drawn, ["1", "3"]);
+  assert.equal(talk.draws.length, talks, "会話は描かない");
+  // 隠れている間
+  n = cards.draws.length;
+  c.state.visibility = "hidden";
+  tick();
+  assert.equal(cards.draws.length, n);
+  c.state.visibility = "visible";
+  // 終わった許可は描かない
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active", permission: permissionRequest(60, { state: "allowed" }) });
+  tick();
+  assert.deepEqual(cards.draws.slice(n).map((d) => d.root.getAttribute("data-cards")), ["3"]);
+  // SA.cards が無ければ何もしない
+  n = cards.draws.length;
+  delete SA.cards;
+  tick();
+  assert.equal(cards.draws.length, n);
+});
+
 // ===== M2b のレビューの直し =====
 test("web static: v3 のシートを開くと、最初の押せる行に焦点がある（× でも押せない行でもない）", async () => {
   const h = loadShell();
