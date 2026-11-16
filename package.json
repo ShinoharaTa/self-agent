@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=${HOME}/.config/self-agent/env src/cli.ts start",
     "check": "tsc --noEmit",
-    "test": "node --test 'test/*.test.ts'",
+    "test": "node scripts/test.ts",
     "test:integration": "node --env-file-if-exists=${HOME}/.config/self-agent/env --test 'test/integration/*.test.ts'",
     "measure": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/measure-turn.ts",
     "devlog": "node --env-file-if-exists=${HOME}/.config/self-agent/env scripts/devlog.ts",
