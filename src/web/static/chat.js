@@ -1078,7 +1078,8 @@
           aborting.set(channelId, now.turnSeq);
           drawTalk(channelId);
           const ok = await abortTurn(channelId, now.turnSeq, null);
-          if (!ok) {
+          // 待つ間に別の実行の印に替わっていたら、その印は消さない
+          if (!ok && aborting.get(channelId) === now.turnSeq) {
             aborting.delete(channelId);
             drawTalk(channelId);
           }
