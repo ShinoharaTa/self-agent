@@ -2,6 +2,8 @@
 
 Web UI の部品（`src/web/static/c-*.js`）のために、次のライブラリを `src/web/static/vendor-*.js` に同梱している（`npm run vendor-web` が `node_modules` から写す。docs/plan/web-ui-components.md §8）。
 
+同梱の時に加えた変更: 裸の import の指定（`"preact"`）を `./vendor-preact.js` に書き換え・`sourceMappingURL` の行を削除・先頭にコメント 1 行（名前・版・ライセンス・著作権）。ほかは配布物のまま。
+
 ## preact 11.2.0
 
 - 同梱: `src/web/static/vendor-preact.js`（`dist/preact.mjs`）・`src/web/static/vendor-preact-hooks.js`（`hooks/dist/hooks.mjs`）
