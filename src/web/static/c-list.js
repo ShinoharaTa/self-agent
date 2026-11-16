@@ -8,6 +8,11 @@ export const TURN_LABEL = Object.freeze({ permission: "許可", question: "質�
 /** ?done= で出す完了の数（src/app/topics.ts の TOPICS_DONE_MAX） */
 export const DONE_MAX = 50;
 
+/** 種類の語。TURN_LABEL に無い種類は「あなたの番」 */
+export function turnWord(kind) {
+  return typeof kind === "string" && Object.hasOwn(TURN_LABEL, kind) ? TURN_LABEL[kind] : "あなたの番";
+}
+
 const NOTE_FAILED = "更新できませんでした。前の一覧を出しています";
 const NOTE_CC = "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります";
 const NOTE_NOHIT = "当たる話題がありません";
@@ -38,7 +43,7 @@ export function rowMark(topic, isUnread) {
 export function rowModel(topic, ctx) {
   const mark = rowMark(topic, ctx.isUnread);
   const state =
-    mark === "turn" && topic.turn ? { text: TURN_LABEL[topic.turn.kind], tone: "warning" } : mark === "running" ? { text: "作業中", tone: "accent" } : null;
+    mark === "turn" ? { text: turnWord(topic.turn && topic.turn.kind), tone: "warning" } : mark === "running" ? { text: "作業中", tone: "accent" } : null;
   return {
     id: topic.id,
     title: topic.title,
@@ -75,7 +80,7 @@ function item(id, title, turn, place, state) {
   return {
     id,
     title,
-    meta: TURN_LABEL[turn.kind] + "・" + state.ago(turn.since),
+    meta: turnWord(turn.kind) + "・" + state.ago(turn.since),
     sub: [place, turn.summary || ""].filter((s) => s !== "").join("・"),
     current: state.current === id,
   };
@@ -156,8 +161,9 @@ export function listModel(state) {
   const words = filterWords(state.filter);
   const filtering = words.length > 0;
 
-  // 「あなたの番」は絞り込まない
-  const items = data.turnIds.map((id) => turnItem(id, state)).filter((t) => t !== null);
+  // 「あなたの番」は絞り込まない。turnIds が配列でなければ空、同じ id は最初の 1 つだけ（key を重ねない）
+  const ids = Array.isArray(data.turnIds) ? [...new Set(data.turnIds)] : [];
+  const items = ids.map((id) => turnItem(id, state)).filter((t) => t !== null);
   const turns =
     data.turns === 0 || items.length === 0
       ? null

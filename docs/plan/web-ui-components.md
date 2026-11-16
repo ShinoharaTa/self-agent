@@ -203,7 +203,7 @@
 | Confirm | 同 | title、target、body、okLabel、danger、onOk、onCancel | なし | 危ない側を primary にしない |
 | Toast | 同 | items | なし | `aria-live`。今の `SA.ui.toast` はここへ渡す橋にする |
 | TopBar | `c-shell.js` / `.css` | view（list・talk・other）、title、status、place、onBack、onPlace、onMenu、onHand | なし | **1 段**。スマホ 56・PC 52。safe-area の上を含む（D1） |
-| BottomBar | 同 | turnCount、active、onList、onHand、onOther | なし | 64px + safe-area の下。中央の右腕は accent（D7） |
+| BottomBar | 同 | turnCount、active、onList、onHand、onOther | なし | 64px + safe-area の下。中央の右腕は accent（D7）。スマホは「一覧」「ほか」が中身の幅（下限 `--c-bottom-h`）で、右腕が残りを全部取る（K3a） |
 | TopicList | `c-list.js` / `.css` | turns、groups、currentId、filter、onOpen、onNew、onAnswer | 群の開閉（localStorage は入口が持つ） | 左端 16px で揃える（D6） |
 | YourTurn（あなたの番） | 同 | items（題・種類・何を訊かれているか・時刻・その場で答えられるか） | なし | **warning の枠のカード**。0 件のときは出さない。その場のボタンは許可・拒否 / 選択肢 / [開く]（D5） |
 | GroupHead | 同 | name、turnCount、running、collapsed、onToggle、onNew | なし | 36px。[+] は 44 の当たり |
@@ -348,6 +348,13 @@
 **K3 一覧**（K3a 済。#393: 一覧と下のバーの部品 `c-list`・`c-shell` とモデルのテスト・見本の節。本番の `v3.html` への載せ替えは K3b）
 - やること: `c-list.js/.css`・BottomBar。`topics.js` の `rowParts`・`turnParts`・`reconcile`・`fillRow`・`createRow`・`updateRow` を消し、描画を部品へ渡す（`load`・`schedule`・`find`・`counts`・`setFilter`・`setCurrent` は残す）。`v3.html` の `.v3-hand-entry`・`.v3-list-foot` を BottomBar に替える。`c-app.js` は `shell.js` より前に読む（F11）。
 - 受け入れ: (1) 「あなたの番」が 1 件以上のとき warning の枠のカードが一覧の先頭に出て、0 件のとき出ない。(2) 許可待ちの項目はカードの中で [許可]・[拒否] が押せ、押すと今と同じ API が呼ばれる（モデルのテスト + 偽の onAnswer）。(3) 「あなたの番」に出た項目は下の群で印（warning）だけになり、副次行を持たない。(4) 見出し・群の名前・行の印の左端が同じ x（画面写しで確かめる）。(5) 下のバーは 1 本で、中央が右腕、左に「一覧 n」、右に「ほか」。最後の行がバーに隠れない。(6) 一覧を 1 行足して描き直しても、既にある行の DOM ノードが同じ（ブラウザで 1 回確かめて PR に書く）。(7) 消した関数を見ていたテストは消し、同じ意味を `import` のテストで置き換える（数を PR に書く）。(8) `/` は変わらない。
+
+- K3b への申し送り（K3a のレビュー）:
+  - 入口は `/api/topics` の応答のうち `turnIds` が配列だと確かめた物だけを `data` に渡す（部品の側も配列でなければ空とみなす）。
+  - `isUnread` は `(channelId, last)` の形（`ch:` を外した ID）に入口で合わせる（今の `store.isUnread({ id, last })` とは形が違う）。
+  - 同じ `data-topic` が「あなたの番」（`c-turn`）と群の行（`c-row[data-mark]`）の両方に出るので、描き直しの後にフォーカスを戻すときは `data-mark` の付いた行を先に探す。
+  - ↑↓・Home・End でフォーカスを動かすのは入口（部品は `listKey` で行き先の番号を返すだけ）。
+  - 群の `section[aria-label]` が読み上げのランドマーク（region）になる事を実機の VoiceOver で確かめる。
 
 **K4 会話の見出し + 吹き出し**
 - やること: TopBar（1 段）、`c-talk.js/.css`。`chat.js` の `render` の先頭に、部品が登録されていればそちらへ渡す分岐を 1 つ足す。`chat.js` の `header`・`frameHeader`・`bubbleRow`・`renderTurn`・`renderRunning`・`stepsList` に当たる物を部品で作る（古い関数は古い殻のために残す）。
