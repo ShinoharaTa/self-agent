@@ -4600,8 +4600,11 @@ test("web static: 古い [続ける] を押すと /continue を 1 回送り、�
   for (const [err, text] of failures) {
     const b = press();
     assert.equal(b.disabled, true);
+    const shown = c.toasts.length;
     settle!.rej(err);
     await c.flush();
+    // 文は 1 回ずつ出る（前の失敗の同じ文が残っているだけ、を通さない）
+    assert.equal(c.toasts.length, shown + 1);
     assert.equal(c.toasts.at(-1), text);
     assert.equal(b.disabled, false);
     c.chat.render(box, "1");
@@ -5002,8 +5005,10 @@ test("web static: SA.talk の on.continue は /continue を 1 回だけ送り、
     assert.equal(JSON.stringify(posts.at(-1)), JSON.stringify({ path: "/api/channels/1/continue", body: {} }));
     assert.equal(lastDraw(talk).state.continueBusy, true);
     assert.equal(c.refreshes.length, refreshes);
+    const shown = c.toasts.length;
     settle!.rej(err);
     await first;
+    assert.equal(c.toasts.length, shown + 1);
     assert.equal(c.toasts.at(-1), text);
     assert.deepEqual([lastDraw(talk).state.continueKey, lastDraw(talk).state.continueBusy], ["11", false]);
   }
