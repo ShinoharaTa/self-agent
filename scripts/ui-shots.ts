@@ -1698,7 +1698,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await shot(page, handName);
         if (vp !== "phone") {
           await load(page, `/static/v3.html#/ch/${open}`);
-          await page.waitForSelector("#ed .msg-agent", { timeout: 5000 });
+          await page.waitForSelector('#ed .c-msg[data-who="agent"]', { timeout: 5000 });
           await wait(800);
           await shot(page, `${p}-c-hand-with-chat`);
         }
