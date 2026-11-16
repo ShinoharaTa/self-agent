@@ -1705,6 +1705,234 @@ test("web static: 質問のカードは cc: と ch: のタブで選んだ状態�
   assert.equal(optionInput(views.ccPermissionCard("s1", p, null)!, "青").checked, false);
 });
 
+// ===== 新しい殻のカードの出口（views.js の SA.views.ccAsk。DOM を作らない） =====
+type AskItem = Record<string, unknown> & { questions?: Array<Record<string, unknown>> };
+type CcAsk = {
+  item: (sessionId: string, p: unknown) => AskItem | null;
+  always: (id: number, checked: boolean) => void;
+  pick: (p: unknown, index: number, label: string, checked: boolean) => void;
+  pickOther: (p: unknown, index: number, checked: boolean) => void;
+  other: (p: unknown, index: number, value: string) => void;
+  permit: (sessionId: string, p: unknown, decision: string, tabId?: string) => Promise<boolean>;
+  answer: (sessionId: string, p: unknown, tabId?: string) => Promise<boolean>;
+  dismiss: (sessionId: string, p: unknown, tabId?: string) => Promise<boolean>;
+};
+
+function askOf(views: unknown): CcAsk {
+  return (views as { ccAsk: CcAsk }).ccAsk;
+}
+
+function permissionRequest(id: number, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    state: "pending",
+    toolName: "Bash",
+    summary: "ls -la",
+    permissionMode: "acceptEdits",
+    expiresAt: new Date(Date.now() + 600000).toISOString(),
+    requestHash: "h" + id,
+    alwaysRule: "Bash(ls:*)",
+    alwaysNote: "ls で始まるコマンド",
+    ...extra,
+  };
+}
+
+test("web static: ccAsk.item は保留中の許可から許可の項目を作る（ルールが無ければ空・残り 60 秒未満で urgent）", () => {
+  const { views } = loadViews();
+  const ask = askOf(views);
+  const item = ask.item("s1", permissionRequest(50))!;
+  assert.deepEqual(Object.keys(item).sort(), ["always", "busy", "id", "kind", "left", "mode", "rule", "ruleNote", "summary", "tool", "urgent"]);
+  assert.equal(item.kind, "permission");
+  assert.equal(item.id, 50);
+  assert.equal(item.tool, "Bash");
+  assert.match(String(item.mode), /^acceptEdits/);
+  assert.equal(item.summary, "ls -la");
+  assert.equal(item.rule, "Bash(ls:*)");
+  assert.equal(item.ruleNote, "ls で始まるコマンド");
+  assert.match(String(item.left), /^残り /);
+  assert.equal(item.urgent, false);
+  assert.equal(item.always, false);
+  assert.equal(item.busy, false);
+  const bare = ask.item("s1", permissionRequest(51, { alwaysRule: null, alwaysNote: undefined, permissionMode: null, summary: null, expiresAt: new Date(Date.now() + 30000).toISOString() }))!;
+  assert.equal(bare.rule, "");
+  assert.equal(bare.ruleNote, "");
+  assert.equal(bare.mode, "");
+  assert.equal(bare.summary, "");
+  assert.equal(bare.urgent, true, "残り 60 秒未満");
+  assert.match(String(bare.left), /^残り /);
+});
+
+test("web static: ccAsk.item は保留中の質問から質問の項目を作り、一覧に無いセッションでは who が空", () => {
+  const { views } = loadViews();
+  const ask = askOf(views);
+  const item = ask.item("s1", questionPermission(60, { permissionMode: "default" }))!;
+  assert.equal(item.kind, "question");
+  assert.equal(item.id, 60);
+  assert.match(String(item.who), /^web-ui ・ /, "一覧に在ればセッションの名前とモード");
+  assert.match(String(item.left), /^残り /);
+  assert.equal(item.urgent, false);
+  assert.equal(item.busy, false);
+  assert.equal(item.ready, false);
+  assert.equal("tool" in item, false, "ツール名は出さない");
+  assert.deepEqual(JSON.parse(JSON.stringify(item.questions)), [
+    {
+      legend: "色",
+      text: "どの色にしますか",
+      multi: false,
+      options: [{ label: "赤", description: "目立つ" }, { label: "青", description: "" }],
+      picked: [],
+      other: false,
+      otherText: "",
+    },
+    {
+      legend: "問 2",
+      text: "どれを入れますか",
+      multi: true,
+      options: [{ label: "A", description: "" }, { label: "B", description: "" }, { label: "C", description: "" }],
+      picked: [],
+      other: false,
+      otherText: "",
+    },
+  ]);
+  assert.equal(ask.item("s9", questionPermission(61))!.who, "", "一覧に無いセッション（プロジェクトのセッション）");
+});
+
+test("web static: ccAsk.item は保留中でない・id が数でない・要求が無いと null", () => {
+  const ask = askOf(loadViews().views);
+  assert.equal(ask.item("s1", null), null);
+  assert.equal(ask.item("s1", undefined), null);
+  assert.equal(ask.item("s1", permissionRequest(52, { state: "allowed" })), null);
+  assert.equal(ask.item("s1", questionPermission(62, { state: "denied" })), null);
+  assert.equal(ask.item("s1", permissionRequest(52, { id: "52" })), null);
+});
+
+test("web static: ccAsk.always で入れると次の item の always が true、外すと false", () => {
+  const ask = askOf(loadViews().views);
+  const p = permissionRequest(53);
+  ask.always(53, true);
+  assert.equal(ask.item("s1", p)!.always, true);
+  ask.always(53, false);
+  assert.equal(ask.item("s1", p)!.always, false);
+});
+
+test("web static: ccAsk の選び方（1 つ選ぶ形は入れ替え、「その他」と選択肢は同時に選べない。複数は足し引き）", () => {
+  const ask = askOf(loadViews().views);
+  const p = questionPermission(63);
+  const q = (i: number) => JSON.parse(JSON.stringify(ask.item("s1", p)!.questions![i]!));
+  // 1 つ選ぶ形
+  ask.pick(p, 0, "赤", true);
+  assert.deepEqual(q(0).picked, ["赤"]);
+  ask.pick(p, 0, "青", true);
+  assert.deepEqual(q(0).picked, ["青"], "入れ替わる");
+  ask.pickOther(p, 0, true);
+  assert.deepEqual(q(0).picked, []);
+  assert.equal(q(0).other, true);
+  ask.pick(p, 0, "赤", true);
+  assert.equal(q(0).other, false, "選択肢を選ぶと「その他」は外れる");
+  assert.deepEqual(q(0).picked, ["赤"]);
+  // 複数選ぶ形
+  ask.pick(p, 1, "C", true);
+  ask.pick(p, 1, "A", true);
+  assert.deepEqual(q(1).picked, ["C", "A"]);
+  ask.pick(p, 1, "C", false);
+  assert.deepEqual(q(1).picked, ["A"]);
+  ask.pickOther(p, 1, true);
+  assert.deepEqual(q(1).picked, []);
+  assert.equal(q(1).other, true);
+  ask.pickOther(p, 1, false);
+  assert.equal(q(1).other, false, "複数選ぶ形の「その他」は外せる");
+  // 範囲の外は何もしない
+  ask.pick(p, 2, "赤", true);
+  ask.pickOther(p, -1, true);
+  ask.other(p, 5, "x");
+  assert.deepEqual(q(0).picked, ["赤"]);
+  assert.equal(ask.item("s1", p)!.questions!.length, 2);
+});
+
+test("web static: ccAsk.other の文は otherText に入り、1 字以上で ready、空白だけ・1,001 字では ready でない", () => {
+  const ask = askOf(loadViews().views);
+  const p = questionPermission(64, { question: { questions: [QUESTIONS[0]], answers: null } });
+  ask.pickOther(p, 0, true);
+  assert.equal(ask.item("s1", p)!.ready, false, "空では答えられない");
+  ask.other(p, 0, "x");
+  assert.equal(ask.item("s1", p)!.questions![0]!.otherText, "x");
+  assert.equal(ask.item("s1", p)!.ready, true);
+  ask.other(p, 0, "   ");
+  assert.equal(ask.item("s1", p)!.questions![0]!.otherText, "   ");
+  assert.equal(ask.item("s1", p)!.ready, false);
+  ask.other(p, 0, "あ".repeat(1001));
+  assert.equal(ask.item("s1", p)!.ready, false);
+  ask.other(p, 0, "あ".repeat(1000));
+  assert.equal(ask.item("s1", p)!.ready, true);
+});
+
+test("web static: ccAsk.permit は decision の道へ requestHash を送り、通ったかに resolve する。送っている間は busy で、2 回目は送らず false", async () => {
+  const { views, posts, bodies, setReply } = loadViews();
+  const ask = askOf(views);
+  for (const [id, decision] of [[54, "allow"], [55, "always"], [56, "deny"]] as const) {
+    assert.equal(await ask.permit("s1", permissionRequest(id), decision), true);
+    assert.equal(posts.at(-1), "/api/cc/permissions/" + id + "/" + decision);
+    assert.deepEqual(JSON.parse(JSON.stringify(bodies.at(-1))), { requestHash: "h" + id });
+  }
+  for (const status of [409, 404, 500]) {
+    setReply(() => Promise.reject(Object.assign(new Error("x"), { status })));
+    assert.equal(await ask.permit("s1", permissionRequest(57), "allow"), false, String(status));
+  }
+  // 送っている間
+  let release: (v: unknown) => void = () => undefined;
+  setReply(() => new Promise((r) => (release = r)));
+  const p = permissionRequest(58);
+  const first = ask.permit("s1", p, "allow");
+  assert.equal(ask.item("s1", p)!.busy, true);
+  const sent = posts.length;
+  assert.equal(await ask.permit("s1", p, "deny"), false, "既に送っている間は false");
+  assert.equal(posts.length, sent, "2 回目は送らない");
+  release({});
+  assert.equal(await first, true);
+  assert.equal(ask.item("s1", p)!.busy, false);
+});
+
+test("web static: ccAsk.answer は答えていない問が在れば送らず false、在れば /answer に問の順の answers。dismiss は /deny", async () => {
+  const { views, posts, bodies, setReply } = loadViews();
+  const ask = askOf(views);
+  const p = questionPermission(65);
+  ask.pick(p, 0, "青", true);
+  assert.equal(await ask.answer("s1", p), false);
+  assert.equal(posts.length, 0, "送らない");
+  ask.pick(p, 1, "C", true);
+  ask.pick(p, 1, "A", true);
+  assert.equal(await ask.answer("s1", p), true);
+  assert.deepEqual(posts, ["/api/cc/permissions/65/answer"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(bodies[0])), { requestHash: "qh", answers: [{ labels: ["青"] }, { labels: ["A", "C"] }] });
+  // 「その他」は前後の空白を除く
+  const p2 = questionPermission(66);
+  ask.pickOther(p2, 0, true);
+  ask.other(p2, 0, "  紫  ");
+  ask.pick(p2, 1, "B", true);
+  assert.equal(await ask.answer("s1", p2), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(bodies[1])), { requestHash: "qh", answers: [{ other: "紫" }, { labels: ["B"] }] });
+  assert.equal(await ask.dismiss("s1", questionPermission(67)), true);
+  assert.equal(posts.at(-1), "/api/cc/permissions/67/deny");
+  assert.deepEqual(JSON.parse(JSON.stringify(bodies.at(-1))), { requestHash: "qh" });
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 409 })));
+  assert.equal(await ask.dismiss("s1", questionPermission(68)), false);
+});
+
+test("web static: ccAsk と古い質問のカードは同じ覚え（片方で選んだものがもう片方に出る）", () => {
+  const { views } = loadViews();
+  const ask = askOf(views);
+  const p = questionPermission(69);
+  ask.pick(p, 0, "青", true);
+  const card = views.ccPermissionCard("s1", p, null)!;
+  assert.equal(optionInput(card, "青").checked, true, "ccAsk で選んだものが古いカードに出る");
+  pick(optionInput(card, "B"));
+  assert.deepEqual(JSON.parse(JSON.stringify(ask.item("s1", p)!.questions![1]!.picked)), ["B"], "古いカードで選んだものが item に出る");
+  ask.always(70, true);
+  const permCard = views.ccPermissionCard("s1", permissionRequest(70), null)!;
+  const box = descendants(permCard).find((n) => n.tagName === "input")! as FakeNode & { checked: boolean };
+  assert.equal(box.checked, true, "常に許可のチェックも同じ覚え");
+});
+
 test("web static: placeChildren は中に残る要素を動かさず（外さず）、ほかを前後に差し込む", () => {
   const { views } = loadViews();
   const box = new FakeNode("div");
