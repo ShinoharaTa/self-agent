@@ -1,6 +1,6 @@
 // 新しい殻（v3.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
 // SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
-// 下のバー（描くのは入口 c-app.js）と「ほか」の板・接続の点と鈴・絞り込み・一覧のキー・[会話][端末]、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの口（上の帯の [右腕] と下のバー）・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、帯の「場所 ∨」（シートと確認。§6.3 の M5）
+// 下のバー（描くのは入口 c-app.js）と「ほか」の板・接続の点と鈴・絞り込み・一覧のキー、列 2 の見出し（描くのは入口 c-app.js の SA.top。[会話][端末]・場所・「…」の板。K4）、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの口（見出しの [右腕] と下のバー）・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、場所を変える（シートと確認。§6.3 の M5）
 "use strict";
 
 (function () {
@@ -195,54 +195,82 @@
     if (info && info.onOpen) info.onOpen();
   }
 
-  /** [会話][端末] の切り替え（ボタンは 1 度だけ作り、押した状態だけ合わせる） */
-  function renderViews() {
-    const box = $("v3-views");
-    if (!box) return;
-    const sessionId = paneSession();
-    // 出せなくなったら会話に戻す
-    if (!sessionId && S.view2 === "pane") S.view2 = "talk";
-    box.hidden = !sessionId;
-    if (!sessionId) return;
-    if (box.children.length === 0) {
-      for (const [view, label] of [
-        ["talk", "会話"],
-        ["pane", "端末"],
-      ]) {
-        const b = el("button", { type: "button", "data-view": view, text: label });
-        b.addEventListener("click", () => setView2(view));
-        box.append(b);
-      }
-    }
-    for (const b of Array.from(box.children)) {
-      const pressed = String(b.getAttribute("data-view") === S.view2);
-      if (b.getAttribute("aria-pressed") !== pressed) b.setAttribute("aria-pressed", pressed);
-    }
+  /** 見出しの押した先（1 回だけ作り、毎回同じ物を渡す） */
+  const TOP_ON = {
+    back: () => openDrawer(),
+    place: (opener) => openPlace(opener),
+    view: (value) => setView2(value),
+    menu: (opener) => openTopMenu(opener),
+    hand: (opener) => openHand(opener, false),
+  };
+
+  /** 列 2 に出している会話のチャンネルの見出しの中身（chat.js の head）。会話でなければ null */
+  function topHead() {
+    return S.active && S.active.startsWith("ch:") && SA.chat.head ? SA.chat.head(S.active.slice(3)) : null;
   }
 
-  /** 列 2 の上の帯（「場所 ∨」のボタン。movable が true でなければ押せず、理由を title に）と [会話][端末]。ボタンと中の要素は作り直さない */
-  function renderBar() {
-    const bar = $("v3-bar");
-    if (!bar) return;
-    const t = S.active ? SA.topics.find(S.active) : null;
-    renderViews();
-    const place = $("v3-place");
-    if (!t) {
-      // スマホは [右腕] を出すため、話題でない画面でも帯を残す（「場所」は隠す）
-      bar.hidden = !(phone() && S.active !== null);
-      place.hidden = true;
-      return;
+  /** 見出しに渡す state（入口 c-app.js の TopBar の props）。何も開いていなければ view: none */
+  function topState() {
+    const info = S.active ? SA.views.info(S.active) : null;
+    if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, menu: false, controls: "v3-hand", on: TOP_ON };
+    const t = SA.topics.find(S.active) || null;
+    const head = topHead();
+    let status = null;
+    if (t) {
+      if (t.mark === "turn") status = { text: "あなたの番", tone: "warning" };
+      else if (t.mark === "running") status = { text: "作業中", tone: "accent" };
+      else status = head ? head.status : null;
     }
-    bar.hidden = false;
-    place.hidden = false;
-    const text = "場所: " + placeText(t);
-    if (refs.placeText.textContent !== text) refs.placeText.textContent = text;
-    const movable = t.movable === true;
-    if (place.disabled !== !movable) place.disabled = !movable;
-    const reason = !movable && t.movable && typeof t.movable.reason === "string" ? t.movable.reason : null;
-    if (reason !== null) {
-      if (place.getAttribute("title") !== reason) place.setAttribute("title", reason);
-    } else if (place.getAttribute("title") !== null) place.removeAttribute("title");
+    return {
+      view: t ? "talk" : "other",
+      title: t && typeof t.title === "string" && t.title !== "" ? t.title : info.title || "",
+      status,
+      note: head ? head.note : null,
+      place: t
+        ? {
+            text: placeText(t),
+            movable: t.movable === true,
+            reason: t.movable !== true && t.movable && typeof t.movable.reason === "string" ? t.movable.reason : null,
+          }
+        : null,
+      views: paneSession() !== null ? { value: S.view2 } : null,
+      hand: handMark(),
+      menu: t !== null && (phone() || (head !== null && head.menu.length > 0)),
+      controls: "v3-hand",
+      on: TOP_ON,
+    };
+  }
+
+  /** 列 2 の見出し（描くのは入口 c-app.js）。描けなければ題だけの形で 1 回だけ描き直す。入口が無ければ何もしない（chat.js・views.js が今の見出しを描く） */
+  function renderBar() {
+    // [端末] を出せなくなったら会話に戻す（入口が無くても）
+    if (paneSession() === null && S.view2 === "pane") S.view2 = "talk";
+    if (!SA.top) return;
+    const st = topState();
+    if (SA.top.draw(st)) return;
+    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, menu: false, controls: "v3-hand", on: TOP_ON });
+  }
+
+  /** 見出しの「…」の板: スマホは場所を変える・[会話][端末] の代わりを先頭に、後ろにチャンネルの操作（head.menu） */
+  function openTopMenu(opener) {
+    const t = S.active ? SA.topics.find(S.active) : null;
+    if (!t) return;
+    const head = topHead();
+    const items = [];
+    if (phone()) {
+      items.push({
+        icon: "pencil",
+        label: "場所を変える",
+        run: t.movable === true ? () => openPlace(opener) : null,
+        why: t.movable !== true && t.movable && typeof t.movable.reason === "string" ? t.movable.reason : "",
+      });
+      if (paneSession() !== null) {
+        items.push(S.view2 === "pane" ? { icon: "chevron-left", label: "会話に戻る", run: () => setView2("talk") } : { icon: "terminal", label: "端末を見る", run: () => setView2("pane") });
+      }
+    }
+    if (head) items.push(...head.menu);
+    if (items.length === 0) return;
+    openSheet(topState().title + " の操作", items, opener);
   }
 
   /** 話題の「場所」の文字（帯と札で同じ決め方）。群 general は General のセッションなら「General」、場所の無い軽いセッションは「なし」 */
@@ -350,10 +378,12 @@
     if (info.onOpen) info.onOpen();
     // 一覧（/api/channels）にまだ無いチャンネル（/api/topics で先に知った話題）は、見出しのために 1 回読む
     if (tabId.startsWith("ch:") && !SA.chat.channelById(tabId.slice(3))) SA.store.load.channels({ quiet: true });
-    // スマホは一覧が隠れるので、見出しの [‹] に焦点
+    // スマホは一覧が隠れるので、見出しの「一覧へ」に焦点（入口が無ければ今の見出しの [‹]）
     if (phone()) {
-      const back = $("ed").querySelector(".ed-back");
-      if (back) back.focus({ preventScroll: true });
+      if (!(SA.top && SA.top.focus("back"))) {
+        const back = $("ed").querySelector(".ed-back");
+        if (back) back.focus({ preventScroll: true });
+      }
     } else if (focusInHand) {
       // 畳んだ右腕の中にあった焦点は列 2 の側へ（入力欄が無ければ一覧の開いた行）
       const input = $("ed").querySelector("textarea.composer-input");
@@ -362,13 +392,15 @@
     }
   }
 
-  /** tabId が列 2 に出ていれば中身だけ描き直す */
+  /** tabId が列 2 に出ていれば見出しと中身だけ描き直す */
   function refresh(tabId) {
     if (tabId !== null && tabId === handTab()) {
       renderHand();
       return;
     }
     if (shownTabId() !== tabId) return;
+    // チャンネルの状態が変わったときに見出しも合わせる
+    renderBar();
     const ed = $("ed");
     if (ed) renderEd(ed, tabId);
   }
@@ -615,7 +647,12 @@
       if (SA.list) SA.list.focusHand();
       return;
     }
-    target = $(!phone() ? "v3-hand-show" : "v3-hand-open");
+    // スマホは見出しの [右腕]、広い幅は畳んだ帯
+    if (phone()) {
+      if (SA.top) SA.top.focus("hand");
+      return;
+    }
+    target = $("v3-hand-show");
     if (target) target.focus();
   }
 
@@ -636,17 +673,12 @@
     return null;
   }
 
-  function handDot(mark, labelled) {
+  function handDot(mark) {
     if (!mark) return null;
-    return el("span", {
-      class: "dot " + (mark === "turn" ? "dot-warn" : "dot-unread"),
-      role: labelled ? "img" : undefined,
-      "aria-label": labelled ? HAND_MARK_TEXT[mark] : undefined,
-      "aria-hidden": labelled ? undefined : "true",
-    });
+    return el("span", { class: "dot " + (mark === "turn" ? "dot-warn" : "dot-unread"), "aria-hidden": "true" });
   }
 
-  /** 2 つの口（畳んだ帯・上の帯）の中身。印が前と同じなら触らない。一覧の下は下のバー */
+  /** 畳んだ帯の口の中身（印が前と同じなら触らない）と、下のバー・見出しの右腕の印 */
   function renderHandEntries() {
     const mark = handMark();
     const sig = String(mark);
@@ -660,11 +692,12 @@
       const label = "右腕を開く" + (mark ? "（" + HAND_MARK_TEXT[mark] + "）" : "");
       b.setAttribute("aria-label", label);
       b.setAttribute("title", label);
-      b.replaceChildren(...[icon("bot"), handDot(mark, false)].filter(Boolean));
+      b.replaceChildren(...[icon("bot"), handDot(mark)].filter(Boolean));
     });
-    fill("v3-hand-open", (b) => b.replaceChildren(...[el("span", { text: "右腕" }), handDot(mark, true)].filter(Boolean)));
     // 下のバーは毎回（件数は印と別に変わる）
     renderBottom(mark);
+    // 見出しの [右腕] の印（スマホ）
+    renderBar();
   }
 
   /** 話題の一覧を読むたびに: 列 2 に右腕のチャンネルが出ていたら右腕へ移し、右腕が変わっていたら描き直し、口を描く */
@@ -1102,7 +1135,7 @@
     });
   }
 
-  // ===== 場所を変える（列 2 の帯の「場所 ∨」→ シート → 確認 → POST /api/topics/ch:<id>/place。docs/plan/web-ui-v3.md §6.3 の M5） =====
+  // ===== 場所を変える（列 2 の見出しの場所のボタンか「…」の板 → シート → 確認 → POST /api/topics/ch:<id>/place。docs/plan/web-ui-v3.md §6.3 の M5） =====
   // 断りの文（応答の error ごと）。サーバーの moveRefusalText（src/app/topic-move.ts の REFUSAL_TEXT）と同じ文。片方を直したらもう片方も直す
   const PLACE_ERRORS = {
     busy: "担当が作業中です。終わってから変えてください",
@@ -1138,7 +1171,7 @@
     openSheet("場所を変える", items, opener);
   }
 
-  /** 確認。閉じたら（[変える]・[やめる]・Escape）場所のボタンに焦点を戻す */
+  /** 確認。閉じたら（[変える]・[やめる]・Escape）見出しの場所のボタン（スマホは「…」）に焦点を戻す */
   function confirmPlace(id, place) {
     const t = SA.topics.find(id);
     if (!t) return;
@@ -1150,8 +1183,7 @@
     const dialog = $("dlg-confirm");
     const back = () => {
       dialog.removeEventListener("close", back);
-      const button = $("v3-place");
-      if (button && document.contains(button) && !button.disabled && !button.hidden) button.focus();
+      if (SA.top) SA.top.focus("place") || SA.top.focus("menu");
     };
     dialog.addEventListener("close", back);
   }
@@ -1219,8 +1251,9 @@
   /** 下のバー（描くのは入口 c-app.js。形は入口が幅で決める）。mark は handMark() の値。描けなければ件数・印・タブの無い形で 1 回だけ描き直す */
   function renderBottom(mark) {
     if (!SA.list) return;
-    const ok = SA.list.drawBar({ turns: SA.topics.counts().turns, hand: mark, tabs: barTabs(), on: BAR_ON });
-    if (!ok) SA.list.drawBar({ turns: 0, hand: null, tabs: [], on: BAR_ON });
+    // controls は右腕のボタンの aria-controls（見出しの [右腕] と同じ先）
+    const ok = SA.list.drawBar({ turns: SA.topics.counts().turns, hand: mark, tabs: barTabs(), controls: "v3-hand", on: BAR_ON });
+    if (!ok) SA.list.drawBar({ turns: 0, hand: null, tabs: [], controls: "v3-hand", on: BAR_ON });
   }
 
   // ===== 接続の点と鈴（今の殻の renderTitleStatus と同じ中身。幅によらず画面を開く） =====
@@ -1427,11 +1460,6 @@
       SA.topics.render();
     }
     refs.searchBox = $("v3-search-box");
-    // 帯の「場所 ∨」（中身は 1 回だけ作る。renderBar は文字・無効・title・hidden だけを書く）
-    const place = $("v3-place");
-    refs.placeText = el("span", { class: "v3-place-text" });
-    place.replaceChildren(refs.placeText, icon("chevron-down"));
-    place.addEventListener("click", () => openPlace(place));
 
     S.theme = THEMES.includes(load("theme", "dark")) ? load("theme", "dark") : "dark";
     applyTheme();
@@ -1446,7 +1474,7 @@
     mqPhone.addEventListener("change", () => {
       setView(S.active ? "body" : "list");
       fitViewport();
-      // 帯を先に（右腕が閉じて焦点を戻す先の [右腕] が帯の中にある）
+      // 見出しを先に（右腕が閉じて焦点を戻す先の [右腕] が見出しの中にある）
       renderBar();
       fitHand();
       // 列 2 が見えるようになったときの既読（setView は切り替わった後の phone() で測るので、ここで付け直す。隠れた会話は readingChannelIds が外す）
@@ -1485,14 +1513,9 @@
       if (tabId && tabId !== S.active && SA.views.info(tabId)) open(tabId);
     });
     document.addEventListener("keydown", onKey);
-    // 右腕の 2 つの口と backdrop（下のバーの右腕のボタンは BAR_ON.hand）
-    for (const [id, focusInput] of [
-      ["v3-hand-show", false],
-      ["v3-hand-open", false],
-    ]) {
-      const b = $(id);
-      if (b) b.addEventListener("click", () => openHand(b, focusInput));
-    }
+    // 畳んだ帯の口と backdrop（下のバーの右腕のボタンは BAR_ON.hand、見出しの [右腕] は TOP_ON.hand）
+    const show = $("v3-hand-show");
+    if (show) show.addEventListener("click", () => openHand(show, false));
     const backdrop = $("v3-hand-backdrop");
     if (backdrop) backdrop.addEventListener("click", () => closeHand());
     renderHeadOps();
@@ -1500,6 +1523,8 @@
     renderBottom(handMark());
     bindStart();
     $("v3-sheet").addEventListener("close", () => {
+      // 閉じてすぐ同じ板を開き直したとき、後から届いた close が新しい opener を消さない
+      if ($("v3-sheet").open) return;
       const opener = sheetOpener;
       sheetOpener = null;
       if (opener && document.contains(opener)) opener.focus();

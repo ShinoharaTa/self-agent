@@ -1016,14 +1016,18 @@
   function render(container, channelId, frame) {
     const t = store.turns[channelId];
     const ch = channelById(channelId);
+    // 新しい殻の列 2 は、見出しを入口 c-app.js の部品が描く（右腕の枠は今の見出しのまま）
+    const top = !frame && !!SA.top;
     if (!t || !t.loaded) {
-      container.replaceChildren(header(ch, channelId, frame), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [SA.views.loading()])]));
+      container.replaceChildren(...[top ? null : header(ch, channelId, frame), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [SA.views.loading()])])].filter(Boolean));
       return;
     }
     if (t.missing) {
       container.replaceChildren(
-        header(null, channelId, frame),
-        el("div", { class: "ed-scroll" }, [el("div", { class: "empty" }, [icon("info"), el("p", { text: "このチャンネルは開けません。削除されたか、受け付けないチャンネルです。" })])]),
+        ...[
+          top ? null : header(null, channelId, frame),
+          el("div", { class: "ed-scroll" }, [el("div", { class: "empty" }, [icon("info"), el("p", { text: "このチャンネルは開けません。削除されたか、受け付けないチャンネルです。" })])]),
+        ].filter(Boolean),
       );
       return;
     }
@@ -1131,7 +1135,7 @@
     // 入力欄は作り直さない（書きかけ・フォーカス・IME の変換を保つ）。見出しと会話だけを入れ替える
     const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-channel") === channelId);
     // 送った本文の状態（Claude Code のチャンネル。[やめる]）は入力欄の上
-    SA.views.placeChildren(container, [header(ch, channelId, frame), scroll, ccPending, kept || composer(ch, channelId, frame)]);
+    SA.views.placeChildren(container, [top ? null : header(ch, channelId, frame), scroll, ccPending, kept || composer(ch, channelId, frame)]);
     markSeen(channelId);
   }
 

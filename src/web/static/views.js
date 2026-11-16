@@ -10,6 +10,15 @@
   const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
   function toolbar(iconName, title, extras, actions, cls) {
+    // 新しい殻（入口 c-app.js の SA.top がある）は題と戻るを見出しの部品が出す。ここは添え物と操作の段だけ（どちらも無ければ隠す）
+    if (SA.top) {
+      const rest = (extras || []).filter(Boolean);
+      const ops = (actions || []).filter(Boolean);
+      return el("header", { class: "ed-toolbar" + (cls ? " " + cls : ""), hidden: rest.length === 0 && ops.length === 0 }, [
+        el("div", { class: "ed-title" }, rest),
+        el("div", { class: "ed-actions" }, ops),
+      ]);
+    }
     return el("header", { class: "ed-toolbar" + (cls ? " " + cls : "") }, [
       el("div", { class: "ed-title" }, [SA.ui.backButton(), icon(iconName), el("h1", { text: title }), ...(extras || [])]),
       el("div", { class: "ed-actions" }, actions || []),
@@ -1639,7 +1648,9 @@
     const s = store.status;
     // 更新の間隔は常設の文にせず見出しの title に（GUIDELINES §5）
     const head = toolbar("activity", "状態");
-    head.querySelector("h1").title = "10 秒ごとに更新";
+    // 新しい殻は見出しの部品が題を出すので h1 が無い（更新の間隔の title は出さない）
+    const h = head.querySelector("h1");
+    if (h) h.title = "10 秒ごとに更新";
     if (!s) {
       container.replaceChildren(head, scroll([loading()]));
       return;
