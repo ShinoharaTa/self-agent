@@ -2205,6 +2205,9 @@ type ShellApp = {
   closeDrawer: () => void;
   refreshStatus: () => void;
   refreshSidebar: () => void;
+  draft: (channelId: string) => string;
+  setDraft: (channelId: string, value: string) => void;
+  pruneDrafts: (channelIds: unknown[]) => void;
 };
 type Topics = { load: () => Promise<void>; schedule: () => void; render: () => void; counts: () => { turns: number; running: number } };
 type HandFrame = { title: string; placeholder: string; ops?: () => DomNode[]; outgoing?: (text: string) => string; replyText?: (text: string) => string; replyExtras?: (text: string) => DomNode[] };
@@ -2807,6 +2810,21 @@ function loadShell(
     document,
   };
 }
+
+test("web static: v3 の書きかけ: 一覧に無いチャンネルの分は消すが、列 2 に開いている会話の分は残す", async () => {
+  const h = loadShell();
+  await h.flush();
+  h.app.open("ch:a");
+  h.app.setDraft("a", "開いている会話の書きかけ");
+  h.app.setDraft("b", "一覧に在る");
+  h.app.setDraft("gone", "一覧に無い");
+  h.app.pruneDrafts(["b"]);
+  assert.deepEqual([h.app.draft("a"), h.app.draft("b"), h.app.draft("gone")], ["開いている会話の書きかけ", "一覧に在る", ""]);
+  // 別の話題へ移った後は、一覧に無ければ消す
+  h.app.open("ch:b");
+  h.app.pruneDrafts(["b"]);
+  assert.deepEqual([h.app.draft("a"), h.app.draft("b")], ["", "一覧に在る"]);
+});
 
 test("web static: v3 の会話のスクロール: 別の話題に切り替えると下端、同じ話題の refresh は位置を保つ（下端に居れば下端）", async () => {
   const h = loadShell();

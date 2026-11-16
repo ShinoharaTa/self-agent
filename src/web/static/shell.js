@@ -100,10 +100,11 @@
     save("drafts", JSON.stringify(S.drafts));
   }
 
-  /** 一覧（/api/channels）に無いチャンネルの書きかけを消す */
+  /** 一覧（/api/channels）に無いチャンネルの書きかけを消す。列 2 に開いている会話の分は残す（入力欄に字が見えたまま、送れない形にしない） */
   function pruneDrafts(channelIds) {
     try {
       const keep = new Set(channelIds);
+      if (S.active && S.active.startsWith("ch:")) keep.add(S.active.slice(3));
       const stale = Object.keys(S.drafts).filter((id) => !keep.has(id));
       if (stale.length === 0) return;
       for (const id of stale) delete S.drafts[id];
