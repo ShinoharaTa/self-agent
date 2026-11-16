@@ -34,6 +34,7 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
     "topics.js",
     "icons-app.svg",
     "manifest.webmanifest",
+    "manifest-v3.webmanifest",
     ...ICON_FILES,
   ]) {
     assert.ok(files.includes(name), name);
@@ -1241,6 +1242,17 @@ test("web static: index.html に manifest・favicon・theme-color 2 つ・apple 
   for (const name of files.filter((n) => n.endsWith(".js"))) assert.doesNotMatch(read(name), /serviceWorker/, name);
 });
 
+test("web static: 試し用の manifest（v3.html だけが指す）は名前・id・start_url だけが違い、ほかは manifest.webmanifest と同じ", () => {
+  const trial = JSON.parse(read("manifest-v3.webmanifest")) as Record<string, unknown>;
+  assert.equal(trial.name, "self-agent v3");
+  assert.equal(trial.short_name, "self-agent v3");
+  assert.equal(trial.id, "/static/v3.html");
+  assert.equal(trial.start_url, "/static/v3.html");
+  const rest = (m: Record<string, unknown>) => Object.fromEntries(Object.entries(m).filter(([k]) => !["name", "short_name", "id", "start_url"].includes(k)));
+  assert.deepEqual(rest(trial), rest(JSON.parse(read("manifest.webmanifest")) as Record<string, unknown>));
+  assert.doesNotMatch(read("index.html"), /manifest-v3/);
+});
+
 test("web static: manifest は §11.1 の値で、アイコンは配るファイルを指す", () => {
   const manifest = JSON.parse(read("manifest.webmanifest")) as Record<string, unknown>;
   assert.equal(manifest.name, "self-agent");
@@ -1941,9 +1953,14 @@ test("web static: v3.html の読み込みの順（base → tokens → app → sh
   ]);
   assert.equal([...html.matchAll(/<script\b/g)].length, scripts.length);
   assert.doesNotMatch(html, /sidebar\.js|workbench\.js/);
-  // head の meta・title・manifest・icon は index.html と同じ
+  // head は、試し用の manifest とホーム画面の名前の 2 行のほかは index.html と同じ
   const headOf = (h: string) => h.slice(0, h.indexOf('<link rel="stylesheet"'));
-  assert.equal(headOf(html), headOf(read("index.html")));
+  const title = '<meta name="apple-mobile-web-app-title" content="self-agent v3">';
+  const manifest = '<link rel="manifest" href="/static/manifest-v3.webmanifest">';
+  assert.ok(headOf(html).includes(title), title);
+  assert.ok(headOf(html).includes(manifest), manifest);
+  const asIndex = headOf(html).replace(title, '<meta name="apple-mobile-web-app-title" content="self-agent">').replace(manifest, '<link rel="manifest" href="/static/manifest.webmanifest">');
+  assert.equal(asIndex, headOf(read("index.html")));
 });
 
 test("web static: v3.html に inline の script・style・style 属性が無く、ui.js が引く id（dlg-confirm と中の 5 つ・toast・toast-alert・ed）がある", () => {
