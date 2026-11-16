@@ -1932,6 +1932,51 @@ test("web static: ccAsk.answer は答えていない問が在れば送らず fal
   assert.equal(await ask.dismiss("s1", questionPermission(68)), false);
 });
 
+test("web static: ccAsk の permit・answer・dismiss は話題の会話のタブ（ch:<id>）から送っても通ったかに resolve し、/turns を読み直す", async () => {
+  const { SA, views, posts, setReply } = loadViews();
+  const ask = askOf(views);
+  const turnLoads: string[] = [];
+  const refreshes: string[] = [];
+  SA.chat = { channelById: (id: string) => ({ id, kind: "session" }) };
+  (SA.store as { load: Record<string, unknown> }).load.turns = (id: string) => turnLoads.push(id);
+  SA.app = { refresh: (tab: string) => refreshes.push(tab) };
+  assert.equal(await ask.permit("s9", permissionRequest(80), "allow", "ch:5"), true);
+  assert.equal(posts.at(-1), "/api/cc/permissions/80/allow");
+  const p = questionPermission(81);
+  ask.pick(p, 0, "赤", true);
+  ask.pick(p, 1, "A", true);
+  assert.equal(await ask.answer("s9", p, "ch:5"), true);
+  assert.equal(await ask.dismiss("s9", questionPermission(82), "ch:5"), true);
+  assert.deepEqual(turnLoads, ["5"], "許可は会話を読み直す（質問の読み直しは会話のタブの側）");
+  assert.ok(refreshes.every((tab) => tab === "ch:5"));
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 409 })));
+  assert.equal(await ask.permit("s9", permissionRequest(83), "deny", "ch:5"), false);
+  const p2 = questionPermission(84);
+  ask.pick(p2, 0, "赤", true);
+  ask.pick(p2, 1, "A", true);
+  assert.equal(await ask.answer("s9", p2, "ch:5"), false);
+  assert.equal(await ask.dismiss("s9", questionPermission(85), "ch:5"), false);
+});
+
+test("web static: ccAsk の answer・dismiss は送っている間の 2 回目を送らず false", async () => {
+  const { views, posts, setReply } = loadViews();
+  const ask = askOf(views);
+  let release: (v: unknown) => void = () => undefined;
+  setReply(() => new Promise((r) => (release = r)));
+  const p = questionPermission(86);
+  ask.pick(p, 0, "赤", true);
+  ask.pick(p, 1, "A", true);
+  const first = ask.answer("s1", p);
+  assert.equal(ask.item("s1", p)!.busy, true);
+  const sent = posts.length;
+  assert.equal(await ask.answer("s1", p), false, "既に送っている間は false");
+  assert.equal(await ask.dismiss("s1", p), false, "既に送っている間は false");
+  assert.equal(posts.length, sent, "2 回目は送らない");
+  release({});
+  assert.equal(await first, true);
+  assert.equal(ask.item("s1", p)!.busy, false);
+});
+
 test("web static: ccAsk と古い質問のカードは同じ覚え（片方で選んだものがもう片方に出る）", () => {
   const { views } = loadViews();
   const ask = askOf(views);
