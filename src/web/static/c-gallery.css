@@ -38,3 +38,31 @@
 .c-gallery-count:active {
   transform: scale(0.97);
 }
+
+/* 節。列の幅いっぱいに広げ、中身（切り替えなど）が入りきらないときは中で横に送らせる */
+.c-gallery-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  width: 100%;
+  padding-top: var(--space-4);
+}
+
+.c-gallery-heading {
+  font-size: var(--font-sm);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  color: var(--text-secondary);
+}
+
+/* 当たりを広げた物どうしが重ならない間隔 */
+.c-gallery-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.c-gallery-narrow {
+  max-width: var(--c-list-w);
+}
