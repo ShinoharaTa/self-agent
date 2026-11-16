@@ -110,7 +110,8 @@ test("web static: モックの「提案」「モック」・分割・ダミー�
 });
 
 test("web static: JS は style 属性・innerHTML を書かない（CSP の style-src 'self'。CSS の変数は setProperty）", () => {
-  for (const name of files.filter((n) => n.endsWith(".js"))) {
+  // 同梱の vendor-*.js（Preact の dangerouslySetInnerHTML の分岐）は除く。eval・new Function は test/web-vendor.test.ts が見る
+  for (const name of files.filter((n) => n.endsWith(".js") && !n.startsWith("vendor-"))) {
     const text = read(name);
     assert.doesNotMatch(text, /setAttribute\(\s*"style"|\.innerHTML|\.outerHTML|insertAdjacentHTML|DOMParser|document\.write|\beval\(|new Function\(/, name);
   }
