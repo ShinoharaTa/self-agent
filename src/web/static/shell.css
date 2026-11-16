@@ -257,6 +257,14 @@
   border-left: 0;
 }
 
+/* 右腕の見出しの題は h2（ページの h1 は列 2 の見出しの 1 つ）。見た目は app.css の .ed-title h1 と同じ */
+.v3-hand .ed-title h2 {
+  overflow: hidden;
+  font-size: var(--font-base);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 札（右腕の返事の <#ID>。吹き出しの下に 1 行。地は付けない） */
 .v3-card {
   display: flex;

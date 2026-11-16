@@ -830,7 +830,7 @@
 
   /**
    * 枠の指定（render の第 3 引数。省略できる。省略したときの描画は今と同じ）
-   *   title: string                 見出しの h1・[…] のシートの題（title + " の操作"）
+   *   title: string                 見出しの h2（ページの h1 は列 2 の見出し）・[…] のシートの題（title + " の操作"）
    *   placeholder: string           入力欄の placeholder と aria-label
    *   ops: () => Node[]             見出しの右端に足すボタン（省略可）
    *   outgoing: (text) => string    送る直前の本文の差し替え（省略可）
@@ -858,7 +858,7 @@
     }
     // .ed-ops の外（≤639px で .ed-ops の中のボタンは隠れるため）
     if (frame.ops) actions.append(...frame.ops());
-    return el("header", { class: "ed-toolbar", "data-channel": channelId }, [el("div", { class: "ed-title" }, [el("h1", { text: frame.title })]), actions]);
+    return el("header", { class: "ed-toolbar", "data-channel": channelId }, [el("div", { class: "ed-title" }, [el("h2", { text: frame.title })]), actions]);
   }
 
   // ===== 入力欄（Enter で送る・Shift+Enter で改行。タッチが主の端末では Enter は改行で、送るのはボタン。
