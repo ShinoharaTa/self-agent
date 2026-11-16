@@ -1199,6 +1199,20 @@
     ]);
   }
 
+  /** 選択肢を選んだ・外した（「その他」と選択肢は同時に選べない。1 つ選ぶ形は入れ替える） */
+  function pickOption(draft, multi, label, checked) {
+    draft.other = false;
+    if (!multi) draft.labels = [label];
+    else if (checked) draft.labels = draft.labels.includes(label) ? draft.labels : [...draft.labels, label];
+    else draft.labels = draft.labels.filter((l) => l !== label);
+  }
+
+  /** 「その他」を選んだ・外した（外せるのは複数選ぶ形だけ） */
+  function pickOtherOption(draft, multi, checked) {
+    draft.other = multi ? checked : true;
+    if (draft.other) draft.labels = [];
+  }
+
   /** 1 問の fieldset（legend に見出し・問の文・選択肢と「その他」）。sync は選んだ状態を input に写す（ほかのタブで選んだものも） */
   function questionFieldset(p, q, index, draft, busy, onChange) {
     const multi = !!q.multiSelect;
@@ -1223,16 +1237,8 @@
       // 「その他」の文の欄に焦点を移すのは指・マウスで選んだときだけ（矢印キーで選んだ瞬間には飛ばさない）
       let byPointer = false;
       input.addEventListener("change", () => {
-        if (label === null) {
-          // 「その他」と選択肢は同時に選べない（答えは labels か other の 1 つ）
-          draft.other = multi ? input.checked : true;
-          if (draft.other) draft.labels = [];
-        } else {
-          draft.other = false;
-          if (!multi) draft.labels = [label];
-          else if (input.checked) draft.labels = draft.labels.includes(label) ? draft.labels : [...draft.labels, label];
-          else draft.labels = draft.labels.filter((l) => l !== label);
-        }
+        if (label === null) pickOtherOption(draft, multi, input.checked);
+        else pickOption(draft, multi, label, input.checked);
         sync();
         onChange();
         if (label === null && draft.other && byPointer && typeof other.focus === "function") other.focus();
