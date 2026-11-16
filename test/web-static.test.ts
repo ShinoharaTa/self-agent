@@ -1939,11 +1939,11 @@ function appKeys(js: string): string[] {
   return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
 }
 
-test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-list → c-shell → c-talk、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
+test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-list → c-shell → c-talk → c-composer、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
   const html = read("v3.html");
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
-  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css"]);
+  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css"]);
   // module は元から後回し（defer を書かない）。文書の順で topics.js の後・shell.js の前に動く
   const scripts = [...html.matchAll(/<script (?:type="module" )?src="([^"]+)"( defer)?><\/script>/g)].map((m) => [m[1], m[0].includes('type="module"') ? "module" : m[2] ? "defer" : "none"]);
   assert.deepEqual(scripts, [
@@ -2278,6 +2278,8 @@ function loadShell(
     noTop?: boolean;
     topDraw?: (st: TopState) => boolean;
     narrow?: boolean | null;
+    /** 入力欄の口（SA.composer）の focus。在れば会話（ch:）の列 2 に [data-composer] の根を置く */
+    composer?: (root: DomNode) => boolean;
   } = {},
 ) {
   // width は .v3 の幅（右腕の形を決める。既定 1,400 = 列。一覧は 280px）
@@ -2524,7 +2526,8 @@ function loadShell(
               const scroll = ui.el("div", { class: "ed-scroll", "data-stick": tab.startsWith("ch:") ? "bottom" : undefined });
               scroll.scrollHeight = heights[tab] ?? 1000;
               scroll.clientHeight = 200;
-              container.replaceChildren(ui.el("header", { class: "ed-toolbar" }, [ui.backButton()]), scroll);
+              const comp = opts.composer && tab.startsWith("ch:") ? [ui.el("div", { "data-composer": tab.slice(3) })] : [];
+              container.replaceChildren(ui.el("header", { class: "ed-toolbar" }, [ui.backButton()]), scroll, ...comp);
             },
             onClose: () => closes.push(tab),
             onOpen: () => opens.push(tab),
@@ -2688,6 +2691,7 @@ function loadShell(
     },
   };
   if (!opts.noTop) SA.top = top;
+  if (opts.composer) SA.composer = { focus: opts.composer, draw: () => true, set: () => true, drop: () => undefined };
   /** 最後に描いた見出しの state */
   const lastTop = (): TopState => {
     const st = top.draws[top.draws.length - 1];
@@ -6136,6 +6140,32 @@ test("web static: 640〜999px の重ねた右腕を開いたまま話題が開�
   assert.equal(h.nodes.backdrop.hidden, true);
   assert.equal(h.calls.push, 0, "entry は積まない");
   assert.deepEqual(h.list.focusRows.at(-1), "ch:1", "開いた行に焦点を頼む");
+});
+
+test("web static: 重ねた右腕を畳んで話題を開いたとき、入力欄が部品なら焦点は口の focus(根)。false なら今の道（一覧の開いた行）", async () => {
+  for (const ok of [true, false]) {
+    const roots: DomNode[] = [];
+    const h = await loadHand(
+      {
+        width: 800,
+        composer: (root) => {
+          roots.push(root);
+          return ok;
+        },
+      },
+      [v3Topic("ch:1")],
+    );
+    h.nodes.handShow.dispatch("click");
+    assert.equal(h.document.activeElement, handClose(h));
+    const rows = h.list.focusRows.length;
+    h.app.open("ch:1");
+    assert.equal(handOf(h), "closed");
+    assert.equal(roots.length, 1, String(ok));
+    assert.equal(roots[0]!.getAttribute("data-composer"), "1");
+    assert.equal(roots[0]!.parent, h.nodes.ed);
+    if (ok) assert.equal(h.list.focusRows.length, rows, "行には頼まない");
+    else assert.deepEqual(h.list.focusRows.at(-1), "ch:1", "開いた行に焦点を頼む");
+  }
 });
 
 test("web static: 右腕の枠（shell.js が渡す frame）を本物の chat.js に通すと、送る本文に「（いま見ている話題: …）」が付き、見出しに [畳む]", async () => {
