@@ -2827,16 +2827,25 @@ test("web static: v3 の load・schedule: 読み込み中に頼まれた分は�
   await h.topics.load();
   assert.equal(h.model().note, "更新できませんでした。前の一覧を出しています");
   assert.equal(polls(), 1);
-  // 描けない（入口が false）: 失敗の表示を描き直し、次の予約も掛かる
+  // 描けない（入口が false）: data の無い失敗の表示（[もう一度読む]）で描き直し、次の予約も掛かる
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
   drawOk = false;
   await h.topics.load();
-  assert.equal(h.model().note, "更新できませんでした。前の一覧を出しています");
+  assert.equal(h.model().phase, "failed");
   assert.equal(polls(), 1);
   // 直ればもとに戻る
   drawOk = true;
   await h.topics.load();
   assert.equal(h.model().note, "");
+});
+
+test("web static: v3 の init は最初の応答の前に 1 回描き、そのモデルは読み込み中", async () => {
+  const h = loadShell();
+  h.api.reply = () => new Promise(() => undefined);
+  // loadShell の init は同期で走り、最初の応答はまだ返っていない
+  assert.equal(h.list.states.length, 1);
+  assert.equal(h.list.states[0]!.data, null);
+  assert.equal(listModel(h.list.states[0]).phase, "loading");
 });
 
 test("web static: v3 の入口（SA.list）が無いとき、init は落ちず一覧の場所に 1 文を出し、ほかは動く", async () => {
@@ -2847,15 +2856,16 @@ test("web static: v3 の入口（SA.list）が無いとき、init は落ちず�
   assert.equal(kidsOf[0]!.tagName, "p");
   assert.equal(kidsOf[0]!.textContent, "一覧を表示できませんでした。ページを読み直してください");
   assert.deepEqual(h.errors, ["[web] list entry missing"]);
-  // 読み取り・描き直し・開くは止まらない
-  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
+  // 読み取り・描き直し・開くは止まらない。件数は題に出す
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")], { turns: 1 }));
   await h.topics.load();
+  assert.equal(h.document.title, "(1) self-agent");
   h.topics.render();
   h.app.open("ch:a");
   assert.equal(h.app.activeTabId(), "ch:a");
 });
 
-test("web static: v3 の render は入口の draw が false なら failed にして 1 回だけ描き直し、もう失敗なら描き直さない", async () => {
+test("web static: v3 の render は入口の draw が false なら failed にして、data の無い失敗の表示で 1 回だけ描き直し（data は残す）、もう失敗なら描き直さない", async () => {
   let drawOk = true;
   const h = loadShell({ draw: () => drawOk });
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
@@ -2866,8 +2876,15 @@ test("web static: v3 の render は入口の draw が false なら failed にし
   h.topics.render();
   assert.equal(h.list.states.length, n + 2);
   assert.equal(h.list.states[n]!.failed, false);
-  assert.equal(h.list.states[n + 1]!.failed, true);
+  const second = h.list.states[n + 1]!;
+  assert.equal(second.failed, true);
+  assert.equal(second.data, null);
+  // 投げずに失敗のモデル（[もう一度読む] の出る phase）を作れる
+  assert.equal(listModel(second).phase, "failed");
+  assert.equal(h.model().phase, "failed");
+  // data 自体は消さない（次の 1 回目の draw には前の data が渡る）
   h.topics.render();
+  assert.notEqual(h.list.states[n + 2]!.data, null);
   assert.equal(h.list.states.length, n + 3, "もう失敗なら 1 回だけ");
 });
 
