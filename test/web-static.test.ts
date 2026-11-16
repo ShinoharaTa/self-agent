@@ -1661,6 +1661,16 @@ test("web static: 質問のカードで「その他」を選んだ後に選択�
     assert.equal(optionInput(card, label).checked, true);
     assert.equal(text.hidden, true, "「その他」の欄は隠れる");
   }
+  // 複数選ぶ形は、選択肢も「その他」も外せる（change の受け手が input の checked を渡している）
+  const multiOther = descendants(fieldsets[1]!).filter((n) => n.tagName === "input").at(-1)! as FakeNode & { checked: boolean };
+  const multiText = descendants(fieldsets[1]!).find((n) => n.tagName === "textarea")!;
+  pick(optionInput(card, "B"), false);
+  assert.equal(optionInput(card, "B").checked, false, "選択肢を外せる");
+  pick(multiOther);
+  assert.equal(multiText.hidden, false);
+  pick(multiOther, false);
+  assert.equal(multiOther.checked, false, "「その他」を外せる");
+  assert.equal(multiText.hidden, true);
 });
 
 test("web static: 質問のカードの [やめる] は確認なしで /deny、409 は古い・400 は形が合わない", async () => {
