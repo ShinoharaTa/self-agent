@@ -174,6 +174,8 @@
   --c-toast-w: 360px;
   --c-spin: 800ms;
   --c-font-body: var(--font-base);
+  --c-row-indent: 28px;
+  --c-list-gap: 10px;
 }
 
 @media (min-width: 640px) and (hover: hover) and (pointer: fine) {

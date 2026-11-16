@@ -14,7 +14,7 @@ const JS_FILES = readdirSync(STATIC_DIR).filter((n) => /^c-.*\.js$/.test(n)).sor
 /** §7.2 の寸法のトークンの名前（tokens.css の末尾） */
 const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "bubble-r", "bubble-tail", "card-r", "btn-sm-h", "round-r",
-  "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body",
+  "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字） */
@@ -30,6 +30,8 @@ const ALLOWED_VARS: ReadonlySet<string> = new Set([
 const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-atoms.css": /^\.c-(?:icon|btn|iconbtn|badge|mark|seg|field|input|empty|loading)(?![a-z])/,
   "c-sheet.css": /^\.c-(?:sheet|confirm|toast)(?![a-z])/,
+  "c-list.css": /^\.c-(?:list|turns|turn|group|rows|row|fold)(?![a-z])/,
+  "c-shell.css": /^\.c-bottom(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
 };
 
@@ -215,16 +217,43 @@ test("web components: 部品（入口以外の c-*.js）は document・window・
   for (const name of JS_FILES.filter((n) => !["c-lib.js", "c-gallery.js"].includes(n))) assert.deepEqual(partProblems(name, read(name)), [], name);
 });
 
-test("web components: import の先（c-atoms は c-lib だけで hook なし、c-sheet は c-lib と c-atoms だけ）・動的な import と createPortal が無い", () => {
-  const allowed: Record<string, string[]> = { "c-atoms.js": ["./c-lib.js"], "c-sheet.js": ["./c-lib.js", "./c-atoms.js"] };
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ。c-atoms・c-list・c-shell は hook なし）・動的な import と createPortal が無い", () => {
+  const allowed: Record<string, string[]> = {
+    "c-atoms.js": ["./c-lib.js"],
+    "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
+    "c-list.js": ["./c-lib.js", "./c-atoms.js"],
+    "c-shell.js": ["./c-lib.js", "./c-atoms.js"],
+  };
   for (const [name, targets] of Object.entries(allowed)) {
     if (!JS_FILES.includes(name)) continue;
     const { from, dynamic } = importsOf(read(name));
     for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
     assert.equal(dynamic, false, `${name}: 動的な import`);
   }
-  if (JS_FILES.includes("c-atoms.js")) assert.doesNotMatch(read("c-atoms.js"), /import\s*\{[^}]*\buse[A-Z]/);
+  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
+});
+
+test("web components: 一覧と下のバー（c-list・c-shell）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。動きを付けない", () => {
+  // 部品は id を出さない（モデルのキー id: や data-topic=${id} は当たらない）
+  for (const name of ["c-list.js", "c-shell.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
+  // 部品の色・高さ・字を外から変えない（印の位置・PC の [+] の当たりを戻す・下のバーの並べ方だけ）
+  const ALLOWED_OUTSIDE = new Set([".c-turn > .c-mark", '.c-group-head > .c-iconbtn[data-size="sm"]::after', '.c-bottom > .c-btn[data-size="sm"]']);
+  const ATOM = /\.c-(?:btn|iconbtn|badge|mark|icon)(?![a-z-])/;
+  for (const name of ["c-list.css", "c-shell.css"]) {
+    if (!CSS_FILES.includes(name)) continue;
+    const rules = parseCss(read(name));
+    for (const rule of rules) for (const selector of rule.selectors) if (ATOM.test(selector)) assert.ok(ALLOWED_OUTSIDE.has(selector), `${name}: ${selector}`);
+    for (const rule of rules) assert.doesNotMatch(rule.body, /(?:^|; ?)(?:animation|transition)(?:-[a-z-]+)?\s*:/, `${name}: ${rule.selectors.join(",")}`);
+    assert.equal(rules.some((r) => r.keyframe), false, `${name}: @keyframes`);
+  }
+  // 作業中の輪を回さない
+  for (const rule of parseCss(read("c-atoms.css"))) if (rule.selectors.some((s) => /^\.c-mark(?![a-z-])/.test(s))) assert.doesNotMatch(rule.body, /animation/, rule.selectors.join(","));
+  if (CSS_FILES.includes("c-shell.css")) {
+    const shell = stripCssComments(read("c-shell.css"));
+    assert.match(shell, /env\(safe-area-inset-bottom/);
+    assert.doesNotMatch(shell, /position:\s*(?:fixed|absolute)/);
+  }
 });
 
 test("web components: c-*.css のセレクタのクラスと、c-*.js（と gallery.html）が書くクラスが同じ集まり", () => {
@@ -264,6 +293,9 @@ test("web components: 見張りの関数は悪い見本を落とす", () => {
   hit(".c-btn .wb{color:var(--text)}", ".wb");
   hit(".c-btn.is-on{color:var(--text)}", ".is-on");
   hit(".c-sheet{color:var(--text)}", "このファイルの頭");
+  assert.ok(cssProblems("c-shell.css", ".c-row{color:var(--text)}").some((p) => p.includes("このファイルの頭")));
+  assert.ok(cssProblems("c-list.css", ".c-bottom{color:var(--text)}").some((p) => p.includes("このファイルの頭")));
+  assert.deepEqual(cssProblems("c-list.css", ".c-rows{margin:0}"), []);
   hit("@import url(x.css);", "@import");
   assert.deepEqual(bad("@keyframes c-spin{to{transform:rotate(360deg)}}"), []);
   // @keyframes の中も色と単位を見る
