@@ -831,15 +831,10 @@
     }
   }
 
-  /** 一覧に戻ったら、開いていた話題の行に焦点（一覧の位置は動かさない） */
+  /** 一覧に戻ったら、開いていた話題の行に焦点（一覧の位置は動かさない。群の中の行を先に探すのは入口 c-app.js） */
   function focusCurrentRow() {
     if (!S.active) return;
-    const selector = 'button.v3-row[data-topic="' + CSS.escape(S.active) + '"]';
-    // 群の中の行を先に。無ければ「あなたの番」の行（節が出ているときだけ）
-    let row = $("v3-groups").querySelector(selector);
-    const turns = $("v3-turns");
-    if (!row && !turns.hidden) row = turns.querySelector(selector);
-    if (row) row.focus({ preventScroll: true });
+    if (SA.list) SA.list.focusRow(S.active);
   }
 
   /** 履歴の entry から一覧までの段数（会話の entry は v3Depth、無ければ 1。一覧は 0） */
@@ -865,7 +860,7 @@
 
   function openDrawer() {
     if (phone()) showList();
-    else refs.list.focus();
+    else if (SA.list) SA.list.focusList();
   }
 
   function closeDrawer() {
@@ -1269,11 +1264,11 @@
   function applyFilter(value) {
     const was = filterOn;
     filterOn = String(value || "").trim() !== "";
-    if (!was && filterOn) filterTop = refs.list.scrollTop;
+    if (!was && filterOn) filterTop = SA.list ? SA.list.scrollTop() : 0;
     SA.topics.setFilter(value);
     SA.topics.render();
     if (was && !filterOn && filterTop !== null) {
-      refs.list.scrollTop = filterTop;
+      if (SA.list) SA.list.setScrollTop(filterTop);
       filterTop = null;
     }
   }
@@ -1314,34 +1309,6 @@
     ops.replaceChildren(toggle, conn);
     refs.searchToggle = toggle;
     refs.conn = conn;
-  }
-
-  /** 見えている（hidden の祖先・閉じた details の中に無い）一覧の行 */
-  function visibleRows() {
-    return Array.from(refs.list.querySelectorAll("button.v3-row")).filter((row) => {
-      for (let n = row; n && n !== refs.list; n = n.parentElement) {
-        if (n.hidden) return false;
-        const parent = n.parentElement;
-        // 閉じた details の中（summary を除く）は出ていない
-        if (parent && String(parent.tagName).toLowerCase() === "details" && !parent.open && String(n.tagName).toLowerCase() !== "summary") return false;
-      }
-      return true;
-    });
-  }
-
-  /** 一覧の中の ↑↓・Home・End（行に焦点があるときだけ。端では動かない） */
-  function onListKey(e) {
-    const target = e.target;
-    if (!target || !target.classList || !target.classList.contains("v3-row")) return;
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
-    const rows = visibleRows();
-    const at = rows.indexOf(target);
-    let next = null;
-    if (e.key === "Home") next = rows[0];
-    else if (e.key === "End") next = rows[rows.length - 1];
-    else if (at >= 0) next = rows[at + (e.key === "ArrowDown" ? 1 : -1)];
-    e.preventDefault();
-    if (next) next.focus();
   }
 
   // ===== スマホのキーボード（visualViewport。今の殻と同じ） =====
@@ -1426,7 +1393,12 @@
   // ===== 起動 =====
   function init() {
     refs.v3 = $("v3");
-    refs.list = $("v3-list-body");
+    // 一覧を描く入口（c-app.js の module）が読めなかったら、一覧の場所に 1 文だけ出す（ほかは続ける）
+    if (!SA.list) {
+      const root = $("c-list-root");
+      if (root) root.replaceChildren(el("p", { text: "一覧を表示できませんでした。ページを読み直してください" }));
+      console.error("[web] list entry missing");
+    }
     refs.searchBox = $("v3-search-box");
     // 帯の「場所 ∨」（中身は 1 回だけ作る。renderBar は文字・無効・title・hidden だけを書く）
     const place = $("v3-place");
@@ -1486,7 +1458,6 @@
       if (tabId && tabId !== S.active && SA.views.info(tabId)) open(tabId);
     });
     document.addEventListener("keydown", onKey);
-    refs.list.addEventListener("keydown", onListKey);
     // 右腕の 3 つの口と backdrop
     for (const [id, focusInput] of [
       ["v3-hand-show", false],

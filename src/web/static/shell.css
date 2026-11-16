@@ -60,7 +60,7 @@
   align-items: center;
   gap: var(--space-2);
   height: var(--titlebar-h);
-  padding: 0 var(--space-3);
+  padding: 0 var(--space-4);
 }
 
 .v3-brand {
@@ -88,190 +88,18 @@
   padding: 0 var(--space-3) var(--space-2);
 }
 
-/* 一覧の中でスクロールするのはここだけ（行の差し替えで位置が動かない） */
-.v3-list-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.v3-list-body:focus {
-  outline: none;
-}
-
-.v3-list-note {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-}
-
-.v3-group-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-1);
-  min-height: var(--row);
-  margin: 0;
-  padding: 0 var(--space-3) 0 var(--space-1);
-  color: var(--text);
-  font-size: var(--font-xs);
-  font-weight: var(--weight-semibold);
-}
-
-.v3-group-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 数は文字で書く（色だけで伝えない）。あなたの番があっても色は変えない */
-.v3-group-note {
-  flex: none;
-  color: var(--text-muted);
-  font-size: var(--font-xs);
-  font-weight: var(--weight-normal);
-  font-variant-numeric: tabular-nums;
-}
-
-.v3-group-empty {
-  margin: 0;
-  padding: 0 var(--space-3) var(--space-2);
-}
-
-.v3-rows {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-/* 行（高さは .sb-row と同じ --row。指の端末では tokens.css の (pointer: coarse) で大きくなる） */
-.v3-row {
-  display: grid;
-  grid-template-columns: var(--space-4) minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  min-height: var(--row);
-  padding: 0 var(--space-3);
-  background: transparent;
-  color: var(--text);
-  border: 0;
-  font-size: var(--font-sm);
-  text-align: left;
-  touch-action: manipulation;
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
+/* 部品の入れ物（c-app.js が描く。箱を作らず、.c-list が .v3-list の縦並びの直接の子になる。K7 で消える） */
+.v3-slot {
+  display: contents;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .v3-row:hover {
-    background: var(--muted);
-  }
-
   .v3-sheet .more-row:not(:disabled):hover {
     background: var(--muted);
   }
 }
 
-.v3-row:active {
-  background: var(--muted);
-}
-
-.v3-row:focus-visible {
-  outline-offset: calc(-1 * var(--ring-width));
-}
-
-.v3-row[aria-current="true"] {
-  background: var(--muted);
-  box-shadow: inset var(--ring-width) 0 0 var(--accent);
-}
-
-/* 印の箱（印が無くても幅を取り、題名の頭をそろえる） */
-.v3-row-mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--space-4);
-}
-
-.v3-row-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.v3-row.is-done .v3-row-title {
-  color: var(--text-muted);
-}
-
-.v3-row-meta {
-  display: inline-flex;
-  gap: var(--space-2);
-  color: var(--text-muted);
-  font-size: var(--font-xs);
-  white-space: nowrap;
-}
-
-.v3-row-time {
-  font-variant-numeric: tabular-nums;
-}
-
-/* 「あなたの番」の行は 2 行（2 行目は待っているものの種類・経過・要約） */
-.v3-row-turn {
-  grid-template-rows: auto auto;
-  padding-top: var(--space-1);
-  padding-bottom: var(--space-1);
-}
-
-.v3-row-sub {
-  grid-column: 2 / -1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: var(--font-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 作業中の輪（.dot と同じ大きさ。回さない: 回転は「待っている」の意味だけ。GUIDELINES §6.1） */
-.v3-ring {
-  flex: none;
-  box-sizing: border-box;
-  width: var(--dot);
-  height: var(--dot);
-  border: 2px solid var(--accent);
-  border-radius: 50%;
-  background: transparent;
-}
-
-/* 完了（n）と「ほかのプロジェクト（n）」の開閉（見出しは .v3-group-head・.sb-group > summary と同じ字。開閉の印はブラウザの既定の三角のまま） */
-.v3-done > summary,
-.v3-others > summary {
-  min-height: var(--row);
-  padding: 0 var(--space-3) 0 var(--space-1);
-  line-height: var(--row);
-  color: var(--text);
-  font-size: var(--font-xs);
-  font-weight: var(--weight-semibold);
-  cursor: pointer;
-  user-select: none;
-}
-
-.v3-done > summary {
-  color: var(--text-muted);
-  font-weight: var(--weight-normal);
-}
-
-.v3-done > .meta {
-  margin: 0;
-  padding: 0 var(--space-3) var(--space-2);
-}
-
-/* 下の口（タスク・リマインド・ほか）。スマホでも一覧の列の末尾（.v3-list-body だけがスクロールする） */
+/* 下の口（タスク・リマインド・ほか）。スマホでも一覧の列の末尾（一覧の部品の .c-list だけがスクロールする） */
 .v3-list-foot {
   display: flex;
   flex: none;
@@ -282,11 +110,6 @@
 
 .v3-foot-btn {
   gap: var(--space-1);
-}
-
-/* 群の見出しの [+]（話題を始める。色・大きさは .btn-ghost・.btn-icon-sm のまま、右端） */
-.v3-add {
-  flex: none;
 }
 
 /* ===== 始めるダイアログ（#v3-start。幅は dialog の既定のまま。≤639px は app.css の下からのシート） ===== */
@@ -588,12 +411,6 @@
 
   /* 帯の「場所 ∨」は指で押せる高さ */
   .v3-place {
-    min-height: var(--tap);
-  }
-
-  /* 群の見出しの [+] は指で押せる大きさ */
-  .v3-add {
-    min-width: var(--tap);
     min-height: var(--tap);
   }
 

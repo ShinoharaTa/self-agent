@@ -18,12 +18,15 @@
   <link rel="stylesheet" href="/static/tokens.css">
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/shell.css">
+  <link rel="stylesheet" href="/static/c-atoms.css">
+  <link rel="stylesheet" href="/static/c-list.css">
   <script src="/static/ui.js" defer></script>
   <script src="/static/api.js" defer></script>
   <script src="/static/sound.js" defer></script>
   <script src="/static/chat.js" defer></script>
   <script src="/static/views.js" defer></script>
   <script src="/static/topics.js" defer></script>
+  <script type="module" src="/static/c-app.js"></script>
   <script src="/static/shell.js" defer></script>
 </head>
 <body>
@@ -35,17 +38,7 @@
         <span class="v3-head-ops" id="v3-head-ops"></span>
       </header>
       <div class="v3-search" id="v3-search-box" hidden></div>
-      <div class="v3-list-body" id="v3-list-body" tabindex="-1">
-        <p class="v3-list-note meta" id="v3-list-note" role="status">読み込み中…</p>
-        <section class="v3-turns" id="v3-turns" aria-labelledby="v3-turns-h" hidden>
-          <h2 class="v3-group-head" id="v3-turns-h">
-            <span class="v3-group-name">あなたの番</span>
-            <span class="v3-group-note" id="v3-turns-count"></span>
-          </h2>
-          <ul class="v3-rows" id="v3-turns-rows" data-list="turns"></ul>
-        </section>
-        <div class="v3-groups" id="v3-groups"></div>
-      </div>
+      <div class="v3-slot" id="c-list-root"></div>
       <div class="v3-hand-entry">
         <button class="v3-hand-ask" id="v3-hand-ask" type="button" aria-controls="v3-hand"></button>
       </div>
