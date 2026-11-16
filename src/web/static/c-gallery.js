@@ -489,7 +489,7 @@ const TALK_DEMOS = [
     turns: [{ id: "r1", kind: "owner", text: "テストを回して", time: "12:30" }],
     running: { steps: STEPS_5, abortable: true, text: "作業中…（1 分 5 秒・ツール 5 回）", waiting: "許可を待っています" },
   },
-  { demo: "talk-run-empty", turns: [], running: { steps: [], abortable: false, text: "作業中…（2 秒・ツール 0 回）" }, runName: () => "Claude Code" },
+  { demo: "talk-run-empty", turns: [], running: { steps: [], abortable: false, text: "作業中…（2 秒・ツール 0 回）", waiting: "許可を待っています: mcp__long_server_name__long_server_name__long_server_name__tool_x" }, runName: () => "Claude Code" },
   {
     demo: "talk-edge",
     hasMore: true,
