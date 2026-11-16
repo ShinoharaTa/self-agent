@@ -94,8 +94,8 @@ const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-/** 見本の絵の種類（g-gallery はページ全体、ほかは押して開いた所） */
-const GALLERY_KINDS = ["g-gallery", "g-sheet", "g-confirm", "g-toast"] as const;
+/** 見本の絵の種類（g-gallery はページ全体、g-list・g-bottom はその節の要素の絵（K3）、ほかは押して開いた所） */
+const GALLERY_KINDS = ["g-gallery", "g-list", "g-bottom", "g-sheet", "g-confirm", "g-toast"] as const;
 type GalleryKind = (typeof GALLERY_KINDS)[number];
 const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
 
@@ -147,6 +147,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (!wanted(name)) return;
     await wait(400);
     await page.screenshot({ path: join(out, `${name}.png`), fullPage });
+    count++;
+  }
+
+  /** 要素 1 つの絵（見本の節など） */
+  async function shotOf(page: Page, name: string, selector: string): Promise<void> {
+    if (!wanted(name)) return;
+    await wait(400);
+    await page.locator(selector).screenshot({ path: join(out, `${name}.png`) });
     count++;
   }
 
@@ -361,7 +369,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     };
     try {
       const full = galleryName(vp, theme, "g-gallery");
-      await step(full, [full], async () => {
+      // 一覧と下のバーの節の絵は、ページ全体と同じ読み込みで検査と位置の戻しの後に撮る
+      const parts = [
+        { name: galleryName(vp, theme, "g-list"), selector: '[data-section="list"]' },
+        { name: galleryName(vp, theme, "g-bottom"), selector: '[data-section="bottom"]' },
+      ];
+      await step(full, [full, ...parts.map((part) => part.name)], async () => {
         await loadGallery();
         await checkGallery(page, vp, label);
         // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
@@ -370,6 +383,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           window.scrollTo(0, 0);
         });
         await shot(page, full, true);
+        for (const part of parts) await shotOf(page, part.name, part.selector);
       });
       /** 押す物（data-demo）を順に押し、開いた物を待って当たりを測ってから撮る */
       const opened: ReadonlyArray<{ kind: GalleryKind; demos: string[]; ready: string }> = [

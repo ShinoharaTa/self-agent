@@ -71,3 +71,13 @@
   font-size: var(--font-sm);
   color: var(--text-secondary);
 }
+
+/* 一覧・下のバーの見本の入れ物（高さは決めない。一覧が全部見える） */
+.c-gallery-pane {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: var(--c-hand-w);
+  border: var(--border-width) solid var(--border);
+  background: var(--surface);
+}

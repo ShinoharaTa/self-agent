@@ -345,7 +345,7 @@
 - やること: `tokens.css` に `--c-*`、`c-atoms.js/.css`、`c-sheet.js/.css`、§7.3 の見張りのテスト、見本に全状態。
 - 受け入れ: (1) §7.3 のテストが通る。(2) 各部品のモデルの関数を `import` して試すテストがある（fake DOM・`fnSource` を使わない）。(3) 見本の絵（スマホ・PC × ダーク・ライト）で、指の端末で 44px・PC（hover と fine）で 36px に満たない押せる物が無い。(4) Segmented は 6 項目でも折り返さない。(5) `v3.html` は変わらない。
 
-**K3 一覧**
+**K3 一覧**（K3a 済。#393: 一覧と下のバーの部品 `c-list`・`c-shell` とモデルのテスト・見本の節。本番の `v3.html` への載せ替えは K3b）
 - やること: `c-list.js/.css`・BottomBar。`topics.js` の `rowParts`・`turnParts`・`reconcile`・`fillRow`・`createRow`・`updateRow` を消し、描画を部品へ渡す（`load`・`schedule`・`find`・`counts`・`setFilter`・`setCurrent` は残す）。`v3.html` の `.v3-hand-entry`・`.v3-list-foot` を BottomBar に替える。`c-app.js` は `shell.js` より前に読む（F11）。
 - 受け入れ: (1) 「あなたの番」が 1 件以上のとき warning の枠のカードが一覧の先頭に出て、0 件のとき出ない。(2) 許可待ちの項目はカードの中で [許可]・[拒否] が押せ、押すと今と同じ API が呼ばれる（モデルのテスト + 偽の onAnswer）。(3) 「あなたの番」に出た項目は下の群で印（warning）だけになり、副次行を持たない。(4) 見出し・群の名前・行の印の左端が同じ x（画面写しで確かめる）。(5) 下のバーは 1 本で、中央が右腕、左に「一覧 n」、右に「ほか」。最後の行がバーに隠れない。(6) 一覧を 1 行足して描き直しても、既にある行の DOM ノードが同じ（ブラウザで 1 回確かめて PR に書く）。(7) 消した関数を見ていたテストは消し、同じ意味を `import` のテストで置き換える（数を PR に書く）。(8) `/` は変わらない。
 
