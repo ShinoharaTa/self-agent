@@ -107,8 +107,8 @@ const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk・g-composer はその節の要素の絵（K3〜K5）、ほかは押して開いた所） */
-const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-composer", "g-sheet", "g-confirm", "g-toast"] as const;
+/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk・g-composer・g-cards はその節の要素の絵（K3〜K5）、ほかは押して開いた所） */
+const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-composer", "g-cards", "g-sheet", "g-confirm", "g-toast"] as const;
 type GalleryKind = (typeof GALLERY_KINDS)[number];
 const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
 
@@ -118,7 +118,7 @@ const HIT_MIN: Record<Viewport, number> = { phone: 44, tablet: 44, pc: 36 };
 /**
  * 当たりの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。scopes の中の targets の見えている物を、
  * 見える所へ送ってから箱の中心から (±d, ±d) の 4 点で elementFromPoint がその要素（か子孫）を返すかで見る（d = 下限 / 2 - 1）。
- * toast なら、知らせ（position: fixed）の下に隠れた点は数えない。足りない物の文を返す
+ * toast なら、知らせ（position: fixed）の下に隠れた点は数えない。label が包むチェック・ラジオは label の箱で測る。足りない物の文を返す
  */
 function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: string; targets: string; toast: boolean }): string[] {
   const lines: string[] = [];
@@ -128,8 +128,10 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
   }
   const d = min / 2 - 1;
   for (const el of els) {
-    el.scrollIntoView({ block: "center", inline: "center" });
-    const r = el.getBoundingClientRect();
+    // label が包むチェック・ラジオは、押せる所が label の箱なので label で測る
+    const box = el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio") ? (el.closest("label") ?? el) : el;
+    box.scrollIntoView({ block: "center", inline: "center" });
+    const r = box.getBoundingClientRect();
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
     const points = [
@@ -141,7 +143,7 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
     const inToast = el.closest(".c-toast") !== null;
     const ok = points.every(([x, y]) => {
       const hit = document.elementFromPoint(x ?? 0, y ?? 0);
-      return hit !== null && (hit === el || el.contains(hit) || (toast && !inToast && hit.closest(".c-toast-item") !== null));
+      return hit !== null && (hit === box || box.contains(hit) || (toast && !inToast && hit.closest(".c-toast-item") !== null));
     });
     if (!ok) lines.push(`当たりが足りない: ${el.tagName.toLowerCase()}.${el.classList[0] ?? ""} ${Math.round(r.width)}x${Math.round(r.height)}`);
   }
@@ -227,6 +229,114 @@ function composerProblems({ demos, phone, label }: { demos: string[]; phone: boo
   // narrow の入れ物（枠を含めて 320）が狭すぎず広すぎない（検査が空振りしない）
   const narrow = section.querySelector('[data-demo="narrow"] > *');
   if (narrow === null || !near(narrow.getBoundingClientRect().width, 320, 0.5)) say(`narrow の入れ物の幅 ${narrow?.getBoundingClientRect().width.toFixed(1) ?? "?"}。320 のはず`);
+  const doc = document.documentElement;
+  if (doc.scrollWidth > doc.clientWidth) say(`ページが横に動く（${doc.scrollWidth} > ${doc.clientWidth}）`);
+  return lines;
+}
+
+/** 見本のカードの data-demo（ページの順） */
+const CARD_DEMOS = ["card-perm", "card-perm-rule", "card-perm-urgent", "card-perm-busy", "card-perm-long", "card-close", "card-close-picked", "card-close-none", "card-move", "card-note", "card-narrow"];
+
+/**
+ * 見本のカードの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見本の名前・枠の線と角と地と幅・見出しの字・
+ * ボタンの高さと並び（スマホは 2 つが 2 等分・3 つが縦、PC は左から 1 行）・チェックの行と印の大きさ・要約の高さ（PC は 8 行で止まる）・
+ * 残り時間の色・待ちの行の role・動いている物・narrow の幅・横にはみ出さない。足りない物の文を返す
+ */
+function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; label: string }): string[] {
+  const lines: string[] = [];
+  const say = (text: string): void => void lines.push(`カード（${label}）: ${text}`);
+  const near = (a: number, b: number, d: number): boolean => Math.abs(a - b) <= d;
+  const section = document.querySelector('[data-section="cards"]');
+  if (section === null) return [`カード（${label}）: 節が無い`];
+  const names = [...section.querySelectorAll("[data-demo]")].map((el) => el.getAttribute("data-demo") ?? "?");
+  for (const name of demos) if (!names.includes(name)) say(`見本が無い: ${name}`);
+  for (const name of names) if (!demos.includes(name)) say(`知らない見本: ${name}`);
+  const colorOf = (v: string): string => {
+    const probe = document.createElement("span");
+    probe.style.color = v;
+    section.append(probe);
+    const c = getComputedStyle(probe).color;
+    probe.remove();
+    return c;
+  };
+  const warning = colorOf("var(--warning)");
+  const surface = colorOf("var(--surface)");
+  const root = getComputedStyle(document.documentElement);
+  const radius = parseFloat(root.getPropertyValue("--c-card-r"));
+  const max = parseFloat(root.getPropertyValue("--c-card-max"));
+  if (!(radius > 0) || !(max > 0)) say("--c-card-r・--c-card-max が読めない");
+  const sectionRight = section.getBoundingClientRect().right;
+  // 2. 枠
+  for (const card of section.querySelectorAll(".c-card")) {
+    const demo = card.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
+    const cs = getComputedStyle(card);
+    for (const side of ["Top", "Right", "Bottom", "Left"] as const) {
+      if (cs[`border${side}Color`] !== warning) say(`${demo} の枠の ${side} の色 ${cs[`border${side}Color`]}。--warning（${warning}）のはず`);
+      if (cs[`border${side}Width`] !== "1px") say(`${demo} の枠の ${side} の太さ ${cs[`border${side}Width`]}。1px のはず`);
+    }
+    if (parseFloat(cs.borderTopLeftRadius) !== radius) say(`${demo} の角 ${cs.borderTopLeftRadius}。${radius}px のはず`);
+    if (cs.backgroundColor !== surface) say(`${demo} の地 ${cs.backgroundColor}。--surface（${surface}）のはず`);
+    const r = card.getBoundingClientRect();
+    if (r.width > max + 0.5) say(`${demo} の幅 ${r.width.toFixed(1)}。${max} 以下のはず`);
+    if (card.scrollWidth > card.clientWidth) say(`${demo} のカードが横にはみ出している（${card.scrollWidth} > ${card.clientWidth}）`);
+    if (r.right > sectionRight + 0.5) say(`${demo} のカードが節の幅を超えている`);
+  }
+  // 3. 見出し
+  for (const title of section.querySelectorAll(".c-card-title")) {
+    const cs = getComputedStyle(title);
+    if (cs.fontSize !== "12px") say(`見出しの字 ${cs.fontSize}。12px のはず`);
+    if (cs.color !== warning) say(`見出しの色 ${cs.color}。--warning のはず`);
+  }
+  // 4. ボタンの並び
+  for (const actions of section.querySelectorAll(".c-card-actions")) {
+    const demo = actions.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
+    const count = actions.getAttribute("data-count");
+    const rects = [...actions.children].map((b) => b.getBoundingClientRect());
+    for (const b of rects) if (b.height < 44) say(`${demo} のボタンの高さ ${b.height.toFixed(1)}。44 以上のはず`);
+    const tops = new Set(rects.map((b) => Math.round(b.top)));
+    if (pc) {
+      // 幅 320 の narrow は折り返してよい（flex-wrap）。左端だけ見る
+      if (tops.size !== 1 && demo !== "card-narrow") say(`${demo} のボタン（${count}）が 1 行に並んでいない`);
+      if (rects[0] !== undefined && !near(rects[0].left, actions.getBoundingClientRect().left, 0.5)) say(`${demo} の最初のボタンが並びの左端に無い`);
+    } else if (count === "2") {
+      const [a, b] = rects;
+      if (tops.size !== 1) say(`${demo} の 2 つのボタンが同じ行に無い`);
+      if (a === undefined || b === undefined || !near(a.width, b.width, 0.5)) say(`${demo} の 2 つのボタンの幅が違う（${a?.width.toFixed(1)}・${b?.width.toFixed(1)}）`);
+    } else if (count === "3") {
+      if (tops.size !== 3) say(`${demo} の 3 つのボタンが 3 行に無い`);
+      if (new Set(rects.map((b) => b.left.toFixed(1))).size !== 1 || new Set(rects.map((b) => b.width.toFixed(1))).size !== 1) say(`${demo} の 3 つのボタンの左端か幅が違う`);
+    }
+  }
+  // 5. チェックの行と印
+  for (const row of section.querySelectorAll("label.c-card-check")) {
+    const demo = row.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
+    const r = row.getBoundingClientRect();
+    if (r.height < 44) say(`${demo} のチェックの行の高さ ${r.height.toFixed(1)}。44 以上のはず`);
+    const input = row.querySelector("input")?.getBoundingClientRect();
+    if (input === undefined || !near(input.width, 24, 0.5) || !near(input.height, 24, 0.5)) say(`${demo} のチェックの印 ${input?.width.toFixed(1)}x${input?.height.toFixed(1)}。24x24 のはず`);
+  }
+  // 6. 要約の高さ
+  const pre = section.querySelector('[data-demo="card-perm-long"] .c-card-code');
+  if (!(pre instanceof HTMLElement)) say("card-perm-long の要約が無い");
+  else if (pc) {
+    const cs = getComputedStyle(pre);
+    const want = parseFloat(cs.lineHeight) * 8 + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const h = pre.getBoundingClientRect().height;
+    if (!(pre.scrollHeight > pre.clientHeight)) say(`card-perm-long の要約が中で送れない（${pre.scrollHeight} <= ${pre.clientHeight}）`);
+    if (!near(h, want, 1)) say(`card-perm-long の要約の高さ ${h.toFixed(1)}。${want.toFixed(1)} のはず`);
+  } else if (pre.scrollHeight > pre.clientHeight + 1) say(`card-perm-long の要約が切れている（${pre.scrollHeight} > ${pre.clientHeight}）`);
+  // 7. 残り時間の色・待ちの行・動き・narrow・横
+  const metaColor = (demo: string): string | null => {
+    const meta = section.querySelector(`[data-demo="${demo}"] .c-card-meta`);
+    return meta === null ? null : getComputedStyle(meta).color;
+  };
+  if (metaColor("card-perm-urgent") !== warning) say(`card-perm-urgent の残り時間の色 ${metaColor("card-perm-urgent")}。--warning のはず`);
+  if (metaColor("card-perm") === null || metaColor("card-perm") === warning) say("card-perm の残り時間が無いか --warning の色");
+  if (section.querySelector('[data-demo="card-note"] .c-note')?.getAttribute("role") !== "status") say("card-note の待ちの行に role=status が無い");
+  const moving = section.getAnimations({ subtree: true }).length;
+  if (moving > 0) say(`節の中で ${moving} 個が動いている`);
+  const narrow = section.querySelector('[data-demo="card-narrow"] > *');
+  if (narrow === null || !near(narrow.getBoundingClientRect().width, 320, 0.5)) say(`card-narrow の入れ物の幅 ${narrow?.getBoundingClientRect().width.toFixed(1) ?? "?"}。320 のはず`);
   const doc = document.documentElement;
   if (doc.scrollWidth > doc.clientWidth) say(`ページが横に動く（${doc.scrollWidth} > ${doc.clientWidth}）`);
   return lines;
@@ -3177,6 +3287,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (lines.length > 0) throw new Error(`入力欄の見本の検査で ${lines.length} 件`);
   }
 
+  /** 見本のカード（cardProblems）と当たり（PC でも 44）を測る。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
+  async function checkCards(page: Page, vp: Viewport, label: string): Promise<void> {
+    const lines = await page.evaluate(cardProblems, { demos: CARD_DEMOS, pc: vp === "pc", label: "今の字" });
+    lines.push(...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-section="cards"]', targets: "button, input, textarea", toast: false })).map((line) => `カード: ${line}`));
+    for (const line of lines) logLines.push(`[${label}] ${line}`);
+    if (lines.length > 0) throw new Error(`カードの見本の検査で ${lines.length} 件`);
+  }
+
   /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない）。絵ごとに読み直す */
   async function gallery(vp: Viewport, theme: Theme): Promise<void> {
     const names = GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind));
@@ -3197,12 +3315,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         { name: galleryName(vp, theme, "g-bottom"), selector: '[data-section="bottom"]' },
         { name: galleryName(vp, theme, "g-talk"), selector: '[data-section="talk"]' },
         { name: galleryName(vp, theme, "g-composer"), selector: '[data-section="composer"]' },
+        { name: galleryName(vp, theme, "g-cards"), selector: '[data-section="cards"]' },
       ];
       await step(full, [full, ...parts.map((part) => part.name)], async () => {
         await loadGallery();
         await checkGallery(page, vp, label);
         await checkTalks(page, vp, label);
         await checkComposers(page, vp, label);
+        await checkCards(page, vp, label);
         // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("*")) if (el.scrollLeft !== 0) el.scrollLeft = 0;
