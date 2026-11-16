@@ -1,7 +1,8 @@
 // npm test の入口（#401）。/dev/shm（tmpfs）が在って書けるなら、その下に自分の一時ディレクトリを作って TMPDIR に向け、
 // 子の `node --test` を走らせる（一時 DB の同期がメモリの上で済むので速い）。SELF_AGENT_TEST_TMP=disk か、作れなければ今までどおり。
 // `npm test -- <引数>` の引数は既定の glob の代わりに渡す（`--` で始まるものは node の option として前に置く）。
-// 子が終わったら（SIGINT・SIGTERM・SIGHUP で止めたときも、子が終わってから）作ったディレクトリを消し、子の exit code で終わる
+// 子が終わったら（SIGINT・SIGTERM・SIGHUP で止めたときも、子が終わってから）作ったディレクトリを消し、子の exit code で終わる。
+// 出力は子のものだけ（消せなかった・起動できなかったときだけ 1 行）
 import { spawn } from "node:child_process";
 import { accessSync, constants, mkdtempSync, rmSync, statSync } from "node:fs";
 
@@ -47,8 +48,22 @@ if (import.meta.main) {
       child.kill(signal);
     });
   }
+  /** 作ったディレクトリを消す。消せなくても（テストが権限を落としたまま止まった等）子の結果は変えない */
+  const cleanup = (): void => {
+    if (dir === undefined) return;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      console.error("npm test: 一時ディレクトリを消せませんでした（/dev/shm の self-agent-test-* を手で消してください）");
+    }
+  };
+  child.on("error", () => {
+    cleanup();
+    console.error("npm test: node --test を起動できませんでした");
+    process.exit(1);
+  });
   child.on("exit", (code, signal) => {
-    if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+    cleanup();
     if (stoppedBy !== undefined) process.exit(SIGNAL_CODES[stoppedBy]);
     process.exit(signal === null ? (code ?? 1) : 1);
   });

@@ -1074,8 +1074,8 @@ test("SdkAgentRunner: ファイル操作の hook は Write・Edit を許すも�
   const projectsDir = join(workDir, "projects");
   mkdirSync(join(projectsDir, "kakeibo", "site"), { recursive: true });
   const file = join(projectsDir, "kakeibo", "site", "index.html");
-  // 中身の在るファイルを置く（tmpfs ではディレクトリの blocks が 0 なので、空のプロジェクトは上限 0 を超えない）
-  writeFileSync(file, "x".repeat(8192));
+  // 隣に中身の在るファイルを置く（tmpfs ではディレクトリの blocks が 0 なので、空のプロジェクトは上限 0 を超えない）。書く先の file は無いまま
+  writeFileSync(join(projectsDir, "kakeibo", "site", "style.css"), "x".repeat(8192));
   const topic = { guildId: "guild-1", channelId: "topic-1", kind: "session" } as const;
   const deny = (reason: string) => ({
     hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },

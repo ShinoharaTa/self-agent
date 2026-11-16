@@ -67,4 +67,4 @@
 
 本体は読まない。`npm test`（`scripts/test.ts`）だけが見る。上の表には入れない（表は本体が読む変数で、Web UI の状態の画面の並びと同じに保つ）。
 
-- `SELF_AGENT_TEST_TMP`: `disk` で、`npm test` の一時ディレクトリを `/dev/shm`（tmpfs）に向けず今までどおり（`TMPDIR` を変えない）にする。ほかの値・未設定なら、`/dev/shm` がディレクトリで書けるときその下に `self-agent-test-*` を作って子の `node --test` の `TMPDIR` にし、終わったら（SIGINT・SIGTERM・SIGHUP で止めたときも）消す
+- `SELF_AGENT_TEST_TMP`: `disk` で、`npm test` の一時ディレクトリを `/dev/shm`（tmpfs）に向けず今までどおり（`TMPDIR` を変えない）にする。ほかの値・未設定なら、`/dev/shm` がディレクトリで書けるときその下に `self-agent-test-*` を作って子の `node --test` の `TMPDIR` にし、終わったら（SIGINT・SIGTERM・SIGHUP で止めたときも）消す。`/dev/shm` が noexec・小さい（Docker の既定は 64 MB。回している間の山は約 52 MB）機械では `disk` にする。tmpfs ではディレクトリ自身の大きさ（blocks）が 0 になり、容量の数え方のテスト（`test/disk.test.ts`）のうちディレクトリの分が 0 と 0 の比べになるので、容量の数え方（`src/agent/disk.ts`）を触ったら `disk` でも回す
