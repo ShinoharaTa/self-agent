@@ -132,7 +132,10 @@ export function footOf(turn, open, end) {
   return { text: end, tone, steps: n > 0 ? turn.steps : null, open: n > 0 && open === true };
 }
 
-/** 会話の行のモデル。{ older, items, running }。openSteps は key（行の id を文字列にした物）の Set。state.on は読まない（TalkTimeline の prop で渡す） */
+/**
+ * 会話の行のモデル。{ older, items, running }。openSteps は key（行の id を文字列にした物）の Set。state.on は読まない（TalkTimeline の prop で渡す）。
+ * continueKey の返事の行にだけ act: { busy }（busy は continueBusy が true のとき）。ほかの行には act の欄を置かない
+ */
 export function talkModel(state, parse) {
   const fmt = state.fmt;
   const turns = Array.isArray(state.turns) ? state.turns : [];
@@ -149,7 +152,7 @@ export function talkModel(state, parse) {
       return { kind: "bubble", key, who: "owner", label, name: null, blocks: [{ type: "plain", text }], time, state: turn.optimistic === true ? "sending" : null, foot: null };
     }
     const open = openSteps ? openSteps.has(key) : false;
-    return {
+    const row = {
       kind: "bubble",
       key,
       who: "agent",
@@ -160,6 +163,8 @@ export function talkModel(state, parse) {
       state: null,
       foot: hasOutcome(turn) ? footOf(turn, open, fmt.end(turn)) : null,
     };
+    if (state.continueKey === key) row.act = { busy: state.continueBusy === true };
+    return row;
   });
   return { older: state.hasMore === true, items, running: state.running ? runModel(state, turns) : null };
 }
@@ -182,7 +187,7 @@ function runModel(state, turns) {
 // ===== 部品 =====
 
 /**
- * 会話の行の根。on: { older(), toggleSteps(key), toggleRunSteps(), stop() }。
+ * 会話の行の根。on: { older(), toggleSteps(key), toggleRunSteps(), stop(), continue(key) }。
  * rows（TalkRows の vnode）を渡せばそれを置き、model.older・model.items を見ない（1 秒ごとは同じ rows を渡して実行中の行だけを描く）
  */
 export function TalkTimeline({ model, on, rows }) {
@@ -192,14 +197,14 @@ export function TalkTimeline({ model, on, rows }) {
   </div>`;
 }
 
-/** 「前の会話を読む」と行（要素で包まず、配列を返す）。on は押されたときに今の状態を読む物を渡す（作ったときの物を持ち続けるため） */
+/** 「前の会話を読む」と行（要素で包まず、配列を返す）。on は押されたときに今の状態を読む物を渡す（作ったときの物を持ち続けるため）。行の［続ける］は on.continue(key) */
 export function TalkRows({ older, items, on }) {
   return [
     older ? html`<div class="c-talk-older" key="older"><${Button} kind="ghost" size="sm" label="前の会話を読む" onPress=${() => on.older()} /></div>` : null,
     ...items.map((item) => {
       if (item.kind === "divider") return html`<${Divider} key=${item.key} text=${item.text} />`;
       if (item.kind === "notice") return html`<${Notice} key=${item.key} text=${item.text} time=${item.time} />`;
-      return html`<${Bubble} key=${item.key} ...${item} onToggle=${() => on.toggleSteps(item.key)} />`;
+      return html`<${Bubble} key=${item.key} ...${item} onToggle=${() => on.toggleSteps(item.key)} onAct=${() => on.continue(item.key)} />`;
     }),
   ];
 }
@@ -263,8 +268,8 @@ export function Notice({ text, time }) {
   return html`<div class="c-notice">${text}${typeof time === "string" && time !== "" ? html`<span class="c-notice-time">${time}</span>` : null}</div>`;
 }
 
-/** 吹き出し。結果の文と手順は吹き出しの外（.c-msg-foot と、その下の一覧） */
-export function Bubble({ who, label, name, blocks, time, state, foot, onToggle }) {
+/** 吹き出し。結果の文と手順は吹き出しの外（.c-msg-foot と、その下の一覧）。act があれば行の一番下に［続ける］（押すと onAct） */
+export function Bubble({ who, label, name, blocks, time, state, foot, act, onToggle, onAct }) {
   const sending = state === "sending";
   return html`<article class="c-msg" data-who=${who} data-state=${sending ? "sending" : undefined} aria-label=${label}>
     ${name ? html`<span class="c-msg-name">${name}</span>` : null}
@@ -274,6 +279,7 @@ export function Bubble({ who, label, name, blocks, time, state, foot, onToggle }
       ${foot ? html`<${Steps} text=${foot.text} tone=${foot.tone} toggles=${Array.isArray(foot.steps)} open=${foot.open} onToggle=${onToggle} />` : null}
     </div>
     ${foot && foot.open && Array.isArray(foot.steps) ? html`<${StepList} steps=${foot.steps} />` : null}
+    ${act ? html`<div class="c-msg-act"><${Button} kind="secondary" size="sm" icon="play" label="続ける" busy=${act.busy} onPress=${() => onAct()} /></div>` : null}
   </article>`;
 }
 

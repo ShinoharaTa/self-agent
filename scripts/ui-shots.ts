@@ -336,7 +336,7 @@ function topProblems({ height, titleMin, placeMin, boxes, demos, label }: { heig
 }
 
 /** 見本の会話の data-demo（ページの順） */
-const TALK_DEMOS = ["talk-basic", "talk-steps", "talk-md", "talk-run", "talk-run-empty", "talk-edge"];
+const TALK_DEMOS = ["talk-basic", "talk-steps", "talk-stopped", "talk-stopped-open", "talk-stopped-busy", "talk-md", "talk-run", "talk-run-empty", "talk-edge"];
 /** 会話の行の幅の上限（.c-talk の中の幅に対する割合。agent と実行中の行・owner） */
 const TALK_MAX: Record<Viewport, { agent: number; owner: number }> = { phone: { agent: 0.86, owner: 0.8 }, tablet: { agent: 0.78, owner: 0.72 }, pc: { agent: 0.78, owner: 0.72 } };
 /** 会話の根の字の大きさ（px。--c-font-body） */
@@ -455,6 +455,43 @@ function talkProblems({ demos, max, fontSize, label }: { demos: string[] | null;
   for (const talk of document.querySelectorAll(".c-talk")) {
     const size = getComputedStyle(talk).fontSize;
     if (size !== `${fontSize}px`) say(`${nameOf(talk)} の根の字 ${size}。${fontSize}px のはず`);
+  }
+  // 10. 行の一番下の［続ける］（返事の行の最後の子・ボタン 1 つ・高さ 36・左端が吹き出しと同じ・上の物との間 16）
+  const acts = [...document.querySelectorAll(".c-msg-act")];
+  for (const act of acts) {
+    const msg = act.parentElement;
+    if (msg === null || !msg.matches('.c-msg[data-who="agent"]')) {
+      say(`${nameOf(act)} の［続ける］の親が返事の行でない`);
+      continue;
+    }
+    if (msg.lastElementChild !== act) say(`${nameOf(act)} の［続ける］が行の最後の子でない`);
+    const btns = act.querySelectorAll("button.c-btn");
+    const btn = btns[0];
+    if (btns.length !== 1 || btn === undefined) {
+      say(`${nameOf(act)} の［続ける］のボタンが ${btns.length} 個（1 つのはず）`);
+      continue;
+    }
+    if ((btn.textContent ?? "").trim() !== "続ける") say(`${nameOf(act)} のボタンの文が「${(btn.textContent ?? "").trim()}」（続ける のはず）`);
+    const b = btn.getBoundingClientRect();
+    if (!near(b.height, 36, 0.5)) say(`${nameOf(act)} の［続ける］の高さ ${b.height.toFixed(1)}。36 のはず`);
+    const bubble = msg.querySelector(":scope > .c-bubble");
+    if (bubble === null || !near(b.left, bubble.getBoundingClientRect().left, 0.5)) say(`${nameOf(act)} の［続ける］の左端が吹き出しとずれる（${b.left.toFixed(1)} / ${bubble === null ? "なし" : bubble.getBoundingClientRect().left.toFixed(1)}）`);
+    const before = act.previousElementSibling;
+    const gap = before === null ? null : b.top - before.getBoundingClientRect().bottom;
+    if (gap === null || !near(gap, 16, 0.5)) say(`${nameOf(act)} の［続ける］と上の物の間 ${gap === null ? "なし" : gap.toFixed(1)}。16 のはず`);
+  }
+  if (demos !== null) {
+    const want = ["talk-stopped", "talk-stopped-open", "talk-stopped-busy"];
+    for (const demo of demos) {
+      const n = document.querySelectorAll(`[data-demo="${demo}"] .c-msg-act`).length;
+      if (n !== (want.includes(demo) ? 1 : 0)) say(`${demo} の［続ける］が ${n} 個（${want.includes(demo) ? 1 : 0} のはず）`);
+    }
+    for (const act of acts) {
+      const busy = act.querySelector('button[aria-busy="true"]') !== null && act.querySelector(".c-btn-spin") !== null;
+      if (busy !== (nameOf(act) === "talk-stopped-busy")) say(`${nameOf(act)} の［続ける］の待ちの形が ${busy ? "在る" : "無い"}`);
+    }
+    const open = document.querySelector('[data-demo="talk-stopped-open"] .c-msg-act');
+    if (open !== null && open.previousElementSibling?.matches(".c-steps-list") !== true) say("talk-stopped-open の［続ける］が手順の一覧の後ろでない");
   }
   return lines;
 }

@@ -462,6 +462,11 @@ const TALK_MD = [
 const STEPS_4 = ["Read src/app.ts", "Grep handleTurn", "Read src/web/chat.ts", "Bash npm test"];
 const STEPS_5 = ["Read src/app.ts", "Edit src/app.ts", "Bash npm run check", "Bash npm test", "Read test/app.test.ts"];
 
+/** 手順の上限で止まった返事（［続ける］の見本の 1 行） */
+function stoppedTurn(id) {
+  return { id, kind: "agent", text: "ここまで進めました。", time: "12:45", outcome: "max_turns", steps: STEPS_4.slice(0, 3), end: "手順の上限で止まりました（12 分 34 秒・ツール 128 回）" };
+}
+
 /** 見本の行。time・name・end は fmt がそのまま返す欄 */
 const TALK_DEMOS = [
   {
@@ -484,6 +489,9 @@ const TALK_DEMOS = [
       { id: "s5", kind: "agent", text: "ここで止めます。", time: "12:47", outcome: "aborted", steps: [], end: "中断しました（5 秒・ツール 1 回）" },
     ],
   },
+  { demo: "talk-stopped", continueKey: "p1", turns: [stoppedTurn("p1")] },
+  { demo: "talk-stopped-open", continueKey: "p2", turns: [stoppedTurn("p2")] },
+  { demo: "talk-stopped-busy", continueKey: "p3", continueBusy: true, turns: [stoppedTurn("p3")] },
   { demo: "talk-md", turns: [{ id: "m1", kind: "agent", text: TALK_MD, time: "12:30" }] },
   {
     demo: "talk-run",
@@ -515,7 +523,7 @@ const TALK_FMT = {
 
 /** 押した物を結果の欄に書く（手順の開閉は見本の中で覚える。見本もモデルを通して描く） */
 function Talks() {
-  const [openSteps, setOpenSteps] = useState(() => new Set(["s2"]));
+  const [openSteps, setOpenSteps] = useState(() => new Set(["s2", "p2"]));
   const [runStepsOpen, setRunStepsOpen] = useState(false);
   const [result, setResult] = useState("");
   const on = {
@@ -534,11 +542,12 @@ function Talks() {
       setResult("run-steps");
     },
     stop: () => setResult("stop"),
+    continue: (key) => setResult(`continue ${key}`),
   };
   return html`<${Section} name="talk" title="会話（TalkTimeline・Bubble・Steps・RunLine）">
-    ${TALK_DEMOS.map(({ demo, turns, hasMore = false, running = null, runName }) => {
+    ${TALK_DEMOS.map(({ demo, turns, hasMore = false, running = null, runName, continueKey = null, continueBusy = false }) => {
       const fmt = runName ? { ...TALK_FMT, runName } : TALK_FMT;
-      const model = talkModel({ channelId: "g", turns, hasMore, running, stopping: false, openSteps, runStepsOpen, fmt, on }, parseBlocks);
+      const model = talkModel({ channelId: "g", turns, hasMore, running, stopping: false, continueKey, continueBusy, openSteps, runStepsOpen, fmt, on }, parseBlocks);
       return html`<div data-demo=${demo} key=${demo}><div class="c-gallery-talk"><${TalkTimeline} model=${model} on=${on} /></div></div>`;
     })}
     <p class="c-gallery-result">${result}</p>

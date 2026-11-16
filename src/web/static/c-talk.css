@@ -202,6 +202,12 @@
   overflow-wrap: anywhere;
 }
 
+/* 吹き出しの行の一番下の操作（［続ける］）。左寄せ。上の結果の文の当たりと重ならない間 */
+.c-msg-act {
+  display: flex;
+  margin-top: var(--space-3);
+}
+
 .c-run {
   display: flex;
   flex-direction: column;
