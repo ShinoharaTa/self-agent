@@ -65,6 +65,7 @@
 - **iOS Safari・ホーム画面の PWA** で ES modules + Preact が同じに動くか（Chromium でしか試していない）。
 - iOS Safari は 12.2 以上の見立て（同梱の本体が無条件に `queueMicrotask` を使う。構文は ES5 + import/export。推測・実機は未確認）。
 - 11 系: `render` は 2 引数だけ・関数の部品では `ref` はただの prop・`defaultProps` は無い・`createPortal` は本体にある。
+- 板（Sheet）は `<dialog>` の `showModal()` に頼る（iOS Safari 15.4 以上の見立て。未確認）。`open` 属性の代わりは書かない（K2 で決めた）。
 - Preact 11 系の枯れ具合。npm では 11.0.0 が 2026-09-30、11.2.0（latest）が 2026-11-06。10 系の最新は 10.29.8（2026-08-01）。既知の不具合は調べていない。だめなら 10.29.8 へ下げる（10 系では試していない）。
 - オーナーが実機のどこを「破綻」と感じたか（§3 は偽データの画面写しから私が拾ったもの）。
 - ライトの絵・古い殻の 4 枚・残りの 40 枚は開いていない（§3.1）。
@@ -198,7 +199,7 @@
 | Segmented | 同 | items、value、onChange、label | なし | 折り返さない。入りきらなければ横に送る（D10 の再発を防ぐ） |
 | Field | 同 | label、hint、error、children | なし | — |
 | Empty / Loading | 同 | text、action | なし | — |
-| Sheet（下から出る板） | `c-sheet.js` / `.css` | open、title、onClose、children | フォーカスの戻り先 | `<dialog>`。スマホは下、PC は中央。safe-area の下 |
+| Sheet（下から出る板） | `c-sheet.js` / `.css` | open、title、onClose、children | 開閉の反映だけ（フォーカスの戻りはブラウザ） | `<dialog>`。スマホは下、PC は中央。safe-area の下 |
 | Confirm | 同 | title、target、body、okLabel、danger、onOk、onCancel | なし | 危ない側を primary にしない |
 | Toast | 同 | items | なし | `aria-live`。今の `SA.ui.toast` はここへ渡す橋にする |
 | TopBar | `c-shell.js` / `.css` | view（list・talk・other）、title、status、place、onBack、onPlace、onMenu、onHand | なし | **1 段**。スマホ 56・PC 52。safe-area の上を含む（D1） |
@@ -237,7 +238,31 @@
 ### 7.2 トークン
 
 - 色・動き・重なり: 今の `tokens.css` をそのまま使う。
-- 寸法: 新しい殻は古い殻の寸法（`--row`・`--titlebar-h`・`--tabbar-h` など）を**使わない**。`tokens.css` に `--c-` で始まる寸法を足す: `--c-bar-h`（56 / PC 52）、`--c-bottom-h`（64）、`--c-row-h`（44 / PC 36）、`--c-tap`（44）、`--c-bubble-r`（12）、`--c-bubble-tail`（4）、`--c-card-r`（12）、`--c-gutter`（16）、`--c-list-w`（280）、`--c-hand-w`（360）。
+- 寸法: 新しい殻は古い殻の寸法（`--row`・`--titlebar-h`・`--tabbar-h` など）を**使わない**。`tokens.css` の末尾に `--c-` で始まる寸法を足した（K2）。既定はスマホ・指の端末で、PC の値は `@media (min-width: 640px) and (hover: hover) and (pointer: fine)` で上書きする（幅だけだと指のタブレットで行が 36px・入力欄の字が 14px になる）。
+
+| 名前 | 既定 | PC | 使う所 |
+|---|---|---|---|
+| `--c-tap` | 44 | — | 当たりの下限・md の高さ |
+| `--c-bar-h` | 56 | 52 | 見出し（K4）・板の見出し |
+| `--c-bottom-h` | 64 | — | 下のバー（K3） |
+| `--c-row-h` | 44 | 36 | 一覧の行（K3） |
+| `--c-gutter` | 16 | — | 左右の余白 |
+| `--c-list-w` | 280 | — | PC の一覧の幅（K3） |
+| `--c-hand-w` | 360 | — | PC の右腕の幅（K6） |
+| `--c-bubble-r` | 14 | — | 吹き出しの角（K4。決定） |
+| `--c-bubble-tail` | 4 | — | 吹き出しのしっぽ側の角（K4） |
+| `--c-card-r` | 10 | — | カードの角（K5。決定） |
+| `--c-btn-sm-h` | 36 | — | Button・IconButton の sm |
+| `--c-round-r` | 22 | 8 | accent のボタンの角（スマホは丸） |
+| `--c-icon` / `--c-icon-sm` | 20 / 16 | — | アイコン |
+| `--c-mark` / `--c-mark-ring` | 8 / 2 | — | 印・作業中の輪の太さ |
+| `--c-badge-h` / `--c-badge-pad` | 20 / 6 | — | 件数の高さ・最小の幅 / 左右 |
+| `--c-seg-h` / `--c-seg-pad` | 44 / 3 | 36 / — | 切り替えの入れ物の高さ / 内側の余白 |
+| `--c-toast-w` | 360 | — | 知らせの最大の幅（PC） |
+| `--c-spin` | 800ms | — | スピナーの 1 周 |
+| `--c-font-body` | `--font-base`（16） | `--font-sm`（14） | 本文・md のボタン・入力欄の字（新しい字の大きさではなく別名） |
+
+- 板が下か中央かは寸法ではなく置き方なので、今の殻と同じ幅だけ（`@media (max-width: 639px)`）で `c-sheet.css` に書く。
 - 古い寸法のトークンは M8b で古い殻と一緒に消す。
 - 字の大きさは今の目盛り（12・14・16）のまま。モック D の 13・15・17 は最寄りへ丸める（スマホの本文 16、PC の本文 14、副次 12）。新しい字のトークンは足さない（§10 の 3）。
 
@@ -249,6 +274,7 @@
 - K8 以降: `v3.html` の `<link>` に `app.css`・`shell.css` が無い。
 - 部品は `style` の prop と `dangerouslySetInnerHTML` を使わない（Preact は style を `style.cssText` で入れるので CSP では止まらない。11 系は数値に px を付けない）。動く値は `data-*` と CSS、どうしても要るときは入口が `style.setProperty` で CSS の変数を入れる。
 - `document`・`window` に触ってよいのは入口（`c-app.js` と見本の `c-gallery.js`）だけ。
+- `c-*.css` の `var()` は `--c-*` か許可リスト（`test/web-components.test.ts` の `ALLOWED_VARS`）だけ。許可リストは base.css の目盛り（`--space-*`・`--font-xs`〜`--font-base`・`--leading-*`・`--weight-*`・`--radius-*`・`--border-width`・`--ring-width`・`--dialog-max`・`--container-max`）、tokens.css の色（`--text-secondary` を含む）、動き・重なり・字（`--dur-*`・`--ease-out`・`--z-toast`・`--font-mono`）。ここに無い物（`--tap`・`--row`・`--icon-size`・`--font-lg` 以上・古い殻の寸法・`--kb`・`--vvh`）は落ちる。足すときはテストの許可リストとこの行を一緒に直す。
 
 ### 7.4 `chat.js`・`views.js` の中の見た目
 
@@ -313,9 +339,9 @@
 - やること: `scripts/vendor-web.ts`・`npm run vendor-web`、`vendor-preact.js`・`vendor-preact-hooks.js`・`vendor-htm.js`、まとめの `c-lib.js`（`h`・`render`・`html`・使う hook だけを出す）、`gallery.html` + `c-gallery.js`（見出し・説明・押すと数が増えるボタンだけ）、`THIRD_PARTY_LICENSES.md`、`docs/plan/web-ui.md` の「依存は足さない」の書き換え。
 - 受け入れ: (1) `npm test` が「commit した vendor = 作り直した物」を確かめる。(2) vendor の 3 つに裸の指定（`from"preact"`）・`sourceMappingURL`・`eval`・`new Function` が無い。(3) `gallery.html` に inline の script・style が無い。(4) `ui-shots --only gallery` の絵に見出しが出て、ページのエラーと CSP 違反が 0。(5) `package.json` の `dependencies` は 3 つのまま。(6) **オーナーが実機の Safari で `/static/gallery.html` を開いて見出しが出る**（出なければここで A へ切り替える）。ホーム画面の PWA は start_url が `/` で `gallery.html` への入口が無いので、K1 では実機の Safari で開く。PWA（standalone）での確かめは、新しい殻が部品を読む段（K3）から。(7) `/` と `/static/v3.html` は 1 バイトも変わらない。
 
-**K2 トークン + 小さい部品 + 板**
+**K2 トークン + 小さい部品 + 板**（済。#391）
 - やること: `tokens.css` に `--c-*`、`c-atoms.js/.css`、`c-sheet.js/.css`、§7.3 の見張りのテスト、見本に全状態。
-- 受け入れ: (1) §7.3 のテストが通る。(2) 各部品のモデルの関数を `import` して試すテストがある（fake DOM・`fnSource` を使わない）。(3) 見本の絵（スマホ・PC × ダーク・ライト）で、当たりが 44px 未満の押せる物が無い。(4) Segmented は 6 項目でも折り返さない。(5) `v3.html` は変わらない。
+- 受け入れ: (1) §7.3 のテストが通る。(2) 各部品のモデルの関数を `import` して試すテストがある（fake DOM・`fnSource` を使わない）。(3) 見本の絵（スマホ・PC × ダーク・ライト）で、指の端末で 44px・PC（hover と fine）で 36px に満たない押せる物が無い。(4) Segmented は 6 項目でも折り返さない。(5) `v3.html` は変わらない。
 
 **K3 一覧**
 - やること: `c-list.js/.css`・BottomBar。`topics.js` の `rowParts`・`turnParts`・`reconcile`・`fillRow`・`createRow`・`updateRow` を消し、描画を部品へ渡す（`load`・`schedule`・`find`・`counts`・`setFilter`・`setCurrent` は残す）。`v3.html` の `.v3-hand-entry`・`.v3-list-foot` を BottomBar に替える。`c-app.js` は `shell.js` より前に読む（F11）。
