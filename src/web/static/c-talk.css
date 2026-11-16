@@ -34,20 +34,6 @@
   max-width: 80%;
 }
 
-@media (min-width: 640px) {
-  .c-msg {
-    max-width: 78%;
-  }
-
-  .c-msg[data-who="owner"] {
-    max-width: 72%;
-  }
-
-  .c-run {
-    max-width: 78%;
-  }
-}
-
 .c-msg-name {
   font-size: var(--font-xs);
   color: var(--text-secondary);
@@ -224,6 +210,22 @@
   gap: var(--space-1);
   min-width: 0;
   max-width: 86%;
+  overflow-wrap: anywhere;
+}
+
+/* 広い幅の上限は .c-msg と .c-run の既定の後ろに置く（前に置くと既定の 86% に負ける） */
+@media (min-width: 640px) {
+  .c-msg {
+    max-width: 78%;
+  }
+
+  .c-msg[data-who="owner"] {
+    max-width: 72%;
+  }
+
+  .c-run {
+    max-width: 78%;
+  }
 }
 
 .c-run-line {
