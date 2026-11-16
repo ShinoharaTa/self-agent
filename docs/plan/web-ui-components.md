@@ -192,11 +192,11 @@
 
 | 部品 | ファイル | 入力（props） | 持つ状態 | CSS の要点 |
 |---|---|---|---|---|
-| Button | `c-atoms.js` / `.css` | kind（primary・accent・secondary・ghost・danger）、size（md 44・sm 36）、icon、label、disabled、busy、onPress | なし | 高さ `--c-tap`。押せないときは色を薄くするだけでなく `aria-disabled` |
-| IconButton | 同 | icon、label（必須。`aria-label`）、badge、onPress | なし | 44×44 の当たり |
+| Button | `c-atoms.js` / `.css` | kind（primary・accent・secondary・ghost・danger）、size（md 44・sm 36）、icon、label、disabled、busy、reason、onPress(event)（`event.currentTarget` が押した要素） | なし | 高さ `--c-tap`。押せないときは色を薄くするだけでなく `aria-disabled` |
+| IconButton | 同 | icon、label（必須。`aria-label`）、badge（札は 9+、名前は 99 まで）、disabled、reason、onPress(event) | なし | 44×44 の当たり |
 | Badge | 同 | count、tone（warning・accent・muted） | なし | 0 は出さない。99+ |
 | Mark（行頭の印） | 同 | state（turn・running・unread・none） | なし | 8px。turn = warning の塗り、running = accent の輪、unread = accent の塗り。none でも幅は取る |
-| Segmented | 同 | items、value、onChange、label | なし | 折り返さない。入りきらなければ横に送る（D10 の再発を防ぐ） |
+| Segmented | 同 | items（value は文字列か数。String() で揃えて比べ、onChange には元の値）、value、onChange、label | なし | 折り返さない。入りきらなければ横に送る（D10 の再発を防ぐ） |
 | Field | 同 | label、hint、error、children | なし | — |
 | Empty / Loading | 同 | text、action | なし | — |
 | Sheet（下から出る板） | `c-sheet.js` / `.css` | open、title、onClose、children | 開閉の反映だけ（フォーカスの戻りはブラウザ） | `<dialog>`。スマホは下、PC は中央。safe-area の下 |
@@ -358,6 +358,8 @@
 **K6 右腕**
 - やること: `c-hand.js/.css`。中身は TalkTimeline + Composer の使い回し。`ui.js` の `toast`・`confirm` を新しい部品へ渡す橋に。
 - 受け入れ: (1) 下のバーの右腕を押すと、どの画面からも板が開く。(2) 開いて閉じるとフォーカスが押した所へ戻る。(3) 札の [開く] でその話題へ行く。(4) PC（1024px 以上）では右の列。(5) toast・confirm の見た目が 1 種類。
+- K2 からの申し送り: 板の中に入力欄を置く画面で、iOS のキーボードが出たときに板が持ち上がるか（`.c-sheet` は `app.css` の `dialog` の `--vvh`・`--kb` を使っていない）。
+- K2 からの申し送り: 知らせの入れ物（`role="status"`・`role="alert"`）は暗黙に atomic なので、足すたびに全部を読み直す見立て。読み上げで確かめて決める。
 
 **flip（#383）**: K6 の後、オーナーが実機で一覧 → 会話 → 送る → 許可に答える → 右腕、を通して見てから。#383 は main に合わせ直す（中身は変えない）。
 
