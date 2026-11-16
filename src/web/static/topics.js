@@ -123,7 +123,7 @@
   }
 
   function counts() {
-    return { turns: data ? data.turns : 0, running: data ? data.topics.filter((t) => t.mark === "running").length : 0 };
+    return { turns: data ? data.turns : 0, running: data ? data.topics.filter((t) => t !== null && typeof t === "object" && t.mark === "running").length : 0 };
   }
 
   // ===== 行を開く =====
