@@ -30,7 +30,7 @@
 | F1 | 新しい殻は `base.css` → `tokens.css` → **`app.css`** → `shell.css` を読む。`shell.css` の先頭に「配置だけ。部品（.btn・.dot・.ed* など）は app.css のものをそのまま使う」とある | `src/web/static/v3.html`・`shell.css` |
 | F2 | `app.css` は 3,250 行・280 クラス。新しい殻の自前の部分（`shell.js`・`topics.js`・`v3.html`）だけで 46 クラスを直に使う。中身（`chat.js` 62・`views.js` 129）は全部 `app.css` | 数えた |
 | F3 | `shell.css` は古い殻の寸法のトークンを使う（`--row` 28px/44px が 6 か所、`--titlebar-h` 40px、`--font-xs` 6 か所）。自前の変数は幅 2 つだけ | `shell.css`・`tokens.css` |
-| F4 | モック D の数値は今の殻と違う。吹き出しの角 14/4px、入力欄は高さ 44px・角 22px の 1 行、送るは accent、「あなたの番」は warning の枠のカード、下のバーは 64px で中央に右腕の accent のボタン、PC の行は 36px | モック D（リポジトリの外） |
+| F4 | モック D の数値は今の殻と違う。吹き出しの角 14/4px、入力欄は高さ 44px・角 22px の 1 行、送るは accent、「あなたの番」はスマホが warning の見出しと枠なしの 2 行の行・PC が warning の件数のボタン 1 つ（枠のカードではない。K3 で読み直した）、下のバーは 64px で中央に右腕の accent のボタン、PC の行は 36px | モック D（リポジトリの外） |
 | F5 | 描画は手書き。DOM を書き換える所は `chat.js` 39・`views.js` 36・`shell.js` 17・`topics.js` 9。`topics.js` は key 付きの reconcile を自前で持つ | 数えた |
 | F6 | `test/web-static.test.ts` は 213 個。うち新しい殻の節（1908 行〜）が 151 個。`fnSource()` の切り出し 30・ソース文字列への正規表現 約 149。絵を見るテストは無い。CI も無い（`.github/workflows` なし） | 数えた |
 | F7 | 静的ファイルは 1 要素の名前だけ配る（`^[A-Za-z0-9_-]+\.(html\|css\|js\|svg\|png\|webmanifest)$`）。**`vendor/` の下・`preact.module.js` のような名前は今は配れない** | `src/web/static.ts` |
@@ -104,7 +104,7 @@
 | D13 | PC の一覧 | 行 28px・字 14px 未満の VS Code の密度。見出しは x≒4px、行の題は x≒36px。「あなたの番」の副次行は途中で切れる | 行 36px・「あなたの番」は warning の件数のボタン | `--row`（F3）。→ TopicRow・YourTurn |
 | D14 | PC の右腕の列 | 返事ごとに「完了」の行。入力欄は空でも 3 行ぶんで「0 / 1,900」 | 札 + 本文だけの吹き出し + 1 行の入力欄 | D2・D4 と同じ。→ HandPanel は TalkTimeline と Composer の使い回し |
 | D15 | PC の会話 | コードの長い行が吹き出しの右端で切れる（横に送れるかは**未確認**） | — | → Bubble の中のコードは横に送れること |
-| D16 | タブレット 820 幅 | 会話の見出しが 3 段に折れる（題 / 場所・Discord / ボタン）。場所の帯と合わせて約 135px。右に機械の印だけの細い列（約 60px）が常に立つ | — | D11 と同じ。→ TopBar は折り返さない。右腕の入口は下のバーか TopBar の 1 つに |
+| D16 | タブレット 820 幅 | 会話の見出しが 3 段に折れる（題 / 場所・Discord / ボタン）。場所の帯と合わせて約 135px。右に機械の印だけの細い列（約 60px）が常に立つ | — | D11 と同じ。→ TopBar は折り返さない。右腕の入口は TopBar の 1 つに。右の細い列は右腕の列の物なので K4・K6 で直す（K3 では触らない） |
 | D17 | スマホのナレッジ | 一覧と中身が縦に二分され、間に約 110px の空き。上の帯は「右腕」だけ。探す欄が見出しの中 | — | `views.js` の master-detail を殻が上書き（`.v3 .master-detail-phone`）。→ K9（それまでは島） |
 
 親・撮った担当から聞いたが私は絵で見ていないこと: 起動のダイアログの select の字が大きい、ナレッジの本文が markdown を描かない。
@@ -113,8 +113,8 @@
 
 | 部品 | 直す差 | 段 |
 |---|---|---|
-| TopBar | D1・D8・D11・D16 | K4 |
-| BottomBar | D7（と D16 の右の細い列） | K3 |
+| TopBar | D1・D8・D11・D16 | K4（D16 の右の細い列は K6 と一緒に） |
+| BottomBar | D7 | K3 |
 | YourTurn | D5 | K3 |
 | TopicList・GroupHead・TopicRow | D6・D13 | K3 |
 | Bubble・Steps | D4・D14・D15 | K4 |
@@ -203,11 +203,11 @@
 | Confirm | 同 | title、target、body、okLabel、danger、onOk、onCancel | なし | 危ない側を primary にしない |
 | Toast | 同 | items | なし | `aria-live`。今の `SA.ui.toast` はここへ渡す橋にする |
 | TopBar | `c-shell.js` / `.css` | view（list・talk・other）、title、status、place、onBack、onPlace、onMenu、onHand | なし | **1 段**。スマホ 56・PC 52。safe-area の上を含む（D1） |
-| BottomBar | 同 | turnCount、active、onList、onHand、onOther | なし | 64px + safe-area の下。中央の右腕は accent（D7）。スマホは「一覧」「ほか」が中身の幅（下限 `--c-bottom-h`）で、右腕が残りを全部取る（K3a） |
-| TopicList | `c-list.js` / `.css` | turns、groups、currentId、filter、onOpen、onNew、onAnswer | 群の開閉（localStorage は入口が持つ） | 左端 16px で揃える（D6） |
-| YourTurn（あなたの番） | 同 | items（題・種類・何を訊かれているか・時刻・その場で答えられるか） | なし | **warning の枠のカード**。0 件のときは出さない。その場のボタンは許可・拒否 / 選択肢 / [開く]（D5） |
-| GroupHead | 同 | name、turnCount、running、collapsed、onToggle、onNew | なし | 36px。[+] は 44 の当たり |
-| TopicRow | 同 | id（key）、title、mark、meta（状態の語 1 つ）、time、current | なし | スマホ 44・PC 36。題は 1 行で省く。副次行は持たない |
+| BottomBar | 同 | variant（phone・wide。入口が幅で決める）、turns、hand（turn・unread・null）、tabs（広い幅の文字のボタン）、on（list・hand(opener)・tab(id)・more(opener)） | なし | スマホは 64px + safe-area の下、広い幅は 44px + safe-area で「タスク」「リマインド」「ほか」。中央の右腕は accent（D7）。スマホは「一覧」「ほか」が中身の幅（下限 `--c-bottom-h`）で、右腕が残りを全部取る（K3a） |
+| TopicList | `c-list.js` / `.css` | turns、groups、currentId、filter、onOpen、onNew（その場で答える onAnswer は持たない。許可・拒否は K5） | 群の開閉（localStorage は入口が持つ） | 左端 16px で揃える（D6） |
+| YourTurn（あなたの番） | 同 | items（題・種類・何を訊かれているか・時刻） | なし | モック D のとおり、スマホは warning の見出し「あなたの番 n」と枠なしの 2 行の行、PC は件数のボタン 1 つ（押すと次の待ちの話題）。0 件のときは出さない。その場の許可・拒否は持たない（項目を押して会話で答える。K5）（D5） |
+| GroupHead | 同 | name、turnCount、running、onNew（群の開閉は作らない） | なし | 36px。[+] は 44 の当たり |
+| TopicRow | 同 | id（key）、title、mark、meta（状態の語 1 つ）、time、current | なし | スマホ 44・PC 36。題は 1 行で省く。副次行は持たない。付記（場所の名前など）は 640px 以上では出さない |
 | TalkTimeline | `c-talk.js` / `.css` | turns、running、cards、onLoadOlder | 下に付いているか（スクロール） | 新着で下にいるときだけ下へ送る |
 | Bubble | 同 | who（owner・agent）、blocks、time、state（sending・failed） | なし | 角 `--c-bubble-r` と話者側の下だけ `--c-bubble-tail`。最大幅 スマホ 80/86%・PC 72/78%。**本文だけ**（D4） |
 | Steps（手順） | 同 | steps、open、onToggle | 開閉 | 吹き出しの**外**の下に小さく 1 行。0 件なら出さない |
@@ -345,12 +345,12 @@
 - やること: `tokens.css` に `--c-*`、`c-atoms.js/.css`、`c-sheet.js/.css`、§7.3 の見張りのテスト、見本に全状態。
 - 受け入れ: (1) §7.3 のテストが通る。(2) 各部品のモデルの関数を `import` して試すテストがある（fake DOM・`fnSource` を使わない）。(3) 見本の絵（スマホ・PC × ダーク・ライト）で、指の端末で 44px・PC（hover と fine）で 36px に満たない押せる物が無い。(4) Segmented は 6 項目でも折り返さない。(5) `v3.html` は変わらない。
 
-**K3 一覧**（K3a 済・K3b-1 済。下のバーは K3b-2。#393: 一覧と下のバーの部品 `c-list`・`c-shell` とモデルのテスト・見本の節。#395: 本番の `v3.html` への載せ替え。K3b は「入口と一覧」（K3b-1）と「下のバーと試し用の manifest」（K3b-2）の 2 本に割った。PR ごとに差と前後の絵が 1 つになり、危ない所（一覧はテストの書き直しと使い回し・フォーカス、バーは右腕のフォーカスの戻り・末尾と safe-area・幅）が別だから）
+**K3 一覧**（K3 済。#393: 一覧と下のバーの部品 `c-list`・`c-shell` とモデルのテスト・見本の節。#395: 本番の `v3.html` への載せ替え。K3b は「入口と一覧」（K3b-1）と「下のバーと試し用の manifest」（K3b-2）の 2 本に割った。PR ごとに差と前後の絵が 1 つになり、危ない所（一覧はテストの書き直しと使い回し・フォーカス、バーは右腕のフォーカスの戻り・末尾と safe-area・幅）が別だから）
 - やること: `c-list.js/.css`・BottomBar。`topics.js` の `rowParts`・`turnParts`・`reconcile`・`fillRow`・`createRow`・`updateRow` を消し、描画を部品へ渡す（`load`・`schedule`・`find`・`counts`・`setFilter`・`setCurrent` は残す）。`v3.html` の `.v3-hand-entry`・`.v3-list-foot` を BottomBar に替える。`c-app.js` は `shell.js` より前に読む（F11）。
   - 形（K3b-1。K4〜K6 も同じ形を使う: 古い JS が状態を持ち、入口へ押し込む）:
     ```
     topics.js（読む・polling・状態）──▶ SA.list.draw(state) ─▶ c-app.js（入口）─▶ listModel(state) ─▶ render(TopicList)
-    shell.js（画面の切り替え・右腕）──▶ SA.list.drawBar(bar) ─▶ c-app.js ─▶ bottomModel(bar) ─▶ render(BottomBar)（K3b-2）
+    shell.js（画面の切り替え・右腕）──▶ SA.list.drawBar(bar) ─▶ c-app.js ─▶ bottomModel(bar) ─▶ render(BottomBar)
     ```
     状態（`data`・`failed`・`filter`・`current`・`doneGroup`・`dataDone`・「ほかのプロジェクト」の開閉）は `topics.js` に残し、部品と入口は状態を持たない（hook を使わない。`render()` の直後に DOM が出来ている前提を保つ）。見た目の判断は `c-list.js` の `listModel`。`document`・`window`・`SA` に触る `c-*.js` は入口 `c-app.js` だけ（見本の `c-gallery.js` は別）。
   - `SA.list`（`c-app.js`。K3b-1 の分。`#c-list-root` が無いページでは作らない）:
@@ -361,9 +361,15 @@
     | `focusRow(id)` → boolean | その話題の行のうち `data-mark` の付いた物（群の中の行）を先に、無ければ「あなたの番」の行にフォーカス |
     | `focusList()` | 一覧の根（`tabindex="-1"` の `.c-list`）にフォーカス |
     | `scrollTop()`・`setScrollTop(n)` | 一覧の根の位置を読む・書く |
+    | `drawBar(bar)` → boolean | `bar` は `{ turns, hand, tabs, on }`。形（スマホか広い幅か）は入口が決める。`#c-bottom-root` が無ければ覚えるだけで true。例外は握って false |
+    | `focusHand()` → boolean | スマホのバーの右腕のボタンにフォーカス。無ければ false |
+
+    `shell.js` は起動のときに 1 回と右腕の印を描くたびに `drawBar` を呼び、false なら件数・印・タブの無い形で 1 回だけ描き直す。
 
     鍵: `#c-list-root` の `keydown` で、行（`button[data-topic]`）の上の ↑↓・Home・End を `listKey` で動かす。修飾キー（Alt・Ctrl・Meta・Shift）付きは素通し。
-- 受け入れ: (1) 「あなたの番」が 1 件以上のとき warning の枠のカードが一覧の先頭に出て、0 件のとき出ない。(2) 許可待ちの項目はカードの中で [許可]・[拒否] が押せ、押すと今と同じ API が呼ばれる（モデルのテスト + 偽の onAnswer）。(3) 「あなたの番」に出た項目は下の群で印（warning）だけになり、副次行を持たない。(4) 見出し・群の名前・行の印の左端が同じ x（画面写しで確かめる）。(5) 下のバーは 1 本で、中央が右腕、左に「一覧 n」、右に「ほか」。最後の行がバーに隠れない。(6) 一覧を 1 行足して描き直しても、既にある行の DOM ノードが同じ（ブラウザで 1 回確かめて PR に書く）。(7) 消した関数を見ていたテストは消し、同じ意味を `import` のテストで置き換える（数を PR に書く）。(8) `/` は変わらない。
+- 受け入れ（K3b で確かめられる形に書き直した。その場の許可・拒否は K5 へ移した）:
+  - 一覧（K3b-1）: (1) `npm run check`・`npm test`・`npm run ui-shots` が通り、`console.log` が空。(2) 「あなたの番」は 1 件以上のときだけ出る。同じ話題は下の群にも 1 行で出て、その行は副次の行を持たない。(3) 「あなたの番」の項目を押すとその話題の会話が開く（PC の件数のボタンは次の待ちの話題）。(4) 見出し・「プロジェクト」・群の名前・「あなたの番」の印の左端が 16px、群の中の行の印が全部 28px（2 段）。(5) 行・完了の見出し・[+] の当たりが指で 44px・PC で 36px 以上。(6) 一覧が更新されても、開いている完了・スクロールの位置・フォーカスが残り、行の要素は使い回される。(7) ↑↓・Home・End、Esc、検索、[+]、完了、「ほかのプロジェクト」が今と同じに動く（違うのは、絞り込み中は「ほかのプロジェクト」を閉じられない・修飾キー付きは奪わない、の 2 つ）。(8) 仮名が全角の等幅の字でも、行の右の語・時刻・「あなたの番」の種類の語が省かれず、題が全角 5 字以上残る（390・375・タブレット・PC）。(9) 古い CSS が一覧に漏れていない。(10) `/` の絵が前後で同じ。
+  - 下のバー（K3b-2）: (1) 同じく 3 つが通る。(2) スマホの下は 1 段のバー（一覧・右腕・ほか）で 64px + safe-area。最後の行がバーに隠れない。広い幅は文字の 3 つ（タスク・リマインド・ほか）で 44px。(3) バーの当たりが指で 44px・PC で 36px 以上。(4) 等幅の字・件数「99+」・右腕に印の形でも、バーの文が省かれない。(5) 最初の応答の前から、件数・印の無い形のバーが出る。(6) 描き直しても右腕のボタンと「ほか」は同じ要素で、右腕・「ほか」の板を閉じた後のフォーカスがそこへ戻る。(7) スマホの「ほか」の板の先頭にタスク・リマインド（広い幅には無い）。スマホの「一覧」で一覧が先頭へ戻る。(8) バーが描けなければ件数・印・タブの無い形で 1 回だけ描き直す。(9) 入口が読めないときは 1 文と [ページを読み直す] が出て、下のバーは出ない。(10) 古い CSS がバーに漏れていない。(11) `/` の絵が前後で同じ。(12) 試し用の manifest が配られ、`v3.html` がそれを指す。
 
 - K3b への申し送り（K3a のレビュー）:
   - 入口は `/api/topics` の応答のうち `turnIds` が配列だと確かめた物だけを `data` に渡す（部品の側も配列でなければ空とみなす）。→ 受けた: `topics.js` の `load` の 4 つの確かめをそのまま残し、テスト（`turnIds` が配列でない応答は失敗の表示で前の `data` が残る）を足した。
@@ -372,8 +378,10 @@
   - ↑↓・Home・End でフォーカスを動かすのは入口（部品は `listKey` で行き先の番号を返すだけ）。→ 受けた: `c-app.js` の `keydown`。
   - 群の `section[aria-label]` が読み上げのランドマーク（region）になる事を実機の VoiceOver で確かめる。→ 実機の手順に入れた: 実機の VoiceOver のローターの「ランドマーク」に群の名前（プロジェクト名・General）が並ぶ事を見て、多すぎて邪魔なら `section` の `aria-label` を外すかを決める。未確認のまま。
   - `turnFrom`（K3b-1 のレビュー）: PC の「あなたの番 N」のボタンの次の話題は、`topics.js` の `turnFrom`（一覧から最後に開いた話題。`setCurrent` で開いた話題にも追従する）が `turnIds` に在ればその次、無ければ `current` の次。右腕は列 2 に開かず `current` にならないので、`current` だけでは右腕が先頭のとき先へ進まない。
-  - `npm run ui-shots` の一覧の検査（当たり・左端・使い回し・フォーカスと位置・鍵・古い CSS の漏れ・幅）は `npm test` では走らない。一覧・入口に触る PR は、マージの前に `npm run ui-shots` を回す。
-  - 入口（`c-app.js`）が読めないときに `#c-list-root` に出す 1 文は、余白の無い裸の `p`。K3b-2 で下のバーも入口が描くようになるので、そのときの出し方と一緒に直す。
+  - `npm run ui-shots` の一覧の検査（当たり・左端・使い回し・フォーカスと位置・鍵・古い CSS の漏れ・幅）は `npm test` では走らない。一覧・入口に触る PR は、マージの前に `npm run ui-shots` を回す。→ 受けた: K3b-2 の PR でも回し、本文に結果を書いた。
+  - 入口（`c-app.js`）が読めないときに `#c-list-root` に出す 1 文は、余白の無い裸の `p`。K3b-2 で下のバーも入口が描くようになるので、そのときの出し方と一緒に直す。→ 受けた: 1 文と [ページを読み直す]（`.v3-empty`）。下のバーの代わりは作らない（一覧が無いので口だけ残しても行ける先が少なく、二重の描き方を入れ替えまで持たない）。
+- K4 への申し送り: 下のバーの右腕のボタンに `aria-controls` が無い（古い口には在った）。TopBar の右腕の口を作るときに、付けるかを一緒に決める。
+- K4 以降への申し送り: 広い幅のバーは高さ 44 に sm のボタンの当たり 44 がちょうど入る作りなので、バーに枠・上下の余白を足さない（足すと列がずれる。上の線も枠でなく内側の影にしてある。`npm run ui-shots` のバーの検査が捕まえる）。
 
 **K4 会話の見出し + 吹き出し**
 - やること: TopBar（1 段）、`c-talk.js/.css`。`chat.js` の `render` の先頭に、部品が登録されていればそちらへ渡す分岐を 1 つ足す。`chat.js` の `header`・`frameHeader`・`bubbleRow`・`renderTurn`・`renderRunning`・`stepsList` に当たる物を部品で作る（古い関数は古い殻のために残す）。
@@ -381,7 +389,7 @@
 
 **K5 入力欄 + カード**
 - やること: `c-composer.js/.css`、`c-cards.js/.css`。`chat.js` の `composer`・`closeCard`・`moveCard`・`continueButton` と、`views.js` の許可・質問のカードに当たる物を部品で作る。送信・許可の処理は今の関数を呼ぶ。
-- 受け入れ: (1) 空の入力欄は高さ 44px の 1 行で、6 行まで伸び、それ以上は中で送る。(2) placeholder は題を含まない決まった短い文で、1 行に収まる。(3) 字数は残り 200 字を切るまで出ない。(4) 送るは 44px の当たりで、空のとき `aria-disabled`、IME の確定の Enter で送らない（今の `bindSendKeys` と同じ振る舞いをモデルのテストで）。(5) 許可・質問・閉じる・移すのカードが同じ枠で、許可は secondary・拒否は ghost。(6) キーボードが出ても入力欄が見える（今の `fitViewport` をそのまま使う。実機はオーナー）。(7) 最後の吹き出しの時刻が入力欄に隠れない（スマホ・PC の絵で）。(8) `/` は変わらない。
+- 受け入れ: (0) 一覧の中で許可・拒否に答えられる（K3 から移した。`/api/topics` に許可の要求の id が無いので、サーバーの変更は別 issue）。(1) 空の入力欄は高さ 44px の 1 行で、6 行まで伸び、それ以上は中で送る。(2) placeholder は題を含まない決まった短い文で、1 行に収まる。(3) 字数は残り 200 字を切るまで出ない。(4) 送るは 44px の当たりで、空のとき `aria-disabled`、IME の確定の Enter で送らない（今の `bindSendKeys` と同じ振る舞いをモデルのテストで）。(5) 許可・質問・閉じる・移すのカードが同じ枠で、許可は secondary・拒否は ghost。(6) キーボードが出ても入力欄が見える（今の `fitViewport` をそのまま使う。実機はオーナー）。(7) 最後の吹き出しの時刻が入力欄に隠れない（スマホ・PC の絵で）。(8) `/` は変わらない。
 
 **K6 右腕**
 - やること: `c-hand.js/.css`。中身は TalkTimeline + Composer の使い回し。`ui.js` の `toast`・`confirm` を新しい部品へ渡す橋に。
