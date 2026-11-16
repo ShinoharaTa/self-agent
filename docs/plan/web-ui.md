@@ -303,6 +303,8 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - CSP `default-src 'self'` は `manifest-src` の既定になるので変えない（事実: server.ts の CSP に個別の指定は無い）。
 - `index.html` に `<link rel="manifest" href="/static/manifest.webmanifest">` と、favicon が無い（事実）ので `<link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">` を足す（名前は `icons.svg`（Lucide の sprite）と紛れないよう `app-icon.svg`）。
 
+試し用の manifest（K3b。docs/plan/web-ui-components.md の K3）: 新しい殻 `/static/v3.html` だけが `/static/manifest-v3.webmanifest` を指す（`name`・`short_name` が `self-agent v3`、`id`・`start_url` が `/static/v3.html`。ほかは上の表と同じ。`v3.html` の `apple-mobile-web-app-title` も `self-agent v3`）。ホーム画面から standalone で新しい殻を開いて、下の safe-area を見るための物。既定の殻の入れ替え（#383）のときに `manifest-v3.webmanifest` を消し、`v3.html` の 2 行を `index.html` と同じに戻し、`test/web-static.test.ts` の試し用の manifest のテストと head の比べを戻す。
+
 ### 11.2 iOS の meta と theme-color
 
 ```html
