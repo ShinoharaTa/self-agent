@@ -208,7 +208,7 @@
 | YourTurn（あなたの番） | 同 | items（題・種類・何を訊かれているか・時刻） | なし | モック D のとおり、スマホは warning の見出し「あなたの番 n」と枠なしの 2 行の行、PC は件数のボタン 1 つ（押すと次の待ちの話題）。0 件のときは出さない。その場の許可・拒否は持たない（項目を押して会話で答える。K5）（D5） |
 | GroupHead | 同 | name、turnCount、running、onNew（群の開閉は作らない） | なし | 36px。[+] は 44 の当たり |
 | TopicRow | 同 | id（key）、title、mark、meta（状態の語 1 つ）、time、current | なし | スマホ 44・PC 36。題は 1 行で省く。副次行は持たない。付記（場所の名前など）は 640px 以上では出さない |
-| TalkTimeline | `c-talk.js` / `.css` | model（`talkModel(state, parse)` の結果: older・items・running。state の `openSteps` は key（行の id を文字列にした物）の Set）、on（older・toggleSteps(key)・toggleRunSteps・stop） | なし（手順の開閉・スクロールは入口と古い JS が持つ） | 根 `div.c-talk` が自分の字と色を持つ。**置くのは TalkTimeline だけ**（Bubble・RunLine・Notice・Divider を単独で置かない）。［前の会話を読む］・行（key 付き）・実行中の行の順。カード・入力欄・空の文は入れない（K5） |
+| TalkTimeline | `c-talk.js` / `.css` | model（`talkModel(state, parse)` の結果: older・items・running。state の `openSteps` は key（行の id を文字列にした物）の Set。`continueKey`（［続ける］を出す返事の key か null）・`continueBusy`（待ちの形））、on（older・toggleSteps(key)・toggleRunSteps・stop・continue(key)） | なし（手順の開閉・スクロールは入口と古い JS が持つ） | 根 `div.c-talk` が自分の字と色を持つ。**置くのは TalkTimeline だけ**（Bubble・RunLine・Notice・Divider を単独で置かない）。［前の会話を読む］・行（key 付き）・実行中の行の順。カード・入力欄・空の文は入れない（K5） |
 | Bubble | 同 | who（owner・agent）、label（読み上げの話者）、name（上の名前か null）、blocks、time、state（sending か null）、foot、onToggle | なし | `article.c-msg`。角 `--c-bubble-r` と話者側の下だけ `--c-bubble-tail`。最大幅 スマホ 80/86%・PC 72/78%。**本文だけ**（D4）。blocks は owner が `plain`（解析しない）、agent が `parseBlocks` の paragraph・heading（見出しのタグにしない）・code・list（入れ子 1 段）。知らない type は段落として text を出すので、表・引用（#389）は `parseBlocks` に type を足し、Blocks に描き方を足す。**コードの段は `pre` だけ**（中に code のタグを作らず、横に送れる）。送っている途中は時刻の欄が「送っています…」。時刻は文だけ（リンクにしない） |
 | Steps（手順） | 同 | text、tone（muted・warning・danger）、toggles、open、onToggle | なし（開閉は外が持つ。押したら描き直す） | 吹き出しの**外**の下に小さく 1 行（`.c-msg-foot` の時刻の隣）。完了で手順 0 は出さない。手順 0 の止まった・失敗は押せない文。`details` を使わず、ボタン（`aria-expanded`）の後ろに一覧（StepList）。見た目 24px・当たりは `::after` で指 44・PC 36。**狭い幅で入りきらない結果の文は末尾を省いて 1 行に保つ**（時刻は省かない） |
 | RunLine（作業中の 1 行） | 同 | run（name・text・waiting・recent・all・stop）、on | なし | 吹き出しにしない。回る輪・経過の文・待ちの文・最後の 3 手順・4 件からの「すべての手順」・abortable のときの［中断］。文が 1 秒ごとに変わるので `aria-live`・`role="status"` を付けない（`aria-busy`） |
@@ -415,7 +415,7 @@
   - `TalkRows({ older, items, on })` は「前の会話を読む」と行を要素で包まずに配列で返す（key は `"rows"`）。`TalkTimeline` は `rows` を渡されなければ自分で作る（見本の DOM は前と同じ）
   - `chat.js` の `talkState(channelId, ch)` が state を作る: 行は `store.turns` の配列そのもの、実行中（Claude Code のチャンネルは null）、［中断］を待つ間の `stopping`、開いた手順（新しい道だけの `talkOpen`。行の key の Set）、すべての手順の開閉（`stepsOpened`）、文の関数（今の `endText`・`progressText`・`allStepsLabel`・名前の決め方）、押した時の関数（`channelId` だけを閉じ込め、押されたときに今の状態を読む）。手順の開閉と［中断］は全部を描く口（`drawTalk`）、1 秒の刻みは実行中のチャンネルの根にだけ `tick`
   - 列 2 の `.ed-scroll` は `div[data-talk=<channelId>] + div.tl`。同じチャンネルの描き直しは `.ed-scroll`・根・`.tl`・入力欄を使い回し（要素・文の選択・スクロールの位置・変換の途中を保つ）、別のチャンネル・読み込み中・開けないときは在った根を `drop` する。描く順は「置いてから描く」。部品で描けなければ、そのタブでは古い描き方に戻る
-  - `.tl` には古い物（［続ける］・要約の知らせ・閉じる確認・場所の確認・Claude Code の状態の行・許可のカード・画面・空の文・完了の文）が残る。`shell.css` の 2 つの規則で、`.tl` は部品の列と左右の端を揃え（上の余白は重ねない）、空なら隠す
+  - `.tl` には古い物（要約の知らせ・閉じる確認・場所の確認・Claude Code の状態の行・許可のカード・画面・空の文・完了の文）が残る。`shell.css` の 2 つの規則で、`.tl` は部品の列と左右の端を揃え（上の余白は重ねない）、空なら隠す
   - 右腕の列（`frame`）と古い殻（`SA.talk` が無い）は今の描き方のまま
 - 設計との違い（#399）:
   1. `chat.js` の分岐は `render` の先頭の 1 つでなく、`render` の中の数か所（カード・入力欄・空の文は K5 まで古い描き方なので、`render` を 2 本にしない）
@@ -428,14 +428,14 @@
 - 確かめ（#399）: `npm run ui-shots` の段 b（5 組。最初の話題）が、`#ed` の `.c-talk` が 1 つで古い行（`.msg`・手順の `details`・区切り・`[data-run-progress]`）が無い事と、見本と同じ決まり（結果の文が吹き出しの外・幅の割合・角・はみ出し・手順の行・時刻・省いた文・直近の手順・`aria-live`・根の字）を見る。段 k（ダークのスマホ・タブレット・PC。絵は `b-talk-rows`・`b-talk-steps-open`・`b-talk-run`・`b-talk-long` と、スマホの `b-talk-mono375`）が、作り物の話題「吹き出しの確かめ」「長い会話」と実行中の話題で、1 文の返事の高さ・長い URL とコード・手順を開いて全部の描き直しをまたぐ・追従・要素の使い回しと文の選択・空の `.tl`・刻みで同じ要素のまま経過の文だけが変わる・入力欄のフォーカスと選択・変換の途中（CDP の `Input.imeSetComposition`）・［続ける］の位置と省いた結果の文・前の会話を読んだ後の位置・PC の列（右腕の列を畳んで測る）・等幅の字・当たり・古い CSS の漏れ（見本の会話と）・描き直しの重さ（スマホだけ。数は標準出力の 1 行）を見る。開いた右腕は古い吹き出しのまま、古い殻に `SA.talk` が無い事も見る。`--only b-talk` で段 k だけを回せる（1 組 21〜29 秒）
 - 実機で確かめる手順: iOS の Safari で、(1) 実行中の会話を開いたまま、日本語を変換の途中にして 5 秒待つ（変換が切れない）、(2) 吹き出しの文を長押しで選んで 5 秒待つ（選択が外れない）、(3) 300 行ほどの会話で打鍵が遅れないか
 - 次の段への申し送り（#399）:
-  - K5: カード・入力欄・［続ける］・空の文・完了の文・要約の知らせは古い `.tl` に残っている。［続ける］は吹き出しの列の下（前は最後の吹き出しの中）。空の会話は列の余白（上下 16px ずつ）の下に空の文。結果の文が省かれたとき（スマホの「手順の上限で止まりました（…）」）に全部を読む道（手順を開いた所に全部の文を出す、など）。最後の吹き出しの時刻が入力欄に隠れない事
+  - K5: カード・入力欄・［続ける］・空の文・完了の文・要約の知らせは古い `.tl` に残っている。［続ける］は行の一番下（K5b。前は吹き出しの列の下）。空の会話は列の余白（上下 16px ずつ）の下に空の文。結果の文が省かれたとき（スマホの「手順の上限で止まりました（…）」）に全部を読む道（手順を開いた所に全部の文を出す、など）。最後の吹き出しの時刻が入力欄に隠れない事
   - K6: 右腕は古い道のまま。`frame.replyText`・`frame.replyExtras`（本文の差し替えと札）を `talkState` に通す口が要る。タブレットの右の細い列
   - K7: スクロールの追従を入口へ
   - その先: 長い会話で全部の描き直しが重ければ、変わらない吹き出しを飛ばす包み（「同じ行を渡す」刻みと両立する）
   - #389: 表・引用は `parseBlocks` に type を足す
 
 **K5 入力欄 + カード**
-- 今の所: 入力欄は本番まで（#406）。部品と見本（`c-composer.js/.css`・見本の節「会話の入力欄（Composer）」・`npm run ui-shots` の `g-composer` と寸法の検査）と、新しい殻の列 2 の入力欄を部品で描く口 `SA.composer`。カード・［続ける］はまだ古い描き方
+- 今の所: 入力欄は本番まで（#406）。部品と見本（`c-composer.js/.css`・見本の節「会話の入力欄（Composer）」・`npm run ui-shots` の `g-composer` と寸法の検査）と、新しい殻の列 2 の入力欄を部品で描く口 `SA.composer`。カードはまだ古い描き方。［続ける］は部品の行の一番下（K5b）
 - 入力欄の本番（#406）:
   - 入口 `c-app.js` が口 `SA.composer = { draw, set, focus, drop }` を置く（中身は `c-composer.js` の `composerMouth`。失敗は `false` と名前だけの log）
   - `chat.js` は右腕でない列 2 で口が在るときだけ、容器の直下の `div[data-composer=<channelId>]`（クラスなし。チャンネルごとに 1 つ。同じチャンネルの描き直しは同じ要素、別のチャンネル・読み込み中・開けないときは `drop` して外す）に `composerState` を渡す。本文の持ち主は今と同じ `SA.app.draft`。placeholder は決まった 3 つの文（話題「この話題に送る」・Claude Code「このセッションに送る」・ほか「ここに送る」）、読み上げの名前は「<題名> に送る」のまま
@@ -444,6 +444,10 @@
   - 部品で描けなければ、そのタブでは古い入力欄（書きかけは draft から入る）。右腕を畳んだ後の焦点は、口が在れば `focus(根)`
   - `shell.css` は根に `flex: none` だけ。下の安全域・キーボードの規則と `fitViewport` は変えていない。欄の入力の位置の線の色（accent）は `c-composer.css` が持つ
 - 確かめ（#406）: `npm run ui-shots` の段 n（ダークのスマホ・タブレット・PC。絵は `b-composer-empty`・`b-composer-6lines` と、スマホの `b-composer-count`）が、作り物の話題「吹き出しの確かめ」で、口に渡ったか（渡っていなければ名前つきで止まる）・空の形（44px・placeholder が 1 行・字数の入れ物の高さ 0・［送る］の `aria-disabled`）・打鍵と描き直しをまたいで同じ要素と焦点・選択（会話の描き直し・刻み・3 秒の読み直し）・変換の途中（CDP）・2・6・10 行の高さと、6 行で最後の吹き出しの時刻が入力欄の上に見える事・上を読んでいる途中は動かない・字数（1,700 字は出ない・1,701・1,901 の色）・別の話題とページの読み直しをまたぐ書きかけ・当たり・古い CSS の漏れ（見本の near と。`caret-color` も）・送る（作り物は受け付けないので失敗の道。PC は Enter も。Shift+Enter は改行。受け付けた形は `page.route` で応答を作り、欄が空の 1 行に戻る）を見る。スマホは長い会話で、本番の欄に 1 字ずつ違う字を 100 字打ち、input の処理の重さ（中央値 4 ms・最大 16 ms まで。CPU 4 倍）とその中の `SA.talk.draw` が 0 回を見る（数は標準出力の 1 行）。失敗の道の送りが console.log に `HTTP 404` と `Failed to load resource` の行を残す。`--only b-composer` で段 n だけを回せる（1 組 18〜23 秒）
+- ［続ける］（K5b。#406）:
+  - `talkModel` は `state.continueKey` の返事の行にだけ `act: { busy }` を置き、`Bubble` は行の最後の子（開いた手順の一覧の後ろ）に `.c-msg-act` > ［続ける］（secondary・sm・左寄せ・上の物との間 16px）を出す。押すと `on.continue(key)`
+  - `chat.js` の `talkState` は、出せるとき（`continuable`: 手順の上限で止まった最後の返事・セッション・実行中のターンが無い・まだ受け付けられていない）だけ `continueKey` を渡す。`on.continue` は押されたときの最後の行を読み、`/continue` を 1 回だけ送り、待つ間は `continueBusy`、だめなら文を出して戻す（受け付けたら今までどおりの描き直しで消える）。新しい殻の `.tl` に古いボタンは入らない。古い殻と右腕は古いボタンのまま（`continueTurn` は受け付けられたかを返す）
+  - 確かめ: 見本の `talk-stopped`・`talk-stopped-open`・`talk-stopped-busy` と、`talkProblems` の 10（行の最後の子・ボタン 1 つ・高さ 36・左端が吹き出しと同じ・上の物との間 16）。段 k の 14 は話題 `long` で `.tl` が空・ボタンが最後の返事の一番下で見えている・当たり、19 は実際に押す（送り 1 回・待ちの形を見る・消える・入力欄と `.ed-scroll` が同じ要素・知らせなし）
 - 実機で確かめる手順（#406）: iOS の Safari（ホーム画面から開いた形も）で、(1) 欄を押すとキーボードが出て、欄と［送る］が見える。拡大しない、(2) 日本語を変換の途中にして 5 秒待つ（切れない）、(3) 6 行まで打つと伸び、最後の吹き出しの時刻が見える、(4) キーボードを閉じると元の位置に戻る、(5) 送った後、欄が空になり 1 行に戻る
 - 次の段への申し送り（#406）:
   - K6: 右腕は古い入力欄のまま。`frame.outgoing`（字数と送る本文の差し替え）と `frame.placeholder` を状態に通す口が要る。`views.js` の `cc:` のタブの入力欄（`ccComposer`）も古いまま
