@@ -1,0 +1,114 @@
+/* 殻の部品（c-shell.js。docs/plan/web-ui-components.md §6 の K3）: 下のバー。寸法は tokens.css の --c-*、色は tokens.css の変数、字と間隔は base.css の目盛りだけ */
+
+/* 一覧（スクロールの入れ物）の下の兄弟に置く（重ねない）。下は safe-area の分だけ伸ばす */
+.c-bottom {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: calc(var(--c-bottom-h) + env(safe-area-inset-bottom, 0px));
+  padding: 0 var(--space-3) env(safe-area-inset-bottom, 0px);
+  border-top: var(--border-width) solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-sm);
+  font-weight: var(--weight-normal);
+  line-height: var(--leading-normal);
+}
+
+/* 広い幅: 文字のボタン（sm 36 + 上下に広げた当たり 4px ずつ）がちょうど入る高さ */
+.c-bottom[data-variant="wide"] {
+  min-height: calc(var(--c-tap) + env(safe-area-inset-bottom, 0px));
+  padding: 0 0 env(safe-area-inset-bottom, 0px);
+}
+
+/* K2 の Button は並べ方と左右の余白だけ変える（280px の列で「リマインド」が省かれない幅） */
+.c-bottom > .c-btn[data-size="sm"] {
+  flex: 1 1 0;
+  padding: 0 var(--space-1);
+}
+
+.c-bottom-btn {
+  display: inline-flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: var(--c-tap);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.c-bottom-btn-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 右腕（幅 2 倍）。見た目は K2 の accent のボタンと同じ */
+.c-bottom-hand {
+  display: inline-flex;
+  flex: 2 1 0;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: var(--c-tap);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--c-round-r);
+  background: var(--accent);
+  color: var(--primary-text);
+  font: inherit;
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+}
+
+.c-bottom-hand-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* accent の地の上で見える色の点（K2 の Mark の色は地と同化する） */
+.c-bottom-hand-mark {
+  flex: none;
+  width: var(--c-mark);
+  height: var(--c-mark);
+  border-radius: var(--radius-full);
+}
+
+.c-bottom-hand-mark[data-state="turn"] {
+  background: var(--warning);
+  box-shadow: 0 0 0 var(--c-mark-ring) var(--primary-text);
+}
+
+.c-bottom-hand-mark[data-state="unread"] {
+  background: var(--primary-text);
+}
+
+/* 押した・乗った（K2 の .c-btn と同じ宣言。動きは付けない） */
+.c-bottom-btn:active,
+.c-bottom-hand:active {
+  transform: scale(0.97);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-bottom-btn:hover {
+    background: var(--muted);
+  }
+
+  .c-bottom-hand:hover {
+    opacity: 0.9;
+  }
+}

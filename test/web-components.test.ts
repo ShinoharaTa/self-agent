@@ -161,8 +161,8 @@ function partProblems(name: string, text: string): string[] {
 }
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-gallery.js", "c-lib.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-gallery.js", "c-lib.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -1124,4 +1124,88 @@ test("web components: Group・TopicRow・Fold の属性と押したとき（[+] 
   const plain = one(html`<${list.Others} others=${list.listModel(stateOf(sampleData())).blocks.find((b) => b.type === "others")} compact=${false} on=${on} />`);
   (find(plain, "c-fold-head")[0]?.props.onClick as () => void)();
   assert.equal(calls.filter((c) => c[0] === "toggleOthers").length, 1);
+});
+
+// ===== 下のバー（c-shell.js。docs/plan/web-ui-components.md §6 の K3） =====
+const shellUrl = new URL("../src/web/static/c-shell.js", import.meta.url).href;
+const shell = (await import(shellUrl)) as Record<string, Fn> & {
+  handLabel: (mark: unknown) => string;
+  listLabel: (turns: unknown) => string;
+  bottomModel: (o: Obj) => { variant: string; items: Obj[] };
+};
+
+test("web components: handLabel・listLabel（0 件は数を言わない・99+）", () => {
+  assert.equal(shell.handLabel(null), "右腕に頼む・訊く");
+  assert.equal(shell.handLabel("turn"), "右腕に頼む・訊く（あなたの番）");
+  assert.equal(shell.handLabel("unread"), "右腕に頼む・訊く（未読）");
+  assert.equal(shell.listLabel(0), "一覧");
+  assert.equal(shell.listLabel(2), "一覧（あなたの番 2 件）");
+  assert.equal(shell.listLabel(120), "一覧（あなたの番 99+ 件）");
+});
+
+test("web components: bottomModel は phone で 一覧・右腕・ほか、wide で tabs の順と「ほか」。知らない値を丸める", () => {
+  assert.deepEqual(shell.bottomModel({ variant: "phone", turns: 2, hand: "turn" }), {
+    variant: "phone",
+    items: [
+      { act: "list", label: "一覧", name: "一覧（あなたの番 2 件）", count: 2 },
+      { act: "hand", label: "右腕に頼む・訊く", name: "右腕に頼む・訊く（あなたの番）", mark: "turn" },
+      { act: "more", label: "ほか" },
+    ],
+  });
+  const quiet = shell.bottomModel({ variant: "tablet", turns: "3", hand: null });
+  assert.equal(quiet.variant, "phone");
+  assert.deepEqual([quiet.items[0]?.count, quiet.items[0]?.name, quiet.items[1]?.mark], [0, "一覧", null]);
+  assert.deepEqual(shell.bottomModel({ variant: "wide", tabs: [{ id: "tasks", title: "タスク" }, { id: "reminders", title: "リマインド" }] }), {
+    variant: "wide",
+    items: [
+      { act: "tab", id: "tasks", label: "タスク" },
+      { act: "tab", id: "reminders", label: "リマインド" },
+      { act: "more", label: "ほか" },
+    ],
+  });
+  assert.deepEqual(shell.bottomModel({ variant: "wide", tabs: null }).items, [{ act: "more", label: "ほか" }]);
+});
+
+test("web components: BottomBar の形と押したとき（ほか・tab は K2 の Button、一覧・右腕は自前）", () => {
+  const calls: unknown[][] = [];
+  const rec = (name: string) => (...a: unknown[]): void => void calls.push([name, ...a]);
+  const on = { list: rec("list"), hand: rec("hand"), tab: rec("tab"), more: rec("more") };
+  const bar = one(html`<${shell.BottomBar} variant="phone" turns=${120} hand="unread" on=${on} />`);
+  assert.deepEqual([bar.props.role, bar.props["aria-label"], bar.props["data-variant"]], ["group", "移動", "phone"]);
+  const v = shell.BottomBar({ variant: "phone", turns: 2, hand: null, on }) as VNode;
+  assert.deepEqual(keysOf(v.props.children), ["list", "hand", "more"]);
+  const listBtn = find(bar, "c-bottom-btn")[0] as El;
+  assert.deepEqual([listBtn.type, listBtn.props["data-act"], listBtn.props["aria-current"], listBtn.props["aria-label"]], ["button", "list", "page", "一覧（あなたの番 99+ 件）"]);
+  assert.equal(textOf(find(listBtn, "c-bottom-btn-label")), "一覧");
+  assert.equal(textOf(find(listBtn, "c-badge")), "99+");
+  const hand = find(bar, "c-bottom-hand")[0] as El;
+  assert.deepEqual([hand.props["data-act"], hand.props["aria-label"]], ["hand", "右腕に頼む・訊く（未読）"]);
+  assert.match(String(((find(hand, "c-icon")[0] as El).children[0] as El).props.href), /#bot$/);
+  const mark = find(hand, "c-bottom-hand-mark")[0] as El;
+  assert.deepEqual([mark.props["data-state"], mark.props["aria-hidden"]], ["unread", "true"]);
+  const more = find(bar, "c-btn")[0] as El;
+  assert.deepEqual([more.props["data-kind"], more.props["data-size"], textOf(more)], ["ghost", "sm", "ほか"]);
+  const x = { scrollIntoView: () => undefined };
+  const y = { scrollIntoView: () => undefined };
+  (listBtn.props.onClick as (e: unknown) => void)({ currentTarget: x });
+  (hand.props.onClick as (e: unknown) => void)({ currentTarget: y });
+  (more.props.onClick as (e: unknown) => void)({ preventDefault: () => undefined, currentTarget: x });
+  assert.deepEqual(calls, [["list"], ["hand", y], ["more", x]]);
+  // 0 件・印なし
+  const quiet = one(html`<${shell.BottomBar} variant="phone" turns=${0} hand=${null} on=${on} />`);
+  assert.equal(find(quiet, "c-badge").length, 0);
+  assert.equal(find(quiet, "c-bottom-hand-mark").length, 0);
+  assert.equal(find(quiet, "c-bottom-btn")[0]?.props["aria-label"], "一覧");
+  // wide: 文字のボタン 3 つ、key は tab: + id
+  const wideV = shell.BottomBar({ variant: "wide", tabs: [{ id: "tasks", title: "タスク" }, { id: "reminders", title: "リマインド" }], on }) as VNode;
+  assert.deepEqual(keysOf(wideV.props.children), ["tab:tasks", "tab:reminders", "more"]);
+  const wide = one(wideV);
+  assert.equal(wide.props["data-variant"], "wide");
+  const btns = find(wide, "c-btn");
+  assert.deepEqual(btns.map((b) => [b.props["data-kind"], b.props["data-size"], textOf(b)]), [["ghost", "sm", "タスク"], ["ghost", "sm", "リマインド"], ["ghost", "sm", "ほか"]]);
+  assert.equal(find(wide, "c-bottom-btn").length + find(wide, "c-bottom-hand").length, 0);
+  calls.length = 0;
+  (btns[1]?.props.onClick as (e: unknown) => void)(fakeEvent());
+  (btns[2]?.props.onClick as (e: unknown) => void)({ preventDefault: () => undefined, currentTarget: y });
+  assert.deepEqual(calls, [["tab", "reminders"], ["more", y]]);
 });
