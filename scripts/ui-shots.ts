@@ -428,19 +428,25 @@ const TALK_TICK_RATIO = 0.25;
  */
 function talkWeight(): { draw: number[]; tick: number[]; same: boolean; changed: boolean; ok: boolean } {
   type Talk = { draw: (root: Element, state: unknown) => boolean; tick: (root: Element, state: unknown) => boolean; drop: (root: Element) => void };
-  const talk = (window as unknown as { SA: { talk: Talk } }).SA.talk;
+  const sa = (window as unknown as { SA: { talk: Talk; ui: { shortTime: (at: string) => string } } }).SA;
+  const talk = sa.talk;
   const box = document.createElement("div");
   box.style.width = "390px";
   document.body.append(box);
-  const agentText = "段落の文です。**太字**と `code` と https://example.com/a を含みます。\n\n- 1 つ目の項目\n- 2 つ目の項目\n\n終わりの段落です。";
-  const turns = Array.from({ length: 300 }, (_v, i) =>
-    i % 2 === 0
-      ? { id: i + 1, kind: "owner", text: `${i + 1} 番目の質問です。`, at: "2026-11-14T00:00:00.000Z" }
-      : { id: i + 1, kind: "agent", text: agentText, at: "2026-11-14T00:00:00.000Z", outcome: "done", steps: ["Read a", "Edit b", "Bash c"], toolCalls: 3, durationMs: 9000 },
-  );
+  // 行ごとに違う文と時刻（解析の覚え・時刻の文を行ごとに作らせる）
+  const agentText = (n: number): string =>
+    `${n} 番目の段落の文です。**太字**と \`code${n}\` と https://example.com/a/${n} を含みます。\n\n- ${n} の 1 つ目の項目\n- ${n} の 2 つ目の項目\n\n終わりの段落です（${n}）。`;
+  const base = Date.now() - 300 * 60_000;
+  const turns = Array.from({ length: 300 }, (_v, i) => {
+    const at = new Date(base + i * 60_000).toISOString();
+    return i % 2 === 0
+      ? { id: i + 1, kind: "owner", text: `${i + 1} 番目の質問です。`, at }
+      : { id: i + 1, kind: "agent", text: agentText(i + 1), at, outcome: "done", steps: ["Read a", "Edit b", "Bash c"], toolCalls: 3, durationMs: 9000 };
+  });
   const noop = (): void => undefined;
   const fmt = {
-    time: () => "09:00",
+    // 本番と同じ時刻の文（chat.js の fmt.time と同じ SA.ui.shortTime）
+    time: (t: { at: string }) => sa.ui.shortTime(t.at),
     label: (t: { kind: string }) => (t.kind === "owner" ? "オーナー" : "既定"),
     name: () => null,
     end: () => "完了（9 秒・ツール 3 回）",

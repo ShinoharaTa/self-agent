@@ -2212,3 +2212,29 @@ test("web components: talkMouth の render が投げたら draw も投げ、そ�
   mouth.tick(root, mouthState());
   assert.equal(rowsOfCall(calls[2]), rowsOfCall(calls[1]));
 });
+
+test("web components: talkMouth の tick は行ごとの文の関数（time・label・name・end）を呼ばず、行の文を読まない（解析しない）。実行中の行の関数だけを呼ぶ", () => {
+  const { mouth } = fakeMouth();
+  const root = {};
+  // 行の文（text）を読んだ回数を数える（行のモデルを作るときだけ読まれ、解析もそこで呼ばれる）
+  let reads = 0;
+  const row = (id: number, kind: string, text: string, o: Obj = {}): Obj =>
+    Object.defineProperty({ id, kind, ...o }, "text", {
+      enumerable: true,
+      get: () => {
+        reads++;
+        return text;
+      },
+    });
+  const turns = Array.from({ length: 300 }, (_v, i) => (i % 2 === 0 ? row(i + 1, "owner", `q${i}`) : row(i + 1, "agent", `**返事** ${i}`, { outcome: "done", steps: ["a"] })));
+  const { calls, fmt } = talkFmt();
+  const state = (text: string): Obj => talkState({ turns, running: { steps: ["a", "b", "c", "d"], abortable: true, text }, fmt, on: talkRec().on });
+  mouth.draw(root, state("1 秒"));
+  const names = (from: number): string[] => [...new Set(calls.slice(from).map((c) => String(c[0])))].sort();
+  assert.ok(names(0).includes("time") && names(0).includes("end") && names(0).includes("label") && names(0).includes("name"));
+  assert.ok(reads >= 300);
+  const [from, before] = [calls.length, reads];
+  mouth.tick(root, state("2 秒"));
+  assert.deepEqual(names(from), ["allLabel", "progress", "runName", "waiting"]);
+  assert.equal(reads, before);
+});
