@@ -144,7 +144,7 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
 
 /** 見出し（.c-top）の高さ（px。--c-bar-h。指の端末 56・PC 52） */
 const TOP_H: Record<Viewport, number> = { phone: 56, tablet: 56, pc: 52 };
-/** 見出しで題に残す幅の下限（px。--c-top-title-min）と場所のボタンの幅の下限（--c-top-place-min） */
+/** 長い題の見本で題に残る幅の下限（px。CSS の下限ではなく、入口が compact に替える幅の算数の見張り）と場所のボタンの幅の下限（--c-top-place-min） */
 const TOP_TITLE_MIN = 80;
 const TOP_PLACE_MIN = 96;
 /** 見本の見出しの入れ物の幅（px。広い幅で全部を出せる下限 --c-top-full-min と、一覧の列 --c-list-w） */
@@ -153,7 +153,7 @@ const TOP_BOX: Record<string, number> = { "c-gallery-top-full": 520, "c-gallery-
 /**
  * 見本の見出しの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。
  * 高さ（--c-bar-h の値と箱の高さ）・1 段（直下の子が上下の中で左から右へ重ならずに並ぶ）・はみ出し・長い題の省き・場所のボタンの幅・
- * 幅を決めた入れ物の幅（広すぎて検査が空振りしない）・ページが横に動かない・広い幅の縮む順（補足 → 場所 → 題）。足りない物の文を返す
+ * 幅を決めた入れ物の幅（広すぎて検査が空振りしない）・ページが横に動かない・広い幅の縮む順（補足 → 場所 → 題）・広い幅の題と状態の間。足りない物の文を返す
  */
 function topProblems({ height, titleMin, placeMin, boxes, label }: { height: number; titleMin: number; placeMin: number; boxes: Record<string, number>; label: string }): string[] {
   const lines: string[] = [];
@@ -166,7 +166,7 @@ function topProblems({ height, titleMin, placeMin, boxes, label }: { height: num
     return range.getBoundingClientRect().width > el.getBoundingClientRect().width + 0.05;
   };
   const tops = [...document.querySelectorAll(".c-top")];
-  if (tops.length !== 9) lines.push(`見出し: .c-top が ${tops.length} 個。見本は 9 つのはず（${label}）`);
+  if (tops.length !== 10) lines.push(`見出し: .c-top が ${tops.length} 個。見本は 10 のはず（${label}）`);
   for (const top of tops) {
     const demo = top.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
     const r = top.getBoundingClientRect();
@@ -204,9 +204,18 @@ function topProblems({ height, titleMin, placeMin, boxes, label }: { height: num
     const wideTitle = top.getAttribute("data-variant") === "wide" ? top.querySelector(".c-top-title") : null;
     if (wideTitle !== null && cut(wideTitle)) {
       const rest = top.querySelector(":scope > .c-top-rest");
-      if (rest !== null && rest.getBoundingClientRect().width >= 14) lines.push(`見出し: ${demo} の題が省かれているのに補足が ${rest.getBoundingClientRect().width.toFixed(1)} 残っている（${label}）`);
+      if (rest !== null && rest.getBoundingClientRect().width >= 1) lines.push(`見出し: ${demo} の題が省かれているのに補足が ${rest.getBoundingClientRect().width.toFixed(1)} 残っている（${label}）`);
       const place = top.querySelector(".c-top-place");
       if (place !== null && Math.abs(place.getBoundingClientRect().width - placeMin) > 1) lines.push(`見出し: ${demo} の題が省かれているのに場所のボタンが ${place.getBoundingClientRect().width.toFixed(1)}。${placeMin} まで縮むはず（${label}）`);
+    }
+    // 題が省かれていなければ、題の字の右端と状態の間は帯の間（column-gap）だけ（題の箱が字より広がらない。箱どうしの間では見えない）
+    const wideStatus = wideTitle === null ? null : top.querySelector(":scope > .c-top-status");
+    if (wideTitle !== null && wideStatus !== null && !cut(wideTitle)) {
+      const range = document.createRange();
+      range.selectNodeContents(wideTitle);
+      const space = wideStatus.getBoundingClientRect().left - range.getBoundingClientRect().right;
+      const gap = parseFloat(css.columnGap);
+      if (Math.abs(space - gap) > 1) lines.push(`見出し: ${demo} の題と状態の間 ${space.toFixed(1)}。帯の間 ${gap} のはず（${label}）`);
     }
     // 520px の Claude Code の形は、場所が縮めば題が全部入る
     if (demo === "top-wide-cc" && wideTitle !== null && cut(wideTitle)) {
