@@ -1332,6 +1332,16 @@ test("web components: BottomBar の形と押したとき（ほか・tab は K2 �
   assert.deepEqual(calls, [["tab", "reminders"], ["more", y]]);
 });
 
+test("web components: BottomBar の右腕のボタンは controls を渡したときだけ aria-controls を持ち、aria-expanded は付けない", () => {
+  const on = { list: () => undefined, hand: () => undefined, tab: () => undefined, more: () => undefined };
+  const handOf = (bar: unknown): El => find(one(bar), "c-bottom-hand")[0] as El;
+  const withControls = handOf(html`<${shell.BottomBar} variant="phone" turns=${0} hand=${null} controls="v3-hand" on=${on} />`);
+  assert.deepEqual([withControls.props["aria-controls"], withControls.props["aria-expanded"]], ["v3-hand", undefined]);
+  assert.equal(handOf(html`<${shell.BottomBar} variant="phone" turns=${0} hand=${null} on=${on} />`).props["aria-controls"], undefined);
+  assert.equal(handOf(html`<${shell.BottomBar} variant="phone" turns=${0} hand=${null} controls="" on=${on} />`).props["aria-controls"], undefined);
+  assert.equal(handOf(html`<${shell.BottomBar} variant="phone" turns=${0} hand=${null} controls=${3} on=${on} />`).props["aria-controls"], undefined);
+});
+
 test("web components: 知らない turn の kind は「あなたの番」の語（行の状態の語と、あなたの番の meta）", () => {
   assert.equal(list.turnWord("permission"), "許可");
   for (const k of ["later", undefined, null, "constructor", "toString"]) assert.equal(list.turnWord(k), "あなたの番", String(k));
