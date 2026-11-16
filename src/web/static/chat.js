@@ -492,12 +492,7 @@
       icon("terminal"),
       "画面",
     ]);
-    screen.addEventListener("click", () => {
-      if (ccScreenOpened.has(channelId)) ccScreenOpened.delete(channelId);
-      else ccScreenOpened.add(channelId);
-      if (ccScreenOpened.has(channelId) && live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
-      SA.app.refresh("ch:" + channelId);
-    });
+    screen.addEventListener("click", () => toggleCcScreen(channelId));
     actions.append(screen);
     const discord = discordUrl(ch.link);
     if (discord) actions.append(el("a", { class: "btn btn-ghost btn-sm hide-sm", href: discord, target: "_blank", rel: "noreferrer" }, [icon("external-link"), "Discord で開く"]));
@@ -507,18 +502,33 @@
     const more = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-ops-more", type: "button", "aria-label": "ほかの操作", title: "ほかの操作" }, [icon("ellipsis")]);
     // このチャンネルの操作だけのシート（パレットは移動用）
     more.addEventListener("click", () =>
-      SA.app.sheet(
-        channelTitle(ch) + " の操作",
-        [
-          live.rc ? { icon: "external-link", label: "RC で開く", href: live.rc } : null,
-          discord ? { icon: "external-link", label: "Discord で開く", href: discord } : null,
-          { icon: "check", label: "閉じる", run: closeOff ? null : () => closeCcChannel(channelId), why: "閉じています" },
-        ].filter(Boolean),
-        more,
-      ),
+      SA.app.sheet(channelTitle(ch) + " の操作", ccMenu(ch, channelId, false), more),
     );
     actions.append(el("div", { class: "ed-ops" }, [close, more]));
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
+  }
+
+  /** 画面の写しを開く・閉じる（開いたらセッションの今を読む） */
+  function toggleCcScreen(channelId) {
+    const ch = channelById(channelId);
+    const live = ch ? ccLive(ch) : {};
+    if (ccScreenOpened.has(channelId)) ccScreenOpened.delete(channelId);
+    else ccScreenOpened.add(channelId);
+    if (ccScreenOpened.has(channelId) && live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
+    SA.app.refresh("ch:" + channelId);
+  }
+
+  /** Claude Code のチャンネルの […] の行（RC で開く・Discord で開く・閉じる）。withScreen なら Discord の前に画面の開閉 */
+  function ccMenu(ch, channelId, withScreen) {
+    const live = ccLive(ch);
+    const discord = discordUrl(ch.link);
+    const closeOff = live.state === "ended";
+    return [
+      live.rc ? { icon: "external-link", label: "RC で開く", href: live.rc } : null,
+      withScreen ? { icon: "terminal", label: ccScreenOpen(channelId) ? "画面を閉じる" : "画面を見る", run: () => toggleCcScreen(channelId) } : null,
+      discord ? { icon: "external-link", label: "Discord で開く", href: discord } : null,
+      { icon: "check", label: "閉じる", run: closeOff ? null : () => closeCcChannel(channelId), why: "閉じています" },
+    ].filter(Boolean);
   }
 
   /** 画面の写しの節（開いているときだけ） */
@@ -767,21 +777,55 @@
     // 狭い画面（≤639px）では上の操作を隠し、[…] でこのチャンネルの操作だけのシートを開く（CSS で出し分ける。パレットは移動用）
     const more = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-ops-more", type: "button", "aria-label": "ほかの操作", title: "ほかの操作" }, [icon("ellipsis")]);
     more.addEventListener("click", () =>
-      SA.app.sheet(
-        channelTitle(ch) + " の操作",
-        [
-          isSession ? { icon: "pause", label: "待ちにする", run: waitOff ? null : () => setWaiting(channelId), why: busy ? busyWhy : "進行中のときだけ" } : null,
-          isSession ? { icon: "check", label: "閉じる", run: closeOff ? null : () => closeSession(channelId), why: busy ? busyWhy : "閉じています" } : null,
-          { icon: "rotate-ccw", label: "会話を新しくする", run: busy ? null : () => renew(channelId), why: busyWhy },
-          url ? { icon: "external-link", label: "ページを開く", href: url } : null,
-          discord ? { icon: "external-link", label: "Discord で開く", href: discord } : null,
-        ].filter(Boolean),
-        more,
-      ),
+      SA.app.sheet(channelTitle(ch) + " の操作", sessionMenu(ch, channelId), more),
     );
     ops.append(renewBtn, more);
     actions.append(ops);
     return el("header", { class: "ed-toolbar", "data-channel": channelId }, [titleRow, actions]);
+  }
+
+  /** 会話の […] の行（待ちにする・閉じる・会話を新しくする・ページを開く・Discord で開く。押せないときは理由） */
+  function sessionMenu(ch, channelId) {
+    const isSession = ch.kind === "session";
+    const url = ch.project ? pageUrl(ch.project.url) : null;
+    const discord = discordUrl(ch.link);
+    const busy = !!pendingOf(channelId, ch);
+    const busyWhy = BUSY_TEXT;
+    const waitOff = busy || ch.state !== "active";
+    const closeOff = busy || ch.state === "done";
+    return [
+      isSession ? { icon: "pause", label: "待ちにする", run: waitOff ? null : () => setWaiting(channelId), why: busy ? busyWhy : "進行中のときだけ" } : null,
+      isSession ? { icon: "check", label: "閉じる", run: closeOff ? null : () => closeSession(channelId), why: busy ? busyWhy : "閉じています" } : null,
+      { icon: "rotate-ccw", label: "会話を新しくする", run: busy ? null : () => renew(channelId), why: busyWhy },
+      url ? { icon: "external-link", label: "ページを開く", href: url } : null,
+      discord ? { icon: "external-link", label: "Discord で開く", href: discord } : null,
+    ].filter(Boolean);
+  }
+
+  /**
+   * 新しい殻の見出し（入口 c-app.js の TopBar）に渡す中身。DOM は作らない。チャンネルが引けなければ null
+   *   status: Claude Code は今の状態、セッションは待ち・完了のときだけ（{ text, tone }）。note: 人格が 2 つ以上のときの札の文。menu: […] の行
+   */
+  function head(channelId) {
+    const ch = channelById(channelId);
+    if (!ch) return null;
+    if (ch.kind === "cc") {
+      const live = ccLive(ch);
+      const text = live.state ? CC_STATE_LABEL[live.state] : null;
+      return {
+        title: channelTitle(ch),
+        status: text ? { text, tone: live.state === "needs_input" ? "warning" : live.state === "running" ? "accent" : "muted" } : null,
+        note: null,
+        menu: ccMenu(ch, channelId, true),
+      };
+    }
+    const p = persona(ch.persona);
+    return {
+      title: channelTitle(ch),
+      status: ch.kind === "session" && (ch.state === "waiting" || ch.state === "done") ? { text: STATE_LABEL[ch.state], tone: "muted" } : null,
+      note: store.channels && store.channels.personas.length > 1 ? p.name + (p.isDefault ? "" : "（人格）") : null,
+      menu: sessionMenu(ch, channelId),
+    };
   }
 
   /**
@@ -1165,5 +1209,6 @@
     ccScreenOpen,
     closeCcChannel,
     ccCommandState,
+    head,
   };
 })();
