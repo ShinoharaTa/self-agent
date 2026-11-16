@@ -209,7 +209,7 @@ const PARSE_MEMO_MAX = 400;
 
 /**
  * 会話の口（入口が 1 回だけ呼ぶ。render は c-lib の render を渡す）。{ draw(root, state), tick(root, state), drop(root) }。
- * draw は行を作り直して覚え、tick は覚えた行の vnode をそのまま渡して実行中の行だけを描く（覚えが無ければ draw と同じ）。
+ * draw は行を作り直して覚え、tick は覚えた行の vnode をそのまま渡して実行中の行だけを描く（モデルも実行中の行の分だけ作る。覚えが無ければ draw と同じ）。
  * 例外は握らない（握るのは入口）
  */
 export function talkMouth(render) {
@@ -242,7 +242,9 @@ export function talkMouth(render) {
       draw(root, state);
       return;
     }
-    paint(root, talkModel(state, parse), state.on, rows);
+    // 行は覚えた物を使うので、作るのは実行中の行のモデルだけ（行ごとの文の関数と解析を呼ばない）
+    const turns = Array.isArray(state.turns) ? state.turns : [];
+    paint(root, { older: false, items: [], running: state.running ? runModel(state, turns) : null }, state.on, rows);
   };
   const drop = (root) => {
     rowsOf.delete(root);
