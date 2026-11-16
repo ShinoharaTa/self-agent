@@ -88,6 +88,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     "b-chat-bottom",
     // 本番の見出し（段 t。ダークの 3 組。PC は幅 1100 で右腕を列で開いた所も）
     ...(theme === "dark" ? ["b-top-long", "b-top-menu", "b-top-place", ...(vp === "pc" ? ["b-top-hand-col"] : [])] : []),
+    // 本番の会話の行（段 k。ダークの 3 組。スマホは幅 375・等幅の字も）
+    ...(theme === "dark" ? ["b-talk-rows", "b-talk-steps-open", "b-talk-run", "b-talk-long", ...(vp === "phone" ? ["b-talk-mono375"] : [])] : []),
     ...(full
       ? ["b-chat-permission", "b-chat-question", "d-composer-3lines", vp === "phone" ? "c-hand-over" : "c-hand-column", ...(vp === "phone" ? [] : ["c-hand-with-chat"]), "e-start-dialog", "f-settings", "f-knowledge-list", "f-knowledge-detail"]
       : []),
@@ -257,27 +259,31 @@ const TALK_FONT: Record<Viewport, number> = { phone: 16, tablet: 16, pc: 14 };
 /**
  * 見本の会話の測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。
  * 見本の名前・吹き出しの中に結果の文が無い・1 行の吹き出しの高さ・幅の上限・角・はみ出し・長いコードを横に送れる・手順の行・実行中の行の読み上げ・根の字。
- * 足りない物の文を返す
+ * demos が null なら本番の会話（見本の名前を前提にした 0・2・3 の talk-edge・6 を飛ばす）。足りない物の文を返す
  */
-function talkProblems({ demos, max, fontSize, label }: { demos: string[]; max: { agent: number; owner: number }; fontSize: number; label: string }): string[] {
+function talkProblems({ demos, max, fontSize, label }: { demos: string[] | null; max: { agent: number; owner: number }; fontSize: number; label: string }): string[] {
   const lines: string[] = [];
   const say = (text: string): void => void lines.push(`会話（${label}）: ${text}`);
   const near = (a: number, b: number, d: number): boolean => Math.abs(a - b) <= d;
   const nameOf = (el: Element): string => el.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
   // 0. 見本の名前
-  const names = [...document.querySelectorAll('[data-section="talk"] [data-demo]')].map((el) => el.getAttribute("data-demo") ?? "?");
-  for (const name of demos) if (!names.includes(name)) say(`見本が無い: ${name}`);
-  for (const name of names) if (!demos.includes(name)) say(`知らない見本: ${name}`);
+  if (demos !== null) {
+    const names = [...document.querySelectorAll('[data-section="talk"] [data-demo]')].map((el) => el.getAttribute("data-demo") ?? "?");
+    for (const name of demos) if (!names.includes(name)) say(`見本が無い: ${name}`);
+    for (const name of names) if (!demos.includes(name)) say(`知らない見本: ${name}`);
+  }
   // 1. 結果の文は吹き出しの外
   for (const bubble of document.querySelectorAll(".c-bubble")) {
     const text = bubble.textContent ?? "";
     for (const word of ["完了（", "止まりました", "中断しました"]) if (text.includes(word)) say(`${nameOf(bubble)} の吹き出しの中に「${word}」が在る`);
   }
   // 2. 1 行の返事の吹き出しの高さ
-  const basic = document.querySelector('[data-demo="talk-basic"] .c-msg[data-who="agent"]');
+  const basic = demos === null ? null : document.querySelector('[data-demo="talk-basic"] .c-msg[data-who="agent"]');
   const basicP = basic?.querySelector(".c-bubble p") ?? null;
   const basicB = basic?.querySelector(".c-bubble") ?? null;
-  if (basicP === null || basicB === null) say("talk-basic に agent の吹き出しが無い");
+  if (demos === null) {
+    // 本番は段 k で話題の 1 文の返事を測る
+  } else if (basicP === null || basicB === null) say("talk-basic に agent の吹き出しが無い");
   else {
     const ph = basicP.getBoundingClientRect().height;
     const bh = basicB.getBoundingClientRect().height;
@@ -297,7 +303,9 @@ function talkProblems({ demos, max, fontSize, label }: { demos: string[]; max: {
   }
   const edge = [...document.querySelectorAll('[data-demo="talk-edge"] .c-msg[data-who="owner"]')].at(-1);
   const edgeTalk = edge?.closest(".c-talk") ?? null;
-  if (edge === undefined || edgeTalk === null) say("talk-edge に owner の吹き出しが無い");
+  if (demos === null) {
+    // 本番には talk-edge が無い
+  } else if (edge === undefined || edgeTalk === null) say("talk-edge に owner の吹き出しが無い");
   else {
     const ts = getComputedStyle(edgeTalk);
     const ratio = edge.getBoundingClientRect().width / (edgeTalk.clientWidth - parseFloat(ts.paddingLeft) - parseFloat(ts.paddingRight));
@@ -316,8 +324,10 @@ function talkProblems({ demos, max, fontSize, label }: { demos: string[]; max: {
     if (el.scrollWidth > el.clientWidth) say(`${nameOf(el)} の ${el.classList[0] ?? ""} が横にはみ出している（${el.scrollWidth} > ${el.clientWidth}）`);
   }
   // 6. 長いコードは吹き出しの中で横に送れる
-  const pre = document.querySelector('[data-demo="talk-md"] .c-md-pre');
-  if (pre === null) say("talk-md にコードの段が無い");
+  const pre = demos === null ? null : document.querySelector('[data-demo="talk-md"] .c-md-pre');
+  if (demos === null) {
+    // 本番は段 k で話題のコードの段を測る
+  } else if (pre === null) say("talk-md にコードの段が無い");
   else {
     if (!(pre.scrollWidth > pre.clientWidth)) say(`talk-md のコードの段が横に長くない（${pre.scrollWidth} ≦ ${pre.clientWidth}）`);
     pre.scrollLeft = 50;
@@ -361,6 +371,119 @@ function talkProblems({ demos, max, fontSize, label }: { demos: string[]; max: {
     if (size !== `${fontSize}px`) say(`${nameOf(talk)} の根の字 ${size}。${fontSize}px のはず`);
   }
   return lines;
+}
+
+/**
+ * 本番の会話の行の形（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。#ed に .c-talk が 1 つで古い描き方の行が無い・
+ * .ed-scroll が横に動かない・.tl が見えているとき、その中身の左端が .c-talk の中身の左端と同じ。足りない物の文を返す
+ */
+function liveTalkProblems({ label }: { label: string }): string[] {
+  const lines: string[] = [];
+  const say = (text: string): void => void lines.push(`本番の会話（${label}）: ${text}`);
+  const talks = document.querySelectorAll("#ed .c-talk");
+  if (talks.length !== 1) say(`#ed の .c-talk が ${talks.length} 個（1 つのはず）`);
+  for (const sel of ["#ed .msg", "#ed details.steps-plain", "#ed .tl-divider", "#ed [data-run-progress]"]) {
+    const n = document.querySelectorAll(sel).length;
+    if (n > 0) say(`${sel} が ${n} 個（古い描き方）`);
+  }
+  const scroll = document.querySelector("#ed .ed-scroll");
+  if (scroll === null) say("#ed に .ed-scroll が無い");
+  else if (scroll.scrollWidth > scroll.clientWidth) say(`.ed-scroll が横に動く（${scroll.scrollWidth} > ${scroll.clientWidth}）`);
+  const talk = talks[0];
+  const tl = document.querySelector("#ed .ed-scroll > [data-talk] + .tl");
+  if (talk !== undefined && tl !== null && tl.getClientRects().length > 0) {
+    const inner = (el: Element): number => el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft);
+    if (Math.abs(inner(tl) - inner(talk)) > 0.5) say(`.tl の中身の左端 ${inner(tl).toFixed(1)} が .c-talk の中身の左端 ${inner(talk).toFixed(1)} でない`);
+  }
+  return lines;
+}
+
+/** 本番の会話の行で古い CSS の漏れを比べる要素（見本の会話の節の、同じ形の物と） */
+const LEAK_TALK = [
+  '.c-msg[data-who="agent"] .c-bubble',
+  '.c-msg[data-who="agent"] .c-md-p',
+  ".c-md-pre",
+  ".c-md-code",
+  ".c-md-link",
+  '.c-msg[data-who="agent"] .c-msg-time',
+  '.c-steps-toggle[data-tone="muted"]',
+  ".c-notice",
+  ".c-divider",
+];
+
+/** 描き直しの重さの受け入れ（tick の中央値の上限 ms と、draw の中央値に対する割合の上限） */
+const TALK_TICK_MAX_MS = 4;
+const TALK_TICK_RATIO = 0.25;
+
+/**
+ * 描き直しの重さを測る（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。作り物の 300 行の state を、body に足した
+ * 一時の入れ物（幅 390px。data-talk を付けないので本番の刻みは触らない）に SA.talk.draw で描き、draw と tick を 5 回捨ててから 20 回ずつ、
+ * 直後の layout の読みまでを測る。終わったら drop して入れ物を外す
+ */
+function talkWeight(): { draw: number[]; tick: number[]; same: boolean; changed: boolean; ok: boolean } {
+  type Talk = { draw: (root: Element, state: unknown) => boolean; tick: (root: Element, state: unknown) => boolean; drop: (root: Element) => void };
+  const talk = (window as unknown as { SA: { talk: Talk } }).SA.talk;
+  const box = document.createElement("div");
+  box.style.width = "390px";
+  document.body.append(box);
+  const agentText = "段落の文です。**太字**と `code` と https://example.com/a を含みます。\n\n- 1 つ目の項目\n- 2 つ目の項目\n\n終わりの段落です。";
+  const turns = Array.from({ length: 300 }, (_v, i) =>
+    i % 2 === 0
+      ? { id: i + 1, kind: "owner", text: `${i + 1} 番目の質問です。`, at: "2026-11-14T00:00:00.000Z" }
+      : { id: i + 1, kind: "agent", text: agentText, at: "2026-11-14T00:00:00.000Z", outcome: "done", steps: ["Read a", "Edit b", "Bash c"], toolCalls: 3, durationMs: 9000 },
+  );
+  const noop = (): void => undefined;
+  const fmt = {
+    time: () => "09:00",
+    label: (t: { kind: string }) => (t.kind === "owner" ? "オーナー" : "既定"),
+    name: () => null,
+    end: () => "完了（9 秒・ツール 3 回）",
+    progress: (r: { n: number }) => `作業中…（${r.n} 秒・ツール 5 回）`,
+    waiting: () => null,
+    allLabel: () => "すべての手順（5）",
+    runName: () => null,
+  };
+  const on = { older: noop, toggleSteps: noop, toggleRunSteps: noop, stop: noop };
+  let n = 0;
+  const state = (): unknown => {
+    n++;
+    return {
+      channelId: "w",
+      turns,
+      hasMore: false,
+      running: { n, turnSeq: 1, toolCalls: 5, steps: ["a", "b", "c", "d", "e"], abortable: true },
+      stopping: false,
+      openSteps: new Set(),
+      runStepsOpen: false,
+      fmt,
+      on,
+    };
+  };
+  let ok = true;
+  const measure = (fn: (root: Element, st: unknown) => boolean): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < 25; i++) {
+      const st = state();
+      const t0 = performance.now();
+      if (!fn(box, st)) ok = false;
+      void box.offsetHeight;
+      const t1 = performance.now();
+      if (i >= 5) out.push(t1 - t0);
+    }
+    return out;
+  };
+  try {
+    const draw = measure((root, st) => talk.draw(root, st));
+    const first = box.querySelector(".c-bubble");
+    const text = box.querySelector(".c-run-text")?.textContent ?? "";
+    const tick = measure((root, st) => talk.tick(root, st));
+    const same = first !== null && box.querySelector(".c-bubble") === first && first.isConnected;
+    const changed = (box.querySelector(".c-run-text")?.textContent ?? "") !== text;
+    return { draw, tick, same, changed, ok };
+  } finally {
+    talk.drop(box);
+    box.remove();
+  }
 }
 
 /**
@@ -438,7 +561,7 @@ const ALL_SHOT_NAMES: readonly string[] = [
 
 async function shoot(browser: Browser, fixture: FixtureServer, out: string, only: string | undefined, logLines: string[]): Promise<{ count: number; failed: number }> {
   const base = fixture.url;
-  const { open, perm, q } = fixture.topics;
+  const { open, perm, q, talk, long, run } = fixture.topics;
   let count = 0;
   let failed = 0;
   const wanted = (name: string): boolean => only === undefined || name.includes(only);
@@ -1561,6 +1684,447 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /** 本番の会話の行の形（liveTalkProblems）と、見本と同じ決まり（talkProblems の本番の分） */
+  async function liveTalkLines(page: Page, vp: Viewport, label: string): Promise<string[]> {
+    return [
+      ...(await page.evaluate(liveTalkProblems, { label })),
+      ...(await page.evaluate(talkProblems, { demos: null, max: TALK_MAX[vp], fontSize: TALK_FONT[vp], label: `本番・${label}` })),
+    ];
+  }
+
+  /** 会話の .ed-scroll を下端へ（stick）・先頭へ・dy だけ上へ */
+  const edScroll = (page: Page, to: "bottom" | "top" | number): Promise<void> =>
+    page.evaluate((where: "bottom" | "top" | number) => {
+      const el = document.querySelector("#ed .ed-scroll");
+      if (el === null) return;
+      if (where === "bottom") el.scrollTop = el.scrollHeight;
+      else if (where === "top") el.scrollTop = 0;
+      else el.scrollTop = el.scrollTop - where;
+    }, to);
+
+  /** 列 2 を描き直す（全部の描き直し。SA.app.refresh） */
+  const refreshCh = (page: Page, id: string): Promise<void> =>
+    page.evaluate((tab: string) => (window as unknown as { SA: { app: { refresh: (t: string) => void } } }).SA.app.refresh(tab), `ch:${id}`);
+
+  /** /turns の after の応答に 1 行足して会話を読み直す（loadEdited と同じく、読み終わったら書き換えを外す） */
+  async function addTurn(page: Page, id: string, turn: Record<string, unknown>): Promise<void> {
+    const pattern = `**/api/channels/${id}/turns?after=*`;
+    await page.route(pattern, async (route) => {
+      // 定期の読み直しと重なって、外した後に終わる事がある（その応答は捨てる）
+      try {
+        const response = await route.fetch();
+        const json = (await response.json()) as { turns: unknown[] };
+        json.turns = [...json.turns, turn];
+        await route.fulfill({ response, json });
+      } catch {
+        // 何もしない
+      }
+    });
+    try {
+      await page.evaluate((ch: string) => (window as unknown as { SA: { store: { load: { turns: (c: string) => Promise<void> } } } }).SA.store.load.turns(ch), id);
+      await wait(300);
+    } finally {
+      await page.unroute(pattern);
+    }
+  }
+
+  /**
+   * 段 k（本番の会話の行。ダークの 3 組）: 吹き出しの確かめ → 実行中の話題 → 長い会話 →（PC）列の幅 →（スマホ）等幅の字 → 漏れ。
+   * 足りない物の文（全部を測ってから、1 つでもあれば段を失敗にする）
+   */
+  async function talkStage(page: Page, vp: Viewport, p: string): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (text: string): void => void lines.push(`段 k: ${text}`);
+    const fontSize = TALK_FONT[vp];
+
+    // ----- 吹き出しの確かめ -----
+    await load(page, `/static/v3.html#/ch/${talk}`);
+    await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
+    await wait(800);
+    lines.push(...(await liveTalkLines(page, vp, "吹き出しの確かめ")));
+    // 4. 1 文の返事（2 行目）の吹き出しは 1 行ぶん + 余白で、手順の行（結果の文）が無い
+    const one = await page.evaluate(() => {
+      const row = document.querySelectorAll("#ed .c-talk > .c-msg")[1];
+      const bubble = row?.querySelector(".c-bubble");
+      return row === undefined || bubble === undefined || bubble === null
+        ? null
+        : { who: row.getAttribute("data-who"), h: bubble.getBoundingClientRect().height, steps: row.querySelectorAll(".c-steps-toggle, .c-steps-text").length };
+    });
+    if (one === null || one.who !== "agent") say("2 行目が返事の吹き出しでない");
+    else {
+      if (Math.abs(one.h - (fontSize * 1.5 + 20)) > 1) say(`1 文の返事の吹き出しの高さ ${one.h.toFixed(1)}。${fontSize * 1.5 + 20} のはず`);
+      if (one.steps !== 0) say("1 文の返事（完了・手順なし）に結果の文が在る");
+    }
+    // 5. 長い URL ははみ出さず、コードの段は横に送れる
+    const wide = await page.evaluate(() => {
+      const link = [...document.querySelectorAll("#ed .c-md-link")].find((a) => (a.textContent ?? "").length >= 300);
+      const bubble = link?.closest(".c-bubble") ?? null;
+      const talkEl = document.querySelector("#ed .c-talk");
+      const scroll = document.querySelector("#ed .ed-scroll");
+      const pre = bubble?.querySelector(".c-md-pre") ?? null;
+      const over = (el: Element | null): boolean | null => (el === null ? null : el.scrollWidth > el.clientWidth);
+      let moved = 0;
+      if (pre !== null) {
+        pre.scrollLeft = 50;
+        moved = pre.scrollLeft;
+        pre.scrollLeft = 0;
+      }
+      return { link: link !== undefined, bubble: over(bubble), talk: over(talkEl), scroll: over(scroll), pre: over(pre), moved };
+    });
+    if (!wide.link) say("400 字の URL のリンクが無い");
+    for (const [name, over] of [
+      ["吹き出し", wide.bubble],
+      [".c-talk", wide.talk],
+      [".ed-scroll", wide.scroll],
+    ] as const) {
+      if (over !== false) say(`長い URL で ${name} が横にはみ出している（${String(over)}）`);
+    }
+    if (wide.pre !== true) say(`コードの段が横に長くない（${String(wide.pre)}）`);
+    if (!(wide.moved > 0)) say("コードの段を横に送れない");
+    // 9. .tl が空なら高さ 0
+    const tlH = await page.evaluate(() => document.querySelector("#ed .ed-scroll > [data-talk] + .tl")?.getBoundingClientRect().height ?? -1);
+    if (tlH !== 0) say(`空の .tl の高さ ${tlH}（0 のはず）`);
+    // 16. PC は列が 840 で真ん中（右腕を列で開いていると列 2 が 840 より狭いので、測る間だけ畳む）
+    if (vp === "pc") {
+      const handOpen = (await page.getAttribute("#v3", "data-hand")) === "open";
+      if (handOpen) {
+        await page.click("#v3-hand-close");
+        await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+        await wait(300);
+      }
+      const col = await page.evaluate(() => {
+        const t = document.querySelector("#ed .c-talk");
+        const sc = document.querySelector("#ed .ed-scroll");
+        if (t === null || sc === null) return null;
+        const a = t.getBoundingClientRect();
+        const b = sc.getBoundingClientRect();
+        const left = a.left - (b.left + sc.clientLeft);
+        const right = b.left + sc.clientLeft + sc.clientWidth - a.right;
+        return { w: a.width, left, right };
+      });
+      if (col === null) say("PC の列を測れない");
+      else {
+        if (Math.abs(col.w - 840) > 0.5) say(`PC の .c-talk の幅 ${col.w.toFixed(1)}（840 のはず）`);
+        if (Math.abs(col.left - col.right) > 1) say(`PC の .c-talk が真ん中でない（左 ${col.left.toFixed(1)}・右 ${col.right.toFixed(1)}）`);
+      }
+      if (handOpen) {
+        await page.click("#v3-hand-show");
+        await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+        await wait(300);
+      }
+    }
+    await edScroll(page, "top");
+    await wait(200);
+    await shot(page, `${p}-b-talk-rows`);
+    // 6. 最後の返事の手順を開く。全部の描き直しをまたいでも開いたまま
+    await edScroll(page, "bottom");
+    await wait(200);
+    await page.locator('#ed .c-talk > .c-msg[data-who="agent"]').last().locator(".c-steps-toggle").click();
+    await wait(200);
+    const opened = async (): Promise<{ expanded: string | null; items: number }> =>
+      page.evaluate(() => {
+        const last = [...document.querySelectorAll('#ed .c-talk > .c-msg[data-who="agent"]')].at(-1);
+        return { expanded: last?.querySelector(".c-steps-toggle")?.getAttribute("aria-expanded") ?? null, items: last?.querySelectorAll("ol.c-steps-list > li").length ?? 0 };
+      });
+    const o1 = await opened();
+    if (o1.expanded !== "true" || o1.items !== 4) say(`最後の返事の手順を開けない（aria-expanded ${String(o1.expanded)}・項目 ${o1.items}）`);
+    await edScroll(page, "bottom");
+    await shot(page, `${p}-b-talk-steps-open`);
+    await refreshCh(page, talk);
+    await wait(200);
+    const o2 = await opened();
+    if (o2.expanded !== "true" || o2.items !== 4) say(`描き直しで開いた手順が閉じた（aria-expanded ${String(o2.expanded)}・項目 ${o2.items}）`);
+    // 18. 当たり（開いた手順の後）
+    lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#ed .c-talk", targets: "button, a[href]:not(.c-md-link), input, select, textarea", toast: false })).map((l) => `段 k: 吹き出しの確かめ: ${l}`));
+    // 7・8. 下端に居るときは新着で下へ。上を読んでいるときは動かさない。行が足されても同じ要素で、選んだ文が残る
+    await edScroll(page, "bottom");
+    await wait(200);
+    await page.evaluate(() => {
+      const w = window as unknown as { __k: { scroll: Element | null; bubble: Element | null } };
+      w.__k = { scroll: document.querySelector("#ed .ed-scroll"), bubble: document.querySelector("#ed .c-bubble") };
+      const p0 = document.querySelector("#ed .c-bubble .c-md-p");
+      const sel = getSelection();
+      if (p0 !== null && sel !== null) {
+        const range = document.createRange();
+        range.selectNodeContents(p0);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    });
+    const rows0 = await page.evaluate(() => document.querySelectorAll("#ed .c-talk > .c-msg").length);
+    const lastId = await page.evaluate((ch: string) => {
+      const t = (window as unknown as { SA: { store: { turns: Record<string, { turns: Array<{ id: number }> }> } } }).SA.store.turns[ch];
+      return t ? Math.max(...t.turns.map((x) => x.id)) : 0;
+    }, talk);
+    const added = (n: number): Record<string, unknown> => ({
+      id: lastId + n,
+      kind: "agent",
+      source: "system",
+      persona: "default",
+      text: `足した返事 ${n} です。`,
+      at: new Date().toISOString(),
+      outcome: "done",
+      steps: [],
+      toolCalls: 0,
+      durationMs: 1000,
+      link: null,
+      messageId: null,
+    });
+    await addTurn(page, talk, added(1));
+    const after1 = await page.evaluate(() => {
+      const w = window as unknown as { __k: { scroll: Element | null; bubble: Element | null } };
+      const sc = document.querySelector("#ed .ed-scroll");
+      return {
+        rows: document.querySelectorAll("#ed .c-talk > .c-msg").length,
+        gap: sc === null ? -1 : sc.scrollHeight - sc.scrollTop - sc.clientHeight,
+        sameScroll: sc !== null && sc === w.__k.scroll,
+        sameBubble: w.__k.bubble !== null && w.__k.bubble.isConnected && document.querySelector("#ed .c-bubble") === w.__k.bubble,
+        selection: (getSelection()?.toString() ?? "").length,
+      };
+    });
+    if (after1.rows !== rows0 + 1) say(`行を足した後の吹き出しが ${after1.rows}（${rows0 + 1} のはず）`);
+    if (!(after1.gap >= 0 && after1.gap < 2)) say(`下端に居たのに新着で下へ送らない（残り ${after1.gap}）`);
+    if (!after1.sameScroll) say("行を足した描き直しで .ed-scroll が別の要素になった");
+    if (!after1.sameBubble) say("行を足した描き直しで最初の吹き出しが別の要素になった");
+    if (after1.selection === 0) say("行を足した描き直しで選んだ文が外れた");
+    await page.evaluate(() => getSelection()?.removeAllRanges());
+    await edScroll(page, 300);
+    await wait(200);
+    const top1 = await page.evaluate(() => document.querySelector("#ed .ed-scroll")?.scrollTop ?? -1);
+    await addTurn(page, talk, added(2));
+    const top2 = await page.evaluate(() => document.querySelector("#ed .ed-scroll")?.scrollTop ?? -1);
+    if (Math.abs(top2 - top1) > 1) say(`上を読んでいるのに新着で動いた（${top1} → ${top2}）`);
+
+    // ----- 実行中の話題 -----
+    await load(page, `/static/v3.html#/ch/${run}`);
+    await page.waitForSelector('#ed .c-run[aria-busy="true"]', { timeout: 5000 });
+    await wait(500);
+    lines.push(...(await liveTalkLines(page, vp, "実行中")));
+    // 11. 刻みは同じ要素のまま経過の文だけを変える。開いたすべての手順も閉じない
+    const runBefore = await page.evaluate(() => {
+      const w = window as unknown as { __r: { text: Element | null; bubble: Element | null } };
+      w.__r = { text: document.querySelector("#ed .c-run-text"), bubble: document.querySelector("#ed .c-bubble") };
+      // 入力欄の字数（古い入力欄の counter）は数えない
+      return { live: document.querySelectorAll("#ed .c-talk[aria-live], #ed .c-talk [aria-live]").length, text: w.__r.text?.textContent ?? "" };
+    });
+    if (runBefore.live !== 0) say(`#ed の会話の行に aria-live が ${runBefore.live} 個`);
+    await wait(2200);
+    const runAfter = await page.evaluate(() => {
+      const w = window as unknown as { __r: { text: Element | null; bubble: Element | null } };
+      const text = document.querySelector("#ed .c-run-text");
+      return {
+        sameText: text !== null && text === w.__r.text,
+        sameBubble: w.__r.bubble !== null && document.querySelector("#ed .c-bubble") === w.__r.bubble,
+        text: text?.textContent ?? "",
+      };
+    });
+    if (!runAfter.sameText) say("刻みで経過の文の要素が別の物になった");
+    if (!runAfter.sameBubble) say("刻みで最初の吹き出しが別の要素になった");
+    if (runAfter.text === runBefore.text) say(`刻みで経過の文が変わらない（${runAfter.text}）`);
+    await page.locator("#ed .c-run .c-steps-toggle").click();
+    await wait(200);
+    await wait(2200);
+    const runOpen = await page.evaluate(() => ({
+      expanded: document.querySelector("#ed .c-run .c-steps-toggle")?.getAttribute("aria-expanded") ?? null,
+      items: document.querySelectorAll("#ed .c-run ol.c-steps-list > li").length,
+    }));
+    if (runOpen.expanded !== "true" || runOpen.items !== 5) say(`刻みですべての手順が閉じた（aria-expanded ${String(runOpen.expanded)}・項目 ${runOpen.items}）`);
+    lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#ed .c-talk", targets: "button, a[href]:not(.c-md-link), input, select, textarea", toast: false })).map((l) => `段 k: 実行中: ${l}`));
+    await edScroll(page, "bottom");
+    await shot(page, `${p}-b-talk-run`);
+    // 12. 入力欄のフォーカス・書きかけ・選択の位置が、刻みと全部の描き直しをまたいで残る
+    const ta = page.locator("#ed textarea").first();
+    await ta.click();
+    await ta.fill("あいうえお");
+    await page.evaluate(() => {
+      const el = document.querySelector("#ed textarea");
+      if (el instanceof HTMLTextAreaElement) {
+        el.focus();
+        el.setSelectionRange(1, 3);
+      }
+    });
+    await wait(2200);
+    await refreshCh(page, run);
+    await wait(200);
+    const kept = await page.evaluate(() => {
+      const el = document.querySelector("#ed textarea");
+      return el instanceof HTMLTextAreaElement ? { focus: document.activeElement === el, value: el.value, a: el.selectionStart, b: el.selectionEnd } : null;
+    });
+    if (kept === null || !kept.focus || kept.value !== "あいうえお" || kept.a !== 1 || kept.b !== 3) say(`入力欄が残らない（${JSON.stringify(kept)}）`);
+    // 13. 変換の途中の字が、刻みと全部の描き直しをまたいで切れない
+    await ta.fill("");
+    await page.evaluate(() => {
+      const el = document.querySelector("#ed textarea");
+      const w = window as unknown as { __ime: { start: number; end: number; blur: number } };
+      w.__ime = { start: 0, end: 0, blur: 0 };
+      if (el === null) return;
+      el.addEventListener("compositionstart", () => void w.__ime.start++);
+      el.addEventListener("compositionend", () => void w.__ime.end++);
+      el.addEventListener("blur", () => void w.__ime.blur++);
+      (el as HTMLTextAreaElement).focus();
+    });
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      await cdp.send("Input.imeSetComposition", { text: "へんかん", selectionStart: 4, selectionEnd: 4 });
+      await wait(200);
+      const started = await page.evaluate(() => (window as unknown as { __ime: { start: number } }).__ime.start);
+      if (started === 0) say("変換の途中を作れない（compositionstart が来ない）");
+      await wait(2200);
+      await refreshCh(page, run);
+      await wait(200);
+      const ime = await page.evaluate(() => {
+        const el = document.querySelector("#ed textarea");
+        return { ...(window as unknown as { __ime: { start: number; end: number; blur: number } }).__ime, value: el instanceof HTMLTextAreaElement ? el.value : null };
+      });
+      if (ime.end !== 0 || ime.blur !== 0 || ime.value !== "へんかん") say(`描き直しで変換の途中が切れた（${JSON.stringify(ime)}）`);
+      await cdp.send("Input.insertText", { text: "変換" });
+    } finally {
+      await cdp.detach();
+    }
+    await ta.fill("");
+    // 重さの受け入れ（ダークのスマホだけ。CPU 4 倍絞り）
+    if (vp === "phone") {
+      const throttle = await page.context().newCDPSession(page);
+      let weight: Awaited<ReturnType<typeof talkWeight>> | null = null;
+      try {
+        await throttle.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+        weight = await page.evaluate(talkWeight);
+      } finally {
+        await throttle.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+        await throttle.detach();
+      }
+      const med = (xs: number[]): number => {
+        const a = [...xs].sort((x, y) => x - y);
+        return a.length % 2 === 1 ? a[(a.length - 1) / 2]! : (a[a.length / 2 - 1]! + a[a.length / 2]!) / 2;
+      };
+      const nums = { drawMed: med(weight.draw), drawMax: Math.max(...weight.draw), tickMed: med(weight.tick), tickMax: Math.max(...weight.tick) };
+      const text = `draw 中央値 ${nums.drawMed.toFixed(1)}・最大 ${nums.drawMax.toFixed(1)} / tick 中央値 ${nums.tickMed.toFixed(1)}・最大 ${nums.tickMax.toFixed(1)}（ms。300 行・CPU 4 倍）`;
+      const passed = nums.tickMed <= TALK_TICK_MAX_MS && nums.tickMed <= nums.drawMed * TALK_TICK_RATIO;
+      if (!passed) say(`描き直しの重さが条件を満たさない: ${text}`);
+      else console.log(`[v3-${p}] 描き直しの重さ: ${text}`);
+      if (!weight.ok) say("重さの測りで SA.talk が描けなかった");
+      if (!weight.same) say("重さの測りの tick の後、最初の吹き出しが別の要素");
+      if (!weight.changed) say("重さの測りの tick で経過の文が変わらない");
+    }
+
+    // ----- 長い会話 -----
+    await load(page, `/static/v3.html#/ch/${long}`);
+    await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
+    await wait(800);
+    await edScroll(page, "bottom");
+    await wait(300);
+    lines.push(...(await liveTalkLines(page, vp, "長い会話")));
+    // 14. 「前の会話を読む」・[続ける] は .tl の先頭で左端が列と同じ・結果の文は 1 行で省かれる・時刻は切れない
+    const longLook = await page.evaluate(() => {
+      const talkEl = document.querySelector("#ed .c-talk");
+      const head = document.querySelector("#ed .ed-scroll > [data-talk] + .tl")?.firstElementChild ?? null;
+      const cont = head?.querySelector("button") ?? null;
+      const last = [...document.querySelectorAll('#ed .c-talk > .c-msg[data-who="agent"]')].at(-1);
+      const label = last?.querySelector(".c-steps-label") ?? null;
+      const time = last?.querySelector(".c-msg-time") ?? null;
+      const inner = (el: Element): number => el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft);
+      return {
+        older: document.querySelector("#ed .c-talk-older button") !== null,
+        cont: cont === null ? null : (cont.textContent ?? "").trim(),
+        left: cont === null || talkEl === null ? null : cont.getBoundingClientRect().left - inner(talkEl),
+        labelText: label?.textContent ?? null,
+        labelH: label === null ? null : label.getBoundingClientRect().height,
+        labelLh: label === null ? null : parseFloat(getComputedStyle(label).lineHeight),
+        cut: label === null ? null : label.scrollWidth > label.clientWidth,
+        timeCut: time === null ? null : time.scrollWidth > time.clientWidth,
+      };
+    });
+    if (!longLook.older) say("長い会話に「前の会話を読む」が無い");
+    if (longLook.cont !== "続ける") say(`.tl の先頭が [続ける] でない（${String(longLook.cont)}）`);
+    else if (longLook.left === null || Math.abs(longLook.left) > 0.5) say(`[続ける] の左端が吹き出しの列とずれる（${String(longLook.left)}）`);
+    if (longLook.labelText === null || !longLook.labelText.startsWith("手順の上限で止まりました")) say(`最後の返事の結果の文が手順の上限でない（${String(longLook.labelText)}）`);
+    else {
+      if (longLook.labelH === null || longLook.labelLh === null || longLook.labelH > longLook.labelLh * 1.5) say(`結果の文が 1 行でない（高さ ${String(longLook.labelH)}）`);
+      // スマホは入りきらずに末尾を省く。タブレット・PC は列が広く、全部が 1 行に入る
+      if (vp === "phone" && longLook.cut !== true) say("結果の文の末尾が省かれていない（スマホ）");
+      if (vp !== "phone" && longLook.cut !== false) say(`結果の文が広い幅で省かれている（${vp}）`);
+    }
+    if (longLook.timeCut !== false) say(`最後の返事の時刻が切れている（${String(longLook.timeCut)}）`);
+    await shot(page, `${p}-b-talk-long`);
+    // 15. 先頭へ送ると前の行を読み、見ていた吹き出しの位置が動かない
+    const mark = await page.evaluate(() => {
+      const sc = document.querySelector("#ed .ed-scroll");
+      if (sc === null) return null;
+      sc.scrollTop = 0;
+      const msgs = [...document.querySelectorAll("#ed .c-talk > .c-msg")];
+      const box = sc.getBoundingClientRect();
+      const seen = msgs.find((m) => m.getBoundingClientRect().bottom > box.top) ?? null;
+      (window as unknown as { __m: Element | null }).__m = seen;
+      return seen === null ? null : seen.getBoundingClientRect().top;
+    });
+    await page.waitForFunction(() => document.querySelectorAll("#ed .c-talk > .c-msg").length >= 60, undefined, { timeout: 5000 }).catch(() => undefined);
+    await wait(500);
+    const after = await page.evaluate(() => {
+      const m = (window as unknown as { __m: Element | null }).__m;
+      return { rows: document.querySelectorAll("#ed .c-talk > .c-msg").length, top: m !== null && m.isConnected ? m.getBoundingClientRect().top : null };
+    });
+    if (after.rows !== 60) say(`前の会話を読んだ後の行が ${after.rows}（60 のはず）`);
+    if (mark === null || after.top === null || Math.abs(after.top - mark) > 2) say(`前の会話を読んだら見ていた吹き出しが動いた（${String(mark)} → ${String(after.top)}）`);
+
+    // 17. 等幅の字（スマホ。幅 390 と 375）
+    if (vp === "phone") {
+      await load(page, `/static/v3.html#/ch/${talk}`);
+      await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
+      await wait(800);
+      lines.push(...(await withMono(page, () => liveTalkLines(page, vp, "等幅の字・幅 390"), "本番の会話")));
+      try {
+        await page.setViewportSize({ width: 375, height: 812 });
+        await wait(300);
+        lines.push(
+          ...(await withMono(
+            page,
+            async () => {
+              const got = await liveTalkLines(page, vp, "等幅の字・幅 375");
+              await edScroll(page, "top");
+              await shot(page, `${p}-b-talk-mono375`);
+              return got;
+            },
+            "本番の会話",
+          )),
+        );
+      } finally {
+        await page.setViewportSize(VIEWPORTS.phone.viewport);
+        await wait(300);
+      }
+    }
+
+    // 10. 古い CSS の漏れ（本番の会話と見本の会話の節。タブレットは除く）
+    if (vp !== "tablet") {
+      await load(page, `/static/v3.html#/ch/${talk}`);
+      await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
+      await wait(800);
+      const styles = ({ root, sels, props }: { root: string; sels: string[]; props: string[] }): Record<string, Record<string, string> | null> => {
+        const out: Record<string, Record<string, string> | null> = {};
+        const scope = document.querySelector(root);
+        for (const sel of sels) {
+          const el = scope === null ? null : scope.querySelector(sel);
+          out[sel] = el === null ? null : Object.fromEntries(props.map((prop) => [prop, getComputedStyle(el).getPropertyValue(prop)]));
+        }
+        return out;
+      };
+      const real = await page.evaluate(styles, { root: "#ed .c-talk", sels: LEAK_TALK, props: LEAK_PROPS });
+      await page.goto("about:blank");
+      await page.goto(base + "/static/gallery.html", { waitUntil: "load" });
+      await page.waitForSelector('[data-section="talk"] .c-talk', { timeout: 5000 });
+      const demo = await page.evaluate(styles, { root: '[data-section="talk"]', sels: LEAK_TALK, props: LEAK_PROPS });
+      for (const sel of LEAK_TALK) {
+        const a = real[sel];
+        const b = demo[sel];
+        if (!a || !b) {
+          say(`漏れ: ${sel} が${!a ? "本番" : "見本"}に無い`);
+          continue;
+        }
+        for (const prop of LEAK_PROPS) if (a[prop] !== b[prop]) say(`漏れ: ${sel} の ${prop} が 本番 ${a[prop]} / 見本 ${b[prop]}`);
+      }
+    }
+    return lines;
+  }
+
   async function newShell(vp: Viewport, theme: Theme, full: boolean): Promise<void> {
     const p = `${vp}-${theme}`;
     if (!newShellNames(vp, theme, full).some(wanted)) return;
@@ -1642,8 +2206,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           for (const el of document.querySelectorAll("#ed *")) if (el.scrollHeight > el.clientHeight + 4) el.scrollTop = 0;
         });
         await shot(page, `${p}-b-chat-top`);
-        // 本番の見出し（軽い分。ライトはここで見る）
-        const problems = await checkTop(page, vp, "会話");
+        // 本番の見出し（軽い分。ライトはここで見る）と、会話の行（部品が描く）
+        const problems = [...(await checkTop(page, vp, "会話")), ...(await liveTalkLines(page, vp, "会話"))];
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
         if (problems.length > 0) throw new Error(`見出しの検査で ${problems.length} 件`);
         await page.evaluate(() => {
@@ -1662,6 +2226,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           const problems = await topStage(page, vp, p);
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`見出しの段の検査で ${problems.length} 件`);
+        });
+        // 本番の会話の行の段
+        const talks = [`${p}-b-talk-rows`, `${p}-b-talk-steps-open`, `${p}-b-talk-run`, `${p}-b-talk-long`, ...(vp === "phone" ? [`${p}-b-talk-mono375`] : [])];
+        await step(`${p} k`, talks, async () => {
+          const started = Date.now();
+          const problems = await talkStage(page, vp, p);
+          console.log(`[v3-${p}] 段 k: ${((Date.now() - started) / 1000).toFixed(1)} 秒`);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`会話の行の段の検査で ${problems.length} 件`);
         });
       }
       if (!full) return;
@@ -1696,6 +2269,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         }
         await wait(1000);
         await shot(page, handName);
+        // 開いた右腕の中は古い吹き出しのまま
+        const hand = await page.evaluate(() => ({ old: document.querySelectorAll("#v3-hand-ed .msg").length, parts: document.querySelectorAll("#v3-hand-ed .c-talk").length }));
+        if (hand.old === 0 || hand.parts !== 0) {
+          logLines.push(`[v3-${p}] 右腕の中の吹き出し: 古い .msg ${hand.old} 個・.c-talk ${hand.parts} 個（古いままのはず）`);
+          throw new Error("右腕の中の吹き出しの検査で 1 件");
+        }
         if (vp !== "phone") {
           await load(page, `/static/v3.html#/ch/${open}`);
           await page.waitForSelector('#ed .c-msg[data-who="agent"]', { timeout: 5000 });
@@ -1754,11 +2333,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           parts: document.querySelectorAll('[class^="c-"], [class*=" c-"]').length,
           toolbar: document.querySelector("#ed .ed-toolbar") !== null,
           top: (window as unknown as { SA?: { top?: unknown } }).SA?.top === undefined,
+          talk: (window as unknown as { SA?: { talk?: unknown } }).SA?.talk === undefined,
+          roots: document.querySelectorAll("[data-talk]").length,
+          msgs: document.querySelectorAll("#ed .msg-agent").length,
         }));
         const problems = [
           ...(old.parts !== 0 ? [`古い殻に c- のクラスの要素が ${old.parts} 個`] : []),
           ...(!old.toolbar ? ["古い殻の #ed に .ed-toolbar が無い"] : []),
           ...(!old.top ? ["古い殻に window.SA.top が在る"] : []),
+          ...(!old.talk ? ["古い殻に window.SA.talk が在る"] : []),
+          ...(old.roots !== 0 ? [`古い殻に [data-talk] が ${old.roots} 個`] : []),
+          ...(old.msgs === 0 ? ["古い殻の #ed に .msg-agent が無い"] : []),
         ];
         for (const line of problems) logLines.push(`[${label}] ${line}`);
         if (problems.length > 0) throw new Error(`古い殻の検査で ${problems.length} 件`);
