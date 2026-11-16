@@ -15,7 +15,7 @@ const JS_FILES = readdirSync(STATIC_DIR).filter((n) => /^c-.*\.js$/.test(n)).sor
 const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "bubble-r", "bubble-tail", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
-  "top-full-min", "top-place-min",
+  "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字） */
@@ -24,7 +24,7 @@ const ALLOWED_VARS: ReadonlySet<string> = new Set([
   "font-xs", "font-sm", "font-base", "leading-normal", "leading-tight", "weight-normal", "weight-medium", "weight-semibold",
   "radius-sm", "radius-md", "radius-lg", "radius-full", "border-width", "ring-width", "dialog-max", "container-max",
   "bg", "surface", "muted", "border", "text", "text-secondary", "text-muted", "primary", "primary-text", "accent", "danger", "success", "warning", "backdrop", "shadow-sm",
-  "dur-micro", "dur-short", "dur-long", "ease-out", "z-toast", "font-mono",
+  "dur-micro", "dur-short", "dur-long", "ease-out", "z-toast", "font-mono", "bubble-owner", "bubble-agent", "bubble-inset",
 ].map((n) => `--${n}`));
 
 /** ファイルごとのセレクタの頭（c-gallery.css は test/web-vendor.test.ts がもっと狭く見ている） */
@@ -33,6 +33,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-sheet.css": /^\.c-(?:sheet|confirm|toast)(?![a-z])/,
   "c-list.css": /^\.c-(?:list|turns|turn|group|rows|row|fold)(?![a-z])/,
   "c-shell.css": /^\.c-(?:bottom|top)(?![a-z])/,
+  "c-talk.css": /^\.c-(?:talk|msg|bubble|md|steps|run|notice|divider)(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
 };
 
@@ -176,7 +177,7 @@ const partProblems = (name: string, text: string): string[] => forbidden(name, t
 const entryProblems = (name: string, text: string): string[] => forbidden(name, text, ENTRY_WORDS, ENTRY_PARTS);
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
   for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
@@ -271,14 +272,22 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
-test("web components: 一覧と下のバー（c-list・c-shell）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。動きを付けない", () => {
+test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーは動きを付けず、会話は実行中の輪だけ", () => {
   // 部品は id を出さない（モデルのキー id: や data-topic=${id} は当たらない）
-  for (const name of ["c-list.js", "c-shell.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
+  for (const name of ["c-list.js", "c-shell.js", "c-talk.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
   // 部品の色・高さ・字を外から変えない（印の位置・PC の [+] の当たりを戻す・下のバーの並べ方だけ）
   const ALLOWED_OUTSIDE = new Set([".c-turn > .c-mark", '.c-group-head > .c-iconbtn[data-size="sm"]::after', '.c-bottom > .c-btn[data-size="sm"]']);
   // K2 の部品のクラス（c-atoms.css・c-sheet.css のセレクタに出る全部。その下のクラスも）は外から宛てない
   const atomClasses = new Set(["c-atoms.css", "c-sheet.css"].flatMap((file) => parseCss(read(file)).filter((r) => !r.keyframe).flatMap((r) => r.selectors.flatMap(classesInSelector))));
   for (const cls of ["c-btn", "c-iconbtn", "c-badge", "c-mark", "c-icon", "c-empty", "c-empty-text", "c-loading", "c-seg", "c-field", "c-input", "c-sheet", "c-toast"]) assert.ok(atomClasses.has(cls), cls);
+  // 会話（c-talk.css）は K2 の部品のクラスに 1 つも宛てない
+  const talkRules = parseCss(read("c-talk.css"));
+  for (const rule of talkRules) for (const selector of rule.selectors) assert.ok(!classesInSelector(selector).some((cls) => atomClasses.has(cls)), `c-talk.css: ${selector}`);
+  // 会話の動きは実行中の輪（.c-run-spin）だけ
+  for (const rule of talkRules) {
+    if (/(?:^|; ?)(?:animation|transition)(?:-[a-z-]+)?\s*:/.test(rule.body)) assert.deepEqual(rule.selectors, [".c-run-spin"], `c-talk.css: ${rule.selectors.join(",")}`);
+  }
+  assert.equal((stripCssComments(read("c-talk.css")).match(/@keyframes\b/g) ?? []).length, 1, "c-talk.css: @keyframes は 1 つ");
   for (const name of ["c-list.css", "c-shell.css"]) {
     if (!CSS_FILES.includes(name)) continue;
     const rules = parseCss(read(name));
@@ -358,11 +367,13 @@ test("web components: 完了・「ほかのプロジェクト」の見出し（.
 test("web components: 古い CSS（app・shell・base・tokens）の裸のタグの規則が、一覧・下のバー・小さい部品のタグに当たらない（base.css の reset だけは許す）", () => {
   // 部品のテンプレートに出るタグ
   const partTags = new Set<string>();
-  for (const name of ["c-list.js", "c-shell.js", "c-atoms.js"]) for (const m of read(name).matchAll(/<([a-z][a-z0-9]*)[\s>/]/g)) partTags.add(m[1] ?? "");
-  for (const tag of ["button", "ul", "li", "h1", "h2", "section", "span", "p", "div", "svg", "use", "header"]) assert.ok(partTags.has(tag), tag);
+  for (const name of ["c-list.js", "c-shell.js", "c-atoms.js", "c-talk.js"]) for (const m of read(name).matchAll(/<([a-z][a-z0-9]*)[\s>/]/g)) partTags.add(m[1] ?? "");
+  for (const tag of ["button", "ul", "li", "h1", "h2", "section", "span", "p", "div", "svg", "use", "header", "article", "pre", "code", "ol", "strong", "a"]) assert.ok(partTags.has(tag), tag);
   // base.css の reset（button・h2・p の字と余白を外す・継ぐ）は見本のページ（gallery.html）にも当たるので、見本との差にならない。
-  // h1（見出しの題）は base.css の字と余白を .c-top-title が全部書き直す
-  const BASE_OK = new Set(["button", "h1", "h2", "p"]);
+  // h1（見出しの題）は base.css の字と余白を .c-top-title が全部書き直す。
+  // a（base.css の色と下線の位置）は見本にも本番にも当たるので差にならない。色は c-talk.css の .c-md-link が書く
+  const BASE_OK = new Set(["button", "h1", "h2", "p", "a"]);
+  assert.ok(parseCss(read("c-talk.css")).some((r) => r.at.length === 0 && r.selectors.includes(".c-md-link") && /(?:^|;)\s*color\s*:/.test(r.body)));
   assert.deepEqual(h1Problems(read("c-shell.css")), []);
   const base = readFileSync(join(ROOT, "templates/web/site/base.css"), "utf8");
   for (const [file, text] of [["app.css", read("app.css")], ["shell.css", read("shell.css")], ["tokens.css", read("tokens.css")], ["base.css", base]] as const) {
@@ -413,6 +424,8 @@ test("web components: 見張りの関数は悪い見本を落とす", () => {
   assert.deepEqual(cssProblems("c-list.css", ".c-rows{margin:0}"), []);
   assert.ok(cssProblems("c-shell.css", ".c-topbar{color:var(--text)}").some((p) => p.includes("このファイルの頭")));
   assert.deepEqual(cssProblems("c-shell.css", ".c-top-title{margin:0}"), []);
+  assert.ok(cssProblems("c-talk.css", ".c-turnline{margin:0}").some((p) => p.includes("このファイルの頭")));
+  assert.deepEqual(cssProblems("c-talk.css", ".c-bubble{background:var(--bubble-agent)}"), []);
   // 見出しの題が base.css の h1 の宣言を書き直していない見本
   assert.deepEqual(h1Problems(".c-top-title{margin:0;font-size:var(--font-base)} @media (x){.c-top-title{line-height:1}}"), ["font-weight", "line-height"]);
   assert.deepEqual(h1Problems(".c-top-title{margin:0;font-weight:1;line-height:1;font-size:1}"), []);
@@ -1623,6 +1636,9 @@ test("web components: TopBar は view が none・知らない値で null。c-she
 const talkUrl = new URL("../src/web/static/c-talk.js", import.meta.url).href;
 const talk = (await import(talkUrl)) as Record<string, Fn> & {
   splitLinks: (text: string) => { type: string; text: string }[];
+  parseBlocks: (text: string) => Obj[];
+  footOf: (turn: Obj, open: unknown, end: string) => Obj | null;
+  talkModel: (state: Obj, parse: (text: string) => unknown) => Obj;
 };
 
 test("web components: splitLinks は太字の中の URL を分け、空の文字の項を作らない", () => {
@@ -1642,4 +1658,373 @@ test("web components: splitLinks は太字の中の URL を分け、空の文字
   ]);
   assert.deepEqual(talk.splitLinks("https://a.example/1https://b"), [{ type: "link", text: "https://a.example/1https://b" }]);
   assert.deepEqual(talk.splitLinks(""), []);
+});
+
+/** 見本と同じ形の fmt（行に持たせた欄を返すだけ）。呼ばれた名前と引数を calls に積む */
+function talkFmt(): { calls: unknown[][]; fmt: Record<string, (...a: unknown[]) => unknown> } {
+  const calls: unknown[][] = [];
+  const rec = (name: string, fn: (...a: unknown[]) => unknown) => (...a: unknown[]): unknown => {
+    calls.push([name, ...a]);
+    return fn(...a);
+  };
+  const f = (turn: unknown): Obj => turn as Obj;
+  return {
+    calls,
+    fmt: {
+      time: rec("time", (t) => f(t).time ?? ""),
+      label: rec("label", (t) => (f(t).kind === "owner" ? "オーナー" : (f(t).name ?? "エージェント"))),
+      name: rec("name", (t, prev) => (f(t).name && !(prev && f(prev).name === f(t).name) ? f(t).name : null)),
+      end: rec("end", (t) => f(t).end ?? ""),
+      progress: rec("progress", (r) => f(r).text),
+      waiting: rec("waiting", (r) => f(r).waiting ?? null),
+      allLabel: rec("allLabel", (r) => "すべての手順（" + (f(r).steps as unknown[]).length + "）"),
+      runName: rec("runName", () => null),
+    },
+  };
+}
+
+const talkState = (o: Obj = {}): Obj => ({
+  channelId: "c",
+  turns: [],
+  hasMore: false,
+  running: null,
+  stopping: false,
+  openSteps: new Set(),
+  runStepsOpen: false,
+  fmt: talkFmt().fmt,
+  on: {},
+  ...o,
+});
+
+const talkRec = (): { calls: unknown[][]; on: Record<string, (...a: unknown[]) => void> } => {
+  const calls: unknown[][] = [];
+  const rec = (name: string) => (...a: unknown[]): void => void calls.push([name, ...a]);
+  return { calls, on: { older: rec("older"), toggleSteps: rec("toggleSteps"), toggleRunSteps: rec("toggleRunSteps"), stop: rec("stop") } };
+};
+
+test("web components: footOf の結果ごとの文・色・手順（完了で手順 0 は無し、手順 0 は押せない文）", () => {
+  const steps = ["Read a", "Bash b"];
+  const foot = (outcome: unknown, st: unknown, open = true): Obj | null => talk.footOf({ outcome, steps: st }, open, "文");
+  assert.equal(foot(undefined, steps), null);
+  assert.equal(foot(null, steps), null);
+  assert.equal(foot("done", []), null);
+  assert.deepEqual(foot("done", steps), { text: "文", tone: "muted", steps, open: true });
+  assert.deepEqual(foot("done", steps, false), { text: "文", tone: "muted", steps, open: false });
+  assert.deepEqual(foot("max_turns", []), { text: "文", tone: "warning", steps: null, open: false });
+  assert.deepEqual(foot("max_turns", steps), { text: "文", tone: "warning", steps, open: true });
+  assert.deepEqual(foot("failed", []), { text: "文", tone: "danger", steps: null, open: false });
+  assert.deepEqual(foot("failed", steps), { text: "文", tone: "danger", steps, open: true });
+  assert.deepEqual(foot("aborted", []), { text: "文", tone: "muted", steps: null, open: false });
+  assert.deepEqual(foot("aborted", steps), { text: "文", tone: "muted", steps, open: true });
+  assert.deepEqual(foot("x", steps), { text: "文", tone: "muted", steps, open: true });
+  // 手順が配列でなければ 0 件と同じ
+  assert.equal(foot("done", "Read a"), null);
+  assert.deepEqual(foot("failed", { length: 2 }), { text: "文", tone: "danger", steps: null, open: false });
+});
+
+test("web components: talkModel の 4 つの kind（知らない kind は agent の吹き出し、文字列でない text は空）", () => {
+  const parse = (text: string): unknown => [{ type: "paragraph", text: "P:" + text }];
+  const turns = [
+    { id: 1, kind: "divider", text: "区切り" },
+    { id: 2, kind: "notice", text: "知らせ", time: "12:30" },
+    { id: 3, kind: "owner", text: "**そのまま**", time: "12:31" },
+    { id: 4, kind: "agent", text: "返事", time: "12:32", name: "A" },
+    { id: 5, kind: "x", text: 7, time: "12:33" },
+    { id: 6, kind: "divider", text: null },
+  ];
+  const m = talk.talkModel(talkState({ turns }), parse);
+  assert.deepEqual(m.items, [
+    { kind: "divider", key: "1", text: "区切り" },
+    { kind: "notice", key: "2", text: "知らせ", time: "12:30" },
+    { kind: "bubble", key: "3", who: "owner", label: "オーナー", name: null, blocks: [{ type: "plain", text: "**そのまま**" }], time: "12:31", state: null, foot: null },
+    { kind: "bubble", key: "4", who: "agent", label: "A", name: "A", blocks: [{ type: "paragraph", text: "P:返事" }], time: "12:32", state: null, foot: null },
+    { kind: "bubble", key: "5", who: "agent", label: "エージェント", name: null, blocks: [{ type: "paragraph", text: "P:" }], time: "12:33", state: null, foot: null },
+    { kind: "divider", key: "6", text: "" },
+  ]);
+  assert.deepEqual([m.older, m.running], [false, null]);
+  // turns が配列でなければ空
+  assert.deepEqual(talk.talkModel(talkState({ turns: null }), parse).items, []);
+});
+
+test("web components: talkModel は name に 1 つ前の行を渡し、先頭は null", () => {
+  const { calls, fmt } = talkFmt();
+  const turns = [
+    { id: "a", kind: "agent", text: "1", name: "Claude Code" },
+    { id: "b", kind: "agent", text: "2", name: "Claude Code" },
+    { id: "c", kind: "owner", text: "3" },
+    { id: "d", kind: "agent", text: "4", name: "Claude Code" },
+  ];
+  const m = talk.talkModel(talkState({ turns, fmt }), talk.parseBlocks);
+  assert.deepEqual(calls.filter((c) => c[0] === "name"), [
+    ["name", turns[0], null],
+    ["name", turns[1], turns[0]],
+    ["name", turns[3], turns[2]],
+  ]);
+  assert.deepEqual((m.items as Obj[]).map((i) => i.name), ["Claude Code", null, null, "Claude Code"]);
+});
+
+test("web components: talkModel の送っている途中・older、parse は agent にだけ、fmt.end は outcome の在る行にだけ", () => {
+  const { calls, fmt } = talkFmt();
+  const parsed: string[] = [];
+  const parse = (text: string): unknown => {
+    parsed.push(text);
+    return talk.parseBlocks(text);
+  };
+  const turns = [
+    { id: 1, kind: "owner", text: "送る", optimistic: true },
+    { id: 2, kind: "owner", text: "送った", optimistic: "yes" },
+    { id: 3, kind: "agent", text: "古い返事" },
+    { id: 4, kind: "agent", text: "完了", outcome: "done", steps: ["Read a"], end: "完了（1 秒）" },
+    { id: 5, kind: "agent", text: "失敗", outcome: "failed", steps: [], end: "止まりました" },
+  ];
+  const m = talk.talkModel(talkState({ turns, fmt, hasMore: true, openSteps: new Set([4]) }), parse);
+  const items = m.items as Obj[];
+  assert.deepEqual(items.map((i) => i.state), ["sending", null, null, null, null]);
+  assert.equal(m.older, true);
+  assert.equal(talk.talkModel(talkState({ hasMore: "true" }), parse).older, false);
+  assert.deepEqual(parsed, ["古い返事", "完了", "失敗"]);
+  assert.deepEqual(calls.filter((c) => c[0] === "end").map((c) => (c[1] as Obj).id), [4, 5]);
+  assert.deepEqual(items.map((i) => i.foot), [
+    null,
+    null,
+    null,
+    { text: "完了（1 秒）", tone: "muted", steps: ["Read a"], open: true },
+    { text: "止まりました", tone: "danger", steps: null, open: false },
+  ]);
+});
+
+test("web components: talkModel の running（後ろ 3 つ・0 件の文・4 件から all・stop は abortable のときだけ・runName に最後の行）", () => {
+  const { calls, fmt } = talkFmt();
+  const turns = [
+    { id: 1, kind: "owner", text: "a" },
+    { id: 2, kind: "agent", text: "b" },
+  ];
+  const run = (steps: unknown, o: Obj = {}): Obj => ({ steps, abortable: true, text: "作業中…", waiting: null, ...o });
+  const m = talk.talkModel(talkState({ turns, fmt, running: run(["s1", "s2", "s3", "s4"]), stopping: true, runStepsOpen: true }), talk.parseBlocks);
+  assert.deepEqual(m.running, {
+    name: null,
+    text: "作業中…",
+    waiting: null,
+    recent: [
+      { text: "s2", current: false },
+      { text: "s3", current: false },
+      { text: "s4", current: true },
+    ],
+    all: { label: "すべての手順（4）", open: true, steps: ["s1", "s2", "s3", "s4"] },
+    stop: { busy: true },
+  });
+  assert.deepEqual(calls.filter((c) => c[0] === "runName"), [["runName", turns[1]]]);
+  // 3 件は all なし。stopping でなければ busy は false
+  const three = talk.talkModel(talkState({ running: run(["s1", "s2", "s3"], { waiting: "許可を待っています" }) }), talk.parseBlocks).running as Obj;
+  assert.deepEqual([three.all, three.stop, three.waiting, (three.recent as Obj[]).map((r) => r.current)], [null, { busy: false }, "許可を待っています", [false, false, true]]);
+  // 0 件・配列でない・abortable でない
+  for (const steps of [[], undefined, "s"]) {
+    const r = talk.talkModel(talkState({ running: run(steps, { abortable: false }) }), talk.parseBlocks).running as Obj;
+    assert.deepEqual([r.recent, r.all, r.stop], [[{ text: "まだ手順はありません", current: false }], null, null], String(steps));
+  }
+  // 行が無ければ runName に null
+  const { calls: c2, fmt: f2 } = talkFmt();
+  talk.talkModel(talkState({ fmt: f2, running: run([]) }), talk.parseBlocks);
+  assert.deepEqual(c2.filter((c) => c[0] === "runName"), [["runName", null]]);
+});
+
+test("web components: Blocks（段落・見出し・code・箇条書き・番号の start・入れ子・plain・知らない type）", () => {
+  const md = one(html`<${talk.Blocks} blocks=${talk.parseBlocks("前 **太**\n\n# 見出し\n\n```\n**a** <b>\n```\n\n- a\n  - a1\n- b\n\n3. x\n4. y")} />`);
+  assert.deepEqual([md.type, md.props.class], ["div", "c-md"]);
+  const kids = md.children as El[];
+  assert.deepEqual(kids.map((k) => [k.type, k.props.class]), [
+    ["p", "c-md-p"],
+    ["p", "c-md-h"],
+    ["pre", "c-md-pre"],
+    ["ul", "c-md-list"],
+    ["ol", "c-md-list"],
+  ]);
+  assert.deepEqual(kids.map(textOf), ["前 太", "見出し", "**a** <b>", "aa1b", "xy"]);
+  // コードの段は文字だけ（中に code のタグを作らない）
+  assert.deepEqual(kids[2]?.children, ["**a** <b>"]);
+  // 箇条書きの start は番号付きだけ。入れ子
+  assert.equal("start" in (kids[3] as El).props, false);
+  assert.equal(kids[4]?.props.start, 3);
+  const first = (kids[3] as El).children[0] as El;
+  assert.equal(first.type, "li");
+  const nested = find(first, "c-md-list")[0] as El;
+  assert.deepEqual([nested.type, nested.children.map(textOf)], ["ul", ["a1"]]);
+  assert.equal(one(html`<${talk.Blocks} blocks=${talk.parseBlocks("1. a")} />`).children.map((k) => (k as El).props.start)[0], 1);
+  // plain は解析しない（** がそのまま）
+  const plain = one(html`<${talk.Blocks} blocks=${[{ type: "plain", text: "**そのまま** https://a.example" }]} />`).children[0] as El;
+  assert.deepEqual([plain.type, plain.props.class, plain.props["data-plain"], plain.children], ["p", "c-md-p", "true", ["**そのまま** https://a.example"]]);
+  // 知らない type は段落として text（文字列でなければ空）
+  const unknown = one(html`<${talk.Blocks} blocks=${[{ type: "table", text: "| a |" }, { type: "quote", text: 3 }]} />`).children as El[];
+  assert.deepEqual(unknown.map((k) => [k.type, k.props.class, textOf(k)]), [["p", "c-md-p", "| a |"], ["p", "c-md-p", ""]]);
+});
+
+test("web components: Inline（リンクの href・target・rel、太字の中のリンク、code）", () => {
+  const tree = expand(html`<${talk.Inline} text=${"見て https://a.example/x と **太 https://b.example/y** と `c`"} />`);
+  const links = tree.flatMap((t) => find(t, "c-md-link"));
+  assert.deepEqual(links.map((a) => [a.type, a.props.href, a.props.target, a.props.rel, textOf(a)]), [
+    ["a", "https://a.example/x", "_blank", "noreferrer noopener", "https://a.example/x"],
+    ["a", "https://b.example/y", "_blank", "noreferrer noopener", "https://b.example/y"],
+  ]);
+  const strong = tree.find((t) => typeof t !== "string" && t.type === "strong") as El;
+  assert.equal(textOf(strong), "太 https://b.example/y");
+  assert.equal(find(strong, "c-md-link").length, 1);
+  const code = tree.flatMap((t) => find(t, "c-md-code"));
+  assert.deepEqual(code.map((c) => [c.type, textOf(c)]), [["code", "c"]]);
+  assert.equal(textOf(tree), "見て https://a.example/x と 太 https://b.example/y と c");
+});
+
+const bubbleOf = (o: Obj = {}): Obj => ({
+  who: "agent",
+  label: "エージェント",
+  name: null,
+  blocks: [{ type: "paragraph", text: "返事" }],
+  time: "12:30",
+  state: null,
+  foot: null,
+  onToggle: () => undefined,
+  ...o,
+});
+
+test("web components: Bubble は owner・agent の data-who と aria-label を持ち、吹き出しの中に結果の文を入れない", () => {
+  const owner = one(html`<${talk.Bubble} ...${bubbleOf({ who: "owner", label: "オーナー", blocks: [{ type: "plain", text: "**a**" }] })} />`);
+  assert.deepEqual([owner.type, owner.props.class, owner.props["data-who"], owner.props["aria-label"]], ["article", "c-msg", "owner", "オーナー"]);
+  assert.equal(textOf(find(owner, "c-bubble")), "**a**");
+  const foot = { text: "完了（1 分）", tone: "muted", steps: ["Read a"], open: false };
+  const agent = one(html`<${talk.Bubble} ...${bubbleOf({ foot })} />`);
+  assert.deepEqual([agent.props["data-who"], agent.props["aria-label"]], ["agent", "エージェント"]);
+  assert.equal(textOf(find(agent, "c-bubble")), "返事");
+  assert.ok(!textOf(find(agent, "c-bubble")).includes("完了"));
+  assert.ok(textOf(find(agent, "c-msg-foot")).includes("完了（1 分）"));
+});
+
+test("web components: Bubble の foot なし・送っている途中・名前の有り無し", () => {
+  const plain = one(html`<${talk.Bubble} ...${bubbleOf()} />`);
+  const foot = find(plain, "c-msg-foot")[0] as El;
+  assert.deepEqual(foot.children.map((c) => (c as El).props.class), ["c-msg-time"]);
+  assert.equal(textOf(foot), "12:30");
+  assert.equal(plain.props["data-state"], undefined);
+  assert.equal(find(plain, "c-msg-name").length, 0);
+  const sending = one(html`<${talk.Bubble} ...${bubbleOf({ who: "owner", state: "sending" })} />`);
+  assert.equal(sending.props["data-state"], "sending");
+  assert.equal(textOf(find(sending, "c-msg-time")), "送っています…");
+  const named = one(html`<${talk.Bubble} ...${bubbleOf({ name: "Claude Code" })} />`);
+  const name = find(named, "c-msg-name")[0] as El;
+  assert.deepEqual([name.type, textOf(name), named.children[0]], ["span", "Claude Code", name]);
+});
+
+test("web components: Steps は toggles で文かボタン。aria-expanded・アイコン・data-tone、押すと onToggle", () => {
+  const text = one(html`<${talk.Steps} text="止まりました" tone="danger" toggles=${false} open=${false} onToggle=${() => undefined} />`);
+  assert.deepEqual([text.type, text.props.class, text.props["data-tone"], textOf(text)], ["span", "c-steps-text", "danger", "止まりました"]);
+  let n = 0;
+  for (const open of [false, true]) {
+    const btn = one(html`<${talk.Steps} text="完了" tone="warning" toggles=${true} open=${open} onToggle=${() => void n++} />`);
+    assert.deepEqual([btn.type, btn.props.class, btn.props.type, btn.props["data-tone"], btn.props["aria-expanded"]], ["button", "c-steps-toggle", "button", "warning", open ? "true" : "false"]);
+    assert.equal("aria-controls" in btn.props, false);
+    const icon = find(btn, "c-icon")[0] as El;
+    assert.deepEqual([icon.props["data-size"], String((icon.children[0] as El).props.href).endsWith(open ? "#chevron-down" : "#chevron-right")], ["sm", true]);
+    assert.equal(textOf(find(btn, "c-steps-label")), "完了");
+    (btn.props.onClick as (e: unknown) => void)(fakeEvent());
+  }
+  assert.equal(n, 2);
+});
+
+test("web components: Bubble は手順を開いているときだけ ol.c-steps-list（項目の数と文）", () => {
+  const steps = ["Read src/app.ts", "Bash npm test"];
+  const closed = one(html`<${talk.Bubble} ...${bubbleOf({ foot: { text: "完了", tone: "muted", steps, open: false } })} />`);
+  assert.equal(find(closed, "c-steps-list").length, 0);
+  assert.equal(find(closed, "c-steps-toggle").length, 1);
+  const open = one(html`<${talk.Bubble} ...${bubbleOf({ foot: { text: "完了", tone: "muted", steps, open: true } })} />`);
+  const list = find(open, "c-steps-list")[0] as El;
+  assert.equal(list.type, "ol");
+  assert.deepEqual(list.children.map((li) => [(li as El).type, textOf(li)]), [["li", "Read src/app.ts"], ["li", "Bash npm test"]]);
+  // 一覧は .c-msg の直下で、foot の後ろ
+  assert.equal(open.children.at(-1), list);
+  // 手順が null（押せない文）なら一覧は無い
+  const none = one(html`<${talk.Bubble} ...${bubbleOf({ foot: { text: "止まりました", tone: "danger", steps: null, open: false } })} />`);
+  assert.deepEqual([find(none, "c-steps-list").length, find(none, "c-steps-toggle").length, find(none, "c-steps-text").length], [0, 0, 1]);
+});
+
+test("web components: RunLine（aria-busy・aria-live と role=status が無い・recent の data-current・waiting・all・［中断］の busy と on）", () => {
+  const { calls, on } = talkRec();
+  const runOf = (o: Obj = {}): Obj => ({
+    name: null,
+    text: "作業中…（12 秒）",
+    waiting: null,
+    recent: [
+      { text: "s1", current: false },
+      { text: "s2", current: true },
+    ],
+    all: null,
+    stop: null,
+    ...o,
+  });
+  const bare = one(html`<${talk.RunLine} run=${runOf()} on=${on} />`);
+  assert.deepEqual([bare.type, bare.props.class, bare.props.role, bare.props["aria-label"], bare.props["aria-busy"]], ["div", "c-run", "group", "作業中", "true"]);
+  const all = (t: Tree): El[] => (typeof t === "string" ? [] : [t, ...t.children.flatMap(all)]);
+  for (const el of all(bare)) assert.ok(!("aria-live" in el.props) && el.props.role !== "status");
+  assert.equal(textOf(find(bare, "c-run-text")), "作業中…（12 秒）");
+  assert.equal((find(bare, "c-run-spin")[0] as El).props["aria-hidden"], "true");
+  const lis = (find(bare, "c-run-recent")[0] as El).children as El[];
+  assert.deepEqual(lis.map((li) => [li.type, li.props["data-current"], textOf(li)]), [["li", undefined, "s1"], ["li", "true", "s2"]]);
+  assert.deepEqual([find(bare, "c-run-waiting").length, find(bare, "c-steps-toggle").length, find(bare, "c-run-actions").length, find(bare, "c-msg-name").length], [0, 0, 0, 0]);
+  const full = one(html`<${talk.RunLine} run=${runOf({ name: "Claude Code", waiting: "許可を待っています", all: { label: "すべての手順（5）", open: true, steps: ["a", "b"] }, stop: { busy: true } })} on=${on} />`);
+  assert.equal(textOf(find(full, "c-msg-name")), "Claude Code");
+  assert.deepEqual([(find(full, "c-run-waiting")[0] as El).type, textOf(find(full, "c-run-waiting"))], ["p", "許可を待っています"]);
+  const toggle = find(full, "c-steps-toggle")[0] as El;
+  assert.deepEqual([toggle.props["data-tone"], toggle.props["aria-expanded"], textOf(find(toggle, "c-steps-label"))], ["muted", "true", "すべての手順（5）"]);
+  assert.deepEqual(find(full, "c-steps-list").map((l) => l.children.map(textOf)), [["a", "b"]]);
+  const stop = find(find(full, "c-run-actions"), "c-btn")[0] as El;
+  assert.deepEqual([stop.props["aria-busy"], stop.props["aria-disabled"], textOf(find(stop, "c-btn-label"))], ["true", "true", "中断"]);
+  (toggle.props.onClick as (e: unknown) => void)(fakeEvent());
+  // busy の間は押しても呼ばない
+  (stop.props.onClick as (e: unknown) => void)(fakeEvent());
+  const idle = one(html`<${talk.RunLine} run=${runOf({ all: { label: "x", open: false, steps: ["a"] }, stop: { busy: false } })} on=${on} />`);
+  assert.equal(find(idle, "c-steps-list").length, 0);
+  const idleStop = find(idle, "c-btn")[0] as El;
+  assert.equal(idleStop.props["aria-busy"], undefined);
+  assert.ok(String((find(idleStop, "c-icon")[0]?.children[0] as El).props.href).endsWith("#square"));
+  (idleStop.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(calls, [["toggleRunSteps"], ["stop"]]);
+});
+
+test("web components: Notice（時刻の有り無し）・Divider（role=separator・子は文字だけ）", () => {
+  const n = one(html`<${talk.Notice} text="開きました" time="12:30" />`);
+  assert.deepEqual([n.type, n.props.class, n.children[0]], ["div", "c-notice", "開きました"]);
+  assert.deepEqual(find(n, "c-notice-time").map((t) => [t.type, textOf(t)]), [["span", "12:30"]]);
+  for (const time of ["", undefined]) assert.deepEqual(one(html`<${talk.Notice} text="開きました" time=${time} />`).children, ["開きました"]);
+  const d = one(html`<${talk.Divider} text="ここから" />`);
+  assert.deepEqual([d.type, d.props.class, d.props.role, d.children], ["div", "c-divider", "separator", ["ここから"]]);
+});
+
+test("web components: TalkTimeline の根・older のボタン・items の順と key・toggleSteps(key)・running の有り無し", () => {
+  const { calls, on } = talkRec();
+  const turns = [
+    { id: 1, kind: "divider", text: "区切り" },
+    { id: 2, kind: "notice", text: "知らせ" },
+    { id: 3, kind: "owner", text: "a" },
+    { id: 4, kind: "agent", text: "b", outcome: "done", steps: ["Read a"], end: "完了" },
+  ];
+  const model = talk.talkModel(talkState({ turns, hasMore: true, running: { steps: [], abortable: false, text: "作業中…" } }), talk.parseBlocks);
+  const v = talk.TalkTimeline({ model, on }) as VNode;
+  assert.deepEqual(keysOf(v.props.children), ["older", "1", "2", "3", "4", "run"]);
+  const root = one(v);
+  assert.deepEqual([root.type, root.props.class], ["div", "c-talk"]);
+  assert.deepEqual((root.children as El[]).map((c) => c.props.class), ["c-talk-older", "c-divider", "c-notice", "c-msg", "c-msg", "c-run"]);
+  const older = find(root, "c-btn")[0] as El;
+  assert.deepEqual([older.props["data-kind"], older.props["data-size"], textOf(older), find(older, "c-icon").length], ["ghost", "sm", "前の会話を読む", 0]);
+  (older.props.onClick as (e: unknown) => void)(fakeEvent());
+  (find(root, "c-steps-toggle")[0]?.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(calls, [["older"], ["toggleSteps", "4"]]);
+  // older・running が無ければ出さない
+  const bare = one(html`<${talk.TalkTimeline} model=${talk.talkModel(talkState({ turns }), talk.parseBlocks)} on=${on} />`);
+  assert.deepEqual([find(bare, "c-talk-older").length, find(bare, "c-run").length], [0, 0]);
+  assert.deepEqual(expand(html`<${talk.TalkTimeline} model=${{ older: false, items: [], running: null }} on=${on} />`).map((t) => (t as El).children.length), [0]);
+});
+
+test("web components: 会話の根（.c-talk）は自分の字と色を持つ（置かれた先からの継承を当てにしない）", () => {
+  const own = parseCss(read("c-talk.css")).filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-talk");
+  assert.ok(own.length > 0);
+  for (const decl of ["font-size: var(--c-font-body)", "line-height: var(--leading-normal)", "color: var(--text)"]) {
+    assert.ok(own.some((r) => r.body.split(";").map((d) => d.trim()).includes(decl)), decl);
+  }
 });
