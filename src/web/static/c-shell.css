@@ -157,10 +157,10 @@
   justify-content: center;
 }
 
-/* 広い幅: 題は中身の幅で、縮んでも --c-top-title-min は残す（先に補足、次に場所が縮む） */
+/* 広い幅: 題は中身の幅で、補足・場所の後に縮む（下限は持たない。題が潰れない幅は入口が compact を渡して守る） */
 .c-top[data-variant="wide"] > .c-top-text {
   flex: 0 1 auto;
-  min-width: var(--c-top-title-min);
+  min-width: 0;
 }
 
 /* base.css の h1 の字と余白を全部ここで決める */
@@ -203,11 +203,11 @@
 }
 
 /*
- * 一番先に縮む（0 まで縮んでよい）。割合の差が小さいと、題が足りない分のごく一部を負って 1px 未満だけ切れ、省く印が出る
- * （題の負う分が配置の最小の単位より小さくなるまで差を広げる）
+ * 一番先に縮む（0 まで縮んでよい）。割合の差が小さいと、題が足りない分のごく一部を負って 1px 未満だけ切れ、省く印が出る。
+ * 補足 1e12・場所 1e6・題 1 なら、題の負う分は足りない分のおよそ 1e-6 倍（場所が縮むときでも）で、配置の最小の単位（1/64px）より小さい
  */
 .c-top > .c-top-rest {
-  flex: 0 100000000 auto;
+  flex: 0 1000000000000 auto;
   min-width: 0;
   font-size: var(--font-sm);
   color: var(--text-muted);
@@ -218,7 +218,7 @@
 
 /* 補足の次に縮み、当たりと語の頭が残る幅は残す（入らない幅では入口が compact にして、場所を帯に出さない） */
 .c-top-place {
-  flex: 0 10000 auto;
+  flex: 0 1000000 auto;
   min-width: var(--c-top-place-min);
   max-width: 40%;
   box-sizing: border-box;
