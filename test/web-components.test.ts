@@ -130,8 +130,8 @@ const classesInJs = (text: string): string[] =>
   [...text.matchAll(/\bclass(?:=|:\s*)"([^"]*)"/g)].flatMap((m) => (m[1] ?? "").split(/\s+/).filter((s) => s !== ""));
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-gallery.js", "c-lib.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-gallery.js", "c-lib.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -484,4 +484,92 @@ test("web components: Empty・Loading（action の有り無し、Loading の既�
   assert.equal(l.props["aria-busy"], undefined);
   assert.equal(textOf(find(l, "c-loading-text")), "読み込んでいます…");
   assert.equal(l.children.length, 1);
+});
+
+const sheetUrl = new URL("../src/web/static/c-sheet.js", import.meta.url).href;
+const sheet = (await import(sheetUrl)) as Record<string, Fn> & {
+  isOutside: (rect: Record<string, number>, x: number, y: number) => boolean;
+  confirmTarget: (target: unknown) => string;
+  confirmButtons: (o: Record<string, unknown>) => { cancel: Record<string, unknown>; ok: Record<string, unknown> };
+  toastSplit: (items: Array<Record<string, unknown>>) => { status: Array<Record<string, unknown>>; alert: Array<Record<string, unknown>> };
+};
+
+test("web components: isOutside は箱の外だけ true（辺の上は中）", () => {
+  const rect = { left: 10, right: 110, top: 20, bottom: 70 };
+  assert.equal(sheet.isOutside(rect, 50, 40), false);
+  for (const [x, y] of [[9, 40], [111, 40], [50, 19], [50, 71]] as const) assert.equal(sheet.isOutside(rect, x, y), true, `${x},${y}`);
+  for (const [x, y] of [[10, 40], [110, 40], [50, 20], [50, 70]] as const) assert.equal(sheet.isOutside(rect, x, y), false, `${x},${y}`);
+});
+
+test("web components: confirmTarget は空白を畳み、80 字（絵文字・結合文字も 1 字ずつ）を超えたら省いて「」で囲む", () => {
+  assert.equal(sheet.confirmTarget("  家計簿の\n\t 話題  "), "「家計簿の 話題」");
+  const a80 = "あ".repeat(80);
+  assert.equal(sheet.confirmTarget(a80), `「${a80}」`);
+  assert.equal(sheet.confirmTarget(a80 + "い"), `「${a80}…」`);
+  const emoji = "😀".repeat(80);
+  assert.equal(sheet.confirmTarget(emoji), `「${emoji}」`);
+  assert.equal(sheet.confirmTarget(emoji + "😀"), `「${emoji}…」`);
+});
+
+test("web components: confirmButtons は danger で実行を danger にし最初のフォーカスを [やめる] に、既定の文", () => {
+  assert.deepEqual(sheet.confirmButtons({}), {
+    cancel: { kind: "secondary", label: "やめる", autofocus: false },
+    ok: { kind: "primary", label: "実行する", autofocus: true },
+  });
+  assert.deepEqual(sheet.confirmButtons({ danger: true, okLabel: "消す", cancelLabel: "残す" }), {
+    cancel: { kind: "secondary", label: "残す", autofocus: true },
+    ok: { kind: "danger", label: "消す", autofocus: false },
+  });
+});
+
+test("web components: Confirm は Node で呼べて Sheet を返し、× を出さず、閉じたら onCancel。footer は [やめる]・実行の順", () => {
+  const onOk = (): void => undefined;
+  const onCancel = (): void => undefined;
+  const v = sheet.Confirm({ open: true, id: "c", title: "消しますか", target: "題", body: "元に戻せません。", okLabel: "消す", danger: true, onOk, onCancel }) as VNode;
+  assert.equal(v.type, sheet.Sheet);
+  assert.equal(v.props.closeButton, false);
+  assert.equal(v.props.onClose, onCancel);
+  assert.equal(v.props.title, "消しますか");
+  const buttons = expand(v.props.footer).filter((t): t is El => typeof t !== "string");
+  assert.deepEqual(buttons.map((b) => [b.props["data-kind"], textOf(b), b.props.autofocus]), [
+    ["secondary", "やめる", true],
+    ["danger", "消す", undefined],
+  ]);
+  const body = expand(v.props.children);
+  assert.equal(textOf(find(body, "c-confirm-target")), "「題」");
+  assert.equal(textOf(find(body, "c-confirm-body")), "元に戻せません。");
+  const plain = sheet.Confirm({ open: false, id: "c", title: "始めますか", onOk, onCancel }) as VNode;
+  assert.deepEqual(expand(plain.props.children), []);
+  const busy = expand((sheet.Confirm({ open: true, id: "c", title: "t", busy: true, onOk, onCancel }) as VNode).props.footer) as El[];
+  assert.deepEqual(busy.map((b) => b.props["aria-busy"]), [undefined, "true"]);
+});
+
+test("web components: toastSplit と Toast（失敗だけ alert、空でも 2 つの入れ物、× で onDismiss(id)）", () => {
+  const items = [
+    { id: "1", text: "a" },
+    { id: "2", text: "b", level: "error", actionLabel: "もう一度", onAction: () => undefined },
+    { id: "3", text: "c", level: "info" },
+  ];
+  const split = sheet.toastSplit(items);
+  assert.deepEqual(split.status.map((i) => i.id), ["1", "3"]);
+  assert.deepEqual(split.alert.map((i) => i.id), ["2"]);
+  const empty = one(html`<${sheet.Toast} items=${[]} onDismiss=${() => undefined} />`);
+  const lists = find(empty, "c-toast-list");
+  assert.deepEqual(lists.map((l) => [l.props.role, l.props["aria-live"]]), [
+    ["status", "polite"],
+    ["alert", "assertive"],
+  ]);
+  assert.equal(find(empty, "c-toast-item").length, 0);
+  const dismissed: string[] = [];
+  const t = one(html`<${sheet.Toast} items=${items} onDismiss=${(id: string) => void dismissed.push(id)} />`);
+  const [status, alert] = find(t, "c-toast-list");
+  assert.deepEqual(find(status as El, "c-toast-item").map((i) => i.props["data-level"]), ["info", "info"]);
+  const failed = find(alert as El, "c-toast-item");
+  assert.equal(failed[0]?.props["data-level"], "error");
+  assert.equal(textOf(find(failed, "c-btn-label")), "もう一度");
+  assert.equal(find(status as El, "c-btn").length, 0);
+  const close = find(failed, "c-iconbtn")[0];
+  assert.equal(close?.props["aria-label"], "閉じる");
+  (close?.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(dismissed, ["2"]);
 });

@@ -66,3 +66,8 @@
 .c-gallery-narrow {
   max-width: var(--c-list-w);
 }
+
+.c-gallery-result {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
