@@ -2159,19 +2159,25 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await edScroll(page, "bottom");
     await wait(300);
     lines.push(...(await liveTalkLines(page, vp, "長い会話")));
-    // 14. 「前の会話を読む」・[続ける] は .tl の先頭で左端が列と同じ・結果の文は 1 行で省かれる・時刻は切れない
+    // 14. 「前の会話を読む」が在る・[続ける] は .tl に無く最後の返事の行の一番下で見えている・結果の文は 1 行で省かれる・時刻は切れない
     const longLook = await page.evaluate(() => {
-      const talkEl = document.querySelector("#ed .c-talk");
-      const head = document.querySelector("#ed .ed-scroll > [data-talk] + .tl")?.firstElementChild ?? null;
-      const cont = head?.querySelector("button") ?? null;
+      const tl = document.querySelector("#ed .ed-scroll > [data-talk] + .tl");
+      const acts = document.querySelectorAll("#ed .c-talk .c-msg-act");
+      const act = acts[0] ?? null;
+      const btn = act?.querySelector("button") ?? null;
+      const scroll = document.querySelector("#ed .ed-scroll");
       const last = [...document.querySelectorAll('#ed .c-talk > .c-msg[data-who="agent"]')].at(-1);
       const label = last?.querySelector(".c-steps-label") ?? null;
       const time = last?.querySelector(".c-msg-time") ?? null;
-      const inner = (el: Element): number => el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft);
       return {
         older: document.querySelector("#ed .c-talk-older button") !== null,
-        cont: cont === null ? null : (cont.textContent ?? "").trim(),
-        left: cont === null || talkEl === null ? null : cont.getBoundingClientRect().left - inner(talkEl),
+        tlCont: tl === null ? null : [...tl.querySelectorAll("button")].filter((b) => (b.textContent ?? "").trim() === "続ける").length,
+        tlKids: tl === null ? null : tl.children.length,
+        tlH: tl === null ? null : tl.getBoundingClientRect().height,
+        acts: acts.length,
+        actLast: act !== null && last !== undefined && act.parentElement === last && last.lastElementChild === act,
+        busy: btn === null ? null : btn.getAttribute("aria-busy"),
+        below: btn === null || scroll === null ? null : btn.getBoundingClientRect().bottom - scroll.getBoundingClientRect().bottom,
         labelText: label?.textContent ?? null,
         labelH: label === null ? null : label.getBoundingClientRect().height,
         labelLh: label === null ? null : parseFloat(getComputedStyle(label).lineHeight),
@@ -2180,8 +2186,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       };
     });
     if (!longLook.older) say("長い会話に「前の会話を読む」が無い");
-    if (longLook.cont !== "続ける") say(`.tl の先頭が [続ける] でない（${String(longLook.cont)}）`);
-    else if (longLook.left === null || Math.abs(longLook.left) > 0.5) say(`[続ける] の左端が吹き出しの列とずれる（${String(longLook.left)}）`);
+    if (longLook.tlCont !== 0) say(`.tl に [続ける] が在る（${String(longLook.tlCont)}）`);
+    if (longLook.tlKids !== 0 || longLook.tlH === null || longLook.tlH > 0.5) say(`長い会話の .tl が空でない（子 ${String(longLook.tlKids)}・高さ ${String(longLook.tlH)}）`);
+    if (longLook.acts !== 1 || !longLook.actLast) say(`[続ける] が最後の返事の行の最後の子に 1 つでない（${longLook.acts} 個・最後の子 ${String(longLook.actLast)}）`);
+    if (longLook.busy === "true") say("[続ける] が押す前から待ちの形");
+    if (longLook.below === null || longLook.below > 0.5) say(`下端へ送っても [続ける] が見えていない（下端との差 ${String(longLook.below)}）`);
     if (longLook.labelText === null || !longLook.labelText.startsWith("手順の上限で止まりました")) say(`最後の返事の結果の文が手順の上限でない（${String(longLook.labelText)}）`);
     else {
       if (longLook.labelH === null || longLook.labelLh === null || longLook.labelH > longLook.labelLh * 1.5) say(`結果の文が 1 行でない（高さ ${String(longLook.labelH)}）`);
@@ -2191,6 +2200,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
     if (longLook.timeCut !== false) say(`最後の返事の時刻が切れている（${String(longLook.timeCut)}）`);
     await shot(page, `${p}-b-talk-long`);
+    lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#ed .c-talk > article.c-msg:last-of-type", targets: "button", toast: false })).map((l) => `段 k の 14 当たり: ${l}`));
+    await edScroll(page, "bottom");
+    await wait(200);
     // 15. 先頭へ送ると前の行を読み、見ていた吹き出しの位置が動かない
     const mark = await page.evaluate(() => {
       const sc = document.querySelector("#ed .ed-scroll");
@@ -2210,6 +2222,58 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     if (after.rows !== 60) say(`前の会話を読んだ後の行が ${after.rows}（60 のはず）`);
     if (mark === null || after.top === null || Math.abs(after.top - mark) > 2) say(`前の会話を読んだら見ていた吹き出しが動いた（${String(mark)} → ${String(after.top)}）`);
+
+    // 19. [続ける] を押す（作り物の受け付けは 202）: 待ちの形を 1 回は見て、消える。送りは 1 回・入力欄と .ed-scroll は同じ要素・知らせは出ない・行の数は同じ
+    await edScroll(page, "bottom");
+    await wait(300);
+    const continues: string[] = [];
+    const onContinue = (r: { method: () => string; url: () => string }): void => {
+      if (r.method() === "POST" && r.url().includes(`/api/channels/${long}/continue`)) continues.push(r.url());
+    };
+    page.on("request", onContinue);
+    try {
+      const from = logLines.length;
+      const rowsBefore = await page.evaluate(() => {
+        const w = window as unknown as { __busy: number; __obs?: MutationObserver; __ta: Element | null; __sc: Element | null };
+        w.__busy = 0;
+        w.__ta = document.querySelector("#ed > [data-composer] textarea");
+        w.__sc = document.querySelector("#ed .ed-scroll");
+        const root = document.querySelector("#ed .c-talk");
+        if (root !== null) {
+          w.__obs = new MutationObserver(() => {
+            if (root.querySelector('.c-msg-act .c-btn[aria-busy="true"]') !== null) w.__busy++;
+          });
+          w.__obs.observe(root, { subtree: true, attributes: true, childList: true });
+        }
+        return document.querySelectorAll("#ed .c-talk > .c-msg").length;
+      });
+      await page.locator("#ed .c-talk .c-msg-act .c-btn").click();
+      await page.waitForFunction(() => document.querySelector("#ed .c-msg-act") === null, undefined, { timeout: 5000 }).catch(() => undefined);
+      await wait(300);
+      const pressed = await page.evaluate(() => {
+        const w = window as unknown as { __busy: number; __obs?: MutationObserver; __ta: Element | null; __sc: Element | null };
+        w.__obs?.disconnect();
+        const tl = document.querySelector("#ed .ed-scroll > [data-talk] + .tl");
+        return {
+          busy: w.__busy,
+          act: document.querySelector("#ed .c-msg-act") !== null,
+          tlCont: tl === null ? 0 : [...tl.querySelectorAll("button")].filter((b) => (b.textContent ?? "").trim() === "続ける").length,
+          sameTa: w.__ta !== null && w.__ta === document.querySelector("#ed > [data-composer] textarea"),
+          sameSc: w.__sc !== null && w.__sc === document.querySelector("#ed .ed-scroll"),
+          toast: (document.querySelector("#toast-alert")?.textContent ?? "").trim(),
+          rows: document.querySelectorAll("#ed .c-talk > .c-msg").length,
+        };
+      });
+      if (continues.length !== 1) say(`19. [続ける] を押した送りが ${continues.length} 回（1 回のはず）`);
+      if (pressed.busy === 0) say("19. [続ける] の待ちの形を見なかった");
+      if (pressed.act || pressed.tlCont !== 0) say(`19. 押した後も [続ける] が在る（行 ${String(pressed.act)}・.tl ${pressed.tlCont}）`);
+      if (!pressed.sameTa || !pressed.sameSc) say(`19. 押した後に入力欄か .ed-scroll が替わった（入力欄 ${String(pressed.sameTa)}・.ed-scroll ${String(pressed.sameSc)}）`);
+      if (pressed.toast !== "") say(`19. 押した後に知らせ「${pressed.toast}」`);
+      if (pressed.rows !== rowsBefore) say(`19. 押した後の行が ${pressed.rows}（${rowsBefore} のはず）`);
+      if (logLines.length !== from) say(`19. 押した間に console.log の行が ${logLines.length - from} 増えた`);
+    } finally {
+      page.off("request", onContinue);
+    }
 
     // 17. 等幅の字（スマホ。幅 390 と 375）
     if (vp === "phone") {

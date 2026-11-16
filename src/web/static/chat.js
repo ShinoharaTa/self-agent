@@ -1045,6 +1045,8 @@
   const talkOpen = {};
   /** [中断] を押して応答を待っているチャンネル → その turnSeq */
   const aborting = new Map();
+  /** [続ける] を押して、受け付けの返事を待っているチャンネル（部品の道だけ） */
+  const continuing = new Set();
 
   function talkOpenOf(channelId) {
     if (!talkOpen[channelId]) talkOpen[channelId] = new Set();
@@ -1057,12 +1059,16 @@
     const isCc = !!(ch && ch.kind === "cc");
     const run = isCc ? null : store.runningOf(channelId);
     if (aborting.has(channelId) && (!run || aborting.get(channelId) !== run.turnSeq)) aborting.delete(channelId);
+    const last = t.turns[t.turns.length - 1];
+    const continueKey = continuable(ch, run, last) ? String(last.id) : null;
     return {
       channelId,
       turns: t.turns,
       hasMore: !!t.hasMore,
       running: run,
       stopping: aborting.has(channelId),
+      continueKey,
+      continueBusy: continueKey !== null && continuing.has(channelId),
       openSteps: talkOpenOf(channelId),
       runStepsOpen: stepsOpened.has(channelId),
       fmt: {
@@ -1105,6 +1111,23 @@
             aborting.delete(channelId);
             drawTalk(channelId);
           }
+        },
+        continue: async (key) => {
+          // 押されたときの最後の行を読む
+          const now = store.turns[channelId];
+          const lastNow = now && now.turns[now.turns.length - 1];
+          if (!lastNow || String(lastNow.id) !== key || continuing.has(channelId)) return;
+          if (!continuable(channelById(channelId), store.runningOf(channelId), lastNow)) return;
+          continuing.add(channelId);
+          drawTalk(channelId);
+          let ok = false;
+          try {
+            ok = await continueTurn(channelId, lastNow, null);
+          } finally {
+            continuing.delete(channelId);
+          }
+          // 受け付けられたら continueTurn の refresh が描き直す（ボタンが消える）。だめなら待ちの形を戻す
+          if (!ok) drawTalk(channelId);
         },
       },
     };
@@ -1282,12 +1305,6 @@
     const run = isCc ? null : store.runningOf(channelId);
     const last = t.turns[t.turns.length - 1];
     let prev = null;
-    if (talk) {
-      // 行は部品が描く。手順の上限で止まった最後の返事の [続ける] は、古い .tl の先頭（吹き出しの列のすぐ下）
-      if (continuable(ch, run, last)) {
-        timeline.append(continueButton(channelId, last));
-      }
-    }
     for (const turn of talk ? [] : t.turns) {
       // 枠の指定があれば Bot の返事の本文だけを差し替えて描く（prev・last との比べは元の行のまま）
       const reply = !!frame && turn.kind === "agent";

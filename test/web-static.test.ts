@@ -4635,6 +4635,8 @@ type TalkState = {
   hasMore: boolean;
   running: unknown;
   stopping: boolean;
+  continueKey: string | null;
+  continueBusy: boolean;
   openSteps: Set<string>;
   runStepsOpen: boolean;
   fmt: Record<string, TalkFn>;
@@ -4917,33 +4919,40 @@ test("web static: SA.talk の on.stop は中断を 1 回だけ送り、待つ間
   await fifth;
 });
 
-test("web static: SA.talk のとき [続ける] は .tl の先頭（手順の上限・セッション・実行なし・押していない）。カード・空の文・完了の文も .tl", async () => {
+test("web static: SA.talk のとき [続ける] は .tl に無く、state.continueKey が最後の返事の key（手順の上限・セッション・実行なし・押していない）。カード・空の文・完了の文は .tl", async () => {
   const c = loadChat();
-  withTalk(c);
+  const { talk } = withTalk(c);
   const last = chatTurn(11, "agent", "x", { outcome: "max_turns", steps: ["a"] });
   const moveProposal = { id: 1, from: "General", to: "kakeibo-app", expiresAt: new Date(Date.now() + 60_000).toISOString() };
   c.put("1", [chatTurn(10, "owner", "a"), last], { kind: "session", title: "t", state: "active", moveProposal });
   const box = c.box();
   c.chat.render(box, "1");
   const tl = () => talkKids(box)[1]!;
-  const head = tl().children[0] as DomNode;
-  assert.ok(head.classes.has("msg-actions"));
-  assert.equal(head.buttons()[0]!.textContent, "続ける");
+  assert.equal(tl().buttons().filter((b) => b.textContent === "続ける").length, 0);
+  assert.deepEqual([lastDraw(talk).state.continueKey, lastDraw(talk).state.continueBusy], ["11", false]);
   assert.ok(tl().querySelector("section.card"));
-  // セッションでない・実行中は出さない
+  // セッションでない・実行中・手順の上限でない・後ろにオーナーの行なら null
   c.put("2", [last]);
   const inbox = c.box();
   c.chat.render(inbox, "2");
-  assert.equal(descendants(inbox).filter((n) => n.textContent === "続ける" && n.tagName === "button").length, 0);
+  assert.equal(lastDraw(talk).state.continueKey, null);
+  c.put("4", [chatTurn(10, "owner", "a"), chatTurn(11, "agent", "x", { outcome: "done", steps: ["a"] })], { kind: "session", title: "t", state: "active" });
+  c.chat.render(c.box(), "4");
+  assert.equal(lastDraw(talk).state.continueKey, null);
+  c.put("5", [chatTurn(10, "owner", "a"), last, chatTurn(12, "owner", "b")], { kind: "session", title: "t", state: "active" });
+  c.chat.render(c.box(), "5");
+  assert.equal(lastDraw(talk).state.continueKey, null);
   setRunning(c, [{ channelId: "1", turnSeq: 1, toolCalls: 1, steps: [], abortable: true }]);
   c.chat.render(box, "1");
-  assert.equal(tl().buttons().filter((b) => b.textContent === "続ける").length, 0);
-  // 押した後は出さない
+  assert.equal(lastDraw(talk).state.continueKey, null);
+  // 押して受け付けられた後は null
   setRunning(c, []);
   c.chat.render(box, "1");
-  (tl().children[0] as DomNode).buttons()[0]!.dispatch("click");
+  assert.equal(lastDraw(talk).state.continueKey, "11");
+  void lastDraw(talk).state.on.continue!("11");
   await c.flush();
   c.chat.render(box, "1");
+  assert.equal(lastDraw(talk).state.continueKey, null);
   assert.equal(tl().buttons().filter((b) => b.textContent === "続ける").length, 0);
   // 空の文と完了の文
   c.put("3", [], { kind: "session", title: "t", state: "done" });
@@ -4952,6 +4961,65 @@ test("web static: SA.talk のとき [続ける] は .tl の先頭（手順の上
   const texts = (talkKids(empty)[1]!.children as DomNode[]).map((n) => n.textContent);
   assert.ok(texts.some((t) => t.startsWith("まだ会話はありません")), JSON.stringify(texts));
   assert.ok(texts.some((t) => t.startsWith("完了したセッションです")), JSON.stringify(texts));
+});
+
+test("web static: SA.talk の on.continue は /continue を 1 回だけ送り、待つ間は continueBusy、だめなら文を出して戻す。key が違う・実行中は送らない", async () => {
+  const c = loadChat();
+  const { SA, talk } = withTalk(c);
+  const posts: Array<{ path: string; body: unknown }> = [];
+  let settle: { res: (v: unknown) => void; rej: (e: unknown) => void } | null = null;
+  SA.api = {
+    post: (path: string, b: unknown) => {
+      posts.push({ path, body: b });
+      return new Promise((res, rej) => (settle = { res, rej }));
+    },
+  };
+  c.put("1", [chatTurn(10, "owner", "a"), chatTurn(11, "agent", "x", { outcome: "max_turns", steps: ["a"] })], { kind: "session", title: "t", state: "active" });
+  const box = c.box();
+  c.chat.render(box, "1");
+  // 最初の draw の on を持ち続けて呼ぶ（押されたときの状態を読む）
+  const on = talk.draws[0]!.state.on;
+  // key が違う・実行中は送らず、draw も増えない
+  const draws0 = talk.draws.length;
+  await on.continue!("99");
+  setRunning(c, [{ channelId: "1", turnSeq: 1, toolCalls: 1, steps: [], abortable: true }]);
+  await on.continue!("11");
+  setRunning(c, []);
+  assert.deepEqual([posts.length, talk.draws.length], [0, draws0]);
+  // 失敗の 4 つ: 文を出し、待ちの形を戻し、もう 1 回押せる
+  const failures: Array<[unknown, string]> = [
+    [{ status: 409, code: "running" }, "実行中のターンがあります"],
+    [{ status: 409 }, "この操作は古くなっています"],
+    [{ status: 404 }, "この操作は古くなっています"],
+    [{ status: 500, toast: "x" }, "x"],
+  ];
+  for (const [err, text] of failures) {
+    const before = posts.length;
+    const refreshes = c.refreshes.length;
+    const first = on.continue!("11") as Promise<void>;
+    void on.continue!("11");
+    assert.equal(posts.length, before + 1);
+    assert.equal(JSON.stringify(posts.at(-1)), JSON.stringify({ path: "/api/channels/1/continue", body: {} }));
+    assert.equal(lastDraw(talk).state.continueBusy, true);
+    assert.equal(c.refreshes.length, refreshes);
+    settle!.rej(err);
+    await first;
+    assert.equal(c.toasts.at(-1), text);
+    assert.deepEqual([lastDraw(talk).state.continueKey, lastDraw(talk).state.continueBusy], ["11", false]);
+  }
+  assert.equal(typeof (c.toastOpts.at(-1) as { retry: unknown }).retry, "function");
+  assert.deepEqual(c.refreshes, []);
+  // 受け付けた
+  const ok = on.continue!("11") as Promise<void>;
+  assert.equal(lastDraw(talk).state.continueBusy, true);
+  settle!.res({ accepted: true });
+  await ok;
+  assert.deepEqual(c.refreshes, ["ch:1"]);
+  assert.equal(posts.length, failures.length + 1);
+  c.chat.render(box, "1");
+  assert.deepEqual([lastDraw(talk).state.continueKey, lastDraw(talk).state.continueBusy], [null, false]);
+  await on.continue!("11");
+  assert.equal(posts.length, failures.length + 1);
 });
 
 test("web static: SA.talk の draw が false なら根を drop して古い描き方（.msg）になり、その後は draw も tick も呼ばない", () => {
