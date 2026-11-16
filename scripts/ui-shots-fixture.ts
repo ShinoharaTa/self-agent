@@ -54,8 +54,8 @@ export type FixtureServer = {
   dir: string;
   /** 作り物の時計の今の値（進めない。入れ終わった後は今の時刻） */
   clockNow: () => Date;
-  /** 撮る画面の話題のチャンネル ID（open: 長い返事・perm: 許可の要求・q: 質問） */
-  topics: { open: string; perm: string; q: string };
+  /** 撮る画面の話題のチャンネル ID（open: 長い返事・perm: 許可の要求・q: 質問・talk: 吹き出しの確かめ・long: 長い会話・run: 実行中） */
+  topics: { open: string; perm: string; q: string; talk: string; long: string; run: string };
   /** サーバーを閉じ、DB を閉じて一時ディレクトリを消す（2 回目以降は同じ Promise を返す） */
   close: () => Promise<void>;
 };
@@ -101,6 +101,21 @@ export function monthKeyOf(iso: string, timeZone = "Asia/Tokyo"): string {
 1. テストは全部通りました（42 件）
 2. 型チェックも通りました
 3. まだ commit はしていません`;
+
+/** 吹き出しの確かめの返事: 400 字の URL・行の中のコード・1 行 200 字のコードの段・箇条書き */
+const TALK_WIDE_REPLY = `記録は \`data/watering.csv\` にあります。
+
+https://example.com/garden/watering/${"a".repeat(364)}
+
+\`\`\`
+${"watering,".repeat(22)}xx
+\`\`\`
+
+- 朝 7 時に 200 ml
+- 夕方 18 時に 150 ml`;
+
+/** 吹き出しの確かめのオーナーの 600 字の発言（空白の無い 80 字の語を含む） */
+const TALK_LONG_OWNER = `${"ベランダの鉢の水やりについて、季節ごとの量と時刻を見直したいです。".repeat(8)} ${"x".repeat(80)} ${"夏は朝と夕方の二回、冬は昼に一回にしたい。".repeat(12)}`.slice(0, 600);
 
 /** 作り物のデータの DB と本物の Web サーバーを立てる。log はサーバーの log の行（既定は捨てる） */
 export async function startFixtureServer(options: { log?: (line: string) => void } = {}): Promise<FixtureServer> {
@@ -154,7 +169,12 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     guildSettings.setChannel(GUILD, "tasksChannelId", TASKS);
 
     let nextId = 200;
-    const say = (channelId: string, kind: "owner" | "agent" | "notice", text: string, extra: { steps?: string[]; toolCalls?: number; durationMs?: number } = {}): void => {
+    const say = (
+      channelId: string,
+      kind: "owner" | "agent" | "notice" | "divider",
+      text: string,
+      extra: { steps?: string[]; toolCalls?: number; durationMs?: number; outcome?: "done" | "max_turns" | "aborted" | "failed" } = {},
+    ): void => {
       history.add({ guildId: GUILD, channelId, kind, source: kind === "owner" ? "web" : "system", text, ...(kind === "agent" ? { outcome: "done" } : {}), ...extra });
     };
     /** プロジェクトの話題の SDK セッション ID（作り物の UUID） */
@@ -244,6 +264,38 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     memories.add("返事は短めが好き");
     notices.add({ guildId: GUILD, level: "info", text: "再起動しました" });
 
+    // 吹き出しの確かめ（General）。区切り・知らせ・長い URL・コードの段・失敗・中断・長い発言・手順 4 の返事（最後の行）
+    const tTalk = topic("吹き出しの確かめ");
+    say(tTalk, "owner", "庭の水やりの記録を見せて");
+    say(tTalk, "agent", "見せます。");
+    say(tTalk, "divider", "会話を新しくしました");
+    say(tTalk, "notice", "記録のファイルを読み直しました");
+    say(tTalk, "agent", TALK_WIDE_REPLY, { steps: ["Read data/watering.csv"], toolCalls: 1, durationMs: 21_000 });
+    say(tTalk, "agent", "記録のファイルを開けませんでした。", { outcome: "failed" });
+    say(tTalk, "agent", "途中で止めました。", { outcome: "aborted", steps: ["Read data/watering.csv", "Grep moisture"], toolCalls: 2, durationMs: 9_000 });
+    say(tTalk, "owner", TALK_LONG_OWNER);
+    say(tTalk, "agent", "水やりの間隔を 2 日ごとに直し、記録の表に列を 1 つ足しました。", {
+      steps: ["Read data/watering.csv", "Edit data/watering.csv", "Edit src/schedule.ts", "Bash npm test"],
+      toolCalls: 4,
+      durationMs: 64_000,
+    });
+    // 長い会話（General）。60 行で、最初に出るのは後ろの 50 行。最後は手順の上限で止まった返事
+    const tLong = topic("長い会話");
+    for (let i = 1; i < 60; i += 2) {
+      say(tLong, "owner", `${i} 番目の質問です。鉢の数はいくつ？`);
+      if (i < 59) say(tLong, "agent", `${i + 1} 番目の返事です。鉢は ${(i % 7) + 2} つです。`);
+    }
+    say(tLong, "agent", "鉢の配置の案を作る途中で止まりました。", {
+      outcome: "max_turns",
+      steps: ["Read data/pots.csv", "Edit data/pots.csv", "Bash npm run layout"],
+      toolCalls: 40,
+      durationMs: 12 * 60_000,
+    });
+    for (const channelId of [tTalk, tLong]) {
+      const rows = history.list(channelId, { limit: 200 });
+      reads.advance(channelId, Math.max(0, ...rows.map((row) => row.id)));
+    }
+
     // 許可の要求（tPerm）と質問（tQ）は今の時刻で入れる（保留の秒数の中に入るように）
     if (seeding > Date.now()) throw new Error("作り物の時計が今を越えた（入れる件数に対して刻みが大きい）");
     seeding = null;
@@ -274,7 +326,17 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     // 実行中のターン（tRun）。送信は受け付けず、[中断]・[続ける] は何もしない（LLM に出さない）
     const startedAt = new Date(Date.now() - 95_000).toISOString();
     const running = [
-      { guildId: GUILD, channelId: tRun, turnSeq: 1, startedAt, toolCalls: 3, label: "Bash npm run chart", steps: ["Read data/moisture.csv", "Write src/chart.ts", "Bash npm run chart"], source: "web", abortable: true } as RunningTurn,
+      {
+        guildId: GUILD,
+        channelId: tRun,
+        turnSeq: 1,
+        startedAt,
+        toolCalls: 5,
+        label: "Bash npm run chart",
+        steps: ["Read data/moisture.csv", "Grep moisture", "Write src/chart.ts", "Edit src/chart.ts", "Bash npm run chart"],
+        source: "web",
+        abortable: true,
+      } as RunningTurn,
     ];
     const handler = {
       runningTurns: (): RunningTurn[] => running,
@@ -360,7 +422,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     closeServer = () => server.close();
     const port = server.address()?.port;
     if (port === undefined) throw new Error("Web サーバーが待ち受けていない");
-    return { url: `http://127.0.0.1:${port}`, login: FIXTURE_LOGIN, dir: tmp, clockNow, topics: { open: tOpen, perm: tPerm, q: tQ }, close };
+    return { url: `http://127.0.0.1:${port}`, login: FIXTURE_LOGIN, dir: tmp, clockNow, topics: { open: tOpen, perm: tPerm, q: tQ, talk: tTalk, long: tLong, run: tRun }, close };
   } catch (error) {
     await close();
     throw error;

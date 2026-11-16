@@ -67,6 +67,28 @@ test("作り物のデータで本物のルートが答え、閉じたらポー�
     assert.equal(tasksRes.status, 200);
     assert.ok(JSON.stringify(await tasksRes.json()).includes("図書館の本を返す"));
 
+    // 吹き出しの確かめ・長い会話（General の話題）
+    assert.ok(topics.topics.some((topic) => topic.id === `ch:${fixture.topics.talk}`));
+    assert.ok(topics.topics.some((topic) => topic.id === `ch:${fixture.topics.long}`));
+    type TurnsJson = { turns: Array<{ id: number; kind: string; outcome?: string | null }>; hasMore: boolean };
+    const talkRes = await fetch(`${fixture.url}/api/channels/${fixture.topics.talk}/turns`, { headers: auth });
+    assert.equal(talkRes.status, 200);
+    const talk = (await talkRes.json()) as TurnsJson;
+    assert.ok(talk.turns.some((turn) => turn.kind === "divider"));
+    assert.ok(talk.turns.some((turn) => turn.outcome === "failed"));
+    assert.ok(talk.turns.some((turn) => turn.outcome === "aborted"));
+    // 長い会話: 最新の 50 行（前があるかは画面が件数で決める）。前の 10 行は before で読める
+    const longRes = await fetch(`${fixture.url}/api/channels/${fixture.topics.long}/turns`, { headers: auth });
+    assert.equal(longRes.status, 200);
+    const long = (await longRes.json()) as TurnsJson;
+    assert.equal(long.turns.length, 50);
+    assert.equal(long.turns.at(-1)?.outcome, "max_turns");
+    const olderRes = await fetch(`${fixture.url}/api/channels/${fixture.topics.long}/turns?before=${long.turns[0]?.id}&limit=50`, { headers: auth });
+    assert.equal(olderRes.status, 200);
+    const older = (await olderRes.json()) as TurnsJson;
+    assert.equal(older.turns.length, 10);
+    assert.equal(older.hasMore, false);
+
     // ヘッダ無しは通らない（今の認証のまま）
     const anonymous = await fetch(`${fixture.url}/api/topics`);
     assert.equal(anonymous.status, 401);
