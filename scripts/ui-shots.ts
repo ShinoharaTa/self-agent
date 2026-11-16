@@ -235,12 +235,13 @@ function composerProblems({ demos, phone, label }: { demos: string[]; phone: boo
 }
 
 /** 見本のカードの data-demo（ページの順） */
-const CARD_DEMOS = ["card-perm", "card-perm-rule", "card-perm-urgent", "card-perm-busy", "card-perm-long", "card-close", "card-close-picked", "card-close-none", "card-move", "card-note", "card-narrow"];
+const CARD_DEMOS = ["card-perm", "card-perm-rule", "card-perm-urgent", "card-perm-busy", "card-perm-long", "card-q-one", "card-q-two", "card-q-other", "card-q-busy", "card-close", "card-close-picked", "card-close-none", "card-move", "card-note", "card-narrow"];
 
 /**
  * 見本のカードの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見本の名前・枠の線と角と地と幅・見出しの字・
  * ボタンの高さと並び（スマホは 2 つが 2 等分・3 つが縦、PC は左から 1 行）・チェックの行と印の大きさ・要約の高さ（PC は 8 行で止まる）・
- * 残り時間の色・待ちの行の role・動いている物・narrow の幅・横にはみ出さない。足りない物の文を返す
+ * 残り時間の色・待ちの行の role・動いている物・narrow の幅・横にはみ出さない・質問の「その他」の欄（見える物と値・スマホの字）と問の間の線と［答える］の押せない印。
+ * 足りない物の文を返す
  */
 function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; label: string }): string[] {
   const lines: string[] = [];
@@ -337,6 +338,34 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
   if (section.querySelector('[data-demo="card-note"] .c-note')?.getAttribute("role") !== "status") say("card-note の待ちの行に role=status が無い");
   const moving = section.getAnimations({ subtree: true }).length;
   if (moving > 0) say(`節の中で ${moving} 個が動いている`);
+  // 8. 「その他」の欄（card-q-other だけ見える）
+  for (const demo of ["card-q-one", "card-q-two", "card-q-other", "card-q-busy"]) {
+    const fields = [...section.querySelectorAll(`[data-demo="${demo}"] textarea.c-card-other`)];
+    if (fields.length === 0) say(`${demo} に「その他」の欄が無い`);
+    for (const field of fields) {
+      if (!(field instanceof HTMLTextAreaElement)) continue;
+      const shown = field.getClientRects().length > 0;
+      if (demo !== "card-q-other") {
+        if (shown) say(`${demo} の「その他」の欄が見えている`);
+        continue;
+      }
+      if (!shown) say("card-q-other の「その他」の欄が見えない");
+      if (field.value !== "別の案を書きます") say(`card-q-other の「その他」の欄の値「${field.value}」。「別の案を書きます」のはず`);
+      if (!pc && parseFloat(getComputedStyle(field).fontSize) < 16) say(`card-q-other の「その他」の欄の字 ${getComputedStyle(field).fontSize}。16px 以上のはず`);
+    }
+  }
+  // 9. 問の間の線（2 問目の上だけ）
+  const sets = [...section.querySelectorAll('[data-demo="card-q-two"] fieldset.c-card-q')];
+  if (sets.length !== 2) say(`card-q-two の問の数 ${sets.length}。2 のはず`);
+  else {
+    const [first, second] = sets.map((f) => getComputedStyle(f).borderTopWidth);
+    if (first !== "0px") say(`card-q-two の 1 問目の上の線 ${first}。0px のはず`);
+    if (second !== "1px") say(`card-q-two の 2 問目の上の線 ${second}。1px のはず`);
+  }
+  // 10. ［答える］の押せない印
+  const answer = (demo: string): string | null => section.querySelector(`[data-demo="${demo}"] .c-card-actions > :first-child`)?.getAttribute("aria-disabled") ?? null;
+  if (answer("card-q-one") !== "true") say("card-q-one の［答える］が押せる形");
+  if (answer("card-q-two") === "true") say("card-q-two の［答える］が押せない形");
   const narrow = section.querySelector('[data-demo="card-narrow"] > *');
   if (narrow === null || !near(narrow.getBoundingClientRect().width, 320, 0.5)) say(`card-narrow の入れ物の幅 ${narrow?.getBoundingClientRect().width.toFixed(1) ?? "?"}。320 のはず`);
   const doc = document.documentElement;

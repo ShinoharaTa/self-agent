@@ -597,7 +597,7 @@ function Composers() {
 }
 
 // ===== カード（K5） =====
-const CARD_ON = { permit: noop, always: noop, task: noop, close: noop, move: noop };
+const CARD_ON = { permit: noop, always: noop, task: noop, close: noop, move: noop, pick: noop, pickOther: noop, other: noop, answer: noop, dismiss: noop };
 const CARD_MODE = "default（使うたびに確認）";
 const CARD_RULE = "Bash(npm run test:*)";
 const cardPerm = (o) => ({ kind: "permission", id: "p1", tool: "Bash", mode: CARD_MODE, summary: "npm test", rule: "", ruleNote: "", always: false, left: "残り 4 分 12 秒", urgent: false, busy: false, ...o });
@@ -611,12 +611,25 @@ const CARD_UNBROKEN_URL = "https://example.com/" + "sample-path-without-a-break/
 const CARD_UNBROKEN_PLACE = "sample_project_name_without_any_break_point_".repeat(3) + "0123456789";
 const CARD_UNBROKEN_TOOL = "mcp__sample_server__" + "tool_name_without_break_".repeat(3) + "0123456789";
 const CARD_LONG_TASK = "見本の長い題の候補をここに置いて、折り返しと幅を見るための行";
+const CARD_OPTIONS = [
+  { label: "小さく直す", description: "今の形を保って、足りない所だけ直します。" },
+  { label: "作り直す", description: "部品から組み直します。時間がかかります。" },
+  { label: "あとで決める", description: "" },
+];
+const cardQ = (o) => ({ legend: "進め方", text: "どの進め方にしますか。", multi: false, options: CARD_OPTIONS, picked: [], other: false, otherText: "", ...o });
+const cardQ2 = (o) => cardQ({ legend: "問 2", text: "確かめる物を選んでください。", multi: true, options: [{ label: "単体のテスト", description: "" }, { label: "画面写し", description: "スマホと PC の両方です。" }], ...o });
+// ラジオの name は id で分かれるので、見本ごとに別の id にする（同じ name だとページの中で 1 つしか選べない）
+const cardQuestion = (o) => ({ kind: "question", id: "q1", who: "", left: "残り 4 分 12 秒", urgent: false, busy: false, ready: false, questions: [cardQ({})], ...o });
 const CARD_DEMOS = [
   { demo: "card-perm", items: [cardPerm({})] },
   { demo: "card-perm-rule", items: [cardPermRule({})] },
   { demo: "card-perm-urgent", items: [cardPermRule({ always: true, left: "残り 42 秒", urgent: true })] },
   { demo: "card-perm-busy", items: [cardPermRule({ always: true, busy: true })] },
   { demo: "card-perm-long", items: [cardPerm({ mode: "", summary: CARD_LONG })] },
+  { demo: "card-q-one", items: [cardQuestion({ id: "q1", who: "見本のセッション ・ " + CARD_MODE })] },
+  { demo: "card-q-two", items: [cardQuestion({ id: "q2", ready: true, questions: [cardQ({ picked: ["小さく直す"] }), cardQ2({ picked: ["単体のテスト", "画面写し"] })] })] },
+  { demo: "card-q-other", items: [cardQuestion({ id: "q3", ready: true, questions: [cardQ({ other: true, otherText: "別の案を書きます" })] })] },
+  { demo: "card-q-busy", items: [cardQuestion({ id: "q4", ready: true, busy: true, questions: [cardQ({ picked: ["作り直す"] })] })] },
   { demo: "card-close", items: [cardClose({})] },
   { demo: "card-close-picked", items: [cardClose({ picked: [1] })] },
   { demo: "card-close-none", items: [cardClose({ tasks: [] })] },
@@ -638,14 +651,29 @@ const CARD_DEMOS = [
       { kind: "move", id: "m1", from: "self-agent", to: LONG_PLACE, busy: false },
       { kind: "move", id: "m2", from: "self-agent", to: CARD_UNBROKEN_PLACE, busy: false },
       cardPerm({ tool: CARD_UNBROKEN_TOOL, rule: "Bash(npm run test:integration -- --only 見本の長い名前のルールをここに置いて幅を見る:*)", ruleNote: "見本の添え書き" }),
+      cardQuestion({
+        id: "q5",
+        who: "見本のセッション ・ " + CARD_MODE,
+        questions: [
+          cardQ({ options: [...CARD_OPTIONS, { label: CARD_UNBROKEN_PLACE, description: CARD_UNBROKEN_URL }], picked: ["作り直す"] }),
+          cardQ2({ legend: "見本の長い見出しをここに置いて折り返しを見る", other: true, otherText: CARD_UNBROKEN_URL }),
+        ],
+      }),
     ],
   },
 ];
 
+/** 「その他」の欄の字は、入力欄の見本と同じやり方で新しい要素に 1 回だけ入れる */
+const cardOtherRef = (demo, items) => (id, index) => {
+  const item = items.find((i) => i.kind === "question" && i.id === id);
+  const q = item && item.questions[index];
+  return composerRef(demo + ":" + id + ":" + index, q ? q.otherText : "");
+};
+
 function CardDemos() {
   return html`<${Section} name="cards" title="カード">
     ${CARD_DEMOS.map(({ demo, items, narrow = false }) => {
-      const body = html`<${Cards} items=${items} on=${CARD_ON} />`;
+      const body = html`<${Cards} items=${items} on=${CARD_ON} otherRef=${cardOtherRef(demo, items)} />`;
       return html`<div data-demo=${demo} key=${demo}>${narrow ? html`<div class="c-gallery-cards c-gallery-cards-narrow">${body}</div>` : html`<div class="c-gallery-cards">${body}</div>`}</div>`;
     })}
   <//>`;
