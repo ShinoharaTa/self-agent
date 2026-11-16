@@ -50,7 +50,7 @@
 | P4 | DOM の無い Node 24 で 3 つとも `import` でき、hook を使わない部品は関数として呼ぶと vnode が返る → `npm test` で fake DOM なしに試せる |
 | P5 | hooks は `from"preact"` という裸の指定を持つので、同梱するときに `./vendor-preact.js` へ書き換えが要る。`sourceMappingURL` のコメントも付いている（消す） |
 | P6 | `tailscale serve` の https は HTTP/2 で返る（curl で `ver=2 code=200`）。小さいファイルが増えても 1 本の接続で 304 を確かめられる |
-| P7 | この機械の日本語の字は IPA ゴシックだけ。画面写しは実機と字形が違う（配置・余白・重なりは見られる。字の印象は見られない） |
+| P7 | この機械の日本語の字は IPA ゴシックだけ。画面写しは実機と字形が違う（配置・余白・重なりは見られる。字の印象は見られない）。幅の収まりは、等幅の字を当てて測る（`npm run ui-shots` の幅の検査） |
 
 大きさ（npm の配布物を量った）: preact 11,970 B（gzip 4,997）+ hooks 3,628 B（gzip 1,589）+ htm 1,207 B（gzip 660）= **16,817 B（gzip 約 7.2 KB）**。今の `shell.js` 1 本（68,968 B）の 1/4。
 
@@ -345,16 +345,32 @@
 - やること: `tokens.css` に `--c-*`、`c-atoms.js/.css`、`c-sheet.js/.css`、§7.3 の見張りのテスト、見本に全状態。
 - 受け入れ: (1) §7.3 のテストが通る。(2) 各部品のモデルの関数を `import` して試すテストがある（fake DOM・`fnSource` を使わない）。(3) 見本の絵（スマホ・PC × ダーク・ライト）で、指の端末で 44px・PC（hover と fine）で 36px に満たない押せる物が無い。(4) Segmented は 6 項目でも折り返さない。(5) `v3.html` は変わらない。
 
-**K3 一覧**（K3a 済。#393: 一覧と下のバーの部品 `c-list`・`c-shell` とモデルのテスト・見本の節。本番の `v3.html` への載せ替えは K3b）
+**K3 一覧**（K3a 済・K3b-1 済。下のバーは K3b-2。#393: 一覧と下のバーの部品 `c-list`・`c-shell` とモデルのテスト・見本の節。#395: 本番の `v3.html` への載せ替え。K3b は「入口と一覧」（K3b-1）と「下のバーと試し用の manifest」（K3b-2）の 2 本に割った。PR ごとに差と前後の絵が 1 つになり、危ない所（一覧はテストの書き直しと使い回し・フォーカス、バーは右腕のフォーカスの戻り・末尾と safe-area・幅）が別だから）
 - やること: `c-list.js/.css`・BottomBar。`topics.js` の `rowParts`・`turnParts`・`reconcile`・`fillRow`・`createRow`・`updateRow` を消し、描画を部品へ渡す（`load`・`schedule`・`find`・`counts`・`setFilter`・`setCurrent` は残す）。`v3.html` の `.v3-hand-entry`・`.v3-list-foot` を BottomBar に替える。`c-app.js` は `shell.js` より前に読む（F11）。
+  - 形（K3b-1。K4〜K6 も同じ形を使う: 古い JS が状態を持ち、入口へ押し込む）:
+    ```
+    topics.js（読む・polling・状態）──▶ SA.list.draw(state) ─▶ c-app.js（入口）─▶ listModel(state) ─▶ render(TopicList)
+    shell.js（画面の切り替え・右腕）──▶ SA.list.drawBar(bar) ─▶ c-app.js ─▶ bottomModel(bar) ─▶ render(BottomBar)（K3b-2）
+    ```
+    状態（`data`・`failed`・`filter`・`current`・`doneGroup`・`dataDone`・「ほかのプロジェクト」の開閉）は `topics.js` に残し、部品と入口は状態を持たない（hook を使わない。`render()` の直後に DOM が出来ている前提を保つ）。見た目の判断は `c-list.js` の `listModel`。`document`・`window`・`SA` に触る `c-*.js` は入口 `c-app.js` だけ（見本の `c-gallery.js` は別）。
+  - `SA.list`（`c-app.js`。K3b-1 の分。`#c-list-root` が無いページでは作らない）:
+
+    | 名前 | 動き |
+    |---|---|
+    | `draw(state)` → boolean | `listModel(state)` を作り `TopicList`（`compact` は PC の式）を `#c-list-root` へ描く。前後で一覧の位置と、一覧の中のフォーカスを保つ（フォーカスのあった物が消えたら同じ話題の群の中の行、無ければ一覧の根）。例外は握って `console.error` し false |
+    | `focusRow(id)` → boolean | その話題の行のうち `data-mark` の付いた物（群の中の行）を先に、無ければ「あなたの番」の行にフォーカス |
+    | `focusList()` | 一覧の根（`tabindex="-1"` の `.c-list`）にフォーカス |
+    | `scrollTop()`・`setScrollTop(n)` | 一覧の根の位置を読む・書く |
+
+    鍵: `#c-list-root` の `keydown` で、行（`button[data-topic]`）の上の ↑↓・Home・End を `listKey` で動かす。修飾キー（Alt・Ctrl・Meta・Shift）付きは素通し。
 - 受け入れ: (1) 「あなたの番」が 1 件以上のとき warning の枠のカードが一覧の先頭に出て、0 件のとき出ない。(2) 許可待ちの項目はカードの中で [許可]・[拒否] が押せ、押すと今と同じ API が呼ばれる（モデルのテスト + 偽の onAnswer）。(3) 「あなたの番」に出た項目は下の群で印（warning）だけになり、副次行を持たない。(4) 見出し・群の名前・行の印の左端が同じ x（画面写しで確かめる）。(5) 下のバーは 1 本で、中央が右腕、左に「一覧 n」、右に「ほか」。最後の行がバーに隠れない。(6) 一覧を 1 行足して描き直しても、既にある行の DOM ノードが同じ（ブラウザで 1 回確かめて PR に書く）。(7) 消した関数を見ていたテストは消し、同じ意味を `import` のテストで置き換える（数を PR に書く）。(8) `/` は変わらない。
 
 - K3b への申し送り（K3a のレビュー）:
-  - 入口は `/api/topics` の応答のうち `turnIds` が配列だと確かめた物だけを `data` に渡す（部品の側も配列でなければ空とみなす）。
-  - `isUnread` は `(channelId, last)` の形（`ch:` を外した ID）に入口で合わせる（今の `store.isUnread({ id, last })` とは形が違う）。
-  - 同じ `data-topic` が「あなたの番」（`c-turn`）と群の行（`c-row[data-mark]`）の両方に出るので、描き直しの後にフォーカスを戻すときは `data-mark` の付いた行を先に探す。
-  - ↑↓・Home・End でフォーカスを動かすのは入口（部品は `listKey` で行き先の番号を返すだけ）。
-  - 群の `section[aria-label]` が読み上げのランドマーク（region）になる事を実機の VoiceOver で確かめる。
+  - 入口は `/api/topics` の応答のうち `turnIds` が配列だと確かめた物だけを `data` に渡す（部品の側も配列でなければ空とみなす）。→ 受けた: `topics.js` の `load` の 4 つの確かめをそのまま残し、テスト（`turnIds` が配列でない応答は失敗の表示で前の `data` が残る）を足した。
+  - `isUnread` は `(channelId, last)` の形（`ch:` を外した ID）に入口で合わせる（今の `store.isUnread({ id, last })` とは形が違う）。→ 受けた: `topics.js` の `IS_UNREAD`（1 回だけ作る）。
+  - 同じ `data-topic` が「あなたの番」（`c-turn`）と群の行（`c-row[data-mark]`）の両方に出るので、描き直しの後にフォーカスを戻すときは `data-mark` の付いた行を先に探す。→ 受けた: `SA.list.focusRow` と `draw` の描き直しの前後（`npm run ui-shots` の「フォーカスと位置」で見る）。
+  - ↑↓・Home・End でフォーカスを動かすのは入口（部品は `listKey` で行き先の番号を返すだけ）。→ 受けた: `c-app.js` の `keydown`。
+  - 群の `section[aria-label]` が読み上げのランドマーク（region）になる事を実機の VoiceOver で確かめる。→ 実機の手順に入れた（#395 の §21.3 の 4）。未確認のまま。
 
 **K4 会話の見出し + 吹き出し**
 - やること: TopBar（1 段）、`c-talk.js/.css`。`chat.js` の `render` の先頭に、部品が登録されていればそちらへ渡す分岐を 1 つ足す。`chat.js` の `header`・`frameHeader`・`bubbleRow`・`renderTurn`・`renderRunning`・`stepsList` に当たる物を部品で作る（古い関数は古い殻のために残す）。
