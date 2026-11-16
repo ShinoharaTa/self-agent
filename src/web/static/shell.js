@@ -655,6 +655,8 @@
     });
     fill("v3-hand-ask", (b) => b.replaceChildren(...[icon("bot"), el("span", { text: "右腕に頼む・訊く" }), handDot(mark, true)].filter(Boolean)));
     fill("v3-hand-open", (b) => b.replaceChildren(...[el("span", { text: "右腕" }), handDot(mark, true)].filter(Boolean)));
+    // 下のバーは毎回（件数は印と別に変わる）
+    renderBottom(mark);
   }
 
   /** 話題の一覧を読むたびに: 列 2 に右腕のチャンネルが出ていたら右腕へ移し、右腕が変わっていたら描き直し、口を描く */
@@ -1186,6 +1188,33 @@
     openSheet("ほか", items, opener);
   }
 
+  /** 下のバーの押した先（1 回だけ作り、毎回同じ物を渡す） */
+  const BAR_ON = {
+    // スマホの「一覧」: 一覧の先頭へ
+    list: () => SA.list.setScrollTop(0),
+    // 開いて入力欄に焦点
+    hand: (opener) => openHand(opener, true),
+    tab: (id) => open(id),
+    more: (opener) => openMore(opener),
+  };
+
+  /** 広い幅のバーに並べる画面（引けるものだけ） */
+  function barTabs() {
+    const tabs = [];
+    for (const id of ["tasks", "reminders"]) {
+      const info = SA.views.info(id);
+      if (info) tabs.push({ id, title: info.title });
+    }
+    return tabs;
+  }
+
+  /** 下のバー（描くのは入口 c-app.js。形は入口が幅で決める）。mark は handMark() の値。描けなければ件数・印・タブの無い形で 1 回だけ描き直す */
+  function renderBottom(mark) {
+    if (!SA.list) return;
+    const ok = SA.list.drawBar({ turns: SA.topics.counts().turns, hand: mark, tabs: barTabs(), on: BAR_ON });
+    if (!ok) SA.list.drawBar({ turns: 0, hand: null, tabs: [], on: BAR_ON });
+  }
+
   function renderFoot() {
     const foot = $("v3-list-foot");
     if (!foot) return;
@@ -1475,6 +1504,7 @@
     renderHeadOps();
     renderConn();
     renderFoot();
+    renderBottom(handMark());
     bindStart();
     $("v3-sheet").addEventListener("close", () => {
       const opener = sheetOpener;
