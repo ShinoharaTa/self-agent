@@ -1,0 +1,174 @@
+/* 板・確認・知らせ（c-sheet.js。docs/plan/web-ui-components.md §6 の K2）。幅・地・枠・角・影・背景は base.css の dialog のまま（PC は中央） */
+
+/* ===== Sheet ===== */
+.c-sheet {
+  padding: 0;
+  max-height: calc(100dvh - var(--space-8));
+  overflow: hidden;
+  color: var(--text);
+  opacity: 0;
+  transform: scale(0.98);
+  transition-property: opacity, transform, overlay, display;
+  transition-duration: calc(var(--dur-short) * 0.65);
+  transition-timing-function: var(--ease-out);
+  transition-behavior: allow-discrete;
+}
+
+/* 閉じているときに display を書かない（native の display: none のまま） */
+.c-sheet[open] {
+  display: flex;
+  flex-direction: column;
+  opacity: 1;
+  transform: none;
+  transition-duration: var(--dur-short);
+}
+
+@starting-style {
+  .c-sheet[open] {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+.c-sheet-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--c-bar-h);
+  padding: 0 var(--space-2) 0 var(--c-gutter);
+}
+
+.c-sheet-title {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--font-base);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  overflow-wrap: anywhere;
+}
+
+.c-sheet-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  padding: 0 var(--c-gutter) var(--c-gutter);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.c-sheet-foot {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--c-gutter);
+}
+
+/* スマホは下に付く（全幅・上だけ角丸）。下から出て、footer のボタンを等分する */
+@media (max-width: 639px) {
+  .c-sheet {
+    width: 100%;
+    max-width: none;
+    margin: auto 0 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-width: var(--border-width) 0 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    opacity: 1;
+    transform: translateY(100%);
+  }
+
+  .c-sheet[open] {
+    transform: none;
+  }
+
+  @starting-style {
+    .c-sheet[open] {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+  }
+
+  .c-sheet-foot {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+  }
+}
+
+/* ===== Confirm ===== */
+.c-confirm-target {
+  margin: 0;
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.c-confirm-body {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+/* ===== Toast（PC は右下、スマホは見出しの高さの下） ===== */
+.c-toast {
+  position: fixed;
+  z-index: var(--z-toast);
+  right: var(--space-4);
+  bottom: calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
+  display: grid;
+  gap: var(--space-2);
+  width: calc(100% - var(--space-7));
+  max-width: var(--c-toast-w);
+  pointer-events: none;
+}
+
+@media (max-width: 639px) {
+  .c-toast {
+    top: calc(var(--c-bar-h) + var(--space-2) + env(safe-area-inset-top, 0px));
+    bottom: auto;
+    left: var(--space-3);
+    right: var(--space-3);
+    width: auto;
+    max-width: none;
+  }
+}
+
+.c-toast-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.c-toast-item {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--c-tap);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--font-sm);
+  transition: opacity var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out);
+}
+
+@starting-style {
+  .c-toast-item {
+    opacity: 0;
+    transform: translateY(var(--space-2));
+  }
+}
+
+.c-toast-item[data-level="error"] {
+  border-left: var(--ring-width) solid var(--danger);
+}
+
+.c-toast-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}

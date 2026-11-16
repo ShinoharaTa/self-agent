@@ -94,8 +94,8 @@ const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-/** 見本の絵の種類（g-gallery はページ全体） */
-const GALLERY_KINDS = ["g-gallery"] as const;
+/** 見本の絵の種類（g-gallery はページ全体、ほかは押して開いた所） */
+const GALLERY_KINDS = ["g-gallery", "g-sheet", "g-confirm", "g-toast"] as const;
 type GalleryKind = (typeof GALLERY_KINDS)[number];
 const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
 
@@ -295,7 +295,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /**
    * 見本の当たりと切り替えの折り返しを測る。開いた dialog があればその中、無ければ .c-gallery と .c-toast の中の押せる物を、
-   * 見える所へ送ってから箱の中心から (±d, ±d) の 4 点で elementFromPoint がその要素（か子孫）を返すかで見る（d = 下限 / 2 - 1）。
+   * 見える所へ送ってから箱の中心から (±d, ±d) の 4 点で elementFromPoint がその要素（か子孫）を返すかで見る（d = 下限 / 2 - 1。知らせに隠れた点は除く）。
    * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
    */
   async function checkGallery(page: Page, vp: Viewport, label: string): Promise<void> {
@@ -320,9 +320,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             [cx - d, cy + d],
             [cx + d, cy + d],
           ];
+          // 知らせ（position: fixed）の下に隠れた見本の物は数えない（隠れていない g-gallery で測っている）
+          const inToast = el.closest(".c-toast") !== null;
           const ok = points.every(([x, y]) => {
             const hit = document.elementFromPoint(x ?? 0, y ?? 0);
-            return hit !== null && (hit === el || el.contains(hit));
+            return hit !== null && (hit === el || el.contains(hit) || (!inToast && hit.closest(".c-toast-item") !== null));
           });
           if (!ok) lines.push(`当たりが足りない: ${el.tagName.toLowerCase()}.${el.classList[0] ?? ""} ${Math.round(r.width)}x${Math.round(r.height)}`);
         }
@@ -365,6 +367,23 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         });
         await shot(page, full, true);
       });
+      /** 押す物（data-demo）を順に押し、開いた物を待って当たりを測ってから撮る */
+      const opened: ReadonlyArray<{ kind: GalleryKind; demos: string[]; ready: string }> = [
+        { kind: "g-sheet", demos: ["sheet"], ready: "dialog.c-sheet[open]" },
+        { kind: "g-confirm", demos: ["confirm-danger"], ready: "dialog.c-sheet[open]" },
+        { kind: "g-toast", demos: ["toast", "toast-error"], ready: ".c-toast-item" },
+      ];
+      for (const { kind, demos, ready } of opened) {
+        const name = galleryName(vp, theme, kind);
+        await step(name, [name], async () => {
+          await loadGallery();
+          for (const demo of demos) await page.click(`[data-demo="${demo}"] button`);
+          await page.waitForSelector(ready, { timeout: 5000 });
+          await wait(400);
+          await checkGallery(page, vp, label);
+          await shot(page, name);
+        });
+      }
     } finally {
       await ctx.close();
     }
@@ -396,7 +415,7 @@ async function main(argv: string[]): Promise<number> {
   const only = values.only;
   // 合う名前が無ければ Chromium を起動せずに返す
   if (only !== undefined && !ALL_SHOT_NAMES.some((name) => name.includes(only))) {
-    console.error(`--only ${only} に合う画面が無い（例: ${["phone-dark-a-list", "pc-dark-b-chat-top", "phone-light-b-chat-permission", "tablet-dark-a-list", "old-pc-dark-list", "pc-dark-g-gallery"].join("・")}）`);
+    console.error(`--only ${only} に合う画面が無い（例: ${["phone-dark-a-list", "pc-dark-b-chat-top", "phone-light-b-chat-permission", "tablet-dark-a-list", "old-pc-dark-list", "pc-dark-g-gallery", "phone-dark-g-sheet"].join("・")}）`);
     return 1;
   }
 

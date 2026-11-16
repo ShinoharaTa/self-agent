@@ -107,7 +107,7 @@ test("web vendor: gallery.html に inline の script・style・style= と on…=
   assert.doesNotMatch(html, /\son[a-z]+=/i);
   assert.doesNotMatch(html, /app\.css|shell\.css/);
   const refs = [...html.matchAll(/<(?:link|script)\b[^>]*\b(?:href|src)="([^"]+)"/g)].map((m) => m[1] ?? "");
-  assert.deepEqual(refs, ["/static/base.css", "/static/tokens.css", "/static/c-atoms.css", "/static/c-gallery.css", "/static/c-gallery.js"]);
+  assert.deepEqual(refs, ["/static/base.css", "/static/tokens.css", "/static/c-atoms.css", "/static/c-sheet.css", "/static/c-gallery.css", "/static/c-gallery.js"]);
   for (const ref of refs) {
     const target = staticFileFor(ref, DIRS);
     assert.ok(target !== undefined, `${ref}: 配れない名前`);
