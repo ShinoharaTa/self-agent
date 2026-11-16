@@ -23,20 +23,24 @@
   padding: 0 0 env(safe-area-inset-bottom, 0px);
 }
 
-/* K2 の Button は並べ方と左右の余白だけ変える（280px の列で「リマインド」が省かれない幅） */
+/*
+ * K2 の Button は並べ方と左右の余白だけ変える。広い幅は等分（280px の列で「リマインド」が省かれない幅）。
+ * スマホの「ほか」も同じ宣言で、右腕（基準の幅が 100%）に押されて下限の幅になる
+ */
 .c-bottom > .c-btn[data-size="sm"] {
   flex: 1 1 0;
+  min-width: var(--c-bottom-h);
   padding: 0 var(--space-1);
 }
 
+/* 「一覧」は中身の幅（件数は 99+ まで。省かない）。下限は当たりが細くならない幅 */
 .c-bottom-btn {
   display: inline-flex;
-  flex: 1 1 0;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  /* 「一覧」と件数（99+ まで）は省かない。足りない分は右腕の文が省かれる */
-  min-width: max-content;
+  min-width: var(--c-bottom-h);
   min-height: var(--c-tap);
   padding: 0 var(--space-2);
   border: 0;
@@ -55,10 +59,13 @@
   text-overflow: ellipsis;
 }
 
-/* 右腕（幅 2 倍）。見た目は K2 の accent のボタンと同じ */
+/*
+ * 右腕は「一覧」と「ほか」の残りを全部取る（基準の幅を 100% にして縮める。0 にすると「ほか」と残りを分け合う）。
+ * 見た目は K2 の accent のボタンと同じ
+ */
 .c-bottom-hand {
   display: inline-flex;
-  flex: 2 1 0;
+  flex: 1 1 100%;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
