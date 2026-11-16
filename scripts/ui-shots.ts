@@ -729,7 +729,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /**
    * わざと起こした失敗の行を console.log に残さない: logLines の from 番目から後ろで、needles のどれかを含む行を外して返す。
-   * 使うのは描けない bar と入口が読めないときの 2 か所だけ（外す語を増やさない）
+   * 使うのは描けない bar・入口が読めないとき・入力欄の送りの失敗の 3 か所だけ（外す語を増やさない）
    */
   function dropExpected(from: number, needles: string[]): string[] {
     const removed: string[] = [];
@@ -2507,9 +2507,16 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           (window as unknown as { __busy: number }).__busy = 0;
           for (const t of document.querySelectorAll("#toast-alert .toast")) t.remove();
         });
+        const from = logLines.length;
         await press();
         await page.waitForFunction(() => (document.querySelector("#toast-alert")?.textContent ?? "") !== "", undefined, { timeout: 5000 }).catch(() => undefined);
         await wait(300);
+        // わざと起こした失敗（送りの 404 とその console.error）の 2 行だけを console.log から外す。数が違えば残して知らせる
+        const removed = dropExpected(from, [`POST /api/channels/${talk}/messages`, "Failed to load resource"]);
+        if (removed.length !== 2) {
+          logLines.push(...removed);
+          say(12, "送る", `${how}: 失敗の行が ${removed.length} 行（2 行のはず）`);
+        }
         const after = await page.evaluate(() => ({
           busy: (window as unknown as { __busy: number }).__busy,
           now: document.querySelector('#ed > [data-composer] .c-composer-row > .c-btn[aria-busy="true"]') !== null,
