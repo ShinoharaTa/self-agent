@@ -139,7 +139,7 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
   return lines;
 }
 
-/** 古い CSS が一覧に漏れていないかを比べる要素（§16 (b)）と性質 */
+/** 古い CSS が一覧に漏れていないかを比べる要素と性質 */
 // 題は同じ状態（印の無い行）の物で比べる（未読の行の題は太い）
 const LEAK_SELECTORS = ['.c-row[data-mark="none"]', '.c-row[data-mark="none"] .c-row-title', ".c-group-name", ".c-group-head", ".c-group-head > .c-iconbtn", ".c-list-label", ".c-fold-head"];
 const LEAK_SELECTORS_PHONE = [".c-turn", ".c-turn-title", ".c-turn-sub"];
@@ -279,7 +279,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
 
   /**
-   * 新しい殻の一覧の検査（§18。ダークの組だけ）: [+] の隣・id・左端・使い回し・フォーカスと位置・鍵。
+   * 新しい殻の一覧の検査（ダークの組だけ）: [+] の隣・id・左端・使い回し・フォーカスと位置・鍵。
    * 当たりは checkParts。応答を書き換えた検査の後は読み直す
    */
   async function checkList(page: Page, vp: Viewport): Promise<string[]> {
@@ -427,7 +427,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
-  /** 古い CSS の漏れ（§16 (b)）: 本番の一覧と見本（[data-demo="list-full"]）で、決めた要素の computed style が同じ。見本を開くので、後で読み直す */
+  /** 古い CSS の漏れ: 本番の一覧と見本（[data-demo="list-full"]）で、決めた要素の computed style が同じ。見本を開くので、後で読み直す */
   async function checkLeaks(page: Page, vp: Viewport): Promise<string[]> {
     const selectors = [...LEAK_SELECTORS, ...(vp === "phone" ? LEAK_SELECTORS_PHONE : LEAK_SELECTORS_PC)];
     const styles = ({ root, sels, props }: { root: string; sels: string[]; props: string[] }): Record<string, Record<string, string> | null> => {
@@ -464,7 +464,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
-  /** 幅の決まり R1〜R3（§18。等幅の字を当てた後に測る）。足りない物の文 */
+  /** 幅の決まり（R1 はみ出ない・R2 右の語と時刻が省かれない・R3 題が全角 5 字残る。等幅の字を当てた後に測る）。足りない物の文 */
   const measureWidths = (page: Page, at: string): Promise<string[]> =>
     page.evaluate((label: string) => {
       const out: string[] = [];
@@ -498,7 +498,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }, at);
 
   /**
-   * 幅の検査（§18。そのページの最後の段）: 仮名が全角の等幅の字を当て、当たった事を確かめてから R1〜R3 を測る。
+   * 幅の検査（そのページの最後の段）: 仮名が全角の等幅の字を当て、当たった事を確かめてから R1〜R3 を測る。
    * スマホは 390 と 375。字は CSSOM の adoptedStyleSheets で当てる（CSP で <style> を足せない）。終わったら外す
    */
   async function checkWidths(page: Page, vp: Viewport, mono: string | null): Promise<string[]> {

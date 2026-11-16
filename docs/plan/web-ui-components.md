@@ -370,7 +370,10 @@
   - `isUnread` は `(channelId, last)` の形（`ch:` を外した ID）に入口で合わせる（今の `store.isUnread({ id, last })` とは形が違う）。→ 受けた: `topics.js` の `IS_UNREAD`（1 回だけ作る）。
   - 同じ `data-topic` が「あなたの番」（`c-turn`）と群の行（`c-row[data-mark]`）の両方に出るので、描き直しの後にフォーカスを戻すときは `data-mark` の付いた行を先に探す。→ 受けた: `SA.list.focusRow` と `draw` の描き直しの前後（`npm run ui-shots` の「フォーカスと位置」で見る）。
   - ↑↓・Home・End でフォーカスを動かすのは入口（部品は `listKey` で行き先の番号を返すだけ）。→ 受けた: `c-app.js` の `keydown`。
-  - 群の `section[aria-label]` が読み上げのランドマーク（region）になる事を実機の VoiceOver で確かめる。→ 実機の手順に入れた（#395 の §21.3 の 4）。未確認のまま。
+  - 群の `section[aria-label]` が読み上げのランドマーク（region）になる事を実機の VoiceOver で確かめる。→ 実機の手順に入れた: 実機の VoiceOver のローターの「ランドマーク」に群の名前（プロジェクト名・General）が並ぶ事を見て、多すぎて邪魔なら `section` の `aria-label` を外すかを決める。未確認のまま。
+  - `turnFrom`（K3b-1 のレビュー）: PC の「あなたの番 N」のボタンの次の話題は、`topics.js` の `turnFrom`（一覧から最後に開いた話題。`setCurrent` で開いた話題にも追従する）が `turnIds` に在ればその次、無ければ `current` の次。右腕は列 2 に開かず `current` にならないので、`current` だけでは右腕が先頭のとき先へ進まない。
+  - `npm run ui-shots` の一覧の検査（当たり・左端・使い回し・フォーカスと位置・鍵・古い CSS の漏れ・幅）は `npm test` では走らない。一覧・入口に触る PR は、マージの前に `npm run ui-shots` を回す。
+  - 入口（`c-app.js`）が読めないときに `#c-list-root` に出す 1 文は、余白の無い裸の `p`。K3b-2 で下のバーも入口が描くようになるので、そのときの出し方と一緒に直す。
 
 **K4 会話の見出し + 吹き出し**
 - やること: TopBar（1 段）、`c-talk.js/.css`。`chat.js` の `render` の先頭に、部品が登録されていればそちらへ渡す分岐を 1 つ足す。`chat.js` の `header`・`frameHeader`・`bubbleRow`・`renderTurn`・`renderRunning`・`stepsList` に当たる物を部品で作る（古い関数は古い殻のために残す）。
