@@ -216,7 +216,7 @@
   text-overflow: ellipsis;
 }
 
-/* 補足の次に縮み、当たりと語の頭が残る幅は残す（入らない幅では入口が compact にして、場所を帯に出さない） */
+/* 補足の次に縮み、当たりと名前の頭が残る幅は残す（下限で名前の字に約 50px。入らない幅では入口が compact にして、場所を帯に出さない） */
 .c-top-place {
   flex: 0 1000000 auto;
   min-width: var(--c-top-place-min);
@@ -235,9 +235,9 @@
   font-size: var(--font-sm);
 }
 
-.c-top-place:disabled {
+.c-top-place[aria-disabled="true"] {
   color: var(--text-muted);
-  cursor: default;
+  cursor: not-allowed;
 }
 
 .c-top-place-text {
@@ -296,13 +296,13 @@
 }
 
 /* 押した・乗った（下のバーの右腕と同じ宣言。押せない場所のボタンには当てない） */
-.c-top-place:not(:disabled):active,
+.c-top-place:not([aria-disabled="true"]):active,
 .c-top-hand:active {
   transform: scale(0.97);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .c-top-place:not(:disabled):hover,
+  .c-top-place:not([aria-disabled="true"]):hover,
   .c-top-hand:hover {
     opacity: 0.9;
   }

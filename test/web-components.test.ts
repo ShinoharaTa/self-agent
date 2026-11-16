@@ -1422,17 +1422,23 @@ test("web components: topModel の phone・talk（戻る・右腕、場所と切
 test("web components: topModel の wide・talk（戻る・右腕なし、場所の押せる・押せない、切り替え、rest は補足だけ）", () => {
   const m = shell.topModel(topProps({ variant: "wide", note: "調べ物", views: { value: "pane" } })) as Obj;
   assert.deepEqual([m.variant, m.back, m.hand, m.rest, m.menu], ["wide", false, null, "調べ物", true]);
-  assert.deepEqual(m.place, { text: "場所: General", disabled: false, reason: null });
+  assert.deepEqual(m.place, { text: "General", label: "場所: General", disabled: false, reason: null });
   assert.deepEqual(m.views, { value: "pane", items: [{ value: "talk", label: "会話" }, { value: "pane", label: "端末" }] });
   assert.equal((shell.topModel(topProps({ variant: "wide", views: { value: "x" } })) as Obj & { views: Obj }).views.value, "talk");
   assert.equal(shell.topModel(topProps({ variant: "wide" }))?.views, null);
   assert.equal(shell.topModel(topProps({ variant: "wide" }))?.rest, "");
   const reason = "Claude Code のセッションは場所を変えられません";
-  assert.deepEqual(shell.topModel(topProps({ variant: "wide", place: { text: "self-agent", movable: { reason }, reason } }))?.place, { text: "場所: self-agent", disabled: true, reason });
-  assert.deepEqual(shell.topModel(topProps({ variant: "wide", place: { text: "a", movable: false, reason: "" } }))?.place, { text: "場所: a", disabled: true, reason: null });
+  assert.deepEqual(shell.topModel(topProps({ variant: "wide", place: { text: "self-agent", movable: { reason }, reason } }))?.place, { text: "self-agent", label: "場所: self-agent", disabled: true, reason });
+  assert.deepEqual(shell.topModel(topProps({ variant: "wide", place: { text: "a", movable: false, reason: "" } }))?.place, { text: "a", label: "場所: a", disabled: true, reason: null });
   // 押せるときは reason を出さない
-  assert.deepEqual(shell.topModel(topProps({ variant: "wide", place: { text: "a", movable: true, reason } }))?.place, { text: "場所: a", disabled: false, reason: null });
+  assert.deepEqual(shell.topModel(topProps({ variant: "wide", place: { text: "a", movable: true, reason } }))?.place, { text: "a", label: "場所: a", disabled: false, reason: null });
   assert.equal(shell.topModel(topProps({ variant: "wide", place: null }))?.place, null);
+  // text が空でない文字列でなければ場所なし（帯のボタンも、補足の「場所: 」も出さない）
+  for (const place of [{}, { text: "" }, { text: null }, { text: 3, movable: true }, "General"]) {
+    assert.equal(shell.topModel(topProps({ variant: "wide", place }))?.place, null, JSON.stringify(place));
+    assert.equal(shell.topModel(topProps({ place, note: "調べ物" }))?.rest, "調べ物", JSON.stringify(place));
+    assert.equal(shell.topModel(topProps({ variant: "wide", compact: true, place }))?.rest, "", JSON.stringify(place));
+  }
 });
 
 test("web components: topModel の wide・compact（場所・切り替えは null、rest は場所と補足。phone は compact を渡しても変わらない）", () => {
@@ -1540,10 +1546,18 @@ test("web components: TopBar の wide（題・状態・場所・gap・切り替�
   assert.deepEqual([textOf(bar.children[1] as El), (bar.children[1] as El).props["data-tone"]], ["判断待ち", "warning"]);
   const place = bar.children[2] as El;
   assert.deepEqual(
-    [place.type, place.props.type, place.props["data-act"], place.props["aria-haspopup"], place.props.disabled, place.props.title, place.props["aria-disabled"]],
-    ["button", "button", "place", "dialog", true, reason, undefined],
+    [place.type, place.props.type, place.props["data-act"], place.props["aria-haspopup"], "disabled" in place.props, place.props.title, place.props["aria-disabled"], place.props["aria-label"]],
+    ["button", "button", "place", "dialog", false, reason, "true", "場所: self-agent"],
   );
-  assert.equal(textOf(find(place, "c-top-place-text")), "場所: self-agent");
+  // 帯に見せる字は名前だけ
+  assert.equal(textOf(find(place, "c-top-place-text")), "self-agent");
+  // 動かせないときは押しても on.place を呼ばない
+  const pe = fakeEvent();
+  (place.props.onClick as (e: unknown) => void)(pe);
+  assert.equal(pe.count(), 1);
+  // 理由が無ければ title も無い
+  const noReason = find(one(html`<${shell.TopBar} ...${{ ...props, place: { text: "self-agent", movable: false } }} on=${on} />`), "c-top-place")[0] as El;
+  assert.deepEqual([noReason.props["aria-disabled"], noReason.props.title], ["true", undefined]);
   const chevron = find(place, "c-icon")[0] as El;
   assert.deepEqual([chevron.props["data-size"], String((chevron.children[0] as El).props.href).endsWith("#chevron-down")], ["sm", true]);
   const seg = find(bar, "c-seg")[0] as El;
@@ -1551,10 +1565,10 @@ test("web components: TopBar の wide（題・状態・場所・gap・切り替�
   const items = find(seg, "c-seg-item");
   assert.deepEqual(items.map((i) => [textOf(i), i.props["aria-checked"]]), [["会話", "true"], ["端末", "false"]]);
   (items[1]?.props.onClick as (e: unknown) => void)(fakeEvent());
-  // 押せる場所は title なし・押すと opener を渡す
+  // 押せる場所は aria-disabled なし・title は「場所を変える」・押すと opener を渡す
   const movable = one(html`<${shell.TopBar} ...${topProps({ variant: "wide", note: "調べ物" })} on=${on} />`);
   const p2 = find(movable, "c-top-place")[0] as El;
-  assert.deepEqual([p2.props.disabled, p2.props.title], [false, undefined]);
+  assert.deepEqual(["disabled" in p2.props, p2.props["aria-disabled"], p2.props.title, p2.props["aria-label"], textOf(find(p2, "c-top-place-text"))], [false, undefined, "場所を変える", "場所: General", "General"]);
   const x = { scrollIntoView: () => undefined };
   (p2.props.onClick as (e: unknown) => void)({ currentTarget: x });
   assert.deepEqual(calls, [["view", "pane"], ["place", x]]);

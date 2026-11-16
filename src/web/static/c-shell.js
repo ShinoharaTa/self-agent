@@ -75,7 +75,8 @@ const TOP_VIEWS = [
 
 /**
  * 見出しの中身。view が talk・other でなければ null（何も描かない）。スマホは場所・切り替えを出さず（「…」の板から）、広い幅は右腕を出さない（右の列の物）。
- * compact（広い幅で根が狭いとき。入口が測って渡す）は、広い幅でも場所・切り替えを帯に出さず、スマホと同じく補足の語にする
+ * compact（広い幅で根が狭いとき。入口が測って渡す）は、広い幅でも場所・切り替えを帯に出さず、スマホと同じく補足の語にする。
+ * place は text が空でない文字列のときだけ場所として扱う。広い幅の帯のボタンは名前だけを見せ、「場所: 」付きは読み上げの名前（label）
  */
 export function topModel({ variant, view, title, status, note, place, views, hand, menu, compact }) {
   if (view !== "talk" && view !== "other") return null;
@@ -83,7 +84,8 @@ export function topModel({ variant, view, title, status, note, place, views, han
   const narrow = v === "wide" && compact === true;
   const talk = view === "talk";
   const st = talk && status && filled(status.text) ? { text: status.text, tone: TOP_TONES.includes(status.tone) ? status.tone : "muted" } : null;
-  const placeText = talk && place ? "場所: " + place.text : null;
+  const placeName = talk && place && filled(place.text) ? place.text : null;
+  const placeText = placeName === null ? null : "場所: " + placeName;
   const noteText = talk && filled(note) ? note : null;
   let rest = "";
   let pl = null;
@@ -99,7 +101,7 @@ export function topModel({ variant, view, title, status, note, place, views, han
     rest = noteText ?? "";
     if (placeText !== null) {
       const disabled = place.movable !== true;
-      pl = { text: placeText, disabled, reason: disabled && filled(place.reason) ? place.reason : null };
+      pl = { text: placeName, label: placeText, disabled, reason: disabled && filled(place.reason) ? place.reason : null };
     }
     if (talk && views) vw = { value: views.value === "pane" ? "pane" : "talk", items: TOP_VIEWS };
   }
@@ -134,8 +136,15 @@ export function TopBar({ variant, view, title, status, note, place, views, hand,
     ${wide ? statusEl : null}
     ${wide ? restEl : null}
     ${m.place
-      ? html`<button class="c-top-place" key="place" type="button" data-act="place" aria-haspopup="dialog" disabled=${m.place.disabled}
-          title=${m.place.reason ?? undefined} onClick=${(event) => on.place(event.currentTarget)}>
+      ? html`<button class="c-top-place" key="place" type="button" data-act="place" aria-haspopup="dialog" aria-label=${m.place.label}
+          aria-disabled=${m.place.disabled ? "true" : undefined} title=${m.place.disabled ? (m.place.reason ?? undefined) : "場所を変える"}
+          onClick=${(event) => {
+            if (m.place.disabled) {
+              event.preventDefault();
+              return;
+            }
+            on.place(event.currentTarget);
+          }}>
           <span class="c-top-place-text">${m.place.text}</span>
           <${Icon} name="chevron-down" size="sm" />
         </button>`
