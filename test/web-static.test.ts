@@ -2203,8 +2203,9 @@ type ShellApp = {
   activeTabId: () => string | null;
   closeDrawer: () => void;
   refreshStatus: () => void;
+  refreshSidebar: () => void;
 };
-type Topics = { load: () => Promise<void>; schedule: () => void; render: () => void };
+type Topics = { load: () => Promise<void>; schedule: () => void; render: () => void; counts: () => { turns: number; running: number } };
 type HandFrame = { title: string; placeholder: string; ops?: () => DomNode[]; outgoing?: (text: string) => string; replyText?: (text: string) => string; replyExtras?: (text: string) => DomNode[] };
 
 // 一覧のモデル（c-list.js）。素の JS で型が無いので、URL を変数にして型の解決を避ける（test/web-components.test.ts と同じ）
@@ -2965,6 +2966,18 @@ test("web static: v3 の下のバーの入口: 最初の応答の前に描き、
   assert.ok(f.list.bottoms.length > before);
   pairs();
   assert.equal(f.list.bottoms.at(-2)!.hand, "turn");
+});
+
+test("web static: 話題に null が混ざった応答でも counts は投げず、右腕の口と下のバーを描く道も止まらない", async () => {
+  const h = loadShell();
+  await h.flush();
+  h.api.reply = () => Promise.resolve(v3Result([null, v3Topic("ch:a", { mark: "running" })], { turns: 1 }));
+  await h.topics.load();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.topics.counts())), { turns: 1, running: 1 });
+  const before = h.list.bottoms.length;
+  assert.doesNotThrow(() => h.app.refreshSidebar());
+  assert.ok(h.list.bottoms.length > before);
+  assert.equal(h.bottomState().turns, 1);
 });
 
 test("web static: v3 の入口（SA.list）が無いとき、init は落ちず一覧の場所に 1 文と読み直すボタンを出し、下のバーは出さず、ほかは動く", async () => {
