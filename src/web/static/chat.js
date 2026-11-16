@@ -246,20 +246,23 @@
     reloadAfterOp(channelId);
   }
 
-  /** /close の確認の確定（selected は添字の配列・"all"・"none"） */
+  /** /close の確認の確定（selected は添字の配列・"all"・"none"）。通ったかに resolve する */
   async function confirmClose(channelId, selected, buttons) {
     for (const b of buttons) b.disabled = true;
+    let ok = false;
     try {
       const data = await SA.api.post("/api/sessions/" + encodeURIComponent(channelId) + "/close/confirm", { selected }, { quiet: true });
       delete picked[channelId];
       const registered = data && typeof data.registered === "number" ? data.registered : 0;
       toast(registered > 0 ? "閉じました。タスクを " + registered + " 件登録しました" : "閉じました");
       if (data && data.registered > 0 && store.tasks !== null) store.reload("tasks");
+      ok = true;
     } catch (err) {
       opFailed(err, () => confirmClose(channelId, selected, []));
       for (const b of buttons) b.disabled = false;
     }
     reloadAfterOp(channelId);
+    return ok;
   }
 
   /** /close の確認のカード（要約・候補のチェックボックス・[全部登録][選んだものを登録][登録しない]） */
@@ -310,12 +313,14 @@
   // ===== 右腕の場所を変える確認（M6g。Discord の [変える][このまま] と同じ処理） =====
   const MOVE_STALE_TEXT = "この確認はもう使えません";
 
-  /** 場所を変える確認に答える（action は accept・keep。[もう一度] はボタン無しでここから） */
+  /** 場所を変える確認に答える（action は accept・keep。[もう一度] はボタン無しでここから）。通ったかに resolve する */
   async function answerMove(channelId, id, action, buttons) {
     for (const b of buttons) b.disabled = true;
+    let ok = false;
     try {
       await SA.api.post("/api/topics/moves/" + encodeURIComponent(id) + "/" + action, {}, { quiet: true });
       toast(action === "accept" ? "場所を変えています" : "場所はこのままにしました");
+      ok = true;
     } catch (err) {
       if (err && err.status === 409 && err.code === "stale") toast(MOVE_STALE_TEXT);
       else if (err && err.data && typeof err.data.message === "string") toast(err.data.message);
@@ -323,6 +328,7 @@
       for (const b of buttons) b.disabled = false;
     }
     reloadAfterOp(channelId);
+    return ok;
   }
 
   /** 場所を変える確認のカード（今の場所・変える先・[変える][このまま]） */
