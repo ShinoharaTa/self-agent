@@ -48,7 +48,7 @@ export function sendKey(event, touch) {
 }
 
 /**
- * 入力欄。on: { input(今の値), send() }。inputRef は textarea の要素を受ける callback の ref（口が渡す）。
+ * 入力欄。on: { input(今の値), send() }。send は押せるとき（本文が在り、送っている途中でない）だけ呼ぶ（［送る］も Enter も）。inputRef は textarea の要素を受ける callback の ref（口が渡す）。
  * textarea は升の最初の子で、前に条件つきの兄弟を置かない。直下の子に key を付ける（兄弟が増えても textarea を作り直さない）
  */
 export function Composer({ model, on, inputRef }) {
@@ -61,6 +61,8 @@ export function Composer({ model, on, inputRef }) {
           onKeyDown=${(event) => {
             if (!sendKey(event, model.touch)) return;
             event.preventDefault();
+            // ［送る］と同じく、空・送っている途中は呼ばない（改行も入れない）
+            if (model.sendDisabled || model.sendBusy) return;
             on.send();
           }}></textarea>
         <div class="c-composer-mirror" aria-hidden="true">${model.mirror}</div>
@@ -76,7 +78,9 @@ export function Composer({ model, on, inputRef }) {
 /**
  * 入力欄の口（入口が 1 回だけ呼ぶ。render は c-lib の render を渡す）。{ draw(root, state), set(root, text), focus(root), drop(root) }。
  * 根ごとに { node, text, ref } を覚える。ref は根ごとに 1 つの同じ関数で、欄の要素が新しくなったときだけその時の本文を入れる（同じ要素には書かない）。
- * draw は覚えの本文を替えて描くだけで、既に在る要素の値に触れない。値を書き換えるのは set だけ。例外は握らない（握るのは入口）
+ * draw は覚えの本文を替えて描くだけで、既に在る要素の値に触れない。値を書き換えるのは set だけ。例外は握らない（握るのは入口）。
+ * 欄がまだ無い根への set は false を返し、その本文は次の draw の state.text に負ける（最初の本文は draw の state.text で渡す）。
+ * set は写し（高さ）を変えないので、呼ぶ側は set の後に同じ本文で draw する
  */
 export function composerMouth(render) {
   const memo = new WeakMap();
