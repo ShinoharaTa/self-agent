@@ -2316,6 +2316,30 @@ type ShellApp = {
 type Topics = { load: () => Promise<void>; schedule: () => void; render: () => void };
 type HandFrame = { title: string; placeholder: string; ops?: () => DomNode[]; outgoing?: (text: string) => string; replyText?: (text: string) => string; replyExtras?: (text: string) => DomNode[] };
 
+// 一覧のモデル（c-list.js）。素の JS で型が無いので、URL を変数にして型の解決を避ける（test/web-components.test.ts と同じ）
+type ListRow = { id: string; title: string; mark: string; state: { text: string; tone: string } | null; time: string | null; tag: string | null; done: boolean; current: boolean };
+type ListGroup = {
+  type: "group";
+  key: string;
+  kind: string;
+  name: string;
+  note: { text: string; tone: string } | null;
+  canAdd: boolean;
+  addLabel: string;
+  rows: ListRow[];
+  done: { label: string; open: boolean; loading: boolean; rows: ListRow[]; more: string } | null;
+};
+type ListOthers = { type: "others"; label: string; open: boolean; forced: boolean; groups: ListGroup[] };
+type ListBlock = ListGroup | ListOthers | { type: "label"; text: string };
+type ListTurn = { id: string; title: string; meta: string; sub: string; current: boolean };
+type ListModel = { phase: string; note: string; turns: { count: number; nextId: string | null; items: ListTurn[] } | null; blocks: ListBlock[]; hitCount: number };
+type ListOn = { open: (id: string, done: boolean) => unknown; add: (key: string, opener: unknown) => unknown; toggleDone: (key: string) => unknown; toggleOthers: () => unknown; retry: () => unknown };
+type ListState = Record<string, unknown> & { on: ListOn; isUnread: (channelId: string, last: unknown) => boolean };
+const listUrl = new URL("../src/web/static/c-list.js", import.meta.url).href;
+const { listModel } = (await import(listUrl)) as { listModel: (state: unknown) => ListModel };
+/** モデルの中の群（「ほかのプロジェクト」の中も） */
+const modelGroups = (m: ListModel): ListGroup[] => m.blocks.flatMap((b) => (b.type === "group" ? [b] : b.type === "others" ? b.groups : []));
+
 const v3Topic = (id: string, o: Record<string, unknown> = {}) => ({ id, title: id, origin: "session", persona: null, activityAt: null, state: "active", last: null, mark: null, turn: null, group: "g", place: null, ...o });
 const v3Result = (topics: unknown[], o: Record<string, unknown> = {}) => ({ groups: [{ key: "g", name: "General", turns: 0, running: 0 }], topics, turns: 0, turnIds: [], rightHands: [], ...o });
 
@@ -2324,7 +2348,17 @@ const v3Result = (topics: unknown[], o: Record<string, unknown> = {}) => ({ grou
  * ch: のタブは data-stick="bottom" の .ed-scroll（高さは heights。既定 1,000・見える高さ 200）と見出しの [‹] を描く
  */
 function loadShell(
-  opts: { phone?: boolean; hash?: string; known?: (tab: string) => boolean; status?: unknown; width?: number; storage?: Record<string, string>; initState?: unknown; asyncBack?: boolean } = {},
+  opts: {
+    phone?: boolean;
+    hash?: string;
+    known?: (tab: string) => boolean;
+    status?: unknown;
+    width?: number;
+    storage?: Record<string, string>;
+    initState?: unknown;
+    asyncBack?: boolean;
+    focusRow?: boolean;
+  } = {},
 ) {
   // width は .v3 の幅（右腕の形を決める。既定 1,400 = 列。一覧は 280px）
   // initState は最初の entry の state（再読み込みで残った物）。asyncBack なら back() の移動と popstate は runHistory() まで待つ（ブラウザと同じく非同期）
@@ -2656,6 +2690,36 @@ function loadShell(
       return api.postReply();
     },
   };
+  // 部品の入口（c-app.js の SA.list）の代わり: draw は state とモデルを覚え（作るときに例外なら false）、ほかは呼ばれた事を覚える
+  const listSeen = {
+    states: [] as ListState[],
+    models: [] as ListModel[],
+    focusRows: [] as string[],
+    focusLists: 0,
+    top: 0,
+  };
+  SA.list = {
+    draw(st: ListState) {
+      listSeen.states.push(st);
+      try {
+        listSeen.models.push(listModel(st));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    focusRow(id: string) {
+      listSeen.focusRows.push(id);
+      return opts.focusRow ?? true;
+    },
+    focusList() {
+      listSeen.focusLists++;
+    },
+    scrollTop: () => listSeen.top,
+    setScrollTop(n: number) {
+      listSeen.top = n;
+    },
+  };
   vm.runInNewContext(read("topics.js"), context);
   vm.runInNewContext(read("shell.js"), context);
   const advance = (ms: number) => {
@@ -2672,7 +2736,43 @@ function loadShell(
   };
   const scroll = () => ed.querySelector(".ed-scroll")!;
   const row = (container: DomNode, id: string) => container.querySelector(`button.v3-row[data-topic="${id}"]`);
+  /** 最後に draw へ渡したモデル・state */
+  const model = (): ListModel => {
+    const m = listSeen.models[listSeen.models.length - 1];
+    assert.ok(m, "SA.list.draw が呼ばれていない");
+    return m;
+  };
+  const lastState = (): ListState => {
+    const st = listSeen.states[listSeen.states.length - 1];
+    assert.ok(st, "SA.list.draw が呼ばれていない");
+    return st;
+  };
+  /** モデルの中の群の行（完了・「ほかのプロジェクト」の中も）。無ければ null */
+  const rowOf = (id: string): ListRow | null => {
+    for (const g of modelGroups(model())) {
+      const found = [...g.rows, ...(g.done ? g.done.rows : [])].find((r) => r.id === id);
+      if (found) return found;
+    }
+    return null;
+  };
+  const turnOf = (id: string): ListTurn | null => model().turns?.items.find((t) => t.id === id) ?? null;
+  const groupOf = (key: string): ListGroup | null => modelGroups(model()).find((g) => g.key === key) ?? null;
+  /** 最後の state.on を呼ぶ（部品のボタンを押した代わり） */
+  const press = {
+    open: (id: string, done = false) => lastState().on.open(id, done),
+    add: (key: string, opener: unknown) => lastState().on.add(key, opener),
+    toggleDone: (key: string) => lastState().on.toggleDone(key),
+    toggleOthers: () => lastState().on.toggleOthers(),
+    retry: () => lastState().on.retry(),
+  };
   return {
+    list: listSeen,
+    model,
+    listState: lastState,
+    rowOf,
+    turnOf,
+    groupOf,
+    press,
     app: SA.app as ShellApp,
     topics: SA.topics as Topics,
     nodes: { v3, ed, groups, turns, turnsRows, note, listBody, headOps, searchBox, foot, views, sheet: ids.get("v3-sheet")!, list, main, bar, hand, handEd, handShow, handAsk, handOpen, backdrop },
@@ -2799,6 +2899,31 @@ test("web static: v3 の open: ch: から切り替えても onClose を呼ばず
   assert.equal(h.app.activeTabId(), "ch:b");
   assert.equal(h.rendered.length, before);
   assert.deepEqual(h.closes, ["cc:x"]);
+});
+
+test("web static: v3 の一覧の入口: render は SA.list.draw に決まった鍵の state を渡し、on・isUnread は毎回同じ物。isUnread は (channelId, last) を store.isUnread({ id, last }) に包む", async () => {
+  const h = loadShell();
+  const asked: unknown[] = [];
+  h.store.isUnread = (c) => {
+    asked.push(JSON.parse(JSON.stringify(c)));
+    return c.id === "u1";
+  };
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
+  await h.flush();
+  await h.topics.load();
+  const first = h.listState();
+  assert.deepEqual(Object.keys(first).sort(), ["ago", "current", "data", "dataDone", "doneGroup", "failed", "filter", "isUnread", "on", "othersOpen", "time"]);
+  h.topics.render();
+  const second = h.listState();
+  assert.notEqual(first, second, "state は描くたびに作る");
+  assert.equal(second.on, first.on);
+  assert.equal(second.isUnread, first.isUnread);
+  assert.deepEqual(Object.keys(second.on).sort(), ["add", "open", "retry", "toggleDone", "toggleOthers"]);
+  asked.length = 0;
+  assert.equal(second.isUnread("u1", "L1"), true);
+  assert.equal(second.isUnread("u2", null), false);
+  assert.deepEqual(asked, [{ id: "u1", last: "L1" }, { id: "u2", last: null }]);
+  assert.equal(h.model().phase, "ready");
 });
 
 test("web static: v3 の load・schedule: 読み込み中に頼まれた分は並行にせず後で 1 回、形の合わない応答・描けない応答は失敗の表示で次の予約が掛かる", async () => {

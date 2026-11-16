@@ -496,6 +496,7 @@
     draw(groups);
     if (body && body.scrollTop !== top) body.scrollTop = top;
     if (focused && document.activeElement !== focused && document.contains(focused)) focused.focus({ preventScroll: true });
+    if (SA.list) SA.list.draw(listState());
   }
 
   function draw(groups) {
@@ -542,6 +543,51 @@
     else if (filterWords().length > 0 && hitCount === 0) setNote("当たる話題がありません");
     else setNote(null);
     document.title = (data.turns > 0 ? "(" + data.turns + ") " : "") + "self-agent";
+  }
+
+  // ===== 部品の入口（c-app.js の SA.list）へ渡す物 =====
+  /** 部品は (channelId, last) で訊く（store.isUnread は { id, last }） */
+  const IS_UNREAD = (channelId, last) => store.isUnread({ id: channelId, last });
+
+  /** 一覧の部品が押されたとき（1 回だけ作る） */
+  const LIST_ON = {
+    open: (id, done) => openRow(id, done),
+    add: (key, opener) => SA.app.newSession(key, opener),
+    toggleDone(key) {
+      // 開いておけるのは 1 つ。開いたら ?done= で読み直し、閉じたら読み直さない
+      if (doneGroup !== key) {
+        doneGroup = key;
+        render();
+        load();
+      } else {
+        doneGroup = null;
+        render();
+      }
+    },
+    toggleOthers() {
+      // 絞り込み中は開いたまま（保存した開閉は変えない）
+      if (filter.trim() !== "") return;
+      saveOthers(!othersSaved());
+      render();
+    },
+    retry: () => load(),
+  };
+
+  /** listModel（c-list.js）が読む状態 */
+  function listState() {
+    return {
+      data,
+      failed,
+      filter,
+      current,
+      doneGroup,
+      dataDone,
+      othersOpen: othersSaved(),
+      isUnread: IS_UNREAD,
+      time: SA.ui.shortTime,
+      ago: SA.views.ago,
+      on: LIST_ON,
+    };
   }
 
   /** 絞り込みの文字を変える（描き直しは呼んだ側の render） */
