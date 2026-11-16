@@ -15,7 +15,7 @@ const JS_FILES = readdirSync(STATIC_DIR).filter((n) => /^c-.*\.js$/.test(n)).sor
 const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "bubble-r", "bubble-tail", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
-  "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x",
+  "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x", "card-max", "check",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字） */
@@ -35,6 +35,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-shell.css": /^\.c-(?:bottom|top)(?![a-z])/,
   "c-talk.css": /^\.c-(?:talk|msg|bubble|md|steps|run|notice|divider)(?![a-z])/,
   "c-composer.css": /^\.c-composer(?![a-z])/,
+  "c-cards.css": /^\.c-(?:cards|card|note)(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
 };
 
@@ -178,8 +179,8 @@ const partProblems = (name: string, text: string): string[] => forbidden(name, t
 const entryProblems = (name: string, text: string): string[] => forbidden(name, text, ENTRY_WORDS, ENTRY_PARTS);
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-cards.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -254,7 +255,7 @@ test("web components: 入口の TOP_FULL_MIN は tokens.css の --c-top-full-min
   assert.doesNotMatch(app, /v3-main/);
 });
 
-test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-app は hook なし）・動的な import と createPortal が無い", () => {
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer・c-cards は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-cards・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
     "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
@@ -262,6 +263,7 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     "c-shell.js": ["./c-lib.js", "./c-atoms.js"],
     "c-talk.js": ["./c-lib.js", "./c-atoms.js"],
     "c-composer.js": ["./c-lib.js", "./c-atoms.js"],
+    "c-cards.js": ["./c-lib.js", "./c-atoms.js"],
     "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js", "./c-composer.js"],
   };
   for (const [name, targets] of Object.entries(allowed)) {
@@ -270,13 +272,13 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
     assert.equal(dynamic, false, `${name}: 動的な import`);
   }
-  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
+  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
-test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄は動きを付けず、会話は実行中の輪だけ", () => {
+test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）とカード（c-cards）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄とカードは動きを付けず、会話は実行中の輪だけ", () => {
   // 部品は id を出さない（モデルのキー id: や data-topic=${id} は当たらない）
-  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
+  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
   // 部品の色・高さ・字を外から変えない（印の位置・PC の [+] の当たりを戻す・下のバーの並べ方だけ）
   const ALLOWED_OUTSIDE = new Set([".c-turn > .c-mark", '.c-group-head > .c-iconbtn[data-size="sm"]::after', '.c-bottom > .c-btn[data-size="sm"]']);
   // K2 の部品のクラス（c-atoms.css・c-sheet.css のセレクタに出る全部。その下のクラスも）は外から宛てない
@@ -292,7 +294,7 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
     if (/(?:^|; ?)(?:animation|transition)(?:-[a-z-]+)?\s*:/.test(rule.body)) assert.deepEqual(rule.selectors, [".c-run-spin"], `c-talk.css: ${rule.selectors.join(",")}`);
   }
   assert.equal((stripCssComments(read("c-talk.css")).match(/@keyframes\b/g) ?? []).length, 1, "c-talk.css: @keyframes は 1 つ");
-  for (const name of ["c-list.css", "c-shell.css", "c-composer.css"]) {
+  for (const name of ["c-list.css", "c-shell.css", "c-composer.css", "c-cards.css"]) {
     if (!CSS_FILES.includes(name)) continue;
     const rules = parseCss(read(name));
     for (const rule of rules) {
@@ -2595,4 +2597,226 @@ test("web components: 入力欄の欄と写しは 1 つの規則で余白・枠�
   for (const r of own) assert.ok(!props(r).some((p) => p.startsWith("background")), "c-composer の地");
   const src = stripCssComments(read("c-composer.css"));
   assert.doesNotMatch(src, /\b(?:animation|transition)(?:-[a-z-]+)?\s*:|@keyframes/);
+});
+
+// ===== カード（c-cards.js。docs/plan/web-ui-components.md §6 の K5） =====
+const cardsUrl = new URL("../src/web/static/c-cards.js", import.meta.url).href;
+const cards = (await import(cardsUrl)) as Record<string, Fn> & { PERMISSION_NOTE: string };
+/** on の名前を全部持つ記録（呼ばれた順に [名前, ...引数]） */
+function cardRec(): { calls: unknown[][]; on: Record<string, (...a: unknown[]) => void> } {
+  const calls: unknown[][] = [];
+  const rec = (name: string) => (...a: unknown[]): void => void calls.push([name, ...a]);
+  const names = ["permit", "always", "task", "close", "move", "pick", "pickOther", "other", "answer", "dismiss"];
+  return { calls, on: Object.fromEntries(names.map((n) => [n, rec(n)])) };
+}
+const permItem = (o: Obj = {}): Obj => ({ kind: "permission", id: 7, tool: "Bash", mode: "default（使うたびに確認）", summary: "npm test", rule: "", ruleNote: "", always: false, left: "残り 4 分 12 秒", urgent: false, busy: false, ...o });
+const closeItem = (o: Obj = {}): Obj => ({ kind: "close", id: "c1", summary: "段落 1\n\n段落 2", tasks: ["1. 題 A", "2. 題 B（期限 11/20）", "3. 題 C"], picked: [], busy: false, ...o });
+const moveItem = (o: Obj = {}): Obj => ({ kind: "move", id: "m1", from: "self-agent", to: "見本のプロジェクト", busy: false, ...o });
+const cardOf = (item: Obj, on = cardRec().on): El => {
+  const name = item.kind === "permission" ? "PermissionCard" : item.kind === "close" ? "CloseCard" : "MoveCard";
+  return one(html`<${cards[name]} item=${item} on=${on} />`);
+};
+/** 直下の子の要素（文字は落とす） */
+const kidsOf = (el: El): El[] => el.children.filter((c): c is El => typeof c !== "string");
+/** ボタンの [kind, 字] と、押せない印・理由 */
+const btnsOf = (el: El): unknown[][] => find(el, "c-btn").map((b) => [b.props["data-kind"], textOf(b)]);
+const press = (b: El | undefined): void => (b?.props.onClick as (e: unknown) => void)(fakeEvent());
+
+test("web components: Cards は並びでない・空で null、根は div.c-cards、子の key は kind:id、知らない kind は出さない", () => {
+  for (const items of [undefined, null, "x", {}, []]) assert.equal(cards.Cards({ items, on: cardRec().on }), null, JSON.stringify(items));
+  const items = [{ kind: "note", id: "n1", text: "待ち…", busy: true }, closeItem(), moveItem(), permItem(), { kind: "nope", id: 1 }, null];
+  const v = cards.Cards({ items, on: cardRec().on }) as RawNode;
+  assert.deepEqual([v.type, v.props.class], ["div", "c-cards"]);
+  assert.deepEqual(keysOf(v.props.children), ["note:n1", "close:c1", "move:m1", "permission:7"]);
+  const root = one(v);
+  assert.deepEqual(kidsOf(root).map((k) => [k.type, k.props["data-kind"] ?? k.props.class]), [["p", "c-note"], ["section", "close"], ["section", "move"], ["section", "permission"]]);
+});
+
+test("web components: Card の aria-label・data-kind、直下の子の key（head・子・note）、meta・note が空なら出さず、data-urgent は true・false・属性なし", () => {
+  const raw = (o: Obj): RawNode => cards.Card({ kind: "x", label: "名前", title: "題", children: [html`<p key="a">中</p>`], ...o }) as RawNode;
+  const v = raw({ meta: "右", note: "下", urgent: true });
+  assert.deepEqual([v.type, v.props.class, v.props["aria-label"], v.props["data-kind"]], ["section", "c-card", "名前", "x"]);
+  assert.deepEqual(keysOf(v.props.children), ["head", "a", "note"]);
+  const el = one(v);
+  assert.deepEqual(kidsOf(el).map((k) => k.props.class), ["c-card-head", undefined, "c-card-note"]);
+  const [title] = find(el, "c-card-title");
+  assert.deepEqual([title?.type, textOf(title as El)], ["h2", "題"]);
+  assert.equal(find(el, "c-card-meta")[0]?.props["data-urgent"], "true");
+  assert.equal(find(one(raw({ meta: "右", urgent: false })), "c-card-meta")[0]?.props["data-urgent"], "false");
+  const plain = find(one(raw({ meta: "右" })), "c-card-meta")[0];
+  assert.ok(plain && !("data-urgent" in plain.props && plain.props["data-urgent"] !== undefined));
+  const bare = one(raw({ meta: "", note: "" }));
+  assert.deepEqual([find(bare, "c-card-meta").length, find(bare, "c-card-note").length], [0, 0]);
+  assert.deepEqual(keysOf((raw({}) as RawNode).props.children), ["head", "a"]);
+});
+
+test("web components: 許可のカードの木と言葉（見出し・facts・pre・常に許可の有り無し・ボタン・説明の文。残り時間の印と section の title は無い）", () => {
+  const el = cardOf(permItem());
+  assert.deepEqual([el.props["aria-label"], textOf(find(el, "c-card-title"))], ["許可の要求", "あなたの番: 許可"]);
+  assert.ok(!("title" in el.props) || el.props.title === undefined);
+  assert.equal(textOf(find(el, "c-card-facts")), "Bash ・ default（使うたびに確認）");
+  assert.equal(textOf(find(el, "c-card-mono")), "Bash");
+  assert.equal(textOf(cardOf(permItem({ mode: "" }))).includes(" ・ "), false);
+  assert.equal(textOf(find(cardOf(permItem({ mode: "" })), "c-card-facts")), "Bash");
+  const [pre] = find(el, "c-card-code");
+  assert.deepEqual([pre?.type, textOf(pre as El)], ["pre", "npm test"]);
+  assert.equal(find(el, "c-card-always").length, 0);
+  assert.deepEqual([textOf(find(el, "c-card-meta")), find(el, "c-card-meta")[0]?.props["data-urgent"]], ["残り 4 分 12 秒", "false"]);
+  for (const always of [true, false]) {
+    const r = cardOf(permItem({ rule: "Bash(npm run test:*)", ruleNote: "添え書き", always }));
+    const [box] = find(r, "c-card-always");
+    assert.ok(box);
+    const [input] = find(box, "c-card-check-input");
+    assert.deepEqual([input?.type, input?.props.type, input?.props.checked, input?.props.disabled], ["input", "checkbox", always, false]);
+    assert.equal(textOf(find(box, "c-card-check-text")), "このセッションでは常に許可");
+    assert.equal(textOf(find(box, "c-card-rule-code")), "Bash(npm run test:*)");
+    assert.equal(textOf(find(box, "c-card-rule")), "Bash(npm run test:*)（添え書き）");
+  }
+  const noNote = cardOf(permItem({ rule: "Bash(ls)", ruleNote: "" }));
+  assert.equal(textOf(find(noNote, "c-card-rule")), "Bash(ls)");
+  assert.equal(find(noNote, "c-card-rule-note").length, 0);
+  assert.deepEqual(btnsOf(el), [["secondary", "許可"], ["ghost", "拒否"]]);
+  for (const b of find(el, "c-btn")) assert.deepEqual([b.props["data-size"], find(b, "c-icon").length, b.props["aria-disabled"]], ["md", 0, undefined]);
+  assert.equal(find(el, "c-card-actions")[0]?.props["data-count"], "2");
+  const last = kidsOf(el).at(-1);
+  assert.deepEqual([last?.props.class, textOf(last as El)], ["c-card-note", cards.PERMISSION_NOTE]);
+  assert.equal(cards.PERMISSION_NOTE, "端末や RC のダイアログでも答えられます。先に答えた方が効きます。");
+  const all = JSON.stringify(expand(html`<${cards.PermissionCard} item=${permItem({ rule: "r", urgent: true })} on=${cardRec().on} />`), (k, v) => (typeof v === "function" ? undefined : v));
+  assert.doesNotMatch(all, /data-permission-left/);
+  assert.equal(find(cardOf(permItem({ urgent: true })), "c-card-meta")[0]?.props["data-urgent"], "true");
+});
+
+test("web components: 許可のカードの呼び出し（許可は always か allow、拒否は deny、チェックは always(id, checked)。busy は押しても呼ばない）", () => {
+  const go = (o: Obj): unknown[][] => {
+    const rec = cardRec();
+    const [allow, deny] = find(cardOf(permItem(o), rec.on), "c-btn");
+    press(allow);
+    press(deny);
+    return rec.calls;
+  };
+  assert.deepEqual(go({}), [["permit", 7, "allow"], ["permit", 7, "deny"]]);
+  assert.deepEqual(go({ rule: "Bash(ls)", always: true }), [["permit", 7, "always"], ["permit", 7, "deny"]]);
+  assert.deepEqual(go({ rule: "Bash(ls)", always: false }), [["permit", 7, "allow"], ["permit", 7, "deny"]]);
+  assert.deepEqual(go({ always: true }), [["permit", 7, "allow"], ["permit", 7, "deny"]]);
+  const rec = cardRec();
+  const el = cardOf(permItem({ rule: "Bash(ls)" }), rec.on);
+  const [input] = find(el, "c-card-check-input");
+  for (const checked of [true, false]) (input?.props.onChange as (e: unknown) => void)({ currentTarget: { checked } });
+  assert.deepEqual(rec.calls, [["always", 7, true], ["always", 7, false]]);
+  assert.equal(find(el, "c-card-check")[0]?.props.title, undefined);
+  // busy
+  const busyRec = cardRec();
+  const busy = cardOf(permItem({ rule: "Bash(ls)", always: true, busy: true }), busyRec.on);
+  for (const b of find(busy, "c-btn")) {
+    assert.deepEqual([b.props["aria-disabled"], b.props.title, b.props["aria-busy"]], ["true", "答えを送っています", undefined]);
+    press(b);
+  }
+  assert.deepEqual(busyRec.calls, []);
+  assert.equal(find(busy, "c-card-check-input")[0]?.props.disabled, true);
+  assert.equal(find(busy, "c-card-check")[0]?.props.title, "答えを送っています");
+});
+
+test("web components: 閉じる前の確認の木と言葉（見出し・右の文・dt・候補の行と checked・候補なし・ボタン）", () => {
+  const el = cardOf(closeItem({ picked: [1] }));
+  assert.deepEqual([el.props["aria-label"], textOf(find(el, "c-card-title"))], ["閉じる前の確認", "あなたの番: 閉じる前の確認"]);
+  const [meta] = find(el, "c-card-meta");
+  assert.deepEqual([textOf(meta as El), meta?.props["data-urgent"]], ["Discord でも選べます", undefined]);
+  assert.deepEqual(find(el, "c-card-dt").map((d) => [d.type, textOf(d)]), [["dt", "要約"], ["dt", "タスクにする候補"]]);
+  assert.equal(textOf(find(el, "c-card-text")), "段落 1\n\n段落 2");
+  const rows = find(el, "c-card-check");
+  assert.deepEqual(rows.map((r) => [r.type, textOf(r), find(r, "c-card-check-input")[0]?.props.checked]), [
+    ["label", "1. 題 A", false],
+    ["label", "2. 題 B（期限 11/20）", true],
+    ["label", "3. 題 C", false],
+  ]);
+  assert.equal(find(el, "c-card-none").length, 0);
+  assert.deepEqual(btnsOf(el), [["primary", "全部登録"], ["secondary", "選んだものを登録"], ["secondary", "登録しない"]]);
+  assert.equal(find(el, "c-card-actions")[0]?.props["data-count"], "3");
+  assert.equal(find(el, "c-card-note").length, 0);
+  const none = cardOf(closeItem({ tasks: [] }));
+  assert.equal(textOf(find(none, "c-card-none")), "やることの候補はありません。");
+  assert.equal(find(none, "c-card-check").length, 0);
+  assert.deepEqual(btnsOf(none), [["secondary", "登録しない"]]);
+  assert.equal(find(none, "c-card-actions")[0]?.props["data-count"], "1");
+});
+
+test("web components: 閉じる前の確認の呼び出し（close の 3 つ・task(id, 番号, checked)。選んでいない間の理由・busy）", () => {
+  const rec = cardRec();
+  const el = cardOf(closeItem({ picked: [0] }), rec.on);
+  for (const b of find(el, "c-btn")) press(b);
+  const inputs = find(el, "c-card-check-input");
+  (inputs[2]?.props.onChange as (e: unknown) => void)({ currentTarget: { checked: true } });
+  (inputs[0]?.props.onChange as (e: unknown) => void)({ currentTarget: { checked: false } });
+  assert.deepEqual(rec.calls, [["close", "c1", "all"], ["close", "c1", "picked"], ["close", "c1", "none"], ["task", "c1", 2, true], ["task", "c1", 0, false]]);
+  const emptyRec = cardRec();
+  const empty = cardOf(closeItem(), emptyRec.on);
+  const [all, picked, none] = find(empty, "c-btn");
+  assert.deepEqual([all?.props["aria-disabled"], picked?.props["aria-disabled"], picked?.props.title, none?.props["aria-disabled"]], [undefined, "true", "候補を選ぶと押せます", undefined]);
+  press(picked);
+  assert.deepEqual(emptyRec.calls, []);
+  const busyRec = cardRec();
+  const busy = cardOf(closeItem({ busy: true }), busyRec.on);
+  for (const b of find(busy, "c-btn")) {
+    assert.deepEqual([b.props["aria-disabled"], b.props.title], ["true", "答えを送っています"]);
+    press(b);
+  }
+  for (const input of find(busy, "c-card-check-input")) assert.equal(input.props.disabled, true);
+  assert.deepEqual(busyRec.calls, []);
+  const busyNone = find(cardOf(closeItem({ tasks: [], busy: true })), "c-btn");
+  assert.deepEqual(busyNone.map((b) => b.props.title), ["答えを送っています"]);
+});
+
+test("web components: 場所を変える確認の木・言葉・呼び出し・busy", () => {
+  const rec = cardRec();
+  const el = cardOf(moveItem(), rec.on);
+  assert.deepEqual([el.props["aria-label"], textOf(find(el, "c-card-title")), textOf(find(el, "c-card-meta"))], ["場所を変える確認", "あなたの番: 場所を変える確認", "Discord でも選べます"]);
+  assert.deepEqual(find(el, "c-card-dt").map(textOf), ["今の場所", "変える先"]);
+  assert.deepEqual(find(el, "c-card-dd").map(textOf), ["self-agent", "見本のプロジェクト"]);
+  assert.deepEqual(find(el, "c-card-text").map((t) => [t.type, textOf(t)]), [["p", "会話は新しくなり、担当には要点を引き継ぎます。記録はこのまま残ります。ファイルは動かしません。"]]);
+  assert.deepEqual(btnsOf(el), [["primary", "変える"], ["secondary", "このまま"]]);
+  assert.equal(find(el, "c-card-actions")[0]?.props["data-count"], "2");
+  for (const b of find(el, "c-btn")) press(b);
+  assert.deepEqual(rec.calls, [["move", "m1", "accept"], ["move", "m1", "keep"]]);
+  const busyRec = cardRec();
+  for (const b of find(cardOf(moveItem({ busy: true }), busyRec.on), "c-btn")) {
+    assert.deepEqual([b.props["aria-disabled"], b.props.title], ["true", "答えを送っています"]);
+    press(b);
+  }
+  assert.deepEqual(busyRec.calls, []);
+});
+
+test("web components: Note は busy のときだけ role=status・aria-busy・data-busy", () => {
+  const busy = one(cards.Note({ text: "閉じる前の要約をしています…", busy: true }));
+  assert.deepEqual([busy.type, busy.props.class, busy.props.role, busy.props["aria-busy"], busy.props["data-busy"], textOf(busy)], ["p", "c-note", "status", "true", "true", "閉じる前の要約をしています…"]);
+  const plain = one(cards.Note({ text: "まだ会話はありません。" }));
+  for (const name of ["role", "aria-busy", "data-busy"]) assert.ok(!(name in plain.props) || plain.props[name] === undefined, name);
+});
+
+test("web components: カードの言葉は今の画面に在る物（新しいのは「あなたの番: 」の見出しだけ）。カードの CSS の枠・見出し・行・要約の高さ・動きなし。htm の属性で value を渡さない", () => {
+  const old = read("chat.js") + read("views.js");
+  const words = [
+    "このセッションでは常に許可", "答えを送っています", "候補を選ぶと押せます", "Discord でも選べます", "要約", "タスクにする候補", "やることの候補はありません。", "今の場所", "変える先",
+    "会話は新しくなり、担当には要点を引き継ぎます。記録はこのまま残ります。ファイルは動かしません。", cards.PERMISSION_NOTE,
+    "許可", "拒否", "全部登録", "選んだものを登録", "登録しない", "変える", "このまま", "許可の要求", "閉じる前の確認", "場所を変える確認",
+  ];
+  for (const w of words) assert.ok(old.includes(w), w);
+  const js = stripJsComments(read("c-cards.js"));
+  const strings = [...js.matchAll(/"([^"\n]*[^\x00-\x7f][^"\n]*)"/g)].map((m) => m[1] ?? "");
+  for (const s of strings) if (!s.startsWith("あなたの番: ")) assert.ok(old.includes(s), s);
+  assert.deepEqual(strings.filter((s) => s.startsWith("あなたの番: ")).sort(), ["あなたの番: 場所を変える確認", "あなたの番: 許可", "あなたの番: 閉じる前の確認"].sort());
+  // CSS
+  const rules = parseCss(read("c-cards.css"));
+  const decls = (sel: string, inFine = false): string[] =>
+    rules.filter((r) => r.selectors.includes(sel) && (inFine ? r.at.some((a) => a.includes(FINE)) : r.at.length === 0)).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
+  for (const d of ["border: var(--border-width) solid var(--warning)", "border-radius: var(--c-card-r)", "background: var(--surface)", "max-width: var(--c-card-max)"]) assert.ok(decls(".c-card").includes(d), d);
+  for (const prop of ["margin", "font-weight", "line-height", "font-size"]) assert.ok(decls(".c-card-title").some((d) => d.startsWith(prop + ":")), prop);
+  assert.ok(decls(".c-card-check").includes("min-height: var(--c-tap)"));
+  for (const d of ["width: var(--c-check)", "height: var(--c-check)", "accent-color: var(--accent)"]) assert.ok(decls(".c-card-check-input").includes(d), d);
+  assert.ok(!decls(".c-card-code").some((d) => d.startsWith("max-height")));
+  assert.ok(decls(".c-card-code", true).some((d) => d.startsWith("max-height")));
+  for (const r of rules) if (r.body.includes("max-height")) assert.ok(r.at.some((a) => a.includes(FINE)), r.selectors.join(","));
+  assert.doesNotMatch(stripCssComments(read("c-cards.css")), /\b(?:animation|transition)(?:-[a-z-]+)?\s*:|@keyframes/);
+  assert.doesNotMatch(js, /(?<![\w.-])(?:value|defaultValue)\s*=\s*\$\{/);
+  assert.doesNotMatch(js, /(?<![\w.-])(?:value|defaultValue)\s*=\s*["']/);
+  assert.doesNotMatch(js, /defaultValue/);
 });

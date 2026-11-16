@@ -1,0 +1,216 @@
+/* 「あなたの番」のカード（c-cards.js。docs/plan/web-ui-components.md §6 の K5）。寸法は tokens.css の --c-* と calc、色は tokens.css の変数、字と間隔は base.css の目盛りだけ。動きは無い */
+
+/* 並び。左右の余白は持たない（置く側が決める） */
+.c-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+/* 枠。どの幅でも --warning の線と角。字と色は自分で持つ（置かれた先からの継承を当てにしない） */
+.c-card {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  width: 100%;
+  max-width: var(--c-card-max);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--warning);
+  border-radius: var(--c-card-r);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--c-font-body);
+  line-height: var(--leading-normal);
+}
+
+.c-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+
+/* 見出しは一覧の「あなたの番」の見出しと同じ字。base.css の裸の h2 の字と余白を全部書き直す */
+.c-card-title {
+  margin: 0;
+  color: var(--warning);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-normal);
+}
+
+.c-card-meta {
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.c-card-meta[data-urgent="false"] {
+  color: var(--text);
+}
+
+.c-card-meta[data-urgent="true"] {
+  color: var(--warning);
+}
+
+/* ツール名とモード */
+.c-card-facts {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  overflow-wrap: anywhere;
+}
+
+.c-card-mono {
+  font-family: var(--font-mono);
+}
+
+/* 要約。スマホは高さを切らない */
+.c-card-code {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+}
+
+.c-card-always {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* チェック・ラジオの行。label の箱が押せる所で、高さは --c-tap 以上 */
+.c-card-check {
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-height: var(--c-tap);
+  padding: calc((var(--c-tap) - var(--c-check)) / 2) 0;
+}
+
+.c-card-check-input {
+  flex: none;
+  width: var(--c-check);
+  height: var(--c-check);
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.c-card-check-text {
+  display: grid;
+  align-content: center;
+  min-width: 0;
+  min-height: var(--c-check);
+  overflow-wrap: anywhere;
+}
+
+/* 常に許可のルール（チェックの字の頭にそろえる）。スマホは 1 行で横に送る */
+.c-card-rule {
+  margin: 0;
+  padding-left: calc(var(--c-check) + var(--space-3));
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.c-card-rule-code {
+  display: block;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.c-card-rule-note {
+  overflow-wrap: anywhere;
+}
+
+.c-card-dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.c-card-dt {
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.c-card-dd {
+  min-width: 0;
+  margin: 0 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+/* そのままの字（Markdown にしない） */
+.c-card-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.c-card-none {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+/* ボタンの並び。スマホは 1 つ・3 つなら縦、2 つなら 2 等分 */
+.c-card-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.c-card-actions[data-count="2"] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.c-card-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+}
+
+/* 待ちの行と 1 行の文 */
+.c-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  text-align: center;
+}
+
+.c-note[data-busy="true"] {
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+/* 細かい指し手の広い幅: 要約は 8 行で止めて中を送る・ルールは折り返す・ボタンは左から 1 行 */
+@media (min-width: 640px) and (hover: hover) and (pointer: fine) {
+  .c-card-code {
+    max-height: calc(var(--font-sm) * var(--leading-normal) * 8 + var(--space-3) * 2);
+    overflow: auto;
+  }
+
+  .c-card-rule-code {
+    display: inline;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    overflow-x: visible;
+  }
+
+  .c-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
