@@ -58,6 +58,8 @@
     handWant: true,
     handOver: false,
     handMode: "over",
+    // 見出しを compact（場所・[会話][端末] を「…」の板へ）にするか。列 2 の幅を測れるまでは compact（fitTop が入口に測らせて決める）
+    topCompact: true,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -212,7 +214,7 @@
   /** 見出しに渡す state（入口 c-app.js の TopBar の props）。何も開いていなければ view: none */
   function topState() {
     const info = S.active ? SA.views.info(S.active) : null;
-    if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, menu: false, controls: "v3-hand", on: TOP_ON };
+    if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, controls: "v3-hand", on: TOP_ON };
     const t = SA.topics.find(S.active) || null;
     const head = topHead();
     let status = null;
@@ -235,7 +237,8 @@
         : null,
       views: paneSession() !== null ? { value: S.view2 } : null,
       hand: handMark(),
-      menu: t !== null && (phone() || (head !== null && head.menu.length > 0)),
+      compact: S.topCompact,
+      menu: t !== null && (topNarrow() || (head !== null && head.menu.length > 0)),
       controls: "v3-hand",
       on: TOP_ON,
     };
@@ -248,16 +251,36 @@
     if (!SA.top) return;
     const st = topState();
     if (SA.top.draw(st)) return;
-    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, menu: false, controls: "v3-hand", on: TOP_ON });
+    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, controls: "v3-hand", on: TOP_ON });
   }
 
-  /** 見出しの「…」の板: スマホは場所を変える・[会話][端末] の代わりを先頭に、後ろにチャンネルの操作（head.menu） */
+  /** 見出しの帯に場所・[会話][端末] が出ていないか（スマホか、広い幅の compact）。出ていなければ「…」の板に入れる */
+  function topNarrow() {
+    return phone() || S.topCompact;
+  }
+
+  /**
+   * 列 2 の幅を入口に測らせ、見出しの compact を決める（替わったときだけ描く）。測れなければ compact。
+   * 重ねた右腕・板が開いている間は測らない（後ろの見出しの形を替えない。板は opener を覚えている）。呼ぶのは resize・applyHand の最後・スマホの境・板の close
+   */
+  function fitTop() {
+    if (!SA.top) return;
+    if (S.handMode === "over" && S.handOver) return;
+    const sheet = $("v3-sheet");
+    if (sheet && sheet.open) return;
+    const next = SA.top.compact() === false ? false : true;
+    if (next === S.topCompact) return;
+    S.topCompact = next;
+    renderBar();
+  }
+
+  /** 見出しの「…」の板: スマホと compact は場所を変える・[会話][端末] の代わりを先頭に、後ろにチャンネルの操作（head.menu） */
   function openTopMenu(opener) {
     const t = S.active ? SA.topics.find(S.active) : null;
     if (!t) return;
     const head = topHead();
     const items = [];
-    if (phone()) {
+    if (topNarrow()) {
       items.push({
         icon: "pencil",
         label: "場所を変える",
@@ -514,6 +537,8 @@
     renderHandEntries();
     // 右腕を開いた・重ねた右腕を畳んで下の会話が出た（readingChannelIds が変わる）
     SA.chat.markSeenShown();
+    // 列 2 の幅が変わった（右腕の開閉・形）
+    fitTop();
   }
 
   /** 右腕の入れ物を描く。描く前の位置を覚え、下に付いていたら（か bottom なら）下へ、でなければ前の位置（renderEd と同じ考え方） */
@@ -1477,6 +1502,7 @@
       // 見出しを先に（右腕が閉じて焦点を戻す先の [右腕] が見出しの中にある）
       renderBar();
       fitHand();
+      fitTop();
       // 列 2 が見えるようになったときの既読（setView は切り替わった後の phone() で測るので、ここで付け直す。隠れた会話は readingChannelIds が外す）
       SA.chat.markSeenShown();
     });
@@ -1507,6 +1533,8 @@
       }
     });
     window.addEventListener("resize", fitHand);
+    // 右腕の形が決まった後に測る（登録の順に呼ばれる）
+    window.addEventListener("resize", fitTop);
     // 手で書き換えた hash・リンク（自分で書いた hash は replaceState・pushState なので来ない）
     window.addEventListener("hashchange", () => {
       const tabId = tabFromHash(location.hash);
@@ -1528,6 +1556,8 @@
       const opener = sheetOpener;
       sheetOpener = null;
       if (opener && document.contains(opener)) opener.focus();
+      // 開いている間は測らないので、閉じた所で測る（opener に戻した後。compact に替わって消えたら入口が「…」へ）
+      fitTop();
     });
 
     // 最初の 1 枚の前に右腕の形を決める（v3.html の初期値は畳んだ重ねる形）。再読み込みで残った右腕の印は外す

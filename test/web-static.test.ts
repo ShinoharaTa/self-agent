@@ -2897,9 +2897,9 @@ test("web static: 見出しの state（topState）: 何も開いていなけれ�
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { title: "話題 A", group: "general", place: { dir: null } }), v3Topic("ch:b", { title: "" })]));
   await h.flush();
   await h.topics.load();
-  assert.deepEqual(topPlain(h.lastTop()), { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, menu: false, controls: "v3-hand" });
+  assert.deepEqual(topPlain(h.lastTop()), { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, controls: "v3-hand" });
   h.app.open("settings");
-  assert.deepEqual(topPlain(h.lastTop()), { view: "other", title: "題:settings", status: null, note: null, place: null, views: null, hand: null, menu: false, controls: "v3-hand" });
+  assert.deepEqual(topPlain(h.lastTop()), { view: "other", title: "題:settings", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, controls: "v3-hand" });
   h.app.open("ch:a");
   assert.deepEqual(topPlain(h.lastTop()), {
     view: "talk",
@@ -2909,6 +2909,7 @@ test("web static: 見出しの state（topState）: 何も開いていなけれ�
     place: { text: "なし", movable: false, reason: null },
     views: null,
     hand: null,
+    compact: false,
     menu: false,
     controls: "v3-hand",
   });
@@ -2966,7 +2967,14 @@ test("web static: 見出しを描けなければ、題だけの state で 1 回�
   h.app.open("ch:a");
   const [full, quiet] = h.top.draws.slice(n);
   assert.equal(full!.status!.text, "あなたの番");
-  assert.deepEqual(topPlain(quiet!), { view: "talk", title: "A", status: null, note: null, place: null, views: null, hand: null, menu: false, controls: "v3-hand" });
+  assert.deepEqual(topPlain(quiet!), { view: "talk", title: "A", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, controls: "v3-hand" });
+  // 最小の state にも今の compact が入る
+  h.top.narrow = true;
+  h.fire("resize");
+  const k = h.top.draws.length;
+  ok.push(false);
+  h.app.refresh("ch:a");
+  assert.equal(h.top.draws[k + 1]!.compact, true);
   assert.equal(quiet!.on, full!.on);
   // 2 回とも描けなければ 2 回で止まる
   const m = h.top.draws.length;
@@ -3061,6 +3069,163 @@ test("web static: refresh は列 2 に出ているタブなら見出しも描き
   assert.equal(h.top.draws.length, n);
   h.app.refresh("ch:1");
   assert.equal(h.top.draws.length, n + 1);
+});
+
+test("web static: fitTop: resize で列 2 を測らせ、compact が替わったときだけ描く。null（測れない）は compact", async () => {
+  const h = loadShell();
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1", { movable: true })], { groups: startGroups() }));
+  await h.flush();
+  await h.topics.load();
+  h.app.open("ch:1");
+  assert.equal(h.lastTop().compact, false);
+  assert.equal(h.lastTop().menu, false, "広い幅で head.menu が無い");
+  h.top.narrow = true;
+  h.fire("resize");
+  assert.equal(h.lastTop().compact, true);
+  assert.equal(h.lastTop().menu, true, "compact は場所が「…」の中");
+  const n = h.top.draws.length;
+  h.fire("resize");
+  assert.equal(h.top.draws.length, n, "同じ値なら描かない");
+  h.top.narrow = false;
+  h.fire("resize");
+  assert.equal(h.top.draws.length, n + 1);
+  assert.equal(h.lastTop().compact, false);
+  // 測れない（null）は compact。もう 1 回でも描かない
+  h.top.narrow = null;
+  h.fire("resize");
+  assert.equal(h.lastTop().compact, true);
+  const m = h.top.draws.length;
+  h.fire("resize");
+  assert.equal(h.top.draws.length, m);
+});
+
+test("web static: fitTop: 右腕の開閉（applyHand）で測り直し、重ねた右腕・板が開いている間は測らない（閉じた所で測る）", async () => {
+  // 列の右腕
+  const c = await loadHand();
+  let before = c.top.measures;
+  c.top.narrow = true;
+  handClose(c).dispatch("click");
+  assert.ok(c.top.measures > before, "畳む");
+  assert.equal(c.lastTop().compact, true);
+  before = c.top.measures;
+  c.top.narrow = false;
+  c.nodes.handShow.dispatch("click");
+  assert.ok(c.top.measures > before, "開く");
+  assert.equal(c.lastTop().compact, false);
+  // 重ねた右腕: 開いている間の resize は測らない。畳むと測る
+  const o = await loadHand({ width: 900 });
+  o.nodes.handShow.dispatch("click");
+  assert.equal(o.nodes.v3.getAttribute("data-hand-mode"), "over");
+  before = o.top.measures;
+  o.top.narrow = true;
+  o.fire("resize");
+  assert.equal(o.top.measures, before);
+  o.nodes.backdrop.dispatch("click");
+  assert.ok(o.top.measures > before);
+  assert.equal(o.lastTop().compact, true);
+  // 板: 開いている間の resize は測らず、close で opener に戻してから測る
+  const s = await loadHand({}, [v3Topic("ch:1")]);
+  s.app.open("ch:1");
+  const sheet = s.nodes.sheet as DomNode & { open?: boolean };
+  s.chatHeads["1"] = { title: "x", status: null, note: null, menu: [{ icon: "x", label: "何か", run: () => undefined }] };
+  s.top.narrow = true;
+  s.fire("resize");
+  s.top.narrow = false;
+  s.fire("resize");
+  s.lastTop().on.menu(s.nodes.topButtons.menu);
+  assert.equal(sheet.getAttribute("open"), "");
+  sheet.open = true;
+  before = s.top.measures;
+  s.top.narrow = true;
+  s.fire("resize");
+  assert.equal(s.top.measures, before, "板が開いている間は測らない");
+  // close の受け手: opener へ焦点 → 測る の順
+  let focusedAt = -1;
+  const menuBtn = s.nodes.topButtons.menu as DomNode & { focus: () => void };
+  const focus = menuBtn.focus.bind(menuBtn);
+  menuBtn.focus = () => {
+    focusedAt = s.top.measures;
+    focus();
+  };
+  sheet.open = false;
+  sheet.removeAttribute("open");
+  sheet.dispatch("close");
+  assert.equal(focusedAt, before, "測る前に opener へ");
+  assert.equal(s.top.measures, before + 1);
+  assert.equal(s.lastTop().compact, true);
+});
+
+test("web static: compact の「…」の板は広い幅でも「場所を変える」（動かせなければ理由）と「端末を見る」⇄「会話に戻る」を先頭に、後ろに head.menu", async () => {
+  const topics = [
+    v3Topic("ch:1", { title: "動かせない", movable: { reason: "完了した話題は場所を変えられません" } }),
+    v3Topic("ch:3", { title: "端末", origin: "cc", sessionId: "s1", movable: true }),
+  ];
+  const w = loadShell({ narrow: true });
+  w.api.reply = () => Promise.resolve(v3Result(topics, { groups: startGroups() }));
+  await w.flush();
+  await w.topics.load();
+  const headMenu = [{ icon: "rotate-ccw", label: "会話を新しくする", run: () => undefined }];
+  w.chatHeads["1"] = { title: "x", status: null, note: null, menu: headMenu };
+  w.chatHeads["3"] = { title: "x", status: null, note: null, menu: headMenu };
+  const rows = () => w.nodes.sheet.querySelectorAll("button.more-row").map((r) => [textOf(r.querySelector("span.sb-label")!), r.getAttribute("disabled") !== null, r.querySelector("span.sb-meta") ? textOf(r.querySelector("span.sb-meta")!) : null]);
+  w.app.open("ch:1");
+  assert.equal(w.lastTop().compact, true);
+  w.lastTop().on.menu(w.nodes.topButtons.menu);
+  assert.deepEqual(rows(), [
+    ["場所を変える", true, "完了した話題は場所を変えられません"],
+    ["会話を新しくする", false, null],
+  ]);
+  w.nodes.sheet.removeAttribute("open");
+  w.app.open("ch:3");
+  w.lastTop().on.menu(w.nodes.topButtons.menu);
+  assert.deepEqual(rows().map((r) => r[0]), ["場所を変える", "端末を見る", "会話を新しくする"]);
+  w.nodes.sheet.querySelectorAll("button.more-row")[1]!.dispatch("click");
+  assert.equal(w.app.activeTabId(), "cc:s1");
+  w.lastTop().on.menu(w.nodes.topButtons.menu);
+  assert.deepEqual(rows().map((r) => r[0]), ["場所を変える", "会話に戻る", "会話を新しくする"]);
+  w.nodes.sheet.querySelectorAll("button.more-row")[1]!.dispatch("click");
+  assert.equal(w.app.activeTabId(), "ch:3");
+  // 「場所を変える」は場所の板へ
+  w.lastTop().on.menu(w.nodes.topButtons.menu);
+  w.nodes.sheet.querySelectorAll("button.more-row")[0]!.dispatch("click");
+  assert.equal(w.nodes.sheet.getAttribute("aria-label"), "場所を変える");
+});
+
+test("web static: SA.top が無いとき、resize・右腕の開閉・板の close で投げない。スマホの境をまたぐと測る", async () => {
+  const h = loadShell({ noTop: true });
+  await h.flush();
+  h.fire("resize");
+  h.nodes.handShow.dispatch("click");
+  h.nodes.sheet.dispatch("close");
+  h.setPhone(true, 390);
+  h.setPhone(false, 1400);
+  const t = loadShell();
+  await t.flush();
+  const before = t.top.measures;
+  // setPhone は change と resize を出すので、change の受け手だけでも 1 回は増える
+  t.setPhone(true, 390);
+  assert.ok(t.top.measures >= before + 1);
+});
+
+test("web static: 測れるまでは compact（S.topCompact の初めは true）。測れれば広い幅は compact でない", async () => {
+  const h = loadShell({ narrow: null });
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1", { movable: true })], { groups: startGroups() }));
+  await h.flush();
+  await h.topics.load();
+  h.app.open("ch:1");
+  assert.equal(h.lastTop().compact, true);
+  assert.equal(h.lastTop().menu, true);
+  h.lastTop().on.menu(h.nodes.topButtons.menu);
+  assert.equal(textOf(h.nodes.sheet.querySelectorAll("button.more-row")[0]!.querySelector("span.sb-label")!), "場所を変える");
+  // 既定（測れて false）なら広い形
+  const w = loadShell();
+  w.api.reply = h.api.reply;
+  await w.flush();
+  await w.topics.load();
+  w.app.open("ch:1");
+  assert.equal(w.lastTop().compact, false);
+  assert.match(fnSource(read("shell.js"), "fitTop"), /const next = SA\.top\.compact\(\) === false \? false : true;/);
+  assert.match(read("shell.js"), /\n {4}topCompact: true,\n/);
 });
 
 test("web static: v3 の open: ch: から切り替えても onClose を呼ばず、cc: からは呼ぶ。同じ話題・引けないタブでは何もしない", async () => {
@@ -6738,7 +6903,8 @@ test("web static: 一覧 → 会話（open と popstate の両方）と、重ね
   assert.ok(readAt(n), "畳んだ時点で下の 1 を読んでいる");
   const sh = read("shell.js");
   assert.match(fnSource(sh, "setView"), /stickOnShow = false;\n\s*\/\/[^\n]*\n\s*SA\.chat\.markSeenShown\(\);\n {2}\}$/);
-  assert.match(fnSource(sh, "applyHand"), /SA\.chat\.markSeenShown\(\);\n {2}\}$/);
+  // 状態を書いた後に呼ぶ（その後は列 2 の幅を測り直す fitTop だけ）
+  assert.match(fnSource(sh, "applyHand"), /SA\.chat\.markSeenShown\(\);\n\s*\/\/[^\n]*\n\s*fitTop\(\);\n {2}\}$/);
 });
 
 test("web static: スマホで会話を開いて一覧に戻した後に幅が広くなると、markSeenShown を呼び、その時点でその会話を読んでいる", async () => {
