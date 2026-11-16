@@ -1,0 +1,39 @@
+/* 部品の見本のページ（gallery.html。docs/plan/web-ui-components.md §9 の K1）。色は tokens.css の変数、字と間隔は base.css の目盛りだけ */
+.c-gallery {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  max-width: var(--container-max);
+  margin: 0 auto;
+  padding: calc(var(--space-6) + env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-right)) calc(var(--space-6) + env(safe-area-inset-bottom)) max(var(--space-4), env(safe-area-inset-left));
+}
+
+.c-gallery-title {
+  font-size: var(--font-xl);
+  line-height: var(--leading-tight);
+  color: var(--text);
+}
+
+.c-gallery-note {
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+}
+
+.c-gallery-count {
+  min-height: var(--tap);
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-sm);
+  font-variant-numeric: tabular-nums;
+  touch-action: manipulation;
+  user-select: none;
+  transition: transform var(--dur-micro) var(--ease-out);
+}
+
+.c-gallery-count:active {
+  transform: scale(0.97);
+}

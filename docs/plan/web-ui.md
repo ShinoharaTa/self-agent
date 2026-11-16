@@ -8,7 +8,7 @@
 目的: Discord を開かずに、tailnet の中のブラウザ（PC はキーボード中心、スマホは指）から、Bot の状態・使用量・セッション・会話を見て、会話に送り、実行中のターンの途中経過を見て止め、セッション・タスク・リマインド・記憶を操作できる。**Discord が主で、Web は同じ Bot・同じ DB を別の窓から使う。** Web から送った発言と返事は Discord にも出る。
 
 結論:
-1. 入口・認証・CSRF・CSP・技術は **v1 のまま**（§2）。別ポート `SELF_AGENT_WEB_PORT`（127.0.0.1）を `tailscale serve --https=9444` で出し、`SELF_AGENT_WEB_ALLOWED_LOGIN` 必須、任意の `SELF_AGENT_WEB_TOKEN` + HMAC の Cookie 30 日、依存は足さない。
+1. 入口・認証・CSRF・CSP・技術は **v1 のまま**（§2）。別ポート `SELF_AGENT_WEB_PORT`（127.0.0.1）を `tailscale serve --https=9444` で出し、`SELF_AGENT_WEB_ALLOWED_LOGIN` 必須、任意の `SELF_AGENT_WEB_TOKEN` + HMAC の Cookie 30 日、依存は足さない。新しい殻の部品だけは Preact + htm をビルドなしで同梱する（docs/plan/web-ui-components.md。2026-11-16）。実行時の依存は足さない。
 2. 画面は **1 枚の HTML の SPA**（`src/web/static/`。モック v2 の workbench・sidebar・views・chat・ui をそのまま移し、`data.js` を `/api/*` を呼ぶ `api.js` に置き換える）。ダーク既定・PC は 28px 行・指の端末は 44px。`templates/web/site/base.css` と `icons.svg` は**複製せず**配る（§3.3）。
 3. 会話の履歴は **DB に新しく保存する（案 B）**: `history` 表に、オーナーの発言（Discord で書いたものも）・Bot の返事（終わり方・手順・ツール回数）・区切り（/renew・/close・切り替え）を handler と各処理が書く（§4）。Discord の履歴は取りに行かない。未読の位置はブラウザ（localStorage）が持つ。
 4. Web から送れるのは **受け付けるチャンネル全部**（#inbox・#tasks・#<NAME>・セッションのチャンネル。全人格）。`Handler.submitText` が、**キューに入れる前に持ち主の Bot で「（Web から）」付きの本文をチャンネルに投稿し**（投稿できなければ受け付けない）、Discord の発言と同じ経路（最終発言の記録・待ち/完了 → 進行中・キュー・turn.ts）で 1 ターン入れ、返事はその投稿への返信にする（Discord 側でも会話が送った順に読める。§5）。
