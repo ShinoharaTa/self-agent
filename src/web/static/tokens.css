@@ -181,6 +181,8 @@
   --c-talk-max: 840px;
   --c-bubble-pad-y: 10px;
   --c-bubble-pad-x: 14px;
+  --c-card-max: 520px;
+  --c-check: 24px;
 }
 
 @media (min-width: 640px) and (hover: hover) and (pointer: fine) {
