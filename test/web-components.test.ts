@@ -254,7 +254,7 @@ test("web components: 入口の TOP_FULL_MIN は tokens.css の --c-top-full-min
   assert.doesNotMatch(app, /v3-main/);
 });
 
-test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-app は hook なし）・動的な import と createPortal が無い", () => {
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
     "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
@@ -262,7 +262,7 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     "c-shell.js": ["./c-lib.js", "./c-atoms.js"],
     "c-talk.js": ["./c-lib.js", "./c-atoms.js"],
     "c-composer.js": ["./c-lib.js", "./c-atoms.js"],
-    "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js"],
+    "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js", "./c-composer.js"],
   };
   for (const [name, targets] of Object.entries(allowed)) {
     if (!JS_FILES.includes(name)) continue;

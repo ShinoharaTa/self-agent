@@ -2,10 +2,12 @@
 // 部品の c-*.js のうち document・window・SA に触るのはここだけ（見本の c-gallery.js は別）。文は部品とモデルが持ち、ここには書かない
 // 下のバーは shell.js が SA.list.drawBar(bar) で押し込む。会話の見出し（K4）は SA.top.draw(state) で、compact にするかは shell.js が SA.top.compact() で測らせて決める
 // 会話の行（K4）は chat.js が根と state を SA.talk.draw(root, state)・1 秒ごとは SA.talk.tick(root, state) で押し込む（覚えと刻みは c-talk.js の talkMouth）
+// 会話の入力欄（K5）は chat.js が根と state を SA.composer.draw(root, state) で押し込み、送った後の空は SA.composer.set(root, "")（欄の要素と本文の覚えは c-composer.js の composerMouth）
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
 import { talkMouth } from "./c-talk.js";
+import { composerMouth } from "./c-composer.js";
 
 const listRoot = document.getElementById("c-list-root");
 
@@ -224,6 +226,50 @@ if (listRoot) {
     }
   }
 
+  /** 入力欄の口（根ごとに欄の要素と本文を覚える） */
+  const composer = composerMouth(render);
+
+  /** 入力欄を描く。描けなければ false（chat.js が古い入力欄に戻す） */
+  function drawComposer(root, state) {
+    try {
+      composer.draw(root, state);
+    } catch (error) {
+      // draw と同じく名前だけ
+      console.error("[web] composer draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    return true;
+  }
+
+  /** 欄の値を書き換える（送った後の空）。欄がまだ無い・書けなければ false */
+  function setComposer(root, text) {
+    try {
+      return composer.set(root, text);
+    } catch (error) {
+      console.error("[web] composer set failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+  }
+
+  /** 欄にフォーカス。欄が無い・できなければ false */
+  function focusComposer(root) {
+    try {
+      return composer.focus(root);
+    } catch (error) {
+      console.error("[web] composer focus failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+  }
+
+  /** 根を空にして覚えを消す */
+  function dropComposer(root) {
+    try {
+      composer.drop(root);
+    } catch {
+      // 外すだけなので握る
+    }
+  }
+
   // ↑↓・Home・End で行を動かす（修飾キー付きは素通し。完了の見出し・[+]・件数のボタンでは動かさない）
   listRoot.addEventListener("keydown", (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -249,4 +295,5 @@ if (listRoot) {
   window.SA.list = { draw, focusRow, focusList, scrollTop, setScrollTop, drawBar, focusHand };
   if (topRoot) window.SA.top = { draw: drawTop, focus: focusTop, compact: topCompact };
   window.SA.talk = { draw: drawTalk, tick: tickTalk, drop: dropTalk };
+  window.SA.composer = { draw: drawComposer, set: setComposer, focus: focusComposer, drop: dropComposer };
 }
