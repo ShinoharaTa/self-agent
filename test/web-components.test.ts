@@ -291,6 +291,13 @@ test("web components: 下のバーの自前のボタンは当たりの下限を�
   }
 });
 
+test("web components: 下のバーの上の線は高さを食わない（枠でなく内側の影）", () => {
+  const own = parseCss(read("c-shell.css")).filter((r) => r.at.length === 0 && r.selectors.includes(".c-bottom"));
+  assert.ok(own.length > 0);
+  for (const rule of own) assert.doesNotMatch(rule.body, /(?:^|;)\s*border-top(?:-[a-z]+)?\s*:/);
+  assert.ok(own.some((r) => /(?:^|;)\s*box-shadow:\s*inset\b/.test(r.body)));
+});
+
 test("web components: c-*.css のセレクタのクラスと、c-*.js（と gallery.html）が書くクラスが同じ集まり", () => {
   const inCss = new Set(CSS_FILES.flatMap((name) => parseCss(read(name)).filter((r) => !r.keyframe).flatMap((r) => r.selectors.flatMap(classesInSelector))));
   // 見本の根（c-gallery）は gallery.html に在る
