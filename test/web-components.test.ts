@@ -239,11 +239,15 @@ test("web components: 一覧と下のバー（c-list・c-shell）は id を出�
   for (const name of ["c-list.js", "c-shell.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
   // 部品の色・高さ・字を外から変えない（印の位置・PC の [+] の当たりを戻す・下のバーの並べ方だけ）
   const ALLOWED_OUTSIDE = new Set([".c-turn > .c-mark", '.c-group-head > .c-iconbtn[data-size="sm"]::after', '.c-bottom > .c-btn[data-size="sm"]']);
-  const ATOM = /\.c-(?:btn|iconbtn|badge|mark|icon)(?![a-z-])/;
+  // K2 の部品のクラス（c-atoms.css・c-sheet.css のセレクタに出る全部。その下のクラスも）は外から宛てない
+  const atomClasses = new Set(["c-atoms.css", "c-sheet.css"].flatMap((file) => parseCss(read(file)).filter((r) => !r.keyframe).flatMap((r) => r.selectors.flatMap(classesInSelector))));
+  for (const cls of ["c-btn", "c-iconbtn", "c-badge", "c-mark", "c-icon", "c-empty", "c-empty-text", "c-loading", "c-seg", "c-field", "c-input", "c-sheet", "c-toast"]) assert.ok(atomClasses.has(cls), cls);
   for (const name of ["c-list.css", "c-shell.css"]) {
     if (!CSS_FILES.includes(name)) continue;
     const rules = parseCss(read(name));
-    for (const rule of rules) for (const selector of rule.selectors) if (ATOM.test(selector)) assert.ok(ALLOWED_OUTSIDE.has(selector), `${name}: ${selector}`);
+    for (const rule of rules) {
+      for (const selector of rule.selectors) if (classesInSelector(selector).some((cls) => atomClasses.has(cls))) assert.ok(ALLOWED_OUTSIDE.has(selector), `${name}: ${selector}`);
+    }
     for (const rule of rules) assert.doesNotMatch(rule.body, /(?:^|; ?)(?:animation|transition)(?:-[a-z-]+)?\s*:/, `${name}: ${rule.selectors.join(",")}`);
     assert.equal(rules.some((r) => r.keyframe), false, `${name}: @keyframes`);
   }
@@ -718,6 +722,7 @@ const list = (await import(listUrl)) as Record<string, Fn> & {
   nextTurnId: (ids: string[], current: string | null) => string | null;
   listNote: (o: Obj) => string;
   listKey: (key: string, count: number, at: number) => number | null | undefined;
+  turnWord: (kind: unknown) => string;
   listModel: (state: Obj) => { phase: string; note: string; turns: null | { count: number; nextId: string | null; items: Obj[] }; blocks: Obj[]; hitCount: number };
 };
 
@@ -1208,4 +1213,32 @@ test("web components: BottomBar の形と押したとき（ほか・tab は K2 �
   (btns[1]?.props.onClick as (e: unknown) => void)(fakeEvent());
   (btns[2]?.props.onClick as (e: unknown) => void)({ preventDefault: () => undefined, currentTarget: y });
   assert.deepEqual(calls, [["tab", "reminders"], ["more", y]]);
+});
+
+test("web components: 知らない turn の kind は「あなたの番」の語（行の状態の語と、あなたの番の meta）", () => {
+  assert.equal(list.turnWord("permission"), "許可");
+  for (const k of ["later", undefined, null, "constructor", "toString"]) assert.equal(list.turnWord(k), "あなたの番", String(k));
+  const ctx = { isUnread: () => false, time: () => "12:00", current: null };
+  assert.deepEqual(list.rowModel(topicOf({ mark: "turn", turn: turnOf("later") }), ctx).state, { text: "あなたの番", tone: "warning" });
+  assert.deepEqual(list.rowModel(topicOf({ mark: "turn", turn: null }), ctx).state, { text: "あなたの番", tone: "warning" });
+  const d = sampleData();
+  (d.topics as Obj[])[0] = topicOf({ id: "ch:1", mark: "turn", turn: turnOf("later", "要約") });
+  assert.equal(list.turnItem("ch:1", stateOf(d))?.meta, "あなたの番・1 分前");
+  const row = find(one(html`<${list.TopicRow} row=${list.rowModel((d.topics as Obj[])[0] as Obj, ctx)} onOpen=${() => undefined} />`), "c-row-state")[0] as El;
+  assert.equal(textOf(row), "あなたの番");
+});
+
+test("web components: listModel は配列でない turnIds を空とし、同じ id は最初の 1 つだけ。bottomModel は tabs の null・id の無い物を捨てる", () => {
+  for (const turnIds of [undefined, null, "ch:1", { 0: "ch:1" }]) {
+    const d = sampleData();
+    d.turnIds = turnIds;
+    assert.equal(list.listModel(stateOf(d)).turns, null, String(turnIds));
+  }
+  const dup = sampleData();
+  dup.turnIds = ["ch:1", "hand:1", "ch:1", "hand:1"];
+  const m = list.listModel(stateOf(dup, { current: "hand:1" }));
+  assert.deepEqual(m.turns?.items.map((t) => t.id), ["ch:1", "hand:1"]);
+  assert.equal(m.turns?.nextId, "ch:1");
+  const tabs = [null, { title: "名前だけ" }, { id: "", title: "空" }, { id: "tasks", title: "タスク" }, undefined, "x", { id: null, title: "n" }];
+  assert.deepEqual(shell.bottomModel({ variant: "wide", tabs }).items, [{ act: "tab", id: "tasks", label: "タスク" }, { act: "more", label: "ほか" }]);
 });

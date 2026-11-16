@@ -24,7 +24,8 @@ export function bottomModel({ variant, turns, hand, tabs }) {
   const n = typeof turns === "number" && !Number.isNaN(turns) ? turns : 0;
   const more = { act: "more", label: "ほか" };
   if (v === "wide") {
-    const list = Array.isArray(tabs) ? tabs : [];
+    // null・id の無い物は捨てる
+    const list = Array.isArray(tabs) ? tabs.filter((tab) => tab !== null && typeof tab === "object" && tab.id !== undefined && tab.id !== null && tab.id !== "") : [];
     return { variant: v, items: [...list.map((tab) => ({ act: "tab", id: tab.id, label: tab.title })), more] };
   }
   const mark = hand === "turn" || hand === "unread" ? hand : null;
