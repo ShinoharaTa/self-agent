@@ -208,11 +208,11 @@
 | YourTurn（あなたの番） | 同 | items（題・種類・何を訊かれているか・時刻） | なし | モック D のとおり、スマホは warning の見出し「あなたの番 n」と枠なしの 2 行の行、PC は件数のボタン 1 つ（押すと次の待ちの話題）。0 件のときは出さない。その場の許可・拒否は持たない（項目を押して会話で答える。K5）（D5） |
 | GroupHead | 同 | name、turnCount、running、onNew（群の開閉は作らない） | なし | 36px。[+] は 44 の当たり |
 | TopicRow | 同 | id（key）、title、mark、meta（状態の語 1 つ）、time、current | なし | スマホ 44・PC 36。題は 1 行で省く。副次行は持たない。付記（場所の名前など）は 640px 以上では出さない |
-| TalkTimeline | `c-talk.js` / `.css` | turns、running、cards、onLoadOlder | 下に付いているか（スクロール） | 新着で下にいるときだけ下へ送る |
-| Bubble | 同 | who（owner・agent）、blocks、time、state（sending・failed） | なし | 角 `--c-bubble-r` と話者側の下だけ `--c-bubble-tail`。最大幅 スマホ 80/86%・PC 72/78%。**本文だけ**（D4） |
-| Steps（手順） | 同 | steps、open、onToggle | 開閉 | 吹き出しの**外**の下に小さく 1 行。0 件なら出さない |
-| RunLine（作業中の 1 行） | 同 | text、elapsed、onStop | なし | — |
-| Divider / Notice | 同 | text、tone | なし | — |
+| TalkTimeline | `c-talk.js` / `.css` | model（`talkModel(state, parse)` の結果: older・items・running）、on（older・toggleSteps(key)・toggleRunSteps・stop） | なし（手順の開閉・スクロールは入口と古い JS が持つ） | 根 `div.c-talk` が自分の字と色を持つ。**置くのは TalkTimeline だけ**（Bubble・RunLine・Notice・Divider を単独で置かない）。［前の会話を読む］・行（key 付き）・実行中の行の順。カード・入力欄・空の文は入れない（K5） |
+| Bubble | 同 | who（owner・agent）、label（読み上げの話者）、name（上の名前か null）、blocks、time、state（sending か null）、foot、onToggle | なし | `article.c-msg`。角 `--c-bubble-r` と話者側の下だけ `--c-bubble-tail`。最大幅 スマホ 80/86%・PC 72/78%。**本文だけ**（D4）。blocks は owner が `plain`（解析しない）、agent が `parseBlocks` の paragraph・heading（見出しのタグにしない）・code・list（入れ子 1 段）。知らない type は段落として text を出すので、表・引用（#389）は `parseBlocks` に type を足し、Blocks に描き方を足す。**コードの段は `pre` だけ**（中に code のタグを作らず、横に送れる）。送っている途中は時刻の欄が「送っています…」。時刻は文だけ（リンクにしない） |
+| Steps（手順） | 同 | text、tone（muted・warning・danger）、toggles、open、onToggle | なし（開閉は外が持つ。押したら描き直す） | 吹き出しの**外**の下に小さく 1 行（`.c-msg-foot` の時刻の隣）。完了で手順 0 は出さない。手順 0 の止まった・失敗は押せない文。`details` を使わず、ボタン（`aria-expanded`）の後ろに一覧（StepList）。見た目 24px・当たりは `::after` で指 44・PC 36。**狭い幅で入りきらない結果の文は末尾を省いて 1 行に保つ**（時刻は省かない） |
+| RunLine（作業中の 1 行） | 同 | run（name・text・waiting・recent・all・stop）、on | なし | 吹き出しにしない。回る輪・経過の文・待ちの文・最後の 3 手順・4 件からの「すべての手順」・abortable のときの［中断］。文が 1 秒ごとに変わるので `aria-live`・`role="status"` を付けない（`aria-busy`） |
+| Divider / Notice | 同 | text（Notice は time も） | なし | 文は要素で包まない。Notice の時刻だけ `span.c-notice-time` |
 | PermissionCard | `c-cards.js` / `.css` | tool、mode、detail、remainSec、canAlways、state、onAllow、onAlways、onDeny | なし（残り時間は入口から） | warning の枠（YourTurn と同じ見た目の言葉）。許可は secondary・拒否は ghost |
 | QuestionCard | 同 | question、options、multi、state、onAnswer | 選んだ物 | 同じ枠 |
 | CloseCard / MoveCard / ResumeCard | 同 | それぞれの文と 2 つのボタン | なし | 同じ枠（tone だけ違う） |
@@ -265,6 +265,8 @@
 | `--c-list-gap` | 10 | — | 行の印と題の間・「あなたの番」の項目の上下・PC の件数のボタンの外の余白（K3） |
 | `--c-top-full-min` | 520 | — | 広い幅の見出しが場所と［会話］［端末］を帯に出せる根の幅の下限。切ると compact（K4） |
 | `--c-top-place-min` | 96 | — | 見出しの場所のボタンの幅の下限（K4） |
+| `--c-talk-max` | 840 | — | 会話の列の最大の幅（K4） |
+| `--c-bubble-pad-y` / `--c-bubble-pad-x` | 10 / 14 | — | 吹き出しの上下 / 左右の内側の余白（K4） |
 
 - 板が下か中央かは寸法ではなく置き方なので、今の殻と同じ幅だけ（`@media (max-width: 639px)`）で `c-sheet.css` に書く。
 - 古い寸法のトークンは M8b で古い殻と一緒に消す。
@@ -278,7 +280,7 @@
 - K8 以降: `v3.html` の `<link>` に `app.css`・`shell.css` が無い。
 - 部品は `style` の prop と `dangerouslySetInnerHTML` を使わない（Preact は style を `style.cssText` で入れるので CSP では止まらない。11 系は数値に px を付けない）。動く値は `data-*` と CSS、どうしても要るときは入口が `style.setProperty` で CSS の変数を入れる。
 - `document`・`window` に触ってよいのは入口（`c-app.js` と見本の `c-gallery.js`）だけ。
-- `c-*.css` の `var()` は `--c-*` か許可リスト（`test/web-components.test.ts` の `ALLOWED_VARS`）だけ。許可リストは base.css の目盛り（`--space-*`・`--font-xs`〜`--font-base`・`--leading-*`・`--weight-*`・`--radius-*`・`--border-width`・`--ring-width`・`--dialog-max`・`--container-max`）、tokens.css の色（`--text-secondary` を含む）、動き・重なり・字（`--dur-*`・`--ease-out`・`--z-toast`・`--font-mono`）。ここに無い物（`--tap`・`--row`・`--icon-size`・`--font-lg` 以上・古い殻の寸法・`--kb`・`--vvh`）は落ちる。足すときはテストの許可リストとこの行を一緒に直す。
+- `c-*.css` の `var()` は `--c-*` か許可リスト（`test/web-components.test.ts` の `ALLOWED_VARS`）だけ。許可リストは base.css の目盛り（`--space-*`・`--font-xs`〜`--font-base`・`--leading-*`・`--weight-*`・`--radius-*`・`--border-width`・`--ring-width`・`--dialog-max`・`--container-max`）、tokens.css の色（`--text-secondary` と、会話の吹き出しの地 `--bubble-*` を含む）、動き・重なり・字（`--dur-*`・`--ease-out`・`--z-toast`・`--font-mono`）。ここに無い物（`--tap`・`--row`・`--icon-size`・`--font-lg` 以上・古い殻の寸法・`--kb`・`--vvh`）は落ちる。足すときはテストの許可リストとこの行を一緒に直す。
 
 ### 7.4 `chat.js`・`views.js` の中の見た目
 
@@ -390,7 +392,7 @@
 **K4 会話の見出し + 吹き出し**
 - やること: TopBar（1 段）、`c-talk.js/.css`。`chat.js` の `render` の先頭に、部品が登録されていればそちらへ渡す分岐を 1 つ足す。`chat.js` の `header`・`frameHeader`・`bubbleRow`・`renderTurn`・`renderRunning`・`stepsList` に当たる物を部品で作る（古い関数は古い殻のために残す）。
 - 受け入れ: (1) スマホの会話で、画面の上から本文の始まりまでが 56px + safe-area（今は約 113px）。(2) 戻る・題・状態・場所・「…」・右腕が 1 段に入り、題は 1 行で省かれる。(3) 吹き出しの中に「完了」の行が無い。手順は吹き出しの外の 1 行で、0 件なら出ない。(4) 1 文の返事の吹き出しの高さが 1 行ぶん + 余白。(5) 400 字の URL が吹き出しからはみ出さない。(6) 下に付いているときだけ新着で下へ送り、上を読んでいるときは動かさない。(7) 820 幅と PC で見出しが 1 段のまま折り返さない。待ちにする・閉じる・会話を新しくする・Discord は「…」の板の中。(8) コードの長い行は吹き出しの中で横に送れる。(9) 入力欄・カードはこの段では古いまま（混ざって見えることを PR に書く）。(10) `/` は変わらない。
-- 進み: 見出しの部品（`c-shell.js` の TopBar・`topModel`、BottomBar の `controls`）と見本の節「見出し（TopBar）」（スマホ 3・広い幅 5・compact 2。`npm run ui-shots` が見本の名前・高さ・1 段・はみ出し・省き・縮む順・題と状態の間・場所のボタンの幅・入れ物の幅を見る）は済み。本番の見出しも済（#398）。吹き出し（`c-talk`）はまだ（#399）。
+- 進み: 見出しの部品（`c-shell.js` の TopBar・`topModel`、BottomBar の `controls`）と見本の節「見出し（TopBar）」（スマホ 3・広い幅 5・compact 2。`npm run ui-shots` が見本の名前・高さ・1 段・はみ出し・省き・縮む順・題と状態の間・場所のボタンの幅・入れ物の幅を見る）は済み。本番の見出しも済（#398）。会話の部品（`c-talk`）と見本の節は済（#399 の 1 本目。見本の節「会話」は 6 つで、`npm run ui-shots` が見本の名前・吹き出しの中に結果の文が無い・1 行の吹き出しの高さ・幅の上限・角・はみ出し・長いコードを横に送れる・手順の行・実行中の行の読み上げ・根の字を、今の字・等幅の字・スマホは幅 375 でも見る）。本番の吹き出しはまだ。
 - 本番の見出しの形（#398）:
   - `v3.html` の列 2 の上は `#c-top-root` だけ（古い帯 `#v3-bar`・場所のボタン・［会話］［端末］・上の［右腕］は消した）。入口 `c-app.js` の口 `SA.top` は 3 つ: `draw(state)`（描けたか。描く前に見出しの中に在った焦点のボタンが消えたら「…」→「一覧へ」→ 最初のボタンへ）、`focus(act)`（back・place・menu・hand）、`compact()`（今の列の幅なら compact か。測るだけで覚えない・描かない。スマホは false、測れなければ null）
   - state の欄は view（none・talk・other）・title・status・note・place・views・hand・compact・menu・controls・on。作るのは `shell.js` の `topState()`。会話のチャンネルの題・状態・人格の札・「…」の行は `chat.js` の `SA.chat.head(channelId)`（DOM を作らない。古い見出しの […] と同じ行の関数を使う）
