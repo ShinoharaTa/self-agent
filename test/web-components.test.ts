@@ -15,7 +15,7 @@ const JS_FILES = readdirSync(STATIC_DIR).filter((n) => /^c-.*\.js$/.test(n)).sor
 const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "bubble-r", "bubble-tail", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
-  "top-title-min",
+  "top-title-min", "top-full-min", "top-place-min",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字） */
@@ -1401,6 +1401,7 @@ test("web components: topModel の phone・talk（戻る・右腕、場所と切
     view: "talk",
     title: "日程の取得が遅い",
     back: true,
+    compact: false,
     status: { text: "あなたの番", tone: "warning" },
     rest: "場所: General",
     place: null,
@@ -1434,13 +1435,41 @@ test("web components: topModel の wide・talk（戻る・右腕なし、場所�
   assert.equal(shell.topModel(topProps({ variant: "wide", place: null }))?.place, null);
 });
 
+test("web components: topModel の wide・compact（場所・切り替えは null、rest は場所と補足。phone は compact を渡しても変わらない）", () => {
+  const props = topProps({ variant: "wide", compact: true, note: "調べ物", views: { value: "pane" } });
+  assert.deepEqual(shell.topModel(props), {
+    variant: "wide",
+    view: "talk",
+    title: "日程の取得が遅い",
+    back: false,
+    compact: true,
+    status: { text: "あなたの番", tone: "warning" },
+    rest: "場所: General ・ 調べ物",
+    place: null,
+    views: null,
+    menu: true,
+    hand: null,
+  });
+  assert.equal(shell.topModel({ ...props, note: null })?.rest, "場所: General");
+  assert.equal(shell.topModel({ ...props, place: null })?.rest, "調べ物");
+  assert.equal(shell.topModel({ ...props, place: null, note: null })?.rest, "");
+  // true のときだけ効く
+  for (const compact of [false, "true", 1, undefined]) assert.equal(shell.topModel({ ...props, compact })?.compact, false, String(compact));
+  assert.notEqual(shell.topModel({ ...props, compact: "true" })?.place, null);
+  // phone は無視する
+  const phone = topProps({ note: "調べ物" });
+  assert.deepEqual(shell.topModel({ ...phone, compact: true }), shell.topModel(phone));
+  // other は compact でも題だけ
+  assert.deepEqual(shell.topModel({ ...props, view: "other" })?.rest, "");
+});
+
 test("web components: topModel の other（状態・補足・場所・切り替え・「…」なし。phone は戻ると右腕だけ残る）", () => {
   const props = topProps({ view: "other", title: "設定", note: "調べ物", views: { value: "talk" } });
   assert.deepEqual(shell.topModel(props), {
-    variant: "phone", view: "other", title: "設定", back: true, status: null, rest: "", place: null, views: null, menu: false, hand: { name: shell.handLabel("turn"), mark: "turn" },
+    variant: "phone", view: "other", title: "設定", back: true, compact: false, status: null, rest: "", place: null, views: null, menu: false, hand: { name: shell.handLabel("turn"), mark: "turn" },
   });
   assert.deepEqual(shell.topModel({ ...props, variant: "wide" }), {
-    variant: "wide", view: "other", title: "設定", back: false, status: null, rest: "", place: null, views: null, menu: false, hand: null,
+    variant: "wide", view: "other", title: "設定", back: false, compact: false, status: null, rest: "", place: null, views: null, menu: false, hand: null,
   });
 });
 
@@ -1533,6 +1562,21 @@ test("web components: TopBar の wide（題・状態・場所・gap・切り替�
   assert.equal(textOf(find(movable, "c-top-rest")), "調べ物");
   // other: 題と gap だけ
   assert.deepEqual(keysOf((shell.TopBar({ ...topProps({ variant: "wide", view: "other", title: "ナレッジ" }), on }) as VNode).props.children), ["text", "gap"]);
+});
+
+test("web components: TopBar の wide・compact（題・状態・補足・gap・「…」の順、data-compact、場所と切り替えが無い）", () => {
+  const { on } = topRec();
+  const props = topProps({ variant: "wide", compact: true, note: "調べ物", place: { text: "self-agent", movable: false, reason: "x" }, views: { value: "talk" } });
+  const v = shell.TopBar({ ...props, on }) as VNode;
+  assert.deepEqual(keysOf(v.props.children), ["text", "status", "rest", "gap", "menu"]);
+  const bar = one(v);
+  assert.deepEqual([bar.props["data-variant"], bar.props["data-compact"]], ["wide", "true"]);
+  assert.equal(textOf(find(bar, "c-top-rest")), "場所: self-agent ・ 調べ物");
+  assert.equal(find(bar, "c-top-place").length + find(bar, "c-seg").length + find(bar, "c-top-hand").length + find(bar, "c-top-sub").length, 0);
+  // compact でない wide・phone には data-compact が無い
+  assert.equal(one(html`<${shell.TopBar} ...${{ ...props, compact: false }} on=${on} />`).props["data-compact"], undefined);
+  assert.equal(one(html`<${shell.TopBar} ...${topProps({ variant: "wide" })} on=${on} />`).props["data-compact"], undefined);
+  assert.equal(one(html`<${shell.TopBar} ...${topProps({ compact: true })} on=${on} />`).props["data-compact"], undefined);
 });
 
 test("web components: TopBar は view が none・知らない値で null。c-shell.js（TopBar を含む）は id の見張りの対象", () => {

@@ -177,6 +177,8 @@
   --c-row-indent: 28px;
   --c-list-gap: 10px;
   --c-top-title-min: 80px;
+  --c-top-full-min: 520px;
+  --c-top-place-min: 96px;
 }
 
 @media (min-width: 640px) and (hover: hover) and (pointer: fine) {

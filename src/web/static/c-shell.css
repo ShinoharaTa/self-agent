@@ -212,9 +212,10 @@
   text-overflow: ellipsis;
 }
 
+/* 縮んでも当たりと語の頭が残る幅は残す（入らない幅では入口が compact にして、場所を帯に出さない） */
 .c-top-place {
   flex: 0 1 auto;
-  min-width: 0;
+  min-width: var(--c-top-place-min);
   max-width: 40%;
   box-sizing: border-box;
   display: inline-flex;
