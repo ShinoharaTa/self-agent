@@ -1,10 +1,10 @@
-// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1〜K3）。部品の状態を並べ、ui-shots が撮る。
+// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1〜K4）。部品の状態を並べ、ui-shots が撮る。
 // 認証の前に配られるので、個人の情報と API の呼び出しを入れない。data-section・data-demo は ui-shots が要素を探す印（CSS では使わない）
 import { html, render, useRef, useState } from "./c-lib.js";
 import { Badge, Button, Empty, Field, IconButton, Loading, Mark, Segmented } from "./c-atoms.js";
 import { Confirm, Sheet, Toast } from "./c-sheet.js";
 import { TopicList, YourTurn, listModel } from "./c-list.js";
-import { BottomBar } from "./c-shell.js";
+import { BottomBar, TopBar } from "./c-shell.js";
 
 // テーマ: shell.js と同じ（localStorage の self-agent-web:theme。dark・light は data-theme、system は外して OS に合わせる。読めなければ dark）
 const THEMES = ["dark", "light", "system"];
@@ -332,6 +332,80 @@ function Lists() {
   <//>`;
 }
 
+// ===== 会話の見出し（K4）。データは作り物 =====
+
+const LONG_HEAD = "長い題の見本。".repeat(9).slice(0, 60);
+const LONG_PLACE = "見本の長い名前のプロジェクトをここに置いて幅を見るための場所";
+const TOP_WIDE_CC = {
+  variant: "wide",
+  view: "talk",
+  title: "cc-self-agent",
+  status: { text: "判断待ち", tone: "warning" },
+  place: { text: "self-agent", movable: false, reason: "Claude Code のセッションは場所を変えられません" },
+  views: { value: "talk" },
+  menu: true,
+};
+// 帯に全部を出す広い幅の一番きつい形（状態の語が一番長い）
+const TOP_WIDE_LONG = {
+  variant: "wide",
+  view: "talk",
+  title: LONG_HEAD,
+  status: { text: "あなたの番", tone: "warning" },
+  note: "調べ物（人格）",
+  place: { text: LONG_PLACE, movable: true },
+  views: { value: "pane" },
+  menu: true,
+};
+/** box: 入れ物（pane は一覧と同じ、full は広い幅の見出しが全部を出せる下限の幅ちょうど、list は一覧の列の幅ちょうど） */
+const TOP_DEMOS = [
+  { demo: "top-phone-talk", variant: "phone", view: "talk", title: "日程の取得が遅い", status: { text: "あなたの番", tone: "warning" }, place: { text: "General", movable: true }, menu: true, hand: "turn" },
+  {
+    demo: "top-phone-long",
+    variant: "phone",
+    view: "talk",
+    title: LONG_HEAD,
+    status: { text: "作業中", tone: "accent" },
+    place: { text: "kakeibo-app", movable: true },
+    note: "調べ物（人格）",
+    menu: true,
+    hand: "unread",
+  },
+  { demo: "top-phone-other", variant: "phone", view: "other", title: "設定", hand: null },
+  { demo: "top-wide-talk", box: "full", variant: "wide", view: "talk", title: "日程の取得が遅い", status: { text: "待ち", tone: "muted" }, place: { text: "escape-mcp", movable: true }, menu: true },
+  { demo: "top-wide-cc", box: "full", ...TOP_WIDE_CC },
+  { demo: "top-wide-long", box: "full", ...TOP_WIDE_LONG },
+  { demo: "top-wide-other", box: "full", variant: "wide", view: "other", title: "ナレッジ" },
+  { demo: "top-compact-cc", box: "list", ...TOP_WIDE_CC, compact: true },
+  { demo: "top-compact-long", box: "list", ...TOP_WIDE_LONG, compact: true },
+];
+
+/** 幅を決めた入れ物（スマホの幅でページが横に動かないよう、横に送れる包みの中） */
+function FixedPane({ demo, box, children }) {
+  return html`<div class="c-gallery-slide" data-demo=${demo}>
+    ${box === "full" ? html`<div class="c-gallery-pane c-gallery-top-full">${children}</div>` : html`<div class="c-gallery-pane c-gallery-top-list">${children}</div>`}
+  </div>`;
+}
+
+/** 押した物を結果の欄に書く（opener・value は語にしない） */
+function Tops() {
+  const [result, setResult] = useState("まだ押していません");
+  const on = {
+    back: () => setResult("一覧へを押した"),
+    place: () => setResult("場所を押した"),
+    view: (value) => setResult(`切り替えた: ${value}`),
+    menu: () => setResult("ほかの操作を押した"),
+    hand: () => setResult("右腕を押した"),
+  };
+  return html`<${Section} name="top" title="見出し（TopBar）">
+    ${TOP_DEMOS.map(({ demo, box, ...props }) =>
+      box === undefined
+        ? html`<${Pane} demo=${demo}><${TopBar} ...${props} on=${on} /><//>`
+        : html`<${FixedPane} demo=${demo} box=${box}><${TopBar} ...${props} on=${on} /><//>`,
+    )}
+    <p class="c-gallery-result">${result}</p>
+  <//>`;
+}
+
 const BOTTOM_ON = { list: noop, hand: noop, tab: noop, more: noop };
 const WIDE_TABS = [
   { id: "tasks", title: "タスク" },
@@ -370,6 +444,7 @@ function Gallery() {
     <${Empties} />
     <${Sheets} push=${push} />
     <${Lists} />
+    <${Tops} />
     <${Bottoms} />
     <${Toast} items=${toasts} onDismiss=${dismiss} />
   `;

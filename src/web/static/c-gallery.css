@@ -81,3 +81,20 @@
   border: var(--border-width) solid var(--border);
   background: var(--surface);
 }
+
+/* 見出しの見本の幅を決めた入れ物。包みは列の幅で、入りきらなければ中で横に送る（ページを横に動かさない） */
+.c-gallery-slide {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* 一番きつい幅で確かめるので縮ませない（一覧の入れ物の max-width を外す） */
+.c-gallery-top-full {
+  width: var(--c-top-full-min);
+  max-width: none;
+}
+
+.c-gallery-top-list {
+  width: var(--c-list-w);
+  max-width: none;
+}

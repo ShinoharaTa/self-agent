@@ -101,8 +101,8 @@ const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-/** 見本の絵の種類（g-gallery はページ全体、g-list・g-bottom はその節の要素の絵（K3）、ほかは押して開いた所） */
-const GALLERY_KINDS = ["g-gallery", "g-list", "g-bottom", "g-sheet", "g-confirm", "g-toast"] as const;
+/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom はその節の要素の絵（K3・K4）、ほかは押して開いた所） */
+const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-sheet", "g-confirm", "g-toast"] as const;
 type GalleryKind = (typeof GALLERY_KINDS)[number];
 const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
 
@@ -138,6 +138,70 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
       return hit !== null && (hit === el || el.contains(hit) || (toast && !inToast && hit.closest(".c-toast-item") !== null));
     });
     if (!ok) lines.push(`当たりが足りない: ${el.tagName.toLowerCase()}.${el.classList[0] ?? ""} ${Math.round(r.width)}x${Math.round(r.height)}`);
+  }
+  return lines;
+}
+
+/** 見出し（.c-top）の高さ（px。--c-bar-h。指の端末 56・PC 52） */
+const TOP_H: Record<Viewport, number> = { phone: 56, tablet: 56, pc: 52 };
+/** 見出しで題に残す幅の下限（px。--c-top-title-min）と場所のボタンの幅の下限（--c-top-place-min） */
+const TOP_TITLE_MIN = 80;
+const TOP_PLACE_MIN = 96;
+/** 見本の見出しの入れ物の幅（px。広い幅で全部を出せる下限 --c-top-full-min と、一覧の列 --c-list-w） */
+const TOP_BOX: Record<string, number> = { "c-gallery-top-full": 520, "c-gallery-top-list": 280 };
+
+/**
+ * 見本の見出しの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。
+ * 高さ（--c-bar-h の値と箱の高さ）・1 段（直下の子が上下の中で左から右へ重ならずに並ぶ）・はみ出し・長い題の省き・場所のボタンの幅・
+ * 幅を決めた入れ物の幅（広すぎて検査が空振りしない）・ページが横に動かない。足りない物の文を返す
+ */
+function topProblems({ height, titleMin, placeMin, boxes, label }: { height: number; titleMin: number; placeMin: number; boxes: Record<string, number>; label: string }): string[] {
+  const lines: string[] = [];
+  const doc = document.documentElement;
+  if (doc.scrollWidth > doc.clientWidth) lines.push(`見出し: ページが横に動く（${doc.scrollWidth} > ${doc.clientWidth}。${label}）`);
+  const tops = [...document.querySelectorAll(".c-top")];
+  if (tops.length !== 9) lines.push(`見出し: .c-top が ${tops.length} 個。見本は 9 つのはず（${label}）`);
+  for (const top of tops) {
+    const demo = top.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
+    const r = top.getBoundingClientRect();
+    const css = getComputedStyle(top);
+    const token = getComputedStyle(document.documentElement).getPropertyValue("--c-bar-h").trim();
+    if (token !== `${height}px` || css.height !== `${height}px` || Math.abs(r.height - height) > 0.5) {
+      lines.push(`見出し: ${demo} の高さ ${r.height.toFixed(1)}（${css.height}・--c-bar-h ${token}）。${height} のはず（${label}）`);
+    }
+    let prevRight = -Infinity;
+    for (const child of top.children) {
+      const c = child.getBoundingClientRect();
+      if (c.top < r.top - 0.5 || c.bottom > r.bottom + 0.5) lines.push(`見出し: ${demo} の ${child.classList[0] ?? child.tagName} が上下にはみ出している（${label}）`);
+      if (c.left < prevRight - 0.5) lines.push(`見出し: ${demo} の ${child.classList[0] ?? child.tagName} が前の子に重なっている（${label}）`);
+      prevRight = Math.max(prevRight, c.right);
+    }
+    // 題・補足・状態・場所の語は 1 行（帯の高さの中で 2 行に折れても、上の検査には掛からない）
+    for (const el of top.querySelectorAll(".c-top-title, .c-top-sub, .c-top > .c-top-status, .c-top > .c-top-rest, .c-top-place-text, .c-top-hand-label")) {
+      const lh = parseFloat(getComputedStyle(el).lineHeight);
+      const h = el.getBoundingClientRect().height;
+      if (!(lh > 0) || h > lh * 1.5) lines.push(`見出し: ${demo} の ${el.classList[0] ?? el.tagName} が 1 行でない（高さ ${h.toFixed(1)}・行 ${getComputedStyle(el).lineHeight}。${label}）`);
+    }
+    if (top.scrollWidth > top.clientWidth) lines.push(`見出し: ${demo} が横にはみ出している（${top.scrollWidth} > ${top.clientWidth}。${label}）`);
+    const box = top.parentElement;
+    const want = box === null ? undefined : Object.entries(boxes).find(([cls]) => box.classList.contains(cls))?.[1];
+    if (box !== null && want !== undefined) {
+      const bs = getComputedStyle(box);
+      const inner = want - parseFloat(bs.borderLeftWidth) - parseFloat(bs.borderRightWidth);
+      if (Math.abs(r.width - inner) > 1) lines.push(`見出し: ${demo} の幅 ${r.width.toFixed(1)}。入れ物 ${want} から枠を引いた ${inner} のはず（${label}）`);
+    }
+    for (const place of top.querySelectorAll(".c-top-place")) {
+      const w = place.getBoundingClientRect().width;
+      if (w < placeMin - 0.5) lines.push(`見出し: ${demo} の場所のボタンの幅 ${w.toFixed(1)}。${placeMin} 以上のはず（${label}）`);
+    }
+    if (/-long$/.test(demo)) {
+      const title = top.querySelector(".c-top-title");
+      if (title === null) lines.push(`見出し: ${demo} に題が無い（${label}）`);
+      else {
+        if (!(title.scrollWidth > title.clientWidth)) lines.push(`見出し: ${demo} の長い題が省かれていない（${label}）`);
+        if (title.clientWidth < titleMin) lines.push(`見出し: ${demo} の題の幅 ${title.clientWidth}。${titleMin} 以上のはず（${label}）`);
+      }
+    }
   }
   return lines;
 }
@@ -1021,9 +1085,45 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       },
       { phone: vp === "phone" },
     );
-    const problems = [...hits, ...rest];
+    const problems = [...hits, ...rest, ...(await checkTops(page, vp))];
     for (const line of problems) logLines.push(`[${label}] ${line}`);
     if (problems.length > 0) throw new Error(`当たり・折り返し・id の検査で ${problems.length} 件`);
+  }
+
+  /** 見本の見出し（topProblems）を、今の字と、仮名が全角の等幅の字（MONO_CSS。終わったら外す）の 2 回測る */
+  async function checkTops(page: Page, vp: Viewport): Promise<string[]> {
+    const args = { height: TOP_H[vp], titleMin: TOP_TITLE_MIN, placeMin: TOP_PLACE_MIN, boxes: TOP_BOX };
+    const lines = await page.evaluate(topProblems, { ...args, label: "今の字" });
+    await page.evaluate((css: string) => {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      (window as unknown as { __topMono: CSSStyleSheet }).__topMono = sheet;
+    }, MONO_CSS);
+    try {
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      await wait(300);
+      const kana = await page.evaluate(() => {
+        const span = document.createElement("span");
+        span.style.position = "absolute";
+        span.style.whiteSpace = "nowrap";
+        span.style.fontSize = "100px";
+        span.textContent = "あ";
+        document.body.append(span);
+        const w = span.getBoundingClientRect().width;
+        span.remove();
+        return w;
+      });
+      if (!(kana >= 99 && kana <= 101)) lines.push(`見出し: 仮名が全角の等幅の字が当たっていない（「あ」${kana.toFixed(1)}）。IPAGothic を入れる`);
+      else lines.push(...(await page.evaluate(topProblems, { ...args, label: "等幅の字" })));
+    } finally {
+      await page.evaluate(() => {
+        const sheet = (window as unknown as { __topMono?: CSSStyleSheet }).__topMono;
+        document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
+      });
+      await wait(300);
+    }
+    return lines;
   }
 
   /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない）。絵ごとに読み直す */
@@ -1039,9 +1139,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     };
     try {
       const full = galleryName(vp, theme, "g-gallery");
-      // 一覧と下のバーの節の絵は、ページ全体と同じ読み込みで検査と位置の戻しの後に撮る
+      // 一覧・見出し・下のバーの節の絵は、ページ全体と同じ読み込みで検査と位置の戻しの後に撮る
       const parts = [
         { name: galleryName(vp, theme, "g-list"), selector: '[data-section="list"]' },
+        { name: galleryName(vp, theme, "g-top"), selector: '[data-section="top"]' },
         { name: galleryName(vp, theme, "g-bottom"), selector: '[data-section="bottom"]' },
       ];
       await step(full, [full, ...parts.map((part) => part.name)], async () => {
