@@ -2953,8 +2953,7 @@ test("web static: v3 の load・schedule: 読み込み中に頼まれた分は�
   // turnIds が配列でない
   h.api.reply = () => Promise.resolve({ ...v3Result([]), turnIds: null });
   await h.topics.load();
-  assert.equal(h.nodes.note.hidden, false);
-  assert.equal(h.nodes.note.text, "更新できませんでした。前の一覧を出しています");
+  assert.equal(h.model().note, "更新できませんでした。前の一覧を出しています");
   assert.equal(polls(), 1);
   // 描けない（id の無い話題）: 投げても失敗の表示と次の予約
   h.api.reply = () => Promise.resolve(v3Result([{ group: "g", state: "active" }]));
@@ -2965,6 +2964,24 @@ test("web static: v3 の load・schedule: 読み込み中に頼まれた分は�
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
   await h.topics.load();
   assert.equal(h.nodes.note.hidden, true);
+});
+
+test("web static: v3 の load: turnIds が配列でない応答は data に入れず、失敗の表示で前の data が残る", async () => {
+  const h = loadShell();
+  await h.flush();
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
+  await h.topics.load();
+  const before = h.listState().data;
+  assert.equal(h.model().phase, "ready");
+  for (const turnIds of [null, "ch:a", { 0: "ch:a" }]) {
+    h.api.reply = () => Promise.resolve({ ...v3Result([v3Topic("ch:b")]), turnIds });
+    await h.topics.load();
+    assert.equal(h.listState().data, before, JSON.stringify(turnIds));
+    assert.equal(h.listState().failed, true);
+    assert.equal(h.model().phase, "ready");
+    assert.equal(h.model().note, "更新できませんでした。前の一覧を出しています");
+    assert.deepEqual(h.groupOf("g")!.rows.map((r) => r.id), ["ch:a"]);
+  }
 });
 
 test("web static: v3 の一覧: 焦点のある行が先頭へ動いても焦点と一覧の位置が残る", async () => {
@@ -3003,22 +3020,23 @@ test("web static: v3 の「あなたの番」が 0 に戻ると行が空にな�
   assert.equal(h.document.activeElement, h.row(h.nodes.groups, "ch:a"));
 });
 
-test("web static: v3 の群は「話題はありません」⇄ 行の一覧を入れ替える", async () => {
+test("web static: v3 の群は見出しの「話題なし」⇄ 行の一覧を入れ替える", async () => {
   const h = loadShell();
+  const groups = [v3Group("g", { name: "General" })];
+  h.api.reply = () => Promise.resolve(v3Result([], { groups }));
   await h.flush();
-  const section = () => h.nodes.groups.children[0]!;
-  assert.equal(section().children.length, 2);
-  assert.ok(section().children[1]!.classes.has("v3-group-empty"));
-  assert.equal(section().children[1]!.text, "話題はありません");
-  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")]));
   await h.topics.load();
-  assert.equal(section().children.length, 2);
-  assert.ok(section().children[1]!.classes.has("v3-rows"));
-  assert.ok(h.row(h.nodes.groups, "ch:a"));
-  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { state: "done" })]));
+  const g = () => h.groupOf("g")!;
+  assert.deepEqual(g().rows, []);
+  assert.deepEqual(g().note, { text: "話題なし", tone: "muted" });
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")], { groups }));
   await h.topics.load();
-  assert.equal(section().children.length, 2);
-  assert.ok(section().children[1]!.classes.has("v3-group-empty"));
+  assert.deepEqual(g().rows.map((r) => r.id), ["ch:a"]);
+  assert.equal(g().note, null);
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { state: "done" })], { groups }));
+  await h.topics.load();
+  assert.deepEqual(g().rows, []);
+  assert.deepEqual(g().note, { text: "話題なし", tone: "muted" });
 });
 
 test("web static: v3 の hash: tabFromHash と hashOf は往復し、hashchange で開き、起動の hash を待っている間は消さない", async () => {
@@ -3116,7 +3134,7 @@ test("web static: 新しい殻の下の口は タスク・リマインド・ほ�
   assert.deepEqual(w.nodes.sheet.querySelectorAll("button.more-row").map(textOf), ["knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"].map((id) => "題:" + id));
 });
 
-test("web static: 絞り込みは題名・群・人格の語を全部含むものだけを残し、当たらない群は hidden にする（要素は消さない）。「あなたの番」は絞り込まない", async () => {
+test("web static: 絞り込みは題名・群・人格の語を全部含むものだけを残し、当たらない群・行はモデルに入れない。「あなたの番」は絞り込まない", async () => {
   const h = loadShell();
   const turn = { kind: "permission", since: "2026-11-14T00:00:00Z", summary: null };
   h.api.reply = () =>
@@ -3132,9 +3150,6 @@ test("web static: 絞り込みは題名・群・人格の語を全部含むも�
     );
   await h.flush();
   await h.topics.load();
-  const [g1, g2] = kids(h.nodes.groups);
-  const li = (id: string) => h.row(h.nodes.groups, id)!.parent as DomNode;
-  const [la, lb, lc] = [li("ch:a"), li("ch:b"), li("ch:c")];
   h.nodes.listBody.scrollTop = 120;
   // 絞り込みのボタンは見出しの先頭
   const toggle = kids(h.nodes.headOps)[0]!;
@@ -3150,32 +3165,28 @@ test("web static: 絞り込みは題名・群・人格の語を全部含むも�
     (input as unknown as { value: string }).value = v;
     input.dispatch("input");
   };
-  const shown = () => ["ch:a", "ch:b", "ch:c"].filter((id) => !li(id).hidden);
+  const shown = () => ["ch:a", "ch:b", "ch:c"].filter((id) => h.rowOf(id) !== null);
+  const groups = () => modelGroups(h.model()).map((g) => g.key);
   // 群の名前と題名の語を両方（大文字・小文字を問わない）
   type("general 買い");
   assert.deepEqual(shown(), ["ch:a"]);
-  assert.equal(g2!.hidden, true);
-  assert.equal(g1!.hidden, false);
+  assert.deepEqual(groups(), ["g1"]);
   // 人格の名前
   type("bob");
   assert.deepEqual(shown(), ["ch:b"]);
   // 「あなたの番」は絞り込まない
-  assert.equal(h.nodes.turns.hidden, false);
-  assert.equal(h.nodes.turnsRows.children.length, 1);
-  assert.equal((h.nodes.turnsRows.children[0] as DomNode).hidden, false);
+  assert.deepEqual(h.model().turns?.items.map((t) => t.id), ["ch:c"]);
   type("proj");
   assert.deepEqual(shown(), ["ch:c"]);
-  assert.equal(g1!.hidden, true);
-  assert.equal(h.nodes.note.hidden, true);
+  assert.deepEqual(groups(), ["g2"]);
+  assert.equal(h.model().note, "");
   type("zzz");
-  assert.equal(h.nodes.note.hidden, false);
-  assert.equal(h.nodes.note.text, "当たる話題がありません");
+  assert.deepEqual(groups(), []);
+  assert.equal(h.model().note, "当たる話題がありません");
+  assert.deepEqual(h.model().turns?.items.map((t) => t.id), ["ch:c"]);
   // 読み直しても絞り込んだまま
   await h.topics.load();
-  assert.equal(h.nodes.note.text, "当たる話題がありません");
-  // 要素は消さず、同じものを使い回す
-  assert.deepEqual(kids(h.nodes.groups), [g1, g2]);
-  assert.deepEqual([li("ch:a"), li("ch:b"), li("ch:c")], [la, lb, lc]);
+  assert.equal(h.model().note, "当たる話題がありません");
   // Escape で閉じると値を空にして全部戻り、位置も戻る・焦点はボタンへ
   h.fireDoc("keydown", keyEvent("Escape", input));
   assert.equal((input as unknown as { value: string }).value, "");
@@ -3183,8 +3194,8 @@ test("web static: 絞り込みは題名・群・人格の語を全部含むも�
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(h.document.activeElement, toggle);
   assert.deepEqual(shown(), ["ch:a", "ch:b", "ch:c"]);
-  assert.equal(g1!.hidden || g2!.hidden, false);
-  assert.equal(h.nodes.note.hidden, true);
+  assert.deepEqual(groups(), ["g1", "g2"]);
+  assert.equal(h.model().note, "");
   assert.equal(h.nodes.listBody.scrollTop, 120);
   // もう一度押すと開き、もう一度押すと閉じる（入力欄は 1 度だけ作る）
   toggle.dispatch("click");
@@ -3270,55 +3281,38 @@ test("web static: 完了は開いたときだけ ?done=<群> で読み、開い�
   await h.flush();
   await h.topics.load();
   assert.equal(h.api.paths.at(-1), "/api/topics");
-  const [s1, s2, s3] = kids(h.nodes.groups);
-  const d1 = s1!.querySelector('details[data-key="done:g1"]')!;
-  const d2 = s2!.querySelector('details[data-key="done:g2"]')!;
-  assert.ok(d1.classes.has("v3-done"));
-  assert.equal(s3!.querySelector("details.v3-done"), null, "完了の無い群には出さない");
-  // 一覧の後ろ（群の見出し → 一覧か「話題はありません」 → 完了）
-  assert.equal(kids(s1!).indexOf(d1), 2);
-  assert.equal(kids(s2!).indexOf(d2), 2);
-  const summary = (d: DomNode) => textOf(kids(d)[0]!);
-  const doneRows = (d: DomNode) => kids(kids(d)[1]!);
-  assert.equal(summary(d1), "完了（60）");
-  assert.equal(kids(d1)[1]!.getAttribute("data-list"), "done:g1");
-  assert.equal(doneRows(d1).length, 0);
-  // 開く: 読み込み中の文字 → ?done=g1 → 行（is-done）と「新しい 50 件」
-  d1.open = true;
-  d1.dispatch("toggle");
-  assert.equal(summary(d1), "完了（60）読み込み中…");
+  const done = (key: string) => h.groupOf(key)!.done;
+  assert.equal(done("g3"), null, "完了の無い群には出さない");
+  assert.deepEqual(done("g1"), { label: "完了（60）", open: false, loading: false, rows: [], more: "" });
+  // 開く: 読み込み中 → ?done=g1 → 行（done）と「新しい 50 件」
+  h.press.toggleDone("g1");
+  assert.equal(done("g1")!.open, true);
+  assert.equal(done("g1")!.loading, true);
   await h.flush();
   assert.equal(h.api.paths.at(-1), "/api/topics?done=g1");
-  assert.equal(summary(d1), "完了（60）");
-  assert.equal(doneRows(d1).length, 1);
-  const doneButton = h.row(d1, "ch:d1")!;
-  assert.ok(doneButton.classes.has("is-done"));
-  assert.ok(!h.row(s1!, "ch:a")!.classes.has("is-done"));
-  assert.equal(d1.querySelector("p.meta")!.hidden, false);
-  assert.equal(textOf(d1.querySelector("p.meta")!), "新しい 50 件を出しています");
+  assert.equal(done("g1")!.loading, false);
+  assert.deepEqual(done("g1")!.rows.map((r) => [r.id, r.done]), [["ch:d1", true]]);
+  assert.equal(h.rowOf("ch:a")!.done, false);
+  assert.equal(done("g1")!.more, "新しい 50 件を出しています");
   // もう 1 つを開くと前のは閉じ、?done= は後の群
-  d2.open = true;
-  d2.dispatch("toggle");
-  assert.equal(d1.open, false);
-  d1.dispatch("toggle");
+  h.press.toggleDone("g2");
+  assert.equal(done("g1")!.open, false);
   await h.flush();
   h.advance(2000);
   await h.flush();
   assert.equal(h.api.paths.at(-1), "/api/topics?done=g2");
-  assert.equal(doneRows(d1).length, 0, "閉じた完了の行は外す");
-  assert.equal(doneRows(d2).length, 1);
-  assert.equal(d2.querySelector("p.meta")!.hidden, true, "50 件以下");
+  assert.deepEqual(done("g1")!.rows, [], "閉じた完了の行は外す");
+  assert.equal(done("g2")!.rows.length, 1);
+  assert.equal(done("g2")!.more, "", "50 件以下");
   // 閉じたら読み直さない。次の読み取りは ?done= なし
   const calls = h.api.calls;
-  d2.open = false;
-  d2.dispatch("toggle");
+  h.press.toggleDone("g2");
   await h.flush();
   assert.equal(h.api.calls, calls);
+  assert.equal(done("g2")!.open, false);
   await h.topics.load();
   assert.equal(h.api.paths.at(-1), "/api/topics");
-  assert.equal(doneRows(d2).length, 0);
-  // 群の要素は作り直さない
-  assert.deepEqual(kids(h.nodes.groups), [s1, s2, s3]);
+  assert.deepEqual(done("g2")!.rows, []);
 });
 
 test("web static: 完了の行が /api/channels に無くて引けなければ、一覧を 1 回読んでから引き直し、それでも無ければ知らせる", async () => {
@@ -3330,24 +3324,23 @@ test("web static: 完了の行が /api/channels に無くて引けなければ�
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:d1", { group: "g1", state: "done" })], { groups }));
   await h.flush();
   await h.topics.load();
-  const d = h.nodes.groups.querySelector("details.v3-done")!;
-  d.open = true;
-  d.dispatch("toggle");
+  h.press.toggleDone("g1");
   await h.flush();
-  h.row(d, "ch:d1")!.dispatch("click");
+  assert.equal(h.rowOf("ch:d1")!.done, true);
+  h.press.open("ch:d1", true);
   await h.flush();
   assert.equal(h.loads.channels, 1);
   assert.deepEqual(toasts, ["この話題はここからは開けません"]);
   assert.equal(h.app.activeTabId(), null);
   // 読んだ後に引ければ開く
   h.store.load = { ...h.store.load, channels: () => ((ready = true), Promise.resolve(null)) };
-  h.row(d, "ch:d1")!.dispatch("click");
+  h.press.open("ch:d1", true);
   await h.flush();
   assert.equal(h.app.activeTabId(), "ch:d1");
   assert.equal(toasts.length, 1);
 });
 
-test("web static: 話題の無いプロジェクトは「ほかのプロジェクト（n）」に畳み、開閉を localStorage に持つ", async () => {
+test("web static: 話題の無いプロジェクトは「ほかのプロジェクト（n）」に畳み、開閉を localStorage に持つ。絞り込み中は閉じられない", async () => {
   const h = loadShell();
   const groups = [
     v3Group("p:a", { kind: "project", name: "a", open: 1 }),
@@ -3355,59 +3348,63 @@ test("web static: 話題の無いプロジェクトは「ほかのプロジェ�
     v3Group("p:c", { kind: "project", name: "c", open: 0, done: 2 }),
     v3Group("general", { name: "General", open: 0 }),
   ];
-  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { group: "p:a", title: "aaa" })], { groups }));
+  // p:c の完了を開いたときだけ、その完了の話題（「ccc」）が届く
+  h.api.reply = () => {
+    const doneC = (h.api.paths.at(-1) ?? "").includes("?done=p%3Ac") ? [v3Topic("ch:c1", { group: "p:c", title: "ccc", state: "done" })] : [];
+    return Promise.resolve(v3Result([v3Topic("ch:a", { group: "p:a", title: "aaa" }), ...doneC], { groups }));
+  };
   await h.flush();
   await h.topics.load();
-  assert.deepEqual(kids(h.nodes.groups).map((n) => n.getAttribute("data-key")), ["p:a", "others", "general"]);
-  const others = kids(h.nodes.groups)[1]!;
-  assert.equal(others.tagName, "details");
-  assert.equal(others.getAttribute("id"), "v3-others");
-  assert.ok(others.classes.has("v3-others"));
-  assert.equal(textOf(kids(others)[0]!), "ほかのプロジェクト（2）");
-  assert.equal(others.open, false, "既定は閉じる");
-  const inner = kids(kids(others)[1]!);
-  assert.deepEqual(inner.map((n) => n.getAttribute("data-key")), ["p:b", "p:c"]);
-  // 中の群は見出しと完了だけ（「話題はありません」は出さない）
-  assert.equal(inner[0]!.children.length, 1);
-  assert.equal(inner[1]!.children.length, 2);
-  assert.ok(kids(inner[1]!)[1]!.classes.has("v3-done"));
+  const outer = () => h.model().blocks.filter((b) => b.type !== "label").map((b) => (b.type === "group" ? b.key : b.type));
+  const othersOf = () => h.model().blocks.find((b): b is ListOthers => b.type === "others") ?? null;
+  assert.deepEqual(outer(), ["p:a", "others", "general"]);
+  assert.equal(othersOf()!.label, "ほかのプロジェクト（2）");
+  assert.equal(othersOf()!.open, false, "既定は閉じる");
+  assert.equal(othersOf()!.forced, false);
+  assert.deepEqual(othersOf()!.groups.map((g) => g.key), ["p:b", "p:c"]);
+  // 中の群は見出しと完了だけ（行と「話題なし」は出さない）
+  assert.deepEqual(othersOf()!.groups.map((g) => [g.rows.length, g.note, g.done && g.done.label]), [[0, null, null], [0, null, "完了（2）"]]);
   // General は話題が無くても畳まない
-  assert.equal(textOf(kids(kids(h.nodes.groups)[2]!)[1]!), "話題はありません");
+  assert.deepEqual(h.groupOf("general")!.note, { text: "話題なし", tone: "muted" });
   // 開閉を保存
-  others.open = true;
-  others.dispatch("toggle");
+  h.press.toggleOthers();
   assert.equal(h.storage.get("self-agent-web:v3-others"), "1");
-  others.open = false;
-  others.dispatch("toggle");
+  assert.equal(othersOf()!.open, true);
+  h.press.toggleOthers();
   assert.equal(h.storage.get("self-agent-web:v3-others"), "0");
-  // 読み直しても同じ要素
-  await h.topics.load();
-  assert.equal(kids(h.nodes.groups)[1], others);
-  assert.deepEqual(kids(kids(others)[1]!), inner);
-  // 絞り込み中は開いた形（保存は変えない）、当たる群が無ければ隠す
+  assert.equal(othersOf()!.open, false);
+  // 絞り込み中は開いた形で閉じられない（保存は変えない）、当たる群が無ければ出さない
+  h.press.toggleDone("p:c");
+  await h.flush();
+  assert.equal(h.api.paths.at(-1), "/api/topics?done=p%3Ac");
   kids(h.nodes.headOps)[0]!.dispatch("click");
   const input = h.document.getElementById("v3-search")!;
+  (input as unknown as { value: string }).value = "ccc";
+  input.dispatch("input");
+  assert.equal(othersOf()!.open, true);
+  assert.equal(othersOf()!.forced, true);
+  assert.deepEqual(othersOf()!.groups.map((g) => g.key), ["p:c"]);
+  h.press.toggleOthers();
+  assert.equal(h.storage.get("self-agent-web:v3-others"), "0");
+  assert.equal(othersOf()!.open, true, "絞り込み中は閉じられない");
   (input as unknown as { value: string }).value = "aaa";
   input.dispatch("input");
-  assert.equal(others.open, true);
-  others.dispatch("toggle");
-  assert.equal(h.storage.get("self-agent-web:v3-others"), "0");
-  assert.equal(others.hidden, true);
+  assert.equal(othersOf(), null);
   (input as unknown as { value: string }).value = "";
   input.dispatch("input");
-  assert.equal(others.open, false, "保存した開閉に戻す");
-  assert.equal(others.hidden, false);
+  assert.equal(othersOf()!.open, false, "保存した開閉に戻す");
+  assert.equal(othersOf()!.forced, false);
   // 保存が開なら、次の殻は開いて出す
   const w = loadShell();
   w.storage.set("self-agent-web:v3-others", "1");
   w.api.reply = h.api.reply;
   await w.flush();
   await w.topics.load();
-  assert.equal(kids(w.nodes.groups)[1]!.open, true);
+  assert.equal(w.model().blocks.find((b): b is ListOthers => b.type === "others")!.open, true);
   // 畳む群が無ければ出さない
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { group: "p:a" })], { groups: [groups[0], groups[3]] }));
   await h.topics.load();
-  assert.deepEqual(kids(h.nodes.groups).map((n) => n.getAttribute("data-key")), ["p:a", "general"]);
+  assert.deepEqual(outer(), ["p:a", "general"]);
 });
 
 test("web static: [会話][端末] はチャンネルのある生きた Claude Code の話題だけに出て、「端末」の間 activeTabId は cc:<sessionId>", async () => {
@@ -3435,7 +3432,7 @@ test("web static: [会話][端末] はチャンネルのある生きた Claude C
   assert.deepEqual([talk!.getAttribute("aria-pressed"), pane!.getAttribute("aria-pressed")], ["false", "true"]);
   // hash と一覧の選んでいる行は話題のまま
   assert.equal(h.location.hash, "#/ch/a");
-  assert.equal(h.row(h.nodes.groups, "ch:a")!.getAttribute("aria-current"), "true");
+  assert.equal(h.rowOf("ch:a")!.current, true);
   // refresh は出している物にだけ当たる
   let before = h.rendered.length;
   h.app.refresh("ch:a");
@@ -3523,23 +3520,22 @@ test("web static: v3 の一覧の注意は 更新の失敗 > Claude Code の一�
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")], { cc }));
   await h.flush();
   await h.topics.load();
-  assert.equal(h.nodes.note.hidden, false);
-  assert.equal(h.nodes.note.text, "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります");
+  assert.equal(h.model().note, "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります");
   h.app.palette();
   const input = h.document.getElementById("v3-search")!;
   (input as unknown as { value: string }).value = "zzz";
   input.dispatch("input");
-  assert.equal(h.nodes.note.text, "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります");
+  assert.equal(h.model().note, "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります");
   h.api.reply = () => Promise.resolve(null);
   await h.topics.load();
-  assert.equal(h.nodes.note.text, "更新できませんでした。前の一覧を出しています");
+  assert.equal(h.model().note, "更新できませんでした。前の一覧を出しています");
   // 無効・古いだけなら出さない
   for (const c of [{ enabled: false, stale: false, unreadable: true }, { enabled: true, stale: true, unreadable: false }]) {
     const w = loadShell();
     w.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")], { cc: c }));
     await w.flush();
     await w.topics.load();
-    assert.equal(w.nodes.note.hidden, true);
+    assert.equal(w.model().note, "");
   }
 });
 
@@ -3550,7 +3546,7 @@ test("web static: /api/status が届く前に押した cc: の行は、届いた
   await h.flush();
   await h.topics.load();
   h.app.open("ch:a");
-  h.row(h.nodes.groups, "cc:x")!.dispatch("click");
+  h.press.open("cc:x");
   await h.flush();
   assert.equal(h.app.activeTabId(), "ch:a");
   ready = true;
@@ -3563,7 +3559,7 @@ test("web static: /api/status が届く前に押した cc: の行は、届いた
   w.api.reply = h.api.reply;
   await w.flush();
   await w.topics.load();
-  w.row(w.nodes.groups, "cc:x")!.dispatch("click");
+  w.press.open("cc:x");
   await w.flush();
   w.app.open("ch:a");
   ready2 = true;
@@ -4297,14 +4293,13 @@ test("web static: 右腕は rightHands の先頭の #inbox で、列 2 には同
   assert.equal(h.document.activeElement, handClose(h));
   // 「あなたの番」の右腕の行を押しても列 2 には開かない（一覧の選んでいる印も付けない）
   h.app.open("ch:a");
-  const row = h.row(h.nodes.turnsRows, "ch:900")!;
-  assert.ok(row);
+  assert.equal(h.turnOf("ch:900")!.title, "右腕");
   const before = h.rendered.length;
-  row.dispatch("click");
+  h.press.open("ch:900");
   h.topics.render();
   assert.equal(h.app.activeTabId(), "ch:a");
   assert.equal(h.rendered.length, before);
-  assert.notEqual(h.row(h.nodes.turnsRows, "ch:900")!.getAttribute("aria-current"), "true");
+  assert.equal(h.turnOf("ch:900")!.current, false);
   assert.equal(h.document.activeElement, handClose(h));
   // 右腕が無ければ（/setup の前）列 3 に案内の文
   const none = loadShell() as HandShell;
@@ -4943,6 +4938,20 @@ async function loadStart(opts: Parameters<typeof loadShell>[0] = {}, o: Record<s
 const startEl = (h: StartShell, id: string) => h.document.getElementById("v3-start-" + id) as DomNode & { value: string; disabled: boolean };
 const groupOf = (h: StartShell, key: string) => descendants(h.nodes.groups).find((n) => n instanceof DomNode && n.getAttribute("data-key") === key) as DomNode;
 const addOf = (h: StartShell, key: string) => groupOf(h, key).querySelector("button.v3-add");
+/** 群の [+] を押した代わり（state.on.add に、一覧の列の中に置いた偽の [+] を opener として渡す。群ごとに同じ要素） */
+const openers = new WeakMap<object, Map<string, DomNode>>();
+const pressAdd = (h: StartShell, key: string): DomNode => {
+  const byKey = openers.get(h) ?? new Map<string, DomNode>();
+  openers.set(h, byKey);
+  let opener = byKey.get(key);
+  if (!opener) {
+    opener = new DomNode("button");
+    h.nodes.list.append(opener);
+    byKey.set(key, opener);
+  }
+  h.press.add(key, opener);
+  return opener;
+};
 const submitStart = (h: StartShell) => {
   const e = { prevented: false, preventDefault: () => (e.prevented = true) };
   startEl(h, "form").dispatch("submit", e);
@@ -4973,26 +4982,20 @@ test("web static: v3.html の始めるダイアログは aria-labelledby・label
   assert.equal(html.includes("v3-add"), false);
 });
 
-test("web static: v3 の始める口: General とプロジェクトの群の見出しに [+] があり、aria-label は「<群の名前> で話題を始める」。ほかの場所・あなたの番には無い。畳んだプロジェクトの見出しにもある", async () => {
+test("web static: v3 の始める口: General とプロジェクトの群の見出しに [+] があり、名前は「<群の名前> で話題を始める」。ほかの場所には無い。畳んだプロジェクトの見出しにもある", async () => {
   const h = await loadStart({}, { turns: 1, turnIds: ["ch:1"] });
   for (const [key, name] of [
     ["general", "General"],
     ["p:alpha", "alpha"],
     ["p:beta", "beta"],
   ]) {
-    const add = addOf(h, key!);
-    assert.ok(add, key);
-    assert.equal(add.getAttribute("aria-label"), name + " で話題を始める");
-    assert.equal(add.getAttribute("title"), name + " で話題を始める");
-    assert.equal(add.getAttribute("data-place"), key);
-    assert.equal(add.getAttribute("type"), "button");
-    assert.ok(add.classes.has("btn-icon-sm"));
-    // 見出しの 3 番目の子
-    assert.equal(kids(kids(groupOf(h, key!))[0]!)[2], add);
+    const g = h.groupOf(key!)!;
+    assert.equal(g.canAdd, true, key);
+    assert.equal(g.addLabel, name + " で話題を始める");
   }
-  assert.ok(descendants(groupOf(h, "p:beta")).length > 0 && h.document.getElementById("v3-others")!.contains(addOf(h, "p:beta")), "畳んだ群");
-  assert.equal(addOf(h, "other"), null);
-  assert.equal(h.nodes.turns.querySelector("button.v3-add"), null);
+  const others = h.model().blocks.find((b): b is ListOthers => b.type === "others")!;
+  assert.deepEqual(others.groups.map((g) => [g.key, g.canAdd]), [["p:beta", true]], "畳んだ群");
+  assert.equal(h.groupOf("other")!.canAdd, false);
 });
 
 test("web static: v3 の始める口: 見出しの補足が変わっても [+] は同じ要素のまま（作り直さない）", async () => {
@@ -5013,7 +5016,7 @@ test("web static: v3 の始める口: 見出しの補足が変わっても [+] �
 
 test("web static: v3 の始める口: [+] を押すと始めるダイアログが開き、場所は押した群・候補は General が先頭でプロジェクトが続く・フォーカスは最初の一言", async () => {
   const h = await loadStart();
-  addOf(h, "p:alpha")!.dispatch("click");
+  pressAdd(h, "p:alpha");
   assert.equal(h.start.getAttribute("open"), "");
   const select = startEl(h, "place");
   assert.deepEqual(
@@ -5044,7 +5047,7 @@ test("web static: v3 の始める口: [+] を押すと始めるダイアログ�
 
 test("web static: v3 の始める口: 題名も一言も空なら送らずに「最初の一言か題名を入れてください」", async () => {
   const h = await loadStart();
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   startEl(h, "text").value = "  \n ";
   startEl(h, "name").value = " ";
   const e = submitStart(h);
@@ -5060,7 +5063,7 @@ test("web static: v3 の始める口: 始めるは POST /api/topics に place・
   const h = await loadStart();
   let resolve: (v: unknown) => void = () => undefined;
   h.api.postReply = () => new Promise((r) => (resolve = r));
-  addOf(h, "p:alpha")!.dispatch("click");
+  pressAdd(h, "p:alpha");
   startEl(h, "text").value = "  最初の一言  ";
   submitStart(h);
   assert.deepEqual(h.api.posts, [{ path: "/api/topics", body: { place: "p:alpha", text: "最初の一言" }, opts: { quiet: true } }]);
@@ -5082,7 +5085,7 @@ test("web static: v3 の始める口: 始めるは POST /api/topics に place・
 test("web static: v3 の始める口: 始めたらダイアログを閉じ、一覧を読み直し、その話題を開く（スマホは会話の画面）", async () => {
   const h = await loadStart();
   h.api.postReply = () => Promise.resolve(created({ title: "旅行の計画" }));
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   startEl(h, "text").value = "旅行の計画を立てたい";
   const reads = h.api.paths.length;
   submitStart(h);
@@ -5109,7 +5112,7 @@ test("web static: v3 の始める口: 始めたらダイアログを閉じ、一
 test("web static: v3 の始める口: turn が failed なら一言を書きかけに戻して開く", async () => {
   const h = await loadStart();
   h.api.postReply = () => Promise.resolve(created({ turn: "failed", title: "題" }));
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   startEl(h, "text").value = "送れなかった一言\n2 行目";
   submitStart(h);
   await h.flush();
@@ -5133,7 +5136,7 @@ test("web static: v3 の始める口: 失敗はダイアログを開いたまま
     [apiError(400, "bad_request"), "始められませんでした。もう一度試してください"],
   ];
   const h = await loadStart();
-  addOf(h, "p:alpha")!.dispatch("click");
+  pressAdd(h, "p:alpha");
   for (const [err, text] of cases) {
     h.api.postReply = () => Promise.reject(err);
     startEl(h, "text").value = "一言";
@@ -5187,7 +5190,7 @@ test("web static: v3 の始める口: 連携が無効・link が無いときの�
 test("web static: v3 の始める口: 最初の一言の Ctrl+Enter・⌘+Enter で送る。変換中は送らない。ただの Enter では送らない", async () => {
   const h = await loadStart();
   h.api.postReply = () => Promise.reject(apiError(500, "internal"));
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   const text = startEl(h, "text");
   text.value = "一言";
   const plain = keyEvent("Enter", text);
@@ -5212,19 +5215,18 @@ test("web static: v3 の始める口: 最初の一言の Ctrl+Enter・⌘+Enter 
 
 test("web static: v3 の始める口: やめる・Escape で閉じたら押した [+] にフォーカスが戻る。話題を開いたときは戻さない", async () => {
   const h = await loadStart();
-  const add = addOf(h, "p:alpha")!;
-  add.dispatch("click");
+  const add = pressAdd(h, "p:alpha");
   startEl(h, "cancel").dispatch("click");
   assert.equal(h.start.getAttribute("open"), null);
   assert.equal(h.document.activeElement, add);
   // Escape（<dialog> の素の動きで close）
-  add.dispatch("click");
+  pressAdd(h, "p:alpha");
   assert.equal(h.document.activeElement, startEl(h, "text"));
   h.start.close();
   assert.equal(h.document.activeElement, add);
   // 始めて話題を開いたときは戻さない
   h.api.postReply = () => Promise.resolve(created());
-  add.dispatch("click");
+  pressAdd(h, "p:alpha");
   startEl(h, "text").value = "一言";
   submitStart(h);
   await h.flush();
@@ -5276,11 +5278,11 @@ const topicReads = (h: StartShell, from: number) => h.api.paths.slice(from).filt
 
 test("web static: v3 の始める口: 送っている間に閉じて開き直し、前の応答が成功で返っても、今のダイアログ・欄・[始める] に触らず、話題へ移らず、toast と一覧の読み直し", async () => {
   const { h, pending, hash } = await loadStartPending();
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   startEl(h, "text").value = "A";
   submitStart(h);
   h.start.close();
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   assert.equal(startEl(h, "ok").disabled, false, "開き直したら [始める] は押せる");
   startEl(h, "text").value = "B";
   const reads = h.api.paths.length;
@@ -5298,11 +5300,11 @@ test("web static: v3 の始める口: 送っている間に閉じて開き直し
 
 test("web static: v3 の始める口: 開き直した後に前の応答が失敗で返ったら、今の欄にエラーも aria-invalid も付けず、失敗の文を toast に出す", async () => {
   const { h, pending } = await loadStartPending();
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   startEl(h, "text").value = "A";
   submitStart(h);
   h.start.close();
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   startEl(h, "text").value = "B";
   pending[0]!.rej(apiError(400, "too_long", { error: "too_long", field: "text" }));
   await h.flush();
@@ -5318,14 +5320,14 @@ test("web static: v3 の始める口: 開き直した後に前の応答が失敗
 
 test("web static: v3 の始める口: 閉じたまま失敗したら toast に失敗の文。次に開くと欄は空・エラーなし", async () => {
   const { h, pending } = await loadStartPending();
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   startEl(h, "text").value = "A";
   submitStart(h);
   h.start.close();
   pending[0]!.rej(apiError(503, "bot_disconnected"));
   await h.flush();
   assert.deepEqual(h.toasts, ["Discord につながっていません。少し待ってからもう一度試してください"]);
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   assert.equal(startEl(h, "text").value, "");
   assert.equal(startEl(h, "error").hidden, true);
   assert.equal(startEl(h, "text").getAttribute("aria-invalid"), null);
@@ -5334,7 +5336,7 @@ test("web static: v3 の始める口: 閉じたまま失敗したら toast に�
 
 test("web static: v3 の始める口: 閉じたまま成功したら話題へ移らず、toast と一覧の読み直し。turn が failed なら書きかけに戻し、toast は失敗の 1 つだけ", async () => {
   const { h, pending, hash } = await loadStartPending();
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   startEl(h, "text").value = "A";
   submitStart(h);
   h.start.close();
@@ -5348,7 +5350,7 @@ test("web static: v3 の始める口: 閉じたまま成功したら話題へ移
   assert.equal(topicReads(h, reads), 1);
   // turn が failed
   h.toasts = [];
-  addOf(h, "general")!.dispatch("click");
+  pressAdd(h, "general");
   startEl(h, "text").value = "送れなかった一言";
   submitStart(h);
   h.start.close();
@@ -5364,11 +5366,11 @@ test("web static: v3 の始める口: 閉じたまま成功したら話題へ移
 for (const order of ["A が先に返る", "B が先に返る"] as const) {
   test(`web static: v3 の始める口: 開き直して B を送れ、B の応答はダイアログを閉じて話題を開く。先に送った A の応答は B の結果を壊さない（${order}）`, async () => {
     const { h, pending } = await loadStartPending();
-    addOf(h, "general")!.dispatch("click");
+    pressAdd(h, "general");
     startEl(h, "text").value = "A";
     submitStart(h);
     h.start.close();
-    addOf(h, "general")!.dispatch("click");
+    pressAdd(h, "general");
     startEl(h, "text").value = "B";
     submitStart(h);
     assert.equal(h.api.posts.length, 2, "2 回目の POST");
@@ -6430,7 +6432,7 @@ test("web static: topics.js の load は render の前に syncReads(reads, ids) 
     Promise.resolve(v3Result([v3Topic("ch:5"), v3Topic("cc:abc", { origin: "cc" }), v3Topic("ch:6")], { rightHands: [v3Hand()], reads: { "5": 3, "900": 7 } }));
   await h.topics.load();
   assert.deepEqual(h.syncs, [{ reads: { "5": 3, "900": 7 }, ids: ["5", "6", "900"] }]);
-  assert.ok(h.row(h.nodes.groups, "ch:5"), "一覧を描く");
+  assert.equal(h.rowOf("ch:5")!.mark, "none", "一覧を描く");
   const load = fnSource(read("topics.js"), "load");
   assert.ok(load.indexOf("store.syncReads(next.reads, ids);") < load.indexOf("render();"));
 });
@@ -6442,5 +6444,5 @@ test("web static: reads の無い応答でも topics.js は一覧を描く", asy
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:5")]));
   await h.topics.load();
   assert.deepEqual(h.syncs, [{ reads: null, ids: ["5"] }]);
-  assert.ok(h.row(h.nodes.groups, "ch:5"));
+  assert.equal(h.rowOf("ch:5")!.mark, "none");
 });
