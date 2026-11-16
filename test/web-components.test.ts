@@ -2373,7 +2373,7 @@ test("web components: Composer の字数の入れ物はいつも在り aria-live
   assert.deepEqual([textOf(over), over[0]?.props["data-over"]], ["1,901 / 1,900", "true"]);
 });
 
-test("web components: Composer の onKeyDown は送るキーで preventDefault と on.send を 1 回ずつ、変換の途中は 0 回。onInput は欄の値を on.input に。［送る］は空で押せない", () => {
+test("web components: Composer の onKeyDown は送るキーで preventDefault と on.send を 1 回ずつ、変換の途中は 0 回。onInput は欄の値を on.input に。［送る］と Enter は空・送っている途中で送らない", () => {
   const rec = composerRec();
   const v = composerTree(composerState({ text: "a", count: 1 }), rec.on);
   const [ta] = rawEls(v).filter((c) => c.type === "textarea");
@@ -2399,6 +2399,14 @@ test("web components: Composer の onKeyDown は送るキーで preventDefault �
   assert.deepEqual([emptyBtn?.props["aria-disabled"], emptyBtn?.props.title], ["true", "本文を入れると送れます"]);
   (emptyBtn?.props.onClick as (e: Obj) => void)(fakeEvent());
   assert.equal(emptyRec.sends(), 0);
+  // Enter も同じ: 空・送っている途中は on.send を呼ばず、改行も入れない
+  for (const state of [composerState(), composerState({ text: "a", count: 1, sending: true })]) {
+    const r = composerRec();
+    const [t] = rawEls(composerTree(state, r.on)).filter((c) => c.type === "textarea");
+    const e = ev({});
+    (t?.props.onKeyDown as (e: Obj) => void)(e);
+    assert.deepEqual([e.count(), r.sends()], [1, 0]);
+  }
 });
 
 type ComposerMouth = { draw: (root: unknown, state: Obj) => void; set: (root: unknown, text: string) => boolean; focus: (root: unknown) => boolean; drop: (root: unknown) => void };
@@ -2459,6 +2467,9 @@ test("web components: composerMouth の ref(null) の後に別の要素が来た
   mouth.draw(root, composerState({ text: "一" }));
   const ref = calls[0]?.vnode?.props.inputRef as (n: unknown) => void;
   ref(null);
+  // 欄が外れた後は、前の要素に触れない
+  assert.equal(mouth.set(root, "x"), false);
+  assert.equal(mouth.focus(root), false);
   mouth.draw(root, composerState({ text: "二" }));
   const next = fakeInput();
   ref(next);
