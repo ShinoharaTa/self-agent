@@ -894,6 +894,34 @@
     });
   }
 
+  /** 送った本文が受け付けられた後（書きかけを消した後）: 仮の行・読み直し。Claude Code のチャンネルはセッションの今を読み直す */
+  function afterSent(channelId, data, text) {
+    const current = channelById(channelId);
+    if (current && current.kind === "cc") {
+      // Claude Code のチャンネル: 行（写し）はサーバーが書いている。届くまでの状態はセッションの今で出す
+      store.load.turns(channelId);
+      const live = ccLive(current);
+      if (live.sessionId) {
+        // サーバーのセッションの今が追いつくまで、仮の「届け待ち」をすぐ描く
+        if (data && typeof data.sendId === "number") store.setCcOptimisticSend(live.sessionId, data.sendId);
+        SA.app.refresh("ch:" + channelId);
+        store.load.ccSession(live.sessionId, { quiet: true });
+        for (const ms of CC_SEND_RECHECK_MS) setTimeout(() => store.load.ccSession(live.sessionId, { quiet: true }), ms);
+      }
+      return;
+    }
+    store.addOptimisticTurn(channelId, data && data.turnId, text);
+    store.load.turns(channelId);
+    SA.poll.running();
+    for (const ms of RUNNING_RECHECK_MS) setTimeout(() => store.load.running({ quiet: true }), ms);
+  }
+
+  /** 送れなかったときの知らせ（[もう一度] は retry） */
+  function sendFailed(err, retry) {
+    const known = err && err.code && (SEND_ERRORS[err.code] || CC_SEND_ERRORS_EXTRA[err.code] || SA.views.CC_SEND_ERRORS[err.code]);
+    if (err && err.toast) toast(known || err.toast, null, { level: "error", retry });
+  }
+
   function composer(ch, channelId, frame) {
     const title = frame ? frame.title : ch ? channelTitle(ch) : "会話";
     const ta = el("textarea", {
@@ -956,28 +984,10 @@
         // 送れたら書きかけを消し、本物の行が来るまで仮の行を出す
         if (ta.value.trim() === raw) ta.value = "";
         SA.app.setDraft(channelId, ta.value);
-        const current = channelById(channelId);
-        if (current && current.kind === "cc") {
-          // Claude Code のチャンネル: 行（写し）はサーバーが書いている。届くまでの状態はセッションの今で出す
-          store.load.turns(channelId);
-          const live = ccLive(current);
-          if (live.sessionId) {
-            // サーバーのセッションの今が追いつくまで、仮の「届け待ち」をすぐ描く
-            if (data && typeof data.sendId === "number") store.setCcOptimisticSend(live.sessionId, data.sendId);
-            SA.app.refresh("ch:" + channelId);
-            store.load.ccSession(live.sessionId, { quiet: true });
-            for (const ms of CC_SEND_RECHECK_MS) setTimeout(() => store.load.ccSession(live.sessionId, { quiet: true }), ms);
-          }
-          return;
-        }
-        store.addOptimisticTurn(channelId, data && data.turnId, text);
-        store.load.turns(channelId);
-        SA.poll.running();
-        for (const ms of RUNNING_RECHECK_MS) setTimeout(() => store.load.running({ quiet: true }), ms);
+        afterSent(channelId, data, text);
       } catch (err) {
         // 本文は入力欄に残す。[もう一度] は入力欄の今の本文を送り直す
-        const known = err && err.code && (SEND_ERRORS[err.code] || CC_SEND_ERRORS_EXTRA[err.code] || SA.views.CC_SEND_ERRORS[err.code]);
-        if (err && err.toast) toast(known || err.toast, null, { level: "error", retry: submit });
+        sendFailed(err, submit);
       } finally {
         sending = false;
         update();
