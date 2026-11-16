@@ -1,4 +1,4 @@
-// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1〜K4）。部品の状態を並べ、ui-shots が撮る。
+// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1〜K5）。部品の状態を並べ、ui-shots が撮る。
 // 認証の前に配られるので、個人の情報と API の呼び出しを入れない。data-section・data-demo は ui-shots が要素を探す印（CSS では使わない）
 import { html, render, useRef, useState } from "./c-lib.js";
 import { Badge, Button, Empty, Field, IconButton, Loading, Mark, Segmented } from "./c-atoms.js";
@@ -6,6 +6,7 @@ import { Confirm, Sheet, Toast } from "./c-sheet.js";
 import { TopicList, YourTurn, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
 import { TalkTimeline, parseBlocks, talkModel } from "./c-talk.js";
+import { Composer, composerModel } from "./c-composer.js";
 
 // テーマ: shell.js と同じ（localStorage の self-agent-web:theme。dark・light は data-theme、system は外して OS に合わせる。読めなければ dark）
 const THEMES = ["dark", "light", "system"];
@@ -544,6 +545,47 @@ function Talks() {
   <//>`;
 }
 
+const COMPOSER_NOTE = "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます";
+const COMPOSER_ONE = "明日の朝でお願いします";
+/** 入力欄の見本（count は送る本文の字数のつもりの数。near・over は本文を短くして字数だけ渡す） */
+const COMPOSER_DEMOS = [
+  { demo: "empty", text: "" },
+  { demo: "one", text: COMPOSER_ONE },
+  { demo: "three", text: "読みました。\n明日の朝に直します。\n終わったら知らせます。" },
+  { demo: "eight", text: Array.from({ length: 8 }, (_v, i) => `${i + 1} 行目`).join("\n") },
+  { demo: "long-line", text: "abcdefghij".repeat(20) },
+  { demo: "near", text: COMPOSER_ONE, count: 1701 },
+  { demo: "over", text: COMPOSER_ONE, count: 1901 },
+  { demo: "sending", text: COMPOSER_ONE, sending: true },
+  { demo: "narrow", text: COMPOSER_ONE, narrow: true },
+];
+const COMPOSER_ON = { input: noop, send: noop };
+
+/** 見本の欄に、要素が来たときに 1 回だけ本文を入れる ref（見本ごとに 1 つの同じ関数。本番は口が同じ事をする） */
+const composerRefs = new Map();
+function composerRef(demo, text) {
+  if (!composerRefs.has(demo)) {
+    const seen = new WeakSet();
+    composerRefs.set(demo, (node) => {
+      if (node && !seen.has(node)) {
+        seen.add(node);
+        node.value = text;
+      }
+    });
+  }
+  return composerRefs.get(demo);
+}
+
+function Composers() {
+  return html`<${Section} name="composer" title="会話の入力欄（Composer）">
+    ${COMPOSER_DEMOS.map(({ demo, text, count, sending = false, narrow = false }) => {
+      const model = composerModel({ text, count: count ?? text.trim().length, max: 1900, sending, touch: false, label: "見本の話題 に送る", placeholder: "この話題に送る", note: COMPOSER_NOTE });
+      const body = html`<${Composer} model=${model} on=${COMPOSER_ON} inputRef=${composerRef(demo, text)} />`;
+      return html`<div data-demo=${demo} key=${demo}>${narrow ? html`<div class="c-gallery-composer c-gallery-composer-narrow">${body}</div>` : html`<div class="c-gallery-composer">${body}</div>`}</div>`;
+    })}
+  <//>`;
+}
+
 /** 知らせの入れ物は見本の根の直下に 1 つ（自動では消さない。× で消す） */
 function Gallery() {
   const [toasts, setToasts] = useState([]);
@@ -570,6 +612,7 @@ function Gallery() {
     <${Tops} />
     <${Bottoms} />
     <${Talks} />
+    <${Composers} />
     <${Toast} items=${toasts} onDismiss=${dismiss} />
   `;
 }
