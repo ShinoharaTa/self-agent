@@ -34,8 +34,8 @@ export function Card({ kind, label, title, meta, urgent, note, children }) {
 }
 
 /** カードの中のチェック・ラジオの行（label が包む。押せない理由は disabled のときだけ行の title に） */
-function Check({ type = "checkbox", name, checked, disabled, reason, onChange, onPointerDown, onKeyDown, children }) {
-  return html`<label class="c-card-check" title=${disabled && reason ? reason : undefined} onPointerDown=${onPointerDown} onKeyDown=${onKeyDown}>
+function Check({ type = "checkbox", name, checked, disabled, reason, onChange, onPointerDown, children }) {
+  return html`<label class="c-card-check" title=${disabled && reason ? reason : undefined} onPointerDown=${onPointerDown}>
     <input class="c-card-check-input" type=${type} name=${name} checked=${!!checked} disabled=${!!disabled} onChange=${onChange} />
     <span class="c-card-check-text">${children}</span>
   </label>`;
@@ -72,9 +72,12 @@ export function PermissionCard({ item, on }) {
   <//>`;
 }
 
+/** 指・マウスで「その他」の行を押した問（fieldset の要素）。要素に付けて覚える（描く関数の中の変数だと、押し始めと change の間に描き直しが入ったときに消える） */
+const pointed = new WeakSet();
+
 /**
  * 質問の 1 問（fieldset。直下の子は全部 key つき）。「その他」の欄はいつも木に在り、hidden で隠す（描き直しで作り直さない）。
- * 本文は渡さない（ref で口が新しい要素にだけ入れる）。指・マウスで「その他」を選んだかは、行の pointerdown で旗を立て、キーで下ろし、change で読んで下ろす
+ * 本文は渡さない（ref で口が新しい要素にだけ入れる）。指・マウスで「その他」を選んだかは、行の pointerdown で印を付け、問の中のキー（ほかの選択肢からの矢印キーも）で外し、change で読んで外す
  */
 function questionSet({ item, q, index, on, otherRef }) {
   const busy = !!item.busy;
@@ -85,8 +88,7 @@ function questionSet({ item, q, index, on, otherRef }) {
   const legend = str(q.legend);
   const options = Array.isArray(q.options) ? q.options : [];
   const picked = Array.isArray(q.picked) ? q.picked : [];
-  let byPointer = false;
-  return html`<fieldset class="c-card-q" key=${"q" + index}>
+  return html`<fieldset class="c-card-q" key=${"q" + index} onKeyDown=${(event) => void pointed.delete(event.currentTarget)}>
     <legend class="c-card-q-legend" key="legend">${legend}</legend>
     <p class="c-card-q-text" key="text">${str(q.text)}</p>
     ${multi ? html`<p class="c-card-q-hint" key="hint">いくつでも選べます</p>` : null}
@@ -99,10 +101,13 @@ function questionSet({ item, q, index, on, otherRef }) {
       <//>`;
     })}
     <${Check} key="other" type=${type} name=${name} checked=${other} disabled=${busy} reason=${SENDING}
-      onPointerDown=${() => void (byPointer = true)} onKeyDown=${() => void (byPointer = false)}
+      onPointerDown=${(event) => {
+        const set = event.currentTarget.closest("fieldset");
+        if (set) pointed.add(set);
+      }}
       onChange=${(event) => {
-        on.pickOther(item.id, index, event.currentTarget.checked, byPointer);
-        byPointer = false;
+        const set = event.currentTarget.closest("fieldset");
+        on.pickOther(item.id, index, event.currentTarget.checked, !!set && pointed.delete(set));
       }}><strong class="c-card-check-label">その他</strong><//>
     <textarea class="c-card-other" key="field" rows="2" maxlength=${OTHER_MAX} aria-label=${"その他の答え（" + legend + "）"}
       hidden=${!other} disabled=${busy} ref=${otherRef ? otherRef(item.id, index) : undefined}

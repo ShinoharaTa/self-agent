@@ -654,9 +654,10 @@ const CARD_DEMOS = [
       cardQuestion({
         id: "q5",
         who: "見本のセッション ・ " + CARD_MODE,
+        ready: true,
         questions: [
-          cardQ({ options: [...CARD_OPTIONS, { label: CARD_UNBROKEN_PLACE, description: CARD_UNBROKEN_URL }], picked: ["作り直す"] }),
-          cardQ2({ legend: "見本の長い見出しをここに置いて折り返しを見る", other: true, otherText: CARD_UNBROKEN_URL }),
+          cardQ({ legend: "見本の長い見出しをここに置いて折り返しを見る", options: [...CARD_OPTIONS, { label: CARD_UNBROKEN_PLACE, description: CARD_UNBROKEN_URL }], picked: ["作り直す"] }),
+          cardQ2({ legend: CARD_UNBROKEN_PLACE, other: true, otherText: CARD_UNBROKEN_URL }),
         ],
       }),
     ],

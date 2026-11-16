@@ -2918,23 +2918,29 @@ test("web components: 質問のカードの押せない理由（busy は 2 つ�
   for (const row of find(busy, "c-card-check")) assert.equal(row.props.title, "答えを送っています");
 });
 
-test("web components: 質問のカードの呼び出し（pick(id, 番号, ラベル, checked)・pickOther(id, 番号, checked, byPointer)・other(id, 番号, 値)。旗は pointerdown で立ち、キーと change の後で下りる。選択肢の行には pointerdown が無い）", () => {
+test("web components: 質問のカードの呼び出し（pick(id, 番号, ラベル, checked)・pickOther(id, 番号, checked, byPointer)・other(id, 番号, 値)。印は「その他」の行の pointerdown で付き、問の中のキーと change の後で外れる。選択肢の行には pointerdown が無い）", () => {
   const rec = cardRec();
   const el = qCard(qItem({ questions: [qOf(), qOf({ multi: true })] }), rec.on);
   const [, second] = kids(el, "fieldset") as El[];
   const rows = find(second as El, "c-card-check");
   const inputs = find(second as El, "c-card-check-input");
-  const change = (i: El | undefined, checked: boolean): void => (i?.props.onChange as (e: unknown) => void)({ currentTarget: { checked } });
+  // 偽の要素: 問（fieldset）と、その中の行・印（closest で問を返す）
+  const set = {};
+  const inside = (o: Obj = {}): Obj => ({ closest: (sel: string) => (sel === "fieldset" ? set : null), ...o });
+  const change = (i: El | undefined, checked: boolean): void => (i?.props.onChange as (e: unknown) => void)({ currentTarget: inside({ checked }) });
+  const down = (r: El): void => (r.props.onPointerDown as (e: unknown) => void)({ currentTarget: inside() });
+  const key = (): void => ((second as El).props.onKeyDown as (e: unknown) => void)({ currentTarget: set });
   change(inputs[0], true);
   change(inputs[1], false);
-  for (const r of rows.slice(0, 2)) assert.deepEqual([r.props.onPointerDown, r.props.onKeyDown], [undefined, undefined]);
+  for (const r of rows) assert.equal(r.props.onKeyDown, undefined);
+  for (const r of rows.slice(0, 2)) assert.equal(r.props.onPointerDown, undefined);
   const otherRow = rows[2] as El;
   const otherInput = inputs[2];
-  (otherRow.props.onPointerDown as () => void)();
+  down(otherRow);
   change(otherInput, true);
   change(otherInput, false);
-  (otherRow.props.onPointerDown as () => void)();
-  (otherRow.props.onKeyDown as () => void)();
+  down(otherRow);
+  key();
   change(otherInput, true);
   (find(second as El, "c-card-other")[0]?.props.onInput as (e: unknown) => void)({ currentTarget: { value: "別の案" } });
   assert.deepEqual(rec.calls, [
@@ -2945,6 +2951,45 @@ test("web components: 質問のカードの呼び出し（pick(id, 番号, ラ�
     ["pickOther", 9, 1, true, false],
     ["other", 9, 1, "別の案"],
   ]);
+});
+
+test("web components: 「その他」を指で押した印は、押し始めと change の間に描き直しても残る（問の要素に付けて覚える。別の問には移らない）", () => {
+  const rec = cardRec();
+  const item = qItem({ questions: [qOf(), qOf()] });
+  const draw = (): El[] => kids(qCard(item, rec.on), "fieldset");
+  const sets = [{}, {}];
+  const inside = (n: number, o: Obj = {}): Obj => ({ closest: () => sets[n], ...o });
+  const otherRow = (els: El[], n: number): El => find(els[n] as El, "c-card-check")[2] as El;
+  const otherInput = (els: El[], n: number): El => find(els[n] as El, "c-card-check-input")[2] as El;
+  (otherRow(draw(), 0).props.onPointerDown as (e: unknown) => void)({ currentTarget: inside(0) });
+  // 描き直した後の木の change に届く
+  const again = draw();
+  (otherInput(again, 1).props.onChange as (e: unknown) => void)({ currentTarget: inside(1, { checked: true }) });
+  (otherInput(again, 0).props.onChange as (e: unknown) => void)({ currentTarget: inside(0, { checked: true }) });
+  assert.deepEqual(rec.calls, [
+    ["pickOther", 9, 1, true, false],
+    ["pickOther", 9, 0, true, true],
+  ]);
+});
+
+test("web components: otherRef は Cards → 質問のカード → 「その他」の欄の ref へ (id, 問の番号) で届く。無ければ ref を付けない", () => {
+  const seen: unknown[][] = [];
+  const refs = new Map<string, () => void>();
+  const otherRef = (id: unknown, index: number): (() => void) => {
+    seen.push([id, index]);
+    const k = id + ":" + index;
+    if (!refs.has(k)) refs.set(k, () => {});
+    return refs.get(k) as () => void;
+  };
+  const item = qItem({ questions: [qOf(), qOf()] });
+  // Cards から 1 段ずつ開く（html の木は ref を props に残さないので、生の vnode で見る）
+  const cardsNode = qCards.Cards({ items: [item], on: cardRec().on, otherRef }) as RawNode;
+  const cardNode = rawEls(cardsNode).find((v) => v.type === qCards.QuestionCard) as RawNode;
+  assert.equal(cardNode.props.otherRef, otherRef);
+  const fields = (ref?: unknown): RawNode[] => rawEls(qCards.QuestionCard({ item, on: cardRec().on, otherRef: ref })).filter((v) => v.type === "textarea");
+  assert.deepEqual(fields(otherRef).map((f) => f.ref ?? f.props.ref), [refs.get("9:0"), refs.get("9:1")]);
+  assert.deepEqual(seen, [[9, 0], [9, 1]]);
+  assert.deepEqual(fields().map((f) => f.ref ?? f.props.ref), [undefined, undefined]);
 });
 
 type CardsMouth = { draw: (root: unknown, state: Obj) => void; focus: (root: unknown, id: unknown, index: number) => boolean; drop: (root: unknown) => void };
