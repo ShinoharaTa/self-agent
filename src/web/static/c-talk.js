@@ -1,5 +1,5 @@
-// 会話の行の部品（docs/plan/web-ui-components.md §6 の K4）: TalkTimeline・Bubble・Steps・StepList・RunLine・Notice・Divider・Blocks・Inline と、
-// そのモデルの関数（talkModel・footOf）と返事の最小限の Markdown の解析。hook を使わない（Node から関数として呼べる）。状態は持たず、
+// 会話の行の部品（docs/plan/web-ui-components.md §6 の K4）: TalkTimeline・TalkRows・Bubble・Steps・StepList・RunLine・Notice・Divider・Blocks・Inline と、
+// そのモデルの関数（talkModel・footOf）と返事の最小限の Markdown の解析、会話の口（talkMouth）。hook を使わない（Node から関数として呼べる）。状態は持たず、
 // 入口が talkModel(state, parse) の結果を押し込む。クラスは固定の文字列、状態は data-* と aria-*。置くのは TalkTimeline だけ。
 // 解析は ui.js の parseBlocks・parseInline の写し（同じ結果である事を test/web-render-text.test.ts が留める。正規表現は変えない）
 import { html } from "./c-lib.js";
@@ -181,17 +181,74 @@ function runModel(state, turns) {
 
 // ===== 部品 =====
 
-/** 会話の行の根。on: { older(), toggleSteps(key), toggleRunSteps(), stop() } */
-export function TalkTimeline({ model, on }) {
+/**
+ * 会話の行の根。on: { older(), toggleSteps(key), toggleRunSteps(), stop() }。
+ * rows（TalkRows の vnode）を渡せばそれを置き、model.older・model.items を見ない（1 秒ごとは同じ rows を渡して実行中の行だけを描く）
+ */
+export function TalkTimeline({ model, on, rows }) {
   return html`<div class="c-talk">
-    ${model.older ? html`<div class="c-talk-older" key="older"><${Button} kind="ghost" size="sm" label="前の会話を読む" onPress=${() => on.older()} /></div>` : null}
-    ${model.items.map((item) => {
+    ${rows !== undefined ? rows : html`<${TalkRows} key="rows" older=${model.older} items=${model.items} on=${on} />`}
+    ${model.running ? html`<${RunLine} key="run" run=${model.running} on=${on} />` : null}
+  </div>`;
+}
+
+/** 「前の会話を読む」と行（要素で包まず、配列を返す）。on は押されたときに今の状態を読む物を渡す（作ったときの物を持ち続けるため） */
+export function TalkRows({ older, items, on }) {
+  return [
+    older ? html`<div class="c-talk-older" key="older"><${Button} kind="ghost" size="sm" label="前の会話を読む" onPress=${() => on.older()} /></div>` : null,
+    ...items.map((item) => {
       if (item.kind === "divider") return html`<${Divider} key=${item.key} text=${item.text} />`;
       if (item.kind === "notice") return html`<${Notice} key=${item.key} text=${item.text} time=${item.time} />`;
       return html`<${Bubble} key=${item.key} ...${item} onToggle=${() => on.toggleSteps(item.key)} />`;
-    })}
-    ${model.running ? html`<${RunLine} key="run" run=${model.running} on=${on} />` : null}
-  </div>`;
+    }),
+  ];
+}
+
+/** 解析の覚えの数の上限（越えたら空にしてから入れる） */
+const PARSE_MEMO_MAX = 400;
+
+/**
+ * 会話の口（入口が 1 回だけ呼ぶ。render は c-lib の render を渡す）。{ draw(root, state), tick(root, state), drop(root) }。
+ * draw は行を作り直して覚え、tick は覚えた行の vnode をそのまま渡して実行中の行だけを描く（覚えが無ければ draw と同じ）。
+ * 例外は握らない（握るのは入口）
+ */
+export function talkMouth(render) {
+  const parsed = new Map();
+  const parse = (text) => {
+    if (parsed.has(text)) return parsed.get(text);
+    if (parsed.size >= PARSE_MEMO_MAX) parsed.clear();
+    const blocks = parseBlocks(text);
+    parsed.set(text, blocks);
+    return blocks;
+  };
+  const rowsOf = new WeakMap();
+  const paint = (root, model, on, rows) => {
+    try {
+      render(html`<${TalkTimeline} model=${model} on=${on} rows=${rows} />`, root);
+    } catch (error) {
+      rowsOf.delete(root);
+      throw error;
+    }
+  };
+  const draw = (root, state) => {
+    const model = talkModel(state, parse);
+    const rows = html`<${TalkRows} key="rows" older=${model.older} items=${model.items} on=${state.on} />`;
+    rowsOf.set(root, rows);
+    paint(root, model, state.on, rows);
+  };
+  const tick = (root, state) => {
+    const rows = rowsOf.get(root);
+    if (rows === undefined) {
+      draw(root, state);
+      return;
+    }
+    paint(root, talkModel(state, parse), state.on, rows);
+  };
+  const drop = (root) => {
+    rowsOf.delete(root);
+    render(null, root);
+  };
+  return { draw, tick, drop };
 }
 
 /** 区切り（文字をそのまま。中に要素を作らない） */

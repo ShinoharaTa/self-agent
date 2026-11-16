@@ -2063,7 +2063,8 @@ test("web components: TalkTimeline の根・older のボタン・items の順と
   ];
   const model = talk.talkModel(talkState({ turns, hasMore: true, running: { steps: [], abortable: false, text: "作業中…" } }), talk.parseBlocks);
   const v = talk.TalkTimeline({ model, on }) as VNode;
-  assert.deepEqual(keysOf(v.props.children), ["older", "1", "2", "3", "4", "run"]);
+  assert.deepEqual(keysOf(v.props.children), ["rows", "run"]);
+  assert.deepEqual(keysOf(talk.TalkRows({ older: model.older, items: model.items, on })), ["older", "1", "2", "3", "4"]);
   const root = one(v);
   assert.deepEqual([root.type, root.props.class], ["div", "c-talk"]);
   assert.deepEqual((root.children as El[]).map((c) => c.props.class), ["c-talk-older", "c-divider", "c-notice", "c-msg", "c-msg", "c-run"]);
@@ -2084,4 +2085,130 @@ test("web components: 会話の根（.c-talk）は自分の字と色を持つ（
   for (const decl of ["font-size: var(--c-font-body)", "line-height: var(--leading-normal)", "color: var(--text)"]) {
     assert.ok(own.some((r) => r.body.split(";").map((d) => d.trim()).includes(decl)), decl);
   }
+});
+
+test("web components: TalkTimeline に rows を渡すと、直下の 1 つ目はその物そのもので model.items を見ない", () => {
+  const { on } = talkRec();
+  const rows = html`<${talk.TalkRows} key="rows" older=${false} items=${[{ kind: "divider", key: "9", text: "渡した行" }]} on=${on} />`;
+  const v = talk.TalkTimeline({ model: { older: true, items: [], running: null }, on, rows }) as VNode;
+  const children = (v.props.children as unknown[]).flat(Infinity).filter((c) => c && typeof c === "object");
+  assert.equal(children[0], rows);
+  const root = one(v);
+  assert.deepEqual((root.children as El[]).map((c) => c.props.class), ["c-divider"]);
+  assert.equal(textOf(root), "渡した行");
+});
+
+test("web components: rows を渡さない TalkTimeline の展開した DOM は、行を直に並べた形と同じ", () => {
+  const { on } = talkRec();
+  const turns = [
+    { id: 1, kind: "divider", text: "区切り" },
+    { id: 2, kind: "notice", text: "知らせ", time: "12:00" },
+    { id: 3, kind: "owner", text: "a", time: "12:01" },
+    { id: 4, kind: "agent", text: "**b** `c` https://a.example/x", outcome: "max_turns", steps: ["Read a"], end: "上限", time: "12:02" },
+  ];
+  const model = talk.talkModel(talkState({ turns, hasMore: true, running: { steps: ["a", "b", "c", "d"], abortable: true, text: "作業中…" } }), talk.parseBlocks);
+  const shape = (t: Tree | Tree[]): unknown =>
+    Array.isArray(t) ? t.map(shape) : typeof t === "string" ? t : [t.type, t.props.class ?? null, t.props["data-who"] ?? null, shape(t.children)];
+  const got = one(html`<${talk.TalkTimeline} model=${model} on=${on} />`);
+  // 行を直に並べた形（TalkRows を挟まない b1 の形）
+  const flat = expand(talk.TalkRows({ older: model.older, items: model.items, on }));
+  const run = expand(html`<${talk.RunLine} run=${model.running} on=${on} />`);
+  assert.deepEqual(shape(got.children), shape([...flat, ...run]));
+  assert.deepEqual([got.type, got.props.class], ["div", "c-talk"]);
+  assert.deepEqual((got.children as El[]).map((c) => c.props.class), ["c-talk-older", "c-divider", "c-notice", "c-msg", "c-msg", "c-run"]);
+});
+
+type Mouth = { draw: (root: unknown, state: Obj) => void; tick: (root: unknown, state: Obj) => void; drop: (root: unknown) => void };
+/** 偽の render（呼ばれた vnode と根を積むだけ。throws が true なら投げる） */
+function fakeMouth(): { mouth: Mouth; calls: { vnode: VNode | null; root: unknown }[]; fail: (v: boolean) => void } {
+  const calls: { vnode: VNode | null; root: unknown }[] = [];
+  let throws = false;
+  const render = (vnode: VNode | null, root: unknown): void => {
+    calls.push({ vnode, root });
+    if (throws) throw new Error("render");
+  };
+  const mouth = (talk.talkMouth as unknown as (r: typeof render) => Mouth)(render);
+  return { mouth, calls, fail: (v) => void (throws = v) };
+}
+const mouthTurns = [
+  { id: 1, kind: "owner", text: "a" },
+  { id: 2, kind: "agent", text: "**b** の返事", outcome: "done", steps: [] },
+];
+const mouthState = (text = "作業中 1 秒"): Obj => talkState({ turns: mouthTurns, running: { steps: [], abortable: true, text }, on: talkRec().on });
+const rowsOfCall = (call: { vnode: VNode | null } | undefined): VNode => (call?.vnode?.props.rows as VNode);
+const runOfCall = (call: { vnode: VNode | null } | undefined): Obj => ((call?.vnode?.props.model as Obj).running as Obj);
+
+test("web components: talkMouth の draw は render を 1 回呼び、rows は key が rows の TalkRows、根は渡した物", () => {
+  const { mouth, calls } = fakeMouth();
+  const root = { name: "root" };
+  mouth.draw(root, mouthState());
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.root, root);
+  assert.equal(calls[0]?.vnode?.type, talk.TalkTimeline);
+  const rows = rowsOfCall(calls[0]);
+  assert.equal(rows.type, talk.TalkRows);
+  assert.equal((rows as unknown as { key: unknown }).key, "rows");
+});
+
+test("web components: talkMouth の tick は draw と同じ rows を渡し、実行中の文は新しい state の物。draw をもう 1 回すると rows は新しい物", () => {
+  const { mouth, calls } = fakeMouth();
+  const root = {};
+  mouth.draw(root, mouthState("1 秒"));
+  mouth.tick(root, mouthState("2 秒"));
+  assert.equal(calls.length, 2);
+  assert.equal(rowsOfCall(calls[1]), rowsOfCall(calls[0]));
+  assert.equal(runOfCall(calls[1]).text, "2 秒");
+  mouth.draw(root, mouthState("3 秒"));
+  assert.notEqual(rowsOfCall(calls[2]), rowsOfCall(calls[0]));
+  mouth.tick(root, mouthState("4 秒"));
+  assert.equal(rowsOfCall(calls[3]), rowsOfCall(calls[2]));
+});
+
+test("web components: talkMouth の tick は、draw していない根では全部を描き、その後の tick で同じ rows。根ごとに別の行を覚える", () => {
+  const { mouth, calls } = fakeMouth();
+  const a = { name: "a" };
+  const b = { name: "b" };
+  mouth.tick(a, mouthState());
+  assert.equal(rowsOfCall(calls[0]).type, talk.TalkRows);
+  mouth.tick(a, mouthState());
+  assert.equal(rowsOfCall(calls[1]), rowsOfCall(calls[0]));
+  mouth.draw(a, mouthState());
+  mouth.tick(b, mouthState());
+  assert.equal(calls[3]?.root, b);
+  assert.notEqual(rowsOfCall(calls[3]), rowsOfCall(calls[2]));
+  mouth.tick(a, mouthState());
+  assert.equal(rowsOfCall(calls[4]), rowsOfCall(calls[2]));
+});
+
+test("web components: talkMouth の drop は render(null, root) を呼び、その後の tick は全部を描く", () => {
+  const { mouth, calls } = fakeMouth();
+  const root = {};
+  mouth.draw(root, mouthState());
+  mouth.drop(root);
+  assert.deepEqual([calls[1]?.vnode, calls[1]?.root], [null, root]);
+  mouth.tick(root, mouthState());
+  assert.notEqual(rowsOfCall(calls[2]), rowsOfCall(calls[0]));
+  assert.equal(rowsOfCall(calls[2]).type, talk.TalkRows);
+});
+
+test("web components: talkMouth は同じ文の解析の結果を使い回す", () => {
+  const { mouth, calls } = fakeMouth();
+  const root = {};
+  mouth.draw(root, mouthState());
+  mouth.draw(root, mouthState());
+  const blocksOf = (call: { vnode: VNode | null } | undefined): unknown => ((rowsOfCall(call).props.items as Obj[])[1] as Obj).blocks;
+  assert.ok(Array.isArray(blocksOf(calls[0])));
+  assert.equal(blocksOf(calls[1]), blocksOf(calls[0]));
+});
+
+test("web components: talkMouth の render が投げたら draw も投げ、その後の tick は全部を描く（壊れた行を覚えない）", () => {
+  const { mouth, calls, fail } = fakeMouth();
+  const root = {};
+  fail(true);
+  assert.throws(() => mouth.draw(root, mouthState()), /render/);
+  fail(false);
+  mouth.tick(root, mouthState());
+  assert.notEqual(rowsOfCall(calls[1]), rowsOfCall(calls[0]));
+  mouth.tick(root, mouthState());
+  assert.equal(rowsOfCall(calls[2]), rowsOfCall(calls[1]));
 });
