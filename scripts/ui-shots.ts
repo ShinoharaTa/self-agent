@@ -648,7 +648,7 @@ function talkProblems({ demos, max, fontSize, label }: { demos: string[] | null;
 
 /**
  * 本番の会話の行の形（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。#ed に .c-talk が 1 つで古い描き方の行が無い・
- * .ed-scroll が横に動かない・.tl が見えているとき、その中身の左端が .c-talk の中身の左端と同じ。足りない物の文を返す
+ * .ed-scroll が横に動かない・カードの根と .tl が見えているとき、その中身の左端が .c-talk の中身の左端と同じで、最初の子が .c-talk の下端からすぐ。足りない物の文を返す
  */
 function liveTalkProblems({ label }: { label: string }): string[] {
   const lines: string[] = [];
@@ -663,9 +663,19 @@ function liveTalkProblems({ label }: { label: string }): string[] {
   if (scroll === null) say("#ed に .ed-scroll が無い");
   else if (scroll.scrollWidth > scroll.clientWidth) say(`.ed-scroll が横に動く（${scroll.scrollWidth} > ${scroll.clientWidth}）`);
   const talk = talks[0];
-  const tl = document.querySelector("#ed .ed-scroll > [data-talk] + .tl");
+  const inner = (el: Element): number => el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft);
+  // カードの根（会話の根のすぐ次）
+  const cards = document.querySelector("#ed .ed-scroll > [data-talk] + [data-cards]");
+  if (talk !== undefined && cards !== null && cards.getClientRects().length > 0) {
+    if (Math.abs(inner(cards) - inner(talk)) > 0.5) say(`カードの根の中身の左端 ${inner(cards).toFixed(1)} が .c-talk の中身の左端 ${inner(talk).toFixed(1)} でない`);
+    const first = cards.firstElementChild;
+    if (first !== null) {
+      const gap = first.getBoundingClientRect().top - parseFloat(getComputedStyle(first).marginTop) - talk.getBoundingClientRect().bottom;
+      if (Math.abs(gap) > 0.5) say(`カードの根の最初の子の上に .c-talk の下の余白のほかに ${gap.toFixed(1)} の間が在る`);
+    }
+  }
+  const tl = document.querySelector("#ed .ed-scroll > [data-cards] + .tl");
   if (talk !== undefined && tl !== null && tl.getClientRects().length > 0) {
-    const inner = (el: Element): number => el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft);
     if (Math.abs(inner(tl) - inner(talk)) > 0.5) say(`.tl の中身の左端 ${inner(tl).toFixed(1)} が .c-talk の中身の左端 ${inner(talk).toFixed(1)} でない`);
     // 上の余白を重ねない（.tl の最初の子は .c-talk の下端からすぐ。間は .c-talk の下の余白だけ）
     const first = tl.firstElementChild;
@@ -2077,7 +2087,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (wide.pre !== true) say(`コードの段が横に長くない（${String(wide.pre)}）`);
     if (!(wide.moved > 0)) say("コードの段を横に送れない");
     // 9. .tl が空なら高さ 0
-    const tlH = await page.evaluate(() => document.querySelector("#ed .ed-scroll > [data-talk] + .tl")?.getBoundingClientRect().height ?? -1);
+    const tlH = await page.evaluate(() => document.querySelector("#ed .ed-scroll > [data-cards] + .tl")?.getBoundingClientRect().height ?? -1);
     if (tlH !== 0) say(`空の .tl の高さ ${tlH}（0 のはず）`);
     // 16. PC は列が 840 で真ん中（右腕を列で開いていると列 2 が 840 より狭いので、測る間だけ畳む）
     if (vp === "pc") {
@@ -2311,7 +2321,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     lines.push(...(await liveTalkLines(page, vp, "長い会話")));
     // 14. 「前の会話を読む」が在る・[続ける] は .tl に無く最後の返事の行の一番下で見えている・結果の文は 1 行で省かれる・時刻は切れない
     const longLook = await page.evaluate(() => {
-      const tl = document.querySelector("#ed .ed-scroll > [data-talk] + .tl");
+      const tl = document.querySelector("#ed .ed-scroll > [data-cards] + .tl");
       const acts = document.querySelectorAll("#ed .c-talk .c-msg-act");
       const act = acts[0] ?? null;
       const btn = act?.querySelector("button") ?? null;
@@ -2475,7 +2485,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const pressed = await page.evaluate(() => {
         const w = window as unknown as { __busy: number; __obs?: MutationObserver; __ta: Element | null; __sc: Element | null };
         w.__obs?.disconnect();
-        const tl = document.querySelector("#ed .ed-scroll > [data-talk] + .tl");
+        const tl = document.querySelector("#ed .ed-scroll > [data-cards] + .tl");
         return {
           busy: w.__busy,
           act: document.querySelector("#ed .c-msg-act") !== null,
@@ -3104,12 +3114,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (!full) return;
       await step(`${p} b2`, [`${p}-b-chat-permission`, `${p}-b-chat-question`], async () => {
         await load(page, `/static/v3.html#/ch/${perm}`);
-        await page.waitForSelector("#ed .cc-permission", { timeout: 5000 });
+        await page.waitForSelector('#ed [data-cards] .c-card[data-kind="permission"]', { timeout: 5000 });
         await wait(800);
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-permission`);
         await load(page, `/static/v3.html#/ch/${q}`);
-        await page.waitForSelector("#ed .cc-question-card", { timeout: 5000 });
+        await page.waitForSelector('#ed [data-cards] .c-card[data-kind="question"]', { timeout: 5000 });
         await wait(800);
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-question`);
@@ -3198,7 +3208,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           toolbar: document.querySelector("#ed .ed-toolbar") !== null,
           top: (window as unknown as { SA?: { top?: unknown } }).SA?.top === undefined,
           talk: (window as unknown as { SA?: { talk?: unknown } }).SA?.talk === undefined,
+          cards: (window as unknown as { SA?: { cards?: unknown } }).SA?.cards === undefined,
           roots: document.querySelectorAll("[data-talk]").length,
+          cardRoots: document.querySelectorAll("[data-cards]").length,
           msgs: document.querySelectorAll("#ed .msg-agent").length,
         }));
         const problems = [
@@ -3207,6 +3219,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           ...(!old.top ? ["古い殻に window.SA.top が在る"] : []),
           ...(!old.talk ? ["古い殻に window.SA.talk が在る"] : []),
           ...(old.roots !== 0 ? [`古い殻に [data-talk] が ${old.roots} 個`] : []),
+          ...(!old.cards ? ["古い殻に window.SA.cards が在る"] : []),
+          ...(old.cardRoots !== 0 ? [`古い殻に [data-cards] が ${old.cardRoots} 個`] : []),
           ...(old.msgs === 0 ? ["古い殻の #ed に .msg-agent が無い"] : []),
         ];
         for (const line of problems) logLines.push(`[${label}] ${line}`);
