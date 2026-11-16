@@ -880,6 +880,8 @@
         ta.placeholder = ta.dataset.placeholder || placeholderOf(ta.dataset.title || "会話");
         ta.setAttribute("enterkeyhint", enterHint());
       }
+      // 新しい殻の入力欄（部品）は描き直して合わせる
+      if (SA.composer && !composerBroken) for (const root of document.querySelectorAll("[data-composer]")) drawComposer(root.getAttribute("data-composer"));
     });
   }
   /** 入力欄のキー（Claude Code のセッションのタブの入力欄も同じ）: Enter で送る（タッチが主の端末では改行）・Shift+Enter で改行・Ctrl+Enter・⌘+Enter はいつも送る。IME の変換中は送らない */
@@ -922,6 +924,13 @@
     if (err && err.toast) toast(known || err.toast, null, { level: "error", retry });
   }
 
+  /** 入力欄の title（キーと届き方の説明） */
+  function composerNote(ch) {
+    return ch && ch.kind === "cc"
+      ? "このセッションに届けます（入力待ちのときに貼ります）。返事はここと Discord の両方に出ます"
+      : "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます";
+  }
+
   function composer(ch, channelId, frame) {
     const title = frame ? frame.title : ch ? channelTitle(ch) : "会話";
     const ta = el("textarea", {
@@ -933,10 +942,7 @@
       "data-title": title,
       "data-placeholder": frame ? frame.placeholder : undefined,
       placeholder: frame ? frame.placeholder : placeholderOf(title),
-      title:
-        ch && ch.kind === "cc"
-          ? "このセッションに届けます（入力待ちのときに貼ります）。返事はここと Discord の両方に出ます"
-          : "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます",
+      title: composerNote(ch),
     });
     ta.value = SA.app.draft(channelId);
     const counter = el("span", { class: "counter", "aria-live": "polite" });
@@ -1136,6 +1142,101 @@
     return null;
   }
 
+  // ===== 新しい殻の入力欄（入口 c-app.js の SA.composer。K5）。古い殻には SA.composer が無いので、ここは通らない =====
+  /** 部品で描けなかった（以後はこのタブで古い入力欄） */
+  let composerBroken = false;
+  /** 送っている間（受け付けの返事が来るまで）のチャンネル */
+  const sendingNow = new Set();
+
+  /** placeholder は決まった短い文（題名を入れない） */
+  function composerPlaceholder(ch) {
+    if (ch && ch.kind === "session") return "この話題に送る";
+    if (ch && ch.kind === "cc") return "このセッションに送る";
+    return "ここに送る";
+  }
+
+  /** 部品に渡す state。本文の持ち主は SA.app.draft。on は channelId だけを閉じ込める */
+  function composerState(channelId, ch) {
+    const text = SA.app.draft(channelId);
+    return {
+      text,
+      count: text.trim().length,
+      max: MESSAGE_MAX,
+      sending: sendingNow.has(channelId),
+      touch: touchPrimary(),
+      label: (ch ? channelTitle(ch) : "会話") + " に送る",
+      placeholder: composerPlaceholder(ch),
+      note: composerNote(ch),
+      on: {
+        input: (value) => composerInput(channelId, value),
+        send: () => composerSend(channelId),
+      },
+    };
+  }
+
+  /** 部品の入力欄の根（data-composer で引く。描いていなければ null） */
+  function composerRoot(channelId) {
+    if (!/^\d+$/.test(channelId)) return null;
+    return document.querySelector('[data-composer="' + channelId + '"]');
+  }
+
+  /** 入力欄だけを描き直す（会話は描かない）。描けなければ根を外して古い入力欄で描き直し、false */
+  function drawComposer(channelId) {
+    if (!SA.composer || composerBroken) return false;
+    const root = composerRoot(channelId);
+    if (!root) return false;
+    if (SA.composer.draw(root, composerState(channelId, channelById(channelId)))) return true;
+    composerBroken = true;
+    SA.composer.drop(root);
+    SA.app.refresh("ch:" + channelId);
+    return false;
+  }
+
+  /** 打鍵: 書きかけを覚え、入力欄だけを描き直す。一番下を見ていたら、欄が伸びても一番下のまま */
+  function composerInput(channelId, text) {
+    SA.app.setDraft(channelId, text);
+    const scroll = scrollOf(channelId);
+    const bottom = !!scroll && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
+    drawComposer(channelId);
+    if (bottom) scroll.scrollTop = scroll.scrollHeight;
+  }
+
+  /** [送る]・Enter（古い入力欄の submit と同じ順）。本文は SA.app.draft から読む */
+  async function composerSend(channelId) {
+    const raw = SA.app.draft(channelId).trim();
+    if (sendingNow.has(channelId) || raw === "") return;
+    if (raw.length > MESSAGE_MAX) {
+      toast(TOO_LONG_TEXT);
+      return;
+    }
+    sendingNow.add(channelId);
+    drawComposer(channelId);
+    try {
+      const data = await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/messages", { text: raw }, { quiet: true });
+      // 受け付けた（202）: 音（sound.js）はここで「受け付けた」を鳴らす
+      SA.events.emit("sent", { channelId });
+      // 送っている間に打ち足していなければ書きかけを消す。set は値だけなので、すぐ同じ本文（空）で描いて高さを戻す
+      if (SA.app.draft(channelId).trim() === raw) {
+        SA.app.setDraft(channelId, "");
+        const root = composerRoot(channelId);
+        if (root && SA.composer && !composerBroken) SA.composer.set(root, "");
+        drawComposer(channelId);
+      }
+      afterSent(channelId, data, raw);
+    } catch (err) {
+      // 本文は書きかけに残す。[もう一度] はその時の書きかけを送り直す
+      sendFailed(err, () => composerSend(channelId));
+    } finally {
+      sendingNow.delete(channelId);
+      drawComposer(channelId);
+    }
+  }
+
+  /** container の直下の、部品の入力欄の根を全部外す */
+  function dropComposerRoots(container, comp) {
+    for (const child of [...container.children]) if (child.getAttribute("data-composer") !== null) comp.drop(child);
+  }
+
   function render(container, channelId, frame) {
     const t = store.turns[channelId];
     const ch = channelById(channelId);
@@ -1143,13 +1244,17 @@
     const top = !frame && !!SA.top;
     // 新しい殻の列 2 は、会話の行も部品が描く（右腕は古い描き方のまま）
     const talk = !frame && SA.talk && !talkBroken ? SA.talk : null;
+    // 入力欄も部品が描く（右腕は古い入力欄のまま）
+    const comp = !frame && SA.composer && !composerBroken ? SA.composer : null;
     if (!t || !t.loaded) {
       if (talk) dropTalkRoots(container, talk);
+      if (comp) dropComposerRoots(container, comp);
       container.replaceChildren(...[top ? null : header(ch, channelId, frame), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [SA.views.loading()])])].filter(Boolean));
       return;
     }
     if (t.missing) {
       if (talk) dropTalkRoots(container, talk);
+      if (comp) dropComposerRoots(container, comp);
       container.replaceChildren(
         ...[
           top ? null : header(null, channelId, frame),
@@ -1280,10 +1385,22 @@
       });
     }
     // 入力欄は作り直さない（書きかけ・フォーカス・IME の変換を保つ）。見出しと会話だけを入れ替える
-    const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-channel") === channelId);
+    const kept = comp ? null : [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-channel") === channelId);
+    // 部品の道: 同じチャンネルの根を使い回す（無ければ作り、ほかのチャンネルの根は外す）
+    let compRoot = comp ? [...container.children].find((child) => child.getAttribute("data-composer") === channelId) || null : null;
+    if (comp && !compRoot) {
+      dropComposerRoots(container, comp);
+      compRoot = el("div", { "data-composer": channelId });
+    }
     // 送った本文の状態（Claude Code のチャンネル。[やめる]）は入力欄の上
-    SA.views.placeChildren(container, [top ? null : header(ch, channelId, frame), scroll, ccPending, kept || composer(ch, channelId, frame)]);
-    // 置いてから描く（根が画面に付いた後）。描けなければ古い描き方で描き直す
+    SA.views.placeChildren(container, [top ? null : header(ch, channelId, frame), scroll, ccPending, comp ? compRoot : kept || composer(ch, channelId, frame)]);
+    // 置いてから描く（根が画面に付いた後）。入力欄を先に描く（描けずにやり直すとき、会話の描き直しを二重にしない）。描けなければ古い描き方で描き直す
+    if (comp && !comp.draw(compRoot, composerState(channelId, ch))) {
+      composerBroken = true;
+      comp.drop(compRoot);
+      render(container, channelId, frame);
+      return;
+    }
     if (talk && !talk.draw(talkRootEl, talkState(channelId, ch))) {
       talkBroken = true;
       talk.drop(talkRootEl);

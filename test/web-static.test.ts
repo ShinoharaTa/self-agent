@@ -4085,7 +4085,12 @@ function loadChat() {
   vm.runInNewContext(read("ui.js"), context);
   const SA = (context.window as { SA: Record<string, unknown> }).SA;
   const toasts: string[] = [];
-  (SA.ui as { toast: unknown }).toast = (text: string) => toasts.push(text);
+  /** toast の 3 つ目の引数（[もう一度] の retry など） */
+  const toastOpts: unknown[] = [];
+  (SA.ui as { toast: unknown }).toast = (text: string, _a?: unknown, o?: unknown) => {
+    toasts.push(text);
+    toastOpts.push(o);
+  };
   const seen: Array<[string, number]> = [];
   const optimistic: Array<[string, unknown, string]> = [];
   const loads: string[] = [];
@@ -4175,6 +4180,7 @@ function loadChat() {
     sheets,
     drafts,
     toasts,
+    toastOpts,
     touch,
     touchListeners,
     box,
@@ -4900,6 +4906,324 @@ test("web static: SA.talk の Claude Code のチャンネルは running が null
   const tl = talkKids(box)[1]!;
   assert.equal(tl.querySelectorAll("[data-cc-status]").length, 1);
   assert.equal(tl.querySelectorAll("section.card").length, 1);
+});
+
+// ===== 新しい殻の入力欄（chat.js が SA.composer に根と state を渡す。K5） =====
+type ComposerState = {
+  text: string;
+  count: number;
+  max: number;
+  sending: boolean;
+  touch: boolean;
+  label: string;
+  placeholder: string;
+  note: string;
+  on: { input: (text: string) => void; send: () => Promise<void> | void };
+};
+type ComposerCall = { root: DomNode; state: ComposerState };
+
+/** 偽の入力欄の口（SA.composer）。呼ばれた根と state を積み、ok を返す。onDraw は描くたびに呼ぶ（欄が伸びた形を作る） */
+function withComposer(c: ReturnType<typeof loadChat>) {
+  const SA = (c.context.window as { SA: Record<string, unknown> }).SA;
+  const draws: ComposerCall[] = [];
+  const sets: Array<[DomNode, string]> = [];
+  const focuses: DomNode[] = [];
+  const drops: DomNode[] = [];
+  const comp = {
+    draws,
+    sets,
+    focuses,
+    drops,
+    ok: true,
+    onDraw: null as ((call: ComposerCall) => void) | null,
+    draw(root: DomNode, state: ComposerState) {
+      const call = { root, state };
+      draws.push(call);
+      if (comp.onDraw) comp.onDraw(call);
+      return comp.ok;
+    },
+    set(root: DomNode, text: string) {
+      sets.push([root, text]);
+      return true;
+    },
+    focus(root: DomNode) {
+      focuses.push(root);
+      return true;
+    },
+    drop(root: DomNode) {
+      drops.push(root);
+    },
+  };
+  SA.composer = comp;
+  return { SA, comp };
+}
+
+const lastComp = (comp: { draws: ComposerCall[] }): ComposerCall => comp.draws[comp.draws.length - 1]!;
+/** 偽の api の post を差し替える（応答を手で返す） */
+function holdPost(c: ReturnType<typeof loadChat>) {
+  const SA = (c.context.window as { SA: Record<string, unknown> }).SA;
+  const held: Array<{ path: string; body: unknown; resolve: (v: unknown) => void; reject: (e: unknown) => void }> = [];
+  SA.api = {
+    post: (path: string, body: unknown) =>
+      new Promise((resolve, reject) => {
+        held.push({ path, body, resolve, reject });
+      }),
+  };
+  return held;
+}
+
+test("web static: SA.composer があると chat.js は .composer-wrap・.composer-input・.counter を作らず、[data-composer] の根を容器の最後の子に置いて draw を 1 回呼ぶ", () => {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  c.drafts["1"] = "  書きかけ ";
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "題の話", state: "active" });
+  const box = c.box();
+  c.chat.render(box, "1");
+  for (const sel of ["div.composer-wrap", "textarea.composer-input", "span.counter", "form.composer"]) assert.equal(box.querySelectorAll(sel).length, 0, sel);
+  const root = box.children[box.children.length - 1] as DomNode;
+  assert.equal(root.getAttribute("data-composer"), "1");
+  assert.equal(root.getAttribute("class"), null);
+  assert.equal(root.children.length, 0);
+  assert.equal(comp.draws.length, 1);
+  assert.equal(comp.draws[0]!.root, root);
+  const st = comp.draws[0]!.state;
+  assert.deepEqual(
+    [st.text, st.count, st.max, st.sending, st.touch, st.label, st.placeholder, st.note],
+    ["  書きかけ ", 4, 1900, false, false, "題の話 に送る", "この話題に送る", "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます"],
+  );
+  assert.deepEqual(Object.keys(st.on).sort(), ["input", "send"]);
+  // タッチが主の端末
+  c.touch.matches = true;
+  c.chat.render(box, "1");
+  assert.equal(lastComp(comp).state.touch, true);
+});
+
+test("web static: SA.composer の placeholder は話題・Claude Code・ほかで決まった 3 つの文（題名を入れない）。label は「<題名> に送る」", () => {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  const store = c.store as unknown as Record<string, unknown>;
+  store.ccSessions = {};
+  store.ccPendingOf = (_id: string, p: unknown) => p;
+  c.put("1", [], { kind: "session", title: "長い長い題", state: "active" });
+  c.put("2", [], { kind: "cc", name: "work", cc: { sessionId: "s1", state: "idle" } });
+  c.put("3", [], { kind: "inbox", name: "inbox" });
+  const got: Array<[string, string, string]> = [];
+  for (const id of ["1", "2", "3"]) {
+    c.chat.render(c.box(), id);
+    const st = lastComp(comp).state;
+    got.push([st.placeholder, st.label, st.note]);
+  }
+  assert.deepEqual(got, [
+    ["この話題に送る", "長い長い題 に送る", "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます"],
+    ["このセッションに送る", "work に送る", "このセッションに届けます（入力待ちのときに貼ります）。返事はここと Discord の両方に出ます"],
+    ["ここに送る", "#inbox に送る", "Discord で発言したのと同じ経路で 1 ターン動きます。返事はここと Discord の両方に出ます"],
+  ]);
+});
+
+test("web static: SA.composer で同じチャンネルを描き直すと根が同じ要素で drop しない。別のチャンネルに替えると前の根を drop して外す。読み込み中・開けないチャンネルでも drop", () => {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  c.put("2", [chatTurn(20, "owner", "b")]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  const root = comp.draws[0]!.root;
+  c.chat.render(box, "1");
+  assert.equal(lastComp(comp).root, root);
+  assert.deepEqual([comp.draws.length, comp.drops.length], [2, 0]);
+  assert.equal(box.querySelectorAll("[data-composer]").length, 1);
+  c.chat.render(box, "2");
+  assert.deepEqual(comp.drops, [root]);
+  assert.equal(box.contains(root), false);
+  const now = lastComp(comp).root;
+  assert.equal(now.getAttribute("data-composer"), "2");
+  assert.equal(box.querySelectorAll("[data-composer]").length, 1);
+  // 読み込み中のチャンネル
+  c.chat.render(box, "5");
+  assert.deepEqual(comp.drops, [root, now]);
+  assert.equal(box.querySelectorAll("[data-composer]").length, 0);
+});
+
+test("web static: SA.composer の on.input は書きかけを覚えて入力欄だけを描き直し（SA.talk.draw・refresh は呼ばない）、一番下を見ていたら一番下のまま、上を読んでいたら動かさない", () => {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  const { talk } = withTalk(c);
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active" });
+  const box = c.box();
+  c.chat.render(box, "1");
+  const scroll = box.querySelector('div.ed-scroll[data-channel="1"]')!;
+  scroll.scrollHeight = 1000;
+  scroll.clientHeight = 200;
+  scroll.scrollTop = 800;
+  // 欄が伸びると .ed-scroll の中身が見える高さが減る（ここでは scrollHeight が増えた形で作る）
+  comp.onDraw = () => {
+    scroll.scrollHeight += 40;
+  };
+  const [draws, talks] = [comp.draws.length, talk.draws.length];
+  lastComp(comp).state.on.input("あい");
+  assert.equal(c.drafts["1"], "あい");
+  assert.equal(comp.draws.length, draws + 1);
+  assert.equal(lastComp(comp).state.text, "あい");
+  assert.equal(lastComp(comp).state.count, 2);
+  assert.equal(talk.draws.length, talks);
+  assert.deepEqual(c.refreshes, []);
+  assert.equal(scroll.scrollTop, 840);
+  // 上を読んでいる途中
+  scroll.scrollTop = 300;
+  lastComp(comp).state.on.input("あいう");
+  assert.equal(scroll.scrollTop, 300);
+  assert.equal(talk.draws.length, talks);
+  // 描けなければ古い入力欄に戻す
+  comp.ok = false;
+  lastComp(comp).state.on.input("あいうえ");
+  assert.deepEqual(c.refreshes, ["ch:1"]);
+  assert.deepEqual(comp.drops, [lastComp(comp).root]);
+});
+
+test("web static: SA.composer の on.send は空・送っている間は送らず、1,901 字はトーストで送らない。受け付けたら書きかけを消して set の後に描き、仮の行と読み直し。送っている間に打ち足していたら消さない", async () => {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  const held = holdPost(c);
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active" });
+  const box = c.box();
+  c.chat.render(box, "1");
+  const root = lastComp(comp).root;
+  const on = () => lastComp(comp).state.on;
+  c.drafts["1"] = "   ";
+  await on().send();
+  assert.equal(held.length, 0);
+  c.drafts["1"] = "x".repeat(1901);
+  await on().send();
+  assert.equal(held.length, 0);
+  assert.deepEqual(c.toasts, ["1,900 字までです"]);
+  // 送る
+  c.drafts["1"] = " 送る本文 ";
+  const before = comp.draws.length;
+  const sending = on().send();
+  assert.equal(held.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify([held[0]!.path, held[0]!.body])), ["/api/channels/1/messages", { text: "送る本文" }]);
+  assert.equal(comp.draws.length, before + 1);
+  assert.equal(lastComp(comp).state.sending, true);
+  // 送っている間は送らない
+  await on().send();
+  assert.equal(held.length, 1);
+  held[0]!.resolve({ turnId: 9 });
+  await sending;
+  assert.equal(c.drafts["1"], "");
+  assert.deepEqual(comp.sets, [[root, ""]]);
+  // set の直後の draw は空の本文で、送っている途中のまま。finally の draw で sending が外れる
+  const after = comp.draws.slice(before + 1);
+  assert.deepEqual(after.map((d) => [d.state.text, d.state.sending]), [["", true], ["", false]]);
+  assert.deepEqual(c.optimistic, [["1", 9, "送る本文"]]);
+  assert.ok(c.loads.includes("1"));
+  // 送っている間に打ち足した
+  c.drafts["1"] = "一つ目";
+  const second = on().send();
+  c.drafts["1"] = "一つ目と二つ目";
+  held[1]!.resolve({ turnId: 10 });
+  await second;
+  assert.equal(c.drafts["1"], "一つ目と二つ目");
+  assert.equal(comp.sets.length, 1);
+  assert.equal(lastComp(comp).state.sending, false);
+  assert.equal(lastComp(comp).state.text, "一つ目と二つ目");
+});
+
+test("web static: SA.composer の on.send が失敗したら書きかけを残してトーストを出し、[もう一度] で送り直す", async () => {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  const held = holdPost(c);
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active" });
+  c.chat.render(c.box(), "1");
+  c.drafts["1"] = "残る本文";
+  const sending = lastComp(comp).state.on.send();
+  held[0]!.reject(Object.assign(new Error("x"), { code: "not_accepted", toast: "送れませんでした" }));
+  await sending;
+  assert.equal(c.drafts["1"], "残る本文");
+  assert.deepEqual(comp.sets, []);
+  assert.equal(c.toasts.length, 1);
+  assert.equal(lastComp(comp).state.sending, false);
+  const retry = (c.toastOpts[0] as { level: string; retry: () => Promise<void> });
+  assert.equal(retry.level, "error");
+  const again = retry.retry();
+  assert.equal(held.length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(held[1]!.body)), { text: "残る本文" });
+  held[1]!.resolve({ turnId: 3 });
+  await again;
+  assert.equal(c.drafts["1"], "");
+});
+
+test("web static: SA.composer の Claude Code のチャンネルの on.send は、古い入力欄と同じく仮の届け待ちと読み直し", async () => {
+  const run = async (withMouth: boolean) => {
+    const c = loadChat();
+    const comp = withMouth ? withComposer(c).comp : null;
+    const store = c.store as unknown as Record<string, unknown>;
+    const marks: unknown[] = [];
+    store.ccSessions = {};
+    store.ccPendingOf = (_id: string, p: unknown) => p;
+    store.setCcOptimisticSend = (sessionId: string, sendId: number) => marks.push(["optimistic", sessionId, sendId]);
+    (store.load as Record<string, unknown>).ccSession = (id: string) => {
+      marks.push(["ccSession", id]);
+      return Promise.resolve(null);
+    };
+    const SA = (c.context.window as { SA: Record<string, unknown> }).SA;
+    SA.api = { post: (path: string, body: unknown) => (marks.push(["post", path, body]), Promise.resolve({ sendId: 4 })) };
+    c.put("9", [], { kind: "cc", name: "work", cc: { sessionId: "s1", state: "idle" } });
+    const box = c.box();
+    c.chat.render(box, "9");
+    c.drafts["9"] = "届けて";
+    marks.length = 0;
+    c.loads.length = 0;
+    c.refreshes.length = 0;
+    if (comp) await lastComp(comp).state.on.send();
+    else {
+      inputOf(box).value = "届けて";
+      formOf(box).dispatch("submit", { preventDefault() {} });
+      await c.flush();
+    }
+    return { marks: JSON.parse(JSON.stringify(marks)) as unknown[], loads: [...c.loads], refreshes: [...c.refreshes], optimistic: c.optimistic.length, draft: c.drafts["9"] };
+  };
+  const got = await run(true);
+  assert.deepEqual(got, await run(false));
+  assert.deepEqual(got.marks, [["post", "/api/channels/9/messages", { text: "届けて" }], ["optimistic", "s1", 4], ["ccSession", "s1"]]);
+  assert.deepEqual([got.loads, got.refreshes, got.optimistic, got.draft], [["9"], ["ch:9"], 0, ""]);
+});
+
+test("web static: SA.composer の draw が false なら根を drop して古い入力欄（書きかけ入り）になり、その後は口を呼ばない", () => {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  c.drafts["1"] = "書きかけ";
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  comp.ok = false;
+  const box = c.box();
+  c.chat.render(box, "1");
+  assert.equal(comp.draws.length, 1);
+  assert.deepEqual(comp.drops, [comp.draws[0]!.root]);
+  assert.equal(box.querySelectorAll("[data-composer]").length, 0);
+  assert.equal(inputOf(box).value, "書きかけ");
+  assert.ok(box.querySelector("div.composer-wrap"));
+  comp.ok = true;
+  c.chat.render(box, "1");
+  c.touchListeners.forEach((fn) => fn());
+  assert.equal(comp.draws.length, 1);
+});
+
+test("web static: 右腕の枠（frame）は SA.composer が在っても古い入力欄。タッチの判定が変わると部品の根を全部描き直す", () => {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  c.put("2", [chatTurn(20, "owner", "b")]);
+  const framed = c.box();
+  c.chat.render(framed, "1", { title: "右腕", placeholder: "右腕に頼む・訊く" });
+  assert.equal(comp.draws.length, 0);
+  assert.ok(inputOf(framed));
+  assert.equal(framed.querySelectorAll("[data-composer]").length, 0);
+  c.chat.render(c.box(), "2");
+  assert.equal(comp.draws.length, 1);
+  c.touch.matches = true;
+  c.touchListeners.forEach((fn) => fn());
+  assert.equal(comp.draws.length, 2);
+  assert.equal(lastComp(comp).state.touch, true);
+  assert.equal(inputOf(framed).getAttribute("enterkeyhint"), "enter");
 });
 
 test("web static: views.js の toolbar は SA.top があると題・戻る・印を作らず添え物と操作の段だけで、どちらも空なら隠す。状態の画面は h1 が無くても描ける", () => {
