@@ -65,8 +65,6 @@
 
 ## テスト専用
 
-本体は読まない。`npm test`（`scripts/test.ts`）だけが見る。
+本体は読まない。`npm test`（`scripts/test.ts`）だけが見る。上の表には入れない（表は本体が読む変数で、Web UI の状態の画面の並びと同じに保つ）。
 
-| 変数名 | 用途 |
-|---|---|
-| `SELF_AGENT_TEST_TMP` | `disk` で、`npm test` の一時ディレクトリを `/dev/shm`（tmpfs）に向けず今までどおり（`TMPDIR` を変えない）にする。ほかの値・未設定なら、`/dev/shm` がディレクトリで書けるときその下に `self-agent-test-*` を作って子の `node --test` の `TMPDIR` にし、終わったら（SIGINT・SIGTERM・SIGHUP で止めたときも）消す |
+- `SELF_AGENT_TEST_TMP`: `disk` で、`npm test` の一時ディレクトリを `/dev/shm`（tmpfs）に向けず今までどおり（`TMPDIR` を変えない）にする。ほかの値・未設定なら、`/dev/shm` がディレクトリで書けるときその下に `self-agent-test-*` を作って子の `node --test` の `TMPDIR` にし、終わったら（SIGINT・SIGTERM・SIGHUP で止めたときも）消す
