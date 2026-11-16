@@ -296,7 +296,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   /**
    * 見本の当たりと切り替えの折り返しを測る。開いた dialog があればその中、無ければ .c-gallery と .c-toast の中の押せる物を、
    * 見える所へ送ってから箱の中心から (±d, ±d) の 4 点で elementFromPoint がその要素（か子孫）を返すかで見る（d = 下限 / 2 - 1。知らせに隠れた点は除く）。
-   * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
+   * id の重なりも見る。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
    */
   async function checkGallery(page: Page, vp: Viewport, label: string): Promise<void> {
     const problems = await page.evaluate(
@@ -332,6 +332,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           const tops = new Set([...seg.children].map((child) => Math.round(child.getBoundingClientRect().top)));
           if (tops.size > 1) lines.push(`切り替えが折り返している: ${seg.children.length} 項目`);
         }
+        // 文書の中の id の重なり（label の for・aria-describedby・aria-labelledby が別の物を指さない）
+        const ids = new Map<string, number>();
+        for (const el of document.querySelectorAll("[id]")) ids.set(el.id, (ids.get(el.id) ?? 0) + 1);
+        for (const [id, n] of ids) if (n > 1) lines.push(`id が重なっている: ${id}（${n} 個）`);
         if (phone) {
           const six = document.querySelector('[data-demo="seg-6"] .c-seg');
           if (six === null || !(six.scrollWidth > six.clientWidth)) lines.push("6 項目の切り替えが横に送れていない");
@@ -341,7 +345,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       { min: HIT_MIN[vp], phone: vp === "phone" },
     );
     for (const line of problems) logLines.push(`[${label}] ${line}`);
-    if (problems.length > 0) throw new Error(`当たり・折り返しの検査で ${problems.length} 件`);
+    if (problems.length > 0) throw new Error(`当たり・折り返し・id の検査で ${problems.length} 件`);
   }
 
   /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない）。絵ごとに読み直す */

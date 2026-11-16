@@ -76,7 +76,7 @@ function IconButtons() {
       <${IconButton} icon="plus" size="sm" label="足す" />
       <${IconButton} icon="x" size="sm" label="閉じる" />
       <${IconButton} icon="bell" label="知らせ" badge=${3} />
-      <${IconButton} icon="bell" label="知らせ" badge=${120} />
+      <${IconButton} icon="bell" label="知らせ" badge=${12} />
       <${IconButton} icon="settings" label="設定" disabled=${true} />
     </div>
   <//>`;
@@ -145,7 +145,7 @@ function Segments() {
 function Fields() {
   return html`<${Section} name="field" title="入力欄">
     <${Field} id="g-title" label="題名" hint="省くと最初の一言から付けます">${(c) => html`<input ...${c} type="text" />`}<//>
-    <${Field} id="g-title-error" label="題名" error="題名を入れてください">${(c) => html`<input ...${c} type="text" />`}<//>
+    <${Field} id="g-title2" label="題名" error="題名を入れてください">${(c) => html`<input ...${c} type="text" />`}<//>
     <${Field} id="g-body" label="最初の一言">${(c) => html`<textarea ...${c} rows="3"></textarea>`}<//>
     <${Field} id="g-place" label="場所">
       ${(c) => html`<select ...${c}>
@@ -201,7 +201,7 @@ function Sheets({ push }) {
       onClose=${() => finish("閉じた")}
       footer=${html`<${Button} kind="secondary" label="やめる" onPress=${() => finish("やめた")} /><${Button} kind="primary" label="始める" onPress=${() => finish("実行した")} />`}
     >
-      <${Field} id="g-sheet-title" label="題名" hint="省くと最初の一言から付けます">${(c) => html`<input ...${c} type="text" />`}<//>
+      <${Field} id="g-new-title" label="題名" hint="省くと最初の一言から付けます">${(c) => html`<input ...${c} type="text" />`}<//>
     <//>
     <${Confirm}
       open=${open === "confirm"}

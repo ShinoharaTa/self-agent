@@ -203,10 +203,11 @@
   cursor: not-allowed;
 }
 
+/* 件数の札は右上の角に寄せる（ボタンの箱の外へは出さない） */
 .c-iconbtn > .c-badge {
   position: absolute;
-  top: var(--space-1);
-  right: var(--space-1);
+  top: 0;
+  right: 0;
 }
 
 /* ===== Badge ===== */

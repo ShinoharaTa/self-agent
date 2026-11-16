@@ -35,53 +35,65 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
 
 const FINE = "(hover: hover) and (pointer: fine)";
 
-type CssRule = { at: string[]; selectors: string[]; body: string };
+type CssRule = { at: string[]; selectors: string[]; body: string; keyframe: boolean };
 
 const stripCssComments = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, "");
 const squash = (text: string): string => text.replace(/\s+/g, " ").trim();
 
-/** コメントを消し、波括弧をたどって規則を返す（at は外側の at-rule の並び。@keyframes の中は返さない） */
+/** 入れ子の規則のセレクタ（& を親に置き換える。& が無ければ親の子孫） */
+const nestSelectors = (parents: string[], own: string[]): string[] =>
+  parents.length === 0 ? own : parents.flatMap((p) => own.map((o) => (o.includes("&") ? o.replaceAll("&", p) : `${p} ${o}`)));
+
+/**
+ * コメントを消し、波括弧をたどって規則を返す。at は外側の at-rule の並び、body はその規則の宣言だけ（入れ子の規則は別の項目）。
+ * 入れ子の規則（&:hover など）のセレクタは親と組み合わせる。@keyframes の中の規則は keyframe: true（セレクタの決まりは見ない）
+ */
 function parseCss(text: string): CssRule[] {
   const src = stripCssComments(text);
   const rules: CssRule[] = [];
-  const stack: Array<{ at: string | undefined; keyframes: boolean }> = [];
+  type Frame = { at?: string; selectors?: string[]; keyframe: boolean; body: string };
+  const stack: Frame[] = [];
+  const top = (): Frame | undefined => stack[stack.length - 1];
   let start = 0;
   for (let i = 0; i < src.length; i++) {
     const ch = src[i];
     if (ch === "{") {
       const prelude = squash(src.slice(start, i));
       start = i + 1;
+      const inKeyframes = stack.some((f) => f.keyframe);
       if (prelude.startsWith("@")) {
-        stack.push({ at: prelude, keyframes: prelude.startsWith("@keyframes") });
-        continue;
+        stack.push({ at: prelude, keyframe: inKeyframes || prelude.startsWith("@keyframes"), body: "" });
+      } else {
+        const own = prelude.split(",").map((sel) => sel.trim());
+        const parent = [...stack].reverse().find((f) => f.selectors !== undefined);
+        stack.push({ selectors: nestSelectors(parent?.selectors ?? [], own), keyframe: inKeyframes, body: "" });
       }
-      const end = src.indexOf("}", i);
-      if (end < 0) throw new Error(`閉じていない規則: ${prelude}`);
-      const inKeyframes = stack.some((s) => s.keyframes);
-      if (!inKeyframes) {
-        rules.push({
-          at: stack.map((s) => s.at ?? ""),
-          selectors: prelude.split(",").map((s) => s.trim()),
-          body: squash(src.slice(i + 1, end)),
-        });
-      }
-      i = end;
-      start = end + 1;
-    } else if (ch === "}") {
-      stack.pop();
-      start = i + 1;
     } else if (ch === ";") {
+      const frame = top();
+      if (frame?.selectors !== undefined) frame.body += src.slice(start, i + 1);
+      start = i + 1;
+    } else if (ch === "}") {
+      const frame = stack.pop();
+      if (frame?.selectors !== undefined) {
+        frame.body += src.slice(start, i);
+        rules.push({ at: stack.flatMap((f) => (f.at === undefined ? [] : [f.at])), selectors: frame.selectors, body: squash(frame.body), keyframe: frame.keyframe });
+      }
       start = i + 1;
     }
   }
+  if (stack.length > 0) throw new Error("閉じていない波括弧");
   return rules;
 }
 
 /** var(--x) の名前 */
 const varsIn = (text: string): string[] => [...text.matchAll(/var\(\s*(--[a-z0-9-]+)/g)].map((m) => m[1] ?? "");
 
-/** セレクタに出るクラスの名前 */
-const classesInSelector = (selector: string): string[] => [...selector.matchAll(/\.([a-z][a-z0-9-]*)/g)].map((m) => m[1] ?? "");
+/** セレクタに出るクラスの名前（全部） */
+const classesInSelector = (selector: string): string[] => [...selector.matchAll(/\.(-?[A-Za-z_][\w-]*)/g)].map((m) => m[1] ?? "");
+
+const COLOR_VALUE = /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark)\(|(?<![-\w])(?:white|black)(?![-\w])/i;
+/** 単位付きの数（負の数・大文字の単位も） */
+const UNIT_NUMBER = /(?<![\w.])-?(\d*\.?\d+)(px|rem|em|ms|s)\b/gi;
 
 /** 1 つの c-*.css の決まり（§8.1 の 2〜5・7）。破った所の文を返す */
 function cssProblems(name: string, text: string): string[] {
@@ -92,20 +104,21 @@ function cssProblems(name: string, text: string): string[] {
     if (!["media", "keyframes", "starting-style", "supports"].includes(m[1] ?? "")) problems.push(`${name}: at-rule @${m[1]}`);
   }
   for (const rule of parseCss(text)) {
-    for (const selector of rule.selectors) {
-      if (selector === ":root") continue;
-      if (!selector.startsWith(".c-")) problems.push(`${name}: .c- 始まりでないセレクタ ${selector}`);
-      else if (head !== undefined && !head.test(selector)) problems.push(`${name}: このファイルの頭でないセレクタ ${selector}`);
-      if (selector.includes(":hover") && !rule.at.some((at) => at.includes(FINE))) problems.push(`${name}: ${FINE} の外の :hover ${selector}`);
+    if (!rule.keyframe) {
+      for (const selector of rule.selectors) {
+        if (selector === ":root") continue;
+        if (!selector.startsWith(".c-")) problems.push(`${name}: .c- 始まりでないセレクタ ${selector}`);
+        else if (head !== undefined && !head.test(selector)) problems.push(`${name}: このファイルの頭でないセレクタ ${selector}`);
+        for (const cls of classesInSelector(selector)) if (!cls.startsWith("c-")) problems.push(`${name}: c- 始まりでないクラス .${cls}（${selector}）`);
+        if (selector.includes(":hover") && !rule.at.some((at) => at.includes(FINE))) problems.push(`${name}: ${FINE} の外の :hover ${selector}`);
+      }
     }
-    if (/#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|oklch|oklab|color)\(|(?<![-\w])(?:white|black)(?![-\w])/i.test(rule.body)) {
-      problems.push(`${name}: 色の値 ${rule.selectors.join(",")} { ${rule.body} }`);
-    }
+    if (COLOR_VALUE.test(rule.body)) problems.push(`${name}: 色の値 ${rule.selectors.join(",")} { ${rule.body} }`);
     for (const v of varsIn(rule.body)) {
       if (!v.startsWith("--c-") && !ALLOWED_VARS.has(v)) problems.push(`${name}: 許可リストに無い変数 ${v}`);
     }
-    for (const m of rule.body.matchAll(/(?<![\w.-])(\d*\.?\d+)(px|rem|em|ms|s)\b/g)) {
-      if (!(m[2] === "px" && Number(m[1]) === 0)) problems.push(`${name}: 単位付きの数 ${m[0]}（${rule.selectors.join(",")}）`);
+    for (const m of rule.body.matchAll(UNIT_NUMBER)) {
+      if (!((m[2] ?? "").toLowerCase() === "px" && Number(m[1]) === 0)) problems.push(`${name}: 単位付きの数 ${m[0]}（${rule.selectors.join(",")}）`);
     }
   }
   return problems;
@@ -122,12 +135,28 @@ function tokenDefs(): { base: Set<string>; media: Set<string> } {
   return { base, media };
 }
 
-/** JS のコメントを消す（文字列の中の // は残す。部品の JS の書き方に合わせた最小のもの） */
-const stripJsComments = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'\\])\/\/.*$/gm, "$1");
+/** JS のコメントを消す（文字列の中の // と htm の閉じ <//> は残す。部品の JS の書き方に合わせた最小のもの） */
+const stripJsComments = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'\\<])\/\/.*$/gm, "$1");
 
-/** JS が書くクラスの名前（class="…" と class: "…"） */
+/** JS が書くクラスの名前（class="…"・class='…'・class = "…" と class: "…"） */
 const classesInJs = (text: string): string[] =>
-  [...text.matchAll(/\bclass(?:=|:\s*)"([^"]*)"/g)].flatMap((m) => (m[1] ?? "").split(/\s+/).filter((s) => s !== ""));
+  [...text.matchAll(/\bclass\s*[=:]\s*(["'])(.*?)\1/g)].flatMap((m) => (m[2] ?? "").split(/\s+/).filter((s) => s !== ""));
+
+/** import の先（二重・単引用符）と動的な import の有無 */
+const importsOf = (text: string): { from: string[]; dynamic: boolean } => ({
+  from: [...text.matchAll(/\bfrom\s*(["'])([^"']+)\1/g)].map((m) => m[2] ?? ""),
+  dynamic: /\bimport\s*\(/.test(stripJsComments(text)),
+});
+
+/** 部品（入口・c-lib.js 以外の c-*.js）が触ってはいけない物（§8.1 の 9） */
+function partProblems(name: string, text: string): string[] {
+  const js = stripJsComments(text);
+  const problems: string[] = [];
+  for (const m of js.matchAll(/\b(document|window|SA|fetch|globalThis|location|localStorage|sessionStorage|navigator|matchMedia|setTimeout|setInterval)\b/g)) problems.push(`${name}: ${m[1]}`);
+  for (const m of js.matchAll(/ownerDocument|getRootNode|activeElement/g)) problems.push(`${name}: ${m[0]}`);
+  if (/\bstyle\b/.test(js)) problems.push(`${name}: style`);
+  return problems;
+}
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
   for (const name of ["c-atoms.css", "c-sheet.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
@@ -162,6 +191,10 @@ test("web components: animation を書いた c-*.css は reduced-motion で止�
     const sheet = read("c-sheet.css");
     assert.match(sheet, /env\(safe-area-inset-bottom/);
     assert.match(sheet, /@media \(max-width: 639px\)/);
+    // 背景の出入り（base.css の reduced-motion は ::backdrop に届かないので、ここで止める）
+    const rules = parseCss(sheet);
+    assert.ok(rules.some((r) => r.selectors.includes(".c-sheet::backdrop") && r.at.length === 0 && /transition-property: opacity/.test(r.body)));
+    assert.ok(rules.some((r) => r.selectors.includes(".c-sheet::backdrop") && r.at.some((at) => at.includes("prefers-reduced-motion: reduce")) && /transition: none/.test(r.body)));
   }
 });
 
@@ -177,30 +210,25 @@ test("web components: c-*.js のクラスは c- の固定の文字列だけで�
   }
 });
 
-test("web components: 部品（入口以外の c-*.js）は document・window などに触らず、style の語を書かない", () => {
+test("web components: 部品（入口以外の c-*.js）は document・window・location・タイマーなどに触らず、style の語を書かない", () => {
   // 入口（見本の c-gallery.js。K3 から c-app.js も）と c-lib.js は対象外
-  for (const name of JS_FILES.filter((n) => !["c-lib.js", "c-gallery.js"].includes(n))) {
-    const js = stripJsComments(read(name));
-    assert.doesNotMatch(js, /\b(?:document|window|SA|fetch|globalThis)\b/, name);
-    assert.doesNotMatch(js, /ownerDocument|getRootNode|activeElement/, name);
-    assert.doesNotMatch(js, /\bstyle\b/, name);
-  }
+  for (const name of JS_FILES.filter((n) => !["c-lib.js", "c-gallery.js"].includes(n))) assert.deepEqual(partProblems(name, read(name)), [], name);
 });
 
-test("web components: import の先（c-atoms は c-lib だけで hook なし、c-sheet は c-lib と c-atoms だけ）と createPortal が無い", () => {
-  const from = (js: string): string[] => [...js.matchAll(/\bfrom\s+"([^"]+)"/g)].map((m) => m[1] ?? "");
+test("web components: import の先（c-atoms は c-lib だけで hook なし、c-sheet は c-lib と c-atoms だけ）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = { "c-atoms.js": ["./c-lib.js"], "c-sheet.js": ["./c-lib.js", "./c-atoms.js"] };
   for (const [name, targets] of Object.entries(allowed)) {
     if (!JS_FILES.includes(name)) continue;
-    const js = read(name);
-    for (const target of from(js)) assert.ok(targets.includes(target), `${name}: ${target}`);
+    const { from, dynamic } = importsOf(read(name));
+    for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
+    assert.equal(dynamic, false, `${name}: 動的な import`);
   }
   if (JS_FILES.includes("c-atoms.js")) assert.doesNotMatch(read("c-atoms.js"), /import\s*\{[^}]*\buse[A-Z]/);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
 test("web components: c-*.css のセレクタのクラスと、c-*.js（と gallery.html）が書くクラスが同じ集まり", () => {
-  const inCss = new Set(CSS_FILES.flatMap((name) => parseCss(read(name)).flatMap((r) => r.selectors.flatMap(classesInSelector))));
+  const inCss = new Set(CSS_FILES.flatMap((name) => parseCss(read(name)).filter((r) => !r.keyframe).flatMap((r) => r.selectors.flatMap(classesInSelector))));
   // 見本の根（c-gallery）は gallery.html に在る
   const inJs = new Set([...JS_FILES.filter((n) => n !== "c-lib.js").flatMap((name) => classesInJs(read(name))), ...classesInJs(read("gallery.html"))]);
   assert.deepEqual([...inCss].filter((c) => !inJs.has(c)).sort(), [], "CSS にだけ在るクラス");
@@ -209,26 +237,56 @@ test("web components: c-*.css のセレクタのクラスと、c-*.js（と gall
 
 test("web components: 見張りの関数は悪い見本を落とす", () => {
   const bad = (text: string): string[] => cssProblems("c-atoms.css", text);
-  assert.ok(bad("button{}").some((p) => p.includes(".c- 始まりでない")));
-  assert.ok(bad(".c-btn{color:#fff}").some((p) => p.includes("色の値")));
-  assert.ok(bad(".c-btn{color:rgb(0 0 0)}").some((p) => p.includes("色の値")));
-  assert.ok(bad(".c-btn{color:white}").some((p) => p.includes("色の値")));
+  const hit = (text: string, part: string): void => assert.ok(bad(text).some((p) => p.includes(part)), `${text} → ${bad(text).join(" / ")}`);
+  hit("button{}", ".c- 始まりでない");
+  hit(".c-btn{color:#fff}", "色の値");
+  hit(".c-btn{color:rgb(0 0 0)}", "色の値");
+  hit(".c-btn{color:white}", "色の値");
+  for (const fn of ["color-mix(in srgb, red, blue)", "hwb(0 0% 0%)", "lab(50% 0 0)", "lch(50% 0 0)", "oklab(0.5 0 0)", "oklch(0.5 0 0)", "light-dark(a, b)"]) hit(`.c-btn{color:${fn}}`, "色の値");
   assert.deepEqual(bad(".c-btn{white-space:nowrap}"), []);
-  assert.ok(bad(".c-btn{height:36px}").some((p) => p.includes("単位付き")));
-  assert.ok(bad(".c-btn{transition:opacity 200ms}").some((p) => p.includes("単位付き")));
-  assert.deepEqual(bad(".c-btn{margin:0px;transform:scale(0.97)}"), []);
-  assert.ok(bad(".c-btn{height:var(--row)}").some((p) => p.includes("--row")));
-  assert.ok(bad(".c-btn{height:var(--tap)}").some((p) => p.includes("--tap")));
-  assert.ok(bad(".c-btn:hover{color:var(--text)}").some((p) => p.includes(":hover")));
-  assert.ok(bad("@media (hover:hover){.c-btn:hover{color:var(--text)}}").some((p) => p.includes(":hover")));
+  hit(".c-btn{height:36px}", "単位付き");
+  hit(".c-btn{transition:opacity 200ms}", "単位付き");
+  // 負の長さ・大文字の単位
+  hit(".c-btn{margin:-5px}", "-5px");
+  hit(".c-btn{inset:-8px}", "-8px");
+  hit(".c-btn{top:calc(-4px)}", "-4px");
+  hit(".c-btn{height:36PX}", "36PX");
+  assert.deepEqual(bad(".c-btn{margin:0px;transform:scale(0.97);inset:calc(-1 * var(--border-width))}"), []);
+  hit(".c-btn{height:var(--row)}", "--row");
+  hit(".c-btn{height:var(--tap)}", "--tap");
+  hit(".c-btn:hover{color:var(--text)}", ":hover");
+  hit("@media (hover:hover){.c-btn:hover{color:var(--text)}}", ":hover");
   assert.deepEqual(bad(`@media ${FINE}{.c-btn:hover{color:var(--text)}}`), []);
-  assert.ok(bad(".c-sheet{color:var(--text)}").some((p) => p.includes("このファイルの頭")));
-  assert.ok(bad("@import url(x.css);").some((p) => p.includes("@import")));
+  // 入れ子の最初の規則も :hover の検査に掛ける
+  hit(".c-btn{color:var(--text); &:hover{color:var(--muted)}}", ":hover");
+  assert.deepEqual(bad(`@media ${FINE}{.c-btn{&:hover{color:var(--muted)}}}`), []);
+  // セレクタの中の全部のクラス
+  hit(".c-btn .wb{color:var(--text)}", ".wb");
+  hit(".c-btn.is-on{color:var(--text)}", ".is-on");
+  hit(".c-sheet{color:var(--text)}", "このファイルの頭");
+  hit("@import url(x.css);", "@import");
   assert.deepEqual(bad("@keyframes c-spin{to{transform:rotate(360deg)}}"), []);
-  assert.deepEqual(parseCss("@media (x){@starting-style{.c-a{b:c}}} .c-d,.c-e{f:g}"), [
-    { at: ["@media (x)", "@starting-style"], selectors: [".c-a"], body: "b:c" },
-    { at: [], selectors: [".c-d", ".c-e"], body: "f:g" },
+  // @keyframes の中も色と単位を見る
+  hit("@keyframes c-x{from{color:#000}}", "色の値");
+  hit("@keyframes c-x{50%{transform:translateY(4px)}}", "4px");
+  assert.deepEqual(parseCss("@media (x){@starting-style{.c-a{b:c}}} .c-d,.c-e{f:g; &:hover{h:i}} @keyframes k{to{j:k}}"), [
+    { at: ["@media (x)", "@starting-style"], selectors: [".c-a"], body: "b:c", keyframe: false },
+    { at: [], selectors: [".c-d:hover", ".c-e:hover"], body: "h:i", keyframe: false },
+    { at: [], selectors: [".c-d", ".c-e"], body: "f:g;", keyframe: false },
+    { at: ["@keyframes k"], selectors: ["to"], body: "j:k", keyframe: true },
   ]);
+
+  // JS の拾い方
+  assert.deepEqual(classesInJs(`html\`<p class='wb'></p><p class = "c-a c-b"></p>\`; const o = { class: "c-c" };`), ["wb", "c-a", "c-b", "c-c"]);
+  assert.deepEqual(importsOf(`import { a } from './x.js';\nimport b from "./y.js";`), { from: ["./x.js", "./y.js"], dynamic: false });
+  assert.equal(importsOf(`const m = await import("./z.js");`).dynamic, true);
+  // htm の閉じ <//> はコメントではない
+  assert.deepEqual(partProblems("x.js", "html`<${A}>a<//> ${document.title}`"), ["x.js: document"]);
+  assert.deepEqual(partProblems("x.js", "// document と window はコメントの中\nconst a = 1;"), []);
+  for (const word of ["location", "localStorage", "sessionStorage", "navigator", "matchMedia", "setTimeout", "setInterval"]) {
+    assert.deepEqual(partProblems("x.js", `const v = ${word};`), [`x.js: ${word}`], word);
+  }
+  assert.deepEqual(partProblems("x.js", "el.style.color = 1;"), ["x.js: style"]);
 });
 
 // ===== モデルと出す形（§8.2。部品を import して呼ぶ。hook の無い部品だけ） =====
@@ -243,11 +301,11 @@ const atoms = (await import(atomsUrl)) as Record<string, Fn> & {
   iconHref: (name: string) => string;
   buttonState: (s: Record<string, unknown>) => Record<string, unknown>;
   iconButtonLabel: (label: unknown, badge: unknown) => string;
-  badgeText: (count: unknown) => string;
+  badgeText: (count: unknown, max?: number) => string;
   MARK_STATES: readonly string[];
   markState: (state: unknown) => string;
-  segmentedTabStop: (items: unknown[], value: unknown) => string | null;
-  segmentedKey: (items: unknown[], current: unknown, key: string) => string | null;
+  segmentedTabStop: (items: unknown[], value: unknown) => unknown;
+  segmentedKey: (items: unknown[], current: unknown, key: string, modified?: boolean) => unknown;
   fieldControl: (id: string, o?: Record<string, unknown>) => Record<string, unknown>;
 };
 const libUrl = new URL("../src/web/static/c-lib.js", import.meta.url).href;
@@ -308,7 +366,7 @@ test("web components: buttonState は kind・size を丸め、disabled・busy �
   assert.deepEqual(atoms.buttonState({ disabled: true, busy: true }).ariaBusy, "true");
 });
 
-test("web components: Button は押せるときだけ onPress を引数なしで呼び、押せないときは aria-disabled と preventDefault", () => {
+test("web components: Button は押せるときだけ onPress に事象を渡して呼び、押せないときは aria-disabled と preventDefault", () => {
   const calls: unknown[][] = [];
   const onPress = (...args: unknown[]): void => void calls.push(args);
   const on = one(html`<${atoms.Button} kind="primary" label="始める" onPress=${onPress} reason="今は送れません" />`);
@@ -322,7 +380,7 @@ test("web components: Button は押せるときだけ onPress を引数なしで
   assert.equal(textOf(find(on, "c-btn-label")), "始める");
   const e1 = fakeEvent();
   (on.props.onClick as (e: unknown) => void)(e1);
-  assert.deepEqual(calls, [[]]);
+  assert.deepEqual(calls, [[e1]]);
   assert.equal(e1.count(), 0);
 
   const off = one(html`<${atoms.Button} label="開く" disabled=${true} reason="今は送れません" onPress=${onPress} />`);
@@ -359,13 +417,27 @@ test("web components: iconButtonLabel と IconButton は名前を必須にし、
   assert.equal(b.props.title, "知らせ");
   assert.equal(b.props["data-size"], "md");
   assert.equal(textOf(find(b, "c-badge")), "3");
+  // 札の字は 9 を超えたら 9+、読み上げの名前は 99 まで
+  const many = one(html`<${atoms.IconButton} icon="bell" label="知らせ" badge=${12} />`);
+  assert.equal(textOf(find(many, "c-badge")), "9+");
+  assert.equal(many.props["aria-label"], "知らせ（12 件）");
+  assert.equal(textOf(find(one(html`<${atoms.IconButton} icon="bell" label="知らせ" badge=${9} />`), "c-badge")), "9");
+  const pressed: unknown[][] = [];
+  const onBtn = one(html`<${atoms.IconButton} icon="plus" label="足す" reason="今は足せません" onPress=${(...a: unknown[]) => void pressed.push(a)} />`);
+  assert.equal(onBtn.props.title, "足す");
+  const ev = fakeEvent();
+  (onBtn.props.onClick as (e: unknown) => void)(ev);
+  assert.deepEqual(pressed, [[ev]]);
   const plain = one(html`<${atoms.IconButton} icon="x" label="閉じる" size="sm" />`);
   assert.equal(find(plain, "c-badge").length, 0);
   assert.equal(plain.props["data-size"], "sm");
   assert.equal(plain.props["aria-disabled"], undefined);
   const calls: unknown[][] = [];
-  const off = one(html`<${atoms.IconButton} icon="settings" label="設定" disabled=${true} onPress=${(...a: unknown[]) => void calls.push(a)} />`);
+  const off = one(html`<${atoms.IconButton} icon="settings" label="設定" disabled=${true} reason="今は開けません" onPress=${(...a: unknown[]) => void calls.push(a)} />`);
   assert.equal(off.props["aria-disabled"], "true");
+  assert.equal(off.props.title, "今は開けません");
+  assert.equal(off.props["aria-label"], "設定");
+  assert.equal(one(html`<${atoms.IconButton} icon="settings" label="設定" disabled=${true} />`).props.title, "設定");
   const e = fakeEvent();
   (off.props.onClick as (e: unknown) => void)(e);
   assert.equal(calls.length, 0);
@@ -375,8 +447,10 @@ test("web components: iconButtonLabel と IconButton は名前を必須にし、
 
 test("web components: badgeText と Badge（1 未満・数でない物は出さない、99+）", () => {
   for (const v of [0, -1, Number.NaN, "3", undefined]) assert.equal(atoms.badgeText(v), "", String(v));
-  assert.deepEqual([1, 99, 99.9].map(atoms.badgeText), ["1", "99", "99"]);
-  assert.deepEqual([100, Infinity].map(atoms.badgeText), ["99+", "99+"]);
+  assert.deepEqual([1, 99, 99.9].map((n) => atoms.badgeText(n)), ["1", "99", "99"]);
+  assert.deepEqual([100, Infinity].map((n) => atoms.badgeText(n)), ["99+", "99+"]);
+  assert.deepEqual([9, 9.5, 10, 120].map((n) => atoms.badgeText(n, 9)), ["9", "9", "9+", "9+"]);
+  assert.equal(textOf(one(html`<${atoms.Badge} count=${120} max=${9} />`)), "9+");
   assert.equal(atoms.Badge({ count: 0 }), null);
   const b = one(html`<${atoms.Badge} count=${12} tone="accent" />`);
   assert.equal(b.props["data-tone"], "accent");
@@ -426,6 +500,16 @@ test("web components: segmentedKey は押せない項目を飛ばして端で折
   assert.equal(atoms.segmentedKey(SEG, "a", "Enter"), null);
   assert.equal(atoms.segmentedKey([{ value: "a", label: "A" }], "a", "ArrowRight"), null);
   assert.equal(atoms.segmentedKey([{ value: "a", label: "A", disabled: true }], "a", "ArrowRight"), null);
+  // 修飾キー付きは動かない（素通し）
+  assert.equal(atoms.segmentedKey(SEG, "a", "ArrowRight", true), null);
+  assert.equal(atoms.segmentedKey(SEG, "a", "Home", true), null);
+  // 値が数でも String() で揃えて比べ（data-value は文字列）、items の元の値を返す
+  const NUM = [{ value: 1, label: "一" }, { value: 2, label: "二" }, { value: 3, label: "三" }];
+  assert.equal(atoms.segmentedKey(NUM, "1", "ArrowRight"), 2);
+  assert.equal(atoms.segmentedKey(NUM, 3, "ArrowRight"), 1);
+  assert.equal(atoms.segmentedKey(NUM, "2", "End"), 3);
+  assert.equal(atoms.segmentedTabStop(NUM, 2), 2);
+  assert.equal(atoms.segmentedTabStop(NUM, "2"), 2);
 });
 
 test("web components: Segmented は radiogroup で、選択中と Tab の入口は 1 つだけ。選択中・押せない項目では onChange を呼ばない", () => {
@@ -447,6 +531,14 @@ test("web components: Segmented は radiogroup で、選択中と Tab の入口�
   assert.deepEqual(changes, ["d"]);
   const six = one(html`<${atoms.Segmented} items=${["1", "2", "3", "4", "5", "6"].map((v) => ({ value: v, label: v }))} value="1" label="タブ" onChange=${() => undefined} />`);
   assert.equal(find(six, "c-seg-item").length, 6);
+  // 数の値: 選択中・Tab の入口・data-value を String() で揃え、onChange には元の数を渡す
+  const got: unknown[] = [];
+  const num = one(html`<${atoms.Segmented} items=${[{ value: 1, label: "一" }, { value: 2, label: "二" }]} value=${1} label="数" onChange=${(v: unknown) => void got.push(v)} />`);
+  const numItems = find(num, "c-seg-item");
+  assert.deepEqual(numItems.map((i) => [i.props["data-value"], i.props["aria-checked"], i.props.tabindex]), [["1", "true", 0], ["2", "false", -1]]);
+  (numItems[0]?.props.onClick as (e: unknown) => void)(fakeEvent());
+  (numItems[1]?.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(got, [2]);
 });
 
 test("web components: fieldControl と Field（説明・誤りの結び付き、label の for、誤りの入れ物は常に在る）", () => {
@@ -542,6 +634,11 @@ test("web components: Confirm は Node で呼べて Sheet を返し、× を出�
   assert.deepEqual(expand(plain.props.children), []);
   const busy = expand((sheet.Confirm({ open: true, id: "c", title: "t", busy: true, onOk, onCancel }) as VNode).props.footer) as El[];
   assert.deepEqual(busy.map((b) => b.props["aria-busy"]), [undefined, "true"]);
+  // [やめる]・実行は onCancel・onOk を引数なしで呼ぶ（押した事象を渡さない）
+  const args: unknown[][] = [];
+  const v2 = sheet.Confirm({ open: true, id: "c", title: "t", onOk: (...a: unknown[]) => void args.push(["ok", ...a]), onCancel: (...a: unknown[]) => void args.push(["cancel", ...a]) }) as VNode;
+  for (const b of expand(v2.props.footer) as El[]) (b.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(args, [["cancel"], ["ok"]]);
 });
 
 test("web components: toastSplit と Toast（失敗だけ alert、空でも 2 つの入れ物、× で onDismiss(id)）", () => {
