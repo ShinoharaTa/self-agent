@@ -1435,6 +1435,89 @@
     );
   }
 
+  // ----- 新しい殻の会話の列のカード（部品 c-cards。chat.js が描く）に渡す項目と、選ぶ・送るの出口。DOM は作らない。
+  // 選んだ状態・チェック・送っている間は古いカードと同じ覚えを使う（古い描き方に戻っても残る） -----
+  /** 保留中の要求をカードの項目にする（許可か質問。保留中でない・id が数でなければ null）。文はここで作る */
+  function ccAskItem(sessionId, p) {
+    if (!p || typeof p.id !== "number" || p.state !== "pending") return null;
+    const left = permissionLeftText(p.expiresAt);
+    const urgent = typeof p.expiresAt === "string" && permissionUrgent(p.expiresAt);
+    const busy = ccPermissionBusy.has(p.id);
+    if (p.question && Array.isArray(p.question.questions) && p.question.questions.length > 0) {
+      const questions = p.question.questions;
+      const drafts = ccQuestionDraft(p.id, questions.length);
+      const s = store.ccSessions ? ccSessionOf(sessionId) : null;
+      return {
+        kind: "question",
+        id: p.id,
+        who: s ? ccName(s) + (p.permissionMode ? " ・ " + permissionModeText(p.permissionMode) : "") : "",
+        left,
+        urgent,
+        busy,
+        ready: ccQuestionPicks(questions, drafts) !== null,
+        questions: questions.map((q, i) => ({
+          legend: questionLegend(q, i),
+          text: String(q.question || ""),
+          multi: !!q.multiSelect,
+          options: (Array.isArray(q.options) ? q.options : []).map((o) => ({ label: o.label, description: o.description })),
+          picked: drafts[i].labels.slice(),
+          other: drafts[i].other,
+          otherText: drafts[i].text,
+        })),
+      };
+    }
+    return {
+      kind: "permission",
+      id: p.id,
+      tool: String(p.toolName),
+      mode: p.permissionMode ? permissionModeText(p.permissionMode) : "",
+      summary: String(p.summary || ""),
+      rule: typeof p.alwaysRule === "string" ? p.alwaysRule : "",
+      ruleNote: typeof p.alwaysNote === "string" ? p.alwaysNote : "",
+      always: ccPermissionAlways.has(p.id),
+      left,
+      urgent,
+      busy,
+    };
+  }
+
+  /** 質問の index 番目の問の draft と、複数選ぶ形か（範囲の外・質問でなければ null） */
+  function ccAskDraft(p, index) {
+    const questions = p && p.question && Array.isArray(p.question.questions) ? p.question.questions : null;
+    if (!questions || !Number.isInteger(index) || index < 0 || index >= questions.length) return null;
+    return { draft: ccQuestionDraft(p.id, questions.length)[index], multi: !!questions[index].multiSelect };
+  }
+
+  const ccAsk = {
+    item: ccAskItem,
+    /** 「このセッションでは常に許可」のチェック */
+    always(id, checked) {
+      if (checked) ccPermissionAlways.add(id);
+      else ccPermissionAlways.delete(id);
+    },
+    pick(p, index, label, checked) {
+      const d = ccAskDraft(p, index);
+      if (d) pickOption(d.draft, d.multi, label, checked);
+    },
+    pickOther(p, index, checked) {
+      const d = ccAskDraft(p, index);
+      if (d) pickOtherOption(d.draft, d.multi, checked);
+    },
+    /** 「その他」の文 */
+    other(p, index, value) {
+      const d = ccAskDraft(p, index);
+      if (d) d.draft.text = String(value);
+    },
+    /** 以下は通ったかに resolve する */
+    permit: (sessionId, p, decision, tabId) => answerCcPermission(sessionId, p, decision, tabId),
+    answer(sessionId, p, tabId) {
+      const picks = ccQuestionPicks(p.question.questions, ccQuestionDraft(p.id, p.question.questions.length));
+      if (!picks) return Promise.resolve(false);
+      return postCcQuestion(sessionId, p, "answer", { requestHash: p.requestHash, answers: picks }, tabId);
+    },
+    dismiss: (sessionId, p, tabId) => postCcQuestion(sessionId, p, "deny", { requestHash: p.requestHash }, tabId),
+  };
+
   function renderCcSession(container, sessionId) {
     const loaded = store.ccSessions[sessionId];
     const s = ccSessionOf(sessionId);
@@ -1996,6 +2079,7 @@
     oneLine,
     todayTokens,
     ccPermissionCard,
+    ccAsk,
     ccQuestionPicks,
     ccQuestionForget,
     placeChildren,
