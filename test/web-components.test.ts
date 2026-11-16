@@ -150,19 +150,33 @@ const importsOf = (text: string): { from: string[]; dynamic: boolean } => ({
   dynamic: /\bimport\s*\(/.test(stripJsComments(text)),
 });
 
-/** 部品（入口・c-lib.js 以外の c-*.js）が触ってはいけない物（§8.1 の 9） */
-function partProblems(name: string, text: string): string[] {
+/** 部品が触ってはいけない語（§8.1 の 9）。WORDS は語の単位で、SUBSTRINGS は語の途中にも当てる。入口（c-app.js）は ENTRY_OK を使ってよい */
+const FORBIDDEN_WORDS = ["document", "window", "SA", "fetch", "globalThis", "location", "localStorage", "sessionStorage", "navigator", "matchMedia", "setTimeout", "setInterval"];
+const FORBIDDEN_SUBSTRINGS = ["ownerDocument", "getRootNode", "activeElement"];
+const ENTRY_OK: ReadonlySet<string> = new Set(["document", "window", "SA", "matchMedia", "activeElement"]);
+const forEntry = (words: string[]): string[] => words.filter((w) => !ENTRY_OK.has(w));
+const PART_WORDS = new RegExp(`\\b(${FORBIDDEN_WORDS.join("|")})\\b`, "g");
+const PART_PARTS = new RegExp(FORBIDDEN_SUBSTRINGS.join("|"), "g");
+const ENTRY_WORDS = new RegExp(`\\b(${forEntry(FORBIDDEN_WORDS).join("|")})\\b`, "g");
+const ENTRY_PARTS = new RegExp(forEntry(FORBIDDEN_SUBSTRINGS).join("|"), "g");
+
+function forbidden(name: string, text: string, words: RegExp, parts: RegExp): string[] {
   const js = stripJsComments(text);
   const problems: string[] = [];
-  for (const m of js.matchAll(/\b(document|window|SA|fetch|globalThis|location|localStorage|sessionStorage|navigator|matchMedia|setTimeout|setInterval)\b/g)) problems.push(`${name}: ${m[1]}`);
-  for (const m of js.matchAll(/ownerDocument|getRootNode|activeElement/g)) problems.push(`${name}: ${m[0]}`);
+  for (const m of js.matchAll(words)) problems.push(`${name}: ${m[1]}`);
+  for (const m of js.matchAll(parts)) problems.push(`${name}: ${m[0]}`);
   if (/\bstyle\b/.test(js)) problems.push(`${name}: style`);
   return problems;
 }
 
+/** 部品（入口・c-lib.js 以外の c-*.js）が触ってはいけない物（§8.1 の 9） */
+const partProblems = (name: string, text: string): string[] => forbidden(name, text, PART_WORDS, PART_PARTS);
+/** 入口（c-app.js）が触ってはいけない物（部品の語から document・window・SA・matchMedia・activeElement を除いた残り） */
+const entryProblems = (name: string, text: string): string[] => forbidden(name, text, ENTRY_WORDS, ENTRY_PARTS);
+
 test("web components: c-*.css・c-*.js がそろっている", () => {
   for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-gallery.js", "c-lib.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -213,16 +227,24 @@ test("web components: c-*.js のクラスは c- の固定の文字列だけで�
 });
 
 test("web components: 部品（入口以外の c-*.js）は document・window・location・タイマーなどに触らず、style の語を書かない", () => {
-  // 入口（見本の c-gallery.js。K3 から c-app.js も）と c-lib.js は対象外
-  for (const name of JS_FILES.filter((n) => !["c-lib.js", "c-gallery.js"].includes(n))) assert.deepEqual(partProblems(name, read(name)), [], name);
+  // 入口（見本の c-gallery.js と、K3 から c-app.js）と c-lib.js は対象外
+  for (const name of JS_FILES.filter((n) => !["c-lib.js", "c-gallery.js", "c-app.js"].includes(n))) assert.deepEqual(partProblems(name, read(name)), [], name);
 });
 
-test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ。c-atoms・c-list・c-shell は hook なし）・動的な import と createPortal が無い", () => {
+test("web components: 入口（c-app.js）は document・window・SA・matchMedia・activeElement のほかに触らず、クラスを書かず、hook を読まない。ほかの c-*.js は入口を読まない", () => {
+  const app = read("c-app.js");
+  assert.deepEqual(entryProblems("c-app.js", app), []);
+  assert.deepEqual(classesInJs(app), []);
+  for (const name of JS_FILES.filter((n) => n !== "c-app.js")) assert.ok(!importsOf(read(name)).from.some((f) => /c-app\.js$/.test(f)), name);
+});
+
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell だけ。c-atoms・c-list・c-shell・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
     "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
     "c-list.js": ["./c-lib.js", "./c-atoms.js"],
     "c-shell.js": ["./c-lib.js", "./c-atoms.js"],
+    "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js"],
   };
   for (const [name, targets] of Object.entries(allowed)) {
     if (!JS_FILES.includes(name)) continue;
@@ -230,7 +252,7 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
     assert.equal(dynamic, false, `${name}: 動的な import`);
   }
-  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
+  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
@@ -323,6 +345,9 @@ test("web components: 見張りの関数は悪い見本を落とす", () => {
     assert.deepEqual(partProblems("x.js", `const v = ${word};`), [`x.js: ${word}`], word);
   }
   assert.deepEqual(partProblems("x.js", "el.style.color = 1;"), ["x.js: style"]);
+  // 入口は document・window・SA・matchMedia・activeElement を使ってよいが、保存・タイマーなどは落とす
+  assert.deepEqual(entryProblems("x.js", "document.activeElement; window.SA; window.matchMedia(q);"), []);
+  assert.deepEqual(entryProblems("x.js", "window.localStorage.getItem(k); setTimeout(f, 1);"), ["x.js: localStorage", "x.js: setTimeout"]);
 });
 
 // ===== モデルと出す形（§8.2。部品を import して呼ぶ。hook の無い部品だけ） =====
