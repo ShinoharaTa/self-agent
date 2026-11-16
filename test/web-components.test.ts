@@ -161,8 +161,8 @@ function partProblems(name: string, text: string): string[] {
 }
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-sheet.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-gallery.js", "c-lib.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-gallery.js", "c-lib.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -701,4 +701,427 @@ test("web components: toastSplit と Toast（失敗だけ alert、空でも 2 �
   assert.equal(close?.props["aria-label"], "閉じる");
   (close?.props.onClick as (e: unknown) => void)(fakeEvent());
   assert.deepEqual(dismissed, ["2"]);
+});
+
+// ===== 一覧（c-list.js。docs/plan/web-ui-components.md §6 の K3） =====
+type Obj = Record<string, unknown>;
+const listUrl = new URL("../src/web/static/c-list.js", import.meta.url).href;
+const list = (await import(listUrl)) as Record<string, Fn> & {
+  TURN_LABEL: Readonly<Record<string, string>>;
+  DONE_MAX: number;
+  filterWords: (filter: unknown) => string[];
+  topicHits: (topic: Obj, groupName: string, words: string[]) => boolean;
+  rowMark: (topic: Obj, isUnread: (channel: string, last: unknown) => boolean) => string;
+  rowModel: (topic: Obj, ctx: Obj) => Obj;
+  groupNote: (group: Obj, memberCount: number, folded: boolean) => Obj | null;
+  turnItem: (id: string, state: Obj) => Obj | null;
+  nextTurnId: (ids: string[], current: string | null) => string | null;
+  listNote: (o: Obj) => string;
+  listKey: (key: string, count: number, at: number) => number | null | undefined;
+  listModel: (state: Obj) => { phase: string; note: string; turns: null | { count: number; nextId: string | null; items: Obj[] }; blocks: Obj[]; hitCount: number };
+};
+
+const topicOf = (o: Obj): Obj => ({
+  id: "ch:1", title: "題", group: "p:a", origin: "session", persona: null, mark: null, turn: null, state: "active", activityAt: "2026-01-01T00:00:00Z", last: null,
+  ...o,
+});
+const groupOf = (o: Obj): Obj => ({ key: "p:a", kind: "project", name: "A", turns: 0, running: 0, open: 1, done: 0, hasTopics: true, ...o });
+const turnOf = (kind: string, summary = ""): Obj => ({ kind, summary, since: "2026-01-01T00:00:00Z", expiresAt: null });
+
+function stateOf(data: Obj | null, o: Obj = {}): Obj {
+  return {
+    data, failed: false, filter: "", current: null, doneGroup: null, dataDone: null, othersOpen: false,
+    isUnread: () => false, time: () => "12:00", ago: () => "1 分前",
+    ...o,
+  };
+}
+
+/** 群 A（プロジェクト・話題あり）・B（話題なしで畳む）・C（話題なしで畳む）・General・ほかの場所 */
+function sampleData(): Obj {
+  return {
+    turns: 2,
+    turnIds: ["ch:1", "hand:1", "ch:missing"],
+    groups: [
+      groupOf({ key: "p:a", name: "A", turns: 1, running: 1, open: 3, done: 60 }),
+      groupOf({ key: "p:b", name: "B", open: 0, done: 2, hasTopics: true }),
+      groupOf({ key: "p:c", name: "C", open: 0, done: 0, hasTopics: false }),
+      groupOf({ key: "general", kind: "general", name: "General", open: 0 }),
+      groupOf({ key: "other", kind: "other", name: "ほかの場所", open: 1 }),
+    ],
+    topics: [
+      topicOf({ id: "ch:1", title: "家計の話", mark: "turn", turn: turnOf("permission", "コマンドを実行してよいか") }),
+      topicOf({ id: "cc:2", title: "作業の話", mark: "running", origin: "cc" }),
+      topicOf({ id: "ch:3", title: "読んだ話", persona: "見本の人格" }),
+      topicOf({ id: "ch:4", title: "古い話", state: "done" }),
+      topicOf({ id: "ch:5", title: "Bの終わった話", group: "p:b", state: "done" }),
+      topicOf({ id: "ch:6", title: "外の話", group: "other" }),
+    ],
+    rightHands: [{ id: "hand:1", guildId: "g", title: "右腕", turn: turnOf("question"), last: null, link: "x" }],
+    cc: { enabled: true, stale: false, unreadable: false },
+  };
+}
+
+test("web components: c-list の TURN_LABEL・DONE_MAX・filterWords・topicHits", () => {
+  assert.deepEqual({ ...list.TURN_LABEL }, { permission: "許可", question: "質問", waiting: "判断待ち", confirm: "確認" });
+  assert.ok(Object.isFrozen(list.TURN_LABEL));
+  assert.equal(list.DONE_MAX, 50);
+  assert.deepEqual(list.filterWords("  Foo  bar "), ["foo", "bar"]);
+  assert.deepEqual(list.filterWords(""), []);
+  const t = topicOf({ title: "Report 下書き", persona: "Helper" });
+  assert.equal(list.topicHits(t, "Alpha", ["report"]), true);
+  assert.equal(list.topicHits(t, "Alpha", ["report", "alpha"]), true);
+  assert.equal(list.topicHits(t, "Alpha", ["helper"]), true);
+  assert.equal(list.topicHits(t, "Alpha", ["report", "beta"]), false);
+  assert.equal(list.topicHits(t, "Alpha", []), true);
+});
+
+test("web components: rowMark は あなたの番 > 作業中 > 未読 で、未読は印の無い ch: だけ isUnread に訊く", () => {
+  const asked: unknown[][] = [];
+  const unread = (...a: unknown[]): boolean => (asked.push(a), true);
+  assert.equal(list.rowMark(topicOf({ mark: "turn" }), unread), "turn");
+  assert.equal(list.rowMark(topicOf({ mark: "running" }), unread), "running");
+  assert.equal(asked.length, 0);
+  const last = { id: 3, at: "x", kind: "agent" };
+  assert.equal(list.rowMark(topicOf({ id: "ch:9", last }), unread), "unread");
+  assert.deepEqual(asked, [["9", last]]);
+  assert.equal(list.rowMark(topicOf({ id: "cc:9" }), unread), "none");
+  assert.equal(asked.length, 1);
+  assert.equal(list.rowMark(topicOf({ id: "ch:9" }), () => false), "none");
+});
+
+test("web components: rowModel は右に状態の語か時刻の 1 つ、付記は「端末」か人格", () => {
+  const ctx = { isUnread: () => false, time: (iso: string) => "t:" + iso, current: "ch:1" };
+  const turn = list.rowModel(topicOf({ mark: "turn", turn: turnOf("waiting") }), ctx);
+  assert.deepEqual(turn.state, { text: "判断待ち", tone: "warning" });
+  assert.equal(turn.time, null);
+  assert.equal(turn.current, true);
+  const running = list.rowModel(topicOf({ id: "cc:2", mark: "running", origin: "cc" }), ctx);
+  assert.deepEqual(running.state, { text: "作業中", tone: "accent" });
+  assert.equal(running.time, null);
+  assert.equal(running.tag, "端末");
+  assert.equal(running.current, false);
+  const plain = list.rowModel(topicOf({ id: "ch:3", persona: "見本の人格", state: "done" }), ctx);
+  assert.deepEqual(plain, { id: "ch:3", title: "題", mark: "none", state: null, time: "t:2026-01-01T00:00:00Z", tag: "見本の人格", done: true, current: false });
+  assert.equal(list.rowModel(topicOf({ activityAt: null }), ctx).time, null);
+  assert.equal(list.rowModel(topicOf({}), ctx).tag, null);
+});
+
+test("web components: groupNote の 4 つの場合と、畳んだ群は「話題なし」を出さない", () => {
+  assert.deepEqual(list.groupNote(groupOf({ turns: 2, running: 1 }), 3, false), { text: "あなたの番 2", tone: "warning" });
+  assert.deepEqual(list.groupNote(groupOf({ running: 1 }), 1, false), { text: "作業中 1", tone: "accent" });
+  assert.deepEqual(list.groupNote(groupOf({}), 0, false), { text: "話題なし", tone: "muted" });
+  assert.equal(list.groupNote(groupOf({}), 2, false), null);
+  assert.equal(list.groupNote(groupOf({ done: 1 }), 0, false), null);
+  assert.equal(list.groupNote(groupOf({}), 0, true), null);
+});
+
+test("web components: turnItem は話題・右腕を引き、引けなければ null。meta は種類と時間、sub は場所と要約", () => {
+  const st = stateOf(sampleData(), { current: "hand:1" });
+  assert.deepEqual(list.turnItem("ch:1", st), { id: "ch:1", title: "家計の話", meta: "許可・1 分前", sub: "A・コマンドを実行してよいか", current: false });
+  assert.deepEqual(list.turnItem("hand:1", st), { id: "hand:1", title: "右腕", meta: "質問・1 分前", sub: "", current: true });
+  assert.equal(list.turnItem("ch:missing", st), null);
+  // 番の無い話題は引かない
+  assert.equal(list.turnItem("ch:3", st), null);
+  const d = sampleData();
+  (d.topics as Obj[])[0] = topicOf({ id: "ch:1", group: "nowhere", mark: "turn", turn: turnOf("confirm") });
+  assert.equal(list.turnItem("ch:1", stateOf(d))?.sub, "");
+});
+
+test("web components: nextTurnId は次・最後から先頭・current が無ければ先頭・空は null", () => {
+  assert.equal(list.nextTurnId(["a", "b", "c"], "a"), "b");
+  assert.equal(list.nextTurnId(["a", "b", "c"], "c"), "a");
+  assert.equal(list.nextTurnId(["a", "b"], null), "a");
+  assert.equal(list.nextTurnId(["a", "b"], "z"), "a");
+  assert.equal(list.nextTurnId([], "a"), null);
+});
+
+test("web components: listNote は 更新の失敗 > Claude Code > 当たらない の 1 つで、data が無いときは空", () => {
+  const base = { failed: false, hasData: true, ccUnreadable: false, filtering: false, hitCount: 0 };
+  assert.equal(list.listNote(base), "");
+  assert.equal(list.listNote({ ...base, failed: true, ccUnreadable: true, filtering: true }), "更新できませんでした。前の一覧を出しています");
+  assert.equal(list.listNote({ ...base, ccUnreadable: true, filtering: true }), "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります");
+  assert.equal(list.listNote({ ...base, filtering: true }), "当たる話題がありません");
+  assert.equal(list.listNote({ ...base, filtering: true, hitCount: 1 }), "");
+  assert.equal(list.listNote({ ...base, hasData: false, failed: true }), "");
+});
+
+test("web components: listKey は Home・End・↑↓（端は null）、at < 0 の矢印と 0 件は null、ほかのキーは undefined", () => {
+  assert.equal(list.listKey("Home", 5, 3), 0);
+  assert.equal(list.listKey("End", 5, 0), 4);
+  assert.equal(list.listKey("ArrowDown", 5, 1), 2);
+  assert.equal(list.listKey("ArrowDown", 5, 4), null);
+  assert.equal(list.listKey("ArrowUp", 5, 1), 0);
+  assert.equal(list.listKey("ArrowUp", 5, 0), null);
+  assert.equal(list.listKey("ArrowDown", 5, -1), null);
+  assert.equal(list.listKey("ArrowUp", 5, -1), null);
+  assert.equal(list.listKey("Home", 5, -1), 0);
+  assert.equal(list.listKey("Home", 0, -1), null);
+  assert.equal(list.listKey("ArrowDown", 0, 0), null);
+  assert.equal(list.listKey("Enter", 5, 1), undefined);
+  assert.equal(list.listKey("PageDown", 0, 0), undefined);
+});
+
+const groupBlocks = (blocks: Obj[]): Obj[] => blocks.filter((b) => b.type === "group");
+
+test("web components: listModel の phase（loading・failed・ready）", () => {
+  assert.deepEqual(list.listModel(stateOf(null)), { phase: "loading", note: "", turns: null, blocks: [], hitCount: 0 });
+  assert.equal(list.listModel(stateOf(null, { failed: true })).phase, "failed");
+  const ready = list.listModel(stateOf(sampleData()));
+  assert.equal(ready.phase, "ready");
+  assert.equal(ready.note, "");
+  assert.equal(list.listModel(stateOf(sampleData(), { failed: true })).note, "更新できませんでした。前の一覧を出しています");
+  const cc = sampleData();
+  cc.cc = { enabled: true, stale: false, unreadable: true };
+  assert.equal(list.listModel(stateOf(cc)).note, "Claude Code の一覧を読めません。作業中の話題が欠けて見えることがあります");
+  cc.cc = { enabled: false, stale: false, unreadable: true };
+  assert.equal(list.listModel(stateOf(cc)).note, "");
+});
+
+test("web components: listModel のあなたの番（0 件で null・turnIds の順・絞り込まない・群の中は印だけ）", () => {
+  const m = list.listModel(stateOf(sampleData(), { current: "ch:1" }));
+  assert.equal(m.turns?.count, 2);
+  assert.deepEqual(m.turns?.items.map((t) => t.id), ["ch:1", "hand:1"]);
+  assert.equal(m.turns?.nextId, "hand:1");
+  const filtered = list.listModel(stateOf(sampleData(), { filter: "読んだ" }));
+  assert.deepEqual(filtered.turns?.items.map((t) => t.id), ["ch:1", "hand:1"]);
+  // 群の中にも同じ話題の行が在り、印は turn で副次の値を持たない
+  const row = (groupBlocks(m.blocks)[0]?.rows as Obj[]).find((r) => r.id === "ch:1");
+  assert.equal(row?.mark, "turn");
+  assert.deepEqual(Object.keys(row ?? {}).sort(), ["current", "done", "id", "mark", "state", "tag", "time", "title"]);
+  const zero = sampleData();
+  zero.turns = 0;
+  assert.equal(list.listModel(stateOf(zero)).turns, null);
+  const unknown = sampleData();
+  unknown.turnIds = ["ch:missing"];
+  assert.equal(list.listModel(stateOf(unknown)).turns, null);
+});
+
+test("web components: listModel の群（サーバーの順・ラベルの位置・話題の無いプロジェクトは「ほか」へ・General は畳まない）", () => {
+  const m = list.listModel(stateOf(sampleData()));
+  assert.deepEqual(
+    m.blocks.map((b) => (b.type === "group" ? b.key : b.type)),
+    ["label", "p:a", "others", "general", "other"],
+  );
+  assert.deepEqual(m.blocks[0], { type: "label", text: "プロジェクト" });
+  const a = m.blocks[1] as Obj;
+  assert.deepEqual(a.note, { text: "あなたの番 1", tone: "warning" });
+  assert.equal(a.canAdd, true);
+  assert.equal(a.addLabel, "A で話題を始める");
+  assert.equal(a.hint, "");
+  assert.deepEqual((a.rows as Obj[]).map((r) => r.id), ["ch:1", "cc:2", "ch:3"]);
+  const others = m.blocks[2] as Obj;
+  assert.equal(others.label, "ほかのプロジェクト（2）");
+  assert.equal(others.open, false);
+  assert.equal(others.forced, false);
+  assert.deepEqual((others.groups as Obj[]).map((g) => [g.key, (g.rows as Obj[]).length, g.note]), [["p:b", 0, null], ["p:c", 0, null]]);
+  assert.equal(list.listModel(stateOf(sampleData(), { othersOpen: true })).blocks[2]?.open, true);
+  const general = m.blocks[3] as Obj;
+  assert.equal(general.hint, "場所を決めていない話題");
+  assert.deepEqual(general.note, { text: "話題なし", tone: "muted" });
+  assert.equal(general.canAdd, true);
+  const other = m.blocks[4] as Obj;
+  assert.equal(other.canAdd, false);
+  assert.equal(other.hint, "");
+  // プロジェクトが「ほか」だけなら、ラベルはその直前
+  const d = sampleData();
+  d.groups = (d.groups as Obj[]).filter((g) => g.key !== "p:a");
+  d.topics = (d.topics as Obj[]).filter((t) => t.group !== "p:a");
+  assert.deepEqual(list.listModel(stateOf(d)).blocks.map((b) => (b.type === "group" ? b.key : b.type)), ["label", "others", "general", "other"]);
+  // プロジェクトが無ければラベルは出さない
+  d.groups = (d.groups as Obj[]).filter((g) => g.kind !== "project");
+  assert.deepEqual(list.listModel(stateOf(d)).blocks.map((b) => b.type), ["group", "group"]);
+});
+
+test("web components: listModel の絞り込み（当たらない行・群・「ほか」を外す・forced・hitCount）", () => {
+  const m = list.listModel(stateOf(sampleData(), { filter: "読んだ" }));
+  assert.deepEqual(m.blocks.map((b) => (b.type === "group" ? b.key : b.type)), ["label", "p:a"]);
+  assert.deepEqual((m.blocks[1]?.rows as Obj[]).map((r) => r.id), ["ch:3"]);
+  assert.equal(m.hitCount, 1);
+  assert.equal(m.note, "");
+  // 群の名前でも当たる
+  assert.equal(list.listModel(stateOf(sampleData(), { filter: "ほかの場所" })).hitCount, 1);
+  // 「ほか」の中の完了に当たれば「ほか」は開いた形で残り、当たる群だけが入る
+  const done = list.listModel(stateOf(sampleData(), { filter: "Bの終わった", doneGroup: "p:b", dataDone: "p:b" }));
+  const others = done.blocks.find((b) => b.type === "others") as Obj;
+  assert.equal(others.open, true);
+  assert.equal(others.forced, true);
+  assert.deepEqual((others.groups as Obj[]).map((g) => g.key), ["p:b"]);
+  assert.equal(done.hitCount, 1);
+  const none = list.listModel(stateOf(sampleData(), { filter: "当たらない語" }));
+  assert.deepEqual(none.blocks, []);
+  assert.equal(none.hitCount, 0);
+  assert.equal(none.note, "当たる話題がありません");
+});
+
+test("web components: listModel の完了（閉・開いて読み込み中・開いて行・50 件を超えた文。開けるのは doneGroup の 1 つ）", () => {
+  const closed = groupBlocks(list.listModel(stateOf(sampleData())).blocks)[0]?.done as Obj;
+  assert.deepEqual(closed, { label: "完了（60）", open: false, loading: false, rows: [], more: "" });
+  const loading = groupBlocks(list.listModel(stateOf(sampleData(), { doneGroup: "p:a", dataDone: null })).blocks)[0]?.done as Obj;
+  assert.deepEqual(loading, { label: "完了（60）", open: true, loading: true, rows: [], more: "" });
+  const open = groupBlocks(list.listModel(stateOf(sampleData(), { doneGroup: "p:a", dataDone: "p:a" })).blocks)[0]?.done as Obj;
+  assert.equal(open.open, true);
+  assert.equal(open.loading, false);
+  assert.deepEqual((open.rows as Obj[]).map((r) => [r.id, r.done]), [["ch:4", true]]);
+  assert.equal(open.more, "新しい 50 件を出しています");
+  // ほかの群の完了は閉じたまま
+  const m = list.listModel(stateOf(sampleData(), { doneGroup: "p:b", dataDone: "p:b" }));
+  assert.equal((groupBlocks(m.blocks)[0]?.done as Obj).open, false);
+  const b = (m.blocks.find((x) => x.type === "others")?.groups as Obj[])[0]?.done as Obj;
+  assert.deepEqual([b.open, (b.rows as Obj[]).length, b.more], [true, 1, ""]);
+  // 完了の無い群は null
+  assert.equal(groupBlocks(m.blocks).find((g) => g.key === "general")?.done, null);
+});
+
+const ON = (): { calls: unknown[][]; on: Record<string, (...a: unknown[]) => void> } => {
+  const calls: unknown[][] = [];
+  const rec = (name: string) => (...a: unknown[]): void => void calls.push([name, ...a]);
+  return { calls, on: { open: rec("open"), add: rec("add"), toggleDone: rec("toggleDone"), toggleOthers: rec("toggleOthers"), retry: rec("retry") } };
+};
+
+/** 子の vnode の key（関数の vnode を開く前） */
+const keysOf = (children: unknown): unknown[] =>
+  (Array.isArray(children) ? children.flat(Infinity) : [children]).filter((c) => c && typeof c === "object").map((c) => (c as { key?: unknown }).key);
+
+test("web components: TopicList は phase ごとの子を出し、根はどの phase でも div.c-list[tabindex=-1]。子の key", () => {
+  const { calls, on } = ON();
+  const root = (state: Obj, compact = false): El => one(html`<${list.TopicList} model=${list.listModel(state)} compact=${compact} on=${on} />`);
+  for (const [st, phase] of [[stateOf(null), "loading"], [stateOf(null, { failed: true }), "failed"], [stateOf(sampleData()), "ready"]] as const) {
+    const r = root(st);
+    assert.equal(r.type, "div");
+    assert.equal(r.props.class, "c-list");
+    assert.equal(r.props.tabindex, "-1");
+    assert.equal(r.props["data-phase"], phase);
+    const note = find(r, "c-list-note")[0];
+    assert.equal(note?.props.role, "status");
+  }
+  assert.equal(find(root(stateOf(null)), "c-loading").length, 1);
+  const failed = root(stateOf(null, { failed: true }));
+  assert.equal(textOf(find(failed, "c-empty-text")), "読み込めませんでした");
+  const retry = find(failed, "c-btn")[0];
+  assert.deepEqual([retry?.props["data-kind"], retry?.props["data-size"], textOf(retry as El)], ["secondary", "sm", "もう一度読む"]);
+  (retry?.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(calls, [["retry"]]);
+  // 子の key: あなたの番・ラベル・群・ほか
+  const v = list.TopicList({ model: list.listModel(stateOf(sampleData())), compact: false, on }) as VNode;
+  const inner = (v.props.children as unknown[]).flat(Infinity);
+  assert.deepEqual(keysOf(inner).filter((k) => k !== undefined), ["turns", "label", "p:a", "others", "general", "other"]);
+  const ready = root(stateOf(sampleData()));
+  assert.equal(textOf(find(ready, "c-list-note")), "");
+  assert.equal(find(ready, "c-turns").length, 1);
+  assert.equal(find(ready, "c-group").length, 3);
+  // 行の li は話題の id、あなたの番の li は turn: + id
+  const rowsV = (list.Group({ group: groupBlocks(list.listModel(stateOf(sampleData())).blocks)[0], compact: false, on }) as VNode);
+  const ul = expand(rowsV);
+  const lis = find(ul, "c-rows")[0]?.children as El[];
+  assert.equal(lis.length, 3);
+  const turnsV = list.YourTurn({ turns: list.listModel(stateOf(sampleData())).turns, compact: false, onOpen: on.open }) as VNode;
+  const turnsTree = one(turnsV);
+  assert.deepEqual(keysOf((find(turnsTree, "c-turns-list")[0] as El).props.children), ["turn:ch:1", "turn:hand:1"]);
+});
+
+test("web components: YourTurn は compact で件数のボタン 1 つ、ほかは見出しと 2 行の項目。押すと onOpen(id, false)", () => {
+  const { calls, on } = ON();
+  const turns = list.listModel(stateOf(sampleData(), { current: "ch:1" })).turns;
+  const wide = one(html`<${list.YourTurn} turns=${turns} compact=${false} onOpen=${on.open} />`);
+  assert.equal(wide.type, "section");
+  assert.equal(wide.props["aria-label"], "あなたの番");
+  assert.equal(textOf(find(wide, "c-turns-head")), "あなたの番2");
+  const items = find(wide, "c-turn");
+  assert.deepEqual(items.map((b) => [b.props["data-topic"], b.props["aria-current"], b.props.title]), [["ch:1", "true", "家計の話"], ["hand:1", undefined, "右腕"]]);
+  assert.ok(items.every((b) => b.props["data-mark"] === undefined));
+  assert.equal(find(items[0] as El, "c-mark")[0]?.props["data-state"], "turn");
+  assert.equal(find(items[0] as El, "c-mark")[0]?.props["aria-hidden"], "true");
+  assert.equal(textOf(find(items[0] as El, "c-turn-meta")), "許可・1 分前");
+  assert.equal(textOf(find(items[0] as El, "c-turn-sub")), "A・コマンドを実行してよいか");
+  assert.equal(find(items[1] as El, "c-turn-sub").length, 0);
+  (items[1]?.props.onClick as () => void)();
+  assert.deepEqual(calls, [["open", "hand:1", false]]);
+  const pc = one(html`<${list.YourTurn} turns=${turns} compact=${true} onOpen=${on.open} />`);
+  assert.equal(pc.props["data-compact"], "true");
+  const jump = find(pc, "c-turns-jump")[0] as El;
+  assert.equal(jump.props["aria-label"], "あなたの番 2 件。次の話題を開く");
+  assert.equal(textOf(find(jump, "c-badge")), "2");
+  assert.equal(find(pc, "c-turn").length, 0);
+  (jump.props.onClick as () => void)();
+  assert.deepEqual(calls[1], ["open", "hand:1", false]);
+  assert.equal(list.YourTurn({ turns: null, compact: false, onOpen: on.open }), null);
+});
+
+test("web components: Group・TopicRow・Fold の属性と押したとき（[+] は canAdd のときだけの IconButton）", () => {
+  const { calls, on } = ON();
+  const blocks = list.listModel(stateOf(sampleData(), { current: "ch:3", isUnread: (c: string) => c === "3", doneGroup: "p:a", dataDone: "p:a" })).blocks;
+  const a = groupBlocks(blocks)[0];
+  const g = one(html`<${list.Group} group=${a} compact=${false} on=${on} />`);
+  assert.deepEqual([g.type, g.props["data-kind"], g.props["aria-label"]], ["section", "project", "A"]);
+  const head = find(g, "c-group-head")[0] as El;
+  assert.equal(head.props["data-add"], "true");
+  assert.equal(find(head, "c-group-name")[0]?.type, "h2");
+  assert.equal(find(find(head, "c-group-name")[0] as El, "c-iconbtn").length, 0);
+  assert.equal(find(head, "c-group-hint").length, 0);
+  assert.equal(find(head, "c-group-note")[0]?.props["data-tone"], "warning");
+  const add = find(head, "c-iconbtn")[0] as El;
+  assert.deepEqual([add.props["aria-label"], add.props.title, add.props["data-size"]], ["A で話題を始める", "A で話題を始める", "md"]);
+  assert.match(String(((add.children[0] as El).children[0] as El).props.href), /#plus$/);
+  const opener = { scrollIntoView: () => undefined };
+  (add.props.onClick as (e: unknown) => void)({ preventDefault: () => undefined, currentTarget: opener });
+  assert.deepEqual(calls, [["add", "p:a", opener]]);
+  const small = one(html`<${list.Group} group=${a} compact=${true} on=${on} />`);
+  assert.equal(find(small, "c-iconbtn")[0]?.props["data-size"], "sm");
+  // 行: 全部 data-mark を持つ
+  const rows = find(g, "c-row");
+  assert.deepEqual(rows.map((r) => [r.props["data-topic"], r.props["data-mark"], r.props["aria-current"], r.props["data-done"]]), [
+    ["ch:1", "turn", undefined, undefined],
+    ["cc:2", "running", undefined, undefined],
+    ["ch:3", "unread", "true", undefined],
+    ["ch:4", "none", undefined, "true"],
+  ]);
+  assert.equal(find(rows[2] as El, "c-mark")[0]?.props["aria-label"], "未読");
+  assert.equal(find(rows[0] as El, "c-mark")[0]?.props["aria-label"], undefined);
+  assert.deepEqual([textOf(find(rows[0] as El, "c-row-state")), find(rows[0] as El, "c-row-time").length], ["許可", 0]);
+  assert.equal(find(rows[1] as El, "c-row-state")[0]?.props["data-tone"], "accent");
+  assert.equal(textOf(find(rows[1] as El, "c-row-tag")), "端末");
+  assert.deepEqual([textOf(find(rows[2] as El, "c-row-time")), find(rows[2] as El, "c-row-state").length], ["12:00", 0]);
+  (rows[3]?.props.onClick as () => void)();
+  assert.deepEqual(calls[1], ["open", "ch:4", true]);
+  // 完了の Fold
+  const fold = find(g, "c-fold")[0] as El;
+  assert.equal(fold.props["data-level"], "row");
+  const fhead = find(fold, "c-fold-head")[0] as El;
+  assert.deepEqual([fhead.props["aria-expanded"], fhead.props["aria-disabled"], textOf(find(fhead, "c-fold-label"))], ["true", undefined, "完了（60）"]);
+  assert.equal(textOf(find(fold, "c-fold-note")), "新しい 50 件を出しています");
+  (fhead.props.onClick as () => void)();
+  assert.deepEqual(calls[2], ["toggleDone", "p:a"]);
+  // 読み込み中
+  const loadingGroup = groupBlocks(list.listModel(stateOf(sampleData(), { doneGroup: "p:a" })).blocks)[0];
+  const lf = find(one(html`<${list.Group} group=${loadingGroup} compact=${false} on=${on} />`), "c-fold")[0] as El;
+  assert.equal(textOf(find(lf, "c-fold-note")), "読み込んでいます…");
+  // [+] の無い群・行の無い群
+  const other = one(html`<${list.Group} group=${groupBlocks(blocks).find((x) => x.key === "other")} compact=${false} on=${on} />`);
+  assert.equal(find(other, "c-group-head")[0]?.props["data-add"], "false");
+  assert.equal(find(other, "c-iconbtn").length, 0);
+  const general = one(html`<${list.Group} group=${groupBlocks(blocks).find((x) => x.key === "general")} compact=${false} on=${on} />`);
+  assert.equal(find(general, "c-rows").length, 0);
+  assert.equal(textOf(find(general, "c-group-hint")), "場所を決めていない話題");
+  // 閉じた Fold は中身を出さない。disabled は onToggle を呼ばない
+  const toggles: number[] = [];
+  const closed = one(html`<${list.Fold} level="group" label="x" open=${false} onToggle=${() => void toggles.push(1)}>${html`<p class="c-fold-note">中</p>`}<//>`);
+  assert.equal(closed.props["data-level"], "group");
+  assert.equal(find(closed, "c-fold-body").length, 0);
+  assert.equal(find(closed, "c-fold-head")[0]?.props["aria-expanded"], "false");
+  const off = one(html`<${list.Fold} level="group" label="x" open=${true} disabled=${true} onToggle=${() => void toggles.push(2)}>${html`<p class="c-fold-note">中</p>`}<//>`);
+  const offHead = find(off, "c-fold-head")[0] as El;
+  assert.equal(offHead.props["aria-disabled"], "true");
+  (offHead.props.onClick as () => void)();
+  (find(closed, "c-fold-head")[0]?.props.onClick as () => void)();
+  assert.deepEqual(toggles, [1]);
+  assert.equal(textOf(find(off, "c-fold-body")), "中");
+  // Others は forced で押しても toggleOthers を呼ばない
+  const filtered = list.listModel(stateOf(sampleData(), { filter: "Bの終わった", doneGroup: "p:b", dataDone: "p:b" })).blocks.find((b) => b.type === "others");
+  const o = one(html`<${list.Others} others=${filtered} compact=${false} on=${on} />`);
+  assert.equal(find(o, "c-group").length, 1);
+  (find(o, "c-fold-head")[0]?.props.onClick as () => void)();
+  assert.equal(calls.filter((c) => c[0] === "toggleOthers").length, 0);
+  const plain = one(html`<${list.Others} others=${list.listModel(stateOf(sampleData())).blocks.find((b) => b.type === "others")} compact=${false} on=${on} />`);
+  (find(plain, "c-fold-head")[0]?.props.onClick as () => void)();
+  assert.equal(calls.filter((c) => c[0] === "toggleOthers").length, 1);
 });
