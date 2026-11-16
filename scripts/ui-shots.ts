@@ -43,10 +43,38 @@ function insideRepo(path: string): boolean {
 
 const wait = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
-async function shoot(browser: Browser, fixture: FixtureServer, out: string, only: string | undefined, logLines: string[]): Promise<number> {
+/** 新しい殻を撮る組（full でなければ一覧と会話の 3 枚だけ）。古い殻はダークのスマホと PC */
+const NEW_SHELLS: ReadonlyArray<{ vp: Viewport; theme: Theme; full: boolean }> = [
+  { vp: "phone", theme: "dark", full: true },
+  { vp: "phone", theme: "light", full: true },
+  { vp: "pc", theme: "dark", full: true },
+  { vp: "pc", theme: "light", full: false },
+  { vp: "tablet", theme: "dark", full: false },
+];
+const OLD_SHELLS: ReadonlyArray<Viewport> = ["phone", "pc"];
+
+function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
+  return [
+    "a-list",
+    "b-chat-top",
+    "b-chat-middle",
+    "b-chat-bottom",
+    ...(full
+      ? ["b-chat-permission", "b-chat-question", "d-composer-3lines", vp === "phone" ? "c-hand-over" : "c-hand-column", ...(vp === "phone" ? [] : ["c-hand-with-chat"]), "e-start-dialog", "f-settings", "f-knowledge-list", "f-knowledge-detail"]
+      : []),
+  ].map((n) => `${vp}-${theme}-${n}`);
+}
+
+const oldShellNames = (vp: Viewport): string[] => [`old-${vp}-dark-list`, `old-${vp}-dark-chat`];
+
+/** 撮る PNG の名前（拡張子なし）の全部。--only はこの中から絞る */
+const ALL_SHOT_NAMES: readonly string[] = [...NEW_SHELLS.flatMap(({ vp, theme, full }) => newShellNames(vp, theme, full)), ...OLD_SHELLS.flatMap(oldShellNames)];
+
+async function shoot(browser: Browser, fixture: FixtureServer, out: string, only: string | undefined, logLines: string[]): Promise<{ count: number; failed: number }> {
   const base = fixture.url;
   const { open, perm, q } = fixture.topics;
   let count = 0;
+  let failed = 0;
   const wanted = (name: string): boolean => only === undefined || name.includes(only);
 
   async function contextFor(vp: Viewport, theme: Theme, label: string): Promise<{ ctx: BrowserContext; page: Page }> {
@@ -88,6 +116,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     try {
       await fn();
     } catch (error) {
+      failed++;
       logLines.push(`[shoot] ${label} に失敗: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
     }
   }
@@ -111,14 +140,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   async function newShell(vp: Viewport, theme: Theme, full: boolean): Promise<void> {
     const p = `${vp}-${theme}`;
-    const names = [
-      "a-list",
-      "b-chat-top",
-      "b-chat-middle",
-      "b-chat-bottom",
-      ...(full ? ["b-chat-permission", "b-chat-question", "d-composer-3lines", vp === "phone" ? "c-hand-over" : "c-hand-column", "c-hand-with-chat", "e-start-dialog", "f-settings", "f-knowledge-list", "f-knowledge-detail"] : []),
-    ].map((n) => `${p}-${n}`);
-    if (!names.some(wanted)) return;
+    if (!newShellNames(vp, theme, full).some(wanted)) return;
     const { ctx, page } = await contextFor(vp, theme, `v3-${p}`);
     try {
       await step(`${p} a`, [`${p}-a-list`], async () => {
@@ -203,7 +225,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   /** 比較用の古い殻（ダークだけ） */
   async function oldShell(vp: Viewport): Promise<void> {
     const label = `old-${vp}-dark`;
-    if (![`${label}-list`, `${label}-chat`].some(wanted)) return;
+    if (!oldShellNames(vp).some(wanted)) return;
     const { ctx, page } = await contextFor(vp, "dark", label);
     try {
       await step(`${label} list`, [`${label}-list`], async () => {
@@ -222,14 +244,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
   }
 
-  await newShell("phone", "dark", true);
-  await newShell("phone", "light", true);
-  await newShell("pc", "dark", true);
-  await newShell("pc", "light", false);
-  await newShell("tablet", "dark", false);
-  await oldShell("phone");
-  await oldShell("pc");
-  return count;
+  for (const { vp, theme, full } of NEW_SHELLS) await newShell(vp, theme, full);
+  for (const vp of OLD_SHELLS) await oldShell(vp);
+  return { count, failed };
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -250,6 +267,11 @@ async function main(argv: string[]): Promise<number> {
     return 2;
   }
   const only = values.only;
+  // 合う名前が無ければ Chromium を起動せずに返す
+  if (only !== undefined && !ALL_SHOT_NAMES.some((name) => name.includes(only))) {
+    console.error(`--only ${only} に合う画面が無い（例: ${["phone-dark-a-list", "pc-dark-b-chat-top", "phone-light-b-chat-permission", "tablet-dark-a-list", "old-pc-dark-list"].join("・")}）`);
+    return 1;
+  }
 
   const logLines: string[] = [];
   let browser: Browser | undefined;
@@ -279,8 +301,12 @@ async function main(argv: string[]): Promise<number> {
     }
     mkdirSync(out, { recursive: true });
     fixture = await startFixtureServer({ log: (line) => logLines.push(`[server] ${line}`) });
-    const count = await shoot(browser, fixture, out, only, logLines);
+    const { count, failed } = await shoot(browser, fixture, out, only, logLines);
     console.log(`${count} 枚を撮った: ${out}`);
+    if (failed > 0) {
+      console.error(`${failed} 段が失敗した。${join(out, "console.log")} を見る`);
+      return 1;
+    }
     return 0;
   } finally {
     await cleanup();
