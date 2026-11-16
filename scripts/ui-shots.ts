@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, isAbsolute, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import type { Browser, BrowserContext, Page } from "playwright-core";
+import type { Browser, BrowserContext, Page, Route } from "playwright-core";
 import { type FixtureServer, startFixtureServer } from "./ui-shots-fixture.ts";
 
 const USAGE = "使い方: npm run ui-shots -- --out <dir> [--only <名前の一部>]（<dir> はリポジトリの外）";
@@ -17,6 +17,8 @@ const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 type Viewport = "phone" | "pc" | "tablet";
 /** /api/topics の応答のうち、検査で書き換える所 */
+/** /api/channels/<id>/turns の応答（段 r が channel を書き換える） */
+type TurnsJson = { turns: unknown[]; channel: Record<string, unknown> | null };
 type TopicsJson = { topics: Array<{ id?: unknown; state?: unknown; mark?: unknown; turn?: unknown; title?: unknown; movable?: unknown }>; turns: number; turnIds: unknown[]; rightHands: Array<{ turn?: unknown }> };
 type Theme = "dark" | "light";
 
@@ -92,6 +94,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(theme === "dark" ? ["b-talk-rows", "b-talk-steps-open", "b-talk-run", "b-talk-long", ...(vp === "phone" ? ["b-talk-long-open", "b-talk-mono375"] : [])] : []),
     // 本番の入力欄（段 n。ダークの 3 組。字数の絵はスマホだけ）
     ...(theme === "dark" ? ["b-composer-empty", "b-composer-6lines", ...(vp === "phone" ? ["b-composer-count"] : [])] : []),
+    // 本番のカード（段 r。ダークの 3 組）
+    ...(theme === "dark" ? ["b-cards-close", "b-cards-move", "b-cards-other", "b-cards-sending"] : []),
     ...(full
       ? ["b-chat-permission", "b-chat-question", "d-composer-3lines", vp === "phone" ? "c-hand-over" : "c-hand-column", ...(vp === "phone" ? [] : ["c-hand-with-chat"]), "e-start-dialog", "f-settings", "f-knowledge-list", "f-knowledge-detail"]
       : []),
@@ -851,6 +855,14 @@ const LEAK_COMPOSER: Array<{ sel: string; extra: string[] }> = [
   { sel: ".c-composer-count-text", extra: [] },
   { sel: ".c-composer-row > .c-btn", extra: [] },
 ];
+/** 本番のカードで古い CSS の漏れを比べる要素（見本の同じ形のカードと。許可はルール付き・質問は 1 問・文は待ちでない物） */
+const LEAK_CARDS: Record<string, { demo: string; sels: string[] }> = {
+  perm: { demo: "card-perm-rule", sels: [".c-card", ".c-card-title", ".c-card-meta", ".c-card-facts", ".c-card-code", ".c-card-check", ".c-card-check-input", ".c-card-actions > .c-btn", ".c-card-note"] },
+  question: { demo: "card-q-one", sels: [".c-card", ".c-card-title", ".c-card-meta", ".c-card-q-legend", ".c-card-check", ".c-card-check-input", ".c-card-other", ".c-card-actions > .c-btn:last-child", ".c-card-note"] },
+  close: { demo: "card-close", sels: [".c-card", ".c-card-title", ".c-card-meta", ".c-card-text", ".c-card-check", ".c-card-check-input", ".c-card-actions > .c-btn"] },
+  move: { demo: "card-move", sels: [".c-card", ".c-card-title", ".c-card-meta", ".c-card-dd", ".c-card-text", ".c-card-actions > .c-btn"] },
+  note: { demo: "card-note", sels: [".c-note:not([data-busy])"] },
+};
 /** 入力欄の 1 字ごとの input の処理の重さの受け入れ（ms。中央値と最大。スマホ・CPU 4 倍） */
 const COMPOSER_INPUT_MED_MS = 4;
 const COMPOSER_INPUT_MAX_MS = 16;
@@ -2990,6 +3002,545 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /**
+   * /turns の応答（limit= の最初の読みも after= も）を edit で書き換え始める。ページを開く前に付ける。戻り値は外す関数。
+   * 外した後に終わる応答は捨てる（addTurn と同じ）
+   */
+  async function editTurns(page: Page, id: string, edit: (json: TurnsJson) => void | Promise<void>): Promise<() => Promise<void>> {
+    const pattern = `**/api/channels/${id}/turns?*`;
+    const handler = async (route: Route): Promise<void> => {
+      try {
+        const response = await route.fetch();
+        const json = (await response.json()) as TurnsJson;
+        await edit(json);
+        await route.fulfill({ response, json });
+      } catch {
+        // 何もしない
+      }
+    };
+    await page.route(pattern, handler);
+    return () => page.unroute(pattern, handler);
+  }
+
+  /** POST の受け口（fixture に無い道・DB に無い作り物の下書き）。受けた道と body を got に積み、before の後に 200 と reply を返す。戻り値は外す関数 */
+  async function postSink(page: Page, pattern: string, got: Array<{ path: string; body: unknown }>, before: () => Promise<void>, reply: unknown = {}): Promise<() => Promise<void>> {
+    const handler = async (route: Route): Promise<void> => {
+      const req = route.request();
+      if (req.method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      got.push({ path: new URL(req.url()).pathname, body: req.postDataJSON() as unknown });
+      await before();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(reply) });
+    };
+    await page.route(pattern, handler);
+    return () => page.unroute(pattern, handler);
+  }
+
+  /**
+   * 段 r（本番のカード。ダークの 3 組）: 許可（0〜4）・置き方の無い話題（1）・空の文（13）・質問（7・5・6・8・9・10）・閉じる前の確認（11）・場所を変える確認（12）・
+   * 当たり（14）・重さ（16。スマホ）・見本との漏れ（15。タブレットを除く。見本を開くので最後）。/turns は editTurns で書き換え、POST は受け口で受ける。
+   * 足りない物の文（全部を測ってから、1 つでもあれば段を失敗にする）。0 で口に渡っていなければそこで止める
+   */
+  async function cardsStage(page: Page, vp: Viewport, p: string): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (n: number, name: string, text: string): void => void lines.push(`段 r の ${n} ${name}: ${text}`);
+    const C = "#ed .ed-scroll > [data-cards]";
+    const offs: Array<() => Promise<void>> = [];
+    /** 見本と比べる本番の計算済みの値（種類 → 要素 → 性質） */
+    const real: Record<string, Record<string, Record<string, string> | null>> = {};
+    const styles = ({ root, sels, props }: { root: string; sels: string[]; props: string[] }): Record<string, Record<string, string> | null> => {
+      const out: Record<string, Record<string, string> | null> = {};
+      const scope = document.querySelector(root);
+      for (const sel of sels) {
+        const el = scope === null ? null : scope.querySelector(sel);
+        out[sel] = el === null ? null : Object.fromEntries(props.map((prop) => [prop, getComputedStyle(el).getPropertyValue(prop)]));
+      }
+      return out;
+    };
+    const hits = async (name: string): Promise<void> => {
+      for (const l of await page.evaluate(hitProblems, { min: 44, scopes: C, targets: "button, input", toast: false })) say(14, "当たり", `${name}: ${l}`);
+    };
+    /** カードの根の中の物（ボタンは label の文で引く） */
+    const look = (): Promise<{
+      cards: number;
+      kinds: string[];
+      height: number;
+      buttons: Array<{ label: string; disabled: boolean; title: string | null }>;
+      checks: Array<{ text: string; checked: boolean; disabled: boolean }>;
+      field: { shown: boolean; value: string; focus: boolean; at: number; mark: boolean } | null;
+      notes: Array<{ text: string; busy: boolean }>;
+      meta: string | null;
+      urgent: string | null;
+    }> =>
+      page.evaluate((sel: string) => {
+        const root = document.querySelector(sel);
+        const field = root?.querySelector("textarea.c-card-other") ?? null;
+        return {
+          cards: root === null ? -1 : root.querySelectorAll(".c-card").length,
+          kinds: root === null ? [] : [...root.querySelectorAll(".c-card")].map((c) => c.getAttribute("data-kind") ?? ""),
+          height: root === null ? -1 : root.getBoundingClientRect().height,
+          buttons: root === null ? [] : [...root.querySelectorAll(".c-card-actions > .c-btn")].map((b) => ({ label: (b.textContent ?? "").trim(), disabled: b.getAttribute("aria-disabled") === "true", title: b.getAttribute("title") })),
+          checks: root === null ? [] : [...root.querySelectorAll("label.c-card-check")].map((l) => {
+            const input = l.querySelector("input");
+            return { text: (l.textContent ?? "").trim(), checked: input instanceof HTMLInputElement && input.checked, disabled: input instanceof HTMLInputElement && input.disabled };
+          }),
+          field: field instanceof HTMLTextAreaElement
+            ? { shown: !field.hidden && field.getClientRects().length > 0, value: field.value, focus: document.activeElement === field, at: field.selectionStart, mark: (field as unknown as { __m?: number }).__m === 1 }
+            : null,
+          notes: root === null ? [] : [...root.querySelectorAll(".c-note")].map((n) => ({ text: (n.textContent ?? "").trim(), busy: n.hasAttribute("data-busy") })),
+          meta: root?.querySelector(".c-card-meta")?.textContent ?? null,
+          urgent: root?.querySelector(".c-card-meta")?.getAttribute("data-urgent") ?? null,
+        };
+      }, C);
+    const reloadTurns = async (id: string): Promise<void> => {
+      await page.evaluate((ch: string) => (window as unknown as { SA: { store: { load: { turns: (c: string) => Promise<void> } } } }).SA.store.load.turns(ch), id);
+      await wait(300);
+    };
+    /** label の行を押す（スマホ・タブレットは tap、PC は click） */
+    const press = async (selector: string): Promise<void> => {
+      if (vp === "pc") await page.locator(selector).click();
+      else await page.locator(selector).tap();
+    };
+    const gone = (): Promise<boolean> =>
+      page
+        .waitForFunction((sel: string) => document.querySelector(sel + " .c-card") === null, C, { timeout: 5000 })
+        .then(() => true)
+        .catch(() => false);
+    const PERM_ROUTE = "**/api/cc/permissions/*/*";
+
+    try {
+      // ----- 許可（話題 perm。常に許可のルールを足した形） -----
+      const perm1 = { soon: false, gone: false, delay: 0 };
+      offs.push(
+        await editTurns(page, perm, async (json) => {
+          if (perm1.delay > 0) await wait(perm1.delay);
+          const ch = json.channel;
+          if (ch === null || typeof ch !== "object") return;
+          if (perm1.gone) {
+            ch.permission = null;
+            return;
+          }
+          const pr = ch.permission as Record<string, unknown> | null | undefined;
+          if (pr && typeof pr === "object") {
+            pr.alwaysRule = "Bash(npm install:*)";
+            pr.alwaysNote = "npm install で始まるコマンド";
+            if (perm1.soon) pr.expiresAt = new Date(Date.now() + 50_000).toISOString();
+          }
+        }),
+      );
+      // 2 の残り時間は実行中のターンが無くても進むはずなので、許可の間は /api/running を空にする（作り物のデータには実行中の話題が在る）
+      const RUNNING = "**/api/running";
+      const noRun = async (route: Route): Promise<void> => {
+        try {
+          const response = await route.fetch();
+          await route.fulfill({ response, json: { turns: [] } });
+        } catch {
+          // 何もしない
+        }
+      };
+      await page.route(RUNNING, noRun);
+      offs.push(() => page.unroute(RUNNING, noRun));
+      await load(page, `/static/v3.html#/ch/${perm}`);
+      await page.waitForSelector(`${C} .c-card[data-kind="permission"]`, { timeout: 5000 }).catch(() => undefined);
+      await wait(300);
+      // 0. 口に渡ったか（渡っていなければ、ほかを測らずに止める）
+      const mouth = await page.evaluate(() => {
+        const scroll = document.querySelector("#ed .ed-scroll");
+        const kids = scroll === null ? [] : [...scroll.children];
+        return {
+          order: kids.map((k) => (k.hasAttribute("data-talk") ? "talk" : k.hasAttribute("data-cards") ? "cards" : k.classList.contains("tl") ? "tl" : k.tagName.toLowerCase())).join(","),
+          perm: document.querySelectorAll('#ed .ed-scroll > [data-cards] .c-card[data-kind="permission"]').length,
+          old: ["#ed .cc-permission", "#ed .cc-question-card", "#ed section.card", "#ed .tl-hint", "#ed .tl-notice"].map((s) => document.querySelectorAll(s).length).reduce((a, b) => a + b, 0),
+        };
+      });
+      if (mouth.order !== "talk,cards,tl" || mouth.perm !== 1 || mouth.old !== 0) throw new Error(`段 r の 0: カードが部品でない（${JSON.stringify(mouth)}）`);
+
+      // 1. 置き方
+      const place = await page.evaluate((sel: string) => {
+        const scroll = document.querySelector("#ed .ed-scroll");
+        const talk = document.querySelector("#ed .c-talk");
+        const root = document.querySelector(sel);
+        const card = root?.querySelector(".c-card") ?? null;
+        const tl = root?.nextElementSibling ?? null;
+        if (scroll === null || talk === null || card === null || tl === null) return null;
+        const inner = (el: Element): number => el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft);
+        const r = card.getBoundingClientRect();
+        return {
+          tl: tl.getBoundingClientRect().height,
+          left: r.left - inner(talk),
+          width: r.width,
+          top: r.top - talk.getBoundingClientRect().bottom,
+          bottom: scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight,
+          side: scroll.scrollWidth > scroll.clientWidth,
+        };
+      }, C);
+      if (place === null) say(1, "置き方", "カード・.c-talk・.tl のどれかが無い");
+      else {
+        if (place.tl !== 0) say(1, "置き方", `.tl の高さ ${place.tl}（0 のはず）`);
+        if (Math.abs(place.left) > 0.5) say(1, "置き方", `カードの左端が .c-talk の中身の左端から ${place.left.toFixed(1)} ずれる`);
+        if (vp === "phone" ? Math.abs(place.width - 358) > 0.5 : place.width > 520.5) say(1, "置き方", `カードの幅 ${place.width.toFixed(1)}（${vp === "phone" ? "358" : "520 以下"} のはず）`);
+        if (Math.abs(place.top) > 0.5) say(1, "置き方", `カードの上端が .c-talk の下端から ${place.top.toFixed(1)} 離れる`);
+        if (!(place.bottom < 1)) say(1, "置き方", `開いた直後に一番下でない（残り ${place.bottom.toFixed(1)}）`);
+        if (place.side) say(1, "置き方", ".ed-scroll が横に動く");
+      }
+      lines.push(...(await liveTalkLines(page, vp, "段 r の許可")));
+      real.perm = await page.evaluate(styles, { root: C, sels: LEAK_CARDS.perm.sels, props: LEAK_PROPS });
+
+      // 2. 残り時間（1 秒ごとに進み、同じ要素のまま）。期限が 60 秒を切った読みの後は data-urgent
+      await page.evaluate((sel: string) => {
+        for (const el of [document.querySelector(sel + " .c-card"), document.querySelector(sel + " .c-card-meta")]) if (el !== null) (el as unknown as { __m?: number }).__m = 1;
+      }, C);
+      const running = await page.evaluate(() => (window as unknown as { SA: { store: { running: unknown[] | null } } }).SA.store.running?.length ?? -1);
+      if (running !== 0) say(2, "残り時間", `実行中のターンを空にできない（${running} 件）`);
+      const t0 = await look();
+      await wait(2200);
+      const t1 = await look();
+      const same = await page.evaluate((sel: string) => [sel + " .c-card", sel + " .c-card-meta"].every((s) => (document.querySelector(s) as unknown as { __m?: number } | null)?.__m === 1), C);
+      if (t0.meta === null || !t0.meta.startsWith("残り ")) say(2, "残り時間", `右の文「${String(t0.meta)}」`);
+      if (t0.meta === t1.meta) say(2, "残り時間", `2.2 秒で変わらない（「${String(t1.meta)}」）`);
+      if (!same) say(2, "残り時間", "描き直しでカードか右の文が別の要素になった");
+      if (t1.urgent !== "false") say(2, "残り時間", `data-urgent が ${String(t1.urgent)}（false のはず）`);
+      perm1.soon = true;
+      await reloadTurns(perm);
+      await wait(300);
+      const t2 = await look();
+      if (t2.urgent !== "true") say(2, "残り時間", `期限 50 秒の読みの後の data-urgent が ${String(t2.urgent)}（true のはず）`);
+      perm1.soon = false;
+      await reloadTurns(perm);
+      await wait(300);
+
+      // 14. 当たり（許可。ルール付き）
+      await hits("許可");
+      await edScroll(page, "bottom");
+
+      // 3. 常に許可のチェックが刻みと描き直しで残る
+      await page.locator(`${C} .c-card-always label.c-card-check`).click();
+      await wait(1200);
+      await refreshCh(page, perm);
+      await wait(200);
+      const always = (await look()).checks[0];
+      if (!always || !always.checked) say(3, "常に許可", `刻みと描き直しの後にチェックが外れた（${JSON.stringify(always)}）`);
+
+      // 4. 許可を押す: 送っている間と、通った後に読み直すまで待ちの形
+      const got: Array<{ path: string; body: unknown }> = [];
+      let answeredAt = 0;
+      // 止めるのは 600 ms と、待ちの形の絵を撮り終えるまでの長い方（絵が送っている間の形になるように）
+      let shotTaken: () => void = () => undefined;
+      const shotDone = new Promise<void>((done) => (shotTaken = done));
+      const offPost = await postSink(page, PERM_ROUTE, got, async () => {
+        await Promise.all([wait(600), shotDone]);
+        // 通った後の読みは 500 ms 遅らせ、許可を消す
+        perm1.delay = 500;
+        perm1.gone = true;
+        answeredAt = Date.now();
+      });
+      offs.push(offPost);
+      await page.locator(`${C} .c-card-actions > .c-btn`).first().click();
+      await wait(150);
+      const sending = await look();
+      const busyButtons = sending.buttons.filter((b) => b.disabled && b.title === "答えを送っています").length;
+      if (busyButtons !== 2 || !sending.checks[0]?.disabled) say(4, "許可を押す", `送っている間の形が違う（${JSON.stringify({ buttons: sending.buttons, check: sending.checks[0] })}）`);
+      await shot(page, `${p}-b-cards-sending`);
+      shotTaken();
+      const until = Date.now() + 3000;
+      while (answeredAt === 0 && Date.now() < until) await wait(50);
+      if (answeredAt === 0) say(4, "許可を押す", "POST が来ない");
+      else {
+        await wait(Math.max(0, answeredAt + 200 - Date.now()));
+        const after = await look();
+        if (after.cards !== 1 || after.buttons.some((b) => !b.disabled)) say(4, "許可を押す", `通った後の読み直しの前に押せる形に戻った（${JSON.stringify(after.buttons)}）`);
+      }
+      if (got.length !== 1 || !got[0]!.path.endsWith("/always") || JSON.stringify(got[0]!.body) !== JSON.stringify({ requestHash: "h1" })) say(4, "許可を押す", `受けた送り ${JSON.stringify(got)}`);
+      if (!(await gone())) say(4, "許可を押す", "許可の無い /turns の後もカードが残る");
+      const emptied = await look();
+      if (emptied.height !== 0) say(4, "許可を押す", `カードが無くなった根の高さ ${emptied.height}`);
+      perm1.delay = 0;
+
+      // 1（続き）. カードの無い話題では根を出さない
+      await load(page, `/static/v3.html#/ch/${talk}`);
+      await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
+      const none = await page.evaluate((sel: string) => {
+        const root = document.querySelector(sel);
+        return root === null ? null : { display: getComputedStyle(root).display, height: root.getBoundingClientRect().height, kids: root.childNodes.length };
+      }, C);
+      if (none === null || none.display !== "none" || none.height !== 0) say(1, "置き方", `カードの無い話題の根 ${JSON.stringify(none)}（display: none・高さ 0 のはず）`);
+
+      // 13. 空の文
+      offs.push(
+        await editTurns(page, talk, (json) => {
+          json.turns = [];
+        }),
+      );
+      await load(page, `/static/v3.html#/ch/${talk}`);
+      await page.waitForSelector(`${C} .c-note`, { timeout: 5000 }).catch(() => undefined);
+      const empty = await look();
+      const hint = await page.evaluate(() => document.querySelectorAll("#ed .tl-hint").length);
+      if (empty.notes.length !== 1 || empty.notes[0]!.text !== "まだ会話はありません。下の欄か Discord で送ると始まります。" || empty.notes[0]!.busy || hint !== 0) say(13, "空の文", JSON.stringify({ notes: empty.notes, hint }));
+      real.note = await page.evaluate(styles, { root: C, sels: LEAK_CARDS.note.sels, props: LEAK_PROPS });
+      await offs.pop()!();
+
+      // ----- 質問（話題 q。1 つ選ぶ形・選択肢 2 つ） -----
+      const q1 = { gone: false };
+      offs.push(
+        await editTurns(page, q, (json) => {
+          if (q1.gone && json.channel !== null && typeof json.channel === "object") json.channel.permission = null;
+        }),
+      );
+      const RADIO = `${C} .c-card-q input.c-card-check-input`;
+      const ROW = `${C} .c-card-q label.c-card-check`;
+      const openQ = async (): Promise<void> => {
+        await load(page, `/static/v3.html#/ch/${q}`);
+        await page.waitForSelector(`${C} .c-card[data-kind="question"]`, { timeout: 5000 });
+        await wait(300);
+      };
+      // 7. 矢印キーで「その他」を選んでも欄へは移らない（PC。済んだら読み直して選んだ状態を消す）
+      if (vp === "pc") {
+        await openQ();
+        await page.locator(RADIO).first().focus();
+        for (let i = 0; i < 4; i++) {
+          if ((await look()).field?.shown) break;
+          await page.keyboard.press("ArrowDown");
+          await wait(150);
+        }
+        const keyed = await look();
+        const onRadio = await page.evaluate(() => document.activeElement instanceof HTMLInputElement && document.activeElement.type === "radio");
+        if (!keyed.field?.shown || keyed.field.focus || !onRadio) say(7, "矢印キー", `欄が見えて焦点はラジオのはず（${JSON.stringify({ field: keyed.field, onRadio })}）`);
+      }
+      await openQ();
+      // 5. 選び方
+      const q0 = await look();
+      const answer0 = q0.buttons.find((b) => b.label === "答える");
+      if (!answer0 || !answer0.disabled || answer0.title !== "すべての問に答えると押せます") say(5, "選び方", `［答える］の初め ${JSON.stringify(answer0)}`);
+      await page.locator(ROW).first().click();
+      await wait(200);
+      const q5 = await look();
+      if (q5.buttons.find((b) => b.label === "答える")?.disabled !== false || !q5.checks[0]?.checked) say(5, "選び方", `選択肢を選んだ後 ${JSON.stringify({ buttons: q5.buttons, checks: q5.checks })}`);
+      // 6. 指で「その他」の行を押すと欄に焦点（押し始めが起きたかも見る。起きなければ確かめる手が作れない）
+      await page.evaluate((sel: string) => {
+        const w = window as unknown as { __pd: number };
+        w.__pd = 0;
+        const rows = document.querySelectorAll(sel);
+        rows[rows.length - 1]?.addEventListener("pointerdown", () => void w.__pd++);
+      }, ROW);
+      await press(`${ROW} >> nth=-1`);
+      await wait(300);
+      const downs = await page.evaluate(() => (window as unknown as { __pd: number }).__pd);
+      if (downs === 0) throw new Error(`段 r の 6: 「その他」の行を ${vp === "pc" ? "click" : "tap"} しても pointerdown が起きない（確かめる手が作れない）`);
+      const q6 = await look();
+      if (q6.checks[0]?.checked || q6.buttons.find((b) => b.label === "答える")?.disabled !== true || !q6.field?.shown) say(5, "選び方", `「その他」を選んだ後 ${JSON.stringify({ checks: q6.checks, buttons: q6.buttons, field: q6.field })}`);
+      if (!q6.field?.focus) say(6, "指で「その他」", `焦点が欄に無い（${JSON.stringify(q6.field)}）`);
+      // 8. 打った字が描き直し・刻み・読み直しで残る
+      await page.evaluate((sel: string) => {
+        const el = document.querySelector(sel + " textarea.c-card-other");
+        if (el !== null) (el as unknown as { __m?: number }).__m = 1;
+      }, C);
+      await page.keyboard.type("abc");
+      await refreshCh(page, q);
+      await wait(3500);
+      const q8 = await look();
+      if (!q8.field || q8.field.value !== "abc" || !q8.field.mark || !q8.field.focus || q8.field.at !== 3) say(8, "打った字", JSON.stringify(q8.field));
+      if (q8.buttons.find((b) => b.label === "答える")?.disabled !== false) say(8, "打った字", "［答える］が押せない");
+      await shot(page, `${p}-b-cards-other`);
+      real.question = await page.evaluate(styles, { root: C, sels: LEAK_CARDS.question.sels, props: LEAK_PROPS });
+      // 14. 当たり（質問。「その他」を選んだ形）
+      await hits("質問");
+      await page.locator(`${C} textarea.c-card-other`).focus();
+      await page.evaluate((sel: string) => {
+        const el = document.querySelector(sel + " textarea.c-card-other");
+        if (el instanceof HTMLTextAreaElement) el.setSelectionRange(el.value.length, el.value.length);
+      }, C);
+      // 9. 変換の途中が切れない
+      const ime = await page.context().newCDPSession(page);
+      try {
+        await page.evaluate((sel: string) => {
+          const w = window as unknown as { __ime: { start: number; end: number; blur: number } };
+          w.__ime = { start: 0, end: 0, blur: 0 };
+          const el = document.querySelector(sel + " textarea.c-card-other");
+          el?.addEventListener("compositionstart", () => void w.__ime.start++);
+          el?.addEventListener("compositionend", () => void w.__ime.end++);
+          el?.addEventListener("blur", () => void w.__ime.blur++);
+        }, C);
+        await ime.send("Input.imeSetComposition", { text: "へんかん", selectionStart: 4, selectionEnd: 4 });
+        await wait(200);
+        const started = await page.evaluate(() => (window as unknown as { __ime: { start: number } }).__ime.start);
+        if (started === 0) throw new Error("段 r の 9: 変換の途中を作れない（compositionstart が来ない）");
+        await refreshCh(page, q);
+        await wait(1200);
+        const mid = await look();
+        const imeMid = await page.evaluate(() => (window as unknown as { __ime: { end: number; blur: number } }).__ime);
+        if (!mid.field || !mid.field.value.includes("へんかん") || !mid.field.mark || !mid.field.focus || imeMid.end !== 0 || imeMid.blur !== 0) say(9, "変換の途中", JSON.stringify({ field: mid.field, ime: imeMid }));
+        await ime.send("Input.insertText", { text: "変換" });
+        await wait(200);
+        const doneIme = await look();
+        if (doneIme.field?.value !== "abc変換") say(9, "変換の途中", `確定の後の値 ${JSON.stringify(doneIme.field?.value)}（abc変換 のはず）`);
+      } finally {
+        await ime.detach();
+      }
+      // 10. 答える（/answer）と、読み直してやめる（/deny）
+      const qGot: Array<{ path: string; body: unknown }> = [];
+      offs.push(
+        await postSink(page, PERM_ROUTE, qGot, async () => {
+          q1.gone = true;
+        }),
+      );
+      await page.locator(`${C} .c-card-actions > .c-btn`).first().click();
+      if (!(await gone())) say(10, "答える", "許可の無い /turns の後もカードが残る");
+      const a = qGot[0];
+      if (!a || !a.path.endsWith("/answer") || JSON.stringify(a.body) !== JSON.stringify({ requestHash: "h2", answers: [{ other: "abc変換" }] })) say(10, "答える", `受けた送り ${JSON.stringify(qGot)}`);
+      q1.gone = false;
+      await openQ();
+      await page.locator(ROW).first().click();
+      await wait(200);
+      await page.locator(`${C} .c-card-actions > .c-btn`).last().click();
+      if (!(await gone())) say(10, "答える", "［やめる］の後もカードが残る");
+      if (qGot.length !== 2 || !qGot[1]!.path.endsWith("/deny") || JSON.stringify(qGot[1]!.body) !== JSON.stringify({ requestHash: "h2" })) say(10, "答える", `［やめる］の送り ${JSON.stringify(qGot.slice(1))}`);
+      q1.gone = false;
+
+      // ----- 閉じる前の確認・場所を変える確認（話題 open） -----
+      const op = { mode: "close" as "close" | "done" | "move" | "moved" };
+      offs.push(
+        await editTurns(page, open, (json) => {
+          const ch = json.channel;
+          if (ch === null || typeof ch !== "object") return;
+          if (op.mode === "close") ch.closeDraft = { summary: "集計の関数の月末の扱いを直した。\nテストを 2 つ足した。", tasks: [{ title: "明細の取り込みを見直す" }, { title: "11 月の合計を確かめる", due: "2026-11-20" }, { title: "README を直す" }] };
+          if (op.mode === "done") {
+            ch.state = "done";
+            ch.closeDraft = null;
+          }
+          if (op.mode === "move") ch.moveProposal = { id: 77, from: "kakeibo-app", to: "General", expiresAt: new Date(Date.now() + 600_000).toISOString() };
+        }),
+      );
+      // 11. 閉じる前の確認
+      await load(page, `/static/v3.html#/ch/${open}`);
+      await page.waitForSelector(`${C} .c-card[data-kind="close"]`, { timeout: 5000 }).catch(() => undefined);
+      await wait(300);
+      const c0 = await look();
+      const picked0 = c0.buttons.find((b) => b.label === "選んだものを登録");
+      if (c0.cards !== 1 || c0.kinds[0] !== "close") say(11, "閉じる前の確認", `カード ${JSON.stringify(c0.kinds)}`);
+      if (JSON.stringify(c0.checks.map((c) => c.text)) !== JSON.stringify(["1. 明細の取り込みを見直す", "2. 11 月の合計を確かめる（期限 2026-11-20）", "3. README を直す"])) say(11, "閉じる前の確認", `候補の行 ${JSON.stringify(c0.checks.map((c) => c.text))}`);
+      if (!picked0 || !picked0.disabled || picked0.title !== "候補を選ぶと押せます") say(11, "閉じる前の確認", `［選んだものを登録］の初め ${JSON.stringify(picked0)}`);
+      real.close = await page.evaluate(styles, { root: C, sels: LEAK_CARDS.close.sels, props: LEAK_PROPS });
+      // 14. 当たり（閉じる。候補 3）
+      await hits("閉じる");
+      await edScroll(page, "bottom");
+      await page.locator(`${C} label.c-card-check >> nth=2`).click();
+      await page.locator(`${C} label.c-card-check >> nth=0`).click();
+      await wait(200);
+      await shot(page, `${p}-b-cards-close`);
+      const cGot: Array<{ path: string; body: unknown }> = [];
+      offs.push(
+        await postSink(
+          page,
+          `**/api/sessions/${open}/close/confirm`,
+          cGot,
+          async () => {
+            op.mode = "done";
+          },
+          { registered: 2 },
+        ),
+      );
+      await page.locator(`${C} .c-card-actions > .c-btn`, { hasText: "選んだものを登録" }).click();
+      if (!(await gone())) say(11, "閉じる前の確認", "閉じた /turns の後もカードが残る");
+      if (cGot.length !== 1 || JSON.stringify(cGot[0]!.body) !== JSON.stringify({ selected: [0, 2] })) say(11, "閉じる前の確認", `受けた送り ${JSON.stringify(cGot)}`);
+      await page.waitForFunction((sel: string) => document.querySelectorAll(sel + " .c-note").length === 1, C, { timeout: 5000 }).catch(() => undefined);
+      const c1 = await look();
+      if (c1.notes.length !== 1 || c1.notes[0]!.text !== "完了したセッションです。発言すると進行中に戻ります。") say(11, "閉じる前の確認", `閉じた後の文 ${JSON.stringify(c1.notes)}`);
+      // 12. 場所を変える確認
+      op.mode = "move";
+      await load(page, `/static/v3.html#/ch/${open}`);
+      await page.waitForSelector(`${C} .c-card[data-kind="move"]`, { timeout: 5000 }).catch(() => undefined);
+      await wait(300);
+      const m0 = await page.evaluate((sel: string) => [...document.querySelectorAll(sel + " .c-card dd")].map((d) => (d.textContent ?? "").trim()), C);
+      const mk = await look();
+      if (mk.cards !== 1 || mk.kinds[0] !== "move" || JSON.stringify(m0) !== JSON.stringify(["kakeibo-app", "General"])) say(12, "場所を変える確認", JSON.stringify({ kinds: mk.kinds, dd: m0 }));
+      real.move = await page.evaluate(styles, { root: C, sels: LEAK_CARDS.move.sels, props: LEAK_PROPS });
+      await edScroll(page, "bottom");
+      await shot(page, `${p}-b-cards-move`);
+      const mGot: Array<{ path: string; body: unknown }> = [];
+      offs.push(
+        await postSink(page, "**/api/topics/moves/*/*", mGot, async () => {
+          op.mode = "moved";
+        }),
+      );
+      await page.locator(`${C} .c-card-actions > .c-btn`, { hasText: "このまま" }).click();
+      if (!(await gone())) say(12, "場所を変える確認", "確認の無い /turns の後もカードが残る");
+      if (mGot.length !== 1 || mGot[0]!.path !== "/api/topics/moves/77/keep") say(12, "場所を変える確認", `受けた送り ${JSON.stringify(mGot)}`);
+
+      // 16. 重さ（ダークのスマホ・CPU 4 倍）: 「その他」に 1 字ずつ 50 字と 1 秒の刻み 3 回の間の SA.cards.draw。その間の SA.talk.draw は 0 回
+      if (vp === "phone") {
+        await openQ();
+        await press(`${ROW} >> nth=-1`);
+        await wait(300);
+        await page.locator(`${C} textarea.c-card-other`).focus();
+        await page.evaluate(() => {
+          const sa = (window as unknown as { SA: { cards: { draw: (...a: unknown[]) => unknown }; talk: { draw: (...a: unknown[]) => unknown } } }).SA;
+          const w = window as unknown as { __w: { times: number[]; talks: number } };
+          w.__w = { times: [], talks: 0 };
+          const draw = sa.cards.draw;
+          sa.cards.draw = (...a: unknown[]) => {
+            const t = performance.now();
+            const out = draw(...a);
+            w.__w.times.push(performance.now() - t);
+            return out;
+          };
+          const talkDraw = sa.talk.draw;
+          sa.talk.draw = (...a: unknown[]) => {
+            w.__w.talks++;
+            return talkDraw(...a);
+          };
+        });
+        const cdp = await page.context().newCDPSession(page);
+        let got16: { times: number[]; talks: number; value: number } | null = null;
+        try {
+          await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+          for (let i = 0; i < 50; i++) await cdp.send("Input.insertText", { text: String.fromCharCode(0x4e00 + i) });
+          await wait(3200);
+          got16 = await page.evaluate((sel: string) => {
+            const w = window as unknown as { __w: { times: number[]; talks: number } };
+            return { times: w.__w.times, talks: w.__w.talks, value: (document.querySelector(sel + " textarea.c-card-other") as HTMLTextAreaElement | null)?.value.length ?? -1 };
+          }, C);
+        } finally {
+          await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+          await cdp.detach();
+        }
+        const sorted = [...got16.times].sort((x, y) => x - y);
+        const med = sorted.length === 0 ? NaN : sorted.length % 2 === 1 ? sorted[(sorted.length - 1) / 2]! : (sorted[sorted.length / 2 - 1]! + sorted[sorted.length / 2]!) / 2;
+        const max = sorted.length === 0 ? NaN : sorted[sorted.length - 1]!;
+        const text = `SA.cards.draw 中央値 ${med.toFixed(2)}・最大 ${max.toFixed(2)}（ms。${sorted.length} 回。50 字と刻み 3 回・CPU 4 倍）・その間の SA.talk.draw ${got16.talks} 回`;
+        if (got16.value !== 50 || sorted.length < 50) say(16, "重さ", `値 ${got16.value} 字・描いた回数 ${sorted.length}（50 字・50 回以上のはず）`);
+        if (!(med <= COMPOSER_INPUT_MED_MS) || !(max <= COMPOSER_INPUT_MAX_MS) || got16.talks !== 0) say(16, "重さ", `条件を満たさない: ${text}`);
+        else console.log(`[v3-${p}] 段 r の 16 重さ: ${text}`);
+      }
+
+      // 15. 見本との漏れ（タブレットを除く。見本を開くので最後）
+      if (vp !== "tablet") {
+        await page.goto("about:blank");
+        await page.goto(base + "/static/gallery.html", { waitUntil: "load" });
+        await page.waitForSelector('[data-section="cards"] [data-demo="card-note"] .c-note', { timeout: 5000 });
+        for (const [kind, { demo, sels }] of Object.entries(LEAK_CARDS)) {
+          const shown = await page.evaluate(styles, { root: `[data-section="cards"] [data-demo="${demo}"]`, sels, props: LEAK_PROPS });
+          const mine = real[kind] ?? {};
+          for (const sel of sels) {
+            const x = mine[sel];
+            const y = shown[sel];
+            if (!x || !y) {
+              say(15, "見本との漏れ", `${kind} の ${sel} が${!x ? "本番" : "見本"}に無い`);
+              continue;
+            }
+            for (const prop of LEAK_PROPS) if (x[prop] !== y[prop]) say(15, "見本との漏れ", `${kind} の ${sel} の ${prop} が 本番 ${x[prop]} / 見本 ${y[prop]}`);
+          }
+        }
+      }
+    } finally {
+      for (const off of offs.splice(0).reverse()) await off().catch(() => undefined);
+      // 選んだ状態と書きかけはこのタブのメモリだけ（読み直せば消える）
+      await page.goto("about:blank");
+    }
+    return lines;
+  }
+
   async function newShell(vp: Viewport, theme: Theme, full: boolean): Promise<void> {
     const p = `${vp}-${theme}`;
     if (!newShellNames(vp, theme, full).some(wanted)) return;
@@ -3109,6 +3660,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           console.log(`[v3-${p}] 段 n: ${((Date.now() - started) / 1000).toFixed(1)} 秒`);
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`入力欄の段の検査で ${problems.length} 件`);
+        });
+        // 本番のカードの段
+        const cardShots = ["close", "move", "other", "sending"].map((n) => `${p}-b-cards-${n}`);
+        await step(`${p} r`, cardShots, async () => {
+          const started = Date.now();
+          const problems = await cardsStage(page, vp, p);
+          console.log(`[v3-${p}] 段 r: ${((Date.now() - started) / 1000).toFixed(1)} 秒`);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`カードの段の検査で ${problems.length} 件`);
         });
       }
       if (!full) return;
