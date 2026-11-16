@@ -62,3 +62,11 @@
 | `SELF_AGENT_CC_MAX_SESSIONS` | 生きている `claude`（`claude agents --json` の数と、起動してまだ一覧に出ていないもの）の上限（正の整数）。既定 30。これ以上なら Web からの起動を断る（409 `limit`） |
 | `SELF_AGENT_CC_SEND_WAIT_MIN` | Web から Claude Code のセッションに送ったものが入力待ちにならないとき、諦める（gave_up）までの分（正の整数）。既定 120 |
 | `SELF_AGENT_CC_NOTIFY` | `0` で、許可の要求・質問・判断待ちの知らせのために Claude Code のチャンネルを作るのをやめる（`docs/plan/claude-code-questions.md` §5。Q4）。既定 `1`（チャンネルが無ければ作ってそこに出す）。`0` でも既にあるチャンネルには許可の要求・質問・判断待ち・終了・写しを出し、ボタンも効く。チャンネルの無いセッションの要求は Web と端末・RC で答える（保留の長さは同じ）。どちらでも #system には出さない。「関わった」ときに作るのは変わらない。それ以外の値は設定エラー |
+
+## テスト専用
+
+本体は読まない。`npm test`（`scripts/test.ts`）だけが見る。
+
+| 変数名 | 用途 |
+|---|---|
+| `SELF_AGENT_TEST_TMP` | `disk` で、`npm test` の一時ディレクトリを `/dev/shm`（tmpfs）に向けず今までどおり（`TMPDIR` を変えない）にする。ほかの値・未設定なら、`/dev/shm` がディレクトリで書けるときその下に `self-agent-test-*` を作って子の `node --test` の `TMPDIR` にし、終わったら（SIGINT・SIGTERM・SIGHUP で止めたときも）消す |

@@ -30,7 +30,7 @@ CC9 は済（Web の会話のサイドバーの群「Claude Code」。アクテ�
 source ~/.nvm/nvm.sh      # 非対話シェルでは毎回必要（Node 24.20.0）
 npm ci                    # 依存インストール（package-lock.json どおり）
 npm run check             # 型チェック（tsc --noEmit）
-npm test                  # 単体テスト（test/*.test.ts。偽 Runner / 偽 Gateway / 一時 SQLite）
+npm test                  # 単体テスト（test/*.test.ts。偽 Runner / 偽 Gateway / 一時 SQLite。/dev/shm が在れば一時ディレクトリをそこに向ける。SELF_AGENT_TEST_TMP=disk で今までどおり）
 npm run test:integration  # 結合テスト（OAuth トークンが無ければ skip。あれば利用枠を消費する）
 npm start                 # 起動（node src/cli.ts start。必須の環境変数が欠けていれば変数名を出して exit 1）
 node src/cli.ts <sub>     # self-agent コマンドの入口（./bin/self-agent <sub> も同じ。sub は start / devlog / usage / guest-setup / github-dry-run / shell-check / job-dry-run / cc-dry-run / cc-setup / unify-setup / measure、ほかに --help・--version。env ファイル（SELF_AGENT_ENV_FILE、無ければ ~/.config/self-agent/env。既にある変数は上書きしない）を読んでから動かす。サブコマンドが無い・知らない名前・引数付きの start は exit 2。npm run * は今までどおり scripts/ の入口から同じ本体を呼ぶ）
