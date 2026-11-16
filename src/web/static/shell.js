@@ -580,7 +580,7 @@
       }
     } else {
       ed.replaceChildren(
-        el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [el("h1", { text: "右腕" })]), el("div", { class: "ed-actions" }, handOps())]),
+        el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [el("h2", { text: "右腕" })]), el("div", { class: "ed-actions" }, handOps())]),
         key === "loading" ? SA.views.loading() : el("div", { class: "v3-empty" }, [el("p", { class: "meta", text: HAND_NONE_TEXT })]),
       );
     }

@@ -2589,7 +2589,7 @@ function loadShell(
       for (const text of handReplies) {
         scroll.append(ui.el("div", { class: "msg" }, [ui.el("p", { class: "msg-text", text: frame.replyText ? frame.replyText(text) : text }), ...(frame.replyExtras ? frame.replyExtras(text) : [])]));
       }
-      const head = ui.el("header", { class: "ed-toolbar" }, [ui.el("h1", { text: frame.title }), ...(frame.ops ? frame.ops() : [])]);
+      const head = ui.el("header", { class: "ed-toolbar" }, [ui.el("h2", { text: frame.title }), ...(frame.ops ? frame.ops() : [])]);
       container.replaceChildren(head, scroll, kept ?? ui.el("div", { class: "composer-wrap" }, [ui.el("textarea", { class: "composer-input" })]));
     },
   };
@@ -4335,8 +4335,9 @@ test("web static: frame の無い描画は今と同じ見出しと入力欄で�
   assert.equal(fh.querySelector("button.ed-back"), null, "[‹] を出さない");
   assert.equal(fh.querySelector("a"), null, "リンクのボタンを出さない");
   assert.equal(fh.querySelector("span.badge"), null, "バッジを出さない");
-  assert.equal(fh.querySelector("div.ed-title")!.children.length, 1, "題の欄は h1 だけ（アイコンを置かない）");
-  assert.equal(fh.querySelector("h1")!.textContent, "右腕");
+  assert.equal(fh.querySelector("div.ed-title")!.children.length, 1, "題の欄は h2 だけ（アイコンを置かない）");
+  assert.equal(fh.querySelector("h2")!.textContent, "右腕");
+  assert.equal(fh.querySelector("h1"), null, "ページの h1 は列 2 の見出しの 1 つ");
   const ops = fh.querySelector("div.ed-ops")!;
   const more = ops.querySelector("button.ed-ops-more")!;
   assert.equal(more.getAttribute("aria-label"), "ほかの操作");
@@ -4365,11 +4366,12 @@ test("web static: frame の無い描画は今と同じ見出しと入力欄で�
   c.chat.render(nolink, "2", frame);
   nolink.querySelector("button.ed-ops-more")!.dispatch("click");
   assert.deepEqual(JSON.parse(JSON.stringify(c.sheets[1]!.items.map((i) => i.label))), ["会話を新しくする"]);
-  // 一覧がまだ（読み込み中でチャンネルが引けない）なら h1 と足したボタンだけ
+  // 一覧がまだ（読み込み中でチャンネルが引けない）なら h2 と足したボタンだけ
   const loading = c.box();
   c.chat.render(loading, "3", frame);
   const lh = loading.querySelector("header.ed-toolbar")!;
-  assert.equal(lh.querySelector("h1")!.textContent, "右腕");
+  assert.equal(lh.querySelector("h2")!.textContent, "右腕");
+  assert.equal(lh.querySelector("h1"), null);
   assert.equal(lh.querySelector("button.ed-ops-more"), null);
   assert.deepEqual(lh.buttons().map((b) => b.getAttribute("id")), ["fold"]);
   assert.equal(lh.querySelector("button.ed-back"), null);
@@ -4504,6 +4506,30 @@ test("web static: views.js の toolbar は SA.top があると題・戻る・印
   const oldBox = c.box();
   views.info("status").render(oldBox);
   assert.equal((oldBox.querySelector("h1") as DomNode & { title?: string }).title, "10 秒ごとに更新");
+});
+
+test("web static: 右腕が無い・読み込み中の見出しは h2「右腕」で、#v3-hand-ed に h1 が無い", async () => {
+  const none = loadShell() as HandShell;
+  await none.flush();
+  const nh = none.nodes.handEd.querySelector("header.ed-toolbar")!;
+  assert.equal(nh.querySelector("h2")!.textContent, "右腕");
+  assert.equal(none.nodes.handEd.querySelector("h1"), null);
+  const loading = loadShell() as HandShell;
+  loading.api.reply = () => new Promise(() => undefined);
+  assert.equal(loading.nodes.handEd.querySelector("h2")!.textContent, "右腕");
+  assert.equal(loading.nodes.handEd.querySelector("h1"), null);
+});
+
+test("web static: shell.css の .v3-hand .ed-title h2 は app.css の .ed-title h1 と同じ 4 つの宣言", () => {
+  const decls = (css: string, sel: string) => {
+    const at = css.indexOf("\n" + sel + " {");
+    assert.ok(at >= 0, sel);
+    const body = css.slice(css.indexOf("{", at) + 1, css.indexOf("}", at));
+    return body.split(";").map((d) => d.trim()).filter((d) => d !== "");
+  };
+  const own = decls(read("shell.css"), ".v3-hand .ed-title h2");
+  assert.equal(own.length, 4);
+  assert.deepEqual(own, decls(read("app.css"), ".ed-title h1"));
 });
 
 test("web static: frame の outgoing は送る本文・字数・仮の行に効き、入力欄が空なら 0 字のまま", async () => {
