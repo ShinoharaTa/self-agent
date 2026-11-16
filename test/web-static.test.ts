@@ -2782,7 +2782,7 @@ test("web static: v3 の一覧の入口: render は SA.list.draw に決まった
   await h.flush();
   await h.topics.load();
   const first = h.listState();
-  assert.deepEqual(Object.keys(first).sort(), ["ago", "current", "data", "dataDone", "doneGroup", "failed", "filter", "isUnread", "on", "othersOpen", "time"]);
+  assert.deepEqual(Object.keys(first).sort(), ["ago", "current", "data", "dataDone", "doneGroup", "failed", "filter", "isUnread", "on", "othersOpen", "time", "turnFrom"]);
   h.topics.render();
   const second = h.listState();
   assert.notEqual(first, second, "state は描くたびに作る");
@@ -4116,6 +4116,30 @@ async function loadHand(opts: Parameters<typeof loadShell>[0] = {}, topics: unkn
 const handClose = (h: HandShell) => h.document.getElementById("v3-hand-close") as DomNode;
 const shownIds = (h: HandShell) => JSON.parse(JSON.stringify(h.app.shownChannelIds())) as string[];
 const handOf = (h: HandShell) => h.nodes.v3.getAttribute("data-hand");
+
+test("web static: 「あなたの番」の先頭が右腕でも、次の話題のボタン（nextId）を押すたびに先へ進む", async () => {
+  const h = loadShell();
+  const turn = { kind: "permission", since: "2026-11-14T00:00:00Z", summary: null };
+  h.api.reply = () =>
+    Promise.resolve(
+      v3Result([v3Topic("ch:a", { mark: "turn", turn }), v3Topic("ch:b", { mark: "turn", turn })], {
+        rightHands: [v3Hand({ turn })],
+        turnIds: ["ch:900", "ch:a", "ch:b"],
+        turns: 3,
+      }),
+    );
+  await h.flush();
+  await h.topics.load();
+  const pressed: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const id = h.model().turns!.nextId!;
+    pressed.push(id);
+    h.press.open(id, false);
+    await h.flush();
+  }
+  assert.deepEqual(pressed, ["ch:900", "ch:a", "ch:b"]);
+  assert.equal(h.listState().turnFrom, "ch:b");
+});
 
 test("web static: 右腕は rightHands の先頭の #inbox で、列 2 には同じチャンネルを開かない（「あなたの番」の右腕の行・hash で開いても右腕が開く）", async () => {
   // hash で開いた右腕のチャンネルは、一覧が読めた時点で列 2 から右腕へ移る

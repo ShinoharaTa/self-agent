@@ -19,6 +19,8 @@
   let filter = "";
   /** 一覧で選んでいる話題（列 2 の話題の ID。[端末] の間も ch: のまま。shell.js が setCurrent で渡す） */
   let current = null;
+  /** 一覧から最後に開いた話題（「あなたの番 N」のボタンの次の起点。右腕は current にならないので別に持つ） */
+  let turnFrom = null;
   let lastLoadAt = 0;
   /** schedule の残りの時間の後の 1 回 */
   let pending = null;
@@ -167,7 +169,14 @@
 
   /** 一覧の部品が押されたとき（1 回だけ作る） */
   const LIST_ON = {
-    open: (id, done) => openRow(id, done),
+    open(id, done) {
+      // 右腕は列 2 に開かず描き直しが来ないことがあるので、起点が変わったらここで描き直す（次に押したとき先へ進む）
+      if (turnFrom !== id) {
+        turnFrom = id;
+        render();
+      }
+      openRow(id, done);
+    },
     add: (key, opener) => SA.app.newSession(key, opener),
     toggleDone(key) {
       // 開いておけるのは 1 つ。開いたら ?done= で読み直し、閉じたら読み直さない
@@ -198,6 +207,7 @@
       current,
       doneGroup,
       dataDone,
+      turnFrom,
       othersOpen: othersSaved(),
       isUnread: IS_UNREAD,
       time: SA.ui.shortTime,
@@ -226,6 +236,7 @@
   /** 一覧で選んでいる話題（aria-current）を変える（描き直しは呼んだ側の render） */
   function setCurrent(id) {
     current = id || null;
+    if (current !== null) turnFrom = current;
   }
 
   SA.topics = { load, schedule, render, find, data: () => data, counts, setFilter, setCurrent };
