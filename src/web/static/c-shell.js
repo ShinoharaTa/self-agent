@@ -73,11 +73,14 @@ const TOP_VIEWS = [
   { value: "pane", label: "端末" },
 ];
 
-
-/** 見出しの中身。view が talk・other でなければ null（何も描かない）。スマホは場所・切り替えを出さず（「…」の板から）、広い幅は右腕を出さない（右の列の物） */
-export function topModel({ variant, view, title, status, note, place, views, hand, menu }) {
+/**
+ * 見出しの中身。view が talk・other でなければ null（何も描かない）。スマホは場所・切り替えを出さず（「…」の板から）、広い幅は右腕を出さない（右の列の物）。
+ * compact（広い幅で根が狭いとき。入口が測って渡す）は、広い幅でも場所・切り替えを帯に出さず、スマホと同じく補足の語にする
+ */
+export function topModel({ variant, view, title, status, note, place, views, hand, menu, compact }) {
   if (view !== "talk" && view !== "other") return null;
   const v = variant === "wide" ? "wide" : "phone";
+  const narrow = v === "wide" && compact === true;
   const talk = view === "talk";
   const st = talk && status && filled(status.text) ? { text: status.text, tone: TOP_TONES.includes(status.tone) ? status.tone : "muted" } : null;
   const placeText = talk && place ? "場所: " + place.text : null;
@@ -90,6 +93,8 @@ export function topModel({ variant, view, title, status, note, place, views, han
     rest = [placeText, noteText].filter((s) => s !== null).join(" ・ ");
     const mark = hand === "turn" || hand === "unread" ? hand : null;
     hd = { name: handLabel(mark), mark };
+  } else if (narrow) {
+    rest = [placeText, noteText].filter((s) => s !== null).join(" ・ ");
   } else {
     rest = noteText ?? "";
     if (placeText !== null) {
@@ -103,6 +108,7 @@ export function topModel({ variant, view, title, status, note, place, views, han
     view,
     title: typeof title === "string" ? title : "",
     back: v === "phone",
+    compact: narrow,
     status: st,
     rest,
     place: pl,
@@ -113,13 +119,13 @@ export function topModel({ variant, view, title, status, note, place, views, han
 }
 
 /** 会話の見出し（列 2 の上）。on: { back(), place(opener), view(value), menu(opener), hand(opener) }。直下の子は決まった key（増減しても残る子を作り直さない） */
-export function TopBar({ variant, view, title, status, note, place, views, hand, menu, controls, on }) {
-  const m = topModel({ variant, view, title, status, note, place, views, hand, menu });
+export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, controls, on }) {
+  const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact });
   if (m === null) return null;
   const wide = m.variant === "wide";
   const statusEl = m.status ? html`<span class="c-top-status" key="status" data-tone=${m.status.tone}>${m.status.text}</span>` : null;
   const restEl = m.rest !== "" ? html`<span class="c-top-rest" key="rest">${m.rest}</span>` : null;
-  return html`<header class="c-top" data-variant=${m.variant} data-view=${m.view}>
+  return html`<header class="c-top" data-variant=${m.variant} data-view=${m.view} data-compact=${m.compact ? "true" : undefined}>
     ${m.back ? html`<span class="c-top-act" key="back" data-act="back"><${IconButton} icon="chevron-left" label="一覧へ" onPress=${() => on.back()} /></span>` : null}
     <div class="c-top-text" key="text">
       <h1 class="c-top-title">${m.title}</h1>
