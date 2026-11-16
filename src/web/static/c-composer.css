@@ -1,0 +1,82 @@
+/* 会話の入力欄（c-composer.js。docs/plan/web-ui-components.md §6 の K5）。寸法は tokens.css の --c-* と calc、色は tokens.css の変数、字と間隔は base.css の目盛りだけ。動きは無い */
+
+/* 帯。地は書かない（列の地のまま）。字と色は自分で持つ（置かれた先からの継承を当てにしない） */
+.c-composer {
+  padding: var(--space-2) var(--c-gutter) var(--space-3);
+  border-top: var(--border-width) solid var(--border);
+  color: var(--text);
+  font-size: var(--c-font-body);
+  line-height: var(--leading-normal);
+}
+
+.c-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  max-width: var(--c-talk-max);
+  margin-inline: auto;
+}
+
+/* 欄と写しを同じ升に重ね、写しの高さで升（と欄）を伸ばす */
+.c-composer-field {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+/* 欄と写しは字・余白・枠・折り返しを同じにする（1 行 = --c-tap、6 行で止まる） */
+.c-composer-input,
+.c-composer-mirror {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: var(--c-tap);
+  max-height: calc(var(--c-tap) + var(--c-font-body) * var(--leading-normal) * 5);
+  padding: calc((var(--c-tap) - var(--c-font-body) * var(--leading-normal)) / 2 - var(--border-width)) var(--space-4);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--c-round-r);
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* フォーカスの輪は base のまま（消さない・枠の太さを変えない） */
+.c-composer-input {
+  margin: 0;
+  background: var(--surface);
+  color: var(--text);
+  resize: none;
+  overflow-y: auto;
+}
+
+.c-composer-input::placeholder {
+  color: var(--text-muted);
+}
+
+.c-composer-mirror {
+  visibility: hidden;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  border-color: transparent;
+}
+
+/* 字数の入れ物（いつも在る。余白を持たず、空なら高さ 0） */
+.c-composer-count {
+  max-width: var(--c-talk-max);
+  margin-inline: auto;
+  text-align: right;
+}
+
+.c-composer-count-text {
+  display: block;
+  padding-top: var(--space-1);
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+}
+
+.c-composer-count-text[data-over="true"] {
+  color: var(--danger);
+}

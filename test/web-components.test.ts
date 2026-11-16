@@ -34,6 +34,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-list.css": /^\.c-(?:list|turns|turn|group|rows|row|fold)(?![a-z])/,
   "c-shell.css": /^\.c-(?:bottom|top)(?![a-z])/,
   "c-talk.css": /^\.c-(?:talk|msg|bubble|md|steps|run|notice|divider)(?![a-z])/,
+  "c-composer.css": /^\.c-composer(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
 };
 
@@ -177,8 +178,8 @@ const partProblems = (name: string, text: string): string[] => forbidden(name, t
 const entryProblems = (name: string, text: string): string[] => forbidden(name, text, ENTRY_WORDS, ENTRY_PARTS);
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -253,13 +254,14 @@ test("web components: 入口の TOP_FULL_MIN は tokens.css の --c-top-full-min
   assert.doesNotMatch(app, /v3-main/);
 });
 
-test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk だけ。c-atoms・c-list・c-shell・c-talk・c-app は hook なし）・動的な import と createPortal が無い", () => {
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
     "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
     "c-list.js": ["./c-lib.js", "./c-atoms.js"],
     "c-shell.js": ["./c-lib.js", "./c-atoms.js"],
     "c-talk.js": ["./c-lib.js", "./c-atoms.js"],
+    "c-composer.js": ["./c-lib.js", "./c-atoms.js"],
     "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js"],
   };
   for (const [name, targets] of Object.entries(allowed)) {
@@ -268,27 +270,29 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
     assert.equal(dynamic, false, `${name}: 動的な import`);
   }
-  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
+  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
-test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーは動きを付けず、会話は実行中の輪だけ", () => {
+test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄は動きを付けず、会話は実行中の輪だけ", () => {
   // 部品は id を出さない（モデルのキー id: や data-topic=${id} は当たらない）
-  for (const name of ["c-list.js", "c-shell.js", "c-talk.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
+  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
   // 部品の色・高さ・字を外から変えない（印の位置・PC の [+] の当たりを戻す・下のバーの並べ方だけ）
   const ALLOWED_OUTSIDE = new Set([".c-turn > .c-mark", '.c-group-head > .c-iconbtn[data-size="sm"]::after', '.c-bottom > .c-btn[data-size="sm"]']);
   // K2 の部品のクラス（c-atoms.css・c-sheet.css のセレクタに出る全部。その下のクラスも）は外から宛てない
   const atomClasses = new Set(["c-atoms.css", "c-sheet.css"].flatMap((file) => parseCss(read(file)).filter((r) => !r.keyframe).flatMap((r) => r.selectors.flatMap(classesInSelector))));
   for (const cls of ["c-btn", "c-iconbtn", "c-badge", "c-mark", "c-icon", "c-empty", "c-empty-text", "c-loading", "c-seg", "c-field", "c-input", "c-sheet", "c-toast"]) assert.ok(atomClasses.has(cls), cls);
-  // 会話（c-talk.css）は K2 の部品のクラスに 1 つも宛てない
+  // 会話（c-talk.css）と入力欄（c-composer.css）は K2 の部品のクラスに 1 つも宛てない
   const talkRules = parseCss(read("c-talk.css"));
-  for (const rule of talkRules) for (const selector of rule.selectors) assert.ok(!classesInSelector(selector).some((cls) => atomClasses.has(cls)), `c-talk.css: ${selector}`);
+  for (const name of ["c-talk.css", "c-composer.css"]) {
+    for (const rule of parseCss(read(name))) for (const selector of rule.selectors) assert.ok(!classesInSelector(selector).some((cls) => atomClasses.has(cls)), `${name}: ${selector}`);
+  }
   // 会話の動きは実行中の輪（.c-run-spin）だけ
   for (const rule of talkRules) {
     if (/(?:^|; ?)(?:animation|transition)(?:-[a-z-]+)?\s*:/.test(rule.body)) assert.deepEqual(rule.selectors, [".c-run-spin"], `c-talk.css: ${rule.selectors.join(",")}`);
   }
   assert.equal((stripCssComments(read("c-talk.css")).match(/@keyframes\b/g) ?? []).length, 1, "c-talk.css: @keyframes は 1 つ");
-  for (const name of ["c-list.css", "c-shell.css"]) {
+  for (const name of ["c-list.css", "c-shell.css", "c-composer.css"]) {
     if (!CSS_FILES.includes(name)) continue;
     const rules = parseCss(read(name));
     for (const rule of rules) {
@@ -2496,4 +2500,25 @@ test("web components: composerMouth の drop は render(null, root) を呼び、
   assert.notEqual(calls[2]?.vnode?.props.inputRef, calls[0]?.vnode?.props.inputRef);
   fail(true);
   assert.throws(() => mouth.draw(root, composerState({ text: "c" })), /render/);
+});
+
+test("web components: 入力欄の欄と写しは 1 つの規則で余白・枠・高さ・折り返しを同じにし、欄は resize: none。根は自分の字と色を持ち、動きが無い", () => {
+  const rules = parseCss(read("c-composer.css"));
+  const decls = (r: CssRule): string[] => r.body.split(";").map((d) => d.trim()).filter((d) => d !== "");
+  const props = (r: CssRule): string[] => decls(r).map((d) => d.split(":")[0]?.trim() ?? "");
+  const both = rules.filter((r) => r.at.length === 0 && r.selectors.includes(".c-composer-input") && r.selectors.includes(".c-composer-mirror"));
+  assert.equal(both.length, 1);
+  for (const name of ["padding", "border", "min-height", "max-height", "white-space", "overflow-wrap", "box-sizing", "grid-area", "border-radius"]) assert.ok(props(both[0] as CssRule).includes(name), name);
+  // 欄だけ・写しだけの規則は、字・余白・枠の太さ・高さを変えない（写しの枠は色だけ）
+  for (const r of rules.filter((x) => x !== both[0] && x.selectors.some((s) => /^\.c-composer-(?:input|mirror)$/.test(s)))) {
+    for (const name of props(r)) assert.ok(!/^(?:padding|border(?!-color)|min-height|max-height|font|line-height|white-space|overflow-wrap|box-sizing|letter-spacing)/.test(name), `${r.selectors.join(",")}: ${name}`);
+  }
+  assert.ok(rules.some((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-composer-input" && decls(r).includes("resize: none")));
+  const own = rules.filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-composer");
+  assert.ok(own.length > 0);
+  for (const decl of ["font-size: var(--c-font-body)", "line-height: var(--leading-normal)", "color: var(--text)"]) assert.ok(own.some((r) => decls(r).includes(decl)), decl);
+  // 帯の地は書かない
+  for (const r of own) assert.ok(!props(r).some((p) => p.startsWith("background")), "c-composer の地");
+  const src = stripCssComments(read("c-composer.css"));
+  assert.doesNotMatch(src, /\b(?:animation|transition)(?:-[a-z-]+)?\s*:|@keyframes/);
 });
