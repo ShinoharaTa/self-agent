@@ -90,6 +90,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(theme === "dark" ? ["b-top-long", "b-top-menu", "b-top-place", ...(vp === "pc" ? ["b-top-hand-col"] : [])] : []),
     // 本番の会話の行（段 k。ダークの 3 組。スマホは幅 375・等幅の字も）
     ...(theme === "dark" ? ["b-talk-rows", "b-talk-steps-open", "b-talk-run", "b-talk-long", ...(vp === "phone" ? ["b-talk-mono375"] : [])] : []),
+    // 本番の入力欄（段 n。ダークの 3 組。字数の絵はスマホだけ）
+    ...(theme === "dark" ? ["b-composer-empty", "b-composer-6lines", ...(vp === "phone" ? ["b-composer-count"] : [])] : []),
     ...(full
       ? ["b-chat-permission", "b-chat-question", "d-composer-3lines", vp === "phone" ? "c-hand-over" : "c-hand-column", ...(vp === "phone" ? [] : ["c-hand-with-chat"]), "e-start-dialog", "f-settings", "f-knowledge-list", "f-knowledge-detail"]
       : []),
@@ -645,6 +647,16 @@ const LEAK_PROPS = [
   "padding-top", "padding-right", "padding-bottom", "padding-left", "margin-top", "margin-right", "margin-bottom", "margin-left",
   "border-top-width", "border-bottom-width", "min-height", "box-sizing", "font-family",
 ];
+/** 本番の入力欄で古い CSS の漏れを比べる要素（見本の入力欄の near と）。extra は LEAK_PROPS に足して比べる性質 */
+const LEAK_COMPOSER: Array<{ sel: string; extra: string[] }> = [
+  { sel: ".c-composer", extra: [] },
+  { sel: ".c-composer-input", extra: ["caret-color"] },
+  { sel: ".c-composer-count-text", extra: [] },
+  { sel: ".c-composer-row > .c-btn", extra: [] },
+];
+/** 入力欄の 1 字ごとの input の処理の重さの受け入れ（ms。中央値と最大。スマホ・CPU 4 倍） */
+const COMPOSER_INPUT_MED_MS = 4;
+const COMPOSER_INPUT_MAX_MS = 16;
 /** 幅の検査で当てる字（仮名が全角の等幅。リポジトリの CSS は変えず、この検査の間だけ） */
 const MONO_CSS = '*, *::before, *::after { font-family: "IPAGothic", "Osaka-Mono", "MS Gothic", monospace !important; }';
 
@@ -2221,6 +2233,423 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /**
+   * 段 n（本番の入力欄。ダークの 3 組）: 吹き出しの確かめを開いて 0〜10・12、スマホは長い会話で 11（重さ）。
+   * 打鍵は page.keyboard と CDP（値を直に書き換えるのは 5 の fill だけ）。足りない物の文（全部を測ってから、1 つでもあれば段を失敗にする）。0 で口に渡っていなければそこで止める
+   */
+  async function composerStage(page: Page, vp: Viewport, p: string): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (n: number, name: string, text: string): void => void lines.push(`段 n の ${n} ${name}: ${text}`);
+    const TA = "#ed > [data-composer] textarea.c-composer-input";
+    const ta = page.locator(TA);
+    /** 欄の高さ・行の高さ・値・選択・焦点・印 */
+    const field = (): Promise<{ h: number; lh: number; value: string; a: number; b: number; focus: boolean; mark: boolean; scroll: boolean } | null> =>
+      page.evaluate((sel: string) => {
+        const el = document.querySelector(sel);
+        if (!(el instanceof HTMLTextAreaElement)) return null;
+        return {
+          h: el.getBoundingClientRect().height,
+          lh: parseFloat(getComputedStyle(el).lineHeight),
+          value: el.value,
+          a: el.selectionStart,
+          b: el.selectionEnd,
+          focus: document.activeElement === el,
+          mark: (el as unknown as { __n?: number }).__n === 1,
+          scroll: el.scrollHeight > el.clientHeight,
+        };
+      }, TA);
+    const clear = async (): Promise<void> => {
+      await ta.focus();
+      await page.keyboard.press("Control+A");
+      await page.keyboard.press("Backspace");
+      await wait(100);
+    };
+    const near = (a: number, b: number, d: number): boolean => Math.abs(a - b) <= d;
+
+    await load(page, `/static/v3.html#/ch/${talk}`);
+    await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
+    await wait(800);
+    // 0. 口に渡ったか（渡っていなければ、ほかを測らずに止める）
+    const mouth = await page.evaluate(() => ({ parts: document.querySelectorAll("#ed > [data-composer] .c-composer").length, old: document.querySelectorAll("#ed .composer-wrap").length }));
+    if (mouth.parts !== 1 || mouth.old !== 0) throw new Error(`段 n の 0: 入力欄が部品でない（.c-composer ${mouth.parts} 個・.composer-wrap ${mouth.old} 個）`);
+
+    // 1. 空の形
+    const empty = await page.evaluate((sel: string) => {
+      const el = document.querySelector(sel);
+      if (!(el instanceof HTMLTextAreaElement)) return null;
+      const cs = getComputedStyle(el);
+      // placeholder と同じ字で 1 行に並べた幅が、欄の中の幅に入るか（scrollWidth <= clientWidth と同じ見方）
+      const probe = document.createElement("span");
+      probe.textContent = el.placeholder;
+      probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${cs.font};letter-spacing:${cs.letterSpacing}`;
+      document.body.append(probe);
+      const textW = probe.getBoundingClientRect().width;
+      probe.remove();
+      const inner = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const root = el.closest("[data-composer]");
+      return {
+        h: el.getBoundingClientRect().height,
+        placeholder: el.placeholder,
+        fits: textW <= inner,
+        textW,
+        inner,
+        count: root?.querySelector(".c-composer-count")?.getBoundingClientRect().height ?? -1,
+        send: root?.querySelector(".c-composer-row > .c-btn")?.getAttribute("aria-disabled") ?? null,
+      };
+    }, TA);
+    if (empty === null) say(1, "空の形", "欄が無い");
+    else {
+      if (!near(empty.h, 44, 0.5)) say(1, "空の形", `欄の高さ ${empty.h.toFixed(1)}。44 のはず`);
+      if (empty.placeholder !== "この話題に送る") say(1, "空の形", `placeholder「${empty.placeholder}」`);
+      if (!empty.fits) say(1, "空の形", `placeholder が 1 行に入らない（${empty.textW.toFixed(1)} > ${empty.inner.toFixed(1)}）`);
+      if (empty.count !== 0) say(1, "空の形", `字数の入れ物の高さ ${empty.count}。0 のはず`);
+      if (empty.send !== "true") say(1, "空の形", `［送る］の aria-disabled が ${String(empty.send)}`);
+    }
+    await edScroll(page, "bottom");
+    await shot(page, `${p}-b-composer-empty`);
+
+    // 2. 打鍵で同じ要素のまま（打つ途中で会話の描き直しを 1 回またぐ）
+    await ta.click();
+    await page.evaluate((sel: string) => {
+      const el = document.querySelector(sel);
+      if (el !== null) (el as unknown as { __n?: number }).__n = 1;
+    }, TA);
+    const typed = "abcdefghij".repeat(3);
+    await page.keyboard.type(typed.slice(0, 15));
+    await refreshCh(page, talk);
+    await page.keyboard.type(typed.slice(15));
+    await wait(100);
+    const f2 = await field();
+    if (f2 === null || !f2.mark || !f2.focus || f2.value !== typed) say(2, "打鍵で同じ要素のまま", JSON.stringify(f2 && { mark: f2.mark, focus: f2.focus, value: f2.value.length }));
+
+    // 3. 選択が残る（会話の描き直し・1 秒の刻み 2 回・3 秒の読み直し 1 回）
+    await page.evaluate((sel: string) => (document.querySelector(sel) as HTMLTextAreaElement | null)?.setSelectionRange(3, 7), TA);
+    await refreshCh(page, talk);
+    await wait(2200);
+    await wait(3200);
+    const f3 = await field();
+    if (f3 === null || !f3.mark || !f3.focus || f3.value !== typed || f3.a !== 3 || f3.b !== 7) say(3, "選択が残る", JSON.stringify(f3 && { mark: f3.mark, focus: f3.focus, value: f3.value.length, a: f3.a, b: f3.b }));
+
+    // 4. 変換の途中が切れない
+    await clear();
+    await page.evaluate((sel: string) => {
+      const el = document.querySelector(sel);
+      const w = window as unknown as { __ime: { start: number; end: number; blur: number } };
+      w.__ime = { start: 0, end: 0, blur: 0 };
+      if (!(el instanceof HTMLTextAreaElement)) return;
+      el.addEventListener("compositionstart", () => void w.__ime.start++);
+      el.addEventListener("compositionend", () => void w.__ime.end++);
+      el.addEventListener("blur", () => void w.__ime.blur++);
+      el.focus();
+    }, TA);
+    const ime = await page.context().newCDPSession(page);
+    try {
+      await ime.send("Input.imeSetComposition", { text: "へんかん", selectionStart: 4, selectionEnd: 4 });
+      await wait(200);
+      const started = await page.evaluate(() => (window as unknown as { __ime: { start: number } }).__ime.start);
+      if (started === 0) say(4, "IME", "変換の途中を作れない（compositionstart が来ない）");
+      await refreshCh(page, talk);
+      await wait(2200);
+      const mid = await page.evaluate((sel: string) => {
+        const el = document.querySelector(sel);
+        return { ...(window as unknown as { __ime: { start: number; end: number; blur: number } }).__ime, value: el instanceof HTMLTextAreaElement ? el.value : null };
+      }, TA);
+      if (mid.end !== 0 || mid.blur !== 0 || mid.value === null || !mid.value.includes("へんかん")) say(4, "IME", `描き直しで変換の途中が切れた（${JSON.stringify(mid)}）`);
+      await ime.send("Input.insertText", { text: "変換" });
+      await wait(200);
+      const done = await page.evaluate((sel: string) => {
+        const el = document.querySelector(sel);
+        return { end: (window as unknown as { __ime: { end: number } }).__ime.end, value: el instanceof HTMLTextAreaElement ? el.value : null };
+      }, TA);
+      if (done.value !== "変換" || done.end !== 1) say(4, "IME", `確定の後 ${JSON.stringify(done)}（値「変換」・compositionend 1 のはず）`);
+    } finally {
+      await ime.detach();
+    }
+
+    // 5. 伸びる（2・6・10 行）。一番下を見ていたら、6 行でも最後の吹き出しの時刻が入力欄の上に見える。消すと 1 行に戻る
+    await clear();
+    await edScroll(page, "bottom");
+    await wait(100);
+    const rowsOf = (n: number): string => Array.from({ length: n }, (_v, i) => `${i + 1} 行目`).join("\n");
+    for (const n of [2, 6, 10]) {
+      await ta.fill(rowsOf(n));
+      await wait(150);
+      const f = await field();
+      const want = f === null ? 0 : 44 + f.lh * Math.min(n - 1, 5);
+      if (f === null || !near(f.h, want, 1)) say(5, "伸びる", `${n} 行の欄の高さ ${f?.h.toFixed(1) ?? "?"}。${want.toFixed(1)} のはず`);
+      if (n === 10 && !(f && f.scroll)) say(5, "伸びる", "10 行の欄が中で送れない");
+      if (n !== 10 && f && f.scroll) say(5, "伸びる", `${n} 行の欄が中で送れる`);
+      if (n === 6) {
+        const seen = await page.evaluate(() => {
+          const last = [...document.querySelectorAll("#ed .c-talk > .c-msg")].at(-1);
+          const time = last?.querySelector(".c-msg-time") ?? null;
+          const root = document.querySelector("#ed > [data-composer]");
+          return time === null || root === null ? null : { time: time.getBoundingClientRect().bottom, root: root.getBoundingClientRect().top };
+        });
+        if (seen === null || seen.time > seen.root + 0.5) say(5, "伸びる", `6 行のとき最後の吹き出しの時刻の下端 ${seen?.time.toFixed(1) ?? "?"} が入力欄の上端 ${seen?.root.toFixed(1) ?? "?"} より下`);
+        await shot(page, `${p}-b-composer-6lines`);
+      }
+    }
+    await clear();
+    const f5 = await field();
+    if (f5 === null || !near(f5.h, 44, 0.5) || f5.value !== "") say(5, "伸びる", `書きかけを消した後の欄の高さ ${f5?.h.toFixed(1) ?? "?"}（44 のはず）・値 ${JSON.stringify(f5?.value)}`);
+
+    // 6. 上を読んでいる途中は、欄が伸びても動かさない
+    await edScroll(page, "bottom");
+    await edScroll(page, 300);
+    await wait(150);
+    const top0 = await page.evaluate(() => document.querySelector("#ed .ed-scroll")?.scrollTop ?? -1);
+    await ta.focus();
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("x");
+    await wait(150);
+    const top1 = await page.evaluate(() => document.querySelector("#ed .ed-scroll")?.scrollTop ?? -1);
+    const f6 = await field();
+    if (!(top0 > 0) || !near(top0, top1, 1)) say(6, "上を読んでいる途中", `scrollTop ${top0} → ${top1}`);
+    if (f6 === null || !(f6.h > 44 + 1)) say(6, "上を読んでいる途中", `改行で欄が伸びていない（${f6?.h.toFixed(1) ?? "?"}）`);
+    await clear();
+
+    // 7. 字数（1,700 字は出ない・1,701 字で出る・1,901 字で上限を超えた色。［送る］は押せる形のまま）
+    const insert = await page.context().newCDPSession(page);
+    const countLook = (): Promise<{ text: string | null; over: string | null; color: string | null; danger: string; send: string | null }> =>
+      page.evaluate(() => {
+        const root = document.querySelector("#ed > [data-composer]");
+        const text = root?.querySelector(".c-composer-count-text") ?? null;
+        const probe = document.createElement("span");
+        probe.style.color = "var(--danger)";
+        document.body.append(probe);
+        const danger = getComputedStyle(probe).color;
+        probe.remove();
+        return {
+          text: text === null ? null : (text.textContent ?? ""),
+          over: text === null ? null : text.getAttribute("data-over"),
+          color: text === null ? null : getComputedStyle(text).color,
+          danger,
+          send: root?.querySelector(".c-composer-row > .c-btn")?.getAttribute("aria-disabled") ?? null,
+        };
+      });
+    try {
+      await ta.focus();
+      await insert.send("Input.insertText", { text: "あ".repeat(1700) });
+      await wait(150);
+      const c0 = await countLook();
+      if (c0.text !== null) say(7, "字数", `1,700 字で字数が出ている（${c0.text}）`);
+      await insert.send("Input.insertText", { text: "い" });
+      await wait(150);
+      const c1 = await countLook();
+      if (c1.text !== "1,701 / 1,900") say(7, "字数", `1,701 字の字数「${String(c1.text)}」`);
+      if (c1.over !== null || c1.color === c1.danger) say(7, "字数", "1,701 字が上限を超えた形");
+      if (c1.send !== null) say(7, "字数", `1,701 字で［送る］の aria-disabled が ${c1.send}`);
+      if (vp === "phone") {
+        await edScroll(page, "bottom");
+        await shot(page, `${p}-b-composer-count`);
+      }
+      // 10. 古い CSS の漏れ（字数の出た形で、見本の near と比べる。タブレットは除く）
+      if (vp !== "tablet") lines.push(...(await composerLeaks(page)));
+      await ta.focus();
+      await page.keyboard.press("Control+End");
+      await insert.send("Input.insertText", { text: "う".repeat(200) });
+      await wait(150);
+      const c2 = await countLook();
+      if (c2.text !== "1,901 / 1,900" || c2.over !== "true" || c2.color !== c2.danger) say(7, "字数", `1,901 字 ${JSON.stringify(c2)}`);
+      if (c2.send !== null) say(7, "字数", `1,901 字で［送る］の aria-disabled が ${c2.send}`);
+    } finally {
+      await insert.detach();
+    }
+    await clear();
+
+    // 8. 書きかけが残る（別の話題へ行って戻る・ページを読み直す）
+    await ta.focus();
+    await page.keyboard.type("draft");
+    await wait(100);
+    const app = (tab: string): Promise<void> => page.evaluate((t: string) => (window as unknown as { SA: { app: { open: (t: string) => void } } }).SA.app.open(t), tab);
+    await app(`ch:${open}`);
+    await wait(500);
+    await app(`ch:${talk}`);
+    await page.waitForSelector(TA, { timeout: 5000 });
+    await wait(500);
+    const f8 = await field();
+    if (f8 === null || f8.value !== "draft" || !near(f8.h, 44, 0.5)) say(8, "書きかけが残る", `戻った後 ${JSON.stringify(f8 && { value: f8.value, h: f8.h })}`);
+    await load(page, `/static/v3.html#/ch/${talk}`);
+    await page.waitForSelector(TA, { timeout: 5000 });
+    const f8b = await field();
+    if (f8b === null || f8b.value !== "draft") say(8, "書きかけが残る", `読み直した後の値 ${JSON.stringify(f8b?.value)}`);
+
+    // 9. 当たり（スマホ・タブレットは 44。PC も［送る］と欄は 44 の高さ）
+    lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#ed > [data-composer]", targets: "button, textarea", toast: false })).map((l) => `段 n の 9 当たり: ${l}`));
+    const sizes = await page.evaluate(() => {
+      const root = document.querySelector("#ed > [data-composer]");
+      const b = root?.querySelector(".c-composer-row > .c-btn")?.getBoundingClientRect();
+      return b === undefined ? null : { w: b.width, h: b.height };
+    });
+    if (sizes === null || sizes.w < 44 || sizes.h < 44) say(9, "当たり", `［送る］が ${sizes === null ? "無い" : `${sizes.w.toFixed(1)}x${sizes.h.toFixed(1)}`}（44x44 以上のはず）`);
+
+    // 12. 送る（作り物の送りは受け付けないので失敗の道）: 待ちの形になって戻る・本文が残る・知らせが出る。PC は Enter も。Shift+Enter は改行
+    const posts: string[] = [];
+    const onRequest = (r: { method: () => string; url: () => string }): void => {
+      if (r.method() === "POST" && r.url().includes(`/api/channels/${talk}/messages`)) posts.push(r.url());
+    };
+    page.on("request", onRequest);
+    try {
+      await page.evaluate(() => {
+        const w = window as unknown as { __busy: number; __obs?: MutationObserver };
+        w.__busy = 0;
+        const root = document.querySelector("#ed > [data-composer]");
+        if (root === null) return;
+        w.__obs = new MutationObserver(() => {
+          if (root.querySelector('.c-composer-row > .c-btn[aria-busy="true"]') !== null) w.__busy++;
+        });
+        w.__obs.observe(root, { subtree: true, attributes: true, childList: true });
+      });
+      const failedOnce = async (how: string, press: () => Promise<void>): Promise<void> => {
+        const before = posts.length;
+        await page.evaluate(() => {
+          (window as unknown as { __busy: number }).__busy = 0;
+          for (const t of document.querySelectorAll("#toast-alert .toast")) t.remove();
+        });
+        await press();
+        await page.waitForFunction(() => (document.querySelector("#toast-alert")?.textContent ?? "") !== "", undefined, { timeout: 5000 }).catch(() => undefined);
+        await wait(300);
+        const after = await page.evaluate(() => ({
+          busy: (window as unknown as { __busy: number }).__busy,
+          now: document.querySelector('#ed > [data-composer] .c-composer-row > .c-btn[aria-busy="true"]') !== null,
+          toast: (document.querySelector("#toast-alert")?.textContent ?? "").trim(),
+        }));
+        const f = await field();
+        if (posts.length !== before + 1) say(12, "送る", `${how}: POST が ${posts.length - before} 回`);
+        if (after.busy === 0 || after.now) say(12, "送る", `${how}: 待ちの形になって戻らない（${JSON.stringify(after)}）`);
+        if (f === null || f.value !== "draft") say(12, "送る", `${how}: 本文が残らない（${JSON.stringify(f?.value)}）`);
+        if (!after.toast.includes("このチャンネルには送れません")) say(12, "送る", `${how}: 知らせ「${after.toast}」`);
+      };
+      await failedOnce("［送る］", () => page.locator("#ed > [data-composer] .c-composer-row > .c-btn").click());
+      if (vp === "pc") {
+        await failedOnce("Enter", async () => {
+          await ta.focus();
+          await page.keyboard.press("End");
+          await page.keyboard.press("Enter");
+        });
+      }
+      const before = posts.length;
+      await ta.focus();
+      await page.keyboard.press("Control+End");
+      await page.keyboard.press("Shift+Enter");
+      await wait(300);
+      const f12 = await field();
+      if (posts.length !== before || f12 === null || f12.value !== "draft\n") say(12, "送る", `Shift+Enter: POST ${posts.length - before} 回・値 ${JSON.stringify(f12?.value)}`);
+      // 受け付けた形（応答だけを作る）: 書きかけが消えて 1 行に戻る
+      const route = `**/api/channels/${talk}/messages`;
+      await page.route(route, (r) => (r.request().method() === "POST" ? r.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ turnId: 990001 }) }) : r.fallback()));
+      try {
+        await page.keyboard.type("2 行目");
+        await page.locator("#ed > [data-composer] .c-composer-row > .c-btn").click();
+        await page.waitForFunction((sel: string) => (document.querySelector(sel) as HTMLTextAreaElement | null)?.value === "", TA, { timeout: 5000 }).catch(() => undefined);
+        await wait(300);
+        const sent = await field();
+        if (sent === null || sent.value !== "" || !near(sent.h, 44, 0.5)) say(12, "送る", `受け付けた後 ${JSON.stringify(sent && { value: sent.value, h: sent.h })}（空・44 のはず）`);
+        const draft = await page.evaluate((ch: string) => (window as unknown as { SA: { app: { draft: (c: string) => string } } }).SA.app.draft(ch), talk);
+        if (draft !== "") say(12, "送る", `受け付けた後の書きかけ ${JSON.stringify(draft)}`);
+      } finally {
+        await page.unroute(route);
+      }
+      await page.evaluate(() => (window as unknown as { __obs?: MutationObserver }).__obs?.disconnect());
+    } finally {
+      page.off("request", onRequest);
+    }
+
+    // 11. 重さ（ダークのスマホ・長い会話・CPU 4 倍）: 本番の欄に 1 字ずつ違う字を 100 字打ち、input の処理（本番の on.input）を測る。その間の SA.talk.draw を数える
+    if (vp === "phone") {
+      await load(page, `/static/v3.html#/ch/${long}`);
+      await page.waitForSelector(TA, { timeout: 5000 });
+      await wait(800);
+      await edScroll(page, "bottom");
+      await ta.focus();
+      await page.evaluate((sel: string) => {
+        const el = document.querySelector(sel);
+        const root = el?.closest("[data-composer]") ?? null;
+        const sa = (window as unknown as { SA: { talk: { draw: (...a: unknown[]) => unknown } } }).SA;
+        const w = window as unknown as { __w: { times: number[]; talks: number; other: number; inside: boolean; t0: number } };
+        w.__w = { times: [], talks: 0, other: 0, inside: false, t0: 0 };
+        const draw = sa.talk.draw;
+        // input の処理の中の描き直しと、その外（定期の読み直しなど）を分けて数える
+        sa.talk.draw = (...a: unknown[]) => {
+          if (w.__w.inside) w.__w.talks++;
+          else w.__w.other++;
+          return draw(...a);
+        };
+        if (root === null) return;
+        // 欄の上の根で、捕まえる段（欄の受け手より前）と泡の段（欄の受け手の後）の間を測る。間に描き直しと、その後の layout の読みまで
+        root.addEventListener("input", () => {
+          w.__w.inside = true;
+          w.__w.t0 = performance.now();
+        }, true);
+        root.addEventListener("input", () => {
+          void (root as HTMLElement).offsetHeight;
+          w.__w.times.push(performance.now() - w.__w.t0);
+          w.__w.inside = false;
+        });
+      }, TA);
+      const cdp = await page.context().newCDPSession(page);
+      let got: { times: number[]; talks: number; other: number; value: number } | null = null;
+      try {
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+        // 1 字ずつ違う字（CJK の続き 100 字）
+        for (let i = 0; i < 100; i++) await cdp.send("Input.insertText", { text: String.fromCharCode(0x4e00 + i) });
+        got = await page.evaluate((sel: string) => {
+          const w = window as unknown as { __w: { times: number[]; talks: number; other: number } };
+          return { times: w.__w.times, talks: w.__w.talks, other: w.__w.other, value: (document.querySelector(sel) as HTMLTextAreaElement | null)?.value.length ?? -1 };
+        }, TA);
+      } finally {
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+        await cdp.detach();
+      }
+      const sorted = [...got.times].sort((x, y) => x - y);
+      const med = sorted.length === 0 ? NaN : sorted.length % 2 === 1 ? sorted[(sorted.length - 1) / 2]! : (sorted[sorted.length / 2 - 1]! + sorted[sorted.length / 2]!) / 2;
+      const max = sorted.length === 0 ? NaN : sorted[sorted.length - 1]!;
+      const text = `input 中央値 ${med.toFixed(2)}・最大 ${max.toFixed(2)}（ms。100 字・長い会話・CPU 4 倍）・input の処理の中の SA.talk.draw ${got.talks} 回（外 ${got.other} 回）`;
+      if (got.times.length !== 100 || got.value !== 100) say(11, "重さ", `測れた input が ${got.times.length} 回・値 ${got.value} 字（100 のはず）`);
+      if (!(med <= COMPOSER_INPUT_MED_MS) || !(max <= COMPOSER_INPUT_MAX_MS) || got.talks !== 0) say(11, "重さ", `条件を満たさない: ${text}`);
+      else console.log(`[v3-${p}] 段 n の 11 重さ: ${text}`);
+      await clear();
+    }
+    // 次の段に書きかけを残さない
+    for (const ch of [talk, long]) await page.evaluate((c: string) => (window as unknown as { SA: { app: { setDraft: (c: string, t: string) => void } } }).SA.app.setDraft(c, ""), ch);
+    return lines;
+  }
+
+  /** 段 n の 10: 本番の入力欄（字数の出た形）と見本の near の計算済みの値（LEAK_COMPOSER）を比べる。見本を開くので、呼んだ後は path を読み直す */
+  async function composerLeaks(page: Page): Promise<string[]> {
+    const lines: string[] = [];
+    const styles = ({ root, sels, props }: { root: string; sels: Array<{ sel: string; extra: string[] }>; props: string[] }): Record<string, Record<string, string> | null> => {
+      const out: Record<string, Record<string, string> | null> = {};
+      const scope = document.querySelector(root);
+      for (const { sel, extra } of sels) {
+        const el = scope === null ? null : scope.querySelector(sel);
+        out[sel] = el === null ? null : Object.fromEntries([...props, ...extra].map((prop) => [prop, getComputedStyle(el).getPropertyValue(prop)]));
+      }
+      return out;
+    };
+    const real = await page.evaluate(styles, { root: "#ed > [data-composer]", sels: LEAK_COMPOSER, props: LEAK_PROPS });
+    const back = page.url();
+    await page.goto("about:blank");
+    await page.goto(base + "/static/gallery.html", { waitUntil: "load" });
+    await page.waitForSelector('[data-section="composer"] [data-demo="near"] .c-composer', { timeout: 5000 });
+    const demo = await page.evaluate(styles, { root: '[data-section="composer"] [data-demo="near"]', sels: LEAK_COMPOSER, props: LEAK_PROPS });
+    for (const { sel, extra } of LEAK_COMPOSER) {
+      const a = real[sel];
+      const b = demo[sel];
+      if (!a || !b) {
+        lines.push(`段 n の 10 漏れ: ${sel} が${!a ? "本番" : "見本"}に無い`);
+        continue;
+      }
+      for (const prop of [...LEAK_PROPS, ...extra]) if (a[prop] !== b[prop]) lines.push(`段 n の 10 漏れ: ${sel} の ${prop} が 本番 ${a[prop]} / 見本 ${b[prop]}`);
+    }
+    await page.goto("about:blank");
+    await page.goto(back, { waitUntil: "load" });
+    await page.waitForSelector("#ed > [data-composer] textarea.c-composer-input", { timeout: 8000 });
+    await wait(800);
+    return lines;
+  }
+
   async function newShell(vp: Viewport, theme: Theme, full: boolean): Promise<void> {
     const p = `${vp}-${theme}`;
     if (!newShellNames(vp, theme, full).some(wanted)) return;
@@ -2331,6 +2760,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           console.log(`[v3-${p}] 段 k: ${((Date.now() - started) / 1000).toFixed(1)} 秒`);
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`会話の行の段の検査で ${problems.length} 件`);
+        });
+        // 本番の入力欄の段
+        const composers = [`${p}-b-composer-empty`, `${p}-b-composer-6lines`, ...(vp === "phone" ? [`${p}-b-composer-count`] : [])];
+        await step(`${p} n`, composers, async () => {
+          const started = Date.now();
+          const problems = await composerStage(page, vp, p);
+          console.log(`[v3-${p}] 段 n: ${((Date.now() - started) / 1000).toFixed(1)} 秒`);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`入力欄の段の検査で ${problems.length} 件`);
         });
       }
       if (!full) return;
