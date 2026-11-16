@@ -290,6 +290,56 @@ test("web components: c-*.css のセレクタのクラスと、c-*.js（と gall
   assert.deepEqual([...inJs].filter((c) => !inCss.has(c)).sort(), [], "JS にだけ在るクラス");
 });
 
+/**
+ * 古い CSS の規則のうち、クラス・id・属性で絞らない物（:not(…) の中は絞りに数えない）の、当たる要素（最後の複合セレクタ）の頭のタグ。
+ * * だけの物・擬似要素だけの物は stars・pseudo に分ける。祖先をクラスで絞った規則（.wb button など）は、部品の中には当たらないので数えない
+ */
+function bareTags(text: string): { tags: Map<string, string[]>; stars: string[]; pseudo: string[] } {
+  const tags = new Map<string, string[]>();
+  const stars: string[] = [];
+  const pseudo: string[] = [];
+  for (const rule of parseCss(text)) {
+    if (rule.keyframe) continue;
+    for (const selector of rule.selectors) {
+      if (/[.#[]/.test(selector.replace(/:not\([^()]*\)/g, ""))) continue;
+      const last = selector.split(/\s*[>+~]\s*|\s+/).at(-1) ?? "";
+      const tag = /^[a-z][a-z0-9-]*/.exec(last)?.[0];
+      if (tag !== undefined) tags.set(tag, [...(tags.get(tag) ?? []), selector]);
+      else if (last.startsWith("*")) stars.push(selector);
+      else if (last.startsWith("::")) pseudo.push(selector);
+    }
+  }
+  return { tags, stars, pseudo };
+}
+
+test("web components: 完了・「ほかのプロジェクト」の見出し（.c-fold-head）は行と同じ --c-row-h の高さ", () => {
+  const rule = parseCss(read("c-list.css")).find((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-fold-head");
+  assert.ok(rule);
+  assert.match(rule.body, /min-height: var\(--c-row-h\);/);
+});
+
+test("web components: 古い CSS（app・shell・base・tokens）の裸のタグの規則が、一覧・下のバー・小さい部品のタグに当たらない（base.css の reset だけは許す）", () => {
+  // 部品のテンプレートに出るタグ
+  const partTags = new Set<string>();
+  for (const name of ["c-list.js", "c-shell.js", "c-atoms.js"]) for (const m of read(name).matchAll(/<([a-z][a-z0-9]*)[\s>/]/g)) partTags.add(m[1] ?? "");
+  for (const tag of ["button", "ul", "li", "h2", "section", "span", "p", "div", "svg", "use"]) assert.ok(partTags.has(tag), tag);
+  // base.css の reset（button・h2・p の字と余白を外す・継ぐ）は見本のページ（gallery.html）にも当たるので、見本との差にならない
+  const BASE_OK = new Set(["button", "h2", "p"]);
+  const base = readFileSync(join(ROOT, "templates/web/site/base.css"), "utf8");
+  for (const [file, text] of [["app.css", read("app.css")], ["shell.css", read("shell.css")], ["tokens.css", read("tokens.css")], ["base.css", base]] as const) {
+    const { tags } = bareTags(text);
+    for (const [tag, selectors] of tags) {
+      if (!partTags.has(tag)) continue;
+      assert.ok(file === "base.css" && BASE_OK.has(tag), `${file}: ${selectors.join(", ")}`);
+    }
+  }
+  // 見張りの拾い方
+  const sample = bareTags("button{} .wb button{} button:not(.x){} li > span{} *{} ::selection{} a[href]{} @keyframes k{to{}}");
+  assert.deepEqual([...sample.tags.keys()], ["button", "span"]);
+  assert.deepEqual(sample.tags.get("button"), ["button", "button:not(.x)"]);
+  assert.deepEqual([sample.stars, sample.pseudo], [["*"], ["::selection"]]);
+});
+
 test("web components: 見張りの関数は悪い見本を落とす", () => {
   const bad = (text: string): string[] => cssProblems("c-atoms.css", text);
   const hit = (text: string, part: string): void => assert.ok(bad(text).some((p) => p.includes(part)), `${text} → ${bad(text).join(" / ")}`);

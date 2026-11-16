@@ -174,7 +174,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await page.goto("about:blank");
     await page.goto(base + path, { waitUntil: "load" });
     // スマホで会話・設定を開いているときは一覧が隠れているので、在るまでを待つ
-    await page.waitForSelector("#v3-groups .v3-group", { state: "attached", timeout: 8000 });
+    await page.waitForSelector("#c-list-root section[data-kind]", { state: "attached", timeout: 8000 });
     await wait(1200);
   }
 
@@ -254,7 +254,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       });
       await step(`${p} e`, [`${p}-e-start-dialog`], async () => {
         await load(page, "/static/v3.html");
-        await page.locator(".v3-add").first().click();
+        await page.locator("#c-list-root .c-group-head > .c-iconbtn").first().click();
         await wait(600);
         await shot(page, `${p}-e-start-dialog`);
       });
