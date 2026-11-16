@@ -371,7 +371,7 @@ test("web components: 完了・「ほかのプロジェクト」の見出し（.
 });
 
 test("web components: 古い CSS（app・shell・base・tokens）の裸のタグの規則が、一覧・下のバー・小さい部品のタグに当たらない（base.css の reset だけは許す）", () => {
-  // 部品のテンプレートに出るタグ（c-composer.js は入れない: app.css の裸の textarea の規則（入力の位置の線の色）が当たる。同じ値を c-composer.css が書く）
+  // 部品のテンプレートに出るタグ（c-composer.js は入れない: app.css の裸の textarea の規則（入力の位置の線の色）が当たる。同じ値を c-composer.css が書く。c-cards.js も入れない: app.css の裸の input, textarea が当たる。欄の線の色は c-cards.css が書く）
   const partTags = new Set<string>();
   for (const name of ["c-list.js", "c-shell.js", "c-atoms.js", "c-talk.js"]) for (const m of read(name).matchAll(/<([a-z][a-z0-9]*)[\s>/]/g)) partTags.add(m[1] ?? "");
   for (const tag of ["button", "ul", "li", "h1", "h2", "section", "span", "p", "div", "svg", "use", "header", "article", "pre", "code", "ol", "strong", "a"]) assert.ok(partTags.has(tag), tag);
@@ -2813,7 +2813,7 @@ test("web components: カードの言葉は今の画面に在る物（新しい�
   const js = stripJsComments(read("c-cards.js"));
   const strings = [...js.matchAll(/"([^"\n]*[^\x00-\x7f][^"\n]*)"/g)].map((m) => m[1] ?? "");
   for (const s of strings) if (!s.startsWith("あなたの番: ")) assert.ok(old.includes(s), s);
-  assert.deepEqual(strings.filter((s) => s.startsWith("あなたの番: ")).sort(), ["あなたの番: 場所を変える確認", "あなたの番: 許可", "あなたの番: 閉じる前の確認"].sort());
+  assert.deepEqual(strings.filter((s) => s.startsWith("あなたの番: ")).sort(), ["あなたの番: 場所を変える確認", "あなたの番: 許可", "あなたの番: 閉じる前の確認", "あなたの番: 質問"].sort());
   // CSS
   const rules = parseCss(read("c-cards.css"));
   const decls = (sel: string, inFine = false): string[] =>
@@ -2829,4 +2829,235 @@ test("web components: カードの言葉は今の画面に在る物（新しい�
   assert.doesNotMatch(js, /(?<![\w.-])(?:value|defaultValue)\s*=\s*\$\{/);
   assert.doesNotMatch(js, /(?<![\w.-])(?:value|defaultValue)\s*=\s*["']/);
   assert.doesNotMatch(js, /defaultValue/);
+});
+
+// ----- 質問のカードと口 -----
+const qCards = (await import(cardsUrl)) as Record<string, Fn> & { OTHER_MAX: number; cardsMouth: unknown };
+const qOf = (o: Obj = {}): Obj => ({ legend: "色", text: "どれにしますか", multi: false, options: [{ label: "赤", description: "暖かい" }, { label: "青", description: "" }], picked: [], other: false, otherText: "", ...o });
+const qItem = (o: Obj = {}): Obj => ({ kind: "question", id: 9, who: "見本 ・ default（使うたびに確認）", left: "残り 4 分 12 秒", urgent: false, busy: false, ready: false, questions: [qOf()], ...o });
+const qCard = (item: Obj, on = cardRec().on, otherRef?: unknown): El => one(html`<${qCards.QuestionCard} item=${item} on=${on} otherRef=${otherRef} />`);
+const fieldsetsOf = (item: Obj, otherRef?: unknown): RawNode[] => rawEls(qCards.QuestionCard({ item, on: cardRec().on, otherRef })).filter((v) => v.type === "fieldset");
+const kids = (el: El, tag: string): El[] => {
+  const all: El[] = [];
+  const walk = (t: Tree): void => {
+    if (typeof t === "string") return;
+    if (t.type === tag) all.push(t);
+    t.children.forEach(walk);
+  };
+  walk(el);
+  return all;
+};
+
+test("web components: 質問のカードの木と言葉（見出し・who・問ごとの fieldset と key・legend・ヒント・input の type と name・checked・その他の欄・ボタン・説明の文。id 属性が無い）", () => {
+  const two = qItem({ questions: [qOf({ picked: ["青"] }), qOf({ legend: "問 2", text: "いくつ", multi: true, options: [{ label: "甲" }, { label: "乙", description: "説明" }], picked: ["甲", "乙"] })] });
+  const el = qCard(two);
+  assert.deepEqual([el.props["aria-label"], el.props["data-kind"], textOf(find(el, "c-card-title"))], ["質問", "question", "あなたの番: 質問"]);
+  assert.equal(textOf(find(el, "c-card-facts")), "見本 ・ default（使うたびに確認）");
+  assert.equal(find(qCard(qItem({ who: "" })), "c-card-facts").length, 0);
+  // fieldset は問の数だけで key は q0・q1。直下の子の key は全部在って重ならない
+  const sets = fieldsetsOf(two);
+  assert.deepEqual(sets.map((v) => v.key), ["q0", "q1"]);
+  assert.deepEqual(keysOf(sets[0]?.props.children), ["legend", "text", "o0", "o1", "other", "field"]);
+  assert.deepEqual(keysOf(sets[1]?.props.children), ["legend", "text", "hint", "o0", "o1", "other", "field"]);
+  const fs = kids(el, "fieldset");
+  assert.deepEqual(fs.map((f) => f.props.class), ["c-card-q", "c-card-q"]);
+  assert.deepEqual(fs.map((f) => [textOf(find(f, "c-card-q-legend")), find(f, "c-card-q-legend")[0]?.type, textOf(find(f, "c-card-q-text"))]), [["色", "legend", "どれにしますか"], ["問 2", "legend", "いくつ"]]);
+  assert.deepEqual(fs.map((f) => find(f, "c-card-q-hint").map(textOf)), [[], ["いくつでも選べます"]]);
+  // input の type・name・checked
+  const inputsOf = (f: El): unknown[][] => find(f, "c-card-check-input").map((i) => [i.props.type, i.props.name, i.props.checked, i.props.disabled]);
+  assert.deepEqual(inputsOf(fs[0] as El), [["radio", "ccq-9-0", false, false], ["radio", "ccq-9-0", true, false], ["radio", "ccq-9-0", false, false]]);
+  assert.deepEqual(inputsOf(fs[1] as El), [["checkbox", "ccq-9-1", true, false], ["checkbox", "ccq-9-1", true, false], ["checkbox", "ccq-9-1", false, false]]);
+  // 選択肢の行の字（名前と説明。説明が空なら span が無い）と「その他」の行
+  const rows = find(fs[0] as El, "c-card-check");
+  assert.deepEqual(rows.map((r) => [find(r, "c-card-check-label").map(textOf), find(r, "c-card-check-desc").map(textOf)]), [[["赤"], ["暖かい"]], [["青"], []], [["その他"], []]]);
+  assert.equal(find(rows[0] as El, "c-card-check-label")[0]?.type, "strong");
+  // その他の欄
+  const [field] = find(fs[0] as El, "c-card-other");
+  assert.deepEqual([field?.type, field?.props.rows, field?.props.maxlength, field?.props["aria-label"], field?.props.hidden, field?.props.disabled], ["textarea", "2", 1000, "その他の答え（色）", true, false]);
+  assert.equal(qCards.OTHER_MAX, 1000);
+  assert.ok(!("value" in (field as El).props) && !("defaultValue" in (field as El).props));
+  // other のときは選択肢が全部 false で「その他」が true、欄は見える
+  const other = kids(qCard(qItem({ questions: [qOf({ picked: ["赤"], other: true })] })), "fieldset")[0] as El;
+  assert.deepEqual(find(other, "c-card-check-input").map((i) => i.props.checked), [false, false, true]);
+  assert.equal(find(other, "c-card-other")[0]?.props.hidden, false);
+  // busy は欄も input も disabled
+  const busy = kids(qCard(qItem({ busy: true })), "fieldset")[0] as El;
+  assert.deepEqual([...find(busy, "c-card-check-input").map((i) => i.props.disabled), find(busy, "c-card-other")[0]?.props.disabled], [true, true, true, true]);
+  // ボタンと説明の文
+  assert.deepEqual(btnsOf(el), [["primary", "答える"], ["ghost", "やめる"]]);
+  for (const b of find(el, "c-btn")) assert.deepEqual([b.props["data-size"], find(b, "c-icon").length], ["md", 0]);
+  assert.equal(find(el, "c-card-actions")[0]?.props["data-count"], "2");
+  const last = kidsOf(el).at(-1);
+  assert.deepEqual([last?.props.class, textOf(last as El)], ["c-card-note", qCards.PERMISSION_NOTE]);
+  assert.deepEqual([textOf(find(el, "c-card-meta")), find(el, "c-card-meta")[0]?.props["data-urgent"]], ["残り 4 分 12 秒", "false"]);
+  assert.equal(find(qCard(qItem({ urgent: true })), "c-card-meta")[0]?.props["data-urgent"], "true");
+  // ボタンの key
+  const v = qCards.QuestionCard({ item: two, on: cardRec().on }) as RawNode;
+  const actions = rawEls(v).find((n) => n.key === "actions") as RawNode;
+  assert.deepEqual(keysOf(actions.props.children), ["answer", "cancel"]);
+  // id 属性が無い
+  const all = JSON.stringify(expand(v), (k, val) => (typeof val === "function" ? undefined : val));
+  assert.doesNotMatch(all, /"id":/);
+  // Cards からも出る（key は question:id）
+  const list = qCards.Cards({ items: [qItem()], on: cardRec().on }) as RawNode;
+  assert.deepEqual(keysOf(list.props.children), ["question:9"]);
+});
+
+test("web components: 質問のカードの押せない理由（busy は 2 つとも「答えを送っています」、ready でない間は［答える］だけ「すべての問に答えると押せます」。押せない間は呼ばない）", () => {
+  const states = (item: Obj): unknown[][] => {
+    const rec = cardRec();
+    const btns = find(qCard(item, rec.on), "c-btn");
+    for (const b of btns) press(b);
+    return [...btns.map((b) => [b.props["aria-disabled"], b.props.title]), rec.calls];
+  };
+  assert.deepEqual(states(qItem({ ready: true })), [[undefined, undefined], [undefined, undefined], [["answer", 9], ["dismiss", 9]]]);
+  assert.deepEqual(states(qItem({ ready: false })), [["true", "すべての問に答えると押せます"], [undefined, undefined], [["dismiss", 9]]]);
+  assert.deepEqual(states(qItem({ ready: true, busy: true })), [["true", "答えを送っています"], ["true", "答えを送っています"], []]);
+  assert.deepEqual(states(qItem({ ready: false, busy: true })), [["true", "答えを送っています"], ["true", "答えを送っています"], []]);
+  const busy = kids(qCard(qItem({ busy: true })), "fieldset")[0] as El;
+  for (const row of find(busy, "c-card-check")) assert.equal(row.props.title, "答えを送っています");
+});
+
+test("web components: 質問のカードの呼び出し（pick(id, 番号, ラベル, checked)・pickOther(id, 番号, checked, byPointer)・other(id, 番号, 値)。旗は pointerdown で立ち、キーと change の後で下りる。選択肢の行には pointerdown が無い）", () => {
+  const rec = cardRec();
+  const el = qCard(qItem({ questions: [qOf(), qOf({ multi: true })] }), rec.on);
+  const [, second] = kids(el, "fieldset") as El[];
+  const rows = find(second as El, "c-card-check");
+  const inputs = find(second as El, "c-card-check-input");
+  const change = (i: El | undefined, checked: boolean): void => (i?.props.onChange as (e: unknown) => void)({ currentTarget: { checked } });
+  change(inputs[0], true);
+  change(inputs[1], false);
+  for (const r of rows.slice(0, 2)) assert.deepEqual([r.props.onPointerDown, r.props.onKeyDown], [undefined, undefined]);
+  const otherRow = rows[2] as El;
+  const otherInput = inputs[2];
+  (otherRow.props.onPointerDown as () => void)();
+  change(otherInput, true);
+  change(otherInput, false);
+  (otherRow.props.onPointerDown as () => void)();
+  (otherRow.props.onKeyDown as () => void)();
+  change(otherInput, true);
+  (find(second as El, "c-card-other")[0]?.props.onInput as (e: unknown) => void)({ currentTarget: { value: "別の案" } });
+  assert.deepEqual(rec.calls, [
+    ["pick", 9, 1, "赤", true],
+    ["pick", 9, 1, "青", false],
+    ["pickOther", 9, 1, true, true],
+    ["pickOther", 9, 1, false, false],
+    ["pickOther", 9, 1, true, false],
+    ["other", 9, 1, "別の案"],
+  ]);
+});
+
+type CardsMouth = { draw: (root: unknown, state: Obj) => void; focus: (root: unknown, id: unknown, index: number) => boolean; drop: (root: unknown) => void };
+type FakeField = { value: string; hidden: boolean; focused: number; focus: () => void };
+const fakeField = (hidden = false): FakeField => {
+  const el: FakeField = { value: "", hidden, focused: 0, focus: () => void el.focused++ };
+  return el;
+};
+/**
+ * 偽の render（描くたびに、質問の項目の問ごとに otherRef(id, 番号) の ref に今の要素を渡す。同じ要素でも渡し直す（口が同じ要素に書かない事を見るため）。
+ * 要素か ref が替わった・鍵が消えたら前の ref に null を先に渡す。null の vnode では全部に null を渡す）
+ */
+function fakeCardsMouth(): { mouth: CardsMouth; calls: { vnode: VNode | null; root: unknown }[]; els: Map<string, FakeField>; fail: (v: boolean) => void } {
+  const calls: { vnode: VNode | null; root: unknown }[] = [];
+  const els = new Map<string, FakeField>();
+  const given = new Map<string, { el: FakeField; ref: (n: unknown) => void }>();
+  let throws = false;
+  const render = (vnode: VNode | null, root: unknown): void => {
+    calls.push({ vnode, root });
+    if (throws) throw new Error("render");
+    const seen = new Set<string>();
+    if (vnode !== null) {
+      const otherRef = vnode.props.otherRef as (id: unknown, i: number) => (n: unknown) => void;
+      for (const item of vnode.props.items as Obj[]) {
+        if (item.kind !== "question") continue;
+        (item.questions as Obj[]).forEach((_, i) => {
+          const key = String(item.id) + ":" + i;
+          seen.add(key);
+          let el = els.get(key);
+          if (el === undefined) els.set(key, (el = fakeField()));
+          const ref = otherRef(item.id, i);
+          const was = given.get(key);
+          if (was && (was.el !== el || was.ref !== ref)) was.ref(null);
+          ref(el);
+          given.set(key, { el, ref });
+        });
+      }
+    }
+    for (const [key, was] of [...given]) {
+      if (seen.has(key)) continue;
+      was.ref(null);
+      given.delete(key);
+    }
+  };
+  const mouth = (qCards.cardsMouth as (r: typeof render) => CardsMouth)(render);
+  return { mouth, calls, els, fail: (v) => void (throws = v) };
+}
+const refOf = (call: { vnode: VNode | null } | undefined, id: unknown, i: number): unknown => (call?.vnode?.props.otherRef as (id: unknown, i: number) => unknown)(id, i);
+
+test("web components: cardsMouth の draw は Cards に items・on を渡し、新しい要素にだけ otherText を 1 回入れ、同じ要素には書かない。ref は鍵ごとに同じ関数", () => {
+  const { mouth, calls, els } = fakeCardsMouth();
+  const root = {};
+  const on = cardRec().on;
+  const items = [qItem({ questions: [qOf({ otherText: "一" }), qOf({ otherText: "二" })] })];
+  mouth.draw(root, { items, on });
+  assert.equal(calls.length, 1);
+  assert.deepEqual([calls[0]?.vnode?.type, calls[0]?.vnode?.props.items, calls[0]?.vnode?.props.on, calls[0]?.root], [qCards.Cards, items, on, root]);
+  assert.deepEqual([els.get("9:0")?.value, els.get("9:1")?.value], ["一", "二"]);
+  // 打鍵のつもり
+  (els.get("9:0") as FakeField).value = "一と";
+  mouth.draw(root, { items: [qItem({ questions: [qOf({ otherText: "zzz" }), qOf({ otherText: "二" })] })], on });
+  assert.equal(els.get("9:0")?.value, "一と");
+  assert.equal(refOf(calls[1], 9, 0), refOf(calls[0], 9, 0));
+  assert.notEqual(refOf(calls[0], 9, 0), refOf(calls[0], 9, 1));
+  // 要素が替わればその時の otherText
+  els.set("9:0", fakeField());
+  mouth.draw(root, { items: [qItem({ questions: [qOf({ otherText: "三" }), qOf()] })], on });
+  assert.equal(els.get("9:0")?.value, "三");
+  // 項目が消えて戻れば新しい関数
+  const before = refOf(calls[2], 9, 0);
+  mouth.draw(root, { items: [], on });
+  els.delete("9:0");
+  mouth.draw(root, { items: [qItem({ questions: [qOf({ otherText: "四" })] })], on });
+  assert.notEqual(refOf(calls[4], 9, 0), before);
+  assert.equal(els.get("9:0")?.value, "四");
+  // 根ごとに別の覚え
+  mouth.draw({}, { items: [qItem()], on });
+  assert.notEqual(refOf(calls[5], 9, 0), refOf(calls[4], 9, 0));
+});
+
+test("web components: cardsMouth の focus は鍵が無い・要素が無い・hidden で false、見えていれば focus を 1 回呼んで true。drop は render(null, root) で、その後の focus は false。render の例外はそのまま出る", () => {
+  const { mouth, calls, els, fail } = fakeCardsMouth();
+  const root = {};
+  const on = cardRec().on;
+  assert.equal(mouth.focus(root, 9, 0), false);
+  els.set("9:0", fakeField(true));
+  mouth.draw(root, { items: [qItem()], on });
+  assert.equal(mouth.focus(root, 9, 1), false);
+  assert.equal(mouth.focus(root, 9, 0), false);
+  (els.get("9:0") as FakeField).hidden = false;
+  assert.equal(mouth.focus(root, 9, 0), true);
+  assert.equal(els.get("9:0")?.focused, 1);
+  // 要素が外れた後は false
+  (refOf(calls[0], 9, 0) as (n: unknown) => void)(null);
+  assert.equal(mouth.focus(root, 9, 0), false);
+  mouth.draw(root, { items: [qItem()], on });
+  assert.equal(mouth.focus(root, 9, 0), true);
+  mouth.drop(root);
+  assert.deepEqual([calls.at(-1)?.vnode, calls.at(-1)?.root], [null, root]);
+  assert.equal(mouth.focus(root, 9, 0), false);
+  fail(true);
+  assert.throws(() => mouth.draw(root, { items: [qItem()], on }), /render/);
+});
+
+test("web components: c-cards.js の .value の代入は口の 1 か所だけで、htm の属性で value・defaultValue を渡さない。「その他」の欄は線の色と字の大きさを自分で持ち、fieldset の既定の枠と余白を外す", () => {
+  const js = stripJsComments(read("c-cards.js"));
+  assert.equal((js.match(/\.value\s*=(?!=)/g) ?? []).length, 1);
+  assert.doesNotMatch(js, /(?<![\w.-])(?:value|defaultValue)\s*=\s*\$\{/);
+  assert.doesNotMatch(js, /(?<![\w.-])(?:value|defaultValue)\s*=\s*["']/);
+  assert.doesNotMatch(js, /defaultValue/);
+  const rules = parseCss(read("c-cards.css"));
+  const decls = (sel: string): string[] =>
+    rules.filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === sel).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
+  for (const d of ["caret-color: var(--accent)", "font-size: var(--c-font-body)"]) assert.ok(decls(".c-card-other").includes(d), d);
+  for (const d of ["border: 0", "padding: 0", "margin: 0", "min-width: 0"]) assert.ok(decls(".c-card-q").includes(d), d);
 });

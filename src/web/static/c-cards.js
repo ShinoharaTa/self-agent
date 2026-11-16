@@ -1,4 +1,4 @@
-// 「あなたの番」のカードの部品（docs/plan/web-ui-components.md §6 の K5）: 1 つの枠 Card と、その上の許可・閉じる前の確認・場所を変える確認のカード、待ちの行と文（Note）、並び（Cards）。
+// 「あなたの番」のカードの部品（docs/plan/web-ui-components.md §6 の K5）: 1 つの枠 Card と、その上の許可・質問・閉じる前の確認・場所を変える確認のカード、待ちの行と文（Note）、並び（Cards）と口（cardsMouth）。
 // hook を使わない（Node から関数として呼べる）。文は全部呼ぶ側が作って渡す（時刻・モード・番号を組まない）。選び方の決まりを持たず、起きた事を on に伝えるだけ。
 // 押せない形は Button の disabled と reason（回る輪は使わない）。クラスは固定の文字列、状態は data-* と aria-*
 import { html } from "./c-lib.js";
@@ -6,6 +6,9 @@ import { Button } from "./c-atoms.js";
 
 /** 許可・質問のカードの下に出す説明の文 */
 export const PERMISSION_NOTE = "端末や RC のダイアログでも答えられます。先に答えた方が効きます。";
+
+/** 「その他」の欄の maxlength */
+export const OTHER_MAX = 1000;
 
 const SENDING = "答えを送っています";
 const BOTH_PLACES = "Discord でも選べます";
@@ -31,8 +34,8 @@ export function Card({ kind, label, title, meta, urgent, note, children }) {
 }
 
 /** カードの中のチェック・ラジオの行（label が包む。押せない理由は disabled のときだけ行の title に） */
-function Check({ type = "checkbox", name, checked, disabled, reason, onChange, children }) {
-  return html`<label class="c-card-check" title=${disabled && reason ? reason : undefined}>
+function Check({ type = "checkbox", name, checked, disabled, reason, onChange, onPointerDown, onKeyDown, children }) {
+  return html`<label class="c-card-check" title=${disabled && reason ? reason : undefined} onPointerDown=${onPointerDown} onKeyDown=${onKeyDown}>
     <input class="c-card-check-input" type=${type} name=${name} checked=${!!checked} disabled=${!!disabled} onChange=${onChange} />
     <span class="c-card-check-text">${children}</span>
   </label>`;
@@ -65,6 +68,63 @@ export function PermissionCard({ item, on }) {
       <${Button} kind="secondary" size="md" label="許可" disabled=${busy} reason=${reason}
         onPress=${() => on.permit(item.id, rule !== "" && item.always ? "always" : "allow")} />
       <${Button} kind="ghost" size="md" label="拒否" disabled=${busy} reason=${reason} onPress=${() => on.permit(item.id, "deny")} />
+    <//>
+  <//>`;
+}
+
+/**
+ * 質問の 1 問（fieldset。直下の子は全部 key つき）。「その他」の欄はいつも木に在り、hidden で隠す（描き直しで作り直さない）。
+ * 本文は渡さない（ref で口が新しい要素にだけ入れる）。指・マウスで「その他」を選んだかは、行の pointerdown で旗を立て、キーで下ろし、change で読んで下ろす
+ */
+function questionSet({ item, q, index, on, otherRef }) {
+  const busy = !!item.busy;
+  const multi = !!q.multi;
+  const other = !!q.other;
+  const type = multi ? "checkbox" : "radio";
+  const name = "ccq-" + item.id + "-" + index;
+  const legend = str(q.legend);
+  const options = Array.isArray(q.options) ? q.options : [];
+  const picked = Array.isArray(q.picked) ? q.picked : [];
+  let byPointer = false;
+  return html`<fieldset class="c-card-q" key=${"q" + index}>
+    <legend class="c-card-q-legend" key="legend">${legend}</legend>
+    <p class="c-card-q-text" key="text">${str(q.text)}</p>
+    ${multi ? html`<p class="c-card-q-hint" key="hint">いくつでも選べます</p>` : null}
+    ${options.map((o, i) => {
+      const label = str(o && o.label);
+      const desc = str(o && o.description);
+      return html`<${Check} key=${"o" + i} type=${type} name=${name} checked=${!other && picked.includes(label)} disabled=${busy} reason=${SENDING}
+        onChange=${(event) => on.pick(item.id, index, label, event.currentTarget.checked)}>
+        <strong class="c-card-check-label">${label}</strong>${desc === "" ? null : html`<span class="c-card-check-desc">${desc}</span>`}
+      <//>`;
+    })}
+    <${Check} key="other" type=${type} name=${name} checked=${other} disabled=${busy} reason=${SENDING}
+      onPointerDown=${() => void (byPointer = true)} onKeyDown=${() => void (byPointer = false)}
+      onChange=${(event) => {
+        on.pickOther(item.id, index, event.currentTarget.checked, byPointer);
+        byPointer = false;
+      }}><strong class="c-card-check-label">その他</strong><//>
+    <textarea class="c-card-other" key="field" rows="2" maxlength=${OTHER_MAX} aria-label=${"その他の答え（" + legend + "）"}
+      hidden=${!other} disabled=${busy} ref=${otherRef ? otherRef(item.id, index) : undefined}
+      onInput=${(event) => on.other(item.id, index, event.currentTarget.value)}></textarea>
+  </fieldset>`;
+}
+
+/**
+ * 質問。item: { id, who, left, urgent, busy, ready（全部の問に答えたか）, questions: [{ legend, text, multi, options: [{ label, description }], picked, other, otherText }] }。
+ * otherRef(id, 問の番号) は「その他」の欄の ref を返す（口が渡す。無ければ付けない）
+ */
+export function QuestionCard({ item, on, otherRef }) {
+  const busy = !!item.busy;
+  const who = str(item.who);
+  const questions = Array.isArray(item.questions) ? item.questions : [];
+  const answerReason = busy ? SENDING : item.ready ? undefined : "すべての問に答えると押せます";
+  return html`<${Card} kind="question" label="質問" title="あなたの番: 質問" meta=${item.left} urgent=${!!item.urgent} note=${PERMISSION_NOTE}>
+    ${who === "" ? null : html`<p class="c-card-facts" key="who">${who}</p>`}
+    ${questions.map((q, index) => questionSet({ item, q: q || {}, index, on, otherRef }))}
+    <${Actions} key="actions">
+      <${Button} key="answer" kind="primary" size="md" label="答える" disabled=${busy || !item.ready} reason=${answerReason} onPress=${() => on.answer(item.id)} />
+      <${Button} key="cancel" kind="ghost" size="md" label="やめる" disabled=${busy} reason=${busy ? SENDING : undefined} onPress=${() => on.dismiss(item.id)} />
     <//>
   <//>`;
 }
@@ -133,17 +193,72 @@ export function Note({ text, busy }) {
 const KINDS = {
   note: ({ item }) => html`<${Note} text=${item.text} busy=${!!item.busy} />`,
   permission: PermissionCard,
+  question: QuestionCard,
   close: CloseCard,
   move: MoveCard,
 };
 
-/** カードの並び。items が並びでない・空なら何も出さない。key は kind + ":" + id。知らない kind は出さない */
-export function Cards({ items, on }) {
+/** カードの並び。otherRef は質問のカードへ渡す。items が並びでない・空なら何も出さない。key は kind + ":" + id。知らない kind は出さない */
+export function Cards({ items, on, otherRef }) {
   if (!Array.isArray(items) || items.length === 0) return null;
   return html`<div class="c-cards">
     ${items.map((item) => {
       const Kind = item && Object.hasOwn(KINDS, item.kind) ? KINDS[item.kind] : undefined;
-      return Kind === undefined ? null : html`<${Kind} key=${item.kind + ":" + item.id} item=${item} on=${on} />`;
+      return Kind === undefined ? null : html`<${Kind} key=${item.kind + ":" + item.id} item=${item} on=${on} otherRef=${otherRef} />`;
     })}
   </div>`;
+}
+
+/**
+ * カードの口: { draw(root, state), focus(root, id, index), drop(root) }。state は { items, on }。
+ * 「その他」の欄の本文は呼ぶ側が持ち（on.other で受けた値を次の draw の otherText に）、口は新しい要素にだけその時の本文を入れる（同じ要素には書かない。打っている途中・変換の途中を壊さない）。
+ * ref は根と鍵（id と問の番号）ごとに同じ関数。項目が消えた鍵は覚えを捨てる。例外は握らない
+ */
+export function cardsMouth(render) {
+  const memo = new WeakMap();
+  const keyOf = (id, index) => String(id) + ":" + index;
+  const slotOf = (slots, key) => {
+    let m = slots.get(key);
+    if (m === undefined) {
+      m = { node: null, text: "", ref: null };
+      const own = m;
+      own.ref = (node) => {
+        if (node && node !== own.node) node.value = own.text;
+        own.node = node || null;
+      };
+      slots.set(key, m);
+    }
+    return m;
+  };
+  const draw = (root, state) => {
+    let slots = memo.get(root);
+    if (slots === undefined) {
+      slots = new Map();
+      memo.set(root, slots);
+    }
+    const live = new Set();
+    for (const item of Array.isArray(state.items) ? state.items : []) {
+      if (!item || item.kind !== "question" || !Array.isArray(item.questions)) continue;
+      item.questions.forEach((q, index) => {
+        const key = keyOf(item.id, index);
+        live.add(key);
+        slotOf(slots, key).text = str(q && q.otherText);
+      });
+    }
+    for (const key of [...slots.keys()]) if (!live.has(key)) slots.delete(key);
+    const own = slots;
+    render(html`<${Cards} items=${state.items} on=${state.on} otherRef=${(id, index) => slotOf(own, keyOf(id, index)).ref} />`, root);
+  };
+  const focus = (root, id, index) => {
+    const slots = memo.get(root);
+    const m = slots === undefined ? undefined : slots.get(keyOf(id, index));
+    if (m === undefined || !m.node || m.node.hidden) return false;
+    m.node.focus();
+    return true;
+  };
+  const drop = (root) => {
+    memo.delete(root);
+    render(null, root);
+  };
+  return { draw, focus, drop };
 }
