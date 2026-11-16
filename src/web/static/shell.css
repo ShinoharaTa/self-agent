@@ -185,45 +185,6 @@
   min-height: 0;
 }
 
-.v3-bar {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border-bottom: var(--border-width) solid var(--border);
-}
-
-/* 「場所 ∨」: 帯の中で縮み、文字だけを 1 行で省略する。色は .meta と同じ */
-.v3-place {
-  justify-content: flex-start;
-  min-width: 0;
-  color: var(--text-secondary);
-  font-weight: var(--weight-normal);
-}
-
-.v3-place .icon {
-  flex: none;
-}
-
-.v3-place-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 押せないときは今までどおりただの文字に見せる（薄くしない・矢印を出さない。理由は title） */
-.v3-place:disabled {
-  opacity: 1;
-  cursor: default;
-}
-
-.v3-place:disabled .icon {
-  display: none;
-}
-
 .v3-empty {
   display: flex;
   flex: 1;
@@ -323,11 +284,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* スマホの上の帯の [右腕] は既定では出さない */
-.v3-hand-open {
-  display: none;
-}
-
 /* ===== スマホ（639px 以下）: 1 列で 一覧 ⇄ 会話 ===== */
 @media (max-width: 639px) {
   .v3 {
@@ -369,16 +325,6 @@
     border-left: 0;
     border-top: var(--border-width) solid var(--border);
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  }
-
-  .v3-hand-open {
-    display: inline-flex;
-    margin-left: auto;
-  }
-
-  /* 帯の「場所 ∨」は指で押せる高さ */
-  .v3-place {
-    min-height: var(--tap);
   }
 
   /* シートは今までどおり下から（app.css の dialog の全幅） */
