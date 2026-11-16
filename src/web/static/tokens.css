@@ -148,3 +148,40 @@
     --bubble-inset: #11141c;
   }
 }
+
+/* 部品（c-*）の寸法。docs/plan/web-ui-components.md §7.2 */
+:root {
+  --c-tap: 44px;
+  --c-bar-h: 56px;
+  --c-bottom-h: 64px;
+  --c-row-h: 44px;
+  --c-gutter: 16px;
+  --c-list-w: 280px;
+  --c-hand-w: 360px;
+  --c-bubble-r: 14px;
+  --c-bubble-tail: 4px;
+  --c-card-r: 10px;
+  --c-btn-sm-h: 36px;
+  --c-round-r: 22px;
+  --c-icon: 20px;
+  --c-icon-sm: 16px;
+  --c-mark: 8px;
+  --c-mark-ring: 2px;
+  --c-badge-h: 20px;
+  --c-badge-pad: 6px;
+  --c-seg-h: 44px;
+  --c-seg-pad: 3px;
+  --c-toast-w: 360px;
+  --c-spin: 800ms;
+  --c-font-body: var(--font-base);
+}
+
+@media (min-width: 640px) and (hover: hover) and (pointer: fine) {
+  :root {
+    --c-bar-h: 52px;
+    --c-row-h: 36px;
+    --c-round-r: 8px;
+    --c-seg-h: 36px;
+    --c-font-body: var(--font-sm);
+  }
+}

@@ -10,7 +10,8 @@
 }
 
 .c-gallery-title {
-  font-size: var(--font-xl);
+  font-size: var(--font-base);
+  font-weight: var(--weight-semibold);
   line-height: var(--leading-tight);
   color: var(--text);
 }
@@ -21,7 +22,7 @@
 }
 
 .c-gallery-count {
-  min-height: var(--tap);
+  min-height: var(--c-tap);
   padding: var(--space-2) var(--space-4);
   border: var(--border-width) solid var(--border);
   border-radius: var(--radius-md);
