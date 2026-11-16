@@ -1703,7 +1703,7 @@ const talkState = (o: Obj = {}): Obj => ({
 const talkRec = (): { calls: unknown[][]; on: Record<string, (...a: unknown[]) => void> } => {
   const calls: unknown[][] = [];
   const rec = (name: string) => (...a: unknown[]): void => void calls.push([name, ...a]);
-  return { calls, on: { older: rec("older"), toggleSteps: rec("toggleSteps"), toggleRunSteps: rec("toggleRunSteps"), stop: rec("stop") } };
+  return { calls, on: { older: rec("older"), toggleSteps: rec("toggleSteps"), toggleRunSteps: rec("toggleRunSteps"), stop: rec("stop"), continue: rec("continue") } };
 };
 
 test("web components: footOf の結果ごとの文・色・手順（完了で手順 0 は無し、手順 0 は押せない文）", () => {
@@ -2003,6 +2003,65 @@ test("web components: Bubble は手順を開いているときだけ ol.c-steps-
   // 手順が null（押せない文）なら一覧は無い
   const none = one(html`<${talk.Bubble} ...${bubbleOf({ foot: { text: "止まりました", tone: "danger", steps: null, open: false } })} />`);
   assert.deepEqual([find(none, "c-steps-list").length, find(none, "c-steps-toggle").length, find(none, "c-steps-text").length], [0, 0, 1]);
+});
+
+test("web components: talkModel（continueKey の返事の行だけに act。busy は continueBusy。null・無い・オーナーや知らせの key のときはどの行にも act の欄が無い）", () => {
+  const turns = [
+    { id: 1, kind: "notice", text: "知らせ" },
+    { id: 2, kind: "owner", text: "a" },
+    { id: 3, kind: "agent", text: "b", outcome: "max_turns", steps: ["Read a"], end: "手順の上限で止まりました" },
+    { id: 4, kind: "agent", text: "c", outcome: "max_turns", steps: ["Read a"], end: "手順の上限で止まりました" },
+  ];
+  const acts = (o: Obj): unknown[] => (talk.talkModel(talkState({ turns, ...o }), talk.parseBlocks).items as Obj[]).map((item) => (Object.hasOwn(item, "act") ? item.act : "-"));
+  assert.deepEqual(acts({ continueKey: "4" }), ["-", "-", "-", { busy: false }]);
+  assert.deepEqual(acts({ continueKey: "4", continueBusy: true }), ["-", "-", "-", { busy: true }]);
+  assert.deepEqual(acts({ continueKey: "3", continueBusy: false }), ["-", "-", { busy: false }, "-"]);
+  // busy は true のときだけ
+  assert.deepEqual(acts({ continueKey: "4", continueBusy: "yes" }), ["-", "-", "-", { busy: false }]);
+  for (const o of [{ continueKey: null }, {}, { continueKey: "2" }, { continueKey: "1" }, { continueKey: "9", continueBusy: true }, { continueKey: 4 }]) {
+    assert.deepEqual(acts(o), ["-", "-", "-", "-"], JSON.stringify(o));
+  }
+});
+
+test("web components: Bubble（act が在れば .c-msg の最後に .c-msg-act > ［続ける］。開いた手順の一覧より後ろ。busy は aria-busy で押しても呼ばない。act が無ければ .c-msg-act が無い）", () => {
+  let n = 0;
+  const steps = ["Read a", "Bash b"];
+  const foot = (open: boolean): Obj => ({ text: "手順の上限で止まりました", tone: "warning", steps, open });
+  const closed = one(html`<${talk.Bubble} ...${bubbleOf({ foot: foot(false), act: { busy: false }, onAct: () => void n++ })} />`);
+  const act = find(closed, "c-msg-act")[0] as El;
+  assert.deepEqual([act.type, closed.children.at(-1)], ["div", act]);
+  const btn = find(act, "c-btn") as El[];
+  assert.equal(btn.length, 1);
+  assert.deepEqual([btn[0]!.type, btn[0]!.props["data-kind"], btn[0]!.props["data-size"], textOf(find(btn[0]!, "c-btn-label")), btn[0]!.props["aria-busy"]], ["button", "secondary", "sm", "続ける", undefined]);
+  assert.ok(String((find(btn[0]!, "c-icon")[0]?.children[0] as El).props.href).endsWith("#play"));
+  (btn[0]!.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.equal(n, 1);
+  // 開いた手順の一覧の後ろ
+  const open = one(html`<${talk.Bubble} ...${bubbleOf({ foot: foot(true), act: { busy: false }, onAct: () => void n++ })} />`);
+  const kids = (open.children as El[]).map((c) => c.props.class);
+  assert.deepEqual(kids.slice(-3), ["c-msg-foot", "c-steps-list", "c-msg-act"]);
+  // 待ちの形は aria-busy で、押しても呼ばない
+  const busy = one(html`<${talk.Bubble} ...${bubbleOf({ foot: foot(false), act: { busy: true }, onAct: () => void n++ })} />`);
+  const busyBtn = find(find(busy, "c-msg-act"), "c-btn")[0] as El;
+  assert.deepEqual([busyBtn.props["aria-busy"], busyBtn.props["aria-disabled"], find(busyBtn, "c-btn-spin").length], ["true", "true", 1]);
+  (busyBtn.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.equal(n, 1);
+  // act が無ければ出さない
+  for (const o of [{ foot: foot(true) }, { foot: foot(false) }, {}]) assert.equal(find(one(html`<${talk.Bubble} ...${bubbleOf(o)} />`), "c-msg-act").length, 0);
+});
+
+test("web components: TalkRows（［続ける］を押すと on.continue にその行の key）", () => {
+  const { calls, on } = talkRec();
+  const turns = [
+    { id: 7, kind: "agent", text: "a", outcome: "done", steps: ["Read a"], end: "完了" },
+    { id: 8, kind: "agent", text: "b", outcome: "max_turns", steps: ["Read a"], end: "手順の上限で止まりました" },
+  ];
+  const model = talk.talkModel(talkState({ turns, continueKey: "8" }), talk.parseBlocks);
+  const root = one(html`<${talk.TalkTimeline} model=${model} on=${on} />`);
+  const acts = find(root, "c-msg-act");
+  assert.equal(acts.length, 1);
+  (find(acts, "c-btn")[0]!.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(calls, [["continue", "8"]]);
 });
 
 test("web components: RunLine（aria-busy・aria-live と role=status が無い・recent の data-current・waiting・all・［中断］の busy と on）", () => {
