@@ -699,13 +699,17 @@
 
   /** [続ける]: 手順の上限で止まった最後の返事（セッション・実行中のターンが無いとき）。押したら隠す（このタブのメモリだけ） */
   const continued = new Set();
+  /** [続ける] を出せるか: 手順の上限で止まった返事・セッション・実行中のターンが無い・まだ押して受け付けられていない */
+  function continuable(ch, run, turn) {
+    return !!turn && turn.kind === "agent" && turn.outcome === "max_turns" && !!ch && ch.kind === "session" && !run && !continued.has(turn.id);
+  }
   function continueButton(channelId, turn) {
     const button = el("button", { class: "btn btn-secondary btn-sm", type: "button" }, [icon("play"), "続ける"]);
     button.addEventListener("click", () => continueTurn(channelId, turn, button));
     return el("div", { class: "msg-actions" }, [button]);
   }
 
-  /** [続ける] を送る。button は押したもの（[もう一度] からは null） */
+  /** [続ける] を送る。button は押したもの（[もう一度] からは null）。受け付けられたら true */
   async function continueTurn(channelId, turn, button) {
     if (button) button.disabled = true;
     try {
@@ -713,11 +717,13 @@
       continued.add(turn.id);
       SA.poll.running();
       SA.app.refresh("ch:" + channelId);
+      return true;
     } catch (err) {
       if (err && err.status === 409) toast(err.code === "running" ? "実行中のターンがあります" : STALE_TEXT);
       else if (err && err.status === 404) toast(STALE_TEXT);
       else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => continueTurn(channelId, turn, null) });
       if (button) button.disabled = false;
+      return false;
     }
   }
 
@@ -1278,7 +1284,7 @@
     let prev = null;
     if (talk) {
       // 行は部品が描く。手順の上限で止まった最後の返事の [続ける] は、古い .tl の先頭（吹き出しの列のすぐ下）
-      if (last && last.kind === "agent" && last.outcome === "max_turns" && ch && ch.kind === "session" && !run && !continued.has(last.id)) {
+      if (continuable(ch, run, last)) {
         timeline.append(continueButton(channelId, last));
       }
     }
@@ -1288,7 +1294,7 @@
       const node = renderTurn(reply && frame.replyText ? Object.assign({}, turn, { text: frame.replyText(turn.text) }) : turn, channelId, ch, prev);
       prev = turn;
       // 手順の上限で止まった最後の返事には [続ける]（セッションで、実行中のターンが無いとき）
-      if (turn === last && turn.kind === "agent" && turn.outcome === "max_turns" && ch && ch.kind === "session" && !run && !continued.has(turn.id)) {
+      if (turn === last && continuable(ch, run, turn)) {
         // 吹き出しの下に左寄せ
         node.append(continueButton(channelId, turn));
       }
