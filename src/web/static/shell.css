@@ -377,6 +377,26 @@
   display: none;
 }
 
+/* カードの根（会話の根のすぐ次）。左右は会話の列と同じ余白、上は会話の下の余白に任せる。空なら出さない */
+.v3 .ed-scroll > [data-cards] {
+  box-sizing: border-box;
+  max-width: var(--c-talk-max);
+  margin-inline: auto;
+  padding: 0 var(--c-gutter) var(--c-gutter);
+}
+
+.v3 .ed-scroll > [data-cards]:empty {
+  display: none;
+}
+
+.v3 .ed-scroll > [data-cards] + .tl {
+  padding: 0 var(--c-gutter) var(--c-gutter);
+}
+
+.v3 .ed-scroll > [data-cards] + .tl:empty {
+  display: none;
+}
+
 /* 入力欄を部品（c-composer）が描くときの根。古い .composer-wrap と同じく縮まず、列の下に置く */
 .v3 .ed > [data-composer] {
   flex: none;

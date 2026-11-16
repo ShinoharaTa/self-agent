@@ -2197,11 +2197,11 @@ function appKeys(js: string): string[] {
   return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
 }
 
-test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-list → c-shell → c-talk → c-composer、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
+test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-list → c-shell → c-talk → c-composer → c-cards、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
   const html = read("v3.html");
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
-  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css"]);
+  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css", "/static/c-cards.css"]);
   // module は元から後回し（defer を書かない）。文書の順で topics.js の後・shell.js の前に動く
   const scripts = [...html.matchAll(/<script (?:type="module" )?src="([^"]+)"( defer)?><\/script>/g)].map((m) => [m[1], m[0].includes('type="module"') ? "module" : m[2] ? "defer" : "none"]);
   assert.deepEqual(scripts, [
