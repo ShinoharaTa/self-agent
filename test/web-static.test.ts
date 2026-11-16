@@ -1647,6 +1647,22 @@ test("web static: 質問のカードは全部の問に答えるまで [答える
   assert.equal(views.ccQuestionPicks(QUESTIONS, [{ labels: ["赤"], other: false, text: "" }, { labels: [], other: false, text: "" }]), null);
 });
 
+test("web static: 質問のカードで「その他」を選んだ後に選択肢を選ぶと、「その他」は外れて欄が隠れる（1 つ選ぶ形も複数選ぶ形も）", () => {
+  const { views } = loadViews();
+  const card = views.ccPermissionCard("s1", questionPermission(26), null)!;
+  const fieldsets = descendants(card).filter((n) => n.tagName === "fieldset");
+  for (const [i, label] of [[0, "赤"], [1, "B"]] as const) {
+    const otherBox = descendants(fieldsets[i]!).filter((n) => n.tagName === "input").at(-1)! as FakeNode & { checked: boolean };
+    const text = descendants(fieldsets[i]!).find((n) => n.tagName === "textarea")!;
+    pick(otherBox);
+    assert.equal(text.hidden, false);
+    pick(optionInput(card, label));
+    assert.equal(otherBox.checked, false, "選択肢を選ぶと「その他」は外れる");
+    assert.equal(optionInput(card, label).checked, true);
+    assert.equal(text.hidden, true, "「その他」の欄は隠れる");
+  }
+});
+
 test("web static: 質問のカードの [やめる] は確認なしで /deny、409 は古い・400 は形が合わない", async () => {
   const { views, posts, bodies, toasts, setReply } = loadViews();
   const card = views.ccPermissionCard("s1", questionPermission(23), null)!;
