@@ -132,7 +132,7 @@ export function footOf(turn, open, end) {
   return { text: end, tone, steps: n > 0 ? turn.steps : null, open: n > 0 && open === true };
 }
 
-/** 会話の行のモデル。{ older, items, running }。state.on は読まない（TalkTimeline の prop で渡す） */
+/** 会話の行のモデル。{ older, items, running }。openSteps は key（行の id を文字列にした物）の Set。state.on は読まない（TalkTimeline の prop で渡す） */
 export function talkModel(state, parse) {
   const fmt = state.fmt;
   const turns = Array.isArray(state.turns) ? state.turns : [];
@@ -148,7 +148,7 @@ export function talkModel(state, parse) {
     if (turn.kind === "owner") {
       return { kind: "bubble", key, who: "owner", label, name: null, blocks: [{ type: "plain", text }], time, state: turn.optimistic === true ? "sending" : null, foot: null };
     }
-    const open = openSteps ? openSteps.has(turn.id) : false;
+    const open = openSteps ? openSteps.has(key) : false;
     return {
       kind: "bubble",
       key,

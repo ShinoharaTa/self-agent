@@ -1777,7 +1777,7 @@ test("web components: talkModel の送っている途中・older、parse は age
     { id: 4, kind: "agent", text: "完了", outcome: "done", steps: ["Read a"], end: "完了（1 秒）" },
     { id: 5, kind: "agent", text: "失敗", outcome: "failed", steps: [], end: "止まりました" },
   ];
-  const m = talk.talkModel(talkState({ turns, fmt, hasMore: true, openSteps: new Set([4]) }), parse);
+  const m = talk.talkModel(talkState({ turns, fmt, hasMore: true, openSteps: new Set(["4"]) }), parse);
   const items = m.items as Obj[];
   assert.deepEqual(items.map((i) => i.state), ["sending", null, null, null, null]);
   assert.equal(m.older, true);
@@ -1826,6 +1826,22 @@ test("web components: talkModel の running（後ろ 3 つ・0 件の文・4 件
   const { calls: c2, fmt: f2 } = talkFmt();
   talk.talkModel(talkState({ fmt: f2, running: run([]) }), talk.parseBlocks);
   assert.deepEqual(c2.filter((c) => c[0] === "runName"), [["runName", null]]);
+});
+
+test("web components: 開いている手順は key（数値の id を文字列にした物）の Set で引く。toggleSteps が受けた key を入れて描き直すと開く", () => {
+  const { calls, on } = talkRec();
+  const turns = [{ id: 4, kind: "agent", text: "直しました。", outcome: "done", steps: ["Read a", "Bash b"], end: "完了" }];
+  const closed = one(html`<${talk.TalkTimeline} model=${talk.talkModel(talkState({ turns }), talk.parseBlocks)} on=${on} />`);
+  const toggle = find(closed, "c-steps-toggle")[0] as El;
+  assert.equal(toggle.props["aria-expanded"], "false");
+  (toggle.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(calls, [["toggleSteps", "4"]]);
+  const opened = one(html`<${talk.TalkTimeline} model=${talk.talkModel(talkState({ turns, openSteps: new Set([calls[0]?.[1]]) }), talk.parseBlocks)} on=${on} />`);
+  assert.equal((find(opened, "c-steps-toggle")[0] as El).props["aria-expanded"], "true");
+  assert.equal(find(opened, "c-steps-list").length, 1);
+  // 元の型（数値）の Set では開かない
+  const raw = one(html`<${talk.TalkTimeline} model=${talk.talkModel(talkState({ turns, openSteps: new Set([4]) }), talk.parseBlocks)} on=${on} />`);
+  assert.equal((find(raw, "c-steps-toggle")[0] as El).props["aria-expanded"], "false");
 });
 
 test("web components: Blocks（段落・見出し・code・箇条書き・番号の start・入れ子・plain・知らない type）", () => {
