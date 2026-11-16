@@ -217,14 +217,17 @@
   }
 
   // ===== 描く =====
-  /** 部品に描かせる。描けなかったら（入口が false）失敗にして、失敗の表示を 1 回だけ描き直す */
+  /**
+   * 部品に描かせる。描けなかったら（入口が false）失敗にして、失敗の表示を 1 回だけ描き直す。
+   * 同じ data ではまた描けないので、2 回目は data の無い形で渡す（data 自体は消さない。次の読み取りで置き換わる）
+   */
   function render() {
+    if (data) document.title = (data.turns > 0 ? "(" + data.turns + ") " : "") + "self-agent";
     if (!SA.list) return;
     const ok = SA.list.draw(listState());
-    if (data) document.title = (data.turns > 0 ? "(" + data.turns + ") " : "") + "self-agent";
     if (!ok && !failed) {
       failed = true;
-      SA.list.draw(listState());
+      SA.list.draw({ ...listState(), data: null, failed: true });
     }
   }
 

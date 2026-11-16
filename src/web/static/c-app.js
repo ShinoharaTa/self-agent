@@ -31,8 +31,9 @@ if (listRoot) {
     try {
       const model = listModel(state);
       render(html`<${TopicList} model=${model} compact=${env.fine.matches} on=${state.on} />`, listRoot);
-    } catch {
-      console.error("[web] list draw failed");
+    } catch (error) {
+      // 名前だけ（message・stack は本文を含むことがあるので出さない）
+      console.error("[web] list draw failed", error instanceof Error ? error.name : "");
       return false;
     }
     const after = rootEl();

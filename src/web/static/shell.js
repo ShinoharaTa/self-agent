@@ -1398,6 +1398,9 @@
       const root = $("c-list-root");
       if (root) root.replaceChildren(el("p", { text: "一覧を表示できませんでした。ページを読み直してください" }));
       console.error("[web] list entry missing");
+    } else {
+      // 最初の応答が返るまでは読み込み中を出す（data がまだ無い）
+      SA.topics.render();
     }
     refs.searchBox = $("v3-search-box");
     // 帯の「場所 ∨」（中身は 1 回だけ作る。renderBar は文字・無効・title・hidden だけを書く）
