@@ -1874,6 +1874,47 @@ test("web components: Blocks（段落・見出し・code・箇条書き・番号
   assert.deepEqual(unknown.map((k) => [k.type, k.props.class, textOf(k)]), [["p", "c-md-p", "| a |"], ["p", "c-md-p", ""]]);
 });
 
+test("web components: 危ない入力を Blocks に通しても、リンクは http(s) だけで、決まったタグと属性しか出ず、HTML は文字のまま", () => {
+  const inputs = [
+    "[x](javascript:alert(1))",
+    "[x](data:text/html,<b>x</b>)",
+    "javascript:alert(1)",
+    "<script>alert(1)</script>",
+    "<img src=x onerror=alert(1)>",
+    "HTTPS://EXAMPLE.COM/a",
+    "//evil.example/a",
+    "[x](file:///etc/passwd)",
+  ];
+  // 今の実装が出すタグ（Blocks と Inline）
+  const TAGS = new Set(["div", "p", "pre", "ul", "ol", "li", "strong", "code", "a"]);
+  const all = (t: Tree): El[] => (typeof t === "string" ? [] : [t, ...t.children.flatMap(all)]);
+  let links = 0;
+  for (const text of inputs) {
+    // 後ろに http(s) の URL を足した形も通す（a の検査が空振りしない）
+    const variants = [talk.parseBlocks(text), [{ type: "plain", text }], talk.parseBlocks("**" + text + "**"), talk.parseBlocks("- " + text), talk.parseBlocks(text + " https://a.example/ok")];
+    for (const blocks of variants) {
+      const tree = one(html`<${talk.Blocks} blocks=${blocks} />`);
+      const els = all(tree);
+      for (const el of els) {
+        assert.ok(TAGS.has(el.type), `${text}: タグ ${el.type}`);
+        for (const prop of Object.keys(el.props)) {
+          assert.ok(!/^on/i.test(prop) && !["style", "src", "dangerouslySetInnerHTML"].includes(prop), `${text}: ${el.type} の ${prop}`);
+        }
+        if (el.type === "a") {
+          links++;
+          assert.match(String(el.props.href), /^https?:\/\//i, text);
+          assert.equal(el.props.target, "_blank", text);
+          const rel = String(el.props.rel).split(/\s+/);
+          assert.ok(rel.includes("noreferrer") && rel.includes("noopener"), `${text}: rel ${el.props.rel}`);
+        }
+      }
+      // HTML は文字のまま出る
+      if (text.includes("<")) assert.ok(textOf(tree).includes(text), `${text}: ${textOf(tree)}`);
+    }
+  }
+  assert.ok(links >= inputs.length, `a の数 ${links}`);
+});
+
 test("web components: Inline（リンクの href・target・rel、太字の中のリンク、code）", () => {
   const tree = expand(html`<${talk.Inline} text=${"見て https://a.example/x と **太 https://b.example/y** と `c`"} />`);
   const links = tree.flatMap((t) => find(t, "c-md-link"));

@@ -195,6 +195,15 @@ test("renderText: c-talk.js の parseBlocks・parseInline は ui.js と同じ結
     "| a | b |\n|---|---|",
     "> 引用の行",
     TALK_MD,
+    // 安全に関わる入力（リンクの記法・危ない scheme・HTML は文字のまま）
+    "[x](javascript:alert(1))",
+    "[x](data:text/html,<b>x</b>)",
+    "javascript:alert(1)",
+    "<script>alert(1)</script>",
+    "<img src=x onerror=alert(1)>",
+    "HTTPS://EXAMPLE.COM/a",
+    "//evil.example/a",
+    "[x](file:///etc/passwd)",
   ];
   for (const text of samples) {
     const ours = json(talk.parseBlocks(text));
