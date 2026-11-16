@@ -394,6 +394,12 @@ function liveTalkProblems({ label }: { label: string }): string[] {
   if (talk !== undefined && tl !== null && tl.getClientRects().length > 0) {
     const inner = (el: Element): number => el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft);
     if (Math.abs(inner(tl) - inner(talk)) > 0.5) say(`.tl の中身の左端 ${inner(tl).toFixed(1)} が .c-talk の中身の左端 ${inner(talk).toFixed(1)} でない`);
+    // 上の余白を重ねない（.tl の最初の子は .c-talk の下端からすぐ。間は .c-talk の下の余白だけ）
+    const first = tl.firstElementChild;
+    if (first !== null) {
+      const gap = first.getBoundingClientRect().top - parseFloat(getComputedStyle(first).marginTop) - talk.getBoundingClientRect().bottom;
+      if (Math.abs(gap) > 0.5) say(`.tl の最初の子の上に .c-talk の下の余白のほかに ${gap.toFixed(1)} の間が在る`);
+    }
   }
   return lines;
 }
@@ -2209,7 +2215,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         // 本番の見出し（軽い分。ライトはここで見る）と、会話の行（部品が描く）
         const problems = [...(await checkTop(page, vp, "会話")), ...(await liveTalkLines(page, vp, "会話"))];
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
-        if (problems.length > 0) throw new Error(`見出しの検査で ${problems.length} 件`);
+        if (problems.length > 0) throw new Error(`見出しと会話の行の検査で ${problems.length} 件`);
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("#ed *")) {
             if (el.scrollHeight > el.clientHeight + 4 && getComputedStyle(el).overflowY !== "visible") el.scrollTop = Math.round((el.scrollHeight - el.clientHeight) * 0.45);
