@@ -1927,11 +1927,11 @@ function appKeys(js: string): string[] {
   return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
 }
 
-test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-list、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
+test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-list → c-shell、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
   const html = read("v3.html");
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
-  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-list.css"]);
+  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-list.css", "/static/c-shell.css"]);
   // module は元から後回し（defer を書かない）。文書の順で topics.js の後・shell.js の前に動く
   const scripts = [...html.matchAll(/<script (?:type="module" )?src="([^"]+)"( defer)?><\/script>/g)].map((m) => [m[1], m[0].includes('type="module"') ? "module" : m[2] ? "defer" : "none"]);
   assert.deepEqual(scripts, [
@@ -2260,14 +2260,10 @@ function loadShell(
   const headOps = node("span", "v3-head-ops");
   const searchBox = node("div", "v3-search-box");
   searchBox.hidden = true;
-  const foot = node("footer", "v3-list-foot");
   const views = node("div", "v3-views");
   views.hidden = true;
   // 一覧の入れ物（中は部品が描く。fake DOM では描かない）
   const listRoot = node("div", "c-list-root", "v3-slot");
-  const handEntry = node("div", undefined, "v3-hand-entry");
-  const handAsk = node("button", "v3-hand-ask", "v3-hand-ask");
-  handEntry.append(handAsk);
   const list = node("nav", "v3-list", "v3-list");
   // 下のバーの入れ物（中は部品が描く。fake DOM では右腕と「ほか」の代わりのボタンだけ）
   const bottomRoot = node("div", "c-bottom-root", "v3-slot");
@@ -2275,7 +2271,7 @@ function loadShell(
   bottomHand.setAttribute("data-act", "hand");
   const bottomMore = node("button");
   if (!opts.noList) bottomRoot.append(bottomHand, bottomMore);
-  list.append(headOps, searchBox, listRoot, bottomRoot, handEntry, foot);
+  list.append(headOps, searchBox, listRoot, bottomRoot);
   Object.defineProperty(list, "offsetWidth", { value: 280 });
   Object.defineProperty(v3, "clientWidth", { get: () => state.width });
   const main = node("main", "v3-main", "v3-main");
@@ -2703,7 +2699,7 @@ function loadShell(
     press,
     app: SA.app as ShellApp,
     topics: SA.topics as Topics,
-    nodes: { v3, ed, listRoot, headOps, searchBox, foot, views, sheet: ids.get("v3-sheet")!, list, main, bar, hand, handEd, handShow, handAsk, handOpen, backdrop, bottomRoot, bottomHand, bottomMore },
+    nodes: { v3, ed, listRoot, headOps, searchBox, views, sheet: ids.get("v3-sheet")!, list, main, bar, hand, handEd, handShow, handOpen, backdrop, bottomRoot, bottomHand, bottomMore },
     handRenders,
     chatChannels,
     handReplies,
@@ -2954,13 +2950,28 @@ test("web static: v3 の下のバーの入口: 最初の応答の前に描き、
   assert.equal(f.list.bottoms.at(-2)!.hand, "turn");
 });
 
-test("web static: v3 の入口（SA.list）が無いとき、init は落ちず一覧の場所に 1 文を出し、ほかは動く", async () => {
+test("web static: v3 の入口（SA.list）が無いとき、init は落ちず一覧の場所に 1 文と読み直すボタンを出し、下のバーは出さず、ほかは動く", async () => {
   const h = loadShell({ noList: true });
   await h.flush();
   const kidsOf = h.nodes.listRoot.children as DomNode[];
   assert.equal(kidsOf.length, 1);
-  assert.equal(kidsOf[0]!.tagName, "p");
-  assert.equal(kidsOf[0]!.textContent, "一覧を表示できませんでした。ページを読み直してください");
+  const box = kidsOf[0]!;
+  assert.equal(box.tagName, "div");
+  assert.ok(box.classes.has("v3-empty") && box.classes.has("v3-entry-missing"));
+  const inner = box.children as DomNode[];
+  assert.equal(inner.length, 2);
+  assert.equal(inner[0]!.tagName, "p");
+  assert.ok(inner[0]!.classes.has("meta"));
+  assert.equal(inner[0]!.textContent, "一覧を表示できませんでした");
+  const again = inner[1]!;
+  assert.equal(again.tagName, "button");
+  assert.ok(again.classes.has("btn") && again.classes.has("btn-secondary"));
+  assert.equal(again.getAttribute("type"), "button");
+  assert.equal(again.textContent, "ページを読み直す");
+  again.dispatch("click");
+  assert.equal(h.calls.reload, 1);
+  // 下のバーの代わりは作らない
+  assert.equal(h.nodes.bottomRoot.children.length, 0);
   assert.deepEqual(h.errors, ["[web] list entry missing"]);
   // 読み取り・描き直し・開くは止まらない。件数は題に出す
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")], { turns: 1 }));
@@ -2969,6 +2980,13 @@ test("web static: v3 の入口（SA.list）が無いとき、init は落ちず�
   h.topics.render();
   h.app.open("ch:a");
   assert.equal(h.app.activeTabId(), "ch:a");
+  // 1 文とボタンを縦に並べる
+  const css = read("shell.css");
+  const at = css.indexOf("\n.v3-entry-missing {");
+  assert.ok(at >= 0);
+  const rule = css.slice(css.indexOf("{", at) + 1, css.indexOf("}", at));
+  assert.match(rule, /flex-direction: column;/);
+  assert.match(rule, /gap: var\(--space-3\);/);
 });
 
 test("web static: v3 の render は入口の draw が false なら failed にして、data の無い失敗の表示で 1 回だけ描き直し（data は残す）、もう失敗なら描き直さない", async () => {
@@ -3148,6 +3166,15 @@ test("web static: 新しい殻の下のバー（広い幅）は タスク・リ�
   await w.flush();
   w.press.bottom("more");
   assert.deepEqual(w.nodes.sheet.querySelectorAll("button.more-row").map(textOf), ["knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"].map((id) => "題:" + id));
+});
+
+test("web static: スマホの「ほか」の板はタスク・リマインドを先頭に、その後ろに決めた順で出す", async () => {
+  const all = ["tasks", "reminders", "knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"];
+  const h = loadShell({ phone: true, known: (tab) => tab.startsWith("ch:") || all.includes(tab) });
+  await h.flush();
+  h.press.bottom("more");
+  assert.equal(h.nodes.sheet.getAttribute("open"), "");
+  assert.deepEqual(h.nodes.sheet.querySelectorAll("button.more-row").map(textOf), all.map((id) => "題:" + id));
 });
 
 test("web static: 絞り込みは題名・群・人格の語を全部含むものだけを残し、当たらない群・行はモデルに入れない。「あなたの番」は絞り込まない", async () => {
@@ -3560,9 +3587,6 @@ test("web static: v3 のシートは幅によらず .more-row の見た目を .v
   assert.match(block(css, "\n.v3-sheet"), /width: min\(360px, 100vw - 32px\);/);
   const phoneCss = css.slice(css.indexOf("@media (max-width: 639px)"));
   assert.match(block(phoneCss, "  .v3-sheet"), /width: 100%;/);
-  // 下の口はスマホでも一覧の列の末尾（固定しない）
-  assert.doesNotMatch(css, /position: fixed;[^}]*\}[^{]*v3-list-foot/);
-  assert.match(block(phoneCss, "  .v3-list-foot"), /env\(safe-area-inset-bottom, 0px\)/);
 });
 
 // ===== 会話を 1 画面に 2 つ描く（chat.js・api.js の「見えている会話」。#357 の M3a） =====
@@ -4558,6 +4582,26 @@ test("web static: 右腕の口の印は あなたの番 > 未読 で 1 つ、見
   assert.deepEqual(p.bottom().items[1], { act: "hand", label: "右腕に頼む・訊く", name: "右腕に頼む・訊く（あなたの番）", mark: "turn" });
 });
 
+test("web static: スマホの一覧で右腕を閉じた後、開いたボタンが文書に無ければ下のバーの右腕のボタンへ焦点を戻す", async () => {
+  // (a) 開いたボタンが消えた: SA.list.focusHand で下のバーの右腕のボタン
+  const h = await loadHand({ phone: true });
+  h.press.bottom("hand", new DomNode("button"));
+  h.history.back();
+  assert.equal(h.list.focusHands, 1);
+  assert.equal(h.document.activeElement, h.nodes.bottomHand);
+  // (b) focusHand が当てられなくても落ちない
+  const f = await loadHand({ phone: true, focusHand: false });
+  f.press.bottom("hand", new DomNode("button"));
+  f.history.back();
+  assert.equal(f.list.focusHands, 1);
+  // (c) 会話の上の [右腕] から開いて閉じたときは、そのボタンへ戻す（focusHand は呼ばない）
+  const c = await loadHand({ phone: true });
+  c.app.open("ch:1");
+  c.nodes.handOpen.dispatch("click");
+  c.history.back();
+  assert.equal(c.list.focusHands, 0);
+});
+
 test("web static: 右腕を描き直しても [畳む] の焦点を保つ", async () => {
   const h = await loadHand();
   const first = handClose(h);
@@ -4589,11 +4633,12 @@ test("web static: 右腕のスクロールは描き直しで位置を保ち（�
   assert.equal(scroll().scrollTop, 1300);
 });
 
-test("web static: v3.html に右腕の枠と 3 つの口があり、右腕のための <dialog> は無い", () => {
+test("web static: v3.html に右腕の枠と 2 つの口と下のバーの入れ物があり、右腕のための <dialog> は無い", () => {
   const html = read("v3.html");
   assert.match(html, /<div class="v3" id="v3" data-view="list" data-hand="closed" data-hand-mode="over">/);
   assert.match(html, /<\/main>\s*<aside class="v3-hand" id="v3-hand" aria-label="右腕">\s*<button class="btn btn-ghost btn-sm btn-icon-sm v3-hand-show" id="v3-hand-show" type="button" aria-controls="v3-hand-ed" aria-expanded="false"><\/button>\s*<div class="ed v3-hand-ed" id="v3-hand-ed"><\/div>\s*<\/aside>\s*<div class="v3-hand-backdrop" id="v3-hand-backdrop" hidden><\/div>\s*<\/div>/);
-  assert.match(html, /id="c-list-root"[\s\S]*<div class="v3-hand-entry">\s*<button class="v3-hand-ask" id="v3-hand-ask" type="button" aria-controls="v3-hand"><\/button>\s*<\/div>\s*<footer class="v3-list-foot"/);
+  assert.match(html, /id="c-list-root"><\/div>\s*<div class="v3-slot" id="c-bottom-root"><\/div>\s*<\/nav>/);
+  assert.doesNotMatch(html, /v3-hand-ask|v3-hand-entry|v3-list-foot/);
   assert.match(html, /id="v3-views"[^>]*><\/div>\s*<button class="btn btn-ghost btn-sm v3-hand-open" id="v3-hand-open" type="button" aria-controls="v3-hand"><\/button>\s*<\/div>/);
   const dialogs = [...html.matchAll(/<dialog id="([^"]+)"/g)].map((m) => m[1]);
   // 始めるダイアログ（M4b）は右腕のためでない
@@ -4606,7 +4651,6 @@ test("web static: v3.html に右腕の枠と 3 つの口があり、右腕のた
   assert.match(css, /\.v3-hand-backdrop \{[^}]*z-index: var\(--z-drawer-backdrop\);[^}]*background: var\(--backdrop\);/);
   const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
   assert.match(phone, /\.v3\[data-hand-mode="over"\]\[data-hand="open"\] \.v3-hand \{[^}]*top: calc\(var\(--space-8\) \+ env\(safe-area-inset-top, 0px\)\);[^}]*padding-bottom: env\(safe-area-inset-bottom, 0px\);/);
-  assert.match(phone, /\.v3-hand-ask \{[^}]*min-height: var\(--tap\);/);
 });
 
 // ===== 右腕の枠のレビューの直し（M3b。#357） =====

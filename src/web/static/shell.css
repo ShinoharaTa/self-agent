@@ -99,19 +99,6 @@
   }
 }
 
-/* 下の口（タスク・リマインド・ほか）。スマホでも一覧の列の末尾（一覧の部品の .c-list だけがスクロールする） */
-.v3-list-foot {
-  display: flex;
-  flex: none;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-  border-top: var(--border-width) solid var(--border);
-}
-
-.v3-foot-btn {
-  gap: var(--space-1);
-}
-
 /* ===== 始めるダイアログ（#v3-start。幅は dialog の既定のまま。≤639px は app.css の下からのシート） ===== */
 .v3-start .textarea {
   resize: vertical;
@@ -247,6 +234,12 @@
   text-align: center;
 }
 
+/* 入口（c-app.js）が読めないときの 1 文とボタン（.v3-empty と一緒に付ける） */
+.v3-entry-missing {
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
 /* ===== 列 3: 右腕（列か、列 2 が 360px を切る幅とスマホでは重ねる形。どちらに置くかは shell.js が測って data-hand-mode に書く） ===== */
 .v3-hand {
   display: flex;
@@ -330,8 +323,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* スマホの 2 つの口（一覧の下・上の帯の [右腕]）は既定では出さない */
-.v3-hand-entry,
+/* スマホの上の帯の [右腕] は既定では出さない */
 .v3-hand-open {
   display: none;
 }
@@ -352,10 +344,6 @@
 
   .v3-list {
     border-right: 0;
-  }
-
-  .v3-list-foot {
-    padding-bottom: calc(var(--space-1) + env(safe-area-inset-bottom, 0px));
   }
 
   /* 会話の列の下端。app.css の .composer-wrap は下の安全域を持たない（古い殻は下タブが持つ）。キーボードの間は足さない */
@@ -381,27 +369,6 @@
     border-left: 0;
     border-top: var(--border-width) solid var(--border);
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  }
-
-  .v3-hand-entry {
-    display: block;
-    padding: var(--space-2) var(--space-3) 0;
-  }
-
-  /* 入力欄に見える形（押すと開いて入力欄に焦点） */
-  .v3-hand-ask {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    width: 100%;
-    min-height: var(--tap);
-    padding: 0 var(--space-3);
-    background: var(--surface);
-    color: var(--text-secondary);
-    border: var(--border-width) solid var(--border);
-    border-radius: var(--radius-md);
-    font-size: var(--font-sm);
-    text-align: left;
   }
 
   .v3-hand-open {
