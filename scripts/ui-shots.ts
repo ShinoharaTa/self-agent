@@ -87,8 +87,21 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
 
 const oldShellNames = (vp: Viewport): string[] => [`old-${vp}-dark-list`, `old-${vp}-dark-chat`];
 
+/** 部品の見本のページ（/static/gallery.html。K1）を撮る組 */
+const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
+  { vp: "phone", theme: "dark" },
+  { vp: "phone", theme: "light" },
+  { vp: "pc", theme: "dark" },
+  { vp: "pc", theme: "light" },
+];
+const galleryName = (vp: Viewport, theme: Theme): string => `${vp}-${theme}-g-gallery`;
+
 /** 撮る PNG の名前（拡張子なし）の全部。--only はこの中から絞る */
-const ALL_SHOT_NAMES: readonly string[] = [...NEW_SHELLS.flatMap(({ vp, theme, full }) => newShellNames(vp, theme, full)), ...OLD_SHELLS.flatMap(oldShellNames)];
+const ALL_SHOT_NAMES: readonly string[] = [
+  ...NEW_SHELLS.flatMap(({ vp, theme, full }) => newShellNames(vp, theme, full)),
+  ...OLD_SHELLS.flatMap(oldShellNames),
+  ...GALLERY_SHOTS.map(({ vp, theme }) => galleryName(vp, theme)),
+];
 
 async function shoot(browser: Browser, fixture: FixtureServer, out: string, only: string | undefined, logLines: string[]): Promise<{ count: number; failed: number }> {
   const base = fixture.url;
@@ -273,8 +286,25 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
   }
 
+  /** 部品の見本のページ（認証の前に配られる。一覧は待たない） */
+  async function gallery(vp: Viewport, theme: Theme): Promise<void> {
+    const name = galleryName(vp, theme);
+    if (!wanted(name)) return;
+    const { ctx, page } = await contextFor(vp, theme, `gallery-${vp}-${theme}`);
+    try {
+      await step(name, [name], async () => {
+        await page.goto(base + "/static/gallery.html", { waitUntil: "load" });
+        await page.waitForSelector(".c-gallery-title", { timeout: 5000 });
+        await shot(page, name);
+      });
+    } finally {
+      await ctx.close();
+    }
+  }
+
   for (const { vp, theme, full } of NEW_SHELLS) await newShell(vp, theme, full);
   for (const vp of OLD_SHELLS) await oldShell(vp);
+  for (const { vp, theme } of GALLERY_SHOTS) await gallery(vp, theme);
   return { count, failed };
 }
 
@@ -298,7 +328,7 @@ async function main(argv: string[]): Promise<number> {
   const only = values.only;
   // 合う名前が無ければ Chromium を起動せずに返す
   if (only !== undefined && !ALL_SHOT_NAMES.some((name) => name.includes(only))) {
-    console.error(`--only ${only} に合う画面が無い（例: ${["phone-dark-a-list", "pc-dark-b-chat-top", "phone-light-b-chat-permission", "tablet-dark-a-list", "old-pc-dark-list"].join("・")}）`);
+    console.error(`--only ${only} に合う画面が無い（例: ${["phone-dark-a-list", "pc-dark-b-chat-top", "phone-light-b-chat-permission", "tablet-dark-a-list", "old-pc-dark-list", "pc-dark-g-gallery"].join("・")}）`);
     return 1;
   }
 
