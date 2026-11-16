@@ -1,0 +1,396 @@
+/* 小さい部品（c-atoms.js。docs/plan/web-ui-components.md §6 の K2）。寸法は tokens.css の --c-*、色は tokens.css の変数、字と間隔は base.css の目盛りだけ */
+
+/* ===== Icon ===== */
+.c-icon {
+  flex: none;
+  width: var(--c-icon);
+  height: var(--c-icon);
+  stroke: currentColor;
+  fill: none;
+}
+
+.c-icon[data-size="sm"] {
+  width: var(--c-icon-sm);
+  height: var(--c-icon-sm);
+}
+
+/* ===== Button ===== */
+.c-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-width: var(--c-tap);
+  max-width: 100%;
+  height: var(--c-tap);
+  padding: 0 var(--space-4);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--c-font-body);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-tight);
+  white-space: nowrap;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform var(--dur-micro) var(--ease-out);
+}
+
+.c-btn-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.c-btn[data-size="sm"] {
+  height: var(--c-btn-sm-h);
+  padding: 0 var(--space-3);
+  font-size: var(--font-sm);
+}
+
+/*
+ * 当たりの箱。角丸の角も当たるよう、枠の外側の四角を ::after で覆う（絶対配置は枠の内側から測るので枠の太さを引く）。
+ * sm は上下に広げて --c-tap にする
+ */
+.c-btn::after {
+  content: "";
+  position: absolute;
+  inset: calc(-1 * var(--border-width));
+}
+
+.c-btn[data-size="sm"]::after {
+  inset: calc((var(--c-btn-sm-h) - var(--c-tap)) / 2 - var(--border-width)) calc(-1 * var(--border-width));
+}
+
+.c-btn[data-kind="primary"] {
+  background: var(--primary);
+  color: var(--primary-text);
+  font-weight: var(--weight-semibold);
+}
+
+.c-btn[data-kind="accent"] {
+  border-radius: var(--c-round-r);
+  background: var(--accent);
+  color: var(--primary-text);
+  font-weight: var(--weight-semibold);
+}
+
+.c-btn[data-kind="secondary"] {
+  border-color: var(--border);
+}
+
+.c-btn[data-kind="ghost"] {
+  color: var(--text-secondary);
+}
+
+.c-btn[data-kind="danger"] {
+  background: var(--danger);
+  color: var(--primary-text);
+  font-weight: var(--weight-semibold);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-btn[data-kind="secondary"]:not([aria-disabled="true"]):hover,
+  .c-btn[data-kind="ghost"]:not([aria-disabled="true"]):hover {
+    background: var(--muted);
+  }
+
+  .c-btn[data-kind="primary"]:not([aria-disabled="true"]):hover,
+  .c-btn[data-kind="accent"]:not([aria-disabled="true"]):hover,
+  .c-btn[data-kind="danger"]:not([aria-disabled="true"]):hover {
+    opacity: 0.9;
+  }
+}
+
+.c-btn:not([aria-disabled="true"]):active {
+  transform: scale(0.97);
+}
+
+/* 押せない（実行中でない）: 字を沈め、塗りの種類は地を --muted に。secondary の枠は残す */
+.c-btn[aria-disabled="true"]:not([aria-busy="true"]) {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.c-btn[data-kind="primary"][aria-disabled="true"]:not([aria-busy="true"]),
+.c-btn[data-kind="accent"][aria-disabled="true"]:not([aria-busy="true"]),
+.c-btn[data-kind="danger"][aria-disabled="true"]:not([aria-busy="true"]) {
+  background: var(--muted);
+}
+
+/* 実行中: 色は種類のまま */
+.c-btn[aria-busy="true"] {
+  cursor: progress;
+}
+
+.c-btn-spin {
+  flex: none;
+  width: var(--c-icon-sm);
+  height: var(--c-icon-sm);
+  border: var(--ring-width) solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-full);
+  animation: c-spin var(--c-spin) linear infinite;
+}
+
+@keyframes c-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 動きを減らす設定では止めた欠けた輪と文が残る */
+@media (prefers-reduced-motion: reduce) {
+  .c-btn-spin {
+    animation: none;
+  }
+}
+
+/* ===== IconButton ===== */
+.c-iconbtn {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--c-tap);
+  height: var(--c-tap);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform var(--dur-micro) var(--ease-out);
+}
+
+.c-iconbtn[data-size="sm"] {
+  width: var(--c-btn-sm-h);
+  height: var(--c-btn-sm-h);
+}
+
+/* 当たりの箱（角丸の角も当たる）。sm は四方に広げて --c-tap にする */
+.c-iconbtn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.c-iconbtn[data-size="sm"]::after {
+  inset: calc((var(--c-btn-sm-h) - var(--c-tap)) / 2);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-iconbtn:not([aria-disabled="true"]):hover {
+    background: var(--muted);
+    color: var(--text);
+  }
+}
+
+.c-iconbtn:not([aria-disabled="true"]):active {
+  transform: scale(0.97);
+}
+
+.c-iconbtn[aria-disabled="true"] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.c-iconbtn > .c-badge {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+}
+
+/* ===== Badge ===== */
+.c-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--c-badge-h);
+  height: var(--c-badge-h);
+  padding: 0 var(--c-badge-pad);
+  border-radius: var(--radius-full);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.c-badge[data-tone="warning"] {
+  background: var(--warning);
+  color: var(--primary-text);
+}
+
+.c-badge[data-tone="accent"] {
+  background: var(--accent);
+  color: var(--primary-text);
+}
+
+.c-badge[data-tone="muted"] {
+  background: var(--muted);
+  color: var(--text-secondary);
+}
+
+/* ===== Mark（動きは K3 で決める） ===== */
+.c-mark {
+  flex: none;
+  display: inline-block;
+  width: var(--c-mark);
+  height: var(--c-mark);
+  border-radius: var(--radius-full);
+}
+
+.c-mark[data-state="turn"] {
+  background: var(--warning);
+}
+
+.c-mark[data-state="unread"] {
+  background: var(--accent);
+}
+
+.c-mark[data-state="running"] {
+  border: var(--c-mark-ring) solid var(--accent);
+}
+
+/* ===== Segmented ===== */
+/* 枠は box-shadow で描く（border だと項目の当たりが入れ物の高さいっぱいにならない）。折り返さず、入りきらなければ横に送る */
+.c-seg {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  height: var(--c-seg-h);
+  padding: 0 var(--c-seg-pad);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 0 0 var(--border-width) var(--border);
+}
+
+.c-seg-item {
+  flex: none;
+  display: inline-flex;
+  align-items: stretch;
+  height: 100%;
+  min-width: var(--c-tap);
+  padding: var(--c-seg-pad) 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  white-space: nowrap;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 入れ物が外側を切るので、輪は内側に */
+.c-seg-item:focus-visible {
+  outline-offset: calc(-1 * var(--ring-width));
+}
+
+.c-seg-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  transition: background-color var(--dur-micro) var(--ease-out), transform var(--dur-micro) var(--ease-out);
+}
+
+.c-seg-item[aria-checked="true"] > .c-seg-label {
+  background: var(--muted);
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-seg-item[aria-checked="false"]:not([aria-disabled="true"]):hover > .c-seg-label {
+    color: var(--text);
+  }
+}
+
+.c-seg-item:not([aria-disabled="true"]):active > .c-seg-label {
+  transform: scale(0.97);
+}
+
+.c-seg-item[aria-disabled="true"] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* ===== Field ===== */
+.c-field {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.c-field-label {
+  font-size: var(--font-sm);
+  color: var(--text);
+}
+
+.c-field-hint {
+  margin: 0;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+/* 空でも 1 行の高さを取る（出たときに下がずれない） */
+.c-field-error {
+  margin: 0;
+  min-height: calc(var(--font-sm) * var(--leading-normal));
+  font-size: var(--font-sm);
+  color: var(--danger);
+}
+
+/* input・textarea・select のどれにも同じクラス */
+.c-input {
+  width: 100%;
+  min-height: var(--c-tap);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--c-font-body);
+  line-height: var(--leading-normal);
+}
+
+.c-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.c-input:disabled {
+  background: var(--muted);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* ===== Empty・Loading（枠・絵・スピナーを付けない。左寄せ） ===== */
+.c-empty,
+.c-loading {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--c-gutter);
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.c-empty-text,
+.c-loading-text {
+  margin: 0;
+}

@@ -87,20 +87,26 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
 
 const oldShellNames = (vp: Viewport): string[] => [`old-${vp}-dark-list`, `old-${vp}-dark-chat`];
 
-/** 部品の見本のページ（/static/gallery.html。K1）を撮る組 */
+/** 部品の見本のページ（/static/gallery.html。K1・K2）を撮る組 */
 const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "phone", theme: "dark" },
   { vp: "phone", theme: "light" },
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-const galleryName = (vp: Viewport, theme: Theme): string => `${vp}-${theme}-g-gallery`;
+/** 見本の絵の種類（g-gallery はページ全体） */
+const GALLERY_KINDS = ["g-gallery"] as const;
+type GalleryKind = (typeof GALLERY_KINDS)[number];
+const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
+
+/** 押せる物の当たりの下限（px。指の端末 44・PC 36。docs/plan/web-ui-components.md §9 の K2） */
+const HIT_MIN: Record<Viewport, number> = { phone: 44, tablet: 44, pc: 36 };
 
 /** 撮る PNG の名前（拡張子なし）の全部。--only はこの中から絞る */
 const ALL_SHOT_NAMES: readonly string[] = [
   ...NEW_SHELLS.flatMap(({ vp, theme, full }) => newShellNames(vp, theme, full)),
   ...OLD_SHELLS.flatMap(oldShellNames),
-  ...GALLERY_SHOTS.map(({ vp, theme }) => galleryName(vp, theme)),
+  ...GALLERY_SHOTS.flatMap(({ vp, theme }) => GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind))),
 ];
 
 async function shoot(browser: Browser, fixture: FixtureServer, out: string, only: string | undefined, logLines: string[]): Promise<{ count: number; failed: number }> {
@@ -137,10 +143,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return { ctx, page };
   }
 
-  async function shot(page: Page, name: string): Promise<void> {
+  async function shot(page: Page, name: string, fullPage = false): Promise<void> {
     if (!wanted(name)) return;
     await wait(400);
-    await page.screenshot({ path: join(out, `${name}.png`) });
+    await page.screenshot({ path: join(out, `${name}.png`), fullPage });
     count++;
   }
 
@@ -287,16 +293,77 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
   }
 
-  /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない） */
+  /**
+   * 見本の当たりと切り替えの折り返しを測る。開いた dialog があればその中、無ければ .c-gallery と .c-toast の中の押せる物を、
+   * 見える所へ送ってから箱の中心から (±d, ±d) の 4 点で elementFromPoint がその要素（か子孫）を返すかで見る（d = 下限 / 2 - 1）。
+   * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
+   */
+  async function checkGallery(page: Page, vp: Viewport, label: string): Promise<void> {
+    const problems = await page.evaluate(
+      ({ min, phone }: { min: number; phone: boolean }) => {
+        const lines: string[] = [];
+        const open = document.querySelector("dialog[open]");
+        const scopes = open ? [open] : [...document.querySelectorAll(".c-gallery, .c-toast")];
+        const targets = new Set<Element>();
+        for (const scope of scopes) {
+          for (const el of scope.querySelectorAll('button, a[href], input, select, textarea, [role="radio"]')) if (el.getClientRects().length > 0) targets.add(el);
+        }
+        const d = min / 2 - 1;
+        for (const el of targets) {
+          el.scrollIntoView({ block: "center", inline: "center" });
+          const r = el.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          const points = [
+            [cx - d, cy - d],
+            [cx + d, cy - d],
+            [cx - d, cy + d],
+            [cx + d, cy + d],
+          ];
+          const ok = points.every(([x, y]) => {
+            const hit = document.elementFromPoint(x ?? 0, y ?? 0);
+            return hit !== null && (hit === el || el.contains(hit));
+          });
+          if (!ok) lines.push(`当たりが足りない: ${el.tagName.toLowerCase()}.${el.classList[0] ?? ""} ${Math.round(r.width)}x${Math.round(r.height)}`);
+        }
+        for (const seg of document.querySelectorAll(".c-seg")) {
+          const tops = new Set([...seg.children].map((child) => Math.round(child.getBoundingClientRect().top)));
+          if (tops.size > 1) lines.push(`切り替えが折り返している: ${seg.children.length} 項目`);
+        }
+        if (phone) {
+          const six = document.querySelector('[data-demo="seg-6"] .c-seg');
+          if (six === null || !(six.scrollWidth > six.clientWidth)) lines.push("6 項目の切り替えが横に送れていない");
+        }
+        return lines;
+      },
+      { min: HIT_MIN[vp], phone: vp === "phone" },
+    );
+    for (const line of problems) logLines.push(`[${label}] ${line}`);
+    if (problems.length > 0) throw new Error(`当たり・折り返しの検査で ${problems.length} 件`);
+  }
+
+  /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない）。絵ごとに読み直す */
   async function gallery(vp: Viewport, theme: Theme): Promise<void> {
-    const name = galleryName(vp, theme);
-    if (!wanted(name)) return;
-    const { ctx, page } = await contextFor(vp, theme, `gallery-${vp}-${theme}`, false);
+    const names = GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind));
+    if (!names.some(wanted)) return;
+    const label = `gallery-${vp}-${theme}`;
+    const { ctx, page } = await contextFor(vp, theme, label, false);
+    const loadGallery = async (): Promise<void> => {
+      await page.goto("about:blank");
+      await page.goto(base + "/static/gallery.html", { waitUntil: "load" });
+      await page.waitForSelector(".c-gallery-title", { timeout: 5000 });
+    };
     try {
-      await step(name, [name], async () => {
-        await page.goto(base + "/static/gallery.html", { waitUntil: "load" });
-        await page.waitForSelector(".c-gallery-title", { timeout: 5000 });
-        await shot(page, name);
+      const full = galleryName(vp, theme, "g-gallery");
+      await step(full, [full], async () => {
+        await loadGallery();
+        await checkGallery(page, vp, label);
+        // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
+        await page.evaluate(() => {
+          for (const el of document.querySelectorAll("*")) if (el.scrollLeft !== 0) el.scrollLeft = 0;
+          window.scrollTo(0, 0);
+        });
+        await shot(page, full, true);
       });
     } finally {
       await ctx.close();
