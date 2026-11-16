@@ -44,7 +44,7 @@ npm run cc-dry-run        # この機械の Claude Code のセッションを 1 
 npm run cc-setup -- --print # ~/.claude/settings.json に足す hooks の設定（5 つの事象の http hook と env。ポートと PermissionRequest の timeout（SELF_AGENT_CC_PERMISSION_HOLD_SEC と SELF_AGENT_CC_QUESTION_HOLD_SEC の大きい方 + 5）を埋め、トークンの値は置き場所の文にする）を標準出力に出す（ファイルは書かない。--print が無ければ使い方で exit 2、SELF_AGENT_CC_HOOK_PORT が無ければ exit 1）
 npm run unify-setup -- --print # プロジェクトのセッション（docs/plan/unify.md §5.3）のために、CLAUDE_CONFIG_DIR の skills・agents を ~/.claude の同じ名前への symlink にする `ln -s` の行（CLAUDE_CONFIG_DIR が無ければ先に mkdir -p）を標準出力に出す。済んだものは「済」、~/.claude に無いものは先にその mkdir -p の行、symlink でないもの・向きの違うものは理由の文（ファイルは書かない。--print が無ければ使い方で exit 2。CLAUDE.md は link しない（~/.claude/CLAUDE.md は CONFIG_DIR によらず読まれる））
 npm run make-icons        # Web UI のホーム画面のアイコン（app-icon.svg と 4 つの PNG）を scripts/make-icons.ts で src/web/static/ に書き直す（依存なし。図形を変えたら走らせて commit する。npm test が commit したものと一致するか確かめる）
-npm run ui-shots -- --out <dir> # Web UI の決まった画面を、作り物のデータの一時 DB と本物の Web サーバー（127.0.0.1 の空きポート）で、playwright-core のヘッドレス Chromium で <dir> に PNG と console.log として撮る（[--only <名前の一部>]。<dir> はリポジトリの外だけ。Discord・Claude・GitHub に出ない・env ファイルと本番の DB を読まない。Chromium が無い・--only に合う画面が無い・途中の段が失敗したときは exit 1）
+npm run ui-shots -- --out <dir> # Web UI の決まった画面を、作り物のデータの一時 DB と本物の Web サーバー（127.0.0.1 の空きポート）で、playwright-core のヘッドレス Chromium で <dir> に PNG と console.log として撮る（[--only <名前の一部>]。<dir> はリポジトリの外だけ。Discord・Claude・GitHub に出ない・env ファイルと本番の DB を読まない。Chromium が無い・--only に合う画面が無い・途中の段が失敗したときは exit 1。SIGINT・SIGTERM・SIGHUP でも閉じて 130・143・129）
 ```
 
 ## ディレクトリ構成

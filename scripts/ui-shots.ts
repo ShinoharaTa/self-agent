@@ -2,9 +2,10 @@
 // scripts/ui-shots-fixture.ts の作り物のデータで本物の Web サーバーを立て、playwright-core のヘッドレス Chromium で
 // 決まった画面を <dir>/<幅>-<テーマ>-<状態>.png に撮る。console の error・warning・pageerror・4xx/5xx・失敗した要求は <dir>/console.log に。
 // <dir> はリポジトリの外だけ（画像を repo に書かない）。Chromium は playwright-core の既定の探し方（PLAYWRIGHT_BROWSERS_PATH も効く）。
-// 成功しても失敗しても（SIGINT・SIGTERM でも）ブラウザとサーバーを閉じ、一時ディレクトリを消す。env ファイルは読まない
+// 成功しても失敗しても（SIGINT・SIGTERM・SIGHUP でも。終了コードは 130・143・129）ブラウザとサーバーを閉じ、一時ディレクトリを消す。env ファイルは読まない
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, isAbsolute } from "node:path";
+import { basename, dirname, join, relative, resolve, isAbsolute, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { Browser, BrowserContext, Page } from "playwright-core";
@@ -36,10 +37,29 @@ function realPathLoose(path: string): string {
   return join(realpathSync(head), ...rest);
 }
 
-function insideRepo(path: string): boolean {
-  const rel = relative(realpathSync(REPO_ROOT), realPathLoose(path));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+/** 根の下（根そのものを含む）か。`..shots` のような名前は中に数える */
+function isUnder(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  if (isAbsolute(rel)) return false;
+  return !(rel === ".." || rel.startsWith(".." + sep));
 }
+
+/** worktree から走らせたときの本体の checkout（git の common dir の親）。git が無い・失敗したら undefined */
+function mainCheckout(): string | undefined {
+  const result = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: REPO_ROOT, encoding: "utf8" });
+  const commonDir = result.status === 0 ? result.stdout.trim() : "";
+  if (commonDir === "" || !existsSync(commonDir)) return undefined;
+  return realpathSync(dirname(commonDir));
+}
+
+function insideRepo(path: string): boolean {
+  const target = realPathLoose(path);
+  const roots = [realpathSync(REPO_ROOT), mainCheckout()].filter((root) => root !== undefined);
+  return roots.some((root) => isUnder(root, target));
+}
+
+/** シグナルの慣例の終了コード（128 + 番号） */
+const SIGNAL_EXIT: Record<"SIGINT" | "SIGTERM" | "SIGHUP", number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
 
 const wait = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
@@ -125,7 +145,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // hash だけ違う URL は同じ文書の移動になり、開いたダイアログが残るので毎回読み直す
     await page.goto("about:blank");
     await page.goto(base + path, { waitUntil: "load" });
-    await page.waitForSelector("#v3-groups .v3-group, .v3-group", { timeout: 8000 }).catch(() => undefined);
+    // スマホで会話・設定を開いているときは一覧が隠れているので、在るまでを待つ
+    await page.waitForSelector("#v3-groups .v3-group", { state: "attached", timeout: 8000 });
     await wait(1200);
   }
 
@@ -149,7 +170,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       });
       await step(`${p} b`, [`${p}-b-chat-top`, `${p}-b-chat-middle`, `${p}-b-chat-bottom`], async () => {
         await load(page, `/static/v3.html#/ch/${open}`);
-        await page.waitForSelector("#ed textarea", { timeout: 5000 }).catch(() => undefined);
+        await page.waitForSelector("#ed textarea", { timeout: 5000 });
         await wait(800);
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("#ed *")) if (el.scrollHeight > el.clientHeight + 4) el.scrollTop = 0;
@@ -167,10 +188,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (!full) return;
       await step(`${p} b2`, [`${p}-b-chat-permission`, `${p}-b-chat-question`], async () => {
         await load(page, `/static/v3.html#/ch/${perm}`);
+        await page.waitForSelector("#ed .cc-permission", { timeout: 5000 });
         await wait(800);
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-permission`);
         await load(page, `/static/v3.html#/ch/${q}`);
+        await page.waitForSelector("#ed .cc-question-card", { timeout: 5000 });
         await wait(800);
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-question`);
@@ -189,13 +212,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (vp === "phone") {
           await page.click("#v3-hand-ask");
         } else {
-          const expanded = await page.getAttribute("#v3-hand-show", "aria-expanded").catch(() => null);
-          if (expanded !== "true") await page.click("#v3-hand-show").catch(() => undefined);
+          const expanded = await page.getAttribute("#v3-hand-show", "aria-expanded");
+          if (expanded !== "true") await page.click("#v3-hand-show");
         }
         await wait(1000);
         await shot(page, handName);
         if (vp !== "phone") {
           await load(page, `/static/v3.html#/ch/${open}`);
+          await page.waitForSelector("#ed .msg-agent", { timeout: 5000 });
           await wait(800);
           await shot(page, `${p}-c-hand-with-chat`);
         }
@@ -208,9 +232,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       });
       await step(`${p} f`, [`${p}-f-settings`, `${p}-f-knowledge-list`, `${p}-f-knowledge-detail`], async () => {
         await load(page, "/static/v3.html#/settings");
+        await page.waitForSelector("#ed .ed-section", { timeout: 5000 });
         await wait(800);
         await shot(page, `${p}-f-settings`);
         await load(page, "/static/v3.html#/knowledge");
+        await page.waitForSelector("#ed .master-item", { timeout: 5000 });
         await wait(800);
         await shot(page, `${p}-f-knowledge-list`);
         await page.locator("#ed").getByText("CSS の container queries").first().click();
@@ -230,12 +256,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     try {
       await step(`${label} list`, [`${label}-list`], async () => {
         await page.goto(base + "/", { waitUntil: "load" });
+        // スマホでは一覧が引き出しの中で隠れているので、在るまでを待つ
+        await page.waitForSelector("#sidebar .sb-row", { state: "attached", timeout: 8000 });
         await wait(2000);
         await shot(page, `${label}-list`);
       });
       await step(`${label} chat`, [`${label}-chat`], async () => {
         await page.goto("about:blank");
         await page.goto(base + `/#/ch/${open}`, { waitUntil: "load" });
+        await page.waitForSelector("#ed .msg-agent", { timeout: 8000 });
         await wait(2000);
         await shot(page, `${label}-chat`);
       });
@@ -284,12 +313,12 @@ async function main(argv: string[]): Promise<number> {
       await fixture?.close().catch(() => undefined);
       if (existsSync(out)) writeFileSync(join(out, "console.log"), logLines.length === 0 ? "" : logLines.join("\n") + "\n");
     })());
-  const onSignal = (signal: NodeJS.Signals): void => {
+  /** 2 回目のシグナルでも即死せず、同じ後片付けの終わりを待って止める */
+  const onSignal = (signal: keyof typeof SIGNAL_EXIT): void => {
     console.error(`${signal} を受けた。ブラウザとサーバーを閉じて止める`);
-    void cleanup().finally(() => process.exit(130));
+    void cleanup().finally(() => process.exit(SIGNAL_EXIT[signal]));
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) process.on(signal, onSignal);
   try {
     const { chromium } = await import("playwright-core");
     try {
@@ -303,6 +332,10 @@ async function main(argv: string[]): Promise<number> {
     fixture = await startFixtureServer({ log: (line) => logLines.push(`[server] ${line}`) });
     const { count, failed } = await shoot(browser, fixture, out, only, logLines);
     console.log(`${count} 枚を撮った: ${out}`);
+    if (count === 0) {
+      console.error("1 枚も撮れなかった（名前の一覧と撮る側がずれている）");
+      return 1;
+    }
     if (failed > 0) {
       console.error(`${failed} 段が失敗した。${join(out, "console.log")} を見る`);
       return 1;
@@ -310,8 +343,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   } finally {
     await cleanup();
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    for (const signal of Object.keys(SIGNAL_EXIT) as Array<keyof typeof SIGNAL_EXIT>) process.off(signal, onSignal);
   }
 }
 

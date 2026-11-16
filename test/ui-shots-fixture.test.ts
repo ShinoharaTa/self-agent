@@ -1,9 +1,9 @@
 // 画面写し（scripts/ui-shots.ts・scripts/ui-shots-fixture.ts。#386）。Chromium は起動しない:
-// 作り物のデータでサーバーが答えること・閉じたら何も残らないこと・データに実在の ID やメールらしい物が無いこと・引数の誤りで exit 2
+// 作り物のデータでサーバーが答えること・閉じたら何も残らないこと・データに実在の ID やメールらしい物が無いこと・引数の誤りで exit 2・--only に合わなければ exit 1
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -35,13 +35,10 @@ function canConnect(port: number): Promise<boolean> {
 }
 
 test("作り物のデータで本物のルートが答え、閉じたらポートも一時ディレクトリも残らない", async () => {
-  const ours = (): string[] => readdirSync(tmpdir()).filter((name) => name.startsWith("self-agent-ui-shots-"));
-  const before = new Set(ours());
   const fixture = await startFixtureServer();
   const port = Number(new URL(fixture.url).port);
-  // このテストが作った一時ディレクトリ
-  const created = ours().filter((name) => !before.has(name));
-  assert.equal(created.length, 1);
+  assert.equal(existsSync(fixture.dir), true);
+  assert.ok(fixture.clockNow().getTime() <= Date.now());
   try {
     const auth = { "Tailscale-User-Login": fixture.login };
     const topicsRes = await fetch(`${fixture.url}/api/topics`, { headers: auth });
@@ -78,7 +75,7 @@ test("作り物のデータで本物のルートが答え、閉じたらポー�
     await fixture.close();
   }
   assert.equal(await canConnect(port), false);
-  assert.equal(existsSync(join(tmpdir(), created[0]!)), false);
+  assert.equal(existsSync(fixture.dir), false);
   // 2 回目の close は何もしない
   await fixture.close();
 });
@@ -102,6 +99,11 @@ test("ui-shots: --out が無い・知らない引数・リポジトリの中の 
   assert.equal(repo.status, 2);
   assert.match(repo.stderr, /リポジトリの中/);
   assert.equal(existsSync(inside), false);
+  // `..` で始まる名前もリポジトリの中
+  const dotted = `${REPO_ROOT}..shots-x`;
+  const dottedRun = run(["--out", dotted]);
+  assert.equal(dottedRun.status, 2);
+  assert.equal(existsSync(dotted), false);
   const root = run(["--out", REPO_ROOT]);
   assert.equal(root.status, 2);
 });
