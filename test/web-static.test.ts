@@ -4755,6 +4755,21 @@ test("web static: SA.talk の on.stop は中断を 1 回だけ送り、待つ間
   await third;
   assert.equal(lastDraw(talk).state.stopping, false);
   assert.equal(posts.length, 3);
+  // 待つ間に turnSeq が替わり、新しい実行で押した後に、前の失敗が返っても新しい印は消さない
+  const fourth = on.stop!() as Promise<void>;
+  const firstSettle = settle!;
+  runs[0] = { ...runs[0], turnSeq: 6 };
+  c.chat.render(box, "1");
+  assert.equal(lastDraw(talk).state.stopping, false);
+  const fifth = on.stop!() as Promise<void>;
+  assert.deepEqual([posts.length, posts.at(-1)], [5, "/api/channels/1/turns/6/abort"]);
+  assert.equal(lastDraw(talk).state.stopping, true);
+  firstSettle.rej({ status: 500 });
+  await fourth;
+  c.chat.render(box, "1");
+  assert.equal(lastDraw(talk).state.stopping, true);
+  settle!.res({});
+  await fifth;
 });
 
 test("web static: SA.talk のとき [続ける] は .tl の先頭（手順の上限・セッション・実行なし・押していない）。カード・空の文・完了の文も .tl", async () => {
