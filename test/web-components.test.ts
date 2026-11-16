@@ -369,7 +369,7 @@ test("web components: 完了・「ほかのプロジェクト」の見出し（.
 });
 
 test("web components: 古い CSS（app・shell・base・tokens）の裸のタグの規則が、一覧・下のバー・小さい部品のタグに当たらない（base.css の reset だけは許す）", () => {
-  // 部品のテンプレートに出るタグ
+  // 部品のテンプレートに出るタグ（c-composer.js は入れない: app.css の裸の textarea の規則（入力の位置の線の色）が当たる。同じ値を c-composer.css が書く）
   const partTags = new Set<string>();
   for (const name of ["c-list.js", "c-shell.js", "c-atoms.js", "c-talk.js"]) for (const m of read(name).matchAll(/<([a-z][a-z0-9]*)[\s>/]/g)) partTags.add(m[1] ?? "");
   for (const tag of ["button", "ul", "li", "h1", "h2", "section", "span", "p", "div", "svg", "use", "header", "article", "pre", "code", "ol", "strong", "a"]) assert.ok(partTags.has(tag), tag);
@@ -2509,6 +2509,12 @@ test("web components: composerMouth の drop は render(null, root) を呼び、
   assert.notEqual(calls[2]?.vnode?.props.inputRef, calls[0]?.vnode?.props.inputRef);
   fail(true);
   assert.throws(() => mouth.draw(root, composerState({ text: "c" })), /render/);
+});
+
+test("web components: 入力欄の欄は入力の位置の線の色（caret-color: var(--accent)）を自分で持つ", () => {
+  const rules = parseCss(read("c-composer.css"));
+  const own = rules.filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-composer-input");
+  assert.ok(own.some((r) => r.body.split(";").map((d) => d.trim()).includes("caret-color: var(--accent)")));
 });
 
 test("web components: 入力欄の欄と写しは 1 つの規則で余白・枠・高さ・折り返しを同じにし、欄は resize: none。根は自分の字と色を持ち、動きが無い", () => {
