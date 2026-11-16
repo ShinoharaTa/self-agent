@@ -293,6 +293,8 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
     const count = actions.getAttribute("data-count");
     const rects = [...actions.children].map((b) => b.getBoundingClientRect());
     for (const b of rects) if (b.height < 44) say(`${demo} のボタンの高さ ${b.height.toFixed(1)}。44 以上のはず`);
+    // 字が省かれていない（幅が足りないと「全…」になる。折り返してよい narrow もここで見る）
+    for (const label of actions.querySelectorAll(".c-btn-label")) if (label.scrollWidth > label.clientWidth) say(`${demo} のボタンの字「${label.textContent}」が省かれている（${label.scrollWidth} > ${label.clientWidth}）`);
     const tops = new Set(rects.map((b) => Math.round(b.top)));
     if (pc) {
       // 幅 320 の narrow は折り返してよい（flex-wrap）。左端だけ見る

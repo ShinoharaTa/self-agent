@@ -2686,6 +2686,16 @@ test("web components: 許可のカードの木と言葉（見出し・facts・pr
   assert.equal(find(cardOf(permItem({ urgent: true })), "c-card-meta")[0]?.props["data-urgent"], "true");
 });
 
+test("web components: 閉じる前の確認のボタンは key で見分ける（候補が無い形から在る形へ替わっても ［登録しない］ が別のボタンにならない）", () => {
+  const actionKeys = (item: Obj): unknown[] => {
+    const v = cards.CloseCard({ item, on: cardRec().on }) as RawNode;
+    const actions = (Array.isArray(v.props.children) ? v.props.children.flat(Infinity) : [v.props.children]).find((c) => (c as RawNode | null)?.key === "actions") as RawNode;
+    return keysOf(actions.props.children);
+  };
+  assert.deepEqual(actionKeys(closeItem({ tasks: [] })), ["none"]);
+  assert.deepEqual(actionKeys(closeItem()), ["all", "picked", "none"]);
+});
+
 test("web components: 許可のカードの呼び出し（許可は always か allow、拒否は deny、チェックは always(id, checked)。busy は押しても呼ばない）", () => {
   const go = (o: Obj): unknown[][] => {
     const rec = cardRec();
