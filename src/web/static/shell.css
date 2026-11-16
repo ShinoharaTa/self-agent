@@ -85,7 +85,7 @@
 /* 絞り込み欄（一覧の上。開いている間だけ） */
 .v3-search {
   flex: none;
-  padding: 0 var(--space-3) var(--space-2);
+  padding: 0 var(--c-gutter) var(--space-2);
 }
 
 /* 部品の入れ物（c-app.js が描く。箱を作らず、.c-list が .v3-list の縦並びの直接の子になる。K7 で消える） */
