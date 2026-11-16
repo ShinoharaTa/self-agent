@@ -408,10 +408,13 @@
         if (back) back.focus({ preventScroll: true });
       }
     } else if (focusInHand) {
-      // 畳んだ右腕の中にあった焦点は列 2 の側へ（入力欄が無ければ一覧の開いた行）
-      const input = $("ed").querySelector("textarea.composer-input");
-      if (input) input.focus({ preventScroll: true });
-      else focusCurrentRow();
+      // 畳んだ右腕の中にあった焦点は列 2 の側へ（入力欄が無ければ一覧の開いた行）。入力欄が部品なら口に頼む
+      const root = [...$("ed").children].find((child) => child.getAttribute("data-composer") !== null);
+      if (!(root && SA.composer && SA.composer.focus(root))) {
+        const input = $("ed").querySelector("textarea.composer-input");
+        if (input) input.focus({ preventScroll: true });
+        else focusCurrentRow();
+      }
     }
   }
 

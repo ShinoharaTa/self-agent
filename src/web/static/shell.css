@@ -376,3 +376,8 @@
 .v3 .ed-scroll > [data-talk] + .tl:empty {
   display: none;
 }
+
+/* 入力欄を部品（c-composer）が描くときの根。古い .composer-wrap と同じく縮まず、列の下に置く */
+.v3 .ed > [data-composer] {
+  flex: none;
+}
