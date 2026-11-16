@@ -216,7 +216,7 @@
 | PermissionCard | `c-cards.js` / `.css` | tool、mode、detail、remainSec、canAlways、state、onAllow、onAlways、onDeny | なし（残り時間は入口から） | warning の枠（YourTurn と同じ見た目の言葉）。許可は secondary・拒否は ghost |
 | QuestionCard | 同 | question、options、multi、state、onAnswer | 選んだ物 | 同じ枠 |
 | CloseCard / MoveCard / ResumeCard | 同 | それぞれの文と 2 つのボタン | なし | 同じ枠（tone だけ違う） |
-| Composer | `c-composer.js` / `.css` | placeholder（決まった短い文）、max、busy、disabledReason、onSend | 下書き・行数・IME 中か | 1 行 44px・角 full・伸びて最大 6 行。字数は残りが少ないときだけ。送るは accent（D2・D3） |
+| Composer | `c-composer.js` / `.css` | model（`composerModel(state)` の結果。state は text・count・max・sending・touch・label・placeholder（決まった短い文）・note）、on（input(今の値)・send）、inputRef（textarea を受ける callback の ref。口 `composerMouth` が渡す）。**textarea に値を渡さない**（`value`・`defaultValue` を書かない。最初の本文と送った後の空は口が要素に直に入れる） | なし（下書きは入口と `SA.app.draft`、行数は CSS の写し、IME 中かは `sendKey` が事象から見る） | 1 行 44px・角 full・伸びて最大 6 行。字数は残りが少ないときだけ。送るは accent（D2・D3） |
 | HandPanel（右腕） | `c-hand.js` / `.css` | open、mode（over・side）、turns、running、cards（札）、onClose、onSend | なし | スマホは全面の板、PC は右の列。中身は TalkTimeline + Composer の使い回し |
 | HandCard（札） | 同 | title、sub、mark、onOpen | なし | モック D の札 |
 | Shell | `c-shell.js` | view、hand、子 | なし | 3 列（PC）/ 1 列（スマホ）の配置だけ |
@@ -435,6 +435,7 @@
   - #389: 表・引用は `parseBlocks` に type を足す
 
 **K5 入力欄 + カード**
+- 今の所: 入力欄の部品と見本まで（#406。`c-composer.js/.css`・見本の節「会話の入力欄（Composer）」・`npm run ui-shots` の `g-composer` と寸法の検査）。本番の画面はまだ古い入力欄
 - やること: `c-composer.js/.css`、`c-cards.js/.css`。`chat.js` の `composer`・`closeCard`・`moveCard`・`continueButton` と、`views.js` の許可・質問のカードに当たる物を部品で作る。送信・許可の処理は今の関数を呼ぶ。
 - 受け入れ: (0) 一覧の中で許可・拒否に答えられる（K3 から移した。`/api/topics` に許可の要求の id が無いので、サーバーの変更は別 issue）。(1) 空の入力欄は高さ 44px の 1 行で、6 行まで伸び、それ以上は中で送る。(2) placeholder は題を含まない決まった短い文で、1 行に収まる。(3) 字数は残り 200 字を切るまで出ない。(4) 送るは 44px の当たりで、空のとき `aria-disabled`、IME の確定の Enter で送らない（今の `bindSendKeys` と同じ振る舞いをモデルのテストで）。(5) 許可・質問・閉じる・移すのカードが同じ枠で、許可は secondary・拒否は ghost。(6) キーボードが出ても入力欄が見える（今の `fitViewport` をそのまま使う。実機はオーナー）。(7) 最後の吹き出しの時刻が入力欄に隠れない（スマホ・PC の絵で）。(8) `/` は変わらない。
 
