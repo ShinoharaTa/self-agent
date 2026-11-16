@@ -2407,7 +2407,7 @@ const fakeInput = (): FakeInput => {
   const el: FakeInput = { value: "", focused: [], focus: (o) => void el.focused.push(o) };
   return el;
 };
-/** 偽の render（vnode の inputRef に今の要素を渡す。要素が替わったら前の要素に代えて null を先に渡す。null の vnode では null を渡す） */
+/** 偽の render（描くたびに vnode の inputRef に今の要素を渡す。同じ要素でも渡し直す（口が同じ要素に書かない事を見るため）。要素か ref が替わったら前の ref に null を先に渡す。null の vnode では null を渡す） */
 function fakeComposerMouth(): { mouth: ComposerMouth; calls: { vnode: VNode | null; root: unknown }[]; swap: (el: FakeInput) => void; fail: (v: boolean) => void } {
   const calls: { vnode: VNode | null; root: unknown }[] = [];
   let el = fakeInput();
@@ -2424,12 +2424,10 @@ function fakeComposerMouth(): { mouth: ComposerMouth; calls: { vnode: VNode | nu
       return;
     }
     const ref = vnode.props.inputRef as (n: unknown) => void;
-    if (given !== el || ref !== lastRef) {
-      if (lastRef && given) lastRef(null);
-      ref(el);
-      given = el;
-      lastRef = ref;
-    }
+    if ((given !== el || ref !== lastRef) && lastRef && given) lastRef(null);
+    ref(el);
+    given = el;
+    lastRef = ref;
   };
   const mouth = (composer.composerMouth as unknown as (r: typeof render) => ComposerMouth)(render);
   return { mouth, calls, swap: (next) => void (el = next), fail: (v) => void (throws = v) };
