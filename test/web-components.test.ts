@@ -2238,3 +2238,262 @@ test("web components: talkMouth の tick は行ごとの文の関数（time・la
   assert.deepEqual(names(from), ["allLabel", "progress", "runName", "waiting"]);
   assert.equal(reads, before);
 });
+
+// ===== 会話の入力欄（c-composer.js。docs/plan/web-ui-components.md §6 の K5） =====
+const composerUrl = new URL("../src/web/static/c-composer.js", import.meta.url).href;
+const composer = (await import(composerUrl)) as Record<string, Fn> & {
+  COMPOSER_NEAR: number;
+  COMPOSER_HARD_MAX: number;
+  composerModel: (state: Obj) => Obj;
+  sendKey: (event: Obj, touch: boolean) => boolean;
+};
+type RawNode = { type: unknown; props: Record<string, unknown>; key?: unknown; ref?: unknown };
+/** 関数の vnode を開かずに、要素の vnode を木の順で（ref と key を見るため） */
+function rawEls(node: unknown): RawNode[] {
+  if (node === null || node === undefined || typeof node !== "object") return [];
+  if (Array.isArray(node)) return node.flatMap(rawEls);
+  const v = node as RawNode;
+  return [v, ...rawEls(v.props.children)];
+}
+const rawOf = (node: unknown, cls: string): RawNode[] => rawEls(node).filter((v) => String(v.props.class ?? "").split(" ").includes(cls));
+const composerState = (o: Obj = {}): Obj => ({ text: "", count: 0, max: 1900, sending: false, touch: false, label: "話題 A に送る", placeholder: "この話題に送る", note: "説明の文", ...o });
+function composerRec(): { on: { input: (v: string) => void; send: () => void }; inputs: string[]; sends: () => number } {
+  const inputs: string[] = [];
+  let sends = 0;
+  return { on: { input: (v) => void inputs.push(v), send: () => void sends++ }, inputs, sends: () => sends };
+}
+const composerTree = (state: Obj, on = composerRec().on, inputRef: unknown = () => undefined): unknown =>
+  composer.Composer({ model: composer.composerModel(state), on, inputRef });
+
+test("web components: c-composer.js は htm の属性で value・defaultValue を渡さず、.value の代入は口の 2 か所だけ", () => {
+  const js = stripJsComments(read("c-composer.js"));
+  assert.doesNotMatch(js, /(?<![\w.-])(?:value|defaultValue)\s*=\s*\$\{/);
+  assert.doesNotMatch(js, /(?<![\w.-])(?:value|defaultValue)\s*=\s*["']/);
+  assert.equal((js.match(/\.value\s*=(?!=)/g) ?? []).length, 2);
+});
+
+test("web components: composerModel の空・空白だけ・1 字（字数は出さず、空は押せない）", () => {
+  for (const text of ["", "  \n "]) {
+    const m = composer.composerModel(composerState({ text, count: 0 }));
+    assert.deepEqual([m.empty, m.showCount, m.countText, m.over, m.sendDisabled, m.sendBusy, m.sendReason], [true, false, "", false, true, false, "本文を入れると送れます"], JSON.stringify(text));
+  }
+  const m = composer.composerModel(composerState({ text: "あ", count: 1 }));
+  assert.deepEqual([m.empty, m.showCount, m.countText, m.sendDisabled, m.sendReason], [false, false, "", false, undefined]);
+  assert.deepEqual([m.label, m.placeholder, m.note, m.touch, m.enterHint], ["話題 A に送る", "この話題に送る", "説明の文", false, "send"]);
+});
+
+test("web components: composerModel の字数（1,700 字は出さず、1,701 字から「1,701 / 1,900」、1,901 字は over でも押せる）", () => {
+  assert.equal(composer.COMPOSER_NEAR, 200);
+  assert.equal(composer.COMPOSER_HARD_MAX, 4000);
+  const at = (count: number): Obj => composer.composerModel(composerState({ text: "x".repeat(count), count }));
+  assert.deepEqual([at(1700).showCount, at(1700).countText], [false, ""]);
+  assert.deepEqual([at(1701).showCount, at(1701).countText, at(1701).over], [true, "1,701 / 1,900", false]);
+  assert.deepEqual([at(1900).countText, at(1900).over, at(1900).sendDisabled], ["1,900 / 1,900", false, false]);
+  assert.deepEqual([at(1901).countText, at(1901).over, at(1901).sendDisabled, at(1901).sendReason], ["1,901 / 1,900", true, false, undefined]);
+});
+
+test("web components: composerModel の送っている間・touch・写し・string でない値", () => {
+  const sending = composer.composerModel(composerState({ text: "a", count: 1, sending: true }));
+  assert.deepEqual([sending.sendBusy, sending.sendDisabled, sending.sendReason], [true, false, "送っています"]);
+  // 空で送っている間は「送っています」を先に言う
+  assert.equal(composer.composerModel(composerState({ sending: true })).sendReason, "送っています");
+  const touch = composer.composerModel(composerState({ touch: true }));
+  assert.deepEqual([touch.touch, touch.enterHint], [true, "enter"]);
+  assert.equal(composer.composerModel(composerState({ text: "a\n" })).mirror, "a\n ");
+  assert.equal(composer.composerModel(composerState({ text: "" })).mirror, " ");
+  const bad = composer.composerModel(composerState({ text: 12, label: null, placeholder: 3, note: undefined }));
+  assert.deepEqual([bad.mirror, bad.empty, bad.label, bad.placeholder, bad.note], [" ", true, "", "", ""]);
+});
+
+test("web components: sendKey は bindSendKeys と同じ決まり（変換の途中は送らない・タッチが主は Enter が改行）", () => {
+  const rows: Array<[string, boolean, number, boolean, boolean, boolean, boolean, boolean]> = [
+    ["Enter", false, 13, false, false, false, false, true],
+    ["Enter", false, 13, false, false, true, false, false],
+    ["Enter", false, 13, false, false, false, true, false],
+    ["Enter", false, 13, true, false, false, true, true],
+    ["Enter", false, 13, false, true, false, true, true],
+    ["Enter", false, 13, true, false, true, false, true],
+    ["Enter", true, 13, false, false, false, false, false],
+    ["Enter", false, 229, false, false, false, false, false],
+    ["Enter", true, 229, true, false, false, false, false],
+    ["a", false, 65, true, false, false, false, false],
+    ["Enter", false, 13, false, true, false, false, true],
+    ["Enter", false, 13, false, false, true, true, false],
+  ];
+  rows.forEach(([key, isComposing, keyCode, ctrlKey, metaKey, shiftKey, touch, want], i) => {
+    assert.equal(composer.sendKey({ key, isComposing, keyCode, ctrlKey, metaKey, shiftKey }, touch), want, `${i + 1} 行目`);
+  });
+});
+
+test("web components: Composer の根・直下の子の key・textarea の props（value と defaultValue が無い）・升の最初の子・写し", () => {
+  const ref = (): void => undefined;
+  const v = composerTree(composerState({ text: "あい", count: 2 }), composerRec().on, ref) as RawNode;
+  assert.deepEqual([v.type, v.props.class], ["div", "c-composer"]);
+  const kids = rawEls(v.props.children).filter((c) => (v.props.children as unknown[]).flat(Infinity).includes(c));
+  assert.deepEqual(kids.map((c) => [c.props.class, c.key]), [["c-composer-row", "row"], ["c-composer-count", "count"]]);
+  const [ta] = rawEls(v).filter((c) => c.type === "textarea");
+  assert.ok(ta);
+  assert.equal(ta.ref, ref);
+  assert.deepEqual(
+    [ta.props.class, ta.props.rows, ta.props.maxlength, ta.props["aria-label"], ta.props.placeholder, ta.props.title, ta.props.enterkeyhint],
+    ["c-composer-input", "1", 4000, "話題 A に送る", "この話題に送る", "説明の文", "send"],
+  );
+  for (const name of ["value", "defaultValue"]) assert.ok(!(name in ta.props), name);
+  const [field] = rawOf(v, "c-composer-field");
+  assert.ok(field);
+  const fieldKids = [field.props.children].flat(Infinity).filter((c) => c && typeof c === "object") as RawNode[];
+  assert.equal(fieldKids[0], ta);
+  assert.deepEqual(fieldKids.map((c) => c.props.class), ["c-composer-input", "c-composer-mirror"]);
+  const root = one(v);
+  const [mirror] = find(root, "c-composer-mirror");
+  assert.deepEqual([mirror?.props["aria-hidden"], textOf(mirror as El)], ["true", "あい "]);
+  // ［送る］は accent・md・字だけ
+  const [btn] = find(root, "c-btn");
+  assert.deepEqual([btn?.props["data-kind"], btn?.props["data-size"], textOf(btn as El), find(btn as El, "c-icon").length], ["accent", "md", "送る", 0]);
+  // touch で enterkeyhint が enter
+  const [taTouch] = rawEls(composerTree(composerState({ touch: true }))).filter((c) => c.type === "textarea");
+  assert.equal(taTouch?.props.enterkeyhint, "enter");
+});
+
+test("web components: Composer の字数の入れ物はいつも在り aria-live=polite、文は出るときだけで data-over", () => {
+  const countOf = (count: number): El => {
+    const [box] = find(one(composerTree(composerState({ text: "x", count }))), "c-composer-count");
+    assert.ok(box);
+    assert.equal(box.props["aria-live"], "polite");
+    return box;
+  };
+  assert.deepEqual(countOf(1).children, []);
+  const near = find(countOf(1701), "c-composer-count-text");
+  assert.deepEqual([near.length, textOf(near), near[0]?.props["data-over"]], [1, "1,701 / 1,900", undefined]);
+  const over = find(countOf(1901), "c-composer-count-text");
+  assert.deepEqual([textOf(over), over[0]?.props["data-over"]], ["1,901 / 1,900", "true"]);
+});
+
+test("web components: Composer の onKeyDown は送るキーで preventDefault と on.send を 1 回ずつ、変換の途中は 0 回。onInput は欄の値を on.input に。［送る］は空で押せない", () => {
+  const rec = composerRec();
+  const v = composerTree(composerState({ text: "a", count: 1 }), rec.on);
+  const [ta] = rawEls(v).filter((c) => c.type === "textarea");
+  const keyDown = ta?.props.onKeyDown as (e: Obj) => void;
+  const ev = (o: Obj): Obj & { count: () => number } => {
+    let n = 0;
+    return { key: "Enter", isComposing: false, keyCode: 13, ctrlKey: false, metaKey: false, shiftKey: false, ...o, preventDefault: () => void n++, count: () => n };
+  };
+  const first = ev({});
+  keyDown(first);
+  assert.deepEqual([first.count(), rec.sends()], [1, 1]);
+  const composing = ev({ isComposing: true });
+  keyDown(composing);
+  assert.deepEqual([composing.count(), rec.sends()], [0, 1]);
+  (ta?.props.onInput as (e: Obj) => void)({ currentTarget: { value: "あいう" } });
+  assert.deepEqual(rec.inputs, ["あいう"]);
+  // ［送る］は押せるときだけ on.send
+  const [btn] = find(one(v), "c-btn");
+  (btn?.props.onClick as (e: Obj) => void)(fakeEvent());
+  assert.equal(rec.sends(), 2);
+  const emptyRec = composerRec();
+  const [emptyBtn] = find(one(composerTree(composerState(), emptyRec.on)), "c-btn");
+  assert.deepEqual([emptyBtn?.props["aria-disabled"], emptyBtn?.props.title], ["true", "本文を入れると送れます"]);
+  (emptyBtn?.props.onClick as (e: Obj) => void)(fakeEvent());
+  assert.equal(emptyRec.sends(), 0);
+});
+
+type ComposerMouth = { draw: (root: unknown, state: Obj) => void; set: (root: unknown, text: string) => boolean; focus: (root: unknown) => boolean; drop: (root: unknown) => void };
+type FakeInput = { value: string; focus: (o?: unknown) => void; focused: unknown[] };
+const fakeInput = (): FakeInput => {
+  const el: FakeInput = { value: "", focused: [], focus: (o) => void el.focused.push(o) };
+  return el;
+};
+/** 偽の render（vnode の inputRef に今の要素を渡す。要素が替わったら前の要素に代えて null を先に渡す。null の vnode では null を渡す） */
+function fakeComposerMouth(): { mouth: ComposerMouth; calls: { vnode: VNode | null; root: unknown }[]; swap: (el: FakeInput) => void; fail: (v: boolean) => void } {
+  const calls: { vnode: VNode | null; root: unknown }[] = [];
+  let el = fakeInput();
+  let given: FakeInput | null = null;
+  let lastRef: ((n: unknown) => void) | null = null;
+  let throws = false;
+  const render = (vnode: VNode | null, root: unknown): void => {
+    calls.push({ vnode, root });
+    if (throws) throw new Error("render");
+    if (vnode === null) {
+      if (lastRef && given) lastRef(null);
+      given = null;
+      lastRef = null;
+      return;
+    }
+    const ref = vnode.props.inputRef as (n: unknown) => void;
+    if (given !== el || ref !== lastRef) {
+      if (lastRef && given) lastRef(null);
+      ref(el);
+      given = el;
+      lastRef = ref;
+    }
+  };
+  const mouth = (composer.composerMouth as unknown as (r: typeof render) => ComposerMouth)(render);
+  return { mouth, calls, swap: (next) => void (el = next), fail: (v) => void (throws = v) };
+}
+
+test("web components: composerMouth の draw は最初の要素に本文を入れ、同じ要素には二度と書かない。ref は根ごとに同じ関数", () => {
+  const { mouth, calls, swap } = fakeComposerMouth();
+  const root = {};
+  const el = fakeInput();
+  swap(el);
+  mouth.draw(root, composerState({ text: "あ" }));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.vnode?.type, composer.Composer);
+  assert.equal(calls[0]?.root, root);
+  assert.equal(el.value, "あ");
+  // 打鍵のつもり
+  el.value = "あい";
+  mouth.draw(root, composerState({ text: "zzz" }));
+  assert.equal(el.value, "あい");
+  assert.equal(calls[1]?.vnode?.props.inputRef, calls[0]?.vnode?.props.inputRef);
+  // 根ごとに別の ref
+  mouth.draw({}, composerState({ text: "b" }));
+  assert.notEqual(calls[2]?.vnode?.props.inputRef, calls[0]?.vnode?.props.inputRef);
+});
+
+test("web components: composerMouth の ref(null) の後に別の要素が来たら、その時の本文を入れる", () => {
+  const { mouth, calls } = fakeComposerMouth();
+  const root = {};
+  mouth.draw(root, composerState({ text: "一" }));
+  const ref = calls[0]?.vnode?.props.inputRef as (n: unknown) => void;
+  ref(null);
+  mouth.draw(root, composerState({ text: "二" }));
+  const next = fakeInput();
+  ref(next);
+  assert.equal(next.value, "二");
+  assert.equal(mouth.focus(root), true);
+  assert.equal(next.focused.length, 1);
+});
+
+test("web components: composerMouth の set・focus は要素が在れば true、無い根では false。focus は preventScroll", () => {
+  const { mouth, swap } = fakeComposerMouth();
+  const root = {};
+  assert.equal(mouth.set(root, "x"), false);
+  assert.equal(mouth.focus(root), false);
+  const el = fakeInput();
+  swap(el);
+  mouth.draw(root, composerState({ text: "書きかけ" }));
+  assert.equal(el.value, "書きかけ");
+  assert.equal(mouth.set(root, ""), true);
+  assert.equal(el.value, "");
+  assert.equal(mouth.focus(root), true);
+  assert.deepEqual(el.focused, [{ preventScroll: true }]);
+  assert.equal(mouth.set({}, ""), false);
+  assert.equal(mouth.focus({}), false);
+});
+
+test("web components: composerMouth の drop は render(null, root) を呼び、その後の draw は最初と同じに動く。render が投げたら draw も投げる", () => {
+  const { mouth, calls, swap, fail } = fakeComposerMouth();
+  const root = {};
+  mouth.draw(root, composerState({ text: "a" }));
+  mouth.drop(root);
+  assert.deepEqual([calls[1]?.vnode, calls[1]?.root], [null, root]);
+  assert.equal(mouth.focus(root), false);
+  const el = fakeInput();
+  swap(el);
+  mouth.draw(root, composerState({ text: "b" }));
+  assert.equal(el.value, "b");
+  assert.notEqual(calls[2]?.vnode?.props.inputRef, calls[0]?.vnode?.props.inputRef);
+  fail(true);
+  assert.throws(() => mouth.draw(root, composerState({ text: "c" })), /render/);
+});
