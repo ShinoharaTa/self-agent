@@ -187,7 +187,11 @@
   border-top: var(--border-width) solid var(--border);
 }
 
+/* legend は既定では枠の上の線に乗る（線が字の右にだけ出て、長い見出しでは消える）。float にして線の下に置く */
 .c-card-q-legend {
+  float: left;
+  width: 100%;
+  margin: 0 0 var(--space-1);
   padding: 0;
   color: var(--text-secondary);
   font-size: var(--font-sm);
@@ -195,7 +199,8 @@
 }
 
 .c-card-q-text {
-  margin: var(--space-1) 0 0;
+  clear: both;
+  margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
