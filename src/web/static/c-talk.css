@@ -182,6 +182,13 @@
   text-overflow: ellipsis;
 }
 
+/* 吹き出しの足の結果の文は、手順を開いている間だけ省かずに折り返す（閉じた形は 1 行のまま） */
+.c-msg-foot > .c-steps-toggle[aria-expanded="true"] {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
+}
+
 .c-steps-toggle[data-tone="warning"],
 .c-steps-text[data-tone="warning"] {
   color: var(--warning);

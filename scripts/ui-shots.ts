@@ -89,7 +89,7 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     // 本番の見出し（段 t。ダークの 3 組。PC は幅 1100 で右腕を列で開いた所も）
     ...(theme === "dark" ? ["b-top-long", "b-top-menu", "b-top-place", ...(vp === "pc" ? ["b-top-hand-col"] : [])] : []),
     // 本番の会話の行（段 k。ダークの 3 組。スマホは幅 375・等幅の字も）
-    ...(theme === "dark" ? ["b-talk-rows", "b-talk-steps-open", "b-talk-run", "b-talk-long", ...(vp === "phone" ? ["b-talk-mono375"] : [])] : []),
+    ...(theme === "dark" ? ["b-talk-rows", "b-talk-steps-open", "b-talk-run", "b-talk-long", ...(vp === "phone" ? ["b-talk-long-open", "b-talk-mono375"] : [])] : []),
     // 本番の入力欄（段 n。ダークの 3 組。字数の絵はスマホだけ）
     ...(theme === "dark" ? ["b-composer-empty", "b-composer-6lines", ...(vp === "phone" ? ["b-composer-count"] : [])] : []),
     ...(full
@@ -424,11 +424,13 @@ function talkProblems({ demos, max, fontSize, label }: { demos: string[] | null;
     const bubble = pre.closest(".c-bubble");
     if (msg !== null && bubble !== null && bubble.getBoundingClientRect().right > msg.getBoundingClientRect().right + 0.5) say("talk-md の吹き出しの右端が行の右端を超えている");
   }
-  // 7. 手順の行
+  // 7. 手順の行（手順を開いた行は結果の文を折り返すので 24 以上・省かない）
   for (const foot of document.querySelectorAll(".c-msg-foot")) {
     const msg = foot.closest(".c-msg");
     const r = foot.getBoundingClientRect();
-    if (!near(r.height, 24, 0.5)) say(`${nameOf(foot)} の手順の行の高さ ${r.height.toFixed(1)}。24 のはず`);
+    if (foot.querySelector(':scope > .c-steps-toggle[aria-expanded="true"]') !== null) {
+      if (r.height < 23.5) say(`${nameOf(foot)} の開いた手順の行の高さ ${r.height.toFixed(1)}。24 以上のはず`);
+    } else if (!near(r.height, 24, 0.5)) say(`${nameOf(foot)} の手順の行の高さ ${r.height.toFixed(1)}。24 のはず`);
     if (msg !== null) {
       const m = msg.getBoundingClientRect();
       if (r.left < m.left - 0.5 || r.right > m.right + 0.5) say(`${nameOf(foot)} の手順の行が行の外に出ている`);
@@ -438,6 +440,10 @@ function talkProblems({ demos, max, fontSize, label }: { demos: string[] | null;
     if (time.scrollWidth > time.clientWidth) say(`${nameOf(time)} の時刻が切れている（${time.scrollWidth} > ${time.clientWidth}）`);
   }
   for (const el of document.querySelectorAll(".c-steps-label, .c-steps-text")) {
+    if (el.matches('.c-msg-foot > .c-steps-toggle[aria-expanded="true"] .c-steps-label')) {
+      if (el.scrollWidth > el.clientWidth) say(`${nameOf(el)} の開いた結果の文が省かれている（${el.scrollWidth} > ${el.clientWidth}）`);
+      continue;
+    }
     if (!(el.scrollWidth > el.clientWidth)) continue;
     const cs = getComputedStyle(el);
     if (cs.textOverflow !== "ellipsis" || cs.overflowX !== "hidden") say(`${nameOf(el)} の結果の文が入りきらないのに省かれていない（text-overflow ${cs.textOverflow}・overflow-x ${cs.overflowX}）`);
@@ -2203,6 +2209,78 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#ed .c-talk > article.c-msg:last-of-type", targets: "button", toast: false })).map((l) => `段 k の 14 当たり: ${l}`));
     await edScroll(page, "bottom");
     await wait(200);
+    // 20. 最後の返事の手順を開くと結果の文を省かずに折り返す（スマホは 2 行以上・広い幅は 1 行）。行の幅は変わらず、閉じると元に戻る
+    const footLook = (): Promise<{ rowW: number; footH: number; labelH: number; lh: number; cut: boolean; tail: boolean; timeCut: boolean; list: boolean; actLast: boolean } | null> =>
+      page.evaluate(() => {
+        const last = [...document.querySelectorAll('#ed .c-talk > .c-msg[data-who="agent"]')].at(-1);
+        const foot = last?.querySelector(":scope > .c-msg-foot") ?? null;
+        const label = foot?.querySelector(".c-steps-label") ?? null;
+        const time = foot?.querySelector(".c-msg-time") ?? null;
+        if (last === undefined || foot === null || label === null || time === null) return null;
+        const lb = label.getBoundingClientRect();
+        const range = document.createRange();
+        const text = label.firstChild;
+        let tail = false;
+        if (text !== null && text.nodeType === Node.TEXT_NODE && (text.textContent ?? "").length > 0) {
+          const len = (text.textContent ?? "").length;
+          range.setStart(text, len - 1);
+          range.setEnd(text, len);
+          const rects = [...range.getClientRects()];
+          const r = rects.at(-1);
+          tail = r !== undefined && r.right <= lb.right + 0.5 && r.bottom <= lb.bottom + 0.5;
+        }
+        const act = last.querySelector(":scope > .c-msg-act");
+        return {
+          rowW: last.getBoundingClientRect().width,
+          footH: foot.getBoundingClientRect().height,
+          labelH: lb.height,
+          lh: parseFloat(getComputedStyle(label).lineHeight),
+          cut: label.scrollWidth > label.clientWidth,
+          tail,
+          timeCut: time.scrollWidth > time.clientWidth,
+          list: last.querySelector(":scope > .c-steps-list") !== null,
+          actLast: act !== null && last.lastElementChild === act,
+        };
+      });
+    const toggleLast = (): Promise<void> => page.locator('#ed .c-talk > .c-msg[data-who="agent"]:last-of-type > .c-msg-foot .c-steps-toggle').click();
+    const closed = await footLook();
+    if (closed === null) say("20. 最後の返事に結果の文のボタンが無い");
+    else {
+      await toggleLast();
+      await wait(300);
+      await edScroll(page, "bottom");
+      await wait(200);
+      const opened = await footLook();
+      if (opened === null) say("20. 開いた後に結果の文が無い");
+      else {
+        if (opened.cut) say("20. 開いた結果の文が省かれている");
+        if (!opened.tail) say("20. 開いた結果の文の最後の字が文の箱の外");
+        if (Math.abs(opened.rowW - closed.rowW) > 0.5) say(`20. 開くと行の幅が変わった（${closed.rowW.toFixed(1)} → ${opened.rowW.toFixed(1)}）`);
+        if (opened.timeCut) say("20. 開いた行の時刻が切れている");
+        if (!opened.list || !opened.actLast) say(`20. 開いた行の手順の一覧 ${String(opened.list)}・[続ける] が最後の子 ${String(opened.actLast)}`);
+        if (vp === "phone") {
+          if (!(opened.labelH > opened.lh * 1.5)) say(`20. スマホで開いた結果の文が 2 行でない（高さ ${opened.labelH.toFixed(1)}）`);
+          if (!(opened.footH > 25)) say(`20. スマホで開いた足の行の高さ ${opened.footH.toFixed(1)}（25 より高いはず）`);
+        } else {
+          if (opened.labelH > opened.lh * 1.5) say(`20. 広い幅で開いた結果の文が 1 行でない（高さ ${opened.labelH.toFixed(1)}）`);
+          if (Math.abs(opened.footH - 24) > 0.5) say(`20. 広い幅で開いた足の行の高さ ${opened.footH.toFixed(1)}（24 のはず）`);
+        }
+      }
+      lines.push(...(await liveTalkLines(page, vp, "長い会話・手順を開いた所")));
+      lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#ed .c-talk > article.c-msg:last-of-type", targets: "button", toast: false })).map((l) => `段 k の 20 当たり: ${l}`));
+      if (vp === "phone") {
+        await edScroll(page, "bottom");
+        await wait(200);
+        await shot(page, `${p}-b-talk-long-open`);
+      }
+      await toggleLast();
+      await wait(300);
+      const again = await footLook();
+      if (again === null || Math.abs(again.footH - 24) > 0.5) say(`20. 閉じた後の足の行の高さ ${again === null ? "なし" : again.footH.toFixed(1)}（24 のはず）`);
+      if (vp === "phone" && again !== null && !again.cut) say("20. 閉じた後にスマホで結果の文が省かれていない");
+      await edScroll(page, "bottom");
+      await wait(200);
+    }
     // 15. 先頭へ送ると前の行を読み、見ていた吹き出しの位置が動かない
     const mark = await page.evaluate(() => {
       const sc = document.querySelector("#ed .ed-scroll");
@@ -2861,7 +2939,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (problems.length > 0) throw new Error(`見出しの段の検査で ${problems.length} 件`);
         });
         // 本番の会話の行の段
-        const talks = [`${p}-b-talk-rows`, `${p}-b-talk-steps-open`, `${p}-b-talk-run`, `${p}-b-talk-long`, ...(vp === "phone" ? [`${p}-b-talk-mono375`] : [])];
+        const talks = [`${p}-b-talk-rows`, `${p}-b-talk-steps-open`, `${p}-b-talk-run`, `${p}-b-talk-long`, ...(vp === "phone" ? [`${p}-b-talk-long-open`, `${p}-b-talk-mono375`] : [])];
         await step(`${p} k`, talks, async () => {
           const started = Date.now();
           const problems = await talkStage(page, vp, p);
