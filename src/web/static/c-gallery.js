@@ -7,6 +7,7 @@ import { TopicList, YourTurn, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
 import { TalkTimeline, parseBlocks, talkModel } from "./c-talk.js";
 import { Composer, composerModel } from "./c-composer.js";
+import { Cards } from "./c-cards.js";
 
 // テーマ: shell.js と同じ（localStorage の self-agent-web:theme。dark・light は data-theme、system は外して OS に合わせる。読めなければ dark）
 const THEMES = ["dark", "light", "system"];
@@ -595,6 +596,56 @@ function Composers() {
   <//>`;
 }
 
+// ===== カード（K5） =====
+const CARD_ON = { permit: noop, always: noop, task: noop, close: noop, move: noop };
+const CARD_MODE = "default（使うたびに確認）";
+const CARD_RULE = "Bash(npm run test:*)";
+const cardPerm = (o) => ({ kind: "permission", id: "p1", tool: "Bash", mode: CARD_MODE, summary: "npm test", rule: "", ruleNote: "", always: false, left: "残り 4 分 12 秒", urgent: false, busy: false, ...o });
+const cardPermRule = (o) => cardPerm({ summary: "npm run test:integration", rule: CARD_RULE, ruleNote: "見本の添え書き", ...o });
+const CARD_LONG = Array.from({ length: 14 }, (_, i) => "echo 見本の行 " + (i + 1)).join("\n");
+const CARD_SUMMARY = "見本の会話で決めた事をまとめた 1 段落目です。\n\n残っている事をまとめた 2 段落目です。";
+const CARD_TASKS = ["1. 見本の候補 A", "2. 見本の候補 B（期限 11/20）", "3. 見本の候補 C"];
+const cardClose = (o) => ({ kind: "close", id: "c1", summary: CARD_SUMMARY, tasks: CARD_TASKS, picked: [], busy: false, ...o });
+const CARD_LONG_TASK = "見本の長い題の候補をここに置いて、折り返しと幅を見るための行";
+const CARD_DEMOS = [
+  { demo: "card-perm", items: [cardPerm({})] },
+  { demo: "card-perm-rule", items: [cardPermRule({})] },
+  { demo: "card-perm-urgent", items: [cardPermRule({ always: true, left: "残り 42 秒", urgent: true })] },
+  { demo: "card-perm-busy", items: [cardPermRule({ always: true, busy: true })] },
+  { demo: "card-perm-long", items: [cardPerm({ mode: "", summary: CARD_LONG })] },
+  { demo: "card-close", items: [cardClose({})] },
+  { demo: "card-close-picked", items: [cardClose({ picked: [1] })] },
+  { demo: "card-close-none", items: [cardClose({ tasks: [] })] },
+  { demo: "card-move", items: [{ kind: "move", id: "m1", from: "self-agent", to: "見本のプロジェクト", busy: false }] },
+  {
+    demo: "card-note",
+    items: [
+      { kind: "note", id: "wait", text: "閉じる前の要約をしています…", busy: true },
+      { kind: "note", id: "empty", text: "まだ会話はありません。下の欄か Discord で送ると始まります。" },
+      { kind: "note", id: "done", text: "完了したセッションです。発言すると進行中に戻ります。" },
+    ],
+  },
+  {
+    demo: "card-narrow",
+    narrow: true,
+    items: [
+      { kind: "note", id: "wait", text: "会話を新しくしています…", busy: true },
+      cardClose({ tasks: [1, 2, 3].map((n) => n + ". " + CARD_LONG_TASK + (n === 2 ? "（期限 11/20）" : "")) }),
+      { kind: "move", id: "m1", from: "self-agent", to: LONG_PLACE, busy: false },
+      cardPerm({ rule: "Bash(npm run test:integration -- --only 見本の長い名前のルールをここに置いて幅を見る:*)", ruleNote: "見本の添え書き" }),
+    ],
+  },
+];
+
+function CardDemos() {
+  return html`<${Section} name="cards" title="カード">
+    ${CARD_DEMOS.map(({ demo, items, narrow = false }) => {
+      const body = html`<${Cards} items=${items} on=${CARD_ON} />`;
+      return html`<div data-demo=${demo} key=${demo}>${narrow ? html`<div class="c-gallery-cards c-gallery-cards-narrow">${body}</div>` : html`<div class="c-gallery-cards">${body}</div>`}</div>`;
+    })}
+  <//>`;
+}
+
 /** 知らせの入れ物は見本の根の直下に 1 つ（自動では消さない。× で消す） */
 function Gallery() {
   const [toasts, setToasts] = useState([]);
@@ -622,6 +673,7 @@ function Gallery() {
     <${Bottoms} />
     <${Talks} />
     <${Composers} />
+    <${CardDemos} />
     <${Toast} items=${toasts} onDismiss=${dismiss} />
   `;
 }

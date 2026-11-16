@@ -119,3 +119,17 @@
   width: calc(var(--space-7) * 10);
   max-width: 100%;
 }
+
+/* カードの見本の入れ物（列の幅いっぱい。地は会話の列と同じ --bg）。narrow は幅 320 */
+.c-gallery-cards {
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  background: var(--bg);
+}
+
+.c-gallery-cards-narrow {
+  width: calc(var(--space-7) * 10);
+  max-width: 100%;
+}
