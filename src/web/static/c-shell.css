@@ -1,4 +1,4 @@
-/* 殻の部品（c-shell.js。docs/plan/web-ui-components.md §6 の K3）: 下のバー。寸法は tokens.css の --c-*、色は tokens.css の変数、字と間隔は base.css の目盛りだけ */
+/* 殻の部品（c-shell.js。docs/plan/web-ui-components.md §6 の K3・K4）: 下のバーと会話の見出し。寸法は tokens.css の --c-*、色は tokens.css の変数、字と間隔は base.css の目盛りだけ */
 
 /* 一覧（スクロールの入れ物）の下の兄弟に置く（重ねない）。下は safe-area の分だけ伸ばす */
 /* 上の線は枠でなく内側の影（枠にすると中身が 1px 減り、広い幅で当たりの箱がはみ出して列がずれる） */
@@ -118,6 +118,187 @@
   }
 
   .c-bottom-hand:hover {
+    opacity: 0.9;
+  }
+}
+
+/* ===== 会話の見出し（TopBar。K4）: 1 段。折り返さず、入りきらない語は省く（場所 → 補足 → 題の順に縮む） ===== */
+
+/* 下の線は枠でなく内側の影（高さがずれない）。上の safe-area は殻の側が持つ */
+.c-top {
+  display: flex;
+  align-items: center;
+  flex: none;
+  box-sizing: border-box;
+  height: var(--c-bar-h);
+  gap: var(--space-1);
+  padding: 0 var(--space-2) 0 var(--space-1);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: inset 0 calc(-1 * var(--border-width)) 0 0 var(--border);
+  overflow: hidden;
+}
+
+.c-top[data-variant="wide"] {
+  gap: var(--space-2);
+  padding: 0 var(--c-gutter);
+}
+
+.c-top-act {
+  flex: none;
+  display: inline-flex;
+}
+
+.c-top-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* 広い幅: 題は中身の幅で、縮んでも --c-top-title-min は残す（先に場所と補足が縮む） */
+.c-top[data-variant="wide"] > .c-top-text {
+  flex: 0 1 auto;
+  min-width: var(--c-top-title-min);
+}
+
+/* base.css の h1 の字と余白を全部ここで決める */
+.c-top-title {
+  margin: 0;
+  font-size: var(--font-base);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.c-top-sub {
+  margin: 0;
+  font-size: var(--font-xs);
+  line-height: var(--leading-tight);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.c-top-status[data-tone="warning"] {
+  color: var(--warning);
+}
+
+.c-top-status[data-tone="accent"] {
+  color: var(--accent);
+}
+
+.c-top-status[data-tone="muted"] {
+  color: var(--text-muted);
+}
+
+.c-top > .c-top-status {
+  flex: none;
+  font-size: var(--font-sm);
+  white-space: nowrap;
+}
+
+.c-top > .c-top-rest {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.c-top-place {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--c-row-h);
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-sm);
+}
+
+.c-top-place:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.c-top-place-text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 広い幅で 切り替え・「…」を右へ押す */
+.c-top-gap {
+  flex: 1 1 0px;
+  min-width: 0;
+}
+
+.c-top-views {
+  flex: none;
+}
+
+.c-top-hand {
+  flex: none;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--c-tap);
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--c-round-r);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-sm);
+  white-space: nowrap;
+}
+
+/* 右腕の語（ボタンは flex: none で中身の幅なので省かれない） */
+.c-top-hand-label {
+  min-width: 0;
+}
+
+/* 地は見出しの色なので、印は下のバーと違って accent で見せる */
+.c-top-hand-mark {
+  flex: none;
+  width: var(--c-mark);
+  height: var(--c-mark);
+  border-radius: var(--radius-full);
+}
+
+.c-top-hand-mark[data-state="turn"] {
+  background: var(--warning);
+}
+
+.c-top-hand-mark[data-state="unread"] {
+  background: var(--accent);
+}
+
+/* 押した・乗った（下のバーの右腕と同じ宣言。押せない場所のボタンには当てない） */
+.c-top-place:not(:disabled):active,
+.c-top-hand:active {
+  transform: scale(0.97);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-top-place:not(:disabled):hover,
+  .c-top-hand:hover {
     opacity: 0.9;
   }
 }
