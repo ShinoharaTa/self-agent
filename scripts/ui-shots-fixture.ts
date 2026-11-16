@@ -285,7 +285,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
       say(tLong, "owner", `${i} 番目の質問です。鉢の数はいくつ？`);
       if (i < 59) say(tLong, "agent", `${i + 1} 番目の返事です。鉢は ${(i % 7) + 2} つです。`);
     }
-    say(tLong, "agent", "鉢の配置の案を作る途中で止まりました。", {
+    say(tLong, "agent", "鉢の配置の案を作っている途中です。", {
       outcome: "max_turns",
       steps: ["Read data/pots.csv", "Edit data/pots.csv", "Bash npm run layout"],
       toolCalls: 40,
