@@ -169,7 +169,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
       return id;
     };
 
-    // プロジェクト: kakeibo-app（4）・garden-sensor（3）・blog-site（2）、General（2）
+    // プロジェクト: kakeibo-app（4 と完了 1）・garden-sensor（3）・blog-site（2）、General（2）
     const tOpen = topic("月ごとの集計がずれる", "kakeibo-app");
     say(tOpen, "owner", "10 月の合計が明細の足し算と合わない。原因を調べて直して");
     say(tOpen, "notice", "プロジェクト kakeibo-app で始めました");
@@ -186,6 +186,11 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     const tK4 = topic("カテゴリの色", "kakeibo-app");
     say(tK4, "owner", "カテゴリごとに色を付けたい");
     say(tK4, "agent", "8 色の案を出しました。");
+    // 完了の話題（kakeibo-app の群に「完了（1）」を出す。見本の一覧と同じ、完了の在る群）
+    const tKDone = topic("古い明細の取り込み", "kakeibo-app");
+    say(tKDone, "owner", "去年の明細を取り込んで");
+    say(tKDone, "agent", "取り込みました。");
+    topicSessions.close(tKDone, "去年の明細を取り込んだ");
     const tQ = topic("センサーの送信間隔", "garden-sensor");
     say(tQ, "owner", "電池が早く減る。送信の間隔を見直して");
     say(tQ, "agent", "間隔の案が 2 つあります。どちらにするか選んでください。");
@@ -216,7 +221,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     say(INBOX, "agent", "どういたしまして。ほかにあれば言ってください。");
 
     // 既読: 未読を 2 つ（tK3・tB2）残し、ほかは読んだことにする
-    for (const channelId of [tOpen, tPerm, tK4, tQ, tRun, tG3, tB1, tGen1, tGen2, INBOX]) {
+    for (const channelId of [tOpen, tPerm, tK4, tKDone, tQ, tRun, tG3, tB1, tGen1, tGen2, INBOX]) {
       const rows = history.list(channelId, { limit: 200 });
       reads.advance(channelId, Math.max(0, ...rows.map((row) => row.id)));
     }
