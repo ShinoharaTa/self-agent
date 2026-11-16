@@ -28,7 +28,7 @@ export function buttonState({ kind, size, disabled, busy }) {
   };
 }
 
-/** native の disabled は付けない（フォーカスと押せない理由の title を残す） */
+/** native の disabled は付けない（フォーカスと押せない理由の title を残す）。onPress は押した事象を受ける（event.currentTarget が押した要素） */
 export function Button({ kind = "secondary", size = "md", icon, label, disabled = false, busy = false, reason, type = "button", autofocus = false, onPress }) {
   const s = buttonState({ kind, size, disabled, busy });
   return html`<button class="c-btn" type=${type} data-kind=${s.kind} data-size=${s.size}
@@ -39,47 +39,48 @@ export function Button({ kind = "secondary", size = "md", icon, label, disabled 
           event.preventDefault();
           return;
         }
-        if (onPress) onPress();
+        if (onPress) onPress(event);
       }}>
     ${busy ? html`<span class="c-btn-spin" aria-hidden="true"></span>` : icon ? html`<${Icon} name=${icon} size="sm" />` : null}
     <span class="c-btn-label">${label}</span>
   </button>`;
 }
 
-/** 絵だけのボタンの名前（空なら例外）。件数があれば「（3 件）」を足す */
+/** 絵だけのボタンの名前（空なら例外）。件数があれば「（3 件）」を足す（読み上げは 99 まで。札の字は 9+） */
 export function iconButtonLabel(label, badge) {
   if (typeof label !== "string" || label === "") throw new TypeError("IconButton の label が要る");
   const text = badgeText(badge);
   return text === "" ? label : `${label}（${text} 件）`;
 }
 
-export function IconButton({ icon, label, size = "md", badge = 0, badgeTone = "warning", disabled = false, onPress }) {
+/** title は label（押せないときは reason があればそれ）。onPress は押した事象を受ける */
+export function IconButton({ icon, label, size = "md", badge = 0, badgeTone = "warning", disabled = false, reason, onPress }) {
   const sz = size === "sm" ? "sm" : "md";
   return html`<button class="c-iconbtn" type="button" data-size=${sz}
-      aria-label=${iconButtonLabel(label, badge)} title=${label} aria-disabled=${disabled ? "true" : undefined}
+      aria-label=${iconButtonLabel(label, badge)} title=${disabled && reason ? reason : label} aria-disabled=${disabled ? "true" : undefined}
       onClick=${(event) => {
         if (disabled) {
           event.preventDefault();
           return;
         }
-        if (onPress) onPress();
+        if (onPress) onPress(event);
       }}>
     <${Icon} name=${icon} size=${sz} />
-    <${Badge} count=${badge} tone=${badgeTone} />
+    <${Badge} count=${badge} tone=${badgeTone} max=${9} />
   </button>`;
 }
 
-/** 件数の文。数でない・1 未満は ""、100 以上は 99+ */
-export function badgeText(count) {
+/** 件数の文。数でない・1 未満は ""、max を超えたら `${max}+`（既定は 99+） */
+export function badgeText(count, max = 99) {
   if (typeof count !== "number" || Number.isNaN(count) || count < 1) return "";
   const n = Math.floor(count);
-  return n >= 100 ? "99+" : String(n);
+  return n > max ? `${max}+` : String(n);
 }
 
 const BADGE_TONES = ["warning", "accent", "muted"];
 
-export function Badge({ count, tone = "warning" }) {
-  const text = badgeText(count);
+export function Badge({ count, tone = "warning", max = 99 }) {
+  const text = badgeText(count, max);
   if (text === "") return null;
   return html`<span class="c-badge" data-tone=${BADGE_TONES.includes(tone) ? tone : "warning"}>${text}</span>`;
 }
@@ -97,26 +98,30 @@ export function Mark({ state = "none", label }) {
       aria-label=${label || undefined} aria-hidden=${label ? undefined : "true"}></span>`;
 }
 
+// 項目の値は String() で揃えて比べ（data-value は文字列になる）、返すのは items の元の値（数なら数）
+const sameValue = (a, b) => String(a) === String(b);
+
 /** Tab で入る項目。value が押せればそれ、違えば最初の押せる項目、無ければ null */
 export function segmentedTabStop(items, value) {
-  const current = items.find((item) => item.value === value);
+  const current = items.find((item) => sameValue(item.value, value));
   if (current && !current.disabled) return current.value;
   const first = items.find((item) => !item.disabled);
   return first ? first.value : null;
 }
 
-/** キーで動く先（押せない項目を飛ばし、端で折り返す）。動かないときは null */
-export function segmentedKey(items, current, key) {
+/** キーで動く先（押せない項目を飛ばし、端で折り返す）。修飾キー（Alt・Ctrl・Meta・Shift）付き・動かないときは null */
+export function segmentedKey(items, current, key, modified = false) {
+  if (modified) return null;
   const enabled = items.map((item, index) => ({ item, index })).filter(({ item }) => !item.disabled);
   if (enabled.length === 0) return null;
-  const at = items.findIndex((item) => item.value === current);
+  const at = items.findIndex((item) => sameValue(item.value, current));
   let next;
   if (key === "Home") next = enabled[0];
   else if (key === "End") next = enabled[enabled.length - 1];
   else if (key === "ArrowRight" || key === "ArrowDown") next = enabled.find(({ index }) => index > at) || enabled[0];
   else if (key === "ArrowLeft" || key === "ArrowUp") next = [...enabled].reverse().find(({ index }) => at >= 0 && index < at) || enabled[enabled.length - 1];
   else return null;
-  return next.item.value === current ? null : next.item.value;
+  return sameValue(next.item.value, current) ? null : next.item.value;
 }
 
 /** いくつかから 1 つを選ぶ切り替え（radiogroup）。折り返さず、入りきらなければ横に送る */
@@ -125,10 +130,10 @@ export function Segmented({ items, value, onChange, label }) {
   const onKey = (event) => {
     const from = event.target.closest(".c-seg-item");
     if (!from) return;
-    const next = segmentedKey(items, from.dataset.value, event.key);
+    const next = segmentedKey(items, from.dataset.value, event.key, event.altKey || event.ctrlKey || event.metaKey || event.shiftKey);
     if (next === null) return;
     event.preventDefault();
-    const el = [...event.currentTarget.children].find((child) => child.dataset.value === next);
+    const el = [...event.currentTarget.children].find((child) => sameValue(child.dataset.value, next));
     if (el) {
       el.focus();
       el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -137,12 +142,12 @@ export function Segmented({ items, value, onChange, label }) {
   };
   return html`<div class="c-seg" role="radiogroup" aria-label=${label} onKeyDown=${onKey}>
     ${items.map(
-      (item) => html`<button class="c-seg-item" type="button" role="radio" key=${item.value} data-value=${item.value}
-          aria-checked=${item.value === value ? "true" : "false"}
+      (item) => html`<button class="c-seg-item" type="button" role="radio" key=${String(item.value)} data-value=${String(item.value)}
+          aria-checked=${sameValue(item.value, value) ? "true" : "false"}
           aria-disabled=${item.disabled ? "true" : undefined}
-          tabindex=${item.value === stop ? 0 : -1}
+          tabindex=${stop !== null && sameValue(item.value, stop) ? 0 : -1}
           onClick=${(event) => {
-            if (item.disabled || item.value === value) return;
+            if (item.disabled || sameValue(item.value, value)) return;
             event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
             onChange(item.value);
           }}>

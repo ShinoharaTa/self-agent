@@ -1,6 +1,6 @@
 // 板・確認・知らせ（docs/plan/web-ui-components.md §6 の K2）: Sheet・Confirm・Toast。
 // hook を使うのは Sheet だけ（自分の <dialog> の ref だけに触る）。Confirm・Toast は Node から呼べる。タイマーは持たない（自動で消すのは入口の側）
-import { html, useRef, useLayoutEffect, useEffect } from "./c-lib.js";
+import { html, useRef, useLayoutEffect } from "./c-lib.js";
 import { Button, IconButton } from "./c-atoms.js";
 
 /** 点が箱の外か（辺の上は中） */
@@ -10,31 +10,46 @@ export function isOutside(rect, x, y) {
 
 /**
  * <dialog> の showModal() で出す板（スマホは下に付き、PC は中央）。外側の不活性・Esc・閉じた後のフォーカスの戻りは native に任せる。
- * native が閉じた（Esc・戻る操作）ときは close の事象で onClose を呼ぶ。prop で閉じたときは呼ばない（onClose は 1 回だけ）。
- * 背景は押し始めと離した所の両方が箱の外のときだけ閉じる
+ * native が閉じた（Esc・戻る操作）ときは close の事象で onClose を呼ぶ。自分で close() を呼んだ（prop で閉じた・開いたまま外した）ときは呼ばない（印 silent）。
+ * 背景は押し始めと離した所の両方が箱の外のときだけ閉じる。
+ * 呼ぶ側は onClose で必ず open を false にする（しないと dialog は閉じて prop は true のまま食い違い、false に戻すまで開けない）。
+ * 常に置いて open で切り替えても、条件で出し入れしてもよい
  */
 export function Sheet({ open, id, title, closeButton = true, onClose, footer, children }) {
   const ref = useRef(null);
   const downOutside = useRef(false);
+  // 自分で close() を呼んだ印。その close の事象で 1 回だけ使って戻す
+  const silent = useRef(false);
   const outside = (event) => event.target === ref.current && isOutside(ref.current.getBoundingClientRect(), event.clientX, event.clientY);
 
   useLayoutEffect(() => {
     const d = ref.current;
     if (open && !d.open) d.showModal();
-    else if (!open && d.open) d.close();
+    else if (!open && d.open) {
+      silent.current = true;
+      d.close();
+    }
   }, [open]);
 
-  useEffect(
+  // 開いたまま外すときは閉じる（まだ文書の中にあるうちに閉じるので、フォーカスは開いた所へ戻る）
+  useLayoutEffect(
     () => () => {
       const d = ref.current;
-      if (d && d.open) d.close();
+      if (d && d.open) {
+        silent.current = true;
+        d.close();
+      }
     },
     [],
   );
 
   return html`<dialog class="c-sheet" id=${id} ref=${ref} aria-labelledby=${id + "-title"}
       onClose=${() => {
-        if (open) onClose();
+        if (silent.current) {
+          silent.current = false;
+          return;
+        }
+        onClose();
       }}
       onPointerDown=${(event) => {
         downOutside.current = outside(event);
@@ -46,7 +61,7 @@ export function Sheet({ open, id, title, closeButton = true, onClose, footer, ch
       }}>
     <div class="c-sheet-head">
       <h2 class="c-sheet-title" id=${id + "-title"}>${title}</h2>
-      ${closeButton ? html`<${IconButton} icon="x" label="閉じる" onPress=${onClose} />` : null}
+      ${closeButton ? html`<${IconButton} icon="x" label="閉じる" onPress=${() => onClose()} />` : null}
     </div>
     <div class="c-sheet-body">${children}</div>
     ${footer ? html`<div class="c-sheet-foot">${footer}</div>` : null}
@@ -72,7 +87,7 @@ export function confirmButtons({ danger, okLabel = "実行する", cancelLabel =
 export function Confirm({ open, id, title, target, body, okLabel, cancelLabel, danger = false, busy = false, onOk, onCancel }) {
   const b = confirmButtons({ danger, okLabel, cancelLabel });
   return html`<${Sheet} open=${open} id=${id} title=${title} closeButton=${false} onClose=${onCancel}
-      footer=${html`<${Button} ...${b.cancel} onPress=${onCancel} /><${Button} ...${b.ok} busy=${busy} onPress=${onOk} />`}>
+      footer=${html`<${Button} ...${b.cancel} onPress=${() => onCancel()} /><${Button} ...${b.ok} busy=${busy} onPress=${() => onOk()} />`}>
     ${target ? html`<p class="c-confirm-target">${confirmTarget(target)}</p>` : null}
     ${body ? html`<p class="c-confirm-body">${body}</p>` : null}
   <//>`;

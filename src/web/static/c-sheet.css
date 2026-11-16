@@ -30,6 +30,32 @@
   }
 }
 
+/* 背景（色は base.css の dialog::backdrop）も板と同じ長さでフェードする。base.css の reduced-motion は擬似要素に届かないのでここで止める */
+.c-sheet::backdrop {
+  opacity: 0;
+  transition-property: opacity, overlay, display;
+  transition-duration: calc(var(--dur-short) * 0.65);
+  transition-timing-function: var(--ease-out);
+  transition-behavior: allow-discrete;
+}
+
+.c-sheet[open]::backdrop {
+  opacity: 1;
+  transition-duration: var(--dur-short);
+}
+
+@starting-style {
+  .c-sheet[open]::backdrop {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .c-sheet::backdrop {
+    transition: none;
+  }
+}
+
 .c-sheet-head {
   flex: none;
   display: flex;
