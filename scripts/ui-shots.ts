@@ -105,8 +105,8 @@ const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk はその節の要素の絵（K3・K4）、ほかは押して開いた所） */
-const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-sheet", "g-confirm", "g-toast"] as const;
+/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk・g-composer はその節の要素の絵（K3〜K5）、ほかは押して開いた所） */
+const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-composer", "g-sheet", "g-confirm", "g-toast"] as const;
 type GalleryKind = (typeof GALLERY_KINDS)[number];
 const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
 
@@ -143,6 +143,85 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
     });
     if (!ok) lines.push(`当たりが足りない: ${el.tagName.toLowerCase()}.${el.classList[0] ?? ""} ${Math.round(r.width)}x${Math.round(r.height)}`);
   }
+  return lines;
+}
+
+/** 見本の入力欄の data-demo（ページの順） */
+const COMPOSER_DEMOS = ["empty", "one", "three", "eight", "long-line", "near", "over", "sending", "narrow"];
+
+/**
+ * 見本の入力欄の測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。行の高さは欄の line-height から計算する。
+ * 見本の名前・1 行の高さ（--c-tap）・3 行と 8 行の高さ（8 行は 6 行で止まり中で送る）・写しが見えず欄と同じ箱・［送る］の大きさと下端・
+ * 字数（near・over だけ。ほかは入れ物の高さ 0。over は --danger）・横にはみ出さない・スマホの字。足りない物の文を返す
+ */
+function composerProblems({ demos, phone, label }: { demos: string[]; phone: boolean; label: string }): string[] {
+  const lines: string[] = [];
+  const say = (text: string): void => void lines.push(`入力欄（${label}）: ${text}`);
+  const near = (a: number, b: number, d: number): boolean => Math.abs(a - b) <= d;
+  const section = document.querySelector('[data-section="composer"]');
+  if (section === null) return [`入力欄（${label}）: 節が無い`];
+  const names = [...section.querySelectorAll("[data-demo]")].map((el) => el.getAttribute("data-demo") ?? "?");
+  for (const name of demos) if (!names.includes(name)) say(`見本が無い: ${name}`);
+  for (const name of names) if (!demos.includes(name)) say(`知らない見本: ${name}`);
+  const tap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--c-tap"));
+  if (!(tap > 0)) say("--c-tap が読めない");
+  const probe = document.createElement("span");
+  probe.style.color = "var(--danger)";
+  section.append(probe);
+  const danger = getComputedStyle(probe).color;
+  probe.remove();
+  const sectionRight = section.getBoundingClientRect().right;
+  for (const demo of names) {
+    const box = section.querySelector(`[data-demo="${demo}"]`);
+    const ta = box?.querySelector("textarea.c-composer-input");
+    const mirror = box?.querySelector(".c-composer-mirror");
+    const send = box?.querySelector(".c-composer-row > .c-btn");
+    const count = box?.querySelector(".c-composer-count");
+    const root = box?.querySelector(".c-composer");
+    if (!(ta instanceof HTMLTextAreaElement) || mirror == null || send == null || count == null || root == null) {
+      say(`${demo} の欄・写し・［送る］・字数の入れ物のどれかが無い`);
+      continue;
+    }
+    const cs = getComputedStyle(ta);
+    const lh = parseFloat(cs.lineHeight);
+    const r = ta.getBoundingClientRect();
+    // 1〜3. 高さ
+    const want = demo === "three" ? tap + lh * 2 : demo === "eight" ? tap + lh * 5 : demo === "long-line" ? null : tap;
+    if (want !== null && !near(r.height, want, demo === "three" || demo === "eight" ? 1 : 0.5)) say(`${demo} の欄の高さ ${r.height.toFixed(1)}。${want.toFixed(1)} のはず（行の高さ ${lh}）`);
+    if (demo === "eight" && !(ta.scrollHeight > ta.clientHeight)) say(`eight の欄が中で送れない（${ta.scrollHeight} <= ${ta.clientHeight}）`);
+    if (demo !== "eight" && demo !== "long-line" && ta.scrollHeight > ta.clientHeight + 1) say(`${demo} の欄が中で送れる（${ta.scrollHeight} > ${ta.clientHeight}）`);
+    // 4. 写し
+    const m = mirror.getBoundingClientRect();
+    if (getComputedStyle(mirror).visibility !== "hidden") say(`${demo} の写しが見えている`);
+    if (![["left", m.left, r.left], ["top", m.top, r.top], ["width", m.width, r.width], ["height", m.height, r.height]].every(([, a, b]) => near(Number(a), Number(b), 0.5))) {
+      say(`${demo} の写しの箱 ${m.left.toFixed(1)},${m.top.toFixed(1)} ${m.width.toFixed(1)}x${m.height.toFixed(1)} が欄 ${r.left.toFixed(1)},${r.top.toFixed(1)} ${r.width.toFixed(1)}x${r.height.toFixed(1)} と違う`);
+    }
+    // 5. ［送る］
+    const b = send.getBoundingClientRect();
+    if (b.width < 44 || b.height < 44) say(`${demo} の［送る］が ${b.width.toFixed(1)}x${b.height.toFixed(1)}。44 以上のはず`);
+    if (!near(b.bottom, r.bottom, 0.5)) say(`${demo} の［送る］の下端 ${b.bottom.toFixed(1)} が欄の下端 ${r.bottom.toFixed(1)} と揃っていない`);
+    // 6. 字数
+    const text = box?.querySelector(".c-composer-count-text") ?? null;
+    if (demo === "near" || demo === "over") {
+      if (text === null || (text.textContent ?? "") === "") say(`${demo} に字数が無い`);
+      else if (demo === "over" && getComputedStyle(text).color !== danger) say(`over の字数の色 ${getComputedStyle(text).color}。--danger（${danger}）のはず`);
+      else if (demo === "near" && getComputedStyle(text).color === danger) say("near の字数が --danger の色");
+    } else {
+      if (text !== null) say(`${demo} に字数が出ている`);
+      if (count.getBoundingClientRect().height !== 0) say(`${demo} の字数の入れ物の高さ ${count.getBoundingClientRect().height}。0 のはず`);
+    }
+    // 7. はみ出し
+    if (ta.scrollWidth > ta.clientWidth) say(`${demo} の欄が横にはみ出している（${ta.scrollWidth} > ${ta.clientWidth}）`);
+    if (root.scrollWidth > root.clientWidth) say(`${demo} の入力欄が横にはみ出している（${root.scrollWidth} > ${root.clientWidth}）`);
+    if (root.getBoundingClientRect().right > sectionRight + 0.5) say(`${demo} の入力欄が節の幅を超えている`);
+    // 8. スマホの字
+    if (phone && parseFloat(cs.fontSize) < 16) say(`${demo} の欄の字 ${cs.fontSize}。16px 以上のはず`);
+  }
+  // narrow の入れ物（枠を含めて 320）が狭すぎず広すぎない（検査が空振りしない）
+  const narrow = section.querySelector('[data-demo="narrow"] > *');
+  if (narrow === null || !near(narrow.getBoundingClientRect().width, 320, 0.5)) say(`narrow の入れ物の幅 ${narrow?.getBoundingClientRect().width.toFixed(1) ?? "?"}。320 のはず`);
+  const doc = document.documentElement;
+  if (doc.scrollWidth > doc.clientWidth) say(`ページが横に動く（${doc.scrollWidth} > ${doc.clientWidth}）`);
   return lines;
 }
 
@@ -2460,6 +2539,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (lines.length > 0) throw new Error(`会話の見本の検査で ${lines.length} 件`);
   }
 
+  /** 見本の入力欄（composerProblems）を測る。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
+  async function checkComposers(page: Page, vp: Viewport, label: string): Promise<void> {
+    const lines = await page.evaluate(composerProblems, { demos: COMPOSER_DEMOS, phone: vp === "phone", label: "今の字" });
+    // ［送る］は PC でも欄と同じ 44 の当たり
+    lines.push(...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-section="composer"]', targets: "button", toast: false })).map((line) => `入力欄: ${line}`));
+    for (const line of lines) logLines.push(`[${label}] ${line}`);
+    if (lines.length > 0) throw new Error(`入力欄の見本の検査で ${lines.length} 件`);
+  }
+
   /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない）。絵ごとに読み直す */
   async function gallery(vp: Viewport, theme: Theme): Promise<void> {
     const names = GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind));
@@ -2479,11 +2567,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         { name: galleryName(vp, theme, "g-top"), selector: '[data-section="top"]' },
         { name: galleryName(vp, theme, "g-bottom"), selector: '[data-section="bottom"]' },
         { name: galleryName(vp, theme, "g-talk"), selector: '[data-section="talk"]' },
+        { name: galleryName(vp, theme, "g-composer"), selector: '[data-section="composer"]' },
       ];
       await step(full, [full, ...parts.map((part) => part.name)], async () => {
         await loadGallery();
         await checkGallery(page, vp, label);
         await checkTalks(page, vp, label);
+        await checkComposers(page, vp, label);
         // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("*")) if (el.scrollLeft !== 0) el.scrollLeft = 0;
