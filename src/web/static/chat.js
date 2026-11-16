@@ -40,6 +40,11 @@
   const OP_RECHECK_MS = 1500;
   /** 要約を待つ表示を解除するまでの時間（ms）。行が来ないまま（知らせを書けなかったなど）操作を止めたままにしない */
   const PENDING_MAX_MS = 3 * 60 * 1000;
+  /** 待ちの行・空の文・完了の文（古い描き方と部品のカードで同じ文） */
+  const WAIT_CLOSE_TEXT = "閉じる前の要約をしています…";
+  const WAIT_RENEW_TEXT = "会話を新しくしています…";
+  const EMPTY_TEXT = "まだ会話はありません。下の欄か Discord で送ると始まります。";
+  const DONE_TEXT = "完了したセッションです。発言すると進行中に戻ります。";
 
   /** リンクにするのは https の Discord の URL だけ */
   function discordUrl(url) {
@@ -1165,14 +1170,20 @@
     }
   }
 
-  /** container の直下の、そのチャンネルの部品の .ed-scroll（{ scroll, root, tl }）。無ければ null */
-  function talkScrollOf(container, channelId) {
+  /**
+   * container の直下の、そのチャンネルの部品の .ed-scroll（{ scroll, root, cardsRoot, tl }）。無ければ null。
+   * withCards なら会話の根の次がそのチャンネルのカードの根でその次が .tl の形だけ、違えば会話の根のすぐ次が .tl の形だけ（cardsRoot は null）
+   */
+  function talkScrollOf(container, channelId, withCards) {
     for (const scroll of [...container.children]) {
       if (!scroll.classList.contains("ed-scroll") || scroll.getAttribute("data-channel") !== channelId) continue;
       const kids = [...scroll.children];
       const at = kids.findIndex((c) => c.getAttribute("data-talk") === channelId);
-      const tl = at >= 0 ? kids[at + 1] : null;
-      if (tl && tl.classList.contains("tl")) return { scroll, root: kids[at], tl };
+      if (at < 0) continue;
+      const cardsRoot = withCards ? kids[at + 1] || null : null;
+      if (withCards && (!cardsRoot || cardsRoot.getAttribute("data-cards") !== channelId)) continue;
+      const tl = kids[at + (withCards ? 2 : 1)] || null;
+      if (tl && tl.classList.contains("tl")) return { scroll, root: kids[at], cardsRoot, tl };
     }
     return null;
   }
@@ -1272,6 +1283,182 @@
     for (const child of [...container.children]) if (child.getAttribute("data-composer") !== null) comp.drop(child);
   }
 
+  // ===== 新しい殻の「あなたの番」のカード・待ちの行・文（入口 c-app.js の SA.cards。K5）。古い殻には SA.cards が無いので、ここは通らない =====
+  /** 部品で描けなかった（以後はこのタブで古いカード） */
+  let cardsBroken = false;
+  /** 送っている間と、送り終えて読み直すまでの項目（"close:" + channelId・"move:" + 提案の id・"ask:" + 要求の id） */
+  const cardBusy = new Set();
+
+  /** 質問（AskUserQuestion）の要求か（views.js の ccPermissionCard と同じ判定） */
+  function isQuestion(p) {
+    return !!(p.question && Array.isArray(p.question.questions) && p.question.questions.length > 0);
+  }
+
+  /** カードの項目（順は古い描き方の .tl と同じ: 待ちの行 → 閉じる前の確認 → 場所を変える確認 → 許可・質問 → 空の文 → 完了の文） */
+  function cardItems(channelId) {
+    const t = store.turns[channelId];
+    const ch = channelById(channelId);
+    const run = store.runningOf(channelId);
+    const items = [];
+    const waiting = pendingOf(channelId, ch);
+    if (waiting) items.push({ kind: "note", id: "wait", busy: true, text: waiting.kind === "close" ? WAIT_CLOSE_TEXT : WAIT_RENEW_TEXT });
+    // 閉じる前の確認の条件は古い描き方と同じ（閉じるのを待っている間は出さない）
+    if (ch && ch.kind === "session" && ch.state !== "done" && ch.closeDraft && !(waiting && waiting.kind === "close")) {
+      const draft = ch.closeDraft;
+      const tasks = Array.isArray(draft.tasks) ? draft.tasks : [];
+      if (!picked[channelId]) picked[channelId] = new Set();
+      items.push({
+        kind: "close",
+        id: channelId,
+        summary: String(draft.summary || ""),
+        tasks: tasks.map((task, i) => i + 1 + ". " + String(task && task.title) + (task && task.due ? "（期限 " + task.due + "）" : "")),
+        picked: [...picked[channelId]].filter((i) => i < tasks.length).sort((a, b) => a - b),
+        busy: cardBusy.has("close:" + channelId),
+      });
+    }
+    if (ch && ch.moveProposal) {
+      const mp = ch.moveProposal;
+      items.push({ kind: "move", id: mp.id, from: String(mp.from || ""), to: String(mp.to || ""), busy: cardBusy.has("move:" + mp.id) });
+    }
+    // プロジェクトのセッションの許可・質問（保留中だけ。終わったものは選んだ状態を捨てる）
+    if (ch && ch.kind === "session" && ch.permission && typeof ch.permission.id === "number") {
+      const p = ch.permission;
+      if (p.state === "pending") {
+        const item = SA.views.ccAsk.item(p.sessionId, p);
+        if (item) items.push(cardBusy.has("ask:" + p.id) ? Object.assign(item, { busy: true }) : item);
+      } else {
+        SA.views.ccQuestionForget(p.id);
+      }
+    }
+    if (t && t.turns.length === 0 && !run) items.push({ kind: "note", id: "empty", text: EMPTY_TEXT });
+    if (ch && ch.kind === "session" && ch.state === "done") items.push({ kind: "note", id: "done", text: DONE_TEXT });
+    return items;
+  }
+
+  /** 今の保留中の要求（id が同じで、質問か許可かが kind と合うときだけ。違えば null: 古い画面からの押しは捨てる） */
+  function askOf(channelId, id, kind) {
+    const ch = channelById(channelId);
+    const p = ch && ch.kind === "session" ? ch.permission : null;
+    if (!p || typeof p.id !== "number" || p.state !== "pending" || p.id !== id) return null;
+    return isQuestion(p) === (kind === "question") ? p : null;
+  }
+
+  /** 部品に渡す on。channelId だけを閉じ込め、押されたときに今の状態を読む */
+  function cardsOn(channelId) {
+    const ask = () => SA.views.ccAsk;
+    return {
+      always: (id, checked) => {
+        ask().always(id, checked);
+        drawCards(channelId);
+      },
+      task: (_id, i, checked) => {
+        if (!picked[channelId]) picked[channelId] = new Set();
+        if (checked) picked[channelId].add(i);
+        else picked[channelId].delete(i);
+        drawCards(channelId);
+      },
+      pick: (id, index, label, checked) => {
+        const p = askOf(channelId, id, "question");
+        if (!p) return;
+        ask().pick(p, index, label, checked);
+        drawCards(channelId);
+      },
+      pickOther: (id, index, checked, byPointer) => {
+        const p = askOf(channelId, id, "question");
+        if (!p) return;
+        ask().pickOther(p, index, checked);
+        // 「その他」の欄に焦点を移すのは指・マウスで選んだときだけ（矢印キーで選んだ瞬間には飛ばさない）。描いて欄が見えてから
+        if (drawCards(channelId) && byPointer && checked) {
+          const root = cardsRoot(channelId);
+          if (root) SA.cards.focus(root, id, index);
+        }
+      },
+      other: (id, index, value) => {
+        const p = askOf(channelId, id, "question");
+        if (!p) return;
+        ask().other(p, index, value);
+        // [答える] の押せる・押せないが変わるので描く（欄の本文は部品が書き換えない）
+        drawCards(channelId);
+      },
+      permit: (id, decision) => {
+        const p = askOf(channelId, id, "permission");
+        if (!p) return;
+        cardOp(channelId, "ask:" + id, () => ask().permit(p.sessionId, p, decision, "ch:" + channelId));
+      },
+      answer: (id) => {
+        const p = askOf(channelId, id, "question");
+        if (!p) return;
+        cardOp(channelId, "ask:" + id, () => ask().answer(p.sessionId, p, "ch:" + channelId));
+      },
+      dismiss: (id) => {
+        const p = askOf(channelId, id, "question");
+        if (!p) return;
+        cardOp(channelId, "ask:" + id, () => ask().dismiss(p.sessionId, p, "ch:" + channelId));
+      },
+      close: (_id, which) => {
+        let selected;
+        if (which === "all" || which === "none") selected = which;
+        else if (which === "picked") {
+          selected = [...(picked[channelId] || [])].sort((a, b) => a - b);
+          if (selected.length === 0) return;
+        } else return;
+        cardOp(channelId, "close:" + channelId, () => confirmClose(channelId, selected, []));
+      },
+      move: (id, action) => cardOp(channelId, "move:" + id, () => answerMove(channelId, id, action, [])),
+    };
+  }
+
+  /** 送る（run は通ったかに resolve する）。送っている間と、通ったら読み直しが済むまで、その項目は待ちの形（二度押しさせない） */
+  async function cardOp(channelId, key, run) {
+    if (cardBusy.has(key)) return;
+    cardBusy.add(key);
+    drawCards(channelId);
+    let ok = false;
+    try {
+      ok = (await run()) === true;
+      // 通ったら、読み直しが済むまで待ちの形のまま。1 回目は送る前に始まっていた読みに相乗りする事がある（同じ鍵の読みは重ならない）ので 2 回待つ
+      if (ok) {
+        await store.load.turns(channelId, { quiet: true });
+        await store.load.turns(channelId, { quiet: true });
+      }
+    } finally {
+      cardBusy.delete(key);
+      SA.app.refresh("ch:" + channelId);
+    }
+  }
+
+  /** 部品のカードの根（data-cards で引く。描いていなければ null） */
+  function cardsRoot(channelId) {
+    if (!/^\d+$/.test(channelId)) return null;
+    return document.querySelector('[data-cards="' + channelId + '"]');
+  }
+
+  /** カードだけを描き直す（会話・入力欄は描かない）。一番下を見ていたら一番下のまま。描けなければ根を外して古いカードで描き直し、false */
+  function drawCards(channelId) {
+    if (!SA.cards || cardsBroken) return false;
+    const root = cardsRoot(channelId);
+    if (!root) return false;
+    const scroll = scrollOf(channelId);
+    const bottom = !!scroll && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
+    if (SA.cards.draw(root, { items: cardItems(channelId), on: cardsOn(channelId) })) {
+      if (bottom) scroll.scrollTop = scroll.scrollHeight;
+      return true;
+    }
+    cardsBroken = true;
+    SA.cards.drop(root);
+    root.remove();
+    SA.app.refresh("ch:" + channelId);
+    return false;
+  }
+
+  /** container の直下の .ed-scroll の直下の、部品のカードの根を全部外す */
+  function dropCardRoots(container, cards) {
+    for (const scroll of [...container.children]) {
+      if (!scroll.classList.contains("ed-scroll")) continue;
+      for (const child of [...scroll.children]) if (child.getAttribute("data-cards") !== null) cards.drop(child);
+    }
+  }
+
   function render(container, channelId, frame) {
     const t = store.turns[channelId];
     const ch = channelById(channelId);
@@ -1284,12 +1471,14 @@
     if (!t || !t.loaded) {
       if (talk) dropTalkRoots(container, talk);
       if (comp) dropComposerRoots(container, comp);
+      if (!frame && SA.cards) dropCardRoots(container, SA.cards);
       container.replaceChildren(...[top ? null : header(ch, channelId, frame), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [SA.views.loading()])])].filter(Boolean));
       return;
     }
     if (t.missing) {
       if (talk) dropTalkRoots(container, talk);
       if (comp) dropComposerRoots(container, comp);
+      if (!frame && SA.cards) dropCardRoots(container, SA.cards);
       container.replaceChildren(
         ...[
           top ? null : header(null, channelId, frame),
@@ -1307,6 +1496,8 @@
       timeline.append(el("div", { class: "tl-hint" }, [more]));
     }
     const isCc = !!(ch && ch.kind === "cc");
+    // 会話の行を部品が描く列 2 では、カード・待ちの行・文も部品が描く（Claude Code のチャンネルは古い .tl のまま）
+    const cards = talk && !isCc && SA.cards && !cardsBroken ? SA.cards : null;
     // Claude Code のチャンネルにはターンが無い（実行中の行・[続ける] は出さない）
     const run = isCc ? null : store.runningOf(channelId);
     const last = t.turns[t.turns.length - 1];
@@ -1326,20 +1517,20 @@
     }
     if (run && !talk) timeline.append(renderRunning(ch, run, prev));
     const waiting = pendingOf(channelId, ch);
-    if (waiting) {
+    if (waiting && !cards) {
       timeline.append(
         el("div", { class: "tl-notice", "aria-busy": "true" }, [
           el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }),
-          el("span", { text: waiting.kind === "close" ? "閉じる前の要約をしています…" : "会話を新しくしています…" }),
+          el("span", { text: waiting.kind === "close" ? WAIT_CLOSE_TEXT : WAIT_RENEW_TEXT }),
         ]),
       );
     }
     // /close の確認（下書きがあり、閉じていない）。この画面で閉じるのを待っている間は出さない（要約のターンの途中の下書き）
-    if (ch && ch.kind === "session" && ch.state !== "done" && ch.closeDraft && !(waiting && waiting.kind === "close")) {
+    if (!cards && ch && ch.kind === "session" && ch.state !== "done" && ch.closeDraft && !(waiting && waiting.kind === "close")) {
       timeline.append(closeCard(channelId, ch.closeDraft));
     }
     // 右腕の場所を変える確認（期限の中の物があるときだけ）
-    if (ch && ch.moveProposal) timeline.append(moveCard(channelId, ch.moveProposal));
+    if (!cards && ch && ch.moveProposal) timeline.append(moveCard(channelId, ch.moveProposal));
     let ccPending = null;
     let card = null;
     if (isCc) {
@@ -1367,7 +1558,7 @@
       // 行が同じ送信の状態（届け待ち・届けた）を出している間は、入力欄の上の帯を出さない
       const statusKind = status ? status.getAttribute("data-cc-status") : null;
       ccPending = live.sessionId && !(statusKind === "queued" || statusKind === "delivered") ? SA.views.ccPendingBar(live.sessionId, live.pending) : null;
-    } else if (ch && ch.kind === "session" && ch.permission && typeof ch.permission.id === "number") {
+    } else if (!cards && ch && ch.kind === "session" && ch.permission && typeof ch.permission.id === "number") {
       // プロジェクトのセッション（docs/plan/unify.md §6.1 の 5）の許可の要求。Claude Code のチャンネルと同じカード・同じ /api/cc/permissions/<id>/*
       const p = ch.permission;
       if (p.state === "pending") {
@@ -1377,13 +1568,13 @@
         SA.views.ccQuestionForget(p.id);
       }
     }
-    if (t.turns.length === 0 && !run) {
+    if (!cards && t.turns.length === 0 && !run) {
       timeline.append(
-        el("p", { class: "tl-hint", text: isCc ? "まだ会話はありません。下の欄か Discord で送ると、このセッションに届きます。" : "まだ会話はありません。下の欄か Discord で送ると始まります。" }),
+        el("p", { class: "tl-hint", text: isCc ? "まだ会話はありません。下の欄か Discord で送ると、このセッションに届きます。" : EMPTY_TEXT }),
       );
     }
-    if (ch && ch.kind === "session" && ch.state === "done") {
-      timeline.append(el("p", { class: "tl-hint", text: "完了したセッションです。発言すると進行中に戻ります。" }));
+    if (!cards && ch && ch.kind === "session" && ch.state === "done") {
+      timeline.append(el("p", { class: "tl-hint", text: DONE_TEXT }));
     }
     // 前に描いたカード（質問の書きかけ）か状態の行（[やめる]）が前の .tl にあれば、その .ed-scroll と .tl を残して中身だけを並べ直す（外すと焦点・IME の変換が切れる）
     const reused = talk ? [] : [card, ccStatusNodes.has(channelId) ? ccStatusNodes.get(channelId).node : null].filter((n) => n && parts.includes(n));
@@ -1391,16 +1582,20 @@
     const oldTimeline = (oldScroll && reused.map((n) => n.parentNode).find((p) => p && p.parentNode === oldScroll)) || null;
     let scroll;
     let talkRootEl = null;
-    // 部品の道: 同じチャンネルの .ed-scroll（直下の根と、そのすぐ次の .tl）があれば使い回す（行の要素・文の選択・スクロールの位置を保つ）
-    const same = talk ? talkScrollOf(container, channelId) : null;
+    let cardsRootEl = null;
+    // 部品の道: 同じチャンネルの .ed-scroll（直下の根と、カードの根と、その次の .tl）があれば使い回す（行の要素・文の選択・スクロールの位置・「その他」の欄を保つ）
+    const same = talk ? talkScrollOf(container, channelId, !!cards) : null;
     if (same) {
       talkRootEl = same.root;
+      cardsRootEl = same.cardsRoot;
       SA.views.placeChildren(same.tl, parts);
       scroll = same.scroll;
     } else if (talk) {
       dropTalkRoots(container, talk);
+      if (SA.cards) dropCardRoots(container, SA.cards);
       talkRootEl = el("div", { "data-talk": channelId });
-      scroll = el("div", { class: "ed-scroll", "data-stick": "bottom", "data-channel": channelId }, [talkRootEl, el("div", { class: "tl" }, parts)]);
+      if (cards) cardsRootEl = el("div", { "data-cards": channelId });
+      scroll = el("div", { class: "ed-scroll", "data-stick": "bottom", "data-channel": channelId }, [talkRootEl, cardsRootEl, el("div", { class: "tl" }, parts)].filter(Boolean));
       scroll.addEventListener("scroll", () => {
         if (scroll.scrollTop < OLDER_THRESHOLD) loadOlder(channelId);
       });
@@ -1433,6 +1628,14 @@
     if (talk && !talk.draw(talkRootEl, talkState(channelId, ch))) {
       talkBroken = true;
       talk.drop(talkRootEl);
+      render(container, channelId, frame);
+      return;
+    }
+    // カードは会話の後。描けなければ根を外す（やり直しでは会話の根のすぐ次が .tl の形として使い回せる）
+    if (cards && !cards.draw(cardsRootEl, { items: cardItems(channelId), on: cardsOn(channelId) })) {
+      cardsBroken = true;
+      cards.drop(cardsRootEl);
+      cardsRootEl.remove();
       render(container, channelId, frame);
       return;
     }

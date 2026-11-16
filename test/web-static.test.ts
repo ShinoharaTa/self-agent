@@ -6024,6 +6024,480 @@ test("web static: schedule（polling の始め・見えるようになったと�
   assert.equal(h.calls.markSeenShown, 2);
 });
 
+// ===== 新しい殻のカード（chat.js が SA.cards に根と state を渡す。K5） =====
+type CardItem = Record<string, unknown> & { kind: string; id: unknown };
+type CardsFn = (...a: unknown[]) => unknown;
+type CardsState = { items: CardItem[]; on: Record<string, CardsFn> };
+type CardsCall = { root: DomNode; state: CardsState };
+
+/** 偽のカードの口（SA.cards）。呼ばれた根と state を積み、ok を返す。onDraw は描くたびに呼ぶ */
+function withCards(c: ReturnType<typeof loadChat>) {
+  const SA = (c.context.window as { SA: Record<string, unknown> }).SA;
+  const draws: CardsCall[] = [];
+  const focuses: Array<{ root: DomNode; id: unknown; index: number }> = [];
+  const drops: DomNode[] = [];
+  const cards = {
+    draws,
+    focuses,
+    drops,
+    ok: true,
+    onDraw: null as ((root: DomNode, state: CardsState) => void) | null,
+    draw(root: DomNode, state: CardsState) {
+      draws.push({ root, state });
+      if (cards.onDraw) cards.onDraw(root, state);
+      return cards.ok;
+    },
+    focus(root: DomNode, id: unknown, index: number) {
+      focuses.push({ root, id, index });
+      return true;
+    },
+    drop(root: DomNode) {
+      drops.push(root);
+    },
+  };
+  SA.cards = cards;
+  return { SA, cards };
+}
+
+const lastCards = (cards: { draws: CardsCall[] }): CardsCall => cards.draws[cards.draws.length - 1]!;
+const cardsPlain = (cards: { draws: CardsCall[] }) => JSON.parse(JSON.stringify(lastCards(cards).state.items)) as CardItem[];
+const cardsOn = (cards: { draws: CardsCall[] }) => lastCards(cards).state.on;
+
+const CLOSE_DRAFT = { summary: "要約の 1 行\n2 行目", tasks: [{ title: "買い物" }, { title: "提出", due: "2026-11-20" }, { title: "掃除" }] };
+
+/** 会話・入力欄・カードの口を置き、話題（1）を描く。load.cc（質問の後の読み直し）も置く */
+function cardsChat(ch: Record<string, unknown> = {}, list: unknown[] = [chatTurn(10, "owner", "a")]) {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  const { talk } = withTalk(c);
+  const { SA, cards } = withCards(c);
+  (c.store.load as Record<string, unknown>).cc = () => Promise.resolve(null);
+  c.put("1", list, { kind: "session", title: "t", state: "active", ...ch });
+  const box = c.box();
+  c.chat.render(box, "1");
+  return { c, SA, comp, talk, cards, box };
+}
+
+/** /turns の読みを手で返す（返すまで待たせる） */
+function holdTurns(c: ReturnType<typeof loadChat>) {
+  const held: Array<() => void> = [];
+  (c.store.load as Record<string, unknown>).turns = (id: string) => {
+    c.loads.push(id);
+    return new Promise((r) => held.push(() => r(null)));
+  };
+  return held;
+}
+
+/** 確認のダイアログの要素を置く（ui.js の confirm が引く id）。[ok] を返す */
+function confirmNodes(c: ReturnType<typeof loadChat>): DomNode {
+  const host = c.box();
+  const nodes: Record<string, DomNode> = {};
+  for (const id of ["dlg-confirm", "dlg-confirm-title", "dlg-confirm-target", "dlg-confirm-body", "dlg-confirm-ok", "dlg-confirm-cancel"]) {
+    nodes[id] = new DomNode(id === "dlg-confirm" ? "dialog" : "button");
+    nodes[id]!.setAttribute("id", id);
+    host.append(nodes[id]!);
+  }
+  return nodes["dlg-confirm-ok"]!;
+}
+
+test("web static: SA.cards があると .ed-scroll の直下は 会話の根・カードの根（属性は data-cards だけ）・.tl の順で、draw は 入力欄 → 会話 → カード の順に根が付いた後", () => {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  const { talk } = withTalk(c);
+  const { cards } = withCards(c);
+  const order: string[] = [];
+  const attached: boolean[] = [];
+  const box = c.box();
+  comp.onDraw = () => order.push("composer");
+  const talkDraw = talk.draw;
+  talk.draw = (root, state) => {
+    order.push("talk");
+    return talkDraw.call(talk, root, state);
+  };
+  cards.onDraw = (root) => {
+    order.push("cards");
+    attached.push(box.contains(root));
+  };
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active" });
+  c.chat.render(box, "1");
+  const kids = talkKids(box);
+  assert.equal(kids.length, 3);
+  assert.equal(kids[0]!.getAttribute("data-talk"), "1");
+  assert.deepEqual([...kids[1]!.attrs.keys()], ["data-cards"]);
+  assert.equal(kids[1]!.getAttribute("data-cards"), "1");
+  assert.ok(kids[2]!.classes.has("tl"));
+  assert.deepEqual(order, ["composer", "talk", "cards"]);
+  assert.deepEqual(attached, [true]);
+  assert.equal(cards.draws[0]!.root, kids[1]);
+});
+
+test("web static: SA.cards があると .tl は空で、古いカード・待ちの行・空の文・完了の文を作らず、ccPermissionCard を呼ばない", async () => {
+  const c = loadChat();
+  withComposer(c);
+  withTalk(c);
+  const { SA, cards } = withCards(c);
+  const views = SA.views as Record<string, unknown>;
+  let old = 0;
+  const card = views.ccPermissionCard as CardsFn;
+  views.ccPermissionCard = (...a: unknown[]) => {
+    old++;
+    return card(...a);
+  };
+  const box = c.box();
+  const ok = confirmNodes(c);
+  c.put("1", [], { kind: "session", title: "t", state: "active", closeDraft: CLOSE_DRAFT, moveProposal: { id: 3, from: "a", to: "b" }, permission: permissionRequest(40, { sessionId: "sx" }) });
+  c.chat.render(box, "1");
+  (c.chat as unknown as { renew: (id: string) => void }).renew("1");
+  ok.dispatch("click");
+  await c.flush();
+  c.chat.render(box, "1");
+  assert.equal(cardsPlain(cards)[0]!.id, "wait");
+  c.put("2", [], { kind: "session", title: "t", state: "done" });
+  const done = c.box();
+  c.chat.render(done, "2");
+  for (const b of [box, done]) {
+    const tl = talkKids(b)[2]!;
+    assert.equal(tl.children.length, 0);
+    for (const sel of ["section.card", "section.cc-permission", "p.tl-hint", "div.tl-notice", "div.tl-hint"]) assert.equal(b.querySelectorAll(sel).length, 0, sel);
+  }
+  assert.equal(old, 0);
+  assert.ok(cards.draws.length >= 3);
+});
+
+test("web static: カードの items は 待ちの行 → 閉じる → 移す → 許可 → 空の文 → 完了の文 の順で、文は古い描き方と同じ", async () => {
+  const { c, cards, box } = cardsChat({ closeDraft: CLOSE_DRAFT, moveProposal: { id: 3, from: "General", to: "beta" }, permission: permissionRequest(41, { sessionId: "sx" }) }, []);
+  let items = cardsPlain(cards);
+  assert.deepEqual(items.map((i) => i.kind + ":" + i.id), ["close:1", "move:3", "permission:41", "note:empty"]);
+  assert.deepEqual(items[0], {
+    kind: "close",
+    id: "1",
+    summary: "要約の 1 行\n2 行目",
+    tasks: ["1. 買い物", "2. 提出（期限 2026-11-20）", "3. 掃除"],
+    picked: [],
+    busy: false,
+  });
+  assert.deepEqual(items[1], { kind: "move", id: 3, from: "General", to: "beta", busy: false });
+  assert.equal(items[2]!.tool, "Bash");
+  assert.equal(items[2]!.busy, false);
+  assert.deepEqual(items[3], { kind: "note", id: "empty", text: "まだ会話はありません。下の欄か Discord で送ると始まります。" });
+  // 選んだ候補は昇順
+  cardsOn(cards).task!("1", 2, true);
+  cardsOn(cards).task!("1", 0, true);
+  assert.deepEqual(cardsPlain(cards)[0]!.picked, [0, 2]);
+  // 会話を新しくしている間は待ちの行が先頭（busy）
+  const ok = confirmNodes(c);
+  (c.chat as unknown as { renew: (id: string) => void }).renew("1");
+  ok.dispatch("click");
+  await c.flush();
+  c.chat.render(box, "1");
+  items = cardsPlain(cards);
+  assert.deepEqual(items[0], { kind: "note", id: "wait", busy: true, text: "会話を新しくしています…" });
+  // 質問・完了: 完了した話題に閉じるカードは出さず、完了の文が最後
+  c.put("2", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "done", closeDraft: CLOSE_DRAFT, permission: questionPermission(42, { sessionId: "sx" }) });
+  c.chat.render(c.box(), "2");
+  items = cardsPlain(cards);
+  assert.deepEqual(items.map((i) => i.kind + ":" + i.id), ["question:42", "note:done"]);
+  assert.deepEqual(items[1], { kind: "note", id: "done", text: "完了したセッションです。発言すると進行中に戻ります。" });
+  assert.equal(items[0]!.who, "");
+  // 実行中は空の文を出さない。終わった許可は出さない
+  setRunning(c, [{ channelId: "3", turnSeq: 1, toolCalls: 0, steps: [], abortable: true }]);
+  c.put("3", [], { kind: "session", title: "t", state: "active", permission: permissionRequest(43, { state: "allowed" }) });
+  c.chat.render(c.box(), "3");
+  assert.deepEqual(cardsPlain(cards), []);
+});
+
+test("web static: 閉じるのを待っている間は閉じるカードを出さず、待ちの行は「閉じる前の要約をしています…」", async () => {
+  const { c, cards, box } = cardsChat({ closeDraft: CLOSE_DRAFT });
+  const ok = confirmNodes(c);
+  (c.chat as unknown as { closeSession: (id: string) => void }).closeSession("1");
+  ok.dispatch("click");
+  await c.flush();
+  c.chat.render(box, "1");
+  assert.deepEqual(cardsPlain(cards), [{ kind: "note", id: "wait", busy: true, text: "閉じる前の要約をしています…" }]);
+});
+
+test("web static: 終わった質問はカードに出さず、選んだ状態を捨てる（ccQuestionForget）", () => {
+  const { c, SA, cards, box } = cardsChat({ permission: questionPermission(44, { sessionId: "sx" }) });
+  const ask = (SA.views as { ccAsk: CcAsk }).ccAsk;
+  cardsOn(cards).pick!(44, 0, "赤", true);
+  assert.deepEqual((cardsPlain(cards)[0]!.questions as Array<{ picked: string[] }>)[0]!.picked, ["赤"]);
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active", permission: questionPermission(44, { state: "allowed" }) });
+  c.chat.render(box, "1");
+  assert.deepEqual(cardsPlain(cards), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(ask.item("sx", questionPermission(44))!.questions![0]!.picked)), [], "選んだ状態は捨てた");
+});
+
+test("web static: 同じ話題の描き直しは 3 つの根と .ed-scroll が同じ要素。別の話題・読み込み中・開けないではカードの根を drop する", () => {
+  const { c, cards, box } = cardsChat();
+  const before = talkKids(box).slice();
+  const scroll = talkScroll(box);
+  c.chat.render(box, "1");
+  assert.equal(talkScroll(box), scroll);
+  assert.deepEqual(talkKids(box), before);
+  assert.equal(lastCards(cards).root, before[1]);
+  assert.equal(cards.drops.length, 0);
+  c.put("2", [chatTurn(10, "owner", "a")], { kind: "session", title: "u", state: "active" });
+  c.chat.render(box, "2");
+  assert.deepEqual(cards.drops, [before[1]]);
+  assert.equal(talkKids(box)[1]!.getAttribute("data-cards"), "2");
+  const second = talkKids(box)[1]!;
+  c.store.turns["2"]!.loaded = false;
+  c.chat.render(box, "2");
+  assert.deepEqual(cards.drops, [before[1], second]);
+  c.put("3", [], {});
+  c.chat.render(box, "3");
+  const third = talkKids(box)[1]!;
+  c.store.turns["3"]!.missing = true;
+  c.chat.render(box, "3");
+  assert.deepEqual(cards.drops, [before[1], second, third]);
+});
+
+test("web static: カードの on.always・task・pick・other は状態を変え、その呼び出しの中でカードだけを描く（会話・入力欄・refresh は呼ばない）", () => {
+  const { c, cards, comp, talk } = cardsChat({ permission: permissionRequest(45, { sessionId: "sx" }) });
+  const counts = () => [comp.draws.length, talk.draws.length, c.refreshes.length];
+  const base = counts();
+  /** fn の中でカードが 1 回だけ描かれる */
+  const once = (fn: () => void) => {
+    const n = cards.draws.length;
+    fn();
+    assert.equal(cards.draws.length, n + 1);
+  };
+  once(() => cardsOn(cards).always!(45, true));
+  assert.equal(cardsPlain(cards)[0]!.always, true);
+  once(() => cardsOn(cards).always!(45, false));
+  assert.equal(cardsPlain(cards)[0]!.always, false);
+  // 閉じる前の確認の候補と質問
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active", closeDraft: CLOSE_DRAFT, permission: questionPermission(46, { sessionId: "sx" }) });
+  once(() => cardsOn(cards).task!("1", 1, true));
+  assert.deepEqual(cardsPlain(cards)[0]!.picked, [1]);
+  once(() => cardsOn(cards).task!("1", 1, false));
+  assert.deepEqual(cardsPlain(cards)[0]!.picked, []);
+  const q = () => cardsPlain(cards)[1]!.questions as Array<{ picked: string[]; other: boolean; otherText: string }>;
+  once(() => cardsOn(cards).pick!(46, 0, "青", true));
+  assert.deepEqual(q()[0]!.picked, ["青"]);
+  once(() => cardsOn(cards).pickOther!(46, 0, true, false));
+  assert.equal(q()[0]!.other, true);
+  assert.deepEqual(q()[0]!.picked, []);
+  once(() => cardsOn(cards).other!(46, 0, "紫"));
+  assert.equal(q()[0]!.otherText, "紫");
+  assert.equal(cardsPlain(cards)[1]!.ready, false, "2 問目が残っている");
+  assert.deepEqual(counts(), base);
+});
+
+test("web static: カードの on.pickOther は byPointer で選んだときだけ、描いた後に「その他」の欄へ focus を頼む", () => {
+  const { cards } = cardsChat({ permission: questionPermission(47, { sessionId: "sx" }) });
+  const root = lastCards(cards).root;
+  let drawsAtFocus = -1;
+  const focus = cards.focus;
+  cards.focus = (r, id, index) => {
+    drawsAtFocus = cards.draws.length;
+    return focus.call(cards, r, id, index);
+  };
+  const n = cards.draws.length;
+  cardsOn(cards).pickOther!(47, 0, true, true);
+  assert.deepEqual(cards.focuses.map((f) => [f.root, f.id, f.index]), [[root, 47, 0]]);
+  assert.equal(drawsAtFocus, n + 1, "描いた後");
+  cardsOn(cards).pickOther!(47, 1, true, false);
+  cardsOn(cards).pickOther!(47, 1, false, true);
+  assert.equal(cards.focuses.length, 1);
+  // 描けなかったら頼まない
+  cards.ok = false;
+  cardsOn(cards).pickOther!(47, 0, true, true);
+  assert.equal(cards.focuses.length, 1);
+});
+
+test("web static: カードの on.permit は decision の道へ requestHash を送り、送っている間と通った後 /turns を 2 回読み直すまで busy。2 回押しても送るのは 1 回", async () => {
+  const { c, cards, box } = cardsChat({ permission: permissionRequest(48, { sessionId: "sx" }) });
+  const held = holdPost(c);
+  const turns = holdTurns(c);
+  void cardsOn(cards).permit!(48, "always");
+  void cardsOn(cards).permit!(48, "allow");
+  assert.deepEqual(held.map((h) => [h.path, JSON.parse(JSON.stringify(h.body))]), [["/api/cc/permissions/48/always", { requestHash: "h48" }]]);
+  assert.equal(cardsPlain(cards)[0]!.busy, true, "送っている間");
+  held[0]!.resolve({});
+  await c.flush();
+  c.chat.render(box, "1");
+  assert.equal(cardsPlain(cards)[0]!.busy, true, "1 回目の読み直しの前");
+  for (const r of turns.splice(0)) r();
+  await c.flush();
+  c.chat.render(box, "1");
+  assert.equal(cardsPlain(cards)[0]!.busy, true, "2 回目の読み直しの前");
+  assert.equal(turns.length, 1);
+  for (const r of turns.splice(0)) r();
+  await c.flush();
+  c.chat.render(box, "1");
+  assert.equal(cardsPlain(cards)[0]!.busy, false, "読み直した後（項目が残っていれば押せる）");
+  assert.equal(held.length, 1);
+  assert.ok(c.refreshes.includes("ch:1"));
+  // 失敗はすぐ外れる
+  void cardsOn(cards).permit!(48, "deny");
+  assert.equal(held[1]!.path, "/api/cc/permissions/48/deny");
+  held[1]!.reject(Object.assign(new Error("x"), { status: 409 }));
+  await c.flush();
+  c.chat.render(box, "1");
+  assert.equal(cardsPlain(cards)[0]!.busy, false);
+  assert.equal(turns.length, 1, "失敗では cardOp は読み直さない（許可の送りの読み直しだけ）");
+});
+
+test("web static: カードの on.answer・on.dismiss は /answer・/deny へ送り、通った後 /turns を読み直す", async () => {
+  const { c, cards } = cardsChat({ permission: questionPermission(49, { sessionId: "sx" }) });
+  cardsOn(cards).pick!(49, 0, "赤", true);
+  cardsOn(cards).pick!(49, 1, "B", true);
+  const loads = c.loads.length;
+  cardsOn(cards).answer!(49);
+  await c.flush();
+  assert.deepEqual(c.posts.map((p) => [p.path, JSON.parse(JSON.stringify(p.body))]), [["/api/cc/permissions/49/answer", { requestHash: "qh", answers: [{ labels: ["赤"] }, { labels: ["B"] }] }]]);
+  assert.deepEqual(c.loads.slice(loads), ["1", "1"]);
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active", permission: questionPermission(50, { sessionId: "sx" }) });
+  c.chat.render(c.box(), "1");
+  cardsOn(cards).dismiss!(50);
+  await c.flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(c.posts[1])), { path: "/api/cc/permissions/50/deny", body: { requestHash: "qh" } });
+  assert.deepEqual(c.loads.slice(loads), ["1", "1", "1", "1"]);
+});
+
+test("web static: カードの on.close は all・none はそのまま、picked は昇順（何も選んでいなければ送らない）で、送っている間は busy。on.move は accept・keep の道", async () => {
+  const { c, cards, box } = cardsChat({ closeDraft: CLOSE_DRAFT });
+  const held = holdPost(c);
+  cardsOn(cards).close!("1", "picked");
+  assert.equal(held.length, 0, "選んでいなければ送らない");
+  cardsOn(cards).task!("1", 2, true);
+  cardsOn(cards).task!("1", 0, true);
+  void cardsOn(cards).close!("1", "picked");
+  assert.deepEqual(held.map((h) => [h.path, JSON.parse(JSON.stringify(h.body))]), [["/api/sessions/1/close/confirm", { selected: [0, 2] }]]);
+  assert.equal(cardsPlain(cards)[0]!.busy, true);
+  void cardsOn(cards).close!("1", "all");
+  assert.equal(held.length, 1, "送っている間は重ねない");
+  held[0]!.reject(Object.assign(new Error("x"), { status: 500 }));
+  await c.flush();
+  c.chat.render(box, "1");
+  assert.equal(cardsPlain(cards)[0]!.busy, false);
+  for (const which of ["all", "none"]) {
+    void cardsOn(cards).close!("1", which);
+    assert.deepEqual(JSON.parse(JSON.stringify(held.at(-1)!.body)), { selected: which });
+    held.at(-1)!.reject(Object.assign(new Error("x"), { status: 500 }));
+    await c.flush();
+  }
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active", moveProposal: { id: 9, from: "a", to: "b" } });
+  c.chat.render(box, "1");
+  for (const action of ["accept", "keep"]) {
+    void cardsOn(cards).move!(9, action);
+    assert.equal(cardsPlain(cards)[0]!.busy, true);
+    assert.equal(held.at(-1)!.path, "/api/topics/moves/9/" + action);
+    held.at(-1)!.reject(Object.assign(new Error("x"), { status: 500 }));
+    await c.flush();
+    c.chat.render(box, "1");
+  }
+});
+
+test("web static: 古い画面からの押し（今の要求と id が違う）と、要求の種類が合わない押しは何も送らず、ccAsk を呼ばない", async () => {
+  const { c, SA, cards } = cardsChat({ permission: permissionRequest(51, { sessionId: "sx" }) });
+  const ask = (SA.views as { ccAsk: Record<string, CardsFn> }).ccAsk;
+  const called: string[] = [];
+  for (const name of ["pick", "pickOther", "other", "permit", "answer", "dismiss"]) {
+    const fn = ask[name]!;
+    ask[name] = (...a: unknown[]) => {
+      called.push(name);
+      return fn(...a);
+    };
+  }
+  const on = cardsOn(cards);
+  const n = cards.draws.length;
+  // id が違う
+  on.permit!(50, "allow");
+  on.pick!(50, 0, "赤", true);
+  // 許可に質問の押し
+  on.pick!(51, 0, "赤", true);
+  on.pickOther!(51, 0, true, true);
+  on.other!(51, 0, "x");
+  on.answer!(51);
+  on.dismiss!(51);
+  // 要求が無い
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active", permission: null });
+  on.permit!(51, "allow");
+  // 質問に許可の押し
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active", permission: questionPermission(52, { sessionId: "sx" }) });
+  on.permit!(52, "allow");
+  await c.flush();
+  assert.deepEqual(c.posts, []);
+  assert.deepEqual(called, []);
+  assert.equal(cards.draws.length, n);
+});
+
+test("web static: カードだけの描き直しは、一番下を見ていたら一番下のまま、上を読んでいたら動かさない", () => {
+  const { cards, box } = cardsChat({ closeDraft: CLOSE_DRAFT });
+  const scroll = talkScroll(box);
+  scroll.scrollHeight = 1000;
+  scroll.clientHeight = 200;
+  scroll.scrollTop = 800;
+  cards.onDraw = () => {
+    scroll.scrollHeight += 40;
+  };
+  cardsOn(cards).task!("1", 0, true);
+  assert.equal(scroll.scrollTop, 840);
+  scroll.scrollTop = 300;
+  cardsOn(cards).task!("1", 1, true);
+  assert.equal(scroll.scrollTop, 300);
+});
+
+test("web static: カードの draw が false なら drop して根を外し、同じ render の中で古いカードを .tl に出す。以後そのタブでは口を呼ばず、選んだ状態は古いカードに出る", () => {
+  const { c, cards, talk, box } = cardsChat({ closeDraft: CLOSE_DRAFT });
+  cardsOn(cards).task!("1", 1, true);
+  const scroll = talkScroll(box);
+  const talkRoot = talkKids(box)[0]!;
+  const root = talkKids(box)[1]!;
+  cards.ok = false;
+  const n = cards.draws.length;
+  c.chat.render(box, "1");
+  assert.equal(cards.draws.length, n + 1);
+  assert.deepEqual(cards.drops, [root]);
+  assert.equal(talkScroll(box), scroll);
+  const kids = talkKids(box);
+  assert.equal(kids.length, 2);
+  assert.equal(kids[0], talkRoot);
+  assert.ok(kids[1]!.classes.has("tl"));
+  const card = kids[1]!.querySelector("section.card")!;
+  assert.ok(card, "古いカード");
+  const boxes = card.querySelectorAll("input") as Array<DomNode & { checked?: boolean }>;
+  assert.deepEqual(boxes.map((b) => !!b.checked || b.getAttribute("checked") !== null), [false, true, false]);
+  assert.ok(talk.draws.length > 0);
+  cards.ok = true;
+  c.chat.render(box, "1");
+  c.chat.render(c.box(), "1");
+  assert.equal(cards.draws.length, n + 1, "以後は呼ばない");
+  assert.equal(box.querySelectorAll("[data-cards]").length, 0);
+});
+
+test("web static: 会話の口が無い・Claude Code のチャンネル・右腕の枠ではカードの口を呼ばず、[data-cards] を作らない", () => {
+  // 会話の口が無い（カードの口だけ）
+  const a = loadChat();
+  const { cards: onlyCards } = withCards(a);
+  a.put("1", [], { kind: "session", title: "t", state: "active", closeDraft: CLOSE_DRAFT });
+  const boxA = a.box();
+  a.chat.render(boxA, "1");
+  assert.equal(onlyCards.draws.length, 0);
+  assert.equal(boxA.querySelectorAll("[data-cards]").length, 0);
+  assert.ok(boxA.querySelector("section.card"));
+  // Claude Code のチャンネルと右腕の枠
+  const b = loadChat();
+  withTalk(b);
+  withComposer(b);
+  const { cards } = withCards(b);
+  const store = b.store as unknown as Record<string, unknown>;
+  store.ccSessions = {};
+  store.ccPendingOf = (_id: string, p: unknown) => p;
+  const permission = { id: 7, state: "pending", toolName: "Bash", summary: "ls", expiresAt: new Date(Date.now() + 60_000).toISOString(), requestHash: "h", alwaysRule: null };
+  b.put("2", [], { kind: "cc", name: "cc-x", cc: { sessionId: "s1", state: "idle", permission } });
+  const boxB = b.box();
+  b.chat.render(boxB, "2");
+  b.put("3", [], { kind: "inbox" });
+  const boxC = b.box();
+  b.chat.render(boxC, "3", { title: "右腕", placeholder: "右腕に送る" });
+  assert.equal(cards.draws.length, 0);
+  for (const box of [boxB, boxC]) assert.equal(box.querySelectorAll("[data-cards]").length, 0);
+  assert.ok(boxB.querySelector("section.cc-permission"), "Claude Code のチャンネルの許可は古いカードのまま");
+});
+
 // ===== M2b のレビューの直し =====
 test("web static: v3 のシートを開くと、最初の押せる行に焦点がある（× でも押せない行でもない）", async () => {
   const h = loadShell();
