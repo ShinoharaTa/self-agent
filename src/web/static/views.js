@@ -1511,7 +1511,9 @@
     /** 以下は通ったかに resolve する */
     permit: (sessionId, p, decision, tabId) => answerCcPermission(sessionId, p, decision, tabId),
     answer(sessionId, p, tabId) {
-      const picks = ccQuestionPicks(p.question.questions, ccQuestionDraft(p.id, p.question.questions.length));
+      const questions = p && p.question && Array.isArray(p.question.questions) ? p.question.questions : null;
+      // 質問でない要求（許可）には答えない（投げない）
+      const picks = questions ? ccQuestionPicks(questions, ccQuestionDraft(p.id, questions.length)) : null;
       if (!picks) return Promise.resolve(false);
       return postCcQuestion(sessionId, p, "answer", { requestHash: p.requestHash, answers: picks }, tabId);
     },

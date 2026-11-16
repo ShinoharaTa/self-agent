@@ -1914,6 +1914,10 @@ test("web static: ccAsk.answer は答えていない問が在れば送らず fal
   assert.equal(await ask.dismiss("s1", questionPermission(67)), true);
   assert.equal(posts.at(-1), "/api/cc/permissions/67/deny");
   assert.deepEqual(JSON.parse(JSON.stringify(bodies.at(-1))), { requestHash: "qh" });
+  // 質問でない要求（許可）には答えない（投げない・送らない）
+  const sent = posts.length;
+  assert.equal(await ask.answer("s1", { id: 70, state: "pending", toolName: "Bash", requestHash: "h" } as never), false);
+  assert.equal(posts.length, sent);
   setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 409 })));
   assert.equal(await ask.dismiss("s1", questionPermission(68)), false);
 });
