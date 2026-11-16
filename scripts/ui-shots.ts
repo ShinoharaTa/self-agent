@@ -110,10 +110,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   let failed = 0;
   const wanted = (name: string): boolean => only === undefined || name.includes(only);
 
-  async function contextFor(vp: Viewport, theme: Theme, label: string): Promise<{ ctx: BrowserContext; page: Page }> {
+  /** auth が false なら Tailscale-User-Login を付けない（認証の前に配られる物を撮る） */
+  async function contextFor(vp: Viewport, theme: Theme, label: string, auth = true): Promise<{ ctx: BrowserContext; page: Page }> {
     const ctx = await browser.newContext({
       ...VIEWPORTS[vp],
-      extraHTTPHeaders: { "Tailscale-User-Login": fixture.login },
+      ...(auth ? { extraHTTPHeaders: { "Tailscale-User-Login": fixture.login } } : {}),
       colorScheme: theme,
       locale: "ja-JP",
       timezoneId: "Asia/Tokyo",
@@ -286,11 +287,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
   }
 
-  /** 部品の見本のページ（認証の前に配られる。一覧は待たない） */
+  /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない） */
   async function gallery(vp: Viewport, theme: Theme): Promise<void> {
     const name = galleryName(vp, theme);
     if (!wanted(name)) return;
-    const { ctx, page } = await contextFor(vp, theme, `gallery-${vp}-${theme}`);
+    const { ctx, page } = await contextFor(vp, theme, `gallery-${vp}-${theme}`, false);
     try {
       await step(name, [name], async () => {
         await page.goto(base + "/static/gallery.html", { waitUntil: "load" });

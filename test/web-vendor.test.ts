@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { staticFileFor } from "../src/web/static.ts";
@@ -12,8 +12,27 @@ const STATIC_DIR = join(ROOT, "src/web/static");
 const DIRS = { staticDir: STATIC_DIR, templateSiteDir: join(ROOT, "templates/web/site") };
 const read = (name: string): string => readFileSync(join(STATIC_DIR, name), "utf8");
 const VENDOR_FILES = ["vendor-preact.js", "vendor-preact-hooks.js", "vendor-htm.js"];
+const devDependencies = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { devDependencies: Record<string, string> }).devDependencies;
+
+/** node_modules の版。無い（npm ci --omit=dev）・package.json と違うときは、何をすればよいか分かる文で落とす */
+function nodeModulesVersion(pkg: "preact" | "htm"): string {
+  const file = join(ROOT, "node_modules", pkg, "package.json");
+  if (!existsSync(file)) assert.fail(`${pkg} が node_modules に無い（devDependencies。npm ci）`);
+  const version = (JSON.parse(readFileSync(file, "utf8")) as { version: string }).version;
+  assert.equal(version, devDependencies[pkg], `${pkg}: node_modules が package.json と違う。npm ci をしてから`);
+  return version;
+}
+
+test("web vendor: src/web/static/ の vendor-* は VENDOR_SOURCES の 3 つだけ（手で足した物を通さない）", () => {
+  const names = readdirSync(STATIC_DIR).filter((n) => n.startsWith("vendor-"));
+  assert.deepEqual(names.sort(), VENDOR_SOURCES.map((source) => source.out).sort());
+  assert.deepEqual([...VENDOR_FILES].sort(), names);
+});
 
 test("web vendor: commit した vendor の 3 つが、今の node_modules から scripts/vendor-web.ts で作り直した物とバイトで一致する", () => {
+  // 版のずれ・node_modules に無いときは「作り直す」でなく npm ci を促す
+  nodeModulesVersion("preact");
+  nodeModulesVersion("htm");
   const made = buildVendorFiles(join(ROOT, "node_modules"));
   assert.deepEqual([...made.keys()].sort(), [...VENDOR_FILES].sort());
   for (const [name, text] of made) {
@@ -22,30 +41,32 @@ test("web vendor: commit した vendor の 3 つが、今の node_modules から
 });
 
 test("web vendor: 裸の指定・sourceMappingURL・eval・new Function が無く、先頭のコメントに名前・版・ライセンスがある", () => {
-  const versions: Record<string, string> = {
-    preact: (JSON.parse(readFileSync(join(ROOT, "node_modules/preact/package.json"), "utf8")) as { version: string }).version,
-    htm: (JSON.parse(readFileSync(join(ROOT, "node_modules/htm/package.json"), "utf8")) as { version: string }).version,
-  };
+  const versions: Record<string, string> = { preact: nodeModulesVersion("preact"), htm: nodeModulesVersion("htm") };
   for (const source of VENDOR_SOURCES) {
     const text = read(source.out);
     assert.doesNotMatch(text, /\b(?:from|import)\s*(["'])(?![./])[^"']*\1/, `${source.out}: 裸の指定`);
     assert.doesNotMatch(text, /sourceMappingURL/, source.out);
-    assert.doesNotMatch(text, /\beval\(|new Function\b/, source.out);
+    assert.doesNotMatch(text, /\beval\(|new Function\b|\bFunction\(/, source.out);
     const first = text.split("\n")[0] ?? "";
     assert.ok(first.startsWith(`/* ${source.label} ${versions[source.pkg]} — `), `${source.out}: ${first}`);
+    assert.ok(first.includes(`${source.copyright.replace(/\.$/, "")}. `), `${source.out}: 著作権の行`);
     assert.match(first, /THIRD_PARTY_LICENSES\.md/);
   }
   assert.match(read("vendor-preact-hooks.js"), /from"\.\/vendor-preact\.js"/);
 });
 
-test("web vendor: vendorText は preact の裸の指定を書き換え、ほかの裸の指定が残れば例外にする", () => {
-  const header = { label: "x", version: "1.0.0", license: "MIT" };
+test("web vendor: vendorText は preact の裸の指定を書き換え、同梱の 3 つ以外の指定・動的な import が残れば例外にする", () => {
+  const header = { label: "x", version: "1.0.0", license: "MIT", copyright: "Copyright 2000 X" };
   assert.equal(
     vendorText('import{a}from"preact";import "preact";export{a};\n//# sourceMappingURL=x.map\n', header),
-    '/* x 1.0.0 — MIT. THIRD_PARTY_LICENSES.md. npm run vendor-web で作る（手で直さない） */\nimport{a}from"./vendor-preact.js";import "./vendor-preact.js";export{a};\n',
+    '/* x 1.0.0 — MIT. Copyright 2000 X. THIRD_PARTY_LICENSES.md. npm run vendor-web で作る（手で直さない） */\nimport{a}from"./vendor-preact.js";import "./vendor-preact.js";export{a};\n',
   );
-  assert.throws(() => vendorText('import{b}from"preact/hooks";', header), /裸の指定/);
-  assert.throws(() => vendorText("import x from 'other';", header), /裸の指定/);
+  assert.doesNotThrow(() => vendorText('import{a}from"./vendor-htm.js";export*from"./vendor-preact-hooks.js";', header));
+  assert.throws(() => vendorText('import{b}from"preact/hooks";', header), /同梱の 3 つ以外/);
+  assert.throws(() => vendorText("import x from 'other';", header), /同梱の 3 つ以外/);
+  assert.throws(() => vendorText('import{c}from"./chunk.mjs";', header), /同梱の 3 つ以外/);
+  assert.throws(() => vendorText('export*from"x";', header), /同梱の 3 つ以外/);
+  assert.throws(() => vendorText('const m=import("x");', header), /動的な import/);
 });
 
 test("web vendor: c-lib.js を Node で import でき、html は vnode を返す", async () => {
@@ -62,11 +83,15 @@ test("web vendor: c-lib.js を Node で import でき、html は vnode を返す
   }
 });
 
-test("web vendor: 部品（c-*.js）は vendor を直に読まず c-lib.js から import し、dangerouslySetInnerHTML を使わない", () => {
-  for (const name of ["c-gallery.js"]) {
+test("web vendor: 部品（c-*.js）は vendor を直に読まず c-lib.js から import し、htm に style= と dangerouslySetInnerHTML を書かない", () => {
+  // Preact は style の prop を style.cssText で入れるので CSP（style-src 'self'）では止まらない。決まりとテストで止める
+  const parts = readdirSync(STATIC_DIR).filter((n) => /^c-.*\.js$/.test(n) && n !== "c-lib.js");
+  assert.ok(parts.length > 0);
+  for (const name of parts) {
     const js = read(name);
     assert.doesNotMatch(js, /vendor-/, name);
     assert.match(js, /from "\.\/c-lib\.js"/, name);
+    assert.doesNotMatch(js, /\bstyle=/, `${name}: style=`);
     assert.doesNotMatch(js, /dangerouslySetInnerHTML|innerHTML/, name);
   }
 });
@@ -108,4 +133,13 @@ test("web vendor: package.json の実行時の依存は 3 つのまま、preact�
   assert.equal(Object.keys(pkg.dependencies).length, 3);
   assert.equal(pkg.devDependencies.preact, "11.2.0");
   assert.equal(pkg.devDependencies.htm, "3.1.1");
+});
+
+test("web vendor: THIRD_PARTY_LICENSES.md は preact・htm の LICENSE の全文を含み、見出しの版は node_modules の版", () => {
+  const text = readFileSync(join(ROOT, "THIRD_PARTY_LICENSES.md"), "utf8");
+  for (const pkg of ["preact", "htm"] as const) {
+    const version = nodeModulesVersion(pkg);
+    assert.ok(text.includes(readFileSync(join(ROOT, "node_modules", pkg, "LICENSE"), "utf8").trimEnd()), `${pkg}: LICENSE の全文`);
+    assert.match(text, new RegExp(`^## ${pkg} ${version.replaceAll(".", "\\.")}$`, "m"), `${pkg}: 見出しの版`);
+  }
 });

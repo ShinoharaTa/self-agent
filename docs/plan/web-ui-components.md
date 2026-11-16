@@ -35,7 +35,7 @@
 | F6 | `test/web-static.test.ts` は 213 個。うち新しい殻の節（1908 行〜）が 151 個。`fnSource()` の切り出し 30・ソース文字列への正規表現 約 149。絵を見るテストは無い。CI も無い（`.github/workflows` なし） | 数えた |
 | F7 | 静的ファイルは 1 要素の名前だけ配る（`^[A-Za-z0-9_-]+\.(html\|css\|js\|svg\|png\|webmanifest)$`）。**`vendor/` の下・`preact.module.js` のような名前は今は配れない** | `src/web/static.ts` |
 | F8 | CSP は `default-src 'self'`。inline の script・style・importmap は書けない。静的ファイルは `no-cache` + ETag（毎回 304 の確認） | `src/web/server.ts` 17・178 行 |
-| F9 | 実行時の依存は 3 つ（SDK・discord.js・zod）、dev は 2 つ（@types/node・typescript）。`docs/plan/web-ui.md` は「依存は足さない」「素の HTML + fetch」と決めている | `package.json`・`web-ui.md` §0 |
+| F9 | 実行時の依存は 3 つ（SDK・discord.js・zod）、dev は 2 つ（@types/node・typescript）（K1 の後は dev 5: typescript・@types/node・playwright-core・preact・htm）。`docs/plan/web-ui.md` は「依存は足さない」「素の HTML + fetch」と決めている | `package.json`・`web-ui.md` §0 |
 | F10 | npm 配布は `src/web/static/` を `dist/web/static/` へそのまま写す。checkout の運用はビルドなし | `docs/plan/distribution.md` |
 | F11 | `shell.js` は `document.readyState` が loading でなければ読まれた時点で `init` する（defer なので実際は読まれた時点） | `shell.js` 1577 行 |
 | F12 | `c-` で始まるクラスは `app.css`・`base.css`・`shell.css` に 1 つも無い | grep |
@@ -63,6 +63,8 @@
 ### 2.4 未確認
 
 - **iOS Safari・ホーム画面の PWA** で ES modules + Preact が同じに動くか（Chromium でしか試していない）。
+- iOS Safari は 12.2 以上の見立て（同梱の本体が無条件に `queueMicrotask` を使う。構文は ES5 + import/export。推測・実機は未確認）。
+- 11 系: `render` は 2 引数だけ・関数の部品では `ref` はただの prop・`defaultProps` は無い・`createPortal` は本体にある。
 - Preact 11 系の枯れ具合。npm では 11.0.0 が 2026-09-30、11.2.0（latest）が 2026-11-06。10 系の最新は 10.29.8（2026-08-01）。既知の不具合は調べていない。だめなら 10.29.8 へ下げる（10 系では試していない）。
 - オーナーが実機のどこを「破綻」と感じたか（§3 は偽データの画面写しから私が拾ったもの）。
 - ライトの絵・古い殻の 4 枚・残りの 40 枚は開いていない（§3.1）。
@@ -245,6 +247,8 @@
 - `c-*.js` が書くクラス名は `c-` で始まる物だけ。`c-app.js` 以外は `document`・`window`・`SA`・`fetch` を書かない。
 - `c-*.css` にあって `c-*.js` に出てこないクラス、その逆、が無い。
 - K8 以降: `v3.html` の `<link>` に `app.css`・`shell.css` が無い。
+- 部品は `style` の prop と `dangerouslySetInnerHTML` を使わない（Preact は style を `style.cssText` で入れるので CSP では止まらない。11 系は数値に px を付けない）。動く値は `data-*` と CSS、どうしても要るときは入口が `style.setProperty` で CSS の変数を入れる。
+- `document`・`window` に触ってよいのは入口（`c-app.js` と見本の `c-gallery.js`）だけ。
 
 ### 7.4 `chat.js`・`views.js` の中の見た目
 
@@ -273,7 +277,7 @@
 - 同梱は `make-icons` と同じ型: `scripts/vendor-web.ts` と `npm run vendor-web` が `node_modules` から写し、裸の指定を書き換え、`sourceMappingURL` を消し、先頭に名前・版・ライセンスのコメントを付ける。`npm test` が「commit した物 = 作り直した物」を確かめる。
 - ライセンスの文は `THIRD_PARTY_LICENSES.md`（リポジトリの根。npm の `files` にも入れる）。`static/` には置かない（配れる名前だけ、のテストがある）。
 - 外部サービスは増えない。**運用コストは 0 円。**
-- 今すでに用意されている物（オーナーの 3 つ目の問いへの答え）: **ライブラリは何も用意していない**（依存は 3 + 2 のまま）。Chromium だけは `~/.cache/ms-playwright/` にある。
+- 今すでに用意されている物（オーナーの 3 つ目の問いへの答え）: **ライブラリは何も用意していない**（依存は 3 + 2 のまま）（K1 の後は実行時 3 のまま・dev 5）。Chromium だけは `~/.cache/ms-playwright/` にある。
 
 ## 9. 段取り（1 PR = 1 論点。どの段でも `/` の古い殻は動く）
 
@@ -306,8 +310,8 @@
 - 受け入れ: (1) 走らせると PNG が `--out` に出て、終わった後 `ss -ltnp` に掴んだポートが残らない。(2) リポジトリの中に画像・DB を書かない。(3) 偽データに実在の名前・ID・トークンが無い。(4) `npm test` は Chromium を起動しない。(5) Chromium が無い機械では理由を出して exit 1。(6) Discord・Claude・GitHub に出ない。
 
 **K1 同梱 + 見本の骨**
-- やること: `scripts/vendor-web.ts`・`npm run vendor-web`、`vendor-preact.js`・`vendor-preact-hooks.js`・`vendor-htm.js`、まとめの `c-lib.js`（`h`・`render`・`html`・使う hook だけを出す）、`gallery.html` + `c-gallery.js`（まだ 1 つの見出しだけ）、`THIRD_PARTY_LICENSES.md`、`docs/plan/web-ui.md` の「依存は足さない」の書き換え。
-- 受け入れ: (1) `npm test` が「commit した vendor = 作り直した物」を確かめる。(2) vendor の 3 つに裸の指定（`from"preact"`）・`sourceMappingURL`・`eval`・`new Function` が無い。(3) `gallery.html` に inline の script・style が無い。(4) `ui-shots --only gallery` の絵に見出しが出て、ページのエラーと CSP 違反が 0。(5) `package.json` の `dependencies` は 3 つのまま。(6) **オーナーが実機（iOS の PWA）で `/static/gallery.html` を開いて見出しが出る**（出なければここで A へ切り替える）。(7) `/` と `/static/v3.html` は 1 バイトも変わらない。
+- やること: `scripts/vendor-web.ts`・`npm run vendor-web`、`vendor-preact.js`・`vendor-preact-hooks.js`・`vendor-htm.js`、まとめの `c-lib.js`（`h`・`render`・`html`・使う hook だけを出す）、`gallery.html` + `c-gallery.js`（見出し・説明・押すと数が増えるボタンだけ）、`THIRD_PARTY_LICENSES.md`、`docs/plan/web-ui.md` の「依存は足さない」の書き換え。
+- 受け入れ: (1) `npm test` が「commit した vendor = 作り直した物」を確かめる。(2) vendor の 3 つに裸の指定（`from"preact"`）・`sourceMappingURL`・`eval`・`new Function` が無い。(3) `gallery.html` に inline の script・style が無い。(4) `ui-shots --only gallery` の絵に見出しが出て、ページのエラーと CSP 違反が 0。(5) `package.json` の `dependencies` は 3 つのまま。(6) **オーナーが実機の Safari で `/static/gallery.html` を開いて見出しが出る**（出なければここで A へ切り替える）。ホーム画面の PWA は start_url が `/` で `gallery.html` への入口が無いので、K1 では実機の Safari で開く。PWA（standalone）での確かめは、新しい殻が部品を読む段（K3）から。(7) `/` と `/static/v3.html` は 1 バイトも変わらない。
 
 **K2 トークン + 小さい部品 + 板**
 - やること: `tokens.css` に `--c-*`、`c-atoms.js/.css`、`c-sheet.js/.css`、§7.3 の見張りのテスト、見本に全状態。
