@@ -710,6 +710,45 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const back = await page.evaluate(() => (document.activeElement as unknown as { __k?: number } | null)?.__k === 1);
         if (!back) lines.push("バー: 右腕を閉じた後の焦点が右腕のボタンに戻らない");
       }
+      // 幅をまたぐ: 640 を越えると広い幅の形、戻すとスマホの形に描き直す
+      const formAt = (): Promise<{ variant: string | null; acts: Array<string | null>; texts: string[] }> =>
+        page.evaluate(() => {
+          const bar = document.querySelector("#c-bottom-root > .c-bottom");
+          const buttons = bar === null ? [] : [...bar.querySelectorAll("button")];
+          return { variant: bar === null ? null : bar.getAttribute("data-variant"), acts: buttons.map((b) => b.getAttribute("data-act")), texts: buttons.map((b) => (b.textContent ?? "").trim()) };
+        });
+      try {
+        await page.setViewportSize({ width: 800, height: VIEWPORTS.phone.viewport.height });
+        await wait(300);
+        const wide = await formAt();
+        if (wide.variant !== "wide" || JSON.stringify(wide.texts) !== JSON.stringify(["タスク", "リマインド", "ほか"])) lines.push(`バー: 800 で広い幅の形にならない（${String(wide.variant)}・${wide.texts.join("・")}）`);
+      } finally {
+        await page.setViewportSize(VIEWPORTS.phone.viewport);
+        await wait(300);
+      }
+      const narrow = await formAt();
+      if (narrow.variant !== "phone" || narrow.acts[0] !== "list" || narrow.acts[1] !== "hand" || narrow.texts[2] !== "ほか") lines.push(`バー: 390 に戻してもスマホの形にならない（${String(narrow.variant)}・${narrow.texts.join("・")}）`);
+      // 開いたボタンの無い戻り: 焦点の無いまま右腕のチャンネルを開き（SA.app.open は右腕を開く）、閉じたら下のバーの右腕のボタンへ
+      const opened = await page.evaluate(() => {
+        const sa = (window as unknown as { SA: { topics: { data: () => { rightHands: Array<{ id: string }> } | null }; app: { open: (id: string) => void } } }).SA;
+        const hand = sa.topics.data()?.rightHands[0];
+        if (hand === undefined) return false;
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        sa.app.open(hand.id);
+        return true;
+      });
+      if (!opened) lines.push("バー: 作り物のデータに右腕が無い（開いたボタンの無い戻り）");
+      else {
+        await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+        await page.evaluate(() => history.back());
+        await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+        await wait(200);
+        const focused = await page.evaluate(() => {
+          const a = document.activeElement;
+          return a !== null && a.matches('#c-bottom-root button[data-act="hand"]');
+        });
+        if (!focused) lines.push("バー: 開いたボタンの無い右腕を閉じた後の焦点が下のバーの右腕のボタンに無い");
+      }
     }
     // 「ほか」の板: スマホは先頭にタスク・リマインド、広い幅は無い。閉じたら「ほか」へ
     await page.locator(".c-bottom button").last().click();
