@@ -976,6 +976,17 @@ test("web components: listModel のあなたの番（0 件で null・turnIds の
   assert.equal(list.listModel(stateOf(unknown)).turns, null);
 });
 
+test("web components: listModel の「あなたの番」の次の起点は、turnFrom が turnIds に在ればそれ・無ければ current・無指定は current", () => {
+  const next = (o: Obj): unknown => list.listModel(stateOf(sampleData(), o)).turns?.nextId;
+  // 右腕（hand:1）は current にならないので、turnFrom が先へ進める
+  assert.equal(next({ current: null, turnFrom: "hand:1" }), "ch:1");
+  assert.equal(next({ current: "ch:1", turnFrom: "hand:1" }), "ch:1");
+  assert.equal(next({ current: "ch:1", turnFrom: "ch:3" }), "hand:1", "ids に無い turnFrom は使わない");
+  assert.equal(next({ current: "ch:1", turnFrom: null }), "hand:1");
+  assert.equal(next({ current: "ch:1" }), "hand:1", "無指定は今と同じ");
+  assert.equal(next({}), "ch:1");
+});
+
 test("web components: listModel の群（サーバーの順・ラベルの位置・話題の無いプロジェクトは「ほか」へ・General は畳まない）", () => {
   const m = list.listModel(stateOf(sampleData()));
   assert.deepEqual(

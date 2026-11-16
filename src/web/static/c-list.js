@@ -152,7 +152,10 @@ function groupModel(g, state, words, folded) {
   };
 }
 
-/** 一覧のモデル（今の topics.js の draw・updateGroup・updateDone・updateOthers の判断） */
+/**
+ * 一覧のモデル（今の topics.js の draw・updateGroup・updateDone・updateOthers の判断）。
+ * state.turnFrom は一覧から最後に開いた話題（右腕のように current にならない話題の先へ進むため）
+ */
 export function listModel(state) {
   const data = state.data;
   if (data === null || data === undefined) {
@@ -164,10 +167,9 @@ export function listModel(state) {
   // 「あなたの番」は絞り込まない。turnIds が配列でなければ空、同じ id は最初の 1 つだけ（key を重ねない）
   const ids = Array.isArray(data.turnIds) ? [...new Set(data.turnIds)] : [];
   const items = ids.map((id) => turnItem(id, state)).filter((t) => t !== null);
-  const turns =
-    data.turns === 0 || items.length === 0
-      ? null
-      : { count: data.turns, nextId: nextTurnId(items.map((t) => t.id), state.current), items };
+  const turnItemIds = items.map((t) => t.id);
+  const from = turnItemIds.includes(state.turnFrom) ? state.turnFrom : state.current;
+  const turns = data.turns === 0 || items.length === 0 ? null : { count: data.turns, nextId: nextTurnId(turnItemIds, from), items };
 
   // 話題の無いプロジェクトの群は「ほかのプロジェクト」に畳む。置く位置は畳んだ最初の群の所（サーバーの群の順のまま）
   const blocks = [];
