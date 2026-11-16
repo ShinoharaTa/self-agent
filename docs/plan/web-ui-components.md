@@ -449,6 +449,7 @@
   - チェックの行: `label.c-card-check` が `input`（24px。`accent-color`）と文を包み、行の高さは 44 以上。質問の選択肢は名前（`strong.c-card-check-label`）と説明（`span.c-card-check-desc`）
   - 「その他」の欄: 入力欄と同じ決まり（value を渡さず、口が新しい要素にだけ本文を入れる。入力の位置の線の色 `caret-color: var(--accent)` を `c-cards.css` が持つ。`app.css` の裸の `input, textarea` が当たるので、裸のタグの見張りには入れない）
   - 当たりの測り方: `scripts/ui-shots.ts` の `hitProblems` は、`label` が包むチェック・ラジオを `label` の箱で測る（押せる所が `label` の箱のため）
+  - 項目の出口: `views.js` の `SA.views.ccAsk`（保留中の許可・質問をカードの項目にする `item`（残り時間・モード・見出しの文はここで作る）と、`always`・`pick`・`pickOther`・`other`・`permit`・`answer`・`dismiss`（送りは通ったかに resolve する））。選び方の決まりは古い質問のカードと同じ関数（`pickOption`・`pickOtherOption`）で、選んだ状態の覚えも古いカードと同じ。まだ呼ぶ所は無く、画面は変わらない
   - 確かめ: `test/web-components.test.ts` の節「カード」（木・言葉・呼び出し・押せない理由・CSS）と、`npm run ui-shots` の `g-cards`（スマホ・PC × ダーク・ライト。`cardProblems`: 枠の線と角と地と幅・見出しの字・ボタンの高さと並び・チェックの行と印・要約の高さ（PC は 8 行）・残り時間の色・待ちの行の `role`・動きなし・narrow の幅 320・横にはみ出さない・「その他」の欄（card-q-other だけ見え、値が入り、スマホは 16px 以上）・2 問目の上の線・［答える］の押せない印。当たりは見本の検査と、カードの節は PC でも 44）
 - カードを本番へつなぐ段への申し送り（#406）:
   - 本番へは口 `SA.cards`（`cardsMouth` を包む）。根は容器の直下の `div[data-cards=<channelId>]`。`v3.html` に `c-cards.css` を足す。`.c-cards` は余白を持たないので、列の左右の余白は根の側で決める
