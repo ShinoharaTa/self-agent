@@ -15,6 +15,7 @@ const JS_FILES = readdirSync(STATIC_DIR).filter((n) => /^c-.*\.js$/.test(n)).sor
 const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "bubble-r", "bubble-tail", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
+  "top-title-min",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字） */
@@ -31,7 +32,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-atoms.css": /^\.c-(?:icon|btn|iconbtn|badge|mark|seg|field|input|empty|loading)(?![a-z])/,
   "c-sheet.css": /^\.c-(?:sheet|confirm|toast)(?![a-z])/,
   "c-list.css": /^\.c-(?:list|turns|turn|group|rows|row|fold)(?![a-z])/,
-  "c-shell.css": /^\.c-bottom(?![a-z])/,
+  "c-shell.css": /^\.c-(?:bottom|top)(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
 };
 
@@ -328,6 +329,12 @@ function bareTags(text: string): { tags: Map<string, string[]>; stars: string[];
   return { tags, stars, pseudo };
 }
 
+/** base.css の h1 に当たる宣言のうち、.c-top-title の規則（@media の外）に無い物の名前 */
+function h1Problems(text: string): string[] {
+  const own = parseCss(text).filter((r) => r.at.length === 0 && r.selectors.includes(".c-top-title"));
+  return ["margin", "font-weight", "line-height", "font-size"].filter((prop) => !own.some((r) => new RegExp(`(?:^|;)\\s*${prop}\\s*:`).test(r.body)));
+}
+
 test("web components: 完了・「ほかのプロジェクト」の見出し（.c-fold-head）は行と同じ --c-row-h の高さ", () => {
   const rule = parseCss(read("c-list.css")).find((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-fold-head");
   assert.ok(rule);
@@ -338,9 +345,11 @@ test("web components: 古い CSS（app・shell・base・tokens）の裸のタグ
   // 部品のテンプレートに出るタグ
   const partTags = new Set<string>();
   for (const name of ["c-list.js", "c-shell.js", "c-atoms.js"]) for (const m of read(name).matchAll(/<([a-z][a-z0-9]*)[\s>/]/g)) partTags.add(m[1] ?? "");
-  for (const tag of ["button", "ul", "li", "h2", "section", "span", "p", "div", "svg", "use"]) assert.ok(partTags.has(tag), tag);
-  // base.css の reset（button・h2・p の字と余白を外す・継ぐ）は見本のページ（gallery.html）にも当たるので、見本との差にならない
-  const BASE_OK = new Set(["button", "h2", "p"]);
+  for (const tag of ["button", "ul", "li", "h1", "h2", "section", "span", "p", "div", "svg", "use", "header"]) assert.ok(partTags.has(tag), tag);
+  // base.css の reset（button・h2・p の字と余白を外す・継ぐ）は見本のページ（gallery.html）にも当たるので、見本との差にならない。
+  // h1（見出しの題）は base.css の字と余白を .c-top-title が全部書き直す
+  const BASE_OK = new Set(["button", "h1", "h2", "p"]);
+  assert.deepEqual(h1Problems(read("c-shell.css")), []);
   const base = readFileSync(join(ROOT, "templates/web/site/base.css"), "utf8");
   for (const [file, text] of [["app.css", read("app.css")], ["shell.css", read("shell.css")], ["tokens.css", read("tokens.css")], ["base.css", base]] as const) {
     const { tags } = bareTags(text);
@@ -388,6 +397,11 @@ test("web components: 見張りの関数は悪い見本を落とす", () => {
   assert.ok(cssProblems("c-shell.css", ".c-row{color:var(--text)}").some((p) => p.includes("このファイルの頭")));
   assert.ok(cssProblems("c-list.css", ".c-bottom{color:var(--text)}").some((p) => p.includes("このファイルの頭")));
   assert.deepEqual(cssProblems("c-list.css", ".c-rows{margin:0}"), []);
+  assert.ok(cssProblems("c-shell.css", ".c-topbar{color:var(--text)}").some((p) => p.includes("このファイルの頭")));
+  assert.deepEqual(cssProblems("c-shell.css", ".c-top-title{margin:0}"), []);
+  // 見出しの題が base.css の h1 の宣言を書き直していない見本
+  assert.deepEqual(h1Problems(".c-top-title{margin:0;font-size:var(--font-base)} @media (x){.c-top-title{line-height:1}}"), ["font-weight", "line-height"]);
+  assert.deepEqual(h1Problems(".c-top-title{margin:0;font-weight:1;line-height:1;font-size:1}"), []);
   hit("@import url(x.css);", "@import");
   assert.deepEqual(bad("@keyframes c-spin{to{transform:rotate(360deg)}}"), []);
   // @keyframes の中も色と単位を見る
@@ -1239,6 +1253,7 @@ const shell = (await import(shellUrl)) as Record<string, Fn> & {
   handLabel: (mark: unknown) => string;
   listLabel: (turns: unknown) => string;
   bottomModel: (o: Obj) => { variant: string; items: Obj[] };
+  topModel: (o: Obj) => Obj | null;
 };
 
 test("web components: handLabel・listLabel（0 件は数を言わない・99+）", () => {
@@ -1343,4 +1358,181 @@ test("web components: listModel は配列でない turnIds を空とし、同じ
   assert.equal(m.turns?.nextId, "ch:1");
   const tabs = [null, { title: "名前だけ" }, { id: "", title: "空" }, { id: "tasks", title: "タスク" }, undefined, "x", { id: null, title: "n" }];
   assert.deepEqual(shell.bottomModel({ variant: "wide", tabs }).items, [{ act: "tab", id: "tasks", label: "タスク" }, { act: "more", label: "ほか" }]);
+});
+
+// ===== 会話の見出し（TopBar。c-shell.js。docs/plan/web-ui-components.md §6 の K4） =====
+const topProps = (o: Obj = {}): Obj => ({
+  variant: "phone",
+  view: "talk",
+  title: "日程の取得が遅い",
+  status: { text: "あなたの番", tone: "warning" },
+  note: null,
+  place: { text: "General", movable: true, reason: null },
+  views: null,
+  hand: "turn",
+  menu: true,
+  ...o,
+});
+const topRec = (): { calls: unknown[][]; on: Record<string, (...a: unknown[]) => void> } => {
+  const calls: unknown[][] = [];
+  const rec = (name: string) => (...a: unknown[]): void => void calls.push([name, ...a]);
+  return { calls, on: { back: rec("back"), place: rec("place"), view: rec("view"), menu: rec("menu"), hand: rec("hand") } };
+};
+
+test("web components: topModel は view が talk・other でなければ null", () => {
+  for (const view of ["none", "list", "", undefined, null]) assert.equal(shell.topModel(topProps({ view })), null, String(view));
+  assert.equal(shell.topModel({}), null);
+});
+
+test("web components: topModel の phone・talk（戻る・右腕、場所と切り替えは出さず、rest は場所と補足）", () => {
+  const m = shell.topModel(topProps({ views: { value: "pane" } })) as Obj;
+  assert.deepEqual(m, {
+    variant: "phone",
+    view: "talk",
+    title: "日程の取得が遅い",
+    back: true,
+    status: { text: "あなたの番", tone: "warning" },
+    rest: "場所: General",
+    place: null,
+    views: null,
+    menu: true,
+    hand: { name: shell.handLabel("turn"), mark: "turn" },
+  });
+  assert.equal((shell.topModel(topProps({ variant: "tablet" })) as Obj).variant, "phone");
+  assert.equal(shell.topModel(topProps({ note: "調べ物" }))?.rest, "場所: General ・ 調べ物");
+  assert.equal(shell.topModel(topProps({ place: null, note: "調べ物" }))?.rest, "調べ物");
+  assert.equal(shell.topModel(topProps({ place: null, note: "" }))?.rest, "");
+  for (const [hand, mark] of [["unread", "unread"], [null, null], ["x", null]] as const) {
+    assert.deepEqual(shell.topModel(topProps({ hand }))?.hand, { name: shell.handLabel(mark), mark }, String(hand));
+  }
+  assert.equal(shell.topModel(topProps({ title: 3 }))?.title, "");
+});
+
+test("web components: topModel の wide・talk（戻る・右腕なし、場所の押せる・押せない、切り替え、rest は補足だけ）", () => {
+  const m = shell.topModel(topProps({ variant: "wide", note: "調べ物", views: { value: "pane" } })) as Obj;
+  assert.deepEqual([m.variant, m.back, m.hand, m.rest, m.menu], ["wide", false, null, "調べ物", true]);
+  assert.deepEqual(m.place, { text: "場所: General", disabled: false, reason: null });
+  assert.deepEqual(m.views, { value: "pane", items: [{ value: "talk", label: "会話" }, { value: "pane", label: "端末" }] });
+  assert.equal((shell.topModel(topProps({ variant: "wide", views: { value: "x" } })) as Obj & { views: Obj }).views.value, "talk");
+  assert.equal(shell.topModel(topProps({ variant: "wide" }))?.views, null);
+  assert.equal(shell.topModel(topProps({ variant: "wide" }))?.rest, "");
+  const reason = "Claude Code のセッションは場所を変えられません";
+  assert.deepEqual(shell.topModel(topProps({ variant: "wide", place: { text: "self-agent", movable: { reason }, reason } }))?.place, { text: "場所: self-agent", disabled: true, reason });
+  assert.deepEqual(shell.topModel(topProps({ variant: "wide", place: { text: "a", movable: false, reason: "" } }))?.place, { text: "場所: a", disabled: true, reason: null });
+  // 押せるときは reason を出さない
+  assert.deepEqual(shell.topModel(topProps({ variant: "wide", place: { text: "a", movable: true, reason } }))?.place, { text: "場所: a", disabled: false, reason: null });
+  assert.equal(shell.topModel(topProps({ variant: "wide", place: null }))?.place, null);
+});
+
+test("web components: topModel の other（状態・補足・場所・切り替え・「…」なし。phone は戻ると右腕だけ残る）", () => {
+  const props = topProps({ view: "other", title: "設定", note: "調べ物", views: { value: "talk" } });
+  assert.deepEqual(shell.topModel(props), {
+    variant: "phone", view: "other", title: "設定", back: true, status: null, rest: "", place: null, views: null, menu: false, hand: { name: shell.handLabel("turn"), mark: "turn" },
+  });
+  assert.deepEqual(shell.topModel({ ...props, variant: "wide" }), {
+    variant: "wide", view: "other", title: "設定", back: false, status: null, rest: "", place: null, views: null, menu: false, hand: null,
+  });
+});
+
+test("web components: topModel の状態（空の文は null、知らない tone は muted）", () => {
+  assert.equal(shell.topModel(topProps({ status: { text: "", tone: "warning" } }))?.status, null);
+  assert.equal(shell.topModel(topProps({ status: { tone: "warning" } }))?.status, null);
+  assert.equal(shell.topModel(topProps({ status: null }))?.status, null);
+  assert.deepEqual(shell.topModel(topProps({ status: { text: "作業中", tone: "danger" } }))?.status, { text: "作業中", tone: "muted" });
+  assert.deepEqual(shell.topModel(topProps({ status: { text: "作業中", tone: "accent" } }))?.status, { text: "作業中", tone: "accent" });
+});
+
+test("web components: TopBar の phone（戻る・題・「…」・右腕の順、sub の文、押したとき、aria-controls）", () => {
+  const { calls, on } = topRec();
+  const v = shell.TopBar({ ...topProps(), on }) as VNode;
+  assert.deepEqual(keysOf(v.props.children), ["back", "text", "menu", "hand"]);
+  const bar = one(v);
+  assert.deepEqual([bar.type, bar.props.class, bar.props["data-variant"], bar.props["data-view"]], ["header", "c-top", "phone", "talk"]);
+  assert.deepEqual(bar.children.map((c) => (c as El).props.class), ["c-top-act", "c-top-text", "c-top-act", "c-top-hand"]);
+  assert.deepEqual(bar.children.map((c) => (c as El).props["data-act"]), ["back", undefined, "menu", "hand"]);
+  const title = find(bar, "c-top-title")[0] as El;
+  assert.deepEqual([title.type, textOf(title)], ["h1", "日程の取得が遅い"]);
+  const sub = find(bar, "c-top-sub")[0] as El;
+  assert.equal(sub.type, "p");
+  assert.equal(textOf(sub), "あなたの番 ・ 場所: General");
+  assert.equal((find(sub, "c-top-status")[0] as El).props["data-tone"], "warning");
+  assert.equal(find(bar, "c-top-place").length + find(bar, "c-top-views").length + find(bar, "c-top-gap").length, 0);
+  const [back, menu] = find(bar, "c-iconbtn") as [El, El];
+  assert.deepEqual([back.props["aria-label"], menu.props["aria-label"]], ["一覧へ", "ほかの操作"]);
+  assert.match(String(((find(back, "c-icon")[0] as El).children[0] as El).props.href), /#chevron-left$/);
+  assert.match(String(((find(menu, "c-icon")[0] as El).children[0] as El).props.href), /#ellipsis$/);
+  const hand = find(bar, "c-top-hand")[0] as El;
+  assert.deepEqual([hand.type, hand.props.type, hand.props["aria-label"], hand.props["aria-controls"], hand.props["aria-expanded"]], ["button", "button", shell.handLabel("turn"), undefined, undefined]);
+  assert.match(String(((find(hand, "c-icon")[0] as El).children[0] as El).props.href), /#bot$/);
+  assert.equal(textOf(find(hand, "c-top-hand-label")), "右腕");
+  const mark = find(hand, "c-top-hand-mark")[0] as El;
+  assert.deepEqual([mark.props["data-state"], mark.props["aria-hidden"]], ["turn", "true"]);
+  const x = { scrollIntoView: () => undefined };
+  const y = { scrollIntoView: () => undefined };
+  (back.props.onClick as (e: unknown) => void)({ preventDefault: () => undefined, currentTarget: x });
+  (menu.props.onClick as (e: unknown) => void)({ preventDefault: () => undefined, currentTarget: x });
+  (hand.props.onClick as (e: unknown) => void)({ currentTarget: y });
+  assert.deepEqual(calls, [["back"], ["menu", x], ["hand", y]]);
+  // controls を渡したときだけ。印が無ければ点を出さない
+  const withControls = one(html`<${shell.TopBar} ...${topProps({ hand: null })} controls="v3-hand" on=${on} />`);
+  assert.equal((find(withControls, "c-top-hand")[0] as El).props["aria-controls"], "v3-hand");
+  assert.equal(find(withControls, "c-top-hand-mark").length, 0);
+  assert.equal((find(one(html`<${shell.TopBar} ...${topProps()} controls="" on=${on} />`), "c-top-hand")[0] as El).props["aria-controls"], undefined);
+  // 状態だけ・補足だけ・どちらも無い（sub を出さない）
+  assert.equal(textOf(find(one(html`<${shell.TopBar} ...${topProps({ place: null })} on=${on} />`), "c-top-sub")), "あなたの番");
+  assert.equal(textOf(find(one(html`<${shell.TopBar} ...${topProps({ status: null })} on=${on} />`), "c-top-sub")), "場所: General");
+  assert.equal(find(one(html`<${shell.TopBar} ...${topProps({ status: null, place: null })} on=${on} />`), "c-top-sub").length, 0);
+  // 「…」なし
+  assert.deepEqual(keysOf((shell.TopBar({ ...topProps({ menu: false }), on }) as VNode).props.children), ["back", "text", "hand"]);
+});
+
+test("web components: TopBar の wide（題・状態・場所・gap・切り替え・「…」の順、戻る・右腕なし、場所の title、切り替え）", () => {
+  const { calls, on } = topRec();
+  const reason = "Claude Code のセッションは場所を変えられません";
+  const props = topProps({ variant: "wide", status: { text: "判断待ち", tone: "warning" }, place: { text: "self-agent", movable: false, reason }, views: { value: "talk" } });
+  const v = shell.TopBar({ ...props, on }) as VNode;
+  assert.deepEqual(keysOf(v.props.children), ["text", "status", "place", "gap", "views", "menu"]);
+  const bar = one(v);
+  assert.equal(bar.props["data-variant"], "wide");
+  assert.deepEqual(bar.children.map((c) => (c as El).props.class), ["c-top-text", "c-top-status", "c-top-place", "c-top-gap", "c-top-views", "c-top-act"]);
+  assert.equal(find(bar, "c-top-sub").length, 0);
+  assert.equal(find(bar, "c-top-hand").length, 0);
+  assert.deepEqual(find(bar, "c-iconbtn").map((b) => b.props["aria-label"]), ["ほかの操作"]);
+  assert.deepEqual([textOf(bar.children[1] as El), (bar.children[1] as El).props["data-tone"]], ["判断待ち", "warning"]);
+  const place = bar.children[2] as El;
+  assert.deepEqual(
+    [place.type, place.props.type, place.props["data-act"], place.props["aria-haspopup"], place.props.disabled, place.props.title, place.props["aria-disabled"]],
+    ["button", "button", "place", "dialog", true, reason, undefined],
+  );
+  assert.equal(textOf(find(place, "c-top-place-text")), "場所: self-agent");
+  const chevron = find(place, "c-icon")[0] as El;
+  assert.deepEqual([chevron.props["data-size"], String((chevron.children[0] as El).props.href).endsWith("#chevron-down")], ["sm", true]);
+  const seg = find(bar, "c-seg")[0] as El;
+  assert.deepEqual([seg.props.role, seg.props["aria-label"]], ["radiogroup", "見る物"]);
+  const items = find(seg, "c-seg-item");
+  assert.deepEqual(items.map((i) => [textOf(i), i.props["aria-checked"]]), [["会話", "true"], ["端末", "false"]]);
+  (items[1]?.props.onClick as (e: unknown) => void)(fakeEvent());
+  // 押せる場所は title なし・押すと opener を渡す
+  const movable = one(html`<${shell.TopBar} ...${topProps({ variant: "wide", note: "調べ物" })} on=${on} />`);
+  const p2 = find(movable, "c-top-place")[0] as El;
+  assert.deepEqual([p2.props.disabled, p2.props.title], [false, undefined]);
+  const x = { scrollIntoView: () => undefined };
+  (p2.props.onClick as (e: unknown) => void)({ currentTarget: x });
+  assert.deepEqual(calls, [["view", "pane"], ["place", x]]);
+  assert.deepEqual(keysOf((shell.TopBar({ ...topProps({ variant: "wide", note: "調べ物" }), on }) as VNode).props.children), ["text", "status", "rest", "place", "gap", "menu"]);
+  assert.equal(textOf(find(movable, "c-top-rest")), "調べ物");
+  // other: 題と gap だけ
+  assert.deepEqual(keysOf((shell.TopBar({ ...topProps({ variant: "wide", view: "other", title: "ナレッジ" }), on }) as VNode).props.children), ["text", "gap"]);
+});
+
+test("web components: TopBar は view が none・知らない値で null。c-shell.js（TopBar を含む）は id の見張りの対象", () => {
+  const { on } = topRec();
+  for (const view of ["none", "x", undefined]) assert.equal(shell.TopBar({ ...topProps({ view }), on }), null, String(view));
+  assert.deepEqual(expand(html`<${shell.TopBar} ...${topProps({ view: "none" })} on=${on} />`), []);
+  const src = stripJsComments(read("c-shell.js"));
+  assert.match(src, /export function TopBar\(/);
+  assert.doesNotMatch(src, /(?<![\w-])id=/);
+  // 描いた木にも id が無い
+  const ids = (t: Tree): string[] => (typeof t === "string" ? [] : [...(t.props.id === undefined ? [] : [String(t.props.id)]), ...t.children.flatMap(ids)]);
+  for (const props of [topProps({ controls: "v3-hand" }), topProps({ variant: "wide", views: { value: "pane" } })]) assert.deepEqual(ids(one(html`<${shell.TopBar} ...${props} on=${on} />`)), []);
 });
