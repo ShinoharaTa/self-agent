@@ -1,0 +1,323 @@
+/* 会話の行（c-talk.js。docs/plan/web-ui-components.md §6 の K4）。寸法は tokens.css の --c-*、色は tokens.css の変数（地は --bubble-*）、字と間隔は base.css の目盛りだけ。動きは実行中の輪だけ */
+
+.c-talk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  box-sizing: border-box;
+  max-width: var(--c-talk-max);
+  margin-inline: auto;
+  padding: var(--c-gutter);
+  color: var(--text);
+  font-size: var(--c-font-body);
+  font-weight: var(--weight-normal);
+  line-height: var(--leading-normal);
+}
+
+.c-talk-older {
+  align-self: center;
+}
+
+.c-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  align-self: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 86%;
+}
+
+.c-msg[data-who="owner"] {
+  align-items: flex-end;
+  align-self: flex-end;
+  max-width: 80%;
+}
+
+@media (min-width: 640px) {
+  .c-msg {
+    max-width: 78%;
+  }
+
+  .c-msg[data-who="owner"] {
+    max-width: 72%;
+  }
+
+  .c-run {
+    max-width: 78%;
+  }
+}
+
+.c-msg-name {
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+}
+
+.c-bubble {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--c-bubble-pad-y) var(--c-bubble-pad-x);
+  background: var(--bubble-agent);
+  border-radius: var(--c-bubble-r) var(--c-bubble-r) var(--c-bubble-r) var(--c-bubble-tail);
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.c-msg[data-who="owner"] > .c-bubble {
+  background: var(--bubble-owner);
+  border-radius: var(--c-bubble-r) var(--c-bubble-r) var(--c-bubble-tail) var(--c-bubble-r);
+}
+
+.c-md {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.c-md-p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.c-md-h {
+  margin: 0;
+  font-weight: var(--weight-semibold);
+}
+
+.c-md-h:not(:first-child) {
+  margin-top: var(--space-2);
+}
+
+.c-md-list {
+  margin: 0;
+  padding-left: var(--space-6);
+}
+
+.c-md-list .c-md-list {
+  margin-top: var(--space-1);
+}
+
+.c-md-list > li + li {
+  margin-top: var(--space-1);
+}
+
+.c-md strong {
+  font-weight: var(--weight-semibold);
+}
+
+.c-md-code {
+  padding: 0 var(--space-1);
+  background: var(--bubble-inset);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+}
+
+.c-md-pre {
+  box-sizing: border-box;
+  margin: 0;
+  max-width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bubble-inset);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+  line-height: var(--leading-normal);
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  tab-size: 4;
+}
+
+.c-md-link {
+  color: var(--accent);
+}
+
+.c-msg-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--space-6);
+  font-size: var(--font-xs);
+  line-height: var(--leading-tight);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.c-msg-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.c-steps-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.c-steps-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--space-6);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-weight: inherit;
+  font-size: var(--font-xs);
+  line-height: var(--leading-tight);
+  white-space: nowrap;
+  touch-action: manipulation;
+}
+
+.c-steps-toggle::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block: calc((var(--space-6) - var(--c-row-h)) / 2);
+}
+
+.c-steps-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.c-steps-toggle[data-tone="warning"],
+.c-steps-text[data-tone="warning"] {
+  color: var(--warning);
+}
+
+.c-steps-toggle[data-tone="danger"],
+.c-steps-text[data-tone="danger"] {
+  color: var(--danger);
+}
+
+.c-steps-list {
+  box-sizing: border-box;
+  margin: 0;
+  max-width: 100%;
+  padding-left: var(--space-6);
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.c-run {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  align-self: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 86%;
+}
+
+.c-run-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.c-run-spin {
+  flex: none;
+  box-sizing: border-box;
+  width: var(--c-icon-sm);
+  height: var(--c-icon-sm);
+  border: var(--c-mark-ring) solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: var(--radius-full);
+  animation: c-run-spin var(--c-spin) linear infinite;
+}
+
+@keyframes c-run-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .c-run-spin {
+    animation: none;
+  }
+}
+
+.c-run-text {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
+
+.c-run-waiting {
+  margin: 0;
+  font-size: var(--font-xs);
+  color: var(--warning);
+}
+
+.c-run-recent {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 100%;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+.c-run-recent > li {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.c-run-recent > li[data-current] {
+  color: var(--text-secondary);
+}
+
+.c-run-actions {
+  display: flex;
+  margin-top: var(--space-3);
+}
+
+.c-notice {
+  align-self: center;
+  max-width: 100%;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.c-notice-time {
+  margin-inline-start: var(--space-2);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.c-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.c-divider::before,
+.c-divider::after {
+  content: "";
+  flex: 1 1 0px;
+  height: var(--border-width);
+  background: var(--border);
+}
