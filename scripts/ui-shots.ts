@@ -361,6 +361,9 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
     const [first, second] = sets.map((f) => getComputedStyle(f).borderTopWidth);
     if (first !== "0px") say(`card-q-two の 1 問目の上の線 ${first}。0px のはず`);
     if (second !== "1px") say(`card-q-two の 2 問目の上の線 ${second}。1px のはず`);
+    // 見出しは線の下に在る（線に乗ると、字の右にだけ線が出る）
+    const legend = sets[1].querySelector("legend");
+    if (legend && legend.getBoundingClientRect().top < sets[1].getBoundingClientRect().top + 1) say("card-q-two の 2 問目の見出しが上の線に乗っている");
   }
   // 10. ［答える］の押せない印
   const answer = (demo: string): string | null => section.querySelector(`[data-demo="${demo}"] .c-card-actions > :first-child`)?.getAttribute("aria-disabled") ?? null;

@@ -465,7 +465,7 @@
   - `docs/design/WEB-UI-GUIDELINES.md` の「許可のカード」「質問のカード」の行（見出しの文・スマホの左 2px・`title`）を本番に合わせて直す
   - 一覧の中で許可・拒否に答える（受け入れの 0）は、サーバーの変更が要るので別 issue
   - 質問のラジオの name は `ccq-<id>-<問の番号>` なので、同じページに同じ id の質問を 2 つ置かない（見本は見本ごとに別の id）
-  - 2 問目の上の線は `fieldset` の上の枠なので、`legend` の高さの真ん中を通り、`legend` の字の右に線が見える（字の上ではない）。実機の絵で見て、要れば直し方を決める
+  - 2 問目の上の線は `fieldset` の上の枠。`legend` は float にして線の下に置く（既定では線に乗り、字の右にだけ線が出る）
 - 入力欄の本番（#406）:
   - 入口 `c-app.js` が口 `SA.composer = { draw, set, focus, drop }` を置く（中身は `c-composer.js` の `composerMouth`。失敗は `false` と名前だけの log）
   - `chat.js` は右腕でない列 2 で口が在るときだけ、容器の直下の `div[data-composer=<channelId>]`（クラスなし。チャンネルごとに 1 つ。同じチャンネルの描き直しは同じ要素、別のチャンネル・読み込み中・開けないときは `drop` して外す）に `composerState` を渡す。本文の持ち主は今と同じ `SA.app.draft`。placeholder は決まった 3 つの文（話題「この話題に送る」・Claude Code「このセッションに送る」・ほか「ここに送る」）、読み上げの名前は「<題名> に送る」のまま
