@@ -2158,7 +2158,8 @@ class DomNode extends FakeNode {
     super.remove();
   }
   querySelectorAll(selector: string): DomNode[] {
-    const m = /^([a-z0-9]+)?((?:\.[\w-]+)*)(?:\[([\w-]+)="([^"]*)"\])?(?::not\(\[([\w-]+)\]\))?$/.exec(selector);
+    // [attr="値"] と、値なしの [attr]（その属性を持つ）
+    const m = /^([a-z0-9]+)?((?:\.[\w-]+)*)(?:\[([\w-]+)(?:="([^"]*)")?\])?(?::not\(\[([\w-]+)\]\))?$/.exec(selector);
     assert.ok(m, selector);
     const classes = (m[2] ?? "").split(".").filter(Boolean);
     return descendants(this).filter(
@@ -2166,7 +2167,7 @@ class DomNode extends FakeNode {
         n instanceof DomNode &&
         (!m[1] || n.tagName === m[1]) &&
         classes.every((c) => n.classes.has(c)) &&
-        (!m[3] || n.getAttribute(m[3]) === m[4]) &&
+        (!m[3] || (m[4] === undefined ? n.getAttribute(m[3]) !== null : n.getAttribute(m[3]) === m[4])) &&
         (!m[5] || n.getAttribute(m[5]) === null),
     );
   }
@@ -4064,6 +4065,8 @@ function loadChat() {
     querySelectorAll: (sel: string) => body.querySelectorAll(sel),
     addEventListener: () => undefined,
   };
+  /** setInterval に渡された受け手（1 秒の刻みを手で回す） */
+  const intervals: Array<() => void> = [];
   const touchListeners: Array<() => void> = [];
   const touch = { matches: false, addEventListener: (_t: string, fn: () => void) => touchListeners.push(fn) };
   const context = {
@@ -4071,7 +4074,10 @@ function loadChat() {
     document,
     setTimeout: () => 0,
     clearTimeout: () => undefined,
-    setInterval: () => 0,
+    setInterval: (fn: () => void) => {
+      intervals.push(fn);
+      return 0;
+    },
     Intl,
     Date,
     Number,
@@ -4174,6 +4180,7 @@ function loadChat() {
     box,
     put,
     flush,
+    intervals,
   };
 }
 
@@ -4473,6 +4480,411 @@ test("web static: SA.top があると chat.js の render は列 2 の見出し�
   const plain = c.box();
   c.chat.render(plain, "1");
   assert.ok(plain.querySelector("header.ed-toolbar")!.querySelector("button.ed-back"));
+});
+
+// ===== 新しい殻の会話の行（chat.js が SA.talk に根と state を渡す。K4） =====
+type TalkFn = (...a: unknown[]) => unknown;
+type TalkState = {
+  channelId: string;
+  turns: unknown[];
+  hasMore: boolean;
+  running: unknown;
+  stopping: boolean;
+  openSteps: Set<string>;
+  runStepsOpen: boolean;
+  fmt: Record<string, TalkFn>;
+  on: Record<string, TalkFn>;
+};
+type TalkCall = { root: DomNode; state: TalkState };
+
+/** 偽の会話の口（SA.talk）。呼ばれた根と state を積み、ok を返す */
+function withTalk(c: ReturnType<typeof loadChat>) {
+  const SA = (c.context.window as { SA: Record<string, unknown> }).SA;
+  const draws: TalkCall[] = [];
+  const ticks: TalkCall[] = [];
+  const drops: DomNode[] = [];
+  const talk = {
+    draws,
+    ticks,
+    drops,
+    ok: true,
+    draw(root: DomNode, state: TalkState) {
+      draws.push({ root, state });
+      return talk.ok;
+    },
+    tick(root: DomNode, state: TalkState) {
+      ticks.push({ root, state });
+      return talk.ok;
+    },
+    drop(root: DomNode) {
+      drops.push(root);
+    },
+  };
+  SA.talk = talk;
+  return { SA, talk };
+}
+
+/** store の実行中を差し替える（loadChat の store は null を返す関数で型が付いている） */
+function setRunning(c: ReturnType<typeof loadChat>, runs: Array<Record<string, unknown>>) {
+  const store = c.store as unknown as Record<string, unknown>;
+  store.running = runs;
+  store.runningOf = (id: string) => runs.find((r) => r.channelId === id) ?? null;
+  store.runningElapsed = () => 95_000;
+  store.runningWaitingText = () => null;
+}
+
+const lastDraw = (talk: { draws: TalkCall[] }): TalkCall => talk.draws[talk.draws.length - 1]!;
+const talkScroll = (box: DomNode): DomNode => box.querySelector("div.ed-scroll")!;
+const talkKids = (box: DomNode): DomNode[] => talkScroll(box).children as DomNode[];
+
+test("web static: SA.talk があると chat.js は .msg・手順の details・「前の会話を読む」を作らず、.ed-scroll > [data-talk] + .tl に置いてから draw を 1 回呼ぶ", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  c.put("1", [chatTurn(10, "owner", "a"), chatTurn(11, "agent", "b", { outcome: "done", steps: ["Read a"] })], { kind: "session", title: "t", state: "active" });
+  c.store.turns["1"]!.hasMore = true;
+  const box = c.box();
+  c.chat.render(box, "1");
+  assert.equal(box.querySelectorAll("article.msg").length, 0);
+  assert.equal(box.querySelectorAll("details.steps-plain").length, 0);
+  assert.equal(box.querySelectorAll("div.tl-hint").length, 0);
+  assert.equal(descendants(box).filter((n) => n.tagName === "button" && n.textContent === "前の会話を読む").length, 0);
+  const kids = talkKids(box);
+  assert.deepEqual([kids.length, kids[0]!.getAttribute("data-talk"), kids[1]!.classes.has("tl")], [2, "1", true]);
+  assert.equal(talk.draws.length, 1);
+  assert.equal(talk.draws[0]!.root, kids[0]);
+  assert.ok(box.contains(talk.draws[0]!.root), "置かれた後の根");
+  assert.equal(talk.draws[0]!.state.turns, c.store.turns["1"]!.turns);
+  assert.equal(talk.draws[0]!.state.hasMore, true);
+});
+
+test("web static: SA.talk で同じチャンネルを描き直すと .ed-scroll・根・.tl・入力欄が同じ要素のままで drop しない", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  const [scroll, root, tl, input] = [talkScroll(box), talkKids(box)[0], talkKids(box)[1], inputOf(box)];
+  c.chat.render(box, "1");
+  assert.equal(talkScroll(box), scroll);
+  assert.equal(talkKids(box)[0], root);
+  assert.equal(talkKids(box)[1], tl);
+  assert.equal(inputOf(box), input);
+  assert.deepEqual([talk.draws.length, talk.drops.length], [2, 0]);
+  assert.equal(talk.draws[1]!.root, root);
+});
+
+test("web static: SA.talk で別のチャンネルに替えると新しい根になり、前の根を drop", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  c.put("2", [chatTurn(20, "owner", "b")]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  const root = talkKids(box)[0];
+  c.chat.render(box, "2");
+  assert.notEqual(talkKids(box)[0], root);
+  assert.equal(talkKids(box)[0]!.getAttribute("data-talk"), "2");
+  assert.deepEqual(talk.drops, [root]);
+  assert.equal(lastDraw(talk).root, talkKids(box)[0]);
+});
+
+test("web static: SA.talk で読み込み中・開けないチャンネルを描くと draw を呼ばず、在った根を drop", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  const root = talkKids(box)[0]!;
+  c.chat.render(box, "2");
+  assert.deepEqual([talk.draws.length, talk.drops.length], [1, 1]);
+  assert.equal(talk.drops[0], root);
+  c.chat.render(box, "1");
+  const again = talkKids(box)[0]!;
+  (c.store.turns as Record<string, unknown>)["3"] = { loaded: true, missing: true, hasMore: false, turns: [], channel: null };
+  c.chat.render(box, "3");
+  assert.deepEqual([talk.draws.length, talk.drops.length], [2, 2]);
+  assert.equal(talk.drops[1], again);
+  assert.ok(box.querySelector("div.empty"));
+});
+
+test("web static: SA.talk の fmt.name・fmt.label（人格 1 つは名前なし、2 つは続く返事で名前なし、Claude Code）", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  const owner = chatTurn(10, "owner", "q");
+  const a1 = chatTurn(11, "agent", "x", { persona: "default" });
+  const a2 = chatTurn(12, "agent", "y", { persona: "default" });
+  const b1 = chatTurn(13, "agent", "z", { persona: "p2" });
+  c.put("1", [owner, a1, a2, b1]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  let fmt = lastDraw(talk).state.fmt;
+  assert.deepEqual([fmt.label!(owner), fmt.label!(a1), fmt.name!(a1, owner), fmt.name!(a2, a1)], ["オーナー", "既定", null, null]);
+  c.store.channels.personas.push({ id: "p2", name: "二号", isDefault: false });
+  c.chat.render(box, "1");
+  fmt = lastDraw(talk).state.fmt;
+  assert.deepEqual([fmt.name!(a1, owner), fmt.name!(a2, a1), fmt.name!(b1, a2), fmt.label!(b1), fmt.name!(a1, null)], ["既定", null, "二号", "二号", "既定"]);
+  c.put("9", [owner, a1, a2], { kind: "cc", name: "work", cc: { state: "idle" } });
+  const cc = c.box();
+  c.chat.render(cc, "9");
+  fmt = lastDraw(talk).state.fmt;
+  assert.deepEqual([fmt.label!(owner), fmt.label!(a1), fmt.name!(a1, owner), fmt.name!(a2, a1)], ["オーナー", "Claude Code", "Claude Code", null]);
+});
+
+test("web static: SA.talk の fmt.end・time・progress・allLabel・runName・waiting は今の関数と同じ文", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  const ui = c.ui as unknown as { shortTime: (v: string) => string; elapsed: (ms: number) => string };
+  const chat = c.chat as unknown as { endText: (t: unknown) => string };
+  const owner = chatTurn(10, "owner", "q");
+  const done = chatTurn(11, "agent", "x", { outcome: "max_turns", durationMs: 720_000, toolCalls: 40, steps: ["a"] });
+  const run = { channelId: "1", turnSeq: 1, toolCalls: 40, steps: ["a", "b", "c", "d", "e"], abortable: true };
+  setRunning(c, [run]);
+  (c.store as unknown as Record<string, unknown>).runningWaitingText = () => "許可を待っています";
+  c.put("1", [owner, done]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  let fmt = lastDraw(talk).state.fmt;
+  assert.equal(fmt.end!(done), chat.endText(done));
+  assert.match(String(fmt.end!(done)), /^手順の上限で止まりました（.+・ツール 40 回）$/);
+  assert.equal(fmt.time!(done), ui.shortTime(done.at));
+  assert.equal(fmt.progress!(run), "作業中…（" + ui.elapsed(95_000) + "・ツール 40 回）");
+  assert.equal(fmt.allLabel!(run), "直近の手順（5）");
+  assert.equal(fmt.allLabel!({ ...run, toolCalls: 5 }), "すべての手順（5）");
+  assert.equal(fmt.waiting!(run), "許可を待っています");
+  assert.equal(fmt.runName!(owner), null);
+  c.store.channels.personas.push({ id: "p2", name: "二号", isDefault: false });
+  c.chat.render(box, "1");
+  fmt = lastDraw(talk).state.fmt;
+  assert.deepEqual([fmt.runName!(owner), fmt.runName!(done), fmt.runName!(null)], ["既定", null, "既定"]);
+  assert.equal(lastDraw(talk).state.running, run);
+});
+
+test("web static: SA.talk の on.toggleSteps は文字列の key を出し入れして全部を描き直し（refresh しない）、古い details の開いた手順は変わらない", () => {
+  const c = loadChat();
+  const { SA, talk } = withTalk(c);
+  c.put("1", [chatTurn(12, "agent", "x", { outcome: "done", steps: ["Read a"] })]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  const on = talk.draws[0]!.state.on;
+  on.toggleSteps!("12");
+  assert.equal(talk.draws.length, 2);
+  assert.ok(lastDraw(talk).state.openSteps.has("12"));
+  assert.equal(lastDraw(talk).root, talkKids(box)[0]);
+  on.toggleSteps!("12");
+  assert.equal(talk.draws.length, 3);
+  assert.equal(lastDraw(talk).state.openSteps.has("12"), false);
+  on.toggleSteps!("12");
+  assert.deepEqual(c.refreshes, []);
+  // 古い道（SA.talk が無い）の details は閉じたまま
+  delete SA.talk;
+  const plain = c.box();
+  c.chat.render(plain, "1");
+  const details = plain.querySelector("details.steps-plain")!;
+  assert.equal(details.getAttribute("open"), null);
+});
+
+test("web static: SA.talk の on.toggleRunSteps は runStepsOpen を入れ替えて全部を描き直す", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  setRunning(c, [{ channelId: "1", turnSeq: 1, toolCalls: 5, steps: ["a", "b", "c", "d", "e"], abortable: false }]);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  const on = talk.draws[0]!.state.on;
+  assert.equal(talk.draws[0]!.state.runStepsOpen, false);
+  on.toggleRunSteps!();
+  assert.deepEqual([talk.draws.length, lastDraw(talk).state.runStepsOpen], [2, true]);
+  on.toggleRunSteps!();
+  assert.deepEqual([talk.draws.length, lastDraw(talk).state.runStepsOpen], [3, false]);
+});
+
+test("web static: SA.talk の on.older は前の行を読む（store.load.olderTurns）", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  c.store.turns["1"]!.hasMore = true;
+  const box = c.box();
+  c.chat.render(box, "1");
+  talk.draws[0]!.state.on.older!();
+  assert.deepEqual(c.loads.filter((l) => l.startsWith("older:")), ["older:1"]);
+});
+
+test("web static: SA.talk の on.stop は中断を 1 回だけ送り、待つ間と成功の後は stopping、失敗・実行が消えた・turnSeq が替わったら stopping でない", async () => {
+  const c = loadChat();
+  const { SA, talk } = withTalk(c);
+  const runs: Array<Record<string, unknown>> = [{ channelId: "1", turnSeq: 3, toolCalls: 1, steps: [], abortable: true }];
+  setRunning(c, runs);
+  const posts: string[] = [];
+  let settle: { res: (v: unknown) => void; rej: (e: unknown) => void } | null = null;
+  SA.api = {
+    post: (path: string) => {
+      posts.push(path);
+      return new Promise((res, rej) => (settle = { res, rej }));
+    },
+  };
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  const on = talk.draws[0]!.state.on;
+  assert.equal(talk.draws[0]!.state.stopping, false);
+  const first = on.stop!() as Promise<void>;
+  void on.stop!();
+  assert.deepEqual(posts, ["/api/channels/1/turns/3/abort"]);
+  assert.equal(lastDraw(talk).state.stopping, true);
+  settle!.res({});
+  await first;
+  c.chat.render(box, "1");
+  assert.equal(lastDraw(talk).state.stopping, true);
+  // 実行が消えた
+  runs.length = 0;
+  c.chat.render(box, "1");
+  assert.equal(lastDraw(talk).state.stopping, false);
+  // turnSeq が替わった
+  runs.push({ channelId: "1", turnSeq: 4, toolCalls: 1, steps: [], abortable: true });
+  const second = on.stop!() as Promise<void>;
+  assert.deepEqual(posts.at(-1), "/api/channels/1/turns/4/abort");
+  settle!.res({});
+  await second;
+  runs[0] = { ...runs[0], turnSeq: 5 };
+  c.chat.render(box, "1");
+  assert.equal(lastDraw(talk).state.stopping, false);
+  // 失敗
+  const third = on.stop!() as Promise<void>;
+  assert.equal(lastDraw(talk).state.stopping, true);
+  settle!.rej({ status: 500 });
+  await third;
+  assert.equal(lastDraw(talk).state.stopping, false);
+  assert.equal(posts.length, 3);
+});
+
+test("web static: SA.talk のとき [続ける] は .tl の先頭（手順の上限・セッション・実行なし・押していない）。カード・空の文・完了の文も .tl", async () => {
+  const c = loadChat();
+  withTalk(c);
+  const last = chatTurn(11, "agent", "x", { outcome: "max_turns", steps: ["a"] });
+  const moveProposal = { id: 1, from: "General", to: "kakeibo-app", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  c.put("1", [chatTurn(10, "owner", "a"), last], { kind: "session", title: "t", state: "active", moveProposal });
+  const box = c.box();
+  c.chat.render(box, "1");
+  const tl = () => talkKids(box)[1]!;
+  const head = tl().children[0] as DomNode;
+  assert.ok(head.classes.has("msg-actions"));
+  assert.equal(head.buttons()[0]!.textContent, "続ける");
+  assert.ok(tl().querySelector("section.card"));
+  // セッションでない・実行中は出さない
+  c.put("2", [last]);
+  const inbox = c.box();
+  c.chat.render(inbox, "2");
+  assert.equal(descendants(inbox).filter((n) => n.textContent === "続ける" && n.tagName === "button").length, 0);
+  setRunning(c, [{ channelId: "1", turnSeq: 1, toolCalls: 1, steps: [], abortable: true }]);
+  c.chat.render(box, "1");
+  assert.equal(tl().buttons().filter((b) => b.textContent === "続ける").length, 0);
+  // 押した後は出さない
+  setRunning(c, []);
+  c.chat.render(box, "1");
+  (tl().children[0] as DomNode).buttons()[0]!.dispatch("click");
+  await c.flush();
+  c.chat.render(box, "1");
+  assert.equal(tl().buttons().filter((b) => b.textContent === "続ける").length, 0);
+  // 空の文と完了の文
+  c.put("3", [], { kind: "session", title: "t", state: "done" });
+  const empty = c.box();
+  c.chat.render(empty, "3");
+  const texts = (talkKids(empty)[1]!.children as DomNode[]).map((n) => n.textContent);
+  assert.ok(texts.some((t) => t.startsWith("まだ会話はありません")), JSON.stringify(texts));
+  assert.ok(texts.some((t) => t.startsWith("完了したセッションです")), JSON.stringify(texts));
+});
+
+test("web static: SA.talk の draw が false なら根を drop して古い描き方（.msg）になり、その後は draw も tick も呼ばない", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  setRunning(c, [{ channelId: "1", turnSeq: 1, toolCalls: 1, steps: [], abortable: true }]);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  talk.ok = false;
+  const box = c.box();
+  c.chat.render(box, "1");
+  assert.equal(talk.draws.length, 1);
+  assert.deepEqual(talk.drops, [talk.draws[0]!.root]);
+  assert.ok(box.querySelector("article.msg"));
+  talk.ok = true;
+  c.chat.render(box, "1");
+  c.intervals[0]!();
+  assert.deepEqual([talk.draws.length, talk.ticks.length], [1, 0]);
+  assert.ok(box.querySelector("article.msg"));
+});
+
+test("web static: 1 秒の刻みは実行中のチャンネルの根にだけ tick（draw は増えない）。実行が無い・見えていないときは呼ばず、[data-run-progress] の書き換えは今のまま", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  const store = c.store as unknown as Record<string, unknown>;
+  setRunning(c, [{ channelId: "1", turnSeq: 1, toolCalls: 2, steps: [], abortable: true }]);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  c.put("2", [chatTurn(20, "owner", "b")]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  const other = c.box();
+  c.chat.render(other, "2");
+  // 右腕（古い道）の経過の文
+  const framed = c.box();
+  c.chat.render(framed, "1", { title: "右腕", placeholder: "右腕に頼む・訊く" });
+  const progress = framed.querySelector('span[data-run-progress="1"]')!;
+  store.runningElapsed = () => 125_000;
+  const tick = c.intervals[0]!;
+  tick();
+  assert.equal(talk.ticks.length, 1);
+  assert.equal(talk.ticks[0]!.root, talkKids(box)[0]);
+  assert.equal(talk.ticks[0]!.state.running, (store.runningOf as (id: string) => unknown)("1"));
+  assert.equal(talk.draws.length, 2);
+  const ui = c.ui as unknown as { elapsed: (ms: number) => string };
+  assert.equal(progress.textContent, "作業中…（" + ui.elapsed(125_000) + "・ツール 2 回）");
+  c.state.visibility = "hidden";
+  tick();
+  assert.equal(talk.ticks.length, 1);
+  c.state.visibility = "visible";
+  setRunning(c, []);
+  tick();
+  assert.equal(talk.ticks.length, 1);
+});
+
+test("web static: 刻みの tick が false なら SA.app.refresh を 1 回呼び、その後は tick を呼ばない", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  setRunning(c, [{ channelId: "1", turnSeq: 1, toolCalls: 2, steps: [], abortable: true }]);
+  c.put("1", [chatTurn(10, "owner", "a")]);
+  const box = c.box();
+  c.chat.render(box, "1");
+  talk.ok = false;
+  c.intervals[0]!();
+  assert.deepEqual([talk.ticks.length, c.refreshes], [1, ["ch:1"]]);
+  c.intervals[0]!();
+  assert.deepEqual([talk.ticks.length, c.refreshes], [1, ["ch:1"]]);
+});
+
+test("web static: 右腕の枠（frame）は SA.talk が在っても古い道（draw を呼ばず .msg）", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  c.put("1", [chatTurn(10, "owner", "a"), chatTurn(11, "agent", "b")]);
+  const framed = c.box();
+  c.chat.render(framed, "1", { title: "右腕", placeholder: "右腕に頼む・訊く" });
+  assert.equal(talk.draws.length, 0);
+  assert.equal(framed.querySelectorAll("article.msg").length, 2);
+  assert.equal(framed.querySelectorAll("[data-talk]").length, 0);
+});
+
+test("web static: SA.talk の Claude Code のチャンネルは running が null で、状態の行と許可のカードは .tl", () => {
+  const c = loadChat();
+  const { talk } = withTalk(c);
+  const store = c.store as unknown as Record<string, unknown>;
+  store.ccSessions = {};
+  store.ccPendingOf = (_id: string, p: unknown) => p;
+  setRunning(c, [{ channelId: "9", turnSeq: 1, toolCalls: 1, steps: [], abortable: true }]);
+  const permission = { id: 7, state: "pending", toolName: "Bash", summary: "ls", expiresAt: new Date(Date.now() + 60_000).toISOString(), requestHash: "h", alwaysRule: null };
+  c.put("9", [chatTurn(10, "owner", "a")], { kind: "cc", name: "work", cc: { sessionId: "s1", state: "running", permission } });
+  const box = c.box();
+  c.chat.render(box, "9");
+  assert.equal(lastDraw(talk).state.running, null);
+  const tl = talkKids(box)[1]!;
+  assert.equal(tl.querySelectorAll("[data-cc-status]").length, 1);
+  assert.equal(tl.querySelectorAll("section.card").length, 1);
 });
 
 test("web static: views.js の toolbar は SA.top があると題・戻る・印を作らず添え物と操作の段だけで、どちらも空なら隠す。状態の画面は h1 が無くても描ける", () => {

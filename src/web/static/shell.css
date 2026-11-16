@@ -367,3 +367,12 @@
     display: flex;
   }
 }
+
+/* 会話の行を部品（c-talk）が描くとき、その下の古い .tl（カード・[続ける]・空の文など）は部品の列と左右の端を揃え、上の余白を重ねない（スマホの .tl の余白にも勝つ） */
+.v3 .ed-scroll > [data-talk] + .tl {
+  padding: 0 var(--c-gutter) var(--c-gutter);
+}
+
+.v3 .ed-scroll > [data-talk] + .tl:empty {
+  display: none;
+}

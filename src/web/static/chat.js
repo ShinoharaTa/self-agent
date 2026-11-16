@@ -678,20 +678,23 @@
     return bubbleRow("agent", "作業中", name, body, null, { class: "msg msg-agent is-running", "aria-busy": "true" });
   }
 
-  /** [中断]。button は押したもの（[もう一度] からは null） */
+  /** [中断]。button は押したもの（[もう一度] からは null）。中断を受け付けられたら true */
   async function abortTurn(channelId, turnSeq, button) {
     if (button) button.disabled = true;
     // 音（sound.js）はこのチャンネルの次の終わりで鳴らさない。応答より先に終わりを読むことがあるので押した時点で知らせ、中断できなければ取り消す
     SA.events.emit("aborted", { channelId });
+    let ok = true;
     try {
       await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/turns/" + turnSeq + "/abort", {}, { quiet: true });
     } catch (err) {
+      ok = false;
       SA.events.emit("abortFailed", { channelId });
       if (err && err.status === 409) toast(STALE_TEXT);
       else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => abortTurn(channelId, turnSeq, null) });
       if (button) button.disabled = false;
     }
     SA.poll.running();
+    return ok;
   }
 
   /** [続ける]: 手順の上限で止まった最後の返事（セッション・実行中のターンが無いとき）。押したら隠す（このタブのメモリだけ） */
@@ -1013,16 +1016,129 @@
     if (after && before) after.scrollTop = top + (after.scrollHeight - height);
   }
 
+  // ===== 新しい殻の会話の行（入口 c-app.js の SA.talk。K4）。古い殻には SA.talk が無いので、ここは通らない =====
+  /** 部品で描けなかった（以後はこのタブで古い描き方） */
+  let talkBroken = false;
+  /** 部品の行で開いた手順（{ [channelId]: Set<行の key = String(turn.id)> }。古い details の openSteps とは別） */
+  const talkOpen = {};
+  /** [中断] を押して応答を待っているチャンネル → その turnSeq */
+  const aborting = new Map();
+
+  function talkOpenOf(channelId) {
+    if (!talkOpen[channelId]) talkOpen[channelId] = new Set();
+    return talkOpen[channelId];
+  }
+
+  /** 部品に渡す state。on は channelId だけを閉じ込め、押されたときに今の状態を読む（行の vnode は作ったときの on を持ち続ける） */
+  function talkState(channelId, ch) {
+    const t = store.turns[channelId];
+    const isCc = !!(ch && ch.kind === "cc");
+    const run = isCc ? null : store.runningOf(channelId);
+    if (aborting.has(channelId) && (!run || aborting.get(channelId) !== run.turnSeq)) aborting.delete(channelId);
+    return {
+      channelId,
+      turns: t.turns,
+      hasMore: !!t.hasMore,
+      running: run,
+      stopping: aborting.has(channelId),
+      openSteps: talkOpenOf(channelId),
+      runStepsOpen: stepsOpened.has(channelId),
+      fmt: {
+        time: (turn) => shortTime(turn.at),
+        label: (turn) => (turn.kind === "owner" ? "オーナー" : isCc ? "Claude Code" : persona(turn.persona).name),
+        // 吹き出しの上の名前は renderTurn と同じ決め方
+        name: (turn, prev) => {
+          if (isCc) return followsSameAgent(prev, ch, turn.persona) ? null : "Claude Code";
+          return showsAgentName(ch) && !followsSameAgent(prev, ch, turn.persona) ? persona(turn.persona).name : null;
+        },
+        end: endText,
+        progress: progressText,
+        waiting: (r) => store.runningWaitingText(r),
+        allLabel: allStepsLabel,
+        // 実行中の行の名前は renderRunning と同じ決め方
+        runName: (prev) => (showsAgentName(ch) && !followsSameAgent(prev, ch, ch ? ch.persona : "default") ? persona(ch ? ch.persona : "default").name : null),
+      },
+      on: {
+        older: () => loadOlder(channelId),
+        toggleSteps: (key) => {
+          const opened = talkOpenOf(channelId);
+          if (opened.has(key)) opened.delete(key);
+          else opened.add(key);
+          drawTalk(channelId);
+        },
+        toggleRunSteps: () => {
+          if (stepsOpened.has(channelId)) stepsOpened.delete(channelId);
+          else stepsOpened.add(channelId);
+          drawTalk(channelId);
+        },
+        stop: async () => {
+          // 押されたときの実行を読む
+          const now = store.runningOf(channelId);
+          if (!now || aborting.has(channelId)) return;
+          aborting.set(channelId, now.turnSeq);
+          drawTalk(channelId);
+          const ok = await abortTurn(channelId, now.turnSeq, null);
+          if (!ok) {
+            aborting.delete(channelId);
+            drawTalk(channelId);
+          }
+        },
+      },
+    };
+  }
+
+  /** 部品の会話の根（data-talk で引く。描いていなければ null） */
+  function talkRoot(channelId) {
+    if (!/^\d+$/.test(channelId)) return null;
+    return document.querySelector('[data-talk="' + channelId + '"]');
+  }
+
+  /** 部品の会話の行を全部描き直す（手順の開閉・[中断]）。描けなければ古い描き方で描き直す */
+  function drawTalk(channelId) {
+    if (!SA.talk || talkBroken) return;
+    const root = talkRoot(channelId);
+    const t = store.turns[channelId];
+    if (!root || !t || !t.loaded) return;
+    if (!SA.talk.draw(root, talkState(channelId, channelById(channelId)))) {
+      talkBroken = true;
+      SA.app.refresh("ch:" + channelId);
+    }
+  }
+
+  /** container の直下の .ed-scroll の直下の、部品の会話の根を全部外す（子を辿る） */
+  function dropTalkRoots(container, talk) {
+    for (const scroll of [...container.children]) {
+      if (!scroll.classList.contains("ed-scroll")) continue;
+      for (const child of [...scroll.children]) if (child.getAttribute("data-talk") !== null) talk.drop(child);
+    }
+  }
+
+  /** container の直下の、そのチャンネルの部品の .ed-scroll（{ scroll, root, tl }）。無ければ null */
+  function talkScrollOf(container, channelId) {
+    for (const scroll of [...container.children]) {
+      if (!scroll.classList.contains("ed-scroll") || scroll.getAttribute("data-channel") !== channelId) continue;
+      const kids = [...scroll.children];
+      const at = kids.findIndex((c) => c.getAttribute("data-talk") === channelId);
+      const tl = at >= 0 ? kids[at + 1] : null;
+      if (tl && tl.classList.contains("tl")) return { scroll, root: kids[at], tl };
+    }
+    return null;
+  }
+
   function render(container, channelId, frame) {
     const t = store.turns[channelId];
     const ch = channelById(channelId);
     // 新しい殻の列 2 は、見出しを入口 c-app.js の部品が描く（右腕の枠は今の見出しのまま）
     const top = !frame && !!SA.top;
+    // 新しい殻の列 2 は、会話の行も部品が描く（右腕は古い描き方のまま）
+    const talk = !frame && SA.talk && !talkBroken ? SA.talk : null;
     if (!t || !t.loaded) {
+      if (talk) dropTalkRoots(container, talk);
       container.replaceChildren(...[top ? null : header(ch, channelId, frame), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [SA.views.loading()])])].filter(Boolean));
       return;
     }
     if (t.missing) {
+      if (talk) dropTalkRoots(container, talk);
       container.replaceChildren(
         ...[
           top ? null : header(null, channelId, frame),
@@ -1034,7 +1150,7 @@
     // 会話の行は先に並べ、最後に .tl に入れる（質問のカードが前と同じなら、前の .tl を残してカードを動かさない）
     const parts = [];
     const timeline = { append: (...nodes) => parts.push(...nodes) };
-    if (t.hasMore) {
+    if (t.hasMore && !talk) {
       const more = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "前の会話を読む" });
       more.addEventListener("click", () => loadOlder(channelId));
       timeline.append(el("div", { class: "tl-hint" }, [more]));
@@ -1044,7 +1160,13 @@
     const run = isCc ? null : store.runningOf(channelId);
     const last = t.turns[t.turns.length - 1];
     let prev = null;
-    for (const turn of t.turns) {
+    if (talk) {
+      // 行は部品が描く。手順の上限で止まった最後の返事の [続ける] は、古い .tl の先頭（吹き出しの列のすぐ下）
+      if (last && last.kind === "agent" && last.outcome === "max_turns" && ch && ch.kind === "session" && !run && !continued.has(last.id)) {
+        timeline.append(continueButton(channelId, last));
+      }
+    }
+    for (const turn of talk ? [] : t.turns) {
       // 枠の指定があれば Bot の返事の本文だけを差し替えて描く（prev・last との比べは元の行のまま）
       const reply = !!frame && turn.kind === "agent";
       const node = renderTurn(reply && frame.replyText ? Object.assign({}, turn, { text: frame.replyText(turn.text) }) : turn, channelId, ch, prev);
@@ -1057,7 +1179,7 @@
       if (reply && frame.replyExtras) node.append(...frame.replyExtras(turn.text));
       timeline.append(node);
     }
-    if (run) timeline.append(renderRunning(ch, run, prev));
+    if (run && !talk) timeline.append(renderRunning(ch, run, prev));
     const waiting = pendingOf(channelId, ch);
     if (waiting) {
       timeline.append(
@@ -1119,11 +1241,25 @@
       timeline.append(el("p", { class: "tl-hint", text: "完了したセッションです。発言すると進行中に戻ります。" }));
     }
     // 前に描いたカード（質問の書きかけ）か状態の行（[やめる]）が前の .tl にあれば、その .ed-scroll と .tl を残して中身だけを並べ直す（外すと焦点・IME の変換が切れる）
-    const reused = [card, ccStatusNodes.has(channelId) ? ccStatusNodes.get(channelId).node : null].filter((n) => n && parts.includes(n));
+    const reused = talk ? [] : [card, ccStatusNodes.has(channelId) ? ccStatusNodes.get(channelId).node : null].filter((n) => n && parts.includes(n));
     const oldScroll = reused.length > 0 ? [...container.children].find((child) => child.classList.contains("ed-scroll") && child.getAttribute("data-channel") === channelId) : null;
     const oldTimeline = (oldScroll && reused.map((n) => n.parentNode).find((p) => p && p.parentNode === oldScroll)) || null;
     let scroll;
-    if (oldTimeline) {
+    let talkRootEl = null;
+    // 部品の道: 同じチャンネルの .ed-scroll（直下の根と、そのすぐ次の .tl）があれば使い回す（行の要素・文の選択・スクロールの位置を保つ）
+    const same = talk ? talkScrollOf(container, channelId) : null;
+    if (same) {
+      talkRootEl = same.root;
+      SA.views.placeChildren(same.tl, parts);
+      scroll = same.scroll;
+    } else if (talk) {
+      dropTalkRoots(container, talk);
+      talkRootEl = el("div", { "data-talk": channelId });
+      scroll = el("div", { class: "ed-scroll", "data-stick": "bottom", "data-channel": channelId }, [talkRootEl, el("div", { class: "tl" }, parts)]);
+      scroll.addEventListener("scroll", () => {
+        if (scroll.scrollTop < OLDER_THRESHOLD) loadOlder(channelId);
+      });
+    } else if (oldTimeline) {
       SA.views.placeChildren(oldTimeline, parts);
       scroll = oldScroll;
     } else {
@@ -1136,6 +1272,13 @@
     const kept = [...container.children].find((child) => child.classList.contains("composer-wrap") && child.getAttribute("data-channel") === channelId);
     // 送った本文の状態（Claude Code のチャンネル。[やめる]）は入力欄の上
     SA.views.placeChildren(container, [top ? null : header(ch, channelId, frame), scroll, ccPending, kept || composer(ch, channelId, frame)]);
+    // 置いてから描く（根が画面に付いた後）。描けなければ古い描き方で描き直す
+    if (talk && !talk.draw(talkRootEl, talkState(channelId, ch))) {
+      talkBroken = true;
+      talk.drop(talkRootEl);
+      render(container, channelId, frame);
+      return;
+    }
     markSeen(channelId);
   }
 
@@ -1159,6 +1302,8 @@
       onClose: () => {
         delete openSteps[channelId];
         stepsOpened.delete(channelId);
+        delete talkOpen[channelId];
+        aborting.delete(channelId);
         delete picked[channelId];
         ccScreenOpened.delete(channelId);
       },
@@ -1182,6 +1327,18 @@
     for (const node of document.querySelectorAll("[data-run-progress]")) {
       const run = store.runningOf(node.getAttribute("data-run-progress"));
       if (run) node.textContent = progressText(run);
+    }
+    // 新しい殻: 実行中のチャンネルの部品の根だけ、覚えた行のまま実行中の行を描く（部品の文を外から書き換えない）
+    if (!SA.talk || talkBroken) return;
+    for (const root of document.querySelectorAll("[data-talk]")) {
+      const id = root.getAttribute("data-talk");
+      const t = store.turns[id];
+      if (!t || !t.loaded || !store.runningOf(id)) continue;
+      if (!SA.talk.tick(root, talkState(id, channelById(id)))) {
+        talkBroken = true;
+        SA.app.refresh("ch:" + id);
+        return;
+      }
     }
   }, 1000);
 
