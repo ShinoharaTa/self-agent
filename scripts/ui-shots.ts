@@ -153,7 +153,7 @@ const TOP_BOX: Record<string, number> = { "c-gallery-top-full": 520, "c-gallery-
 /**
  * 見本の見出しの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。
  * 高さ（--c-bar-h の値と箱の高さ）・1 段（直下の子が上下の中で左から右へ重ならずに並ぶ）・はみ出し・長い題の省き・場所のボタンの幅・
- * 幅を決めた入れ物の幅（広すぎて検査が空振りしない）・ページが横に動かない。足りない物の文を返す
+ * 幅を決めた入れ物の幅（広すぎて検査が空振りしない）・ページが横に動かない・広い幅の縮む順（補足 → 場所 → 題）。足りない物の文を返す
  */
 function topProblems({ height, titleMin, placeMin, boxes, label }: { height: number; titleMin: number; placeMin: number; boxes: Record<string, number>; label: string }): string[] {
   const lines: string[] = [];
@@ -193,6 +193,14 @@ function topProblems({ height, titleMin, placeMin, boxes, label }: { height: num
     for (const place of top.querySelectorAll(".c-top-place")) {
       const w = place.getBoundingClientRect().width;
       if (w < placeMin - 0.5) lines.push(`見出し: ${demo} の場所のボタンの幅 ${w.toFixed(1)}。${placeMin} 以上のはず（${label}）`);
+    }
+    // 広い幅は 補足 → 場所 → 題 の順に縮む: 題が省かれているなら、補足は残っておらず、場所は下限の幅
+    const wideTitle = top.getAttribute("data-variant") === "wide" ? top.querySelector(".c-top-title") : null;
+    if (wideTitle !== null && wideTitle.scrollWidth > wideTitle.clientWidth) {
+      const rest = top.querySelector(":scope > .c-top-rest");
+      if (rest !== null && rest.getBoundingClientRect().width >= 14) lines.push(`見出し: ${demo} の題が省かれているのに補足が ${rest.getBoundingClientRect().width.toFixed(1)} 残っている（${label}）`);
+      const place = top.querySelector(".c-top-place");
+      if (place !== null && Math.abs(place.getBoundingClientRect().width - placeMin) > 1) lines.push(`見出し: ${demo} の題が省かれているのに場所のボタンが ${place.getBoundingClientRect().width.toFixed(1)}。${placeMin} まで縮むはず（${label}）`);
     }
     if (/-long$/.test(demo)) {
       const title = top.querySelector(".c-top-title");

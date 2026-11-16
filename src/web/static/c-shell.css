@@ -122,7 +122,7 @@
   }
 }
 
-/* ===== 会話の見出し（TopBar。K4）: 1 段。折り返さず、入りきらない語は省く（場所 → 補足 → 題の順に縮む） ===== */
+/* ===== 会話の見出し（TopBar。K4）: 1 段。折り返さず、入りきらない語は省く（補足 → 場所 → 題の順に縮む。縮む割合の差で順を作る） ===== */
 
 /* 下の線は枠でなく内側の影（高さがずれない）。上の safe-area は殻の側が持つ */
 .c-top {
@@ -157,7 +157,7 @@
   justify-content: center;
 }
 
-/* 広い幅: 題は中身の幅で、縮んでも --c-top-title-min は残す（先に場所と補足が縮む） */
+/* 広い幅: 題は中身の幅で、縮んでも --c-top-title-min は残す（先に補足、次に場所が縮む） */
 .c-top[data-variant="wide"] > .c-top-text {
   flex: 0 1 auto;
   min-width: var(--c-top-title-min);
@@ -202,8 +202,9 @@
   white-space: nowrap;
 }
 
+/* 一番先に縮む（0 まで縮んでよい） */
 .c-top > .c-top-rest {
-  flex: 0 1 auto;
+  flex: 0 10000 auto;
   min-width: 0;
   font-size: var(--font-sm);
   color: var(--text-muted);
@@ -212,9 +213,9 @@
   text-overflow: ellipsis;
 }
 
-/* 縮んでも当たりと語の頭が残る幅は残す（入らない幅では入口が compact にして、場所を帯に出さない） */
+/* 補足の次に縮み、当たりと語の頭が残る幅は残す（入らない幅では入口が compact にして、場所を帯に出さない） */
 .c-top-place {
-  flex: 0 1 auto;
+  flex: 0 100 auto;
   min-width: var(--c-top-place-min);
   max-width: 40%;
   box-sizing: border-box;
