@@ -1085,8 +1085,9 @@
   function reloadAfterCcAnswer(sessionId, tabId) {
     const ch = tabId && tabId.startsWith("ch:") ? SA.chat.channelById(tabId.slice(3)) : null;
     if (ch && ch.kind === "session") {
-      store.load.turns(ch.id, { quiet: true });
-      SA.app.refresh(tabId);
+      // 描き直すのは読み直しが返ってから（先に描くと、通った直後に、まだ保留中のままの要求が答える前の形で一度出る）
+      const redraw = () => SA.app.refresh(tabId);
+      Promise.resolve(store.load.turns(ch.id, { quiet: true })).then(redraw, redraw);
       return;
     }
     store.load.ccSession(sessionId);

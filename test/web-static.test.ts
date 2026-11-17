@@ -1953,7 +1953,8 @@ test("web static: ccAsk の permit・answer・dismiss は話題の会話のタ�
   assert.equal(await ask.answer("s9", p, "ch:5"), true);
   assert.equal(await ask.dismiss("s9", questionPermission(82), "ch:5"), true);
   assert.deepEqual(turnLoads, ["5", "5", "5"], "許可・答える・やめるのどれも会話を読み直す");
-  assert.ok(refreshes.every((tab) => tab === "ch:5"));
+  // 1 回の送りにつき、送り始めと、読み直しの後の 2 回描き直す
+  assert.deepEqual(refreshes, Array(6).fill("ch:5"));
   setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 409 })));
   assert.equal(await ask.permit("s9", permissionRequest(83), "deny", "ch:5"), false);
   const p2 = questionPermission(84);
@@ -1962,7 +1963,21 @@ test("web static: ccAsk の permit・answer・dismiss は話題の会話のタ�
   assert.equal(await ask.answer("s9", p2, "ch:5"), false);
   assert.equal(await ask.dismiss("s9", questionPermission(85), "ch:5"), false);
   assert.deepEqual(turnLoads, ["5", "5", "5", "5", "5", "5"], "失敗しても読み直す");
+  assert.deepEqual(refreshes, Array(12).fill("ch:5"), "失敗しても、押せる形へ戻すために描き直す");
   assert.deepEqual(ccLoads, []);
+  // 終わりの描き直しは、読み直しが返ってから（先に描くと、通った直後に答える前の形のカードが一度出る）
+  setReply(() => Promise.resolve({}));
+  let loaded: () => void = () => undefined;
+  load.turns = () => new Promise<null>((resolve) => (loaded = () => resolve(null)));
+  for (const send of [() => ask.permit("s9", permissionRequest(86), "allow", "ch:5"), () => ask.dismiss("s9", questionPermission(87), "ch:5")]) {
+    refreshes.length = 0;
+    assert.equal(await send(), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(refreshes, ["ch:5"], "読み直しが返るまでは送り始めの 1 回だけ");
+    loaded();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(refreshes, ["ch:5", "ch:5"]);
+  }
 });
 
 test("web static: ccAsk の answer・dismiss は Claude Code のチャンネルの会話のタブ（kind cc の ch:<id>）・cc:<id> のタブ・tabId なしからは、今までどおりセッションと一覧を読み直す", async () => {
