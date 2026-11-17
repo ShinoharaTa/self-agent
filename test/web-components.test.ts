@@ -815,7 +815,7 @@ test("web components: Confirm は Node で呼べて Sheet を返し、× を出�
   assert.deepEqual(args, [["cancel"], ["ok"]]);
 });
 
-test("web components: toastSplit と Toast（失敗だけ alert、空でも 2 つの入れ物、× で onDismiss(id)）", () => {
+test("web components: toastSplit と Toast（失敗だけ alert、空でも 2 つの入れ物、× で onDismiss(id)。止める・消える途中）", () => {
   const items = [
     { id: "1", text: "a" },
     { id: "2", text: "b", level: "error", actionLabel: "もう一度", onAction: () => undefined },
@@ -843,6 +843,35 @@ test("web components: toastSplit と Toast（失敗だけ alert、空でも 2 �
   assert.equal(close?.props["aria-label"], "閉じる");
   (close?.props.onClick as (e: unknown) => void)(fakeEvent());
   assert.deepEqual(dismissed, ["2"]);
+  // 入れ物は足した知らせだけを読ませる
+  assert.deepEqual(lists.map((l) => l.props["aria-atomic"]), ["false", "false"]);
+  // 消える途中の行だけ data-leaving。onHold・onLeft は無くても呼べる
+  const held: unknown[][] = [];
+  const left: string[] = [];
+  const leaving = [{ id: "a", text: "a" }, { id: "b", text: "b", leaving: true }];
+  const rows = find(one(html`<${sheet.Toast} items=${leaving} onDismiss=${() => undefined} onHold=${(...a: unknown[]) => void held.push(a)} onLeft=${(id: string) => void left.push(id)} />`), "c-toast-item");
+  assert.deepEqual(rows.map((r) => r.props["data-leaving"]), [undefined, "true"]);
+  const [still, going] = rows as [El, El];
+  const on = (row: El, name: string, event: unknown) => (row.props[name] as (e: unknown) => void)(event);
+  // マウスのときだけ hover
+  on(still, "onpointerenter", { pointerType: "touch" });
+  on(still, "onpointerenter", { pointerType: "mouse" });
+  on(still, "onpointerleave", { pointerType: "mouse" });
+  // 中の別のボタンへ移るだけなら focus を外さない
+  const inner = {};
+  const self = { contains: (n: unknown) => n === inner };
+  on(still, "onfocusin", {});
+  on(still, "onfocusout", { relatedTarget: inner, currentTarget: self });
+  on(still, "onfocusout", { relatedTarget: null, currentTarget: self });
+  assert.deepEqual(held, [["a", "hover", true], ["a", "hover", false], ["a", "focus", true], ["a", "focus", false]]);
+  // 消える途中の行そのものの transitionend だけ onLeft(id)
+  on(still, "ontransitionend", { target: self, currentTarget: self });
+  on(going, "ontransitionend", { target: inner, currentTarget: self });
+  on(going, "ontransitionend", { target: self, currentTarget: self });
+  assert.deepEqual(left, ["b"]);
+  const bare = find(one(html`<${sheet.Toast} items=${leaving} onDismiss=${() => undefined} />`), "c-toast-item") as [El, El];
+  on(bare[0], "onpointerenter", { pointerType: "mouse" });
+  on(bare[1], "ontransitionend", { target: self, currentTarget: self });
 });
 
 // ===== 一覧（c-list.js。docs/plan/web-ui-components.md §6 の K3） =====

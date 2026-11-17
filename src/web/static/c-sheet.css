@@ -188,6 +188,27 @@
   }
 }
 
+/* 消える途中（ui.js が data-leaving を付け、動きの後に外す）。入ってきた向きへ戻る。長さは出るときと同じ。止める動きは base.css の reduced-motion */
+.c-toast-item[data-leaving="true"] {
+  opacity: 0;
+  transform: translateY(var(--space-2));
+  pointer-events: none;
+}
+
+/* スマホは上に出るので、上から入って上へ消える */
+@media (max-width: 639px) {
+  @starting-style {
+    .c-toast-item {
+      opacity: 0;
+      transform: translateY(calc(-1 * var(--space-2)));
+    }
+  }
+
+  .c-toast-item[data-leaving="true"] {
+    transform: translateY(calc(-1 * var(--space-2)));
+  }
+}
+
 .c-toast-item[data-level="error"] {
   border-left: var(--ring-width) solid var(--danger);
 }
