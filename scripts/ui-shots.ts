@@ -168,6 +168,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(theme === "dark" ? ["b-composer-empty", "b-composer-6lines", ...(vp === "phone" ? ["b-composer-count"] : [])] : []),
     // 本番のカード（段 r。ダークの 3 組）
     ...(theme === "dark" ? ["b-cards-close", "b-cards-move", "b-cards-other", "b-cards-sending"] : []),
+    // 知らせと確認（段 u。ダークのスマホと PC）
+    ...(theme === "dark" && vp !== "tablet" ? ["u-notice", "u-notice-error", "u-confirm"] : []),
     ...(full
       ? ["b-chat-permission", "b-chat-question", "d-composer-3lines", vp === "phone" ? "c-hand-over" : "c-hand-column", ...(vp === "phone" ? [] : ["c-hand-with-chat"]), "e-start-dialog", "f-settings", "f-knowledge-list", "f-knowledge-detail"]
       : []),
@@ -228,6 +230,17 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
     if (!ok) lines.push(`当たりが足りない: ${el.tagName.toLowerCase()}.${el.classList[0] ?? ""} ${Math.round(r.width)}x${Math.round(r.height)}`);
   }
   return lines;
+}
+
+/** 知らせ（部品の #c-notice-root）の文。role は status（知らせ）か alert（失敗）。ブラウザの中で動く */
+function noticeText(role: "status" | "alert"): string {
+  return (document.querySelector(`#c-notice-root .c-toast-list[role="${role}"]`)?.textContent ?? "").trim();
+}
+
+/** 知らせの文に text が在るか（text が空なら何か在るか）。waitForFunction に渡す */
+function noticeHas({ role, text }: { role: "status" | "alert"; text: string }): boolean {
+  const now = (document.querySelector(`#c-notice-root .c-toast-list[role="${role}"]`)?.textContent ?? "").trim();
+  return text === "" ? now !== "" : now.includes(text);
 }
 
 /** 見本の入力欄の data-demo（ページの順） */
@@ -2639,15 +2652,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           tlCont: tl === null ? 0 : [...tl.querySelectorAll("button")].filter((b) => (b.textContent ?? "").trim() === "続ける").length,
           sameTa: w.__ta !== null && w.__ta === document.querySelector("#ed > [data-composer] textarea"),
           sameSc: w.__sc !== null && w.__sc === document.querySelector("#ed .ed-scroll"),
-          toast: (document.querySelector("#toast-alert")?.textContent ?? "").trim(),
           rows: document.querySelectorAll("#ed .c-talk > .c-msg").length,
         };
       });
+      const pressedToast = await page.evaluate(noticeText, "alert" as const);
       if (continues.length !== 1) say(`19. [続ける] を押した送りが ${continues.length} 回（1 回のはず）`);
       if (pressed.busy === 0) say("19. [続ける] の待ちの形を見なかった");
       if (pressed.act || pressed.tlCont !== 0) say(`19. 押した後も [続ける] が在る（行 ${String(pressed.act)}・.tl ${pressed.tlCont}）`);
       if (!pressed.sameTa || !pressed.sameSc) say(`19. 押した後に入力欄か .ed-scroll が替わった（入力欄 ${String(pressed.sameTa)}・.ed-scroll ${String(pressed.sameSc)}）`);
-      if (pressed.toast !== "") say(`19. 押した後に知らせ「${pressed.toast}」`);
+      if (pressedToast !== "") say(`19. 押した後に知らせ「${pressedToast}」`);
       if (pressed.rows !== rowsBefore) say(`19. 押した後の行が ${pressed.rows}（${rowsBefore} のはず）`);
       if (logLines.length !== from) say(`19. 押した間に console.log の行が ${logLines.length - from} 増えた`);
     } finally {
@@ -2987,11 +3000,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const before = posts.length;
         await page.evaluate(() => {
           (window as unknown as { __busy: number }).__busy = 0;
-          for (const t of document.querySelectorAll("#toast-alert .toast")) t.remove();
+          // 前の失敗は × を押して消す（部品の DOM を外から外さない）
+          for (const b of document.querySelectorAll<HTMLButtonElement>('#c-notice-root .c-toast-list[role="alert"] .c-toast-item button[aria-label="閉じる"]')) b.click();
         });
+        await page.waitForFunction(() => document.querySelector('#c-notice-root .c-toast-list[role="alert"] .c-toast-item') === null, undefined, { timeout: 5000 }).catch(() => undefined);
         const from = logLines.length;
         await press();
-        await page.waitForFunction(() => (document.querySelector("#toast-alert")?.textContent ?? "") !== "", undefined, { timeout: 5000 }).catch(() => undefined);
+        await page.waitForFunction(noticeHas, { role: "alert" as const, text: "" }, { timeout: 5000 }).catch(() => undefined);
         await settled(page);
         // わざと起こした失敗（送りの 404 とその console.error）の 2 行だけを console.log から外す。数が違えば残して知らせる
         const removed = dropExpected(from, [`POST /api/channels/${talk}/messages`, "Failed to load resource"]);
@@ -3002,13 +3017,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const after = await page.evaluate(() => ({
           busy: (window as unknown as { __busy: number }).__busy,
           now: document.querySelector('#ed > [data-composer] .c-composer-row > .c-btn[aria-busy="true"]') !== null,
-          toast: (document.querySelector("#toast-alert")?.textContent ?? "").trim(),
         }));
+        const afterToast = await page.evaluate(noticeText, "alert" as const);
         const f = await field();
         if (posts.length !== before + 1) say(12, "送る", `${how}: POST が ${posts.length - before} 回`);
         if (after.busy === 0 || after.now) say(12, "送る", `${how}: 待ちの形になって戻らない（${JSON.stringify(after)}）`);
         if (f === null || f.value !== "draft") say(12, "送る", `${how}: 本文が残らない（${JSON.stringify(f?.value)}）`);
-        if (!after.toast.includes("このチャンネルには送れません")) say(12, "送る", `${how}: 知らせ「${after.toast}」`);
+        if (!afterToast.includes("このチャンネルには送れません")) say(12, "送る", `${how}: 知らせ「${afterToast}」`);
       };
       await failedOnce("［送る］", () => page.locator("#ed > [data-composer] .c-composer-row > .c-btn").click());
       if (vp === "pc") {
@@ -3682,6 +3697,127 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /**
+   * 段 u: 知らせと確認（ui.js の toast・confirm が部品の口 SA.notice・SA.ask へ描く）。話題を 1 つ開いた画面で、ページの中から呼ぶ（データは変えない。文は chat.js に在る物）。
+   * 知らせは 4 秒で消えるので、出してから測り終えて撮るまでを NOTICE_BUDGET_MS の内に収め、過ぎたら失敗にする（settled は消えるタイマーを待たない）
+   */
+  async function noticeStage(page: Page, vp: Viewport, p: string): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (n: number, name: string, text: string): void => void lines.push(`段 u の ${n} ${name}: ${text}`);
+    const NOTICE_BUDGET_MS = 3500;
+    const ITEM = "#c-notice-root .c-toast-item";
+    await load(page, `/static/v3.html#/ch/${open}`);
+    await page.waitForSelector("#ed > [data-composer] textarea", { timeout: 5000 });
+    await settled(page);
+    /** 出ている知らせを × で全部消し、無くなるのを待つ */
+    const clear = async (): Promise<void> => {
+      await page.evaluate((sel: string) => {
+        for (const b of document.querySelectorAll<HTMLButtonElement>(sel + ' button[aria-label="閉じる"]')) b.click();
+      }, ITEM);
+      await page.waitForFunction((sel: string) => document.querySelector(sel) === null, ITEM, { timeout: 5000 }).catch(() => undefined);
+    };
+
+    // 1. 知らせ: 部品の status の側に 1 つ・同じ文。古い入れ物は空
+    const TEXT = "送るのをやめました";
+    const shownAt = Date.now();
+    await page.evaluate((text: string) => (window as unknown as { SA: { ui: { toast: (t: string) => void } } }).SA.ui.toast(text), TEXT);
+    await page.waitForSelector(ITEM, { timeout: 5000 }).catch(() => undefined);
+    const first = await page.evaluate(() => ({
+      status: [...document.querySelectorAll('#c-notice-root .c-toast-list[role="status"] .c-toast-item')].map((i) => (i.textContent ?? "").trim()),
+      alert: document.querySelectorAll('#c-notice-root .c-toast-list[role="alert"] .c-toast-item').length,
+      old: document.querySelectorAll("#toast > *, #toast-alert > *").length,
+    }));
+    if (first.status.length !== 1 || first.status[0] !== TEXT || first.alert !== 0) say(1, "知らせ", `status ${JSON.stringify(first.status)}・alert ${first.alert}`);
+    if (first.old !== 0) say(1, "知らせ", `古い #toast・#toast-alert に ${first.old} 個`);
+    // 2. 場所: スマホは見出しの下・画面の中・入力欄と重ならない。PC は画面の右下の中
+    const place = await page.evaluate((sel: string) => {
+      const box = (q: string) => {
+        const r = document.querySelector(q)?.getBoundingClientRect();
+        return r ? { top: r.top, bottom: r.bottom, left: r.left, right: r.right } : null;
+      };
+      return { item: box(sel), top: box("#c-top-root .c-top"), composer: box("#ed > [data-composer]"), w: innerWidth, h: innerHeight };
+    }, ITEM);
+    const it = place.item;
+    if (it === null) say(2, "場所", "知らせが無い");
+    else if (vp === "phone") {
+      if (place.top === null || it.top < place.top.bottom - 0.5) say(2, "場所", `上端 ${it.top} が見出しの下端 ${String(place.top?.bottom)} より上`);
+      if (it.left < 0 || it.right > place.w) say(2, "場所", `左右 ${it.left}〜${it.right} が画面（${place.w}）の外`);
+      const c = place.composer;
+      if (c === null || !(it.bottom <= c.top || it.top >= c.bottom)) say(2, "場所", `入力欄 ${JSON.stringify(c)} と重なる（${JSON.stringify(it)}）`);
+    } else {
+      if (it.left < 0 || it.top < 0 || it.right > place.w || it.bottom > place.h) say(2, "場所", `画面の外 ${JSON.stringify(it)}`);
+      if (it.left < place.w / 2 || it.top < place.h / 2) say(2, "場所", `右下に無い ${JSON.stringify(it)}`);
+    }
+    await shot(page, `${p}-u-notice`);
+    if (Date.now() - shownAt > NOTICE_BUDGET_MS) say(1, "知らせ", `出してから撮るまで ${Date.now() - shownAt} ms（消える前に撮れていない恐れ）`);
+    await clear();
+
+    // 3. 止める（スマホだけ）: × にフォーカスが在る間は消えず、外すと 4 秒で消える。時間そのものを見るので決まった時間だけ待つ
+    if (vp === "phone") {
+      await page.evaluate((text: string) => (window as unknown as { SA: { ui: { toast: (t: string) => void } } }).SA.ui.toast(text), TEXT);
+      await page.waitForSelector(ITEM, { timeout: 5000 }).catch(() => undefined);
+      await page.focus(ITEM + ' button[aria-label="閉じる"]').catch(() => undefined);
+      await wait(4300);
+      const held = await page.evaluate((sel: string) => [...document.querySelectorAll(sel)].map((i) => i.getAttribute("data-leaving")), ITEM);
+      if (held.length !== 1 || held[0] !== null) say(3, "止める", `フォーカスの間に消えかけた（${JSON.stringify(held)}）`);
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await wait(4600);
+      const left = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, ITEM);
+      if (left !== 0) say(3, "止める", `外してから 4.6 秒後も ${left} 個残る`);
+      await clear();
+    }
+
+    // 4. 失敗: alert の側に [もう一度]・×。自動では消えない
+    const ERROR = "このチャンネルには送れません";
+    await page.evaluate((text: string) => (window as unknown as { SA: { ui: { toast: (t: string, a: null, o: unknown) => void } } }).SA.ui.toast(text, null, { level: "error", retry: () => undefined }), ERROR);
+    await page.waitForFunction(noticeHas, { role: "alert" as const, text: ERROR }, { timeout: 5000 }).catch(() => undefined);
+    const failed = await page.evaluate(() => {
+      const items = [...document.querySelectorAll('#c-notice-root .c-toast-list[role="alert"] .c-toast-item')];
+      return { count: items.length, buttons: items.flatMap((i) => [...i.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? (b.textContent ?? "").trim())) };
+    });
+    if (failed.count !== 1 || JSON.stringify(failed.buttons) !== JSON.stringify(["もう一度", "閉じる"])) say(4, "失敗", JSON.stringify(failed));
+    for (const l of await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#c-notice-root", targets: "button", toast: true })) say(4, "当たり", l);
+    await shot(page, `${p}-u-notice-error`);
+    await clear();
+
+    // 5. 確認: 部品の板が 1 つ開き、古い #dlg-confirm は開かない。フォーカスは実行のボタン。Esc で閉じて開く前の要素へ戻る
+    await page.evaluate(() => {
+      const ta = document.querySelector<HTMLTextAreaElement>("#ed > [data-composer] textarea");
+      ta?.focus();
+      const title = (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim();
+      (window as unknown as { SA: { ui: { confirm: (o: unknown) => void } } }).SA.ui.confirm({
+        title: "閉じますか",
+        target: title,
+        body: "会話を要約してから完了に移します。やることの候補があれば、ここか Discord で選んでから閉じます。",
+        ok: "閉じる",
+        run: () => undefined,
+      });
+    });
+    await page.waitForSelector("dialog.c-sheet[open]", { timeout: 5000 }).catch(() => undefined);
+    const asked = await page.evaluate(() => {
+      const open = [...document.querySelectorAll("dialog.c-sheet[open]")];
+      const a = document.activeElement;
+      return {
+        open: open.length,
+        old: document.querySelector("#dlg-confirm")?.hasAttribute("open") ?? null,
+        focus: a instanceof HTMLElement && open[0]?.contains(a) ? (a.textContent ?? "").trim() : a?.tagName ?? null,
+      };
+    });
+    if (asked.open !== 1 || asked.old !== false) say(5, "確認", `部品の板 ${asked.open}・古い確認の open ${String(asked.old)}`);
+    if (asked.focus !== "閉じる") say(5, "確認", `最初のフォーカスが「${String(asked.focus)}」（実行のボタンのはず）`);
+    await shot(page, `${p}-u-confirm`);
+    await page.keyboard.press("Escape");
+    await settled(page);
+    const closed = await page.evaluate(() => ({
+      open: document.querySelectorAll("dialog[open]").length,
+      back: document.activeElement === document.querySelector("#ed > [data-composer] textarea"),
+      tag: document.activeElement?.tagName ?? null,
+    }));
+    if (closed.open !== 0) say(5, "確認", `Esc の後も ${closed.open} 個開いている`);
+    if (!closed.back) say(5, "確認", `Esc の後のフォーカスが ${String(closed.tag)}（開く前の入力欄のはず）`);
+    return lines;
+  }
+
   async function newShell(vp: Viewport, theme: Theme, full: boolean): Promise<void> {
     const p = `${vp}-${theme}`;
     if (!newShellNames(vp, theme, full).some(wanted)) return;
@@ -3811,6 +3947,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`カードの段の検査で ${problems.length} 件`);
         });
+        // 知らせと確認の段（スマホと PC）
+        if (vp !== "tablet") {
+          await step(`${p} u`, ["notice", "notice-error", "confirm"].map((n) => `${p}-u-${n}`), async () => {
+            const problems = await noticeStage(page, vp, p);
+            for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+            if (problems.length > 0) throw new Error(`知らせと確認の段の検査で ${problems.length} 件`);
+          });
+        }
       }
       if (!full) return;
       await step(`${p} b2`, [`${p}-b-chat-permission`, `${p}-b-chat-question`], async () => {
@@ -4213,7 +4357,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         .then(() => true)
         .catch(() => false);
       if (!done) say(4, "やめた後", "5 秒たっても［やめる］が消えない");
-      await page.waitForFunction(() => (document.querySelector("#toast")?.textContent ?? "").includes("送るのをやめました"), undefined, { timeout: 5000 }).catch(() => undefined);
+      await page.waitForFunction(noticeHas, { role: "status" as const, text: "送るのをやめました" }, { timeout: 5000 }).catch(() => undefined);
       await page.waitForFunction((k: string) => (document.querySelector(k + " .c-composer-sent-text")?.textContent ?? "") !== "", K, { timeout: 5000 }).catch(() => undefined);
       await settled(page);
       console.log(`[v3-${p}] 段 cc: 状態の行の［やめる］が消えた後の焦点 ${await focusOf()}`);
@@ -4221,7 +4365,6 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const pEl = document.querySelector(c + " .c-status p");
         const ta = document.querySelector(k + " textarea");
         return {
-          toast: (document.querySelector("#toast")?.textContent ?? "").trim(),
           text: pEl?.textContent?.trim() ?? null,
           sameP: (pEl as unknown as { __m?: number } | null)?.__m === 1,
           cancels: document.querySelectorAll(c + " .c-btn").length,
@@ -4232,7 +4375,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           bar: document.querySelectorAll("#ed .cc-send-state").length,
         };
       }, { c: C, k: K });
-      if (!after.toast.includes("送るのをやめました")) say(4, "やめた後", `知らせ「${after.toast}」`);
+      const afterToast = await page.evaluate(noticeText, "status" as const);
+      if (!afterToast.includes("送るのをやめました")) say(4, "やめた後", `知らせ「${afterToast}」`);
       if (after.text !== "作業中…" || !after.sameP) say(4, "やめた後", `状態の行「${String(after.text)}」・同じ p ${after.sameP}`);
       if (after.cancels !== 0) say(4, "やめた後", `［やめる］が ${after.cancels} 個残る`);
       if (!after.sent.startsWith("本文 #") || !after.sent.endsWith("送るのをやめました")) say(4, "やめた後", `帯の文「${after.sent}」`);
@@ -4291,8 +4435,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         .catch(() => false);
       if (!gone) say(7, "許可を押す", "5 秒たってもカードが消えない");
       else console.log(`[v3-${p}] 段 cc: 許可を押してからカードが消えるまで ${Date.now() - goneAt} ms・その後の焦点 ${await focusOf()}`);
-      await page.waitForFunction(() => (document.querySelector("#toast")?.textContent ?? "").includes("許可しました"), undefined, { timeout: 5000 }).catch(() => undefined);
-      const toast = (await page.evaluate(() => document.querySelector("#toast")?.textContent ?? "")).trim();
+      await page.waitForFunction(noticeHas, { role: "status" as const, text: "許可しました" }, { timeout: 5000 }).catch(() => undefined);
+      const toast = await page.evaluate(noticeText, "status" as const);
       if (!toast.includes("許可しました")) say(7, "許可を押す", `知らせ「${toast}」`);
       if (answers !== 1) say(7, "許可を押す", `POST が ${answers} 回（1 回のはず）`);
       await offs.pop()!();
