@@ -1936,9 +1936,14 @@ test("web static: ccAsk の permit・answer・dismiss は話題の会話のタ�
   const { SA, views, posts, setReply } = loadViews();
   const ask = askOf(views);
   const turnLoads: string[] = [];
+  const ccLoads: string[] = [];
   const refreshes: string[] = [];
   SA.chat = { channelById: (id: string) => ({ id, kind: "session" }) };
-  (SA.store as { load: Record<string, unknown> }).load.turns = (id: string) => turnLoads.push(id);
+  const load = (SA.store as { load: Record<string, unknown> }).load;
+  load.turns = (id: string) => turnLoads.push(id);
+  // 話題の会話のタブからは Claude Code の一覧もセッションも読まない
+  load.ccSession = (id: string) => ccLoads.push("ccSession:" + id);
+  load.cc = () => ccLoads.push("cc");
   SA.app = { refresh: (tab: string) => refreshes.push(tab) };
   assert.equal(await ask.permit("s9", permissionRequest(80), "allow", "ch:5"), true);
   assert.equal(posts.at(-1), "/api/cc/permissions/80/allow");
@@ -1947,7 +1952,7 @@ test("web static: ccAsk の permit・answer・dismiss は話題の会話のタ�
   ask.pick(p, 1, "A", true);
   assert.equal(await ask.answer("s9", p, "ch:5"), true);
   assert.equal(await ask.dismiss("s9", questionPermission(82), "ch:5"), true);
-  assert.deepEqual(turnLoads, ["5"], "許可は会話を読み直す（質問の読み直しは会話のタブの側）");
+  assert.deepEqual(turnLoads, ["5", "5", "5"], "許可・答える・やめるのどれも会話を読み直す");
   assert.ok(refreshes.every((tab) => tab === "ch:5"));
   setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 409 })));
   assert.equal(await ask.permit("s9", permissionRequest(83), "deny", "ch:5"), false);
@@ -1956,6 +1961,31 @@ test("web static: ccAsk の permit・answer・dismiss は話題の会話のタ�
   ask.pick(p2, 1, "A", true);
   assert.equal(await ask.answer("s9", p2, "ch:5"), false);
   assert.equal(await ask.dismiss("s9", questionPermission(85), "ch:5"), false);
+  assert.deepEqual(turnLoads, ["5", "5", "5", "5", "5", "5"], "失敗しても読み直す");
+  assert.deepEqual(ccLoads, []);
+});
+
+test("web static: ccAsk の answer・dismiss は Claude Code のチャンネルの会話のタブ（kind cc の ch:<id>）・cc:<id> のタブ・tabId なしからは、今までどおりセッションと一覧を読み直す", async () => {
+  const { SA, views } = loadViews();
+  const ask = askOf(views);
+  const loads: string[] = [];
+  SA.chat = { channelById: (id: string) => ({ id, kind: "cc" }) };
+  const load = (SA.store as { load: Record<string, unknown> }).load;
+  load.turns = (id: string) => loads.push("turns:" + id);
+  load.ccSession = (id: string) => loads.push("ccSession:" + id);
+  load.cc = () => loads.push("cc");
+  const answered = (id: number) => {
+    const p = questionPermission(id);
+    ask.pick(p, 0, "赤", true);
+    ask.pick(p, 1, "A", true);
+    return p;
+  };
+  for (const tabId of ["ch:7", "cc:s9", undefined]) {
+    loads.length = 0;
+    assert.equal(await ask.answer("s9", answered(90), tabId), true, String(tabId));
+    assert.equal(await ask.dismiss("s9", questionPermission(91), tabId), true, String(tabId));
+    assert.deepEqual(loads, ["ccSession:s9", "cc", "ccSession:s9", "cc"], String(tabId));
+  }
 });
 
 test("web static: ccAsk の answer・dismiss は送っている間の 2 回目を送らず false", async () => {
@@ -6065,13 +6095,15 @@ const cardsOn = (cards: { draws: CardsCall[] }) => lastCards(cards).state.on;
 
 const CLOSE_DRAFT = { summary: "要約の 1 行\n2 行目", tasks: [{ title: "買い物" }, { title: "提出", due: "2026-11-20" }, { title: "掃除" }] };
 
-/** 会話・入力欄・カードの口を置き、話題（1）を描く。load.cc（質問の後の読み直し）も置く */
+/** 会話・入力欄・カードの口を置き、話題（1）を描く。話題のカードは Claude Code の一覧を読まないので、load.cc は呼ばれたら落ちる */
 function cardsChat(ch: Record<string, unknown> = {}, list: unknown[] = [chatTurn(10, "owner", "a")]) {
   const c = loadChat();
   const { comp } = withComposer(c);
   const { talk } = withTalk(c);
   const { SA, cards } = withCards(c);
-  (c.store.load as Record<string, unknown>).cc = () => Promise.resolve(null);
+  (c.store.load as Record<string, unknown>).cc = () => {
+    throw new Error("話題のカードから load.cc を呼ばない");
+  };
   c.put("1", list, { kind: "session", title: "t", state: "active", ...ch });
   const box = c.box();
   c.chat.render(box, "1");
@@ -6347,13 +6379,13 @@ test("web static: カードの on.answer・on.dismiss は /answer・/deny へ送
   cardsOn(cards).answer!(49);
   await c.flush();
   assert.deepEqual(c.posts.map((p) => [p.path, JSON.parse(JSON.stringify(p.body))]), [["/api/cc/permissions/49/answer", { requestHash: "qh", answers: [{ labels: ["赤"] }, { labels: ["B"] }] }]]);
-  assert.deepEqual(c.loads.slice(loads), ["1", "1"]);
+  assert.deepEqual(c.loads.slice(loads), ["1", "1", "1"], "送りの終わりの 1 回と cardOp の 2 回");
   c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active", permission: questionPermission(50, { sessionId: "sx" }) });
   c.chat.render(c.box(), "1");
   cardsOn(cards).dismiss!(50);
   await c.flush();
   assert.deepEqual(JSON.parse(JSON.stringify(c.posts[1])), { path: "/api/cc/permissions/50/deny", body: { requestHash: "qh" } });
-  assert.deepEqual(c.loads.slice(loads), ["1", "1", "1", "1"]);
+  assert.deepEqual(c.loads.slice(loads), ["1", "1", "1", "1", "1", "1"]);
 });
 
 test("web static: カードの on.close は all・none はそのまま、picked は昇順（何も選んでいなければ送らない）で、送っている間は busy。on.move は accept・keep の道", async () => {
