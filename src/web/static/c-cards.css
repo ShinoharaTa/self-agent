@@ -265,6 +265,15 @@
   text-align: left;
 }
 
+/* 状態の行。［やめる］が出入りしても行の高さは変わらない（sm のボタンの高さを下限に） */
+.c-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--c-btn-sm-h);
+}
+
 /* 細かい指し手の広い幅: 要約は 8 行で止めて中を送る・ルールは折り返す・ボタンは左から 1 行 */
 @media (min-width: 640px) and (hover: hover) and (pointer: fine) {
   .c-card-code {
