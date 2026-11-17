@@ -6970,6 +6970,90 @@ test("web static: Claude Code のチャンネルの画面の写しは、開い�
   assert.deepEqual(cardKeys(h.cards), ["note:ended"]);
 });
 
+type CompSent = { id: number; text: string; tone: string; cancel: boolean; busy: boolean } | null;
+const compSent = (comp: { draws: ComposerCall[] }): CompSent => JSON.parse(JSON.stringify((lastComp(comp).state as unknown as { sent: CompSent }).sent ?? null)) as CompSent;
+
+test("web static: 入力欄の部品の道では古い帯（.cc-send-state）を作らず、Claude Code のチャンネルの入力欄の state に sent と on.cancel が在る（話題には無い）", () => {
+  const h = ccCardsChat({ pending: ccPend(3, "delivered", { replyState: "posted" }) });
+  assert.equal(h.box.querySelectorAll(".cc-send-state").length, 0);
+  const st = lastComp(h.comp).state as unknown as { sent: CompSent; on: Record<string, unknown> };
+  assert.deepEqual(Object.keys(st.on).sort(), ["cancel", "input", "send"]);
+  assert.deepEqual(compSent(h.comp), { id: 3, text: "本文 #3: 届けました・返事が来ました", tone: "done", cancel: false, busy: false });
+  const s = cardsChat();
+  const sst = lastComp(s.comp).state as unknown as Record<string, unknown>;
+  assert.equal("sent" in sst, false);
+  assert.deepEqual(Object.keys(sst.on as object).sort(), ["input", "send"]);
+});
+
+test("web static: 入力欄の sent は状態の行が届け待ち・届けたを出している間は null で、ほかは ccSend.note の文と色（終わったセッションの届け待ちは［やめる］）", () => {
+  const h = ccCardsChat();
+  const note = (h.SA.views as { ccSend: { note: (p: unknown) => Record<string, unknown> | null } }).ccSend.note;
+  for (const cc of [
+    { pending: ccPend(3, "queued") },
+    { pending: ccPend(3, "delivering") },
+    { state: "running", pending: ccPend(3, "queued") },
+    { pending: ccPend(3, "delivered", { replyState: "waiting" }) },
+    {},
+  ]) {
+    h.draw(cc);
+    assert.equal(compSent(h.comp), null, JSON.stringify(cc));
+  }
+  const cases: Array<[Record<string, unknown>, string, string, boolean]> = [
+    [{ pending: ccPend(3, "cancelled") }, "本文 #3: 送るのをやめました", "", false],
+    [{ pending: ccPend(3, "delivered", { replyState: "posted" }) }, "本文 #3: 届けました・返事が来ました", "done", false],
+    [{ state: "running", pending: ccPend(3, "delivered", { replyState: "waiting" }) }, "本文 #3: 届けました・返事を待っています", "done", false],
+    [{ pending: ccPend(3, "gave_up") }, "本文 #3: 入力待ちにならなかったため、届けるのをやめました", "warning", false],
+    [{ state: "ended", pending: ccPend(3, "queued") }, "本文 #3: 届け待ち。入力待ちになったら届けます", "", true],
+  ];
+  for (const [cc, text, tone, cancel] of cases) {
+    h.draw(cc);
+    assert.deepEqual(compSent(h.comp), { id: 3, text, tone, cancel, busy: false }, text);
+    assert.deepEqual(JSON.parse(JSON.stringify(note(cc.pending))), { id: 3, text, tone, cancel }, "ccSend.note と同じ");
+  }
+  // セッションが無いチャンネルには出さない
+  h.draw({ sessionId: undefined, pending: ccPend(3, "cancelled") });
+  assert.equal(compSent(h.comp), null);
+});
+
+test("web static: 入力欄の帯の on.cancel は状態の行と同じ道で送り、送っている間と読み直すまで busy。押した時は入力欄だけを描き直す", async () => {
+  const h = ccCardsChat({ state: "ended", pending: ccPend(3, "queued") });
+  const held = holdPost(h.c);
+  h.ctl.hold = true;
+  const counts = [h.comp.draws.length, h.talk.draws.length, h.cards.draws.length];
+  const on = lastComp(h.comp).state.on as unknown as { cancel: (id: number) => void };
+  on.cancel(3);
+  on.cancel(3);
+  assert.deepEqual(held.map((x) => x.path), ["/api/cc/sends/3/cancel"]);
+  assert.equal(h.comp.draws.length, counts[0]! + 2, "2 回とも入力欄を描く");
+  assert.equal(h.talk.draws.length, counts[1], "会話は描かない");
+  assert.equal(compSent(h.comp)!.busy, true);
+  held[0]!.resolve({});
+  await h.c.flush();
+  await h.release();
+  h.draw({ state: "ended", pending: ccPend(3, "queued") });
+  assert.equal(compSent(h.comp)!.busy, true, "2 回目の読み直しの前");
+  await h.release();
+  h.draw({ state: "ended", pending: ccPend(3, "queued") });
+  assert.equal(compSent(h.comp)!.busy, false);
+  assert.deepEqual(h.ccLoads, ["s1", "quiet:s1", "quiet:s1"]);
+  // id が違えば送らない
+  on.cancel(4);
+  await h.c.flush();
+  assert.equal(held.length, 1);
+});
+
+test("web static: Claude Code のチャンネルで入力欄の口が描けなければ古い帯（.cc-send-state）を今の条件で出し、状態の行と要求は部品のまま", () => {
+  const h = ccCardsChat({ pending: ccPend(3, "cancelled"), permission: ccPermissionOf(7) });
+  h.comp.ok = false;
+  h.draw({ pending: ccPend(3, "cancelled"), permission: ccPermissionOf(7) });
+  assert.equal(h.box.querySelectorAll("div.cc-send-state").length, 1);
+  assert.deepEqual(cardKeys(h.cards), ["permission:7"]);
+  // 状態の行が届け待ちを出している間は古い帯も出さない
+  h.draw({ pending: ccPend(3, "queued") });
+  assert.equal(h.box.querySelectorAll("div.cc-send-state").length, 0);
+  assert.deepEqual(cardKeys(h.cards), ["status:cc"]);
+});
+
 // ===== M2b のレビューの直し =====
 test("web static: v3 のシートを開くと、最初の押せる行に焦点がある（× でも押せない行でもない）", async () => {
   const h = loadShell();
