@@ -10,6 +10,8 @@ import { createChannelResolver } from "../src/app/access.ts";
 import type { RunningTurn, SubmitTextResult } from "../src/app/handler.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
 import type { AgentRunner } from "../src/agent/runner.ts";
+import { permissionHistoryText } from "../src/cc/channel-posts.ts";
+import { CC_CHANNEL_ENDED_TEXT } from "../src/cc/channels.ts";
 import type { CcAnswerResult } from "../src/cc/permission-hold.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { CcCancelResult } from "../src/cc/sender.ts";
@@ -537,6 +539,8 @@ function seedCc(
   nextChannelId: () => string,
 ) {
   const holdSec = 3600;
+  const ASK_TOOL = "Bash";
+  const ASK_SUMMARY = "npm update --save";
   const channelStore = new CcChannelStore(db);
   const sends = new CcSendStore(db);
   const permissions = new CcPermissionStore(db);
@@ -567,6 +571,12 @@ function seedCc(
   say(ended, "owner", "秋の記事の見出しを考えて");
   say(ended, "agent", "見出しを 5 つ考えました。");
   say(ended, "owner", "ありがとう");
+  // 本体が Web の会話に残す知らせの行（許可の要求を出したとき・セッションが終わったとき）と同じ文・同じ kind・source
+  const notice = (channelId: string, text: string): void => {
+    history.add({ guildId: GUILD, channelId, kind: "notice", source: "system", text });
+  };
+  notice(ask, permissionHistoryText({ toolName: ASK_TOOL, summary: ASK_SUMMARY, questionInput: null }));
+  notice(ended, CC_CHANNEL_ENDED_TEXT);
   for (const channelId of [queue, ask, ended]) {
     const rows = history.list(channelId, { limit: 200 });
     reads.advance(channelId, Math.max(0, ...rows.map((row) => row.id)));
@@ -576,7 +586,7 @@ function seedCc(
     for (const row of sends.listQueuedFor(CC_A)) sends.transition(row.id, ["queued"], "cancelled");
     sends.add({ sessionId: CC_A, text: "README にも書いて", origin: "web", state: "queued", channelId: queue });
     for (const row of permissions.listPending()) if (row.sessionId === CC_B) permissions.resolve(row.id, "expired", null);
-    permissions.add({ sessionId: CC_B, requestHash: "shots-h1", toolName: "Bash", summary: "npm update --save", permissionMode: "default", state: "pending" });
+    permissions.add({ sessionId: CC_B, requestHash: "shots-h1", toolName: ASK_TOOL, summary: ASK_SUMMARY, permissionMode: "default", state: "pending" });
   };
   reset();
 
@@ -628,7 +638,7 @@ function seedCc(
   return {
     store: channelStore,
     fixture: { queue, ask, ended, reset },
-    status: () => ({ ...CC_STATUS_DISABLED, enabled: true, hookPort: true, tmux: "ok" as const, multilineOk: true, pendingPermissions: permissions.countPending("hook") }),
+    status: () => ({ ...CC_STATUS_DISABLED, enabled: true, hookPort: true, tmux: "ok" as const, multilineOk: true, pendingPermissions: permissions.countPending("hook"), unifyReady: true }),
     topics: { registry, channels: channelStore, permissions, sends, starts, holdSec, questionHoldSec: holdSec },
     channels: { store: channelStore, describe },
     turns: { store: channelStore, channels: { submitWeb: async () => ({ ok: false as const, reason: "stopped" as const }) }, registry },
