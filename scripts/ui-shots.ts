@@ -232,9 +232,14 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
   return lines;
 }
 
-/** 知らせ（部品の #c-notice-root）の文。role は status（知らせ）か alert（失敗）。ブラウザの中で動く */
+/**
+ * 知らせの文。role は status（知らせ）か alert（失敗）。ブラウザの中で動く。
+ * 部品の #c-notice-root と、口が描けなかったときの古い入れ物（#toast・#toast-alert）の両方を読む（「知らせが出ない」の検査が古い道で空振りしない）
+ */
 function noticeText(role: "status" | "alert"): string {
-  return (document.querySelector(`#c-notice-root .c-toast-list[role="${role}"]`)?.textContent ?? "").trim();
+  const part = document.querySelector(`#c-notice-root .c-toast-list[role="${role}"]`)?.textContent ?? "";
+  const old = document.querySelector(role === "alert" ? "#toast-alert" : "#toast")?.textContent ?? "";
+  return (part + old).trim();
 }
 
 /** 知らせの文に text が在るか（text が空なら何か在るか）。waitForFunction に渡す */
@@ -3003,7 +3008,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           // 前の失敗は × を押して消す（部品の DOM を外から外さない）
           for (const b of document.querySelectorAll<HTMLButtonElement>('#c-notice-root .c-toast-list[role="alert"] .c-toast-item button[aria-label="閉じる"]')) b.click();
         });
-        await page.waitForFunction(() => document.querySelector('#c-notice-root .c-toast-list[role="alert"] .c-toast-item') === null, undefined, { timeout: 5000 }).catch(() => undefined);
+        // 前の失敗が残ると、後の「知らせの文」の検査が古い知らせで通ってしまうので、消えなければ知らせる
+        const cleared = await page
+          .waitForFunction(() => document.querySelector('#c-notice-root .c-toast-list[role="alert"] .c-toast-item') === null, undefined, { timeout: 5000 })
+          .then(() => true, () => false);
+        if (!cleared) say(12, "送る", `${how}: 前の失敗の知らせが × で消えない`);
         const from = logLines.length;
         await press();
         await page.waitForFunction(noticeHas, { role: "alert" as const, text: "" }, { timeout: 5000 }).catch(() => undefined);
