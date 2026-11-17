@@ -408,6 +408,12 @@
     return null;
   }
 
+  /** 送った本文の帯を出すか（セッションが在り、状態の行が同じ送信の状態（届け待ち・届けた）を出していない）。古い帯と入力欄の部品の帯で同じ判定 */
+  function ccBandShown(live) {
+    const s = ccStatusOf(live);
+    return !!live.sessionId && !(s && (s.kind === "queued" || s.kind === "delivered"));
+  }
+
   /** チャンネルごとの、前に描いた状態の行（種類・pending の id・[やめる] の有無が同じなら使い回す） */
   const ccStatusNodes = new Map();
 
@@ -1204,10 +1210,18 @@
     return "ここに送る";
   }
 
-  /** 部品に渡す state。本文の持ち主は SA.app.draft。on は channelId だけを閉じ込める */
+  /** Claude Code のチャンネルの送った本文の帯（出さなければ null）。届け待ちなら［やめる］で、押した後は読み直すまで busy */
+  function ccSentOf(ch) {
+    const live = ccLive(ch);
+    if (!ccBandShown(live)) return null;
+    const note = SA.views.ccSend.note(live.pending);
+    return note ? Object.assign(note, { busy: cardBusy.has("send:" + note.id) }) : null;
+  }
+
+  /** 部品に渡す state。本文の持ち主は SA.app.draft。on は channelId だけを閉じ込める。Claude Code のチャンネルは送った本文の帯（sent）と on.cancel も */
   function composerState(channelId, ch) {
     const text = SA.app.draft(channelId);
-    return {
+    const state = {
       text,
       count: text.trim().length,
       max: MESSAGE_MAX,
@@ -1221,6 +1235,11 @@
         send: () => composerSend(channelId),
       },
     };
+    if (ch && ch.kind === "cc") {
+      state.sent = ccSentOf(ch);
+      state.on.cancel = (sendId) => cancelSend(channelId, sendId);
+    }
+    return state;
   }
 
   /** 部品の入力欄の根（data-composer で引く。描いていなければ null） */
@@ -1652,10 +1671,8 @@
       if (!cards && live.state === "ended") {
         timeline.append(el("p", { class: "tl-hint", text: CC_ENDED_TEXT }));
       }
-      // 行が同じ送信の状態（届け待ち・届けた）を出している間は、入力欄の上の帯を出さない（種類は状態の行と同じ判定から取る）
-      const status = ccStatusOf(live);
-      const statusKind = status ? status.kind : null;
-      ccPending = live.sessionId && !(statusKind === "queued" || statusKind === "delivered") ? SA.views.ccPendingBar(live.sessionId, live.pending) : null;
+      // 行が同じ送信の状態（届け待ち・届けた）を出している間は、入力欄の上の帯を出さない。入力欄の部品の道では、帯は部品が描く
+      ccPending = !comp && ccBandShown(live) ? SA.views.ccPendingBar(live.sessionId, live.pending) : null;
     } else if (!cards && ch && ch.kind === "session" && ch.permission && typeof ch.permission.id === "number") {
       // プロジェクトのセッション（docs/plan/unify.md §6.1 の 5）の許可の要求。Claude Code のチャンネルと同じカード・同じ /api/cc/permissions/<id>/*
       const p = ch.permission;
@@ -1714,7 +1731,7 @@
       dropComposerRoots(container, comp);
       compRoot = el("div", { "data-composer": channelId });
     }
-    // 送った本文の状態（Claude Code のチャンネル。[やめる]）は入力欄の上
+    // 送った本文の状態（Claude Code のチャンネル。[やめる]）は入力欄の上（入力欄の部品の道では部品の中）
     SA.views.placeChildren(container, [top ? null : header(ch, channelId, frame), scroll, ccPending, comp ? compRoot : kept || composer(ch, channelId, frame)]);
     // 置いてから描く（根が画面に付いた後）。入力欄を先に描く（描けずにやり直すとき、会話の描き直しを二重にしない）。描けなければ古い描き方で描き直す
     if (comp && !comp.draw(compRoot, composerState(channelId, ch))) {

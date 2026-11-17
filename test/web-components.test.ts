@@ -2429,6 +2429,12 @@ test("web components: composerModel の sent（無い・文が空・文字列で
   assert.deepEqual([(m({ cancel: 1, busy: "y" }) as Obj).cancel, (m({ cancel: 1, busy: "y" }) as Obj).busy], [true, true]);
 });
 
+test("web components: composerModel の sent の cancel は id が数のときだけ true（id が無い・文字列では［やめる］を出さない）", () => {
+  const cancelOf = (sent: Obj): unknown => (composer.composerModel(composerState({ sent: { text: "本文 #1: 届け待ち", cancel: true, ...sent } })).sent as Obj).cancel;
+  assert.equal(cancelOf({ id: 1 }), true);
+  for (const id of [undefined, null, "1"]) assert.equal(cancelOf({ id }), false, String(id));
+});
+
 test("web components: Composer の帯はいつも最初の子（key=sent・aria-live=polite）で、無いときは子が 0。在れば文と data-tone、cancel なら［やめる］（ghost・sm・理由なし）で on.cancel(id)、busy では呼ばない", () => {
   const sentOf = (sent: unknown, on: Obj = composerRec().on): { v: RawNode; box: El } => {
     const v = composerTree(composerState({ text: "下書き", count: 3, sent }), on as never) as RawNode;

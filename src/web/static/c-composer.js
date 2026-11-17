@@ -14,7 +14,7 @@ const str = (v) => (typeof v === "string" ? v : "");
 /**
  * 入力欄のモデル（純粋）。state: { text, count（送る本文の字数。前後の空白を除く）, max, sending, touch, label, placeholder, note, sent }。
  * 字数は残りが COMPOSER_NEAR を切ってから出し（超えた後も出る）、上限を超えても［送る］は押せる。
- * sent は送った本文の帯（{ id, text, tone, cancel, busy }。文が空・文字列でなければ null。tone は done・warning のほかは ""）
+ * sent は送った本文の帯（{ id, text, tone, cancel, busy }。文が空・文字列でなければ null。tone は done・warning のほかは ""。cancel は id が数のときだけ）
  */
 export function composerModel(state) {
   const text = str(state.text);
@@ -48,7 +48,8 @@ function sentOf(sent) {
   const text = str(sent.text);
   if (text === "") return null;
   const tone = sent.tone === "done" || sent.tone === "warning" ? sent.tone : "";
-  return { id: sent.id, text, tone, cancel: !!sent.cancel, busy: !!sent.busy };
+  // ［やめる］は送りの id が数のときだけ（on.cancel に id の無い押しを渡さない）
+  return { id: sent.id, text, tone, cancel: !!sent.cancel && typeof sent.id === "number", busy: !!sent.busy };
 }
 
 /** Enter で送るか（純粋）。変換の途中（isComposing・keyCode 229）は送らない。Ctrl・⌘ 付きはいつも、ほかは Shift なしでタッチが主でないときだけ */
