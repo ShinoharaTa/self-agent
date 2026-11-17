@@ -5799,6 +5799,12 @@ test("web static: 右腕の枠（frame）も SA.talk が在れば口で描き、
   assert.deepEqual([plain.fmt.reply, plain.fmt.refs], [null, null]);
   plain.on.ref!("ch:5");
   assert.deepEqual(opened, ["ch:5"]);
+  // 枠で描いたチャンネルを枠なしで描き直すと、枠を忘れる
+  c.chat.render(c.box(), "1");
+  const again = talk.draws.at(-1)!.state;
+  assert.deepEqual([again.fmt.reply, again.fmt.refs], [null, null]);
+  again.on.ref!("ch:5");
+  assert.deepEqual(opened, ["ch:5"]);
   // 描けなければ古い .msg と札の DOM
   talk.ok = false;
   const broken = c.box();
