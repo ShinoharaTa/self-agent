@@ -36,6 +36,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-talk.css": /^\.c-(?:talk|msg|bubble|md|steps|run|notice|divider|refs|ref)(?![a-z])/,
   "c-composer.css": /^\.c-composer(?![a-z])/,
   "c-cards.css": /^\.c-(?:cards|card|note|status)(?![a-z])/,
+  "c-hand.css": /^\.c-hand(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
 };
 
@@ -179,8 +180,8 @@ const partProblems = (name: string, text: string): string[] => forbidden(name, t
 const entryProblems = (name: string, text: string): string[] => forbidden(name, text, ENTRY_WORDS, ENTRY_PARTS);
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-cards.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -255,7 +256,7 @@ test("web components: 入口の TOP_FULL_MIN は tokens.css の --c-top-full-min
   assert.doesNotMatch(app, /v3-main/);
 });
 
-test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer・c-cards は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer・c-cards・c-sheet だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-cards・c-app は hook なし）・動的な import と createPortal が無い", () => {
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer・c-cards・c-hand は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer・c-cards・c-sheet だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-cards・c-hand・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
     "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
@@ -264,6 +265,7 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     "c-talk.js": ["./c-lib.js", "./c-atoms.js"],
     "c-composer.js": ["./c-lib.js", "./c-atoms.js"],
     "c-cards.js": ["./c-lib.js", "./c-atoms.js"],
+    "c-hand.js": ["./c-lib.js", "./c-atoms.js"],
     "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js", "./c-composer.js", "./c-cards.js", "./c-sheet.js"],
   };
   for (const [name, targets] of Object.entries(allowed)) {
@@ -272,13 +274,13 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
     assert.equal(dynamic, false, `${name}: 動的な import`);
   }
-  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
+  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
-test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）とカード（c-cards）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄とカードは動きを付けず、会話は実行中の輪だけ", () => {
+test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）とカード（c-cards）と右腕（c-hand）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄とカードと右腕は動きを付けず、会話は実行中の輪だけ。下のバーと右腕は position の fixed・absolute を書かない", () => {
   // 部品は id を出さない（モデルのキー id: や data-topic=${id} は当たらない）
-  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
+  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
   // 部品の色・高さ・字を外から変えない（印の位置・PC の [+] の当たりを戻す・下のバーの並べ方だけ）
   const ALLOWED_OUTSIDE = new Set([".c-turn > .c-mark", '.c-group-head > .c-iconbtn[data-size="sm"]::after', '.c-bottom > .c-btn[data-size="sm"]']);
   // K2 の部品のクラス（c-atoms.css・c-sheet.css のセレクタに出る全部。その下のクラスも）は外から宛てない
@@ -294,7 +296,7 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
     if (/(?:^|; ?)(?:animation|transition)(?:-[a-z-]+)?\s*:/.test(rule.body)) assert.deepEqual(rule.selectors, [".c-run-spin"], `c-talk.css: ${rule.selectors.join(",")}`);
   }
   assert.equal((stripCssComments(read("c-talk.css")).match(/@keyframes\b/g) ?? []).length, 1, "c-talk.css: @keyframes は 1 つ");
-  for (const name of ["c-list.css", "c-shell.css", "c-composer.css", "c-cards.css"]) {
+  for (const name of ["c-list.css", "c-shell.css", "c-composer.css", "c-cards.css", "c-hand.css"]) {
     if (!CSS_FILES.includes(name)) continue;
     const rules = parseCss(read(name));
     for (const rule of rules) {
@@ -310,6 +312,7 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
     assert.match(shell, /env\(safe-area-inset-bottom/);
     assert.doesNotMatch(shell, /position:\s*(?:fixed|absolute)/);
   }
+  if (CSS_FILES.includes("c-hand.css")) assert.doesNotMatch(stripCssComments(read("c-hand.css")), /position:\s*(?:fixed|absolute)/, "c-hand.css");
 });
 
 test("web components: 下のバーの自前のボタンは当たりの下限を持つ", () => {
@@ -2014,7 +2017,7 @@ test("web components: talkModel: fmt.reply は Bot の返事の本文だけを�
   assert.deepEqual(talk.refsOf([{ id: "a", title: "A", meta: 3 }, { id: "b", title: "B", meta: "m" }]), [{ id: "a", title: "A", meta: "" }, { id: "b", title: "B", meta: "m" }]);
 });
 
-test("web components: Refs は Node で呼べる: 札は group と題の名前・meta が空なら span を作らない・［開く］で onOpen(id)。TalkRows の札の行は on.ref(id)（無ければ何もしない）", () => {
+test("web components: Refs と HandHead は Node で呼べる: 札は group と題の名前・meta が空なら span を作らない・［開く］で onOpen(id)（TalkRows の札の行は on.ref(id)。無ければ何もしない）。見出しは h2 と data-act（menu は menu のときだけ）・［畳む］で on.close()", async () => {
   // press は後ろ（カードの節）で宣言されるので、ここでは自前で押す
   const tap = (b: El | undefined): void => (b?.props.onClick as (e: unknown) => void)(fakeEvent());
   const opened: unknown[] = [];
@@ -2038,6 +2041,29 @@ test("web components: Refs は Node で呼べる: 札は group と題の名前�
   tap(find(expand(talk.TalkRows({ older: false, items, on: { ref: (id: unknown) => got.push(id) } })), "c-btn")[0]);
   assert.deepEqual(got, ["t9"]);
   tap(find(expand(talk.TalkRows({ older: false, items, on: {} })), "c-btn")[0]);
+  // 右腕の見出し（c-hand.js）
+  const hand = (await import(new URL("../src/web/static/c-hand.js", import.meta.url).href)) as Record<string, Fn>;
+  const handCalls: unknown[][] = [];
+  const handOn = { menu: (opener: unknown) => void handCalls.push(["menu", opener]), close: (...a: unknown[]) => void handCalls.push(["close", ...a]) };
+  const head = one(html`<${hand.HandHead} title="右腕" menu=${true} on=${handOn} />`);
+  assert.deepEqual([head.type, head.props.class], ["header", "c-hand-head"]);
+  assert.deepEqual(head.children.map((c) => [(c as El).type, (c as El).props.class, (c as El).props["data-act"]]), [["h2", "c-hand-title", undefined], ["span", "c-hand-act", "menu"], ["span", "c-hand-act", "close"]]);
+  assert.equal(textOf(find(head, "c-hand-title")), "右腕");
+  const menuBtn = find(head, "c-iconbtn")[0] as El;
+  assert.equal(menuBtn.props["aria-label"], "ほかの操作");
+  const ev = fakeEvent();
+  (menuBtn.props.onClick as (e: unknown) => void)(ev);
+  const close = find(head, "c-btn")[0] as El;
+  assert.deepEqual([close.props["data-kind"], close.props["data-size"], textOf(close)], ["ghost", "sm", "畳む"]);
+  tap(close);
+  assert.deepEqual(handCalls, [["menu", ev.currentTarget], ["close"]]);
+  const v2 = hand.HandHead({ title: "右腕", menu: true, on: handOn }) as VNode;
+  assert.deepEqual(keysOf(v2.props.children), ["title", "menu", "close"]);
+  for (const menu of [false, undefined]) {
+    const bare = one(html`<${hand.HandHead} title="右腕" menu=${menu} on=${handOn} />`);
+    assert.deepEqual(bare.children.map((c) => (c as El).props["data-act"]), [undefined, "close"]);
+    assert.equal(find(bare, "c-iconbtn").length, 0);
+  }
 });
 
 const bubbleOf = (o: Obj = {}): Obj => ({

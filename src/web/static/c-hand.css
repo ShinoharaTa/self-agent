@@ -1,0 +1,34 @@
+/* 右腕の部品（c-hand.js。docs/plan/web-ui-components.md §6 の K6）。寸法は tokens.css の --c-*、色は tokens.css の変数、字と間隔は base.css の目盛りだけ。動きは無い */
+
+/* 見出し。高さ・地・下の線は会話の見出し（c-shell.css の .c-top）と同じ。［‹］が無いので左の内側は会話の左端（--c-gutter）に揃える */
+.c-hand-head {
+  display: flex;
+  align-items: center;
+  flex: none;
+  box-sizing: border-box;
+  height: var(--c-bar-h);
+  gap: var(--space-1);
+  padding: 0 var(--space-2) 0 var(--c-gutter);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-sm);
+  line-height: var(--leading-normal);
+  box-shadow: inset 0 calc(-1 * var(--border-width)) 0 0 var(--border);
+  overflow: hidden;
+}
+
+.c-hand-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--font-base);
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.c-hand-act {
+  flex: none;
+  display: inline-flex;
+}
