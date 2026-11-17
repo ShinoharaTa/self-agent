@@ -1,6 +1,6 @@
 // 「あなたの番」のカードの部品（docs/plan/web-ui-components.md §6 の K5）: 1 つの枠 Card と、その上の許可・質問・閉じる前の確認・場所を変える確認のカード、待ちの行と文（Note）、状態の行と［やめる］（StatusRow）、並び（Cards）と口（cardsMouth）。
 // hook を使わない（Node から関数として呼べる）。文は全部呼ぶ側が作って渡す（時刻・モード・番号を組まない）。選び方の決まりを持たず、起きた事を on に伝えるだけ。
-// 押せない形は Button の disabled と reason（回る輪は使わない）。クラスは固定の文字列、状態は data-* と aria-*
+// 押せない形は Button の disabled と reason（回る輪は状態の行の［やめる］の busy だけ）。クラスは固定の文字列、状態は data-* と aria-*
 import { html } from "./c-lib.js";
 import { Button } from "./c-atoms.js";
 
