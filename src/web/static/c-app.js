@@ -4,12 +4,14 @@
 // 会話の行（K4）は chat.js が根と state を SA.talk.draw(root, state)・1 秒ごとは SA.talk.tick(root, state) で押し込む（覚えと刻みは c-talk.js の talkMouth）
 // 会話の入力欄（K5）は chat.js が根と state を SA.composer.draw(root, state) で押し込み、送った後の空は SA.composer.set(root, "")（欄の要素と本文の覚えは c-composer.js の composerMouth）
 // 「あなたの番」のカード（K5）は chat.js が根と state を SA.cards.draw(root, state) で押し込み、「その他」の欄への焦点は SA.cards.focus(root, id, index)（「その他」の本文の覚えは c-cards.js の cardsMouth）
+// 知らせと確認（K6）は ui.js が SA.notice.draw(state)・SA.ask.draw(state) で押し込む（状態とタイマーは ui.js が持ち、ここは描くだけ）
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
 import { talkMouth } from "./c-talk.js";
 import { composerMouth } from "./c-composer.js";
 import { cardsMouth } from "./c-cards.js";
+import { Confirm, Toast } from "./c-sheet.js";
 
 const listRoot = document.getElementById("c-list-root");
 
@@ -333,4 +335,53 @@ if (listRoot) {
   window.SA.talk = { draw: drawTalk, tick: tickTalk, drop: dropTalk };
   window.SA.composer = { draw: drawComposer, set: setComposer, focus: focusComposer, drop: dropComposer };
   window.SA.cards = { draw: drawCards, focus: focusCards, drop: dropCards };
+}
+
+/** 知らせの入れ物。無ければ null（口を置かない。ui.js は古い #toast に出す） */
+const noticeRoot = document.getElementById("c-notice-root");
+/** 確認の入れ物。無ければ null（口を置かない。ui.js は古い #dlg-confirm を開く） */
+const askRoot = document.getElementById("c-ask-root");
+
+if (noticeRoot) {
+  /** 知らせを描く。state は { items, on: { dismiss(id), hold(id, kind, on), left(id) } }。描けなければ false（ui.js が古い描き方に戻す） */
+  const drawNotice = (state) => {
+    try {
+      render(html`<${Toast} items=${state.items} onDismiss=${state.on.dismiss} onHold=${state.on.hold} onLeft=${state.on.left} />`, noticeRoot);
+    } catch (error) {
+      // 名前だけ（message・stack は本文を含むことがあるので出さない）
+      console.error("[web] notice draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    return true;
+  };
+  window.SA = window.SA || {};
+  window.SA.notice = { draw: drawNotice };
+}
+
+if (askRoot) {
+  /** 確認を描く。state は { open, title, target, body, okLabel, danger, on: { ok(), cancel() } }。描けなければ false */
+  const drawAsk = (state) => {
+    try {
+      render(
+        html`<${Confirm}
+          open=${state.open}
+          id="c-ask"
+          title=${state.title}
+          target=${state.target}
+          body=${state.body}
+          okLabel=${state.okLabel}
+          danger=${state.danger}
+          onOk=${state.on.ok}
+          onCancel=${state.on.cancel}
+        />`,
+        askRoot,
+      );
+    } catch (error) {
+      console.error("[web] ask draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    return true;
+  };
+  window.SA = window.SA || {};
+  window.SA.ask = { draw: drawAsk };
 }

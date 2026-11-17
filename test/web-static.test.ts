@@ -2385,11 +2385,11 @@ function appKeys(js: string): string[] {
   return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
 }
 
-test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-list → c-shell → c-talk → c-composer → c-cards、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
+test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
   const html = read("v3.html");
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
-  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css", "/static/c-cards.css"]);
+  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-sheet.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css", "/static/c-cards.css"]);
   // module は元から後回し（defer を書かない）。文書の順で topics.js の後・shell.js の前に動く
   const scripts = [...html.matchAll(/<script (?:type="module" )?src="([^"]+)"( defer)?><\/script>/g)].map((m) => [m[1], m[0].includes('type="module"') ? "module" : m[2] ? "defer" : "none"]);
   assert.deepEqual(scripts, [
@@ -2409,7 +2409,7 @@ test("web static: v3.html の読み込みの順（base → tokens → app → sh
   assert.equal(asIndex, headOf(read("index.html")));
 });
 
-test("web static: v3.html に inline の script・style・style 属性が無く、ui.js が引く id（dlg-confirm と中の 5 つ・toast・toast-alert・ed）がある", () => {
+test("web static: v3.html に inline の script・style・style 属性が無く、ui.js が引く id（dlg-confirm と中の 5 つ・toast・toast-alert・ed）と、知らせ・確認の部品の根（#v3 の外）がある", () => {
   const html = read("v3.html");
   assert.doesNotMatch(html, /<style\b/i);
   assert.doesNotMatch(html, /\sstyle=/i);
@@ -2420,6 +2420,12 @@ test("web static: v3.html に inline の script・style・style 属性が無く�
   }
   assert.match(html, /<body>\s*<a class="skip-link" href="#ed">本文へ<\/a>/);
   assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
+  // 知らせ・確認の部品の根は body の直下（#v3 の inert・重なりの外）
+  const shell = html.slice(html.indexOf('<div class="v3" id="v3"'), html.indexOf('<dialog id="v3-sheet"'));
+  for (const id of ["c-notice-root", "c-ask-root"]) {
+    assert.match(html, new RegExp(`<div class="v3-slot" id="${id}"></div>`), id);
+    assert.equal(shell.includes(id), false, id);
+  }
 });
 
 test("web static: v3.html に今の画面の作る口が無い", () => {
