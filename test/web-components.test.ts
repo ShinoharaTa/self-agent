@@ -35,7 +35,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-shell.css": /^\.c-(?:bottom|top)(?![a-z])/,
   "c-talk.css": /^\.c-(?:talk|msg|bubble|md|steps|run|notice|divider)(?![a-z])/,
   "c-composer.css": /^\.c-composer(?![a-z])/,
-  "c-cards.css": /^\.c-(?:cards|card|note)(?![a-z])/,
+  "c-cards.css": /^\.c-(?:cards|card|note|status)(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
 };
 
@@ -2801,6 +2801,53 @@ test("web components: Note は busy のときだけ role=status・data-busy（ar
   assert.ok(!("aria-busy" in busy.props) || busy.props["aria-busy"] === undefined, "待ちの行に aria-busy は無い");
   const plain = one(cards.Note({ text: "まだ会話はありません。" }));
   for (const name of ["role", "aria-busy", "data-busy"]) assert.ok(!(name in plain.props) || plain.props[name] === undefined, name);
+});
+
+test("web components: StatusRow の木（div.c-status の中の p.c-note[role=status][data-busy=true]。aria-busy は付けない）と子の key、cancel が無い・オブジェクトでなければボタンが無い", () => {
+  const raw = (cancel: unknown): RawNode => cards.StatusRow({ item: { kind: "status", id: "cc", text: "作業中…", cancel }, on: {} }) as RawNode;
+  for (const cancel of [null, undefined, true, 3, "x"]) {
+    const v = raw(cancel);
+    assert.deepEqual([v.type, v.props.class], ["div", "c-status"], String(cancel));
+    assert.deepEqual(keysOf(v.props.children), ["text"], String(cancel));
+    const el = one(v);
+    assert.equal(find(el, "c-btn").length, 0, String(cancel));
+    const [p] = kidsOf(el);
+    assert.deepEqual([p?.type, p?.props.class, p?.props.role, p?.props["data-busy"], textOf(p as El)], ["p", "c-note", "status", "true", "作業中…"]);
+    assert.ok(!("aria-busy" in (p as El).props) || (p as El).props["aria-busy"] === undefined, "状態の行に aria-busy は無い");
+  }
+  assert.equal(textOf(one(cards.StatusRow({ item: { kind: "status", id: "cc", text: 5, cancel: null }, on: {} }))), "", "文字列でない文は空");
+  assert.deepEqual(keysOf((raw({ id: 4, busy: false }) as RawNode).props.children), ["text", "cancel"]);
+});
+
+test("web components: StatusRow の［やめる］は ghost・sm・押せない理由なしで、押すと on.cancel(取り消す物の id) を 1 回。busy では輪を出して呼ばない", () => {
+  const calls: unknown[][] = [];
+  const on = { cancel: (...a: unknown[]): void => void calls.push(["cancel", ...a]) };
+  const row = (busy: boolean): El => one(cards.StatusRow({ item: { kind: "status", id: "cc", text: "届け待ちです。入力待ちになったら届けます", cancel: { id: 14, busy } }, on }));
+  const idle = row(false);
+  assert.deepEqual(btnsOf(idle), [["ghost", "やめる"]]);
+  const [b] = find(idle, "c-btn");
+  assert.equal(b?.props["data-size"], "sm");
+  for (const name of ["aria-disabled", "aria-busy", "title"]) assert.ok(!(name in (b as El).props) || (b as El).props[name] === undefined, name);
+  press(b);
+  assert.deepEqual(calls, [["cancel", 14]]);
+  const busy = row(true);
+  const [bb] = find(busy, "c-btn");
+  assert.deepEqual([bb?.props["aria-disabled"], bb?.props["aria-busy"], bb?.props.title], ["true", "true", undefined]);
+  assert.equal(find(busy, "c-btn-spin").length, 1);
+  press(bb);
+  assert.deepEqual(calls, [["cancel", 14]], "busy の間は呼ばない");
+});
+
+test("web components: Cards は status を status:<id> の key で出し、on を StatusRow へ渡す", () => {
+  const calls: unknown[][] = [];
+  const on = { ...cardRec().on, cancel: (...a: unknown[]): void => void calls.push(["cancel", ...a]) };
+  const items = [{ kind: "status", id: "cc", text: "作業中です。終わったら届けます", cancel: { id: 9, busy: false } }, permItem(), { kind: "note", id: "ended", text: "終わり" }];
+  const v = cards.Cards({ items, on }) as RawNode;
+  assert.deepEqual(keysOf(v.props.children), ["status:cc", "permission:7", "note:ended"]);
+  const root = one(v);
+  assert.deepEqual(kidsOf(root).map((k) => k.props.class), ["c-status", "c-card", "c-note"]);
+  press(find(kidsOf(root)[0] as El, "c-btn")[0]);
+  assert.deepEqual(calls, [["cancel", 9]]);
 });
 
 test("web components: カードの言葉は今の画面に在る物（新しいのは「あなたの番: 」の見出しだけ）。カードの CSS の枠・見出し・行・要約の高さ・動きなし。htm の属性で value を渡さない", () => {

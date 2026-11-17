@@ -1,4 +1,4 @@
-// 「あなたの番」のカードの部品（docs/plan/web-ui-components.md §6 の K5）: 1 つの枠 Card と、その上の許可・質問・閉じる前の確認・場所を変える確認のカード、待ちの行と文（Note）、並び（Cards）と口（cardsMouth）。
+// 「あなたの番」のカードの部品（docs/plan/web-ui-components.md §6 の K5）: 1 つの枠 Card と、その上の許可・質問・閉じる前の確認・場所を変える確認のカード、待ちの行と文（Note）、状態の行と［やめる］（StatusRow）、並び（Cards）と口（cardsMouth）。
 // hook を使わない（Node から関数として呼べる）。文は全部呼ぶ側が作って渡す（時刻・モード・番号を組まない）。選び方の決まりを持たず、起きた事を on に伝えるだけ。
 // 押せない形は Button の disabled と reason（回る輪は使わない）。クラスは固定の文字列、状態は data-* と aria-*
 import { html } from "./c-lib.js";
@@ -195,8 +195,23 @@ export function Note({ text, busy }) {
     : html`<p class="c-note">${str(text)}</p>`;
 }
 
+/**
+ * 状態の行（待ちの行の文）と、取り消せるときの［やめる］。item: { id, text, cancel: null か { id: 取り消す物の id, busy } }。
+ * 文の要素は［やめる］の出入りでも同じ（key）。aria-busy は付けない（Note と同じ理由）。押せない理由の文は付けない（busy の輪だけ）
+ */
+export function StatusRow({ item, on }) {
+  const cancel = item.cancel && typeof item.cancel === "object" ? item.cancel : null;
+  return html`<div class="c-status">
+    <p class="c-note" key="text" role="status" data-busy="true">${str(item.text)}</p>
+    ${cancel === null
+      ? null
+      : html`<${Button} key="cancel" kind="ghost" size="sm" label="やめる" busy=${!!cancel.busy} onPress=${() => on.cancel(cancel.id)} />`}
+  </div>`;
+}
+
 const KINDS = {
   note: ({ item }) => html`<${Note} text=${item.text} busy=${!!item.busy} />`,
+  status: StatusRow,
   permission: PermissionCard,
   question: QuestionCard,
   close: CloseCard,
