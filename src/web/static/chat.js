@@ -1289,7 +1289,7 @@
   // ===== 新しい殻の「あなたの番」のカード・待ちの行・文（入口 c-app.js の SA.cards。K5）。古い殻には SA.cards が無いので、ここは通らない =====
   /** 部品で描けなかった（以後はこのタブで古いカード） */
   let cardsBroken = false;
-  /** 送っている間と、送り終えて読み直すまでの項目（"close:" + channelId・"move:" + 提案の id・"ask:" + 要求の id） */
+  /** 送っている間と、送り終えて読み直すまでの項目（"close:" + channelId・"move:" + 提案の id・"ask:" + 要求の id・"send:" + 送りの id） */
   const cardBusy = new Set();
 
   /** 質問（AskUserQuestion）の要求か（views.js の ccPermissionCard と同じ判定） */
@@ -1297,10 +1297,36 @@
     return !!(p.question && Array.isArray(p.question.questions) && p.question.questions.length > 0);
   }
 
+  /**
+   * Claude Code のチャンネルのカードの項目（状態の行 → 許可・質問 → 終わった文 → 空の文）。
+   * 状態の行の id は "cc" の固定（送りが替わっても同じ要素のまま文だけ変わる）。［やめる］が今の送りの物かは押されたときに確かめる
+   */
+  function ccCardItems(ch, t) {
+    const live = ccLive(ch);
+    const items = [];
+    const s = ccStatusOf(live);
+    if (s) {
+      const id = live.pending && typeof live.pending.id === "number" ? live.pending.id : null;
+      items.push({ kind: "status", id: "cc", text: s.text, cancel: s.cancel && id !== null ? { id, busy: cardBusy.has("send:" + id) } : null });
+    }
+    // 許可・質問（保留中だけ。終わったものは選んだ状態を捨てる。このタブでは終わったカードを出さない）
+    const p = askRequestOf(ch);
+    if (p && p.state === "pending") {
+      const item = SA.views.ccAsk.item(live.sessionId, p);
+      if (item) items.push(cardBusy.has("ask:" + p.id) ? Object.assign(item, { busy: true }) : item);
+    } else if (p) {
+      SA.views.ccQuestionForget(p.id);
+    }
+    if (live.state === "ended") items.push({ kind: "note", id: "ended", text: CC_ENDED_TEXT });
+    if (t && t.turns.length === 0) items.push({ kind: "note", id: "empty", text: CC_EMPTY_TEXT });
+    return items;
+  }
+
   /** カードの項目（順は古い描き方の .tl と同じ: 待ちの行 → 閉じる前の確認 → 場所を変える確認 → 許可・質問 → 空の文 → 完了の文） */
   function cardItems(channelId) {
     const t = store.turns[channelId];
     const ch = channelById(channelId);
+    if (ch && ch.kind === "cc") return ccCardItems(ch, t);
     const run = store.runningOf(channelId);
     const items = [];
     const waiting = pendingOf(channelId, ch);
@@ -1363,6 +1389,34 @@
     return isQuestion(p) === (kind === "question") ? p : null;
   }
 
+  /** Claude Code のセッションの読み直し（cardOp の 4 つ目）。404 のほかの失敗は握る（待ちの形は cardOp の finally が外す） */
+  function ccReload(sessionId) {
+    return () => Promise.resolve(store.load.ccSession(sessionId, { quiet: true })).catch(() => null);
+  }
+
+  /** 押された要求の送り先と、通った後の読み直し（Claude Code のチャンネルはセッションの今、ほかは /turns） */
+  function askTarget(channelId, p) {
+    const ch = channelById(channelId);
+    const sessionId = askSessionOf(ch, p);
+    return { sessionId, reload: ch && ch.kind === "cc" ? ccReload(sessionId) : undefined };
+  }
+
+  /**
+   * 状態の行・送った本文の帯の［やめる］。今のチャンネルが Claude Code のチャンネルで、今の送りが同じ id の届け待ちのときだけ送る（古い画面からの押しは捨てる）。
+   * 送っている間と、通ってセッションを読み直すまで、状態の行と帯の［やめる］は待ちの形
+   */
+  function cancelSend(channelId, sendId) {
+    const ch = channelById(channelId);
+    if (!ch || ch.kind !== "cc") return;
+    const live = ccLive(ch);
+    const p = live.pending;
+    if (!p || typeof p.id !== "number" || p.id !== sendId || p.state !== "queued") return;
+    const sessionId = live.sessionId;
+    void cardOp(channelId, "send:" + sendId, () => SA.views.ccSend.cancel(sendId, sessionId), ccReload(sessionId));
+    // 帯の［やめる］も待ちの形にする（cardOp は最初の await の前に待ちに入れている）
+    drawComposer(channelId);
+  }
+
   /** 部品に渡す on。channelId だけを閉じ込め、押されたときに今の状態を読む */
   function cardsOn(channelId) {
     const ask = () => SA.views.ccAsk;
@@ -1403,17 +1457,20 @@
       permit: (id, decision) => {
         const p = askOf(channelId, id, "permission");
         if (!p) return;
-        cardOp(channelId, "ask:" + id, () => ask().permit(p.sessionId, p, decision, "ch:" + channelId));
+        const to = askTarget(channelId, p);
+        cardOp(channelId, "ask:" + id, () => ask().permit(to.sessionId, p, decision, "ch:" + channelId), to.reload);
       },
       answer: (id) => {
         const p = askOf(channelId, id, "question");
         if (!p) return;
-        cardOp(channelId, "ask:" + id, () => ask().answer(p.sessionId, p, "ch:" + channelId));
+        const to = askTarget(channelId, p);
+        cardOp(channelId, "ask:" + id, () => ask().answer(to.sessionId, p, "ch:" + channelId), to.reload);
       },
       dismiss: (id) => {
         const p = askOf(channelId, id, "question");
         if (!p) return;
-        cardOp(channelId, "ask:" + id, () => ask().dismiss(p.sessionId, p, "ch:" + channelId));
+        const to = askTarget(channelId, p);
+        cardOp(channelId, "ask:" + id, () => ask().dismiss(to.sessionId, p, "ch:" + channelId), to.reload);
       },
       close: (_id, which) => {
         let selected;
@@ -1425,11 +1482,15 @@
         cardOp(channelId, "close:" + channelId, () => confirmClose(channelId, selected, []));
       },
       move: (id, action) => cardOp(channelId, "move:" + id, () => answerMove(channelId, id, action, [])),
+      cancel: (sendId) => cancelSend(channelId, sendId),
     };
   }
 
-  /** 送る（run は通ったかに resolve する）。送っている間と、通ったら読み直しが済むまで、その項目は待ちの形（二度押しさせない） */
-  async function cardOp(channelId, key, run) {
+  /**
+   * 送る（run は通ったかに resolve する）。送っている間と、通ったら読み直しが済むまで、その項目は待ちの形（二度押しさせない）。
+   * reload は通った後の読み直し（省けば /turns。Claude Code のチャンネルはセッションの今）
+   */
+  async function cardOp(channelId, key, run, reload) {
     if (cardBusy.has(key)) return;
     cardBusy.add(key);
     drawCards(channelId);
@@ -1440,8 +1501,9 @@
       // polling の読みに相乗りする事があり（同じ鍵の読みは重ならない）、そのときは古い状態を返す。ここの 1 回目もそれに相乗りするので、
       // 2 回目で初めて送った後の状態を読む（1 回だけだと、押せる形に一瞬戻る事がある）
       if (ok) {
-        await store.load.turns(channelId, { quiet: true });
-        await store.load.turns(channelId, { quiet: true });
+        const again = reload || (() => store.load.turns(channelId, { quiet: true }));
+        await again();
+        await again();
       }
     } finally {
       cardBusy.delete(key);
@@ -1528,8 +1590,8 @@
       timeline.append(el("div", { class: "tl-hint" }, [more]));
     }
     const isCc = !!(ch && ch.kind === "cc");
-    // 会話の行を部品が描く列 2 では、カード・待ちの行・文も部品が描く（Claude Code のチャンネルは古い .tl のまま）
-    const cards = talk && !isCc && SA.cards && !cardsBroken ? SA.cards : null;
+    // 会話の行を部品が描く列 2 では、カード・待ちの行・状態の行・文も部品が描く（Claude Code のチャンネルの画面の写しは古い .tl のまま）
+    const cards = talk && SA.cards && !cardsBroken ? SA.cards : null;
     // Claude Code のチャンネルにはターンが無い（実行中の行・[続ける] は出さない）
     const run = isCc ? null : store.runningOf(channelId);
     const last = t.turns[t.turns.length - 1];
@@ -1571,24 +1633,28 @@
       if (!live.loaded && live.sessionId) store.load.ccSession(live.sessionId, { quiet: true });
       // 一覧から開いた直後（チャンネルがまだ分からなかった）でも、セッションの今の polling を始める
       SA.poll.kickCc();
-      // 会話の行のすぐ下に、送信と作業の状態
-      const status = ccStatusRow(channelId, live);
-      if (status) timeline.append(status);
-      const p = live.permission;
-      if (p && p.state === "pending") {
-        card = SA.views.ccPermissionCard(live.sessionId, p, live.rc, "ch:" + channelId);
-        if (card) timeline.append(card);
-      } else if (p && typeof p.id === "number") {
-        // 終わった質問の選んだ状態を捨てる（このタブでは終わったカードを出さない）
-        SA.views.ccQuestionForget(p.id);
+      // 会話の行のすぐ下に、送信と作業の状態と許可・質問（部品の道ではカードの根が描く）
+      if (!cards) {
+        const status = ccStatusRow(channelId, live);
+        if (status) timeline.append(status);
+        const p = live.permission;
+        if (p && p.state === "pending") {
+          card = SA.views.ccPermissionCard(live.sessionId, p, live.rc, "ch:" + channelId);
+          if (card) timeline.append(card);
+        } else if (p && typeof p.id === "number") {
+          // 終わった質問の選んだ状態を捨てる（このタブでは終わったカードを出さない）
+          SA.views.ccQuestionForget(p.id);
+        }
       }
+      // 画面の写しはどちらの道でも .tl（部品の道ではカードの根の次）
       const screen = ccScreenSection(ch, channelId);
       if (screen) timeline.append(screen);
-      if (live.state === "ended") {
+      if (!cards && live.state === "ended") {
         timeline.append(el("p", { class: "tl-hint", text: CC_ENDED_TEXT }));
       }
-      // 行が同じ送信の状態（届け待ち・届けた）を出している間は、入力欄の上の帯を出さない
-      const statusKind = status ? status.getAttribute("data-cc-status") : null;
+      // 行が同じ送信の状態（届け待ち・届けた）を出している間は、入力欄の上の帯を出さない（種類は状態の行と同じ判定から取る）
+      const status = ccStatusOf(live);
+      const statusKind = status ? status.kind : null;
       ccPending = live.sessionId && !(statusKind === "queued" || statusKind === "delivered") ? SA.views.ccPendingBar(live.sessionId, live.pending) : null;
     } else if (!cards && ch && ch.kind === "session" && ch.permission && typeof ch.permission.id === "number") {
       // プロジェクトのセッション（docs/plan/unify.md §6.1 の 5）の許可の要求。Claude Code のチャンネルと同じカード・同じ /api/cc/permissions/<id>/*
