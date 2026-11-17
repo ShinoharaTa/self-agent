@@ -10,9 +10,16 @@ import { createChannelResolver } from "../src/app/access.ts";
 import type { RunningTurn, SubmitTextResult } from "../src/app/handler.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
 import type { AgentRunner } from "../src/agent/runner.ts";
+import type { CcAnswerResult } from "../src/cc/permission-hold.ts";
+import type { CcSessionView } from "../src/cc/registry.ts";
+import type { CcCancelResult } from "../src/cc/sender.ts";
 import type { Gateway } from "../src/discord/gateway.ts";
+import type { TmuxPane } from "../src/tmux/tmux.ts";
 import { AttachmentStore } from "../src/store/attachments.ts";
+import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
+import { CcSendStore } from "../src/store/cc-sends.ts";
+import { CcStartStore } from "../src/store/cc-starts.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { HistoryStore } from "../src/store/history.ts";
@@ -26,6 +33,7 @@ import { TaskStore } from "../src/store/tasks.ts";
 import { TopicReadStore } from "../src/store/topic-reads.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
+import { CC_STATUS_DISABLED, ccChannelDescriber, ccRoutes } from "../src/web/routes/cc.ts";
 import { channelRoutes, webChannelLookup } from "../src/web/routes/channels.ts";
 import { knowledgeRoutes } from "../src/web/routes/knowledge.ts";
 import { memoryRoutes } from "../src/web/routes/memories.ts";
@@ -56,6 +64,11 @@ export type FixtureServer = {
   clockNow: () => Date;
   /** 撮る画面の話題のチャンネル ID（open: 長い返事・perm: 許可の要求・q: 質問・talk: 吹き出しの確かめ・long: 長い会話・run: 実行中） */
   topics: { open: string; perm: string; q: string; talk: string; long: string; run: string };
+  /**
+   * Claude Code のチャンネル（cc: true で立てたときだけ）。queue: 届け待ちの送りが在る・ask: 許可の要求が在る・ended: 一覧に居ないセッション（終わった）。
+   * reset は queue の届け待ちと ask の保留中の許可を新しく 1 行ずつにする（前の届け待ちは取り消し、前の保留は終わらせる。同じ段を幅ごとに繰り返すため）
+   */
+  cc?: { queue: string; ask: string; ended: string; reset: () => void };
   /** サーバーを閉じ、DB を閉じて一時ディレクトリを消す（2 回目以降は同じ Promise を返す） */
   close: () => Promise<void>;
 };
@@ -117,8 +130,18 @@ ${"watering,".repeat(22)}xx
 /** 吹き出しの確かめのオーナーの 600 字の発言（空白の無い 80 字の語を含む） */
 const TALK_LONG_OWNER = `${"ベランダの鉢の水やりについて、季節ごとの量と時刻を見直したいです。".repeat(8)} ${"x".repeat(80)} ${"夏は朝と夕方の二回、冬は昼に一回にしたい。".repeat(12)}`.slice(0, 600);
 
-/** 作り物のデータの DB と本物の Web サーバーを立てる。log はサーバーの log の行（既定は捨てる） */
-export async function startFixtureServer(options: { log?: (line: string) => void } = {}): Promise<FixtureServer> {
+/** Claude Code のセッション（作り物の UUID。数字の長い並びにしない）。A は作業中・B は判断待ち・C は一覧に居ない（終わった） */
+const CC_A = "c0de0a01-0000-4000-8000-0000000000a1";
+const CC_B = "c0de0b02-0000-4000-8000-0000000000b2";
+const CC_C = "c0de0c03-0000-4000-8000-0000000000c3";
+/** 画面の写し（tmux の capture-pane の代わりに返す数行） */
+const CC_SCREEN = "見本の作業をしています\n\n> 次の指示を待っています\n";
+
+/**
+ * 作り物のデータの DB と本物の Web サーバーを立てる。log はサーバーの log の行（既定は捨てる）。
+ * cc なら Claude Code の連携が動くとして、セッション 2 つ（一覧）と Claude Code のチャンネル 3 つ・届け待ち・許可の要求を足す（無ければ今までどおり何も足さない）
+ */
+export async function startFixtureServer(options: { log?: (line: string) => void; cc?: boolean } = {}): Promise<FixtureServer> {
   const log = options.log ?? (() => undefined);
   const tmp = mkdtempSync(join(tmpdir(), "self-agent-ui-shots-"));
   let db: ReturnType<typeof openDb> | undefined;
@@ -323,6 +346,9 @@ export async function startFixtureServer(options: { log?: (line: string) => void
       }),
     });
 
+    // Claude Code（cc: true のときだけ）。入れるのは今の時刻（許可の要求が保留の秒数の中に入るように）
+    const cc = options.cc === true ? seedCc(db, workspace, history, reads, () => String(nextId++)) : undefined;
+
     // 実行中のターン（tRun）。送信は受け付けず、[中断]・[続ける] は何もしない（LLM に出さない）
     const startedAt = new Date(Date.now() - 95_000).toISOString();
     const running = [
@@ -364,7 +390,8 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     };
     const resolveChannel = createChannelResolver(cfg, guildSettings, topicSessions);
     const places = { workspaceDir: workspace, protectedDirs: [], generalDir: "General" };
-    const lookup = webChannelLookup({ cfg, resolveChannel, guildSettings, topicSessions });
+    // 既読・/messages と同じ引き方（Claude Code のチャンネルも通すのは cc のときだけ。本体の配線と同じ）
+    const lookup = webChannelLookup({ cfg, resolveChannel, guildSettings, topicSessions, ...(cc === undefined ? {} : { ccChannels: cc.store }) });
     const projectPermissions = { store: permissions, sessions, holdSec: 3600, questionHoldSec: 3600 };
     const topicDeps = {
       cfg,
@@ -379,6 +406,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
       projectPermissions,
       reads: { store: reads, lookup },
       now,
+      ...(cc === undefined ? {} : { cc: cc.topics }),
     };
     const noLog = (): void => undefined;
     const channelName = (id: string): string | null => topicSessions.get(id)?.title ?? (id === INBOX ? "#inbox" : null);
@@ -395,11 +423,24 @@ export async function startFixtureServer(options: { log?: (line: string) => void
         serving: () => false,
         guildSettings,
         env: {},
+        ...(cc === undefined ? {} : { cc: cc.status }),
       }),
       ...usageRoutes({ cfg, usage, attachments, now }),
-      ...channelRoutes({ cfg, guildSettings, topicSessions, projects, history, personas, resolveChannel, reads, projectPermissions: { ...projectPermissions, now } }),
+      ...channelRoutes({
+        cfg,
+        guildSettings,
+        topicSessions,
+        projects,
+        history,
+        personas,
+        resolveChannel,
+        reads,
+        projectPermissions: { ...projectPermissions, now },
+        ...(cc === undefined ? {} : { cc: cc.channels }),
+      }),
       ...topicRoutes({ ...topicDeps, collect: createTopicCollector(topicDeps) }),
-      ...turnRoutes({ cfg, guildSettings, topicSessions, resolveChannel, handler, now, log: noLog }),
+      ...turnRoutes({ cfg, guildSettings, topicSessions, resolveChannel, handler, now, log: noLog, ...(cc === undefined ? {} : { cc: cc.turns }) }),
+      ...(cc === undefined ? [] : ccRoutes(cc.routes(lookup))),
       ...taskRoutes({ tasks, reminders, log: noLog }),
       ...reminderRoutes({ cfg, reminders, channelName, log: noLog }),
       ...memoryRoutes({ memories, log: noLog }),
@@ -422,9 +463,185 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     closeServer = () => server.close();
     const port = server.address()?.port;
     if (port === undefined) throw new Error("Web サーバーが待ち受けていない");
-    return { url: `http://127.0.0.1:${port}`, login: FIXTURE_LOGIN, dir: tmp, clockNow, topics: { open: tOpen, perm: tPerm, q: tQ, talk: tTalk, long: tLong, run: tRun }, close };
+    return {
+      url: `http://127.0.0.1:${port}`,
+      login: FIXTURE_LOGIN,
+      dir: tmp,
+      clockNow,
+      topics: { open: tOpen, perm: tPerm, q: tQ, talk: tTalk, long: tLong, run: tRun },
+      ...(cc === undefined ? {} : { cc: cc.fixture }),
+      close,
+    };
   } catch (error) {
     await close();
     throw error;
   }
+}
+
+/** Claude Code のセッションの一覧の 1 行（作り物。claude agents --json の代わり） */
+function ccView(sessionId: string, name: string, cwd: string, state: "running" | "needs_input", pid: number): CcSessionView {
+  const at = Date.now() - 4 * 60_000;
+  return {
+    sessionId,
+    status: state === "running" ? "busy" : "waiting",
+    pendingPermission: state === "needs_input",
+    waitingKind: null,
+    waitingSince: state === "needs_input" ? at : undefined,
+    lastPromptAt: at,
+    lastEventAt: at,
+    transcriptLastAt: at,
+    startedAt: at - 30 * 60_000,
+    state,
+    pid,
+    name,
+    cwd,
+    kind: undefined,
+    waitingFor: state === "needs_input" ? "permission" : undefined,
+    lastPromptText: null,
+    permissionMode: "default",
+    lastActivityAt: at,
+    bridgeSessionId: undefined,
+    tmux: `tmux-shots/default,${pid},0`,
+    startedBy: "web",
+    trustPending: false,
+    permission: undefined,
+  };
+}
+
+/** tmux のペイン（作り物。一覧の pid ごとに 1 つ） */
+function ccPane(pid: number, cwd: string): TmuxPane {
+  return {
+    sessionName: `shots-${pid}`,
+    windowIndex: 0,
+    paneIndex: 0,
+    paneId: `%${pid}`,
+    windowActive: true,
+    paneActive: true,
+    currentPath: cwd,
+    currentCommand: "claude",
+    inMode: false,
+    dead: false,
+    panePid: pid,
+  };
+}
+
+/**
+ * Claude Code の作り物（cc: true）。一覧・ペイン・画面の写し・送信の取り消し・許可の応答は偽物（行の状態を変えるだけ。tmux にも hook にも出ない）。
+ * 表（cc_channels・cc_sends・cc_permissions）と、それを読むルートは本物
+ */
+function seedCc(
+  db: ReturnType<typeof openDb>,
+  workspace: string,
+  history: HistoryStore,
+  reads: TopicReadStore,
+  nextChannelId: () => string,
+) {
+  const holdSec = 3600;
+  const channelStore = new CcChannelStore(db);
+  const sends = new CcSendStore(db);
+  const permissions = new CcPermissionStore(db);
+  const starts = new CcStartStore(db);
+  const cwdA = join(workspace, "kakeibo-app");
+  const cwdB = join(workspace, "garden-sensor");
+  const cwdC = join(workspace, "blog-site");
+  const views = [ccView(CC_A, "見本の作業", cwdA, "running", 4101), ccView(CC_B, "見本の確認", cwdB, "needs_input", 4102)];
+  const registry = {
+    snapshot: () => ({ sessions: views, stale: false, unreadable: false, fetchedAt: Date.now() }),
+    touch: () => undefined,
+  };
+  const queue = nextChannelId();
+  const ask = nextChannelId();
+  const ended = nextChannelId();
+  channelStore.create({ channelId: queue, guildId: GUILD, sessionId: CC_A, name: "cc-見本の作業", cwd: cwdA, origin: "web" });
+  channelStore.create({ channelId: ask, guildId: GUILD, sessionId: CC_B, name: "cc-見本の確認", cwd: cwdB, origin: "permission" });
+  channelStore.create({ channelId: ended, guildId: GUILD, sessionId: CC_C, name: "cc-見本の下書き", cwd: cwdC, origin: "web" });
+  channelStore.setState(ended, "ended");
+  const say = (channelId: string, kind: "owner" | "agent", text: string): void => {
+    history.add({ guildId: GUILD, channelId, kind, source: kind === "owner" ? "web" : "system", text, ...(kind === "agent" ? { outcome: "done" } : {}) });
+  };
+  say(queue, "owner", "集計のテストを足して");
+  say(queue, "agent", "テストを 3 件足しました。全部通っています。");
+  say(queue, "owner", "README にも書いて");
+  say(ask, "owner", "依存を新しくして");
+  say(ask, "agent", "npm の依存を確かめます。");
+  say(ended, "owner", "秋の記事の見出しを考えて");
+  say(ended, "agent", "見出しを 5 つ考えました。");
+  say(ended, "owner", "ありがとう");
+  for (const channelId of [queue, ask, ended]) {
+    const rows = history.list(channelId, { limit: 200 });
+    reads.advance(channelId, Math.max(0, ...rows.map((row) => row.id)));
+  }
+
+  const reset = (): void => {
+    for (const row of sends.listQueuedFor(CC_A)) sends.transition(row.id, ["queued"], "cancelled");
+    sends.add({ sessionId: CC_A, text: "README にも書いて", origin: "web", state: "queued", channelId: queue });
+    for (const row of permissions.listPending()) if (row.sessionId === CC_B) permissions.resolve(row.id, "expired", null);
+    permissions.add({ sessionId: CC_B, requestHash: "shots-h1", toolName: "Bash", summary: "npm update --save", permissionMode: "default", state: "pending" });
+  };
+  reset();
+
+  const hold = {
+    answer: (id: number, decision: "allow" | "always" | "deny", via: "web" | "discord", requestHash?: string): CcAnswerResult => {
+      const row = permissions.get(id);
+      if (row === undefined) return { ok: false, reason: "not_found" };
+      if (row.state !== "pending" || (requestHash !== undefined && requestHash !== row.requestHash)) return { ok: false, reason: "stale" };
+      if (row.questionInput !== null && decision !== "deny") return { ok: false, reason: "stale" };
+      if (decision === "always" && (row.alwaysRules === null || row.alwaysRules.length === 0)) return { ok: false, reason: "stale" };
+      const to = decision === "deny" ? "denied" : decision === "always" ? "allowed_always" : "allowed";
+      return permissions.resolve(id, to, via) ? { ok: true, state: to } : { ok: false, reason: "stale" };
+    },
+    // 質問の要求は入れていない
+    answerQuestion: () => ({ ok: false as const, reason: "stale" as const }),
+  };
+  const sender = {
+    submit: async () => ({ ok: false as const, reason: "stopped" as const }),
+    cancel: (id: number): CcCancelResult => {
+      if (sends.get(id) === undefined) return "not_found";
+      return sends.transition(id, ["queued", "awaiting_confirm"], "cancelled") ? "cancelled" : "stale";
+    },
+  };
+  const panes = {
+    lookup: async () => {
+      const byTmux = new Map(views.map((view) => [view.tmux, ccPane(view.pid, view.cwd ?? workspace)]));
+      return {
+        ok: true as const,
+        find: (target: { pid: number; tmux: string | undefined }) => byTmux.get(target.tmux),
+        sendable: () => ({ ok: false as const, reason: "not_in_tmux" as const }),
+        pane: () => undefined,
+      };
+    },
+  };
+  const tmux = { capturePane: async () => ({ ok: true as const, value: CC_SCREEN }) };
+  const hostChannels = {
+    openChannel: async () => ({ ok: false as const, reason: "not_found" as const }),
+    channelOf: (sessionId: string) => {
+      const row = [queue, ask, ended].map((id) => channelStore.get(id)).find((r) => r !== undefined && r.sessionId === sessionId);
+      return row;
+    },
+    defaultGuild: () => GUILD,
+    close: () => ({ result: "ended" as const }),
+    postClosed: () => undefined,
+  };
+  const permissionDeps = { store: permissions, holdSec, questionHoldSec: holdSec };
+  // ~ は一時ディレクトリの作業場所にする（cwd はどれも作業場所の中で、相対で出る）
+  const describe = ccChannelDescriber({ registry, workspaceDir: workspace, home: workspace, sends, permissions: permissionDeps });
+  return {
+    store: channelStore,
+    fixture: { queue, ask, ended, reset },
+    status: () => ({ ...CC_STATUS_DISABLED, enabled: true, hookPort: true, tmux: "ok" as const, multilineOk: true, pendingPermissions: permissions.countPending("hook") }),
+    topics: { registry, channels: channelStore, permissions, sends, starts, holdSec, questionHoldSec: holdSec },
+    channels: { store: channelStore, describe },
+    turns: { store: channelStore, channels: { submitWeb: async () => ({ ok: false as const, reason: "stopped" as const }) }, registry },
+    routes: (lookup: ReturnType<typeof webChannelLookup>): Parameters<typeof ccRoutes>[0] => ({
+      registry,
+      panes,
+      tmux,
+      workspaceDir: workspace,
+      home: workspace,
+      sender,
+      sends,
+      permissions: { hold, ...permissionDeps },
+      channels: { store: hostChannels, allowedGuildIds: [GUILD], lookup },
+    }),
+  };
 }

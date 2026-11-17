@@ -102,6 +102,94 @@ test("作り物のデータで本物のルートが答え、閉じたらポー�
   await fixture.close();
 });
 
+test("cc: true では Claude Code の連携が動き、チャンネル 3 つ（届け待ち・許可・終わった）と届け待ちの取り消し・reset が本物のルートで答える", async () => {
+  const fixture = await startFixtureServer({ cc: true });
+  try {
+    const cc = fixture.cc;
+    assert.ok(cc !== undefined);
+    const auth = { "Tailscale-User-Login": fixture.login };
+    const post = { ...auth, "Sec-Fetch-Site": "same-origin", "X-Self-Agent": "1", "Content-Type": "application/json" };
+    const get = async (path: string): Promise<{ status: number; json: Record<string, unknown> }> => {
+      const res = await fetch(`${fixture.url}${path}`, { headers: auth });
+      return { status: res.status, json: (await res.json()) as Record<string, unknown> };
+    };
+    const status = await get("/api/status");
+    assert.equal(status.status, 200);
+    assert.equal((status.json.cc as { enabled: boolean }).enabled, true);
+
+    // /api/channels: kind cc が 3 つ。終わったチャンネルは ended
+    const channels = (await get("/api/channels")).json.channels as Array<{ id: string; kind: string; cc?: { sessionId: string; state: string; pending: { id: number; state: string } | null; permission: { state: string } | null } }>;
+    const ccRows = channels.filter((c) => c.kind === "cc");
+    assert.deepEqual(ccRows.map((c) => c.id).sort(), [cc.queue, cc.ask, cc.ended].sort());
+    const byId = new Map(ccRows.map((c) => [c.id, c.cc!]));
+    assert.equal(byId.get(cc.ended)!.state, "ended");
+    assert.equal(byId.get(cc.ask)!.permission?.state, "pending");
+    const a = byId.get(cc.queue)!.sessionId;
+    const ended = byId.get(cc.ended)!.sessionId;
+    for (const row of ccRows) assert.match(row.cc!.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
+
+    // /api/topics: 動いている 2 つはそのプロジェクトの群の行、終わった 1 つはその群の完了（?done=）の行
+    type Topics = { topics: Array<{ id: string; group: string; state: string }> };
+    const topics = (await get("/api/topics")).json as Topics;
+    const rowOf = (list: Topics, id: string) => list.topics.find((topic) => topic.id === `ch:${id}`);
+    assert.deepEqual([rowOf(topics, cc.queue)?.state, rowOf(topics, cc.ask)?.state, rowOf(topics, cc.ended)], ["active", "active", undefined]);
+    const done = (await get(`/api/topics?done=${encodeURIComponent("p:blog-site")}`)).json as Topics;
+    assert.equal(rowOf(done, cc.ended)?.state, "done");
+
+    // 会話・セッション（届け待ち）・終わったセッションは 404
+    const turns = await get(`/api/channels/${cc.queue}/turns`);
+    assert.equal(turns.status, 200);
+    assert.ok((turns.json.turns as unknown[]).length >= 2);
+    const session = await get(`/api/cc/sessions/${a}`);
+    assert.equal(session.status, 200);
+    const pending = session.json.pending as { id: number; state: string };
+    assert.equal(pending.state, "queued");
+    assert.equal(typeof session.json.screen, "string");
+    assert.equal((await get(`/api/cc/sessions/${ended}`)).status, 404);
+
+    // 取り消すと cancelled。reset でまた queued（新しい行）
+    const cancel = await fetch(`${fixture.url}/api/cc/sends/${pending.id}/cancel`, { method: "POST", headers: post, body: "{}" });
+    assert.equal(cancel.status, 200);
+    await cancel.body?.cancel();
+    assert.equal(((await get(`/api/cc/sessions/${a}`)).json.pending as { state: string }).state, "cancelled");
+    cc.reset();
+    const again = (await get(`/api/cc/sessions/${a}`)).json.pending as { id: number; state: string };
+    assert.equal(again.state, "queued");
+    assert.notEqual(again.id, pending.id);
+
+    // 許可に答えると終わり、reset で新しい保留が 1 つ
+    const perms = (await get("/api/cc/permissions")).json.permissions as Array<{ id: number; requestHash: string }>;
+    assert.equal(perms.length, 1);
+    const allow = await fetch(`${fixture.url}/api/cc/permissions/${perms[0]!.id}/allow`, { method: "POST", headers: post, body: JSON.stringify({ requestHash: perms[0]!.requestHash }) });
+    assert.equal(allow.status, 200);
+    await allow.body?.cancel();
+    assert.equal(((await get("/api/cc/permissions")).json.permissions as unknown[]).length, 0);
+    cc.reset();
+    const fresh = (await get("/api/cc/permissions")).json.permissions as Array<{ id: number }>;
+    assert.equal(fresh.length, 1);
+    assert.notEqual(fresh[0]!.id, perms[0]!.id);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("cc なしでは Claude Code の連携は無効で、kind cc のチャンネルも Claude Code のルートも無い", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    assert.equal(fixture.cc, undefined);
+    const auth = { "Tailscale-User-Login": fixture.login };
+    const status = (await (await fetch(`${fixture.url}/api/status`, { headers: auth })).json()) as { cc: { enabled: boolean } };
+    assert.equal(status.cc.enabled, false);
+    const channels = (await (await fetch(`${fixture.url}/api/channels`, { headers: auth })).json()) as { channels: Array<{ kind: string }> };
+    assert.equal(channels.channels.filter((c) => c.kind === "cc").length, 0);
+    const sessions = await fetch(`${fixture.url}/api/cc/sessions`, { headers: auth });
+    assert.equal(sessions.status, 404);
+    await sessions.body?.cancel();
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("作り物のデータに、Discord の ID らしい数字・実在のメールらしい物が無い", () => {
   const source = readFileSync(FIXTURE_SOURCE, "utf8");
   assert.deepEqual(source.match(/(?<!\d)\d{17,20}(?!\d)/g) ?? [], []);
