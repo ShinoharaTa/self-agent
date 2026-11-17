@@ -2117,6 +2117,24 @@ test("web static: ccSend.cancel は通ったかに resolve し（reject しな�
   assert.deepEqual(loads, []);
 });
 
+test("web static: 古い帯（ccPendingBar）の [やめる] は押すと押せなくなり、通ればそのまま、409・ほかの失敗では押せる形に戻る", async () => {
+  const { views, posts, setReply } = loadViews();
+  const bar = (views as unknown as { ccPendingBar: (sessionId: string, pending: unknown) => FakeNode | null }).ccPendingBar;
+  const press = async (id: number): Promise<{ now: boolean | undefined; after: boolean | undefined }> => {
+    const button = bar("s1", { id, state: "queued", lastPaneState: null, replyState: null })!.buttons().find((b) => b.textContent === "やめる")! as FakeNode & { disabled?: boolean };
+    button.dispatch("click");
+    const now = button.disabled;
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    return { now, after: button.disabled };
+  };
+  assert.deepEqual(await press(3), { now: true, after: true }, "通った");
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 409 })));
+  assert.deepEqual(await press(4), { now: true, after: false }, "409");
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 500 })));
+  assert.deepEqual(await press(5), { now: true, after: false }, "500");
+  assert.deepEqual(posts, ["/api/cc/sends/3/cancel", "/api/cc/sends/4/cancel", "/api/cc/sends/5/cancel"]);
+});
+
 test("web static: placeChildren は中に残る要素を動かさず（外さず）、ほかを前後に差し込む", () => {
   const { views } = loadViews();
   const box = new FakeNode("div");
