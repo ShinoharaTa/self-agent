@@ -67,6 +67,65 @@ const SIGNAL_EXIT: Record<"SIGINT" | "SIGTERM" | "SIGHUP", number> = { SIGINT: 1
 
 const wait = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
+/** settled の静けさの窓（ms。DOM の変更がこれだけ続けて無ければ落ち着いた）と上限（ms） */
+const SETTLE_QUIET_MS = 100;
+const SETTLE_LIMIT_MS = 5000;
+
+/** page ごとの飛んでいる要求（contextFor で 1 回だけ仕掛ける） */
+const inflight = new WeakMap<Page, Set<unknown>>();
+
+function trackRequests(page: Page): void {
+  const pending = new Set<unknown>();
+  inflight.set(page, pending);
+  page.on("request", (r) => pending.add(r));
+  page.on("requestfinished", (r) => pending.delete(r));
+  page.on("requestfailed", (r) => pending.delete(r));
+}
+
+/**
+ * 落ち着くまで待つ: 飛んでいる要求が 0・DOM の変更が SETTLE_QUIET_MS 続けて無い・終わりの在る動きが走っていない。
+ * 上限に達したら false（呼ぶ側が失敗として記録する）。無限の animation は除く。1 秒刻みの書き換えは窓の間に取れる
+ */
+async function settledWithin(page: Page, limit: number): Promise<boolean> {
+  const until = Date.now() + limit;
+  const pending = inflight.get(page);
+  for (;;) {
+    while ((pending?.size ?? 0) > 0) {
+      if (Date.now() >= until) return false;
+      await wait(20);
+    }
+    const left = until - Date.now();
+    if (left <= 0) return false;
+    const quiet = await page.evaluate(
+      ({ quietMs, leftMs }: { quietMs: number; leftMs: number }) =>
+        new Promise<boolean>((done) => {
+          const end = Date.now() + leftMs;
+          let last = Date.now();
+          const obs = new MutationObserver(() => {
+            last = Date.now();
+          });
+          obs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+          const moving = (): boolean =>
+            document.getAnimations().some((a) => a.playState === "running" && Number.isFinite(Number(a.effect?.getComputedTiming().endTime)));
+          const tick = (): void => {
+            const now = Date.now();
+            if (now > end) {
+              obs.disconnect();
+              done(false);
+            } else if (now - last >= quietMs && !moving()) {
+              obs.disconnect();
+              done(true);
+            } else setTimeout(tick, 20);
+          };
+          setTimeout(tick, quietMs);
+        }),
+      { quietMs: SETTLE_QUIET_MS, leftMs: left },
+    );
+    if (!quiet) return false;
+    if ((pending?.size ?? 0) === 0) return true;
+  }
+}
+
 /** 新しい殻を撮る組（full でなければ一覧と会話の 3 枚だけ）。古い殻はダークのスマホと PC */
 const NEW_SHELLS: ReadonlyArray<{ vp: Viewport; theme: Theme; full: boolean }> = [
   { vp: "phone", theme: "dark", full: true },
@@ -943,6 +1002,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       } catch {}
     }, theme);
     const page = await ctx.newPage();
+    trackRequests(page);
     page.setDefaultTimeout(6000);
     page.on("console", (m) => {
       if (m.type() === "error" || m.type() === "warning") logLines.push(`[${label}] console.${m.type()}: ${m.text()}`);
@@ -953,6 +1013,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     page.on("requestfailed", (r) => logLines.push(`[${label}] requestfailed ${r.url().replace(base, "")} ${r.failure()?.errorText ?? ""}`));
     return { ctx, page };
+  }
+
+  /** 落ち着くまで待つ（settledWithin）。上限に達したら console.log に 1 行と段の失敗を 1 つ足す（例外にはしない） */
+  async function settled(page: Page, limit = SETTLE_LIMIT_MS): Promise<void> {
+    if (await settledWithin(page, limit)) return;
+    const url = new URL(page.url());
+    failed++;
+    logLines.push(`[ui-shots] settled timeout ${url.pathname}${url.hash}`);
   }
 
   async function shot(page: Page, name: string, fullPage = false): Promise<void> {
