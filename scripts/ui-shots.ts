@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, isAbsolute, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import type { Browser, BrowserContext, Page, Route } from "playwright-core";
+import type { Browser, BrowserContext, Page, Request as PageRequest, Route } from "playwright-core";
 import { type FixtureServer, startFixtureServer } from "./ui-shots-fixture.ts";
 
 const USAGE = "使い方: npm run ui-shots -- --out <dir> [--only <名前の一部>]（<dir> はリポジトリの外）";
@@ -72,14 +72,26 @@ const SETTLE_QUIET_MS = 100;
 const SETTLE_LIMIT_MS = 5000;
 
 /** page ごとの飛んでいる要求（contextFor で 1 回だけ仕掛ける） */
-const inflight = new WeakMap<Page, Set<unknown>>();
+const inflight = new WeakMap<Page, Set<PageRequest>>();
 
 function trackRequests(page: Page): void {
-  const pending = new Set<unknown>();
+  const pending = new Set<PageRequest>();
   inflight.set(page, pending);
   page.on("request", (r) => pending.add(r));
   page.on("requestfinished", (r) => pending.delete(r));
   page.on("requestfailed", (r) => pending.delete(r));
+}
+
+/**
+ * 上限まで待っても終わらなかった要求を忘れ、その名前（メソッドとパス）を返す。
+ * finished も failed も来ない要求を残すと、以後の settled が毎回上限まで待つ（1 回の実行が何倍にも延びる）
+ */
+function forgetStuck(page: Page): string[] {
+  const pending = inflight.get(page);
+  if (pending === undefined) return [];
+  const names = [...pending].map((r) => `${r.method()} ${new URL(r.url()).pathname}`);
+  pending.clear();
+  return names;
 }
 
 /**
@@ -1016,13 +1028,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return { ctx, page };
   }
 
-  /** 落ち着くまで待つ（settledWithin）。上限に達したら console.log に 1 行と段の失敗を 1 つ足す（例外にはしない） */
+  /**
+   * 落ち着くまで待つ（settledWithin）。上限に達したら console.log に 1 行と段の失敗を 1 つ足す（例外にはしない）。
+   * 要求を待って上限に達したら、終わらなかった要求の名前を行に足して忘れる（同じ要求で次からも上限まで待たない）
+   */
   async function settled(page: Page, limit = SETTLE_LIMIT_MS): Promise<void> {
     const stuck = await settledWithin(page, limit);
     if (stuck === "") return;
     const url = new URL(page.url());
     failed++;
-    logLines.push(`[ui-shots] settled timeout（${stuck}） ${url.pathname}${url.hash}`);
+    const names = stuck === "要求" ? forgetStuck(page) : [];
+    logLines.push(`[ui-shots] settled timeout（${stuck}） ${url.pathname}${url.hash}${names.length > 0 ? `（終わらない要求: ${names.join("、")}）` : ""}`);
   }
 
   /** held は、わざと止めた要求が在る間の絵（落ち着きを待つと止めた要求を待ってしまうので、決まった時間だけ待つ） */
