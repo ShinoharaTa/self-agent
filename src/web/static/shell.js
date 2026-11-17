@@ -1208,13 +1208,16 @@
       t.place && t.place.dir
         ? "場所を " + placeText(t) + " から " + place.name + " に変えます。ファイルは動かしません。会話の記録はこのまま残り、担当には要点を引き継ぎます。あとで戻せます"
         : "場所を なし から " + place.name + " に変えます。会話の記録はこのまま残り、担当には要点を引き継ぎます。場所なしには戻せません";
-    SA.ui.confirm({ title: "場所を変えますか", target: t.title, body, ok: "変える", run: () => submitPlace(id, place) });
-    const dialog = $("dlg-confirm");
-    const back = () => {
-      dialog.removeEventListener("close", back);
-      if (SA.top) SA.top.focus("place") || SA.top.focus("menu");
-    };
-    dialog.addEventListener("close", back);
+    SA.ui.confirm({
+      title: "場所を変えますか",
+      target: t.title,
+      body,
+      ok: "変える",
+      run: () => submitPlace(id, place),
+      closed: () => {
+        if (SA.top) SA.top.focus("place") || SA.top.focus("menu");
+      },
+    });
   }
 
   function placeFailure(err) {
