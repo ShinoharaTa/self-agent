@@ -2558,11 +2558,11 @@ function appKeys(js: string): string[] {
   return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
 }
 
-test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
+test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards → c-hand、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
   const html = read("v3.html");
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
-  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-sheet.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css", "/static/c-cards.css"]);
+  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-sheet.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css", "/static/c-cards.css", "/static/c-hand.css"]);
   // module は元から後回し（defer を書かない）。文書の順で topics.js の後・shell.js の前に動く
   const scripts = [...html.matchAll(/<script (?:type="module" )?src="([^"]+)"( defer)?><\/script>/g)].map((m) => [m[1], m[0].includes('type="module"') ? "module" : m[2] ? "defer" : "none"]);
   assert.deepEqual(scripts, [
@@ -7715,10 +7715,10 @@ test("web static: 右腕のスクロールは描き直しで位置を保ち（�
   assert.equal(scroll().scrollTop, 1300);
 });
 
-test("web static: v3.html に右腕の枠と 2 つの口と下のバーの入れ物があり、右腕のための <dialog> は無い", () => {
+test("web static: v3.html に右腕の枠と 2 つの口と見出しの入れ物と下のバーの入れ物があり、右腕のための <dialog> は無い", () => {
   const html = read("v3.html");
   assert.match(html, /<div class="v3" id="v3" data-view="list" data-hand="closed" data-hand-mode="over">/);
-  assert.match(html, /<\/main>\s*<aside class="v3-hand" id="v3-hand" aria-label="右腕">\s*<button class="btn btn-ghost btn-sm btn-icon-sm v3-hand-show" id="v3-hand-show" type="button" aria-controls="v3-hand-ed" aria-expanded="false"><\/button>\s*<div class="ed v3-hand-ed" id="v3-hand-ed"><\/div>\s*<\/aside>\s*<div class="v3-hand-backdrop" id="v3-hand-backdrop" hidden><\/div>\s*<\/div>/);
+  assert.match(html, /<\/main>\s*<aside class="v3-hand" id="v3-hand" aria-label="右腕">\s*<button class="btn btn-ghost btn-sm btn-icon-sm v3-hand-show" id="v3-hand-show" type="button" aria-controls="v3-hand-ed" aria-expanded="false"><\/button>\s*<div class="v3-slot" id="c-hand-root"><\/div>\s*<div class="ed v3-hand-ed" id="v3-hand-ed"><\/div>\s*<\/aside>\s*<div class="v3-hand-backdrop" id="v3-hand-backdrop" hidden><\/div>\s*<\/div>/);
   assert.match(html, /id="c-list-root"><\/div>\s*<div class="v3-slot" id="c-bottom-root"><\/div>\s*<\/nav>/);
   assert.doesNotMatch(html, /v3-hand-ask|v3-hand-entry|v3-list-foot/);
   // 見出しの [右腕] は部品（入口 c-app.js の TopBar）。aria-controls の先の右腕の枠（id="v3-hand"）はここ
