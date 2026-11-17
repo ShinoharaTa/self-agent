@@ -6368,8 +6368,11 @@ test("web static: カードの on.close は all・none はそのまま、picked 
   assert.equal(cardsPlain(cards)[0]!.busy, true);
   void cardsOn(cards).close!("1", "all");
   assert.equal(held.length, 1, "送っている間は重ねない");
+  c.refreshes.length = 0;
   held[0]!.reject(Object.assign(new Error("x"), { status: 500 }));
   await c.flush();
+  // 失敗した後にカードを押せる形へ戻すのは、送りの終わりの描き直しだけ（閉じる・移すは 1 秒の刻みでは描き直さない）
+  assert.deepEqual(c.refreshes, ["ch:1"], "失敗の後に会話のタブを描き直す");
   c.chat.render(box, "1");
   assert.equal(cardsPlain(cards)[0]!.busy, false);
   for (const which of ["all", "none"]) {
@@ -6384,8 +6387,10 @@ test("web static: カードの on.close は all・none はそのまま、picked 
     void cardsOn(cards).move!(9, action);
     assert.equal(cardsPlain(cards)[0]!.busy, true);
     assert.equal(held.at(-1)!.path, "/api/topics/moves/9/" + action);
+    c.refreshes.length = 0;
     held.at(-1)!.reject(Object.assign(new Error("x"), { status: 500 }));
     await c.flush();
+    assert.deepEqual(c.refreshes, ["ch:1"], "失敗の後に会話のタブを描き直す（" + action + "）");
     c.chat.render(box, "1");
   }
 });
