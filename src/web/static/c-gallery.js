@@ -568,8 +568,12 @@ const COMPOSER_DEMOS = [
   { demo: "over", text: COMPOSER_ONE, count: 1901 },
   { demo: "sending", text: COMPOSER_ONE, sending: true },
   { demo: "narrow", text: COMPOSER_ONE, narrow: true },
+  // 送った本文の帯（Claude Code のチャンネル）
+  { demo: "sent-done", text: "", sent: { id: 12, text: "本文 #12: 届けました・返事が来ました", tone: "done" } },
+  { demo: "sent-warning", text: "", sent: { id: 13, text: "本文 #13: 入力待ちにならなかったため、届けるのをやめました", tone: "warning" } },
+  { demo: "sent-cancel", text: "", sent: { id: 14, text: "本文 #14: 届け待ち。入力待ちになったら届けます", tone: "", cancel: true } },
 ];
-const COMPOSER_ON = { input: noop, send: noop };
+const COMPOSER_ON = { input: noop, send: noop, cancel: noop };
 
 /** 見本の欄に、要素が来たときに 1 回だけ本文を入れる ref（見本ごとに 1 つの同じ関数。本番は口が同じ事をする） */
 const composerRefs = new Map();
@@ -588,8 +592,8 @@ function composerRef(demo, text) {
 
 function Composers() {
   return html`<${Section} name="composer" title="会話の入力欄（Composer）">
-    ${COMPOSER_DEMOS.map(({ demo, text, count, sending = false, narrow = false }) => {
-      const model = composerModel({ text, count: count ?? text.trim().length, max: 1900, sending, touch: false, label: "見本の話題 に送る", placeholder: "この話題に送る", note: COMPOSER_NOTE });
+    ${COMPOSER_DEMOS.map(({ demo, text, count, sending = false, narrow = false, sent = null }) => {
+      const model = composerModel({ text, count: count ?? text.trim().length, max: 1900, sending, touch: false, label: "見本の話題 に送る", placeholder: "この話題に送る", note: COMPOSER_NOTE, sent });
       const body = html`<${Composer} model=${model} on=${COMPOSER_ON} inputRef=${composerRef(demo, text)} />`;
       return html`<div data-demo=${demo} key=${demo}>${narrow ? html`<div class="c-gallery-composer c-gallery-composer-narrow">${body}</div>` : html`<div class="c-gallery-composer">${body}</div>`}</div>`;
     })}
@@ -597,7 +601,7 @@ function Composers() {
 }
 
 // ===== カード（K5） =====
-const CARD_ON = { permit: noop, always: noop, task: noop, close: noop, move: noop, pick: noop, pickOther: noop, other: noop, answer: noop, dismiss: noop };
+const CARD_ON = { permit: noop, always: noop, task: noop, close: noop, move: noop, pick: noop, pickOther: noop, other: noop, answer: noop, dismiss: noop, cancel: noop };
 const CARD_MODE = "default（使うたびに確認）";
 const CARD_RULE = "Bash(npm run test:*)";
 const cardPerm = (o) => ({ kind: "permission", id: "p1", tool: "Bash", mode: CARD_MODE, summary: "npm test", rule: "", ruleNote: "", always: false, left: "残り 4 分 12 秒", urgent: false, busy: false, ...o });
@@ -640,6 +644,15 @@ const CARD_DEMOS = [
       { kind: "note", id: "wait", text: "閉じる前の要約をしています…", busy: true },
       { kind: "note", id: "empty", text: "まだ会話はありません。下の欄か Discord で送ると始まります。" },
       { kind: "note", id: "done", text: "完了したセッションです。発言すると進行中に戻ります。" },
+    ],
+  },
+  // 状態の行（Claude Code のチャンネル）。［やめる］の有り・無し・送っている間
+  {
+    demo: "card-status",
+    items: [
+      { kind: "status", id: "a", text: "届け待ちです。入力待ちになったら届けます", cancel: { id: 21, busy: false } },
+      { kind: "status", id: "b", text: "作業中…", cancel: null },
+      { kind: "status", id: "c", text: "作業中です。終わったら届けます", cancel: { id: 22, busy: true } },
     ],
   },
   {
