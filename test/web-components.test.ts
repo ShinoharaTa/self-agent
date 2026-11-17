@@ -2795,9 +2795,10 @@ test("web components: 場所を変える確認の木・言葉・呼び出し・b
   assert.deepEqual(busyRec.calls, []);
 });
 
-test("web components: Note は busy のときだけ role=status・aria-busy・data-busy", () => {
+test("web components: Note は busy のときだけ role=status・data-busy（aria-busy は付けない: 読み上げが待たされる）", () => {
   const busy = one(cards.Note({ text: "閉じる前の要約をしています…", busy: true }));
-  assert.deepEqual([busy.type, busy.props.class, busy.props.role, busy.props["aria-busy"], busy.props["data-busy"], textOf(busy)], ["p", "c-note", "status", "true", "true", "閉じる前の要約をしています…"]);
+  assert.deepEqual([busy.type, busy.props.class, busy.props.role, busy.props["data-busy"], textOf(busy)], ["p", "c-note", "status", "true", "閉じる前の要約をしています…"]);
+  assert.ok(!("aria-busy" in busy.props) || busy.props["aria-busy"] === undefined, "待ちの行に aria-busy は無い");
   const plain = one(cards.Note({ text: "まだ会話はありません。" }));
   for (const name of ["role", "aria-busy", "data-busy"]) assert.ok(!(name in plain.props) || plain.props[name] === undefined, name);
 });
