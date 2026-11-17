@@ -84,18 +84,19 @@ function trackRequests(page: Page): void {
 
 /**
  * 落ち着くまで待つ: 飛んでいる要求が 0・DOM の変更が SETTLE_QUIET_MS 続けて無い・終わりの在る動きが走っていない。
- * 上限に達したら false（呼ぶ側が失敗として記録する）。無限の animation は除く。1 秒刻みの書き換えは窓の間に取れる
+ * 落ち着いたら ""。上限に達したら、待っていた物（"要求" か "画面"）を返す（呼ぶ側が失敗として記録する）。
+ * 無限の animation は除く。1 秒刻みの書き換えは窓の間に取れる
  */
-async function settledWithin(page: Page, limit: number): Promise<boolean> {
+async function settledWithin(page: Page, limit: number): Promise<"" | "要求" | "画面"> {
   const until = Date.now() + limit;
   const pending = inflight.get(page);
   for (;;) {
     while ((pending?.size ?? 0) > 0) {
-      if (Date.now() >= until) return false;
+      if (Date.now() >= until) return "要求";
       await wait(20);
     }
     const left = until - Date.now();
-    if (left <= 0) return false;
+    if (left <= 0) return "要求";
     const quiet = await page.evaluate(
       ({ quietMs, leftMs }: { quietMs: number; leftMs: number }) =>
         new Promise<boolean>((done) => {
@@ -121,8 +122,8 @@ async function settledWithin(page: Page, limit: number): Promise<boolean> {
         }),
       { quietMs: SETTLE_QUIET_MS, leftMs: left },
     );
-    if (!quiet) return false;
-    if ((pending?.size ?? 0) === 0) return true;
+    if (!quiet) return "画面";
+    if ((pending?.size ?? 0) === 0) return "";
   }
 }
 
@@ -1017,10 +1018,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /** 落ち着くまで待つ（settledWithin）。上限に達したら console.log に 1 行と段の失敗を 1 つ足す（例外にはしない） */
   async function settled(page: Page, limit = SETTLE_LIMIT_MS): Promise<void> {
-    if (await settledWithin(page, limit)) return;
+    const stuck = await settledWithin(page, limit);
+    if (stuck === "") return;
     const url = new URL(page.url());
     failed++;
-    logLines.push(`[ui-shots] settled timeout ${url.pathname}${url.hash}`);
+    logLines.push(`[ui-shots] settled timeout（${stuck}） ${url.pathname}${url.hash}`);
   }
 
   /** held は、わざと止めた要求が在る間の絵（落ち着きを待つと止めた要求を待ってしまうので、決まった時間だけ待つ） */
@@ -2863,7 +2865,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await ta.focus();
     await page.keyboard.press("Shift+Enter");
     await page.keyboard.type("x");
-    await settled(page);
+    // この間に位置が動かない事を見るので、落ち着きではなく実時間で待つ
+    await wait(150);
     const top1 = await page.evaluate(() => document.querySelector("#ed .ed-scroll")?.scrollTop ?? -1);
     const f6 = await field();
     if (!(top0 > 0) || !near(top0, top1, 1)) say(6, "上を読んでいる途中", `scrollTop ${top0} → ${top1}`);
