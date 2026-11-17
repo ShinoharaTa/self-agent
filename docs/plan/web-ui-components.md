@@ -217,7 +217,7 @@
 | Card（枠） | 同 | kind、label（`aria-label`）、title、meta、urgent、note、children | なし | `section.c-card`。どの幅でも `--warning` の線・角 `--c-card-r`・地 `--surface`・最大幅 `--c-card-max`。見出しは「あなたの番: …」（12px・semibold・`--warning`）。右の文は urgent で `--warning` |
 | PermissionCard | 同 | item（id・tool・mode・summary・rule・ruleNote・always・left・urgent・busy）、on（permit(id, allow・always・deny)・always(id, checked)） | なし（残り時間の文は入口から） | 許可は secondary・拒否は ghost（md・絵なし）。rule が在るときだけ「このセッションでは常に許可」のチェックとルール。説明の文 `PERMISSION_NOTE` はいつもカードの下。要約はスマホは切らず、PC は 8 行で中を送る |
 | CloseCard / MoveCard | 同 | item（閉じる: id・summary・tasks（行の文）・picked（選んだ番号。0 から）・busy。移す: id・from・to・busy）、on（close(id, all・picked・none)・task(id, 番号, checked)・move(id, accept・keep)） | なし | 右の文は「Discord でも選べます」。閉じるは［全部登録］primary・［選んだものを登録］・［登録しない］（候補が無ければ［登録しない］だけ）、移すは［変える］primary・［このまま］ |
-| Note（待ちの行と文） | 同 | text、busy | なし | `p.c-note`。busy は `role="status"`・`aria-busy`・左寄せで、回る輪は無い（文は「…」で終わる） |
+| Note（待ちの行と文） | 同 | text、busy | なし | `p.c-note`。busy は `role="status"`・左寄せで（`aria-busy` は付けない: 外れるまで読み上げが待たされ、この行は外れずに消える）、回る輪は無い（文は「…」で終わる） |
 | QuestionCard | 同 | item（id・who・left・urgent・busy・ready（全部の問に答えたか。呼ぶ側が決める）・questions（legend・text・multi・options（label・description）・picked（ラベルの並び）・other・otherText））、on（pick(id, 問の番号, ラベル, checked)・pickOther(id, 問の番号, checked, byPointer)・other(id, 問の番号, 値)・answer(id)・dismiss(id)）、otherRef | なし（選び方の決まりと「その他」の本文は呼ぶ側） | 問ごとに `fieldset`（2 問目から上に線）。ラジオか（multi なら）チェックの行と「その他」の行。name は `ccq-<id>-<問の番号>`。「その他」の欄（`textarea`。maxlength `OTHER_MAX` = 1000）は**いつも木に在り** `hidden` で隠す（描き直しで作り直さない）。value を渡さない。［答える］primary（ready でない間は「すべての問に答えると押せます」）・［やめる］ghost。`byPointer` は「その他」の行の pointerdown で立ち、キーと change の後で下りる |
 | 口 cardsMouth | 同 | render | なし | `{ draw(root, { items, on }), focus(root, id, 問の番号), drop(root) }`。「その他」の欄の ref は根と（id・問の番号）ごとに同じ関数で、**新しい要素にだけ**その時の `otherText` を入れる（同じ要素には書かない）。項目が消えた鍵は覚えを捨てる。focus は要素が無い・hidden なら false。例外は握らない |
 | Composer | `c-composer.js` / `.css` | model（`composerModel(state)` の結果。state は text・count・max・sending・touch・label・placeholder（決まった短い文）・note）、on（input(今の値)・send）、inputRef（textarea を受ける callback の ref。口 `composerMouth` が渡す）。**textarea に値を渡さない**（`value`・`defaultValue` を書かない。最初の本文と送った後の空は口が要素に直に入れる） | なし（下書きは入口と `SA.app.draft`、行数は CSS の写し、IME 中かは `sendKey` が事象から見る） | 1 行 44px・角 full・伸びて最大 6 行。字数は残りが少ないときだけ。送るは accent（D2・D3） |
@@ -463,7 +463,7 @@
   - `on.always`・`on.task`: 状態を書き換えてその場で描き直す（カードだけ。一番下を見ていたら一番下のまま）。番号は `on.close` の中で昇順に
   - 部品で描けなければ、そのタブでは古いカードが `.tl` に出る（選んだ状態は同じ覚え）
   - Claude Code のチャンネルの順と［やめる］: K5d へ（そのまま）
-  - 待ちの行の `aria-busy`: 本番につないだ。読み上げは実機で確かめる（外すかは別の PR）
+  - 待ちの行の `aria-busy`: 外した（`role="status"` だけ）。読み上げは実機で確かめる
   - 子孫のセレクタ: 段 r の 15（見本との漏れ）で見ている。GUIDELINES の許可・質問のカードの行は直した
   - 一覧の中で答える: 別 issue のまま。ラジオの name・2 問目の線: そのまま（部品の決め）
 - 確かめ（#406。カード）: `npm run ui-shots` の段 r（ダークのスマホ・タブレット・PC。絵は `b-cards-close`・`b-cards-move`・`b-cards-other`・`b-cards-sending`）が、`/turns` を `page.route` で書き換え（下書き・確認・常に許可のルール・期限）、POST を受け口で受けて、口に渡ったか（渡っていなければ名前つきで止まる）・置き方（`.tl` の高さ 0・左端と上端・幅・一番下・カードの無い話題は根が出ない）・残り時間（実行中のターンを空にして 1 秒で進む・同じ要素・60 秒を切ると `data-urgent`）・常に許可のチェック・許可を押す（送っている間と、通った後の読み直しまで押せない）・質問の選び方・指で「その他」（スマホ・タブレットは tap）で欄に焦点・矢印キーでは移らない（PC）・打った字と変換の途中（CDP）が描き直し・刻み・読み直しで残る・答える・やめる・閉じる前の確認（番号は昇順）・場所を変える確認・空の文・当たり（44）・古い CSS の漏れ（見本と。タブレットを除く）・重さ（スマホ。「その他」に 50 字と刻み 3 回の `SA.cards.draw` が段 n と同じ上限まで・その間の `SA.talk.draw` 0 回。数は標準出力の 1 行）を見る。`--only b-cards` で段 r だけを回せる（1 組 26〜32 秒）

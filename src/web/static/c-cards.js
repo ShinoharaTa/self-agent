@@ -188,10 +188,10 @@ export function MoveCard({ item, on }) {
   <//>`;
 }
 
-/** 待ちの行（busy。文は「…」で終わる。動きは無い）と、1 行の文 */
+/** 待ちの行（busy。文は「…」で終わる。動きは無い）と、1 行の文。待ちの行は読み上げる（aria-busy を付けると、外れるまで読み上げが待たされる。この行は外れずに消える） */
 export function Note({ text, busy }) {
   return busy
-    ? html`<p class="c-note" role="status" aria-busy="true" data-busy="true">${str(text)}</p>`
+    ? html`<p class="c-note" role="status" data-busy="true">${str(text)}</p>`
     : html`<p class="c-note">${str(text)}</p>`;
 }
 
