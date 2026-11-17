@@ -381,6 +381,7 @@ function loadViews(opts: { v3?: boolean } = {}) {
   const posts: string[] = [];
   const bodies: unknown[] = [];
   const toasts: string[] = [];
+  const toastOpts: unknown[] = [];
   let reply: (path: string) => Promise<unknown> = () => Promise.resolve({});
   const context = {
     window: {} as Record<string, unknown>,
@@ -404,7 +405,10 @@ function loadViews(opts: { v3?: boolean } = {}) {
     },
   };
   // トーストは記録だけ（views.js は読み込みのときに SA.ui.toast を受け取る）
-  (SA.ui as { toast: unknown }).toast = (text: string) => toasts.push(text);
+  (SA.ui as { toast: unknown }).toast = (text: string, _action: unknown, opts: unknown) => {
+    toasts.push(text);
+    toastOpts.push(opts ?? null);
+  };
   vm.runInNewContext(read("views.js"), context);
   const views = SA.views as {
     ccPermissionCard: (sessionId: string, p: unknown, rc: string | null) => FakeNode | null;
@@ -412,7 +416,7 @@ function loadViews(opts: { v3?: boolean } = {}) {
     ccQuestionForget: (id: number) => void;
     placeChildren: (container: FakeNode, nodes: Array<FakeNode | null>) => void;
   };
-  return { SA, views, posts, bodies, toasts, setReply: (fn: (path: string) => Promise<unknown>) => (reply = fn) };
+  return { SA, views, posts, bodies, toasts, toastOpts, setReply: (fn: (path: string) => Promise<unknown>) => (reply = fn) };
 }
 
 test("web static: 許可のカードは [許可][拒否] の 2 つ（許可 secondary・拒否 ghost）と常に許可のチェックで、チェックで [許可] の送り先が always に変わる", async () => {
@@ -2035,6 +2039,82 @@ test("web static: ccAsk と古い質問のカードは同じ覚え（片方で�
   const permCard = views.ccPermissionCard("s1", permissionRequest(70), null)!;
   const box = descendants(permCard).find((n) => n.tagName === "input")! as FakeNode & { checked: boolean };
   assert.equal(box.checked, true, "常に許可のチェックも同じ覚え");
+});
+
+type CcSendNote = { id: number; text: string; tone: string; cancel: boolean };
+function ccSendOf(views: unknown) {
+  return (views as { ccSend: { note: (pending: unknown) => CcSendNote | null; cancel: (sendId: number, sessionId: string | null) => Promise<boolean> } }).ccSend;
+}
+
+test("web static: ccSend.note は送った本文の文・色の種類・[やめる] を返し、文は古い帯（ccPendingBar）と同じ", () => {
+  const { views } = loadViews();
+  const ccSend = ccSendOf(views);
+  const bar = (views as unknown as { ccPendingBar: (sessionId: string, pending: unknown) => FakeNode | null }).ccPendingBar;
+  const plain = (v: unknown) => (v === null ? null : JSON.parse(JSON.stringify(v)));
+  assert.equal(ccSend.note(null), null);
+  assert.equal(ccSend.note({ id: "3", state: "queued" }), null, "id が数でない");
+  const p = (state: string, extra: Record<string, unknown> = {}) => ({ id: 3, state, lastPaneState: null, replyState: null, ...extra });
+  const cases: Array<[Record<string, unknown>, string, string, boolean]> = [
+    [p("awaiting_confirm"), "本文 #3: Discord の確認を待っています", "", false],
+    [p("queued"), "本文 #3: 届け待ち。入力待ちになったら届けます", "", true],
+    [p("delivering"), "本文 #3: 届けています…", "", false],
+    [p("delivered"), "本文 #3: 届けました", "done", false],
+    [p("unconfirmed"), "本文 #3: 届いたかを確かめられませんでした。画面で確かめてください。やり直しはしません", "warning", false],
+    [p("failed"), "本文 #3: 送れませんでした。セッションが終わったか、別の Claude Code に変わっています", "warning", false],
+    [p("gave_up"), "本文 #3: 入力待ちにならなかったため、届けるのをやめました", "warning", false],
+    [p("cancelled"), "本文 #3: 送るのをやめました", "", false],
+    // ダイアログが出ている間の届け待ち
+    [p("queued", { lastPaneState: "dialog" }), "本文 #3: ダイアログが出ているため待っています（端末か RC で答えてください）", "", true],
+    // 届けた後の返事の状態は「・」でつなぐ（届けていなければ付けない）
+    [p("delivered", { replyState: "posted" }), "本文 #3: 届けました・返事が来ました", "done", false],
+    [p("delivered", { replyState: "timed_out" }), "本文 #3: 届けました・返事が来ませんでした（中断されたか、24 時間経ちました）", "done", false],
+    [p("cancelled", { replyState: "posted" }), "本文 #3: 送るのをやめました", "", false],
+  ];
+  for (const [pending, text, tone, cancel] of cases) {
+    const label = JSON.stringify(pending);
+    assert.deepEqual(plain(ccSend.note(pending)), { id: 3, text, tone, cancel }, label);
+    // 古い帯と同じ字・同じ色・[やめる] の有無が同じ
+    const node = bar("s1", pending)!;
+    const span = node.children.find((n) => n.tagName === "span" && !n.classes.has("spinner"))!;
+    assert.equal(span.textContent, text, label);
+    assert.equal(node.classes.has("is-done"), tone === "done", label);
+    assert.equal(node.classes.has("is-warning"), tone === "warning", label);
+    assert.equal(node.buttons().length, cancel ? 1 : 0, label);
+  }
+});
+
+test("web static: ccSend.cancel は通ったかに resolve し（reject しない）、トーストを出して、sessionId があればそのセッションを読み直す", async () => {
+  const { SA, views, posts, toasts, toastOpts, setReply } = loadViews();
+  const ccSend = ccSendOf(views);
+  const loads: string[] = [];
+  (SA.store as { load: Record<string, unknown> }).load.ccSession = (id: string) => loads.push(id);
+  // 通る
+  assert.equal(await ccSend.cancel(3, "s1"), true);
+  assert.deepEqual(posts, ["/api/cc/sends/3/cancel"]);
+  assert.deepEqual(toasts, ["送るのをやめました"]);
+  assert.deepEqual(loads, ["s1"]);
+  // 409（届けている途中か、終わっている）
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 409 })));
+  assert.equal(await ccSend.cancel(4, "s1"), false);
+  assert.equal(toasts.at(-1), "この操作は古くなっています（届けている途中か、終わっています）");
+  assert.equal(toastOpts.at(-1), null, "409 はエラーのトーストでない");
+  assert.deepEqual(loads, ["s1", "s1"], "失敗しても読み直す");
+  // ほかの失敗は [もう一度] つきのエラー。[もう一度] は同じ道へもう一度送る
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 500 })));
+  assert.equal(await ccSend.cancel(5, "s1"), false);
+  assert.equal(toasts.at(-1), "送るのをやめられませんでした");
+  const opts = toastOpts.at(-1) as { level: string; retry: () => Promise<boolean> };
+  assert.equal(opts.level, "error");
+  setReply(() => Promise.resolve({}));
+  assert.equal(await opts.retry(), true);
+  assert.deepEqual(posts.slice(-2), ["/api/cc/sends/5/cancel", "/api/cc/sends/5/cancel"]);
+  assert.equal(toasts.at(-1), "送るのをやめました");
+  // sessionId が無ければ読まない
+  loads.length = 0;
+  assert.equal(await ccSend.cancel(6, null), true);
+  setReply(() => Promise.reject(Object.assign(new Error("x"), { status: 500 })));
+  assert.equal(await ccSend.cancel(7, null), false);
+  assert.deepEqual(loads, []);
 });
 
 test("web static: placeChildren は中に残る要素を動かさず（外さず）、ほかを前後に差し込む", () => {

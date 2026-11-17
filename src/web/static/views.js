@@ -887,42 +887,68 @@
     );
   }
 
-  /** 届け待ちを取り下げる（[やめる]）。sessionId があれば終わった後にそのセッションを読み直す。button は押したもの（[もう一度] からは null） */
-  function cancelCcSend(sendId, sessionId, button) {
-    if (button) button.disabled = true;
-    SA.api.post("/api/cc/sends/" + sendId + "/cancel", {}, { quiet: true }).then(
-      () => {
-        toast("送るのをやめました");
+  /**
+   * 届け待ちを取り下げる（[やめる]）。通ったかに resolve する（reject しない）。
+   * sessionId があれば、通っても失敗しても終わった後にそのセッションを読み直す
+   */
+  function ccSendCancel(sendId, sessionId) {
+    return SA.api
+      .post("/api/cc/sends/" + sendId + "/cancel", {}, { quiet: true })
+      .then(
+        () => {
+          toast("送るのをやめました");
+          return true;
+        },
+        (err) => {
+          if (err && err.status === 409) toast("この操作は古くなっています（届けている途中か、終わっています）");
+          else toast((err && err.toast) || "送るのをやめられませんでした", null, { level: "error", retry: () => ccSendCancel(sendId, sessionId) });
+          return false;
+        },
+      )
+      .then((ok) => {
         if (sessionId) store.load.ccSession(sessionId);
-      },
-      (err) => {
-        if (button) button.disabled = false;
-        if (err && err.status === 409) toast("この操作は古くなっています（届けている途中か、終わっています）");
-        else toast((err && err.toast) || "送るのをやめられませんでした", null, { level: "error", retry: () => cancelCcSend(sendId, sessionId, null) });
-        if (sessionId) store.load.ccSession(sessionId);
-      },
-    );
+        return ok;
+      });
   }
 
-  /** 送った本文の状態の行。届け待ちなら [やめる] */
-  function ccPendingBar(sessionId, pending) {
+  /** 古い描き方の [やめる]。button は押したもの（[もう一度] からは null）で、通らなければ押せる形に戻す */
+  function cancelCcSend(sendId, sessionId, button) {
+    if (button) button.disabled = true;
+    ccSendCancel(sendId, sessionId).then((ok) => {
+      if (!ok && button) button.disabled = false;
+    });
+  }
+
+  /** 送った本文の状態の文と色の種類（tone は done・warning・""）。届け待ちなら cancel。pending が無い・id が数でなければ null */
+  function ccSendNote(pending) {
     if (!pending || typeof pending.id !== "number") return null;
     // ダイアログ（trust・許可など）が出ている間は積んだまま待つ（再起動の後も、最後に見たペインの状態で分かる）
     const text =
       pending.state === "queued" && pending.lastPaneState === "dialog"
         ? "ダイアログが出ているため待っています（端末か RC で答えてください）"
         : CC_SEND_STATES[pending.state] || String(pending.state);
-    const cls = pending.state === "delivered" ? " is-done" : pending.state === "unconfirmed" || pending.state === "failed" || pending.state === "gave_up" ? " is-warning" : "";
+    const tone = pending.state === "delivered" ? "done" : pending.state === "unconfirmed" || pending.state === "failed" || pending.state === "gave_up" ? "warning" : "";
     const reply = pending.state === "delivered" && pending.replyState ? CC_REPLY_STATES[pending.replyState] : null;
-    const children = [el("span", { text: "本文 #" + pending.id + ": " + text + (reply ? "・" + reply : "") })];
+    return { id: pending.id, text: "本文 #" + pending.id + ": " + text + (reply ? "・" + reply : ""), tone, cancel: pending.state === "queued" };
+  }
+
+  /** 送った本文の状態の行。届け待ちなら [やめる] */
+  function ccPendingBar(sessionId, pending) {
+    const note = ccSendNote(pending);
+    if (!note) return null;
+    const cls = note.tone === "done" ? " is-done" : note.tone === "warning" ? " is-warning" : "";
+    const children = [el("span", { text: note.text })];
     if (pending.state === "queued" || pending.state === "delivering") children.unshift(el("span", { class: "spinner spinner-sm", "aria-hidden": "true" }));
-    if (pending.state === "queued") {
+    if (note.cancel) {
       const cancel = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "やめる" });
       cancel.addEventListener("click", () => cancelCcSend(pending.id, sessionId, cancel));
       children.push(cancel);
     }
     return el("div", { class: "cc-send-state" + cls, "data-cc-pending": sessionId, "aria-live": "polite" }, children);
   }
+
+  /** 新しい殻の入力欄の部品（c-composer）の帯に渡す、DOM を作らない出口 */
+  const ccSend = { note: ccSendNote, cancel: ccSendCancel };
 
   /** 入力欄（会話の入力欄と同じキー。chat.js の bindSendKeys）。描き直しでは作り直さない（書きかけ・フォーカス・IME の変換を保つ） */
   function ccComposer(sessionId, title) {
@@ -2093,6 +2119,7 @@
     // Claude Code のチャンネルの会話のタブ（chat.js。CC14）と共用する
     ccPendingBar,
     cancelCcSend,
+    ccSend,
     ccSessionOf,
     rcUrl,
     CC_STATES,
