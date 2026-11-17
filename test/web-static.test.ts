@@ -6618,7 +6618,7 @@ test("web static: カードの draw が false なら drop して根を外し、�
   assert.equal(box.querySelectorAll("[data-cards]").length, 0);
 });
 
-test("web static: 会話の口が無い・Claude Code のチャンネル・右腕の枠ではカードの口を呼ばず、[data-cards] を作らない", () => {
+test("web static: 会話の口が無い・右腕の枠ではカードの口を呼ばず、[data-cards] を作らない", () => {
   // 会話の口が無い（カードの口だけ）
   const a = loadChat();
   const { cards: onlyCards } = withCards(a);
@@ -6628,24 +6628,16 @@ test("web static: 会話の口が無い・Claude Code のチャンネル・右�
   assert.equal(onlyCards.draws.length, 0);
   assert.equal(boxA.querySelectorAll("[data-cards]").length, 0);
   assert.ok(boxA.querySelector("section.card"));
-  // Claude Code のチャンネルと右腕の枠
+  // 右腕の枠
   const b = loadChat();
   withTalk(b);
   withComposer(b);
   const { cards } = withCards(b);
-  const store = b.store as unknown as Record<string, unknown>;
-  store.ccSessions = {};
-  store.ccPendingOf = (_id: string, p: unknown) => p;
-  const permission = { id: 7, state: "pending", toolName: "Bash", summary: "ls", expiresAt: new Date(Date.now() + 60_000).toISOString(), requestHash: "h", alwaysRule: null };
-  b.put("2", [], { kind: "cc", name: "cc-x", cc: { sessionId: "s1", state: "idle", permission } });
-  const boxB = b.box();
-  b.chat.render(boxB, "2");
   b.put("3", [], { kind: "inbox" });
   const boxC = b.box();
   b.chat.render(boxC, "3", { title: "右腕", placeholder: "右腕に送る" });
   assert.equal(cards.draws.length, 0);
-  for (const box of [boxB, boxC]) assert.equal(box.querySelectorAll("[data-cards]").length, 0);
-  assert.ok(boxB.querySelector("section.cc-permission"), "Claude Code のチャンネルの許可は古いカードのまま");
+  assert.equal(boxC.querySelectorAll("[data-cards]").length, 0);
 });
 
 test("web static: 1 秒の刻みは pending の許可・質問が出ている話題のカードだけを描き、実行中のターンが無くても描く。隠れている間・許可の無い話題・SA.cards が無ければ描かない", () => {
@@ -6680,6 +6672,302 @@ test("web static: 1 秒の刻みは pending の許可・質問が出ている話
   delete SA.cards;
   tick();
   assert.equal(cards.draws.length, n);
+});
+
+// ===== Claude Code のチャンネルのカード（chat.js が kind cc の状態の行・許可・質問・文を SA.cards に渡す。K5） =====
+/** 送りの状態（ccStatusOf・ccSend.note の材料） */
+const ccPend = (id: number, state: string, extra: Record<string, unknown> = {}) => ({ id, state, lastPaneState: null, replyState: null, ...extra });
+/** Claude Code のセッションの保留中の許可（sessionId は持たない。送り先はチャンネルのセッション） */
+const ccPermissionOf = (id: number, extra: Record<string, unknown> = {}) => ({
+  id,
+  state: "pending",
+  toolName: "Bash",
+  summary: "ls",
+  expiresAt: new Date(Date.now() + 600000).toISOString(),
+  requestHash: "h" + id,
+  alwaysRule: null,
+  ...extra,
+});
+
+/**
+ * 会話・入力欄・カードの口を置き、Claude Code のチャンネル（9。セッション s1）を描く。セッションは読んだ形（中身なし）にして描くたびの読みを止め、
+ * セッションの今の読みを ccLoads に積む（quiet の読みは "quiet:" 付き）。ctl.hold なら quiet の読みを手で返し、ctl.fail なら quiet の読みが reject する
+ */
+function ccCardsChat(cc: Record<string, unknown> = {}, list: unknown[] = [chatTurn(10, "owner", "a")]) {
+  const c = loadChat();
+  const { comp } = withComposer(c);
+  const { talk } = withTalk(c);
+  const { SA, cards } = withCards(c);
+  const store = c.store as unknown as Record<string, unknown>;
+  store.ccSessions = { s1: { session: null, missing: false } };
+  store.ccPendingOf = (_id: string, p: unknown) => p;
+  const ccLoads: string[] = [];
+  const ctl = { hold: false, fail: false, held: [] as Array<() => void> };
+  const load = c.store.load as Record<string, unknown>;
+  load.ccSession = (id: string, opts?: { quiet?: boolean }) => {
+    const quiet = !!(opts && opts.quiet);
+    ccLoads.push((quiet ? "quiet:" : "") + id);
+    if (quiet && ctl.fail) return Promise.reject(new Error("x"));
+    if (quiet && ctl.hold) return new Promise((r) => ctl.held.push(() => r(null)));
+    return Promise.resolve(null);
+  };
+  load.cc = () => {
+    ccLoads.push("list");
+    return Promise.resolve(null);
+  };
+  const put = (o: Record<string, unknown> = {}, l: unknown[] = list) => c.put("9", l, { kind: "cc", name: "cc-x", cc: { sessionId: "s1", state: "idle", ...o } });
+  put(cc);
+  const box = c.box();
+  c.chat.render(box, "9");
+  /** チャンネルの今を替えて描き直す */
+  const draw = (o: Record<string, unknown> = {}, l: unknown[] = list) => {
+    put(o, l);
+    c.chat.render(box, "9");
+  };
+  /** 手で返す quiet の読みを全部返す */
+  const release = async () => {
+    for (const r of ctl.held.splice(0)) r();
+    await c.flush();
+  };
+  return { c, SA, comp, talk, cards, box, ccLoads, ctl, draw, release };
+}
+
+const cardKeys = (cards: { draws: CardsCall[] }) => cardsPlain(cards).map((i) => i.kind + ":" + i.id);
+
+test("web static: SA.cards があると Claude Code のチャンネルも [data-cards] に描き、.tl に状態の行・古いカード・文を作らず、ccPermissionCard を呼ばない", () => {
+  const c = loadChat();
+  withComposer(c);
+  withTalk(c);
+  const { SA, cards } = withCards(c);
+  const views = SA.views as Record<string, unknown>;
+  let old = 0;
+  const card = views.ccPermissionCard as CardsFn;
+  views.ccPermissionCard = (...a: unknown[]) => {
+    old++;
+    return card(...a);
+  };
+  const store = c.store as unknown as Record<string, unknown>;
+  store.ccSessions = { s1: { session: null, missing: false } };
+  store.ccPendingOf = (_id: string, p: unknown) => p;
+  c.put("9", [], { kind: "cc", name: "cc-x", cc: { sessionId: "s1", state: "idle", pending: ccPend(3, "queued"), permission: ccPermissionOf(7) } });
+  const box = c.box();
+  c.chat.render(box, "9");
+  c.put("8", [], { kind: "cc", name: "cc-y", cc: { sessionId: "s1", state: "ended" } });
+  const ended = c.box();
+  c.chat.render(ended, "8");
+  for (const b of [box, ended]) {
+    const kids = talkKids(b);
+    assert.equal(kids.length, 3);
+    assert.ok(kids[1]!.getAttribute("data-cards"));
+    assert.equal(kids[2]!.children.length, 0);
+    for (const sel of ["[data-cc-status]", "div.cc-status", "section.card", "section.cc-permission", "p.tl-hint"]) assert.equal(b.querySelectorAll(sel).length, 0, sel);
+  }
+  assert.equal(old, 0);
+  assert.equal(cards.draws.length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(cards.draws[0]!.state.items)).map((i: CardItem) => i.kind + ":" + i.id), ["status:cc", "permission:7", "note:empty"]);
+  assert.deepEqual(cardsPlain(cards), [
+    { kind: "note", id: "ended", text: "このセッションは終わっています。Discord のチャンネルに書くと、同じディレクトリで起動して続けられます。" },
+    { kind: "note", id: "empty", text: "まだ会話はありません。下の欄か Discord で送ると、このセッションに届きます。" },
+  ]);
+});
+
+test("web static: Claude Code のチャンネルの状態の行は ccStatusOf の 6 つの文で、［やめる］は届け待ち（届けている途中でない）だけ。終わったセッションには出さない", () => {
+  const h = ccCardsChat();
+  const cases: Array<[Record<string, unknown>, string, unknown]> = [
+    [{ pending: ccPend(3, "delivering") }, "届けています…", null],
+    [{ pending: ccPend(3, "queued", { lastPaneState: "dialog" }) }, "ダイアログが出ているため待っています（端末か RC で答えてください）", { id: 3, busy: false }],
+    [{ state: "running", pending: ccPend(3, "queued") }, "作業中です。終わったら届けます", { id: 3, busy: false }],
+    [{ pending: ccPend(3, "queued") }, "届け待ちです。入力待ちになったら届けます", { id: 3, busy: false }],
+    [{ state: "running" }, "作業中…", null],
+    [{ pending: ccPend(3, "delivered", { replyState: "waiting" }) }, "届けました。返事を待っています", null],
+  ];
+  for (const [cc, text, cancel] of cases) {
+    h.draw(cc);
+    assert.deepEqual(cardsPlain(h.cards)[0], { kind: "status", id: "cc", text, cancel }, text);
+  }
+  // 状態の行が無い（返事を戻した後・終わった）
+  h.draw({ pending: ccPend(3, "delivered", { replyState: "sent" }) });
+  assert.deepEqual(cardKeys(h.cards), []);
+  h.draw({ state: "ended", pending: ccPend(3, "queued") });
+  assert.deepEqual(cardKeys(h.cards), ["note:ended"]);
+});
+
+test("web static: Claude Code のチャンネルのカードの項目は 状態の行 → 許可・質問 → 終わった文 → 空の文 の順", () => {
+  const h = ccCardsChat({ state: "running", pending: ccPend(3, "queued"), permission: ccPermissionOf(7) }, []);
+  assert.deepEqual(cardKeys(h.cards), ["status:cc", "permission:7", "note:empty"]);
+  const item = cardsPlain(h.cards)[1]!;
+  assert.equal(item.tool, "Bash");
+  assert.equal(item.busy, false);
+  // 終わったセッションには状態の行が出ないので、終わった文は要求の次
+  h.draw({ state: "ended", permission: questionPermission(8) }, []);
+  assert.deepEqual(cardKeys(h.cards), ["question:8", "note:ended", "note:empty"]);
+  // 会話が在れば空の文は無い
+  h.draw({ state: "ended" }, [chatTurn(10, "owner", "a")]);
+  assert.deepEqual(cardKeys(h.cards), ["note:ended"]);
+});
+
+test("web static: Claude Code のチャンネルの保留中でない要求はカードに出さず、選んだ状態を 1 回捨てる（ccQuestionForget）", () => {
+  const h = ccCardsChat({ permission: questionPermission(44) });
+  const views = h.SA.views as Record<string, unknown>;
+  const ask = views.ccAsk as CcAsk;
+  cardsOn(h.cards).pick!(44, 0, "赤", true);
+  assert.deepEqual((cardsPlain(h.cards)[0]!.questions as Array<{ picked: string[] }>)[0]!.picked, ["赤"]);
+  const forget = views.ccQuestionForget as CardsFn;
+  const forgot: unknown[] = [];
+  views.ccQuestionForget = (id: unknown) => {
+    forgot.push(id);
+    return forget(id);
+  };
+  h.draw({ permission: questionPermission(44, { state: "allowed" }) });
+  assert.deepEqual(cardKeys(h.cards), []);
+  assert.deepEqual(forgot, [44]);
+  assert.deepEqual(JSON.parse(JSON.stringify(ask.item("s1", questionPermission(44))!.questions![0]!.picked)), [], "選んだ状態は捨てた");
+});
+
+test("web static: 状態の行の on.cancel は今の届け待ちの id だけを 1 回送り、送っている間と通った後セッションを 2 回読み直すまで busy。失敗はすぐ外れ、終わりに会話のタブを描き直す", async () => {
+  const h = ccCardsChat({ pending: ccPend(3, "queued") });
+  const held = holdPost(h.c);
+  h.ctl.hold = true;
+  h.c.refreshes.length = 0;
+  const comps = h.comp.draws.length;
+  cardsOn(h.cards).cancel!(3);
+  assert.equal(h.comp.draws.length, comps + 1, "呼んだすぐ後に入力欄も描く");
+  cardsOn(h.cards).cancel!(3);
+  assert.deepEqual(held.map((x) => x.path), ["/api/cc/sends/3/cancel"]);
+  assert.deepEqual(cardsPlain(h.cards)[0]!.cancel, { id: 3, busy: true }, "送っている間");
+  held[0]!.resolve({});
+  await h.c.flush();
+  h.draw({ pending: ccPend(3, "queued") });
+  assert.deepEqual(cardsPlain(h.cards)[0]!.cancel, { id: 3, busy: true }, "1 回目の読み直しの前");
+  await h.release();
+  h.draw({ pending: ccPend(3, "queued") });
+  assert.deepEqual(cardsPlain(h.cards)[0]!.cancel, { id: 3, busy: true }, "2 回目の読み直しの前");
+  assert.equal(h.ctl.held.length, 1);
+  await h.release();
+  h.draw({ pending: ccPend(3, "queued") });
+  assert.deepEqual(cardsPlain(h.cards)[0]!.cancel, { id: 3, busy: false });
+  assert.deepEqual(h.ccLoads, ["s1", "quiet:s1", "quiet:s1"], "ccSend.cancel の 1 回と cardOp の 2 回");
+  assert.ok(h.c.refreshes.includes("ch:9"));
+  assert.equal(h.c.loads.filter((id) => id === "9").length, 0, "/turns は読まない");
+  assert.deepEqual(h.c.toasts, ["送るのをやめました"]);
+  // 失敗はすぐ外れる（cardOp は読み直さない）
+  cardsOn(h.cards).cancel!(3);
+  held[1]!.reject(Object.assign(new Error("x"), { status: 500 }));
+  await h.c.flush();
+  h.draw({ pending: ccPend(3, "queued") });
+  assert.deepEqual(cardsPlain(h.cards)[0]!.cancel, { id: 3, busy: false });
+  assert.deepEqual(h.ccLoads, ["s1", "quiet:s1", "quiet:s1", "s1"]);
+  // id が違う・届け待ちでない・Claude Code のチャンネルでない → 送らない
+  cardsOn(h.cards).cancel!(4);
+  h.draw({ pending: ccPend(3, "delivering") });
+  cardsOn(h.cards).cancel!(3);
+  h.draw({});
+  cardsOn(h.cards).cancel!(3);
+  await h.c.flush();
+  assert.equal(held.length, 2);
+  const s = cardsChat();
+  const sHeld = holdPost(s.c);
+  cardsOn(s.cards).cancel!(3);
+  await s.c.flush();
+  assert.equal(sHeld.length, 0);
+});
+
+test("web static: Claude Code のチャンネルのカードの on.permit・answer・dismiss はチャンネルのセッションへ送り、読み直しはセッションの今（/turns を読まない）", async () => {
+  const h = ccCardsChat({ permission: ccPermissionOf(7) });
+  const held = holdPost(h.c);
+  h.ctl.hold = true;
+  cardsOn(h.cards).permit!(7, "allow");
+  cardsOn(h.cards).permit!(7, "deny");
+  assert.deepEqual(held.map((x) => [x.path, JSON.parse(JSON.stringify(x.body))]), [["/api/cc/permissions/7/allow", { requestHash: "h7" }]]);
+  assert.equal(cardsPlain(h.cards)[0]!.busy, true);
+  held[0]!.resolve({});
+  await h.c.flush();
+  h.draw({ permission: ccPermissionOf(7) });
+  assert.equal(cardsPlain(h.cards)[0]!.busy, true, "読み直しの前");
+  await h.release();
+  await h.release();
+  h.draw({ permission: ccPermissionOf(7) });
+  assert.equal(cardsPlain(h.cards)[0]!.busy, false);
+  // 送りの終わりの読み（セッションと一覧）と cardOp の 2 回
+  assert.deepEqual(h.ccLoads, ["s1", "list", "quiet:s1", "quiet:s1"]);
+  assert.ok(h.c.refreshes.includes("ch:9"));
+  // 質問の答えと、答えない
+  h.ctl.hold = false;
+  h.draw({ permission: questionPermission(8) });
+  cardsOn(h.cards).pick!(8, 0, "赤", true);
+  cardsOn(h.cards).pick!(8, 1, "B", true);
+  cardsOn(h.cards).answer!(8);
+  held[1]!.resolve({});
+  await h.c.flush();
+  h.draw({ permission: questionPermission(9) });
+  cardsOn(h.cards).dismiss!(9);
+  held[2]!.resolve({});
+  await h.c.flush();
+  assert.deepEqual(held.slice(1).map((x) => [x.path, JSON.parse(JSON.stringify(x.body))]), [
+    ["/api/cc/permissions/8/answer", { requestHash: "qh", answers: [{ labels: ["赤"] }, { labels: ["B"] }] }],
+    ["/api/cc/permissions/9/deny", { requestHash: "qh" }],
+  ]);
+  assert.deepEqual(h.ccLoads.slice(4), ["s1", "list", "quiet:s1", "quiet:s1", "s1", "list", "quiet:s1", "quiet:s1"]);
+  assert.equal(h.c.loads.filter((id) => id === "9").length, 0, "/turns は読まない");
+});
+
+test("web static: Claude Code のチャンネルのカードの読み直しが reject しても待ちの形は外れ、捕まえ手の無い reject にならない", async (t) => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => {
+    process.off("unhandledRejection", onUnhandled);
+  });
+  const h = ccCardsChat({ permission: ccPermissionOf(7), pending: ccPend(3, "queued") });
+  h.ctl.fail = true;
+  cardsOn(h.cards).permit!(7, "allow");
+  cardsOn(h.cards).cancel!(3);
+  await h.c.flush();
+  await new Promise((r) => setImmediate(r));
+  h.draw({ permission: ccPermissionOf(7), pending: ccPend(3, "queued") });
+  const items = cardsPlain(h.cards);
+  assert.deepEqual(items[0]!.cancel, { id: 3, busy: false });
+  assert.equal(items[1]!.busy, false);
+  assert.ok(h.ccLoads.filter((x) => x === "quiet:s1").length >= 2, "読み直しを試した");
+  assert.deepEqual(unhandled, []);
+});
+
+test("web static: 1 秒の刻みは Claude Code のチャンネルの保留中の要求でもカードを描き、要求が無ければ描かない", () => {
+  const h = ccCardsChat({ permission: ccPermissionOf(7) });
+  const tick = h.c.intervals[0]!;
+  let n = h.cards.draws.length;
+  tick();
+  assert.deepEqual(h.cards.draws.slice(n).map((d) => d.root.getAttribute("data-cards")), ["9"]);
+  h.draw({ pending: ccPend(3, "queued") });
+  n = h.cards.draws.length;
+  tick();
+  assert.equal(h.cards.draws.length, n);
+});
+
+test("web static: Claude Code のチャンネルでカードの口が描けなければ、状態の行と許可のカードは古い .tl に出る", () => {
+  const h = ccCardsChat({ pending: ccPend(3, "queued"), permission: ccPermissionOf(7) });
+  h.cards.ok = false;
+  h.draw({ pending: ccPend(3, "queued"), permission: ccPermissionOf(7) });
+  assert.equal(h.box.querySelectorAll("[data-cards]").length, 0);
+  const tl = talkKids(h.box)[1]!;
+  assert.ok(tl.classes.has("tl"));
+  assert.equal(tl.querySelectorAll("[data-cc-status]").length, 1);
+  assert.equal(tl.querySelectorAll("section.card").length, 1);
+});
+
+test("web static: Claude Code のチャンネルの画面の写しは、開いていれば .tl（カードの根の次）に在る", () => {
+  const h = ccCardsChat({ state: "ended" });
+  assert.equal(h.box.querySelectorAll("section.card").length, 0);
+  chatHead(h.c, "9")!.menu.find((i) => i.label === "画面を見る")!.run!();
+  h.draw({ state: "ended" });
+  const kids = talkKids(h.box);
+  assert.equal(kids[1]!.getAttribute("data-cards"), "9");
+  assert.ok(kids[2]!.classes.has("tl"));
+  const screen = kids[2]!.querySelector("section.card")!;
+  assert.equal(screen.getAttribute("id"), "cc-screen-9");
+  assert.deepEqual(cardKeys(h.cards), ["note:ended"]);
 });
 
 // ===== M2b のレビューの直し =====
