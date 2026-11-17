@@ -1,4 +1,4 @@
-// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1〜K5）。部品の状態を並べ、ui-shots が撮る。
+// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1〜K6）。部品の状態を並べ、ui-shots が撮る。
 // 認証の前に配られるので、個人の情報と API の呼び出しを入れない。data-section・data-demo は ui-shots が要素を探す印（CSS では使わない）
 import { html, render, useRef, useState } from "./c-lib.js";
 import { Badge, Button, Empty, Field, IconButton, Loading, Mark, Segmented } from "./c-atoms.js";
@@ -8,6 +8,7 @@ import { BottomBar, TopBar } from "./c-shell.js";
 import { TalkTimeline, parseBlocks, talkModel } from "./c-talk.js";
 import { Composer, composerModel } from "./c-composer.js";
 import { Cards } from "./c-cards.js";
+import { HandHead } from "./c-hand.js";
 
 // テーマ: shell.js と同じ（localStorage の self-agent-web:theme。dark・light は data-theme、system は外して OS に合わせる。読めなければ dark）
 const THEMES = ["dark", "light", "system"];
@@ -693,6 +694,35 @@ function CardDemos() {
   <//>`;
 }
 
+/** 右腕の見本の札（返事の本文の <#ID> の代わり。1 つは meta 無し） */
+const HAND_REFS = [
+  { id: "h1", title: "見本の話題: 週末の買い物の段取りを決める", meta: "12:40" },
+  { id: "h2", title: "見本の話題: 部屋の片付け" },
+];
+const HAND_MARK = /<#[a-z0-9]+>/g;
+/** 右腕の見本の文の関数（会話の見本と同じ。返事の本文から印を外し、印の数だけ札を返す） */
+const HAND_FMT = {
+  ...TALK_FMT,
+  reply: (text) => text.replace(HAND_MARK, "").trim(),
+  refs: (text) => HAND_REFS.slice(0, (text.match(HAND_MARK) || []).length),
+};
+const HAND_TURNS = [
+  { id: "a1", kind: "owner", text: "週末の買い物と片付けの話題はどこ？", time: "12:41" },
+  { id: "a2", kind: "agent", text: "この 2 つです。\n<#h1> <#h2>", time: "12:41" },
+];
+const HAND_ON = { older() {}, toggleSteps() {}, toggleRunSteps() {}, stop() {}, continue() {}, ref() {} };
+
+/** 右腕の見本（右腕の列と同じ 360px の箱）。押しても何も起きない */
+function Hands() {
+  const model = talkModel({ channelId: "g-hand", turns: HAND_TURNS, hasMore: false, running: null, stopping: false, openSteps: new Set(), runStepsOpen: false, fmt: HAND_FMT, on: HAND_ON }, parseBlocks);
+  return html`<${Section} name="hand" title="右腕">
+    <div class="c-gallery-hand">
+      <${HandHead} title="右腕" menu=${true} on=${{ menu() {}, close() {} }} />
+      <${TalkTimeline} model=${model} on=${HAND_ON} />
+    </div>
+  <//>`;
+}
+
 /** 知らせの入れ物は見本の根の直下に 1 つ（自動では消さない。× で消す） */
 function Gallery() {
   const [toasts, setToasts] = useState([]);
@@ -721,6 +751,7 @@ function Gallery() {
     <${Talks} />
     <${Composers} />
     <${CardDemos} />
+    <${Hands} />
     <${Toast} items=${toasts} onDismiss=${dismiss} />
   `;
 }

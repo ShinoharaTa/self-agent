@@ -108,7 +108,7 @@ test("web vendor: gallery.html に inline の script・style・style= と on…=
   // c-shell.css は当たらない（名前の頭がスラッシュの物だけ）
   assert.doesNotMatch(html, /\/(?:app|shell)\.css/);
   const refs = [...html.matchAll(/<(?:link|script)\b[^>]*\b(?:href|src)="([^"]+)"/g)].map((m) => m[1] ?? "");
-  assert.deepEqual(refs, ["/static/base.css", "/static/tokens.css", "/static/c-atoms.css", "/static/c-sheet.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css", "/static/c-cards.css", "/static/c-gallery.css", "/static/c-gallery.js"]);
+  assert.deepEqual(refs, ["/static/base.css", "/static/tokens.css", "/static/c-atoms.css", "/static/c-sheet.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css", "/static/c-cards.css", "/static/c-hand.css", "/static/c-gallery.css", "/static/c-gallery.js"]);
   for (const ref of refs) {
     const target = staticFileFor(ref, DIRS);
     assert.ok(target !== undefined, `${ref}: 配れない名前`);
