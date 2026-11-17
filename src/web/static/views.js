@@ -1075,17 +1075,22 @@
       },
     ).then((ok) => {
       ccPermissionBusy.delete(p.id);
-      // プロジェクトのセッションの会話のタブ（kind session）のカードは /turns の channel から出す（docs/plan/unify.md §6.1 の 5）
-      const ch = tabId && tabId.startsWith("ch:") ? SA.chat.channelById(tabId.slice(3)) : null;
-      if (ch && ch.kind === "session") {
-        store.load.turns(ch.id, { quiet: true });
-        SA.app.refresh(tabId);
-        return ok;
-      }
-      store.load.ccSession(sessionId);
-      store.load.cc({ quiet: true });
+      reloadAfterCcAnswer(sessionId, tabId);
       return ok;
     });
+  }
+
+  /** 許可・質問に答えた後の読み直し（通っても失敗でも）。
+   * プロジェクトのセッションの会話のタブ（kind session）のカードは /turns の channel から出す（docs/plan/unify.md §6.1 の 5） */
+  function reloadAfterCcAnswer(sessionId, tabId) {
+    const ch = tabId && tabId.startsWith("ch:") ? SA.chat.channelById(tabId.slice(3)) : null;
+    if (ch && ch.kind === "session") {
+      store.load.turns(ch.id, { quiet: true });
+      SA.app.refresh(tabId);
+      return;
+    }
+    store.load.ccSession(sessionId);
+    store.load.cc({ quiet: true });
   }
 
   // ----- 質問（AskUserQuestion。docs/plan/claude-code-questions.md §4。Q3）: 問ごとに選択肢（1 つ選ぶ形はラジオ・複数はチェック）と「その他」。
@@ -1187,8 +1192,7 @@
       },
     ).then((ok) => {
       ccPermissionBusy.delete(p.id);
-      store.load.ccSession(sessionId);
-      store.load.cc({ quiet: true });
+      reloadAfterCcAnswer(sessionId, tabId);
       return ok;
     });
   }
