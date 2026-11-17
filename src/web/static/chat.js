@@ -45,6 +45,9 @@
   const WAIT_RENEW_TEXT = "会話を新しくしています…";
   const EMPTY_TEXT = "まだ会話はありません。下の欄か Discord で送ると始まります。";
   const DONE_TEXT = "完了したセッションです。発言すると進行中に戻ります。";
+  /** Claude Code のチャンネルの終わった文と空の文（古い描き方と部品のカードで同じ文） */
+  const CC_ENDED_TEXT = "このセッションは終わっています。Discord のチャンネルに書くと、同じディレクトリで起動して続けられます。";
+  const CC_EMPTY_TEXT = "まだ会話はありません。下の欄か Discord で送ると、このセッションに届きます。";
 
   /** リンクにするのは https の Discord の URL だけ */
   function discordUrl(url) {
@@ -1321,10 +1324,11 @@
       items.push({ kind: "move", id: mp.id, from: String(mp.from || ""), to: String(mp.to || ""), busy: cardBusy.has("move:" + mp.id) });
     }
     // プロジェクトのセッションの許可・質問（保留中だけ。終わったものは選んだ状態を捨てる）
-    if (ch && ch.kind === "session" && ch.permission && typeof ch.permission.id === "number") {
-      const p = ch.permission;
+    const ask = ch && ch.kind === "session" ? askRequestOf(ch) : null;
+    if (ask) {
+      const p = ask;
       if (p.state === "pending") {
-        const item = SA.views.ccAsk.item(p.sessionId, p);
+        const item = SA.views.ccAsk.item(askSessionOf(ch, p), p);
         if (item) items.push(cardBusy.has("ask:" + p.id) ? Object.assign(item, { busy: true }) : item);
       } else {
         SA.views.ccQuestionForget(p.id);
@@ -1335,11 +1339,27 @@
     return items;
   }
 
+  /** チャンネルの許可・質問の要求（プロジェクトのセッションは ch.permission、Claude Code のチャンネルはセッションの今）。id が数でなければ null */
+  function askRequestOf(ch) {
+    const p = ch && ch.kind === "session" ? ch.permission : ch && ch.kind === "cc" ? ccLive(ch).permission : null;
+    return p && typeof p.id === "number" ? p : null;
+  }
+
+  /** 保留中の要求（無ければ null） */
+  function pendingAskOf(ch) {
+    const p = askRequestOf(ch);
+    return p && p.state === "pending" ? p : null;
+  }
+
+  /** 要求の送り先のセッション（Claude Code のチャンネルはそのチャンネルのセッション、プロジェクトのセッションは要求の sessionId） */
+  function askSessionOf(ch, p) {
+    return ch && ch.kind === "cc" ? ccLive(ch).sessionId : p.sessionId;
+  }
+
   /** 今の保留中の要求（id が同じで、質問か許可かが kind と合うときだけ。違えば null: 古い画面からの押しは捨てる） */
   function askOf(channelId, id, kind) {
-    const ch = channelById(channelId);
-    const p = ch && ch.kind === "session" ? ch.permission : null;
-    if (!p || typeof p.id !== "number" || p.state !== "pending" || p.id !== id) return null;
+    const p = pendingAskOf(channelById(channelId));
+    if (!p || p.id !== id) return null;
     return isQuestion(p) === (kind === "question") ? p : null;
   }
 
@@ -1466,9 +1486,7 @@
     if (!SA.cards || cardsBroken || document.visibilityState !== "visible") return;
     for (const root of document.querySelectorAll("[data-cards]")) {
       const id = root.getAttribute("data-cards");
-      const ch = channelById(id);
-      const p = ch && ch.kind === "session" ? ch.permission : null;
-      if (!p || p.state !== "pending") continue;
+      if (!pendingAskOf(channelById(id))) continue;
       if (!drawCards(id)) return;
     }
   }
@@ -1567,7 +1585,7 @@
       const screen = ccScreenSection(ch, channelId);
       if (screen) timeline.append(screen);
       if (live.state === "ended") {
-        timeline.append(el("p", { class: "tl-hint", text: "このセッションは終わっています。Discord のチャンネルに書くと、同じディレクトリで起動して続けられます。" }));
+        timeline.append(el("p", { class: "tl-hint", text: CC_ENDED_TEXT }));
       }
       // 行が同じ送信の状態（届け待ち・届けた）を出している間は、入力欄の上の帯を出さない
       const statusKind = status ? status.getAttribute("data-cc-status") : null;
@@ -1584,7 +1602,7 @@
     }
     if (!cards && t.turns.length === 0 && !run) {
       timeline.append(
-        el("p", { class: "tl-hint", text: isCc ? "まだ会話はありません。下の欄か Discord で送ると、このセッションに届きます。" : EMPTY_TEXT }),
+        el("p", { class: "tl-hint", text: isCc ? CC_EMPTY_TEXT : EMPTY_TEXT }),
       );
     }
     if (!cards && ch && ch.kind === "session" && ch.state === "done") {
