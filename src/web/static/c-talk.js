@@ -1,5 +1,5 @@
-// 会話の行の部品（docs/plan/web-ui-components.md §6 の K4）: TalkTimeline・TalkRows・Bubble・Steps・StepList・RunLine・Notice・Divider・Blocks・Inline と、
-// そのモデルの関数（talkModel・footOf）と返事の最小限の Markdown の解析、会話の口（talkMouth）。hook を使わない（Node から関数として呼べる）。状態は持たず、
+// 会話の行の部品（docs/plan/web-ui-components.md §6 の K4）: TalkTimeline・TalkRows・Bubble・Refs・Steps・StepList・RunLine・Notice・Divider・Blocks・Inline と、
+// そのモデルの関数（talkModel・footOf・refsOf）と返事の最小限の Markdown の解析、会話の口（talkMouth）。hook を使わない（Node から関数として呼べる）。状態は持たず、
 // 入口が talkModel(state, parse) の結果を押し込む。クラスは固定の文字列、状態は data-* と aria-*。置くのは TalkTimeline だけ。
 // 解析は ui.js の parseBlocks・parseInline の写し（同じ結果である事を test/web-render-text.test.ts が留める。正規表現は変えない）
 import { html } from "./c-lib.js";
@@ -132,24 +132,39 @@ export function footOf(turn, open, end) {
   return { text: end, tone, steps: n > 0 ? turn.steps : null, open: n > 0 && open === true };
 }
 
+/** 札の並び（返事の <#ID>）。並びでなければ []。id・title が空でない文字列の物だけを { id, title, meta } に（meta は文字列でなければ ""）。数は絞らない */
+export function refsOf(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const ref of list) {
+    if (!ref || typeof ref.id !== "string" || ref.id === "" || typeof ref.title !== "string" || ref.title === "") continue;
+    out.push({ id: ref.id, title: ref.title, meta: typeof ref.meta === "string" ? ref.meta : "" });
+  }
+  return out;
+}
+
 /**
  * 会話の行のモデル。{ older, items, running }。openSteps は key（行の id を文字列にした物）の Set。state.on は読まない（TalkTimeline の prop で渡す）。
- * continueKey の返事の行にだけ act: { busy }（busy は continueBusy が true のとき）。ほかの行には act の欄を置かない
+ * continueKey の返事の行にだけ act: { busy }（busy は continueBusy が true のとき）。ほかの行には act の欄を置かない。
+ * Bot の返事の行だけ: fmt.reply が関数なら解析する本文をその結果にし、fmt.refs が関数なら（差し替える前の本文から）札を取り、
+ * 1 つ以上在るときだけ返事のすぐ後ろに { kind: "refs", key: key + ":refs", refs } の行を足す
  */
 export function talkModel(state, parse) {
   const fmt = state.fmt;
   const turns = Array.isArray(state.turns) ? state.turns : [];
   const openSteps = state.openSteps;
-  const items = turns.map((turn, i) => {
+  const reply = typeof fmt.reply === "function" ? fmt.reply : null;
+  const refsFn = typeof fmt.refs === "function" ? fmt.refs : null;
+  const items = turns.flatMap((turn, i) => {
     const prev = i > 0 ? turns[i - 1] : null;
     const key = String(turn.id);
     const text = textOr(turn.text);
-    if (turn.kind === "divider") return { kind: "divider", key, text };
-    if (turn.kind === "notice") return { kind: "notice", key, text, time: fmt.time(turn) };
+    if (turn.kind === "divider") return [{ kind: "divider", key, text }];
+    if (turn.kind === "notice") return [{ kind: "notice", key, text, time: fmt.time(turn) }];
     const time = fmt.time(turn);
     const label = fmt.label(turn);
     if (turn.kind === "owner") {
-      return { kind: "bubble", key, who: "owner", label, name: null, blocks: [{ type: "plain", text }], time, state: turn.optimistic === true ? "sending" : null, foot: null };
+      return [{ kind: "bubble", key, who: "owner", label, name: null, blocks: [{ type: "plain", text }], time, state: turn.optimistic === true ? "sending" : null, foot: null }];
     }
     const open = openSteps ? openSteps.has(key) : false;
     const row = {
@@ -158,13 +173,14 @@ export function talkModel(state, parse) {
       who: "agent",
       label,
       name: fmt.name(turn, prev),
-      blocks: parse(text),
+      blocks: parse(reply ? textOr(reply(text)) : text),
       time,
       state: null,
       foot: hasOutcome(turn) ? footOf(turn, open, fmt.end(turn)) : null,
     };
     if (state.continueKey === key) row.act = { busy: state.continueBusy === true };
-    return row;
+    const refs = refsFn ? refsOf(refsFn(text)) : [];
+    return refs.length > 0 ? [row, { kind: "refs", key: key + ":refs", refs }] : [row];
   });
   return { older: state.hasMore === true, items, running: state.running ? runModel(state, turns) : null };
 }
@@ -197,13 +213,18 @@ export function TalkTimeline({ model, on, rows }) {
   </div>`;
 }
 
-/** 「前の会話を読む」と行（要素で包まず、配列を返す）。on は押されたときに今の状態を読む物を渡す（作ったときの物を持ち続けるため）。行の［続ける］は on.continue(key) */
+/** 「前の会話を読む」と行（要素で包まず、配列を返す）。on は押されたときに今の状態を読む物を渡す（作ったときの物を持ち続けるため）。行の［続ける］は on.continue(key)、札の［開く］は on.ref(id)（無ければ何もしない） */
 export function TalkRows({ older, items, on }) {
   return [
     older ? html`<div class="c-talk-older" key="older"><${Button} kind="ghost" size="sm" label="前の会話を読む" onPress=${() => on.older()} /></div>` : null,
     ...items.map((item) => {
       if (item.kind === "divider") return html`<${Divider} key=${item.key} text=${item.text} />`;
       if (item.kind === "notice") return html`<${Notice} key=${item.key} text=${item.text} time=${item.time} />`;
+      if (item.kind === "refs") {
+        return html`<${Refs} key=${item.key} refs=${item.refs} onOpen=${(id) => {
+          if (on.ref) on.ref(id);
+        }} />`;
+      }
       return html`<${Bubble} key=${item.key} ...${item} onToggle=${() => on.toggleSteps(item.key)} onAct=${() => on.continue(item.key)} />`;
     }),
   ];
@@ -281,6 +302,19 @@ export function Bubble({ who, label, name, blocks, time, state, foot, act, onTog
     ${foot && foot.open && Array.isArray(foot.steps) ? html`<${StepList} steps=${foot.steps} />` : null}
     ${act ? html`<div class="c-msg-act"><${Button} kind="secondary" size="sm" icon="play" label="続ける" busy=${act.busy} onPress=${() => onAct()} /></div>` : null}
   </article>`;
+}
+
+/** 札（返事の <#ID>）。札ごとに題・meta（空なら出さない）・［開く］（押すと onOpen(id)）。状態は持たない */
+export function Refs({ refs, onOpen }) {
+  return html`<div class="c-refs">
+    ${refs.map(
+      (ref) => html`<div class="c-ref" key=${ref.id} role="group" aria-label=${ref.title}>
+        <span class="c-ref-title">${ref.title}</span>
+        ${ref.meta !== "" ? html`<span class="c-ref-meta">${ref.meta}</span>` : null}
+        <${Button} kind="ghost" size="sm" label="開く" onPress=${() => onOpen(ref.id)} />
+      </div>`,
+    )}
+  </div>`;
 }
 
 /** 結果の文。手順があれば開閉のボタン（開閉の状態は外が持つ。aria-controls は付けず、一覧はボタンのすぐ後ろに出す） */

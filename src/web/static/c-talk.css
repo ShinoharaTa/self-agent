@@ -336,3 +336,37 @@
   height: var(--border-width);
   background: var(--border);
 }
+
+/* ===== 札（返事の <#ID>。返事のすぐ後ろの行。吹き出しの最大幅の外で、会話の列いっぱい。地は付けない） ===== */
+
+.c-refs {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* 高さは［開く］のボタンに任せる */
+.c-ref {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.c-ref-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.c-ref-meta {
+  flex: none;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  font-variant-numeric: tabular-nums;
+}

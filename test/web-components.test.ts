@@ -33,7 +33,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-sheet.css": /^\.c-(?:sheet|confirm|toast)(?![a-z])/,
   "c-list.css": /^\.c-(?:list|turns|turn|group|rows|row|fold)(?![a-z])/,
   "c-shell.css": /^\.c-(?:bottom|top)(?![a-z])/,
-  "c-talk.css": /^\.c-(?:talk|msg|bubble|md|steps|run|notice|divider)(?![a-z])/,
+  "c-talk.css": /^\.c-(?:talk|msg|bubble|md|steps|run|notice|divider|refs|ref)(?![a-z])/,
   "c-composer.css": /^\.c-composer(?![a-z])/,
   "c-cards.css": /^\.c-(?:cards|card|note|status)(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
@@ -1674,6 +1674,7 @@ const talk = (await import(talkUrl)) as Record<string, Fn> & {
   parseBlocks: (text: string) => Obj[];
   footOf: (turn: Obj, open: unknown, end: string) => Obj | null;
   talkModel: (state: Obj, parse: (text: string) => unknown) => Obj;
+  refsOf: (list: unknown) => Obj[];
 };
 
 test("web components: splitLinks は太字の中の URL を分け、空の文字の項を作らない", () => {
@@ -1963,6 +1964,80 @@ test("web components: Inline（リンクの href・target・rel、太字の中�
   const code = tree.flatMap((t) => find(t, "c-md-code"));
   assert.deepEqual(code.map((c) => [c.type, textOf(c)]), [["code", "c"]]);
   assert.equal(textOf(tree), "見て https://a.example/x と 太 https://b.example/y と c");
+});
+
+test("web components: talkModel: fmt.reply は Bot の返事の本文だけを差し替え、fmt.refs の札は返事のすぐ後ろの行（kind refs）。関数でない・空・id か題の無い物では行を足さない", () => {
+  const parse = (text: string): unknown => [{ type: "paragraph", text: "P:" + text }];
+  const base = talkFmt().fmt;
+  const replied: unknown[] = [];
+  const refsAsked: unknown[] = [];
+  const fmt = {
+    ...base,
+    reply: (text: unknown) => {
+      replied.push(text);
+      return "R:" + String(text);
+    },
+    refs: (text: unknown) => {
+      refsAsked.push(text);
+      if (text === "札 2") return [{ id: "t1", title: "話題 1", meta: "3 分" }, { id: "t2", title: "話題 2" }];
+      if (text === "札 壊れ") return [{ id: "", title: "空" }, { id: "t3", title: "" }, { id: 4, title: "数" }, null, "x"];
+      if (text === "札 並びでない") return { id: "t1", title: "話題 1" };
+      return [];
+    },
+  };
+  const turns = [
+    { id: 1, kind: "divider", text: "区切り" },
+    { id: 2, kind: "notice", text: "知らせ" },
+    { id: 3, kind: "owner", text: "札 2" },
+    { id: 4, kind: "agent", text: "札 2" },
+    { id: 5, kind: "agent", text: "札 壊れ" },
+    { id: 6, kind: "agent", text: "札 並びでない" },
+    { id: 7, kind: "agent", text: "札なし" },
+  ];
+  const m = talk.talkModel(talkState({ turns, fmt }), parse);
+  const items = m.items as Obj[];
+  assert.deepEqual(items.map((i) => i.key), ["1", "2", "3", "4", "4:refs", "5", "6", "7"]);
+  assert.deepEqual(items[4], { kind: "refs", key: "4:refs", refs: [{ id: "t1", title: "話題 1", meta: "3 分" }, { id: "t2", title: "話題 2", meta: "" }] });
+  // 差し替えは返事の本文だけ。札に渡すのは差し替える前の本文
+  assert.deepEqual(replied, ["札 2", "札 壊れ", "札 並びでない", "札なし"]);
+  assert.deepEqual(refsAsked, ["札 2", "札 壊れ", "札 並びでない", "札なし"]);
+  assert.deepEqual(items[3]!.blocks, [{ type: "paragraph", text: "P:R:札 2" }]);
+  assert.deepEqual(items[2]!.blocks, [{ type: "plain", text: "札 2" }]);
+  assert.deepEqual([items[0]!.text, items[1]!.text], ["区切り", "知らせ"]);
+  // reply が文字列でない物を返せば空。reply・refs が関数でなければ今までどおり
+  const odd = talk.talkModel(talkState({ turns: [{ id: 1, kind: "agent", text: "a" }], fmt: { ...base, reply: () => 7, refs: "x" } }), parse);
+  assert.deepEqual((odd.items as Obj[]).map((i) => [i.key, i.blocks]), [["1", [{ type: "paragraph", text: "P:" }]]]);
+  const plain = talk.talkModel(talkState({ turns: [{ id: 1, kind: "agent", text: "a" }], fmt: { ...base, reply: null, refs: null } }), parse);
+  assert.deepEqual((plain.items as Obj[]).map((i) => [i.key, i.blocks]), [["1", [{ type: "paragraph", text: "P:a" }]]]);
+  // refsOf
+  assert.deepEqual(talk.refsOf(null), []);
+  assert.deepEqual(talk.refsOf([{ id: "a", title: "A", meta: 3 }, { id: "b", title: "B", meta: "m" }]), [{ id: "a", title: "A", meta: "" }, { id: "b", title: "B", meta: "m" }]);
+});
+
+test("web components: Refs は Node で呼べる: 札は group と題の名前・meta が空なら span を作らない・［開く］で onOpen(id)。TalkRows の札の行は on.ref(id)（無ければ何もしない）", () => {
+  // press は後ろ（カードの節）で宣言されるので、ここでは自前で押す
+  const tap = (b: El | undefined): void => (b?.props.onClick as (e: unknown) => void)(fakeEvent());
+  const opened: unknown[] = [];
+  const root = one(html`<${talk.Refs} refs=${[{ id: "t1", title: "話題 1", meta: "3 分" }, { id: "t2", title: "話題 2", meta: "" }]} onOpen=${(id: unknown) => opened.push(id)} />`);
+  assert.deepEqual([root.type, root.props.class], ["div", "c-refs"]);
+  const refs = root.children as El[];
+  assert.deepEqual(refs.map((r) => [r.type, r.props.class, r.props.role, r.props["aria-label"]]), [["div", "c-ref", "group", "話題 1"], ["div", "c-ref", "group", "話題 2"]]);
+  assert.deepEqual(refs.map((r) => r.children.map((c) => (c as El).props.class)), [["c-ref-title", "c-ref-meta", "c-btn"], ["c-ref-title", "c-btn"]]);
+  assert.deepEqual([textOf(find(refs[0]!, "c-ref-title")), textOf(find(refs[0]!, "c-ref-meta"))], ["話題 1", "3 分"]);
+  const buttons = find(root, "c-btn");
+  assert.deepEqual(buttons.map((b) => [b.props["data-kind"], b.props["data-size"], textOf(b)]), [["ghost", "sm", "開く"], ["ghost", "sm", "開く"]]);
+  tap(buttons[1]);
+  tap(buttons[0]);
+  assert.deepEqual(opened, ["t2", "t1"]);
+  const v = talk.Refs({ refs: [{ id: "a", title: "A", meta: "" }, { id: "b", title: "B", meta: "" }], onOpen: () => undefined }) as VNode;
+  assert.deepEqual(keysOf(v.props.children), ["a", "b"]);
+  // TalkRows の札の行
+  const items = [{ kind: "refs", key: "4:refs", refs: [{ id: "t9", title: "話題 9", meta: "" }] }];
+  assert.deepEqual(keysOf(talk.TalkRows({ older: false, items, on: {} })), ["4:refs"]);
+  const got: unknown[] = [];
+  tap(find(expand(talk.TalkRows({ older: false, items, on: { ref: (id: unknown) => got.push(id) } })), "c-btn")[0]);
+  assert.deepEqual(got, ["t9"]);
+  tap(find(expand(talk.TalkRows({ older: false, items, on: {} })), "c-btn")[0]);
 });
 
 const bubbleOf = (o: Obj = {}): Obj => ({
