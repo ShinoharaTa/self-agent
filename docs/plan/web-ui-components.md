@@ -347,6 +347,8 @@
 **K0 画面写し**
 - **済（#386）。** やること: `scripts/ui-shots.ts` と `npm run ui-shots -- --out <dir> [--only <名前>]` を作る。偽データの DB を一時ディレクトリに作り、本体の Web サーバーを 127.0.0.1 の空きポートで立て、スマホ 390×844・PC 1440×900・タブレット 820×1180、ダーク・ライトで決まった画面を撮り、**必ずサーバーとブラウザを閉じる**。`playwright-core` 1.58.2 を devDependencies に。
 - 受け入れ: (1) 走らせると PNG が `--out` に出て、終わった後 `ss -ltnp` に掴んだポートが残らない。(2) リポジトリの中に画像・DB を書かない。(3) 偽データに実在の名前・ID・トークンが無い。(4) `npm test` は Chromium を起動しない。(5) Chromium が無い機械では理由を出して exit 1。(6) Discord・Claude・GitHub に出ない。
+- 回す決まり（#420）: 実装の途中は `--only` で当たる段だけを回す。絞らない 1 回はマージの前に 1 回（レビューの後の直しが配るファイルを変えたらもう 1 回）。
+  - 検査の中の待ちは、落ち着き（飛んでいる要求・DOM の変更・終わりの在る動き）を待つなら `settled`、実時間が要る（刻み・周期の読みをまたぐ・この間に何も起きない事を見る・わざと止めた要求の間）ときだけ `wait` にし、理由をコメントに書く。`settled` が上限に達すると `console.log` に `settled timeout` の行が出て段の失敗になる。
 
 **K1 同梱 + 見本の骨**
 - やること: `scripts/vendor-web.ts`・`npm run vendor-web`、`vendor-preact.js`・`vendor-preact-hooks.js`・`vendor-htm.js`、まとめの `c-lib.js`（`h`・`render`・`html`・使う hook だけを出す）、`gallery.html` + `c-gallery.js`（見出し・説明・押すと数が増えるボタンだけ）、`THIRD_PARTY_LICENSES.md`、`docs/plan/web-ui.md` の「依存は足さない」の書き換え。
