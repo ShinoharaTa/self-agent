@@ -5,12 +5,14 @@
 // 会話の入力欄（K5）は chat.js が根と state を SA.composer.draw(root, state) で押し込み、送った後の空は SA.composer.set(root, "")（欄の要素と本文の覚えは c-composer.js の composerMouth）
 // 「あなたの番」のカード（K5）は chat.js が根と state を SA.cards.draw(root, state) で押し込み、「その他」の欄への焦点は SA.cards.focus(root, id, index)（「その他」の本文の覚えは c-cards.js の cardsMouth）
 // 知らせと確認（K6）は ui.js が SA.notice.draw(state)・SA.ask.draw(state) で押し込む（状態とタイマーは ui.js が持ち、ここは描くだけ）
+// 右腕の見出し（K6）は shell.js が SA.hand.draw(state) で押し込み、[畳む]・「…」への焦点は SA.hand.focus(what)（右腕の中の会話・入力欄・カードは上の口を使い回す）
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
 import { talkMouth } from "./c-talk.js";
 import { composerMouth } from "./c-composer.js";
 import { cardsMouth } from "./c-cards.js";
+import { HandHead } from "./c-hand.js";
 import { Confirm, Toast } from "./c-sheet.js";
 
 const listRoot = document.getElementById("c-list-root");
@@ -384,4 +386,46 @@ if (askRoot) {
   };
   window.SA = window.SA || {};
   window.SA.ask = { draw: drawAsk };
+}
+
+/** 右腕の見出しの入れ物。無ければ null（口を置かない。chat.js が古い見出しを描く） */
+const handRoot = document.getElementById("c-hand-root");
+
+if (handRoot) {
+  /** 右腕の見出しのボタン（close・menu）。無ければ null */
+  const handButton = (what) => {
+    const span = handRoot.querySelector('[data-act="' + what + '"]');
+    return span ? span.querySelector("button") : null;
+  };
+
+  /** 見出しを描く。state は { title, menu, on: { menu(opener), close() } } か null（消す）。描けなければ false（shell.js が古い見出しに戻す） */
+  const drawHand = (state) => {
+    const before = document.activeElement;
+    const inside = !!before && handRoot.contains(before);
+    try {
+      render(state === null ? null : html`<${HandHead} title=${state.title} menu=${state.menu} on=${state.on} />`, handRoot);
+    } catch (error) {
+      // 名前だけ（message・stack は本文を含むことがあるので出さない）
+      console.error("[web] hand draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    // 焦点のあったボタンが消えた（「…」が出なくなった）: [畳む] へ（body に落とさない）
+    if (inside && !document.contains(before)) {
+      const next = handButton("close");
+      if (next) next.focus({ preventScroll: true });
+    }
+    return true;
+  };
+
+  /** 見出しのボタン（close・menu）にフォーカス。無ければ false */
+  const focusHand = (what) => {
+    if (what !== "close" && what !== "menu") return false;
+    const b = handButton(what);
+    if (!b) return false;
+    b.focus();
+    return true;
+  };
+
+  window.SA = window.SA || {};
+  window.SA.hand = { draw: drawHand, focus: focusHand };
 }
