@@ -3735,13 +3735,23 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const r = document.querySelector(q)?.getBoundingClientRect();
         return r ? { top: r.top, bottom: r.bottom, left: r.left, right: r.right } : null;
       };
-      return { item: box(sel), top: box("#c-top-root .c-top"), composer: box("#ed > [data-composer]"), w: innerWidth, h: innerHeight };
+      const wrap = document.querySelector("#c-notice-root .c-toast");
+      return {
+        item: box(sel),
+        top: box("#c-top-root .c-top"),
+        composer: box("#ed > [data-composer]"),
+        // 入れ物が画面に留まっているか（c-sheet.css が読めないと文書の末尾に流れる）
+        fixed: wrap === null ? null : getComputedStyle(wrap).position,
+        w: innerWidth,
+        h: innerHeight,
+      };
     }, ITEM);
     const it = place.item;
+    if (place.fixed !== "fixed") say(2, "場所", `入れ物の position が ${String(place.fixed)}（fixed のはず）`);
     if (it === null) say(2, "場所", "知らせが無い");
     else if (vp === "phone") {
       if (place.top === null || it.top < place.top.bottom - 0.5) say(2, "場所", `上端 ${it.top} が見出しの下端 ${String(place.top?.bottom)} より上`);
-      if (it.left < 0 || it.right > place.w) say(2, "場所", `左右 ${it.left}〜${it.right} が画面（${place.w}）の外`);
+      if (it.left < 0 || it.right > place.w || it.bottom > place.h) say(2, "場所", `${JSON.stringify(it)} が画面（${place.w}x${place.h}）の外`);
       const c = place.composer;
       if (c === null || !(it.bottom <= c.top || it.top >= c.bottom)) say(2, "場所", `入力欄 ${JSON.stringify(c)} と重なる（${JSON.stringify(it)}）`);
     } else {
