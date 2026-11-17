@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFixtureServer } from "../scripts/ui-shots-fixture.ts";
+import { permissionHistoryText } from "../src/cc/channel-posts.ts";
+import { CC_CHANNEL_ENDED_TEXT } from "../src/cc/channels.ts";
 
 const FIXTURE_SOURCE = fileURLToPath(new URL("../scripts/ui-shots-fixture.ts", import.meta.url));
 const SCRIPT = fileURLToPath(new URL("../scripts/ui-shots.ts", import.meta.url));
@@ -116,6 +118,7 @@ test("cc: true では Claude Code の連携が動き、チャンネル 3 つ（�
     const status = await get("/api/status");
     assert.equal(status.status, 200);
     assert.equal((status.json.cc as { enabled: boolean }).enabled, true);
+    assert.equal((status.json.cc as { unifyReady: boolean }).unifyReady, true);
 
     // /api/channels: kind cc が 3 つ。終わったチャンネルは ended
     const channels = (await get("/api/channels")).json.channels as Array<{ id: string; kind: string; cc?: { sessionId: string; state: string; pending: { id: number; state: string } | null; permission: { state: string } | null } }>;
@@ -140,6 +143,12 @@ test("cc: true では Claude Code の連携が動き、チャンネル 3 つ（�
     const turns = await get(`/api/channels/${cc.queue}/turns`);
     assert.equal(turns.status, 200);
     assert.ok((turns.json.turns as unknown[]).length >= 2);
+    // 許可・終わったチャンネルの最後の行は、本体が残すのと同じ知らせ（notice）の行
+    type Turn = { kind: string; text: string };
+    const lastTurn = async (id: string): Promise<Turn> => ((await get(`/api/channels/${id}/turns`)).json.turns as Turn[]).at(-1)!;
+    assert.deepEqual(await lastTurn(cc.ask), { ...(await lastTurn(cc.ask)), kind: "notice", text: permissionHistoryText({ toolName: "Bash", summary: "npm update --save", questionInput: null }) });
+    assert.deepEqual(await lastTurn(cc.ended), { ...(await lastTurn(cc.ended)), kind: "notice", text: CC_CHANNEL_ENDED_TEXT });
+    assert.equal((await lastTurn(cc.queue)).kind, "owner");
     const session = await get(`/api/cc/sessions/${a}`);
     assert.equal(session.status, 200);
     const pending = session.json.pending as { id: number; state: string };
