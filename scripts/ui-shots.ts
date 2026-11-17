@@ -155,12 +155,13 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
 }
 
 /** 見本の入力欄の data-demo（ページの順） */
-const COMPOSER_DEMOS = ["empty", "one", "three", "eight", "long-line", "near", "over", "sending", "narrow"];
+const COMPOSER_DEMOS = ["empty", "one", "three", "eight", "long-line", "near", "over", "sending", "narrow", "sent-done", "sent-warning", "sent-cancel"];
 
 /**
  * 見本の入力欄の測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。行の高さは欄の line-height から計算する。
  * 見本の名前・1 行の高さ（--c-tap）・3 行と 8 行の高さ（8 行は 6 行で止まり中で送る）・写しが見えず欄と同じ箱・［送る］の大きさと下端・
- * 字数（near・over だけ。ほかは入れ物の高さ 0。over は --danger）・横にはみ出さない・スマホの字。足りない物の文を返す
+ * 字数（near・over だけ。ほかは入れ物の高さ 0。over は --danger）・横にはみ出さない・スマホの字・
+ * 送った本文の帯（sent-* だけ中身が在り、欄の行の上・色は tone のとおり・sent-cancel だけ［やめる］。ほかは高さ 0）。足りない物の文を返す
  */
 function composerProblems({ demos, phone, label }: { demos: string[]; phone: boolean; label: string }): string[] {
   const lines: string[] = [];
@@ -177,6 +178,12 @@ function composerProblems({ demos, phone, label }: { demos: string[]; phone: boo
   probe.style.color = "var(--danger)";
   section.append(probe);
   const danger = getComputedStyle(probe).color;
+  probe.style.color = "var(--success)";
+  const success = getComputedStyle(probe).color;
+  probe.style.color = "var(--warning)";
+  const warning = getComputedStyle(probe).color;
+  probe.style.color = "var(--text-muted)";
+  const muted = getComputedStyle(probe).color;
   probe.remove();
   const sectionRight = section.getBoundingClientRect().right;
   for (const demo of names) {
@@ -229,6 +236,24 @@ function composerProblems({ demos, phone, label }: { demos: string[]; phone: boo
     if (root.getBoundingClientRect().right > sectionRight + 0.5) say(`${demo} の入力欄が節の幅を超えている`);
     // 8. スマホの字
     if (phone && parseFloat(cs.fontSize) < 16) say(`${demo} の欄の字 ${cs.fontSize}。16px 以上のはず`);
+    // 9. 送った本文の帯（いつも根の最初の子。sent-* でなければ空で高さ 0）
+    const sent = root.firstElementChild;
+    if (sent === null || !sent.classList.contains("c-composer-sent")) {
+      say(`${demo} の根の最初の子が送った本文の帯でない`);
+      continue;
+    }
+    const sr = sent.getBoundingClientRect();
+    const cancels = sent.querySelectorAll(".c-btn");
+    if (!demo.startsWith("sent-")) {
+      if (sent.childElementCount !== 0 || sr.height !== 0) say(`${demo} の送った本文の帯が空でない（子 ${sent.childElementCount}・高さ ${sr.height}）`);
+      continue;
+    }
+    if ((sent.querySelector(".c-composer-sent-text")?.textContent ?? "") === "") say(`${demo} の送った本文の帯に文が無い`);
+    if (!(sr.height > 0) || sr.bottom > r.top + 0.5) say(`${demo} の送った本文の帯が欄の行の上に無い（帯の下端 ${sr.bottom.toFixed(1)}・欄の上端 ${r.top.toFixed(1)}）`);
+    const tone = getComputedStyle(sent).color;
+    const toneWant = demo === "sent-done" ? success : demo === "sent-warning" ? warning : muted;
+    if (tone !== toneWant) say(`${demo} の送った本文の帯の色 ${tone}。${toneWant} のはず`);
+    if (cancels.length !== (demo === "sent-cancel" ? 1 : 0)) say(`${demo} の送った本文の帯の［やめる］の数 ${cancels.length}`);
   }
   // narrow の入れ物（枠を含めて 320）が狭すぎず広すぎない（検査が空振りしない）
   const narrow = section.querySelector('[data-demo="narrow"] > *');
@@ -239,13 +264,13 @@ function composerProblems({ demos, phone, label }: { demos: string[]; phone: boo
 }
 
 /** 見本のカードの data-demo（ページの順） */
-const CARD_DEMOS = ["card-perm", "card-perm-rule", "card-perm-urgent", "card-perm-busy", "card-perm-long", "card-q-one", "card-q-two", "card-q-other", "card-q-busy", "card-close", "card-close-picked", "card-close-none", "card-move", "card-note", "card-narrow"];
+const CARD_DEMOS = ["card-perm", "card-perm-rule", "card-perm-urgent", "card-perm-busy", "card-perm-long", "card-q-one", "card-q-two", "card-q-other", "card-q-busy", "card-close", "card-close-picked", "card-close-none", "card-move", "card-note", "card-status", "card-narrow"];
 
 /**
  * 見本のカードの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見本の名前・枠の線と角と地と幅・見出しの字・
  * ボタンの高さと並び（スマホは 2 つが 2 等分・3 つが縦、PC は左から 1 行）・チェックの行と印の大きさ・要約の高さ（PC は 8 行で止まる）・
- * 残り時間の色・待ちの行の role・動いている物・narrow の幅・横にはみ出さない・質問の「その他」の欄（見える物と値・スマホの字）と問の間の線と［答える］の押せない印。
- * 足りない物の文を返す
+ * 残り時間の色・待ちの行の role・動いている物（状態の行の送っている間の輪のほかは無い）・narrow の幅・横にはみ出さない・質問の「その他」の欄（見える物と値・スマホの字）と問の間の線と［答える］の押せない印・
+ * 状態の行（role=status が 3 つで aria-busy なし・［やめる］が 2 つ・3 行の高さが同じ）。足りない物の文を返す
  */
 function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; label: string }): string[] {
   const lines: string[] = [];
@@ -340,8 +365,22 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
   if (metaColor("card-perm-urgent") !== warning) say(`card-perm-urgent の残り時間の色 ${metaColor("card-perm-urgent")}。--warning のはず`);
   if (metaColor("card-perm") === null || metaColor("card-perm") === warning) say("card-perm の残り時間が無いか --warning の色");
   if (section.querySelector('[data-demo="card-note"] .c-note')?.getAttribute("role") !== "status") say("card-note の待ちの行に role=status が無い");
-  const moving = section.getAnimations({ subtree: true }).length;
+  // 動いてよいのは、状態の行の送っている間の［やめる］の輪だけ
+  const spin = (a: Animation): boolean => {
+    const target = a.effect instanceof KeyframeEffect ? a.effect.target : null;
+    return target !== null && target.matches('[data-demo="card-status"] .c-status .c-btn[aria-busy="true"] .c-btn-spin');
+  };
+  const moving = section.getAnimations({ subtree: true }).filter((a) => !spin(a)).length;
   if (moving > 0) say(`節の中で ${moving} 個が動いている`);
+  // 状態の行
+  const statusRows = [...section.querySelectorAll('[data-demo="card-status"] .c-status')];
+  const statusTexts = section.querySelectorAll('[data-demo="card-status"] p[role="status"]');
+  if (statusRows.length !== 3 || statusTexts.length !== 3) say(`card-status の行 ${statusRows.length}・role=status ${statusTexts.length}。3 つずつのはず`);
+  if (section.querySelector('[data-demo="card-status"] [aria-busy]:not(.c-btn)') !== null) say("card-status のボタンのほかに aria-busy が在る");
+  const statusButtons = section.querySelectorAll('[data-demo="card-status"] .c-status > .c-btn');
+  if (statusButtons.length !== 2) say(`card-status の［やめる］の数 ${statusButtons.length}。2 のはず`);
+  const statusHeights = new Set(statusRows.map((row) => row.getBoundingClientRect().height.toFixed(1)));
+  if (statusHeights.size !== 1) say(`card-status の 3 行の高さが違う（${[...statusHeights].join("・")}）`);
   // 8. 「その他」の欄（card-q-other だけ見える）
   for (const demo of ["card-q-one", "card-q-two", "card-q-other", "card-q-busy"]) {
     const fields = [...section.querySelectorAll(`[data-demo="${demo}"] textarea.c-card-other`)];
