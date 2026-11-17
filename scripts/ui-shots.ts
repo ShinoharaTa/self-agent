@@ -4223,6 +4223,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const refs = box.querySelectorAll(".c-refs .c-ref");
       if (refs.length !== 2) out.push(`右腕: 札が ${refs.length}（2 のはず）`);
       if (box.querySelectorAll(".c-ref .c-ref-meta").length !== 1) out.push("右腕: 札の meta が 1 つでない");
+      // 押せる物の数（「…」・［畳む］・［開く］2 つ）。数を見ないと、ボタンが消えても当たりとはみ出しの検査が 0 件で通る
+      const opens = box.querySelectorAll(".c-ref > button.c-btn").length;
+      const heads = box.querySelectorAll(".c-hand-head [data-act] > button").length;
+      if (opens !== 2 || heads !== 2) out.push(`右腕: ボタンが 見出し ${heads}・札 ${opens}（2・2 のはず）`);
+      const bubbles = box.querySelectorAll(".c-bubble").length;
+      if (bubbles !== 2) out.push(`右腕: 吹き出しが ${bubbles}（2 のはず）`);
       if ([...box.querySelectorAll(".c-bubble")].some((el) => (el.textContent ?? "").includes("<#"))) out.push("右腕: 返事の本文に <# が残っている");
       if (box.scrollWidth > box.clientWidth) out.push(`右腕: 箱が横にはみ出している（${box.scrollWidth} > ${box.clientWidth}）`);
       const b = box.getBoundingClientRect();
