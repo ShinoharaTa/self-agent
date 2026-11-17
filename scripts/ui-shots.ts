@@ -1023,9 +1023,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     logLines.push(`[ui-shots] settled timeout ${url.pathname}${url.hash}`);
   }
 
-  async function shot(page: Page, name: string, fullPage = false): Promise<void> {
+  /** held は、わざと止めた要求が在る間の絵（落ち着きを待つと止めた要求を待ってしまうので、決まった時間だけ待つ） */
+  async function shot(page: Page, name: string, fullPage = false, held = false): Promise<void> {
     if (!wanted(name)) return;
-    await wait(400);
+    if (held) await wait(400);
+    else await settled(page);
     await page.screenshot({ path: join(out, `${name}.png`), fullPage });
     count++;
   }
@@ -1033,7 +1035,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   /** 要素 1 つの絵（見本の節など） */
   async function shotOf(page: Page, name: string, selector: string): Promise<void> {
     if (!wanted(name)) return;
-    await wait(400);
+    await settled(page);
     await page.locator(selector).screenshot({ path: join(out, `${name}.png`) });
     count++;
   }
@@ -1067,7 +1069,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await page.goto(base + path, { waitUntil: "load" });
     // スマホで会話・設定を開いているときは一覧が隠れているので、在るまでを待つ
     await page.waitForSelector("#c-list-root section[data-kind]", { state: "attached", timeout: 8000 });
-    await wait(1200);
+    await settled(page);
   }
 
   async function scrollBottom(page: Page): Promise<void> {
@@ -1076,7 +1078,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (el.scrollHeight > el.clientHeight + 4 && getComputedStyle(el).overflowY !== "visible") el.scrollTop = el.scrollHeight;
       }
     });
-    await wait(300);
+    await settled(page);
   }
 
   /** 本番の部品の当たり（hitProblems。範囲の中の button だけ）。測った後は一覧の位置を先頭に戻す */
@@ -1100,7 +1102,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     try {
       await page.evaluate(() => (window as unknown as { SA: { topics: { load: () => Promise<void> } } }).SA.topics.load());
-      await wait(300);
+      await settled(page);
     } finally {
       await page.unroute(pattern);
     }
@@ -1196,7 +1198,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
       // フォーカスと位置 (1): 一覧が送れる高さにして、行にフォーカス・100 送ってから、順を入れ替えた応答で読み直す
       await page.setViewportSize({ width: 1440, height: 500 });
-      await wait(300);
+      await settled(page);
       const picked = await page.evaluate(() => {
         const rows = [...document.querySelectorAll<HTMLElement>("#c-list-root button[data-topic][data-mark]")];
         const row = rows[2] ?? rows[0];
@@ -1377,7 +1379,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }, MONO_CSS);
     try {
       await page.evaluate(() => document.fonts.ready.then(() => undefined));
-      await wait(300);
+      await settled(page);
       const glyph = await page.evaluate(() => {
         const span = document.createElement("span");
         span.style.position = "absolute";
@@ -1397,10 +1399,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const lines = await measureWidths(page, `幅 ${VIEWPORTS[vp].viewport.width}`);
       if (vp === "phone") {
         await page.setViewportSize({ width: 375, height: 812 });
-        await wait(300);
+        await settled(page);
         lines.push(...(await measureWidths(page, "幅 375")));
         await page.setViewportSize(VIEWPORTS.phone.viewport);
-        await wait(300);
+        await settled(page);
       }
       if (mono !== null) {
         // 幅を戻すと右腕の口が描き直され、バーも今の状態に戻るので、絵の前にもう 1 回一番きつい形を描く
@@ -1462,7 +1464,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const list = document.querySelector(".c-list");
         if (list !== null) list.scrollTop = list.scrollHeight;
       });
-      await wait(300);
+      await settled(page);
       const end = await page.evaluate(() => {
         const bar = document.querySelector(".c-bottom");
         const buttons = [...document.querySelectorAll("#c-list-root button")].filter((b) => b.getClientRects().length > 0);
@@ -1490,7 +1492,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (list !== null) list.scrollTop = 100;
       });
       await page.click('#c-bottom-root [data-act="list"]');
-      await wait(200);
+      await settled(page);
       const top = await page.evaluate(() => document.querySelector(".c-list")?.scrollTop ?? -1);
       if (top !== 0) lines.push(`バー: 「一覧」を押しても先頭に戻らない（${top}）`);
       // 同じ要素: 右腕のボタンと「ほか」に印を付け、右腕を「あなたの番」にして描き直させる
@@ -1530,7 +1532,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await loadEdited(page, () => undefined);
         await page.evaluate(() => history.back());
         await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-        await wait(200);
+        await settled(page);
         const back = await page.evaluate(() => (document.activeElement as unknown as { __k?: number } | null)?.__k === 1);
         if (!back) lines.push("バー: 右腕を閉じた後の焦点が右腕のボタンに戻らない");
       }
@@ -1543,12 +1545,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         });
       try {
         await page.setViewportSize({ width: 800, height: VIEWPORTS.phone.viewport.height });
-        await wait(300);
+        await settled(page);
         const wide = await formAt();
         if (wide.variant !== "wide" || JSON.stringify(wide.texts) !== JSON.stringify(["タスク", "リマインド", "ほか"])) lines.push(`バー: 800 で広い幅の形にならない（${String(wide.variant)}・${wide.texts.join("・")}）`);
       } finally {
         await page.setViewportSize(VIEWPORTS.phone.viewport);
-        await wait(300);
+        await settled(page);
       }
       const narrow = await formAt();
       if (narrow.variant !== "phone" || narrow.acts[0] !== "list" || narrow.acts[1] !== "hand" || narrow.texts[2] !== "ほか") lines.push(`バー: 390 に戻してもスマホの形にならない（${String(narrow.variant)}・${narrow.texts.join("・")}）`);
@@ -1566,7 +1568,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
         await page.evaluate(() => history.back());
         await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-        await wait(200);
+        await settled(page);
         const focused = await page.evaluate(() => {
           const a = document.activeElement;
           return a !== null && a.matches('#c-bottom-root button[data-act="hand"]');
@@ -1583,7 +1585,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     } else if ((rows[0] ?? "").includes("タスク")) lines.push("バー: 広い幅の「ほか」の板にタスクが在る");
     await page.click("#v3-sheet button.sheet-close");
     await page.waitForSelector("#v3-sheet:not([open])", { state: "attached", timeout: 5000 });
-    await wait(200);
+    await settled(page);
     const moreFocus = await page.evaluate((isPhone: boolean) => {
       const buttons = document.querySelectorAll(".c-bottom button");
       const more = buttons[buttons.length - 1];
@@ -1609,7 +1611,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const second = list.drawBar({ turns: 0, hand: null, tabs: [], on });
         return { first, second, hand: document.querySelector('#c-bottom-root [data-act="hand"]') !== null };
       });
-      await wait(300);
+      await settled(page);
       if (drawn.first !== false || drawn.second !== true || !drawn.hand) lines.push(`バー: 描けなかったときの形が違う（1 回目 ${drawn.first}・2 回目 ${drawn.second}・右腕 ${drawn.hand}）`);
       const removed = dropExpected(from, ["[web] bar draw failed"]);
       if (removed.length !== 1) lines.push(removed.length === 0 ? "バー: 失敗が console に出ていない" : `バー: 失敗の行が ${removed.length} 行`);
@@ -1644,7 +1646,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await page.unroute(pattern);
     }
     await page.waitForSelector("#c-list-root section[data-kind]", { state: "attached", timeout: 8000 });
-    await wait(1200);
+    await settled(page);
     return lines;
   }
 
@@ -1726,7 +1728,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }, MONO_CSS);
     try {
       await page.evaluate(() => document.fonts.ready.then(() => undefined));
-      await wait(300);
+      await settled(page);
       const kana = await page.evaluate(() => {
         const span = document.createElement("span");
         span.style.position = "absolute";
@@ -1745,7 +1747,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const sheet = (window as unknown as { __liveMono?: CSSStyleSheet }).__liveMono;
         document.adoptedStyleSheets = document.adoptedStyleSheets.filter((x) => x !== sheet);
       });
-      await wait(300);
+      await settled(page);
     }
   }
 
@@ -1808,6 +1810,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await page.evaluate((n: number) => (document.querySelectorAll("#c-top-root button")[n] as HTMLElement | undefined)?.focus(), i);
       await page.keyboard.press("Shift+Tab");
       await page.keyboard.press("Tab");
+      // 焦点の輪が付くまでの短い待ち（落ち着きは待たない。順番のため）
       await wait(50);
       const ring = await page.evaluate((n: number) => {
         const b = document.querySelectorAll("#c-top-root button")[n];
@@ -1844,7 +1847,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   async function escSheet(page: Page): Promise<void> {
     await page.keyboard.press("Escape");
     await page.waitForSelector("#v3-sheet:not([open])", { state: "attached", timeout: 5000 });
-    await wait(200);
+    await settled(page);
   }
 
   /** 板の行の字 */
@@ -1889,7 +1892,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await load(page, "/static/v3.html");
       await page.locator(`#c-list-root button[data-topic="ch:${open}"]`).last().click();
       await page.waitForSelector("#ed textarea", { timeout: 5000 });
-      await wait(500);
+      await settled(page);
       if (!(await activeIs(page, TOP_BACK))) lines.push("本番の見出し: 一覧から話題を開いた後の焦点が「一覧へ」に無い");
       lines.push(...(await checkTop(page, vp, "会話", { ed: true })));
       await page.click(TOP_BACK);
@@ -1897,7 +1900,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
     await load(page, chat);
     await page.waitForSelector("#ed textarea", { timeout: 5000 });
-    await wait(500);
+    await settled(page);
     if (!phone) lines.push(...(await checkTop(page, vp, "会話")), ...(await checkRule(page, tag, "会話")));
     const form = await topForm(page);
     if (vp === "tablet") {
@@ -1946,13 +1949,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (controls.a === null || controls.a !== controls.b || !controls.exists) lines.push(`本番の見出し: 右腕のボタンの aria-controls が合わない（見出し ${String(controls.a)}・下のバー ${String(controls.b)}・先 ${controls.exists}）`);
       await page.click(TOP_HAND);
       await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
-      await wait(500);
+      await settled(page);
       const width = await page.evaluate((id: string | null) => (id === null ? 0 : (document.getElementById(id)?.getBoundingClientRect().width ?? 0)), controls.a);
       if (!(width > 0)) lines.push("本番の見出し: aria-controls の先が開いた右腕の入れ物でない（幅 0）");
       lines.push(...(await checkHandHeading(page, "右腕")), ...(await checkH1(page, "右腕")));
       await page.click("#v3-hand-close");
       await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-      await wait(300);
+      await settled(page);
       if (!(await activeIs(page, TOP_HAND))) lines.push("本番の見出し: 右腕を畳んだ後の焦点が見出しの [右腕] に無い");
     } else {
       const show = await page.evaluate(() => {
@@ -1963,7 +1966,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (vp === "tablet") {
         await page.click("#v3-hand-show");
         await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
-        await wait(500);
+        await settled(page);
         const over = await topForm(page);
         if (over.mode !== "over") lines.push(`本番の見出し: タブレットの右腕が重ねる形でない（${String(over.mode)}）`);
         if (!(over.width >= over.min)) lines.push(`本番の見出し: 前提が崩れた。重ねて開いた間の列 2 の幅 ${over.width} がしきい値 ${over.min} 以上でない`);
@@ -1971,7 +1974,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         lines.push(...(await checkHandHeading(page, "右腕")), ...(await checkH1(page, "右腕")));
         await page.click("#v3-hand-close");
         await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-        await wait(300);
+        await settled(page);
         if (!(await topForm(page)).compact) lines.push("本番の見出し: 重ねた右腕を畳んだ後に compact でない");
         lines.push(...(await checkRule(page, tag, "右腕を畳んだ後")));
       } else {
@@ -1988,17 +1991,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     else {
       await load(page, "/static/v3.html#/" + long.replace(":", "/"));
       await page.waitForSelector("#ed textarea", { timeout: 5000 });
-      await wait(500);
+      await settled(page);
       lines.push(...(await checkTop(page, vp, "長い題", { ed: phone })), ...(await longTitleLines(page, vp, "長い題")));
       if (vp !== "phone") lines.push(...(await checkRule(page, tag, "長い題")));
       lines.push(...(await withMono(page, () => longTitleLines(page, vp, "長い題・等幅の字"))));
       if (phone) {
         await page.setViewportSize({ width: 375, height: 812 });
-        await wait(300);
+        await settled(page);
         lines.push(...(await checkTop(page, vp, "長い題・幅 375", { hits: false })));
         lines.push(...(await withMono(page, () => longTitleLines(page, vp, "長い題・幅 375・等幅の字"))));
         await page.setViewportSize(VIEWPORTS.phone.viewport);
-        await wait(300);
+        await settled(page);
       }
       await shot(page, `${p}-b-top-long`);
     }
@@ -2010,7 +2013,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     lines.push(...(await checkTop(page, vp, "設定", { hits: false })));
     const errorsBefore = logLines.filter((line) => line.includes("pageerror")).length;
     await page.evaluate(() => (window as unknown as { SA: { app: { open: (id: string) => void } } }).SA.app.open("status"));
-    await wait(800);
+    await settled(page);
     const status = await page.evaluate(() => document.querySelector("#c-top-root .c-top-title")?.textContent ?? null);
     if (status !== "状態") lines.push(`本番の見出し: 状態の題が「${String(status)}」`);
     if (logLines.filter((line) => line.includes("pageerror")).length !== errorsBefore) lines.push("本番の見出し: 状態を開くと pageerror が出る");
@@ -2037,7 +2040,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // 右腕を畳んだ形
     await page.click("#v3-hand-close");
     await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-    await wait(300);
+    await settled(page);
     await check("右腕を畳んだ形");
     // 動かせない話題
     await loadEdited(page, (json) => {
@@ -2049,10 +2052,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     if (locked === null || locked.aria !== "true" || locked.native) lines.push(`本番の見出し: 動かせない話題の場所のボタンが aria-disabled でない（${JSON.stringify(locked)}）`);
     await page.evaluate(() => (window as unknown as { SA: { topics: { load: () => Promise<void> } } }).SA.topics.load());
-    await wait(300);
+    await settled(page);
     await page.click("#v3-hand-show");
     await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
-    await wait(300);
+    await settled(page);
     return lines;
   }
 
@@ -2061,7 +2064,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     const lines: string[] = [];
     const size = async (width: number): Promise<void> => {
       await page.setViewportSize({ width, height: VIEWPORTS.pc.viewport.height });
-      await wait(400);
+      await settled(page);
     };
     const at = async (label: string, want: boolean): Promise<void> => {
       const f = await topForm(page);
@@ -2074,17 +2077,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if ((await topForm(page)).hand === "open") {
         await page.click("#v3-hand-close");
         await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-        await wait(300);
+        await settled(page);
       }
       await at("幅 1100・右腕を畳んだ形", false);
       await page.click("#v3-hand-show");
       await page.waitForSelector('#v3[data-hand="open"][data-hand-mode="column"]', { timeout: 5000 });
-      await wait(300);
+      await settled(page);
       await at("幅 1100・右腕を列で開いた形", true);
       await shot(page, "pc-dark-b-top-hand-col");
       await page.click("#v3-hand-close");
       await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-      await wait(300);
+      await settled(page);
       await at("幅 1100・畳み直した形", false);
       // 幅をまたいで戻る（1440 → 800 → 1440）
       await size(1440);
@@ -2109,7 +2112,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }
     } finally {
       await page.setViewportSize(VIEWPORTS.pc.viewport);
-      await wait(300);
+      await settled(page);
     }
     return lines;
   }
@@ -2152,7 +2155,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     try {
       await page.evaluate((ch: string) => (window as unknown as { SA: { store: { load: { turns: (c: string) => Promise<void> } } } }).SA.store.load.turns(ch), id);
-      await wait(300);
+      await settled(page);
     } finally {
       await page.unroute(pattern);
     }
@@ -2170,7 +2173,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // ----- 吹き出しの確かめ -----
     await load(page, `/static/v3.html#/ch/${talk}`);
     await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
-    await wait(800);
+    await settled(page);
     lines.push(...(await liveTalkLines(page, vp, "吹き出しの確かめ")));
     // 4. 1 文の返事（2 行目）の吹き出しは 1 行ぶん + 余白で、手順の行（結果の文）が無い
     const one = await page.evaluate(() => {
@@ -2220,7 +2223,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (handOpen) {
         await page.click("#v3-hand-close");
         await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-        await wait(300);
+        await settled(page);
       }
       const col = await page.evaluate(() => {
         const t = document.querySelector("#ed .c-talk");
@@ -2240,17 +2243,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (handOpen) {
         await page.click("#v3-hand-show");
         await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
-        await wait(300);
+        await settled(page);
       }
     }
     await edScroll(page, "top");
-    await wait(200);
+    await settled(page);
     await shot(page, `${p}-b-talk-rows`);
     // 6. 最後の返事の手順を開く。全部の描き直しをまたいでも開いたまま
     await edScroll(page, "bottom");
-    await wait(200);
+    await settled(page);
     await page.locator('#ed .c-talk > .c-msg[data-who="agent"]').last().locator(".c-steps-toggle").click();
-    await wait(200);
+    await settled(page);
     const opened = async (): Promise<{ expanded: string | null; items: number }> =>
       page.evaluate(() => {
         const last = [...document.querySelectorAll('#ed .c-talk > .c-msg[data-who="agent"]')].at(-1);
@@ -2261,14 +2264,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await edScroll(page, "bottom");
     await shot(page, `${p}-b-talk-steps-open`);
     await refreshCh(page, talk);
-    await wait(200);
+    await settled(page);
     const o2 = await opened();
     if (o2.expanded !== "true" || o2.items !== 4) say(`描き直しで開いた手順が閉じた（aria-expanded ${String(o2.expanded)}・項目 ${o2.items}）`);
     // 18. 当たり（開いた手順の後）
     lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#ed .c-talk", targets: "button, a[href]:not(.c-md-link), input, select, textarea", toast: false })).map((l) => `段 k: 吹き出しの確かめ: ${l}`));
     // 7・8. 下端に居るときは新着で下へ。上を読んでいるときは動かさない。行が足されても同じ要素で、選んだ文が残る
     await edScroll(page, "bottom");
-    await wait(200);
+    await settled(page);
     await page.evaluate(() => {
       const w = window as unknown as { __k: { scroll: Element | null; bubble: Element | null } };
       w.__k = { scroll: document.querySelector("#ed .ed-scroll"), bubble: document.querySelector("#ed .c-bubble") };
@@ -2319,7 +2322,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (after1.selection === 0) say("行を足した描き直しで選んだ文が外れた");
     await page.evaluate(() => getSelection()?.removeAllRanges());
     await edScroll(page, 300);
-    await wait(200);
+    await settled(page);
     const top1 = await page.evaluate(() => document.querySelector("#ed .ed-scroll")?.scrollTop ?? -1);
     await addTurn(page, talk, added(2));
     const top2 = await page.evaluate(() => document.querySelector("#ed .ed-scroll")?.scrollTop ?? -1);
@@ -2328,7 +2331,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // ----- 実行中の話題 -----
     await load(page, `/static/v3.html#/ch/${run}`);
     await page.waitForSelector('#ed .c-run[aria-busy="true"]', { timeout: 5000 });
-    await wait(500);
+    await settled(page);
     lines.push(...(await liveTalkLines(page, vp, "実行中")));
     // 11. 刻みは同じ要素のまま経過の文だけを変える。開いたすべての手順も閉じない
     const runBefore = await page.evaluate(() => {
@@ -2352,7 +2355,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (!runAfter.sameBubble) say("刻みで最初の吹き出しが別の要素になった");
     if (runAfter.text === runBefore.text) say(`刻みで経過の文が変わらない（${runAfter.text}）`);
     await page.locator("#ed .c-run .c-steps-toggle").click();
-    await wait(200);
+    await settled(page);
     await wait(2200);
     const runOpen = await page.evaluate(() => ({
       expanded: document.querySelector("#ed .c-run .c-steps-toggle")?.getAttribute("aria-expanded") ?? null,
@@ -2375,7 +2378,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     await wait(2200);
     await refreshCh(page, run);
-    await wait(200);
+    await settled(page);
     const kept = await page.evaluate(() => {
       const el = document.querySelector("#ed textarea");
       return el instanceof HTMLTextAreaElement ? { focus: document.activeElement === el, value: el.value, a: el.selectionStart, b: el.selectionEnd } : null;
@@ -2396,12 +2399,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     const cdp = await page.context().newCDPSession(page);
     try {
       await cdp.send("Input.imeSetComposition", { text: "へんかん", selectionStart: 4, selectionEnd: 4 });
-      await wait(200);
+      await settled(page);
       const started = await page.evaluate(() => (window as unknown as { __ime: { start: number } }).__ime.start);
       if (started === 0) say("変換の途中を作れない（compositionstart が来ない）");
       await wait(2200);
       await refreshCh(page, run);
-      await wait(200);
+      await settled(page);
       const ime = await page.evaluate(() => {
         const el = document.querySelector("#ed textarea");
         return { ...(window as unknown as { __ime: { start: number; end: number; blur: number } }).__ime, value: el instanceof HTMLTextAreaElement ? el.value : null };
@@ -2440,9 +2443,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // ----- 長い会話 -----
     await load(page, `/static/v3.html#/ch/${long}`);
     await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
-    await wait(800);
+    await settled(page);
     await edScroll(page, "bottom");
-    await wait(300);
+    await settled(page);
     lines.push(...(await liveTalkLines(page, vp, "長い会話")));
     // 14. 「前の会話を読む」が在る・[続ける] は .tl に無く最後の返事の行の一番下で見えている・結果の文は 1 行で省かれる・時刻は切れない
     const longLook = await page.evaluate(() => {
@@ -2487,7 +2490,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await shot(page, `${p}-b-talk-long`);
     lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#ed .c-talk > article.c-msg:last-of-type", targets: "button", toast: false })).map((l) => `段 k の 14 当たり: ${l}`));
     await edScroll(page, "bottom");
-    await wait(200);
+    await settled(page);
     // 20. 最後の返事の手順を開くと結果の文を省かずに折り返す（スマホは 2 行以上・広い幅は 1 行）。行の幅は変わらず、閉じると元に戻る
     const footLook = (): Promise<{ rowW: number; footH: number; labelH: number; lh: number; cut: boolean; tail: boolean; timeCut: boolean; list: boolean; actLast: boolean } | null> =>
       page.evaluate(() => {
@@ -2526,9 +2529,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (closed === null) say("20. 最後の返事に結果の文のボタンが無い");
     else {
       await toggleLast();
-      await wait(300);
+      await settled(page);
       await edScroll(page, "bottom");
-      await wait(200);
+      await settled(page);
       const opened = await footLook();
       if (opened === null) say("20. 開いた後に結果の文が無い");
       else {
@@ -2549,16 +2552,16 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#ed .c-talk > article.c-msg:last-of-type", targets: "button", toast: false })).map((l) => `段 k の 20 当たり: ${l}`));
       if (vp === "phone") {
         await edScroll(page, "bottom");
-        await wait(200);
+        await settled(page);
         await shot(page, `${p}-b-talk-long-open`);
       }
       await toggleLast();
-      await wait(300);
+      await settled(page);
       const again = await footLook();
       if (again === null || Math.abs(again.footH - 24) > 0.5) say(`20. 閉じた後の足の行の高さ ${again === null ? "なし" : again.footH.toFixed(1)}（24 のはず）`);
       if (vp === "phone" && again !== null && !again.cut) say("20. 閉じた後にスマホで結果の文が省かれていない");
       await edScroll(page, "bottom");
-      await wait(200);
+      await settled(page);
     }
     // 15. 先頭へ送ると前の行を読み、見ていた吹き出しの位置が動かない
     const mark = await page.evaluate(() => {
@@ -2572,7 +2575,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       return seen === null ? null : seen.getBoundingClientRect().top;
     });
     await page.waitForFunction(() => document.querySelectorAll("#ed .c-talk > .c-msg").length >= 60, undefined, { timeout: 5000 }).catch(() => undefined);
-    await wait(500);
+    await settled(page);
     const after = await page.evaluate(() => {
       const m = (window as unknown as { __m: Element | null }).__m;
       return { rows: document.querySelectorAll("#ed .c-talk > .c-msg").length, top: m !== null && m.isConnected ? m.getBoundingClientRect().top : null };
@@ -2582,7 +2585,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
     // 19. [続ける] を押す（作り物の受け付けは 202）: 待ちの形を 1 回は見て、消える。送りは 1 回・入力欄と .ed-scroll は同じ要素・知らせは出ない・行の数は同じ
     await edScroll(page, "bottom");
-    await wait(300);
+    await settled(page);
     const continues: string[] = [];
     const onContinue = (r: { method: () => string; url: () => string }): void => {
       if (r.method() === "POST" && r.url().includes(`/api/channels/${long}/continue`)) continues.push(r.url());
@@ -2606,7 +2609,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       });
       await page.locator("#ed .c-talk .c-msg-act .c-btn").click();
       await page.waitForFunction(() => document.querySelector("#ed .c-msg-act") === null, undefined, { timeout: 5000 }).catch(() => undefined);
-      await wait(300);
+      await settled(page);
       const pressed = await page.evaluate(() => {
         const w = window as unknown as { __busy: number; __obs?: MutationObserver; __ta: Element | null; __sc: Element | null };
         w.__obs?.disconnect();
@@ -2636,11 +2639,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (vp === "phone") {
       await load(page, `/static/v3.html#/ch/${talk}`);
       await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
-      await wait(800);
+      await settled(page);
       lines.push(...(await withMono(page, () => liveTalkLines(page, vp, "等幅の字・幅 390"), "本番の会話")));
       try {
         await page.setViewportSize({ width: 375, height: 812 });
-        await wait(300);
+        await settled(page);
         lines.push(
           ...(await withMono(
             page,
@@ -2655,7 +2658,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         );
       } finally {
         await page.setViewportSize(VIEWPORTS.phone.viewport);
-        await wait(300);
+        await settled(page);
       }
     }
 
@@ -2663,7 +2666,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (vp !== "tablet") {
       await load(page, `/static/v3.html#/ch/${talk}`);
       await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
-      await wait(800);
+      await settled(page);
       const styles = ({ root, sels, props }: { root: string; sels: string[]; props: string[] }): Record<string, Record<string, string> | null> => {
         const out: Record<string, Record<string, string> | null> = {};
         const scope = document.querySelector(root);
@@ -2720,13 +2723,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await ta.focus();
       await page.keyboard.press("Control+A");
       await page.keyboard.press("Backspace");
-      await wait(100);
+      await settled(page);
     };
     const near = (a: number, b: number, d: number): boolean => Math.abs(a - b) <= d;
 
     await load(page, `/static/v3.html#/ch/${talk}`);
     await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
-    await wait(800);
+    await settled(page);
     // 0. 口に渡ったか（渡っていなければ、ほかを測らずに止める）
     const mouth = await page.evaluate(() => ({ parts: document.querySelectorAll("#ed > [data-composer] .c-composer").length, old: document.querySelectorAll("#ed .composer-wrap").length }));
     if (mouth.parts !== 1 || mouth.old !== 0) throw new Error(`段 n の 0: 入力欄が部品でない（.c-composer ${mouth.parts} 個・.composer-wrap ${mouth.old} 個）`);
@@ -2776,7 +2779,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await page.keyboard.type(typed.slice(0, 15));
     await refreshCh(page, talk);
     await page.keyboard.type(typed.slice(15));
-    await wait(100);
+    await settled(page);
     const f2 = await field();
     if (f2 === null || !f2.mark || !f2.focus || f2.value !== typed) say(2, "打鍵で同じ要素のまま", JSON.stringify(f2 && { mark: f2.mark, focus: f2.focus, value: f2.value.length }));
 
@@ -2803,7 +2806,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     const ime = await page.context().newCDPSession(page);
     try {
       await ime.send("Input.imeSetComposition", { text: "へんかん", selectionStart: 4, selectionEnd: 4 });
-      await wait(200);
+      await settled(page);
       const started = await page.evaluate(() => (window as unknown as { __ime: { start: number } }).__ime.start);
       if (started === 0) say(4, "IME", "変換の途中を作れない（compositionstart が来ない）");
       await refreshCh(page, talk);
@@ -2814,7 +2817,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }, TA);
       if (mid.end !== 0 || mid.blur !== 0 || mid.value === null || !mid.value.includes("へんかん")) say(4, "IME", `描き直しで変換の途中が切れた（${JSON.stringify(mid)}）`);
       await ime.send("Input.insertText", { text: "変換" });
-      await wait(200);
+      await settled(page);
       const done = await page.evaluate((sel: string) => {
         const el = document.querySelector(sel);
         return { end: (window as unknown as { __ime: { end: number } }).__ime.end, value: el instanceof HTMLTextAreaElement ? el.value : null };
@@ -2827,11 +2830,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // 5. 伸びる（2・6・10 行）。一番下を見ていたら、6 行でも最後の吹き出しの時刻が入力欄の上に見える。消すと 1 行に戻る
     await clear();
     await edScroll(page, "bottom");
-    await wait(100);
+    await settled(page);
     const rowsOf = (n: number): string => Array.from({ length: n }, (_v, i) => `${i + 1} 行目`).join("\n");
     for (const n of [2, 6, 10]) {
       await ta.fill(rowsOf(n));
-      await wait(150);
+      await settled(page);
       const f = await field();
       const want = f === null ? 0 : 44 + f.lh * Math.min(n - 1, 5);
       if (f === null || !near(f.h, want, 1)) say(5, "伸びる", `${n} 行の欄の高さ ${f?.h.toFixed(1) ?? "?"}。${want.toFixed(1)} のはず`);
@@ -2855,12 +2858,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // 6. 上を読んでいる途中は、欄が伸びても動かさない
     await edScroll(page, "bottom");
     await edScroll(page, 300);
-    await wait(150);
+    await settled(page);
     const top0 = await page.evaluate(() => document.querySelector("#ed .ed-scroll")?.scrollTop ?? -1);
     await ta.focus();
     await page.keyboard.press("Shift+Enter");
     await page.keyboard.type("x");
-    await wait(150);
+    await settled(page);
     const top1 = await page.evaluate(() => document.querySelector("#ed .ed-scroll")?.scrollTop ?? -1);
     const f6 = await field();
     if (!(top0 > 0) || !near(top0, top1, 1)) say(6, "上を読んでいる途中", `scrollTop ${top0} → ${top1}`);
@@ -2889,11 +2892,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     try {
       await ta.focus();
       await insert.send("Input.insertText", { text: "あ".repeat(1700) });
-      await wait(150);
+      await settled(page);
       const c0 = await countLook();
       if (c0.text !== null) say(7, "字数", `1,700 字で字数が出ている（${c0.text}）`);
       await insert.send("Input.insertText", { text: "い" });
-      await wait(150);
+      await settled(page);
       const c1 = await countLook();
       if (c1.text !== "1,701 / 1,900") say(7, "字数", `1,701 字の字数「${String(c1.text)}」`);
       if (c1.over !== null || c1.color === c1.danger) say(7, "字数", "1,701 字が上限を超えた形");
@@ -2907,7 +2910,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await ta.focus();
       await page.keyboard.press("Control+End");
       await insert.send("Input.insertText", { text: "う".repeat(200) });
-      await wait(150);
+      await settled(page);
       const c2 = await countLook();
       if (c2.text !== "1,901 / 1,900" || c2.over !== "true" || c2.color !== c2.danger) say(7, "字数", `1,901 字 ${JSON.stringify(c2)}`);
       if (c2.send !== null) say(7, "字数", `1,901 字で［送る］の aria-disabled が ${c2.send}`);
@@ -2919,13 +2922,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // 8. 書きかけが残る（別の話題へ行って戻る・ページを読み直す）
     await ta.focus();
     await page.keyboard.type("draft");
+    // 打った字が下書きに渡るまでの短い待ち（今と同じ間で別の話題へ移る）
     await wait(100);
     const app = (tab: string): Promise<void> => page.evaluate((t: string) => (window as unknown as { SA: { app: { open: (t: string) => void } } }).SA.app.open(t), tab);
     await app(`ch:${open}`);
-    await wait(500);
+    await settled(page);
     await app(`ch:${talk}`);
     await page.waitForSelector(TA, { timeout: 5000 });
-    await wait(500);
+    await settled(page);
     const f8 = await field();
     if (f8 === null || f8.value !== "draft" || !near(f8.h, 44, 0.5)) say(8, "書きかけが残る", `戻った後 ${JSON.stringify(f8 && { value: f8.value, h: f8.h })}`);
     await load(page, `/static/v3.html#/ch/${talk}`);
@@ -2968,7 +2972,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const from = logLines.length;
         await press();
         await page.waitForFunction(() => (document.querySelector("#toast-alert")?.textContent ?? "") !== "", undefined, { timeout: 5000 }).catch(() => undefined);
-        await wait(300);
+        await settled(page);
         // わざと起こした失敗（送りの 404 とその console.error）の 2 行だけを console.log から外す。数が違えば残して知らせる
         const removed = dropExpected(from, [`POST /api/channels/${talk}/messages`, "Failed to load resource"]);
         if (removed.length !== 2) {
@@ -2998,6 +3002,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await ta.focus();
       await page.keyboard.press("Control+End");
       await page.keyboard.press("Shift+Enter");
+      // 実時間: この間に POST が起きない事を見る
       await wait(300);
       const f12 = await field();
       if (posts.length !== before || f12 === null || f12.value !== "draft\n") say(12, "送る", `Shift+Enter: POST ${posts.length - before} 回・値 ${JSON.stringify(f12?.value)}`);
@@ -3008,7 +3013,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await page.keyboard.type("2 行目");
         await page.locator("#ed > [data-composer] .c-composer-row > .c-btn").click();
         await page.waitForFunction((sel: string) => (document.querySelector(sel) as HTMLTextAreaElement | null)?.value === "", TA, { timeout: 5000 }).catch(() => undefined);
-        await wait(300);
+        await settled(page);
         const sent = await field();
         if (sent === null || sent.value !== "" || !near(sent.h, 44, 0.5)) say(12, "送る", `受け付けた後 ${JSON.stringify(sent && { value: sent.value, h: sent.h })}（空・44 のはず）`);
         const draft = await page.evaluate((ch: string) => (window as unknown as { SA: { app: { draft: (c: string) => string } } }).SA.app.draft(ch), talk);
@@ -3025,7 +3030,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (vp === "phone") {
       await load(page, `/static/v3.html#/ch/${long}`);
       await page.waitForSelector(TA, { timeout: 5000 });
-      await wait(800);
+      await settled(page);
       await edScroll(page, "bottom");
       await ta.focus();
       await page.evaluate((sel: string) => {
@@ -3111,7 +3116,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await page.goto("about:blank");
     await page.goto(back, { waitUntil: "load" });
     await page.waitForSelector("#ed > [data-composer] textarea.c-composer-input", { timeout: 8000 });
-    await wait(800);
+    await settled(page);
     return lines;
   }
 
@@ -3209,7 +3214,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }, C);
     const reloadTurns = async (id: string): Promise<void> => {
       await page.evaluate((ch: string) => (window as unknown as { SA: { store: { load: { turns: (c: string) => Promise<void> } } } }).SA.store.load.turns(ch), id);
-      await wait(300);
+      await settled(page);
     };
     /** label の行を押す（スマホ・タブレットは tap、PC は click） */
     const press = async (selector: string): Promise<void> => {
@@ -3257,7 +3262,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       offs.push(() => page.unroute(RUNNING, noRun));
       await load(page, `/static/v3.html#/ch/${perm}`);
       await page.waitForSelector(`${C} .c-card[data-kind="permission"]`, { timeout: 5000 }).catch(() => undefined);
-      await wait(300);
+      await settled(page);
       // 0. 口に渡ったか（渡っていなければ、ほかを測らずに止める）
       const mouth = await page.evaluate(() => {
         const scroll = document.querySelector("#ed .ed-scroll");
@@ -3317,12 +3322,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (t1.urgent !== "false") say(2, "残り時間", `data-urgent が ${String(t1.urgent)}（false のはず）`);
       perm1.soon = true;
       await reloadTurns(perm);
-      await wait(300);
+      await settled(page);
       const t2 = await look();
       if (t2.urgent !== "true") say(2, "残り時間", `期限 50 秒の読みの後の data-urgent が ${String(t2.urgent)}（true のはず）`);
       perm1.soon = false;
       await reloadTurns(perm);
-      await wait(300);
+      await settled(page);
 
       // 14. 当たり（許可。ルール付き）
       await hits("許可");
@@ -3330,9 +3335,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
       // 3. 常に許可のチェックが刻みと描き直しで残る
       await page.locator(`${C} .c-card-always label.c-card-check`).click();
+      // 実時間: 1 秒の刻みを 1 回またぐ
       await wait(1200);
       await refreshCh(page, perm);
-      await wait(200);
+      await settled(page);
       const always = (await look()).checks[0];
       if (!always || !always.checked) say(3, "常に許可", `刻みと描き直しの後にチェックが外れた（${JSON.stringify(always)}）`);
 
@@ -3351,11 +3357,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       });
       offs.push(offPost);
       await page.locator(`${C} .c-card-actions > .c-btn`).first().click();
+      // 送っている間の形を見る（POST はわざと止めているので落ち着きは待たない）
       await wait(150);
       const sending = await look();
       const busyButtons = sending.buttons.filter((b) => b.disabled && b.title === "答えを送っています").length;
       if (busyButtons !== 2 || !sending.checks[0]?.disabled) say(4, "許可を押す", `送っている間の形が違う（${JSON.stringify({ buttons: sending.buttons, check: sending.checks[0] })}）`);
-      await shot(page, `${p}-b-cards-sending`);
+      await shot(page, `${p}-b-cards-sending`, false, true);
       shotTaken();
       const until = Date.now() + 3000;
       while (answeredAt === 0 && Date.now() < until) await wait(50);
@@ -3406,7 +3413,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const openQ = async (): Promise<void> => {
         await load(page, `/static/v3.html#/ch/${q}`);
         await page.waitForSelector(`${C} .c-card[data-kind="question"]`, { timeout: 5000 });
-        await wait(300);
+        await settled(page);
       };
       // 7. 矢印キーで「その他」を選んでも欄へは移らない（PC。済んだら読み直して選んだ状態を消す）
       if (vp === "pc") {
@@ -3415,7 +3422,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         for (let i = 0; i < 4; i++) {
           if ((await look()).field?.shown) break;
           await page.keyboard.press("ArrowDown");
-          await wait(150);
+          await settled(page);
         }
         const keyed = await look();
         const onRadio = await page.evaluate(() => document.activeElement instanceof HTMLInputElement && document.activeElement.type === "radio");
@@ -3427,7 +3434,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const answer0 = q0.buttons.find((b) => b.label === "答える");
       if (!answer0 || !answer0.disabled || answer0.title !== "すべての問に答えると押せます") say(5, "選び方", `［答える］の初め ${JSON.stringify(answer0)}`);
       await page.locator(ROW).first().click();
-      await wait(200);
+      await settled(page);
       const q5 = await look();
       if (q5.buttons.find((b) => b.label === "答える")?.disabled !== false || !q5.checks[0]?.checked) say(5, "選び方", `選択肢を選んだ後 ${JSON.stringify({ buttons: q5.buttons, checks: q5.checks })}`);
       // 6. 指で「その他」の行を押すと欄に焦点（押し始めが起きたかも見る。起きなければ確かめる手が作れない）
@@ -3438,7 +3445,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         rows[rows.length - 1]?.addEventListener("pointerdown", () => void w.__pd++);
       }, ROW);
       await press(`${ROW} >> nth=-1`);
-      await wait(300);
+      await settled(page);
       const downs = await page.evaluate(() => (window as unknown as { __pd: number }).__pd);
       if (downs === 0) throw new Error(`段 r の 6: 「その他」の行を ${vp === "pc" ? "click" : "tap"} しても pointerdown が起きない（確かめる手が作れない）`);
       const q6 = await look();
@@ -3476,16 +3483,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           el?.addEventListener("blur", () => void w.__ime.blur++);
         }, C);
         await ime.send("Input.imeSetComposition", { text: "へんかん", selectionStart: 4, selectionEnd: 4 });
-        await wait(200);
+        await settled(page);
         const started = await page.evaluate(() => (window as unknown as { __ime: { start: number } }).__ime.start);
         if (started === 0) throw new Error("段 r の 9: 変換の途中を作れない（compositionstart が来ない）");
         await refreshCh(page, q);
+        // 実時間: 描き直しの後に 1 秒の刻みを 1 回またぐ
         await wait(1200);
         const mid = await look();
         const imeMid = await page.evaluate(() => (window as unknown as { __ime: { end: number; blur: number } }).__ime);
         if (!mid.field || !mid.field.value.includes("へんかん") || !mid.field.mark || !mid.field.focus || imeMid.end !== 0 || imeMid.blur !== 0) say(9, "変換の途中", JSON.stringify({ field: mid.field, ime: imeMid }));
         await ime.send("Input.insertText", { text: "変換" });
-        await wait(200);
+        await settled(page);
         const doneIme = await look();
         if (doneIme.field?.value !== "abc変換") say(9, "変換の途中", `確定の後の値 ${JSON.stringify(doneIme.field?.value)}（abc変換 のはず）`);
       } finally {
@@ -3505,7 +3513,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       q1.gone = false;
       await openQ();
       await page.locator(ROW).first().click();
-      await wait(200);
+      await settled(page);
       await page.locator(`${C} .c-card-actions > .c-btn`).last().click();
       if (!(await gone())) say(10, "答える", "［やめる］の後もカードが残る");
       if (qGot.length !== 2 || !qGot[1]!.path.endsWith("/deny") || JSON.stringify(qGot[1]!.body) !== JSON.stringify({ requestHash: "h2" })) say(10, "答える", `［やめる］の送り ${JSON.stringify(qGot.slice(1))}`);
@@ -3528,7 +3536,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       // 11. 閉じる前の確認
       await load(page, `/static/v3.html#/ch/${open}`);
       await page.waitForSelector(`${C} .c-card[data-kind="close"]`, { timeout: 5000 }).catch(() => undefined);
-      await wait(300);
+      await settled(page);
       const c0 = await look();
       const picked0 = c0.buttons.find((b) => b.label === "選んだものを登録");
       if (c0.cards !== 1 || c0.kinds[0] !== "close") say(11, "閉じる前の確認", `カード ${JSON.stringify(c0.kinds)}`);
@@ -3540,7 +3548,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await edScroll(page, "bottom");
       await page.locator(`${C} label.c-card-check >> nth=2`).click();
       await page.locator(`${C} label.c-card-check >> nth=0`).click();
-      await wait(200);
+      await settled(page);
       await shot(page, `${p}-b-cards-close`);
       const cGot: Array<{ path: string; body: unknown }> = [];
       offs.push(
@@ -3564,7 +3572,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       op.mode = "move";
       await load(page, `/static/v3.html#/ch/${open}`);
       await page.waitForSelector(`${C} .c-card[data-kind="move"]`, { timeout: 5000 }).catch(() => undefined);
-      await wait(300);
+      await settled(page);
       const m0 = await page.evaluate((sel: string) => [...document.querySelectorAll(sel + " .c-card dd")].map((d) => (d.textContent ?? "").trim()), C);
       const mk = await look();
       if (mk.cards !== 1 || mk.kinds[0] !== "move" || JSON.stringify(m0) !== JSON.stringify(["kakeibo-app", "General"])) say(12, "場所を変える確認", JSON.stringify({ kinds: mk.kinds, dd: m0 }));
@@ -3585,7 +3593,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (vp === "phone") {
         await openQ();
         await press(`${ROW} >> nth=-1`);
-        await wait(300);
+        await settled(page);
         await page.locator(`${C} textarea.c-card-other`).focus();
         await page.evaluate(() => {
           const sa = (window as unknown as { SA: { cards: { draw: (...a: unknown[]) => unknown }; talk: { draw: (...a: unknown[]) => unknown } } }).SA;
@@ -3680,7 +3688,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           });
           if (left === null || Math.abs(left - 16) > 0.5) problems.push(`絞り込み欄の左端が ${String(left)}（16 のはず）`);
           await page.click("#v3-search-toggle");
-          await wait(200);
+          await settled(page);
         }
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
         if (problems.length > 0) throw new Error(`一覧の列の検査で ${problems.length} 件`);
@@ -3717,7 +3725,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             await page.click("#c-list-root .v3-entry-missing button");
             await page.waitForFunction(() => (window as unknown as { __before?: number }).__before === undefined, undefined, { timeout: 5000 });
             await page.waitForSelector("#c-list-root .v3-entry-missing", { timeout: 5000 });
-            await wait(300);
+            await settled(page);
           } finally {
             await page.unroute(entry);
           }
@@ -3730,7 +3738,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await step(`${p} b`, [`${p}-b-chat-top`, `${p}-b-chat-middle`, `${p}-b-chat-bottom`], async () => {
         await load(page, `/static/v3.html#/ch/${open}`);
         await page.waitForSelector("#ed textarea", { timeout: 5000 });
-        await wait(800);
+        await settled(page);
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("#ed *")) if (el.scrollHeight > el.clientHeight + 4) el.scrollTop = 0;
         });
@@ -3788,18 +3796,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await step(`${p} b2`, [`${p}-b-chat-permission`, `${p}-b-chat-question`], async () => {
         await load(page, `/static/v3.html#/ch/${perm}`);
         await page.waitForSelector('#ed [data-cards] .c-card[data-kind="permission"]', { timeout: 5000 });
-        await wait(800);
+        await settled(page);
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-permission`);
         await load(page, `/static/v3.html#/ch/${q}`);
         await page.waitForSelector('#ed [data-cards] .c-card[data-kind="question"]', { timeout: 5000 });
-        await wait(800);
+        await settled(page);
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-question`);
       });
       await step(`${p} d`, [`${p}-d-composer-3lines`], async () => {
         await load(page, `/static/v3.html#/ch/${open}`);
-        await wait(800);
+        await settled(page);
         const textarea = page.locator("#ed textarea").first();
         await textarea.click();
         await textarea.fill("README の手順を見直して\n古い写真は消して\nテストも走らせて");
@@ -3814,7 +3822,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           const expanded = await page.getAttribute("#v3-hand-show", "aria-expanded");
           if (expanded !== "true") await page.click("#v3-hand-show");
         }
-        await wait(1000);
+        await settled(page);
         await shot(page, handName);
         // 開いた右腕の中は古い吹き出しのまま
         const hand = await page.evaluate(() => ({ old: document.querySelectorAll("#v3-hand-ed .msg").length, parts: document.querySelectorAll("#v3-hand-ed .c-talk").length }));
@@ -3825,30 +3833,30 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (vp !== "phone") {
           await load(page, `/static/v3.html#/ch/${open}`);
           await page.waitForSelector('#ed .c-msg[data-who="agent"]', { timeout: 5000 });
-          await wait(800);
+          await settled(page);
           await shot(page, `${p}-c-hand-with-chat`);
         }
       });
       await step(`${p} e`, [`${p}-e-start-dialog`], async () => {
         await load(page, "/static/v3.html");
         await page.locator("#c-list-root .c-group-head > .c-iconbtn").first().click();
-        await wait(600);
+        await settled(page);
         await shot(page, `${p}-e-start-dialog`);
       });
       await step(`${p} f`, [`${p}-f-settings`, `${p}-f-knowledge-list`, `${p}-f-knowledge-detail`], async () => {
         await load(page, "/static/v3.html#/settings");
         await page.waitForSelector("#ed .ed-section", { timeout: 5000 });
-        await wait(800);
+        await settled(page);
         await shot(page, `${p}-f-settings`);
         const problems = await checkTop(page, vp, "設定", { hits: false });
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
         if (problems.length > 0) throw new Error(`見出しの検査で ${problems.length} 件`);
         await load(page, "/static/v3.html#/knowledge");
         await page.waitForSelector("#ed .master-item", { timeout: 5000 });
-        await wait(800);
+        await settled(page);
         await shot(page, `${p}-f-knowledge-list`);
         await page.locator("#ed").getByText("CSS の container queries").first().click();
-        await wait(800);
+        await settled(page);
         await shot(page, `${p}-f-knowledge-detail`);
       });
     } finally {
@@ -3866,14 +3874,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await page.goto(base + "/", { waitUntil: "load" });
         // スマホでは一覧が引き出しの中で隠れているので、在るまでを待つ
         await page.waitForSelector("#sidebar .sb-row", { state: "attached", timeout: 8000 });
-        await wait(2000);
+        await settled(page);
         await shot(page, `${label}-list`);
       });
       await step(`${label} chat`, [`${label}-chat`], async () => {
         await page.goto("about:blank");
         await page.goto(base + `/#/ch/${open}`, { waitUntil: "load" });
         await page.waitForSelector("#ed .msg-agent", { timeout: 8000 });
-        await wait(2000);
+        await settled(page);
         await shot(page, `${label}-chat`);
         // 古い殻に部品（c-*）と見出しの入口は無く、今の見出しが在る
         const old = await page.evaluate(() => ({
@@ -3953,7 +3961,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }, MONO_CSS);
     try {
       await page.evaluate(() => document.fonts.ready.then(() => undefined));
-      await wait(300);
+      await settled(page);
       const kana = await page.evaluate(() => {
         const span = document.createElement("span");
         span.style.position = "absolute";
@@ -3972,7 +3980,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const sheet = (window as unknown as { __topMono?: CSSStyleSheet }).__topMono;
         document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
       });
-      await wait(300);
+      await settled(page);
     }
     return lines;
   }
@@ -3988,11 +3996,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (vp === "phone") {
       try {
         await page.setViewportSize({ width: 375, height: 812 });
-        await wait(300);
+        await settled(page);
         lines.push(...(await withMono(page, () => page.evaluate(talkProblems, { ...args, label: "幅 375・等幅の字" }), "見本の会話")));
       } finally {
         await page.setViewportSize(VIEWPORTS.phone.viewport);
-        await wait(300);
+        await settled(page);
       }
     }
     for (const line of lines) logLines.push(`[${label}] ${line}`);
@@ -4064,7 +4072,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await loadGallery();
           for (const demo of demos) await page.click(`[data-demo="${demo}"] button`);
           await page.waitForSelector(ready, { timeout: 5000 });
-          await wait(400);
+          await settled(page);
           await checkGallery(page, vp, label);
           await shot(page, name);
         });
@@ -4107,7 +4115,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         return false;
       }
       await page.locator("#v3-sheet .more-row").filter({ hasText: label }).first().click();
-      await wait(600);
+      await settled(page);
       return true;
     };
     /** 画面の節（.tl の中）と、その .tl の前がカードの根か */
@@ -4124,7 +4132,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       // ----- 届け待ち（セッションは作業中） -----
       await load(page, `/static/v3.html#/ch/${cc.queue}`);
       await page.waitForSelector(`${C} .c-status`, { timeout: 5000 }).catch(() => undefined);
-      await wait(300);
+      await settled(page);
       // 0. 口に渡ったか（渡っていなければ、ほかを測らずに止める）
       const mouth = await page.evaluate(({ c, k }: { c: string; k: string }) => {
         const root = document.querySelector(c);
@@ -4169,6 +4177,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await page.route(ROUTE, slow);
       offs.push(() => page.unroute(ROUTE, slow));
       await page.locator(CANCEL).click();
+      // POST はわざと遅らせている（その間に 2 回目を押す）ので落ち着きは待たない
       await wait(100);
       await page.evaluate((sel: string) => (document.querySelector(sel) as HTMLElement | null)?.click(), CANCEL);
       await wait(100);
@@ -4186,7 +4195,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (!done) say(4, "やめた後", "5 秒たっても［やめる］が消えない");
       await page.waitForFunction(() => (document.querySelector("#toast")?.textContent ?? "").includes("送るのをやめました"), undefined, { timeout: 5000 }).catch(() => undefined);
       await page.waitForFunction((k: string) => (document.querySelector(k + " .c-composer-sent-text")?.textContent ?? "") !== "", K, { timeout: 5000 }).catch(() => undefined);
-      await wait(300);
+      await settled(page);
       console.log(`[v3-${p}] 段 cc: 状態の行の［やめる］が消えた後の焦点 ${await focusOf()}`);
       const after = await page.evaluate(({ c, k }: { c: string; k: string }) => {
         const pEl = document.querySelector(c + " .c-status p");
@@ -4218,7 +4227,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       // ----- 許可（セッションは判断待ち） -----
       await load(page, `/static/v3.html#/ch/${cc.ask}`);
       await page.waitForSelector(`${C} .c-card[data-kind="permission"]`, { timeout: 5000 }).catch(() => undefined);
-      await wait(300);
+      await settled(page);
       // 5. 許可のカードは部品で、見出しは話題と同じ
       const card = await page.evaluate((c: string) => ({
         cards: document.querySelectorAll(c + ' .c-card[data-kind="permission"]').length,
@@ -4251,6 +4260,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       offs.push(() => page.unroute(PERM, hold));
       await edScroll(page, "bottom");
       await page.locator(`${C} .c-card-actions > .c-btn`).filter({ hasText: /^許可$/ }).click();
+      // POST はわざと遅らせている（送っている間の形を見る）ので落ち着きは待たない
       await wait(100);
       const waiting = await page.evaluate((c: string) => [...document.querySelectorAll(c + " .c-card-actions > .c-btn")].map((b) => b.getAttribute("aria-disabled")), C);
       if (waiting.length === 0 || waiting.some((d) => d !== "true")) say(7, "許可を押す", `送っている間の形 ${JSON.stringify(waiting)}`);
@@ -4282,10 +4292,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       console.log(`[v3-${p}] 段 cc の 10: 見出しの切り替えが${views ? "在る" : "無い（確かめない）"}`);
       if (views) {
         await page.locator('#c-top-root .c-seg-item[data-value="pane"]').click();
-        await wait(800);
+        await settled(page);
         await page.locator('#c-top-root .c-seg-item[data-value="talk"]').click();
         await page.waitForSelector(C, { state: "attached", timeout: 5000 }).catch(() => undefined);
-        await wait(600);
+        await settled(page);
         const back = await page.evaluate((c: string) => ({
           cards: document.querySelectorAll(c).length,
           old: ["#ed .tl section.card", "#ed .tl .cc-status", "#ed .cc-permission"].map((s) => document.querySelectorAll(s).length).reduce((a, b) => a + b, 0),
@@ -4299,7 +4309,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await page.waitForSelector(`#c-list-root button[data-topic="ch:${cc.ended}"]`, { timeout: 5000 });
       await page.locator(`#c-list-root button[data-topic="ch:${cc.ended}"]`).last().click();
       await page.waitForSelector(`${C} .c-note`, { timeout: 5000 }).catch(() => undefined);
-      await wait(300);
+      await settled(page);
       endedSession = await page.evaluate((id: string) => {
         const ch = (window as unknown as { SA: { chat: { channelById: (c: string) => { cc?: { sessionId?: unknown } } | null } } }).SA.chat.channelById(id);
         return ch && ch.cc && typeof ch.cc.sessionId === "string" ? ch.cc.sessionId : null;
