@@ -12,8 +12,9 @@ export const COMPOSER_HARD_MAX = 4000;
 const str = (v) => (typeof v === "string" ? v : "");
 
 /**
- * 入力欄のモデル（純粋）。state: { text, count（送る本文の字数。前後の空白を除く）, max, sending, touch, label, placeholder, note }。
- * 字数は残りが COMPOSER_NEAR を切ってから出し（超えた後も出る）、上限を超えても［送る］は押せる
+ * 入力欄のモデル（純粋）。state: { text, count（送る本文の字数。前後の空白を除く）, max, sending, touch, label, placeholder, note, sent }。
+ * 字数は残りが COMPOSER_NEAR を切ってから出し（超えた後も出る）、上限を超えても［送る］は押せる。
+ * sent は送った本文の帯（{ id, text, tone, cancel, busy }。文が空・文字列でなければ null。tone は done・warning のほかは ""）
  */
 export function composerModel(state) {
   const text = str(state.text);
@@ -38,7 +39,16 @@ export function composerModel(state) {
     sendBusy: sending,
     sendDisabled: empty,
     sendReason: sending ? "送っています" : empty ? "本文を入れると送れます" : undefined,
+    sent: sentOf(state.sent),
   };
+}
+
+function sentOf(sent) {
+  if (!sent || typeof sent !== "object") return null;
+  const text = str(sent.text);
+  if (text === "") return null;
+  const tone = sent.tone === "done" || sent.tone === "warning" ? sent.tone : "";
+  return { id: sent.id, text, tone, cancel: !!sent.cancel, busy: !!sent.busy };
 }
 
 /** Enter で送るか（純粋）。変換の途中（isComposing・keyCode 229）は送らない。Ctrl・⌘ 付きはいつも、ほかは Shift なしでタッチが主でないときだけ */
@@ -48,11 +58,19 @@ export function sendKey(event, touch) {
 }
 
 /**
- * 入力欄。on: { input(今の値), send() }。send は押せるとき（本文が在り、送っている途中でない）だけ呼ぶ（［送る］も Enter も）。inputRef は textarea の要素を受ける callback の ref（口が渡す）。
- * textarea は升の最初の子で、前に条件つきの兄弟を置かない。直下の子に key を付ける（兄弟が増えても textarea を作り直さない）
+ * 入力欄。on: { input(今の値), send(), cancel(送りの id) }。send は押せるとき（本文が在り、送っている途中でない）だけ呼ぶ（［送る］も Enter も）。inputRef は textarea の要素を受ける callback の ref（口が渡す）。
+ * textarea は升の最初の子で、前に条件つきの兄弟を置かない。直下の子に key を付ける（兄弟が増えても textarea を作り直さない）。
+ * 送った本文の帯はいつも最初の子に置き（無いときは子が 0）、出入りで行を動かさない。帯の［やめる］は押せない理由の文を付けない（busy の輪だけ）
  */
 export function Composer({ model, on, inputRef }) {
+  const sent = model.sent;
   return html`<div class="c-composer">
+    <div class="c-composer-sent" key="sent" aria-live="polite" data-tone=${sent && sent.tone !== "" ? sent.tone : undefined}>${sent
+      ? [
+          html`<span class="c-composer-sent-text" key="text">${sent.text}</span>`,
+          sent.cancel ? html`<${Button} key="cancel" kind="ghost" size="sm" label="やめる" busy=${sent.busy} onPress=${() => on.cancel(sent.id)} />` : null,
+        ]
+      : null}</div>
     <div class="c-composer-row" key="row">
       <div class="c-composer-field">
         <textarea class="c-composer-input" rows="1" maxlength=${COMPOSER_HARD_MAX} aria-label=${model.label} placeholder=${model.placeholder}

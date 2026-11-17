@@ -2395,7 +2395,7 @@ test("web components: Composer の根・直下の子の key・textarea の props
   const v = composerTree(composerState({ text: "あい", count: 2 }), composerRec().on, ref) as RawNode;
   assert.deepEqual([v.type, v.props.class], ["div", "c-composer"]);
   const kids = rawEls(v.props.children).filter((c) => (v.props.children as unknown[]).flat(Infinity).includes(c));
-  assert.deepEqual(kids.map((c) => [c.props.class, c.key]), [["c-composer-row", "row"], ["c-composer-count", "count"]]);
+  assert.deepEqual(kids.map((c) => [c.props.class, c.key]), [["c-composer-sent", "sent"], ["c-composer-row", "row"], ["c-composer-count", "count"]]);
   const [ta] = rawEls(v).filter((c) => c.type === "textarea");
   assert.ok(ta);
   assert.equal(ta.ref, ref);
@@ -2418,6 +2418,60 @@ test("web components: Composer の根・直下の子の key・textarea の props
   // touch で enterkeyhint が enter
   const [taTouch] = rawEls(composerTree(composerState({ touch: true }))).filter((c) => c.type === "textarea");
   assert.equal(taTouch?.props.enterkeyhint, "enter");
+});
+
+test("web components: composerModel の sent（無い・文が空・文字列でない → null。tone は done・warning のほかは空。cancel・busy は真偽に）", () => {
+  for (const sent of [undefined, null, "x", 3, { id: 1, text: "" }, { id: 1, text: 5 }, { id: 1 }]) assert.equal(composer.composerModel(composerState({ sent })).sent, null, JSON.stringify(sent));
+  const m = (o: Obj): unknown => JSON.parse(JSON.stringify(composer.composerModel(composerState({ sent: { id: 12, text: "本文 #12: 届けました", ...o } })).sent));
+  assert.deepEqual(m({ tone: "done" }), { id: 12, text: "本文 #12: 届けました", tone: "done", cancel: false, busy: false });
+  assert.equal((m({ tone: "warning" }) as Obj).tone, "warning");
+  for (const tone of [undefined, "", "danger", 1]) assert.equal((m({ tone }) as Obj).tone, "", String(tone));
+  assert.deepEqual([(m({ cancel: 1, busy: "y" }) as Obj).cancel, (m({ cancel: 1, busy: "y" }) as Obj).busy], [true, true]);
+});
+
+test("web components: Composer の帯はいつも最初の子（key=sent・aria-live=polite）で、無いときは子が 0。在れば文と data-tone、cancel なら［やめる］（ghost・sm・理由なし）で on.cancel(id)、busy では呼ばない", () => {
+  const sentOf = (sent: unknown, on: Obj = composerRec().on): { v: RawNode; box: El } => {
+    const v = composerTree(composerState({ text: "下書き", count: 3, sent }), on as never) as RawNode;
+    const first = [v.props.children].flat(Infinity).filter((c) => c && typeof c === "object")[0] as RawNode;
+    assert.deepEqual([first.props.class, first.key, first.props["aria-live"]], ["c-composer-sent", "sent", "polite"]);
+    const [box] = find(one(v), "c-composer-sent");
+    return { v, box: box as El };
+  };
+  const none = sentOf(null).box;
+  assert.deepEqual(none.children, [], "中身が無ければ子が 0（:empty で消える）");
+  assert.ok(!("data-tone" in none.props) || none.props["data-tone"] === undefined);
+  const done = sentOf({ id: 12, text: "本文 #12: 届けました・返事が来ました", tone: "done" }).box;
+  assert.deepEqual([done.props["data-tone"], textOf(find(done, "c-composer-sent-text")), find(done, "c-btn").length], ["done", "本文 #12: 届けました・返事が来ました", 0]);
+  const plain = sentOf({ id: 15, text: "本文 #15: 送るのをやめました", tone: "" }).box;
+  assert.ok(!("data-tone" in plain.props) || plain.props["data-tone"] === undefined, "tone が空なら属性なし");
+  assert.equal(sentOf({ id: 13, text: "本文 #13: 届けました", tone: "warning" }).box.props["data-tone"], "warning");
+  const cancels: unknown[] = [];
+  const on = { ...composerRec().on, cancel: (id: unknown) => void cancels.push(id) };
+  const idle = sentOf({ id: 14, text: "本文 #14: 届け待ち。入力待ちになったら届けます", tone: "", cancel: true }, on).box;
+  const [b] = find(idle, "c-btn");
+  assert.deepEqual([b?.props["data-kind"], b?.props["data-size"], textOf(b as El)], ["ghost", "sm", "やめる"]);
+  for (const name of ["aria-disabled", "aria-busy", "title"]) assert.ok(!(name in (b as El).props) || (b as El).props[name] === undefined, name);
+  (b?.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(cancels, [14]);
+  const busy = sentOf({ id: 14, text: "本文 #14: 届け待ち。入力待ちになったら届けます", tone: "", cancel: true, busy: true }, on).box;
+  const [bb] = find(busy, "c-btn");
+  assert.deepEqual([bb?.props["aria-disabled"], bb?.props["aria-busy"]], ["true", "true"]);
+  (bb?.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.deepEqual(cancels, [14], "busy の間は呼ばない");
+});
+
+test("web components: Composer の帯の有り無しで、行と textarea の位置・key・ref は同じ（帯の出入りで欄を作り直さない）", () => {
+  const ref = (): void => undefined;
+  const shape = (sent: unknown): unknown => {
+    const v = composerTree(composerState({ text: "a", count: 1, sent }), composerRec().on, ref) as RawNode;
+    const kids = [v.props.children].flat(Infinity).filter((c) => c && typeof c === "object") as RawNode[];
+    const index = kids.findIndex((c) => c.props.class === "c-composer-row");
+    const [ta] = rawEls(kids[index]).filter((c) => c.type === "textarea");
+    return [kids.map((c) => c.key), index, ta?.ref === ref, ta?.key];
+  };
+  const without = shape(null);
+  assert.deepEqual(without, [["sent", "row", "count"], 1, true, undefined]);
+  for (const sent of [{ id: 1, text: "本文 #1: 届けました", tone: "done" }, { id: 2, text: "本文 #2: 届け待ち。入力待ちになったら届けます", cancel: true }]) assert.deepEqual(shape(sent), without);
 });
 
 test("web components: Composer の字数の入れ物はいつも在り aria-live=polite、文は出るときだけで data-over", () => {

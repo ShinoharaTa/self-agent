@@ -9,6 +9,37 @@
   line-height: var(--leading-normal);
 }
 
+/* 送った本文の帯（欄の行の上）。中身が無いときは消す */
+.c-composer-sent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: var(--c-talk-max);
+  margin-inline: auto;
+  padding-bottom: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+/* 長い文は帯の中で折り返す */
+.c-composer-sent-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.c-composer-sent:empty {
+  display: none;
+}
+
+.c-composer-sent[data-tone="done"] {
+  color: var(--success);
+}
+
+.c-composer-sent[data-tone="warning"] {
+  color: var(--warning);
+}
+
 .c-composer-row {
   display: flex;
   align-items: flex-end;
