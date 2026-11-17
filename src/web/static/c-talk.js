@@ -132,12 +132,14 @@ export function footOf(turn, open, end) {
   return { text: end, tone, steps: n > 0 ? turn.steps : null, open: n > 0 && open === true };
 }
 
-/** 札の並び（返事の <#ID>）。並びでなければ []。id・title が空でない文字列の物だけを { id, title, meta } に（meta は文字列でなければ ""）。数は絞らない */
+/** 札の並び（返事の <#ID>）。並びでなければ []。id・title が空でない文字列の物だけを { id, title, meta } に（meta は文字列でなければ ""）。同じ id は先の 1 つだけ（札の key にする）。数は絞らない */
 export function refsOf(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
+  const seen = new Set();
   for (const ref of list) {
-    if (!ref || typeof ref.id !== "string" || ref.id === "" || typeof ref.title !== "string" || ref.title === "") continue;
+    if (!ref || typeof ref.id !== "string" || ref.id === "" || typeof ref.title !== "string" || ref.title === "" || seen.has(ref.id)) continue;
+    seen.add(ref.id);
     out.push({ id: ref.id, title: ref.title, meta: typeof ref.meta === "string" ? ref.meta : "" });
   }
   return out;
@@ -146,7 +148,7 @@ export function refsOf(list) {
 /**
  * 会話の行のモデル。{ older, items, running }。openSteps は key（行の id を文字列にした物）の Set。state.on は読まない（TalkTimeline の prop で渡す）。
  * continueKey の返事の行にだけ act: { busy }（busy は continueBusy が true のとき）。ほかの行には act の欄を置かない。
- * Bot の返事の行だけ: fmt.reply が関数なら解析する本文をその結果にし、fmt.refs が関数なら（差し替える前の本文から）札を取り、
+ * Bot の返事の行だけ: fmt.reply が関数なら解析する本文をその結果にし（文字列でない物が返れば元の本文のまま）、fmt.refs が関数なら（差し替える前の本文から）札を取り、
  * 1 つ以上在るときだけ返事のすぐ後ろに { kind: "refs", key: key + ":refs", refs } の行を足す
  */
 export function talkModel(state, parse) {
@@ -167,13 +169,14 @@ export function talkModel(state, parse) {
       return [{ kind: "bubble", key, who: "owner", label, name: null, blocks: [{ type: "plain", text }], time, state: turn.optimistic === true ? "sending" : null, foot: null }];
     }
     const open = openSteps ? openSteps.has(key) : false;
+    const shown = reply ? reply(text) : text;
     const row = {
       kind: "bubble",
       key,
       who: "agent",
       label,
       name: fmt.name(turn, prev),
-      blocks: parse(reply ? textOr(reply(text)) : text),
+      blocks: parse(typeof shown === "string" ? shown : text),
       time,
       state: null,
       foot: hasOutcome(turn) ? footOf(turn, open, fmt.end(turn)) : null,

@@ -1969,7 +1969,7 @@ test("web components: Inline（リンクの href・target・rel、太字の中�
   assert.equal(textOf(tree), "見て https://a.example/x と 太 https://b.example/y と c");
 });
 
-test("web components: talkModel: fmt.reply は Bot の返事の本文だけを差し替え、fmt.refs の札は返事のすぐ後ろの行（kind refs）。関数でない・空・id か題の無い物では行を足さない", () => {
+test("web components: talkModel: fmt.reply は Bot の返事の本文だけを差し替え、fmt.refs の札は返事のすぐ後ろの行（kind refs）。関数でない・空・id か題の無い物では行を足さない。reply が文字列でない物を返せば元の本文、同じ id の札は 1 つ", () => {
   const parse = (text: string): unknown => [{ type: "paragraph", text: "P:" + text }];
   const base = talkFmt().fmt;
   const replied: unknown[] = [];
@@ -2007,14 +2007,18 @@ test("web components: talkModel: fmt.reply は Bot の返事の本文だけを�
   assert.deepEqual(items[3]!.blocks, [{ type: "paragraph", text: "P:R:札 2" }]);
   assert.deepEqual(items[2]!.blocks, [{ type: "plain", text: "札 2" }]);
   assert.deepEqual([items[0]!.text, items[1]!.text], ["区切り", "知らせ"]);
-  // reply が文字列でない物を返せば空。reply・refs が関数でなければ今までどおり
+  // reply が文字列でない物を返せば元の本文のまま（空の文字列は空のまま）。reply・refs が関数でなければ今までどおり
   const odd = talk.talkModel(talkState({ turns: [{ id: 1, kind: "agent", text: "a" }], fmt: { ...base, reply: () => 7, refs: "x" } }), parse);
-  assert.deepEqual((odd.items as Obj[]).map((i) => [i.key, i.blocks]), [["1", [{ type: "paragraph", text: "P:" }]]]);
+  assert.deepEqual((odd.items as Obj[]).map((i) => [i.key, i.blocks]), [["1", [{ type: "paragraph", text: "P:a" }]]]);
+  const blank = talk.talkModel(talkState({ turns: [{ id: 1, kind: "agent", text: "a" }], fmt: { ...base, reply: () => "" } }), parse);
+  assert.deepEqual((blank.items as Obj[]).map((i) => [i.key, i.blocks]), [["1", [{ type: "paragraph", text: "P:" }]]]);
   const plain = talk.talkModel(talkState({ turns: [{ id: 1, kind: "agent", text: "a" }], fmt: { ...base, reply: null, refs: null } }), parse);
   assert.deepEqual((plain.items as Obj[]).map((i) => [i.key, i.blocks]), [["1", [{ type: "paragraph", text: "P:a" }]]]);
   // refsOf
   assert.deepEqual(talk.refsOf(null), []);
   assert.deepEqual(talk.refsOf([{ id: "a", title: "A", meta: 3 }, { id: "b", title: "B", meta: "m" }]), [{ id: "a", title: "A", meta: "" }, { id: "b", title: "B", meta: "m" }]);
+  // 同じ id は先の 1 つだけ（札の key が重ならない）
+  assert.deepEqual(talk.refsOf([{ id: "a", title: "A" }, { id: "a", title: "A2" }, { id: "b", title: "B" }]), [{ id: "a", title: "A", meta: "" }, { id: "b", title: "B", meta: "" }]);
 });
 
 test("web components: Refs と HandHead は Node で呼べる: 札は group と題の名前・meta が空なら span を作らない・［開く］で onOpen(id)（TalkRows の札の行は on.ref(id)。無ければ何もしない）。見出しは h2 と data-act（menu は menu のときだけ）・［畳む］で on.close()", async () => {
