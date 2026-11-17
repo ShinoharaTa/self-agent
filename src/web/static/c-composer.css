@@ -9,7 +9,7 @@
   line-height: var(--leading-normal);
 }
 
-/* 送った本文の帯（欄の行の上）。中身が無いときは消す */
+/* 送った本文の帯（欄の行の上）。いつも表示のまま在り（読み上げの入れ物を先に置く。字数の入れ物と同じ）、余白は中身が在るときだけ持つので、空なら高さ 0 */
 .c-composer-sent {
   display: flex;
   flex-wrap: wrap;
@@ -17,7 +17,6 @@
   gap: var(--space-2);
   max-width: var(--c-talk-max);
   margin-inline: auto;
-  padding-bottom: var(--space-2);
   color: var(--text-muted);
   font-size: var(--font-sm);
 }
@@ -28,8 +27,8 @@
   overflow-wrap: anywhere;
 }
 
-.c-composer-sent:empty {
-  display: none;
+.c-composer-sent:not(:empty) {
+  padding-bottom: var(--space-2);
 }
 
 .c-composer-sent[data-tone="done"] {

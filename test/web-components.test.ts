@@ -2438,7 +2438,7 @@ test("web components: Composer の帯はいつも最初の子（key=sent・aria-
     return { v, box: box as El };
   };
   const none = sentOf(null).box;
-  assert.deepEqual(none.children, [], "中身が無ければ子が 0（:empty で消える）");
+  assert.deepEqual(none.children, [], "中身が無ければ子が 0（余白を持たず高さ 0）");
   assert.ok(!("data-tone" in none.props) || none.props["data-tone"] === undefined);
   const done = sentOf({ id: 12, text: "本文 #12: 届けました・返事が来ました", tone: "done" }).box;
   assert.deepEqual([done.props["data-tone"], textOf(find(done, "c-composer-sent-text")), find(done, "c-btn").length], ["done", "本文 #12: 届けました・返事が来ました", 0]);
