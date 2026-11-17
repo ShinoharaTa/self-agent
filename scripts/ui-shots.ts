@@ -1076,7 +1076,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   function dropExpected(from: number, needles: string[]): string[] {
     const removed: string[] = [];
     const kept = logLines.slice(0, from);
-    for (const line of logLines.slice(from)) (needles.some((n) => line.includes(n)) ? removed : kept).push(line);
+    // settled timeout の行は外さない（終わらない要求の名前が外す語と重なっても、失敗の理由を console.log に残す）
+    for (const line of logLines.slice(from)) (!line.startsWith("[ui-shots] settled timeout") && needles.some((n) => line.includes(n)) ? removed : kept).push(line);
     logLines.splice(0, logLines.length, ...kept);
     return removed;
   }
