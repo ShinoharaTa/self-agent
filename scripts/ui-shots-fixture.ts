@@ -264,6 +264,9 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     say(INBOX, "agent", "「月ごとの集計がずれる」で原因が分かり、直してテストも通っています。commit の指示を待っています。");
     say(INBOX, "owner", "ありがとう");
     say(INBOX, "agent", "どういたしまして。ほかにあれば言ってください。");
+    // 最後は道具を使った返事（手順の在る「完了」の行）と札 2 つ（返事の <#ID>）
+    say(INBOX, "owner", "家計簿と RSS の話題を出して");
+    say(INBOX, "agent", `<#${tOpen}> と <#${tB2}> です。`, { steps: ["topic_list"], toolCalls: 1, durationMs: 4_000 });
 
     // 既読: 未読を 2 つ（tK3・tB2）残し、ほかは読んだことにする
     for (const channelId of [tOpen, tPerm, tK4, tKDone, tQ, tRun, tG3, tB1, tGen1, tGen2, INBOX]) {
