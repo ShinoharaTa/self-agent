@@ -4227,6 +4227,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const opens = box.querySelectorAll(".c-ref > button.c-btn").length;
       const heads = box.querySelectorAll(".c-hand-head [data-act] > button").length;
       if (opens !== 2 || heads !== 2) out.push(`右腕: ボタンが 見出し ${heads}・札 ${opens}（2・2 のはず）`);
+      // 読み上げの名前は古い右腕と同じ文（［開く］は「<題> を開く」・［畳む］は「右腕を畳む」）。札そのものは名前を持たない
+      for (const ref of refs) {
+        const title = (ref.querySelector(".c-ref-title")?.textContent ?? "").trim();
+        const name = ref.querySelector(":scope > button.c-btn")?.getAttribute("aria-label");
+        if (name !== `${title} を開く`) out.push(`右腕: 札の［開く］の名前が ${JSON.stringify(name)}（「${title} を開く」のはず）`);
+        if (ref.hasAttribute("role") || ref.hasAttribute("aria-label")) out.push("右腕: 札に role か aria-label が在る");
+      }
+      const closeName = box.querySelector('.c-hand-head [data-act="close"] > button')?.getAttribute("aria-label");
+      if (closeName !== "右腕を畳む") out.push(`右腕: ［畳む］の名前が ${JSON.stringify(closeName)}（「右腕を畳む」のはず）`);
       const bubbles = box.querySelectorAll(".c-bubble").length;
       if (bubbles !== 2) out.push(`右腕: 吹き出しが ${bubbles}（2 のはず）`);
       if ([...box.querySelectorAll(".c-bubble")].some((el) => (el.textContent ?? "").includes("<#"))) out.push("右腕: 返事の本文に <# が残っている");

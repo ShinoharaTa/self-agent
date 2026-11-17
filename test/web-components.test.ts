@@ -543,7 +543,7 @@ test("web components: buttonState は kind・size を丸め、disabled・busy �
   assert.deepEqual(atoms.buttonState({ disabled: true, busy: true }).ariaBusy, "true");
 });
 
-test("web components: Button は押せるときだけ onPress に事象を渡して呼び、押せないときは aria-disabled と preventDefault", () => {
+test("web components: Button は押せるときだけ onPress に事象を渡して呼び、押せないときは aria-disabled と preventDefault。name が空でない文字列のときだけ aria-label（見える文は label のまま）", () => {
   const calls: unknown[][] = [];
   const onPress = (...args: unknown[]): void => void calls.push(args);
   const on = one(html`<${atoms.Button} kind="primary" label="始める" onPress=${onPress} reason="今は送れません" />`);
@@ -554,7 +554,11 @@ test("web components: Button は押せるときだけ onPress に事象を渡し
   assert.equal(on.props.title, undefined);
   assert.equal(on.props.autofocus, undefined);
   assert.equal("disabled" in on.props, false);
+  assert.equal(on.props["aria-label"], undefined);
   assert.equal(textOf(find(on, "c-btn-label")), "始める");
+  const named = one(html`<${atoms.Button} label="開く" name="話題 1 を開く" />`);
+  assert.deepEqual([named.props["aria-label"], textOf(find(named, "c-btn-label"))], ["話題 1 を開く", "開く"]);
+  for (const name of ["", 3, null]) assert.equal(one(html`<${atoms.Button} label="開く" name=${name} />`).props["aria-label"], undefined);
   const e1 = fakeEvent();
   (on.props.onClick as (e: unknown) => void)(e1);
   assert.deepEqual(calls, [[e1]]);
@@ -2021,18 +2025,18 @@ test("web components: talkModel: fmt.reply は Bot の返事の本文だけを�
   assert.deepEqual(talk.refsOf([{ id: "a", title: "A" }, { id: "a", title: "A2" }, { id: "b", title: "B" }]), [{ id: "a", title: "A", meta: "" }, { id: "b", title: "B", meta: "" }]);
 });
 
-test("web components: Refs と HandHead は Node で呼べる: 札は group と題の名前・meta が空なら span を作らない・［開く］で onOpen(id)（TalkRows の札の行は on.ref(id)。無ければ何もしない）。見出しは h2 と data-act（menu は menu のときだけ）・［畳む］で on.close()", async () => {
+test("web components: Refs と HandHead は Node で呼べる: 札は role も名前も持たず（題を 2 回読ませない）・meta が空なら span を作らない・［開く］の名前は「<題> を開く」で onOpen(id)（TalkRows の札の行は on.ref(id)。無ければ何もしない）。見出しは h2 と data-act（menu は menu のときだけ）・［畳む］の名前は「<題>を畳む」で on.close()", async () => {
   // press は後ろ（カードの節）で宣言されるので、ここでは自前で押す
   const tap = (b: El | undefined): void => (b?.props.onClick as (e: unknown) => void)(fakeEvent());
   const opened: unknown[] = [];
   const root = one(html`<${talk.Refs} refs=${[{ id: "t1", title: "話題 1", meta: "3 分" }, { id: "t2", title: "話題 2", meta: "" }]} onOpen=${(id: unknown) => opened.push(id)} />`);
   assert.deepEqual([root.type, root.props.class], ["div", "c-refs"]);
   const refs = root.children as El[];
-  assert.deepEqual(refs.map((r) => [r.type, r.props.class, r.props.role, r.props["aria-label"]]), [["div", "c-ref", "group", "話題 1"], ["div", "c-ref", "group", "話題 2"]]);
+  assert.deepEqual(refs.map((r) => [r.type, r.props.class, r.props.role, r.props["aria-label"]]), [["div", "c-ref", undefined, undefined], ["div", "c-ref", undefined, undefined]]);
   assert.deepEqual(refs.map((r) => r.children.map((c) => (c as El).props.class)), [["c-ref-title", "c-ref-meta", "c-btn"], ["c-ref-title", "c-btn"]]);
   assert.deepEqual([textOf(find(refs[0]!, "c-ref-title")), textOf(find(refs[0]!, "c-ref-meta"))], ["話題 1", "3 分"]);
   const buttons = find(root, "c-btn");
-  assert.deepEqual(buttons.map((b) => [b.props["data-kind"], b.props["data-size"], textOf(b)]), [["ghost", "sm", "開く"], ["ghost", "sm", "開く"]]);
+  assert.deepEqual(buttons.map((b) => [b.props["data-kind"], b.props["data-size"], textOf(b), b.props["aria-label"]]), [["ghost", "sm", "開く", "話題 1 を開く"], ["ghost", "sm", "開く", "話題 2 を開く"]]);
   tap(buttons[1]);
   tap(buttons[0]);
   assert.deepEqual(opened, ["t2", "t1"]);
@@ -2058,7 +2062,7 @@ test("web components: Refs と HandHead は Node で呼べる: 札は group と�
   const ev = fakeEvent();
   (menuBtn.props.onClick as (e: unknown) => void)(ev);
   const close = find(head, "c-btn")[0] as El;
-  assert.deepEqual([close.props["data-kind"], close.props["data-size"], textOf(close)], ["ghost", "sm", "畳む"]);
+  assert.deepEqual([close.props["data-kind"], close.props["data-size"], textOf(close), close.props["aria-label"]], ["ghost", "sm", "畳む", "右腕を畳む"]);
   tap(close);
   assert.deepEqual(handCalls, [["menu", ev.currentTarget], ["close"]]);
   const v2 = hand.HandHead({ title: "右腕", menu: true, on: handOn }) as VNode;

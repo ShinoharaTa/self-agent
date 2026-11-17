@@ -307,14 +307,14 @@ export function Bubble({ who, label, name, blocks, time, state, foot, act, onTog
   </article>`;
 }
 
-/** 札（返事の <#ID>）。札ごとに題・meta（空なら出さない）・［開く］（押すと onOpen(id)）。状態は持たない */
+/** 札（返事の <#ID>）。札ごとに題・meta（空なら出さない）・［開く］（押すと onOpen(id)。読み上げの名前は「<題> を開く」）。状態は持たない */
 export function Refs({ refs, onOpen }) {
   return html`<div class="c-refs">
     ${refs.map(
-      (ref) => html`<div class="c-ref" key=${ref.id} role="group" aria-label=${ref.title}>
+      (ref) => html`<div class="c-ref" key=${ref.id}>
         <span class="c-ref-title">${ref.title}</span>
         ${ref.meta !== "" ? html`<span class="c-ref-meta">${ref.meta}</span>` : null}
-        <${Button} kind="ghost" size="sm" label="開く" onPress=${() => onOpen(ref.id)} />
+        <${Button} kind="ghost" size="sm" label="開く" name=${ref.title + " を開く"} onPress=${() => onOpen(ref.id)} />
       </div>`,
     )}
   </div>`;

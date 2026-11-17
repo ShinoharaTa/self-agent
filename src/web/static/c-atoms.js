@@ -28,10 +28,12 @@ export function buttonState({ kind, size, disabled, busy }) {
   };
 }
 
-/** native の disabled は付けない（フォーカスと押せない理由の title を残す）。onPress は押した事象を受ける（event.currentTarget が押した要素） */
-export function Button({ kind = "secondary", size = "md", icon, label, disabled = false, busy = false, reason, type = "button", autofocus = false, onPress }) {
+/** native の disabled は付けない（フォーカスと押せない理由の title を残す）。onPress は押した事象を受ける（event.currentTarget が押した要素）。
+ * name は読み上げの名前（空でない文字列のときだけ aria-label。見える文は label のまま） */
+export function Button({ kind = "secondary", size = "md", icon, label, name, disabled = false, busy = false, reason, type = "button", autofocus = false, onPress }) {
   const s = buttonState({ kind, size, disabled, busy });
   return html`<button class="c-btn" type=${type} data-kind=${s.kind} data-size=${s.size}
+      aria-label=${typeof name === "string" && name !== "" ? name : undefined}
       aria-disabled=${s.ariaDisabled} aria-busy=${s.ariaBusy}
       title=${s.inert && reason ? reason : undefined} autofocus=${autofocus ? true : undefined}
       onClick=${(event) => {
