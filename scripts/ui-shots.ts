@@ -104,6 +104,10 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
 
 const oldShellNames = (vp: Viewport): string[] => [`old-${vp}-dark-list`, `old-${vp}-dark-chat`];
 
+/** Claude Code のチャンネルの段 cc（2 つ目のサーバー。ダークの 3 組）。今のサーバーに足すとほかの絵が変わるので分ける */
+const CC_SHELLS: ReadonlyArray<Viewport> = ["phone", "pc", "tablet"];
+const ccShellNames = (vp: Viewport): string[] => ["b-cc-status", "b-cc-sent", "b-cc-permission", "b-cc-ended", "b-cc-ended-screen"].map((n) => `${vp}-dark-${n}`);
+
 /** 部品の見本のページ（/static/gallery.html。K1・K2）を撮る組 */
 const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "phone", theme: "dark" },
@@ -913,9 +917,11 @@ const ALL_SHOT_NAMES: readonly string[] = [
   ...NEW_SHELLS.flatMap(({ vp, theme, full }) => newShellNames(vp, theme, full)),
   ...OLD_SHELLS.flatMap(oldShellNames),
   ...GALLERY_SHOTS.flatMap(({ vp, theme }) => GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind))),
+  ...CC_SHELLS.flatMap(ccShellNames),
 ];
 
-async function shoot(browser: Browser, fixture: FixtureServer, out: string, only: string | undefined, logLines: string[]): Promise<{ count: number; failed: number }> {
+/** part は撮る部（main: 今のサーバーの全部、cc: 2 つ目のサーバーの段 cc だけ） */
+async function shoot(browser: Browser, fixture: FixtureServer, out: string, only: string | undefined, logLines: string[], part: "main" | "cc" = "main"): Promise<{ count: number; failed: number }> {
   const base = fixture.url;
   const { open, perm, q, talk, long, run } = fixture.topics;
   let count = 0;
@@ -4000,6 +4006,297 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
   }
 
+  /**
+   * 段 cc（Claude Code のチャンネル。2 つ目のサーバー（cc: true）で、ダークの 3 組）: 届け待ち（0〜4）・許可（5〜8）・終わった（9）・［端末］⇄［会話］（10）・記録（11）。
+   * 足りない物の文（全部を測ってから、1 つでもあれば段を失敗にする）。0 で口に渡っていなければそこで止める
+   */
+  async function ccStage(page: Page, vp: Viewport, p: string): Promise<string[]> {
+    const cc = fixture.cc;
+    if (cc === undefined) throw new Error("段 cc: Claude Code の作り物が無い（cc: true で立てたサーバーでない）");
+    const lines: string[] = [];
+    const say = (n: number, name: string, text: string): void => void lines.push(`段 cc の ${n} ${name}: ${text}`);
+    const C = "#ed .ed-scroll > [data-cards]";
+    const K = "#ed > [data-composer]";
+    const CANCEL = `${C} .c-status .c-btn`;
+    const offs: Array<() => Promise<void>> = [];
+    cc.reset();
+    const from = logLines.length;
+    /** 焦点の要素の短い書き方（記録に出す） */
+    const focusOf = (): Promise<string> =>
+      page.evaluate(() => {
+        const el = document.activeElement;
+        if (el === null) return "null";
+        const cls = el.getAttribute("class");
+        return el.tagName.toLowerCase() + (cls ? "." + cls.split(/\s+/).join(".") : "");
+      });
+    /** 「…」の板から label の行を押す */
+    const menuRow = async (label: string): Promise<boolean> => {
+      await page.click(TOP_MENU);
+      await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+      const rows = await sheetRows(page);
+      if (!rows.includes(label)) {
+        await escSheet(page);
+        return false;
+      }
+      await page.locator("#v3-sheet .more-row").filter({ hasText: label }).first().click();
+      await wait(600);
+      return true;
+    };
+    /** 画面の節（.tl の中）と、その .tl の前がカードの根か */
+    const screenOf = (id: string): Promise<{ inTl: boolean; afterCards: boolean } | null> =>
+      page.evaluate((sid: string) => {
+        const sec = document.getElementById(sid);
+        if (sec === null) return null;
+        const tl = sec.parentElement;
+        return { inTl: tl !== null && tl.classList.contains("tl"), afterCards: tl !== null && tl.previousElementSibling !== null && tl.previousElementSibling.hasAttribute("data-cards") };
+      }, `cc-screen-${id}`);
+    let endedSession: string | null = null;
+
+    try {
+      // ----- 届け待ち（セッションは作業中） -----
+      await load(page, `/static/v3.html#/ch/${cc.queue}`);
+      await page.waitForSelector(`${C} .c-status`, { timeout: 5000 }).catch(() => undefined);
+      await wait(300);
+      // 0. 口に渡ったか（渡っていなければ、ほかを測らずに止める）
+      const mouth = await page.evaluate(({ c, k }: { c: string; k: string }) => {
+        const root = document.querySelector(c);
+        const rows = root === null ? [] : [...root.querySelectorAll(".c-status")];
+        const sent = document.querySelector(k + " .c-composer-sent");
+        return {
+          cards: root !== null,
+          rows: rows.length,
+          text: rows[0]?.querySelector("p")?.textContent?.trim() ?? null,
+          cancels: rows[0] === undefined ? 0 : rows[0].querySelectorAll(".c-btn").length,
+          old: ["#ed .tl .cc-status", "#ed .tl section.card", "#ed .tl .tl-hint", "#ed .tl .tl-notice", "#ed .cc-send-state"].map((s) => document.querySelectorAll(s).length).reduce((a, b) => a + b, 0),
+          sent: sent === null ? null : { kids: sent.children.length, text: sent.textContent ?? "" },
+        };
+      }, { c: C, k: K });
+      if (!mouth.cards || mouth.rows !== 1 || mouth.text !== "作業中です。終わったら届けます" || mouth.cancels !== 1 || mouth.old !== 0 || mouth.sent === null || mouth.sent.kids !== 0 || mouth.sent.text !== "") {
+        throw new Error(`段 cc の 0: 状態の行が部品でない（${JSON.stringify(mouth)}）`);
+      }
+      await shot(page, `${p}-b-cc-status`);
+
+      // 1. 当たり（カードの根と入力欄の中の button。PC も 44）
+      for (const l of await page.evaluate(hitProblems, { min: 44, scopes: `${C}, ${K}`, targets: "button", toast: false })) say(1, "当たり", `届け待ち: ${l}`);
+      await edScroll(page, "bottom");
+
+      // 2. 状態の行の p と textarea に印を付け、下書きを打つ
+      await page.evaluate(({ c, k }: { c: string; k: string }) => {
+        for (const el of [document.querySelector(c + " .c-status p"), document.querySelector(k + " textarea")]) if (el !== null) (el as unknown as { __m?: number }).__m = 1;
+      }, { c: C, k: K });
+      const DRAFT = "下書きの続き";
+      await page.locator(`${K} textarea`).fill(DRAFT);
+      const h0 = await page.evaluate((c: string) => document.querySelector(c + " .c-status")?.getBoundingClientRect().height ?? -1, C);
+
+      // 3. ［やめる］を 2 回押す（POST は 600 ms 遅らせる）: 待つ間は待ちの形で、POST は 1 回
+      const ROUTE = "**/api/cc/sends/*/cancel";
+      let cancels = 0;
+      const slow = async (route: Route): Promise<void> => {
+        if (route.request().method() === "POST") {
+          cancels++;
+          await wait(600);
+        }
+        await route.continue().catch(() => undefined);
+      };
+      await page.route(ROUTE, slow);
+      offs.push(() => page.unroute(ROUTE, slow));
+      await page.locator(CANCEL).click();
+      await wait(100);
+      await page.evaluate((sel: string) => (document.querySelector(sel) as HTMLElement | null)?.click(), CANCEL);
+      await wait(100);
+      const during = await page.evaluate((sel: string) => {
+        const b = document.querySelector(sel);
+        return b === null ? null : { disabled: b.getAttribute("aria-disabled"), busy: b.getAttribute("aria-busy") };
+      }, CANCEL);
+      if (during === null || during.disabled !== "true" || during.busy !== "true") say(3, "やめる", `待つ間の形 ${JSON.stringify(during)}（aria-disabled・aria-busy が true のはず）`);
+
+      // 4. 通った後: 知らせ・同じ p で「作業中…」・［やめる］が無い・帯に「送るのをやめました」・下書きが残る・行の高さが同じ
+      const done = await page
+        .waitForFunction((sel: string) => document.querySelector(sel) === null, CANCEL, { timeout: 5000 })
+        .then(() => true)
+        .catch(() => false);
+      if (!done) say(4, "やめた後", "5 秒たっても［やめる］が消えない");
+      await page.waitForFunction(() => (document.querySelector("#toast")?.textContent ?? "").includes("送るのをやめました"), undefined, { timeout: 5000 }).catch(() => undefined);
+      await page.waitForFunction((k: string) => (document.querySelector(k + " .c-composer-sent-text")?.textContent ?? "") !== "", K, { timeout: 5000 }).catch(() => undefined);
+      await wait(300);
+      console.log(`[v3-${p}] 段 cc: 状態の行の［やめる］が消えた後の焦点 ${await focusOf()}`);
+      const after = await page.evaluate(({ c, k }: { c: string; k: string }) => {
+        const pEl = document.querySelector(c + " .c-status p");
+        const ta = document.querySelector(k + " textarea");
+        return {
+          toast: (document.querySelector("#toast")?.textContent ?? "").trim(),
+          text: pEl?.textContent?.trim() ?? null,
+          sameP: (pEl as unknown as { __m?: number } | null)?.__m === 1,
+          cancels: document.querySelectorAll(c + " .c-btn").length,
+          sent: (document.querySelector(k + " .c-composer-sent-text")?.textContent ?? "").trim(),
+          sameTa: (ta as unknown as { __m?: number } | null)?.__m === 1,
+          draft: ta instanceof HTMLTextAreaElement ? ta.value : null,
+          height: document.querySelector(c + " .c-status")?.getBoundingClientRect().height ?? -1,
+          bar: document.querySelectorAll("#ed .cc-send-state").length,
+        };
+      }, { c: C, k: K });
+      if (!after.toast.includes("送るのをやめました")) say(4, "やめた後", `知らせ「${after.toast}」`);
+      if (after.text !== "作業中…" || !after.sameP) say(4, "やめた後", `状態の行「${String(after.text)}」・同じ p ${after.sameP}`);
+      if (after.cancels !== 0) say(4, "やめた後", `［やめる］が ${after.cancels} 個残る`);
+      if (!after.sent.startsWith("本文 #") || !after.sent.endsWith("送るのをやめました")) say(4, "やめた後", `帯の文「${after.sent}」`);
+      if (!after.sameTa || after.draft !== DRAFT) say(4, "やめた後", `入力欄が作り直された・下書きが消えた（同じ要素 ${after.sameTa}・${JSON.stringify(after.draft)}）`);
+      if (Math.abs(after.height - h0) > 0.5) say(4, "やめた後", `状態の行の高さ ${h0} → ${after.height}`);
+      if (after.bar !== 0) say(4, "やめた後", `古い帯が ${after.bar} 個`);
+      if (cancels !== 1) say(3, "やめる", `POST が ${cancels} 回（1 回のはず）`);
+      await shot(page, `${p}-b-cc-sent`);
+      await offs.pop()!();
+      await page.locator(`${K} textarea`).fill("");
+
+      // ----- 許可（セッションは判断待ち） -----
+      await load(page, `/static/v3.html#/ch/${cc.ask}`);
+      await page.waitForSelector(`${C} .c-card[data-kind="permission"]`, { timeout: 5000 }).catch(() => undefined);
+      await wait(300);
+      // 5. 許可のカードは部品で、見出しは話題と同じ
+      const card = await page.evaluate((c: string) => ({
+        cards: document.querySelectorAll(c + ' .c-card[data-kind="permission"]').length,
+        title: (document.querySelector(c + " .c-card-title")?.textContent ?? "").trim(),
+        old: ["#ed .tl section.card", "#ed .tl .cc-status", "#ed .cc-permission"].map((s) => document.querySelectorAll(s).length).reduce((a, b) => a + b, 0),
+      }), C);
+      if (card.cards !== 1 || card.title !== "あなたの番: 許可" || card.old !== 0) say(5, "許可", JSON.stringify(card));
+      await edScroll(page, "bottom");
+      await shot(page, `${p}-b-cc-permission`);
+      for (const l of await page.evaluate(hitProblems, { min: 44, scopes: `${C}, ${K}`, targets: "button, input", toast: false })) say(1, "当たり", `許可: ${l}`);
+
+      // 6. 残り時間が 1 秒ごとに進む
+      const meta = (): Promise<string | null> => page.evaluate((c: string) => document.querySelector(c + " .c-card-meta")?.textContent ?? null, C);
+      const m0 = await meta();
+      await wait(2200);
+      const m1 = await meta();
+      if (m0 === null || !m0.startsWith("残り ") || m0 === m1) say(6, "残り時間", `「${String(m0)}」→「${String(m1)}」`);
+
+      // 7. ［許可］を押す（本物の POST を 300 ms 遅らせる）: 待ちの形 → 5 秒以内にカードが消える。POST は 1 回
+      const PERM = "**/api/cc/permissions/*/*";
+      let answers = 0;
+      const hold = async (route: Route): Promise<void> => {
+        if (route.request().method() === "POST") {
+          answers++;
+          await wait(300);
+        }
+        await route.continue().catch(() => undefined);
+      };
+      await page.route(PERM, hold);
+      offs.push(() => page.unroute(PERM, hold));
+      await edScroll(page, "bottom");
+      await page.locator(`${C} .c-card-actions > .c-btn`).filter({ hasText: /^許可$/ }).click();
+      await wait(100);
+      const waiting = await page.evaluate((c: string) => [...document.querySelectorAll(c + " .c-card-actions > .c-btn")].map((b) => b.getAttribute("aria-disabled")), C);
+      if (waiting.length === 0 || waiting.some((d) => d !== "true")) say(7, "許可を押す", `送っている間の形 ${JSON.stringify(waiting)}`);
+      const goneAt = Date.now();
+      const gone = await page
+        .waitForFunction((c: string) => document.querySelector(c + " .c-card") === null, C, { timeout: 5000 })
+        .then(() => true)
+        .catch(() => false);
+      if (!gone) say(7, "許可を押す", "5 秒たってもカードが消えない");
+      else console.log(`[v3-${p}] 段 cc: 許可を押してからカードが消えるまで ${Date.now() - goneAt} ms・その後の焦点 ${await focusOf()}`);
+      await page.waitForFunction(() => (document.querySelector("#toast")?.textContent ?? "").includes("許可しました"), undefined, { timeout: 5000 }).catch(() => undefined);
+      const toast = (await page.evaluate(() => document.querySelector("#toast")?.textContent ?? "")).trim();
+      if (!toast.includes("許可しました")) say(7, "許可を押す", `知らせ「${toast}」`);
+      if (answers !== 1) say(7, "許可を押す", `POST が ${answers} 回（1 回のはず）`);
+      await offs.pop()!();
+
+      // 8. 「…」の板から画面を開く: .tl（カードの根の次）に節。もう一度で閉じる
+      if (!(await menuRow("画面を見る"))) say(8, "画面", "「…」の板に「画面を見る」が無い");
+      else {
+        await page.waitForSelector(`#cc-screen-${cc.ask}`, { timeout: 5000 }).catch(() => undefined);
+        const sc = await screenOf(cc.ask);
+        if (sc === null || !sc.inTl || !sc.afterCards) say(8, "画面", `節の場所 ${JSON.stringify(sc)}（.tl の中・カードの根の次のはず）`);
+        if (!(await menuRow("画面を閉じる"))) say(8, "画面", "「…」の板に「画面を閉じる」が無い");
+        else if ((await screenOf(cc.ask)) !== null) say(8, "画面", "閉じても節が残る");
+      }
+
+      // 10. 見出しの［端末］へ切り替えて［会話］へ戻る（切り替えが出る幅だけ）: カードの根がもう一度在り、古いカードが .tl に無い
+      const views = await page.evaluate(() => document.querySelector("#c-top-root .c-top-views") !== null);
+      console.log(`[v3-${p}] 段 cc の 10: 見出しの切り替えが${views ? "在る" : "無い（確かめない）"}`);
+      if (views) {
+        await page.locator('#c-top-root .c-seg-item[data-value="pane"]').click();
+        await wait(800);
+        await page.locator('#c-top-root .c-seg-item[data-value="talk"]').click();
+        await page.waitForSelector(C, { state: "attached", timeout: 5000 }).catch(() => undefined);
+        await wait(600);
+        const back = await page.evaluate((c: string) => ({
+          cards: document.querySelectorAll(c).length,
+          old: ["#ed .tl section.card", "#ed .tl .cc-status", "#ed .cc-permission"].map((s) => document.querySelectorAll(s).length).reduce((a, b) => a + b, 0),
+        }), C);
+        if (back.cards !== 1 || back.old !== 0) say(10, "端末と会話", JSON.stringify(back));
+      }
+
+      // ----- 終わった（一覧に居ないセッション）。開くのは群の「完了」を開いた行から（一覧に在る話題にだけ「…」が出る） -----
+      await load(page, "/static/v3.html");
+      await page.locator('#c-list-root section.c-group[aria-label="blog-site"] .c-fold-head').first().click();
+      await page.waitForSelector(`#c-list-root button[data-topic="ch:${cc.ended}"]`, { timeout: 5000 });
+      await page.locator(`#c-list-root button[data-topic="ch:${cc.ended}"]`).last().click();
+      await page.waitForSelector(`${C} .c-note`, { timeout: 5000 }).catch(() => undefined);
+      await wait(300);
+      endedSession = await page.evaluate((id: string) => {
+        const ch = (window as unknown as { SA: { chat: { channelById: (c: string) => { cc?: { sessionId?: unknown } } | null } } }).SA.chat.channelById(id);
+        return ch && ch.cc && typeof ch.cc.sessionId === "string" ? ch.cc.sessionId : null;
+      }, cc.ended);
+      // 9. 終わった文は部品の文で、状態の行は無い。入力欄は今と同じ形
+      const end = await page.evaluate(({ c, k }: { c: string; k: string }) => ({
+        notes: [...document.querySelectorAll(c + " .c-note")].map((n) => (n.textContent ?? "").trim()),
+        status: document.querySelectorAll(c + " .c-status").length,
+        old: ["#ed .tl .tl-hint", "#ed .tl .cc-status", "#ed .cc-send-state"].map((s) => document.querySelectorAll(s).length).reduce((a, b) => a + b, 0),
+        textarea: document.querySelectorAll(k + " textarea").length,
+      }), { c: C, k: K });
+      const ENDED = "このセッションは終わっています。Discord のチャンネルに書くと、同じディレクトリで起動して続けられます。";
+      if (end.notes.length !== 1 || end.notes[0] !== ENDED || end.status !== 0 || end.old !== 0 || end.textarea !== 1) say(9, "終わった", JSON.stringify(end));
+      await edScroll(page, "bottom");
+      await shot(page, `${p}-b-cc-ended`);
+      if (!(await menuRow("画面を見る"))) say(9, "終わった", "「…」の板に「画面を見る」が無い");
+      else {
+        await page.waitForSelector(`#cc-screen-${cc.ended}`, { timeout: 5000 }).catch(() => undefined);
+        const order = await page.evaluate(({ c, id }: { c: string; id: string }) => {
+          const note = document.querySelector(c + " .c-note");
+          const sec = document.getElementById(id);
+          return note === null || sec === null ? null : { note: note.getBoundingClientRect().top, screen: sec.getBoundingClientRect().top, text: (sec.textContent ?? "").trim() };
+        }, { c: C, id: `cc-screen-${cc.ended}` });
+        if (order === null || !(order.note < order.screen)) say(9, "終わった", `終わった文が画面の節より上に無い（${JSON.stringify(order)}）`);
+        await edScroll(page, "bottom");
+        await shot(page, `${p}-b-cc-ended-screen`);
+        await menuRow("画面を閉じる");
+      }
+    } finally {
+      for (const off of offs.reverse()) await off();
+    }
+
+    // 11. 記録: 段の間に増えた行は、終わったチャンネルのセッションの 404（とその console の行）だけ
+    const added = logLines.slice(from);
+    const http404 = endedSession === null ? 0 : added.filter((l) => l.includes(`HTTP 404 GET /api/cc/sessions/${endedSession}`)).length;
+    const res404 = added.filter((l) => l.includes("Failed to load resource") && l.includes("404")).length;
+    if (endedSession !== null && http404 > 0 && res404 === http404 && added.length === http404 * 2) dropExpected(from, [`/api/cc/sessions/${endedSession}`, "Failed to load resource"]);
+    else say(11, "記録", `段の間の行 ${added.length}（終わったセッションの 404 ${http404}・console ${res404}）`);
+    return lines;
+  }
+
+  /** 段 cc の組（2 つ目のサーバー。ダークだけ） */
+  async function ccShell(vp: Viewport): Promise<void> {
+    const p = `${vp}-dark`;
+    const names = ccShellNames(vp);
+    if (!names.some(wanted)) return;
+    const { ctx, page } = await contextFor(vp, "dark", `v3-${p}-cc`);
+    try {
+      await step(`${p} cc`, names, async () => {
+        const started = Date.now();
+        const problems = await ccStage(page, vp, p);
+        console.log(`[v3-${p}] 段 cc: ${((Date.now() - started) / 1000).toFixed(1)} 秒`);
+        for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+        if (problems.length > 0) throw new Error(`Claude Code のチャンネルの段の検査で ${problems.length} 件`);
+      });
+    } finally {
+      await ctx.close();
+    }
+  }
+
+  // 2 つ目のサーバー（Claude Code のチャンネル）の部は、段 cc だけを回して返す
+  if (part === "cc") {
+    for (const vp of CC_SHELLS) await ccShell(vp);
+    return { count, failed };
+  }
   for (const { vp, theme, full } of NEW_SHELLS) await newShell(vp, theme, full);
   for (const vp of OLD_SHELLS) await oldShell(vp);
   for (const { vp, theme } of GALLERY_SHOTS) await gallery(vp, theme);
@@ -4033,12 +4330,14 @@ async function main(argv: string[]): Promise<number> {
   const logLines: string[] = [];
   let browser: Browser | undefined;
   let fixture: FixtureServer | undefined;
+  let ccFixture: FixtureServer | undefined;
   let cleaning: Promise<void> | undefined;
   /** ブラウザとサーバーを閉じ、<dir> があれば console.log を書く（何度呼んでも 1 回） */
   const cleanup = (): Promise<void> =>
     (cleaning ??= (async () => {
       await browser?.close().catch(() => undefined);
       await fixture?.close().catch(() => undefined);
+      await ccFixture?.close().catch(() => undefined);
       if (existsSync(out)) writeFileSync(join(out, "console.log"), logLines.length === 0 ? "" : logLines.join("\n") + "\n");
     })());
   /** 2 回目のシグナルでも即死せず、同じ後片付けの終わりを待って止める */
@@ -4058,7 +4357,16 @@ async function main(argv: string[]): Promise<number> {
     }
     mkdirSync(out, { recursive: true });
     fixture = await startFixtureServer({ log: (line) => logLines.push(`[server] ${line}`) });
-    const { count, failed } = await shoot(browser, fixture, out, only, logLines);
+    const first = await shoot(browser, fixture, out, only, logLines);
+    let count = first.count;
+    let failed = first.failed;
+    // 段 cc は 2 つ目のサーバー（Claude Code のチャンネル入り）。合う名前が無ければ立てない
+    if (CC_SHELLS.flatMap(ccShellNames).some((name) => only === undefined || name.includes(only))) {
+      ccFixture = await startFixtureServer({ cc: true, log: (line) => logLines.push(`[server-cc] ${line}`) });
+      const cc = await shoot(browser, ccFixture, out, only, logLines, "cc");
+      count += cc.count;
+      failed += cc.failed;
+    }
     console.log(`${count} 枚を撮った: ${out}`);
     if (count === 0) {
       console.error("1 枚も撮れなかった（名前の一覧と撮る側がずれている）");
