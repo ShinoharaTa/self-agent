@@ -864,7 +864,10 @@
    *   ops: () => Node[]             見出しの右端に足すボタン（省略可）
    *   outgoing: (text) => string    送る直前の本文の差し替え（省略可）
    *   replyText: (text) => string   Bot の返事の本文を描く前の差し替え（省略可）
-   *   replyExtras: (text) => Node[] Bot の返事の吹き出しの下に足す要素（省略可）
+   *   replyExtras: (text) => Node[] Bot の返事の吹き出しの下に足す要素（省略可。古い描き方のときだけ）
+   *   head: false                   見出しを作らない（呼ぶ側が別に描く。省略可）
+   *   replyRefs: (text) => [{ id, title, meta }]  部品の道の札（Bot の返事のすぐ下。省略可）
+   *   onRef: (id) => void           札の [開く]（省略可）
    */
   /** 枠の見出し: 題と […]（会話を新しくする・Discord で開く）と枠のボタン。[‹]・アイコン・バッジ・リンクのボタンは出さない */
   function frameHeader(ch, channelId, frame) {
@@ -1061,6 +1064,9 @@
   // ===== 新しい殻の会話の行（入口 c-app.js の SA.talk。K4）。古い殻には SA.talk が無いので、ここは通らない =====
   /** 部品で描けなかった（以後はこのタブで古い描き方） */
   let talkBroken = false;
+  /** render に渡された枠（チャンネル → frame。枠なしで描くと消す） */
+  const frames = new Map();
+  const frameOf = (channelId) => frames.get(channelId) || null;
   /** 部品の行で開いた手順（{ [channelId]: Set<行の key = String(turn.id)> }。古い details の openSteps とは別） */
   const talkOpen = {};
   /** [中断] を押して応答を待っているチャンネル → その turnSeq */
@@ -1081,6 +1087,7 @@
     if (aborting.has(channelId) && (!run || aborting.get(channelId) !== run.turnSeq)) aborting.delete(channelId);
     const last = t.turns[t.turns.length - 1];
     const continueKey = continuable(ch, run, last) ? String(last.id) : null;
+    const frame = frameOf(channelId);
     return {
       channelId,
       turns: t.turns,
@@ -1105,9 +1112,17 @@
         allLabel: allStepsLabel,
         // 実行中の行の名前は renderRunning と同じ決め方
         runName: (prev) => (showsAgentName(ch) && !followsSameAgent(prev, ch, ch ? ch.persona : "default") ? persona(ch ? ch.persona : "default").name : null),
+        // 枠（右腕）の Bot の返事の本文の差し替えと札
+        reply: frame && frame.replyText ? frame.replyText : null,
+        refs: frame && frame.replyRefs ? frame.replyRefs : null,
       },
       on: {
         older: () => loadOlder(channelId),
+        // 札の [開く]: 押されたときの枠を読む
+        ref: (id) => {
+          const f = frameOf(channelId);
+          if (f && f.onRef) f.onRef(id);
+        },
         toggleSteps: (key) => {
           const opened = talkOpenOf(channelId);
           if (opened.has(key)) opened.delete(key);
@@ -1221,14 +1236,17 @@
   /** 部品に渡す state。本文の持ち主は SA.app.draft。on は channelId だけを閉じ込める。Claude Code のチャンネルは送った本文の帯（sent）と on.cancel も */
   function composerState(channelId, ch) {
     const text = SA.app.draft(channelId);
+    // 枠（右腕）は placeholder・label が枠の文で、字数は送る直前の差し替え（outgoing）を通した物（空なら 0）
+    const frame = frameOf(channelId);
+    const raw = text.trim();
     const state = {
       text,
-      count: text.trim().length,
+      count: raw === "" ? 0 : (frame && frame.outgoing ? frame.outgoing(raw) : raw).length,
       max: MESSAGE_MAX,
       sending: sendingNow.has(channelId),
       touch: touchPrimary(),
-      label: (ch ? channelTitle(ch) : "会話") + " に送る",
-      placeholder: composerPlaceholder(ch),
+      label: frame ? frame.placeholder : (ch ? channelTitle(ch) : "会話") + " に送る",
+      placeholder: frame ? frame.placeholder : composerPlaceholder(ch),
       note: composerNote(ch),
       on: {
         input: (value) => composerInput(channelId, value),
@@ -1273,14 +1291,17 @@
   async function composerSend(channelId) {
     const raw = SA.app.draft(channelId).trim();
     if (sendingNow.has(channelId) || raw === "") return;
-    if (raw.length > MESSAGE_MAX) {
+    // 枠（右腕）は送る直前に差し替える（上限の判定・送る本文・仮の行は差し替えた物。書きかけと比べるのは raw）
+    const frame = frameOf(channelId);
+    const text = frame && frame.outgoing ? frame.outgoing(raw) : raw;
+    if (text.length > MESSAGE_MAX) {
       toast(TOO_LONG_TEXT);
       return;
     }
     sendingNow.add(channelId);
     drawComposer(channelId);
     try {
-      const data = await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/messages", { text: raw }, { quiet: true });
+      const data = await SA.api.post("/api/channels/" + encodeURIComponent(channelId) + "/messages", { text }, { quiet: true });
       // 受け付けた（202）: 音（sound.js）はここで「受け付けた」を鳴らす
       SA.events.emit("sent", { channelId });
       // 送っている間に打ち足していなければ書きかけを消す。set は値だけなので、すぐ同じ本文（空）で描いて高さを戻す
@@ -1290,7 +1311,7 @@
         if (root && SA.composer && !composerBroken) SA.composer.set(root, "");
         drawComposer(channelId);
       }
-      afterSent(channelId, data, raw);
+      afterSent(channelId, data, text);
     } catch (err) {
       // 本文は書きかけに残す。[もう一度] はその時の書きかけを送り直す
       sendFailed(err, () => composerSend(channelId));
@@ -1573,25 +1594,28 @@
   }
 
   function render(container, channelId, frame) {
+    // 部品の道の state（talkState・composerState）が、チャンネルごとに枠を引く
+    if (frame) frames.set(channelId, frame);
+    else frames.delete(channelId);
     const t = store.turns[channelId];
     const ch = channelById(channelId);
-    // 新しい殻の列 2 は、見出しを入口 c-app.js の部品が描く（右腕の枠は今の見出しのまま）
-    const top = !frame && !!SA.top;
-    // 新しい殻の列 2 は、会話の行も部品が描く（右腕は古い描き方のまま）
-    const talk = !frame && SA.talk && !talkBroken ? SA.talk : null;
-    // 入力欄も部品が描く（右腕は古い入力欄のまま）
-    const comp = !frame && SA.composer && !composerBroken ? SA.composer : null;
+    // 新しい殻の列 2 は、見出しを入口 c-app.js の部品が描く。枠は head: false のときだけ見出しを作らない（右腕の見出しは shell.js が別に描く）
+    const top = frame ? frame.head === false : !!SA.top;
+    // 新しい殻は、会話の行も部品が描く（右腕の枠も。札は枠の replyRefs）
+    const talk = SA.talk && !talkBroken ? SA.talk : null;
+    // 入力欄も部品が描く（右腕の枠も。placeholder・outgoing は composerState が枠から引く）
+    const comp = SA.composer && !composerBroken ? SA.composer : null;
     if (!t || !t.loaded) {
       if (talk) dropTalkRoots(container, talk);
       if (comp) dropComposerRoots(container, comp);
-      if (!frame && SA.cards) dropCardRoots(container, SA.cards);
+      if (SA.cards) dropCardRoots(container, SA.cards);
       container.replaceChildren(...[top ? null : header(ch, channelId, frame), el("div", { class: "ed-scroll" }, [el("div", { class: "ed-page" }, [SA.views.loading()])])].filter(Boolean));
       return;
     }
     if (t.missing) {
       if (talk) dropTalkRoots(container, talk);
       if (comp) dropComposerRoots(container, comp);
-      if (!frame && SA.cards) dropCardRoots(container, SA.cards);
+      if (SA.cards) dropCardRoots(container, SA.cards);
       container.replaceChildren(
         ...[
           top ? null : header(null, channelId, frame),

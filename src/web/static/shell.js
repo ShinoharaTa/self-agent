@@ -557,8 +557,44 @@
     else scroll.scrollTop = oldTop;
   }
 
-  /** chat.js に渡す枠の指定（毎回同じ物） */
-  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing, replyText: namedText, replyExtras: handCards };
+  /** chat.js に渡す枠の指定（毎回同じ物）。札は古い描き方では replyExtras（DOM）、部品の道では replyRefs（データ）と onRef */
+  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing, replyText: namedText, replyExtras: handCards, replyRefs: handRefs, onRef: (id) => SA.app.open(id) };
+  /** 見出しを入口 c-app.js の部品（SA.hand）が描くときの枠（chat.js は見出しを作らない） */
+  const HAND_FRAME_BARE = Object.assign({}, HAND_FRAME, { head: false });
+
+  /** 部品の見出しで描けなかった（以後はこのタブで古い見出し） */
+  let handHeadBroken = false;
+  /** 部品の見出しの on（1 回だけ作る） */
+  const HAND_ON = { menu: (opener) => openHandMenu(opener), close: () => closeHand() };
+
+  /** 右腕の「…」の行（chat.js の head の menu。#inbox では会話を新しくする・Discord で開く）。チャンネルが無ければ空 */
+  function handMenu() {
+    const id = handChannelId();
+    const head = id && SA.chat.head ? SA.chat.head(id) : null;
+    return head ? head.menu : [];
+  }
+
+  function openHandMenu(opener) {
+    const items = handMenu();
+    if (items.length === 0) return;
+    openSheet(HAND_FRAME.title + " の操作", items, opener);
+  }
+
+  /** 右腕の見出しを部品で描く（閉じていれば消す）。描けたら true、口が無い・描けなければ false（古い見出しに戻す） */
+  function drawHandHead() {
+    if (!SA.hand || handHeadBroken) return false;
+    if (SA.hand.draw(handVisible() ? { title: HAND_FRAME.title, menu: handMenu().length > 0, on: HAND_ON } : null)) return true;
+    handHeadBroken = true;
+    SA.hand.draw(null);
+    return false;
+  }
+
+  /** 右腕の [畳む] に焦点（部品の見出しか、古い見出しの #v3-hand-close） */
+  function focusHandClose() {
+    if (SA.hand && !handHeadBroken && SA.hand.focus("close")) return;
+    const close = $("v3-hand-close");
+    if (close) close.focus();
+  }
 
   /** 何を描くか（右腕のチャンネル ID か、無ければ "none"、一覧をまだ読んでいなければ "loading"） */
   function handKey() {
@@ -567,9 +603,15 @@
 
   /** 見えている右腕を描く（[畳む] に焦点があれば、描き直した後の [畳む] に戻す。入力欄は chat.js が残す） */
   function renderHand() {
-    if (!handVisible()) return;
+    // 閉じたら部品の見出しを消す
+    if (!handVisible()) {
+      drawHandHead();
+      return;
+    }
     const ed = $("v3-hand-ed");
     if (!ed) return;
+    const bare = drawHandHead();
+    // [畳む] の焦点を戻すのは古い見出しのとき（部品の見出しは描き直しで要素が替わらない）
     const closeBefore = $("v3-hand-close");
     const refocus = !!closeBefore && document.activeElement === closeBefore;
     const id = handChannelId();
@@ -577,15 +619,18 @@
     handCardIds = [];
     if (id) {
       const first = handLoadedId !== id;
-      keepScroll(ed, () => SA.chat.render(ed, id, HAND_FRAME), handStick || handShown !== key);
+      keepScroll(ed, () => SA.chat.render(ed, id, bare ? HAND_FRAME_BARE : HAND_FRAME), handStick || handShown !== key);
       if (first) {
         handLoadedId = id;
         SA.store.load.turns(id);
       }
     } else {
+      // 部品の見出しがあれば本文だけ
       ed.replaceChildren(
-        el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [el("h2", { text: "右腕" })]), el("div", { class: "ed-actions" }, handOps())]),
-        key === "loading" ? SA.views.loading() : el("div", { class: "v3-empty" }, [el("p", { class: "meta", text: HAND_NONE_TEXT })]),
+        ...[
+          bare ? null : el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [el("h2", { text: "右腕" })]), el("div", { class: "ed-actions" }, handOps())]),
+          key === "loading" ? SA.views.loading() : el("div", { class: "v3-empty" }, [el("p", { class: "meta", text: HAND_NONE_TEXT })]),
+        ].filter(Boolean),
       );
     }
     handShown = key;
@@ -604,7 +649,7 @@
     return [b];
   }
 
-  /** 右腕を開く。focusInput なら入力欄に、でなければ [畳む] に焦点 */
+  /** 右腕を開く。focusInput なら入力欄に（部品なら口に頼む）、でなければ [畳む] に焦点 */
   function openHand(opener, focusInput) {
     handOpener = opener || null;
     handClosing = false;
@@ -631,9 +676,16 @@
     applyHand();
     if (reload && handVisible()) SA.store.load.turns(id);
     const ed = $("v3-hand-ed");
-    const input = focusInput && ed ? ed.querySelector(".composer-input") : null;
-    const target = input || $("v3-hand-close");
-    if (target) target.focus();
+    if (focusInput && ed) {
+      const root = [...ed.children].find((child) => child.getAttribute("data-composer") !== null);
+      if (root && SA.composer && SA.composer.focus(root)) return;
+      const input = ed.querySelector(".composer-input");
+      if (input) {
+        input.focus();
+        return;
+      }
+    }
+    focusHandClose();
   }
 
   /** 右腕を畳む（列は保存して帯のボタンに焦点。重ねる形は履歴の entry があれば戻る = popstate で閉じる） */
@@ -781,21 +833,32 @@
     return JSON.stringify(handCardIds.map(cardParts));
   }
 
-  /** 返事の吹き出しの下に足す札（題名・場所・状態・[開く]） */
-  function handCards(text) {
-    const cards = [];
-    for (const id of cardIds(text)) {
-      if (!handCardIds.includes(id)) handCardIds.push(id);
-      const p = cardParts(id);
-      if (!p) continue;
-      const open = el("button", { class: "btn btn-ghost btn-sm", type: "button", "aria-label": p.title + " を開く", text: "開く" });
-      open.addEventListener("click", () => SA.app.open(p.id));
-      const meta = [p.place, p.state].filter(Boolean).join("・");
-      // 場所も状態も引けなければ meta の span を作らない
-      const parts = [el("span", { class: "v3-card-title", text: p.title }), meta ? el("span", { class: "v3-card-meta", text: meta }) : null, open].filter(Boolean);
-      cards.push(el("div", { class: "v3-card", "data-topic": p.id }, parts));
+  /** 返事の札のデータ（{ id, title, meta }。meta は場所・状態を「・」で。引けた物だけ）。引いた <#ID> を覚える（一覧が変われば描き直す）。投げたら札を出さない */
+  function handRefs(text) {
+    try {
+      const refs = [];
+      for (const id of cardIds(text)) {
+        if (!handCardIds.includes(id)) handCardIds.push(id);
+        const p = cardParts(id);
+        if (p) refs.push({ id: p.id, title: p.title, meta: [p.place, p.state].filter(Boolean).join("・") });
+      }
+      return refs;
+    } catch {
+      // 本文・ID は出さない（1 つの返事の札が出ないだけにする）
+      console.warn("[web] hand refs failed");
+      return [];
     }
-    return cards;
+  }
+
+  /** 返事の吹き出しの下に足す札（題名・場所・状態・[開く]。古い描き方） */
+  function handCards(text) {
+    return handRefs(text).map((r) => {
+      const open = el("button", { class: "btn btn-ghost btn-sm", type: "button", "aria-label": r.title + " を開く", text: "開く" });
+      open.addEventListener("click", () => SA.app.open(r.id));
+      // 場所も状態も引けなければ meta の span を作らない
+      const parts = [el("span", { class: "v3-card-title", text: r.title }), r.meta ? el("span", { class: "v3-card-meta", text: r.meta }) : null, open].filter(Boolean);
+      return el("div", { class: "v3-card", "data-topic": r.id }, parts);
+    });
   }
 
   /** 返事の本文の <#ID> のうち引けたものを「<題名>」に（引けないもの・先頭が 0 の数字はそのまま） */
@@ -1534,10 +1597,7 @@
       if (handChanged) applyHand();
       if (handClosed) restoreHandFocus();
       // 進むで開いたら [畳む] に焦点
-      else if (handChanged) {
-        const close = $("v3-hand-close");
-        if (close) close.focus();
-      }
+      else if (handChanged) focusHandClose();
     });
     window.addEventListener("resize", fitHand);
     // 右腕の形が決まった後に測る（登録の順に呼ばれる）
