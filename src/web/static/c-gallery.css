@@ -133,3 +133,14 @@
   width: calc(var(--space-7) * 10);
   max-width: 100%;
 }
+
+/* 右腕の見本の入れ物（右腕の列と同じ幅。地は会話の列と同じ --bg） */
+.c-gallery-hand {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: var(--c-hand-w);
+  max-width: 100%;
+  border: var(--border-width) solid var(--border);
+  background: var(--bg);
+}

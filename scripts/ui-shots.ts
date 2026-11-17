@@ -189,8 +189,8 @@ const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk・g-composer・g-cards はその節の要素の絵（K3〜K5）、ほかは押して開いた所） */
-const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-composer", "g-cards", "g-sheet", "g-confirm", "g-toast"] as const;
+/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk・g-composer・g-cards・g-hand はその節の要素の絵（K3〜K6）、ほかは押して開いた所） */
+const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-composer", "g-cards", "g-hand", "g-sheet", "g-confirm", "g-toast"] as const;
 type GalleryKind = (typeof GALLERY_KINDS)[number];
 const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
 
@@ -4210,6 +4210,34 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (lines.length > 0) throw new Error(`カードの見本の検査で ${lines.length} 件`);
   }
 
+  /** 見本の右腕（360px の箱）: 見出しと札の形、横にはみ出さない事、当たり（PC でも 44）。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
+  async function checkHands(page: Page, label: string): Promise<void> {
+    const lines = await page.evaluate(() => {
+      const out: string[] = [];
+      const box = document.querySelector('[data-section="hand"] .c-gallery-hand');
+      if (box === null) return ["右腕: 見本の箱が無い"];
+      const titles = [...box.querySelectorAll(".c-hand-head h2.c-hand-title")].map((el) => el.textContent);
+      if (titles.length !== 1 || titles[0] !== "右腕") out.push(`右腕: 見出しの題 ${JSON.stringify(titles)}（「右腕」が 1 つのはず）`);
+      const acts = [...box.querySelectorAll(".c-hand-head [data-act]")].map((el) => el.getAttribute("data-act"));
+      if (acts.join(",") !== "menu,close") out.push(`右腕: 見出しのボタン ${acts.join(",")}（menu,close のはず）`);
+      const refs = box.querySelectorAll(".c-refs .c-ref");
+      if (refs.length !== 2) out.push(`右腕: 札が ${refs.length}（2 のはず）`);
+      if (box.querySelectorAll(".c-ref .c-ref-meta").length !== 1) out.push("右腕: 札の meta が 1 つでない");
+      if ([...box.querySelectorAll(".c-bubble")].some((el) => (el.textContent ?? "").includes("<#"))) out.push("右腕: 返事の本文に <# が残っている");
+      if (box.scrollWidth > box.clientWidth) out.push(`右腕: 箱が横にはみ出している（${box.scrollWidth} > ${box.clientWidth}）`);
+      const b = box.getBoundingClientRect();
+      for (const el of box.querySelectorAll(".c-hand-head, .c-hand-act, .c-msg, .c-bubble, .c-refs, .c-ref, .c-ref-title, .c-ref .c-btn")) {
+        const r = el.getBoundingClientRect();
+        if (r.left < b.left - 0.5 || r.right > b.right + 0.5) out.push(`右腕: ${el.className} が箱の外（${r.left.toFixed(1)}〜${r.right.toFixed(1)}、箱 ${b.left.toFixed(1)}〜${b.right.toFixed(1)}）`);
+      }
+      for (const el of box.querySelectorAll(".c-ref-title, .c-hand-title")) if (el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow !== "ellipsis") out.push(`右腕: ${el.className} が省かれずにはみ出している`);
+      return out;
+    });
+    lines.push(...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-section="hand"]', targets: "button", toast: false })).map((line) => `右腕: ${line}`));
+    for (const line of lines) logLines.push(`[${label}] ${line}`);
+    if (lines.length > 0) throw new Error(`右腕の見本の検査で ${lines.length} 件`);
+  }
+
   /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない）。絵ごとに読み直す */
   async function gallery(vp: Viewport, theme: Theme): Promise<void> {
     const names = GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind));
@@ -4231,6 +4259,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         { name: galleryName(vp, theme, "g-talk"), selector: '[data-section="talk"]' },
         { name: galleryName(vp, theme, "g-composer"), selector: '[data-section="composer"]' },
         { name: galleryName(vp, theme, "g-cards"), selector: '[data-section="cards"]' },
+        { name: galleryName(vp, theme, "g-hand"), selector: '[data-section="hand"]' },
       ];
       await step(full, [full, ...parts.map((part) => part.name)], async () => {
         await loadGallery();
@@ -4238,6 +4267,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await checkTalks(page, vp, label);
         await checkComposers(page, vp, label);
         await checkCards(page, vp, label);
+        await checkHands(page, label);
         // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("*")) if (el.scrollLeft !== 0) el.scrollLeft = 0;
