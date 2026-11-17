@@ -310,7 +310,7 @@
     if (item.auto && !item.hover && !item.focus) item.timer = setTimeout(() => removeToast(item), TOAST_MS);
   }
 
-  function toast(text, action, opts) {
+  function toastDom(text, action, opts) {
     const error = !!(opts && opts.level === "error");
     const retry = error && opts && typeof opts.retry === "function" ? opts.retry : null;
     const box = document.getElementById(error ? "toast-alert" : "toast");
@@ -365,6 +365,117 @@
     armToast(item);
   }
 
+  // 新しい殻（v3.html）では、部品の知らせ（入口 c-app.js の SA.notice）へ描く。決まり（置き換え・上限・自動で消す・止める・消える途中）は上と同じで、
+  // 状態とタイマーはここが持ち、口へは出ている物の並びを毎回押し込む。口が無い・描けなかった（その回から）ときは上の古い #toast・#toast-alert に出す
+  /** 口が一度でも描けなかった（以後は口を呼ばない） */
+  let noticeBroken = false;
+  /** 出ている物（古い順。消える途中も含む）。{ id, text, error, actionLabel, onAction, hasAction, auto, timer, leaveTimer, hover, focus, leaving } */
+  let notices = [];
+  let noticeSeq = 0;
+  const noticeOf = (id) => notices.find((n) => n.id === id) || null;
+
+  /** 出ている物を口へ描く。描けなければ口をやめ、出ていた物を捨てて false */
+  function drawNotices() {
+    const items = notices.map((n) => ({ id: n.id, text: n.text, level: n.error ? "error" : "info", actionLabel: n.actionLabel, onAction: n.onAction, leaving: n.leaving }));
+    if (window.SA.notice.draw({ items, on: NOTICE_ON }) === true) return true;
+    noticeBroken = true;
+    for (const n of notices) {
+      clearTimeout(n.timer);
+      clearTimeout(n.leaveTimer);
+    }
+    notices = [];
+    return false;
+  }
+
+  /** 消える途中にする（描くのは呼ぶ側）。動きの後の left か、保険の時間で外す */
+  function leaveNotice(item) {
+    if (item.leaving) return;
+    clearTimeout(item.timer);
+    item.timer = null;
+    item.leaving = true;
+    item.leaveTimer = setTimeout(() => noticeLeft(item.id), TOAST_LEAVE_FALLBACK_MS);
+  }
+
+  function noticeLeft(id) {
+    const item = noticeOf(id);
+    if (!item) return;
+    clearTimeout(item.leaveTimer);
+    notices = notices.filter((n) => n !== item);
+    drawNotices();
+  }
+
+  function noticeDismiss(id) {
+    const item = noticeOf(id);
+    if (!item) return;
+    leaveNotice(item);
+    drawNotices();
+  }
+
+  function noticeHold(id, kind, on) {
+    const item = noticeOf(id);
+    if (!item || (kind !== "hover" && kind !== "focus")) return;
+    item[kind] = !!on;
+    armNotice(item);
+  }
+
+  /** armToast と同じ決まり（消える途中の物は数え直さない） */
+  function armNotice(item) {
+    clearTimeout(item.timer);
+    item.timer = null;
+    if (item.leaving) return;
+    if (item.auto && !item.hover && !item.focus) {
+      item.timer = setTimeout(() => {
+        leaveNotice(item);
+        drawNotices();
+      }, TOAST_MS);
+    }
+  }
+
+  const NOTICE_ON = { dismiss: noticeDismiss, hold: noticeHold, left: noticeLeft };
+
+  /** 口へ出す。出せなければ false（呼ぶ側が古い描き方に出す） */
+  function toastMouth(text, action, opts) {
+    const error = !!(opts && opts.level === "error");
+    const retry = error && opts && typeof opts.retry === "function" ? opts.retry : null;
+    // 両方のボタンを持つ形は部品に無い（そういう呼び出しも無い）ので古い描き方に任せる
+    if (action && retry) return false;
+    const side = () => notices.filter((n) => n.error === error && !n.leaving);
+    if (!error) for (const n of side()) if (!n.hasAction) leaveNotice(n);
+    const max = phone() ? 1 : 2;
+    for (let mine = side(); mine.length >= max; mine = side()) leaveNotice(mine[0]);
+    const run = action ? action.run : retry;
+    const item = {
+      id: "n" + ++noticeSeq,
+      text,
+      error,
+      actionLabel: action ? action.label : retry ? "もう一度" : null,
+      onAction: null,
+      hasAction: !!action,
+      auto: !error && (!action || phone()),
+      timer: null,
+      leaveTimer: null,
+      hover: false,
+      focus: false,
+      leaving: false,
+    };
+    if (run) {
+      item.onAction = () => {
+        leaveNotice(item);
+        drawNotices();
+        run();
+      };
+    }
+    notices.push(item);
+    if (!drawNotices()) return false;
+    armNotice(item);
+    return true;
+  }
+
+  function toast(text, action, opts) {
+    if (window.SA.notice && !noticeBroken && toastMouth(text, action, opts)) return;
+    toastDom(text, action, opts);
+  }
+
   /** スマホ（≤639px）の見出しの左端の [‹]（一覧へ。押すと一覧を開く）。≥640px では CSS で出さない */
   function backButton() {
     const b = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm ed-back", type: "button", "aria-label": "一覧へ", title: "一覧へ" }, [icon("chevron-left")]);
@@ -414,9 +525,9 @@
 
   /**
    * 確認。ok なら run を呼ぶ。title は動詞だけ（「閉じますか」）、target（任意）は対象の題名で本文の前の 1 行に出す
-   * （長い題名で見出しを何行にもしない。UI-8）
+   * （長い題名で見出しを何行にもしない。UI-8）。closed（任意）は閉じた直後・run の前に 1 回呼ぶ（やめたときも）
    */
-  function confirm(opts) {
+  function confirmDom(opts) {
     const dialog = document.getElementById("dlg-confirm");
     document.getElementById("dlg-confirm-title").textContent = opts.title;
     const target = document.getElementById("dlg-confirm-target");
@@ -439,6 +550,7 @@
       cancel.removeEventListener("click", onCancel);
       dialog.removeEventListener("close", onClose);
       closeDialog(dialog);
+      if (typeof opts.closed === "function") opts.closed();
       if (accepted) opts.run();
     };
     const onOk = () => finish(true);
@@ -451,6 +563,56 @@
     // 危険な操作は最初のフォーカスを [やめる] に（Enter で実行しない。GUIDELINES §5）
     if (opts.danger) cancel.focus();
     else ok.focus();
+  }
+
+  // 新しい殻（v3.html）では、部品の確認（入口 c-app.js の SA.ask）へ描く。開いている間に次が来たら前をやめにする。
+  // 口が無い・描けなかった（その回から）ときは上の古い #dlg-confirm を開く
+  /** 口が一度でも描けなかった（以後は口を呼ばない） */
+  let askBroken = false;
+  /** 開いている確認。{ opts, done } */
+  let asking = null;
+
+  function askState(mine, open) {
+    const opts = mine.opts;
+    return {
+      open,
+      title: opts.title,
+      // 80 字・「」は部品がする
+      target: typeof opts.target === "string" && opts.target.trim() !== "" ? opts.target : "",
+      body: opts.body || "",
+      okLabel: opts.ok || "実行する",
+      danger: !!opts.danger,
+      on: { ok: () => finishAsk(mine, true), cancel: () => finishAsk(mine, false) },
+    };
+  }
+
+  /** 閉じる → closed → run（ok のときだけ）。1 回だけ */
+  function finishAsk(mine, accepted) {
+    if (mine.done) return;
+    mine.done = true;
+    if (asking === mine) asking = null;
+    if (window.SA.ask.draw(askState(mine, false)) !== true) askBroken = true;
+    if (typeof mine.opts.closed === "function") mine.opts.closed();
+    if (accepted) mine.opts.run();
+  }
+
+  /** 口へ開く。開けなければ false（呼ぶ側が古い確認を開く） */
+  function confirmMouth(opts) {
+    if (asking) finishAsk(asking, false);
+    if (askBroken) return false;
+    const mine = { opts, done: false };
+    asking = mine;
+    if (window.SA.ask.draw(askState(mine, true)) !== true) {
+      askBroken = true;
+      asking = null;
+      return false;
+    }
+    return true;
+  }
+
+  function confirm(opts) {
+    if (window.SA.ask && !askBroken && confirmMouth(opts)) return;
+    confirmDom(opts);
   }
 
   /**

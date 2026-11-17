@@ -234,21 +234,34 @@ class FakeNode {
   }
 }
 
-function loadToast(opts: { phone?: boolean } = {}) {
+/** 部品の口（SA.notice・SA.ask）の代わり。draw の state を覚え、答えは ok で決める */
+type FakeMouth = { states: Array<Record<string, any>>; ok: boolean; draw: (state: Record<string, any>) => boolean };
+const fakeMouth = (): FakeMouth => {
+  const m: FakeMouth = { states: [], ok: true, draw: (state) => (m.states.push(state), m.ok) };
+  return m;
+};
+
+function loadToast(opts: { phone?: boolean; notice?: FakeMouth; ask?: FakeMouth } = {}) {
   const boxes = { toast: new FakeNode("div"), "toast-alert": new FakeNode("div") };
   boxes.toast.hidden = true;
   boxes["toast-alert"].hidden = true;
+  // 古い確認（#dlg-confirm と中の 5 つ）
+  const dialog: Record<string, FakeNode> = {};
+  for (const id of ["dlg-confirm", "dlg-confirm-title", "dlg-confirm-target", "dlg-confirm-body", "dlg-confirm-ok", "dlg-confirm-cancel"]) dialog[id] = new FakeNode(id === "dlg-confirm" ? "dialog" : "p");
   let now = 0;
   let seq = 0;
   const timers = new Map<number, { at: number; fn: () => void }>();
   const document = {
-    getElementById: (id: string) => (boxes as Record<string, FakeNode>)[id] ?? null,
+    getElementById: (id: string) => (boxes as Record<string, FakeNode>)[id] ?? dialog[id] ?? null,
     createElement: (tag: string) => new FakeNode(tag),
     createElementNS: (_ns: string, tag: string) => new FakeNode(tag),
     createTextNode: (text: string) => Object.assign(new FakeNode("#text"), { text }),
   };
   const context = {
-    window: (opts.phone ? { matchMedia: () => ({ matches: true }) } : {}) as Record<string, unknown>,
+    window: {
+      ...(opts.phone ? { matchMedia: () => ({ matches: true }) } : {}),
+      ...(opts.notice || opts.ask ? { SA: { ...(opts.notice ? { notice: opts.notice } : {}), ...(opts.ask ? { ask: opts.ask } : {}) } } : {}),
+    } as Record<string, unknown>,
     document,
     setTimeout: (fn: () => void, ms: number) => {
       timers.set(++seq, { at: now + ms, fn });
@@ -269,8 +282,8 @@ function loadToast(opts: { phone?: boolean } = {}) {
       }
     }
   };
-  const ui = (context.window as { SA: { ui: { toast: (text: string, action?: unknown, opts?: unknown) => void } } }).SA.ui;
-  return { ui, boxes, advance };
+  const ui = (context.window as { SA: { ui: { toast: (text: string, action?: unknown, opts?: unknown) => void; confirm: (opts: Record<string, unknown>) => void } } }).SA.ui;
+  return { ui, boxes, dialog, advance };
 }
 
 test("web static: 知らせのトーストは 4 秒で消え、マウスが乗っている間・focus の間は消えない（指のタップでは止めない）", () => {
@@ -354,6 +367,166 @@ test("web static: 失敗のトーストは #toast-alert に出て自動で消え
   advance(400);
   assert.deepEqual(boxes["toast-alert"].children.map((c) => c.children[0]!.textContent), ["b", "c"]);
   assert.equal(boxes["toast-alert"].children[0]!.buttons().some((b) => b.textContent === "もう一度"), false);
+});
+
+test("web static: ui.js の toast は SA.notice が在れば口へ描き、置き換え・上限・自動で消す・止める・消える途中・[取り消す]・[もう一度] は今と同じ決まり", () => {
+  const notice = fakeMouth();
+  const { ui, boxes, advance } = loadToast({ notice });
+  // 偽の口が受けた並びは ui.js の側（別の realm）で作られるので、こちらの配列に写す
+  const items = () => [...(notice.states.at(-1)?.items ?? [])] as Array<Record<string, any>>;
+  const shown = () => items().map((i) => [i.text, i.level, i.leaving]);
+  const on = () => notice.states.at(-1)!.on as { dismiss: (id: string) => void; hold: (id: string, kind: string, on: boolean) => void; left: (id: string) => void };
+  ui.toast("a");
+  assert.deepEqual(shown(), [["a", "info", false]]);
+  // action の無い知らせは次の知らせで消える途中に。動きの事象が来なくても保険の時間で外す
+  ui.toast("b");
+  assert.deepEqual(shown(), [["a", "info", true], ["b", "info", false]]);
+  advance(400);
+  assert.deepEqual(shown(), [["b", "info", false]]);
+  // left(id) で、すぐ外す
+  ui.toast("c");
+  on().left(items()[0]!.id);
+  assert.deepEqual(shown(), [["c", "info", false]]);
+  // 4 秒で消える途中に
+  advance(3999);
+  assert.deepEqual(shown(), [["c", "info", false]]);
+  advance(1);
+  assert.deepEqual(shown(), [["c", "info", true]]);
+  advance(400);
+  assert.deepEqual(shown(), []);
+  // マウスが乗っている間・focus の間は止め、離れたら 4 秒から数え直す
+  ui.toast("d");
+  const d = items()[0]!.id;
+  on().hold(d, "hover", true);
+  advance(10000);
+  on().hold(d, "hover", false);
+  on().hold(d, "focus", true);
+  advance(10000);
+  assert.deepEqual(shown(), [["d", "info", false]]);
+  on().hold(d, "focus", false);
+  advance(3999);
+  assert.deepEqual(shown(), [["d", "info", false]]);
+  advance(1);
+  assert.deepEqual(shown(), [["d", "info", true]]);
+  advance(400);
+  // [取り消す] 付きは自動で消えず、次の知らせでも消えない。押すと消える途中を描いてから run
+  const log: string[] = [];
+  ui.toast("完了にしました", { label: "取り消す", run: () => log.push("run:" + String(items()[0]!.leaving)) });
+  advance(60000);
+  ui.toast("別の知らせ");
+  assert.deepEqual(shown(), [["完了にしました", "info", false], ["別の知らせ", "info", false]]);
+  assert.equal(items()[0]!.actionLabel, "取り消す");
+  // 上限は 2 つ（古い順に消える途中）
+  ui.toast("3 つ目");
+  assert.deepEqual(shown(), [["完了にしました", "info", false], ["別の知らせ", "info", true], ["3 つ目", "info", false]]);
+  items()[0]!.onAction();
+  assert.deepEqual(log, ["run:true"]);
+  advance(4400);
+  // 失敗は alert の側で自動で消えず、[もう一度] で retry。知らせが来ても残る
+  let retried = 0;
+  ui.toast("操作に失敗しました", null, { level: "error", retry: () => retried++ });
+  advance(60000);
+  ui.toast("x");
+  assert.deepEqual(shown(), [["操作に失敗しました", "error", false], ["x", "info", false]]);
+  const failed = items()[0]!;
+  assert.equal(failed.actionLabel, "もう一度");
+  failed.onAction();
+  assert.equal(retried, 1);
+  assert.equal(items()[0]!.leaving, true);
+  // × は消える途中に
+  on().dismiss(items()[1]!.id);
+  assert.equal(items()[1]!.leaving, true);
+  // retry が無ければボタンは無い
+  advance(400);
+  ui.toast("y", null, { level: "error" });
+  assert.equal(items().find((i) => i.text === "y")!.actionLabel, null);
+  // 古い入れ物には出さない
+  assert.equal(boxes.toast.children.length, 0);
+  assert.equal(boxes["toast-alert"].children.length, 0);
+  // スマホはそれぞれ 1 つまでで、[取り消す] 付きも 4 秒で消える
+  const phoneNotice = fakeMouth();
+  const p = loadToast({ phone: true, notice: phoneNotice });
+  const phoneShown = () => ([...(phoneNotice.states.at(-1)?.items ?? [])] as Array<Record<string, any>>).map((i) => [i.text, i.leaving]);
+  p.ui.toast("完了にしました", { label: "取り消す", run: () => undefined });
+  p.ui.toast("別の知らせ");
+  assert.deepEqual(phoneShown(), [["完了にしました", true], ["別の知らせ", false]]);
+  p.advance(400);
+  p.ui.toast("戻せます", { label: "取り消す", run: () => undefined });
+  p.advance(4000);
+  assert.deepEqual(phoneShown(), [["戻せます", true]]);
+});
+
+test("web static: SA.notice の draw が false なら、その知らせから古い #toast・#toast-alert に出し、以後は口を呼ばない。action と retry の両方も古い道", () => {
+  const notice = fakeMouth();
+  const { ui, boxes, advance } = loadToast({ notice });
+  ui.toast("a");
+  assert.equal(notice.states.length, 1);
+  notice.ok = false;
+  ui.toast("b");
+  assert.equal(notice.states.length, 2);
+  assert.deepEqual(boxes.toast.children.map((c) => c.children[0]!.textContent), ["b"]);
+  // 出ていた物のタイマーは止めた（口を呼ばない）
+  advance(10000);
+  ui.toast("c", null, { level: "error" });
+  assert.equal(notice.states.length, 2);
+  assert.deepEqual(boxes["toast-alert"].children.map((c) => c.children[0]!.textContent), ["c"]);
+  // action と retry の両方を渡す形は、口が在っても古い道（口を呼ばない）
+  const both = fakeMouth();
+  const h = loadToast({ notice: both });
+  h.ui.toast("d", { label: "取り消す", run: () => undefined }, { level: "error", retry: () => undefined });
+  assert.equal(both.states.length, 0);
+  assert.deepEqual(h.boxes["toast-alert"].buttons().map((b) => b.textContent), ["取り消す", "もう一度", ""]);
+  // 次の知らせは口へ
+  h.ui.toast("e");
+  assert.equal(both.states.length, 1);
+});
+
+test("web static: ui.js の confirm は SA.ask が在れば口へ描き、実行は 閉じる → closed → run の順、やめるは closed だけ。開いている間の 2 つ目は前をやめにする。draw が false なら古い #dlg-confirm", () => {
+  const ask = fakeMouth();
+  const log: string[] = [];
+  const orig = ask.draw;
+  ask.draw = (state) => (log.push("draw:" + String(state.open)), orig(state));
+  const { ui, dialog } = loadToast({ ask });
+  const opts = (name: string, o: Record<string, unknown> = {}) => ({ title: "閉じますか", run: () => log.push("run:" + name), closed: () => log.push("closed:" + name), ...o });
+  const long = "あ".repeat(100);
+  ui.confirm(opts("a", { target: long, body: "元に戻せません", ok: "閉じる", danger: true }));
+  const first = ask.states.at(-1)!;
+  assert.deepEqual({ ...first, on: undefined }, { open: true, title: "閉じますか", target: long, body: "元に戻せません", okLabel: "閉じる", danger: true, on: undefined });
+  first.on.ok();
+  first.on.ok();
+  first.on.cancel();
+  assert.deepEqual(log, ["draw:true", "draw:false", "closed:a", "run:a"]);
+  assert.equal(ask.states.at(-1)!.open, false);
+  // 既定の文・空白だけの target・やめる
+  log.length = 0;
+  ui.confirm(opts("b", { target: "  " }));
+  const second = ask.states.at(-1)!;
+  assert.deepEqual([second.target, second.body, second.okLabel, second.danger], ["", "", "実行する", false]);
+  second.on.cancel();
+  assert.deepEqual(log, ["draw:true", "draw:false", "closed:b"]);
+  // 開いている間の 2 つ目は前をやめにしてから開く
+  log.length = 0;
+  ui.confirm(opts("c"));
+  const c = ask.states.at(-1)!;
+  ui.confirm(opts("d"));
+  c.on.ok();
+  assert.deepEqual(log, ["draw:true", "draw:false", "closed:c", "draw:true"]);
+  ask.states.at(-1)!.on.ok();
+  assert.deepEqual(log.slice(-3), ["draw:false", "closed:d", "run:d"]);
+  assert.equal(dialog["dlg-confirm"]!.getAttribute("open"), null, "古い確認は開かない");
+  // draw が false なら古い #dlg-confirm（以後は口を呼ばない）。古い道も 閉じる → closed → run
+  ask.ok = false;
+  log.length = 0;
+  ui.confirm(opts("e"));
+  assert.equal(dialog["dlg-confirm"]!.getAttribute("open"), "");
+  assert.equal(dialog["dlg-confirm-title"]!.textContent, "閉じますか");
+  dialog["dlg-confirm-ok"]!.dispatch("click");
+  assert.equal(dialog["dlg-confirm"]!.getAttribute("open"), null);
+  assert.deepEqual(log, ["draw:true", "closed:e", "run:e"]);
+  ui.confirm(opts("f"));
+  assert.deepEqual(log.slice(-1), ["run:e"], "口を呼ばない");
+  dialog["dlg-confirm-cancel"]!.dispatch("click");
+  assert.deepEqual(log.slice(-1), ["closed:f"]);
 });
 
 test("web static: index.html に失敗のトーストの容れ物（role=alert）がある", () => {
@@ -8744,7 +8917,7 @@ test("web static: v3 の場所: シートを開いた後に話題が一覧から
   assert.equal(closeListeners(h), 0);
 });
 
-test("web static: v3 の場所: close が後から届いても（本物の <dialog> の順）、[変える] は送り、届いたら焦点を戻して listener を外す", async () => {
+test("web static: v3 の場所: close が後から届いても（本物の <dialog> の順）、[変える] は送り、閉じた直後（closed）に焦点を戻し、後の close では動かさない", async () => {
   const h = await loadPlace();
   h.api.postReply = () => Promise.resolve({ accepted: true });
   // このテストだけ: close() は open を外し、close の event は積むだけ（後で流す）
@@ -8760,11 +8933,14 @@ test("web static: v3 の場所: close が後から届いても（本物の <dial
   h.document.getElementById("dlg-confirm-ok")!.dispatch("click");
   assert.equal(h.confirm.getAttribute("open"), null);
   assert.equal(h.api.posts.length, 1, "close の event を待たずに送る");
-  assert.equal(closeListeners(h), 1, "焦点を戻す listener は event まで残る");
-  assert.equal(later.length, 1);
-  for (const fn of later.splice(0)) fn();
+  // 焦点は確認の closed（閉じた直後・run の前）で戻す。close の event は聞かない
   assert.equal(h.document.activeElement, placeBtn(h));
   assert.equal(closeListeners(h), 0);
+  assert.equal(later.length, 1);
+  const other = h.nodes.topButtons.hand;
+  other.focus();
+  for (const fn of later.splice(0)) fn();
+  assert.equal(h.document.activeElement, other, "後から届いた close では焦点を動かさない");
   await h.flush();
   assert.deepEqual(h.toasts, ["場所を beta に変えています。要点をまとめるので少しかかります"]);
 });
