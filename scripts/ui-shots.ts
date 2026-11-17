@@ -3752,11 +3752,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     else if (vp === "phone") {
       if (place.top === null || it.top < place.top.bottom - 0.5) say(2, "場所", `上端 ${it.top} が見出しの下端 ${String(place.top?.bottom)} より上`);
       if (it.left < 0 || it.right > place.w || it.bottom > place.h) say(2, "場所", `${JSON.stringify(it)} が画面（${place.w}x${place.h}）の外`);
-      const c = place.composer;
-      if (c === null || !(it.bottom <= c.top || it.top >= c.bottom)) say(2, "場所", `入力欄 ${JSON.stringify(c)} と重なる（${JSON.stringify(it)}）`);
     } else {
       if (it.left < 0 || it.top < 0 || it.right > place.w || it.bottom > place.h) say(2, "場所", `画面の外 ${JSON.stringify(it)}`);
       if (it.left < place.w / 2 || it.top < place.h / 2) say(2, "場所", `右下に無い ${JSON.stringify(it)}`);
+    }
+    // どの幅でも、入力欄の帯（［送る］）と縦に重ならない（重なると、知らせが出ている間［送る］を押せない）
+    if (it !== null) {
+      const c = place.composer;
+      if (c === null || !(it.bottom <= c.top || it.top >= c.bottom)) say(2, "場所", `入力欄 ${JSON.stringify(c)} と重なる（${JSON.stringify(it)}）`);
     }
     await shot(page, `${p}-u-notice`);
     if (Date.now() - shownAt > NOTICE_BUDGET_MS) say(1, "知らせ", `出してから撮るまで ${Date.now() - shownAt} ms（消える前に撮れていない恐れ）`);

@@ -138,11 +138,12 @@
 }
 
 /* ===== Toast（PC は右下、スマホは見出しの高さの下） ===== */
+/* 右下は、1 行の入力欄の帯（線 + 上の余白 + --c-tap + 下の余白）の上に置く。帯に重ねると、知らせが出ている間［送る］を押せない */
 .c-toast {
   position: fixed;
   z-index: var(--z-toast);
   right: var(--space-4);
-  bottom: calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
+  bottom: calc(var(--border-width) + var(--space-2) + var(--c-tap) + var(--space-3) + var(--space-3) + env(safe-area-inset-bottom, 0px));
   display: grid;
   gap: var(--space-2);
   width: calc(100% - var(--space-7));
