@@ -1893,18 +1893,25 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   const sheetRows = (page: Page): Promise<string[]> => page.evaluate(() => [...document.querySelectorAll("#v3-sheet .more-row .sb-label")].map((el) => (el.textContent ?? "").trim()));
 
   /**
-   * 段 c: 開いた右腕の中が部品（見出し・会話・札・入力欄）で描かれている。phoneOpened はスマホで下のバーから開いた直後か（焦点が入力欄に在るはず）。
-   * 最後に札の［開く］を押すので、呼んだ後は列 2 にその話題が開いている。足りない物の文を返す
+   * 段 c: 開いた右腕の中が部品（見出し・会話・札・入力欄）で描かれている。phone ならスマホで下のバーから開いた後（畳んで開き直し、焦点が入力欄に在るかも見る）。
+   * 絵を撮った後に呼ぶ。最後に札の［開く］を押すので、呼んだ後は列 2 にその話題が開いている。足りない物の文を返す
    */
-  async function handPartsLines(page: Page, vp: Viewport, phoneOpened: boolean): Promise<string[]> {
+  async function handPartsLines(page: Page, vp: Viewport, phone: boolean): Promise<string[]> {
     const lines: string[] = [];
-    // 6. スマホで下のバーから開いた直後の焦点（ほかの検査で動かす前に見る）
-    if (phoneOpened && !(await activeIs(page, "#v3-hand-ed textarea.c-composer-input"))) {
-      const at = await page.evaluate(() => {
-        const a = document.activeElement;
-        return a === null ? "null" : `${a.tagName.toLowerCase()}.${a.classList[0] ?? ""}`;
-      });
-      lines.push(`右腕: 下のバーから開いた直後の焦点が入力欄に無い（${at}）`);
+    // 6. スマホで下のバーから開いた直後の焦点。初めて開いたときは読み込み中で入力欄が無いので、読み込んだ後に畳んで開き直してから見る
+    if (phone) {
+      await page.click(HAND_CLOSE);
+      await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+      await settled(page);
+      await page.click('#c-bottom-root [data-act="hand"]');
+      await settled(page);
+      if (!(await activeIs(page, "#v3-hand-ed textarea.c-composer-input"))) {
+        const at = await page.evaluate(() => {
+          const a = document.activeElement;
+          return a === null ? "null" : `${a.tagName.toLowerCase()}.${a.classList[0] ?? ""}`;
+        });
+        lines.push(`右腕: 読み込んだ後に下のバーから開き直した直後の焦点が入力欄に無い（${at}）`);
+      }
     }
     lines.push(
       ...(await page.evaluate(() => {
