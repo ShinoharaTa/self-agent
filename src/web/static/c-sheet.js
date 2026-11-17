@@ -1,5 +1,5 @@
 // 板・確認・知らせ（docs/plan/web-ui-components.md §6 の K2）: Sheet・Confirm・Toast。
-// hook を使うのは Sheet だけ（自分の <dialog> の ref だけに触る）。Confirm・Toast は Node から呼べる。タイマーは持たない（自動で消すのは入口の側）
+// hook を使うのは Sheet だけ（自分の <dialog> の ref だけに触る）。Confirm・Toast は Node から呼べる。タイマーは持たない（自動で消す・止めるのは ui.js の側）
 import { html, useRef, useLayoutEffect } from "./c-lib.js";
 import { Button, IconButton } from "./c-atoms.js";
 
@@ -98,16 +98,39 @@ export function toastSplit(items) {
   return { status: items.filter((item) => item.level !== "error"), alert: items.filter((item) => item.level === "error") };
 }
 
-/** 知らせの入れ物。読み上げの領域は先に在る必要があるので、中が空でも 2 つとも出す */
-export function Toast({ items, onDismiss }) {
+/**
+ * 知らせの入れ物。読み上げの領域は先に在る必要があるので、中が空でも 2 つとも出す（足した知らせだけを読ませるため aria-atomic="false"）。
+ * item.leaving は消える途中（data-leaving。動きの後に onLeft(id)）。onHold(id, kind, on) はマウスが乗っている間（"hover"）と
+ * 中にフォーカスが在る間（"focus"）を知らせる（止めるかは呼ぶ側が決める）。onHold・onLeft は無くてもよい
+ */
+export function Toast({ items, onDismiss, onHold, onLeft }) {
   const { status, alert } = toastSplit(items);
-  const row = (item) => html`<div class="c-toast-item" key=${item.id} data-level=${item.level === "error" ? "error" : "info"}>
+  const hold = (id, kind, on) => {
+    if (onHold) onHold(id, kind, on);
+  };
+  // 事象の属性は全部小文字で書く（Preact は小文字の名前をそのまま事象の名前にする。focusin などは大文字混じりだと名前が変わる版がある）
+  const row = (item) => html`<div class="c-toast-item" key=${item.id} data-level=${item.level === "error" ? "error" : "info"} data-leaving=${item.leaving ? "true" : undefined}
+      onpointerenter=${(event) => {
+        if (event.pointerType === "mouse") hold(item.id, "hover", true);
+      }}
+      onpointerleave=${(event) => {
+        if (event.pointerType === "mouse") hold(item.id, "hover", false);
+      }}
+      onfocusin=${() => hold(item.id, "focus", true)}
+      onfocusout=${(event) => {
+        if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return;
+        hold(item.id, "focus", false);
+      }}
+      ontransitionend=${(event) => {
+        // 中のボタンの transition の事象も上がってくるので、行そのものの物だけ
+        if (item.leaving && event.target === event.currentTarget && onLeft) onLeft(item.id);
+      }}>
     <p class="c-toast-text">${item.text}</p>
     ${item.actionLabel ? html`<${Button} kind="ghost" size="sm" label=${item.actionLabel} onPress=${item.onAction} />` : null}
     <${IconButton} icon="x" size="sm" label="閉じる" onPress=${() => onDismiss(item.id)} />
   </div>`;
   return html`<div class="c-toast">
-    <div class="c-toast-list" role="status" aria-live="polite">${status.map(row)}</div>
-    <div class="c-toast-list" role="alert" aria-live="assertive">${alert.map(row)}</div>
+    <div class="c-toast-list" role="status" aria-live="polite" aria-atomic="false">${status.map(row)}</div>
+    <div class="c-toast-list" role="alert" aria-live="assertive" aria-atomic="false">${alert.map(row)}</div>
   </div>`;
 }
