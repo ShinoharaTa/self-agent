@@ -983,7 +983,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /**
    * わざと起こした失敗の行を console.log に残さない: logLines の from 番目から後ろで、needles のどれかを含む行を外して返す。
-   * 使うのは描けない bar・入口が読めないとき・入力欄の送りの失敗の 3 か所だけ（外す語を増やさない）
+   * 使うのは描けない bar・入口が読めないとき・入力欄の送りの失敗・一覧に無い Claude Code のセッションの読み（404）の 4 か所だけ（外す語を増やさない）
    */
   function dropExpected(from: number, needles: string[]): string[] {
     const removed: string[] = [];

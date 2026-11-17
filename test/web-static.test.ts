@@ -6806,6 +6806,14 @@ test("web static: Claude Code のチャンネルのカードの項目は 状態�
   assert.deepEqual(cardKeys(h.cards), ["note:ended"]);
 });
 
+test("web static: Claude Code のチャンネルの質問のカードの who は、チャンネルのセッションの名前とモード（項目にチャンネルのセッションの id を渡す）", () => {
+  const h = ccCardsChat({ permission: questionPermission(8, { permissionMode: "default" }) });
+  assert.equal(cardsPlain(h.cards)[0]!.who, "", "一覧に無い間は空");
+  (h.c.store as unknown as Record<string, unknown>).cc = { sessions: [{ sessionId: "s1", name: "web-ui" }, { sessionId: "s2", name: "ほか" }] };
+  h.draw({ permission: questionPermission(8, { permissionMode: "default" }) });
+  assert.match(String(cardsPlain(h.cards)[0]!.who), /^web-ui ・ /);
+});
+
 test("web static: Claude Code のチャンネルの保留中でない要求はカードに出さず、選んだ状態を 1 回捨てる（ccQuestionForget）", () => {
   const h = ccCardsChat({ permission: questionPermission(44) });
   const views = h.SA.views as Record<string, unknown>;

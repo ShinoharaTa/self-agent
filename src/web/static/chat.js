@@ -1408,7 +1408,7 @@
     return isQuestion(p) === (kind === "question") ? p : null;
   }
 
-  /** Claude Code のセッションの読み直し（cardOp の 4 つ目）。404 のほかの失敗は握る（待ちの形は cardOp の finally が外す） */
+  /** Claude Code のセッションの読み直し（cardOp の 4 つ目）。読みが reject しても握る（待ちの形は cardOp の finally が外す） */
   function ccReload(sessionId) {
     return () => Promise.resolve(store.load.ccSession(sessionId, { quiet: true })).catch(() => null);
   }
