@@ -262,7 +262,7 @@ export const TAKEOVER_AFTER_TERM_TEXT =
  * 送ったと言い切らない）
  */
 export const TAKEOVER_MAYBE_TERM_TEXT =
-  "端末の Claude Code は終了しているかもしれません。終了していれば、このチャンネルで /cc take をもう一度実行すると、終わった会話から取り込めます。";
+  "端末の Claude Code は終了しているかもしれません。終了していれば、/cc take をもう一度実行すると、終わった会話から取り込めます。";
 
 /**
  * 確認の文を書き換える失敗の文（§4）。afterTerm（SIGTERM を送った後の失敗）なら TAKEOVER_AFTER_TERM_TEXT を次の行に足す。
