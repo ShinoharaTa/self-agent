@@ -58,7 +58,7 @@ v2 → v3 で変えた所（ここに無い節は v2 のまま運んだ）:
 12. `CcSender.submit`・`propose` は送り先の確かめ（await）の後、await しない区間で積む。
 13. `SdkSessionStore`（`channel_sessions`）は key からしか引けない。DB の接続は 1 本。`markGone`・`upsertSeen` は内側に BEGIN を持つ。
 14. CC13 の [起動して続ける] は**新しい** claude を起動する（`--resume` は無い）。保留した発言はメモリの中（`<channelId>:<messageId>`）。
-15. マイグレーションは配列の位置で番号が決まる（main の最後は v41）。`sessions.origin` は CHECK があり、値を足すには表の作り直しが要る。
+15. マイグレーションは配列の位置で番号が決まる（v2 を書いた時点の main の最後は v41。今は v44 で、この表は v45。§3.9）。`sessions.origin` は CHECK があり、値を足すには表の作り直しが要る。
 16. Gateway にチャンネル名の変更は無い（topic と移動はある）。`findStateCategory` はカテゴリを作ることがあり、/new は `layoutQueueKey` のキューの中で呼ぶ。
 17. SDK 0.3.286（同梱 CLI 2.1.286）。端末の CLI は先に進む。
 
@@ -125,7 +125,7 @@ v2 → v3 で変えた所（ここに無い節は v2 のまま運んだ）:
 
 - `/new` と同じキュー（`layoutQueueKey`）の中で、進行中のカテゴリの解決と Discord のチャンネルの作成を行う。期限は 15 秒。作れなければ `no_channel`（端末はそのまま）。
 - **`sessions` の行は commit まで作らない**。その間のチャンネルは、発言しても何も起こらない（§1.3 の 1）。作る道具は `createTopicSession` の前半を切り出した `createTopicChannel`（/setup の確認・カテゴリ・チャンネルの作成まで。行は作らない）。`createTopicSession` はそれを呼ぶ形にし、振る舞いは変えない。
-- 作ったらすぐ `cc_takeovers.target_channel_id` に書く（落ちても、どのチャンネルを作ったかが DB に残る）。
+- 作ったらすぐ `cc_takeovers.target_channel_id` に書く（落ちても、どのチャンネルを作ったかが DB に残る）。作ってから書くまでの間に落ちた・書けなかったときは DB に残らないので、その場で消し、消せなければ log にチャンネル ID を出す（`/new` が DB の保存に失敗したときと同じ）。
 - **題名**は `cc_sessions.name` を `normalizeTopicTitle` に通し、100 字で切った物。空ならプロジェクトの名前。名前・topic・カテゴリは `/new project:<名前>` と同じ（`sessionChannelName`・`sessionTopic(題名, undefined, プロジェクト)`・進行中）。
 
 **(2) チャンネルを作った後に失敗したら、そのチャンネルをどうするか**
@@ -203,7 +203,7 @@ v2 → v3 で変えた所（ここに無い節は v2 のまま運んだ）:
 
 - **生きているセッションの条件**: 今読んだ一覧で interactive・idle・信頼の確認待ちでない・保留の許可が無い・**tmux のペインが引けて `probePaneState` が idle**。tmux の外は断る（/exit の後の取り込みで拾える）。ペインを撮れなければ `tmux_failed`。 **追補（v3）**: tmux を必須にしない。ペインを引く口・撮る口は本体の省ける依存にし、渡されなければ（tmux の無い機械）生きているセッションはすべて `not_in_tmux` で断る。引く口が `no_server`（tmux のサーバーが動いていない）を返したときも `not_in_tmux`、ほかの失敗は `tmux_failed`。
 - **「今読んだ一覧」**: `t0 = now()` → `await registry.tick()` → `snapshot()` が `stale === false`・`unreadable === false`・`fetchedAt >= t0`。満たさなければ `list_failed`（終わったセッションの取り込みでも同じ。「一覧に無い」を古い一覧で言わない）。
-- **cwd の形**: 名前は `resumeProject(cwd)`。`checkSessionProject(名前)` を通し、さらに**端末の cwd（末尾の / を除く）が runner の cwd（`verifiedProjectDir(名前)`）と同じ文字列**のときだけ取り込む。違えば `outside_workspace`（作業場所が symlink 越しなど。probe で確かめたのは同じ形だけ）。
+- **cwd の形**: 名前は `takeoverProjectName(cwd, workspaceDir)`（`cc/channels.ts` の `resumeProject` と同じ中身。あちらは import しない）。`checkSessionProject(名前)` を通し、さらに**端末の cwd（末尾の / を除く）が runner の cwd（`verifiedProjectDir(名前)`）と同じ文字列**のときだけ取り込む。違えば `outside_workspace`（作業場所が symlink 越しなど。probe で確かめたのは同じ形だけ）。
 - **相手の確かめ**（signal の直前に全部。1 つでも欠ければ `identity`。signal は送らない）:
   1. 今読んだ一覧にその session_id があり、pid が最初の確かめと同じで、interactive・idle。
   2. `sessionFile(pid, sessionId)` が返る。

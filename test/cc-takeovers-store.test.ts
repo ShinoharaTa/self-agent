@@ -48,6 +48,9 @@ test("cc_takeovers: 新しい DB は最新の版で、表と索引 2 つがあ�
   // CHECK: 知らない状態・モードは入らない
   assert.throws(() => db.prepare(`${INSERT} VALUES ('s', 'alive', 'p', 'g', 'discord', 'c', 't', 'done', 'auto', 'a', 'a')`).run());
   assert.throws(() => db.prepare(`${INSERT} VALUES ('s', 'alive', 'p', 'g', 'discord', 'c', NULL, 'closed', 'default', 'a', 'a')`).run());
+  // CHECK: 知らない source・entry は入らない
+  assert.throws(() => db.prepare(`${INSERT} VALUES ('s', 'paused', 'p', 'g', 'discord', 'c', NULL, 'awaiting_confirm', 'default', 'a', 'a')`).run());
+  assert.throws(() => db.prepare(`${INSERT} VALUES ('s', 'alive', 'p', 'g', 'slack', 'c', NULL, 'awaiting_confirm', 'default', 'a', 'a')`).run());
   // CHECK: 行き先が空のまま done にはできない
   assert.throws(() => db.prepare(`${INSERT} VALUES ('s', 'alive', 'p', 'g', 'discord', 'c', NULL, 'done', 'default', 'a', 'a')`).run());
   // CHECK: 確認の投稿は確認を出したチャンネルがあるときだけ
@@ -72,6 +75,7 @@ test("openDb: v44 までの DB を上げると最新の版になり、cc_takeove
   assert.ok(MIGRATIONS.length >= 45);
   const dir = tempDir(t);
   const path = join(dir, "self-agent.db");
+  // v45（cc_takeovers）の 1 つ前の版。後の移行を足しても変えない
   const before = 44;
   const old = new DatabaseSync(path);
   for (const migration of MIGRATIONS.slice(0, before)) old.exec(migration);
@@ -250,6 +254,26 @@ test("takenFor・clearNote: 行き先（target_channel_id）で引き、確認�
   assert.equal(store.clearNote("ch-2"), false);
 });
 
+test("takenFor・clearNote: 行き先が在っても、実行中・失敗の行では引かない", (t) => {
+  const { store, propose, run } = setup(t);
+  const running = propose()!;
+  run(running.id, "ch-1");
+  assert.equal(store.takenFor("ch-1"), undefined);
+  assert.equal(store.clearNote("ch-1"), false);
+  store.fail(running.id, "copy_failed");
+  assert.equal(store.get(running.id)?.targetChannelId, "ch-1");
+  assert.equal(store.takenFor("ch-1"), undefined);
+  assert.equal(store.clearNote("ch-1"), false);
+});
+
+test("start: 位置を check にする", (t) => {
+  const { store, propose } = setup(t);
+  const row = propose()!;
+  assert.equal(store.get(row.id)?.step, null);
+  assert.equal(store.start(row.id), true);
+  assert.equal(store.get(row.id)?.step, "check");
+});
+
 test("setTarget: 実行中で行き先が空の行だけ。2 回目は false", (t) => {
   const { store, propose } = setup(t);
   const row = propose()!;
@@ -316,8 +340,12 @@ test("clearTarget・listTargetLeft: failed の行だけ行き先を空に戻し�
 test("setConfirmMessage・markEffects・listEffectsPending", (t) => {
   const { store, propose, run } = setup(t);
   const a = propose()!;
-  store.setConfirmMessage(a.id, "msg-1");
+  assert.equal(store.setConfirmMessage(a.id, "msg-1"), true);
   assert.equal(store.get(a.id)?.confirmMessageId, "msg-1");
+  // 1 回だけ。無い id は false
+  assert.equal(store.setConfirmMessage(a.id, "msg-2"), false);
+  assert.equal(store.get(a.id)?.confirmMessageId, "msg-1");
+  assert.equal(store.setConfirmMessage(999, "msg-1"), false);
   assert.equal(store.markEffects(a.id), false);
   run(a.id, "ch-1");
   store.finish(a.id);
@@ -329,6 +357,17 @@ test("setConfirmMessage・markEffects・listEffectsPending", (t) => {
   assert.ok(store.get(a.id)?.effectsAt);
   assert.equal(store.markEffects(a.id), false);
   assert.deepEqual(store.listEffectsPending().map((row) => row.id), [b.id]);
+});
+
+test("setConfirmMessage: Web から始めた行には書かない（投げない）。実行中になった後でも Discord の行には書ける", (t) => {
+  const { store, propose } = setup(t);
+  const web = propose({ entry: "web", confirmChannelId: undefined })!;
+  assert.equal(store.setConfirmMessage(web.id, "msg-1"), false);
+  assert.equal(store.get(web.id)?.confirmMessageId, null);
+  const discord = propose({ sessionId: S2 })!;
+  store.start(discord.id);
+  assert.equal(store.setConfirmMessage(discord.id, "msg-2"), true);
+  assert.equal(store.get(discord.id)?.confirmMessageId, "msg-2");
 });
 
 test("SdkSessionStore.hasSessionId: どれかの key に同じ session_id があれば true", (t) => {

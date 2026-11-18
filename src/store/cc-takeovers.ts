@@ -161,9 +161,12 @@ export class CcTakeoverStore {
     return row === undefined ? undefined : toRow(row);
   }
 
-  /** 確認待ち → 実行中（[取り込む]）。移したら true */
+  /** 確認待ち → 実行中（[取り込む]）。位置は最初の check にする。移したら true */
   start(id: number): boolean {
-    return this.move(id, "awaiting_confirm", "running", false);
+    const result = this.db
+      .prepare("UPDATE cc_takeovers SET state = 'running', step = 'check', updated_at = ? WHERE id = ? AND state = 'awaiting_confirm'")
+      .run(this.now().toISOString(), id);
+    return Number(result.changes) > 0;
   }
 
   /** 実行中の行の位置を書く。実行中でなければ false */
@@ -182,7 +185,11 @@ export class CcTakeoverStore {
     return Number(result.changes) > 0;
   }
 
-  /** 実行中で行き先がまだ空の行に、行き先のチャンネルを書く（step channel で作った直後）。書いたら true */
+  /**
+   * 実行中で行き先がまだ空の行に、行き先のチャンネルを書く（step channel で作った直後）。書いたら true。
+   * 同じチャンネルが別の行の行き先に在ると UNIQUE の違反で投げる（作ったばかりのチャンネルでは起きない）。
+   * 呼び出し側は false と同じく失敗として扱い、投げた例外を外に出さない
+   */
   setTarget(id: number, channelId: string): boolean {
     const result = this.db
       .prepare("UPDATE cc_takeovers SET target_channel_id = ?, updated_at = ? WHERE id = ? AND state = 'running' AND target_channel_id IS NULL")
@@ -268,11 +275,18 @@ export class CcTakeoverStore {
     return Number(result.changes) > 0;
   }
 
-  /** 確認のメッセージを書く */
-  setConfirmMessage(id: number, messageId: string): void {
-    this.db
-      .prepare("UPDATE cc_takeovers SET confirm_message_id = ?, updated_at = ? WHERE id = ?")
+  /**
+   * 確認のメッセージを書く（Discord から始めた行に 1 回だけ。書いたら true）。
+   * Web から始めた行（確認のチャンネルが無い）と、すでに書いた行は変えない。
+   * 状態は見ない（投稿の返りより先に [取り込む] が押されても、後で確認の文を書き換えられるように）
+   */
+  setConfirmMessage(id: number, messageId: string): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE cc_takeovers SET confirm_message_id = ?, updated_at = ? WHERE id = ? AND confirm_channel_id IS NOT NULL AND confirm_message_id IS NULL",
+      )
       .run(messageId, this.now().toISOString(), id);
+    return Number(result.changes) > 0;
   }
 
   /** 後始末を済ませた（done で effects_at が空の行だけ。2 回目は false） */
