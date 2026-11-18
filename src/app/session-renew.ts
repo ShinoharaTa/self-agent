@@ -35,7 +35,7 @@ export type SessionRenewDeps = {
   /** 発言のターンと同じキュー（key は channelId）。要約のターンが発言のターンと重ならないようにする */
   turnQueue: Pick<KeyedSerialQueue, "run">;
   /** 要約のターンの runner（チャンネルの持ち主の人格のもの）と、SDK セッション・seed・usage */
-  turn: Pick<TurnDeps, "runner" | "projectRunner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
+  turn: Pick<TurnDeps, "runner" | "projectRunner" | "personas" | "sessions" | "seeds" | "usage" | "log" | "takeover">;
   /** Web UI のためのターンの記録（Web UI が有効なときだけ渡す）。新しくしたら区切りの行を書く。無ければ書かない */
   history?: Pick<HistoryStore, "add">;
   log: (message: string) => void;
@@ -110,6 +110,12 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
 
   if (RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
     // 会話の記録が既に無いので要約は作れない。resume 失敗の復旧と同じ seed（前の /renew の要約 → /close の要約 → 題名）にする
+    // 取り込んだ会話なら捨てる前に知らせる（turn.ts と同じく、投げても続ける。docs/plan/takeover.md §3.6.3）
+    try {
+      turn.takeover?.resumeDropped(channelId, sessionId);
+    } catch (error) {
+      log(`取り込みの resumeDropped で例外（${error instanceof Error ? error.name : "unknown"}）が出たため、飛ばして続けます`);
+    }
     sessions.delete(channelId);
     const seed = resumeSeed(session, undefined, "inbox");
     if (seed !== undefined) seeds.set(channelId, seed);
