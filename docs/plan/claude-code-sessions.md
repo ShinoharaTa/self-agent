@@ -1,5 +1,7 @@
 # この機械の Claude Code（CLI）の対話セッションを self-agent から一覧・指示・起動する（確定版）
 
+> **2026-11-18（#428）**: この機能（リモコン）は投資を止めた。取り込み（#341）とプロジェクトのセッション（#277）を本線にし、使う期間の後に消す。残す物・消す物と段は `docs/plan/terminal-handover.md`。
+
 > 2026-11-01。spec-writer。v1（案）→ v2（改行・Web からの許可・SDK のツール）→ v3（常に許可・保留 5 分・返事を戻す）→ v4（確定版）→ **v5（実機確認の反映。§1 に事実を移し、§2.4 の hooks（`SessionStart` 無し）、§3.2 の印の形、§3.4 の許可（保留中もダイアログは出る・[RC で答える] を廃止・「他で答えられた」の検知）、§4 の trust の扱いを直した）**。関連 issue は #191。状態: **設計は確定。CC1（PR #203）・CC2（PR #204）はレビュー中、CC3 は実装中**。v5 で CC1 に戻す直しは §8 の CC1 の行に書いた。**チャンネルとの統合（Web の会話欄の群「Claude Code」・セッションごとの Discord のチャンネル・端末の指示の写し）は `docs/plan/claude-code-channels.md`（CC9〜CC14。本書の §5.2 の投稿先・§5.4 の追いかけ・「`/cc` を持たない」をそこで改める）。**
 > リポジトリ・`~/.local/share/self-agent`・`~/.config/self-agent`・`~/.claude/settings.json` は変更していない。
 > 「確認（文書）」= 公式文書（code.claude.com/docs の hooks・remote-control・agent-view・sessions）。「確認（実機）」= 2026-11-01 に CLI 2.1.316・tmux 3.4・Ubuntu 24.04 で、**専用の tmux サーバー・空のディレクトリ・`--settings` で渡した hooks・RC を切った試験のセッション**で確かめた事実（オーナーの既定の tmux サーバーと `~/.claude/settings.json` は使っていない）。「未確認」= 実装・実機で確かめるまで前提にしない（§12）。

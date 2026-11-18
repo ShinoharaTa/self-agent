@@ -16,7 +16,7 @@
 3. `CLAUDE_CONFIG_DIR` は `~/.claude` と**共有しない**。Bot 専用のディレクトリに、`skills`・`agents`・`CLAUDE.md`・`rules`・`projects`（記録と自動メモリ）だけを symlink で**選択的に共有**し（U1 では skills・agents だけ。CLAUDE.md・rules は link しない（§1.5）。projects は U3）、`settings.json`（hooks・permissions）と `.credentials.json`・`sessions` は分ける（§5.3）。
 4. 許可（Bash など）と質問（AskUserQuestion）は SDK の `canUseTool` で受け、**既存の Discord / Web の許可カード・質問カード（cc_permissions・channel-posts.ts・views.js）に流す**。新しい UI は作らない（§5.1）。
 5. 端末の Claude Code から self-agent の持ち物（タスク・リマインド・記憶・ナレッジ）を使う口（案 B）は、A の後に **127.0.0.1 の MCP（Streamable HTTP）** として足す（personas.md PR-E の設計を流用。§6 の U4）。順番は A → B（案 D）。
-6. リモコン（CC1〜CC14）は**残す**。端末・RC で起動したセッションを Discord から見る・送る用途は変わらない。プロジェクトのセッションは tmux の外で動く SDK セッションなので、リモコンの一覧には出ない（未確認。U0 で確かめる）。
+6. リモコン（CC1〜CC14）は**残す**。端末・RC で起動したセッションを Discord から見る・送る用途は変わらない。プロジェクトのセッションは tmux の外で動く SDK セッションなので、リモコンの一覧には出ない（未確認。U0 で確かめる）。**（#428 で変えた: リモコンは投資を止め、取り込みとプロジェクトのセッションを本線にして、使う期間の後に消す。`docs/plan/terminal-handover.md`）**
 7. 外部サービスは増えない（0 円）。増えるのは context（CLAUDE.md・skills の一覧・ツールの定義）と、プロジェクトのセッションの 1 ターンあたりのトークン。
 
 ---
@@ -195,6 +195,8 @@
 - 提案: **プロジェクトのセッションではサブエージェントを許す**（Claude Code そのもの。見えない処理は SubagentStart/Stop の hook で途中経過「<名前> に任せています」を出す）。軽いモードは今までどおり使わない。REQUIREMENTS の決定事項に「プロジェクトのセッションは例外」を足す。→ **未決 2**。許さないなら `disallowedTools: ['Agent']` の 1 行。
 
 ### 5.7 リモコン（CC1〜CC14・Q1〜Q5）の位置づけ
+> **2026-11-18（#428）で変えた**: 下の「残す」はやめた。リモコンは投資を止め、取り込み（#341）とプロジェクトのセッションを本線にして、使う期間の後に消す。`docs/plan/terminal-handover.md`。
+
 - 残す。端末・RC で起動したセッションを Discord から見る・送る・許可に答える用途は本案で変わらない。
 - 縮むところ: 「self-agent から `cc_start` で起動する」は、プロジェクトのセッションを `/new project:` で作れば要らなくなる場面が増える。消さずに残す（tmux の中で動かしたいときの口）。
 - 重なりを避ける: 本案の許可カードは `cc_permissions` を共有するが、`origin 'sdk'` の行は registry・hook-server・channels.ts（Claude Code のチャンネルを作る）を通らない。U0 でプロジェクトのセッションが `claude agents --json` に出ないことを確かめる（出るなら `kind` で除く）。
@@ -218,7 +220,7 @@
 | reminder_set（prompt。予約した依頼） | 今のまま | not_available（予約した依頼は軽いモードで動き、そのチャンネルには結びつけない） |
 | session_open | #inbox だけ | not_available（今と同じ） |
 | project_open / project_files | セッションだけ | not_available（§5.2。ファイルは Claude Code の Read/Write/Edit/Bash で直接） |
-| cc_list / cc_send / cc_start | SELF_AGENT_CC のとき | 同じ（端末のセッションに頼む口は残す） |
+| cc_list / cc_send / cc_start | SELF_AGENT_CC のとき | 同じ（端末のセッションに頼む口は残す）。X1 で消す（#428） |
 
 - `allowedTools` には `mcp__self-agent__*` を入れたままにする（自前ツールにカードを出さない。今の `dontAsk` と同じ扱い）。WebSearch・WebFetch も入れたまま（WebFetch の URL の hook も入れる。外のページを読んだ後の Bash はカードが止める）。
 - CLI の既定のツールで self-agent が**禁じるもの**: 無し（U1）。`disallowedTools` は AskUserQuestion（U2 まで）と、未決 2 で Agent。
@@ -231,7 +233,7 @@
 |---|---|---|---|---|
 | **U0 確かめ** | `npm run unify-probe`（measure と同じ入口。Discord 無し）: Bot 専用の一時 `CLAUDE_CONFIG_DIR` に §5.3 の link を作り、self-agent のリポジトリを cwd に 2 ターン動かす。`InstructionsLoaded` hook で CLAUDE.md・skills が読まれたか、`canUseTool` が Bash と AskUserQuestion で呼ばれるか、記録の場所、`claude agents --json` に出るか、Bash の env のトークン、トークン数を表で出す | §1.4 の 6 つの答え（済。§1.5） | 無し（コードは probe だけ） | 実機の表。OAuth のトークンが要り、利用枠を使う |
 | **U1 プロジェクトのセッション（最小）**（済（PR）。U1a・U1b） | `sessions.project_dir`・`permission_mode`（v40。`cc_permissions.origin` も）・profile（preset + append・settingSources・`tools` 省略・`disallowedTools: ['AskUserQuestion']`（質問は U2）・`canUseTool` → 許可カード（既存）・時間切れ deny・打ち切りの一時停止）・`/new project:`・Web のダイアログのセレクト・秘密の場所の拒否・unify-setup の `--print` と起動時の link の確認 | **「Discord から self-agent のリポジトリで skills 付きの Claude Code と同じ返事」** | 許可カードが多すぎて使えない（→ 未決 3 の既定）。turn の打ち切りと保留の相互作用。`always` が resume に効かない | 単体: 偽 queryFn で Options の形（settingSources・cwd・tools・systemPrompt）を固定、偽 gateway で canUseTool → カード → ボタン → PermissionResult を往復、時間切れ deny、軽いモードの Options が 1 バイトも変わらない（既存のテスト）。実機: self-agent のリポジトリで「CLAUDE.md の コマンド の節を要約して」「npm run check を実行して」（カードで許可）、端末の Claude Code の返事と比べる |
-| **U2 質問・モード** | AskUserQuestion を `canUseTool` → 質問カード（Q1〜Q5 の流用）・`/mode`・Web の見出しのセレクト・サブエージェントの途中経過（未決 2 の結果で `disallowedTools`） | 質問に Discord の選択肢で答える。モードの切り替え | headless の空答えの不具合（未確認 4） | 単体: `updatedInput` の形。実機: 「どちらにするか私に訊いて」で選択肢が出て答えが通る |
+| **U2 質問・モード**（#428 の H4a・H4b で行う。`docs/plan/terminal-handover.md` §3.1） | AskUserQuestion を `canUseTool` → 質問カード（Q1〜Q5 の流用）・`/mode`・Web の見出しのセレクト・サブエージェントの途中経過（未決 2 の結果で `disallowedTools`） | 質問に Discord の選択肢で答える。モードの切り替え | headless の空答えの不具合（未確認 4） | 単体: `updatedInput` の形。実機: 「どちらにするか私に訊いて」で選択肢が出て答えが通る |
 | **U3 記憶と続き** | `projects` の link（自動メモリ有効・`CLAUDE_CODE_DISABLE_AUTO_MEMORY` を外す・`CLAUDE_CODE_PROJECT_DIR_NAME` をプロジェクトのセッションでは付けない）・端末からの `--resume` の案内（/sessions にセッション ID の末尾は出さず「端末で続ける: `claude --resume` の案内」を Web にだけ）・I2 の緩和（プロジェクト同士 2 まで）・トークンの計測で軽いモードを残すか決める材料 | 同じ記憶・同じ会話の続き | 同時 resume で記録が混ざる（案内に「Discord 側が動いている間は端末で開かない」） | 実機: Discord で 2 ターン → 端末で `--resume` → 続きを読める |
 | **U4 案 B（端末に self-agent の持ち物）** | 自前 MCP（task/kb/memory/reminder）を 127.0.0.1 の Streamable HTTP で出す（personas.md PR-E の設計。run ごとのトークンでなく、`~/.config/self-agent/env` の固定トークンを `bearer_token_env_var` で）。`~/.claude.json` への登録はオーナー（`unify-setup -- --print`） | 端末の Claude Code から「タスクに入れて」「来週の火曜に知らせて」 | MCP のトークンの置き場。self-agent が止まっていると端末のツールが失敗する（Claude Code は失敗を返事にするだけ） | 単体: HTTP の認証・形。実機: 端末で `task_list` |
 | **U5 仕上げ** | ユーザーの MCP を `mcpServers` に写す（`strictMcpConfig` は true のまま、写した分だけ）・`session_open` の `project`・1 つ下（worktree）のプロジェクト・人格ごとの CLAUDE.md・軽いモードを畳むかの判断 | 入口の差がほぼ消える | 無し | U3 の計測 |
@@ -239,6 +241,7 @@
 - U1 の切り方の根拠: DB の列 2 つ・profile 1 つ・許可の橋 1 つ・コマンドの引数 1 つで済む。許可カード・ボタン・Web のカード・DB の表は CC5a〜c と Q1〜Q5 で**既にある**ので、作るのは `canUseTool` → `cc_permissions` → `PermissionResult` の往復だけ。
 - U0 を飛ばさない: §1.4 の 1・2・3 は設計の分岐（§5.3・§5.5・§5.7）に直結する。probe は半日で書ける。
 - U5 の session_open の project は、Web UI の M6 が先に入れた（docs/plan/web-ui-v3.md §4。#369 の M6f）。
+- 取り込み（#341）が本線になると「端末へ戻りたい」の受け皿は U3 になる（#428）。
 
 ---
 
