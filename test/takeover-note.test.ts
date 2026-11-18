@@ -141,14 +141,19 @@ test("中断・タイムアウト・result の届かない失敗: 前置きを�
 
 test("No conversation found で捨てる: resumeDropped が 1 回（捨てる session_id で）。やり直しの新規の prompt に前置きは入らない", async (t) => {
   const fake = fakeTakeover("session-taken");
-  const { runner, sessions, run } = setup(
-    t,
-    [failed("No conversation found with session ID: x", false), ok("session-new")],
-    fake.takeover,
-  );
+  // 呼ばれた時点でそのチャンネルに残っている SDK セッション（捨てる前に呼ぶ）
+  const held: Array<string | undefined> = [];
+  const { runner, sessions, run } = setup(t, [failed("No conversation found with session ID: x", false), ok("session-new")], {
+    ...fake.takeover!,
+    resumeDropped: (key, sessionId) => {
+      held.push(sessions.get(key));
+      fake.takeover!.resumeDropped(key, sessionId);
+    },
+  });
   sessions.set("topic-1", "session-taken");
 
   assert.ok((await run()).ok);
+  assert.deepEqual(held, ["session-taken"]);
   assert.equal(runner.inputs.length, 2);
   assert.equal(runner.inputs[1]!.sessionId, undefined);
   assert.ok(!runner.inputs[1]!.prompt.includes(NOTE));
