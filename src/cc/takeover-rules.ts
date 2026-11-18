@@ -67,7 +67,7 @@ export type TakeoverRefusalInput = {
     | { source: "alive"; view: Pick<CcSessionView, "state" | "status" | "kind" | "trustPending">; pane: TakeoverPane }
     | { source: "ended" };
   /**
-   * cwd の形まで合った（§3.4。resumeProject の名前が checkSessionProject を通り、端末の cwd が verifiedProjectDir と同じ文字列）プロジェクトの名前。
+   * cwd の形まで合った（§3.4。takeoverProjectName の名前が checkSessionProject を通り、端末の cwd が verifiedProjectDir と同じ文字列）プロジェクトの名前。
    * 合わなければ呼び出し側が undefined を渡す
    */
   project: string | undefined;
@@ -80,7 +80,7 @@ export type TakeoverRefusalInput = {
 };
 
 /**
- * 取り込めるか（§3.2・§3.4 の条件。§4 の表の順に見る）。取り込めれば undefined、断るなら符号。
+ * 取り込めるか（§3.2・§3.4 の条件。§3.4 の条件の順に見て、共存の間の断り（§3.2）と取り込み済みは最後）。取り込めれば undefined、断るなら符号。
  * 元の記録の検査（no_transcript・too_large）と、確かめ直し・終了・写しの失敗は ここでは見ない（takeover-files.ts と H1b の本体）
  */
 export function takeoverRefusal(input: TakeoverRefusalInput): TakeoverFailure | undefined {
