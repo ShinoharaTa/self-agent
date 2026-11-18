@@ -77,6 +77,17 @@ export type TurnDeps = {
   memories: Pick<MemoryStore, "list">;
   usage: UsageStore;
   log: (message: string) => void;
+  /**
+   * 端末の Claude Code から取り込んだ会話（cc/takeover.ts。docs/plan/takeover.md §3.6.1・§3.6.3）。key は channelId。
+   * noteFor が返せば resume のターンの prompt の頭に付け、resume の結果で noteDone を呼び、SDK セッションを捨てる直前に resumeDropped を呼ぶ。
+   * 無ければ何もしない。例外を投げてもターンは止めない
+   * 3 つとも同期で呼ぶ（Promise を返す実装の reject は拾えない）
+   */
+  takeover?: {
+    noteFor(key: string, sessionId: string, turn: { purpose?: string; scheduled?: boolean }): string | undefined;
+    noteDone(key: string): void;
+    resumeDropped(key: string, sessionId: string): void;
+  };
 };
 
 export type ChannelTurn = {
@@ -269,9 +280,33 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     return result;
   };
 
+  // 取り込みの 3 つの呼び出しは、投げてもターンを壊さない（log は段の名前と例外の種類だけ）
+  const takeoverCall = <T>(step: string, call: () => T): T | undefined => {
+    try {
+      return call();
+    } catch (error) {
+      log(`取り込みの ${step} で例外（${error instanceof Error ? error.name : "unknown"}）が出たため、飛ばしてターンを続けます`);
+      return undefined;
+    }
+  };
+
   const sessionId = sessions.get(key);
   if (sessionId !== undefined) {
-    const result = await runOnce(prompt, sessionId);
+    const { takeover } = deps;
+    const note =
+      takeover === undefined
+        ? undefined
+        : takeoverCall("noteFor", () =>
+            takeover.noteFor(key, sessionId, {
+              ...(turn.purpose === undefined ? {} : { purpose: turn.purpose }),
+              ...(turn.scheduled === undefined ? {} : { scheduled: turn.scheduled }),
+            }),
+          );
+    const result = await runOnce(note === undefined ? prompt : `${note}\n\n${prompt}`, sessionId);
+    // 前置きは、記録に入ったと分かったら消す（中断・タイムアウト・result の届かない失敗では残す）
+    if (note !== undefined && takeover !== undefined && (result.ok || result.sessionRecorded === true)) {
+      takeoverCall("noteDone", () => takeover.noteDone(key));
+    }
     if (result.ok) return result;
     // 数えるのは結果が届かなかった失敗だけ。結果が届いた失敗（API エラー・手順数の上限など）は SDK が会話を読めた証拠で、
     // タイムアウトは時間がかかっただけ、中断はオーナーが止めただけで、会話自体は生きている
@@ -295,6 +330,7 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     } else {
       return result;
     }
+    if (takeover !== undefined) takeoverCall("resumeDropped", () => takeover.resumeDropped(key, sessionId));
     sessions.delete(key);
     const session = topicSessions.get(turn.channelId);
     // #tasks は #tasks の要約、それ以外（#inbox）は #inbox の要約を使う。要約はそのチャンネルの持ち主の人格のもの
