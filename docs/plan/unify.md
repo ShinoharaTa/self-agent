@@ -132,7 +132,7 @@
 - 2 つのモードは **runner を 2 つ**（`SdkAgentRunner` に `RunnerProfile` を渡す）で作り、turn.ts が `kind` で選ぶ。ゲストが同じ仕組みで別の profile を持っているので、形は既にある。
 
 ### 4.2 self-agent 固有のまま残すもの
-タスク・リマインド・ナレッジ・記憶（DB）、Discord のチャンネルと状態カテゴリ、#inbox/#tasks の切り替え、scheduler、リマインドの発火、Web UI の会話欄・history、リモコン（CC1〜CC14・Q1〜Q5）、ゲスト（guest/。今の隔離のまま）、人格（軽いモードだけ）。
+タスク・リマインド・ナレッジ・記憶（DB）、Discord のチャンネルと状態カテゴリ、#inbox/#tasks の切り替え、scheduler、リマインドの発火、Web UI の会話欄・history、リモコン（CC1〜CC14・Q1〜Q5。**#428 で変えた: 使う期間の後に消す**）、ゲスト（guest/。今の隔離のまま）、人格（軽いモードだけ）。
 
 ---
 
@@ -288,7 +288,7 @@
 
 ## 8. 決定事項と未決
 
-決定（本案）: A を本線に D、2 モードの並立、選択的共有（symlink）、`canUseTool` → 既存カード、時間切れは deny、プロジェクトのセッションは既定の人格だけ、PR-J4 は進めない、リモコンは残す。
+決定（本案）: A を本線に D、2 モードの並立、選択的共有（symlink）、`canUseTool` → 既存カード、時間切れは deny、プロジェクトのセッションは既定の人格だけ、PR-J4 は進めない、リモコンは残す（**#428 で変えた: 残さない。`docs/plan/terminal-handover.md`**）。
 
 **オーナーの決定（2026-11-06。U0 の後）**:
 1. **CLAUDE_CONFIG_DIR**: 選択的共有（symlink）。U0 で `~/.claude/CLAUDE.md` は link しなくても読まれると分かったので、link は `skills`・`agents`（U3 で `projects`）だけ。`~/.claude.json`（ユーザー MCP）は共有されない（U5 で `mcpServers` に写す）。

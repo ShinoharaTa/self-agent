@@ -49,10 +49,13 @@
 | `SELF_AGENT_CC=1` | プロジェクトのセッション・General・許可の橋の前提（`main.ts` の `projectRunner`・`unifyReady`）。今は **claude と tmux の両方**と、hook のポート・トークンが無いと起動エラー | 名前は変えない。X4 で hook の 2 変数と tmux の必須を外す（§4.2） |
 | `cc_permissions`・`cc/permission-hold.ts`・`permissions.ts`・`questions.ts`・`question-flow.ts` | `agent/permission-bridge.ts`（origin sdk の行・`holdExternal`） | 残す。表の名前・ボタンの `cc:perm`・`cc:q`・API のパスも変えない（押せないボタンを残さない） |
 | `cc/notice-text.ts`・`cc/channel-posts.ts` の `permissionHistoryText` 系・`cc/hook-server.ts` の `summarizePermission` | 許可の橋が文と要約に使う | 使う関数だけ残す側のファイルへ移してから、元を消す |
-| `cc/starter.ts` のプロジェクトの検査 | `app/session-ops.ts`・`right-hand.ts`・`topic-move.ts`・`commands/new.ts`・`move.ts`・`web/routes/projects.ts`・`topics.ts`・`agent/project-profile.ts` | X3 の前に別のファイルへ移す（動きは変えない PR） |
+| `cc/starter.ts` のプロジェクトの検査 | `app/session-ops.ts`・`right-hand.ts`・`topic-move.ts`・`github-handoff.ts`・`commands/new.ts`・`move.ts`・`web/routes/projects.ts`・`topics.ts`・`agent/project-profile.ts`・`cc/labels.ts`（`CC_PROJECT_PATTERN`）・`main.ts` | X3 の前に別のファイルへ移す（動きは変えない PR） |
 | `cc/registry.ts` の `CcTimers` | `app/topic-proposals.ts` | 型を移す |
-| `web/routes/cc.ts` の `CC_PERMISSION_RECENT_MS`・`HoldSeconds`・`questionJson`、`commands/cc-confirm.ts` の `CC_CONFIRM_TTL_MS` | `web/routes/topics.ts`（あなたの番） | 残すファイルへ移す |
-| `cc/channels.ts` の `ccDeletePrompt`・`CcChannels` | `app/scheduler.ts`・`web/routes/turns.ts`・`app/shutdown.ts` | X3 で呼び手ごと外す |
+| `cc/hook-server.ts` の型と定数（`CcHookEvent`・`CcHookReceiver`・`CcPermissionSummary`・`CC_WAITING_NOTIFICATIONS`） | `cc/registry.ts`・`cc/permission-hold.ts` | X4 の前に残す側のファイルへ移す |
+| `tmux/tmux.ts` の `execFileRunner`・`RunCommand`・`CHILD_*`、`tmux/pane-state.ts` の `CLAUDE_COMMAND`・`PaneState` | `cc/agents.ts`・`tmux/workspace-map.ts` | 貼り付け・写しだけを消し、これらは残す（置き場所は実装で） |
+| `web/routes/cc.ts` の `CC_PERMISSION_RECENT_MS`・`HoldSeconds`・`questionJson`・`permissionJson`・`SUBMIT_STATUS`・`CC_STATUS_DISABLED`・`CcStatus`、`commands/cc-confirm.ts` の `CC_CONFIRM_TTL_MS`・`ccRepliesIn`・`CC_START_SEND_FAILED_NOTE` | `web/routes/topics.ts`（あなたの番）・`channels.ts`・`turns.ts`・`status.ts`、`app/commands/github.ts`・`app/github-handoff.ts` | 残すファイルへ移す（`cc-confirm.ts` は X1 でファイルごとは消せない）。`/api/status` の cc の欄（hook のポート・tmux・複数行の可否を読む）は X2〜X4 で、残る物だけに削る |
+| `cc/channels.ts` の `ccDeletePrompt`・`CcChannels` と振り分け（`routeCcChannelMessages` など） | `app/scheduler.ts`・`web/routes/turns.ts`・`main.ts`（配線）。`web/routes/cc.ts` は `app/commands/cc.ts` の `closeReply` も使う | X3 で呼び手ごと外す |
+| 止めるときの順（`app/shutdown.ts` が型で持つ: `CcChannelPosts`・`CcHookServer`・`CcReplier`・`CcSender`・`CcStarter`・`CcConfirmExpirer`） | 停止の手順 | 消す段ごとに引数から外す |
 | `cc_sessions` | 一覧・取り込み・`/api/topics` | 表は残し、X5 で使わない列だけ落とす |
 | `SELF_AGENT_DELETE_AFTER_DAYS` | 普通のセッションの削除の確認 | 残す（cc の側の確認だけ消す） |
 | 取り込みが頼る消す側（`ensureFor`・`markTaken`・sender の holds・`stopFollow`・`ccEndedHandler`） | 今の取り込みの設計 | 取り込みの側を変えて頼らなくする（§3.4） |
@@ -86,7 +89,7 @@
 | Q4 | なし（プロジェクトのセッションは最初から自分のチャンネルに出す） | `ensureFor` でチャンネルを作る道 |
 | Q5 | 関係なし（会話の行の軽量化は共通） | — |
 
-- **質問（H4a）**: `PROJECT_DISALLOWED_TOOLS` から AskUserQuestion を外し【確 `project-profile.ts`】、許可の橋で tool が AskUserQuestion のときは `question_input` 付きの行を作って質問のカードを出す。時間切れ・［やめる］は deny。`answerQuestion` が `holdExternal` の行を閉じられるかは実装の最初に読む【未（コード）】
+- **質問（H4a）**: `PROJECT_DISALLOWED_TOOLS` から AskUserQuestion を外し【確 `project-profile.ts`】、許可の橋で tool が AskUserQuestion のときは `question_input` 付きの行を作って質問のカードを出す。時間切れ・［やめる］は deny。`answerQuestion` は origin を見ないので `holdExternal` の行も閉じられる【確 `cc/permission-hold.ts`】。橋が、閉じた行の `answers` を `updatedInput` に写す所は新しく書く。要約のターン（/close・/renew）では AskUserQuestion を外したままにする
 - **モード（H4b）**: unify.md §5.1 のとおり。`/mode`（プロジェクトのセッションの中だけ。default / acceptEdits / plan）と Web の見出しのセレクト（`TopBar` の部品に足す）。ターンの途中では変えない。bypassPermissions・dontAsk・auto は出さない
 - 案の比較（順）:
 
@@ -113,7 +116,7 @@
 - 同じスレッドにもう話題があれば、新しく作らず「対応中 → その話題」を返す（今の `already`）。その話題が閉じていれば新しく作る
 - 地図に無いリポジトリは今のまま `not_local`。General で始める案は採らない（リポジトリが無い所では対応できない）
 - ［対応］と［起動して送る］は 1 つになる（`no_session` の分岐が無くなる）。確認の文に「同じ場所で実行中の話題: n 件」を 1 行（重なりの注意）
-- DB: 小さい表 `github_handoffs`（notification_id・thread_id・channel_id・created_at）を足す。`cc_sends.notification_id` は X5 で表ごと消える
+- DB: 小さい表 `github_topics`（notification_id・thread_id・channel_id・created_at）を足す。`github_handoffs` という名前は使わない（同じ名前の古い表が v21 から残っていて、列が合わない【確 `store/db.ts`】。古い表は X5 で消す）。`cc_sends.notification_id` は X5 で表ごと消える
 - 運用コスト: 話題が増える分は、今ある削除の確認（`SELF_AGENT_DELETE_AFTER_DAYS`）で片付く
 
 ### 3.3 tmux の外のセッションの取り込み
@@ -175,13 +178,15 @@
 | 段 | 入る物 | 前提 | オーナーに見える変化 | 戻し方 |
 |---|---|---|---|---|
 | **H0** 投資を止める | 文書だけ: 本書・unify.md（§0 の 6・§5.7・§5.9・§6）・web-ui-components.md（`cc:` のタブを部品にしない）・web-ui-v3.md（§3.1・§8）・claude-code-*.md の頭に 1 行・CLAUDE.md | なし | なし | revert |
-| **H1** 取り込みの土台 | takeover.md v3、DB `cc_takeovers`、規則・記録の写し、`CcTakeover`、前置きの文（#343〜#345 を運ぶ。§3.4 の 1・2・5・7）。配線はしない。2〜3 PR | H0 | なし | revert（表は空のまま残る） |
+| **H1** 取り込みの土台 | takeover.md v3、DB `cc_takeovers`、規則・記録の写し、`CcTakeover`、前置きの文（#343〜#345 を運ぶ。§3.4 の 1・2・5・7）。配線はしない。2〜3 PR | H0 | なし | コードだけ revert（移行の要素は残す。表は空のまま残る） |
 | **H2** 取り込みの入口（Discord） | `/cc take` → 選ぶ → 確認 → 新しいチャンネル、配線、起動時の片付け、断る文（§3.5） | H1 | `/cc take` が使える | revert。取り込み済みの話題は普通の話題として残る |
 | **H3** 取り込みの入口（Web）と札 | API 3 ルート、札の部品、確認、`cc:` の行の既定を札に | H2。新しい殻だけに作る | 端末の行を押すと札。［取り込む］ | revert（行は今の［端末］に戻る） |
 | **H4a** 質問 | AskUserQuestion を許可の橋 → 質問のカード・ボタン | なし（H1〜H3 と並べてよい） | プロジェクトのセッションが選択肢で訊く | revert（また使えない物に戻る） |
 | **H4b** モード | `/mode`、見出しのセレクト、取り込みの前置きとモードの引き継ぎ | H4a。取り込みの側は H2 | `/mode` とセレクト | revert（default 固定に戻る） |
-| **H5** ［対応］の付け替え | §3.2。DB `github_handoffs` | なし（H4 の後が望ましい） | ［対応］で話題ができる。［起動して送る］が無くなる | revert（tmux の宛先に戻る。X の前なら戻せる） |
+| **H5** ［対応］の付け替え | §3.2。DB `github_topics` | なし（H4 の後が望ましい） | ［対応］で話題ができる。［起動して送る］が無くなる | コードだけ revert（移行の要素は残す。tmux の宛先に戻る。X の前なら戻せる） |
 | **使う期間** | コードなし。§4.4 の数を見る | H2〜H5 | — | — |
+
+- DB の移行を足した段（H1・H5）を戻すときは、**移行の要素を消さない**。一度起動して版が進んだ DB は、移行の数がそれより少ないコードでは開けず、起動が止まる【確 `store/db.ts` の `migrate`】
 
 受け入れの確かめ（テストできる形）:
 - H0: `npm run check`・`npm test` が通る（文書だけの PR でも走らせる）。`docs/plan/`・CLAUDE.md を「リモコン」「残す」で grep し、リモコンを残すと書いた所が無い
@@ -197,10 +202,10 @@
 | 段 | 消す物 | 前提 | 見える変化 | 戻し方 |
 |---|---|---|---|---|
 | **X1** ツール | cc_list・cc_send・cc_start の定義、システムプロンプトの 1 行、`topic_list` の説明の直し、`app/cc-tools.ts`、`commands/cc-confirm.ts` の［送る］［起動する］、あなたの番の該当の行 | 使う期間の条件（§4.4） | 右腕が端末へ送らなくなる | revert（キャッシュがもう 1 回外れる） |
-| **X2** Web | ［端末］・「端末を見る」・`cc:` のタブ（`views.js`・`shell.js` の pane）・起動のダイアログ・`GET /api/cc/sessions/<id>`・`/send`・`/api/cc/sends/<id>/cancel`・`POST /api/cc/sessions`・`/unfollow`・`/channel`。`ui-shots` の段 cc の絵を札の絵に | X1。**flip（M8）が済んでいる**（古い殻が同じ API を呼ぶ） | 端末の行は札だけ | revert |
-| **X3** Discord | `cc/channels.ts`・`channel-posts.ts` の写し・`replies.ts`・`sender.ts`・`starter.ts` の起動・`panes.ts` の残り・`/cc open\|cancel\|close`・`cc:resume`・`cc:unfollow`・`cc:del`・/setup のカテゴリ・history の cc の行・取り込みの守り（§3.4 の 8）・`cc-…` を完了へ移す道（同 2）。先にプロジェクトの検査を別のファイルへ移す PR | X1・X2 | 開いている `cc-…` に「この機能は終わりました」を 1 通出して完了へ（1 回だけ）。`/cc` は take だけ | revert（移したチャンネルは手で戻す） |
-| **X4** hook と設定（決定 1 が「消す」のとき） | `cc/hook-server.ts`・hook の側の保留・許可と判断待ちの届け・`cc-setup`・`--reset-multiline`・`SELF_AGENT_CC_HOOK_PORT`・`_HOOK_TOKEN`・`SELF_AGENT_CC_NOTIFY`・`_SEND_WAIT_MIN`・`_MAX_SESSIONS`。`SELF_AGENT_CC=1` は tmux が無くても起動する | X3。**先にオーナーが `~/.claude/settings.json` の hooks を外す**（受け口が無いと毎ターン hook のエラーが出る【文 sessions.md §13】） | 端末の許可が Discord・Web に来なくなる | revert + hooks を戻す |
-| **X5** DB | 表 `cc_sends`・`cc_starts`・`cc_replies`・`cc_channels`・`cc_state` を消す。`cc_sessions` の `started_by`・`tmux_session`・`tmux_session_id`・`start_pane_id`・`trust_pending_at`・`channel_id`・`follow*`・`reply_count*`・`notified_at`、`guild_settings.cc_category_id`、`cc_takeovers` の使わなくなった列を落とす | X1〜X4 から 7 日 | なし | **戻せない**。入れる前に DB のファイルを控える |
+| **X2** Web | ［端末］・「端末を見る」・`cc:` のタブ（`views.js`・`shell.js` の pane）・起動のダイアログ・`GET /api/cc/sessions/<id>`・`/send`・`/api/cc/sends/<id>/cancel`・`POST /api/cc/sessions`・`/unfollow`・`/channel`。`GET /api/cc/sessions`（一覧）と `GET /api/cc/projects` は、呼び手（`api.js` の読み続け・古い殻の起動のダイアログ）を確かめてから消す。`ui-shots` の段 cc の絵を札の絵に | X1。**flip（M8）が済んでいる**（古い殻が同じ API を呼ぶ） | 端末の行は札だけ。端末の許可・質問のカードは Web では `cc-…` の会話のタブにだけ残る（X3 まで） | revert |
+| **X3** Discord | `cc/channels.ts`・`channel-posts.ts` の写し・`replies.ts`・`sender.ts`・`starter.ts` の起動・`panes.ts` の残り・`/cc open\|cancel\|close`・`cc:resume`・`cc:unfollow`・`cc:del`・/setup のカテゴリ・history の cc の行・取り込みの守り（§3.4 の 8）・`cc-…` を完了へ移す道（同 2）・`cc-dry-run -- --reset-multiline`。**同じ PR で、hook から来た許可・質問は保留せず、すぐ空の本文を返す**（届け先のチャンネルが無くなるので、誰にも見えない要求を持ち続けない。端末の中でそのまま訊かれる）。決定 1 で「#system に 1 通」を採るなら、この段で作る。先にプロジェクトの検査を別のファイルへ移す PR | X1・X2 | 開いている `cc-…` に「この機能は終わりました」を 1 通出して完了へ（1 回だけ）。`/cc` は take だけ。**端末の許可・質問・判断待ちが Discord・Web に来なくなる**（今は届け先がそのセッションのチャンネルだけで、無ければ log だけ【確 `cc/channel-posts.ts`】） | revert（移したチャンネルは手で戻す） |
+| **X4** hook と設定（決定 1 が「消す」のとき） | `cc/hook-server.ts`・hook の側の保留・許可と判断待ちの届けの残り・`cc-setup`・`SELF_AGENT_CC_HOOK_PORT`・`_HOOK_TOKEN`・`SELF_AGENT_CC_NOTIFY`・`_SEND_WAIT_MIN`・`_MAX_SESSIONS`。`SELF_AGENT_CC=1` は tmux が無くても起動する | X3。**先にオーナーが `~/.claude/settings.json` の hooks を外す**（受け口が無いと毎ターン hook のエラーが出る【文 sessions.md §13】） | なし（届けは X3 で止まっている）。一覧の順と判断待ちの種類は `claude agents --json` の状態だけで決まるようになる（hook が書いていた `cc_sessions` の `waiting_kind`・`last_prompt_*`・`last_event*` が更新されない） | revert + hooks を戻す |
+| **X5** DB | 表 `cc_sends`・`cc_starts`・`cc_replies`・`cc_channels`・`cc_state` と、使っていない古い `github_handoffs`（v21）を消す。`cc_sessions` の `started_by`・`tmux_session`・`tmux_session_id`・`start_pane_id`・`trust_pending_at`・`channel_id`・`follow*`・`reply_count*`・`notified_at`、`guild_settings.cc_category_id`、`cc_takeovers` の使わなくなった列を落とす | X1〜X4 から 7 日 | なし | **戻せない**。入れる前に DB のファイルを控える |
 
 - 消えた変数が env に残っていても起動は止めない（起動の log に変数名を 1 行）。Bot は常駐なので、設定エラーにして止める方が害が大きい
 - `cc_permissions` は消さない。origin hook の行は今ある 30 日の片付けで消える
@@ -227,13 +232,13 @@
 
 | # | 決める事 | 決定 | 理由 |
 |---|---|---|---|
-| 1 | 端末で直接使っている間の許可・質問を Discord・Web に届ける機能を、最後に消すか残すか | **消す（X4）。ただし §4.4 の数で、期間中に Discord・Web から答えたのが週に数件以下のとき。「判断待ちがある」事は一覧と札に出し続ける**（hook が無くても `claude agents --json` で分かる） | 届け先だった `cc-…` のチャンネルが無くなるので、残すなら #system へ戻す作りが新しく要る（残す方が仕事が増える）。端末のセッションは RC につながる設定【文】なので、スマホから答える道は残る。残すと受け口・ポート・トークン・`~/.claude/settings.json` の hooks を持ち続ける。多く使っていたら「#system に 1 通」の形で残す |
+| 1 | 端末で直接使っている間の許可・質問を Discord・Web に届ける機能を、最後に消すか残すか | **消す。ただし §4.4 の数で、期間中に Discord・Web から答えたのが週に数件以下のとき。届けが実際に止まるのは X3（届け先のチャンネルを消す段）で、受け口を消すのが X4 なので、残すかどうかは X3 の前に見る。「判断待ちがある」事は一覧と札に出し続ける**（hook が無くても `claude agents --json` で分かる） | 届け先だった `cc-…` のチャンネルが無くなるので、残すなら #system へ戻す作りが新しく要る（残す方が仕事が増える）。端末のセッションは RC につながる設定【文】なので、スマホから答える道は残る。残すと受け口・ポート・トークン・`~/.claude/settings.json` の hooks を持ち続ける。多く使っていたら「#system に 1 通」の形で残す |
 | 2 | 取り込み先を新しい普通のチャンネルにし、今ある `cc-…` はその場で変えず完了へ移す | **そうする** | 端末のセッションごとのチャンネルをやめるので、変える元が無くなる。道が 1 つになり X3 が軽い。失う物は `cc-…` の中の履歴との地続き（数日の間だけ） |
 | 3 | ［対応］の宛先 | **PR・issue ごとに新しい話題。同じスレッドは同じ話題へ**（§3.2 の A） | 進行中の会話に割り込まない。一覧で追える |
 | 4 | tmux の外の生きているセッションを self-agent が終わらせるか | **終わらせない（案内だけ）** | 今は 1 本も無い。止め方が 3 種類とも未確認 |
 | 5 | 使う期間と消し始める条件 | **7 日・§4.4 の条件。X5 はさらに 7 日後** | DB の移行だけが戻せない |
 
-ほかの未決（決める人）: 待機しているプロジェクトのセッションを「オーナーの番」に数えるか（オーナー。#338 の側）/ 古い PR #342〜#348 を閉じる時（オーナー）/ 残す関数の移し先のファイル名・札の部品の名前・`github_handoffs` の列の細部（実装者が決めてよい）。
+ほかの未決（決める人）: 待機しているプロジェクトのセッションを「オーナーの番」に数えるか（オーナー。#338 の側）/ 古い PR #342〜#348 を閉じる時（オーナー）/ 残す関数の移し先のファイル名・札の部品の名前・`github_topics` の列の細部（実装者が決めてよい）。
 
 ### 5.2 未確認（試し方と倒し方）
 利用枠を使う試しは、オーナーの許しを得てから行う。
@@ -251,8 +256,15 @@
 | 9 | ［対応］で始めた話題の最初のターンが、テンプレートの文で止まるべき所で止まるか | 自分の PR の通知で 1 件 | テンプレートの文を直す | 1 ターン |
 | 10 | #338 が `cc_channels`・`cc_sends` を読んでいないか | PR の差分を grep | 読んでいれば #338 の側を X3 の前に直す | 0 |
 
+### 5.3 実装への申し送り（H0 のレビューから）
+- **H1（takeover.md v3 で決める）**: `cc_takeovers` の `channel_id`・`guild_id` の意味。今の列は NOT NULL で、確認のボタンの照合に使う。取り込み先が「確認の後に作る新しいチャンネル」になると、確認待ちの時点の channel_id が「確認を出した場所」か「行き先」かが決まらない。Web から始めた確認を Discord のどこに出すかも決める。ここを決めずに進むと H2 で 2 本目の移行が要る
+- **H1・H2**: 新しいチャンネルを作る時点。元の設計は SIGTERM の前に取り込み先を確かめる（作れなければ取り込まない）。新しい設計でも、作るのは SIGTERM の前にし、その後で失敗したときの残ったチャンネルの扱いを書く
+- **H2**: 取り込んだ端末のセッションに `cc-…` のチャンネルが在ったとき、`cc_channels` の行の最後の状態を決める（ended のままだと、そこへの発言に［起動して続ける］が出て、同じ session_id が戻ると開き直る）
+- **H5**: `startTopic` の `by` は今 web と right_hand の 2 つ【確 `app/session-ops.ts`】。`github` を足すと区切りの文に触る
+- **X5**: 落とす `cc_sessions` の列には index が無く、DROP COLUMN で落とせる見込み【確 `store/db.ts`。レビュー】
+
 ## 6. 既存の計画との関係
-- **Web UI の部品（K7 以降）**: `cc:` のタブ（［端末］）は部品にしない（web-ui-components.md の「その段で決める」を「作らない」に。`ccComposer` の issue も立てない）。K7（殻の根）は pane の切り替えを古い描き方のまま包んで運ぶだけにし、作り直さない。X2 を K8 より先に入れると、`legacy-views.css` へ移す物が減る。K9 の「1 画面 1 PR」の一覧から `cc:` のタブを外す。新しく作る部品は札と見出しのモードのセレクトの 2 つ
+- **Web UI の部品（K7 以降）**: `cc:` のタブ（［端末］）は部品にしない（web-ui-components.md の「その段で決める」を「作らない」に。`ccComposer` の issue も立てない）。K7（殻の根）は pane の切り替えを古い描き方のまま包んで運ぶだけにし、作り直さない。X2 を K8 より先に入れると、`legacy-views.css` へ移す物が減る。K9 の「1 画面 1 PR」の一覧に `cc:` のタブは元から無い（足さない）。新しく作る部品は札と見出しのモードのセレクトの 2 つ
 - **flip（M8）**: H3 は新しい殻だけに作る（古い殻には足さない）。X2 は flip の後。flip が遅れても H0〜H5 と X1 は進められる
 - **#338（進行状況）**: 端末のセッションとプロジェクトのセッションの「実行中」を読む【文 PR の本文】。残す側（一覧・`sessions`）だけに頼る見込み（§5.2 の 10）。DB の番号は後から入る方がずらす
 - **作業ジョブ（保留）**: 触らない。`SELF_AGENT_JOBS=1` は設定エラーのまま
