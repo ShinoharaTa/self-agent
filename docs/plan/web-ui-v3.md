@@ -106,7 +106,7 @@ PC（1,280px〜。列 3 は畳める。幅が足りなければ列 3 → 列 1 �
               state, last: { id, at, kind }, movable: true | { reason }, link } ] }
 ```
 
-- **id**: Discord のチャンネルがあれば `ch:`、無い Claude Code のセッションは `cc:`。Claude Code のチャンネルは今も Web では `ch:` で開く（CC14）ので、取り込み（#341。チャンネルがその場でプロジェクトのセッションに変わる）の後も id は変わらない。
+- **id**: Discord のチャンネルがあれば `ch:`、無い Claude Code のセッションは `cc:`。Claude Code のチャンネルは今も Web では `ch:` で開く（CC14）ので、取り込み（#341。チャンネルがその場でプロジェクトのセッションに変わる）の後も id は変わらない。（#428: 取り込むと `cc:` の行は消え、新しい話題の `ch:` の行ができる。H3 で直す）
 - **場所の決め方**: セッションは `project_dir`（General の名前なら群 general）／軽いセッション（`project_dir` なし）は `place.dir = null` で群 general／Claude Code は cwd が workspace の直下の名前かその下ならそのプロジェクト（新しい純関数 `projectOf(cwd, workspace)` を `cc/labels.ts` に足す）、外なら群 other「ほかの場所」。#tasks と人格の入口は群 general の末尾に固定（`movable` は理由つきの不可）。右腕（#inbox）は一覧に出さない。
 - **並び**: 群はプロジェクト（話題のあるものを上、名前順）→ General → ほかの場所。話題の無いプロジェクトは「ほかのプロジェクト（n）」に畳む。群の中は あなたの番 → 作業中 → 最後の活動の新しい順。完了は群ごとに「完了（n）」に畳み、開くまで返さない（`?done=<group>`）。
 - 足した人格のセッションも同じ群に出し、行に人格の名前を添える（今の一覧のバッジと同じ。行に `persona` を持たせる）。
@@ -252,7 +252,7 @@ DB: `topic_moves(id, channel_id, from_dir, to_dir, state: proposed | running | d
 
 ## 8. 見る物（列 2 の切り替え）
 
-- **今ある物で始める（M2）**: 会話／端末（Claude Code のセッションの画面の写し。あるときだけ）。会話の中の手順・許可と質問のカード・/close の下書き・GitHub の通知の札は今の描画のまま。
+- **今ある物で始める（M2）**: 会話／端末（Claude Code のセッションの画面の写し。あるときだけ）（#428: 端末の行は札が既定になり（H3）、［端末］は X2 で消す）。会話の中の手順・許可と質問のカード・/close の下書き・GitHub の通知の札は今の描画のまま。
 - **後の段（M9）**: 「変更 n」の切り替えと、会話の中の変更の札（`src/login.ts +12 −3` → [変更を見る]）。モックにはあるが、最初の段には入れない（図からも外した）。
 - M9 で要る API: `GET /api/topics/<id>/changes`（`git status --porcelain` と `diff --numstat`）と `GET /api/topics/<id>/diff?path=`（1 ファイル。上限つき）。対象はプロジェクトのセッションと、cwd がプロジェクトの中の Claude Code のセッション。
 - 危ない点と守り: 秘密のファイル（`agent/project-profile.ts` の秘密の守りと同じ線。`.env*` などは名前だけ出して中身は出さない）／パスは git の出した一覧にあるものだけ・symlink をたどらない／git の設定からの実行（fsmonitor・ext-diff・textconv・pager を引数と環境で切る。シェルを通さず固定の引数）／大きさ（1 ファイル 200 KB・一覧 500 件で切る）／読み取りだけ（index も書かない: `GIT_OPTIONAL_LOCKS=0`）。

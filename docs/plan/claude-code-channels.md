@@ -1,5 +1,7 @@
 # Claude Code のセッションを会話欄に統合し、セッションごとの Discord のチャンネルで続ける（確定版）
 
+> **2026-11-18（#428）**: この機能（リモコン）は投資を止めた。取り込み（#341）とプロジェクトのセッション（#277）を本線にし、使う期間の後に消す。残す物・消す物と段は `docs/plan/terminal-handover.md`。
+
 > 関連 issue は #236。CC1〜CC8 は `docs/plan/claude-code-sessions.md`。
 
 > 2026-11-05。spec-writer。v1（案）→ **v2（確定版。オーナーの決定 §9 を反映）**。`docs/plan/claude-code-sessions.md`（確定版。CC1〜CC8 は実装・マージ済み。DB は v35）の上に載せる。関連 issue は #191（実装は新しい issue を立てる）。

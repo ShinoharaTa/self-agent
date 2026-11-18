@@ -1,5 +1,7 @@
 # Claude Code の質問（AskUserQuestion）に Discord・Web から答え、知らせを #system からセッションのチャンネルへ移す
 
+> **2026-11-18（#428）**: この機能（リモコン）は投資を止めた。取り込み（#341）とプロジェクトのセッション（#277）を本線にし、使う期間の後に消す。残す物・消す物と段は `docs/plan/terminal-handover.md`。質問の表現（§2〜§4）は、プロジェクトのセッションの質問（H4a）が使う。
+
 > 関連 issue は実装のときに立てる。CC1〜CC8 は `docs/plan/claude-code-sessions.md`、CC9〜CC14 は `docs/plan/claude-code-channels.md`。
 
 > 2026-11-05。spec-writer。v1（案）→ **v2（確定版。オーナーの決定 §13.1 を反映）**。`docs/plan/claude-code-channels.md`（確定版。CC9〜CC14 は実装・マージ済み。DB は v37）の上に載せる。
