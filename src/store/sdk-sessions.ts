@@ -15,6 +15,11 @@ export class SdkSessionStore {
     return row === undefined ? undefined : String(row.session_id);
   }
 
+  /** その session_id がどれかの key に保存されているか（取り込みの already_taken の判定と、記録の写しの hasMapping。docs/plan/takeover.md §5.1） */
+  hasSessionId(sessionId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM channel_sessions WHERE session_id = ? LIMIT 1").get(sessionId) !== undefined;
+  }
+
   /** 保存する（置き換える）。連続失敗の回数は 0 に戻す */
   set(key: string, sessionId: string): void {
     this.db

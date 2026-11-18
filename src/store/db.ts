@@ -838,6 +838,36 @@ export const MIGRATIONS: readonly string[] = [
     updated_at TEXT NOT NULL
   );
   `,
+  // v45（docs/plan/takeover.md §3.9・§5 の H1a。#341）: 取り込み。同じ session_id で確認待ち・実行中は 1 つ（cc_takeovers_active）。
+  // confirm_channel_id は確認を出した Discord のチャンネル、target_channel_id は行き先の新しいチャンネル（1 つの行だけ。cc_takeovers_target）。
+  // 本文は置かない。sessions・cc_channels・cc_sessions の定義は変えない
+  `
+  CREATE TABLE cc_takeovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('alive','ended')),
+    project TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    entry TEXT NOT NULL CHECK (entry IN ('discord','web')),
+    confirm_channel_id TEXT,
+    confirm_message_id TEXT,
+    target_channel_id TEXT,
+    state TEXT NOT NULL CHECK (state IN ('awaiting_confirm','running','done','failed','cancelled')),
+    step TEXT CHECK (step IN ('check','channel','term','copy','commit')),
+    failure TEXT,
+    permission_mode TEXT NOT NULL CHECK (permission_mode IN ('default','acceptEdits','plan')),
+    terminal_mode TEXT,
+    interrupted INTEGER NOT NULL DEFAULT 0,
+    note_pending INTEGER NOT NULL DEFAULT 0,
+    effects_at TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT,
+    CHECK ((entry = 'discord') = (confirm_channel_id IS NOT NULL)),
+    CHECK (confirm_message_id IS NULL OR confirm_channel_id IS NOT NULL),
+    CHECK (state <> 'done' OR target_channel_id IS NOT NULL)
+  );
+  CREATE UNIQUE INDEX cc_takeovers_active ON cc_takeovers(session_id) WHERE state IN ('awaiting_confirm','running');
+  CREATE UNIQUE INDEX cc_takeovers_target ON cc_takeovers(target_channel_id) WHERE target_channel_id IS NOT NULL;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
