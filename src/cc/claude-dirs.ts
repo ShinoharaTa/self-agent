@@ -54,6 +54,8 @@ export type SessionFileInfo = {
   bridgeSessionId: string | undefined;
   /** `<session>:@<window_id>.%<pane>`（か `<session>:<window>.%<pane>`） */
   tmux: string | undefined;
+  /** プロセスの開始（/proc/<pid>/stat の starttime の 10 進の文字列。取り込みの相手の確かめ。docs/plan/takeover.md §3.4） */
+  procStart: string | undefined;
 };
 
 /** 記録のディレクトリの名前（cwd の英数字以外を `-` に） */
@@ -72,7 +74,7 @@ export class ClaudeDirs {
   }
 
   /**
-   * `sessions/<pid>.json` の bridgeSessionId・tmux。無い・読めない・JSON のオブジェクトでない・大きすぎる・
+   * `sessions/<pid>.json` の bridgeSessionId・tmux・procStart。無い・読めない・JSON のオブジェクトでない・大きすぎる・
    * sessionId の欄が無いか sessionId と違う（pid が使い回された古いファイル）なら undefined
    */
   sessionFile(pid: number, sessionId: string): SessionFileInfo | undefined {
@@ -87,9 +89,11 @@ export class ClaudeDirs {
       if (item.sessionId !== sessionId) return undefined;
       const bridge = item.bridgeSessionId;
       const tmux = item.tmux;
+      const procStart = item.procStart;
       return {
         bridgeSessionId: typeof bridge === "string" && BRIDGE_SESSION_PATTERN.test(bridge) ? bridge : undefined,
         tmux: typeof tmux === "string" && TMUX_PATTERN.test(tmux) ? tmux : undefined,
+        procStart: typeof procStart === "string" && /^\d{1,20}$/.test(procStart) ? procStart : undefined,
       };
     } catch {
       return undefined;

@@ -566,7 +566,7 @@ test("CcRegistry: 送信の待ち行列が空でない（busy）間は、見て�
 
 test("CcRegistry: log は件数と種類だけで、名前・cwd・sessionId・本文を出さない", async (t) => {
   const s = setup(t);
-  s.files.set(S1, { bridgeSessionId: "session_secretbridge", tmux: "secret-tmux:0.%3" });
+  s.files.set(S1, { bridgeSessionId: "session_secretbridge", tmux: "secret-tmux:0.%3", procStart: undefined });
   s.willList(agent(S1, { status: "busy" }), agent(S2), agent(S3, { status: "waiting" }), agent(S4));
   await s.registry.tick();
   s.hook({ hook_event_name: "UserPromptSubmit", session_id: S2, prompt: "secret prompt text" });
