@@ -10,6 +10,7 @@ import {
   createHandler,
   EMPTY_REPLY,
   FAILURE_REPLY,
+  type HandlerDeps,
   MAX_TURNS_REPLY,
   PROGRESS_DELAY_MS,
   PROGRESS_INTERVAL_MS,
@@ -117,7 +118,12 @@ function okResult(sessionId: string, text: string): Extract<RunResult, { ok: tru
 function setup(
   t: TestContext,
   results: Array<RunResult | Error>,
-  options: { history?: boolean; ownerConnected?: (channelId: string) => boolean; stopping?: () => boolean } = {},
+  options: {
+    history?: boolean;
+    ownerConnected?: (channelId: string) => boolean;
+    stopping?: () => boolean;
+    takeover?: HandlerDeps["takeover"];
+  } = {},
 ) {
   const db = tempDb(t);
   // sendMessage で送ったものの ID は posted-<n>
@@ -157,6 +163,7 @@ function setup(
     ...(options.history === true ? { history } : {}),
     ...(options.ownerConnected === undefined ? {} : { ownerConnected: options.ownerConnected }),
     ...(options.stopping === undefined ? {} : { stopping: options.stopping }),
+    ...(options.takeover === undefined ? {} : { takeover: options.takeover }),
     log: (line) => (line.startsWith("トークン（") ? tokenLogs : logs).push(line),
   });
   const handle = handler.handleMessage;
@@ -657,6 +664,31 @@ test("キュー待ちの前に進行中に戻したら、キューの中では�
   assert.equal(channelOps.moves.length, 1);
   assert.equal(logs.length, 1);
   assert.deepEqual(gateway.sent.map((sent) => sent.text), [`${REVIVED_NOTE}\nはい`]);
+});
+
+test("deps の takeover はターンに渡る: resume のターンの prompt の頭に前置きが付き、済んだら noteDone。渡さなければ付かない", async (t) => {
+  const calls: string[] = [];
+  const takeover: NonNullable<HandlerDeps["takeover"]> = {
+    noteFor: (key, sessionId) => {
+      calls.push(`noteFor ${key} ${sessionId}`);
+      return "（前置き）";
+    },
+    noteDone: (key) => void calls.push(`noteDone ${key}`),
+    resumeDropped: (key, sessionId) => void calls.push(`resumeDropped ${key} ${sessionId}`),
+  };
+  const body = buildTurnPrompt("続きを", CREATED_AT, "Asia/Tokyo", "旅行の計画");
+  const withTakeover = setup(t, [okResult("session-a", "了解")], { takeover });
+  withTakeover.topicSessions.create(TOPIC);
+  withTakeover.sessions.set("topic-1", "session-a");
+  await withTakeover.handle(message({ id: "message-1", channelId: "topic-1", content: "続きを" }));
+  assert.equal(withTakeover.runner.inputs[0]!.prompt, `（前置き）\n\n${body}`);
+  assert.deepEqual(calls, ["noteFor topic-1 session-a", "noteDone topic-1"]);
+
+  const without = setup(t, [okResult("session-a", "了解")]);
+  without.topicSessions.create(TOPIC);
+  without.sessions.set("topic-1", "session-a");
+  await without.handle(message({ id: "message-1", channelId: "topic-1", content: "続きを" }));
+  assert.equal(without.runner.inputs[0]!.prompt, body);
 });
 
 test("resume 失敗: SDK セッションを捨てて要約の seed を入れ、sessionId 無しで 1 回だけやり直し、成功したら seed を消す", async (t) => {
