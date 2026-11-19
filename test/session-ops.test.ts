@@ -16,6 +16,8 @@ import {
   confirmClose,
   CONTINUED_TEXT,
   continueSession,
+  createTopicChannel,
+  createTopicSession,
   openTopicSession,
   type ProjectSessionGate,
   renewChannel,
@@ -124,6 +126,44 @@ test("openTopicSession: 空の題名は empty_title（受け付けない）、/s
     gateway.sent.map((sent) => ({ channelId: sent.channelId, text: sent.text })),
     [{ channelId: result.channelId, text: welcomeText("旅行") }],
   );
+});
+
+test("createTopicChannel: /setup 前は not_set_up で何も作らない", async (t) => {
+  const db = tempDb(t);
+  const gateway = new FakeGateway({ record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn"] });
+  const { guildSettings, topicSessions } = createStores(db, () => NOW);
+
+  assert.deepEqual(await createTopicChannel("guild-1", "旅行", { gateway, guildSettings, log: () => {} }, undefined, "app"), { result: "not_set_up" });
+  assert.deepEqual(gateway.calls, []);
+  assert.deepEqual(topicSessions.listUndeleted("guild-1"), []);
+});
+
+test("createTopicChannel: 作ると sessions に行が無く、名前・topic・親は createTopicSession と同じ", async (t) => {
+  const db = tempDb(t);
+  const gateway = new FakeGateway({
+    allow: ["getParentId", "sendMessage", "pinMessage", "messageExists", "moveChannel", "send"],
+    record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn"],
+  });
+  const { guildSettings, topicSessions } = createStores(db, () => NOW);
+  const deps = { gateway, guildSettings, topicSessions, queue: new KeyedSerialQueue(1), log: () => {} };
+  assert.equal((await ensureGuildLayout("guild-1", deps)).failure, null);
+
+  gateway.reset();
+  const channel = await createTopicChannel("guild-1", "旅行", deps, undefined, "app");
+  assert.equal(channel.result, "created");
+  assert.ok(channel.result === "created");
+  assert.equal(topicSessions.get(channel.channelId), undefined);
+  assert.deepEqual(topicSessions.listUndeleted("guild-1"), []);
+  const channelOptions = gateway.callsOf("createTextChannel").map((call) => (call.method === "createTextChannel" ? call.options : undefined));
+
+  gateway.reset();
+  const session = await createTopicSession("guild-1", "旅行", deps, "command", undefined, "app");
+  assert.ok(session.result === "created");
+  const sessionOptions = gateway.callsOf("createTextChannel").map((call) => (call.method === "createTextChannel" ? call.options : undefined));
+  assert.deepEqual(channelOptions, sessionOptions);
+  assert.equal(channelOptions.length, 1);
+  assert.equal(channel.categoryId, channelOptions[0]?.parentId);
+  assert.equal(topicSessions.get(session.channelId)?.categoryId, channel.categoryId);
 });
 
 test("waitSession・continueSession: 結果の種類と、変えたときだけ history の知らせ", (t) => {

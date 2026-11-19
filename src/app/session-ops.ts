@@ -96,20 +96,21 @@ export function checkSessionProject(name: string, gate: ProjectSessionGate): Pro
 
 export type NewSessionResult = { result: "not_set_up" } | { result: "created"; channelId: string };
 
+/** createTopicChannel の結果（created は作ったチャンネルとその親の進行中カテゴリ） */
+export type NewTopicChannelResult = { result: "not_set_up" } | { result: "created"; channelId: string; categoryId: string };
+
 /**
- * 空きのある進行中カテゴリにセッション用のチャンネルを作り、sessions に保存する。/setup 前（進行中カテゴリが無い）なら何もしない。
- * origin は作られ方（/new・ホームパネルは command、#inbox・#<NAME> の session_open は inbox）。
- * owner は作る人格（チャンネルの持ち主。省略は既定の人格）。足した人格ならチャンネル名に `<NAME>-` を付け、topic に表示名を添える
+ * 空きのある進行中カテゴリにセッション用のチャンネルを作る（sessions の行は作らない。createTopicSession の前半と、取り込み（docs/plan/takeover.md §3.1））。
+ * /setup 前（進行中カテゴリが無い）なら何もしない。名前・topic・親は createTopicSession と同じ。owner・projectDir は createTopicSession と同じ意味
  */
-export async function createTopicSession(
+export async function createTopicChannel(
   guildId: string,
   title: string,
-  deps: Pick<NewSessionDeps, "gateway" | "guildSettings" | "topicSessions" | "log">,
-  origin: TopicSessionOrigin = "command",
+  deps: Pick<NewSessionDeps, "gateway" | "guildSettings" | "log">,
   owner?: SessionOwner,
   projectDir?: string,
-): Promise<NewSessionResult> {
-  const { gateway, guildSettings, topicSessions, log } = deps;
+): Promise<NewTopicChannelResult> {
+  const { gateway, guildSettings } = deps;
   if (
     guildSettings.get(guildId) === undefined ||
     guildSettings.getStateCategory(guildId, "active", FIRST_ORDINAL) === undefined
@@ -123,6 +124,26 @@ export async function createTopicSession(
     parentId: categoryId,
     topic: sessionTopic(title, owner, projectDir),
   });
+  return { result: "created", channelId, categoryId };
+}
+
+/**
+ * 空きのある進行中カテゴリにセッション用のチャンネルを作り、sessions に保存する。/setup 前（進行中カテゴリが無い）なら何もしない。
+ * origin は作られ方（/new・ホームパネルは command、#inbox・#<NAME> の session_open は inbox）。
+ * owner は作る人格（チャンネルの持ち主。省略は既定の人格）。足した人格ならチャンネル名に `<NAME>-` を付け、topic に表示名を添える
+ */
+export async function createTopicSession(
+  guildId: string,
+  title: string,
+  deps: Pick<NewSessionDeps, "gateway" | "guildSettings" | "topicSessions" | "log">,
+  origin: TopicSessionOrigin = "command",
+  owner?: SessionOwner,
+  projectDir?: string,
+): Promise<NewSessionResult> {
+  const { topicSessions, log } = deps;
+  const created = await createTopicChannel(guildId, title, deps, owner, projectDir);
+  if (created.result === "not_set_up") return created;
+  const { channelId, categoryId } = created;
   try {
     // プロジェクトのセッションの project_dir・permission_mode（default 固定。docs/plan/unify.md §5.1）も同じ INSERT で書く
     topicSessions.create({
