@@ -136,6 +136,12 @@ function setup(t: TestContext, options: Options = {}) {
     onSleep: (_ms: number): void => {},
     /** 新しいチャンネルの作成: ok = 作れる、not_set_up = /setup 前、throws = 例外、hangs = 期限の後に返る（late で返す） */
     channel: "ok" as "ok" | "not_set_up" | "throws" | "hangs",
+    /** チャンネルの期限の待ち（sleep）が投げる */
+    timeoutRejects: false,
+    /** この長さの sleep が投げる（終了を待つ間の失敗など） */
+    rejectSleep: undefined as number | undefined,
+    /** 次の tick で、終わったセッションが一覧に戻る（端末で resume した） */
+    reviveOnTick: false,
   };
   /** チャンネルの作成と kill の呼ばれた順 */
   const events: string[] = [];
@@ -162,6 +168,7 @@ function setup(t: TestContext, options: Options = {}) {
     async tick(): Promise<void> {
       this.ticks++;
       if (env.advance) list.fetchedAt = clock.now;
+      if (env.reviveOnTick && !list.sessions.some((candidate) => candidate.sessionId === S1)) list.sessions = [view];
       // registry と同じく、消えたセッションは gone_at を書く
       if (exited && list.sessions.length > 0) {
         list.sessions = [];
@@ -219,7 +226,11 @@ function setup(t: TestContext, options: Options = {}) {
     readBtime: () => BTIME,
     sleep: (ms) => {
       // チャンネルの期限の待ちは、期限切れを試すときだけ終わる（ほかは作成の方が先）
-      if (ms === TAKEOVER_CHANNEL_TIMEOUT_MS) return env.channel === "hangs" ? Promise.resolve() : new Promise<void>(() => {});
+      if (ms === TAKEOVER_CHANNEL_TIMEOUT_MS) {
+        if (env.timeoutRejects) return Promise.reject(new Error("/secret/path"));
+        return env.channel === "hangs" ? Promise.resolve() : new Promise<void>(() => {});
+      }
+      if (ms === env.rejectSleep) return Promise.reject(new Error("/secret/path"));
       clock.now += ms;
       env.onSleep(ms);
       return Promise.resolve();
@@ -560,25 +571,119 @@ test("期限の後に返ったチャンネルを消せない: log に手で消�
   assertQuietLogs(s, /手で消してください/);
 });
 
-test("setTarget が false・投げる（同じ行き先が別の行に在る）: 作ったチャンネルを消して internal。kill しない", async (t) => {
-  for (const mode of ["false", "throws"] as const) {
-    await t.test(mode, async (t2) => {
-      const s = setup(t2);
-      const store = Object.create(s.takeovers) as typeof s.takeovers;
-      store.setTarget = () => {
-        if (mode === "throws") throw new Error("UNIQUE constraint failed: /secret/path");
-        return false;
-      };
-      const { id, result } = await s.proposeAndConfirm(s.make({ takeovers: store }));
-      assert.deepEqual(result, { ok: false, reason: "internal", text: takeoverFailureText("internal", false), plainText: takeoverFailureText("internal", false), edited: true });
-      assert.deepEqual(s.kills, []);
-      assert.deepEqual(s.gateway.deleted, [DEST]);
-      assert.equal(s.takeovers.get(id)?.state, "failed");
-      assert.equal(s.takeovers.get(id)?.targetChannelId, null);
-      assertUntouched(s);
-      assertQuietLogs(s);
-    });
-  }
+test("setTarget が false: 作ったチャンネルを消して internal。kill しない", async (t) => {
+  const s = setup(t);
+  const store = Object.create(s.takeovers) as typeof s.takeovers;
+  store.setTarget = () => false;
+  const { id, result } = await s.proposeAndConfirm(s.make({ takeovers: store }));
+  assert.deepEqual(result, { ok: false, reason: "internal", text: takeoverFailureText("internal", false), plainText: takeoverFailureText("internal", false), edited: true });
+  assert.deepEqual(s.kills, []);
+  assert.deepEqual(s.gateway.deleted, [DEST]);
+  assert.equal(s.takeovers.get(id)?.state, "failed");
+  assert.equal(s.takeovers.get(id)?.targetChannelId, null);
+  assertUntouched(s);
+  assertQuietLogs(s);
+});
+
+test("setTarget が投げる（同じ行き先が別の行に在るかもしれない）: 消さずに log に手で消せるようチャンネル ID を出して internal。kill しない", async (t) => {
+  const s = setup(t);
+  const store = Object.create(s.takeovers) as typeof s.takeovers;
+  store.setTarget = () => {
+    throw new Error("UNIQUE constraint failed: /secret/path");
+  };
+  const { id, result } = await s.proposeAndConfirm(s.make({ takeovers: store }));
+  assert.deepEqual(result, { ok: false, reason: "internal", text: takeoverFailureText("internal", false), plainText: takeoverFailureText("internal", false), edited: true });
+  assert.deepEqual(s.kills, []);
+  assert.deepEqual(s.gateway.deleted, []);
+  assert.equal(s.takeovers.get(id)?.state, "failed");
+  assert.equal(s.takeovers.get(id)?.targetChannelId, null);
+  assert.equal(s.logs.filter((line) => line.includes(DEST)).length, 1);
+  assert.ok(s.logs.some((line) => line.includes(DEST) && line.includes("手で消してください")));
+  assertUntouched(s);
+  assertQuietLogs(s, /手で消してください/);
+});
+
+test("チャンネルの期限の待ちが投げる: no_channel で kill しない。その後に作成が返ったら、そのチャンネルは消す", async (t) => {
+  const s = setup(t);
+  s.env.channel = "hangs";
+  s.env.timeoutRejects = true;
+  const { id, result } = await s.proposeAndConfirm();
+  assert.deepEqual(result, { ok: false, reason: "no_channel", text: takeoverFailureText("no_channel", false), plainText: takeoverFailureText("no_channel", false), edited: true });
+  assert.deepEqual(s.kills, []);
+  assert.deepEqual(s.gateway.deleted, []);
+  s.late.resolve!();
+  await tick();
+  await tick();
+  assert.deepEqual(s.gateway.deleted, [DEST]);
+  assert.equal(s.takeovers.get(id)?.targetChannelId, null);
+  assertUntouched(s);
+  assertQuietLogs(s);
+});
+
+test("SIGTERM の後・終了を見届けた後の例外: copy_failed で続け方（終了しています）の文。作ったチャンネルは消す", async (t) => {
+  const s = setup(t);
+  const store = Object.create(s.takeovers) as typeof s.takeovers;
+  store.setStep = (stepId, step) => {
+    if (step === "copy") throw new Error("/secret/path");
+    return s.takeovers.setStep(stepId, step);
+  };
+  const { id, result } = await s.proposeAndConfirm(s.make({ takeovers: store }));
+  assert.deepEqual(result, { ok: false, reason: "copy_failed", text: takeoverFailureText("copy_failed", true), plainText: takeoverFailureText("copy_failed", true), edited: true });
+  assert.match(!result.ok && "text" in result ? result.text : "", new RegExp(TAKEOVER_AFTER_TERM_TEXT));
+  assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  assertDropped(s, id);
+  assertQuietLogs(s);
+});
+
+test("SIGTERM の後・終了を見届ける前の例外（終了を待つ sleep が投げる）: copy_failed で「終了しているかもしれません」の文。作ったチャンネルは消す", async (t) => {
+  const s = setup(t);
+  s.env.rejectSleep = 250;
+  const { id, result } = await s.proposeAndConfirm();
+  const text = `${takeoverFailureText("copy_failed", false)}\n${TAKEOVER_MAYBE_TERM_TEXT}`;
+  assert.deepEqual(result, { ok: false, reason: "copy_failed", text, plainText: text, edited: true });
+  assert.doesNotMatch(text, /終了しています/);
+  assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  assertDropped(s, id);
+  assertQuietLogs(s);
+});
+
+test("終わったセッションの取り込み: チャンネルの作成の間に一覧へ戻った（読み直した一覧に現れる）なら changed で写さない。作ったチャンネルは消す", async (t) => {
+  const s = setup(t, { ended: true });
+  const takeover = s.make({
+    createChannel: async (guildId, title, projectDir) => {
+      const created = await s.deps.createChannel(guildId, title, projectDir);
+      s.env.reviveOnTick = true;
+      return created;
+    },
+  });
+  const { id, result } = await s.proposeAndConfirm(takeover);
+  assert.equal(!result.ok && result.reason, "changed");
+  assert.deepEqual(s.kills, []);
+  assert.equal(existsSync(s.dst), false);
+  assertDropped(s, id);
+  assertUntouched(s, "ended");
+});
+
+test("確かめ直しで記録が読めない・短くなった（readAppended が undefined）: changed で kill しない。作ったチャンネルは消す", async (t) => {
+  const s = setup(t);
+  const { id, result } = await s.proposeAndConfirm(s.make({ files: { readAppended: () => undefined } }));
+  assert.equal(!result.ok && result.reason, "changed");
+  assert.deepEqual(s.kills, []);
+  assertDropped(s, id);
+  assertUntouched(s);
+});
+
+test("確かめ直しで生きていない（2 秒の間に終わった）: identity でなく changed で kill しない。作ったチャンネルは消す", async (t) => {
+  const s = setup(t);
+  s.env.onSleep = (ms) => {
+    if (ms !== 2000) return;
+    s.list.sessions = [];
+    s.ccSessions.markGone([]);
+  };
+  const { id, result } = await s.proposeAndConfirm();
+  assert.equal(!result.ok && result.reason, "changed");
+  assert.deepEqual(s.kills, []);
+  assertDropped(s, id);
 });
 
 test("kill の後に pid が消えない: not_exited（後ろの文は足さない）。作ったチャンネルは消す", async (t) => {
@@ -822,6 +927,13 @@ test("noteFor・noteDone・resumeDropped（§3.6.1・§3.6.3）は行き先の�
   // 前置きが無い設定なら何も返さない
   assert.equal(s.make({ note: undefined }).noteFor(DEST, S1, {}), undefined);
   s.make();
+  // resumeDropped が違う session_id なら、知らせも前置きの取り消しも無い
+  const postsBeforeOther = s.gateway.posts.length;
+  s.takeover.resumeDropped(DEST, S2);
+  await tick();
+  assert.equal(s.gateway.posts.length, postsBeforeOther);
+  assert.equal(s.takeovers.takenFor(DEST)?.notePending, true);
+  assert.equal(s.takeover.noteFor(DEST, S1, {}), "（前置き）");
   s.takeover.noteDone(DEST);
   assert.equal(s.takeover.noteFor(DEST, S1, {}), undefined);
 

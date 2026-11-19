@@ -246,6 +246,15 @@ function errorKind(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
+/** SIGTERM を送ったか: none = 送っていない、maybe = 送ったが終了を見届けていない（か分からない）、done = 送って終了を見届けた */
+type TakeoverTerm = "none" | "maybe" | "done";
+
+/** 失敗の文（§4）。done なら TAKEOVER_AFTER_TERM_TEXT（takeoverFailureText の afterTerm）、maybe なら TAKEOVER_MAYBE_TERM_TEXT を次の行に足す */
+function failureText(code: TakeoverFailure, term: TakeoverTerm): string {
+  if (term === "maybe") return `${takeoverFailureText(code, false)}\n${TAKEOVER_MAYBE_TERM_TEXT}`;
+  return takeoverFailureText(code, term === "done");
+}
+
 export class CcTakeover {
   private readonly deps: CcTakeoverDeps;
   private readonly files: TakeoverFiles;
@@ -347,16 +356,19 @@ export class CcTakeover {
     }
     if (!takeovers.start(id)) return { ok: false, reason: "stale" };
     log(`Claude Code: 取り込みを始めます（#${id}、${row.source}、guild=${row.guildId}）`);
-    const progress = { afterTerm: false };
+    const progress = { afterTerm: false, exited: false };
     let outcome: { channelId: string } | TakeoverFailure;
+    let term: TakeoverTerm;
     try {
       outcome = await this.run(row, progress);
+      term = progress.afterTerm ? "done" : "none";
     } catch (error) {
       log(`Claude Code: 取り込みの途中で例外が起きました（#${id}、${errorKind(error)}）`);
-      // SIGTERM より前なら端末はそのまま（internal）、後なら写し・切り替えの失敗と同じ
+      // SIGTERM より前なら端末はそのまま（internal）、後なら写し・切り替えの失敗と同じ。終了を見届ける前なら言い切らない
       outcome = progress.afterTerm ? "copy_failed" : "internal";
+      term = !progress.afterTerm ? "none" : progress.exited ? "done" : "maybe";
     }
-    if (typeof outcome === "string") return this.failed(row, outcome, progress.afterTerm);
+    if (typeof outcome === "string") return this.failed(row, outcome, term);
     log(`Claude Code: 取り込みました（#${id}、guild=${row.guildId}）`);
     const { plainText, edited } = await this.effects(id);
     return { ok: true, channelId: outcome.channelId, text: takeoverLinkText(outcome.channelId), plainText, edited };
@@ -412,7 +424,7 @@ export class CcTakeover {
       if (row.confirmChannelId === null || row.confirmMessageId === null) continue;
       // SIGTERM を送ったか分からない段なら、言い切らずに続け方を足す
       const maybeTerm = row.source === "alive" && (row.step === "term" || row.step === "copy" || row.step === "commit");
-      const text = `${takeoverFailureText("restart", false)}${maybeTerm ? `\n${TAKEOVER_MAYBE_TERM_TEXT}` : ""}`;
+      const text = failureText("restart", maybeTerm ? "maybe" : "none");
       const channelId = row.confirmChannelId;
       const messageId = row.confirmMessageId;
       void Promise.resolve()
@@ -470,10 +482,11 @@ export class CcTakeover {
   }
 
   /**
-   * check → channel → term → copy → commit（§4）。成功なら行き先のチャンネル、失敗なら符号。SIGTERM を送ったら progress.afterTerm を立てる。
+   * check → channel → term → copy → commit（§4）。成功なら行き先のチャンネル、失敗なら符号。SIGTERM を送ったら progress.afterTerm を、
+   * 終了を見届けたら progress.exited を立てる。
    * check が通るまでチャンネルを作らない。作ったチャンネルは直後に target_channel_id に書き、以後の失敗は failed() が消す
    */
-  private async run(row: CcTakeoverRow, progress: { afterTerm: boolean }): Promise<{ channelId: string } | TakeoverFailure> {
+  private async run(row: CcTakeoverRow, progress: { afterTerm: boolean; exited: boolean }): Promise<{ channelId: string } | TakeoverFailure> {
     const { takeovers, ccSessions, sdkSessions, dirs, queue, log } = this.deps;
     const id = row.id;
     const sessionId = row.sessionId;
@@ -508,18 +521,13 @@ export class CcTakeover {
       created = await Promise.race([creating, this.deps.sleep(TAKEOVER_CHANNEL_TIMEOUT_MS).then(() => undefined)]);
     } catch (error) {
       log(`Claude Code: 取り込みの新しいチャンネルを作れませんでした（#${id}、${errorKind(error)}）`);
+      // 期限の待ちが投げたときは、作成が後から返りうる（作成自身が投げたのなら何も起きない）
+      this.dropLate(id, creating);
       return "no_channel";
     }
     if (created === undefined) {
       log(`Claude Code: 取り込みの新しいチャンネルを期限までに作れませんでした（#${id}）`);
-      // 遅れてできたチャンネルは DB に残らないので、その場で消す（待たない）
-      void creating.then(
-        (late) => {
-          if (late.result === "created") return this.dropUntracked(id, late.channelId);
-          return undefined;
-        },
-        () => undefined,
-      );
+      this.dropLate(id, creating);
       return "no_channel";
     }
     if (created.result === "not_set_up") {
@@ -528,11 +536,13 @@ export class CcTakeover {
     }
     const channelId = created.channelId;
     const categoryId = created.categoryId;
-    let targeted = false;
+    let targeted: boolean;
     try {
       targeted = takeovers.setTarget(id, channelId);
     } catch (error) {
-      log(`Claude Code: 取り込みの行き先を DB に書けませんでした（#${id}、${errorKind(error)}）`);
+      // UNIQUE（別の行の行き先かもしれない）か DB の失敗。消さずに、手で消せるようチャンネル ID を出す（ログ方針の例外）
+      log(`Claude Code: 取り込みの行き先を DB に書けませんでした。手で消してください（#${id}、channel=${channelId}、${errorKind(error)}）`);
+      return "internal";
     }
     if (!targeted) {
       await this.dropUntracked(id, channelId);
@@ -572,6 +582,7 @@ export class CcTakeover {
       progress.afterTerm = true;
       log(`Claude Code: 取り込みのため端末の Claude Code に SIGTERM を送りました（#${id}）`);
       if (!(await this.waitExit(first))) return "not_exited";
+      progress.exited = true;
       // registry に追いつかせるだけ（読めなくても進む）
       try {
         await this.deps.registry.tick();
@@ -581,7 +592,9 @@ export class CcTakeover {
       const later = this.files.readAppended(paths.src, inspected.size);
       if (later !== undefined && appendedInterrupted(later)) takeovers.setInterrupted(id);
     }
-    // 終わったセッションが一覧に戻っていたら（端末で resume した）写さない（同期で見る）
+    // 終わったセッションが一覧に戻っていたら（端末で resume した）写さない。チャンネルの作成の間に戻ったものにも気づけるよう 1 回読み直す
+    // （読めなくても今の snapshot で確かめて進む）
+    if (row.source === "ended") await this.readList();
     if (row.source === "ended" && this.deps.registry.snapshot().sessions.some((candidate) => candidate.sessionId === sessionId)) return "changed";
     takeovers.setStep(id, "copy");
     let copied: ReturnType<typeof copyTranscript>;
@@ -693,10 +706,10 @@ export class CcTakeover {
    * 失敗（§4）: failed にし、作った行き先のチャンネルを消し（sessions の行が無いときだけ）、確認の文を失敗の文に書き換える。
    * 投げない（DB の例外でも失敗の結果を返す）。例外で行が running のまま残ったら、次の起動の recoverRunning が restart にして直す
    */
-  private async failed(row: CcTakeoverRow, code: TakeoverFailure, afterTerm: boolean): Promise<CcTakeoverConfirmResult> {
+  private async failed(row: CcTakeoverRow, code: TakeoverFailure, term: TakeoverTerm): Promise<CcTakeoverConfirmResult> {
     const { takeovers, log } = this.deps;
     const id = row.id;
-    const text = takeoverFailureText(code, afterTerm);
+    const text = failureText(code, term);
     let current: CcTakeoverRow | undefined;
     try {
       const before = takeovers.get(id);
@@ -734,8 +747,16 @@ export class CcTakeover {
     log(`Claude Code: 取り込みで作ったチャンネルを消しました（#${id}）`);
   }
 
+  /** 期限の後（か期限の待ちが投げた後）に作成が返ったら、そのチャンネルを消す（待たない。作成が投げたら何もしない） */
+  private dropLate(id: number, creating: Promise<NewTopicChannelResult>): void {
+    void creating.then(
+      (late) => (late.result === "created" ? this.dropUntracked(id, late.channelId) : undefined),
+      () => undefined,
+    );
+  }
+
   /**
-   * DB に書けなかった（期限の後にできた・setTarget に失敗した）チャンネルをその場で消す（§3.1）。sessions に行があれば消さない。
+   * DB に書けなかった（期限の後にできた・setTarget が false だった）チャンネルをその場で消す（§3.1）。sessions に行があれば消さない。
    * 消せなければ log にチャンネル ID（手で消せるよう。/new の DB の保存の失敗と同じ扱い）。投げない
    */
   private async dropUntracked(id: number, channelId: string): Promise<void> {

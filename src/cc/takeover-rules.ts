@@ -258,8 +258,8 @@ export const TAKEOVER_AFTER_TERM_TEXT =
   "端末の Claude Code は終了しています。/cc take をもう一度実行すると、終わった会話から取り込めます。";
 
 /**
- * 再起動で restart にした取り込みが SIGTERM を送ったか分からない段（term・copy・commit）だったときに足す文（docs/plan/takeover.md §9.1。
- * 送ったと言い切らない）
+ * 再起動で restart にした取り込みが SIGTERM を送ったか分からない段（term・copy・commit）だったとき（docs/plan/takeover.md §9.1）と、
+ * SIGTERM を送った後・終了を見届ける前の例外（§4）に足す文（送った・終わったと言い切らない）
  */
 export const TAKEOVER_MAYBE_TERM_TEXT =
   "端末の Claude Code は終了しているかもしれません。終了していれば、/cc take をもう一度実行すると、終わった会話から取り込めます。";
