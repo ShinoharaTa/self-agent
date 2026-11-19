@@ -40,6 +40,7 @@ import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { createTmux, type RunCommand } from "../src/tmux/tmux.ts";
 import { tempDb, tempDir } from "./helpers/db.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
+import { TAKEOVER_SEND_REJECT_TEXT } from "../src/cc/takeover-rules.ts";
 
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
 const S1 = "11111111-1111-4111-8111-111111111111";
@@ -495,6 +496,16 @@ test("[送る]: queued にして待ち行列を回す。入力待ちでなけれ
   const again = await s.pressButton("cc:send:1");
   assert.deepEqual(again, [{ method: "reply", message: { text: STALE_TEXT, ephemeral: true } }]);
   assert.ok(!s.logs.join("\n").includes(SECRET_TEXT));
+});
+
+test("[送る]: 取り込みの途中（confirm が taking_over）なら確認待ちのまま、押した人にだけ断る", async (t) => {
+  const s = setup(t);
+  await s.handlers().ccSend({ session_id: S1, text: SECRET_TEXT });
+  const real = s.runtime.value!;
+  s.runtime.value = { ...real, sender: { confirm: () => "taking_over", kick: () => real.sender.kick(), announce: (id) => real.sender.announce(id) } };
+  const calls = await s.pressButton("cc:send:1");
+  assert.deepEqual(calls, [{ method: "deferUpdate" }, { method: "reply", message: { text: TAKEOVER_SEND_REJECT_TEXT, ephemeral: true } }]);
+  assert.equal(s.sends.get(1)?.state, "awaiting_confirm");
 });
 
 test("[送る]: 届いたら「送りました」とペインと RC のリンク", async (t) => {

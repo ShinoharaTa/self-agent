@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import type { CcPaneResolver } from "../../cc/panes.ts";
 import type { CcRegistry, CcTimers } from "../../cc/registry.ts";
 import type { CcSender } from "../../cc/sender.ts";
+import { TAKEOVER_SEND_REJECT_TEXT } from "../../cc/takeover-rules.ts";
 import type { CcStartFailure, CcStarter } from "../../cc/starter.ts";
 import type { Config } from "../../config.ts";
 import { escapeDiscordText } from "../../discord/escape.ts";
@@ -314,7 +315,13 @@ export function createCcConfirmButtons(deps: CcConfirmDeps): CcConfirmButtons {
       return;
     }
     await responder.deferUpdate();
-    if (runtime.sender.confirm(id) !== "queued") {
+    const confirmed = runtime.sender.confirm(id);
+    // 取り込みの途中（docs/plan/takeover.md §3.2）: 確認待ちのまま、押した人にだけ断る（ボタンは残す）
+    if (confirmed === "taking_over") {
+      await responder.reply({ text: TAKEOVER_SEND_REJECT_TEXT, ephemeral: true });
+      return;
+    }
+    if (confirmed !== "queued") {
       await stale(responder);
       return;
     }

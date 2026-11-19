@@ -120,6 +120,8 @@ function setup(t: TestContext) {
   const settled: Array<[number, string]> = [];
   /** sleep の中で呼ぶもの（Enter の後の確かめの待ちの間に hook の事象を入れる） */
   const hooks: { onSleep?: (ms: number) => void } = {};
+  /** 取り込みの途中のセッション（holds。docs/plan/takeover.md §3.2） */
+  const held = new Set<string>();
   const sender = new CcSender({
     cfg: { ccSendWaitMin: 120, allowedGuildIds: ["g1", "g2"] },
     registry,
@@ -143,11 +145,12 @@ function setup(t: TestContext) {
       settled: (row) => void settled.push([row.id, row.state]),
       dialog: () => undefined,
     },
+    holds: (sessionId) => held.has(sessionId),
     log: (message) => logs.push(message),
   });
   /** 送り込みの操作（load・paste・Enter）だけ */
   const actions = () => commands.filter((args) => ["load-buffer", "paste-buffer", "send-keys"].includes(args[0]!)).map((args) => args[0]);
-  return { db, clock, sends, sessions, env, commands, inputs, snapshot, sender, notices, logs, sleeps, actions, finished, settled, hooks };
+  return { db, clock, sends, sessions, env, commands, inputs, snapshot, sender, notices, logs, sleeps, actions, finished, settled, hooks, held };
 }
 
 /** 貼った文字が入力欄に見える画面 */
@@ -610,4 +613,49 @@ test("onFinished: 届けたら delivered の行（返事の印は waiting）を�
   assert.ok(second.ok);
   await sender.idle();
   assert.deepEqual(finished.at(-1) && [finished.at(-1)!.id, finished.at(-1)!.state, finished.at(-1)!.replyState], [second.send.id, "unconfirmed", "waiting"]);
+});
+
+test("取り込みの途中（holds）: submit・propose・[送る] は taking_over で行を変えず、queued は届けずに残す", async (t) => {
+  const { sender, sends, held, actions } = setup(t);
+  const proposed = await sender.propose({ sessionId: S1, text: "確認待ち", channelId: "c1" });
+  assert.ok(proposed.ok);
+  held.add(S1);
+  assert.deepEqual(await sender.submit({ sessionId: S1, text: "送る", origin: "web" }), { ok: false, reason: "taking_over" });
+  assert.deepEqual(await sender.submit({ sessionId: S1, text: "発言", origin: "discord", channelId: "c1", messageId: "m1" }), {
+    ok: false,
+    reason: "taking_over",
+  });
+  assert.deepEqual(await sender.propose({ sessionId: S1, text: "別", channelId: "c1" }), { ok: false, reason: "taking_over" });
+  assert.equal(sender.confirm(proposed.send.id), "taking_over");
+  assert.equal(sends.get(proposed.send.id)?.state, "awaiting_confirm");
+  // 別のセッションは今までどおり
+  const other = await sender.submit({ sessionId: S2, text: "S2 へ", origin: "web" });
+  assert.ok(other.ok);
+  await sender.idle();
+  // 取り込みの前に積んだ queued は届けない（queued のまま）
+  held.delete(S1);
+  assert.equal(sender.confirm(proposed.send.id), "queued");
+  held.add(S1);
+  const before = actions().length;
+  await sender.kick();
+  assert.equal(sends.get(proposed.send.id)?.state, "queued");
+  assert.equal(actions().length, before);
+  held.delete(S1);
+  await sender.kick();
+  // 終わったら貼る
+  assert.notEqual(sends.get(proposed.send.id)?.state, "queued");
+  assert.ok(actions().length > before);
+});
+
+test("ペイン宛ての送信（起動の最初の指示）: 結びついたセッションが取り込みの途中なら届けずに queued のまま", async (t) => {
+  const { sender, sends, held, actions } = setup(t);
+  const row = sends.add({ sessionId: null, paneId: "%1", startDir: "/w/a", text: "最初の指示", origin: "start", state: "queued" });
+  held.add(S1);
+  await sender.kick();
+  const after = sends.get(row.id)!;
+  assert.deepEqual([after.state, after.sessionId], ["queued", S1]);
+  assert.deepEqual(actions(), []);
+  held.delete(S1);
+  await sender.kick();
+  assert.notEqual(sends.get(row.id)?.state, "queued");
 });
