@@ -120,6 +120,7 @@ export const SUBMIT_STATUS: Readonly<Record<string, number>> = {
   no_server: 503,
   tmux_failed: 503,
   stopped: 503,
+  taking_over: 409,
 };
 
 /** 起動を断った理由 → HTTP の状態（§5.1） */

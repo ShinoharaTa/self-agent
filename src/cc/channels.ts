@@ -47,6 +47,7 @@ import type { CcRegistry, CcSessionView, CcState } from "./registry.ts";
 import { CC_CHANNEL_QUEUE_MAX, normalizeSendText, type CcSender, type CcSubmitResult } from "./sender.ts";
 import { breakMaskedLinks } from "./replies.ts";
 import { normalizeTitle, type CcStartFailure, type CcStarter, type CcStartResult } from "./starter.ts";
+import { TAKEOVER_SEND_REJECT_TEXT } from "./takeover-rules.ts";
 
 /** Discord で 1 つのカテゴリに入れられるチャンネル数（カテゴリ「Claude Code」は 1 つだけで、満杯なら作らずに断る） */
 export const CC_CATEGORY_CHANNEL_LIMIT = 50;
@@ -117,6 +118,7 @@ const SUBMIT_REJECT_REPLY: Readonly<Record<Exclude<CcSubmitResult, { ok: true }>
   no_server: "tmux のサーバーがありません",
   tmux_failed: "tmux を使えませんでした",
   stopped: "停止中です",
+  taking_over: TAKEOVER_SEND_REJECT_TEXT,
 };
 
 /** 送れなかった理由（cc_sends.last_pane_state）の表示 */
