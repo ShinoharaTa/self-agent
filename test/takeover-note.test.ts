@@ -11,7 +11,12 @@ import {
   TIMEOUT_ERROR,
   type TurnDeps,
 } from "../src/app/turn.ts";
+import { CcTakeover, TAKEOVER_DROPPED_TEXT } from "../src/cc/takeover.ts";
+import { CcSessionStore } from "../src/store/cc-sessions.ts";
+import { CcTakeoverStore } from "../src/store/cc-takeovers.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
+import { FakeGateway } from "./helpers/gateway.ts";
+import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
 import { FakeRunner, type FakeRunStep, turnUsage } from "./helpers/runner.ts";
 
 const NOW = new Date("2026-11-13T00:00:00.000Z");
@@ -328,4 +333,89 @@ test("画像の拒否で sessionRecorded が false: noteDone は呼ばず、resu
   assert.ok(!runner.inputs[1]!.prompt.includes(NOTE));
   assert.deepEqual(fake.calls.noteDone, []);
   assert.deepEqual(fake.calls.resumeDropped, [["topic-1", "session-taken"]]);
+});
+
+/** 本物の CcTakeover（cc/takeover.ts）。noteFor・noteDone・resumeDropped が使わない部品は、呼ばれたら投げる。省ける依存は渡さない */
+function realSetup(t: TestContext, steps: FakeRunStep[]) {
+  const db = tempDb(t);
+  const now = (): Date => NOW;
+  const runner = new FakeRunner(steps);
+  const stores = createStores(db, now);
+  const { sessions, seeds, topicSessions, memories, inboxSummaries, usage } = stores;
+  const takeovers = new CcTakeoverStore(db, now);
+  const gateway = new FakeGateway({ allow: ["sendMessage"], messageIdPrefix: "msg-" });
+  const unused = (name: string) => (): never => {
+    throw new Error(`想定外の呼び出し: ${name}`);
+  };
+  const takeover = new CcTakeover({
+    db,
+    cfg: { workspaceDir: "/nonexistent" },
+    home: "/nonexistent",
+    claudeConfigDir: "/nonexistent",
+    registry: { tick: unused("tick"), snapshot: unused("snapshot") },
+    dirs: { sessionFile: unused("sessionFile") },
+    takeovers,
+    ccSessions: new CcSessionStore(db, now),
+    topicSessions,
+    sdkSessions: sessions,
+    ready: () => true,
+    checkSessionProject: unused("checkSessionProject"),
+    verifiedProjectDir: unused("verifiedProjectDir"),
+    createChannel: unused("createChannel"),
+    queue: new RecordingQueue(1),
+    channelOps: new RecordingChannelOps(),
+    gateway,
+    kill: unused("kill"),
+    readProc: unused("readProc"),
+    readBtime: unused("readBtime"),
+    sleep: unused("sleep"),
+    now,
+    ownPid: 1,
+    note: TAKEOVER_NOTE,
+    log: () => {},
+  });
+  // 取り込みは通さず、ストアに done・note_pending = 1 の行を直接作る（行き先は topic-1）
+  const row = takeovers.propose({
+    sessionId: "session-taken",
+    source: "ended",
+    project: "alpha",
+    guildId: "guild-1",
+    entry: "web",
+    permissionMode: "default",
+  })!;
+  assert.ok(takeovers.start(row.id));
+  assert.ok(takeovers.setTarget(row.id, "topic-1"));
+  assert.ok(takeovers.finish(row.id));
+  topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "作業", categoryId: "active-1" });
+  sessions.set("topic-1", "session-taken");
+  const deps: TurnDeps = { runner, sessions, seeds, topicSessions, inboxSummaries, memories, usage, log: () => {}, takeover };
+  return { runner, takeovers, gateway, run: () => runChannelTurn(deps, TURN) };
+}
+
+test("本物の CcTakeover: done・note_pending = 1 の行 → 最初の resume に前置き → 消えて次のターンは付かない", async (t) => {
+  const { runner, takeovers, run } = realSetup(t, [ok("session-taken"), ok("session-taken")]);
+  assert.equal(takeovers.takenFor("topic-1")?.notePending, true);
+
+  assert.ok((await run()).ok);
+  assert.equal(runner.inputs[0]!.prompt, `${TAKEOVER_NOTE}\n\n${PROMPT}`);
+  assert.equal(takeovers.takenFor("topic-1")?.notePending, false);
+
+  assert.ok((await run()).ok);
+  assert.equal(runner.inputs[1]!.prompt, PROMPT);
+});
+
+test("本物の CcTakeover: SDK セッションを捨てたら resumeDropped で知らせが 1 通", async (t) => {
+  const { runner, takeovers, gateway, run } = realSetup(t, [
+    failed("No conversation found with session ID: x", false),
+    ok("session-new"),
+  ]);
+
+  assert.ok((await run()).ok);
+  assert.ok(!runner.inputs[1]!.prompt.includes(TAKEOVER_NOTE_HEAD));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    gateway.posts.map((post) => [post.channelId, post.message.text]),
+    [["topic-1", TAKEOVER_DROPPED_TEXT]],
+  );
+  assert.equal(takeovers.takenFor("topic-1")?.notePending, false);
 });
