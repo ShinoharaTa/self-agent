@@ -5,7 +5,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createSdkMcpServer, type CanUseTool, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { labelOf, MODEL_CHOICES, modelKeys, resolveModelKey } from "../src/agent/models.ts";
+import { labelOf, MODEL_CHOICES, modelKeys, resolveModelKey, resolveModelName } from "../src/agent/models.ts";
 import { createProjectProfile } from "../src/agent/project-profile.ts";
 import { buildQueryOptions } from "../src/agent/query-options.ts";
 import type { RunContext, RunResult } from "../src/agent/runner.ts";
@@ -392,4 +392,13 @@ test("SdkAgentRunner: context が無くても input.model があれば Options �
     records.map((record) => record.model),
     ["claude-haiku-4-5", "claude-sonnet-5-5"],
   );
+});
+
+test("resolveModelName: key・画面の字・完全な ID で引け（空白（全角も）と大文字小文字は見ない）、近いだけの名前は引かない。resolveModelKey は key だけのまま", () => {
+  for (const name of ["sonnet", " Sonnet ", "Sonnet 5.5", "sonnet5.5", "Sonnet\u30005.5", "claude-sonnet-5-5"]) {
+    assert.equal(resolveModelName(name)?.key, "sonnet", name);
+  }
+  for (const name of ["Opus 5", "sonnet 4", "", " ", "claude-"]) assert.equal(resolveModelName(name), undefined, name);
+  assert.equal(resolveModelKey("Sonnet 5.5"), undefined);
+  assert.equal(resolveModelKey("claude-sonnet-5-5"), undefined);
 });

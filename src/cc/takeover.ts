@@ -700,7 +700,13 @@ export class CcTakeover {
     const { db, topicSessions, sdkSessions, takeovers, log } = this.deps;
     db.exec("BEGIN IMMEDIATE");
     try {
-      const model = this.deps.placeModel?.(row.project);
+      // 端末を止めた後なので、場所の既定が読めないだけでは落とさない（モデルは付けない）
+      let model: string | undefined;
+      try {
+        model = this.deps.placeModel?.(row.project);
+      } catch (error) {
+        log(`Claude Code: 取り込みで場所の既定のモデルを読めませんでした（#${row.id}、${errorKind(error)}）`);
+      }
       topicSessions.create({
         channelId,
         guildId: row.guildId,
