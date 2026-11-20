@@ -237,7 +237,7 @@ test("right hand open: model を渡すと話題は今までどおり作られ、
   const result = await s.rightHand.open({ ...ARGS, project: "alpha", text: "宿を探して", model: "sonnet" }, INBOX);
   assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "alpha", turn: "started", note: MODEL_NOT_YET_NOTE });
   assert.equal(s.topicSessions.projectDirOf("ch-1")?.projectDir, "alpha");
-  // 最初の依頼にも model は渡らない（startTopic に model を渡さない）
+  // 話題は今までどおり作られる（model を渡す先はまだ無い。型が守る）
   assert.deepEqual(s.submits, [{ guildId: GUILD, channelId: "ch-1", content: "宿を探して", at: NOW, source: "web", via: "right_hand" }]);
 });
 

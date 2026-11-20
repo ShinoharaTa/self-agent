@@ -222,7 +222,7 @@ test("ツール定義: session_open の model は前後の空白を除いて 1�
   const json = z.toJSONSchema(schema) as { properties: Record<string, { description?: string }> };
   assert.equal(
     json.properties.model?.description,
-    "使うモデルの名前（オーナーが名前で指定したときだけ渡す。opus・sonnet・haiku など）。使えない名前なら、使える名前が返る。省略すると場所の既定のモデルで始まる",
+    "使うモデルの名前（オーナーが名前で指定したときだけ、言われた名前のまま渡す）。使えない名前なら話題は作られず、使える名前の一覧が返るので、オーナーに伝えて選び直してもらう（自分で別の名前を選んで呼び直さない）。省略すると場所の既定のモデルで始まる",
   );
 });
 

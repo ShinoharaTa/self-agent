@@ -95,7 +95,7 @@ export type CcStartArgs = { project: string; title: string; text?: string; permi
 
 /** session_open（project・text・model を足した形）の引数 */
 export type TopicOpenArgs = { title: string; context: string; project?: string; text?: string; model?: string };
-/** session_open（project・text を足した形）の結果（そのまま JSON にしてモデルに返す） */
+/** session_open（project・text・model を足した形）の結果（そのまま JSON にしてモデルに返す） */
 export type TopicOpenResult =
   | { result: "not_available"; message?: string }
   | { result: "not_set_up" }
@@ -1148,7 +1148,7 @@ export function createTaskTools(
           .min(1)
           .max(SESSION_OPEN_MODEL_MAX_LENGTH)
           .optional()
-          .describe("使うモデルの名前（オーナーが名前で指定したときだけ渡す。opus・sonnet・haiku など）。使えない名前なら、使える名前が返る。省略すると場所の既定のモデルで始まる"),
+          .describe("使うモデルの名前（オーナーが名前で指定したときだけ、言われた名前のまま渡す）。使えない名前なら話題は作られず、使える名前の一覧が返るので、オーナーに伝えて選び直してもらう（自分で別の名前を選んで呼び直さない）。省略すると場所の既定のモデルで始まる"),
       },
       // Discord にチャンネルを作り終えるまで待つ（ターンのタイムアウト内に収まる前提）
       async (args) => topicHandlers.sessionOpen(args),
