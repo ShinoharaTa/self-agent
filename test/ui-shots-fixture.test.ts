@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { startFixtureServer } from "../scripts/ui-shots-fixture.ts";
 import { permissionHistoryText } from "../src/cc/channel-posts.ts";
 import { CC_CHANNEL_ENDED_TEXT } from "../src/cc/channels.ts";
+import { takeoverConfirmText } from "../src/cc/takeover.ts";
 
 const FIXTURE_SOURCE = fileURLToPath(new URL("../scripts/ui-shots-fixture.ts", import.meta.url));
 const SCRIPT = fileURLToPath(new URL("../scripts/ui-shots.ts", import.meta.url));
@@ -182,6 +183,52 @@ test("cc: true では Claude Code の連携が動き、チャンネル 3 つ（�
   }
 });
 
+test("cc: true では、チャンネルの無い待機のセッションが 1 つ在り（cc: の行）、取り込みの 4 つのルートが作り物の本体で答える", async () => {
+  const fixture = await startFixtureServer({ cc: true });
+  try {
+    const cc = fixture.cc;
+    assert.ok(cc !== undefined);
+    const auth = { "Tailscale-User-Login": fixture.login };
+    const post = { ...auth, "Sec-Fetch-Site": "same-origin", "X-Self-Agent": "1", "Content-Type": "application/json" };
+    const get = async (path: string): Promise<{ status: number; json: Record<string, unknown> }> => {
+      const res = await fetch(`${fixture.url}${path}`, { headers: auth });
+      return { status: res.status, json: (await res.json()) as Record<string, unknown> };
+    };
+    const send = async (path: string): Promise<{ status: number; json: Record<string, unknown> }> => {
+      const res = await fetch(`${fixture.url}${path}`, { method: "POST", headers: post, body: "{}" });
+      return { status: res.status, json: (await res.json()) as Record<string, unknown> };
+    };
+    // 一覧: 待機のセッションは cc: の行で、あなたの番・作業中に入らない
+    type Topics = { topics: Array<{ id: string; title: string; group: string; mark: string | null; state: string }>; turnIds: string[] };
+    const topics = (await get("/api/topics")).json as Topics;
+    const row = topics.topics.find((t) => t.id === `cc:${cc.term}`);
+    assert.ok(row, "cc: の行");
+    assert.deepEqual([row.title, row.group, row.mark, row.state], ["見本の調べもの", "p:kakeibo-app", null, "active"]);
+    assert.equal(topics.turnIds.includes(row.id), false);
+    // 判定: 4 つ目は取り込める、ほかは busy
+    const check = await get(`/api/cc/sessions/${cc.term}/takeover`);
+    assert.equal(check.status, 200);
+    assert.deepEqual([check.json.takeable, check.json.state, check.json.reason, check.json.title, check.json.project, check.json.rcUrl, check.json.last], [true, "idle", null, "見本の調べもの", "kakeibo-app", null, null]);
+    assert.equal(typeof check.json.activityAt, "string");
+    const channels = (await get("/api/channels")).json.channels as Array<{ id: string; kind: string; cc?: { sessionId: string } }>;
+    const other = channels.find((c) => c.id === cc.queue)!.cc!.sessionId;
+    const busy = await get(`/api/cc/sessions/${other}/takeover`);
+    assert.deepEqual([busy.json.takeable, busy.json.reason, busy.json.state], [false, "busy", "running"]);
+    // 確認を作る: 本物の確認の文
+    const propose = await send(`/api/cc/sessions/${cc.term}/takeover`);
+    assert.equal(propose.status, 201);
+    assert.deepEqual(propose.json, { id: 1, text: takeoverConfirmText({ title: "見本の調べもの", project: "kakeibo-app", source: "alive", permissionMode: "default", terminalMode: null }, false) });
+    assert.match(String(propose.json.text), /を取り込みます。/);
+    // やめるは通り、進めるは使えない確認、知らない番号は 404
+    assert.deepEqual((await send("/api/cc/takeovers/1/cancel")).json, { ok: true });
+    const confirm = await send("/api/cc/takeovers/1/confirm");
+    assert.deepEqual([confirm.status, confirm.json.error], [409, "stale"]);
+    assert.equal((await send("/api/cc/takeovers/2/confirm")).status, 404);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("cc なしでは Claude Code の連携は無効で、kind cc のチャンネルも Claude Code のルートも無い", async () => {
   const fixture = await startFixtureServer();
   try {
@@ -194,6 +241,19 @@ test("cc なしでは Claude Code の連携は無効で、kind cc のチャン�
     const sessions = await fetch(`${fixture.url}/api/cc/sessions`, { headers: auth });
     assert.equal(sessions.status, 404);
     await sessions.body?.cancel();
+    // 取り込みのルートも無い
+    const uuid = "c0de0d04-0000-4000-8000-0000000000d4";
+    const post = { ...auth, "Sec-Fetch-Site": "same-origin", "X-Self-Agent": "1", "Content-Type": "application/json" };
+    for (const [method, path] of [
+      ["GET", `/api/cc/sessions/${uuid}/takeover`],
+      ["POST", `/api/cc/sessions/${uuid}/takeover`],
+      ["POST", "/api/cc/takeovers/1/confirm"],
+      ["POST", "/api/cc/takeovers/1/cancel"],
+    ] as const) {
+      const res = await fetch(`${fixture.url}${path}`, method === "GET" ? { headers: auth } : { method, headers: post, body: "{}" });
+      assert.equal(res.status, 404, `${method} ${path}`);
+      await res.body?.cancel();
+    }
   } finally {
     await fixture.close();
   }

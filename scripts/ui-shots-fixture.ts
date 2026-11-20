@@ -15,6 +15,8 @@ import { CC_CHANNEL_ENDED_TEXT } from "../src/cc/channels.ts";
 import type { CcAnswerResult } from "../src/cc/permission-hold.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { CcCancelResult } from "../src/cc/sender.ts";
+import { takeoverConfirmText, type CcTakeoverCheck } from "../src/cc/takeover.ts";
+import { takeoverReasonText } from "../src/cc/takeover-rules.ts";
 import type { Gateway } from "../src/discord/gateway.ts";
 import type { TmuxPane } from "../src/tmux/tmux.ts";
 import { AttachmentStore } from "../src/store/attachments.ts";
@@ -22,6 +24,7 @@ import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcStartStore } from "../src/store/cc-starts.ts";
+import type { CcTakeoverRow } from "../src/store/cc-takeovers.ts";
 import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { HistoryStore } from "../src/store/history.ts";
@@ -36,6 +39,7 @@ import { TopicReadStore } from "../src/store/topic-reads.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
 import { CC_STATUS_DISABLED, ccChannelDescriber, ccRoutes } from "../src/web/routes/cc.ts";
+import { ccTakeoverRoutes } from "../src/web/routes/cc-takeover.ts";
 import { channelRoutes, webChannelLookup } from "../src/web/routes/channels.ts";
 import { knowledgeRoutes } from "../src/web/routes/knowledge.ts";
 import { memoryRoutes } from "../src/web/routes/memories.ts";
@@ -68,9 +72,10 @@ export type FixtureServer = {
   topics: { open: string; perm: string; q: string; talk: string; long: string; run: string };
   /**
    * Claude Code のチャンネル（cc: true で立てたときだけ）。queue: 届け待ちの送りが在る・ask: 許可の要求が在る・ended: 一覧に居ないセッション（終わった）。
+   * term: チャンネルの無い待機のセッションの ID（一覧では cc: の行。取り込める）。
    * reset は queue の届け待ちと ask の保留中の許可を新しく 1 行ずつにする（前の届け待ちは取り消し、前の保留は終わらせる。同じ段を幅ごとに繰り返すため）
    */
-  cc?: { queue: string; ask: string; ended: string; reset: () => void };
+  cc?: { queue: string; ask: string; ended: string; term: string; reset: () => void };
   /** サーバーを閉じ、DB を閉じて一時ディレクトリを消す（2 回目以降は同じ Promise を返す） */
   close: () => Promise<void>;
 };
@@ -136,6 +141,7 @@ const TALK_LONG_OWNER = `${"ベランダの鉢の水やりについて、季節�
 const CC_A = "c0de0a01-0000-4000-8000-0000000000a1";
 const CC_B = "c0de0b02-0000-4000-8000-0000000000b2";
 const CC_C = "c0de0c03-0000-4000-8000-0000000000c3";
+const CC_D = "c0de0d04-0000-4000-8000-0000000000d4";
 /** 画面の写し（tmux の capture-pane の代わりに返す数行） */
 const CC_SCREEN = "見本の作業をしています\n\n> 次の指示を待っています\n";
 
@@ -446,6 +452,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
       ...topicRoutes({ ...topicDeps, collect: createTopicCollector(topicDeps) }),
       ...turnRoutes({ cfg, guildSettings, topicSessions, resolveChannel, handler, now, log: noLog, ...(cc === undefined ? {} : { cc: cc.turns }) }),
       ...(cc === undefined ? [] : ccRoutes(cc.routes(lookup))),
+      ...(cc === undefined ? [] : ccTakeoverRoutes({ takeover: () => cc.takeover, takeovers: cc.takeovers, cfg, guildSettings })),
       ...taskRoutes({ tasks, reminders, log: noLog }),
       ...reminderRoutes({ cfg, reminders, channelName, log: noLog }),
       ...memoryRoutes({ memories, log: noLog }),
@@ -484,11 +491,11 @@ export async function startFixtureServer(options: { log?: (line: string) => void
 }
 
 /** Claude Code のセッションの一覧の 1 行（作り物。claude agents --json の代わり） */
-function ccView(sessionId: string, name: string, cwd: string, state: "running" | "needs_input", pid: number): CcSessionView {
+function ccView(sessionId: string, name: string, cwd: string, state: "running" | "needs_input" | "idle", pid: number): CcSessionView {
   const at = Date.now() - 4 * 60_000;
   return {
     sessionId,
-    status: state === "running" ? "busy" : "waiting",
+    status: state === "running" ? "busy" : state === "idle" ? "idle" : "waiting",
     pendingPermission: state === "needs_input",
     waitingKind: null,
     waitingSince: state === "needs_input" ? at : undefined,
@@ -551,7 +558,9 @@ function seedCc(
   const cwdA = join(workspace, "kakeibo-app");
   const cwdB = join(workspace, "garden-sensor");
   const cwdC = join(workspace, "blog-site");
-  const views = [ccView(CC_A, "見本の作業", cwdA, "running", 4101), ccView(CC_B, "見本の確認", cwdB, "needs_input", 4102)];
+  // 4 つ目: 待機・チャンネル無し・届け待ち無し（一覧では cc: の行。取り込める）
+  const termView = ccView(CC_D, "見本の調べもの", cwdA, "idle", 4103);
+  const views = [ccView(CC_A, "見本の作業", cwdA, "running", 4101), ccView(CC_B, "見本の確認", cwdB, "needs_input", 4102), termView];
   const registry = {
     snapshot: () => ({ sessions: views, stale: false, unreadable: false, fetchedAt: Date.now() }),
     touch: () => undefined,
@@ -636,11 +645,56 @@ function seedCc(
     postClosed: () => undefined,
   };
   const permissionDeps = { store: permissions, holdSec, questionHoldSec: holdSec };
+  // 取り込みの本体の作り物（4 つ目だけ取り込める。確認の文は本物の関数。進めるのは stale で、絵では押さない）
+  const termProject = "kakeibo-app";
+  const takeover = {
+    check: async (sessionId: string): Promise<CcTakeoverCheck> =>
+      sessionId === CC_D
+        ? { takeable: true, reason: undefined, state: "idle", title: termView.name ?? "", project: termProject, at: termView.lastActivityAt, bridgeSessionId: undefined, last: undefined }
+        : { takeable: false, reason: "busy", state: "running", title: "", project: undefined, at: undefined, bridgeSessionId: undefined, last: undefined },
+    propose: async (input: { sessionId: string }) =>
+      input.sessionId === CC_D
+        ? {
+            ok: true as const,
+            id: 1,
+            message: { text: "", components: [] },
+            plainText: takeoverConfirmText({ title: termView.name ?? "", project: termProject, source: "alive", permissionMode: "default", terminalMode: null }, false),
+          }
+        : { ok: false as const, reason: "busy" as const, text: takeoverReasonText("busy") },
+    confirm: async () => ({ ok: false as const, reason: "stale" as const }),
+    cancel: () => true,
+  };
+  const at = new Date().toISOString();
+  const takeoverRow: CcTakeoverRow = {
+    id: 1,
+    sessionId: CC_D,
+    source: "alive",
+    project: termProject,
+    guildId: GUILD,
+    entry: "web",
+    confirmChannelId: null,
+    targetChannelId: null,
+    state: "awaiting_confirm",
+    step: null,
+    failure: null,
+    permissionMode: "default",
+    terminalMode: null,
+    interrupted: false,
+    notePending: true,
+    confirmMessageId: null,
+    effectsAt: null,
+    createdAt: at,
+    updatedAt: at,
+    finishedAt: null,
+  };
+  const takeovers = { get: (id: number) => (id === 1 ? takeoverRow : undefined), activeFor: () => undefined };
   // ~ は一時ディレクトリの作業場所にする（cwd はどれも作業場所の中で、相対で出る）
   const describe = ccChannelDescriber({ registry, workspaceDir: workspace, home: workspace, sends, permissions: permissionDeps });
   return {
     store: channelStore,
-    fixture: { queue, ask, ended, reset },
+    fixture: { queue, ask, ended, term: CC_D, reset },
+    takeover,
+    takeovers,
     status: () => ({ ...CC_STATUS_DISABLED, enabled: true, hookPort: true, tmux: "ok" as const, multilineOk: true, pendingPermissions: permissions.countPending("hook"), unifyReady: true }),
     topics: { registry, channels: channelStore, permissions, sends, starts, holdSec, questionHoldSec: holdSec },
     channels: { store: channelStore, describe },
