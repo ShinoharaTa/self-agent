@@ -10699,6 +10699,145 @@ test("web static: 取り込みの途中に札を閉じても応答を受け、�
   assert.deepEqual(t.opened, []);
 });
 
+test("web static: 取り込みの札は古い判定の応答を捨てる（後から読んだ方だけを使う）", async () => {
+  // 結果が分からない間の 1.5 秒の読み直しが返らないうちに、5 秒の読み直しが始まって先に返る
+  const t = await lostTakeover();
+  const slow = deferred();
+  const fast = deferred();
+  t.api.getReply = () => slow.promise;
+  t.advance(1500);
+  t.api.getReply = () => fast.promise;
+  t.advance(3500);
+  assert.equal(t.gets.length, 3);
+  fast.resolve(takeCheck({ takeable: false, state: "running", last: { takeover: 7, state: "running", id: null } }));
+  await t.flush();
+  assert.equal(t.raw().check!.state, "running");
+  assert.equal(t.raw().checking, false);
+  const drawn = t.draws.length;
+  // 遅れて返った古い応答（済んだ、と言う）では描かない・書き換えない・話題を開かない
+  slow.resolve(takeCheck({ takeable: false, state: "ended", last: { takeover: 7, state: "done", id: "ch:9" } }));
+  await t.flush();
+  assert.equal(t.draws.length, drawn);
+  assert.equal(t.raw().phase, "lost");
+  assert.deepEqual(t.opened, []);
+  assert.deepEqual(t.toasts, []);
+});
+
+test("web static: 取り込みを進めた後に別の話題を見ている間に断られたら、知らせを出し、札に戻っても文が残る", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  const d = deferred();
+  t.api.postReply = (path) => (path.endsWith("/confirm") ? d.promise : Promise.resolve({ id: 7, text: "本文" }));
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  await t.flush();
+  t.state.active = "ch:other";
+  t.takeover().close("s1");
+  d.reject(takeError(409, { error: "not_exited", text: "端末の Claude Code が終わりませんでした。" }));
+  await t.flush();
+  assert.deepEqual(t.toasts, [{ text: "「端末の題」: 端末の Claude Code が終わりませんでした。", level: "error" }]);
+  // 札に戻る: 開いたときの読み直しが読めても文は残る
+  t.state.active = "term:s1";
+  t.render();
+  t.takeover().open("s1");
+  await t.flush();
+  assert.equal(t.raw().phase, "idle");
+  assert.equal(t.raw().checking, false);
+  assert.equal(t.raw().error, "端末の Claude Code が終わりませんでした。");
+  // その次に判定が読めたら消す
+  t.raw().on.recheck();
+  await t.flush();
+  assert.equal(t.raw().error, null);
+  assert.equal(t.toasts.length, 1);
+});
+
+test("web static: 札を出している間に断られたときは知らせを出さない（文は札に出る）", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  t.api.postReply = (path) => (path.endsWith("/confirm") ? Promise.reject(takeError(409, { error: "not_exited", text: "終わりませんでした。" })) : Promise.resolve({ id: 7, text: "本文" }));
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  await t.flush();
+  assert.deepEqual(t.toasts, []);
+  assert.equal(t.raw().error, "終わりませんでした。");
+});
+
+test("web static: 札を閉じても結果が分からない間の読み直しは止めず、別の話題を見ている間に失敗が分かったら知らせを出す", async () => {
+  for (const [state, want] of [
+    ["failed", "「端末の題」: 取り込めませんでした。"],
+    ["cancelled", "「端末の題」: 取り込みは始まっていません。もう一度試せます。"],
+  ] as const) {
+    const t = await lostTakeover();
+    t.state.active = "ch:other";
+    t.takeover().close("s1");
+    assert.equal(t.timers.size, 3, "閉じてもタイマーは残す");
+    t.api.getReply = () => Promise.resolve(takeCheck({ takeable: false, state: "ended", last: { takeover: 7, state, id: null } }));
+    t.advance(1500);
+    await t.flush();
+    assert.equal(t.gets.length, 2);
+    assert.deepEqual(t.toasts, [{ text: want, level: "error" }], state);
+    assert.equal(t.timers.size, 0);
+    // 札に戻ると文が残っている
+    t.state.active = "term:s1";
+    t.render();
+    t.takeover().open("s1");
+    await t.flush();
+    assert.equal(t.raw().phase, "idle");
+    assert.equal(t.raw().error, want.slice("「端末の題」: ".length), state);
+  }
+});
+
+test("web static: 結果が分からない間に、後から別の取り込みが作られていたら分からない形を解く（文は出さない）", async () => {
+  const t = await lostTakeover();
+  t.api.getReply = () => Promise.resolve(takeCheck({ takeable: false, state: "idle", last: { takeover: 8, state: "awaiting_confirm", id: null } }));
+  t.raw().on.recheck();
+  await t.flush();
+  assert.equal(t.raw().phase, "idle");
+  assert.equal(t.raw().error, null);
+  assert.equal(t.timers.size, 0);
+  assert.deepEqual(t.toasts, []);
+  assert.deepEqual(t.opened, []);
+});
+
+test("web static: 読み直しで済んでいたのに行き先が返らなければ、知らせと一覧の読み直しだけして分からない形を解く", async () => {
+  const t = await lostTakeover();
+  t.api.getReply = () => Promise.resolve(takeCheck({ takeable: false, state: "ended", last: { takeover: 7, state: "done", id: null } }));
+  t.raw().on.recheck();
+  await t.flush();
+  assert.equal(t.raw().phase, "idle");
+  assert.equal(t.raw().error, null);
+  assert.equal(t.timers.size, 0);
+  assert.deepEqual(t.toasts, [{ text: "「端末の題」を取り込みました", level: null }]);
+  assert.equal(t.counts.topicLoads, 1);
+  assert.deepEqual(t.opened, []);
+});
+
+test("web static: 何もしていない札を閉じたら忘れ、開き直すと判定を読み直す。途中の札は閉じても覚えている", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  t.takeover().close("s1");
+  const d = deferred();
+  t.api.getReply = () => d.promise;
+  t.render();
+  t.takeover().open("s1");
+  assert.equal(t.gets.length, 2);
+  assert.equal(t.raw().check, null, "前の判定は持ち越さない");
+  d.resolve(takeCheck());
+  await t.flush();
+  // 途中（結果が分からない）で閉じて開き直しても、分からない形のまま
+  const u = await lostTakeover();
+  u.takeover().close("s1");
+  u.api.getReply = () => Promise.resolve(takeCheck({ last: { takeover: 7, state: "running", id: null } }));
+  u.render();
+  u.takeover().open("s1");
+  await u.flush();
+  assert.equal(u.raw().phase, "lost");
+});
+
 test("web static: takeover.js を読むのは v3.html だけ（index.html・workbench.js は読まない・名前を出さない）", () => {
   assert.match(read("v3.html"), /<script src="\/static\/takeover\.js" defer><\/script>/);
   for (const name of ["index.html", "workbench.js"]) {
