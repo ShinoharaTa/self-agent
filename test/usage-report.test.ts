@@ -291,9 +291,9 @@ test("formatUsageEntry: 1 ターン 1 行（key・session_id は出さない）�
       "00:04:05 session           Sonnet 5.5 ok steps 2 入力 10,105 読み 5,000 書き 5,100(1h 5,000) なし 5 出力 65 率 49% ctx 5,102 4.2s",
     ],
     [
-      "一覧に無いモデルは ID のまま",
+      "一覧に無いモデルは先頭の claude- を落とした ID",
       entry({ model: "claude-opus-5" }),
-      "00:04:05 session           claude-opus-5 ok steps 2 入力 10,105 読み 5,000 書き 5,100(1h 5,000) なし 5 出力 65 率 49% ctx 5,102 4.2s",
+      "00:04:05 session           opus-5     ok steps 2 入力 10,105 読み 5,000 書き 5,100(1h 5,000) なし 5 出力 65 率 49% ctx 5,102 4.2s",
     ],
   ];
   for (const [label, value, expected] of cases) {

@@ -6,7 +6,7 @@ import type { UsageEntry } from "../store/usage.ts";
 
 /** npm run usage の行で種類を揃える幅（いちばん長い session-scheduled に合わせる） */
 export const USAGE_KIND_WIDTH = 17;
-/** npm run usage の行でモデル（一覧の字。一覧に無ければ ID のまま）を揃える幅（一覧でいちばん長い Sonnet 5.5 に合わせる） */
+/** npm run usage の行でモデル（一覧の字。一覧に無ければ先頭の claude- を落とした ID）を揃える幅（一覧でいちばん長い Sonnet 5.5 に合わせる） */
 export const USAGE_MODEL_WIDTH = 10;
 
 /** 桁区切り（カンマ）の数 */
@@ -71,6 +71,12 @@ export function entryTokens(entry: UsageEntry): EntryTokens {
   };
 }
 
+/** usage の行のモデルの字。一覧に在れば一覧の字、無ければ先頭の claude- を落とした ID（幅に収めるため） */
+function usageModelLabel(id: string): string {
+  const label = labelOf(id);
+  return label === id && id.startsWith("claude-") ? id.slice("claude-".length) : label;
+}
+
 /** その時刻の、timeZone での時刻（HH:MM:SS） */
 function formatClock(at: string, timeZone: string): string {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -99,7 +105,7 @@ export function formatUsageEntry(entry: UsageEntry, timeZone: string): string {
   return [
     formatClock(entry.at, timeZone),
     (entry.kind ?? "-").padEnd(USAGE_KIND_WIDTH),
-    (entry.model === null ? "-" : labelOf(entry.model)).padEnd(USAGE_MODEL_WIDTH),
+    (entry.model === null ? "-" : usageModelLabel(entry.model)).padEnd(USAGE_MODEL_WIDTH),
     entry.ok ? "ok" : "NG",
     `steps ${entry.steps === null ? "-" : entry.steps.length}`,
     `入力 ${formatMaybe(total)}`,
