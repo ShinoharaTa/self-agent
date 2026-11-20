@@ -16,6 +16,7 @@ import {
   PROGRESS_INTERVAL_MS,
   type ProgressTimers,
   REVIVED_NOTE,
+  GITHUB_ECHO_PREFIX,
   RIGHT_HAND_ECHO_PREFIX,
   RUNNING_STEPS_MAX,
   WEB_ECHO_PREFIX,
@@ -1730,6 +1731,37 @@ test("Web: via right_hand で写しの投稿に失敗したら、log は「右�
   assert.deepEqual(await handler.submitText({ ...webInput("topic-1", "送れない本文"), via: "right_hand" }), { result: "echo_failed" });
 
   assert.deepEqual(logs, ["右腕の発言の投稿に失敗しました: Missing Access"]);
+});
+
+test("Web: via github なら写しは「（GitHub の通知から）」で始まり、本文に URL があってもターンの allowedUrls は空。履歴の owner の行は source web で本文だけ", async (t) => {
+  const { gateway, runner, topicSessions, history, handler } = setup(t, [okResult("session-1", "見ます")], { history: true });
+  topicSessions.create(TOPIC);
+  const content = "[self-agent から] GitHub の通知の対応依頼。URL: https://github.com/example-org/example-repo/pull/12 。";
+
+  const result = await handler.submitText({ ...webInput("topic-1", content), via: "github" });
+
+  assert.equal(result.result, "accepted");
+  assert.equal(GITHUB_ECHO_PREFIX, "（GitHub の通知から）");
+  assert.deepEqual(gateway.posts, [{ channelId: "topic-1", messageId: "posted-1", message: { text: `${GITHUB_ECHO_PREFIX}\n${content}` } }]);
+  await until(() => gateway.sent.length === 1);
+  assert.deepEqual(runner.inputs.map((input) => input.allowedUrls), [[]]);
+  assert.deepEqual(
+    historyRows(history, "topic-1").filter((row) => row.kind === "owner").map((row) => [row.source, row.text, row.messageId]),
+    [["web", content, "posted-1"]],
+  );
+});
+
+test("Web: via github で写しの投稿に失敗したら、log は「GitHub の通知の発言の投稿に失敗しました」で、チャンネル ID・本文は出ない", async (t) => {
+  const { gateway, topicSessions, handler, logs } = setup(t, [], { history: true });
+  topicSessions.create(TOPIC);
+  gateway.beforeSendMessage = () => {
+    throw new Error("Missing Access");
+  };
+
+  assert.deepEqual(await handler.submitText({ ...webInput("topic-1", "送れない本文"), via: "github" }), { result: "echo_failed" });
+
+  assert.deepEqual(logs, ["GitHub の通知の発言の投稿に失敗しました: Missing Access"]);
+  for (const word of ["topic-1", "送れない本文"]) assert.equal(logs.join("\n").includes(word), false, word);
 });
 
 test("Web: 待ちのセッションに送ると、返す前に進行中に戻して最終発言の時刻を記録し、返事の先頭に REVIVED_NOTE を付ける", async (t) => {

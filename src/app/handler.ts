@@ -52,6 +52,8 @@ export const RUNNING_STEPS_MAX = 30;
 export const WEB_ECHO_PREFIX = "（Web から）";
 /** 右腕（#inbox のエージェント）が始めた話題の最初の依頼を Discord に投稿するときの 1 行目（docs/plan/web-ui-v3.md §4） */
 export const RIGHT_HAND_ECHO_PREFIX = "（右腕から）";
+/** GitHub の通知の［対応］で始めた話題の最初の依頼を Discord に投稿するときの 1 行目（app/github-topics.ts） */
+export const GITHUB_ECHO_PREFIX = "（GitHub の通知から）";
 /** echo の後に停止を始めてターンにしなかったときの Web の会話の知らせ */
 export const WEB_STOPPING_NOTICE = "停止中のためターンにしませんでした";
 // 途中経過の表示は progress.ts（ジョブと共通）。これまでどおり handler からも使えるようにする
@@ -164,7 +166,8 @@ export type Handler = {
    * その ID 付きで history の owner の行を書いてから、その投稿への返信としてターンを始める（返信までは待たない）。turnId は owner の行の id（history が無い・書けなければ 0）。
    * 停止を始めていれば、echo の前なら投稿せずに、echo の後ならキューに入れずに stopping。
    * サーバーの許可と /setup 済みの判定は呼び出し側（web/routes/channels.ts の webChannelLookup）が行う。
-   * via が right_hand（右腕が書いた最初の依頼）なら、投稿の 1 行目は「（右腕から）」で、本文の URL は WebFetch の許可に入れない
+   * via が right_hand（右腕が書いた最初の依頼）なら、投稿の 1 行目は「（右腕から）」で、本文の URL は WebFetch の許可に入れない。
+   * via が github（GitHub の通知の［対応］の最初の依頼）なら、投稿の 1 行目は「（GitHub の通知から）」で、本文の URL は WebFetch の許可に入れない
    */
   submitText(input: {
     guildId: string;
@@ -172,7 +175,7 @@ export type Handler = {
     content: string;
     at: Date;
     source: "web";
-    via?: "right_hand";
+    via?: "right_hand" | "github";
   }): Promise<SubmitTextResult>;
   /** 実行中のターン（発言・[続ける]。全部の種類のチャンネル） */
   runningTurns(): RunningTurn[];
@@ -589,11 +592,13 @@ export function createHandler(deps: HandlerDeps): Handler {
       if (deps.ownerConnected !== undefined && !deps.ownerConnected(channelId)) return { result: "bot_disconnected" };
       if (deps.stopping?.() === true) return { result: "stopping" };
       // Discord の時系列に Web の発言を残す（返事はこの投稿への返信になる）。メンションは鳴らさない（sendMessage の既定）
+      const prefix = via === "right_hand" ? RIGHT_HAND_ECHO_PREFIX : via === "github" ? GITHUB_ECHO_PREFIX : WEB_ECHO_PREFIX;
+      const speaker = via === "right_hand" ? "右腕の" : via === "github" ? "GitHub の通知の" : "Web の";
       let messageId: string;
       try {
-        messageId = await gateway.sendMessage(channelId, { text: `${via === "right_hand" ? RIGHT_HAND_ECHO_PREFIX : WEB_ECHO_PREFIX}\n${content}` });
+        messageId = await gateway.sendMessage(channelId, { text: `${prefix}\n${content}` });
       } catch (error) {
-        log(`${via === "right_hand" ? "右腕の" : "Web の"}発言の投稿に失敗しました: ${describeError(error)}`);
+        log(`${speaker}発言の投稿に失敗しました: ${describeError(error)}`);
         return { result: "echo_failed" };
       }
       const turnId =
@@ -604,7 +609,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         ) ?? 0;
       // echo の間に停止を始めていれば、ターンにしない（停止の待ちに入らないため）
       if (deps.stopping?.() === true) {
-        log(`停止中のため ${via === "right_hand" ? "右腕の" : "Web の"}投稿をターンにしませんでした`);
+        log(`停止中のため ${speaker}投稿をターンにしませんでした`);
         // owner の行が返事の無いまま残らないように知らせを足す
         recordHistory(
           history,
@@ -623,7 +628,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         replyToId: messageId,
         source,
         historyId: turnId,
-        ...(via === "right_hand" ? { allowedUrls: [] } : {}),
+        ...(via === "right_hand" || via === "github" ? { allowedUrls: [] } : {}),
       }).catch((error: unknown) =>
         log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`),
       );

@@ -22,6 +22,7 @@ import {
   type ProjectSessionGate,
   renewChannel,
   rightHandWelcomeText,
+  startedDividerText,
   startTopic,
   type StartTopicInput,
   titleFromText,
@@ -499,6 +500,36 @@ test("startTopic（right_hand）: 仕切りは「右腕が General で始めま�
   assert.ok(light.result === "created");
   assert.equal(light.projectDir, null);
   assert.deepEqual(off.history.list(light.channelId, { limit: 10 }).map((row) => row.text), ["右腕が場所なしで始めました"]);
+});
+
+// ---- GitHub の通知の［対応］から始める（docs/plan/terminal-handover.md の H5） ----
+
+test("startTopic（github）: origin は command、最初の投稿は welcomeText、仕切りは「GitHub の通知から <名前> で始めました」、submitText に via github", async (t) => {
+  const s = await startSetup(t);
+  const result = await s.start({ title: "GitHub PR 12", text: "対応依頼", by: "github", place: { kind: "project", name: "alpha" } });
+  assert.ok(result.result === "created");
+  assert.equal(result.projectDir, "alpha");
+  assert.equal(s.topicSessions.get(result.channelId)?.origin, "command");
+  assert.deepEqual(s.gateway.sent.map((sent) => sent.text), [welcomeText("GitHub PR 12", "alpha")]);
+  assert.deepEqual(s.history.list(result.channelId, { limit: 10 }).map((row) => row.text), ["GitHub の通知から alpha で始めました"]);
+  assert.deepEqual(s.submits, [
+    { guildId: "guild-1", channelId: result.channelId, content: "対応依頼", at: NOW, source: "web", via: "github" },
+  ]);
+  assert.ok(s.logs.some((line) => line.startsWith("GitHub の通知からセッションを作りました")));
+});
+
+test("startedDividerText: github の 3 つの文。web・right_hand の文は今と同じ", () => {
+  const project = { kind: "project", name: "alpha" } as const;
+  const general = { kind: "general" } as const;
+  assert.equal(startedDividerText(project, "alpha", "github"), "GitHub の通知から alpha で始めました");
+  assert.equal(startedDividerText(general, "General", "github"), "GitHub の通知から General で始めました");
+  assert.equal(startedDividerText(general, undefined, "github"), "GitHub の通知から場所なしで始めました");
+  assert.equal(startedDividerText(project, "alpha"), "alpha で始めました");
+  assert.equal(startedDividerText(general, "General", "web"), "General で始めました");
+  assert.equal(startedDividerText(general, undefined, "web"), "場所なしで始めました");
+  assert.equal(startedDividerText(project, "alpha", "right_hand"), "右腕が alpha で始めました");
+  assert.equal(startedDividerText(general, "General", "right_hand"), "右腕が General で始めました");
+  assert.equal(startedDividerText(general, undefined, "right_hand"), "右腕が場所なしで始めました");
 });
 
 test("startTopic: seed を渡すと最初の投稿より前に seeds.set が呼ばれる。seeds が無ければ何もせずに作れる", async (t) => {
