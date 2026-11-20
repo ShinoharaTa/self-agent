@@ -7,6 +7,7 @@ import type { CcRegistry } from "../cc/registry.ts";
 import type { CcReplier } from "../cc/replies.ts";
 import type { CcSender } from "../cc/sender.ts";
 import type { CcStarter } from "../cc/starter.ts";
+import type { CcTakeoverExpirer } from "../cc/takeover.ts";
 import type { CcConfirmExpirer } from "./commands/cc-confirm.ts";
 import type { TopicProposalExpirer } from "./topic-proposals.ts";
 import type { Config } from "../config.ts";
@@ -75,6 +76,8 @@ export type ShutdownDeps = {
   ccChannelPosts?: Pick<CcChannelPosts, "stop" | "idle">;
   /** cc_send・cc_start の確認の失効（SELF_AGENT_CC の有効・無効によらず動かす）。scheduler と同じ時点で止め、書き換えの途中のものを待つ */
   ccConfirmExpirer?: Pick<CcConfirmExpirer, "stop" | "idle">;
+  /** 取り込みの確認の失効（SELF_AGENT_CC=1 で連携が動くときだけ）。停止を始めたら止め、実行中の 1 回が終わるのを待つ */
+  ccTakeoverExpirer?: Pick<CcTakeoverExpirer, "stop" | "idle">;
   /** 右腕の場所を変える確認の失効（SELF_AGENT_CC の有効・無効によらず動かす）。ccConfirmExpirer と同じ時点で止め、書き換えの途中のものを待つ */
   topicProposalExpirer?: Pick<TopicProposalExpirer, "stop" | "idle">;
   /** Claude Code の返事を Discord に戻す（SELF_AGENT_CC=1 のときだけ）。scheduler と同じ時点で止め（新しい Stop を扱わない）、投稿の途中のものを待つ */
@@ -138,6 +141,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccPermissions,
     ccChannelPosts,
     ccConfirmExpirer,
+    ccTakeoverExpirer,
     topicProposalExpirer,
     ccReplier,
     ccHookServer,
@@ -171,6 +175,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       ccStarter?.idle(),
       ccChannelPosts?.idle(),
       ccConfirmExpirer?.idle(),
+      ccTakeoverExpirer?.idle(),
       topicProposalExpirer?.idle(),
       ccReplier?.idle(),
     ]);
@@ -211,6 +216,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccPermissions?.stop();
     ccChannelPosts?.stop();
     ccConfirmExpirer?.stop();
+    ccTakeoverExpirer?.stop();
     topicProposalExpirer?.stop();
     ccReplier?.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);

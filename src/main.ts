@@ -24,8 +24,8 @@ import {
 } from "./agent/permission-bridge.ts";
 import { createProjectProfile } from "./agent/project-profile.ts";
 import { checkSharedLinks } from "./agent/unify-setup-check.ts";
-import type { ProjectSessionGate } from "./app/session-ops.ts";
-import { personaSystemPrompts } from "./agent/system-prompt.ts";
+import { checkSessionProject, createTopicChannel, type ProjectSessionGate } from "./app/session-ops.ts";
+import { personaSystemPrompts, TAKEOVER_NOTE } from "./agent/system-prompt.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
 import { prepareImages, pruneAttachments } from "./app/attachments.ts";
@@ -54,6 +54,7 @@ import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { type MoveDeps, recoverMoves } from "./app/topic-move.ts";
+import type { TurnDeps } from "./app/turn.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
 import { CcChannels, ccEndedHandler, ccPermissionAnsweredHandler, routeCcChannelMessages } from "./cc/channels.ts";
@@ -66,7 +67,8 @@ import { CcPermissionHold } from "./cc/permission-hold.ts";
 import { CcRegistry } from "./cc/registry.ts";
 import { CcReplier } from "./cc/replies.ts";
 import { CcSender } from "./cc/sender.ts";
-import { ccPlacesOf, CcStarter, ensureGeneralDir, procMemAvailable } from "./cc/starter.ts";
+import { ccPlacesOf, CcStarter, ensureGeneralDir, procMemAvailable, projectDir as verifiedProjectDir } from "./cc/starter.ts";
+import { CcTakeover, CcTakeoverExpirer, readProcBtime, readProcStat } from "./cc/takeover.ts";
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
@@ -92,6 +94,7 @@ import { CC_REPLY_KEEP_DAYS, CcReplyStore } from "./store/cc-replies.ts";
 import { CC_SEND_KEEP_DAYS, CcSendStore } from "./store/cc-sends.ts";
 import { CC_SESSION_KEEP_DAYS, CcSessionStore } from "./store/cc-sessions.ts";
 import { CC_START_KEEP_DAYS, CcStartStore } from "./store/cc-starts.ts";
+import { CcTakeoverStore } from "./store/cc-takeovers.ts";
 import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { HistoryStore } from "./store/history.ts";
@@ -110,6 +113,7 @@ import { TopicMoveStore } from "./store/topic-moves.ts";
 import { TopicReadStore } from "./store/topic-reads.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { USAGE_KEEP_DAYS, UsageStore } from "./store/usage.ts";
+import { probePaneState } from "./tmux/pane-state.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
 import { ccChannelDescriber, ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
 import { channelRoutes, webChannelLookup, webChannelNamer } from "./web/routes/channels.ts";
@@ -234,6 +238,8 @@ const ccStarts = new CcStartStore(db, now);
 const ccReplies = new CcReplyStore(db, now);
 // Claude Code のセッションの Discord のチャンネル（CC10。docs/plan/claude-code-channels.md）。作る・終わった・戻ったは下の CcChannels
 const ccChannelStore = new CcChannelStore(db, now);
+// 端末の Claude Code の会話の取り込み（docs/plan/takeover.md）。行を作る・進めるのは下の CcTakeover
+const ccTakeovers = new CcTakeoverStore(db, now);
 // 再起動の前の [起動して続ける]（resuming）は起動を追えないので、終わったままに戻す（CC13）
 {
   const reset = ccChannelStore.resetResuming();
@@ -389,6 +395,17 @@ const kbMemory = {
 const turnQueue = createTurnQueue(config);
 // ターンはチャンネルの持ち主の人格の runner で動かす（personas）
 // プロジェクトのセッションの発言・[続ける]・/close・/renew のターンは projectRunner（予約した依頼は軽いモード。無ければ「SELF_AGENT_CC=1 が要ります」）
+// 取り込み（docs/plan/takeover.md。SELF_AGENT_CC=1 で連携が動くときだけ下で作る）
+let ccTakeover: CcTakeover | undefined;
+let ccTakeoverExpirer: CcTakeoverExpirer | undefined;
+// 取り込んだ会話の最初のターンの前置きと、resume できずに捨てたときの知らせ（ccTakeover は下で作る）
+const turnTakeover: TurnDeps["takeover"] = config.cc
+  ? {
+      noteFor: (key, sessionId, current) => ccTakeover?.noteFor(key, sessionId, current),
+      noteDone: (key) => ccTakeover?.noteDone(key),
+      resumeDropped: (key, sessionId) => ccTakeover?.resumeDropped(key, sessionId),
+    }
+  : undefined;
 const turn = {
   runner,
   ...(projectRunner === undefined ? {} : { projectRunner }),
@@ -400,6 +417,7 @@ const turn = {
   memories,
   usage,
   log,
+  ...(turnTakeover === undefined ? {} : { takeover: turnTakeover }),
 };
 const channelOps = new ChannelOpsQueue({
   gateway,
@@ -878,6 +896,8 @@ if (
   ccSender = new CcSender({
     cfg: config,
     registry,
+    // 取り込みの途中のセッションには積まない・届けない
+    holds: (sessionId) => ccTakeover?.holds(sessionId) === true,
     panes,
     tmux,
     sends: ccSends,
@@ -983,6 +1003,57 @@ if (
     now,
     log,
   });
+  // 取り込みの待ち（チャンネル作成の期限・SIGTERM の前の間・終了の見届け）。reject しない。作成が先に返ると期限のタイマーだけ残るので、unref して終了を引き止めない
+  const takeoverSleep = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms).unref();
+    });
+  const takeover = new CcTakeover({
+    db,
+    cfg: config,
+    home: homedir(),
+    claudeConfigDir: config.claudeConfigDir,
+    registry,
+    panes,
+    probePane: (paneId) => probePaneState({ tmux, paneId, now: () => now().getTime() }),
+    dirs: new ClaudeDirs(),
+    takeovers: ccTakeovers,
+    ccChannels: ccChannelStore,
+    ccSessions,
+    ccSends,
+    ccPermissions: ccPermissionStore,
+    topicSessions,
+    sdkSessions: sessions,
+    ready: () => projectSessions?.ready() === true,
+    checkSessionProject: (name) =>
+      projectSessions === undefined ? { ok: false, reason: "not_set_up" } : checkSessionProject(name, projectSessions),
+    verifiedProjectDir: (name) => verifiedProjectDir(name, ccPlacesOf(config, homedir())),
+    // /new と同じ作り方（既定の人格の Bot。sessions の行は本体が commit で作る）
+    createChannel: (guildId, title, projectDir) => createTopicChannel(guildId, title, { gateway, guildSettings, log }, undefined, projectDir),
+    queue: layoutQueue,
+    channelOps,
+    gateway,
+    ...history,
+    kill: (pid) => {
+      process.kill(pid, "SIGTERM");
+    },
+    readProc: readProcStat,
+    readBtime: readProcBtime,
+    sleep: takeoverSleep,
+    now,
+    ownPid: process.pid,
+    note: TAKEOVER_NOTE,
+    log,
+  });
+  ccTakeover = takeover;
+  // 確認の失効（10 分）を 1 分ごとに確かめる
+  ccTakeoverExpirer = new CcTakeoverExpirer({ takeover, log });
+  // 起動時の前段（DB だけ）: 再起動の前に running だった行を failed（restart）にする。一覧の最初の読み取りと操作の受け付けより前
+  try {
+    takeover.recoverRunning();
+  } catch (error) {
+    log(`Claude Code: 取り込みの起動時の片付けに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
+  }
 }
 // cc_send・cc_start の確認の失効（10 分）。SELF_AGENT_CC が無効でも動かし、再起動の前に出した確認が残っていれば取り消して注記する
 const ccConfirmExpirer = new CcConfirmExpirer({
@@ -1379,6 +1450,7 @@ const lifecycle = createShutdown(
     ...(ccChannelPosts === undefined ? {} : { ccChannelPosts }),
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     ccConfirmExpirer,
+    ...(ccTakeoverExpirer === undefined ? {} : { ccTakeoverExpirer }),
     topicProposalExpirer,
     ...(ccReplier === undefined ? {} : { ccReplier }),
     closeDb: () => db.close(),
@@ -1446,6 +1518,14 @@ void guest?.start(lifecycle.stopping);
 logUnconfiguredGuilds({ cfg: config, guildSettings, log });
 // 作業ジョブ: 再起動で止まった run の #jobs への知らせを出してから、入れ直した queued を始める
 await jobs?.announceRecovered();
+// 取り込みの起動時の後段（Discord が要る）: 前段が失敗にした行の確認の文の書き換え・残った行き先のチャンネルの削除・後始末の残り
+if (ccTakeover !== undefined) {
+  try {
+    await ccTakeover.recoverEffects();
+  } catch (error) {
+    log(`Claude Code: 取り込みの起動時の片付けに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
+  }
+}
 // 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で（リマインドは分の境目ごと）。停止を始めていれば何もしない
 scheduler.start(TICK_INTERVAL_MS);
 reminderScheduler.start();
@@ -1458,6 +1538,7 @@ ccChannelPosts?.rewriteRecovered(ccRecoveredPermissions);
 projectPermissionPoster?.rewriteRecovered(ccRecoveredPermissions);
 ccChannelPosts?.start();
 ccConfirmExpirer.start();
+ccTakeoverExpirer?.start();
 topicProposalExpirer.start();
 ccReplier?.start();
 console.log(`self-agent: 起動しました（model=${config.model}）`);
