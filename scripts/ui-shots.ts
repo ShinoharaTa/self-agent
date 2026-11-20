@@ -180,7 +180,8 @@ const oldShellNames = (vp: Viewport): string[] => [`old-${vp}-dark-list`, `old-$
 
 /** Claude Code のチャンネルの段 cc（2 つ目のサーバー。ダークの 3 組）。今のサーバーに足すとほかの絵が変わるので分ける */
 const CC_SHELLS: ReadonlyArray<Viewport> = ["phone", "pc", "tablet"];
-const ccShellNames = (vp: Viewport): string[] => ["b-cc-status", "b-cc-sent", "b-cc-permission", "b-cc-ended", "b-cc-ended-screen"].map((n) => `${vp}-dark-${n}`);
+const ccShellNames = (vp: Viewport): string[] =>
+  ["b-cc-status", "b-cc-sent", "b-cc-permission", "b-cc-ended", "b-cc-ended-screen", "b-cc-term", "b-cc-term-confirm"].map((n) => `${vp}-dark-${n}`);
 
 /** 部品の見本のページ（/static/gallery.html。K1・K2）を撮る組 */
 const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
@@ -4743,6 +4744,64 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await shot(page, `${p}-b-cc-ended-screen`);
         await menuRow("画面を閉じる");
       }
+
+      // ----- 端末のセッションの札（チャンネルの無い待機のセッション。一覧の cc: の行） -----
+      // 12. 行を押すと札（取り込める形）。列 2 に画面の写しが無く、画面の写しの API（/takeover の付かない /api/cc/sessions/<id>）を読まない
+      await load(page, "/static/v3.html");
+      const TERM = '#ed .ed-scroll > [data-term] .c-term[data-kind="ready"]';
+      const screenReads: string[] = [];
+      const onRequest = (req: { url: () => string }): void => {
+        const path = new URL(req.url()).pathname;
+        if (path === `/api/cc/sessions/${cc.term}`) screenReads.push(path);
+      };
+      page.on("request", onRequest);
+      offs.push(async () => void page.off("request", onRequest));
+      await page.locator(`#c-list-root button[data-topic="cc:${cc.term}"]`).first().click();
+      const ready = await page
+        .waitForSelector(TERM, { timeout: 5000 })
+        .then(() => true)
+        .catch(() => false);
+      await settled(page);
+      if (!ready) say(12, "札", "5 秒たっても取り込める形の札が出ない");
+      const termState = await page.evaluate(() => ({
+        screens: document.querySelectorAll("#ed .cc-screen").length,
+        tab: (window as unknown as { SA: { app: { activeTabId: () => string | null } } }).SA.app.activeTabId(),
+        hash: location.hash,
+      }));
+      if (termState.screens !== 0) say(12, "札", `列 2 に画面の写しが ${termState.screens} 個`);
+      if (termState.tab !== `term:${cc.term}` || termState.hash !== `#/cc/${cc.term}`) say(12, "札", `タブ ${String(termState.tab)}・hash ${termState.hash}`);
+      const readsAtCard = screenReads.length;
+      if (readsAtCard !== 0) say(12, "札", `画面の写しの API を ${readsAtCard} 回読んだ`);
+      await shot(page, `${p}-b-cc-term`);
+
+      // 13. ［取り込む］で確認（本文はサーバーの文・最初の焦点は［やめる］）。［やめる］で閉じて札に戻る
+      if (ready) {
+        await page.locator(`${TERM} .c-term-actions .c-btn`).filter({ hasText: /^取り込む$/ }).click();
+        const asked = await page
+          .waitForSelector("dialog.c-sheet[open] .c-confirm-body", { timeout: 5000 })
+          .then(() => true)
+          .catch(() => false);
+        await settled(page);
+        const confirm = await page.evaluate(() => {
+          const open = document.querySelector("dialog.c-sheet[open]");
+          const a = document.activeElement;
+          return {
+            body: (open?.querySelector(".c-confirm-body")?.textContent ?? "").trim(),
+            focus: a instanceof HTMLElement && open !== null && open.contains(a) ? (a.textContent ?? "").trim() : (a?.tagName ?? null),
+          };
+        });
+        if (!asked || !confirm.body.includes("を取り込みます。")) say(13, "確認", `本文「${confirm.body}」`);
+        if (confirm.focus !== "やめる") say(13, "確認", `最初の焦点が「${String(confirm.focus)}」（［やめる］のはず）`);
+        await shot(page, `${p}-b-cc-term-confirm`);
+        await page.locator("dialog.c-sheet[open] .c-btn").filter({ hasText: /^やめる$/ }).click();
+        const back = await page
+          .waitForFunction((sel: string) => document.querySelector("dialog.c-sheet[open]") === null && document.querySelector(sel) !== null, TERM, { timeout: 5000 })
+          .then(() => true)
+          .catch(() => false);
+        await settled(page);
+        if (!back) say(13, "確認", "［やめる］の後に確認が閉じて取り込める形の札に戻らない");
+      }
+      if (screenReads.length !== readsAtCard) say(13, "確認", `確認の間に画面の写しの API を ${screenReads.length - readsAtCard} 回読んだ`);
     } finally {
       for (const off of offs.reverse()) await off();
     }
