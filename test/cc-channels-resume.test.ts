@@ -557,3 +557,27 @@ test("cc:del: 記録した今の確認で ended のときだけ。[削除する]
   assert.equal(s.store.get("900000000000000005")?.state, "open");
   assertQuietLogs(logs);
 });
+
+test("cc:del: deleted の行（取り込んだセッションの cc のチャンネル）の [削除する]・[残す] は『すでに処理済みです』に書き換えるだけ", async (t) => {
+  const s = setup(t);
+  const gateway = new FakeGateway({ allow: ["deleteChannel"] });
+  const channelOps = new RecordingChannelOps();
+  const component = createCcComponent({
+    ccDelete: { deleteAfterDays: 30, store: s.store, gateway, channelOps },
+    gateway: s.gateway,
+    log: () => {},
+  });
+  // 削除の確認を出した後に取り込まれた（取り込みはチャンネルを消さずに行を deleted にする）
+  s.store.setDeletePrompt(CHANNEL, "prompt-1");
+  const endedAt = s.store.get(CHANNEL)?.endedAt;
+  assert.equal(s.store.markDeleted(CHANNEL), true);
+  for (const customId of [`cc:del:${CHANNEL}`, `cc:del:keep:${CHANNEL}`]) {
+    const responder = new FakeResponder();
+    await component.handle(button(customId, "prompt-1"), responder);
+    assert.deepEqual(responder.calls, [{ method: "update", message: { text: ALREADY_HANDLED_TEXT, components: [] } }], customId);
+  }
+  assert.deepEqual(gateway.deleted, []);
+  assert.deepEqual(channelOps.cancelled, []);
+  assert.equal(s.store.get(CHANNEL)?.state, "deleted");
+  assert.equal(s.store.get(CHANNEL)?.endedAt, endedAt);
+});
