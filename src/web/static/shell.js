@@ -54,6 +54,8 @@
     view: "list",
     // Claude Code のチャンネルのある話題で見ている物（"talk" 会話 | "pane" 端末の画面の写し）。話題を開くたびに talk
     view2: "talk",
+    // 端末のセッションの話題（cc:）で見ている物（"card" 札 | "pane" 今の［端末］のタブ）。話題を開くたびに card
+    term: "card",
     // 右腕: 列のとき開いているか（localStorage の v3-hand）・重ねる形で開いているか（保存しない）・形（"column" | "over"）
     handWant: true,
     handOver: false,
@@ -148,6 +150,8 @@
 
   // 列 2 に最後に描いたタブ（[端末] の間は cc:<sessionId>）
   let edTab = null;
+  // 札を描けなかった。次からは今の［端末］のタブを出す
+  let termBroken = false;
 
   /** タブの中身を描く。同じタブならスクロール位置は保ち、別のタブに切り替えたとき（switched）は下端（data-stick="bottom"）か先頭から */
   function renderEd(ed, tabId, switched) {
@@ -156,6 +160,24 @@
     const oldScroll = switched || hidden ? null : ed.querySelector(".ed-scroll");
     const wasBottom = !oldScroll || atBottom(oldScroll);
     const oldTop = oldScroll ? oldScroll.scrollTop : 0;
+    if (tabId && tabId.startsWith("term:")) {
+      const sessionId = tabId.slice(5);
+      let drawn = false;
+      try {
+        drawn = SA.takeover.render(ed, sessionId, termCtx(sessionId)) === true;
+      } catch (error) {
+        console.error("[web] term render failed", error instanceof Error ? error.name : "");
+      }
+      // 札は短いので位置は覚えない
+      if (drawn) return;
+      // 描けなければ今の［端末］のタブに戻し、次からも札を試さない（画面の写しは api.js の polling が読む）
+      termBroken = true;
+      SA.takeover.close(sessionId);
+      tabId = shownTabId();
+      edTab = tabId || null;
+      // 見出しは札の名前で描いた後なので、戻したタブの名前で描き直す
+      renderBar();
+    }
     const info = tabId ? SA.views.info(tabId) : null;
     if (!info) {
       ed.replaceChildren(el("div", { class: "v3-empty" }, [el("p", { class: "meta", text: "左の一覧から話題を選んでください" })]));
@@ -178,8 +200,37 @@
     return t && t.origin === "cc" && t.id.startsWith("ch:") && t.sessionId !== null ? t.sessionId : null;
   }
 
-  /** 列 2 に出しているタブ（[端末] の間は cc:<sessionId>。一覧の aria-current と hash は S.active のまま） */
+  /** 札を出す話題（cc: で、札の入口と口が在り、まだ「端末を見る」を押していない）なら、そのセッションの ID */
+  function termSession() {
+    if (S.term !== "card" || termBroken || !S.active || !S.active.startsWith("cc:")) return null;
+    return SA.takeover && SA.term ? S.active.slice(3) : null;
+  }
+
+  /** 札に渡す物: 一覧の行（cc: の行。無ければ同じセッションの Claude Code のチャンネルの行。どちらも無ければ null）・場所の文字・「端末を見る」 */
+  function termCtx(sessionId) {
+    const data = SA.topics.data();
+    const row =
+      SA.topics.find("cc:" + sessionId) ||
+      (data ? data.topics.find((t) => t !== null && typeof t === "object" && t.origin === "cc" && t.sessionId === sessionId) : null) ||
+      null;
+    return { row, place: row ? placeText(row) : null, pane: showTermPane };
+  }
+
+  /** 札の「端末を見る」: 今の［端末］のタブに替える（別のタブとして描き、画面の写しを読む） */
+  function showTermPane() {
+    const sessionId = termSession();
+    if (sessionId === null) return;
+    S.term = "pane";
+    SA.takeover.close(sessionId);
+    renderMain(true);
+    const info = SA.views.info(shownTabId());
+    if (info && info.onOpen) info.onOpen();
+  }
+
+  /** 列 2 に出しているタブ（[端末] の間は cc:<sessionId>、札の間は term:<sessionId>。一覧の aria-current と hash は S.active のまま） */
   function shownTabId() {
+    const term = termSession();
+    if (term) return "term:" + term;
     if (S.view2 === "pane") {
       const sessionId = paneSession();
       if (sessionId) return "cc:" + sessionId;
@@ -325,7 +376,7 @@
       // 一覧を出している間に会話に戻したら、次に会話の列を出したとき下端にする（[端末] の位置を当てない）
       if (mainHidden()) hiddenScroll = { top: 0, bottom: true };
       renderEd(ed, shown, true);
-    }
+    } else if (ed && shown && shown.startsWith("term:")) renderEd(ed, shown);
     syncHand();
   }
 
@@ -379,9 +430,11 @@
     if (S.active !== null && switched && !S.active.startsWith("ch:")) {
       const prev = SA.views.info(S.active);
       if (prev && prev.onClose) prev.onClose();
+      if (S.active.startsWith("cc:") && SA.takeover) SA.takeover.close(S.active.slice(3));
     }
     S.active = tabId;
     S.view2 = "talk";
+    S.term = "card";
     SA.topics.setCurrent(tabId);
     deferred = null;
     if (switched) {
@@ -405,7 +458,10 @@
     // 同じ話題でも [端末] から会話に戻ったときは別のタブとして描く
     renderMain(switched || shownBefore !== shownTabId());
     SA.topics.render();
-    if (info.onOpen) info.onOpen();
+    // 札のときは画面の写しを読まない（判定だけ読む）
+    const term = termSession();
+    if (term) SA.takeover.open(term);
+    else if (info.onOpen) info.onOpen();
     // 一覧（/api/channels）にまだ無いチャンネル（/api/topics で先に知った話題）は、見出しのために 1 回読む
     if (tabId.startsWith("ch:") && !SA.chat.channelById(tabId.slice(3))) SA.store.load.channels({ quiet: true });
     // スマホは一覧が隠れるので、見出しの「一覧へ」に焦点（入口が無ければ今の見出しの [‹]）

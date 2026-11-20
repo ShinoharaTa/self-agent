@@ -32,6 +32,7 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
     "shell.css",
     "shell.js",
     "topics.js",
+    "takeover.js",
     "c-term.js",
     "c-term.css",
     "icons-app.svg",
@@ -2590,7 +2591,7 @@ function appKeys(js: string): string[] {
   return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
 }
 
-test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards → c-hand → c-term、ui → api → sound → chat → views → topics → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
+test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards → c-hand → c-term、ui → api → sound → chat → views → topics → takeover → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
   const html = read("v3.html");
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
@@ -2598,7 +2599,7 @@ test("web static: v3.html の読み込みの順（base → tokens → app → sh
   // module は元から後回し（defer を書かない）。文書の順で topics.js の後・shell.js の前に動く
   const scripts = [...html.matchAll(/<script (?:type="module" )?src="([^"]+)"( defer)?><\/script>/g)].map((m) => [m[1], m[0].includes('type="module"') ? "module" : m[2] ? "defer" : "none"]);
   assert.deepEqual(scripts, [
-    ...["ui", "api", "sound", "chat", "views", "topics"].map((n) => [`/static/${n}.js`, "defer"]),
+    ...["ui", "api", "sound", "chat", "views", "topics", "takeover"].map((n) => [`/static/${n}.js`, "defer"]),
     ["/static/c-app.js", "module"],
     ["/static/shell.js", "defer"],
   ]);
@@ -2878,6 +2879,7 @@ type HandFrame = {
   replyRefs?: (text: string) => Array<{ id: string; title: string; meta: string }>;
   onRef?: (id: string) => void;
 };
+type TermCtx = { row: { id: string } | null; place: string | null; pane: () => void };
 type HandHeadState = { title: string; menu: boolean; on: { menu: (opener: unknown) => unknown; close: () => unknown } };
 
 // 一覧のモデル（c-list.js）。素の JS で型が無いので、URL を変数にして型の解決を避ける（test/web-components.test.ts と同じ）
@@ -2956,6 +2958,11 @@ function loadShell(
     hand?: { draw?: (st: HandHeadState | null) => boolean; focus?: boolean };
     /** 右腕の描画（chat.js の render の代わり）で、入力欄を古い .composer-wrap でなく [data-composer] の根にする */
     handComposer?: boolean;
+    /**
+     * 端末のセッションの札（作り物の SA.takeover と SA.term）。render・open・close を覚える。draw は render の答え（既定 true）、
+     * noEntry なら SA.takeover を、noMouth なら SA.term を置かない。既定（渡さない）はどちらも無い
+     */
+    takeover?: { draw?: () => boolean; noEntry?: boolean; noMouth?: boolean };
   } = {},
 ) {
   // width は .v3 の幅（右腕の形を決める。既定 1,400 = 列。一覧は 280px）
@@ -3388,6 +3395,21 @@ function loadShell(
   };
   if (!opts.noTop) SA.top = top;
   if (opts.composer) SA.composer = { focus: opts.composer, draw: () => true, set: () => true, drop: () => undefined };
+  // 札の作り物: render は列 2 に .ed-scroll > [data-term] を置き、渡された ctx を覚える
+  const term = { renders: [] as Array<{ sessionId: string; ctx: TermCtx }>, opens: [] as string[], closes: [] as string[] };
+  const takeoverOpts = opts.takeover;
+  if (takeoverOpts && !takeoverOpts.noEntry)
+    SA.takeover = {
+      render: (container: DomNode, sessionId: string, ctx: TermCtx) => {
+        term.renders.push({ sessionId, ctx });
+        if (takeoverOpts.draw && !takeoverOpts.draw()) return false;
+        container.replaceChildren(ui.el("div", { class: "ed-scroll" }, [ui.el("div", { "data-term": "" })]));
+        return true;
+      },
+      open: (sessionId: string) => void term.opens.push(sessionId),
+      close: (sessionId: string) => void term.closes.push(sessionId),
+    };
+  if (takeoverOpts && !takeoverOpts.noMouth) SA.term = { draw: () => true, drop: () => undefined };
   // 右腕の見出しの入口（c-app.js の SA.hand）の代わり: draw は state を覚え、focus は what を覚えて代わりのボタンに焦点
   const handHead = { draws: [] as Array<HandHeadState | null>, focuses: [] as string[] };
   const handOpts = opts.hand;
@@ -3478,6 +3500,7 @@ function loadShell(
     warns,
     handHead,
     handButtons,
+    term,
     list: listSeen,
     model,
     listState: lastState,
@@ -4962,7 +4985,7 @@ test("web static: SA.app.shownChannelIds は 2 つの殻にあり、前に出て
   assert.deepEqual(ids(), []);
   const sh = read("shell.js");
   const ctx: Record<string, unknown> = { S: { view2: "pane", active: "ch:333" }, paneSession: () => "s1", handVisible: () => false, handChannelId: () => null };
-  vm.runInNewContext(fnSource(sh, "shownTabId") + fnSource(sh, "shownChannelIds") + "\nresult = shownChannelIds();", ctx);
+  vm.runInNewContext(fnSource(sh, "termSession") + fnSource(sh, "shownTabId") + fnSource(sh, "shownChannelIds") + "\nresult = shownChannelIds();", ctx);
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.result)), []);
   (ctx.S as { view2: string }).view2 = "talk";
   vm.runInNewContext("result = shownChannelIds();", ctx);
@@ -9997,4 +10020,681 @@ test("web static: v3 の許可のモード: スマホの「…」の板に「許
   h.app.open("ch:2");
   menu();
   assert.equal(sheetRows(h).some((r) => r.label === "許可のモードを変える"), false);
+});
+
+// ===== 端末のセッションの札（docs/plan/terminal-handover.md の H3。shell.js の分岐と takeover.js のつなぎ） =====
+const termTopic = (sessionId: string, o: Record<string, unknown> = {}) => v3Topic("cc:" + sessionId, { origin: "cc", sessionId, title: "端末の題", ...o });
+
+async function loadTermShell(opts: Parameters<typeof loadShell>[0] = {}, topics: unknown[] = [termTopic("s1")]) {
+  const h = loadShell({ takeover: {}, ...opts });
+  h.api.reply = () => Promise.resolve(v3Result(topics));
+  await h.flush();
+  await h.topics.load();
+  return h;
+}
+
+test("web static: 新しい殻は端末の行を開くと札を出し、列 2 のタブは term:<sessionId> になる", async () => {
+  const h = await loadTermShell();
+  h.app.open("cc:s1");
+  assert.equal(h.app.activeTabId(), "term:s1");
+  // cc: で始まらないので、画面の写しの polling（api.js の activeCcSession）は回らない
+  assert.equal(h.app.activeTabId()!.startsWith("cc:"), false);
+  assert.deepEqual(h.term.renders.map((r) => r.sessionId), ["s1"]);
+  assert.ok(h.nodes.ed.querySelector("[data-term]"), "札の根");
+  assert.equal(h.rendered.some((r) => r.tab === "cc:s1"), false, "［端末］のタブを描かない");
+  // 一覧の選んでいる行は話題のまま
+  assert.equal(h.rowOf("cc:s1")!.current, true);
+});
+
+test("web static: 新しい殻は札を出すとき画面の写しの読み込み（views.js の onOpen）を呼ばず、札の open を呼ぶ", async () => {
+  const h = await loadTermShell();
+  h.app.open("cc:s1");
+  assert.deepEqual(h.opens, []);
+  assert.deepEqual(h.term.opens, ["s1"]);
+});
+
+test("web static: 新しい殻の札の hash は #/cc/<id> のままで、その hash から開いても札", async () => {
+  const h = await loadTermShell();
+  h.app.open("cc:s1");
+  assert.equal(h.location.hash, "#/cc/s1");
+  const g = loadShell({ takeover: {}, hash: "#/cc/s1" });
+  g.api.reply = () => Promise.resolve(v3Result([termTopic("s1")]));
+  await g.flush();
+  assert.equal(g.app.activeTabId(), "term:s1");
+  assert.deepEqual(g.term.opens, ["s1"]);
+  assert.deepEqual(g.opens, []);
+});
+
+test("web static: 新しい殻の札の『端末を見る』で今の［端末］のタブ（cc:<sessionId>）になり、onOpen を呼ぶ", async () => {
+  const h = await loadTermShell();
+  h.app.open("cc:s1");
+  h.term.renders.at(-1)!.ctx.pane();
+  assert.equal(h.app.activeTabId(), "cc:s1");
+  assert.equal(h.rendered.at(-1)!.tab, "cc:s1");
+  assert.deepEqual(h.opens, ["cc:s1"]);
+  assert.deepEqual(h.term.closes, ["s1"]);
+  assert.equal(h.location.hash, "#/cc/s1");
+});
+
+test("web static: 新しい殻で同じ行をもう一度開くと札に戻る", async () => {
+  const h = await loadTermShell();
+  h.app.open("cc:s1");
+  h.term.renders.at(-1)!.ctx.pane();
+  const before = h.term.renders.length;
+  h.app.open("cc:s1");
+  assert.equal(h.app.activeTabId(), "term:s1");
+  assert.equal(h.term.renders.length, before + 1);
+  assert.deepEqual(h.term.opens, ["s1", "s1"]);
+  assert.ok(h.nodes.ed.querySelector("[data-term]"));
+});
+
+test("web static: 新しい殻はほかの話題へ移るとき札の close を呼ぶ", async () => {
+  const h = await loadTermShell({}, [termTopic("s1"), v3Topic("ch:a")]);
+  h.app.open("cc:s1");
+  assert.deepEqual(h.term.closes, []);
+  h.app.open("ch:a");
+  assert.deepEqual(h.term.closes, ["s1"]);
+  assert.equal(h.app.activeTabId(), "ch:a");
+});
+
+test("web static: 新しい殻は一覧を読み直すたびに、出ている札を新しい行で描き直す（ほかのタブは描き直さない）", async () => {
+  const topics: unknown[] = [termTopic("s1"), v3Topic("ch:a")];
+  const h = await loadTermShell({}, topics);
+  h.app.open("cc:s1");
+  const before = h.term.renders.length;
+  topics[0] = termTopic("s1", { mark: "running" });
+  await h.topics.load();
+  assert.equal(h.term.renders.length, before + 1);
+  assert.equal((h.term.renders.at(-1)!.ctx.row as { mark?: string }).mark, "running");
+  // 会話のタブは一覧を読み直しても描き直さない
+  h.app.open("ch:a");
+  const rendered = h.rendered.length;
+  const renders = h.term.renders.length;
+  await h.topics.load();
+  assert.equal(h.rendered.length, rendered);
+  assert.equal(h.term.renders.length, renders);
+});
+
+test("web static: 新しい殻は札の入口か口が無ければ今の［端末］のタブを出す", async () => {
+  for (const takeover of [undefined, { noEntry: true }, { noMouth: true }]) {
+    const h = await loadTermShell({ takeover });
+    h.app.open("cc:s1");
+    const label = JSON.stringify(takeover ?? null);
+    assert.equal(h.app.activeTabId(), "cc:s1", label);
+    assert.equal(h.rendered.at(-1)!.tab, "cc:s1", label);
+    assert.deepEqual(h.opens, ["cc:s1"], label);
+    assert.deepEqual(h.term.renders, [], label);
+    assert.deepEqual(h.term.opens, [], label);
+  }
+});
+
+test("web static: 新しい殻は札を描けなければ今の［端末］のタブに戻し、次からも札を試さない", async () => {
+  const h = await loadTermShell({ takeover: { draw: () => false } }, [termTopic("s1"), termTopic("s2")]);
+  h.app.open("cc:s1");
+  assert.equal(h.app.activeTabId(), "cc:s1");
+  assert.equal(h.rendered.at(-1)!.tab, "cc:s1");
+  assert.deepEqual(h.term.closes, ["s1"]);
+  assert.deepEqual(h.opens, ["cc:s1"], "画面の写しを読む");
+  assert.deepEqual(h.term.opens, []);
+  // 見出しは戻したタブの名前で描き直す
+  assert.equal(h.lastTop().title, "端末の題");
+  // 次の端末の行も札を試さない
+  h.app.open("cc:s2");
+  assert.equal(h.term.renders.length, 1);
+  assert.equal(h.app.activeTabId(), "cc:s2");
+  assert.equal(h.rendered.at(-1)!.tab, "cc:s2");
+});
+
+test("web static: 新しい殻の札には、同じセッションの一覧の行（cc: の行、無ければ Claude Code のチャンネルの行）と場所の文字を渡す", async () => {
+  const h = await loadTermShell({}, [
+    termTopic("s1", { group: "p:proj", place: { dir: "proj" } }),
+    v3Topic("ch:c", { origin: "cc", sessionId: "s2", title: "チャンネル", place: { dir: "other" } }),
+  ]);
+  h.app.open("cc:s1");
+  let ctx = h.term.renders.at(-1)!.ctx;
+  assert.equal(ctx.row!.id, "cc:s1");
+  assert.equal(ctx.place, "proj");
+  h.app.open("cc:s2");
+  ctx = h.term.renders.at(-1)!.ctx;
+  assert.equal(ctx.row!.id, "ch:c");
+  assert.equal(ctx.place, "other");
+  h.app.open("cc:s3");
+  ctx = h.term.renders.at(-1)!.ctx;
+  assert.equal(ctx.row, null);
+  assert.equal(ctx.place, null);
+});
+
+type TermRaw = {
+  title: string;
+  place: string | null;
+  rowState: string | null;
+  activity: string | null;
+  pane: boolean;
+  check: { takeable: boolean; state: string; reason: unknown; text: unknown; rcUrl: string | null } | null;
+  checking: boolean;
+  failed: boolean;
+  phase: string;
+  error: string | null;
+  on: { take: () => void; pane: () => void; recheck: () => void };
+};
+type ConfirmOpts = { title: string; target: string; body: string; ok: string; danger: boolean; run: () => void; closed: () => void };
+type Deferred = { promise: Promise<unknown>; resolve: (v: unknown) => void; reject: (e: unknown) => void };
+const deferred = (): Deferred => {
+  let resolve!: (v: unknown) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<unknown>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+};
+/** api.js の失敗の形（status・code・data・toast） */
+const takeError = (status: number, data: Record<string, unknown> | null = null) =>
+  Object.assign(new Error(String(status)), {
+    status,
+    code: data && typeof data.error === "string" ? data.error : null,
+    data,
+    toast: status === 0 ? "サーバーにつながりません" : "操作に失敗しました。もう一度試してください",
+  });
+const takeCheck = (o: Record<string, unknown> = {}) => ({
+  takeable: true,
+  state: "idle",
+  reason: null,
+  text: null,
+  title: "判定の題",
+  project: "proj",
+  activityAt: "2026-11-20T01:00:00.000Z",
+  rcUrl: null,
+  last: null,
+  ...o,
+});
+
+/**
+ * takeover.js を作り物の SA（ui・api・app・topics・term）と作り物のタイマーで読む。app.refresh は、出している札（active）なら最後の ctx で描き直す（shell.js と同じ）。
+ * get は gets に積んで getReply の答え、post は posts に積んで postReply の答え
+ */
+function loadTakeover() {
+  const state = { now: 0, active: "term:s1" as string | null };
+  let seq = 0;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  const draws: TermRaw[] = [];
+  const confirms: ConfirmOpts[] = [];
+  const toasts: Array<{ text: string; level: string | null }> = [];
+  const refreshes: string[] = [];
+  const opened: string[] = [];
+  const gets: string[] = [];
+  const posts: string[] = [];
+  const counts = { topicLoads: 0, drops: 0 };
+  const api = {
+    getReply: (_path: string): Promise<unknown> => Promise.resolve(takeCheck()),
+    postReply: (_path: string): Promise<unknown> => Promise.resolve({}),
+  };
+  const el = (tag: string, props: Record<string, string> = {}, children: DomNode[] = []) => {
+    const n = new DomNode(tag);
+    for (const [k, v] of Object.entries(props)) if (k === "class") n.setAttribute("class", v);
+    else n.setAttribute(k, v);
+    for (const c of children) n.append(c);
+    return n;
+  };
+  const ed = new DomNode("div");
+  let lastCtx: { sessionId: string; ctx: unknown } | null = null;
+  const SA: Record<string, unknown> = {
+    ui: {
+      el,
+      confirm: (o: ConfirmOpts) => void confirms.push(o),
+      toast: (text: string, _action: unknown, opts?: { level?: string }) => void toasts.push({ text, level: opts?.level ?? null }),
+      dateTime: (v: string) => "dt:" + v,
+    },
+    api: {
+      get: (path: string) => {
+        gets.push(path);
+        return api.getReply(path);
+      },
+      post: (path: string) => {
+        posts.push(path);
+        return api.postReply(path);
+      },
+    },
+    app: {
+      refresh: (id: string) => {
+        refreshes.push(id);
+        if (lastCtx && id === state.active && id === "term:" + lastCtx.sessionId) takeover().render(ed, lastCtx.sessionId, lastCtx.ctx);
+      },
+      activeTabId: () => state.active,
+      open: (id: string) => void opened.push(id),
+    },
+    topics: {
+      load: () => {
+        counts.topicLoads++;
+      },
+    },
+    term: {
+      draw: (_root: unknown, raw: TermRaw) => {
+        draws.push(raw);
+        return true;
+      },
+      drop: () => {
+        counts.drops++;
+      },
+    },
+  };
+  const context = {
+    window: { SA },
+    console,
+    queueMicrotask,
+    setTimeout: (fn: () => void, ms: number) => {
+      timers.set(++seq, { at: state.now + ms, fn });
+      return seq;
+    },
+    clearTimeout: (id: number) => void timers.delete(id),
+  };
+  vm.runInNewContext(read("takeover.js"), context);
+  const takeover = () => SA.takeover as { render: (ed: unknown, sessionId: string, ctx: unknown) => boolean; open: (sessionId: string) => void; close: (sessionId: string) => void };
+  /** 札を描く（ctx は覚えて、refresh の描き直しに使う） */
+  const render = (sessionId = "s1", ctx: Record<string, unknown> = { row: termTopic(sessionId), place: "proj", pane: () => undefined }) => {
+    lastCtx = { sessionId, ctx };
+    return takeover().render(ed, sessionId, ctx);
+  };
+  const advance = (ms: number) => {
+    state.now += ms;
+    for (const [id, t] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+      if (t.at <= state.now && timers.has(id)) {
+        timers.delete(id);
+        t.fn();
+      }
+    }
+  };
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+  const raw = (): TermRaw => {
+    const r = draws.at(-1);
+    assert.ok(r, "SA.term.draw が呼ばれていない");
+    return r;
+  };
+  /** 開いて最初の判定を読み終えた形にする */
+  const opened1 = async (sessionId = "s1") => {
+    render(sessionId);
+    takeover().open(sessionId);
+    await flush();
+  };
+  return { state, api, ed, draws, confirms, toasts, refreshes, opened, gets, posts, counts, timers, takeover, render, advance, flush, raw, opened1 };
+}
+
+test("web static: 取り込みの札は開いたら判定を 1 回読み、読んでいる間は確かめている形を渡す", async () => {
+  const t = loadTakeover();
+  const d = deferred();
+  t.api.getReply = () => d.promise;
+  assert.equal(t.render(), true);
+  assert.ok(t.ed.querySelector(".ed-scroll"), "入れ物");
+  assert.ok(t.ed.querySelector("[data-term]"), "札の根");
+  t.takeover().open("s1");
+  assert.deepEqual(t.gets, ["/api/cc/sessions/s1/takeover"]);
+  assert.equal(t.raw().checking, true);
+  assert.equal(t.raw().check, null);
+  // 読んでいる間にもう一度開いても読まない
+  t.takeover().open("s1");
+  assert.equal(t.gets.length, 1);
+  d.resolve(takeCheck());
+  await t.flush();
+  assert.equal(t.raw().checking, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(t.raw().check)), { takeable: true, state: "idle", reason: null, text: null, rcUrl: null });
+  // 題は一覧の行、場所は ctx、時刻は一覧の行が無ければ判定の物
+  assert.equal(t.raw().title, "端末の題");
+  assert.equal(t.raw().place, "proj");
+  assert.equal(t.raw().activity, "dt:2026-11-20T01:00:00.000Z");
+  assert.equal(t.raw().rowState, "idle");
+  assert.equal(t.raw().pane, true);
+  assert.equal(t.gets.length, 1);
+});
+
+test("web static: 取り込みの札は一覧の行の状態が変わったら判定を読み直し、同じなら読まない", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  assert.equal(t.gets.length, 1);
+  t.render();
+  t.render();
+  assert.equal(t.gets.length, 1, "同じ状態では読まない");
+  t.render("s1", { row: termTopic("s1", { mark: "running" }), place: null, pane: () => undefined });
+  assert.equal(t.gets.length, 2);
+  assert.equal(t.raw().checking, true, "読み直しの間は確かめている形");
+  assert.equal(t.raw().rowState, "running");
+  await t.flush();
+  t.render("s1", { row: termTopic("s1", { mark: "running" }), place: null, pane: () => undefined });
+  assert.equal(t.gets.length, 2);
+  t.render("s1", { row: termTopic("s1", { mark: "turn" }), place: null, pane: () => undefined });
+  assert.equal(t.gets.length, 3);
+  assert.equal(t.raw().rowState, "waiting");
+});
+
+test("web static: 取り込みの札は時間では判定を読まない", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  assert.equal(t.gets.length, 1);
+  t.advance(60_000);
+  await t.flush();
+  t.advance(600_000);
+  await t.flush();
+  assert.equal(t.gets.length, 1);
+  assert.equal(t.timers.size, 0);
+});
+
+test("web static: 取り込みの札は画面の写しの API を呼ばない", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  t.api.postReply = (path) => Promise.resolve(path.endsWith("/confirm") ? { ok: true, id: "ch:9" } : { id: 7, text: "本文" });
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  await t.flush();
+  t.render();
+  t.takeover().open("s1");
+  t.raw().on.recheck();
+  await t.flush();
+  for (const path of [...t.gets, ...t.posts]) assert.match(path, /^\/api\/cc\/(sessions\/[^/]+\/takeover|takeovers\/\d+\/(confirm|cancel))$/, path);
+  assert.equal([...t.gets, ...t.posts].some((p) => /^\/api\/cc\/sessions\/[^/]+$/.test(p)), false);
+});
+
+test("web static: 取り込みの札の［取り込む］は確認を作り、確認は danger で本文はサーバーの文・対象は題", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  const d = deferred();
+  t.api.postReply = () => d.promise;
+  t.raw().on.take();
+  assert.deepEqual(t.posts, ["/api/cc/sessions/s1/takeover"]);
+  assert.equal(t.raw().phase, "proposing");
+  d.resolve({ id: 7, text: "「端末の題」を取り込みます。" });
+  await t.flush();
+  assert.equal(t.raw().phase, "asking");
+  assert.equal(t.confirms.length, 1);
+  const c = t.confirms[0]!;
+  assert.equal(c.title, "取り込みますか");
+  assert.equal(c.ok, "取り込む");
+  assert.equal(c.danger, true);
+  assert.equal(c.body, "「端末の題」を取り込みます。");
+  assert.equal(c.target, "端末の題");
+});
+
+test("web static: 取り込みの確認でやめたら /cancel だけを送る", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  t.api.postReply = () => Promise.resolve({ id: 7, text: "本文" });
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[0]!.closed();
+  await t.flush();
+  assert.deepEqual(t.posts, ["/api/cc/sessions/s1/takeover", "/api/cc/takeovers/7/cancel"]);
+  assert.equal(t.raw().phase, "idle");
+  assert.deepEqual(t.toasts, []);
+  // cancel が失敗しても知らせない
+  t.api.postReply = (path) => (path.endsWith("/cancel") ? Promise.reject(takeError(500)) : Promise.resolve({ id: 8, text: "本文" }));
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[1]!.closed();
+  await t.flush();
+  assert.deepEqual(t.toasts, []);
+  assert.equal(t.raw().error, null);
+});
+
+test("web static: 取り込みの確認で進めたら /confirm だけを送る（closed が run より先でも /cancel を送らない）", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  const d = deferred();
+  t.api.postReply = (path) => (path.endsWith("/confirm") ? d.promise : Promise.resolve({ id: 7, text: "本文" }));
+  t.raw().on.take();
+  await t.flush();
+  // ui.js と同じく closed → run の順
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  await t.flush();
+  assert.deepEqual(t.posts, ["/api/cc/sessions/s1/takeover", "/api/cc/takeovers/7/confirm"]);
+  assert.equal(t.raw().phase, "taking");
+});
+
+test("web static: 取り込みの途中・確認の間は［取り込む］をもう一度押しても 2 つ目を送らない", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  const propose = deferred();
+  const confirm = deferred();
+  t.api.postReply = (path) => (path.endsWith("/confirm") ? confirm.promise : propose.promise);
+  t.raw().on.take();
+  t.raw().on.take();
+  assert.equal(t.posts.length, 1, "確認を作っている間");
+  propose.resolve({ id: 7, text: "本文" });
+  await t.flush();
+  t.raw().on.take();
+  assert.equal(t.posts.length, 1, "確認の間");
+  assert.equal(t.confirms.length, 1);
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  await t.flush();
+  t.raw().on.take();
+  assert.deepEqual(t.posts, ["/api/cc/sessions/s1/takeover", "/api/cc/takeovers/7/confirm"], "進めている間");
+});
+
+test("web static: 取り込みが済んだら知らせを出し、一覧を読み直して新しい話題を開く", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  t.api.postReply = (path) => Promise.resolve(path.endsWith("/confirm") ? { ok: true, id: "ch:9", text: "済" } : { id: 7, text: "本文" });
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  await t.flush();
+  assert.deepEqual(t.toasts, [{ text: "「端末の題」を取り込みました", level: null }]);
+  assert.equal(t.counts.topicLoads, 1);
+  assert.deepEqual(t.opened, ["ch:9"]);
+  assert.equal(t.counts.drops, 1, "札の根を外す");
+});
+
+test("web static: 取り込みが済んだとき別の話題を見ていたら、知らせだけ出して移らない", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  t.api.postReply = (path) => Promise.resolve(path.endsWith("/confirm") ? { ok: true, id: "ch:9" } : { id: 7, text: "本文" });
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  t.state.active = "ch:other";
+  await t.flush();
+  assert.deepEqual(t.toasts.map((x) => x.text), ["「端末の題」を取り込みました"]);
+  assert.equal(t.counts.topicLoads, 1);
+  assert.deepEqual(t.opened, []);
+});
+
+test("web static: 取り込みを断られたら文を札に出して判定を読み直す（/setup 前は決めた文）", async () => {
+  for (const [data, want] of [
+    [{ error: "in_progress", text: "取り込みはもう進んでいます。" }, "取り込みはもう進んでいます。"],
+    [{ error: "not_set_up" }, "先に Discord で /setup を実行してください"],
+    [null, "操作に失敗しました。もう一度試してください"],
+  ] as const) {
+    const t = loadTakeover();
+    await t.opened1();
+    const check = deferred();
+    t.api.getReply = () => check.promise;
+    t.api.postReply = () => Promise.reject(takeError(data === null ? 500 : 409, data));
+    t.raw().on.take();
+    await t.flush();
+    assert.equal(t.raw().phase, "idle", want);
+    assert.equal(t.raw().error, want);
+    assert.equal(t.gets.length, 2, "判定を読み直す");
+    assert.equal(t.raw().checking, true);
+    // 次の判定が読めたら文は消す（部品の契約）
+    check.resolve(takeCheck());
+    await t.flush();
+    assert.equal(t.raw().error, null);
+  }
+  // 切れたときは読み直さず、例外の文
+  const t = loadTakeover();
+  await t.opened1();
+  t.api.postReply = () => Promise.reject(takeError(0));
+  t.raw().on.take();
+  await t.flush();
+  assert.equal(t.raw().error, "サーバーにつながりません");
+  assert.equal(t.gets.length, 1);
+  // 押し直したら文を消す
+  t.api.postReply = () => new Promise(() => undefined);
+  t.raw().on.take();
+  assert.equal(t.raw().error, null);
+});
+
+test("web static: 使えない確認（stale）は知らせを出して判定を読み直す", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  t.api.postReply = (path) => (path.endsWith("/confirm") ? Promise.reject(takeError(409, { error: "stale", text: "この確認はもう使えません。" })) : Promise.resolve({ id: 7, text: "本文" }));
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  await t.flush();
+  assert.deepEqual(t.toasts, [{ text: "この確認はもう使えません。", level: "error" }]);
+  assert.equal(t.raw().phase, "idle");
+  assert.equal(t.gets.length, 2);
+  // ほかの 409 は札の文
+  const u = loadTakeover();
+  await u.opened1();
+  const check = deferred();
+  u.api.postReply = (path) => (path.endsWith("/confirm") ? Promise.reject(takeError(409, { error: "expired", text: "確認の時間が過ぎました。" })) : Promise.resolve({ id: 7, text: "本文" }));
+  u.raw().on.take();
+  await u.flush();
+  u.api.getReply = () => check.promise;
+  u.confirms[0]!.closed();
+  u.confirms[0]!.run();
+  await u.flush();
+  assert.deepEqual(u.toasts, []);
+  assert.equal(u.raw().error, "確認の時間が過ぎました。");
+  assert.equal(u.raw().phase, "idle");
+  assert.equal(u.gets.length, 2);
+});
+
+/** 確認で進めて、応答が切れた形にする */
+async function lostTakeover() {
+  const t = loadTakeover();
+  await t.opened1();
+  t.api.postReply = (path) => (path.endsWith("/confirm") ? Promise.reject(takeError(0)) : Promise.resolve({ id: 7, text: "本文" }));
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  await t.flush();
+  return t;
+}
+
+test("web static: 取り込みの応答が切れたら結果が分からない形にして、1.5 秒・5 秒・15 秒で読み直す", async () => {
+  const t = await lostTakeover();
+  assert.equal(t.raw().phase, "lost");
+  assert.equal(t.gets.length, 1);
+  t.api.getReply = () => Promise.resolve(takeCheck({ takeable: false, state: "running", last: { takeover: 7, state: "running", id: null } }));
+  t.advance(1499);
+  await t.flush();
+  assert.equal(t.gets.length, 1);
+  t.advance(1);
+  await t.flush();
+  assert.equal(t.gets.length, 2);
+  t.advance(3500);
+  await t.flush();
+  assert.equal(t.gets.length, 3);
+  t.advance(10_000);
+  await t.flush();
+  assert.equal(t.gets.length, 4);
+  t.advance(600_000);
+  await t.flush();
+  assert.equal(t.gets.length, 4, "3 回の後は読まない");
+  assert.equal(t.raw().phase, "lost");
+  // 5xx も同じ
+  const u = loadTakeover();
+  await u.opened1();
+  u.api.postReply = (path) => (path.endsWith("/confirm") ? Promise.reject(takeError(502)) : Promise.resolve({ id: 7, text: "本文" }));
+  u.raw().on.take();
+  await u.flush();
+  u.confirms[0]!.closed();
+  u.confirms[0]!.run();
+  await u.flush();
+  assert.equal(u.raw().phase, "lost");
+  assert.equal(u.timers.size, 3);
+});
+
+test("web static: 読み直しで済んでいたら新しい話題を開き、失敗・始まっていないは決めた文、実行中は分からない形のまま", async () => {
+  const cases: Array<[Record<string, unknown>, string, string | null]> = [
+    [{ takeover: 7, state: "failed", id: null }, "idle", "取り込めませんでした。"],
+    [{ takeover: 7, state: "awaiting_confirm", id: null }, "idle", "取り込みは始まっていません。もう一度試せます。"],
+    [{ takeover: 7, state: "cancelled", id: null }, "idle", "取り込みは始まっていません。もう一度試せます。"],
+    [{ takeover: 7, state: "running", id: null }, "lost", null],
+  ];
+  for (const [last, phase, error] of cases) {
+    const t = await lostTakeover();
+    t.api.getReply = () => Promise.resolve(takeCheck({ last }));
+    t.raw().on.recheck();
+    await t.flush();
+    assert.equal(t.raw().phase, phase, String(last.state));
+    assert.equal(t.raw().error, error, String(last.state));
+    assert.equal(t.timers.size, phase === "lost" ? 3 : 0, String(last.state));
+  }
+  const t = await lostTakeover();
+  t.api.getReply = () => Promise.resolve(takeCheck({ last: { takeover: 7, state: "done", id: "ch:9" } }));
+  t.advance(1500);
+  await t.flush();
+  assert.deepEqual(t.opened, ["ch:9"]);
+  assert.deepEqual(t.toasts.map((x) => x.text), ["「端末の題」を取り込みました"]);
+  assert.equal(t.timers.size, 0);
+});
+
+test("web static: 読み直しの last の番号が違えば分からない形のまま", async () => {
+  const t = await lostTakeover();
+  for (const last of [{ takeover: 6, state: "done", id: "ch:9" }, { takeover: 6, state: "failed", id: null }, null]) {
+    t.api.getReply = () => Promise.resolve(takeCheck({ last }));
+    t.raw().on.recheck();
+    await t.flush();
+    assert.equal(t.raw().phase, "lost");
+  }
+  // 判定を読めなかったときも
+  t.api.getReply = () => Promise.reject(takeError(500));
+  t.raw().on.recheck();
+  await t.flush();
+  assert.equal(t.raw().phase, "lost");
+  assert.deepEqual(t.opened, []);
+});
+
+test("web static: 取り込みの札は rcUrl が https://claude.ai/code/ で始まるときだけ渡す", async () => {
+  for (const [rcUrl, want] of [
+    ["https://claude.ai/code/session_x", "https://claude.ai/code/session_x"],
+    ["http://claude.ai/code/session_x", null],
+    ["https://example.com/https://claude.ai/code/", null],
+    ["javascript:alert(1)", null],
+    [null, null],
+    [42, null],
+  ] as const) {
+    const t = loadTakeover();
+    t.api.getReply = () => Promise.resolve(takeCheck({ rcUrl }));
+    await t.opened1();
+    assert.equal(t.raw().check!.rcUrl, want, String(rcUrl));
+  }
+});
+
+test("web static: 取り込みの途中に札を閉じても応答を受け、済んだ知らせを出す", async () => {
+  const t = loadTakeover();
+  await t.opened1();
+  const d = deferred();
+  t.api.postReply = (path) => (path.endsWith("/confirm") ? d.promise : Promise.resolve({ id: 7, text: "本文" }));
+  t.raw().on.take();
+  await t.flush();
+  t.confirms[0]!.closed();
+  t.confirms[0]!.run();
+  await t.flush();
+  t.state.active = "ch:other";
+  t.takeover().close("s1");
+  assert.equal(t.counts.drops, 1);
+  d.resolve({ ok: true, id: "ch:9" });
+  await t.flush();
+  assert.deepEqual(t.toasts.map((x) => x.text), ["「端末の題」を取り込みました"]);
+  assert.equal(t.counts.topicLoads, 1);
+  assert.deepEqual(t.opened, []);
+});
+
+test("web static: takeover.js を読むのは v3.html だけ（index.html・workbench.js は読まない・名前を出さない）", () => {
+  assert.match(read("v3.html"), /<script src="\/static\/takeover\.js" defer><\/script>/);
+  for (const name of ["index.html", "workbench.js"]) {
+    assert.doesNotMatch(read(name), /takeover\.js|SA\.takeover/, name);
+  }
 });
