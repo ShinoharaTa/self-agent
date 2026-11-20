@@ -10698,3 +10698,42 @@ test("web static: takeover.js を読むのは v3.html だけ（index.html・work
     assert.doesNotMatch(read(name), /takeover\.js|SA\.takeover/, name);
   }
 });
+
+test("web static: 新しい殻の Claude Code のチャンネルの『…』の板に『取り込む』が出て、押すと cc:<sessionId> の札を開く", async () => {
+  const h = await loadTermShell({ phone: true }, [v3Topic("ch:3", { title: "端末", origin: "cc", sessionId: "s1", movable: true })]);
+  h.chatHeads["3"] = { title: "x", status: null, note: null, menu: [{ icon: "rotate-ccw", label: "会話を新しくする", run: () => undefined }] };
+  h.app.open("ch:3");
+  h.lastTop().on.menu(h.nodes.topButtons.menu);
+  const rows = h.nodes.sheet.querySelectorAll("button.more-row");
+  assert.deepEqual(rows.map((r) => textOf(r.querySelector("span.sb-label")!)), ["場所を変える", "端末を見る", "取り込む", "会話を新しくする"]);
+  rows[2]!.dispatch("click");
+  assert.equal(h.app.activeTabId(), "term:s1");
+  assert.equal(h.location.hash, "#/cc/s1");
+  assert.deepEqual(h.term.opens, ["s1"]);
+});
+
+test("web static: 新しい殻は広い幅でも、取り込める Claude Code のチャンネルの見出しに『…』を出す", async () => {
+  const h = await loadTermShell({}, [v3Topic("ch:3", { title: "端末", origin: "cc", sessionId: "s1" }), v3Topic("ch:4", { origin: "cc", sessionId: null })]);
+  h.app.open("ch:3");
+  assert.equal(h.lastTop().compact, false);
+  assert.equal(h.lastTop().menu, true);
+  h.lastTop().on.menu(h.nodes.topButtons.menu);
+  assert.deepEqual(h.nodes.sheet.querySelectorAll("button.more-row").map((r) => textOf(r.querySelector("span.sb-label")!)), ["取り込む"]);
+  // 一覧に居ないセッションのチャンネルには出さない
+  h.nodes.sheet.removeAttribute("open");
+  h.app.open("ch:4");
+  assert.equal(h.lastTop().menu, false);
+});
+
+test("web static: 新しい殻は札の入口が無ければ『取り込む』を出さない", async () => {
+  for (const takeover of [undefined, { noEntry: true }, { noMouth: true }]) {
+    const h = await loadTermShell({ takeover }, [v3Topic("ch:3", { title: "端末", origin: "cc", sessionId: "s1" })]);
+    h.app.open("ch:3");
+    assert.equal(h.lastTop().menu, false, JSON.stringify(takeover ?? null));
+  }
+  // 札を描けなかった後も出さない
+  const h = await loadTermShell({ takeover: { draw: () => false } }, [termTopic("s2"), v3Topic("ch:3", { title: "端末", origin: "cc", sessionId: "s1" })]);
+  h.app.open("cc:s2");
+  h.app.open("ch:3");
+  assert.equal(h.lastTop().menu, false);
+});

@@ -206,6 +206,11 @@
     return SA.takeover && SA.term ? S.active.slice(3) : null;
   }
 
+  /** 「…」の板に「取り込む」を出せる話題（Claude Code のチャンネルが在り、今も一覧に居るセッションで、札の入口と口が在る）なら、そのセッションの ID */
+  function takeSession() {
+    return SA.takeover && SA.term && !termBroken ? paneSession() : null;
+  }
+
   /** 札に渡す物: 一覧の行（cc: の行。無ければ同じセッションの Claude Code のチャンネルの行。どちらも無ければ null）・場所の文字・「端末を見る」 */
   function termCtx(sessionId) {
     const data = SA.topics.data();
@@ -291,7 +296,7 @@
       views: paneSession() !== null ? { value: S.view2 } : null,
       hand: handMark(),
       compact: S.topCompact,
-      menu: t !== null && (topNarrow() || (head !== null && head.menu.length > 0)),
+      menu: t !== null && (topNarrow() || takeSession() !== null || (head !== null && head.menu.length > 0)),
       mode: head && head.mode ? { value: head.mode, disabled: modeBusy(t), reason: modeBusy(t) ? MODE_BUSY : null } : null,
       controls: "v3-hand",
       on: TOP_ON,
@@ -349,6 +354,8 @@
         items.push(S.view2 === "pane" ? { icon: "chevron-left", label: "会話に戻る", run: () => setView2("talk") } : { icon: "terminal", label: "端末を見る", run: () => setView2("pane") });
       }
     }
+    const takeId = takeSession();
+    if (takeId !== null) items.push({ icon: "play", label: "取り込む", run: () => open("cc:" + takeId) });
     if (head) items.push(...head.menu);
     if (items.length === 0) return;
     openSheet(topState().title + " の操作", items, opener);
