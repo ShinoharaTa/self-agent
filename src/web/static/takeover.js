@@ -101,7 +101,8 @@
   }
 
   // ===== 判定を読む =====
-  async function load(e, quiet) {
+  /** keep: 断られた直後の読み直し。読めても失敗の文は残す（次に読めたとき・押し直したときに消す） */
+  async function load(e, quiet, keep) {
     e.checking = true;
     const seq = ++e.seq;
     if (!quiet) redraw(e);
@@ -115,7 +116,7 @@
     if (data !== null && typeof data === "object") {
       e.check = data;
       e.failed = false;
-      e.error = null;
+      if (!keep) e.error = null;
       e.sig = e.rowSig;
     } else {
       e.check = null;
@@ -159,13 +160,13 @@
       e.phase = "idle";
       e.error = failureText(err);
       if (err && err.status === 0) redraw(e);
-      else load(e);
+      else load(e, false, true);
       return;
     }
     if (!res || typeof res.id !== "number") {
       e.phase = "idle";
       e.error = FALLBACK_TEXT;
-      load(e);
+      load(e, false, true);
       return;
     }
     const id = res.id;
@@ -212,9 +213,10 @@
     } catch (err) {
       if (err && err.status === 409) {
         toIdle(e, null);
-        if (err.code === "stale") SA.ui.toast(failureText(err), null, { level: "error" });
+        const stale = err.code === "stale";
+        if (stale) SA.ui.toast(failureText(err), null, { level: "error" });
         else e.error = failureText(err);
-        load(e);
+        load(e, false, !stale);
       } else lost(e);
       return;
     }
