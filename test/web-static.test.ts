@@ -1748,6 +1748,34 @@ function pick(input: FakeNode & { checked: boolean }, checked = true): void {
   input.dispatch("change");
 }
 
+test("web static: 古い殻: プロジェクトのセッションの許可・質問のカードの注記は端末の無い文（terminal false）。未指定は今の文のまま", () => {
+  const { views } = loadViews();
+  const card = views.ccPermissionCard as (s: string, p: unknown, rc: null, tab?: string, terminal?: boolean) => FakeNode;
+  const notesOf = (node: FakeNode): unknown[] => [node.getAttribute("title"), descendants(node).filter((n) => n.classes.has("cc-permission-note")).map((n) => n.textContent)];
+  const OLD = "端末や RC のダイアログでも答えられます。先に答えた方が効きます。";
+  const PERM = "時間が過ぎると拒否になります。";
+  const QUESTION = "時間切れになったら、答えを発言で送ってください。";
+  assert.deepEqual(notesOf(card("s1", permissionRequest(80), null, "ch:p1", false)), [PERM, [PERM]]);
+  assert.deepEqual(notesOf(card("s1", permissionRequest(81), null, "ch:p2")), [OLD, [OLD]]);
+  assert.deepEqual(notesOf(card("s1", questionPermission(82), null, "ch:q1", false)), [QUESTION, [QUESTION]]);
+  assert.deepEqual(notesOf(card("s1", questionPermission(83), null, "ch:q2")), [OLD, [OLD]]);
+});
+
+test("web static: 古い殻: 会話のタブはプロジェクトのセッションの許可のカードに terminal false を渡す", () => {
+  const c = loadChat();
+  const views = (c.context.window as { SA: { views: Record<string, unknown> } }).SA.views;
+  const real = views.ccPermissionCard as (...a: unknown[]) => unknown;
+  const calls: unknown[][] = [];
+  views.ccPermissionCard = (...a: unknown[]) => {
+    calls.push(a);
+    return real(...a);
+  };
+  c.put("1", [chatTurn(10, "owner", "a")], { kind: "session", title: "t", state: "active", permission: permissionRequest(84, { sessionId: "sx" }) });
+  c.chat.render(c.box(), "1");
+  assert.ok(calls.length > 0);
+  for (const a of calls) assert.deepEqual([a[0], a[2], a[3], a[4]], ["sx", null, "ch:1", false]);
+});
+
 test("web static: 質問のカードは問ごとに見出し・問の文・選択肢（単一はラジオ・複数はチェック）と「その他」を出し、ツール名は出さない", () => {
   const { views } = loadViews();
   const card = views.ccPermissionCard("s1", questionPermission(20), null)!;
@@ -2504,20 +2532,6 @@ test("web static: 許可を待っている間は実行中の行に「許可を�
   assert.match(api, /if \(w\.toolName === "AskUserQuestion"\) return "質問の答えを待っています";\n {4}return "許可を待っています: "/);
   const css = read("app.css");
   assert.match(css, /\n\.run-waiting \{[^}]*color: var\(--text\);/);
-});
-
-test("web static: 新しい殻: プロジェクトのセッションの許可・質問の item は terminal false。Claude Code のチャンネルの item には付かない", () => {
-  const chat = read("chat.js");
-  const body = (name: string): string => {
-    const start = chat.indexOf(`  function ${name}(`);
-    assert.ok(start >= 0, name);
-    const end = chat.indexOf("\n  }\n", start);
-    return chat.slice(start, end);
-  };
-  const session = body("cardItems");
-  assert.match(session, /const ask = ch && ch\.kind === "session" \? askRequestOf\(ch\) : null;/);
-  assert.match(session, /const item = SA\.views\.ccAsk\.item\(askSessionOf\(ch, p\), p\);\n {8}if \(item\) \{\n(?: {10}\/\/.*\n)? {10}item\.terminal = false;\n {10}items\.push\(/);
-  assert.doesNotMatch(body("ccCardItems"), /terminal/);
 });
 
 test("web static: 新しいセッションのダイアログのプロジェクト（U1b）は /api/projects/workspace から「（なし）」を先頭に、選んだら projectDir。サイドバーの行にプロジェクトの印", () => {
@@ -6636,6 +6650,7 @@ test("web static: カードの items は 待ちの行 → 閉じる → 移す �
   assert.deepEqual(items[1], { kind: "move", id: 3, from: "General", to: "beta", busy: false });
   assert.equal(items[2]!.tool, "Bash");
   assert.equal(items[2]!.busy, false);
+  assert.equal(items[2]!.terminal, false, "プロジェクトのセッションには端末が無い");
   assert.deepEqual(items[3], { kind: "note", id: "empty", text: "まだ会話はありません。下の欄か Discord で送ると始まります。" });
   // 選んだ候補は昇順
   cardsOn(cards).task!("1", 2, true);
@@ -6654,6 +6669,7 @@ test("web static: カードの items は 待ちの行 → 閉じる → 移す �
   c.chat.render(c.box(), "2");
   items = cardsPlain(cards);
   assert.deepEqual(items.map((i) => i.kind + ":" + i.id), ["question:42", "note:done"]);
+  assert.equal(items[0]!.terminal, false, "質問にも端末の無い印");
   assert.deepEqual(items[1], { kind: "note", id: "done", text: "完了したセッションです。発言すると進行中に戻ります。" });
   assert.equal(items[0]!.who, "");
   // 実行中は空の文を出さない。終わった許可は出さない
@@ -7076,7 +7092,9 @@ test("web static: SA.cards があると Claude Code のチャンネルも [data-
   }
   assert.equal(old, 0);
   assert.equal(cards.draws.length, 2);
-  assert.deepEqual(JSON.parse(JSON.stringify(cards.draws[0]!.state.items)).map((i: CardItem) => i.kind + ":" + i.id), ["status:cc", "permission:7", "note:empty"]);
+  const ccItems = JSON.parse(JSON.stringify(cards.draws[0]!.state.items)) as CardItem[];
+  assert.deepEqual(ccItems.map((i: CardItem) => i.kind + ":" + i.id), ["status:cc", "permission:7", "note:empty"]);
+  assert.equal("terminal" in ccItems[1]!, false, "Claude Code のチャンネル（端末あり）には付けない");
   assert.deepEqual(cardsPlain(cards), [
     { kind: "note", id: "ended", text: "このセッションは終わっています。Discord のチャンネルに書くと、同じディレクトリで起動して続けられます。" },
     { kind: "note", id: "empty", text: "まだ会話はありません。下の欄か Discord で送ると、このセッションに届きます。" },

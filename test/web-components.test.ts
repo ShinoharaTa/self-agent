@@ -3058,10 +3058,7 @@ test("web components: カードの言葉は今の画面に在る物（新しい�
   for (const w of words) assert.ok(old.includes(w), w);
   const js = stripJsComments(read("c-cards.js"));
   const strings = [...js.matchAll(/"([^"\n]*[^\x00-\x7f][^"\n]*)"/g)].map((m) => m[1] ?? "");
-  // 端末の無いセッションの説明の文（2 つ）は新しい殻だけの文
-  const sessionNotes = [cards.SESSION_PERMISSION_NOTE, cards.SESSION_QUESTION_NOTE];
-  assert.deepEqual(strings.filter((s) => sessionNotes.includes(s)).sort(), [...sessionNotes].sort());
-  for (const s of strings) if (!s.startsWith("あなたの番: ") && !sessionNotes.includes(s)) assert.ok(old.includes(s), s);
+  for (const s of strings) if (!s.startsWith("あなたの番: ")) assert.ok(old.includes(s), s);
   assert.deepEqual(strings.filter((s) => s.startsWith("あなたの番: ")).sort(), ["あなたの番: 場所を変える確認", "あなたの番: 許可", "あなたの番: 閉じる前の確認", "あなたの番: 質問"].sort());
   // CSS
   const rules = parseCss(read("c-cards.css"));

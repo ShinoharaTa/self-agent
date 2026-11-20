@@ -1049,6 +1049,9 @@
   }
 
   const PERMISSION_NOTE = "端末や RC のダイアログでも答えられます。先に答えた方が効きます。";
+  /** 端末の無いセッション（terminal が false）の許可・質問のカードの説明の文（c-cards.js と同じ文） */
+  const SESSION_PERMISSION_NOTE = "時間が過ぎると拒否になります。";
+  const SESSION_QUESTION_NOTE = "時間切れになったら、答えを発言で送ってください。";
 
   /** 保留の残り（m 分 s 秒）。過ぎていれば null */
   function remainingText(iso) {
@@ -1307,8 +1310,9 @@
     return { node, sync };
   }
 
-  /** 質問のカード（問・選択肢・説明は hook から来たデータなので textContent で出す。GUIDELINES §5 質問のカード）。ccPermissionCard が委ねる */
-  function ccQuestionCard(sessionId, p, rc, tabId) {
+  /** 質問のカード（問・選択肢・説明は hook から来たデータなので textContent で出す。GUIDELINES §5 質問のカード）。ccPermissionCard が委ねる。terminal が false なら端末の無いセッションの説明の文 */
+  function ccQuestionCard(sessionId, p, rc, tabId, terminal) {
+    const cardNote = terminal === false ? SESSION_QUESTION_NOTE : PERMISSION_NOTE;
     const questions = p.question.questions;
     const pending = p.state === "pending";
     const cacheKey = tabId || "cc:" + sessionId;
@@ -1329,7 +1333,7 @@
     }
     const busy = ccPermissionBusy.has(p.id);
     // 中身が変わらなければ同じ要素を返す（描き直しで「その他」の書きかけ・焦点を保つ。親は placeChildren でこの要素を動かさない）
-    const key = JSON.stringify([p.requestHash, p.expiresAt, busy, rc, who ? who.textContent : null]);
+    const key = JSON.stringify([p.requestHash, p.expiresAt, busy, rc, who ? who.textContent : null, cardNote]);
     const cached = ccQuestionNodes.get(cacheKey);
     if (cached && cached.id === p.id && cached.key === key) {
       // ほかのタブ（cc: と ch:）で選んだものをこのカードにも写す
@@ -1371,13 +1375,13 @@
     drop.addEventListener("click", () => postCcQuestion(sessionId, p, "deny", { requestHash: p.requestHash }, tabId));
     const node = el(
       "section",
-      { class: "card card-sm cc-permission cc-question-card is-pending", "aria-label": "質問", title: PERMISSION_NOTE },
+      { class: "card card-sm cc-permission cc-question-card is-pending", "aria-label": "質問", title: cardNote },
       [
         questionHead("質問を待っています", p, true),
         who,
         ...fieldsets.map((f) => f.node),
         el("div", { class: "msg-actions" }, [answer, drop]),
-        el("p", { class: "cc-permission-note show-sm", text: PERMISSION_NOTE }),
+        el("p", { class: "cc-permission-note show-sm", text: cardNote }),
       ],
     );
     ccQuestionNodes.set(cacheKey, { id: p.id, key, node, sync });
@@ -1398,12 +1402,13 @@
     }
   }
 
-  /** 許可のカード（要約・ツール名は hook から来たデータなので textContent で出す。GUIDELINES §5 許可のカード）。tabId は押した後に描き直すタブ（省けば cc:<sessionId>） */
-  function ccPermissionCard(sessionId, p, rc, tabId) {
+  /** 許可のカード（要約・ツール名は hook から来たデータなので textContent で出す。GUIDELINES §5 許可のカード）。tabId は押した後に描き直すタブ（省けば cc:<sessionId>）。terminal が false（端末の無いプロジェクトのセッション）なら端末の無い説明の文 */
+  function ccPermissionCard(sessionId, p, rc, tabId, terminal) {
     if (!p || typeof p.id !== "number") return null;
     // 質問（AskUserQuestion）は質問のカード（Q3）
-    if (p.question && Array.isArray(p.question.questions) && p.question.questions.length > 0) return ccQuestionCard(sessionId, p, rc, tabId);
+    if (p.question && Array.isArray(p.question.questions) && p.question.questions.length > 0) return ccQuestionCard(sessionId, p, rc, tabId, terminal);
     const pending = p.state === "pending";
+    const cardNote = terminal === false ? SESSION_PERMISSION_NOTE : PERMISSION_NOTE;
     const head = el("div", { class: "card-head" }, [
       el("h2", { text: pending ? "許可を待っています" : "許可の要求" }),
       el("span", {
@@ -1460,10 +1465,10 @@
       {
         class: "card card-sm cc-permission is-pending",
         "aria-label": "許可の要求",
-        title: PERMISSION_NOTE,
+        title: cardNote,
       },
       // title はタッチで出ないので、スマホでは同じ文を 12px で常設する（PC は title）
-      [head, ...facts, el("div", { class: "msg-actions" }, [allow, deny]), el("p", { class: "cc-permission-note show-sm", text: PERMISSION_NOTE })],
+      [head, ...facts, el("div", { class: "msg-actions" }, [allow, deny]), el("p", { class: "cc-permission-note show-sm", text: cardNote })],
     );
   }
 
