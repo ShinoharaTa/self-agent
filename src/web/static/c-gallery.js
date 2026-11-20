@@ -635,6 +635,7 @@ const CARD_DEMOS = [
   { demo: "card-q-two", items: [cardQuestion({ id: "q2", ready: true, questions: [cardQ({ picked: ["小さく直す"] }), cardQ2({ picked: ["単体のテスト", "画面写し"] })] })] },
   { demo: "card-q-other", items: [cardQuestion({ id: "q3", ready: true, questions: [cardQ({ other: true, otherText: "別の案を書きます" })] })] },
   { demo: "card-q-busy", items: [cardQuestion({ id: "q4", ready: true, busy: true, questions: [cardQ({ picked: ["作り直す"] })] })] },
+  { demo: "card-q-session", items: [cardQuestion({ id: "q5", terminal: false })] },
   { demo: "card-close", items: [cardClose({})] },
   { demo: "card-close-picked", items: [cardClose({ picked: [1] })] },
   { demo: "card-close-none", items: [cardClose({ tasks: [] })] },

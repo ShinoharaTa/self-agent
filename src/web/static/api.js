@@ -400,6 +400,7 @@
   function waitingText(run) {
     const w = run && run.waitingPermission;
     if (!w || typeof w.toolName !== "string") return null;
+    if (w.toolName === "AskUserQuestion") return "質問の答えを待っています";
     return "許可を待っています: " + (typeof w.displayName === "string" && w.displayName !== "" ? w.displayName : w.toolName);
   }
   store.runningWaitingText = waitingText;

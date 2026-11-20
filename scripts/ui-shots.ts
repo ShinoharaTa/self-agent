@@ -358,7 +358,7 @@ function composerProblems({ demos, phone, label }: { demos: string[]; phone: boo
 }
 
 /** 見本のカードの data-demo（ページの順） */
-const CARD_DEMOS = ["card-perm", "card-perm-rule", "card-perm-urgent", "card-perm-busy", "card-perm-long", "card-q-one", "card-q-two", "card-q-other", "card-q-busy", "card-close", "card-close-picked", "card-close-none", "card-move", "card-note", "card-status", "card-narrow"];
+const CARD_DEMOS = ["card-perm", "card-perm-rule", "card-perm-urgent", "card-perm-busy", "card-perm-long", "card-q-one", "card-q-two", "card-q-other", "card-q-busy", "card-q-session", "card-close", "card-close-picked", "card-close-none", "card-move", "card-note", "card-status", "card-narrow"];
 
 /**
  * 見本のカードの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見本の名前・枠の線と角と地と幅・見出しの字・
@@ -476,7 +476,7 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
   const statusHeights = new Set(statusRows.map((row) => row.getBoundingClientRect().height.toFixed(1)));
   if (statusHeights.size !== 1) say(`card-status の 3 行の高さが違う（${[...statusHeights].join("・")}）`);
   // 8. 「その他」の欄（card-q-other だけ見える）
-  for (const demo of ["card-q-one", "card-q-two", "card-q-other", "card-q-busy"]) {
+  for (const demo of ["card-q-one", "card-q-two", "card-q-other", "card-q-busy", "card-q-session"]) {
     const fields = [...section.querySelectorAll(`[data-demo="${demo}"] textarea.c-card-other`)];
     if (fields.length === 0) say(`${demo} に「その他」の欄が無い`);
     for (const field of fields) {

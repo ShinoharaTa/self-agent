@@ -2799,7 +2799,7 @@ test("web components: 入力欄の欄と写しは 1 つの規則で余白・枠�
 
 // ===== カード（c-cards.js。docs/plan/web-ui-components.md §6 の K5） =====
 const cardsUrl = new URL("../src/web/static/c-cards.js", import.meta.url).href;
-const cards = (await import(cardsUrl)) as Record<string, Fn> & { PERMISSION_NOTE: string };
+const cards = (await import(cardsUrl)) as Record<string, Fn> & { PERMISSION_NOTE: string; SESSION_PERMISSION_NOTE: string; SESSION_QUESTION_NOTE: string };
 /** on の名前を全部持つ記録（呼ばれた順に [名前, ...引数]） */
 function cardRec(): { calls: unknown[][]; on: Record<string, (...a: unknown[]) => void> } {
   const calls: unknown[][] = [];
@@ -3058,7 +3058,10 @@ test("web components: カードの言葉は今の画面に在る物（新しい�
   for (const w of words) assert.ok(old.includes(w), w);
   const js = stripJsComments(read("c-cards.js"));
   const strings = [...js.matchAll(/"([^"\n]*[^\x00-\x7f][^"\n]*)"/g)].map((m) => m[1] ?? "");
-  for (const s of strings) if (!s.startsWith("あなたの番: ")) assert.ok(old.includes(s), s);
+  // 端末の無いセッションの説明の文（2 つ）は新しい殻だけの文
+  const sessionNotes = [cards.SESSION_PERMISSION_NOTE, cards.SESSION_QUESTION_NOTE];
+  assert.deepEqual(strings.filter((s) => sessionNotes.includes(s)).sort(), [...sessionNotes].sort());
+  for (const s of strings) if (!s.startsWith("あなたの番: ") && !sessionNotes.includes(s)) assert.ok(old.includes(s), s);
   assert.deepEqual(strings.filter((s) => s.startsWith("あなたの番: ")).sort(), ["あなたの番: 場所を変える確認", "あなたの番: 許可", "あなたの番: 閉じる前の確認", "あなたの番: 質問"].sort());
   // CSS
   const rules = parseCss(read("c-cards.css"));
@@ -3078,7 +3081,7 @@ test("web components: カードの言葉は今の画面に在る物（新しい�
 });
 
 // ----- 質問のカードと口 -----
-const qCards = (await import(cardsUrl)) as Record<string, Fn> & { OTHER_MAX: number; cardsMouth: unknown };
+const qCards = (await import(cardsUrl)) as Record<string, Fn> & { OTHER_MAX: number; cardsMouth: unknown; SESSION_QUESTION_NOTE: string };
 const qOf = (o: Obj = {}): Obj => ({ legend: "色", text: "どれにしますか", multi: false, options: [{ label: "赤", description: "暖かい" }, { label: "青", description: "" }], picked: [], other: false, otherText: "", ...o });
 const qItem = (o: Obj = {}): Obj => ({ kind: "question", id: 9, who: "見本 ・ default（使うたびに確認）", left: "残り 4 分 12 秒", urgent: false, busy: false, ready: false, questions: [qOf()], ...o });
 const qCard = (item: Obj, on = cardRec().on, otherRef?: unknown): El => one(html`<${qCards.QuestionCard} item=${item} on=${on} otherRef=${otherRef} />`);
@@ -3147,6 +3150,22 @@ test("web components: 質問のカードの木と言葉（見出し・who・問�
   // Cards からも出る（key は question:id）
   const list = qCards.Cards({ items: [qItem()], on: cardRec().on }) as RawNode;
   assert.deepEqual(keysOf(list.props.children), ["question:9"]);
+});
+
+test("web components: QuestionCard: terminal false の注記は SESSION_QUESTION_NOTE。未指定は PERMISSION_NOTE のまま", () => {
+  const noteOf = (el: El): string => textOf(kidsOf(el).at(-1) as El);
+  assert.equal(qCards.SESSION_QUESTION_NOTE, "時間が過ぎると時間切れになります。そのときは、答えを発言で送ってください。");
+  assert.equal(noteOf(qCard(qItem({ terminal: false }))), qCards.SESSION_QUESTION_NOTE);
+  assert.equal(noteOf(qCard(qItem())), qCards.PERMISSION_NOTE);
+  assert.equal(noteOf(qCard(qItem({ terminal: true }))), qCards.PERMISSION_NOTE);
+});
+
+test("web components: PermissionCard: terminal false の注記は SESSION_PERMISSION_NOTE。未指定は PERMISSION_NOTE のまま", () => {
+  const noteOf = (el: El): string => textOf(kidsOf(el).at(-1) as El);
+  assert.equal(cards.SESSION_PERMISSION_NOTE, "時間が過ぎると拒否になります。");
+  assert.equal(noteOf(cardOf(permItem({ terminal: false }))), cards.SESSION_PERMISSION_NOTE);
+  assert.equal(noteOf(cardOf(permItem())), cards.PERMISSION_NOTE);
+  assert.equal(noteOf(cardOf(permItem({ terminal: true }))), cards.PERMISSION_NOTE);
 });
 
 test("web components: 質問のカードの押せない理由（busy は 2 つとも「答えを送っています」、ready でない間は［答える］だけ「すべての問に答えると押せます」。押せない間は呼ばない）", () => {

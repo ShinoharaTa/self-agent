@@ -6,6 +6,10 @@ import { Button } from "./c-atoms.js";
 
 /** 許可・質問のカードの下に出す説明の文 */
 export const PERMISSION_NOTE = "端末や RC のダイアログでも答えられます。先に答えた方が効きます。";
+/** 端末の無いセッション（item.terminal が false）の許可のカードの説明の文 */
+export const SESSION_PERMISSION_NOTE = "時間が過ぎると拒否になります。";
+/** 端末の無いセッション（item.terminal が false）の質問のカードの説明の文 */
+export const SESSION_QUESTION_NOTE = "時間が過ぎると時間切れになります。そのときは、答えを発言で送ってください。";
 
 /** 「その他」の欄の maxlength */
 export const OTHER_MAX = 1000;
@@ -47,14 +51,14 @@ function Actions({ children }) {
   return html`<div class="c-card-actions" data-count=${String(list.length)}>${list}</div>`;
 }
 
-/** 許可の要求。item: { id, tool, mode, summary, rule, ruleNote, always, left, urgent, busy } */
+/** 許可の要求。item: { id, tool, mode, summary, rule, ruleNote, always, left, urgent, busy, terminal（false なら端末の無いセッションの説明の文） } */
 export function PermissionCard({ item, on }) {
   const busy = !!item.busy;
   const rule = str(item.rule);
   const mode = str(item.mode);
   const ruleNote = str(item.ruleNote);
   const reason = busy ? SENDING : undefined;
-  return html`<${Card} kind="permission" label="許可の要求" title="あなたの番: 許可" meta=${item.left} urgent=${!!item.urgent} note=${PERMISSION_NOTE}>
+  return html`<${Card} kind="permission" label="許可の要求" title="あなたの番: 許可" meta=${item.left} urgent=${!!item.urgent} note=${item.terminal === false ? SESSION_PERMISSION_NOTE : PERMISSION_NOTE}>
     <p class="c-card-facts" key="facts"><span class="c-card-mono">${str(item.tool)}</span>${mode === "" ? null : " ・ " + mode}</p>
     <pre class="c-card-code" key="code">${str(item.summary)}</pre>
     ${rule === ""
@@ -116,7 +120,7 @@ function questionSet({ item, q, index, on, otherRef }) {
 }
 
 /**
- * 質問。item: { id, who, left, urgent, busy, ready（全部の問に答えたか）, questions: [{ legend, text, multi, options: [{ label, description }], picked, other, otherText }] }。
+ * 質問。item: { id, who, left, urgent, busy, ready（全部の問に答えたか）, terminal（false なら端末の無いセッションの説明の文）, questions: [{ legend, text, multi, options: [{ label, description }], picked, other, otherText }] }。
  * otherRef(id, 問の番号) は「その他」の欄の ref を返す（口が渡す。無ければ付けない）
  */
 export function QuestionCard({ item, on, otherRef }) {
@@ -124,7 +128,7 @@ export function QuestionCard({ item, on, otherRef }) {
   const who = str(item.who);
   const questions = Array.isArray(item.questions) ? item.questions : [];
   const answerReason = busy ? SENDING : item.ready ? undefined : "すべての問に答えると押せます";
-  return html`<${Card} kind="question" label="質問" title="あなたの番: 質問" meta=${item.left} urgent=${!!item.urgent} note=${PERMISSION_NOTE}>
+  return html`<${Card} kind="question" label="質問" title="あなたの番: 質問" meta=${item.left} urgent=${!!item.urgent} note=${item.terminal === false ? SESSION_QUESTION_NOTE : PERMISSION_NOTE}>
     ${who === "" ? null : html`<p class="c-card-facts" key="who">${who}</p>`}
     ${questions.map((q, index) => questionSet({ item, q: q || {}, index, on, otherRef }))}
     <${Actions} key="actions">
