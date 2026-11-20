@@ -3629,9 +3629,9 @@ test("web static: 見出しの state（topState）: 何も開いていなけれ�
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { title: "話題 A", group: "general", place: { dir: null } }), v3Topic("ch:b", { title: "" })]));
   await h.flush();
   await h.topics.load();
-  assert.deepEqual(topPlain(h.lastTop()), { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, controls: "v3-hand" });
+  assert.deepEqual(topPlain(h.lastTop()), { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, mode: null, controls: "v3-hand" });
   h.app.open("settings");
-  assert.deepEqual(topPlain(h.lastTop()), { view: "other", title: "題:settings", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, controls: "v3-hand" });
+  assert.deepEqual(topPlain(h.lastTop()), { view: "other", title: "題:settings", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, mode: null, controls: "v3-hand" });
   h.app.open("ch:a");
   assert.deepEqual(topPlain(h.lastTop()), {
     view: "talk",
@@ -3643,6 +3643,7 @@ test("web static: 見出しの state（topState）: 何も開いていなけれ�
     hand: null,
     compact: false,
     menu: false,
+    mode: null,
     controls: "v3-hand",
   });
   h.app.open("ch:b");
@@ -3699,7 +3700,7 @@ test("web static: 見出しを描けなければ、題だけの state で 1 回�
   h.app.open("ch:a");
   const [full, quiet] = h.top.draws.slice(n);
   assert.equal(full!.status!.text, "あなたの番");
-  assert.deepEqual(topPlain(quiet!), { view: "talk", title: "A", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, controls: "v3-hand" });
+  assert.deepEqual(topPlain(quiet!), { view: "talk", title: "A", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, mode: null, controls: "v3-hand" });
   // 最小の state にも今の compact が入る
   h.top.narrow = true;
   h.fire("resize");

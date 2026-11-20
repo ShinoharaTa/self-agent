@@ -68,6 +68,8 @@ export function BottomBar({ variant, turns, hand, tabs, controls, on }) {
 // ===== 会話の見出し（TopBar。K4）。1 段で、スマホは 一覧へ・題・「…」・右腕、広い幅は 題・状態・場所・［会話］［端末］・「…」 =====
 
 const TOP_TONES = ["warning", "accent", "muted"];
+/** 帯に出す許可のモード（プロジェクトのセッションで選べる 3 つ） */
+const TOP_MODES = ["default", "acceptEdits", "plan"];
 const TOP_VIEWS = [
   { value: "talk", label: "会話" },
   { value: "pane", label: "端末" },
@@ -76,9 +78,11 @@ const TOP_VIEWS = [
 /**
  * 見出しの中身。view が talk・other でなければ null（何も描かない）。スマホは場所・切り替えを出さず（「…」の板から）、広い幅は右腕を出さない（右の列の物）。
  * compact（広い幅で根が狭いとき。入口が測って渡す）は、広い幅でも場所・切り替えを帯に出さず、スマホと同じく補足の語にする。
- * place は text が空でない文字列のときだけ場所として扱う。広い幅の帯のボタンは名前だけを見せ、「場所: 」付きは読み上げの名前（label）
+ * place は text が空でない文字列のときだけ場所として扱う。広い幅の帯のボタンは名前だけを見せ、「場所: 」付きは読み上げの名前（label）。
+ * mode（プロジェクトのセッションの許可のモード）は、広い幅で compact でない会話の見出しで、value が default・acceptEdits・plan のときだけ帯のボタンにする
+ * （スマホ・compact は帯にも補足の語にも出さない。「…」の板から）
  */
-export function topModel({ variant, view, title, status, note, place, views, hand, menu, compact }) {
+export function topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode }) {
   if (view !== "talk" && view !== "other") return null;
   const v = variant === "wide" ? "wide" : "phone";
   const narrow = v === "wide" && compact === true;
@@ -91,6 +95,7 @@ export function topModel({ variant, view, title, status, note, place, views, han
   let pl = null;
   let vw = null;
   let hd = null;
+  let md = null;
   if (v === "phone") {
     rest = [placeText, noteText].filter((s) => s !== null).join(" ・ ");
     const mark = hand === "turn" || hand === "unread" ? hand : null;
@@ -104,6 +109,10 @@ export function topModel({ variant, view, title, status, note, place, views, han
       pl = { text: placeName, label: placeText, disabled, reason: disabled && filled(place.reason) ? place.reason : null };
     }
     if (talk && views) vw = { value: views.value === "pane" ? "pane" : "talk", items: TOP_VIEWS };
+    if (talk && mode && TOP_MODES.includes(mode.value)) {
+      const disabled = mode.disabled === true;
+      md = { text: mode.value, label: "許可のモード: " + mode.value, disabled, reason: disabled && filled(mode.reason) ? mode.reason : null };
+    }
   }
   return {
     variant: v,
@@ -114,15 +123,16 @@ export function topModel({ variant, view, title, status, note, place, views, han
     status: st,
     rest,
     place: pl,
+    mode: md,
     views: vw,
     menu: talk && menu === true,
     hand: hd,
   };
 }
 
-/** 会話の見出し（列 2 の上）。on: { back(), place(opener), view(value), menu(opener), hand(opener) }。直下の子は決まった key（増減しても残る子を作り直さない） */
-export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, controls, on }) {
-  const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact });
+/** 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), hand(opener) }。直下の子は決まった key（増減しても残る子を作り直さない） */
+export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, controls, on }) {
+  const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode });
   if (m === null) return null;
   const wide = m.variant === "wide";
   const statusEl = m.status ? html`<span class="c-top-status" key="status" data-tone=${m.status.tone}>${m.status.text}</span>` : null;
@@ -146,6 +156,20 @@ export function TopBar({ variant, view, title, status, note, place, views, hand,
             on.place(event.currentTarget);
           }}>
           <span class="c-top-place-text">${m.place.text}</span>
+          <${Icon} name="chevron-down" size="sm" />
+        </button>`
+      : null}
+    ${m.mode
+      ? html`<button class="c-top-mode" key="mode" type="button" data-act="mode" aria-haspopup="dialog" aria-label=${m.mode.label}
+          aria-disabled=${m.mode.disabled ? "true" : undefined} title=${m.mode.disabled ? (m.mode.reason ?? undefined) : "許可のモードを変える"}
+          onClick=${(event) => {
+            if (m.mode.disabled) {
+              event.preventDefault();
+              return;
+            }
+            on.mode(event.currentTarget);
+          }}>
+          <span class="c-top-mode-text">${m.mode.text}</span>
           <${Icon} name="chevron-down" size="sm" />
         </button>`
       : null}

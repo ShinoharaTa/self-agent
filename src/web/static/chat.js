@@ -764,7 +764,7 @@
       store.channels && store.channels.personas.length > 1 ? el("span", { class: "badge", text: p.name + (p.isDefault ? "" : "（人格）") }) : null,
     ]);
     const actions = el("div", { class: "ed-actions" });
-    // プロジェクトのセッション（docs/plan/unify.md）: プロジェクトと許可のモード（モードの切り替えは後の段）
+    // プロジェクトのセッション（docs/plan/unify.md）: プロジェクトと許可のモード
     if (isSession && ch.projectDir) {
       actions.append(
         el("span", { class: "badge hide-sm", title: "プロジェクトのセッション（許可のモード: " + ch.projectDir.permissionMode + "）" }, [
@@ -834,6 +834,7 @@
   /**
    * 新しい殻の見出し（入口 c-app.js の TopBar）に渡す中身。DOM は作らない。チャンネルが引けなければ null
    *   status: Claude Code は今の状態、セッションは待ち・完了のときだけ（{ text, tone }）。note: 人格が 2 つ以上のときの札の文。menu: […] の行
+   *   mode: プロジェクトのセッションの許可のモード（ほかは null）
    */
   function head(channelId) {
     const ch = channelById(channelId);
@@ -846,6 +847,7 @@
         status: text ? { text, tone: live.state === "needs_input" ? "warning" : live.state === "running" ? "accent" : "muted" } : null,
         note: null,
         menu: ccMenu(ch, channelId, true),
+        mode: null,
       };
     }
     const p = persona(ch.persona);
@@ -854,6 +856,7 @@
       status: ch.kind === "session" && (ch.state === "waiting" || ch.state === "done") ? { text: STATE_LABEL[ch.state], tone: "muted" } : null,
       note: store.channels && store.channels.personas.length > 1 ? p.name + (p.isDefault ? "" : "（人格）") : null,
       menu: sessionMenu(ch, channelId),
+      mode: ch.kind === "session" && ch.projectDir ? ch.projectDir.permissionMode : null,
     };
   }
 
