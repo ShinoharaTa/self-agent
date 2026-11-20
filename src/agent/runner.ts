@@ -56,6 +56,11 @@ export type RunInput = {
   /** 指定すればそのセッションを resume する */
   sessionId?: string;
   context?: RunContext;
+  /**
+   * その話題のモデル（sessions.model の完全な ID）。context を渡さないターン（軽いモードの /renew の要約・場所を変える要点のターン）で使う。
+   * context.model が在ればそちらが先。無ければ設定のモデル
+   */
+  model?: string;
   /** このターンで WebFetch に取得を許す URL（オーナーがこのターンの発言に貼ったもの）。未指定・空なら WebFetch はすべて拒否する */
   allowedUrls?: readonly string[];
   /** 外からの中断（[中断]）。abort されたらターンを止め、errorMessage "aborted" の失敗を返す（打ち切りの "timeout" とは別） */

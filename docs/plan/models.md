@@ -79,7 +79,7 @@
   - `ALTER TABLE sessions ADD COLUMN model TEXT`（完全な ID。NULL = 全体の既定に従う。今ある行は全部 NULL = 挙動は変わらない）
   - `CREATE TABLE place_settings (place TEXT PRIMARY KEY, label TEXT, model TEXT, updated_at TEXT NOT NULL)`（place は `general` か `p:<名前>`。`model` は key。label が担当の表示名）
   - `ALTER TABLE usage_log ADD COLUMN model TEXT`（`npm run usage` でモデルごとに見るため。今は見えない）
-- 実行: `RunContext` に `model?` を足し、`turn.ts` が `permissionMode` と同じ所で入れる。`query-options.ts` は変えない（runner（`sdk-runner.ts`）が、context に model が在るときだけ設定を写して model を差し替え、無ければ今の設定をそのまま渡す。Options を変えないため）。`project-profile.ts` は `context.model ?? cfg.model`。devlog（`sdk-runner.ts:773`）も実際に渡した値にする。`RunResult.model`（実際に渡したモデル）を足す（usage_log に記録するため）。
+- 実行: `RunContext` に `model?` を足し、`turn.ts` が `permissionMode` と同じ所で入れる。`query-options.ts` は変えない（runner（`sdk-runner.ts`）が、context に model が在るときだけ設定を写して model を差し替え、無ければ今の設定をそのまま渡す。Options を変えないため）。`project-profile.ts` は `context.model ?? cfg.model`。devlog（`sdk-runner.ts:773`）も実際に渡した値にする。`RunResult.model`（実際に渡したモデル）を足す（usage_log に記録するため）。context を渡さないターン（軽いモードの /renew の要約・場所を変える要点のターン）は `RunInput.model` で渡す（context を渡すと打ち切りの時間・手順の上限・ファイルの守りが変わるため）。
 - 表示:
   - Web: 会話の見出し（`src/web/static/c-shell.js` の `topModel`。場所・モードの並び）に label。スマホは「…」の板。一覧の行には出さない（狭い）。
   - Discord: 作ったチャンネルの最初の投稿（`welcomeText`）に 1 行「担当: <表示名>（<label>）」。全体の既定のときは出さない。
@@ -137,7 +137,7 @@
 - 触る: `src/app/session-ops.ts`（`StartTopicInput.model?`、解決の関数 1 つ、`welcomeText` の 1 行）、`src/app/commands/new.ts`（`model` の choices。`persona` と併用は断る）、`src/app/right-hand.ts`（PR-0 の note をやめ、使えない名前は `bad_model` + key の一覧）、`src/web/routes/topics.ts`（body の `model`。重複よけのキー `:681` に足す）、`src/cc/takeover.ts`（場所の既定）。
 - 受け入れ: `/new model:sonnet` の話題は `sessions.model = claude-sonnet-5-5`／省略で場所の既定が在ればその ID、無ければ NULL／`session_open` の `model: "xxx"` は話題を作らず `bad_model`／［対応］と取り込みは場所の既定／最初の投稿に担当の行（NULL のときは無い）。
 - テスト: 解決の順の表（明示・場所・無し）、各入口 1 本ずつ。
-- **PR-2 の前に直す（会話の途中でモデルが変わらないように）**: (a) 軽いモードの /renew の要約のターン（`src/app/session-renew.ts`。context を渡さない） (b) 軽いモードの、場所を変える要点のターン（`src/app/topic-move.ts`。同じ） (c) 人格つきの話題は、runner が `context.model` を人格のモデルより先に使うので、`sessions.model` を付けない事を入口で守る（`/new` の併用を断る・`/renew model:` も断る） (d) 取り込みは端末の会話を resume するので、場所の既定を付けると最初のターンから別のモデルになりうる（受け入れ済み。今も全体の既定で同じ）。プロジェクトのセッションの /renew と要点のターンは PR-1 で入れた
+- **PR-2 の前に直す（会話の途中でモデルが変わらないように）**: (a) 軽いモードの /renew の要約のターン（`src/app/session-renew.ts`。context を渡さない）は済（`RunInput.model`） (b) 軽いモードの、場所を変える要点のターン（`src/app/topic-move.ts`。同じ）は済（`RunInput.model`） (c) 人格つきの話題は、runner が `context.model` を人格のモデルより先に使うので、`sessions.model` を付けない事を入口で守る（`/new` の併用を断る・`/renew model:` も断る） (d) 取り込みは端末の会話を resume するので、場所の既定を付けると最初のターンから別のモデルになりうる（受け入れ済み。今も全体の既定で同じ）。プロジェクトのセッションの /renew と要点のターンは PR-1 で入れた
 
 ### PR-3: Web（始める板・見出し）
 - 触る: `src/web/static/shell.js`（板の選択。場所を変えたら初期値も追う）、`c-shell.js`・見本（見出しの label）、`GET /api/topics` の行に `model`・`modelLabel`、`GET /api/models`（一覧と場所の既定）。

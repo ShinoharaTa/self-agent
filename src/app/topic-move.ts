@@ -289,8 +289,8 @@ async function moveTurn(input: MoveInput, deps: MoveDeps, gate: ProjectSessionGa
   }
   let result: RunResult | undefined;
   if (project === undefined || turn.projectRunner !== undefined) {
-    // 要点のターンも話題のモデルで動かす（会話の途中でモデルを変えない）。軽いモードは context を渡さないので入れない
-    const model = project === undefined ? undefined : topicSessions.modelOf?.(channelId);
+    // 要点のターンも話題のモデルで動かす（会話の途中でモデルを変えない）。軽いモードは context を渡さないので RunInput.model で渡す
+    const model = topicSessions.modelOf?.(channelId);
     const context: RunContext | undefined =
       project === undefined
         ? undefined
@@ -305,7 +305,13 @@ async function moveTurn(input: MoveInput, deps: MoveDeps, gate: ProjectSessionGa
           };
     const runner = project !== undefined && turn.projectRunner !== undefined ? turn.projectRunner : persona.runner;
     try {
-      result = await runner.run({ prompt: MOVE_NOTE_PROMPT, sessionId, context, allowedUrls: [] });
+      result = await runner.run({
+        prompt: MOVE_NOTE_PROMPT,
+        sessionId,
+        context,
+        allowedUrls: [],
+        ...(project !== undefined || model === undefined ? {} : { model }),
+      });
     } catch (error) {
       deps.log(`場所の付け替えの要点のターンが投げました（guild=${guildId}、${errorName(error)}）`);
     }
