@@ -143,6 +143,8 @@ test("readBody: Content-Length の無い（chunked の）本文は、読んだ�
 test("staticFileFor: / は index.html、/static/<name> は 1 要素の html・css・js・svg・png・webmanifest だけ。base.css・icons.svg は templates から", () => {
   const dirs = { staticDir: "/s", templateSiteDir: "/t" };
   assert.deepEqual(staticFileFor("/", dirs), { file: "/s/index.html", contentType: "text/html; charset=utf-8" });
+  // 古い殻（M8 から M8b まで）
+  assert.deepEqual(staticFileFor("/static/classic.html", dirs), { file: "/s/classic.html", contentType: "text/html; charset=utf-8" });
   assert.deepEqual(staticFileFor("/static/app.js", dirs), { file: "/s/app.js", contentType: "text/javascript; charset=utf-8" });
   assert.deepEqual(staticFileFor("/static/base.css", dirs), { file: "/t/base.css", contentType: "text/css; charset=utf-8" });
   assert.deepEqual(staticFileFor("/static/icons.svg", dirs), { file: "/t/icons.svg", contentType: "image/svg+xml; charset=utf-8" });

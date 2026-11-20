@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#11141c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="self-agent">
+  <title>self-agent</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="stylesheet" href="/static/base.css">
+  <link rel="stylesheet" href="/static/tokens.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/ui.js" defer></script>
+  <script src="/static/api.js" defer></script>
+  <script src="/static/sound.js" defer></script>
+  <script src="/static/chat.js" defer></script>
+  <script src="/static/views.js" defer></script>
+  <script src="/static/sidebar.js" defer></script>
+  <script src="/static/workbench.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#editors">本文へ</a>
+  <div class="wb" id="wb">
+    <header class="wb-titlebar">
+      <button class="btn btn-ghost btn-sm btn-icon-sm" id="sidebar-toggle" type="button" aria-label="サイドバー（Ctrl+B）" title="サイドバー（Ctrl+B）" aria-controls="sidebar" aria-expanded="true">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons-app.svg#sidebar"></use></svg>
+      </button>
+      <span class="wb-brand">self-agent</span>
+      <span class="wb-title-current" id="title-current"></span>
+      <button class="cmd-center" id="command-center" type="button" aria-label="移動・コマンド（Ctrl+K）">
+        <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#search"></use></svg>
+        <span class="cmd-center-text">画面・コマンドを探す</span>
+        <kbd>Ctrl+K</kbd>
+      </button>
+      <div class="wb-title-actions">
+        <button class="btn btn-ghost btn-sm btn-icon-sm" id="panel-toggle" type="button" aria-label="パネル（Ctrl+J）" title="パネル（Ctrl+J）" aria-controls="panel" aria-pressed="true">
+          <svg class="icon" aria-hidden="true"><use href="/static/icons-app.svg#panel-bottom"></use></svg>
+        </button>
+        <button class="btn btn-ghost btn-sm btn-icon-sm" id="theme-toggle" type="button" aria-label="テーマを切り替える"></button>
+      </div>
+    </header>
+
+    <nav class="wb-activity" id="activity" aria-label="アクティビティ"></nav>
+    <aside class="wb-sidebar" id="sidebar" aria-label="サイドバー"></aside>
+    <div class="wb-sash wb-sash-sidebar" id="sash-sidebar" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅" tabindex="0"></div>
+
+    <main class="wb-main">
+      <div class="wb-editors" id="editors" tabindex="-1"></div>
+      <div class="wb-sash wb-sash-panel" id="sash-panel" role="separator" aria-orientation="horizontal" aria-label="パネルの高さ" tabindex="0"></div>
+      <section class="wb-panel" id="panel" aria-label="パネル"></section>
+    </main>
+
+    <footer class="wb-statusbar" id="statusbar" aria-label="ステータスバー"></footer>
+  </div>
+
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+  <div class="drawer-backdrop" id="more-backdrop" hidden></div>
+  <div class="more-sheet" id="more-sheet" role="dialog" aria-modal="true" aria-label="その他の画面" tabindex="-1"></div>
+
+  <div class="palette-backdrop" id="palette-backdrop" hidden>
+    <div class="palette" role="dialog" aria-modal="true" aria-label="コマンドパレット">
+      <div class="palette-head">
+        <input class="palette-input" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" enterkeyhint="search" placeholder="探す" title="名前で探します。&gt; か / で始めるとコマンド" aria-label="探す">
+        <span class="palette-mode" id="palette-mode"></span>
+      </div>
+      <ul class="palette-list" id="palette-list" role="listbox" aria-label="候補"></ul>
+    </div>
+  </div>
+
+  <dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title" aria-describedby="dlg-confirm-target dlg-confirm-body">
+    <h2 id="dlg-confirm-title" class="dlg-title"></h2>
+    <p id="dlg-confirm-target" class="dlg-target" hidden></p>
+    <p id="dlg-confirm-body" class="meta"></p>
+    <div class="dialog-actions">
+      <button class="btn btn-secondary btn-sm" id="dlg-confirm-cancel" type="button">やめる</button>
+      <button class="btn btn-primary btn-sm" id="dlg-confirm-ok" type="button">実行する</button>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-new" aria-labelledby="dlg-new-title">
+    <form id="new-form" class="stack" novalidate>
+      <h2 id="dlg-new-title" class="dlg-title">新しいセッション</h2>
+      <div class="field">
+        <label for="new-title">題名</label>
+        <input class="input" id="new-title" maxlength="100" enterkeyhint="done" placeholder="例: 冬の旅行の計画" autocomplete="off" required aria-required="true" aria-describedby="new-error">
+      </div>
+      <div class="field" id="new-guild-field" hidden>
+        <label for="new-guild">サーバー</label>
+        <select class="select" id="new-guild"></select>
+      </div>
+      <div class="field" id="new-persona-field" hidden>
+        <label for="new-persona">人格</label>
+        <select class="select" id="new-persona"></select>
+      </div>
+      <div class="field" id="new-project-field" hidden>
+        <label for="new-project">プロジェクト</label>
+        <select class="select" id="new-project" aria-describedby="new-project-hint"></select>
+        <p class="meta" id="new-project-hint">選ぶと Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はボタンで答えます。人格は既定だけです</p>
+      </div>
+      <div class="alert-slot"><p class="alert" id="new-error" role="alert" hidden></p></div>
+      <p class="meta">Discord にチャンネルができます。</p>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary btn-sm" id="dlg-new-cancel" type="button">やめる</button>
+        <button class="btn btn-primary btn-sm" id="dlg-new-ok" type="submit">作る</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-cc-start" aria-labelledby="dlg-cc-start-title">
+    <form id="cc-start-form" class="stack" novalidate>
+      <h2 id="dlg-cc-start-title" class="dlg-title">Claude Code を起動</h2>
+      <div class="field">
+        <label for="cc-start-project">プロジェクト</label>
+        <select class="select" id="cc-start-project"></select>
+      </div>
+      <div class="field">
+        <label for="cc-start-title">題名</label>
+        <input class="input" id="cc-start-title" maxlength="40" enterkeyhint="done" placeholder="例: fix-login" autocomplete="off" required aria-required="true" aria-describedby="cc-start-error">
+      </div>
+      <div class="field">
+        <label for="cc-start-text">最初の指示（任意）</label>
+        <textarea class="textarea" id="cc-start-text" rows="3" maxlength="2000" aria-describedby="cc-start-error"></textarea>
+      </div>
+      <details class="dlg-more" id="cc-start-more">
+        <summary>詳しい設定</summary>
+        <div class="field">
+          <label for="cc-start-mode">権限モード</label>
+          <select class="select" id="cc-start-mode">
+            <option value="">既定（この機械の設定に従う）</option>
+            <option value="default">default（使うたびに確認）</option>
+            <option value="acceptEdits">acceptEdits（編集は確認なし）</option>
+            <option value="plan">plan（計画だけ）</option>
+            <option value="auto">auto（自動で判断）</option>
+          </select>
+        </div>
+      </details>
+      <div class="alert-slot"><p class="alert" id="cc-start-error" role="alert" hidden></p></div>
+      <p class="meta">この機械の tmux に新しいセッションを作り、claude を起動します。題名は 40 字までです。</p>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary btn-sm" id="dlg-cc-start-cancel" type="button">やめる</button>
+        <button class="btn btn-primary btn-sm" id="dlg-cc-start-ok" type="submit">起動する</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast-region">
+    <div class="toast-stack" id="toast" role="status" aria-atomic="false" hidden></div>
+    <div class="toast-stack" id="toast-alert" role="alert" aria-atomic="false" hidden></div>
+  </div>
+</body>
+</html>
