@@ -46,7 +46,7 @@ export type MoveDeps = {
   moves: Pick<TopicMoveStore, "start" | "accept" | "finish" | "fail" | "runningChannels">;
   /** 発言のターンと同じキュー（key は channelId。has は枠待ち・前のジョブ待ちの発言を busy にするため） */
   turnQueue: Pick<KeyedSerialQueue, "run" | "has">;
-  turn: Pick<TurnDeps, "runner" | "projectRunner" | "personas" | "sessions" | "seeds" | "usage" | "log">;
+  turn: Pick<TurnDeps, "runner" | "projectRunner" | "personas" | "sessions" | "seeds" | "usage" | "log" | "takeover">;
   /** 実行中のターン（handler.runningTurns） */
   runningTurns: () => ReadonlyArray<{ channelId: string }>;
   /** SELF_AGENT_CC=1 のときだけ。places には generalDir が入っている（M4a） */
@@ -284,7 +284,7 @@ async function moveTurn(input: MoveInput, deps: MoveDeps, gate: ProjectSessionGa
   if (project !== undefined && projectDir(project.projectDir, gate.places) === undefined) {
     // 今の場所が使えない（消えた・改名された・直下でなくなった）と要点のターンは必ず失敗する。記録が無いときと同じく要点なしで進める
     deps.log(`今の場所が使えないので要点なしで付け替えます（guild=${guildId}）`);
-    return finishWithoutNote(input, deps, id, session, from, to, generalDir);
+    return finishWithoutNote(input, deps, id, session, from, to, generalDir, sessionId);
   }
   let result: RunResult | undefined;
   if (project === undefined || turn.projectRunner !== undefined) {
@@ -320,7 +320,7 @@ async function moveTurn(input: MoveInput, deps: MoveDeps, gate: ProjectSessionGa
 
   if (result !== undefined && !result.ok && RESUME_FAILURE_PATTERN.test(result.errorMessage)) {
     // 会話の記録がもう無いので要点は取れない
-    return finishWithoutNote(input, deps, id, session, from, to, generalDir);
+    return finishWithoutNote(input, deps, id, session, from, to, generalDir, sessionId);
   }
 
   // ほかの失敗: 何も変えない。途中まで記録された会話は次の発言で続ける（同じ SDK セッションなら置き換えない）
@@ -346,15 +346,25 @@ function finishWithoutNote(
   from: string | null,
   to: string,
   generalDir: string | undefined,
+  sessionId: string,
 ): MoveOutcome {
   const { channelId } = input;
   const lines = placeLines(from, to, generalDir);
   const seed = resumeSeed(session, undefined, "inbox");
-  return finish(input, deps, id, from, to, null, generalDir, () => {
+  const outcome = finish(input, deps, id, from, to, null, generalDir, () => {
     deps.topicSessions.setProject(channelId, to, "default");
     deps.turn.sessions.delete(channelId);
     deps.turn.seeds.set(channelId, seed === undefined ? lines : `${seed}\n\n${lines}`);
   });
+  if (outcome.result === "moved") {
+    // 取り込んだ会話なら、捨てたことを知らせる（turn.ts・session-renew.ts と同じく、投げても続ける）
+    try {
+      deps.turn.takeover?.resumeDropped(channelId, sessionId);
+    } catch (error) {
+      deps.log(`取り込みの resumeDropped で例外（${error instanceof Error ? error.name : "unknown"}）が出たため、飛ばして続けます`);
+    }
+  }
+  return outcome;
 }
 
 /** 受け付けた後（キューの中）で断る: 行を failed にし、履歴に知らせ */

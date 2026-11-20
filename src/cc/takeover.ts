@@ -223,8 +223,8 @@ export type CcTakeoverProposeResult =
   | { ok: true; id: number; message: OutgoingMessage; plainText: string }
   | { ok: false; reason: TakeoverFailure; text: string };
 
-/** takeable の 1 行（§3.5） */
-export type CcTakeable = { sessionId: string; title: string; project: string; alive: boolean };
+/** takeable の 1 行（§3.5）。at は待機なら最後の活動、終わった物なら終わった時刻（ms。分からなければ undefined） */
+export type CcTakeable = { sessionId: string; title: string; project: string; alive: boolean; at: number | undefined };
 
 /**
  * confirm の結果。stale = 確認待ちでない、expired = 10 分を過ぎた（取り消した）。
@@ -327,11 +327,13 @@ export class CcTakeover {
       if (!(await this.judge(sessionId, fresh, "idle")).ok) continue;
       const assessed = await this.judge(sessionId, fresh);
       if (!assessed.ok) continue;
+      const goneAt = Date.parse(assessed.session?.goneAt ?? "");
       result.push({
         sessionId,
         title: this.titleOf(assessed.session, assessed.project),
         project: assessed.project,
         alive: assessed.source === "alive",
+        at: assessed.source === "alive" ? assessed.view?.lastActivityAt : Number.isFinite(goneAt) ? goneAt : undefined,
       });
     }
     return result;
@@ -836,6 +838,8 @@ export class CcTakeover {
       pendingPermission: ccPermissions?.pendingFor(sessionId) !== undefined || view?.pendingPermission === true,
       mapped: sdkSessions.hasSessionId(sessionId),
     });
+    // 一覧にも cc_sessions にも無い session_id（細工した値・古い候補）は、場所のせいにせず「確かめられない」で断る
+    if (code === "outside_workspace" && view === undefined && session === undefined) return { ok: false, code: "identity" };
     if (code !== undefined) return { ok: false, code };
     // 一覧に無いのに gone になっていない（registry がまだ見ていない）ものは、終わったと言えない
     if (view === undefined && (session === undefined || session.goneAt === null)) return { ok: false, code: "identity" };
