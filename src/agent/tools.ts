@@ -93,8 +93,8 @@ export type CcStartArgs = { project: string; title: string; text?: string; permi
 
 // ---- 右腕のツール（docs/plan/web-ui-v3.md §4 の M6。処理は src/app/right-hand.ts） ----
 
-/** session_open（project・text を足した形）の引数 */
-export type TopicOpenArgs = { title: string; context: string; project?: string; text?: string };
+/** session_open（project・text・model を足した形）の引数 */
+export type TopicOpenArgs = { title: string; context: string; project?: string; text?: string; model?: string };
 /** session_open（project・text を足した形）の結果（そのまま JSON にしてモデルに返す） */
 export type TopicOpenResult =
   | { result: "not_available"; message?: string }
@@ -326,6 +326,8 @@ export const SESSION_OPEN_TITLE_MAX_LENGTH = 100;
 export const SESSION_OPEN_CONTEXT_MAX_LENGTH = 400;
 /** session_open の text の文字数の上限（app/session-ops.ts の TOPIC_TEXT_MAX_LENGTH と同じ値。テストで同じことを確かめる） */
 export const SESSION_OPEN_TEXT_MAX_LENGTH = 1900;
+/** session_open の model の文字数の上限 */
+export const SESSION_OPEN_MODEL_MAX_LENGTH = 32;
 /** topic_move の place の文字数の上限 */
 export const TOPIC_PLACE_MAX_LENGTH = 64;
 /** topic_move の topic の文字数の上限 */
@@ -1140,6 +1142,13 @@ export function createTaskTools(
           .max(SESSION_OPEN_TEXT_MAX_LENGTH)
           .optional()
           .describe("担当への最初の依頼。オーナーの依頼をそのまま書く。これを渡すと、作ったチャンネルで担当が作業を始める。無ければ省略する"),
+        model: z
+          .string()
+          .trim()
+          .min(1)
+          .max(SESSION_OPEN_MODEL_MAX_LENGTH)
+          .optional()
+          .describe("使うモデルの名前（オーナーが名前で指定したときだけ渡す。opus・sonnet・haiku など）。使えない名前なら、使える名前が返る。省略すると場所の既定のモデルで始まる"),
       },
       // Discord にチャンネルを作り終えるまで待つ（ターンのタイムアウト内に収まる前提）
       async (args) => topicHandlers.sessionOpen(args),

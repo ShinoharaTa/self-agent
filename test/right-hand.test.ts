@@ -11,6 +11,7 @@ import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
   createRightHand,
   FIRST_TURN_FAILED_NOTE,
+  MODEL_NOT_YET_NOTE,
   NO_PROJECT_SESSIONS_NOTE,
   PERSONA_PLACE_NOTE,
   PLACE_FALLBACK_NOTE,
@@ -229,6 +230,21 @@ test("right hand open: submitText が受け付けなかったら turn failed で
   const both = await s.rightHand.open({ ...ARGS, title: "b", project: "gamma", text: "一言" }, INBOX);
   assert.ok(both.result === "created");
   assert.equal(both.note, `${PLACE_FALLBACK_NOTE} ${FIRST_TURN_FAILED_NOTE}`);
+});
+
+test("right hand open: model を渡すと話題は今までどおり作られ、note にモデルの指定はまだ使えない旨", async (t) => {
+  const s = setup(t);
+  const result = await s.rightHand.open({ ...ARGS, project: "alpha", text: "宿を探して", model: "sonnet" }, INBOX);
+  assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "alpha", turn: "started", note: MODEL_NOT_YET_NOTE });
+  assert.equal(s.topicSessions.projectDirOf("ch-1")?.projectDir, "alpha");
+  // 最初の依頼にも model は渡らない（startTopic に model を渡さない）
+  assert.deepEqual(s.submits, [{ guildId: GUILD, channelId: "ch-1", content: "宿を探して", at: NOW, source: "web", via: "right_hand" }]);
+});
+
+test("right hand open: model と場所の fallback の note が並ぶと、半角の空白でつないで両方が入る", async (t) => {
+  const s = setup(t);
+  const result = await s.rightHand.open({ ...ARGS, project: "gamma", model: "opus" }, INBOX);
+  assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "General", turn: "none", note: `${PLACE_FALLBACK_NOTE} ${MODEL_NOT_YET_NOTE}` });
 });
 
 test("right hand open: seed に「#inbox からの続き:」と context が入る", async (t) => {

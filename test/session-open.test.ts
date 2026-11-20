@@ -209,6 +209,36 @@ test("ツール定義: session_open の project は 64 字まで、text は 1,90
   assert.deepEqual(schema.parse({ title: "a", context: "c", project: " alpha ", text: " 見て " }), { title: "a", context: "c", project: "alpha", text: "見て" });
 });
 
+test("ツール定義: session_open の model は前後の空白を除いて 1〜32 字で省け、describe の文は決まった文", (t) => {
+  const definition = tools(t, fakeOpen().open, undefined).find((candidate) => candidate.name === "session_open");
+  assert.ok(definition !== undefined);
+  const schema = z.object(definition.inputSchema);
+
+  assert.equal("model" in schema.parse({ title: "a", context: "c" }), false);
+  assert.deepEqual(schema.parse({ title: "a", context: "c", model: " sonnet " }), { title: "a", context: "c", model: "sonnet" });
+  assert.equal(schema.safeParse({ title: "a", context: "c", model: "m".repeat(32) }).success, true);
+  assert.equal(schema.safeParse({ title: "a", context: "c", model: "m".repeat(33) }).success, false);
+  assert.equal(schema.safeParse({ title: "a", context: "c", model: " 　 " }).success, false);
+  const json = z.toJSONSchema(schema) as { properties: Record<string, { description?: string }> };
+  assert.equal(
+    json.properties.model?.description,
+    "使うモデルの名前（オーナーが名前で指定したときだけ渡す。opus・sonnet・haiku など）。使えない名前なら、使える名前が返る。省略すると場所の既定のモデルで始まる",
+  );
+});
+
+test("session_open: model を渡すと（trim されて）openTopic に届き、渡さなければ args に model の鍵が無い", async (t) => {
+  const definition = tools(t, fakeOpen().open, undefined).find((candidate) => candidate.name === "session_open");
+  assert.ok(definition !== undefined);
+  const schema = z.object(definition.inputSchema);
+  const fake = fakeOpen();
+  // 1 回の run で 1 回しか作れないので、run ごとに作り直す
+  await sessionOpen(t, fake.open, INBOX)(schema.parse({ ...ARGS, model: "  haiku " }) as unknown as TopicOpenArgs);
+  await sessionOpen(t, fake.open, INBOX)(schema.parse({ ...ARGS, title: "別件" }) as unknown as TopicOpenArgs);
+  assert.equal(fake.calls.length, 2);
+  assert.equal(fake.calls[0]![0].model, "haiku");
+  assert.equal("model" in fake.calls[1]![0], false);
+});
+
 test("session_open: 1 回の run で 2 回呼ぶと、2 回目は limit で openTopic を呼ばない", async (t) => {
   const fake = fakeOpen();
   const call = sessionOpen(t, fake.open, INBOX);
