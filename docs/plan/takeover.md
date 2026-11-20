@@ -34,7 +34,7 @@ v2 → v3 で変えた所（ここに無い節は v2 のまま運んだ）:
 - 取り込み先は **新しい普通のチャンネル**（`/new project:` と同じ形の話題）。題名は端末のセッションの名前。チャンネルは **SIGTERM の前**に作り、作れなければ取り込まない（端末はそのまま）。その後で失敗したら、作ったチャンネルは消す。
 - 端末の claude は **SIGTERM** で終わらせる。生きているセッションは tmux の中・待機中だけ。終わったセッションも同じ手順で取り込め（tmux は要らない）、やり直しの口を兼ねる。
 - 記録は Bot の `CLAUDE_CONFIG_DIR` へ **コピー**する（session_id は同じ。端末側とはそこで分岐）。
-- 取り込んだ会話には **PROJECT_APPEND が入らない**（probe）。最初のターンの発言の前に 1 回だけ「前置き」を付ける。許可のモードは H4b まで常に default。
+- 取り込んだ会話には **PROJECT_APPEND が入らない**（probe）。最初のターンの発言の前に 1 回だけ「前置き」を付ける。許可のモードは端末の plan・acceptEdits をそのまま引き継ぎ、ほかは default（H4b）。
 - 入口は `/cc take`（どこで打っても候補から選ぶ → 確認のボタン）と、Web の札の［取り込む］。SDK のツールは作らない。DB は表 1 つ（移行 1 つ）。環境変数は足さない。逆向き（端末へ戻す）は U3。
 - 今ある `cc-…` のチャンネルは変えない。取り込んだセッションに在れば「続きは新しいチャンネルで」を 1 通出して完了へ移す（リモコンを消すまでの間だけの道）。
 
@@ -258,7 +258,7 @@ v2 → v3 で変えた所（ここに無い節は v2 のまま運んだ）:
 （v2 のまま。読み替え: 「そのチャンネル」は**行き先の新しいチャンネル**で、取り込みの行は `target_channel_id` で引く。「U2」「/mode」は terminal-handover.md の段 H4b。H4a・H4b の後に、前置きの「AskUserQuestion は使えません」とモードの引き継ぎを直す。）
 
 - `sessions`: state active・origin `command`（CHECK を変えない。出どころは `cc_takeovers`）・persona は既定・`project_dir` はプロジェクトの名前。
-- **`permission_mode` は常に default**。U1 には後からモードを変える口が無く（§1.1 の 5）、plan・acceptEdits を引き継ぐと戻せない。確認の文に「許可のモードは default になります（端末: <端末のモード>）」と書く。端末のモードは `cc_takeovers.terminal_mode` に残す。U2 で /mode が入ったら引き継ぎを見直す（未決 6）。
+- **`permission_mode` は端末の plan・acceptEdits をそのまま引き継ぎ、ほか（default・auto・bypassPermissions・不明）は default**（`mapTakeoverMode`。propose で `cc_takeovers.permission_mode` に置き、commit で `sessions` に写す）。H4b で /mode が入り、取り込んだ後でも戻せるようになったので引き継ぐ（未決 6）。確認の文に「許可のモードは <引き継ぐモード> になります（端末: <端末のモード>）」と書く。端末のモードは `cc_takeovers.terminal_mode` に残す。H4b の前に作られて確認待ちのまま残っていた行は、行の値（default）のまま進む。
 - モデルと effort は `cfg` のもの（端末のモデルは引き継がない）。最初のターンはキャッシュが全部外れる（P9）。**1 回だけ受け入れ**、CLAUDE.md の「プロンプトキャッシュの規則」に例外として 1 行足す。
 
 #### 3.6.1 self-agent の案内の渡し方（P6 への対応）
@@ -332,7 +332,7 @@ v2 → v3 で変えた所（ここに無い節は v2 のまま運んだ）:
 | `state` | TEXT NOT NULL。`awaiting_confirm`・`running`・`done`・`failed`・`cancelled` | §4 |
 | `step` | TEXT（NULL 可）。`check`・`channel`・`term`・`copy`・`commit` | running の間の位置 |
 | `failure` | TEXT（NULL 可） | 失敗の符号（文字列のまま） |
-| `permission_mode` | TEXT NOT NULL。`default`・`acceptEdits`・`plan` | 取り込んだセッションのモード（H4b まで常に default） |
+| `permission_mode` | TEXT NOT NULL。`default`・`acceptEdits`・`plan` | 取り込んだセッションのモード（端末の plan・acceptEdits はそのまま、ほかは default） |
 | `terminal_mode` | TEXT（NULL 可） | 端末のときのモード（確認の文に出す） |
 | `interrupted` | INTEGER NOT NULL DEFAULT 0 | 終わらせる直前に端末で動きがあった |
 | `note_pending` | INTEGER NOT NULL DEFAULT 0 | 前置きをまだ付けていない |
@@ -380,7 +380,7 @@ running の間の step:
 | （channel の続き。生きているときだけ） | 2 秒おいて、一覧・ペイン・記録の増えた分を確かめ直す | `changed` など。端末はそのまま / 消す |
 | term（生きているときだけ） | 相手の確かめ → SIGTERM → `/proc/<pid>` が消えるまで待つ → 一覧を 1 回読む → 増えた分を見る | 確かめで落ちた: `identity`（signal なし）。消えない: `not_exited`（signal は送った）/ 消す |
 | copy | 終わったセッションなら一覧を 1 回読み直して戻っていない事 → 記録を写す（同じ実体なら写さない） | `copy_failed`・`already_taken`・`changed`。生きていた物は端末が終わっている（終わった会話として取り込み直せる）/ 消す |
-| commit | `BEGIN IMMEDIATE` の 1 つのトランザクション: `sessions` の行（行き先の channel_id・state active・origin `command`・`project_dir`・`permission_mode` default）→ `channel_sessions` に（行き先の channel_id, session_id）→ 取り込みを done（`note_pending = 1`）。内側に BEGIN のある操作は呼ばない | 巻き戻して `copy_failed` / 消す |
+| commit | `BEGIN IMMEDIATE` の 1 つのトランザクション: `sessions` の行（行き先の channel_id・state active・origin `command`・`project_dir`・`permission_mode` は取り込みの行の値）→ `channel_sessions` に（行き先の channel_id, session_id）→ 取り込みを done（`note_pending = 1`）。内側に BEGIN のある操作は呼ばない | 巻き戻して `copy_failed` / 消す |
 | （後始末。失敗しても done） | 新しいチャンネルに完了の文・Web の履歴に区切りと知らせ → `cc-…` が在れば deleted・案内・完了へ（§3.2）→ Discord の入口なら確認の文を書き換える → `effects_at` | 起動時に、`effects_at` が空の done の行をやり直す（完了の文がまれに 2 回出るのは受け入れる。行き先の `sessions` の行が無ければ済みにするだけ）。`cc-…` を deleted にした後・案内と完了への移動の前に落ちると、やり直しでは案内も移動も出ない（二重に出さない方を取った。受ける） |
 
 v2 と違う所: step `channel` が増えた / commit は `cc_channels` に触らず、`stopFollow` も呼ばない / 進行中への移動と topic の書き換えは要らない（最初からその形で作る）/ 差し止めた ended の流し直しは無い。
@@ -409,9 +409,9 @@ v3 で足した・変えた符号:
 
 ほかの符号（`not_ready`・`list_failed`・`target_invalid`・`tmux_failed`・`pane`・`already_taken`・`in_progress`・`no_transcript`・`too_large`・`changed`・`identity`・`not_exited`・`copy_failed`・`internal`・`restart`）の文は v2 のまま（`cc/takeover-rules.ts` の `FAILURE_TEXTS`）。
 
-確認の文: 「「<題名>」（<プロジェクト>）を取り込みます。端末の Claude Code は終了し、続きは新しいチャンネルで self-agent が引き継ぎます。許可のモードは default になります（端末: <端末のモード>）。モデルは self-agent の設定のものになります。」（終わったセッションは 2 文目の前半を「端末の Claude Code はすでに終わっています。」に）。
+確認の文: 「「<題名>」（<プロジェクト>）を取り込みます。端末の Claude Code は終了し、続きは新しいチャンネルで self-agent が引き継ぎます。許可のモードは <引き継ぐモード> になります（端末: <端末のモード>）。モデルは self-agent の設定のものになります。」（終わったセッションは 2 文目の前半を「端末の Claude Code はすでに終わっています。」に）。
 
-完了の文（新しいチャンネルの最初の投稿と、Web の履歴の知らせ）: 「端末の Claude Code から取り込みました。ここから先は self-agent がこの会話を続けます（<プロジェクト>・許可のモード default）。これより前の会話はここには出ませんが、self-agent は覚えています。端末で claude --resume すると取り込む前までの会話が別に開きます（ここでの続きは入りません）。」`interrupted` なら「取り込みの直前に端末で動きがありました。最後の指示は途中で止まっているかもしれません。」を足す。
+完了の文（新しいチャンネルの最初の投稿と、Web の履歴の知らせ）: 「端末の Claude Code から取り込みました。ここから先は self-agent がこの会話を続けます（<プロジェクト>・許可のモード <引き継いだモード>）。これより前の会話はここには出ませんが、self-agent は覚えています。端末で claude --resume すると取り込む前までの会話が別に開きます（ここでの続きは入りません）。」`interrupted` なら「取り込みの直前に端末で動きがありました。最後の指示は途中で止まっているかもしれません。」を足す。
 
 確認の文の書き換え（Discord の入口。成功）: 「取り込みました → <#新しいチャンネル>」。
 
@@ -624,7 +624,7 @@ v3 で足した・変わった物:
 | 3 | 待機しているプロジェクトのセッションを「オーナーの番」に数えるか | #338 の側（terminal-handover.md §5.1） |
 | 4 | tmux の外の生きているセッションも終わらせるか | **決まった**（#428 の決定 4: 終わらせない） |
 | 5 | `TAKEOVER_MAX_BYTES` の値 | 実装者（128 MB で始め、R3 で直す） |
-| 6 | 端末の plan・acceptEdits を引き継ぐか | H4b で決める（terminal-handover.md §3.1） |
+| 6 | 端末の plan・acceptEdits を引き継ぐか | **決まった**（H4b: 引き継ぐ。ほかは default。§3.6） |
 | 7 | 端末の cwd の形が違うセッションも取り込むか | 残る。今は断る。使う期間に困ったら見直す（オーナー） |
 | 8 | M1 の手順 5（R6。背景のシェル・MCP の子プロセスが SIGTERM の後に残るか） | 残る（下の 3） |
 | — | （v3 のレビューで足した）取り込んだ話題の場所を付け替えたとき、会話の記録が無くて新しい会話になると、「元の会話は端末で開けます」の知らせが出ない（§3.6.3） | 決めた: 要点なしで付け替える経路だけ通す（`topic-move.ts` の deps に `takeover` を足し、付け替えが通った後に `resumeDropped`。H2） |
