@@ -6,12 +6,14 @@
 // 「あなたの番」のカード（K5）は chat.js が根と state を SA.cards.draw(root, state) で押し込み、「その他」の欄への焦点は SA.cards.focus(root, id, index)（「その他」の本文の覚えは c-cards.js の cardsMouth）
 // 知らせと確認（K6）は ui.js が SA.notice.draw(state)・SA.ask.draw(state) で押し込む（状態とタイマーは ui.js が持ち、ここは描くだけ）
 // 右腕の見出し（K6）は shell.js が SA.hand.draw(state) で押し込み、[畳む]・「…」への焦点は SA.hand.focus(what)（右腕の中の会話・入力欄・カードは上の口を使い回す）
+// 端末のセッションの札（H3）は SA.term.draw(root, raw) で描き（raw は c-term.js の termView に渡す生の状態と on）、SA.term.drop(root) で外す
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
 import { talkMouth } from "./c-talk.js";
 import { composerMouth } from "./c-composer.js";
 import { cardsMouth } from "./c-cards.js";
+import { TermCard, termView } from "./c-term.js";
 import { HandHead } from "./c-hand.js";
 import { Confirm, Toast } from "./c-sheet.js";
 
@@ -311,6 +313,27 @@ if (listRoot) {
     }
   }
 
+  /** 端末のセッションの札を描く。描けなければ false（shell.js が今の［端末］のタブに戻す） */
+  function drawTerm(root, raw) {
+    try {
+      render(html`<${TermCard} ...${termView(raw)} on=${raw.on} />`, root);
+    } catch (error) {
+      // draw と同じく名前だけ
+      console.error("[web] term draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    return true;
+  }
+
+  /** 根を空にする */
+  function dropTerm(root) {
+    try {
+      render(null, root);
+    } catch {
+      // 外すだけなので握る
+    }
+  }
+
   // ↑↓・Home・End で行を動かす（修飾キー付きは素通し。完了の見出し・[+]・件数のボタンでは動かさない）
   listRoot.addEventListener("keydown", (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -338,6 +361,7 @@ if (listRoot) {
   window.SA.talk = { draw: drawTalk, tick: tickTalk, drop: dropTalk };
   window.SA.composer = { draw: drawComposer, set: setComposer, focus: focusComposer, drop: dropComposer };
   window.SA.cards = { draw: drawCards, focus: focusCards, drop: dropCards };
+  window.SA.term = { draw: drawTerm, drop: dropTerm };
 }
 
 /** 知らせの入れ物。無ければ null（口を置かない。ui.js は古い #toast に出す） */
