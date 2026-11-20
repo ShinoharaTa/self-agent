@@ -9837,6 +9837,8 @@ test("web static: GitHub のタブの [対応] は起動の確認・/start・[�
   for (const word of ["起動して送る", "no_session", "startable", "やめる", "cancelCcSend", "confirm("]) assert.equal(body.includes(word), false, word);
   assert.match(body, /label: "開く"/);
   assert.match(body, /SA\.app\.open\("ch:" \+ channelId\)/);
+  // 開く前に会話の一覧を読み直す（新しい殻は話題、古い殻はチャンネル）
+  assert.match(body, /if \(isV3Shell\(\) && SA\.topics\) SA\.topics\.load\(\);\s+else SA\.store\.load\.channels\(\);\s+SA\.app\.open\(/);
   assert.ok(source.includes("この通知の PR・Issue の話題を作り、対応依頼（リポジトリ、番号、URL の 1 行）を最初の一言として送ります"));
   assert.ok(source.includes("この通知は対応できません。この機械に無いリポジトリか、[対応] を足す前の通知です"));
   assert.equal(source.includes("起動して送る"), false);

@@ -193,12 +193,14 @@ export class GithubTopicHandoff {
       } catch {
         this.deps.log("GitHub の［対応］の話題を記録できませんでした");
       }
-      return {
-        kind: "created",
-        channelId: started.channelId,
-        turn: started.turn === "started" ? "started" : "failed",
-        overlapping: this.overlapping(started.channelId, started.projectDir),
-      };
+      // 話題はもうできている。重なりを数えられなくても「作りました」を返す（注意の 1 行が出ないだけ）
+      let overlapping = 0;
+      try {
+        overlapping = this.overlapping(started.channelId, started.projectDir);
+      } catch {
+        this.deps.log("GitHub の［対応］の重なりを数えられませんでした");
+      }
+      return { kind: "created", channelId: started.channelId, turn: started.turn === "started" ? "started" : "failed", overlapping };
     } finally {
       this.inFlight.delete(row.threadId);
     }
