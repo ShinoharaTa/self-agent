@@ -857,6 +857,38 @@ test("propose: 確認待ちがあれば in_progress、届け待ちがあれば q
   assertQuietLogs(s);
 });
 
+test("idle(): 実行中の confirm が終わるまで返らない。何も無ければすぐ返る。confirm が失敗で終わっても返る", async (t) => {
+  for (const fails of [false, true]) {
+    const s = setup(t, { ended: true });
+    // 何も無ければすぐ返る
+    await s.takeover.idle();
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const takeover = s.make({
+      createChannel: async () => {
+        await gate;
+        if (fails) throw new Error("/secret/path");
+        return { result: "created", channelId: DEST, categoryId: "cat-active" };
+      },
+    });
+    const proposed = await takeover.propose({ sessionId: S1, entry: "web", guildId: "guild-1" });
+    assert.ok(proposed.ok);
+    const confirming = takeover.confirm(proposed.id);
+    let idled = false;
+    const idle = takeover.idle().then(() => {
+      idled = true;
+    });
+    for (let n = 0; n < 5; n++) await tick();
+    assert.equal(idled, false, String(fails));
+    release();
+    const result = await confirming;
+    await idle;
+    assert.equal(idled, true, String(fails));
+    assert.equal(result.ok, !fails, String(fails));
+    await takeover.idle();
+  }
+});
+
 test("propose: 許可の保留があれば queued、取り込み済み（channel_sessions にある）なら already_taken", async (t) => {
   const s = setup(t);
   const permission = s.ccPermissions.add({ sessionId: S1, requestHash: "h", toolName: "Bash", summary: "x", permissionMode: null, state: "pending" });
@@ -1354,14 +1386,45 @@ test("見張り: 本体は cc/channels.ts・sender.ts・replies.ts・starter.ts�
 test("見張り: main.ts は turn に takeover を入れ、createHandler には turn を広げて渡す（別々に書くと前置きが黙って付かない）", () => {
   const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   assert.match(source, /const turn = \{[\s\S]*?takeover: turnTakeover[\s\S]*?\n\};/);
-  assert.match(source, /createHandler\(\{[\s\S]*?\.\.\.turn,/);
+  // createHandler({ … }) の呼び出しを閉じる所まで（後ろの別の呼び出しに跨がない）
   const call = source.match(/createHandler\(\{[\s\S]*?\n\}\);/)?.[0];
   assert.ok(call !== undefined);
+  assert.match(call, /\n {2}\.\.\.turn,\n/);
   assert.doesNotMatch(call, /takeover:/);
 });
 
 test("見張り: main.ts は取り込みの sleep に timers/promises を使わない（reject しない・unref の takeoverSleep）", () => {
   const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  assert.match(source, /sleep: takeoverSleep,/);
-  assert.match(source, /\.unref\(\)/);
+  const start = source.indexOf("const takeoverSleep");
+  const end = source.indexOf("const takeover = new CcTakeover(", start);
+  assert.ok(start >= 0 && end > start);
+  // 定義の中に unref が在り、timers/promises の名前を使わない
+  const definition = source.slice(start, end);
+  assert.match(definition, /setTimeout\(resolve, ms\)\.unref\(\)/);
+  const sleepLine = source.match(/\n\s*sleep: [^\n]*/g)?.find((line) => line.includes("takeoverSleep"));
+  assert.equal(sleepLine?.trim(), "sleep: takeoverSleep,");
+  for (const text of [definition, sleepLine]) assert.doesNotMatch(text, /timers\/promises|setTimeoutPromise|scheduler\.wait|delay\(/);
+});
+
+test("見張り: main.ts は取り込みを送信の守り・起動時の片付け 2 段・失効・停止に繋ぐ（順も）", () => {
+  const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  // 取り込みの途中のセッションには積まない・届けない
+  const sender = source.match(/new CcSender\(\{[\s\S]*?\n {2}\}\);/)?.[0];
+  assert.ok(sender !== undefined);
+  assert.match(sender, /holds: \(sessionId\) => ccTakeover\?\.holds\(sessionId\)/);
+  // 前段（DB だけ）は一覧の最初の読み取りより前、後段は gateway の start の後で一覧の周期の start より前
+  const at = (needle: string): number => {
+    const index = source.indexOf(needle);
+    assert.ok(index >= 0, needle);
+    return index;
+  };
+  assert.ok(at("takeover.recoverRunning();") < at("await ccRegistry?.tick();"));
+  assert.ok(at("await gateway.start(") < at("await ccTakeover.recoverEffects();"));
+  assert.ok(at("await ccTakeover.recoverEffects();") < at("ccRegistry?.start();"));
+  assert.ok(at("ccTakeoverExpirer?.start();") > at("await gateway.start("));
+  // 停止は失効と取り込みの途中の 1 件を待つ
+  const shutdown = source.match(/createShutdown\(\n {2}\{[\s\S]*?\n {2}\},\n/)?.[0];
+  assert.ok(shutdown !== undefined);
+  assert.match(shutdown, /\.\.\.\(ccTakeoverExpirer === undefined \? \{\} : \{ ccTakeoverExpirer \}\),/);
+  assert.match(shutdown, /\.\.\.\(ccTakeover === undefined \? \{\} : \{ ccTakeover \}\),/);
 });
