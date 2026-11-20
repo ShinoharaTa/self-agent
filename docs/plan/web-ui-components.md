@@ -366,6 +366,7 @@
     ```
     topics.js（読む・polling・状態）──▶ SA.list.draw(state) ─▶ c-app.js（入口）─▶ listModel(state) ─▶ render(TopicList)
     shell.js（画面の切り替え・右腕）──▶ SA.list.drawBar(bar) ─▶ c-app.js ─▶ bottomModel(bar) ─▶ render(BottomBar)
+    takeover.js（端末のセッションの札のつなぎ。判定・確認の状態）──▶ SA.term.draw(root, raw) ─▶ c-app.js ─▶ termView(raw) ─▶ render(TermCard)
     ```
     状態（`data`・`failed`・`filter`・`current`・`doneGroup`・`dataDone`・「ほかのプロジェクト」の開閉）は `topics.js` に残し、部品と入口は状態を持たない（hook を使わない。`render()` の直後に DOM が出来ている前提を保つ）。見た目の判断は `c-list.js` の `listModel`。`document`・`window`・`SA` に触る `c-*.js` は入口 `c-app.js` だけ（見本の `c-gallery.js` は別）。
   - `SA.list`（`c-app.js`。K3b-1 の分。`#c-list-root` が無いページでは作らない）:
