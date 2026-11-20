@@ -166,14 +166,16 @@ test("runChannelTurn: セッションのチャンネルは話題のモデルを 
   assert.equal("model" in runner.inputs[4]!.context!, false);
 });
 
-test("/renew: プロジェクトのセッションの要約のターンは context に話題のモデル。軽いモードは今までどおり context なし", async (t) => {
+test("/renew: プロジェクトのセッションの要約のターンは context に話題のモデル。軽いモードは context なしのまま RunInput の model に話題のモデル（NULL は鍵が無い）", async (t) => {
   const stores = createStores(tempDb(t), () => NOW);
   stores.topicSessions.create({ channelId: CHANNEL, guildId: GUILD, title: "作業", categoryId: "c", model: "claude-haiku-4-5" });
   stores.topicSessions.setProject(CHANNEL, "alpha", "default");
   stores.topicSessions.create({ channelId: "light", guildId: GUILD, title: "軽い", categoryId: "c", model: "claude-haiku-4-5" });
+  stores.topicSessions.create({ channelId: "light-null", guildId: GUILD, title: "既定", categoryId: "c" });
   stores.sessions.set(CHANNEL, "project-session");
   stores.sessions.set("light", "light-session");
-  const runner = new FakeRunner([ok("x")]);
+  stores.sessions.set("light-null", "light-null-session");
+  const runner = new FakeRunner([ok("x"), ok("w")]);
   const projectRunner = new FakeRunner([ok("y")]);
   const deps = {
     topicSessions: stores.topicSessions,
@@ -183,11 +185,16 @@ test("/renew: プロジェクトのセッションの要約のターンは conte
   };
   assert.equal((await renewSession(deps, GUILD, CHANNEL)).result, "renewed");
   assert.equal(projectRunner.inputs[0]!.context?.model, "claude-haiku-4-5");
+  assert.equal("model" in projectRunner.inputs[0]!, false);
   assert.equal((await renewSession(deps, GUILD, "light")).result, "renewed");
   assert.equal(runner.inputs[0]!.context, undefined);
+  assert.equal(runner.inputs[0]!.model, "claude-haiku-4-5");
+  assert.equal((await renewSession(deps, GUILD, "light-null")).result, "renewed");
+  assert.equal(runner.inputs[1]!.context, undefined);
+  assert.deepEqual(Object.keys(runner.inputs[1]!), ["prompt", "sessionId", "context", "allowedUrls"]);
 });
 
-test("場所を変える: プロジェクトのセッションの要点のターンは context に話題のモデル。NULL は入れない。軽いモードは今までどおり context なし", async (t) => {
+test("場所を変える: プロジェクトのセッションの要点のターンは context に話題のモデル。NULL は入れない。軽いモードは context なしのまま RunInput の model に話題のモデル（NULL は鍵が無い）", async (t) => {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
   const ws = tempDir(t);
@@ -196,8 +203,9 @@ test("場所を変える: プロジェクトのセッションの要点のター
   stores.topicSessions.create({ channelId: "proj", guildId: GUILD, title: "作業", categoryId: "c", projectDir: "alpha", permissionMode: "default", model: "claude-haiku-4-5" });
   stores.topicSessions.create({ channelId: "plain", guildId: GUILD, title: "既定", categoryId: "c", projectDir: "alpha", permissionMode: "default" });
   stores.topicSessions.create({ channelId: "light", guildId: GUILD, title: "軽い", categoryId: "c", model: "claude-haiku-4-5" });
-  for (const channelId of ["proj", "plain", "light"]) stores.sessions.set(channelId, `${channelId}-session`);
-  const runner = new FakeRunner([ok("x")]);
+  stores.topicSessions.create({ channelId: "light-null", guildId: GUILD, title: "軽い既定", categoryId: "c" });
+  for (const channelId of ["proj", "plain", "light", "light-null"]) stores.sessions.set(channelId, `${channelId}-session`);
+  const runner = new FakeRunner([ok("x"), ok("w")]);
   const projectRunner = new FakeRunner([ok("y"), ok("z")]);
   const deps: MoveDeps = {
     topicSessions: stores.topicSessions,
@@ -215,8 +223,13 @@ test("場所を変える: プロジェクトのセッションの要点のター
   assert.equal(projectRunner.inputs[0]!.context?.model, "claude-haiku-4-5");
   assert.equal((await move("plain")).result, "moved");
   assert.equal("model" in projectRunner.inputs[1]!.context!, false);
+  assert.equal("model" in projectRunner.inputs[0]!, false);
   assert.equal((await move("light")).result, "moved");
   assert.equal(runner.inputs[0]!.context, undefined);
+  assert.equal(runner.inputs[0]!.model, "claude-haiku-4-5");
+  assert.equal((await move("light-null")).result, "moved");
+  assert.equal(runner.inputs[1]!.context, undefined);
+  assert.deepEqual(Object.keys(runner.inputs[1]!), ["prompt", "sessionId", "context", "allowedUrls"]);
 });
 
 const RUNNER_CFG = {
@@ -335,5 +348,24 @@ test("SdkAgentRunner: dev ログの model は、context に model があれば�
   assert.deepEqual(
     records.map((record) => record.model),
     ["claude-sonnet-5-5", "claude-opus-5"],
+  );
+});
+
+test("SdkAgentRunner: context が無くても input.model があれば Options の model はその値（ほかは buildQueryOptions(cfg) と同じ）。context.model があればそちらが先。dev ログも同じ値", async () => {
+  const records: DevLogRecord[] = [];
+  const devLog: DevLogDeps = { sink: { write: (record) => void records.push(record) }, now: () => NOW };
+  const { runner, calls } = lightRunner(RUNNER_CFG.model, devLog);
+  const picked = await runner.run({ prompt: "x", model: "claude-haiku-4-5" });
+  await runner.run({ prompt: "x", context: sessionContext({ model: "claude-sonnet-5-5" }), model: "claude-haiku-4-5" });
+  const { mcpServers: _a, maxTurns: _b, abortController: _c, hooks: _d, stderr: _e, ...withModel } = calls[0]!.options;
+  const { mcpServers: _f, ...expected } = buildQueryOptions(RUNNER_CFG, mcpServer());
+  assert.equal(withModel.model, "claude-haiku-4-5");
+  assert.deepEqual(Object.keys(withModel), Object.keys(expected));
+  assert.deepEqual({ ...withModel, model: expected.model }, expected);
+  assert.equal(picked.model, "claude-haiku-4-5");
+  assert.equal(calls[1]!.options.model, "claude-sonnet-5-5");
+  assert.deepEqual(
+    records.map((record) => record.model),
+    ["claude-haiku-4-5", "claude-sonnet-5-5"],
   );
 });

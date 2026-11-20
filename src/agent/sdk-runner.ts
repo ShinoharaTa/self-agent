@@ -769,8 +769,8 @@ export class SdkAgentRunner implements AgentRunner {
         channelId: input.context?.channelId ?? null,
         kind: input.context?.kind ?? null,
         ...(this.cfg.persona === undefined ? {} : { persona: this.cfg.persona }),
-        // 話題のモデル（context.model）があればそれを渡している
-        model: input.context?.model ?? this.cfg.model,
+        // 話題のモデル（context.model か input.model）があればそれを渡している
+        model: input.context?.model ?? input.model ?? this.cfg.model,
         effort: this.cfg.effort ?? null,
         maxTurns,
         resume: input.sessionId ?? null,
@@ -814,8 +814,8 @@ export class SdkAgentRunner implements AgentRunner {
   private baseOptions(input: RunInput, run: ProfileRunState): { options: Options; sandbox: boolean } {
     if (this.profile !== undefined) return { options: this.profile.buildOptions(input, run), sandbox: false };
     const sandbox = this.sandboxForRun();
-    // 話題のモデル（context.model）があればそれ、無ければ設定のモデル（全体の既定か人格のモデル）。無いときは this.cfg をそのまま渡す（Options を変えない）
-    const model = input.context?.model;
+    // 話題のモデル（context.model、無ければ input.model）があればそれ、無ければ設定のモデル（全体の既定か人格のモデル）。無いときは this.cfg をそのまま渡す（Options を変えない）
+    const model = input.context?.model ?? input.model;
     const cfg = model === undefined ? this.cfg : { ...this.cfg, model };
     return { options: buildQueryOptions(cfg, this.createMcpServer!(input.context), sandbox), sandbox };
   }

@@ -86,8 +86,8 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
   const persona = turnPersonaOf(turn, channelId);
   const project = topicSessions.projectDirOf?.(channelId);
   if (project !== undefined && turn.projectRunner === undefined) return { result: "failed", errorMessage: PROJECT_NEEDS_CC_ERROR };
-  // 要約のターンも話題のモデルで動かす（会話の途中でモデルを変えない）。軽いモードは context を渡さないので入れない
-  const model = project === undefined ? undefined : topicSessions.modelOf?.(channelId);
+  // 要約のターンも話題のモデルで動かす（会話の途中でモデルを変えない）。軽いモードは context を渡さないので RunInput.model で渡す
+  const model = topicSessions.modelOf?.(channelId);
   const context: RunContext | undefined =
     project === undefined
       ? undefined
@@ -101,7 +101,13 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
           ...(model === undefined ? {} : { model }),
         };
   const runner = project !== undefined && turn.projectRunner !== undefined ? turn.projectRunner : persona.runner;
-  const result = await runner.run({ prompt: RENEW_PROMPT, sessionId, context, allowedUrls: [] });
+  const result = await runner.run({
+    prompt: RENEW_PROMPT,
+    sessionId,
+    context,
+    allowedUrls: [],
+    ...(project !== undefined || model === undefined ? {} : { model }),
+  });
   recordTurnUsage(turn, channelId, "session-renew", result, persona);
 
   if (result.ok) {
