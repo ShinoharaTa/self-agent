@@ -286,7 +286,7 @@
 - `c-*.css` のセレクタは必ず `.c-` で始まる（例外は `:root` と `@media`）。色の値（`#`・`rgb(`・`hsl(`）を書かない。`--c-` 以外の寸法のトークンと古い寸法のトークンを使わない。
 - `c-*.js` が書くクラス名は `c-` で始まる物だけ。`c-app.js` 以外は `document`・`window`・`SA`・`fetch` を書かない。
 - `c-*.css` にあって `c-*.js` に出てこないクラス、その逆、が無い。
-- K8 以降: `v3.html` の `<link>` に `app.css`・`shell.css` が無い。
+- K8 以降: `index.html`（新しい殻）の `<link>` に `app.css`・`shell.css` が無い。
 - 部品は `style` の prop と `dangerouslySetInnerHTML` を使わない（Preact は style を `style.cssText` で入れるので CSP では止まらない。11 系は数値に px を付けない）。動く値は `data-*` と CSS、どうしても要るときは入口が `style.setProperty` で CSS の変数を入れる。
 - `document`・`window` に触ってよいのは入口（`c-app.js` と見本の `c-gallery.js`）だけ。
 - `c-*.css` の `var()` は `--c-*` か許可リスト（`test/web-components.test.ts` の `ALLOWED_VARS`）だけ。許可リストは base.css の目盛り（`--space-*`・`--font-xs`〜`--font-base`・`--leading-*`・`--weight-*`・`--radius-*`・`--border-width`・`--ring-width`・`--dialog-max`・`--container-max`）、tokens.css の色（`--text-secondary` と、会話の吹き出しの地 `--bubble-*` を含む）、動き・重なり・字（`--dur-*`・`--ease-out`・`--z-toast`・`--font-mono`）。ここに無い物（`--tap`・`--row`・`--icon-size`・`--font-lg` 以上・古い殻の寸法・`--kb`・`--vvh`）は落ちる。足すときはテストの許可リストとこの行を一緒に直す。
@@ -335,10 +335,10 @@
 | K4 | 会話の見出しを 1 段に + 吹き出し・手順・作業中 | v3 の会話の上と本文 | 大 |
 | K5 | 入力欄 + 許可・質問などのカード | v3 の会話の下とカード | 大 |
 | K6 | 右腕（見出し・札。中身は口の使い回し）+ toast・confirm の橋（済。#422） | v3 の右腕 | 中 |
-| — | **ここで実機で見る → PR #383（flip）を main に合わせ直して出す** | `/` が新しい殻に | — |
+| — | **ここで実機で見る → PR #383（flip）を main に合わせ直して出す**（済。M8。#381） | `/` が新しい殻に | — |
 | K7 | 殻の根を 1 つに（経路・viewport・キーを `shell.js` から移す） | 変わらない | 大 |
 | K8 | 新しい殻から `app.css`・`shell.css` を外す（`legacy-views.css`） | 変わらない | 中 |
-| M8b | 古い殻を消す（`index.html`→classic・`sidebar.js`・`workbench.js`・`app.css`・古い寸法のトークン） | `/static/classic.html` が無くなる | 中 |
+| M8b | 古い殻を消す（`classic.html`・`sidebar.js`・`workbench.js`・`app.css`・古い寸法のトークン） | `/static/classic.html` が無くなる | 中 |
 | K9 | 「ほか」の画面を 1 画面 1 PR で部品へ（設定 → タスク → リマインド → 知識 → メモリ → GitHub → 使用量） | 各画面 | 中 ×7 |
 | M9 | 「変更」の見え方。最初から部品で作る | 新しい画面 | 既存の計画どおり |
 
@@ -406,7 +406,7 @@
 - 受け入れ（どれも `npm run ui-shots` の検査で見る。見出しは段 t、会話の行は段 b と段 k）: (1) スマホの会話で、画面の上から本文の始まりまでが 56px + safe-area（今は約 113px）。(2) 戻る・題・状態・場所・「…」・右腕が 1 段に入り、題は 1 行で省かれる。(3) 吹き出しの中に「完了」の行が無い。手順は吹き出しの外の 1 行で、完了で 0 件なら出ない。(4) 1 文の返事の吹き出しの高さが 1 行ぶん + 余白（字 × 1.5 + 20）。幅の割合と角が決まりどおりで、PC の列は 840px で真ん中。(5) 400 字の URL が吹き出し・列・`.ed-scroll` からはみ出さない。(6) 下に付いているときだけ新着で下へ送り、上を読んでいるときは動かさない。前の会話を読んでも見ていた行の位置が動かない。(7) 820 幅と PC で見出しが 1 段のまま折り返さない。待ちにする・閉じる・会話を新しくする・Discord は「…」の板の中。(8) コードの長い行は吹き出しの中で横に送れる。(9) 描き直し（定期の読み直し・1 秒ごと）で、入力欄のフォーカスと書きかけ・変換の途中・文の選択・開いた手順が残る。(10) 1 秒ごとの描きは、300 行・CPU 4 倍絞りで中央値 4 ms 以下、かつ全部の描き直しの中央値の 1/4 以下（段 k のスマホ。測りの行は行ごとに違う文と時刻で、時刻は本番と同じ `SA.ui.shortTime`。実測は draw の中央値約 38 ms、tick の中央値約 2 ms）。(11) 等幅の字（幅 390・375）でも時刻と手順の行が 1 行。当たりは指で 44px・PC で 36px 以上。実行中の行に `aria-live`・`role="status"` が無い。(12) 入力欄・カード・［続ける］・空の文・右腕はこの段では古いまま（混ざって見えることを PR に書く）。(13) `/` は変わらない（古い殻に `SA.talk` が無く、古い吹き出しが出ている）。
 - 進み: **済**。見出しの部品（`c-shell.js` の TopBar・`topModel`、BottomBar の `controls`）と見本の節「見出し（TopBar）」（スマホ 3・広い幅 5・compact 2。`npm run ui-shots` が見本の名前・高さ・1 段・はみ出し・省き・縮む順・題と状態の間・場所のボタンの幅・入れ物の幅を見る）。本番の見出し（#398）。会話の部品（`c-talk`）と見本の節（#399 の 1 本目。見本の節「会話」は 6 つで、`npm run ui-shots` が見本の名前・吹き出しの中に結果の文が無い・1 行の吹き出しの高さ・幅の上限・角・はみ出し・長いコードを横に送れる・手順の行・実行中の行の読み上げ・根の字を、今の字・等幅の字・スマホは幅 375 でも見る）。本番の会話の行（#399 の 2 本目。下の「本番の会話の行の形」）。
 - 本番の見出しの形（#398）:
-  - `v3.html` の列 2 の上は `#c-top-root` だけ（古い帯 `#v3-bar`・場所のボタン・［会話］［端末］・上の［右腕］は消した）。入口 `c-app.js` の口 `SA.top` は 3 つ: `draw(state)`（描けたか。描く前に見出しの中に在った焦点のボタンが消えたら「…」→「一覧へ」→ 最初のボタンへ）、`focus(act)`（back・place・menu・hand）、`compact()`（今の列の幅なら compact か。測るだけで覚えない・描かない。スマホは false、測れなければ null）
+  - 新しい殻（K4 のときは `v3.html`。M8 から `index.html`）の列 2 の上は `#c-top-root` だけ（古い帯 `#v3-bar`・場所のボタン・［会話］［端末］・上の［右腕］は消した）。入口 `c-app.js` の口 `SA.top` は 3 つ: `draw(state)`（描けたか。描く前に見出しの中に在った焦点のボタンが消えたら「…」→「一覧へ」→ 最初のボタンへ）、`focus(act)`（back・place・menu・hand）、`compact()`（今の列の幅なら compact か。測るだけで覚えない・描かない。スマホは false、測れなければ null）
   - state の欄は view（none・talk・other）・title・status・note・place・views・hand・compact・menu・controls・on。作るのは `shell.js` の `topState()`。会話のチャンネルの題・状態・人格の札・「…」の行は `chat.js` の `SA.chat.head(channelId)`（DOM を作らない。古い見出しの […] と同じ行の関数を使う）
   - ほかの画面（設定・ナレッジなど）は `views.js` の `toolbar()` が、入口が在るときは題と戻るを作らず、添え物と操作の段だけを返す（どちらも空なら隠す）。`chat.js` の `render` は入口が在るとき列 2 の見出しを作らない。右腕の列（`frame`）は今の見出しのまま → K6: 枠の `head: false` のときは作らない（右腕の見出しは `shell.js` が `SA.hand` で描く）
   - 「…」の板は今の `#v3-sheet`（古い見た目のまま）。閉じてすぐ同じ板を開き直したとき、後から届いた `close` が新しい開き手を消さないよう、板が開いていれば受け手は何もしない
@@ -459,7 +459,7 @@
   - Claude Code のチャンネルの部品: 状態の行の種類 `status`（`StatusRow`）と、入力欄の部品の最初の子の送った本文の帯（`.c-composer-sent`。いつも表示のまま在り（`display: none` にしない。読み上げの入れ物を先に置く）、中身が無いときは子が 0 で、余白を持たず高さ 0。色は tone の `--success`・`--warning`、ほかは `--text-muted`）。文と色の種類と取り消しは `views.js` の `SA.views.ccSend`（`note`・`cancel`）が出し、古い帯もこれで作る。見本は `card-status` と `sent-done`・`sent-warning`・`sent-cancel`。画面写しの作り物のデータは `startFixtureServer({ cc: true })`（2 つ目のサーバー。今のサーバーに足すと一覧が変わってほかの絵が全部変わる）
   - 確かめ: `test/web-components.test.ts` の節「カード」（木・言葉・呼び出し・押せない理由・CSS）と、`npm run ui-shots` の `g-cards`（スマホ・PC × ダーク・ライト。`cardProblems`: 枠の線と角と地と幅・見出しの字・ボタンの高さと並び・チェックの行と印・要約の高さ（PC は 8 行）・残り時間の色・待ちの行の `role`・動きなし（状態の行の送っている間の［やめる］の輪だけ）・状態の行（card-status の `role=status` が 3 つ・`aria-busy` なし・［やめる］2 つ・3 行の高さが同じ）・narrow の幅 320・横にはみ出さない・「その他」の欄（card-q-other だけ見え、値が入り、スマホは 16px 以上）・2 問目の上の線・［答える］の押せない印。当たりは見本の検査と、カードの節は PC でも 44）
 - カードの本番（#406）:
-  - 口・根・CSS・余白: 入口 `c-app.js` の `SA.cards = { draw, focus, drop }`（`cardsMouth` を包む。失敗は `false` と名前だけの log）。根は `.ed-scroll` の直下で会話の根のすぐ次の `div[data-cards=<channelId>]`（属性はそれだけ）、その次に `.tl`。余白は `shell.css` の根の規則（会話の列と同じ左右、空なら出さない）。`c-cards.css` は `v3.html` が読む。口を使うのは、列 2 で会話の口が生きているとき（Claude Code のチャンネルも。K6 から右腕の列も）
+  - 口・根・CSS・余白: 入口 `c-app.js` の `SA.cards = { draw, focus, drop }`（`cardsMouth` を包む。失敗は `false` と名前だけの log）。根は `.ed-scroll` の直下で会話の根のすぐ次の `div[data-cards=<channelId>]`（属性はそれだけ）、その次に `.tl`。余白は `shell.css` の根の規則（会話の列と同じ左右、空なら出さない）。`c-cards.css` は新しい殻（`index.html`）が読む。口を使うのは、列 2 で会話の口が生きているとき（Claude Code のチャンネルも。K6 から右腕の列も）
   - 項目の順: 待ちの行 → 閉じる → 移す → 許可か質問 → 空の文 → 完了の文（`chat.js` の `cardItems`。条件は古い描き方と同じ）。Claude Code のチャンネルは 状態の行 → 許可か質問（保留中だけ） → 終わった文 → 空の文（`ccCardItems`。文は古い描き方と同じ定数）。状態の行の id は `"cc"` の固定（送りが替わっても同じ要素で文だけ変わる）。画面の写しはカードの根の次の古い `.tl` に残すので、画面を開いている間は終わった文・空の文が画面の上に来る
   - 残り時間: `chat.js` の 1 秒の刻みの先頭（実行中のターンが無くても）で、pending の要求が出ているチャンネル（プロジェクトのセッションは `ch.permission`、Claude Code のチャンネルはセッションの今。`pendingAskOf`）のカードだけ描き直す。文は `views.js`
   - 選び方の決まり・ラジオの change: `views.js` の `pickOption`・`pickOtherOption` と出口 `SA.views.ccAsk`。古いカードも同じ関数。`chat.js` は今の要求と id・種類（質問か許可か）が合わない押しを捨てる
@@ -504,9 +504,9 @@
 
 **K6 右腕**（済。#422。PR 3 本: 知らせ・確認の橋、札と見出しの部品と見本、本番の右腕をつなぐ）
 - やること: `c-hand.js/.css`。中身は TalkTimeline + Composer の使い回し。`ui.js` の `toast`・`confirm` を新しい部品へ渡す橋に。
-- 橋は済み（#422）: `ui.js` の `toast`・`confirm` は、入口の口 `SA.notice`・`SA.ask`（根は `v3.html` の `#c-notice-root`・`#c-ask-root`）が在れば部品の Toast・Confirm に描く。置き換え・上限・自動で消す・止める・消える途中の決まりと、タイマー・状態は `ui.js` が持つ（入口はタイマーに触れない）。呼ぶ側は変えない。口が無い・描けなかった（その回から）・action と retry の両方を渡すときは古い DOM。`confirm` の `closed` は閉じた直後・`run` の前に 1 回で、場所の確認がフォーカスを戻すのに使う。スマホの知らせの場所は見出しのすぐ下のまま
+- 橋は済み（#422）: `ui.js` の `toast`・`confirm` は、入口の口 `SA.notice`・`SA.ask`（根は新しい殻 `index.html` の `#c-notice-root`・`#c-ask-root`）が在れば部品の Toast・Confirm に描く。置き換え・上限・自動で消す・止める・消える途中の決まりと、タイマー・状態は `ui.js` が持つ（入口はタイマーに触れない）。呼ぶ側は変えない。口が無い・描けなかった（その回から）・action と retry の両方を渡すときは古い DOM。`confirm` の `closed` は閉じた直後・`run` の前に 1 回で、場所の確認がフォーカスを戻すのに使う。スマホの知らせの場所は見出しのすぐ下のまま
 - 右腕も済み（#422）: 形は K3〜K5 と同じ（古い JS が状態を持ち、口へ押し込む）。HandPanel は作らず、足した部品は札 `Refs`（会話の行の 1 つ。`c-talk.js`）と見出し `HandHead`（`c-hand.js`）だけ
-  - 見出し: 入口 `c-app.js` の口 `SA.hand = { draw(state), focus(what) }`（根は `v3.html` の `aside#v3-hand` の中の `#c-hand-root`）。`shell.js` の `renderHand()` が開いている間だけ `{ title: "右腕", menu, on }` を描き（閉じたら null）、「…」は `chat.js` の `head` の menu が在るとき（#inbox では「会話を新しくする」・「Discord で開く」。板の題は「右腕 の操作」）。口が無い・描けなければ（その回から）古い `header.ed-toolbar`
+  - 見出し: 入口 `c-app.js` の口 `SA.hand = { draw(state), focus(what) }`（根は新しい殻 `index.html` の `aside#v3-hand` の中の `#c-hand-root`）。`shell.js` の `renderHand()` が開いている間だけ `{ title: "右腕", menu, on }` を描き（閉じたら null）、「…」は `chat.js` の `head` の menu が在るとき（#inbox では「会話を新しくする」・「Discord で開く」。板の題は「右腕 の操作」）。口が無い・描けなければ（その回から）古い `header.ed-toolbar`
   - 中身: `shell.js` は `chat.js` に `head: false` の枠を渡し、`chat.js` は枠でも会話・入力欄・カードの口で描く。枠の欄は、`replyText`（本文の差し替え）・`replyRefs`（札のデータ `{ id, title, meta }`。`shell.js` の `handRefs`）・`onRef`（札の［開く］。`SA.app.open`）を `talkState` に、`placeholder`（placeholder と読み上げの名前）・`outgoing`（「（いま見ている話題: …）」を足す。字数・上限・送る本文・仮の行に効き、空なら 0 字）を `composerState`・`composerSend` に通す。`replyExtras`（札の DOM）・`ops`（古い［畳む］）は古い描き方のときだけ。`handRefs` は投げたら札を出さず `[web] hand refs failed` を出す
   - 読み上げの名前: `Button` に `name`（空でない文字列のときだけ `aria-label`。見える文 `label` とは別）を足し、札の［開く］は「<題> を開く」、見出しの［畳む］は「右腕を畳む」（古い右腕と同じ文）。札の `div.c-ref` は role・名前を持たない（題を 2 回読ませない）
   - 焦点: 下のバーから開くと入力欄（口の `focus(根)`、通らなければ古い `.composer-input`）、見出し・細い帯から開くと［畳む］（`SA.hand.focus("close")`、通らなければ `#v3-hand-close`）。**初めて開いたときは右腕の会話をまだ読んでいない（読み込み中で入力欄が無い）ので、下のバーからでも［畳む］に回る**（前からの動き。焦点の見直しの issue #423 で扱う）。画面写しの段 c は、読み込んだ後に畳んで開き直してから焦点を見る
@@ -517,19 +517,19 @@
 - K2 からの申し送り: 知らせの入れ物（`role="status"`・`role="alert"`）は暗黙に atomic なので、足すたびに全部を読み直す見立て。読み上げで確かめて決める。→ 入れ物に `aria-atomic="false"` を付けた（今の `#toast`・`#toast-alert` と同じ。読み上げでは確かめていない）。
 - 申し送り（K6 の後）:
   - K7（殻の根）へ: 右腕の枠（`aside#v3-hand`・開閉・履歴・inert・背景）と畳んだ細い帯（D16）はまだ `shell.js` と `shell.css`。幅のトークンは `--v3-hand-w`（効いている）と `--c-hand-w`（使っていない）の 2 つが在るので 1 つに。口 `SA.hand` と `#c-hand-root` は殻の部品に入れば消える
-  - flip の後の片付け（K9）へ: 口が在れば通らなくなった古い道（`chat.js` の `frameHeader`・`composer()`・`frame.replyExtras`、`shell.js` の `handCards`・`handOps`、`shell.css` の `.v3-card`・`.v3-hand .ed-…`、`v3.html` の `#dlg-confirm`・`#toast`・`#toast-alert`、`ui.js` の `toastDom`・`confirmDom`）は、古い殻を消す段でまとめて消す。それまでは戻り先として残す
+  - flip の後の片付け（K9）へ: 口が在れば通らなくなった古い道（`chat.js` の `frameHeader`・`composer()`・`frame.replyExtras`、`shell.js` の `handCards`・`handOps`、`shell.css` の `.v3-card`・`.v3-hand .ed-…`、`index.html` の `#dlg-confirm`・`#toast`・`#toast-alert`、`ui.js` の `toastDom`・`confirmDom`）は、古い殻を消す段でまとめて消す。それまでは戻り先として残す
   - 別の issue: 押したカード・［やめる］が消えるとフォーカスが body に落ちる（形の案: カードの口が描く前後でフォーカスを見て、根の中に在った物が document から外れたら「残ったカードの最初の押せるボタン → 無ければ、タッチが主でないときは入力欄、タッチが主のときは会話の入れ物」へ。タッチのときの先はオーナーが決める。キーボードを出さない方を既定に）。右腕を初めて開いたときの焦点（#423）。`cc:` のタブ（［端末］）の古いカード・帯・入力欄（#428: `cc:` のタブは部品にしない。X2 で消す。代わりに端末の行の小さい 1 枚（札）を H3 で部品として作る。`docs/plan/terminal-handover.md` §2.2・§6）。一覧の上の見出し（銘・検索・緑の点・鐘）。知らせの場所を変える（オーナーが既定以外を選んだとき）
   - 要らなかった物: 同じ会話の根を 2 つ持つ仕組み（`set`・根 2 つ）と、板の中の入力欄の iOS のキーボードの対応
 
-**flip（#383）**: K6 の後、オーナーが実機で一覧 → 会話 → 送る → 許可に答える → 右腕、を通して見てから。#383 は main に合わせ直す（中身は変えない）。
+**flip（#383）**: K6 の後、オーナーが実機で一覧 → 会話 → 送る → 許可に答える → 右腕、を通して見てから。#383 は main に合わせ直す（中身は変えない）。→ 済（M8。#381）: #383 の中身を K6 の後の main に合わせ直した。`/` は新しい殻（`index.html`）、古い殻は `/static/classic.html`（設定の「画面」から行き来。M8b で消す）、試し用の manifest は消した（docs/plan/web-ui.md §11.1）。次は K7。
 
-**K7 根を 1 つに**・**K8 `app.css` を外す**・**K9**: 受け入れは「画面写しが前と同じ（差が決めた割合より小さい）」を主にする。K8 は `v3.html` の `<link>` に `app.css`・`shell.css` が無いこと、「ほか」の 7 画面の絵が前と同じこと。
+**K7 根を 1 つに**・**K8 `app.css` を外す**・**K9**: 受け入れは「画面写しが前と同じ（差が決めた割合より小さい）」を主にする。K8 は `index.html` の `<link>` に `app.css`・`shell.css` が無いこと、「ほか」の 7 画面の絵が前と同じこと。
 
 ### 積んでいる issue / PR との関係
 
 | 物 | 今 | この設計での扱い |
 |---|---|---|
-| PR #383（M8 flip） | open | **止める**。K6 の後に合わせ直す |
+| PR #383（M8 flip） | open | **止める**。K6 の後に合わせ直す → 中身を今の main に合わせ直した（M8 済。#381） |
 | #381（M8）・#349（Web UI の作り直し） | open | #349 の下に K0〜K9 の issue を足す。#381 は flip まで開けたまま |
 | M8b | 未着手 | K8 の後。消す物がはっきりするので楽になる |
 | M9（変更の見え方） | 未着手 | flip の後。最初から部品で |
@@ -540,7 +540,7 @@
 
 ### 設計として決めたこと（変えたければ言ってください）
 
-- 入口は増やさない。`v3.html` の中を島ごとに替える（3 つ目の殻は作らない）。
+- 入口は増やさない。新しい殻の html（M8 から `index.html`）の中を島ごとに替える（3 つ目の殻は作らない）。
 - light DOM。クラスの接頭辞は `c-`。ファイルは 1 要素の名前。サーバーは変えない。
 - `api.js`（`SA.store`・ポーリング）はそのまま。signals は入れない。
 - 画面写しの元の絵は commit しない（機械で字が違う。P7）。PR ごとに前と後を撮って比べる。

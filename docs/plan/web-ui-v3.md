@@ -280,7 +280,7 @@ M0 は今の画面のまま直す 1 PR（同じ「待ちの見え方」の論点
 | web-ui.md §0・§3.1・§3.2 | 構成と殻（タブ・Alt+1〜9・localStorage の tabs・パネル）を新しい殻の説明に。探す（今のパレット）は残す |
 | web-ui.md §3.4・§4.4・§11 | API の表に `/api/topics` 系／既読はサーバー／manifest の `start_url` は変えない（`/` のまま） |
 | web-ui-polish.md §5 | 「描画の 2 系統は作らない」に、M2〜M8 の間だけ入口が 2 つある例外を書く |
-| unify.md §6（U5） | 「session_open の project」を M6 に前倒ししたと書く。決定 4（軽いモードは残す）は変えない |
+| unify.md §6（U5） | 「session_open の project」を M6 に前倒ししたと書く。決定 4（軽いモードは残す）は変えない（M6f で済み） |
 | CLAUDE.md・environment.md・directory-structure.md | 概要に 1 行・キャッシュの規則に M6 の 1 行／`SELF_AGENT_GENERAL_DIR`／新しいファイル |
 
 文書の書き換えは、決まりが実際に変わる段（M0 は §4 の 1 行、ほかは M8）の PR に入れる。
@@ -297,8 +297,9 @@ M0 は今の画面のまま直す 1 PR（同じ「待ちの見え方」の論点
 | M5（済） | 付け替え（§6。本体・`topic_moves`・API・「場所 ∨」・`/move`） | M | 場所を変えられる | revert（表は残してよい） |
 | M6（済。M6a〜M6g） | 右腕のツール（§4。3 つ + システムプロンプト。定義とシステムプロンプトは 1 PR（M6f）。**キャッシュが 1 回外れる**）と確認の札（Discord のボタン・Web のカード） | M | 右腕が渡す・一覧に答える・付け替えを持ちかける | revert（もう 1 回外れる） |
 | M7（済。M7a・M7b） | 既読をサーバーに（§3.3） | S | スマホと PC で未読が揃う | M7b は revert。M7a は戻さない（DB が v44） |
-| M8 | 切り替え（`/` を新しい殻に。古い殻は `/static/classic.html` に 1 段残す）と文書（§10） | S | 新しい画面が既定 | html の入れ替えを戻す |
-| M8b | 古い殻を消す（`sidebar.js`・`workbench.js`・使わなくなった CSS・localStorage の `self-agent-web:seen`・`seen-sent`） | M | なし | revert |
+| M8-0（済） | 新しい殻の直し 3 つ（popstate の順・スマホのナレッジ・設定のキーの表。#381） | S | 切り替えの前に新しい殻のスマホで困らない | revert |
+| M8（済） | 切り替え（`/` を新しい殻に。古い殻は `/static/classic.html` に 1 段残す）と文書（§10） | S | 新しい画面が既定 | html の入れ替えを戻す |
+| M8b | 古い殻を消す（`classic.html`・`sidebar.js`・`workbench.js`・使わなくなった CSS・localStorage の `self-agent-web:seen`・`seen-sent`、`views.js` の `isV3Shell` の分岐と設定の `shellLink`。§15 の M8 の「M8b の前に決める物」を先に片付ける） | M | なし | revert |
 | M9 | 見る物「変更」（§8） | L | 会話の横で変更を読める | revert |
 
 **切り替え方の推薦**: env の旗（サーバーで出し分け）ではなく、**入口の html を並べて置く**（F10。`/static/v3.html`）。再起動も設定も要らず、オーナーがスマホと PC で両方を見比べられ、各段を単独で戻せる。一気に替えるのは、M2〜M7 が 1 つの大きい PR になりレビューできないので採らない。
@@ -413,3 +414,15 @@ M0 は今の画面のまま直す 1 PR（同じ「待ちの見え方」の論点
 - popstate は右腕の状態を先に変数だけ変え、`setView()` の後で `applyHand()` を当てる。スマホで [一覧]・[会話]・[右腕] から 2 つ一度に戻ったとき、これから隠れる会話を既読にしない（M7b の残り）。
 - ≤639px のナレッジは、`shell.css` が `app.css` の古い殻の規則を打ち消し、一覧（上）と中身（下）を `2fr / 3fr` で縦に並べ、見出しの検索も出す。`views.js` の DOM と古い殻の見た目は変えない。
 - 設定のキーの表は共通の 2 行 + 殻ごとの行（新しい殻は Ctrl+K / ⌘+K・↑ / ↓ / Home / End・Esc）。殻は描くときに `#v3` の有無で見分ける（`isV3Shell`。M8b で分岐ごと消す）。
+
+**M8 の実装で決めたこと（#381。「違」は設計と違える所、「補」は設計が決めていない所）**:
+
+- 補: 入れ替えはファイルの名前で行う（`index.html` → `classic.html`、`v3.html` → `index.html`。`classic.html` は中身を変えない。`index.html` は head の試し用の 2 行（manifest の link と `apple-mobile-web-app-title`）だけを古い殻と同じ値に戻す）。試し用の `manifest-v3.webmanifest` は消す（docs/plan/web-ui.md §11.1）。`manifest.webmanifest`・`static.ts`・`server.ts` は変えない。再起動は要らない。
+- 補: `/static/v3.html`・`/static/manifest-v3.webmanifest` は消す（404）。`/` へ飛ばす html は置かない。
+- 補: 行き来のリンクは設定の「この画面の表示」に 1 行（「画面」）。新しい殻では「前の画面を開く」（`/static/classic.html`）、古い殻では「新しい画面を開く」（`/`）。同じ窓で素の URL を開き、ハッシュは引き継がない。M8b で消す。
+- 補: 共有の部品（`views.js`）は描くときに `#v3` の有無で殻を見分ける（`isV3Shell`）。使うのは設定のキーの表とリンクと、新しい殻の一覧の読み直し（`SA.topics.load`）の 3 か所。`SA.app` には足さない。M8b で分岐ごと消す。
+- 違: §10 の「探す（今のパレット）は残す」はやらない。新しい殻の「探す」は題名の絞り込み（Ctrl+K）だけ。足りなければ M9 で。
+- 補: 古い殻（`/static/classic.html`）は M8b まで直さない。新しい決まり（語彙・配置）に合わせる変更はせず、壊れたときだけ直す。
+- 補: 文書は新しい殻の決まりを本文にし、古い殻だけの決まりは各節の末尾の小節「古い殻（`/static/classic.html`）だけの決まり（M8b で消す）」に寄せる。
+- 補: ホーム画面のバッジ（`setAppBadge`）は実装していない（§3.2 との差）。数を出すのは `document.title` の `(n) self-agent` だけで、新しい殻では「あなたの番」の数（`topics.js` の `data.turns`）。
+- 補: M8b の前に決める物: 会話ログの過去の日付・プロジェクト（ページ）のファイルの一覧（W7）への入口・Claude Code の群の細かい行（trust の確認待ち・届け待ち・tmux の外）。どれも古い殻（`/static/classic.html`）と CLI では見られる。
