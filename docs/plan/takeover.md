@@ -258,7 +258,7 @@ v2 → v3 で変えた所（ここに無い節は v2 のまま運んだ）:
 （v2 のまま。読み替え: 「そのチャンネル」は**行き先の新しいチャンネル**で、取り込みの行は `target_channel_id` で引く。「U2」「/mode」は terminal-handover.md の段 H4b。H4a・H4b の後に、前置きの「AskUserQuestion は使えません」とモードの引き継ぎを直す。）
 
 - `sessions`: state active・origin `command`（CHECK を変えない。出どころは `cc_takeovers`）・persona は既定・`project_dir` はプロジェクトの名前。
-- **`permission_mode` は端末の plan・acceptEdits をそのまま引き継ぎ、ほか（default・auto・bypassPermissions・不明）は default**（`mapTakeoverMode`。propose で `cc_takeovers.permission_mode` に置き、commit で `sessions` に写す）。H4b で /mode が入り、取り込んだ後でも戻せるようになったので引き継ぐ（未決 6）。確認の文に「許可のモードは <引き継ぐモード> になります（端末: <端末のモード>）」と書く。端末のモードは `cc_takeovers.terminal_mode` に残す。H4b の前に作られて確認待ちのまま残っていた行は、行の値（default）のまま進む。
+- **`permission_mode` は端末の plan・acceptEdits をそのまま引き継ぎ、ほか（default・auto・bypassPermissions・不明）は default**（`mapTakeoverMode`。propose で `cc_takeovers.permission_mode` に置き、commit で `sessions` に写す）。H4b で /mode が入り、取り込んだ後でも戻せるようになったので引き継ぐ（未決 6）。確認の文に「許可のモードは <引き継ぐモード> になります（端末: <端末のモード>）」と書く。端末のモードは `cc_takeovers.terminal_mode` に残す。端末のモードは最後に受けた hook の値（`cc_sessions.permission_mode`）で、終わったセッションでも行に残っていれば引き継ぐ。hook を一度も受けていなければ不明で default。H4b の前に作られて確認待ちのまま残っていた行は、行の値（default）のまま進む。
 - モデルと effort は `cfg` のもの（端末のモデルは引き継がない）。最初のターンはキャッシュが全部外れる（P9）。**1 回だけ受け入れ**、CLAUDE.md の「プロンプトキャッシュの規則」に例外として 1 行足す。
 
 #### 3.6.1 self-agent の案内の渡し方（P6 への対応）

@@ -446,10 +446,35 @@ test("端末が auto・bypassPermissions・不明（null）の取り込みは de
   }
 });
 
+test("端末のモードは hook が行に置いた値を先に使う（一覧の値と違っても）。終わったセッションでも行に残った値を引き継ぐ", async (t) => {
+  // 生きているセッション: 行は acceptEdits、一覧は plan
+  const alive = setup(t);
+  assert.equal(alive.view.permissionMode, "plan");
+  assert.equal(alive.ccSessions.applyEvent(S1, { event: "Stop", permissionMode: "acceptEdits" }, new Date(PROC_START_MS + 2000)), true);
+  const first = await alive.takeover.propose({ sessionId: S1, entry: "discord", guildId: "guild-1", confirmChannelId: "confirm-1" });
+  assert.ok(first.ok);
+  assert.ok(first.message.text.includes("許可のモードは acceptEdits になります（端末: acceptEdits）"));
+  assert.equal(alive.takeovers.get(first.id)?.terminalMode, "acceptEdits");
+  assert.ok((await alive.takeover.confirm(first.id)).ok);
+  assert.deepEqual(alive.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: "acceptEdits" });
+  // 終わったセッション: 一覧には無い。最後の hook の値が行に残っている
+  const ended = setup(t, { ended: true });
+  assert.equal(ended.ccSessions.applyEvent(S1, { event: "Stop", permissionMode: "plan" }, new Date(PROC_START_MS + 2000)), true);
+  const second = await ended.takeover.propose({ sessionId: S1, entry: "discord", guildId: "guild-1", confirmChannelId: "confirm-1" });
+  assert.ok(second.ok);
+  assert.ok(second.message.text.includes("許可のモードは plan になります（端末: plan）"));
+  const result = await ended.takeover.confirm(second.id);
+  assert.ok(result.ok);
+  assert.equal(result.plainText, takeoverDoneText("alpha", "plan", false, false));
+  assert.deepEqual(ended.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: "plan" });
+});
+
 test("前から確認待ちで残っていた行（permission_mode が default）は、端末が plan でも default のまま進む", async (t) => {
   const s = setup(t);
   assert.equal(s.view.permissionMode, "plan");
-  const row = addRow(s, S1);
+  // 前の版が作った行の形: 端末のモードは plan と記録され、引き継ぐモードは default
+  const row = addRow(s, S1, "alive", "discord", "plan");
+  assert.equal(row.terminalMode, "plan");
   assert.equal(row.permissionMode, "default");
   const result = await s.takeover.confirm(row.id);
   assert.ok(result.ok);
@@ -809,8 +834,9 @@ test("recoverRunning（前段）だけで running は failed（restart）にな�
 });
 
 /** 取り込みの行を直接作る（discord なら確認のチャンネル付き） */
-function addRow(s: Setup, sessionId: string, source: "alive" | "ended" = "alive", entry: "discord" | "web" = "discord") {
+function addRow(s: Setup, sessionId: string, source: "alive" | "ended" = "alive", entry: "discord" | "web" = "discord", terminalMode: string | null = null) {
   return s.takeovers.propose({
+    terminalMode,
     sessionId,
     source,
     project: "alpha",
