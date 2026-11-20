@@ -189,8 +189,8 @@ const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk・g-composer・g-cards・g-hand はその節の要素の絵（K3〜K6）、ほかは押して開いた所） */
-const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-composer", "g-cards", "g-hand", "g-sheet", "g-confirm", "g-toast"] as const;
+/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk・g-composer・g-cards・g-hand・g-term はその節の要素の絵（K3〜K6 と端末のセッションの札）、ほかは押して開いた所） */
+const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-composer", "g-cards", "g-hand", "g-term", "g-sheet", "g-confirm", "g-toast"] as const;
 type GalleryKind = (typeof GALLERY_KINDS)[number];
 const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
 
@@ -359,6 +359,53 @@ function composerProblems({ demos, phone, label }: { demos: string[]; phone: boo
 
 /** 見本のカードの data-demo（ページの順） */
 const CARD_DEMOS = ["card-perm", "card-perm-rule", "card-perm-urgent", "card-perm-busy", "card-perm-long", "card-q-one", "card-q-two", "card-q-other", "card-q-busy", "card-q-session", "card-close", "card-close-picked", "card-close-none", "card-move", "card-note", "card-status", "card-narrow"];
+
+/** 見本の札の data-demo（ページの順）と、［取り込む］を押せる物 */
+const TERM_DEMOS = ["ready", "ended", "busy", "waiting", "blocked", "checking", "taking", "lost", "error", "long"];
+const TERM_TAKEABLE = ["ready", "ended"];
+/** ［取り込む］を押せず、下の文が在るはずの物 */
+const TERM_BLOCKED = ["busy", "waiting", "blocked", "checking", "taking", "lost"];
+
+/**
+ * 見本の札の測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見本の名前と順・札が 1 つずつ・［取り込む］の押せる・押せないと下の文・
+ * long が横にはみ出さない・スマホの RC のリンクの高さ。足りない物の文を返す
+ */
+function termProblems({ demos, takeable, blocked, phone, label }: { demos: string[]; takeable: string[]; blocked: string[]; phone: boolean; label: string }): string[] {
+  const lines: string[] = [];
+  const say = (text: string): void => void lines.push(`札（${label}）: ${text}`);
+  const section = document.querySelector('[data-section="term"]');
+  if (section === null) return [`札（${label}）: 節が無い`];
+  const names = [...section.querySelectorAll("[data-demo]")].map((el) => el.getAttribute("data-demo") ?? "?");
+  if (names.join(",") !== demos.join(",")) say(`見本の並び ${names.join(",")}（${demos.join(",")} のはず）`);
+  const takeOf = (demo: string): Element | null => section.querySelector(`[data-demo="${demo}"] .c-term .c-term-actions > button.c-btn`);
+  for (const demo of demos) {
+    const count = section.querySelectorAll(`[data-demo="${demo}"] .c-term`).length;
+    if (count !== 1) say(`${demo} の札が ${count}（1 のはず）`);
+  }
+  for (const demo of takeable) {
+    const take = takeOf(demo);
+    if (take === null) say(`${demo} に［取り込む］が無い`);
+    else if (take.hasAttribute("aria-disabled")) say(`${demo} の［取り込む］に aria-disabled が在る`);
+  }
+  for (const demo of blocked) {
+    const take = takeOf(demo);
+    if (take === null) say(`${demo} に［取り込む］が無い`);
+    else if (take.getAttribute("aria-disabled") !== "true") say(`${demo} の［取り込む］の aria-disabled が ${JSON.stringify(take.getAttribute("aria-disabled"))}（"true" のはず）`);
+    const note = (section.querySelector(`[data-demo="${demo}"] .c-term-note`)?.textContent ?? "").trim();
+    if (note === "") say(`${demo} の下の文が空`);
+  }
+  const long = section.querySelector('[data-demo="long"] .c-term');
+  if (long !== null && long.scrollWidth > long.clientWidth) say(`long の札が横にはみ出している（${long.scrollWidth} > ${long.clientWidth}）`);
+  if (phone) {
+    const links = section.querySelectorAll(".c-term-link");
+    if (links.length === 0) say("RC のリンクが 1 つも無い");
+    for (const link of links) {
+      const h = link.getBoundingClientRect().height;
+      if (h < 44) say(`${link.closest("[data-demo]")?.getAttribute("data-demo") ?? "?"} の RC のリンクの高さ ${h.toFixed(1)}。44 以上のはず`);
+    }
+  }
+  return lines;
+}
 
 /**
  * 見本のカードの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見本の名前・枠の線と角と地と幅・見出しの字・
@@ -4337,6 +4384,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (lines.length > 0) throw new Error(`右腕の見本の検査で ${lines.length} 件`);
   }
 
+  /** 見本の札（termProblems）を測る。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
+  async function checkTerms(page: Page, vp: Viewport, label: string): Promise<void> {
+    const lines = await page.evaluate(termProblems, { demos: TERM_DEMOS, takeable: TERM_TAKEABLE, blocked: TERM_BLOCKED, phone: vp === "phone", label: "今の字" });
+    for (const line of lines) logLines.push(`[${label}] ${line}`);
+    if (lines.length > 0) throw new Error(`札の見本の検査で ${lines.length} 件`);
+  }
+
   /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない）。絵ごとに読み直す */
   async function gallery(vp: Viewport, theme: Theme): Promise<void> {
     const names = GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind));
@@ -4359,6 +4413,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         { name: galleryName(vp, theme, "g-composer"), selector: '[data-section="composer"]' },
         { name: galleryName(vp, theme, "g-cards"), selector: '[data-section="cards"]' },
         { name: galleryName(vp, theme, "g-hand"), selector: '[data-section="hand"]' },
+        { name: galleryName(vp, theme, "g-term"), selector: '[data-section="term"]' },
       ];
       await step(full, [full, ...parts.map((part) => part.name)], async () => {
         await loadGallery();
@@ -4367,6 +4422,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await checkComposers(page, vp, label);
         await checkCards(page, vp, label);
         await checkHands(page, label);
+        await checkTerms(page, vp, label);
         // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("*")) if (el.scrollLeft !== 0) el.scrollLeft = 0;

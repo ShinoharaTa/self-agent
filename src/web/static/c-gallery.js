@@ -1,4 +1,4 @@
-// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1〜K6）。部品の状態を並べ、ui-shots が撮る。
+// 部品の見本のページ（/static/gallery.html。docs/plan/web-ui-components.md §9 の K1〜K6 と、端末のセッションの札）。部品の状態を並べ、ui-shots が撮る。
 // 認証の前に配られるので、個人の情報と API の呼び出しを入れない。data-section・data-demo は ui-shots が要素を探す印（CSS では使わない）
 import { html, render, useRef, useState } from "./c-lib.js";
 import { Badge, Button, Empty, Field, IconButton, Loading, Mark, Segmented } from "./c-atoms.js";
@@ -9,6 +9,7 @@ import { TalkTimeline, parseBlocks, talkModel } from "./c-talk.js";
 import { Composer, composerModel } from "./c-composer.js";
 import { Cards } from "./c-cards.js";
 import { HandHead } from "./c-hand.js";
+import { TermCard, termView } from "./c-term.js";
 
 // テーマ: shell.js と同じ（localStorage の self-agent-web:theme。dark・light は data-theme、system は外して OS に合わせる。読めなければ dark）
 const THEMES = ["dark", "light", "system"];
@@ -747,6 +748,34 @@ function Hands() {
   <//>`;
 }
 
+/** 札の見本の既定の生の状態（書いていない物はこれ） */
+const TERM_BASE = { title: "ログインの直し", place: "self-agent", rowState: "idle", activity: "11/20(金) 14:05", pane: true, check: null, checking: false, failed: false, phase: "idle", error: null };
+const TERM_READY = { takeable: true, state: "idle", reason: null, text: null, rcUrl: "https://claude.ai/code/demo" };
+/** 札の見本（ready・ended・busy・waiting・blocked が取り込めるかの 4 つの形、ほかは途中の形。long は幅 320 の入れ物） */
+const TERM_DEMOS = [
+  { demo: "ready", raw: { check: TERM_READY } },
+  { demo: "ended", raw: { rowState: null, pane: false, activity: "11/20(金) 13:40", check: { takeable: true, state: "ended", reason: null, text: null, rcUrl: null } } },
+  { demo: "busy", raw: { rowState: "running", check: { takeable: false, state: "running", reason: "busy", text: "実行中です。終わると取り込めます", rcUrl: null } } },
+  { demo: "waiting", raw: { rowState: "waiting", check: { takeable: false, state: "waiting", reason: "waiting", text: "判断待ちです。端末か RC で答えると取り込めます", rcUrl: null } } },
+  { demo: "blocked", raw: { check: { takeable: false, state: "idle", reason: "not_in_tmux", text: "このセッションは外から終わらせません。終わらせてから取り込めます", rcUrl: null } } },
+  { demo: "checking", raw: { checking: true } },
+  { demo: "taking", raw: { check: TERM_READY, phase: "taking" } },
+  { demo: "lost", raw: { check: TERM_READY, phase: "lost" } },
+  { demo: "error", raw: { check: TERM_READY, error: "取り込めませんでした: 端末の画面が待機の状態ではありません（書きかけ・ダイアログ・操作の直後）" } },
+  { demo: "long", narrow: true, raw: { check: TERM_READY, title: "端末のセッションの題がとても長いときに札の幅からはみ出さずに折り返すかを確かめるための見本の題です。ここまでで八十字になるように字を足していきます。あと少しです", place: "ほかの場所（~/projects/very/long/path/name）" } },
+];
+const TERM_ON = { take() {}, pane() {}, recheck() {} };
+
+/** 端末のセッションの札の見本。押しても何も起きない */
+function Terms() {
+  return html`<${Section} name="term" title="端末のセッションの札">
+    ${TERM_DEMOS.map(({ demo, raw, narrow = false }) => {
+      const body = html`<${TermCard} ...${termView({ ...TERM_BASE, ...raw })} on=${TERM_ON} />`;
+      return html`<div data-demo=${demo} key=${demo}>${narrow ? html`<div class="c-gallery-cards c-gallery-cards-narrow">${body}</div>` : html`<div class="c-gallery-cards">${body}</div>`}</div>`;
+    })}
+  <//>`;
+}
+
 /** 知らせの入れ物は見本の根の直下に 1 つ（自動では消さない。× で消す） */
 function Gallery() {
   const [toasts, setToasts] = useState([]);
@@ -776,6 +805,7 @@ function Gallery() {
     <${Composers} />
     <${CardDemos} />
     <${Hands} />
+    <${Terms} />
     <${Toast} items=${toasts} onDismiss=${dismiss} />
   `;
 }
