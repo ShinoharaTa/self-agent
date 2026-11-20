@@ -239,8 +239,11 @@ export type StartTopicInput = {
   title?: string;
   text?: string;
   place: StartTopicPlace;
-  /** 誰が始めたか（log の主語・仕切り・最初の投稿・origin）。right_hand は #inbox のエージェント（docs/plan/web-ui-v3.md §4） */
-  by: "web" | "right_hand";
+  /**
+   * 誰が始めたか（log の主語・仕切り・最初の投稿・origin）。right_hand は #inbox のエージェント（docs/plan/web-ui-v3.md §4）、
+   * github は GitHub の通知の［対応］（app/github-topics.ts。docs/plan/terminal-handover.md の H5）
+   */
+  by: "web" | "right_hand" | "github";
   at: Date;
   /** 持ち主の人格（足した人格の入口から）。あるときは place を見ず、その人格の軽いセッションを作る */
   owner?: SessionOwner;
@@ -274,8 +277,15 @@ export type StartTopicDeps = Pick<NewSessionDeps, "gateway" | "personas" | "guil
   seeds?: Pick<ChannelSeedStore, "set">;
 };
 
-/** 話題を始めたときの仕切りの文（純関数）。projectDir が undefined なら場所なし（軽いセッション）。by が right_hand なら頭に「右腕が」を付ける */
-export function startedDividerText(place: StartTopicPlace, projectDir: string | undefined, by: "web" | "right_hand" = "web"): string {
+/**
+ * 話題を始めたときの仕切りの文（純関数）。projectDir が undefined なら場所なし（軽いセッション）。by が right_hand なら頭に「右腕が」、
+ * github なら「GitHub の通知から」を付ける
+ */
+export function startedDividerText(place: StartTopicPlace, projectDir: string | undefined, by: "web" | "right_hand" | "github" = "web"): string {
+  if (by === "github") {
+    if (projectDir === undefined) return "GitHub の通知から場所なしで始めました";
+    return place.kind === "project" ? `GitHub の通知から ${place.name} で始めました` : "GitHub の通知から General で始めました";
+  }
   if (by === "right_hand") {
     if (projectDir === undefined) return "右腕が場所なしで始めました";
     return place.kind === "project" ? `右腕が ${place.name} で始めました` : "右腕が General で始めました";
@@ -293,6 +303,7 @@ export function rightHandWelcomeText(title: string, from: string, projectDir?: s
  * 話題を始める（場所・題名・最初の一言。種類は選ばせない）。既定の人格・origin command。応答はせず結果の種類を返す。
  * General は使えれば（連携・共有の link・ディレクトリ）プロジェクトのセッション、使えなければ軽いセッション。プロジェクトは使えなければ断る。
  * owner があれば場所を見ずにその人格の軽いセッション。by が right_hand なら origin inbox・最初の投稿に頼んだチャンネル・最初の一言は via right_hand。
+ * by が github なら origin command・最初の投稿は welcomeText のまま・最初の一言は via github。
  * seed があれば作った直後（最初の投稿より前）に seeds へ入れる（seeds が無い・入れられないときは log だけで話題は作る）。
  * 作った後に仕切りを 1 行書き、一言があれば submitText で最初のターンを入れる（受け付けられなくても話題は残す）。
  * 投げた例外は握らない。log に題名・本文・チャンネル ID・プロジェクトの名前・パスを出さない
@@ -339,7 +350,7 @@ export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): 
     title,
     input.owner,
     deps,
-    rightHand ? "右腕から" : "Web から",
+    rightHand ? "右腕から" : input.by === "github" ? "GitHub の通知から" : "Web から",
     undefined,
     projectDir,
     {
@@ -373,7 +384,7 @@ export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): 
       content: text,
       at: input.at,
       source: "web",
-      ...(rightHand ? { via: "right_hand" as const } : {}),
+      ...(rightHand ? { via: "right_hand" as const } : input.by === "github" ? { via: "github" as const } : {}),
     });
     turn = submitted.result === "accepted" ? "started" : "failed";
     if (turn === "failed") deps.log(`話題は作りましたが、最初の一言を送れませんでした（${submitted.result}）`);
