@@ -253,7 +253,7 @@ test("takeoverFailureText: §4 の文。終了の後なら次の行に足す", (
   assert.equal(takeoverFailureText("copy_failed", true), `取り込めませんでした: 記録を写せませんでした\n${TAKEOVER_AFTER_TERM_TEXT}`);
   assert.equal(
     takeoverFailureText("not_exited", true),
-    "取り込めませんでした: 10 秒待っても端末の Claude Code が終わりませんでした。取り込みはやめました。後から終わったら、もう一度 /cc take してください",
+    "取り込めませんでした: 10 秒待っても端末の Claude Code が終わりませんでした。取り込みはやめました。後から終わったら、もう一度取り込んでください",
   );
   assert.equal(takeoverFailureText("identity", false), "取り込めませんでした: セッションを確かめられませんでした。端末の Claude Code はそのままです");
   assert.equal(takeoverFailureText("tmux_failed", false), "取り込めませんでした: 端末の画面を読めませんでした。もう一度");
@@ -262,7 +262,7 @@ test("takeoverFailureText: §4 の文。終了の後なら次の行に足す", (
     "取り込めませんでした: 記録の写し先を使えません（CLAUDE_CONFIG_DIR の projects の外を指しています）",
   );
   // SIGTERM の後に足す文（行き先は新しいチャンネルなので「このチャンネルで」とは言わない）
-  assert.equal(TAKEOVER_AFTER_TERM_TEXT, "端末の Claude Code は終了しています。/cc take をもう一度実行すると、終わった会話から取り込めます。");
+  assert.equal(TAKEOVER_AFTER_TERM_TEXT, "端末の Claude Code は終了しています。もう一度取り込むと、終わった会話から取り込めます。");
   const codes: TakeoverFailure[] = [
     "not_ready",
     "list_failed",
