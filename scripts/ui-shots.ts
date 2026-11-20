@@ -523,7 +523,7 @@ const TOP_BOX: Record<string, number> = { "c-gallery-top-full": 520, "c-gallery-
 /** 見本の見出しの data-demo（ページの順） */
 const TOP_DEMOS = [
   "top-phone-talk", "top-phone-long", "top-phone-other",
-  "top-wide-talk", "top-wide-cc", "top-wide-long", "top-wide-short", "top-wide-other",
+  "top-wide-talk", "top-wide-cc", "top-wide-long", "top-wide-short", "top-wide-mode", "top-wide-mode-busy", "top-wide-other",
   "top-compact-cc", "top-compact-long",
 ];
 

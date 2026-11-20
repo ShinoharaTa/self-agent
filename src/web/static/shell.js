@@ -202,6 +202,7 @@
   const TOP_ON = {
     back: () => openDrawer(),
     place: (opener) => openPlace(opener),
+    mode: (opener) => openMode(opener),
     view: (value) => setView2(value),
     menu: (opener) => openTopMenu(opener),
     hand: (opener) => openHand(opener, false),
@@ -215,7 +216,7 @@
   /** 見出しに渡す state（入口 c-app.js の TopBar の props）。何も開いていなければ view: none */
   function topState() {
     const info = S.active ? SA.views.info(S.active) : null;
-    if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, controls: "v3-hand", on: TOP_ON };
+    if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, controls: "v3-hand", on: TOP_ON };
     const t = SA.topics.find(S.active) || null;
     const head = topHead();
     let status = null;
@@ -240,6 +241,7 @@
       hand: handMark(),
       compact: S.topCompact,
       menu: t !== null && (topNarrow() || (head !== null && head.menu.length > 0)),
+      mode: head && head.mode ? { value: head.mode, disabled: !!t && t.mark === "running", reason: !!t && t.mark === "running" ? MODE_BUSY : null } : null,
       controls: "v3-hand",
       on: TOP_ON,
     };
@@ -252,7 +254,7 @@
     if (!SA.top) return;
     const st = topState();
     if (SA.top.draw(st)) return;
-    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, controls: "v3-hand", on: TOP_ON });
+    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, controls: "v3-hand", on: TOP_ON });
   }
 
   /** 見出しの帯に場所・[会話][端末] が出ていないか（スマホか、広い幅の compact）。出ていなければ「…」の板に入れる */
@@ -288,6 +290,10 @@
         run: t.movable === true ? () => openPlace(opener) : null,
         why: t.movable !== true && t.movable && typeof t.movable.reason === "string" ? t.movable.reason : "",
       });
+      if (head && head.mode) {
+        const busy = t.mark === "running";
+        items.push({ icon: "settings", label: "許可のモードを変える", run: busy ? null : () => openMode(opener), why: MODE_BUSY });
+      }
       if (paneSession() !== null) {
         items.push(S.view2 === "pane" ? { icon: "chevron-left", label: "会話に戻る", run: () => setView2("talk") } : { icon: "terminal", label: "端末を見る", run: () => setView2("pane") });
       }
@@ -1308,6 +1314,52 @@
     // 受け付けただけ。結果は一覧の place・movable と履歴の仕切りで見せる
     SA.ui.toast("場所を " + place.name + " に変えています。要点をまとめるので少しかかります");
     SA.topics.load();
+  }
+
+  // ===== 許可のモード（列 2 の見出しのモードのボタンか「…」の板 → シート → POST /api/topics/ch:<id>/mode。プロジェクトのセッションだけ） =====
+  // 選べるモードと板の文。サーバーの MODE_LABELS（src/app/session-mode.ts）と views.js の PERMISSION_MODES と同じ文。片方を直したらもう片方も直す
+  const MODE_ROWS = [
+    ["default", "default（使うたびに確認）"],
+    ["acceptEdits", "acceptEdits（編集は確認なし）"],
+    ["plan", "plan（計画だけ）"],
+  ];
+  const MODE_BUSY = "担当が作業中です。終わってから変えてください";
+
+  /** シートに 3 つのモードを並べる（今のモードは押せない行）。今の話題がプロジェクトのセッションでなければ何もしない */
+  function openMode(opener) {
+    const t = S.active ? SA.topics.find(S.active) : null;
+    const head = topHead();
+    if (!t || !head || !head.mode) return;
+    const now = head.mode;
+    const id = t.id;
+    const rows = MODE_ROWS.map(([value, label]) =>
+      value === now ? { icon: "check", label, run: null, why: "今のモード" } : { icon: "circle", label, run: () => setMode(id, value) },
+    );
+    openSheet("許可のモード", rows, opener);
+  }
+
+  /** 送る。id（ch:<channelId>）は encode しない（%3A ではルートに当たらない）。成功したら一覧を読み直して見出しを描き直す */
+  async function setMode(id, value) {
+    try {
+      await SA.api.post("/api/topics/" + id + "/mode", { mode: value }, { quiet: true });
+    } catch (err) {
+      const code = err && err.status === 409 ? err.code : null;
+      if (code === "busy") SA.ui.toast(MODE_BUSY, null, { level: "error" });
+      else if (code === "closed") SA.ui.toast("閉じています", null, { level: "error" });
+      else if (code === "not_project") SA.ui.toast("このセッションに許可のモードはありません。", null, { level: "error" });
+      else SA.ui.toast(err && typeof err.toast === "string" ? err.toast : "サーバーにつながりません", null, { level: "error", retry: () => setMode(id, value) });
+      return;
+    }
+    // 帯に見えない形（スマホ・compact）だけ知らせる
+    if (topNarrow()) SA.ui.toast("許可のモードを " + value + " にしました");
+    SA.topics.load();
+    // モードは会話の一覧（/api/channels の projectDir）から引くので、それも読み直してから描き直す
+    try {
+      await SA.store.load.channels({ quiet: true });
+    } catch {
+      // 読めなければ次の polling で直る
+    }
+    renderBar();
   }
 
   // ===== 下のバー（描くのは入口 c-app.js）と「ほか」の板 =====

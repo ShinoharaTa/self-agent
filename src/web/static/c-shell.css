@@ -218,8 +218,10 @@
   text-overflow: ellipsis;
 }
 
-/* 補足の次に縮み、当たりと名前の頭が残る幅は残す（下限で名前の字に約 50px。入らない幅では入口が compact にして、場所を帯に出さない） */
-.c-top-place {
+/* 補足の次に縮み、当たりと名前の頭が残る幅は残す（下限で名前の字に約 50px。入らない幅では入口が compact にして、場所を帯に出さない）。
+   許可のモードのボタンも同じ形 */
+.c-top-place,
+.c-top-mode {
   flex: 0 1000000 auto;
   min-width: var(--c-top-place-min);
   max-width: 40%;
@@ -237,12 +239,14 @@
   font-size: var(--font-sm);
 }
 
-.c-top-place[aria-disabled="true"] {
+.c-top-place[aria-disabled="true"],
+.c-top-mode[aria-disabled="true"] {
   color: var(--text-muted);
   cursor: not-allowed;
 }
 
-.c-top-place-text {
+.c-top-place-text,
+.c-top-mode-text {
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -299,12 +303,14 @@
 
 /* 押した・乗った（下のバーの右腕と同じ宣言。押せない場所のボタンには当てない） */
 .c-top-place:not([aria-disabled="true"]):active,
+.c-top-mode:not([aria-disabled="true"]):active,
 .c-top-hand:active {
   transform: scale(0.97);
 }
 
 @media (hover: hover) and (pointer: fine) {
   .c-top-place:not([aria-disabled="true"]):hover,
+  .c-top-mode:not([aria-disabled="true"]):hover,
   .c-top-hand:hover {
     opacity: 0.9;
   }
