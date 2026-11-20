@@ -1350,3 +1350,18 @@ test("見張り: 本体は cc/channels.ts・sender.ts・replies.ts・starter.ts�
   }
   assert.ok(!specifiers.some((specifier) => specifier.endsWith("/cc-confirm.ts")));
 });
+
+test("見張り: main.ts は turn に takeover を入れ、createHandler には turn を広げて渡す（別々に書くと前置きが黙って付かない）", () => {
+  const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.match(source, /const turn = \{[\s\S]*?takeover: turnTakeover[\s\S]*?\n\};/);
+  assert.match(source, /createHandler\(\{[\s\S]*?\.\.\.turn,/);
+  const call = source.match(/createHandler\(\{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(call !== undefined);
+  assert.doesNotMatch(call, /takeover:/);
+});
+
+test("見張り: main.ts は取り込みの sleep に timers/promises を使わない（reject しない・unref の takeoverSleep）", () => {
+  const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.match(source, /sleep: takeoverSleep,/);
+  assert.match(source, /\.unref\(\)/);
+});

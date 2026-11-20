@@ -552,6 +552,27 @@ test("Claude Code: 停止を始めたら送信の待ち行列を止め、貼っ�
   assert.deepEqual(events, ["send stop", "send idle", "stop", "closeDb"]);
 });
 
+test("Claude Code: 停止を始めたら取り込みの確認の失効も止め、実行中の 1 回が終わってから gateway を止める", async () => {
+  const events: string[] = [];
+  const gate = deferred();
+  const ccTakeoverExpirer = {
+    stop: () => {
+      events.push("takeover stop");
+    },
+    idle: async () => {
+      await gate.promise;
+      events.push("takeover idle");
+    },
+  };
+  const { shutdown } = createShutdown(deps(events, { ccTakeoverExpirer }), noopInner);
+  const done = shutdown();
+  await flush();
+  assert.deepEqual(events, ["takeover stop"]);
+  gate.resolve();
+  await done;
+  assert.deepEqual(events, ["takeover stop", "takeover idle", "stop", "closeDb"]);
+});
+
 test("Claude Code: 停止を始めたらすぐ、保留中の許可の要求に空の本文を返す（受け口を閉じる前）", async () => {
   const events: string[] = [];
   const gate = deferred();
