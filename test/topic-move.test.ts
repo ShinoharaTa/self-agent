@@ -337,6 +337,67 @@ test("moveTopic: 今の場所のディレクトリが無くなった（消えた
   }
 });
 
+/** 取り込みの口の偽物。resumeDropped の呼び出し（呼ばれた時点の SDK セッションの対応と行の状態も）を記録する。throws なら投げる */
+function fakeTakeover(env: ReturnType<typeof setup>, options: { throws?: boolean } = {}) {
+  const dropped: Array<{ key: string; sessionId: string; mapped: string | undefined; state: unknown }> = [];
+  env.deps.turn = {
+    ...env.deps.turn,
+    takeover: {
+      noteFor: () => undefined,
+      noteDone: () => {},
+      resumeDropped: (key, sessionId) => {
+        dropped.push({ key, sessionId, mapped: env.sessions.get(key), state: env.rows()[0]?.state });
+        if (options.throws === true) throw new TypeError("/secret/path");
+      },
+    },
+  };
+  return dropped;
+}
+
+test("moveTopic: No conversation found で要点なしに付け替えたら、通った後に takeover.resumeDropped を 1 回（捨てた session_id で）。投げても moved で、log は例外の種類だけ", async (t) => {
+  for (const throws of [false, true]) {
+    const env = setup(t, { steps: [RESUME_FAILURE] });
+    const dropped = fakeTakeover(env, { throws });
+    assert.deepEqual(await moveTopic(env.input(), env.deps), { result: "moved", from: null, to: "alpha", note: null });
+    // 付け替えの書き込み（SDK セッションの対応を消す・done）の後に呼ぶ
+    assert.deepEqual(dropped, [{ key: "topic-1", sessionId: "session-1", mapped: undefined, state: "done" }]);
+    const failure = "取り込みの resumeDropped で例外（TypeError）が出たため、飛ばして続けます";
+    assert.equal(env.logs.includes(failure), throws);
+    for (const line of env.logs) assert.doesNotMatch(line, /secret|session-1|topic-1/, line);
+  }
+});
+
+test("moveTopic: 今の場所が使えなくて要点なしに付け替えたときも resumeDropped を 1 回", async (t) => {
+  const env = setup(t, { projectDir: "beta" });
+  rmSync(join(env.ws, "beta"), { recursive: true });
+  const dropped = fakeTakeover(env);
+  assert.deepEqual(await moveTopic(env.input(), env.deps), { result: "moved", from: "beta", to: "alpha", note: null });
+  assert.deepEqual(dropped, [{ key: "topic-1", sessionId: "session-1", mapped: undefined, state: "done" }]);
+});
+
+test("moveTopic: 要点が取れた・会話がまだ無い・ほかの失敗・書き込みの失敗では resumeDropped を呼ばない", async (t) => {
+  const cases: Array<[string, SetupOptions, string, ((env: ReturnType<typeof setup>) => void)?]> = [
+    ["要点が取れた", { steps: [ok(NOTE)] }, "moved"],
+    ["会話がまだ無い", { conversation: false }, "moved"],
+    ["ほかの失敗", { steps: [FAILED] }, "failed"],
+    [
+      "書き込みの失敗",
+      { steps: [RESUME_FAILURE] },
+      "failed",
+      (env) => {
+        env.deps.turn = { ...env.deps.turn, seeds: new ThrowingSeeds(env.db, () => NOW) };
+      },
+    ],
+  ];
+  for (const [name, options, expected, prepare] of cases) {
+    const env = setup(t, options);
+    prepare?.(env);
+    const dropped = fakeTakeover(env);
+    assert.equal((await moveTopic(env.input(), env.deps)).result, expected, name);
+    assert.deepEqual(dropped, [], name);
+  }
+});
+
 test("moveTopic: projectRunner の無い環境でプロジェクトの話題は failed で、何も変えない", async (t) => {
   const env = setup(t, { steps: [ok(NOTE)], projectDir: "alpha" });
   const { projectRunner: _projectRunner, ...turn } = env.deps.turn;

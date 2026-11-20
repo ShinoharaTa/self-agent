@@ -520,6 +520,26 @@ test("端末の cwd が runner の cwd と違う: outside_workspace で kill し
   assertUntouched(s);
 });
 
+test("propose: 一覧にも cc_sessions にも無い session_id は identity で断る（outside_workspace と言わない）。チャンネルも kill も無い", async (t) => {
+  const s = setup(t);
+  const proposed = await s.takeover.propose({ sessionId: S2, entry: "discord", guildId: "guild-1", confirmChannelId: "confirm-1" });
+  assert.equal(!proposed.ok && proposed.reason, "identity");
+  assert.equal(!proposed.ok && proposed.text, takeoverFailureText("identity", false));
+  assert.deepEqual(s.kills, []);
+  assert.deepEqual(s.channelCalls, []);
+  assertUntouched(s);
+  assertQuietLogs(s);
+});
+
+test("propose: cc_sessions に行が在って cwd が無いセッションは今までどおり outside_workspace", async (t) => {
+  const s = setup(t, { ended: true });
+  s.db.prepare("UPDATE cc_sessions SET cwd = NULL WHERE session_id = ?").run(S1);
+  const proposed = await s.takeover.propose({ sessionId: S1, entry: "discord", guildId: "guild-1", confirmChannelId: "confirm-1" });
+  assert.equal(!proposed.ok && proposed.reason, "outside_workspace");
+  assert.deepEqual(s.kills, []);
+  assert.deepEqual(s.channelCalls, []);
+});
+
 for (const [name, mode] of [
   ["/setup 前（not_set_up）", "not_set_up"],
   ["作成が投げる", "throws"],
@@ -1250,7 +1270,7 @@ test("題名: 名前が空・制御文字だけならプロジェクトの名前
   }
 });
 
-test("takeable(): 一覧を 1 回だけ読み、待機（最後の活動の新しい順）→ 終わった物（終わった時刻の新しい順）。実行中・取り込み済み・確認待ちは入らない", async (t) => {
+test("takeable(): 一覧を 1 回だけ読み、待機（最後の活動の新しい順）→ 終わった物（終わった時刻の新しい順）。at は待機なら最後の活動、終わった物なら終わった時刻。実行中・取り込み済み・確認待ちは入らない", async (t) => {
   const s = setup(t);
   const older = { ...s.view, sessionId: S2, lastActivityAt: BASE - 60_000 } as CcSessionView;
   const newer = { ...s.view, lastActivityAt: BASE } as CcSessionView;
@@ -1270,14 +1290,22 @@ test("takeable(): 一覧を 1 回だけ読み、待機（最後の活動の新�
   const rows = await s.takeover.takeable();
   assert.equal(s.registry.ticks, ticks + 1);
   assert.deepEqual(
-    rows.map((row) => [row.sessionId, row.title, row.project, row.alive]),
+    rows.map((row) => [row.sessionId, row.title, row.project, row.alive, row.at]),
     [
-      [S1, SECRET_NAME, "alpha", true],
-      [S2, "two", "alpha", true],
-      [S3, "three", "alpha", false],
-      [E1, "e1", "alpha", false],
+      [S1, SECRET_NAME, "alpha", true, BASE],
+      [S2, "two", "alpha", true, BASE - 60_000],
+      [S3, "three", "alpha", false, BASE + 1000],
+      [E1, "e1", "alpha", false, BASE],
     ],
   );
+  // 時刻が読めなければ undefined（最後の活動が無い待機・終わった時刻が読めない物）
+  s.list.sessions = [{ ...older, lastActivityAt: undefined } as CcSessionView, newer];
+  s.db.prepare("UPDATE cc_sessions SET gone_at = ? WHERE session_id = ?").run("not-a-time", E1);
+  const unknown = await s.takeover.takeable();
+  assert.equal(unknown.find((row) => row.sessionId === S2)?.at, undefined);
+  assert.equal(unknown.find((row) => row.sessionId === E1)?.at, undefined);
+  assert.equal(unknown.find((row) => row.sessionId === S1)?.at, BASE);
+  s.list.sessions = [older, newer];
   // 実行中・取り込み済み・確認待ちは外す
   s.list.sessions = [{ ...older, status: "busy", state: "running" } as CcSessionView, newer];
   s.sdkSessions.set("other-channel", S3);
