@@ -1418,7 +1418,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         ...(ccChannels === undefined ? {} : { channels: { store: ccChannels, allowedGuildIds: config.allowedGuildIds, lookup: webChannelOf } }),
         now,
       }),
-      // 取り込み（札の判定・確認・進める・やめる。SELF_AGENT_CC が無効なら 404）
+      // 取り込み（札の判定・確認・進める・やめる。取り込みの本体が無ければ（Claude Code の連携が動いていなければ）404）
       ...ccTakeoverRoutes({ takeover: () => ccTakeover, takeovers: ccTakeovers, cfg: config, guildSettings }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）
       ...projectRoutes({
