@@ -25,16 +25,17 @@ import {
 } from "./file-access.ts";
 import { normalizeUrl } from "./url.ts";
 import { buildQueryOptions, ensureSandboxWriteDirs } from "./query-options.ts";
-import type {
-  AgentRunner,
-  Compaction,
-  PermissionWaiting,
-  RunContext,
-  RunImage,
-  RunInput,
-  RunResult,
-  StepUsage,
-  TurnUsage,
+import {
+  type AgentRunner,
+  type Compaction,
+  type PermissionWaiting,
+  type RunContext,
+  type RunImage,
+  type RunInput,
+  type RunResult,
+  type StepUsage,
+  type TurnUsage,
+  runModelOf,
 } from "./runner.ts";
 import { MCP_SERVER_NAME } from "./tools.ts";
 
@@ -770,7 +771,7 @@ export class SdkAgentRunner implements AgentRunner {
         kind: input.context?.kind ?? null,
         ...(this.cfg.persona === undefined ? {} : { persona: this.cfg.persona }),
         // 話題のモデル（context.model か input.model）があればそれを渡している
-        model: input.context?.model ?? input.model ?? this.cfg.model,
+        model: runModelOf(input) ?? this.cfg.model,
         effort: this.cfg.effort ?? null,
         maxTurns,
         resume: input.sessionId ?? null,
@@ -815,7 +816,7 @@ export class SdkAgentRunner implements AgentRunner {
     if (this.profile !== undefined) return { options: this.profile.buildOptions(input, run), sandbox: false };
     const sandbox = this.sandboxForRun();
     // 話題のモデル（context.model、無ければ input.model）があればそれ、無ければ設定のモデル（全体の既定か人格のモデル）。無いときは this.cfg をそのまま渡す（Options を変えない）
-    const model = input.context?.model ?? input.model;
+    const model = runModelOf(input);
     const cfg = model === undefined ? this.cfg : { ...this.cfg, model };
     return { options: buildQueryOptions(cfg, this.createMcpServer!(input.context), sandbox), sandbox };
   }

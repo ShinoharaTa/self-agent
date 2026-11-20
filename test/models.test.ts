@@ -287,14 +287,15 @@ test("SdkAgentRunner: context に model が無ければ Options は buildQueryOp
   assert.equal(picked.model, "claude-sonnet-5-5");
 });
 
-test("SdkAgentRunner: 人格の runner（設定のモデルが人格のもの）は context に model が無ければ人格のモデル、あればその値", async () => {
+test("SdkAgentRunner: 人格の runner（設定のモデルが人格のもの）は context に model が無ければ人格のモデル、あればその値。input.model だけを渡せばその値", async () => {
   const persona = lightRunner("claude-sonnet-5");
   await persona.runner.run({ prompt: "x", context: sessionContext() });
   await persona.runner.run({ prompt: "x", context: sessionContext({ model: "claude-haiku-4-5" }) });
   await persona.runner.run({ prompt: "x" });
+  await persona.runner.run({ prompt: "x", model: "claude-haiku-4-5" });
   assert.deepEqual(
     persona.calls.map((call) => call.options.model),
-    ["claude-sonnet-5", "claude-haiku-4-5", "claude-sonnet-5"],
+    ["claude-sonnet-5", "claude-haiku-4-5", "claude-sonnet-5", "claude-haiku-4-5"],
   );
 });
 
@@ -337,6 +338,29 @@ test("createProjectProfile: context に model が無ければ Options は今ま�
   assert.equal(picked.model, "claude-sonnet-5-5");
   assert.deepEqual(Object.keys(picked), Object.keys(plain));
   assert.deepEqual({ ...picked, model: plain.model }, plain);
+});
+
+test("createProjectProfile: context.model が無く input.model が在れば Options の model はその値。両方在れば context.model", (t) => {
+  const { home, cfg } = projectPlaces(t);
+  const server = mcpServer();
+  const canUse: CanUseTool = async () => ({ behavior: "allow" });
+  const profile = createProjectProfile({
+    cfg,
+    createMcpServer: () => server,
+    canUseTool: () => canUse,
+    home,
+    env: { PATH: "/usr/bin", HOME: home },
+    log: () => {},
+  });
+  const run = { sessionId: () => undefined, signal: new AbortController().signal };
+  const context = sessionContext({ projectDir: "alpha", permissionMode: "default" });
+  const inputOnly = profile.buildOptions({ prompt: "x", context, model: "claude-haiku-4-5" }, run);
+  const both = profile.buildOptions(
+    { prompt: "x", context: { ...context, model: "claude-sonnet-5-5" }, model: "claude-haiku-4-5" },
+    run,
+  );
+  assert.equal(inputOnly.model, "claude-haiku-4-5");
+  assert.equal(both.model, "claude-sonnet-5-5");
 });
 
 test("SdkAgentRunner: dev ログの model は、context に model があればその値、無ければ設定のモデル", async () => {
