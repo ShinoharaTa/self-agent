@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import type { GithubHandoffResult } from "../src/app/github-handoff.ts";
+import type { GithubTopicResult } from "../src/app/github-topics.ts";
 import type { GithubPollerStatus } from "../src/github/poller.ts";
 import { GithubStore, type NewGithubNotification } from "../src/store/github.ts";
 import { githubRoutes } from "../src/web/routes/github.ts";
@@ -181,21 +181,18 @@ test("GET /api/github: SELF_AGENT_GITHUB が無効なら 404", async (t) => {
   assert.deepEqual(await get(server, "/api/github"), { status: 404, json: { error: "not_found" } });
 });
 
-test("GET /api/github・POST act / start: 送り込みがあれば [対応] を付けられる行に handoff、結果は文と種類で返す", async (t) => {
+test("GET /api/github・POST act: 話題を作る口があれば [対応] を付けられる行に handoff、結果は種類と文と、作った・もうある話題の channelId で返す", async (t) => {
   const store = new GithubStore(tempDb(t), () => NOW);
   const calls: string[] = [];
-  const results: Record<string, GithubHandoffResult> = {
-    act: { kind: "no_session", repo: "example-org/example-repo", dir: "example-repo" },
-    start: { kind: "started", tmuxSession: "example-repo", sendId: 7, dir: "example-repo" },
-  };
+  const results: GithubTopicResult[] = [
+    { kind: "created", channelId: "topic-1", turn: "started", overlapping: 0 },
+    { kind: "already", channelId: "topic-1" },
+    { kind: "busy" },
+  ];
   const handoff = {
-    act: async (id: number) => {
-      calls.push(`act ${id}`);
-      return id === 999 ? ({ kind: "stale" } as const) : results.act!;
-    },
-    start: async (id: number) => {
-      calls.push(`start ${id}`);
-      return results.start!;
+    act: async (id: number, guildId?: string) => {
+      calls.push(`act ${id} ${guildId ?? "-"}`);
+      return id === 999 ? ({ kind: "stale" } as const) : results.shift()!;
     },
   };
   const server = await serve(t, githubRoutes({ cfg: { github: true }, store, status: () => STATUS, handoff }), () => NOW);
@@ -211,16 +208,29 @@ test("GET /api/github・POST act / start: 送り込みがあれば [対応] を�
   assert.equal(rows.find((row) => row.id === ok.notification.id)?.handoff, true);
   assert.equal(rows.find((row) => row.id === no.notification.id)?.handoff, false);
 
-  const acted = await post(server, `/api/github/${ok.notification.id}/act`);
-  assert.equal(acted.status, 200);
-  assert.equal(acted.json.result, "no_session");
-  assert.equal(acted.json.startable, true);
-  assert.match(String(acted.json.text), /起動して送りますか/);
-  const started = await post(server, `/api/github/${ok.notification.id}/start`);
-  assert.deepEqual(started.json.sendId, 7);
-  assert.equal(started.json.result, "started");
+  const path = `/api/github/${ok.notification.id}/act`;
+  assert.deepEqual(await post(server, path), { status: 200, json: { result: "created", text: "この通知の話題を作りました", channelId: "topic-1" } });
+  assert.deepEqual(await post(server, path), { status: 200, json: { result: "already", text: "この通知の話題はもうあります", channelId: "topic-1" } });
+  assert.deepEqual(await post(server, path), { status: 200, json: { result: "busy", text: "この通知の話題を作っている途中です" } });
   assert.deepEqual(await post(server, "/api/github/999/act"), { status: 404, json: { error: "not_found" } });
-  assert.deepEqual(calls, [`act ${ok.notification.id}`, `start ${ok.notification.id}`, "act 999"]);
+  // Web はサーバーを指定しない
+  assert.deepEqual(calls, [`act ${ok.notification.id} -`, `act ${ok.notification.id} -`, `act ${ok.notification.id} -`, "act 999 -"]);
+});
+
+test("POST /api/github/<id>/start: 話題を作る口があっても 404 で、何も呼ばない", async (t) => {
+  const store = new GithubStore(tempDb(t), () => NOW);
+  const calls: number[] = [];
+  const handoff = {
+    act: async (id: number) => {
+      calls.push(id);
+      return { kind: "busy" } as const;
+    },
+  };
+  const server = await serve(t, githubRoutes({ cfg: { github: true }, store, status: () => STATUS, handoff }), () => NOW);
+  const added = store.addNotification(event({ threadId: "t-1", handoffOk: true }));
+  assert.ok(added.result === "added");
+  assert.deepEqual(await post(server, `/api/github/${added.notification.id}/start`), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(calls, []);
 });
 
 test("POST /api/github/<id>/act: 送り込みが無ければ 404", async (t) => {
@@ -233,13 +243,12 @@ test("POST /api/github/<id>/act: 送り込みが無ければ 404", async (t) => 
 test("POST /api/github/<id>/act: 地図に無いリポジトリ（not_local）は 200 で種類と文を返す", async (t) => {
   const store = new GithubStore(tempDb(t), () => NOW);
   const handoff = {
-    act: async () => ({ kind: "not_local", repo: "example-org/example-repo" }) as GithubHandoffResult,
-    start: async () => ({ kind: "stale" }) as GithubHandoffResult,
+    act: async () => ({ kind: "not_local", repo: "example-org/example-repo" }) as GithubTopicResult,
   };
   const server = await serve(t, githubRoutes({ cfg: { github: true }, store, status: () => STATUS, handoff }), () => NOW);
   const response = await post(server, "/api/github/1/act");
   assert.equal(response.status, 200);
   assert.equal(response.json.result, "not_local");
-  assert.equal(response.json.text, "example-org/example-repo は ~/workspace にありません（送り先を決められません）");
-  assert.equal(response.json.startable, undefined);
+  assert.equal(response.json.text, "example-org/example-repo は ~/workspace の直下にありません（話題を始める場所を決められません）");
+  assert.equal(response.json.channelId, undefined);
 });

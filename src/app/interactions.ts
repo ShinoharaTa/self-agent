@@ -7,7 +7,7 @@ import type { CcConfirmDeps } from "./commands/cc-confirm.ts";
 import type { CcTakeGetter } from "./commands/cc-take.ts";
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
-import { createGithubComponent, type GithubComponentDeps } from "./commands/github.ts";
+import { createGithubTopicComponent, type GithubTopicComponentDeps } from "./commands/github.ts";
 import { helpCommand } from "./commands/help.ts";
 import { createJobCommand, createJobComponent, type JobCommandDeps } from "./commands/job.ts";
 import { createHomeComponent, type HomeDeps } from "./commands/home.ts";
@@ -111,13 +111,14 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
  * Claude Code のボタン（cc:）は許可の要求の保留（ccPermissionButtons。SELF_AGENT_CC が有効なときだけ）と、SDK のツールの確認の [送る]・[起動する]・[やめる]
  * のための cc_sends・cc_starts・送信・起動（ccRuntime。SELF_AGENT_CC が有効なときだけ）を使う。取り込みのセレクトと確認の [取り込む][やめる]
  * （cc:takepick・cc:take）は取り込みの本体（ccTakeover。SELF_AGENT_CC が有効なときだけ）を使う。
- * #github の [対応]（gh:）は GitHub の通知の送り込み（githubHandoff。SELF_AGENT_GITHUB と SELF_AGENT_CC が有効のときだけ渡す）を使う
+ * #github の [対応]（gh:）は PR・Issue ごとの話題を作る口（githubTopics）と、[やめる] のための古い送り込み（githubHandoff）を使う
+ * （どちらも SELF_AGENT_GITHUB と SELF_AGENT_CC が有効のときだけ渡す）
  */
 export type ComponentDeps = CloseDeps &
   CcComponentDeps &
   CcConfirmDeps &
   Partial<Pick<JobCommandDeps, "jobs">> &
-  Partial<Pick<GithubComponentDeps, "githubHandoff">> &
+  Partial<Pick<GithubTopicComponentDeps, "githubTopics" | "githubHandoff">> &
   WaitDeps &
   TasksDeps &
   HomeDeps &
@@ -143,7 +144,9 @@ export function createComponents(deps: ComponentDeps): ComponentHandler[] {
     createRemindersComponent(deps),
     createCcComponent(deps),
     ...(deps.jobs === undefined ? [] : [createJobComponent({ jobs: deps.jobs, log: deps.log })]),
-    ...(deps.githubHandoff === undefined ? [] : [createGithubComponent({ githubHandoff: deps.githubHandoff, log: deps.log })]),
+    ...(deps.githubTopics === undefined
+      ? []
+      : [createGithubTopicComponent({ githubTopics: deps.githubTopics, githubHandoff: deps.githubHandoff ?? (() => undefined), log: deps.log })]),
   ];
 }
 

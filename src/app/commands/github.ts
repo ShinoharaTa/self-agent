@@ -2,10 +2,13 @@
 // [対応]（`gh:act:<通知の行 ID>`。#github の投稿に付けるのは github/poller.ts の githubActButton）は本人にだけの保留の後に app/github-handoff.ts の act を呼び、結果を本人にだけ返す。
 // セッションが無ければ [起動して送る]（`gh:start:<通知の行 ID>`）、積んだら [やめる]（`gh:cancel:<cc_sends の ID>`）をその返信に付ける。
 // 送り先・本文は押した時点の DB と地図だけで決め、custom_id から読むのは整数の ID だけ（形が違えば古い扱い）
+// 配線しているのは createGithubTopicComponent（docs/plan/terminal-handover.md の H5）: [対応] は app/github-topics.ts の act で、その PR・Issue の話題を作る。
+// [起動して送る] は何も起動せず古い扱い、[やめる] は今までどおり（前に積んだ届け待ちを取り下げる）。createGithubComponent は配線していない
 import { escapeDiscordText } from "../../discord/escape.ts";
 import type { ButtonDef, OutgoingMessage } from "../../discord/gateway.ts";
 import { ccRepliesIn } from "./cc-confirm.ts";
 import { type GithubHandoff, type GithubHandoffResult, handoffResultText } from "../github-handoff.ts";
+import { type GithubTopicHandoff, topicResultText } from "../github-topics.ts";
 import type { ComponentHandler } from "../interactions.ts";
 
 /** ボタンの custom_id の名前空間（`gh:<action>:<id>`） */
@@ -15,6 +18,8 @@ const NAMESPACE = "gh";
 export const GITHUB_STALE_TEXT = "この操作は古くなっています";
 /** [対応] を使えない（SELF_AGENT_CC が無効・起動時に準備できなかった） */
 export const GITHUB_HANDOFF_UNAVAILABLE_TEXT = "Claude Code への送り込みは使えません（SELF_AGENT_CC と git が要ります）";
+/** [対応]（話題を作る）を使えない（SELF_AGENT_CC が無効・起動時に準備できなかった） */
+export const GITHUB_TOPIC_UNAVAILABLE_TEXT = "［対応］は使えません（SELF_AGENT_CC と git が要ります）";
 /** [やめる] を押した後 */
 export const GITHUB_CANCELLED_TEXT = "対応依頼を送るのをやめました";
 
@@ -92,6 +97,54 @@ export function createGithubComponent(deps: GithubComponentDeps): ComponentHandl
         return;
       }
       await responder.update(githubResultMessage(parsed.id, result));
+    },
+  };
+}
+
+export type GithubTopicComponentDeps = {
+  /** [対応]（話題を作る）。起動時に準備できなければ undefined（押されたら本人にだけ断る） */
+  githubTopics: () => Pick<GithubTopicHandoff, "act"> | undefined;
+  /** [やめる]（前に積んだ届け待ちの取り下げ）だけに使う。無ければ本人にだけ断る */
+  githubHandoff: () => Pick<GithubHandoff, "cancel"> | undefined;
+  log: (message: string) => void;
+};
+
+/**
+ * [対応]（#github の投稿。本人にだけの保留の後に話題を作り、結果を本人にだけ返す。ボタンは付けない）・[起動して送る]（何も起動せず古い扱い）・
+ * [やめる]（今までどおり返信の書き換え）。形の違う custom_id・ボタン以外は本人にだけ「古くなっています」
+ */
+export function createGithubTopicComponent(deps: GithubTopicComponentDeps): ComponentHandler {
+  return {
+    namespace: NAMESPACE,
+    async handle(interaction, responder) {
+      const parsed = interaction.kind === "button" ? parseGithubCustomId(interaction.customId) : undefined;
+      if (parsed === undefined || parsed.action === "start") {
+        await responder.reply({ text: GITHUB_STALE_TEXT, ephemeral: true });
+        return;
+      }
+      if (parsed.action === "cancel") {
+        const handoff = deps.githubHandoff();
+        if (handoff === undefined) {
+          await responder.reply({ text: GITHUB_HANDOFF_UNAVAILABLE_TEXT, ephemeral: true });
+          return;
+        }
+        if (handoff.cancel(parsed.id) === "stale") {
+          await responder.reply({ text: GITHUB_STALE_TEXT, ephemeral: true });
+          return;
+        }
+        deps.log(`GitHub の対応依頼を取り消しました（送信 #${parsed.id}）`);
+        await responder.update({ text: GITHUB_CANCELLED_TEXT, components: [] });
+        return;
+      }
+      const topics = deps.githubTopics();
+      if (topics === undefined) {
+        await responder.reply({ text: GITHUB_TOPIC_UNAVAILABLE_TEXT, ephemeral: true });
+        return;
+      }
+      // 地図を作り話題を作るので 3 秒を超えうる。話題は押したサーバーに作る。結果は本人にだけ
+      await responder.defer(true);
+      const result = await topics.act(parsed.id, interaction.guildId ?? undefined);
+      await responder.reply({ text: topicResultText(result, "discord", escapeDiscordText), ephemeral: true });
     },
   };
 }
