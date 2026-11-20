@@ -2500,8 +2500,24 @@ test("web static: 許可を待っている間は実行中の行に「許可を�
   assert.match(chat, /const waiting = store\.runningWaitingText\(run\);\n {4}if \(waiting\) body\.push\(el\("div", \{ class: "run-waiting", text: waiting \}\)\);/);
   assert.match(api, /"許可を待っています: " \+ \(typeof w\.displayName === "string" && w\.displayName !== "" \? w\.displayName : w\.toolName\)/);
   assert.match(api, /waitingText\(prev\) !== waitingText\(turn\)/);
+  // 質問（AskUserQuestion）は「質問の答えを待っています」（progress.ts の permissionWaitingLine と同じ）
+  assert.match(api, /if \(w\.toolName === "AskUserQuestion"\) return "質問の答えを待っています";\n {4}return "許可を待っています: "/);
   const css = read("app.css");
   assert.match(css, /\n\.run-waiting \{[^}]*color: var\(--text\);/);
+});
+
+test("web static: 新しい殻: プロジェクトのセッションの許可・質問の item は terminal false。Claude Code のチャンネルの item には付かない", () => {
+  const chat = read("chat.js");
+  const body = (name: string): string => {
+    const start = chat.indexOf(`  function ${name}(`);
+    assert.ok(start >= 0, name);
+    const end = chat.indexOf("\n  }\n", start);
+    return chat.slice(start, end);
+  };
+  const session = body("cardItems");
+  assert.match(session, /const ask = ch && ch\.kind === "session" \? askRequestOf\(ch\) : null;/);
+  assert.match(session, /const item = SA\.views\.ccAsk\.item\(askSessionOf\(ch, p\), p\);\n {8}if \(item\) \{\n(?: {10}\/\/.*\n)? {10}item\.terminal = false;\n {10}items\.push\(/);
+  assert.doesNotMatch(body("ccCardItems"), /terminal/);
 });
 
 test("web static: 新しいセッションのダイアログのプロジェクト（U1b）は /api/projects/workspace から「（なし）」を先頭に、選んだら projectDir。サイドバーの行にプロジェクトの印", () => {

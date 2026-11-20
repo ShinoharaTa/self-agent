@@ -1395,7 +1395,11 @@
       const p = ask;
       if (p.state === "pending") {
         const item = SA.views.ccAsk.item(askSessionOf(ch, p), p);
-        if (item) items.push(cardBusy.has("ask:" + p.id) ? Object.assign(item, { busy: true }) : item);
+        if (item) {
+          // 端末の無いセッションなので、カードに端末と RC の説明の文を出さない
+          item.terminal = false;
+          items.push(cardBusy.has("ask:" + p.id) ? Object.assign(item, { busy: true }) : item);
+        }
       } else {
         SA.views.ccQuestionForget(p.id);
       }

@@ -1095,7 +1095,7 @@
         return true;
       },
       (err) => {
-        if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
+        if (err && err.status === 409) toast("この操作は古くなっています（もう答えられたか、時間切れです）");
         else if (err && err.status === 404) toast("この要求はもうありません");
         else if (err && err.toast) toast(err.toast, null, { level: "error", retry: () => answerCcPermission(sessionId, p, decision, tabId) });
         return false;
@@ -1210,7 +1210,7 @@
         return true;
       },
       (err) => {
-        if (err && err.status === 409) toast("この操作は古くなっています（端末か RC で答えられたか、時間切れです）");
+        if (err && err.status === 409) toast("この操作は古くなっています（もう答えられたか、時間切れです）");
         else if (err && err.status === 400) toast("答えの形が合いません");
         else if (err && err.status === 404) toast("この質問はもうありません");
         // 古い・無い要求の選んだ状態は使わない
