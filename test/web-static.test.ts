@@ -13,6 +13,9 @@ import { staticFileFor } from "../src/web/static.ts";
 const STATIC_DIR = fileURLToPath(new URL("../src/web/static/", import.meta.url));
 const files = readdirSync(STATIC_DIR);
 const read = (name: string): string => readFileSync(join(STATIC_DIR, name), "utf8");
+/** `/` が配る新しい殻と、M8b まで残す古い殻（/static/classic.html。docs/plan/web-ui-v3.md の M8） */
+const SHELL_HTML = "index.html";
+const CLASSIC_HTML = "classic.html";
 /** scripts/make-icons.ts が書くもの（docs/plan/web-ui.md §11.5） */
 const ICON_FILES = ["app-icon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-512-maskable.png"];
 
@@ -28,7 +31,7 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
     "views.js",
     "sidebar.js",
     "workbench.js",
-    "v3.html",
+    "classic.html",
     "shell.css",
     "shell.js",
     "topics.js",
@@ -37,13 +40,14 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
     "c-term.css",
     "icons-app.svg",
     "manifest.webmanifest",
-    "manifest-v3.webmanifest",
     ...ICON_FILES,
   ]) {
     assert.ok(files.includes(name), name);
   }
   assert.equal(files.includes("base.css"), false);
   assert.equal(files.includes("icons.svg"), false);
+  // 新しい殻は M8 で index.html に移した（前の名前の v3 の html と試し用の manifest は置かない。/static/ のその名前は 404）
+  assert.deepEqual(files.filter((n) => n.startsWith("v3.") || n.startsWith("manifest-v3")), []);
 });
 
 test("web static: ファイル名はサーバーが配る形（/static/<name>）だけ", () => {
@@ -86,8 +90,8 @@ test("web static: HTML に inline の script・style・style 属性・on* 属性
   }
 });
 
-test("web static: index.html の読み込みの順と既定のテーマ", () => {
-  const html = read("index.html");
+test("web static: 古い殻（classic.html）の読み込みの順と既定のテーマ", () => {
+  const html = read(CLASSIC_HTML);
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
   assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css"]);
@@ -532,8 +536,8 @@ test("web static: ui.js の confirm は SA.ask が在れば口へ描き、実行
   assert.deepEqual(log.slice(-1), ["closed:f"]);
 });
 
-test("web static: index.html に失敗のトーストの容れ物（role=alert）がある", () => {
-  const html = read("index.html");
+test("web static: 古い殻（classic.html）に失敗のトーストの容れ物（role=alert）がある", () => {
+  const html = read(CLASSIC_HTML);
   assert.match(html, /<div class="toast-stack" id="toast" role="status"[^>]*hidden><\/div>/);
   assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
 });
@@ -635,7 +639,7 @@ test("web static: 許可のカードは [許可][拒否] の 2 つ（許可 seco
 });
 
 test("web static: 本文へのスキップリンク・入力の必須とエラーの属性・z-index の変数（GUIDELINES §4・§5・§8）", () => {
-  const html = read("index.html");
+  const html = read(CLASSIC_HTML);
   // body の最初の要素がスキップリンクで、飛び先は焦点を受けられる
   assert.match(html, /<body>\s*<a class="skip-link" href="#editors">本文へ<\/a>/);
   assert.match(html, /id="editors" tabindex="-1"/);
@@ -659,7 +663,7 @@ test("web static: 本文へのスキップリンク・入力の必須とエラ�
 });
 
 test("web static: スマホの下タブは固定 4（会話・タスク・リマインド・その他）で、「その他」のシートと backdrop の容れ物がある（docs/plan/web-ui-polish.md の NAV）", () => {
-  const html = read("index.html");
+  const html = read(CLASSIC_HTML);
   const sheet = /<div[^>]*id="more-sheet"[^>]*>/.exec(html)?.[0] ?? "";
   assert.match(sheet, /role="dialog"/);
   assert.match(sheet, /aria-modal="true"/);
@@ -1357,7 +1361,7 @@ test("web static: 画面の言葉に「！」・ツール名・HTTP の番号が
     // 応答の status をそのままトーストの文にしない
     assert.doesNotMatch(js, /toast\s*=\s*res\.status|toast\([^;]*\.status\s*\+/, name);
   }
-  for (const name of ["index.html", "v3.html"]) texts.push([name, read(name).replace(/<!doctype[^>]*>/i, "")]);
+  for (const name of [CLASSIC_HTML, SHELL_HTML]) texts.push([name, read(name).replace(/<!doctype[^>]*>/i, "")]);
   for (const [name, text] of texts) {
     assert.doesNotMatch(text, /[！!]/, `${name}: ${text}`);
     assert.doesNotMatch(text, TOOL_NAME, `${name}: ${text}`);
@@ -1407,30 +1411,21 @@ function decodePng(buf: Buffer): { width: number; height: number; colorType: num
   return { width, height, colorType, pixels };
 }
 
-test("web static: index.html に manifest・favicon・theme-color 2 つ・apple の meta とアイコンがある", () => {
-  const html = read("index.html");
-  assert.match(html, /<link rel="manifest" href="\/static\/manifest\.webmanifest">/);
-  assert.match(html, /<link rel="icon" href="\/static\/app-icon\.svg" type="image\/svg\+xml">/);
-  assert.match(html, /<link rel="apple-touch-icon" href="\/static\/apple-touch-icon\.png">/);
-  assert.equal([...html.matchAll(/<meta name="theme-color" /g)].length, 2);
-  assert.match(html, /<meta name="apple-mobile-web-app-capable" content="yes">/);
-  assert.match(html, /<meta name="mobile-web-app-capable" content="yes">/);
-  assert.match(html, /<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">/);
-  assert.match(html, /<meta name="apple-mobile-web-app-title" content="self-agent">/);
-  // service worker は置かない（§11.3）
-  assert.doesNotMatch(html, /serviceWorker/);
+test("web static: 2 つの殻（index.html・classic.html）に manifest・favicon・theme-color 2 つ・apple の meta とアイコンがある", () => {
+  for (const name of [SHELL_HTML, CLASSIC_HTML]) {
+    const html = read(name);
+    assert.match(html, /<link rel="manifest" href="\/static\/manifest\.webmanifest">/, name);
+    assert.match(html, /<link rel="icon" href="\/static\/app-icon\.svg" type="image\/svg\+xml">/, name);
+    assert.match(html, /<link rel="apple-touch-icon" href="\/static\/apple-touch-icon\.png">/, name);
+    assert.equal([...html.matchAll(/<meta name="theme-color" /g)].length, 2, name);
+    assert.match(html, /<meta name="apple-mobile-web-app-capable" content="yes">/, name);
+    assert.match(html, /<meta name="mobile-web-app-capable" content="yes">/, name);
+    assert.match(html, /<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">/, name);
+    assert.match(html, /<meta name="apple-mobile-web-app-title" content="self-agent">/, name);
+    // service worker は置かない（§11.3）
+    assert.doesNotMatch(html, /serviceWorker/, name);
+  }
   for (const name of files.filter((n) => n.endsWith(".js"))) assert.doesNotMatch(read(name), /serviceWorker/, name);
-});
-
-test("web static: 試し用の manifest（v3.html だけが指す）は名前・id・start_url だけが違い、ほかは manifest.webmanifest と同じ", () => {
-  const trial = JSON.parse(read("manifest-v3.webmanifest")) as Record<string, unknown>;
-  assert.equal(trial.name, "self-agent v3");
-  assert.equal(trial.short_name, "self-agent v3");
-  assert.equal(trial.id, "/static/v3.html");
-  assert.equal(trial.start_url, "/static/v3.html");
-  const rest = (m: Record<string, unknown>) => Object.fromEntries(Object.entries(m).filter(([k]) => !["name", "short_name", "id", "start_url"].includes(k)));
-  assert.deepEqual(rest(trial), rest(JSON.parse(read("manifest.webmanifest")) as Record<string, unknown>));
-  assert.doesNotMatch(read("index.html"), /manifest-v3/);
 });
 
 test("web static: manifest は §11.1 の値で、アイコンは配るファイルを指す", () => {
@@ -1565,7 +1560,7 @@ test("web static: スマホの殻（UI-7。#250）: ≤639px はタブの帯・�
   const css = read("app.css");
   assert.match(css, /\n\.ed-ops-more,\n\.ed-back \{\n {2}display: none;\n\}/);
   assert.match(css, /\n\.wb-brand-status,\n\.wb-title-current \{\n {2}display: none;\n\}/);
-  assert.match(read("index.html"), /<span class="wb-title-current" id="title-current"><\/span>/);
+  assert.match(read(CLASSIC_HTML), /<span class="wb-title-current" id="title-current"><\/span>/);
   // [‹] は ui.js の 1 つの部品で、会話の見出し（3 つ）と views.js の toolbar が使う
   assert.match(read("ui.js"), /class: "btn btn-ghost btn-sm btn-icon-sm ed-back"[^\n]*"aria-label": "一覧へ"/);
   assert.match(read("ui.js"), /addEventListener\("click", \(\) => SA\.app\.openDrawer\(\)\)/);
@@ -1644,8 +1639,8 @@ test("web static: ≤639px のダイアログは下からのシート・トー�
   assert.match(phone, /\.wb\.is-keyboard \.wb-activity \{\n {4}display: none;/);
   assert.match(phone, /\.more-row \.icon \{\n {4}width: var\(--icon-sm\);/);
   assert.match(read("app.css"), /\n\.wb \{\n {2}display: grid;\n {2}height: var\(--vvh, 100dvh\);/);
-  assert.match(read("index.html"), /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">/);
-  assert.match(read("index.html"), /<p id="dlg-confirm-target" class="dlg-target" hidden><\/p>/);
+  assert.match(read(CLASSIC_HTML), /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">/);
+  assert.match(read(CLASSIC_HTML), /<p id="dlg-confirm-target" class="dlg-target" hidden><\/p>/);
   const wb = read("workbench.js");
   assert.match(wb, /vv\.addEventListener\("resize", fitViewport\)/);
   assert.match(wb, /root\.style\.setProperty\("--vvh", /);
@@ -1667,7 +1662,7 @@ test("web static: UI-8 のレビュー: キーボードは幅ごとの最大の�
   assert.match(ui, /dialog\.addEventListener\("pointerdown"/);
   assert.match(ui, /const close = downOutside && outside\(event\);/);
   assert.match(ui, /opts\.target\.trim\(\) !== ""/);
-  const html = read("index.html");
+  const html = read(CLASSIC_HTML);
   assert.match(html, /<dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title" aria-describedby="dlg-confirm-target dlg-confirm-body">/);
   assert.match(html, /<textarea class="textarea" id="cc-start-text" rows="3"/);
   assert.match(html, /<details class="dlg-more" id="cc-start-more">\s*<summary>詳しい設定<\/summary>\s*<div class="field">\s*<label for="cc-start-mode">/);
@@ -2538,7 +2533,7 @@ test("web static: 許可を待っている間は実行中の行に「許可を�
 });
 
 test("web static: 新しいセッションのダイアログのプロジェクト（U1b）は /api/projects/workspace から「（なし）」を先頭に、選んだら projectDir。サイドバーの行にプロジェクトの印", () => {
-  const html = read("index.html");
+  const html = read(CLASSIC_HTML);
   assert.match(html, /<div class="field" id="new-project-field" hidden>/);
   const workbench = read("workbench.js");
   assert.match(workbench, /SA\.api\.get\("\/api\/projects\/workspace", \{ quiet: true \}\)/);
@@ -2549,7 +2544,7 @@ test("web static: 新しいセッションのダイアログのプロジェク�
   assert.match(workbench, /if \(status\.cc\.unifyReady === false\) \{\n {6}\$\("new-project"\)\.disabled = true;/);
   assert.match(workbench, /\$\("new-project-hint"\)\.textContent = NEW_PROJECT_NOT_READY_HINT;/);
   assert.match(workbench, /const NEW_PROJECT_NOT_READY_HINT = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行してから再起動してください";/);
-  // index.html の説明と同じ文
+  // 古い殻（classic.html）の説明と同じ文
   assert.ok(html.includes('<p class="meta" id="new-project-hint">選ぶと Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はボタンで答えます。人格は既定だけです</p>'));
   const sidebar = read("sidebar.js");
   assert.match(sidebar, /class: "badge badge-project", title: "プロジェクトのセッション", text: ch\.projectDir\.dir/);
@@ -2573,7 +2568,7 @@ test("web static: tokens.css は変数だけで、app.css に :root の色のブ
   assert.match(app, /^ \*\/\n\n::selection \{/m);
 });
 
-// ===== 新しい殻（v3.html・shell.js・topics.js・shell.css・tokens.css。docs/plan/web-ui-v3.md の M2a） =====
+// ===== 新しい殻（index.html・shell.js・topics.js・shell.css・tokens.css。docs/plan/web-ui-v3.md の M2a） =====
 /** IIFE の直下（2 字下げ）の function の本体を切り出す */
 function fnSource(js: string, name: string): string {
   const start = js.indexOf(`\n  function ${name}(`);
@@ -2591,8 +2586,8 @@ function appKeys(js: string): string[] {
   return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
 }
 
-test("web static: v3.html の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards → c-hand → c-term、ui → api → sound → chat → views → topics → takeover → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
-  const html = read("v3.html");
+test("web static: 新しい殻（index.html）の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards → c-hand → c-term、ui → api → sound → chat → views → topics → takeover → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
+  const html = read(SHELL_HTML);
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
   assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css", "/static/shell.css", "/static/c-atoms.css", "/static/c-sheet.css", "/static/c-list.css", "/static/c-shell.css", "/static/c-talk.css", "/static/c-composer.css", "/static/c-cards.css", "/static/c-hand.css", "/static/c-term.css"]);
@@ -2605,18 +2600,13 @@ test("web static: v3.html の読み込みの順（base → tokens → app → sh
   ]);
   assert.equal([...html.matchAll(/<script\b/g)].length, scripts.length);
   assert.doesNotMatch(html, /sidebar\.js|workbench\.js/);
-  // head は、試し用の manifest とホーム画面の名前の 2 行のほかは index.html と同じ
+  // head の meta・title・manifest・icon は古い殻（classic.html）と同じ
   const headOf = (h: string) => h.slice(0, h.indexOf('<link rel="stylesheet"'));
-  const title = '<meta name="apple-mobile-web-app-title" content="self-agent v3">';
-  const manifest = '<link rel="manifest" href="/static/manifest-v3.webmanifest">';
-  assert.ok(headOf(html).includes(title), title);
-  assert.ok(headOf(html).includes(manifest), manifest);
-  const asIndex = headOf(html).replace(title, '<meta name="apple-mobile-web-app-title" content="self-agent">').replace(manifest, '<link rel="manifest" href="/static/manifest.webmanifest">');
-  assert.equal(asIndex, headOf(read("index.html")));
+  assert.equal(headOf(html), headOf(read(CLASSIC_HTML)));
 });
 
-test("web static: v3.html に inline の script・style・style 属性が無く、ui.js が引く id（dlg-confirm と中の 5 つ・toast・toast-alert・ed）と、知らせ・確認の部品の根（#v3 の外）がある", () => {
-  const html = read("v3.html");
+test("web static: 新しい殻（index.html）に inline の script・style・style 属性が無く、ui.js が引く id（dlg-confirm と中の 5 つ・toast・toast-alert・ed）と、知らせ・確認の部品の根（#v3 の外）がある", () => {
+  const html = read(SHELL_HTML);
   assert.doesNotMatch(html, /<style\b/i);
   assert.doesNotMatch(html, /\sstyle=/i);
   assert.doesNotMatch(html, /\son[a-z]+=/i);
@@ -2634,12 +2624,12 @@ test("web static: v3.html に inline の script・style・style 属性が無く�
   }
 });
 
-test("web static: v3.html に今の画面の作る口が無い", () => {
-  const html = read("v3.html");
+test("web static: 新しい殻（index.html）に古い殻の作る口が無い", () => {
+  const html = read(SHELL_HTML);
   for (const word of ["dlg-new", "dlg-cc-start", "palette"]) assert.equal(html.includes(word), false, word);
 });
 
-test("web static: 新しい殻の SA.app は今の殻と同じ名前を全部持つ", () => {
+test("web static: 新しい殻の SA.app は古い殻と同じ名前を全部持つ", () => {
   const now = appKeys(read("workbench.js"));
   assert.ok(now.length >= 20);
   assert.deepEqual(appKeys(read("shell.js")), now);
@@ -2931,7 +2921,7 @@ const v3Topic = (id: string, o: Record<string, unknown> = {}) => ({ id, title: i
 const v3Result = (topics: unknown[], o: Record<string, unknown> = {}) => ({ groups: [{ key: "g", name: "General", turns: 0, running: 0 }], topics, turns: 0, turnIds: [], rightHands: [], ...o });
 
 /**
- * v3.html の骨組みを DomNode で組み、ui.js・topics.js・shell.js を読み込む。views.info は known のタブだけを返し、
+ * 新しい殻（index.html）の骨組みを DomNode で組み、ui.js・topics.js・shell.js を読み込む。views.info は known のタブだけを返し、
  * ch: のタブは data-stick="bottom" の .ed-scroll（高さは heights。既定 1,000・見える高さ 200）と見出しの [‹] を描く
  */
 function loadShell(
@@ -3106,7 +3096,7 @@ function loadShell(
       calls.reload++;
     },
     hash: opts.hash ?? "",
-    pathname: "/static/v3.html",
+    pathname: "/",
     search: "",
     get href() {
       return "https://host" + this.pathname + this.search + this.hash;
@@ -4680,7 +4670,7 @@ test("web static: スマホで会話の列が隠れている間の [端末] の 
   assert.equal(h.rendered.length, before + 1);
 });
 
-test("web static: 接続の点と鈴は今の殻と同じラベルで、押すと状態・知らせを開く", async () => {
+test("web static: 接続の点と鈴は古い殻と同じラベルで、押すと状態・知らせを開く", async () => {
   const h = loadShell({ known: (tab) => tab === "status" || tab === "notices" });
   await h.flush();
   const conn = () => kids(kids(h.nodes.headOps)[1]!);
@@ -4962,7 +4952,7 @@ const typeIn = (box: DomNode, text: string) => {
 };
 
 test("web static: SA.app.shownChannelIds は 2 つの殻にあり、前に出ている会話のタブのチャンネルだけを返す（会話でないタブ・[端末] の間は空）", () => {
-  // 今の殻（workbench.js）: S.active で決まる
+  // 古い殻（workbench.js）: S.active で決まる
   const wb = read("workbench.js");
   const run = (active: string | null) => {
     const ctx: Record<string, unknown> = { S: { active } };
@@ -7893,8 +7883,8 @@ test("web static: 右腕のスクロールは描き直しで位置を保ち（�
   assert.equal(scroll().scrollTop, 1300);
 });
 
-test("web static: v3.html に右腕の枠と 2 つの口と見出しの入れ物と下のバーの入れ物があり、右腕のための <dialog> は無い", () => {
-  const html = read("v3.html");
+test("web static: 新しい殻（index.html）に右腕の枠と 2 つの口と見出しの入れ物と下のバーの入れ物があり、右腕のための <dialog> は無い", () => {
+  const html = read(SHELL_HTML);
   assert.match(html, /<div class="v3" id="v3" data-view="list" data-hand="closed" data-hand-mode="over">/);
   assert.match(html, /<\/main>\s*<aside class="v3-hand" id="v3-hand" aria-label="右腕">\s*<button class="btn btn-ghost btn-sm btn-icon-sm v3-hand-show" id="v3-hand-show" type="button" aria-controls="v3-hand-ed" aria-expanded="false"><\/button>\s*<div class="v3-slot" id="c-hand-root"><\/div>\s*<div class="ed v3-hand-ed" id="v3-hand-ed"><\/div>\s*<\/aside>\s*<div class="v3-hand-backdrop" id="v3-hand-backdrop" hidden><\/div>\s*<\/div>/);
   assert.match(html, /id="c-list-root"><\/div>\s*<div class="v3-slot" id="c-bottom-root"><\/div>\s*<\/nav>/);
@@ -8404,8 +8394,8 @@ const created = (o: Record<string, unknown> = {}) => ({ id: "ch:77", channelId: 
 const apiError = (status: number, code: string | null, data: Record<string, unknown> | null = null) =>
   Object.assign(new Error(status + ": " + code), { status, code, data: data ?? (code ? { error: code } : null) });
 
-test("web static: v3.html の始めるダイアログは aria-labelledby・label の for・role=alert を持ち、inline の script・style が無い", () => {
-  const html = read("v3.html");
+test("web static: 新しい殻（index.html）の始めるダイアログは aria-labelledby・label の for・role=alert を持ち、inline の script・style が無い", () => {
+  const html = read(SHELL_HTML);
   const at = html.indexOf('<dialog id="v3-start"');
   assert.ok(at > html.indexOf('<dialog id="v3-sheet"'), "#v3-sheet の後ろ");
   const dialog = html.slice(at, html.indexOf("</dialog>", at));
@@ -8421,7 +8411,7 @@ test("web static: v3.html の始めるダイアログは aria-labelledby・label
   assert.match(dialog, /<input [^>]*maxlength="100"/);
   assert.match(dialog, /<button class="btn btn-primary btn-sm" id="v3-start-ok" type="submit">始める<\/button>/);
   assert.doesNotMatch(dialog, /\sstyle=|\son[a-z]+=|<script|<style/i);
-  // [+] は topics.js が作る（v3.html の「あなたの番」の見出しには無い）
+  // [+] は topics.js が作る（index.html の「あなたの番」の見出しには無い）
   assert.equal(html.includes("v3-add"), false);
 });
 
@@ -8876,11 +8866,11 @@ const movePlace = (h: PlaceShell, id: string, label: string) => {
   h.document.getElementById("dlg-confirm-ok")!.dispatch("click");
 };
 
-test("web static: v3.html に場所の帯（v3-bar・v3-place・v3-views・v3-hand-open）が無く、見出しの入れ物 #c-top-root がある。dialog の数は M4b の後と同じ", () => {
-  const html = read("v3.html");
+test("web static: 新しい殻（index.html）に場所の帯（v3-bar・v3-place・v3-views・v3-hand-open）が無く、見出しの入れ物 #c-top-root がある。dialog の数は M4b の後と同じ", () => {
+  const html = read(SHELL_HTML);
   assert.match(html, /<div class="v3-slot" id="c-top-root"><\/div>/);
   for (const name of ["v3-bar", "v3-place", "v3-views", "v3-hand-open"]) {
-    assert.equal(html.includes(name), false, "v3.html: " + name);
+    assert.equal(html.includes(name), false, SHELL_HTML + ": " + name);
     assert.equal(read("shell.css").includes(name), false, "shell.css: " + name);
     assert.equal(read("shell.js").includes(name), false, "shell.js: " + name);
   }
@@ -9252,8 +9242,8 @@ function renderMoveCard(proposal: unknown = MOVE_PROPOSAL) {
   return { c, box, card, button };
 }
 
-test("web static: 場所を変える確認のカードは、今の画面（index.html）と新しい殻（v3.html）の両方が読む chat.js・views.js にある", () => {
-  for (const html of ["index.html", "v3.html"]) {
+test("web static: 場所を変える確認のカードは、古い殻（classic.html）と新しい殻（index.html）の両方が読む chat.js・views.js にある", () => {
+  for (const html of [CLASSIC_HTML, SHELL_HTML]) {
     const text = read(html);
     for (const js of ["chat.js", "views.js"]) assert.match(text, new RegExp(`<script src="/static/${js.replace(".", "\\.")}" defer></script>`), `${html}: ${js}`);
   }
@@ -9826,7 +9816,7 @@ test("web static: 新しい殻のキーの表は shell.js の処理と合って�
   assert.match(listJs, /key === "End"/);
 });
 
-test("web static: 今の殻の readingChannelIds は shownChannelIds と同じ関数", () => {
+test("web static: 古い殻の readingChannelIds は shownChannelIds と同じ関数", () => {
   assert.match(read("workbench.js"), /\n {4}readingChannelIds: shownChannelIds,\n/);
   assert.ok(appKeys(read("shell.js")).includes("readingChannelIds"));
 });
@@ -10838,9 +10828,9 @@ test("web static: 何もしていない札を閉じたら忘れ、開き直す�
   assert.equal(u.raw().phase, "lost");
 });
 
-test("web static: takeover.js を読むのは v3.html だけ（index.html・workbench.js は読まない・名前を出さない）", () => {
-  assert.match(read("v3.html"), /<script src="\/static\/takeover\.js" defer><\/script>/);
-  for (const name of ["index.html", "workbench.js"]) {
+test("web static: takeover.js を読むのは新しい殻（index.html）だけ（古い殻の classic.html・workbench.js は読まない・名前を出さない）", () => {
+  assert.match(read(SHELL_HTML), /<script src="\/static\/takeover\.js" defer><\/script>/);
+  for (const name of [CLASSIC_HTML, "workbench.js"]) {
     assert.doesNotMatch(read(name), /takeover\.js|SA\.takeover/, name);
   }
 });
