@@ -15,9 +15,16 @@ import {
 import {
   createPermissionBridge,
   createPermissionPoster,
+  PROJECT_PERMISSION_ABORT_MESSAGE,
   PROJECT_PERMISSION_DENY_MESSAGE,
+  PROJECT_PERMISSION_NO_SESSION_MESSAGE,
   PROJECT_PERMISSION_SUMMARY_TURN_MESSAGE,
+  PROJECT_QUESTION_DROP_MESSAGE,
+  PROJECT_QUESTION_UNREADABLE_MESSAGE,
   projectPermissionTimeoutMessage,
+  projectQuestionTimeoutMessage,
+  questionPlacesByOrigin,
+  questionResultOf,
 } from "../src/agent/permission-bridge.ts";
 import {
   createProjectProfile,
@@ -116,7 +123,7 @@ test("createProjectProfile: preset・settingSources・cwd（プロジェクト�
   assert.equal(options.cwd, join(workspaceDir, "alpha"));
   assert.equal("tools" in options, false);
   assert.equal(options.permissionMode, "acceptEdits");
-  assert.deepEqual(options.disallowedTools, ["AskUserQuestion"]);
+  assert.deepEqual(options.disallowedTools, []);
   assert.deepEqual(options.allowedTools, ["mcp__selfagent__*", "WebSearch", "WebFetch"]);
   assert.equal(options.strictMcpConfig, true);
   assert.equal(options.model, "claude-opus-5");
@@ -195,11 +202,13 @@ test("秘密の場所: Read・Glob・Grep・Edit で dataDir・CLAUDE_CONFIG_DIR
   );
 });
 
-/** 呼ぶと pending の関数を全部呼ぶ偽のタイマー */
+/** 呼ぶと pending の関数を全部呼ぶ偽のタイマー（delays は登録された待ちの長さ） */
 function fakeTimers() {
   const pending: Array<() => void> = [];
+  const delays: number[] = [];
   const timers: CcTimers = {
-    after: (fn) => {
+    after: (fn, ms) => {
+      delays.push(ms);
       let cancelled = false;
       pending.push(() => {
         if (!cancelled) fn();
@@ -209,7 +218,7 @@ function fakeTimers() {
       };
     },
   };
-  return { timers, fire: () => pending.splice(0).forEach((fn) => fn()) };
+  return { timers, delays, fire: () => pending.splice(0).forEach((fn) => fn()) };
 }
 
 async function until(check: () => boolean, label: string): Promise<void> {
@@ -220,8 +229,12 @@ async function until(check: () => boolean, label: string): Promise<void> {
   assert.fail(`待ちきれませんでした: ${label}`);
 }
 
-/** profile 付きの runner と、canUseTool を 1 回呼んで結果を残す偽の query */
-function setupBridge(t: TestContext, suggestions: unknown[] = []) {
+/** profile 付きの runner と、canUseTool を 1 回呼んで結果を残す偽の query（call は呼ぶツール。既定は Bash） */
+function setupBridge(
+  t: TestContext,
+  suggestions: unknown[] = [],
+  call: { toolName: string; input: Record<string, unknown> } = { toolName: "Bash", input: { command: "npm run check", description: "check" } },
+) {
   const { workspaceDir, home, cfg } = places(t);
   const db = tempDb(t);
   const now = () => new Date(BASE);
@@ -229,7 +242,7 @@ function setupBridge(t: TestContext, suggestions: unknown[] = []) {
   stores.topicSessions.create({ channelId: CHANNEL, guildId: GUILD, title: "self-agent の作業", categoryId: "cat-1" });
   stores.topicSessions.setProject(CHANNEL, "alpha", "default");
   const permissions = new CcPermissionStore(db, now);
-  const { timers, fire } = fakeTimers();
+  const { timers, delays, fire } = fakeTimers();
   const logs: string[] = [];
   const log = (line: string) => logs.push(line);
   const hold = new CcPermissionHold({
@@ -248,18 +261,19 @@ function setupBridge(t: TestContext, suggestions: unknown[] = []) {
     cfg: { ownerUserId: "owner-1", workspaceDir },
     home,
     holdSec: 300,
+    questionHoldSec: 900,
     history: stores.history,
     log,
   });
-  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, workspaceDir, home, log });
+  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, questionHoldSec: 900, workspaceDir, home, log });
   const results: PermissionResult[] = [];
   const signal = new AbortController();
   // 失敗したテストで保留が残らないよう、終わりに中断する
   t.after(() => signal.abort());
-  const queryFn: QueryFn = (call) =>
+  const queryFn: QueryFn = (query) =>
     (async function* () {
       yield { type: "system", subtype: "init", session_id: SESSION } as unknown as SDKMessage;
-      const result = await call.options.canUseTool!("Bash", { command: "npm run check", description: "check" }, {
+      const result = await query.options.canUseTool!(call.toolName, call.input, {
         signal: signal.signal,
         suggestions: suggestions as never,
       } as never);
@@ -276,7 +290,7 @@ function setupBridge(t: TestContext, suggestions: unknown[] = []) {
     createProjectProfile({ cfg, createMcpServer: () => mcpServer(), canUseTool: bridge, home, env: {}, log }),
   );
   const run = runner.run({ prompt: "npm run check を実行して", context: context({ permissionMode: "default" }) });
-  return { db, permissions, hold, gateway, results, run, fire, logs, signal, stores, workspaceDir };
+  return { db, permissions, hold, poster, gateway, results, run, fire, delays, logs, signal, stores, workspaceDir };
 }
 
 test("許可の橋: canUseTool で origin sdk・pending の行とカードの 1 通ができ、[許可] で allow になり 1 通を書き換える", async (t) => {
@@ -581,6 +595,7 @@ test("許可の橋: 要約のターン（purpose close・renew）はカードを
     hold: { holdExternal: () => assert.fail("保留しない") },
     poster: { post: () => assert.fail("出さない"), resolved: () => assert.fail("出さない") },
     holdSec: 300,
+    questionHoldSec: 900,
     workspaceDir,
     home,
     log: (line) => logs.push(line),
@@ -664,7 +679,7 @@ test("createProjectProfile: 要約のターン（purpose close・renew）は書�
     { prompt: "x", context: context({ permissionMode: "acceptEdits" }) },
     { sessionId: () => undefined, signal: new AbortController().signal },
   );
-  assert.deepEqual(normal.disallowedTools, ["AskUserQuestion"]);
+  assert.deepEqual(normal.disallowedTools, []);
   assert.deepEqual(normal.allowedTools, ["mcp__selfagent__*", "WebSearch", "WebFetch"]);
   assert.equal(normal.permissionMode, "acceptEdits");
 });
@@ -865,7 +880,7 @@ test("許可の橋: run の signal が鳴れば保留をやめて拒否し、待
   const { timers } = fakeTimers();
   const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store: permissions, known: () => false, now, timers, log: () => undefined });
   const poster = { post: async () => undefined, resolved: async () => undefined };
-  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, workspaceDir, home, log: () => undefined });
+  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, questionHoldSec: 900, workspaceDir, home, log: () => undefined });
   const run = new AbortController();
   const canUse = bridge(context(), () => SESSION, { signal: run.signal });
   // canUseTool の signal は鳴らない（SDK が鳴らさない場合）
@@ -890,7 +905,7 @@ test("許可の橋: 同じセッションの要求は順に（前が終わるま
   const { timers } = fakeTimers();
   const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store: permissions, known: () => false, now, timers, log: () => undefined });
   const poster = { post: async () => undefined, resolved: async () => undefined };
-  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, workspaceDir, home, log: () => undefined });
+  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, questionHoldSec: 900, workspaceDir, home, log: () => undefined });
   const run = new AbortController();
   t.after(() => run.abort());
   const OTHER = "44444444-4444-4444-8444-444444444444";
@@ -970,4 +985,356 @@ test("/api/cc/permissions/<id>/allow で sdk の行に答えると canUseTool �
   const result = await s.run;
   assert.ok(result.ok);
   assert.deepEqual(s.results, [{ behavior: "allow" }]);
+});
+
+// ---- 質問（AskUserQuestion）: 許可の橋が質問の行と 1 通にし、答えを updatedInput.answers で返す ----
+
+const ONE_QUESTION = {
+  questions: [
+    {
+      question: "どちらにしますか",
+      header: "案",
+      options: [
+        { label: "A 案", description: "a" },
+        { label: "B 案", description: "b" },
+      ],
+      multiSelect: false,
+    },
+  ],
+};
+const TWO_QUESTIONS = {
+  questions: [
+    ONE_QUESTION.questions[0]!,
+    {
+      question: "どれを入れますか",
+      header: "部品",
+      options: [{ label: "x" }, { label: "y" }, { label: "z" }],
+      multiSelect: true,
+    },
+  ],
+  metadata: { source: "test" },
+};
+const ask = (input: Record<string, unknown>) => ({ toolName: "AskUserQuestion", input });
+
+test("質問の橋: AskUserQuestion は origin sdk・pending・question_input 付きの行と質問の 1 通（ボタン cc:q:pick・cc:q:other・cc:q:drop。メンション付き・端末と RC の文なし）になり、常に許可のルールは持たない", async (t) => {
+  const s = setupBridge(t, [{ type: "addRules", rules: [{ toolName: "AskUserQuestion" }], behavior: "allow", destination: "localSettings" }], ask(ONE_QUESTION));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  assert.equal(row.origin, "sdk");
+  assert.equal(row.state, "pending");
+  assert.equal(row.toolName, "AskUserQuestion");
+  assert.deepEqual(JSON.parse(row.questionInput!), ONE_QUESTION);
+  assert.equal(row.alwaysRules, null);
+  assert.equal(row.summary, "質問 1 問: どちらにしますか");
+  const post = s.gateway.posts[0]!;
+  assert.equal(post.channelId, CHANNEL);
+  assert.equal(post.message.mentionUserId, "owner-1");
+  assert.ok(post.message.text.startsWith("Claude Code が質問しています（1 問）: "), post.message.text);
+  assert.ok(post.message.text.includes("の作業（alpha・default）"), post.message.text);
+  assert.ok(post.message.text.includes("ボタンは 15 分効きます。過ぎたら時間切れになります"), post.message.text);
+  assert.ok(!post.message.text.includes("端末") && !post.message.text.includes("RC"), post.message.text);
+  const ids = (post.message.components ?? []).flatMap((c) => (c.kind === "buttons" ? c.buttons.map((b) => b.customId) : []));
+  assert.deepEqual(ids, [`cc:q:pick:${row.id}:0:0`, `cc:q:pick:${row.id}:0:1`, `cc:q:other:${row.id}:0`, `cc:q:drop:${row.id}`]);
+  assert.ok(post.message.components?.every((c) => c.kind !== "links"));
+  s.signal.abort();
+  await s.run;
+});
+
+test("質問の橋: 1 問・1 つ選ぶ に answerQuestion で答えると allow で updatedInput は元の input + answers（問の文 → label）", async (t) => {
+  const s = setupBridge(t, [], ask(ONE_QUESTION));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  assert.deepEqual(s.hold.answerQuestion(row.id, row.requestHash, [{ labels: ["B 案"] }], "discord"), { ok: true, state: "allowed" });
+  await s.run;
+  assert.deepEqual(s.results, [{ behavior: "allow", updatedInput: { ...ONE_QUESTION, answers: { どちらにしますか: "B 案" } } }]);
+});
+
+test("質問の橋: 複数の問は answers に問の数だけキーが在り、元の input の questions・ほかのキーはそのまま", async (t) => {
+  const s = setupBridge(t, [], ask(TWO_QUESTIONS));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  assert.deepEqual(s.hold.answerQuestion(row.id, row.requestHash, [{ labels: ["A 案"] }, { labels: ["y"] }], "web"), { ok: true, state: "allowed" });
+  await s.run;
+  const result = s.results[0]!;
+  assert.equal(result.behavior, "allow");
+  const updated = (result as { updatedInput: Record<string, unknown> }).updatedInput;
+  assert.deepEqual(updated.questions, TWO_QUESTIONS.questions);
+  assert.deepEqual(updated.metadata, { source: "test" });
+  assert.deepEqual(updated.answers, { どちらにしますか: "A 案", どれを入れますか: "y" });
+});
+
+test("質問の橋: multiSelect は選択肢の順に `, ` でつないだ 1 つの文字列（選んだ順ではない）", async (t) => {
+  const s = setupBridge(t, [], ask(TWO_QUESTIONS));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  s.hold.answerQuestion(row.id, row.requestHash, [{ labels: ["A 案"] }, { labels: ["z", "x"] }], "web");
+  await s.run;
+  const updated = (s.results[0] as { updatedInput: Record<string, unknown> }).updatedInput;
+  assert.deepEqual(updated.answers, { どちらにしますか: "A 案", どれを入れますか: "x, z" });
+});
+
+test("質問の橋: その他 は打った文字列（前後の空白を落とした物）", async (t) => {
+  const s = setupBridge(t, [], ask(ONE_QUESTION));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  s.hold.answerQuestion(row.id, row.requestHash, [{ other: "  C 案にして  " }], "web");
+  await s.run;
+  assert.deepEqual(s.results, [{ behavior: "allow", updatedInput: { ...ONE_QUESTION, answers: { どちらにしますか: "C 案にして" } } }]);
+});
+
+test("質問の橋: ［やめる］（answer deny）は deny で PROJECT_QUESTION_DROP_MESSAGE、行は denied", async (t) => {
+  const s = setupBridge(t, [], ask(ONE_QUESTION));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  assert.deepEqual(s.hold.answer(row.id, "deny", "discord"), { ok: true, state: "denied" });
+  await s.run;
+  assert.deepEqual(s.results, [{ behavior: "deny", message: PROJECT_QUESTION_DROP_MESSAGE }]);
+  assert.equal(s.permissions.get(row.id)?.state, "denied");
+});
+
+test("質問の橋: 時間切れは質問の保留の長さ（900 秒）で deny（projectQuestionTimeoutMessage(900)）と expired。300 秒では切れない", async (t) => {
+  const s = setupBridge(t, [], ask(ONE_QUESTION));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  assert.deepEqual(s.delays, [900_000]);
+  s.fire();
+  await s.run;
+  assert.deepEqual(s.results, [{ behavior: "deny", message: projectQuestionTimeoutMessage(900) }]);
+  assert.equal(s.permissions.get(row.id)?.state, "expired");
+  // 許可の要求は今までどおり 300 秒
+  const bash = setupBridge(t);
+  await until(() => bash.gateway.posts.length === 1, "カード");
+  assert.deepEqual(bash.delays, [300_000]);
+  bash.signal.abort();
+  await bash.run;
+});
+
+test("質問の橋: ターンの中断は deny と released（via abort）", async (t) => {
+  const s = setupBridge(t, [], ask(ONE_QUESTION));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  s.signal.abort();
+  await s.run;
+  assert.deepEqual(s.results, [{ behavior: "deny", message: PROJECT_PERMISSION_ABORT_MESSAGE }]);
+  assert.equal(s.permissions.get(row.id)?.state, "released");
+  assert.equal(s.permissions.get(row.id)?.via, "abort");
+});
+
+test("質問の橋: 読めない形（選択肢 1 つ・問 5 個・32 KB 超）は行も 1 通も作らずに PROJECT_QUESTION_UNREADABLE_MESSAGE で deny", async (t) => {
+  const one = { questions: [{ question: "q", header: "h", options: [{ label: "only" }], multiSelect: false }] };
+  const five = { questions: Array.from({ length: 5 }, (_, i) => ({ question: `q${i}`, header: "h", options: [{ label: "a" }, { label: "b" }], multiSelect: false })) };
+  const large = { ...ONE_QUESTION, metadata: { pad: "x".repeat(33 * 1024) } };
+  for (const input of [one, five, large]) {
+    const s = setupBridge(t, [], ask(input));
+    const result = await s.run;
+    assert.ok(result.ok);
+    assert.deepEqual(s.results, [{ behavior: "deny", message: PROJECT_QUESTION_UNREADABLE_MESSAGE }]);
+    assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM cc_permissions").get()?.n, 0);
+    assert.equal(s.gateway.posts.length, 0);
+    assert.ok(s.logs.includes("プロジェクトのセッション: 読めない形の質問を出さずに断りました"));
+  }
+});
+
+test("質問の橋: 質問の行に answer allow・always は stale のまま（許可のボタンでは通らない）", async (t) => {
+  const s = setupBridge(t, [], ask(ONE_QUESTION));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  assert.deepEqual(s.hold.answer(row.id, "allow", "web", row.requestHash), { ok: false, reason: "stale" });
+  assert.deepEqual(s.hold.answer(row.id, "always", "discord"), { ok: false, reason: "stale" });
+  assert.equal(s.permissions.get(row.id)?.state, "pending");
+  s.signal.abort();
+  await s.run;
+});
+
+test("質問の橋: 要約のターンでは AskUserQuestion も行を作らずに拒否", async (t) => {
+  const { workspaceDir, home } = places(t);
+  const db = tempDb(t);
+  const permissions = new CcPermissionStore(db, () => new Date(BASE));
+  const bridge = createPermissionBridge({
+    permissions,
+    hold: { holdExternal: () => assert.fail("保留しない") },
+    poster: { post: () => assert.fail("出さない"), resolved: () => assert.fail("出さない") },
+    holdSec: 300,
+    questionHoldSec: 900,
+    workspaceDir,
+    home,
+    log: () => undefined,
+  });
+  for (const purpose of ["close", "renew"] as const) {
+    const result = await bridge(context({ purpose }), () => SESSION)("AskUserQuestion", ONE_QUESTION, { signal: new AbortController().signal } as never);
+    assert.deepEqual(result, { behavior: "deny", message: PROJECT_PERMISSION_SUMMARY_TURN_MESSAGE });
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM cc_permissions").get()?.n, 0);
+});
+
+test("質問の橋: log は「プロジェクトのセッション: 質問（#id）→ allowed（discord）」だけで、問の文・答え・セッションの ID を含まない", async (t) => {
+  const s = setupBridge(t, [], ask(ONE_QUESTION));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  s.hold.answerQuestion(row.id, row.requestHash, [{ labels: ["A 案"] }], "discord");
+  await s.run;
+  const mine = s.logs.filter((line) => line.startsWith("プロジェクトのセッション:"));
+  assert.deepEqual(mine, [`プロジェクトのセッション: 質問（#${row.id}）→ allowed（discord）`]);
+  assert.ok(s.logs.every((line) => !line.includes("どちらにしますか") && !line.includes("A 案") && !line.includes(SESSION) && !line.includes(CHANNEL)));
+  // Discord で押したものは応答で書き換える（ここでは書き換えない）
+  assert.equal(s.gateway.edits.length, 0);
+});
+
+test("質問の橋: Web の会話に「質問: …（n 問）」と「質問の答え: 答えました（Web）: …」。時間切れは「質問の結果: 時間切れ。続きを送ると訊き直します」", async (t) => {
+  {
+    const s = setupBridge(t, [], ask(ONE_QUESTION));
+    await until(() => s.gateway.posts.length === 1, "1 通");
+    const row = s.permissions.listPending()[0]!;
+    s.hold.answerQuestion(row.id, row.requestHash, [{ labels: ["A 案"] }], "web");
+    await s.run;
+    await until(() => s.gateway.edits.length === 1, "書き換え");
+    const notices = s.stores.history.list(CHANNEL, { limit: 10 }).map((h) => h.text);
+    assert.ok(notices.includes("質問: 「案」どちらにしますか（1 問）"), notices.join("|"));
+    assert.ok(notices.includes("質問の答え: 答えました（Web）:\n1. 「案」A 案"), notices.join("|"));
+    const edited = s.gateway.edits[0]!.message;
+    assert.ok(edited.text.endsWith("答えました（Web）:\n1. 「案」A 案"), edited.text);
+    assert.deepEqual(edited.components, []);
+  }
+  {
+    const s = setupBridge(t, [], ask(ONE_QUESTION));
+    await until(() => s.gateway.posts.length === 1, "1 通");
+    s.fire();
+    await s.run;
+    await until(() => s.gateway.edits.length === 1, "書き換え");
+    const notices = s.stores.history.list(CHANNEL, { limit: 10 }).map((h) => h.text);
+    assert.ok(notices.includes("質問の結果: 時間切れ。続きを送ると訊き直します"), notices.join("|"));
+    assert.ok(notices.every((text) => !text.includes("端末") && !text.includes("RC")));
+    assert.ok(s.gateway.edits[0]!.message.text.endsWith("時間切れ。続きを送ると訊き直します"));
+  }
+});
+
+test("questionResultOf: allowed で answers が無ければ deny（fail-closed）、released は deny", () => {
+  const input = { questions: [] };
+  assert.deepEqual(questionResultOf({ state: "allowed", answers: null }, input, 900), { behavior: "deny", message: PROJECT_PERMISSION_NO_SESSION_MESSAGE });
+  assert.deepEqual(questionResultOf({ state: "allowed", answers: {} }, input, 900), { behavior: "deny", message: PROJECT_PERMISSION_NO_SESSION_MESSAGE });
+  assert.deepEqual(questionResultOf({ state: "released", answers: null }, input, 900), { behavior: "deny", message: PROJECT_PERMISSION_ABORT_MESSAGE });
+  assert.deepEqual(questionResultOf({ state: "allowed_always", answers: { q: "a" } }, input, 900), { behavior: "deny", message: PROJECT_PERMISSION_ABORT_MESSAGE });
+  assert.deepEqual(questionResultOf({ state: "expired", answers: null }, input, 60), { behavior: "deny", message: projectQuestionTimeoutMessage(60) });
+  assert.deepEqual(questionResultOf({ state: "allowed", answers: { q: "a" } }, input, 900), { behavior: "allow", updatedInput: { questions: [], answers: { q: "a" } } });
+});
+
+test("questionPlacesByOrigin: origin sdk の行はプロジェクトのセッションの 1 通（題名・プロジェクト・端末の文なし）、ほかは Claude Code のチャンネルの 1 通", async (t) => {
+  const s = setupBridge(t, [], ask(ONE_QUESTION));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.listPending()[0]!;
+  const hookRow = s.permissions.add({ sessionId: "other", requestHash: "hh", toolName: "AskUserQuestion", summary: "s", permissionMode: null, state: "pending", origin: "hook" });
+  const hook = {
+    pendingQuestion: (id: number) => ({ requestHash: `hook-${id}`, questions: [] }),
+    questionStepMessage: (id: number) => ({ message: { text: `hook-${id}` }, channelId: null, messageId: null }),
+  };
+  const places = questionPlacesByOrigin({ permissions: s.permissions, sdk: s.poster, hook });
+  assert.equal(places.pendingQuestion(row.id)?.requestHash, row.requestHash);
+  assert.equal(places.pendingQuestion(row.id)?.questions[0]?.question, "どちらにしますか");
+  const step = places.stepMessage(row.id, [])!;
+  assert.ok(step.message.text.startsWith("Claude Code が質問しています（1 問）: "), step.message.text);
+  assert.ok(step.message.text.includes("の作業（alpha・default）"), step.message.text);
+  assert.ok(!step.message.text.includes("端末") && !step.message.text.includes("RC"), step.message.text);
+  assert.equal(step.channelId, CHANNEL);
+  assert.equal(places.pendingQuestion(hookRow.id)?.requestHash, `hook-${hookRow.id}`);
+  assert.equal(places.stepMessage(hookRow.id, [])?.message.text, `hook-${hookRow.id}`);
+  // 行が無ければ hook に任せる
+  assert.equal(places.stepMessage(9999, [])?.message.text, "hook-9999");
+  s.signal.abort();
+  await s.run;
+});
+
+test("poster.questionStepMessage: 2 問目の 1 通は「答え済み:」に 1 問目、メンションなし、ボタンの効く時間は質問の長さ", async (t) => {
+  const s = setupBridge(t, [], ask(TWO_QUESTIONS));
+  await until(() => s.gateway.posts.length === 1, "1 通");
+  const row = s.permissions.get(s.permissions.listPending()[0]!.id)!;
+  const step = s.poster.questionStepMessage(row.id, [{ labels: ["A 案"] }])!;
+  assert.ok(step.message.text.includes("答え済み:\n1. 「案」A 案"), step.message.text);
+  assert.ok(step.message.text.includes("質問 2/2「部品」"), step.message.text);
+  assert.ok(step.message.text.includes("ボタンは 15 分効きます。過ぎたら時間切れになります"), step.message.text);
+  assert.equal(step.message.mentionUserId, undefined);
+  assert.equal(step.message.suppressEmbeds, true);
+  assert.equal(step.channelId, row.messageChannelId);
+  assert.equal(step.messageId, row.messageId);
+  assert.ok(step.message.components?.some((c) => c.kind === "select"));
+  // pending でなければ pendingQuestion は無い・質問でない行は step も無い
+  s.signal.abort();
+  await s.run;
+  assert.equal(s.poster.pendingQuestion(row.id), undefined);
+  const bash = s.permissions.add({ sessionId: SESSION, requestHash: "b", toolName: "Bash", summary: "ls", permissionMode: null, state: "released", origin: "sdk" });
+  assert.equal(s.poster.questionStepMessage(bash.id, []), undefined);
+});
+
+test("/api/cc/permissions/<id>/answer で sdk の質問の行に答えると canUseTool は allow + answers。/deny は deny", async (t) => {
+  const { ccRoutes } = await import("../src/web/routes/cc.ts");
+  const routesOf = (s: ReturnType<typeof setupBridge>) =>
+    ccRoutes({
+      registry: { snapshot: () => ({ sessions: [], stale: false, unreadable: false, fetchedAt: undefined }) as never, touch: () => undefined },
+      panes: undefined,
+      tmux: undefined,
+      workspaceDir: s.workspaceDir,
+      home: "/h",
+      permissions: { hold: s.hold, store: s.permissions, holdSec: 300, questionHoldSec: 900 },
+    });
+  {
+    const s = setupBridge(t, [], ask(ONE_QUESTION));
+    await until(() => s.gateway.posts.length === 1, "1 通");
+    const row = s.permissions.listPending()[0]!;
+    const answer = routesOf(s).find((route) => route.method === "POST" && route.pattern.source.endsWith("\\/answer$"))!;
+    const reply = await answer.handle({ params: [String(row.id)], body: { requestHash: row.requestHash, answers: [{ labels: ["A 案"] }] } } as never);
+    assert.deepEqual(reply, { status: 200, json: { state: "allowed" } });
+    await s.run;
+    assert.deepEqual(s.results, [{ behavior: "allow", updatedInput: { ...ONE_QUESTION, answers: { どちらにしますか: "A 案" } } }]);
+  }
+  {
+    const s = setupBridge(t, [], ask(ONE_QUESTION));
+    await until(() => s.gateway.posts.length === 1, "1 通");
+    const row = s.permissions.listPending()[0]!;
+    const deny = routesOf(s).find((route) => route.method === "POST" && route.pattern.source.includes("allow|always|deny"))!;
+    const reply = await deny.handle({ params: [String(row.id), "deny"], body: { requestHash: row.requestHash } } as never);
+    assert.deepEqual(reply, { status: 200, json: { state: "denied" } });
+    await s.run;
+    assert.deepEqual(s.results, [{ behavior: "deny", message: PROJECT_QUESTION_DROP_MESSAGE }]);
+  }
+});
+
+test("再起動: recover で expired にした sdk の質問の 1 通は rewriteRecovered で「時間切れ。続きを送ると訊き直します」に書き換わり、ボタンが外れる", async (t) => {
+  const { workspaceDir, home } = places(t);
+  const db = tempDb(t);
+  const now = () => new Date(BASE);
+  const stores = createStores(db, now);
+  stores.topicSessions.create({ channelId: CHANNEL, guildId: GUILD, title: "作業", categoryId: "cat-1" });
+  stores.topicSessions.setProject(CHANNEL, "alpha", "default");
+  const permissions = new CcPermissionStore(db, now);
+  const row = permissions.add({
+    sessionId: SESSION,
+    requestHash: "h",
+    toolName: "AskUserQuestion",
+    summary: "質問 1 問: どちらにしますか",
+    permissionMode: "default",
+    state: "pending",
+    origin: "sdk",
+    questionInput: JSON.stringify(ONE_QUESTION),
+  });
+  permissions.setMessage(row.id, CHANNEL, "msg-1");
+  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store: permissions, known: () => false, now, log: () => undefined });
+  const recovered = hold.recover();
+  assert.deepEqual(recovered.map((r) => r.state), ["expired"]);
+  const gateway = new FakeGateway({ allow: ["sendMessage", "editMessage"] });
+  const poster = createPermissionPoster({
+    gateway,
+    permissions,
+    topicSessions: stores.topicSessions,
+    cfg: { ownerUserId: "owner-1", workspaceDir },
+    home,
+    holdSec: 300,
+    questionHoldSec: 900,
+    log: () => undefined,
+  });
+  poster.rewriteRecovered(recovered);
+  await until(() => gateway.edits.length === 1, "書き換え");
+  const edit = gateway.edits[0]!;
+  assert.equal(edit.channelId, CHANNEL);
+  assert.ok(edit.message.text.endsWith("時間切れ。続きを送ると訊き直します"), edit.message.text);
+  assert.ok(!edit.message.text.includes("端末") && !edit.message.text.includes("RC"), edit.message.text);
+  assert.deepEqual(edit.message.components, []);
 });

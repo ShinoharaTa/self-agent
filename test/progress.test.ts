@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { OutgoingMessage } from "../src/discord/gateway.ts";
-import { PROGRESS_INTERVAL_MS, type ProgressTimers, startProgress } from "../src/app/progress.ts";
+import { permissionWaitingLine, PROGRESS_INTERVAL_MS, type ProgressTimers, startProgress } from "../src/app/progress.ts";
 
 /** 書き換えの列を進める */
 async function flush(): Promise<void> {
@@ -129,4 +129,11 @@ test("startProgress: 許可を待ち始めたら間隔を待たずに「許可�
     "作業中…（0 分 0 秒・ツール 0 回）",
     "完了（0 分 0 秒・ツール 0 回）",
   ]);
+});
+
+test("permissionWaitingLine: AskUserQuestion は「質問の答えを待っています」。ほかは今のまま", () => {
+  assert.equal(permissionWaitingLine({ toolName: "AskUserQuestion" }), "質問の答えを待っています");
+  assert.equal(permissionWaitingLine({ toolName: "AskUserQuestion", displayName: "Ask" }), "質問の答えを待っています");
+  assert.equal(permissionWaitingLine({ toolName: "Bash" }), "許可を待っています: Bash");
+  assert.equal(permissionWaitingLine({ toolName: "Bash", displayName: "Run command" }), "許可を待っています: Run command");
 });

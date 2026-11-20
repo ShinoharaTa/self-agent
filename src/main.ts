@@ -20,6 +20,7 @@ import {
   createPermissionBridge,
   createPermissionPoster,
   denyAllPermissions,
+  questionPlacesByOrigin,
   resolvedMessageByOrigin,
 } from "./agent/permission-bridge.ts";
 import { createProjectProfile } from "./agent/project-profile.ts";
@@ -794,6 +795,7 @@ if (
     cfg: config,
     home: homedir(),
     holdSec: config.ccPermissionHoldSec,
+    questionHoldSec: config.ccQuestionHoldSec,
     ...history,
     log,
   });
@@ -803,6 +805,7 @@ if (
     hold: permissionHold,
     poster: projectPoster,
     holdSec: config.ccPermissionHoldSec,
+    questionHoldSec: config.ccQuestionHoldSec,
     workspaceDir: config.workspaceDir,
     home: homedir(),
     log,
@@ -856,6 +859,8 @@ if (
   });
   ccChannelPosts = channelPosts;
   permissionHold.listen(channelPosts);
+  // 質問の今の問と次の 1 通。プロジェクトのセッションの質問（origin sdk）はそのセッションの題名・プロジェクトで（端末の文なし）
+  const questionPlaces = questionPlacesByOrigin({ permissions: ccPermissionStore, sdk: projectPoster, hook: channelPosts });
   // 許可の要求のボタン（チャンネルの 1 通。再起動の前に #system に出したものも）。SELF_AGENT_CC_NOTIFY によらず作る
   ccPermissionButtons = {
     answer: (id, decision) => permissionHold.answer(id, decision, "discord"),
@@ -870,9 +875,9 @@ if (
     // 質問（AskUserQuestion）の選択肢のボタン・セレクト・モーダル（Q2）。途中の答えはプロセスの中
     questions: {
       flow: new CcQuestionFlow(),
-      pendingQuestion: (id) => channelPosts.pendingQuestion(id),
+      pendingQuestion: questionPlaces.pendingQuestion,
       answerQuestion: (id, requestHash, picks) => permissionHold.answerQuestion(id, requestHash, picks, "discord"),
-      stepMessage: (id, picks) => channelPosts.questionStepMessage(id, picks),
+      stepMessage: questionPlaces.stepMessage,
     },
   };
   // 受け付けを始める前に、再起動で pending のまま残った許可の要求を expired にする（出した 1 通は Discord につないだ後に書き換える）
