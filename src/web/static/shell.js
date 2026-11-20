@@ -1,5 +1,5 @@
-// 新しい殻（v3.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
-// SA.app（今の殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
+// 新しい殻（index.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
+// SA.app（古い殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
 // 下のバー（描くのは入口 c-app.js）と「ほか」の板・接続の点と鈴・絞り込み・一覧のキー、列 2 の見出し（描くのは入口 c-app.js の SA.top。[会話][端末]・場所・「…」の板。K4）、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの口（見出しの [右腕] と下のバー）・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、場所を変える（シートと確認。§6.3 の M5）
 "use strict";
 
@@ -8,7 +8,7 @@
   const { el, icon, openDialog, closeDialog } = SA.ui;
   const root = document.documentElement;
 
-  // ===== 保存（このブラウザだけ。読めなくても動く。鍵は今の殻と同じなので、テーマと書きかけは 2 つの画面で共有する） =====
+  // ===== 保存（このブラウザだけ。読めなくても動く。鍵は古い殻と同じなので、テーマと書きかけは 2 つの画面で共有する） =====
   const STORAGE_PREFIX = "self-agent-web:";
 
   function load(key, fallback) {
@@ -68,7 +68,7 @@
   const refs = {};
 
   // ===== テーマ =====
-  // ブラウザの上の帯の色（--surface。v3.html の theme-color の 2 つと同じ値）
+  // ブラウザの上の帯の色（--surface。index.html の theme-color の 2 つと同じ値）
   const THEME_COLORS = { light: "#ffffff", dark: "#11141c" };
 
   function applyTheme() {
@@ -956,7 +956,7 @@
     return title === null ? text : "（いま見ている話題: " + title + "）\n" + text;
   }
 
-  // ===== hash（#/ch/<id>・#/cc/<id>・#/tasks。今の殻と同じ形） =====
+  // ===== hash（#/ch/<id>・#/cc/<id>・#/tasks。古い殻と同じ形） =====
   function hashOf(tabId) {
     return "#/" + tabId.replace(":", "/");
   }
@@ -1110,7 +1110,7 @@
     });
     sheetOpener = opener || null;
     dialog.setAttribute("aria-label", label);
-    // 題と ×（閉じ方を見せる。今の殻の sheetHead と同じ）
+    // 題と ×（閉じ方を見せる。古い殻の sheetHead と同じ）
     const close = el("button", { class: "btn btn-ghost btn-sm btn-icon-sm sheet-close", type: "button", "aria-label": "閉じる" }, [icon("x")]);
     close.addEventListener("click", () => closeDialog(dialog));
     dialog.replaceChildren(el("div", { class: "sheet-head" }, [el("span", { class: "sheet-title", text: label }), close]), el("ul", { class: "more-list" }, rows));
@@ -1472,7 +1472,7 @@
     if (!ok) SA.list.drawBar({ turns: 0, hand: null, tabs: [], controls: "v3-hand", on: BAR_ON });
   }
 
-  // ===== 接続の点と鈴（今の殻の renderTitleStatus と同じ中身。幅によらず画面を開く） =====
+  // ===== 接続の点と鈴（古い殻の renderTitleStatus と同じ中身。幅によらず画面を開く） =====
   let connSig = null;
 
   function renderConn() {
@@ -1580,7 +1580,7 @@
     refs.conn = conn;
   }
 
-  // ===== スマホのキーボード（visualViewport。今の殻と同じ） =====
+  // ===== スマホのキーボード（visualViewport。古い殻と同じ） =====
   // iOS はキーボードで layout viewport を縮めないので、見えている高さを --vvh に書いて .v3 をそれに合わせ、ずらされたページを戻す。
   // キーボードが出ている間は .is-keyboard。--kb はキーボードの高さ（シートのダイアログを上に出す）。PC では書かない
   // キーボードの判定は幅ごとの最大の見えている高さとの差で見る。--vvt は visualViewport の上のずれ
@@ -1748,7 +1748,7 @@
       fitTop();
     });
 
-    // 最初の 1 枚の前に右腕の形を決める（v3.html の初期値は畳んだ重ねる形）。再読み込みで残った右腕の印は外す
+    // 最初の 1 枚の前に右腕の形を決める（index.html の初期値は畳んだ重ねる形）。再読み込みで残った右腕の印は外す
     dropHandMark();
     fitHand();
     applyHand();
@@ -1760,7 +1760,7 @@
       renderMain();
     }
 
-    // 設定・使用量の画面が使う（今の殻と同じ）
+    // 設定・使用量の画面が使う（古い殻と同じ）
     SA.store.load.usageDays();
     SA.store.load.usage(null);
     // api.js の polling は今のまま全部動かす（chat.js が store.channels・store.running・store.cc を使う）

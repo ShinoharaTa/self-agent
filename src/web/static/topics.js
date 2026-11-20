@@ -1,4 +1,4 @@
-// 新しい殻（v3.html）の話題の一覧（列 1）: GET /api/topics を読んで状態を持ち、描くのは部品（入口 c-app.js の SA.list.draw。
+// 新しい殻（index.html）の話題の一覧（列 1）: GET /api/topics を読んで状態を持ち、描くのは部品（入口 c-app.js の SA.list.draw。
 // docs/plan/web-ui-components.md §9 の K3。スクロール位置・焦点を保つのも入口）
 "use strict";
 

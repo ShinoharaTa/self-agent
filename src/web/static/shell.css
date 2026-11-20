@@ -1,5 +1,5 @@
 /*
- * 新しい殻（v3.html。docs/plan/web-ui-v3.md §2）の配置だけ。セレクタは .v3 で始まるものだけで、色は tokens.css の変数だけを使う。
+ * 新しい殻（index.html。docs/plan/web-ui-v3.md §2）の配置だけ。セレクタは .v3 で始まるものだけで、色は tokens.css の変数だけを使う。
  * 部品（.btn・.dot・.ed* など）は app.css のものをそのまま使う。幅の段は 639px の 1 つ（GUIDELINES §4）
  */
 
@@ -107,7 +107,7 @@
 /* ===== シート（「ほか」・見出しの […]）: 幅によらず app.css の ≤639px の .more-list・.more-row・.sheet-head と同じ見た目。PC は中央 ===== */
 .v3-sheet {
   width: min(360px, 100vw - 32px);
-  /* base.css の dialog の余白でなく、今の殻の .more-sheet と同じ */
+  /* base.css の dialog の余白でなく、古い殻の .more-sheet と同じ */
   padding: var(--space-2) 0;
 }
 

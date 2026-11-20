@@ -1,4 +1,4 @@
-// 新しい殻（v3.html）の部品の入口（docs/plan/web-ui-components.md §9 の K3）。状態は topics.js が持ち、SA.list.draw(state) で押し込む。
+// 新しい殻（index.html）の部品の入口（docs/plan/web-ui-components.md §9 の K3）。状態は topics.js が持ち、SA.list.draw(state) で押し込む。
 // 部品の c-*.js のうち document・window・SA に触るのはここだけ（見本の c-gallery.js は別）。文は部品とモデルが持ち、ここには書かない
 // 下のバーは shell.js が SA.list.drawBar(bar) で押し込む。会話の見出し（K4）は SA.top.draw(state) で、compact にするかは shell.js が SA.top.compact() で測らせて決める
 // 会話の行（K4）は chat.js が根と state を SA.talk.draw(root, state)・1 秒ごとは SA.talk.tick(root, state) で押し込む（覚えと刻みは c-talk.js の talkMouth）

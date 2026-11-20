@@ -47,7 +47,7 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
   assert.equal(files.includes("base.css"), false);
   assert.equal(files.includes("icons.svg"), false);
   // 新しい殻は M8 で index.html に移した（前の名前の v3 の html と試し用の manifest は置かない。/static/ のその名前は 404）
-  assert.deepEqual(files.filter((n) => n.startsWith("v3.") || n.startsWith("manifest-v3")), []);
+  assert.deepEqual(files.filter((n) => /(^|-)v3\./.test(n)), []);
 });
 
 test("web static: ファイル名はサーバーが配る形（/static/<name>）だけ", () => {
