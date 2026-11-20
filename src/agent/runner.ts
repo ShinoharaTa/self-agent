@@ -74,6 +74,11 @@ export type RunInput = {
   onPermissionWaiting?: (waiting: PermissionWaiting | undefined) => void;
 };
 
+/** この run に渡された話題のモデル（context.model が先、無ければ input.model）。どちらも無ければ undefined（設定のモデルで動く） */
+export function runModelOf(input: RunInput): string | undefined {
+  return input.context?.model ?? input.model;
+}
+
 /**
  * メインループの 1 ステップ（API 呼び出し 1 回）の入力側のトークン。cacheCreation1hInputTokens は cacheCreationInputTokens のうち 1 時間のキャッシュの分。
  * 出力は持たない（途中の assistant メッセージの出力は確定していない）

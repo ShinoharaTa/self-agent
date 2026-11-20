@@ -79,7 +79,7 @@
   - `ALTER TABLE sessions ADD COLUMN model TEXT`（完全な ID。NULL = 全体の既定に従う。今ある行は全部 NULL = 挙動は変わらない）
   - `CREATE TABLE place_settings (place TEXT PRIMARY KEY, label TEXT, model TEXT, updated_at TEXT NOT NULL)`（place は `general` か `p:<名前>`。`model` は key。label が担当の表示名）
   - `ALTER TABLE usage_log ADD COLUMN model TEXT`（`npm run usage` でモデルごとに見るため。今は見えない）
-- 実行: `RunContext` に `model?` を足し、`turn.ts` が `permissionMode` と同じ所で入れる。`query-options.ts` は変えない（runner（`sdk-runner.ts`）が、context に model が在るときだけ設定を写して model を差し替え、無ければ今の設定をそのまま渡す。Options を変えないため）。`project-profile.ts` は `context.model ?? cfg.model`。devlog（`sdk-runner.ts:773`）も実際に渡した値にする。`RunResult.model`（実際に渡したモデル）を足す（usage_log に記録するため）。context を渡さないターン（軽いモードの /renew の要約・場所を変える要点のターン）は `RunInput.model` で渡す（context を渡すと打ち切りの時間・手順の上限・ファイルの守りが変わるため）。
+- 実行: `RunContext` に `model?` を足し、`turn.ts` が `permissionMode` と同じ所で入れる。`query-options.ts` は変えない（runner（`sdk-runner.ts`）が、context に model が在るときだけ設定を写して model を差し替え、無ければ今の設定をそのまま渡す。Options を変えないため）。`project-profile.ts` は `runModelOf(input) ?? cfg.model`（`runner.ts` の 1 つの関数 `runModelOf`（context.model が先、無ければ `RunInput.model`）で、`project-profile.ts` の Options・`sdk-runner.ts` の Options と devlog の 3 か所が同じ値を読む）。devlog（`sdk-runner.ts:773`）も実際に渡した値にする。`RunResult.model`（実際に渡したモデル）を足す（usage_log に記録するため）。context を渡さないターン（軽いモードの /renew の要約・場所を変える要点のターン）は `RunInput.model` で渡す（context を渡すと打ち切りの時間・手順の上限・ファイルの守りが変わるため）。
 - 表示:
   - Web: 会話の見出し（`src/web/static/c-shell.js` の `topModel`。場所・モードの並び）に label。スマホは「…」の板。一覧の行には出さない（狭い）。
   - Discord: 作ったチャンネルの最初の投稿（`welcomeText`）に 1 行「担当: <表示名>（<label>）」。全体の既定のときは出さない。

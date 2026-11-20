@@ -15,7 +15,7 @@ import { ccPlacesOf, projectDir as verifiedProjectDir } from "../cc/starter.ts";
 import type { Config } from "../config.ts";
 import { hasParentSegment, resolveRealPath } from "./file-access.ts";
 import { childEnv } from "./query-options.ts";
-import { isProjectPermissionMode, type ProjectPermissionMode, type RunContext, type RunInput } from "./runner.ts";
+import { isProjectPermissionMode, type ProjectPermissionMode, type RunContext, type RunInput, runModelOf } from "./runner.ts";
 import { createWebFetchGuard, type ProfileRunState, type RunnerProfile, ownerApiKeySource } from "./sdk-runner.ts";
 import { PROJECT_APPEND } from "./system-prompt.ts";
 import { MCP_SERVER_NAME } from "./tools.ts";
@@ -279,8 +279,8 @@ export function createProjectProfile(deps: ProjectProfileDeps): RunnerProfile {
       if (cwd === undefined) throw new Error(PROJECT_DIR_INVALID_ERROR);
       const summaryTurn = context.purpose === "close" || context.purpose === "renew";
       return {
-        // 話題のモデル（sessions.model）があればそれ。無ければ全体の既定
-        model: context.model ?? cfg.model,
+        // 話題のモデル（context.model、無ければ input.model）があればそれ。無ければ全体の既定
+        model: runModelOf(input) ?? cfg.model,
         // Claude Code の preset に self-agent の文を足す。snapshot: true で会話ごとに記録して固定する（プロジェクトのセッションだけの例外。docs/plan/unify.md §5.4）
         systemPrompt: { type: "preset", preset: "claude_code", append: PROJECT_APPEND, snapshot: true },
         // ユーザー（Bot の CLAUDE_CONFIG_DIR）・プロジェクト・ローカルの設定・CLAUDE.md・skills・agents を読む
