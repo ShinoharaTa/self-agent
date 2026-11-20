@@ -365,12 +365,15 @@ const TERM_DEMOS = ["ready", "ended", "busy", "waiting", "blocked", "checking", 
 const TERM_TAKEABLE = ["ready", "ended"];
 /** ［取り込む］を押せず、下の文が在るはずの物 */
 const TERM_BLOCKED = ["busy", "waiting", "blocked", "checking", "taking", "lost"];
+/** 見本 error の下の文（c-gallery.js の見本と同じ文） */
+const TERM_ERROR = "取り込めませんでした: 端末の画面が待機の状態ではありません（書きかけ・ダイアログ・操作の直後）";
 
 /**
  * 見本の札の測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見本の名前と順・札が 1 つずつ・［取り込む］の押せる・押せないと下の文・
- * long が横にはみ出さない・スマホの RC のリンクの高さ。足りない物の文を返す
+ * error の失敗の文（role=alert）と long の文なし・long の札と題と場所が横にはみ出さない・ボタンの並び（スマホは縦で幅がそろう、PC は横 1 行。幅 320 の long は折り返してよい）・
+ * RC のリンクの高さ（スマホも PC も 44 以上）。足りない物の文を返す
  */
-function termProblems({ demos, takeable, blocked, phone, label }: { demos: string[]; takeable: string[]; blocked: string[]; phone: boolean; label: string }): string[] {
+function termProblems({ demos, takeable, blocked, error, phone, label }: { demos: string[]; takeable: string[]; blocked: string[]; error: string; phone: boolean; label: string }): string[] {
   const lines: string[] = [];
   const say = (text: string): void => void lines.push(`札（${label}）: ${text}`);
   const section = document.querySelector('[data-section="term"]');
@@ -394,15 +397,45 @@ function termProblems({ demos, takeable, blocked, phone, label }: { demos: strin
     const note = (section.querySelector(`[data-demo="${demo}"] .c-term-note`)?.textContent ?? "").trim();
     if (note === "") say(`${demo} の下の文が空`);
   }
+  // error は押せて、下の文が見本の失敗の文で role=alert。long は押せて、下の文なし
+  for (const demo of ["error", "long"]) {
+    const take = takeOf(demo);
+    if (take === null) say(`${demo} に［取り込む］が無い`);
+    else if (take.hasAttribute("aria-disabled")) say(`${demo} の［取り込む］に aria-disabled が在る`);
+  }
+  const errorNote = section.querySelector('[data-demo="error"] .c-term-note');
+  if (errorNote === null) say("error の下の文が無い");
+  else {
+    if ((errorNote.textContent ?? "").trim() !== error) say(`error の下の文が ${JSON.stringify(errorNote.textContent)}（見本の失敗の文のはず）`);
+    if (errorNote.getAttribute("role") !== "alert") say(`error の下の文の role が ${JSON.stringify(errorNote.getAttribute("role"))}（alert のはず）`);
+  }
+  if (section.querySelector('[data-demo="long"] .c-term-note') !== null) say("long に下の文が在る");
+  // long の札・題・場所の値が横にはみ出さない
   const long = section.querySelector('[data-demo="long"] .c-term');
-  if (long !== null && long.scrollWidth > long.clientWidth) say(`long の札が横にはみ出している（${long.scrollWidth} > ${long.clientWidth}）`);
-  if (phone) {
-    const links = section.querySelectorAll(".c-term-link");
-    if (links.length === 0) say("RC のリンクが 1 つも無い");
-    for (const link of links) {
-      const h = link.getBoundingClientRect().height;
-      if (h < 44) say(`${link.closest("[data-demo]")?.getAttribute("data-demo") ?? "?"} の RC のリンクの高さ ${h.toFixed(1)}。44 以上のはず`);
+  if (long === null) say("long の札が無い");
+  else {
+    const box = long.getBoundingClientRect();
+    for (const el of [long, ...long.querySelectorAll(".c-term-title, .c-term-dd")]) {
+      const r = el.getBoundingClientRect();
+      if (el.scrollWidth > el.clientWidth || r.right > box.right + 0.5) say(`long の ${el.className} が横にはみ出している（${el.scrollWidth} > ${el.clientWidth}）`);
     }
+  }
+  // ボタンの並び
+  for (const actions of section.querySelectorAll(".c-term-actions")) {
+    const demo = actions.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
+    const rects = [...actions.children].map((b) => b.getBoundingClientRect());
+    const tops = new Set(rects.map((b) => Math.round(b.top)));
+    if (phone) {
+      if (tops.size !== rects.length) say(`${demo} のボタン（${rects.length}）が縦に並んでいない`);
+      if (new Set(rects.map((b) => b.width.toFixed(1))).size !== 1) say(`${demo} のボタンの幅がそろっていない`);
+    } else if (tops.size !== 1 && demo !== "long") say(`${demo} のボタン（${rects.length}）が 1 行に並んでいない`);
+  }
+  // RC のリンクの高さ（スマホも PC も）
+  const links = section.querySelectorAll(".c-term-link");
+  if (links.length === 0) say("RC のリンクが 1 つも無い");
+  for (const link of links) {
+    const h = link.getBoundingClientRect().height;
+    if (h < 44) say(`${link.closest("[data-demo]")?.getAttribute("data-demo") ?? "?"} の RC のリンクの高さ ${h.toFixed(1)}。44 以上のはず`);
   }
   return lines;
 }
@@ -4384,9 +4417,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (lines.length > 0) throw new Error(`右腕の見本の検査で ${lines.length} 件`);
   }
 
-  /** 見本の札（termProblems）を測る。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
+  /** 見本の札（termProblems）と当たり（PC でも 44）を測る。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
   async function checkTerms(page: Page, vp: Viewport, label: string): Promise<void> {
-    const lines = await page.evaluate(termProblems, { demos: TERM_DEMOS, takeable: TERM_TAKEABLE, blocked: TERM_BLOCKED, phone: vp === "phone", label: "今の字" });
+    const lines = await page.evaluate(termProblems, { demos: TERM_DEMOS, takeable: TERM_TAKEABLE, blocked: TERM_BLOCKED, error: TERM_ERROR, phone: vp === "phone", label: "今の字" });
+    lines.push(...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-section="term"]', targets: "button, a[href]", toast: false })).map((line) => `札: ${line}`));
     for (const line of lines) logLines.push(`[${label}] ${line}`);
     if (lines.length > 0) throw new Error(`札の見本の検査で ${lines.length} 件`);
   }
