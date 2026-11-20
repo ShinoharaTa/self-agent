@@ -397,6 +397,14 @@
   display: none;
 }
 
+/* 端末のセッションの札の根。左右は会話の列と同じ余白 */
+.v3 .ed-scroll > [data-term] {
+  box-sizing: border-box;
+  max-width: var(--c-talk-max);
+  margin-inline: auto;
+  padding: var(--c-gutter);
+}
+
 /* 入力欄を部品（c-composer）が描くときの根。古い .composer-wrap と同じく縮まず、列の下に置く */
 .v3 .ed > [data-composer] {
   flex: none;
