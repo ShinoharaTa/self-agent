@@ -3154,7 +3154,7 @@ test("web components: 質問のカードの木と言葉（見出し・who・問�
 
 test("web components: QuestionCard: terminal false の注記は SESSION_QUESTION_NOTE。未指定は PERMISSION_NOTE のまま", () => {
   const noteOf = (el: El): string => textOf(kidsOf(el).at(-1) as El);
-  assert.equal(qCards.SESSION_QUESTION_NOTE, "時間が過ぎると時間切れになります。そのときは、答えを発言で送ってください。");
+  assert.equal(qCards.SESSION_QUESTION_NOTE, "時間切れになったら、答えを発言で送ってください。");
   assert.equal(noteOf(qCard(qItem({ terminal: false }))), qCards.SESSION_QUESTION_NOTE);
   assert.equal(noteOf(qCard(qItem())), qCards.PERMISSION_NOTE);
   assert.equal(noteOf(qCard(qItem({ terminal: true }))), qCards.PERMISSION_NOTE);
