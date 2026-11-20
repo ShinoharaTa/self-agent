@@ -185,6 +185,14 @@ export class TopicSessionStore {
     return Number(result.changes) > 0;
   }
 
+  /** プロジェクトのセッションの許可のモードだけを変える（/mode・Web・計画の許可。app/session-mode.ts）。project_dir の在る行を変えたら true */
+  setPermissionMode(channelId: string, mode: ProjectPermissionMode): boolean {
+    const result = this.db
+      .prepare("UPDATE sessions SET permission_mode = ? WHERE channel_id = ? AND project_dir IS NOT NULL")
+      .run(mode, channelId);
+    return Number(result.changes) === 1;
+  }
+
   /** 最終発言の時刻を今にする。行が無ければ undefined */
   touch(channelId: string): TopicSession | undefined {
     const row = this.db

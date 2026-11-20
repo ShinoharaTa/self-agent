@@ -559,3 +559,19 @@ test("openDb: v14 の DB を v15 に上げても既存のセッションは残�
   assert.equal(store.get("topic-9"), undefined);
 });
 
+
+test("TopicSessionStore: setPermissionMode は project_dir の在る行だけを変える", (t) => {
+  const store = new TopicSessionStore(tempDb(t), clock());
+  store.create({ ...NEW_SESSION, channelId: "project-1", projectDir: "alpha" });
+  store.create({ ...NEW_SESSION, channelId: "light-1" });
+
+  assert.equal(store.setPermissionMode("project-1", "plan"), true);
+  assert.deepEqual(store.projectDirOf("project-1"), { projectDir: "alpha", permissionMode: "plan" });
+  // 軽いセッション・行の無いチャンネルは変えない（軽いセッションは project_dir も NULL のまま）
+  assert.equal(store.setPermissionMode("light-1", "acceptEdits"), false);
+  assert.equal(store.projectDirOf("light-1"), undefined);
+  assert.equal(store.setPermissionMode("missing-1", "plan"), false);
+  // 場所は変えない
+  assert.equal(store.setPermissionMode("project-1", "acceptEdits"), true);
+  assert.deepEqual(store.projectDirOf("project-1"), { projectDir: "alpha", permissionMode: "acceptEdits" });
+});
