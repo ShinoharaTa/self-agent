@@ -74,7 +74,7 @@ export const PROJECT_QUESTION_DROP_MESSAGE =
   "オーナーは選択肢で答えずに閉じました。同じ質問を繰り返さず、必要なら訊きたいことを本文に書いてください";
 /** 読めない形の質問の message（行もカードも作らない） */
 export const PROJECT_QUESTION_UNREADABLE_MESSAGE =
-  "この形の質問は self-agent で出せません（問は 1〜4 個、選択肢は問ごとに 2〜8 個、問の文と選択肢の名前はそれぞれ重ならないこと）。形を直すか、本文で訊いてください";
+  "この形の質問は self-agent で出せません（問は 1〜4 個、選択肢は問ごとに 2〜8 個、問の文と選択肢の名前はそれぞれ重ならず、長すぎないこと）。形を直すか、本文で訊いてください";
 
 /** 質問の時間切れの message（holdSec 秒） */
 export function projectQuestionTimeoutMessage(holdSec: number): string {
@@ -303,7 +303,7 @@ export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPo
   QuestionPlaces & {
   /** Discord で押した sdk の行の書き換え後の 1 通とその場所（app/commands/cc.ts の応答）。行が無ければ undefined */
   resolvedMessage(id: number): { message: OutgoingMessage; channelId: string | null; messageId: string | null } | undefined;
-  /** 再起動の前に保留していて expired にした sdk の行の 1 通を書き換える（Discord につないだ後）。待たない */
+  /** 再起動の前に保留していて expired にした sdk の行の 1 通を書き換え、Web の会話に結果を書く（Discord につないだ後）。待たない */
   rewriteRecovered(rows: readonly CcPermissionRow[]): void;
 } {
   const { gateway, permissions, topicSessions, cfg, home, holdSec, questionHoldSec, history, log } = deps;
@@ -389,6 +389,12 @@ export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPo
     rewriteRecovered(rows) {
       for (const row of rows) {
         if (row.origin !== "sdk") continue;
+        // Web の会話にも結果（時間切れ）を書く（1 通を出せていて、話題のセッションの行があるチャンネルだけ）
+        const topic = row.messageChannelId === null ? undefined : topicSessions.get(row.messageChannelId);
+        if (topic !== undefined && row.messageChannelId !== null) {
+          const text = permissionResultHistoryText(row, false);
+          if (text !== undefined) record({ guildId: topic.guildId, channelId: row.messageChannelId }, text);
+        }
         void edit(row);
       }
     },
