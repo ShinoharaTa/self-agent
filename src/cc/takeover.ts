@@ -262,6 +262,8 @@ export class CcTakeover {
   private readonly droppedNoticed = new Set<number>();
   /** 起動時の前段（recoverRunning）が失敗にし、後段（recoverEffects）で確認の文を書き換える行 */
   private readonly resetPending: CcTakeoverRow[] = [];
+  /** 実行中の confirm（停止の idle が待つ。settle したら外す） */
+  private readonly confirming = new Set<Promise<unknown>>();
 
   constructor(deps: CcTakeoverDeps) {
     this.deps = deps;
@@ -345,8 +347,24 @@ export class CcTakeover {
     return this.assess(sessionId, fresh, assumePane);
   }
 
-  /** [取り込む]（§4）: 確認待ちを running にして step を順に進める。結果の文で確認の文を書き換える */
-  async confirm(id: number): Promise<CcTakeoverConfirmResult> {
+  /** [取り込む]（§4）: 確認待ちを running にして step を順に進める。結果の文で確認の文を書き換える。終わるまで idle が待つ */
+  confirm(id: number): Promise<CcTakeoverConfirmResult> {
+    const running = this.runConfirm(id);
+    const settled = running.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.confirming.add(settled);
+    void settled.then(() => this.confirming.delete(settled));
+    return running;
+  }
+
+  /** 実行中の confirm が終わるのを待つ（待っている間に増えた分も待つ。reject しない） */
+  async idle(): Promise<void> {
+    while (this.confirming.size > 0) await Promise.all([...this.confirming]);
+  }
+
+  private async runConfirm(id: number): Promise<CcTakeoverConfirmResult> {
     const { takeovers, now, log } = this.deps;
     const row = takeovers.get(id);
     if (row === undefined || row.state !== "awaiting_confirm") return { ok: false, reason: "stale" };

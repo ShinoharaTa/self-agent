@@ -1052,7 +1052,7 @@ if (
   try {
     takeover.recoverRunning();
   } catch (error) {
-    log(`Claude Code: 取り込みの起動時の片付けに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
+    log(`Claude Code: 取り込みの起動時の片付け（前段）に失敗しました（${error instanceof Error ? error.name : typeof error}）`);
   }
 }
 // cc_send・cc_start の確認の失効（10 分）。SELF_AGENT_CC が無効でも動かし、再起動の前に出した確認が残っていれば取り消して注記する
@@ -1451,6 +1451,8 @@ const lifecycle = createShutdown(
     ...(ccHookServer === undefined ? {} : { ccHookServer }),
     ccConfirmExpirer,
     ...(ccTakeoverExpirer === undefined ? {} : { ccTakeoverExpirer }),
+    // 取り込みの途中の 1 件（チャンネルの作成 → SIGTERM → 写し → commit）は猶予の中で終わるのを待つ
+    ...(ccTakeover === undefined ? {} : { ccTakeover }),
     topicProposalExpirer,
     ...(ccReplier === undefined ? {} : { ccReplier }),
     closeDb: () => db.close(),
@@ -1523,7 +1525,7 @@ if (ccTakeover !== undefined) {
   try {
     await ccTakeover.recoverEffects();
   } catch (error) {
-    log(`Claude Code: 取り込みの起動時の片付けに失敗しました（${error instanceof Error ? error.name : typeof error}）`);
+    log(`Claude Code: 取り込みの起動時の片付け（後段）に失敗しました（${error instanceof Error ? error.name : typeof error}）`);
   }
 }
 // 起動直後に 1 回（止まっていた間に過ぎた分を拾う）、以後は一定間隔で（リマインドは分の境目ごと）。停止を始めていれば何もしない
