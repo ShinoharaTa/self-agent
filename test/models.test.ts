@@ -9,13 +9,18 @@ import { labelOf, MODEL_CHOICES, modelKeys, resolveModelKey } from "../src/agent
 import { createProjectProfile } from "../src/agent/project-profile.ts";
 import { buildQueryOptions } from "../src/agent/query-options.ts";
 import type { RunContext, RunResult } from "../src/agent/runner.ts";
-import { type QueryFn, SdkAgentRunner } from "../src/agent/sdk-runner.ts";
+import { type DevLogDeps, type QueryFn, SdkAgentRunner } from "../src/agent/sdk-runner.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
+import type { ProjectSessionGate } from "../src/app/session-ops.ts";
 import { renewSession } from "../src/app/session-renew.ts";
+import { type MoveDeps, moveTopic } from "../src/app/topic-move.ts";
 import { runChannelTurn } from "../src/app/turn.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
+import type { DevLogRecord } from "../src/devlog/log.ts";
 import { PlaceSettingStore } from "../src/store/place-settings.ts";
+import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
+import { RecordingQueue } from "./helpers/recording.ts";
 import { FakeRunner } from "./helpers/runner.ts";
 
 const NOW = new Date("2026-11-20T00:00:00.000Z");
@@ -182,6 +187,38 @@ test("/renew: プロジェクトのセッションの要約のターンは conte
   assert.equal(runner.inputs[0]!.context, undefined);
 });
 
+test("場所を変える: プロジェクトのセッションの要点のターンは context に話題のモデル。NULL は入れない。軽いモードは今までどおり context なし", async (t) => {
+  const db = tempDb(t);
+  const stores = createStores(db, () => NOW);
+  const ws = tempDir(t);
+  for (const name of ["alpha", "beta"]) mkdirSync(join(ws, name));
+  const gate: ProjectSessionGate = { places: { workspaceDir: ws, protectedDirs: [], generalDir: "general-dir" }, ready: () => true };
+  stores.topicSessions.create({ channelId: "proj", guildId: GUILD, title: "作業", categoryId: "c", projectDir: "alpha", permissionMode: "default", model: "claude-haiku-4-5" });
+  stores.topicSessions.create({ channelId: "plain", guildId: GUILD, title: "既定", categoryId: "c", projectDir: "alpha", permissionMode: "default" });
+  stores.topicSessions.create({ channelId: "light", guildId: GUILD, title: "軽い", categoryId: "c", model: "claude-haiku-4-5" });
+  for (const channelId of ["proj", "plain", "light"]) stores.sessions.set(channelId, `${channelId}-session`);
+  const runner = new FakeRunner([ok("x")]);
+  const projectRunner = new FakeRunner([ok("y"), ok("z")]);
+  const deps: MoveDeps = {
+    topicSessions: stores.topicSessions,
+    moves: new TopicMoveStore(db, () => NOW),
+    turnQueue: new RecordingQueue(2),
+    turn: { runner, projectRunner, sessions: stores.sessions, seeds: stores.seeds, usage: stores.usage, log: () => undefined },
+    runningTurns: () => [],
+    projectSessions: gate,
+    history: stores.history,
+    setChannelTopic: async () => {},
+    log: () => undefined,
+  };
+  const move = (channelId: string) => moveTopic({ guildId: GUILD, channelId, place: { kind: "project", name: "beta" }, by: "web" }, deps);
+  assert.equal((await move("proj")).result, "moved");
+  assert.equal(projectRunner.inputs[0]!.context?.model, "claude-haiku-4-5");
+  assert.equal((await move("plain")).result, "moved");
+  assert.equal("model" in projectRunner.inputs[1]!.context!, false);
+  assert.equal((await move("light")).result, "moved");
+  assert.equal(runner.inputs[0]!.context, undefined);
+});
+
 const RUNNER_CFG = {
   model: "claude-opus-5",
   workDir: "/srv/work",
@@ -197,7 +234,7 @@ function mcpServer() {
 }
 
 /** 成功を 1 つ返す query で runner を作り、渡した Options を記録する */
-function lightRunner(model = RUNNER_CFG.model) {
+function lightRunner(model = RUNNER_CFG.model, devLog?: DevLogDeps) {
   const calls: Array<Parameters<QueryFn>[0]> = [];
   const runner = new SdkAgentRunner(
     { ...RUNNER_CFG, model },
@@ -210,6 +247,8 @@ function lightRunner(model = RUNNER_CFG.model) {
         yield { type: "result", subtype: "success", is_error: false, result: "はい", session_id: "s-1", duration_ms: 1 } as unknown as SDKMessage;
       })();
     },
+
+    devLog,
   );
   return { runner, calls };
 }
@@ -285,4 +324,16 @@ test("createProjectProfile: context に model が無ければ Options は今ま�
   assert.equal(picked.model, "claude-sonnet-5-5");
   assert.deepEqual(Object.keys(picked), Object.keys(plain));
   assert.deepEqual({ ...picked, model: plain.model }, plain);
+});
+
+test("SdkAgentRunner: dev ログの model は、context に model があればその値、無ければ設定のモデル", async () => {
+  const records: DevLogRecord[] = [];
+  const devLog: DevLogDeps = { sink: { write: (record) => void records.push(record) }, now: () => NOW };
+  const { runner } = lightRunner(RUNNER_CFG.model, devLog);
+  await runner.run({ prompt: "x", context: sessionContext({ model: "claude-sonnet-5-5" }) });
+  await runner.run({ prompt: "x", context: sessionContext() });
+  assert.deepEqual(
+    records.map((record) => record.model),
+    ["claude-sonnet-5-5", "claude-opus-5"],
+  );
 });

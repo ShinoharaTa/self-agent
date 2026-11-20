@@ -42,7 +42,8 @@ export type MoveOutcome =
   | { result: "failed" };
 
 export type MoveDeps = {
-  topicSessions: Pick<TopicSessionStore, "get" | "personaOf" | "projectDirOf" | "setProject" | "setRenewed" | "getCloseDraft">;
+  topicSessions: Pick<TopicSessionStore, "get" | "personaOf" | "projectDirOf" | "setProject" | "setRenewed" | "getCloseDraft"> &
+    Partial<Pick<TopicSessionStore, "modelOf">>;
   moves: Pick<TopicMoveStore, "start" | "accept" | "finish" | "fail" | "runningChannels">;
   /** 発言のターンと同じキュー（key は channelId。has は枠待ち・前のジョブ待ちの発言を busy にするため） */
   turnQueue: Pick<KeyedSerialQueue, "run" | "has">;
@@ -288,10 +289,20 @@ async function moveTurn(input: MoveInput, deps: MoveDeps, gate: ProjectSessionGa
   }
   let result: RunResult | undefined;
   if (project === undefined || turn.projectRunner !== undefined) {
+    // 要点のターンも話題のモデルで動かす（会話の途中でモデルを変えない）。軽いモードは context を渡さないので入れない
+    const model = project === undefined ? undefined : topicSessions.modelOf?.(channelId);
     const context: RunContext | undefined =
       project === undefined
         ? undefined
-        : { guildId, channelId, kind: "session", purpose: "renew", projectDir: project.projectDir, permissionMode: project.permissionMode };
+        : {
+            guildId,
+            channelId,
+            kind: "session",
+            purpose: "renew",
+            projectDir: project.projectDir,
+            permissionMode: project.permissionMode,
+            ...(model === undefined ? {} : { model }),
+          };
     const runner = project !== undefined && turn.projectRunner !== undefined ? turn.projectRunner : persona.runner;
     try {
       result = await runner.run({ prompt: MOVE_NOTE_PROMPT, sessionId, context, allowedUrls: [] });

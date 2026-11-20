@@ -17,10 +17,10 @@
 | モデルは env だけで決まる。`SELF_AGENT_MODEL`、無ければ `claude-opus-5`。文字列の検査は無い | `src/config.ts:198`・`:702` |
 | effort も env だけ（`SELF_AGENT_EFFORT`。low〜max）。未設定なら Options に入れない | `src/config.ts:6`・`:717`、`src/agent/query-options.ts:347` |
 | 軽いモード（#inbox・#tasks・今までのセッション）は `model: cfg.model` | `src/agent/query-options.ts:317` |
-| プロジェクトのセッションも `model: cfg.model`（`config` そのもの）。runner は 1 つを共有 | `src/agent/project-profile.ts:282`・`:297`、`src/main.ts:328` |
+| プロジェクトのセッションも `model: cfg.model`（`config` そのもの）。runner は 1 つを共有 | `src/agent/project-profile.ts:283`・`:297`、`src/main.ts:328` |
 | 人格は runner を 1 つずつ持ち `persona.model ?? config.model`。プロジェクトのセッションには人格を付けられない | `src/main.ts:368`、`src/app/commands/new.ts`（PROJECT_PERSONA_REPLY） |
-| モデルは**毎ターン** Options で渡す（resume のときも同じ Options に `resume` を足すだけ） | `src/agent/sdk-runner.ts:811`・`:864` |
-| **DB にモデル・effort の列は無い**（sessions・usage_log とも）。残るのは devlog だけ | `src/store/db.ts`（v3・v40 の sessions、最新 v46）、`src/agent/sdk-runner.ts:770` |
+| モデルは**毎ターン** Options で渡す（resume のときも同じ Options に `resume` を足すだけ） | `src/agent/sdk-runner.ts:814`・`:870` |
+| **DB にモデル・effort の列は無い**（sessions・usage_log とも）。残るのは devlog だけ | `src/store/db.ts`（v3・v40 の sessions、最新 v46）、`src/agent/sdk-runner.ts:773` |
 | 1 回の run に付ける情報は `RunContext`。`projectDir`・`permissionMode` が既にこの形で通っている | `src/agent/runner.ts:23-24`、`src/app/turn.ts:220`・`:235` |
 | 話題を始める道: Web・右腕・GitHub の［対応］は `startTopic` の 1 本。`/new` は `openTopicSession`。取り込みは `topicSessions.create` を直に呼ぶ | `src/app/session-ops.ts`（startTopic）、`src/main.ts:1184`、`src/cc/takeover.ts:696` |
 | 自前のツール（MCP）はプロジェクトのセッションにも同じものが付く | `src/agent/project-profile.ts:294-295` |
@@ -79,7 +79,7 @@
   - `ALTER TABLE sessions ADD COLUMN model TEXT`（完全な ID。NULL = 全体の既定に従う。今ある行は全部 NULL = 挙動は変わらない）
   - `CREATE TABLE place_settings (place TEXT PRIMARY KEY, label TEXT, model TEXT, updated_at TEXT NOT NULL)`（place は `general` か `p:<名前>`。`model` は key。label が担当の表示名）
   - `ALTER TABLE usage_log ADD COLUMN model TEXT`（`npm run usage` でモデルごとに見るため。今は見えない）
-- 実行: `RunContext` に `model?` を足し、`turn.ts` が `permissionMode` と同じ所で入れる。`query-options.ts:317` と `project-profile.ts:282` は `context.model ?? cfg.model`。devlog（`sdk-runner.ts:770`）も実際に渡した値にする。
+- 実行: `RunContext` に `model?` を足し、`turn.ts` が `permissionMode` と同じ所で入れる。`query-options.ts` は変えない（runner（`sdk-runner.ts`）が、context に model が在るときだけ設定を写して model を差し替え、無ければ今の設定をそのまま渡す。Options を変えないため）。`project-profile.ts` は `context.model ?? cfg.model`。devlog（`sdk-runner.ts:773`）も実際に渡した値にする。`RunResult.model`（実際に渡したモデル）を足す（usage_log に記録するため）。
 - 表示:
   - Web: 会話の見出し（`src/web/static/c-shell.js` の `topModel`。場所・モードの並び）に label。スマホは「…」の板。一覧の行には出さない（狭い）。
   - Discord: 作ったチャンネルの最初の投稿（`welcomeText`）に 1 行「担当: <表示名>（<label>）」。全体の既定のときは出さない。
@@ -129,7 +129,7 @@
 - 渡されたら note「モデルの指定はまだ使えないので、既定のモデルで始めました」（結果に `model` の欄は足していない。PR-2 で note を消す）。
 
 ### PR-1: 一覧・v47・実行の配線（入口なし = 挙動は変わらない）
-- 触る: 新 `src/agent/models.ts`（一覧・`resolveModelKey(key)`・`labelOf(id)`）、`src/store/db.ts`（v47。§4 の 3 つ）、`src/store/topic-sessions.ts`（`create` に `model?`、`modelOf(channelId)`、`setModel`）、新 `src/store/place-settings.ts`（get・set・list）、`src/agent/runner.ts`（`RunContext.model?`）、`src/app/turn.ts`・`src/app/session-renew.ts`（context に入れる）、`query-options.ts`・`project-profile.ts`・`sdk-runner.ts`（`context.model ?? cfg.model`）、usage の記録に model、`src/cli/usage.ts` に列。
+- 触る: 新 `src/agent/models.ts`（一覧・`resolveModelKey(key)`・`labelOf(id)`）、`src/store/db.ts`（v47。§4 の 3 つ）、`src/store/topic-sessions.ts`（`create` に `model?`、`modelOf(channelId)`、`setModel`）、新 `src/store/place-settings.ts`（get・set・list）、`src/agent/runner.ts`（`RunContext.model?`）、`src/app/turn.ts`・`src/app/session-renew.ts`・`src/app/topic-move.ts`（context に入れる）、`project-profile.ts`（`context.model ?? cfg.model`）・`sdk-runner.ts`（context に model が在るときだけ設定の model を差し替える。devlog の model）、`src/agent/runner.ts` の `RunResult.model`（実際に渡したモデル）、`src/store/usage.ts`（usage の記録に model）、`src/app/usage-report.ts`（`npm run usage` の列）。`/api/usage` の行にも `model` の欄が増える。
 - 受け入れ: v46 の DB が v47 に上がり、今ある行の `model` は NULL／`sessions.model` が NULL のセッションの Options は変更前と同じ（比較のテスト）／値のあるセッションは軽いモード・プロジェクトのセッションとも Options.model がその値／#inbox・#tasks・予約した依頼は `cfg.model`／`npm run usage` に model の列。
 - テスト: 移行、Options の同一性、偽 Runner が受けた context、人格の runner は NULL のとき人格のモデル。
 
@@ -137,6 +137,7 @@
 - 触る: `src/app/session-ops.ts`（`StartTopicInput.model?`、解決の関数 1 つ、`welcomeText` の 1 行）、`src/app/commands/new.ts`（`model` の choices。`persona` と併用は断る）、`src/app/right-hand.ts`（PR-0 の note をやめ、使えない名前は `bad_model` + key の一覧）、`src/web/routes/topics.ts`（body の `model`。重複よけのキー `:681` に足す）、`src/cc/takeover.ts`（場所の既定）。
 - 受け入れ: `/new model:sonnet` の話題は `sessions.model = claude-sonnet-5-5`／省略で場所の既定が在ればその ID、無ければ NULL／`session_open` の `model: "xxx"` は話題を作らず `bad_model`／［対応］と取り込みは場所の既定／最初の投稿に担当の行（NULL のときは無い）。
 - テスト: 解決の順の表（明示・場所・無し）、各入口 1 本ずつ。
+- **PR-2 の前に直す（会話の途中でモデルが変わらないように）**: (a) 軽いモードの /renew の要約のターン（`src/app/session-renew.ts`。context を渡さない） (b) 軽いモードの、場所を変える要点のターン（`src/app/topic-move.ts`。同じ） (c) 人格つきの話題は、runner が `context.model` を人格のモデルより先に使うので、`sessions.model` を付けない事を入口で守る（`/new` の併用を断る・`/renew model:` も断る） (d) 取り込みは端末の会話を resume するので、場所の既定を付けると最初のターンから別のモデルになりうる（受け入れ済み。今も全体の既定で同じ）。プロジェクトのセッションの /renew と要点のターンは PR-1 で入れた
 
 ### PR-3: Web（始める板・見出し）
 - 触る: `src/web/static/shell.js`（板の選択。場所を変えたら初期値も追う）、`c-shell.js`・見本（見出しの label）、`GET /api/topics` の行に `model`・`modelLabel`、`GET /api/models`（一覧と場所の既定）。
