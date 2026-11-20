@@ -7,6 +7,7 @@
 // AskUserQuestion は質問の行（question_input 付き。常に許可のルールは持たない）にして、質問の 1 通（questionNotice。ボタンは cc:q:*）を出し、
 // SELF_AGENT_CC_QUESTION_HOLD_SEC の間保留する。答えは allow + updatedInput（元の input + answers）、[やめる]・時間切れ・中断は deny。
 // 読めない形の質問は行も 1 通も作らずに deny（本文で訊かせる）。
+// ExitPlanMode（plan の計画）は普通の許可の要求で、許可したら deps の planApproved を呼ぶ（許可のモードを default に戻す）。
 // log は「プロジェクトのセッション: 許可の要求（#id）→ <状態>（<経路>）」「プロジェクトのセッション: 質問（#id）→ <状態>（<経路>）」だけ
 // （ツール名・要約・パス・問の文・答え・セッションの ID は出さない）
 import { join } from "node:path";
@@ -122,8 +123,13 @@ export type PermissionBridgeDeps = {
   /** 常に許可のファイルのルールの線引き（cc/permissions.ts の ruleContext）と、要約の相対パスの元 */
   workspaceDir: string;
   home: string;
+  /** plan のセッションで ExitPlanMode（計画）を許可した後に呼ぶ（main が許可のモードを default に戻す。app/session-mode.ts の by plan）。投げても許可の結果は変えない */
+  planApproved?: (context: RunContext) => void;
   log: (message: string) => void;
 };
+
+/** 計画を終えるツール（plan のモードで計画ができたときの許可の要求） */
+const EXIT_PLAN_TOOL = "ExitPlanMode";
 
 /** プロジェクトのセッションの cwd（`<workspaceDir>/<projectDir>`） */
 function projectCwd(workspaceDir: string, context: RunContext): string | undefined {
@@ -156,7 +162,7 @@ export function createPermissionBridge(
   sessionId: () => string | undefined,
   run?: Pick<ProfileRunState, "waitPermission" | "signal">,
 ) => CanUseTool {
-  const { permissions, hold, poster, holdSec, questionHoldSec, workspaceDir, home, log } = deps;
+  const { permissions, hold, poster, holdSec, questionHoldSec, workspaceDir, home, planApproved, log } = deps;
   /** セッション → 前の要求が閉じるまでの Promise（1 セッションに pending は 1 件のため、同じセッションの要求は順に） */
   const chains = new Map<string, Promise<unknown>>();
 
@@ -203,7 +209,16 @@ export function createPermissionBridge(
     const final = permissions.get(row.id) ?? closed;
     log(`プロジェクトのセッション: ${question ? "質問" : "許可の要求"}（#${row.id}）→ ${final.state}${final.via === null ? "" : `（${final.via}）`}`);
     await poster.resolved(context, final).catch(() => undefined);
-    return question ? questionResultOf(final, input, sec) : permissionResultOf(final, holdSec);
+    if (question) return questionResultOf(final, input, sec);
+    const result = permissionResultOf(final, holdSec);
+    if (toolName === EXIT_PLAN_TOOL && result.behavior === "allow") {
+      try {
+        planApproved?.(context);
+      } catch {
+        log("計画の許可の後のモードの戻しに失敗しました");
+      }
+    }
+    return result;
   };
 
   return (context, sessionId, run) => async (toolName, input, options) => {

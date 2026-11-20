@@ -57,6 +57,7 @@ import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
 import { type MoveDeps, recoverMoves } from "./app/topic-move.ts";
+import { MODE_PLAN_APPROVED_TEXT, type SessionModeDeps, setSessionMode } from "./app/session-mode.ts";
 import type { TurnDeps } from "./app/turn.ts";
 import { AgentsClient, resolveClaudePath, resolveTmuxPath } from "./cc/agents.ts";
 import { ClaudeDirs } from "./cc/claude-dirs.ts";
@@ -533,6 +534,18 @@ const moveDeps: MoveDeps = {
   ...(projectSessions === undefined ? {} : { projectSessions }),
   log,
 };
+// プロジェクトのセッションの許可のモード（/mode と POST /api/topics/ch:<id>/mode と計画の許可。SELF_AGENT_CC=1 のときだけ。実行中のターンは呼ばれたときに引く）
+const sessionMode: SessionModeDeps | undefined =
+  projectRunner === undefined
+    ? undefined
+    : {
+        topicSessions,
+        runningTurns: () => handler.runningTurns(),
+        turnQueue,
+        moves: topicMoves,
+        history: config.web ? historyStore : undefined,
+        log,
+      };
 // 右腕の場所を変える確認（move: のボタンと Web の「あなたの番」。期限の判定は topicMoves と同じ時計）
 const topicProposals = createTopicProposals({ move: moveDeps, moves: topicMoves, ownerPosts, now, log });
 // コマンドは既定の人格のアプリだけが登録して受ける。/close・/renew のターンはチャンネルの持ち主の人格で動かし、結果は持ち主の Bot が投稿する
@@ -565,6 +578,8 @@ const commands = createCommands({
   ...(projectSessions === undefined ? {} : { projectSessions }),
   // /move（結果は /renew と同じく持ち主の人格の形で出す）
   move: { ...moveDeps, personas, ownerPosts },
+  // /mode（SELF_AGENT_CC=1 のときだけ登録する）
+  ...(sessionMode === undefined ? {} : { mode: sessionMode }),
   log,
 });
 // GitHub の通知の [対応]（下の Claude Code の配線の後で作る。ボタンは押されたときに読む）
@@ -820,6 +835,18 @@ if (
     questionHoldSec: config.ccQuestionHoldSec,
     workspaceDir: config.workspaceDir,
     home: homedir(),
+    // 計画（ExitPlanMode）を許可したら許可のモードを default に戻し、そのチャンネルに 1 行出す（失敗は log だけ）
+    ...(sessionMode === undefined
+      ? {}
+      : {
+          planApproved: (context: RunContext) => {
+            const outcome = setSessionMode({ guildId: context.guildId, channelId: context.channelId, mode: "default", by: "plan" }, sessionMode);
+            if (outcome.result !== "changed") return;
+            ownerPosts.send(context.channelId, MODE_PLAN_APPROVED_TEXT).catch((error: unknown) => {
+              log(`計画の許可の後のモードの知らせを投稿できませんでした（${error instanceof Error ? error.name : typeof error}）`);
+            });
+          },
+        }),
     log,
   });
   const registry = new CcRegistry({
@@ -1292,6 +1319,17 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       start: topicStart,
       // POST /api/topics/ch:<id>/place（M5。/move と同じ実体。結果は持ち主の Bot でチャンネルに投稿する）
       move: { ...moveDeps, ownerPosts },
+      // POST /api/topics/ch:<id>/mode（/mode と同じ実体。変えた文は持ち主の Bot でチャンネルに投稿する）
+      ...(sessionMode === undefined
+        ? {}
+        : {
+            mode: {
+              deps: sessionMode,
+              post: async (channelId: string, text: string) => {
+                await ownerPosts.send(channelId, text);
+              },
+            },
+          }),
       // 右腕の場所を変える確認を「あなたの番」に付ける（M6e）。POST /api/topics/moves/<id>/accept・/keep（M6g）も同じ実体
       proposals: topicProposals,
       // 既読（M7）。GET /api/topics の reads と POST /api/topics/ch:<id>/read（会話の判定は /messages と同じ webChannelOf）
