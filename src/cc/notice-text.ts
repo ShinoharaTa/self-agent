@@ -255,7 +255,7 @@ export function permissionResolvedMessage(
   terminal = true,
 ): OutgoingMessage {
   const parsed = parseQuestionInput(row.questionInput);
-  if (parsed !== undefined) return questionResolvedMessage(row, parsed.questions, session, places);
+  if (parsed !== undefined) return questionResolvedMessage(row, parsed.questions, session, places, terminal);
   const rcUrl = terminal ? rcUrlOf(session) : undefined;
   return {
     text: fit(`${permissionHead(row, session, places)}\n${permissionResultLine(row, rcUrl, terminal) ?? ""}`, MESSAGE_MAX_CHARS),
@@ -282,6 +282,9 @@ const QUESTION_TEXT_MIN = 40;
 const QUESTION_MODAL_HEADER_MAX = 40;
 /** 「その他」のモーダルのテキスト入力の customId */
 export const CC_QUESTION_TEXT_INPUT_ID = "text";
+/** 端末の無い側（プロジェクトのセッション）の質問の時間切れ・停止の結果の行 */
+export const CC_QUESTION_EXPIRED_NO_TERMINAL = "時間切れ。続きを送ると訊き直します";
+export const CC_QUESTION_RELEASED_NO_TERMINAL = "ターンが止まったため、答えを待つのをやめました";
 
 /** 質問の操作の種類（`cc:q:<action>:…`。app/commands/cc-question.ts が受ける） */
 export type CcQuestionAction = "pick" | "other" | "text" | "sel" | "ok" | "drop";
@@ -348,7 +351,14 @@ export function questionNotice(
   questions: readonly CcQuestion[],
   picks: readonly CcQuestionPick[],
   session: CcNoticeSession | undefined,
-  options: { workspaceDir: string; home: string; holdSec: number; ownerUserId?: string | undefined },
+  options: {
+    workspaceDir: string;
+    home: string;
+    holdSec: number;
+    ownerUserId?: string | undefined;
+    /** false はプロジェクトのセッション（端末・RC のダイアログが無い。過ぎたら時間切れ。[RC で開く] を付けない） */
+    terminal?: boolean;
+  },
 ): OutgoingMessage {
   const step = Math.min(picks.length, questions.length - 1);
   const question = questions[step]!;
@@ -356,7 +366,10 @@ export function questionNotice(
   const head = questionHead(row, questions, session, options);
   const title = `質問 ${step + 1}/${questions.length}${headerLabel(question)}`;
   const hint = buttons ? undefined : question.multiSelect ? "（いくつでも選べます。選んでから [決める] を押してください）" : "（選んでから [決める] を押してください）";
-  const footer = `端末や RC のダイアログでも答えられます（ボタンは ${duration(options.holdSec)}効きます）`;
+  const footer =
+    options.terminal === false
+      ? `ボタンは ${duration(options.holdSec)}効きます。過ぎたら時間切れになります。このチャンネルへの発言は、答えたあとに届きます`
+      : `端末や RC のダイアログでも答えられます（ボタンは ${duration(options.holdSec)}効きます）`;
   type Sizes = { questionMax: number; withDescription: boolean; answerMax: number; labelMax: number };
   const compose = (sizes: Sizes): string => {
     const answered = picks.slice(0, step).map((pick, index) => answerLine(index, questions[index]!, questionPickText(pick), sizes.answerMax));
@@ -421,7 +434,7 @@ export function questionNotice(
     });
     rows.push({ kind: "buttons", buttons: [{ customId: questionCustomId("ok", row.id, step), label: "決める", style: "primary" }, other, drop] });
   }
-  const rcUrl = rcUrlOf(session);
+  const rcUrl = options.terminal === false ? undefined : rcUrlOf(session);
   if (rcUrl !== undefined) rows.push({ kind: "links", links: [{ label: "RC で開く", url: rcUrl }] });
   return {
     text: fit(text, limit),
@@ -437,17 +450,24 @@ export function questionModalTitle(question: CcQuestion): string {
 
 /**
  * 終わった質問の結果の行（純関数）。allowed は「答えました（Discord | Web）:」と答えた問の行、denied は「答えませんでした（…）」、
- * それ以外は許可の要求と同じ（端末か RC で答えられました・時間切れ…）。escape が false なら Markdown のエスケープをしない（Web の会話）
+ * それ以外は許可の要求と同じ（端末か RC で答えられました・時間切れ…）。escape が false なら Markdown のエスケープをしない（Web の会話）。
+ * terminal が false（プロジェクトのセッション）なら時間切れ・停止は端末と RC の文を出さない
  */
 export function questionResultLine(
   row: Pick<CcPermissionRow, "state" | "via" | "alwaysRules" | "answers">,
   questions: readonly CcQuestion[],
   rcUrl: string | undefined,
   escape = true,
+  terminal = true,
 ): string | undefined {
   const via = row.via === "discord" ? "Discord" : row.via === "web" ? "Web" : "?";
   if (row.state === "denied") return `答えませんでした（${via}）`;
-  if (row.state !== "allowed") return permissionResultLine(row, rcUrl);
+  if (row.state !== "allowed") {
+    if (terminal) return permissionResultLine(row, rcUrl);
+    if (row.state === "expired") return CC_QUESTION_EXPIRED_NO_TERMINAL;
+    if (row.state === "released") return CC_QUESTION_RELEASED_NO_TERMINAL;
+    return permissionResultLine(row, undefined, false);
+  }
   const answers = row.answers ?? {};
   const lines = questions.flatMap((question, index) => {
     const value = answers[question.question];
@@ -465,10 +485,15 @@ export function questionResolvedMessage(
   questions: readonly CcQuestion[],
   session: CcNoticeSession | undefined,
   places: { workspaceDir: string; home: string },
+  /** false はプロジェクトのセッション（端末・RC が無い。[RC で開く] を付けない） */
+  terminal = true,
 ): OutgoingMessage {
-  const rcUrl = rcUrlOf(session);
+  const rcUrl = terminal ? rcUrlOf(session) : undefined;
   return {
-    text: fit(`${questionHead(row, questions, session, places)}\n${questionResultLine(row, questions, rcUrl) ?? ""}`, MESSAGE_MAX_CHARS),
+    text: fit(
+      `${questionHead(row, questions, session, places)}\n${questionResultLine(row, questions, rcUrl, true, terminal) ?? ""}`,
+      MESSAGE_MAX_CHARS,
+    ),
     components: rcUrl === undefined ? [] : [{ kind: "links", links: [{ label: "RC で開く", url: rcUrl }] }],
   };
 }
@@ -485,11 +510,32 @@ export function questionHistoryText(questions: readonly CcQuestion[]): string {
 export function questionResultHistoryText(
   row: Pick<CcPermissionRow, "state" | "via" | "alwaysRules" | "answers">,
   questions: readonly CcQuestion[],
+  /** false はプロジェクトのセッション（questionResultLine と同じ） */
+  terminal = true,
 ): string | undefined {
-  const line = questionResultLine(row, questions, undefined, false);
+  const line = questionResultLine(row, questions, undefined, false, terminal);
   if (line === undefined) return undefined;
   // 答えた・答えなかった（Discord・Web）は「質問の答え」、端末か RC で答えられた・時間切れ・停止は「質問の結果」
   return row.state === "allowed" || row.state === "denied" ? `質問の答え: ${line}` : `質問の結果: ${line}`;
+}
+
+/** 許可の要求の Web の会話の 1 行（純関数。文字のまま）。質問の行は「質問: …（n 問）」 */
+export function permissionHistoryText(row: Pick<CcPermissionRow, "toolName" | "summary" | "questionInput">): string {
+  const parsed = parseQuestionInput(row.questionInput);
+  if (parsed !== undefined) return questionHistoryText(parsed.questions);
+  return `許可を待っています: ${row.toolName}\n${row.summary}`;
+}
+
+/** 終わった許可の要求の Web の会話の 1 行（純関数）。pending なら undefined。質問の行は「質問の答え: …」 */
+export function permissionResultHistoryText(
+  row: Pick<CcPermissionRow, "toolName" | "state" | "via" | "alwaysRules" | "questionInput" | "answers">,
+  /** false はプロジェクトのセッション（notice-text.ts の permissionResultLine と同じ） */
+  terminal = true,
+): string | undefined {
+  const parsed = parseQuestionInput(row.questionInput);
+  if (parsed !== undefined) return questionResultHistoryText(row, parsed.questions, terminal);
+  const line = permissionResultLine(row, undefined, terminal);
+  return line === undefined ? undefined : `許可の要求（${row.toolName}）: ${line}`;
 }
 
 /** 判断待ちの理由（claude agents --json の waitingFor か、hook の Notification の種類） */

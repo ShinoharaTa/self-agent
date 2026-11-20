@@ -35,12 +35,11 @@ import {
   type CcWaitBudget,
   dueWaitingViews,
   noticeSessionOf,
+  permissionHistoryText,
   permissionNotice,
   permissionResolvedMessage,
-  permissionResultLine,
-  questionHistoryText,
+  permissionResultHistoryText,
   questionNotice,
-  questionResultHistoryText,
   waitingNotice,
 } from "./notice-text.ts";
 import { CC_PROMPT_MIRROR_MAX_CHARS, type CcHookEvent } from "./hook-server.ts";
@@ -52,6 +51,8 @@ import { promptKey, singleLine } from "./sender.ts";
 
 // 比べるための形は sender.ts（unconfirmed を UserPromptSubmit で delivered に直すのと同じ）
 export { promptKey };
+// Web の会話の 1 行は notice-text.ts に移した（今までの import のため出し直す）
+export { permissionHistoryText, permissionResultHistoryText };
 
 /** self-agent が届けたものとみなす窓（届けてからこの間の UserPromptSubmit は、本文が同じなら写さない） */
 export const CC_PROMPT_MIRROR_WINDOW_MS = 30_000;
@@ -126,25 +127,6 @@ export type CcChannelPostsDeps = {
   timers?: CcTimers;
   log: (message: string) => void;
 };
-
-/** 許可の要求の Web の会話の 1 行（純関数。文字のまま）。質問の行は「質問: …（n 問）」 */
-export function permissionHistoryText(row: Pick<CcPermissionRow, "toolName" | "summary" | "questionInput">): string {
-  const parsed = parseQuestionInput(row.questionInput);
-  if (parsed !== undefined) return questionHistoryText(parsed.questions);
-  return `許可を待っています: ${row.toolName}\n${row.summary}`;
-}
-
-/** 終わった許可の要求の Web の会話の 1 行（純関数）。pending なら undefined。質問の行は「質問の答え: …」 */
-export function permissionResultHistoryText(
-  row: Pick<CcPermissionRow, "toolName" | "state" | "via" | "alwaysRules" | "questionInput" | "answers">,
-  /** false はプロジェクトのセッション（notice-text.ts の permissionResultLine と同じ） */
-  terminal = true,
-): string | undefined {
-  const parsed = parseQuestionInput(row.questionInput);
-  if (parsed !== undefined) return questionResultHistoryText(row, parsed.questions);
-  const line = permissionResultLine(row, undefined, terminal);
-  return line === undefined ? undefined : `許可の要求（${row.toolName}）: ${line}`;
-}
 
 const REAL_TIMERS: CcTimers = {
   after: (fn, ms) => {
