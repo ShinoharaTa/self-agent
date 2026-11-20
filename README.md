@@ -28,7 +28,7 @@ It runs on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/over
 | Command | What it does |
 |---|---|
 | `/setup` | Creates the categories (`self-agent`, `進行中`, `待ち`, `完了`) and the `#inbox`, `#tasks` and `#system` channels (plus `#github` when GitHub notifications are enabled). Running it again recreates only what is missing. |
-| `/new <title>` | Creates a session channel. With `project`, the session works in a project under `~/workspace` with the same setup as Claude Code (see step 10). |
+| `/new <title>` | Creates a session channel. With `project`, the session works in a project under `~/workspace` with the same setup as Claude Code (see step 10). With `model`, picks the model for that session (default: the place's default, then `SELF_AGENT_MODEL`). |
 | `/close` | Closes the session: saves a summary, lets you confirm suggested to-dos with buttons and adds them, then moves the channel to 完了. |
 | `/renew` | Summarizes the conversation and starts a fresh one (to reset a long conversation). Works in sessions, `#inbox` and `#tasks`. |
 | `/wait` | Moves the session to 待ち. Posting in that channel moves it back to 進行中. |
