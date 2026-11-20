@@ -37,6 +37,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-composer.css": /^\.c-composer(?![a-z])/,
   "c-cards.css": /^\.c-(?:cards|card|note|status)(?![a-z])/,
   "c-hand.css": /^\.c-hand(?![a-z])/,
+  "c-term.css": /^\.c-term(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
 };
 
@@ -180,8 +181,8 @@ const partProblems = (name: string, text: string): string[] => forbidden(name, t
 const entryProblems = (name: string, text: string): string[] => forbidden(name, text, ENTRY_WORDS, ENTRY_PARTS);
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-term.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -256,7 +257,7 @@ test("web components: 入口の TOP_FULL_MIN は tokens.css の --c-top-full-min
   assert.doesNotMatch(app, /v3-main/);
 });
 
-test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer・c-cards・c-hand は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer・c-cards・c-sheet・c-hand だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-cards・c-hand・c-app は hook なし）・動的な import と createPortal が無い", () => {
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer・c-cards・c-hand・c-term は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer・c-cards・c-sheet・c-hand・c-term だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-cards・c-hand・c-term・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
     "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
@@ -266,7 +267,8 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     "c-composer.js": ["./c-lib.js", "./c-atoms.js"],
     "c-cards.js": ["./c-lib.js", "./c-atoms.js"],
     "c-hand.js": ["./c-lib.js", "./c-atoms.js"],
-    "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js", "./c-composer.js", "./c-cards.js", "./c-sheet.js", "./c-hand.js"],
+    "c-term.js": ["./c-lib.js", "./c-atoms.js"],
+    "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js", "./c-composer.js", "./c-cards.js", "./c-sheet.js", "./c-hand.js", "./c-term.js"],
   };
   for (const [name, targets] of Object.entries(allowed)) {
     if (!JS_FILES.includes(name)) continue;
@@ -274,13 +276,13 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
     assert.equal(dynamic, false, `${name}: 動的な import`);
   }
-  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
+  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
-test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）とカード（c-cards）と右腕（c-hand）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄とカードと右腕は動きを付けず、会話は実行中の輪だけ。下のバーと右腕は position の fixed・absolute を書かない", () => {
+test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）とカード（c-cards）と右腕（c-hand）と札（c-term）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄とカードと右腕と札は動きを付けず、会話は実行中の輪だけ。下のバーと右腕と札は position の fixed・absolute を書かない", () => {
   // 部品は id を出さない（モデルのキー id: や data-topic=${id} は当たらない）
-  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
+  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
   // 部品の色・高さ・字を外から変えない（印の位置・PC の [+] の当たりを戻す・下のバーの並べ方だけ）
   const ALLOWED_OUTSIDE = new Set([".c-turn > .c-mark", '.c-group-head > .c-iconbtn[data-size="sm"]::after', '.c-bottom > .c-btn[data-size="sm"]']);
   // K2 の部品のクラス（c-atoms.css・c-sheet.css のセレクタに出る全部。その下のクラスも）は外から宛てない
@@ -296,7 +298,7 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
     if (/(?:^|; ?)(?:animation|transition)(?:-[a-z-]+)?\s*:/.test(rule.body)) assert.deepEqual(rule.selectors, [".c-run-spin"], `c-talk.css: ${rule.selectors.join(",")}`);
   }
   assert.equal((stripCssComments(read("c-talk.css")).match(/@keyframes\b/g) ?? []).length, 1, "c-talk.css: @keyframes は 1 つ");
-  for (const name of ["c-list.css", "c-shell.css", "c-composer.css", "c-cards.css", "c-hand.css"]) {
+  for (const name of ["c-list.css", "c-shell.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-term.css"]) {
     if (!CSS_FILES.includes(name)) continue;
     const rules = parseCss(read(name));
     for (const rule of rules) {
@@ -313,6 +315,7 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
     assert.doesNotMatch(shell, /position:\s*(?:fixed|absolute)/);
   }
   if (CSS_FILES.includes("c-hand.css")) assert.doesNotMatch(stripCssComments(read("c-hand.css")), /position:\s*(?:fixed|absolute)/, "c-hand.css");
+  if (CSS_FILES.includes("c-term.css")) assert.doesNotMatch(stripCssComments(read("c-term.css")), /position:\s*(?:fixed|absolute)/, "c-term.css");
 });
 
 test("web components: 下のバーの自前のボタンは当たりの下限を持つ", () => {
@@ -3456,4 +3459,214 @@ test("web components: ★ MODE_LABELS（サーバー）と views.js の PERMISSI
   const shellRows = [...rows.matchAll(/\["(\w+)", "([^"]*)"\]/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(shellRows, server);
   for (const [id, text] of server) assert.equal(viewTexts[id], text, id);
+});
+
+// 端末のセッションの札（c-term.js）
+const termUrl = new URL("../src/web/static/c-term.js", import.meta.url).href;
+const term = (await import(termUrl)) as Record<string, Fn> & { TERM_TEXT: Record<string, string>; termView: (raw: Obj) => Obj };
+const TERM_READY = { takeable: true, state: "idle", reason: null, text: null, rcUrl: "https://claude.ai/code/demo" };
+const termRaw = (o: Obj = {}): Obj => ({
+  title: "ログインの直し",
+  place: "self-agent",
+  rowState: "idle",
+  activity: "11/20(金) 14:05",
+  pane: true,
+  check: null,
+  checking: false,
+  failed: false,
+  phase: "idle",
+  error: null,
+  ...o,
+});
+function termRec(): { calls: string[]; on: { take: () => void; pane: () => void; recheck: () => void } } {
+  const calls: string[] = [];
+  return { calls, on: { take: () => void calls.push("take"), pane: () => void calls.push("pane"), recheck: () => void calls.push("recheck") } };
+}
+const termCard = (raw: Obj, on = termRec().on): El => one(html`<${term.TermCard} ...${term.termView(raw)} on=${on} />`);
+const termBtns = (el: El): unknown[][] => find(el, "c-btn").map((b) => [b.props["data-kind"], b.props["data-size"], textOf(b)]);
+
+test("web components: TermCard は section.c-term に題・事実の行・説明・状態の文・ボタンを決めた順で出す", () => {
+  const el = termCard(termRaw({ check: TERM_READY, error: "取り込めませんでした: 書きかけ" }));
+  assert.deepEqual([el.type, el.props.class, el.props["aria-label"], el.props["data-kind"]], ["section", "c-term", "端末のセッション", "ready"]);
+  assert.deepEqual(kidsOf(el).map((k) => [k.type, k.props.class]), [["h2", "c-term-title"], ["dl", "c-term-dl"], ["p", "c-term-lead"], ["p", "c-term-note"], ["div", "c-term-actions"]]);
+  assert.equal(textOf(find(el, "c-term-title")), "ログインの直し");
+  const rows = find(el, "c-term-row");
+  assert.deepEqual(rows.map((r) => [r.type, ...kidsOf(r).map((k) => `${k.type}.${String(k.props.class)}`)]), [["div", "dt.c-term-dt", "dd.c-term-dd"], ["div", "dt.c-term-dt", "dd.c-term-dd"], ["div", "dt.c-term-dt", "dd.c-term-dd"]]);
+  assert.deepEqual(rows.map((r) => [textOf(find(r, "c-term-dt")), textOf(find(r, "c-term-dd"))]), [["場所", "self-agent"], ["状態", "待機"], ["最後の活動", "11/20(金) 14:05"]]);
+  assert.deepEqual(rows.map((r) => find(r, "c-term-dd")[0]?.props["data-tone"]), [undefined, "muted", undefined]);
+  assert.equal(textOf(find(el, "c-term-lead")), "取り込むと、端末の Claude Code を終わらせて、続きを新しい話題で引き継ぎます。");
+  assert.equal(textOf(find(el, "c-term-note")), "取り込めませんでした: 書きかけ");
+  const actions = find(el, "c-term-actions")[0] as El;
+  assert.deepEqual(kidsOf(actions).map((k) => [k.type, k.props.class]), [["button", "c-btn"], ["button", "c-btn"], ["a", "c-term-link"]]);
+  assert.deepEqual(termBtns(el), [["primary", "md", "取り込む"], ["ghost", "md", "端末を見る"]]);
+  const link = find(el, "c-term-link")[0] as El;
+  assert.deepEqual([link.props.href, link.props.target, link.props.rel, textOf(link)], ["https://claude.ai/code/demo", "_blank", "noreferrer noopener", "RC で開く"]);
+  // 場所が無ければ「不明」
+  assert.equal(textOf(find(termCard(termRaw({ place: null, check: TERM_READY })), "c-term-dd")[0] as El), "不明");
+  // 押すと on の物を呼ぶ
+  const { calls, on } = termRec();
+  const blocked = termCard(termRaw({ check: { takeable: false, state: "idle", reason: "not_in_tmux", text: "外", rcUrl: null } }), on);
+  assert.deepEqual(termBtns(blocked), [["primary", "md", "取り込む"], ["secondary", "md", "確かめ直す"], ["ghost", "md", "端末を見る"]]);
+  for (const b of find(blocked, "c-btn")) press(b);
+  press(find(termCard(termRaw({ check: TERM_READY }), on), "c-btn")[0]);
+  assert.deepEqual(calls, ["recheck", "pane", "take"]);
+});
+
+test("web components: termView は取り込める（待機・終わった）・実行中・判断待ち・理由つきの 4 つを kind と文に分ける", () => {
+  const view = (o: Obj): Obj => term.termView(termRaw(o));
+  const ready = view({ check: TERM_READY });
+  assert.deepEqual([ready.kind, ready.state, ready.lead, ready.note, ready.take, ready.recheck, ready.rcUrl], [
+    "ready", { text: "待機", tone: "muted" }, "取り込むと、端末の Claude Code を終わらせて、続きを新しい話題で引き継ぎます。", null, { disabled: false, busy: false, reason: null }, false, "https://claude.ai/code/demo",
+  ]);
+  assert.deepEqual(ready.when, { label: "最後の活動", text: "11/20(金) 14:05" });
+  const ended = view({ rowState: null, pane: false, activity: "11/20(金) 13:40", check: { takeable: true, state: "ended", reason: null, text: null, rcUrl: null } });
+  assert.deepEqual([ended.kind, ended.state, ended.when, ended.lead, ended.pane, ended.rcUrl], [
+    "ready", { text: "終わりました", tone: "muted" }, { label: "終わった時刻", text: "11/20(金) 13:40" }, "端末の Claude Code は終わっています。取り込むと、続きを新しい話題で引き継ぎます。", null, null,
+  ]);
+  const busy = view({ rowState: "running", check: { takeable: false, state: "running", reason: "busy", text: "実行中です。終わると取り込めます", rcUrl: null } });
+  assert.deepEqual([busy.kind, busy.state, busy.lead, busy.note, busy.take, busy.recheck], [
+    "busy", { text: "実行中", tone: "accent" }, null, { text: "実行中です。終わると取り込めます", tone: "plain", busy: false }, { disabled: true, busy: false, reason: "実行中です。終わると取り込めます" }, false,
+  ]);
+  const waiting = view({ rowState: "waiting", check: { takeable: false, state: "waiting", reason: "waiting", text: "判断待ちです。端末か RC で答えると取り込めます", rcUrl: null } });
+  assert.deepEqual([waiting.kind, waiting.state, waiting.note, waiting.recheck], ["waiting", { text: "判断待ち", tone: "warning" }, { text: "判断待ちです。端末か RC で答えると取り込めます", tone: "plain", busy: false }, false]);
+  const blocked = view({ check: { takeable: false, state: "idle", reason: "not_in_tmux", text: "このセッションは外から終わらせません。終わらせてから取り込めます", rcUrl: null } });
+  assert.deepEqual([blocked.kind, blocked.note, blocked.take, blocked.recheck], [
+    "blocked", { text: "このセッションは外から終わらせません。終わらせてから取り込めます", tone: "plain", busy: false }, { disabled: true, busy: false, reason: "このセッションは外から終わらせません。終わらせてから取り込めます" }, true,
+  ]);
+  // 理由の文が無ければ「今は取り込めません」。状態が知らない物は「不明」
+  const bare = view({ rowState: null, check: { takeable: false, state: "unknown", reason: "gone", text: null, rcUrl: null } });
+  assert.deepEqual([bare.kind, bare.state, bare.note], ["blocked", { text: "不明", tone: "muted" }, { text: "今は取り込めません", tone: "plain", busy: false }]);
+  // 読めなかった（failed）は blocked・確かめ直す
+  const failed = view({ failed: true });
+  assert.deepEqual([failed.kind, failed.note, failed.recheck, failed.rcUrl], ["blocked", { text: "取り込めるか確かめられませんでした。", tone: "error", busy: false }, true, null]);
+});
+
+test("web components: termView は確かめている間・取り込みの途中・結果が分からない間は［取り込む］を押せなくする", () => {
+  const view = (o: Obj): Obj => term.termView(termRaw(o));
+  const first = view({});
+  assert.deepEqual([first.kind, first.note, first.take, first.lead], ["checking", { text: "取り込めるか確かめています…", tone: "plain", busy: true }, { disabled: true, busy: false, reason: "取り込めるか確かめています…" }, null]);
+  const again = view({ check: TERM_READY, checking: true });
+  assert.deepEqual([again.kind, again.take], ["checking", { disabled: true, busy: false, reason: "取り込めるか確かめています…" }]);
+  const proposing = view({ check: TERM_READY, phase: "proposing" });
+  assert.deepEqual([proposing.kind, proposing.take], ["ready", { disabled: true, busy: true, reason: null }]);
+  const asking = view({ check: TERM_READY, phase: "asking" });
+  assert.deepEqual([asking.kind, asking.take], ["ready", { disabled: true, busy: false, reason: null }]);
+  const taking = view({ check: TERM_READY, phase: "taking" });
+  assert.deepEqual([taking.kind, taking.note, taking.take, taking.pane, taking.lead, taking.recheck], [
+    "taking", { text: "取り込んでいます…", tone: "plain", busy: true }, { disabled: true, busy: true, reason: "取り込んでいます…" }, { disabled: true, reason: "取り込んでいます…" }, null, false,
+  ]);
+  const lost = view({ check: TERM_READY, phase: "lost" });
+  assert.deepEqual([lost.kind, lost.note, lost.take, lost.pane, lost.recheck], [
+    "lost", { text: "結果を確かめられませんでした。取り込みは続いているかもしれません。", tone: "error", busy: false }, { disabled: true, busy: false, reason: "結果を確かめられませんでした。取り込みは続いているかもしれません。" }, { disabled: false, reason: null }, true,
+  ]);
+  // 途中の形は失敗の文より先
+  assert.equal((view({ check: TERM_READY, phase: "taking", error: "失敗" }).note as Obj).text, "取り込んでいます…");
+  assert.equal((view({ check: TERM_READY, phase: "lost", error: "失敗" }).note as Obj).text, "結果を確かめられませんでした。取り込みは続いているかもしれません。");
+});
+
+test("web components: termView は確かめ直している間、状態を一覧の行から出す", () => {
+  const view = (o: Obj): Obj => term.termView(termRaw(o));
+  assert.deepEqual(view({ rowState: "running", check: TERM_READY, checking: true }).state, { text: "実行中", tone: "accent" });
+  assert.deepEqual(view({ rowState: "running", check: TERM_READY }).state, { text: "待機", tone: "muted" });
+  // 行が無ければ前の判定の状態、それも無ければ不明
+  assert.deepEqual(view({ rowState: null, check: { ...TERM_READY, state: "ended" }, checking: true }).state, { text: "終わりました", tone: "muted" });
+  assert.deepEqual(view({ rowState: null, checking: true }).state, { text: "不明", tone: "muted" });
+  // 時刻の見出しも出す状態に合わせる
+  assert.deepEqual(view({ rowState: "idle", check: { ...TERM_READY, state: "ended" }, checking: true }).when, { label: "最後の活動", text: "11/20(金) 14:05" });
+});
+
+test("web components: termView の失敗の文は理由の文・確かめている文より先に出る", () => {
+  const view = (o: Obj): Obj => term.termView(termRaw(o));
+  const err = "取り込めませんでした: 端末の画面が待機の状態ではありません（書きかけ・ダイアログ・操作の直後）";
+  const ready = view({ check: TERM_READY, error: err });
+  assert.deepEqual([ready.kind, ready.note, ready.take], ["ready", { text: err, tone: "error", busy: false }, { disabled: false, busy: false, reason: null }]);
+  const busy = view({ check: { takeable: false, state: "running", reason: "busy", text: "実行中です。終わると取り込めます", rcUrl: null }, error: err });
+  assert.deepEqual([busy.note, busy.take], [{ text: err, tone: "error", busy: false }, { disabled: true, busy: false, reason: err }]);
+  assert.deepEqual(view({ checking: true, error: err }).note, { text: err, tone: "error", busy: false });
+  assert.deepEqual(view({ failed: true, error: err }).note, { text: err, tone: "error", busy: false });
+});
+
+test("web components: TermCard は押せない［取り込む］に理由を付け、押しても on.take を呼ばない", () => {
+  const cases: [Obj, string, string | undefined][] = [
+    [{}, "取り込めるか確かめています…", undefined],
+    [{ check: { takeable: false, state: "running", reason: "busy", text: "実行中です。終わると取り込めます", rcUrl: null } }, "実行中です。終わると取り込めます", undefined],
+    [{ check: TERM_READY, phase: "taking" }, "取り込んでいます…", "true"],
+    [{ check: TERM_READY, phase: "lost" }, "結果を確かめられませんでした。取り込みは続いているかもしれません。", undefined],
+  ];
+  for (const [o, reason, busy] of cases) {
+    const { calls, on } = termRec();
+    const take = find(termCard(termRaw(o), on), "c-btn")[0] as El;
+    assert.deepEqual([textOf(take), take.props["aria-disabled"], take.props.title, take.props["aria-busy"]], ["取り込む", "true", reason, busy], JSON.stringify(o));
+    const ev = fakeEvent();
+    (take.props.onClick as (e: unknown) => void)(ev);
+    assert.deepEqual([calls, ev.count()], [[], 1], JSON.stringify(o));
+  }
+  // 確認を作っている間・訊いている間は理由なしで押せない
+  for (const phase of ["proposing", "asking"]) {
+    const { calls, on } = termRec();
+    const take = find(termCard(termRaw({ check: TERM_READY, phase }), on), "c-btn")[0] as El;
+    assert.deepEqual([take.props["aria-disabled"], take.props.title], ["true", undefined], phase);
+    press(take);
+    assert.deepEqual(calls, [], phase);
+  }
+  // 取り込みの途中は［端末を見る］も押せない
+  const { calls, on } = termRec();
+  const pane = find(termCard(termRaw({ check: TERM_READY, phase: "taking" }), on), "c-btn")[1] as El;
+  assert.deepEqual([textOf(pane), pane.props["aria-disabled"], pane.props.title], ["端末を見る", "true", "取り込んでいます…"]);
+  press(pane);
+  assert.deepEqual(calls, []);
+});
+
+test("web components: TermCard は rcUrl が無ければリンクを出さず、pane が無ければ［端末を見る］を出さず、時刻が無ければその行を出さない", () => {
+  const el = termCard(termRaw({ pane: false, activity: null, check: { ...TERM_READY, rcUrl: null } }));
+  assert.equal(find(el, "c-term-link").length, 0);
+  assert.deepEqual(termBtns(el), [["primary", "md", "取り込む"]]);
+  assert.deepEqual(find(el, "c-term-dt").map(textOf), ["場所", "状態"]);
+  const v = term.termView(termRaw({ activity: null }));
+  assert.equal(v.when, null);
+  // 説明の文・下の文が無ければ p を出さない
+  const quiet = termCard(termRaw({ check: TERM_READY }));
+  assert.deepEqual([find(quiet, "c-term-lead").length, find(quiet, "c-term-note").length], [1, 0]);
+  const busy = termCard(termRaw({ check: { takeable: false, state: "running", reason: "busy", text: "実行中です。終わると取り込めます", rcUrl: null } }));
+  assert.deepEqual([find(busy, "c-term-lead").length, find(busy, "c-term-note").length], [0, 1]);
+});
+
+test("web components: TermCard の失敗の文は role alert、ほかの文は role status", () => {
+  const noteOf = (o: Obj): El => find(termCard(termRaw(o)), "c-term-note")[0] as El;
+  const attrs = (el: El): unknown[] => [el.props.role, el.props["data-tone"], el.props["data-busy"]];
+  assert.deepEqual(attrs(noteOf({ check: TERM_READY, error: "取り込めませんでした: x" })), ["alert", "error", undefined]);
+  assert.deepEqual(attrs(noteOf({ failed: true })), ["alert", "error", undefined]);
+  assert.deepEqual(attrs(noteOf({ check: TERM_READY, phase: "lost" })), ["alert", "error", undefined]);
+  assert.deepEqual(attrs(noteOf({})), ["status", "plain", ""]);
+  assert.deepEqual(attrs(noteOf({ check: TERM_READY, phase: "taking" })), ["status", "plain", ""]);
+  assert.deepEqual(attrs(noteOf({ check: { takeable: false, state: "waiting", reason: "waiting", text: "判断待ちです", rcUrl: null } })), ["status", "plain", undefined]);
+});
+
+test("web components: 札の決めた文（TERM_TEXT）", () => {
+  assert.deepEqual(term.TERM_TEXT, {
+    label: "端末のセッション",
+    place: "場所",
+    state: "状態",
+    activity: "最後の活動",
+    endedAt: "終わった時刻",
+    noPlace: "不明",
+    idle: "待機",
+    running: "実行中",
+    waiting: "判断待ち",
+    ended: "終わりました",
+    unknown: "不明",
+    lead: "取り込むと、端末の Claude Code を終わらせて、続きを新しい話題で引き継ぎます。",
+    leadEnded: "端末の Claude Code は終わっています。取り込むと、続きを新しい話題で引き継ぎます。",
+    checking: "取り込めるか確かめています…",
+    checkFailed: "取り込めるか確かめられませんでした。",
+    taking: "取り込んでいます…",
+    lost: "結果を確かめられませんでした。取り込みは続いているかもしれません。",
+    blocked: "今は取り込めません",
+    take: "取り込む",
+    recheck: "確かめ直す",
+    pane: "端末を見る",
+    rc: "RC で開く",
+  });
+  assert.equal(Object.keys(term.TERM_TEXT).length, 22);
+  assert.ok(Object.isFrozen(term.TERM_TEXT));
 });

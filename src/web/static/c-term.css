@@ -1,0 +1,115 @@
+/* 端末のセッションの札（c-term.js。docs/plan/terminal-handover.md の H3）。箱・余白・字・事実の行・ボタンの並びは c-cards.css の .c-card と同じで、枠と題だけ中立の色（「あなたの番」の色を使わない）。動きは無い */
+
+/* 枠。字と色は自分で持つ（置かれた先からの継承を当てにしない） */
+.c-term {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  width: 100%;
+  max-width: var(--c-card-max);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--c-card-r);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--c-font-body);
+  line-height: var(--leading-normal);
+}
+
+/* 題は .c-card-title と同じ字。base.css の裸の h2 の字と余白を全部書き直す。長い題は折り返す */
+.c-term-title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-xs);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.c-term-dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  margin: 0;
+}
+
+/* 事実の 1 行（dt と dd の間は .c-card-dl の行の間と同じ） */
+.c-term-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.c-term-dt {
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+}
+
+.c-term-dd {
+  min-width: 0;
+  margin: 0 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.c-term-dd[data-tone="accent"] {
+  color: var(--accent);
+}
+
+.c-term-dd[data-tone="warning"] {
+  color: var(--warning);
+}
+
+.c-term-dd[data-tone="muted"] {
+  color: var(--text-secondary);
+}
+
+.c-term-lead {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 状態の文・断りの文（サーバーの文が 2 行のときは改行を残す） */
+.c-term-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.c-term-note[data-tone="error"] {
+  color: var(--danger);
+}
+
+/* ボタンの並び。スマホは縦 */
+.c-term-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+/* RC のリンク。当たりの高さはボタンと同じ --c-tap */
+.c-term-link {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--c-tap);
+  padding: 0 var(--space-4);
+  color: var(--primary);
+  font-size: var(--c-font-body);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+/* 細かい指し手の広い幅: ボタンは左から 1 行 */
+@media (min-width: 640px) and (hover: hover) and (pointer: fine) {
+  .c-term-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
