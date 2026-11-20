@@ -185,7 +185,7 @@ K3 から一覧は部品が描く（`topics.js` は状態を持って入口 `c-a
 
 ### 5.3 始める口
 
-`session-ops.ts` に `startTopic({title, place, text, by})`（`createTopicSession` → 仕切り → 最初のターン）を足し、右腕の `session_open` と `POST /api/topics {title, place, text, model?}`（群の [+]）が同じ本体を呼ぶ。題名は省けば `text` の先頭から作る。
+`session-ops.ts` に `startTopic({title, place, text, by})`（`createTopicSession` → 仕切り → 最初のターン）を足し、右腕の `session_open` と `POST /api/topics {title, place, text, model?}`（群の [+]。知らない model は 400 `invalid_model`）が同じ本体を呼ぶ。題名は省けば `text` の先頭から作る。
 
 実装で決めた所（M4。#360）:
 

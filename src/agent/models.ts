@@ -23,6 +23,21 @@ export function resolveModelKey(key: string): ModelChoice | undefined {
   return MODEL_CHOICES.find((choice) => choice.key === wanted);
 }
 
+/** 名前の比べ方（空白（全角も）を全部除いて小文字に） */
+function nameForm(name: string): string {
+  return name.replace(/\s/gu, "").toLowerCase();
+}
+
+/**
+ * 右腕の session_open の model の名前の行: key・画面の字・完全な ID のどれか（空白と大文字小文字は見ない）。一覧に無ければ undefined。
+ * /new・Web・場所の既定は resolveModelKey（key だけ）
+ */
+export function resolveModelName(name: string): ModelChoice | undefined {
+  const wanted = nameForm(name);
+  if (wanted === "") return undefined;
+  return MODEL_CHOICES.find((choice) => [choice.key, choice.label, choice.model].some((candidate) => nameForm(candidate) === wanted));
+}
+
 /** 完全な ID の画面の字。一覧に無ければ ID そのまま */
 export function labelOf(id: string): string {
   return MODEL_CHOICES.find((choice) => choice.model === id)?.label ?? id;

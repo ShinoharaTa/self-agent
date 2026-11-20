@@ -16,6 +16,7 @@ import {
 import { ensureGuildLayout } from "../src/app/commands/setup.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
+  openTopicSession,
   placeKeyOf,
   type ProjectSessionGate,
   resolveTopicModel,
@@ -216,6 +217,30 @@ test("/new の一覧に無い model は MODEL_INVALID_REPLY で作らない", as
     assert.deepEqual(calls, [{ method: "reply", message: { text: MODEL_INVALID_REPLY, ephemeral: true } }], model);
   }
   assert.equal(s.created(), 0);
+});
+
+test("openTopicSession: モデルの解決（placeSettings.get）が投げたら、チャンネルも sessions の行も作らずに投げる", async (t) => {
+  const db = tempDb(t);
+  const { guildSettings, topicSessions } = createStores(db, () => NOW);
+  guildSettings.setChannel(GUILD, "inboxChannelId", "inbox-1");
+  guildSettings.setStateCategory(GUILD, "active", 1, "active-1");
+  const gateway = new FakeGateway({ record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn", "send"] });
+  gateway.alive.add("active-1");
+  const deps = {
+    gateway,
+    guildSettings,
+    topicSessions,
+    queue: new KeyedSerialQueue(1),
+    placeSettings: {
+      get: () => {
+        throw new Error("読めない");
+      },
+    },
+    log: () => undefined,
+  };
+  await assert.rejects(openTopicSession(GUILD, "作業", undefined, deps, "/new で"), /読めない/);
+  assert.deepEqual(gateway.calls, []);
+  assert.equal(Number(db.prepare("SELECT COUNT(*) AS n FROM sessions").get()?.n), 0);
 });
 
 // ---- startTopic（［対応］は model を渡さない） ----

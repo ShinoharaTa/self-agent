@@ -1989,3 +1989,42 @@ test("takeoverDoneText: モデルの行は本文の後・中断の行の前。mo
   assert.equal(takeoverDoneText("alpha", "default", true, true, "claude-opus-5-5"), `${body}\nモデル: Opus 5.5\n${interrupted}`);
   assert.equal(takeoverDoneText("alpha", "default", false, false, "x-unknown"), `${takeoverDoneText("alpha", "default", false, false)}\nモデル: x-unknown`);
 });
+
+test("取り込み: placeModel が投げても取り込みは成功し、モデルは付かず完了の文にモデルの行が無い", async (t) => {
+  const s = setup(t);
+  const { result } = await s.proposeAndConfirm(
+    s.make({
+      placeModel: () => {
+        throw new Error("/secret/path");
+      },
+    }),
+  );
+  assert.ok(result.ok);
+  assert.equal(s.topicSessions.modelOf(DEST), undefined);
+  assert.equal(result.plainText, takeoverDoneText("alpha", "plan", false, false));
+  assert.equal(s.gateway.posts.find((post) => post.channelId === DEST)?.message.text, takeoverDoneText("alpha", "plan", false));
+  assert.ok(s.logs.some((line) => line.includes("場所の既定のモデルを読めませんでした")));
+  assertQuietLogs(s);
+});
+
+test("取り込み: 後始末の modelOf の読み直しが投げても成功のままで、Discord と Web の文の両方にモデルの行が無い", async (t) => {
+  const s = setup(t);
+  const { result } = await s.proposeAndConfirm(
+    s.make({
+      placeModel: () => "claude-sonnet-5-5",
+      topicSessions: {
+        create: (session) => s.topicSessions.create(session),
+        get: (channelId) => s.topicSessions.get(channelId),
+        modelOf: () => {
+          throw new Error("/secret/path");
+        },
+      },
+    }),
+  );
+  assert.ok(result.ok);
+  assert.equal(s.topicSessions.modelOf(DEST), "claude-sonnet-5-5");
+  assert.equal(result.plainText, takeoverDoneText("alpha", "plan", false, false));
+  assert.equal(s.gateway.posts.find((post) => post.channelId === DEST)?.message.text, takeoverDoneText("alpha", "plan", false));
+  assert.ok(s.history.list(DEST, { limit: 10 }).some((entry) => entry.kind === "notice" && entry.text === takeoverDoneText("alpha", "plan", false, false)));
+  assertQuietLogs(s);
+});

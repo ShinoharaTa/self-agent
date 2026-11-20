@@ -203,7 +203,7 @@ export function createNewSessionCommand(deps: NewSessionDeps): CommandHandler {
         return;
       }
       if (project === undefined) {
-        await startTopicSession(guildId, rawTitle, responder, deps, "/new で", owner, undefined, owner === undefined ? model : undefined);
+        await startTopicSession(guildId, rawTitle, responder, deps, "/new で", owner, undefined, model);
         return;
       }
       if (owner !== undefined) {

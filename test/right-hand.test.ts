@@ -250,9 +250,16 @@ test("right hand open: model の key（前後の空白・大文字も可）で�
   assert.ok(welcome.endsWith("\nモデル: Sonnet 5.5\n#inbox の話の続きです。"), welcome);
 });
 
+test("right hand open: model は一覧の字（Sonnet 5.5）でも作られ、sessions.model が完全な ID・結果の model が一覧の字", async (t) => {
+  const s = setup(t);
+  const result = await s.rightHand.open({ ...ARGS, model: "Sonnet 5.5" }, INBOX);
+  assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "General", turn: "none", model: "Sonnet 5.5" });
+  assert.equal(s.topicSessions.modelOf("ch-1"), "claude-sonnet-5-5");
+});
+
 test("right hand open: 使えない model の名前は bad_model で、チャンネル・行・送信も無く、上限も数えない", async (t) => {
   const s = setup(t, { perDay: 1 });
-  for (const model of ["xxx", "Sonnet 5.5", "claude-sonnet-5-5"]) {
+  for (const model of ["xxx", "Opus 5", "sonnet 4"]) {
     assert.deepEqual(await s.rightHand.open({ ...ARGS, text: "一言", model }, INBOX), {
       result: "bad_model",
       models: modelKeys(),

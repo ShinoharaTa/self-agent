@@ -77,6 +77,12 @@
 
 場所なしの軽いセッション（`/new` の project 省略・連携が無効・General が使えない）は `general` の既定を使う（Web の一覧の群と同じ規則）。
 
+PR-2 で決めた細目:
+- Web の `POST /api/topics` の `model` は key だけ。知らない key と空文字は 400 `invalid_model`、文字列でなければ（`null` も）400 `bad_request`。無指定は欄を送らない（場所の既定になる）。
+- 右腕の `session_open` の `model` は key・一覧の字（「Sonnet 5.5」）・完全な ID のどれでも引ける（空白（全角も）と大文字小文字は見ない。`resolveModelName`）。`/new`・Web・場所の既定は key だけ（`resolveModelKey`）。
+- 足した人格の入口（#<NAME>）の `session_open`: 名前の検査が先。使える名前なら話題は作り、モデルは付けずに note。使えない名前なら `bad_model` で作らない。
+- 取り込みで場所の既定が読めなければ（例外）、モデル無しで取り込みを続ける（端末を止めた後なので落とさない。log だけ）。
+
 ## 4. 保存と表示
 
 - **移行 v47 が要る**（1 回にまとめる）:
@@ -146,7 +152,8 @@
 
 ### PR-3: Web（始める板・見出し）
 - 触る: `src/web/static/shell.js`（板の選択。場所を変えたら初期値も追う）、`c-shell.js`・見本（見出しの label）、`GET /api/topics` の行に `model`・`modelLabel`、`GET /api/models`（一覧と場所の既定）。
-- 受け入れ: 板で選んだ key が body に入る／見出しに label／スマホは「…」の板。**ui-shots の前後の画を PR に付ける**。
+- 受け入れ: 板で選んだ key が body に入る／見出しに label／スマホは「…」の板。
+- 注意: 「場所の既定のまま」のときは body に `model` の欄を送らない（`null`・空文字は 400）。**ui-shots の前後の画を PR に付ける**。
 
 ### PR-4: 場所の既定と表示名の編集（Web の設定）
 - 触る: `GET/PUT /api/places/<place>/settings`、設定の画面の「場所」。
