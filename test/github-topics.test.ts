@@ -251,6 +251,35 @@ test("act: turn が failed（none も）でも github_topics に行を足す", a
   assert.equal((await s.handoff.act(other)).kind === "created" && s.topics.latestForThread("t-2")?.channelId, "made-2");
 });
 
+test("act: github_topics に記録できなくても created を返し、log は 1 行。次の押下ではもう 1 つできる", async (t) => {
+  const s = setup(t);
+  const id = s.notify();
+  const add = s.topics.add.bind(s.topics);
+  s.topics.add = () => {
+    throw new Error("秘密の失敗");
+  };
+  assert.deepEqual(await s.handoff.act(id), { kind: "created", channelId: "topic-1", turn: "started", overlapping: 0 });
+  assert.deepEqual(s.logs, ["GitHub の［対応］の話題を記録できませんでした", `GitHub の対応: created（通知 #${id}）`]);
+  assert.equal(s.topics.latestForThread("t-1"), undefined);
+  s.topics.add = add;
+  assert.deepEqual(await s.handoff.act(id), { kind: "created", channelId: "topic-2", turn: "started", overlapping: 0 });
+  assert.equal(s.starts.length, 2);
+  assert.equal((await s.handoff.act(id)).kind, "already");
+});
+
+test("act: 重なりを数えられなくても created を返し（記録は済んでいる）、次の押下は already", async (t) => {
+  const s = setup(t);
+  const id = s.notify();
+  Object.defineProperty(s.env, "running", {
+    get() {
+      throw new Error("秘密の失敗");
+    },
+  });
+  assert.deepEqual(await s.handoff.act(id), { kind: "created", channelId: "topic-1", turn: "started", overlapping: 0 });
+  assert.deepEqual(s.logs, ["GitHub の［対応］の重なりを数えられませんでした", `GitHub の対応: created（通知 #${id}）`]);
+  assert.deepEqual(await s.handoff.act(id), { kind: "already", channelId: "topic-1" });
+});
+
 test("act: 同じ場所で実行中の話題を数える（作った話題自身・別の場所・重複したチャンネルは数えない）", async (t) => {
   const s = setup(t);
   s.sessions.set("same-1", { state: "active", projectDir: "example-repo" });
@@ -457,6 +486,10 @@ test("見張り: main.ts は [対応] の宛先を話題の口にし（ポーリ
   const made = source.match(/githubTopics = new GithubTopicHandoff\(\{[\s\S]*?\n {6}\}\);/)?.[0];
   assert.ok(made !== undefined);
   assert.match(made, /start: \(input\) => startTopic\(input, topicStart\),/);
+  // Web から押したときのサーバーは /setup 済みの最初のもの、チャンネルの有無は Gateway に訊く、数えるのは今のターン
+  assert.match(made, /setUpGuild: \(\) => config\.allowedGuildIds\.find\(\(id\) => guildSettings\.get\(id\) !== undefined\),/);
+  assert.match(made, /channelExists: \(id\) => gateway\.channelExists\(id\),/);
+  assert.match(made, /runningTurns: \(\) => handler\.runningTurns\(\),/);
   // 作るのは topicStart の定義より前（クロージャでなければ初期化の前の参照になる）
   assert.ok(source.indexOf("githubTopics = new GithubTopicHandoff(") < source.indexOf("const topicStart = {"));
   // 古いクラスも作る（[やめる] が使う）

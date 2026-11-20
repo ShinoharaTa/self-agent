@@ -1141,8 +1141,9 @@ if (config.github && ccRegistry !== undefined && ccPanes !== undefined && ccTmux
       now,
       log,
     });
-    // [対応] の宛先（docs/plan/terminal-handover.md の H5）: その PR・Issue の話題（プロジェクトのセッション）を作る。プロジェクトのセッションが使えるときだけ。
-    // topicStart は下で定義するので、押したときに読むクロージャで渡す
+    // [対応] の宛先（docs/plan/terminal-handover.md の H5）: その PR・Issue の話題（プロジェクトのセッション）を作る。
+    // プロジェクトのセッションの設定（unify-setup）が済んでいなくても作る（ボタンは付き、押すと「設定が済んでいません」の文を返す。projectSessions は
+    // SELF_AGENT_CC=1 なら在るので、この if は型のため）。topicStart は下で定義するので、押したときに読むクロージャで渡す
     if (projectSessions !== undefined) {
       githubTopics = new GithubTopicHandoff({
         workspaceDir: config.workspaceDir,
