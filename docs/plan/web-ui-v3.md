@@ -106,7 +106,7 @@ PC（1,280px〜。列 3 は畳める。幅が足りなければ列 3 → 列 1 �
               state, last: { id, at, kind }, movable: true | { reason }, link } ] }
 ```
 
-- **id**: Discord のチャンネルがあれば `ch:`、無い Claude Code のセッションは `cc:`。Claude Code のチャンネルは今も Web では `ch:` で開く（CC14）ので、取り込み（#341。チャンネルがその場でプロジェクトのセッションに変わる）の後も id は変わらない。（#428: 取り込むと `cc:` の行は消え、新しい話題の `ch:` の行ができる。H3 で直す）
+- **id**: Discord のチャンネルがあれば `ch:`、無い Claude Code のセッションは `cc:`。Claude Code のチャンネルは今も Web では `ch:` で開く（CC14）ので、取り込み（#341。チャンネルがその場でプロジェクトのセッションに変わる）の後も id は変わらない。（#428: 取り込むと `cc:` の行は消え、新しい話題の `ch:` の行ができる。H3 で直す）`cc:` の話題は、新しい殻では既定で札（列 2 のタブの名前は `term:<sessionId>`。`S.active` と hash は `cc:` のまま）
 - **場所の決め方**: セッションは `project_dir`（General の名前なら群 general）／軽いセッション（`project_dir` なし）は `place.dir = null` で群 general／Claude Code は cwd が workspace の直下の名前かその下ならそのプロジェクト（新しい純関数 `projectOf(cwd, workspace)` を `cc/labels.ts` に足す）、外なら群 other「ほかの場所」。#tasks と人格の入口は群 general の末尾に固定（`movable` は理由つきの不可）。右腕（#inbox）は一覧に出さない。
 - **並び**: 群はプロジェクト（話題のあるものを上、名前順）→ General → ほかの場所。話題の無いプロジェクトは「ほかのプロジェクト（n）」に畳む。群の中は あなたの番 → 作業中 → 最後の活動の新しい順。完了は群ごとに「完了（n）」に畳み、開くまで返さない（`?done=<group>`）。
 - 足した人格のセッションも同じ群に出し、行に人格の名前を添える（今の一覧のバッジと同じ。行に `persona` を持たせる）。
