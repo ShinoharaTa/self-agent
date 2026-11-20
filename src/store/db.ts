@@ -868,6 +868,18 @@ export const MIGRATIONS: readonly string[] = [
   CREATE UNIQUE INDEX cc_takeovers_active ON cc_takeovers(session_id) WHERE state IN ('awaiting_confirm','running');
   CREATE UNIQUE INDEX cc_takeovers_target ON cc_takeovers(target_channel_id) WHERE target_channel_id IS NOT NULL;
   `,
+  // v46（docs/plan/terminal-handover.md §3.2。#428 の H5）: GitHub の［対応］で作った話題。スレッド → 話題のチャンネル（同じスレッドは新しい行が勝つ）。
+  // 本文・題名・リポジトリ名は置かない。github_handoffs（v21 の古い表）とは別の表。ほかの表は変えない
+  `
+  CREATE TABLE github_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    notification_id INTEGER NOT NULL,
+    thread_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX github_topics_thread ON github_topics(thread_id, id);
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
