@@ -68,7 +68,7 @@ export function sessionModeOf(
 
 /**
  * 許可のモードを変える。断ったとき・同じモードのときは DB も history も触らない。変えたら history に notice を 1 行と log を 1 行。
- * by plan（計画の許可の後に default へ戻す）だけは実行中でも変える
+ * by plan（計画の許可の後に default へ戻す）だけは実行中でも変える。今のモードが plan でなければ何もしない（unchanged）
  */
 export function setSessionMode(
   input: { guildId: string; channelId: string; mode: ProjectPermissionMode; by: "discord" | "web" | "plan" },
@@ -77,6 +77,8 @@ export function setSessionMode(
   const { guildId, channelId, mode, by } = input;
   const now = sessionModeOf(guildId, channelId, deps);
   if (now.result !== "ok") return { result: now.result };
+  // 計画の許可の後の戻しは、今 plan のときだけ（acceptEdits のセッションで ExitPlanMode が許可されても default に落とさない）
+  if (by === "plan" && now.mode !== "plan") return { result: "unchanged", mode: now.mode };
   if (
     by !== "plan" &&
     (deps.runningTurns().some((running) => running.channelId === channelId) ||
