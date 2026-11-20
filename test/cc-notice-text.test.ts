@@ -11,16 +11,24 @@ import {
   CC_WAIT_CHECK_MS,
   CC_WAIT_NOTIFY_LIMIT,
   CC_WAIT_NOTIFY_MS,
+  CC_QUESTION_EXPIRED_NO_TERMINAL,
+  CC_QUESTION_RELEASED_NO_TERMINAL,
   CcWaitBudget,
   permissionNotice,
+  permissionResolvedMessage,
   permissionResultLine,
+  questionNotice,
+  questionResolvedMessage,
+  questionResultHistoryText,
+  questionResultLine,
 } from "../src/cc/notice-text.ts";
 import { type CcHookEvent, parseHookEvent } from "../src/cc/hook-server.ts";
 import { CC_PERMISSION_DENY_MESSAGE, CC_PERMISSION_RATE_LIMIT, CcPermissionHold, decisionBody } from "../src/cc/permission-hold.ts";
 import { CcRegistry, type CcTimers } from "../src/cc/registry.ts";
+import { parseQuestionInput } from "../src/cc/questions.ts";
 import type { Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
 import { type CcChannelOrigin, CcChannelStore } from "../src/store/cc-channels.ts";
-import { CcPermissionStore } from "../src/store/cc-permissions.ts";
+import { type CcPermissionRow, CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcSessionStore } from "../src/store/cc-sessions.ts";
 import { MIGRATIONS } from "../src/store/db.ts";
@@ -643,4 +651,84 @@ test("v32: cc_permissions に message_id・message_channel_id、cc_sessions に 
   assert.ok(permissionColumns.includes("message_id") && permissionColumns.includes("message_channel_id"));
   const sessionColumns = db.prepare("PRAGMA table_info(cc_sessions)").all().map((row) => String(row.name));
   assert.ok(sessionColumns.includes("notified_at"));
+});
+
+/** 端末の無い側の文の見本に使う質問の行（origin sdk） */
+function questionRow(extra: Partial<CcPermissionRow> = {}): CcPermissionRow {
+  return {
+    id: 4,
+    sessionId: S1,
+    requestHash: "h",
+    toolName: "AskUserQuestion",
+    summary: "質問 1 問: どちらにしますか",
+    permissionMode: "default",
+    alwaysRules: null,
+    state: "pending",
+    via: null,
+    createdAt: "2026-11-01T00:00:00.000Z",
+    resolvedAt: null,
+    messageId: null,
+    messageChannelId: null,
+    questionInput: JSON.stringify({ questions: [{ question: "どちらにしますか", header: "案", options: [{ label: "A 案" }, { label: "B 案" }] }] }),
+    answers: null,
+    origin: "sdk",
+    ...extra,
+  };
+}
+const QUESTION_PLACES = { workspaceDir: "/w", home: "/h" };
+const RC_SESSION = { name: "作業", cwd: "/w/alpha", bridgeSessionId: "session_abc" };
+
+test("質問の文: terminal false は footer が「過ぎたら時間切れになります。このチャンネルへの発言は、答えたあとに届きます」で［RC で開く］なし。既定（hook）は今の文のまま", () => {
+  const row = questionRow();
+  const questions = parseQuestionInput(row.questionInput)!.questions;
+  const sdk = questionNotice(row, questions, [], RC_SESSION, { ...QUESTION_PLACES, holdSec: 900, ownerUserId: "owner-1", terminal: false });
+  assert.ok(
+    sdk.text.endsWith("ボタンは 15 分効きます。過ぎたら時間切れになります。このチャンネルへの発言は、答えたあとに届きます"),
+    sdk.text,
+  );
+  assert.ok(!sdk.text.includes("端末") && !sdk.text.includes("RC"), sdk.text);
+  assert.ok(sdk.components?.every((c) => c.kind !== "links"));
+  const hook = questionNotice(row, questions, [], RC_SESSION, { ...QUESTION_PLACES, holdSec: 900, ownerUserId: "owner-1" });
+  assert.ok(hook.text.endsWith("端末や RC のダイアログでも答えられます（ボタンは 15 分効きます）"), hook.text);
+  assert.ok(hook.components?.some((c) => c.kind === "links"));
+  // 見出し・問・選択肢・部品（custom_id）は同じ
+  assert.equal(sdk.text.split("\n").slice(0, -1).join("\n"), hook.text.split("\n").slice(0, -1).join("\n"));
+  assert.deepEqual(sdk.components, hook.components?.filter((c) => c.kind !== "links"));
+  // permissionNotice の terminal も質問に効く
+  const viaNotice = permissionNotice(row, RC_SESSION, { ...QUESTION_PLACES, holdSec: 900, terminal: false });
+  assert.ok(viaNotice.text.includes("過ぎたら時間切れになります"), viaNotice.text);
+});
+
+test("質問の結果: terminal false の expired・released は端末と RC の文を出さない。allowed・denied は terminal によらず同じ", () => {
+  const questions = parseQuestionInput(questionRow().questionInput)!.questions;
+  const expired = questionRow({ state: "expired" });
+  const released = questionRow({ state: "released", via: "abort" });
+  assert.equal(questionResultLine(expired, questions, undefined, true, false), CC_QUESTION_EXPIRED_NO_TERMINAL);
+  assert.equal(questionResultLine(released, questions, undefined, true, false), CC_QUESTION_RELEASED_NO_TERMINAL);
+  assert.equal(questionResultLine(expired, questions, undefined), "時間切れ。端末か RC で答えてください");
+  assert.ok(questionResultLine(released, questions, undefined)!.includes("端末か RC で答えてください"));
+  for (const row of [questionRow({ state: "allowed", via: "web", answers: { どちらにしますか: "A 案" } }), questionRow({ state: "denied", via: "discord" })]) {
+    assert.equal(questionResultLine(row, questions, undefined, true, false), questionResultLine(row, questions, undefined));
+  }
+  // 1 通: terminal false は［RC で開く］を付けない。既定は残す
+  const sdk = permissionResolvedMessage(expired, RC_SESSION, QUESTION_PLACES, false);
+  assert.ok(sdk.text.endsWith(CC_QUESTION_EXPIRED_NO_TERMINAL), sdk.text);
+  assert.deepEqual(sdk.components, []);
+  const hook = questionResolvedMessage(expired, questions, RC_SESSION, QUESTION_PLACES);
+  assert.ok(hook.text.includes("時間切れ。端末か RC で答えてください"), hook.text);
+  assert.ok(hook.components?.some((c) => c.kind === "links"));
+  // Web の会話の 1 行
+  assert.equal(questionResultHistoryText(expired, questions, false), `質問の結果: ${CC_QUESTION_EXPIRED_NO_TERMINAL}`);
+  assert.equal(questionResultHistoryText(expired, questions), "質問の結果: 時間切れ。端末か RC で答えてください");
+});
+
+test("permissionHistoryText・permissionResultHistoryText は notice-text.ts に在り、channel-posts.ts からも同じ関数が取れる", async () => {
+  const notice = await import("../src/cc/notice-text.ts");
+  const posts = await import("../src/cc/channel-posts.ts");
+  assert.equal(posts.permissionHistoryText, notice.permissionHistoryText);
+  assert.equal(posts.permissionResultHistoryText, notice.permissionResultHistoryText);
+  const row = questionRow({ state: "expired" });
+  assert.equal(notice.permissionHistoryText(row), "質問: 「案」どちらにしますか（1 問）");
+  assert.equal(notice.permissionResultHistoryText(row, false), `質問の結果: ${CC_QUESTION_EXPIRED_NO_TERMINAL}`);
+  assert.equal(notice.permissionResultHistoryText(row), "質問の結果: 時間切れ。端末か RC で答えてください");
 });
