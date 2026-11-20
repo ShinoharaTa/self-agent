@@ -84,7 +84,7 @@
 | 元 | 流用する物 | 流用しない物 |
 |---|---|---|
 | Q1 | `cc_permissions` の `question_input`・`answers`、`parseQuestions`・`validateAnswers`、`answerQuestion`、応答の形（`allow` + `updatedInput` に `answers`。canUseTool の戻り値と同じ形【文 unify.md §5.1】）、`/api/cc/permissions/<id>/answer`、保留の秒 | hook の受け口の読み取り、`answered_elsewhere` の検知（端末が無い） |
-| Q2 | `question-flow.ts`（1 通を 1 問ずつ・その他はモーダル）・`cc:q:*`・質問の文 | 時間切れの文「端末か RC で答えてください」→「時間切れ。続きを送ると訊き直します」 |
+| Q2 | `question-flow.ts`（1 通を 1 問ずつ・その他はモーダル）・`cc:q:*`・質問の文 | 時間切れの文「端末か RC で答えてください」→「時間切れ。答えは、このチャンネルへの発言で送ってください」 |
 | Q3 | 部品 `QuestionCard`【確 `c-cards.js`】 | なし |
 | Q4 | なし（プロジェクトのセッションは最初から自分のチャンネルに出す） | `ensureFor` でチャンネルを作る道 |
 | Q5 | 関係なし（会話の行の軽量化は共通） | — |
