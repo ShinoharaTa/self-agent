@@ -3581,9 +3581,19 @@ test("web components: termView の失敗の文は理由の文・確かめてい�
   const ready = view({ check: TERM_READY, error: err });
   assert.deepEqual([ready.kind, ready.note, ready.take], ["ready", { text: err, tone: "error", busy: false }, { disabled: false, busy: false, reason: null }]);
   const busy = view({ check: { takeable: false, state: "running", reason: "busy", text: "実行中です。終わると取り込めます", rcUrl: null }, error: err });
-  assert.deepEqual([busy.note, busy.take], [{ text: err, tone: "error", busy: false }, { disabled: true, busy: false, reason: err }]);
-  assert.deepEqual(view({ checking: true, error: err }).note, { text: err, tone: "error", busy: false });
-  assert.deepEqual(view({ failed: true, error: err }).note, { text: err, tone: "error", busy: false });
+  // 下の文は直前の失敗の文、［取り込む］の理由は今の理由
+  assert.deepEqual([busy.note, busy.take], [{ text: err, tone: "error", busy: false }, { disabled: true, busy: false, reason: "実行中です。終わると取り込めます" }]);
+  const checking = view({ checking: true, error: err });
+  assert.deepEqual([checking.note, checking.take], [{ text: err, tone: "error", busy: false }, { disabled: true, busy: false, reason: "取り込めるか確かめています…" }]);
+  const failed = view({ failed: true, error: err });
+  assert.deepEqual([failed.note, failed.take], [{ text: err, tone: "error", busy: false }, { disabled: true, busy: false, reason: "取り込めるか確かめられませんでした。" }]);
+  const blocked = view({ check: { takeable: false, state: "idle", reason: "not_in_tmux", text: null, rcUrl: null }, error: err });
+  assert.deepEqual([blocked.note, blocked.take], [{ text: err, tone: "error", busy: false }, { disabled: true, busy: false, reason: "今は取り込めません" }]);
+  const waiting = view({ check: { takeable: false, state: "waiting", reason: "waiting", text: "判断待ちです", rcUrl: null }, error: err });
+  assert.deepEqual([waiting.note, waiting.take], [{ text: err, tone: "error", busy: false }, { disabled: true, busy: false, reason: "判断待ちです" }]);
+  // lost・taking は失敗の文より途中の形が先で、理由も途中の形
+  assert.equal((view({ check: TERM_READY, phase: "lost", error: err }).take as Obj).reason, "結果を確かめられませんでした。取り込みは続いているかもしれません。");
+  assert.equal((view({ check: TERM_READY, phase: "taking", error: err }).take as Obj).reason, "取り込んでいます…");
 });
 
 test("web components: TermCard は押せない［取り込む］に理由を付け、押しても on.take を呼ばない", () => {
@@ -3637,8 +3647,8 @@ test("web components: TermCard の失敗の文は role alert、ほかの文は r
   assert.deepEqual(attrs(noteOf({ check: TERM_READY, error: "取り込めませんでした: x" })), ["alert", "error", undefined]);
   assert.deepEqual(attrs(noteOf({ failed: true })), ["alert", "error", undefined]);
   assert.deepEqual(attrs(noteOf({ check: TERM_READY, phase: "lost" })), ["alert", "error", undefined]);
-  assert.deepEqual(attrs(noteOf({})), ["status", "plain", ""]);
-  assert.deepEqual(attrs(noteOf({ check: TERM_READY, phase: "taking" })), ["status", "plain", ""]);
+  assert.deepEqual(attrs(noteOf({})), ["status", "plain", "true"]);
+  assert.deepEqual(attrs(noteOf({ check: TERM_READY, phase: "taking" })), ["status", "plain", "true"]);
   assert.deepEqual(attrs(noteOf({ check: { takeable: false, state: "waiting", reason: "waiting", text: "判断待ちです", rcUrl: null } })), ["status", "plain", undefined]);
 });
 
@@ -3669,4 +3679,79 @@ test("web components: 札の決めた文（TERM_TEXT）", () => {
   });
   assert.equal(Object.keys(term.TERM_TEXT).length, 22);
   assert.ok(Object.isFrozen(term.TERM_TEXT));
+});
+
+test("web components: termView の状態は idle・running・waiting・ended・unknown だけで、needs_input は判断待ち、ほかの値は不明", () => {
+  const view = (o: Obj): Obj => term.termView(termRaw(o));
+  assert.deepEqual(view({ rowState: "needs_input", checking: true }).state, { text: "判断待ち", tone: "warning" });
+  assert.deepEqual(view({ check: { ...TERM_READY, state: "needs_input" } }).state, { text: "判断待ち", tone: "warning" });
+  for (const state of [undefined, "take", "label", "lead", "constructor", "toString", 3, null]) {
+    assert.deepEqual(view({ check: { ...TERM_READY, state } }).state, { text: "不明", tone: "muted" }, String(state));
+    assert.deepEqual(view({ rowState: state, checking: true }).state, { text: "不明", tone: "muted" }, String(state));
+  }
+  for (const state of ["idle", "running", "waiting", "ended"]) assert.equal((view({ check: { ...TERM_READY, state } }).state as Obj).text, term.TERM_TEXT[state], state);
+});
+
+test("web components: termView は failed のとき check を見ず、読めなかった形（［取り込む］は押せず、［確かめ直す］）にする", () => {
+  const v = term.termView(termRaw({ failed: true, check: TERM_READY }));
+  assert.deepEqual([v.kind, v.note, v.take, v.recheck, v.rcUrl, v.lead], [
+    "blocked", { text: "取り込めるか確かめられませんでした。", tone: "error", busy: false }, { disabled: true, busy: false, reason: "取り込めるか確かめられませんでした。" }, true, null, null,
+  ]);
+  assert.deepEqual(v.pane, { disabled: false, reason: null });
+  const el = termCard(termRaw({ failed: true, check: TERM_READY }));
+  assert.equal(find(el, "c-term-link").length, 0);
+  assert.deepEqual(termBtns(el), [["primary", "md", "取り込む"], ["secondary", "md", "確かめ直す"], ["ghost", "md", "端末を見る"]]);
+  assert.equal((find(el, "c-btn")[0] as El).props["aria-disabled"], "true");
+});
+
+test("web components: termView は error・activity・rcUrl・check の契約の外の値を丸める（文は空でない文字だけ、リンクは claude.ai/code の https だけ）", () => {
+  for (const error of [undefined, "", 0, {}, false]) {
+    const el = termCard(termRaw({ check: TERM_READY, error }));
+    assert.equal(find(el, "c-term-note").length, 0, String(error));
+    assert.equal(term.termView(termRaw({ check: TERM_READY, error })).note, null, String(error));
+  }
+  for (const activity of [undefined, "", 12]) {
+    assert.equal(term.termView(termRaw({ check: TERM_READY, activity })).when, null, String(activity));
+    assert.deepEqual(find(termCard(termRaw({ check: TERM_READY, activity })), "c-term-dt").map(textOf), ["場所", "状態"], String(activity));
+  }
+  for (const rcUrl of ["javascript:alert(1)", undefined, "", "http://claude.ai/code/x", "https://claude.ai/codex", "https://example.com/https://claude.ai/code/", 1]) {
+    assert.equal(term.termView(termRaw({ check: { ...TERM_READY, rcUrl } })).rcUrl, null, String(rcUrl));
+    assert.equal(find(termCard(termRaw({ check: { ...TERM_READY, rcUrl } })), "c-term-link").length, 0, String(rcUrl));
+  }
+  assert.equal(term.termView(termRaw({ check: TERM_READY })).rcUrl, "https://claude.ai/code/demo");
+  // check が undefined でも落ちず、確かめている形
+  const v = term.termView(termRaw({ check: undefined }));
+  assert.deepEqual([v.kind, v.rcUrl, (v.note as Obj).text], ["checking", null, "取り込めるか確かめています…"]);
+  assert.equal(term.termView(termRaw({ check: undefined, failed: true })).kind, "blocked");
+  // check.text が空・文字でなければ「今は取り込めません」
+  for (const text of ["", undefined, 5]) assert.equal((term.termView(termRaw({ check: { takeable: false, state: "idle", reason: "x", text, rcUrl: null } })).note as Obj).text, "今は取り込めません", String(text));
+});
+
+test("web components: termMouth の draw は根に札を 1 つ描き、同じ根にもう一度描くと差し替わり、drop で空にし、その後も描ける。render の例外はそのまま出る", () => {
+  const calls: { vnode: VNode | null; root: unknown }[] = [];
+  let fail = false;
+  const render = (vnode: VNode | null, root: unknown): void => {
+    if (fail) throw new Error("render");
+    calls.push({ vnode, root });
+  };
+  const mouth = (term.termMouth as unknown as (r: typeof render) => { draw: (root: unknown, raw: Obj) => void; drop: (root: unknown) => void })(render);
+  const root = {};
+  const { calls: pressed, on } = termRec();
+  mouth.draw(root, termRaw({ check: TERM_READY, on }));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.root, root);
+  const first = one(calls[0]?.vnode);
+  assert.deepEqual([first.props.class, first.props["data-kind"]], ["c-term", "ready"]);
+  assert.equal(expand(calls[0]?.vnode).length, 1);
+  press(find(first, "c-btn")[0]);
+  assert.deepEqual(pressed, ["take"]);
+  mouth.draw(root, termRaw({ check: { takeable: false, state: "running", reason: "busy", text: "実行中", rcUrl: null }, on }));
+  assert.deepEqual([calls.length, calls[1]?.root, one(calls[1]?.vnode).props["data-kind"]], [2, root, "busy"]);
+  mouth.drop(root);
+  assert.deepEqual([calls.length, calls[2]?.vnode, calls[2]?.root], [3, null, root]);
+  mouth.draw(root, termRaw({ on }));
+  assert.equal(one(calls[3]?.vnode).props["data-kind"], "checking");
+  fail = true;
+  assert.throws(() => mouth.draw(root, termRaw({ on })), /render/);
+  assert.throws(() => mouth.drop(root), /render/);
 });
