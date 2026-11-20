@@ -161,6 +161,12 @@ export class CcTakeoverStore {
     return row === undefined ? undefined : toRow(row);
   }
 
+  /** その session_id の一番新しい取り込みの行（状態を問わない。無ければ undefined）。Web の札が結果を確かめ直すとき */
+  lastFor(sessionId: string): CcTakeoverRow | undefined {
+    const row = this.db.prepare("SELECT * FROM cc_takeovers WHERE session_id = ? ORDER BY id DESC LIMIT 1").get(sessionId);
+    return row === undefined ? undefined : toRow(row);
+  }
+
   /** 確認待ち → 実行中（[取り込む]）。位置は最初の check にする。移したら true */
   start(id: number): boolean {
     const result = this.db

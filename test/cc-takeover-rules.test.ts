@@ -19,6 +19,7 @@ import {
   TAKEOVER_SETTLE_MS,
   takeoverFailureText,
   takeoverIdentity,
+  takeoverReasonText,
   takeoverRefusal,
   type TakeoverFailure,
   type TakeoverIdentityInput,
@@ -286,4 +287,40 @@ test("takeoverFailureText: §4 の文。終了の後なら次の行に足す", (
   ];
   const texts = new Set(codes.map((code) => takeoverFailureText(code, false)));
   assert.equal(texts.size, codes.length);
+});
+
+test("takeoverReasonText: 全部の符号に文が在り、takeoverFailureText の『取り込めませんでした: 』の後ろと同じ", () => {
+  const codes = [
+    "not_ready",
+    "list_failed",
+    "outside_workspace",
+    "no_channel",
+    "target_invalid",
+    "tmux_failed",
+    "busy",
+    "waiting",
+    "not_in_tmux",
+    "pane",
+    "queued",
+    "already_taken",
+    "in_progress",
+    "no_transcript",
+    "too_large",
+    "changed",
+    "identity",
+    "not_exited",
+    "copy_failed",
+    "internal",
+    "restart",
+  ] as const satisfies readonly TakeoverFailure[];
+  // 符号が足されたらここで型が落ちる（全部を並べる）
+  const all: [Exclude<TakeoverFailure, (typeof codes)[number]>] extends [never] ? true : false = true;
+  assert.equal(all, true);
+  for (const code of codes) {
+    const reason = takeoverReasonText(code);
+    assert.equal(typeof reason, "string", code);
+    assert.ok(reason.length > 0, code);
+    assert.equal(takeoverFailureText(code, false), `取り込めませんでした: ${reason}`, code);
+    assert.doesNotMatch(reason, /^取り込めませんでした/, code);
+  }
 });

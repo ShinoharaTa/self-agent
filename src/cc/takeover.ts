@@ -21,7 +21,7 @@ import type { CcChannelStore } from "../store/cc-channels.ts";
 import type { CcPermissionStore } from "../store/cc-permissions.ts";
 import type { CcSendStore } from "../store/cc-sends.ts";
 import { headChars, type CcSessionRow, type CcSessionStore } from "../store/cc-sessions.ts";
-import type { CcTakeoverEntry, CcTakeoverRow, CcTakeoverSource, CcTakeoverStore } from "../store/cc-takeovers.ts";
+import type { CcTakeoverEntry, CcTakeoverRow, CcTakeoverSource, CcTakeoverState, CcTakeoverStore } from "../store/cc-takeovers.ts";
 import { rollbackIfOpen } from "../store/db.ts";
 import { recordHistory, type HistoryStore } from "../store/history.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
@@ -227,6 +227,24 @@ export type CcTakeoverProposeResult =
 export type CcTakeable = { sessionId: string; title: string; project: string; alive: boolean; at: number | undefined };
 
 /**
+ * check の結果（Web の札）。takeable・reason は propose と同じ判定、state・at は一覧と cc_sessions から。
+ * last はその session_id の一番新しい取り込みの行（無ければ undefined）
+ */
+export type CcTakeoverCheck = {
+  takeable: boolean;
+  /** 取り込めない理由（takeable なら undefined） */
+  reason: TakeoverFailure | undefined;
+  state: "idle" | "running" | "waiting" | "ended" | "unknown";
+  title: string;
+  /** SELF_AGENT_WORKSPACE_DIR の直下の名前（判定が通ったときだけ） */
+  project: string | undefined;
+  /** 一覧に居れば最後の活動、終わった物は終わった時刻（ms。分からなければ undefined） */
+  at: number | undefined;
+  bridgeSessionId: string | undefined;
+  last: { id: number; state: CcTakeoverState; targetChannelId: string | null } | undefined;
+};
+
+/**
  * confirm の結果。stale = 確認待ちでない、expired = 10 分を過ぎた（取り消した）。
  * 成功の channelId は行き先の新しいチャンネル（新しい話題）、text は「取り込みました → <#…>」、plainText は完了の文のエスケープ前（Web の応答）。
  * edited は確認の文を書き換えられたか（Discord の入口で false なら、呼び出し側が押された 1 通を text に書き換えてボタンを外す）
@@ -339,6 +357,35 @@ export class CcTakeover {
       });
     }
     return result;
+  }
+
+  /**
+   * 1 件の判定だけ（Web の札）。propose と同じ判定で、行を作らない・取り消さない・log を出さない。
+   * Web の確認待ちだけが残っているときは、それが無いものとして見る（確認を作る口が取り消して作り直す）。Discord の確認待ち・実行中は in_progress
+   */
+  async check(sessionId: string): Promise<CcTakeoverCheck> {
+    const { takeovers, registry, ccSessions } = this.deps;
+    const fresh = this.deps.ready() ? await this.readList() : false;
+    const active = takeovers.activeFor(sessionId);
+    const mine = active !== undefined && active.entry === "web" && active.state === "awaiting_confirm";
+    const assessed: Assessed = active !== undefined && !mine ? { ok: false, code: "in_progress" } : await this.assess(sessionId, fresh);
+    // 一覧を読んだ後の写し
+    const view = registry.snapshot().sessions.find((candidate) => candidate.sessionId === sessionId);
+    const session = ccSessions.get(sessionId);
+    const state: CcTakeoverCheck["state"] =
+      view !== undefined ? (view.state === "needs_input" ? "waiting" : view.state) : session?.goneAt ? "ended" : "unknown";
+    const goneAt = Date.parse(session?.goneAt ?? "");
+    const last = takeovers.lastFor(sessionId);
+    return {
+      takeable: assessed.ok,
+      reason: assessed.ok ? undefined : assessed.code,
+      state,
+      title: this.titleOf(session, assessed.ok ? assessed.project : "Claude Code"),
+      project: assessed.ok ? assessed.project : undefined,
+      at: view?.lastActivityAt ?? (Number.isFinite(goneAt) ? goneAt : undefined),
+      bridgeSessionId: view?.bridgeSessionId ?? undefined,
+      last: last === undefined ? undefined : { id: last.id, state: last.state, targetChannelId: last.targetChannelId },
+    };
   }
 
   /** propose・takeable の 1 件の判定（一覧は読んだ後）: 確認待ちか running の取り込みがあれば in_progress、ほかは assess */

@@ -264,6 +264,11 @@ export const TAKEOVER_AFTER_TERM_TEXT =
 export const TAKEOVER_MAYBE_TERM_TEXT =
   "端末の Claude Code は終了しているかもしれません。終了していれば、/cc take をもう一度実行すると、終わった会話から取り込めます。";
 
+/** 断りの理由だけの文（頭の「取り込めませんでした: 」を付けない。Web の札が状態として出す） */
+export function takeoverReasonText(code: TakeoverFailure): string {
+  return FAILURE_TEXTS[code];
+}
+
 /**
  * 確認の文を書き換える失敗の文（§4）。afterTerm（SIGTERM を送った後の失敗）なら TAKEOVER_AFTER_TERM_TEXT を次の行に足す。
  * not_exited は文の中に続け方があるので足さない
