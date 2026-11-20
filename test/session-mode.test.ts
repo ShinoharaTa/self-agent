@@ -140,6 +140,21 @@ test("by plan は実行中でも変える", (t) => {
   return release();
 });
 
+test("by plan は、今のモードが plan のときだけ default に戻す（acceptEdits・default は変えず、history にも書かない）", (t) => {
+  const env = setup(t);
+  assert.deepEqual(setSessionMode({ guildId: GUILD, channelId: CHANNEL, mode: "default", by: "plan" }, env.deps), { result: "unchanged", mode: "default" });
+  assert.equal(setSessionMode({ guildId: GUILD, channelId: CHANNEL, mode: "acceptEdits", by: "web" }, env.deps).result, "changed");
+  const before = env.historyOf(CHANNEL).length;
+  const logs = env.logs.length;
+  assert.deepEqual(setSessionMode({ guildId: GUILD, channelId: CHANNEL, mode: "default", by: "plan" }, env.deps), {
+    result: "unchanged",
+    mode: "acceptEdits",
+  });
+  assert.equal(env.modeOf(CHANNEL), "acceptEdits");
+  assert.equal(env.historyOf(CHANNEL).length, before);
+  assert.equal(env.logs.length, logs);
+});
+
 test("★ log にチャンネル ID・題名・プロジェクトの名前が出ない", (t) => {
   const env = setup(t);
   setSessionMode({ guildId: GUILD, channelId: CHANNEL, mode: "plan", by: "web" }, env.deps);

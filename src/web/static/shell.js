@@ -241,7 +241,7 @@
       hand: handMark(),
       compact: S.topCompact,
       menu: t !== null && (topNarrow() || (head !== null && head.menu.length > 0)),
-      mode: head && head.mode ? { value: head.mode, disabled: !!t && t.mark === "running", reason: !!t && t.mark === "running" ? MODE_BUSY : null } : null,
+      mode: head && head.mode ? { value: head.mode, disabled: modeBusy(t), reason: modeBusy(t) ? MODE_BUSY : null } : null,
       controls: "v3-hand",
       on: TOP_ON,
     };
@@ -291,7 +291,7 @@
         why: t.movable !== true && t.movable && typeof t.movable.reason === "string" ? t.movable.reason : "",
       });
       if (head && head.mode) {
-        const busy = t.mark === "running";
+        const busy = modeBusy(t);
         items.push({ icon: "settings", label: "許可のモードを変える", run: busy ? null : () => openMode(opener), why: MODE_BUSY });
       }
       if (paneSession() !== null) {
@@ -1324,6 +1324,12 @@
     ["plan", "plan（計画だけ）"],
   ];
   const MODE_BUSY = "担当が作業中です。終わってから変えてください";
+  /** モードを変えられない間（サーバーの busy と同じ向き）: 作業中と、許可の要求・質問の待ち（ターンは実行中）。判断待ち・確認は変えられる */
+  function modeBusy(t) {
+    if (!t) return false;
+    if (t.mark === "running") return true;
+    return !!t.turn && (t.turn.kind === "permission" || t.turn.kind === "question");
+  }
 
   /** シートに 3 つのモードを並べる（今のモードは押せない行）。今の話題がプロジェクトのセッションでなければ何もしない */
   function openMode(opener) {

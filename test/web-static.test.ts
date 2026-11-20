@@ -9862,6 +9862,13 @@ async function loadMode(opts: Parameters<typeof loadShell>[0] = {}, mode = "plan
 }
 /** 見出しの state の mode（殻の中で作った物なので JSON で写して比べる） */
 const modeOf = (h: PlaceShell) => JSON.parse(JSON.stringify(h.lastTop().mode ?? null)) as unknown;
+/** ch:3 を「あなたの番」（待ちの種類 kind）にして一覧を読み直す */
+async function markTurn(h: PlaceShell, kind: string) {
+  const turn = { kind, summary: "待ち", since: "2026-11-20T00:00:00.000Z", expiresAt: null };
+  h.topicList = h.topicList.map((t) => (t.id === "ch:3" ? { ...t, mark: "turn", turn } : t));
+  await h.topics.load();
+  h.app.refresh("ch:3");
+}
 /** ch:3 を作業中にして一覧を読み直す */
 async function markRunning(h: PlaceShell) {
   h.topicList = h.topicList.map((t) => (t.id === "ch:3" ? { ...t, mark: "running" } : t));
@@ -9893,6 +9900,11 @@ test("web static: v3 の許可のモード: 見出しの state はプロジェ�
   h.app.open("ch:3");
   await markRunning(h);
   assert.deepEqual(modeOf(h), { value: "plan", disabled: true, reason: MODE_BUSY_TEXT });
+  // 許可の要求・質問の待ち（あなたの番。ターンは実行中）も押せない。判断待ち・確認は押せる
+  for (const [kind, disabled] of [["permission", true], ["question", true], ["waiting", false], ["confirm", false]] as const) {
+    await markTurn(h, kind);
+    assert.deepEqual(modeOf(h), { value: "plan", disabled, reason: disabled ? MODE_BUSY_TEXT : null }, kind);
+  }
 });
 
 test("web static: v3 の許可のモード: 行を押すと POST /api/topics/ch:<id>/mode に { mode } を 1 回（: を % にしない）。成功の後は話題と会話の一覧を読み直し、広い幅ではトーストを出さない", async () => {
@@ -9973,6 +9985,11 @@ test("web static: v3 の許可のモード: スマホの「…」の板に「許
   await markRunning(h);
   menu();
   assert.deepEqual(sheetRows(h).find((r) => r.label === "許可のモードを変える"), { label: "許可のモードを変える", why: MODE_BUSY_TEXT, disabled: true, icon: "settings" });
+  h.nodes.sheet.removeAttribute("open");
+  // 許可の要求の待ちも押せない行
+  await markTurn(h, "permission");
+  menu();
+  assert.equal(sheetRows(h).find((r) => r.label === "許可のモードを変える")?.disabled, true);
   h.nodes.sheet.removeAttribute("open");
   // プロジェクトでない話題には無い
   h.app.open("ch:2");
