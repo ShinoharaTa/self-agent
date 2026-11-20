@@ -1705,7 +1705,7 @@
       // プロジェクトのセッション（docs/plan/unify.md §6.1 の 5）の許可の要求。Claude Code のチャンネルと同じカード・同じ /api/cc/permissions/<id>/*
       const p = ch.permission;
       if (p.state === "pending") {
-        card = SA.views.ccPermissionCard(p.sessionId, p, null, "ch:" + channelId);
+        card = SA.views.ccPermissionCard(p.sessionId, p, null, "ch:" + channelId, false);
         if (card) timeline.append(card);
       } else {
         SA.views.ccQuestionForget(p.id);
