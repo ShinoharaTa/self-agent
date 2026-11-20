@@ -283,7 +283,7 @@ const QUESTION_MODAL_HEADER_MAX = 40;
 /** 「その他」のモーダルのテキスト入力の customId */
 export const CC_QUESTION_TEXT_INPUT_ID = "text";
 /** 端末の無い側（プロジェクトのセッション）の質問の時間切れ・停止の結果の行 */
-export const CC_QUESTION_EXPIRED_NO_TERMINAL = "時間切れ。続きを送ると訊き直します";
+export const CC_QUESTION_EXPIRED_NO_TERMINAL = "時間切れ。答えは、このチャンネルへの発言で送ってください";
 export const CC_QUESTION_RELEASED_NO_TERMINAL = "ターンが止まったため、答えを待つのをやめました";
 
 /** 質問の操作の種類（`cc:q:<action>:…`。app/commands/cc-question.ts が受ける） */
@@ -368,7 +368,7 @@ export function questionNotice(
   const hint = buttons ? undefined : question.multiSelect ? "（いくつでも選べます。選んでから [決める] を押してください）" : "（選んでから [決める] を押してください）";
   const footer =
     options.terminal === false
-      ? `ボタンは ${duration(options.holdSec)}効きます。過ぎたら時間切れになります。このチャンネルへの発言は、答えたあとに届きます`
+      ? `ボタンは ${duration(options.holdSec)}効きます。過ぎたら時間切れになります。このチャンネルへの発言は、このターンが終わってから届きます`
       : `端末や RC のダイアログでも答えられます（ボタンは ${duration(options.holdSec)}効きます）`;
   type Sizes = { questionMax: number; withDescription: boolean; answerMax: number; labelMax: number };
   const compose = (sizes: Sizes): string => {

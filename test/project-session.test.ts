@@ -1120,7 +1120,7 @@ test("質問の橋: ターンの中断は deny と released（via abort）", asy
   assert.equal(s.permissions.get(row.id)?.via, "abort");
 });
 
-test("質問の橋: 読めない形（選択肢 1 つ・問 5 個・32 KB 超）は行も 1 通も作らずに PROJECT_QUESTION_UNREADABLE_MESSAGE で deny", async (t) => {
+test("質問の橋: 読めない形（選択肢 1 つ・問 5 個・32 KB 超）は行も 1 通も作らずに PROJECT_QUESTION_UNREADABLE_MESSAGE で deny", { timeout: 10_000 }, async (t) => {
   const one = { questions: [{ question: "q", header: "h", options: [{ label: "only" }], multiSelect: false }] };
   const five = { questions: Array.from({ length: 5 }, (_, i) => ({ question: `q${i}`, header: "h", options: [{ label: "a" }, { label: "b" }], multiSelect: false })) };
   const large = { ...ONE_QUESTION, metadata: { pad: "x".repeat(33 * 1024) } };
@@ -1180,7 +1180,7 @@ test("質問の橋: log は「プロジェクトのセッション: 質問（#id
   assert.equal(s.gateway.edits.length, 0);
 });
 
-test("質問の橋: Web の会話に「質問: …（n 問）」と「質問の答え: 答えました（Web）: …」。時間切れは「質問の結果: 時間切れ。続きを送ると訊き直します」", async (t) => {
+test("質問の橋: Web の会話に「質問: …（n 問）」と「質問の答え: 答えました（Web）: …」。時間切れは「質問の結果: 時間切れ。答えは、このチャンネルへの発言で送ってください」", async (t) => {
   {
     const s = setupBridge(t, [], ask(ONE_QUESTION));
     await until(() => s.gateway.posts.length === 1, "1 通");
@@ -1202,9 +1202,9 @@ test("質問の橋: Web の会話に「質問: …（n 問）」と「質問の�
     await s.run;
     await until(() => s.gateway.edits.length === 1, "書き換え");
     const notices = s.stores.history.list(CHANNEL, { limit: 10 }).map((h) => h.text);
-    assert.ok(notices.includes("質問の結果: 時間切れ。続きを送ると訊き直します"), notices.join("|"));
+    assert.ok(notices.includes("質問の結果: 時間切れ。答えは、このチャンネルへの発言で送ってください"), notices.join("|"));
     assert.ok(notices.every((text) => !text.includes("端末") && !text.includes("RC")));
-    assert.ok(s.gateway.edits[0]!.message.text.endsWith("時間切れ。続きを送ると訊き直します"));
+    assert.ok(s.gateway.edits[0]!.message.text.endsWith("時間切れ。答えは、このチャンネルへの発言で送ってください"));
   }
 });
 
@@ -1297,7 +1297,7 @@ test("/api/cc/permissions/<id>/answer で sdk の質問の行に答えると can
   }
 });
 
-test("再起動: recover で expired にした sdk の質問の 1 通は rewriteRecovered で「時間切れ。続きを送ると訊き直します」に書き換わり、ボタンが外れる", async (t) => {
+test("再起動: recover で expired にした sdk の質問の 1 通は rewriteRecovered で「時間切れ。答えは、このチャンネルへの発言で送ってください」に書き換わり、ボタンが外れる", async (t) => {
   const { workspaceDir, home } = places(t);
   const db = tempDb(t);
   const now = () => new Date(BASE);
@@ -1334,7 +1334,57 @@ test("再起動: recover で expired にした sdk の質問の 1 通は rewrite
   await until(() => gateway.edits.length === 1, "書き換え");
   const edit = gateway.edits[0]!;
   assert.equal(edit.channelId, CHANNEL);
-  assert.ok(edit.message.text.endsWith("時間切れ。続きを送ると訊き直します"), edit.message.text);
+  assert.ok(edit.message.text.endsWith("時間切れ。答えは、このチャンネルへの発言で送ってください"), edit.message.text);
   assert.ok(!edit.message.text.includes("端末") && !edit.message.text.includes("RC"), edit.message.text);
   assert.deepEqual(edit.message.components, []);
+});
+
+test("再起動で時間切れにした質問の行は、1 通の書き換えと Web の会話の結果の行（質問の結果: 時間切れ…）の両方が残る。話題のセッションの行が無いチャンネルは書き換えだけ", async (t) => {
+  const { workspaceDir, home } = places(t);
+  const db = tempDb(t);
+  const now = () => new Date(BASE);
+  const stores = createStores(db, now);
+  stores.topicSessions.create({ channelId: CHANNEL, guildId: GUILD, title: "作業", categoryId: "cat-1" });
+  stores.topicSessions.setProject(CHANNEL, "alpha", "default");
+  const permissions = new CcPermissionStore(db, now);
+  const question = permissions.add({
+    sessionId: SESSION,
+    requestHash: "h",
+    toolName: "AskUserQuestion",
+    summary: "質問 1 問: どちらにしますか",
+    permissionMode: "default",
+    state: "pending",
+    origin: "sdk",
+    questionInput: JSON.stringify(ONE_QUESTION),
+  });
+  permissions.setMessage(question.id, CHANNEL, "msg-1");
+  // 許可の要求の行にも同じく効く
+  const bash = permissions.add({ sessionId: "s-bash", requestHash: "b", toolName: "Bash", summary: "ls", permissionMode: "default", state: "pending", origin: "sdk" });
+  permissions.setMessage(bash.id, CHANNEL, "msg-2");
+  // 話題のセッションの行が無いチャンネル
+  const orphan = permissions.add({ sessionId: "s-orphan", requestHash: "o", toolName: "Bash", summary: "pwd", permissionMode: "default", state: "pending", origin: "sdk" });
+  permissions.setMessage(orphan.id, "gone-1", "msg-3");
+  // 1 通を出せていない行
+  permissions.add({ sessionId: "s-none", requestHash: "n", toolName: "Bash", summary: "id", permissionMode: "default", state: "pending", origin: "sdk" });
+  const hold = new CcPermissionHold({ cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 }, store: permissions, known: () => false, now, log: () => undefined });
+  const recovered = hold.recover();
+  assert.equal(recovered.length, 4);
+  const gateway = new FakeGateway({ allow: ["sendMessage", "editMessage"] });
+  const poster = createPermissionPoster({
+    gateway,
+    permissions,
+    topicSessions: stores.topicSessions,
+    cfg: { ownerUserId: "owner-1", workspaceDir },
+    home,
+    holdSec: 300,
+    questionHoldSec: 900,
+    history: stores.history,
+    log: () => undefined,
+  });
+  poster.rewriteRecovered(recovered);
+  await until(() => gateway.edits.length === 3, "書き換え");
+  assert.deepEqual(gateway.edits.map((e) => e.channelId).sort(), [CHANNEL, CHANNEL, "gone-1"]);
+  const notices = stores.history.list(CHANNEL, { limit: 10 }).map((h) => h.text);
+  assert.deepEqual(notices.sort(), ["許可の要求（Bash）: 時間切れ（拒否しました）", "質問の結果: 時間切れ。答えは、このチャンネルへの発言で送ってください"].sort());
+  assert.deepEqual(stores.history.list("gone-1", { limit: 10 }), []);
 });

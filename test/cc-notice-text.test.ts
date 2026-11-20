@@ -678,12 +678,12 @@ function questionRow(extra: Partial<CcPermissionRow> = {}): CcPermissionRow {
 const QUESTION_PLACES = { workspaceDir: "/w", home: "/h" };
 const RC_SESSION = { name: "作業", cwd: "/w/alpha", bridgeSessionId: "session_abc" };
 
-test("質問の文: terminal false は footer が「過ぎたら時間切れになります。このチャンネルへの発言は、答えたあとに届きます」で［RC で開く］なし。既定（hook）は今の文のまま", () => {
+test("質問の文: terminal false は footer が「過ぎたら時間切れになります。このチャンネルへの発言は、このターンが終わってから届きます」で［RC で開く］なし。既定（hook）は今の文のまま", () => {
   const row = questionRow();
   const questions = parseQuestionInput(row.questionInput)!.questions;
   const sdk = questionNotice(row, questions, [], RC_SESSION, { ...QUESTION_PLACES, holdSec: 900, ownerUserId: "owner-1", terminal: false });
   assert.ok(
-    sdk.text.endsWith("ボタンは 15 分効きます。過ぎたら時間切れになります。このチャンネルへの発言は、答えたあとに届きます"),
+    sdk.text.endsWith("ボタンは 15 分効きます。過ぎたら時間切れになります。このチャンネルへの発言は、このターンが終わってから届きます"),
     sdk.text,
   );
   assert.ok(!sdk.text.includes("端末") && !sdk.text.includes("RC"), sdk.text);
