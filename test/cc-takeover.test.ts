@@ -4,6 +4,8 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
+import { CC_TAKE_POSTED_REPLY, CC_TAKE_STALE_REPLY, type CcTakeRuntime } from "../src/app/commands/cc-take.ts";
 import { layoutQueueKey } from "../src/app/commands/setup.ts";
 import type { NewTopicChannelResult } from "../src/app/session-ops.ts";
 import { projectDirName } from "../src/cc/claude-dirs.ts";
@@ -23,6 +25,7 @@ import {
 } from "../src/cc/takeover.ts";
 import { prepareTarget } from "../src/cc/takeover-files.ts";
 import { TAKEOVER_AFTER_TERM_TEXT, TAKEOVER_CHANNEL_TIMEOUT_MS, TAKEOVER_MAYBE_TERM_TEXT, takeoverFailureText } from "../src/cc/takeover-rules.ts";
+import type { Interaction } from "../src/discord/gateway.ts";
 import type { PaneState } from "../src/tmux/pane-state.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
@@ -35,6 +38,7 @@ import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { tempDb, tempDir } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
+import { FakeResponder } from "./helpers/responder.ts";
 
 const BASE = Date.parse("2026-11-13T00:00:00.000Z");
 const S1 = "11111111-1111-4111-8111-111111111111";
@@ -1427,4 +1431,188 @@ test("見張り: main.ts は取り込みを送信の守り・起動時の片付�
   assert.ok(shutdown !== undefined);
   assert.match(shutdown, /\.\.\.\(ccTakeoverExpirer === undefined \? \{\} : \{ ccTakeoverExpirer \}\),/);
   assert.match(shutdown, /\.\.\.\(ccTakeover === undefined \? \{\} : \{ ccTakeover \}\),/);
+});
+
+/** 入口（/cc take・cc:takepick・cc:take:go|no）を本物の CcTakeover の前に置く。確認は confirm-1 で打つ */
+function entrance(s: Setup) {
+  const runtime: CcTakeRuntime = {
+    // make() で差し替えた後もその本体を使う
+    get takeover() {
+      return s.takeover;
+    },
+    takeovers: s.takeovers,
+    gateway: s.gateway,
+    ready: () => true,
+    counts: () => ({
+      running: s.list.sessions.filter((view) => view.state === "running").length,
+      waiting: s.list.sessions.filter((view) => view.state === "needs_input").length,
+    }),
+    rcUrl: () => undefined,
+    timeZone: "Asia/Tokyo",
+  };
+  const log = s.deps.log;
+  const command = createCcCommand({ ccChannels: () => undefined, guildSettings: { ccCategoryId: () => null }, ccTakeover: () => runtime, log });
+  const component = createCcComponent({ ccTakeover: () => runtime, gateway: s.gateway, log });
+  const base = { guildId: "guild-1", channelId: "confirm-1", userId: "owner-1", createdAt: new Date(BASE) };
+  /** /cc take を打ってセレクトの値を返す */
+  const take = async (): Promise<string[]> => {
+    const responder = new FakeResponder();
+    await command.handle({ ...base, kind: "command", name: "cc", subcommand: "take", options: {} }, responder);
+    const row = responder.replies[0]?.components?.[0];
+    return row?.kind === "select" ? row.select.options.map((option) => option.value) : [];
+  };
+  /** セレクトで選ぶ（本人への応答を返す） */
+  const pick = async (sessionId: string): Promise<FakeResponder> => {
+    const responder = new FakeResponder();
+    await component.handle({ ...base, kind: "select", customId: "cc:takepick", values: [sessionId] }, responder);
+    return responder;
+  };
+  /** 確認のボタンを押す */
+  const press = async (customId: string): Promise<FakeResponder> => {
+    const responder = new FakeResponder();
+    await component.handle({ ...base, kind: "button", customId } as Extract<Interaction, { kind: "button" }>, responder);
+    return responder;
+  };
+  /** 出した確認の文のボタン（[取り込む]・[やめる]） */
+  const buttons = (): string[] => {
+    const post = s.gateway.posts.find((candidate) => candidate.channelId === "confirm-1");
+    const row = post?.message.components?.[0];
+    return row?.kind === "buttons" ? row.buttons.map((button) => button.customId) : [];
+  };
+  return { take, pick, press, buttons };
+}
+
+test("/cc take → 選ぶ → ［取り込む］（H2 の受け入れ）: 新しいチャンネルができ、sessions に project_dir と元の session_id が入り、確認の文が『取り込みました → <#…>』になる", async (t) => {
+  const s = setup(t);
+  const e = entrance(s);
+  assert.deepEqual(await e.take(), [S1]);
+  const picked = await e.pick(S1);
+  assert.deepEqual(picked.replies, [{ text: CC_TAKE_POSTED_REPLY, ephemeral: true }]);
+  // 確認は打ったチャンネルに出し、まだ行き先は作らない
+  assert.deepEqual(s.gateway.posts.map((post) => [post.channelId, post.messageId]), [["confirm-1", "msg-1"]]);
+  assert.equal(s.gateway.posts[0]!.message.text, takeoverConfirmText({ title: SECRET_NAME, project: "alpha", source: "alive", terminalMode: "plan" }));
+  assert.deepEqual(s.channelCalls, []);
+  const [go] = e.buttons();
+  assert.match(go ?? "", /^cc:take:go:\d+$/);
+  const pressed = await e.press(go!);
+  assert.deepEqual(pressed.calls, [{ method: "deferUpdate" }]);
+  assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  assert.deepEqual(s.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: "default" });
+  assert.equal(s.sdkSessions.get(DEST), S1);
+  assert.deepEqual(s.gateway.edits, [{ channelId: "confirm-1", messageId: "msg-1", message: { text: takeoverLinkText(DEST), components: [] } }]);
+  assertQuietLogs(s);
+});
+
+test("候補を出した後に実行中・判断待ち・tmux の外・直下でない になったセッションを選ぶと、それぞれの文で断り、確認もチャンネルも kill も無い", async (t) => {
+  for (const [code, change] of [
+    ["busy", (s: Setup) => Object.assign(s.view, { status: "busy", state: "running" })],
+    ["waiting", (s: Setup) => Object.assign(s.view, { state: "needs_input" })],
+    ["not_in_tmux", (s: Setup) => s.make({ panes: undefined })],
+    ["outside_workspace", (s: Setup) => Object.assign(s.view, { cwd: join(s.cwd, "sub") })],
+  ] as const) {
+    await t.test(code, async (t2) => {
+      const s = setup(t2);
+      const e = entrance(s);
+      assert.deepEqual(await e.take(), [S1]);
+      change(s);
+      const picked = await e.pick(S1);
+      assert.deepEqual(picked.replies, [{ text: takeoverFailureText(code, false), ephemeral: true, suppressEmbeds: true }]);
+      assert.deepEqual(s.gateway.posts, []);
+      assert.deepEqual(s.channelCalls, []);
+      assert.deepEqual(s.kills, []);
+      assertUntouched(s);
+      // 断りの log は符号とサーバー ID だけ（符号の outside_workspace は「workspace」を含む）
+      assertQuietLogs(s, /^Claude Code: 取り込みを断りました（outside_workspace、guild=guild-1）$/);
+    });
+  }
+});
+
+test("既に cc-… のチャンネルが在るセッションを入口から取り込む: 案内が 1 通で、cc_channels の行は deleted、完了へ移す", async (t) => {
+  const s = setup(t);
+  const e = entrance(s);
+  await e.take();
+  await e.pick(S1);
+  await e.press(e.buttons()[0]!);
+  assert.equal(s.ccChannels.get("chan-1")?.state, "deleted");
+  assert.deepEqual(
+    s.gateway.posts.filter((post) => post.channelId === "chan-1").map((post) => post.message.text),
+    [takeoverMovedText(DEST)],
+  );
+  assert.deepEqual(s.channelOps.moves, [{ channelId: "chan-1", target: { kind: "state", guildId: "guild-1", state: "done" } }]);
+});
+
+test("10 分後の ［取り込む］ は期限切れに書き換えて kill しない。失効の後・［やめる］ の後は本人にだけ断る", async (t) => {
+  const s = setup(t);
+  const e = entrance(s);
+  await e.take();
+  await e.pick(S1);
+  const [go] = e.buttons();
+  s.clock.now += TAKEOVER_CONFIRM_TTL_MS;
+  const late = await e.press(go!);
+  assert.deepEqual(late.calls, [{ method: "deferUpdate" }]);
+  assert.deepEqual(s.gateway.edits, [{ channelId: "confirm-1", messageId: "msg-1", message: { text: TAKEOVER_EXPIRED_TEXT, components: [] } }]);
+  assert.deepEqual(s.kills, []);
+  assert.deepEqual(s.channelCalls, []);
+  const again = await e.press(go!);
+  assert.deepEqual(again.calls, [{ method: "reply", message: { text: CC_TAKE_STALE_REPLY, ephemeral: true } }]);
+
+  // 失効（1 分ごとの expire）の後
+  s.gateway.posts.length = 0;
+  await e.pick(S1);
+  const [go2] = e.buttons();
+  s.clock.now += TAKEOVER_CONFIRM_TTL_MS;
+  assert.equal(await s.takeover.expire(), 1);
+  const expired = await e.press(go2!);
+  assert.deepEqual(expired.calls, [{ method: "reply", message: { text: CC_TAKE_STALE_REPLY, ephemeral: true } }]);
+
+  // [やめる] の後
+  s.gateway.posts.length = 0;
+  await e.pick(S1);
+  const [go3, no3] = e.buttons();
+  const cancelled = await e.press(no3!);
+  assert.deepEqual(cancelled.calls, [{ method: "update", message: { text: "取り込みをやめました。", components: [] } }]);
+  const afterCancel = await e.press(go3!);
+  assert.deepEqual(afterCancel.calls, [{ method: "reply", message: { text: CC_TAKE_STALE_REPLY, ephemeral: true } }]);
+  assert.deepEqual(s.kills, []);
+  assert.deepEqual(s.channelCalls, []);
+  assertQuietLogs(s);
+});
+
+test("［取り込む］ の同時の二度押し: kill は 1 回、2 つ目は本人にだけ『この確認はもう使えません。』", async (t) => {
+  const s = setup(t);
+  const e = entrance(s);
+  await e.take();
+  await e.pick(S1);
+  const [go] = e.buttons();
+  const [first, second] = await Promise.all([e.press(go!), e.press(go!)]);
+  assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  const staleReply = { method: "reply", message: { text: CC_TAKE_STALE_REPLY, ephemeral: true } };
+  const results = [first!.calls, second!.calls];
+  assert.equal(results.filter((calls) => calls.some((call) => JSON.stringify(call) === JSON.stringify(staleReply))).length, 1);
+  assert.ok(results.some((calls) => JSON.stringify(calls) === JSON.stringify([{ method: "deferUpdate" }])));
+  assert.equal(s.sdkSessions.get(DEST), S1);
+});
+
+test("見張り: commands/cc-take.ts は cc/channels.ts・sender.ts・replies.ts・starter.ts・commands/cc-confirm.ts・commands/cc.ts を import しない", () => {
+  const source = readFileSync(new URL("../src/app/commands/cc-take.ts", import.meta.url), "utf8");
+  const specifiers = [...source.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g)].map((match) => match[1]!);
+  assert.ok(specifiers.includes("../../cc/takeover.ts"));
+  for (const forbidden of ["channels.ts", "sender.ts", "replies.ts", "starter.ts", "cc-confirm.ts", "cc.ts"]) {
+    assert.ok(!specifiers.some((specifier) => specifier.endsWith(`/${forbidden}`)), forbidden);
+  }
+});
+
+test("見張り: main.ts は /cc take の deps に入口を遅く読む getter（ccTakeEntry）で渡し、本体を作った直後に入口を作る", () => {
+  const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const commands = source.match(/createCommands\(\{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(commands !== undefined);
+  assert.match(commands, /\.\.\.\(config\.cc \? \{ ccChannels: \(\) => ccChannels, ccTakeover: \(\) => ccTakeEntry \} : \{\}\),/);
+  const components = source.match(/createComponents\(\{[\s\S]*?\n {2}\}\)/)?.[0];
+  assert.ok(components !== undefined);
+  assert.match(components, /\n {4}ccTakeover: \(\) => ccTakeEntry,\n/);
+  // 入口は本体と同じ物を使い、本体を作った直後に作る
+  const made = source.indexOf("ccTakeover = takeover;");
+  const entry = source.indexOf("ccTakeEntry = {", made);
+  assert.ok(made >= 0 && entry > made);
+  assert.match(source.slice(entry, source.indexOf("\n  };", entry)), /\n {4}takeover,\n {4}takeovers: ccTakeovers,\n/);
 });
