@@ -20,7 +20,7 @@ test("github_topics: 新しい DB は最新の版で、表と索引がある", (
   assert.deepEqual(columns, ["id", "notification_id", "thread_id", "channel_id", "created_at"]);
 });
 
-test("openDb: v45 までの DB を上げると最新の版になり、github_topics ができる。今ある表の行はそのまま", (t) => {
+test("openDb: v45 までの DB を上げると最新の版になり、github_topics ができる。今ある表・索引の定義と cc_takeovers の行はそのまま", (t) => {
   assert.ok(MIGRATIONS.length >= 46);
   const path = join(tempDir(t), "self-agent.db");
   // v46（github_topics）の 1 つ前の版。後の移行を足しても変えない
@@ -34,11 +34,16 @@ test("openDb: v45 までの DB を上げると最新の版になり、github_top
       "INSERT INTO cc_takeovers (session_id, source, project, guild_id, entry, state, permission_mode, created_at, updated_at) VALUES ('s', 'alive', 'p', 'g', 'web', 'awaiting_confirm', 'default', 'a', 'a')",
     )
     .run();
+  // github_topics の他の表・索引の定義（名前の近い github_handoffs・github_notifications も入る）
+  const others = "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'github_topics%' ORDER BY name";
+  const defsBefore = old.prepare(others).all().map((row) => ({ ...row }));
+  assert.ok(defsBefore.some((row) => row.name === "github_handoffs"));
   old.close();
   const db = openDb(path);
   t.after(() => db.close());
   assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
   assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name = 'github_topics'").get()?.name, "github_topics");
+  assert.deepEqual(db.prepare(others).all().map((row) => ({ ...row })), defsBefore);
   const rows = db.prepare("SELECT session_id, project, state FROM cc_takeovers").all();
   assert.deepEqual(rows.map((row) => ({ ...row })), [{ session_id: "s", project: "p", state: "awaiting_confirm" }]);
 });
@@ -51,7 +56,7 @@ test("add・latestForThread: add した行を返す", (t) => {
     notificationId: 7,
     threadId: "thread-1",
     channelId: "channel-1",
-    createdAt: AT,
+    createdAt: AT.toISOString(),
   });
 });
 
