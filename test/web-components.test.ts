@@ -1474,6 +1474,7 @@ test("web components: topModel の phone・talk（戻る・右腕、場所と切
     status: { text: "あなたの番", tone: "warning" },
     rest: "場所: General",
     place: null,
+    mode: null,
     views: null,
     menu: true,
     hand: { name: shell.handLabel("turn"), mark: "turn" },
@@ -1521,6 +1522,7 @@ test("web components: topModel の wide・compact（場所・切り替えは nul
     status: { text: "あなたの番", tone: "warning" },
     rest: "場所: General ・ 調べ物",
     place: null,
+    mode: null,
     views: null,
     menu: true,
     hand: null,
@@ -1541,10 +1543,10 @@ test("web components: topModel の wide・compact（場所・切り替えは nul
 test("web components: topModel の other（状態・補足・場所・切り替え・「…」なし。phone は戻ると右腕だけ残る）", () => {
   const props = topProps({ view: "other", title: "設定", note: "調べ物", views: { value: "talk" } });
   assert.deepEqual(shell.topModel(props), {
-    variant: "phone", view: "other", title: "設定", back: true, compact: false, status: null, rest: "", place: null, views: null, menu: false, hand: { name: shell.handLabel("turn"), mark: "turn" },
+    variant: "phone", view: "other", title: "設定", back: true, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: { name: shell.handLabel("turn"), mark: "turn" },
   });
   assert.deepEqual(shell.topModel({ ...props, variant: "wide" }), {
-    variant: "wide", view: "other", title: "設定", back: false, compact: false, status: null, rest: "", place: null, views: null, menu: false, hand: null,
+    variant: "wide", view: "other", title: "設定", back: false, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: null,
   });
 });
 
@@ -3367,4 +3369,91 @@ test("web components: c-cards.js の .value の代入は口の 1 か所だけで
     rules.filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === sel).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
   for (const d of ["caret-color: var(--accent)", "font-size: var(--c-font-body)"]) assert.ok(decls(".c-card-other").includes(d), d);
   for (const d of ["border: 0", "padding: 0", "margin: 0", "min-width: 0"]) assert.ok(decls(".c-card-q").includes(d), d);
+});
+
+// ===== 許可のモード（プロジェクトのセッション。見出しの帯のボタン） =====
+
+const MODE_BUSY_TEXT = "担当が作業中です。終わってから変えてください";
+
+test("web components: topModel: 広い幅は mode を返し、スマホ・compact・view other は null", () => {
+  const mode = { value: "plan", disabled: false, reason: null };
+  assert.deepEqual(shell.topModel(topProps({ variant: "wide", mode }))?.mode, { text: "plan", label: "許可のモード: plan", disabled: false, reason: null });
+  for (const value of ["default", "acceptEdits"]) {
+    assert.deepEqual(shell.topModel(topProps({ variant: "wide", mode: { value } }))?.mode, { text: value, label: "許可のモード: " + value, disabled: false, reason: null }, value);
+  }
+  // 押せないときだけ reason（空なら null）。押せるときは reason を出さない
+  assert.deepEqual(shell.topModel(topProps({ variant: "wide", mode: { value: "default", disabled: true, reason: MODE_BUSY_TEXT } }))?.mode, {
+    text: "default",
+    label: "許可のモード: default",
+    disabled: true,
+    reason: MODE_BUSY_TEXT,
+  });
+  assert.equal((shell.topModel(topProps({ variant: "wide", mode: { value: "default", disabled: true, reason: "" } }))?.mode as Obj).reason, null);
+  assert.equal((shell.topModel(topProps({ variant: "wide", mode: { value: "default", disabled: false, reason: MODE_BUSY_TEXT } }))?.mode as Obj).reason, null);
+  // true のときだけ押せない
+  assert.equal((shell.topModel(topProps({ variant: "wide", mode: { value: "plan", disabled: "true" } }))?.mode as Obj).disabled, false);
+  // スマホ・compact・other は帯にも補足にも出さない
+  assert.equal(shell.topModel(topProps({ mode }))?.mode, null);
+  assert.equal(shell.topModel(topProps({ mode }))?.rest, "場所: General");
+  assert.equal(shell.topModel(topProps({ variant: "wide", compact: true, mode }))?.mode, null);
+  assert.equal(shell.topModel(topProps({ variant: "wide", compact: true, mode }))?.rest, "場所: General");
+  assert.equal(shell.topModel(topProps({ variant: "wide", view: "other", mode }))?.mode, null);
+  assert.equal(shell.topModel(topProps({ variant: "wide", mode: null }))?.mode, null);
+  assert.equal(shell.topModel(topProps({ variant: "wide" }))?.mode, null);
+});
+
+test("web components: ★ topModel: 3 つ以外の value は null", () => {
+  for (const value of ["bypassPermissions", "dontAsk", "auto", "PLAN", "", null, undefined, 3]) {
+    assert.equal(shell.topModel(topProps({ variant: "wide", mode: { value, disabled: false } }))?.mode, null, String(value));
+  }
+  for (const mode of ["plan", {}, 1]) assert.equal(shell.topModel(topProps({ variant: "wide", mode }))?.mode, null, JSON.stringify(mode));
+});
+
+test("web components: TopBar: 押せない mode は aria-disabled と title に理由", () => {
+  const calls: unknown[][] = [];
+  const on = { ...topRec().on, mode: (...a: unknown[]) => void calls.push(["mode", ...a]) };
+  const props = topProps({ variant: "wide", mode: { value: "default", disabled: true, reason: MODE_BUSY_TEXT } });
+  const v = shell.TopBar({ ...props, on }) as VNode;
+  // 場所のボタンのすぐ後ろ、gap の前
+  assert.deepEqual(keysOf(v.props.children), ["text", "status", "place", "mode", "gap", "menu"]);
+  const bar = one(v);
+  const btn = find(bar, "c-top-mode")[0] as El;
+  assert.deepEqual(
+    [btn.type, btn.props.type, btn.props["data-act"], btn.props["aria-haspopup"], "disabled" in btn.props, btn.props.title, btn.props["aria-disabled"], btn.props["aria-label"]],
+    ["button", "button", "mode", "dialog", false, MODE_BUSY_TEXT, "true", "許可のモード: default"],
+  );
+  assert.equal(textOf(find(btn, "c-top-mode-text")), "default");
+  const chevron = find(btn, "c-icon")[0] as El;
+  assert.deepEqual([chevron.props["data-size"], String((chevron.children[0] as El).props.href).endsWith("#chevron-down")], ["sm", true]);
+  // 押せないときは押しても on.mode を呼ばない
+  const pe = fakeEvent();
+  (btn.props.onClick as (e: unknown) => void)(pe);
+  assert.equal(pe.count(), 1);
+  assert.deepEqual(calls, []);
+  // 押せるときは aria-disabled なし・title は「許可のモードを変える」・押すと opener を渡す
+  const ok = find(one(html`<${shell.TopBar} ...${topProps({ variant: "wide", mode: { value: "plan" } })} on=${on} />`), "c-top-mode")[0] as El;
+  assert.deepEqual([ok.props["aria-disabled"], ok.props.title, ok.props["aria-label"]], [undefined, "許可のモードを変える", "許可のモード: plan"]);
+  const x = { scrollIntoView: () => undefined };
+  (ok.props.onClick as (e: unknown) => void)({ currentTarget: x });
+  assert.deepEqual(calls, [["mode", x]]);
+  // スマホには出さない
+  assert.equal(find(one(html`<${shell.TopBar} ...${topProps({ mode: { value: "plan" } })} on=${on} />`), "c-top-mode").length, 0);
+});
+
+test("web components: ★ MODE_LABELS（サーバー）と views.js の PERMISSION_MODES と shell.js の MODE_ROWS の 3 つの文が同じ", async () => {
+  const { MODE_LABELS } = await import("../src/app/session-mode.ts");
+  const server = Object.entries(MODE_LABELS);
+  assert.deepEqual(server.map(([id]) => id), ["default", "acceptEdits", "plan"]);
+  // views.js の PERMISSION_MODES（ほかのモードの文も持つ。3 つは同じ字）
+  const views = readFileSync(join(STATIC_DIR, "views.js"), "utf8");
+  const block = views.match(/const PERMISSION_MODES = \{([\s\S]*?)\};/)?.[1];
+  assert.ok(block !== undefined);
+  const viewTexts = Object.fromEntries([...block.matchAll(/(\w+): "([^"]*)"/g)].map((m) => [m[1], m[2]]));
+  // shell.js の MODE_ROWS（順も同じ）
+  const shellJs = readFileSync(join(STATIC_DIR, "shell.js"), "utf8");
+  const rows = shellJs.match(/const MODE_ROWS = \[([\s\S]*?)\n {2}\];/)?.[1];
+  assert.ok(rows !== undefined);
+  const shellRows = [...rows.matchAll(/\["(\w+)", "([^"]*)"\]/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(shellRows, server);
+  for (const [id, text] of server) assert.equal(viewTexts[id], text, id);
 });

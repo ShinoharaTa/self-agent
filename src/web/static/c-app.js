@@ -151,7 +151,7 @@ if (listRoot) {
     return node.matches("button") ? node : node.querySelector("button");
   }
 
-  /** 見出しを描く。state は { view, title, status, note, place, views, hand, compact, menu, controls, on }。形（スマホか広い幅か）はここで、compact は state のまま */
+  /** 見出しを描く。state は { view, title, status, note, place, views, hand, compact, menu, mode, controls, on }。形（スマホか広い幅か）はここで、compact は state のまま */
   function drawTop(state) {
     lastTop = state;
     if (!topRoot) return true;
@@ -170,6 +170,7 @@ if (listRoot) {
           hand=${state.hand}
           menu=${state.menu}
           compact=${state.compact === true}
+          mode=${state.mode}
           controls=${state.controls}
           on=${state.on}
         />`,
@@ -188,9 +189,9 @@ if (listRoot) {
     return true;
   }
 
-  /** 見出しのボタン（back・place・menu・hand）にフォーカス。無い・押せなければ false */
+  /** 見出しのボタン（back・place・mode・menu・hand）にフォーカス。無い・押せなければ false */
   function focusTop(act) {
-    if (!topRoot || !["back", "place", "menu", "hand"].includes(act)) return false;
+    if (!topRoot || !["back", "place", "mode", "menu", "hand"].includes(act)) return false;
     const b = buttonIn(topRoot.querySelector('[data-act="' + act + '"]'));
     if (!b || b.disabled) return false;
     b.focus({ preventScroll: true });
