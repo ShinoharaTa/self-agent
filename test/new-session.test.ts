@@ -370,7 +370,11 @@ test("/new のコマンド定義: 題名は必須の文字列で 1〜100 字", (
   const { def } = createNewSessionCommand(deps);
   assert.deepEqual(
     def.options?.map(({ type, name, required, minLength, maxLength }) => ({ type, name, required, minLength, maxLength })),
-    [{ type: "string", name: "title", required: true, minLength: 1, maxLength: 100 }],
+    [
+      { type: "string", name: "title", required: true, minLength: 1, maxLength: 100 },
+      // モデルの任意の引数は常に最後（docs/plan/models.md §3）
+      { type: "string", name: "model", required: undefined, minLength: undefined, maxLength: undefined },
+    ],
   );
 });
 

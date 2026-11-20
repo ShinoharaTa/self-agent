@@ -25,7 +25,7 @@ import {
 } from "./agent/permission-bridge.ts";
 import { createProjectProfile } from "./agent/project-profile.ts";
 import { checkSharedLinks } from "./agent/unify-setup-check.ts";
-import { checkSessionProject, createTopicChannel, type ProjectSessionGate, startTopic } from "./app/session-ops.ts";
+import { checkSessionProject, createTopicChannel, type ProjectSessionGate, resolveTopicModel, startTopic } from "./app/session-ops.ts";
 import { personaSystemPrompts, TAKEOVER_NOTE } from "./agent/system-prompt.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
@@ -108,6 +108,7 @@ import { JobStore } from "./store/jobs.ts";
 import { KnowledgeStore } from "./store/knowledge.ts";
 import { MemoryStore } from "./store/memories.ts";
 import { NOTICE_KEEP_DAYS, NoticeStore } from "./store/notices.ts";
+import { PlaceSettingStore } from "./store/place-settings.ts";
 import { ProjectStore } from "./store/projects.ts";
 import { ReminderStore } from "./store/reminders.ts";
 import { RoutineRecordStore } from "./store/routine-records.ts";
@@ -210,6 +211,8 @@ const sessions = new SdkSessionStore(db, now);
 const usage = new UsageStore(db, now);
 const guildSettings = new GuildSettingsStore(db, now);
 const topicSessions = new TopicSessionStore(db, now);
+// 場所ごとの既定のモデル（docs/plan/models.md §3・§4。書く口は PR-4）
+const placeSettings = new PlaceSettingStore(db, now);
 const seeds = new ChannelSeedStore(db, now);
 const inboxSummaries = new InboxSummaryStore(db, now);
 const knowledge = new KnowledgeStore(db, now);
@@ -576,6 +579,8 @@ const commands = createCommands({
   ...(config.cc ? { ccChannels: () => ccChannels, ccTakeover: () => ccTakeEntry } : {}),
   // /new の project（SELF_AGENT_CC=1 のときだけ）
   ...(projectSessions === undefined ? {} : { projectSessions }),
+  // /new とホームパネルの場所の既定のモデル
+  placeSettings,
   // /move（結果は /renew と同じく持ち主の人格の形で出す）
   move: { ...moveDeps, personas, ownerPosts },
   // /mode（SELF_AGENT_CC=1 のときだけ登録する）
@@ -1067,6 +1072,7 @@ if (
     ccSends,
     ccPermissions: ccPermissionStore,
     topicSessions,
+    placeModel: (project) => resolveTopicModel({ persona: false, projectDir: project, generalDir: config.generalDir, placeSettings })?.model,
     sdkSessions: sessions,
     ready: () => projectSessions?.ready() === true,
     checkSessionProject: (name) =>
@@ -1237,6 +1243,7 @@ const topicStart = {
   defaultConnected: () => gateway.connected(),
   seeds,
   ...(projectSessions === undefined ? {} : { projectSessions }),
+  placeSettings,
   log,
 };
 // GET /api/topics の元（右腕の topic_list と共有する。Web が無効なら undefined）
@@ -1488,6 +1495,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         inboxRotator,
         history: historyStore,
         ...(projectSessions === undefined ? {} : { projectSessions }),
+        placeSettings,
         log,
       }),
     ],

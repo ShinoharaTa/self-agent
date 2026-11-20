@@ -68,6 +68,8 @@ export type SessionRouteDeps = Pick<ChannelRouteDeps, "cfg" | "resolveChannel"> 
     history: Pick<HistoryStore, "add">;
     /** プロジェクトのセッション（docs/plan/unify.md §5.2。SELF_AGENT_CC=1 のときだけ）。無ければ projectDir は 409 cc_disabled */
     projectSessions?: ProjectSessionGate;
+    /** 場所の既定のモデル（docs/plan/models.md §3。POST /api/sessions は選ばせず、場所の既定だけ） */
+    placeSettings?: NewSessionDeps["placeSettings"];
     log: (message: string) => void;
   };
 

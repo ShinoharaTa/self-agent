@@ -1,12 +1,14 @@
 // セッションの操作（作る・待ちにする・進行中に戻す・閉じる・会話を新しくする）の本体。Discord のコマンド・ボタン（commands/）と Web UI が共有する。
 // 応答（interaction への返信・保留）は呼び出し側が行い、ここは結果の種類を返す。保留が要る操作は、受け付けた（断らない）と決まった時点で onAccepted を呼ぶ
 import { removeNodeModules } from "../agent/disk.ts";
+import { type ModelChoice, modelLine, resolveModelKey } from "../agent/models.ts";
 import { type CcPlaces, ensureGeneralDir, projectDir as verifiedProjectDir } from "../cc/starter.ts";
 import { DEFAULT_PERSONA_ID, type PersonaConfig } from "../config.ts";
 import { normalizeChannelName } from "../discord/channel-name.ts";
 import { escapeDiscordText } from "../discord/escape.ts";
 import { type HistoryStore, recordHistory } from "../store/history.ts";
 import type { ChannelSeedStore } from "../store/channel-seeds.ts";
+import type { PlaceSettingStore } from "../store/place-settings.ts";
 import type { SummaryChannelKind } from "../store/inbox-summaries.ts";
 import type { CloseDraft, TopicSession, TopicSessionOrigin } from "../store/topic-sessions.ts";
 import { findStateCategory } from "./categories.ts";
@@ -70,12 +72,17 @@ export function sessionTopic(title: string, owner?: SessionOwner, projectDir?: s
   return projectDir === undefined ? title : `${title}（${projectDir}）`;
 }
 
-/** 最初の投稿。プロジェクトのセッションならその装備と許可の答え方の 1 行を足す（名前の `_` などの Markdown は無効にする） */
-export function welcomeText(title: string, projectDir?: string): string {
+/**
+ * 最初の投稿。プロジェクトのセッションならその装備と許可の答え方の 1 行を足す（名前の `_` などの Markdown は無効にする）。
+ * model（完全な ID）があれば最後にモデルの 1 行を足す
+ */
+export function welcomeText(title: string, projectDir?: string, model?: string): string {
   const head = `セッション「${title}」を始めました。ここで話しかけてください。`;
-  return projectDir === undefined
-    ? head
-    : `${head}\nプロジェクト: ${escapeDiscordText(projectDir)}。このチャンネルの発言は Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はここのボタンか Web で答えます`;
+  const body =
+    projectDir === undefined
+      ? head
+      : `${head}\nプロジェクト: ${escapeDiscordText(projectDir)}。このチャンネルの発言は Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はここのボタンか Web で答えます`;
+  return model === undefined ? body : `${body}\n${modelLine(model)}`;
 }
 
 /**
@@ -94,7 +101,37 @@ export function checkSessionProject(name: string, gate: ProjectSessionGate): Pro
   return { ok: true, projectDir: name };
 }
 
-export type NewSessionResult = { result: "not_set_up" } | { result: "created"; channelId: string };
+/** 場所の既定の鍵（place_settings.place。docs/plan/models.md §4）。projectDir が無い・General なら general、ほかは p:<名前>（app/topics.ts の groupKeyOf と同じ規則） */
+export function placeKeyOf(projectDir: string | undefined, generalDir: string | undefined): string {
+  return projectDir === undefined || projectDir === generalDir ? "general" : `p:${projectDir}`;
+}
+
+export type TopicModelInput = {
+  /** 明示のモデルの key（/new の model・session_open の model・POST /api/topics の model） */
+  key?: string;
+  /** 足した人格の話題か（人格の話題にはモデルを付けない） */
+  persona: boolean;
+  projectDir: string | undefined;
+  generalDir: string | undefined;
+  placeSettings: Pick<PlaceSettingStore, "get"> | undefined;
+};
+
+/**
+ * 話題のモデルを決める（docs/plan/models.md §3）: 人格の話題 → 無し、明示の key → 場所の既定の key → 無し（全体の既定に従う）。
+ * 一覧に無い key は無いものとして次へ進む。投げない（placeSettings.get の例外だけはそのまま投げる）
+ */
+export function resolveTopicModel(input: TopicModelInput): ModelChoice | undefined {
+  if (input.persona) return undefined;
+  if (input.key !== undefined) {
+    const picked = resolveModelKey(input.key);
+    if (picked !== undefined) return picked;
+  }
+  const placed = input.placeSettings?.get(placeKeyOf(input.projectDir, input.generalDir))?.model;
+  return placed === null || placed === undefined ? undefined : resolveModelKey(placed);
+}
+
+/** created の model は sessions.model に置いた完全な ID（無ければ欄ごと無い） */
+export type NewSessionResult = { result: "not_set_up" } | { result: "created"; channelId: string; model?: string };
 
 /** createTopicChannel の結果（created は作ったチャンネルとその親の進行中カテゴリ） */
 export type NewTopicChannelResult = { result: "not_set_up" } | { result: "created"; channelId: string; categoryId: string };
@@ -130,7 +167,8 @@ export async function createTopicChannel(
 /**
  * 空きのある進行中カテゴリにセッション用のチャンネルを作り、sessions に保存する。/setup 前（進行中カテゴリが無い）なら何もしない。
  * origin は作られ方（/new・ホームパネルは command、#inbox・#<NAME> の session_open は inbox）。
- * owner は作る人格（チャンネルの持ち主。省略は既定の人格）。足した人格ならチャンネル名に `<NAME>-` を付け、topic に表示名を添える
+ * owner は作る人格（チャンネルの持ち主。省略は既定の人格）。足した人格ならチャンネル名に `<NAME>-` を付け、topic に表示名を添える。
+ * model はその話題のモデル（完全な ID。省略は NULL）
  */
 export async function createTopicSession(
   guildId: string,
@@ -139,6 +177,7 @@ export async function createTopicSession(
   origin: TopicSessionOrigin = "command",
   owner?: SessionOwner,
   projectDir?: string,
+  model?: string,
 ): Promise<NewSessionResult> {
   const { topicSessions, log } = deps;
   const created = await createTopicChannel(guildId, title, deps, owner, projectDir);
@@ -154,6 +193,7 @@ export async function createTopicSession(
       origin,
       ...(owner === undefined ? {} : { persona: owner.id }),
       ...(projectDir === undefined ? {} : { projectDir, permissionMode: "default" as const }),
+      ...(model === undefined ? {} : { model }),
     });
   } catch (error) {
     // チャンネルだけが Discord に残る。手で消せるよう、ログにチャンネル ID を出す（ログ方針の例外）
@@ -172,17 +212,23 @@ export type OpenTopicSessionResult = { result: "empty_title" } | NewSessionResul
  * 空白だけの題名は作らない（empty_title。onAccepted は呼ばない）→ onAccepted → /setup と同じキューで作成 → 最初の投稿（チャンネルの持ち主の Bot。失敗は log だけ）。
  * via は log の主語（「/new で」など）。owner は作る人格（省略は既定の人格）。projectDir はプロジェクトのセッションのプロジェクト
  * （checkSessionProject を通った名前。owner とは同時に渡さない）。
- * options の origin は作られ方（省略は command）、welcome は最初の投稿（省略は welcomeText）、onCreated は作った直後（キューの中・最初の投稿より前）に呼ぶ
+ * options の origin は作られ方（省略は command）、welcome は最初の投稿（決めたモデルの完全な ID を受ける。省略は welcomeText）、
+ * onCreated は作った直後（キューの中・最初の投稿より前）に呼ぶ、model は明示のモデルの key（resolveTopicModel で場所の既定と合わせて決める）
  */
 export async function openTopicSession(
   guildId: string,
   rawTitle: string,
   owner: SessionOwner | undefined,
-  deps: Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log">,
+  deps: Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log" | "projectSessions" | "placeSettings">,
   via: string,
   onAccepted?: () => Promise<void>,
   projectDir?: string,
-  options?: { origin?: TopicSessionOrigin; welcome?: string; onCreated?: (channelId: string) => void },
+  options?: {
+    origin?: TopicSessionOrigin;
+    welcome?: (model: string | undefined) => string;
+    onCreated?: (channelId: string) => void;
+    model?: string;
+  },
 ): Promise<OpenTopicSessionResult> {
   const { gateway, personas, queue, log } = deps;
   // 空白だけの題名は Discord の min_length・必須の検証を通ってしまうので、ここで弾く
@@ -190,9 +236,17 @@ export async function openTopicSession(
   if (title === "") return { result: "empty_title" };
   // Discord への作成が複数回ありうるので、呼び出し側はここで保留する
   await onAccepted?.();
+  // チャンネルを作る前に決める（投げたらチャンネルはできない）
+  const chosen = resolveTopicModel({
+    key: options?.model,
+    persona: owner !== undefined,
+    projectDir,
+    generalDir: deps.projectSessions?.places.generalDir,
+    placeSettings: deps.placeSettings,
+  });
   // 同時に走ると空きの数え方がずれるので、/setup と同じ key で 1 つずつ実行する
   const result = await queue.run(layoutQueueKey(guildId), async () => {
-    const created = await createTopicSession(guildId, title, deps, options?.origin ?? "command", owner, projectDir);
+    const created = await createTopicSession(guildId, title, deps, options?.origin ?? "command", owner, projectDir, chosen?.model);
     if (created.result === "created") options?.onCreated?.(created.channelId);
     return created;
   });
@@ -203,12 +257,15 @@ export async function openTopicSession(
   );
   try {
     // 最初の投稿はチャンネルの持ち主の Bot が行う（足した人格のセッションはその人格の Bot）
-    await (personas?.gatewayFor(result.channelId) ?? gateway).send(result.channelId, options?.welcome ?? welcomeText(title, projectDir));
+    await (personas?.gatewayFor(result.channelId) ?? gateway).send(
+      result.channelId,
+      options?.welcome?.(chosen?.model) ?? welcomeText(title, projectDir, chosen?.model),
+    );
   } catch (error) {
     // チャンネルと DB の行はできているので、失敗の返信にはしない
     log(`セッションの最初の投稿に失敗しました: ${describeError(error)}`);
   }
-  return result;
+  return { ...result, ...(chosen === undefined ? {} : { model: chosen.model }) };
 }
 
 // ---- 話題を始める（POST /api/topics。docs/plan/web-ui-v3.md §5・§11 の M4） ----
@@ -251,6 +308,8 @@ export type StartTopicInput = {
   seed?: string;
   /** 頼んだチャンネルの名前（# なし）。by が right_hand のときの最初の投稿に使う。省略は "inbox" */
   from?: string;
+  /** モデルの key（呼ぶ側が resolveModelKey で確かめた物）。省略は場所の既定 */
+  model?: string;
 };
 export type StartTopicResult =
   | { result: "empty" }
@@ -267,8 +326,10 @@ export type StartTopicResult =
       projectDir: string | null;
       /** started: 最初のターンを受け付けた・none: 一言が無い・failed: 受け付けられなかった（話題は作ってある） */
       turn: "started" | "none" | "failed";
+      /** sessions.model に置いた完全な ID（無ければ欄ごと無い） */
+      model?: string;
     };
-export type StartTopicDeps = Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log"> & {
+export type StartTopicDeps = Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log" | "placeSettings"> & {
   history: Pick<HistoryStore, "add"> | undefined;
   submitText: Handler["submitText"];
   /** SELF_AGENT_CC=1 のときだけ。places には generalDir が入っている */
@@ -294,9 +355,9 @@ export function startedDividerText(place: StartTopicPlace, projectDir: string | 
   return place.kind === "project" ? `${place.name} で始めました` : "General で始めました";
 }
 
-/** by が right_hand のときの最初の投稿（welcomeText の後ろに 1 行足す） */
-export function rightHandWelcomeText(title: string, from: string, projectDir?: string): string {
-  return `${welcomeText(title, projectDir)}\n#${from} の話の続きです。`;
+/** by が right_hand のときの最初の投稿（welcomeText の後ろに 1 行足す。モデルの行はその前） */
+export function rightHandWelcomeText(title: string, from: string, projectDir?: string, model?: string): string {
+  return `${welcomeText(title, projectDir, model)}\n#${from} の話の続きです。`;
 }
 
 /**
@@ -354,7 +415,13 @@ export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): 
     undefined,
     projectDir,
     {
-      ...(rightHand ? { origin: "inbox" as const, welcome: rightHandWelcomeText(title, input.from ?? "inbox", projectDir) } : {}),
+      ...(rightHand
+        ? {
+            origin: "inbox" as const,
+            welcome: (model: string | undefined) => rightHandWelcomeText(title, input.from ?? "inbox", projectDir, model),
+          }
+        : {}),
+      ...(input.model === undefined ? {} : { model: input.model }),
       ...(seed === undefined ? {} : { onCreated: (created: string) => putSeed(created, seed) }),
     },
   );
@@ -389,7 +456,14 @@ export async function startTopic(input: StartTopicInput, deps: StartTopicDeps): 
     turn = submitted.result === "accepted" ? "started" : "failed";
     if (turn === "failed") deps.log(`話題は作りましたが、最初の一言を送れませんでした（${submitted.result}）`);
   }
-  return { result: "created", channelId, title, projectDir: projectDir ?? null, turn };
+  return {
+    result: "created",
+    channelId,
+    title,
+    projectDir: projectDir ?? null,
+    turn,
+    ...(opened.model === undefined ? {} : { model: opened.model }),
+  };
 }
 
 // ---- 待ちにする・進行中に戻す（/wait・[続ける]） ----

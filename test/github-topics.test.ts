@@ -132,6 +132,8 @@ test("act: 地図に在るリポジトリは話題ができ、題名は handoffT
     { guildId: "guild-9", title: handoffTitle(target), text: handoffTemplate(target), place: { kind: "project", name: "example-repo" }, by: "github", at: NOW },
   ]);
   assert.equal(s.starts[0]!.title, "GitHub PR 12");
+  // モデルは選ばせない（場所の既定だけ。docs/plan/models.md §3）
+  assert.equal("model" in s.starts[0]!, false);
   const row = s.topics.latestForThread("t-1");
   assert.deepEqual(row && { notificationId: row.notificationId, threadId: row.threadId, channelId: row.channelId }, { notificationId: id, threadId: "t-1", channelId: "topic-1" });
   assert.deepEqual(s.logs, [`GitHub の対応: created（通知 #${id}）`]);

@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { modelKeys } from "../src/agent/models.ts";
 import type { RunContext } from "../src/agent/runner.ts";
 import type { TopicOpenArgs } from "../src/agent/tools.ts";
 import { createTopicSession } from "../src/app/commands/new.ts";
@@ -11,10 +12,11 @@ import { KeyedSerialQueue } from "../src/app/queue.ts";
 import {
   createRightHand,
   FIRST_TURN_FAILED_NOTE,
-  MODEL_NOT_YET_NOTE,
   NO_PROJECT_SESSIONS_NOTE,
+  PERSONA_MODEL_NOTE,
   PERSONA_PLACE_NOTE,
   PLACE_FALLBACK_NOTE,
+  SESSION_OPEN_BAD_MODEL_MESSAGE,
   SESSION_OPEN_EXISTING_MESSAGE,
   TOPIC_LIST_DISABLED_MESSAGE,
   TOPIC_LIST_NOTICE,
@@ -33,6 +35,7 @@ import { moveRefusalText } from "../src/app/topic-move.ts";
 import type { ProposeResult, TopicProposals } from "../src/app/topic-proposals.ts";
 import { buildTopics, type TopicsInput, type TopicSeed } from "../src/app/topics.ts";
 import type { PersonaConfig } from "../src/config.ts";
+import { PlaceSettingStore } from "../src/store/place-settings.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 
@@ -75,6 +78,7 @@ function setup(t: TestContext, options: Options = {}) {
   const gateway = new FakeGateway({ record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn", "send"] });
   gateway.alive.add("active-1");
   const { guildSettings, topicSessions, seeds, history } = createStores(db, now);
+  const placeSettings = new PlaceSettingStore(db, now);
   if (options.setUp ?? true) {
     guildSettings.setChannel(GUILD, "inboxChannelId", "inbox-1");
     guildSettings.setStateCategory(GUILD, "active", 1, "active-1");
@@ -113,7 +117,7 @@ function setup(t: TestContext, options: Options = {}) {
     resolveChannel: (_guildId, channelId) => (channelId === "inbox-1" || channelId === "luna-inbox" ? "inbox" : channelId === "tasks-1" ? "tasks" : "session"),
     personas: { ownerOf: (channelId) => (channelId === "luna-inbox" ? "luna" : "default") },
     topicSessions,
-    start: { gateway, guildSettings, topicSessions, queue, log, history, submitText, seeds, ...projectSessions },
+    start: { gateway, guildSettings, topicSessions, queue, log, history, submitText, seeds, placeSettings, ...projectSessions },
     ...(options.collect === undefined ? {} : { collect: options.collect }),
     ...(options.proposals === false ? {} : { proposals }),
     now,
@@ -125,6 +129,7 @@ function setup(t: TestContext, options: Options = {}) {
     gateway,
     guildSettings,
     topicSessions,
+    placeSettings,
     seeds,
     history,
     workspace,
@@ -232,19 +237,70 @@ test("right hand open: submitText が受け付けなかったら turn failed で
   assert.equal(both.note, `${PLACE_FALLBACK_NOTE} ${FIRST_TURN_FAILED_NOTE}`);
 });
 
-test("right hand open: model を渡すと話題は今までどおり作られ、note にモデルの指定はまだ使えない旨", async (t) => {
+test("right hand open: model の key（前後の空白・大文字も可）で作られ、sessions.model が完全な ID・結果の model が一覧の字・note は無い", async (t) => {
   const s = setup(t);
-  const result = await s.rightHand.open({ ...ARGS, project: "alpha", text: "宿を探して", model: "sonnet" }, INBOX);
-  assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "alpha", turn: "started", note: MODEL_NOT_YET_NOTE });
+  const result = await s.rightHand.open({ ...ARGS, project: "alpha", text: "宿を探して", model: " Sonnet " }, INBOX);
+  assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "alpha", turn: "started", model: "Sonnet 5.5" });
+  assert.equal(s.topicSessions.modelOf("ch-1"), "claude-sonnet-5-5");
   assert.equal(s.topicSessions.projectDirOf("ch-1")?.projectDir, "alpha");
-  // 話題は今までどおり作られる（model を渡す先はまだ無い。型が守る）
   assert.deepEqual(s.submits, [{ guildId: GUILD, channelId: "ch-1", content: "宿を探して", at: NOW, source: "web", via: "right_hand" }]);
+  // 最初の投稿のモデルの行は「話の続き」の前
+  const sent = s.gateway.calls.find((call) => call.method === "send");
+  const welcome = sent?.method === "send" ? sent.text : "";
+  assert.ok(welcome.endsWith("\nモデル: Sonnet 5.5\n#inbox の話の続きです。"), welcome);
 });
 
-test("right hand open: model と場所の fallback の note が並ぶと、半角の空白でつないで両方が入る", async (t) => {
+test("right hand open: 使えない model の名前は bad_model で、チャンネル・行・送信も無く、上限も数えない", async (t) => {
+  const s = setup(t, { perDay: 1 });
+  for (const model of ["xxx", "Sonnet 5.5", "claude-sonnet-5-5"]) {
+    assert.deepEqual(await s.rightHand.open({ ...ARGS, text: "一言", model }, INBOX), {
+      result: "bad_model",
+      models: modelKeys(),
+      message: SESSION_OPEN_BAD_MODEL_MESSAGE,
+    });
+  }
+  assert.equal(s.sessionCount(), 0);
+  assert.deepEqual(s.gateway.calls, []);
+  assert.equal(s.submits.length, 0);
+  // 続けて呼ぶと作れる（上限 1 を消費していない）
+  const result = await s.rightHand.open(ARGS, INBOX);
+  assert.equal(result.result, "created");
+  // #inbox 以外は not_available が先
+  assert.deepEqual(await s.rightHand.open({ ...ARGS, model: "xxx" }, { ...INBOX, channelId: "tasks-1", kind: "tasks" }), { result: "not_available" });
+});
+
+test("right hand open: model を省くと場所の既定が付き結果に model、既定が無ければ結果に model の欄は無い", async (t) => {
   const s = setup(t);
-  const result = await s.rightHand.open({ ...ARGS, project: "gamma", model: "opus" }, INBOX);
-  assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "General", turn: "none", note: `${PLACE_FALLBACK_NOTE} ${MODEL_NOT_YET_NOTE}` });
+  const none = await s.rightHand.open({ ...ARGS, title: "a" }, INBOX);
+  assert.deepEqual(none, { result: "created", channelId: "ch-1", place: "General", turn: "none" });
+  assert.equal(s.topicSessions.modelOf("ch-1"), undefined);
+  s.placeSettings.set("p:alpha", { label: null, model: "haiku" });
+  const placed = await s.rightHand.open({ ...ARGS, title: "b", project: "alpha" }, INBOX);
+  assert.deepEqual(placed, { result: "created", channelId: "ch-2", place: "alpha", turn: "none", model: "Haiku 4.5" });
+  assert.equal(s.topicSessions.modelOf("ch-2"), "claude-haiku-4-5");
+});
+
+test("right hand open: 一覧に無い project で General に落ちたとき、付くのは general の既定（頼まれた project の既定ではない）", async (t) => {
+  const s = setup(t);
+  s.placeSettings.set("general", { label: null, model: "opus" });
+  s.placeSettings.set("p:gamma", { label: null, model: "haiku" });
+  const result = await s.rightHand.open({ ...ARGS, project: "gamma" }, INBOX);
+  assert.deepEqual(result, { result: "created", channelId: "ch-1", place: "General", turn: "none", note: PLACE_FALLBACK_NOTE, model: "Opus 5.5" });
+  assert.equal(s.topicSessions.modelOf("ch-1"), "claude-opus-5-5");
+  // 明示の model と場所の fallback の note が並んでも、note は場所のものだけ
+  const explicit = await s.rightHand.open({ ...ARGS, title: "b", project: "gamma", model: "sonnet" }, INBOX);
+  assert.deepEqual(explicit, { result: "created", channelId: "ch-2", place: "General", turn: "none", note: PLACE_FALLBACK_NOTE, model: "Sonnet 5.5" });
+});
+
+test("right hand open: #<NAME> から model を渡すと作られてモデルは付かず note に人格のモデルの旨。使えない名前は bad_model", async (t) => {
+  const s = setup(t);
+  s.placeSettings.set("general", { label: null, model: "opus" });
+  const result = await s.rightHand.open({ ...ARGS, model: "sonnet" }, LUNA_INBOX);
+  assert.ok(result.result === "created");
+  assert.equal(result.note, PERSONA_MODEL_NOTE);
+  assert.equal(result.model, undefined);
+  assert.equal(s.topicSessions.modelOf(result.channelId), undefined);
+  assert.equal((await s.rightHand.open({ ...ARGS, title: "b", model: "xxx" }, LUNA_INBOX)).result, "bad_model");
 });
 
 test("right hand open: seed に「#inbox からの続き:」と context が入る", async (t) => {

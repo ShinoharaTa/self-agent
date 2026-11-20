@@ -22,6 +22,7 @@ import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcStartStore } from "../src/store/cc-starts.ts";
+import { PlaceSettingStore } from "../src/store/place-settings.ts";
 import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { CLOSE_CONFIRM_NOTICE, webChannelLookup } from "../src/web/routes/channels.ts";
 import { TOPIC_START_DUPLICATE_MS, topicRoutes } from "../src/web/routes/topics.ts";
@@ -679,6 +680,7 @@ async function startServer(
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
   const { guildSettings, topicSessions, history } = stores;
+  const placeSettings = new PlaceSettingStore(db, () => NOW);
   if (options.setUp !== false) {
     guildSettings.setChannel(GUILD, "inboxChannelId", "100");
     guildSettings.setChannel(GUILD, "tasksChannelId", "101");
@@ -754,6 +756,7 @@ async function startServer(
                   },
             defaultConnected: () => connected.value,
             ...(options.cc === false ? {} : { projectSessions: { places, ready: () => ready.value } }),
+            placeSettings,
             log,
           },
         }),
@@ -772,7 +775,7 @@ async function startServer(
   });
   await server.start();
   t.after(() => server.close());
-  return { server, gateway, topicSessions, history, ready, connected, submits, next, logs, clock, runner };
+  return { server, gateway, topicSessions, placeSettings, history, ready, connected, submits, next, logs, clock, runner };
 }
 
 /** 作ったチャンネル（createTextChannel の呼び出し）の数 */
@@ -929,6 +932,39 @@ test("POST /api/topics: 同じ内容を 5 秒以内に 2 回送っても作る�
   assert.deepEqual(await postJson(s.server, "/api/topics", retry), { status: 503, json: { error: "unify_not_ready" } });
   s.ready.value = true;
   assert.equal((await postJson(s.server, "/api/topics", retry)).status, 201);
+});
+
+test("POST /api/topics: model の key で 201・sessions.model が完全な ID。知らない key・空文字は 400 invalid_model、型違いは 400 bad_request で作らない。省略は場所の既定", async (t) => {
+  const s = await startServer(t);
+  const picked = await postJson(s.server, "/api/topics", { place: "general", title: "a", model: "sonnet" });
+  assert.equal(picked.status, 201);
+  assert.equal(s.topicSessions.modelOf(picked.json.channelId as string), "claude-sonnet-5-5");
+  // 201 の json は変えない（PR-3）
+  assert.equal("model" in picked.json, false);
+  assert.equal(s.gateway.sent[0]?.text, welcomeText("a", "General", "claude-sonnet-5-5"));
+  for (const model of ["xxx", ""]) {
+    assert.deepEqual(await postJson(s.server, "/api/topics", { place: "general", title: "b", model }), { status: 400, json: { error: "invalid_model" } });
+  }
+  assert.deepEqual(await postJson(s.server, "/api/topics", { place: "general", title: "b", model: 1 }), { status: 400, json: { error: "bad_request" } });
+  assert.equal(createdCount(s.gateway), 1);
+  // 省略は場所の既定（p:alpha）。既定が無い general は NULL
+  s.placeSettings.set("p:alpha", { label: null, model: "haiku" });
+  const placed = await postJson(s.server, "/api/topics", { place: "p:alpha", title: "c" });
+  assert.equal(s.topicSessions.modelOf(placed.json.channelId as string), "claude-haiku-4-5");
+  const none = await postJson(s.server, "/api/topics", { place: "general", title: "d" });
+  assert.equal(s.topicSessions.modelOf(none.json.channelId as string), undefined);
+});
+
+test("POST /api/topics: 重複よけは model も見る（違えば 2 つ、同じ key なら大文字小文字が違っても 1 つ）", async (t) => {
+  const s = await startServer(t);
+  const body = { place: "general", title: "旅行" };
+  const sonnet = await postJson(s.server, "/api/topics", { ...body, model: "Sonnet" });
+  assert.deepEqual(await postJson(s.server, "/api/topics", { ...body, model: "sonnet" }), sonnet);
+  assert.equal(createdCount(s.gateway), 1);
+  const opus = await postJson(s.server, "/api/topics", { ...body, model: "opus" });
+  assert.equal(opus.status, 201);
+  assert.notEqual(opus.json.channelId, sonnet.json.channelId);
+  assert.equal(createdCount(s.gateway), 2);
 });
 
 test("POST /api/topics: 最初の一言が受け付けられなければ 201 で turn failed", async (t) => {

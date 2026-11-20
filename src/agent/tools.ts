@@ -101,7 +101,8 @@ export type TopicOpenResult =
   | { result: "not_set_up" }
   | { result: "existing"; channelId: string; message: string }
   | { result: "limit"; message: string }
-  | { result: "created"; channelId: string; place: string; turn: "started" | "none" | "failed"; note?: string };
+  | { result: "bad_model"; models: string[]; message: string }
+  | { result: "created"; channelId: string; place: string; turn: "started" | "none" | "failed"; note?: string; model?: string };
 /**
  * session_open の処理。Discord にチャンネルを作るので app 側（src/app/right-hand.ts）で実装して渡す。
  * context はこの run のチャンネル（#inbox・#<NAME> 以外なら not_available を返す）
