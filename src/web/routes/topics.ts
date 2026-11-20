@@ -36,6 +36,7 @@ import {
 } from "../../app/topic-move.ts";
 import type { TopicProposals } from "../../app/topic-proposals.ts";
 import { modeChangedReply, type SessionModeDeps, setSessionMode } from "../../app/session-mode.ts";
+import { resolveModelKey } from "../../agent/models.ts";
 import { isProjectPermissionMode } from "../../agent/runner.ts";
 import { cwdLabel, projectOf } from "../../cc/labels.ts";
 import { permissionExpiresAt } from "../../cc/permission-hold.ts";
@@ -623,9 +624,24 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
    */
   let recent: { key: string; at: number; response: Promise<RouteResult> } | undefined;
 
-  const begin = async (guildId: string, place: StartTopicPlace, title: string | undefined, text: string | undefined): Promise<RouteResult> => {
+  /** model はモデルの key（resolveModelKey で確かめた物。省略は場所の既定） */
+  const begin = async (
+    guildId: string,
+    place: StartTopicPlace,
+    title: string | undefined,
+    text: string | undefined,
+    model: string | undefined,
+  ): Promise<RouteResult> => {
     const result = await startTopic(
-      { guildId, place, by: "web", at: now(), ...(title === undefined ? {} : { title }), ...(text === undefined ? {} : { text }) },
+      {
+        guildId,
+        place,
+        by: "web",
+        at: now(),
+        ...(title === undefined ? {} : { title }),
+        ...(text === undefined ? {} : { text }),
+        ...(model === undefined ? {} : { model }),
+      },
       start,
     );
     switch (result.result) {
@@ -672,16 +688,21 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
       if (title !== undefined && typeof title !== "string") return BAD_REQUEST;
       if (text !== undefined && typeof text !== "string") return BAD_REQUEST;
       if (requested !== undefined && (typeof requested !== "string" || !cfg.allowedGuildIds.includes(requested))) return BAD_REQUEST;
+      // モデルは一覧の key だけ（空文字も知らない key として断る）
+      const rawModel = body?.model;
+      if (rawModel !== undefined && typeof rawModel !== "string") return BAD_REQUEST;
+      const picked = rawModel === undefined ? undefined : resolveModelKey(rawModel);
+      if (rawModel !== undefined && picked === undefined) return { status: 400, json: { error: "invalid_model" } };
       // 要求に無ければ、許可したサーバーのうち /setup 済みの最初の 1 つ
       const guildId = requested ?? cfg.allowedGuildIds.find((id) => guildSettings.get(id) !== undefined);
       if (guildId === undefined) return { status: 409, json: { error: "not_set_up" } };
       // チャンネルを作るのは既定の人格の Bot
       if (!start.defaultConnected()) return { status: 503, json: { error: "bot_disconnected" } };
       const placeKey = place.kind === "general" ? GENERAL_GROUP : `p:${place.name}`;
-      const key = JSON.stringify([guildId, placeKey, normalizeTopicTitle(title ?? ""), (text ?? "").trim()]);
+      const key = JSON.stringify([guildId, placeKey, normalizeTopicTitle(title ?? ""), (text ?? "").trim(), picked?.key ?? ""]);
       const at = now().getTime();
       if (recent !== undefined && recent.key === key && at - recent.at < TOPIC_START_DUPLICATE_MS) return recent.response;
-      const entry = { key, at, response: begin(guildId, place, title, text) };
+      const entry = { key, at, response: begin(guildId, place, title, text, picked?.key) };
       recent = entry;
       const done = await entry.response.catch((error: unknown) => {
         if (recent === entry) recent = undefined;

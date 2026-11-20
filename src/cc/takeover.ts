@@ -10,6 +10,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { modelLine } from "../agent/models.ts";
 import type { ChannelOpsQueue } from "../app/channel-ops.ts";
 import { layoutQueueKey } from "../app/commands/setup.ts";
 import type { KeyedSerialQueue } from "../app/queue.ts";
@@ -87,13 +88,17 @@ export function takeoverConfirmText(
   );
 }
 
-/** 完了の文（§4。新しいチャンネルの最初の投稿と Web の履歴の知らせ。純関数）。escape が false なら Web 向け（エスケープ前） */
-export function takeoverDoneText(project: string, mode: CcTakeoverMode, interrupted: boolean, escape = true): string {
+/**
+ * 完了の文（§4。新しいチャンネルの最初の投稿と Web の履歴の知らせ。純関数）。escape が false なら Web 向け（エスケープ前）。
+ * model（完全な ID）があれば本文の後・中断の行の前にモデルの 1 行を足す
+ */
+export function takeoverDoneText(project: string, mode: CcTakeoverMode, interrupted: boolean, escape = true, model?: string): string {
   const text =
     `端末の Claude Code から取り込みました。ここから先は self-agent がこの会話を続けます（${label(project, escape)}・許可のモード ${mode}）。` +
     "これより前の会話はここには出ませんが、self-agent は覚えています。" +
     "端末で claude --resume すると取り込む前までの会話が別に開きます（ここでの続きは入りません）。";
-  return interrupted ? `${text}\n${TAKEOVER_INTERRUPTED_TEXT}` : text;
+  const withModel = model === undefined ? text : `${text}\n${modelLine(model)}`;
+  return interrupted ? `${withModel}\n${TAKEOVER_INTERRUPTED_TEXT}` : withModel;
 }
 
 /** 確認の文の書き換え（Discord の入口の成功。§3.5）と confirm の結果の text */
@@ -182,7 +187,9 @@ export type CcTakeoverDeps = {
   ccSends?: Pick<CcSendStore, "activeFor">;
   /** 共存の間だけ（X4 で外す）。self-agent が保留している許可の確かめ。無ければ一覧の pendingPermission だけを見る */
   ccPermissions?: Pick<CcPermissionStore, "pendingFor">;
-  topicSessions: Pick<TopicSessionStore, "create" | "get">;
+  topicSessions: Pick<TopicSessionStore, "create" | "get" | "modelOf">;
+  /** その場所の既定のモデル（完全な ID。無ければ undefined）。main が resolveTopicModel を束ねて渡す。無ければ付けない */
+  placeModel?: (project: string) => string | undefined;
   sdkSessions: Pick<SdkSessionStore, "hasSessionId" | "set">;
   /** ProjectSessionGate.ready（SELF_AGENT_CC=1 とプロジェクトのセッションの準備） */
   ready: () => boolean;
@@ -693,6 +700,7 @@ export class CcTakeover {
     const { db, topicSessions, sdkSessions, takeovers, log } = this.deps;
     db.exec("BEGIN IMMEDIATE");
     try {
+      const model = this.deps.placeModel?.(row.project);
       topicSessions.create({
         channelId,
         guildId: row.guildId,
@@ -701,6 +709,7 @@ export class CcTakeover {
         origin: "command",
         projectDir: row.project,
         permissionMode: row.permissionMode,
+        ...(model === undefined ? {} : { model }),
       });
       sdkSessions.set(channelId, row.sessionId);
       if (!takeovers.finish(row.id)) throw new Error("取り込みの行が実行中ではありません");
@@ -718,7 +727,7 @@ export class CcTakeover {
    * → Discord の確認の文を「取り込みました → <#…>」に → effects_at。完了の文（エスケープ前）と、確認の文を書き換えられたかを返す
    */
   private async effects(id: number): Promise<{ plainText: string; edited: boolean }> {
-    const { takeovers, ccChannels, channelOps, gateway, log } = this.deps;
+    const { takeovers, ccChannels, channelOps, gateway, topicSessions, log } = this.deps;
     const failed = (what: string) => (error: unknown) => log(`Claude Code: 取り込みの後に${what}できませんでした（#${id}、${errorKind(error)}）`);
     let row: CcTakeoverRow | undefined;
     try {
@@ -728,8 +737,14 @@ export class CcTakeover {
     }
     if (row === undefined || row.targetChannelId === null) return { plainText: "", edited: false };
     const target = row.targetChannelId;
-    const text = takeoverDoneText(row.project, row.permissionMode, row.interrupted);
-    const plainText = takeoverDoneText(row.project, row.permissionMode, row.interrupted, false);
+    let model: string | undefined;
+    try {
+      model = topicSessions.modelOf(target);
+    } catch (error) {
+      failed("モデルを読み直")(error);
+    }
+    const text = takeoverDoneText(row.project, row.permissionMode, row.interrupted, true, model);
+    const plainText = takeoverDoneText(row.project, row.permissionMode, row.interrupted, false, model);
     await gateway.sendMessage(target, { text }).then(() => undefined, failed("完了の文を出"));
     this.record(row.guildId, target, "divider", takeoverDivider(row.project));
     // 完了の文（注意を含む）も Web の会話に残す（history は文字のまま出すのでエスケープ前）

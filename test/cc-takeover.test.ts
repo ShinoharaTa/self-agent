@@ -1087,6 +1087,7 @@ test("commit の途中の例外（sessions の INSERT が投げる）: 全部巻
         throw new Error("/secret/path");
       },
       get: (channelId) => s.topicSessions.get(channelId),
+      modelOf: (channelId) => s.topicSessions.modelOf(channelId),
     },
   });
   const { id, result } = await s.proposeAndConfirm(takeover);
@@ -1951,4 +1952,40 @@ test("Web の入口: 記号入りの名前でも応答の文はエスケープ�
   assert.equal(confirmed.status, 200);
   assert.equal(confirmed.json.text, takeoverDoneText("al_pha", "plan", false, false));
   assert.ok((confirmed.json.text as string).includes("（al_pha・"));
+});
+
+// ---- モデル（docs/plan/models.md §3。#451） ----
+
+test("取り込み: placeModel が ID を返すと sessions.model がその値で、完了の文にモデルの行。返さない・渡さないと NULL で文は今と同じ", async (t) => {
+  const s = setup(t);
+  const asked: string[] = [];
+  const { result } = await s.proposeAndConfirm(
+    s.make({
+      placeModel: (project) => {
+        asked.push(project);
+        return "claude-sonnet-5-5";
+      },
+    }),
+  );
+  assert.ok(result.ok);
+  assert.deepEqual(asked, ["alpha"]);
+  assert.equal(s.topicSessions.modelOf(DEST), "claude-sonnet-5-5");
+  assert.equal(result.plainText, takeoverDoneText("alpha", "plan", false, false, "claude-sonnet-5-5"));
+  assert.ok(result.plainText.endsWith("\nモデル: Sonnet 5.5"));
+  assert.equal(s.gateway.posts.find((post) => post.channelId === DEST)?.message.text, takeoverDoneText("alpha", "plan", false, true, "claude-sonnet-5-5"));
+
+  for (const placeModel of [() => undefined, undefined]) {
+    const other = setup(t);
+    const done = await other.proposeAndConfirm(other.make(placeModel === undefined ? {} : { placeModel }));
+    assert.ok(done.result.ok);
+    assert.equal(other.topicSessions.modelOf(DEST), undefined);
+    assert.equal(done.result.plainText, takeoverDoneText("alpha", "plan", false, false));
+  }
+});
+
+test("takeoverDoneText: モデルの行は本文の後・中断の行の前。model が無ければ今と同じ", () => {
+  const base = takeoverDoneText("alpha", "default", true);
+  const [body, interrupted] = base.split("\n");
+  assert.equal(takeoverDoneText("alpha", "default", true, true, "claude-opus-5-5"), `${body}\nモデル: Opus 5.5\n${interrupted}`);
+  assert.equal(takeoverDoneText("alpha", "default", false, false, "x-unknown"), `${takeoverDoneText("alpha", "default", false, false)}\nモデル: x-unknown`);
 });

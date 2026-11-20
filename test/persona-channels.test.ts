@@ -225,7 +225,7 @@ test("#<NAME> は、その人格が設定にあるときだけ受け付ける（
 test("/new: 足した人格があるときだけ persona の引数（選択肢は表示名）を足す", () => {
   assert.deepEqual(
     newCommandDef([]).options?.map((option) => option.name),
-    ["title"],
+    ["title", "model"],
   );
   const options = newCommandDef(PERSONAS).options ?? [];
   assert.deepEqual(options[1], {

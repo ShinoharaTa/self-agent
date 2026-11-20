@@ -6,6 +6,7 @@ import { ensureGuildLayout, homePanelMessage } from "../src/app/commands/setup.t
 import { taskListMessage } from "../src/app/commands/tasks.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
+import { PlaceSettingStore } from "../src/store/place-settings.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
@@ -45,6 +46,7 @@ function setup(t: TestContext) {
   });
   const { guildSettings, tasks, reminders } = createStores(db, () => NOW);
   const { topicSessions } = createStores(db, () => clock.now);
+  const placeSettings = new PlaceSettingStore(db, () => NOW);
   const logs: string[] = [];
   const component = createHomeComponent({
     gateway,
@@ -54,6 +56,7 @@ function setup(t: TestContext) {
     reminders,
     cfg: { timeZone: "Asia/Tokyo" },
     queue: new KeyedSerialQueue(1),
+    placeSettings,
     log: (line) => logs.push(line),
   });
   const handle = async (interaction: ComponentInteraction): Promise<ResponderCall[]> => {
@@ -67,7 +70,7 @@ function setup(t: TestContext) {
     assert.equal(result.failure, null);
     gateway.calls = [];
   };
-  return { clock, gateway, topicSessions, tasks, reminders, logs, handle, setUp };
+  return { clock, gateway, topicSessions, placeSettings, tasks, reminders, logs, handle, setUp };
 }
 
 test("[新しいセッション]: 題名 1 項目（必須・100 字まで）のモーダルを開く", async (t) => {
@@ -153,4 +156,13 @@ test("home の不明な操作は例外にする", async (t) => {
   await assert.rejects(handle({ ...BASE, kind: "button", customId: "home:other" }), /home の不明な操作です/);
   await assert.rejects(handle({ ...BASE, kind: "select", customId: "home:tasks", values: [] }), /home の不明な操作です/);
   await assert.rejects(handle({ ...BASE, kind: "modal", customId: "home:other", fields: {} }), /home の不明な操作です/);
+});
+
+test("モーダル送信: モデルは選ばせず、場所の既定（general）が付いて最初の投稿にモデルの行", async (t) => {
+  const { gateway, topicSessions, placeSettings, handle, setUp } = setup(t);
+  await setUp();
+  placeSettings.set("general", { label: null, model: "haiku" });
+  await handle(submitTitle("旅行の計画"));
+  assert.equal(topicSessions.modelOf("ch-8"), "claude-haiku-4-5");
+  assert.deepEqual(gateway.calls.at(-1), { method: "send", channelId: "ch-8", text: welcomeText("旅行の計画", undefined, "claude-haiku-4-5") });
 });

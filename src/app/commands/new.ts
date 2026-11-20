@@ -1,6 +1,8 @@
+import { MODEL_CHOICES, resolveModelKey } from "../../agent/models.ts";
 import { type Config, DEFAULT_PERSONA_ID, type PersonaConfig } from "../../config.ts";
 import type { CommandDef, Gateway, InteractionResponder } from "../../discord/gateway.ts";
 import type { GuildSettingsStore } from "../../store/guild-settings.ts";
+import type { PlaceSettingStore } from "../../store/place-settings.ts";
 import type { TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { CommandHandler } from "../interactions.ts";
 import type { PersonaRouter } from "../personas.ts";
@@ -30,6 +32,10 @@ export const PROJECT_INVALID_REPLY = "そのプロジェクトは使えません
 export const PROJECT_PERSONA_REPLY = "プロジェクトのセッションは既定の人格だけです";
 /** 共有の link（npm run unify-setup）が済んでいない */
 export const PROJECT_NOT_SET_UP_REPLY = "設定が済んでいません（unify-setup）";
+/** /new の model と足した人格は同時に使えない（docs/plan/models.md） */
+export const MODEL_PERSONA_REPLY = "モデルを選べるのは既定の人格だけです";
+/** /new の model が一覧に無い（一覧から外した後の古い選択肢など） */
+export const MODEL_INVALID_REPLY = "そのモデルは使えません";
 
 /** 題名の文字数（Discord 側で検証する。/new とホームパネルのモーダルで共通） */
 export const TITLE_MAX_LENGTH = 100;
@@ -56,13 +62,15 @@ export type NewSessionDeps = {
   queue: KeyedSerialQueue;
   /** プロジェクトのセッション（docs/plan/unify.md §5.2。SELF_AGENT_CC=1 のときだけ）。無ければ /new に project の引数を出さない */
   projectSessions?: ProjectSessionGate;
+  /** 場所の既定のモデル（docs/plan/models.md §3）。無ければ明示の指定だけが効く */
+  placeSettings?: Pick<PlaceSettingStore, "get">;
   log: (message: string) => void;
 };
 
 /**
  * 題名からセッションを作り、そのリンクを本人にだけ表示する（/new とホームパネルの [新しいセッション] のモーダルで共通）。
  * 空白だけの題名は作らずに案内する → 保留 → session-ops.ts の openTopicSession（/setup と同じキューで作成 → 最初の投稿（チャンネルの持ち主の Bot））→ リンクを返す。
- * via は log の主語（「/new で」など）。owner は作る人格（省略は既定の人格）
+ * via は log の主語（「/new で」など）。owner は作る人格（省略は既定の人格）。model は明示のモデルの key（省略は場所の既定）
  */
 export async function startTopicSession(
   guildId: string,
@@ -72,9 +80,19 @@ export async function startTopicSession(
   via: string,
   owner?: SessionOwner,
   projectDir?: string,
+  model?: string,
 ): Promise<void> {
   // Discord への作成が複数回ありうるので、受け付けたら（空の題名でなければ）保留する
-  const result = await openTopicSession(guildId, rawTitle, owner, deps, via, () => responder.defer(true), projectDir);
+  const result = await openTopicSession(
+    guildId,
+    rawTitle,
+    owner,
+    deps,
+    via,
+    () => responder.defer(true),
+    projectDir,
+    model === undefined ? undefined : { model },
+  );
   switch (result.result) {
     case "empty_title":
       await responder.reply({ text: EMPTY_TITLE_REPLY, ephemeral: true });
@@ -94,11 +112,13 @@ export const PERSONA_OPTION = "persona";
 export const PROJECT_OPTION = "project";
 /** Discord の選択肢の数の上限。これを超えるプロジェクトは選択肢を出さず文字列で受ける */
 export const PROJECT_CHOICES_MAX = 25;
+/** /new のモデルの引数の名前 */
+export const MODEL_OPTION = "model";
 
 /**
  * /new の定義。足した人格があるときだけ、人格を選ぶ任意の引数（選択肢は表示名。省略は既定の人格）を足す。
  * projects（SELF_AGENT_WORKSPACE_DIR の直下で使えるもの。SELF_AGENT_CC=1 のときだけ）が 1 つ以上あれば、プロジェクトの任意の引数を足す
- * （25 件までは選択肢、それより多ければ文字列で受けて検証する）
+ * （25 件までは選択肢、それより多ければ文字列で受けて検証する）。モデルの任意の引数（選択肢は一覧）は常に最後に足す
  */
 export function newCommandDef(personas: readonly Pick<PersonaConfig, "id" | "name">[] = [], projects: readonly string[] = []): CommandDef {
   return {
@@ -135,12 +155,19 @@ export function newCommandDef(personas: readonly Pick<PersonaConfig, "id" | "nam
                 : { choices: projects.map((name) => ({ name, value: name })) }),
             },
           ]),
+      {
+        type: "string" as const,
+        name: MODEL_OPTION,
+        description: "使うモデル（省略すると場所の既定。無ければ全体の既定）",
+        choices: MODEL_CHOICES.map((choice) => ({ name: choice.label, value: choice.key })),
+      },
     ],
   };
 }
 
 /**
- * `/new 題名 [persona] [project]`: セッション用のチャンネルを進行中カテゴリに作り、そのリンクを本人にだけ表示する。
+ * `/new 題名 [persona] [project] [model]`: セッション用のチャンネルを進行中カテゴリに作り、そのリンクを本人にだけ表示する。
+ * model は一覧に無い値・足した人格との組み合わせを本人にだけ断る（project との組み合わせの断りより先）。
  * project があれば、足した人格との組み合わせ・共有の link が済んでいない・使えない名前を本人にだけ断ってから、プロジェクトのセッションを作る
  */
 export function createNewSessionCommand(deps: NewSessionDeps): CommandHandler {
@@ -164,8 +191,19 @@ export function createNewSessionCommand(deps: NewSessionDeps): CommandHandler {
       }
       const project = interaction.options[PROJECT_OPTION];
       if (project !== undefined && typeof project !== "string") throw new Error("/new のプロジェクトが不正です");
+      const rawModel = interaction.options[MODEL_OPTION];
+      if (rawModel !== undefined && typeof rawModel !== "string") throw new Error("/new のモデルが不正です");
+      const model = rawModel === undefined ? undefined : resolveModelKey(rawModel)?.key;
+      if (rawModel !== undefined && model === undefined) {
+        await responder.reply({ text: MODEL_INVALID_REPLY, ephemeral: true });
+        return;
+      }
+      if (model !== undefined && owner !== undefined) {
+        await responder.reply({ text: MODEL_PERSONA_REPLY, ephemeral: true });
+        return;
+      }
       if (project === undefined) {
-        await startTopicSession(guildId, rawTitle, responder, deps, "/new で", owner);
+        await startTopicSession(guildId, rawTitle, responder, deps, "/new で", owner, undefined, owner === undefined ? model : undefined);
         return;
       }
       if (owner !== undefined) {
@@ -178,7 +216,7 @@ export function createNewSessionCommand(deps: NewSessionDeps): CommandHandler {
         await responder.reply({ text, ephemeral: true });
         return;
       }
-      await startTopicSession(guildId, rawTitle, responder, deps, "/new で", undefined, checked.projectDir);
+      await startTopicSession(guildId, rawTitle, responder, deps, "/new で", undefined, checked.projectDir, model);
     },
   };
 }

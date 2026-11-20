@@ -32,3 +32,8 @@ export function labelOf(id: string): string {
 export function modelKeys(): string[] {
   return MODEL_CHOICES.map((choice) => choice.key);
 }
+
+/** 最初の投稿・取り込みの完了の文に足すモデルの 1 行（句点なし。一覧に無い ID は ID のまま） */
+export function modelLine(id: string): string {
+  return `モデル: ${labelOf(id)}`;
+}

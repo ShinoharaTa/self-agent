@@ -23,6 +23,7 @@ import {
 import { renewedText } from "../src/app/session-renew.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import type { PersonaConfig } from "../src/config.ts";
+import { PlaceSettingStore } from "../src/store/place-settings.ts";
 import type { CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { channelRoutes } from "../src/web/routes/channels.ts";
 import { CLOSE_CONFIRM_NOTICE, sessionRoutes } from "../src/web/routes/sessions.ts";
@@ -116,6 +117,7 @@ async function setup(
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
   const { guildSettings, topicSessions, sessions, seeds, inboxSummaries, memories, usage, projects, tasks, history } = stores;
+  const placeSettings = new PlaceSettingStore(db, () => NOW);
   guildSettings.setChannel(GUILD, "inboxChannelId", "100");
   guildSettings.setChannel(GUILD, "tasksChannelId", "101");
   guildSettings.setStateCategory(GUILD, "active", 1, "500");
@@ -182,6 +184,7 @@ async function setup(
       },
       history,
       ...(options.projectSessions === undefined ? {} : { projectSessions: options.projectSessions }),
+      placeSettings,
       log,
     }),
   ];
@@ -201,7 +204,7 @@ async function setup(
   /** そのチャンネルの履歴の行（種類と本文） */
   const rows = (channelId: string) => history.list(channelId, { limit: 50 }).map((row) => ({ kind: row.kind, text: row.text, persona: row.persona }));
   const openTasks = () => tasks.list({ status: "open", limit: 50 }).map((task) => ({ title: task.title, due: task.due }));
-  return { db, server, gateway, mikaGateway, connected, runner, turnQueue, channelOps, rotations, rotator, logs, rows, openTasks, turn, ...stores };
+  return { db, server, gateway, mikaGateway, connected, runner, turnQueue, channelOps, rotations, rotator, logs, rows, openTasks, turn, placeSettings, ...stores };
 }
 
 test("POST /api/sessions: 既定の人格の Bot で進行中カテゴリにチャンネルを作り、最初の投稿をして 201 と channelId・link。log は Web から", async (t) => {
@@ -609,4 +612,17 @@ test("POST /renew: Claude Code のチャンネル（CC14）は SDK のターン�
   assert.deepEqual(await call(env.server, "POST", "/api/channels/300/renew"), { status: 404, json: { error: "not_found" } });
   assert.deepEqual(env.rotations, []);
   assert.equal(env.runner.inputs.length, 0);
+});
+
+test("POST /api/sessions: モデルは選ばせず場所の既定（general）が付き、最初の投稿にモデルの行。足した人格の話題には付けない", async (t) => {
+  const env = await setup(t);
+  env.placeSettings.set("general", { label: null, model: "sonnet" });
+  const res = await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "冬の旅行", model: "opus" });
+  assert.equal(res.status, 201);
+  const channelId = (res.json as { channelId: string }).channelId;
+  assert.equal(env.topicSessions.modelOf(channelId), "claude-sonnet-5-5");
+  assert.equal(env.gateway.sent.at(-1)?.text, welcomeText("冬の旅行", undefined, "claude-sonnet-5-5"));
+  const mika = await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "相談", persona: "mika" });
+  assert.equal(mika.status, 201);
+  assert.equal(env.topicSessions.modelOf((mika.json as { channelId: string }).channelId), undefined);
 });
