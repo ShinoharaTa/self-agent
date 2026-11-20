@@ -157,6 +157,29 @@ test("activeFor・runningFor: 確認待ちは active だけ、実行中は両方
   assert.equal(store.runningFor(S1), undefined);
 });
 
+test("lastFor: 一番新しい行を返し、無ければ undefined（状態を問わない）", (t) => {
+  const { store, propose, run } = setup(t);
+  assert.equal(store.lastFor(S1), undefined);
+  const first = propose()!;
+  assert.equal(store.lastFor(S1)?.id, first.id);
+  assert.equal(store.cancel(first.id), true);
+  assert.equal(store.lastFor(S1)?.state, "cancelled");
+  const second = propose({ entry: "web", confirmChannelId: undefined })!;
+  assert.equal(store.lastFor(S1)?.id, second.id);
+  run(second.id, "ch-1");
+  assert.equal(store.finish(second.id), true);
+  // ほかの session_id の行は見ない
+  const other = propose({ sessionId: S2 })!;
+  assert.ok(other.id > second.id);
+  const last = store.lastFor(S1);
+  assert.equal(last?.id, second.id);
+  assert.equal(last?.state, "done");
+  assert.equal(last?.targetChannelId, "ch-1");
+  assert.equal(last?.entry, "web");
+  assert.deepEqual(last, store.get(second.id));
+  assert.equal(store.lastFor(S2)?.id, other.id);
+});
+
 test("start・setStep・setInterrupted・finish: compare-and-set で、当たらなければ false", (t) => {
   const { clock, store, propose } = setup(t);
   const row = propose()!;

@@ -1616,3 +1616,164 @@ test("見張り: main.ts は /cc take の deps に入口を遅く読む getter�
   assert.ok(made >= 0 && entry > made);
   assert.match(source.slice(entry, source.indexOf("\n  };", entry)), /\n {4}takeover,\n {4}takeovers: ccTakeovers,\n/);
 });
+
+test("check: 待機のセッションは takeable で state は idle、行を作らず log も出さない", async (t) => {
+  const s = setup(t);
+  s.view.lastActivityAt = BASE - 5_000;
+  const ticks = s.registry.ticks;
+  const checked = await s.takeover.check(S1);
+  assert.deepEqual(checked, {
+    takeable: true,
+    reason: undefined,
+    state: "idle",
+    title: SECRET_NAME,
+    project: "alpha",
+    at: BASE - 5_000,
+    bridgeSessionId: undefined,
+    last: undefined,
+  });
+  // 一覧は読む（propose と同じ判定）。行は作らず、log も出さない
+  assert.equal(s.registry.ticks, ticks + 1);
+  assert.equal(s.takeovers.lastFor(S1), undefined);
+  assert.deepEqual(s.logs, []);
+  assert.deepEqual(s.kills, []);
+  assert.deepEqual(s.channelCalls, []);
+});
+
+test("check: 実行中は busy で state は running、判断待ちは waiting で state は waiting", async (t) => {
+  for (const [state, status, reason, expected] of [
+    ["running", "busy", "busy", "running"],
+    ["needs_input", "waiting", "waiting", "waiting"],
+  ] as const) {
+    const s = setup(t);
+    s.view.state = state;
+    s.view.status = status;
+    s.view.bridgeSessionId = "bridge-1";
+    const checked = await s.takeover.check(S1);
+    assert.equal(checked.takeable, false, state);
+    assert.equal(checked.reason, reason, state);
+    assert.equal(checked.state, expected, state);
+    // 判定が通らなければ場所は出さず、題の空の代わりは「Claude Code」
+    assert.equal(checked.project, undefined, state);
+    assert.equal(checked.title, SECRET_NAME, state);
+    assert.equal(checked.bridgeSessionId, "bridge-1", state);
+    assert.deepEqual(s.logs, [], state);
+  }
+});
+
+test("check: 一覧に無く cc_sessions が gone なら state は ended で takeable、at は終わった時刻", async (t) => {
+  const s = setup(t, { ended: true });
+  const checked = await s.takeover.check(S1);
+  assert.equal(checked.takeable, true);
+  assert.equal(checked.state, "ended");
+  assert.equal(checked.project, "alpha");
+  assert.equal(checked.at, Date.parse(s.ccSessions.get(S1)!.goneAt!));
+  assert.equal(checked.at, BASE);
+  assert.equal(checked.bridgeSessionId, undefined);
+});
+
+test("check: 一覧にも cc_sessions にも無い session_id は identity で state は unknown", async (t) => {
+  const s = setup(t);
+  const checked = await s.takeover.check(S2);
+  assert.deepEqual(checked, {
+    takeable: false,
+    reason: "identity",
+    state: "unknown",
+    title: "Claude Code",
+    project: undefined,
+    at: undefined,
+    bridgeSessionId: undefined,
+    last: undefined,
+  });
+  assert.deepEqual(s.logs, []);
+});
+
+test("check: Discord の確認待ち・実行中の取り込みがあれば in_progress", async (t) => {
+  const s = setup(t);
+  const discord = await s.takeover.propose({ sessionId: S1, entry: "discord", guildId: "guild-1", confirmChannelId: "confirm-1" });
+  assert.ok(discord.ok);
+  const awaiting = await s.takeover.check(S1);
+  assert.equal(awaiting.takeable, false);
+  assert.equal(awaiting.reason, "in_progress");
+  assert.equal(awaiting.state, "idle");
+  assert.equal(s.takeovers.get(discord.id)?.state, "awaiting_confirm");
+  s.takeover.cancel(discord.id);
+  // Web の行でも実行中なら in_progress
+  const web = await s.takeover.propose({ sessionId: S1, entry: "web", guildId: "guild-1" });
+  assert.ok(web.ok);
+  assert.ok(s.takeovers.start(web.id));
+  const running = await s.takeover.check(S1);
+  assert.equal(running.reason, "in_progress");
+  assert.equal(s.takeovers.get(web.id)?.state, "running");
+});
+
+test("check: Web の確認待ちだけなら takeable のまま（その行は取り消さない）", async (t) => {
+  const s = setup(t);
+  const web = await s.takeover.propose({ sessionId: S1, entry: "web", guildId: "guild-1" });
+  assert.ok(web.ok);
+  const logs = s.logs.length;
+  const checked = await s.takeover.check(S1);
+  assert.equal(checked.takeable, true);
+  assert.equal(checked.reason, undefined);
+  assert.equal(checked.project, "alpha");
+  assert.deepEqual(checked.last, { id: web.id, state: "awaiting_confirm", targetChannelId: null });
+  assert.equal(s.takeovers.get(web.id)?.state, "awaiting_confirm");
+  assert.equal(s.logs.length, logs);
+});
+
+test("check: 断りの符号は propose と同じ（not_ready・outside_workspace・not_in_tmux・pane・queued・already_taken）", async (t) => {
+  const cases: Array<[string, (s: Setup) => CcTakeover]> = [
+    ["not_ready", (s) => s.make({ ready: () => false })],
+    ["outside_workspace", (s) => s.make({ verifiedProjectDir: (name) => join(s.workspace, "elsewhere", name) })],
+    ["not_in_tmux", (s) => s.make({ panes: undefined })],
+    [
+      "pane",
+      (s) => {
+        s.env.probes = ["draft", "draft"];
+        return s.takeover;
+      },
+    ],
+    [
+      "queued",
+      (s) => {
+        s.ccSends.add({ sessionId: S1, text: "x", origin: "web", state: "queued" });
+        return s.takeover;
+      },
+    ],
+    [
+      "already_taken",
+      (s) => {
+        s.sdkSessions.set("other-channel", S1);
+        return s.takeover;
+      },
+    ],
+  ];
+  const rows: Array<[string, string | undefined, string | false]> = [];
+  for (const [code, prepare] of cases) {
+    const s = setup(t);
+    const takeover = prepare(s);
+    const checked = await takeover.check(S1);
+    const proposed = await takeover.propose({ sessionId: S1, entry: "web", guildId: "guild-1" });
+    rows.push([code, checked.reason, !proposed.ok && proposed.reason]);
+  }
+  assert.deepEqual(
+    rows,
+    cases.map(([code]) => [code, code, code]),
+  );
+});
+
+test("check: last は一番新しい行の番号・状態・行き先（無ければ undefined）", async (t) => {
+  const s = setup(t, { ended: true });
+  assert.equal((await s.takeover.check(S1)).last, undefined);
+  const first = await s.takeover.propose({ sessionId: S1, entry: "web", guildId: "guild-1" });
+  assert.ok(first.ok);
+  s.takeover.cancel(first.id);
+  assert.deepEqual((await s.takeover.check(S1)).last, { id: first.id, state: "cancelled", targetChannelId: null });
+  const { id, result } = await s.proposeAndConfirm(s.takeover, "web");
+  assert.equal(result.ok, true);
+  assert.ok(id > first.id);
+  const checked = await s.takeover.check(S1);
+  assert.deepEqual(checked.last, { id, state: "done", targetChannelId: DEST });
+  // 取り込み済みなので、もう取り込めない
+  assert.equal(checked.reason, "already_taken");
+});
