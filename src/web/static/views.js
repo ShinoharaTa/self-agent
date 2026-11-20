@@ -1833,7 +1833,7 @@
     ["Esc", "絞り込み・重ねた右腕を閉じる"],
   ];
 
-  /** 新しい殻（v3.html の根 #v3）で描いているか。描くときに呼ぶ（M8b で分岐ごと消す） */
+  /** 新しい殻（index.html の根 #v3）で描いているか。描くときに呼ぶ（M8b で分岐ごと消す） */
   function isV3Shell() {
     return document.getElementById("v3") !== null;
   }

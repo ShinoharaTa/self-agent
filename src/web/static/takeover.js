@@ -1,4 +1,4 @@
-// 新しい殻（v3.html）の端末のセッションの札のつなぎ（docs/plan/terminal-handover.md の H3）: 取り込みの判定を読み、確認・進める・やめるを
+// 新しい殻（index.html）の端末のセッションの札のつなぎ（docs/plan/terminal-handover.md の H3）: 取り込みの判定を読み、確認・進める・やめるを
 // サーバー（/api/cc/sessions/<id>/takeover・/api/cc/takeovers/<番号>/confirm|cancel）に送り、生の状態を口 SA.term へ押し込む（描くのは部品 c-term.js）。
 // 判定は開いたとき・一覧の行の状態が変わったとき・［確かめ直す］と、結果が分からないときの決めた読み直しだけ読む（時間では読まない）。画面の写しは読まない
 "use strict";
