@@ -12,6 +12,8 @@
 // 終わったチャンネルの [起動して続ける]（`cc:resume:<channel_id>:<message_id>`）・[やめる]（`cc:resume:keep:<channel_id>:<message_id>`）は
 // cc/channels.ts の resume・keepEnded（CC13）。削除の確認の [削除する]（`cc:del:<channel_id>`）・[残す]（`cc:del:keep:<channel_id>`）は
 // commands/delete.ts に倣い、記録した今の確認のボタンで、チャンネルが ended のときだけ動く（DB だけで動くので SELF_AGENT_CC が無効でも押せる）
+// 取り込みの `/cc take`・セレクト `cc:takepick`・確認の `cc:take:go|no:<id>`（docs/plan/takeover.md §3.5）は、ここで振り分けるだけで
+// 処理は commands/cc-take.ts
 import {
   type CcChannelFailure,
   type CcChannels,
@@ -38,6 +40,8 @@ import { clip } from "./tasks.ts";
 import { type CcConfirmButtons, type CcConfirmDeps, createCcConfirmButtons } from "./cc-confirm.ts";
 import { type CcQuestionButtons, handleQuestion } from "./cc-question.ts";
 import { STALE_TURN_REPLY } from "./turn-controls.ts";
+import { CC_TAKE_STALE_REPLY, type CcTakeGetter, handleTakeButton, handleTakeCommand, handleTakePick, TAKE_PICK_SELECT_ID } from "./cc-take.ts";
+import { TAKEOVER_GO_PREFIX, TAKEOVER_NO_PREFIX } from "../../cc/takeover.ts";
 
 const NAMESPACE = "cc";
 /** /cc open のセレクト */
@@ -103,6 +107,8 @@ export type CcCommandDeps = {
   ccChannels: CcChannelsGetter;
   /** /setup 前のサーバー（カテゴリ「Claude Code」が無い）では断る */
   guildSettings: Pick<GuildSettingsStore, "ccCategoryId">;
+  /** 取り込み（/cc take）。SELF_AGENT_CC=1 で連携が動くときだけ。無ければ使えない扱い */
+  ccTakeover?: CcTakeGetter;
   log: (message: string) => void;
 };
 
@@ -111,19 +117,35 @@ export function createCcCommand(deps: CcCommandDeps): CommandHandler {
   return {
     def: {
       name: "cc",
-      description: "Claude Code のセッションの Discord のチャンネルを操作します",
+      description: "Claude Code のセッションを取り込む・Discord のチャンネルを操作します",
       subcommands: [
+        { name: "take", description: "端末の Claude Code のセッションを選んで取り込み、新しいチャンネルで続けます" },
         { name: "open", description: "Claude Code のセッションを選んで、そのチャンネルを作ります" },
         { name: "cancel", description: "このチャンネルのセッションへの届け待ちをやめます" },
         { name: "close", description: "このチャンネルを閉じて完了に移します（書くと起動して続けられます）" },
       ],
     },
     async handle(interaction, responder) {
-      if (interaction.subcommand !== "open" && interaction.subcommand !== "cancel" && interaction.subcommand !== "close") {
+      if (
+        interaction.subcommand !== "take" &&
+        interaction.subcommand !== "open" &&
+        interaction.subcommand !== "cancel" &&
+        interaction.subcommand !== "close"
+      ) {
         throw new Error(`/cc の不明なサブコマンドです（${interaction.subcommand ?? ""}）`);
       }
       const guildId = interaction.guildId;
       if (guildId === null) throw new Error("サーバー外で /cc が呼ばれました");
+      // 取り込みはチャンネルの操作と別の口（commands/cc-take.ts）
+      if (interaction.subcommand === "take") {
+        const take = deps.ccTakeover?.();
+        if (take === undefined) {
+          await responder.reply({ text: CC_UNAVAILABLE_REPLY, ephemeral: true });
+          return;
+        }
+        await handleTakeCommand(take, interaction, responder, deps.log);
+        return;
+      }
       const channels = deps.ccChannels();
       if (channels === undefined) {
         await responder.reply({ text: CC_UNAVAILABLE_REPLY, ephemeral: true });
@@ -201,6 +223,8 @@ export type CcComponentDeps = {
   ccFollow?: { replies: Pick<CcReplyStore, "get">; sessions: Pick<CcSessionStore, "get" | "stopFollow"> };
   /** /cc open のセレクト（cc:pick）と [起動して続ける]（cc:resume）。無ければ cc:pick・cc:resume は例外 */
   ccChannels?: CcChannelsGetter;
+  /** 取り込みのセレクト（cc:takepick）と確認の [取り込む][やめる]（cc:take）。SELF_AGENT_CC=1 で連携が動くときだけ。無ければ使えない扱い */
+  ccTakeover?: CcTakeGetter;
   /** 削除の確認の [削除する][残す]（cc:del。CC13。DB だけで動くので SELF_AGENT_CC が無効でも渡す）。無ければ cc:del は例外 */
   ccDelete?: {
     deleteAfterDays: number;
@@ -318,8 +342,40 @@ export function createCcComponent(deps: CcComponentDeps): ComponentHandler {
         await responder.reply({ text: openResultReply(result), ephemeral: true });
         return;
       }
+      // /cc take のセレクト: 選んだセッションの取り込みの確認を、打ったチャンネルに出す
+      if (interaction.customId === TAKE_PICK_SELECT_ID) {
+        if (interaction.kind !== "select") throw new Error(`cc:takepick の不明な操作です（${interaction.kind}）`);
+        const guildId = interaction.guildId;
+        const channelId = interaction.channelId;
+        const sessionId = interaction.values[0];
+        if (guildId === null || channelId === null || interaction.values.length !== 1 || sessionId === undefined || !isUuid(sessionId)) {
+          throw new Error("cc:takepick の選択が正しくありません");
+        }
+        const take = deps.ccTakeover?.();
+        if (take === undefined) {
+          await responder.reply({ text: CC_UNAVAILABLE_REPLY, ephemeral: true });
+          return;
+        }
+        await handleTakePick(take, { guildId, channelId, sessionId }, responder, deps.log);
+        return;
+      }
       const parts = interaction.customId.split(":");
       const [, kind, action, rawId, ...rest] = parts;
+      // 取り込みの確認の [取り込む][やめる]: cc:take:go:<id>・cc:take:no:<id>
+      if (kind === "take") {
+        const prefix = parts.slice(0, 3).join(":");
+        const id = parts.length === 4 ? parseId(parts[3]) : undefined;
+        if (interaction.kind !== "button" || (prefix !== TAKEOVER_GO_PREFIX && prefix !== TAKEOVER_NO_PREFIX) || id === undefined) {
+          throw new Error(`cc:take の不明な操作です（${interaction.kind}）`);
+        }
+        const take = deps.ccTakeover?.();
+        if (take === undefined) {
+          await responder.reply({ text: CC_TAKE_STALE_REPLY, ephemeral: true });
+          return;
+        }
+        await handleTakeButton(take, prefix === TAKEOVER_GO_PREFIX, id, interaction, responder, deps.log);
+        return;
+      }
       // 終わったチャンネルの [起動して続ける][やめる]（CC13）: cc:resume:<channel_id>:<message_id>・cc:resume:keep:<channel_id>:<message_id>
       if (kind === "resume") {
         const keep = parts.length === 5 && parts[2] === "keep";

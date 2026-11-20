@@ -4,6 +4,7 @@ import type { CommandDef, Gateway, Interaction, InteractionResponder } from "../
 import { createGuestsCommand, type GuestsCommandDeps } from "../guest/commands/admin.ts";
 import { type CcChannelsGetter, type CcComponentDeps, createCcCommand, createCcComponent } from "./commands/cc.ts";
 import type { CcConfirmDeps } from "./commands/cc-confirm.ts";
+import type { CcTakeGetter } from "./commands/cc-take.ts";
 import { type CloseDeps, createCloseCommand, createCloseComponent } from "./commands/close.ts";
 import { createDeleteComponent, type DeleteDeps } from "./commands/delete.ts";
 import { createGithubComponent, type GithubComponentDeps } from "./commands/github.ts";
@@ -49,10 +50,12 @@ export type ComponentHandler = {
  * jobs は作業ジョブ（SELF_AGENT_JOBS が有効のときだけ渡す）。あれば /job を登録する。
  * guests はゲストの層の操作（ゲストが有効のときだけ渡す。guest/index.ts の createGuestLayer の admin）。あれば /guests を登録する。
  * ccChannels は Claude Code のセッションのチャンネル（SELF_AGENT_CC=1 のときだけ渡す。cc/channels.ts）。あれば /cc を登録する。
+ * ccTakeover は /cc take の取り込み（SELF_AGENT_CC=1 のときだけ渡す。commands/cc-take.ts）。/cc を登録する条件は ccChannels のまま。
  * move は話題の場所の付け替え（app/topic-move.ts）。あれば /move を登録する
  */
 export type CommandDeps = SetupDeps &
   Partial<{ ccChannels: CcChannelsGetter }> &
+  Partial<{ ccTakeover: CcTakeGetter }> &
   Partial<{ move: MoveCommandDeps }> &
   Partial<Pick<JobCommandDeps, "jobs">> &
   Partial<Pick<GuestsCommandDeps, "guests">> &
@@ -84,7 +87,14 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
     ...(deps.guests === undefined ? [] : [createGuestsCommand({ guests: deps.guests, log: deps.log })]),
     ...(deps.ccChannels === undefined
       ? []
-      : [createCcCommand({ ccChannels: deps.ccChannels, guildSettings: deps.guildSettings, log: deps.log })]),
+      : [
+          createCcCommand({
+            ccChannels: deps.ccChannels,
+            guildSettings: deps.guildSettings,
+            ...(deps.ccTakeover === undefined ? {} : { ccTakeover: deps.ccTakeover }),
+            log: deps.log,
+          }),
+        ]),
     ...(deps.move === undefined ? [] : [createMoveCommand(deps.move)]),
   ];
 }
@@ -99,7 +109,8 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
  * リマインドのボタンと /reminders のセレクト（rem:）は、リマインドとタスクのストアを使う。
  * #jobs のボタンとモーダル（job:）は作業ジョブ（jobs。SELF_AGENT_JOBS が有効のときだけ渡す）を使う。
  * Claude Code のボタン（cc:）は許可の要求の保留（ccPermissionButtons。SELF_AGENT_CC が有効なときだけ）と、SDK のツールの確認の [送る]・[起動する]・[やめる]
- * のための cc_sends・cc_starts・送信・起動（ccRuntime。SELF_AGENT_CC が有効なときだけ）を使う。
+ * のための cc_sends・cc_starts・送信・起動（ccRuntime。SELF_AGENT_CC が有効なときだけ）を使う。取り込みのセレクトと確認の [取り込む][やめる]
+ * （cc:takepick・cc:take）は取り込みの本体（ccTakeover。SELF_AGENT_CC が有効なときだけ）を使う。
  * #github の [対応]（gh:）は GitHub の通知の送り込み（githubHandoff。SELF_AGENT_GITHUB と SELF_AGENT_CC が有効のときだけ渡す）を使う
  */
 export type ComponentDeps = CloseDeps &
