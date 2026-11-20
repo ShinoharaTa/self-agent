@@ -223,11 +223,12 @@
 | 口 cardsMouth | 同 | render | なし | `{ draw(root, { items, on }), focus(root, id, 問の番号), drop(root) }`。「その他」の欄の ref は根と（id・問の番号）ごとに同じ関数で、**新しい要素にだけ**その時の `otherText` を入れる（同じ要素には書かない）。項目が消えた鍵は覚えを捨てる。focus は要素が無い・hidden なら false。例外は握らない |
 | Composer | `c-composer.js` / `.css` | model（`composerModel(state)` の結果。state は text・count・max・sending・touch・label・placeholder（決まった短い文）・note・sent（送った本文の帯。{ id・text・tone（done・warning・空）・cancel・busy } か null））、on（input(今の値)・send・cancel(送りの id)）、inputRef（textarea を受ける callback の ref。口 `composerMouth` が渡す）。**textarea に値を渡さない**（`value`・`defaultValue` を書かない。最初の本文と送った後の空は口が要素に直に入れる） | なし（下書きは入口と `SA.app.draft`、行数は CSS の写し、IME 中かは `sendKey` が事象から見る） | 1 行 44px・角 full・伸びて最大 6 行。字数は残りが少ないときだけ。送るは accent（D2・D3） |
 | HandHead（右腕の見出し） | `c-hand.js` / `.css` | title、menu（「…」を出すか）、on（menu(押したボタン)・close()） | なし | `header.c-hand-head` > `h2.c-hand-title`（ページの `h1` は列 2 の見出しの 1 つ）・menu のときだけ「…」（`data-act="menu"`）・いつも［畳む］（ghost・sm。`data-act="close"`。読み上げの名前は「<題>を畳む」）。高さ・地・下の線は TopBar と同じで、左の内側は `--c-gutter`。右腕の枠（開く・閉じる・履歴）は部品にしない。中の会話・入力欄・カードは TalkTimeline・Composer・Cards の使い回し |
+| TermCard（端末のセッションの札） | `c-term.js` / `.css` | `termView(raw)` の返り値 + on（take・pane・recheck） | なし | `section.c-term` > `h2.c-term-title` + `dl.c-term-dl` + `p.c-term-lead` + `p.c-term-note` + `div.c-term-actions` |
 | Refs（札。返事の `<#ID>`） | `c-talk.js` / `.css` | refs（`refsOf` を通した id・title・meta。同じ id は先の 1 つだけ）、onOpen(id) | なし | 会話の行の 1 つ（kind `refs`。`talkModel` が state の `fmt.refs` が関数のとき、差し替える前の返事の本文から取り、1 つ以上在れば返事のすぐ後ろに足す。`fmt.reply` が関数なら解析する返事の本文をその結果にする。文字列でない物が返れば元の本文のまま）。札ごとに `div.c-ref`（role・名前は付けない。題を 2 回読ませない）・題（1 行で省く）・meta（空なら出さない）・［開く］（ghost・sm。読み上げの名前は「<題> を開く」。TalkRows は `on.ref(id)`）。会話の列いっぱいで地は付けない。札の間は `--space-2`（sm のボタンの当たりは上下に 4 ずつ広げて 44 なので、間隔 4 だと隣の札の当たりと重なる） |
 | Shell | `c-shell.js` | view、hand、子 | なし | 3 列（PC）/ 1 列（スマホ）の配置だけ |
 | LegacyPane（古い画面の入れ物） | `c-shell.js` | 描く関数、tabId | なし | `views.js` が描く場所。中は `legacy-views.css`（§7.4） |
 
-入口 `c-app.js`: `SA.store`（`api.js`。そのまま）を読み、`SA.app.refresh()` が呼ばれたら次の描画の機会に 1 回だけ根を描き直す。経路（hash・履歴）・viewport・キーは K7 までは `shell.js` のまま。
+入口 `c-app.js`: `SA.store`（`api.js`。そのまま）を読み、`SA.app.refresh()` が呼ばれたら次の描画の機会に 1 回だけ根を描き直す。経路（hash・履歴）・viewport・キーは K7 までは `shell.js` のまま。端末のセッションの札の口は `SA.term = { draw(root, raw), drop(root) }`（draw は `termView(raw)` を通して TermCard を描き、描けなければ `false` と名前だけの log。drop は根を空にする）。
 
 ## 7. CSS の方針
 
