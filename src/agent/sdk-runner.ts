@@ -738,6 +738,8 @@ export class SdkAgentRunner implements AgentRunner {
     let result: RunResult;
     try {
       result = await this.runQuery(input, base, abortController, maxTurns, recording?.steps, run);
+      // usage_log に記録するため、実際に渡したモデルを付ける
+      if (base.options.model !== undefined) result = { ...result, model: base.options.model };
     } finally {
       timeout.clear();
       input.signal?.removeEventListener("abort", onAbort);
@@ -767,7 +769,8 @@ export class SdkAgentRunner implements AgentRunner {
         channelId: input.context?.channelId ?? null,
         kind: input.context?.kind ?? null,
         ...(this.cfg.persona === undefined ? {} : { persona: this.cfg.persona }),
-        model: this.cfg.model,
+        // 話題のモデル（context.model）があればそれを渡している
+        model: input.context?.model ?? this.cfg.model,
         effort: this.cfg.effort ?? null,
         maxTurns,
         resume: input.sessionId ?? null,
@@ -811,7 +814,10 @@ export class SdkAgentRunner implements AgentRunner {
   private baseOptions(input: RunInput, run: ProfileRunState): { options: Options; sandbox: boolean } {
     if (this.profile !== undefined) return { options: this.profile.buildOptions(input, run), sandbox: false };
     const sandbox = this.sandboxForRun();
-    return { options: buildQueryOptions(this.cfg, this.createMcpServer!(input.context), sandbox), sandbox };
+    // 話題のモデル（context.model）があればそれ、無ければ設定のモデル（全体の既定か人格のモデル）。無いときは this.cfg をそのまま渡す（Options を変えない）
+    const model = input.context?.model;
+    const cfg = model === undefined ? this.cfg : { ...this.cfg, model };
+    return { options: buildQueryOptions(cfg, this.createMcpServer!(input.context), sandbox), sandbox };
   }
 
   /**

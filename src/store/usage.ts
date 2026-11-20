@@ -32,6 +32,8 @@ export type UsageRecord = {
   persona?: string;
   /** ターンを動かしたエンジン。省略は claude */
   engine?: Engine;
+  /** SDK に渡したモデル（完全な ID）。省略は NULL */
+  model?: string;
 };
 
 export type UsageEntry = {
@@ -54,6 +56,8 @@ export type UsageEntry = {
   cacheCreation1hInputTokens: number | null;
   /** JSON として読めない・形が違うときも null */
   steps: StepUsage[] | null;
+  /** SDK に渡したモデル（完全な ID）。v47 より前の行・記録しなかった行は null */
+  model: string | null;
 };
 
 /** listRecent の範囲。since はちょうどを含み、until はちょうどを含まない。kind は完全一致 */
@@ -138,6 +142,7 @@ function toEntry(row: Record<string, SQLOutputValue>): UsageEntry {
     outputTokens: nullableNumber(row.output_tokens),
     cacheCreation1hInputTokens: nullableNumber(row.cache_creation_1h_tokens),
     steps: stepsFromJson(row.steps),
+    model: row.model === null || row.model === undefined ? null : String(row.model),
   };
 }
 
@@ -155,8 +160,8 @@ export class UsageStore {
     this.db
       .prepare(
         "INSERT INTO usage_log (at, key, session_id, ok, duration_ms, input_tokens, cache_read_input_tokens, cache_creation_input_tokens, compacted, tool_calls, context_tokens, " +
-          "kind, output_tokens, cache_creation_1h_tokens, steps, persona, engine) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "kind, output_tokens, cache_creation_1h_tokens, steps, persona, engine, model) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         this.now().toISOString(),
@@ -176,6 +181,7 @@ export class UsageStore {
         record.steps === undefined || record.steps === null ? null : stepsToJson(record.steps),
         record.persona ?? DEFAULT_PERSONA_ID,
         record.engine ?? "claude",
+        record.model ?? null,
       );
   }
 

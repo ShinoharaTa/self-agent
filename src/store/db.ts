@@ -880,6 +880,18 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX github_topics_thread ON github_topics(thread_id, id);
   `,
+  // v47（docs/plan/models.md §4。#451）: 話題のモデル。sessions.model は完全な ID（NULL = 全体の既定に従う。今ある行は NULL）。
+  // place_settings は場所（general か p:<名前>）ごとの担当の表示名と既定のモデル（agent/models.ts の key）。usage_log.model は実際に渡したモデルの ID
+  `
+  ALTER TABLE sessions ADD COLUMN model TEXT;
+  CREATE TABLE place_settings (
+    place TEXT PRIMARY KEY,
+    label TEXT,
+    model TEXT,
+    updated_at TEXT NOT NULL
+  );
+  ALTER TABLE usage_log ADD COLUMN model TEXT;
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
