@@ -170,7 +170,7 @@
       }
       // 札は短いので位置は覚えない
       if (drawn) return;
-      // 描けなければ今の［端末］のタブに戻し、次からも札を試さない（画面の写しは api.js の polling が読む）
+      // 描けなければ今の［端末］のタブに戻し、次からも札を試さない（画面の写しは、open からなら下の onOpen が読み始める。描き直しの途中なら行を開き直したとき）
       termBroken = true;
       SA.takeover.close(sessionId);
       tabId = shownTabId();

@@ -130,13 +130,31 @@
   /** 結果が分からない間の読み直しの後。済んで札を外したら true */
   function afterRecheck(e) {
     const last = e.check && e.check.last && typeof e.check.last === "object" ? e.check.last : null;
-    if (last === null || last.takeover !== e.takeover) return false;
-    if (last.state === "done" && text(last.id) !== null) {
-      done(e, last.id);
-      return true;
+    if (last === null || typeof last.takeover !== "number") return false;
+    // 後から別の取り込みが作られていれば、自分の分はもう終わっている（結果は分からないので、今の判定だけ見せる）
+    if (last.takeover > e.takeover) {
+      toIdle(e, null);
+      return false;
     }
-    if (last.state === "failed") toIdle(e, FAILED_TEXT);
-    else if (last.state === "awaiting_confirm" || last.state === "cancelled") toIdle(e, NOT_STARTED_TEXT);
+    if (last.takeover !== e.takeover) return false;
+    if (last.state === "done") {
+      if (text(last.id) !== null) {
+        done(e, last.id);
+        return true;
+      }
+      // 済んだが行き先が返らない: 知らせて一覧を読み直し、今の判定を見せる
+      toIdle(e, null);
+      SA.ui.toast(doneText(e));
+      SA.topics.load();
+      return false;
+    }
+    if (last.state === "failed") {
+      toIdle(e, null);
+      fail(e, FAILED_TEXT);
+    } else if (last.state === "awaiting_confirm" || last.state === "cancelled") {
+      toIdle(e, null);
+      fail(e, NOT_STARTED_TEXT);
+    }
     return false;
   }
 
@@ -145,6 +163,12 @@
     e.phase = "idle";
     e.takeover = null;
     e.error = error;
+  }
+
+  /** 進めた後の失敗の文を札に置く。札を出していなければ知らせも出す（文は、札に戻って開いたときの読み直しでは消さない） */
+  function fail(e, error) {
+    e.error = error;
+    if (SA.app.activeTabId() !== "term:" + e.id) SA.ui.toast("「" + e.title + "」: " + error, null, { level: "error" });
   }
 
   // ===== 取り込む =====
@@ -215,7 +239,7 @@
         toIdle(e, null);
         const stale = err.code === "stale";
         if (stale) SA.ui.toast(failureText(err), null, { level: "error" });
-        else e.error = failureText(err);
+        else fail(e, failureText(err));
         load(e, false, !stale);
       } else lost(e);
       return;
@@ -240,9 +264,13 @@
     e.takeover = null;
     dropRoot(e);
     forget(e);
-    SA.ui.toast("「" + e.title + "」を取り込みました");
+    SA.ui.toast(doneText(e));
     SA.topics.load();
     if (shown) SA.app.open(channelTabId);
+  }
+
+  function doneText(e) {
+    return "「" + e.title + "」を取り込みました";
   }
 
   // ===== 口 =====
@@ -290,10 +318,10 @@
     return SA.term.draw(e.root, raw) === true;
   }
 
-  /** 札を開いた（読んでいなければ判定を読む） */
+  /** 札を開いた（読んでいなければ判定を読む。離れている間の失敗の文が残っていれば、この読み直しでは消さない） */
   function open(sessionId) {
     const e = entryOf(sessionId);
-    if (!e.checking) load(e);
+    if (!e.checking) load(e, false, e.error !== null);
   }
 
   /** 札を閉じた（読み直しのタイマーは止めない。途中の取り込みは残して応答を受ける） */
