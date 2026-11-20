@@ -83,5 +83,6 @@ npm run ui-shots -- --out <dir> # Web UI の決まった画面を、作り物の
 - プロジェクトのセッション（docs/plan/unify.md。agent/project-profile.ts）は例外: Claude Code の preset のシステムプロンプト（cwd・git の状態などの動的な節を含む）に PROJECT_APPEND を足して snapshot: true で会話ごとに固定し、settingSources（user・project・local）と CLI の既定のツールを使う。軽いモード（#inbox・#tasks・今までのセッション）の Options は変えない
 - CC7（cc_list・cc_send・cc_start のツールとシステムプロンプトの 1 行）を入れた再起動の後は、全セッションの次のターンで 1 回キャッシュが外れる（SELF_AGENT_CC が無効でも同じ。ツールは無効でも定義するため）
 - M6（session_open の project・text、topic_list・topic_move のツールと、システムプロンプトの数行。docs/plan/web-ui-v3.md §4）を入れた再起動の後は、全セッションの次のターンで 1 回キャッシュが外れる（Web UI・SELF_AGENT_CC が無効でも同じ。ツールは無効でも定義するため）。プロジェクトのセッションの PROJECT_APPEND の変更は、新しい会話から効く
+- #451 の PR-0（session_open の引数 model）を入れた再起動の後は、全セッションの次のターンで 1 回キャッシュが外れる（軽いモードもプロジェクトのセッションも。自前のツールは両方に付くため）。引数の describe の文は後で変えない
 - H4a（プロジェクトのセッションの通常のターンで AskUserQuestion を使えるようにした）を入れた再起動の後は、今あるプロジェクトのセッションの次のターンで 1 回キャッシュが外れる見込み（ツールの集合が変わるため。軽いモードは変わらない）
 - H4b（/mode）は軽いモードにもプロジェクトのセッションのツール・システムプロンプトにも触らない。許可のモードを変えたセッションの次のターンの外れ方は実機で確かめる
