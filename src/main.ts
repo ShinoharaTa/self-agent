@@ -25,7 +25,7 @@ import {
 } from "./agent/permission-bridge.ts";
 import { createProjectProfile } from "./agent/project-profile.ts";
 import { checkSharedLinks } from "./agent/unify-setup-check.ts";
-import { checkSessionProject, createTopicChannel, type ProjectSessionGate } from "./app/session-ops.ts";
+import { checkSessionProject, createTopicChannel, type ProjectSessionGate, startTopic } from "./app/session-ops.ts";
 import { personaSystemPrompts, TAKEOVER_NOTE } from "./agent/system-prompt.ts";
 import { createTaskMcpServer } from "./agent/tools.ts";
 import { createChannelResolver, logUnconfiguredGuilds } from "./app/access.ts";
@@ -42,6 +42,7 @@ import { createCcTools } from "./app/cc-tools.ts";
 import type { CcToolDeps } from "./agent/tools.ts";
 import { createNotifyMemoryChange } from "./app/commands/memory-undo.ts";
 import { GithubHandoff } from "./app/github-handoff.ts";
+import { GithubTopicHandoff } from "./app/github-topics.ts";
 import { createCommands, createComponents, createInteractionHandler, registerCommands } from "./app/interactions.ts";
 import { createMoveProposalButtons } from "./app/commands/move-proposal.ts";
 import { createTopicProposals, TopicProposalExpirer } from "./app/topic-proposals.ts";
@@ -86,6 +87,7 @@ import { createStaticServer, type StaticServer } from "./serve/static-server.ts"
 import { AttachmentStore } from "./store/attachments.ts";
 import { ChannelSeedStore } from "./store/channel-seeds.ts";
 import { GithubStore } from "./store/github.ts";
+import { GithubTopicStore } from "./store/github-topics.ts";
 import { GuestStore } from "./store/guest.ts";
 import { GuestGuildStore } from "./store/guest-guilds.ts";
 import { GuestInviteStore } from "./store/guest-invites.ts";
@@ -234,6 +236,8 @@ const ccSends = new CcSendStore(db, now);
 const ccPermissionStore = new CcPermissionStore(db, now);
 // GitHub の通知のスレッド・出来事・ポーリングの状態（SELF_AGENT_GITHUB=1 のときだけ書く。古い行は tick で消す）
 const githubStore = new GithubStore(db, now);
+// GitHub の［対応］で作った話題（docs/plan/terminal-handover.md の H5。スレッド → 話題のチャンネル）
+const githubTopicStore = new GithubTopicStore(db);
 // cc_start の起動の確認（CC7）
 const ccStarts = new CcStartStore(db, now);
 // Claude Code の返事を Discord に戻した記録（CC8。本文は持たない）
@@ -564,6 +568,8 @@ const commands = createCommands({
 });
 // GitHub の通知の [対応]（下の Claude Code の配線の後で作る。ボタンは押されたときに読む）
 let githubHandoff: GithubHandoff | undefined;
+// GitHub の通知の [対応] で PR・Issue ごとの話題を作る口（下で作る。配線しているのはこちら。古い githubHandoff は [やめる] だけに使う）
+let githubTopics: GithubTopicHandoff | undefined;
 const handleInteraction = createInteractionHandler({
   cfg: config,
   commands,
@@ -607,7 +613,7 @@ const handleInteraction = createInteractionHandler({
     // #system の許可の要求のボタン（SELF_AGENT_CC=1 で SELF_AGENT_CC_NOTIFY が 1 のときだけ。下で作る）
     ccPermissionButtons: () => ccPermissionButtons,
     // #github の [対応]（SELF_AGENT_GITHUB と SELF_AGENT_CC のときだけ。送り込みは下で作る）
-    ...(config.github && config.cc ? { githubHandoff: () => githubHandoff } : {}),
+    ...(config.github && config.cc ? { githubTopics: () => githubTopics, githubHandoff: () => githubHandoff } : {}),
     // /close の確定の区切りの行（Web UI が有効なときだけ）
     ...history,
     log,
@@ -1100,6 +1106,7 @@ const topicProposalExpirer = new TopicProposalExpirer({ proposals: topicProposal
 // GitHub の通知の [対応]（docs/plan/github-notifications.md §5・§6、docs/plan/claude-code-sessions.md §6。SELF_AGENT_GITHUB と SELF_AGENT_CC の両方のときだけ）:
 // そのリポジトリの Claude Code のセッションに固定のテンプレートを cc_sends（origin github）で積み、無ければそのディレクトリで起動して積む。
 // 地図（~/workspace の remote）を読む git は起動時に PATH から 1 回解決する。無い・ワークスペースが workDir・dataDir と重なるなら [対応] を付けない（§7.2）
+// 配線する [対応] の宛先は、同じ条件の下で作る githubTopics（その PR・Issue の話題。docs/plan/terminal-handover.md の H5）。githubHandoff は [やめる] だけに使う
 if (config.github && ccRegistry !== undefined && ccPanes !== undefined && ccTmux !== undefined && ccSender !== undefined && ccStarter !== undefined) {
   const handoffGitPath = resolveCommandPath("git");
   const workspaceReal = (() => {
@@ -1134,6 +1141,23 @@ if (config.github && ccRegistry !== undefined && ccPanes !== undefined && ccTmux
       now,
       log,
     });
+    // [対応] の宛先（docs/plan/terminal-handover.md の H5）: その PR・Issue の話題（プロジェクトのセッション）を作る。プロジェクトのセッションが使えるときだけ。
+    // topicStart は下で定義するので、押したときに読むクロージャで渡す
+    if (projectSessions !== undefined) {
+      githubTopics = new GithubTopicHandoff({
+        workspaceDir: config.workspaceDir,
+        gitPath: handoffGitPath,
+        store: githubStore,
+        topics: githubTopicStore,
+        topicSessions,
+        channelExists: (id) => gateway.channelExists(id),
+        setUpGuild: () => config.allowedGuildIds.find((id) => guildSettings.get(id) !== undefined),
+        start: (input) => startTopic(input, topicStart),
+        runningTurns: () => handler.runningTurns(),
+        now,
+        log,
+      });
+    }
   }
 }
 
@@ -1142,8 +1166,8 @@ if (config.github && ccRegistry !== undefined && ccPanes !== undefined && ccTmux
 const ghPath = config.github ? resolveGhPath() : undefined;
 const githubPoller = createGithubPoller({
   cfg: config,
-  // [対応] を付ける（SELF_AGENT_CC も有効で、送り込みを準備できたときだけ）
-  ...(githubHandoff === undefined ? {} : { handoff: githubHandoff }),
+  // [対応] を付ける（SELF_AGENT_CC も有効で、話題を作る口を準備できたときだけ。地図はワークスペースの直下のリポジトリだけ）
+  ...(githubTopics === undefined ? {} : { handoff: githubTopics }),
   gh: ghPath === undefined ? undefined : new GhClient({ ghPath }),
   store: githubStore,
   guildSettings,
@@ -1358,8 +1382,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         cfg: config,
         store: githubStore,
         status: githubPoller === undefined ? undefined : () => githubPoller.status(),
-        // [対応]・[起動して送る]（SELF_AGENT_CC も有効なときだけ）
-        ...(githubHandoff === undefined ? {} : { handoff: githubHandoff }),
+        // [対応]（話題を作る。SELF_AGENT_CC も有効なときだけ）
+        ...(githubTopics === undefined ? {} : { handoff: githubTopics }),
       }),
       ...knowledgeRoutes({ knowledge }),
       // この機械の Claude Code のセッションの一覧と画面の写し（SELF_AGENT_CC が無効なら 404）

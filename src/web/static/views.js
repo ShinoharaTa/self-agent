@@ -562,32 +562,25 @@
     return parts.join("・");
   }
 
-  /** [対応] と [起動して送る] の結果（サーバーの文をトーストに。積んだら [やめる]、セッションが無ければ起動の確認） */
+  /** [対応] の結果（サーバーの文をトーストに。作った・もうある話題なら [開く]。会話の一覧を読み直してからその会話を開く） */
   function githubHandoffDone(n, data) {
-    const text = data && typeof data.text === "string" ? data.text : "送りました";
-    if (data && data.result === "no_session" && data.startable === true) {
-      confirm({
-        title: "Claude Code を起動して送りますか",
-        body: text,
-        ok: "起動して送る",
-        run: () => githubHandoff(null, n, "start"),
-      });
+    const text = data && typeof data.text === "string" ? data.text : "この通知の話題を作りました";
+    const channelId = data && typeof data.channelId === "string" ? data.channelId : null;
+    if (channelId === null) {
+      toast(text);
       return;
     }
-    const sendId = data && typeof data.sendId === "number" ? data.sendId : null;
-    const cancellable = sendId !== null && (data.result === "started" || data.state === "queued");
-    toast(
-      text,
-      cancellable
-        ? {
-            label: "やめる",
-            run: () => cancelCcSend(sendId, null, null),
-          }
-        : undefined,
-    );
+    toast(text, {
+      label: "開く",
+      run: () => {
+        if (isV3Shell() && SA.topics) SA.topics.load();
+        else SA.store.load.channels();
+        SA.app.open("ch:" + channelId);
+      },
+    });
   }
 
-  /** POST /api/github/<id>/act（[対応]）・start（[起動して送る]）。押したボタンは終わるまで押せなくする */
+  /** POST /api/github/<id>/act（[対応]）。押したボタンは終わるまで押せなくする */
   function githubHandoff(button, n, action) {
     if (button) button.disabled = true;
     SA.api.post("/api/github/" + n.id + "/" + action, {}, { quiet: true }).then(
@@ -627,11 +620,11 @@
       attrs.disabled = true;
       attrs.title =
         store.github && store.github.handoff
-          ? "この通知は送れません。この機械に無いリポジトリか、[対応] を足す前の通知です"
+          ? "この通知は対応できません。この機械に無いリポジトリか、[対応] を足す前の通知です"
           : "Claude Code の連携が無効です（設定で有効にできます）";
       return el("button", attrs);
     }
-    attrs.title = "このリポジトリの Claude Code のセッションに対応依頼（リポジトリ、番号、URL の 1 行）を送ります。セッションが無ければ起動するか確かめます";
+    attrs.title = "この通知の PR・Issue の話題を作り、対応依頼（リポジトリ、番号、URL の 1 行）を最初の一言として送ります";
     const button = el("button", attrs);
     button.addEventListener("click", () => githubHandoff(button, n, "act"));
     return button;

@@ -9827,3 +9827,17 @@ test("web static: reads の無い応答でも topics.js は一覧を描く", asy
   assert.deepEqual(h.syncs, [{ reads: null, ids: ["5"] }]);
   assert.equal(h.rowOf("ch:5")!.mark, "none");
 });
+
+test("web static: GitHub のタブの [対応] は起動の確認・/start・[やめる] を持たず、話題の channelId があれば [開く] で会話を開く", () => {
+  const source = read("views.js");
+  const start = source.indexOf("function githubHandoffDone(");
+  const end = source.indexOf("function githubItem(", start);
+  assert.ok(start >= 0 && end > start);
+  const body = source.slice(start, end);
+  for (const word of ["起動して送る", "no_session", "startable", "やめる", "cancelCcSend", "confirm("]) assert.equal(body.includes(word), false, word);
+  assert.match(body, /label: "開く"/);
+  assert.match(body, /SA\.app\.open\("ch:" \+ channelId\)/);
+  assert.ok(source.includes("この通知の PR・Issue の話題を作り、対応依頼（リポジトリ、番号、URL の 1 行）を最初の一言として送ります"));
+  assert.ok(source.includes("この通知は対応できません。この機械に無いリポジトリか、[対応] を足す前の通知です"));
+  assert.equal(source.includes("起動して送る"), false);
+});
