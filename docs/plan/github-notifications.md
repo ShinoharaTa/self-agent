@@ -149,6 +149,13 @@
 
 ## 5. 段 2: [対応] と稼働中のセッションへの送り込み
 
+### 5.0 H5 で宛先を話題に付け替えた（terminal-handover.md §3.2。#428）
+- 配線している [対応] は `src/app/github-topics.ts` の `GithubTopicHandoff`。押すと、通知のリポジトリが `~/workspace` の**直下**にあれば（地図は押すたびに作る）、そこを場所にその PR・Issue の話題（プロジェクトのセッション。`startTopic` の `by: "github"`）を作り、§8 のテンプレートを最初の一言として送る。題名は `GitHub PR <番号>` の形（`handoffTitle`）。`SELF_AGENT_CC=1` と unify-setup が要る。
+- 同じスレッドの話題（`github_topics` の新しい行）が進行中か待ちで、チャンネルがあれば作らずにその話題を返す（`already`）。閉じた・消えたなら新しく作る。直下に無い（1 つ下だけ・地図に無い）リポジトリは `not_local`。
+- 結果は #github では本人にだけの返信（作った・ある話題のチャンネルへのリンク）、Web では GitHub のタブのトーストと [開く]。同じ場所で実行中のほかの話題があれば、結果の文に「同じ場所で実行中の話題: n 件」を 1 行。
+- [対応] を付けるのは、自分の（`SELF_AGENT_GITHUB_OWNERS` の）リポジトリと、地図の直下にあるリポジトリ（`mappedRepos`）。
+- 以下の §5 の本文と §6 は端末の Claude Code のセッションへ送る古い経路（`src/app/github-handoff.ts` の `GithubHandoff`）の説明。コードは残るが配線していない（消す段で消す）。純関数（`handoffTarget`・`handoffTemplate`・`handoffTitle`・`startDirOf`）は新しい経路も使う。
+
 > CC6 で載せ替えた形（実装は `src/app/github-handoff.ts`・`src/app/commands/github.ts`）:
 > - 送り先は押すたびに決め直す。`claude agents --json` の一覧（registry）のうち tmux の送れるペイン（claude-code-sessions.md §3.1）にいるセッションを、**一覧の cwd** で §5.2 の地図に対応させ、そのリポジトリのものを候補にする（ペインの cwd は使わない）。
 > - 候補が 1 つならそのセッションに積む（入力待ちでなければ送信の待ち行列で待つ）。複数なら §5.2 の 5 の順（入力待ち → アクティブなペイン）で 1 つに決め、**入力待ちが無い・それでも複数なら送らずに候補（セッション名）を返す**（どれに積むかを決められないため）。
@@ -218,6 +225,8 @@
 - tmux のサーバーが無い（`no server running`）→ 積まずに失敗で返す（「tmux が動いていません」）。
 
 ### 5.6 ボタン（名前空間 `gh:`。CC6 の形）
+H5 の後（配線しているのは `createGithubTopicComponent`）: `gh:act` は話題を作り、結果を本人にだけ返す（ボタンは付けない）。`gh:start` は何も起動せず「この操作は古くなっています」。`gh:cancel` は下の表のまま（前に積んだ届け待ちを取り下げる）。Web は `POST /api/github/<id>/act` だけで、`/start` は無い（404）。下の表は古い経路の形。
+
 | custom_id | 動作 |
 |---|---|
 | `gh:act:<notification_row_id>` | #github の投稿の [対応]。本人にだけ保留してから送り先を決め（2 回撮るので 3 秒を超えうる）、結果を本人にだけ返す |
@@ -230,6 +239,8 @@
 ---
 
 ## 6. 段 3: 動いていなければ起動して送る（CC6 で Manager から置き換え）
+> H5 で宛先を話題に付け替えた（§5.0）ので、[起動して送る] は無くなった。この節は古い経路の説明で、コードは残るが配線していない（消す段で消す）。
+
 - 段 2 で候補のセッションが無い（地図にディレクトリはあるが、そこに対応する Claude Code のセッションが無い）とき、「<repo> の Claude Code のセッションは動いていません。~/workspace/<dir> で新しいセッションを起動して送りますか？」と [起動して送る] を返す。
 - [起動して送る] で、そのリポジトリのディレクトリ（地図のディレクトリのうちワークスペースの直下のものを先に、同じ深さなら名前の順で最初のもの。1 つ下も可）に、claude-code-sessions.md §4.2 の起動（`started_by: 'github'`・題名「GitHub PR|Issue <番号>」・権限モードは指定しない）をし、§8 の段 2 のテンプレートを最初の指示として `cc_sends`（ペイン宛て・`origin: 'github'`・`notification_id`）に積む。起動の上限・tmux のサーバーが無い・1 分の間隔などは起動と同じ規則で断る。trust の確認待ちの間は届かない（同じ）。
 - 押す間にセッションが現れていれば、起動せずにそれに積む（§5 と同じ判定）。
@@ -271,6 +282,7 @@ src/store/github.ts      通知・スレッド・送り込み・ポーリング�
 6. 1 回押して 1 回送る。自動ではやり直さない（待ち行列の再試行は「まだ送っていない」ものだけ）。
 7. log（console）: 「GitHub の通知: 新しい n 件（赤 a・黄 b・白 c）」「GitHub の対応: <結果の種類>（通知 #<id>、送信 #<id>）」と、送信の経過（claude-code-sessions.md の送信の log。番号と状態だけ）と失敗の種類だけ（CC6）。**リポジトリ名・題名・本文・URL・ログイン・セッション名・パス・gh の stderr は出さない**（非公開リポジトリの名前が漏れないように）。
 8. Discord の #github には、リポジトリ名・題名・URL・セッション名を出してよい（オーナーだけのサーバー）。
+- H5 の後: 4 の送り先は「その時点の地図で `~/workspace` の直下にあるリポジトリを場所にした新しい話題か、同じスレッドの開いている話題」。5 の入力待ちの判定は無い（話題のターンとして入る）。3 は同じで、最初の一言の本文の URL は WebFetch の許可に入れない。題名に第三者の文字列を入れない（`GitHub PR <番号>` の形だけ）。7 の log は「GitHub の対応: <結果の種類>（通知 #<id>）」で、チャンネル ID・プロジェクトの名前も出さない。
 
 ---
 
@@ -352,6 +364,7 @@ ALTER TABLE guild_settings ADD COLUMN github_channel_id TEXT;
 ```
 - title・url は #github の書き換え（「届けました」など）に使う。ローカルの DB だけ。
 - CC6: `github_handoffs` は使わない（表は残す）。送り込みは `cc_sends` の `notification_id`（claude-code-sessions.md §9）で、`prune` は終わっていない送信の通知を残す。
+- H5（v46）: `github_topics`（id・notification_id・thread_id・channel_id・created_at。索引は thread_id, id）。スレッド → [対応] で作った話題のチャンネル。同じスレッドは新しい行が勝つ。本文・題名・リポジトリ名は置かない。
 
 ---
 
@@ -405,6 +418,8 @@ ALTER TABLE guild_settings ADD COLUMN github_channel_id TEXT;
 11. `SELF_AGENT_GITHUB_OWNERS` はオーナーが env に書く
 
 実装者が決めてよいこと: 文言、DB の列名、タイマーの実装、fixture の作り方、dry-run の出力の形。
+
+H5（terminal-handover.md §3.2・決定 3）で変わったこと: [対応] の宛先は PR・Issue ごとの話題（§5.0）。7 は「`OWNERS` のリポジトリと、地図の直下にあるリポジトリだけ」に。8 の待ち行列は新しい [対応] では使わない（話題のターンになる）。9 は、プロジェクトのセッションの許可のモード（既定は default）の話になる。古い経路への切り替えの口は作らない（戻すのはコードの revert）。
 
 ## 費用
 - 外部サービスの追加なし（GitHub の API はオーナーの今の枠。1 日 100 回程度）。依存の追加なし（node の child_process）。運用費 0 円。
