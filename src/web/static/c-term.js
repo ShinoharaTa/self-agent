@@ -88,7 +88,7 @@ function takeOf(raw, kind, plain) {
  * つなぎが渡す生の状態 → TermCard の props（on は含めない）。
  * raw: { title, place, rowState（一覧の行の idle・running・waiting か null）, activity（表示用の時刻か null）, pane, check（null か { takeable, state, reason, text, rcUrl }）, checking, failed, phase（idle・proposing・asking・taking・lost）, error }
  * failed のときは check を見ない（読めなかった形にする）。
- * error は、つなぎが次の判定が読めたとき・［取り込む］を押し直したときに null に戻す（その間は下の文の先頭に出る）。
+ * error は、つなぎが［取り込む］を押し直したときと、断られた直後の読み直しの次に判定が読めたときに null に戻す（その間は下の文の先頭に出る）。
  */
 export function termView(raw) {
   const check = raw.failed === true || raw.check === undefined || raw.check === null ? null : raw.check;

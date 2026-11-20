@@ -10520,9 +10520,16 @@ test("web static: 取り込みを断られたら文を札に出して判定を�
     assert.equal(t.raw().error, want);
     assert.equal(t.gets.length, 2, "判定を読み直す");
     assert.equal(t.raw().checking, true);
-    // 次の判定が読めたら文は消す（部品の契約）
+    // 断られた直後の読み直しが読めても文は残す（すぐ消えると読めない）
     check.resolve(takeCheck());
     await t.flush();
+    assert.equal(t.raw().checking, false);
+    assert.equal(t.raw().error, want);
+    // その次に判定が読めたら文は消す（部品の契約）
+    t.api.getReply = () => Promise.resolve(takeCheck());
+    t.raw().on.recheck();
+    await t.flush();
+    assert.equal(t.gets.length, 3);
     assert.equal(t.raw().error, null);
   }
   // 切れたときは読み直さず、例外の文
