@@ -13,6 +13,7 @@ import { createJobCommand, createJobComponent, type JobCommandDeps } from "./com
 import { createHomeComponent, type HomeDeps } from "./commands/home.ts";
 import { createKbDeleteComponent, type KbDeleteDeps } from "./commands/kb-delete.ts";
 import { createMemoryUndoComponent, type MemoryUndoDeps } from "./commands/memory-undo.ts";
+import { createModeCommand } from "./commands/mode.ts";
 import { createMoveCommand, type MoveCommandDeps } from "./commands/move.ts";
 import { createNewSessionCommand, type NewSessionDeps } from "./commands/new.ts";
 import { createProjectsCommand, createProjectsComponent, type ProjectsDeps } from "./commands/projects.ts";
@@ -24,6 +25,7 @@ import { createTasksCommand, createTasksComponent, type TasksDeps } from "./comm
 import { createTurnControlsComponent, type TurnControlsDeps } from "./commands/turn-controls.ts";
 import { createUsageCommand, type UsageDeps } from "./commands/usage.ts";
 import { createWaitCommand, createWaitComponent, type WaitDeps } from "./commands/wait.ts";
+import type { SessionModeDeps } from "./session-mode.ts";
 
 export const OWNER_ONLY_REPLY = "オーナー専用です";
 export const UNKNOWN_REPLY = "不明な操作です";
@@ -51,12 +53,14 @@ export type ComponentHandler = {
  * guests はゲストの層の操作（ゲストが有効のときだけ渡す。guest/index.ts の createGuestLayer の admin）。あれば /guests を登録する。
  * ccChannels は Claude Code のセッションのチャンネル（SELF_AGENT_CC=1 のときだけ渡す。cc/channels.ts）。あれば /cc を登録する。
  * ccTakeover は /cc take の取り込み（SELF_AGENT_CC=1 のときだけ渡す。commands/cc-take.ts）。/cc を登録する条件は ccChannels のまま。
- * move は話題の場所の付け替え（app/topic-move.ts）。あれば /move を登録する
+ * move は話題の場所の付け替え（app/topic-move.ts）。あれば /move を登録する。
+ * mode はプロジェクトのセッションの許可のモード（app/session-mode.ts。SELF_AGENT_CC=1 のときだけ渡す）。あれば /mode を登録する
  */
 export type CommandDeps = SetupDeps &
   Partial<{ ccChannels: CcChannelsGetter }> &
   Partial<{ ccTakeover: CcTakeGetter }> &
   Partial<{ move: MoveCommandDeps }> &
+  Partial<{ mode: SessionModeDeps }> &
   Partial<Pick<JobCommandDeps, "jobs">> &
   Partial<Pick<GuestsCommandDeps, "guests">> &
   NewSessionDeps &
@@ -96,6 +100,7 @@ export function createCommands(deps: CommandDeps): CommandHandler[] {
           }),
         ]),
     ...(deps.move === undefined ? [] : [createMoveCommand(deps.move)]),
+    ...(deps.mode === undefined ? [] : [createModeCommand(deps.mode)]),
   ];
 }
 
