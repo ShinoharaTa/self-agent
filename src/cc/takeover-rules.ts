@@ -104,7 +104,7 @@ export function takeoverRefusal(input: TakeoverRefusalInput): TakeoverFailure | 
   return undefined;
 }
 
-/** 端末の許可のモードから、取り込んだセッションのモード（§3.6）。U2 まで呼ばない（取り込んだセッションは常に default）。default・acceptEdits・plan はそのまま、ほか（auto・bypassPermissions・不明）は default */
+/** 端末の許可のモードから、取り込んだセッションのモード（§3.6）。propose が呼ぶ。default・acceptEdits・plan はそのまま、ほか（auto・bypassPermissions・不明）は default */
 export function mapTakeoverMode(mode: string | null | undefined): CcTakeoverMode {
   return mode === "acceptEdits" || mode === "plan" ? mode : "default";
 }
