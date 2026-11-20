@@ -21,11 +21,12 @@ import { PROJECT_APPEND } from "./system-prompt.ts";
 import { MCP_SERVER_NAME } from "./tools.ts";
 import { UNIFY_SHARED_LINKS } from "./unify-setup-check.ts";
 
-/** プロジェクトのセッションで外す CLI の組み込みツール（U1。質問は U2 で canUseTool → 質問カードにする） */
-export const PROJECT_DISALLOWED_TOOLS: readonly string[] = ["AskUserQuestion"];
+/** CLI の既定のツールのうち、通常のターンでも禁じるもの（今は無い。質問は許可の橋が質問のカードにする） */
+export const PROJECT_DISALLOWED_TOOLS: readonly string[] = [];
 
-/** 要約のターン（/close・/renew）でさらに外すツール（書く・動かす・サブエージェント） */
+/** 要約のターン（/close・/renew）でさらに外すツール（要約のターンでは質問させない。書く・動かす・サブエージェント） */
 export const PROJECT_SUMMARY_DISALLOWED_TOOLS: readonly string[] = [
+  "AskUserQuestion",
   "Bash",
   "Edit",
   "Write",

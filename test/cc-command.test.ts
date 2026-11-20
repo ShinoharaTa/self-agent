@@ -199,3 +199,111 @@ test("cc:q:*（Q2）: モーダルの送信・セレクトも名前空間 cc で
     assert.deepEqual(responder.calls, [{ method: "reply", message: { text: "この操作は古くなっています", ephemeral: true } }], interaction.kind);
   }
 });
+
+test("cc:q: origin sdk の質問も pick → 次の問 → 最後の問で answerQuestion まで通り、answered は Claude Code のチャンネルを作らない", async (t) => {
+  const { createPermissionPoster, questionPlacesByOrigin } = await import("../src/agent/permission-bridge.ts");
+  const { ccPermissionAnsweredHandler } = await import("../src/cc/channels.ts");
+  const { CcPermissionHold } = await import("../src/cc/permission-hold.ts");
+  const { CcQuestionFlow } = await import("../src/cc/question-flow.ts");
+  const { CcPermissionStore } = await import("../src/store/cc-permissions.ts");
+  const { createStores, tempDb } = await import("./helpers/db.ts");
+  const db = tempDb(t);
+  const now = () => NOW;
+  const stores = createStores(db, now);
+  stores.topicSessions.create({ channelId: "channel-1", guildId: "guild-1", title: "作業", categoryId: "cat-1" });
+  stores.topicSessions.setProject("channel-1", "alpha", "default");
+  const permissions = new CcPermissionStore(db, now);
+  const hold = new CcPermissionHold({
+    cfg: { ccPermissionHoldSec: 300, ccQuestionHoldSec: 900 },
+    store: permissions,
+    known: () => false,
+    now,
+    timers: { after: () => () => undefined },
+    log: () => {},
+  });
+  const gateway = new FakeGateway({ allow: ["sendMessage", "editMessage"] });
+  const poster = createPermissionPoster({
+    gateway,
+    permissions,
+    topicSessions: stores.topicSessions,
+    cfg: { ownerUserId: "owner-1", workspaceDir: "/w" },
+    home: "/h",
+    holdSec: 300,
+    questionHoldSec: 900,
+    log: () => {},
+  });
+  const input = {
+    questions: [
+      { question: "どちらにしますか", header: "案", options: [{ label: "A 案" }, { label: "B 案" }], multiSelect: false },
+      { question: "いつにしますか", header: "日", options: [{ label: "今日" }, { label: "明日" }], multiSelect: false },
+    ],
+  };
+  const row = permissions.add({
+    sessionId: S1,
+    requestHash: "h",
+    toolName: "AskUserQuestion",
+    summary: "質問 2 問: どちらにしますか",
+    permissionMode: "default",
+    state: "pending",
+    origin: "sdk",
+    questionInput: JSON.stringify(input),
+  });
+  const closing = hold.holdExternal(row, 900_000);
+  await poster.post({ guildId: "guild-1", channelId: "channel-1", kind: "session" }, row);
+  const ensured: string[] = [];
+  const places = questionPlacesByOrigin({
+    permissions,
+    sdk: poster,
+    hook: {
+      pendingQuestion: () => assert.fail("hook の口は使わない"),
+      questionStepMessage: () => assert.fail("hook の口は使わない"),
+    },
+  });
+  const answeredHandler = ccPermissionAnsweredHandler({
+    permissions,
+    channels: () => ({ ensureFor: async (sessionId: string) => void ensured.push(sessionId) }) as never,
+    log: () => {},
+  });
+  // 途中の答えはプロセスの中に 1 つ（main と同じ）
+  const flow = new CcQuestionFlow();
+  const component = createCcComponent({
+    ccPermissionButtons: () => ({
+      answer: (id, decision) => hold.answer(id, decision, "discord"),
+      resolvedMessage: (id) => poster.resolvedMessage(id),
+      // main と同じく guildId の null は undefined に
+      answered: (id, guildId) => answeredHandler(id, guildId ?? undefined),
+      questions: {
+        flow,
+        pendingQuestion: places.pendingQuestion,
+        answerQuestion: (id, requestHash, picks) => hold.answerQuestion(id, requestHash, picks, "discord"),
+        stepMessage: places.stepMessage,
+      },
+    }),
+    gateway,
+    log: () => {},
+  });
+  const press = (customId: string): Extract<Interaction, { kind: "button" }> => ({
+    kind: "button",
+    customId,
+    guildId: "guild-1",
+    channelId: "channel-1",
+    userId: "owner-1",
+    createdAt: NOW,
+  });
+  const first = new FakeResponder();
+  await component.handle(press(`cc:q:pick:${row.id}:0:1`), first);
+  assert.equal(first.calls.length, 1);
+  const step = first.calls[0]!;
+  assert.ok(step.method === "update" && step.message.text.includes("答え済み:\n1. 「案」B 案") && step.message.text.includes("質問 2/2「日」"));
+  assert.ok(step.method === "update" && !step.message.text.includes("端末"), step.method === "update" ? step.message.text : "");
+  assert.equal(permissions.get(row.id)?.state, "pending");
+  const last = new FakeResponder();
+  await component.handle(press(`cc:q:pick:${row.id}:1:0`), last);
+  const final = await closing;
+  assert.equal(final.state, "allowed");
+  assert.equal(final.via, "discord");
+  assert.deepEqual(final.answers, { どちらにしますか: "B 案", いつにしますか: "今日" });
+  const done = last.calls[0]!;
+  assert.ok(done.method === "update" && done.message.text.endsWith("答えました（Discord）:\n1. 「案」B 案\n2. 「日」今日"), JSON.stringify(done));
+  assert.deepEqual(ensured, []);
+});

@@ -93,9 +93,10 @@ function setupTimeout(t: TestContext) {
     cfg: { ownerUserId: "owner-1", workspaceDir },
     home,
     holdSec: 300,
+    questionHoldSec: 900,
     log,
   });
-  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, workspaceDir, home, log });
+  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, questionHoldSec: 900, workspaceDir, home, log });
   const results: PermissionResult[] = [];
   let openGate: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {

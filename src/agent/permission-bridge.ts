@@ -4,18 +4,25 @@
 // hold.answer で返し、閉じた後の行から PermissionResult を作る: allowed → allow、allowed_always → allow + updatedPermissions（destination は必ず session）、
 // denied → deny、時間切れ（expired）→ deny（headless には端末のダイアログが無いので fail-closed）、ターンの中断・停止（released）→ deny。
 // 1 セッションに pending は 1 件なので、同じセッションの要求は前のものが閉じるまで待つ。
-// log は「プロジェクトのセッション: 許可の要求（#id）→ <状態>（<経路>）」だけ（ツール名・要約・パス・セッションの ID は出さない）
+// AskUserQuestion は質問の行（question_input 付き。常に許可のルールは持たない）にして、質問の 1 通（questionNotice。ボタンは cc:q:*）を出し、
+// SELF_AGENT_CC_QUESTION_HOLD_SEC の間保留する。答えは allow + updatedInput（元の input + answers）、[やめる]・時間切れ・中断は deny。
+// 読めない形の質問は行も 1 通も作らずに deny（本文で訊かせる）。
+// log は「プロジェクトのセッション: 許可の要求（#id）→ <状態>（<経路>）」「プロジェクトのセッション: 質問（#id）→ <状態>（<経路>）」だけ
+// （ツール名・要約・パス・問の文・答え・セッションの ID は出さない）
 import { join } from "node:path";
 import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
-import { permissionHistoryText, permissionResultHistoryText } from "../cc/channel-posts.ts";
 import { summarizePermission } from "../cc/hook-server.ts";
 import {
   type CcNoticeSession,
+  permissionHistoryText,
   permissionNotice,
   permissionResolvedMessage,
+  permissionResultHistoryText,
+  questionNotice,
 } from "../cc/notice-text.ts";
 import type { CcPermissionHold } from "../cc/permission-hold.ts";
 import { alwaysRulesOf, sessionRulesUpdate } from "../cc/permissions.ts";
+import { CC_QUESTION_TOOL, type CcQuestion, type CcQuestionPick, parseQuestionInput } from "../cc/questions.ts";
 import { type Config, DEFAULT_PERSONA_ID } from "../config.ts";
 import type { OutgoingMessage } from "../discord/gateway.ts";
 import type { OwnerPosts } from "../app/personas.ts";
@@ -62,6 +69,40 @@ export function permissionResultOf(row: Pick<CcPermissionRow, "state" | "alwaysR
   }
 }
 
+/** 質問の [やめる] の message（モデルに渡る） */
+export const PROJECT_QUESTION_DROP_MESSAGE =
+  "オーナーは選択肢で答えずに閉じました。同じ質問を繰り返さず、必要なら訊きたいことを本文に書いてください";
+/** 読めない形の質問の message（行もカードも作らない） */
+export const PROJECT_QUESTION_UNREADABLE_MESSAGE =
+  "この形の質問は self-agent で出せません（問は 1〜4 個、選択肢は問ごとに 2〜8 個、問の文と選択肢の名前はそれぞれ重ならないこと）。形を直すか、本文で訊いてください";
+
+/** 質問の時間切れの message（holdSec 秒） */
+export function projectQuestionTimeoutMessage(holdSec: number): string {
+  return `質問は時間切れになりました（${holdSec} 秒）。オーナーはまだ答えていません。答えを推測して進めず、訊きたいことを本文に書いてこのターンを終えてください`;
+}
+
+/** 閉じた質問の行から canUseTool の結果を作る（純関数）。input は canUseTool が受けた tool_input */
+export function questionResultOf(
+  row: Pick<CcPermissionRow, "state" | "answers">,
+  input: Record<string, unknown>,
+  holdSec: number,
+): PermissionResult {
+  switch (row.state) {
+    case "allowed":
+      // 答えが無い allowed は起きないはず（fail-closed）
+      return row.answers === null || Object.keys(row.answers).length === 0
+        ? { behavior: "deny", message: PROJECT_PERMISSION_NO_SESSION_MESSAGE }
+        : { behavior: "allow", updatedInput: { ...input, answers: row.answers } };
+    case "denied":
+      return { behavior: "deny", message: PROJECT_QUESTION_DROP_MESSAGE };
+    case "expired":
+      return { behavior: "deny", message: projectQuestionTimeoutMessage(holdSec) };
+    default:
+      // released（中断・停止）・allowed_always（質問の行には起きない）などは拒否
+      return { behavior: "deny", message: PROJECT_PERMISSION_ABORT_MESSAGE };
+  }
+}
+
 /** 許可の要求をチャンネルに出す・書き換える口（createPermissionPoster）。投げない */
 export type PermissionPoster = {
   /** pending の行の 1 通をそのセッションのチャンネルに出して permissions.setMessage する。Web の会話にも「許可を待っています」を書く */
@@ -76,6 +117,8 @@ export type PermissionBridgeDeps = {
   poster: PermissionPoster;
   /** 保留の長さ（SELF_AGENT_CC_PERMISSION_HOLD_SEC の秒） */
   holdSec: number;
+  /** 質問の保留の長さ（SELF_AGENT_CC_QUESTION_HOLD_SEC の秒） */
+  questionHoldSec: number;
   /** 常に許可のファイルのルールの線引き（cc/permissions.ts の ruleContext）と、要約の相対パスの元 */
   workspaceDir: string;
   home: string;
@@ -113,7 +156,7 @@ export function createPermissionBridge(
   sessionId: () => string | undefined,
   run?: Pick<ProfileRunState, "waitPermission" | "signal">,
 ) => CanUseTool {
-  const { permissions, hold, poster, holdSec, workspaceDir, home, log } = deps;
+  const { permissions, hold, poster, holdSec, questionHoldSec, workspaceDir, home, log } = deps;
   /** セッション → 前の要求が閉じるまでの Promise（1 セッションに pending は 1 件のため、同じセッションの要求は順に） */
   const chains = new Map<string, Promise<unknown>>();
 
@@ -132,24 +175,35 @@ export function createPermissionBridge(
     }
     const cwd = projectCwd(workspaceDir, context);
     const summarized = summarizePermission(toolName, input, cwd);
+    const question = toolName === CC_QUESTION_TOOL;
+    // 読めない形の質問は行も 1 通も作らない（本文で訊かせる）
+    if (question && summarized.questionInput === undefined) {
+      log("プロジェクトのセッション: 読めない形の質問を出さずに断りました");
+      return { behavior: "deny", message: PROJECT_QUESTION_UNREADABLE_MESSAGE };
+    }
     const row = permissions.add({
       sessionId,
       requestHash: summarized.requestHash,
       toolName,
-      summary: bridgeSummary(summarized.summary, options.title),
       permissionMode: context.permissionMode ?? "default",
-      alwaysRules: alwaysRulesOf(toolName, options.suggestions, { cwd, workspaceDir, home }),
       state: "pending",
       origin: "sdk",
+      ...(question
+        ? { summary: summarized.summary, alwaysRules: null, questionInput: summarized.questionInput }
+        : {
+            summary: bridgeSummary(summarized.summary, options.title),
+            alwaysRules: alwaysRulesOf(toolName, options.suggestions, { cwd, workspaceDir, home }),
+          }),
     });
+    const sec = question ? questionHoldSec : holdSec;
     // 先に保留に登録する（投稿の間に Web で押されても答えられるように）
-    const closing = hold.holdExternal(row, holdSec * 1000, signal);
+    const closing = hold.holdExternal(row, sec * 1000, signal);
     await poster.post(context, row).catch(() => undefined);
     const closed = await closing;
     const final = permissions.get(row.id) ?? closed;
-    log(`プロジェクトのセッション: 許可の要求（#${row.id}）→ ${final.state}${final.via === null ? "" : `（${final.via}）`}`);
+    log(`プロジェクトのセッション: ${question ? "質問" : "許可の要求"}（#${row.id}）→ ${final.state}${final.via === null ? "" : `（${final.via}）`}`);
     await poster.resolved(context, final).catch(() => undefined);
-    return permissionResultOf(final, holdSec);
+    return question ? questionResultOf(final, input, sec) : permissionResultOf(final, holdSec);
   };
 
   return (context, sessionId, run) => async (toolName, input, options) => {
@@ -202,6 +256,27 @@ export function resolvedMessageByOrigin(deps: {
   return (id) => (deps.permissions.get(id)?.origin === "sdk" ? deps.sdk(id) : deps.hook(id));
 }
 
+/** cc:q の今の問と次の 1 通を作る口（createPermissionPoster と cc/channel-posts.ts の CcChannelPosts が持つ） */
+export type QuestionPlaces = {
+  /** 保留中（pending）の質問の行の問と request_hash。行が無い・pending でない・question_input が読めなければ undefined */
+  pendingQuestion(id: number): { requestHash: string; questions: CcQuestion[] } | undefined;
+  /** 質問の次の問の 1 通とその場所（picks は答えた問の答え）。行が無い・質問でなければ undefined */
+  questionStepMessage(id: number, picks: readonly CcQuestionPick[]): ResolvedPermissionMessage | undefined;
+};
+
+/** cc:q の「今の問」と「次の 1 通」を、行の origin で作り分ける（main の questions）。行が無ければ hook に任せる */
+export function questionPlacesByOrigin(deps: {
+  permissions: Pick<CcPermissionStore, "get">;
+  sdk: QuestionPlaces;
+  hook: QuestionPlaces;
+}): { pendingQuestion: QuestionPlaces["pendingQuestion"]; stepMessage: QuestionPlaces["questionStepMessage"] } {
+  const placesOf = (id: number): QuestionPlaces => (deps.permissions.get(id)?.origin === "sdk" ? deps.sdk : deps.hook);
+  return {
+    pendingQuestion: (id) => placesOf(id).pendingQuestion(id),
+    stepMessage: (id, picks) => placesOf(id).questionStepMessage(id, picks),
+  };
+}
+
 export type PermissionPosterDeps = {
   /** 投稿・書き換え（持ち主の Bot。app/personas.ts の ownerPosts） */
   gateway: Pick<OwnerPosts, "sendMessage" | "editMessage">;
@@ -212,6 +287,8 @@ export type PermissionPosterDeps = {
   home: string;
   /** ボタンが効く時間（SELF_AGENT_CC_PERMISSION_HOLD_SEC） */
   holdSec: number;
+  /** 質問のボタンが効く時間（SELF_AGENT_CC_QUESTION_HOLD_SEC） */
+  questionHoldSec: number;
   /** Web UI の会話の記録（Web UI が有効なときだけ） */
   history?: Pick<HistoryStore, "add">;
   log: (message: string) => void;
@@ -222,13 +299,14 @@ function errorKind(error: unknown): string {
 }
 
 /** 許可の要求の 1 通の出し方（そのセッションのチャンネルに、持ち主の Bot で）と、Discord のボタンの応答の書き換え（resolvedMessage） */
-export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPoster & {
+export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPoster &
+  QuestionPlaces & {
   /** Discord で押した sdk の行の書き換え後の 1 通とその場所（app/commands/cc.ts の応答）。行が無ければ undefined */
   resolvedMessage(id: number): { message: OutgoingMessage; channelId: string | null; messageId: string | null } | undefined;
   /** 再起動の前に保留していて expired にした sdk の行の 1 通を書き換える（Discord につないだ後）。待たない */
   rewriteRecovered(rows: readonly CcPermissionRow[]): void;
 } {
-  const { gateway, permissions, topicSessions, cfg, home, holdSec, history, log } = deps;
+  const { gateway, permissions, topicSessions, cfg, home, holdSec, questionHoldSec, history, log } = deps;
   const places = { workspaceDir: cfg.workspaceDir, home };
   /** 1 通の名前（セッションの題名）とディレクトリ（プロジェクト）。RC のリンクは無い */
   const sessionOf = (channelId: string): CcNoticeSession => {
@@ -261,7 +339,7 @@ export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPo
     async post(context, row) {
       const message = permissionNotice(row, sessionOf(context.channelId), {
         ...places,
-        holdSec,
+        holdSec: row.questionInput !== null ? questionHoldSec : holdSec,
         ownerUserId: cfg.ownerUserId,
         // 端末・RC のダイアログは無い（時間切れは拒否）
         terminal: false,
@@ -292,6 +370,21 @@ export function createPermissionPoster(deps: PermissionPosterDeps): PermissionPo
         channelId: row.messageChannelId,
         messageId: row.messageId,
       };
+    },
+    pendingQuestion(id) {
+      const row = permissions.get(id);
+      if (row === undefined || row.state !== "pending") return undefined;
+      const parsed = parseQuestionInput(row.questionInput);
+      return parsed === undefined ? undefined : { requestHash: row.requestHash, questions: parsed.questions };
+    },
+    questionStepMessage(id, picks) {
+      const row = permissions.get(id);
+      const parsed = parseQuestionInput(row?.questionInput ?? null);
+      if (row === undefined || parsed === undefined) return undefined;
+      const session = row.messageChannelId === null ? undefined : sessionOf(row.messageChannelId);
+      // 書き換えでは鳴らさないのでメンションは付けない
+      const message = questionNotice(row, parsed.questions, picks, session, { ...places, holdSec: questionHoldSec, terminal: false });
+      return { message: { ...message, suppressEmbeds: true }, channelId: row.messageChannelId, messageId: row.messageId };
     },
     rewriteRecovered(rows) {
       for (const row of rows) {

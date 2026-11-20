@@ -1,6 +1,7 @@
 // 途中経過のメッセージ（「作業中…（m 分 s 秒・ツール n 回）」+ 直近の手順と [中断]）。セッションのチャンネルのターン（handler.ts）と
 // 作業ジョブ（jobs/orchestrator.ts）で共通。送信先・ボタン・最初の 1 通を出すまでの遅れは呼び出し側が決める
 import type { PermissionWaiting, ProgressStep } from "../agent/runner.ts";
+import { CC_QUESTION_TOOL } from "../cc/questions.ts";
 import type { ButtonDef, OutgoingMessage } from "../discord/gateway.ts";
 
 /** 途中経過のメッセージを出した後、表示が変わっていれば書き換える間隔 */
@@ -12,8 +13,9 @@ export function formatElapsed(ms: number): string {
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }
 
-/** 許可を待っている間の 1 行（手順の label と同じく、ツールの引数・パスは出さない） */
+/** 許可を待っている間の 1 行（手順の label と同じく、ツールの引数・パスは出さない）。質問（AskUserQuestion）は答えを待つ文 */
 export function permissionWaitingLine(waiting: Pick<PermissionWaiting, "toolName" | "displayName">): string {
+  if (waiting.toolName === CC_QUESTION_TOOL) return "質問の答えを待っています";
   return `許可を待っています: ${waiting.displayName ?? waiting.toolName}`;
 }
 
