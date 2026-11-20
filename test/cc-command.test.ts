@@ -578,10 +578,23 @@ test("cc:takepick: 確認の投稿に失敗したら cancel して本人にだ�
   assertTakeLogs(logs);
 });
 
+test("/cc take: 一覧の読み取り（takeable）が投げたら、保留だけしてそのまま投げる（セレクトは出さない。失敗の文は操作の入口が出す）", async (t) => {
+  const f = fakeTake(t);
+  f.runtime.takeover.takeable = async () => {
+    f.calls.push("takeable");
+    throw new Error("一覧を読めない");
+  };
+  const command = createCcCommand({ ccChannels: () => undefined, guildSettings: { ccCategoryId: () => "cat-cc" }, ccTakeover: f.getter, log: () => {} });
+  const responder = new FakeResponder();
+  await assert.rejects(command.handle(TAKE, responder), /一覧を読めない/);
+  assert.deepEqual(responder.calls, [{ method: "defer", ephemeral: true }]);
+  assert.deepEqual(f.calls, ["takeable"]);
+});
+
 test("cc:takepick: セレクトでない・値が UUID でない・複数の値は投げる。連携が無ければ他と同じ文", async (t) => {
   const f = fakeTake(t);
   const component = createCcComponent({ ccTakeover: f.getter, gateway: new FakeGateway(), log: () => {} });
-  await assert.rejects(component.handle({ ...takeButton("go", 1), customId: "cc:takepick" }, new FakeResponder()));
+  await assert.rejects(component.handle({ ...takeButton("go", 1), customId: "cc:takepick" }, new FakeResponder()), /cc:takepick の不明な操作/);
   await assert.rejects(component.handle(takePick(["../x"]), new FakeResponder()));
   await assert.rejects(component.handle(takePick([S1, S2]), new FakeResponder()));
   await assert.rejects(component.handle(takePick([]), new FakeResponder()));
