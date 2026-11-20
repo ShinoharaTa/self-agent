@@ -8,7 +8,8 @@ export type GithubTopicRow = {
   threadId: string;
   /** ［対応］で作った話題のチャンネル */
   channelId: string;
-  createdAt: Date;
+  /** 作った時刻（ISO の文字列） */
+  createdAt: string;
 };
 
 function toRow(row: Record<string, SQLOutputValue>): GithubTopicRow {
@@ -17,7 +18,7 @@ function toRow(row: Record<string, SQLOutputValue>): GithubTopicRow {
     notificationId: Number(row.notification_id),
     threadId: String(row.thread_id),
     channelId: String(row.channel_id),
-    createdAt: new Date(String(row.created_at)),
+    createdAt: String(row.created_at),
   };
 }
 
