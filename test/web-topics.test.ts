@@ -11,6 +11,7 @@ import { PersonaRouter } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { welcomeText } from "../src/app/session-ops.ts";
 import { MOVE_FAILED_TEXT, type MoveDeps, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
+import { MODE_PLAN_NOTE, modeChangedText } from "../src/app/session-mode.ts";
 import { createTopicProposals, type TopicProposals } from "../src/app/topic-proposals.ts";
 import type { Topic, TopicsResult } from "../src/app/topics.ts";
 import { buildTopics } from "../src/app/topics.ts";
@@ -108,6 +109,7 @@ async function setup(
     proposals?: boolean;
     fakeProposals?: Pick<TopicProposals, "pendingAll" | "accept" | "keep" | "channelOf">;
     reads?: boolean;
+    mode?: boolean;
   } = {},
 ) {
   const db = tempDb(t);
@@ -308,6 +310,10 @@ async function setup(
       ? { cc: { registry, channels: ccStore, permissions, sends, starts, holdSec: 300, questionHoldSec: 900 } }
       : {}),
     ...(reads === undefined ? {} : { reads }),
+    // 許可のモードの配線（mode のときだけ）。変えた文の投稿は posts に入る
+    ...(options.mode === true
+      ? { mode: { deps: { topicSessions, runningTurns: () => handler.runningTurns(), turnQueue, moves, history, log }, post } }
+      : {}),
     now: () => options.at ?? NOW,
   });
   const server = createWebServer({
@@ -1520,4 +1526,64 @@ test("POST /api/topics/ch:<id>/read: 知らない ID でも lastId が 0 なら 
   assert.deepEqual(await postJson(s.server, "/api/topics/ch:999/read", { lastId: 0 }), { status: 400, json: { error: "bad_request" } });
   assert.deepEqual(await postJson(s.server, "/api/topics/ch:200/read", { lastId: 2 ** 53 }), { status: 400, json: { error: "bad_request" } });
   assert.deepEqual(s.topicReads.all(), new Map());
+});
+
+test("★ POST /mode は 3 つ以外で 400、知らないチャンネルで 404、busy・closed・not_project で 409", async (t) => {
+  const s = await setup(t, { mode: true, running: ["205"], allowed: [GUILD] });
+  for (const body of [{}, { mode: 1 }, { mode: "bypassPermissions" }, { mode: "auto" }, { mode: "dontAsk" }, { mode: "PLAN" }, { mode: null }]) {
+    assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/mode", body), { status: 400, json: { error: "bad_request" } }, JSON.stringify(body));
+  }
+  for (const id of ["999", "400", "100"]) {
+    assert.deepEqual(await postJson(s.server, `/api/topics/ch:${id}/mode`, { mode: "plan" }), { status: 404, json: { error: "not_found" } }, id);
+  }
+  // cc:<sessionId> の話題はパスが当たらない
+  assert.equal((await postJson(s.server, `/api/topics/cc:${S3}/mode`, { mode: "plan" })).status, 404);
+  const cases: Array<[string, string]> = [
+    ["205", "busy"],
+    ["202", "closed"],
+    ["200", "not_project"],
+  ];
+  for (const [id, error] of cases) {
+    assert.deepEqual(await postJson(s.server, `/api/topics/ch:${id}/mode`, { mode: "plan" }), { status: 409, json: { error } }, id);
+  }
+  // 枠待ちの発言・場所の付け替え中も busy
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const queued = s.turnQueue.run("201", () => gate);
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/mode", { mode: "plan" }), { status: 409, json: { error: "busy" } });
+  release();
+  await queued;
+  s.moves.start({ channelId: "201", fromDir: "alpha", toDir: "beta", by: "web" });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/mode", { mode: "plan" }), { status: 409, json: { error: "busy" } });
+  assert.deepEqual(s.posts, []);
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "alpha", permissionMode: "default" });
+  assert.deepEqual(s.topicSessions.projectDirOf("205"), { projectDir: "beta", permissionMode: "default" });
+});
+
+test("POST /mode: changed で 200 とチャンネルへの投稿 1 通、unchanged は投稿しない", async (t) => {
+  const s = await setup(t, { mode: true });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/mode", { mode: "acceptEdits" }), { status: 200, json: { result: "changed", mode: "acceptEdits" } });
+  await s.waitPosts(1);
+  assert.deepEqual(s.posts, [{ channelId: "201", text: modeChangedText("acceptEdits") }]);
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "alpha", permissionMode: "acceptEdits" });
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/mode", { mode: "acceptEdits" }), { status: 200, json: { result: "unchanged", mode: "acceptEdits" } });
+  // plan は 2 行
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/mode", { mode: "plan" }), { status: 200, json: { result: "changed", mode: "plan" } });
+  await s.waitPosts(2);
+  assert.deepEqual(s.posts.at(-1), { channelId: "201", text: `${modeChangedText("plan")}\n${MODE_PLAN_NOTE}` });
+  assert.equal(s.posts.length, 2);
+  assert.ok(s.logs.includes(`Web から許可のモードを変えました（guild=${GUILD}）`));
+  assert.ok(s.logs.every((line) => !line.includes("201") && !line.includes("alpha")), s.logs.join("\n"));
+  // 投稿が投げても 200 のまま（log だけ）
+  s.postFails.value = true;
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/mode", { mode: "default" }), { status: 200, json: { result: "changed", mode: "default" } });
+  await s.waitLog((line) => line.startsWith("許可のモードの変更を Discord に投稿できませんでした"));
+});
+
+test("POST /mode: mode の配線が無ければルートが無い", async (t) => {
+  const s = await setup(t, { move: "cc", general: true });
+  // 201 はプロジェクトのセッションなので、ルートがあれば 200 になる
+  assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/mode", { mode: "plan" }), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(s.posts, []);
+  assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "alpha", permissionMode: "default" });
 });

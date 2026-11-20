@@ -234,6 +234,7 @@ function setupBridge(
   t: TestContext,
   suggestions: unknown[] = [],
   call: { toolName: string; input: Record<string, unknown> } = { toolName: "Bash", input: { command: "npm run check", description: "check" } },
+  planApproved?: (context: RunContext) => void,
 ) {
   const { workspaceDir, home, cfg } = places(t);
   const db = tempDb(t);
@@ -265,7 +266,17 @@ function setupBridge(
     history: stores.history,
     log,
   });
-  const bridge = createPermissionBridge({ permissions, hold, poster, holdSec: 300, questionHoldSec: 900, workspaceDir, home, log });
+  const bridge = createPermissionBridge({
+    permissions,
+    hold,
+    poster,
+    holdSec: 300,
+    questionHoldSec: 900,
+    workspaceDir,
+    home,
+    ...(planApproved === undefined ? {} : { planApproved }),
+    log,
+  });
   const results: PermissionResult[] = [];
   const signal = new AbortController();
   // 失敗したテストで保留が残らないよう、終わりに中断する
@@ -1387,4 +1398,110 @@ test("再起動で時間切れにした質問の行は、1 通の書き換えと
   const notices = stores.history.list(CHANNEL, { limit: 10 }).map((h) => h.text);
   assert.deepEqual(notices.sort(), ["許可の要求（Bash）: 時間切れ（拒否しました）", "質問の結果: 時間切れ。答えは、このチャンネルへの発言で送ってください"].sort());
   assert.deepEqual(stores.history.list("gone-1", { limit: 10 }), []);
+});
+
+test("★ DB のモードを変えた次のターンの Options の permissionMode が変わる", { timeout: 20_000 }, async (t) => {
+  const { cfg, home } = places(t);
+  const stores = createStores(tempDb(t), () => new Date(BASE));
+  stores.topicSessions.create({ channelId: CHANNEL, guildId: GUILD, title: "作業", categoryId: "cat-1", projectDir: "alpha" });
+  const modes: Array<string | undefined> = [];
+  const queryFn: QueryFn = (query) =>
+    (async function* () {
+      modes.push(query.options.permissionMode);
+      yield { type: "system", subtype: "init", session_id: SESSION } as unknown as SDKMessage;
+      yield { type: "result", subtype: "success", is_error: false, result: "済み", session_id: SESSION, duration_ms: 1 } as unknown as SDKMessage;
+    })();
+  const projectRunner = new SdkAgentRunner(
+    { ...cfg, turnTimeoutSec: 300, sessionTurnTimeoutSec: 900 },
+    undefined,
+    undefined,
+    () => undefined,
+    queryFn,
+    undefined,
+    createProjectProfile({ cfg, createMcpServer: () => mcpServer(), canUseTool: () => async () => ({ behavior: "allow" }), home, env: {}, log: () => undefined }),
+  );
+  const deps = { ...stores, runner: new FakeRunner([]), projectRunner, log: () => undefined };
+  const turn = { guildId: GUILD, channelId: CHANNEL, kind: "session" as const, prompt: "やって", allowedUrls: [] };
+  await runChannelTurn(deps, turn);
+  assert.ok(stores.topicSessions.setPermissionMode(CHANNEL, "plan"));
+  await runChannelTurn(deps, turn);
+  assert.ok(stores.topicSessions.setPermissionMode(CHANNEL, "acceptEdits"));
+  await runChannelTurn(deps, turn);
+  assert.deepEqual(modes, ["default", "plan", "acceptEdits"]);
+});
+
+test("★ DB に 3 つ以外の値が在っても Options は default", { timeout: 20_000 }, async (t) => {
+  const { cfg, home } = places(t);
+  const db = tempDb(t);
+  const stores = createStores(db, () => new Date(BASE));
+  stores.topicSessions.create({ channelId: CHANNEL, guildId: GUILD, title: "作業", categoryId: "cat-1", projectDir: "alpha" });
+  const modes: Array<string | undefined> = [];
+  const queryFn: QueryFn = (query) =>
+    (async function* () {
+      modes.push(query.options.permissionMode);
+      yield { type: "system", subtype: "init", session_id: SESSION } as unknown as SDKMessage;
+      yield { type: "result", subtype: "success", is_error: false, result: "済み", session_id: SESSION, duration_ms: 1 } as unknown as SDKMessage;
+    })();
+  const projectRunner = new SdkAgentRunner(
+    { ...cfg, turnTimeoutSec: 300, sessionTurnTimeoutSec: 900 },
+    undefined,
+    undefined,
+    () => undefined,
+    queryFn,
+    undefined,
+    createProjectProfile({ cfg, createMcpServer: () => mcpServer(), canUseTool: () => async () => ({ behavior: "allow" }), home, env: {}, log: () => undefined }),
+  );
+  const deps = { ...stores, runner: new FakeRunner([]), projectRunner, log: () => undefined };
+  const turn = { guildId: GUILD, channelId: CHANNEL, kind: "session" as const, prompt: "やって", allowedUrls: [] };
+  for (const value of ["bypassPermissions", "dontAsk", "auto", "PLAN"]) {
+    db.prepare("UPDATE sessions SET permission_mode = ? WHERE channel_id = ?").run(value, CHANNEL);
+    await runChannelTurn(deps, turn);
+  }
+  assert.deepEqual(modes, ["default", "default", "default", "default"]);
+});
+
+const EXIT_PLAN_CALL = { toolName: "ExitPlanMode", input: { plan: "README に 1 行足す" } };
+
+test("★ ExitPlanMode を許可すると planApproved が 1 回呼ばれ、拒否・時間切れでは呼ばれない", { timeout: 20_000 }, async (t) => {
+  for (const answer of ["allow", "deny", "expire", "abort"] as const) {
+    const approved: RunContext[] = [];
+    const s = setupBridge(t, [], EXIT_PLAN_CALL, (ctx) => void approved.push(ctx));
+    await until(() => s.gateway.posts.length === 1, `カード（${answer}）`);
+    const row = s.permissions.listPending()[0]!;
+    if (answer === "allow") s.hold.answer(row.id, "allow", "web", row.requestHash);
+    else if (answer === "deny") s.hold.answer(row.id, "deny", "discord");
+    else if (answer === "expire") s.fire();
+    else s.signal.abort();
+    await s.run;
+    const allowed = answer === "allow";
+    assert.equal(s.results[0]?.behavior, allowed ? "allow" : "deny", answer);
+    assert.equal(approved.length, allowed ? 1 : 0, answer);
+    if (allowed) {
+      assert.equal(approved[0]!.channelId, CHANNEL);
+      assert.equal(approved[0]!.guildId, GUILD);
+    }
+  }
+});
+
+test("ExitPlanMode 以外の許可では planApproved を呼ばない", { timeout: 20_000 }, async (t) => {
+  const approved: RunContext[] = [];
+  const s = setupBridge(t, [], undefined, (ctx) => void approved.push(ctx));
+  await until(() => s.gateway.posts.length === 1, "カード");
+  const row = s.permissions.listPending()[0]!;
+  s.hold.answer(row.id, "allow", "web", row.requestHash);
+  await s.run;
+  assert.deepEqual(s.results, [{ behavior: "allow" }]);
+  assert.equal(approved.length, 0);
+});
+
+test("planApproved が投げても許可の結果はそのまま返る", { timeout: 20_000 }, async (t) => {
+  const s = setupBridge(t, [], EXIT_PLAN_CALL, () => {
+    throw new Error("boom");
+  });
+  await until(() => s.gateway.posts.length === 1, "カード");
+  const row = s.permissions.listPending()[0]!;
+  s.hold.answer(row.id, "allow", "web", row.requestHash);
+  await s.run;
+  assert.deepEqual(s.results, [{ behavior: "allow" }]);
+  assert.ok(s.logs.includes("計画の許可の後のモードの戻しに失敗しました"));
 });

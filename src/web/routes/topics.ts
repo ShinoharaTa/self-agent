@@ -5,6 +5,7 @@
 // POST /api/topics/ch:<id>/place（M5）は話題の場所を変える（app/topic-move.ts の moveTopic。move の配線があるときだけ。202 ですぐ返し、結果はチャンネルに投稿する）
 // 右腕の場所を変える確認（M6e。app/topic-proposals.ts）は、proposals の配線があるとき、その話題の「あなたの番」（confirm）に付ける
 // POST /api/topics/moves/<id>/accept・/keep（M6g）は、その確認に Web から答える（Discord の [変える][このまま] と同じ accept・keep。proposals の配線があるときだけ）
+// POST /api/topics/ch:<id>/mode（H4b）はプロジェクトのセッションの許可のモードを変える（app/session-mode.ts の setSessionMode。mode の配線があるときだけ）
 // 既読（M7。docs/plan/web-ui-v3.md §3.3）: GET の応答に reads（{ [channelId]: lastReadId }）を足し、POST /api/topics/ch:<id>/read で進める（reads の配線があるときだけ。log は出さない）
 import { CC_CONFIRM_TTL_MS } from "../../app/commands/cc-confirm.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
@@ -34,6 +35,8 @@ import {
   parsePlace as parseMovePlace,
 } from "../../app/topic-move.ts";
 import type { TopicProposals } from "../../app/topic-proposals.ts";
+import { modeChangedReply, type SessionModeDeps, setSessionMode } from "../../app/session-mode.ts";
+import { isProjectPermissionMode } from "../../agent/runner.ts";
 import { cwdLabel, projectOf } from "../../cc/labels.ts";
 import { permissionExpiresAt } from "../../cc/permission-hold.ts";
 import { sinceOf, type CcRegistry, type CcSessionView } from "../../cc/registry.ts";
@@ -81,6 +84,11 @@ export type TopicRouteDeps = {
    * moves.runningChannels は movable の「場所を変えています」に使う。ownerPosts は結果の投稿（sessionRoutes に渡している物）
    */
   move?: MoveDeps & { ownerPosts: Pick<OwnerPosts, "send"> };
+  /**
+   * POST /api/topics/ch:<id>/mode の配線（/mode と同じ実体）。無ければそのルートを足さない。
+   * post は変えたときの文をチャンネルへ持ち主の Bot で投稿する口（待たない。失敗は log だけ）
+   */
+  mode?: { deps: SessionModeDeps; post(channelId: string, text: string): Promise<void> };
   /**
    * 右腕の場所を変える確認（app/topic-proposals.ts）。期限の中の確認を、その話題の「あなたの番」（confirm）に付ける。
    * POST /api/topics/moves/<id>/accept・/keep の配線（Discord のボタンと同じ実体）。無ければその 2 つのルートを足さない
@@ -452,7 +460,7 @@ function readsOfResult(result: TopicsResult, store: Pick<TopicReadStore, "all"> 
 }
 
 export function topicRoutes(deps: TopicRouteDeps): Route[] {
-  const { cfg, guildSettings, places, move, proposals, reads } = deps;
+  const { cfg, guildSettings, places, move, mode, proposals, reads } = deps;
   const now = deps.now ?? (() => new Date());
   const collect = deps.collect ?? createTopicCollector(deps);
   const readsOf = (result: TopicsResult): Record<string, number> => readsOfResult(result, reads?.store);
@@ -532,6 +540,37 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
             }
           });
         return { status: 202, json: { accepted: true } };
+      },
+    });
+  }
+  if (mode !== undefined) {
+    routes.push({
+      method: "POST",
+      pattern: /^\/api\/topics\/ch:(\d{1,25})\/mode$/,
+      handle: async ({ params, body }) => {
+        const channelId = params[0] ?? "";
+        const value: unknown = body?.mode;
+        if (!isProjectPermissionMode(value)) return BAD_REQUEST;
+        const session = mode.deps.topicSessions.get(channelId);
+        if (session === undefined || !cfg.allowedGuildIds.includes(session.guildId)) return NOT_FOUND;
+        const { guildId } = session;
+        const outcome = setSessionMode({ guildId, channelId, mode: value, by: "web" }, mode.deps);
+        switch (outcome.result) {
+          case "not_session":
+            return NOT_FOUND;
+          case "closed":
+          case "not_project":
+          case "busy":
+            return { status: 409, json: { error: outcome.result } };
+          case "unchanged":
+            return { status: 200, json: { result: "unchanged", mode: value } };
+          case "changed":
+            mode.deps.log(`Web から許可のモードを変えました（guild=${guildId}）`);
+            void mode.post(channelId, modeChangedReply(value)).catch((error: unknown) => {
+              mode.deps.log(`許可のモードの変更を Discord に投稿できませんでした（${errorName(error)}）`);
+            });
+            return { status: 200, json: { result: "changed", mode: value } };
+        }
       },
     });
   }
