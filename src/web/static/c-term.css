@@ -99,7 +99,7 @@
   justify-content: center;
   min-height: var(--c-tap);
   padding: 0 var(--space-4);
-  color: var(--primary);
+  color: var(--accent);
   font-size: var(--c-font-body);
   text-decoration: underline;
   overflow-wrap: anywhere;

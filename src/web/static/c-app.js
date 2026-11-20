@@ -13,7 +13,7 @@ import { BottomBar, TopBar } from "./c-shell.js";
 import { talkMouth } from "./c-talk.js";
 import { composerMouth } from "./c-composer.js";
 import { cardsMouth } from "./c-cards.js";
-import { TermCard, termView } from "./c-term.js";
+import { termMouth } from "./c-term.js";
 import { HandHead } from "./c-hand.js";
 import { Confirm, Toast } from "./c-sheet.js";
 
@@ -313,14 +313,24 @@ if (listRoot) {
     }
   }
 
+  /** 札の口 */
+  const term = termMouth(render);
+
   /** 端末のセッションの札を描く。描けなければ false（shell.js が今の［端末］のタブに戻す） */
   function drawTerm(root, raw) {
+    const before = document.activeElement;
+    const inside = !!before && root.contains(before);
     try {
-      render(html`<${TermCard} ...${termView(raw)} on=${raw.on} />`, root);
+      term.draw(root, raw);
     } catch (error) {
       // draw と同じく名前だけ
       console.error("[web] term draw failed", error instanceof Error ? error.name : "");
       return false;
+    }
+    // 焦点のあったボタンが消えた（［確かめ直す］など）: 押せる最初のボタン → RC のリンク → 最初のボタン（body に落とさない）
+    if (inside && !document.contains(before)) {
+      const next = root.querySelector('button:not([aria-disabled="true"])') || root.querySelector("a.c-term-link") || root.querySelector("button");
+      if (next) next.focus({ preventScroll: true });
     }
     return true;
   }
@@ -328,7 +338,7 @@ if (listRoot) {
   /** 根を空にする */
   function dropTerm(root) {
     try {
-      render(null, root);
+      term.drop(root);
     } catch {
       // 外すだけなので握る
     }
