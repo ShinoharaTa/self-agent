@@ -21,7 +21,7 @@ import type { CcChannelStore } from "../store/cc-channels.ts";
 import type { CcPermissionStore } from "../store/cc-permissions.ts";
 import type { CcSendStore } from "../store/cc-sends.ts";
 import { headChars, type CcSessionRow, type CcSessionStore } from "../store/cc-sessions.ts";
-import type { CcTakeoverEntry, CcTakeoverRow, CcTakeoverSource, CcTakeoverState, CcTakeoverStore } from "../store/cc-takeovers.ts";
+import type { CcTakeoverEntry, CcTakeoverMode, CcTakeoverRow, CcTakeoverSource, CcTakeoverState, CcTakeoverStore } from "../store/cc-takeovers.ts";
 import { rollbackIfOpen } from "../store/db.ts";
 import { recordHistory, type HistoryStore } from "../store/history.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
@@ -34,6 +34,7 @@ import { copyTranscript, inspectSource, prepareTarget, readAppended, takeoverPat
 import {
   appendedInterrupted,
   lineage,
+  mapTakeoverMode,
   parseBtime,
   parseStat,
   type ProcStat,
@@ -76,20 +77,20 @@ function label(text: string, escape: boolean): string {
 
 /** 確認の文（§4。純関数）。escape が false なら Web 向け（エスケープ前） */
 export function takeoverConfirmText(
-  input: { title: string; project: string; source: CcTakeoverSource; terminalMode: string | null },
+  input: { title: string; project: string; source: CcTakeoverSource; permissionMode: CcTakeoverMode; terminalMode: string | null },
   escape = true,
 ): string {
   const ending = input.source === "alive" ? "端末の Claude Code は終了し、" : "端末の Claude Code はすでに終わっています。";
   return (
     `「${label(input.title, escape)}」（${label(input.project, escape)}）を取り込みます。${ending}続きは新しいチャンネルで self-agent が引き継ぎます。` +
-    `許可のモードは default になります（端末: ${label(input.terminalMode ?? "不明", escape)}）。モデルは self-agent の設定のものになります。`
+    `許可のモードは ${input.permissionMode} になります（端末: ${label(input.terminalMode ?? "不明", escape)}）。モデルは self-agent の設定のものになります。`
   );
 }
 
 /** 完了の文（§4。新しいチャンネルの最初の投稿と Web の履歴の知らせ。純関数）。escape が false なら Web 向け（エスケープ前） */
-export function takeoverDoneText(project: string, interrupted: boolean, escape = true): string {
+export function takeoverDoneText(project: string, mode: CcTakeoverMode, interrupted: boolean, escape = true): string {
   const text =
-    `端末の Claude Code から取り込みました。ここから先は self-agent がこの会話を続けます（${label(project, escape)}・許可のモード default）。` +
+    `端末の Claude Code から取り込みました。ここから先は self-agent がこの会話を続けます（${label(project, escape)}・許可のモード ${mode}）。` +
     "これより前の会話はここには出ませんが、self-agent は覚えています。" +
     "端末で claude --resume すると取り込む前までの会話が別に開きます（ここでの続きは入りません）。";
   return interrupted ? `${text}\n${TAKEOVER_INTERRUPTED_TEXT}` : text;
@@ -310,14 +311,14 @@ export class CcTakeover {
       guildId: input.guildId,
       entry: input.entry,
       ...(input.confirmChannelId === undefined ? {} : { confirmChannelId: input.confirmChannelId }),
-      // H4b まで常に default（§3.6。mapTakeoverMode は呼ばない）
-      permissionMode: "default",
+      // 端末の plan・acceptEdits はそのまま、ほかは default（§3.6）
+      permissionMode: mapTakeoverMode(terminalMode),
       terminalMode,
     });
     if (row === undefined) return refuse("in_progress");
     log(`Claude Code: 取り込みの確認を作りました（#${row.id}、${row.source}、${row.entry}、guild=${row.guildId}）`);
     const title = this.titleOf(assessed.session, assessed.project);
-    const confirmInput = { title, project: assessed.project, source: assessed.source, terminalMode };
+    const confirmInput = { title, project: assessed.project, source: assessed.source, permissionMode: row.permissionMode, terminalMode };
     return {
       ok: true,
       id: row.id,
@@ -699,7 +700,7 @@ export class CcTakeover {
         categoryId,
         origin: "command",
         projectDir: row.project,
-        permissionMode: "default",
+        permissionMode: row.permissionMode,
       });
       sdkSessions.set(channelId, row.sessionId);
       if (!takeovers.finish(row.id)) throw new Error("取り込みの行が実行中ではありません");
@@ -727,8 +728,8 @@ export class CcTakeover {
     }
     if (row === undefined || row.targetChannelId === null) return { plainText: "", edited: false };
     const target = row.targetChannelId;
-    const text = takeoverDoneText(row.project, row.interrupted);
-    const plainText = takeoverDoneText(row.project, row.interrupted, false);
+    const text = takeoverDoneText(row.project, row.permissionMode, row.interrupted);
+    const plainText = takeoverDoneText(row.project, row.permissionMode, row.interrupted, false);
     await gateway.sendMessage(target, { text }).then(() => undefined, failed("完了の文を出"));
     this.record(row.guildId, target, "divider", takeoverDivider(row.project));
     // 完了の文（注意を含む）も Web の会話に残す（history は文字のまま出すのでエスケープ前）

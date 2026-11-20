@@ -343,8 +343,8 @@ test("待機のセッション: 新しいチャンネルを作った後で SIGTE
   const s = setup(t);
   const proposed = await s.takeover.propose({ sessionId: S1, entry: "discord", guildId: "guild-1", confirmChannelId: "confirm-1" });
   assert.ok(proposed.ok);
-  assert.equal(proposed.message.text, takeoverConfirmText({ title: SECRET_NAME, project: "alpha", source: "alive", terminalMode: "plan" }));
-  assert.match(proposed.message.text, /端末の Claude Code は終了し、続きは新しいチャンネルで self-agent が引き継ぎます。許可のモードは default になります（端末: plan）/);
+  assert.equal(proposed.message.text, takeoverConfirmText({ title: SECRET_NAME, project: "alpha", source: "alive", permissionMode: "plan", terminalMode: "plan" }));
+  assert.match(proposed.message.text, /端末の Claude Code は終了し、続きは新しいチャンネルで self-agent が引き継ぎます。許可のモードは plan になります（端末: plan）/);
   assert.deepEqual(
     proposed.message.components?.[0]?.kind === "buttons" ? proposed.message.components[0].buttons.map((button) => button.customId) : [],
     [`cc:take:go:${proposed.id}`, `cc:take:no:${proposed.id}`],
@@ -353,14 +353,14 @@ test("待機のセッション: 新しいチャンネルを作った後で SIGTE
   assert.deepEqual(s.channelCalls, []);
   s.takeovers.setConfirmMessage(proposed.id, "msg-confirm");
   const result = await s.takeover.confirm(proposed.id);
-  assert.deepEqual(result, { ok: true, channelId: DEST, text: takeoverLinkText(DEST), plainText: takeoverDoneText("alpha", false, false), edited: true });
+  assert.deepEqual(result, { ok: true, channelId: DEST, text: takeoverLinkText(DEST), plainText: takeoverDoneText("alpha", "plan", false, false), edited: true });
   // チャンネルの作成が kill より前。/new と同じキューの中で作る
   assert.deepEqual(s.events, ["channel", "kill"]);
   assert.deepEqual(s.channelCalls, [{ guildId: "guild-1", title: SECRET_NAME, projectDir: "alpha" }]);
   assert.deepEqual(s.queue.keys, [layoutQueueKey("guild-1")]);
   assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
   const session = s.topicSessions.get(DEST);
-  assert.deepEqual(s.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: "default" });
+  assert.deepEqual(s.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: "plan" });
   assert.equal(session?.state, "active");
   assert.equal(session?.title, SECRET_NAME);
   assert.equal(session?.categoryId, "cat-active");
@@ -376,7 +376,7 @@ test("待機のセッション: 新しいチャンネルを作った後で SIGTE
   assert.deepEqual(
     s.gateway.posts.map((post) => [post.channelId, post.message.text]),
     [
-      [DEST, takeoverDoneText("alpha", false)],
+      [DEST, takeoverDoneText("alpha", "plan", false)],
       ["chan-1", takeoverMovedText(DEST)],
     ],
   );
@@ -385,7 +385,7 @@ test("待機のセッション: 新しいチャンネルを作った後で SIGTE
     s.history.list(DEST, { limit: 10 }).map((entry) => [entry.kind, entry.text]),
     [
       ["divider", "端末の Claude Code から取り込みました（alpha）"],
-      ["notice", takeoverDoneText("alpha", false, false)],
+      ["notice", takeoverDoneText("alpha", "plan", false, false)],
     ],
   );
   assert.equal(s.ccChannels.get("chan-1")?.state, "deleted");
@@ -409,8 +409,52 @@ test("終わったセッション（gone）: kill なしで同じ結果", async 
   assert.equal(s.takeovers.get(proposed.id)?.notePending, true);
   assert.equal(s.takeovers.get(proposed.id)?.targetChannelId, DEST);
   assert.equal(existsSync(s.dst), true);
-  assert.ok(s.gateway.posts.some((post) => post.channelId === DEST && post.message.text === takeoverDoneText("alpha", false)));
+  assert.ok(s.gateway.posts.some((post) => post.channelId === DEST && post.message.text === takeoverDoneText("alpha", "default", false)));
   assertQuietLogs(s);
+});
+
+for (const mode of ["plan", "acceptEdits"] as const) {
+  test(`端末が ${mode} の取り込みは、確認の文・行・作ったセッション・完了の文が ${mode}`, async (t) => {
+    const s = setup(t);
+    s.view.permissionMode = mode;
+    const proposed = await s.takeover.propose({ sessionId: S1, entry: "discord", guildId: "guild-1", confirmChannelId: "confirm-1" });
+    assert.ok(proposed.ok);
+    assert.equal(proposed.message.text, takeoverConfirmText({ title: SECRET_NAME, project: "alpha", source: "alive", permissionMode: mode, terminalMode: mode }));
+    assert.ok(proposed.message.text.includes(`許可のモードは ${mode} になります（端末: ${mode}）`));
+    assert.ok(proposed.plainText.includes(`許可のモードは ${mode} になります`));
+    assert.equal(s.takeovers.get(proposed.id)?.permissionMode, mode);
+    const result = await s.takeover.confirm(proposed.id);
+    assert.deepEqual(result, { ok: true, channelId: DEST, text: takeoverLinkText(DEST), plainText: takeoverDoneText("alpha", mode, false, false), edited: false });
+    assert.ok(result.ok && result.plainText.includes(`・許可のモード ${mode}）`));
+    assert.deepEqual(s.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: mode });
+    assert.equal(s.gateway.posts.find((post) => post.channelId === DEST)?.message.text, takeoverDoneText("alpha", mode, false));
+  });
+}
+
+test("端末が auto・bypassPermissions・不明（null）の取り込みは default", async (t) => {
+  for (const mode of ["auto", "bypassPermissions", null]) {
+    const s = setup(t);
+    s.view.permissionMode = mode;
+    const proposed = await s.takeover.propose({ sessionId: S1, entry: "discord", guildId: "guild-1", confirmChannelId: "confirm-1" });
+    assert.ok(proposed.ok, String(mode));
+    assert.ok(proposed.message.text.includes(`許可のモードは default になります（端末: ${mode ?? "不明"}）`), String(mode));
+    assert.equal(s.takeovers.get(proposed.id)?.permissionMode, "default", String(mode));
+    const result = await s.takeover.confirm(proposed.id);
+    assert.ok(result.ok, String(mode));
+    assert.equal(result.plainText, takeoverDoneText("alpha", "default", false, false), String(mode));
+    assert.deepEqual(s.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: "default" }, String(mode));
+  }
+});
+
+test("前から確認待ちで残っていた行（permission_mode が default）は、端末が plan でも default のまま進む", async (t) => {
+  const s = setup(t);
+  assert.equal(s.view.permissionMode, "plan");
+  const row = addRow(s, S1);
+  assert.equal(row.permissionMode, "default");
+  const result = await s.takeover.confirm(row.id);
+  assert.ok(result.ok);
+  assert.equal(result.plainText, takeoverDoneText("alpha", "default", false, false));
+  assert.deepEqual(s.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: "default" });
 });
 
 for (const [name, broken] of [
@@ -1216,7 +1260,7 @@ test("recoverEffects: done で effects_at が空の行は後始末を 1 回（�
   assert.deepEqual(
     s.gateway.posts.map((post) => [post.channelId, post.message.text]),
     [
-      [DEST, takeoverDoneText("alpha", false)],
+      [DEST, takeoverDoneText("alpha", "default", false)],
       ["chan-1", takeoverMovedText(DEST)],
     ],
   );
@@ -1289,7 +1333,7 @@ test("ペインを引く口が no_server なら not_in_tmux、ほかの失敗は
 test("Web の入口（confirmChannelId 無し）: 確認の文の書き換えは無く、結果の channelId が行き先", async (t) => {
   const s = setup(t, { ended: true });
   const { id, result } = await s.proposeAndConfirm(s.takeover, "web");
-  assert.deepEqual(result, { ok: true, channelId: DEST, text: takeoverLinkText(DEST), plainText: takeoverDoneText("alpha", false, false), edited: false });
+  assert.deepEqual(result, { ok: true, channelId: DEST, text: takeoverLinkText(DEST), plainText: takeoverDoneText("alpha", "default", false, false), edited: false });
   assert.equal(s.takeovers.get(id)?.confirmChannelId, null);
   assert.deepEqual(s.gateway.edits, []);
 });
@@ -1494,14 +1538,14 @@ test("/cc take → 選ぶ → ［取り込む］（H2 の受け入れ）: 新し
   assert.deepEqual(picked.replies, [{ text: CC_TAKE_POSTED_REPLY, ephemeral: true }]);
   // 確認は打ったチャンネルに出し、まだ行き先は作らない
   assert.deepEqual(s.gateway.posts.map((post) => [post.channelId, post.messageId]), [["confirm-1", "msg-1"]]);
-  assert.equal(s.gateway.posts[0]!.message.text, takeoverConfirmText({ title: SECRET_NAME, project: "alpha", source: "alive", terminalMode: "plan" }));
+  assert.equal(s.gateway.posts[0]!.message.text, takeoverConfirmText({ title: SECRET_NAME, project: "alpha", source: "alive", permissionMode: "plan", terminalMode: "plan" }));
   assert.deepEqual(s.channelCalls, []);
   const [go] = e.buttons();
   assert.match(go ?? "", /^cc:take:go:\d+$/);
   const pressed = await e.press(go!);
   assert.deepEqual(pressed.calls, [{ method: "deferUpdate" }]);
   assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
-  assert.deepEqual(s.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: "default" });
+  assert.deepEqual(s.topicSessions.projectDirOf(DEST), { projectDir: "alpha", permissionMode: "plan" });
   assert.equal(s.sdkSessions.get(DEST), S1);
   assert.deepEqual(s.gateway.edits, [{ channelId: "confirm-1", messageId: "msg-1", message: { text: takeoverLinkText(DEST), components: [] } }]);
   assertQuietLogs(s);
@@ -1835,12 +1879,13 @@ test("Web の入口の端から端: GET → POST /takeover → POST /confirm で
   assert.deepEqual(s.kills, []);
   const proposed = await callJson(server, "POST", `/api/cc/sessions/${S1}/takeover`);
   assert.equal(proposed.status, 201);
+  assert.ok((proposed.json.text as string).includes("許可のモードは plan になります（端末: plan）"));
   const id = proposed.json.id as number;
   assert.equal(s.takeovers.get(id)?.entry, "web");
   assert.equal(s.takeovers.get(id)?.confirmChannelId, null);
   const confirmed = await callJson(server, "POST", `/api/cc/takeovers/${id}/confirm`);
   assert.equal(confirmed.status, 200);
-  assert.deepEqual(confirmed.json, { ok: true, id: `ch:${DEST}`, text: takeoverDoneText("alpha", false, false) });
+  assert.deepEqual(confirmed.json, { ok: true, id: `ch:${DEST}`, text: takeoverDoneText("alpha", "plan", false, false) });
   assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
   assert.equal(s.sdkSessions.get(DEST), S1);
   // 済んだ後の GET は last に行き先を出す
@@ -1874,10 +1919,10 @@ test("Web の入口: 記号入りの名前でも応答の文はエスケープ�
   assert.equal(read.json.project, "al_pha");
   const proposed = await callJson(server, "POST", `/api/cc/sessions/${S1}/takeover`);
   assert.equal(proposed.status, 201);
-  assert.equal(proposed.json.text, takeoverConfirmText({ title: name, project: "al_pha", source: "alive", terminalMode: "plan" }, false));
+  assert.equal(proposed.json.text, takeoverConfirmText({ title: name, project: "al_pha", source: "alive", permissionMode: "plan", terminalMode: "plan" }, false));
   assert.ok((proposed.json.text as string).includes(`「${name}」（al_pha）`));
   const confirmed = await callJson(server, "POST", `/api/cc/takeovers/${proposed.json.id as number}/confirm`);
   assert.equal(confirmed.status, 200);
-  assert.equal(confirmed.json.text, takeoverDoneText("al_pha", false, false));
+  assert.equal(confirmed.json.text, takeoverDoneText("al_pha", "plan", false, false));
   assert.ok((confirmed.json.text as string).includes("（al_pha・"));
 });
