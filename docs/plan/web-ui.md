@@ -5,12 +5,14 @@
 
 ## 0. 目的・結論
 
+> M8（#381）から `/` の殻は docs/plan/web-ui-v3.md の新しい殻（話題の一覧・会話・右腕）。この文書が書く VS Code 風の殻（タイトルバー・アクティビティ・サイドバー・タブ・パネル）は古い殻で、`/static/classic.html` に M8b まで残る。
+
 目的: Discord を開かずに、tailnet の中のブラウザ（PC はキーボード中心、スマホは指）から、Bot の状態・使用量・セッション・会話を見て、会話に送り、実行中のターンの途中経過を見て止め、セッション・タスク・リマインド・記憶を操作できる。**Discord が主で、Web は同じ Bot・同じ DB を別の窓から使う。** Web から送った発言と返事は Discord にも出る。
 
 結論:
 1. 入口・認証・CSRF・CSP・技術は **v1 のまま**（§2）。別ポート `SELF_AGENT_WEB_PORT`（127.0.0.1）を `tailscale serve --https=9444` で出し、`SELF_AGENT_WEB_ALLOWED_LOGIN` 必須、任意の `SELF_AGENT_WEB_TOKEN` + HMAC の Cookie 30 日、依存は足さない。新しい殻の部品だけは Preact + htm をビルドなしで同梱する（docs/plan/web-ui-components.md。2026-11-16）。実行時の依存は足さない。
 2. 画面は **1 枚の HTML の SPA**（`src/web/static/`。モック v2 の workbench・sidebar・views・chat・ui をそのまま移し、`data.js` を `/api/*` を呼ぶ `api.js` に置き換える）。ダーク既定・PC は 28px 行・指の端末は 44px。`templates/web/site/base.css` と `icons.svg` は**複製せず**配る（§3.3）。
-3. 会話の履歴は **DB に新しく保存する（案 B）**: `history` 表に、オーナーの発言（Discord で書いたものも）・Bot の返事（終わり方・手順・ツール回数）・区切り（/renew・/close・切り替え）を handler と各処理が書く（§4）。Discord の履歴は取りに行かない。未読の位置はブラウザ（localStorage）が持つ。
+3. 会話の履歴は **DB に新しく保存する（案 B）**: `history` 表に、オーナーの発言（Discord で書いたものも）・Bot の返事（終わり方・手順・ツール回数）・区切り（/renew・/close・切り替え）を handler と各処理が書く（§4）。Discord の履歴は取りに行かない。既読はサーバー（M7。§4.4）が持つ。
 4. Web から送れるのは **受け付けるチャンネル全部**（#inbox・#tasks・#<NAME>・セッションのチャンネル。全人格）。`Handler.submitText` が、**キューに入れる前に持ち主の Bot で「（Web から）」付きの本文をチャンネルに投稿し**（投稿できなければ受け付けない）、Discord の発言と同じ経路（最終発言の記録・待ち/完了 → 進行中・キュー・turn.ts）で 1 ターン入れ、返事はその投稿への返信にする（Discord 側でも会話が送った順に読める。§5）。
 5. 途中経過は **polling**（実行中のターンは 2 秒ごと）。handler が実行中のターンの経過・ツール回数・直近の手順を持ち、`/api/running` で返す。[中断]・[続ける] は Discord のボタンと同じ `handler.abortTurn`・`continueTurn`（§5.3）。SSE は tailscale serve 越しが未確認なので入れない（確かめ方は §5.4）。
 6. セッションの操作（/new・/wait・/close・/renew・待ち → 続ける）は、コマンドのファイルから **`src/app/session-ops.ts`** に本体を出し、Discord のコマンドと Web の両方がそれを呼ぶ（§6）。
@@ -60,20 +62,28 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 ## 3. 画面（SPA）
 
 ### 3.1 構成（モック v2 を本番へ）
-- `src/web/static/` に置く: `index.html`・`app.css`・`ui.js`・`api.js`（`data.js` の置き換え）・`chat.js`・`views.js`・`sidebar.js`・`workbench.js`・`icons-app.svg`。`base.css`・`icons.svg` は `templates/web/site/` のものを `/static/base.css`・`/static/icons.svg` で配る（複製しない。`scaffold.ts` の `WEB_TEMPLATE_DIR`）。`src/web/static/` は `new URL("./static/", import.meta.url)` で解決する（`dist/` でも同じ深さ）。公開物では `build` が `dist/web/static/` に複製する（決定済み。distribution.md §4.1）。
+- `src/web/static/` に置く: `index.html`（新しい殻。M8 から）・`classic.html`（古い殻。M8b で消す）・`tokens.css`・`app.css`・`shell.css`・`ui.js`・`api.js`（`data.js` の置き換え）・`sound.js`・`chat.js`・`views.js`・`topics.js`・`shell.js`・`sidebar.js`（古い殻だけ）・`workbench.js`（古い殻だけ）・`icons-app.svg`。`base.css`・`icons.svg` は `templates/web/site/` のものを `/static/base.css`・`/static/icons.svg` で配る（複製しない。`scaffold.ts` の `WEB_TEMPLATE_DIR`）。`src/web/static/` は `new URL("./static/", import.meta.url)` で解決する（`dist/` でも同じ深さ）。公開物では `build` が `dist/web/static/` に複製する（決定済み。distribution.md §4.1）。
 - モックから外すもの: 「提案」の印と出し入れ（`data-proposal`・`proposal()`・`only-current`・`proposal-toggle`・`setProposals`・設定の「提案の部品」）、「モック v2」のバッジ、分割の残骸（`is-split`・`moveTab`・`closeGroup`・`splitSash`・`wb-sash-group`・タブのドラッグ）、`data.js` のダミー、`chat.js` の偽の進行（`startRun`・`tick`・`finishRun` の script）。
 - `window.SA` の名前空間と各ファイルの役割分担は保つ。`api.js` が `SA.api`（`fetch` の包み: `X-Self-Agent: 1`、JSON、401 なら `/` へ（§3.3）、エラーはトースト）と `SA.store`（`/api/*` の結果を持つメモリの状態。`channels`・`turns[channelId]`・`running`・`tasks`・… と、変わったら `SA.app.refresh*` を呼ぶ）を持つ。`chat.js`・`views.js`・`sidebar.js` は `SA.data` の代わりに `SA.store` を読む。
-- 深いリンクは **URL の hash**（`#/ch/<channelId>`・`#/tasks`・`#/reminders`・`#/usage`・`#/devlog`・`#/status`・`#/settings`・`#/project/<slug>`・`#/job/<id>`・`#/github`・`#/knowledge`・`#/memories`・`#/sessions/new`）。hash はサーバーに届かないので、ルータ・認証・CSP は 1 枚の HTML のまま。タブを開く・切り替えるたびに `history.replaceState` で hash を変え、読み込み時は hash があればそれを開く。パスでの深いリンクは作らない。
-- localStorage（接頭辞 `self-agent-web:`。読めなくても動く。モックの `sa-mock-v2:` は使わない）: `theme`（dark / light / system。既定 dark）、`--sidebar-w`・`--panel-h`、`tabs`（開いているタブの ID の並びと active）、`panel`（開いているか・どのタブか）、`drafts`（チャンネルごとの書きかけ。送ったら消す）、`seen`（§4.4 の未読）。本文以外は小さい。書きかけは本人のブラウザだけ。
+- 深いリンクは **URL の hash**（`#/ch/<channelId>`・`#/tasks`・`#/reminders`・`#/usage`・`#/devlog`・`#/status`・`#/settings`・`#/project/<slug>`・`#/job/<id>`・`#/github`・`#/knowledge`・`#/memories`・`#/sessions/new`）。hash はサーバーに届かないので、ルータ・認証・CSP は 1 枚の HTML のまま。タブ（新しい殻では開いた話題・画面）を開く・切り替えるたびに hash を変え、読み込み時は hash があればそれを開く（2 つの殻で同じ形）。パスでの深いリンクは作らない。
+- localStorage（接頭辞 `self-agent-web:`。読めなくても動く。モックの `sa-mock-v2:` は使わない）: 両方の殻が使う `theme`（dark / light / system。既定 dark）・`drafts`（チャンネルごとの書きかけ。送ったら消す）・`sound`（音の設定）・`seen`・`seen-sent`（M7 の移行の元と旗。§4.4）／新しい殻だけの `v3-hand`（右腕の開閉）・`v3-others`（「ほかのプロジェクト」の開閉）／古い殻だけの `tabs`（開いているタブの ID の並びと active）・`panel`（開いているか・どのタブか）・`--sidebar-w`・`--panel-h`。同じ名前を違う意味で使う鍵は無い（殻を替えても消す・移す物は無い）。本文以外は小さい。書きかけは本人のブラウザだけ。
 - 更新（polling。`document.visibilityState === "visible"` のときだけ。隠れたら止め、戻ったら即 1 回）: `/api/status` 10 秒。`/api/running` は実行中のターンが 1 つでもあれば 2 秒、無ければ 10 秒。開いている会話のタブの `turns?after=<最後の id>` は、`/api/running` の結果がそのチャンネルで変わったとき（始まった・終わった）と 5 秒ごと。一覧（channels・tasks・reminders・…）は開いたときと 60 秒ごと、操作の後は即。`/api/status` の応答に `stopping: true` が来たらトースト「再起動中です」を出して polling を止める。
 
 ### 3.2 殻（W1）
-- タイトルバー（サイドバーの切り替え・名前・コマンドセンター（Ctrl+K）・パネルの切り替え・テーマ）、アクティビティバー（PC は左の縦、1023px 以下は下の横。639px 以下は固定 4 + その他（`docs/plan/web-ui-polish.md` の NAV）。項目は §3.4 の表の順。**CC9 から「Claude Code」の項目は無く、会話のサイドバーの群「Claude Code」（入口の次）になる（`docs/plan/claude-code-channels.md` §2）。**無効な機能（dev モードでない devlog・GitHub 無効・ジョブ無効・配信無効のプロジェクト）は `/api/status` を見て**項目ごと出さない**）、サイドバー（PC は幅のつまみ付き、狭い画面はドロワー）、エディタ（タブ。Alt+1〜9・Alt+W・中クリックで閉じる・矢印で移動）、パネル（出力・知らせ・ジョブ。Ctrl+J。狭い画面は既定で閉じる）、ステータスバー（Bot の接続の点・シェル・実行中 n・ジョブ n・知らせ n・今日のトークン・版）、コマンドパレット、確認ダイアログ、トースト、ようこそ。振る舞いはモックの `workbench.js` のとおり（分割を除く）。
+- 殻は docs/plan/web-ui-v3.md §2 の新しい殻（`index.html`・`shell.js`・`topics.js`・`shell.css`）。PC は 3 列: 一覧（280px）・会話（開いた話題か画面。最小 360px）・右腕（#inbox の会話。360px）。右腕は「一覧 + 右腕 + 360px」が入れば列に並べ、足りなければ会話の上に重ねる（畳むと細い帯）。幅の段は 639px の 1 つで、639 以下は一覧 ⇄ 会話（全幅）、右腕は下からの枠。
+- 一覧: 先頭に「あなたの番」の節、その下に場所ごとの群（`GET /api/topics`。§3.4）。見出しに接続の点・鈴・絞り込み。一覧の下に「右腕に頼む・訊く」と口 タスク・リマインド・ほか（シート「ほか」: ナレッジ・記憶・GitHub・使用量・会話ログ・知らせ・状態・設定。無効な機能は出さない）。会話の見出しに「場所」のボタンと [会話][端末] の切り替え（Claude Code の話題。スマホと狭い幅は「…」の板の中）。
+- キー: Ctrl+K / ⌘+K（題名の絞り込みを開く）・Esc（重ねた右腕・絞り込み・スマホの会話 → 一覧）・一覧の行の ↑ / ↓ / Home / End。**探すのは題名の絞り込みだけで、コマンドパレットは無い**（web-ui-v3.md §15 の M8 の 違）。
+- 履歴: スマホで開いた会話は `{ v3Body: true }` の entry に積み、戻ると一覧。スマホで右腕を開いたときだけ `v3Hand` の entry を積む（戻るで閉じる）。640px 以上の重ねる形は entry を積まず、[畳む]・Esc・外側（backdrop）を押す・一覧から話題を開く、で閉じる。`v3Depth` は一覧までの段数。古い殻の印（`saList`・`saBody`）は読まない。
+- 会話・ナレッジ・タスクなどの画面の中身（`chat.js`・`views.js`）と確認ダイアログ・トーストは両方の殻で同じ。
 - テーマ: 既定 **dark**（`<html data-theme="dark">`。モックと同じ）。`system` を選ぶと `data-theme` を外して base.css の `prefers-color-scheme` に任せる。色の値は app.css の `:root[data-theme]` に base.css の写し（確認。base.css は編集しない）。
 - 密度: app.css の `--row`（PC 28px、`pointer: coarse` で `--tap` = 44px）、`.btn-sm`・`.input-sm`・`.chip-sm`・`.segmented-sm`。**`templates/web/DESIGN.md` の「押せるものは 44×44px 以上」「.container 640px」は LLM が作るページの決まりで、Web UI には当てはめない**（Web UI 専用の app.css で上書きする。DESIGN.md・base.css は変えない。両者の関係は app.css の先頭のコメントと本文書に書く）。
-- 設定の画面: テーマ、キーボードの一覧、環境変数の**有無**（`/api/status` の `env`。値は返さない）。
+- 設定の画面: テーマ、画面（もう一方の殻を開くリンク。新しい殻は「前の画面を開く」、古い殻は「新しい画面を開く」。M8b で消す）、キーボードの一覧（殻ごと）、環境変数の**有無**（`/api/status` の `env`。値は返さない）。
+
+古い殻（`/static/classic.html`）だけの決まり（M8b で消す）:
+- タイトルバー（サイドバーの切り替え・名前・コマンドセンター（Ctrl+K）・パネルの切り替え・テーマ）、アクティビティバー（PC は左の縦、1023px 以下は下の横。639px 以下は固定 4 + その他（`docs/plan/web-ui-polish.md` の NAV）。項目は §3.4 の表の順。**CC9 から「Claude Code」の項目は無く、会話のサイドバーの群「Claude Code」（入口の次）になる（`docs/plan/claude-code-channels.md` §2）。**無効な機能（dev モードでない devlog・GitHub 無効・ジョブ無効・配信無効のプロジェクト）は `/api/status` を見て**項目ごと出さない**）、サイドバー（PC は幅のつまみ付き、狭い画面はドロワー）、エディタ（タブ。Alt+1〜9・Alt+W・中クリックで閉じる・矢印で移動）、パネル（出力・知らせ・ジョブ。Ctrl+J。狭い画面は既定で閉じる）、ステータスバー（Bot の接続の点・シェル・実行中 n・ジョブ n・知らせ n・今日のトークン・版）、コマンドパレット、確認ダイアログ、トースト、ようこそ。振る舞いはモックの `workbench.js` のとおり（分割を除く）。
 
 ### 3.3 配り方
+- `/` は `index.html`（新しい殻）。古い殻は `/static/classic.html`（M8b まで）。
 - `GET /` → `index.html`、`GET /static/<name>` → `src/web/static/<name>`（`base.css`・`icons.svg` だけ `templates/web/site/`）。`name` は `/^[A-Za-z0-9_-]+\.(html|css|js|svg|png|webmanifest)$/` に合うものだけ（png・webmanifest はホーム画面のアイコンと manifest。§11）（`..`・ドットで始まる名前・拡張子なしは 404）。**`/static/*` は認証なしで配る**（中身は公開リポジトリにあるもので秘密は無く、ログイン画面が `base.css` を読むため）。`/`・`/api/*` は認証が要る。Content-Type は html / css / js / svg / png（image/png）/ webmanifest（application/manifest+json）の小さな表（static-server.ts の表とは別。`charset=utf-8`）。`Cache-Control: no-cache` と `ETag`（ファイルの mtime + size）。`GET /login` はトークンがあるときだけのフォーム（`src/web/server.ts` の中で組み立てる。誤り・回数の超過の固定の文を出すため。`/static/base.css` を読み、殻と同じ部品で組む。認証なしで返す唯一の HTML）。401 のとき画面（api.js）は `/` へ移る（トークンがあれば `/` が `/login` へ 302、無ければ「Tailscale でつないでください」。`/login` はトークンが無いと 404 のため）。
 - 認証を通らない `GET /` は `/login` へ 302（トークンが無ければ 401 の本文「Tailscale でつないでください」）。ルートの処理が投げたときの 500 の log は例外の message だけ（`describeError` 相当。パス・クエリは出さない）。
 
@@ -84,6 +94,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 | 使用量 | `/api/usage?date=YYYY-MM-DD&last=N&kind=`・`/api/usage/days?n=30` | — | W1 |
 | 設定 | （`/api/status` の `env`） | — | W1 |
 | 会話（サイドバー） | `/api/channels`（§4.3）。CC9 から `/api/cc/sessions`（群「Claude Code」。`docs/plan/claude-code-channels.md` §2）。M7 から応答に `reads`（`{ [channelId]: lastReadId }`。web-ui-v3.md §3.3） | — | W2 / CC9 / M7 |
+| 話題の一覧（M1・M4〜M6。web-ui-v3.md §3〜§6） | `/api/topics`（`?done=<群>` で、その群の完了の話題も） | `/api/topics`（場所・題名・最初の一言で始める）・`/api/topics/ch:<id>/place`（場所を変える）・`/api/topics/moves/<id>/accept`・`/keep`（場所を変える確認に答える） | M1 / M4 / M5 / M6 |
 | 既読（M7。web-ui-v3.md §3.3） | `/api/topics` と `/api/channels` の応答の `reads` | `/api/topics/ch:<id>/read`（`{ lastId }`。大きい方だけ・最新の行で頭打ち） | M7 |
 | 会話のタブ | `/api/channels/<id>/turns?before=&after=&limit=`（§4.3） | `/api/channels/<id>/messages`・`/turns/<seq>/abort`・`/continue`（§5）。CC14 から `kind: "cc"`（Claude Code のチャンネル。claude-code-channels.md §5） | W2 / W3 |
 | 実行中 | `/api/running`（§5.2） | — | W3 |
@@ -153,8 +164,8 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - 表示の対応（`chat.js`）: `owner` → `msg-owner`、`agent` → `msg-agent`（`steps` の details と `end`（`outcome` と `progressEndText` 相当の文を `toolCalls`・`durationMs` から client で作る）。`outcome === "max_turns"` かつそのチャンネルの最後の行かつセッションなら [続ける]）、`notice` → `tl-notice`、`divider` → `tl-divider`。`running` はこの API には無く、`/api/running`（§5.2）から足す。
 
 ### 4.4 既読（未読の位置）
-- サーバーは持たない。ブラウザの localStorage `seen[channelId] = <見た最後の history.id>`。会話のタブを表示している間（visible かつ active）は最新の id を `seen` に書き、サイドバーの未読の点は `channel.last.kind === "agent" && last.id > seen[id]`。アクティビティバーの数字は未読のチャンネル数。1 人用なので端末ごとで十分（別の端末で読んだかは合わせない）。
-- M7 から既読はサーバー（web-ui-v3.md §3.3）。画面は localStorage に書かない。
+- 既読はサーバーが持つ（M7。表 `topic_reads`。web-ui-v3.md §3.3）。`GET /api/topics`・`GET /api/channels` の応答の `reads`（`{ [channelId]: lastReadId }`）を読み、未読の点は「最後の行が返事（agent）で、その id が `reads` より大きい」。読んでいる会話（`SA.app.readingChannelIds()`）が見えている間は `POST /api/topics/ch:<id>/read` で進める（大きい方だけ・最新の行で頭打ち）。スマホと PC で揃い、ほかの端末の既読は polling で届く。画面は localStorage に書かない。
+- localStorage の `seen`（M7 より前の既読。チャンネルごとの見た最後の `history.id`）と `seen-sent`（移行が済んだ旗）は、共有の `api.js` が両方の殻で M7 の移行に使う（`seen` は旗が無い間だけ読み、書かない。`seen-sent` は移行が済んだら書く）。どちらの鍵も M8b で消す（web-ui-v3.md §11・§15）。
 
 ## 5. Web から送る・途中経過（W3）
 
@@ -289,7 +300,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 | 項目 | 値 | 理由 |
 |---|---|---|
 | `name` / `short_name` | `self-agent` / `self-agent` | 表示名は 1 つ。ホームでは 12 字までしか出ない |
-| `id` / `start_url` / `scope` | `/` / `/` / `/` | hash のルーティングなので `/` だけ。`/login` は scope の中でもよい（302 で戻る） |
+| `id` / `start_url` / `scope` | `/` / `/` / `/` | hash のルーティングなので `/` だけ。`/login` は scope の中でもよい（302 で戻る）。M8 からも値は `/` のままで、開く物が新しい殻になった（`/static/classic.html` も scope の中） |
 | `display` | `standalone` | ブラウザの枠を消す。`fullscreen` にしない（ステータスバーが消えると時計が見えない） |
 | `background_color` | `#0b0d14` | 起動の一瞬の地。既定のダークの `--bg`（GUIDELINES §2.1） |
 | `theme_color` | `#11141c` | タイトルバーの `--surface`（ダーク）。ライトは meta で上書き（§11.2） |
@@ -303,7 +314,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 - CSP `default-src 'self'` は `manifest-src` の既定になるので変えない（事実: server.ts の CSP に個別の指定は無い）。
 - `index.html` に `<link rel="manifest" href="/static/manifest.webmanifest">` と、favicon が無い（事実）ので `<link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">` を足す（名前は `icons.svg`（Lucide の sprite）と紛れないよう `app-icon.svg`）。
 
-試し用の manifest（K3b。docs/plan/web-ui-components.md の K3）: 新しい殻 `/static/v3.html` だけが `/static/manifest-v3.webmanifest` を指す（`name`・`short_name` が `self-agent v3`、`id`・`start_url` が `/static/v3.html`。ほかは上の表と同じ。`v3.html` の `apple-mobile-web-app-title` も `self-agent v3`）。ホーム画面から standalone で新しい殻を開いて、下の safe-area を見るための物。既定の殻の入れ替え（#383）のときに `manifest-v3.webmanifest` を消し、`v3.html` の 2 行を `index.html` と同じに戻し、`test/web-static.test.ts` の試し用の manifest のテストと head の比べを戻す。
+試し用の manifest（K3b。docs/plan/web-ui-components.md の K3）は、入口の入れ替え（M8。#381）で消した。K3b から入れ替えまでは、新しい殻だけが別の manifest（`name`・`short_name` が `self-agent v3`、`id`・`start_url` が新しい殻の URL）を指し、ホーム画面から standalone で新しい殻を開いて下の safe-area を見ていた。入れ替えで新しい殻（`index.html`）の head の 2 行（manifest の link と `apple-mobile-web-app-title`）を古い殻と同じ値に戻し、`test/web-static.test.ts` の試し用の manifest のテストを消して、head の比べを「古い殻と同じ」に戻した。
 
 ### 11.2 iOS の meta と theme-color
 
@@ -378,4 +389,4 @@ iPhone（Safari・https。tailscale serve 経由）:
 
 PC / Android（参考）: Chrome のメニューに「アプリをインストール」が出て、入れると別窓で開く。
 
-単体（`npm test`）: `/static/manifest.webmanifest` と `/static/icon-192.png` が認証なしで 200・Content-Type が合う。`/static/x.json`・`/static/a/b.png`・`/static/.png` は 404。`index.html` に `rel="manifest"`・`theme-color` が 2 つ・`apple-touch-icon` がある（grep）。inline の `<script>`・`<style>` は無いまま。`scripts/make-icons.ts` の出力が commit したものと一致する（CI で差分 0）。
+単体（`npm test`）: `/static/manifest.webmanifest` と `/static/icon-192.png` が認証なしで 200・Content-Type が合う。`/static/x.json`・`/static/a/b.png`・`/static/.png` は 404。`index.html`・`classic.html` の両方に `rel="manifest"`・`theme-color` が 2 つ・`apple-touch-icon` がある（grep）。inline の `<script>`・`<style>` は無いまま。`scripts/make-icons.ts` の出力が commit したものと一致する（CI で差分 0）。

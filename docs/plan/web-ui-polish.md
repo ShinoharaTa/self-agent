@@ -419,3 +419,5 @@ WEB-UI-GUIDELINES.md §11 の 7 つ。オーナーに聞くことは無し。
 #### UI-12 標準 PWA の細部（#112）（済。#255。`black-translucent` にし、ライトのときはホーム画面から開いたときだけステータスバーの裏の帯を `--primary` の暗い色に。docs/plan/web-ui.md §11.2）
 
 `index.html` の `apple-mobile-web-app-status-bar-style` を判断に合わせて変える（1 行）。
+
+> 注（M8。#381）: M2〜M8 の間は入口が 2 つあった（`/` の古い殻と `/static/v3.html` の新しい殻）。M8 から `/` は新しい殻（docs/plan/web-ui-v3.md）で、この節（スマホの第 2 回）は古い殻（`/static/classic.html`）の決まり。古い殻を消す M8b でこの節を閉じる。
