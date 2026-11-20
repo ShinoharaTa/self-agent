@@ -36,6 +36,7 @@ import { InboxRotator } from "./app/inbox-rotate.ts";
 import type { CcPermissionButtons } from "./app/commands/cc.ts";
 import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
 import { CcConfirmExpirer, type CcConfirmRuntime } from "./app/commands/cc-confirm.ts";
+import type { CcTakeGetter } from "./app/commands/cc-take.ts";
 import { ccRcUrl } from "./cc/labels.ts";
 import { createCcTools } from "./app/cc-tools.ts";
 import type { CcToolDeps } from "./agent/tools.ts";
@@ -399,6 +400,8 @@ const turnQueue = createTurnQueue(config);
 // 取り込み（docs/plan/takeover.md。SELF_AGENT_CC=1 で連携が動くときだけ下で作る）
 let ccTakeover: CcTakeover | undefined;
 let ccTakeoverExpirer: CcTakeoverExpirer | undefined;
+// /cc take の入口が使うもの（ccTakeover と同じく下で作る）
+let ccTakeEntry: ReturnType<CcTakeGetter>;
 // 取り込んだ会話の最初のターンの前置きと、resume できずに捨てたときの知らせ（ccTakeover は下で作る）
 const turnTakeover: TurnDeps["takeover"] = config.cc
   ? {
@@ -551,8 +554,8 @@ const commands = createCommands({
   ...(guest === undefined ? {} : { guests: guest.admin }),
   // /close の確定と /renew の区切りの行（Web UI が有効なときだけ）
   ...history,
-  // /cc（SELF_AGENT_CC=1 のときだけ登録する。チャンネルの操作は下で作る）
-  ...(config.cc ? { ccChannels: () => ccChannels } : {}),
+  // /cc（SELF_AGENT_CC=1 のときだけ登録する。チャンネルの操作と取り込みは下で作る）
+  ...(config.cc ? { ccChannels: () => ccChannels, ccTakeover: () => ccTakeEntry } : {}),
   // /new の project（SELF_AGENT_CC=1 のときだけ）
   ...(projectSessions === undefined ? {} : { projectSessions }),
   // /move（結果は /renew と同じく持ち主の人格の形で出す）
@@ -595,6 +598,8 @@ const handleInteraction = createInteractionHandler({
     ccPosts: ownerPosts,
     // /cc open のセレクト（cc:pick）と終わったチャンネルの [起動して続ける]（cc:resume）
     ccChannels: () => ccChannels,
+    // 取り込みのセレクト（cc:takepick）と確認の [取り込む][やめる]（cc:take）
+    ccTakeover: () => ccTakeEntry,
     // Claude Code のチャンネルの削除の確認の [削除する][残す]（cc:del。DB だけで動く）
     ccDelete: { deleteAfterDays: config.deleteAfterDays, store: ccChannelStore, gateway, channelOps },
     // #jobs のボタンとモーダル（SELF_AGENT_JOBS=1 のときだけ）
@@ -1051,6 +1056,24 @@ if (
     log,
   });
   ccTakeover = takeover;
+  ccTakeEntry = {
+    takeover,
+    takeovers: ccTakeovers,
+    gateway,
+    ready: () => projectSessions?.ready() === true,
+    counts: () => {
+      const views = registry.snapshot().sessions;
+      return {
+        running: views.filter((view) => view.state === "running").length,
+        waiting: views.filter((view) => view.state === "needs_input").length,
+      };
+    },
+    rcUrl: (sessionId) => {
+      const bridge = registry.snapshot().sessions.find((view) => view.sessionId === sessionId)?.bridgeSessionId;
+      return bridge === undefined ? undefined : ccRcUrl(bridge);
+    },
+    timeZone: config.timeZone,
+  };
   // 確認の失効（10 分）を 1 分ごとに確かめる
   ccTakeoverExpirer = new CcTakeoverExpirer({ takeover, log });
   // 起動時の前段（DB だけ）: 再起動の前に running だった行を failed（restart）にする。一覧の最初の読み取りと操作の受け付けより前
