@@ -2903,7 +2903,7 @@ type BottomItem = { act: string; id?: string; label: string; name?: string; coun
 type BottomModel = { variant: string; items: BottomItem[] };
 type BarOn = { list: () => unknown; hand: (opener: unknown) => unknown; tab: (id: string) => unknown; more: (opener: unknown) => unknown };
 type BarState = { turns: number; hand: string | null; tabs: Array<{ id: string; title: string }>; controls?: string; on: BarOn };
-type TopOn = { back: () => unknown; place: (opener: unknown) => unknown; view: (value: string) => unknown; menu: (opener: unknown) => unknown; hand: (opener: unknown) => unknown };
+type TopOn = { back: () => unknown; place: (opener: unknown) => unknown; view: (value: string) => unknown; menu: (opener: unknown) => unknown; hand: (opener: unknown) => unknown; mode: (opener: unknown) => unknown };
 type TopState = {
   view: string;
   title: string;
@@ -2914,6 +2914,7 @@ type TopState = {
   hand: string | null;
   compact?: boolean;
   menu: boolean;
+  mode?: { value: string; disabled: boolean; reason: string | null } | null;
   controls: string;
   on: TopOn;
 };
@@ -9843,4 +9844,138 @@ test("web static: GitHub のタブの [対応] は起動の確認・/start・[�
   assert.ok(source.includes("この通知の PR・Issue の話題を作り、対応依頼（リポジトリ、番号、URL の 1 行）を最初の一言として送ります"));
   assert.ok(source.includes("この通知は対応できません。この機械に無いリポジトリか、[対応] を足す前の通知です"));
   assert.equal(source.includes("起動して送る"), false);
+});
+
+// ===== 許可のモード（H4b。#428）: 列 2 の帯のモードのボタン・板「許可のモード」・POST /api/topics/ch:<id>/mode・スマホの「…」の行 =====
+const MODE_BUSY_TEXT = "担当が作業中です。終わってから変えてください";
+type ModeToast = { text: string; error: boolean; retry: (() => unknown) | null };
+
+/** 場所の殻に、プロジェクトのセッション ch:3（今のモード mode）と軽い話題 ch:2 の head を足す。トーストは level と［もう一度］の有り無しも覚える */
+async function loadMode(opts: Parameters<typeof loadShell>[0] = {}, mode = "plan") {
+  const h = await loadPlace(opts);
+  h.chatHeads["3"] = { title: "作業", status: null, note: null, menu: [], mode };
+  h.chatHeads["2"] = { title: "軽い", status: null, note: null, menu: [], mode: null };
+  const toasts: ModeToast[] = [];
+  h.ui.toast = (text: string, _action: unknown, o?: { level?: string; retry?: () => unknown }) =>
+    void toasts.push({ text, error: !!o && o.level === "error", retry: o && typeof o.retry === "function" ? o.retry : null });
+  return { h, toasts };
+}
+/** 見出しの state の mode（殻の中で作った物なので JSON で写して比べる） */
+const modeOf = (h: PlaceShell) => JSON.parse(JSON.stringify(h.lastTop().mode ?? null)) as unknown;
+/** ch:3 を作業中にして一覧を読み直す */
+async function markRunning(h: PlaceShell) {
+  h.topicList = h.topicList.map((t) => (t.id === "ch:3" ? { ...t, mark: "running" } : t));
+  await h.topics.load();
+  h.app.refresh("ch:3");
+}
+
+test("web static: v3 の許可のモード: 見出しの state はプロジェクトのセッションだけ mode を持ち、作業中は押せず理由。押すと板「許可のモード」に 3 行（今のモードは押せない）", async () => {
+  const { h } = await loadMode();
+  h.app.open("ch:3");
+  assert.deepEqual(modeOf(h), { value: "plan", disabled: false, reason: null });
+  h.lastTop().on.mode(h.nodes.topButtons.menu);
+  assert.equal(h.nodes.sheet.getAttribute("aria-label"), "許可のモード");
+  assert.deepEqual(
+    sheetRows(h).map((r) => [r.label, r.disabled, r.why, r.icon]),
+    [
+      ["default（使うたびに確認）", false, null, "circle"],
+      ["acceptEdits（編集は確認なし）", false, null, "circle"],
+      ["plan（計画だけ）", true, "今のモード", "check"],
+    ],
+  );
+  h.nodes.sheet.removeAttribute("open");
+  // プロジェクトでない話題は mode が無く、on.mode でも板を開かない
+  h.app.open("ch:2");
+  assert.equal(h.lastTop().mode, null);
+  h.lastTop().on.mode(h.nodes.topButtons.menu);
+  assert.equal(h.nodes.sheet.getAttribute("open"), null);
+  // 作業中は押せず理由
+  h.app.open("ch:3");
+  await markRunning(h);
+  assert.deepEqual(modeOf(h), { value: "plan", disabled: true, reason: MODE_BUSY_TEXT });
+});
+
+test("web static: v3 の許可のモード: 行を押すと POST /api/topics/ch:<id>/mode に { mode } を 1 回（: を % にしない）。成功の後は話題と会話の一覧を読み直し、広い幅ではトーストを出さない", async () => {
+  const { h, toasts } = await loadMode();
+  h.api.postReply = () => Promise.resolve({ result: "changed", mode: "acceptEdits" });
+  h.app.open("ch:3");
+  h.lastTop().on.mode(h.nodes.topButtons.menu);
+  const reads = h.api.paths.length;
+  const channels = h.loads.channels;
+  pickPlace(h, "acceptEdits（編集は確認なし）");
+  await h.flush();
+  assert.deepEqual(h.api.posts, [{ path: "/api/topics/ch:3/mode", body: { mode: "acceptEdits" }, opts: { quiet: true } }]);
+  assert.equal(topicReads(h, reads), 1);
+  assert.equal(h.loads.channels - channels, 1);
+  assert.deepEqual(toasts, []);
+});
+
+test("web static: v3 の許可のモード: 409 busy は作業中の文、closed・not_project はそれぞれの文（どれも［もう一度］なし）。ほかの失敗は［もう一度］付きで、押すと同じ値を送り直す。失敗では読み直さない", async () => {
+  const { h, toasts } = await loadMode();
+  h.app.open("ch:3");
+  const send = async (err: Error) => {
+    h.api.postReply = () => Promise.reject(err);
+    h.lastTop().on.mode(h.nodes.topButtons.menu);
+    pickPlace(h, "default（使うたびに確認）");
+    await h.flush();
+  };
+  const reads = h.api.paths.length;
+  const channels = h.loads.channels;
+  await send(apiError(409, "busy"));
+  await send(apiError(409, "closed"));
+  await send(apiError(409, "not_project"));
+  assert.deepEqual(
+    toasts.map((t) => [t.text, t.error, t.retry !== null]),
+    [
+      [MODE_BUSY_TEXT, true, false],
+      ["閉じています", true, false],
+      ["このセッションに許可のモードはありません。", true, false],
+    ],
+  );
+  toasts.length = 0;
+  await send(Object.assign(apiError(500, "internal"), { toast: "サーバーの処理に失敗しました" }));
+  await send(apiError(0, null));
+  assert.deepEqual(
+    toasts.map((t) => [t.text, t.error, t.retry !== null]),
+    [
+      ["サーバーの処理に失敗しました", true, true],
+      ["サーバーにつながりません", true, true],
+    ],
+  );
+  assert.equal(topicReads(h, reads), 0);
+  assert.equal(h.loads.channels, channels);
+  // ［もう一度］は同じ話題に同じ値を送る
+  h.api.postReply = () => Promise.resolve({ result: "changed", mode: "default" });
+  const before = h.api.posts.length;
+  toasts[0]!.retry!();
+  await h.flush();
+  assert.deepEqual(h.api.posts.slice(before), [{ path: "/api/topics/ch:3/mode", body: { mode: "default" }, opts: { quiet: true } }]);
+});
+
+test("web static: v3 の許可のモード: スマホの「…」の板に「許可のモードを変える」（作業中は押せず理由）。プロジェクトでない話題には無い。スマホで変えたらトースト", async () => {
+  const { h, toasts } = await loadMode({ phone: true });
+  const menu = () => h.lastTop().on.menu(h.nodes.topButtons.menu);
+  h.app.open("ch:3");
+  // スマホでも state の mode は在る（帯に出さないのは部品が決める）
+  assert.deepEqual(modeOf(h), { value: "plan", disabled: false, reason: null });
+  menu();
+  const row = sheetRows(h).find((r) => r.label === "許可のモードを変える");
+  assert.deepEqual(row, { label: "許可のモードを変える", why: null, disabled: false, icon: "settings" });
+  // 押すと板「許可のモード」へ。変えたらトースト（帯に見えないため）
+  pickPlace(h, "許可のモードを変える");
+  assert.equal(h.nodes.sheet.getAttribute("aria-label"), "許可のモード");
+  h.api.postReply = () => Promise.resolve({ result: "changed", mode: "default" });
+  pickPlace(h, "default（使うたびに確認）");
+  await h.flush();
+  assert.deepEqual(toasts.map((t) => [t.text, t.error]), [["許可のモードを default にしました", false]]);
+  h.nodes.sheet.removeAttribute("open");
+  // 作業中は押せない行で理由
+  await markRunning(h);
+  menu();
+  assert.deepEqual(sheetRows(h).find((r) => r.label === "許可のモードを変える"), { label: "許可のモードを変える", why: MODE_BUSY_TEXT, disabled: true, icon: "settings" });
+  h.nodes.sheet.removeAttribute("open");
+  // プロジェクトでない話題には無い
+  h.app.open("ch:2");
+  menu();
+  assert.equal(sheetRows(h).some((r) => r.label === "許可のモードを変える"), false);
 });
