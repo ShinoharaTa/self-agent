@@ -430,7 +430,7 @@ v3 で足した・変えた符号:
 
 **H1 の順**: H1a と H1c は互いに独立で、どちらも main から切れる。H1b は両方が入ってから切る（本体はストアと規則（H1a）を使い、本物の本体をターンに渡すテスト 2 件を H1c のテストのファイルに足すため）。PR ごとの指示は実装の issue に置く。
 
-**今は H2 まで**: H1 の 3 本と、H2 の 2 本（1 本目は main への配線。起動時の片付けの前段・後段、確認の失効のタイマーと停止、`CcSender` の `holds`、ターンの口、場所の付け替えの `resumeDropped`。2 本目は入口 `/cc take`・`cc:takepick`・`cc:take:go|no:<id>`（`app/commands/cc-take.ts`。振り分けは `app/commands/cc.ts`））。Discord から取り込める。実機の確かめ（§6 の H2）はまだ。H3 は API まで（取り込みの 4 ルート。`web/routes/cc-takeover.ts`。札と画面はまだ）。
+**今は H2 まで**: H1 の 3 本と、H2 の 2 本（1 本目は main への配線。起動時の片付けの前段・後段、確認の失効のタイマーと停止、`CcSender` の `holds`、ターンの口、場所の付け替えの `resumeDropped`。2 本目は入口 `/cc take`・`cc:takepick`・`cc:take:go|no:<id>`（`app/commands/cc-take.ts`。振り分けは `app/commands/cc.ts`））。Discord から取り込める。実機の確かめ（§6 の H2）はまだ。H3 は API まで（取り込みの 4 ルート。`web/routes/cc-takeover.ts`。札の部品 `c-term.js` は見本だけが描く。本番の画面はまだ）。
 
 停止のとき、取り込みの途中の 1 件（`CcTakeover.idle`）は停止の猶予（`SELF_AGENT_SHUTDOWN_GRACE_SEC`。既定 30 秒）の中で終わるのを待つ。待ちの sleep だけでチャンネルの作成の期限 15 秒・SIGTERM の前の間 2 秒・終了の見届け 10 秒の合計 27 秒になり、キューの待ち・写し・Discord の呼び出しを足すと猶予を超えうるので、切れたら次の起動の前段（`recoverRunning`）が失敗（restart）にする。チャンネルを作ってから行き先を行に書くまでの間に切れると、作ったチャンネルが残る（行に行き先が無いので起動時にも消せない）。
 
