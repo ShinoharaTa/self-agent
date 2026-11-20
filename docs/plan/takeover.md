@@ -239,7 +239,9 @@ v2 → v3 で変えた所（ここに無い節は v2 のまま運んだ）:
 
 **Web（H3。新しい殻だけ）**
 - 一覧の端末の行を押すと札。取り込めるときは［取り込む］、取り込めないときは §4 の文。確認は `SA.ask`（文は Discord と同じ）。
-- API は 3 つ: `POST /api/cc/sessions/<id>/takeover`（確認待ちの行を作る。201 `{ id, text }`）・`POST /api/cc/takeovers/<id>/confirm`（200 `{ ok, channelId, text }`。**`channelId` は新しい話題の id** で、画面は `ch:<channelId>` へ移る）・`POST /api/cc/takeovers/<id>/cancel`（200 `{ ok }`）。断り・失効・失敗は 409 `{ error, text }`、番号が数字でなければ 400、配線が無ければ 404。
+- API は 4 つ（H3 の API で決めた形）: `GET /api/cc/sessions/<id>/takeover`（判定を読む。本体の `check` で、`propose` と同じ判定。行を作らない。200 `{ takeable, state, reason, text, title, project, activityAt, rcUrl, last }`。`text` は理由だけの文、`state` は `idle`・`running`・`waiting`・`ended`・`unknown`）・`POST /api/cc/sessions/<id>/takeover`（確認待ちの行を作る。201 `{ id, text }`）・`POST /api/cc/takeovers/<番号>/confirm`（200 `{ ok, id, text }`。**`id` は新しい話題の `ch:<channelId>`** で、画面はそこへ移る）・`POST /api/cc/takeovers/<番号>/cancel`（200 `{ ok }`）。断り・失効・失敗は 409 `{ error, text }`、もう使えない確認は 409 `stale`（文は Discord と同じ「この確認はもう使えません。」）、番号が数字でなければ 400、形の違う session_id・無い番号・配線が無ければ 404。
+- `last` はその session_id の一番新しい取り込み（`{ takeover, state, id }`。`id` は done で行き先が在るときだけ `ch:<channelId>`）。応答が届かなかったときに読み直して、済んでいれば新しい話題へ移る。
+- 自分（Web）の確認待ちが残っていれば、GET は取り込めると見て、確認を作る POST がそれを取り消して作り直す（画面を閉じた・切れた後に 10 分待たせない）。Discord の確認待ち・実行中の行は取り消さない（`in_progress`）。
 - サーバーは `/api/topics` と同じ決め方（§1.3 の 9）。無ければ 409 `not_set_up`。
 - **Web から始めた確認は Discord に出さない**（`confirm_channel_id` は空）。確認は Web の 1 枚で完結し、Discord に見えるのは結果（新しいチャンネルの最初の投稿）だけ。confirm・cancel の API は `entry` が web の行だけを受ける（Discord の確認を Web から進めない。逆も）。
 
@@ -428,7 +430,7 @@ v3 で足した・変えた符号:
 
 **H1 の順**: H1a と H1c は互いに独立で、どちらも main から切れる。H1b は両方が入ってから切る（本体はストアと規則（H1a）を使い、本物の本体をターンに渡すテスト 2 件を H1c のテストのファイルに足すため）。PR ごとの指示は実装の issue に置く。
 
-**今は H2 まで**: H1 の 3 本と、H2 の 2 本（1 本目は main への配線。起動時の片付けの前段・後段、確認の失効のタイマーと停止、`CcSender` の `holds`、ターンの口、場所の付け替えの `resumeDropped`。2 本目は入口 `/cc take`・`cc:takepick`・`cc:take:go|no:<id>`（`app/commands/cc-take.ts`。振り分けは `app/commands/cc.ts`））。Discord から取り込める。実機の確かめ（§6 の H2）はまだ。
+**今は H2 まで**: H1 の 3 本と、H2 の 2 本（1 本目は main への配線。起動時の片付けの前段・後段、確認の失効のタイマーと停止、`CcSender` の `holds`、ターンの口、場所の付け替えの `resumeDropped`。2 本目は入口 `/cc take`・`cc:takepick`・`cc:take:go|no:<id>`（`app/commands/cc-take.ts`。振り分けは `app/commands/cc.ts`））。Discord から取り込める。実機の確かめ（§6 の H2）はまだ。H3 は API まで（取り込みの 4 ルート。`web/routes/cc-takeover.ts`。札と画面はまだ）。
 
 停止のとき、取り込みの途中の 1 件（`CcTakeover.idle`）は停止の猶予（`SELF_AGENT_SHUTDOWN_GRACE_SEC`。既定 30 秒）の中で終わるのを待つ。待ちの sleep だけでチャンネルの作成の期限 15 秒・SIGTERM の前の間 2 秒・終了の見届け 10 秒の合計 27 秒になり、キューの待ち・写し・Discord の呼び出しを足すと猶予を超えうるので、切れたら次の起動の前段（`recoverRunning`）が失敗（restart）にする。チャンネルを作ってから行き先を行に書くまでの間に切れると、作ったチャンネルが残る（行に行き先が無いので起動時にも消せない）。
 
