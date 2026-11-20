@@ -244,7 +244,7 @@ const FAILURE_TEXTS: Readonly<Record<TakeoverFailure, string>> = {
   too_large: "記録が大きすぎます。端末で /compact してから",
   changed: "直前に動きがありました。もう一度",
   identity: "セッションを確かめられませんでした。端末の Claude Code はそのままです",
-  not_exited: "10 秒待っても端末の Claude Code が終わりませんでした。取り込みはやめました。後から終わったら、もう一度 /cc take してください",
+  not_exited: "10 秒待っても端末の Claude Code が終わりませんでした。取り込みはやめました。後から終わったら、もう一度取り込んでください",
   copy_failed: "記録を写せませんでした",
   internal: "内部のエラーが起きました（端末の Claude Code はそのままです）",
   restart: "self-agent が再起動しました",
@@ -255,14 +255,14 @@ export const TAKEOVER_SEND_REJECT_TEXT = "取り込みの途中です。終わ�
 
 /** SIGTERM を送った後の失敗に足す文（§4。not_exited には足さない） */
 export const TAKEOVER_AFTER_TERM_TEXT =
-  "端末の Claude Code は終了しています。/cc take をもう一度実行すると、終わった会話から取り込めます。";
+  "端末の Claude Code は終了しています。もう一度取り込むと、終わった会話から取り込めます。";
 
 /**
  * 再起動で restart にした取り込みが SIGTERM を送ったか分からない段（term・copy・commit）だったとき（docs/plan/takeover.md §9.1）と、
  * SIGTERM を送った後・終了を見届ける前の例外（§4）に足す文（送った・終わったと言い切らない）
  */
 export const TAKEOVER_MAYBE_TERM_TEXT =
-  "端末の Claude Code は終了しているかもしれません。終了していれば、/cc take をもう一度実行すると、終わった会話から取り込めます。";
+  "端末の Claude Code は終了しているかもしれません。終了していれば、もう一度取り込むと、終わった会話から取り込めます。";
 
 /** 断りの理由だけの文（頭の「取り込めませんでした: 」を付けない。Web の札が状態として出す） */
 export function takeoverReasonText(code: TakeoverFailure): string {
