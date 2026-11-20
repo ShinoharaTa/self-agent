@@ -185,7 +185,7 @@ K3 から一覧は部品が描く（`topics.js` は状態を持って入口 `c-a
 
 ### 5.3 始める口
 
-`session-ops.ts` に `startTopic({title, place, text, by})`（`createTopicSession` → 仕切り → 最初のターン）を足し、右腕の `session_open` と `POST /api/topics {title, place, text}`（群の [+]）が同じ本体を呼ぶ。題名は省けば `text` の先頭から作る。
+`session-ops.ts` に `startTopic({title, place, text, by})`（`createTopicSession` → 仕切り → 最初のターン）を足し、右腕の `session_open` と `POST /api/topics {title, place, text, model?}`（群の [+]）が同じ本体を呼ぶ。題名は省けば `text` の先頭から作る。
 
 実装で決めた所（M4。#360）:
 
@@ -366,6 +366,7 @@ M0 は今の画面のまま直す 1 PR（同じ「待ちの見え方」の論点
 **M6 の実装で決めたこと（#369。「違」は設計と違える所、「補」は設計が決めていない所）**:
 
 - 補: `session_open` の結果から `cooldown` を消し、`created` に `place`（"General"・プロジェクトの名前・"なし"）・`turn`（started・none・failed）・`note`（任意）を足す。`existing` のときは `text` を送らない。
+- 補: `created` に `model`（任意）、`bad_model`（#451）。
 - 補: `topic_list` は引数なしで、短い行だけ（§4 の「実装で足した所」）。30 件まで。件数は切る前の数を別に返す。
 - 補: `topic_move` の `topic` は `topic_list` の `channel_id`（数字・`<#数字>`・`ch:数字`）。`place` は "General"（大文字小文字を見ない）かプロジェクトの名前で、一覧に無い名前は断る（General に落とさない）。
 - 補: `topic_move` も 1 回の発言に 1 件。

@@ -68,10 +68,14 @@
 | 取り込み（`/cc take`） | 選ばせない。場所の既定。端末のモデルは引き継がない（`src/cc` にモデルの情報が無い） | 触らない |
 | #inbox・#tasks | **対象外**。`SELF_AGENT_MODEL` のまま（長く続く会話で、始める瞬間が無い） | - |
 | 人格つき（`/new persona:`） | `model` と併用は断る（人格のモデルが決める。project と persona の併用を断るのと同じ扱い） | 触らない |
+| ホームパネルの［新しいセッション］ | 選ばせない。場所の既定 | 触らない |
+| 古い殻の `POST /api/sessions` | 選ばせない。場所の既定 | 触らない |
 
 右腕に引数を足さない道: 在る（右腕は常に場所の既定で始め、変えたければ話題の側で `/renew model:`）。ただし「Sonnet で調べて」と #inbox で頼めない。要求の中心が「リクエスト時に選ぶ」なので、**引数を足す方を推す**。enum にせず文字列にするのは、一覧を変えてもツールの定義が変わらないようにするため。
 
-解決の順（全入口で同じ・`startTopic` と `/new` の中で 1 か所）: 明示の指定 > 場所の既定 > NULL（= 全体の既定に従う。今と同じ）。
+解決の順（全入口で同じ・`openTopicSession` の中の 1 か所（`resolveTopicModel`。取り込みは main が同じ関数を束ねて渡す））: 明示の指定 > 場所の既定 > NULL（= 全体の既定に従う。今と同じ）。
+
+場所なしの軽いセッション（`/new` の project 省略・連携が無効・General が使えない）は `general` の既定を使う（Web の一覧の群と同じ規則）。
 
 ## 4. 保存と表示
 
@@ -82,7 +86,7 @@
 - 実行: `RunContext` に `model?` を足し、`turn.ts` が `permissionMode` と同じ所で入れる。`query-options.ts` は変えない（runner（`sdk-runner.ts`）が、context に model が在るときだけ設定を写して model を差し替え、無ければ今の設定をそのまま渡す。Options を変えないため）。`project-profile.ts` は `runModelOf(input) ?? cfg.model`（`runner.ts` の 1 つの関数 `runModelOf`（context.model が先、無ければ `RunInput.model`）で、`project-profile.ts` の Options・`sdk-runner.ts` の Options と devlog の 3 か所が同じ値を読む）。devlog（`sdk-runner.ts:773`）も実際に渡した値にする。`RunResult.model`（実際に渡したモデル）を足す（usage_log に記録するため）。context を渡さないターン（軽いモードの /renew の要約・場所を変える要点のターン）は `RunInput.model` で渡す（context を渡すと打ち切りの時間・手順の上限・ファイルの守りが変わるため）。
 - 表示:
   - Web: 会話の見出し（`src/web/static/c-shell.js` の `topModel`。場所・モードの並び）に label。スマホは「…」の板。一覧の行には出さない（狭い）。
-  - Discord: 作ったチャンネルの最初の投稿（`welcomeText`）に 1 行「担当: <表示名>（<label>）」。全体の既定のときは出さない。
+  - Discord: 作ったチャンネルの最初の投稿（`welcomeText`）に 1 行。PR-2 では「モデル: <label>」。表示名の付く PR-4 で「担当: <表示名>（<label>）」。取り込みは完了の文に同じ行。全体の既定のときは出さない。
   - `topic_list` の結果の行に `model`（結果だけ。定義は変えない）。
 - 場所の既定と表示名の編集: Web の設定に「場所」の一覧（表示名・既定のモデル）。env にしない（§10 の決め事 3）。
 
@@ -126,7 +130,7 @@
 
 ### PR-0: `session_open` に引数 `model` を足す（#448 の再起動に同梱）
 - 済（#452）。describe の文（確定。後で変えない）:「使うモデルの名前（オーナーが名前で指定したときだけ、言われた名前のまま渡す）。使えない名前なら話題は作られず、使える名前の一覧が返るので、オーナーに伝えて選び直してもらう（自分で別の名前を選んで呼び直さない）。省略すると場所の既定のモデルで始まる」。
-- 渡されたら note「モデルの指定はまだ使えないので、既定のモデルで始めました」（結果に `model` の欄は足していない。PR-2 で note を消す）。
+- 渡されたら note「モデルの指定はまだ使えないので、既定のモデルで始めました」（PR-2 で note を消し、結果に `model`（一覧の字）と `bad_model` を足した）。
 
 ### PR-1: 一覧・v47・実行の配線（入口なし = 挙動は変わらない）
 - 触る: 新 `src/agent/models.ts`（一覧・`resolveModelKey(key)`・`labelOf(id)`）、`src/store/db.ts`（v47。§4 の 3 つ）、`src/store/topic-sessions.ts`（`create` に `model?`、`modelOf(channelId)`、`setModel`）、新 `src/store/place-settings.ts`（get・set・list）、`src/agent/runner.ts`（`RunContext.model?`）、`src/app/turn.ts`・`src/app/session-renew.ts`・`src/app/topic-move.ts`（context に入れる）、`project-profile.ts`（`context.model ?? cfg.model`）・`sdk-runner.ts`（context に model が在るときだけ設定の model を差し替える。devlog の model）、`src/agent/runner.ts` の `RunResult.model`（実際に渡したモデル）、`src/store/usage.ts`（usage の記録に model）、`src/app/usage-report.ts`（`npm run usage` の列）。`/api/usage` の行にも `model` の欄が増える。
@@ -134,7 +138,8 @@
 - テスト: 移行、Options の同一性、偽 Runner が受けた context、人格の runner は NULL のとき人格のモデル。
 
 ### PR-2: 入口（`/new`・startTopic・右腕・［対応］・取り込み）
-- 触る: `src/app/session-ops.ts`（`StartTopicInput.model?`、解決の関数 1 つ、`welcomeText` の 1 行）、`src/app/commands/new.ts`（`model` の choices。`persona` と併用は断る）、`src/app/right-hand.ts`（PR-0 の note をやめ、使えない名前は `bad_model` + key の一覧）、`src/web/routes/topics.ts`（body の `model`。重複よけのキー `:681` に足す）、`src/cc/takeover.ts`（場所の既定）。
+- 実装済み（PR は #451 から辿る）。
+- 触る: `src/app/session-ops.ts`（`StartTopicInput.model?`、解決の関数 `resolveTopicModel` と `placeKeyOf`（`openTopicSession` の中で呼ぶ）、`welcomeText`・`rightHandWelcomeText` の 1 行）、`src/agent/models.ts`（`modelLine`）、`src/app/commands/new.ts`（`model` の choices。`persona` と併用は断る）、`src/app/commands/help.ts`（`/new` の行）、`src/app/right-hand.ts`（PR-0 の note をやめ、使えない名前は `bad_model` + key の一覧。人格の入口から model なら作って note）、`src/agent/tools.ts`（結果の型だけ。定義・describe は変えない）、`src/web/routes/topics.ts`（body の `model`。重複よけのキーに足す。201 の json は PR-3）、`src/web/routes/sessions.ts`（deps の型）、`src/cc/takeover.ts`（場所の既定と完了の文の 1 行）、`src/main.ts`（`PlaceSettingStore` と配線 4 か所）。`src/app/github-topics.ts` は触らない（`startTopic` に model を渡さない = 場所の既定）。
 - 受け入れ: `/new model:sonnet` の話題は `sessions.model = claude-sonnet-5-5`／省略で場所の既定が在ればその ID、無ければ NULL／`session_open` の `model: "xxx"` は話題を作らず `bad_model`／［対応］と取り込みは場所の既定／最初の投稿に担当の行（NULL のときは無い）。
 - テスト: 解決の順の表（明示・場所・無し）、各入口 1 本ずつ。
 - **PR-2 の前に直す（会話の途中でモデルが変わらないように）**: (a) 軽いモードの /renew の要約のターン（`src/app/session-renew.ts`。context を渡さない）は済（`RunInput.model`） (b) 軽いモードの、場所を変える要点のターン（`src/app/topic-move.ts`。同じ）は済（`RunInput.model`） (c) 人格つきの話題は、runner が `context.model` を人格のモデルより先に使うので、`sessions.model` を付けない事を入口で守る（`/new` の併用を断る・`/renew model:` も断る） (d) 取り込みは端末の会話を resume するので、場所の既定を付けると最初のターンから別のモデルになりうる（受け入れ済み。今も全体の既定で同じ）。プロジェクトのセッションの /renew と要点のターンは PR-1 で入れた
