@@ -9,7 +9,7 @@ export const PERMISSION_NOTE = "端末や RC のダイアログでも答えら�
 /** 端末の無いセッション（item.terminal が false）の許可のカードの説明の文 */
 export const SESSION_PERMISSION_NOTE = "時間が過ぎると拒否になります。";
 /** 端末の無いセッション（item.terminal が false）の質問のカードの説明の文 */
-export const SESSION_QUESTION_NOTE = "時間が過ぎると時間切れになります。そのときは、答えを発言で送ってください。";
+export const SESSION_QUESTION_NOTE = "時間切れになったら、答えを発言で送ってください。";
 
 /** 「その他」の欄の maxlength */
 export const OTHER_MAX = 1000;
