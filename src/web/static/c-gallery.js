@@ -751,7 +751,7 @@ function Hands() {
 /** 札の見本の既定の生の状態（書いていない物はこれ） */
 const TERM_BASE = { title: "ログインの直し", place: "self-agent", rowState: "idle", activity: "11/20(金) 14:05", pane: true, check: null, checking: false, failed: false, phase: "idle", error: null };
 const TERM_READY = { takeable: true, state: "idle", reason: null, text: null, rcUrl: "https://claude.ai/code/demo" };
-/** 札の見本（ready・ended・busy・waiting・blocked が取り込めるかの 4 つの形、ほかは途中の形。long は幅 320 の入れ物） */
+/** 札の見本（ready・ended・busy・waiting・blocked が取り込めるかの 4 つの形、ほかは途中の形。long は幅 320 の入れ物で、題と場所に切れ目の無い字） */
 const TERM_DEMOS = [
   { demo: "ready", raw: { check: TERM_READY } },
   { demo: "ended", raw: { rowState: null, pane: false, activity: "11/20(金) 13:40", check: { takeable: true, state: "ended", reason: null, text: null, rcUrl: null } } },
@@ -762,7 +762,7 @@ const TERM_DEMOS = [
   { demo: "taking", raw: { check: TERM_READY, phase: "taking" } },
   { demo: "lost", raw: { check: TERM_READY, phase: "lost" } },
   { demo: "error", raw: { check: TERM_READY, error: "取り込めませんでした: 端末の画面が待機の状態ではありません（書きかけ・ダイアログ・操作の直後）" } },
-  { demo: "long", narrow: true, raw: { check: TERM_READY, title: "端末のセッションの題がとても長いときに札の幅からはみ出さずに折り返すかを確かめるための見本の題です。ここまでで八十字になるように字を足していきます。あと少しです", place: "ほかの場所（~/projects/very/long/path/name）" } },
+  { demo: "long", narrow: true, raw: { check: TERM_READY, title: "端末のセッションの題がとても長いときに札の幅からはみ出さずに折り返すかを確かめるための見本の題です。ここまでで八十字になるように字を足していきます。あと少しです" + "sample_terminal_session_title_without_any_break_point_".repeat(2) + "0123456789", place: CARD_UNBROKEN_PLACE } },
 ];
 const TERM_ON = { take() {}, pane() {}, recheck() {} };
 
