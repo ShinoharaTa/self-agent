@@ -3,6 +3,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { join } from "node:path";
 import { createCcCommand, createCcComponent } from "../src/app/commands/cc.ts";
 import { CC_TAKE_POSTED_REPLY, CC_TAKE_STALE_REPLY, type CcTakeRuntime } from "../src/app/commands/cc-take.ts";
@@ -35,6 +36,9 @@ import { CcTakeoverStore } from "../src/store/cc-takeovers.ts";
 import { HistoryStore } from "../src/store/history.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
+import { GuildSettingsStore } from "../src/store/guild-settings.ts";
+import { ccTakeoverRoutes, TAKEOVER_WEB_STALE_TEXT } from "../src/web/routes/cc-takeover.ts";
+import { createWebServer, type WebServer } from "../src/web/server.ts";
 import { tempDb, tempDir } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
@@ -1776,4 +1780,104 @@ test("check: last は一番新しい行の番号・状態・行き先（無け�
   assert.deepEqual(checked.last, { id, state: "done", targetChannelId: DEST });
   // 取り込み済みなので、もう取り込めない
   assert.equal(checked.reason, "already_taken");
+});
+
+const WEB_LOGIN = "owner@example.com";
+
+/** 取り込みの 4 ルートだけを載せた Web サーバー（127.0.0.1 の空きポート） */
+async function serveTakeover(t: TestContext, s: Setup): Promise<WebServer> {
+  const guildSettings = new GuildSettingsStore(s.db, () => new Date(s.clock.now));
+  guildSettings.setChannel("guild-1", "homeCategoryId", "home-1");
+  const routes = ccTakeoverRoutes({
+    takeover: () => s.takeover,
+    takeovers: s.takeovers,
+    cfg: { allowedGuildIds: ["guild-1"] },
+    guildSettings,
+  });
+  const server = createWebServer({
+    host: "127.0.0.1",
+    port: 0,
+    allowedLogin: WEB_LOGIN,
+    staticDir: tempDir(t),
+    templateSiteDir: tempDir(t),
+    routes,
+    stopping: () => false,
+    now: () => new Date(s.clock.now),
+    log: () => undefined,
+  });
+  await server.start();
+  t.after(() => server.close());
+  return server;
+}
+
+function callJson(server: WebServer, method: "GET" | "POST", path: string): Promise<{ status: number; json: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = { "tailscale-user-login": WEB_LOGIN };
+    if (method === "POST") Object.assign(headers, { "sec-fetch-site": "same-origin", "x-self-agent": "1", "content-type": "application/json" });
+    const req = request({ host: "127.0.0.1", port: server.address()!.port, method, path, headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode!, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end(method === "POST" ? "{}" : undefined);
+  });
+}
+
+test("Web の入口の端から端: GET → POST /takeover → POST /confirm で kill は 1 回、応答の id は新しいチャンネル", async (t) => {
+  const s = setup(t);
+  const server = await serveTakeover(t, s);
+  const read = await callJson(server, "GET", `/api/cc/sessions/${S1}/takeover`);
+  assert.equal(read.status, 200);
+  assert.equal(read.json.takeable, true);
+  assert.equal(read.json.state, "idle");
+  assert.deepEqual(s.kills, []);
+  const proposed = await callJson(server, "POST", `/api/cc/sessions/${S1}/takeover`);
+  assert.equal(proposed.status, 201);
+  const id = proposed.json.id as number;
+  assert.equal(s.takeovers.get(id)?.entry, "web");
+  assert.equal(s.takeovers.get(id)?.confirmChannelId, null);
+  const confirmed = await callJson(server, "POST", `/api/cc/takeovers/${id}/confirm`);
+  assert.equal(confirmed.status, 200);
+  assert.deepEqual(confirmed.json, { ok: true, id: `ch:${DEST}`, text: takeoverDoneText("alpha", false, false) });
+  assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  assert.equal(s.sdkSessions.get(DEST), S1);
+  // 済んだ後の GET は last に行き先を出す
+  const after = await callJson(server, "GET", `/api/cc/sessions/${S1}/takeover`);
+  assert.deepEqual(after.json.last, { takeover: id, state: "done", id: `ch:${DEST}` });
+  assertQuietLogs(s);
+});
+
+test("Web の入口: 同時の 2 つの /confirm は kill 1 回で、片方は 409 stale", async (t) => {
+  const s = setup(t);
+  const server = await serveTakeover(t, s);
+  const proposed = await callJson(server, "POST", `/api/cc/sessions/${S1}/takeover`);
+  const id = proposed.json.id as number;
+  const both = await Promise.all([
+    callJson(server, "POST", `/api/cc/takeovers/${id}/confirm`),
+    callJson(server, "POST", `/api/cc/takeovers/${id}/confirm`),
+  ]);
+  assert.deepEqual(s.kills, [{ pid: PID, signal: "SIGTERM" }]);
+  assert.deepEqual(both.map((response) => response.status).sort(), [200, 409]);
+  const stale = both.find((response) => response.status === 409)!;
+  assert.deepEqual(stale.json, { error: "stale", text: TAKEOVER_WEB_STALE_TEXT });
+});
+
+test("Web の入口: 記号入りの名前でも応答の文はエスケープ前", async (t) => {
+  const s = setup(t, { project: "al_pha" });
+  const name = "a*b_c~<@1>";
+  s.ccSessions.upsertSeen([{ sessionId: S1, cwd: s.cwd, name, pid: PID }]);
+  const server = await serveTakeover(t, s);
+  const read = await callJson(server, "GET", `/api/cc/sessions/${S1}/takeover`);
+  assert.equal(read.json.title, name);
+  assert.equal(read.json.project, "al_pha");
+  const proposed = await callJson(server, "POST", `/api/cc/sessions/${S1}/takeover`);
+  assert.equal(proposed.status, 201);
+  assert.equal(proposed.json.text, takeoverConfirmText({ title: name, project: "al_pha", source: "alive", terminalMode: "plan" }, false));
+  assert.ok((proposed.json.text as string).includes(`「${name}」（al_pha）`));
+  const confirmed = await callJson(server, "POST", `/api/cc/takeovers/${proposed.json.id as number}/confirm`);
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.json.text, takeoverDoneText("al_pha", false, false));
+  assert.ok((confirmed.json.text as string).includes("（al_pha・"));
 });

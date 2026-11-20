@@ -120,6 +120,7 @@ import { USAGE_KEEP_DAYS, UsageStore } from "./store/usage.ts";
 import { probePaneState } from "./tmux/pane-state.ts";
 import { createTmux, type Tmux } from "./tmux/tmux.ts";
 import { ccChannelDescriber, ccRoutes, ccStatus, type CcStatus } from "./web/routes/cc.ts";
+import { ccTakeoverRoutes } from "./web/routes/cc-takeover.ts";
 import { channelRoutes, webChannelLookup, webChannelNamer } from "./web/routes/channels.ts";
 import { createTopicCollector, topicRoutes } from "./web/routes/topics.ts";
 import { devlogRoutes } from "./web/routes/devlog.ts";
@@ -1417,6 +1418,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         ...(ccChannels === undefined ? {} : { channels: { store: ccChannels, allowedGuildIds: config.allowedGuildIds, lookup: webChannelOf } }),
         now,
       }),
+      // 取り込み（札の判定・確認・進める・やめる。SELF_AGENT_CC が無効なら 404）
+      ...ccTakeoverRoutes({ takeover: () => ccTakeover, takeovers: ccTakeovers, cfg: config, guildSettings }),
       // 作ったプロジェクトのファイルを読むだけ（配信が無効でも出す）
       ...projectRoutes({
         cfg: config,
