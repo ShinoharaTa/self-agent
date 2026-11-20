@@ -78,6 +78,8 @@ test("recordTurnUsage: 成功はトークンの合計・種類・出力・1 時�
     outputTokens: 65,
     cacheCreation1hInputTokens: 5000,
     steps: TWO_STEPS.steps,
+    // runner がモデルを返さなければ NULL
+    model: null,
   });
   // compaction の行はそのまま残す
   assert.deepEqual(logs, [OK_LOG, "会話が長くなったため SDK が古い部分を要約しました（trigger=auto、要約前 150000 トークン）"]);
@@ -121,6 +123,22 @@ test("recordTurnUsage: 失敗はトークンの合計・出力を記録せず（
     "トークン（session・失敗）: ステップ 1、入力 954（読み 900・書き 50（1 時間 50）・なし 4）、出力 -、キャッシュ率 94%、1 ステップ目 読み 900・書き 50",
     "トークン（inbox-rotate・失敗）: 記録なし",
   ]);
+});
+
+test("recordTurnUsage: runner が返した実際のモデルを成功・失敗とも記録する", (t) => {
+  const { usage, deps } = setup(t);
+  recordTurnUsage(deps, "topic-1", "session", { ...OK, model: "claude-sonnet-5-5" });
+  recordTurnUsage(deps, "topic-1", "session", {
+    ok: false,
+    errorMessage: "timeout",
+    toolCalls: 0,
+    sessionRecorded: false,
+    model: "claude-haiku-4-5",
+  });
+  assert.deepEqual(
+    usage.recent(10).map((entry) => entry.model),
+    ["claude-haiku-4-5", "claude-sonnet-5-5"],
+  );
 });
 
 test("formatTurnUsageLog: ステップが無ければキャッシュ率と 1 ステップ目は -。出力が無ければ（result に usage が無い）出力は -", () => {
@@ -198,6 +216,7 @@ function entry(fields: Partial<UsageEntry>): UsageEntry {
     outputTokens: 65,
     cacheCreation1hInputTokens: 5000,
     steps: TWO_STEPS.steps,
+    model: null,
     ...fields,
   };
 }
@@ -236,22 +255,22 @@ test("formatUsageEntry: 1 ターン 1 行（key・session_id は出さない）�
     [
       "成功",
       NEW_OK,
-      "00:04:05 session           ok steps 2 入力 10,105 読み 5,000 書き 5,100(1h 5,000) なし 5 出力 65 率 49% ctx 5,102 4.2s",
+      "00:04:05 session           -          ok steps 2 入力 10,105 読み 5,000 書き 5,100(1h 5,000) なし 5 出力 65 率 49% ctx 5,102 4.2s",
     ],
     [
       "v17 より前の行",
       OLD_OK,
-      "00:04:05 -                 ok steps - 入力 2,310 読み 2,000 書き 300(1h -) なし 10 出力 - 率 87% ctx 2,310 3.0s",
+      "00:04:05 -                 -          ok steps - 入力 2,310 読み 2,000 書き 300(1h -) なし 10 出力 - 率 87% ctx 2,310 3.0s",
     ],
     [
       "失敗（ステップあり）",
       FAILED_WITH_STEPS,
-      "00:04:05 inbox             NG steps 1 入力 954 読み 900 書き 50(1h 50) なし 4 出力 - 率 94% ctx - -",
+      "00:04:05 inbox             -          NG steps 1 入力 954 読み 900 書き 50(1h 50) なし 4 出力 - 率 94% ctx - -",
     ],
     [
       "失敗（ステップなし）",
       FAILED_EMPTY,
-      "00:04:05 inbox-rotate      NG steps - 入力 - 読み - 書き -(1h -) なし - 出力 - 率 - ctx - -",
+      "00:04:05 inbox-rotate      -          NG steps - 入力 - 読み - 書き -(1h -) なし - 出力 - 率 - ctx - -",
     ],
     [
       "入力が 0",
@@ -264,7 +283,17 @@ test("formatUsageEntry: 1 ターン 1 行（key・session_id は出さない）�
         contextTokens: 0,
         steps: [],
       }),
-      "00:04:05 session           ok steps 0 入力 0 読み 0 書き 0(1h 0) なし 0 出力 0 率 - ctx 0 4.2s",
+      "00:04:05 session           -          ok steps 0 入力 0 読み 0 書き 0(1h 0) なし 0 出力 0 率 - ctx 0 4.2s",
+    ],
+    [
+      "モデルは一覧の字",
+      entry({ model: "claude-sonnet-5-5" }),
+      "00:04:05 session           Sonnet 5.5 ok steps 2 入力 10,105 読み 5,000 書き 5,100(1h 5,000) なし 5 出力 65 率 49% ctx 5,102 4.2s",
+    ],
+    [
+      "一覧に無いモデルは ID のまま",
+      entry({ model: "claude-opus-5" }),
+      "00:04:05 session           claude-opus-5 ok steps 2 入力 10,105 読み 5,000 書き 5,100(1h 5,000) なし 5 出力 65 率 49% ctx 5,102 4.2s",
     ],
   ];
   for (const [label, value, expected] of cases) {

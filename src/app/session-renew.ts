@@ -31,7 +31,7 @@ export const RENEWED_SEED_HEADER = "会話を新しくしました。前の会�
 
 export type SessionRenewDeps = {
   /** projectDirOf があれば、プロジェクトのセッションの要約のターンを projectRunner で動かす（会話の記録の場所を合わせる。docs/plan/unify.md） */
-  topicSessions: Pick<TopicSessionStore, "get" | "setRenewed"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
+  topicSessions: Pick<TopicSessionStore, "get" | "setRenewed"> & Partial<Pick<TopicSessionStore, "projectDirOf" | "modelOf">>;
   /** 発言のターンと同じキュー（key は channelId）。要約のターンが発言のターンと重ならないようにする */
   turnQueue: Pick<KeyedSerialQueue, "run">;
   /** 要約のターンの runner（チャンネルの持ち主の人格のもの）と、SDK セッション・seed・usage */
@@ -86,10 +86,20 @@ async function renewTurn(deps: SessionRenewDeps, guildId: string, channelId: str
   const persona = turnPersonaOf(turn, channelId);
   const project = topicSessions.projectDirOf?.(channelId);
   if (project !== undefined && turn.projectRunner === undefined) return { result: "failed", errorMessage: PROJECT_NEEDS_CC_ERROR };
+  // 要約のターンも話題のモデルで動かす（会話の途中でモデルを変えない）。軽いモードは context を渡さないので入れない
+  const model = project === undefined ? undefined : topicSessions.modelOf?.(channelId);
   const context: RunContext | undefined =
     project === undefined
       ? undefined
-      : { guildId, channelId, kind: "session", purpose: "renew", projectDir: project.projectDir, permissionMode: project.permissionMode };
+      : {
+          guildId,
+          channelId,
+          kind: "session",
+          purpose: "renew",
+          projectDir: project.projectDir,
+          permissionMode: project.permissionMode,
+          ...(model === undefined ? {} : { model }),
+        };
   const runner = project !== undefined && turn.projectRunner !== undefined ? turn.projectRunner : persona.runner;
   const result = await runner.run({ prompt: RENEW_PROMPT, sessionId, context, allowedUrls: [] });
   recordTurnUsage(turn, channelId, "session-renew", result, persona);

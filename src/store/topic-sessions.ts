@@ -63,6 +63,8 @@ export type NewTopicSession = {
    */
   projectDir?: string;
   permissionMode?: ProjectPermissionMode;
+  /** その話題のモデル（完全な ID。docs/plan/models.md §4）。省略すれば NULL（全体の既定に従う） */
+  model?: string;
 };
 
 const STATES: readonly TopicSessionState[] = ["active", "waiting", "done", "deleted"];
@@ -142,8 +144,8 @@ export class TopicSessionStore {
     const at = this.now().toISOString();
     const row = this.db
       .prepare(
-        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, origin, persona, project_dir, permission_mode) " +
-          "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, origin, persona, project_dir, permission_mode, model) " +
+          "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
       )
       .get(
         session.channelId,
@@ -156,8 +158,21 @@ export class TopicSessionStore {
         session.persona ?? DEFAULT_PERSONA_ID,
         session.projectDir ?? null,
         session.permissionMode ?? "default",
+        session.model ?? null,
       );
     return toSession(row!);
+  }
+
+  /** その話題のモデル（完全な ID。削除済みの行も返す）。行が無い・NULL（全体の既定に従う）なら undefined */
+  modelOf(channelId: string): string | undefined {
+    const row = this.db.prepare("SELECT model FROM sessions WHERE channel_id = ?").get(channelId);
+    return row === undefined || row.model === null || row.model === undefined ? undefined : String(row.model);
+  }
+
+  /** その話題のモデルを変える（完全な ID。null で全体の既定に戻す）。検証は呼び出し側（agent/models.ts）。行があれば true */
+  setModel(channelId: string, model: string | null): boolean {
+    const result = this.db.prepare("UPDATE sessions SET model = ? WHERE channel_id = ?").run(model, channelId);
+    return Number(result.changes) > 0;
   }
 
   /** そのセッションのチャンネルの持ち主の人格の id（削除済みの行も返す）。セッションでなければ undefined */

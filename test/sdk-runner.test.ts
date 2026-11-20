@@ -217,6 +217,7 @@ test("SdkAgentRunner: 成功ならメインループの usage を合算し、並
     toolCalls: 0,
     // 最後のステップ（msg-2）の入力
     contextTokens: 1205,
+    model: cfg.model,
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.prompt, "明日買い物に行く");
@@ -267,6 +268,7 @@ test("SdkAgentRunner: 既定の runner は init の apiKeySource が ANTHROPIC_A
     sessionId: "session-1",
     sessionRecorded: false,
     toolCalls: 0,
+    model: cfg.model,
   });
   assert.equal(consumedAfterInit, false);
   assert.equal(mismatch.calls[0]!.options.abortController?.signal.aborted, true);
@@ -342,6 +344,7 @@ test("SdkAgentRunner: is_error・error_max_turns は result の session_id を�
     sessionId: "session-2",
     sessionRecorded: true,
     toolCalls: 0,
+    model: cfg.model,
   });
 
   const maxTurns = setupRunner(
@@ -353,6 +356,7 @@ test("SdkAgentRunner: is_error・error_max_turns は result の session_id を�
     sessionId: "session-3",
     sessionRecorded: true,
     toolCalls: 0,
+    model: cfg.model,
   });
 });
 
@@ -374,6 +378,7 @@ test("SdkAgentRunner: result が届かずに終われば失敗。途中の sessi
       cacheCreation1hInputTokens: 0,
       steps: [step(10, 0, 0)],
     },
+    model: cfg.model,
   });
 });
 
@@ -533,6 +538,7 @@ test("SdkAgentRunner: 中断・打ち切りで終わったら、そのターン�
     sessionId: "session-1",
     sessionRecorded: false,
     toolCalls: 0,
+    model: cfg.model,
   });
 
   const before = setupRunner(untilAbort(undefined));
@@ -542,6 +548,7 @@ test("SdkAgentRunner: 中断・打ち切りで終わったら、そのターン�
     sessionId: undefined,
     sessionRecorded: false,
     toolCalls: 0,
+    model: cfg.model,
   });
 
   const timeout = setupRunner(untilAbort("session-2"), { turnTimeoutSec: 0.01 });
@@ -551,6 +558,7 @@ test("SdkAgentRunner: 中断・打ち切りで終わったら、そのターン�
     sessionId: "session-2",
     sessionRecorded: false,
     toolCalls: 0,
+    model: cfg.model,
   });
 });
 
@@ -936,7 +944,7 @@ test("SdkAgentRunner: 打ち切りはセッションのチャンネルなら ses
     const signal = call.options.abortController!.signal;
     await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
   };
-  const timeout = { ok: false, errorMessage: "timeout", sessionId: "session-1", sessionRecorded: false, toolCalls: 0 };
+  const timeout = { ok: false, errorMessage: "timeout", sessionId: "session-1", sessionRecorded: false, toolCalls: 0, model: cfg.model };
 
   for (const { label, context, session } of KIND_CASES) {
     // 使うはずの方だけ 10ms にする（もう一方の 300 秒を使えば打ち切られない）
@@ -1298,7 +1306,7 @@ test("SdkAgentRunner: signal が abort されたら止めて aborted を返す�
       if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
       if (throws) throw new Error("Claude Code process aborted by user");
     };
-  const aborted = { ok: false, errorMessage: "aborted", sessionId: "session-1", sessionRecorded: false, toolCalls: 0 };
+  const aborted = { ok: false, errorMessage: "aborted", sessionId: "session-1", sessionRecorded: false, toolCalls: 0, model: cfg.model };
 
   for (const throws of [true, false]) {
     const { runner, calls } = setupRunner(untilAbort(throws));
@@ -1611,6 +1619,7 @@ test("dev ログ: 書き込みに失敗してもターンは失敗せず、log �
     durationMs: 4200,
     toolCalls: 0,
     contextTokens: 0,
+    model: cfg.model,
   });
   assert.equal(logs.length, 1);
   assert.ok(!logs[0]!.includes("秘密") && !logs[0]!.includes(root), logs[0]);

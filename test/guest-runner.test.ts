@@ -249,6 +249,7 @@ test("ゲストの runner: init の apiKeySource が ANTHROPIC_API_KEY でなけ
       sessionId: "session-1",
       sessionRecorded: false,
       toolCalls: 0,
+      model: CFG.guestModel,
     }, String(source));
     assert.equal(consumedAfterInit, false, String(source));
     assert.equal(signal?.aborted, true, String(source));

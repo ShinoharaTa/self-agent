@@ -279,7 +279,8 @@ export function createProjectProfile(deps: ProjectProfileDeps): RunnerProfile {
       if (cwd === undefined) throw new Error(PROJECT_DIR_INVALID_ERROR);
       const summaryTurn = context.purpose === "close" || context.purpose === "renew";
       return {
-        model: cfg.model,
+        // 話題のモデル（sessions.model）があればそれ。無ければ全体の既定
+        model: context.model ?? cfg.model,
         // Claude Code の preset に self-agent の文を足す。snapshot: true で会話ごとに記録して固定する（プロジェクトのセッションだけの例外。docs/plan/unify.md §5.4）
         systemPrompt: { type: "preset", preset: "claude_code", append: PROJECT_APPEND, snapshot: true },
         // ユーザー（Bot の CLAUDE_CONFIG_DIR）・プロジェクト・ローカルの設定・CLAUDE.md・skills・agents を読む

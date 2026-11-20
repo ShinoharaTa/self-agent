@@ -68,9 +68,10 @@ export type TurnDeps = {
   seeds: ChannelSeedStore;
   /**
    * 復旧の seed に要約（/renew の要約、無ければ /close の要約、どちらも無ければ題名）を入れるため。
-   * projectDirOf があれば、セッションのチャンネルのターンがプロジェクトのセッションか見る（無ければすべて軽いモード）
+   * projectDirOf があれば、セッションのチャンネルのターンがプロジェクトのセッションか見る（無ければすべて軽いモード）。
+   * modelOf があれば、セッションのチャンネルのターンに話題のモデルを入れる（無ければ runner の設定のモデル）
    */
-  topicSessions: Pick<TopicSessionStore, "get"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
+  topicSessions: Pick<TopicSessionStore, "get"> & Partial<Pick<TopicSessionStore, "projectDirOf" | "modelOf">>;
   /** #inbox・#tasks（セッションでないチャンネル）の復旧の seed に、そのサーバーの直近の同じチャンネルの要約を入れるため */
   inboxSummaries: Pick<InboxSummaryStore, "latest">;
   /** 新しい SDK セッションの最初の prompt の先頭に、有効な記憶を付けるため */
@@ -156,6 +157,8 @@ export function recordTurnUsage(
 ): void {
   const { usage, log } = deps;
   const by = persona === undefined ? {} : { persona: persona.id, engine: persona.engine };
+  // 実際に渡したモデル（runner が返したときだけ）
+  const model = result.model === undefined ? {} : { model: result.model };
   if (!result.ok) {
     usage.record({
       key,
@@ -165,6 +168,7 @@ export function recordTurnUsage(
       kind,
       steps: result.usage?.steps ?? null,
       ...by,
+      ...model,
     });
     log(formatTurnUsageLog(kind, result));
     return;
@@ -185,6 +189,7 @@ export function recordTurnUsage(
     cacheCreation1hInputTokens: result.usage.cacheCreation1hInputTokens,
     steps: result.usage.steps,
     ...by,
+    ...model,
   });
   log(formatTurnUsageLog(kind, result));
   if (result.compacted !== undefined) {
@@ -205,6 +210,7 @@ export function recordTurnUsage(
  * - API が画像（か大きすぎるリクエスト）を受け付けなかった（result.imageRejected）ときは、その会話を残さない。resume で起きたらすぐに
  *   SDK セッションを捨てて seed を入れ、画像を外して（このターンに画像があれば IMAGE_DROPPED_NOTE を付けて）やり直す。新しいセッションで
  *   起きたら、このターンに画像があり、まだ外していなければ 1 回だけ画像を外してやり直す（画像を外すのは 1 ターンに 1 回だけ）
+ * - セッションのチャンネルの発言・[続ける]・/close のターンは、話題のモデル（sessions.model）があれば context に model を入れる（予約した依頼・#inbox・#tasks は入れない）
  * - プロジェクトのセッション（sessions.project_dir がある）の発言・[続ける]・/close のターンは projectRunner で、context に projectDir・permissionMode を入れる
  *   （/close は purpose close のまま。許可の橋がツールを全部拒否する）。予約した依頼・#inbox・#tasks は今までどおり軽いモードの runner。projectRunner が無ければ run せずに PROJECT_NEEDS_CC_ERROR の失敗を返す
  * 返す結果の失敗は呼び出し側で返信・log する
@@ -225,6 +231,9 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
   const runner = project !== undefined && deps.projectRunner !== undefined ? deps.projectRunner : persona.runner;
   // usage の記録とログのラベル。予約した依頼のターンは -scheduled を付ける
   const usageKind = turn.scheduled === true ? `${turn.kind}-scheduled` : turn.kind;
+  // 話題のモデル（予約した依頼・#inbox・#tasks は入れない。docs/plan/models.md §4）
+  const model =
+    turn.kind === "session" && turn.scheduled === undefined ? topicSessions.modelOf?.(turn.channelId) : undefined;
   const context: RunContext = {
     guildId: turn.guildId,
     channelId: turn.channelId,
@@ -233,6 +242,7 @@ export async function runChannelTurn(deps: TurnDeps, turn: ChannelTurn): Promise
     ...(turn.purpose === undefined ? {} : { purpose: turn.purpose }),
     ...(turn.attachmentIds === undefined || turn.attachmentIds.length === 0 ? {} : { attachmentIds: turn.attachmentIds }),
     ...(project === undefined ? {} : { projectDir: project.projectDir, permissionMode: project.permissionMode }),
+    ...(model === undefined ? {} : { model }),
   };
 
   // 画像。API が受け付けなければ外す（prompt にはそのことを注記する）

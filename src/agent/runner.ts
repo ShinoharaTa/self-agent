@@ -22,6 +22,11 @@ export type RunContext = {
    */
   projectDir?: string;
   permissionMode?: ProjectPermissionMode;
+  /**
+   * その話題のモデル（sessions.model の完全な ID。docs/plan/models.md §4）。セッションのチャンネルのターンで値があるときだけ入る。
+   * 無ければ runner の設定のモデル（全体の既定か人格のモデル）。#inbox・#tasks・予約した依頼のターンには入れない
+   */
+  model?: string;
 };
 
 /** プロジェクトのセッションで選べる許可のモード（docs/plan/unify.md §5.1。bypassPermissions・dontAsk・auto は選べない） */
@@ -105,6 +110,8 @@ export type RunResult =
        * usage と違って合算しないので、ターンを終えた時点の会話の大きさの目安になる
        */
       contextTokens: number;
+      /** この run で SDK に渡したモデル（Options.model）。usage_log に記録する。Options を組む前に終わった・偽の runner では入らない */
+      model?: string;
     }
   | {
       ok: false;
@@ -125,6 +132,8 @@ export type RunResult =
        * 当てはまるときだけ入る
        */
       imageRejected?: true;
+      /** この run で SDK に渡したモデル（Options.model）。Options を組めなかった・偽の runner では入らない */
+      model?: string;
     };
 
 export interface AgentRunner {

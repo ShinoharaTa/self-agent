@@ -1,10 +1,13 @@
 // ターンのトークン使用量の表示（ターンごとの console の 1 行と、npm run usage の行）。純関数だけ。
 // プロンプトキャッシュが効いているか（読み・書き）を見るためのもの。チャンネル ID・key・session_id は出さない
+import { labelOf } from "../agent/models.ts";
 import type { RunResult, StepUsage } from "../agent/runner.ts";
 import type { UsageEntry } from "../store/usage.ts";
 
 /** npm run usage の行で種類を揃える幅（いちばん長い session-scheduled に合わせる） */
 export const USAGE_KIND_WIDTH = 17;
+/** npm run usage の行でモデル（一覧の字。一覧に無ければ ID のまま）を揃える幅（一覧でいちばん長い Sonnet 5.5 に合わせる） */
+export const USAGE_MODEL_WIDTH = 10;
 
 /** 桁区切り（カンマ）の数 */
 function formatCount(value: number): string {
@@ -82,7 +85,7 @@ function formatClock(at: string, timeZone: string): string {
 }
 
 /**
- * npm run usage の 1 ターンの行。v17 より前の行（種類・steps が無い）や失敗したターン（所要時間・ctx が無い）の無い値は -。
+ * npm run usage の 1 ターンの行。v17 より前の行（種類・steps が無い）・v47 より前の行（モデルが無い）や失敗したターン（所要時間・ctx が無い）の無い値は -。
  * key・session_id は出さない
  */
 export function formatUsageEntry(entry: UsageEntry, timeZone: string): string {
@@ -96,6 +99,7 @@ export function formatUsageEntry(entry: UsageEntry, timeZone: string): string {
   return [
     formatClock(entry.at, timeZone),
     (entry.kind ?? "-").padEnd(USAGE_KIND_WIDTH),
+    (entry.model === null ? "-" : labelOf(entry.model)).padEnd(USAGE_MODEL_WIDTH),
     entry.ok ? "ok" : "NG",
     `steps ${entry.steps === null ? "-" : entry.steps.length}`,
     `入力 ${formatMaybe(total)}`,

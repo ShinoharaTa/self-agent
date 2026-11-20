@@ -275,6 +275,8 @@ test("受け付けた発言で runner を呼び、usage 記録・session 保存�
       outputTokens: null,
       cacheCreation1hInputTokens: 0,
       steps: turnUsage(10, 2000, 300).steps,
+      // 偽の結果にモデルが無いので NULL
+      model: null,
     },
   ]);
   assert.equal(gateway.typingStarted, 1);
