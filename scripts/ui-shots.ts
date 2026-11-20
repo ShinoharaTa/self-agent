@@ -1312,7 +1312,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       });
       if (reuse.kept !== reuse.all) lines.push(`使い回し: 元の行 ${reuse.all} のうち残ったのは ${reuse.kept}`);
       if (reuse.now !== before + 1) lines.push(`使い回し: 行が ${before} → ${reuse.now}（1 つ増えるはず）`);
-      await load(page, "/static/v3.html");
+      await load(page, "/");
 
       // フォーカスと位置 (1): 一覧が送れる高さにして、行にフォーカス・100 送ってから、順を入れ替えた応答で読み直す
       await page.setViewportSize({ width: 1440, height: 500 });
@@ -1335,7 +1335,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (now.top !== 100) lines.push(`フォーカスと位置 (1): 一覧の位置が ${now.top}（100 のはず）`);
       }
       await page.setViewportSize(VIEWPORTS.pc.viewport);
-      await load(page, "/static/v3.html");
+      await load(page, "/");
 
       // 鍵: ↓・End・Home・先頭の ↑。修飾キー付きは動かさない
       const rowCount = await page.evaluate(() => {
@@ -1356,7 +1356,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await expectKey("ArrowUp", 0);
         for (const key of ["Shift+ArrowDown", "Alt+ArrowDown", "Control+End"]) await expectKey(key, 0);
       }
-      await load(page, "/static/v3.html");
+      await load(page, "/");
     }
     if (phone) {
       // フォーカスと位置 (3): focusRow は群の中の行に当てる
@@ -1384,7 +1384,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const after = await focusState(page);
         if (after.topic !== turn || !after.mark) lines.push(`フォーカスと位置 (2): 「あなたの番」が消えた後のフォーカスが ${after.topic ?? "（行の外）"}・群の中の行 ${after.mark}`);
       }
-      await load(page, "/static/v3.html");
+      await load(page, "/");
     }
     return lines;
   }
@@ -1432,7 +1432,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         for (const prop of LEAK_PROPS) if (!(sel === ".c-group-name" && prop === "margin-right") && a[prop] !== b[prop]) lines.push(`漏れ: ${sel} の ${prop} が 本番 ${a[prop]} / 見本 ${b[prop]}`);
       }
     }
-    await load(page, "/static/v3.html");
+    await load(page, "/");
     return lines;
   }
 
@@ -1747,7 +1747,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     try {
       await page.goto("about:blank");
-      await page.goto(base + "/static/v3.html", { waitUntil: "load" });
+      await page.goto(base + "/", { waitUntil: "load" });
       await page.waitForSelector("#c-bottom-root .c-bottom", { timeout: 5000 });
       const first = await page.evaluate(() => ({
         loading: document.querySelector('.c-list[data-phase="loading"]') !== null,
@@ -2084,11 +2084,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   async function topStage(page: Page, vp: Viewport, p: string): Promise<string[]> {
     const tag = `v3-${p}`;
     const lines: string[] = [];
-    const chat = `/static/v3.html#/ch/${open}`;
+    const chat = `/#/ch/${open}`;
     const phone = vp === "phone";
     // 会話を開く（スマホは一覧の行から。焦点は「一覧へ」・押すと一覧へ）
     if (phone) {
-      await load(page, "/static/v3.html");
+      await load(page, "/");
       await page.locator(`#c-list-root button[data-topic="ch:${open}"]`).last().click();
       await page.waitForSelector("#ed textarea", { timeout: 5000 });
       await settled(page);
@@ -2188,7 +2188,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     if (long === null) lines.push("本番の見出し: 作り物のデータに長い題の話題が無い");
     else {
-      await load(page, "/static/v3.html#/" + long.replace(":", "/"));
+      await load(page, "/#/" + long.replace(":", "/"));
       await page.waitForSelector("#ed textarea", { timeout: 5000 });
       await settled(page);
       lines.push(...(await checkTop(page, vp, "長い題", { ed: phone })), ...(await longTitleLines(page, vp, "長い題")));
@@ -2205,7 +2205,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await shot(page, `${p}-b-top-long`);
     }
     // ほかの画面: 設定（題・#ed に h1 が無い）と状態（例外が出ない）
-    await load(page, "/static/v3.html#/settings");
+    await load(page, "/#/settings");
     await page.waitForSelector("#ed .ed-section", { timeout: 5000 });
     const settings = await page.evaluate(() => ({ title: document.querySelector("#c-top-root .c-top-title")?.textContent ?? null, h1: document.querySelectorAll("#ed h1").length }));
     if (settings.title !== "設定" || settings.h1 !== 0) lines.push(`本番の見出し: 設定の題が「${String(settings.title)}」・#ed の h1 が ${settings.h1} 個`);
@@ -2370,7 +2370,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     const fontSize = TALK_FONT[vp];
 
     // ----- 吹き出しの確かめ -----
-    await load(page, `/static/v3.html#/ch/${talk}`);
+    await load(page, `/#/ch/${talk}`);
     await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
     await settled(page);
     lines.push(...(await liveTalkLines(page, vp, "吹き出しの確かめ")));
@@ -2528,7 +2528,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (Math.abs(top2 - top1) > 1) say(`上を読んでいるのに新着で動いた（${top1} → ${top2}）`);
 
     // ----- 実行中の話題 -----
-    await load(page, `/static/v3.html#/ch/${run}`);
+    await load(page, `/#/ch/${run}`);
     await page.waitForSelector('#ed .c-run[aria-busy="true"]', { timeout: 5000 });
     await settled(page);
     lines.push(...(await liveTalkLines(page, vp, "実行中")));
@@ -2640,7 +2640,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
 
     // ----- 長い会話 -----
-    await load(page, `/static/v3.html#/ch/${long}`);
+    await load(page, `/#/ch/${long}`);
     await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
     await settled(page);
     await edScroll(page, "bottom");
@@ -2836,7 +2836,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
     // 17. 等幅の字（スマホ。幅 390 と 375）
     if (vp === "phone") {
-      await load(page, `/static/v3.html#/ch/${talk}`);
+      await load(page, `/#/ch/${talk}`);
       await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
       await settled(page);
       lines.push(...(await withMono(page, () => liveTalkLines(page, vp, "等幅の字・幅 390"), "本番の会話")));
@@ -2863,7 +2863,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
     // 10. 古い CSS の漏れ（本番の会話と見本の会話の節。タブレットは除く）
     if (vp !== "tablet") {
-      await load(page, `/static/v3.html#/ch/${talk}`);
+      await load(page, `/#/ch/${talk}`);
       await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
       await settled(page);
       const styles = ({ root, sels, props }: { root: string; sels: string[]; props: string[] }): Record<string, Record<string, string> | null> => {
@@ -2926,7 +2926,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     };
     const near = (a: number, b: number, d: number): boolean => Math.abs(a - b) <= d;
 
-    await load(page, `/static/v3.html#/ch/${talk}`);
+    await load(page, `/#/ch/${talk}`);
     await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
     await settled(page);
     // 0. 口に渡ったか（渡っていなければ、ほかを測らずに止める）
@@ -3132,7 +3132,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await settled(page);
     const f8 = await field();
     if (f8 === null || f8.value !== "draft" || !near(f8.h, 44, 0.5)) say(8, "書きかけが残る", `戻った後 ${JSON.stringify(f8 && { value: f8.value, h: f8.h })}`);
-    await load(page, `/static/v3.html#/ch/${talk}`);
+    await load(page, `/#/ch/${talk}`);
     await page.waitForSelector(TA, { timeout: 5000 });
     const f8b = await field();
     if (f8b === null || f8b.value !== "draft") say(8, "書きかけが残る", `読み直した後の値 ${JSON.stringify(f8b?.value)}`);
@@ -3234,7 +3234,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
     // 11. 重さ（ダークのスマホ・長い会話・CPU 4 倍）: 本番の欄に 1 字ずつ違う字を 100 字打ち、input の処理（本番の on.input）を測る。その間の SA.talk.draw を数える
     if (vp === "phone") {
-      await load(page, `/static/v3.html#/ch/${long}`);
+      await load(page, `/#/ch/${long}`);
       await page.waitForSelector(TA, { timeout: 5000 });
       await settled(page);
       await edScroll(page, "bottom");
@@ -3466,7 +3466,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       };
       await page.route(RUNNING, noRun);
       offs.push(() => page.unroute(RUNNING, noRun));
-      await load(page, `/static/v3.html#/ch/${perm}`);
+      await load(page, `/#/ch/${perm}`);
       await page.waitForSelector(`${C} .c-card[data-kind="permission"]`, { timeout: 5000 }).catch(() => undefined);
       await settled(page);
       // 0. 口に渡ったか（渡っていなければ、ほかを測らずに止める）
@@ -3585,7 +3585,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       perm1.delay = 0;
 
       // 1（続き）. カードの無い話題では根を出さない
-      await load(page, `/static/v3.html#/ch/${talk}`);
+      await load(page, `/#/ch/${talk}`);
       await page.waitForSelector('#ed .c-talk .c-msg[data-who="agent"]', { timeout: 5000 });
       const none = await page.evaluate((sel: string) => {
         const root = document.querySelector(sel);
@@ -3599,7 +3599,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           json.turns = [];
         }),
       );
-      await load(page, `/static/v3.html#/ch/${talk}`);
+      await load(page, `/#/ch/${talk}`);
       await page.waitForSelector(`${C} .c-note`, { timeout: 5000 }).catch(() => undefined);
       const empty = await look();
       const hint = await page.evaluate(() => document.querySelectorAll("#ed .tl-hint").length);
@@ -3617,7 +3617,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const RADIO = `${C} .c-card-q input.c-card-check-input`;
       const ROW = `${C} .c-card-q label.c-card-check`;
       const openQ = async (): Promise<void> => {
-        await load(page, `/static/v3.html#/ch/${q}`);
+        await load(page, `/#/ch/${q}`);
         await page.waitForSelector(`${C} .c-card[data-kind="question"]`, { timeout: 5000 });
         await settled(page);
       };
@@ -3740,7 +3740,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         }),
       );
       // 11. 閉じる前の確認
-      await load(page, `/static/v3.html#/ch/${open}`);
+      await load(page, `/#/ch/${open}`);
       await page.waitForSelector(`${C} .c-card[data-kind="close"]`, { timeout: 5000 }).catch(() => undefined);
       await settled(page);
       const c0 = await look();
@@ -3776,7 +3776,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (c1.notes.length !== 1 || c1.notes[0]!.text !== "完了したセッションです。発言すると進行中に戻ります。") say(11, "閉じる前の確認", `閉じた後の文 ${JSON.stringify(c1.notes)}`);
       // 12. 場所を変える確認
       op.mode = "move";
-      await load(page, `/static/v3.html#/ch/${open}`);
+      await load(page, `/#/ch/${open}`);
       await page.waitForSelector(`${C} .c-card[data-kind="move"]`, { timeout: 5000 }).catch(() => undefined);
       await settled(page);
       const m0 = await page.evaluate((sel: string) => [...document.querySelectorAll(sel + " .c-card dd")].map((d) => (d.textContent ?? "").trim()), C);
@@ -3877,7 +3877,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     const say = (n: number, name: string, text: string): void => void lines.push(`段 u の ${n} ${name}: ${text}`);
     const NOTICE_BUDGET_MS = 3500;
     const ITEM = "#c-notice-root .c-toast-item";
-    await load(page, `/static/v3.html#/ch/${open}`);
+    await load(page, `/#/ch/${open}`);
     await page.waitForSelector("#ed > [data-composer] textarea", { timeout: 5000 });
     await settled(page);
     /** 出ている知らせを × で全部消し、無くなるのを待つ */
@@ -4015,7 +4015,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const mono = theme === "dark" && vp !== "pc" ? `${p}-a-list-mono` : null;
       const end = theme === "dark" && vp !== "pc" ? `${p}-a-list-end` : null;
       await step(`${p} a`, [`${p}-a-list`, ...(mono ? [mono] : []), ...(end ? [end] : [])], async () => {
-        await load(page, "/static/v3.html");
+        await load(page, "/");
         await shot(page, `${p}-a-list`);
         // 一覧の列の検査（ダークの組だけ）。全部を測ってから、1 つでもあれば段を失敗にする
         if (theme !== "dark") return;
@@ -4047,7 +4047,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.route(entry, (route) => route.abort());
           try {
             await page.goto("about:blank");
-            await page.goto(base + "/static/v3.html", { waitUntil: "load" });
+            await page.goto(base + "/", { waitUntil: "load" });
             await page.waitForSelector("#c-list-root .v3-entry-missing", { timeout: 5000 });
             await shot(page, `${p}-a-entry-missing`);
             const box = await page.evaluate(() => {
@@ -4081,7 +4081,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         });
       }
       await step(`${p} b`, [`${p}-b-chat-top`, `${p}-b-chat-middle`, `${p}-b-chat-bottom`], async () => {
-        await load(page, `/static/v3.html#/ch/${open}`);
+        await load(page, `/#/ch/${open}`);
         await page.waitForSelector("#ed textarea", { timeout: 5000 });
         await settled(page);
         await page.evaluate(() => {
@@ -4147,19 +4147,19 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }
       if (!full) return;
       await step(`${p} b2`, [`${p}-b-chat-permission`, `${p}-b-chat-question`], async () => {
-        await load(page, `/static/v3.html#/ch/${perm}`);
+        await load(page, `/#/ch/${perm}`);
         await page.waitForSelector('#ed [data-cards] .c-card[data-kind="permission"]', { timeout: 5000 });
         await settled(page);
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-permission`);
-        await load(page, `/static/v3.html#/ch/${q}`);
+        await load(page, `/#/ch/${q}`);
         await page.waitForSelector('#ed [data-cards] .c-card[data-kind="question"]', { timeout: 5000 });
         await settled(page);
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-question`);
       });
       await step(`${p} d`, [`${p}-d-composer-3lines`], async () => {
-        await load(page, `/static/v3.html#/ch/${open}`);
+        await load(page, `/#/ch/${open}`);
         await settled(page);
         const textarea = page.locator("#ed textarea").first();
         await textarea.click();
@@ -4168,7 +4168,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       });
       const handName = `${p}-c-hand${vp === "phone" ? "-over" : "-column"}`;
       await step(`${p} c`, vp === "phone" ? [handName] : [handName, `${p}-c-hand-with-chat`], async () => {
-        await load(page, "/static/v3.html");
+        await load(page, "/");
         if (vp === "phone") {
           await page.click('#c-bottom-root [data-act="hand"]');
         } else {
@@ -4182,27 +4182,27 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
         if (problems.length > 0) throw new Error(`右腕の段の検査で ${problems.length} 件`);
         if (vp !== "phone") {
-          await load(page, `/static/v3.html#/ch/${open}`);
+          await load(page, `/#/ch/${open}`);
           await page.waitForSelector('#ed .c-msg[data-who="agent"]', { timeout: 5000 });
           await settled(page);
           await shot(page, `${p}-c-hand-with-chat`);
         }
       });
       await step(`${p} e`, [`${p}-e-start-dialog`], async () => {
-        await load(page, "/static/v3.html");
+        await load(page, "/");
         await page.locator("#c-list-root .c-group-head > .c-iconbtn").first().click();
         await settled(page);
         await shot(page, `${p}-e-start-dialog`);
       });
       await step(`${p} f`, [`${p}-f-settings`, `${p}-f-knowledge-list`, `${p}-f-knowledge-detail`], async () => {
-        await load(page, "/static/v3.html#/settings");
+        await load(page, "/#/settings");
         await page.waitForSelector("#ed .ed-section", { timeout: 5000 });
         await settled(page);
         await shot(page, `${p}-f-settings`);
         const problems = await checkTop(page, vp, "設定", { hits: false });
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
         if (problems.length > 0) throw new Error(`見出しの検査で ${problems.length} 件`);
-        await load(page, "/static/v3.html#/knowledge");
+        await load(page, "/#/knowledge");
         await page.waitForSelector("#ed .master-item", { timeout: 5000 });
         await settled(page);
         await shot(page, `${p}-f-knowledge-list`);
@@ -4222,7 +4222,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     const { ctx, page } = await contextFor(vp, "dark", label);
     try {
       await step(`${label} list`, [`${label}-list`], async () => {
-        await page.goto(base + "/", { waitUntil: "load" });
+        await page.goto(base + "/static/classic.html", { waitUntil: "load" });
         // スマホでは一覧が引き出しの中で隠れているので、在るまでを待つ
         await page.waitForSelector("#sidebar .sb-row", { state: "attached", timeout: 8000 });
         await settled(page);
@@ -4230,7 +4230,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       });
       await step(`${label} chat`, [`${label}-chat`], async () => {
         await page.goto("about:blank");
-        await page.goto(base + `/#/ch/${open}`, { waitUntil: "load" });
+        await page.goto(base + `/static/classic.html#/ch/${open}`, { waitUntil: "load" });
         await page.waitForSelector("#ed .msg-agent", { timeout: 8000 });
         await settled(page);
         await shot(page, `${label}-chat`);
@@ -4536,7 +4536,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
     try {
       // ----- 届け待ち（セッションは作業中） -----
-      await load(page, `/static/v3.html#/ch/${cc.queue}`);
+      await load(page, `/#/ch/${cc.queue}`);
       await page.waitForSelector(`${C} .c-status`, { timeout: 5000 }).catch(() => undefined);
       await settled(page);
       // 0. 口に渡ったか（渡っていなければ、ほかを測らずに止める）
@@ -4631,7 +4631,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await page.locator(`${K} textarea`).fill("");
 
       // ----- 許可（セッションは判断待ち） -----
-      await load(page, `/static/v3.html#/ch/${cc.ask}`);
+      await load(page, `/#/ch/${cc.ask}`);
       await page.waitForSelector(`${C} .c-card[data-kind="permission"]`, { timeout: 5000 }).catch(() => undefined);
       await settled(page);
       // 5. 許可のカードは部品で、見出しは話題と同じ
@@ -4710,7 +4710,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }
 
       // ----- 終わった（一覧に居ないセッション）。開くのは群の「完了」を開いた行から（一覧に在る話題にだけ「…」が出る） -----
-      await load(page, "/static/v3.html");
+      await load(page, "/");
       await page.locator('#c-list-root section.c-group[aria-label="blog-site"] .c-fold-head').first().click();
       await page.waitForSelector(`#c-list-root button[data-topic="ch:${cc.ended}"]`, { timeout: 5000 });
       await page.locator(`#c-list-root button[data-topic="ch:${cc.ended}"]`).last().click();
@@ -4747,7 +4747,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
       // ----- 端末のセッションの札（チャンネルの無い待機のセッション。一覧の cc: の行） -----
       // 12. 行を押すと札（取り込める形）。列 2 に画面の写しが無く、画面の写しの API（/takeover の付かない /api/cc/sessions/<id>）を読まない
-      await load(page, "/static/v3.html");
+      await load(page, "/");
       const TERM = '#ed .ed-scroll > [data-term] .c-term[data-kind="ready"]';
       const screenReads: string[] = [];
       const onRequest = (req: { url: () => string }): void => {
