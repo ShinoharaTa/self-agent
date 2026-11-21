@@ -890,6 +890,7 @@ const listUrl = new URL("../src/web/static/c-list.js", import.meta.url).href;
 const list = (await import(listUrl)) as Record<string, Fn> & {
   TURN_LABEL: Readonly<Record<string, string>>;
   DONE_MAX: number;
+  STOPPED_LABEL: Readonly<Record<string, { text: string; tone: string }>>;
   filterWords: (filter: unknown) => string[];
   topicHits: (topic: Obj, groupName: string, words: string[]) => boolean;
   rowMark: (topic: Obj, isUnread: (channel: string, last: unknown) => boolean) => string;
@@ -986,6 +987,55 @@ test("web components: rowModel は右に状態の語か時刻の 1 つ、付記�
   assert.deepEqual(plain, { id: "ch:3", title: "題", mark: "none", state: null, time: "t:2026-01-01T00:00:00Z", tag: "見本の人格", done: true, current: false });
   assert.equal(list.rowModel(topicOf({ activityAt: null }), ctx).time, null);
   assert.equal(list.rowModel(topicOf({}), ctx).tag, null);
+});
+
+test("web components: STOPPED_LABEL は凍結した終わり方の語の表", () => {
+  assert.deepEqual(JSON.parse(JSON.stringify(list.STOPPED_LABEL)), {
+    max_turns: { text: "上限で停止", tone: "warning" },
+    failed: { text: "失敗", tone: "warning" },
+    aborted: { text: "中断", tone: "muted" },
+  });
+  assert.ok(Object.isFrozen(list.STOPPED_LABEL));
+});
+
+test("web components: rowModel は順番待ちを「順番待ち」、止まったを終わり方の語にし、時刻は出さない", () => {
+  const ctx = { isUnread: () => false, time: (iso: string) => "t:" + iso, current: null };
+  const queued = list.rowModel(topicOf({ queued: true }), ctx);
+  assert.deepEqual(queued.state, { text: "順番待ち", tone: "muted" });
+  assert.equal(queued.time, null);
+  const stopped = (ended: unknown): unknown => {
+    const r = list.rowModel(topicOf({ stopped: true, ended }), ctx);
+    assert.equal(r.time, null);
+    return r.state;
+  };
+  assert.deepEqual(stopped("max_turns"), { text: "上限で停止", tone: "warning" });
+  assert.deepEqual(stopped("failed"), { text: "失敗", tone: "warning" });
+  assert.deepEqual(stopped("aborted"), { text: "中断", tone: "muted" });
+  assert.deepEqual(stopped("other"), { text: "停止", tone: "muted" });
+  assert.deepEqual(stopped(null), { text: "停止", tone: "muted" });
+  assert.deepEqual(stopped("toString"), { text: "停止", tone: "muted" });
+  // false は今までどおり時刻
+  const off = list.rowModel(topicOf({ queued: false, stopped: false, ended: "failed" }), ctx);
+  assert.deepEqual([off.state, off.time], [null, "t:2026-01-01T00:00:00Z"]);
+});
+
+test("web components: rowModel の語の順は あなたの番 > 作業中 > 順番待ち > 止まった", () => {
+  const ctx = { isUnread: () => false, time: () => "12:34", current: null };
+  assert.deepEqual(list.rowModel(topicOf({ mark: "turn", turn: turnOf("question"), stopped: true, ended: "failed" }), ctx).state, { text: "質問", tone: "warning" });
+  assert.deepEqual(list.rowModel(topicOf({ mark: "running", queued: true }), ctx).state, { text: "作業中", tone: "accent" });
+  assert.deepEqual(list.rowModel(topicOf({ queued: true, stopped: true, ended: "max_turns" }), ctx).state, { text: "順番待ち", tone: "muted" });
+});
+
+test("web components: rowModel は queued・stopped の無い話題を今までどおり時刻にし、未読の止まった話題は印が未読で語は表のとおり", () => {
+  const ctx = { isUnread: () => true, time: () => "12:34", current: null };
+  const old = topicOf({ id: "cc:1" });
+  assert.equal("queued" in old || "stopped" in old, false);
+  const plain = list.rowModel(old, ctx);
+  assert.deepEqual([plain.state, plain.time], [null, "12:34"]);
+  const unread = list.rowModel(topicOf({ id: "ch:5", stopped: true, ended: "max_turns" }), ctx);
+  assert.equal(unread.mark, "unread");
+  assert.deepEqual(unread.state, { text: "上限で停止", tone: "warning" });
+  assert.equal(unread.time, null);
 });
 
 test("web components: groupNote の 4 つの場合と、畳んだ群は「話題なし」を出さない", () => {

@@ -250,7 +250,7 @@ const FULL_DATA = {
   turns: 2,
   turnIds: ["ch:1", "ch:20"],
   groups: [
-    gGroup({ key: "p:a", name: "見本のプロジェクト A", turns: 1, running: 1, open: 8, done: 3 }),
+    gGroup({ key: "p:a", name: "見本のプロジェクト A", turns: 1, running: 1, open: 11, done: 3 }),
     gGroup({ key: "p:b", name: "見本のプロジェクト B", open: 1, done: 60 }),
     gGroup({ key: "p:c", name: "見本のプロジェクト C", done: 1 }),
     gGroup({ key: "p:d", name: "見本のプロジェクト D", hasTopics: false }),
@@ -259,6 +259,9 @@ const FULL_DATA = {
   topics: [
     gTopic({ id: "ch:1", title: "見本の家計の話題", mark: "turn", turn: gTurn("permission", LONG_SUMMARY) }),
     gTopic({ id: "cc:2", title: "見本の作業中の話題", mark: "running", origin: "cc" }),
+    gTopic({ id: "ch:31", title: "見本の順番待ちの話題", queued: true }),
+    gTopic({ id: "ch:32", title: "見本の上限で止まった話題", stopped: true, ended: "max_turns" }),
+    gTopic({ id: "ch:33", title: "見本の中断した話題", stopped: true, ended: "aborted" }),
     gTopic({ id: "ch:3", title: "見本の未読の話題" }),
     gTopic({ id: "ch:4", title: "見本の読んだ話題" }),
     gTopic({ id: "ch:5", title: LONG_TOPIC }),
