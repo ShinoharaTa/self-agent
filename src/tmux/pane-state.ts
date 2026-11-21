@@ -366,15 +366,16 @@ export function classifyMeta(meta: PaneMeta, now: number): PaneState | undefined
 }
 
 /**
- * 2 回の撮り比べに使う画面（制御シーケンスを落とし、バックグラウンドのエージェントの一覧の行を除いたもの。一覧が無ければ画面全体）。
- * 動いているエージェントの行は時間・トークンの数が毎秒変わるので、比べに入れると動いている間ずっと busy になる（#456）
+ * 2 回の撮り比べに使う画面（制御シーケンスを落とし、バックグラウンドのエージェントの一覧の行を、行の数だけの 1 行に置き換えたもの。
+ * 一覧が無ければ画面全体）。動いているエージェントの行は時間・トークンの数が毎秒変わるので、比べに入れると動いている間ずっと busy になる（#456）。
+ * 一覧の行の数が変わった（エージェントが増えた・減った）ときは、画面が動いているとみなして違う文字列にする
  */
 export function comparableScreen(raw: string): string {
   const plain = stripAnsi(raw);
   const lines = plain.split("\n");
   const { end, listTop } = footerBounds(lines);
   if (listTop === end) return plain;
-  return [...lines.slice(0, listTop), ...lines.slice(end)].join("\n");
+  return [...lines.slice(0, listTop), `\u0000${end - listTop}`, ...lines.slice(end)].join("\n");
 }
 
 /**
