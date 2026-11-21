@@ -106,6 +106,8 @@ PC（1,280px〜。列 3 は畳める。幅が足りなければ列 3 → 列 1 �
               state, last: { id, at, kind }, movable: true | { reason }, link } ] }
 ```
 
+- **順番待ち・止まった・終わり方（#457 の L1a）**: 話題に `queued`（発言のターンの待ち行列に在り、実行中でない）・`stopped`（最後の agent の行が `max_turns`・`failed`・`aborted` で、その後に owner の行が無く、`running`・`queued`・完了でない）・`ended`（最後の agent の行の outcome か null）・`tookMs`（その行の durationMs か null）・`byRightHand`（`sessions.origin` が `inbox`）を足す。入口・Claude Code の行はどれも false・null。`mark`・並び・群の数は変えない。
+
 - **id**: Discord のチャンネルがあれば `ch:`、無い Claude Code のセッションは `cc:`。Claude Code のチャンネルは今も Web では `ch:` で開く（CC14）ので、取り込み（#341。チャンネルがその場でプロジェクトのセッションに変わる）の後も id は変わらない。（#428: 取り込むと `cc:` の行は消え、新しい話題の `ch:` の行ができる。H3 で直す）`cc:` の話題は、新しい殻では既定で札（列 2 のタブの名前は `term:<sessionId>`。`S.active` と hash は `cc:` のまま）
 - **場所の決め方**: セッションは `project_dir`（General の名前なら群 general）／軽いセッション（`project_dir` なし）は `place.dir = null` で群 general／Claude Code は cwd が workspace の直下の名前かその下ならそのプロジェクト（新しい純関数 `projectOf(cwd, workspace)` を `cc/labels.ts` に足す）、外なら群 other「ほかの場所」。#tasks と人格の入口は群 general の末尾に固定（`movable` は理由つきの不可）。右腕（#inbox）は一覧に出さない。
 - **並び**: 群はプロジェクト（話題のあるものを上、名前順）→ General → ほかの場所。話題の無いプロジェクトは「ほかのプロジェクト（n）」に畳む。群の中は あなたの番 → 作業中 → 最後の活動の新しい順。完了は群ごとに「完了（n）」に畳み、開くまで返さない（`?done=<group>`）。
@@ -163,6 +165,7 @@ K3 から一覧は部品が描く（`topics.js` は状態を持って入口 `c-a
 - **実装で足した所（#369 の M6）**:
   - `topic_move` の確認の札 [変える][このまま] は、**場所が変わる話題のチャンネル**に出す（右腕の #inbox ではない）。Web では、その話題の会話のタブの末尾に同じ確認のカードを出す（`/api/channels/<id>/turns` の `channel.moveProposal` だけを見る。`/api/topics` の `turn` は同じ話題に別の確認があると古い方 1 つだけなので使わない。周期の読み直しで `moveProposal` が変われば、行が増えなくても描き直す）。答えは `POST /api/topics/moves/<id>/accept`・`/keep`（Discord のボタンと同じ処理。M6g）。
   - `topic_list` の行の中身（`app/topics.ts` の `topicListRows`）: 対象は、入口でなく完了でない話題 + 入口（#tasks・#<NAME>）のうち あなたの番・作業中 の物 + あなたの番のある #inbox。行は `kind`（`session`・`claude_code`）・題名・場所・状態・あなたの番の要約・時刻・`channel_id` だけ（最後の発言の本文・sessionId・cwd・link は入れない）。並びは あなたの番 → 作業中 → 残り、同じ中は新しい順で 30 件まで（切った残りの数は `more`）。`counts.your_turn` は `/api/topics` の `turns`、`counts.running` は群の running の和と同じ。`counts.total` は対象の数（30 件に切る前）。Web UI が無効なら `disabled`。
+  - #457 の L1a: `state` に `stopped`・`queued` を足す（決め方は あなたの番 → 作業中 → 順番待ち → 止まった → 待ち・進行中。並びは あなたの番 → 止まった → 作業中 → 順番待ち → 残り）。行に `ended`（最後のターンの outcome）・`took_min`（分。1 以上に丸める）・`by_right_hand: true` を値が在るときだけ足し、`counts` に `queued`・`stopped` を足す。ツールの名前・説明の文・入力の形は変えない。
   - 人格の入口（#<NAME>）から始める話題は、今までどおりその人格の**軽いセッション**（プロジェクトのセッションは既定の人格だけ。`project` は見ない）。
   - #inbox で「ページを作って」と頼まれたら、右腕は **`/new` を案内する**（右腕は軽いセッションを作らない。オーナーが決めた）。
   - 1 日の上限（`SELF_AGENT_AUTO_SESSION_PER_DAY`）の既定は 3 のまま（オーナーが決めた）。

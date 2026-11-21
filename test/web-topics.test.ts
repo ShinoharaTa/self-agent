@@ -95,6 +95,7 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる。
  * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose と setMessageId（札が出た印）で足し、期限の判定は proposalClock の時刻。
  * fakeProposals を渡すと、本物の代わりにそれを渡す（proposals より優先）
+ * queued を渡すと、そのチャンネルを待ち行列に在るとする turnQueue を渡す（無ければ turnQueue を渡さない）
  * reads を true にすると既読（topic_reads）を渡す。会話の判定は main と同じ webChannelLookup（cc のときだけ Claude Code のチャンネルも通す）
  */
 async function setup(
@@ -111,6 +112,7 @@ async function setup(
     fakeProposals?: Pick<TopicProposals, "pendingAll" | "accept" | "keep" | "channelOf">;
     reads?: boolean;
     mode?: boolean;
+    queued?: string[];
   } = {},
 ) {
   const db = tempDb(t);
@@ -302,6 +304,7 @@ async function setup(
     history,
     personas,
     handler,
+    ...(options.queued === undefined ? {} : { turnQueue: { has: (channelId: string) => options.queued!.includes(channelId) } }),
     places,
     home: "/home/owner",
     projectPermissions: { store: sdkStore, sessions, holdSec: 300, questionHoldSec: 900 },
@@ -528,6 +531,41 @@ test("web topics: 実行中のターンのあるチャンネルは mark が runn
   assert.equal(byId(result, "ch:201")!.mark, "turn");
   const general = result.groups.find((group) => group.key === "general")!;
   assert.equal(general.running, 1);
+});
+
+test("web topics: 待ち行列に在り実行中でない話題は queued。入口・Claude Code は queued にならない", async (t) => {
+  const { server } = await setup(t, { cc: true, queued: ["200", "201", "101", "300"], running: ["201"] });
+  const result = await topics(server);
+  assert.equal(byId(result, "ch:200")!.queued, true);
+  assert.equal(byId(result, "ch:201")!.queued, false);
+  assert.equal(byId(result, "ch:101")!.queued, false);
+  assert.equal(byId(result, "ch:300")!.queued, false);
+  assert.equal(byId(result, "ch:204")!.queued, false);
+});
+
+test("web topics: turnQueue を渡さなければ queued は全部 false", async (t) => {
+  const { server } = await setup(t, { cc: true });
+  const result = await topics(server);
+  assert.equal(result.topics.length > 0, true);
+  assert.equal(result.topics.every((topic) => topic.queued === false), true);
+});
+
+test("web topics: 右腕が始めた話題は byRightHand。最後の agent の行の終わり方・時間が ended・tookMs で、後に発言が無ければ stopped", async (t) => {
+  const { server, topicSessions, history } = await setup(t);
+  topicSessions.create({ channelId: "206", guildId: GUILD, title: "右腕から", categoryId: "c", origin: "inbox" });
+  history.add({ guildId: GUILD, channelId: "206", kind: "owner", source: "system", text: "始め" });
+  history.add({ guildId: GUILD, channelId: "206", kind: "agent", source: "discord", text: "返事", outcome: "max_turns", durationMs: 120_000 });
+  history.add({ guildId: GUILD, channelId: "206", kind: "notice", source: "system", text: "上限" });
+  const result = await topics(server);
+  const topic = byId(result, "ch:206")!;
+  assert.deepEqual([topic.byRightHand, topic.ended, topic.tookMs, topic.stopped, topic.queued], [true, "max_turns", 120_000, true, false]);
+  // last は id・at・kind だけ
+  assert.deepEqual(Object.keys(topic.last!).sort(), ["at", "id", "kind"]);
+  assert.equal(byId(result, "ch:200")!.byRightHand, false);
+  assert.equal(byId(result, "ch:200")!.ended, null);
+  // 後に owner の行が来れば止まっていない
+  history.add({ guildId: GUILD, channelId: "206", kind: "owner", source: "discord", text: "続けて" });
+  assert.equal(byId(await topics(server), "ch:206")!.stopped, false);
 });
 
 test("web topics: setUp していないサーバーの行は出ない", async (t) => {
@@ -1274,6 +1312,35 @@ test("createTopicCollector: 同じ依存で集めて buildTopics した物が GE
   ) as TopicsResult;
   assert.deepEqual(fromCollector, fromRoute);
   assert.ok(fromRoute.topics.length >= 4);
+});
+
+test("createTopicCollector: 種の queued は待ち行列に在り実行中でないセッションだけ（入口は false）", (t) => {
+  const db = tempDb(t);
+  const { guildSettings, topicSessions, history } = createStores(db, () => NOW);
+  const workspace = realpathSync(tempDir(t));
+  guildSettings.setChannel(GUILD, "inboxChannelId", "100");
+  guildSettings.setChannel(GUILD, "tasksChannelId", "101");
+  topicSessions.create({ channelId: "200", guildId: GUILD, title: "実行中", categoryId: "c" });
+  topicSessions.create({ channelId: "201", guildId: GUILD, title: "待ち", categoryId: "c" });
+  const personas = new PersonaRouter({
+    personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway: {} as Gateway, connected: () => true }],
+    guildSettings,
+    topicSessions,
+  });
+  const seeds = createTopicCollector({
+    cfg: { allowedGuildIds: [GUILD], personas: [], workspaceDir: workspace },
+    guildSettings,
+    topicSessions,
+    history,
+    personas,
+    handler: { runningTurns: (): RunningTurn[] => [{ guildId: GUILD, channelId: "200" } as RunningTurn] },
+    turnQueue: { has: () => true },
+    places: { workspaceDir: workspace, protectedDirs: [] },
+    home: "/home/owner",
+    now: () => NOW,
+  })(NOW.getTime(), null).seeds;
+  const queuedOf = (id: string) => seeds.find((item) => item.id === id)?.queued;
+  assert.deepEqual([queuedOf("ch:200"), queuedOf("ch:201"), queuedOf("ch:101")], [false, true, false]);
 });
 
 // ---- 右腕の場所を変える確認（M6e） ----

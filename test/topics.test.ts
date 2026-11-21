@@ -9,6 +9,7 @@ import {
   compareTurns,
   groupKeyOf,
   pickTurn,
+  stoppedOf,
   summarize,
   TOPIC_LIST_MAX,
   topicListRows,
@@ -43,6 +44,10 @@ function seed(id: string, overrides: Partial<TopicSeed> = {}): TopicSeed {
     running: false,
     turns: [],
     movable: true,
+    queued: false,
+    lastAgent: null,
+    lastOwnerId: null,
+    byRightHand: false,
     ...overrides,
   };
 }
@@ -69,6 +74,11 @@ function topic(id: string, overrides: Partial<Topic> = {}): Topic {
     last: null,
     movable: true,
     link: null,
+    queued: false,
+    stopped: false,
+    ended: null,
+    tookMs: null,
+    byRightHand: false,
     ...overrides,
   };
 }
@@ -357,7 +367,7 @@ test("topicListRows: あなたの番 → 作業中 → 残り（待ち・進行�
     ["General", "なし", "alpha", "なし", "なし"],
   );
   assert.equal(rows.topics.filter((row) => row.turn !== undefined).length, 1);
-  assert.deepEqual(rows.counts, { your_turn: 1, running: 2, total: 5 });
+  assert.deepEqual(rows.counts, { your_turn: 1, running: 2, queued: 0, stopped: 0, total: 5 });
   assert.equal(rows.more, 0);
 });
 
@@ -378,7 +388,7 @@ test("topicListRows: あなたの番・作業中でない入口と、完了し�
     rows.topics.map((row) => row.channel_id),
     ["1"],
   );
-  assert.deepEqual(rows.counts, { your_turn: 0, running: 0, total: 1 });
+  assert.deepEqual(rows.counts, { your_turn: 0, running: 0, queued: 0, stopped: 0, total: 1 });
 });
 
 test("topicListRows: 入口に「あなたの番」があると行に出て、counts.your_turn が result.turns と同じ", () => {
@@ -421,7 +431,7 @@ test("topicListRows: 右腕に「あなたの番」があると #inbox の行が
     { channel_id: "1", kind: "session", title: "ch:1", place: "なし", state: "idle", at: "2026-11-14 09:00" },
   ]);
   assert.equal(rows.counts.your_turn, result.turns);
-  assert.deepEqual(rows.counts, { your_turn: 1, running: 0, total: 2 });
+  assert.deepEqual(rows.counts, { your_turn: 1, running: 0, queued: 0, stopped: 0, total: 2 });
 });
 
 test("topicListRows: 右腕の最後の発言が無ければ at は空で、あなたの番の中で一番古い扱い", () => {
@@ -458,7 +468,7 @@ test("topicListRows: 31 件あると topics は 30 件で more が 1、counts �
   assert.equal(TOPIC_LIST_MAX, 30);
   assert.equal(rows.topics.length, 30);
   assert.equal(rows.more, 1);
-  assert.deepEqual(rows.counts, { your_turn: 0, running: 1, total: 31 });
+  assert.deepEqual(rows.counts, { your_turn: 0, running: 1, queued: 0, stopped: 0, total: 31 });
   // 作業中が先、残りは新しい順なので、いちばん古い（ch:2）が切られる
   assert.equal(rows.topics[0]?.channel_id, "1");
   assert.equal(rows.topics.some((row) => row.channel_id === "2"), false);
@@ -504,4 +514,106 @@ test("topicListRows: 行に最後の発言の本文・sessionId・cwd・link が
 
 test("SESSION_OPEN_TEXT_MAX_LENGTH は startTopic の TOPIC_TEXT_MAX_LENGTH と同じ", () => {
   assert.equal(SESSION_OPEN_TEXT_MAX_LENGTH, TOPIC_TEXT_MAX_LENGTH);
+});
+
+// ---- 順番待ち・止まった・終わり方・かかった時間・右腕の印（#457 の L1a） ----
+
+test("stoppedOf: 上限・失敗・中断で終わり、後に owner の行が無ければ真。ふつうの終わり・後に owner の行・agent の行なしは偽", () => {
+  for (const outcome of ["max_turns", "failed", "aborted"] as const) {
+    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, null), true, outcome);
+    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, 4), true, outcome);
+    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, 6), false, outcome);
+  }
+  assert.equal(stoppedOf({ id: 5, outcome: "done", durationMs: 1000 }, null), false);
+  assert.equal(stoppedOf({ id: 5, outcome: null, durationMs: null }, null), false);
+  assert.equal(stoppedOf(null, null), false);
+  assert.equal(stoppedOf(null, 3), false);
+});
+
+const STOPPED_SEED = { lastAgent: { id: 10, outcome: "failed", durationMs: 90_000 }, lastOwnerId: 9 } as const;
+
+test("buildTopics: queued は running なら false。stopped は running・queued・done なら false。ended・tookMs・byRightHand はそのまま", () => {
+  const result = buildTopics(
+    input(
+      [
+        seed("ch:1", { queued: true }),
+        seed("ch:2", { queued: true, running: true }),
+        seed("ch:3", { ...STOPPED_SEED, byRightHand: true }),
+        seed("ch:4", { ...STOPPED_SEED, running: true }),
+        seed("ch:5", { ...STOPPED_SEED, queued: true }),
+        seed("ch:6", { ...STOPPED_SEED, state: "done" }),
+        seed("ch:7", { lastAgent: { id: 10, outcome: "done", durationMs: 1000 }, lastOwnerId: 11 }),
+      ],
+      { done: "general" },
+    ),
+  );
+  const of = (id: string) => result.topics.find((item) => item.id === id)!;
+  assert.deepEqual(
+    ["ch:1", "ch:2", "ch:3", "ch:4", "ch:5", "ch:6", "ch:7"].map((id) => [id, of(id).queued, of(id).stopped]),
+    [
+      ["ch:1", true, false],
+      ["ch:2", false, false],
+      ["ch:3", false, true],
+      ["ch:4", false, false],
+      ["ch:5", true, false],
+      ["ch:6", false, false],
+      ["ch:7", false, false],
+    ],
+  );
+  assert.deepEqual([of("ch:3").ended, of("ch:3").tookMs, of("ch:3").byRightHand], ["failed", 90_000, true]);
+  assert.deepEqual([of("ch:7").ended, of("ch:7").tookMs, of("ch:7").byRightHand], ["done", 1000, false]);
+  assert.deepEqual([of("ch:1").ended, of("ch:1").tookMs], [null, null]);
+  // 印・群の数は今のまま（queued・stopped は mark にしない）
+  assert.equal(of("ch:1").mark, null);
+  assert.equal(of("ch:3").mark, null);
+  assert.equal(result.groups.find((group) => group.key === "general")?.running, 2);
+});
+
+test("topicListRows: あなたの番 → 止まった → 作業中 → 順番待ち → 残りの順。counts に queued・stopped", () => {
+  const result = buildTopics(
+    input([
+      seed("ch:1", { activityAt: at(9) }),
+      seed("ch:2", { activityAt: at(1), running: true }),
+      seed("ch:3", { activityAt: at(8), queued: true }),
+      seed("ch:4", { activityAt: at(2), ...STOPPED_SEED }),
+      seed("ch:5", { activityAt: at(3), turns: [turn("question", 0)], ...STOPPED_SEED }),
+      seed("ch:6", { activityAt: at(7), state: "waiting" }),
+      seed("ch:7", { activityAt: at(4), queued: true }),
+    ]),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  assert.deepEqual(
+    rows.topics.map((row) => [row.channel_id, row.state]),
+    [
+      ["5", "your_turn"],
+      ["4", "stopped"],
+      ["2", "running"],
+      ["3", "queued"],
+      ["7", "queued"],
+      ["1", "idle"],
+      ["6", "waiting"],
+    ],
+  );
+  assert.deepEqual(rows.counts, { your_turn: 1, running: 1, queued: 2, stopped: 1, total: 7 });
+});
+
+test("topicListRows: ended・took_min（1 分の下限・丸め）・by_right_hand は値が在るときだけ", () => {
+  const agent = (durationMs: number | null) => ({ lastAgent: { id: 10, outcome: "done" as const, durationMs }, lastOwnerId: 9 });
+  const result = buildTopics(
+    input([
+      seed("ch:1", { activityAt: at(5), ...agent(29_000) }),
+      seed("ch:2", { activityAt: at(4), ...agent(90_000) }),
+      seed("ch:3", { activityAt: at(3), ...agent(null), byRightHand: true }),
+      seed("ch:4", { activityAt: at(2) }),
+    ]),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  const of = (id: string) => rows.topics.find((row) => row.channel_id === id)!;
+  assert.equal(of("1").took_min, 1);
+  assert.equal(of("2").took_min, 2);
+  assert.equal("took_min" in of("3"), false);
+  assert.equal(of("3").ended, "done");
+  assert.equal(of("3").by_right_hand, true);
+  assert.equal("by_right_hand" in of("1"), false);
+  assert.deepEqual(Object.keys(of("4")).sort(), ["at", "channel_id", "kind", "place", "state", "title"]);
 });

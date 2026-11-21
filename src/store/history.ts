@@ -47,6 +47,17 @@ export type NewHistoryRow = {
   messageId?: string | null;
 };
 
+/** latestByChannel の 1 チャンネル分 */
+export type LatestHistory = {
+  id: number;
+  at: string;
+  kind: HistoryKind;
+  /** 最後の agent の行。無ければ null */
+  lastAgent: { id: number; at: string; outcome: HistoryOutcome | null; durationMs: number | null } | null;
+  /** 最後の owner の行の id。無ければ null */
+  lastOwnerId: number | null;
+};
+
 /** text を切る字数（返事の全文は Discord にある） */
 export const HISTORY_TEXT_MAX_LENGTH = 4000;
 /** steps に残す手順の数（それより多ければ「（ほか n 手順）」を 1 つ足す） */
@@ -163,16 +174,40 @@ export class HistoryStore {
     return rows.map(toRow).reverse();
   }
 
-  /** そのサーバーのチャンネルごとの最後の行（key は channelId） */
-  latestByChannel(guildId: string): Map<string, { id: number; at: string; kind: HistoryKind }> {
+  /**
+   * そのサーバーのチャンネルごとの最後の行（key は channelId）。lastAgent は最後の agent の行（無ければ null）、
+   * lastOwnerId は最後の owner の行の id（無ければ null）
+   */
+  latestByChannel(guildId: string): Map<string, LatestHistory> {
     const rows = this.db
       .prepare(
-        "SELECT h.channel_id, h.id, h.at, h.kind FROM history h " +
-          "JOIN (SELECT channel_id, MAX(id) AS id FROM history WHERE guild_id = ? GROUP BY channel_id) m ON h.id = m.id",
+        "SELECT h.channel_id, h.id, h.at, h.kind, a.id AS agent_id, a.at AS agent_at, a.outcome AS agent_outcome, " +
+          "a.duration_ms AS agent_duration_ms, m.owner_id FROM history h " +
+          "JOIN (SELECT channel_id, MAX(id) AS id, MAX(CASE WHEN kind = 'agent' THEN id END) AS agent_id, " +
+          "MAX(CASE WHEN kind = 'owner' THEN id END) AS owner_id FROM history WHERE guild_id = ? GROUP BY channel_id) m ON h.id = m.id " +
+          "LEFT JOIN history a ON a.id = m.agent_id",
       )
       .all(guildId);
     return new Map(
-      rows.map((row) => [String(row.channel_id), { id: Number(row.id), at: String(row.at), kind: pick(KINDS, row.kind, "kind") }]),
+      rows.map((row) => [
+        String(row.channel_id),
+        {
+          id: Number(row.id),
+          at: String(row.at),
+          kind: pick(KINDS, row.kind, "kind"),
+          lastAgent:
+            row.agent_id === null || row.agent_id === undefined
+              ? null
+              : {
+                  id: Number(row.agent_id),
+                  at: String(row.agent_at),
+                  outcome:
+                    row.agent_outcome === null || row.agent_outcome === undefined ? null : pick(OUTCOMES, row.agent_outcome, "outcome"),
+                  durationMs: nullableNumber(row.agent_duration_ms),
+                },
+          lastOwnerId: nullableNumber(row.owner_id),
+        },
+      ]),
     );
   }
 
