@@ -967,6 +967,7 @@ test("web static: ccStatusOf（chat.js）は 届け待ち > 作業中 > 届け�
     [{ state: "ended", pending: p("queued") }, null],
     [{ state: "idle", pending: p("delivering") }, { kind: "queued", text: "届けています…", cancel: false }],
     [{ state: "running", pending: p("queued", { lastPaneState: "dialog" }) }, { kind: "queued", text: "ダイアログが出ているため待っています（端末か RC で答えてください）", cancel: true }],
+    [{ state: "running", pending: p("queued", { lastPaneState: "no_prompt" }) }, { kind: "queued", text: "入力欄が見つからないため待っています（端末の画面を確かめてください）", cancel: true }],
     [{ state: "running", pending: p("queued") }, { kind: "queued", text: "作業中です。終わったら届けます", cancel: true }],
     [{ state: "idle", pending: p("queued") }, { kind: "queued", text: "届け待ちです。入力待ちになったら届けます", cancel: true }],
     [{ state: "running", pending: p("delivered", { replyState: "waiting" }) }, { kind: "running", text: "作業中…", cancel: false }],
@@ -7118,11 +7119,12 @@ test("web static: SA.cards があると Claude Code のチャンネルも [data-
   ]);
 });
 
-test("web static: Claude Code のチャンネルの状態の行は ccStatusOf の 6 つの文で、［やめる］は届け待ち（届けている途中でない）だけ。終わったセッションには出さない", () => {
+test("web static: Claude Code のチャンネルの状態の行は ccStatusOf の 7 つの文で、［やめる］は届け待ち（届けている途中でない）だけ。終わったセッションには出さない", () => {
   const h = ccCardsChat();
   const cases: Array<[Record<string, unknown>, string, unknown]> = [
     [{ pending: ccPend(3, "delivering") }, "届けています…", null],
     [{ pending: ccPend(3, "queued", { lastPaneState: "dialog" }) }, "ダイアログが出ているため待っています（端末か RC で答えてください）", { id: 3, busy: false }],
+    [{ pending: ccPend(3, "queued", { lastPaneState: "no_prompt" }) }, "入力欄が見つからないため待っています（端末の画面を確かめてください）", { id: 3, busy: false }],
     [{ state: "running", pending: ccPend(3, "queued") }, "作業中です。終わったら届けます", { id: 3, busy: false }],
     [{ pending: ccPend(3, "queued") }, "届け待ちです。入力待ちになったら届けます", { id: 3, busy: false }],
     [{ state: "running" }, "作業中…", null],

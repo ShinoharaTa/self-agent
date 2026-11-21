@@ -1,5 +1,7 @@
 // Claude Code のペインが入力待ちか（docs/plan/github-notifications.md §5.3）。送ってよいのは idle のときだけ。
 // 判定は純関数（classifyPane）で、撮るのは probePaneState。idle を得たら 1.5 秒後にもう一度撮り、画面が 1 文字も変わらず、また idle なら確定
+// バックグラウンドのエージェントが在ると、Claude Code はフッターの下に一覧（`● main` の行と `◯ <名前>` の行）を出す。一覧は入力欄を
+// 下から押し上げ、動いているエージェントの行は時間・トークンの数が毎秒変わるので、入力欄を探す所と 2 回の撮り比べでは一覧を読み飛ばす（footerBounds。#456・#447）
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { Tmux, TmuxPane } from "./tmux.ts";
 
@@ -17,6 +19,13 @@ export const OWNER_ACTIVE_MS = 60_000;
 export const SECOND_CAPTURE_DELAY_MS = 1500;
 /** 入力欄を探す範囲（下から何行。末尾の空行は数えない） */
 export const PROMPT_SEARCH_LINES = 8;
+
+/** 入力欄の下に出る、バックグラウンドのエージェントの一覧を読み飛ばす上限の行数（`● main` の行は数えない） */
+export const AGENT_LIST_MAX_ROWS = 12;
+// 一覧の先頭の行（主の会話を見ている形）。`●` が main に無い形（エージェントの側を見ている）は一覧とみなさない
+const AGENT_MAIN_ROW = /^\s{1,4}● main\s*$/;
+// 一覧のエージェントの行
+const AGENT_ROW = /^\s{1,4}◯ \S/;
 
 /** 入力欄の上のスピナーを探す範囲（上の `─` の行から上に何行） */
 export const SPINNER_SEARCH_LINES = 10;
@@ -157,10 +166,38 @@ function styledLines(raw: string): Array<Array<{ ch: string; dim: boolean }>> {
   return lines;
 }
 
-/** 入力欄の行（`─` の行 / `❯`+U+00A0 の行 / `─` の行 の真ん中）の位置。下から PROMPT_SEARCH_LINES 行以内に無ければ undefined */
-function findPromptLine(lines: string[]): number | undefined {
+/** 画面の下の端の位置（footerBounds の戻り値） */
+export type FooterBounds = {
+  /** 末尾の空行を除いた終わり（その行は含まない） */
+  end: number;
+  /** バックグラウンドのエージェントの一覧の `● main` の行。一覧が無ければ end */
+  listTop: number;
+  /** 一覧の上の空行を除いた終わり（入力欄を探す下の端）。一覧が無ければ end */
+  bodyEnd: number;
+};
+
+/**
+ * 入力欄の下に出る、バックグラウンドのエージェントの一覧の位置（制御シーケンスを落とした行）。一覧が在るとみなすのは、
+ * 末尾から上へ `◯ <名前>` の行が 0〜AGENT_LIST_MAX_ROWS 行続き、そのすぐ上が `● main` の行のときだけ（ほかは無いとみなして今までと同じ）
+ */
+export function footerBounds(lines: string[]): FooterBounds {
   let end = lines.length;
   while (end > 0 && lines[end - 1]!.trim() === "") end -= 1;
+  let top = end;
+  while (top > 0 && end - top < AGENT_LIST_MAX_ROWS && AGENT_ROW.test(lines[top - 1]!)) top -= 1;
+  if (top === 0 || !AGENT_MAIN_ROW.test(lines[top - 1]!)) return { end, listTop: end, bodyEnd: end };
+  const listTop = top - 1;
+  let bodyEnd = listTop;
+  while (bodyEnd > 0 && lines[bodyEnd - 1]!.trim() === "") bodyEnd -= 1;
+  return { end, listTop, bodyEnd };
+}
+
+/**
+ * 入力欄の行（`─` の行 / `❯`+U+00A0 の行 / `─` の行 の真ん中）の位置。下（エージェントの一覧があればその上）から
+ * PROMPT_SEARCH_LINES 行以内に無ければ undefined
+ */
+function findPromptLine(lines: string[]): number | undefined {
+  const end = footerBounds(lines).bodyEnd;
   const start = Math.max(0, end - PROMPT_SEARCH_LINES);
   for (let i = end - 2; i - 1 >= start; i -= 1) {
     if (isRuleLine(lines[i - 1]!.trim()) && lines[i]!.startsWith(PROMPT_PREFIX) && isRuleLine(lines[i + 1]!.trim())) return i;
@@ -175,6 +212,8 @@ function findPromptLine(lines: string[]): number | undefined {
  * - dialog・busy の印を探すのは、入力欄があればその上 SPINNER_SEARCH_LINES 行から画面の末尾まで（返答の本文に「Press Enter」などの語が
  *   残っていても dialog・busy にしないため。#294）。入力欄が無ければ（ダイアログが入力欄を置き換えている）画面全体
  * - no_prompt: vim のノーマル・ビジュアルモード（dialog・busy と同じ範囲で探す）、または入力欄の形（§5.3）が下から PROMPT_SEARCH_LINES 行以内に無い
+ * - 入力欄の下のバックグラウンドのエージェントの一覧（footerBounds の条件に当たるものだけ）は読み飛ばす。下から数えるのは一覧の上からで、
+ *   入力欄があれば dialog・busy の印も一覧の行では探さない（一覧が入力欄を押し上げ、エージェントの行の文で誤らないため。#456・#447）
  * - draft: 入力行に `[Pasted text`・`[Image #` がある、dim でない見える文字がある。見える文字が全部 dim なら候補（`Try "`・ターンの後の
  *   提案の文）とみなして idle（貼ると候補は置き換わる。Claude Code 2.1.316 の実機で確かめた。docs/plan/claude-code-sessions.md の CC3）
  */
@@ -183,7 +222,7 @@ export function classifyScreen(raw: string): ScreenState {
   const lines = plain.split("\n");
   const prompt = findPromptLine(lines);
   const windowTop = prompt === undefined ? 0 : Math.max(0, prompt - 1 - SPINNER_SEARCH_LINES);
-  const near = lines.slice(windowTop).join("\n");
+  const near = (prompt === undefined ? lines : lines.slice(windowTop, footerBounds(lines).bodyEnd)).join("\n");
   const lower = near.toLowerCase();
   if (DIALOG_MARKERS.some((marker) => lower.includes(marker.toLowerCase()))) return "dialog";
   if (BUSY_TEXT.test(near)) return "busy";
@@ -204,7 +243,7 @@ export function classifyScreen(raw: string): ScreenState {
 
 /**
  * 入力欄の文字（下の `─` の行と、その上で `❯`+U+00A0 の行のすぐ上にある `─` の行の間の行を、❯ を除いて空白なしでつないだもの）。
- * 下の `─` は下から PROMPT_SEARCH_LINES 行以内、入力欄は INPUT_BOX_MAX_LINES 行まで（貼った文字が折り返して複数行になってもよい）。無ければ undefined
+ * 下の `─` は下（エージェントの一覧があればその上）から PROMPT_SEARCH_LINES 行以内、入力欄は INPUT_BOX_MAX_LINES 行まで（貼った文字が折り返して複数行になってもよい）。無ければ undefined
  */
 export function inputBoxText(raw: string): string | undefined {
   const lines = stripAnsi(raw).split("\n");
@@ -215,8 +254,7 @@ export function inputBoxText(raw: string): string | undefined {
 
 /** 入力欄の上の `─` と下の `─` の行の位置（inputBoxText と同じ探し方）。無ければ undefined */
 function findInputBox(lines: string[]): { top: number; bottom: number } | undefined {
-  let end = lines.length;
-  while (end > 0 && lines[end - 1]!.trim() === "") end -= 1;
+  const end = footerBounds(lines).bodyEnd;
   for (let bottom = end - 1; bottom >= Math.max(0, end - PROMPT_SEARCH_LINES); bottom -= 1) {
     if (!isRuleLine(lines[bottom]!.trim())) continue;
     for (let top = bottom - 2; top >= Math.max(0, bottom - 1 - INPUT_BOX_MAX_LINES); top -= 1) {
@@ -328,8 +366,20 @@ export function classifyMeta(meta: PaneMeta, now: number): PaneState | undefined
 }
 
 /**
+ * 2 回の撮り比べに使う画面（制御シーケンスを落とし、バックグラウンドのエージェントの一覧の行を除いたもの。一覧が無ければ画面全体）。
+ * 動いているエージェントの行は時間・トークンの数が毎秒変わるので、比べに入れると動いている間ずっと busy になる（#456）
+ */
+export function comparableScreen(raw: string): string {
+  const plain = stripAnsi(raw);
+  const lines = plain.split("\n");
+  const { end, listTop } = footerBounds(lines);
+  if (listTop === end) return plain;
+  return [...lines.slice(0, listTop), ...lines.slice(end)].join("\n");
+}
+
+/**
  * ペインの状態（§5.3）。raw2 は 1.5 秒後に撮ったもの。raw2 が無ければ 1 回目だけで判定する（idle は確定ではない）。
- * raw2 があれば、2 回目も idle で、制御シーケンスを落とした画面が 1 文字も変わっていないときだけ idle。変わっていれば busy
+ * raw2 があれば、2 回目も idle で、制御シーケンスを落とした画面（エージェントの一覧の行を除く。comparableScreen）が 1 文字も変わっていないときだけ idle。変わっていれば busy
  */
 export function classifyPane(meta: PaneMeta, raw1: string, raw2: string | undefined, now: number): PaneState {
   const byMeta = classifyMeta(meta, now);
@@ -338,7 +388,7 @@ export function classifyPane(meta: PaneMeta, raw1: string, raw2: string | undefi
   if (first !== "idle" || raw2 === undefined) return first;
   const second = classifyScreen(raw2);
   if (second !== "idle") return second;
-  return stripAnsi(raw1) === stripAnsi(raw2) ? "idle" : "busy";
+  return comparableScreen(raw1) === comparableScreen(raw2) ? "idle" : "busy";
 }
 
 /** probePaneState が使う tmux の操作 */

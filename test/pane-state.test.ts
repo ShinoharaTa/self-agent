@@ -1,10 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  AGENT_LIST_MAX_ROWS,
   classifyPane,
   classifyScreen,
+  comparableScreen,
   DIALOG_MARKERS,
   expectedMarkerLines,
+  footerBounds,
   INPUT_BOX_MAX_LINES,
   inputBoxSolidText,
   inputBoxText,
@@ -364,6 +367,99 @@ test("classifyPane: 2 回撮る。2 回目で変化があれば busy、2 回目�
   assert.equal(classifyPane(META, DRAFT, EMPTY, NOW), "draft");
   // 2 回目が無ければ 1 回目だけ
   assert.equal(classifyPane(META, EMPTY, undefined, NOW), "idle");
+});
+
+// バックグラウンドのエージェントが在るときの入力待ちの画面（実機の写し。名前・文は置き換え）: フッターの下に更新の知らせ・リンクの行・
+// 空行・一覧（`● main` と `◯ <名前>` の行）が続き、入力欄が下から 8 行より上に押し上げられる（#456・#447）
+const AGENT_FOOTER = [
+  `${sgr("39")}  ${sgr("38;5;220")}⏵⏵ auto mode on${sgr("38;5;246")} · 4 shells · ↓ to manage${sgr("39")}`,
+  `${" ".repeat(40)}${sgr("38;5;114")}✔ Update installed · Restart to update${sgr("39")}`,
+  `${" ".repeat(75)}${sgr("38;5;114")}${link("https://example.invalid/s", "/rc")}${sgr("39")}`,
+  "",
+];
+const agentRow = (name: string, time: string, tokens: string): string =>
+  `  ${sgr("38;5;246")}◯${sgr("39")} ${name}  作業の説明（置き換え）      ${time} · ↓ ${tokens} tokens`;
+const AGENT_ROWS = [agentRow("implementer", "8m 41s", "115.3k"), agentRow("implementer", "21m 19s", "292.0k"), agentRow("pr-reviewer", "21m 0s", "63.5k")];
+const AGENT_MAIN = `  ${sgr("1")}●${sgr("0")} main`;
+const AGENT_ABOVE = [...HISTORY, "✻ Churned for 5m 6s · done 9:58 AM · 4 shells still running", ""];
+
+/** 一覧の在る画面（rows はエージェントの行、main は一覧の先頭の行。null なら先頭の行を出さない） */
+function agentScreen(input: string[], options: { rows?: string[]; main?: string | null; above?: string[]; top?: string } = {}): string {
+  const main = options.main === undefined ? AGENT_MAIN : options.main;
+  return [
+    ...(options.above ?? AGENT_ABOVE),
+    options.top ?? `${sgr("38;5;244")}${"─".repeat(36)} 見本のセッション ─`,
+    ...input,
+    RULE,
+    ...AGENT_FOOTER,
+    ...(main === null ? [] : [main]),
+    ...(options.rows ?? AGENT_ROWS),
+    ...Array(2).fill(""),
+  ].join("\n");
+}
+const AGENT_IDLE = agentScreen([PROMPT]);
+
+test("footerBounds: 一覧（`● main` と 0〜12 行の `◯` の行）が在れば、その上の空行を除いた所を入力欄を探す下の端にする", () => {
+  const lines = stripAnsi(AGENT_IDLE).split("\n");
+  const main = lines.findIndex((line) => line === "  ● main");
+  assert.deepEqual(footerBounds(lines), { end: main + 4, listTop: main, bodyEnd: main - 1 });
+  // 一覧が無い画面は今までと同じ（end から数える）
+  const plain = stripAnsi(EMPTY).split("\n");
+  const end = plain.length - 6;
+  assert.deepEqual(footerBounds(plain), { end, listTop: end, bodyEnd: end });
+  // `● main` だけ（エージェント 0 行）も一覧
+  assert.deepEqual(footerBounds(["x", "", "  ● main", ""]), { end: 3, listTop: 2, bodyEnd: 1 });
+  // 上限: 12 行は一覧、13 行は一覧とみなさない
+  assert.equal(AGENT_LIST_MAX_ROWS, 12);
+  const rows = (n: number): string[] => ["x", "", "  ● main", ...Array(n).fill("  ◯ agent  作業")];
+  assert.deepEqual(footerBounds(rows(12)), { end: 15, listTop: 2, bodyEnd: 1 });
+  assert.deepEqual(footerBounds(rows(13)), { end: 16, listTop: 16, bodyEnd: 16 });
+  // `● main` が無い・main が `◯`（エージェントの側を見ている）・先頭の空白が 5 つ以上は一覧とみなさない
+  assert.deepEqual(footerBounds(["x", "  ◯ agent  作業"]), { end: 2, listTop: 2, bodyEnd: 2 });
+  assert.deepEqual(footerBounds(["x", "  ◯ main", "  ● agent  作業"]), { end: 3, listTop: 3, bodyEnd: 3 });
+  assert.deepEqual(footerBounds(["x", "     ● main"]), { end: 2, listTop: 2, bodyEnd: 2 });
+});
+
+test("classifyScreen: 入力欄の下のバックグラウンドのエージェントの一覧は読み飛ばす（#456・#447）", () => {
+  assert.equal(classifyScreen(AGENT_IDLE), "idle");
+  assert.equal(classifyScreen(agentScreen([`${PROMPT}書きかけの文`])), "draft");
+  const spinning = [...HISTORY, `${sgr("38;5;174")}✶${sgr("39")} Working… (12s · ↓ 1.2k tokens)`, ""];
+  assert.equal(classifyScreen(agentScreen([PROMPT], { above: spinning })), "busy");
+  // `● main` だけ（エージェント 0 行）
+  assert.equal(classifyScreen(agentScreen([PROMPT], { rows: [] })), "idle");
+  // エージェントの行は 12 行まで
+  const many = (n: number): string[] => Array.from({ length: n }, (_, i) => agentRow(`agent-${i}`, `${i}s`, "1.0k"));
+  assert.equal(classifyScreen(agentScreen([PROMPT], { rows: many(AGENT_LIST_MAX_ROWS) })), "idle");
+  assert.equal(classifyScreen(agentScreen([PROMPT], { rows: many(AGENT_LIST_MAX_ROWS + 1) })), "no_prompt");
+  // `● main` の行が無い・`●` がエージェントの行に在る（main が `◯`）は一覧とみなさない
+  assert.equal(classifyScreen(agentScreen([PROMPT], { main: null })), "no_prompt");
+  assert.equal(classifyScreen(agentScreen([PROMPT], { main: "  ◯ main", rows: ["  ● implementer  作業の説明（置き換え）  1m 2s · ↓ 1.0k tokens", ...AGENT_ROWS.slice(1)] })), "no_prompt");
+  // 一覧の行の文で dialog・busy にしない
+  const noisy = [agentRow("implementer", "1m 2s", "1.0k").replace("作業の説明（置き換え）", "Press Enter to continue"), agentRow("pr-reviewer", "3s", "2.0k").replace("作業の説明（置き換え）", "esc to interrupt")];
+  assert.equal(classifyScreen(agentScreen([PROMPT], { rows: noisy })), "idle");
+});
+
+test("classifyPane: 2 回の撮り比べはエージェントの一覧の行を除いて比べる（#456）", () => {
+  const later = agentScreen([PROMPT], { rows: [agentRow("implementer", "8m 42s", "115.9k"), agentRow("implementer", "21m 20s", "292.4k"), agentRow("pr-reviewer", "21m 1s", "63.6k")] });
+  assert.equal(classifyPane(META, AGENT_IDLE, later, NOW), "idle");
+  // 片方だけ行の数が違っても、それぞれ自分の一覧を除いて比べる
+  assert.equal(classifyPane(META, AGENT_IDLE, agentScreen([PROMPT], { rows: AGENT_ROWS.slice(0, 1) }), NOW), "idle");
+  // 一覧より上が 1 文字違えば busy
+  assert.equal(classifyPane(META, AGENT_IDLE, AGENT_IDLE.replace("5m 6s", "5m 7s"), NOW), "busy");
+  // 一覧の無い画面は今までどおり画面全体で比べる
+  assert.equal(classifyPane(META, EMPTY, EMPTY.replace("返答", "返事"), NOW), "busy");
+  assert.equal(comparableScreen(EMPTY), stripAnsi(EMPTY));
+  assert.ok(!comparableScreen(AGENT_IDLE).includes("◯"));
+  assert.ok(!comparableScreen(AGENT_IDLE).includes("● main"));
+});
+
+test("inputBoxText・inputBoxSolidText・pasteLanded: エージェントの一覧の在る画面でも入力欄を読む", () => {
+  assert.equal(inputBoxText(AGENT_IDLE), "");
+  assert.equal(inputBoxText(agentScreen([`${PROMPT}1 行目`, "  2 行目"])), "1行目2行目");
+  assert.equal(inputBoxSolidText(agentScreen([`${PROMPT}${sgr("2")}Try "候補"${sgr("0")}本文`])), "本文");
+  const text = "[self-agent から] GitHub の通知の対応依頼: owner/repo の PR #12（レビュー）。";
+  assert.equal(pasteLanded(AGENT_IDLE, agentScreen([`${PROMPT}${text}`]), text), true);
+  assert.equal(pasteLanded(AGENT_IDLE, AGENT_IDLE, text), false);
 });
 
 /** 画面を順に返す偽の Tmux。captures の要素が undefined ならペインが無い（not_found） */
