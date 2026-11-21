@@ -179,6 +179,8 @@ export type Handler = {
   }): Promise<SubmitTextResult>;
   /** 実行中のターン（発言・[続ける]。全部の種類のチャンネル） */
   runningTurns(): RunningTurn[];
+  /** 発言を積んだが、まだ始まっていない（同時実行の枠か、同じチャンネルの前のジョブを待っている）ターンの在るチャンネルの ID */
+  queuedChannels(): string[];
 };
 
 /** 1 ターンの依頼（オーナーの発言か [続ける]） */
@@ -281,6 +283,13 @@ export function createHandler(deps: HandlerDeps): Handler {
    * 中断（controller）はセッションのチャンネルのターンだけ
    */
   const running = new Map<string, RunningEntry>();
+  /** 積んだが、まだ始まっていない発言のターンの数（key は channelId。0 になったら消す） */
+  const queued = new Map<string, number>();
+  const unqueue = (channelId: string): void => {
+    const count = (queued.get(channelId) ?? 0) - 1;
+    if (count > 0) queued.set(channelId, count);
+    else queued.delete(channelId);
+  };
   /**
    * 最後に振ったターンの番号（ターンごとに 1 ずつ増やす。セッションのチャンネルのターンは [中断] のボタンに入れる）。
    * 開始値は handler を作った時刻のミリ秒にし、再起動しても前の番号（残ったボタン）と重ならないようにする
@@ -538,9 +547,22 @@ export function createHandler(deps: HandlerDeps): Handler {
       );
     }
     // セッションのターンは同時実行の枠を 1 つ #inbox・#tasks 用に残す
-    await queue.run(request.channelId, () => handleTurn(request, channelName, revived), {
-      session: request.kind === "session",
-    });
+    // 枠を取って呼ばれたら順番待ちから外す（呼ばれずに終わった・投げたときは finally で外す）
+    queued.set(request.channelId, (queued.get(request.channelId) ?? 0) + 1);
+    let started = false;
+    try {
+      await queue.run(
+        request.channelId,
+        () => {
+          started = true;
+          unqueue(request.channelId);
+          return handleTurn(request, channelName, revived);
+        },
+        { session: request.kind === "session" },
+      );
+    } finally {
+      if (!started) unqueue(request.channelId);
+    }
   };
 
   return {
@@ -634,6 +656,7 @@ export function createHandler(deps: HandlerDeps): Handler {
       );
       return { result: "accepted", turnId, messageId };
     },
+    queuedChannels: () => [...queued.keys()],
     runningTurns: () =>
       [...running.entries()].map(([channelId, turn]) => ({
         guildId: turn.guildId,

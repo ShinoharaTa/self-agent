@@ -617,3 +617,34 @@ test("topicListRows: ended・took_min（1 分の下限・丸め）・by_right_ha
   assert.equal("by_right_hand" in of("1"), false);
   assert.deepEqual(Object.keys(of("4")).sort(), ["at", "channel_id", "kind", "place", "state", "title"]);
 });
+
+test("buildTopics: 完了の話題は種の queued が true でも queued: false", () => {
+  const result = buildTopics(input([seed("ch:1", { queued: true, state: "done" }), seed("ch:2", { queued: true })], { done: "general" }));
+  const of = (id: string) => result.topics.find((item) => item.id === id)!;
+  assert.deepEqual([of("ch:1").queued, of("ch:2").queued], [false, true]);
+});
+
+test("topicListRows: 作業中・順番待ちの行には ended・took_min を付けない（前のターンの値）。止まった・idle の行には付く", () => {
+  const agent = { lastAgent: { id: 10, outcome: "done" as const, durationMs: 90_000 }, lastOwnerId: 11 };
+  const result = buildTopics(
+    input([
+      seed("ch:1", { activityAt: at(5), ...agent, running: true, byRightHand: true }),
+      seed("ch:2", { activityAt: at(4), ...agent, queued: true, byRightHand: true }),
+      seed("ch:3", { activityAt: at(3), ...STOPPED_SEED }),
+      seed("ch:4", { activityAt: at(2), ...agent }),
+    ]),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  const of = (id: string) => rows.topics.find((row) => row.channel_id === id)!;
+  assert.deepEqual(
+    ["1", "2", "3", "4"].map((id) => [of(id).state, of(id).ended, of(id).took_min, "ended" in of(id), "took_min" in of(id)]),
+    [
+      ["running", undefined, undefined, false, false],
+      ["queued", undefined, undefined, false, false],
+      ["stopped", "failed", 2, true, true],
+      ["idle", "done", 2, true, true],
+    ],
+  );
+  // by_right_hand は今までどおり付く
+  assert.deepEqual([of("1").by_right_hand, of("2").by_right_hand], [true, true]);
+});

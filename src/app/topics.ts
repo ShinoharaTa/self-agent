@@ -45,7 +45,7 @@ export type Topic = {
   movable: true | { reason: string };
   /** Discord のチャンネルの URL。無ければ null */
   link: string | null;
-  /** 順番待ち（発言は積まれたが、まだ始まっていない）。running なら false */
+  /** 順番待ち（発言を積んだが、まだ始まっていない（枠か、同じ話題の前のジョブを待っている））。実行中・完了なら false */
   queued: boolean;
   /** 止まった（stoppedOf が真で、running・queued・done でない） */
   stopped: boolean;
@@ -103,7 +103,7 @@ export type TopicSeed = {
   /** この話題で待っているもの全部（0 個以上。pickTurn が 1 つ選ぶ） */
   turns: TopicTurn[];
   movable: Topic["movable"];
-  /** 順番待ち（待ち行列に在り、実行中でない） */
+  /** 順番待ち（発言を積んだが、まだ始まっていない（枠か、同じ話題の前のジョブを待っている））。実行中・完了なら false */
   queued: boolean;
   lastAgent: TopicLastAgent;
   /** 最後の owner の行の id。無ければ null */
@@ -229,7 +229,7 @@ export function compareTopics(a: Topic, b: Topic): number {
 function topicOf(seed: TopicSeed, generalDir: string | null): Topic {
   const done = seed.state === "done";
   const turn = done ? null : pickTurn(seed.turns);
-  const queued = seed.queued && !seed.running;
+  const queued = seed.queued && !seed.running && !done;
   return {
     id: seed.id,
     title: seed.title,
@@ -360,7 +360,7 @@ function listPlaceOf(dir: string | null, generalDir: string | undefined): string
  * buildTopics の結果 → topic_list の短い行（純関数）。対象は入口（pinned）でなく完了でない話題と、入口のうち あなたの番・作業中 の物と、
  * あなたの番のある右腕（#inbox）。だから counts.your_turn は result.turns と、counts.running は群の running の和と同じになる。
  * あなたの番 → 止まった → 作業中 → 順番待ち → 残りの順、同じ中では新しい順に先頭 TOPIC_LIST_MAX 件。counts は切る前の数、more は切った残りの数。
- * ended・took_min・by_right_hand は値が在るときだけ付ける。
+ * ended・took_min・by_right_hand は値が在るときだけ付ける。ended・took_min は作業中・順番待ちの行には付けない（前のターンの値なので）。
  * 最後の発言の本文・sessionId・cwd・link は出さない
  */
 export function topicListRows(
@@ -389,6 +389,8 @@ export function topicListRows(
               : topic.state === "waiting"
                 ? "waiting"
                 : "idle";
+    // 作業中・順番待ちの行の ended・took_min は前のターンの値なので付けない
+    const inTurn = state === "running" || state === "queued";
     const channel = /^ch:(\d+)$/.exec(topic.id)?.[1];
     items.push({
       id: topic.id,
@@ -401,8 +403,8 @@ export function topicListRows(
         state,
         ...(state === "your_turn" && topic.turn !== null ? { turn: topic.turn.summary } : {}),
         at: wallClock(topic.activityAt),
-        ...(topic.ended === null ? {} : { ended: topic.ended }),
-        ...(topic.tookMs === null ? {} : { took_min: Math.max(1, Math.round(topic.tookMs / 60000)) }),
+        ...(topic.ended === null || inTurn ? {} : { ended: topic.ended }),
+        ...(topic.tookMs === null || inTurn ? {} : { took_min: Math.max(1, Math.round(topic.tookMs / 60000)) }),
         ...(topic.byRightHand ? { by_right_hand: true as const } : {}),
       },
     });

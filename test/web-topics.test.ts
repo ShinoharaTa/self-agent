@@ -95,7 +95,7 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * postFails を true にすると結果の投稿は投げる。waitLog で log の行を待てる。
  * proposals を true にすると右腕の場所を変える確認（topic-proposals.ts）を渡す。確認の行は moves.propose と setMessageId（札が出た印）で足し、期限の判定は proposalClock の時刻。
  * fakeProposals を渡すと、本物の代わりにそれを渡す（proposals より優先）
- * queued を渡すと、そのチャンネルを待ち行列に在るとする turnQueue を渡す（無ければ turnQueue を渡さない）
+ * queued を渡すと、そのチャンネルを順番待ちとする handler.queuedChannels を渡す（無ければ queuedChannels を渡さない）
  * reads を true にすると既読（topic_reads）を渡す。会話の判定は main と同じ webChannelLookup（cc のときだけ Claude Code のチャンネルも通す）
  */
 async function setup(
@@ -197,6 +197,7 @@ async function setup(
   const running = options.running ?? [];
   const handler = {
     runningTurns: (): RunningTurn[] => running.map((channelId) => ({ guildId: GUILD, channelId }) as RunningTurn),
+    ...(options.queued === undefined ? {} : { queuedChannels: (): string[] => [...options.queued!] }),
   };
   // プロジェクトのセッションの許可を探したチャンネル
   const sdkLookups: string[] = [];
@@ -304,7 +305,6 @@ async function setup(
     history,
     personas,
     handler,
-    ...(options.queued === undefined ? {} : { turnQueue: { has: (channelId: string) => options.queued!.includes(channelId) } }),
     places,
     home: "/home/owner",
     projectPermissions: { store: sdkStore, sessions, holdSec: 300, questionHoldSec: 900 },
@@ -533,7 +533,7 @@ test("web topics: 実行中のターンのあるチャンネルは mark が runn
   assert.equal(general.running, 1);
 });
 
-test("web topics: 待ち行列に在り実行中でない話題は queued。入口・Claude Code は queued にならない", async (t) => {
+test("web topics: 順番待ち（queuedChannels）に在り実行中でない話題は queued。入口・Claude Code は queued にならない", async (t) => {
   const { server } = await setup(t, { cc: true, queued: ["200", "201", "101", "300"], running: ["201"] });
   const result = await topics(server);
   assert.equal(byId(result, "ch:200")!.queued, true);
@@ -543,7 +543,7 @@ test("web topics: 待ち行列に在り実行中でない話題は queued。入�
   assert.equal(byId(result, "ch:204")!.queued, false);
 });
 
-test("web topics: turnQueue を渡さなければ queued は全部 false", async (t) => {
+test("web topics: queuedChannels が無ければ queued は全部 false", async (t) => {
   const { server } = await setup(t, { cc: true });
   const result = await topics(server);
   assert.equal(result.topics.length > 0, true);
@@ -1314,7 +1314,7 @@ test("createTopicCollector: 同じ依存で集めて buildTopics した物が GE
   assert.ok(fromRoute.topics.length >= 4);
 });
 
-test("createTopicCollector: 種の queued は待ち行列に在り実行中でないセッションだけ（入口は false）", (t) => {
+test("createTopicCollector: 種の queued は順番待ち（queuedChannels）に在り実行中でないセッションだけ（入口は false）", (t) => {
   const db = tempDb(t);
   const { guildSettings, topicSessions, history } = createStores(db, () => NOW);
   const workspace = realpathSync(tempDir(t));
@@ -1333,8 +1333,10 @@ test("createTopicCollector: 種の queued は待ち行列に在り実行中で�
     topicSessions,
     history,
     personas,
-    handler: { runningTurns: (): RunningTurn[] => [{ guildId: GUILD, channelId: "200" } as RunningTurn] },
-    turnQueue: { has: () => true },
+    handler: {
+      runningTurns: (): RunningTurn[] => [{ guildId: GUILD, channelId: "200" } as RunningTurn],
+      queuedChannels: () => ["100", "101", "200", "201"],
+    },
     places: { workspaceDir: workspace, protectedDirs: [] },
     home: "/home/owner",
     now: () => NOW,
