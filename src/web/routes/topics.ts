@@ -351,7 +351,7 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
             queued: turnQueue?.has(channelId) === true && !runningIds.has(channelId),
             lastAgent: lastAgentOf(latest.get(channelId)),
             lastOwnerId: latest.get(channelId)?.lastOwnerId ?? null,
-            // 右腕（#inbox の session_open）が始めた話題は origin inbox
+            // session_open で始めた話題は origin inbox（#inbox の右腕。足した人格の入口 #<NAME> からも同じ）
             byRightHand: item.origin === "inbox",
           });
           track(channelId, turns);

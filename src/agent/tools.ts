@@ -127,7 +127,7 @@ export type TopicListRow = {
   ended?: HistoryOutcome;
   /** 最後のターンのかかった時間（分。1 以上）。無ければ付けない */
   took_min?: number;
-  /** 右腕が始めた話題のときだけ true */
+  /** エージェントが session_open で始めた話題（#inbox の右腕。足した人格の入口 #<NAME> からも同じ）のときだけ true */
   by_right_hand?: true;
 };
 export type TopicListResult =
