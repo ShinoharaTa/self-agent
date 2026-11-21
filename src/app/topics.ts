@@ -53,7 +53,7 @@ export type Topic = {
   ended: HistoryOutcome | null;
   /** 最後の agent の行のかかった時間（ms）。無ければ null */
   tookMs: number | null;
-  /** 右腕（#inbox の session_open）が始めた話題 */
+  /** エージェントが session_open で始めた話題（#inbox の右腕。足した人格の入口 #<NAME> からも同じ。sessions.origin が inbox） */
   byRightHand: boolean;
 };
 
