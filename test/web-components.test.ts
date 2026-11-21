@@ -1023,7 +1023,11 @@ test("web components: rowModel の語の順は あなたの番 > 作業中 > 順
   const ctx = { isUnread: () => false, time: () => "12:34", current: null };
   assert.deepEqual(list.rowModel(topicOf({ mark: "turn", turn: turnOf("question"), stopped: true, ended: "failed" }), ctx).state, { text: "質問", tone: "warning" });
   assert.deepEqual(list.rowModel(topicOf({ mark: "running", queued: true }), ctx).state, { text: "作業中", tone: "accent" });
+  assert.deepEqual(list.rowModel(topicOf({ mark: "running", stopped: true, ended: "failed" }), ctx).state, { text: "作業中", tone: "accent" });
   assert.deepEqual(list.rowModel(topicOf({ queued: true, stopped: true, ended: "max_turns" }), ctx).state, { text: "順番待ち", tone: "muted" });
+  // true のときだけ（ほかの値は語にしない）
+  assert.equal(list.rowModel(topicOf({ queued: 1 }), ctx).state, null);
+  assert.equal(list.rowModel(topicOf({ stopped: "yes", ended: "failed" }), ctx).state, null);
 });
 
 test("web components: rowModel は queued・stopped の無い話題を今までどおり時刻にし、未読の止まった話題は印が未読で語は表のとおり", () => {
