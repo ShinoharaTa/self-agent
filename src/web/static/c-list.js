@@ -8,6 +8,11 @@ export const TURN_LABEL = Object.freeze({ permission: "許可", question: "質�
 /** ?done= で出す完了の数（src/app/topics.ts の TOPICS_DONE_MAX） */
 export const DONE_MAX = 50;
 
+/** 止まった話題の終わり方の語（ended の値ごと）。表に無い値は「停止」 */
+export const STOPPED_LABEL = Object.freeze({ max_turns: { text: "上限で停止", tone: "warning" }, failed: { text: "失敗", tone: "warning" }, aborted: { text: "中断", tone: "muted" } });
+const STOPPED_OTHER = Object.freeze({ text: "停止", tone: "muted" });
+const QUEUED_STATE = Object.freeze({ text: "順番待ち", tone: "muted" });
+
 /** 種類の語。TURN_LABEL に無い種類は「あなたの番」 */
 export function turnWord(kind) {
   return typeof kind === "string" && Object.hasOwn(TURN_LABEL, kind) ? TURN_LABEL[kind] : "あなたの番";
@@ -39,11 +44,29 @@ export function rowMark(topic, isUnread) {
   return "none";
 }
 
-/** 行の値。右は状態の語か時刻のどちらか 1 つ（履歴の無い行は時刻も出さない）。ctx: { isUnread, time, current } */
+/** 止まった話題の語。ended が表に無ければ「停止」 */
+function stoppedState(ended) {
+  const s = typeof ended === "string" && Object.hasOwn(STOPPED_LABEL, ended) ? STOPPED_LABEL[ended] : STOPPED_OTHER;
+  return { text: s.text, tone: s.tone };
+}
+
+/**
+ * 行の値。右は状態の語か時刻のどちらか 1 つ（履歴の無い行は時刻も出さない）。ctx: { isUnread, time, current }
+ * 語は あなたの番 > 作業中 > 順番待ち（queued）> 止まった（stopped。終わり方で 上限で停止・失敗・中断・停止）の順で 1 つ。
+ * 順番待ち・止まったは印（未読の点）とは別に決める
+ */
 export function rowModel(topic, ctx) {
   const mark = rowMark(topic, ctx.isUnread);
   const state =
-    mark === "turn" ? { text: turnWord(topic.turn && topic.turn.kind), tone: "warning" } : mark === "running" ? { text: "作業中", tone: "accent" } : null;
+    mark === "turn"
+      ? { text: turnWord(topic.turn && topic.turn.kind), tone: "warning" }
+      : mark === "running"
+        ? { text: "作業中", tone: "accent" }
+        : topic.queued === true
+          ? { text: QUEUED_STATE.text, tone: QUEUED_STATE.tone }
+          : topic.stopped === true
+            ? stoppedState(topic.ended)
+            : null;
   return {
     id: topic.id,
     title: topic.title,
