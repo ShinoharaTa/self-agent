@@ -1289,8 +1289,6 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       history: historyStore,
       personas,
       handler,
-      // 順番待ちの印（/mode の検査と同じ待ち行列）
-      turnQueue,
       places: ccPlacesOf(config, homedir()),
       home: homedir(),
       // 群の判定（projectOf）は実際の場所で比べる（読めなければ設定のまま）

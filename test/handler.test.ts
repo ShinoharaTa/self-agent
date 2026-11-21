@@ -1922,6 +1922,76 @@ test("runningTurns: Web から送ったセッションのターンは source web
   assert.deepEqual(handler.runningTurns(), []);
 });
 
+test("queuedChannels: セッションの枠を待つ別のチャンネルの発言だけが入り、始まったら外れる。全部終わると空", async (t) => {
+  const { runner, topicSessions, handler, handle } = setup(t, [okResult("session-1", "はい"), okResult("session-2", "はい")]);
+  topicSessions.create(TOPIC);
+  topicSessions.create({ ...TOPIC, channelId: "topic-2", title: "別の話題" });
+  const first = deferred();
+  const second = deferred();
+  runner.gates = [first.promise, second.promise];
+
+  const a = handle(message({ channelId: "topic-1" }));
+  await until(() => runner.inputs.length === 1);
+  const b = handle(message({ id: "message-2", channelId: "topic-2" }));
+  await settle();
+  // セッションの枠は 1 つなので B は待つ
+  assert.deepEqual(handler.queuedChannels(), ["topic-2"]);
+  assert.deepEqual(handler.runningTurns().map((turn) => turn.channelId), ["topic-1"]);
+
+  first.resolve();
+  await a;
+  await until(() => runner.inputs.length === 2);
+  assert.deepEqual(handler.runningTurns().map((turn) => turn.channelId), ["topic-2"]);
+  assert.deepEqual(handler.queuedChannels(), []);
+
+  second.resolve();
+  await b;
+  assert.deepEqual(handler.queuedChannels(), []);
+  assert.deepEqual(handler.runningTurns(), []);
+});
+
+test("queuedChannels: 同じチャンネルに 2 つ積むと、1 つ目の実行中はそのチャンネルが入る（後ろの発言）。全部終わると空", async (t) => {
+  const { runner, topicSessions, handler, handle } = setup(t, [okResult("session-1", "はい"), okResult("session-1", "はい")]);
+  topicSessions.create(TOPIC);
+  const first = deferred();
+  runner.gates = [first.promise];
+
+  const a = handle(message({ channelId: "topic-1" }));
+  await until(() => runner.inputs.length === 1);
+  assert.deepEqual(handler.queuedChannels(), []);
+  const b = handle(message({ id: "message-2", channelId: "topic-1" }));
+  await settle();
+  assert.deepEqual(handler.queuedChannels(), ["topic-1"]);
+  assert.deepEqual(handler.runningTurns().map((turn) => turn.channelId), ["topic-1"]);
+
+  first.resolve();
+  await Promise.all([a, b]);
+  assert.equal(runner.inputs.length, 2);
+  assert.deepEqual(handler.queuedChannels(), []);
+  assert.deepEqual(handler.runningTurns(), []);
+});
+
+test("queuedChannels: ターンの終わりの返信の投稿中（running から外れた後）は入らない", async (t) => {
+  const { gateway, runner, topicSessions, handler, handle } = setup(t, [okResult("session-1", "はい")]);
+  topicSessions.create(TOPIC);
+  const sending = deferred();
+  const reached = { value: false };
+  gateway.beforeSend = () => {
+    reached.value = true;
+    return sending.promise;
+  };
+
+  const turn = handle(message({ channelId: "topic-1" }));
+  await until(() => reached.value);
+  assert.equal(runner.inputs.length, 1);
+  assert.deepEqual(handler.runningTurns(), []);
+  assert.deepEqual(handler.queuedChannels(), []);
+
+  sending.resolve();
+  await turn;
+  assert.deepEqual(handler.queuedChannels(), []);
+});
+
 test("runningTurns: 許可を待っている間（onPermissionWaiting）は waitingPermission（since は ISO）を出し、待ち終えたら外す", async (t) => {
   const { runner, topicSessions, handler } = setup(t, [okResult("session-1", "済み")]);
   topicSessions.create(TOPIC);

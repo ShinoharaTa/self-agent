@@ -63,9 +63,8 @@ export type TopicRouteDeps = {
   topicSessions: Pick<TopicSessionStore, "get" | "listByState" | "getCloseDraft"> & Partial<Pick<TopicSessionStore, "projectDirOf">>;
   history: Pick<HistoryStore, "list" | "latestByChannel">;
   personas: Pick<PersonaRouter, "ownerOf"> & { all: readonly Pick<PersonaRuntime, "id" | "name">[] };
-  handler: Pick<Handler, "runningTurns">;
-  /** 発言のターンの待ち行列（/mode の検査と同じ turnQueue）。無ければ queued は全部 false */
-  turnQueue?: { has(channelId: string): boolean };
+  /** 実行中のターンと、順番待ちのチャンネル（queuedChannels が無ければ queued は全部 false） */
+  handler: Pick<Handler, "runningTurns"> & Partial<Pick<Handler, "queuedChannels">>;
   places: CcPlaces;
   home: string;
   /** projectOf に渡すワークスペースの root（配線で realpath したもの）。無ければ cfg.workspaceDir */
@@ -176,7 +175,7 @@ function permissionTurn(row: CcPermissionRow, hold: HoldSeconds): TopicTurn {
  * at は今の時刻（ms）、done は ?done= の群の key（無ければ null）
  */
 export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: string | null) => TopicsInput {
-  const { cfg, guildSettings, topicSessions, history, personas, handler, turnQueue, places, home, projectPermissions, cc, move, proposals } = deps;
+  const { cfg, guildSettings, topicSessions, history, personas, handler, places, home, projectPermissions, cc, move, proposals } = deps;
   const workspaceRoot = deps.workspaceRoot ?? cfg.workspaceDir;
 
   /** 既定でない人格の名前（既定なら null） */
@@ -202,6 +201,8 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
     const nowIso = new Date(at).toISOString();
     const guilds = cfg.allowedGuildIds.filter((id) => guildSettings.get(id) !== undefined);
     const runningIds = new Set(handler.runningTurns().map((turn) => turn.channelId));
+    // 発言を積んだが、まだ始まっていないターンの在るチャンネル（1 回だけ引く）
+    const queuedIds = new Set(handler.queuedChannels?.() ?? []);
     // 付け替えの途中のチャンネル（move の配線があるときだけ。1 回だけ引く）
     const movingIds = move?.moves.runningChannels();
     // 連携の設定が済んでいるか（連携があるときだけ。1 回だけ引く）
@@ -348,7 +349,7 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
             running: runningIds.has(channelId),
             turns,
             movable: sessionMovable(channelId, item.state, persona),
-            queued: turnQueue?.has(channelId) === true && !runningIds.has(channelId),
+            queued: queuedIds.has(channelId) && !runningIds.has(channelId),
             lastAgent: lastAgentOf(latest.get(channelId)),
             lastOwnerId: latest.get(channelId)?.lastOwnerId ?? null,
             // session_open で始めた話題は origin inbox（#inbox の右腕。足した人格の入口 #<NAME> からも同じ）
