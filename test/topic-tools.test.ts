@@ -38,7 +38,7 @@ const DENIED: RunContext[] = [
 const LISTED: TopicListResult = {
   result: "ok",
   注意: "注意の文",
-  counts: { your_turn: 1, running: 0, total: 1 },
+  counts: { your_turn: 1, running: 0, queued: 0, stopped: 0, total: 1 },
   topics: [{ channel_id: "700", kind: "session", title: "旅行の計画", place: "General", state: "your_turn", turn: "許可の要求", at: "2026-11-14 10:00" }],
   more: 0,
   places: ["General", "alpha"],

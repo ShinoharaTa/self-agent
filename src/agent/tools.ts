@@ -15,6 +15,7 @@ import {
 } from "../app/recurrence.ts";
 import { formatDate } from "../app/time.ts";
 import { verifiedProjectDir } from "./disk.ts";
+import type { HistoryOutcome } from "../store/history.ts";
 import {
   KB_BODY_MAX_LENGTH,
   KB_SEARCH_DEFAULT_LIMIT,
@@ -117,18 +118,24 @@ export type TopicListRow = {
   title: string;
   /** "General"・プロジェクトの名前・"なし" */
   place: string;
-  state: "your_turn" | "running" | "waiting" | "idle";
+  state: "your_turn" | "stopped" | "running" | "queued" | "waiting" | "idle";
   /** your_turn のときの要約（1 行） */
   turn?: string;
   /** 最後の活動の時刻（cfg.timeZone の壁時計） */
   at: string;
+  /** 最後のターンの終わり方（history の outcome）。無ければ付けない */
+  ended?: HistoryOutcome;
+  /** 最後のターンのかかった時間（分。1 以上）。無ければ付けない */
+  took_min?: number;
+  /** 右腕が始めた話題のときだけ true */
+  by_right_hand?: true;
 };
 export type TopicListResult =
   | {
       result: "ok";
       注意: string;
       /** 切る前の数（/api/topics と同じ。your_turn は turns、running は群の running の和） */
-      counts: { your_turn: number; running: number; total: number };
+      counts: { your_turn: number; running: number; queued: number; stopped: number; total: number };
       topics: TopicListRow[];
       more: number;
       places: string[];

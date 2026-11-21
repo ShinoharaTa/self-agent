@@ -48,7 +48,7 @@ import type { CcPermissionRow, CcPermissionStore } from "../../store/cc-permissi
 import type { CcSendStore } from "../../store/cc-sends.ts";
 import type { CcStartStore } from "../../store/cc-starts.ts";
 import type { GuildSettingsStore } from "../../store/guild-settings.ts";
-import { type HistoryStore, recordHistory } from "../../store/history.ts";
+import { type HistoryStore, type LatestHistory, recordHistory } from "../../store/history.ts";
 import type { SdkSessionStore } from "../../store/sdk-sessions.ts";
 import type { TopicReadStore } from "../../store/topic-reads.ts";
 import type { TopicSessionStore } from "../../store/topic-sessions.ts";
@@ -64,6 +64,8 @@ export type TopicRouteDeps = {
   history: Pick<HistoryStore, "list" | "latestByChannel">;
   personas: Pick<PersonaRouter, "ownerOf"> & { all: readonly Pick<PersonaRuntime, "id" | "name">[] };
   handler: Pick<Handler, "runningTurns">;
+  /** 発言のターンの待ち行列（/mode の検査と同じ turnQueue）。無ければ queued は全部 false */
+  turnQueue?: { has(channelId: string): boolean };
   places: CcPlaces;
   home: string;
   /** projectOf に渡すワークスペースの root（配線で realpath したもの）。無ければ cfg.workspaceDir */
@@ -128,6 +130,14 @@ const CC_UNMOVABLE = { reason: "端末のセッションは場所を変えられ
 /** セッションの話題が場所を変えられない理由（move の配線があるときだけ） */
 const PERSONA_UNMOVABLE = { reason: "足した人格の話題は場所を変えられません" };
 const DONE_UNMOVABLE = { reason: "完了した話題は場所を変えられません" };
+/** 入口・Claude Code のセッションの種の順番待ち・止まった・右腕の印（どれも見ない） */
+const NO_PROGRESS = { queued: false, lastAgent: null, lastOwnerId: null, byRightHand: false } as const;
+
+/** latestByChannel の行 → 種の lastAgent（at は使わない） */
+function lastAgentOf(row: LatestHistory | undefined): TopicSeed["lastAgent"] {
+  const agent = row?.lastAgent ?? null;
+  return agent === null ? null : { id: agent.id, outcome: agent.outcome, durationMs: agent.durationMs };
+}
 const MOVING_UNMOVABLE = { reason: "場所を変えています" };
 const CC_DISABLED_UNMOVABLE = { reason: moveRefusalText("cc_disabled") };
 const UNIFY_NOT_READY_UNMOVABLE = { reason: moveRefusalText("unify_not_ready") };
@@ -166,7 +176,7 @@ function permissionTurn(row: CcPermissionRow, hold: HoldSeconds): TopicTurn {
  * at は今の時刻（ms）、done は ?done= の群の key（無ければ null）
  */
 export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: string | null) => TopicsInput {
-  const { cfg, guildSettings, topicSessions, history, personas, handler, places, home, projectPermissions, cc, move, proposals } = deps;
+  const { cfg, guildSettings, topicSessions, history, personas, handler, turnQueue, places, home, projectPermissions, cc, move, proposals } = deps;
   const workspaceRoot = deps.workspaceRoot ?? cfg.workspaceDir;
 
   /** 既定でない人格の名前（既定なら null） */
@@ -285,13 +295,18 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
         running: active && view?.state === "running",
         turns,
         movable: CC_UNMOVABLE,
+        ...NO_PROGRESS,
       };
     };
 
     for (const guildId of guilds) {
       const settings = guildSettings.get(guildId)!;
       const latest = history.latestByChannel(guildId);
-      const lastOf = (channelId: string): TopicLast => latest.get(channelId) ?? null;
+      // last は id・at・kind だけ（lastAgent・lastOwnerId はセッションの話題の種にだけ使う）
+      const lastOf = (channelId: string): TopicLast => {
+        const row = latest.get(channelId);
+        return row === undefined ? null : { id: row.id, at: row.at, kind: row.kind };
+      };
 
       // (1) セッション
       for (const state of ["active", "waiting", "done"] as const) {
@@ -333,6 +348,11 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
             running: runningIds.has(channelId),
             turns,
             movable: sessionMovable(channelId, item.state, persona),
+            queued: turnQueue?.has(channelId) === true && !runningIds.has(channelId),
+            lastAgent: lastAgentOf(latest.get(channelId)),
+            lastOwnerId: latest.get(channelId)?.lastOwnerId ?? null,
+            // 右腕（#inbox の session_open）が始めた話題は origin inbox
+            byRightHand: item.origin === "inbox",
           });
           track(channelId, turns);
         }
@@ -359,6 +379,7 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
           running: runningIds.has(channelId),
           turns,
           movable: ENTRY_UNMOVABLE,
+          ...NO_PROGRESS,
         });
         track(channelId, turns);
       };

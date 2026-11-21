@@ -526,6 +526,10 @@ function listSeed(id: string, overrides: Partial<TopicSeed> = {}): TopicSeed {
     running: false,
     turns: [],
     movable: true,
+    queued: false,
+    lastAgent: null,
+    lastOwnerId: null,
+    byRightHand: false,
     ...overrides,
   };
 }

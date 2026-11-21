@@ -274,7 +274,7 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
   };
 
   /** そのサーバー（/setup 済み）の入口（#inbox・#tasks・設定にある人格の #<NAME>） */
-  const entries = (guildId: string, latest: ReturnType<HistoryStore["latestByChannel"]>): WebChannel[] => {
+  const entries = (guildId: string, latest: Map<string, NonNullable<Last>>): WebChannel[] => {
     const settings = guildSettings.get(guildId);
     if (settings === undefined) return [];
     const list: WebChannel[] = [];
@@ -344,7 +344,10 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
         const describe = cc?.describe();
         for (const guild of guilds) {
           if (!guild.setUp) continue;
-          const latest = history.latestByChannel(guild.id);
+          // last は id・at・kind だけ（latestByChannel の lastAgent・lastOwnerId は出さない）
+          const latest = new Map(
+            [...history.latestByChannel(guild.id)].map(([channelId, row]) => [channelId, { id: row.id, at: row.at, kind: row.kind }]),
+          );
           channels.push(...entries(guild.id, latest));
           for (const state of LISTED_STATES) {
             for (const item of topicSessions.listByState(guild.id, state, SESSION_LIST_LIMITS[state])) {

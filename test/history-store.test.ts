@@ -157,11 +157,46 @@ test("HistoryStore.latestByChannel: そのサーバーのチャンネルごと�
   assert.deepEqual(
     store.latestByChannel("g"),
     new Map([
-      ["a", { id: lastA, at: at(1).toISOString(), kind: "agent" }],
-      ["b", { id: lastB, at: at(2).toISOString(), kind: "divider" }],
+      ["a", { id: lastA, at: at(1).toISOString(), kind: "agent", lastAgent: { id: lastA, at: at(1).toISOString(), outcome: null, durationMs: null }, lastOwnerId: lastA - 1 }],
+      ["b", { id: lastB, at: at(2).toISOString(), kind: "divider", lastAgent: null, lastOwnerId: null }],
     ]),
   );
   assert.deepEqual(store.latestByChannel("none"), new Map());
+});
+
+test("HistoryStore.latestByChannel: lastAgent は最後の agent の行（後に notice が来ても）、lastOwnerId は最後の owner の行", (t) => {
+  const { clock, store } = setup(t);
+  // agent の行が無いチャンネル
+  const ownerOnly = store.add({ guildId: "g", channelId: "none", kind: "owner", source: "discord", text: "1" });
+  store.add({ guildId: "g", channelId: "none", kind: "notice", source: "system", text: "2" });
+  // agent の後に notice
+  store.add({ guildId: "g", channelId: "n", kind: "owner", source: "discord", text: "3" });
+  clock.now = at(1);
+  const agentN = store.add({ guildId: "g", channelId: "n", kind: "agent", source: "discord", text: "4", outcome: "max_turns", durationMs: 90_000 });
+  clock.now = at(2);
+  const noticeN = store.add({ guildId: "g", channelId: "n", kind: "notice", source: "system", text: "5" });
+  // agent の後に owner
+  const agentO = store.add({ guildId: "g", channelId: "o", kind: "agent", source: "discord", text: "6", outcome: "failed" });
+  const ownerO = store.add({ guildId: "g", channelId: "o", kind: "owner", source: "web", text: "7" });
+  // ほかのサーバーの行は混ざらない（同じチャンネル名でも）
+  store.add({ guildId: "other", channelId: "n", kind: "agent", source: "discord", text: "8", outcome: "done" });
+  store.add({ guildId: "other", channelId: "n", kind: "owner", source: "discord", text: "9" });
+
+  const latest = store.latestByChannel("g");
+  assert.equal(latest.get("none")?.lastAgent, null);
+  assert.equal(latest.get("none")?.lastOwnerId, ownerOnly);
+  assert.deepEqual(latest.get("n"), {
+    id: noticeN,
+    at: at(2).toISOString(),
+    kind: "notice",
+    lastAgent: { id: agentN, at: at(1).toISOString(), outcome: "max_turns", durationMs: 90_000 },
+    lastOwnerId: agentN - 1,
+  });
+  assert.equal(latest.get("o")?.lastAgent?.id, agentO);
+  assert.equal(latest.get("o")?.lastAgent?.outcome, "failed");
+  assert.equal(latest.get("o")?.lastOwnerId, ownerO);
+  assert.ok((latest.get("o")?.lastOwnerId ?? 0) > agentO);
+  assert.equal(latest.size, 3);
 });
 
 test("HistoryStore.prune: cutoff より前に書いた行だけを消し、消した数を返す", (t) => {

@@ -1,7 +1,7 @@
 // 話題の一覧（docs/plan/web-ui-v3.md §3〜§5・§11 の M1）。セッション・プロジェクトのセッション・Claude Code のセッションを 1 つの形（Topic）にし、
 // 群（プロジェクト・General・ほかの場所）と「あなたの番」を数える純関数（DB・時計・fs を触らない）。集めるのは web/routes/topics.ts
 import type { TopicListRow } from "../agent/tools.ts";
-import type { HistoryKind } from "../store/history.ts";
+import type { HistoryKind, HistoryOutcome } from "../store/history.ts";
 import { formatWallClock } from "./recurrence.ts";
 
 export type TopicTurnKind = "permission" | "question" | "waiting" | "confirm";
@@ -17,6 +17,8 @@ export type TopicTurn = {
 /** "unread" は出さない（型にだけ置く）。未読は画面が reads と last から決める（M7） */
 export type TopicMark = "turn" | "running" | "unread" | null;
 export type TopicLast = { id: number; at: string; kind: HistoryKind } | null;
+/** 最後の agent の行（終わり方・かかった時間）。無ければ null */
+export type TopicLastAgent = { id: number; outcome: HistoryOutcome | null; durationMs: number | null } | null;
 
 export type Topic = {
   /** Discord のチャンネルがあれば "ch:<channelId>"、無い Claude Code のセッションは "cc:<sessionId>" */
@@ -43,6 +45,16 @@ export type Topic = {
   movable: true | { reason: string };
   /** Discord のチャンネルの URL。無ければ null */
   link: string | null;
+  /** 順番待ち（発言は積まれたが、まだ始まっていない）。running なら false */
+  queued: boolean;
+  /** 止まった（stoppedOf が真で、running・queued・done でない） */
+  stopped: boolean;
+  /** 最後の agent の行の終わり方。無ければ null */
+  ended: HistoryOutcome | null;
+  /** 最後の agent の行のかかった時間（ms）。無ければ null */
+  tookMs: number | null;
+  /** 右腕（#inbox の session_open）が始めた話題 */
+  byRightHand: boolean;
 };
 
 export type TopicGroup = {
@@ -91,6 +103,12 @@ export type TopicSeed = {
   /** この話題で待っているもの全部（0 個以上。pickTurn が 1 つ選ぶ） */
   turns: TopicTurn[];
   movable: Topic["movable"];
+  /** 順番待ち（待ち行列に在り、実行中でない） */
+  queued: boolean;
+  lastAgent: TopicLastAgent;
+  /** 最後の owner の行の id。無ければ null */
+  lastOwnerId: number | null;
+  byRightHand: boolean;
 };
 
 export type TopicsInput = {
@@ -181,6 +199,15 @@ export function markOf(turn: TopicTurn | null, running: boolean): TopicMark {
   return running ? "running" : null;
 }
 
+/** 止まったと見る終わり方（上限で止まった・失敗・中断） */
+const STOPPED_OUTCOMES: ReadonlySet<HistoryOutcome> = new Set(["max_turns", "failed", "aborted"]);
+
+/** 止まった（最後の agent の行が上限・失敗・中断で終わり、その後に owner の行が無い）。running・queued・done は見ない */
+export function stoppedOf(lastAgent: TopicLastAgent, lastOwnerId: number | null): boolean {
+  if (lastAgent === null || lastAgent.outcome === null || !STOPPED_OUTCOMES.has(lastAgent.outcome)) return false;
+  return lastOwnerId === null || lastOwnerId < lastAgent.id;
+}
+
 function markRank(mark: TopicMark): number {
   return mark === "turn" ? 0 : mark === "running" ? 1 : 2;
 }
@@ -202,6 +229,7 @@ export function compareTopics(a: Topic, b: Topic): number {
 function topicOf(seed: TopicSeed, generalDir: string | null): Topic {
   const done = seed.state === "done";
   const turn = done ? null : pickTurn(seed.turns);
+  const queued = seed.queued && !seed.running;
   return {
     id: seed.id,
     title: seed.title,
@@ -219,6 +247,11 @@ function topicOf(seed: TopicSeed, generalDir: string | null): Topic {
     last: seed.last,
     movable: seed.movable,
     link: seed.link,
+    queued,
+    stopped: !seed.running && !queued && !done && stoppedOf(seed.lastAgent, seed.lastOwnerId),
+    ended: seed.lastAgent?.outcome ?? null,
+    tookMs: seed.lastAgent?.durationMs ?? null,
+    byRightHand: seed.byRightHand,
   };
 }
 
@@ -308,7 +341,14 @@ export function buildTopics(input: TopicsInput): TopicsResult {
 /** topic_list に出す話題の数 */
 export const TOPIC_LIST_MAX = 30;
 
-const LIST_STATE_RANK: Readonly<Record<TopicListRow["state"], number>> = { your_turn: 0, running: 1, waiting: 2, idle: 2 };
+const LIST_STATE_RANK: Readonly<Record<TopicListRow["state"], number>> = {
+  your_turn: 0,
+  stopped: 1,
+  running: 2,
+  queued: 3,
+  waiting: 4,
+  idle: 4,
+};
 
 /** 話題の場所の表示（topic-move.ts の placeLabel と同じ決まり。topic-move.ts がこのファイルを import するのでここにも置く） */
 function listPlaceOf(dir: string | null, generalDir: string | undefined): string {
@@ -319,13 +359,18 @@ function listPlaceOf(dir: string | null, generalDir: string | undefined): string
 /**
  * buildTopics の結果 → topic_list の短い行（純関数）。対象は入口（pinned）でなく完了でない話題と、入口のうち あなたの番・作業中 の物と、
  * あなたの番のある右腕（#inbox）。だから counts.your_turn は result.turns と、counts.running は群の running の和と同じになる。
- * あなたの番 → 作業中 → 残りの順、同じ中では新しい順に先頭 TOPIC_LIST_MAX 件。counts は切る前の数、more は切った残りの数。
+ * あなたの番 → 止まった → 作業中 → 順番待ち → 残りの順、同じ中では新しい順に先頭 TOPIC_LIST_MAX 件。counts は切る前の数、more は切った残りの数。
+ * ended・took_min・by_right_hand は値が在るときだけ付ける。
  * 最後の発言の本文・sessionId・cwd・link は出さない
  */
 export function topicListRows(
   result: TopicsResult,
   options: { timeZone: string; generalDir: string | undefined },
-): { counts: { your_turn: number; running: number; total: number }; topics: TopicListRow[]; more: number } {
+): {
+  counts: { your_turn: number; running: number; queued: number; stopped: number; total: number };
+  topics: TopicListRow[];
+  more: number;
+} {
   const wallClock = (iso: string | null): string => (iso === null ? "" : formatWallClock(new Date(time(iso)), options.timeZone));
   // 並べるための共通の形（id・activityAt は並びにだけ使う）
   const items: Array<{ id: string; activityAt: string | null; row: TopicListRow }> = [];
@@ -333,7 +378,17 @@ export function topicListRows(
     if (topic.state === "done") continue;
     if (topic.pinned && topic.mark !== "turn" && topic.mark !== "running") continue;
     const state: TopicListRow["state"] =
-      topic.mark === "turn" ? "your_turn" : topic.mark === "running" ? "running" : topic.state === "waiting" ? "waiting" : "idle";
+      topic.mark === "turn"
+        ? "your_turn"
+        : topic.mark === "running"
+          ? "running"
+          : topic.queued
+            ? "queued"
+            : topic.stopped
+              ? "stopped"
+              : topic.state === "waiting"
+                ? "waiting"
+                : "idle";
     const channel = /^ch:(\d+)$/.exec(topic.id)?.[1];
     items.push({
       id: topic.id,
@@ -346,6 +401,9 @@ export function topicListRows(
         state,
         ...(state === "your_turn" && topic.turn !== null ? { turn: topic.turn.summary } : {}),
         at: wallClock(topic.activityAt),
+        ...(topic.ended === null ? {} : { ended: topic.ended }),
+        ...(topic.tookMs === null ? {} : { took_min: Math.max(1, Math.round(topic.tookMs / 60000)) }),
+        ...(topic.byRightHand ? { by_right_hand: true as const } : {}),
       },
     });
   }
@@ -373,6 +431,8 @@ export function topicListRows(
     counts: {
       your_turn: items.filter((item) => item.row.state === "your_turn").length,
       running: items.filter((item) => item.row.state === "running").length,
+      queued: items.filter((item) => item.row.state === "queued").length,
+      stopped: items.filter((item) => item.row.state === "stopped").length,
       total: items.length,
     },
     topics: rows,
