@@ -400,6 +400,7 @@
     if (p && p.state === "delivering") return { kind: "queued", text: "届けています…", cancel: false };
     if (p && p.state === "queued") {
       if (p.lastPaneState === "dialog") return { kind: "queued", text: "ダイアログが出ているため待っています（端末か RC で答えてください）", cancel: true };
+      if (p.lastPaneState === "no_prompt") return { kind: "queued", text: "入力欄が見つからないため待っています（端末の画面を確かめてください）", cancel: true };
       if (live.state === "running") return { kind: "queued", text: "作業中です。終わったら届けます", cancel: true };
       return { kind: "queued", text: "届け待ちです。入力待ちになったら届けます", cancel: true };
     }
