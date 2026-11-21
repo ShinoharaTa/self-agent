@@ -434,6 +434,14 @@ test("classifyScreen: 入力欄の下のバックグラウンドのエージェ�
   // `● main` の行が無い・`●` がエージェントの行に在る（main が `◯`）は一覧とみなさない
   assert.equal(classifyScreen(agentScreen([PROMPT], { main: null })), "no_prompt");
   assert.equal(classifyScreen(agentScreen([PROMPT], { main: "  ◯ main", rows: ["  ● implementer  作業の説明（置き換え）  1m 2s · ↓ 1.0k tokens", ...AGENT_ROWS.slice(1)] })), "no_prompt");
+  // `● main` の行の後ろに文が在る形は一覧とみなさない
+  assert.equal(classifyScreen(agentScreen([PROMPT], { main: `${AGENT_MAIN}  （2 件）` })), "no_prompt");
+  assert.equal(classifyScreen(agentScreen([PROMPT], { main: `${AGENT_MAIN}  ↑↓ to navigate` })), "dialog");
+  // 入力欄の無い画面（ダイアログが入力欄を置き換えている）は、一覧が在っても画面全体で印を探す
+  const dialogBody = [...HISTORY, "Do you want to proceed?", "❯ 1. Yes", "  2. No", "", "Esc to cancel · Tab to amend"];
+  const withList = (body: string[]): string => [...body, "", AGENT_MAIN, ...AGENT_ROWS, ""].join("\n");
+  assert.equal(classifyScreen(withList(dialogBody)), "dialog");
+  assert.equal(classifyScreen(withList([...HISTORY, "入力欄の無い画面"])), "no_prompt");
   // 一覧の行の文で dialog・busy にしない
   const noisy = [agentRow("implementer", "1m 2s", "1.0k").replace("作業の説明（置き換え）", "Press Enter to continue"), agentRow("pr-reviewer", "3s", "2.0k").replace("作業の説明（置き換え）", "esc to interrupt")];
   assert.equal(classifyScreen(agentScreen([PROMPT], { rows: noisy })), "idle");
@@ -442,8 +450,12 @@ test("classifyScreen: 入力欄の下のバックグラウンドのエージェ�
 test("classifyPane: 2 回の撮り比べはエージェントの一覧の行を除いて比べる（#456）", () => {
   const later = agentScreen([PROMPT], { rows: [agentRow("implementer", "8m 42s", "115.9k"), agentRow("implementer", "21m 20s", "292.4k"), agentRow("pr-reviewer", "21m 1s", "63.6k")] });
   assert.equal(classifyPane(META, AGENT_IDLE, later, NOW), "idle");
-  // 片方だけ行の数が違っても、それぞれ自分の一覧を除いて比べる
-  assert.equal(classifyPane(META, AGENT_IDLE, agentScreen([PROMPT], { rows: AGENT_ROWS.slice(0, 1) }), NOW), "idle");
+  // 一覧の行の数が変わったら（エージェントが増えた・減った）busy
+  assert.equal(classifyPane(META, AGENT_IDLE, agentScreen([PROMPT], { rows: AGENT_ROWS.slice(0, 1) }), NOW), "busy");
+  assert.equal(classifyPane(META, AGENT_IDLE, agentScreen([PROMPT], { rows: [...AGENT_ROWS, agentRow("implementer", "1s", "0.1k")] }), NOW), "busy");
+  // 除くのは一覧の行だけ。すぐ上のフッター・入力欄が 1 文字違えば busy
+  assert.equal(classifyPane(META, AGENT_IDLE, AGENT_IDLE.replace("4 shells · ↓ to manage", "3 shells · ↓ to manage"), NOW), "busy");
+  assert.equal(classifyPane(META, AGENT_IDLE, AGENT_IDLE.replace("Update installed", "Update installing"), NOW), "busy");
   // 一覧より上が 1 文字違えば busy
   assert.equal(classifyPane(META, AGENT_IDLE, AGENT_IDLE.replace("5m 6s", "5m 7s"), NOW), "busy");
   // 一覧の無い画面は今までどおり画面全体で比べる
