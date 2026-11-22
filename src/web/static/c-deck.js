@@ -328,11 +328,6 @@ export function deckModel(state) {
   };
 }
 
-/** 入口が焦点を当てる項目のボタンのセレクタ（key は固定の字の組み合わせ。CSS.escape は入口が使う） */
-export function itemSelector(key) {
-  return '[data-key="' + key + '"] .c-item-main';
-}
-
 // ===== 部品 =====
 
 /** 3 つの列（見えない列も描き、横に送る）。on: { open(item, key) } */

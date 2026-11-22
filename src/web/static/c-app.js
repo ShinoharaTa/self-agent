@@ -7,6 +7,7 @@
 // 知らせと確認（K6）は ui.js が SA.notice.draw(state)・SA.ask.draw(state) で押し込む（状態とタイマーは ui.js が持ち、ここは描くだけ）
 // 右腕の見出し（K6）は shell.js が SA.hand.draw(state) で押し込み、[畳む]・「…」への焦点は SA.hand.focus(what)（右腕の中の会話・入力欄・カードは上の口を使い回す）
 // 端末のセッションの札（H3）は SA.term.draw(root, raw) で描き（raw は c-term.js の termView に渡す生の状態と on）、SA.term.drop(root) で外す
+// 流れの列と上の帯（D1）は flows.js が SA.deck.draw(state)・shell.js が SA.deck.drawBand(state) で押し込む。幅の計算（SA.deck.fit）は c-deck.js の deckFit
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
@@ -16,6 +17,7 @@ import { cardsMouth } from "./c-cards.js";
 import { termMouth } from "./c-term.js";
 import { HandHead } from "./c-hand.js";
 import { Confirm, Toast } from "./c-sheet.js";
+import { Deck, DeckBand, deckFit, deckModel } from "./c-deck.js";
 
 const listRoot = document.getElementById("c-list-root");
 
@@ -98,12 +100,16 @@ if (listRoot) {
     if (root) root.scrollTop = n;
   }
 
-  /** 下のバーを描く。bar は { turns, hand, tabs, controls, on }。形（スマホか広い幅か）はここで決める。フォーカスと一覧の位置には触らない */
+  /** 下のバーを描く。bar は { turns, hand, tabs, controls, on } か null（流れの列の間は描かない）。形（スマホか広い幅か）はここで決める。フォーカスと一覧の位置には触らない */
   function drawBar(bar) {
     lastBar = bar;
     // 描く所が無いのは失敗ではない
     if (!barRoot) return true;
     try {
+      if (bar === null) {
+        render(null, barRoot);
+        return true;
+      }
       render(
         html`<${BottomBar} variant=${env.phone.matches ? "phone" : "wide"} turns=${bar.turns} hand=${bar.hand} tabs=${bar.tabs} controls=${bar.controls} on=${bar.on} />`,
         barRoot,
@@ -173,6 +179,7 @@ if (listRoot) {
           menu=${state.menu}
           compact=${state.compact === true}
           mode=${state.mode}
+          close=${state.close === true}
           controls=${state.controls}
           on=${state.on}
         />`,
@@ -191,9 +198,9 @@ if (listRoot) {
     return true;
   }
 
-  /** 見出しのボタン（back・place・mode・menu・hand）にフォーカス。無い・押せなければ false */
+  /** 見出しのボタン（back・place・mode・menu・hand・close）にフォーカス。無い・押せなければ false */
   function focusTop(act) {
-    if (!topRoot || !["back", "place", "mode", "menu", "hand"].includes(act)) return false;
+    if (!topRoot || !["back", "place", "mode", "menu", "hand", "close"].includes(act)) return false;
     const b = buttonIn(topRoot.querySelector('[data-act="' + act + '"]'));
     if (!b || b.disabled) return false;
     b.focus({ preventScroll: true });
@@ -372,6 +379,76 @@ if (listRoot) {
   window.SA.composer = { draw: drawComposer, set: setComposer, focus: focusComposer, drop: dropComposer };
   window.SA.cards = { draw: drawCards, focus: focusCards, drop: dropCards };
   window.SA.term = { draw: drawTerm, drop: dropTerm };
+}
+
+/** 流れの列と上の帯の入れ物。両方が無ければ口を置かない（shell.js は今の広い幅の形のまま） */
+const deckRoot = document.getElementById("c-deck-root");
+const bandRoot = document.getElementById("c-band-root");
+
+if (deckRoot && bandRoot) {
+  /** その要素が button ならそれ、違えば中の最初の button（無ければ null） */
+  const buttonOf = (node) => (!node ? null : node.matches("button") ? node : node.querySelector("button"));
+
+  /** key の項目の押せるボタン（席に開けない項目は div なので null）。セレクタに key を埋めない */
+  const itemButton = (key) => {
+    const item = Array.from(deckRoot.querySelectorAll("[data-key]")).find((n) => n.dataset.key === key);
+    const main = item ? item.querySelector(".c-item-main") : null;
+    return main && main.matches("button") ? main : null;
+  };
+
+  /** 帯のボタン（status・find・hand・start・more）にフォーカス。無ければ false */
+  const focusBand = (act) => {
+    if (!["status", "find", "hand", "start", "more"].includes(act)) return false;
+    const b = buttonOf(bandRoot.querySelector('[data-act="' + act + '"]'));
+    if (!b) return false;
+    b.focus({ preventScroll: true });
+    return true;
+  };
+
+  const focusItem = (key) => {
+    const b = itemButton(key);
+    if (!b) return false;
+    b.focus();
+    return true;
+  };
+
+  /**
+   * 3 つの列を描く。state は flows.js の flowState()。描けなければ false。列は同じ要素を使い回すので、列ごとの縦の位置は残る。
+   * 焦点のあった項目が消えたら、同じ key の項目 → 帯の［探す］へ（body に落とさない）
+   */
+  const drawDeck = (state) => {
+    const before = document.activeElement;
+    const inside = !!before && deckRoot.contains(before);
+    const holder = inside ? before.closest("[data-key]") : null;
+    const key = holder ? holder.dataset.key : null;
+    try {
+      render(html`<${Deck} model=${deckModel(state)} on=${state.on} />`, deckRoot);
+    } catch (error) {
+      // 名前だけ（message・stack は本文を含むことがあるので出さない）
+      console.error("[web] deck draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    if (inside && !document.contains(before) && !(key !== null && focusItem(key))) focusBand("find");
+    return true;
+  };
+
+  /** 上の帯を描く。state は { conn, hand, controls, on }。描けなければ false */
+  const drawBand = (state) => {
+    const before = document.activeElement;
+    const inside = !!before && bandRoot.contains(before);
+    const act = inside && before.closest("[data-act]") ? before.closest("[data-act]").getAttribute("data-act") : null;
+    try {
+      render(html`<${DeckBand} conn=${state.conn} hand=${state.hand} controls=${state.controls} on=${state.on} />`, bandRoot);
+    } catch (error) {
+      console.error("[web] band draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    if (inside && !document.contains(before) && !(act !== null && focusBand(act))) focusBand("find");
+    return true;
+  };
+
+  window.SA = window.SA || {};
+  window.SA.deck = { draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand };
 }
 
 /** 知らせの入れ物。無ければ null（口を置かない。ui.js は古い #toast に出す） */
