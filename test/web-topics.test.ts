@@ -591,6 +591,31 @@ test("web topics: 右腕の最後の行が統括のまとめの notice（source 
   assert.equal(Object.hasOwn(topic.last!, "lead"), false);
 });
 
+test("web topics: 統括のまとめの notice の後に owner の行・agent の行が来たら、右腕の last.lead は付かない", async (t) => {
+  const { server, history } = await setup(t);
+  const text = leadText([{ guildId: GUILD, channelId: "200", durationMs: 240_000, outcome: "done", byRightHand: false, pinged: false }], null);
+  const handLast = async () => (await topics(server)).rightHands[0]!.last!;
+  history.add({ guildId: GUILD, channelId: "100", kind: "notice", source: "system", text });
+  assert.equal((await handLast()).lead, true);
+  history.add({ guildId: GUILD, channelId: "100", kind: "owner", source: "discord", text: "ありがとう" });
+  assert.equal((await handLast()).kind, "owner");
+  assert.equal(Object.hasOwn(await handLast(), "lead"), false);
+  history.add({ guildId: GUILD, channelId: "100", kind: "agent", source: "discord", text: "どういたしまして", outcome: "done" });
+  assert.equal((await handLast()).kind, "agent");
+  assert.equal(Object.hasOwn(await handLast(), "lead"), false);
+});
+
+test("web topics: 統括のまとめの後に別の notice（まとめでない）が最後に来たら、右腕の last.lead は付かない", async (t) => {
+  const { server, history } = await setup(t);
+  const text = leadText([{ guildId: GUILD, channelId: "200", durationMs: 240_000, outcome: "done", byRightHand: false, pinged: false }], null);
+  const handLast = async () => (await topics(server)).rightHands[0]!.last!;
+  history.add({ guildId: GUILD, channelId: "100", kind: "notice", source: "system", text });
+  assert.equal((await handLast()).lead, true);
+  history.add({ guildId: GUILD, channelId: "100", kind: "notice", source: "system", text: "待ちに移しました" });
+  assert.equal((await handLast()).kind, "notice");
+  assert.equal(Object.hasOwn(await handLast(), "lead"), false);
+});
+
 test("web topics: setUp していないサーバーの行は出ない", async (t) => {
   const { server } = await setup(t, { cc: true });
   const result = await topics(server, "/api/topics?done=general");

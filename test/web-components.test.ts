@@ -2056,11 +2056,11 @@ test("web components: talkModel: fmt.notice は知らせ（notice）の行の本
   }
 });
 
-test("web components: 右腕の枠（shell.js の HAND_FRAME）だけが noticeText に namedText を持ち、chat.js の部品の道が fmt.notice に渡す。.c-notice は改行をそのまま出す（#457 の L2）", () => {
+test("web components: 右腕の枠（shell.js の HAND_FRAME）だけが noticeText に handNoticeText を持ち、chat.js の部品の道が fmt.notice に渡す。.c-notice は改行をそのまま出す（#457 の L2）", () => {
   const shell = stripJsComments(read("shell.js"));
   const hand = /const HAND_FRAME = \{[^\n]*\};/.exec(shell)?.[0];
   assert.ok(hand, "shell.js から HAND_FRAME の 1 行を抜き出せない（書き方が変わった）");
-  assert.ok(hand.includes("noticeText: namedText"));
+  assert.ok(hand.includes("noticeText: handNoticeText"));
   // 話題の会話の枠には足さない（noticeText は HAND_FRAME の 1 か所だけ）
   assert.equal((shell.match(/noticeText/g) ?? []).length, 1);
   assert.match(read("chat.js"), /notice: frame && frame\.noticeText \? frame\.noticeText : null,/);
