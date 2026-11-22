@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   createLead,
   inScope,
@@ -455,4 +456,21 @@ test("lead: 宛先を引く所が投げても reject せず、log 1 行だけ（
   await lead.idle();
   assert.equal(posts.length, 1);
   assert.equal(rows().length, 1);
+});
+
+// ---- 配線の見張り（main.ts） ----
+
+test("見張り: main.ts は SELF_AGENT_LEAD_NOTIFY が有効のときだけ createLead を作り、handler の onTurnEnd と停止の lead に渡す", () => {
+  const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const made = source.match(/const lead = config\.leadNotify\n {2}\? createLead\(\{[\s\S]*?\n {4}\}\)\n {2}: undefined;/)?.[0];
+  assert.ok(made !== undefined);
+  assert.match(made, /settings: \(\) => \(\{ ring: config\.leadRing, scope: config\.leadScope \}\),/);
+  assert.match(made, /ownerUserId: config\.ownerUserId,/);
+  assert.match(made, /post: \(channelId, message\) => ownerPosts\.sendMessage\(channelId, message\),/);
+  const handler = source.match(/const handler = createHandler\(\{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(handler !== undefined);
+  assert.match(handler, /\n {2}onTurnEnd: \(event\) => lead\?\.onTurnEnd\(event\),\n/);
+  const lifecycle = source.match(/const lifecycle = createShutdown\([\s\S]*?closeDb: \(\) => db\.close\(\),/)?.[0];
+  assert.ok(lifecycle !== undefined);
+  assert.match(lifecycle, /\.\.\.\(lead === undefined \? \{\} : \{ lead \}\),/);
 });
