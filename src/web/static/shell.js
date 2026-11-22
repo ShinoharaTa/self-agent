@@ -473,6 +473,11 @@
     // 流れの列: 「探す」の板から開いたか（板は閉じ、焦点は席の［閉じる］へ）
     const fromFind = deckOn() && findOpen();
     if (phone()) {
+      // スマホの流れの列: 板は閉じ（entry は showBody が話題に置き換える）、閉じた後の焦点の元を覚える
+      if (deckFull()) {
+        if (fromFind) closeFind(false);
+        S.seatFrom = fromFind ? { find: true } : { key: fromKey };
+      }
       if (S.handOver) {
         S.handOver = false;
         applyHand();
@@ -783,10 +788,12 @@
       }
     } else if (!S.handOver) {
       S.handOver = true;
-      // スマホは戻る（端のスワイプ）で閉じられるよう entry を 1 つ積む
+      // スマホは戻る（端のスワイプ）で閉じられるよう entry を 1 つ積む（「探す」の板の entry の上なら置き換える。戻る 1 回で列）
       if (phone()) {
         try {
-          history.pushState({ v3Body: S.view === "body", v3Hand: true, v3Depth: depthOf(history.state) }, "", location.href);
+          const st = { v3Body: S.view === "body", v3Hand: true, v3Depth: depthOf(history.state) };
+          if (history.state && history.state.v3Find) history.replaceState(st, "", location.href);
+          else history.pushState(st, "", location.href);
         } catch {
           // 積めなくても [畳む]・backdrop で閉じられる
         }
@@ -1108,6 +1115,8 @@
       // 右腕を開いたまま話題を開いたら、右腕の entry を話題の entry に置き換える（一覧までの段数は下の entry の 1 つ上）
       if (history.state && history.state.v3Hand) history.replaceState({ v3Body: true, v3Depth: (history.state.v3Depth || 0) + 1 }, "", hash);
       else if (history.state && history.state.v3Body) history.replaceState(history.state, "", hash);
+      // スマホの「探す」の板の entry も話題に置き換える（戻ると列）
+      else if (history.state && history.state.v3Find) history.replaceState({ v3Body: true }, "", hash);
       else history.pushState({ v3Body: true }, "", hash);
     } catch {
       // 積めなくても [‹] で一覧に戻れる
@@ -1786,15 +1795,16 @@
     openSheet("ほか", items, opener);
   }
 
-  // 「探す」の板を開いたボタン（閉じた後に焦点を戻す）
+  // 「探す」の板を開いたボタン（閉じた後に焦点を戻す）・板の entry を戻っている途中か（popstate で閉じる）
   let findOpener = null;
+  let findClosing = false;
 
   function findOpen() {
     return !!refs.v3 && refs.v3.getAttribute("data-find") === "open";
   }
 
   /**
-   * 「探す」の板: 一覧（話題の一覧と絞り込み）を列の上に重ね、後ろを押せなくして、絞り込み欄に焦点。履歴は積まない。
+   * 「探す」の板: 一覧（話題の一覧と絞り込み）を列の上に重ね、後ろを押せなくして、絞り込み欄に焦点。履歴は広い幅では積まず、スマホは entry を 1 つ積む（戻るで閉じる）。
    * ダイアログ・重ねた右腕の間は開かない（Ctrl+K と同じ）。開いていれば絞り込み欄に焦点を戻すだけ
    */
   function openFind(opener) {
@@ -1803,7 +1813,15 @@
     if (S.handMode === "over" && S.handOver) return;
     if (!findOpen()) {
       findOpener = opener || null;
+      findClosing = false;
       refs.v3.setAttribute("data-find", "open");
+      if (deckFull()) {
+        try {
+          if (!(history.state && history.state.v3Find)) history.pushState({ v3Find: true }, "", location.href);
+        } catch {
+          // 積めなくても Esc・幕で閉じられる
+        }
+      }
       const backdrop = $("v3-find-backdrop");
       if (backdrop) backdrop.hidden = false;
       const list = $("v3-list");
@@ -1819,9 +1837,23 @@
     searchInput().focus();
   }
 
-  /** 板を閉じる（属性を戻し、絞り込みの字を空にする）。restore なら開いたボタンへ焦点 */
+  /**
+   * 板を閉じる（属性を戻し、絞り込みの字を空にする）。restore なら開いたボタンへ焦点。
+   * restore で今の entry が板の物（v3Find。スマホ）なら戻る（popstate で閉じる）。restore でない閉じ方（行を開く・右腕を開く）は戻らず、entry は開いた先が置き換える
+   */
   function closeFind(restore) {
     if (!findOpen()) return;
+    if (restore && history.state && history.state.v3Find) {
+      if (findClosing) return;
+      try {
+        findClosing = true;
+        history.back();
+        return;
+      } catch {
+        // 戻れなければその場で閉じる
+        findClosing = false;
+      }
+    }
     refs.v3.setAttribute("data-find", "closed");
     const backdrop = $("v3-find-backdrop");
     if (backdrop) backdrop.hidden = true;
@@ -1985,6 +2017,10 @@
     window.addEventListener("popstate", (e) => {
       const st = e.state || {};
       handClosing = false;
+      findClosing = false;
+      // スマホの「探す」の板は履歴の v3Find に合わせて閉じる（進むでは開き直さない）
+      const findClosed = findOpen() && !st.v3Find;
+      if (findClosed) closeFind(true);
       // 重ねた右腕の開閉は履歴の v3Hand に合わせる（スマホで開いたときだけ entry を積む）
       // 先に変数だけ変え、面を変えてから当てる（2 つ一度に戻ったとき、隠れる会話を既読にしない）
       let handClosed = false;
@@ -1997,10 +2033,10 @@
       if (st.v3Body && S.active) setView("body");
       else {
         setView("list");
-        // 一覧の行（流れの列では席を開いた元）への焦点は右腕が関わらなかったときだけ（閉じたなら開いた口へ戻す）
-        if (!handChanged && !S.handOver) {
-          if (phone()) focusCurrentRow();
-          else if (deckOn()) focusSeatFrom();
+        // 一覧の行（流れの列では席を開いた元）への焦点は右腕・板が関わらなかったときだけ（閉じたなら開いた口へ戻す）
+        if (!handChanged && !S.handOver && !findClosed) {
+          if (deckOn()) focusSeatFrom();
+          else if (phone()) focusCurrentRow();
         }
       }
       if (handChanged) applyHand();
