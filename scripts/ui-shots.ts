@@ -157,6 +157,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     // 一覧を末尾まで送った所（ダークのスマホ・タブレット）と、入口が読めないとき（ダークのスマホ）
     ...(theme === "dark" && vp !== "pc" ? ["a-list-end"] : []),
     ...(theme === "dark" && vp === "phone" ? ["a-entry-missing"] : []),
+    // 流れの列（D1。640px 以上の 3 組）: 帯と 3 列の所と、項目から席を開いた所
+    ...(vp !== "phone" ? ["a-deck", "a-deck-seat"] : []),
     "b-chat-top",
     "b-chat-middle",
     "b-chat-bottom",
@@ -190,8 +192,8 @@ const GALLERY_SHOTS: ReadonlyArray<{ vp: Viewport; theme: Theme }> = [
   { vp: "pc", theme: "dark" },
   { vp: "pc", theme: "light" },
 ];
-/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk・g-composer・g-cards・g-hand・g-term はその節の要素の絵（K3〜K6 と端末のセッションの札）、ほかは押して開いた所） */
-const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-composer", "g-cards", "g-hand", "g-term", "g-sheet", "g-confirm", "g-toast"] as const;
+/** 見本の絵の種類（g-gallery はページ全体、g-list・g-top・g-bottom・g-talk・g-composer・g-cards・g-hand・g-term・g-deck はその節の要素の絵（K3〜K6 と端末のセッションの札と流れの列）、ほかは押して開いた所） */
+const GALLERY_KINDS = ["g-gallery", "g-list", "g-top", "g-bottom", "g-talk", "g-composer", "g-cards", "g-hand", "g-term", "g-deck", "g-sheet", "g-confirm", "g-toast"] as const;
 type GalleryKind = (typeof GALLERY_KINDS)[number];
 const galleryName = (vp: Viewport, theme: Theme, kind: GalleryKind): string => `${vp}-${theme}-${kind}`;
 
@@ -4007,6 +4009,68 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /**
+   * 流れの列の検査（D1）: 見える列の数が data-deck と c-deck.js の deckFit と合う・列の幅は 420 以下・席の幅は deckFit と同じ・
+   * 列と項目と帯で字が横にはみ出ない・番の項目の地は --turn-surface で左の線は --warning・帯のボタンは 4 つ（data-act）。足りない物の文
+   */
+  async function deckLines(page: Page, vp: Viewport, label: string): Promise<string[]> {
+    return page.evaluate(
+      ({ label, width }: { label: string; width: number }) => {
+        const out: string[] = [];
+        const say = (text: string): void => void out.push(`流れの列（${label}・幅 ${width}）: ${text}`);
+        const v3 = document.querySelector<HTMLElement>("#v3");
+        const deck = document.querySelector<HTMLElement>("#c-deck-root .c-deck");
+        if (v3 === null || deck === null) return [`流れの列（${label}）: #v3 か .c-deck が無い`];
+        const want = Number(v3.getAttribute("data-deck"));
+        const seatOpen = v3.getAttribute("data-view") === "body";
+        const box = deck.getBoundingClientRect();
+        const cols = [...deck.querySelectorAll<HTMLElement>(":scope > .c-col")];
+        if (cols.length !== 3) say(`列が ${cols.length} 本（3 本のはず）`);
+        const shown = cols.filter((c) => {
+          const r = c.getBoundingClientRect();
+          return r.width > 0 && r.left >= box.left - 0.5 && r.right <= box.right + 0.5;
+        });
+        if (want > 0 && shown.length !== want) say(`見える列が ${shown.length} 本（data-deck ${want}）`);
+        if (deck.getAttribute("data-cols") !== String(want)) say(`.c-deck の data-cols が ${deck.getAttribute("data-cols")}（${want} のはず）`);
+        for (const c of shown) if (c.getBoundingClientRect().width > 420.5) say(`列 ${c.dataset.col} の幅 ${c.getBoundingClientRect().width.toFixed(1)}（420 以下のはず）`);
+        const main = document.querySelector<HTMLElement>("#v3-main");
+        const seat = main === null || !seatOpen ? 0 : main.getBoundingClientRect().width;
+        const fit = (window as unknown as { SA: { deck: { fit: (w: number, open: boolean) => { cols: number; seat: number } } } }).SA.deck.fit(v3.clientWidth, seatOpen);
+        if (fit.cols !== want) say(`deckFit の列 ${fit.cols}・data-deck ${want}`);
+        if (Math.abs(seat - fit.seat) > 1) say(`席の幅 ${seat.toFixed(1)}（deckFit では ${fit.seat}）`);
+        // はみ出る字（列・項目・帯）
+        for (const sel of [".c-deck", ".c-col", ".c-col-head", ".c-item", ".c-item-main", ".c-band", ".c-band-ops"]) {
+          for (const el of document.querySelectorAll<HTMLElement>(`:is(#c-deck-root, #c-band-root) ${sel}`)) {
+            if (el.getClientRects().length === 0 || el.matches(".c-deck")) continue;
+            if (el.scrollWidth > el.clientWidth + 0.5) say(`${sel}「${(el.textContent ?? "").trim().slice(0, 20)}」がはみ出る 幅 ${el.clientWidth} 要る幅 ${el.scrollWidth}`);
+          }
+        }
+        // 番の項目の面と線（変数の値を色に直して比べる）
+        const probe = document.createElement("span");
+        document.body.append(probe);
+        const colorOf = (v: string): string => {
+          probe.style.color = `var(${v})`;
+          return getComputedStyle(probe).color;
+        };
+        const turnSurface = colorOf("--turn-surface");
+        const warning = colorOf("--warning");
+        probe.remove();
+        const turns = [...deck.querySelectorAll<HTMLElement>('.c-item[data-turn="true"]')].filter((el) => el.dataset.current !== "true");
+        if (turns.length === 0) say("番の項目が無い");
+        for (const el of turns) {
+          const cs = getComputedStyle(el);
+          if (cs.backgroundColor !== turnSurface) say(`番の項目の地 ${cs.backgroundColor}（--turn-surface ${turnSurface} のはず）`);
+          if (cs.borderLeftColor !== warning || cs.borderLeftWidth !== "3px") say(`番の項目の左の線 ${cs.borderLeftWidth} ${cs.borderLeftColor}（3px ${warning} のはず）`);
+        }
+        // 帯のボタン
+        const acts = [...document.querySelectorAll("#c-band-root .c-band-ops [data-act]")].map((el) => el.getAttribute("data-act"));
+        if (JSON.stringify(acts) !== JSON.stringify(["find", "hand", "start", "more"])) say(`帯のボタンが ${acts.join("・")}（探す・右腕・始める・ほか のはず）`);
+        return out;
+      },
+      { label, width: VIEWPORTS[vp].viewport.width },
+    );
+  }
+
   async function newShell(vp: Viewport, theme: Theme, full: boolean): Promise<void> {
     const p = `${vp}-${theme}`;
     if (!newShellNames(vp, theme, full).some(wanted)) return;
@@ -4078,6 +4142,25 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (!removed.some((line) => line.includes("[web] list entry missing"))) problems.push("入口: 「[web] list entry missing」が console に出ていない");
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`入口の検査で ${problems.length} 件`);
+        });
+      }
+      // 流れの列（D1。640px 以上）: 列の数と幅・はみ出し・番の項目の面と線・帯のボタン。項目から席を開いて、列と席の幅・開いた項目の印
+      if (vp !== "phone") {
+        await step(`${p} deck`, [`${p}-a-deck`, `${p}-a-deck-seat`], async () => {
+          await load(page, "/");
+          await page.waitForSelector("#v3[data-deck] #c-deck-root .c-deck .c-col", { timeout: 5000 });
+          await settled(page);
+          const problems: string[] = [...(await deckLines(page, vp, "列"))];
+          await shot(page, `${p}-a-deck`);
+          await page.locator('#c-deck-root .c-col[data-col="turn"] .c-item[data-turn="true"] button.c-item-main').first().click();
+          await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+          await settled(page);
+          problems.push(...(await deckLines(page, vp, "席")));
+          const current = await page.evaluate(() => document.querySelectorAll('#c-deck-root .c-item[data-current="true"] > button.c-item-main[aria-current="true"]').length);
+          if (current !== 1) problems.push(`流れの列（席）: 開いた項目の印（aria-current）が ${current} 個（1 個のはず）`);
+          await shot(page, `${p}-a-deck-seat`);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`流れの列の検査で ${problems.length} 件`);
         });
       }
       await step(`${p} b`, [`${p}-b-chat-top`, `${p}-b-chat-middle`, `${p}-b-chat-bottom`], async () => {
@@ -4449,6 +4532,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         { name: galleryName(vp, theme, "g-cards"), selector: '[data-section="cards"]' },
         { name: galleryName(vp, theme, "g-hand"), selector: '[data-section="hand"]' },
         { name: galleryName(vp, theme, "g-term"), selector: '[data-section="term"]' },
+        { name: galleryName(vp, theme, "g-deck"), selector: '[data-section="deck"]' },
       ];
       await step(full, [full, ...parts.map((part) => part.name)], async () => {
         await loadGallery();

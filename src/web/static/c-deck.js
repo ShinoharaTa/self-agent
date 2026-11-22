@@ -358,7 +358,7 @@ export function Column({ col, on }) {
   </section>`;
 }
 
-/** 1 つの項目。席に開ける物（target）はボタン、外へのリンクだけの物は題をリンクにする */
+/** 1 つの項目。席に開ける物（target）はボタン、外へのリンクだけの物は項目ごとリンク（新しいタブ）、どちらでもなければ押せない */
 export function Item({ item, on }) {
   const head = [item.word, item.place].filter(filled).join("・");
   const inner = [
@@ -367,16 +367,16 @@ export function Item({ item, on }) {
       <span class="c-item-word">${head}</span>
       ${item.time ? html`<span class="c-item-time">${item.time}</span>` : null}
     </span>`,
-    item.target === null && item.href
-      ? html`<a class="c-item-link" key="title" href=${item.href} target="_blank" rel="noreferrer noopener"><span class="c-item-title">${item.title}</span></a>`
-      : html`<span class="c-item-title" key="title">${item.title}</span>`,
+    html`<span class="c-item-title" key="title">${item.title}</span>`,
     item.summary ? html`<span class="c-item-sum" key="sum">${item.summary}</span>` : null,
   ];
   return html`<div class="c-item" role="listitem" data-key=${item.key} data-kind=${item.kind} data-turn=${item.turn ? "true" : undefined}
       data-current=${item.current ? "true" : undefined}>
     ${item.target !== null
       ? html`<button class="c-item-main" type="button" aria-current=${item.current ? "true" : undefined} onClick=${() => on.open(item, item.key)}>${inner}</button>`
-      : html`<div class="c-item-main">${inner}</div>`}
+      : item.href
+        ? html`<a class="c-item-link" href=${item.href} target="_blank" rel="noreferrer noopener">${inner}</a>`
+        : html`<div class="c-item-main">${inner}</div>`}
   </div>`;
 }
 
