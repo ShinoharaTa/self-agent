@@ -814,8 +814,10 @@
       // スマホは戻る（端のスワイプ）で閉じられるよう entry を 1 つ積む（「探す」の板の entry の上なら置き換える。戻る 1 回で列）
       if (phone()) {
         try {
-          const st = { v3Body: S.view === "body", v3Hand: true, v3Depth: depthOf(history.state) };
-          if (history.state && history.state.v3Find) history.replaceState(st, "", location.href);
+          // 板の entry の上なら、板の下の段数を引き継ぐ（スレッドの上で開いた板。札で話題を開いた後の［‹］が列まで戻る）
+          const onFind = !!(history.state && history.state.v3Find);
+          const st = { v3Body: S.view === "body", v3Hand: true, v3Depth: onFind ? underFind(history.state) : depthOf(history.state) };
+          if (onFind) history.replaceState(st, "", location.href);
           else history.pushState(st, "", location.href);
         } catch {
           // 積めなくても [畳む]・backdrop で閉じられる
@@ -1158,7 +1160,21 @@
     return state && state.v3Body ? state.v3Depth || 1 : 0;
   }
 
+  /** 「探す」の板の entry の下から列までの段数（スレッドの上で開いた板だけ。列の上の板は 0） */
+  function underFind(state) {
+    return state && state.v3Find ? state.v3Depth || 0 : 0;
+  }
+
   function showList() {
+    // 進むで戻ってきた板の entry（スレッドの上。板は閉じたまま）からは、下のスレッドの entry も越えて列まで戻る
+    if (underFind(history.state) > 0) {
+      try {
+        history.go(-(underFind(history.state) + 1));
+        return;
+      } catch {
+        // 戻れなければその場で一覧にする
+      }
+    }
     if (history.state && history.state.v3Body) {
       try {
         // popstate で一覧にする（札で開いた話題は、その下の話題の entry も越えて一覧まで戻る）
@@ -2056,7 +2072,8 @@
         handChanged = true;
         handClosed = !S.handOver;
       }
-      if (st.v3Body && S.active) setView("body");
+      // スレッドの上で開いた板の entry（進むで戻ってきた。板は開き直さない）は、下のスレッドのまま
+      if ((st.v3Body || underFind(st) > 0) && S.active) setView("body");
       else {
         setView("list");
         // 一覧の行（流れの列では席を開いた元）への焦点は右腕・板が関わらなかったときだけ（閉じたなら開いた口へ戻す）

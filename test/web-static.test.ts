@@ -11745,6 +11745,51 @@ test("web static: スマホの流れの列: スレッドの上で Ctrl+K の板�
   assert.equal(h.history.state, null);
 });
 
+test("web static: スマホの流れの列: スレッドの上の Ctrl+K の板から右腕を開き、右腕から別の話題を開いても、［‹］1 回で列へ戻る（板の下の段数を右腕の entry が引き継ぐ）", async () => {
+  const h = (await loadDeck({ phone: true, width: 390 })) as HandShell;
+  h.app.open("ch:1");
+  h.fireDoc("keydown", keyEvent("k", h.nodes.topButtons.back, { ctrlKey: true }));
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Find: true, v3Depth: 1 });
+  // 板の中の右腕の行: 板の entry を右腕の entry に置き換える（下のスレッドまでの段数 1 を持つ）
+  const pushes = h.calls.push;
+  h.app.open("ch:900");
+  assert.equal(handOf(h), "open");
+  assert.equal(h.calls.push, pushes);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Body: true, v3Hand: true, v3Depth: 1 });
+  // 右腕から別の話題: 右腕の entry が話題に替わり、列までは 2 段
+  h.app.open("ch:2");
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.calls.push, pushes);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Body: true, v3Depth: 2 });
+  // ［‹］1 回で列（下の ch:1 の entry で止まらない）
+  h.lastTop().on.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(h.history.state, null);
+});
+
+test("web static: スマホの流れの列: スレッドの上の板を戻るで閉じた後、進むで板の entry に入ってもスレッドのまま（板は開き直さない）。そこからの［‹］は 1 回で列へ戻る", async () => {
+  const h = await loadDeck({ phone: true, width: 390 });
+  h.app.open("ch:1");
+  h.fireDoc("keydown", keyEvent("k", h.nodes.topButtons.back, { ctrlKey: true }));
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  h.history.forward();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Find: true, v3Depth: 1 });
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  h.lastTop().on.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(h.history.state, null);
+  // 列の上で開いた板の entry（段数なし）へ進むで入ったときは列のまま
+  const findBtn = h.nodes.bandButtons.find!;
+  lastBand(h).on.find!(findBtn);
+  h.history.back();
+  h.history.forward();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Find: true });
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+});
+
 test("web static: スマホの流れの列: 下のバーの右腕は entry を 1 つ積み、帯・列・下のバーが inert。戻ると畳み、焦点は下のバーの右腕。板の中から開くと板の entry を置き換える（戻る 1 回で列）", async () => {
   const h = (await loadDeck({ phone: true, width: 390 })) as HandShell;
   const inert = () => [h.nodes.band, h.nodes.deckBox, h.nodes.foot].map((n) => (n as unknown as { inert?: boolean }).inert === true);
