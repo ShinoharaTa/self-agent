@@ -4435,3 +4435,93 @@ test("web components: c-deck.css の横送り（paged の 4 つと列の 2 つ�
   const src = stripCssComments(read("c-deck.css"));
   assert.doesNotMatch(src, /(?<![-\w])(?:scroll-behavior|transition|animation)\s*:|@media \((?:min|max)-width/);
 });
+
+const DECK_PAGES = [
+  { id: "turn", label: "あなたの番", count: 2 },
+  { id: "tasks", label: "タスク", count: null },
+  { id: "feed", label: "通知", count: null },
+];
+
+test("web components: bottomModel の deck は列 3 つと右腕の 4 つ。今の列は 1 つだけ（知らない page は先頭）、pages が配列でなければ右腕だけ。phone・wide は今と同じ", () => {
+  assert.deepEqual(shell.bottomModel({ variant: "deck", pages: DECK_PAGES, page: "tasks", hand: "turn" }), {
+    variant: "deck",
+    items: [
+      { act: "page", id: "turn", label: "あなたの番", name: "あなたの番（2 件）", count: 2, current: false },
+      { act: "page", id: "tasks", label: "タスク", name: "タスク", count: 0, current: true },
+      { act: "page", id: "feed", label: "通知", name: "通知", count: 0, current: false },
+      { act: "hand", label: "右腕", name: shell.handLabel("turn"), mark: "turn" },
+    ],
+  });
+  for (const page of ["x", undefined, null]) {
+    const m = shell.bottomModel({ variant: "deck", pages: DECK_PAGES, page, hand: null });
+    assert.deepEqual(m.items.filter((i) => i.current === true).map((i) => i.id), ["turn"], String(page));
+  }
+  const zero = shell.bottomModel({ variant: "deck", pages: [{ id: "turn", label: "あなたの番", count: 0 }, { id: "feed", label: "通知", count: 120 }], page: "feed", hand: "unread" });
+  assert.deepEqual(zero.items.map((i) => i.name), ["あなたの番", "通知（99+ 件）", shell.handLabel("unread")]);
+  for (const pages of [null, undefined, "x", { id: "turn" }]) {
+    assert.deepEqual(shell.bottomModel({ variant: "deck", pages, page: "turn", hand: null }).items, [{ act: "hand", label: "右腕", name: shell.handLabel(null), mark: null }], String(pages));
+  }
+  // null・id の無い物は捨てる
+  assert.deepEqual(shell.bottomModel({ variant: "deck", pages: [null, { label: "x" }, { id: "", label: "y" }, DECK_PAGES[2]], page: "turn" }).items.map((i) => [i.act, i.id, i.current]), [["page", "feed", true], ["hand", undefined, undefined]]);
+  // phone・wide は deck の引数を渡しても今と同じ
+  assert.deepEqual(shell.bottomModel({ variant: "phone", turns: 2, hand: "turn", pages: DECK_PAGES, page: "feed" }), shell.bottomModel({ variant: "phone", turns: 2, hand: "turn" }));
+  assert.deepEqual(shell.bottomModel({ variant: "wide", tabs: [{ id: "tasks", title: "タスク" }], pages: DECK_PAGES }), shell.bottomModel({ variant: "wide", tabs: [{ id: "tasks", title: "タスク" }] }));
+});
+
+test("web components: BottomBar の deck（role・名前・data-variant、列のボタンの data-act・data-page・aria-current・aria-label、Badge は数のある列だけ、押すと on.page(id)、右腕は字「右腕」と on.hand）", () => {
+  const calls: unknown[][] = [];
+  const rec = (name: string) => (...a: unknown[]): void => void calls.push([name, ...a]);
+  const on = { page: rec("page"), hand: rec("hand"), list: rec("list"), tab: rec("tab"), more: rec("more") };
+  const v = shell.BottomBar({ variant: "deck", pages: [{ ...DECK_PAGES[0], count: 120 }, DECK_PAGES[1], DECK_PAGES[2]], page: "turn", hand: "turn", controls: "v3-hand", on }) as VNode;
+  assert.deepEqual(keysOf(v.props.children), ["turn", "tasks", "feed", "hand"]);
+  const bar = one(v);
+  assert.deepEqual([bar.props.role, bar.props["aria-label"], bar.props["data-variant"]], ["group", "移動", "deck"]);
+  const pages = find(bar, "c-bottom-page");
+  assert.deepEqual(
+    pages.map((b) => [b.type, b.props.type, b.props["data-act"], b.props["data-page"], b.props["aria-current"], b.props["aria-pressed"], b.props["aria-label"]]),
+    [
+      ["button", "button", "page", "turn", "true", undefined, "あなたの番（99+ 件）"],
+      ["button", "button", "page", "tasks", undefined, undefined, "タスク"],
+      ["button", "button", "page", "feed", undefined, undefined, "通知"],
+    ],
+  );
+  assert.deepEqual(pages.map((b) => textOf(find(b, "c-bottom-page-label"))), ["あなたの番", "タスク", "通知"]);
+  assert.deepEqual(pages.map((b) => find(b, "c-badge").map(textOf)), [["99+"], [], []]);
+  assert.equal(find(bar, "c-bottom-btn").length + find(bar, "c-btn").length, 0);
+  const hand = find(bar, "c-bottom-hand")[0] as El;
+  assert.deepEqual([hand.props["data-act"], hand.props["aria-label"], hand.props["aria-controls"], hand.props["aria-expanded"]], ["hand", shell.handLabel("turn"), "v3-hand", undefined]);
+  assert.equal(textOf(find(hand, "c-bottom-hand-label")), "右腕");
+  assert.match(String(((find(hand, "c-icon")[0] as El).children[0] as El).props.href), /#bot$/);
+  assert.equal(find(hand, "c-bottom-hand-mark")[0]?.props["data-state"], "turn");
+  const y = { scrollIntoView: () => undefined };
+  for (const b of pages) (b.props.onClick as (e: unknown) => void)(fakeEvent());
+  (hand.props.onClick as (e: unknown) => void)({ currentTarget: y });
+  assert.deepEqual(calls, [["page", "turn"], ["page", "tasks"], ["page", "feed"], ["hand", y]]);
+  // 数なし・今の列が通知・印なし
+  const quiet = one(html`<${shell.BottomBar} variant="deck" pages=${DECK_PAGES.map((p) => ({ ...p, count: null }))} page="feed" hand=${null} on=${on} />`);
+  assert.equal(find(quiet, "c-badge").length, 0);
+  assert.deepEqual(find(quiet, "c-bottom-page").map((b) => b.props["aria-current"]), [undefined, undefined, "true"]);
+  assert.equal(find(quiet, "c-bottom-hand-mark").length, 0);
+  assert.equal(find(quiet, "c-bottom-hand")[0]?.props["aria-controls"], undefined);
+});
+
+test("web components: TopBar の backLabel（無ければ「一覧へ」、空でない文字列ならその字。モデルの形は変えない）", () => {
+  const { on } = topRec();
+  const backOf = (o: Obj): unknown => find(one(html`<${shell.TopBar} ...${topProps(o)} on=${on} />`), "c-iconbtn")[0]?.props["aria-label"];
+  assert.equal(backOf({}), "一覧へ");
+  assert.equal(backOf({ backLabel: "戻る" }), "戻る");
+  for (const backLabel of ["", null, 3]) assert.equal(backOf({ backLabel }), "一覧へ", String(backLabel));
+  assert.deepEqual(shell.topModel(topProps({ backLabel: "戻る" })), shell.topModel(topProps()));
+});
+
+test("web components: c-shell.css の列のボタン（.c-bottom-page）は当たりの下限が --c-tap、今の列は太さと --muted の地。deck の右腕は中身の幅", () => {
+  const rules = parseCss(read("c-shell.css"));
+  const body = (sel: string): string => rules.filter((r) => r.at.length === 0 && r.selectors.includes(sel)).map((r) => r.body).join(" ");
+  const page = body(".c-bottom-page");
+  for (const decl of ["min-width: var(--c-tap)", "min-height: var(--c-tap)", "flex: 1 1 auto", "color: var(--text-secondary)"]) assert.ok(page.includes(decl), decl);
+  const current = body('.c-bottom-page[aria-current="true"]');
+  for (const decl of ["color: var(--text)", "font-weight: var(--weight-semibold)", "background: var(--muted)"]) assert.ok(current.includes(decl), decl);
+  assert.ok(body('.c-bottom[data-variant="deck"] .c-bottom-hand').includes("flex: 0 0 auto"));
+  // :hover は細かい指の media の中だけ（cssProblems が見る）、線・影は足さない
+  assert.doesNotMatch(page + current, /border:(?! 0)|box-shadow|transition/);
+});

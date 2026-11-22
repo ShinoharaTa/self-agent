@@ -106,14 +106,51 @@
   background: var(--primary-text);
 }
 
+/* スマホの流れの列（deck。D2）: 列のボタンは残りを分け合い、右腕は中身の幅。今の列は字の太さと地と aria-current（色だけにしない。差し色は D3） */
+.c-bottom-page {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-width: var(--c-tap);
+  min-height: var(--c-tap);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.c-bottom-page[aria-current="true"] {
+  background: var(--muted);
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+}
+
+.c-bottom-page-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.c-bottom[data-variant="deck"] .c-bottom-hand {
+  flex: 0 0 auto;
+}
+
 /* 押した・乗った（K2 の .c-btn と同じ宣言。動きは付けない） */
 .c-bottom-btn:active,
+.c-bottom-page:active,
 .c-bottom-hand:active {
   transform: scale(0.97);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .c-bottom-btn:hover {
+  .c-bottom-btn:hover,
+  .c-bottom-page:hover {
     background: var(--muted);
   }
 
