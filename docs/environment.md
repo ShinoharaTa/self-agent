@@ -62,3 +62,6 @@
 | `SELF_AGENT_CC_MAX_SESSIONS` | 生きている `claude`（`claude agents --json` の数と、起動してまだ一覧に出ていないもの）の上限（正の整数）。既定 30。これ以上なら Web からの起動を断る（409 `limit`） |
 | `SELF_AGENT_CC_SEND_WAIT_MIN` | Web から Claude Code のセッションに送ったものが入力待ちにならないとき、諦める（gave_up）までの分（正の整数）。既定 120 |
 | `SELF_AGENT_CC_NOTIFY` | `0` で、許可の要求・質問・判断待ちの知らせのために Claude Code のチャンネルを作るのをやめる（`docs/plan/claude-code-questions.md` §5。Q4）。既定 `1`（チャンネルが無ければ作ってそこに出す）。`0` でも既にあるチャンネルには許可の要求・質問・判断待ち・終了・写しを出し、ボタンも効く。チャンネルの無いセッションの要求は Web と端末・RC で答える（保留の長さは同じ）。どちらでも #system には出さない。「関わった」ときに作るのは変わらない。それ以外の値は設定エラー |
+| `SELF_AGENT_LEAD_NOTIFY` | `0` で、話題のターンの終わりのまとめ（`docs/plan/lead.md` の L2。#457）を #inbox に出さない。既定 `1`。それ以外の値は設定エラー。今は読むだけで、まとめを出す配線はまだ無い |
+| `SELF_AGENT_LEAD_RING` | まとめでオーナーを鳴らす物。`off`（鳴らさない）・`all`（毎回）・`stopped`（上限・失敗で止まったターンが在るとき）・`long`（それに加えて 2 分以上かかって終わったターンが在るとき）。既定 `long`。中断（オーナーの操作）と、返事が Discord のオーナーの発言への返信で出たターンは鳴らす理由に数えない。それ以外の値は `SELF_AGENT_LEAD_NOTIFY=0` でも設定エラー |
+| `SELF_AGENT_LEAD_SCOPE` | まとめに入れるターン。`all`（話題の全部のターン）・`long`（右腕・GitHub から送った最初の一言のターン、2 分以上かかったターン、上限・失敗・中断で止まったターン）・`right_hand`（右腕が始めた話題のターン）。既定 `all`。それ以外の値は `SELF_AGENT_LEAD_NOTIFY=0` でも設定エラー |
