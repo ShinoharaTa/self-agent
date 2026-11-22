@@ -29,6 +29,19 @@
   grid-auto-columns: min(var(--c-deck-col-max), calc((100% - 2 * var(--space-2)) / 3));
 }
 
+/* スマホ（D2）: 1 列ずつ全幅で止まる横送り。指の動きはブラウザの物（送りの動きは D5）。位置は下のバーが示すので送りのバーは出さない */
+.c-deck[data-paged="true"] {
+  grid-auto-columns: 100%;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.c-deck[data-paged="true"] > .c-col {
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
 .c-col {
   display: flex;
   flex-direction: column;
@@ -67,6 +80,7 @@
   min-height: 0;
   padding-bottom: var(--space-2);
   overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
 .c-col-label {
