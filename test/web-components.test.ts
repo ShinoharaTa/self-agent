@@ -3887,12 +3887,14 @@ test("web components: termMouth の draw は根に札を 1 つ描き、同じ根
 });
 
 // ===== 流れの列（c-deck.js。docs/plan/web-ui-deck.md の D1） =====
-type FlowItem = { key: string; kind: string; word: string; place: string; time: string; at: string | null; title: string; summary: string; mark: string; turn: boolean; target: string | null; href: string | null; ops: unknown[]; current: boolean };
+type FlowItem = { key: string; kind: string; word: string; place: string; time: string; at: string | null; title: string; summary: string; mark: string; turn: boolean; target: string | null; href: string | null; ops: FlowOp[]; current: boolean };
+type FlowOp = { id: string; label: string; name: string | null; disabled: boolean; busy: boolean; reason: string | null };
 type FlowColumn = { id: string; name: string; count: number | null; tone: string; phase: string; empty: string; sections: Array<{ label: string | null; items: FlowItem[] }> };
 const deckUrl = new URL("../src/web/static/c-deck.js", import.meta.url).href;
 const deck = (await import(deckUrl)) as Record<string, Fn> & {
   DECK: Readonly<Record<string, number>>;
   FEED_MAX: number;
+  ACT_REASON: Readonly<Record<string, string>>;
   deckFit: (width: unknown, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number };
   itemWord: (kind: unknown, src: unknown, state: Obj) => string;
   turnItems: (state: Obj) => FlowItem[];
@@ -4083,7 +4085,7 @@ test("web components: deckModel の 3 つの列（名前・数・tone・phase・
     ],
     rightHands: [],
   };
-  const full = deck.deckModel(flowOf({ topics, tasks: [{ id: 1, title: "t", due: null }], reminders: [], notices: [{ at: "2026-01-01T00:00:00Z", text: "n" }], ops: true }));
+  const full = deck.deckModel(flowOf({ topics, tasks: [{ id: 1, title: "t", due: null }], reminders: [], notices: [{ at: "2026-01-01T00:00:00Z", text: "n" }], ops: false }));
   const [turn, tasks, feed] = full.columns as [FlowColumn, FlowColumn, FlowColumn];
   assert.deepEqual(turn.sections.map((s) => [s.label, s.items.length]), [[null, 1], ["動いている", 1]]);
   assert.equal(turn.count, 1);
@@ -4148,6 +4150,90 @@ test("web components: Deck は 3 つの section.c-col を常に出し、項目�
   // 節の見出し
   const running = deck.deckModel(flowOf({ topics: { turnIds: [], groups: [], topics: [{ id: "ch:9", title: "動", mark: "running", turn: null }], rightHands: [] } }));
   assert.deepEqual(find(one(html`<${deck.Deck} model=${running} on=${on} />`), "c-col-label").map(textOf), ["動いている"]);
+});
+
+test("web components: ops が true のときだけ、タスクは［完了］（頭の印の場所の IconButton）・GitHub の通知は［対応］（.c-item-ops の Button sm。押せない理由は views.js の 2 文）。リマインド・知らせ・話題には付けない。busy の項目は押せない", () => {
+  const calls: unknown[][] = [];
+  const on = { open: (...a: unknown[]) => void calls.push(["open", ...a]), op: (...a: unknown[]) => void calls.push(["op", ...a]) };
+  const topics = {
+    turnIds: ["ch:1"],
+    groups: [],
+    topics: [
+      { id: "ch:1", title: "番", mark: "turn", turn: { kind: "permission", since: "s" } },
+      { id: "ch:2", title: "未読", mark: null, turn: null, activityAt: "2026-01-01T00:00:00Z", last: { id: 1 } },
+    ],
+    rightHands: [],
+  };
+  const github = [
+    { id: 1, url: "https://github.com/o/r/pull/2", title: "押せる", label: "", updatedAt: "2026-01-01T03:00:00Z", handoff: true },
+    { id: 2, url: "https://github.com/o/r/issues/3", title: "押せない", label: "", updatedAt: "2026-01-01T02:00:00Z", handoff: false },
+  ];
+  const base = { topics, tasks: [{ id: 5, title: "買い物", due: null }], reminders: [{ id: 1, text: "r", nextAt: null }], github, notices: [{ at: "2026-01-01T01:00:00Z", text: "n" }], isUnread: () => true };
+  const all = (m: Obj) => (m.columns as FlowColumn[]).flatMap((c) => c.sections.flatMap((s) => s.items));
+  // ops が true でなければ付けない（今までどおり）
+  for (const ops of [false, undefined, "true"]) assert.ok(all(deck.deckModel(flowOf({ ...base, ops }))).every((i) => i.ops.length === 0), String(ops));
+  const model = deck.deckModel(flowOf({ ...base, ops: true, handoff: true }));
+  const items = all(model);
+  const opsOf = (key: string) => items.find((i) => i.key === key)!.ops;
+  assert.deepEqual(opsOf("task:5"), [{ id: "complete", label: "完了", name: "「買い物」を完了にする", disabled: false, busy: false, reason: null }]);
+  assert.deepEqual(opsOf("gh:1"), [{ id: "act", label: "対応", name: null, disabled: false, busy: false, reason: null }]);
+  assert.deepEqual(opsOf("gh:2"), [{ id: "act", label: "対応", name: null, disabled: true, busy: false, reason: "この通知は対応できません。この機械に無いリポジトリか、[対応] を足す前の通知です" }]);
+  for (const key of ["turn:ch:1", "rem:1", "notice:2026-01-01T01:00:00Z:0", "topic:ch:2"]) assert.deepEqual(opsOf(key), [], key);
+  // 連携が無効なら理由は連携の文。2 つの文は views.js の githubActButton と同じ字
+  const off = all(deck.deckModel(flowOf({ ...base, ops: true, handoff: false })));
+  assert.equal(off.find((i) => i.key === "gh:1")!.ops[0]?.reason, null);
+  assert.equal(off.find((i) => i.key === "gh:2")!.ops[0]?.reason, "Claude Code の連携が無効です（設定で有効にできます）");
+  const views = read("views.js");
+  for (const text of Object.values(deck.ACT_REASON)) assert.ok(views.includes('"' + text + '"'), text);
+  // busy の項目は押せない（応答まで）
+  const busy = all(deck.deckModel(flowOf({ ...base, ops: true, handoff: true, busy: ["task:5", "gh:1"] })));
+  assert.deepEqual(busy.find((i) => i.key === "task:5")!.ops[0], { id: "complete", label: "完了", name: "「買い物」を完了にする", disabled: true, busy: true, reason: null });
+  assert.deepEqual([busy.find((i) => i.key === "gh:1")!.ops[0]?.disabled, busy.find((i) => i.key === "gh:1")!.ops[0]?.busy], [true, true]);
+  // 描く: 完了は押せない項目（div）の頭の IconButton（印の代わり）。ボタンの中にボタンを入れない
+  const root = one(html`<${deck.Deck} model=${model} on=${on} />`);
+  const byKey = (key: string) => find(root, "c-item").find((i) => i.props["data-key"] === key)!;
+  const task = byKey("task:5");
+  const taskMain = find(task, "c-item-main")[0]!;
+  assert.equal(taskMain.type, "div");
+  const meta = find(taskMain, "c-item-meta")[0]!;
+  const done = find(meta, "c-iconbtn");
+  assert.equal(done.length, 1);
+  assert.deepEqual([done[0]!.props["aria-label"], done[0]!.props["data-size"], done[0]!.props["aria-disabled"]], ["「買い物」を完了にする", "sm", undefined]);
+  assert.equal(find(meta, "c-mark").length, 0);
+  assert.equal(find(task, "c-item-ops").length, 0);
+  const ev = fakeEvent();
+  (done[0]!.props.onClick as (e: unknown) => void)(ev);
+  const taskModel = items.find((i) => i.key === "task:5");
+  assert.deepEqual(calls, [["op", taskModel, "complete"]]);
+  // 対応は開くリンクの兄弟の .c-item-ops（リンクの中に入れない）
+  const gh = byKey("gh:1");
+  const link = find(gh, "c-item-link")[0]!;
+  assert.equal(find(link, "c-btn").length + find(link, "c-iconbtn").length, 0);
+  const opsBox = gh.children.filter((c): c is El => typeof c !== "string" && c.props.class === "c-item-ops");
+  assert.equal(opsBox.length, 1);
+  const act = find(opsBox[0]!, "c-btn")[0]!;
+  assert.deepEqual([textOf(find(act, "c-btn-label")), act.props["data-size"], act.props["data-kind"], act.props["aria-disabled"], act.props.title], ["対応", "sm", "secondary", undefined, undefined]);
+  (act.props.onClick as (e: unknown) => void)(ev);
+  assert.deepEqual(calls[1], ["op", items.find((i) => i.key === "gh:1"), "act"]);
+  // 押せない［対応］は aria-disabled と title の理由（今の一覧と同じ出し方）で、押しても on.op を呼ばない
+  const offAct = find(byKey("gh:2"), "c-btn")[0]!;
+  assert.deepEqual([offAct.props["aria-disabled"], offAct.props.title], ["true", "この通知は対応できません。この機械に無いリポジトリか、[対応] を足す前の通知です"]);
+  (offAct.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.equal(calls.length, 2);
+  // 操作の無い項目は .c-item-ops を出さず、印のまま
+  for (const key of ["turn:ch:1", "rem:1", "topic:ch:2"]) {
+    assert.equal(find(byKey(key), "c-item-ops").length + find(byKey(key), "c-iconbtn").length + find(byKey(key), "c-btn").length, 0, key);
+    assert.equal(find(byKey(key), "c-mark").length, 1, key);
+  }
+  // busy の描き直し: 完了は aria-disabled、対応は aria-busy。押しても on.op を呼ばない
+  const busyRoot = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ ...base, ops: true, handoff: true, busy: ["task:5", "gh:1"] }))} on=${on} />`);
+  const bKey = (key: string) => find(busyRoot, "c-item").find((i) => i.props["data-key"] === key)!;
+  const bDone = find(bKey("task:5"), "c-iconbtn")[0]!;
+  const bAct = find(bKey("gh:1"), "c-btn")[0]!;
+  assert.deepEqual([bDone.props["aria-disabled"], bAct.props["aria-disabled"], bAct.props["aria-busy"]], ["true", "true", "true"]);
+  (bDone.props.onClick as (e: unknown) => void)(fakeEvent());
+  (bAct.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.equal(calls.length, 2);
 });
 
 test("web components: DeckBand は点・名前・探す・右腕・始める・ほかの順で、右腕は aria-controls と aria-expanded、押すと on の 5 つ", () => {

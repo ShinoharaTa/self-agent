@@ -18,6 +18,8 @@
   let started = false;
   /** 最後に押した項目の key（shell.js の open が 1 回だけ読む。閉じた後の焦点の戻り先） */
   let pressedKey = null;
+  /** 操作を押してから応答までの項目の key（同じ項目を二度送らない。描き直しで押せなくする） */
+  const busy = new Set();
 
   /** 部品が押されたとき（1 回だけ作る） */
   const FLOW_ON = {
@@ -26,7 +28,34 @@
       pressedKey = typeof key === "string" ? key : null;
       SA.app.open(item.target);
     },
+    // 完了 → views.js の completeTask（知らせと［取り消す］・一覧の読み直しは views.js のまま）、対応 → githubHandoff
+    op: (item, opId) => {
+      if (!item || typeof item.key !== "string" || busy.has(item.key)) return;
+      const run = opRun(item.key, opId);
+      if (!run) return;
+      busy.add(item.key);
+      render();
+      const done = () => {
+        busy.delete(item.key);
+        render();
+      };
+      Promise.resolve(run()).then(done, done);
+    },
   };
+
+  /** 項目の key と操作から、元の物に対する呼び出しを返す（引けなければ null） */
+  function opRun(key, opId) {
+    if (opId === "complete") {
+      const task = (store.openTasks || []).find((t) => "task:" + t.id === key);
+      return task ? () => SA.views.completeTask(null, task) : null;
+    }
+    if (opId === "act") {
+      const list = store.github && Array.isArray(store.github.notifications) ? store.github.notifications : [];
+      const n = list.find((x) => "gh:" + x.id === key);
+      return n && n.handoff ? () => SA.views.githubHandoff(null, n, "act") : null;
+    }
+    return null;
+  }
 
   const isUnread = (channelId, last) => store.isUnread({ id: channelId, last });
 
@@ -48,7 +77,8 @@
       day: SA.views.dayLabel,
       oneLine: SA.views.oneLine,
       parts: SA.views.githubParts,
-      ops: false,
+      ops: true,
+      busy: [...busy],
       on: FLOW_ON,
     };
   }

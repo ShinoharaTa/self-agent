@@ -344,16 +344,17 @@
 
   /**
    * POST して、通ったら一覧を読み直して then を呼ぶ。押したボタンは終わるまで押せなくし、読み直しが終わったら（失敗でも）押せる状態に戻す
-   * （読み直せていれば行ごと描き直されている）
+   * （読み直せていれば行ごと描き直されている）。返す Promise は、通れば読み直しの後、通らなければすぐに終わる（流れの列の押してから応答まで）
    */
   function act(button, path, key, then) {
     if (button) button.disabled = true;
-    SA.api.post(path, {}, { quiet: true }).then(
+    return SA.api.post(path, {}, { quiet: true }).then(
       (data) => {
-        store.reload(key).then(() => {
+        const reloaded = store.reload(key).then(() => {
           if (button) button.disabled = false;
         });
         if (then) then(data);
+        return reloaded;
       },
       (err) => {
         if (button) button.disabled = false;
@@ -384,7 +385,7 @@
   }
 
   function completeTask(button, t) {
-    act(button, "/api/tasks/" + t.id + "/complete", "tasks", () => {
+    return act(button, "/api/tasks/" + t.id + "/complete", "tasks", () => {
       toast("「" + t.title + "」を完了にしました", {
         label: "取り消す",
         run: () => act(null, "/api/tasks/" + t.id + "/reopen", "tasks"),
@@ -580,10 +581,10 @@
     });
   }
 
-  /** POST /api/github/<id>/act（[対応]）。押したボタンは終わるまで押せなくする */
+  /** POST /api/github/<id>/act（[対応]）。押したボタンは終わるまで押せなくする（返す Promise は応答の後に終わる） */
   function githubHandoff(button, n, action) {
     if (button) button.disabled = true;
-    SA.api.post("/api/github/" + n.id + "/" + action, {}, { quiet: true }).then(
+    return SA.api.post("/api/github/" + n.id + "/" + action, {}, { quiet: true }).then(
       (data) => {
         if (button) button.disabled = false;
         githubHandoffDone(n, data);
@@ -2108,6 +2109,9 @@
     kbSelectedId: () => (store.knowledge ? (kbSelected(store.knowledge.entries) || { id: null }).id : null),
     kbInput,
     githubParts,
+    // 流れの列の操作（flows.js。button は null）
+    completeTask,
+    githubHandoff,
     ccName,
     ago,
     secondsAgo,
