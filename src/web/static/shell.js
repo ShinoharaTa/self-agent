@@ -41,8 +41,10 @@
   // スマホ（639px 以下）は 1 列（一覧 ⇄ 会話）、640px 以上は 2 列
   const mqPhone = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false, addEventListener() {} };
   const phone = () => mqPhone.matches;
-  // 640px 以上で流れの列の入口（c-app.js の SA.deck）が在れば、上の帯 + 3 列 + 席。無ければ今の広い幅の形（一覧 + 列 2 + 右腕の列）に落ちる（D6 で落ち先ごと消す）
-  const deckOn = () => !phone() && !!SA.deck;
+  // 流れの列の入口（c-app.js の SA.deck）が在れば、640px 以上は上の帯 + 3 列 + 席。無ければ今の広い幅の形（一覧 + 列 2 + 右腕の列）に落ちる（D6 で落ち先ごと消す）
+  // スマホは入口に下のバーの口（SA.deck.drawBar）も在るときだけ、上の帯 + 1 列ずつの横送り + 下のバー（deckFull。D2）。無ければ今のスマホの殻（一覧 ⇄ 会話）
+  const deckOn = () => !!SA.deck && (!phone() || typeof SA.deck.drawBar === "function");
+  const deckFull = () => phone() && deckOn();
 
   // ===== 状態 =====
   const THEMES = ["dark", "light", "system"];
@@ -69,6 +71,8 @@
     deckCols: null,
     deckCurrent: null,
     seatFrom: null,
+    // スマホの流れの列で見ている列（"turn" | "tasks" | "feed"。メモリだけ。履歴・hash・保存に書かない）
+    deckPage: "turn",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -307,7 +311,9 @@
       compact: S.topCompact,
       menu: t !== null && (topNarrow() || takeSession() !== null || (head !== null && head.menu.length > 0)),
       mode: head && head.mode ? { value: head.mode, disabled: modeBusy(t), reason: modeBusy(t) ? MODE_BUSY : null } : null,
-      close: deckOn(),
+      close: deckOn() && !phone(),
+      // スマホの流れの列の［‹］は列へ戻る（落ち先は「一覧へ」のまま）
+      backLabel: deckFull() ? "戻る" : undefined,
       controls: "v3-hand",
       on: TOP_ON,
     };
@@ -320,7 +326,7 @@
     if (!SA.top) return;
     const st = topState();
     if (SA.top.draw(st)) return;
-    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, close: st.close, controls: "v3-hand", on: TOP_ON });
+    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, close: st.close, backLabel: st.backLabel, controls: "v3-hand", on: TOP_ON });
   }
 
   /** 見出しの帯に場所・[会話][端末] が出ていないか（スマホか、広い幅の compact）。出ていなければ「…」の板に入れる */
@@ -622,7 +628,7 @@
       if (n) n.inert = on;
     };
     set("v3-list", over);
-    for (const id of ["v3-band", "v3-deck", "v3-main"]) set(id, over || find);
+    for (const id of ["v3-band", "v3-deck", "v3-foot", "v3-main"]) set(id, over || find);
   }
 
   /** 開閉と形を属性に書き、見えていれば描く（見えていない間は高さが測れないので、属性を書いた後で描く） */
@@ -837,6 +843,11 @@
     let target = shownNode(opener) ? opener : null;
     if (target) {
       target.focus();
+      return;
+    }
+    // スマホの流れの列で列が見えている: 下のバーの右腕のボタン
+    if (deckFull() && S.view !== "body") {
+      SA.deck.focusBar("hand");
       return;
     }
     // スマホの一覧: 下のバーの右腕のボタン（無ければ何もしない）
@@ -1523,6 +1534,24 @@
     more: (opener) => openMore(opener),
   };
 
+  /** スマホの流れの列の下のバーの押した先（1 回だけ作り、毎回同じ物を渡す） */
+  const DECKBAR_ON = {
+    // バーで選んだ列へすぐ送る（履歴・hash は変えない）
+    page: (id) => {
+      S.deckPage = id;
+      SA.deck.page(id);
+      renderBottom(handMark());
+    },
+    // 指・焦点の移動で送られた列（何度来てもよい。ここから SA.deck.page を呼ばない）
+    paged: (id) => {
+      if (S.deckPage === id) return;
+      S.deckPage = id;
+      renderBottom(handMark());
+    },
+    // 開いて入力欄に焦点（一覧の下のバーの右腕と同じ）
+    hand: (opener) => openHand(opener, true),
+  };
+
   /** 広い幅のバーに並べる画面（引けるものだけ） */
   function barTabs() {
     const tabs = [];
@@ -1535,12 +1564,19 @@
 
   /** 下のバー（描くのは入口 c-app.js。形は入口が幅で決める）。mark は handMark() の値。描けなければ件数・印・タブの無い形で 1 回だけ描き直す */
   function renderBottom(mark) {
-    if (!SA.list) return;
-    // 流れの列の間は下のバーを描かない（行き先は上の帯）
     if (deckOn()) {
-      SA.list.drawBar(null);
+      // 流れの列の間は一覧の下のバーを描かない。広い幅は行き先が上の帯なのでスマホの列の下のバーも空にする
+      if (SA.list) SA.list.drawBar(null);
+      if (!phone()) {
+        if (typeof SA.deck.drawBar === "function") SA.deck.drawBar(null);
+        return;
+      }
+      // スマホは列の下のバー（列 3 つと右腕）。描けなければ印の無い形で 1 回だけ描き直す
+      const bar = { page: S.deckPage, hand: mark, controls: "v3-hand", on: DECKBAR_ON };
+      if (!SA.deck.drawBar(bar)) SA.deck.drawBar(Object.assign({}, bar, { hand: null }));
       return;
     }
+    if (!SA.list) return;
     // controls は右腕のボタンの aria-controls（見出しの [右腕] と同じ先）
     const ok = SA.list.drawBar({ turns: SA.topics.counts().turns, hand: mark, tabs: barTabs(), controls: "v3-hand", on: BAR_ON });
     if (!ok) SA.list.drawBar({ turns: 0, hand: null, tabs: [], controls: "v3-hand", on: BAR_ON });
@@ -1663,10 +1699,11 @@
     refs.conn = conn;
   }
 
-  // ===== 流れの列（640px 以上で入口 SA.deck が在るとき。docs/plan/web-ui-deck.md の D1）: 上の帯・3 つの列・席・「探す」の板 =====
+  // ===== 流れの列（入口 SA.deck が在るとき。docs/plan/web-ui-deck.md の D1・D2）: 上の帯・3 つの列・席・「探す」の板。スマホは 1 列ずつの横送りと下のバー =====
   /**
    * 幅と席の開閉から見える列の数と席の形を決めて #v3 に書く（data-deck・data-seat・data-find）。変わったら列・帯・下のバー・見出しを描き直す。
-   * 流れの列でなくなったら（スマホ・入口が無い）属性を消し、板を閉じ、下のバーを戻す。呼ぶのは起動・resize・スマホの境・setView
+   * スマホは列 1・席 full（スレッドは列の上に重ねる）で、描き直したら今の列へ送る。
+   * 流れの列でなくなったら（入口が無い）属性を消し、板を閉じ、下のバーを戻す。呼ぶのは起動・resize・スマホの境・setView
    */
   function fitDeck() {
     const v3 = refs.v3;
@@ -1681,26 +1718,32 @@
       renderBottom(handMark());
       return;
     }
-    const fit = SA.deck.fit(v3.clientWidth, S.view === "body");
-    const seat = fit.side ? "side" : "fold";
+    // 幅の判定は phone() だけ（スマホは deckFit を使わず 1 列）
+    const full = phone();
+    const fit = full ? { cols: 1, side: false } : SA.deck.fit(v3.clientWidth, S.view === "body");
+    const seat = full ? "full" : fit.side ? "side" : "fold";
     const current = S.view === "body" ? S.active : null;
     const first = S.deckCols === null;
+    const wasFull = v3.getAttribute("data-seat") === "full";
     const changed = first || S.deckCols !== fit.cols || S.deckCurrent !== current || v3.getAttribute("data-seat") !== seat;
     v3.setAttribute("data-deck", String(fit.cols));
     v3.setAttribute("data-seat", seat);
     if (first) v3.setAttribute("data-find", "closed");
-    // 初めて流れの列になったときに、列のタスク・リマインドを polling に足して読む（スマホでは D2 まで読まない。中は 1 回だけ）
+    // 初めて流れの列になったときに、列のタスク・リマインドを polling に足して読む（スマホでも。中は 1 回だけ）
     if (first && SA.flows) SA.flows.init();
     if (!changed) return;
     S.deckCols = fit.cols;
     S.deckCurrent = current;
     if (SA.flows) {
-      SA.flows.setView({ cols: fit.cols, current });
+      SA.flows.setView({ cols: fit.cols, current, paged: full });
       SA.flows.render();
     }
     renderBand();
-    if (first) renderBottom(handMark());
+    // スマホと広い幅をまたいだら下のバーを描き直す（スマホは列の下のバー、広い幅は空）
+    if (first || wasFull !== full) renderBottom(handMark());
     fitTop();
+    // 列を描き直した後に今の列へ送る（列の入れ物が幅 0 の間は入口が何もしない）
+    if (full) SA.deck.page(S.deckPage);
   }
 
   /** 列を今の値で描き直す（流れの列の間だけ） */
@@ -1718,11 +1761,12 @@
     more: (opener) => openDeckMore(opener),
   };
 
-  /** 上の帯（描くのは入口 c-app.js。流れの列の間だけ）。点は接続の Bot、右腕は印と開閉 */
+  /** 上の帯（描くのは入口 c-app.js。流れの列の間だけ）。点は接続の Bot、右腕は印と開閉（スマホの形は［右腕］を出さない。口は下のバー） */
   function renderBand() {
     if (!deckOn()) return;
     const bot = connBot();
     SA.deck.drawBand({
+      variant: phone() ? "phone" : "wide",
       conn: bot ? { tone: bot.connected ? "ok" : "bad", label: bot.label } : null,
       hand: { mark: handMark(), open: S.handMode === "over" && S.handOver },
       controls: "v3-hand",

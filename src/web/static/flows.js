@@ -1,7 +1,7 @@
 // 新しい殻（index.html）の流れの列（docs/plan/web-ui-deck.md の D1）: 3 つの列の状態と読み込みと、項目を押したときの口。
-// 描くのは入口 c-app.js の SA.deck.draw（モデルの純関数は c-deck.js）。見える列の数と席に開いている物は shell.js が setView で渡す。
+// 描くのは入口 c-app.js の SA.deck.draw（モデルの純関数は c-deck.js）。見える列の数・席に開いている物・1 列ずつの横送りか（スマホ）は shell.js が setView で渡す。
 // 読むのは api.js の store（タスク・リマインドは store.want で polling に足す。GitHub は /api/status で有効と分かってから。無効の間は一度も読まない）。
-// init は shell.js が初めて流れの列になったときに呼ぶ（スマホでは D2 まで読まない）
+// init は shell.js が初めて流れの列になったときに呼ぶ（スマホでも。D2）
 "use strict";
 
 (function () {
@@ -13,6 +13,8 @@
   let cols = 3;
   /** 席に開いているタブの ID（閉じていれば null） */
   let current = null;
+  /** 1 列ずつの横送りか（スマホ。shell.js が幅から決める） */
+  let paged = false;
   /** GitHub の通知を読むか（/api/status の github.enabled が true になった後） */
   let githubOn = false;
   let started = false;
@@ -87,6 +89,7 @@
     return {
       cols,
       current,
+      paged,
       topics: SA.topics.data(),
       tasks: store.openTasks,
       reminders: store.reminders,
@@ -132,6 +135,7 @@
   function setView(view) {
     cols = view.cols;
     current = view.current;
+    paged = view.paged === true;
   }
 
   /** 入口が在れば描く。描けなければ話題の無い形で 1 回だけ描き直す */

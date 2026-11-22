@@ -2945,7 +2945,9 @@ type TopState = {
 };
 const deckUrl = new URL("../src/web/static/c-deck.js", import.meta.url).href;
 const { deckFit, DECK } = (await import(deckUrl)) as { deckFit: (width: number, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number }; DECK: Record<string, number> };
-type BandState = { conn: { tone: string; label: string } | null; hand: { mark: string | null; open: boolean }; controls: string; on: Record<string, (opener?: unknown) => unknown> };
+type BandState = { variant?: string; conn: { tone: string; label: string } | null; hand: { mark: string | null; open: boolean }; controls: string; on: Record<string, (opener?: unknown) => unknown> };
+/** スマホの流れの列の下のバー（SA.deck.drawBar の bar。D2） */
+type DeckBarState = { page: string; hand: string | null; controls: string; on: { page: (id: string) => unknown; paged: (id: string) => unknown; hand: (opener: unknown) => unknown } };
 const shellUrl = new URL("../src/web/static/c-shell.js", import.meta.url).href;
 const { bottomModel } = (await import(shellUrl)) as { bottomModel: (o: { variant: string; turns: unknown; hand: unknown; tabs: unknown }) => BottomModel };
 /** モデルの中の群（「ほかのプロジェクト」の中も） */
@@ -2989,9 +2991,12 @@ function loadShell(
     takeover?: { draw?: () => boolean; noEntry?: boolean; noMouth?: boolean };
     /**
      * 流れの列（D1）の作り物の入口 SA.deck・SA.flows と、#v3-band・#v3-deck・#v3-find-backdrop・見出しの［閉じる］を置く。
-     * fit は本物の deckFit。focusItem は items に在る key だけ true。既定（渡さない）は今までどおり何も置かない
+     * fit は本物の deckFit。focusItem は items に在る key だけ true。既定（渡さない）は今までどおり何も置かない。
+     * スマホの下のバーの口（drawBar・page・focusBar）と #v3-foot も置く（noFoot なら置かない = スマホは落ち先）。deckBar は drawBar の答え（既定 true）
      */
     deck?: boolean;
+    noFoot?: boolean;
+    deckBar?: (bar: DeckBarState | null) => boolean;
   } = {},
 ) {
   // width は .v3 の幅（右腕の形を決める。既定 1,400 = 列。一覧は 280px）
@@ -3068,7 +3073,19 @@ function loadShell(
   deckBox.append(deckRoot);
   const findBackdrop = node("div", "v3-find-backdrop", "v3-find-backdrop");
   findBackdrop.hidden = true;
-  if (opts.deck) v3.append(band, list, deckBox, main, hand, backdrop, findBackdrop);
+  // スマホの流れの列の下のバーの入れ物（noFoot でなければ。中は代わりのボタン: 列 3 つと右腕）
+  const foot = node("div", "v3-foot", "v3-foot");
+  const footRoot = node("div", "c-foot-root", "v3-slot");
+  const footButtons: Record<string, DomNode> = {};
+  for (const act of ["turn", "tasks", "feed", "hand"]) {
+    const b = node("button");
+    b.setAttribute("data-act", act === "hand" ? "hand" : "page");
+    footButtons[act] = b;
+    footRoot.append(b);
+  }
+  foot.append(footRoot);
+  if (opts.deck && !opts.noFoot) v3.append(band, list, deckBox, foot, main, hand, backdrop, findBackdrop);
+  else if (opts.deck) v3.append(band, list, deckBox, main, hand, backdrop, findBackdrop);
   else v3.append(list, main, hand, backdrop);
   const body = node("body");
   body.append(v3, node("dialog", "v3-sheet"));
@@ -3490,8 +3507,26 @@ function loadShell(
     return st;
   };
   // 流れの列の入口の代わり: draw・drawBand は state を覚え、focusItem は items に在る key のとき代わりの項目のボタンに焦点、focusBand は帯の代わりのボタンに焦点
-  const deckSeen = { draws: [] as unknown[], bands: [] as BandState[], focusItems: [] as string[], focusBands: [] as string[], items: new Set<string>() };
-  const flowSeen = { inits: 0, statuses: 0, views: [] as Array<{ cols: number; current: string | null }>, renders: 0, key: null as string | null };
+  // スマホの下のバーの口: drawBar は bar を覚え、page は id を覚え、focusBar は代わりのボタンに焦点
+  const deckSeen = {
+    draws: [] as unknown[],
+    bands: [] as BandState[],
+    focusItems: [] as string[],
+    focusBands: [] as string[],
+    items: new Set<string>(),
+    bars: [] as Array<DeckBarState | null>,
+    pages: [] as string[],
+    focusBars: [] as string[],
+  };
+  // views は cols・current だけ（D1 の検査の形）、passed は渡された物そのまま（paged も。D2）
+  const flowSeen = {
+    inits: 0,
+    statuses: 0,
+    views: [] as Array<{ cols: number; current: string | null }>,
+    passed: [] as Array<{ cols: number; current: string | null; paged?: boolean }>,
+    renders: 0,
+    key: null as string | null,
+  };
   if (opts.deck) {
     SA.deck = {
       draw(st: unknown) {
@@ -3517,11 +3552,34 @@ function loadShell(
         return true;
       },
     };
+    if (!opts.noFoot) {
+      const deckBar = opts.deckBar;
+      Object.assign(SA.deck as Record<string, unknown>, {
+        drawBar(bar: DeckBarState | null) {
+          deckSeen.bars.push(bar);
+          return deckBar ? deckBar(bar) : true;
+        },
+        page(id: string) {
+          deckSeen.pages.push(id);
+          return true;
+        },
+        focusBar(act: string) {
+          deckSeen.focusBars.push(act);
+          const b = footButtons[act];
+          if (!b) return false;
+          b.focus();
+          return true;
+        },
+      });
+    }
     // flows.js の代わり: 呼ばれた事を覚える。lastKey は key を 1 回だけ返す（項目を押した代わりに key を置いてから open）
     SA.flows = {
       init: () => void flowSeen.inits++,
       status: () => void flowSeen.statuses++,
-      setView: (v: { cols: number; current: string | null }) => void flowSeen.views.push({ ...v }),
+      setView: (v: { cols: number; current: string | null; paged?: boolean }) => {
+        flowSeen.views.push({ cols: v.cols, current: v.current });
+        flowSeen.passed.push({ ...v });
+      },
       render: () => void flowSeen.renders++,
       lastKey: () => {
         const k = flowSeen.key;
@@ -3610,7 +3668,7 @@ function loadShell(
     press,
     app: SA.app as ShellApp,
     topics: SA.topics as Topics,
-    nodes: { v3, ed, listRoot, headOps, searchBox, sheet: ids.get("v3-sheet")!, list, main, topRoot, topButtons, hand, handEd, handShow, backdrop, bottomRoot, bottomHand, bottomMore, band, bandButtons, deckBox, itemButton, findBackdrop },
+    nodes: { v3, ed, listRoot, headOps, searchBox, sheet: ids.get("v3-sheet")!, list, main, topRoot, topButtons, hand, handEd, handShow, backdrop, bottomRoot, bottomHand, bottomMore, band, bandButtons, deckBox, itemButton, findBackdrop, foot, footButtons },
     deck: deckSeen,
     flows: flowSeen,
     top,
@@ -11062,7 +11120,7 @@ async function loadDeck(opts: Parameters<typeof loadShell>[0] = {}) {
   return h;
 }
 
-test("web static: 流れの列: 幅 1440・1180・820 で data-deck は 3・3・2、data-seat は side・fold・fold。スマホでは 3 つの属性を消し、戻すと付く", async () => {
+test("web static: 流れの列: 幅 1440・1180・820 で data-deck は 3・3・2、data-seat は side・fold・fold。スマホでは 1・full（1 列ずつの横送り）、戻すと 3・side", async () => {
   const h = await loadDeck({ width: 1440 });
   assert.deepEqual(deckAttrs(h), ["3", "side", "closed"]);
   h.setPhone(false, 1180);
@@ -11070,10 +11128,22 @@ test("web static: 流れの列: 幅 1440・1180・820 で data-deck は 3・3・
   h.setPhone(false, 820);
   assert.deepEqual(deckAttrs(h), ["2", "fold", "closed"]);
   assert.deepEqual(h.flows.views.at(-1), { cols: 2, current: null });
+  assert.deepEqual(h.flows.passed.at(-1), { cols: 2, current: null, paged: false });
   h.setPhone(true, 390);
-  assert.deepEqual(deckAttrs(h), [null, null, null]);
+  assert.deepEqual(deckAttrs(h), ["1", "full", "closed"]);
+  assert.deepEqual(h.flows.passed.at(-1), { cols: 1, current: null, paged: true });
   h.setPhone(false, 1440);
   assert.deepEqual(deckAttrs(h), ["3", "side", "closed"]);
+  assert.deepEqual(h.flows.passed.at(-1), { cols: 3, current: null, paged: false });
+  h.setPhone(true, 390);
+  assert.deepEqual(deckAttrs(h), ["1", "full", "closed"]);
+  // スマホで起動しても同じ（席を開いても 1・full のまま）
+  const p = await loadDeck({ phone: true, width: 390 });
+  assert.deepEqual(deckAttrs(p), ["1", "full", "closed"]);
+  assert.deepEqual(p.flows.passed.at(-1), { cols: 1, current: null, paged: true });
+  p.app.open("ch:1");
+  assert.deepEqual(deckAttrs(p), ["1", "full", "closed"]);
+  assert.deepEqual(p.flows.passed.at(-1), { cols: 1, current: "ch:1", paged: true });
 });
 
 test("web static: 流れの列: 項目から開くと席（data-view body・hash・v3Body の entry 1 つ）。flows に開いた ID を渡し、820 では列は 1 本。2 つ目を開いても履歴は増えない", async () => {
@@ -11230,10 +11300,13 @@ test("web static: 流れの列: 右腕は幅 1400 でも重ねる形で、帯の
   assert.equal(lastBand(h).hand.open, false);
   assert.equal(h.document.activeElement, hand);
   for (const n of [h.nodes.band, h.nodes.deckBox]) assert.equal((n as unknown as { inert: boolean }).inert, false);
-  // スマホに替えると下のバーが戻る
+  // スマホに替えても一覧の下のバーは空のまま、列の下のバー（SA.deck.drawBar）に描く
   h.setPhone(true, 390);
-  assert.notEqual(h.list.bottoms.at(-1), null);
-  assert.equal(h.bottom().variant, "phone");
+  assert.equal(h.list.bottoms.at(-1), null);
+  const bar = h.deck.bars.at(-1);
+  assert.ok(bar);
+  assert.equal(bar.page, "turn");
+  assert.equal(bar.controls, "v3-hand");
 });
 
 test("web static: 流れの列: 帯の［＋ 始める］は General の始める板、歯車の板は 知識・メモリ・使用量・（dev なら会話ログ）・設定、点は状態の画面", async () => {
@@ -11270,11 +11343,11 @@ test("web static: 流れの列: 初めて流れの列になったときに flows
   h.app.refreshNotices();
   h.app.refreshTabs();
   assert.ok(h.flows.renders >= before.renders + 4);
-  // スマホの間は描かない
+  // スマホの間も描く（1 列ずつの横送り）
   h.setPhone(true, 390);
   const phoneRenders = h.flows.renders;
   h.app.refreshSidebar();
-  assert.equal(h.flows.renders, phoneRenders);
+  assert.equal(h.flows.renders, phoneRenders + 1);
   const sh = read("shell.js");
   const init = fnSource(sh, "init");
   assert.doesNotMatch(init, /SA\.flows\.init\(\)/);
@@ -11282,15 +11355,25 @@ test("web static: 流れの列: 初めて流れの列になったときに flows
   assert.match(fnSource(sh, "fitDeck"), /if \(first && SA\.flows\) SA\.flows\.init\(\);/);
 });
 
-test("web static: 流れの列: スマホで起動しても flows.init を呼ばず（列のタスク・リマインドを読まない）、幅を広げて初めて流れの列になったときに 1 回だけ呼ぶ", async () => {
+test("web static: 流れの列: スマホで起動しても flows.init を 1 回（列のタスク・リマインドを読む）、幅をまたいでも呼び直さない。下のバーの口が無ければ（noFoot）スマホは今の殻で init を呼ばない", async () => {
   const h = await loadDeck({ phone: true, width: 390 });
-  assert.equal(h.flows.inits, 0);
-  h.setPhone(false, 1000);
   assert.equal(h.flows.inits, 1);
-  // スマホを挟んで戻るとまた呼ぶ（読むのは 1 回だけ。flows.js の init は 2 回目から何もしない。下の読み込みの検査）
-  h.setPhone(true, 390);
   h.setPhone(false, 1000);
-  assert.equal(h.flows.inits, 2);
+  h.setPhone(true, 390);
+  assert.equal(h.flows.inits, 1);
+  // 落ち先（drawBar の無い SA.deck）: 属性なし・init 0 回・古い下のバー（variant phone）。広げて初めて流れの列になったときに 1 回、スマホを挟んで戻るとまた呼ぶ（中は 1 回だけ）
+  const f = await loadDeck({ phone: true, width: 390, noFoot: true });
+  assert.deepEqual(deckAttrs(f), [null, null, null]);
+  assert.equal(f.flows.inits, 0);
+  assert.equal(f.bottom().variant, "phone");
+  assert.equal(f.deck.bars.length, 0);
+  f.setPhone(false, 1000);
+  assert.equal(f.flows.inits, 1);
+  f.setPhone(true, 390);
+  assert.deepEqual(deckAttrs(f), [null, null, null]);
+  assert.equal(f.bottom().variant, "phone");
+  f.setPhone(false, 1000);
+  assert.equal(f.flows.inits, 2);
 });
 
 test("web static: 流れの列: 「探す」の板の中から右腕を開くと板を閉じ（4 つとも inert）、畳むと 4 つとも inert でなく焦点は帯の［探す］。右腕を重ねている間は Ctrl+K で板を開かない", async () => {
@@ -11347,11 +11430,144 @@ test("web static: shell.css の流れの列の規則は .v3[data-deck] 始まり
   assert.ok(end < css.indexOf("@media (max-width: 639px)"));
 });
 
-test("web static: 下のバーの入れ物（.v3-foot。D2）は素の display: none の並びのほかに shell.css の規則が無く、どの幅でも場所を取らない（入れ替えは D2 の PR-2）", () => {
+test("web static: 下のバーの入れ物（.v3-foot。D2）は素の display: none の並びのほかは、スマホの流れの列（data-seat=\"full\"）とキーボードの間の規則だけで、広い幅・落ち先では場所を取らない", () => {
   const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
   const sels = [...css.matchAll(/([^{}]+)\{/g)].map((m) => m[1]!.trim().replace(/\s+/g, " ")).filter((sel) => sel.includes("v3-foot"));
-  assert.deepEqual(sels, [".v3-band, .v3-deck, .v3-find-backdrop, .v3-foot"]);
+  assert.deepEqual(sels, [
+    ".v3-band, .v3-deck, .v3-find-backdrop, .v3-foot",
+    ".v3[data-deck][data-seat=\"full\"] .v3-foot",
+    ".v3[data-deck][data-seat=\"full\"][data-view=\"body\"] .v3-band, .v3[data-deck][data-seat=\"full\"][data-view=\"body\"] .v3-deck, .v3[data-deck][data-seat=\"full\"][data-view=\"body\"] .v3-foot",
+    ".v3[data-deck].is-keyboard .v3-foot",
+  ]);
+  // 出すのは full の規則だけ（キーボードの間は隠す）
+  assert.match(css, /\.v3\[data-deck\]\[data-seat="full"\] \.v3-foot \{\s*display: block;/);
+  assert.match(css, /\.v3\[data-deck\]\.is-keyboard \.v3-foot \{\s*display: none;\s*\}/);
   assert.doesNotMatch(read("app.css"), /v3-foot|c-foot/);
+});
+
+// ===== スマホの流れの列（D2）: 上の帯・1 列ずつの横送り・下のバー（shell.js。入口は作り物） =====
+const lastDeckBar = (h: ReturnType<typeof loadShell>): DeckBarState => {
+  const b = h.deck.bars.at(-1);
+  assert.ok(b, "SA.deck.drawBar が呼ばれていない（か null）");
+  return b;
+};
+
+test("web static: スマホの流れの列: 下のバーは SA.list.drawBar(null) のまま SA.deck.drawBar に描き、列は SA.deck.page で送る（履歴・hash は変えない）。paged は描き直すだけで、同じ id は何もしない", async () => {
+  const h = await loadDeck({ phone: true, width: 390 });
+  assert.equal(h.list.bottoms.at(-1), null);
+  const bar = lastDeckBar(h);
+  assert.equal(bar.page, "turn");
+  assert.equal(bar.hand, null);
+  assert.equal(bar.controls, "v3-hand");
+  // 起動では今の列（あなたの番）へ送る
+  assert.equal(h.deck.pages.at(-1), "turn");
+  const pushes = h.calls.push;
+  const hash = h.location.hash;
+  const st = h.history.state;
+  const pages = h.deck.pages.length;
+  bar.on.page("tasks");
+  assert.deepEqual(h.deck.pages.slice(pages), ["tasks"]);
+  assert.equal(lastDeckBar(h).page, "tasks");
+  assert.equal(h.calls.push, pushes);
+  assert.equal(h.location.hash, hash);
+  assert.equal(h.history.state, st);
+  // 指で送った列（paged）は描き直すが送らない。同じ id はもう一度来ても描き直さない
+  const bars = h.deck.bars.length;
+  lastDeckBar(h).on.paged("feed");
+  assert.equal(h.deck.pages.length, pages + 1);
+  assert.equal(h.deck.bars.length, bars + 1);
+  assert.equal(lastDeckBar(h).page, "feed");
+  lastDeckBar(h).on.paged("feed");
+  assert.equal(h.deck.bars.length, bars + 1);
+  assert.equal(h.calls.push, pushes);
+  // 今の列をもう一度押しても同じ列へ送るだけ
+  lastDeckBar(h).on.page("feed");
+  assert.equal(h.deck.pages.at(-1), "feed");
+  assert.equal(lastDeckBar(h).page, "feed");
+  // 右腕: 開いて、印は下のバーの hand に出る
+  lastDeckBar(h).on.hand(h.nodes.footButtons.hand);
+  assert.equal(h.nodes.v3.getAttribute("data-hand"), "open");
+  // 帯はスマホの形（［右腕］は下のバー）
+  assert.equal(lastBand(h).variant, "phone");
+  h.setPhone(false, 1440);
+  assert.equal(lastBand(h).variant, "wide");
+});
+
+test("web static: スマホの流れの列: 下のバーを描けなければ hand: null で 1 回だけ描き直す。右腕の印は下のバーの hand", async () => {
+  const seen: Array<DeckBarState | null> = [];
+  const h = await loadDeck({ phone: true, width: 390, deckBar: (b) => (seen.push(b), b === null || b.hand === null) });
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1")], { rightHands: [v3Hand({ turn: { at: 1 } })] }));
+  await h.topics.load();
+  const before = seen.length;
+  lastDeckBar(h).on.page("tasks");
+  assert.deepEqual(
+    seen.slice(before).map((b) => b && { page: b.page, hand: b.hand }),
+    [
+      { page: "tasks", hand: "turn" },
+      { page: "tasks", hand: null },
+    ],
+  );
+  // 描けたら 1 回だけ
+  const ok = await loadDeck({ phone: true, width: 390 });
+  ok.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1")], { rightHands: [v3Hand({ turn: { at: 1 } })] }));
+  await ok.topics.load();
+  const n = ok.deck.bars.length;
+  lastDeckBar(ok).on.page("feed");
+  assert.equal(ok.deck.bars.length, n + 1);
+  assert.equal(lastDeckBar(ok).hand, "turn");
+});
+
+test("web static: スマホの流れの列: 歯車の板は 知識・メモリ・使用量・（dev なら会話ログ）・設定、点は状態の画面をスレッドの場所に開く", async () => {
+  const all = ["knowledge", "memories", "usage", "devlog", "settings", "status", "tasks", "reminders", "github", "notices"];
+  for (const dev of [false, true]) {
+    const h = await loadDeck({ phone: true, width: 390, known: (tab) => tab.startsWith("ch:") || (all.includes(tab) && (dev || tab !== "devlog")), status: { bots: [{ name: "見本", connected: true }] } });
+    lastBand(h).on.more!(h.nodes.bandButtons.more);
+    const sheet = h.nodes.sheet;
+    assert.equal(sheet.getAttribute("aria-label"), "ほか");
+    assert.deepEqual(sheet.querySelectorAll("button.more-row").map(textOf), ["題:knowledge", "題:memories", "題:usage", ...(dev ? ["題:devlog"] : []), "題:settings"]);
+    sheet.querySelector("button.sheet-close")!.dispatch("click");
+    const pushes = h.calls.push;
+    lastBand(h).on.status!();
+    assert.equal(h.app.activeTabId(), "status");
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+    assert.equal(h.calls.push, pushes + 1);
+    assert.deepEqual(deckAttrs(h), ["1", "full", "closed"]);
+  }
+});
+
+test("web static: スマホの流れの列: 列 feed のまま 1440 にすると下のバーは空（drawBar(null)）、390 に戻すと page feed で描いて SA.deck.page(feed)。スレッドを開いたまままたいでも body のまま", async () => {
+  const h = await loadDeck({ phone: true, width: 390 });
+  lastDeckBar(h).on.page("feed");
+  h.setPhone(false, 1440);
+  assert.equal(h.deck.bars.at(-1), null);
+  assert.equal(h.list.bottoms.at(-1), null);
+  const pages = h.deck.pages.length;
+  h.setPhone(true, 390);
+  assert.equal(lastDeckBar(h).page, "feed");
+  assert.ok(h.deck.pages.slice(pages).includes("feed"));
+  assert.ok(h.deck.pages.slice(pages).every((id) => id === "feed"));
+  h.app.open("ch:1");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  h.setPhone(false, 1440);
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.deepEqual(deckAttrs(h), ["3", "side", "closed"]);
+  h.setPhone(true, 390);
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.deepEqual(deckAttrs(h), ["1", "full", "closed"]);
+  assert.equal(lastDeckBar(h).page, "feed");
+});
+
+test("web static: スマホの流れの列: 列が見えている間は開いていた会話を読んでいる扱いにせず（readingChannelIds）、スレッドを開くと読む。shownChannelIds は変わらない", async () => {
+  const h = (await loadDeck({ phone: true, width: 390 })) as HandShell;
+  h.app.open("ch:1");
+  assert.deepEqual(readingIds(h), ["1"]);
+  assert.deepEqual(shownIds(h), ["1"]);
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.deepEqual(readingIds(h), []);
+  assert.deepEqual(shownIds(h), ["1"]);
+  h.history.forward();
+  assert.deepEqual(readingIds(h), ["1"]);
 });
 
 test("web static: 流れの列の操作: ［完了］は POST /complete → 知らせ「…を完了にしました」→［取り消す］で /reopen、［対応］は POST /api/github/<id>/act。応答までの二度押しは送らず、失敗したら busy が外れてもう一度押せる", async () => {
