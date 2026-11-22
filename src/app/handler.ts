@@ -8,6 +8,7 @@ import type { MemoryStore } from "../store/memories.ts";
 import type { SdkSessionStore } from "../store/sdk-sessions.ts";
 import type { TopicSession, TopicSessionStore } from "../store/topic-sessions.ts";
 import type { UsageStore } from "../store/usage.ts";
+import type { TurnEndEvent } from "./lead.ts";
 import { acceptedChannel, type ChannelKind, type ResolveChannel } from "./access.ts";
 import { type AttachmentSource, attachmentNotes, attachmentReply, type PreparedImages } from "./attachments.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
@@ -117,6 +118,8 @@ export type HandlerDeps = {
   ownerConnected?: (channelId: string) => boolean;
   /** 停止を始めたか（shutdown.ts の stopping）。Web からの発言の echo の前とキューに入れる前に見る。省略は停止していない扱い */
   stopping?: () => boolean;
+  /** セッションのチャンネルのターンの終わり（統括のまとめ。lead.ts）。返事を返して history を書いた後に 1 回呼ぶ。省略すれば出さない */
+  onTurnEnd?: (event: TurnEndEvent) => void;
   log: (message: string) => void;
 };
 
@@ -202,6 +205,8 @@ type TurnRequest = {
   historyId?: number;
   /** WebFetch で取得できる URL。無ければ content に書かれた URL */
   allowedUrls?: readonly string[];
+  /** 右腕・GitHub の通知から送った依頼（submitText の via）。ターンの終わりの事象にだけ使い、DB・history には書かない */
+  via?: "right_hand" | "github";
 };
 
 function describeError(error: unknown): string {
@@ -434,6 +439,8 @@ export function createHandler(deps: HandlerDeps): Handler {
     const finished = result;
     // 返事の行は返信の後に書く（text は REVIVED_NOTE を付ける前の返信の本文）
     const recordReply = (text: string): void => {
+      const outcome = turnOutcome(finished);
+      const durationMs = finished.ok ? finished.durationMs : now().getTime() - startedAt;
       recordHistory(
         history,
         {
@@ -443,13 +450,29 @@ export function createHandler(deps: HandlerDeps): Handler {
           source: request.source,
           persona,
           text,
-          outcome: turnOutcome(finished),
+          outcome,
           steps,
           toolCalls: finished.toolCalls,
-          durationMs: finished.ok ? finished.durationMs : now().getTime() - startedAt,
+          durationMs,
         },
         log,
       );
+      // 統括のまとめは話題（セッションのチャンネル）のターンだけ。返信・history・ターンの結果は変えない
+      if (kind !== "session" || deps.onTurnEnd === undefined) return;
+      try {
+        deps.onTurnEnd({
+          guildId,
+          channelId,
+          durationMs,
+          outcome,
+          ...(request.via === undefined ? {} : { via: request.via }),
+          byRightHand: current?.origin === "inbox",
+          // Discord のオーナーの発言への返信で返した（上限の 1 通は返信にしない）
+          pinged: request.source === "discord" && request.replyToId !== undefined && outcome !== "max_turns",
+        });
+      } catch {
+        log("まとめの受け付けに失敗しました");
+      }
     };
 
     if (result.ok) {
@@ -651,6 +674,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         source,
         historyId: turnId,
         ...(via === "right_hand" || via === "github" ? { allowedUrls: [] } : {}),
+        ...(via === undefined ? {} : { via }),
       }).catch((error: unknown) =>
         log(`ターンの処理中にエラーが発生しました: ${describeError(error)}`),
       );
