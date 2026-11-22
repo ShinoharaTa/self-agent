@@ -434,11 +434,34 @@
     return ids;
   }
 
+  /** 流れの列の間の古い行き先（古い hash・画面のタブ）→ 列の id。古い表は開かず、その列へ */
+  const OLD_PAGES = { tasks: "tasks", reminders: "tasks", github: "feed", notices: "feed" };
+
+  /** 古い行き先か（流れの列の間だけ。幅に依らない） */
+  function oldPage(tabId) {
+    return deckOn() && Object.prototype.hasOwnProperty.call(OLD_PAGES, tabId) ? OLD_PAGES[tabId] : null;
+  }
+
+  /** 古い行き先を列に読み替える: 今の列を替え（スマホはその列へ送る）、hash は今の物に書き直す。履歴は積まず、スレッドが開いていても閉じない */
+  function showOldPage(page) {
+    S.deckPage = page;
+    if (deckFull()) {
+      SA.deck.page(page);
+      renderBottom(handMark());
+    }
+    writeHash();
+  }
+
   /** 話題か画面を列 2 に開く（知らない・無効な機能のタブは開かない） */
   function open(tabId) {
     // 流れの列の項目から開いたときの key（押した直後の 1 回だけ。ほかの開き方では null）
     const fromKey = SA.flows ? SA.flows.lastKey() : null;
     if (!tabId) return;
+    const page = oldPage(tabId);
+    if (page !== null) {
+      showOldPage(page);
+      return;
+    }
     const info = SA.views.info(tabId);
     if (!info) {
       // /api/status が届く前の Claude Code の話題は、届いたら開く（起動の hash と同じ道）
@@ -2052,7 +2075,7 @@
     // 手で書き換えた hash・リンク（自分で書いた hash は replaceState・pushState なので来ない）
     window.addEventListener("hashchange", () => {
       const tabId = tabFromHash(location.hash);
-      if (tabId && tabId !== S.active && SA.views.info(tabId)) open(tabId);
+      if (tabId && tabId !== S.active && (SA.views.info(tabId) || oldPage(tabId) !== null)) open(tabId);
     });
     document.addEventListener("keydown", onKey);
     // 畳んだ帯の口と backdrop（下のバーの右腕のボタンは BAR_ON.hand、見出しの [右腕] は TOP_ON.hand）
@@ -2083,7 +2106,8 @@
     applyHand();
 
     const fromHash = tabFromHash(location.hash);
-    if (fromHash && SA.views.info(fromHash)) open(fromHash);
+    // 流れの列の間の古い hash（#/tasks など）は列に読み替える（open の頭）
+    if (fromHash && (SA.views.info(fromHash) || oldPage(fromHash) !== null)) open(fromHash);
     else {
       deferred = fromHash;
       renderMain();
