@@ -11433,6 +11433,54 @@ test("web static: 流れの列の操作: ［完了］は POST /complete → 知�
   assert.deepEqual([...flows.state().busy], []);
 });
 
+test("web static: 流れの列の操作: busy は応答と読み直しが終わるまで続き（間を置いた 2 回目も送らない）、終わると外れる。［対応］は応答まで", async () => {
+  const { SA, posts, setReply } = loadViews({ v3: true });
+  const tick = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+  const store = SA.store as Record<string, unknown>;
+  let reloaded: (v?: unknown) => void = () => undefined;
+  store.reload = () => new Promise((r) => (reloaded = r));
+  store.openTasks = [{ id: 5, title: "買い物", due: null, status: "open" }];
+  store.github = { notifications: [{ id: 9, url: "https://github.com/o/r/pull/2", title: "押せる", handoff: true }], handoff: true };
+  SA.topics = { data: () => null };
+  SA.deck = { draw: () => true };
+  vm.runInNewContext(read("flows.js"), { window: { SA } });
+  const flows = SA.flows as { state: () => { busy: string[]; on: { op: (item: unknown, opId: string) => void } } };
+  const on = flows.state().on;
+  let answer: (v: unknown) => void = () => undefined;
+  setReply(() => new Promise((r) => (answer = r)));
+  // 応答の前: 間を置いた 2 回目も送らない
+  on.op({ key: "task:5" }, "complete");
+  await tick();
+  on.op({ key: "task:5" }, "complete");
+  await tick();
+  assert.deepEqual(posts, ["/api/tasks/5/complete"]);
+  assert.deepEqual([...flows.state().busy], ["task:5"]);
+  // 応答は返ったが読み直し中: busy のまま・送らない
+  answer({});
+  await tick();
+  on.op({ key: "task:5" }, "complete");
+  await tick();
+  assert.deepEqual(posts, ["/api/tasks/5/complete"]);
+  assert.deepEqual([...flows.state().busy], ["task:5"]);
+  // 読み直しが終わると外れる
+  reloaded();
+  await tick();
+  assert.deepEqual([...flows.state().busy], []);
+  // ［対応］: 応答の前に間を置いた 2 回目は送らない。返ると外れる
+  posts.length = 0;
+  on.op({ key: "gh:9" }, "act");
+  await tick();
+  on.op({ key: "gh:9" }, "act");
+  await tick();
+  assert.deepEqual(posts, ["/api/github/9/act"]);
+  assert.deepEqual([...flows.state().busy], ["gh:9"]);
+  answer({ text: "話題を作りました" });
+  await tick();
+  assert.deepEqual([...flows.state().busy], []);
+});
+
 test("web static: 流れの列の操作: views.js の呼び出しが同期で投げても busy を残さず、もう一度押せる", async () => {
   const { SA } = loadViews({ v3: true });
   const store = SA.store as Record<string, unknown>;
