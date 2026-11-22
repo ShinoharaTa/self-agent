@@ -851,8 +851,10 @@ function Decks() {
       </div>
     </div>
     <div class="c-gallery-deck" data-demo="deck-3"><${Deck} model=${deckModel(deckState())} on=${DECK_ON} /></div>
-    <div class="c-gallery-deck" data-demo="deck-ops">
-      <${Deck} model=${deckModel(deckState({ ops: true, busy: ["task:3", "gh:3"], github: DECK_GITHUB_OPS, handoff: true }))} on=${DECK_ON} />
+    <div class="c-gallery-slide" data-demo="deck-ops">
+      <div class="c-gallery-deck c-gallery-deck-ops">
+        <${Deck} model=${deckModel(deckState({ ops: true, busy: ["task:3", "gh:3"], github: DECK_GITHUB_OPS, handoff: true }))} on=${DECK_ON} />
+      </div>
     </div>
     <div class="c-gallery-deck" data-demo="deck-empty">
       <${Deck} model=${deckModel(deckState({ topics: QUIET_DATA, tasks: [], reminders: [], github: [], notices: [], isUnread: () => false }))} on=${DECK_ON} />
