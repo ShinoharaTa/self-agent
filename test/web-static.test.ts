@@ -11433,6 +11433,29 @@ test("web static: 流れの列の操作: ［完了］は POST /complete → 知�
   assert.deepEqual([...flows.state().busy], []);
 });
 
+test("web static: 流れの列の操作: views.js の呼び出しが同期で投げても busy を残さず、もう一度押せる", async () => {
+  const { SA } = loadViews({ v3: true });
+  const store = SA.store as Record<string, unknown>;
+  store.openTasks = [{ id: 5, title: "買い物", due: null, status: "open" }];
+  SA.topics = { data: () => null };
+  SA.deck = { draw: () => true };
+  vm.runInNewContext(read("flows.js"), { window: { SA } });
+  const views = SA.views as Record<string, unknown>;
+  let calls = 0;
+  views.completeTask = () => {
+    calls += 1;
+    throw new Error("x");
+  };
+  const flows = SA.flows as { state: () => { busy: string[]; on: { op: (item: unknown, opId: string) => void } } };
+  flows.state().on.op({ key: "task:5" }, "complete");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual([...flows.state().busy], []);
+  flows.state().on.op({ key: "task:5" }, "complete");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 2);
+  assert.deepEqual([...flows.state().busy], []);
+});
+
 /** api.js と flows.js を同じ偽の window で読む（SA.api.get は get。topics・views・ui は作り物） */
 function loadFlows(get: (path: string) => Promise<unknown>) {
   const SA: Record<string, unknown> = {

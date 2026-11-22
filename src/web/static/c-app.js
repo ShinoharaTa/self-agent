@@ -17,7 +17,7 @@ import { cardsMouth } from "./c-cards.js";
 import { termMouth } from "./c-term.js";
 import { HandHead } from "./c-hand.js";
 import { Confirm, Toast } from "./c-sheet.js";
-import { Deck, DeckBand, deckFit, deckModel } from "./c-deck.js";
+import { Deck, DeckBand, deckFit, deckModel, focusAfter } from "./c-deck.js";
 
 const listRoot = document.getElementById("c-list-root");
 
@@ -412,15 +412,34 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
+  /** 列（data-col）の項目の key の並び */
+  const colKeys = (col) => {
+    const box = col === null ? null : Array.from(deckRoot.querySelectorAll("[data-col]")).find((n) => n.dataset.col === col);
+    return box ? Array.from(box.querySelectorAll("[data-key]")).map((n) => n.dataset.key) : [];
+  };
+
+  /** key の項目の中の最初の押せる物（［完了］・リンク・開くボタン）にフォーカス。無ければ false */
+  const focusFirstIn = (key) => {
+    const item = Array.from(deckRoot.querySelectorAll("[data-key]")).find((n) => n.dataset.key === key);
+    const target = item ? item.querySelector("button, a[href]") : null;
+    if (!target) return false;
+    target.focus();
+    return true;
+  };
+
   /**
    * 3 つの列を描く。state は flows.js の flowState()。描けなければ false。列は同じ要素を使い回すので、列ごとの縦の位置は残る。
-   * 焦点のあった項目が消えたら、同じ key の項目 → 帯の［探す］へ（body に落とさない）
+   * 焦点のあった物が消えたら、同じ key の項目が残っていればその項目 → 帯の［探す］。項目ごと消えた（完了した）なら、
+   * 同じ列の同じ並びの位置に来た項目（無ければ列の最後）の最初の押せる物 → 列が空なら帯の［探す］（body に落とさない）
    */
   const drawDeck = (state) => {
     const before = document.activeElement;
     const inside = !!before && deckRoot.contains(before);
     const holder = inside ? before.closest("[data-key]") : null;
     const key = holder ? holder.dataset.key : null;
+    const colBox = holder ? holder.closest("[data-col]") : null;
+    const col = colBox ? colBox.dataset.col : null;
+    const keysBefore = colKeys(col);
     try {
       render(html`<${Deck} model=${deckModel(state)} on=${state.on} />`, deckRoot);
     } catch (error) {
@@ -428,7 +447,12 @@ if (deckRoot && bandRoot) {
       console.error("[web] deck draw failed", error instanceof Error ? error.name : "");
       return false;
     }
-    if (inside && !document.contains(before) && !(key !== null && focusItem(key))) focusBand("find");
+    if (inside && !document.contains(before)) {
+      const keysAfter = colKeys(col);
+      const next = key === null || keysAfter.includes(key) ? null : focusAfter(keysBefore, keysAfter, key);
+      const moved = key === null ? false : next === null ? keysAfter.includes(key) && focusItem(key) : focusFirstIn(next);
+      if (!moved) focusBand("find");
+    }
     return true;
   };
 
