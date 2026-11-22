@@ -449,7 +449,8 @@ if (deckRoot && bandRoot) {
    * 3 つの列を描く。state は flows.js の flowState()。描けなければ false。列は同じ要素を使い回すので、列ごとの縦の位置は残る。
    * 焦点のあった物が消えたら、同じ key の項目が残っていればその項目（開くボタン）→ 帯の［探す］。項目がどの理由で消えても（完了・取り消し・読み直し）、
    * 同じ列の押せる項目のうち同じ並びの位置に来た項目（無ければ列の最後）の最初の押せる物へ。列に押せる項目が無ければ帯の［探す］（body に落とさない）。
-   * タスクの列は、消えた項目と同じ種類（タスクかリマインド）の項目だけで数える（最後のタスクを完了にした焦点をリマインドの［止める］に乗せない）
+   * タスクの列は、消えた項目と同じ種類（タスクかリマインド）の項目だけで数える（最後のタスクを完了にした焦点をリマインドの［止める］に乗せない）。
+   * 焦点のあった物が残っているのに焦点だけ外れたら（並び替えで節が動いた）、同じ物へ戻す
    */
   const drawDeck = (state) => {
     const before = document.activeElement;
@@ -477,6 +478,9 @@ if (deckRoot && bandRoot) {
       const next = key === null || keysAfter.includes(key) ? null : focusAfter(keysBefore, keysAfter, key);
       const moved = key === null ? false : next === null ? keysAfter.includes(key) && focusItem(key) : focusFirstIn(next);
       if (!moved) focusBand("find");
+    } else if (inside && document.activeElement !== before) {
+      // 並び替え（リマインドの［次を飛ばす］）で節が動くと、残っている節でも焦点を失うブラウザが在る（moveBefore の無い物）。同じ物へ戻す
+      before.focus();
     }
     return true;
   };
