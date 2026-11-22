@@ -1139,7 +1139,8 @@
       if (history.state && history.state.v3Hand) history.replaceState({ v3Body: true, v3Depth: (history.state.v3Depth || 0) + 1 }, "", hash);
       else if (history.state && history.state.v3Body) history.replaceState(history.state, "", hash);
       // スマホの「探す」の板の entry も話題に置き換える（戻ると列）
-      else if (history.state && history.state.v3Find) history.replaceState({ v3Body: true }, "", hash);
+      // スレッドの上で開いた板（Ctrl+K）なら、下の話題の entry も越えて列まで戻れるよう段数を 1 つ上にする（右腕の entry と同じ）
+      else if (history.state && history.state.v3Find) history.replaceState(history.state.v3Depth ? { v3Body: true, v3Depth: history.state.v3Depth + 1 } : { v3Body: true }, "", hash);
       else history.pushState({ v3Body: true }, "", hash);
     } catch {
       // 積めなくても [‹] で一覧に戻れる
@@ -1840,7 +1841,9 @@
       refs.v3.setAttribute("data-find", "open");
       if (deckFull()) {
         try {
-          if (!(history.state && history.state.v3Find)) history.pushState({ v3Find: true }, "", location.href);
+          // スレッドの上で開いたら（Ctrl+K）、下の entry から列までの段数を覚える（板の行を開いたときに showBody が使う）
+          const under = depthOf(history.state);
+          if (!(history.state && history.state.v3Find)) history.pushState(under > 0 ? { v3Find: true, v3Depth: under } : { v3Find: true }, "", location.href);
         } catch {
           // 積めなくても Esc・幕で閉じられる
         }

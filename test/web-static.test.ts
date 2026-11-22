@@ -11715,6 +11715,36 @@ test("web static: スマホの流れの列: 帯の［探す］の板は entry �
   assert.equal(w.calls.back, 0);
 });
 
+test("web static: スマホの流れの列: スレッドの上で Ctrl+K の板を開き、板の行を開いても、［‹］1 回で列へ戻る（下の話題の entry を越える。板を戻るで閉じればスレッドのまま）", async () => {
+  const h = await loadDeck({ phone: true, width: 390 });
+  h.app.open("ch:1");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Body: true });
+  const ctrlK = () => h.fireDoc("keydown", keyEvent("k", h.nodes.topButtons.back, { ctrlKey: true }));
+  // 板を開く: entry を 1 つ積み、下の entry から列までの段数（1）を覚える
+  ctrlK();
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "open");
+  assert.equal(h.calls.push, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Find: true, v3Depth: 1 });
+  // 戻るで閉じるとスレッドのまま
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Body: true });
+  // もう一度開いて板の行を開く: 板の entry が話題に替わり（積み増さない）、列までは 2 段
+  ctrlK();
+  const pushes = h.calls.push;
+  h.press.open("ch:2");
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.calls.push, pushes);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Body: true, v3Depth: 2 });
+  assert.equal(h.location.hash, "#/ch/2");
+  // ［‹］1 回で列（下の ch:1 の entry で止まらない）
+  h.lastTop().on.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(h.history.state, null);
+});
+
 test("web static: スマホの流れの列: 下のバーの右腕は entry を 1 つ積み、帯・列・下のバーが inert。戻ると畳み、焦点は下のバーの右腕。板の中から開くと板の entry を置き換える（戻る 1 回で列）", async () => {
   const h = (await loadDeck({ phone: true, width: 390 })) as HandShell;
   const inert = () => [h.nodes.band, h.nodes.deckBox, h.nodes.foot].map((n) => (n as unknown as { inert?: boolean }).inert === true);
