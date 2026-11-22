@@ -1,0 +1,293 @@
+/* 流れの列と上の帯（c-deck.js。docs/plan/web-ui-deck.md §4 の D1）。寸法は tokens.css の --c-*、色は tokens.css の変数、字と間隔は base.css の目盛りだけ */
+/* 区切りの線・影・半透明・動きは書かない（面の段で分ける。動きは D5） */
+
+/* ===== 3 つの列（見える数は data-cols。余りは台の色。入りきらない列は横に送る） ===== */
+.c-deck {
+  box-sizing: border-box;
+  display: grid;
+  grid-auto-flow: column;
+  gap: var(--space-2);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  color: var(--text);
+  font-size: var(--font-sm);
+  line-height: var(--leading-normal);
+}
+
+.c-deck[data-cols="1"] {
+  grid-auto-columns: min(var(--c-deck-col-max), 100%);
+}
+
+.c-deck[data-cols="2"] {
+  grid-auto-columns: min(var(--c-deck-col-max), calc((100% - var(--space-2)) / 2));
+}
+
+.c-deck[data-cols="3"] {
+  grid-auto-columns: min(var(--c-deck-col-max), calc((100% - 2 * var(--space-2)) / 3));
+}
+
+.c-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+}
+
+.c-col-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--c-row-h);
+  padding: 0 var(--c-gutter);
+}
+
+.c-col-name {
+  margin: 0;
+  font-size: var(--font-sm);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+}
+
+.c-col-count {
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.c-col-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 0;
+  padding-bottom: var(--space-2);
+  overflow-y: auto;
+}
+
+.c-col-label {
+  margin: var(--space-2) 0 0;
+  padding: 0 var(--c-gutter);
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+}
+
+/* ===== 1 つの項目（線は左の 1 本だけ。ふだんは面と同じ色、番は --warning、開いている項目は --accent） ===== */
+.c-item {
+  box-sizing: border-box;
+  display: flex;
+  flex: none;
+  min-height: var(--c-tap);
+  border-left: var(--c-deck-line) solid var(--surface);
+  background: var(--surface);
+}
+
+.c-item[data-turn="true"] {
+  border-left-color: var(--warning);
+  background: var(--turn-surface);
+}
+
+.c-item[data-current="true"] {
+  border-left-color: var(--accent);
+  background: var(--muted);
+}
+
+.c-item-main {
+  box-sizing: border-box;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) var(--c-gutter) var(--space-2) calc(var(--c-gutter) - var(--c-deck-line));
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: start;
+}
+
+.c-item > button.c-item-main {
+  cursor: pointer;
+}
+
+/* 輪は base.css の物。列の送りで切れないよう内側へ */
+.c-item > button.c-item-main:focus-visible {
+  outline-offset: calc(-1 * var(--ring-width));
+}
+
+.c-item-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--font-xs);
+  line-height: var(--leading-tight);
+}
+
+.c-item-word {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 番の面の上の語は --text（--warning は線だけ。字にしない） */
+.c-item[data-turn="true"] .c-item-word {
+  color: var(--text);
+}
+
+.c-item-time {
+  flex: none;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.c-item-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.c-item-link {
+  min-width: 0;
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.c-item-sum {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-item:has(> button.c-item-main:hover) {
+    background: var(--muted);
+  }
+
+  .c-item:not([data-turn="true"]):not([data-current="true"]):has(> button.c-item-main:hover) {
+    border-left-color: var(--muted);
+  }
+}
+
+/* ===== 上の帯（● self-agent・［探す］［右腕］［＋ 始める］［歯車］） ===== */
+.c-band {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--c-deck-band-h);
+  padding: 0 var(--c-gutter) 0 var(--space-1);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-sm);
+  line-height: var(--leading-normal);
+}
+
+.c-band-conn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--c-tap);
+  min-height: var(--c-tap);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  cursor: pointer;
+}
+
+.c-band-dot {
+  width: var(--c-mark);
+  height: var(--c-mark);
+  border-radius: var(--radius-full);
+}
+
+.c-band-dot[data-tone="ok"] {
+  background: var(--success);
+}
+
+.c-band-dot[data-tone="bad"] {
+  background: var(--danger);
+}
+
+.c-band-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.c-band-ops {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.c-band-act {
+  display: inline-flex;
+}
+
+/* 右腕（開閉を読み上げるので自前のボタン。見た目は ghost の sm と同じ） */
+.c-band-hand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--c-tap);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.c-band-hand-label {
+  min-width: 0;
+}
+
+.c-band-hand-mark {
+  flex: none;
+  width: var(--c-mark);
+  height: var(--c-mark);
+  border-radius: var(--radius-full);
+}
+
+.c-band-hand-mark[data-state="turn"] {
+  background: var(--warning);
+}
+
+.c-band-hand-mark[data-state="unread"] {
+  background: var(--accent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-band-conn:hover,
+  .c-band-hand:hover {
+    background: var(--muted);
+  }
+}

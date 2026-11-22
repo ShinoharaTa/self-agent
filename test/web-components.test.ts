@@ -38,6 +38,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-cards.css": /^\.c-(?:cards|card|note|status)(?![a-z])/,
   "c-hand.css": /^\.c-hand(?![a-z])/,
   "c-term.css": /^\.c-term(?![a-z])/,
+  "c-deck.css": /^\.c-(?:deck|col|item|band)(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
 };
 
@@ -181,8 +182,8 @@ const partProblems = (name: string, text: string): string[] => forbidden(name, t
 const entryProblems = (name: string, text: string): string[] => forbidden(name, text, ENTRY_WORDS, ENTRY_PARTS);
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-term.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-term.css", "c-deck.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-deck.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -292,7 +293,7 @@ test("web components: 入口の TOP_FULL_MIN は tokens.css の --c-top-full-min
   assert.doesNotMatch(app, /v3-main/);
 });
 
-test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer・c-cards・c-hand・c-term は c-lib と c-atoms だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer・c-cards・c-sheet・c-hand・c-term だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-cards・c-hand・c-term・c-app は hook なし）・動的な import と createPortal が無い", () => {
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer・c-cards・c-hand・c-term は c-lib と c-atoms だけ、c-deck は c-lib・c-atoms・c-list だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer・c-cards・c-sheet・c-hand・c-term・c-deck だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-cards・c-hand・c-term・c-deck・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
     "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
@@ -303,7 +304,8 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     "c-cards.js": ["./c-lib.js", "./c-atoms.js"],
     "c-hand.js": ["./c-lib.js", "./c-atoms.js"],
     "c-term.js": ["./c-lib.js", "./c-atoms.js"],
-    "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js", "./c-composer.js", "./c-cards.js", "./c-sheet.js", "./c-hand.js", "./c-term.js"],
+    "c-deck.js": ["./c-lib.js", "./c-atoms.js", "./c-list.js"],
+    "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js", "./c-composer.js", "./c-cards.js", "./c-sheet.js", "./c-hand.js", "./c-term.js", "./c-deck.js"],
   };
   for (const [name, targets] of Object.entries(allowed)) {
     if (!JS_FILES.includes(name)) continue;
@@ -311,13 +313,13 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
     assert.equal(dynamic, false, `${name}: 動的な import`);
   }
-  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
+  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-deck.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
-test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）とカード（c-cards）と右腕（c-hand）と札（c-term）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄とカードと右腕と札は動きを付けず、会話は実行中の輪だけ。下のバーと右腕と札は position の fixed・absolute を書かない", () => {
+test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）とカード（c-cards）と右腕（c-hand）と札（c-term）と流れの列（c-deck）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄とカードと右腕と札と流れの列は動きを付けず、会話は実行中の輪だけ。下のバーと右腕と札は position の fixed・absolute を書かない", () => {
   // 部品は id を出さない（モデルのキー id: や data-topic=${id} は当たらない）
-  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
+  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-deck.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
   // 部品の色・高さ・字を外から変えない（印の位置・PC の [+] の当たりを戻す・下のバーの並べ方だけ）
   const ALLOWED_OUTSIDE = new Set([".c-turn > .c-mark", '.c-group-head > .c-iconbtn[data-size="sm"]::after', '.c-bottom > .c-btn[data-size="sm"]']);
   // K2 の部品のクラス（c-atoms.css・c-sheet.css のセレクタに出る全部。その下のクラスも）は外から宛てない
@@ -333,7 +335,7 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
     if (/(?:^|; ?)(?:animation|transition)(?:-[a-z-]+)?\s*:/.test(rule.body)) assert.deepEqual(rule.selectors, [".c-run-spin"], `c-talk.css: ${rule.selectors.join(",")}`);
   }
   assert.equal((stripCssComments(read("c-talk.css")).match(/@keyframes\b/g) ?? []).length, 1, "c-talk.css: @keyframes は 1 つ");
-  for (const name of ["c-list.css", "c-shell.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-term.css"]) {
+  for (const name of ["c-list.css", "c-shell.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-term.css", "c-deck.css"]) {
     if (!CSS_FILES.includes(name)) continue;
     const rules = parseCss(read(name));
     for (const rule of rules) {
@@ -3880,4 +3882,322 @@ test("web components: termMouth の draw は根に札を 1 つ描き、同じ根
   fail = true;
   assert.throws(() => mouth.draw(root, termRaw({ on })), /render/);
   assert.throws(() => mouth.drop(root), /render/);
+});
+
+// ===== 流れの列（c-deck.js。docs/plan/web-ui-deck.md の D1） =====
+type FlowItem = { key: string; kind: string; word: string; place: string; time: string; at: string | null; title: string; summary: string; mark: string; turn: boolean; target: string | null; href: string | null; ops: unknown[]; current: boolean };
+type FlowColumn = { id: string; name: string; count: number | null; tone: string; phase: string; empty: string; sections: Array<{ label: string | null; items: FlowItem[] }> };
+const deckUrl = new URL("../src/web/static/c-deck.js", import.meta.url).href;
+const deck = (await import(deckUrl)) as Record<string, Fn> & {
+  DECK: Readonly<Record<string, number>>;
+  FEED_MAX: number;
+  deckFit: (width: unknown, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number };
+  itemWord: (kind: unknown, src: unknown, state: Obj) => string;
+  turnItems: (state: Obj) => FlowItem[];
+  runningItems: (state: Obj) => FlowItem[];
+  taskItems: (state: Obj) => FlowItem[];
+  reminderItems: (state: Obj) => FlowItem[];
+  feedItems: (state: Obj) => FlowItem[];
+  deckModel: (state: Obj) => { cols: number; columns: FlowColumn[] };
+  itemSelector: (key: string) => string;
+};
+
+/** 流れの列の state（既定は全部空で読めている） */
+function flowOf(o: Obj = {}): Obj {
+  return {
+    cols: 3, current: null, topics: { turnIds: [], groups: [], topics: [], rightHands: [] }, tasks: [], reminders: [], github: null, handoff: false, notices: [], today: "2026-01-02",
+    isUnread: () => false, time: (at: string) => "t:" + at, ago: (at: string) => "ago:" + at, day: (d: string) => "day:" + d, oneLine: (t: string) => String(t).replace(/\s*[\r\n]+\s*/g, " "),
+    parts: (url: string) => {
+      const m = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:pull|issues)\/(\d+)/.exec(url);
+      return m ? { repo: m[1] + "/" + m[2], number: m[3] } : null;
+    },
+    ...o,
+  };
+}
+
+test("web components: deckFit は設計書の幅の計算（列・席・並ぶか畳むか）で、数でない幅は既定", () => {
+  assert.deepEqual({ ...deck.DECK }, { COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600 });
+  assert.ok(Object.isFrozen(deck.DECK));
+  const fit = (w: number, open: boolean) => deck.deckFit(w, open);
+  assert.deepEqual(fit(1440, true), { cols: 3, side: true, seat: 540, colW: 300 });
+  assert.deepEqual(fit(1440, false), { cols: 3, side: true, seat: 0, colW: 420 });
+  assert.deepEqual(fit(1180, false), { cols: 3, side: false, seat: 0, colW: 393 });
+  assert.deepEqual(fit(1180, true), { cols: 2, side: false, seat: 566, colW: 307 });
+  assert.deepEqual(fit(820, false), { cols: 2, side: false, seat: 0, colW: 410 });
+  assert.deepEqual(fit(820, true), { cols: 1, side: false, seat: 440, colW: 380 });
+  assert.deepEqual(fit(1340, true), { cols: 3, side: true, seat: 440, colW: 300 });
+  assert.deepEqual(fit(1339, true), { cols: 2, side: false, seat: 600, colW: 369 });
+  assert.deepEqual(fit(640, true), { cols: 0, side: false, seat: 440, colW: 0 });
+  assert.deepEqual(fit(640, false), { cols: 2, side: false, seat: 0, colW: 320 });
+  // 席が閉じていれば 1 列は出す
+  assert.equal(fit(200, false).cols, 1);
+  for (const w of [Number.NaN, 0, -5, "1440", null, undefined, Number.POSITIVE_INFINITY]) assert.deepEqual(deck.deckFit(w, true), { cols: 1, side: false, seat: 0, colW: 0 }, String(w));
+});
+
+test("web components: turnItems は turnIds の順に話題と右腕（題「右腕」）を引き、引けない id・番の無い物を捨て、開いている物に current", () => {
+  const topics = {
+    turnIds: ["hand:1", "ch:1", "ch:missing", "ch:2", "ch:1"],
+    groups: [{ key: "p:a", name: "A" }],
+    topics: [
+      { id: "ch:1", title: "家計", group: "p:a", mark: "turn", turn: { kind: "permission", summary: "コマンド", since: "S1" } },
+      { id: "ch:2", title: "番の無い話題", group: "p:a", mark: null, turn: null },
+    ],
+    rightHands: [{ id: "hand:1", title: "x", turn: { kind: "question", summary: "", since: "S2" } }],
+  };
+  const items = deck.turnItems(flowOf({ topics, current: "ch:1" }));
+  assert.deepEqual(items.map((i) => [i.key, i.kind, i.word, i.place, i.time, i.title, i.summary, i.mark, i.turn, i.target, i.current]), [
+    ["turn:hand:1", "question", "質問", "", "ago:S2", "右腕", "", "turn", true, "hand:1", false],
+    ["turn:ch:1", "permission", "許可", "A", "ago:S1", "家計", "コマンド", "turn", true, "ch:1", true],
+  ]);
+  assert.ok(items.every((i) => i.ops.length === 0 && i.href === null));
+  assert.deepEqual(deck.turnItems(flowOf({ topics: null })), []);
+});
+
+test("web components: runningItems は番の無い作業中の話題だけを新しい順に", () => {
+  const topics = {
+    turnIds: [],
+    groups: [{ key: "p:a", name: "A" }],
+    topics: [
+      { id: "cc:1", title: "古い", group: "p:a", mark: "running", turn: null, activityAt: "2026-01-01T00:00:00Z" },
+      { id: "ch:2", title: "番", group: "p:a", mark: "running", turn: { kind: "permission", since: "x" }, activityAt: "2026-01-03T00:00:00Z" },
+      { id: "ch:3", title: "新しい", group: "p:a", mark: "running", turn: null, activityAt: "2026-01-02T00:00:00Z" },
+      { id: "ch:4", title: "静か", group: "p:a", mark: null, turn: null, activityAt: "2026-01-04T00:00:00Z" },
+    ],
+    rightHands: [],
+  };
+  const items = deck.runningItems(flowOf({ topics }));
+  assert.deepEqual(items.map((i) => [i.key, i.word, i.place, i.mark, i.target, i.turn]), [
+    ["run:ch:3", "動いている", "A", "running", "ch:3", false],
+    ["run:cc:1", "動いている", "A", "running", "cc:1", false],
+  ]);
+});
+
+test("web components: taskItems は 期限切れ → 今日 → 期限の昇順 → 期限なし（同じ期限は元の順）、reminderItems は nextAt の昇順で無い物は最後", () => {
+  const tasks = [
+    { id: 1, title: "なし 1", due: null },
+    { id: 2, title: "先 b", due: "2026-01-05" },
+    { id: 3, title: "今日", due: "2026-01-02" },
+    { id: 4, title: "切れ 2", due: "2026-01-01" },
+    { id: 5, title: "先 a", due: "2026-01-03" },
+    { id: 6, title: "切れ 1", due: "2025-12-01" },
+    { id: 7, title: "なし 2", due: null },
+    { id: 8, title: "先 a2", due: "2026-01-03" },
+  ];
+  const items = deck.taskItems(flowOf({ tasks }));
+  assert.deepEqual(items.map((i) => i.title), ["切れ 1", "切れ 2", "今日", "先 a", "先 a2", "先 b", "なし 1", "なし 2"]);
+  assert.deepEqual(items.map((i) => i.word), ["期限切れ", "期限切れ", "今日", "day:2026-01-03", "day:2026-01-03", "day:2026-01-05", "タスク", "タスク"]);
+  assert.deepEqual(items.slice(0, 3).map((i) => [i.key, i.time, i.target, i.mark]), [["task:6", "day:2025-12-01", null, "none"], ["task:4", "day:2026-01-01", null, "none"], ["task:3", "day:2026-01-02", null, "none"]]);
+  assert.equal(items[6]?.time, "");
+  assert.deepEqual(deck.taskItems(flowOf({ tasks: null })), []);
+  const reminders = [
+    { id: 1, text: "なし", nextAt: null },
+    { id: 2, text: "遅い", nextAt: "2026-01-03T00:00:00Z" },
+    { id: 3, text: "早い\n2 行", nextAt: "2026-01-02T00:00:00Z" },
+  ];
+  const rem = deck.reminderItems(flowOf({ reminders }));
+  assert.deepEqual(rem.map((i) => [i.key, i.word, i.title, i.time]), [
+    ["rem:3", "リマインド", "早い 2 行", "t:2026-01-02T00:00:00Z"],
+    ["rem:2", "リマインド", "遅い", "t:2026-01-03T00:00:00Z"],
+    ["rem:1", "リマインド", "なし", ""],
+  ]);
+});
+
+test("web components: feedItems は GitHub・知らせ・未読の話題を時刻の新しい順に混ぜ（同じ時刻は GitHub → 知らせ → 話題、時刻の無い物は最後）、50 件で切る", () => {
+  const T = (h: number) => `2026-01-01T0${h}:00:00Z`;
+  const topics = {
+    turnIds: [],
+    groups: [{ key: "p:a", name: "A" }],
+    topics: [
+      { id: "ch:1", title: "未読", group: "p:a", mark: null, turn: null, activityAt: T(3), last: { id: 9 } },
+      { id: "ch:2", title: "読んだ", group: "p:a", mark: null, turn: null, activityAt: T(4), last: null },
+      { id: "cc:3", title: "端末", group: "p:a", mark: null, turn: null, activityAt: T(5), last: null },
+      { id: "ch:4", title: "作業中", group: "p:a", mark: "running", turn: null, activityAt: T(6), last: null },
+      { id: "ch:5", title: "同じ時刻", group: "p:a", mark: null, turn: null, activityAt: T(2), last: null },
+    ],
+    rightHands: [],
+  };
+  const github = [
+    { id: 11, url: "https://github.com/o/r/pull/12", title: "直し", label: "レビュー依頼", updatedAt: T(2) },
+    { id: 12, url: "https://github.com/o/r/issues/7", title: "", label: "", updatedAt: T(1) },
+    { id: 13, url: "https://github.com/o/r", title: "ほか", label: "", updatedAt: null },
+  ];
+  const notices = [
+    { at: T(2), text: "知らせ A", link: "https://discord.com/channels/1/2/3" },
+    { at: T(4), text: "知らせ B", link: "https://example.com/x" },
+  ];
+  const state = flowOf({ topics, github, notices, isUnread: (ch: string) => ch === "1" || ch === "3" || ch === "4" || ch === "5" });
+  const items = deck.feedItems(state);
+  assert.deepEqual(items.map((i) => i.key), ["notice:" + T(4) + ":1", "topic:ch:1", "gh:11", "notice:" + T(2) + ":0", "topic:ch:5", "gh:12", "gh:13"]);
+  const by = (key: string) => items.find((i) => i.key === key)!;
+  assert.deepEqual([by("gh:11").kind, by("gh:11").word, by("gh:11").title, by("gh:11").place, by("gh:11").href, by("gh:11").target], ["pr", "PR", "レビュー依頼: 直し #12", "o/r", "https://github.com/o/r/pull/12", null]);
+  assert.deepEqual([by("gh:12").kind, by("gh:12").word, by("gh:12").title], ["issue", "Issue", "（題名なし） #7"]);
+  assert.deepEqual([by("gh:13").kind, by("gh:13").word, by("gh:13").title, by("gh:13").place, by("gh:13").time], ["github", "GitHub", "ほか", "", ""]);
+  assert.equal(by("notice:" + T(2) + ":0").href, "https://discord.com/channels/1/2/3");
+  assert.equal(by("notice:" + T(4) + ":1").href, null);
+  assert.deepEqual([by("topic:ch:1").kind, by("topic:ch:1").word, by("topic:ch:1").mark, by("topic:ch:1").target, by("topic:ch:1").place], ["reply", "返事", "unread", "ch:1", "A"]);
+  // isUnread にはチャンネル ID と last を渡す
+  const asked: unknown[][] = [];
+  deck.feedItems(flowOf({ topics, isUnread: (ch: string, last: unknown) => void asked.push([ch, last]) }));
+  assert.deepEqual(asked[0], ["1", { id: 9 }]);
+  // GitHub が null でも知らせと話題は出る
+  assert.deepEqual(deck.feedItems(flowOf({ topics, notices, github: null, isUnread: (ch: string) => ch === "1" })).map((i) => i.kind), ["notice", "reply", "notice"]);
+  // 50 件で切る
+  const many = Array.from({ length: 60 }, (_, i) => ({ at: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(), text: "n" + i, link: null }));
+  const cut = deck.feedItems(flowOf({ notices: many }));
+  assert.equal(deck.FEED_MAX, 50);
+  assert.equal(cut.length, 50);
+  assert.equal(cut[0]?.title, "n59");
+});
+
+test("web components: itemWord は全部の種類の語（期限の 4 通り・知らない種類は あなたの番）", () => {
+  const st = flowOf();
+  const words = ["permission", "question", "waiting", "confirm", "running", "reminder", "pr", "issue", "github", "notice", "reply"].map((k) => deck.itemWord(k, {}, st));
+  assert.deepEqual(words, ["許可", "質問", "判断待ち", "確認", "動いている", "リマインド", "PR", "Issue", "GitHub", "知らせ", "返事"]);
+  assert.equal(deck.itemWord("task", { due: "2026-01-01" }, st), "期限切れ");
+  assert.equal(deck.itemWord("task", { due: "2026-01-02" }, st), "今日");
+  assert.equal(deck.itemWord("task", { due: "2026-01-09" }, st), "day:2026-01-09");
+  assert.equal(deck.itemWord("task", { due: null }, st), "タスク");
+  assert.equal(deck.itemWord("x", {}, st), "あなたの番");
+});
+
+test("web components: deckModel の 3 つの列（名前・数・tone・phase・空の文・空の節を出さない・ops は空）", () => {
+  const empty = deck.deckModel(flowOf());
+  assert.equal(empty.cols, 3);
+  assert.deepEqual(empty.columns.map((c) => [c.id, c.name, c.count, c.tone, c.phase, c.empty, c.sections.length]), [
+    ["turn", "あなたの番", 0, "warning", "ready", "今は待たせている事がありません", 0],
+    ["tasks", "タスク", 0, "none", "ready", "タスクとリマインドはありません", 0],
+    ["feed", "通知", null, "none", "ready", "通知はありません", 0],
+  ]);
+  const loading = deck.deckModel(flowOf({ topics: null, tasks: null, reminders: null, notices: null }));
+  assert.deepEqual(loading.columns.map((c) => c.phase), ["loading", "loading", "loading"]);
+  // タスクかリマインドの片方が読めていれば読み込み中にしない。GitHub が無くても通知は読めている
+  assert.equal(deck.deckModel(flowOf({ tasks: null })).columns[1]?.phase, "ready");
+  const topics = {
+    turnIds: ["ch:1"],
+    groups: [],
+    topics: [
+      { id: "ch:1", title: "番", mark: "turn", turn: { kind: "permission", since: "s" } },
+      { id: "ch:2", title: "動", mark: "running", turn: null, activityAt: "2026-01-01T00:00:00Z" },
+    ],
+    rightHands: [],
+  };
+  const full = deck.deckModel(flowOf({ topics, tasks: [{ id: 1, title: "t", due: null }], reminders: [], notices: [{ at: "2026-01-01T00:00:00Z", text: "n" }], ops: true }));
+  const [turn, tasks, feed] = full.columns as [FlowColumn, FlowColumn, FlowColumn];
+  assert.deepEqual(turn.sections.map((s) => [s.label, s.items.length]), [[null, 1], ["動いている", 1]]);
+  assert.equal(turn.count, 1);
+  assert.deepEqual(tasks.sections.map((s) => [s.label, s.items.length]), [[null, 1]]);
+  assert.equal(tasks.count, 1);
+  assert.deepEqual(feed.sections.map((s) => [s.label, s.items.length]), [[null, 1]]);
+  assert.ok(full.columns.every((c) => c.sections.every((s) => s.items.every((i) => i.ops.length === 0))));
+  // リマインドだけなら見出しの無い節は出さない
+  const rem = deck.deckModel(flowOf({ reminders: [{ id: 1, text: "r", nextAt: null }] })).columns[1]!;
+  assert.deepEqual(rem.sections.map((s) => s.label), ["リマインド"]);
+  // cols は 0〜3 に丸め、数でなければ 3
+  assert.deepEqual([5, -1, 1.7, "x"].map((c) => deck.deckModel(flowOf({ cols: c })).cols), [3, 0, 1, 3]);
+  assert.equal(deck.itemSelector("task:1"), '[data-key="task:1"] .c-item-main');
+});
+
+test("web components: Deck は 3 つの section.c-col を常に出し、項目の data-*・aria-current、席に開けない物は div、外へのリンクは新しいタブ。押すと on.open(item, key)", () => {
+  const calls: unknown[][] = [];
+  const on = { open: (...a: unknown[]) => void calls.push(a) };
+  const topics = { turnIds: ["ch:1"], groups: [], topics: [{ id: "ch:1", title: "番", mark: "turn", turn: { kind: "permission", summary: "要約", since: "s" } }], rightHands: [] };
+  const github = [{ id: 1, url: "https://github.com/o/r/pull/2", title: "PR の題", label: "", updatedAt: "2026-01-01T00:00:00Z" }];
+  const model = deck.deckModel(flowOf({ topics, current: "ch:1", cols: 2, tasks: [{ id: 3, title: "t", due: null }], github }));
+  const root = one(html`<${deck.Deck} model=${model} on=${on} />`);
+  assert.deepEqual([root.type, root.props.class, root.props["data-cols"]], ["div", "c-deck", "2"]);
+  const cols = find(root, "c-col");
+  assert.deepEqual(cols.map((c) => [c.type, c.props["data-col"], c.props["aria-label"]]), [["section", "turn", "あなたの番 1 件"], ["section", "tasks", "タスク 1 件"], ["section", "feed", "通知"]]);
+  assert.equal(textOf(find(cols[0]!, "c-badge")), "1");
+  assert.equal(textOf(find(cols[1]!, "c-col-count")), "1");
+  assert.equal(find(cols[2]!, "c-col-count").length + find(cols[2]!, "c-badge").length, 0);
+  assert.ok(cols.every((c) => find(c, "c-col-body")[0]?.props.role === "list"));
+  const items = find(root, "c-item");
+  assert.deepEqual(items.map((i) => [i.props.role, i.props["data-key"], i.props["data-kind"], i.props["data-turn"], i.props["data-current"]]), [
+    ["listitem", "turn:ch:1", "permission", "true", "true"],
+    ["listitem", "task:3", "task", undefined, undefined],
+    ["listitem", "gh:1", "pr", undefined, undefined],
+  ]);
+  const [turnItem, taskItem, ghItem] = items as [El, El, El];
+  const main = find(turnItem, "c-item-main")[0]!;
+  assert.deepEqual([main.type, main.props.type, main.props["aria-current"]], ["button", "button", "true"]);
+  assert.equal(textOf(find(main, "c-item-word")), "許可");
+  assert.equal(textOf(find(main, "c-item-time")), "ago:s");
+  assert.equal(textOf(find(main, "c-item-title")), "番");
+  assert.equal(textOf(find(main, "c-item-sum")), "要約");
+  assert.deepEqual([find(main, "c-mark")[0]?.props["data-state"], find(main, "c-mark")[0]?.props["aria-label"]], ["turn", "あなたの番"]);
+  (main.props.onClick as () => void)();
+  assert.deepEqual(calls, [[model.columns[0]!.sections[0]!.items[0], "turn:ch:1"]]);
+  // 席に開けない物は div（押せない）、時刻・要約が無ければ出さない
+  const taskMain = find(taskItem, "c-item-main")[0]!;
+  assert.equal(taskMain.type, "div");
+  assert.equal(find(taskMain, "c-item-time").length + find(taskMain, "c-item-sum").length + find(taskMain, "c-item-link").length, 0);
+  assert.equal(find(taskMain, "c-mark")[0]?.props["aria-hidden"], "true");
+  const link = find(ghItem, "c-item-link")[0]!;
+  assert.deepEqual([link.type, link.props.href, link.props.target, link.props.rel], ["a", "https://github.com/o/r/pull/2", "_blank", "noreferrer noopener"]);
+  assert.equal(textOf(find(link, "c-item-title")), "PR の題 #2");
+  // 読み込み中・空
+  const loading = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ topics: null, tasks: null, reminders: null, notices: null }))} on=${on} />`);
+  assert.equal(find(loading, "c-col").length, 3);
+  assert.equal(find(loading, "c-loading").length, 3);
+  const empty = one(html`<${deck.Deck} model=${deck.deckModel(flowOf())} on=${on} />`);
+  assert.deepEqual(find(empty, "c-empty-text").map(textOf), ["今は待たせている事がありません", "タスクとリマインドはありません", "通知はありません"]);
+  // 節の見出し
+  const running = deck.deckModel(flowOf({ topics: { turnIds: [], groups: [], topics: [{ id: "ch:9", title: "動", mark: "running", turn: null }], rightHands: [] } }));
+  assert.deepEqual(find(one(html`<${deck.Deck} model=${running} on=${on} />`), "c-col-label").map(textOf), ["動いている"]);
+});
+
+test("web components: DeckBand は点・名前・探す・右腕・始める・ほかの順で、右腕は aria-controls と aria-expanded、押すと on の 5 つ", () => {
+  const calls: unknown[][] = [];
+  const on = {
+    status: () => void calls.push(["status"]),
+    find: (o: unknown) => void calls.push(["find", o]),
+    hand: (o: unknown) => void calls.push(["hand", o]),
+    start: (o: unknown) => void calls.push(["start", o]),
+    more: (o: unknown) => void calls.push(["more", o]),
+  };
+  const band = one(html`<${deck.DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: true }} controls="v3-hand" on=${on} />`);
+  assert.deepEqual([band.type, band.props.class], ["header", "c-band"]);
+  const acts = (t: El): unknown[] => {
+    const out: unknown[] = [];
+    const walk = (n: Tree) => {
+      if (typeof n === "string") return;
+      if (n.props["data-act"] !== undefined) out.push(n.props["data-act"]);
+      n.children.forEach(walk);
+    };
+    walk(t);
+    return out;
+  };
+  assert.deepEqual(acts(band), ["status", "find", "hand", "start", "more"]);
+  const conn = find(band, "c-band-conn")[0]!;
+  assert.deepEqual([conn.props["aria-label"], conn.props.title, find(conn, "c-band-dot")[0]?.props["data-tone"]], ["見本の Bot: 接続中", "見本の Bot: 接続中", "ok"]);
+  assert.equal(textOf(find(band, "c-band-name")), "self-agent");
+  const hand = find(band, "c-band-hand")[0]!;
+  assert.deepEqual([hand.props["aria-controls"], hand.props["aria-expanded"], hand.props["aria-label"], find(hand, "c-band-hand-mark")[0]?.props["data-state"]], ["v3-hand", "true", "右腕（あなたの番）", "turn"]);
+  assert.deepEqual(find(band, "c-btn-label").map(textOf), ["探す", "始める"]);
+  assert.equal(find(band, "c-iconbtn")[0]?.props["aria-label"], "ほか");
+  const ev = fakeEvent();
+  (conn.props.onClick as () => void)();
+  (hand.props.onClick as (e: unknown) => void)(ev);
+  for (const b of [...find(band, "c-btn"), ...find(band, "c-iconbtn")]) (b.props.onClick as (e: unknown) => void)(ev);
+  assert.deepEqual(calls.map((c) => c[0]), ["status", "hand", "find", "start", "more"]);
+  assert.equal(calls[1]?.[1], ev.currentTarget);
+  // 状態をまだ読めていなければ点を出さない。印が無ければ名前は見える字のまま、閉じていれば aria-expanded=false
+  const quiet = one(html`<${deck.DeckBand} conn=${null} hand=${{ mark: null, open: false }} on=${on} />`);
+  assert.equal(find(quiet, "c-band-conn").length, 0);
+  const qh = find(quiet, "c-band-hand")[0]!;
+  assert.deepEqual([qh.props["aria-label"], qh.props["aria-expanded"], qh.props["aria-controls"], find(qh, "c-band-hand-mark").length], [undefined, "false", undefined, 0]);
+  assert.equal(find(one(html`<${deck.DeckBand} conn=${{ tone: "bad", label: "x" }} hand=${null} on=${on} />`), "c-band-dot")[0]?.props["data-tone"], "bad");
+});
+
+test("web components: c-deck.css は区切りの線（左の線と 0 の外し・角丸のほかの border）・gradient・半透明・影・動きを書かない", () => {
+  const rules = parseCss(read("c-deck.css"));
+  assert.ok(rules.length > 0);
+  for (const rule of rules) {
+    for (const decl of rule.body.split(";").map((d) => d.trim()).filter((d) => d !== "")) {
+      const prop = decl.slice(0, decl.indexOf(":")).trim();
+      if (prop.startsWith("border")) assert.ok(["border-left", "border-left-color", "border-radius"].includes(prop) || decl === "border: 0", `${rule.selectors.join(",")}: ${decl}`);
+      assert.doesNotMatch(decl, /gradient|rgba\(|^opacity\s*:|^box-shadow\s*:|^animation|^transition/, `${rule.selectors.join(",")}: ${decl}`);
+    }
+  }
+  assert.doesNotMatch(stripCssComments(read("c-deck.css")), /@keyframes|@media \(min-width|1340/);
 });

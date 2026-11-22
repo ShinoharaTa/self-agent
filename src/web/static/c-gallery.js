@@ -10,6 +10,7 @@ import { Composer, composerModel } from "./c-composer.js";
 import { Cards } from "./c-cards.js";
 import { HandHead } from "./c-hand.js";
 import { TermCard, termView } from "./c-term.js";
+import { Deck, DeckBand, deckModel } from "./c-deck.js";
 
 // テーマ: shell.js と同じ（localStorage の self-agent-web:theme。dark・light は data-theme、system は外して OS に合わせる。読めなければ dark）
 const THEMES = ["dark", "light", "system"];
@@ -780,6 +781,77 @@ function Terms() {
   <//>`;
 }
 
+// ===== 流れの列と上の帯（D1）。データは作り物 =====
+
+const DECK_DATA = {
+  ...FULL_DATA,
+  turnIds: ["ch:1", "ch:21", "ch:20"],
+  topics: [
+    ...FULL_DATA.topics,
+    gTopic({ id: "ch:21", title: "見本の判断待ちの話題", mark: "turn", turn: gTurn("waiting", "") }),
+  ],
+};
+const DECK_TASKS = [
+  { id: 1, title: "見本の期限なしのタスク", due: null, status: "open" },
+  { id: 2, title: "見本の今日のタスク", due: "2026-01-01", status: "open" },
+  { id: 3, title: "見本の先のタスク", due: "2026-01-03", status: "open" },
+  { id: 4, title: "見本の期限切れのタスク", due: "2025-12-30", status: "open" },
+];
+const DECK_REMINDERS = [
+  { id: 1, text: "見本の毎朝の\nリマインド", nextAt: "2026-01-02T00:00:00Z", kind: "repeat", rule: "" },
+  { id: 2, text: "見本の 1 回のリマインド", nextAt: "2026-01-01T09:00:00Z", kind: "once", rule: "" },
+];
+const DECK_GITHUB = [
+  { id: 1, url: "https://github.com/example/sample/pull/12", title: "見本の PR", label: "レビュー依頼", level: "yellow", updatedAt: "2026-01-01T02:00:00Z", actorLogin: "sample", handoff: null },
+  { id: 2, url: "https://github.com/example/sample/issues/7", title: "", label: "", level: "white", updatedAt: "2026-01-01T01:00:00Z", actorLogin: "sample", handoff: null },
+];
+const DECK_NOTICES = [
+  { at: "2026-01-01T02:30:00Z", text: "見本の知らせ（Discord に投稿した物）", level: "info", link: "https://discord.com/channels/1/2/3" },
+  { at: "2026-01-01T00:30:00Z", text: "見本の知らせ（投稿していない物）", level: "warning", link: null },
+];
+const DECK_DAYS = { "2026-01-01": "1/1(木)", "2026-01-03": "1/3(土)", "2025-12-30": "12/30(火)" };
+const GITHUB_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:pull|issues)\/(\d+)/;
+
+const deckState = (o = {}) => ({
+  cols: 3,
+  current: "ch:21",
+  topics: DECK_DATA,
+  tasks: DECK_TASKS,
+  reminders: DECK_REMINDERS,
+  github: DECK_GITHUB,
+  handoff: false,
+  notices: DECK_NOTICES,
+  today: "2026-01-01",
+  isUnread: (channel) => channel === "3",
+  time: () => "12:34",
+  ago: () => "3 分前",
+  day: (d) => DECK_DAYS[d] || d,
+  oneLine: (text) => String(text).replace(/\s*[\r\n]+\s*/g, " "),
+  parts: (url) => {
+    const m = typeof url === "string" ? GITHUB_URL.exec(url) : null;
+    return m ? { repo: m[1] + "/" + m[2], number: m[3] } : null;
+  },
+  ...o,
+});
+const DECK_ON = { open: noop };
+const BAND_ON = { status: noop, find: noop, hand: noop, start: noop, more: noop };
+
+/** 帯と 3 つの列の見本（列は見本の幅で 3 等分）。押しても何も起きない */
+function Decks() {
+  return html`<${Section} name="deck" title="流れの列と上の帯">
+    <div class="c-gallery-deck" data-demo="band">
+      <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
+    </div>
+    <div class="c-gallery-deck" data-demo="deck-3"><${Deck} model=${deckModel(deckState())} on=${DECK_ON} /></div>
+    <div class="c-gallery-deck" data-demo="deck-empty">
+      <${Deck} model=${deckModel(deckState({ topics: QUIET_DATA, tasks: [], reminders: [], github: [], notices: [] }))} on=${DECK_ON} />
+    </div>
+    <div class="c-gallery-deck" data-demo="deck-loading">
+      <${Deck} model=${deckModel(deckState({ topics: null, tasks: null, reminders: null, github: null, notices: null }))} on=${DECK_ON} />
+    </div>
+  <//>`;
+}
+
 /** 知らせの入れ物は見本の根の直下に 1 つ（自動では消さない。× で消す） */
 function Gallery() {
   const [toasts, setToasts] = useState([]);
@@ -810,6 +882,7 @@ function Gallery() {
     <${CardDemos} />
     <${Hands} />
     <${Terms} />
+    <${Decks} />
     <${Toast} items=${toasts} onDismiss=${dismiss} />
   `;
 }
