@@ -4371,3 +4371,67 @@ test("web components: TopBar の close（true で帯の右端に data-act=close 
   assert.equal(shell.TopBar({ ...topProps({ view: "none" }), close: true, on }), null);
   assert.equal(shell.topModel({ ...topProps({ view: "other" }), close: true })?.close, true);
 });
+
+// ===== スマホの 3 列の横送り（D2 の PR-1。docs/plan/web-ui-deck.md §4.4）: 部品だけ =====
+
+test("web components: deckModel の paged は true のときだけ true。Deck は paged のときだけ data-paged=true で、列は 3 つのまま", () => {
+  assert.equal(deck.deckModel(flowOf({ cols: 1, paged: true })).paged, true);
+  for (const paged of [undefined, false, "true", 1]) assert.equal(deck.deckModel(flowOf({ cols: 1, paged })).paged, false, String(paged));
+  const paged = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ cols: 1, paged: true }))} on=${{ open: () => undefined, op: () => undefined }} />`);
+  assert.deepEqual([paged.props.class, paged.props["data-cols"], paged.props["data-paged"]], ["c-deck", "1", "true"]);
+  assert.deepEqual(find(paged, "c-col").map((c) => c.props["data-col"]), ["turn", "tasks", "feed"]);
+  const plain = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ cols: 1 }))} on=${{ open: () => undefined, op: () => undefined }} />`);
+  assert.equal(plain.props["data-paged"], undefined);
+  assert.equal(find(plain, "c-col").length, 3);
+});
+
+test("web components: DeckBand の phone は点・探す・始める・ほかの順で右腕を出さず、［始める］は名前「始める」の IconButton。variant なし・wide は今と同じ出力", () => {
+  const calls: unknown[][] = [];
+  const rec = (name: string) => (o?: unknown): void => void calls.push([name, o]);
+  const on = { status: rec("status"), find: rec("find"), hand: rec("hand"), start: rec("start"), more: rec("more") };
+  const acts = (t: El): unknown[] => {
+    const out: unknown[] = [];
+    const walk = (n: Tree) => {
+      if (typeof n === "string") return;
+      if (n.props["data-act"] !== undefined) out.push(n.props["data-act"]);
+      n.children.forEach(walk);
+    };
+    walk(t);
+    return out;
+  };
+  const props = { conn: { tone: "ok", label: "見本の Bot: 接続中" }, hand: { mark: "turn", open: false }, controls: "v3-hand", on };
+  const band = one(html`<${deck.DeckBand} variant="phone" ...${props} />`);
+  assert.deepEqual(acts(band), ["status", "find", "start", "more"]);
+  assert.equal(find(band, "c-band-hand").length, 0);
+  assert.equal(textOf(find(band, "c-band-name")), "self-agent");
+  assert.deepEqual(find(band, "c-btn-label").map(textOf), ["探す"]);
+  const start = band.children.flatMap((c) => (typeof c === "string" ? [] : find(c, "c-band-act"))).find((s) => s.props["data-act"] === "start")!;
+  const startBtn = find(start, "c-iconbtn")[0]!;
+  assert.equal(startBtn.props["aria-label"], "始める");
+  assert.match(String(((find(startBtn, "c-icon")[0] as El).children[0] as El).props.href), /#plus$/);
+  assert.deepEqual(find(band, "c-iconbtn").map((b) => b.props["aria-label"]), ["始める", "ほか"]);
+  const ev = fakeEvent();
+  (startBtn.props.onClick as (e: unknown) => void)(ev);
+  assert.deepEqual(calls, [["start", ev.currentTarget]]);
+  // variant なし・wide・知らない値は今の形（右腕あり・［始める］は字つき）
+  const now = one(html`<${deck.DeckBand} ...${props} />`);
+  for (const variant of ["wide", "tablet", null]) {
+    const other = one(html`<${deck.DeckBand} variant=${variant} ...${props} />`);
+    assert.deepEqual(acts(other), acts(now), String(variant));
+    assert.equal(textOf(other), textOf(now), String(variant));
+    assert.deepEqual(find(other, "c-btn-label").map(textOf), ["探す", "始める"], String(variant));
+  }
+  assert.deepEqual(acts(now), ["status", "find", "hand", "start", "more"]);
+});
+
+test("web components: c-deck.css の横送り（paged の 4 つと列の 2 つ、列の本体の縦の overscroll）。scroll-behavior・幅の段を書かない", () => {
+  const rules = parseCss(read("c-deck.css"));
+  const body = (sel: string): string => rules.filter((r) => r.at.length === 0 && r.selectors.includes(sel)).map((r) => r.body).join(" ");
+  const paged = body('.c-deck[data-paged="true"]');
+  for (const decl of ["grid-auto-columns: 100%", "scroll-snap-type: x mandatory", "overscroll-behavior-x: contain", "scrollbar-width: none"]) assert.ok(paged.includes(decl), decl);
+  const col = body('.c-deck[data-paged="true"] > .c-col');
+  for (const decl of ["scroll-snap-align: start", "scroll-snap-stop: always"]) assert.ok(col.includes(decl), decl);
+  assert.ok(body(".c-col-body").includes("overscroll-behavior-y: contain"));
+  const src = stripCssComments(read("c-deck.css"));
+  assert.doesNotMatch(src, /(?<![-\w])(?:scroll-behavior|transition|animation)\s*:|@media \((?:min|max)-width/);
+});

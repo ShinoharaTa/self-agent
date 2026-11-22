@@ -316,7 +316,7 @@ export function focusAfter(before, after, key) {
   return after[Math.min(Math.max(i, 0), after.length - 1)];
 }
 
-/** 3 つの列のモデル。cols は見える列の数（0〜3。既定 3）。空の節は出さない */
+/** 3 つの列のモデル。cols は見える列の数（0〜3。既定 3）。paged（スマホの 1 列ずつの横送り。D2）は true のときだけ。空の節は出さない */
 export function deckModel(state) {
   const cols = typeof state.cols === "number" && Number.isFinite(state.cols) ? Math.max(0, Math.min(3, Math.floor(state.cols))) : 3;
   const sections = (list) => list.filter((s) => s.items.length > 0);
@@ -324,6 +324,7 @@ export function deckModel(state) {
   const tasks = taskItems(state);
   return {
     cols,
+    paged: state.paged === true,
     columns: [
       {
         id: "turn",
@@ -358,9 +359,9 @@ export function deckModel(state) {
 
 // ===== 部品 =====
 
-/** 3 つの列（見えない列も描き、横に送る）。on: { open(item, key), op(item, opId) } */
+/** 3 つの列（見えない列も描き、横に送る。paged は 1 列ずつ止まる）。on: { open(item, key), op(item, opId) } */
 export function Deck({ model, on }) {
-  return html`<div class="c-deck" data-cols=${String(model.cols)}>
+  return html`<div class="c-deck" data-cols=${String(model.cols)} data-paged=${model.paged === true ? "true" : undefined}>
     ${model.columns.map((col) => html`<${Column} key=${col.id} col=${col} on=${on} />`)}
   </div>`;
 }
@@ -446,9 +447,11 @@ function bandHandName(mark) {
 
 /**
  * 上の帯。conn は { tone: "ok"|"bad", label } か null（状態をまだ読めていない）、hand は { mark, open }、controls は右腕のボタンの aria-controls。
+ * variant が phone（スマホ。D2）なら［右腕］を出さず（下のバーの物）、［始める］は字のないボタン。ほかは今の形。
  * on: { status(), find(opener), hand(opener), start(opener), more(opener) }
  */
-export function DeckBand({ conn, hand, controls, on }) {
+export function DeckBand({ variant, conn, hand, controls, on }) {
+  const phone = variant === "phone";
   const mark = hand && (hand.mark === "turn" || hand.mark === "unread") ? hand.mark : null;
   return html`<header class="c-band">
     ${conn
@@ -459,12 +462,18 @@ export function DeckBand({ conn, hand, controls, on }) {
     <span class="c-band-name" key="name">self-agent</span>
     <span class="c-band-ops" key="ops">
       <span class="c-band-act" data-act="find"><${Button} kind="ghost" size="sm" icon="search" label="探す" onPress=${(event) => on.find(event.currentTarget)} /></span>
-      <button class="c-band-hand" type="button" data-act="hand" aria-label=${bandHandName(mark)} aria-controls=${filled(controls) ? controls : undefined}
-          aria-expanded=${hand && hand.open ? "true" : "false"} onClick=${(event) => on.hand(event.currentTarget)}>
-        <span class="c-band-hand-label">右腕</span>
-        ${mark ? html`<span class="c-band-hand-mark" data-state=${mark} aria-hidden="true"></span>` : null}
-      </button>
-      <span class="c-band-act" data-act="start"><${Button} kind="ghost" size="sm" icon="plus" label="始める" onPress=${(event) => on.start(event.currentTarget)} /></span>
+      ${phone
+        ? null
+        : html`<button class="c-band-hand" type="button" data-act="hand" aria-label=${bandHandName(mark)} aria-controls=${filled(controls) ? controls : undefined}
+            aria-expanded=${hand && hand.open ? "true" : "false"} onClick=${(event) => on.hand(event.currentTarget)}>
+            <span class="c-band-hand-label">右腕</span>
+            ${mark ? html`<span class="c-band-hand-mark" data-state=${mark} aria-hidden="true"></span>` : null}
+          </button>`}
+      <span class="c-band-act" data-act="start">
+        ${phone
+          ? html`<${IconButton} icon="plus" label="始める" onPress=${(event) => on.start(event.currentTarget)} />`
+          : html`<${Button} kind="ghost" size="sm" icon="plus" label="始める" onPress=${(event) => on.start(event.currentTarget)} />`}
+      </span>
       <span class="c-band-act" data-act="more"><${IconButton} icon="settings" label="ほか" onPress=${(event) => on.more(event.currentTarget)} /></span>
     </span>
   </header>`;
