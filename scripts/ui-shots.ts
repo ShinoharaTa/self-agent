@@ -166,6 +166,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(theme === "dark" && vp === "phone" ? ["a-entry-missing"] : []),
     // 流れの列（D1。640px 以上の 3 組）: 帯と 3 列の所と、項目から席を開いた所
     ...(vp !== "phone" ? ["a-deck", "a-deck-seat"] : []),
+    // 列の中の操作（D1 の PR-2。ダークの PC だけ）: タスクを［完了］にした直後
+    ...(vp === "pc" && theme === "dark" ? ["a-deck-done"] : []),
     "b-chat-top",
     "b-chat-middle",
     "b-chat-bottom",
@@ -4409,6 +4411,46 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await shot(page, `${p}-a-deck-seat`);
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`流れの列の検査で ${problems.length} 件`);
+        });
+      }
+      // 列の中の操作（D1 の PR-2。ダークの PC だけ）: ［完了］の当たり・列から 1 つ消える・知らせと［取り消す］・焦点の行き先。撮った後に［取り消す］で戻す（戻せなければ段を失敗にする）
+      if (vp === "pc" && theme === "dark") {
+        await step(`${p} done`, [`${p}-a-deck-done`], async () => {
+          const TASK = '#c-deck-root .c-col[data-col="tasks"] .c-item[data-kind="task"]';
+          const UNDO = "#c-notice-root .c-toast-item button";
+          const problems: string[] = [];
+          const say = (text: string): void => void problems.push(`列の中の操作: ${text}`);
+          await load(page, "/");
+          await page.waitForSelector(TASK, { timeout: 5000 });
+          await settled(page);
+          const keys = (): Promise<string[]> => page.evaluate((sel: string) => [...document.querySelectorAll(sel)].map((el) => el.getAttribute("data-key") ?? ""), TASK);
+          const before = await keys();
+          for (const line of await page.evaluate(hitProblems, { min: 44, scopes: '#c-deck-root .c-col[data-col="tasks"]', targets: ".c-item-meta .c-iconbtn", toast: false })) say(line);
+          await page.click(`${TASK} .c-item-meta .c-iconbtn`);
+          const gone = await page
+            .waitForFunction(([sel, n]: [string, number]) => document.querySelectorAll(sel).length === n, [TASK, before.length - 1] as [string, number], { timeout: 5000 })
+            .then(() => true, () => false);
+          if (!gone) say(`［完了］の後の列の項目が ${(await keys()).length} 個（${before.length - 1} 個のはず）`);
+          else if ((await keys()).includes(before[0]!)) say(`押した項目 ${before[0]} が列に残る`);
+          const notice = await page
+            .waitForSelector(`${UNDO} >> text=取り消す`, { timeout: 5000 })
+            .then(() => page.evaluate(() => (document.querySelector('#c-notice-root .c-toast-list[role="status"]')?.textContent ?? "").trim()), () => null);
+          if (notice === null) say("知らせに［取り消す］が無い");
+          else if (!notice.includes("を完了にしました")) say(`知らせが「${notice.slice(0, 40)}」`);
+          await settled(page);
+          // 押したボタンは項目ごと消える。焦点は c-app.js の drawDeck の決まり（同じ key の項目 → 帯の［探す］）で body に落ちない
+          const focus = await page.evaluate(() => (document.activeElement === document.body || document.activeElement === null ? "body" : ""));
+          if (focus === "body") say("押したボタンが消えた後、焦点が body に落ちる");
+          await shot(page, `${p}-a-deck-done`);
+          // 元に戻す（一時 DB を後ろの段のために戻す）
+          if (notice !== null) await page.click(`${UNDO} >> text=取り消す`);
+          const back = await page
+            .waitForFunction(([sel, n]: [string, number]) => document.querySelectorAll(sel).length === n, [TASK, before.length] as [string, number], { timeout: 5000 })
+            .then(() => true, () => false);
+          if (!back) throw new Error(`［取り消す］で列が戻らない（${(await keys()).length} 個。${before.length} 個のはず）`);
+          await settled(page);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`列の中の操作の検査で ${problems.length} 件`);
         });
       }
       await step(`${p} b`, [`${p}-b-chat-top`, `${p}-b-chat-middle`, `${p}-b-chat-bottom`], async () => {

@@ -157,3 +157,8 @@
 .c-gallery-band {
   width: var(--c-top-full-min);
 }
+
+/* 操作の付いた列も、スマホの幅で項目のリンクが［対応］に押し潰されないよう、帯の幅より縮めずに横に送る */
+.c-gallery-deck-ops {
+  min-width: var(--c-top-full-min);
+}
