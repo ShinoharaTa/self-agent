@@ -505,6 +505,7 @@ if (deckRoot && bandRoot) {
 
   /**
    * 下のバーを描く（D2。スマホの流れの列の下）。bar は { page, hand, controls, on: { page(id), paged(id), hand(opener) } } か null（空にする）。
+   * paged(id) は自分で page() した分のほかに送られて一番近い列が替わったとき（半分を越えた時点。何度来ても同じ結果にし、中から page() を呼ばない）。
    * 描けなければ false。フォーカスには触らない
    */
   function drawBar(bar) {
@@ -522,11 +523,11 @@ if (deckRoot && bandRoot) {
     return true;
   }
 
-  /** その列の左端へすぐ送る（動かさない）。列が無ければ false。全部見えている幅では何も起きない */
+  /** その列の左端へすぐ送る（動かさない）。スマホの横送り（data-paged）のときに呼ぶ。列が無い・列の入れ物が隠れている間（幅 0）は false */
   const page = (id) => {
     const box = deckBox();
     const col = colOf(id);
-    if (!box || !col) return false;
+    if (!box || !col || box.clientWidth === 0) return false;
     pagedAt = id;
     box.scrollLeft = colLeft(box, col);
     return true;
@@ -543,7 +544,10 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 横送り（data-paged の列）で一番近い列が替わったら、下のバーに知らせる（指で送った分。タイマーは使わない） */
+  /**
+   * 横送り（data-paged の列）で一番近い列が替わったら、下のバーに知らせる。自分で page() した分のほか（指・幅の変化の止まり直し・焦点の移動で送られた分）。
+   * 半分を越えた時点で来るので、受け手は何度来ても同じ結果にする。受け手の中から page() を呼ばない。タイマーは使わない
+   */
   const onScroll = (event) => {
     const box = event.target;
     if (!box || box.parentElement !== deckRoot || !box.hasAttribute("data-paged")) return;

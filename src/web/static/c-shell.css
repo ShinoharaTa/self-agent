@@ -151,6 +151,16 @@
   background: var(--muted);
 }
 
+/* 焦点の輪は見える地（角丸の span）の内側に出す（base.css の :focus-visible と同じ線。四角い当たりの箱の外には出さない） */
+.c-bottom-page:focus-visible {
+  outline: none;
+}
+
+.c-bottom-page:focus-visible .c-bottom-page-in {
+  outline: var(--ring-width) solid var(--accent);
+  outline-offset: calc(-1 * var(--ring-width));
+}
+
 .c-bottom-page-label {
   min-width: 0;
   overflow: hidden;

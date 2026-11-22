@@ -4867,11 +4867,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const st = getComputedStyle(deck);
         if (st.scrollSnapType !== "x mandatory") out.push(`deck-paged: scroll-snap-type が ${st.scrollSnapType}`);
         if (!(deck.scrollWidth > deck.clientWidth)) out.push("deck-paged: 横に送れない");
-        // 2 つ目の列の途中まで送ると、どちらかの列の頭に止まる（1 列ずつ）
+        // 2 つ目の列の 7 割まで送ると、2 つ目の列の頭に止まる（1 列ずつ）
         const left = deck.getBoundingClientRect().left;
-        deck.scrollLeft = deck.clientWidth * 0.3;
-        const lefts = cols.map((col) => Math.round(col.getBoundingClientRect().left - left));
-        if (!lefts.some((x) => Math.abs(x) <= 1)) out.push(`deck-paged: 送った後に列の頭で止まっていない（${lefts.join(",")}）`);
+        deck.scrollLeft = deck.clientWidth * 0.7;
+        const second = cols[1] === undefined ? NaN : cols[1].getBoundingClientRect().left - left;
+        if (!(Math.abs(second) <= 1)) out.push(`deck-paged: 送った後に 2 つ目の列の頭で止まっていない（2 つ目の列の左 ${second.toFixed(1)}）`);
         deck.scrollLeft = 0;
       }
       return out;
