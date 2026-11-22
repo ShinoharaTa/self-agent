@@ -8003,7 +8003,8 @@ test("web static: 新しい殻（index.html）に右腕の枠と 2 つの口と�
   assert.match(html, /id="c-list-root"><\/div>\s*<div class="v3-slot" id="c-bottom-root"><\/div>\s*<\/nav>/);
   // 流れの列（D1）: 上の帯は根の最初の子、列は一覧と列 2 の間。どちらも中は部品が描く
   assert.match(html, /<div class="v3" id="v3"[^>]*>\s*<div class="v3-band" id="v3-band"><div class="v3-slot" id="c-band-root"><\/div><\/div>\s*<nav class="v3-list"/);
-  assert.match(html, /<\/nav>\s*<div class="v3-deck" id="v3-deck"><div class="v3-slot" id="c-deck-root"><\/div><\/div>\s*<main class="v3-main"/);
+  // スマホの流れの列の下のバー（D2）は列の次・列 2 の前（Tab の順は 帯 → 列 → 下のバー）
+  assert.match(html, /<\/nav>\s*<div class="v3-deck" id="v3-deck"><div class="v3-slot" id="c-deck-root"><\/div><\/div>\s*<div class="v3-foot" id="v3-foot"><div class="v3-slot" id="c-foot-root"><\/div><\/div>\s*<main class="v3-main"/);
   assert.doesNotMatch(html, /v3-hand-ask|v3-hand-entry|v3-list-foot/);
   // 見出しの [右腕] は部品（入口 c-app.js の TopBar）。aria-controls の先の右腕の枠（id="v3-hand"）はここ
   assert.match(html, /<main class="v3-main" id="v3-main">\s*<div class="v3-slot" id="c-top-root"><\/div>\s*<div class="ed" id="ed"><\/div>\s*<\/main>/);
@@ -11338,12 +11339,19 @@ test("web static: shell.css の流れの列の規則は .v3[data-deck] 始まり
   const rules = [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]!.trim() }));
   assert.ok(rules.length >= 10);
   const bare = rules.filter((r) => !r.sel.split(",").every((p) => p.trim().startsWith(".v3[data-deck")));
-  assert.deepEqual(bare, [{ sel: ".v3-band, .v3-deck, .v3-find-backdrop", body: "display: none;" }]);
+  assert.deepEqual(bare, [{ sel: ".v3-band, .v3-deck, .v3-find-backdrop, .v3-foot", body: "display: none;" }]);
   const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
   const phoneBlock = phone.slice(0, phone.indexOf("\n}\n") + 3);
-  assert.doesNotMatch(phoneBlock, /data-deck|data-seat|data-find|v3-band|v3-deck|v3-find/);
+  assert.doesNotMatch(phoneBlock, /data-deck|data-seat|data-find|v3-band|v3-deck|v3-find|v3-foot/);
   // 流れの列の規則は media の外（幅の段を足さない）
   assert.ok(end < css.indexOf("@media (max-width: 639px)"));
+});
+
+test("web static: 下のバーの入れ物（.v3-foot。D2）は素の display: none の並びのほかに shell.css の規則が無く、どの幅でも場所を取らない（入れ替えは D2 の PR-2）", () => {
+  const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const sels = [...css.matchAll(/([^{}]+)\{/g)].map((m) => m[1]!.trim().replace(/\s+/g, " ")).filter((sel) => sel.includes("v3-foot"));
+  assert.deepEqual(sels, [".v3-band, .v3-deck, .v3-find-backdrop, .v3-foot"]);
+  assert.doesNotMatch(read("app.css"), /v3-foot|c-foot/);
 });
 
 test("web static: 流れの列の操作: ［完了］は POST /complete → 知らせ「…を完了にしました」→［取り消す］で /reopen、［対応］は POST /api/github/<id>/act。応答までの二度押しは送らず、失敗したら busy が外れてもう一度押せる", async () => {

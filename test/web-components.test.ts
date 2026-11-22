@@ -3904,7 +3904,7 @@ const deck = (await import(deckUrl)) as Record<string, Fn> & {
   taskItems: (state: Obj) => FlowItem[];
   reminderItems: (state: Obj) => FlowItem[];
   feedItems: (state: Obj) => FlowItem[];
-  deckModel: (state: Obj) => { cols: number; columns: FlowColumn[] };
+  deckModel: (state: Obj) => { cols: number; paged: boolean; columns: FlowColumn[] };
 };
 
 /** 流れの列の state（既定は全部空で読めている） */
@@ -4524,4 +4524,22 @@ test("web components: c-shell.css の列のボタン（.c-bottom-page）は当�
   assert.ok(body('.c-bottom[data-variant="deck"] .c-bottom-hand').includes("flex: 0 0 auto"));
   // :hover は細かい指の media の中だけ（cssProblems が見る）、線・影は足さない
   assert.doesNotMatch(page + current, /border:(?! 0)|box-shadow|transition/);
+});
+
+test("web components: 入口の下のバーの 3 つの口（drawBar・page・focusBar）は #c-foot-root が在るときだけ SA.deck に足し、横送りの読み取りは scroll を capture・passive で 1 つ", () => {
+  const app = stripJsComments(read("c-app.js"));
+  assert.match(app, /const footRoot = document\.getElementById\("c-foot-root"\);/);
+  const at = app.indexOf("Object.assign(window.SA.deck, { drawBar, page, focusBar });");
+  assert.ok(at > 0, "3 つの口を足す行が無い");
+  const guard = app.lastIndexOf("if (footRoot) {", at);
+  assert.ok(guard > 0 && app.slice(guard, at).split("{").length === app.slice(guard, at).split("}").length + 1, "口を足すのが if (footRoot) の中でない");
+  assert.equal([...app.matchAll(/window\.SA\.deck = /g)].length, 1);
+  assert.match(app, /window\.SA\.deck = \{ draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand \};/);
+  assert.equal([...app.matchAll(/addEventListener\("scroll"/g)].length, 1);
+  assert.match(app.slice(guard, at), /deckRoot\.addEventListener\("scroll", onScroll, \{ capture: true, passive: true \}\);/);
+  // 下のバーは deck の形で、列の名前は列のモデルから（入口に列の名前を書かない）
+  assert.match(app, /<\$\{BottomBar\} variant="deck" pages=\$\{barPages\(\)\}/);
+  assert.doesNotMatch(app, /"あなたの番"|"タスク"|"通知"/);
+  // 送るのは scrollLeft を書くだけ（動かさない）
+  assert.doesNotMatch(app, /scrollTo\(|scrollBy\(|scrollIntoView\(|behavior/);
 });
