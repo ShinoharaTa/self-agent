@@ -502,6 +502,7 @@ const TALK_DEMOS = [
     demo: "talk-basic",
     turns: [
       { id: "b1", kind: "notice", text: "セッションを開きました", time: "12:30" },
+      { id: "b6", kind: "notice", text: "場所を「kakeibo-app」に変えました。ここまでの要点:\n\n- 月ごとの集計の表を直した\n- CSV の読み込みで日付の形式が 2 つある事が分かった\n- 残り: 繰り越しの計算と、その検査\n\n続きはこの話題で話せます。", time: "12:30" },
       { id: "b2", kind: "owner", text: "おはよう", time: "12:30" },
       { id: "b3", kind: "agent", text: "おはようございます。", time: "12:31", outcome: "done", steps: [] },
       { id: "b4", kind: "agent", name: "Claude Code", text: "1 つ目の返事です。", time: "12:32" },

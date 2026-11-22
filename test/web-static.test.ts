@@ -2878,6 +2878,7 @@ type HandFrame = {
   ops?: () => DomNode[];
   outgoing?: (text: string) => string;
   replyText?: (text: string) => string;
+  noticeText?: ((text: string) => string) | null;
   replyExtras?: (text: string) => DomNode[];
   head?: false;
   replyRefs?: (text: string) => Array<{ id: string; title: string; meta: string }>;
@@ -3266,6 +3267,8 @@ function loadShell(
   const chatHeads: Record<string, unknown> = {};
   // 右腕の Bot の返事の本文（描くたびに replyText・replyExtras を通して .ed-scroll に入れる）
   const handReplies: string[] = [];
+  // 右腕の知らせ（notice）の本文（返事の後ろに、描くたびに noticeText を通して p.fake-notice で入れる）
+  const handNotices: string[] = [];
   SA.chat = {
     markSeenShown: () => {
       marks.seenShown++;
@@ -3297,6 +3300,9 @@ function loadShell(
             ? frame.replyExtras(text)
             : [];
         scroll.append(ui.el("div", { class: "msg" }, [ui.el("p", { class: "msg-text", text: frame.replyText ? frame.replyText(text) : text }), ...extras]));
+      }
+      for (const text of handNotices) {
+        scroll.append(ui.el("p", { class: "fake-notice", text: frame.noticeText ? frame.noticeText(text) : text }));
       }
       const head = bare ? null : ui.el("header", { class: "ed-toolbar" }, [ui.el("h2", { text: frame.title }), ...(frame.ops ? frame.ops() : [])]);
       const keptRoot = (container.children as DomNode[]).find((c) => c.getAttribute("data-composer") !== null);
@@ -3523,6 +3529,7 @@ function loadShell(
     chatChannels,
     chatHeads,
     handReplies,
+    handNotices,
     state,
     api,
     heights,
@@ -8217,6 +8224,31 @@ test("web static: 先頭が 0 の <#00012> は ID として扱わず、札も出
   const cards = h.nodes.handEd.querySelectorAll("div.v3-card").map((c) => c.getAttribute("data-topic"));
   assert.deepEqual(cards, ["ch:1", "ch:2", "ch:3", "ch:4", "ch:5"]);
   assert.equal(h.nodes.handEd.querySelector("p.msg-text")!.textContent, "<#00012> <#0> 「T1」 「T2」 「T3」 「T4」 「T5」 「T6」 「T12」");
+});
+
+// ===== 統括のまとめの知らせ（#457 の L2） =====
+test("web static: 右腕の知らせ（統括のまとめ）の <#ID> は引けたものを「題名」に、引けないものは <#…> のまま", async () => {
+  const h = await loadHand({}, [v3Topic("ch:208", { title: "領収書の整理" })]);
+  h.handNotices.push("終わりました: <#208>（4 分）\n終わりました: <#209>（1 分未満）");
+  h.app.refresh("ch:900");
+  const notice = h.nodes.handEd.querySelector("p.fake-notice")!.textContent;
+  assert.match(notice, /「領収書の整理」/);
+  assert.doesNotMatch(notice, /<#208>/);
+  assert.match(notice, /<#209>/);
+});
+
+test("web static: 右腕を開いたまま、知らせ（統括のまとめ）に出た話題の題が変わると右腕を描き直す（返事にその ID が無くても）", async () => {
+  const topics = [v3Topic("ch:208", { title: "領収書の整理" })];
+  const h = await loadHand({}, topics);
+  h.handReplies.push("わかりました");
+  h.handNotices.push("終わりました: <#208>（4 分）");
+  h.app.refresh("ch:900");
+  assert.match(h.nodes.handEd.querySelector("p.fake-notice")!.textContent, /「領収書の整理」/);
+  const renders = h.handRenders.length;
+  topics[0] = v3Topic("ch:208", { title: "領収書の整理 2" });
+  await h.topics.load();
+  assert.equal(h.handRenders.length, renders + 1);
+  assert.match(h.nodes.handEd.querySelector("p.fake-notice")!.textContent, /「領収書の整理 2」/);
 });
 
 // ===== 右腕の見出しと中身を部品へ（K6） =====
