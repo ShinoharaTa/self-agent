@@ -1,6 +1,7 @@
 // 新しい殻（index.html）の流れの列（docs/plan/web-ui-deck.md の D1）: 3 つの列の状態と読み込みと、項目を押したときの口。
 // 描くのは入口 c-app.js の SA.deck.draw（モデルの純関数は c-deck.js）。見える列の数と席に開いている物は shell.js が setView で渡す。
-// 読むのは api.js の store（タスク・リマインドは store.want で polling に足す。GitHub は /api/status で有効と分かってから。無効の間は一度も読まない）
+// 読むのは api.js の store（タスク・リマインドは store.want で polling に足す。GitHub は /api/status で有効と分かってから。無効の間は一度も読まない）。
+// init は shell.js が初めて流れの列になったときに呼ぶ（スマホでは D2 まで読まない）
 "use strict";
 
 (function () {
@@ -63,9 +64,9 @@
     status();
   }
 
-  /** /api/status を読んだ後: GitHub が初めて有効と分かったら polling に足して 1 回読む */
+  /** /api/status を読んだ後: GitHub が初めて有効と分かったら polling に足して 1 回読む（init の前は何もしない） */
   function status() {
-    if (githubOn) return;
+    if (!started || githubOn) return;
     const st = store.status;
     if (!(st && st.github && st.github.enabled === true)) return;
     githubOn = true;
