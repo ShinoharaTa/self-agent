@@ -205,6 +205,25 @@
   padding-right: var(--c-gutter);
 }
 
+/*
+ * 操作が 2 つの種類（リマインド）は、題の下の行に置く（左［次を飛ばす］・右端［止める］。戻せない操作を離す）。
+ * ghost の字の端を題の左端・時刻の右端に揃えるため、行の左右の余白からボタンの字の内側の余白（sm の横の余白と枠）を引く
+ */
+.c-item[data-ops="row"] {
+  flex-wrap: wrap;
+}
+
+.c-item[data-ops="row"] .c-item-ops {
+  flex: 0 0 100%;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  padding: 0 calc(var(--c-gutter) - var(--space-3) - var(--border-width)) var(--space-1) calc(var(--c-gutter) - var(--c-deck-line) - var(--space-3) - var(--border-width));
+}
+
+.c-item[data-ops="row"] .c-item-ops > :first-child:not(:last-child) {
+  margin-inline-end: auto;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .c-item:has(> button.c-item-main:hover),
   .c-item:has(> .c-item-link:hover) {

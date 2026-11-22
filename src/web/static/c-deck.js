@@ -40,7 +40,7 @@ function dueWord(task, state) {
   return "タスク";
 }
 
-/** 種類の語。src は元の物（タスクのときだけ見る）、state は期限の語に使う。知らない種類は あなたの番 の語（turnWord） */
+/** 種類の語。src は元の物（タスク・リマインドのときだけ見る）、state は期限の語に使う。知らない種類は あなたの番 の語（turnWord） */
 export function itemWord(kind, src, state) {
   switch (kind) {
     case "running":
@@ -48,7 +48,7 @@ export function itemWord(kind, src, state) {
     case "task":
       return dueWord(src, state);
     case "reminder":
-      return "リマインド";
+      return src && src.kind === "prompt" ? "依頼" : "リマインド";
     case "pr":
       return "PR";
     case "issue":
@@ -64,7 +64,7 @@ export function itemWord(kind, src, state) {
   }
 }
 
-/** 項目の形を揃える（ops は state.ops が true のときだけ。タスクと GitHub の通知） */
+/** 項目の形を揃える（ops は state.ops が true のときだけ。タスク・リマインドと GitHub の通知。opsRow は操作を題の下の行に置く項目（リマインド）） */
 function flowItem(state, o) {
   const target = filled(o.target) ? o.target : null;
   return {
@@ -81,6 +81,7 @@ function flowItem(state, o) {
     target,
     href: target === null && filled(o.href) ? o.href : null,
     ops: state.ops === true && Array.isArray(o.ops) ? o.ops : [],
+    opsRow: o.opsRow === true,
     current: target !== null && state.current === target,
   };
 }
@@ -139,6 +140,8 @@ function byNewest(a, b) {
 
 /** 押してから応答までの項目か（state.busy は key の配列。flows.js の busy） */
 const isBusy = (state, key) => Array.isArray(state.busy) && state.busy.includes(key);
+/** その項目の応答待ちが、押した操作（opId）か（state.busyOp は key → 操作の id。回る印は押した方だけ） */
+const isBusyOp = (state, key, opId) => isBusy(state, key) && state.busyOp != null && typeof state.busyOp === "object" && state.busyOp[key] === opId;
 
 /** [対応] を押せない理由（views.js の githubActButton の 2 文。連携の有無で選ぶ） */
 export const ACT_REASON = Object.freeze({
@@ -194,23 +197,38 @@ export function taskItems(state) {
     );
 }
 
-/** リマインド。nextAt の昇順（無い物は最後。同じ時刻は元の順） */
+/** 繰り返しのリマインドか（rule が空でない文字列） */
+const repeats = (r) => filled(r.rule);
+
+/** リマインドの操作（繰り返しだけ［次を飛ばす］、常に［止める］。どちらかが応答待ちなら 2 つとも押せない） */
+function reminderOps(state, r, key, title) {
+  const disabled = isBusy(state, key);
+  const op = (id, label, name) => ({ id, label, name, kind: "ghost", disabled, busy: disabled && isBusyOp(state, key, id), reason: null });
+  return [repeats(r) ? op("skip", "次を飛ばす", "「" + title + "」の次を飛ばす") : null, op("cancel", "止める", "「" + title + "」を止める")].filter((x) => x !== null);
+}
+
+/** リマインド。nextAt の昇順（無い物は最後。同じ時刻は元の順）。語は種類（依頼か）、場所の所は繰り返しの文（無ければ「1 回だけ」） */
 export function reminderItems(state) {
   const list = Array.isArray(state.reminders) ? state.reminders : [];
   return list
     .map((r, i) => ({ r, i, ms: atMs(r.nextAt) }))
     .sort((a, b) => (a.ms === null || b.ms === null ? (a.ms === null ? (b.ms === null ? 0 : 1) : -1) : a.ms - b.ms) || a.i - b.i)
-    .map(({ r }) =>
-      flowItem(state, {
-        key: "rem:" + r.id,
+    .map(({ r }) => {
+      const key = "rem:" + r.id;
+      const title = state.oneLine(r.text);
+      return flowItem(state, {
+        key,
         kind: "reminder",
         word: itemWord("reminder", r, state),
+        place: repeats(r) ? (filled(r.ruleText) ? r.ruleText : r.rule) : "1 回だけ",
         time: r.nextAt ? state.time(r.nextAt) : "",
         at: r.nextAt,
-        title: state.oneLine(r.text),
+        title,
         mark: "none",
-      }),
-    );
+        opsRow: true,
+        ops: reminderOps(state, r, key, title),
+      });
+    });
 }
 
 /** 通知の列に出す数 */
@@ -300,9 +318,13 @@ export function feedItems(state) {
     .map((e) => e.item);
 }
 
-/** 焦点の行き先に数える項目の key（entries は列の項目の { key, pressable }。押せる物（ボタン・リンク）を持たない項目は数えない） */
-export function pressableKeys(entries) {
-  return entries.filter((e) => e.pressable === true && typeof e.key === "string").map((e) => e.key);
+/**
+ * 焦点の行き先に数える項目の key（entries は列の項目の { key, pressable, kind }。押せる物（ボタン・リンク）を持たない項目は数えない）。
+ * kind が文字列なら、その種類の項目だけで数える（タスクの列: 最後のタスクを完了にした焦点をリマインドの操作に乗せない）
+ */
+export function pressableKeys(entries, kind) {
+  const only = typeof kind === "string";
+  return entries.filter((e) => e.pressable === true && typeof e.key === "string" && (!only || e.kind === kind)).map((e) => e.key);
 }
 
 /**
@@ -389,7 +411,7 @@ export function Column({ col, on }) {
 
 /** 押しっぱなしで繰り返す鍵（Enter・Space） */
 const REPEAT_KEYS = Object.freeze(["Enter", " "]);
-/** 操作のボタン（［完了］・［対応］）。開くボタン・リンクは含めない */
+/** 操作のボタン（［完了］・［対応］・［次を飛ばす］・［止める］）。開くボタン・リンクは含めない */
 const OP_BUTTON = ".c-item-meta .c-iconbtn, .c-item-ops .c-btn";
 
 /**
@@ -404,7 +426,8 @@ export function holdRepeat(event) {
 
 /**
  * 1 つの項目。席に開ける物（target）はボタン、外へのリンクだけの物は項目ごとリンク（新しいタブ）、どちらでもなければ押せない。
- * 操作（ops）は開くボタン・リンクの中に入れない: 完了は押せない項目（div）の頭の印の場所、ほかは項目の中の兄弟の .c-item-ops
+ * 操作（ops）は開くボタン・リンクの中に入れない: 完了は押せない項目（div）の頭の印の場所、ほかは項目の中の兄弟の .c-item-ops。
+ * opsRow の項目（リマインド）は .c-item-ops を題の下の行にする（data-ops="row"。左［次を飛ばす］・右端［止める］）
  */
 export function Item({ item, on }) {
   const head = [item.word, item.place].filter(filled).join("・");
@@ -422,7 +445,7 @@ export function Item({ item, on }) {
     item.summary ? html`<span class="c-item-sum" key="sum">${item.summary}</span>` : null,
   ];
   return html`<div class="c-item" role="listitem" data-key=${item.key} data-kind=${item.kind} data-turn=${item.turn ? "true" : undefined}
-      data-current=${item.current ? "true" : undefined} onKeyDown=${item.ops.length > 0 ? holdRepeat : undefined}>
+      data-ops=${item.opsRow ? "row" : undefined} data-current=${item.current ? "true" : undefined} onKeyDown=${item.ops.length > 0 ? holdRepeat : undefined}>
     ${item.target !== null
       ? html`<button class="c-item-main" type="button" aria-current=${item.current ? "true" : undefined} onClick=${() => on.open(item, item.key)}>${inner}</button>`
       : item.href
@@ -432,7 +455,7 @@ export function Item({ item, on }) {
       ? html`<div class="c-item-ops">
           ${rest.map(
             (op) =>
-              html`<${Button} key=${op.id} size="sm" label=${op.label} name=${op.name || undefined} disabled=${op.disabled} busy=${op.busy}
+              html`<${Button} key=${op.id} kind=${op.kind || undefined} size="sm" label=${op.label} name=${op.name || undefined} disabled=${op.disabled} busy=${op.busy}
                 reason=${op.reason || undefined} onPress=${() => on.op(item, op.id)} />`,
           )}
         </div>`

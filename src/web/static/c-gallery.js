@@ -806,9 +806,11 @@ const DECK_TASKS = [
   { id: 3, title: "見本の先のタスク", due: "2026-01-03", status: "open" },
   { id: 4, title: "見本の期限切れのタスク", due: "2025-12-30", status: "open" },
 ];
+/** 本物（/api/reminders）の形。rule は保存した文字列か null、ruleText はその文 */
 const DECK_REMINDERS = [
-  { id: 1, text: "見本の毎朝の\nリマインド", nextAt: "2026-01-02T00:00:00Z", kind: "repeat", rule: "" },
-  { id: 2, text: "見本の 1 回のリマインド", nextAt: "2026-01-01T09:00:00Z", kind: "once", rule: "" },
+  { id: 1, text: "見本の毎朝の\nリマインド", nextAt: "2026-01-02T00:00:00Z", kind: "notify", rule: "daily@09:00", ruleText: "毎日 9:00" },
+  { id: 2, text: "見本の 1 回のリマインド", nextAt: "2026-01-01T09:00:00Z", kind: "notify", rule: null, ruleText: null },
+  { id: 3, text: "見本の平日の依頼", nextAt: "2026-01-02T03:00:00Z", kind: "prompt", rule: "weekdays@12:00", ruleText: "平日 12:00" },
 ];
 const DECK_GITHUB = [
   { id: 1, url: "https://github.com/example/sample/pull/12", title: "見本の PR", label: "レビュー依頼", level: "yellow", updatedAt: "2026-01-01T02:00:00Z", actorLogin: "sample", handoff: null },
@@ -851,7 +853,13 @@ const DECK_GITHUB_OPS = [
 const DECK_ON = { open: noop, op: noop };
 const BAND_ON = { status: noop, find: noop, hand: noop, start: noop, more: noop };
 
-/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。band-phone・deck-paged はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
+/** スマホの幅の枠の操作つきの見本（タスクの列だけ。リマインドの操作の行が狭い列で 1 行に入るか） */
+const deckTasksOnly = (state) => {
+  const model = deckModel(state);
+  return { ...model, columns: model.columns.filter((c) => c.id === "tasks") };
+};
+
+/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
     <div class="c-gallery-slide" data-demo="band">
@@ -867,7 +875,7 @@ function Decks() {
     <div class="c-gallery-deck" data-demo="deck-3"><${Deck} model=${deckModel(deckState())} on=${DECK_ON} /></div>
     <div class="c-gallery-slide" data-demo="deck-ops">
       <div class="c-gallery-deck c-gallery-deck-ops">
-        <${Deck} model=${deckModel(deckState({ ops: true, busy: ["task:3", "gh:3"], github: DECK_GITHUB_OPS, handoff: true }))} on=${DECK_ON} />
+        <${Deck} model=${deckModel(deckState({ ops: true, busy: ["task:3", "gh:3", "rem:3"], busyOp: { "rem:3": "cancel" }, github: DECK_GITHUB_OPS, handoff: true }))} on=${DECK_ON} />
       </div>
     </div>
     <div class="c-gallery-deck" data-demo="deck-empty">
@@ -878,6 +886,9 @@ function Decks() {
     </div>
     <div class="c-gallery-slide" data-demo="deck-paged">
       <div class="c-gallery-deck c-gallery-phone"><${Deck} model=${deckModel(deckState({ cols: 1, paged: true }))} on=${DECK_ON} /></div>
+    </div>
+    <div class="c-gallery-slide" data-demo="deck-phone-ops">
+      <div class="c-gallery-deck c-gallery-phone"><${Deck} model=${deckTasksOnly(deckState({ cols: 1, paged: true, ops: true }))} on=${DECK_ON} /></div>
     </div>
   <//>`;
 }
