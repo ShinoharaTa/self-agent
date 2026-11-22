@@ -144,3 +144,11 @@
   border: var(--border-width) solid var(--border);
   background: var(--bg);
 }
+
+/* 流れの列と上の帯の見本の入れ物（列の幅いっぱい。地は列の間の台と同じ --bg） */
+.c-gallery-deck {
+  box-sizing: border-box;
+  width: 100%;
+  border: var(--border-width) solid var(--border);
+  background: var(--bg);
+}
