@@ -4660,3 +4660,17 @@ test("web components: 入口の下のバーの 3 つの口（drawBar・page・fo
   // 送るのは scrollLeft を書くだけ（動かさない）
   assert.doesNotMatch(app, /scrollTo\(|scrollBy\(|scrollIntoView\(|behavior/);
 });
+
+test("web components: 入口の流れの列の焦点は、タスクの列だけ消えた項目と同じ種類（data-kind）で数え、行き先がリマインドなら操作の行の最後のボタン（［止める］）", () => {
+  const app = stripJsComments(read("c-app.js"));
+  // 種類を渡すのはタスクの列だけ（描く前と後の両方で同じ kind）
+  assert.match(app, /const kind = col === "tasks" && holder \? holder\.dataset\.kind : undefined;/);
+  assert.match(app, /const keysBefore = colKeys\(col, kind\);/);
+  assert.match(app, /const keysAfter = colKeys\(col, kind\);/);
+  assert.equal([...app.matchAll(/colKeys\(col\)/g)].length, 0);
+  // 項目の種類を entries に入れて pressableKeys の第 2 引数へ
+  assert.match(app, /key: n\.dataset\.key, kind: n\.dataset\.kind, pressable:/);
+  assert.match(app, /^\s*kind,\n\s*\);/m);
+  // リマインドは .c-item-ops の最後のボタン、ほかは今のまま最初の押せる物
+  assert.match(app, /item\.dataset\.kind === "reminder" \? item\.querySelector\("\.c-item-ops button:last-child"\) : item\.querySelector\("button, a\[href\]"\)/);
+});
