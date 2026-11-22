@@ -300,6 +300,11 @@ export function feedItems(state) {
     .map((e) => e.item);
 }
 
+/** 焦点の行き先に数える項目の key（entries は列の項目の { key, pressable }。押せる物（ボタン・リンク）を持たない項目は数えない） */
+export function pressableKeys(entries) {
+  return entries.filter((e) => e.pressable === true && typeof e.key === "string").map((e) => e.key);
+}
+
 /**
  * 焦点のあった項目（key）の描き直しの後の行き先の key。before・after はその列の項目の key の並び（描き直しの前と後）。
  * key が残っていれば key、消えていれば同じ並びの位置に来た項目（無ければ列の最後）、列が空なら null
@@ -381,6 +386,21 @@ export function Column({ col, on }) {
   </section>`;
 }
 
+/** 押しっぱなしで繰り返す鍵（Enter・Space） */
+const REPEAT_KEYS = Object.freeze(["Enter", " "]);
+/** 操作のボタン（［完了］・［対応］）。開くボタン・リンクは含めない */
+const OP_BUTTON = ".c-item-meta .c-iconbtn, .c-item-ops .c-btn";
+
+/**
+ * 項目の入れ物の keydown: 操作のボタンから来た繰り返し（repeat）の Enter・Space は押さない（完了の後に焦点が次の［完了］へ移るので、押しっぱなしで次々に完了にしない）。
+ * 開くボタン・リンクと、繰り返しでない keydown はそのまま
+ */
+export function holdRepeat(event) {
+  if (!event || event.repeat !== true || !REPEAT_KEYS.includes(event.key)) return;
+  const from = event.target;
+  if (from && typeof from.closest === "function" && from.closest(OP_BUTTON)) event.preventDefault();
+}
+
 /**
  * 1 つの項目。席に開ける物（target）はボタン、外へのリンクだけの物は項目ごとリンク（新しいタブ）、どちらでもなければ押せない。
  * 操作（ops）は開くボタン・リンクの中に入れない: 完了は押せない項目（div）の頭の印の場所、ほかは項目の中の兄弟の .c-item-ops
@@ -401,7 +421,7 @@ export function Item({ item, on }) {
     item.summary ? html`<span class="c-item-sum" key="sum">${item.summary}</span>` : null,
   ];
   return html`<div class="c-item" role="listitem" data-key=${item.key} data-kind=${item.kind} data-turn=${item.turn ? "true" : undefined}
-      data-current=${item.current ? "true" : undefined}>
+      data-current=${item.current ? "true" : undefined} onKeyDown=${item.ops.length > 0 ? holdRepeat : undefined}>
     ${item.target !== null
       ? html`<button class="c-item-main" type="button" aria-current=${item.current ? "true" : undefined} onClick=${() => on.open(item, item.key)}>${inner}</button>`
       : item.href

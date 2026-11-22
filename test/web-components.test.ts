@@ -3896,6 +3896,7 @@ const deck = (await import(deckUrl)) as Record<string, Fn> & {
   FEED_MAX: number;
   ACT_REASON: Readonly<Record<string, string>>;
   focusAfter: (before: string[], after: string[], key: string) => string | null;
+  pressableKeys: (entries: Array<{ key: string; pressable: boolean }>) => string[];
   deckFit: (width: unknown, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number };
   itemWord: (kind: unknown, src: unknown, state: Obj) => string;
   turnItems: (state: Obj) => FlowItem[];
@@ -4251,6 +4252,41 @@ test("web components: focusAfter は完了で消えた項目の焦点の行き�
   assert.equal(deck.focusAfter(abc, ["task:3", "task:1", "task:2"], "task:1"), "task:1");
   // 前の並びに無い key は列の頭
   assert.equal(deck.focusAfter([], ["task:2"], "task:9"), "task:2");
+});
+
+test("web components: 焦点の行き先は押せる項目（ボタン・リンクを持つ）だけで数える。リマインドが在る列で最後のタスクを完了 → 1 つ前のタスク", () => {
+  const entries = (keys: string[]) => keys.map((key) => ({ key, pressable: key.startsWith("task:") }));
+  const before = deck.pressableKeys(entries(["task:1", "task:2", "rem:1"]));
+  const after = deck.pressableKeys(entries(["task:1", "rem:1"]));
+  assert.deepEqual([before, after], [["task:1", "task:2"], ["task:1"]]);
+  assert.equal(deck.focusAfter(before, after, "task:2"), "task:1");
+  // タスクが無くなりリマインドだけ → 押せる項目が無い（入口が帯の［探す］へ）
+  assert.equal(deck.focusAfter(["task:1"], deck.pressableKeys(entries(["rem:1"])), "task:1"), null);
+});
+
+test("web components: 項目の入れ物は、操作のボタン（［完了］・［対応］）から来た繰り返しの Enter・Space だけを押さない（開くボタン・リンク・繰り返しでない keydown はそのまま）", () => {
+  const topics = { turnIds: ["ch:1"], groups: [], topics: [{ id: "ch:1", title: "番", mark: "turn", turn: { kind: "permission", since: "s" } }], rightHands: [] };
+  const github = [{ id: 1, url: "https://github.com/o/r/pull/2", title: "押せる", label: "", updatedAt: "2026-01-01T03:00:00Z", handoff: true }];
+  const model = deck.deckModel(flowOf({ topics, tasks: [{ id: 5, title: "買い物", due: null }], github, ops: true, handoff: true }));
+  const root = one(html`<${deck.Deck} model=${model} on=${{ open: () => undefined, op: () => undefined }} />`);
+  const byKey = (key: string) => find(root, "c-item").find((i) => i.props["data-key"] === key)!;
+  const keydown = (key: string, onto: string, from: string, repeat: boolean) => {
+    let prevented = false;
+    const event = { key: onto, repeat, target: { closest: (sel: string) => (sel.split(", ").some((s) => s.endsWith(from)) ? {} : null) }, preventDefault: () => void (prevented = true) };
+    const handler = byKey(key).props.onKeyDown as ((e: unknown) => void) | undefined;
+    if (handler) handler(event);
+    return prevented;
+  };
+  // ［完了］・［対応］の繰り返しの Enter・Space は押さない
+  assert.equal(keydown("task:5", "Enter", ".c-iconbtn", true), true);
+  assert.equal(keydown("task:5", " ", ".c-iconbtn", true), true);
+  assert.equal(keydown("gh:1", "Enter", ".c-btn", true), true);
+  // 繰り返しでない・ほかの鍵はそのまま
+  assert.equal(keydown("task:5", "Enter", ".c-iconbtn", false), false);
+  assert.equal(keydown("task:5", "Tab", ".c-iconbtn", true), false);
+  // 開くリンク・開くボタンは繰り返しでもそのまま
+  assert.equal(keydown("gh:1", "Enter", ".c-item-link", true), false);
+  assert.equal(keydown("turn:ch:1", "Enter", ".c-item-main", true), false);
 });
 
 test("web components: DeckBand は点・名前・探す・右腕・始める・ほかの順で、右腕は aria-controls と aria-expanded、押すと on の 5 つ", () => {

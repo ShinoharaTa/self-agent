@@ -17,7 +17,7 @@ import { cardsMouth } from "./c-cards.js";
 import { termMouth } from "./c-term.js";
 import { HandHead } from "./c-hand.js";
 import { Confirm, Toast } from "./c-sheet.js";
-import { Deck, DeckBand, deckFit, deckModel, focusAfter } from "./c-deck.js";
+import { Deck, DeckBand, deckFit, deckModel, focusAfter, pressableKeys } from "./c-deck.js";
 
 const listRoot = document.getElementById("c-list-root");
 
@@ -412,10 +412,11 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 列（data-col）の項目の key の並び */
+  /** 列（data-col）の項目のうち、押せる物（ボタン・リンク）を持つ項目の key の並び（リマインドなど押せない項目は数えない） */
   const colKeys = (col) => {
     const box = col === null ? null : Array.from(deckRoot.querySelectorAll("[data-col]")).find((n) => n.dataset.col === col);
-    return box ? Array.from(box.querySelectorAll("[data-key]")).map((n) => n.dataset.key) : [];
+    if (!box) return [];
+    return pressableKeys(Array.from(box.querySelectorAll("[data-key]")).map((n) => ({ key: n.dataset.key, pressable: n.querySelector("button, a[href]") !== null })));
   };
 
   /** key の項目の中の最初の押せる物（［完了］・リンク・開くボタン）にフォーカス。無ければ false */
@@ -429,8 +430,8 @@ if (deckRoot && bandRoot) {
 
   /**
    * 3 つの列を描く。state は flows.js の flowState()。描けなければ false。列は同じ要素を使い回すので、列ごとの縦の位置は残る。
-   * 焦点のあった物が消えたら、同じ key の項目が残っていればその項目 → 帯の［探す］。項目ごと消えた（完了した）なら、
-   * 同じ列の同じ並びの位置に来た項目（無ければ列の最後）の最初の押せる物 → 列が空なら帯の［探す］（body に落とさない）
+   * 焦点のあった物が消えたら、同じ key の項目が残っていればその項目（開くボタン）→ 帯の［探す］。項目がどの理由で消えても（完了・取り消し・読み直し）、
+   * 同じ列の押せる項目のうち同じ並びの位置に来た項目（無ければ列の最後）の最初の押せる物へ。列に押せる項目が無ければ帯の［探す］（body に落とさない）
    */
   const drawDeck = (state) => {
     const before = document.activeElement;
