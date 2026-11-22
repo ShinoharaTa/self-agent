@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createChannelResolver } from "../src/app/access.ts";
 import type { RunningTurn, SubmitTextResult } from "../src/app/handler.ts";
 import { leadText } from "../src/app/lead.ts";
+import { formatRule, nextOccurrence } from "../src/app/recurrence.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
 import type { AgentRunner } from "../src/agent/runner.ts";
 import { permissionHistoryText } from "../src/cc/channel-posts.ts";
@@ -77,6 +78,8 @@ export type FixtureServer = {
    * reset は queue の届け待ちと ask の保留中の許可を新しく 1 行ずつにする（前の届け待ちは取り消し、前の保留は終わらせる。同じ段を幅ごとに繰り返すため）
    */
   cc?: { queue: string; ask: string; ended: string; term: string; reset: () => void };
+  /** リマインド 2 件（毎日 9:00 と、その次の回の 1 時間後の 1 回だけ）を止めて入れ直す（流れの列の［次を飛ばす］［止める］の段の後で、後ろの段のために戻す） */
+  resetReminders: () => void;
   /** サーバーを閉じ、DB を閉じて一時ディレクトリを消す（2 回目以降は同じ Promise を返す） */
   close: () => Promise<void>;
 };
@@ -297,6 +300,18 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     tasks.add({ title: "図書館の本を返す", due: "2026-11-20" });
     tasks.add({ title: "自転車のタイヤに空気を入れる" });
     tasks.add({ title: "年賀状の住所録を見直す。去年の分から引っ越した人を直して、ラベルの印刷までやる", due: "2026-12-10" });
+    // リマインド 2 件（流れの列の［次を飛ばす］［止める］）: 毎日 9:00 と、その次の回の 1 時間後の 1 回だけ（飛ばすと並びが入れ替わる）
+    const daily = formatRule({ repeat: "daily", time: { hour: 9, minute: 0 } });
+    const addReminders = (): void => {
+      const dailyNext = nextOccurrence(daily, clockNow(), "Asia/Tokyo")!;
+      reminders.add({ guildId: GUILD, channelId: INBOX, kind: "notify", text: "朝の薬を飲む", rule: daily, nextAt: dailyNext });
+      reminders.add({ guildId: GUILD, channelId: INBOX, kind: "notify", text: "ゴミの分別表を冷蔵庫に貼る", nextAt: new Date(dailyNext.getTime() + 3600_000) });
+    };
+    addReminders();
+    const resetReminders = (): void => {
+      for (const r of reminders.listActive(100)) reminders.cancel(r.id);
+      addReminders();
+    };
     knowledge.add({
       url: "https://example.com/css-container",
       urlKey: "https://example.com/css-container",
@@ -493,6 +508,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
       login: FIXTURE_LOGIN,
       dir: tmp,
       clockNow,
+      resetReminders,
       topics: { open: tOpen, perm: tPerm, q: tQ, talk: tTalk, long: tLong, run: tRun },
       ...(cc === undefined ? {} : { cc: cc.fixture }),
       close,
