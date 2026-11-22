@@ -300,6 +300,17 @@ export function feedItems(state) {
     .map((e) => e.item);
 }
 
+/**
+ * 焦点のあった項目（key）の描き直しの後の行き先の key。before・after はその列の項目の key の並び（描き直しの前と後）。
+ * key が残っていれば key、消えていれば同じ並びの位置に来た項目（無ければ列の最後）、列が空なら null
+ */
+export function focusAfter(before, after, key) {
+  if (after.includes(key)) return key;
+  if (after.length === 0) return null;
+  const i = before.indexOf(key);
+  return after[Math.min(Math.max(i, 0), after.length - 1)];
+}
+
 /** 3 つの列のモデル。cols は見える列の数（0〜3。既定 3）。空の節は出さない */
 export function deckModel(state) {
   const cols = typeof state.cols === "number" && Number.isFinite(state.cols) ? Math.max(0, Math.min(3, Math.floor(state.cols))) : 3;

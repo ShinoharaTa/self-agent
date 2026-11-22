@@ -4438,9 +4438,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (notice === null) say("知らせに［取り消す］が無い");
           else if (!notice.includes("を完了にしました")) say(`知らせが「${notice.slice(0, 40)}」`);
           await settled(page);
-          // 押したボタンは項目ごと消える。焦点は c-app.js の drawDeck の決まり（同じ key の項目 → 帯の［探す］）で body に落ちない
-          const focus = await page.evaluate(() => (document.activeElement === document.body || document.activeElement === null ? "body" : ""));
-          if (focus === "body") say("押したボタンが消えた後、焦点が body に落ちる");
+          // 押したボタンは項目ごと消える。焦点は c-app.js の drawDeck の決まりで、同じ列の次の項目（ここでは次のタスク）の［完了］へ
+          const focus = await page.evaluate((sel: string) => {
+            const a = document.activeElement;
+            const item = a === null ? null : a.closest(sel);
+            return { key: item === null ? null : item.getAttribute("data-key"), done: a !== null && a.matches(".c-item-meta .c-iconbtn") };
+          }, TASK);
+          if (focus.key !== before[1] || !focus.done) say(`［完了］の後の焦点が ${String(focus.key)}${focus.done ? " の［完了］" : ""}（${String(before[1])} の［完了］のはず）`);
           await shot(page, `${p}-a-deck-done`);
           // 元に戻す（一時 DB を後ろの段のために戻す）
           if (notice !== null) await page.click(`${UNDO} >> text=取り消す`);
@@ -4449,6 +4453,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             .then(() => true, () => false);
           if (!back) throw new Error(`［取り消す］で列が戻らない（${(await keys()).length} 個。${before.length} 個のはず）`);
           await settled(page);
+          // ［取り消す］で戻っても、列は焦点を奪わない
+          if (await page.evaluate(() => document.querySelector("#c-deck-root")?.contains(document.activeElement) === true)) say("［取り消す］の後に焦点が列の中へ移る");
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`列の中の操作の検査で ${problems.length} 件`);
         });

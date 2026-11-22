@@ -3895,6 +3895,7 @@ const deck = (await import(deckUrl)) as Record<string, Fn> & {
   DECK: Readonly<Record<string, number>>;
   FEED_MAX: number;
   ACT_REASON: Readonly<Record<string, string>>;
+  focusAfter: (before: string[], after: string[], key: string) => string | null;
   deckFit: (width: unknown, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number };
   itemWord: (kind: unknown, src: unknown, state: Obj) => string;
   turnItems: (state: Obj) => FlowItem[];
@@ -4234,6 +4235,22 @@ test("web components: ops が true のときだけ、タスクは［完了］（
   (bDone.props.onClick as (e: unknown) => void)(fakeEvent());
   (bAct.props.onClick as (e: unknown) => void)(fakeEvent());
   assert.equal(calls.length, 2);
+});
+
+test("web components: focusAfter は完了で消えた項目の焦点の行き先（同じ列の同じ並びの位置に来た項目、無ければ列の最後、空なら null。残っていればその key）", () => {
+  const abc = ["task:1", "task:2", "task:3"];
+  // 真ん中を完了 → 元の 3 つ目（今の 2 つ目）
+  assert.equal(deck.focusAfter(abc, ["task:1", "task:3"], "task:2"), "task:3");
+  // 最後を完了 → 1 つ前
+  assert.equal(deck.focusAfter(abc, ["task:1", "task:2"], "task:3"), "task:2");
+  // 最初を完了 → 次
+  assert.equal(deck.focusAfter(abc, ["task:2", "task:3"], "task:1"), "task:2");
+  // 1 つだけを完了 → 列が空（入口が帯の［探す］へ）
+  assert.equal(deck.focusAfter(["task:1"], [], "task:1"), null);
+  // 残っていればその key（並びが変わっても）
+  assert.equal(deck.focusAfter(abc, ["task:3", "task:1", "task:2"], "task:1"), "task:1");
+  // 前の並びに無い key は列の頭
+  assert.equal(deck.focusAfter([], ["task:2"], "task:9"), "task:2");
 });
 
 test("web components: DeckBand は点・名前・探す・右腕・始める・ほかの順で、右腕は aria-controls と aria-expanded、押すと on の 5 つ", () => {

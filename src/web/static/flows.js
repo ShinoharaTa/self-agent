@@ -39,7 +39,14 @@
         busy.delete(item.key);
         render();
       };
-      Promise.resolve(run()).then(done, done);
+      // 同期で投げても busy を残さない
+      let answer;
+      try {
+        answer = run();
+      } catch (error) {
+        answer = Promise.reject(error);
+      }
+      Promise.resolve(answer).then(done, done);
     },
   };
 
