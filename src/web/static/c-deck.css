@@ -207,7 +207,8 @@
 
 /*
  * 操作が 2 つの種類（リマインド）は、題の下の行に置く（左［次を飛ばす］・右端［止める］。戻せない操作を離す）。
- * ghost の字の端を題の左端・時刻の右端に揃えるため、行の左右の余白からボタンの字の内側の余白（sm の横の余白と枠）を引く
+ * ghost の字の端を題の左端・時刻の右端に揃えるため、行の左右の余白からボタンの字の内側の余白（sm の横の余白）を引く。
+ * ボタンの枠の分は引かない（字は枠の幅だけ内側に来る）: 列の端との間に、焦点の輪（輪の幅 + 輪の離れ）が切れずに入る幅を残す
  */
 .c-item[data-ops="row"] {
   flex-wrap: wrap;
@@ -217,7 +218,7 @@
   flex: 0 0 100%;
   justify-content: flex-end;
   box-sizing: border-box;
-  padding: 0 calc(var(--c-gutter) - var(--space-3) - var(--border-width)) var(--space-1) calc(var(--c-gutter) - var(--c-deck-line) - var(--space-3) - var(--border-width));
+  padding: 0 calc(var(--c-gutter) - var(--space-3)) var(--space-1) calc(var(--c-gutter) - var(--c-deck-line) - var(--space-3));
 }
 
 .c-item[data-ops="row"] .c-item-ops > :first-child:not(:last-child) {
