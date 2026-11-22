@@ -11749,6 +11749,52 @@ test("web static: スマホの流れの列: 下のバーの右腕は entry を 1
   assert.equal(h.document.activeElement, findBtn);
 });
 
+test("web static: 流れの列: 古い行き先（起動の hash・hashchange の #/tasks・#/reminders は列 tasks、#/github・#/notices は列 feed）は古い表を開かず、hash を消し、履歴を積まない。スレッドは閉じない。入口が無ければ今までどおり古い表", async () => {
+  const known = (tab: string) => tab.startsWith("ch:") || ["tasks", "reminders", "github", "notices"].includes(tab);
+  const cases: Array<[string, string]> = [
+    ["#/tasks", "tasks"],
+    ["#/reminders", "tasks"],
+    ["#/github", "feed"],
+    ["#/notices", "feed"],
+  ];
+  for (const [hash, page] of cases) {
+    // スマホ: 起動の hash
+    const h = await loadDeck({ phone: true, width: 390, hash, known });
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "list", hash);
+    assert.equal(h.app.activeTabId(), null, hash);
+    assert.equal(h.location.hash, "", hash);
+    assert.equal(h.calls.push, 0, hash);
+    assert.equal(lastDeckBar(h).page, page, hash);
+    assert.equal(h.deck.pages.at(-1), page, hash);
+    assert.ok(!h.rendered.some((r) => r.tab === hash.slice(2)), hash);
+    // hashchange でも同じ（スレッドを開いたままでも閉じない。hash はスレッドの物に戻す）
+    const c = await loadDeck({ phone: true, width: 390, known });
+    c.app.open("ch:1");
+    const pushes = c.calls.push;
+    c.location.hash = hash;
+    c.fire("hashchange");
+    assert.equal(c.nodes.v3.getAttribute("data-view"), "body", hash);
+    assert.equal(c.app.activeTabId(), "ch:1", hash);
+    assert.equal(c.location.hash, "#/ch/1", hash);
+    assert.equal(c.calls.push, pushes, hash);
+    assert.equal(lastDeckBar(c).page, page, hash);
+    // 広い幅でも古い表は開かない（席は開かない。全部の列が見えているので送らない）
+    const w = await loadDeck({ width: 1440, hash, known });
+    assert.equal(w.nodes.v3.getAttribute("data-view"), "list", hash);
+    assert.equal(w.app.activeTabId(), null, hash);
+    assert.equal(w.location.hash, "", hash);
+    assert.equal(w.calls.push, 0, hash);
+    assert.equal(w.deck.pages.length, 0, hash);
+    // 入口が無い（広い幅の落ち先・スマホの落ち先）: 今までどおり古い表が開く
+    for (const opts of [{ width: 1400 }, { phone: true, width: 390, deck: true, noFoot: true }]) {
+      const o = loadShell({ ...opts, hash, known });
+      await o.flush();
+      assert.equal(o.app.activeTabId(), hash.slice(2), hash);
+      assert.equal(o.location.hash, hash, hash);
+    }
+  }
+});
+
 test("web static: 流れの列の操作: ［完了］は POST /complete → 知らせ「…を完了にしました」→［取り消す］で /reopen、［対応］は POST /api/github/<id>/act。応答までの二度押しは送らず、失敗したら busy が外れてもう一度押せる", async () => {
   const { SA, posts, toasts, toastActions, setReply } = loadViews({ v3: true });
   const tick = async () => {
