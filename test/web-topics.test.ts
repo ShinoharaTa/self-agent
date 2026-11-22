@@ -8,6 +8,7 @@ import type { AgentRunner } from "../src/agent/runner.ts";
 import { createChannelResolver } from "../src/app/access.ts";
 import { createHandler, type RunningTurn, type SubmitTextResult, WEB_ECHO_PREFIX } from "../src/app/handler.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
+import { leadText } from "../src/app/lead.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { welcomeText } from "../src/app/session-ops.ts";
 import { MOVE_FAILED_TEXT, type MoveDeps, moveRefusalText, movedPostText } from "../src/app/topic-move.ts";
@@ -566,6 +567,28 @@ test("web topics: 右腕が始めた話題は byRightHand。最後の agent の�
   // 後に owner の行が来れば止まっていない
   history.add({ guildId: GUILD, channelId: "206", kind: "owner", source: "discord", text: "続けて" });
   assert.equal(byId(await topics(server), "ch:206")!.stopped, false);
+});
+
+test("web topics: 右腕の最後の行が統括のまとめの notice（source system）のときだけ last.lead が true。ほかの notice・agent の行・system でない同じ文・話題の行には lead の鍵が無い", async (t) => {
+  const { server, history } = await setup(t);
+  const text = leadText([{ guildId: GUILD, channelId: "200", durationMs: 240_000, outcome: "done", byRightHand: false, pinged: false }], null);
+  const handLast = async () => (await topics(server)).rightHands[0]!.last!;
+  history.add({ guildId: GUILD, channelId: "100", kind: "agent", source: "discord", text, outcome: "done" });
+  assert.equal(Object.hasOwn(await handLast(), "lead"), false);
+  history.add({ guildId: GUILD, channelId: "100", kind: "notice", source: "system", text: "待ちに移しました" });
+  assert.equal(Object.hasOwn(await handLast(), "lead"), false);
+  history.add({ guildId: GUILD, channelId: "100", kind: "notice", source: "web", text });
+  assert.equal(Object.hasOwn(await handLast(), "lead"), false);
+  const id = history.add({ guildId: GUILD, channelId: "100", kind: "notice", source: "system", text });
+  const last = await handLast();
+  assert.equal(last.lead, true);
+  assert.equal(last.kind, "notice");
+  assert.equal(last.id, id);
+  // 話題の行には付けない（同じ文の notice が最後でも）
+  history.add({ guildId: GUILD, channelId: "200", kind: "notice", source: "system", text });
+  const topic = byId(await topics(server), "ch:200")!;
+  assert.equal(topic.last!.kind, "notice");
+  assert.equal(Object.hasOwn(topic.last!, "lead"), false);
 });
 
 test("web topics: setUp していないサーバーの行は出ない", async (t) => {

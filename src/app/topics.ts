@@ -16,7 +16,8 @@ export type TopicTurn = {
 };
 /** "unread" は出さない（型にだけ置く）。未読は画面が reads と last から決める（M7） */
 export type TopicMark = "turn" | "running" | "unread" | null;
-export type TopicLast = { id: number; at: string; kind: HistoryKind } | null;
+/** lead: 右腕の最後の行が統括のまとめの notice（Web の未読に数える。右腕の last にだけ、真のときだけ付ける。#457 の L2） */
+export type TopicLast = { id: number; at: string; kind: HistoryKind; lead?: true } | null;
 /** 最後の agent の行（終わり方・かかった時間）。無ければ null */
 export type TopicLastAgent = { id: number; outcome: HistoryOutcome | null; durationMs: number | null } | null;
 

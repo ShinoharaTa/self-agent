@@ -571,8 +571,8 @@
     return rest === 0;
   };
 
-  /** 最後の行が返事で、まだ見ていない */
-  store.isUnread = (channel) => !!(channel && channel.last && channel.last.kind === "agent" && channel.last.id > (Number(store.seen[channel.id]) || 0));
+  /** 最後の行が返事か統括のまとめ（右腕の last.lead。#457 の L2）で、まだ見ていない */
+  store.isUnread = (channel) => !!(channel && channel.last && (channel.last.kind === "agent" || channel.last.lead === true) && channel.last.id > (Number(store.seen[channel.id]) || 0));
 
   store.unreadCount = () => (store.channels ? store.channels.channels.filter(store.isUnread).length : 0);
 

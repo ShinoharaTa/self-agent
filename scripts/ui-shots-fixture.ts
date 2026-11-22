@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createChannelResolver } from "../src/app/access.ts";
 import type { RunningTurn, SubmitTextResult } from "../src/app/handler.ts";
+import { leadText } from "../src/app/lead.ts";
 import { PersonaRouter } from "../src/app/personas.ts";
 import type { AgentRunner } from "../src/agent/runner.ts";
 import { permissionHistoryText } from "../src/cc/channel-posts.ts";
@@ -270,6 +271,18 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     say(INBOX, "agent", "「月ごとの集計がずれる」で原因が分かり、直してテストも通っています。commit の指示を待っています。");
     say(INBOX, "owner", "ありがとう");
     say(INBOX, "agent", "どういたしまして。ほかにあれば言ってください。");
+    // 統括のまとめ（#457 の L2。leadText の形・source system の notice。<#ID> は作り物の話題）。最後の行は下の返事のまま（既読・未読の検査を変えない）
+    say(
+      INBOX,
+      "notice",
+      leadText(
+        [
+          { guildId: GUILD, channelId: tB1, durationMs: 240_000, outcome: "done", byRightHand: false, pinged: false },
+          { guildId: GUILD, channelId: tG3, durationMs: 30_000, outcome: "done", byRightHand: false, pinged: false },
+        ],
+        { running: 1, queued: 0, yourTurn: 2 },
+      ),
+    );
     // 最後は道具を使った返事（手順の在る「完了」の行）と札 2 つ（返事の <#ID>）
     say(INBOX, "owner", "家計簿と RSS の話題を出して");
     say(INBOX, "agent", `<#${tOpen}> と <#${tB2}> です。`, { steps: ["topic_list"], toolCalls: 1, durationMs: 4_000 });
