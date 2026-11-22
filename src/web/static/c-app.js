@@ -423,17 +423,23 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 列（data-col）の項目のうち、押せる物（ボタン・リンク）を持つ項目の key の並び（リマインドなど押せない項目は数えない） */
-  const colKeys = (col) => {
+  /** 列（data-col）の項目のうち、押せる物（ボタン・リンク）を持つ項目の key の並び（押せない項目は数えない）。kind が文字列ならその種類（data-kind）の項目だけ */
+  const colKeys = (col, kind) => {
     const box = col === null ? null : Array.from(deckRoot.querySelectorAll("[data-col]")).find((n) => n.dataset.col === col);
     if (!box) return [];
-    return pressableKeys(Array.from(box.querySelectorAll("[data-key]")).map((n) => ({ key: n.dataset.key, pressable: n.querySelector("button, a[href]") !== null })));
+    return pressableKeys(
+      Array.from(box.querySelectorAll("[data-key]")).map((n) => ({ key: n.dataset.key, kind: n.dataset.kind, pressable: n.querySelector("button, a[href]") !== null })),
+      kind,
+    );
   };
 
-  /** key の項目の中の最初の押せる物（［完了］・リンク・開くボタン）にフォーカス。無ければ false */
+  /**
+   * key の項目の中の最初の押せる物（［完了］・リンク・開くボタン）にフォーカス。リマインドは操作の行の最後のボタン（［止める］。確認つきなので続けて Enter を押しても確認で止まる）。
+   * 無ければ false
+   */
   const focusFirstIn = (key) => {
     const item = Array.from(deckRoot.querySelectorAll("[data-key]")).find((n) => n.dataset.key === key);
-    const target = item ? item.querySelector("button, a[href]") : null;
+    const target = !item ? null : item.dataset.kind === "reminder" ? item.querySelector(".c-item-ops button:last-child") : item.querySelector("button, a[href]");
     if (!target) return false;
     target.focus();
     return true;
@@ -442,7 +448,8 @@ if (deckRoot && bandRoot) {
   /**
    * 3 つの列を描く。state は flows.js の flowState()。描けなければ false。列は同じ要素を使い回すので、列ごとの縦の位置は残る。
    * 焦点のあった物が消えたら、同じ key の項目が残っていればその項目（開くボタン）→ 帯の［探す］。項目がどの理由で消えても（完了・取り消し・読み直し）、
-   * 同じ列の押せる項目のうち同じ並びの位置に来た項目（無ければ列の最後）の最初の押せる物へ。列に押せる項目が無ければ帯の［探す］（body に落とさない）
+   * 同じ列の押せる項目のうち同じ並びの位置に来た項目（無ければ列の最後）の最初の押せる物へ。列に押せる項目が無ければ帯の［探す］（body に落とさない）。
+   * タスクの列は、消えた項目と同じ種類（タスクかリマインド）の項目だけで数える（最後のタスクを完了にした焦点をリマインドの［止める］に乗せない）
    */
   const drawDeck = (state) => {
     const before = document.activeElement;
@@ -451,7 +458,8 @@ if (deckRoot && bandRoot) {
     const key = holder ? holder.dataset.key : null;
     const colBox = holder ? holder.closest("[data-col]") : null;
     const col = colBox ? colBox.dataset.col : null;
-    const keysBefore = colKeys(col);
+    const kind = col === "tasks" && holder ? holder.dataset.kind : undefined;
+    const keysBefore = colKeys(col, kind);
     const turnsBefore = turnCount();
     try {
       const model = deckModel(state);
@@ -465,7 +473,7 @@ if (deckRoot && bandRoot) {
     // 下のバーの番の数は列の見出しと同じ数
     if (lastBar !== null && turnCount() !== turnsBefore) drawBar(lastBar);
     if (inside && !document.contains(before)) {
-      const keysAfter = colKeys(col);
+      const keysAfter = colKeys(col, kind);
       const next = key === null || keysAfter.includes(key) ? null : focusAfter(keysBefore, keysAfter, key);
       const moved = key === null ? false : next === null ? keysAfter.includes(key) && focusItem(key) : focusFirstIn(next);
       if (!moved) focusBand("find");
