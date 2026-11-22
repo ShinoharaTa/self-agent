@@ -4808,6 +4808,80 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (lines.length > 0) throw new Error(`札の見本の検査で ${lines.length} 件`);
   }
 
+  /**
+   * スマホの流れの列の見本（D2）: 下のバーの deck の 2 つ（列 3 つと右腕・今の列は 1 つ・数の Badge は番の列だけ・字が省かれない・id なし）、
+   * 帯の phone（点・探す・始める・ほかで右腕なし・「self-agent」が省かれない）、deck-paged（列 3 つが枠の幅で、1 列ずつ止まる横送り）と当たり（PC でも 44）。
+   * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
+   */
+  async function checkDeckPhone(page: Page, label: string): Promise<void> {
+    const lines = await page.evaluate(() => {
+      const out: string[] = [];
+      const cut = (el: Element | null): boolean => el !== null && el.scrollWidth > el.clientWidth + 1;
+      const bars: ReadonlyArray<[string, string, string]> = [
+        ["bottom-deck", "turn", "2"],
+        ["bottom-deck-quiet", "feed", ""],
+      ];
+      for (const [demo, current, badge] of bars) {
+        const bar = document.querySelector(`[data-demo="${demo}"] .c-bottom`);
+        if (bar === null) {
+          out.push(`${demo}: 下のバーが無い`);
+          continue;
+        }
+        if (bar.getAttribute("data-variant") !== "deck") out.push(`${demo}: data-variant が ${bar.getAttribute("data-variant")}（deck のはず）`);
+        const texts = [...bar.querySelectorAll(":scope > button")].map((b) => (b.querySelector(".c-bottom-page-label, .c-bottom-hand-label")?.textContent ?? "").trim());
+        if (texts.join(",") !== "あなたの番,タスク,通知,右腕") out.push(`${demo}: ボタンの字 ${texts.join(",")}（あなたの番,タスク,通知,右腕 のはず）`);
+        const now = [...bar.querySelectorAll('[aria-current="true"]')].map((b) => b.getAttribute("data-page"));
+        if (now.join(",") !== current) out.push(`${demo}: 今の列 ${now.join(",")}（${current} のはず）`);
+        const badges = [...bar.querySelectorAll(".c-badge")].map((b) => `${b.closest("[data-page]")?.getAttribute("data-page") ?? "?"}:${(b.textContent ?? "").trim()}`);
+        if (badges.join(",") !== (badge === "" ? "" : `turn:${badge}`)) out.push(`${demo}: 数の Badge ${badges.join(",") || "なし"}（${badge === "" ? "なし" : `turn:${badge}`} のはず）`);
+        for (const el of bar.querySelectorAll(".c-bottom-page-label, .c-bottom-hand-label")) if (cut(el)) out.push(`${demo}: 「${el.textContent}」が省かれている`);
+        if (bar.querySelector("[id]") !== null) out.push(`${demo}: id の付いた要素が在る`);
+        if (cut(bar)) out.push(`${demo}: バーが横にはみ出している（${bar.scrollWidth} > ${bar.clientWidth}）`);
+      }
+      const band = document.querySelector('[data-demo="band-phone"] .c-band');
+      if (band === null) out.push("band-phone: 帯が無い");
+      else {
+        const acts = [...band.querySelectorAll("[data-act]")].map((el) => el.getAttribute("data-act"));
+        if (acts.join(",") !== "status,find,start,more") out.push(`band-phone: ボタン ${acts.join(",")}（status,find,start,more のはず）`);
+        if (band.querySelector(".c-band-hand") !== null) out.push("band-phone: 右腕が在る");
+        if (band.querySelector('[data-act="start"] .c-iconbtn')?.getAttribute("aria-label") !== "始める") out.push("band-phone: ［始める］が名前「始める」の IconButton でない");
+        const name = band.querySelector(".c-band-name");
+        if (name === null || (name.textContent ?? "") !== "self-agent" || cut(name)) out.push("band-phone: 「self-agent」が省かれているか無い");
+      }
+      const box = document.querySelector('[data-demo="deck-paged"] .c-gallery-phone');
+      const deck = box?.querySelector(".c-deck") ?? null;
+      if (box === null || deck === null) out.push("deck-paged: 列が無い");
+      else {
+        if (deck.getAttribute("data-paged") !== "true") out.push("deck-paged: data-paged が無い");
+        const outer = box.getBoundingClientRect().width;
+        if (Math.abs(outer - 390) > 0.5) out.push(`deck-paged: 枠の幅 ${outer.toFixed(1)}（390 のはず）`);
+        const cols = [...deck.querySelectorAll(":scope > .c-col")];
+        if (cols.length !== 3) out.push(`deck-paged: 列が ${cols.length}（3 のはず）`);
+        for (const col of cols) {
+          const w = col.getBoundingClientRect().width;
+          if (Math.abs(w - deck.clientWidth) > 0.5) out.push(`deck-paged: 列 ${col.getAttribute("data-col")} の幅 ${w.toFixed(1)}（枠の中の幅 ${deck.clientWidth} のはず）`);
+        }
+        const st = getComputedStyle(deck);
+        if (st.scrollSnapType !== "x mandatory") out.push(`deck-paged: scroll-snap-type が ${st.scrollSnapType}`);
+        if (!(deck.scrollWidth > deck.clientWidth)) out.push("deck-paged: 横に送れない");
+        // 2 つ目の列の途中まで送ると、どちらかの列の頭に止まる（1 列ずつ）
+        const left = deck.getBoundingClientRect().left;
+        deck.scrollLeft = deck.clientWidth * 0.3;
+        const lefts = cols.map((col) => Math.round(col.getBoundingClientRect().left - left));
+        if (!lefts.some((x) => Math.abs(x) <= 1)) out.push(`deck-paged: 送った後に列の頭で止まっていない（${lefts.join(",")}）`);
+        deck.scrollLeft = 0;
+      }
+      return out;
+    });
+    lines.push(
+      ...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-demo="bottom-deck"], [data-demo="bottom-deck-quiet"], [data-demo="band-phone"], [data-demo="deck-paged"]', targets: "button, a[href]", toast: false })).map(
+        (line) => `スマホの流れの列: ${line}`,
+      ),
+    );
+    for (const line of lines) logLines.push(`[${label}] ${line}`);
+    if (lines.length > 0) throw new Error(`スマホの流れの列の見本の検査で ${lines.length} 件`);
+  }
+
   /** 部品の見本のページ（認証の前に配られる事を確かめるため Tailscale-User-Login なしで開く。一覧は待たない）。絵ごとに読み直す */
   async function gallery(vp: Viewport, theme: Theme): Promise<void> {
     const names = GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind));
@@ -4841,6 +4915,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await checkCards(page, vp, label);
         await checkHands(page, label);
         await checkTerms(page, vp, label);
+        await checkDeckPhone(page, label);
         // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("*")) if (el.scrollLeft !== 0) el.scrollLeft = 0;

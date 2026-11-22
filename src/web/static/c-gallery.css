@@ -162,3 +162,8 @@
 .c-gallery-deck-ops {
   min-width: var(--c-top-full-min);
 }
+
+/* スマホの帯と 1 列ずつの横送り（D2）の枠。外側がスマホの幅（390）で、見本の列より広ければ包みの中で横に送る */
+.c-gallery-phone {
+  width: calc(var(--c-hand-w) + var(--space-6) + var(--space-1) + 2 * var(--border-width));
+}
