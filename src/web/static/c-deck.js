@@ -31,13 +31,13 @@ const filled = (v) => typeof v === "string" && v !== "";
 /** 印の読み上げの語（none は読み上げない） */
 const MARK_LABEL = Object.freeze({ turn: "あなたの番", running: "作業中", unread: "未読" });
 
-/** 期限の語（期限切れ・今日・日付・期限なし）。today が無ければ日付 */
+/** 期限の語（期限切れ・今日、ほかは「タスク」。期限の日付は右の時刻の所にだけ出す） */
 function dueWord(task, state) {
   const due = task && typeof task.due === "string" && task.due !== "" ? task.due : null;
   if (due === null) return "タスク";
   if (filled(state.today) && due < state.today) return "期限切れ";
   if (filled(state.today) && due === state.today) return "今日";
-  return state.day(due);
+  return "タスク";
 }
 
 /** 種類の語。src は元の物（タスクのときだけ見る）、state は期限の語に使う。知らない種類は あなたの番 の語（turnWord） */

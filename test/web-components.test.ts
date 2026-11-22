@@ -3986,7 +3986,7 @@ test("web components: taskItems は 期限切れ → 今日 → 期限の昇順 
   ];
   const items = deck.taskItems(flowOf({ tasks }));
   assert.deepEqual(items.map((i) => i.title), ["切れ 1", "切れ 2", "今日", "先 a", "先 a2", "先 b", "なし 1", "なし 2"]);
-  assert.deepEqual(items.map((i) => i.word), ["期限切れ", "期限切れ", "今日", "day:2026-01-03", "day:2026-01-03", "day:2026-01-05", "タスク", "タスク"]);
+  assert.deepEqual(items.map((i) => i.word), ["期限切れ", "期限切れ", "今日", "タスク", "タスク", "タスク", "タスク", "タスク"]);
   assert.deepEqual(items.slice(0, 3).map((i) => [i.key, i.time, i.target, i.mark]), [["task:6", "day:2025-12-01", null, "none"], ["task:4", "day:2026-01-01", null, "none"], ["task:3", "day:2026-01-02", null, "none"]]);
   assert.equal(items[6]?.time, "");
   assert.deepEqual(deck.taskItems(flowOf({ tasks: null })), []);
@@ -4050,13 +4050,14 @@ test("web components: feedItems は GitHub・知らせ・未読の話題を時�
   assert.equal(cut[0]?.title, "n59");
 });
 
-test("web components: itemWord は全部の種類の語（期限の 4 通り・知らない種類は あなたの番）", () => {
+test("web components: itemWord は全部の種類の語（期限の 4 通り（先の日は「タスク」）・知らない種類は あなたの番）", () => {
   const st = flowOf();
   const words = ["permission", "question", "waiting", "confirm", "running", "reminder", "pr", "issue", "github", "notice", "reply"].map((k) => deck.itemWord(k, {}, st));
   assert.deepEqual(words, ["許可", "質問", "判断待ち", "確認", "動いている", "リマインド", "PR", "Issue", "GitHub", "知らせ", "返事"]);
   assert.equal(deck.itemWord("task", { due: "2026-01-01" }, st), "期限切れ");
   assert.equal(deck.itemWord("task", { due: "2026-01-02" }, st), "今日");
-  assert.equal(deck.itemWord("task", { due: "2026-01-09" }, st), "day:2026-01-09");
+  // 先の日は語にせず、日付は右の時刻の所にだけ
+  assert.equal(deck.itemWord("task", { due: "2026-01-09" }, st), "タスク");
   assert.equal(deck.itemWord("task", { due: null }, st), "タスク");
   assert.equal(deck.itemWord("x", {}, st), "あなたの番");
 });
